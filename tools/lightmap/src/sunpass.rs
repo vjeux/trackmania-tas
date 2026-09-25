@@ -14,12 +14,15 @@ use crate::passdiff::Buf;
 
 /// One vertex of the LM mesh stream (stride 40): POSITION f32×3 @0, BLENDINDICES u8×4 @12, NORMAL snorm16×4 @16,
 /// PSIZE f32 @24, TEXCOORD0 snorm16×2 @28 (the LM uv), TANGENT snorm16×4 @32.
+/// (`psize` = the H-basis vertex shader's tangent-frame mode v4.x, `tangent` its v3 — lmaccum.rs.)
 #[derive(Clone, Copy, Debug)]
 pub struct LmVertex {
     pub pos: [f32; 3],
     pub chart_idx: u32,
     pub normal: [f32; 3],
     pub uv: [f32; 2],
+    pub psize: f32,
+    pub tangent: [f32; 4],
 }
 
 /// One instance of the instance stream (stride 48): v6 = quaternion xyzw, v7 = translation xyz + uniform scale w,
@@ -51,6 +54,8 @@ pub fn parse_lm_vertices(vb: &[u8]) -> Vec<LmVertex> {
                 chart_idx: (b[13] as u32) << 8 | b[12] as u32,
                 normal: [snorm16(h(16)), snorm16(h(18)), snorm16(h(20))],
                 uv: [snorm16(h(28)), snorm16(h(30))],
+                psize: f(24),
+                tangent: [snorm16(h(32)), snorm16(h(34)), snorm16(h(36)), snorm16(h(38))],
             }
         })
         .collect()
@@ -225,7 +230,7 @@ pub struct Target {
 
 /// D3D11 rasterisation of one triangle at 8 sub-pixel bits with the top-left rule; calls `f(x, y, b0, b1, b2)`
 /// for every covered pixel centre with the barycentric weights of the three vertices (w ≡ 1 → linear).
-fn rasterise_triangle(v: [[f32; 2]; 3], w: u32, h: u32, mut f: impl FnMut(u32, u32, f32, f32, f32)) {
+pub fn rasterise_triangle(v: [[f32; 2]; 3], w: u32, h: u32, mut f: impl FnMut(u32, u32, f32, f32, f32)) {
     // viewport: x = (ndc.x + 1)/2 · W, y = (1 − ndc.y)/2 · H, snapped to 1/256 pixel
     let snap = |c: f32| (c * 256.0).round() / 256.0;
     let sx: Vec<f32> = v.iter().map(|p| snap((p[0] * 0.5 + 0.5) * w as f32)).collect();

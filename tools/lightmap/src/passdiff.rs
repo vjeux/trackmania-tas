@@ -393,20 +393,34 @@ pub fn peel_frustums_for(m: &Manifest, sweep: u32, ours: &[[f32; 3]]) -> Vec<Vec
     if by_dir.is_empty() {
         return Vec::new();
     }
+    // THE FRUSTUM FIT, from the captured frustums (three directions, world + fitted): each peel's frustum
+    // is an axis-aligned box projected onto the direction's frame — right = normalize(D × Y), up = right ×
+    // D, forward = D; the centre is the box centre, the half-extents Σ_k |axis_k|·H_k. The boxes read off
+    // the capture (least squares over the 18 extents, residuals ≤ 1.7 m): the world peel's = (1024.5,
+    // 72.0, 1024.5) ± (1025.5, 66.95, 1025.4) — the map's block volume; the fitted peel's = (871.0, 50.7,
+    // 353.5) ± (10.8, 45.9, 16.4) — the items' box. (The decompile of the fit is engineer B's row; these
+    // numbers stand in until then.) A direction the capture lacks takes them projected onto its frame.
     let reorient = |fs: &Vec<Frustum>, v: [f32; 3], od: [f32; 3]| -> Vec<Frustum> {
         let c = v[0] * od[0] + v[1] * od[1] + v[2] * od[2];
         if c >= 0.999_99 {
             return fs.clone();
         }
+        let r = { let x = crate::geometry::cross(od, [0.0, 1.0, 0.0]); if x[0].abs() + x[2].abs() < 1e-6 { [1.0, 0.0, 0.0] } else { crate::geometry::norm(x) } };
+        let u = crate::geometry::cross(r, od);
+        let boxes: [([f32; 3], [f32; 3]); 2] = [([1024.5, 72.0, 1024.5], [1025.5, 66.95, 1025.4]), ([871.0, 50.7, 353.5], [10.8, 45.9, 16.4])];
         fs.iter()
-            .map(|f0| {
+            .enumerate()
+            .map(|(i, f0)| {
                 let mut f = f0.clone();
-                let helper = if od[1].abs() < 0.99 { [0.0, 1.0, 0.0] } else { [1.0, 0.0, 0.0] };
-                let r = crate::geometry::norm(crate::geometry::cross(helper, od));
-                let u = crate::geometry::cross(od, r);
                 f.forward = od;
                 f.right = r;
-                f.up = [-u[0], -u[1], -u[2]];
+                f.up = u;
+                // which box: the peel with the larger extents is the world's
+                let is_world = f0.half[0] > 500.0;
+                let (bc, bh) = if is_world { boxes[0] } else { boxes[1] };
+                f.center = bc;
+                let ext = |a: [f32; 3]| -> f32 { a[0].abs() * bh[0] + a[1].abs() * bh[1] + a[2].abs() * bh[2] };
+                f.half = [ext(r), ext(u), ext(od)];
                 f
             })
             .collect()
@@ -745,25 +759,31 @@ pub fn gunzip(b: &[u8]) -> Result<Vec<u8>, String> {
 
 /// Load one entry's buffer from its root: a raw dump by the manifest's format, or a DDS (optionally gzipped).
 pub fn load_entry(root: &std::path::Path, e: &Entry) -> Result<Buf, String> {
-    let p = root.join(&e.file);
-    let bytes = read_entry_bytes(root, &e.file)?;
+    load_file(root, &e.file, &e.format, e.width, e.height, e.row_pitch)
+}
+
+/// `load_entry` by file name: `format` / `width` / `height` / `row_pitch` as the manifest gives them (a DDS
+/// header supplies what is missing; a raw dump needs all of them).
+pub fn load_file(root: &std::path::Path, file: &str, format: &str, width: u32, height: u32, row_pitch: u32) -> Result<Buf, String> {
+    let p = root.join(file);
+    let bytes = read_entry_bytes(root, file)?;
     if bytes.len() >= 4 && &bytes[..4] == b"DDS " {
         let (dxgi, w, h, pitch, off) = parse_dds(&bytes)?;
-        let fmt = if !e.format.is_empty() && parse_format(&e.format) != Fmt::Unknown { parse_format(&e.format) } else { dxgi_fmt(dxgi) };
+        let fmt = if !format.is_empty() && parse_format(format) != Fmt::Unknown { parse_format(format) } else { dxgi_fmt(dxgi) };
         if fmt == Fmt::Unknown {
             return Err(format!("{}: DDS format {dxgi} not supported", p.display()));
         }
-        let (w, h) = if e.width > 0 && e.height > 0 { (e.width, e.height) } else { (w, h) };
+        let (w, h) = if width > 0 && height > 0 { (width, height) } else { (w, h) };
         return decode_raw(&bytes[off..], fmt, w, h, pitch);
     }
-    let fmt = parse_format(&e.format);
+    let fmt = parse_format(format);
     if fmt == Fmt::Unknown {
-        return Err(format!("{}: format {:?} not supported", p.display(), e.format));
+        return Err(format!("{}: format {:?} not supported", p.display(), format));
     }
-    if e.width == 0 || e.height == 0 {
+    if width == 0 || height == 0 {
         return Err(format!("{}: no width/height in the manifest", p.display()));
     }
-    decode_raw(&bytes, fmt, e.width, e.height, e.row_pitch)
+    decode_raw(&bytes, fmt, width, height, row_pitch)
 }
 
 /// The comparison statistics of two equally shaped buffers over the compared channels.

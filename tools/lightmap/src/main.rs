@@ -3199,6 +3199,286 @@ fn run(a: Vec<String>) {
             let co = lightmap::probecheck::CheckOpts { frame, opts, verbose: has("-v") };
             if let Err(e) = lightmap::probecheck::run(&root, &co) { eprintln!("probe-check: {e}"); std::process::exit(1); }
         }
+        "lmscene" => {
+            // lmtool lmscene PASSCAP_ROOT [--env-frame 127448]: the capture's LM meshes as the accumulate draws see them —
+            // per object the vertex/index counts, the PSIZE tangent-frame modes, the instance quaternion, the vertex
+            // normals against the geometric ones (are the cards' normals the faces'?), duplicated (two-sided) triangles
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let root = std::path::PathBuf::from(&a[1]);
+            let env_frame: u32 = f("--env-frame").map(|v| v.parse().expect("--env-frame")).unwrap_or(127448);
+            let sc = lightmap::lmaccum::load_lm_scene(&root, env_frame).expect("LM scene");
+            println!("{} instances, {} chart ST entries", sc.instances.len(), sc.table.len());
+            for (mi, m) in sc.meshes.iter().enumerate() {
+                let inst = &sc.instances[sc.inst_first[mi]];
+                let rows = lightmap::sunpass::rotation_rows(inst.q);
+                let mut modes = std::collections::BTreeMap::<i32, usize>::new();
+                for v in &m.verts { *modes.entry(v.psize.round() as i32).or_insert(0) += 1; }
+                let mut tris: std::collections::HashMap<[u16; 3], usize> = std::collections::HashMap::new();
+                let (mut rev, mut n_off, mut worst) = (0usize, 0usize, 0f32);
+                for t in m.indices.chunks_exact(3) {
+                    let mut k = [t[0], t[1], t[2]];
+                    k.sort();
+                    *tris.entry(k).or_insert(0) += 1;
+                    // the geometric normal vs the mean vertex normal
+                    let (p0, p1, p2) = (m.verts[t[0] as usize].pos, m.verts[t[1] as usize].pos, m.verts[t[2] as usize].pos);
+                    let e1 = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+                    let e2 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
+                    let g = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+                    let gl = (g[0] * g[0] + g[1] * g[1] + g[2] * g[2]).sqrt().max(1e-12);
+                    let mut nm = [0f32; 3];
+                    for &i in t { for k in 0..3 { nm[k] += m.verts[i as usize].normal[k] / 3.0; } }
+                    let nl = (nm[0] * nm[0] + nm[1] * nm[1] + nm[2] * nm[2]).sqrt().max(1e-12);
+                    let c = (g[0] * nm[0] + g[1] * nm[1] + g[2] * nm[2]) / (gl * nl);
+                    if c < 0.0 { rev += 1; }
+                    let ang = c.abs().min(1.0).acos().to_degrees();
+                    if ang > 5.0 { n_off += 1; }
+                    if ang > worst { worst = ang; }
+                }
+                let dup = tris.values().filter(|&&c| c > 1).count();
+                let (u0, u1) = m.verts.iter().fold(([f32::MAX; 2], [f32::MIN; 2]), |(lo, hi), v| ([lo[0].min(v.uv[0]), lo[1].min(v.uv[1])], [hi[0].max(v.uv[0]), hi[1].max(v.uv[1])]));
+                let ci: std::collections::BTreeSet<u32> = m.verts.iter().map(|v| v.chart_idx).collect();
+                println!("mesh {mi} (eid {}): {} vertices, {} triangles, {} instance(s) from {}; PSIZE modes {:?}; quaternion {:?} (rows {:?}); chart_idx {:?} st.x bits {:#x} st {:?}; uv [{:.4},{:.4}]..[{:.4},{:.4}]", sc.eids[mi], m.verts.len(), m.indices.len() / 3, sc.inst_count[mi], sc.inst_first[mi], modes, inst.q, rows, ci.iter().take(6).collect::<Vec<_>>(), inst.st_x_bits, inst.st, u0[0], u0[1], u1[0], u1[1]);
+                println!("    vertex normal vs face normal: {rev} triangles reversed (n·g < 0), {n_off} more than 5° off (worst {worst:.1}°); {dup} triangle sets drawn more than once (same three vertices)");
+                if mi == 2 || m.indices.len() / 3 > 100 {
+                    // a few sample vertices of the big mesh
+                    for v in m.verts.iter().step_by((m.verts.len() / 6).max(1)).take(6) {
+                        println!("    v pos {:?} n {:?} t {:?} psize {} uv {:?} chart {}", v.pos, v.normal, v.tangent, v.psize, v.uv, v.chart_idx);
+                    }
+                }
+            }
+            // the tiles: the ST of the first few tile instances
+            for i in 3..sc.instances.len().min(6) { let t = &sc.instances[i]; println!("tile instance {i}: q {:?} t {:?} scale {} st {:?}", t.q, t.t, t.scale, t.st); }
+        }
+        "ilightdir-check" => {
+            // lmtool ilightdir-check PASSCAP_ROOT [--frame 127448] [--env-frame 127448] [--cmp unorm|float] [--only-chained]
+            //   the transcribed LmILightDir_Set block (lmaccum.rs: VS 17111 + PS 17112) run over the CAPTURED peel colour +
+            //   depth of every layer snapshot of the frame, compared with the CAPTURED TMapILightDir after that block —
+            //   chained (our target carried from block to block, as the game's) and per block (each block started from
+            //   the game's own previous snapshot, isolating the block's error)
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let has = |k: &str| a.iter().any(|x| x == k);
+            let root = std::path::PathBuf::from(&a[1]);
+            let frame: u32 = f("--frame").map(|v| v.parse().expect("--frame")).unwrap_or(127448);
+            let env_frame: u32 = f("--env-frame").map(|v| v.parse().expect("--env-frame")).unwrap_or(127448);
+            let cmp = match f("--cmp").as_deref() { Some("float") => lightmap::lmaccum::DepthCompare::Float, _ => lightmap::lmaccum::DepthCompare::Unorm16Round };
+            let manifest = f("--manifest").map(std::path::PathBuf::from).unwrap_or_else(|| root.join("MANIFEST.json"));
+            let t0 = std::time::Instant::now();
+            let sc = lightmap::lmaccum::load_lm_scene(&root, env_frame).expect("LM scene");
+            let entries = lightmap::lmaccum::load_capture_entries(&manifest).expect("manifest");
+            let draws = lightmap::lmaccum::load_draws(&root, frame).expect("draws log");
+            let blocks = lightmap::lmaccum::set_blocks(&draws, &sc).expect("accumulate blocks");
+            println!("frame {frame}: {} accumulate blocks in the log ({} draws), scene loaded in {:.1} s", blocks.len(), blocks.iter().map(|b| b.draws.len()).sum::<usize>(), t0.elapsed().as_secs_f32());
+            let ild: Vec<&lightmap::lmaccum::CapEntry> = entries.iter().filter(|e| e.pass == "ilightdir" && e.frame == frame).collect();
+            let layers: Vec<&lightmap::lmaccum::CapEntry> = entries.iter().filter(|e| (e.pass == "peel_color" || e.pass == "peel_depth") && e.frame == frame).collect();
+            println!("  manifest: {} ilightdir snapshots, {} layer buffers for this frame", ild.len(), layers.len());
+            let mut chained = lightmap::lmaccum::DirTarget::cleared(2048, 2048);
+            let mut prev_game: Option<lightmap::passdiff::Buf> = None;
+            let mut totals = (0usize, 0usize, 0usize, 0usize);
+            for (bi, b) in blocks.iter().enumerate() {
+                let Some(snap) = ild.iter().find(|e| e.eid_first <= b.eid_first && b.eid_last <= e.eid_last || e.eid_last == b.eid_last).copied() else {
+                    println!("block {bi:2} eids {}-{}: no captured ilightdir snapshot", b.eid_first, b.eid_last);
+                    continue;
+                };
+                let color = layers.iter().filter(|e| e.pass == "peel_color" && e.eid_last < b.eid_first).max_by_key(|e| e.eid_last).copied();
+                let depth = layers.iter().filter(|e| e.pass == "peel_depth" && e.eid_last < b.eid_first).max_by_key(|e| e.eid_last).copied();
+                let (Some(ce), Some(de)) = (color, depth) else {
+                    println!("block {bi:2} eids {}-{}: no captured layer colour/depth before it", b.eid_first, b.eid_last);
+                    continue;
+                };
+                let (cb, db) = (ce.load(&root).expect("layer colour"), de.load(&root).expect("layer depth"));
+                let game = snap.load(&root).expect("ilightdir snapshot");
+                let layer = lightmap::lmaccum::LayerTargets { color: &cb, depth: &db };
+                let probe: Option<(u32, u32)> = f("--probe").map(|s| { let v: Vec<u32> = s.split(',').map(|t| t.trim().parse().expect("--probe x,y")).collect(); (v[0], v[1]) });
+                let only_block: Option<usize> = f("--block").map(|s| s.parse().expect("--block N"));
+                if let Some(ob) = only_block { if ob != bi { prev_game = Some(game); continue; } }
+                if probe.is_some() || has("--borders") {
+                    // the layer targets' border (the 1-px frame the viewport (1,1,4094,4094) never draws) and centre
+                    let (w, h) = (db.w, db.h);
+                    let px = |x: u32, y: u32| format!("d {:.5} (q {}) c ({:.4},{:.4},{:.4})", db.get(x, y, 0), (db.get(x, y, 0) * 65535.0).round(), cb.get(x, y, 0), cb.get(x, y, 1), cb.get(x, y, 2));
+                    println!("    layer targets {w}×{h}: (0,0) {} | (1,1) {} | (w-1,0) {} | (w-2,1) {} | (0,h-1) {} | (w-1,h-1) {} | centre {}", px(0, 0), px(1, 1), px(w - 1, 0), px(w - 2, 1), px(0, h - 1), px(w - 1, h - 1), px(w / 2, h / 2));
+                    if let Some((x, y)) = probe { println!("    game ilightdir at ({x},{y}) after this block: ({:.4},{:.4},{:.4}); before: {:?}", game.get(x, y, 0), game.get(x, y, 1), game.get(x, y, 2), prev_game.as_ref().map(|p| [p.get(x, y, 0), p.get(x, y, 1), p.get(x, y, 2)])); }
+                }
+                let d0 = b.draws[0].cb.peel_dir;
+                // the peel this block belongs to: the projection's scale tells the world (≈5e-4) from the fitted (≈1e-2) frustum
+                let sx = b.draws[0].cb.world_pw01_shadow[0][0].abs().max(b.draws[0].cb.world_pw01_shadow[2][0].abs());
+                let t1 = std::time::Instant::now();
+                // per block: from the game's previous snapshot
+                let mut fresh = lightmap::lmaccum::DirTarget::cleared(2048, 2048);
+                if let Some(pg) = &prev_game { for y in 0..2048u32 { for x in 0..2048u32 { fresh.px[(y * 2048 + x) as usize] = lightmap::gpufmt::pack_r11g11b10([pg.get(x, y, 0), pg.get(x, y, 1), pg.get(x, y, 2)], lightmap::gpufmt::Rounding::Truncate); } } }
+                let mut trace: lightmap::lmaccum::SetTrace = if has("--classify") { vec![None; 2048 * 2048] } else { Vec::new() };
+                lightmap::lmaccum::run_set_block_trace(&sc.meshes, &sc.instances, &sc.table, &b.draws, &layer, cmp, &mut fresh, probe, if has("--classify") { Some(&mut trace) } else { None });
+                if has("--classify") {
+                    // the mismatching pixels by the fragment's z range and uv range: which rule the game applies
+                    let mut cls = std::collections::BTreeMap::<String, (usize, usize)>::new();
+                    for y in 0..2048u32 { for x in 0..2048u32 {
+                        let i = (y * 2048 + x) as usize;
+                        let Some((u, v, z, stored, ndd)) = trace[i] else { continue };
+                        let o = fresh.rgb(x, y); let g = [game.get(x, y, 0), game.get(x, y, 1), game.get(x, y, 2)];
+                        let same = lightmap::gpufmt::pack_r11g11b10(g, lightmap::gpufmt::Rounding::Truncate) == fresh.px[i];
+                        let zr = if z < 0.0 { "z<0" } else if z > 1.0 { "z>1" } else { "0≤z≤1" };
+                        let ur = if u < 0.0 || u > 1.0 || v < 0.0 || v > 1.0 { "uv-out" } else { "uv-in" };
+                        let sr = if stored == 0.0 { "st=0" } else if stored >= 1.0 { "st=1" } else { "0<st<1" };
+                        let cr = if z >= stored { "ge" } else { "lt" };
+                        let nr = if ndd < 0.0 { "back" } else { "front" };
+                        let gw = if prev_game.as_ref().map(|p| [p.get(x, y, 0), p.get(x, y, 1), p.get(x, y, 2)] != g).unwrap_or(g != [0.0; 3]) { "game-wrote" } else { "game-kept" };
+                        let ow = if o != [0.0; 3] || fresh.px[i] != prev_game.as_ref().map(|p| lightmap::gpufmt::pack_r11g11b10([p.get(x, y, 0), p.get(x, y, 1), p.get(x, y, 2)], lightmap::gpufmt::Rounding::Truncate)).unwrap_or(0) { "ours-wrote" } else { "ours-kept" };
+                        let e = cls.entry(format!("{zr:7} {ur:6} {sr:7} {cr} {nr:5} {gw} {ow}")).or_insert((0, 0));
+                        e.0 += 1; if !same { e.1 += 1; }
+                        if !same && e.1 <= 2 { println!("      example {zr} {ur} {sr} {cr}: ({x},{y}) uv ({u:.4},{v:.4}) z {z:.5} stored {stored:.5} ours ({:.4},{:.4},{:.4}) game ({:.4},{:.4},{:.4}) before {:?}", o[0], o[1], o[2], g[0], g[1], g[2], prev_game.as_ref().map(|p| [p.get(x, y, 0), p.get(x, y, 1), p.get(x, y, 2)])); }
+                    } }
+                    for (k, (n, bad)) in &cls { println!("      {k}: {n:>8} pixels, {bad:>8} mismatching"); }
+                }
+                let cf = lightmap::lmaccum::compare_dir(&fresh, &game);
+                if !has("--only-chained") {
+                    println!("block {bi:2} eids {:5}-{:5} {} layer {:?} ({}) D ({:.3},{:.3},{:.3}) proj-scale {sx:.1e}  per-block : {}", b.eid_first, b.eid_last, ce.phase.clone().unwrap_or_default(), ce.layer, if sx < 2e-3 { "world" } else { "fitted" }, d0[0], d0[1], d0[2], lightmap::lmaccum::fmt_dircmp(&cf));
+                }
+                lightmap::lmaccum::run_set_block(&sc.meshes, &sc.instances, &sc.table, &b.draws, &layer, cmp, &mut chained);
+                let cc = lightmap::lmaccum::compare_dir(&chained, &game);
+                println!("block {bi:2} eids {:5}-{:5} {:56} chained   : {}  ({:.1} s)", b.eid_first, b.eid_last, "", lightmap::lmaccum::fmt_dircmp(&cc), t1.elapsed().as_secs_f32());
+                totals.0 += cf.touched; totals.1 += cf.exact; totals.2 += cf.quantum; totals.3 += cf.worse;
+                // the worst per-block texels, a few, with what each side holds
+                if cf.worse > 0 && !has("--quiet") {
+                    let mut shown = 0;
+                    'outer: for y in (0..2048u32).step_by(3) { for x in (0..2048u32).step_by(3) {
+                        let o = fresh.rgb(x, y); let g = [game.get(x, y, 0), game.get(x, y, 1), game.get(x, y, 2)];
+                        let d = (0..3).map(|k| (o[k] - g[k]).abs()).fold(0f32, f32::max);
+                        if d > 0.01 { println!("      ({x},{y}) ours ({:.4},{:.4},{:.4}) game ({:.4},{:.4},{:.4})", o[0], o[1], o[2], g[0], g[1], g[2]); shown += 1; if shown >= 5 { break 'outer; } }
+                    } }
+                }
+                prev_game = Some(game);
+            }
+            let pct = |n: usize| if totals.0 > 0 { 100.0 * n as f64 / totals.0 as f64 } else { 0.0 };
+            println!("ALL BLOCKS per-block: touched {} exact {} ({:.3} %) ±1 quantum {} ({:.3} %) worse {} ({:.3} %)  [{:?}, {:.1} s]", totals.0, totals.1, pct(totals.1), totals.2, pct(totals.2), totals.3, pct(totals.3), cmp, t0.elapsed().as_secs_f32());
+        }
+        "hbasis-check" => {
+            // lmtool hbasis-check PASSCAP_ROOT [--frame 127448] [--index K] [--env-frame 127448] [--blend trunc-src-round|round|trunc|round-src|trunc-src] [--dump-prefix P]
+            //   the transcribed H-basis accumulate (lmaccum.rs: VS 17118 + PS 17122) run over the CAPTURED TMapILightDir after the
+            //   direction's last accumulate, added onto the CAPTURED MRTs after the previous direction, compared f16 for f16 with the
+            //   CAPTURED four MRTs after the direction (hbasis0..3)
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let root = std::path::PathBuf::from(&a[1]);
+            let env_frame: u32 = f("--env-frame").map(|v| v.parse().expect("--env-frame")).unwrap_or(127448);
+            let manifest = f("--manifest").map(std::path::PathBuf::from).unwrap_or_else(|| root.join("MANIFEST.json"));
+            let blend = match f("--blend").as_deref() { Some("round-src") => lightmap::sunpass::BlendModel::RoundSrcAndSum, Some("trunc") => lightmap::sunpass::BlendModel::TruncSum, Some("trunc-src") => lightmap::sunpass::BlendModel::TruncSrcAndSum, Some("round") => lightmap::sunpass::BlendModel::RoundSum, _ => lightmap::sunpass::BlendModel::TruncSrcRoundSum };
+            let t0 = std::time::Instant::now();
+            let sc = lightmap::lmaccum::load_lm_scene(&root, env_frame).expect("LM scene");
+            let entries = lightmap::lmaccum::load_capture_entries(&manifest).expect("manifest");
+            // the direction: by sweep index (--index K) or the first banked hbasis of --frame
+            let capture = f("--capture").unwrap_or_else(|| "pwc2".into());
+            let hb0: Vec<&lightmap::lmaccum::CapEntry> = entries.iter().filter(|e| e.pass == "hbasis0" && e.capture == capture && e.banked).collect();
+            let target = match (f("--index"), f("--frame")) {
+                (Some(k), _) => { let k: u32 = k.parse().expect("--index"); hb0.iter().find(|e| e.sweep_direction_index == Some(k) && e.cbuffers["ShaderP"].is_object()).copied().unwrap_or_else(|| panic!("no banked hbasis0 with sweep_direction_index {k}")) }
+                (None, fr) => { let fr: u32 = fr.map(|v| v.parse().expect("--frame")).unwrap_or(127448); hb0.iter().find(|e| e.frame == fr).copied().unwrap_or_else(|| panic!("no banked hbasis0 in frame {fr}")) }
+            };
+            let k = target.sweep_direction_index.unwrap_or(0);
+            let (cb, raster) = target.hb_constants().expect("hbasis entry constants");
+            println!("direction index {k} (frame {}, eids {}-{}): D ({:.5},{:.5},{:.5}) InvDirCount {} raster offset {:?} → Trans {:?}", target.frame, target.eid_first, target.eid_last, cb.peel_dir[0], cb.peel_dir[1], cb.peel_dir[2], cb.inv_dir_count, lightmap::lmaccum::RASTER_OFFSETS[k as usize % 9], raster.trans_ss);
+            // the four MRTs after this direction, and after the previous one (zero for the sweep's first)
+            let mrt_after: Vec<&lightmap::lmaccum::CapEntry> = (0..4).map(|m| entries.iter().find(|e| e.pass == format!("hbasis{m}") && e.capture == capture && e.frame == target.frame && e.eid_last == target.eid_last && e.banked).unwrap_or_else(|| panic!("hbasis{m} after direction {k} not banked"))).collect();
+            let prev: Option<Vec<&lightmap::lmaccum::CapEntry>> = if k == 0 { None } else {
+                let p0 = hb0.iter().filter(|e| e.sweep_direction_index == Some(k - 1)).max_by_key(|e| (e.frame, e.eid_last)).copied().unwrap_or_else(|| panic!("hbasis0 after direction {} not banked — the MRTs before direction {k} are unknown", k - 1));
+                Some((0..4).map(|m| entries.iter().find(|e| e.pass == format!("hbasis{m}") && e.capture == capture && e.frame == p0.frame && e.eid_last == p0.eid_last && e.banked).unwrap_or_else(|| panic!("hbasis{m} after direction {} not banked", k - 1))).collect())
+            };
+            // the ilightdir after the direction's last accumulate: the snapshot with the greatest eid_last before the H-basis draws
+            let ild = entries.iter().filter(|e| e.pass == "ilightdir" && e.capture == capture && e.frame == target.frame && e.eid_last < target.eid_first).max_by_key(|e| e.eid_last).unwrap_or_else(|| panic!("no ilightdir snapshot before the H-basis draws of direction {k} (frame {} eid {})", target.frame, target.eid_first));
+            println!("  inputs: ilightdir {} (eids {}-{}); MRTs before: {}", ild.file, ild.eid_first, ild.eid_last, prev.as_ref().map(|p| p[0].file.clone()).unwrap_or_else(|| "cleared (0)".into()));
+            let ildb = ild.load(&root).expect("ilightdir");
+            let mut ilt = lightmap::lmaccum::DirTarget::cleared(ildb.w, ildb.h);
+            for y in 0..ildb.h { for x in 0..ildb.w { ilt.px[(y * ildb.w + x) as usize] = lightmap::gpufmt::pack_r11g11b10([ildb.get(x, y, 0), ildb.get(x, y, 1), ildb.get(x, y, 2)], lightmap::gpufmt::Rounding::Truncate); } }
+            let mut tgt = match &prev {
+                Some(p) => { let bufs: Vec<lightmap::passdiff::Buf> = p.iter().map(|e| e.load(&root).expect("previous MRT")).collect(); lightmap::lmaccum::HbTargets::from_bufs([&bufs[0], &bufs[1], &bufs[2], &bufs[3]]) }
+                None => lightmap::lmaccum::HbTargets::cleared(2048, 2048),
+            };
+            // the four draws in the block's order (frame 127448: the pad, the wall, the vegetation item, the tiles)
+            let order = [0usize, 1, 2, 3];
+            let draws: Vec<lightmap::lmaccum::HbDraw> = order.iter().map(|&m| lightmap::lmaccum::HbDraw { eid: target.eid_first, mesh: m, instance_first: sc.inst_first[m], instance_count: sc.inst_count[m], raster, cb }).collect();
+            let t1 = std::time::Instant::now();
+            lightmap::lmaccum::run_hbasis(&sc.meshes, &sc.instances, &sc.table, &draws, &ilt, &mut tgt, blend);
+            println!("  rasterised in {:.1} s ({blend:?})", t1.elapsed().as_secs_f32());
+            let game: Vec<lightmap::passdiff::Buf> = mrt_after.iter().map(|e| e.load(&root).expect("MRT after")).collect();
+            for m in 0..4 {
+                for ch in 0..4 {
+                    let (n, exact, ulp1, worse, maxd, worst) = lightmap::lmaccum::compare_mrt(&tgt.mrt[m], &game[m], ch);
+                    let pct = |v: usize| if n > 0 { 100.0 * v as f64 / n as f64 } else { 0.0 };
+                    println!("  C{m}.{}: {n:>8} values  exact {exact:>8} ({:6.2} %)  1 ulp {ulp1:>7} ({:5.2} %)  worse {worse:>6} ({:5.3} %)  max |Δ| {maxd:.6} at ({},{}) game {:.6} ours {:.6}", ["r", "g", "b", "a"][ch], pct(exact), pct(ulp1), pct(worse), worst.0, worst.1, worst.2, worst.3);
+                }
+            }
+            // alpha = the coverage count: where do the two rasters disagree?
+            let (mut ours_only, mut game_only) = (0usize, 0usize);
+            for y in 0..2048u32 { for x in 0..2048u32 { let o = tgt.mrt[0][(y * 2048 + x) as usize][3]; let g = game[0].get(x, y, 3); if o > 0.0 && g == 0.0 { ours_only += 1; } if g > 0.0 && o == 0.0 { game_only += 1; } } }
+            println!("  coverage (alpha > 0): ours-only {ours_only}, game-only {game_only}");
+            if let Some(p) = f("--dump-prefix") {
+                for m in 0..4 { let mut bytes = Vec::with_capacity(2048 * 2048 * 8); for px in &tgt.mrt[m] { for k in 0..4 { bytes.extend_from_slice(&lightmap::gpufmt::encode_f16(px[k], lightmap::gpufmt::Rounding::NearestEven).to_le_bytes()); } } std::fs::write(format!("{p}_hbasis{m}.bin"), &bytes).expect("dump"); }
+                println!("  wrote {p}_hbasis0..3.bin (raw RGBA16F 2048²)");
+            }
+            println!("done in {:.1} s", t0.elapsed().as_secs_f32());
+        }
+        "ambient-check" => {
+            // lmtool ambient-check PASSCAP_ROOT [--capture pwc2]: the AddAmbient UAV snapshots (ambient_accum/) against the
+            //   transcribed CS 17125 — the .w channel = Σ Scale/2 over the directions issued so far (Scale = D.y/32 from the
+            //   H-basis entries' directions), the .xyz increments ÷ Scale = the peel colour target's centre pixel after the
+            //   direction's environment render, compared with the banked env-layer colour where one exists
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let root = std::path::PathBuf::from(&a[1]);
+            let manifest = f("--manifest").map(std::path::PathBuf::from).unwrap_or_else(|| root.join("MANIFEST.json"));
+            let capture = f("--capture").unwrap_or_else(|| "pwc2".into());
+            let entries = lightmap::lmaccum::load_capture_entries(&manifest).expect("manifest");
+            let mut acc: Vec<&lightmap::lmaccum::CapEntry> = entries.iter().filter(|e| e.pass == "ambient_accum" && e.capture == capture).collect();
+            acc.sort_by_key(|e| (e.frame, e.eid_last));
+            // every direction of the capture in issue order with its D (from any hbasis0 entry, banked or not)
+            let mut dirs: Vec<(u32, u32, u64, [f32; 3])> = entries.iter().filter(|e| e.pass == "hbasis0" && e.capture == capture && e.dir.is_some() && e.sweep_direction_index.is_some()).map(|e| (e.sweep_direction_index.unwrap(), e.frame, e.eid_last, e.dir.unwrap())).collect();
+            dirs.sort_by_key(|d| (d.0, d.1, d.2));
+            dirs.dedup_by_key(|d| d.0);
+            println!("{} ambient_accum snapshots, {} directions with a vector (indices {}..{})", acc.len(), dirs.len(), dirs.first().map(|d| d.0).unwrap_or(0), dirs.last().map(|d| d.0).unwrap_or(0));
+            let load4 = |e: &lightmap::lmaccum::CapEntry| -> [f32; 4] { let b = lightmap::passdiff::read_entry_bytes(&root, &e.file).expect("uav bytes"); let g = |o: usize| f32::from_le_bytes(b[o..o + 4].try_into().unwrap()); [g(0), g(4), g(8), g(12)] };
+            // a snapshot taken at (frame, eid) covers the directions whose H-basis draws come after it... the dispatch of
+            // direction k precedes k's blocks: the snapshot includes k when k's hbasis eid_last > eid in the same frame or later
+            let mut prev: Option<([f32; 4], u32)> = None;
+            let (mut n_w_ok, mut n_w) = (0usize, 0usize);
+            let mut running = [0f32; 4];
+            let mut running_known = false;
+            for e in &acc {
+                let v = load4(e);
+                // the first direction NOT yet accumulated at this snapshot: the smallest (frame, eid_last) > (e.frame, e.eid)
+                let next = dirs.iter().find(|d| (d.1, d.2) > (e.frame, e.eid_last)).map(|d| d.0);
+                let Some(next) = next else { println!("frame {} eid {}: {:?} (after the last known direction)", e.frame, e.eid_last, v); continue; };
+                // directions 0..next-1 are in the sum (the dispatch of `next − 1` has run: it precedes its blocks — the snapshot after the dispatch of direction j includes j)
+                let count = next; // directions 0..=next-1
+                let w_expect: f32 = dirs.iter().filter(|d| d.0 < count).fold(0f32, |s, d| d.3[1] / 32.0 * 0.5 + s);
+                let w_ok = (v[3] - w_expect).abs() <= 1e-6 * v[3].abs().max(1.0);
+                n_w += 1; if w_ok { n_w_ok += 1; }
+                let mut line = format!("frame {:6} eid {:5}: after direction {:3}: w {:.7} (Σ D.y/64 over 0..={}: {:.7} {})  xyz ({:.6},{:.6},{:.6})", e.frame, e.eid_last, count as i64 - 1, v[3], count as i64 - 1, w_expect, if w_ok { "OK" } else { "MISMATCH" }, v[0], v[1], v[2]);
+                if let Some((pv, pcount)) = prev {
+                    if pcount + 1 == count {
+                        // one direction between the two snapshots: its centre colour = Δ / Scale
+                        let d = dirs.iter().find(|d| d.0 == count - 1).unwrap();
+                        let scale = d.3[1] / 32.0;
+                        let c = [(v[0] - pv[0]) / scale, (v[1] - pv[1]) / scale, (v[2] - pv[2]) / scale];
+                        line += &format!("  Δ/Scale = centre colour ({:.4},{:.4},{:.4}) [D.y {:.4}]", c[0], c[1], c[2], d.3[1]);
+                        // the banked environment render of that direction: the peel_color with the greatest (frame, eid_last) before the dispatch
+                        let env = entries.iter().filter(|x| x.pass == "peel_color" && x.capture == capture && (x.frame, x.eid_last) < (e.frame, e.eid_last)).max_by_key(|x| (x.frame, x.eid_last));
+                        if let Some(env) = env {
+                            if (e.frame, e.eid_last).0 == env.frame || e.eid_last < 100 {
+                                let b = env.load(&root).expect("env colour");
+                                let (cx, cy) = lightmap::lmaccum::ambient_pixel(b.w, b.h);
+                                let g = [b.get(cx, cy, 0), b.get(cx, cy, 1), b.get(cx, cy, 2)];
+                                let mut acc2 = pv;
+                                lightmap::lmaccum::cs_17125(&mut acc2, g, scale);
+                                let exact = acc2 == v;
+                                line += &format!("; banked env {} centre ({:.4},{:.4},{:.4}) → CS 17125 gives ({:.7},{:.7},{:.7},{:.7}) {}", env.file.rsplit('/').next().unwrap_or(""), g[0], g[1], g[2], acc2[0], acc2[1], acc2[2], acc2[3], if exact { "EXACT" } else { "differs" });
+                                if running_known { lightmap::lmaccum::cs_17125(&mut running, g, scale); line += &format!("; running from our chain ({:.7},{:.7},{:.7},{:.7})", running[0], running[1], running[2], running[3]); }
+                            }
+                        }
+                    } else {
+                        line += &format!("  ({} directions since the previous snapshot)", count - pcount);
+                    }
+                }
+                println!("{line}");
+                if !running_known { running = v; running_known = true; }
+                prev = Some((v, count));
+            }
+            println!("w channel: {n_w_ok} of {n_w} snapshots equal Σ D.y/64 over the directions issued (Scale = 8·D.y/N, N = 256)");
+        }
         "dilate-check" => {
             // lmtool dilate-check PASSCAP_ROOT [--frame N]: the transcribed PS 1332 gutter dilation (gpuenc::dilate_ps1332), 8 passes on
             // each captured final_03 image, compared f16 for f16 with the captured final_04 images

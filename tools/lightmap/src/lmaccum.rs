@@ -1,0 +1,885 @@
+//! The lightmapper's per-direction ACCUMULATE passes, TRANSCRIBED from the capture (passcap/pwc-day; ids of
+//! capture pwc2 frame 127448, pwc1 frame 40648 in brackets — the DXBC is byte-identical across the captures):
+//!
+//! * `LmILightDir_Set` — VS 17111 [17525] (Vertex_17111.txt) + PS 17112 [17526] (Pixel_17112.txt). After every
+//!   peel layer the LM raster of every object (the 3 items + the 4096 zone tiles, 4 draws) writes into
+//!   `TMapILightDir` (2048² R11G11B10, cleared to 0 before the direction's first block): a texel facing the peel
+//!   direction (`n·PeelDirInW ≥ 0`, else discard) projects its world position through `WorldPw01Shadow`, point-
+//!   samples the layer's depth with the comparison sampler s1 (ClampEdge, GreaterEqual: passes when the texel's
+//!   z01 ≥ the stored layer depth — the layer is beyond the texel on the sky side) and, when it passes, writes the
+//!   layer's colour point-sampled at the same uv (s0 ClampEdge). Last write wins: the block runs after every layer
+//!   of both peels (world, then fitted), far-to-near, so a texel ends with the layer nearest to it on the sky side.
+//! * the H-BASIS accumulate — VS 17118 [17532] (Vertex_17118.txt) + PS 17122 [17536] (Pixel_17122.txt), once per
+//!   direction after both peels: the same LM raster reads `TMapILightDir` at its own pixel (`ld`) and blends
+//!   (One/One) into four 2048² RGBA16F MRTs: `C0 += (4π/N)·L·(0.093506(3sz²−1) + 0.398928 sz + 0.199472)`,
+//!   `C1 += (4π/N)·L·(−0.230330 sy − 0.161951 sy sz)`, `C2 += (4π/N)·L·(−0.230330 sz − 0.107966(3sz²−1))`,
+//!   `C3 += (4π/N)·L·(−0.230330 sx − 0.161951 sx sz)`, alpha += InvDirCount (1/N). (sx, sy, sz) = the direction
+//!   in the texel's tangent frame, built as the bytecode does from the vertex stream's PSIZE mode and TANGENT.
+//! * `AddAmbient` — CS 17125 [17539] (Compute_17539.txt), one thread per direction, before the direction's first
+//!   accumulate: `BufAmbientAccum.xyz += Scale · TexColorPeeled[W/2, H/2]` (the centre pixel of the peel colour
+//!   target as the environment render left it), `.w += Scale · 0.5`; `Scale` = the cbuffer's
+//!   `g_LmILightDir_AddAmbient.Scale` (= D.y/32 = 8·D.y/N for N = 256 on every logged dispatch).
+//!
+//! Nothing here is modelled: the vertex formats are the draws' input layouts (env/frame127448/mesh.json), the
+//! constants the cbuffers of logs/draws-frame*.json.gz, the sampler modes logs/samplers-frame127448.json, the
+//! rasteriser the D3D11 rules (sunpass::rasterise_triangle), the target conversions the hardware facts measured on
+//! this GPU (R11G11B10 store truncates; a blended RGBA16F target truncates the source to f16 and rounds the sum to
+//! nearest even — sunpass::BlendModel::TruncSrcRoundSum). `lmtool ilightdir-check`, `hbasis-check` and
+//! `ambient-check` run these kernels on the CAPTURED inputs and compare with the CAPTURED outputs to the quantum.
+
+use crate::gpufmt::{quantise_f16, Rounding};
+use crate::passdiff::Buf;
+use crate::sunpass::{rasterise_triangle, rotation_rows, LmInstance, LmMesh, LmVertex};
+
+/// The LM raster constants of one draw (cb ShaderV.g_CBufferV): `LM01_Scale_RasterSS` (2, −2) and
+/// `LM01_Trans_RasterSS` (−1 + ox·2/(9·2048), 1 − oy·2/(9·2048)) for the direction's raster offset (ox, oy).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LmRasterCb {
+    pub scale_ss: [f32; 2],
+    pub trans_ss: [f32; 2],
+}
+
+/// The nine raster offsets of `LM01_Trans_RasterSS`, in the sweep's cycle (direction k uses offset k mod 9;
+/// read off the capture's per-direction cbuffers — the port's `BakeParams::jitter_cycle`).
+pub const RASTER_OFFSETS: [[f32; 2]; 9] = [[-4.0, 2.0], [-1.0, 3.0], [2.0, 4.0], [-3.0, -1.0], [0.0, 0.0], [3.0, 1.0], [-2.0, -4.0], [1.0, -3.0], [4.0, -2.0]];
+
+impl LmRasterCb {
+    /// The constants of raster offset `k mod 9` for a `w`×`h` LM target (`w` = 2048 in the capture): what the
+    /// cbuffer holds for directions 0 and 2 of the capture to the last f32 bit (unit-tested).
+    pub fn for_offset(k: usize, w: u32, h: u32) -> LmRasterCb {
+        let o = RASTER_OFFSETS[k % 9];
+        LmRasterCb { scale_ss: [2.0, -2.0], trans_ss: [-1.0 + o[0] / 9.0 * (2.0 / w as f32), 1.0 - o[1] / 9.0 * (2.0 / h as f32)] }
+    }
+}
+
+/// The chart ST of a vertex (VS instructions 0–8, shared by every LM vertex shader): `idx = (b1 << 8) | b0`;
+/// `idx < 0xffff` → `g_TcLM_ST_LM01[idx + asint(inst.st.x)]`, else the instance's own ST (the tiles' path).
+#[inline]
+pub fn chart_st(v: &LmVertex, inst: &LmInstance, table: &[[f32; 4]]) -> [f32; 4] {
+    if v.chart_idx < 0xffff {
+        let i = v.chart_idx.wrapping_add(inst.st_x_bits) as usize;
+        table.get(i).copied().unwrap_or([0.0; 4])
+    } else {
+        inst.st
+    }
+}
+
+/// The LM raster position of a vertex (VS 17111 9–10, 34 / VS 17118 9–10, 29): `clip.xy = (ST.xy·Scale)·uv +
+/// (Scale·ST.zw + Trans)`, z = 0.5, w = 1.
+#[inline]
+pub fn lm_clip(v: &LmVertex, st: [f32; 4], cb: &LmRasterCb) -> [f32; 2] {
+    let sxy = [st[0] * cb.scale_ss[0], st[1] * cb.scale_ss[1]];
+    let tzw = [cb.scale_ss[0] * st[2] + cb.trans_ss[0], cb.scale_ss[1] * st[3] + cb.trans_ss[1]];
+    [sxy[0] * v.uv[0] + tzw[0], sxy[1] * v.uv[1] + tzw[1]]
+}
+
+/// `rows · p·scale + t` (the world position of a vertex, VS 17111 20–33 / VS 17118 30–37).
+#[inline]
+pub fn world_pos(v: &LmVertex, inst: &LmInstance, rows: &[[f32; 3]; 3]) -> [f32; 3] {
+    let p = [v.pos[0] * inst.scale, v.pos[1] * inst.scale, v.pos[2] * inst.scale];
+    [
+        p[0] * rows[0][0] + p[1] * rows[0][1] + p[2] * rows[0][2] + inst.t[0],
+        p[0] * rows[1][0] + p[1] * rows[1][1] + p[2] * rows[1][2] + inst.t[1],
+        p[0] * rows[2][0] + p[1] * rows[2][1] + p[2] * rows[2][2] + inst.t[2],
+    ]
+}
+
+/// `rows · n` (the world normal, VS 17111 35–37 / VS 17118 22–28; the same for any object-space vector).
+#[inline]
+pub fn rotate(n: [f32; 3], rows: &[[f32; 3]; 3]) -> [f32; 3] {
+    [
+        n[0] * rows[0][0] + n[1] * rows[0][1] + n[2] * rows[0][2],
+        n[0] * rows[1][0] + n[1] * rows[1][1] + n[2] * rows[1][2],
+        n[0] * rows[2][0] + n[1] * rows[2][1] + n[2] * rows[2][2],
+    ]
+}
+
+#[inline]
+fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+/// `cross(a, b)` in the bytecode's form (`mul r, a.yzx, b.zxy; mad r, a.zxy, b.yzx, -r` → the component order of
+/// the DXBC: r.x = a.y·b.z − a.z·b.y, r.y = a.z·b.x − a.x·b.z, r.z = a.x·b.y − a.y·b.x).
+#[inline]
+fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// LmILightDir_Set
+// ---------------------------------------------------------------------------------------------------------------
+
+/// The PS 17112 constants (cb ShaderP.g_CBufferP): the peel's `WorldPw01Shadow` (HLSL rows as the log prints
+/// them; register k = column k) and `PeelDirInW`.
+#[derive(Clone, Copy, Debug)]
+pub struct SetCb {
+    pub world_pw01_shadow: [[f32; 4]; 4],
+    pub peel_dir: [f32; 3],
+}
+
+/// A vertex after VS 17111: LM clip xy, world position (o1), world normal (o2).
+#[derive(Clone, Copy, Debug)]
+pub struct SetVsOut {
+    pub clip: [f32; 2],
+    pub pos: [f32; 3],
+    pub nrm: [f32; 3],
+}
+
+pub fn vs_17111(v: &LmVertex, inst: &LmInstance, table: &[[f32; 4]], cb: &LmRasterCb) -> SetVsOut {
+    let rows = rotation_rows(inst.q);
+    let st = chart_st(v, inst, table);
+    SetVsOut { clip: lm_clip(v, st, cb), pos: world_pos(v, inst, &rows), nrm: rotate(v.normal, &rows) }
+}
+
+/// How the comparison sampler sees the D16 layer depth against the texel's f32 reference.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DepthCompare {
+    /// the reference converted to the target's UNORM16 fixed point (round to nearest) and compared as integers
+    Unorm16Round,
+    /// the reference kept in f32 against the stored value q/65535
+    Float,
+}
+
+/// The layer targets the block samples: the peel colour (R11G11B10, decoded) and depth (D16 as UNORM16 → f32).
+pub struct LayerTargets<'a> {
+    pub color: &'a Buf,
+    pub depth: &'a Buf,
+}
+
+/// Point sampling with ClampEdge addressing (s0 / s1 of PS 17112: `SGbxClamp_Point`): the texel `floor(u·W)`,
+/// clamped to the edge.
+#[inline]
+pub fn point_texel(u: f32, w: u32) -> u32 {
+    let x = (u * w as f32).floor();
+    if x <= 0.0 { 0 } else if x >= (w - 1) as f32 { w - 1 } else { x as u32 }
+}
+
+/// PS 17112 for one pixel: `Some(rgb)` written to the target, `None` discarded. `p` = v1 (world position), `n` =
+/// v2 (world normal, interpolated, not normalised).
+#[inline]
+pub fn ps_17112(p: [f32; 3], n: [f32; 3], cb: &SetCb, layer: &LayerTargets, cmp: DepthCompare) -> Option<[f32; 3]> {
+    // 0-2: dp3 n·PeelDirInW; discard if < 0 (0 passes)
+    if dot(n, cb.peel_dir) < 0.0 {
+        return None;
+    }
+    // 3-8: (p, 1) · the four registers = columns of the printed matrix (row-vector convention)
+    let m = &cb.world_pw01_shadow;
+    let z = p[0] * m[0][2] + p[1] * m[1][2] + p[2] * m[2][2] + m[3][2];
+    let u = p[0] * m[0][0] + p[1] * m[1][0] + p[2] * m[2][0] + m[3][0];
+    let v = p[0] * m[0][1] + p[1] * m[1][1] + p[2] * m[2][1] + m[3][1];
+    let w = p[0] * m[0][3] + p[1] * m[1][3] + p[2] * m[2][3] + m[3][3];
+    // 9: the colour lookup's uv = (u, v)/w; 10: the compare samples at the UNDIVIDED (u, v) (w = 1 for the ortho)
+    let (cu, cv) = (u / w, v / w);
+    let (tx, ty) = (point_texel(u, layer.depth.w), point_texel(v, layer.depth.h));
+    let stored = layer.depth.get(tx, ty, 0);
+    let pass = match cmp {
+        DepthCompare::Unorm16Round => {
+            let rq = (z.clamp(0.0, 1.0) * 65535.0).round();
+            let sq = (stored * 65535.0).round();
+            rq >= sq
+        }
+        DepthCompare::Float => z >= stored,
+    };
+    // 11-13: discard when the compare result (1 or 0) − 0.5 < 0
+    if !pass {
+        return None;
+    }
+    // 14: the layer colour at the same point
+    let (cx, cy) = (point_texel(cu, layer.color.w), point_texel(cv, layer.color.h));
+    let mut c = [layer.color.get(cx, cy, 0), layer.color.get(cx, cy, 1), layer.color.get(cx, cy, 2)];
+    // 15-18: max 0, min 1e38, then zero where ≥ 5e37 (Inf/NaN guard)
+    for k in 0..3 {
+        let v = c[k].max(0.0).min(99999996802856930000000000000000000000.0);
+        c[k] = if v < 49999998401428460000000000000000000000.0 { v } else { 0.0 };
+    }
+    Some(c)
+}
+
+/// One accumulate draw: mesh + instance range + the two cbuffers. `world_box` = the FITTED peel's variant of the
+/// vertex shader (VS 17115 [pwc1: 17529]): four clip distances `(x − MinX, z − MinZ, MaxX − x, MaxZ − z)` of the
+/// world position against `WorldBoxMinXZ` / `WorldBoxMaxXZ` — the LM raster of the fitted blocks reaches only the
+/// texels whose world (x, z) lies in the items' box; every other texel keeps the world peel's value. The world
+/// blocks run VS 17111 (no clip distances; the cbuffer's box is 0).
+#[derive(Clone, Debug)]
+pub struct SetDraw {
+    pub eid: u64,
+    pub mesh: usize,
+    pub instance_first: usize,
+    pub instance_count: usize,
+    pub raster: LmRasterCb,
+    pub cb: SetCb,
+    pub world_box: Option<[[f32; 2]; 2]>,
+}
+
+/// VS 17115's clip distances of a vertex (instructions 38–39): `(x − MinX, z − MinZ, MaxX − x, MaxZ − z)`.
+#[inline]
+pub fn clip_distances(pos: [f32; 3], world_box: &[[f32; 2]; 2]) -> [f32; 4] {
+    [pos[0] - world_box[0][0], pos[2] - world_box[0][1], -pos[0] + world_box[1][0], -pos[2] + world_box[1][1]]
+}
+
+/// The 2048² R11G11B10 `TMapILightDir` target as the GPU holds it (packed u32 per pixel).
+pub struct DirTarget {
+    pub w: u32,
+    pub h: u32,
+    pub px: Vec<u32>,
+}
+
+impl DirTarget {
+    pub fn cleared(w: u32, h: u32) -> DirTarget {
+        DirTarget { w, h, px: vec![0; (w * h) as usize] }
+    }
+    #[inline]
+    pub fn rgb(&self, x: u32, y: u32) -> [f32; 3] {
+        crate::gpufmt::unpack_r11g11b10(self.px[(y * self.w + x) as usize])
+    }
+}
+
+/// Run one block of accumulate draws (the 4 objects after one peel layer) over the layer's captured targets.
+/// The R11G11B10 store truncates (the colour is already an R11G11B10 value, so the store is exact either way).
+pub fn run_set_block(meshes: &[LmMesh], instances: &[LmInstance], table: &[[f32; 4]], draws: &[SetDraw], layer: &LayerTargets, cmp: DepthCompare, tgt: &mut DirTarget) {
+    run_set_block_probe(meshes, instances, table, draws, layer, cmp, tgt, None);
+}
+
+/// `run_set_block` with an optional probe pixel: every fragment landing on it prints its whole path (the draw, the
+/// interpolated position / normal, the projected uv / z, the sampled layer depth and colour, the verdict). With
+/// `trace`, the last fragment of every pixel is recorded: (u, v, z, stored depth, n·D).
+pub fn run_set_block_probe(meshes: &[LmMesh], instances: &[LmInstance], table: &[[f32; 4]], draws: &[SetDraw], layer: &LayerTargets, cmp: DepthCompare, tgt: &mut DirTarget, probe: Option<(u32, u32)>) {
+    run_set_block_trace(meshes, instances, table, draws, layer, cmp, tgt, probe, None);
+}
+
+/// The per-pixel trace of a block: the last fragment's projected (u, v, z), the layer depth it compared with, n·D.
+pub type SetTrace = Vec<Option<(f32, f32, f32, f32, f32)>>;
+
+pub fn run_set_block_trace(meshes: &[LmMesh], instances: &[LmInstance], table: &[[f32; 4]], draws: &[SetDraw], layer: &LayerTargets, cmp: DepthCompare, tgt: &mut DirTarget, probe: Option<(u32, u32)>, mut trace: Option<&mut SetTrace>) {
+    let (w, h) = (tgt.w, tgt.h);
+    for (di, d) in draws.iter().enumerate() {
+        let mesh = &meshes[d.mesh];
+        for ii in d.instance_first..d.instance_first + d.instance_count {
+            let inst = &instances[ii];
+            let vs: Vec<SetVsOut> = mesh.verts.iter().map(|v| vs_17111(v, inst, table, &d.raster)).collect();
+            // the fitted variant's clip distances per vertex (SV_ClipDistance: linear over the primitive, a pixel with
+            // any distance < 0 is clipped — the clipper's cut evaluated at the pixel centre)
+            let cds: Vec<[f32; 4]> = match &d.world_box { Some(b) => vs.iter().map(|o| clip_distances(o.pos, b)).collect(), None => Vec::new() };
+            for (ti, tri) in mesh.indices.chunks_exact(3).enumerate() {
+                let (a, b, c) = (&vs[tri[0] as usize], &vs[tri[1] as usize], &vs[tri[2] as usize]);
+                let cd: Option<[[f32; 4]; 3]> = if cds.is_empty() { None } else { Some([cds[tri[0] as usize], cds[tri[1] as usize], cds[tri[2] as usize]]) };
+                rasterise_triangle([a.clip, b.clip, c.clip], w, h, |x, y, b0, b1, b2| {
+                    if let Some(cd) = &cd {
+                        for i in 0..4 {
+                            if cd[0][i] * b0 + cd[1][i] * b1 + cd[2][i] * b2 < 0.0 {
+                                if probe == Some((x, y)) { eprintln!("probe ({x},{y}): draw {di} tri {ti} clipped by clip distance {i} ({:.4})", cd[0][i] * b0 + cd[1][i] * b1 + cd[2][i] * b2); }
+                                return;
+                            }
+                        }
+                    }
+                    let p = [a.pos[0] * b0 + b.pos[0] * b1 + c.pos[0] * b2, a.pos[1] * b0 + b.pos[1] * b1 + c.pos[1] * b2, a.pos[2] * b0 + b.pos[2] * b1 + c.pos[2] * b2];
+                    let n = [a.nrm[0] * b0 + b.nrm[0] * b1 + c.nrm[0] * b2, a.nrm[1] * b0 + b.nrm[1] * b1 + c.nrm[1] * b2, a.nrm[2] * b0 + b.nrm[2] * b1 + c.nrm[2] * b2];
+                    let r = ps_17112(p, n, &d.cb, layer, cmp);
+                    if probe == Some((x, y)) || trace.is_some() {
+                        let m = &d.cb.world_pw01_shadow;
+                        let u = p[0] * m[0][0] + p[1] * m[1][0] + p[2] * m[2][0] + m[3][0];
+                        let v = p[0] * m[0][1] + p[1] * m[1][1] + p[2] * m[2][1] + m[3][1];
+                        let z = p[0] * m[0][2] + p[1] * m[1][2] + p[2] * m[2][2] + m[3][2];
+                        let (tx, ty) = (point_texel(u, layer.depth.w), point_texel(v, layer.depth.h));
+                        let stored = layer.depth.get(tx, ty, 0);
+                        if let Some(t) = trace.as_deref_mut() { t[(y * w + x) as usize] = Some((u, v, z, stored, dot(n, d.cb.peel_dir))); }
+                        if probe == Some((x, y)) {
+                            eprintln!("probe ({x},{y}): draw {di} (eid {}, mesh {}) instance {ii} tri {ti} bary ({b0:.3},{b1:.3},{b2:.3}) p ({:.3},{:.3},{:.3}) n ({:.3},{:.3},{:.3}) n·D {:.4}; uv ({u:.5},{v:.5}) → texel ({tx},{ty}) z {z:.6} stored {stored:.6} (q {}) → {}; layer colour there ({:.4},{:.4},{:.4}); result {:?}", d.eid, d.mesh, p[0], p[1], p[2], n[0], n[1], n[2], dot(n, d.cb.peel_dir), (stored * 65535.0).round(), if z >= stored { "pass" } else { "FAIL" }, layer.color.get(tx, ty, 0), layer.color.get(tx, ty, 1), layer.color.get(tx, ty, 2), r);
+                        }
+                    }
+                    if let Some(rgb) = r {
+                        tgt.px[(y * w + x) as usize] = crate::gpufmt::pack_r11g11b10(rgb, Rounding::Truncate);
+                    }
+                });
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// The H-basis accumulate
+// ---------------------------------------------------------------------------------------------------------------
+
+/// The PS 17122 / VS 17118 constants: `PeelDirInW` (both stages) and `InvDirCount`.
+#[derive(Clone, Copy, Debug)]
+pub struct HbCb {
+    pub peel_dir: [f32; 3],
+    pub inv_dir_count: f32,
+}
+
+/// A vertex after VS 17118: LM clip xy, `o2` (the world normal in mode A, else the direction in the vertex's
+/// tangent frame) and `o3` (the object-space tangent with w = 1 in mode A, else 0). `mode` = |PSIZE| class.
+#[derive(Clone, Copy, Debug)]
+pub struct HbVsOut {
+    pub clip: [f32; 2],
+    pub o2: [f32; 3],
+    pub o3: [f32; 4],
+}
+
+/// VS 17118, the tangent-frame modes by the vertex's PSIZE (`v4.x`): |v4.x| > 2.5 → the pixel shader builds the
+/// frame (o2 = the world normal, o3 = the raw tangent, w = 1); |v4.x| < 1.5 → the vertex's own frame with the
+/// bitangent `cross(n, t)·sign(v4.x)`, both rotated to the world; else → the frame from `normalize(t × n_world)`
+/// and `n_world × that`. In the last two the direction is projected in the vertex shader and interpolated.
+pub fn vs_17118(v: &LmVertex, inst: &LmInstance, table: &[[f32; 4]], cb: &LmRasterCb, peel_dir: [f32; 3]) -> HbVsOut {
+    let rows = rotation_rows(inst.q);
+    let st = chart_st(v, inst, table);
+    let clip = lm_clip(v, st, cb);
+    // 22-28: r6 = the world normal (dp3 with the rows)
+    let r6 = rotate(v.normal, &rows);
+    let t = [v.tangent[0], v.tangent[1], v.tangent[2]];
+    // 38-39: 2.5 < |v4.x|
+    if 2.5 < v.psize.abs() {
+        return HbVsOut { clip, o2: r6, o3: [t[0], t[1], t[2], 1.0] };
+    }
+    let (r2, r3) = if v.psize.abs() < 1.5 {
+        // 46-47: r0 = cross(v2, v3); 48-52: × sign(v4.x) (0 when v4.x = 0)
+        let r0 = cross(v.normal, t);
+        let s = if 0.0 < v.psize { 1.0 } else if v.psize < 0.0 { -1.0 } else { 0.0 };
+        let r0 = [r0[0] * s, r0[1] * s, r0[2] * s];
+        // 53-55: r2 = rows·v3 ; 56-58: r3 = rows·r0
+        (rotate(t, &rows), rotate(r0, &rows))
+    } else {
+        // 60-61: r0 = cross(v3, r6) (the object-space tangent against the WORLD normal, as written)
+        let r0 = cross(t, r6);
+        // 62-66: r2 = normalize(r0), 0 when degenerate
+        let l2 = dot(r0, r0);
+        let r2 = if 0.0 < l2 { let s = 1.0 / l2.sqrt(); [r0[0] * s, r0[1] * s, r0[2] * s] } else { [0.0; 3] };
+        // 67-68: r3 = cross(r6, r2)
+        (r2, cross(r6, r2))
+    };
+    // 70-72: o2 = (D·r2, D·r3, D·r6); 73: o3 = 0
+    HbVsOut { clip, o2: [dot(peel_dir, r2), dot(peel_dir, r3), dot(peel_dir, r6)], o3: [0.0; 4] }
+}
+
+/// The four MRT outputs of PS 17122 for one pixel: `v2` = the interpolated o2, `v3` = the provoking vertex's o3
+/// (nointerpolation), `l` = `TMapILightDir[px, py]`.
+#[inline]
+pub fn ps_17122(v2: [f32; 3], v3: [f32; 4], l: [f32; 3], cb: &HbCb) -> [[f32; 4]; 4] {
+    // 1-34: (sx, sy, sz) = r1
+    let r1: [f32; 3] = if 0.5 < v3[3] {
+        let t = [v3[0], v3[1], v3[2]];
+        // 3-9: r1 = normalize(cross(v2, v3)) (0 when degenerate) — the bitangent from the tangent
+        let c = cross(v2, t);
+        let l2 = dot(c, c);
+        let b = if 0.0 < l2 { let s = 1.0 / l2.sqrt(); [c[0] * s, c[1] * s, c[2] * s] } else { [0.0; 3] };
+        // 10-11: r2 = cross(r1, v2) — the re-orthogonalised tangent
+        let tt = cross(b, v2);
+        // 12-19: r3 = normalize(v2.z, 0, −v2.x) (0 when degenerate)
+        let l2 = v2[2] * v2[2] + v2[0] * v2[0];
+        let t0 = if 0.0 < l2 { let s = 1.0 / l2.sqrt(); [v2[2] * s, 0.0, -v2[0] * s] } else { [0.0; 3] };
+        // 20-21: r4 = cross(v2, r3)
+        let b0 = cross(v2, t0);
+        // 22-26: |v2.y| > 0.707107 → the mesh tangent's frame (r3 = r2, r4 = r1)
+        let (tx, bx) = if 0.707107 < v2[1].abs() { (tt, b) } else { (t0, b0) };
+        // 27-29
+        [dot(cb.peel_dir, tx), dot(cb.peel_dir, bx), dot(cb.peel_dir, v2)]
+    } else {
+        // 31-33: normalize(v2)
+        let l2 = dot(v2, v2);
+        let s = 1.0 / l2.sqrt();
+        [v2[0] * s, v2[1] * s, v2[2] * s]
+    };
+    let (sx, sy, sz) = (r1[0], r1[1], r1[2]);
+    // 35: r1.w = InvDirCount · 4π ; 38: L' = L · r1.w
+    let k = cb.inv_dir_count * 12.566371;
+    let lp = [l[0] * k, l[1] * k, l[2] * k];
+    // 39: r2 = (sz·sz, sy·sz, sx·sz)
+    let r2 = [sz * sz, sy * sz, sx * sz];
+    // 40: r0.w = 3·sz² − 1
+    let q = r2[0] * 3.0 + -1.0;
+    // 41: r1.xy = (sy, sx) · −0.230330
+    let mut r1x = sy * -0.230330;
+    let mut r1y = sx * -0.230330;
+    // 42: r1.w = sz · 0.398928 + 0.199472
+    let r1w = sz * 0.398928 + 0.199472;
+    // 43: r2.x = q · 0.107966 ; 44: r0.w = q · 0.093506 + r1.w
+    let r2x = q * 0.107966;
+    let p0 = q * 0.093506 + r1w;
+    // 45: o0 = P0 · L'
+    let o0 = [p0 * lp[0], p0 * lp[1], p0 * lp[2], cb.inv_dir_count];
+    // 46: r1.xy = (sy·sz, sx·sz) · −0.161951 + r1.xy
+    r1x = r2[1] * -0.161951 + r1x;
+    r1y = r2[2] * -0.161951 + r1y;
+    // 47: o1 = L' · r1.x
+    let o1 = [lp[0] * r1x, lp[1] * r1x, lp[2] * r1x, cb.inv_dir_count];
+    // 48: r0.w = sz · −0.230330 − r2.x ; 49: o2 = r0.w · L'
+    let p2 = sz * -0.230330 - r2x;
+    let o2 = [p2 * lp[0], p2 * lp[1], p2 * lp[2], cb.inv_dir_count];
+    // 50: o3 = L' · r1.y
+    let o3 = [lp[0] * r1y, lp[1] * r1y, lp[2] * r1y, cb.inv_dir_count];
+    [o0, o1, o2, o3]
+}
+
+/// One H-basis draw.
+#[derive(Clone, Debug)]
+pub struct HbDraw {
+    pub eid: u64,
+    pub mesh: usize,
+    pub instance_first: usize,
+    pub instance_count: usize,
+    pub raster: LmRasterCb,
+    pub cb: HbCb,
+}
+
+/// The four RGBA16F MRTs (values as the f16 targets hold them, decoded to f32).
+pub struct HbTargets {
+    pub w: u32,
+    pub h: u32,
+    pub mrt: [Vec<[f32; 4]>; 4],
+}
+
+impl HbTargets {
+    pub fn cleared(w: u32, h: u32) -> HbTargets {
+        let z = vec![[0.0f32; 4]; (w * h) as usize];
+        HbTargets { w, h, mrt: [z.clone(), z.clone(), z.clone(), z] }
+    }
+    /// From four captured buffers (RGBA16F decoded).
+    pub fn from_bufs(b: [&Buf; 4]) -> HbTargets {
+        let (w, h) = (b[0].w, b[0].h);
+        let mut t = HbTargets::cleared(w, h);
+        for k in 0..4 {
+            for y in 0..h {
+                for x in 0..w {
+                    let i = (y * w + x) as usize;
+                    t.mrt[k][i] = [b[k].get(x, y, 0), b[k].get(x, y, 1), b[k].get(x, y, 2), b[k].get(x, y, 3)];
+                }
+            }
+        }
+        t
+    }
+}
+
+/// Blend one pixel-shader output into the f16 target the way this GPU does (`sunpass::BlendModel`).
+#[inline]
+pub fn blend_f16(dst: f32, src: f32, model: crate::sunpass::BlendModel) -> f32 {
+    use crate::sunpass::BlendModel as B;
+    let (s, r) = match model {
+        B::RoundSum => (src, Rounding::NearestEven),
+        B::RoundSrcAndSum => (quantise_f16(src, Rounding::NearestEven), Rounding::NearestEven),
+        B::TruncSum => (src, Rounding::Truncate),
+        B::TruncSrcAndSum => (quantise_f16(src, Rounding::Truncate), Rounding::Truncate),
+        B::TruncSrcRoundSum => (quantise_f16(src, Rounding::Truncate), Rounding::NearestEven),
+    };
+    quantise_f16(dst + s, r)
+}
+
+/// Run the direction's four H-basis draws over `ilightdir` (the target after the direction's last accumulate)
+/// into `tgt` (the MRTs before the direction). The provoking vertex of a triangle is its first index (D3D11).
+pub fn run_hbasis(meshes: &[LmMesh], instances: &[LmInstance], table: &[[f32; 4]], draws: &[HbDraw], ilightdir: &DirTarget, tgt: &mut HbTargets, blend: crate::sunpass::BlendModel) {
+    let (w, h) = (tgt.w, tgt.h);
+    for d in draws {
+        let mesh = &meshes[d.mesh];
+        for ii in d.instance_first..d.instance_first + d.instance_count {
+            let inst = &instances[ii];
+            let vs: Vec<HbVsOut> = mesh.verts.iter().map(|v| vs_17118(v, inst, table, &d.raster, d.cb.peel_dir)).collect();
+            for tri in mesh.indices.chunks_exact(3) {
+                let (a, b, c) = (&vs[tri[0] as usize], &vs[tri[1] as usize], &vs[tri[2] as usize]);
+                let v3 = a.o3;
+                rasterise_triangle([a.clip, b.clip, c.clip], w, h, |x, y, b0, b1, b2| {
+                    let v2 = [a.o2[0] * b0 + b.o2[0] * b1 + c.o2[0] * b2, a.o2[1] * b0 + b.o2[1] * b1 + c.o2[1] * b2, a.o2[2] * b0 + b.o2[2] * b1 + c.o2[2] * b2];
+                    let l = ilightdir.rgb(x, y);
+                    let o = ps_17122(v2, v3, l, &d.cb);
+                    let i = (y * w + x) as usize;
+                    for k in 0..4 {
+                        for ch in 0..4 {
+                            tgt.mrt[k][i][ch] = blend_f16(tgt.mrt[k][i][ch], o[k][ch], blend);
+                        }
+                    }
+                });
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// AddAmbient
+// ---------------------------------------------------------------------------------------------------------------
+
+/// CS 17125 for one dispatch: `accum.xyz += Scale · color[W >> 1, H >> 1]`, `accum.w += Scale · 0.5` (f32 buffer,
+/// `mad` per component in the bytecode's order).
+#[inline]
+pub fn cs_17125(accum: &mut [f32; 4], centre_rgb: [f32; 3], scale: f32) {
+    for k in 0..3 {
+        accum[k] = centre_rgb[k] * scale + accum[k];
+    }
+    accum[3] = scale * 0.5 + accum[3];
+}
+
+/// The pixel the compute shader reads: `resinfo` → (W, H) >> 1.
+#[inline]
+pub fn ambient_pixel(w: u32, h: u32) -> (u32, u32) {
+    (w >> 1, h >> 1)
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Comparison helpers
+// ---------------------------------------------------------------------------------------------------------------
+
+/// Compare two R11G11B10 targets: (pixels where either side is non-zero, exact pixels, pixels off by ≤ 1 quantum in
+/// every channel, worse, ours-only non-zero, game-only non-zero).
+pub struct DirCmp {
+    pub touched: usize,
+    pub exact: usize,
+    pub quantum: usize,
+    pub worse: usize,
+    pub ours_only: usize,
+    pub game_only: usize,
+}
+
+pub fn compare_dir(ours: &DirTarget, game: &Buf) -> DirCmp {
+    let mut c = DirCmp { touched: 0, exact: 0, quantum: 0, worse: 0, ours_only: 0, game_only: 0 };
+    for y in 0..ours.h {
+        for x in 0..ours.w {
+            let o = ours.rgb(x, y);
+            let g = [game.get(x, y, 0), game.get(x, y, 1), game.get(x, y, 2)];
+            let on = o.iter().any(|v| *v != 0.0);
+            let gn = g.iter().any(|v| *v != 0.0);
+            if !on && !gn {
+                continue;
+            }
+            c.touched += 1;
+            if on && !gn { c.ours_only += 1; }
+            if gn && !on { c.game_only += 1; }
+            let go = crate::gpufmt::pack_r11g11b10(g, Rounding::Truncate);
+            if go == ours.px[(y * ours.w + x) as usize] {
+                c.exact += 1;
+            } else {
+                // one quantum = the next representable value of the game's channel
+                let within = (0..3).all(|k| {
+                    let (mb, sh) = if k == 2 { (5, 22) } else { (6, k * 11) };
+                    let gq = (go >> sh) & ((1 << (mb + 5)) - 1);
+                    let oq = (ours.px[(y * ours.w + x) as usize] >> sh) & ((1 << (mb + 5)) - 1);
+                    (gq as i64 - oq as i64).abs() <= 1
+                });
+                if within { c.quantum += 1 } else { c.worse += 1 }
+            }
+        }
+    }
+    c
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn raster_offsets_reproduce_the_captured_cbuffers_bit_for_bit() {
+        // frame 127448 (direction 0 of sweep 0): LM01_Trans_RasterSS (−1.0004340410232544, 0.9997829794883728)
+        let c0 = LmRasterCb::for_offset(0, 2048, 2048);
+        assert_eq!(c0.trans_ss, [-1.0004340410232544f64 as f32, 0.9997829794883728f64 as f32]);
+        // frame 40648 (offset 2 of the cycle): (−0.9997829794883728, 0.9995659589767456)
+        let c2 = LmRasterCb::for_offset(2, 2048, 2048);
+        assert_eq!(c2.trans_ss, [-0.9997829794883728f64 as f32, 0.9995659589767456f64 as f32]);
+        // offset 4 = (0, 0): the un-jittered raster
+        assert_eq!(LmRasterCb::for_offset(4, 2048, 2048).trans_ss, [-1.0, 1.0]);
+    }
+
+    #[test]
+    fn point_texel_clamps_to_the_edge() {
+        assert_eq!(point_texel(-0.2, 4096), 0);
+        assert_eq!(point_texel(0.0, 4096), 0);
+        assert_eq!(point_texel(0.5, 4096), 2048);
+        assert_eq!(point_texel(1.0, 4096), 4095);
+        assert_eq!(point_texel(1.7, 4096), 4095);
+        assert_eq!(point_texel(0.99999, 4096), 4095);
+    }
+
+    #[test]
+    fn hbasis_c0_of_a_texel_facing_the_direction_is_pi_over_four_times_l_over_n() {
+        // mode A vertex data: n = up, t = x; D = up → sz = 1, sx = sy = 0: P0(1) = 0.093506·2 + 0.398928 + 0.199472 = 0.785412
+        let cb = HbCb { peel_dir: [0.0, 1.0, 0.0], inv_dir_count: 1.0 / 256.0 };
+        let o = ps_17122([0.0, 1.0, 0.0], [1.0, 0.0, 0.0, 1.0], [1.0, 1.0, 1.0], &cb);
+        let k = 12.566371f32 / 256.0;
+        assert!((o[0][0] - 0.785412 * k).abs() < 1e-6, "{:?}", o[0]);
+        assert_eq!(o[0][3], 1.0 / 256.0);
+        // C1 (−0.23033 sy − 0.161951 sy sz) and C3 (sx) vanish at the zenith; C2 = −0.23033 − 0.107966·2
+        assert!(o[1][0].abs() < 1e-7 && o[3][0].abs() < 1e-7);
+        assert!((o[2][0] - (-0.230330 - 0.107966 * 2.0) * k).abs() < 1e-6, "{:?}", o[2]);
+    }
+
+    #[test]
+    fn hbasis_frame_switches_on_the_normals_y_at_0_707107() {
+        // a wall (n = +z) takes T0 = normalize(n.z, 0, −n.x) = +x, B0 = n × T0 = +y: D = +y → (sx, sy, sz) = (0, 1, 0)
+        let cb = HbCb { peel_dir: [0.0, 1.0, 0.0], inv_dir_count: 1.0 };
+        let o = ps_17122([0.0, 0.0, 1.0], [1.0, 0.0, 0.0, 1.0], [1.0, 0.0, 0.0], &cb);
+        let k = 12.566371f32;
+        // C1 = −0.23033·sy·L' with sy = 1
+        assert!((o[1][0] - -0.230330 * k).abs() < 1e-5, "{:?}", o[1]);
+        assert!(o[3][0].abs() < 1e-6);
+        // a floor (n = +y) with the mesh tangent t = +z: B = normalize(n × t) = +x, T = B × n = +z; D = +z → sx = 1
+        let o = ps_17122([0.0, 1.0, 0.0], [0.0, 0.0, 1.0, 1.0], [1.0, 0.0, 0.0], &HbCb { peel_dir: [0.0, 0.0, 1.0], inv_dir_count: 1.0 });
+        assert!((o[3][0] - -0.230330 * k).abs() < 1e-5, "{:?}", o[3]);
+        assert!(o[1][0].abs() < 1e-6, "{:?}", o[1]);
+    }
+
+    #[test]
+    fn set_pass_discards_back_faces_and_failed_compares_and_copies_the_layer_pixel() {
+        let mut color = Buf::new(4, 4, 3);
+        let mut depth = Buf::new(4, 4, 1);
+        for y in 0..4 { for x in 0..4 { color.set(x, y, 0, 0.25 + x as f32 * 0.1); depth.set(x, y, 0, 0.5); } }
+        let layer = LayerTargets { color: &color, depth: &depth };
+        // an identity-like projection: u = x/4 + 0.125.., z = the position's y
+        let mut m = [[0.0f32; 4]; 4];
+        m[0][0] = 0.25; m[2][1] = 0.25; m[1][2] = 1.0; m[3][3] = 1.0;
+        let cb = SetCb { world_pw01_shadow: m, peel_dir: [0.0, 1.0, 0.0] };
+        // facing away → discarded
+        assert!(ps_17112([2.0, 0.7, 0.0], [0.0, -1.0, 0.0], &cb, &layer, DepthCompare::Float).is_none());
+        // z = 0.7 ≥ stored 0.5 → the layer pixel at u = 0.5 → texel 2 → 0.45
+        assert_eq!(ps_17112([2.0, 0.7, 0.0], [0.0, 1.0, 0.0], &cb, &layer, DepthCompare::Float), Some([0.45, 0.0, 0.0]));
+        // z = 0.3 < 0.5 → discarded
+        assert!(ps_17112([2.0, 0.3, 0.0], [0.0, 1.0, 0.0], &cb, &layer, DepthCompare::Float).is_none());
+        // exactly at the stored depth passes (GreaterEqual)
+        assert!(ps_17112([2.0, 0.5, 0.0], [0.0, 1.0, 0.0], &cb, &layer, DepthCompare::Float).is_some());
+    }
+
+    #[test]
+    fn add_ambient_is_a_running_sum_with_half_scale_in_w() {
+        let mut acc = [0.0f32; 4];
+        cs_17125(&mut acc, [0.3, 0.5, 0.9], 0.010867852717638016f64 as f32);
+        cs_17125(&mut acc, [0.3, 0.5, 0.9], 0.010867852717638016f64 as f32);
+        let s = 0.010867852717638016f64 as f32;
+        assert_eq!(acc[3], s * 0.5 + (s * 0.5 + 0.0));
+        assert!((acc[0] - 2.0 * 0.3 * s).abs() < 1e-7);
+        assert_eq!(ambient_pixel(4096, 4096), (2048, 2048));
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// The capture's data (passcap/pwc-day) and the check drivers behind `lmtool ilightdir-check / hbasis-check /
+// ambient-check`
+// ---------------------------------------------------------------------------------------------------------------
+
+use serde_json::Value;
+use std::path::Path;
+
+/// The LM scene as the capture holds it: the four LM meshes in the order of frame 127448's accumulate block
+/// (the pad (24 indices, 1 instance), the wall (12, 1), the vegetation item (5751, 1), the zone tile (24, 4096)),
+/// each with its first instance in the instance stream, the 4099 instances (vb_17033.bin) and the chart ST table
+/// (g_TcLM_ST_LM01).
+pub struct LmScene {
+    pub meshes: Vec<LmMesh>,
+    pub inst_first: Vec<usize>,
+    pub inst_count: Vec<usize>,
+    pub instances: Vec<LmInstance>,
+    pub table: Vec<[f32; 4]>,
+    /// The mesh.json eids the meshes came from.
+    pub eids: Vec<u64>,
+}
+
+impl LmScene {
+    /// The mesh drawn with `idx` indices × `inst` instances (the accumulate / H-basis draws name no vertex
+    /// buffer in the log; the pair identifies the object).
+    pub fn mesh_for(&self, idx: usize, inst: usize) -> Option<usize> {
+        (0..self.meshes.len()).find(|&i| self.meshes[i].indices.len() == idx && self.inst_count[i] == inst)
+    }
+}
+
+fn json_f32(v: &Value) -> f32 {
+    v.as_f64().unwrap_or(0.0) as f32
+}
+
+fn json_v3(v: &Value) -> [f32; 3] {
+    [json_f32(&v[0]), json_f32(&v[1]), json_f32(&v[2])]
+}
+
+fn json_v2(v: &Value) -> [f32; 2] {
+    [json_f32(&v[0]), json_f32(&v[1])]
+}
+
+fn json_m4(v: &Value) -> [[f32; 4]; 4] {
+    let mut o = [[0f32; 4]; 4];
+    for i in 0..4 {
+        for j in 0..4 {
+            o[i][j] = json_f32(&v[i][j]);
+        }
+    }
+    o
+}
+
+/// The draws log of a frame (`logs/draws-frame<N>.json[.gz]`, or the top-level `draws-frame<N>.json.gz`).
+pub fn load_draws(root: &Path, frame: u32) -> Result<Vec<Value>, String> {
+    let bytes = crate::passdiff::read_entry_bytes(root, &format!("logs/draws-frame{frame}.json")).or_else(|_| crate::passdiff::read_entry_bytes(root, &format!("draws-frame{frame}.json")))?;
+    let v: Value = serde_json::from_slice(&bytes).map_err(|e| format!("draws-frame{frame}: {e}"))?;
+    v.as_array().cloned().ok_or_else(|| "draws log is not an array".into())
+}
+
+/// The LM scene from `env/frame<N>/` (mesh.json's records with the 40-byte LM stream + the instance stream) and
+/// the instance counts of the matching sun draws (PS 15187) in that frame's log.
+pub fn load_lm_scene(root: &Path, env_frame: u32) -> Result<LmScene, String> {
+    let env = root.join(format!("env/frame{env_frame}"));
+    let mesh_json: Value = serde_json::from_str(&std::fs::read_to_string(env.join("mesh.json")).map_err(|e| format!("mesh.json: {e}"))?).map_err(|e| format!("mesh.json: {e}"))?;
+    let draws = load_draws(root, env_frame)?;
+    // the sun draws of the first block name the four objects with their instance counts
+    let sun: Vec<&Value> = draws.iter().filter(|e| e.pointer("/Pixel/shader").and_then(|v| v.as_str()) == Some("15187")).take(4).collect();
+    if sun.len() != 4 {
+        return Err(format!("frame {env_frame}: {} sun draws (PS 15187) in the log, 4 expected", sun.len()));
+    }
+    let mut sc = LmScene { meshes: Vec::new(), inst_first: Vec::new(), inst_count: Vec::new(), instances: Vec::new(), table: Vec::new(), eids: Vec::new() };
+    let mut instance_bytes: Option<Vec<u8>> = None;
+    for e in &sun {
+        let eid = e["eid"].as_u64().unwrap();
+        let rec = mesh_json.as_array().unwrap().iter().find(|r| r["eid"].as_u64() == Some(eid)).ok_or_else(|| format!("mesh.json has no eid {eid}"))?;
+        let vbs = rec["vertex_buffers"].as_array().ok_or("vertex_buffers")?;
+        let vb0 = std::fs::read(env.join("mesh").join(vbs[0]["file"].as_str().unwrap())).map_err(|e| format!("vb0: {e}"))?;
+        let idx_file = rec["vsout"]["index_file"].as_str().ok_or("index file")?;
+        let ib = std::fs::read(env.join("mesh").join(idx_file)).map_err(|e| format!("indices: {e}"))?;
+        let indices: Vec<u16> = ib.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        sc.meshes.push(LmMesh { verts: crate::sunpass::parse_lm_vertices(&vb0), indices });
+        sc.inst_first.push((vbs[1]["offset"].as_u64().unwrap_or(0) / 48) as usize);
+        sc.inst_count.push(e["inst"].as_u64().unwrap_or(1).max(1) as usize);
+        sc.eids.push(eid);
+        if instance_bytes.is_none() {
+            instance_bytes = Some(std::fs::read(env.join("mesh").join(vbs[1]["file"].as_str().unwrap())).map_err(|e| format!("instance vb: {e}"))?);
+        }
+    }
+    sc.instances = crate::sunpass::parse_instances(instance_bytes.as_deref().unwrap_or(&[]));
+    // the chart table: the VS SRV 0 of the first sun draw
+    let first = sc.eids[0];
+    let dir = env.join("bufs");
+    let table_file = std::fs::read_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?.filter_map(|d| d.ok()).map(|d| d.file_name().to_string_lossy().to_string()).find(|n| n.starts_with(&format!("e{first:06}_Vertex_srv0_")));
+    if let Some(f) = table_file {
+        let b = std::fs::read(dir.join(&f)).map_err(|e| format!("{f}: {e}"))?;
+        sc.table = b.chunks_exact(16).map(|c| [f32::from_le_bytes(c[0..4].try_into().unwrap()), f32::from_le_bytes(c[4..8].try_into().unwrap()), f32::from_le_bytes(c[8..12].try_into().unwrap()), f32::from_le_bytes(c[12..16].try_into().unwrap())]).collect();
+    }
+    Ok(sc)
+}
+
+/// A manifest entry as the capture writes it (a `serde_json::Value` view; the fields the checks need).
+#[derive(Clone, Debug)]
+pub struct CapEntry {
+    pub pass: String,
+    pub capture: String,
+    pub frame: u32,
+    pub direction: Option<u32>,
+    pub sweep_direction_index: Option<u32>,
+    pub phase: Option<String>,
+    pub layer: Option<u32>,
+    pub eid_first: u64,
+    pub eid_last: u64,
+    pub file: String,
+    pub format: String,
+    pub width: u32,
+    pub height: u32,
+    pub dir: Option<[f32; 3]>,
+    pub banked: bool,
+    pub cbuffers: Value,
+}
+
+pub fn load_capture_entries(manifest: &Path) -> Result<Vec<CapEntry>, String> {
+    let txt = std::fs::read_to_string(manifest).map_err(|e| format!("{}: {e}", manifest.display()))?;
+    let v: Value = serde_json::from_str(&txt).map_err(|e| format!("{}: {e}", manifest.display()))?;
+    let u = |x: &Value| x.as_u64().or_else(|| x.as_str().and_then(|s| s.parse().ok()));
+    let mut out = Vec::new();
+    for e in v["passes"].as_array().ok_or("manifest has no `passes`")? {
+        let eid = u(&e["eid"]);
+        out.push(CapEntry {
+            pass: e["pass"].as_str().unwrap_or("").to_string(),
+            capture: e["capture"].as_str().unwrap_or("").to_string(),
+            frame: u(&e["frame"]).unwrap_or(0) as u32,
+            direction: u(&e["direction"]).map(|x| x as u32),
+            sweep_direction_index: u(&e["sweep_direction_index"]).map(|x| x as u32),
+            phase: e["phase"].as_str().map(|s| s.to_string()),
+            layer: u(&e["layer"]).map(|x| x as u32),
+            eid_first: u(&e["eid_first"]).or(eid).unwrap_or(0),
+            eid_last: u(&e["eid_last"]).or(eid).unwrap_or(0),
+            file: e["file"].as_str().unwrap_or("").to_string(),
+            format: e["format"].as_str().unwrap_or("").to_string(),
+            width: u(&e["width"]).unwrap_or(0) as u32,
+            height: u(&e["height"]).unwrap_or(0) as u32,
+            dir: if e["dir"].is_array() { Some(json_v3(&e["dir"])) } else { None },
+            banked: e["banked"].as_bool().unwrap_or(true),
+            cbuffers: e["cbuffers"].clone(),
+        });
+    }
+    Ok(out)
+}
+
+impl CapEntry {
+    pub fn load(&self, root: &Path) -> Result<Buf, String> {
+        crate::passdiff::load_file(root, &self.file, &self.format, self.width, self.height, 0)
+    }
+    /// The H-basis draw constants an `hbasis*` entry carries.
+    pub fn hb_constants(&self) -> Option<(HbCb, LmRasterCb)> {
+        let p = &self.cbuffers["ShaderP"]["ShaderP"]["g_CBufferP"];
+        let v = &self.cbuffers["ShaderV"]["ShaderV"]["g_CBufferV"];
+        let dir = if p["PeelDirInW"].is_array() { json_v3(&p["PeelDirInW"]) } else { self.dir? };
+        let inv = if p["InvDirCount"].is_number() { json_f32(&p["InvDirCount"]) } else { return None };
+        let raster = if v["LM01_Trans_RasterSS"].is_array() { LmRasterCb { scale_ss: json_v2(&v["LM01_Scale_RasterSS"]), trans_ss: json_v2(&v["LM01_Trans_RasterSS"]) } } else { LmRasterCb::for_offset(self.sweep_direction_index? as usize, self.width.max(1), self.height.max(1)) };
+        Some((HbCb { peel_dir: dir, inv_dir_count: inv }, raster))
+    }
+}
+
+/// One accumulate block of a frame's log: its four draws with their constants and the eid range.
+pub struct SetBlock {
+    pub eid_first: u64,
+    pub eid_last: u64,
+    pub draws: Vec<SetDraw>,
+}
+
+/// The accumulate blocks (PS 17112 / 17526) of a frame's draws log, in order, grouped four by four.
+pub fn set_blocks(draws: &[Value], scene: &LmScene) -> Result<Vec<SetBlock>, String> {
+    let mut blocks: Vec<SetBlock> = Vec::new();
+    for e in draws {
+        let ps = e.pointer("/Pixel/shader").and_then(|v| v.as_str()).unwrap_or("");
+        if ps != "17112" && ps != "17526" {
+            continue;
+        }
+        let eid = e["eid"].as_u64().unwrap_or(0);
+        let idx = e["idx"].as_u64().unwrap_or(0) as usize;
+        let inst = e["inst"].as_u64().unwrap_or(1).max(1) as usize;
+        let mesh = scene.mesh_for(idx, inst).ok_or_else(|| format!("eid {eid}: no LM mesh with {idx} indices × {inst} instances"))?;
+        let pcb = &e["Pixel"]["cbuffers"]["ShaderP"]["g_CBufferP"];
+        let vcb = &e["Vertex"]["cbuffers"]["ShaderV"]["g_CBufferV"];
+        let vs_id = e.pointer("/Vertex/shader").and_then(|v| v.as_str()).unwrap_or("");
+        // the fitted blocks' vertex shader clips to the items' world box (VS 17115 / pwc1 17529)
+        let world_box = if vs_id == "17115" || vs_id == "17529" { Some([json_v2(&vcb["WorldBoxMinXZ"]), json_v2(&vcb["WorldBoxMaxXZ"])]) } else { None };
+        let d = SetDraw {
+            eid,
+            mesh,
+            instance_first: scene.inst_first[mesh],
+            instance_count: inst,
+            raster: LmRasterCb { scale_ss: json_v2(&vcb["LM01_Scale_RasterSS"]), trans_ss: json_v2(&vcb["LM01_Trans_RasterSS"]) },
+            cb: SetCb { world_pw01_shadow: json_m4(&pcb["WorldPw01Shadow"]), peel_dir: json_v3(&pcb["PeelDirInW"]) },
+            world_box,
+        };
+        match blocks.last_mut() {
+            Some(b) if b.draws.len() < 4 && eid - b.eid_last <= 6 => { b.eid_last = eid; b.draws.push(d); }
+            _ => blocks.push(SetBlock { eid_first: eid, eid_last: eid, draws: vec![d] }),
+        }
+    }
+    Ok(blocks)
+}
+
+/// The report of one comparison line.
+pub fn fmt_dircmp(c: &DirCmp) -> String {
+    let pct = |n: usize| if c.touched > 0 { 100.0 * n as f64 / c.touched as f64 } else { 0.0 };
+    format!("touched {:>8}  exact {:>8} ({:6.2} %)  ±1 quantum {:>6} ({:5.2} %)  worse {:>6} ({:5.2} %)  ours-only {:>6}  game-only {:>6}", c.touched, c.exact, pct(c.exact), c.quantum, pct(c.quantum), c.worse, pct(c.worse), c.ours_only, c.game_only)
+}
+
+/// Per-channel f16 comparison of one MRT: (values compared, exact, within 1 ulp of the game's value, worse, max |Δ|),
+/// over the pixels where either side is non-zero in that channel.
+pub fn compare_mrt(ours: &[[f32; 4]], game: &Buf, ch: usize) -> (usize, usize, usize, usize, f32, (u32, u32, f32, f32)) {
+    let (mut n, mut exact, mut ulp1, mut worse, mut maxd) = (0usize, 0usize, 0usize, 0usize, 0f32);
+    let mut worst = (0u32, 0u32, 0f32, 0f32);
+    for y in 0..game.h {
+        for x in 0..game.w {
+            let i = (y * game.w + x) as usize;
+            let g = game.get(x, y, ch as u32);
+            let o = ours[i][ch];
+            if g == 0.0 && o == 0.0 {
+                continue;
+            }
+            n += 1;
+            let d = (o - g).abs();
+            if d == 0.0 {
+                exact += 1;
+            } else {
+                let ulp = (crate::gpufmt::decode_f16(crate::gpufmt::encode_f16(g, Rounding::NearestEven).wrapping_add(1)) - g).abs();
+                if d <= ulp * 1.001 { ulp1 += 1 } else { worse += 1 }
+                if d > maxd { maxd = d; worst = (x, y, g, o); }
+            }
+        }
+    }
+    (n, exact, ulp1, worse, maxd, worst)
+}
