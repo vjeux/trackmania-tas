@@ -811,7 +811,17 @@ fn run(a: Vec<String>) {
                 };
                 let dscale: f32 = f("--decoration-scale").map(|s| s.parse().unwrap()).unwrap_or(1.0);
                 let doff: [f32; 3] = f("--decoration-offset").map(|s| { let v: Vec<f32> = s.split(',').map(|x| x.trim().parse().unwrap()).collect(); [v[0], v[1], v[2]] }).unwrap_or([0.0; 3]);
+                // the transcribed chain (--lm-from-map / --game-peel) takes the Scene3d as the GAME's environment block (envcap::env_block_from_scene3d:
+                // the sea box far faces + the terrain patches as the peels' environment layer and the shadow casters, the Water surface dropped)
+                let game_block = has("--lm-from-map") || has("--game-peel");
                 for p in paths {
+                    if game_block {
+                        match lightmap::envcap::env_block_from_scene3d(&p, dscale, doff) {
+                            Ok((t, dropped)) => { eprintln!("decoration: the game's environment block from {p}: {} triangles ({dropped} water triangles dropped)", t.len()); scene.decor.extend(t); }
+                            Err(e) => eprintln!("decoration: {e} (ignored)"),
+                        }
+                        continue;
+                    }
                     match lightmap::geometry::load_obj_decor(&p, dscale, doff) {
                         Ok(t) => { eprintln!("decoration: {} triangles from {p}", t.len()); scene.decor.extend(t); }
                         Err(e) => eprintln!("decoration: {e} (ignored)"),
@@ -1344,7 +1354,8 @@ fn run(a: Vec<String>) {
             // THE DOME MESH (domemesh.rs): with --env-from PASSCAP the game's own dome triangles (mesh e001051) are
             // rasterised per peel and PS 16774 runs on the interpolated (u, v); --dome-analytic keeps the ellipsoid model
             if !has("--dome-analytic") {
-                if let Some(dir) = f("--env-from") {
+                // (--dome-mesh-from DIR: the captured dome mesh alone, to separate the dome's effect from the rest of --env-from)
+                if let Some(dir) = f("--dome-mesh-from").or_else(|| f("--env-from")) {
                     match lightmap::domemesh::DomeMesh::load(std::path::Path::new(&dir)) {
                         Ok(m) => { eprintln!("env-from {dir}: the sky dome mesh ({} vertices, {} triangles) rasterised per peel", m.pos.len(), m.indices.len() / 3); prm.dome_mesh = Some(std::sync::Arc::new(m)); }
                         Err(e) => eprintln!("env-from {dir}: no dome mesh ({e}) — the analytic dome stands in"),

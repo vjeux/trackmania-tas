@@ -243,3 +243,45 @@ mod tests {
         }
     }
 }
+
+/// THE GAME'S ENVIRONMENT BLOCK FROM THE DECORATION'S SCENE3D (no capture): the Scene3d export's mobils by material —
+/// `InvisibleShadowCaster` = the sea box (the far faces only, wound outward), `WarpSand` = the four terrain patches, the
+/// `Water` surface is NOT part of the block (pwc-day: 262 + 1 120 = the captured 1 382 triangles; the 336 Water triangles
+/// dropped). The same `DecorTri` flags `env_decor` gives the captured block, so the peels' environment layer and the
+/// shadow casters see the game's geometry with or without `--env-from`.
+pub fn env_block_from_scene3d(path: &str, scale: f32, offset: [f32; 3]) -> Result<(Vec<DecorTri>, usize), String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
+    let mut verts: Vec<[f32; 3]> = Vec::new();
+    let mut meshes: Vec<EnvMesh> = Vec::new();
+    let mut cur: Option<EnvMesh> = None;
+    let mut dropped = 0usize;
+    let mut skip = false;
+    for line in text.lines() {
+        let mut it = line.split_whitespace();
+        match it.next() {
+            Some("v") => {
+                let c: Vec<f32> = it.take(3).map(|x| x.parse().unwrap_or(0.0)).collect();
+                if c.len() == 3 { verts.push([c[0] * scale + offset[0], c[1] * scale + offset[1], c[2] * scale + offset[2]]); }
+            }
+            Some("usemtl") => {
+                let name = it.next().unwrap_or("").to_string();
+                if let Some(m) = cur.take() { if !m.tris.is_empty() { meshes.push(m); } }
+                skip = name.to_ascii_lowercase().contains("water");
+                cur = Some(EnvMesh { name: if name.to_ascii_lowercase().contains("invisible") { "sea_box".into() } else { name }, tris: Vec::new() });
+            }
+            Some("f") => {
+                let idx: Vec<usize> = it.map(|x| x.split('/').next().unwrap_or("0").parse::<i64>().unwrap_or(0)).map(|i| if i < 0 { (verts.len() as i64 + i) as usize } else { (i - 1).max(0) as usize }).collect();
+                for k in 1..idx.len().saturating_sub(1) {
+                    let (a, b, c) = (idx[0], idx[k], idx[k + 1]);
+                    if a < verts.len() && b < verts.len() && c < verts.len() {
+                        if skip { dropped += 1; continue; }
+                        if let Some(m) = cur.as_mut() { m.tris.push([verts[a], verts[b], verts[c]]); }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Some(m) = cur.take() { if !m.tris.is_empty() { meshes.push(m); } }
+    Ok((env_decor(&meshes), dropped))
+}
