@@ -275,6 +275,67 @@ impl PixelIndex {
     }
 }
 
+/// Recycled buffers: the per-frame fragment tables (tens of MB, above glibc's mmap threshold) would be
+/// mapped and unmapped every direction — 60 k page faults per direction on a tiny map, a tenth of its time.
+/// A dropped table hands its allocation back here; the next frame takes one with its capacity (and its
+/// pages) intact.
+pub struct Recycle<T> {
+    pool: std::sync::Mutex<Vec<Vec<T>>>,
+}
+
+impl<T> Recycle<T> {
+    pub const fn new() -> Recycle<T> {
+        Recycle { pool: std::sync::Mutex::new(Vec::new()) }
+    }
+    /// An empty vector, with a recycled capacity when one is available.
+    pub fn take(&self) -> Vec<T> {
+        self.pool.lock().unwrap().pop().unwrap_or_default()
+    }
+    /// A vector with at least `cap` capacity (the largest recycled one is preferred when it fits).
+    pub fn take_with_capacity(&self, cap: usize) -> Vec<T> {
+        let mut v = {
+            let mut p = self.pool.lock().unwrap();
+            match p.iter().position(|v| v.capacity() >= cap) {
+                Some(i) => p.swap_remove(i),
+                None => p.pop().unwrap_or_default(),
+            }
+        };
+        v.clear();
+        v.reserve(cap);
+        v
+    }
+    pub fn give(&self, mut v: Vec<T>) {
+        if v.capacity() == 0 {
+            return;
+        }
+        v.clear();
+        let mut p = self.pool.lock().unwrap();
+        if p.len() < 12 {
+            p.push(v);
+        }
+    }
+}
+
+pub static LAYER_FRAGS: Recycle<LayerFrag> = Recycle::new();
+pub static ABUF_FRAGS: Recycle<Frag> = Recycle::new();
+pub static U32S: Recycle<u32> = Recycle::new();
+
+impl Drop for Layers {
+    fn drop(&mut self) {
+        LAYER_FRAGS.give(std::mem::take(&mut self.frags));
+        U32S.give(std::mem::take(&mut self.start));
+    }
+}
+
+impl Drop for ABuffer {
+    fn drop(&mut self) {
+        for (start, frags) in self.bands.drain(..) {
+            U32S.give(start);
+            ABUF_FRAGS.give(frags);
+        }
+    }
+}
+
 pub struct ABuffer {
     pub res: u32,
     /// Rows per band; the bands' CSR tables stay separate (no serial stitch of ~100 M fragments).
@@ -757,8 +818,8 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
     let mut bucket_base: Vec<u32> = Vec::with_capacity(bucket_results.len() + 1);
     bucket_base.push(0);
     for (_, f) in &bucket_results { let last = *bucket_base.last().unwrap(); bucket_base.push(last + f.len() as u32); }
-    let mut start: Vec<u32> = Vec::with_capacity(npx + 1);
-    let mut frags: Vec<Frag> = Vec::with_capacity(total);
+    let mut start: Vec<u32> = U32S.take_with_capacity(npx + 1);
+    let mut frags: Vec<Frag> = ABUF_FRAGS.take_with_capacity(total);
     // SAFETY: every slot is written exactly once below by the bucket that owns it
     unsafe { start.set_len(npx + 1); frags.set_len(total); }
     start[npx] = total as u32;
@@ -1547,8 +1608,8 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
         part_pix.push(0usize);
         for (counts, _) in &parts { let last = *part_pix.last().unwrap(); part_pix.push(last + counts.len()); }
         let total = *part_base.last().unwrap();
-        let mut start: Vec<u32> = Vec::with_capacity(npx + 1);
-        let mut frags: Vec<LayerFrag> = Vec::with_capacity(total);
+        let mut start: Vec<u32> = U32S.take_with_capacity(npx + 1);
+        let mut frags: Vec<LayerFrag> = LAYER_FRAGS.take_with_capacity(total);
         // SAFETY: every slot of both vectors is written exactly once below, by the part that owns it
         unsafe { start.set_len(npx + 1); frags.set_len(total); }
         start[npx] = total as u32;
@@ -1965,6 +2026,11 @@ pub mod prof {
     pub static FRAMES: AtomicU64 = AtomicU64::new(0);
     pub static EXACT: AtomicU64 = AtomicU64::new(0);
     pub static L_PAR: AtomicU64 = AtomicU64::new(0);
+    /// The per-direction glue outside the stages: the dome raster, the wanted bitmap, the sel/occl clear.
+    pub static DOME: AtomicU64 = AtomicU64::new(0);
+    pub static BITMAP: AtomicU64 = AtomicU64::new(0);
+    pub static CLEAR: AtomicU64 = AtomicU64::new(0);
+    pub static CONTRIB: AtomicU64 = AtomicU64::new(0);
     pub fn add(c: &AtomicU64, t: std::time::Instant) {
         c.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
@@ -1972,8 +2038,9 @@ pub mod prof {
         let g = |c: &AtomicU64| c.load(Ordering::Relaxed) as f64 / 1e9;
         let staged = g(&BUILD) + g(&LAYERS) + g(&DUMP) + g(&GATHER) + g(&ACCUM) + g(&SNAP) + g(&FRAMES) + g(&EXACT);
         crate::alphatex::alpha_stats_report();
+        eprintln!("profile [{label}] glue: dome raster {:.2}s, wanted bitmap {:.2}s, sel/occl clear {:.2}s, contribution {:.2}s", g(&DOME), g(&BITMAP), g(&CLEAR), g(&CONTRIB));
         eprintln!("profile [{label}]: A-buffer build {:.2}s (wanted index {:.2}s, clip {:.2}s, raster {:.2}s, CSR {:.2}s), exact layer count {:.2}s, layer derivation {:.2}s (parallel part {:.2}s), per-direction dumps {:.2}s, gather {:.2}s, accumulate {:.2}s, accumulation snapshots {:.2}s, frames {:.2}s; directions total {:.2}s (unstaged {:.2}s); sweep total {total:.2}s", g(&BUILD), g(&B_INDEX), g(&B_CLIP), g(&B_RASTER), g(&B_SORT), g(&EXACT), g(&LAYERS), g(&L_PAR), g(&DUMP), g(&GATHER), g(&ACCUM), g(&SNAP), g(&FRAMES), g(&DIR), g(&DIR) - staged);
-        for c in [&BUILD, &LAYERS, &DUMP, &GATHER, &ACCUM, &SNAP, &B_CLIP, &B_RASTER, &B_SORT, &B_INDEX, &DIR, &FRAMES, &EXACT, &L_PAR] { c.store(0, Ordering::Relaxed); }
+        for c in [&BUILD, &LAYERS, &DUMP, &GATHER, &ACCUM, &SNAP, &B_CLIP, &B_RASTER, &B_SORT, &B_INDEX, &DIR, &FRAMES, &EXACT, &L_PAR, &DOME, &BITMAP, &CLEAR, &CONTRIB] { c.store(0, Ordering::Relaxed); }
     }
 }
 
@@ -2399,6 +2466,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         // (the reused buffers, filled in parallel)
         let sel: &mut [[f32; 3]] = &mut sel_buf[..cur.len()];
         let occl: &mut [bool] = &mut occl_buf[..cur.len()];
+        let t_clear = std::time::Instant::now();
         {
             let n = cur.len();
             let per = (n / (threads * 2).max(1)).max(4096);
@@ -2410,6 +2478,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                 }
             });
         }
+        prof::add(&prof::CLEAR, t_clear);
         let mut t_build_total = 0.0f32;
         // the transcribed accumulate's TMapILightDir of this direction (cleared before the first block)
         let mut dir_lm: Option<crate::lmaccum::DirTarget> = prm.lm_scene.as_ref().map(|_| crate::lmaccum::DirTarget::cleared(2048, 2048));
@@ -2431,6 +2500,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         } else {
         for (pi, frame) in peels.iter().enumerate() {
             let tb2 = std::time::Instant::now();
+            let t_dome = std::time::Instant::now();
             // the game's dome mesh rasterised in this peel's frame (the eye = GbxV_EyeInWorld = the frustum's
             // centre — the scene bbox the frustum is fit to; a metre off moves the 22 km dome's view vector by
             // 5e-5 rad), the sun shift = LightDirAngle_m11Zx, InvertY on, ForceX off — the capture's GbxSkyV0
@@ -2440,6 +2510,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             };
             if let Some(r) = &dome_r { if want_dir_dump || std::env::var_os("LMTOOL_PEEL_LAYERS_DEBUG").is_some() { eprintln!("peel: direction {di} peel {pi}: the dome mesh covers the frame with {} front-facing triangles", r.triangles()); } }
             let dome_r = dome_r.as_ref();
+            prof::add(&prof::DOME, t_dome);
             // the deepest receiver along this direction: nothing beyond it can occlude
             let zmax = (0..8).map(|i| { let p = [if i & 1 == 0 { bmin[0] } else { bmax[0] }, if i & 2 == 0 { bmin[1] } else { bmax[1] }, if i & 4 == 0 { bmin[2] } else { bmax[2] }]; frame.project(p).2 }).fold(f32::MIN, f32::max);
             // the game's peel renders everything inside the frustum's depth range; beyond the far plane the
@@ -2526,6 +2597,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                         }
                     }
                 }
+                prof::add(&prof::BITMAP, t_idx);
                 // THE PROBES' texels (probebake.rs): the world peel's layers must exist where the probe draws sample them —
                 // every block cell's (u, v) texel and its 3×3 neighbourhood (the sky visibility's 2×2 PCF footprint)
                 if let (Some(pb), true) = (&prm.probe_bake, pi == 0) {
@@ -2856,6 +2928,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             prof::add(&prof::GATHER, tg);
         }
         } // (the live direction)
+        let t_contrib = std::time::Instant::now();
         if let (Some(tx), true) = (&contrib_tx, replay.is_none()) {
             // THE CONTRIBUTION of this direction: sel of the facing sub-samples, the occl bits, the probes
             let mut c = crate::contrib::DirContrib { sweep: prm.sweep, di: di as u32, n_subs: cur.len() as u32, ..Default::default() };
@@ -2871,6 +2944,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             }
             tx.send(c).expect("contribution writer");
         }
+        prof::add(&prof::CONTRIB, t_contrib);
         let t_build = t_build_total;
         let ta = std::time::Instant::now();
         // THE PROBES: the direction's two folds (PS 1112) — the game issues them after the H-basis, the order is immaterial

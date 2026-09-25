@@ -23,7 +23,30 @@ fn t_quarter(dt: Option<u32>, x: &lightmap::moods::MoodXml) -> bool {
     (0.25..0.5).contains(&t) || t >= 0.75
 }
 
+/// glibc's allocator tuned for the bake: allocations up to 32 MB served from the arenas and freed memory never
+/// trimmed back to the kernel (the default mmap threshold hands every buffer over 128 KB — the per-frame
+/// fragment lists, indices, layer tables — to mmap/munmap: 63 k page faults per direction on a tiny map, a
+/// tenth of its time). 32 MB is glibc's ceiling for the threshold; the few larger buffers still round-trip.
+fn tune_malloc() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    unsafe {
+        // (glibc's mallopt, declared here: the libc crate is not among the vendored dependencies)
+        extern "C" {
+            fn mallopt(param: i32, value: i32) -> i32;
+        }
+        const M_TRIM_THRESHOLD: i32 = -1;
+        const M_TOP_PAD: i32 = -2;
+        const M_MMAP_THRESHOLD: i32 = -3;
+        if std::env::var_os("LMTOOL_NO_MALLOC_TUNE").is_none() {
+            mallopt(M_MMAP_THRESHOLD, 32 * 1024 * 1024);
+            mallopt(M_TRIM_THRESHOLD, i32::MAX);
+            mallopt(M_TOP_PAD, 64 * 1024 * 1024);
+        }
+    }
+}
+
 fn main() {
+    tune_malloc();
     let mut a: Vec<String> = std::env::args().skip(1).collect();
     // `bake … --lm-from-map` IMPLIES the transcribed chain: the game's peel and accumulation (--game-peel), one raster
     // sub-sample (--ss 1), the sky at the game's scale (--sky-global-scale 1), the H-basis without the port's kappa
@@ -6722,6 +6745,7 @@ fn run(a: Vec<String>) {
             //   shared store); --weights w0,w1,…: the ranges proportional to the boxes' speeds (cores)
             let mut coop = false;
             let mut weights: Vec<f64> = Vec::new();
+            let mut shard: Option<(usize, usize)> = None;
             let mut i = 1;
             let mut in_extra = false;
             while i < a.len() {
@@ -6740,14 +6764,23 @@ fn run(a: Vec<String>) {
                     "--keep-work" => keep_work = true,
                     "--coop" => coop = true,
                     "--weights" => { weights = a[i + 1].split(',').map(|w| w.trim().parse::<f64>().expect("--weights")).collect(); i += 1; }
+                    // --shard K/N: this box takes the maps whose index ≡ K (mod N) — whole maps per box, the linear
+                    //   way to spread a batch of small maps over a fleet (the split is for the giants)
+                    "--shard" => { let (k, n) = a[i + 1].split_once('/').expect("--shard K/N"); shard = Some((k.trim().parse().expect("--shard"), n.trim().parse().expect("--shard"))); i += 1; }
                     "--maps" => { let txt = std::fs::read_to_string(&a[i + 1]).expect("--maps list"); for l in txt.lines() { let l = l.trim(); if !l.is_empty() && !l.starts_with('#') { maps.push(l.to_string()); } } i += 1; }
                     _ => maps.push(x.clone()),
                 }
                 i += 1;
             }
+            if let Some((k, n)) = shard {
+                assert!(n > 0 && k < n, "--shard K/N: K below N");
+                let all = maps.len();
+                maps = maps.into_iter().enumerate().filter(|(i, _)| i % n == k).map(|(_, m)| m).collect();
+                eprintln!("relight-batch: shard {k}/{n}: {} of {all} maps", maps.len());
+            }
             let out_dir = std::path::PathBuf::from(out_dir.expect("--out-dir DIR"));
             std::fs::create_dir_all(&out_dir).expect("out dir");
-            let manifest = manifest.map(std::path::PathBuf::from).unwrap_or_else(|| out_dir.join("relight-manifest.json"));
+            let manifest = manifest.map(std::path::PathBuf::from).unwrap_or_else(|| out_dir.join(match shard { Some((k, n)) => format!("relight-manifest-shard{k}of{n}.json"), None => "relight-manifest.json".to_string() }));
             if writer == "transcribed" { extra.push("--file-transcribed".to_string()); }
             let exe = std::env::current_exe().expect("exe");
             #[derive(Default, Clone)]
