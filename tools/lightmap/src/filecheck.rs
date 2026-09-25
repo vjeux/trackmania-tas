@@ -791,3 +791,56 @@ mod tests {
         assert!((m2 - 3.0 * 2.5066283 * 0.39894226).abs() < 1e-5);
     }
 }
+
+// ───────────────────────────── the writer's entry point for the end-to-end chain ─────────────────────────────
+
+/// Everything the lightmap chunk takes from the bake's GPU end state, in one struct: the encode's three textures
+/// (`gpuenc::encode_ycbcr4`), the MaxHdr buffer (`gpuenc::maxhdr_hbasis` × 4), the mood's MaxHDR, the AddAmbient
+/// accumulator's xyz at the end of sweep 0, and the probe volumes (the two folds and the sky visibility) with the
+/// block's range and tile table.
+pub struct GpuEndState<'a> {
+    pub ycbcr: &'a crate::gpuenc::YCbCr4,
+    pub maxhdr: [f32; 4],
+    pub mood_max_hdr: f32,
+    pub ambient_xyz: [f32; 3],
+    pub probe_colour: &'a crate::probepass::Volume3,
+    pub probe_updown: &'a crate::probepass::Volume3,
+    pub probe_skyvis: Option<&'a crate::probepass::Volume3>,
+    pub block: ([u32; 3], [u32; 3]),
+    pub tiles: &'a [Option<(u32, u32)>],
+    pub atlas: (u32, u32),
+}
+
+/// What the file gets: the blobs of frame 0 (0 = colour, 1 = the three greys, 2 = the four probe WEBPs with the
+/// `frame_info` end offsets of the first three), the per-chart frame bytes, the record's scale fields, the probe
+/// scales for the trailer.
+pub struct FileImages {
+    pub blob0: Vec<u8>,
+    pub blob1: Vec<u8>,
+    pub blob1_sizes: [usize; 2],
+    pub probe_blob: Vec<u8>,
+    pub probe_ends: [u32; 3],
+    pub fb0: Vec<u8>,
+    pub max_hdr: f32,
+    pub hbasis234: [f32; 3],
+    pub lambient_f16: [u16; 3],
+    pub probe_scales: [f32; 3],
+}
+
+/// The client's CPU side end to end (needs libwebp): `charts` = the layout rectangles in the mapping's order.
+pub fn file_images(g: &GpuEndState, charts: &[(u32, u32, u32, u32)]) -> Option<FileImages> {
+    let (w, h) = (g.ycbcr.w as usize, g.ycbcr.h as usize);
+    let (blob0, blob1, blob1_sizes, fb0) = frame0_blobs(&g.ycbcr.y4, &g.ycbcr.cb4, &g.ycbcr.cr4, w, h, charts)?;
+    let dl = crate::probepass::download_probes(g.probe_colour, g.probe_updown, g.probe_skyvis, g.block);
+    let atl = crate::probepass::probe_atlases(&dl, g.block.0, g.tiles, g.atlas.0, g.atlas.1);
+    let enc = crate::probepass::encode_probe_atlases(&atl, g.atlas.0, g.atlas.1)?;
+    let mut probe_blob = Vec::new();
+    let mut probe_ends = [0u32; 3];
+    for (k, e) in enc.iter().enumerate() {
+        probe_blob.extend_from_slice(e);
+        if k < 3 { probe_ends[k] = probe_blob.len() as u32; }
+    }
+    let (max_hdr, hbasis234) = record_scales(g.maxhdr, g.mood_max_hdr);
+    let lambient_f16 = [0, 1, 2].map(|k| crate::gpufmt::encode_f16(g.ambient_xyz[k], crate::gpufmt::Rounding::NearestEven));
+    Some(FileImages { blob0, blob1, blob1_sizes, probe_blob, probe_ends, fb0, max_hdr, hbasis234, lambient_f16, probe_scales: [dl.max0, dl.max2, 1e-5] })
+}
