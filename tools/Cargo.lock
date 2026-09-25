@@ -160,6 +160,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "doorrig"
+version = "1.0.0"
+dependencies = [
+ "tmdrive",
+]
+
+[[package]]
 name = "dsprobe"
 version = "1.0.0"
 
@@ -899,6 +906,9 @@ dependencies = [
 [[package]]
 name = "tmdrive"
 version = "1.0.0"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "tmmaps"
