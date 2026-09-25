@@ -309,6 +309,15 @@ void LmWatch() {
                 g_lmRunTag = "r" + Time::Stamp + "-";
                 g_lmStatus = "armed: chain found, cache0=" + Hex64(cache0) + " run " + g_lmRunTag;
                 LmAppend("lmrecords-trace.txt", "== chain found " + Time::Stamp + " run " + g_lmRunTag + "\n" + c.info);
+                // the LOAD-TIME dump (tag L): the map's record array as the editor built it on load — for a map that
+                // already carries a lightmap the compute keeps the same set and the same s, so nothing else may trigger
+                // before the editor leaves (hill4's 9-s q3 bake gave no dump at all, 2026-09-25)
+                try {
+                    string st0 = LmDumpBoth(c, "L");
+                    LmAppend("lmrecords-trace.txt", "== load-time dump L\n" + st0);
+                } catch {
+                    LmAppend("lmrecords-trace.txt", "load-time dump threw at " + g_lmStep + ": " + getExceptionInfo() + "\n");
+                }
             }
             uint64 now = Time::Stamp;
             if (now - lastTrace >= 2) {
