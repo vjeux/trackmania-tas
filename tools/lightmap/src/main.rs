@@ -5375,7 +5375,15 @@ fn run(a: Vec<String>) {
             let faces = mapgeom::fillers::faces(&mut store, &mut idx, &mf);
             let dirs: std::collections::HashMap<usize, u8> = mf.blocks.iter().map(|b| (b.index, b.dir)).collect();
             let grounds = mapgeom::bake::record_grounds(&faces, &mf);
-            let clips = mapgeom::bake::simulate(&faces, &dirs, &grounds);
+            let mut clips = mapgeom::bake::simulate(&faces, &dirs, &grounds);
+            // the game's creation order: the authored blocks in block order, per face, per clip of the face's list (mapgeom's simulate
+            // walks its occupant cells sorted) — --clip-order sim keeps mapgeom's order
+            if f("--clip-order").as_deref() != Some("sim") {
+                let pos_in_list: Vec<usize> = clips.iter().map(|c| faces.occupants.get(&c.cell).and_then(|os| os.iter().find(|o| o.index == c.owner_index && o.unit == c.unit)).and_then(|o| o.faces[c.face].iter().position(|n| *n == c.name)).unwrap_or(0)).collect();
+                let mut idx: Vec<usize> = (0..clips.len()).collect();
+                idx.sort_by_key(|&i| (clips[i].owner_index, clips[i].unit, clips[i].face, pos_in_list[i]));
+                clips = idx.iter().map(|&i| clips[i].clone()).collect();
+            }
             let mut n_clip_objs = 0u32;
             let mut n_clip_recs = 0usize;
             let clip_obj0: u32 = 16384 + mf.blocks.len() as u32 + (grid * grid) as u32;
@@ -5423,6 +5431,24 @@ fn run(a: Vec<String>) {
                 n_clip_recs += n;
             }
             println!("{} drawn clips → {n_clip_recs} records ({n_clip_objs} objects from {clip_obj0})", clips.iter().filter(|c| c.drawn()).count());
+            // THE ITEMS: one record per placed item with a PreLightGen (geometry::Scene: the embedded / stock models), the record box
+            // from lmtiles::item_records (the mobil Iso4 chain), obj after the clips
+            let scene = lightmap::geometry::Scene::from_map(&a[1]).expect("scene");
+            let irecs = lightmap::lmtiles::item_records(&scene, 1.0, false);
+            let item_obj0 = clip_obj0 + n_clip_objs;
+            let mut n_item_recs = 0usize;
+            for (k, inst) in scene.instances.iter().enumerate() {
+                let m = &scene.models[inst.model];
+                let Some(b) = m.plg_bounds else { continue };
+                let fx_only = !m.mat_links.is_empty() && m.mat_links.iter().all(|l| l.contains("RaceTriggerFX"));
+                if fx_only { continue; }
+                let Some(ir) = irecs.iter().find(|r| r.item == inst.item) else { continue };
+                let Some(rec) = &ir.record else { continue };
+                let q = lightmap::layout::item_quality(inst.lm_quality);
+                recs.push(lightmap::records::Rec { class: "item", obj: item_obj0 + k as u32, sub: 0, meter_by_uv: m.plg_u02, uv: b, quality: q, centre: rec.world.c, half: rec.world.h, group: ((inst.model as u64) << 32) | q.to_bits() as u64 });
+                n_item_recs += 1;
+            }
+            println!("{} items → {n_item_recs} records (objects from {item_obj0})", scene.instances.len());
             // --hfc-study: the horizontal free clips' SHAPE (the mobil list the engine picks: EndEnd / InEnd / OutEnd / StrEnd) read off
             // the dump against the owner's neighbourhood — the corner cells beside the face
             if a.iter().any(|x| x == "--hfc-study") {
@@ -5451,6 +5477,30 @@ fn run(a: Vec<String>) {
                 for (k, n) in v { println!("  {n:4} × {k}"); }
             }
             lightmap::records::compare(&recs, &dump);
+            // --layout: the grouped allocation over our records against the map's own chart table (the dump as the bridge: our record →
+            // its dump record → the key obj·4 | sub → the editor's rect)
+            if a.iter().any(|x| x == "--layout") {
+                let own = lightmap::mapio::load(&a[1]).expect("own bake");
+                let q = lightmap::layout::quality_index_of(&own).unwrap_or(2);
+                let d = own.chunk.data.as_ref().unwrap();
+                let mp = d.cache.mapping().unwrap();
+                let mut ed: std::collections::HashMap<u32, (u16, u16, u16, u16)> = Default::default();
+                for i in 0..mp.count as usize { ed.insert(mp.binds[i].obj_group_idx, (mp.pos[i].0, mp.pos[i].1, mp.size[i].0, mp.size[i].1)); }
+                let link = lightmap::records::match_dump(&recs, &dump);
+                let gl = lightmap::records::layout_of(&recs, q).expect("layout");
+                let (mut n, mut ok, mut same_size) = (0usize, 0usize, 0usize);
+                let mut misses: Vec<String> = Vec::new();
+                for c in &gl.charts {
+                    let k = c.obj as usize;
+                    let Some(Some(j)) = link.get(k) else { continue };
+                    let key = (dump[*j].key >> 32) as u32;
+                    let Some(&(ex, ey, ew, eh)) = ed.get(&key) else { continue };
+                    n += 1;
+                    if c.x == ex as i32 && c.y == ey as i32 && c.w == ew as i32 && c.h == eh as i32 { ok += 1; } else { if c.w == ew as i32 && c.h == eh as i32 { same_size += 1; } if misses.len() < 8 { misses.push(format!("{} #{k}: ours ({}, {}) {}×{} editor ({ex}, {ey}) {ew}×{eh}", recs[k].class, c.x, c.y, c.w, c.h)); } }
+                }
+                println!("layout: {} charts, s {} Σ {} (editor TotalLmSurfaceMeter in the chunk: see packtest), {ok} of {n} rects equal to the editor's table ({same_size} same size elsewhere)", gl.charts.len(), gl.s, gl.sum_area);
+                for m in &misses { println!("  {m}"); }
+            }
             // --ring-map: our tile ring index vs the dump's over the marked region (one char per cell: ours/dump differences marked)
             if a.iter().any(|x| x == "--ring-map") {
                 let ring_of = |q: f32| -> char { let r = (-(q.log2()) * 2.0).round() as i32; if r >= 9 { '.' } else { char::from_digit(r as u32, 10).unwrap_or('?') } };
