@@ -281,7 +281,10 @@ pub fn patch_frame_records(head: &mut [u8], fp: &FrameParams) {
             head[r + 8..r + 12].copy_from_slice(&fp.daytime.to_le_bytes());
         }
         head[r + 16..r + 20].copy_from_slice(&fp.max_hdr_mood.to_le_bytes());
-        head[r + 20..r + 24].copy_from_slice(&fp.max_hdr.to_le_bytes());
+        // frame 0's MaxHDR is the bake's K; the editor writes the other frames' (the black night frame) as 1e-5
+        // (every editor save: "frame record 1: MaxHDR 0.00001" — validation 2026-09-25)
+        let k = if i == 0 { fp.max_hdr } else { 1e-5f32 };
+        head[r + 20..r + 24].copy_from_slice(&k.to_le_bytes());
         head[r + 24..r + 28].copy_from_slice(&fp.bounce.to_le_bytes());
         head[r + 28..r + 32].copy_from_slice(&fp.sky.to_le_bytes());
     }
