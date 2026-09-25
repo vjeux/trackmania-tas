@@ -224,6 +224,11 @@ fn back_to_start(lock: &GameLock) -> Result<(), String> {
 pub fn cap_test(lock: &GameLock, map: &str) -> Result<(), String> {
     let h = lock.host();
     println!("=== 1. a fresh game, both plugins alive ===");
+    // The plugin's file protocol is off for players; the marker turns it on
+    // for this harness (read once, when the plugin loads).
+    fs::create_dir_all(speedcap_dir()).map_err(|e| format!("cannot create the Speed Cap storage folder: {e}"))?;
+    fs::write(speedcap_dir().join("automation.on"), "jumprig captest\n")
+        .map_err(|e| format!("cannot write the automation marker: {e}"))?;
     // A game left running by the previous holder loaded whatever SpeedCap
     // source it found at ITS start, and a plugin that failed to compile then
     // is never reloaded (a file written from outside did not trigger the

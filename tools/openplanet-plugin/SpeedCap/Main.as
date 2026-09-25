@@ -77,8 +77,14 @@ float S_LimitKmh = 1000.0f;
 [Setting name="Show debug window"]
 bool S_ShowDebug = false;
 
-[Setting name="Automation (state + command files)" description="Write state.json and execute cmd.txt in the plugin storage folder."]
-bool S_Automation = true;
+// OFF by default: the state file is for the test harness (`jumprig captest`),
+// and a file write four times a second is the one thing in this plugin that
+// can cost a frame on a slow disk. The harness turns it on by dropping an
+// `automation.on` marker in the storage folder before it starts the game.
+[Setting name="Automation (state + command files)" description="For the test harness: write state.json and execute cmd.txt in the plugin storage folder four times a second. Leave off for normal play."]
+bool S_Automation = false;
+bool g_AutomationMarker = false;
+bool AutomationOn() { return S_Automation || g_AutomationMarker; }
 
 // Runtime state -----------------------------------------------------------
 
@@ -89,6 +95,8 @@ uint g_ActiveIndex = 0;
 uint64 g_ActivePtr = 0;         // tunings.Data[ActiveIndex]: what the cars read
 string g_ActiveName = "";
 array<uint64> g_Signed;         // every entry whose +0x2f4..+0x2fc match
+uint64 g_LastScannedActive = 0;
+uint64 g_LastScanAt = 0;
 bool g_ActiveSigned = false;    // the active entry is among them
 bool g_OriginalKnown = false;
 float g_Original = 0.0f;        // the value the game had before we touched it
@@ -240,10 +248,18 @@ bool ResolveTunings() {
         g_ActiveName = MwId(Dev::ReadUInt32(active + TUNING_NAME)).GetName();
     }
 
-    g_Signed.RemoveRange(0, g_Signed.Length);
-    for (uint i = 0; i < count; i++) {
-        uint64 t = Dev::ReadUInt64(data + uint64(i) * 8);
-        if (LooksLikePointer(t) && SignatureAt(t)) g_Signed.InsertLast(t);
+    // The per-entry signature scan is the bulk of the reads; it only needs
+    // redoing when the active entry moved (the container was rebuilt) or,
+    // as a guard, every couple of seconds.
+    bool moved = (active != g_LastScannedActive);
+    if (moved || g_Signed.Length == 0 || Time::Now - g_LastScanAt > 2000) {
+        g_Signed.RemoveRange(0, g_Signed.Length);
+        for (uint i = 0; i < count; i++) {
+            uint64 t = Dev::ReadUInt64(data + uint64(i) * 8);
+            if (LooksLikePointer(t) && SignatureAt(t)) g_Signed.InsertLast(t);
+        }
+        g_LastScannedActive = active;
+        g_LastScanAt = Time::Now;
     }
     g_ActiveSigned = g_Signed.Find(active) >= 0;
     if (!g_ActiveSigned) {
@@ -503,7 +519,7 @@ void Update(float dt) {
     if (now - g_LastTickMs < TICK_PERIOD_MS) return;
     g_LastTickMs = now;
     Tick(false);
-    if (!S_Automation) return;
+    if (!AutomationOn()) return;
     PollCommand();
     WriteState();
     ReloadTick();
@@ -541,6 +557,7 @@ void RenderInterface() {
 }
 
 void Main() {
+    g_AutomationMarker = IO::FileExists(StoragePath("automation.on"));
     Tick(true);
     if (g_ActivePtr != 0 && !g_ActiveSigned) {
         warn("[SpeedCap] " + g_Status);
