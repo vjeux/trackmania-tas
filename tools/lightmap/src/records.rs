@@ -81,6 +81,12 @@ pub fn zone_tiles(store: &mut mapgeom::store::DataStore, collection: &str, zone:
         let Some(pp) = v.mobils.iter().flatten().find_map(|m| m.prefab.clone()) else { continue };
         let pm = store.load_model(&pp)?;
         let pf = mapgeom::static_item::prefab::CPlugPrefab::from_model(&pm)?;
+        if std::env::var("LMTOOL_ZONE_TRACE").is_ok() {
+            eprintln!("zone {collection}/{zone}: {path} → {pp}: {} entities", pf.ents.len());
+            for (i, e) in pf.ents.iter().enumerate() {
+                if let Some(mapgeom::static_item::Node::StaticObject(so)) = e.model.inline.as_deref() { if let Some(s2) = so.solid2() { eprintln!("  entity {i}: PLG {:?} at {:?}, {} shaded geoms", s2.pre_light_gen.as_ref().map(|p| (p.u01, p.u02, p.u04)), e.pos, s2.shaded_geoms.len()); } else { eprintln!("  entity {i}: static object without solid2"); } } else { eprintln!("  entity {i}: model index {} (external / other)", e.model.index); }
+            }
+        }
         for e in &pf.ents {
             let Some(mapgeom::static_item::Node::StaticObject(so)) = e.model.inline.as_deref() else { continue };
             let Some(s2) = so.solid2() else { continue };

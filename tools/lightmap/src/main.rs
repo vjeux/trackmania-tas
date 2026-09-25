@@ -5286,6 +5286,19 @@ fn run(a: Vec<String>) {
             // --store LOGICAL --pak FILE:KEY: the stock-item route (geometry::load_model_from_store); --prefab LOGICAL: a prefab's
             // entities' PLGs (records::prefab_entity_records at the identity)
             let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            // --zone-plg COLL:ZONE: the zone prefab's PLG (records::zone_tiles)
+            if let Some(cz) = f("--zone-plg") {
+                let (coll, zone) = cz.split_once(':').expect("--zone-plg COLL:ZONE");
+                let pak_arg = f("--pak").expect("--pak FILE:KEY");
+                let (pp, key) = pak_arg.rsplit_once(':').expect("--pak FILE:KEY");
+                let mut store = mapgeom::store::DataStore::empty();
+                store.add_pak(pp, key).expect("pak");
+                match lightmap::records::zone_tiles(&mut store, coll, zone, 1, 0.0, 0.0, &|_, _| 1.0) {
+                    Ok(v) => for r in &v { println!("{coll}/{zone}: MBU {} uv {:?} box centre {:?} half {:?}", r.meter_by_uv, r.uv, r.centre, r.half); },
+                    Err(e) => println!("{coll}/{zone}: {e}"),
+                }
+                return;
+            }
             if let Some(logical) = f("--prefab") {
                 let pak_arg = f("--pak").expect("--pak FILE:KEY");
                 let (pp, key) = pak_arg.rsplit_once(':').expect("--pak FILE:KEY");
@@ -5340,7 +5353,8 @@ fn run(a: Vec<String>) {
             let mf = tmmaps::map::MapFile::load(std::path::Path::new(&a[1]));
             // the marked cells: the items' file cells AND the blocks' cells (the WaterBase blocks one level above the ground mark
             // their tiles at ring 1)
-            let mut item_cells: std::collections::HashSet<(i32, i32, i32)> = mf.items.iter().map(|it| (it.file_cell[0] as i32, it.file_cell[1] as i32, it.file_cell[2] as i32)).collect();
+            let tile_y0: i32 = f("--tile-level").map(|v| v.parse().unwrap()).unwrap_or(9);
+            let mut item_cells: std::collections::HashSet<(i32, i32, i32)> = mf.items.iter().map(|it| (it.file_cell[0] as i32, it.file_cell[1] as i32, it.file_cell[2] as i32)).filter(|c| a.iter().any(|x| x == "--items-3d") || c.1 == tile_y0).collect();
             // (a GHOST block — flags bit 28 — marks nothing: stpad's 12 flagged WaterBase blocks leave their tiles at ring ≥ 2)
             if !a.iter().any(|x| x == "--no-block-cells") { for b in &mf.blocks { if b.flags & 0x1000_0000 != 0 && !a.iter().any(|x| x == "--ghost-marks") { continue; } let (x, y, z) = b.coords(); item_cells.insert((x, y, z)); } }
             let tile_y: i32 = f("--tile-level").map(|v| v.parse().unwrap()).unwrap_or(9);
@@ -7396,7 +7410,7 @@ fn run(a: Vec<String>) {
             // the item-only tiny maps and is not transcribed here.) Oracle: refs/hill*-q3-editor's size ladder, one size class per ring.
             let tile_quality: Vec<f32> = {
                 let mf = tmmaps::map::MapFile::load(std::path::Path::new(&a[1]));
-                let tile_y: i32 = mf.baked.first().map(|b| b.coords().1).unwrap_or(5);
+                let tile_y: i32 = lightmap::layout::tile_level(&mf, &f("--collection").unwrap_or_else(|| "BlueBay".into()));
                 // --tile-mark K: an item marks its cell at the tile level when |item level − tile level| ≤ K (default 0 = its own level only; 99 = any level)
                 let mark_k: i32 = f("--tile-mark").map(|v| v.parse().unwrap()).unwrap_or(0);
                 let marked: std::collections::HashSet<(i32, i32, i32)> = mf.items.iter().flat_map(|it| { let (x, y, z) = (it.file_cell[0] as i32, it.file_cell[1] as i32, it.file_cell[2] as i32); (-mark_k..=mark_k).map(move |d| (x, y + d, z)) }).collect();
@@ -7635,7 +7649,48 @@ fn run(a: Vec<String>) {
                 for c in &gl.charts { if c.charted == lightmap::layout::Charted::Bound { bound += 1; } if let Some(&(ex, ey, ew, eh)) = ed.get(&c.obj) { n += 1; if c.x == ex as i32 && c.y == ey as i32 && c.w == ew as i32 && c.h == eh as i32 { ok += 1; } else { if c.w == ew as i32 && c.h == eh as i32 { same_size += 1; } else { diff_size += 1; *size_hist.entry((c.w, c.h, ew as i32, eh as i32)).or_default() += 1; } if shown < 10 && a.iter().any(|x| x == "--show-misses") { shown += 1; println!("  miss obj {}: ours ({}, {}) {}×{} editor ({ex}, {ey}) {ew}×{eh}", c.obj, c.x, c.y, c.w, c.h); } } } }
                 println!("via layout::for_map: s {} Σarea {} maxIter {}; {} charts ({bound} bound), {ok} of {n} equal to the editor's table (of {} editor entries); misses: {same_size} same size elsewhere, {diff_size} other size", gl.s, gl.sum_area, gl.max_iter, gl.charts.len(), ed.len());
                 if diff_size > 0 { let mut v: Vec<_> = size_hist.into_iter().collect(); v.sort_by_key(|(_, n)| std::cmp::Reverse(*n)); println!("  size differences (ours w×h → editor w×h: count): {:?}", v.iter().take(12).map(|((a, b, c, d), n)| format!("{a}×{b}→{c}×{d}:{n}")).collect::<Vec<_>>()); }
-                // --cell-study: per grid entry (nb·na > 1) whose members all have editor rects: the editor's cell edge sequence per axis
+
+                // --obj-diff: the objects only one side has (ours without an editor entry / the editor's without a chart of ours)
+                if a.iter().any(|x| x == "--obj-diff") {
+                    let ours: std::collections::BTreeSet<u32> = gl.charts.iter().map(|c| c.obj).collect();
+                    let theirs: std::collections::BTreeSet<u32> = ed.keys().copied().collect();
+                    let only_ours: Vec<u32> = ours.difference(&theirs).copied().collect();
+                    let only_theirs: Vec<u32> = theirs.difference(&ours).copied().collect();
+                    println!("  objects only ours: {} {:?}", only_ours.len(), &only_ours[..only_ours.len().min(40)]);
+                    // our record items by (PLG bounds, material count) class
+                    let mut cls: std::collections::BTreeMap<String, usize> = Default::default();
+                    for c in &gl.charts { if c.obj >= base { let it = (c.obj - base) as usize; if let Some(inst) = scene.instances.iter().find(|i| i.item == it) { let m = &scene.models[inst.model]; *cls.entry(format!("PLG {:?} mats {} tris {}", m.plg_bounds.map(|b| [(b[0] * 1000.0).round() / 1000.0, (b[1] * 1000.0).round() / 1000.0, (b[2] * 1000.0).round() / 1000.0, (b[3] * 1000.0).round() / 1000.0]), m.mat_links.len().min(1), if m.tris.is_empty() { 0 } else { 1 })).or_default() += 1; } } }
+                    let mut v: Vec<_> = cls.into_iter().collect(); v.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+                    println!("  our item record classes: {:?}", &v[..v.len().min(10)]);
+                    println!("  scene: {} instances, {} models; file items {}", scene.instances.len(), scene.models.len(), scene.instances.iter().map(|i| i.item).max().unwrap_or(0) + 1);
+                    // --obj-align: the editor numbers its item objects by RANK among the record items; align our record items (item
+                    // order, our chart size) with the editor's item entries (obj order, size) greedily — an entry of ours whose size is
+                    // not within 25 % of the editor's next entry is one the editor did not chart
+                    if a.iter().any(|x| x == "--obj-align") {
+                        let mut ours_items: Vec<(u32, i32, i32)> = gl.charts.iter().filter(|c| c.obj >= base).map(|c| (c.obj, c.w, c.h)).collect();
+                        ours_items.sort();
+                        let mut ed_items: Vec<(u32, i32, i32)> = ed.iter().filter(|(o, _)| **o >= base).map(|(o, r)| (*o, r.2 as i32, r.3 as i32)).collect();
+                        ed_items.sort();
+                        let (mut i, mut j) = (0usize, 0usize);
+                        let mut excluded: Vec<u32> = Vec::new();
+                        let mut extra_ed = 0usize;
+                        while i < ours_items.len() && j < ed_items.len() {
+                            let (o, w, h) = ours_items[i]; let (_, ew, eh) = ed_items[j];
+                            let close = |a: i32, b: i32| (a - b).abs() as f32 <= 0.25 * (a.max(b) as f32) + 2.0;
+                            if close(w, ew) && close(h, eh) { i += 1; j += 1; }
+                            else if i + 1 < ours_items.len() && close(ours_items[i + 1].1, ew) && close(ours_items[i + 1].2, eh) { excluded.push(o); i += 1; }
+                            else { extra_ed += 1; j += 1; }
+                        }
+                        while i < ours_items.len() { excluded.push(ours_items[i].0); i += 1; }
+                        println!("  obj-align: {} of ours excluded by the editor, {} editor entries unmatched; excluded items: {:?}", excluded.len(), extra_ed + (ed_items.len() - j), excluded.iter().take(30).map(|o| o - base).collect::<Vec<_>>());
+                        let mut cls: std::collections::BTreeMap<String, usize> = Default::default();
+                        for o in &excluded { let it = (o - base) as usize; if let Some(inst) = scene.instances.iter().find(|i| i.item == it) { let m = &scene.models[inst.model]; *cls.entry(format!("model {} PLG {:?} mats {} lm_uv_geoms {} tris {}", inst.model, m.plg_bounds.map(|b| [(b[0] * 1000.0).round() / 1000.0, (b[1] * 1000.0).round() / 1000.0, (b[2] * 1000.0).round() / 1000.0, (b[3] * 1000.0).round() / 1000.0]), m.mat_links.len(), m.lm_uv_geoms, m.tris.len())).or_default() += 1; } }
+                        for (k, n) in &cls { println!("    {n:4} × {k}"); }
+                    }
+                    println!("  objects only the editor's: {} {:?}", only_theirs.len(), &only_theirs[..only_theirs.len().min(40)]);
+                    for &o in only_ours.iter().take(6) { if o >= base { let it = (o - base) as usize; if let Some(inst) = scene.instances.iter().find(|i| i.item == it) { let m = &scene.models[inst.model]; println!("    ours obj {o} = item {it} model {} PLG {:?} mats {:?}", inst.model, m.plg_bounds, m.mat_links.iter().take(3).collect::<Vec<_>>()); } } }
+                    for &o in only_theirs.iter().take(6) { if o >= base { let it = (o - base) as usize; if let Some(inst) = scene.instances.iter().find(|i| i.item == it) { let m = &scene.models[inst.model]; println!("    editor obj {o} = item {it} model {} PLG {:?} mats {:?} rect {:?}", inst.model, m.plg_bounds, m.mat_links.iter().take(3).collect::<Vec<_>>(), ed.get(&o)); } else { println!("    editor obj {o} = item {it}: not in the scene"); } } }
+                }                // --cell-study: per grid entry (nb·na > 1) whose members all have editor rects: the editor's cell edge sequence per axis
                 // (from the members' rects) against ours — the error-diffusion rule study
                 if a.iter().any(|x| x == "--cell-study") {
                     let (g, pad, _m) = gl.params;

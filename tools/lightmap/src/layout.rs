@@ -317,27 +317,84 @@ pub fn quality_index_of(own: &crate::mapio::MapLightmap) -> Option<u32> {
 /// The whole allocation of a map: the tiles from its baked records + the 64×64 grid, the items from the scene, the keys
 /// from the block records when a pak is given (`lmtiles`), else the cell/triangle centres. `quality_index` = the game's
 /// enum (tinyctl quality − 1); `base` = the tile count (the item object base).
+/// A collection's ground: the decoration grid (cells of 32 m from the world origin), the ground row, the world-y offset
+/// (`world_y = cy · 8 + yoff`) and the flat terrain zones a tiny map marks its ground with.
+pub struct CollectionProfile {
+    pub grid: i32,
+    pub ground_row: i32,
+    pub yoff: f32,
+    pub flat_zones: &'static [&'static str],
+}
+
+impl CollectionProfile {
+    pub fn of(collection: &str) -> CollectionProfile {
+        match collection {
+            // stpad's table: 96 × 96 Grass tiles at y 8 (row 9), the WaterBase blocks at cy 10 → 16
+            "Stadium" => CollectionProfile { grid: 96, ground_row: 9, yoff: -64.0, flat_zones: &["Grass"] },
+            // the tiny maps' items sit in row 16 at y 8..16 → yoff −120 (the one Water block at row 14)
+            "WhiteShore" => CollectionProfile { grid: 64, ground_row: 14, yoff: -120.0, flat_zones: &["Land", "Water"] },
+            // items in row 4 at y −8..0 → yoff −40 (the one Lake block at row 4)
+            "GreenCoast" => CollectionProfile { grid: 64, ground_row: 4, yoff: -40.0, flat_zones: &["Grass", "Lake"] },
+            // BlueBay: the Sea tiles' row 5 at y 0
+            _ => CollectionProfile { grid: 64, ground_row: 5, yoff: -40.0, flat_zones: &["Sea", "Land"] },
+        }
+    }
+}
+
+/// The tiles' cell row: LMTOOL_TILE_LEVEL, else the baked records' row, else a ground-flagged flat terrain block's (the tiny
+/// maps' one Water / Lake block), else the collection's ground row.
+pub fn tile_level(mf: &tmmaps::map::MapFile, collection: &str) -> i32 {
+    let prof = CollectionProfile::of(collection);
+    std::env::var("LMTOOL_TILE_LEVEL").ok().and_then(|v| v.parse().ok())
+        .or_else(|| mf.baked.first().map(|b| b.coords().1))
+        .or_else(|| mf.blocks.iter().find(|b| b.flags & 0x1000 != 0 && prof.flat_zones.contains(&b.name.as_str())).map(|b| b.coords().1))
+        .unwrap_or(prof.ground_row)
+}
+
 pub fn for_map(map_path: &str, scene: &crate::geometry::Scene, base: u32, quality_index: u32, tile_plg: TilePlg, pak: Option<(&str, &str)>, collection: &str, zone: &str, kept: Option<&std::collections::HashSet<usize>>) -> Result<GameLayout, String> {
     let mf = tmmaps::map::MapFile::load(std::path::Path::new(map_path));
-    let (sx, sz) = (64i32, 64i32);
+    let prof = CollectionProfile::of(collection);
+    // the ground grid: the map's own size when its cell count is the tile base (the 64 × 64 tiny maps), else the collection's
+    // decoration grid (Stadium's 96 × 96 ground under a 48 × 48 map)
+    let (sx, sz) = if (mf.size[0].max(0) * mf.size[2].max(0)) as u32 == base { (mf.size[0], mf.size[2]) } else { (prof.grid, prof.grid) };
     let baked: Vec<(i32, i32)> = mf.baked.iter().map(|b| { let (x, _, z) = b.coords(); (x, z) }).collect();
     let cell_of = tile_cells(&baked, sx, sz);
     if cell_of.len() as u32 != base {
         return Err(format!("{} tile cells but base {base}", cell_of.len()));
     }
-    let tile_y: i32 = mf.baked.first().map(|b| b.coords().1).unwrap_or(5);
-    let item_cells: std::collections::HashSet<(i32, i32, i32)> = mf.items.iter().map(|it| (it.file_cell[0] as i32, it.file_cell[1] as i32, it.file_cell[2] as i32)).collect();
+    // the tile level: the baked records' row, else a ground-flagged flat terrain block's (the tiny maps' one Water / Lake block),
+    // else the collection's ground row; LMTOOL_TILE_LEVEL / LMTOOL_YOFF override
+    let tile_y: i32 = tile_level(&mf, collection);
+    let yoff: f32 = std::env::var("LMTOOL_YOFF").ok().and_then(|v| v.parse().ok()).unwrap_or(prof.yoff);
+    // the marked cells: the items' file cells and the blocks' (a ghost block, flag bit 28, marks nothing); the ring is 3-D
+    // (tiny03 WhiteShore's table: an ITEM marks its cell only at the tiles' own level — rings 1–4 = 147 / 129 / 111 / 106 exactly
+    // with the items of row 14 alone, the rows 15–21 items excluded; a BLOCK marks in 3-D — stpad's WaterBase blocks one row up give
+    // ring 1. LMTOOL_ITEMS_3D=1 marks items in 3-D too.)
+    let items_3d = std::env::var("LMTOOL_ITEMS_3D").is_ok();
+    let mut item_cells: std::collections::HashSet<(i32, i32, i32)> = mf.items.iter().map(|it| (it.file_cell[0] as i32, it.file_cell[1] as i32, it.file_cell[2] as i32)).filter(|c| items_3d || c.1 == tile_y).collect();
+    for b in &mf.blocks { if b.flags & 0x1000_0000 != 0 { continue; } if b.flags & 0x1000 != 0 && prof.flat_zones.contains(&b.name.as_str()) { continue; } let (x, y, z) = b.coords(); item_cells.insert((x, y, z)); }
     let tq = tile_quality(&cell_of, tile_y, &item_cells);
+    if std::env::var("LMTOOL_LAYOUT_TRACE").is_ok() {
+        let mut h: std::collections::BTreeMap<u32, usize> = Default::default();
+        for q in &tq { *h.entry(q.to_bits()).or_default() += 1; }
+        eprintln!("layout tiles: grid {sx} × {sz}, level {tile_y}, yoff {yoff}, {} marked cells; quality histogram {:?}", item_cells.len(), h.iter().map(|(b, n)| (f32::from_bits(*b), *n)).collect::<Vec<_>>());
+    }
     // the keys
     let mut tile_keys: Vec<ChartKey> = cell_of.iter().map(|&(cx, cz)| ChartKey { centre: [cx as f32 * 32.0 + 16.0, 8.0, cz as f32 * 32.0 + 16.0], h2: 0.0 }).collect();
     let mut item_keys: std::collections::HashMap<u32, ChartKey> = Default::default();
+    let mut tile_plg_from_pak: Option<TilePlg> = None;
     if let Some((pak_path, key)) = pak {
         let mut store = mapgeom::store::DataStore::empty();
         store.add_pak(pak_path, key).map_err(|e| format!("pak: {e}"))?;
+        // the zone prefab's PreLightGen (MeterByUv, uv bounds) — the collection's tile chart extent
+        if let Ok(zt) = crate::records::zone_tiles(&mut store, collection, zone, 1, 0.0, 0.0, &|_, _| 1.0) {
+            if let Some(r) = zt.first() { tile_plg_from_pak = Some(TilePlg { meter_by_uv: r.meter_by_uv, bounds: r.uv }); }
+        }
         let chunks = tmmaps::gbx::all_skip_chunks(&mf.gbx.body);
         let gen: Vec<(String, u32)> = chunks.iter().find(|(c, ..)| *c == 0x0304_3043).and_then(|&(_, _, payload, size)| tmmaps::map::genealogy_full(&mf.gbx.body[payload..payload + size]).ok()).map(|recs| recs.into_iter().map(|r| (r.current, r.dir)).collect()).unwrap_or_default();
         let size = [mf.size[0].max(0) as usize, mf.size[1].max(0) as usize, mf.size[2].max(0) as usize];
-        let tiles = crate::lmtiles::tile_records(&mut store, collection, size, &gen, zone, tile_y as f32, -40.0, 1.0)?;
+        let size = if (size[0] * size[2]) as u32 == base { size } else { [sx as usize, size[1], sz as usize] };
+        let tiles = crate::lmtiles::tile_records(&mut store, collection, size, &gen, zone, tile_y as f32, yoff, 1.0)?;
         let mut by_cell: std::collections::HashMap<(i32, i32), ChartKey> = Default::default();
         for (cx, cz, _zone, _dir, rec) in &tiles {
             let h = rec.world.h;
@@ -371,6 +428,7 @@ pub fn for_map(map_path: &str, scene: &crate::geometry::Scene, base: u32, qualit
             item_keys.insert(base + inst.item as u32, ChartKey { centre: [(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0, (lo[2] + hi[2]) / 2.0], h2: 0.0 });
         }
     }
+    let tile_plg = tile_plg_from_pak.unwrap_or(tile_plg);
     let tiles: Vec<([f32; 2], ChartKey)> = (0..base as usize).map(|k| (tile_plg.ext(tq[k]), tile_keys[k])).collect();
     // the records among the items: the kept list when given (RE 7's reduction of the reference bakes), and never a model without
     // a non-degenerate uv-set-0 bound (the 1-uv-set items get no record)
@@ -490,7 +548,8 @@ pub fn allocate_grouped(input: &LayoutInput, groups: &[u64]) -> Result<GameLayou
     let counts: Vec<u32> = members.iter().map(|m| m.len() as u32).collect();
     // the chunk size: RE 7's dumps give c = 8 on tiny 16 (458 models) and on stpad (946 models) where the read formula gives
     // 8 and 6 — c = 8 whenever chunking applies (k = ceil(1000 / nModels) > 1) until a third map pins the divisor
-    let chunk = ir::chunk_size(n as u32, members.len() as u32).map(|_| 8u32);
+    // RE 7's FUN_140292740 chunk size (tiny 16: 458 groups → 8; stpad: 735 → 8; tiny03 WhiteShore: 279 → 6); LMTOOL_CHUNK=N overrides
+    let chunk = match std::env::var("LMTOOL_CHUNK").ok().and_then(|v| v.parse::<u32>().ok()) { Some(c) => Some(c), None => ir::chunk_size(n as u32, members.len() as u32) };
     let entries = ir::split_chunks(&counts, chunk);
     let c = chunk.unwrap_or(u32::MAX);
     // the entry of a record: its group's chunk `ordinal / c` — the chunk-0 entry sits at the group's place, the others where
