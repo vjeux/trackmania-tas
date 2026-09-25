@@ -168,6 +168,12 @@ pub struct Entry {
     pub sweep_direction_index: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub banked: Option<bool>,
+    /// The capture frame the buffer comes from (a RenderDoc capture holds one frame per file).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame: Option<u32>,
+    /// A single event id (buffers saved by texture id at one event, UAV dumps).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eid: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raster: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -269,6 +275,9 @@ pub struct Manifest {
     pub conventions: serde_json::Map<String, serde_json::Value>,
     #[serde(default)]
     pub passes: Vec<Entry>,
+    /// The capture's finalisation record (CS 23025's cbuffers/SRVs/UAVs, the reduce dispatches, the chain).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_encode: Option<serde_json::Value>,
 }
 
 /// The dump writer.
@@ -305,6 +314,7 @@ impl PassDump {
                 layout: Vec::new(),
                 conventions: serde_json::Map::new(),
                 passes: Vec::new(),
+                final_encode: None,
             },
             dirs: None,
             bytes_written: 0,
@@ -429,6 +439,8 @@ pub fn entry(pass: &str, file: String, space: &str) -> Entry {
         capture: None,
         sweep_direction_index: None,
         banked: None,
+        frame: None,
+        eid: None,
         chart: None,
         file,
         format: String::new(),
@@ -486,7 +498,7 @@ mod tests {
 
     #[test]
     fn manifest_round_trips_through_json() {
-        let mut d = PassDump { root: "/tmp".into(), manifest: Manifest { producer: "t".into(), map: "m".into(), baked_map: None, quality: 3, daytime_word: Some(7), mood: "BlueBay/Day".into(), atlas: Atlas { w: 2048, h: 2048, ss: 3, stored_w: 1024, stored_h: 1024 }, sun_dir: [0.0, 1.0, 0.0], sun_rgb: [1.0; 3], sweeps: vec![], layout: vec![], conventions: serde_json::Map::new(), passes: vec![] }, dirs: Some(vec![0, 3]), bytes_written: 0 };
+        let mut d = PassDump { root: "/tmp".into(), manifest: Manifest { producer: "t".into(), map: "m".into(), baked_map: None, quality: 3, daytime_word: Some(7), mood: "BlueBay/Day".into(), atlas: Atlas { w: 2048, h: 2048, ss: 3, stored_w: 1024, stored_h: 1024 }, sun_dir: [0.0, 1.0, 0.0], sun_rgb: [1.0; 3], sweeps: vec![], layout: vec![], conventions: serde_json::Map::new(), passes: vec![], final_encode: None }, dirs: Some(vec![0, 3]), bytes_written: 0 };
         let mut e = entry("peel_depth", "peel_depth/s0/d000/l00.bin".into(), "peel");
         e.sweep = Some(0);
         e.direction = Some(0);

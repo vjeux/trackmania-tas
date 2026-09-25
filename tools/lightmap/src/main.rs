@@ -3019,6 +3019,114 @@ fn run(a: Vec<String>) {
                 }
             }
         }
+        "encode-check" => {
+            // lmtool encode-check PASSCAP_ROOT [--frame N] [--fma] [--half-up] [--all]
+            //   the transcribed finalisation (gpuenc.rs: the |rgb| max reduction + CS 23025 LmCompress_HBasis_YCbCr4)
+            //   run on the capture's post-dilation coefficient images (final_04_after_dilate8_ps1332/frame<N>/) and
+            //   compared BYTE FOR BYTE with the captured Y4 / Cb4 / Cr4 textures (final_06_encoded_rgba8_cs23025/) and
+            //   with the captured MaxHdr buffer (final_05_maxreduce/…_uav0_*.bin); --all tries every arithmetic option
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let has = |k: &str| a.iter().any(|x| x == k);
+            let root = std::path::PathBuf::from(&a[1]);
+            let frame: u32 = f("--frame").map(|v| v.parse().expect("--frame")).unwrap_or(74490);
+            let txt = std::fs::read_to_string(root.join("MANIFEST.json")).expect("MANIFEST.json");
+            let m = lightmap::passdiff::read_manifest(&txt).expect("manifest");
+            let ent = |pass: &str| -> Vec<lightmap::passdump::Entry> { m.passes.iter().filter(|e| e.pass == pass && e.frame == Some(frame)).cloned().collect() };
+            // the four coefficient images after the dilation, in the CS's SRV order t0..t3 = the manifest order of
+            // the final_04 entries (24858, 24752, 24749, 24852: the rotated MRT0..3)
+            let dil = ent("final_04_after_dilate8_ps1332");
+            assert_eq!(dil.len(), 4, "final_04 entries for frame {frame}: {}", dil.len());
+            let order = ["24858", "24752", "24749", "24852"];
+            let mut imgs: Vec<lightmap::passdiff::Buf> = Vec::new();
+            for id in order {
+                let e = dil.iter().find(|e| e.file.contains(&format!("_{id}.dds"))).unwrap_or_else(|| panic!("no final_04 image {id}"));
+                imgs.push(lightmap::passdiff::load_entry(&root, e).expect("load"));
+                println!("image {id}: {}×{} ×{}", imgs.last().unwrap().w, imgs.last().unwrap().h, imgs.last().unwrap().channels);
+            }
+            let maxhdr = [lightmap::gpuenc::maxhdr_hbasis(&imgs[0]), lightmap::gpuenc::maxhdr_hbasis(&imgs[1]), lightmap::gpuenc::maxhdr_hbasis(&imgs[2]), lightmap::gpuenc::maxhdr_hbasis(&imgs[3])];
+            println!("MaxHdr (ours, f16 max |rgb| per image): {maxhdr:?}");
+            // the captured reduction buffer
+            let red = m.passes.iter().find(|e| e.pass == "final_05_maxreduce_buffer" && e.frame == Some(frame));
+            let mut mood = 7.519885063171387f32;
+            if let Some(fe) = m.final_encode.as_ref() { if let Some(v) = fe.get("cbuffers").and_then(|c| c.get("Shader")).and_then(|c| c.get("g_CBufferC")).and_then(|c| c.get("Mood_MaxHdr")).and_then(|v| v.as_f64()) { mood = v as f32; } }
+            println!("Mood_MaxHdr (cbuffer): {mood}");
+            if let Some(r) = red {
+                let b = lightmap::passdiff::read_entry_bytes(&root, &r.file).expect("maxhdr buffer");
+                let cap: Vec<f32> = b.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+                println!("MaxHdr (captured buffer 25127): {cap:?}");
+                for k in 0..4 { if (cap[k] - maxhdr[k]).abs() > 0.0 { println!("  MISMATCH image {k}: ours {} captured {}", maxhdr[k], cap[k]); } }
+            }
+            let enc = ent("final_06_encoded_rgba8_cs23025");
+            let load_id = |id: &str| -> lightmap::passdiff::Buf { let e = enc.iter().find(|e| e.file.contains(&format!("_{id}.dds"))).unwrap_or_else(|| panic!("no final_06 {id}")); lightmap::passdiff::load_entry(&root, e).expect("load") };
+            let (y4c, cb4c, cr4c) = (load_id("25137"), load_id("25140"), load_id("25143"));
+            let opts: Vec<lightmap::gpuenc::EncodeOpts> = if has("--all") {
+                let mut v = Vec::new();
+                for f16c in [false] { for f16 in [false] { for fma in [false, true] { for u in [lightmap::gpuenc::UnormRounding::Trunc12, lightmap::gpuenc::UnormRounding::NearestEven] { v.push(lightmap::gpuenc::EncodeOpts { fma, unorm: u, f16_store: f16, f16_c: f16c }); } } } }
+                v
+            } else {
+                vec![lightmap::gpuenc::EncodeOpts { fma: has("--fma"), unorm: if has("--half-up") { lightmap::gpuenc::UnormRounding::HalfUp } else if has("--truncate") { lightmap::gpuenc::UnormRounding::Truncate } else if has("--nearest") { lightmap::gpuenc::UnormRounding::NearestEven } else { lightmap::gpuenc::UnormRounding::Trunc12 }, f16_store: has("--f16-store"), f16_c: has("--f16-c") }]
+            };
+            if has("--probe-mismatch") {
+                // where do the ±1 bytes come from? print the first mismatching Y4 texels with the float value
+                // before the UNORM store and its distance to the rounding boundary
+                let o = lightmap::gpuenc::EncodeOpts::default();
+                let inv = 1.0f32 / (maxhdr[0] / mood).max(1.0);
+                let mut shown = 0;
+                let mut hist = [0usize; 8]; // |frac - 0.5| buckets: <1e-5, <1e-4, <1e-3, <1e-2, <0.05, <0.1, <0.3, rest
+                let mut total = 0usize;
+                for y in 0..imgs[0].h { for x in 0..imgs[0].w { for k in 0..4 {
+                    let m = inv * maxhdr[k];
+                    let p = [imgs[k].get(x, y, 0), imgs[k].get(x, y, 1), imgs[k].get(x, y, 2)];
+                    let mut c = [0f32; 3];
+                    for i in 0..3 {
+                        let v = p[i] / m;
+                        if k == 0 { c[i] = v.max(0.0).sqrt().min(1.0); } else { let sgn = ((0.0 < v) as i32 - (v < 0.0) as i32) as f32; c[i] = (v.abs().sqrt() * sgn * 0.5 + 0.5).max(-1.0).min(1.0); }
+                        if o.f16_c { c[i] = lightmap::gpufmt::quantise_f16(c[i], lightmap::gpufmt::Rounding::NearestEven); }
+                    }
+                    let yv = ((0.256788f32 * c[0] + 0.504129 * c[1]) + 0.097906 * c[2]) + 0.062745;
+                    let ours = lightmap::gpuenc::unorm8(lightmap::gpuenc::store_value(yv.max(0.0), o), o.unorm);
+                    let theirs = (y4c.get(x, y, k as u32) * 255.0).round() as u8;
+                    if ours != theirs {
+                        total += 1;
+                        let scaled = yv.max(0.0).clamp(0.0, 1.0) * 255.0;
+                        let frac = scaled - scaled.floor();
+                        let d = (frac - 0.5).abs();
+                        let b = if d < 1e-5 { 0 } else if d < 1e-4 { 1 } else if d < 1e-3 { 2 } else if d < 1e-2 { 3 } else if d < 0.05 { 4 } else if d < 0.1 { 5 } else if d < 0.3 { 6 } else { 7 };
+                        hist[b] += 1;
+                        if shown < 12 { println!("  ({x},{y}) k={k}: rgb {:?} /m {:?} c {:?} Y {yv:.7} ×255 = {scaled:.5} → ours {ours} theirs {theirs}", p, [p[0] / m, p[1] / m, p[2] / m], c); shown += 1; }
+                    }
+                }}}
+                println!("Y4 mismatches {total}; |frac−0.5| histogram (<1e-5, <1e-4, <1e-3, <1e-2, <0.05, <0.1, <0.3, rest): {hist:?}");
+                // the empirical rounding threshold per output byte: over ALL texels (k = 0 only), the largest of our
+                // scaled values that the GPU still stored as b, and the smallest it stored as b + 1
+                let mut lo_of_next = vec![f32::INFINITY; 256]; // min s with theirs = b+1  (indexed by b+1)
+                let mut hi_of_this = vec![f32::NEG_INFINITY; 256]; // max s with theirs = b
+                for y in 0..imgs[0].h { for x in 0..imgs[0].w {
+                    let m = inv * maxhdr[0];
+                    let p = [imgs[0].get(x, y, 0), imgs[0].get(x, y, 1), imgs[0].get(x, y, 2)];
+                    let mut c = [(p[0] / m).max(0.0).sqrt().min(1.0), (p[1] / m).max(0.0).sqrt().min(1.0), (p[2] / m).max(0.0).sqrt().min(1.0)];
+                    if o.f16_c { for i in 0..3 { c[i] = lightmap::gpufmt::quantise_f16(c[i], lightmap::gpufmt::Rounding::NearestEven); } }
+                    let yv = ((0.256788f32 * c[0] + 0.504129 * c[1]) + 0.097906 * c[2]) + 0.062745;
+                    let sc = lightmap::gpuenc::store_value(yv.max(0.0), o).clamp(0.0, 1.0) * 255.0;
+                    let t = (y4c.get(x, y, 0) * 255.0).round() as usize;
+                    if sc > hi_of_this[t] { hi_of_this[t] = sc; }
+                    if sc < lo_of_next[t] { lo_of_next[t] = sc; }
+                }}
+                println!("byte b: max s stored as b | min s stored as b (threshold between b-1 and b lies in [max s(b-1), min s(b)])");
+                for b in [16usize, 40, 66, 67, 100, 128, 153, 154, 180, 200, 230, 250] {
+                    if hi_of_this[b - 1].is_finite() && lo_of_next[b].is_finite() { println!("  b={b}: s(b-1) max {:.4}  s(b) min {:.4}  → threshold − (b − 0.5) ∈ [{:.4}, {:.4}]", hi_of_this[b - 1], lo_of_next[b], hi_of_this[b - 1] - (b as f32 - 0.5), lo_of_next[b] - (b as f32 - 0.5)); }
+                }
+            }
+            for o in opts {
+                let e = lightmap::gpuenc::encode_ycbcr4([&imgs[0], &imgs[1], &imgs[2], &imgs[3]], maxhdr, mood, o);
+                let (n, d, mx, ch) = lightmap::gpuenc::compare_u8(&e.y4, &y4c);
+                println!("{o:?}: Y4  {}×{}: {d} of {n} bytes differ (max |Δ| {mx}) per channel {ch:?}", e.w, e.h);
+                let (n, d, mx, ch) = lightmap::gpuenc::compare_u8(&e.cb4, &cb4c);
+                println!("{o:?}: Cb4 {}×{}: {d} of {n} bytes differ (max |Δ| {mx}) per channel {ch:?}", e.w / 2, e.h / 2);
+                let (n, d, mx, ch) = lightmap::gpuenc::compare_u8(&e.cr4, &cr4c);
+                println!("{o:?}: Cr4 {}×{}: {d} of {n} bytes differ (max |Δ| {mx}) per channel {ch:?}", e.w / 2, e.h / 2);
+            }
+        }
         "passdiff" => {
             // lmtool passdiff GAME_DIR OURS_DIR [--pass P] [--tol T] [--floor F] [--stride S] [--threshold PCT]
             //   [--game-map MAP.Gbx] [--heat DIR] [--all-heat] [--report FILE.md]
