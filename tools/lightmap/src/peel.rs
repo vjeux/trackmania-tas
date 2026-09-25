@@ -572,10 +572,15 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
         // and up to SLOT_K item fragments inline, the rest in the overflow list — no fragment list to sort
         // (the tiles of a giant produce 400 M fragments per direction), the band's slots stay in cache
         let band_px = if counting { ((by1 - by0 + 1).max(0) as usize) * res as usize } else { 0 };
-        let mut env_max: Vec<f32> = vec![0.0; band_px];
-        let mut slots: Vec<Slot> = vec![Slot::EMPTY; band_px];
+        // the band's slot and environment tables come from a per-thread pool (a fresh 2 MB allocation per band
+        // had the kernel's page-fault lock at 6 % of the run); the scan below resets what it read
+        let mut bufs = SLOT_BUFS.take();
+        let (mut slots, mut env_max) = (std::mem::take(&mut bufs.0), std::mem::take(&mut bufs.1));
+        if slots.len() < band_px { slots.resize(band_px, Slot::EMPTY); }
+        if env_max.len() < band_px { env_max.resize(band_px, 0.0); }
         let mut overflow: Vec<(u32, CFrag)> = Vec::new();
         if by0 > by1 {
+            SLOT_BUFS.set((slots, env_max));
             return (out, hist, covered);
         }
         let band_clip = (clip.0, by0, clip.2, by1);
@@ -661,10 +666,13 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
             overflow.sort_by(|p, q| p.0.cmp(&q.0));
             let mut oi = 0usize;
             let mut buf: Vec<CFrag> = Vec::with_capacity(64);
-            for (li, sl) in slots.iter().enumerate() {
+            for li in 0..band_px {
+                let sl = &mut slots[li];
+                let env_d = std::mem::replace(&mut env_max[li], 0.0);
                 if sl.n == 0 { continue; }
                 covered += 1;
                 let n = sl.n as usize;
+                sl.n = 0;
                 buf.clear();
                 buf.extend_from_slice(&sl.f[..n.min(SLOT_K)]);
                 if n > SLOT_K {
@@ -674,9 +682,10 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
                 if buf.len() > 1 {
                     buf.sort_by(|p, q| p.z.total_cmp(&q.z).then_with(|| p.tri.cmp(&q.tri)));
                 }
-                hist[count_run(&buf, env_max[li]).min(MAX_LAYERS)] += 1;
+                hist[count_run(&buf, env_d).min(MAX_LAYERS)] += 1;
             }
         }
+        SLOT_BUFS.set((slots, env_max));
         if raster_stats { band_ns[b].store(t_band.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed); RS_TRIS.fetch_add(rs_tris, std::sync::atomic::Ordering::Relaxed); RS_TESTED.fetch_add(rs_tested, std::sync::atomic::Ordering::Relaxed); RS_VISITS.fetch_add(rs_visits, std::sync::atomic::Ordering::Relaxed); }
         (out, hist, covered)
     });
@@ -1878,6 +1887,11 @@ pub struct Slot {
 
 impl Slot {
     pub const EMPTY: Slot = Slot { n: 0, f: [CFrag { z: 0.0, tri: 0, bias: 0.0 }; SLOT_K] };
+}
+
+thread_local! {
+    /// The raster band's slot and environment tables, kept per pool thread across bands (see the fused count).
+    static SLOT_BUFS: std::cell::Cell<(Vec<Slot>, Vec<f32>)> = const { std::cell::Cell::new((Vec::new(), Vec::new())) };
 }
 
 /// Raster bands per pool thread (LMTOOL_BANDS_PER_THREAD, default 4).

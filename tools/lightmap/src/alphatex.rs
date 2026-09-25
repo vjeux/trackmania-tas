@@ -202,6 +202,7 @@ impl AlphaTex {
         if levels.is_empty() {
             return Err("no mip level decoded".into());
         }
+        if alpha_stats_on() { eprintln!("alpha texture {}×{}: per level mixed fraction {:?}", levels[0].w, levels[0].h, levels.iter().map(|l| format!("{}x{}:{:.2}", l.w, l.h, l.mixed_frac)).collect::<Vec<_>>()); }
         Ok(AlphaTex { levels, flipped })
     }
 
@@ -279,7 +280,14 @@ impl AlphaTex {
         let l0 = lc.floor();
         let t = lc - l0;
         let two = t > 0.0 && l0 < last;
-        TapPlan { lod, l0: l0 as usize, l1: if two { l0 as usize + 1 } else { l0 as usize }, two, t, axis, n, aniso }
+        // whether the early-outs are worth trying: every tap at every level must find a uniform neighbourhood
+        // (and all on one side) for them to decide — with the level's mixed fraction m the chance is about
+        // (1 − m)^(taps × levels); below 0.3 the pre-checks cost more than they save (the giant's leaves at
+        // levels 4–5: m ≈ 0.3, 2–3 taps, two levels → 8 % of the tests decided early, 92 % paid the checks)
+        let m = self.levels[l0 as usize].mixed_frac;
+        let checks = (n * if two { 2 } else { 1 }) as i32;
+        let try_early = (1.0 - m).powi(checks) >= 0.3;
+        TapPlan { lod, l0: l0 as usize, l1: if two { l0 as usize + 1 } else { l0 as usize }, two, t, axis, n, aniso, try_early }
     }
 
     /// The bilinear sample of one level with ClampEdge addressing — `sample_level`'s arithmetic, the
@@ -332,7 +340,7 @@ impl AlphaTex {
         let stats = alpha_stats_on();
         if stats { ALPHA_STATS[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed); ALPHA_STATS[4].fetch_add(p.n as u64, std::sync::atomic::Ordering::Relaxed); ALPHA_STATS[5].fetch_add(p.l0 as u64, std::sync::atomic::Ordering::Relaxed); }
         let clamp_thr = addr == Address::ClampEdge && threshold > 127.5 / 255.0 && threshold < 128.5 / 255.0;
-        if clamp_thr && self.levels[p.l0].mixed_frac < 0.5 {
+        if clamp_thr && p.try_early {
             let n = p.n;
             let half = if n > 1 { 0.5 - 0.5 / n as f32 } else { 0.0 };
             let (u0, u1) = ((u - p.axis[0].abs() * half).clamp(0.0, 1.0), (u + p.axis[0].abs() * half).clamp(0.0, 1.0));
@@ -436,6 +444,7 @@ pub fn alpha_stats_on() -> bool {
 }
 pub fn alpha_stats_report() {
     if alpha_stats_on() {
+        // (the per-level mixed fractions are printed once at load: `AlphaTex::from_dds`)
         let g = |i: usize| ALPHA_STATS[i].load(std::sync::atomic::Ordering::Relaxed);
         eprintln!("alpha stats: {} tests, {} block early-outs, {} class early-outs, {} full samples; mean taps {:.2}, mean l0 {:.2}", g(0), g(1), g(2), g(3), g(4) as f64 / g(0).max(1) as f64, g(5) as f64 / g(0).max(1) as f64);
         for c in &ALPHA_STATS { c.store(0, std::sync::atomic::Ordering::Relaxed); }
@@ -454,6 +463,8 @@ pub struct TapPlan {
     pub axis: [f32; 2],
     pub n: usize,
     pub aniso: usize,
+    /// Try the exact early-outs before sampling (see `plan`).
+    pub try_early: bool,
 }
 
 /// A triangle's texture-coordinate footprint per pixel: the screen-space derivatives of (u, v) in
