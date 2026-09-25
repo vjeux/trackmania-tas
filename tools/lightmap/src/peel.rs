@@ -1301,14 +1301,56 @@ impl Layers {
     /// that the LESS test lets the farthest fragment through) elsewhere. `k` counts the REAL layers —
     /// the synthetic dome layer (`skip` = 1) is not a render target of the game's.
     pub fn depth_image(&self, k: usize, skip: usize) -> Vec<f32> {
-        let k = k + skip;
-        // (through `at`: the sparse form indexes `start` by the wanted pixels' dense index)
-        (0..self.h).flat_map(|y| (0..self.w).map(move |x| (x, y))).map(|(x, y)| { let f = self.at(x, y); if k < f.len() { f[k].d } else { 1.0 } }).collect()
+        self.layer_image(k + skip, 1.0, |f| f.d)
     }
     /// Layer `k`'s colour image (the clear = black where the pixel has fewer layers).
     pub fn colour_image(&self, k: usize, skip: usize) -> Vec<[f32; 3]> {
-        let k = k + skip;
-        (0..self.h).flat_map(|y| (0..self.w).map(move |x| (x, y))).map(|(x, y)| { let f = self.at(x, y); if k < f.len() { f[k].rgb } else { [0.0; 3] } }).collect()
+        self.layer_image(k + skip, [0.0; 3], |f| f.rgb)
+    }
+    /// `colour_image` as a flat RGB buffer (3 floats per pixel — a `passdiff::Buf`'s data), built in parallel.
+    pub fn colour_buf(&self, k: usize, skip: usize) -> crate::passdiff::Buf {
+        let img = self.colour_image(k, skip);
+        // the [f32; 3] array is three contiguous floats: reinterpret without a copy per element
+        let n = img.len();
+        let mut img = std::mem::ManuallyDrop::new(img);
+        let data: Vec<f32> = unsafe { Vec::from_raw_parts(img.as_mut_ptr() as *mut f32, n * 3, img.capacity() * 3) };
+        crate::passdiff::Buf { w: self.w, h: self.h, channels: 3, data }
+    }
+    /// A per-pixel image of layer `k` (`clear` where a pixel has fewer layers), built in parallel: the dense
+    /// form by pixel chunks, the sparse form as the clear everywhere then the wanted pixels' values.
+    fn layer_image<T: Copy + Send + Sync>(&self, k: usize, clear: T, get: impl Fn(&LayerFrag) -> T + Sync) -> Vec<T> {
+        let n = (self.w * self.h) as usize;
+        let mut img: Vec<T> = Vec::with_capacity(n);
+        // SAFETY: every element is written below (the dense form directly, the sparse form by the fill then the scatter)
+        unsafe { img.set_len(n); }
+        let ip = img.as_mut_ptr() as usize;
+        let threads = crate::pool::pool().threads.max(1);
+        match &self.sparse {
+            None => {
+                let chunk = (n / (threads * 4).max(1)).max(4096);
+                crate::pool::pool().run((n + chunk - 1) / chunk, |ci| {
+                    for i in ci * chunk..((ci + 1) * chunk).min(n) {
+                        let (a, c) = (self.start[i] as usize, self.start[i + 1] as usize);
+                        unsafe { *(ip as *mut T).add(i) = if a + k < c { get(&self.frags[a + k]) } else { clear }; }
+                    }
+                });
+            }
+            Some(px) => {
+                let chunk = (n / (threads * 4).max(1)).max(4096);
+                crate::pool::pool().run((n + chunk - 1) / chunk, |ci| {
+                    for i in ci * chunk..((ci + 1) * chunk).min(n) { unsafe { *(ip as *mut T).add(i) = clear; } }
+                });
+                let m = px.pixels.len();
+                let chunk = (m / (threads * 4).max(1)).max(1024);
+                crate::pool::pool().run((m + chunk - 1) / chunk, |ci| {
+                    for r in ci * chunk..((ci + 1) * chunk).min(m) {
+                        let (a, c) = (self.start[r] as usize, self.start[r + 1] as usize);
+                        if a + k < c { unsafe { *(ip as *mut T).add(px.pixels[r] as usize) = get(&self.frags[a + k]); } }
+                    }
+                });
+            }
+        }
+        img
     }
 }
 
@@ -2614,8 +2656,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                 });
                 let pw01 = frame.world_pw01();
                 for k in 0..nl {
-                    let cimg = ly.colour_image(k, 0);
-                    let color = crate::passdiff::Buf { w: ly.w, h: ly.h, channels: 3, data: cimg.iter().flat_map(|c| c.iter().copied()).collect() };
+                    let color = ly.colour_buf(k, 0);
                     let depth = crate::passdiff::Buf { w: ly.w, h: ly.h, channels: 1, data: ly.depth_image(k, 0) };
                     if let (Some((lm, draws)), Some(dt)) = (&lm_draws, dir_lm.as_mut()) {
                         crate::lmaccum::run_set_block(&lm.meshes, &lm.instances, &lm.table, draws, &crate::lmaccum::LayerTargets { color: &color, depth: &depth }, crate::lmaccum::DepthCompare::Float, dt);

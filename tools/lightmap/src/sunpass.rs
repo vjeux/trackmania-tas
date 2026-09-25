@@ -269,7 +269,21 @@ pub fn screen_snapped(clip: [f32; 2], w: u32, h: u32) -> [f32; 2] {
     [snap((clip[0] * 0.5 + 0.5) * w as f32), snap((0.5 - clip[1] * 0.5) * h as f32)]
 }
 
-pub fn rasterise_triangle(v: [[f32; 2]; 3], w: u32, h: u32, mut f: impl FnMut(u32, u32, f32, f32, f32)) {
+pub fn rasterise_triangle(v: [[f32; 2]; 3], w: u32, h: u32, f: impl FnMut(u32, u32, f32, f32, f32)) {
+    rasterise_triangle_rows(v, w, h, 0, h as i64, f)
+}
+
+/// The pixel rows `rasterise_triangle` would visit for `v`: [lo, hi) in pixels (the snapped vertices' extent,
+/// clamped to the target) — the band-parallel LM raster bins triangles with it.
+pub fn raster_rows(v: [[f32; 2]; 3], h: u32) -> (i64, i64) {
+    let sy: Vec<f32> = v.iter().map(|p| snap256((0.5 - p[1] * 0.5) * h as f32)).collect();
+    let miny = sy.iter().cloned().fold(f32::INFINITY, f32::min).floor().max(0.0) as i64;
+    let maxy = sy.iter().cloned().fold(f32::NEG_INFINITY, f32::max).ceil().min(h as f32) as i64;
+    (miny, maxy)
+}
+
+/// `rasterise_triangle` visiting only the rows in [y_lo, y_hi) — the same pixels and weights on those rows.
+pub fn rasterise_triangle_rows(v: [[f32; 2]; 3], w: u32, h: u32, y_lo: i64, y_hi: i64, mut f: impl FnMut(u32, u32, f32, f32, f32)) {
     // viewport: x = (ndc.x + 1)/2 · W, y = (1 − ndc.y)/2 · H, snapped to 1/256 pixel
     let floor_snap = RASTER_SNAP_FLOOR.load(std::sync::atomic::Ordering::Relaxed);
     let snap = |c: f32| { let _ = floor_snap; snap256(c) };
@@ -293,8 +307,8 @@ pub fn rasterise_triangle(v: [[f32; 2]; 3], w: u32, h: u32, mut f: impl FnMut(u3
     let uarea = ((bx[1] - bx[0]) * (by[2] - by[0]) - (bx[2] - bx[0]) * (by[1] - by[0])).abs();
     let minx = ax.iter().cloned().fold(f32::INFINITY, f32::min).floor().max(0.0) as i64;
     let maxx = ax.iter().cloned().fold(f32::NEG_INFINITY, f32::max).ceil().min(w as f32) as i64;
-    let miny = ay.iter().cloned().fold(f32::INFINITY, f32::min).floor().max(0.0) as i64;
-    let maxy = ay.iter().cloned().fold(f32::NEG_INFINITY, f32::max).ceil().min(h as f32) as i64;
+    let miny = (ay.iter().cloned().fold(f32::INFINITY, f32::min).floor().max(0.0) as i64).max(y_lo);
+    let maxy = (ay.iter().cloned().fold(f32::NEG_INFINITY, f32::max).ceil().min(h as f32) as i64).min(y_hi);
     // edge functions e_i(p) = (b − a) × (p − a) for edges a→b: (v0→v1), (v1→v2), (v2→v0); with the positive area the
     // inside is e ≥ 0; a top or left edge includes the boundary (top-left rule)
     let edge = |x0: f32, y0: f32, x1: f32, y1: f32, px: f32, py: f32| (x1 - x0) * (py - y0) - (y1 - y0) * (px - x0);

@@ -2120,6 +2120,15 @@ fn run(a: Vec<String>) {
                     }
                 }
             }
+            // LMTOOL_HB_DUMP=FILE: sweep 0's four transcribed MRTs as raw f32 (w, h, then 4 × w·h × 4 floats) — the
+            // band-parallel LM accumulate is checked against the serial one byte for byte with it
+            if let (Some(hb), Ok(path)) = (hb_sweeps.last(), std::env::var("LMTOOL_HB_DUMP")) {
+                let mut v: Vec<u8> = Vec::with_capacity(8 + 4 * (hb.w * hb.h) as usize * 16);
+                v.extend_from_slice(&hb.w.to_le_bytes()); v.extend_from_slice(&hb.h.to_le_bytes());
+                for m in 0..4 { for px in &hb.mrt[m] { for c in 0..4 { v.extend_from_slice(&px[c].to_bits().to_le_bytes()); } } }
+                std::fs::write(&path, &v).expect("LMTOOL_HB_DUMP");
+                eprintln!("hb-dump: {path} ({} B)", v.len());
+            }
             let mrt_buf = |hb: &lightmap::lmaccum::HbTargets, m: usize| -> lightmap::passdiff::Buf { let mut b = lightmap::passdiff::Buf::new(hb.w, hb.h, 4); for i in 0..(hb.w * hb.h) as usize { for c in 0..4 { b.data[i * 4 + c] = hb.mrt[m][i][c]; } } b };
             for it in 1..iterations {
                 if let Some(s) = sweep_only { if it != s { continue; } }

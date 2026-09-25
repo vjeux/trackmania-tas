@@ -252,7 +252,93 @@ pub fn run_set_block(meshes: &[LmMesh], instances: &[LmInstance], table: &[[f32;
 /// interpolated position / normal, the projected uv / z, the sampled layer depth and colour, the verdict). With
 /// `trace`, the last fragment of every pixel is recorded: (u, v, z, stored depth, n·D).
 pub fn run_set_block_probe(meshes: &[LmMesh], instances: &[LmInstance], table: &[[f32; 4]], draws: &[SetDraw], layer: &LayerTargets, cmp: DepthCompare, tgt: &mut DirTarget, probe: Option<(u32, u32)>) {
+    if probe.is_none() && std::env::var_os("LMTOOL_LMACCUM_SERIAL").is_none() {
+        return run_set_block_par(meshes, instances, table, draws, layer, cmp, tgt);
+    }
     run_set_block_trace(meshes, instances, table, draws, layer, cmp, tgt, probe, None);
+}
+
+/// The LM raster's band decomposition: every (draw, instance) transformed once, in parallel; every triangle
+/// binned into the pixel-row bands it touches, in (draw, instance, triangle) order; each band rasterises its
+/// triangles with the rows clipped to the band. Per PIXEL the fragments arrive in the serial loops' order (a
+/// pixel lies in one band, whose list keeps the global order), so every per-pixel fold is unchanged.
+struct BandPlan {
+    /// (pair index, triangle index) per band.
+    lists: Vec<Vec<(u32, u32)>>,
+    rows: usize,
+    n_bands: usize,
+}
+
+fn band_plan<P: Sync>(preps: &[P], clip_of: impl Fn(&P, usize) -> [[f32; 2]; 3] + Sync, tri_count: impl Fn(&P) -> usize + Sync, h: u32, threads: usize) -> BandPlan {
+    let n_bands = (threads * 4).clamp(1, h as usize);
+    let rows = (h as usize + n_bands - 1) / n_bands;
+    // per pair its per-band lists, then the bands' lists as the concatenation over the pairs in order
+    let per_pair: Vec<Vec<Vec<u32>>> = crate::pool::pool().map(preps.len(), |k| {
+        let p = &preps[k];
+        let mut out: Vec<Vec<u32>> = vec![Vec::new(); n_bands];
+        for t in 0..tri_count(p) {
+            let (lo, hi) = crate::sunpass::raster_rows(clip_of(p, t), h);
+            if lo >= hi { continue; }
+            let (b0, b1) = ((lo as usize) / rows, ((hi as usize - 1) / rows).min(n_bands - 1));
+            for b in b0..=b1 { out[b].push(t as u32); }
+        }
+        out
+    });
+    let lists: Vec<Vec<(u32, u32)>> = crate::pool::pool().map(n_bands, |b| {
+        let mut v = Vec::new();
+        for (k, pp) in per_pair.iter().enumerate() { for &t in &pp[b] { v.push((k as u32, t)); } }
+        v
+    });
+    BandPlan { lists, rows, n_bands }
+}
+
+struct SetPrep {
+    di: usize,
+    vs: Vec<SetVsOut>,
+    cds: Vec<[f32; 4]>,
+}
+
+pub fn run_set_block_par(meshes: &[LmMesh], instances: &[LmInstance], table: &[[f32; 4]], draws: &[SetDraw], layer: &LayerTargets, cmp: DepthCompare, tgt: &mut DirTarget) {
+    let (w, h) = (tgt.w, tgt.h);
+    let threads = crate::pool::pool().threads.max(1);
+    let pairs: Vec<(usize, usize)> = draws.iter().enumerate().flat_map(|(di, d)| (d.instance_first..d.instance_first + d.instance_count).map(move |ii| (di, ii))).collect();
+    let preps: Vec<SetPrep> = crate::pool::pool().map(pairs.len(), |k| {
+        let (di, ii) = pairs[k];
+        let d = &draws[di];
+        let mesh = &meshes[d.mesh];
+        let inst = &instances[ii];
+        let vs: Vec<SetVsOut> = mesh.verts.iter().map(|v| vs_17111(v, inst, table, &d.raster)).collect();
+        let cds: Vec<[f32; 4]> = match &d.world_box { Some(b) => vs.iter().map(|o| clip_distances(o.pos, b)).collect(), None => Vec::new() };
+        SetPrep { di, vs, cds }
+    });
+    let plan = band_plan(&preps, |p, t| { let idx = &meshes[draws[p.di].mesh].indices[t * 3..t * 3 + 3]; [p.vs[idx[0] as usize].clip, p.vs[idx[1] as usize].clip, p.vs[idx[2] as usize].clip] }, |p| meshes[draws[p.di].mesh].indices.len() / 3, h, threads);
+    let px_ptr = tgt.px.as_mut_ptr() as usize;
+    crate::pool::pool().run(plan.n_bands, |b| {
+        let (y_lo, y_hi) = ((b * plan.rows) as i64, (((b + 1) * plan.rows).min(h as usize)) as i64);
+        for &(k, t) in &plan.lists[b] {
+            let p = &preps[k as usize];
+            let d = &draws[p.di];
+            let mesh = &meshes[d.mesh];
+            let tri = &mesh.indices[t as usize * 3..t as usize * 3 + 3];
+            let (a, bb, c) = (&p.vs[tri[0] as usize], &p.vs[tri[1] as usize], &p.vs[tri[2] as usize]);
+            let cd: Option<[[f32; 4]; 3]> = if p.cds.is_empty() { None } else { Some([p.cds[tri[0] as usize], p.cds[tri[1] as usize], p.cds[tri[2] as usize]]) };
+            crate::sunpass::rasterise_triangle_rows([a.clip, bb.clip, c.clip], w, h, y_lo, y_hi, |x, y, b0, b1, b2| {
+                if let Some(cd) = &cd {
+                    for i in 0..4 {
+                        if cd[0][i] * b0 + cd[1][i] * b1 + cd[2][i] * b2 < 0.0 {
+                            return;
+                        }
+                    }
+                }
+                let pos = [a.pos[0] * b0 + bb.pos[0] * b1 + c.pos[0] * b2, a.pos[1] * b0 + bb.pos[1] * b1 + c.pos[1] * b2, a.pos[2] * b0 + bb.pos[2] * b1 + c.pos[2] * b2];
+                let n = [a.nrm[0] * b0 + bb.nrm[0] * b1 + c.nrm[0] * b2, a.nrm[1] * b0 + bb.nrm[1] * b1 + c.nrm[1] * b2, a.nrm[2] * b0 + bb.nrm[2] * b1 + c.nrm[2] * b2];
+                if let Some(rgb) = ps_17112(pos, n, &d.cb, layer, cmp) {
+                    // SAFETY: the bands own disjoint pixel rows
+                    unsafe { *(px_ptr as *mut u32).add((y * w + x) as usize) = crate::gpufmt::pack_r11g11b10(rgb, Rounding::Truncate); }
+                }
+            });
+        }
+    });
 }
 
 /// The per-pixel trace of a block: the last fragment's projected (u, v, z), the layer depth it compared with, n·D.
@@ -531,7 +617,88 @@ pub fn frag_model() -> FragModel {
     if HB_FRAG_MODEL.load(std::sync::atomic::Ordering::Relaxed) == 1 { FragModel::F32Coalesced } else { FragModel::Sequential }
 }
 
+struct HbPrep {
+    di: usize,
+    ii: usize,
+    vs: Vec<HbVsOut>,
+}
+
+/// `run_hbasis_probe` band-parallel (no probe): see `band_plan`.
+pub fn run_hbasis_par(meshes: &[LmMesh], instances: &[LmInstance], table: &[[f32; 4]], draws: &[HbDraw], ilightdir: &DirTarget, tgt: &mut HbTargets, blend: crate::sunpass::BlendModel, owner: Option<&mut Vec<u8>>) {
+    let (w, h) = (tgt.w, tgt.h);
+    let model = frag_model();
+    let imode = interp_mode();
+    let threads = crate::pool::pool().threads.max(1);
+    let pairs: Vec<(usize, usize)> = draws.iter().enumerate().flat_map(|(di, d)| (d.instance_first..d.instance_first + d.instance_count).map(move |ii| (di, ii))).collect();
+    let preps: Vec<HbPrep> = crate::pool::pool().map(pairs.len(), |k| {
+        let (di, ii) = pairs[k];
+        let d = &draws[di];
+        let mesh = &meshes[d.mesh];
+        let inst = &instances[ii];
+        HbPrep { di, ii, vs: mesh.verts.iter().map(|v| vs_17118(v, inst, table, &d.raster, d.cb.peel_dir)).collect() }
+    });
+    let plan = band_plan(&preps, |p, t| { let idx = &meshes[draws[p.di].mesh].indices[t * 3..t * 3 + 3]; [p.vs[idx[0] as usize].clip, p.vs[idx[1] as usize].clip, p.vs[idx[2] as usize].clip] }, |p| meshes[draws[p.di].mesh].indices.len() / 3, h, threads);
+    // the coalesced model's per-pixel running sums, first fragments and counts
+    let n_px = (w * h) as usize;
+    let mut acc: Vec<[[f32; 4]; 4]> = if model == FragModel::F32Coalesced { vec![[[0.0; 4]; 4]; n_px] } else { Vec::new() };
+    let mut count: Vec<u8> = if model == FragModel::F32Coalesced { vec![0; n_px] } else { Vec::new() };
+    let mut first: Vec<[[f32; 4]; 4]> = if model == FragModel::F32Coalesced { vec![[[0.0; 4]; 4]; n_px] } else { Vec::new() };
+    let mrt_ptrs: [usize; 4] = [tgt.mrt[0].as_mut_ptr() as usize, tgt.mrt[1].as_mut_ptr() as usize, tgt.mrt[2].as_mut_ptr() as usize, tgt.mrt[3].as_mut_ptr() as usize];
+    let (acc_p, count_p, first_p) = (acc.as_mut_ptr() as usize, count.as_mut_ptr() as usize, first.as_mut_ptr() as usize);
+    let owner_p: Option<usize> = owner.as_ref().map(|o| o.as_ptr() as usize);
+    let _ = &owner;
+    crate::pool::pool().run(plan.n_bands, |b| {
+        let (y_lo, y_hi) = ((b * plan.rows) as i64, (((b + 1) * plan.rows).min(h as usize)) as i64);
+        for &(k, t) in &plan.lists[b] {
+            let p = &preps[k as usize];
+            let d = &draws[p.di];
+            let mesh = &meshes[d.mesh];
+            let tri = &mesh.indices[t as usize * 3..t as usize * 3 + 3];
+            let (a, bb, c) = (&p.vs[tri[0] as usize], &p.vs[tri[1] as usize], &p.vs[tri[2] as usize]);
+            let v3 = a.o3;
+            let _ = p.ii;
+            crate::sunpass::rasterise_triangle_rows([a.clip, bb.clip, c.clip], w, h, y_lo, y_hi, |x, y, b0, b1, b2| {
+                let v2 = if imode == 0 { [a.o2[0] * b0 + bb.o2[0] * b1 + c.o2[0] * b2, a.o2[1] * b0 + bb.o2[1] * b1 + c.o2[1] * b2, a.o2[2] * b0 + bb.o2[2] * b1 + c.o2[2] * b2] } else { interp3(imode, [crate::sunpass::screen_snapped([a.clip[0], a.clip[1]], w, h), crate::sunpass::screen_snapped([bb.clip[0], bb.clip[1]], w, h), crate::sunpass::screen_snapped([c.clip[0], c.clip[1]], w, h)], [a.o2, bb.o2, c.o2], [b0, b1, b2], x as f32 + 0.5, y as f32 + 0.5) };
+                let l = ilightdir.rgb(x, y);
+                let o = ps_17122(v2, v3, l, &d.cb);
+                let i = (y * w + x) as usize;
+                // SAFETY: the bands own disjoint pixel rows
+                unsafe {
+                    if let Some(op) = owner_p { *(op as *mut u8).add(i) = d.mesh as u8 + 1; }
+                    match model {
+                        FragModel::Sequential => {
+                            for k in 0..4 {
+                                let slot = &mut *(mrt_ptrs[k] as *mut [f32; 4]).add(i);
+                                for ch in 0..4 { slot[ch] = blend_f16(slot[ch], o[k][ch], blend); }
+                            }
+                        }
+                        FragModel::F32Coalesced => {
+                            let cnt = &mut *(count_p as *mut u8).add(i);
+                            if *cnt == 0 { *(first_p as *mut [[f32; 4]; 4]).add(i) = o; }
+                            let ac = &mut *(acc_p as *mut [[f32; 4]; 4]).add(i);
+                            for k in 0..4 { for ch in 0..4 { ac[k][ch] += o[k][ch]; } }
+                            *cnt = cnt.saturating_add(1);
+                        }
+                    }
+                }
+            });
+        }
+    });
+    if model == FragModel::F32Coalesced {
+        for i in 0..n_px {
+            match count[i] {
+                0 => {}
+                1 => { for k in 0..4 { for ch in 0..4 { tgt.mrt[k][i][ch] = blend_f16(tgt.mrt[k][i][ch], first[i][k][ch], blend); } } }
+                _ => { for k in 0..4 { for ch in 0..4 { tgt.mrt[k][i][ch] = quantise_f16(tgt.mrt[k][i][ch] + acc[i][k][ch], Rounding::NearestEven); } } }
+            }
+        }
+    }
+}
+
 pub fn run_hbasis_probe(meshes: &[LmMesh], instances: &[LmInstance], table: &[[f32; 4]], draws: &[HbDraw], ilightdir: &DirTarget, tgt: &mut HbTargets, blend: crate::sunpass::BlendModel, mut owner: Option<&mut Vec<u8>>, probe: Option<(u32, u32)>) {
+    if probe.is_none() && std::env::var_os("LMTOOL_LMACCUM_SERIAL").is_none() {
+        return run_hbasis_par(meshes, instances, table, draws, ilightdir, tgt, blend, owner);
+    }
     let (w, h) = (tgt.w, tgt.h);
     let model = frag_model();
     let imode = interp_mode();
