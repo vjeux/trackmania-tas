@@ -960,7 +960,8 @@ fn cmd_cpus(args: &[String]) {
     let title = mk64::course::COURSES.iter().find(|x| x.0 == dir).map(|x| x.1.to_string()).unwrap_or_else(|| dir.clone());
     for cpu in mk64::cpus::field(&c, &frame, &rom, player, &base, half_width) {
         let traj = mk64::cpus::trajectory(&c, &frame, &soup, &cpu, laps, 50);
-        let out = out_dir.join(format!("MK64 {title} - {}.Ghost.Gbx", cpu.name));
+        // the map files drop the apostrophe ("MK64 Bowsers Castle"); so do these
+        let out = out_dir.join(format!("MK64 {} - {}.Ghost.Gbx", title.replace('\'', ""), cpu.name));
         let out_s = out.to_string_lossy().to_string();
         match mk64::ghost::write(&traj, donor, &out_s, uid.as_deref(), 50) {
             Ok(_) => {}
