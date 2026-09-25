@@ -1236,7 +1236,7 @@ fn run(a: Vec<String>) {
             if let Some(gm) = &game_manifest {
                 // the sun shadow map's frustum and the per-direction peel frustums of sweep 0 (later sweeps below)
                 if let Some(e) = gm.passes.iter().find(|e| e.pass == "sun_shadow") { if let Some(fr) = &e.frustum { prm.shadow_frustum = Some(fr.clone()); eprintln!("frustum-from: the sun shadow map's frustum adopted (centre {:?}, half {:?})", fr.center, fr.half); } }
-                let fs = lightmap::passdiff::peel_frustums(gm, 0);
+                let fs = lightmap::passdiff::peel_frustums_for(gm, 0, &prm.sphere_dirs);
                 if !fs.is_empty() { eprintln!("frustum-from: {} peel frustums of sweep 0 adopted", fs.len()); prm.frustums = Some(std::sync::Arc::new(fs)); }
                 if let Some(e) = gm.passes.iter().find(|e| e.pass == "peel_depth") { if e.width > 0 && e.width != prm.peel_res { eprintln!("frustum-from: peel resolution {} → {}", prm.peel_res, e.width); prm.peel_res = e.width; } }
             }
@@ -1301,7 +1301,7 @@ fn run(a: Vec<String>) {
                         if let Ok(ps) = lightmap::dome::PointSets::load(&pp) { if let Some(set) = ps.nearest(n) { p2.sphere_dirs = std::sync::Arc::new(lightmap::dome::rotate_set(set)); } }
                     }
                 }
-                if let Some(gm) = &game_manifest { let fs = lightmap::passdiff::peel_frustums(gm, it as u32); p2.frustums = if fs.is_empty() { None } else { Some(std::sync::Arc::new(fs)) }; }
+                if let Some(gm) = &game_manifest { let fs = lightmap::passdiff::peel_frustums_for(gm, it as u32, &p2.sphere_dirs); p2.frustums = if fs.is_empty() { None } else { Some(std::sync::Arc::new(fs)) }; }
                 if let Some(d) = &prm.dump { let mut dm = d.lock().unwrap(); let n = p2.sphere_dirs.len() as u32; dm.manifest.sweeps.push(lightmap::passdump::Sweep { sweep: it as u32, n_dirs: n, scale: 4.0 / n.max(1) as f32, dirs: p2.sphere_dirs.iter().copied().collect() }); }
                 charts = if prm.raster_peel { lightmap::peel::bake_peel_raster(&scene, &bvh, &p2, &chart_sizes(&p2)) } else { lightmap::bake::bake(&scene, &bvh, &p2, &lights) };
                 let mean: f32 = charts.iter().flat_map(|c| c.rgb.iter()).map(|c| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]).sum::<f32>() / charts.iter().map(|c| c.rgb.len()).sum::<usize>().max(1) as f32;

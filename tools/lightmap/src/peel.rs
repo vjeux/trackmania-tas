@@ -1254,3 +1254,81 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
     eprintln!("peel: done, {} directions over {} sub-samples ({:.1}s); fragment radiance calls {}, facing the sun {}, lit {}", n_dirs, subs.len(), t0.elapsed().as_secs_f32(), SUN_STATS[0].load(std::sync::atomic::Ordering::Relaxed), SUN_STATS[1].load(std::sync::atomic::Ordering::Relaxed), SUN_STATS[2].load(std::sync::atomic::Ordering::Relaxed));
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lookup_inset_squeezes_towards_the_centre_by_one_texel_at_the_edges() {
+        // u = 0.5 + (u − 0.5)(w − 2)/w: the render-space edge pixels read one pixel inward, the centre stays
+        let w = 2048;
+        assert_eq!(lookup_pixel(0.0, w, true), 1);
+        assert_eq!(lookup_pixel(2047.9, w, true), 2046);
+        assert_eq!(lookup_pixel(1024.0, w, true), 1024);
+        assert_eq!(lookup_pixel(1024.0, w, false), 1024);
+        assert_eq!(lookup_pixel(0.0, w, false), 0);
+        assert_eq!(lookup_pixel(-3.0, w, false), 0, "clamped");
+        assert_eq!(lookup_pixel(5000.0, w, false), 2047, "clamped");
+        // without the inset the pixel index is the floor (pixel k spans [k, k+1)), not the rounding
+        assert_eq!(lookup_pixel(1.5, w, false), 1);
+        assert_eq!(lookup_pixel(1.99, w, false), 1);
+    }
+
+    #[test]
+    fn layer_selection_takes_the_nearest_layer_still_beyond_the_texel() {
+        // far-to-near stored depths: the dome at 0, the ground at 0.1, a plate at 0.4, the texel's own
+        // surface pushed past it by the bias at 0.6001
+        let list = [LayerFrag { d: 0.0, rgb: [1.0; 3] }, LayerFrag { d: 0.1, rgb: [2.0; 3] }, LayerFrag { d: 0.4, rgb: [3.0; 3] }, LayerFrag { d: 0.6001, rgb: [4.0; 3] }];
+        assert_eq!(select_layer(&list, 0.6).unwrap().rgb, [3.0; 3], "the plate beyond the texel, not its own surface");
+        assert_eq!(select_layer(&list, 0.05).unwrap().rgb, [1.0; 3], "a texel beyond everything but the dome sees the dome");
+        assert_eq!(select_layer(&list, 0.9).unwrap().rgb, [4.0; 3]);
+        assert!(select_layer(&list[1..], 0.05).is_none(), "nothing beyond → the clear");
+        assert!(select_layer(&[], 0.5).is_none());
+    }
+
+    #[test]
+    fn d3d_depth_bias_on_d32_is_one_ulp_plus_the_slope() {
+        // z near 1: exponent −1 → 2^−24; slope 0.001 per pixel × 1.0
+        let b = d3d_depth_bias(0.9, 0.001, (1, 1.0));
+        assert!((b - (2f32.powi(-24) + 0.001)).abs() < 1e-9, "{b}");
+        // the constant term follows the primitive's max depth exponent
+        let b2 = d3d_depth_bias(0.3, 0.0, (1, 1.0));
+        assert!((b2 - 2f32.powi(-25)).abs() < 1e-12, "{b2}");
+        assert_eq!(d3d_depth_bias(0.9, 0.5, (0, 0.0)), 0.0);
+        assert!((d3d_depth_bias(0.9, 0.5, (0, 2.0)) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn frame_round_trips_through_its_frustum() {
+        let d = norm([0.3, 0.5, 0.8]);
+        let f = PeelFrame::new(d, [800.0, 10.0, 300.0], [900.0, 90.0, 380.0], 512);
+        let fr = f.frustum();
+        let g = PeelFrame::from_frustum(&fr, 512, 512);
+        for p in [[850.0f32, 40.0, 340.0], [800.0, 10.0, 300.0], [899.0, 89.0, 379.0]] {
+            let (x0, y0, z0) = f.project(p);
+            let (x1, y1, z1) = g.project(p);
+            assert!((x0 - x1).abs() < 1e-2 && (y0 - y1).abs() < 1e-2, "{p:?}: ({x0},{y0}) vs ({x1},{y1})");
+            assert!((f.z01(z0) - g.z01(z1)).abs() < 1e-5);
+            // the Frustum's own projection agrees with the frame's
+            let (px, py, z01) = fr.project(p, 512, 512);
+            assert!((px - x0).abs() < 1e-2 && (py - y0).abs() < 1e-2 && (z01 - f.z01(z0)).abs() < 1e-5, "{p:?}: frustum ({px},{py},{z01}) vs frame ({x0},{y0},{})", f.z01(z0));
+            // unproject inverts project
+            let q = f.unproject(x0, y0, z0);
+            assert!((0..3).all(|k| (q[k] - p[k]).abs() < 1e-2), "{q:?} vs {p:?}");
+        }
+        // the receivers' bbox spans z01 0..1: the corner farthest along d is the far plane
+        let zs: Vec<f32> = (0..8).map(|i| { let p = [if i & 1 == 0 { 800.0 } else { 900.0 }, if i & 2 == 0 { 10.0 } else { 90.0 }, if i & 4 == 0 { 300.0 } else { 380.0 }]; f.z01(f.project(p).2) }).collect();
+        let (lo, hi) = (zs.iter().cloned().fold(f32::MAX, f32::min), zs.iter().cloned().fold(f32::MIN, f32::max));
+        assert!(lo.abs() < 1e-5 && (hi - 1.0).abs() < 1e-5, "{lo} {hi}");
+        // extend_far pushes the far plane out to a triangle below the box, the near plane stays
+        let mut f2 = f.clone();
+        // (beyond = farther along d, the sky side; a point behind the near plane would not move it)
+        let far = [850.0 + 300.0 * d[0], 40.0 + 300.0 * d[1], 340.0 + 300.0 * d[2]];
+        let tri = WTri { p0: far, e1: [1.0, 0.0, 0.0], e2: [0.0, 0.0, 1.0], inst: DECOR_INST, tri: 0, alpha: u16::MAX, uv0: [[0.0; 2]; 3] };
+        f2.extend_far(&[tri]);
+        assert!((f2.z_from_z01(1.0) - f.z_from_z01(1.0)).abs() < 1e-3, "near plane unchanged");
+        let (_, _, zt) = f2.project(tri.p0);
+        assert!(f2.z01(zt) >= 0.0 && f2.z01(zt) < 0.05, "the far triangle is now inside, at the far end: {}", f2.z01(zt));
+    }
+}

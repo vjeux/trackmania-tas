@@ -34,20 +34,58 @@ pub fn read_manifest(txt: &str) -> Result<Manifest, String> {
 /// else `peel_color`); directions without an entry are filled from the nearest lower direction so
 /// the list is dense up to the last captured direction.
 pub fn peel_frustums(m: &Manifest, sweep: u32) -> Vec<Frustum> {
-    let mut by_dir: HashMap<u32, Frustum> = HashMap::new();
+    peel_frustums_for(m, sweep, &[])
+}
+
+/// `peel_frustums` for OUR direction list: each of our directions takes the captured frustum of the
+/// game direction with the nearest VECTOR (the game draws its list in an interleaved order, so the
+/// indices differ); without vectors on the game side the indices are matched directly, and a direction
+/// the capture lacks takes the nearest captured one — a peel frustum only differs per direction by its
+/// orientation, so the nearest vector's is the right fit.
+pub fn peel_frustums_for(m: &Manifest, sweep: u32, ours: &[[f32; 3]]) -> Vec<Frustum> {
+    let mut by_dir: HashMap<u32, (Frustum, Option<[f32; 3]>)> = HashMap::new();
     for e in &m.passes {
         if (e.pass == "peel_depth" || e.pass == "peel_color") && e.sweep.unwrap_or(0) == sweep {
             if let (Some(d), Some(f)) = (e.direction, &e.frustum) {
-                by_dir.entry(d).or_insert_with(|| f.clone());
+                let v = e.dir.or_else(|| f.forward.into());
+                by_dir.entry(d).or_insert_with(|| (f.clone(), v));
             }
         }
     }
-    let Some(&max) = by_dir.keys().max() else { return Vec::new() };
+    if by_dir.is_empty() {
+        return Vec::new();
+    }
+    if !ours.is_empty() && by_dir.values().all(|(_, v)| v.is_some()) {
+        // by vector: every one of our directions gets the frustum of the game direction nearest to it
+        // (the capture may hold only a subset — then the nearest captured direction's frustum stands
+        // in, re-oriented to our direction by `PeelFrame::from_frustum` only if the vectors agree; a
+        // stand-in for a different direction is flagged by the caller through `dir` mismatch)
+        return ours
+            .iter()
+            .map(|od| {
+                let best = by_dir.values().max_by(|a, b| { let ca = a.1.map(|v| v[0] * od[0] + v[1] * od[1] + v[2] * od[2]).unwrap_or(-2.0); let cb = b.1.map(|v| v[0] * od[0] + v[1] * od[1] + v[2] * od[2]).unwrap_or(-2.0); ca.partial_cmp(&cb).unwrap_or(std::cmp::Ordering::Equal) }).unwrap();
+                let mut f = best.0.clone();
+                // the captured frustum of another direction: keep its extents, turn its axes to ours
+                let v = best.1.unwrap();
+                let c = v[0] * od[0] + v[1] * od[1] + v[2] * od[2];
+                if c < 0.999_99 {
+                    let helper = if od[1].abs() < 0.99 { [0.0, 1.0, 0.0] } else { [1.0, 0.0, 0.0] };
+                    let r = crate::geometry::norm(crate::geometry::cross(helper, *od));
+                    let u = crate::geometry::cross(*od, r);
+                    f.forward = *od;
+                    f.right = r;
+                    f.up = [-u[0], -u[1], -u[2]];
+                }
+                f
+            })
+            .collect();
+    }
+    let max = *by_dir.keys().max().unwrap();
     let mut out = Vec::with_capacity(max as usize + 1);
     for d in 0..=max {
         // the captured direction nearest in index (ties → the lower)
         let nearest = by_dir.keys().min_by_key(|k| ((**k as i64 - d as i64).abs(), **k)).copied().unwrap();
-        out.push(by_dir[&nearest].clone());
+        out.push(by_dir[&nearest].0.clone());
     }
     out
 }
@@ -590,17 +628,42 @@ fn is_depth_pass(p: &str) -> bool {
 }
 
 /// Match the game's direction list to ours (nearest vector) for a sweep: game index → our index.
+/// The game's direction list of a sweep: its manifest's `sweeps`, else the per-entry `dir` vectors of
+/// its peel / ilightdir entries (indexed by their `direction`).
+fn game_dirs(game: &Manifest, sweep: u32) -> Vec<[f32; 3]> {
+    if let Some(gs) = game.sweeps.iter().find(|s| s.sweep == sweep) {
+        if !gs.dirs.is_empty() {
+            return gs.dirs.clone();
+        }
+    }
+    let mut by: std::collections::BTreeMap<u32, [f32; 3]> = Default::default();
+    for e in &game.passes {
+        if e.sweep.unwrap_or(0) == sweep {
+            if let (Some(d), Some(v)) = (e.direction, e.dir) {
+                by.entry(d).or_insert(v);
+            }
+        }
+    }
+    let Some((&max, _)) = by.iter().next_back() else { return Vec::new() };
+    (0..=max).map(|d| by.get(&d).copied().unwrap_or([0.0; 3])).collect()
+}
+
 fn direction_map(game: &Manifest, ours: &Manifest, sweep: u32) -> (HashMap<u32, u32>, Option<String>) {
-    let gs = game.sweeps.iter().find(|s| s.sweep == sweep);
+    let gdirs = game_dirs(game, sweep);
     let os = ours.sweeps.iter().find(|s| s.sweep == sweep);
     let mut map = HashMap::new();
-    let (Some(gs), Some(os)) = (gs, os) else { return (map, None) };
-    if gs.dirs.is_empty() || os.dirs.is_empty() {
+    let Some(os) = os else { return (map, None) };
+    if gdirs.is_empty() || os.dirs.is_empty() {
         return (map, None);
     }
     let mut permuted = 0usize;
     let mut worst_deg = 0.0f32;
-    for (gi, gd) in gs.dirs.iter().enumerate() {
+    let mut unknown = 0usize;
+    for (gi, gd) in gdirs.iter().enumerate() {
+        if *gd == [0.0; 3] {
+            unknown += 1;
+            continue;
+        }
         let mut best = (0usize, -2.0f32);
         for (oi, od) in os.dirs.iter().enumerate() {
             let c = gd[0] * od[0] + gd[1] * od[1] + gd[2] * od[2];
@@ -614,7 +677,7 @@ fn direction_map(game: &Manifest, ours: &Manifest, sweep: u32) -> (HashMap<u32, 
         worst_deg = worst_deg.max(best.1.clamp(-1.0, 1.0).acos().to_degrees());
         map.insert(gi as u32, best.0 as u32);
     }
-    let note = if permuted > 0 { Some(format!("direction_permute(sweep {sweep}: {permuted} of {} directions re-matched by nearest vector, worst {worst_deg:.2}°)", gs.dirs.len())) } else if worst_deg > 0.05 { Some(format!("direction_set(sweep {sweep}: same order, worst angle {worst_deg:.2}°)")) } else { None };
+    let note = if permuted > 0 { Some(format!("direction_permute(sweep {sweep}: {permuted} of {} directions re-matched by nearest vector, worst {worst_deg:.2}°{})", gdirs.len(), if unknown > 0 { format!(", {unknown} without a vector kept by index") } else { String::new() })) } else if worst_deg > 0.05 { Some(format!("direction_set(sweep {sweep}: same order, worst angle {worst_deg:.2}°)")) } else { None };
     (map, note)
 }
 
