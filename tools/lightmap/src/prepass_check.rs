@@ -9,7 +9,7 @@ use crate::gpufmt::{quantise_f16, Rounding};
 use crate::passdiff::{load_entry, read_manifest, Buf};
 use crate::passdump::{Entry, Manifest};
 use crate::prepass::{self, DrawRec, Meshes, RunOpts, Target, Textures, WaterData, WaterDraw, H, W};
-use crate::texsample::{self, Address, Bc1Decode, Sampler};
+use crate::texsample::{self, Address, Bc1Decode, Sampler, Texture};
 use std::path::{Path, PathBuf};
 
 fn arg(a: &[String], k: &str) -> Option<String> {
@@ -598,4 +598,61 @@ pub fn edge_debug(runs: &[Vec<DrawRec>], instances: &[crate::sunpass::LmInstance
         println!("  run {k} offset {:?}: {} triangles inside or within 2/256 px of the centre of ({x}, {y})", prepass::OFFSETS[k], lines.len());
         for l in lines { println!("{l}"); }
     }
+}
+
+// ───────────────────────── the collection / zone tables the from-map chain still takes from the capture ─────────────────────────
+
+/// What `setupmap` (the setup chain from the map) still reads from the captured environment: the terrain material's
+/// constants at the pre-pass's zero world matrix for the tile slices and the wall slices (PS 8401), the pad material's
+/// constant (PS 17025), and the water pass's id map, plane tables, LUTs, sampler and cbuffer template (PS 17018).
+pub struct FrozenTables {
+    pub tile_rgb: [f32; 3],
+    pub wall_rgb: [f32; 3],
+    pub pad_rgb: [f32; 3],
+    pub ids: Buf,
+    pub top_by_plane: Vec<[f32; 4]>,
+    pub depth_by_id: Vec<[f32; 4]>,
+    pub fog: Texture,
+    pub transmittance: Texture,
+    pub water_template: Option<WaterDraw>,
+    pub sampler: Sampler,
+    pub water_sampler: Sampler,
+    /// (i_py, i_pxz) of the tile draws and the wall draw, for the log.
+    pub tile_slices: (u32, u32),
+}
+
+pub fn frozen_tables(root: &Path, frame: u32, env_frame: u32) -> Result<FrozenTables, String> {
+    let a: Vec<String> = Vec::new();
+    let s = load_setup(&a, root, frame, env_frame, true);
+    let ctx = make_ctx(&a, root, frame, env_frame, &s);
+    let run = s.runs.first().ok_or("no pre-pass run in the capture")?;
+    let terrain = ctx.terrain().ok_or("the terrain material textures 5354 / 5363 / 5367 are not in the env")?;
+    let eye = [0.0f32; 3];
+    let tile_draw = run.iter().find(|d| d.ps == "8401" && !(d.i_pxz == 0 && d.i_py == 0)).ok_or("no tile draw (PS 8401 with non-zero slices)")?;
+    let wall_draw = run.iter().find(|d| d.ps == "8401" && d.i_pxz == 0 && d.i_py == 0);
+    let konst = |d: &DrawRec| prepass::ps_8401(&terrain, [0.0; 3], [-eye[0], -eye[1], -eye[2]], eye, d.i_py, d.i_pxz, d.i_pyx2, d.i_pyh2, [0.0; 3], [0.0; 3]);
+    let tile_rgb = konst(tile_draw);
+    let wall_rgb = wall_draw.map(konst).unwrap_or(tile_rgb);
+    let pad_rgb = ctx.pad().map(|p| prepass::ps_17025(&p, [0.0; 3], [0.0; 3], [0.0; 4])).unwrap_or([0.0; 3]);
+    let ids = ctx.entries("atlas_ids").first().map(|e| ctx.load(e)).or_else(|| ctx.ids(run)).ok_or("no water-id map")?;
+    let (Some(fog), Some(tr)) = (s.tex.get("15075"), s.tex.get("15078")) else { return Err("the water LUTs 15075 / 15078 are not in the env".into()) };
+    let mut ws = Sampler::bilinear_no_mip(Address::Clamp);
+    ws.weight_bits = ctx.sampler.weight_bits;
+    Ok(FrozenTables { tile_rgb, wall_rgb, pad_rgb, ids, top_by_plane: ctx.top_by_plane.clone(), depth_by_id: ctx.depth_by_id.clone(), fog: fog.clone(), transmittance: tr.clone(), water_template: prepass::water_draws(run).into_iter().last(), sampler: ctx.sampler, water_sampler: ws, tile_slices: (tile_draw.i_py, tile_draw.i_pxz) })
+}
+
+/// The water tint of run `k` over the LM scene's tile mesh (PS 17018 with the frozen tables), applied to `tgt`.
+pub fn tint_from_map(f: &FrozenTables, lm: &crate::lmaccum::LmScene, k: usize, tgt: &mut Target) {
+    let Some(tpl) = &f.water_template else { return };
+    let (ox, oy) = prepass::OFFSETS[k];
+    let q = 2.0f32 / W as f32;
+    let mut draws = Vec::new();
+    for (mk, _) in lm.meshes.iter().enumerate() {
+        if lm.inst_count[mk] < 1000 {
+            continue;
+        }
+        draws.push(WaterDraw { eid: k as u64, mesh: mk, instance_first: lm.inst_first[mk], instance_count: lm.inst_count[mk], scale_ss: [2.0, -2.0], trans_ss: [-1.0 + (ox as f32 / 9.0) * q, 1.0 - (oy as f32 / 9.0) * q], world_to_id: tpl.world_to_id, world_min_xz: tpl.world_min_xz, world_max_xz: tpl.world_max_xz, scale_out: tpl.scale_out });
+    }
+    let water = WaterData { ids: &f.ids, top_by_plane: f.top_by_plane.clone(), depth_by_id: f.depth_by_id.clone(), fog: &f.fog, transmittance: &f.transmittance, sampler: f.water_sampler };
+    prepass::run_water_draws(&draws, &lm.meshes, &lm.instances, &lm.table, &water, tgt);
 }

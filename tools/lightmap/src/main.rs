@@ -1370,7 +1370,8 @@ fn run(a: Vec<String>) {
             // image) sampled at every peel fragment's lightmap coordinate through the LM instance stream's ST (ilatlas.rs) —
             // in place of the port's per-fragment albedo × sun
             let mut e2e_out: Option<lightmap::e2e::ChainOut> = None;
-            if let Some(src) = f("--ilightinput-from") {
+            let mut from_map_setup: Option<lightmap::setupmap::FromMap> = None;
+            if let Some(src) = f("--ilightinput-from").filter(|s| s != "map") {
                 let lm_root = std::path::PathBuf::from(f("--lm-from").expect("--ilightinput-from needs --lm-from PASSCAP_ROOT (the LM instance stream)"));
                 let env_frame: u32 = f("--lm-env-frame").map(|v| v.parse().expect("--lm-env-frame")).unwrap_or(127448);
                 let pre_frame: u32 = f("--pre-frame").map(|v| v.parse().expect("--pre-frame")).unwrap_or(127447);
@@ -1534,6 +1535,72 @@ fn run(a: Vec<String>) {
                 // the sweep's H-basis MRTs are taken for the finalisation + the transcribed writer
                 if prm.hb_out.is_none() { prm.hb_out = Some(std::sync::Arc::new(lightmap::ilatlas::HbSlot(std::sync::Mutex::new(None)))); }
             }
+                // --ilightinput-from map: THE SETUP CHAIN FROM THE MAP (setupmap.rs) — the sun camera fit, the shadow map, the direct sun,
+                // the nine pre-pass runs and the ILightInput chain on E's from-map LM scene; only the collection / zone tables named in
+                // the log come from the captured environment (--env-from ROOT: prepass_check::frozen_tables). With --lm-from ROOT every
+                // stage is also compared with the capture's buffers.
+                if f("--ilightinput-from").as_deref() == Some("map") {
+                    let ti = std::time::Instant::now();
+                    let lm = prm.lm_scene.clone().expect("--ilightinput-from map needs --lm-from-map");
+                    let env_root = std::path::PathBuf::from(f("--env-from").expect("--ilightinput-from map needs --env-from PASSCAP_ROOT for the frozen collection tables"));
+                    let frozen = lightmap::prepass_check::frozen_tables(&env_root, 127447, 127448).unwrap_or_else(|e| panic!("frozen tables: {e}"));
+                    eprintln!("setup-from-map: FROZEN from the capture — the terrain constants (tile slices {:?} → {:?}, wall → {:?}), the pad constant {:?}, the water id map / plane tables / LUTs 15075 + 15078 ({:.1}s)", frozen.tile_slices, frozen.tile_rgb, frozen.wall_rgb, frozen.pad_rgb, ti.elapsed().as_secs_f32());
+                    // the scene box S = the union of the LM scene's placed vertices (the block records' union on pwc-day: the tiles at
+                    // y 3.9999785 over 0..2048, the items)
+                    let mut sbox = lightmap::lightcam::Aabb { min: [f32::MAX; 3], max: [f32::MIN; 3] };
+                    for (k, mesh) in lm.meshes.iter().enumerate() {
+                        for inst in lm.instances.iter().skip(lm.inst_first[k]).take(lm.inst_count[k]) {
+                            let r = lightmap::sunpass::rotation_rows(inst.q);
+                            for v in &mesh.verts {
+                                let p = v.pos;
+                                let w = [r[0][0] * p[0] + r[0][1] * p[1] + r[0][2] * p[2] + inst.t[0], r[1][0] * p[0] + r[1][1] * p[1] + r[1][2] * p[2] + inst.t[1], r[2][0] * p[0] + r[2][1] * p[1] + r[2][2] * p[2] + inst.t[2]];
+                                for c in 0..3 { sbox.min[c] = sbox.min[c].min(w[c]); sbox.max[c] = sbox.max[c].max(w[c]); }
+                            }
+                        }
+                    }
+                    let mf = tmmaps::map::MapFile::load(std::path::Path::new(&map_path));
+                    let files = mapgeom::embedded::files(&mf).expect("embedded items");
+                    let by_name: std::collections::BTreeMap<String, Vec<u8>> = files.iter().map(|(k, v)| (k.rsplit(['/', '\\']).next().unwrap_or(k).to_string(), v.clone())).collect();
+                    let item_bytes = |name: &str| -> Option<Vec<u8>> { by_name.get(name).cloned().or_else(|| by_name.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.clone())) };
+                    let dir_in_world = [-prm.sun_dir[0], -prm.sun_dir[1], -prm.sun_dir[2]];
+                    let fm = lightmap::setupmap::build(&scene, &lm, &sbox, dir_in_world, prm.sun, &frozen, &item_bytes, false);
+                    for n in &fm.notes { eprintln!("setup-from-map: {n}"); }
+                    // against the capture: the stages the e2e chain compares (the same entries)
+                    if let Some(root) = f("--lm-from").map(std::path::PathBuf::from) {
+                        if let Ok(txt) = std::fs::read_to_string(root.join("MANIFEST.json")) {
+                            if let Ok(m) = lightmap::passdiff::read_manifest(&txt) {
+                                let cmp = |name: &str, ours: &lightmap::passdiff::Buf, pass: &str, frame: u32, suffix: &str, ch: u32, fmt: lightmap::gpucmp::Fmt| {
+                                    let e = m.passes.iter().filter(|e| e.pass == pass && e.frame == Some(frame) && e.file.contains(suffix)).max_by_key(|e| e.eid_last.unwrap_or(0));
+                                    match e.and_then(|e| lightmap::passdiff::load_entry(&root, e).ok()) {
+                                        Some(cap) => { let r = lightmap::gpucmp::compare_where(ours, &cap, ch, fmt, &|_x, _y| true); eprintln!("setup-from-map: {name} vs the captured {pass}: {} exact / {} within 1 quantum / {} beyond of {} (max |Δ| {:.6} at {:?})", r.exact, r.ulp1, r.beyond, r.values, r.max_abs, r.worst); }
+                                        None => eprintln!("setup-from-map: {name}: no captured {pass} entry"),
+                                    }
+                                };
+                                cmp("shadow map", &fm.shadow, "sun_shadow", 127448, "", 1, lightmap::gpucmp::Fmt::Exact);
+                                cmp("direct sun", &fm.sun, "sun_direct", 127448, "", 4, lightmap::gpucmp::Fmt::F16);
+                                cmp("pre-pass 16963", &fm.attr, "atlas_attr_2", 127447, "", 4, lightmap::gpucmp::Fmt::F16);
+                                cmp("MDiffuse 16969", &fm.mdiffuse8, "setup_ps17043", 127448, "_16969", 4, lightmap::gpucmp::Fmt::Unorm8);
+                                if let Some(cap) = m.passes.iter().filter(|e| e.pass == "setup_ps17043" && e.frame == Some(127448) && e.file.contains("_16969")).max_by_key(|e| e.eid_last.unwrap_or(0)).and_then(|e| lightmap::passdiff::load_entry(&root, e).ok()) {
+                                    let (mut per_ch, mut shown) = ([0usize; 4], 0);
+                                    for y in 0..2048u32 { for x in 0..2048u32 { let mut diff = false; for c in 0..4 { if (fm.mdiffuse8.get(x, y, c) - cap.get(x, y, c)).abs() > 0.5 / 255.0 { per_ch[c as usize] += 1; diff = true; } } if diff && shown < 6 && (x + y) % 7 == 0 { eprintln!("setup-from-map:   MDiffuse ({x}, {y}): ours [{:.4}, {:.4}, {:.4}, {:.4}] captured [{:.4}, {:.4}, {:.4}, {:.4}]", fm.mdiffuse8.get(x, y, 0), fm.mdiffuse8.get(x, y, 1), fm.mdiffuse8.get(x, y, 2), fm.mdiffuse8.get(x, y, 3), cap.get(x, y, 0), cap.get(x, y, 1), cap.get(x, y, 2), cap.get(x, y, 3)); shown += 1; } } }
+                                    eprintln!("setup-from-map:   MDiffuse values off per channel {:?}", per_ch);
+                                }
+                                cmp("ILightInput 17095 dilated", &fm.ilightinput, "setup_ps1335", 127448, "_rt0_", 3, lightmap::gpucmp::Fmt::R11G11B10);
+                            }
+                        }
+                    }
+                    if let Some(dir) = f("--chain-final-dir") {
+                        let dump = |name: &str, b: &lightmap::passdiff::Buf| { let mut out = Vec::with_capacity(b.data.len() * 4); for x in &b.data { out.extend_from_slice(&x.to_le_bytes()); } std::fs::write(format!("{dir}/{name}"), out).expect("write"); };
+                        dump("frommap-shadow.f32", &fm.shadow); dump("frommap-sun.f32", &fm.sun); dump("frommap-attr.f32", &fm.attr); dump("frommap-mdiffuse8.f32", &fm.mdiffuse8); dump("frommap-ilightinput.f32", &fm.ilightinput);
+                    }
+                    let il = lightmap::ilatlas::IlAtlas::from_lm_scene(fm.ilightinput.clone(), &lm);
+                    let item_map = il.map_items(&scene);
+                    eprintln!("setup-from-map: the peels colour from OUR from-map ILightInput atlas — {} LM instances ({} items, {} tiles by footprint), port items mapped {:?} ({:.1}s total)", il.insts.len(), il.n_items, il.tile_of.len(), item_map, ti.elapsed().as_secs_f32());
+                    prm.ilatlas = Some(std::sync::Arc::new(lightmap::ilatlas::IlSource { atlas: il, item_map }));
+                    if prm.hb_out.is_none() { prm.hb_out = Some(std::sync::Arc::new(lightmap::ilatlas::HbSlot(std::sync::Mutex::new(None)))); }
+                    if prm.ambient_out.is_none() { prm.ambient_out = Some(std::sync::Arc::new(std::sync::Mutex::new(Vec::new()))); }
+                    from_map_setup = Some(fm);
+                }
             // THE ZONE TILES' CHART ST from the capture's instance buffer (`lmaccum::load_lm_scene`: the 4096-instance
             // object's g_InstanceDatas — t = the cell's corner, st = its chart ST; the mapping's obj index = the instance
             // index, a traversal RE-6's block records describe): the harness's tile colour path
@@ -1562,7 +1629,7 @@ fn run(a: Vec<String>) {
             // colour's texture — the harness's transcription of the colour path on the game's own input
             // (integration: the value `e2e` belongs to the chain's handler above — ilatlas from the transcribed setup
             // chain — and is not a file; D's peelcolor path takes a file only)
-            if let Some(path) = f("--ilightinput-from").filter(|p| p != "e2e") {
+            if let Some(path) = f("--ilightinput-from").filter(|p| p != "e2e" && p != "map") {
                 let pb = std::path::PathBuf::from(&path);
                 let (root, file) = (pb.parent().map(|p| p.to_path_buf()).unwrap_or_default(), pb.file_name().unwrap().to_string_lossy().to_string());
                 let mut e = lightmap::passdump::entry("ilightinput", file, "atlas");

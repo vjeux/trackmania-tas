@@ -60,12 +60,25 @@ impl IlAtlas {
     /// mesh's vertex buffer (vb_5350, stride 28: POSITION @0, TEXCOORD1 @20).
     pub fn new(atlas: Buf, instances: &[u8], tile_vb: &[u8], n_items: usize) -> IlAtlas {
         let insts = parse_instances(instances);
-        let rows: Vec<[[f32; 3]; 3]> = insts.iter().map(|i| rotation_rows(i.q)).collect();
         // the tile mesh: an affine TexCoord1 in local x / z from the vertices' extremes
         let verts: Vec<([f32; 3], [f32; 2])> = tile_vb.chunks_exact(28).map(|b| { let f = |o: usize| f32::from_le_bytes(b[o..o + 4].try_into().unwrap()); ([f(0), f(4), f(8)], [f(20), f(24)]) }).collect();
+        IlAtlas::from_parts(atlas, insts, &verts, n_items)
+    }
+
+    /// The same from an LM scene built without a capture (`lmmesh::lm_scene_from_map`): its instances and the tile mesh's
+    /// (position, TexCoord1) vertices.
+    pub fn from_lm_scene(atlas: Buf, lm: &crate::lmaccum::LmScene) -> IlAtlas {
+        let tile_k = lm.meshes.iter().enumerate().find(|(k, _)| lm.inst_count[*k] >= 1000).map(|(k, _)| k);
+        let verts: Vec<([f32; 3], [f32; 2])> = tile_k.map(|k| lm.meshes[k].verts.iter().map(|v| (v.pos, v.uv)).collect()).unwrap_or_default();
+        let n_items = tile_k.map(|k| lm.inst_first[k]).unwrap_or(lm.instances.len());
+        IlAtlas::from_parts(atlas, lm.instances.clone(), &verts, n_items)
+    }
+
+    pub fn from_parts(atlas: Buf, insts: Vec<LmInstance>, verts: &[([f32; 3], [f32; 2])], n_items: usize) -> IlAtlas {
+        let rows: Vec<[[f32; 3]; 3]> = insts.iter().map(|i| rotation_rows(i.q)).collect();
         let (mut xmin, mut xmax, mut zmin, mut zmax) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
         let (mut u_at_xmin, mut u_at_xmax, mut v_at_zmin, mut v_at_zmax) = (0f32, 0f32, 0f32, 0f32);
-        for (p, uv) in &verts {
+        for (p, uv) in verts {
             if p[0] < xmin { xmin = p[0]; u_at_xmin = uv[0]; }
             if p[0] > xmax { xmax = p[0]; u_at_xmax = uv[0]; }
             if p[2] < zmin { zmin = p[2]; v_at_zmin = uv[1]; }
