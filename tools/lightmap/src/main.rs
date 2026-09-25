@@ -5416,6 +5416,127 @@ fn run(a: Vec<String>) {
             std::fs::write(&table, &md).expect("bench table");
             print!("{md}");
         }
+        "relight-batch" => {
+            // lmtool relight-batch (MAP... | --maps LIST.txt) --out-dir DIR [--quality Q] [--jobs J] [--manifest relight.json]
+            //   [--writer port|transcribed] [-- EXTRA BAKE ARGS]: THE RE-LIGHT DRIVER — every map baked by a child
+            //   `lmtool bake --raster --game-peel --quality Q --profile` into DIR/<name>, then `lmtool check` on the
+            //   written file (the structural self-check: chunk structure, blobs, probe grid, atlas fill, encoding
+            //   sanity), J maps at a time; the manifest (JSON) carries per map the timings per sweep, the peak RSS,
+            //   the peel cameras line (the tiling), the check's verdict and the bake's last lines on failure, plus a
+            //   Markdown table beside it. --writer transcribed asks the bake for the transcribed file chain
+            //   (finalisation → filecheck::file_images → the writer) once it is wired (--file-transcribed); the
+            //   default is the port's own chunk encoder. Nothing is uploaded.
+            let mut maps: Vec<String> = Vec::new();
+            let mut extra: Vec<String> = Vec::new();
+            let mut quality = "4".to_string();
+            let mut jobs = 1usize;
+            let mut out_dir: Option<String> = None;
+            let mut manifest: Option<String> = None;
+            let mut writer = "port".to_string();
+            let mut i = 1;
+            let mut in_extra = false;
+            while i < a.len() {
+                let x = &a[i];
+                if in_extra { extra.push(x.clone()); i += 1; continue; }
+                match x.as_str() {
+                    "--" => in_extra = true,
+                    "--quality" => { quality = a[i + 1].clone(); i += 1; }
+                    "--jobs" => { jobs = a[i + 1].parse().expect("--jobs"); i += 1; }
+                    "--out-dir" => { out_dir = Some(a[i + 1].clone()); i += 1; }
+                    "--manifest" => { manifest = Some(a[i + 1].clone()); i += 1; }
+                    "--writer" => { writer = a[i + 1].clone(); i += 1; }
+                    "--maps" => { let txt = std::fs::read_to_string(&a[i + 1]).expect("--maps list"); for l in txt.lines() { let l = l.trim(); if !l.is_empty() && !l.starts_with('#') { maps.push(l.to_string()); } } i += 1; }
+                    _ => maps.push(x.clone()),
+                }
+                i += 1;
+            }
+            let out_dir = std::path::PathBuf::from(out_dir.expect("--out-dir DIR"));
+            std::fs::create_dir_all(&out_dir).expect("out dir");
+            let manifest = manifest.map(std::path::PathBuf::from).unwrap_or_else(|| out_dir.join("relight-manifest.json"));
+            if writer == "transcribed" { extra.push("--file-transcribed".to_string()); }
+            let exe = std::env::current_exe().expect("exe");
+            #[derive(Default, Clone)]
+            struct Row { map: String, out: String, tris: String, insts: String, texels: String, cameras: String, peels: String, sweeps: Vec<f32>, bake_s: f32, check_s: f32, rss: String, bake_ok: bool, check_ok: bool, check_fails: usize, note: String, started: u64, host: String }
+            let rows: std::sync::Mutex<Vec<Row>> = std::sync::Mutex::new(Vec::new());
+            let next = std::sync::atomic::AtomicUsize::new(0);
+            let t_all = std::time::Instant::now();
+            let host = std::env::var("HOSTNAME").unwrap_or_default();
+            std::thread::scope(|sc| {
+                for _ in 0..jobs.max(1) {
+                    sc.spawn(|| loop {
+                        let k = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        if k >= maps.len() { break; }
+                        let m = &maps[k];
+                        let name = std::path::Path::new(m).file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or(m.clone());
+                        let out = out_dir.join(&name);
+                        let started = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+                        let t = std::time::Instant::now();
+                        let mut cmd = std::process::Command::new(&exe);
+                        cmd.arg("bake").arg(m).arg("--raster").arg("--quality").arg(&quality).arg("--game-peel").arg("--profile").arg("--out").arg(&out);
+                        for e in &extra { cmd.arg(e); }
+                        let output = cmd.output();
+                        let bake_s = t.elapsed().as_secs_f32();
+                        let mut row = Row { map: m.clone(), out: out.to_string_lossy().to_string(), bake_s, started, host: host.clone(), ..Default::default() };
+                        match output {
+                            Ok(o) => {
+                                row.bake_ok = o.status.success();
+                                let err = String::from_utf8_lossy(&o.stderr).to_string();
+                                let _ = std::fs::write(out_dir.join(format!("{name}.bake.log")), format!("{}\n{}", String::from_utf8_lossy(&o.stdout), err));
+                                for l in err.lines() {
+                                    if let Some(r) = l.strip_prefix("scene: ") {
+                                        let parts: Vec<&str> = r.split(", ").collect();
+                                        if parts.len() >= 3 { row.insts = parts[1].split(' ').next().unwrap_or("").to_string(); row.tris = parts[2].split(' ').next().unwrap_or("").to_string(); }
+                                    }
+                                    if l.starts_with("peel: ") && l.contains(" layout texels over ") && row.texels.is_empty() { row.texels = l["peel: ".len()..].split(' ').next().unwrap_or("").to_string(); }
+                                    if let Some(r) = l.strip_prefix("peel cameras: ") { if r.contains("tiling at scale") { row.cameras = r.to_string(); } }
+                                    if l.starts_with("peel: direction 1/") && row.peels.is_empty() { if let Some(p) = l.find('(') { row.peels = l[p + 1..].split(' ').next().unwrap_or("").to_string(); } }
+                                    if l.starts_with("profile [sweep ") { if let Some(p) = l.rfind("sweep total ") { row.sweeps.push(l[p + "sweep total ".len()..].trim_end_matches('s').parse().unwrap_or(0.0)); } }
+                                    if let Some(r) = l.strip_prefix("peak RSS ") { row.rss = r.to_string(); }
+                                }
+                                if !row.bake_ok { row.note = err.lines().rev().take(3).collect::<Vec<_>>().join(" | "); }
+                            }
+                            Err(e) => { row.note = e.to_string(); }
+                        }
+                        if row.bake_ok {
+                            let t2 = std::time::Instant::now();
+                            let chk = std::process::Command::new(&exe).arg("check").arg(&out).output();
+                            row.check_s = t2.elapsed().as_secs_f32();
+                            match chk {
+                                Ok(o) => {
+                                    let txt = format!("{}\n{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+                                    let _ = std::fs::write(out_dir.join(format!("{name}.check.log")), &txt);
+                                    row.check_fails = txt.lines().filter(|l| l.contains("[FAIL]")).count();
+                                    row.check_ok = o.status.success() && row.check_fails == 0;
+                                    if !row.check_ok { row.note = txt.lines().filter(|l| l.contains("[FAIL]")).take(3).collect::<Vec<_>>().join(" | "); }
+                                }
+                                Err(e) => { row.note = format!("check: {e}"); }
+                            }
+                        }
+                        eprintln!("relight: {name}: bake {:.1}s ({}), check {:.1}s ({}), sweeps {:?}, RSS {}, peels {}", row.bake_s, if row.bake_ok { "ok" } else { "FAILED" }, row.check_s, if row.check_ok { "ok" } else if row.bake_ok { "FAIL" } else { "-" }, row.sweeps, row.rss, row.peels);
+                        rows.lock().unwrap().push(row);
+                    });
+                }
+            });
+            let mut rows = rows.into_inner().unwrap();
+            rows.sort_by(|a, b| a.map.cmp(&b.map));
+            let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
+            let mut js = String::new();
+            js.push_str(&format!("{{\n  \"tool\": \"lmtool relight-batch\",\n  \"quality\": {quality},\n  \"jobs\": {jobs},\n  \"writer\": \"{}\",\n  \"extra_args\": [{}],\n  \"host\": \"{}\",\n  \"wall_s\": {:.1},\n  \"maps\": [\n", esc(&writer), extra.iter().map(|e| format!("\"{}\"", esc(e))).collect::<Vec<_>>().join(", "), esc(&host), t_all.elapsed().as_secs_f32()));
+            for (i, r) in rows.iter().enumerate() {
+                js.push_str(&format!("    {{\"map\": \"{}\", \"out\": \"{}\", \"started_unix\": {}, \"bake_ok\": {}, \"bake_s\": {:.1}, \"sweeps_s\": [{}], \"peak_rss\": \"{}\", \"triangles\": \"{}\", \"items\": \"{}\", \"layout_texels\": \"{}\", \"peels_per_direction\": \"{}\", \"peel_cameras\": \"{}\", \"check_ok\": {}, \"check_fails\": {}, \"check_s\": {:.1}, \"note\": \"{}\"}}{}\n", esc(&r.map), esc(&r.out), r.started, r.bake_ok, r.bake_s, r.sweeps.iter().map(|s| format!("{s:.1}")).collect::<Vec<_>>().join(", "), esc(&r.rss), r.tris, r.insts, r.texels, r.peels, esc(&r.cameras), r.check_ok, r.check_fails, r.check_s, esc(&r.note), if i + 1 < rows.len() { "," } else { "" }));
+            }
+            js.push_str("  ]\n}\n");
+            std::fs::write(&manifest, &js).expect("manifest");
+            let mut md = String::new();
+            md.push_str(&format!("# lmtool relight-batch — quality {quality}, {} maps, {} at a time, writer {writer}, extra {:?}, {:.0} s wall ({})\n\n| map | triangles | items | texels | peels/dir | sweeps (s) | bake (s) | peak RSS | check | |\n|---|---|---|---|---|---|---|---|---|---|\n", rows.len(), jobs, extra, t_all.elapsed().as_secs_f32(), host));
+            for r in &rows {
+                md.push_str(&format!("| {} | {} | {} | {} | {} | {} | {:.1} | {} | {} | {} |\n", std::path::Path::new(&r.map).file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default(), r.tris, r.insts, r.texels, r.peels, r.sweeps.iter().map(|s| format!("{s:.1}")).collect::<Vec<_>>().join(" / "), r.bake_s, r.rss, if r.check_ok { "ok".to_string() } else if r.bake_ok { format!("{} FAIL", r.check_fails) } else { "bake FAILED".to_string() }, r.note));
+            }
+            let md_path = manifest.with_extension("md");
+            std::fs::write(&md_path, &md).expect("table");
+            print!("{md}");
+            eprintln!("relight-batch: manifest {} table {}", manifest.display(), md_path.display());
+        }
         "passdiff" => {
             // lmtool passdiff GAME_DIR OURS_DIR [--pass P] [--tol T] [--floor F] [--stride S] [--threshold PCT]
             //   [--game-map MAP.Gbx] [--heat DIR] [--all-heat] [--report FILE.md]
