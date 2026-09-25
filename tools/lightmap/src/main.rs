@@ -4267,6 +4267,199 @@ fn run(a: Vec<String>) {
                 println!("wrote {out} (DDS R16_UNORM {}×{})", tgt.w, tgt.h);
             }
         }
+        "frustum-check" => {
+            // lmtool frustum-check PASSCAP_ROOT [--frame N] [--manifest FROZEN.json] [--eps E] [--far-pad P] [--norm div|rsqrt] [--fma] [--expand-scale]
+            //   the CPU light-camera fit (lightcam.rs) against the capture's SceneV cbuffers: every distinct camera of the
+            //   draws log is back-solved to its world box (eye = centre, the half extents from the projected extents through
+            //   the rules), the sun camera is recomputed from the capture's own caster geometry (the scene box = the union of
+            //   the tiles + items) and every cbuffer value printed against the captured one in f32 ulps
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let has = |k: &str| a.iter().any(|x| x == k);
+            let root = std::path::PathBuf::from(&a[1]);
+            let frame: u32 = f("--frame").map(|v| v.parse().expect("--frame")).unwrap_or(127448);
+            let env = root.join(format!("env/frame{frame}"));
+            let rules = lightmap::lightcam::FitRules { expand_eps: f("--eps").map(|v| v.parse().unwrap()).unwrap_or(1e-4), far_pad: f("--far-pad").map(|v| v.parse().unwrap()).unwrap_or(5.0), normalise: match f("--norm").as_deref() { Some("rsqrt") => lightmap::lightcam::Normalise::MulRsqrt, Some("rsqrt64") => lightmap::lightcam::Normalise::MulRsqrtF64, Some("newton") => lightmap::lightcam::Normalise::MulRsqrtNewton, Some("xz") => lightmap::lightcam::Normalise::MulRsqrtXZ, Some("magic1") => lightmap::lightcam::Normalise::Magic1, Some("magic2") => lightmap::lightcam::Normalise::Magic2, Some("div") => lightmap::lightcam::Normalise::DivSqrt, _ => lightmap::lightcam::Normalise::MulRsqrt }, dot: if has("--fma") { lightmap::lightcam::DotOrder::Fma } else { lightmap::lightcam::DotOrder::Separate }, expand_by_scale: has("--expand-scale"), centre_from_half: !has("--centre-mean"), norm_forward: has("--norm-fwd"), norm_up: has("--norm-up") };
+            println!("rules: {rules:?}");
+            let draws_bytes = lightmap::passdiff::read_entry_bytes(&root, &format!("logs/draws-frame{frame}.json")).expect("draws log");
+            let draws: serde_json::Value = serde_json::from_slice(&draws_bytes).expect("draws json");
+            let m4 = |v: &serde_json::Value| -> [[f32; 4]; 4] { let mut o = [[0f32; 4]; 4]; for i in 0..4 { for j in 0..4 { o[i][j] = v[i][j].as_f64().unwrap() as f32; } } o };
+            let m43 = |v: &serde_json::Value| -> [[f32; 3]; 4] { let mut o = [[0f32; 3]; 4]; for i in 0..4 { for j in 0..3 { o[i][j] = v[i][j].as_f64().unwrap() as f32; } } o };
+            let v4 = |v: &serde_json::Value| -> [f32; 4] { [v[0].as_f64().unwrap() as f32, v[1].as_f64().unwrap() as f32, v[2].as_f64().unwrap() as f32, v[3].as_f64().unwrap_or(0.0) as f32] };
+            // the distinct cameras (by eye + projection), in eid order
+            struct Cap { eid: u64, eye: [f32; 4], w2c: [[f32; 3]; 4], proj: [[f32; 4]; 4], mm: [f32; 4], wpc: [[f32; 4]; 4] }
+            let mut caps: Vec<Cap> = Vec::new();
+            for e in draws.as_array().unwrap() {
+                let Some(sv) = e["Vertex"]["cbuffers"].get("SceneV") else { continue };
+                if sv.get("GbxV_EyeInWorld").is_none() || sv["GbxV_CameraIsOrtho"].as_i64() != Some(1) { continue; }
+                let c = Cap { eid: e["eid"].as_u64().unwrap(), eye: v4(&sv["GbxV_EyeInWorld"]), w2c: m43(&sv["GbxV_WorldToCamera"]), proj: m4(&sv["GbxV_CameraProjection"]), mm: v4(&sv["GbxV_Camera_MinZ_MaxZ_InvRange_HasDeferredZ"]), wpc: m4(&sv["GbxV_WorldPrCamera"]) };
+                if caps.iter().any(|k| k.eye == c.eye && k.proj == c.proj) { continue; }
+                caps.push(c);
+            }
+            println!("{} distinct orthographic cameras in frame {frame}", caps.len());
+            let report = |name: &str, cam: &lightmap::lightcam::OrthoCamera, cap: &Cap| {
+                let u = lightmap::lightcam::ulps;
+                let w2c = cam.world_to_camera();
+                let p = cam.projection();
+                let mm = cam.min_max_inv();
+                let wpc = cam.world_pr_camera();
+                let mut worst = 0i64;
+                let mut lines = Vec::new();
+                let mut push = |what: String, ours: f32, game: f32| { let d = u(ours, game); worst = worst.max(d.abs()); if d != 0 { lines.push(format!("      {what}: ours {ours:.9} game {game:.9} ({d:+} ulp)")); } };
+                for k in 0..3 { push(format!("EyeInWorld[{k}]"), cam.eye[k], cap.eye[k]); }
+                for i in 0..4 { for j in 0..3 { push(format!("WorldToCamera[{i}][{j}]"), w2c[i][j], cap.w2c[i][j]); } }
+                for i in 0..4 { for j in 0..4 { push(format!("CameraProjection[{i}][{j}]"), p[i][j], cap.proj[i][j]); } }
+                for k in 0..3 { push(format!("MinZ_MaxZ_InvRange[{k}]"), mm[k], cap.mm[k]); }
+                for i in 0..4 { for j in 0..4 { push(format!("WorldPrCamera[{i}][{j}]"), wpc[i][j], cap.wpc[i][j]); } }
+                println!("    {name}: worst {worst} ulp over 55 values{}", if lines.is_empty() { " — ALL BIT-IDENTICAL".to_string() } else { format!(", {} differ:", lines.len()) });
+                for l in lines.iter().take(24) { println!("{l}"); }
+            };
+            // back-solve every camera's world box from its cbuffers: eye = centre; the light-space extents
+            // (halfW, halfH, hd = −near) ÷ scale = |R|·h → three equations in (hx, hy, hz)
+            for cap in &caps {
+                let d = [cap.w2c[0][2], cap.w2c[1][2], cap.w2c[2][2]];
+                let right = [cap.w2c[0][0], cap.w2c[1][0], cap.w2c[2][0]];
+                let up = [cap.w2c[0][1], cap.w2c[1][1], cap.w2c[2][1]];
+                let half_w = -1.0 / cap.proj[0][0] as f64;
+                let half_h = 1.0 / cap.proj[1][1] as f64;
+                let (near, far) = (cap.mm[0] as f64, cap.mm[1] as f64);
+                let s = 1.0 + rules.expand_eps as f64;
+                let ext = [half_w / s, half_h / s, -near / s];
+                // solve |A|·h = ext, A rows = |right|, |up|, |d|
+                let am = [[right[0].abs() as f64, right[1].abs() as f64, right[2].abs() as f64], [up[0].abs() as f64, up[1].abs() as f64, up[2].abs() as f64], [d[0].abs() as f64, d[1].abs() as f64, d[2].abs() as f64]];
+                let det = |m: &[[f64; 3]; 3]| m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+                let dm = det(&am);
+                let mut h = [0f64; 3];
+                for k in 0..3 { let mut mk = am; for r in 0..3 { mk[r][k] = ext[r]; } h[k] = det(&mk) / dm; }
+                println!("  eid {}: D ({:.5}, {:.5}, {:.5}) eye ({:.4}, {:.7}, {:.4}) halfW {half_w:.4} halfH {half_h:.4} near {near:.4} far {far:.4} (far + near = {:.5}) → box half ({:.4}, {:.4}, {:.4}) = y range [{:.4}, {:.4}]", cap.eid, d[0], d[1], d[2], cap.eye[0], cap.eye[1], cap.eye[2], far + near, h[0], h[1], h[2], cap.eye[1] as f64 - h[1], cap.eye[1] as f64 + h[1]);
+                // the fit on the back-solved box (the arithmetic check: the eye and the rules; the box itself is the camera's)
+                let mut b = lightmap::lightcam::Aabb::empty();
+                b.add_point([cap.eye[0] - h[0] as f32, cap.eye[1] - h[1] as f32, cap.eye[2] - h[2] as f32]);
+                b.add_point([cap.eye[0] + h[0] as f32, cap.eye[1] + h[1] as f32, cap.eye[2] + h[2] as f32]);
+                let cam = lightmap::lightcam::fit_camera(&b, d, &rules);
+                report("fit on the back-solved box", &cam, cap);
+            }
+            // the sun camera from the capture's own geometry: the scene box = the union of the tiles + the items (the
+            // shadow-map casters of VS 5394 — the same buffers as shadow-check)
+            let mtxt = std::fs::read_to_string(f("--manifest").map(std::path::PathBuf::from).unwrap_or_else(|| root.join("MANIFEST.json"))).expect("MANIFEST.json");
+            let mval: serde_json::Value = serde_json::from_str(&lightmap::passdiff::repair_truncated_json(&mtxt)).expect("manifest json");
+            let shadow_ent = mval["passes"].as_array().unwrap().iter().find(|e| e["pass"].as_str() == Some("sun_shadow") && e["frame"].as_u64() == Some(frame as u64)).expect("a sun_shadow entry for the frame");
+            let (eid_first, eid_last) = (shadow_ent["eid_first"].as_u64().unwrap_or(0), shadow_ent["eid_last"].as_u64().unwrap_or(u64::MAX));
+            let mesh_json: serde_json::Value = serde_json::from_str(&lightmap::passdiff::repair_truncated_json(&std::fs::read_to_string(env.join("mesh.json")).expect("mesh.json"))).expect("mesh.json");
+            let mut scene_box = lightmap::lightcam::Aabb::empty();
+            let mut items_box = lightmap::lightcam::Aabb::empty();
+            let mut sun_cap: Option<&Cap> = None;
+            for e in draws.as_array().unwrap() {
+                let eid = e["eid"].as_u64().unwrap_or(0);
+                if eid < eid_first || eid > eid_last || !e["flags"].as_str().map(|s| s.contains("Drawcall")).unwrap_or(false) { continue; }
+                let vs_id = e["Vertex"]["shader"].as_str().unwrap_or("");
+                if vs_id != "5394" && vs_id != "14613" { continue; } // the block records: the tiles + the items (the vegetation item = trunk + its two leaf meshes)
+                if sun_cap.is_none() { sun_cap = caps.iter().find(|c| c.eid <= eid && e["Vertex"]["cbuffers"]["SceneV"]["GbxV_EyeInWorld"].as_array().map(|v| v[0].as_f64().unwrap() as f32 == c.eye[0] && v[1].as_f64().unwrap() as f32 == c.eye[1]).unwrap_or(false)); }
+                let drawv = &e["Vertex"]["cbuffers"]["DrawV"]["g_CBufferV_Draw"];
+                let instance_start = drawv["InstanceStart"].as_u64().unwrap_or(0) as u32;
+                let rec = mesh_json.as_array().unwrap().iter().find(|r| r["eid"].as_u64() == Some(eid)).unwrap_or_else(|| panic!("mesh.json has no eid {eid}"));
+                let vbs = rec["vertex_buffers"].as_array().unwrap();
+                let vb = std::fs::read(env.join("mesh").join(vbs[0]["file"].as_str().unwrap())).expect("vb");
+                let stride = vbs[0]["stride"].as_u64().unwrap() as usize;
+                let il = rec["input_layout"].as_array().unwrap();
+                let pos_off = il.iter().find(|x| x["semantic"].as_str() == Some("POSITION")).map(|x| x["offset"].as_u64().unwrap() as usize).unwrap();
+                let ib = std::fs::read(env.join("mesh").join(rec["vsout"]["index_file"].as_str().unwrap())).expect("indices");
+                let mesh = lightmap::shadowmap::CasterMesh::parse(&vb, stride, pos_off, None, &ib);
+                let dyna = std::fs::read(env.join("bufs").join(format!("e{eid:06}_Vertex_srv0_2185.bin"))).unwrap_or_default();
+                let sm = std::fs::read(env.join("bufs").join(format!("e{eid:06}_Vertex_srv1_17163.bin"))).unwrap_or_default();
+                let tables = lightmap::shadowmap::InstanceTables::parse(&dyna, &sm);
+                let inst = e["inst"].as_u64().unwrap_or(0).max(1) as u32;
+                // the instance's world box = the transformed vertex box (|R|·h + T on the mesh's own box: the record form)
+                let mut mesh_box = lightmap::lightcam::Aabb::empty();
+                for p in &mesh.pos { mesh_box.add_point(*p); }
+                let (mc, mh) = (mesh_box.centre(), mesh_box.half());
+                for iid in 0..inst {
+                    let Some(rows) = tables.rows(instance_start, iid, lightmap::shadowmap::Arith::Fma) else { continue };
+                    let c = [rows[0][0] * mc[0] + rows[0][1] * mc[1] + rows[0][2] * mc[2] + rows[0][3], rows[1][0] * mc[0] + rows[1][1] * mc[1] + rows[1][2] * mc[2] + rows[1][3], rows[2][0] * mc[0] + rows[2][1] * mc[1] + rows[2][2] * mc[2] + rows[2][3]];
+                    let h = [rows[0][0].abs() * mh[0] + rows[0][1].abs() * mh[1] + rows[0][2].abs() * mh[2], rows[1][0].abs() * mh[0] + rows[1][1].abs() * mh[1] + rows[1][2].abs() * mh[2], rows[2][0].abs() * mh[0] + rows[2][1].abs() * mh[1] + rows[2][2].abs() * mh[2]];
+                    let b = lightmap::lightcam::Aabb { min: [c[0] - h[0], c[1] - h[1], c[2] - h[2]], max: [c[0] + h[0], c[1] + h[1], c[2] + h[2]] };
+                    scene_box.add_box(&b);
+                    if inst == 1 { items_box.add_box(&b); }
+                }
+                println!("  scene box after eid {eid} ({inst} instance(s)): min {:?} max {:?}", scene_box.min, scene_box.max);
+            }
+            println!("SCENE BOX from the casters: centre {:?} half {:?}; items' box: centre {:?} half {:?}", scene_box.centre(), scene_box.half(), items_box.centre(), items_box.half());
+            // the PROBE GRID box (the world peel's focus box = the scene box ∪ this one, RE 5): the probe draw's
+            // ProbeToShadow (PS 17151, grid coords → the sun shadow map's uvz) times the inverse of the sun's
+            // WorldPw01Shadow (PS 15187's cbuffer) = GridToWorld: the cell size on the diagonal, the origin in the last
+            // row; the grid is the 3D target's size (32 × 16 × 32)
+            let probe = draws.as_array().unwrap().iter().find(|e| e["Pixel"]["shader"].as_str() == Some("17151"));
+            let sun_direct = draws.as_array().unwrap().iter().find(|e| e["Pixel"]["shader"].as_str() == Some("15187"));
+            let mut grid_box: Option<lightmap::lightcam::Aabb> = None;
+            if let (Some(pr), Some(sd)) = (probe, sun_direct) {
+                let pts = m43(&pr["Pixel"]["cbuffers"]["ShaderP"]["g_CBufferP"]["ProbeToShadow"]);
+                // TMapShadow at the probe draw is the CURRENT direction's world-peel depth (texture 17089 is reused): its WorldPw01Shadow
+                // the peel's WorldPw01Shadow = the first accumulate draw (PS 17112) AFTER the probe draw (same direction block)
+                let probe_eid = pr["eid"].as_u64().unwrap();
+                let peel_pw = draws.as_array().unwrap().iter().filter(|e| e["Pixel"]["shader"].as_str() == Some("17112") && e["eid"].as_u64().unwrap_or(0) > probe_eid).next().map(|e| m4(&e["Pixel"]["cbuffers"]["ShaderP"]["g_CBufferP"]["WorldPw01Shadow"]));
+                let pw = match (has("--probe-sun"), peel_pw) { (false, Some(p)) => { println!("  (through the WorldPw01Shadow of the first accumulate draw after the probe draw {probe_eid})"); p } _ => m4(&sd["Pixel"]["cbuffers"]["ShaderP"]["g_CBufferP"]["WorldPw01Shadow"]) };
+                let dims = [pr["outputs"][0]["w"].as_u64().unwrap_or(32) as f64, pr["outputs"][0]["h"].as_u64().unwrap_or(16) as f64, pr["outputs"][0]["d"].as_u64().unwrap_or(32) as f64];
+                // invert the 4×4 (row-vector affine: rotation/scale 3×3 + translation row) in f64
+                let mut a = [[0f64; 3]; 3];
+                for i in 0..3 { for j in 0..3 { a[i][j] = pw[i][j] as f64; } }
+                let t = [pw[3][0] as f64, pw[3][1] as f64, pw[3][2] as f64];
+                let det = a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1]) - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0]) + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0]);
+                let mut inv = [[0f64; 3]; 3];
+                inv[0][0] = (a[1][1] * a[2][2] - a[1][2] * a[2][1]) / det; inv[0][1] = (a[0][2] * a[2][1] - a[0][1] * a[2][2]) / det; inv[0][2] = (a[0][1] * a[1][2] - a[0][2] * a[1][1]) / det;
+                inv[1][0] = (a[1][2] * a[2][0] - a[1][0] * a[2][2]) / det; inv[1][1] = (a[0][0] * a[2][2] - a[0][2] * a[2][0]) / det; inv[1][2] = (a[0][2] * a[1][0] - a[0][0] * a[1][2]) / det;
+                inv[2][0] = (a[1][0] * a[2][1] - a[1][1] * a[2][0]) / det; inv[2][1] = (a[0][1] * a[2][0] - a[0][0] * a[2][1]) / det; inv[2][2] = (a[0][0] * a[1][1] - a[0][1] * a[1][0]) / det;
+                // world = (uvz − t) · inv ; grid → uvz = g · P + p_t ; so GridToWorld rows = P_rows · inv, origin = (p_t − t) · inv
+                let mul = |v: [f64; 3]| [v[0] * inv[0][0] + v[1] * inv[1][0] + v[2] * inv[2][0], v[0] * inv[0][1] + v[1] * inv[1][1] + v[2] * inv[2][1], v[0] * inv[0][2] + v[1] * inv[1][2] + v[2] * inv[2][2]];
+                let rows: Vec<[f64; 3]> = (0..3).map(|i| mul([pts[i][0] as f64, pts[i][1] as f64, pts[i][2] as f64])).collect();
+                let origin = mul([pts[3][0] as f64 - t[0], pts[3][1] as f64 - t[1], pts[3][2] as f64 - t[2]]);
+                println!("PROBE GRID (eid {} ProbeToShadow through the sun's WorldPw01Shadow⁻¹): GridToWorld rows {:?} {:?} {:?}, origin ({:.4}, {:.4}, {:.4}), dims {:?}", pr["eid"], rows[0].map(|v| (v * 1e4).round() / 1e4), rows[1].map(|v| (v * 1e4).round() / 1e4), rows[2].map(|v| (v * 1e4).round() / 1e4), origin[0], origin[1], origin[2], dims);
+                let cell = [rows[0][0], rows[1][1], rows[2][2]];
+                let lo = [origin[0] - 0.5 * cell[0], origin[1] - 0.5 * cell[1], origin[2] - 0.5 * cell[2]];
+                let hi = [origin[0] + (dims[0] - 0.5) * cell[0], origin[1] + (dims[1] - 0.5) * cell[1], origin[2] + (dims[2] - 0.5) * cell[2]];
+                println!("  cells (i − 0.5)·cell + origin, i = 0..dims: box [{:.4}, {:.4}] × [{:.4}, {:.4}] × [{:.4}, {:.4}]", lo[0], hi[0], lo[1], hi[1], lo[2], hi[2]);
+                grid_box = Some(lightmap::lightcam::Aabb { min: [lo[0] as f32, lo[1] as f32, lo[2] as f32], max: [hi[0] as f32, hi[1] as f32, hi[2] as f32] });
+            }
+            if let Some(cap) = sun_cap {
+                let d = [cap.w2c[0][2], cap.w2c[1][2], cap.w2c[2][2]];
+                let cam = lightmap::lightcam::fit_camera(&scene_box, d, &rules);
+                println!("SUN CAMERA (eid {}) from the scene box and the rules:", cap.eid);
+                report("sun camera", &cam, cap);
+            }
+            // the PEEL cameras: the world peel's box W = the scene box with its y max raised to --world-ymax (138.0 read off
+            // the capture: the source record is RE 5's), the fitted peel's box F = the items' x/z with the scene's y range
+            // (the tiling rule's one cell on this map: the union of the item records' x/z clipped to the cell, y = the box's)
+            let world_ymax: f32 = f("--world-ymax").map(|v| v.parse().unwrap()).unwrap_or(138.0);
+            let mut w_box = scene_box;
+            w_box.max[1] = world_ymax;
+            let mut f_box = lightmap::lightcam::Aabb { min: [items_box.min[0], scene_box.min[1], items_box.min[2]], max: [items_box.max[0], scene_box.max[1], items_box.max[2]] };
+            // --f-box xmin,zmin,xmax,zmax: the item RECORDS' x/z box (the models' own bounding boxes, not the meshes' vertices)
+            if let Some(s) = f("--f-box") { let v: Vec<f32> = s.split(',').map(|x| x.parse().unwrap()).collect(); f_box.min[0] = v[0]; f_box.min[2] = v[1]; f_box.max[0] = v[2]; f_box.max[2] = v[3]; }
+            println!("PEEL boxes: W min {:?} max {:?}; F min {:?} max {:?}", w_box.min, w_box.max, f_box.min, f_box.max);
+            for cap in &caps {
+                if cap.eye[0] == 0.0 && cap.eye[2] == 0.0 { continue; }
+                if sun_cap.map(|s| s.eid == cap.eid).unwrap_or(false) { continue; }
+                let d = [cap.w2c[0][2], cap.w2c[1][2], cap.w2c[2][2]];
+                // which box: the eye tells (W's centre y 71 vs F's 49.75)
+                let (name, b) = if (cap.eye[0] - w_box.centre()[0]).abs() < 1.0 && (cap.eye[2] - w_box.centre()[2]).abs() < 1.0 { ("world peel", w_box) } else { ("fitted peel", f_box) };
+                let cam = lightmap::lightcam::fit_camera(&b, d, &rules);
+                println!("PEEL CAMERA eid {} ({name}, D ({:.4}, {:.4}, {:.4})):", cap.eid, d[0], d[1], d[2]);
+                report(name, &cam, cap);
+                // the lookup matrix of this camera's accumulate draws (PS 17112 with the same PeelDirInW, the first one
+                // after this camera's eid whose WorldPw01Shadow's z column matches the camera's forward)
+                let pw01 = cam.world_pw01_shadow(4096, 4096);
+                let acc = draws.as_array().unwrap().iter().filter(|e| e["Pixel"]["shader"].as_str() == Some("17112") && e["eid"].as_u64().unwrap_or(0) > cap.eid).find(|e| { let m = m4(&e["Pixel"]["cbuffers"]["ShaderP"]["g_CBufferP"]["WorldPw01Shadow"]); (m[3][2] - pw01[3][2]).abs() < 1e-3 && (m[0][0] - pw01[0][0]).abs() < 1e-6 });
+                match acc {
+                    Some(e) => {
+                        let m = m4(&e["Pixel"]["cbuffers"]["ShaderP"]["g_CBufferP"]["WorldPw01Shadow"]);
+                        let mut worst = 0i64;
+                        let mut lines = Vec::new();
+                        for i in 0..4 { for j in 0..4 { let dlt = lightmap::lightcam::ulps(pw01[i][j], m[i][j]); worst = worst.max(dlt.abs()); if dlt != 0 { lines.push(format!("      WorldPw01Shadow[{i}][{j}]: ours {:.9} game {:.9} ({dlt:+} ulp)", pw01[i][j], m[i][j])); } } }
+                        println!("    WorldPw01Shadow of the accumulate eid {}: worst {worst} ulp over 16 values{}", e["eid"], if lines.is_empty() { " — ALL BIT-IDENTICAL".to_string() } else { format!(", {} differ:", lines.len()) });
+                        for l in lines { println!("{l}"); }
+                    }
+                    None => println!("    (no accumulate draw with this camera's WorldPw01Shadow in the frame)"),
+                }
+            }
+        }
         "encode-check" => {
             // lmtool encode-check PASSCAP_ROOT [--frame N] [--fma] [--half-up] [--all]
             //   the transcribed finalisation (gpuenc.rs: the |rgb| max reduction + CS 23025 LmCompress_HBasis_YCbCr4)

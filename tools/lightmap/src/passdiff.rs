@@ -405,34 +405,30 @@ pub fn peel_frustums_for(m: &Manifest, sweep: u32, ours: &[[f32; 3]]) -> Vec<Vec
     if by_dir.is_empty() {
         return Vec::new();
     }
-    // THE FRUSTUM FIT, from the captured frustums (three directions, world + fitted): each peel's frustum
-    // is an axis-aligned box projected onto the direction's frame — right = normalize(D × Y), up = right ×
-    // D, forward = D; the centre is the box centre, the half-extents Σ_k |axis_k|·H_k. The boxes read off
-    // the capture (least squares over the 18 extents, residuals ≤ 1.7 m): the world peel's = (1024.5,
-    // 72.0, 1024.5) ± (1025.5, 66.95, 1025.4) — the map's block volume; the fitted peel's = (871.0, 50.7,
-    // 353.5) ± (10.8, 45.9, 16.4) — the items' box. (The decompile of the fit is engineer B's row; these
-    // numbers stand in until then.) A direction the capture lacks takes them projected onto its frame.
+    // a direction the capture lacks: the TRANSCRIBED fit (lightcam: CHmsVolumeShadow::UpdateFrustum's rules — the
+    // world peel on the scene ∪ environment box, the fitted peel on the item records' box — bit-identical to the
+    // captured sun and world-peel cameras of pwc-day) replaces engineer 2's least-squares stand-in boxes
+    let boxes = crate::lightcam::PeelBoxes::pwc_day();
+    let rules = crate::lightcam::FitRules::default();
     let reorient = |fs: &Vec<Frustum>, v: [f32; 3], od: [f32; 3]| -> Vec<Frustum> {
         let c = v[0] * od[0] + v[1] * od[1] + v[2] * od[2];
         if c >= 0.999_99 {
             return fs.clone();
         }
-        let r = { let x = crate::geometry::cross(od, [0.0, 1.0, 0.0]); if x[0].abs() + x[2].abs() < 1e-6 { [1.0, 0.0, 0.0] } else { crate::geometry::norm(x) } };
-        let u = crate::geometry::cross(r, od);
-        let boxes: [([f32; 3], [f32; 3]); 2] = [([1024.5, 72.0, 1024.5], [1025.5, 66.95, 1025.4]), ([871.0, 50.7, 353.5], [10.8, 45.9, 16.4])];
+        let fit = crate::lightcam::peel_frusta(od, &boxes, 4096, &rules);
+        if fit.len() == 2 {
+            // keep the captured peel count (a direction with one captured peel gets the matching one)
+            return if fs.len() >= 2 { fit } else { fit.into_iter().take(fs.len().max(1)).collect() };
+        }
         fs.iter()
-            .enumerate()
-            .map(|(i, f0)| {
+            .map(|f0| {
                 let mut f = f0.clone();
+                let helper = if od[1].abs() < 0.99 { [0.0, 1.0, 0.0] } else { [1.0, 0.0, 0.0] };
+                let r = crate::geometry::norm(crate::geometry::cross(helper, od));
+                let u = crate::geometry::cross(od, r);
                 f.forward = od;
                 f.right = r;
-                f.up = u;
-                // which box: the peel with the larger extents is the world's
-                let is_world = f0.half[0] > 500.0;
-                let (bc, bh) = if is_world { boxes[0] } else { boxes[1] };
-                f.center = bc;
-                let ext = |a: [f32; 3]| -> f32 { a[0].abs() * bh[0] + a[1].abs() * bh[1] + a[2].abs() * bh[2] };
-                f.half = [ext(r), ext(u), ext(od)];
+                f.up = [-u[0], -u[1], -u[2]];
                 f
             })
             .collect()
