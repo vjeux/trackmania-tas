@@ -134,7 +134,8 @@ impl DirContrib {
         let tmp = dir.join(format!("{}.tmp", file_name(self.sweep, self.di)));
         let mut f = std::fs::File::create(&tmp)?;
         f.write_all(&self.file_bytes())?;
-        f.sync_all()?;
+        drop(f);
+        // (no fsync: the rename makes the file appear whole; durability is not the point)
         std::fs::rename(&tmp, dir.join(file_name(self.sweep, self.di)))
     }
 
@@ -153,6 +154,62 @@ impl DirContrib {
     }
 }
 
+/// A PACK of contributions: one file per (sweep, box) — `sweep<s>-box<k>.contribs` — holding every direction's
+/// file bytes behind an index (the shared store takes seconds per small file: a range's 400 files went at
+/// one every two seconds, one 100 MB pack goes in three).
+pub struct ContribPack {
+    pub sweep: u32,
+    pub entries: std::collections::BTreeMap<u32, Vec<u8>>,
+}
+
+pub const PACK_MAGIC: &[u8; 8] = b"LMCTPK1 ";
+
+impl ContribPack {
+    pub fn write(&self, path: &Path) -> std::io::Result<()> {
+        let mut v: Vec<u8> = Vec::new();
+        v.extend_from_slice(PACK_MAGIC);
+        v.extend_from_slice(&self.sweep.to_le_bytes());
+        v.extend_from_slice(&(self.entries.len() as u32).to_le_bytes());
+        // the index: (di, offset, len) with offsets from the start of the data
+        let mut off = 0u64;
+        for (di, b) in &self.entries {
+            v.extend_from_slice(&di.to_le_bytes());
+            v.extend_from_slice(&off.to_le_bytes());
+            v.extend_from_slice(&(b.len() as u64).to_le_bytes());
+            off += b.len() as u64;
+        }
+        for b in self.entries.values() { v.extend_from_slice(b); }
+        let tmp = path.with_extension("contribs.tmp");
+        if let Some(parent) = path.parent() { std::fs::create_dir_all(parent)?; }
+        std::fs::write(&tmp, &v)?;
+        std::fs::rename(&tmp, path)
+    }
+
+    pub fn read(path: &Path) -> Result<ContribPack, String> {
+        let b = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        if b.len() < 16 || &b[0..8] != PACK_MAGIC { return Err(format!("{}: not a contribution pack", path.display())); }
+        let sweep = u32::from_le_bytes(b[8..12].try_into().unwrap());
+        let n = u32::from_le_bytes(b[12..16].try_into().unwrap()) as usize;
+        let data0 = 16 + n * 20;
+        if b.len() < data0 { return Err(format!("{}: truncated pack index", path.display())); }
+        let mut entries = std::collections::BTreeMap::new();
+        for k in 0..n {
+            let o = 16 + k * 20;
+            let di = u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+            let off = u64::from_le_bytes(b[o + 4..o + 12].try_into().unwrap()) as usize;
+            let len = u64::from_le_bytes(b[o + 12..o + 20].try_into().unwrap()) as usize;
+            if data0 + off + len > b.len() { return Err(format!("{}: truncated pack data", path.display())); }
+            entries.insert(di, b[data0 + off..data0 + off + len].to_vec());
+        }
+        Ok(ContribPack { sweep, entries })
+    }
+}
+
+/// Is this contribution source a pack file (else a directory of per-direction files)?
+pub fn is_pack(p: &Path) -> bool {
+    p.extension().map(|e| e == "contribs").unwrap_or(false)
+}
+
 /// The merge's reader: `threads` readers fetch the directions' files ahead of the replay (the shared store
 /// serves a single reader at ~14 MB/s and several in parallel), at most `ahead` decoded contributions held.
 pub struct Prefetch {
@@ -166,21 +223,41 @@ pub struct Prefetch {
 }
 
 impl Prefetch {
-    pub fn new(dirs: Vec<PathBuf>, sweep: u32, order: Vec<u32>, threads: usize, ahead: usize) -> Prefetch {
+    pub fn new(sources: Vec<PathBuf>, sweep: u32, order: Vec<u32>, threads: usize, ahead: usize) -> Prefetch {
         let ready = std::sync::Arc::new((std::sync::Mutex::new(std::collections::BTreeMap::new()), std::sync::Condvar::new()));
         let next_to_read = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let order = std::sync::Arc::new(order);
         let consumed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        // the packs among the sources, read whole (in parallel) into one map of raw entries
+        let (packs, dirs): (Vec<PathBuf>, Vec<PathBuf>) = sources.into_iter().partition(|p| is_pack(p));
+        let pack_entries: std::sync::Arc<std::collections::BTreeMap<u32, Vec<u8>>> = {
+            let loaded: Vec<Result<ContribPack, String>> = std::thread::scope(|sc| {
+                let hs: Vec<_> = packs.iter().map(|p| sc.spawn(move || ContribPack::read(p))).collect();
+                hs.into_iter().map(|h| h.join().unwrap()).collect()
+            });
+            let mut all = std::collections::BTreeMap::new();
+            for (p, r) in packs.iter().zip(loaded) {
+                match r {
+                    Ok(pk) => { if pk.sweep != sweep { panic!("{}: a sweep {} pack, sweep {sweep} expected", p.display(), pk.sweep); } for (di, b) in pk.entries { all.insert(di, b); } }
+                    Err(e) => panic!("merge-contrib: {e}"),
+                }
+            }
+            if !packs.is_empty() { eprintln!("merge-contrib: {} pack(s) read, {} directions", packs.len(), all.len()); }
+            std::sync::Arc::new(all)
+        };
         let mut handles = Vec::new();
         for _ in 0..threads.max(1) {
-            let (ready, next_to_read, order, dirs, consumed) = (ready.clone(), next_to_read.clone(), order.clone(), dirs.clone(), consumed.clone());
+            let (ready, next_to_read, order, dirs, consumed, pack_entries) = (ready.clone(), next_to_read.clone(), order.clone(), dirs.clone(), consumed.clone(), pack_entries.clone());
             handles.push(std::thread::spawn(move || loop {
                 let k = next_to_read.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 if k >= order.len() { break; }
                 // stay at most `ahead` files past the consumer
                 while k > consumed.load(std::sync::atomic::Ordering::SeqCst) + ahead { std::thread::sleep(std::time::Duration::from_millis(5)); }
                 let di = order[k];
-                let r = DirContrib::load(&dirs, sweep, di);
+                let r = match pack_entries.get(&di) {
+                    Some(b) => DirContrib::from_file_bytes(b).map_err(|e| format!("pack entry for direction {di}: {e}")),
+                    None => DirContrib::load(&dirs, sweep, di),
+                };
                 let (m, cv) = &*ready;
                 m.lock().unwrap().insert(di, r);
                 cv.notify_all();
@@ -250,6 +327,29 @@ mod tests {
         let e = c.encode();
         assert_eq!(u32::from_le_bytes(e[20..24].try_into().unwrap()), 1, "raw mode");
         assert_eq!(DirContrib::decode(&e).unwrap().sel, c.sel);
+    }
+
+    #[test]
+    fn the_pack_round_trips() {
+        let mk = |di: u32| DirContrib { sweep: 2, di, n_subs: 10, sel: vec![[0.5, 0.25, 1.0]; 3], occl_bits: vec![di as u64], probe_cur: vec![], sky_adds: vec![(1, 0.5)] };
+        let mut pk = ContribPack { sweep: 2, entries: std::collections::BTreeMap::new() };
+        for di in [3u32, 7, 1] { pk.entries.insert(di, mk(di).file_bytes()); }
+        let dir = std::env::temp_dir().join(format!("lmtool-pack-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("sweep2-box0.contribs");
+        pk.write(&p).unwrap();
+        assert!(is_pack(&p));
+        let rd = ContribPack::read(&p).unwrap();
+        assert_eq!(rd.sweep, 2);
+        assert_eq!(rd.entries.keys().copied().collect::<Vec<_>>(), vec![1, 3, 7]);
+        let c = DirContrib::from_file_bytes(&rd.entries[&7]).unwrap();
+        assert_eq!(c.di, 7);
+        assert_eq!(c.occl_bits, vec![7]);
+        let pf = Prefetch::new(vec![p.clone()], 2, vec![1, 3, 7], 2, 4);
+        assert_eq!(pf.take(3).unwrap().di, 3);
+        assert_eq!(pf.take(1).unwrap().di, 1);
+        assert_eq!(pf.take(7).unwrap().di, 7);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

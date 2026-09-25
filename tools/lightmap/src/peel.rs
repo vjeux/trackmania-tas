@@ -2187,10 +2187,23 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
     let tile_clip: Vec<Option<[f32; 4]>> = prm.peel_tile_clip.as_ref().map(|v| v.as_ref().clone()).unwrap_or_default();
     // THE DIRECTION-RANGE SPLIT (contrib.rs): a box bakes the directions of its range and writes what each
     // contributes; the merge replays every direction's contribution through the accumulate below in order
+    // (eight writers: a file on the shared store costs a second of latency; one writer throttled the bake to
+    // its pace — 41 of 176 cores busy)
+    // a `.contribs` target = ONE pack file for the range, assembled in memory and written at the end (the
+    // shared store takes seconds per small file); a directory = one file per direction
+    let pack_entries: std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<u32, Vec<u8>>>> = std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new()));
+    let pack_mode = prm.contrib_out.as_ref().map(|p| crate::contrib::is_pack(p)).unwrap_or(false);
+    let mut contrib_writers: Vec<std::thread::JoinHandle<()>> = Vec::new();
     let contrib_tx: Option<std::sync::mpsc::SyncSender<crate::contrib::DirContrib>> = prm.contrib_out.as_ref().map(|dir| {
-        let (tx, rx) = std::sync::mpsc::sync_channel::<crate::contrib::DirContrib>(4);
-        let dir = dir.clone();
-        std::thread::spawn(move || { for c in rx { c.write(&dir).expect("write contribution"); } });
+        let (tx, rx) = std::sync::mpsc::sync_channel::<crate::contrib::DirContrib>(64);
+        let rx = std::sync::Arc::new(std::sync::Mutex::new(rx));
+        for _ in 0..8 {
+            let (dir, rx, pe) = (dir.clone(), rx.clone(), pack_entries.clone());
+            contrib_writers.push(std::thread::spawn(move || loop {
+                let c = match rx.lock().unwrap().recv() { Ok(c) => c, Err(_) => break };
+                if pack_mode { let b = c.file_bytes(); pe.lock().unwrap().insert(c.di, b); } else { c.write(&dir).expect("write contribution"); }
+            }));
+        }
         tx
     });
     if prm.contrib_out.is_some() {
@@ -3045,8 +3058,19 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         for r in &lm_rows { eprintln!("  {r}"); }
     }
     drop(contrib_tx);
+    for h in contrib_writers { h.join().expect("contribution writer"); }
     if prm.merge_contrib.is_some() { eprintln!("merge-contrib: sweep {}: {n_replayed} directions replayed in issue order", prm.sweep); }
-    if let Some(dir) = &prm.contrib_out { eprintln!("contrib-out: sweep {}: the directions {:?} written to {}", prm.sweep, prm.dir_range.unwrap_or((0, dirs.len())), dir.display()); }
+    if let Some(dir) = &prm.contrib_out {
+        if pack_mode {
+            let entries = std::mem::take(&mut *pack_entries.lock().unwrap());
+            let bytes: usize = entries.values().map(|b| b.len()).sum();
+            let t_pack = std::time::Instant::now();
+            crate::contrib::ContribPack { sweep: prm.sweep, entries }.write(dir).expect("write contribution pack");
+            eprintln!("contrib-out: sweep {}: the directions {:?} packed into {} ({:.1} MB, {:.1}s)", prm.sweep, prm.dir_range.unwrap_or((0, dirs.len())), dir.display(), bytes as f64 / 1e6, t_pack.elapsed().as_secs_f32());
+        } else {
+            eprintln!("contrib-out: sweep {}: the directions {:?} written to {}", prm.sweep, prm.dir_range.unwrap_or((0, dirs.len())), dir.display());
+        }
+    }
     // the sweep's transcribed H-basis MRTs to the caller (the sweep-transition chain / the finalisation)
     if let (Some(slot), Some(hb)) = (&prm.hb_out, hb_lm.take()) {
         *slot.0.lock().unwrap() = Some(hb);

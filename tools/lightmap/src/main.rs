@@ -6548,7 +6548,7 @@ fn run(a: Vec<String>) {
                                 let mut children: Vec<(usize, std::process::Child)> = Vec::new();
                                 let t_sw = std::time::Instant::now();
                                 for k in 0..boxes {
-                                    let cdir = wroot.join(format!("s{sw}-box{k}"));
+                                    let cdir = wroot.join(format!("sweep{sw}-box{k}.contribs"));
                                     let mut args: Vec<String> = vec!["bake".into(), m.clone(), "--raster".into(), "--quality".into(), quality.clone(), "--game-peel".into(), "--profile".into()];
                                     args.extend(extra.iter().cloned());
                                     args.extend(["--sweep-only".into(), sw.to_string(), "--dir-range".into(), format!("{k}/{boxes}"), "--contrib-out".into(), cdir.to_string_lossy().to_string(), "--out".into(), wroot.join(format!("s{sw}-box{k}.Map.Gbx")).to_string_lossy().to_string()]);
@@ -6587,7 +6587,7 @@ fn run(a: Vec<String>) {
                                 let mut cmd = std::process::Command::new(&exe);
                                 cmd.arg("bake").arg(m).arg("--raster").arg("--quality").arg(&quality).arg("--game-peel").arg("--profile");
                                 for e in &extra { cmd.arg(e); }
-                                let dirs: Vec<String> = (0..boxes).map(|k| wroot.join(format!("s{sw}-box{k}")).to_string_lossy().to_string()).collect();
+                                let dirs: Vec<String> = (0..boxes).map(|k| wroot.join(format!("sweep{sw}-box{k}.contribs")).to_string_lossy().to_string()).collect();
                                 cmd.arg("--sweep-only").arg(sw.to_string()).arg("--merge-contrib").arg(dirs.join(",")).arg("--field-out").arg(wroot.join(format!("field{sw}.bin")));
                                 if sw > 0 { cmd.arg("--field-from").arg(&field_prev); }
                                 cmd.arg("--out").arg(if sw + 1 == n_sweeps { out.clone() } else { wroot.join(format!("merge{sw}.Map.Gbx")) });
@@ -6600,7 +6600,7 @@ fn run(a: Vec<String>) {
                                         all_err += &err.lines().filter(|l| !l.starts_with("profile [sweep ")).collect::<Vec<_>>().join("\n");
                                         all_err += &format!("\nprofile [sweep {sw}]: split over {boxes} box(es): range bakes {range_s:.1}s, merge {:.1}s; sweep total {:.1}s\n", t_m.elapsed().as_secs_f32(), range_s + t_m.elapsed().as_secs_f32());
                                         if !o.status.success() { ok = false; all_err += &format!("sweep {sw} merge FAILED: {}\n", err.lines().rev().take(3).collect::<Vec<_>>().join(" | ")); }
-                                        if !keep_work { for d in &dirs { let _ = std::fs::remove_dir_all(d); } }
+                                        if !keep_work { for d in &dirs { let _ = std::fs::remove_file(d); } }
                                     }
                                     Err(e) => { ok = false; all_err += &format!("sweep {sw} merge: {e}\n"); }
                                 }
