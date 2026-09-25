@@ -795,7 +795,8 @@ pub fn race(args: &[String]) -> i32 {
         }
         a.push(x.clone());
     }
-    let has = |k: &str| a.iter().any(|x| x == k);
+    let given: Vec<String> = a.clone();
+    let has = |k: &str| given.iter().any(|x| x == k);
     let defaults: [(&str, &str); 7] = [("--map", &map), ("--mode", "TrackMania/TM_PlayMap_Local"), ("--outdir", "/mnt/c/Users/vjeux/mk64qa/race"), ("--tag", "race"), ("--shots", "0"), ("--ghost-query", "&layer=0"), ("--timeout", "150")];
     for (k, v) in defaults {
         if !has(k) {
