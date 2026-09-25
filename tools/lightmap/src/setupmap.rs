@@ -494,3 +494,54 @@ pub fn tables_from_pak(f: &mut FrozenTables, read: &mut dyn FnMut(&str) -> Optio
     notes.push(format!("water tables (captured): top_by_plane {:?}, depth_by_id {:?}, id map {}×{} histogram {:?}; the collection descriptor (RE 8): WaterTop 7.0 WaterFloor 4.0 FogMaxDepth 3.5 → depth 3.0, 1/fogMaxDepth {}", f.top_by_plane, f.depth_by_id, f.ids.w, f.ids.h, hist, 1.0f32 / 3.5));
     notes.push(format!("tables FROM THE PAK (RE 8's chain): {}; still frozen: the transmittance LUT 15078 (the kind-51 ImageGen)", got.join("; ")));
 }
+
+/// The collection tables through RE child 8's `paktables` (the material chain of the pack, the collection's water descriptor,
+/// the fog LUT image and the transmittance generator): nothing of the pre-pass's material inputs stays frozen. `links` = the
+/// game-material links of the map's LM instances: the zone tiles' (the terrain material of the zone) and the items' constant
+/// materials (Land, TrackWallInWorld).
+pub fn tables_from_paktables(f: &mut FrozenTables, store: &mut mapgeom::store::DataStore, collection: &str, tile_link: &str, scene: &crate::geometry::Scene, notes: &mut Vec<String>) -> Result<(), String> {
+    let mut got = Vec::new();
+    let tile = crate::paktables::material_constant(store, tile_link)?;
+    got.push(format!("tiles {tile_link} → {:?} ({:?}, ids {:?}, {} at uv {:?}; frozen {:?})", tile.rgb, tile.family, tile.ids, tile.image, tile.uv, f.tile_rgb));
+    f.tile_rgb = tile.rgb;
+    // the items' constant materials: every game-material link of the scene's models that the pack resolves
+    let mut links: Vec<String> = Vec::new();
+    for m in &scene.models {
+        for l in &m.mat_links {
+            if !links.contains(l) {
+                links.push(l.clone());
+            }
+        }
+    }
+    for l in &links {
+        match crate::paktables::material_constant(store, l) {
+            Ok(mc) => {
+                match mc.family {
+                    crate::paktables::Family::PyPxzIds => { got.push(format!("{l} → {:?} (terrain ids {:?}; frozen Land {:?})", mc.rgb, mc.ids, f.wall_rgb)); f.wall_rgb = mc.rgb; }
+                    crate::paktables::Family::PyPxzProjected => { got.push(format!("{l} → {:?} (projected, {}; frozen TrackWall {:?})", mc.rgb, mc.image, f.pad_rgb)); f.pad_rgb = mc.rgb; }
+                }
+            }
+            Err(e) => notes.push(format!("pak: {l}: {e} (the texture path keeps it)")),
+        }
+    }
+    let w = crate::paktables::water_tables(store, collection)?;
+    f.top_by_plane = vec![[w.top, 0.0, 0.0, 1.0]];
+    f.depth_by_id = vec![[w.depth_inv[0], w.depth_inv[1], 0.0, 1.0]];
+    let ch = f.ids.channels as usize;
+    for (i, v) in f.ids.data.iter_mut().enumerate() { *v = if i % ch == 0 { 1.0 } else { 0.0 }; }
+    // the two LUTs against the frozen ones, texel for texel
+    let cmp = |ours: &Texture, theirs: &Texture| -> (usize, usize) {
+        let (Some(a), Some(c)) = (ours.levels.first().and_then(|s| s.first()), theirs.levels.first().and_then(|s| s.first())) else { return (0, 0) };
+        let n = a.w.min(c.w);
+        ((0..n).filter(|&i| a.get(i, 0) == c.get(i, 0)).count(), n as usize)
+    };
+    let fog = crate::paktables::lut_texture(&w.fog, true);
+    let tr = crate::paktables::lut_texture(&w.transmittance, true);
+    let (fs, fn_) = cmp(&fog, &f.fog);
+    let (ts, tn) = cmp(&tr, &f.transmittance);
+    got.push(format!("water {:?}: top_by_plane [{}], depth_by_id [({}, {})], fog LUT {fs}/{fn_} texels identical to the captured 15075, transmittance LUT (the kind-0x33 generator) {ts}/{tn} identical to 15078", w.desc, w.top, w.depth_inv[0], w.depth_inv[1]));
+    f.fog = fog;
+    f.transmittance = tr;
+    notes.push(format!("tables FROM THE PACK (RE 8's paktables): {}; nothing of the material inputs is frozen", got.join("; ")));
+    Ok(())
+}

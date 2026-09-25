@@ -1564,15 +1564,22 @@ fn run(a: Vec<String>) {
                         if !paks.is_empty() {
                             let mut store = mapgeom::store::DataStore::empty();
                             for p in &paks { if let Some((pp, key)) = p.rsplit_once(':') { store.add_pak(pp, key).unwrap_or_else(|e| panic!("--pak {p}: {e}")); } }
-                            let mut read = |path: &str| -> Option<Vec<u8>> { store.read(path).ok().map(|b| b.to_vec()) };
-                            lightmap::setupmap::tables_from_pak(&mut frozen, &mut read, &f("--collection").unwrap_or_else(|| "BlueBay".into()), &f("--mood-name").unwrap_or_else(|| "Day".into()), &f("--tile-pxz").unwrap_or_else(|| "SeaFloor".into()), &mut pak_notes);
+                            let collection = f("--collection").unwrap_or_else(|| "BlueBay".into());
+                            // RE 8's paktables (the material chain, the water descriptor, the LUT image + generator) — the zone tiles' material link
+                            // from --tile-material (default <Coll>\Media\Material\SeaFloor: BlueBay's Sea zone); the interim corner-mean path is the fallback
+                            let tile_link = f("--tile-material").unwrap_or_else(|| format!("{collection}\\Media\\Material\\SeaFloor"));
+                            if let Err(e) = lightmap::setupmap::tables_from_paktables(&mut frozen, &mut store, &collection, &tile_link, &scene, &mut pak_notes) {
+                                pak_notes.push(format!("paktables: {e} — the interim pak path (corner means + WaterColor.tga + the descriptor table) is used"));
+                                let mut read = |path: &str| -> Option<Vec<u8>> { store.read(path).ok().map(|b| b.to_vec()) };
+                                lightmap::setupmap::tables_from_pak(&mut frozen, &mut read, &collection, &f("--mood-name").unwrap_or_else(|| "Day".into()), &f("--tile-pxz").unwrap_or_else(|| "SeaFloor".into()), &mut pak_notes);
+                            }
                         }
                     }
                     for n in &pak_notes { eprintln!("setup-from-map: {n}"); }
                     if pak_notes.is_empty() {
                         eprintln!("setup-from-map: FROZEN from the capture — the terrain constants (tile slices {:?} → {:?}, Land → {:?}), the TrackWall constant {:?}, the water id map / plane tables / LUTs 15075 + 15078 ({:.1}s)", frozen.tile_slices, frozen.tile_rgb, frozen.wall_rgb, frozen.pad_rgb, ti.elapsed().as_secs_f32());
                     } else {
-                        eprintln!("setup-from-map: still FROZEN from the capture — the transmittance LUT 15078 (WaterTransmittance.ImageGen.Gbx, the kind-51 generator) ({:.1}s)", ti.elapsed().as_secs_f32());
+                        eprintln!("setup-from-map: the collection tables from the pack ({:.1}s)", ti.elapsed().as_secs_f32());
                     }
                     // the scene box S = the union of the LM scene's placed vertices (the block records' union on pwc-day: the tiles at
                     // y 3.9999785 over 0..2048, the items)
