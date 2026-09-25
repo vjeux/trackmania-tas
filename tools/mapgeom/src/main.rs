@@ -1258,6 +1258,28 @@ fn main() {
         // (iPy, iPxz, iPyX2, iPyH2 = SubIndexPyPxz) and the g_WorldPosToTc* buffers as uploaded (4 float4 per
         // layer, printed as floats and bits). `--buffers OUT` writes the BaseColor buffer's bytes (= the
         // captured 5352 for BlueBay) to a file.
+        // material-colour-flags LINK… : CPlugMaterial+0xf0 bits 0/1 ("takes the placement colour" / "colour 2") from the
+        // material's CPlugMaterialCustom GpuFx parameter names (chunk 0x0903A00A; the finaliser 0x14040ee40 tests list 2
+        // for `BaseColorTargetId` / `DeactivableDisplayId`, list 1 for `BaseColorTarget` / `BaseColorTarget_sRGB`) — the
+        // Solid2Model's +0x1f0 bits and the item clone key's colour follow from any material with bit 0 (RE 7, 2026-09-25)
+        "material-colour-flags" => {
+            let mut store = open(&a);
+            let links: Vec<String> = a.rest.iter().skip(1).filter(|x| !x.starts_with("--")).cloned().collect();
+            for link in &links {
+                let file = if link.to_ascii_lowercase().ends_with(".gbx") { link.clone() } else { format!("{link}.Material.Gbx") };
+                let m = match store.load_model(&file) { Ok(m) => m, Err(e) => { println!("{link}: {e}"); continue } };
+                let g = match m.graph() { Ok(g) => g, Err(e) => { println!("{link}: {e}"); continue } };
+                let mut found = false;
+                for s in &g.slots {
+                    if let mapgeom::node::Slot::Node(mapgeom::node::Node::MaterialCustom(c)) = s {
+                        found = true;
+                        let f = c.colour_flags();
+                        println!("{link}: colour flags {f:#x}{}{} — GpuFx list 1 {:?}, list 2 {:?}", if f & 1 != 0 { " [takes the placement colour]" } else { "" }, if f & 2 != 0 { " [colour 2]" } else { "" }, c.gpufx_names[0], c.gpufx_names[1]);
+                    }
+                }
+                if !found { println!("{link}: no CPlugMaterialCustom node → flags 0"); }
+            }
+        }
         "terrain-material" => {
             let mut store = open(&a);
             let out_path = flag(&a.rest, "--buffers");

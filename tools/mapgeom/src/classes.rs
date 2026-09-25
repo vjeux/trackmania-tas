@@ -1698,7 +1698,10 @@ impl<'a> Graph<'a> {
             }
             0x0903A00A => {
                 acc.touched = true;
-                for _ in 0..2 {
+                // both readings of the GpuFx lists: the (name, floats) params (RE 8: the material's constant overrides)
+                // and the two lists' names (RE 7: the placement-colour flags)
+                let mut lists: [Vec<String>; 2] = Default::default();
+                for list in lists.iter_mut() {
                     let n = self.r.u32()? as usize;
                     for _ in 0..n {
                         // GpuFx: id, count1, count2, bool, count2 x count1 floats
@@ -1710,9 +1713,11 @@ impl<'a> Graph<'a> {
                         for _ in 0..c1 * c2 {
                             vals.push(self.r.f32()?);
                         }
-                        acc.mat_custom_mut().params.push((name, vals));
+                        acc.mat_custom_mut().params.push((name.clone(), vals));
+                        list.push(name);
                     }
                 }
+                acc.mat_custom.get_or_insert_with(Default::default).gpufx_names = lists;
                 Ok(())
             }
             0x0903A00B => {

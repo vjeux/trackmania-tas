@@ -9,6 +9,32 @@ use super::merged::Merged;
 use super::surface::Surf;
 use crate::crystal_model::CPlugMaterialUserInst;
 
+/// CPlugMaterial+0xf0 bits 0/1 of an external `.Material.Gbx` — bit 0 "takes the placement colour", bit 1 "colour 2"
+/// — from its CPlugMaterialCustom's GpuFx parameter names (`MaterialCustomRaw::colour_flags`; the finaliser 0x14040ee40
+/// tests `BaseColorTargetId` / `DeactivableDisplayId` in list 2 and `BaseColorTarget` / `BaseColorTarget_sRGB` in
+/// list 1). 0 when the material has no custom node or cannot be read. A Solid2Model whose materials include a bit-0
+/// material gets +0x1f0 & 2 and is CLONED PER PLACEMENT COLOUR by the item spawner (the clone key FUN_1401df340 =
+/// {model, params flags, colour}), which the lightmapper sees as one record group per (model, colour) — RE 7,
+/// 2026-09-25 (E's tiny 03 split: TrackBordersInWorld / TrackWallClipsInWorld / StructureInWorld items clone per
+/// colour, TrackWallInWorld / Deco / DecoHill / TechnicsTrims / Land items do not).
+pub fn material_colour_flags(store: &mut crate::store::DataStore, link: &str) -> u32 {
+    let file = if link.to_ascii_lowercase().ends_with(".gbx") { link.to_string() } else { format!("{link}.Material.Gbx") };
+    let Ok(m) = store.load_model(&file) else { return 0 };
+    let Ok(g) = m.graph() else { return 0 };
+    let mut f = 0u32;
+    for s in &g.slots {
+        if let crate::node::Slot::Node(crate::node::Node::MaterialCustom(c)) = s {
+            f |= c.colour_flags();
+        }
+    }
+    f
+}
+
+/// Does any of these material links take the placement colour (→ the model is cloned per colour)?
+pub fn colour_cloned(store: &mut crate::store::DataStore, links: &[String]) -> bool {
+    links.iter().any(|l| material_colour_flags(store, l) & 1 != 0)
+}
+
 /// Physics id of an external `.Material.Gbx` (its `CPlugMaterial` surface
 /// id), through the store; `None` when it cannot be read.
 pub fn material_physics(store: &mut crate::store::DataStore, path: &str) -> Option<u8> {

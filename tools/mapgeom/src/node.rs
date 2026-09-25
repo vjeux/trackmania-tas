@@ -353,6 +353,44 @@ pub struct MaterialCustomRaw {
     /// 0x0903A00A: the GpuFx parameters (the two lists concatenated), as (name, floats) — a
     /// material's constant overrides (`PxzScaleTrans` = (0.0005, 0.0005, 0.5) on WarpSand).
     pub params: Vec<(String, Vec<f32>)>,
+    /// 0x0903A00A: the GpuFx parameter names of the two lists (custom+0x70 and custom+0x80 at runtime,
+    /// 0x30-byte entries with the name Id at +0x18). The material's runtime flags come from them (RE 7,
+    /// 2026-09-25, CPlugMaterial finaliser 0x14040ee40 l.~40–70): +0xf0 bit 0 "takes the placement colour" ⟺
+    /// list 2 has `BaseColorTargetId` or list 1 has `BaseColorTarget` / `BaseColorTarget_sRGB`; bit 1 "colour 2"
+    /// ⟺ list 2 has `DeactivableDisplayId`. (The Solid2Model's +0x1f0 bits 1/2 = any material with those bits; the
+    /// item clone key then carries the placement colour.)
+    pub gpufx_names: [Vec<String>; 2],
+}
+
+#[cfg(test)]
+mod colour_flag_tests {
+    use super::MaterialCustomRaw;
+    #[test]
+    fn stadium_on_terrain_materials() {
+        // WhiteShore\Media\Modifier\StadiumOnTerrain\* as the pack has them (2026-09-25)
+        let mk = |l1: &[&str], l2: &[&str]| MaterialCustomRaw { gpufx_names: [l1.iter().map(|s| s.to_string()).collect(), l2.iter().map(|s| s.to_string()).collect()], ..Default::default() };
+        assert_eq!(mk(&["BaseColorTarget", "BaseColorTarget_SI"], &["TcScale_BRNH", "Meters_Depth"]).colour_flags(), 1); // TrackBordersInWorld
+        assert_eq!(mk(&["BaseColorTarget"], &[]).colour_flags(), 1); // TrackWallClipsInWorld, StructureInWorld
+        assert_eq!(mk(&["BaseColorTarget_sRGB"], &[]).colour_flags(), 1); // DecalPaintSponsor4x1D
+        assert_eq!(mk(&[], &[]).colour_flags(), 0); // Deco, DecoHill, TrackWallInWorld
+        assert_eq!(mk(&["TargetColor"], &[]).colour_flags(), 0); // CustomMetalPainted: a different parameter
+        assert_eq!(mk(&[], &["BaseColorTargetId", "DeactivableDisplayId"]).colour_flags(), 3);
+    }
+}
+
+impl MaterialCustomRaw {
+    /// CPlugMaterial+0xf0 bits 0 and 1 as the finaliser derives them (see `gpufx_names`).
+    pub fn colour_flags(&self) -> u32 {
+        let has = |list: usize, n: &str| self.gpufx_names[list].iter().any(|x| x == n);
+        let mut f = 0u32;
+        if has(1, "BaseColorTargetId") || has(0, "BaseColorTarget") || has(0, "BaseColorTarget_sRGB") {
+            f |= 1;
+        }
+        if has(1, "DeactivableDisplayId") {
+            f |= 2;
+        }
+        f
+    }
 }
 
 #[derive(Clone, Debug)]
