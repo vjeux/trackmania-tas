@@ -24,6 +24,8 @@ pub struct Rec {
     pub pos_rank: Option<u32>,
     /// A WALL record (RE 7: the Base_VFCMiddle_Air model with an axis-aligned third Iso4 row): (facing code, height 2·h.y).
     pub wall: Option<(u8, f32)>,
+    /// The map item index for an item record, and its model / species name.
+    pub item: Option<(usize, String)>,
 }
 
 impl Rec {
@@ -44,6 +46,9 @@ pub struct DumpRec {
     pub half: [f32; 3],
     pub key: u64,
     pub chart: (i32, i32, i32, i32),
+    /// The model / PLG pointer columns (the game's clone identity).
+    pub model: String,
+    pub plg: String,
 }
 
 pub fn read_dump(path: &str) -> Result<Vec<DumpRec>, String> {
@@ -53,6 +58,7 @@ pub fn read_dump(path: &str) -> Result<Vec<DumpRec>, String> {
     let col = |name: &str| header.iter().position(|h| *h == name).ok_or_else(|| format!("{path}: no column {name}"));
     let (ci, cm, cu0, cv0, cu1, cv1, cq, cx, cy, cz, chx, chy, chz, ck) = (col("i")?, col("meterByUv")?, col("u0")?, col("v0")?, col("u1")?, col("v1")?, col("quality")?, col("centerX")?, col("centerY")?, col("centerZ")?, col("halfX")?, col("halfY")?, col("halfZ")?, col("key")?);
     let (ccx, ccy, ccw, cch) = (col("cx")?, col("cy")?, col("cw")?, col("ch")?);
+    let (cmodel, cplg) = (header.iter().position(|h| *h == "model"), header.iter().position(|h| *h == "plg"));
     let mut out = Vec::new();
     for l in lines {
         let f: Vec<&str> = l.split('\t').collect();
@@ -67,6 +73,8 @@ pub fn read_dump(path: &str) -> Result<Vec<DumpRec>, String> {
             half: [p(chx), p(chy), p(chz)],
             key: u64::from_str_radix(f[ck].trim(), 16).unwrap_or(0),
             chart: (f[ccx].trim().parse().unwrap_or(-1), f[ccy].trim().parse().unwrap_or(-1), f[ccw].trim().parse().unwrap_or(-1), f[cch].trim().parse().unwrap_or(-1)),
+            model: cmodel.map(|c| f[c].trim().to_string()).unwrap_or_default(),
+            plg: cplg.map(|c| f[c].trim().to_string()).unwrap_or_default(),
         });
     }
     Ok(out)
@@ -114,7 +122,7 @@ pub fn zone_tiles(store: &mut mapgeom::store::DataStore, collection: &str, zone:
             let iso: crate::lmtiles::Iso4 = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, cx as f32 * 32.0, cell_y * 8.0 + yoff, cz as f32 * 32.0];
             let w = mb.transformed(&iso);
             let q = quality(cx, cz);
-            out.push(Rec { class: "tile", obj: 0, sub: 0, meter_by_uv: mbu, uv, quality: q, centre: w.c, half: w.h, group: 0xF000_0000_0000_0000 | q.to_bits() as u64, key_centre: None, pos_rank: None, wall: None });
+            out.push(Rec { class: "tile", obj: 0, sub: 0, meter_by_uv: mbu, uv, quality: q, centre: w.c, half: w.h, group: 0xF000_0000_0000_0000 | q.to_bits() as u64, key_centre: None, pos_rank: None, wall: None, item: None });
         }
     }
     Ok(out)
@@ -205,6 +213,22 @@ pub fn compare(ours: &[Rec], dump: &[DumpRec]) {
     let extra: Vec<usize> = (0..dump.len()).filter(|j| !used[*j]).collect();
     println!("records-check: {} ours vs {} dump", ours.len(), dump.len());
     for (c, (m, qd, miss)) in &by_class { println!("  {c}: {m} matched ({qd} with another quality), {miss} missing"); }
+    // the centre / half precision per class: exact f32 matches and the max |Δ| (the Morton key rounds the centre to metres)
+    {
+        let mut prec: std::collections::BTreeMap<&str, (usize, usize, f32, f32, usize, f32, usize)> = Default::default();
+        let mut uv_examples = 0;
+        for &(i, j) in &order_pairs {
+            let (r, d) = (&ours[i], &dump[j]);
+            let e = prec.entry(r.class).or_insert((0, 0, 0.0, 0.0, 0, 0.0, 0));
+            if r.centre == d.centre { e.0 += 1; }
+            if r.half == d.half { e.1 += 1; }
+            for k in 0..3 { e.2 = e.2.max((r.centre[k] - d.centre[k]).abs()); e.3 = e.3.max((r.half[k] - d.half[k]).abs()); }
+            if r.uv == d.uv { e.4 += 1; } else if uv_examples < 6 { uv_examples += 1; println!("  {} #{i}: uv {:?} vs dump {:?} (MBU {} vs {})", r.class, r.uv, d.uv, r.meter_by_uv, d.meter_by_uv); }
+            for k in 0..4 { e.5 = e.5.max((r.uv[k] - d.uv[k]).abs()); }
+            if r.meter_by_uv == d.meter_by_uv { e.6 += 1; }
+        }
+        for (c, (ce, he, dc, dh, ue, du, me)) in &prec { println!("  {c}: centre bit-exact {ce}, half bit-exact {he}, max |Δcentre| {dc:.6}, max |Δhalf| {dh:.6}; uv bounds bit-exact {ue} (max |Δ| {du:.6}), MeterByUv bit-exact {me}"); }
+    }
     println!("  dump records not matched by ours: {}", extra.len());
     let mut extra_classes: std::collections::BTreeMap<String, usize> = Default::default();
     for &j in &extra { *extra_classes.entry(format!("MBU {:.4} uv [{:.4} {:.4} {:.4} {:.4}] q {:.4}", dump[j].meter_by_uv, dump[j].uv[0], dump[j].uv[1], dump[j].uv[2], dump[j].uv[3], dump[j].quality)).or_default() += 1; }
@@ -254,7 +278,7 @@ pub fn prefab_entity_records_in(store: &mut mapgeom::store::DataStore, free: boo
                 // THE WALL TEST (RE 7's FUN_14028ff90): this exact model file, and the entity's world Iso4 third row (m2, m5, m8) axis-aligned
                 let iso = crate::lmtiles::from_xform(&e_xf);
                 let wall = if prefab_path == crate::itemrule::WALL_MODEL_FILE { crate::itemrule::wall_facing(iso[2], iso[5], iso[8]).map(|code| (code, 2.0 * w.h[1])) } else { None };
-                out.push(Rec { class, obj, sub: *sub, meter_by_uv: plg.u02, uv: [plg.u04[0], plg.u04[1], plg.u04[2], plg.u04[3]], quality, centre: w.c, half: w.h, group, key_centre: None, pos_rank: None, wall });
+                out.push(Rec { class, obj, sub: *sub, meter_by_uv: plg.u02, uv: [plg.u04[0], plg.u04[1], plg.u04[2], plg.u04[3]], quality, centre: w.c, half: w.h, group, key_centre: None, pos_rank: None, wall, item: None });
                 *sub += 1;
             }
             None if e.model.index >= 0 => {
@@ -449,23 +473,77 @@ pub fn build_map_records(map_path: &str, scene: &crate::geometry::Scene, store: 
             n_clip_objs += 1;
         }
     }
-    // 4. the items
+    // 4. THE ITEMS, IN ITEM ORDER (tiny03's dump interleaves them: a kind-0 tree and a kind-2 item follow the map's item order) —
+    // a kind-2 record for an item the scene loaded (a PreLightGen with non-degenerate uv-0 bounds and a lightmap material), a
+    // kind-0 record for a vegetation placement (RE 7, 19:50Z + 20:15Z, bit-exact 380 / 380 on tiny03): its pack item model
+    // references .VegetTreeModel.Gbx files, the species = the variant byte into the species list, a record iff the species'
+    // VegetTreeModel carries a PreLightGen with u01 ≠ 0 (bushes: hasPLG 0 → none); the quality byte clamp(int(255·G·√2^e), 1,
+    // 255) / 255; the box = the LOD-0 non-leaf visuals' fold (VegetTreeModel::lightmap_record_box) through the Iso4 of the
+    // VARIED quaternion (veget_instance::variation: the pose-hash seed, the yaw / tilt draws; the scale draw is not in it) with
+    // the item position as translation (itemrule::legacy_tree_record_box).
     let item_obj0 = clip_obj0 + n_clip_objs;
-    let irecs = crate::lmtiles::item_records(scene, 1.0, false);
     let mut n_items = 0usize;
-    for inst in scene.instances.iter() {
-        if let Some(k) = &opts.kept { if !k.contains(&inst.item) { continue; } }
-        let m = &scene.models[inst.model];
-        let Some(b) = m.plg_bounds else { continue };
-        if !(b[2] > b[0] && b[3] > b[1]) { continue; }
-        let no_lm: Vec<String> = std::env::var("LMTOOL_NO_LM_MATERIALS").map(|v| v.split(',').map(|t| t.to_string()).collect()).unwrap_or_else(|_| vec!["RaceTriggerFX".into(), "\\Decal".into()]);
-        if !m.mat_links.is_empty() && m.mat_links.iter().all(|l| no_lm.iter().any(|n| l.contains(n.as_str()))) { continue; }
-        let Some(ir) = irecs.iter().find(|r| r.item == inst.item) else { continue };
-        let Some(rec) = &ir.record else { continue };
-        let q = crate::layout::item_quality(inst.lm_quality);
-        recs.push(Rec { class: "item", obj: item_obj0 + n_items as u32, sub: 0, meter_by_uv: m.plg_u02, uv: b, quality: q, centre: rec.world.c, half: rec.world.h, group: ((inst.model as u64) << 32) | q.to_bits() as u64, key_centre: None, pos_rank: None, wall: None });
+    let inst_of_item: std::collections::HashMap<usize, usize> = scene.instances.iter().enumerate().map(|(k, i)| (i.item, k)).collect();
+    let lm_quality: Vec<u8> = tmmaps::gbx::all_skip_chunks(&mf.gbx.body).iter().find(|(c, ..)| *c == 0x0304_3068).map(|&(_, _, payload, size)| { let start = payload + 4 + mf.blocks.len() + mf.baked.len(); mf.gbx.body[start.min(payload + size)..(payload + size).min(start + mf.items.len())].to_vec() }).unwrap_or_default();
+    let irecs = crate::lmtiles::item_records(scene, 1.0, false);
+    // THE ITEM CLONE IDENTITY = (item model, placement COLOUR byte — chunk 0x03043062): tiny03's dump shows one Solid2Model / PLG
+    // pointer per colour of the same item file (AC00000190: colour 1 → 0x…856600, colour 4 → 0x…85c440; five files split so),
+    // so the records of two colours never share a group
+    let colours = mf.colors();
+    let no_lm: Vec<String> = std::env::var("LMTOOL_NO_LM_MATERIALS").map(|v| v.split(',').map(|t| t.to_string()).collect()).unwrap_or_else(|_| vec!["RaceTriggerFX".into(), "\\Decal".into()]);
+    let mut species_cache: std::collections::HashMap<String, Option<Vec<String>>> = Default::default();
+    let mut model_cache: std::collections::HashMap<String, Option<(Option<mapgeom::static_item::solid2::PreLightGen>, Option<([f32; 3], [f32; 3])>, mapgeom::veget_instance::TreeParams)>> = Default::default();
+    let mut n_kind0 = 0usize;
+    for (ii, it) in mf.items.iter().enumerate() {
+        if let Some(k) = &opts.kept { if !k.contains(&ii) { continue; } }
+        if let Some(&ki) = inst_of_item.get(&ii) {
+            let inst = &scene.instances[ki];
+            let m = &scene.models[inst.model];
+            let Some(b) = m.plg_bounds else { continue };
+            if !(b[2] > b[0] && b[3] > b[1]) { continue; }
+            if !m.mat_links.is_empty() && m.mat_links.iter().all(|l| no_lm.iter().any(|n| l.contains(n.as_str()))) { continue; }
+            let Some(ir) = irecs.iter().find(|r| r.item == inst.item) else { continue };
+            let Some(rec) = &ir.record else { continue };
+            let q = crate::layout::item_quality(inst.lm_quality);
+            let colour = colours.as_ref().map(|c| c.item(ii)).unwrap_or(0) as u64;
+            let group = if std::env::var_os("LMTOOL_NO_COLOUR_CLONES").is_some() || !crate::itemrule::colour_cloned(&m.mat_links) { ((inst.model as u64) << 32) | q.to_bits() as u64 } else { ((inst.model as u64) << 40) | (colour << 32) | q.to_bits() as u64 };
+            recs.push(Rec { class: "item", obj: item_obj0 + n_items as u32, sub: 0, meter_by_uv: m.plg_u02, uv: b, quality: q, centre: rec.world.c, half: rec.world.h, group, key_centre: None, pos_rank: None, wall: None, item: Some((ii, format!("{} v{} flags {:#x}", it.model, it.variant(), it.flags))) });
+            n_items += 1;
+            continue;
+        }
+        let list = species_cache.entry(it.model.clone()).or_insert_with(|| { let file = mapgeom::tiny_library::find_item_file(store, &it.model)?; mapgeom::veget::item_species(store, &file).ok() }).clone();
+        let Some(list) = list else { continue };
+        if list.is_empty() { continue; }
+        let v = it.variant() as usize;
+        let Some(species) = list.get(v).or_else(|| list.first()).cloned() else { continue };
+        let md = model_cache.entry(species.clone()).or_insert_with(|| {
+            let m = mapgeom::veget::parse_tree_model(store, &species).ok()?;
+            let params = mapgeom::veget_instance::TreeParams { scale_var01: m.scale_var01, angle_max_rot_xz_deg: m.angle_max_rot_xz_deg, enable_random_rotation_y: m.enable_random_rotation_y != 0 };
+            let bx = m.lightmap_record_box();
+            let plg = store.read(&species).ok().and_then(|bytes| mapgeom::static_item::legacy_plg::veget_tree_prelight(&bytes).ok().flatten());
+            Some((plg, bx, params))
+        }).clone();
+        let Some((Some(plg), Some((c, h)), params)) = md else { continue };
+        if plg.u01 == 0 { continue; }
+        let e = crate::itemrule::quality_exponent(lm_quality.get(ii).copied().unwrap_or(0));
+        let byte = ((255.0f32 * 2f32.powf(e as f32 * 0.5)) as i32).clamp(1, 255);
+        let q = byte as f32 / 255.0;
+        let (q1, t, seed) = mapgeom::veget_instance::item_pose(it.yaw, it.pitch, it.roll, it.pos, it.pivot);
+        let inst = mapgeom::veget_instance::variation(q1, t, seed, params, true);
+        let (centre, half) = crate::itemrule::legacy_tree_record_box(inst.quat, it.pos, c, h);
+        let mut hh = std::collections::hash_map::DefaultHasher::new();
+        use std::hash::{Hash, Hasher};
+        // LMTOOL_KIND0_GROUP=item: every kind-0 record its own group (the study); default one group per species
+        if std::env::var("LMTOOL_KIND0_GROUP").map(|v| v == "item").unwrap_or(false) { ("legacy", ii).hash(&mut hh); } else { ("legacy", species.as_str()).hash(&mut hh); }
+        // LMTOOL_KIND0_KEY=pos|posc: the Morton key from the item position (+ the model box centre) instead of the record centre
+        let key_centre = match std::env::var("LMTOOL_KIND0_KEY").ok().as_deref() { Some("pos") => Some(it.pos), Some("posc") => Some([it.pos[0] + c[0], it.pos[1] + c[1], it.pos[2] + c[2]]), _ => None };
+        recs.push(Rec { class: "item0", obj: item_obj0 + n_items as u32, sub: 0, meter_by_uv: plg.u02, uv: [plg.u04[0], plg.u04[1], plg.u04[2], plg.u04[3]], quality: q, centre, half, group: (hh.finish() & 0x0000_FFFF_FFFF_0000) | q.to_bits() as u64, key_centre, pos_rank: None, wall: None, item: Some((ii, species.clone())) });
         n_items += 1;
+        n_kind0 += 1;
     }
+    if n_kind0 > 0 { notes.push(format!("{n_kind0} kind-0 legacy tree records")); }
     let _ = n_block_recs;
     Ok(MapRecords { recs, n_blocks: n_blocks_authored as usize, n_tiles, n_clips: n_clip_recs, n_items, tile_cells: cells, tile_quality: tq, block_obj0, tile_obj0, clip_obj0, item_obj0, notes })
 }
+
+

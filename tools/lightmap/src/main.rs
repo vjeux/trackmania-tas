@@ -5719,6 +5719,30 @@ fn run(a: Vec<String>) {
             // --store LOGICAL --pak FILE:KEY: the stock-item route (geometry::load_model_from_store); --prefab LOGICAL: a prefab's
             // entities' PLGs (records::prefab_entity_records at the identity)
             let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            // --from-map MAP --name FILE: an embedded item's bytes (mapgeom::embedded::files) — its item model class, externals and
+            // the legacy PreLightGen (VegetTreeModel tail / CPlugSolid 0x09005017) through RE 7's legacy_plg readers
+            if let Some(mp) = f("--from-map") {
+                let name = f("--name").expect("--name ITEM.Item.Gbx");
+                let mf = tmmaps::map::MapFile::load(std::path::Path::new(&mp));
+                let files = mapgeom::embedded::files(&mf).expect("embedded");
+                let Some((k, bytes)) = files.iter().find(|(k, _)| k.rsplit(['/', '\\']).next().unwrap_or(k) == name) else { println!("{name}: not embedded ({} files)", files.len()); return };
+                println!("{k}: {} bytes", bytes.len());
+                let g = tmmaps::gbx::Gbx::parse(bytes);
+                println!("  class {:#010x}, {} nodes, ref table {} bytes", g.class_id, g.num_nodes, g.ref_table.len());
+                let refs = mapgeom::static_item::file::ref_table_nodes(&g.ref_table);
+                println!("  externals: {:?}", refs.iter().take(8).collect::<Vec<_>>());
+                match mapgeom::static_item::file::parse_file(bytes) {
+                    Ok(f) => {
+                        if let Some(mc) = f.item.model() { println!("  model chunk: entity_model index {} inline {:?}; edition index {} inline {:?}", mc.entity_model.index, mc.entity_model.inline.as_deref().map(|n| n.class_id()), mc.entity_model_edition.index, mc.entity_model_edition.inline.as_deref().map(|n| n.class_id())); }
+                        println!("  static_object {} prefab {}", f.item.static_object().is_some(), f.item.prefab().is_some());
+                    }
+                    Err(e) => println!("  item parse: {e}"),
+                }
+                // the legacy PLGs: a VegetTreeModel (chunkless, the PLG in the tail) or a CPlugSolid 0x09005017 anywhere in the body
+                if let Ok(Some(pg)) = mapgeom::static_item::legacy_plg::veget_tree_prelight(bytes) { println!("  VegetTreeModel PLG: u01 {} MeterByUv {} uv0 {:?}", pg.u01, pg.u02, &pg.u04[..4]); }
+                match mapgeom::static_item::legacy_plg::solid_prelight(&g.body) { Ok(Some(pg)) => println!("  CPlugSolid 0x09005017 PLG: u01 {} MeterByUv {} uv0 {:?}", pg.u01, pg.u02, &pg.u04[..4]), Ok(None) => println!("  no CPlugSolid PLG in the body"), Err(e) => println!("  solid_prelight: {e}") }
+                return;
+            }
             // --zone-plg COLL:ZONE: the zone prefab's PLG (records::zone_tiles)
             if let Some(cz) = f("--zone-plg") {
                 let (coll, zone) = cz.split_once(':').expect("--zone-plg COLL:ZONE");
@@ -5780,200 +5804,25 @@ fn run(a: Vec<String>) {
             // the collection's profile gives the defaults: the ground grid, the tile row (layout::tile_level — the baked / flat zone
             // block row, else the profile's ground row) and yoff; --zone defaults to the profile's first flat zone
             let coll = f("--collection").unwrap_or_else(|| "Stadium".into());
-            let prof0 = lightmap::layout::CollectionProfile::of(&coll);
-            let mf = tmmaps::map::MapFile::load(std::path::Path::new(&a[1]));
-            // the ground zone: the map's ground-flagged flat zone blocks name it (the resaved tiny maps: 4 096 Water / Lake), else
-            // the profile's first zone
-            let zone = f("--zone").unwrap_or_else(|| lightmap::layout::ground_zone(&mf, &coll));
-            let grid: usize = f("--grid").map(|v| v.parse().unwrap()).unwrap_or(if (mf.size[0].max(0) * mf.size[2].max(0)) as i32 == prof0.grid * prof0.grid || coll != "Stadium" { mf.size[0].max(1) as usize } else { prof0.grid as usize });
-            let tile_y0: i32 = f("--tile-level").map(|v| v.parse().unwrap()).unwrap_or_else(|| lightmap::layout::tile_level(&mf, &coll));
-            // the tiles sit at cell_y·8 + yoff = tile_y0·8 + the profile's yoff
-            let yoff: f32 = f("--yoff").map(|v| v.parse().unwrap()).unwrap_or(prof0.yoff);
-            let cell_y: f32 = f("--cell-y").map(|v| v.parse().unwrap()).unwrap_or(tile_y0 as f32);
-            // the marked cells: the items' file cells at the tile level AND the blocks' cells (3-D; the WaterBase blocks one level
-            // above the ground mark their tiles at ring 1)
-            let mut item_cells: std::collections::HashSet<(i32, i32, i32)> = mf.items.iter().map(|it| (it.file_cell[0] as i32, it.file_cell[1] as i32, it.file_cell[2] as i32)).filter(|c| a.iter().any(|x| x == "--items-3d") || c.1 == tile_y0).collect();
-            // (a GHOST block — flags bit 28 — marks nothing: stpad's 12 flagged WaterBase blocks leave their tiles at ring ≥ 2)
-            if !a.iter().any(|x| x == "--no-block-cells") { for b in &mf.blocks { if b.flags & 0x1000_0000 != 0 && !a.iter().any(|x| x == "--ghost-marks") { continue; } if b.flags & 0x1000 != 0 && prof0.flat_zones.contains(&b.name.as_str()) { continue; } let (x, y, z) = b.coords(); item_cells.insert((x, y, z)); } }
-            let tile_y: i32 = tile_y0;
-            println!("marked cells: {} (items {}, blocks {}); tile level {tile_y}; item cell y values {:?}", item_cells.len(), mf.items.len(), mf.blocks.len(), { let mut v: Vec<i32> = mf.items.iter().map(|it| it.file_cell[1] as i32).collect(); v.sort(); v.dedup(); v });
-            let cells: Vec<(i32, i32)> = (0..grid as i32).flat_map(|cx| (0..grid as i32).map(move |cz| (cx, cz))).collect();
-            let tq = lightmap::layout::tile_quality(&cells, tile_y, &item_cells);
-            let q_of = |cx: usize, cz: usize| -> f32 { tq[cx * grid + cz] };
-            let tiles = lightmap::records::zone_tiles(&mut store, &coll, &zone, grid, cell_y, yoff, &q_of).expect("zone tiles");
-            println!("{} zone tiles; first {:?}", tiles.len(), tiles.first().map(|r| (r.centre, r.half, r.meter_by_uv, r.uv, r.quality)));
-            let qh: std::collections::BTreeMap<u32, usize> = tiles.iter().fold(Default::default(), |mut m, r| { *m.entry(r.quality.to_bits()).or_default() += 1; m });
-            println!("  tile quality histogram: {:?}", qh.iter().map(|(b, n)| (f32::from_bits(*b), *n)).collect::<Vec<_>>());
-            // THE BLOCKS (authored, in block order — one obj each) and THE ENGINE'S CLIPS (mapgeom::bake::simulate: the free clips the
-            // client instantiates at load, 1 028 drawn on stpad = the dump's 1 028 clip objects), then THE ITEMS
-            let mut recs: Vec<lightmap::records::Rec> = Vec::new();
-            // the blocks' world y = cy·8 + the collection's yoff (Stadium −64, WhiteShore −120, …); a ground-flagged FLAT ZONE block
-            // (the resaved tiny maps carry their 4 096 Water / Lake / Grass tiles as blocks) IS a tile — no block record for it
-            let prof = lightmap::layout::CollectionProfile::of(&coll);
-            let yoff_blocks: f32 = f("--block-yoff").map(|v| v.parse().unwrap()).unwrap_or(prof.yoff);
-            let is_zone_block = |b: &tmmaps::map::BlockRec| b.flags & 0x1000 != 0 && prof.flat_zones.contains(&b.name.as_str());
-            let mut idx = mapgeom::blockmap::BlockInfoIndex::build(&store, &coll);
-            let mut n_block_recs = 0usize;
-            for (bi_, b) in mf.blocks.iter().enumerate() {
-                if is_zone_block(b) { continue; }
-                let Some(path) = idx.path_for(&b.name) else { eprintln!("block {}: no block info for {}", bi_, b.name); continue };
-                let bi = match idx.load(&mut store, &path) { Ok(bi) => bi.clone(), Err(e) => { eprintln!("block {}: {e}", bi_); continue } };
-                let (x, y, z) = b.coords();
-                let ground = b.flags & mapgeom::blockmap::FLAG_GROUND != 0;
-                let variant = (b.flags & mapgeom::blockmap::FLAG_VARIANT_MASK) as usize;
-                let subvariant = ((b.flags >> mapgeom::blockmap::FLAG_SUBVARIANT_SHIFT) & 63) as usize;
-                let additional = ((b.flags >> mapgeom::blockmap::FLAG_ADDITIONAL_SHIFT) & 127) as usize;
-                let n = lightmap::records::block_records_class(&mut store, &bi, [x, y, z], b.dir, ground, variant, subvariant, additional, yoff_blocks, "block", 16384 + bi_ as u32, 1.0, b.flags & 0x1000_0000 != 0, &mut recs).unwrap_or_else(|e| { eprintln!("block {bi_}: {e}"); 0 });
-                n_block_recs += n;
-            }
-            println!("{} authored blocks → {n_block_recs} records; first {:?}", mf.blocks.len(), recs.first().map(|r| (r.centre, r.half, r.meter_by_uv, r.uv)));
-            recs.extend(tiles.iter().cloned());
-            // the clips
-            let faces = mapgeom::fillers::faces(&mut store, &mut idx, &mf);
-            let dirs: std::collections::HashMap<usize, u8> = mf.blocks.iter().map(|b| (b.index, b.dir)).collect();
-            let grounds = mapgeom::bake::record_grounds(&faces, &mf);
-            let mut clips = mapgeom::bake::simulate(&faces, &dirs, &grounds);
-            // the game's creation order: the authored blocks in block order, per face, per clip of the face's list (mapgeom's simulate
-            // walks its occupant cells sorted) — --clip-order sim keeps mapgeom's order
-            let mut clip_creation_rank: Vec<u32> = Vec::new();
-            if f("--clip-order").as_deref() != Some("sim") {
-                // THE OWNER ORDER (RE 7, 17:55Z; stpad: 0 descents against the dump): the challenge's cell hash map walked in slot
-                // order (the normal blocks inserted in file order), then the free-mode blocks in (x, z, y) order —
-                // itemrule::clip_owner_order; per owner the faces N, E, S, W, then the bottom (--face-order overrides), each
-                // face's clips in the unit's list order
-                let cells: Vec<[i32; 3]> = mf.blocks.iter().map(|b| { let (x, y, z) = b.coords(); [x, y, z] }).collect();
-                let frees: Vec<bool> = mf.blocks.iter().map(|b| b.flags & 0x1000_0000 != 0).collect();
-                let owner_order = lightmap::itemrule::clip_owner_order(&cells, &frees);
-                let owner_rank: std::collections::HashMap<usize, usize> = owner_order.iter().enumerate().map(|(r, &bi)| (mf.blocks[bi].index, r)).collect();
-                let face_order: Vec<usize> = f("--face-order").map(|v| v.split(',').map(|t| t.parse().unwrap()).collect()).unwrap_or_else(|| vec![0, 1, 2, 3, 4, 5]);
-                let face_rank = |face: usize| face_order.iter().position(|&x| x == face).unwrap_or(9);
-                let pos_in_list: Vec<usize> = clips.iter().map(|c| faces.occupants.get(&c.cell).and_then(|os| os.iter().find(|o| o.index == c.owner_index && o.unit == c.unit)).and_then(|o| o.faces[c.face].iter().position(|n| *n == c.name)).unwrap_or(0)).collect();
-                let mut idx: Vec<usize> = (0..clips.len()).collect();
-                idx.sort_by_key(|&i| (owner_rank.get(&clips[i].owner_index).copied().unwrap_or(usize::MAX), clips[i].unit, face_rank(clips[i].face), pos_in_list[i]));
-                // the CREATION order (file order of the owners × faces × list) as a rank per clip, for --clip-pos creation
-                let mut cidx: Vec<usize> = (0..clips.len()).collect();
-                cidx.sort_by_key(|&i| (clips[i].owner_index, clips[i].unit, face_rank(clips[i].face), pos_in_list[i]));
-                let mut crank: Vec<u32> = vec![0; clips.len()]; for (r, &i) in cidx.iter().enumerate() { crank[i] = r as u32; }
-                clip_creation_rank = idx.iter().map(|&i| crank[i]).collect();
-                clips = idx.iter().map(|&i| clips[i].clone()).collect();
-            }
-            let mut n_clip_objs = 0u32;
-            let mut n_clip_recs = 0usize;
-            let clip_obj0: u32 = 16384 + mf.blocks.len() as u32 + (grid * grid) as u32;
-            let clip_pos_mode = f("--clip-pos").unwrap_or_default();
-            let n_before_clips = recs.len();
-            for (ci, c) in clips.iter().enumerate().filter(|(_, c)| c.drawn()) {
-                let Some(path) = idx.path_for(&c.name) else { eprintln!("clip {}: no block info", c.name); continue };
-                let bi = match idx.load(&mut store, &path) { Ok(bi) => bi.clone(), Err(e) => { eprintln!("clip {}: {e}", c.name); continue } };
-                // --clip-neighbour-cell: the piece's block cell = the owner's cell + step(face) (fillers.rs: a piece stands on side d
-                // of ITS cell, its owner across that side)
-                // the clip's cell = the OWNER block's own coords (mapgeom's occupant cells carry the rotated unit footprint — one off in
-                // x and z for stpad's dir-3 blocks; the WaterBase blocks are single units)
-                let owner_b = mf.blocks.iter().find(|b| b.index == c.owner_index);
-                let owner_cell = match owner_b { Some(b) => { let (x, y, z) = b.coords(); [x, y, z] } None => [c.cell[0] as i32, c.cell[1] as i32, c.cell[2] as i32] };
-                // THE CLIP BLOCK (stpad's table, 2026-09-25): a SIDE clip's block sits in the cell ACROSS the owner's face (owner cell +
-                // step(face)) with dir = opposite(face) — the piece stands on that side of its cell, its owner across it (fillers.rs) —
-                // and its mesh (local x ≈ −0.58: just outside its own cell) lands 0.58 m inside the owner's; a top/bottom clip keeps the
-                // owner's cell above/below and the owner's dir (+ the clip's own)
-                let mut cell = owner_cell;
-                let d: u8 = if c.face < 4 {
-                    let st = mapgeom::bake::step(c.face);
-                    cell = [owner_cell[0] + st.0, owner_cell[1] + st.1, owner_cell[2] + st.2];
-                    let fd: Option<Vec<u8>> = f("--clip-face-dirs").map(|v| v.split(',').map(|t| t.parse().unwrap()).collect());
-                    match &fd { Some(v) => v[c.face], None => mapgeom::bake::opposite(c.face) as u8 }
-                } else {
-                    let st = mapgeom::bake::step(c.face);
-                    if !a.iter().any(|x| x == "--tb-owner-cell") { cell = [owner_cell[0] + st.0, owner_cell[1] + st.1, owner_cell[2] + st.2]; }
-                    c.dir_word() as u8
-                };
-                let class: &'static str = match c.face { 0 => "clipN", 1 => "clipE", 2 => "clipS", 3 => "clipW", 4 => "clipT", _ => "clipB" };
-                // THE HORIZONTAL CLIP'S SHAPE (stpad's table, 2026-09-25 — 120 In / 16 Out / 288 Str reproduced): the mobil list of an
-                // HFC Left (Right) piece is read off the owner's neighbours at the piece's end of the face — the cell beside the owner
-                // on that side (ghost blocks count as present): empty → InEnd (list 4); present and the diagonal beyond the face also
-                // present → OutEnd (list 8); present, diagonal empty → StrEnd (list 12). (EndEnd, list 0, never occurs here.)
-                let mut variant = 0usize;
-                if c.face < 4 && (c.name == "waterhfcleft" || c.name == "waterhfcright") {
-                    let st = mapgeom::bake::step(c.face);
-                    let (lx, lz) = if c.name == "waterhfcleft" { (-st.2, st.0) } else { (st.2, -st.0) };
-                    let occ = |dx: i32, dz: i32| mf.blocks.iter().any(|b| { let (x, y, z) = b.coords(); (x, y, z) == (owner_cell[0] + dx, owner_cell[1], owner_cell[2] + dz) });
-                    // the 16 lists = 4 left-end shapes × 4 right-end shapes (index = left·4 + right; End / In / Out / Str): the Left clip
-                    // sets the left factor (0, 4, 8, 12), the Right clip the right one (0, 1, 2, 3)
-                    let shape = if !occ(lx, lz) { 1 } else if occ(st.0 + lx, st.2 + lz) { 2 } else { 3 };
-                    variant = if c.name == "waterhfcleft" { shape * 4 } else { shape };
-                }
-                let mut owner_free = owner_b.map(|b| b.flags & 0x1000_0000 != 0).unwrap_or(false);
-                // --one-class NAME[,NAME]: those clip kinds' entities are ONE clone across the normal / free classes (the study)
-                if let Some(list) = f("--one-class") { if list.split(',').any(|n| n == c.name) { owner_free = false; } }
-                let n0 = recs.len();
-                let n = lightmap::records::block_records_class(&mut store, &bi, cell, d, c.ground, variant, 0, 0, yoff_blocks, class, clip_obj0 + n_clip_objs, 1.0, owner_free, &mut recs).unwrap_or_else(|e| { eprintln!("clip {}: {e}", c.name); 0 });
-                // --ordinal-centre owner|cell|first: the Morton key of a clip record from the owner's cell centre, the clip block's
-                // cell centre, or the object's first record (the study of the clip records' ordinal key)
-                if let Some(mode) = f("--ordinal-centre") {
-                    let kc: Option<[f32; 3]> = match mode.as_str() {
-                        "owner" => Some([owner_cell[0] as f32 * 32.0 + 16.0, owner_cell[1] as f32 * 8.0 + yoff_blocks, owner_cell[2] as f32 * 32.0 + 16.0]),
-                        "cell" => Some([cell[0] as f32 * 32.0 + 16.0, cell[1] as f32 * 8.0 + yoff_blocks, cell[2] as f32 * 32.0 + 16.0]),
-                        "first" => recs.get(n0).map(|r| r.centre),
-                        _ => None,
-                    };
-                    for r in recs[n0..].iter_mut() { r.key_centre = kc; }
-                }
-                // --clip-pos creation: the group position of a clip record follows the clip blocks' CREATION order (file order of
-                // the owners); the records within one object keep their sub order
-                let pos_kinds: Option<Vec<String>> = f("--clip-pos-kinds").map(|v| v.split(',').map(|t| t.to_string()).collect());
-                let pos_applies = pos_kinds.as_ref().map(|k| k.iter().any(|n| *n == c.name)).unwrap_or(true);
-                if clip_pos_mode == "creation" && pos_applies && !clip_creation_rank.is_empty() {
-                    let base_rank = n_before_clips as u32;
-                    for (si, r) in recs[n0..].iter_mut().enumerate() { r.pos_rank = Some(base_rank + clip_creation_rank[ci] * 8 + si as u32); }
-                }
-                n_clip_objs += 1;
-                n_clip_recs += n;
-            }
-            println!("{} drawn clips → {n_clip_recs} records ({n_clip_objs} objects from {clip_obj0})", clips.iter().filter(|c| c.drawn()).count());
-            // THE ITEMS: one record per placed item with a PreLightGen (geometry::Scene: the embedded / stock models), the record box
-            // from lmtiles::item_records (the mobil Iso4 chain), obj after the clips
+            // THE RECORD LIST through records::build_map_records (the bake's --layout-game path), the study switches as options
+            let kept: Option<std::collections::HashSet<usize>> = f("--kept").map(|p| std::fs::read_to_string(&p).expect("--kept").split(|c: char| c == ',' || c.is_whitespace()).filter_map(|t| t.trim().parse().ok()).collect());
+            let opts = lightmap::records::BuildOpts {
+                collection: coll.clone(), zone: f("--zone"), kept,
+                tile_level: f("--tile-level").map(|v| v.parse().unwrap()), yoff: f("--yoff").map(|v| v.parse().unwrap()), grid: f("--grid").map(|v| v.parse().unwrap()),
+                items_3d: a.iter().any(|x| x == "--items-3d"), ghost_marks: a.iter().any(|x| x == "--ghost-marks"), no_block_cells: a.iter().any(|x| x == "--no-block-cells"),
+                clip_order_sim: f("--clip-order").as_deref() == Some("sim"), face_order: f("--face-order").map(|v| v.split(',').map(|t| t.parse().unwrap()).collect()),
+                one_class: f("--one-class").map(|v| v.split(',').map(|t| t.to_string()).collect()).unwrap_or_default(),
+            };
             let scene = lightmap::geometry::Scene::from_map(&a[1]).expect("scene");
-            let irecs = lightmap::lmtiles::item_records(&scene, 1.0, false);
-            let item_obj0 = clip_obj0 + n_clip_objs;
-            let mut n_item_recs = 0usize;
-            for (k, inst) in scene.instances.iter().enumerate() {
-                let m = &scene.models[inst.model];
-                let Some(b) = m.plg_bounds else { continue };
-                let fx_only = !m.mat_links.is_empty() && m.mat_links.iter().all(|l| l.contains("RaceTriggerFX"));
-                if fx_only { continue; }
-                let Some(ir) = irecs.iter().find(|r| r.item == inst.item) else { continue };
-                let Some(rec) = &ir.record else { continue };
-                let q = lightmap::layout::item_quality(inst.lm_quality);
-                recs.push(lightmap::records::Rec { class: "item", obj: item_obj0 + k as u32, sub: 0, meter_by_uv: m.plg_u02, uv: b, quality: q, centre: rec.world.c, half: rec.world.h, group: ((inst.model as u64) << 32) | q.to_bits() as u64, key_centre: None, pos_rank: None, wall: None });
-                n_item_recs += 1;
-            }
-            println!("{} items → {n_item_recs} records (objects from {item_obj0})", scene.instances.len());
-            // --hfc-study: the horizontal free clips' SHAPE (the mobil list the engine picks: EndEnd / InEnd / OutEnd / StrEnd) read off
-            // the dump against the owner's neighbourhood — the corner cells beside the face
-            if a.iter().any(|x| x == "--hfc-study") {
-                let occupied: std::collections::HashSet<(i32, i32, i32)> = mf.blocks.iter().filter(|b| b.flags & 0x1000_0000 == 0 || a.iter().any(|x| x == "--hfc-ghosts")).map(|b| { let (x, y, z) = b.coords(); (x, y, z) }).collect();
-                let shape_of = |mbu: f32| -> &'static str { if (mbu - 32.76258).abs() < 1e-3 { "In" } else if (mbu - 32.740406).abs() < 1e-3 { "Out" } else if (mbu - 32.749474).abs() < 1e-3 { "Str" } else if (mbu - 33.512375).abs() < 1e-3 { "EndEnd" } else { "?" } };
-                let mut table: std::collections::BTreeMap<String, usize> = Default::default();
-                for c in clips.iter().filter(|c| c.drawn() && (c.name == "waterhfcleft" || c.name == "waterhfcright")) {
-                    let Some(b) = mf.blocks.iter().find(|b| b.index == c.owner_index) else { continue };
-                    let (ox, oy, oz) = b.coords();
-                    // our piece (list 0) position → the dump's nearest HFC record
-                    let hit = recs.iter().find(|r| r.class.starts_with("clip") && r.obj == clip_obj0 + clips.iter().filter(|d| d.drawn()).position(|d| std::ptr::eq(d, c)).unwrap() as u32 && r.sub == 0);
-                    let Some(r) = hit else { continue };
-                    let near = dump.iter().filter(|d| shape_of(d.meter_by_uv) != "?" && shape_of(d.meter_by_uv) != "EndEnd").min_by(|p, q| { let dp = (0..3).map(|k| (p.centre[k] - r.centre[k]).powi(2)).sum::<f32>(); let dq = (0..3).map(|k| (q.centre[k] - r.centre[k]).powi(2)).sum::<f32>(); dp.partial_cmp(&dq).unwrap() });
-                    let Some(d) = near else { continue };
-                    let dist = (0..3).map(|k| (d.centre[k] - r.centre[k]).powi(2)).sum::<f32>().sqrt();
-                    let shape = if dist < 1.5 { shape_of(d.meter_by_uv) } else { "none" };
-                    // the neighbourhood in the face's frame: fwd = step(face); left/right = the perpendicular
-                    let st = mapgeom::bake::step(c.face);
-                    let (lx, lz) = (-st.2, st.0); // a left-hand perpendicular of (dx, dz)
-                    let occ = |dx: i32, dz: i32| occupied.contains(&(ox + dx, oy, oz + dz));
-                    let key = format!("{} {}: fwd {} | left {} right {} | fwd-left {} fwd-right {}", c.name, shape, occ(st.0, st.2) as u8, occ(lx, lz) as u8, occ(-lx, -lz) as u8, occ(st.0 + lx, st.2 + lz) as u8, occ(st.0 - lx, st.2 - lz) as u8);
-                    *table.entry(key).or_default() += 1;
-                }
-                println!("hfc study (shape read off the dump at our piece's position; neighbours of the owner in the face frame):");
-                let mut v: Vec<_> = table.into_iter().collect(); v.sort();
-                for (k, n) in v { println!("  {n:4} × {k}"); }
-            }
+            let mr = lightmap::records::build_map_records(&a[1], &scene, &mut store, &opts).expect("records");
+            for n in &mr.notes { println!("note: {n}"); }
+            let mf = tmmaps::map::MapFile::load(std::path::Path::new(&a[1]));
+            let grid = (mr.tile_cells.iter().map(|c| c.0).max().unwrap_or(0) + 1) as usize;
+            let tq = mr.tile_quality.clone();
+            let qh: std::collections::BTreeMap<u32, usize> = tq.iter().fold(Default::default(), |mut m, q| { *m.entry(q.to_bits()).or_default() += 1; m });
+            println!("{} blocks → {} records, {} tiles (quality histogram {:?}), {} clip records, {} items; objs blocks {}.. tiles {}.. clips {}.. items {}..", mr.n_blocks, mr.recs.len() - mr.n_tiles - mr.n_clips - mr.n_items, mr.n_tiles, qh.iter().map(|(b, n)| (f32::from_bits(*b), *n)).collect::<Vec<_>>(), mr.n_clips, mr.n_items, mr.block_obj0, mr.tile_obj0, mr.clip_obj0, mr.item_obj0);
+            let recs = mr.recs;
+            let _ = (&mf, grid);
             lightmap::records::compare(&recs, &dump);
             // --layout: the grouped allocation over our records against the map's own chart table (the dump as the bridge: our record →
             // its dump record → the key obj·4 | sub → the editor's rect)
@@ -6029,13 +5878,45 @@ fn run(a: Vec<String>) {
                 println!("  membership: {tight} of {multi} multi-member entries have their editor members in a box ≤ 1.1 × ours");
                 // --group-detail MBU: every record of the groups with that MeterByUv (4 decimals): index, class, centre, Morton key,
                 // our chunk / cell, the editor's rect — the study of the clip records' ordinals
+                // --clone-study: per item file, the dump's model pointers (the game's clone identity) with the items behind each
+                if a.iter().any(|x| x == "--clone-study") {
+                    let mut by_file: std::collections::BTreeMap<String, std::collections::BTreeMap<String, Vec<String>>> = Default::default();
+                    for (k, r) in recs.iter().enumerate() {
+                        let Some((ii, name)) = &r.item else { continue };
+                        let Some(Some(j)) = link.get(k) else { continue };
+                        let it = &mf.items[*ii];
+                        let colour = mf.colors().map(|c| c.item(*ii)).unwrap_or(0);
+                        by_file.entry(name.clone()).or_default().entry(dump[*j].model.clone()).or_default().push(format!("i{ii} y {:.1} cy {} yaw {:.2} pitch {:.2} roll {:.2} flags {:#x} colour {colour} q {} pivot {:?} scale {}", it.pos[1], it.file_cell[1], it.yaw, it.pitch, it.roll, it.flags, r.quality, it.pivot, it.scale));
+                    }
+                    for (file, ptrs) in &by_file {
+                        if ptrs.len() < 2 { continue; }
+                        println!("  {file}: {} model pointers", ptrs.len());
+                        for (ptr, items) in ptrs { println!("    {ptr}: {} items: {}", items.len(), items.iter().take(4).cloned().collect::<Vec<_>>().join(" | ")); }
+                    }
+                    let multi = by_file.values().filter(|p| p.len() >= 2).count();
+                    println!("  {} item files with several model pointers of {}", multi, by_file.len());
+                    // per item file: colour → the dump's model pointers (does every colour get its own clone?)
+                    let mut by_file_colour: std::collections::BTreeMap<String, std::collections::BTreeMap<u8, std::collections::BTreeSet<String>>> = Default::default();
+                    for (k, r) in recs.iter().enumerate() {
+                        let Some((ii, name)) = &r.item else { continue };
+                        let Some(Some(j)) = link.get(k) else { continue };
+                        let colour = mf.colors().map(|c| c.item(*ii)).unwrap_or(0);
+                        by_file_colour.entry(name.clone()).or_default().entry(colour).or_default().insert(dump[*j].model.clone());
+                    }
+                    for (file, cols) in &by_file_colour {
+                        if cols.len() < 2 { continue; }
+                        let ptrs: std::collections::BTreeSet<&String> = cols.values().flatten().collect();
+                        let links: Vec<String> = scene.instances.iter().find(|i| file.starts_with(&i.model_name)).map(|i| scene.models[i.model].mat_links.clone()).unwrap_or_default();
+                        println!("  {file}: colours {:?} → {} pointers{}; materials {:?}", cols.keys().collect::<Vec<_>>(), ptrs.len(), if ptrs.len() == cols.len() { " (one per colour)" } else { " (SHARED across colours)" }, links);
+                    }
+                }
                 if let Some(mbu) = f("--group-detail").and_then(|v| v.parse::<f32>().ok()) {
                     for (ei, (rect, (nb, na), mem)) in gl.entries.iter().enumerate() {
                         let Some((k0, _)) = mem.first() else { continue };
                         if (recs[*k0].meter_by_uv - mbu).abs() > 2e-6 || (f("--group-class").map(|c| !recs[*k0].class.starts_with(c.as_str())).unwrap_or(false)) { continue; }
                         println!("  entry {ei} key {:?} rect {:?} grid {nb}×{na}:", gl.entry_keys.get(ei), rect);
                         let mut ms: Vec<(usize, u32)> = mem.clone(); ms.sort_by_key(|(_, o)| *o);
-                        for (k, o) in ms { let r = &recs[k]; let e = link.get(k).and_then(|l| l.as_ref()).and_then(|j| edr(*j)); println!("    #{k} {} obj {} sub {} centre ({:.2}, {:.2}, {:.2}) morton {:#x} cell {o}: editor rect {:?}", r.class, r.obj, r.sub, r.centre[0], r.centre[1], r.centre[2], lightmap::itemrule::morton3(r.centre) & 0xffff_ffff_ffff, e); }
+                        for (k, o) in ms { let r = &recs[k]; let e = link.get(k).and_then(|l| l.as_ref()).and_then(|j| edr(*j)); let dm = link.get(k).and_then(|l| l.as_ref()).map(|j| dump[*j].model.clone()).unwrap_or_default(); println!("    #{k} {} obj {} sub {} {:?} centre ({:.2}, {:.2}, {:.2}) morton {:#x} cell {o}: editor rect {:?} model ptr {dm}", r.class, r.obj, r.sub, r.item, r.centre[0], r.centre[1], r.centre[2], lightmap::itemrule::morton3(r.centre) & 0xffff_ffff_ffff, e); }
                     }
                 }
                 if a.iter().any(|x| x == "--membership-by-class") { for (k, (t, nt)) in &by { println!("    {k}: tight {t}, loose {nt}"); } }

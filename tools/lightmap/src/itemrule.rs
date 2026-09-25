@@ -1168,3 +1168,15 @@ mod tests {
         assert_eq!(r[1], ChartRecord::MergedGroup { avg_f: 30.0, subs: vec![1, 2, 3] });
     }
 }
+
+
+/// THE ITEM CLONE PER COLOUR (observed on the baker's tiny03 dump, 2026-09-25 20:45Z; the pack's material bit is RE 8's open item):
+/// a placed item's Solid2Model is cloned per placement COLOUR byte (chunk 0x03043062) — one PLG pointer, one group per colour —
+/// only when the model uses a COLOURABLE material; models of other materials keep one clone across colours. Colourable so
+/// far (link substrings): TrackBordersInWorld, TrackWallClipsInWorld, StructureInWorld, DecoHill (AC00000001 / 28 / 185 / 189 /
+/// 190 split); shared: Deco, TrackWallInWorld, TechnicsTrims, ScreenBack, Ad4x1Screen, Pylon, Land (AC00000000 / 13 / 14 / 19 /
+/// 21 / 29 / 31 / 210 / 212 / 213 / 215 / 216 one pointer over colours 0 and 1). LMTOOL_COLOUR_MATERIALS=a,b overrides.
+pub fn colour_cloned(mat_links: &[String]) -> bool {
+    let list: Vec<String> = std::env::var("LMTOOL_COLOUR_MATERIALS").map(|v| v.split(',').map(|t| t.to_string()).collect()).unwrap_or_else(|_| ["TrackBordersInWorld", "TrackWallClipsInWorld", "StructureInWorld", "DecoHill"].iter().map(|s| s.to_string()).collect());
+    mat_links.iter().any(|l| list.iter().any(|n| l.contains(n.as_str())))
+}
