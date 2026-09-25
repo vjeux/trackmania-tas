@@ -1688,7 +1688,8 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             // current set): only their fragments are kept and only their layers derived — unless the
             // direction is dumped, when every pixel is wanted
             let t_idx = std::time::Instant::now();
-            let wanted: Option<std::sync::Arc<PixelIndex>> = if prm.game_peel && !want_dir_dump {
+            // (the transcribed accumulate reads every pixel of the layers: the dense path when --lm-from is on)
+            let wanted: Option<std::sync::Arc<PixelIndex>> = if prm.game_peel && !want_dir_dump && prm.lm_scene.is_none() {
                 let n = (frame.res as usize * frame.res_y as usize + 63) / 64;
                 // one shared bitmap, the bits OR-ed in atomically (neighbouring sub-samples share words,
                 // and neighbours sit in the same chunk — the contention is nil)

@@ -5501,6 +5501,8 @@ fn run(a: Vec<String>) {
                 for (&o, &(_, _, w, h)) in &ed { if o < base { *hist.entry((w, h)).or_default() += 1; } }
                 println!("editor tile chart sizes: {:?}", hist);
                 println!("editor atlas {}×{}, m_u01 {}, m_u02 {}, m_u03 {}", mp.atlas_w, mp.atlas_h, mp.m_u01, mp.m_u02, mp.m_u03);
+                // the editor's Σ chart area (TotalLmSurfaceMeter, cache chunk 0x0602200B = (1, Σarea))
+                for c in &d.cache.chunks { if c.id == 0x0602_200B { if let lightmap::format::ChunkBody::Raw(b) = &c.body { if b.len() >= 8 { let area = f32::from_le_bytes([b[4], b[5], b[6], b[7]]); println!("editor TotalLmSurfaceMeter (0x0602200B): {area} m²  → D = W·H/Σarea = {:.4} (layout units/m)²", (w_atlas as f64 * w_atlas as f64) / area as f64); } } } }
             }
             // our chart list in IdForLightMap order: tiles (ids 0..base) then items (base + item)
             let mut charts: Vec<lightmap::pack::ChartExt> = Vec::new();
@@ -5564,7 +5566,26 @@ fn run(a: Vec<String>) {
                 idx.sort_by_key(|&i| (charts[i].ext[0] * charts[i].ext[1]).to_bits());
                 idx
             };
-            let Some((s, placed)) = lightmap::pack::allocate_ordered(&charts, &placed_order, w_atlas, w_atlas, g, mmin, max_iter) else { println!("allocation failed"); return };
+            // --s X: one TryPack at a given s (layout units per metre) instead of the scale search — to test the
+            // sizes the editor's own s produces; --try-s A,B,N: the success/failure of TryPack over a range of s
+            if let Some(r) = f("--try-s") {
+                let v: Vec<f32> = r.split(',').map(|t| t.parse().unwrap()).collect();
+                let n = v[2] as usize;
+                for i in 0..=n {
+                    let s = v[0] + (v[1] - v[0]) * i as f32 / n as f32;
+                    let ok = lightmap::pack::try_pack(&charts, &placed_order, s, w_atlas, w_atlas, g, mmin).is_some();
+                    println!("  s {s:.4}: TryPack {}", if ok { "succeeds" } else { "FAILS" });
+                }
+                return;
+            }
+            let forced_s: Option<f32> = f("--s").map(|v| v.parse().unwrap());
+            let Some((s, placed)) = (match forced_s { Some(s) => lightmap::pack::try_pack(&charts, &placed_order, s, w_atlas, w_atlas, g, mmin).map(|p| (s, p)), None => lightmap::pack::allocate_ordered(&charts, &placed_order, w_atlas, w_atlas, g, mmin, max_iter) }) else { println!("allocation failed"); return };
+            {
+                // our tile chart sizes (layout units) against the editor's histogram
+                let mut hist: std::collections::BTreeMap<(u32, u32), usize> = Default::default();
+                for (k, p) in placed.iter().enumerate() { if ids[k] < base { let sz = if pad > 0 { ((p.w as u32).saturating_sub(2 * pad), (p.h as u32).saturating_sub(2 * pad)) } else { (2 * (p.w as u32).saturating_sub(1), 2 * (p.h as u32).saturating_sub(1)) }; *hist.entry(sz).or_default() += 1; } }
+                println!("our tile chart sizes at s {s:.4}: {:?}", hist);
+            }
             println!("s_final {s:.4} texels/m (tie {tie})");
             let (mut n_cmp, mut size_ok, mut pos_ok) = (0, 0, 0);
             let mut shown = 0;
