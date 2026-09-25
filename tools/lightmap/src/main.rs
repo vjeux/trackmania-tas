@@ -1046,10 +1046,18 @@ fn run(a: Vec<String>) {
                 let lat_d: f32 = f("--sun-lat").map(|s| s.parse().unwrap()).unwrap_or(x.latitude);
                 let (mut az_d, mut el_d) = {
                     let u = t; // the blend key
-                    let time = if u <= 0.25 { (t_s + 4.0 * u * (t_r + 1.0 - t_s)).rem_euclid(1.0) }
+                    // THE CAPTURE DECIDES (pwc-day, DayTime 0x9b59 = 0.606827, Latitude 20): the bake's cbuffer DirInWorld =
+                    // (−0.22097, −0.91646, 0.33357) = D at b = (u − t_r)/(t_s − t_r) = 0.5709 with t_r 0.25 / t_s 0.875 — the
+                    // DayTime word IS the arc's time (cos πb = −0.2211, −cos(lat)·sin πb = −0.9165, sin(lat)·sin πb = 0.3336);
+                    // the piecewise blender curve the port carried (fitted to two dome-glow observations) put the sun at
+                    // b = 0.433, mirrored in x (engineer 2's finding: every shadow on the wrong side of the wall).
+                    // --sun-time-curve blender restores the old mapping.
+                    let time = if f("--sun-time-curve").as_deref() == Some("blender") {
+                        if u <= 0.25 { (t_s + 4.0 * u * (t_r + 1.0 - t_s)).rem_euclid(1.0) }
                         else if u <= 0.5 { t_r + 4.0 * (u - 0.25) * w_b }
                         else if u <= 0.75 { t_r + w_b + 4.0 * (u - 0.5) * (t_s - t_r - 2.0 * w_b) }
-                        else { t_s - w_b + 4.0 * (u - 0.75) * w_b };
+                        else { t_s - w_b + 4.0 * (u - 0.75) * w_b }
+                    } else { u };
                     let b = if time >= t_r && time <= t_s { ((time - t_r) / (t_s - t_r)).clamp(0.0, 1.0) } else if time > (t_r + t_s) * 0.5 { 1.0 } else { 0.0 };
                     let (pb, lat) = (std::f32::consts::PI * b, lat_d.to_radians());
                     // the light direction (sun → ground); the sun's position is −D. The Z sign: the rotation is
