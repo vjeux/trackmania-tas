@@ -174,6 +174,8 @@ pub struct BakeParams {
     /// centre − shift (the geometry moved by +shift), +1 the mirror reading.
     /// The harness: stop a sweep after this many directions (0 = all).
     pub max_dirs: usize,
+    /// Print the stage timers at the end of every sweep.
+    pub profile: bool,
     pub raster_jitter: bool,
     pub jitter_cycle: [[f32; 2]; 9],
     pub jitter_sign: f32,
@@ -259,6 +261,7 @@ impl Default for BakeParams {
             lightsum_after: Default::default(),
             dome_exact: true,
             max_dirs: 0,
+            profile: false,
             raster_jitter: false,
             jitter_cycle: [[-4.0, 2.0], [-1.0, 3.0], [2.0, 4.0], [-3.0, -1.0], [0.0, 0.0], [3.0, 1.0], [-2.0, -4.0], [1.0, -3.0], [4.0, -2.0]],
             jitter_sign: -1.0,

@@ -1282,6 +1282,7 @@ fn run(a: Vec<String>) {
             prm.raster_jitter = if has("--no-raster-jitter") { false } else if has("--raster-jitter") { true } else { prm.game_peel };
             if let Some(v) = f("--jitter-sign") { prm.jitter_sign = v.parse().expect("--jitter-sign"); }
             if let Some(v) = f("--max-dirs") { prm.max_dirs = v.parse().expect("--max-dirs"); }
+            prm.profile = has("--profile");
             prm.obj_base = base;
             let game_manifest: Option<lightmap::passdump::Manifest> = f("--frustum-from").map(|p| {
                 let txt = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("--frustum-from {p}: {e}"));
@@ -1398,6 +1399,19 @@ fn run(a: Vec<String>) {
                     g2.sun_dir = prm.sun_dir;
                     prm.sky_grad = Some(std::sync::Arc::new(g2));
                 }
+            }
+            if std::env::var_os("LMTOOL_BENCH_DOME").is_some() {
+                if let Some(sg) = &prm.sky_grad {
+                    let t = std::time::Instant::now();
+                    let mut acc = 0.0f32;
+                    for i in 0..1_000_000u32 {
+                        let q = [871.0 + (i % 1000) as f32 * 0.01, 50.0, 353.0 + (i / 1000) as f32 * 0.01];
+                        let v = sg.dome_radiance(q, [0.345, 0.117, 0.931], [871.0, 50.0, 353.0]);
+                        acc += v[0];
+                    }
+                    eprintln!("bench: 1 M dome_radiance in {:.3}s ({:.0} ns each), checksum {acc}", t.elapsed().as_secs_f32(), t.elapsed().as_nanos() as f64 / 1e6);
+                }
+                return;
             }
             if let Some(gm) = f("--sky-probe") {
                 // (--game-dir DIR: where the capture's files live when the manifest is a frozen copy elsewhere)

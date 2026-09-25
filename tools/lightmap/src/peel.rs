@@ -166,7 +166,10 @@ impl ABuffer {
         // tried 2026-09-24 02:00Z: tiny 16 went from +42 % to +57 %; neither explains the editor's darker
         // hills under dense canopies. LMTOOL_LAYERS_NEAR=1 selects the receiver-side reading.)
         let (a, c) = (b.0[i] as usize, b.0[i + 1] as usize);
-        if std::env::var_os("LMTOOL_LAYERS_NEAR").is_some() {
+        // (the environment is read ONCE: std::env takes a process-wide lock, and this runs per pixel on
+        // every thread — it serialised the whole gather)
+        static LAYERS_NEAR: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *LAYERS_NEAR.get_or_init(|| std::env::var_os("LMTOOL_LAYERS_NEAR").is_some()) {
             &b.1[c.saturating_sub(MAX_LAYERS).max(a)..c]
         } else {
             &b.1[a..c.min(a + MAX_LAYERS)]
@@ -206,14 +209,16 @@ pub fn build_abuffer(tris: &[WTri], frame: &PeelFrame, threads: usize) -> ABuffe
 /// LMTOOL_CARDS_OCCLUDE=0 takes them out (they stay receivers): the hill test map's slopes under a
 /// dense bush canopy read 0.19 in the editor at Day where cards that occlude give 0.035 (2026-09-23).
 pub fn cards_occlude() -> bool {
-    std::env::var("LMTOOL_CARDS_OCCLUDE").map(|v| v != "0").unwrap_or(true)
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("LMTOOL_CARDS_OCCLUDE").map(|v| v != "0").unwrap_or(true))
 }
 
 /// Whether the cards cast SUN shadows (the bake's sun shadow map). LMTOOL_CARDS_SHADOW=0 leaves them out.
 pub fn cards_shadow() -> bool {
     // default OFF (DIFFERENTIAL, the hill test map 2026-09-23 23:50Z: the slopes under a dense canopy read
     // 0.19 of the editor's at Day with the cards in the sun shadow map, 0.76–1.4 without); =1 puts them in
-    std::env::var("LMTOOL_CARDS_SHADOW").map(|v| v == "1").unwrap_or(false)
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("LMTOOL_CARDS_SHADOW").map(|v| v == "1").unwrap_or(false))
 }
 
 pub fn build_abuffer_upto(tris: &[WTri], frame: &PeelFrame, threads: usize, zmax: f32, masks: &[crate::geometry::AlphaMask]) -> ABuffer {
@@ -223,8 +228,40 @@ pub fn build_abuffer_upto(tris: &[WTri], frame: &PeelFrame, threads: usize, zmax
 /// `build_abuffer_upto` with both depth planes: fragments with depth outside [zmin, zmax) are clipped
 /// (the D3D depth clip of a fragment outside the frustum's near/far planes).
 pub fn build_abuffer_range(tris: &[WTri], frame: &PeelFrame, threads: usize, zmin: f32, zmax: f32, masks: &[crate::geometry::AlphaMask]) -> ABuffer {
+    build_abuffer_wanted(tris, frame, threads, zmin, zmax, masks, None)
+}
+
+/// A pixel bitmap (row-major, one bit per pixel) — the peel pixels some texel reads.
+#[inline]
+pub fn bit(mask: &[u64], i: usize) -> bool {
+    (mask[i >> 6] >> (i & 63)) & 1 == 1
+}
+
+/// `build_abuffer_range` keeping only the fragments of the `wanted` pixels (the layers of a pixel depend
+/// on that pixel's fragments alone, so the pixels no texel looks up are never derived — the speed of the
+/// harness; the dump of a direction wants every pixel and passes None).
+pub fn build_abuffer_wanted(tris: &[WTri], frame: &PeelFrame, threads: usize, zmin: f32, zmax: f32, masks: &[crate::geometry::AlphaMask], wanted: Option<&[u64]>) -> ABuffer {
     let res = frame.res;
     let res_y = frame.res_y;
+    // the wanted pixels' bounding rectangle: the raster visits nothing outside it
+    let clip: (i32, i32, i32, i32) = match wanted {
+        Some(m) => {
+            let (mut x0, mut y0, mut x1, mut y1) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
+            for (wi, word) in m.iter().enumerate() {
+                if *word == 0 { continue; }
+                let mut w = *word;
+                while w != 0 {
+                    let b = w.trailing_zeros() as usize;
+                    w &= w - 1;
+                    let i = wi * 64 + b;
+                    let (x, y) = ((i % res as usize) as i32, (i / res as usize) as i32);
+                    x0 = x0.min(x); x1 = x1.max(x); y0 = y0.min(y); y1 = y1.max(y);
+                }
+            }
+            if x0 > x1 { (0, 0, -1, -1) } else { (x0, y0, x1, y1) }
+        }
+        None => (0, 0, res as i32 - 1, res_y as i32 - 1),
+    };
     // LMTOOL_PEEL_CULL_BACK=1 (hypothesis under test): the peel renders only the faces turned toward
     // the receivers' side (geometric normal against D); back faces are culled, not drawn black — so a
     // thin wall's own far face does not occlude its texels and a hollow tower sees out
@@ -266,7 +303,12 @@ pub fn build_abuffer_range(tris: &[WTri], frame: &PeelFrame, threads: usize, zmi
                             continue;
                         }
                         let mask = if t.alpha != u16::MAX { masks.get(t.alpha as usize) } else { None };
-                        raster::triangle(res, res_y, [[x0, y0], [x1, y1], [x2, y2]], |x, y, b| {
+                        raster::triangle_clipped(res, res_y, [[x0, y0], [x1, y1], [x2, y2]], clip, |x, y, b| {
+                            if let Some(m) = wanted {
+                                if !bit(m, (y * res + x) as usize) {
+                                    return;
+                                }
+                            }
                             let z = z0 * b[0] + z1 * b[1] + z2 * b[2];
                             if z < zmax && z >= zmin {
                                 // the alpha test: the cut-out texture at the fragment's TexCoord0
@@ -598,7 +640,7 @@ fn tri_slope(wt: &WTri, frame: &PeelFrame) -> (f32, f32) {
 /// previous layer's STORED depth by at least the rasteriser bias (fragments within the bias of the
 /// previous layer are never rendered again — merged), at most `MAX_LAYERS` layers. The colour is the
 /// fragment's `ILightInput` radiance at the pixel centre, quantised as the colour target stores it.
-fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm: &BakeParams, shadow: Option<&ShadowMap>, sun_bias: f32, sky: [f32; 3], threads: usize) -> Layers {
+fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm: &BakeParams, shadow: Option<&ShadowMap>, sun_bias: f32, sky: [f32; 3], threads: usize, wanted: Option<&[u64]>) -> Layers {
     let (w, h) = (frame.res, frame.res_y);
     let n = (w * h) as usize;
     let rows_per = ((h as usize) / threads.max(1)).max(1);
@@ -613,6 +655,12 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
                     let mut out: Vec<LayerFrag> = Vec::new();
                     for y in y0..y1 {
                         for x in 0..w as usize {
+                            if let Some(m) = wanted {
+                                if !bit(m, y * w as usize + x) {
+                                    counts.push(0);
+                                    continue;
+                                }
+                            }
                             let list = ab.at_all(x as u32, y as u32);
                             let before = out.len();
                             let mut d_prev = f32::NEG_INFINITY;
@@ -691,6 +739,25 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
         frags.extend(out);
     }
     Layers { w, h, start, frags, max_layers: MAX_LAYERS }
+}
+
+/// Stage timers for `--profile` (nanoseconds, summed over the bake).
+pub mod prof {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    pub static BUILD: AtomicU64 = AtomicU64::new(0);
+    pub static LAYERS: AtomicU64 = AtomicU64::new(0);
+    pub static DUMP: AtomicU64 = AtomicU64::new(0);
+    pub static GATHER: AtomicU64 = AtomicU64::new(0);
+    pub static ACCUM: AtomicU64 = AtomicU64::new(0);
+    pub static SNAP: AtomicU64 = AtomicU64::new(0);
+    pub fn add(c: &AtomicU64, t: std::time::Instant) {
+        c.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    }
+    pub fn report(label: &str, total: f32) {
+        let g = |c: &AtomicU64| c.load(Ordering::Relaxed) as f64 / 1e9;
+        eprintln!("profile [{label}]: A-buffer build {:.2}s, layer derivation {:.2}s, per-direction dumps {:.2}s, gather {:.2}s, accumulate {:.2}s, accumulation snapshots {:.2}s; sweep total {total:.2}s", g(&BUILD), g(&LAYERS), g(&DUMP), g(&GATHER), g(&ACCUM), g(&SNAP));
+        for c in [&BUILD, &LAYERS, &DUMP, &GATHER, &ACCUM, &SNAP] { c.store(0, Ordering::Relaxed); }
+    }
 }
 
 /// The game's texel lookup into a layer target: POINT sampling after the one-texel inset
@@ -1054,12 +1121,30 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             // the game's peel renders everything inside the frustum's depth range; beyond the far plane the
             // fragments are dropped (DepthClipEnable, the capture) or pancaked onto it (--no-depth-clip);
             // fragments nearer than the near plane can never be selected (they are on the receivers' side)
-            let ab = if prm.game_peel { build_abuffer_range(&bvh.tris, frame, threads, if prm.depth_clip { frame.z_from_z01(0.0) } else { f32::NEG_INFINITY }, frame.z_from_z01(1.0), &prm.alpha_masks) } else { build_abuffer_upto(&bvh.tris, frame, threads, zmax, &prm.alpha_masks) };
+            // the pixels this direction's texels read (the game's lookup of every sub-sample of the
+            // current set): only their fragments are kept and only their layers derived — unless the
+            // direction is dumped, when every pixel is wanted
+            let wanted: Option<Vec<u64>> = if prm.game_peel && !want_dir_dump {
+                let n = (frame.res as usize * frame.res_y as usize + 63) / 64;
+                let mut m = vec![0u64; n];
+                for s in cur.iter() {
+                    let (x, y, _) = frame.project(s.p);
+                    let (px, py) = (lookup_pixel(x, frame.res, prm.peel_inset), lookup_pixel(y, frame.res_y, prm.peel_inset));
+                    let i = py as usize * frame.res as usize + px as usize;
+                    m[i >> 6] |= 1u64 << (i & 63);
+                }
+                Some(m)
+            } else { None };
+            let ab = if prm.game_peel { build_abuffer_wanted(&bvh.tris, frame, threads, if prm.depth_clip { frame.z_from_z01(0.0) } else { f32::NEG_INFINITY }, frame.z_from_z01(1.0), &prm.alpha_masks, wanted.as_deref()) } else { build_abuffer_upto(&bvh.tris, frame, threads, zmax, &prm.alpha_masks) };
             t_build_total += tb2.elapsed().as_secs_f32();
+            prof::add(&prof::BUILD, tb2);
             frag_total += ab.len();
             // the game's layers of this peel (game-peel mode), and their dump
             // (the layers are also extracted for the dump alone, so the port's own gather can be dumped and compared)
-            let layers: Option<Layers> = if prm.game_peel || want_dir_dump { Some(extract_layers(&ab, frame, scene, bvh, prm, shadow.as_ref(), sun_bias, sky, threads)) } else { None };
+            let tl = std::time::Instant::now();
+            let layers: Option<Layers> = if prm.game_peel || want_dir_dump { Some(extract_layers(&ab, frame, scene, bvh, prm, shadow.as_ref(), sun_bias, sky, threads, wanted.as_deref())) } else { None };
+            prof::add(&prof::LAYERS, tl);
+            let td = std::time::Instant::now();
             if let (Some(ly), Some(dump), true) = (&layers, &prm.dump, want_dir_dump) {
                 let mut dmp = dump.lock().unwrap();
                 let skip = if prm.dome_layer { 1 } else { 0 };
@@ -1123,6 +1208,8 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                     eprintln!("  dir {di} peel {pi}: instance {k} has {n} fragments in the A-buffer (res {}×{}); frame r ({:.2},{:.2},{:.2}) u ({:.2},{:.2},{:.2}) s0 {:.1} t0 {:.1} scale {:.3}", frame.res, frame.res_y, frame.r[0], frame.r[1], frame.r[2], frame.u[0], frame.u[1], frame.u[2], frame.s0, frame.t0, frame.scale);
                 }
             }
+            prof::add(&prof::DUMP, td);
+            let tg = std::time::Instant::now();
             // THE GATHER of this peel: per sub-sample the layer it reads (game mode: the game's lookup;
             // else the port's A-buffer walk), written into `sel` (last peel wins where it has a layer)
             let sel_ptr = sel.as_mut_ptr() as usize;
@@ -1214,8 +1301,10 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                     });
                 }
             });
+            prof::add(&prof::GATHER, tg);
         }
         let t_build = t_build_total;
+        let ta = std::time::Instant::now();
         // THE ACCUMULATE (LmLBumpILighting): E += 4/N · max(0, n·D) · TMapILightDir[texel]
         let acc_ptrs: Vec<usize> = acc_tex.iter_mut().map(|v| v.as_mut_ptr() as usize).collect();
         let cover_ptrs: Vec<usize> = cover.iter_mut().map(|v| v.as_mut_ptr() as usize).collect();
@@ -1274,7 +1363,9 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                 });
             }
         });
+        prof::add(&prof::ACCUM, ta);
         let ab_len = frag_total;
+        let tsn = std::time::Instant::now();
         // the harness: the accumulation target after this direction (the game's H-basis MRT snapshot after
         // its k-th direction, `--dump-lightsum-after`); direction = the index in the sweep's issue order
         if let Some(dump) = &prm.dump {
@@ -1290,6 +1381,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                 }
             }
         }
+        prof::add(&prof::SNAP, tsn);
         if want_dir_dump {
             if let Some(dump) = &prm.dump {
                 let mut dmp = dump.lock().unwrap();
@@ -1387,6 +1479,9 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             }
         }
         if card_prelit { c.rgb_irr = std::mem::take(&mut irr[ci]); }
+    }
+    if std::env::var_os("LMTOOL_PROFILE").is_some() || prm.profile {
+        prof::report(&format!("sweep {}", prm.sweep), t0.elapsed().as_secs_f32());
     }
     // --- the differential harness: this sweep's accumulation target and its resolve ---
     if let Some(dump) = &prm.dump {

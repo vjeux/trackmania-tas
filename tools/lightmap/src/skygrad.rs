@@ -165,7 +165,8 @@ impl SkyGradient {
         let v = 1.0 - v_mesh;
         // PS: the second gradient × ScaleGrad1 (the first × ScaleGrad0 = 0), the lobes, the fog, GlobalScale
         let g = self.sample_linear(u, v, self.dome_u_mode);
-        if std::env::var_os("LMTOOL_DOME_DEBUG").is_some() {
+        static DEBUG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *DEBUG.get_or_init(|| std::env::var_os("LMTOOL_DOME_DEBUG").is_some()) {
             eprintln!("dome: q ({:.1},{:.1},{:.1}) d ({:.3},{:.3},{:.3}) t {t:.0} P ({:.0},{:.0},{:.0}) u_mesh {u_mesh:.4} v_mesh {v_mesh:.4} sun_u {sun_u:.4} u {u:.4} v {v:.4} tex ({:.4},{:.4},{:.4}) sun_dir ({:.3},{:.3},{:.3}) scale {} fog {:?} global {}", q[0], q[1], q[2], d[0], d[1], d[2], p[0], p[1], p[2], g[0], g[1], g[2], self.sun_dir[0], self.sun_dir[1], self.sun_dir[2], self.scale, self.fog, self.global_scale);
         }
         let mut out = [g[0] * self.scale, g[1] * self.scale, g[2] * self.scale];

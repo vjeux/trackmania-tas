@@ -54,7 +54,13 @@ fn edge(a: [f32; 2], b: [f32; 2], p: [f32; 2]) -> f32 {
 /// Rasterise one triangle over a w×h target, calling `f(x, y, bary)` for every pixel whose centre it
 /// covers under the top-left rule. Degenerate (zero-area) triangles produce nothing. Both windings are
 /// accepted (the sign is normalised); `f` receives barycentrics in the vertex order given.
-pub fn triangle<F: FnMut(u32, u32, Bary)>(w: u32, h: u32, p: [[f32; 2]; 3], mut f: F) {
+pub fn triangle<F: FnMut(u32, u32, Bary)>(w: u32, h: u32, p: [[f32; 2]; 3], f: F) {
+    triangle_clipped(w, h, p, (0, 0, w as i32 - 1, h as i32 - 1), f)
+}
+
+/// `triangle` visiting only the pixels inside `clip` = (x0, y0, x1, y1) inclusive — the same pixels,
+/// the same barycentrics, just the rows and columns outside the clip skipped.
+pub fn triangle_clipped<F: FnMut(u32, u32, Bary)>(w: u32, h: u32, p: [[f32; 2]; 3], clip: (i32, i32, i32, i32), mut f: F) {
     let area = edge(p[0], p[1], p[2]);
     if area == 0.0 || !area.is_finite() {
         return;
@@ -63,6 +69,10 @@ pub fn triangle<F: FnMut(u32, u32, Bary)>(w: u32, h: u32, p: [[f32; 2]; 3], mut 
     let (a, b, c, swapped) = if area > 0.0 { (p[0], p[1], p[2], false) } else { (p[0], p[2], p[1], true) };
     let area = area.abs();
     let Some((x0, x1, y0, y1)) = bounds(&p, w, h) else { return };
+    let (x0, x1, y0, y1) = (x0.max(clip.0), x1.min(clip.2), y0.max(clip.1), y1.min(clip.3));
+    if x0 > x1 || y0 > y1 {
+        return;
+    }
     let tl = [top_left(a, b), top_left(b, c), top_left(c, a)];
     let inv = 1.0 / area;
     for y in y0..=y1 {

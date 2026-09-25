@@ -1334,10 +1334,11 @@ pub fn run(game_root: &std::path::Path, ours_root: &std::path::Path, opts: &Opts
     let mut rows: Vec<Row> = Vec::new();
     let mut compared_passes: std::collections::BTreeSet<String> = Default::default();
     let mut missing: HashMap<String, usize> = HashMap::new();
-    for i in order {
+    // one pair: the row, or Err(Some(pass)) when the game has no entry for it (Err(None) = skipped)
+    let compare_one = |i: usize| -> Result<Row, Option<String>> {
         let oe = &ours.passes[i];
-        if let Some(p) = &opts.pass { if &oe.pass != p { continue; } }
-        if pipeline_rank(&oe.pass) == PIPELINE.len() { continue; }
+        if let Some(p) = &opts.pass { if &oe.pass != p { return Err(None); } }
+        if pipeline_rank(&oe.pass) == PIPELINE.len() { return Err(None); }
         let obj = oe.chart.as_ref().map(|c| c.obj);
         // the game's matching entry: same chart, or an atlas-space one to cut; our `final_hdr` (E) also
         // matches the game's `hbasis0` (C0 = √(2π)·E for a flat normal) through a named scale
@@ -1355,21 +1356,20 @@ pub fn run(game_root: &std::path::Path, ours_root: &std::path::Path, opts: &Opts
         }
         let Some(ge_i) = ge_i else {
             if std::env::var_os("LMTOOL_PASSDIFF_DEBUG").is_some() { eprintln!("no game entry for ours: {} sweep {:?} direction {:?} peel {:?} layer {:?} chart {:?} ({})", oe.pass, oe.sweep, oe.direction, oe.peel, oe.layer, obj, oe.file); }
-            *missing.entry(oe.pass.clone()).or_insert(0) += 1;
-            continue
+            return Err(Some(oe.pass.clone()));
         };
         let ge = &game.passes[ge_i];
         let mut transforms: Vec<String> = Vec::new();
-        let mut ob = match load_entry(ours_root, oe) { Ok(b) => b, Err(e) => { eprintln!("passdiff: ours {}: {e}", oe.file); continue; } };
-        let mut gb = match load_entry(game_root, ge) { Ok(b) => b, Err(e) => { eprintln!("passdiff: game {}: {e}", ge.file); continue; } };
+        let mut ob = match load_entry(ours_root, oe) { Ok(b) => b, Err(e) => { eprintln!("passdiff: ours {}: {e}", oe.file); return Err(None); } };
+        let mut gb = match load_entry(game_root, ge) { Ok(b) => b, Err(e) => { eprintln!("passdiff: game {}: {e}", ge.file); return Err(None); } };
         // --delta-from J: an accumulation snapshot compared as its INCREMENT since the snapshot after
         // direction J (both sides) — the directions between the two, isolated
         if let (Some(j), "lightsum", Some(k)) = (opts.delta_from, oe.pass.as_str(), oe.direction) {
-            if k <= j { continue; }
+            if k <= j { return Err(None); }
             let op = ours.passes.iter().find(|e| e.pass == "lightsum" && e.sweep == oe.sweep && e.direction == Some(j) && e.chart.as_ref().map(|c| c.obj) == obj);
             let gp = game_idx.get(&("lightsum".to_string(), oe.sweep, Some(j), None, None, None)).and_then(pick).map(|i| &game.passes[i]);
-            let (Some(op), Some(gp)) = (op, gp) else { continue };
-            let (Ok(opb), Ok(gpb)) = (load_entry(ours_root, op), load_entry(game_root, gp)) else { continue };
+            let (Some(op), Some(gp)) = (op, gp) else { return Err(None) };
+            let (Ok(opb), Ok(gpb)) = (load_entry(ours_root, op), load_entry(game_root, gp)) else { return Err(None) };
             if opb.data.len() == ob.data.len() && gpb.data.len() == gb.data.len() {
                 for (a, b) in ob.data.iter_mut().zip(opb.data.iter()) { *a -= *b; }
                 for (a, b) in gb.data.iter_mut().zip(gpb.data.iter()) { *a -= *b; }
@@ -1447,12 +1447,12 @@ pub fn run(game_root: &std::path::Path, ours_root: &std::path::Path, opts: &Opts
         } else {
             // chart space: cut the game's atlas by the chart rect when the game entry is atlas-wide
             if ge.chart.is_none() {
-                let Some(obj) = obj else { continue };
-                let Some(r) = game_rect_of.get(&obj) else { *missing.entry(format!("{} (no game rect for obj {obj})", oe.pass)).or_insert(0) += 1; continue };
+                let Some(obj) = obj else { return Err(None) };
+                let Some(r) = game_rect_of.get(&obj) else { return Err(Some(format!("{} (no game rect for obj {obj})", oe.pass))) };
                 let stored_w = if game.atlas.stored_w > 0 { game.atlas.stored_w } else { 1024 };
                 match cut_chart(&gb, r, stored_w) {
                     Some((cut, sc)) => { transforms.push(format!("chart_cut(obj {obj}: rect ({}, {}) {}×{} at scale {sc})", r.x, r.y, r.w, r.h)); g = cut; }
-                    None => { eprintln!("passdiff: {}: cannot cut obj {obj} from a {}×{} buffer", oe.pass, gb.w, gb.h); continue; }
+                    None => { eprintln!("passdiff: {}: cannot cut obj {obj} from a {}×{} buffer", oe.pass, gb.w, gb.h); return Err(None); }
                 }
             } else { g = gb.clone(); }
             o = ob.clone();
@@ -1498,8 +1498,30 @@ pub fn run(game_root: &std::path::Path, ours_root: &std::path::Path, opts: &Opts
             format!("systematic: mean Δ {:+.4} ({:+.1} % of the game's mean {:.4}; ours/game per channel {})", stats.mean_signed, 100.0 * stats.mean_signed / stats.mean_ref, stats.mean_ref, per_ch.join("/"))
         } else { String::new() };
         if !coverage_note.is_empty() { if !note.is_empty() { note += "; "; } note += &coverage_note; }
-        compared_passes.insert(oe.pass.clone());
-        rows.push(Row { pass: oe.pass.clone(), sweep: oe.sweep, direction: oe.direction, peel: oe.peel, layer: oe.layer, chart: obj, stats, transforms, note, pair: if opts.keep_pairs { Some((g, o, channels)) } else { None } });
+        Ok(Row { pass: oe.pass.clone(), sweep: oe.sweep, direction: oe.direction, peel: oe.peel, layer: oe.layer, chart: obj, stats, transforms, note, pair: if opts.keep_pairs { Some((g, o, channels)) } else { None } })
+    };
+    // the pairs are independent: 16 workers (each pair holds two buffers of up to 200 MB)
+    let n_workers = 16usize.min(order.len().max(1));
+    let results: Vec<(usize, Result<Row, Option<String>>)> = std::thread::scope(|sc| {
+        let hs: Vec<_> = (0..n_workers)
+            .map(|wk| {
+                let order = &order;
+                let compare_one = &compare_one;
+                sc.spawn(move || -> Vec<(usize, Result<Row, Option<String>>)> {
+                    order.iter().enumerate().filter(|(k, _)| k % n_workers == wk).map(|(k, &i)| (k, compare_one(i))).collect()
+                })
+            })
+            .collect();
+        let mut all: Vec<(usize, Result<Row, Option<String>>)> = hs.into_iter().flat_map(|h| h.join().unwrap()).collect();
+        all.sort_by_key(|(k, _)| *k);
+        all
+    });
+    for (_, r) in results {
+        match r {
+            Ok(row) => { compared_passes.insert(row.pass.clone()); rows.push(row); }
+            Err(Some(p)) => { *missing.entry(p).or_insert(0) += 1; }
+            Err(None) => {}
+        }
     }
     for (p, n) in &missing {
         findings.push(format!("not compared: {n} of our `{p}` buffers have no game entry"));

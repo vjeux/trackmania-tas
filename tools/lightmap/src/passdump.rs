@@ -303,6 +303,10 @@ pub struct PassDump {
     /// Which directions of each sweep get their per-direction buffers written (None = all).
     pub dirs: Option<Vec<u32>>,
     pub bytes_written: u64,
+    /// Background writers: the buffers go down a bounded channel and hit the disk off the bake's threads
+    /// (`finish` drains them).
+    writer_tx: Option<std::sync::mpsc::SyncSender<(std::path::PathBuf, Vec<u8>)>>,
+    writers: Vec<std::thread::JoinHandle<std::io::Result<u64>>>,
 }
 
 impl std::fmt::Debug for PassDump {
@@ -335,6 +339,8 @@ impl PassDump {
             },
             dirs: None,
             bytes_written: 0,
+            writer_tx: None,
+            writers: Vec::new(),
         })
     }
 
@@ -348,13 +354,47 @@ impl PassDump {
     }
 
     fn write_file(&mut self, rel: &str, bytes: &[u8]) -> std::io::Result<()> {
+        self.write_file_owned(rel, bytes.to_vec())
+    }
+
+    /// Queue a buffer for the background writers (started on first use: 8 threads, 16 buffers in flight).
+    fn write_file_owned(&mut self, rel: &str, bytes: Vec<u8>) -> std::io::Result<()> {
         let p = self.root.join(rel);
         if let Some(parent) = p.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let mut f = std::io::BufWriter::new(std::fs::File::create(&p)?);
-        f.write_all(bytes)?;
         self.bytes_written += bytes.len() as u64;
+        if self.writer_tx.is_none() {
+            let (tx, rx) = std::sync::mpsc::sync_channel::<(std::path::PathBuf, Vec<u8>)>(16);
+            let rx = std::sync::Arc::new(std::sync::Mutex::new(rx));
+            for _ in 0..8 {
+                let rx = rx.clone();
+                self.writers.push(std::thread::spawn(move || -> std::io::Result<u64> {
+                    let mut total = 0u64;
+                    loop {
+                        let job = { let guard = rx.lock().unwrap(); guard.recv() };
+                        let Ok((path, data)) = job else { break };
+                        let mut f = std::io::BufWriter::with_capacity(1 << 20, std::fs::File::create(&path)?);
+                        f.write_all(&data)?;
+                        total += data.len() as u64;
+                    }
+                    Ok(total)
+                }));
+            }
+            self.writer_tx = Some(tx);
+        }
+        self.writer_tx.as_ref().unwrap().send((p, bytes)).map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "dump writer gone"))?;
+        Ok(())
+    }
+
+    /// Wait for every queued buffer to reach the disk.
+    pub fn drain(&mut self) -> std::io::Result<()> {
+        if let Some(tx) = self.writer_tx.take() {
+            drop(tx);
+            for h in self.writers.drain(..) {
+                h.join().map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "dump writer panicked"))??;
+            }
+        }
         Ok(())
     }
 
@@ -372,7 +412,7 @@ impl PassDump {
         if e.format.is_empty() {
             e.format = match channels { 1 => "R32_FLOAT", 2 => "R32G32_FLOAT", 3 => "R32G32B32_FLOAT", _ => "R32G32B32A32_FLOAT" }.into();
         }
-        self.write_file(&e.file.clone(), &bytes)?;
+        self.write_file_owned(&e.file.clone(), bytes)?;
         self.manifest.passes.push(e);
         Ok(())
     }
@@ -388,7 +428,7 @@ impl PassDump {
         e.height = h;
         e.row_pitch = w * 4;
         e.origin = "top-left".into();
-        self.write_file(&e.file.clone(), &bytes)?;
+        self.write_file_owned(&e.file.clone(), bytes)?;
         self.manifest.passes.push(e);
         Ok(())
     }
@@ -431,7 +471,7 @@ impl PassDump {
                 e.height = h;
                 e.row_pitch = w * 8;
                 e.origin = "top-left".into();
-                self.write_file(&e.file.clone(), &bytes)?;
+                self.write_file_owned(&e.file.clone(), bytes)?;
                 self.manifest.passes.push(e);
                 Ok(())
             }
@@ -439,7 +479,8 @@ impl PassDump {
     }
 
     /// Write MANIFEST.json (call once at the end; safe to call again after more entries).
-    pub fn finish(&self) -> std::io::Result<()> {
+    pub fn finish(&mut self) -> std::io::Result<()> {
+        self.drain()?;
         let s = serde_json::to_string_pretty(&self.manifest).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
         std::fs::write(self.root.join("MANIFEST.json"), s)
     }
@@ -519,7 +560,7 @@ mod tests {
 
     #[test]
     fn manifest_round_trips_through_json() {
-        let mut d = PassDump { root: "/tmp".into(), manifest: Manifest { producer: "t".into(), map: "m".into(), baked_map: None, quality: 3, daytime_word: Some(7), mood: "BlueBay/Day".into(), atlas: Atlas { w: 2048, h: 2048, ss: 3, stored_w: 1024, stored_h: 1024 }, sun_dir: [0.0, 1.0, 0.0], sun_rgb: [1.0; 3], sweeps: vec![], layout: vec![], conventions: serde_json::Map::new(), passes: vec![], final_encode: None, probe_draw_state: None }, dirs: Some(vec![0, 3]), bytes_written: 0 };
+        let mut d = PassDump { root: "/tmp".into(), manifest: Manifest { producer: "t".into(), map: "m".into(), baked_map: None, quality: 3, daytime_word: Some(7), mood: "BlueBay/Day".into(), atlas: Atlas { w: 2048, h: 2048, ss: 3, stored_w: 1024, stored_h: 1024 }, sun_dir: [0.0, 1.0, 0.0], sun_rgb: [1.0; 3], sweeps: vec![], layout: vec![], conventions: serde_json::Map::new(), passes: vec![], final_encode: None, probe_draw_state: None }, dirs: Some(vec![0, 3]), bytes_written: 0, writer_tx: None, writers: Vec::new() };
         let mut e = entry("peel_depth", "peel_depth/s0/d000/l00.bin".into(), "peel");
         e.sweep = Some(0);
         e.direction = Some(0);
