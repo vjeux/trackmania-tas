@@ -2113,6 +2113,8 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
     let mut sel_buf: Vec<[f32; 3]> = vec![[0.0; 3]; max_set];
     let mut occl_buf: Vec<bool> = vec![false; max_set];
     let range_all_buf: Vec<u32> = if jitter { (0..max_set as u32).collect() } else { Vec::new() };
+    // the tiles' world-XZ clip boxes per peel index (None = the world peel: no clip), see the gather
+    let tile_clip: Vec<Option<[f32; 4]>> = prm.peel_tile_clip.as_ref().map(|v| v.as_ref().clone()).unwrap_or_default();
     for (di, d) in dirs.iter().enumerate() {
         let t_dir = std::time::Instant::now();
         let g = di % groups;
@@ -2460,6 +2462,16 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                             let ndd = dot(s.n, *d);
                             if ndd <= 0.0 {
                                 continue;
+                            }
+                            // THE TILE PASS'S WORLD-XZ CLIP (RE 7: LmRasterPosNrm_Inst_v's ClipWorldBoxXZ permutation emits
+                            // SV_ClipDistance0 = (wx − MinX, wz − MinZ, MaxX − wx, MaxZ − wz) from the tile record's
+                            // {cx ± hx, cz ± hz}; the hardware drops every LM fragment whose world XZ lies outside the
+                            // tile's cell — no y test, distance 0 kept; the world pass has the clip off): so a texel
+                            // reads exactly the tile whose cell holds its world position
+                            if let Some(Some(b)) = tile_clip.get(pi) {
+                                if !(s.p[0] - b[0] >= 0.0 && s.p[2] - b[1] >= 0.0 && b[2] - s.p[0] >= 0.0 && b[3] - s.p[2] >= 0.0) {
+                                    continue;
+                                }
                             }
                             let (x, y, z) = frame.project(s.p);
                             let mut hit: Option<([f32; 3], bool)> = None;

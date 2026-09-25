@@ -1753,6 +1753,10 @@ fn run(a: Vec<String>) {
                 for (i, t) in plan.tiles.iter().enumerate() { eprintln!("  tile {i}: [{:.1}, {:.1}]×[{:.1}, {:.1}]×[{:.1}, {:.1}]", t.min[0], t.max[0], t.min[1], t.max[1], t.min[2], t.max[2]); }
                 if plan.size != prm.peel_res { eprintln!("peel cameras: peel resolution {} → {}", prm.peel_res, plan.size); prm.peel_res = plan.size; }
                 prm.frustums = Some(std::sync::Arc::new(plan.table(&prm.sphere_dirs)));
+                // the tiles' world-XZ clip for the accumulate (RE 7): the world peel unclipped, each tile its cell
+                let mut clips: Vec<Option<[f32; 4]>> = vec![None];
+                for t in &plan.tiles { clips.push(Some([t.min[0], t.min[2], t.max[0], t.max[2]])); }
+                prm.peel_tile_clip = Some(std::sync::Arc::new(clips));
                 Some(plan)
             } else { None };
             // (the sweep's direction list goes into the manifest before the sweep bakes, so a manifest written

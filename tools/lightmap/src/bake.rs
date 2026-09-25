@@ -192,6 +192,11 @@ pub struct BakeParams {
     /// The layer-count rule on a census ESTIMATE of the written fractions (--layers-estimate) instead of
     /// the exact dense depth-only pass over the whole viewport.
     pub layers_estimate: bool,
+    /// Per peel index of a direction's peel list, the fitted TILE's world-XZ clip box [min x, min z, max x,
+    /// max z] (the tile record's cx ± hx, cz ± hz) — None for the world peel. The game's tile pass draws every
+    /// chart and clips each LM fragment by its world XZ against the tile (RE 7), so a texel reads only the
+    /// tile whose cell holds it.
+    pub peel_tile_clip: Option<std::sync::Arc<Vec<Option<[f32; 4]>>>>,
     /// The game's sky dome MESH (capture e001051), rasterised per peel with VS 16773's constants; None =
     /// the analytic ellipsoid model (`SkyGradient::dome_radiance`).
     pub dome_mesh: Option<std::sync::Arc<crate::domemesh::DomeMesh>>,
@@ -317,6 +322,7 @@ impl Default for BakeParams {
             peel_layer_counts: None,
             layers_from_capture: true,
             layers_estimate: false,
+            peel_tile_clip: None,
             dome_mesh: None,
             lm_scene: None,
             ilatlas: None,
