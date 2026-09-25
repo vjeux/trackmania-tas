@@ -208,7 +208,15 @@ pub fn add_billboards(course: &Course, mesh: &mut Mesh, frame: &Frame, kind: &st
         Some(d) if lists.iter().filter(|l| l.ends_with(d)).count() > 1 => lists.iter().filter(|l| l.ends_with(d)).collect(),
         _ => vec![first],
     };
-    let default_model: Vec<ModelTri> = picked.iter().flat_map(|dl| model_triangles(course, dl)).collect();
+    // a model whose display list loads only the PALETTE and leaves the texture
+    // image to the actor code (the piranha plants: `dma_textures(gTexture
+    // PiranhaPlant1…)`, the frame picked per tick) gets its first frame here —
+    // untextured, they were pure white crossed panels (vjeux, 2026-09-25)
+    let initial: Option<(String, u32, u32, bool, bool)> = match kind {
+        "piranha_plant" => Some(("gTexturePiranhaPlant1".to_string(), 32, 64, true, false)),
+        _ => None,
+    };
+    let default_model: Vec<ModelTri> = picked.iter().flat_map(|dl| model_triangles_with(course, dl, initial.clone())).collect();
     if default_model.is_empty() {
         return (0, 0);
     }
@@ -247,9 +255,12 @@ pub fn add_billboards(course: &Course, mesh: &mut Mesh, frame: &Frame, kind: &st
         for &yaw in yaws {
             let (s, c) = (yaw.sin(), yaw.cos());
             for t in model {
+                // the piranha plant is stored as its LEFT half, mirrored across
+                // the quad by the tile (`G_TX_MIRROR` on s), like the Thwomp face
+                let mirror_s = t.tex.as_ref().map(|x| x.0.contains("PiranhaPlant")).unwrap_or(false);
                 let mat = t.tex.as_ref().map(|(sym, w, h, cs, ct)| {
                     *mats.entry((sym.clone(), *cs, *ct)).or_insert_with(|| {
-                        mesh.materials.push(Material { sym: sym.clone(), mirror_s: false, mirror_t: false, clamp_s: *cs, clamp_t: *ct, w: *w, h: *h, fmt: 2, tint: [255, 255, 255] });
+                        mesh.materials.push(Material { sym: sym.clone(), mirror_s, mirror_t: false, clamp_s: *cs, clamp_t: *ct, w: *w, h: *h, fmt: 2, tint: [255, 255, 255] });
                         mesh.materials.len() - 1
                     })
                 });
@@ -260,6 +271,9 @@ pub fn add_billboards(course: &Course, mesh: &mut Mesh, frame: &Frame, kind: &st
                     let world = [sp[0] as f32 + rx, sp[1] as f32 + y, sp[2] as f32 + rz];
                     let (tw, th) = t.tex.as_ref().map(|x| (x.1 as f32, x.2 as f32)).unwrap_or((32.0, 32.0));
                     let mut u = v.tc[0] as f32 / 32.0 / tw;
+                    if mirror_s {
+                        u /= 2.0; // the mirrored image is twice as wide
+                    }
                     let mut vv = v.tc[1] as f32 / 32.0 / th;
                     if t.tex.as_ref().map(|x| x.3).unwrap_or(false) {
                         u = u.clamp(0.0, 1.0);

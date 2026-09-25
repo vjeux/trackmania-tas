@@ -56,6 +56,18 @@ pub struct ItemBoxes {
 /// One item holding every item box of the course, or None when the course
 /// has no item box spawns.
 pub fn build(store: &mut DataStore, name: &str, spawns: &[[i16; 3]], frame: &Frame, assets: &AssetIndex, rom: &mut Rom, tag: &str) -> Result<Option<ItemBoxes>, String> {
+    build_faces(store, name, spawns, frame, assets, rom, tag, None)
+}
+
+/// The colour material: `ItemInflatableMat` follows the PLACEMENT's colour
+/// byte (measured 2026-09-25 on a six-item line-up: Default yellow, White,
+/// Green, Blue, Red, Black); none of the FX/light/tech materials did.
+pub const COLOUR_LINK: &str = "Stadium\\Media\\Material\\ItemInflatableMat";
+
+/// `face`: Some(k) builds only face k of every cube — the six-faces-six-colours
+/// item box is six such items, each placed with its own colour byte (vjeux
+/// 2026-09-25: "in the real game they are all sorts of colors").
+pub fn build_faces(store: &mut DataStore, name: &str, spawns: &[[i16; 3]], frame: &Frame, assets: &AssetIndex, rom: &mut Rom, tag: &str, face: Option<usize>) -> Result<Option<ItemBoxes>, String> {
     if spawns.is_empty() {
         return Ok(None);
     }
@@ -140,10 +152,19 @@ pub fn build(store: &mut DataStore, name: &str, spawns: &[[i16; 3]], frame: &Fra
             // FULL cube — the material line-up shot. MK64_IB_LINK: one material
             // for all; MK64_IB_FULL=1: a full cube instead of the frame.
             let survey: Vec<String> = std::env::var("MK64_IB_SURVEY").map(|s| s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()).unwrap_or_default();
-            let link = if survey.is_empty() { std::env::var("MK64_IB_LINK").unwrap_or_else(|_| DEFAULT_LINK.to_string()) } else { survey[box_index % survey.len()].clone() };
+            let link = match face {
+                Some(_) => COLOUR_LINK.to_string(),
+                None => {
+                    if survey.is_empty() { std::env::var("MK64_IB_LINK").unwrap_or_else(|_| DEFAULT_LINK.to_string()) } else { survey[box_index % survey.len()].clone() }
+                }
+            };
             mesh.materials.push(CPlugMaterialUserInst::game_material(&link, crate::tm::PHYS_CONCRETE));
             let full = !survey.is_empty() || std::env::var("MK64_IB_FULL").is_ok() || DEFAULT_FULL;
-            let geometry = if full { cube_faces(OUTER_M, None) } else { cube_frame(OUTER_M, 0.12 * OUTER_M) };
+            let geometry = match face {
+                Some(k) => cube_faces(OUTER_M, Some(k)),
+                None if full => cube_faces(OUTER_M, None),
+                None => cube_frame(OUTER_M, 0.12 * OUTER_M),
+            };
             (vec![geometry], vec![mesh.materials.len() - 1])
         };
         let has_uv1 = vec![true; per_material.len()];
@@ -239,7 +260,7 @@ pub fn build(store: &mut DataStore, name: &str, spawns: &[[i16; 3]], frame: &Fra
     for (n, b) in mapgeom::static_item::assemble::SIDECARS.with(|s| std::mem::take(&mut *s.borrow_mut())) {
         pictures.insert(n, b);
     }
-    let marks_bytes = if shared {
+    let marks_bytes = if shared || matches!(face, Some(k) if k > 0) {
         Vec::new()
     } else {
         let marks_name = name.replace("_itemboxes.Item.Gbx", "_itemmarks.Item.Gbx");

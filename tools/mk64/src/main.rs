@@ -78,6 +78,7 @@ fn main() {
         "ghost-all" => cmd_ghost_all(&args),
         "mux" => cmd_mux(&args),
         "colours" => cmd_colours(&args),
+        "routes" => cmd_routes(&args),
         "skins" => mk64::skins::cmd(&args, &decomp_dir(&args), &rom_path(&args).expect("--rom FILE ($MK64_ROM)")),
         "texture" => cmd_texture(&args),
         "render" => cmd_render(&args),
@@ -280,6 +281,23 @@ fn cmd_render(args: &[String]) {
         }
         if let Some(p0) = pts.first() {
             img.dot(p0[0], p0[2], 6, [255, 0, 0]);
+        }
+        // the alternate routes in other colours, with a dot every 5 % of each
+        let colours = [[255, 80, 255], [80, 255, 80], [255, 140, 0], [80, 200, 255]];
+        let mut alts: Vec<(&String, &Vec<[i16; 3]>)> = c.other_paths.iter().filter(|(nm, _)| nm.contains("_track_path_")).collect();
+        alts.sort();
+        for (k, (_, alt)) in alts.iter().enumerate() {
+            let col = colours[k % colours.len()];
+            let ap: Vec<[f32; 3]> = alt.iter().map(|q| frame.to_tm(*q)).collect();
+            for i in 0..ap.len() {
+                let (a, b) = (ap[i], ap[(i + 1) % ap.len()]);
+                img.line((a[0], a[2]), (b[0], b[2]), col);
+            }
+        }
+        for i in 0..pts.len() {
+            if i * 20 % pts.len() < 20 {
+                img.dot(pts[i][0], pts[i][2], 4, [255, 255, 255]);
+            }
         }
         for ib in &c.item_boxes {
             let p = frame.to_tm(ib.pos);
@@ -682,4 +700,46 @@ fn cmd_mux(args: &[String]) {
         n += 1;
     }
     println!("{n} clips in {}", out_dir.display());
+}
+
+/// `mk64 routes COURSE`: where the course's alternate routes (`_track_path_2..`)
+/// diverge from the main path — the lap fractions along the main path where
+/// EVERY route passes within 25 units (a checkpoint there catches every
+/// branch) and where they do not.
+fn cmd_routes(args: &[String]) {
+    let (c, _decomp) = load_course(args);
+    let dir = course_arg(args);
+    let main: Vec<[f32; 3]> = c.path.iter().map(|p| [p.pos[0] as f32, p.pos[1] as f32, p.pos[2] as f32]).collect();
+    let mut alts: Vec<(&String, &Vec<[i16; 3]>)> = c.other_paths.iter().filter(|(n, _)| n.contains("_track_path_")).collect();
+    alts.sort();
+    println!("{dir}: main path {} points; {} alternate route(s): {}", main.len(), alts.len(), alts.iter().map(|(n, v)| format!("{} ({} pts)", n.rsplit('_').next().unwrap_or("?"), v.len())).collect::<Vec<_>>().join(", "));
+    if alts.is_empty() {
+        return;
+    }
+    // per main point: the nearest distance from each alternate route
+    let n = main.len();
+    let mut shared = vec![true; n];
+    for (_, alt) in &alts {
+        for (i, p) in main.iter().enumerate() {
+            let d = alt.iter().map(|q| ((q[0] as f32 - p[0]).powi(2) + (q[2] as f32 - p[2]).powi(2)).sqrt()).fold(f32::MAX, f32::min);
+            if d > 25.0 {
+                shared[i] = false;
+            }
+        }
+    }
+    // runs
+    let mut i = 0;
+    while i < n {
+        let s = shared[i];
+        let j0 = i;
+        while i < n && shared[i] == s {
+            i += 1;
+        }
+        println!("  {:>5.1}% .. {:>5.1}%  {}", j0 as f32 * 100.0 / n as f32, i as f32 * 100.0 / n as f32, if s { "all routes together" } else { "ROUTES SPLIT" });
+    }
+    let cps = 4;
+    for k in 1..=cps {
+        let idx = (k * n) / (cps + 1);
+        println!("  checkpoint {k} at {:>5.1}%: {}", idx as f32 * 100.0 / n as f32, if shared[idx] { "ok (all routes pass)" } else { "MISSED by some route" });
+    }
 }
