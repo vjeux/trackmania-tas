@@ -75,6 +75,8 @@ fn main() {
         "sprites" => cmd_sprites(&args),
         "overlaps" => cmd_overlaps(&args),
         "ghost" => cmd_ghost(&args),
+        "ghost-all" => cmd_ghost_all(&args),
+        "mux" => cmd_mux(&args),
         "colours" => cmd_colours(&args),
         "skins" => mk64::skins::cmd(&args, &decomp_dir(&args), &rom_path(&args).expect("--rom FILE ($MK64_ROM)")),
         "texture" => cmd_texture(&args),
@@ -559,8 +561,125 @@ fn cmd_ghost(args: &[String]) {
     let traj = mk64::ghost::centreline(&c, &frame, &soup, laps, &drive, 50);
     let vmax_seen = traj.poses.iter().map(|p| p.speed).fold(0.0f32, f32::max);
     println!("  drive: vmax {:.0} km/h, a_lat {} a_acc {} a_brk {}; top speed reached {:.0} km/h; laps at {:?} s", drive.vmax * 3.6, drive.a_lat, drive.a_acc, drive.a_brk, vmax_seen * 3.6, traj.lap_ms.iter().map(|m| *m as f64 / 1000.0).collect::<Vec<_>>());
-    match mk64::ghost::write(&traj, donor, out, flag(args, "--uid"), 50) {
+    // the uid: --uid, else read from --map (the built map's header)
+    let uid: Option<String> = match (flag(args, "--uid"), flag(args, "--map")) {
+        (Some(u), _) => Some(u.to_string()),
+        (None, Some(m)) => {
+            let data = std::fs::read(m).unwrap_or_else(|e| die(format!("{m}: {e}")));
+            Some(gbx::map_uid_of(&data).unwrap_or_else(|| die(format!("{m}: no map uid in the header"))))
+        }
+        (None, None) => None,
+    };
+    if let Some(u) = &uid {
+        println!("  map uid {u}");
+    }
+    match mk64::ghost::write(&traj, donor, out, uid.as_deref(), 50) {
         Ok(r) => println!("  {r}"),
         Err(e) => die(format!("{out}: {e}")),
     }
+}
+
+/// `mk64 ghost-all --host MAP --maps-dir DIR --out-dir DIR --donor GHOST [ghost flags]`:
+/// one centreline ghost per built map in `--maps-dir` (`MK64 <Title>.Map.Gbx`,
+/// the uid read from each), written as `DIR/MK64 <Title>.Ghost.Gbx`.
+fn cmd_ghost_all(args: &[String]) {
+    let maps_dir = std::path::PathBuf::from(flag(args, "--maps-dir").unwrap_or_else(|| die("--maps-dir DIR (the built maps)")));
+    let out_dir = std::path::PathBuf::from(flag(args, "--out-dir").unwrap_or_else(|| die("--out-dir DIR")));
+    std::fs::create_dir_all(&out_dir).unwrap_or_else(|e| die(format!("{}: {e}", out_dir.display())));
+    let mut passthrough: Vec<String> = Vec::new();
+    let mut i = 2;
+    while i < args.len() {
+        if args[i] == "--maps-dir" || args[i] == "--out-dir" {
+            i += 2;
+            continue;
+        }
+        passthrough.push(args[i].clone());
+        i += 1;
+    }
+    let mut built = 0;
+    for (dir, title, laps) in mk64::course::COURSES {
+        if laps.is_none() {
+            continue;
+        }
+        let file_title = title.replace('\'', "");
+        let map = maps_dir.join(format!("MK64 {file_title}.Map.Gbx"));
+        if !map.is_file() {
+            eprintln!("=== {dir}: no map at {} — skipped", map.display());
+            continue;
+        }
+        let out = out_dir.join(format!("MK64 {file_title}.Ghost.Gbx"));
+        let mut a: Vec<String> = vec!["mk64".into(), "ghost".into(), dir.to_string()];
+        a.extend(passthrough.iter().cloned());
+        a.push("--map".into());
+        a.push(map.to_string_lossy().into_owned());
+        a.push("--out".into());
+        a.push(out.to_string_lossy().into_owned());
+        println!("=== {dir} → {}", out.display());
+        cmd_ghost(&a);
+        built += 1;
+    }
+    println!("built {built} ghosts into {}", out_dir.display());
+}
+
+/// `mk64 mux --webm-dir DIR --music-dir DIR --out-dir DIR [--crf N] [--ffmpeg BIN]`:
+/// every `mk64-<course>-1lap.webm` the render batch produced becomes
+/// `DIR/MK64 <Title> - centreline ghost, lap 1.mp4` (H.264, ≤ 50 MB for the
+/// artifact store) with the course's theme (`mk64_<key>.ogg`, `tm::music_theme`)
+/// faded out over the last 3 s. ffmpeg does the work; this picks the files.
+fn cmd_mux(args: &[String]) {
+    let webm_dir = std::path::PathBuf::from(flag(args, "--webm-dir").unwrap_or_else(|| die("--webm-dir DIR")));
+    let music_dir = std::path::PathBuf::from(flag(args, "--music-dir").unwrap_or_else(|| die("--music-dir DIR")));
+    let out_dir = std::path::PathBuf::from(flag(args, "--out-dir").unwrap_or_else(|| die("--out-dir DIR")));
+    let crf = flag(args, "--crf").unwrap_or("24");
+    let ffmpeg = flag(args, "--ffmpeg").unwrap_or("ffmpeg");
+    std::fs::create_dir_all(&out_dir).unwrap_or_else(|e| die(format!("{}: {e}", out_dir.display())));
+    let mut n = 0;
+    for (dir, title, laps) in mk64::course::COURSES {
+        if laps.is_none() {
+            continue;
+        }
+        let stem = if *dir == "luigi_raceway" { "mk64-luigi-1lap".to_string() } else { format!("mk64-{}-1lap", dir.replace('_', "-")) };
+        let webm = webm_dir.join(format!("{stem}.webm"));
+        if !webm.is_file() {
+            println!("{dir}: no {} yet", webm.display());
+            continue;
+        }
+        let out = out_dir.join(format!("MK64 {} - centreline ghost, lap 1.mp4", title.replace('\'', "")));
+        if out.is_file() {
+            println!("{dir}: {} exists — kept", out.display());
+            n += 1;
+            continue;
+        }
+        // the clip's length decides where the fade starts
+        let probe = std::process::Command::new(ffmpeg.replace("ffmpeg", "ffprobe"))
+            .args(["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0"])
+            .arg(&webm)
+            .output()
+            .unwrap_or_else(|e| die(format!("ffprobe: {e}")));
+        let dur: f64 = String::from_utf8_lossy(&probe.stdout).trim().parse().unwrap_or(0.0);
+        let fade_at = (dur - 3.0).max(0.0);
+        let music = mk64::tm::music_theme(dir).map(|k| music_dir.join(format!("mk64_{k}.ogg"))).filter(|p| p.is_file());
+        let mut cmd = std::process::Command::new(ffmpeg);
+        cmd.args(["-y", "-loglevel", "error", "-i"]).arg(&webm);
+        match &music {
+            Some(m) => {
+                cmd.arg("-i").arg(m).args(["-filter_complex", &format!("[1:a]afade=t=out:st={fade_at:.2}:d=3[a]"), "-map", "0:v", "-map", "[a]", "-c:a", "aac", "-b:a", "128k", "-shortest"]);
+            }
+            None => {
+                cmd.args(["-map", "0:v", "-an"]);
+            }
+        }
+        cmd.args(["-c:v", "libx264", "-preset", "slow", "-crf", crf, "-pix_fmt", "yuv420p", "-movflags", "+faststart"]).arg(&out);
+        let st = cmd.status().unwrap_or_else(|e| die(format!("ffmpeg: {e}")));
+        if !st.success() {
+            die(format!("ffmpeg failed on {}", webm.display()));
+        }
+        let bytes = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
+        println!("{dir}: {} ({:.1} MB, {dur:.1} s{})", out.display(), bytes as f64 / 1048576.0, if music.is_some() { ", music" } else { ", silent" });
+        if bytes > 50 * 1024 * 1024 {
+            println!("  over the 50 MB artifact limit — re-run with --crf {}", crf.parse::<u32>().unwrap_or(24) + 3);
+        }
+        n += 1;
+    }
+    println!("{n} clips in {}", out_dir.display());
 }
