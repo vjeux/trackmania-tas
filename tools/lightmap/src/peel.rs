@@ -2525,7 +2525,9 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                 // the game's ilightdir at its H-basis draw and its four MRTs after this direction (by the true issue index)
                 let sweep = prm.sweep;
                 let cap = |pass: &str| entries.iter().filter(|e| e.pass == pass && e.banked && e.sweep_direction_index == Some(di as u32) && e.sweep.unwrap_or(0) == sweep).max_by_key(|e| (e.frame, e.eid_last));
-                let names = ["pad", "wall", "vegetation", "tiles"];
+                // the object names by what the mesh IS (its index / instance counts), not by its position in the scene — the
+                // capture's LM scene comes pad, wall, vegetation, tiles; the map-built one in item order
+                let names: Vec<String> = lm.meshes.iter().enumerate().map(|(k, m)| if lm.inst_count[k] > 1 { "tiles".to_string() } else { match m.indices.len() { 24 => "pad".to_string(), 12 => "wall".to_string(), 5751 => "vegetation".to_string(), n => format!("mesh{k}({n} idx)") } }).collect();
                 if let Some(ge) = cap("ilightdir_final") {
                     if let Ok(g) = ge.load(root) {
                         let c = crate::lmaccum::compare_dir(dt, &g);

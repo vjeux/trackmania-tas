@@ -1337,6 +1337,8 @@ fn run(a: Vec<String>) {
                 eprintln!("lm-from: {} capture entries from {} ({} ilightdir_final, {} banked hbasis0)", entries.len(), mp.display(), entries.iter().filter(|e| e.pass == "ilightdir_final").count(), entries.iter().filter(|e| e.pass == "hbasis0" && e.banked).count());
                 prm.hbasis_game = Some((root, std::sync::Arc::new(entries)));
                 prm.lm_scene = Some(std::sync::Arc::new(sc));
+                // the sweep's H-basis MRTs are taken for the finalisation + the transcribed writer
+                if prm.hb_out.is_none() { prm.hb_out = Some(std::sync::Arc::new(lightmap::ilatlas::HbSlot(std::sync::Mutex::new(None)))); }
             }
             // --ilightinput-from e2e|FILE (with --lm-from PASSCAP_ROOT): the peel colours from the game's ILightInput ATLAS — the
             // transcribed setup chain's dilated 17095 (e2e.rs: pre-pass → MDiffuse → shadow map → direct sun → PS 1038 / 17043 /
@@ -1502,6 +1504,8 @@ fn run(a: Vec<String>) {
                     prm.hbasis_game = Some((root, std::sync::Arc::new(entries)));
                 }
                 prm.lm_scene = Some(std::sync::Arc::new(sc));
+                // the sweep's H-basis MRTs are taken for the finalisation + the transcribed writer
+                if prm.hb_out.is_none() { prm.hb_out = Some(std::sync::Arc::new(lightmap::ilatlas::HbSlot(std::sync::Mutex::new(None)))); }
             }
             // THE ZONE TILES' CHART ST from the capture's instance buffer (`lmaccum::load_lm_scene`: the 4096-instance
             // object's g_InstanceDatas — t = the cell's corner, st = its chart ST; the mapping's obj index = the instance
@@ -1862,15 +1866,17 @@ fn run(a: Vec<String>) {
             //     finalisation chain (pwc4 frame 74490, another run of the same bake) — `--chain-final-dir DIR` writes the images
             // the finalised (×2-added) coefficient images of the transcribed chain, kept for the transcribed FILE writer below
             let mut chain_finals: Option<Vec<lightmap::passdiff::Buf>> = None;
-            if hb_sweeps.len() >= 1 && e2e_out.is_some() {
+            // (the finalisation runs whenever a sweep's H-basis MRTs exist — from the captured chain (--lm-from + --ilightinput-from e2e)
+            // or from the map alone (--lm-from-map); the comparison with the captured finals needs the capture root)
+            if hb_sweeps.len() >= 1 && (e2e_out.is_some() || has("--lm-from-map")) {
                 let tf = std::time::Instant::now();
                 let n_sw = hb_sweeps.len();
                 // per coefficient image: Σ_sweeps 2 · resolve(MRT) — the game adds each sweep's resolved image × 2 into the previous
                 // sweep's finalised targets (f16: source truncated, sum RTNE)
                 // (`finalprep::finalise_sweeps` — the library form of this step)
                 let finals: Vec<lightmap::passdiff::Buf> = lightmap::finalprep::finalise_sweeps(&hb_sweeps).into_iter().collect();
-                if let Some(gm) = &game_manifest {
-                    let root = std::path::PathBuf::from(f("--lm-from").unwrap());
+                if let (Some(gm), Some(lm_root)) = (&game_manifest, f("--lm-from").or_else(|| f("--lm-cap-root"))) {
+                    let root = std::path::PathBuf::from(lm_root);
                     let mut ents: Vec<&lightmap::passdump::Entry> = gm.passes.iter().filter(|e| e.pass == "final_02_scaled_x2_ps1109").collect();
                     ents.sort_by_key(|e| e.eid_last.unwrap_or(0));
                     for (m, e) in ents.iter().enumerate().take(4) {
