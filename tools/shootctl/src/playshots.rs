@@ -57,6 +57,10 @@ pub struct Opts {
     /// shot, its answer in the report (`/mobils?name=Car` — are the ghosts'
     /// cars in the scene, and visible?).
     pub probes: Vec<String>,
+    /// `--ghost-at-ms MS`: add the ghosts this long after the playground
+    /// opens (0 = right away; the race itself starts ~14.7 s in — a mode
+    /// script may clear the ghost list when its round starts).
+    pub ghost_at_ms: u64,
     /// `--mode SCRIPT`: the game mode PlayMap runs the map in (empty = the
     /// map's own declared mode). `TrackMania/TM_TimeAttack_Local.Script.txt`
     /// is the solo mode with a ghost manager.
@@ -96,6 +100,7 @@ pub fn parse_opts(args: &[String]) -> Result<Opts, String> {
         // every --ghost FILE, in order
         ghosts: args.iter().enumerate().filter(|(_, a)| *a == "--ghost").filter_map(|(i, _)| args.get(i + 1).cloned()).collect(),
         probes: args.iter().enumerate().filter(|(_, a)| *a == "--probe").filter_map(|(i, _)| args.get(i + 1).cloned()).collect(),
+        ghost_at_ms: num("--ghost-at-ms", 0)?,
         mode: val("--mode").unwrap_or_default(),
         skin: val("--skin"),
         detach: args.iter().any(|a| a == "--detach"),
@@ -231,6 +236,12 @@ fn run_shots(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
     println!("{} playground after {:.1}s (ctx {})", el(), opened.as_secs_f64(), super::http_get("/ctx", 10).unwrap_or_default().trim());
     let mut lines = Vec::new();
     let all_ghosts: Vec<String> = opts.ghost.iter().cloned().chain(opts.ghosts.iter().cloned()).collect();
+    if !all_ghosts.is_empty() && opts.ghost_at_ms > 0 {
+        let so_far = load0.elapsed().as_millis() as u64;
+        if opts.ghost_at_ms > so_far {
+            std::thread::sleep(Duration::from_millis(opts.ghost_at_ms - so_far));
+        }
+    }
     for g in &all_ghosts {
         // the plugin reads the file from arg.txt (a C:/ path)
         let game_ghost = super::game_path(g)?;
