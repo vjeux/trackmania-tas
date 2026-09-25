@@ -1928,6 +1928,7 @@ fn run(a: Vec<String>) {
                 }
                 if let Some(gm) = &game_manifest {
                     let fs = lightmap::passdiff::peel_frustums_for(gm, it as u32, &p2.sphere_dirs);
+                    if !fs.is_empty() { eprintln!("frustum-from: sweep {it}: {} directions' peels ({} peels per direction; the capture's where it has them, else the transcribed light-camera fit on the map's boxes)", fs.len(), fs.iter().map(|v| v.len()).max().unwrap_or(0)); }
                     p2.frustums = if fs.is_empty() { None } else { Some(std::sync::Arc::new(fs)) };
                     let lc = lightmap::peelcap::captured_layer_counts(gm, it as u32, &p2.sphere_dirs);
                     let n_known = lc.iter().filter(|v| v.iter().any(|c| c.is_some())).count();

@@ -402,14 +402,22 @@ pub fn peel_frustums_for(m: &Manifest, sweep: u32, ours: &[[f32; 3]]) -> Vec<Vec
             }
         }
     }
-    if by_dir.is_empty() {
-        return Vec::new();
-    }
     // a direction the capture lacks: the TRANSCRIBED fit (lightcam: CHmsVolumeShadow::UpdateFrustum's rules — the
     // world peel on the scene ∪ environment box, the fitted peel on the item records' box — bit-identical to the
     // captured sun and world-peel cameras of pwc-day) replaces engineer 2's least-squares stand-in boxes
     let boxes = crate::lightcam::PeelBoxes::pwc_day();
     let rules = crate::lightcam::FitRules::default();
+    if by_dir.is_empty() {
+        // a SWEEP the capture has no peel frustums for (pwc6's sweep-1 layers carry no direction): the same fit for every
+        // direction — the game's sweep-1 world peel is the sweep-0 one (frame 7534's true direction 9 projects the probe
+        // block to u 0.20–0.25, v 0.37–0.61, z 0.47–0.52 of the 2048 m world box; the port's receiver-fit frame left the
+        // probes at its far plane, u −0.66..1.0) — provided the capture has peels of SOME sweep of this map
+        let any_peel = m.passes.iter().any(|e| (e.pass == "peel_depth" || e.pass == "peel_color") && e.frustum.is_some());
+        if any_peel && !ours.is_empty() {
+            return ours.iter().map(|od| crate::lightcam::peel_frusta(*od, &boxes, 4096, &rules)).collect();
+        }
+        return Vec::new();
+    }
     let reorient = |fs: &Vec<Frustum>, v: [f32; 3], od: [f32; 3]| -> Vec<Frustum> {
         let c = v[0] * od[0] + v[1] * od[1] + v[2] * od[2];
         if c >= 0.999_99 {
