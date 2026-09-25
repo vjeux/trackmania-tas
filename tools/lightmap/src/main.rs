@@ -1338,6 +1338,36 @@ fn run(a: Vec<String>) {
                 prm.hbasis_game = Some((root, std::sync::Arc::new(entries)));
                 prm.lm_scene = Some(std::sync::Arc::new(sc));
             }
+            // --ilightinput-from e2e|FILE (with --lm-from PASSCAP_ROOT): the peel colours from the game's ILightInput ATLAS — the
+            // transcribed setup chain's dilated 17095 (e2e.rs: pre-pass → MDiffuse → shadow map → direct sun → PS 1038 / 17043 /
+            // 1109 / 1335 × 8, computed here from the capture's frozen inputs when `e2e`, or a raw 2048² R11G11B10 / RGBA16F
+            // image) sampled at every peel fragment's lightmap coordinate through the LM instance stream's ST (ilatlas.rs) —
+            // in place of the port's per-fragment albedo × sun
+            let mut e2e_out: Option<lightmap::e2e::ChainOut> = None;
+            if let Some(src) = f("--ilightinput-from") {
+                let lm_root = std::path::PathBuf::from(f("--lm-from").expect("--ilightinput-from needs --lm-from PASSCAP_ROOT (the LM instance stream)"));
+                let env_frame: u32 = f("--lm-env-frame").map(|v| v.parse().expect("--lm-env-frame")).unwrap_or(127448);
+                let pre_frame: u32 = f("--pre-frame").map(|v| v.parse().expect("--pre-frame")).unwrap_or(127447);
+                let ti = std::time::Instant::now();
+                let atlas = if src == "e2e" {
+                    let out = lightmap::e2e::chain(&lm_root, pre_frame, env_frame, has("--skip-prepass"), true);
+                    for (i, s) in out.stages.iter().enumerate() { eprintln!("  e2e stage {}: {} — {} exact / {} within 1 quantum / {} beyond of {}", i + 1, s.name, s.report.exact, s.report.ulp1, s.report.beyond, s.report.values); }
+                    let il = out.ilightinput.clone();
+                    e2e_out = Some(out);
+                    il
+                } else {
+                    lightmap::ilatlas::load_atlas(std::path::Path::new(&src)).unwrap_or_else(|e| panic!("--ilightinput-from {src}: {e}"))
+                };
+                let mesh_dir = lm_root.join(format!("env/frame{env_frame}/mesh"));
+                let insts = lightmap::prepass::read_maybe_gz(&mesh_dir.join("vb_17033.bin")).unwrap_or_else(|e| panic!("{e}"));
+                let tile_vb = lightmap::prepass::read_maybe_gz(&mesh_dir.join("vb_5350.bin")).unwrap_or_else(|e| panic!("{e}"));
+                let n_items = scene.item_count.max(1);
+                let il = lightmap::ilatlas::IlAtlas::new(atlas, &insts, &tile_vb, n_items);
+                let item_map = il.map_items(&scene);
+                eprintln!("ilightinput-from {src}: atlas {}×{}, {} LM instances ({} items, {} tiles by footprint), port items mapped {:?} ({:.1}s)", il.buf.w, il.buf.h, il.insts.len(), n_items, il.tile_of.len(), item_map, ti.elapsed().as_secs_f32());
+                prm.ilatlas = Some(std::sync::Arc::new(lightmap::ilatlas::IlSource { atlas: il, item_map }));
+                prm.hb_out = Some(std::sync::Arc::new(lightmap::ilatlas::HbSlot(std::sync::Mutex::new(None))));
+            }
             if let Some(gm) = &game_manifest {
                 // the sun shadow map's frustum (only with --shadow-frustum-from-capture: the sun pass's
                 // conventions are the baker's transcription; the port's own frame otherwise) and the
@@ -1632,6 +1662,14 @@ fn run(a: Vec<String>) {
             if let Some(d) = &prm.dump { let mut dm = d.lock().unwrap(); let n = prm.sphere_dirs.len() as u32; dm.manifest.sweeps.push(lightmap::passdump::Sweep { sweep: 0, n_dirs: n, scale: 4.0 / n.max(1) as f32, dirs: prm.sphere_dirs.iter().copied().collect() }); }
             let mut charts = if prm.raster_peel { lightmap::peel::bake_peel_raster(&scene, &bvh, &prm, &chart_sizes(&prm)) } else { lightmap::bake::bake(&scene, &bvh, &prm, &lights) };
             eprintln!("baked {} charts ({:.1}s)", charts.len(), t0.elapsed().as_secs_f32());
+            // --- THE CHAIN through the sweeps (--ilightinput-from): the sweep's transcribed H-basis MRTs (E's lm-from targets)
+            //     are the next sweep's ILightInput through C's sweep-transition chain (sweep1::ilightinput_from_c0: PS 25113 resolve,
+            //     PS 1038 × κ = 1/√(2π), the alpha mask, PS 1109 × MDiffuse, PS 1335 × 8) and, after the last sweep, the finalisation
+            //     (finalprep.rs: PS 25113, PS 1109 × 2 onto the previous sweep's images, PS 1034, PS 1332 × 8, the encode)
+            let mut hb_sweeps: Vec<lightmap::lmaccum::HbTargets> = Vec::new();
+            let take_hb = |p: &lightmap::bake::BakeParams| -> Option<lightmap::lmaccum::HbTargets> { p.hb_out.as_ref().and_then(|s| s.0.lock().unwrap().take()) };
+            if let Some(hb) = take_hb(&prm) { eprintln!("chain: sweep 0's H-basis MRTs taken ({}×{})", hb.w, hb.h); hb_sweeps.push(hb); }
+            let mrt_buf = |hb: &lightmap::lmaccum::HbTargets, m: usize| -> lightmap::passdiff::Buf { let mut b = lightmap::passdiff::Buf::new(hb.w, hb.h, 4); for i in 0..(hb.w * hb.h) as usize { for c in 0..4 { b.data[i * 4 + c] = hb.mrt[m][i][c]; } } b };
             for it in 1..iterations {
                 let mut field = lightmap::bake::RadianceField { charts: vec![None; scene.instances.len()], flip_v: prm.flip_v, uv_bounds: prm.uv_bounds };
                 let inst_of_item: std::collections::HashMap<usize, usize> = scene.instances.iter().enumerate().map(|(ii, inst)| (inst.item, ii)).collect();
@@ -1684,10 +1722,80 @@ fn run(a: Vec<String>) {
                     if !hits.is_empty() { eprintln!("sweep {it}: captured peel directions: {}", hits.join("; ")); }
                     if f("--dump-dirs").as_deref() == Some("game") { if let Some(d) = &prm.dump { let v = lightmap::passdiff::game_dir_indices(gm, it as u32, &p2.sphere_dirs); eprintln!("dump-dirs game: sweep {it} → our directions {:?}", v); d.lock().unwrap().dirs = Some(v); } }
                 }
+                // the sweep-transition chain: OUR sweep-(it−1) C0 → the sweep-it ILightInput atlas (C's transcription), compared with the
+                // capture's sweep-1 ILightInput when banked (pwc6's, another run of the same bake)
+                if let (Some(hb), Some(e2e), Some(il0)) = (hb_sweeps.last(), e2e_out.as_ref(), prm.ilatlas.as_ref()) {
+                    let c0 = mrt_buf(hb, 0);
+                    let mdl = lightmap::sweep1::mdiffuse_linear(&e2e.mdiffuse8, None);
+                    let ts = std::time::Instant::now();
+                    let atlas = lightmap::sweep1::ilightinput_from_c0(&c0, &mdl, None, 0.3989423);
+                    if let Some(gm) = &game_manifest {
+                        if let Some(e) = gm.passes.iter().filter(|e| e.pass == "ilightinput" && e.sweep == Some(it as u32)).min_by_key(|e| e.eid_last.unwrap_or(0)) {
+                            match lightmap::passdiff::load_entry(std::path::Path::new(&f("--lm-from").unwrap()), e) {
+                                Ok(cap) => { let r = lightmap::gpucmp::compare(&atlas, &cap, 3, lightmap::gpucmp::Fmt::R11G11B10); eprintln!("chain: the sweep-{it} ILightInput from OUR sweep-{} C0 vs the captured {} ({:?}): {}", it - 1, e.file, e.capture, r.line()); }
+                                Err(err) => eprintln!("chain: the captured sweep-{it} ILightInput {}: {err}", e.file),
+                            }
+                        } else { eprintln!("chain: no captured sweep-{it} ILightInput entry in the manifest"); }
+                    }
+                    let n_items = scene.item_count.max(1);
+                    let lm_root = std::path::PathBuf::from(f("--lm-from").unwrap());
+                    let env_frame: u32 = f("--lm-env-frame").map(|v| v.parse().expect("--lm-env-frame")).unwrap_or(127448);
+                    let mesh_dir = lm_root.join(format!("env/frame{env_frame}/mesh"));
+                    let insts = lightmap::prepass::read_maybe_gz(&mesh_dir.join("vb_17033.bin")).unwrap_or_else(|e| panic!("{e}"));
+                    let tile_vb = lightmap::prepass::read_maybe_gz(&mesh_dir.join("vb_5350.bin")).unwrap_or_else(|e| panic!("{e}"));
+                    let il = lightmap::ilatlas::IlAtlas::new(atlas, &insts, &tile_vb, n_items);
+                    let item_map = il0.item_map.clone();
+                    p2.ilatlas = Some(std::sync::Arc::new(lightmap::ilatlas::IlSource { atlas: il, item_map }));
+                    p2.hb_out = Some(std::sync::Arc::new(lightmap::ilatlas::HbSlot(std::sync::Mutex::new(None))));
+                    eprintln!("chain: sweep {it} peels sample OUR sweep-{} ILightInput ({:.1}s)", it - 1, ts.elapsed().as_secs_f32());
+                }
                 if let Some(d) = &prm.dump { let mut dm = d.lock().unwrap(); let n = p2.sphere_dirs.len() as u32; dm.manifest.sweeps.push(lightmap::passdump::Sweep { sweep: it as u32, n_dirs: n, scale: 4.0 / n.max(1) as f32, dirs: p2.sphere_dirs.iter().copied().collect() }); }
                 charts = if prm.raster_peel { lightmap::peel::bake_peel_raster(&scene, &bvh, &p2, &chart_sizes(&p2)) } else { lightmap::bake::bake(&scene, &bvh, &p2, &lights) };
                 let mean: f32 = charts.iter().flat_map(|c| c.rgb.iter()).map(|c| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]).sum::<f32>() / charts.iter().map(|c| c.rgb.len()).sum::<usize>().max(1) as f32;
                 eprintln!("bounce iteration {it}: mean texel {mean:.4} ({:.1}s)", t0.elapsed().as_secs_f32());
+                if let Some(hb) = take_hb(&p2) { eprintln!("chain: sweep {it}'s H-basis MRTs taken"); hb_sweeps.push(hb); }
+            }
+            // --- the finalisation of the chain (ROW 12 + the baker's dilation and encode) on OUR sweeps' MRTs, against the captured
+            //     finalisation chain (pwc4 frame 74490, another run of the same bake) — `--chain-final-dir DIR` writes the images
+            if hb_sweeps.len() >= 1 && e2e_out.is_some() {
+                let tf = std::time::Instant::now();
+                let n_sw = hb_sweeps.len();
+                // per coefficient image: Σ_sweeps 2 · resolve(MRT) — the game adds each sweep's resolved image × 2 into the previous
+                // sweep's finalised targets (f16: source truncated, sum RTNE)
+                let mut finals: Vec<lightmap::passdiff::Buf> = Vec::new();
+                for m in 0..4 {
+                    let mut acc = lightmap::passdiff::Buf::new(2048, 2048, 4);
+                    for hb in &hb_sweeps {
+                        let res = lightmap::finalprep::resolve_ps25113(&mrt_buf(hb, m), false, lightmap::gpufmt::Rounding::Truncate);
+                        acc = lightmap::finalprep::add_scaled_ps1109(&acc, &res, [2.0, 2.0, 2.0, 0.0]);
+                    }
+                    // the alpha channel carries the last resolve's alpha (1 where covered) for the tail's PS 1034 target
+                    if let Some(hb) = hb_sweeps.last() { let res = lightmap::finalprep::resolve_ps25113(&mrt_buf(hb, m), false, lightmap::gpufmt::Rounding::Truncate); for i in 0..(2048 * 2048) as usize { acc.data[i * 4 + 3] = res.data[i * 4 + 3]; } }
+                    finals.push(acc);
+                }
+                if let Some(gm) = &game_manifest {
+                    let root = std::path::PathBuf::from(f("--lm-from").unwrap());
+                    let mut ents: Vec<&lightmap::passdump::Entry> = gm.passes.iter().filter(|e| e.pass == "final_02_scaled_x2_ps1109").collect();
+                    ents.sort_by_key(|e| e.eid_last.unwrap_or(0));
+                    for (m, e) in ents.iter().enumerate().take(4) {
+                        if let Ok(cap) = lightmap::passdiff::load_entry(&root, e) {
+                            let r = lightmap::gpucmp::compare(&finals[m], &cap, 4, lightmap::gpucmp::Fmt::F16);
+                            let (mut n, mut within) = (0usize, 0usize);
+                            for i in 0..(2048 * 2048) as usize { for c in 0..3 { let g = cap.data[i * 4 + c]; let o = finals[m].data[i * 4 + c]; if g != 0.0 || o != 0.0 { n += 1; if (o - g).abs() <= 0.02 * g.abs().max(1e-6) { within += 1; } } } }
+                            eprintln!("chain: finalised image {m} ({n_sw} sweeps × 2 · PS 25113) vs the captured {} ({:?}): {} — rgb within 2 %: {within}/{n} ({:.2} %)", e.file, e.capture, r.line(), 100.0 * within as f64 / n.max(1) as f64);
+                        }
+                    }
+                }
+                if let Some(dir) = f("--chain-final-dir") {
+                    std::fs::create_dir_all(&dir).expect("--chain-final-dir");
+                    for (m, b) in finals.iter().enumerate() {
+                        let mut bytes = Vec::new();
+                        for i in 0..(b.w * b.h) as usize { for c in 0..4 { bytes.extend_from_slice(&lightmap::gpufmt::encode_f16(b.data[i * 4 + c], lightmap::gpufmt::Rounding::NearestEven).to_le_bytes()); } }
+                        std::fs::write(format!("{dir}/chain-final-{m}.rgba16f"), bytes).expect("write");
+                    }
+                    eprintln!("chain: wrote the finalised images under {dir}");
+                }
+                eprintln!("chain: finalisation of {n_sw} sweep(s) in {:.1}s", tf.elapsed().as_secs_f32());
             }
             compare(&charts, "bake vs own");
             let k: f32 = match f("--k") {
@@ -4821,6 +4929,12 @@ fn run(a: Vec<String>) {
             //   passes CHAINED on our own outputs (pre-pass → MDiffuse → shadow map → direct sun → ILightInput chain), each stage against
             //   its captured intermediate, the first divergent stage named (e2e.rs)
             lightmap::e2e::run(a.clone());
+        }
+        "chain-final" => {
+            // lmtool chain-final DIR PASSCAP_ROOT [--map SAVE.Map.Gbx] [--frame 74490]: the chain's tail on OUR finalised coefficient images
+            //   (the bake's --chain-final-dir): PS 1034, PS 1332 × 8, the max reduce, CS 23025, the file writer — against the captured
+            //   finalisation and the save's blobs (e2e.rs)
+            lightmap::e2e::chain_final(a.clone());
         }
         "texstat" => {
             // lmtool texstat FILE.dds[.gz]: per mip the min / mean / max of each channel (a look at a texture the pass samples)

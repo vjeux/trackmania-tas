@@ -213,25 +213,76 @@ fn sun_target_to_buf(t: &crate::sunpass::Target) -> Buf {
     b
 }
 
+/// The chained outputs of the setup stages.
+pub struct ChainOut {
+    /// 16963 after the nine pre-pass runs (RGBA16F values).
+    pub acc: Buf,
+    /// The MDiffuse 16969 (sRGB UNORM8 values).
+    pub mdiffuse8: Buf,
+    /// The direct sun (RGBA16F values).
+    pub sun: Buf,
+    /// The dilated ILightInput 17095 (R11G11B10 values, 3 channels) and its coverage.
+    pub ilightinput: Buf,
+    pub coverage: Buf,
+    pub stages: Vec<Stage>,
+}
+
+/// `lmtool e2e-check`.
 pub fn run(a: Vec<String>) {
     let root = PathBuf::from(&a[1]);
     let pre_frame: u32 = arg(&a, "--pre-frame").map(|v| v.parse().expect("--pre-frame")).unwrap_or(127447);
     let frame: u32 = arg(&a, "--frame").map(|v| v.parse().expect("--frame")).unwrap_or(127448);
     let tol: f64 = arg(&a, "--tol").map(|v| v.parse().expect("--tol")).unwrap_or(0.0);
+    let t0 = std::time::Instant::now();
+    let out = chain(&root, pre_frame, frame, flag(&a, "--skip-prepass"), false);
+    let stages = &out.stages;
+    if let Some(dir) = arg(&a, "--dump-dir") {
+        dump(&out, Path::new(&dir));
+    }
+    println!("\nE2E ({:.0} s): {} stages", t0.elapsed().as_secs_f32(), stages.len());
+    let first = stages.iter().position(|s| s.diverged(tol));
+    for (i, s) in stages.iter().enumerate() {
+        let mark = if Some(i) == first { " ← FIRST DIVERGENCE" } else if s.report.beyond == 0 { " (closed to the quantum)" } else { "" };
+        println!("  {}. {}: {} exact / {} within 1 quantum / {} beyond of {} values ({:.4} % beyond){mark}", i + 1, s.name, s.report.exact, s.report.ulp1, s.report.beyond, s.report.values, 100.0 * s.beyond_frac);
+    }
+    match first {
+        Some(i) => println!("first divergent stage: {} — worst value at ({}, {}) ch {}: captured {:.6} ours {:.6}", stages[i].name, stages[i].report.worst.0, stages[i].report.worst.1, stages[i].report.worst.2, stages[i].report.worst.3, stages[i].report.worst.4),
+        None => println!("no stage beyond one quantum"),
+    }
+}
+
+/// Write the chained intermediates (raw images) for the sweep stages.
+pub fn dump(out: &ChainOut, dir: &Path) {
+    std::fs::create_dir_all(dir).expect("dump dir");
+    let f16 = |b: &Buf, name: &str| { let mut bytes = Vec::new(); for i in 0..(b.w * b.h) as usize { for k in 0..b.channels as usize { bytes.extend_from_slice(&crate::gpufmt::encode_f16(b.data[i * b.channels as usize + k], Rounding::NearestEven).to_le_bytes()); } } std::fs::write(dir.join(name), bytes).expect("write"); };
+    f16(&out.acc, "e2e-16963-prepass-sum.rgba16f");
+    f16(&out.sun, "e2e-sun_direct.rgba16f");
+    let mut r11 = Vec::new();
+    let c = &out.ilightinput;
+    for i in 0..(W * H) as usize { r11.extend_from_slice(&crate::gpufmt::pack_r11g11b10([c.data[i * 3], c.data[i * 3 + 1], c.data[i * 3 + 2]], Rounding::Truncate).to_le_bytes()); }
+    std::fs::write(dir.join("e2e-ilightinput-17095.r11g11b10"), r11).expect("write");
+    let mut m8 = Vec::new();
+    for i in 0..(W * H) as usize { for k in 0..4 { m8.push((out.mdiffuse8.data[i * 4 + k] * 255.0).round() as u8); } }
+    std::fs::write(dir.join("e2e-mdiffuse-16969.rgba8"), m8).expect("write");
+    println!("wrote the chained intermediates under {}", dir.display());
+}
+
+/// The setup chain on our own outputs; `quiet` prints nothing.
+pub fn chain(root: &Path, pre_frame: u32, frame: u32, skip_prepass: bool, quiet: bool) -> ChainOut {
+    let root = root.to_path_buf();
     let txt = std::fs::read_to_string(root.join("MANIFEST.json")).expect("MANIFEST.json");
     let m = read_manifest(&txt).expect("manifest");
     let mut stages: Vec<Stage> = Vec::new();
     let mut push = |name: &str, r: Report| {
         let frac = if r.values > 0 { r.beyond as f64 / r.values as f64 } else { 0.0 };
-        println!("[{}] {name}: {}", stages.len() + 1, r.line());
+        if !quiet { println!("[{}] {name}: {}", stages.len() + 1, r.line()); }
         stages.push(Stage { name: name.to_string(), report: r, beyond_frac: frac });
     };
-    let t0 = std::time::Instant::now();
 
     // ---- stage 1: the pre-pass, nine runs → 16963
-    let acc = if flag(&a, "--skip-prepass") {
+    let acc = if skip_prepass {
         let e = entry(&m, "setup_ps1109", pre_frame, "").expect("setup_ps1109");
-        println!("[1] pre-pass SKIPPED: the captured 16963 ({}) enters", e.file);
+        if !quiet { println!("[1] pre-pass SKIPPED: the captured 16963 ({}) enters", e.file); }
         load_entry(&root, e).unwrap()
     } else {
         let acc = prepass_nine_runs(&root, pre_frame, frame);
@@ -244,7 +295,7 @@ pub fn run(a: Vec<String>) {
         for y in 0..H { for x in 0..W { oa.set(x, y, 0, acc.get(x, y, 3)); ca.set(x, y, 0, cap.get(x, y, 3)); } }
         let ra = compare_where(&oa, &ca, 1, Fmt::F16, &|_, _| true);
         r.texels = ra.exact; // borrow the field for the summary line below
-        println!("    alpha (the nine-run coverage): {} of {} texels bit-identical", ra.exact, ra.values);
+        if !quiet { println!("    alpha (the nine-run coverage): {} of {} texels bit-identical", ra.exact, ra.values); }
         r.texels = W as usize * H as usize;
         push("attribute pre-pass, nine runs → 16963 (RGBA16F; rgb = the materials' sRGB-decoded samples × coverage)", r);
         acc
@@ -314,31 +365,7 @@ pub fn run(a: Vec<String>) {
             push(&format!("PS 1335 × {} → its coverage (R8)", eids.len()), compare(&w, &tw, 1, Fmt::Unorm8));
         }
     }
-    if let Some(out) = arg(&a, "--dump-dir") {
-        let dir = PathBuf::from(out);
-        std::fs::create_dir_all(&dir).expect("dump dir");
-        let f16 = |b: &Buf, name: &str| { let mut bytes = Vec::new(); for i in 0..(b.w * b.h) as usize { for k in 0..b.channels as usize { bytes.extend_from_slice(&crate::gpufmt::encode_f16(b.data[i * b.channels as usize + k], Rounding::NearestEven).to_le_bytes()); } } std::fs::write(dir.join(name), bytes).expect("write"); };
-        f16(&acc, "e2e-16963-prepass-sum.rgba16f");
-        f16(&sun_buf, "e2e-sun_direct.rgba16f");
-        let mut r11 = Vec::new();
-        for i in 0..(W * H) as usize { r11.extend_from_slice(&crate::gpufmt::pack_r11g11b10([c.data[i * 3], c.data[i * 3 + 1], c.data[i * 3 + 2]], Rounding::Truncate).to_le_bytes()); }
-        std::fs::write(dir.join("e2e-ilightinput-17095.r11g11b10"), r11).expect("write");
-        std::fs::write(dir.join("e2e-shadow-d16.dds"), shadow.to_dds()).expect("write");
-        println!("wrote the chained intermediates under {}", dir.display());
-    }
-
-    // ---- the verdict
-    println!("\nE2E ({:.0} s): {} stages", t0.elapsed().as_secs_f32(), stages.len());
-    let first = stages.iter().position(|s| s.diverged(tol));
-    for (i, s) in stages.iter().enumerate() {
-        let mark = if Some(i) == first { " ← FIRST DIVERGENCE" } else if s.report.beyond == 0 { " (closed to the quantum)" } else { "" };
-        println!("  {}. {}: {} exact / {} within 1 quantum / {} beyond of {} values ({:.4} % beyond){mark}", i + 1, s.name, s.report.exact, s.report.ulp1, s.report.beyond, s.report.values, 100.0 * s.beyond_frac);
-    }
-    match first {
-        Some(i) => println!("first divergent stage: {} — worst value at ({}, {}) ch {}: captured {:.6} ours {:.6}", stages[i].name, stages[i].report.worst.0, stages[i].report.worst.1, stages[i].report.worst.2, stages[i].report.worst.3, stages[i].report.worst.4),
-        None => println!("no stage beyond one quantum"),
-    }
-    let _ = quantise_f16;
+    ChainOut { acc, mdiffuse8: mdiff8, sun: sun_buf, ilightinput: c, coverage: w, stages }
 }
 
 /// Stage 1 as `prepass_check --all-runs` does it, returning our 16963 after the nine runs.
@@ -346,4 +373,114 @@ pub fn prepass_nine_runs(root: &Path, pre_frame: u32, env_frame: u32) -> Buf {
     let a: Vec<String> = vec!["prepass-check".into(), root.display().to_string(), "--frame".into(), pre_frame.to_string(), "--env-frame".into(), env_frame.to_string()];
     let _ = a;
     crate::prepass_check::nine_run_sum(root, pre_frame, env_frame)
+}
+
+/// `lmtool chain-final DIR ROOT [--map SAVE.Map.Gbx] [--frame 74490]`: the tail of the chain on OUR finalised
+/// coefficient images (`--chain-final-dir` of the bake: 2 · Σ_sweeps PS 25113 per MRT): PS 1034 (rgb into the
+/// dilation targets, the alpha of the resolve), PS 1332 × 8 (the baker's), the max reduce, CS 23025 (the encode),
+/// then the file writer (engineer C's `filecheck::frame0_blobs`) — each against the captured finalisation chain of
+/// frame `--frame` (pwc4's run of the same bake) and the save's blobs.
+pub fn chain_final(a: Vec<String>) {
+    let dir = PathBuf::from(&a[1]);
+    let root = PathBuf::from(&a[2]);
+    let frame: u32 = arg(&a, "--frame").map(|v| v.parse().expect("--frame")).unwrap_or(74490);
+    let txt = std::fs::read_to_string(root.join("MANIFEST.json")).expect("MANIFEST.json");
+    let m = read_manifest(&txt).expect("manifest");
+    let load_f16 = |p: &Path| -> Buf {
+        let b = std::fs::read(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+        let mut out = Buf::new(W, H, 4);
+        for i in 0..(W * H) as usize { for c in 0..4 { out.data[i * 4 + c] = crate::gpufmt::decode_f16(u16::from_le_bytes(b[i * 8 + c * 2..i * 8 + c * 2 + 2].try_into().unwrap())); } }
+        out
+    };
+    // --from-capture: the captured ×2 images enter instead (the tail alone, a validation of this command)
+    let finals: Vec<Buf> = if flag(&a, "--from-capture") {
+        ["24911", "24914", "24917", "24920"].iter().map(|id| { let e = m.passes.iter().filter(|e| e.pass == "final_02_scaled_x2_ps1109" && e.frame == Some(frame) && e.file.contains(&format!("_{id}.dds"))).max_by_key(|e| e.eid_last.unwrap_or(0)).cloned().unwrap_or_else(|| panic!("no final_02 {id}")); load_entry(&root, &e).unwrap() }).collect()
+    } else {
+        (0..4).map(|k| load_f16(&dir.join(format!("chain-final-{k}.rgba16f")))).collect()
+    };
+    // the captured chain: final_02 (the ×2 images, 24911/14/17/20 ↔ MRT 0..3), final_03 (after the copy), final_04 (after
+    // the dilation), final_06 (the encoded textures) of the frame
+    let ent = |pass: &str, id: &str| m.passes.iter().filter(|e| e.pass == pass && e.frame == Some(frame) && e.file.contains(&format!("_{id}.dds"))).max_by_key(|e| e.eid_last.unwrap_or(0)).cloned();
+    const X2: [&str; 4] = ["24911", "24914", "24917", "24920"];
+    const TGT: [&str; 4] = ["24858", "24752", "24749", "24852"];
+    let store = Rounding::Truncate;
+    let mut imgs: Vec<Buf> = Vec::new();
+    for k in 0..4 {
+        if let Some(e) = ent("final_02_scaled_x2_ps1109", X2[k]) {
+            let cap = load_entry(&root, &e).unwrap();
+            let r = compare(&finals[k], &cap, 4, Fmt::F16);
+            let (mut n, mut within) = (0usize, 0usize);
+            for i in 0..(W * H) as usize { for c in 0..3 { let g = cap.data[i * 4 + c]; let o = finals[k].data[i * 4 + c]; if g != 0.0 || o != 0.0 { n += 1; if (o - g).abs() <= 0.02 * g.abs().max(1e-6) { within += 1; } } } }
+            println!("[final ×2] image {k} vs captured {} ({:?}): {} — rgb within 2 %: {within}/{n} ({:.2} %)", e.file, e.capture, r.line(), 100.0 * within as f64 / n.max(1) as f64);
+        }
+        // PS 1034: rgb of the ×2 image into the target whose alpha the resolve left (1 where covered; the ×2 add writes alpha × 0,
+        // so the bake stores the resolve's alpha in the finals' alpha channel; --from-capture takes final_01's)
+        let mut base = Buf::new(W, H, 4);
+        if flag(&a, "--from-capture") {
+            let e = ent("final_01_after_rotate_ps25113", TGT[k]).expect("final_01");
+            let cap = load_entry(&root, &e).unwrap();
+            for i in 0..(W * H) as usize { base.data[i * 4 + 3] = cap.data[i * 4 + 3]; }
+        } else {
+            for i in 0..(W * H) as usize { base.data[i * 4 + 3] = finals[k].data[i * 4 + 3]; }
+        }
+        let copied = crate::finalprep::write_masked(&base, &crate::finalprep::copy_ps1034(&finals[k], [1.0, 1.0, 0.0, 0.0], W, H), 7, store);
+        if let Some(e) = ent("final_03_after_colormat_ps1034", TGT[k]) {
+            let cap = load_entry(&root, &e).unwrap();
+            println!("[PS 1034] image {k} vs captured {}: {}", e.file, compare(&copied, &cap, 4, Fmt::F16).line());
+        }
+        let mut img = copied;
+        for _ in 0..8 { img = crate::gpuenc::dilate_ps1332(&img); }
+        if let Some(e) = ent("final_04_after_dilate8_ps1332", TGT[k]) {
+            let cap = load_entry(&root, &e).unwrap();
+            let r = compare(&img, &cap, 4, Fmt::F16);
+            let (mut n, mut within) = (0usize, 0usize);
+            for i in 0..(W * H) as usize { for c in 0..3 { let g = cap.data[i * 4 + c]; let o = img.data[i * 4 + c]; if g != 0.0 || o != 0.0 { n += 1; if (o - g).abs() <= 0.02 * g.abs().max(1e-6) { within += 1; } } } }
+            println!("[PS 1332 × 8] image {k} vs captured {}: {} — rgb within 2 %: {within}/{n} ({:.2} %)", e.file, r.line(), 100.0 * within as f64 / n.max(1) as f64);
+        }
+        imgs.push(img);
+    }
+    // the max reduce + the encode
+    let maxhdr = [crate::gpuenc::maxhdr_hbasis(&imgs[0]), crate::gpuenc::maxhdr_hbasis(&imgs[1]), crate::gpuenc::maxhdr_hbasis(&imgs[2]), crate::gpuenc::maxhdr_hbasis(&imgs[3])];
+    let mut mood = 7.519885063171387f32;
+    if let Some(fe) = m.final_encode.as_ref() { if let Some(v) = fe.get("cbuffers").and_then(|c| c.get("Shader")).and_then(|c| c.get("g_CBufferC")).and_then(|c| c.get("Mood_MaxHdr")).and_then(|v| v.as_f64()) { mood = v as f32; } }
+    println!("[max reduce] MaxHdr ours {maxhdr:?}, Mood_MaxHdr {mood}");
+    if let Some(r) = m.passes.iter().find(|e| e.pass == "final_05_maxreduce_buffer" && e.frame == Some(frame)) {
+        if let Ok(b) = crate::passdiff::read_entry_bytes(&root, &r.file) { let cap: Vec<f32> = b.chunks_exact(4).take(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect(); println!("             captured MaxHdr {cap:?}"); }
+    }
+    let enc = crate::gpuenc::encode_ycbcr4([&imgs[0], &imgs[1], &imgs[2], &imgs[3]], maxhdr, mood, crate::gpuenc::EncodeOpts::default());
+    // the frame's three encoded textures in id order = Y4, Cb4, Cr4 (pwc4: 25137 / 25140 / 25143; pwc6: 8797 / 8800 / 8803)
+    let mut encs: Vec<&Entry> = m.passes.iter().filter(|e| e.pass == "final_06_encoded_rgba8_cs23025" && e.frame == Some(frame)).collect();
+    encs.sort_by_key(|e| (e.eid.unwrap_or(0), e.file.clone()));
+    let last_eid = encs.last().and_then(|e| e.eid);
+    encs.retain(|e| e.eid == last_eid);
+    for (k, (name, ours)) in [("Y4", &enc.y4), ("Cb4", &enc.cb4), ("Cr4", &enc.cr4)].into_iter().enumerate() {
+        if let Some(e) = encs.get(k).cloned().cloned() {
+            let cap = load_entry(&root, &e).unwrap();
+            let (n, diff, maxd, per) = crate::gpuenc::compare_u8(ours, &cap);
+            println!("[CS 23025] {name} vs captured {} (frame {:?}): {} of {n} bytes identical, max |Δ| {maxd}, off per channel {per:?}", e.file, e.frame, n - diff);
+
+        }
+    }
+    // the file: the blobs from our textures against the save
+    if let Some(map) = arg(&a, "--map") {
+        match crate::mapio::load(&map) {
+            Ok(mm) => {
+                if let Some(d) = mm.chunk.data.as_ref() {
+                    if let Some(mp) = d.cache.mapping() {
+                        let charts: Vec<(u32, u32, u32, u32)> = (0..mp.count as usize).map(|i| (mp.pos[i].0 as u32, mp.pos[i].1 as u32, mp.size[i].0 as u32, mp.size[i].1 as u32)).collect();
+                        match crate::filecheck::frame0_blobs(&enc.y4, &enc.cb4, &enc.cr4, enc.w as usize, enc.h as usize, &charts) {
+                            Some((blob0, blob1, sizes, fb)) => {
+                                println!("[file] blob 0 (the colour atlas WEBP) vs {map}: {}", crate::filecheck::cmp_bytes(&d.frames[0].images[0], &blob0));
+                                if let Some((n, ex, w1, w2, mx)) = crate::filecheck::cmp_decoded(&d.frames[0].images[0], &blob0) { println!("       decoded: {ex} of {n} values identical, {w1} within 1, {w2} within 2, max |Δ| {mx}"); }
+                                println!("[file] blob 1 (the three greys) vs the save: {} (part sizes {:?})", crate::filecheck::cmp_bytes(&d.frames[0].images[1], &blob1), sizes);
+                                println!("[file] frame bytes fb0: {} of {} identical", fb.iter().zip(mp.frame_bytes[0].iter()).filter(|(a, b)| a == b).count(), charts.len());
+                            }
+                            None => println!("[file] no libwebp in this build"),
+                        }
+                    }
+                }
+            }
+            Err(e) => println!("[file] {map}: {e}"),
+        }
+    }
 }

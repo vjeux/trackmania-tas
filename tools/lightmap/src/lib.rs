@@ -28,6 +28,7 @@ pub mod gpuenc;
 pub mod gpucmp;
 pub mod finalprep;
 pub mod ilightin;
+pub mod ilatlas;
 pub mod prepass;
 pub mod prepass_check;
 pub mod e2e;

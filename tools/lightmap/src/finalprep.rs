@@ -273,3 +273,20 @@ mod tests {
         assert_eq!(m.get(3, 2, 3), 0.7778320);
     }
 }
+
+/// PS 1109 × `ScaleSrc` blended One/One onto a target that already holds the previous sweep's finalised image
+/// (frame 74490 eids into 24911 / 24914 / 24917 / 24920): `f16_rtne(dst + f16_rtz(src × scale))` per channel —
+/// the lightmap is 2·Σ_sweeps C_k.
+pub fn add_scaled_ps1109(dst: &Buf, src: &Buf, scale: [f32; 4]) -> Buf {
+    let mut out = Buf::new(src.w, src.h, 4);
+    for y in 0..src.h {
+        for x in 0..src.w {
+            let v = ld(src, x as i64, y as i64);
+            for k in 0..4 {
+                let s = quantise_f16(v[k] * scale[k], Rounding::Truncate);
+                out.set(x, y, k as u32, quantise_f16(dst.get(x, y, k as u32) + s, Rounding::NearestEven));
+            }
+        }
+    }
+    out
+}

@@ -914,6 +914,14 @@ fn fragment_radiance(scene: &Scene, bvh: &Bvh, prm: &BakeParams, shadow: Option<
             }
         }
     }
+    // THE GAME'S COLOUR (PS 17131 / 17134): TMapILightInput sampled at the fragment's lightmap coordinate — the
+    // transcribed setup chain's atlas when the harness has it (`--ilightinput-from`); a fragment without a lightmap
+    // coordinate (the environment block) falls through to the port's model
+    if let Some(il) = &prm.ilatlas {
+        if let Some(c) = il.colour(scene, wt, hit_p, true) {
+            return c;
+        }
+    }
     let h = Hit { t: 0.0, tri };
     let alb = hit_albedo(scene, bvh, prm, &h);
     // the lightmap so far at this surface point (0 on the first sweep), read back ÷ bounce_decode
@@ -2575,6 +2583,10 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
     if !lm_rows.is_empty() {
         eprintln!("lm-accumulate: THE TRANSCRIBED ROWS 7–9 OVER OUR PEEL LAYERS vs the capture (sweep {}):", prm.sweep);
         for r in &lm_rows { eprintln!("  {r}"); }
+    }
+    // the sweep's transcribed H-basis MRTs to the caller (the sweep-transition chain / the finalisation)
+    if let (Some(slot), Some(hb)) = (&prm.hb_out, hb_lm.take()) {
+        *slot.0.lock().unwrap() = Some(hb);
     }
     eprintln!("peel: done, {} directions over {} sub-samples ({:.1}s); fragment radiance calls {}, facing the sun {}, lit {}", n_dirs, subs.len(), t0.elapsed().as_secs_f32(), SUN_STATS[0].load(std::sync::atomic::Ordering::Relaxed), SUN_STATS[1].load(std::sync::atomic::Ordering::Relaxed), SUN_STATS[2].load(std::sync::atomic::Ordering::Relaxed));
     out
