@@ -2147,9 +2147,9 @@ fn run(a: Vec<String>) {
                 let last = ours.last().copied().unwrap_or([0.0; 4]);
                 chain_ambient_xyz = Some([last[0], last[1], last[2]]);
                 eprintln!("chain: AddAmbient accumulator after sweep 0 (ours, {} directions): [{:.6}, {:.6}, {:.6}, w {:.6}]", ours.len(), last[0], last[1], last[2], last[3]);
-                if let Some(mp) = f("--frustum-from") {
+                if let (Some(mp), Some(lm_root)) = (f("--frustum-from"), f("--lm-from")) {
                     if let Ok(entries) = lightmap::lmaccum::load_capture_entries(std::path::Path::new(&mp)) {
-                        let root = std::path::PathBuf::from(f("--lm-from").unwrap());
+                        let root = std::path::PathBuf::from(lm_root);
                         let snaps: Vec<&lightmap::lmaccum::CapEntry> = entries.iter().filter(|e| e.pass == "ambient_accum" && e.capture == "pwc2").collect();
                         let mut dirs: Vec<(u32, u32, u64)> = entries.iter().filter(|e| e.pass == "hbasis0" && e.capture == "pwc2" && e.sweep_direction_index.is_some()).map(|e| (e.sweep_direction_index.unwrap(), e.frame, e.eid_last)).collect();
                         dirs.sort_by_key(|d| (d.1, d.2));
@@ -2306,7 +2306,19 @@ fn run(a: Vec<String>) {
                 }
                 let mean: f32 = charts.iter().flat_map(|c| c.rgb.iter()).map(|c| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]).sum::<f32>() / charts.iter().map(|c| c.rgb.len()).sum::<usize>().max(1) as f32;
                 eprintln!("bounce iteration {it}: mean texel {mean:.4} ({:.1}s)", t0.elapsed().as_secs_f32());
-                if let Some(hb) = take_hb(&p2) { eprintln!("chain: sweep {it}'s H-basis MRTs taken"); hb_sweeps.push(hb); }
+                if let Some(hb) = take_hb(&p2) {
+                    eprintln!("chain: sweep {it}'s H-basis MRTs taken");
+                    // LMTOOL_HB_DUMP=FILE also writes FILE.s<it> for the later sweeps (the same raw layout)
+                    if let Ok(path) = std::env::var("LMTOOL_HB_DUMP") {
+                        let path = format!("{path}.s{it}");
+                        let mut v: Vec<u8> = Vec::with_capacity(8 + 4 * (hb.w * hb.h) as usize * 16);
+                        v.extend_from_slice(&hb.w.to_le_bytes()); v.extend_from_slice(&hb.h.to_le_bytes());
+                        for m in 0..4 { for px in &hb.mrt[m] { for c in 0..4 { v.extend_from_slice(&px[c].to_bits().to_le_bytes()); } } }
+                        std::fs::write(&path, &v).expect("LMTOOL_HB_DUMP");
+                        eprintln!("hb-dump: {path} ({} B)", v.len());
+                    }
+                    hb_sweeps.push(hb);
+                }
             }
             // --- the finalisation of the chain (ROW 12 + the baker's dilation and encode) on OUR sweeps' MRTs, against the captured
             //     finalisation chain (pwc4 frame 74490, another run of the same bake) — `--chain-final-dir DIR` writes the images
