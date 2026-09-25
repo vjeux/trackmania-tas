@@ -1216,13 +1216,16 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
     // chart metadata for the dump: (item, chart_ss w, h, covered mask per texel is implied by counts)
     let mut chart_geo: Vec<(Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<[f32; 3]>)> = Vec::new(); // pos, nrm, albedo per chart_ss pixel
     let dumping = prm.dump.is_some();
-    for (ii, _inst) in scene.instances.iter().enumerate() {
+    // THE LAYOUT RASTER, one chart per pool task (independent), the results concatenated in chart order
+    type ChartOut = (Vec<SubSample>, (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<[f32; 3]>));
+    let n_inst = scene.instances.len();
+    let per_chart: Vec<ChartOut> = crate::pool::pool().map(n_inst, |ii| {
         let (cw, ch) = sizes[ii];
-        chart_meta.push((cw, ch));
         let (lw, lh) = (cw * 2, ch * 2);
         let r = crate::chartraster::raster_chart(scene, ii, lw, lh, ss, prm.flip_v, prm.uv_bounds);
         let (gw, gh) = (lw * ss_eff, lh * ss_eff);
         let mut geo = if dumping { (vec![[0.0f32; 3]; (gw * gh) as usize], vec![[0.0f32; 3]; (gw * gh) as usize], vec![[0.0f32; 3]; (gw * gh) as usize]) } else { (Vec::new(), Vec::new(), Vec::new()) };
+        let mut subs: Vec<SubSample> = Vec::new();
         if prm.per_subsample {
             for s in &r.subs {
                 let (tx, ty) = (s.sx / ss / 2, s.sy / ss / 2);
@@ -1259,32 +1262,12 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                 subs.push(SubSample { p, n, own_tri: own, group: 0, chart: ii as u32, texel: ty.min(ch - 1) * cw + tx.min(cw - 1), sx: lx, sy: ly });
             }
         }
+        (subs, geo)
+    });
+    for (ii, (chart_subs, geo)) in per_chart.into_iter().enumerate() {
+        chart_meta.push(sizes[ii]);
         if dumping { chart_geo.push(geo); }
-        if false {
-        if std::env::var_os("LMTOOL_PEEL_DEBUG").is_some() && ii < 3 {
-            let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
-            for s in &r.subs { for k in 0..3 { lo[k] = lo[k].min(s.p[k]); hi[k] = hi[k].max(s.p[k]); } }
-            let up = r.subs.iter().filter(|s| s.n[1] > 0.9).count();
-            let side = r.subs.iter().filter(|s| s.n[1].abs() < 0.1).count();
-            eprintln!("peel: chart {ii} ({}) {lw}×{lh}: {} subs, bbox {:?}..{:?}, {up} up-facing, {side} side-facing", _inst.model_name, r.subs.len(), lo, hi);
-            let (old, _) = crate::bake::rasterise_pub(scene, ii, lw, lh, prm.flip_v, prm.uv_bounds);
-            let old_side = old.iter().filter(|s| s.n[1].abs() < 0.1).count();
-            let old_north = old.iter().filter(|s| s.n[2] > 0.9).count();
-            let new_north = r.subs.iter().filter(|s| s.n[2] > 0.9).count();
-            eprintln!("    old rasteriser at {lw}×{lh}: {} samples, {old_side} side-facing, {old_north} north-facing (new: {new_north} north-facing sub-samples)", old.len());
-            // a few side-facing samples with their normals, to aim the probe
-            for s in r.subs.iter().filter(|s| s.n[2] > 0.9).step_by(20000).take(8) { eprintln!("    north sample p ({:.1},{:.1},{:.1}) n ({:.2},{:.2},{:.2})", s.p[0], s.p[1], s.p[2], s.n[0], s.n[1], s.n[2]); }
-        }
-        if r.subs.is_empty() && std::env::var_os("LMTOOL_PEEL_DEBUG").is_some() {
-            let m = &scene.models[_inst.model];
-            eprintln!("peel: chart {ii} ({}) {lw}×{lh} has NO sub-samples: {} tris, plg_bounds {:?}, uv {:?}..{:?}", _inst.model_name, m.tris.len(), m.plg_bounds, m.uv_min, m.uv_max);
-        }
-        for s in &r.subs {
-            let (tx, ty) = (s.sx / ss / 2, s.sy / ss / 2);
-            let group = ((s.sy % ss) * ss + s.sx % ss) as u8;
-            subs.push(SubSample { p: s.p, n: s.n, own_tri: bvh.perm[(tri_base[ii] + s.tri) as usize], group, chart: ii as u32, texel: ty.min(ch - 1) * cw + tx.min(cw - 1), sx: s.sx, sy: s.sy });
-        }
-        }
+        subs.extend(chart_subs);
     }
     eprintln!("peel: {} layout texels over {} charts (ss {ss} for coverage) ({:.1}s)", subs.len(), scene.instances.len(), t0.elapsed().as_secs_f32());
     // THE GAME'S RASTER JITTER: nine sub-sample sets, one per LM01_Trans_RasterSS offset — direction k
@@ -1295,17 +1278,22 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         (0..9).map(|j| {
             let sh = prm.jitter_cycle[j];
             let shift = [prm.jitter_sign * -1.0 * sh[0] / 9.0, prm.jitter_sign * -1.0 * sh[1] / 9.0];
-            let mut set: Vec<SubSample> = Vec::new();
-            for (ii, _inst) in scene.instances.iter().enumerate() {
+            // the charts in parallel (each chart's raster is independent), concatenated in chart order
+            let n_inst = scene.instances.len();
+            let per_chart: Vec<Vec<SubSample>> = crate::pool::pool().map(n_inst, |ii| {
                 let (cw, ch) = sizes[ii];
                 let (lw, lh) = (cw * 2, ch * 2);
                 let r = crate::chartraster::raster_chart_shifted(scene, ii, lw, lh, 1, prm.flip_v, prm.uv_bounds, shift);
+                let mut set: Vec<SubSample> = Vec::with_capacity(r.subs.len());
                 for s in &r.subs {
                     let (tx, ty) = (s.sx / 2, s.sy / 2);
                     let own = bvh.perm[(tri_base[ii] + s.tri) as usize];
                     set.push(SubSample { p: s.p, n: s.n, own_tri: own, group: 0, chart: ii as u32, texel: ty.min(ch - 1) * cw + tx.min(cw - 1), sx: s.sx, sy: s.sy });
                 }
-            }
+                set
+            });
+            let mut set: Vec<SubSample> = Vec::with_capacity(per_chart.iter().map(|v| v.len()).sum());
+            for v in per_chart { set.extend(v); }
             set
         }).collect()
     } else { Vec::new() };
