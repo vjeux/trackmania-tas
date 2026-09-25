@@ -712,7 +712,8 @@ pub fn download_probes(colour: &Volume3, updown: &Volume3, skyvis: Option<&Volum
                         rgb = [1, 1, 1];
                     }
                     if let Some(sv) = skyvis {
-                        sky = Some(lround(sv.get(x, y, z, 0) * 255.0).clamp(0, 255) as u8);
+                        // the same sRGB curve as image 0 (the table the decompile indexes with the f16 bits)
+                        sky = Some(lround(crate::gpufmt::linear_to_srgb(sv.get(x, y, z, 0).clamp(0.0, 1.0)) * 255.0).clamp(0, 255) as u8);
                     }
                 }
                 probes.push(((x, y, z), rgb, ok, sky, sq));
@@ -746,7 +747,7 @@ mod download_tests {
         assert!(open.2);
         // sRGB(0.4) = 0.6652 → 170, sRGB(0.5) = 0.7354 → 188, 1.0 → 255
         assert_eq!(open.1, [170, 188, 255]);
-        assert_eq!(open.3, Some(255)); // round(0.999·255) = 254.7 → 255
+        assert_eq!(open.3, Some(255)); // sRGB(0.999) = 0.9996 → 254.9 → 255
         // signed sqrt: 127·√(0.4) = 80.3 → 80; −127·√(0.2) = −56.8 → −57; 127·1 = 127
         assert_eq!(open.4, [80, -57, 127]);
         let closed = &dl.probes[1];

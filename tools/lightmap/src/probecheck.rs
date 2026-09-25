@@ -308,6 +308,10 @@ pub fn download_check(root: &std::path::Path, map: &str, frame: u32) -> Result<(
             println!("  probe ({x},{y},{z}) → atlas ({},{}): ours img0 {:?} stored {:?}; img2 signed {:?} stored {:?}; sky {:?} stored {}", px.0, px.1, rgb, s0, sq, s2, sky, s1[0]);
             shown += 1;
         }
+        if std::env::var("LMTOOL_PROBE_DUMP").is_ok() {
+            let sv = skyvis.as_ref().map(|v| v.get(*x, *y, *z, 0)).unwrap_or(0.0);
+            println!("  P {x} {y} {z} sky {sv:.6} ours1 {:?} stored1 {} colour {:.6} {:.6} {:.6} a {:.6} ours0 {:?} stored0 {:?} updown {:.6} {:.6} {:.6} ours2 {:?} stored2 {:?}", sky, s1[0], colour.get(*x, *y, *z, 0), colour.get(*x, *y, *z, 1), colour.get(*x, *y, *z, 2), colour.get(*x, *y, *z, 3), rgb, s0, updown.get(*x, *y, *z, 0), updown.get(*x, *y, *z, 1), updown.get(*x, *y, *z, 2), sq, s2);
+        }
     }
     let summarise = |name: &str, h: &std::collections::BTreeMap<i32, usize>| {
         let n: usize = h.values().sum();

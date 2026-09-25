@@ -819,10 +819,16 @@ pub struct SetBlock {
 
 /// The accumulate blocks (PS 17112 / 17526) of a frame's draws log, in order, grouped four by four.
 pub fn set_blocks(draws: &[Value], scene: &LmScene) -> Result<Vec<SetBlock>, String> {
+    set_blocks_with(draws, scene, &["17112", "17526"], &["17115", "17529"])
+}
+
+/// `set_blocks` with the capture's own shader ids (RenderDoc ids are per capture: pwc6's accumulate is PS 8507
+/// with the fitted-frustum VS 8510).
+pub fn set_blocks_with(draws: &[Value], scene: &LmScene, ps_ids: &[&str], fitted_vs_ids: &[&str]) -> Result<Vec<SetBlock>, String> {
     let mut blocks: Vec<SetBlock> = Vec::new();
     for e in draws {
         let ps = e.pointer("/Pixel/shader").and_then(|v| v.as_str()).unwrap_or("");
-        if ps != "17112" && ps != "17526" {
+        if !ps_ids.contains(&ps) {
             continue;
         }
         let eid = e["eid"].as_u64().unwrap_or(0);
@@ -833,7 +839,7 @@ pub fn set_blocks(draws: &[Value], scene: &LmScene) -> Result<Vec<SetBlock>, Str
         let vcb = &e["Vertex"]["cbuffers"]["ShaderV"]["g_CBufferV"];
         let vs_id = e.pointer("/Vertex/shader").and_then(|v| v.as_str()).unwrap_or("");
         // the fitted blocks' vertex shader clips to the items' world box (VS 17115 / pwc1 17529)
-        let world_box = if vs_id == "17115" || vs_id == "17529" { Some([json_v2(&vcb["WorldBoxMinXZ"]), json_v2(&vcb["WorldBoxMaxXZ"])]) } else { None };
+        let world_box = if fitted_vs_ids.contains(&vs_id) { Some([json_v2(&vcb["WorldBoxMinXZ"]), json_v2(&vcb["WorldBoxMaxXZ"])]) } else { None };
         let d = SetDraw {
             eid,
             mesh,

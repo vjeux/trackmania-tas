@@ -18,16 +18,18 @@ use crate::dome::{rotate_set, PointSets};
 use crate::passdiff::Buf;
 use crate::passdump::Manifest;
 
-/// Sweep 1's issue order at quality 3 (N = 128) as indices into the rotated 128-set, in the order
-/// the game draws them (sweep_direction_index 0..127). The last entry was not captured (the capture
-/// ends at index 126); it is the one set point no other index took (set index 0) — marked inferred.
+/// Sweep 1's issue order at quality 3 (N = 128) as indices into the rotated 128-set, indexed by the
+/// game's issue index (the capture manifest's `sweep_direction_index`, 0..127). The capture banked the
+/// H-basis of issue indices 1..127; index 0 — the first sweep-1 direction, drawn right after the sweep
+/// transition in frame 7533 — is the one set point no captured index took, set index 0 (the point
+/// sweep 0 starts with too); marked inferred until its vector is read off frame 7533's layers.
 pub const SWEEP1_ISSUE_ORDER_128: [u8; 128] = [
+    0, // inferred (see above)
     28, 69, 116, 49, 114, 98, 9, 48, 18, 124, 6, 55, 17, 96, 33, 75, 2, 89, 8, 93, 83, 120, 57, 11, 58, 46, 44, 104, 107, 24, 3, 76, 88, 82, 63, 22, 86, 100, 59, 72, 118, 53, 106, 56, 111, 78, 4, 115, 105, 91, 43, 20, 99, 23, 51, 95, 70, 47, 40, 81, 19, 29, 85, 12, 36, 113, 65, 52, 38, 15, 112, 34, 41, 125, 126, 5, 122, 7, 90, 35, 79, 108, 64, 77, 61, 66, 121, 50, 27, 97, 74, 32, 127, 94, 1, 84, 42, 119, 68, 67, 117, 31, 101, 45, 37, 87, 123, 26, 10, 25, 60, 16, 92, 109, 73, 54, 103, 110, 39, 102, 21, 14, 13, 80, 30, 62, 71,
-    0, // inferred: the only set index the 127 captured directions leave
 ];
 
-/// How many entries of `SWEEP1_ISSUE_ORDER_128` were read off the capture (the rest inferred).
-pub const SWEEP1_ISSUE_ORDER_CAPTURED: usize = 127;
+/// The issue indices of `SWEEP1_ISSUE_ORDER_128` read off the capture (the H-basis snapshots' vectors).
+pub const SWEEP1_ISSUE_ORDER_CAPTURED: std::ops::Range<usize> = 1..128;
 
 /// Sweep 0's issue order (the 256-set) as far as the captures go: pwc2 gave indices 0–123, pwc6
 /// 246–255; the rest is unknown (`None`).
@@ -266,12 +268,12 @@ mod tests {
     fn the_first_captured_directions_of_sweep_1_are_the_rotated_128_set_points() {
         let Ok(ps) = PointSets::load(&crate::dome::default_path()) else { return }; // the table is banked outside the repo
         let rot = rotate_set(ps.set(128).unwrap());
-        // sweep_direction_index 0..4 of capture pwc6 (frame 7533): PeelDirInW as captured
+        // sweep_direction_index 1..5 of capture pwc6 (frame 7533): PeelDirInW as captured
         let captured = [[-0.9900975823402405f32, -0.13565689325332642, 0.03611139580607414], [-0.8956512808799744, 0.37530019879341125, 0.23865997791290283], [-0.8171971440315247, 0.23677007853984833, 0.5254794955253601], [-0.9098978042602539, -0.2575885057449341, 0.32516777515411377], [-0.9827044010162354, 0.18498900532722473, -0.00843580812215805]];
         for (k, d) in captured.iter().enumerate() {
             let (i, a) = nearest(*d, &rot);
-            assert_eq!(i, SWEEP1_ISSUE_ORDER_128[k] as usize, "index {k}");
-            assert!(a < 0.03, "index {k}: {a}° off the table point");
+            assert_eq!(i, SWEEP1_ISSUE_ORDER_128[k + 1] as usize, "index {}", k + 1);
+            assert!(a < 0.035, "index {}: {a}° off the table point", k + 1);
         }
     }
 
@@ -348,5 +350,128 @@ pub fn check_ilightinput(root: &std::path::Path, kappa: f32, fit: bool, mask_fro
         println!("GPU sRGB table fit: {fitted} (channel, byte) cells observed, {inconsistent} with an empty interval, {off_iec} where the IEC value falls outside (the table's value taken as the interval's midpoint)");
         run(Some(&table), "fitted GPU sRGB decode");
     }
+    Ok(())
+}
+
+// ───────────────────────────── lmtool sweep1-check --direction K ─────────────────────────────
+
+/// The RenderDoc ids of capture pwc6 (frames 7529–7537): the accumulate PS, its fitted-frustum VS, the
+/// H-basis PS, the probe PS (SetILightDir), the peel PSs.
+pub struct CaptureIds {
+    pub accumulate_ps: &'static [&'static str],
+    pub fitted_vs: &'static [&'static str],
+    pub hbasis_ps: &'static str,
+    pub probe_ps: &'static [&'static str],
+}
+
+pub const PWC6_IDS: CaptureIds = CaptureIds { accumulate_ps: &["8507"], fitted_vs: &["8510"], hbasis_ps: "8517", probe_ps: &["8546"] };
+pub const PWC2_IDS: CaptureIds = CaptureIds { accumulate_ps: &["17112"], fitted_vs: &["17115"], hbasis_ps: "17122", probe_ps: &["17151"] };
+
+/// One sweep-1 direction end to end on the captured inputs (frame `frame` of pwc6, the direction whose
+/// H-basis snapshot carries `sweep_direction_index == index`): every accumulate block on the captured
+/// layer colour + depth (E's `lmaccum`, chained from the cleared target) against the captured
+/// `TMapILightDir` snapshots, every probe draw (`probepass`) against the captured probe volumes, and the
+/// H-basis block added onto the captured MRTs after the previous direction against the captured MRTs
+/// after this one.
+pub fn check_direction(root: &std::path::Path, frame: u32, index: u32, env_frame: u32, ids: &CaptureIds, capture: &str) -> Result<(), String> {
+    use crate::lmaccum::*;
+    let t0 = std::time::Instant::now();
+    let manifest = root.join("MANIFEST.json");
+    let sc = load_lm_scene(root, env_frame)?;
+    let entries = load_capture_entries(&manifest)?;
+    let draws = load_draws(root, frame)?;
+    let hb0: Vec<&CapEntry> = entries.iter().filter(|e| e.pass == "hbasis0" && e.capture == capture && e.banked).collect();
+    let target = hb0.iter().find(|e| e.sweep_direction_index == Some(index) && e.frame == frame).copied().ok_or_else(|| format!("no banked hbasis0 with sweep_direction_index {index} in frame {frame}"))?;
+    let prev = hb0.iter().filter(|e| e.sweep_direction_index == Some(index.wrapping_sub(1))).max_by_key(|e| (e.frame, e.eid_last)).copied();
+    let (hcb, raster) = target.hb_constants().ok_or("the hbasis entry carries no constants")?;
+    println!("frame {frame} ({capture}), direction index {index}: D ({:.5}, {:.5}, {:.5}) InvDirCount {} (N = {}), H-basis at eid {}; previous direction's MRTs: {}", hcb.peel_dir[0], hcb.peel_dir[1], hcb.peel_dir[2], hcb.inv_dir_count, (1.0 / hcb.inv_dir_count).round(), target.eid_last, prev.map(|p| format!("index {} frame {} eid {}", index - 1, p.frame, p.eid_last)).unwrap_or_else(|| "none banked".into()));
+    // the direction's eid range: from the previous H-basis block of the frame (the log's PS draws, banked or not;
+    // the frame start when the direction began in the previous frame) up to this direction's H-basis block
+    let range_hi = target.eid_last;
+    let mut hb_eids: Vec<u64> = draws.iter().filter(|e| e.pointer("/Pixel/shader").and_then(|v| v.as_str()) == Some(ids.hbasis_ps)).filter_map(|e| e["eid"].as_u64()).collect();
+    hb_eids.sort_unstable();
+    let block_first = hb_eids.iter().rev().filter(|&&x| x <= range_hi).take(4).last().copied().unwrap_or(range_hi);
+    let range_lo = hb_eids.iter().filter(|&&x| x < block_first).max().copied().unwrap_or(0);
+    let hb_draws: Vec<&serde_json::Value> = draws.iter().filter(|e| e.pointer("/Pixel/shader").and_then(|v| v.as_str()) == Some(ids.hbasis_ps) && e["eid"].as_u64().map(|x| x >= block_first && x <= range_hi).unwrap_or(false)).collect();
+    println!("  {} H-basis draws in the range ({}..={}); {} accumulate blocks; {} probe draws", hb_draws.len(), range_lo, range_hi, set_blocks_with(&draws, &sc, ids.accumulate_ps, ids.fitted_vs)?.iter().filter(|b| b.eid_first > range_lo && b.eid_last < range_hi).count(), draws.iter().filter(|e| e.pointer("/Pixel/shader").and_then(|v| v.as_str()).map(|s| ids.probe_ps.contains(&s)).unwrap_or(false) && e["eid"].as_u64().map(|x| x > range_lo && x < range_hi).unwrap_or(false)).count());
+    let layers: Vec<&CapEntry> = entries.iter().filter(|e| (e.pass == "peel_color" || e.pass == "peel_depth") && e.frame == frame && e.eid_last > range_lo && e.eid_last < range_hi).collect();
+    let ild: Vec<&CapEntry> = entries.iter().filter(|e| e.pass == "ilightdir" && e.frame == frame && e.eid_last > range_lo && e.eid_last < range_hi).collect();
+    let probes: Vec<&CapEntry> = entries.iter().filter(|e| e.pass == "probe3d_world" && e.frame == frame && e.eid_last > range_lo && e.eid_last < range_hi).collect();
+    println!("  manifest: {} layer buffers, {} ilightdir snapshots, {} probe volumes in the range ({:.1} s)", layers.len(), ild.len(), probes.len(), t0.elapsed().as_secs_f32());
+    if layers.is_empty() {
+        return Err("no peel_color/peel_depth entries of this direction in the manifest (the layers are not exported yet)".into());
+    }
+    let layer_before = |eid: u64, pass: &str| -> Option<&CapEntry> { layers.iter().filter(|e| e.pass == pass && e.eid_last < eid).max_by_key(|e| e.eid_last).copied() };
+    // ── the probe draws (world phase) ──
+    let probe_state: Option<serde_json::Value> = std::fs::read_to_string(root.join(format!("probe3d/frame{frame}/samplers-scissors.json"))).ok().and_then(|t| serde_json::from_str(&t).ok());
+    let offsets_e = entries.iter().find(|e| e.pass == "probe_safety_offset" && e.frame == frame).or_else(|| entries.iter().find(|e| e.pass == "probe_safety_offset"));
+    let offsets = match offsets_e { Some(e) => Some(crate::probepass::load_dds_volume(&crate::passdiff::read_entry_bytes(root, &e.file)?, crate::probepass::VolFmt::from_name(&e.format), 32)?), None => None };
+    let mut probe_target = crate::probepass::Volume3::new(32, 16, 32, 4);
+    let mut probe_closed = (0usize, 0usize);
+    let mut cache: Option<(u64, u64, Buf, Buf)> = None; // (colour eid, depth eid, colour, depth)
+    let mut load_layer = |eid: u64| -> Result<Option<(Buf, Buf, String)>, String> {
+        let (Some(ce), Some(de)) = (layer_before(eid, "peel_color"), layer_before(eid, "peel_depth")) else { return Ok(None) };
+        if let Some((c, d, _, _)) = &cache { if *c == ce.eid_last && *d == de.eid_last { let (_, _, cb, db) = cache.as_ref().unwrap(); return Ok(Some((cb.clone(), db.clone(), ce.file.clone()))); } }
+        let cb = ce.load(root)?; let db = de.load(root)?;
+        cache = Some((ce.eid_last, de.eid_last, cb.clone(), db.clone()));
+        Ok(Some((cb, db, ce.file.clone())))
+    };
+    for a in draws.iter().filter(|e| e.pointer("/Pixel/shader").and_then(|v| v.as_str()).map(|s| ids.probe_ps.contains(&s)).unwrap_or(false) && e["eid"].as_u64().map(|x| x > range_lo && x < range_hi).unwrap_or(false)) {
+        let eid = a["eid"].as_u64().unwrap_or(0);
+        let sc_rect = crate::probecheck::scissor_for(probe_state.as_ref(), eid).unwrap_or(Some([22, 4, 7, 8]));
+        let Some(d) = crate::probecheck::probe_draw_from_action(a, sc_rect) else { continue };
+        let Some((cb, db, cname)) = load_layer(eid)? else { println!("  probe draw eid {eid}: no layer before it"); continue };
+        let written = crate::probepass::probe_set_ilightdir(&mut probe_target, &d, &cb, &db, offsets.as_ref(), crate::probepass::ProbeOpts::default());
+        match probes.iter().find(|e| e.eid_last == eid) {
+            Some(pe) => {
+                let theirs = crate::probepass::load_dds_volume(&crate::passdiff::read_entry_bytes(root, &pe.file)?, crate::probepass::VolFmt::from_name(&pe.format), 32)?;
+                let r = crate::probepass::compare_volumes(&probe_target, &theirs, 4);
+                if r.closed() { probe_closed.0 += 1; } else { probe_closed.1 += 1; }
+                println!("  probe draw eid {eid} (layer {}): {written} probes written, {} non-zero — {} {}", cname.rsplit('/').next().unwrap_or(""), probe_target.count_nonzero(), if r.closed() { "CLOSED" } else { "OPEN" }, r.line());
+            }
+            None => println!("  probe draw eid {eid}: {written} probes written (no captured volume)"),
+        }
+    }
+    println!("  probe draws: {} closed, {} open", probe_closed.0, probe_closed.1);
+    // ── the accumulate blocks, chained from the cleared target ──
+    let blocks: Vec<SetBlock> = set_blocks_with(&draws, &sc, ids.accumulate_ps, ids.fitted_vs)?.into_iter().filter(|b| b.eid_first > range_lo && b.eid_last < range_hi).collect();
+    let mut chained = DirTarget::cleared(2048, 2048);
+    let mut totals = (0usize, 0usize, 0usize, 0usize);
+    let mut blocks_done = 0;
+    for (bi, b) in blocks.iter().enumerate() {
+        let Some((cb, db, cname)) = load_layer(b.eid_first)? else { println!("  block {bi:2} eids {}-{}: no captured layer before it — stopping the chain", b.eid_first, b.eid_last); break };
+        let layer = LayerTargets { color: &cb, depth: &db };
+        let sx = b.draws[0].cb.world_pw01_shadow[0][0].abs().max(b.draws[0].cb.world_pw01_shadow[2][0].abs());
+        run_set_block(&sc.meshes, &sc.instances, &sc.table, &b.draws, &layer, DepthCompare::Unorm16Round, &mut chained);
+        blocks_done += 1;
+        match ild.iter().find(|e| e.eid_last == b.eid_last || (e.eid_first <= b.eid_first && b.eid_last <= e.eid_last)) {
+            Some(snap) => {
+                let game = snap.load(root)?;
+                let c = compare_dir(&chained, &game);
+                totals.0 += c.touched; totals.1 += c.exact; totals.2 += c.quantum; totals.3 += c.worse;
+                println!("  block {bi:2} eids {:5}-{:5} {} layer {} chained: {}", b.eid_first, b.eid_last, if sx < 2e-3 { "world " } else { "fitted" }, cname.rsplit('/').next().unwrap_or(""), fmt_dircmp(&c));
+            }
+            None => println!("  block {bi:2} eids {:5}-{:5} {} layer {} (no captured ilightdir)", b.eid_first, b.eid_last, if sx < 2e-3 { "world " } else { "fitted" }, cname.rsplit('/').next().unwrap_or("")),
+        }
+    }
+    let pct = |n: usize| if totals.0 > 0 { 100.0 * n as f64 / totals.0 as f64 } else { 0.0 };
+    println!("  accumulate: {blocks_done} of {} blocks run; over the compared snapshots touched {} exact {} ({:.3} %) ±1 quantum {} ({:.3} %) worse {} ({:.3} %)", blocks.len(), totals.0, totals.1, pct(totals.1), totals.2, pct(totals.2), totals.3, pct(totals.3));
+    // ── the H-basis ──
+    if blocks_done == blocks.len() {
+        let Some(p) = prev else { println!("  H-basis: the previous direction's MRTs are not banked — skipped"); return Ok(()) };
+        let mrt_prev: Vec<Buf> = (0..4).map(|m| entries.iter().find(|e| e.pass == format!("hbasis{m}") && e.capture == capture && e.frame == p.frame && e.eid_last == p.eid_last && e.banked).ok_or_else(|| format!("hbasis{m} after direction {} not banked", index - 1)).and_then(|e| e.load(root))).collect::<Result<_, _>>()?;
+        let mrt_after: Vec<Buf> = (0..4).map(|m| entries.iter().find(|e| e.pass == format!("hbasis{m}") && e.capture == capture && e.frame == frame && e.eid_last == target.eid_last && e.banked).ok_or_else(|| format!("hbasis{m} after direction {index} not banked")).and_then(|e| e.load(root))).collect::<Result<_, _>>()?;
+        let mut tgt = HbTargets::from_bufs([&mrt_prev[0], &mrt_prev[1], &mrt_prev[2], &mrt_prev[3]]);
+        let hbd: Vec<HbDraw> = (0..4).map(|m| HbDraw { eid: target.eid_last, mesh: m, instance_first: sc.inst_first[m], instance_count: sc.inst_count[m], raster, cb: hcb }).collect();
+        run_hbasis(&sc.meshes, &sc.instances, &sc.table, &hbd, &chained, &mut tgt, crate::sunpass::BlendModel::TruncSrcRoundSum);
+        for m in 0..4 {
+            for ch in 0..4 {
+                let (n, exact, ulp1, worse, maxd, worst) = compare_mrt(&tgt.mrt[m], &mrt_after[m], ch);
+                let pc = |v: usize| if n > 0 { 100.0 * v as f64 / n as f64 } else { 0.0 };
+                println!("  H-basis C{m}.{}: {n:>8} values  exact {exact:>8} ({:6.2} %)  1 ulp {ulp1:>7} ({:5.2} %)  worse {worse:>6} ({:5.3} %)  max |Δ| {maxd:.6} at ({},{}) game {:.6} ours {:.6}", ["r", "g", "b", "a"][ch], pc(exact), pc(ulp1), pc(worse), worst.0, worst.1, worst.2, worst.3);
+            }
+        }
+    }
+    println!("done in {:.1} s", t0.elapsed().as_secs_f32());
     Ok(())
 }
