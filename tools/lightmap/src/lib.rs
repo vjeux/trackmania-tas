@@ -24,6 +24,7 @@ pub mod finalprep;
 pub mod ilightin;
 pub mod sunpass;
 pub mod lmaccum;
+pub mod shadowmap;
 pub mod format;
 pub mod geometry;
 pub mod img;

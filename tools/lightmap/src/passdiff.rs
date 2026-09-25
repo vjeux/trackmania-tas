@@ -56,6 +56,18 @@ pub fn repair_truncated_json(txt: &str) -> String {
         out.pop();
         if out.ends_with(':') { out.push_str(":null"); break; }
     }
+    // inside an object, a key left without its value (`"key"` or `"key":` at the cut): drop it with its comma
+    if stack.last() == Some(&'}') && out.ends_with('"') {
+        let trimmed = out.trim_end();
+        if let Some(q) = trimmed[..trimmed.len() - 1].rfind('"') {
+            let before = trimmed[..q].trim_end();
+            if before.ends_with('{') || before.ends_with(',') {
+                let mut cut = before.to_string();
+                if cut.ends_with(',') { cut.pop(); }
+                out = cut;
+            }
+        }
+    }
     while let Some(c) = stack.pop() {
         out.push(c);
     }
@@ -770,6 +782,18 @@ pub fn gunzip(b: &[u8]) -> Result<Vec<u8>, String> {
         return Err(format!("gzip: inflated {} B, header says {isize}", out.len()));
     }
     Ok(out)
+}
+
+/// Decode a DDS file's first mip (DX10 header or a legacy fourcc): the manifest's `format` string wins over the
+/// header's when it names a known format; `width`/`height` > 0 override the header's.
+pub fn load_dds_bytes(bytes: &[u8], format: &str, width: u32, height: u32) -> Result<Buf, String> {
+    let (dxgi, w, h, pitch, off) = parse_dds(bytes)?;
+    let fmt = if !format.is_empty() && parse_format(format) != Fmt::Unknown { parse_format(format) } else { dxgi_fmt(dxgi) };
+    if fmt == Fmt::Unknown {
+        return Err(format!("DDS format {dxgi} not supported"));
+    }
+    let (w, h) = if width > 0 && height > 0 { (width, height) } else { (w, h) };
+    decode_raw(&bytes[off..], fmt, w, h, pitch)
 }
 
 /// Load one entry's buffer from its root: a raw dump by the manifest's format, or a DDS (optionally gzipped).
@@ -1626,6 +1650,16 @@ mod tests {
         assert_eq!(b.data, vec![1.0, 0.5, -2.0, 1.0]);
         let d = decode_raw(&0x00ff_ffffu32.to_le_bytes(), Fmt::D24S8, 1, 1, 0).unwrap();
         assert_eq!(d.data[0], 1.0);
+    }
+
+    #[test]
+    fn a_manifest_cut_inside_a_key_is_repaired() {
+        // the capture's manifest cut after a key's colon, and after a bare key
+        for cut in ["{\"passes\": [{\"pass\": \"a\", \"viewport\": [{\"x\": 0.0, \"minDepth\":", "{\"passes\": [{\"pass\": \"a\", \"viewport\": [{\"x\": 0.0, \"minDepth\"", "{\"passes\": [{\"pass\": \"a\", \"viewport\": [{\"x\": 0.0,"] {
+            let fixed = repair_truncated_json(cut);
+            let v: serde_json::Value = serde_json::from_str(&fixed).unwrap_or_else(|e| panic!("{cut:?} → {fixed:?}: {e}"));
+            assert_eq!(v["passes"][0]["viewport"][0]["x"].as_f64(), Some(0.0));
+        }
     }
 
     #[test]

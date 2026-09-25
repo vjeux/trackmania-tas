@@ -3105,7 +3105,7 @@ fn run(a: Vec<String>) {
             }
         }
         "sun-check" => {
-            // lmtool sun-check PASSCAP_ROOT [--frame N] [--blend round-sum|round-src] [--dump OUT.dds]
+            // lmtool sun-check PASSCAP_ROOT [--frame N] [--blend round-sum|round-src] [--dump OUT.dds] [--shadow OURS.dds]
             //   the transcribed DIRECT SUN pass (sunpass.rs: VS 15183 + PS 15187, D3D11 rasterisation, 2×2 PCF GreaterEqual)
             //   run from the capture's own inputs (the LM meshes + instance stream + chart table in env/frame<N>/, the 36
             //   draws' cbuffers in logs/draws-frame<N>.json.gz, the captured D16 shadow map) and compared f16 for f16
@@ -3158,7 +3158,8 @@ fn run(a: Vec<String>) {
                 sd.push(lightmap::sunpass::SunDraw { eid: e["eid"].as_u64().unwrap(), mesh: k % 4, instance_first: inst_first[k % 4], instance_count: inst, scale_ss: v2(&vs["LM01_Scale_RasterSS"]), trans_ss: v2(&vs["LM01_Trans_RasterSS"]), world_pw01_shadow: m4(&ps["WorldPw01Shadow"]), dir_in_world: v3(&ps["DirInWorld"]), light_rgb: v3(&ps["LightRgb"]), out_scale: ps["OutScale"].as_f64().unwrap() as f32 });
             }
             let ent = |pass: &str| m.passes.iter().find(|e| e.pass == pass && e.frame == Some(frame)).unwrap_or_else(|| panic!("no {pass} entry for frame {frame}"));
-            let shadow = lightmap::passdiff::load_entry(&root, ent("sun_shadow")).expect("shadow map");
+            // --shadow FILE.dds: OUR shadow map (lmtool shadow-check --dump) in place of the captured one — the row 2 → row 3 chain
+            let shadow = match f("--shadow") { Some(p) => { let b = std::fs::read(&p).expect("--shadow file"); let sm = lightmap::passdiff::load_dds_bytes(&b, "R16_UNORM", 0, 0).expect("--shadow dds"); println!("shadow map from {p}"); sm } None => lightmap::passdiff::load_entry(&root, ent("sun_shadow")).expect("shadow map") };
             let target = lightmap::passdiff::load_entry(&root, ent("sun_direct")).expect("sun_direct");
             println!("shadow map {}×{} (D16 as UNORM16), target {}×{}×{}", shadow.w, shadow.h, target.w, target.h, target.channels);
             let sm = lightmap::sunpass::ShadowMap { depth: &shadow };
@@ -3893,6 +3894,200 @@ fn run(a: Vec<String>) {
                 all_closed &= rc.closed() && rw.closed();
             }
             println!("ROW 4 {}", if all_closed { "CLOSED: every value bit-identical or within one quantum of its target" } else { "NOT closed (values beyond one quantum above)" });
+        }
+        "shadow-check" => {
+            // lmtool shadow-check PASSCAP_ROOT [--frame N] [--arith fma|separate|both] [--unorm nearest|truncate|both]
+            //   [--no-alpha-test] [--dump OUT.dds] [--worst N]
+            //   the transcribed SUN SHADOW MAP (shadowmap.rs: VS 5394 / 1142 / 14613 + PS 1147, the D3D11 rasteriser with
+            //   the D16 depth bias) run from the capture's own inputs (the casters' vertex/index buffers, the instance
+            //   remap + static-mesh table banked per draw, the alpha textures, the seven draws' cbuffers and state) and
+            //   compared 16-bit value for 16-bit value with the captured depth target; the post-VS positions are checked
+            //   bit for bit against the captured vsout of every draw first
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let has = |k: &str| a.iter().any(|x| x == k);
+            let root = std::path::PathBuf::from(&a[1]);
+            let frame: u32 = f("--frame").map(|v| v.parse().expect("--frame")).unwrap_or(127448);
+            let env = root.join(format!("env/frame{frame}"));
+            // --manifest FILE: a frozen copy (the capture's MANIFEST.json changes while the baker banks)
+            let mtxt = std::fs::read_to_string(f("--manifest").map(std::path::PathBuf::from).unwrap_or_else(|| root.join("MANIFEST.json"))).expect("MANIFEST.json");
+            let m = lightmap::passdiff::read_manifest(&mtxt).expect("manifest");
+            let mval: serde_json::Value = serde_json::from_str(&lightmap::passdiff::repair_truncated_json(&mtxt)).expect("manifest json");
+            let shadow_ent = mval["passes"].as_array().unwrap().iter().find(|e| e["pass"].as_str() == Some("sun_shadow") && e["frame"].as_u64() == Some(frame as u64)).expect("a sun_shadow entry for the frame");
+            let (eid_first, eid_last) = (shadow_ent["eid_first"].as_u64().unwrap_or(0), shadow_ent["eid_last"].as_u64().unwrap_or(u64::MAX));
+            let mesh_json: serde_json::Value = serde_json::from_str(&lightmap::passdiff::repair_truncated_json(&std::fs::read_to_string(env.join("mesh.json")).expect("mesh.json"))).expect("mesh.json");
+            let samplers: serde_json::Value = std::fs::read_to_string(env.join("samplers.json")).ok().and_then(|t| serde_json::from_str(&lightmap::passdiff::repair_truncated_json(&t)).ok()).unwrap_or(serde_json::Value::Null);
+            let draws_bytes = lightmap::passdiff::read_entry_bytes(&root, &format!("logs/draws-frame{frame}.json")).expect("draws log");
+            let draws: serde_json::Value = serde_json::from_slice(&draws_bytes).expect("draws json");
+            let pass_draws: Vec<&serde_json::Value> = draws.as_array().unwrap().iter().filter(|e| { let eid = e["eid"].as_u64().unwrap_or(0); eid >= eid_first && eid <= eid_last && e["flags"].as_str().map(|s| s.contains("Drawcall")).unwrap_or(false) }).collect();
+            println!("sun shadow pass: eids {eid_first}–{eid_last}, {} draws", pass_draws.len());
+            let m4 = |v: &serde_json::Value| -> [[f32; 4]; 4] { let mut o = [[0f32; 4]; 4]; for i in 0..4 { for j in 0..4 { o[i][j] = v[i][j].as_f64().unwrap() as f32; } } o };
+            let mut cam: Option<lightmap::shadowmap::LightCamera> = None;
+            let mut state: Option<lightmap::shadowmap::RasterState> = None;
+            let mut casters: Vec<lightmap::shadowmap::CasterDraw> = Vec::new();
+            for e in &pass_draws {
+                let eid = e["eid"].as_u64().unwrap();
+                let vs = e["Vertex"]["shader"].as_str().unwrap_or("?");
+                let ps = e["Pixel"]["shader"].as_str().unwrap_or("?");
+                let scene_v = &e["Vertex"]["cbuffers"]["SceneV"];
+                let c = lightmap::shadowmap::LightCamera { world_pr_camera: m4(&scene_v["GbxV_WorldPrCamera"]) };
+                if let Some(c0) = &cam { if c0.world_pr_camera != c.world_pr_camera { println!("  NOTE: eid {eid} has a different GbxV_WorldPrCamera"); } }
+                cam.get_or_insert(c);
+                let r = &e["raster"];
+                let vp = e["viewport"].as_array().map(|v| { let mut o = [0f32; 6]; for (i, x) in v.iter().take(6).enumerate() { o[i] = x.as_f64().unwrap_or(0.0) as f32; } o }).unwrap_or([0.0, 0.0, 4096.0, 4096.0, 0.0, 1.0]);
+                let st = lightmap::shadowmap::RasterState { viewport: vp, depth_bias: r["depthBias"].as_i64().unwrap_or(0) as i32, slope_scaled_depth_bias: r["slopeScaledDepthBias"].as_f64().unwrap_or(0.0) as f32, depth_bias_clamp: r["depthBiasClamp"].as_f64().unwrap_or(0.0) as f32, cull_back: r["cull"].as_str() == Some("CullMode.Back"), front_ccw: r["frontCCW"].as_bool().unwrap_or(true), depth_clip: r["depthClip"].as_bool().unwrap_or(true), plane: match f("--plane").as_deref() { Some("unsnapped") => lightmap::shadowmap::PlaneEval::F64Unsnapped, Some("f32a") => lightmap::shadowmap::PlaneEval::F32VertexA, Some("f32o") => lightmap::shadowmap::PlaneEval::F32Origin, Some("f32b") => lightmap::shadowmap::PlaneEval::F32Bbox, Some("f32co") => lightmap::shadowmap::PlaneEval::F32CoefOrigin, Some("f32ca") => lightmap::shadowmap::PlaneEval::F32CoefVertexA, Some("f32cb") => lightmap::shadowmap::PlaneEval::F32CoefBbox, Some("fixfloor") => lightmap::shadowmap::PlaneEval::FixedCoefFloor, Some("fixtrunc") => lightmap::shadowmap::PlaneEval::FixedCoefTrunc, Some("bary") => lightmap::shadowmap::PlaneEval::BaryFixed, _ => lightmap::shadowmap::PlaneEval::F64Snapped }, coef_bits: f("--coef-bits").map(|v| v.parse().unwrap()).unwrap_or(36) };
+                if let Some(s0) = &state { if format!("{s0:?}") != format!("{st:?}") { println!("  NOTE: eid {eid} has a different raster state: {st:?}"); } }
+                state.get_or_insert(st);
+                if e["depthstate"]["func"].as_str() != Some("CompareFunction.Greater") { println!("  NOTE: eid {eid} depth func {:?}", e["depthstate"]["func"]); }
+                let drawv = &e["Vertex"]["cbuffers"]["DrawV"]["g_CBufferV_Draw"];
+                let instance_start = drawv["InstanceStart"].as_u64().unwrap_or(0) as u32;
+                let visual_to_world = drawv.get("VisualToWorld").and_then(|v| v.as_array()).map(|rows| { let mut o = [[0f32; 3]; 4]; for i in 0..4 { for j in 0..3 { o[i][j] = rows[i][j].as_f64().unwrap_or(0.0) as f32; } } o });
+                let rec = mesh_json.as_array().unwrap().iter().find(|r| r["eid"].as_u64() == Some(eid)).unwrap_or_else(|| panic!("mesh.json has no eid {eid} (ask the baker for the mesh export)"));
+                let vbs = rec["vertex_buffers"].as_array().unwrap();
+                let vb = std::fs::read(env.join("mesh").join(vbs[0]["file"].as_str().unwrap())).unwrap_or_else(|err| panic!("vb of eid {eid}: {err}"));
+                let stride = vbs[0]["stride"].as_u64().unwrap() as usize;
+                let il = rec["input_layout"].as_array().unwrap();
+                let find = |sem: &str, idx: u64| il.iter().find(|x| x["semantic"].as_str() == Some(sem) && x["index"].as_u64() == Some(idx)).map(|x| x["offset"].as_u64().unwrap() as usize);
+                let pos_off = find("POSITION", 0).expect("POSITION0");
+                let uv_off = if vs == "14613" { find("TEXCOORD", 0) } else { None };
+                let ib = std::fs::read(env.join("mesh").join(rec["vsout"]["index_file"].as_str().expect("index file"))).expect("indices");
+                let mesh = lightmap::shadowmap::CasterMesh::parse(&vb, stride, pos_off, uv_off, &ib);
+                // the post-VS positions: the output vertex is SV_Position (+ TEXCOORD0 for VS 14613) → the stride from the record
+                let vs_stride = rec["vsout"]["vertexByteStride"].as_u64().unwrap_or(16).max(16) as usize;
+                let vsout = std::fs::read(env.join("mesh").join(rec["vsout"]["file"].as_str().unwrap_or(""))).ok().map(|b| b.chunks_exact(vs_stride).map(|c| [f32::from_le_bytes(c[0..4].try_into().unwrap()), f32::from_le_bytes(c[4..8].try_into().unwrap()), f32::from_le_bytes(c[8..12].try_into().unwrap()), f32::from_le_bytes(c[12..16].try_into().unwrap())]).collect::<Vec<_>>());
+                let dyna = std::fs::read(env.join("bufs").join(format!("e{eid:06}_Vertex_srv0_2185.bin"))).unwrap_or_default();
+                let sm = std::fs::read(env.join("bufs").join(format!("e{eid:06}_Vertex_srv1_17163.bin"))).unwrap_or_default();
+                if dyna.is_empty() && instance_start != 0xffff_ffff { println!("  WARNING: eid {eid}: no g_Buf_DynaU32s snapshot banked (bufs/e{eid:06}_Vertex_srv0_2185.bin)"); }
+                let tables = lightmap::shadowmap::InstanceTables::parse(&dyna, &sm);
+                let mut alpha = None;
+                if ps == "1147" {
+                    let thr = e["Pixel"]["cbuffers"]["ShaderP"]["GbxShadowAlphaThreshold"].as_f64().expect("GbxShadowAlphaThreshold") as f32;
+                    let tex_id = e["Pixel"]["srvs"][0]["tex"]["id"].as_str().expect("PS srv0");
+                    // the texture file: textures.json maps the id to its file (exported under the first eid that bound it)
+                    let textures: serde_json::Value = std::fs::read_to_string(env.join("textures.json")).ok().and_then(|t| serde_json::from_str(&lightmap::passdiff::repair_truncated_json(&t)).ok()).unwrap_or(serde_json::Value::Null);
+                    let tex_file = textures.as_array().and_then(|arr| arr.iter().find(|t| t["id"].as_u64().map(|i| i.to_string()) == Some(tex_id.to_string()) || t["id"].as_str() == Some(tex_id))).and_then(|t| t["file"].as_str().map(|s| s.to_string())).unwrap_or_else(|| format!("e{eid:06}_{tex_id}.dds"));
+                    let tex_bytes = lightmap::passdiff::read_entry_bytes(&root, &format!("env/frame{frame}/textures/{tex_file}")).unwrap_or_else(|err| panic!("alpha texture of eid {eid}: {err}"));
+                    let texture = lightmap::shadowmap::AlphaTexture::from_dds(&tex_bytes).unwrap_or_else(|err| panic!("alpha texture of eid {eid}: {err}"));
+                    let aniso = samplers.as_array().and_then(|arr| arr.iter().find(|s| s["eid"].as_u64() == Some(eid))).and_then(|s| s["stages"]["Pixel"][0]["maxAnisotropy"].as_f64()).unwrap_or(16.0) as f32;
+                    println!("  eid {eid}: alpha test threshold {thr} on texture {tex_id} ({}×{}, {} mips), anisotropy {aniso}", texture.w, texture.h, texture.mips.len());
+                    alpha = Some(lightmap::shadowmap::AlphaTest { threshold: thr, texture, max_anisotropy: aniso });
+                }
+                let inst = e["inst"].as_u64().unwrap_or(0).max(1) as u32;
+                let idx0 = tables.index(instance_start, 0);
+                // where the instance's origin lands on the target (a single-instance draw)
+                let origin_px = if inst == 1 && visual_to_world.is_none() {
+                    tables.rows(instance_start, 0, lightmap::shadowmap::Arith::Fma).map(|rows| {
+                        let cl = lightmap::shadowmap::vs_static_mesh([0.0, 0.0, 0.0], &rows, &c, lightmap::shadowmap::Arith::Fma);
+                        format!(", origin ({:.1}, {:.1}, {:.1}) → pixel ({:.1}, {:.1}) z01 {:.4}", rows[0][3], rows[1][3], rows[2][3], (cl[0] * 0.5 + 0.5) * vp[2] + vp[0], (0.5 - cl[1] * 0.5) * vp[3] + vp[1], cl[2])
+                    }).unwrap_or_default()
+                } else { String::new() };
+                println!("  eid {eid}: VS {vs} PS {ps}, {} vertices, {} indices, {} instance(s), InstanceStart {}{}{}{origin_px}", mesh.pos.len(), mesh.indices.len(), inst, instance_start as i32, idx0.map(|i| format!(" → static mesh {i}")).unwrap_or_default(), visual_to_world.map(|_| " (VisualToWorld)").unwrap_or(""));
+                casters.push(lightmap::shadowmap::CasterDraw { eid, mesh, instance_start, instance_count: inst, visual_to_world, tables, alpha, vsout });
+            }
+            let cam = cam.expect("a camera");
+            let st = state.expect("a raster state");
+            println!("camera GbxV_WorldPrCamera rows {:?}", cam.world_pr_camera);
+            println!("raster state {st:?}");
+            // 1. the vertex shader against the captured post-VS positions, per arithmetic model
+            let ariths: Vec<lightmap::shadowmap::Arith> = match f("--arith").as_deref() { Some("fma") => vec![lightmap::shadowmap::Arith::Fma], Some("separate") => vec![lightmap::shadowmap::Arith::Separate], _ => vec![lightmap::shadowmap::Arith::Fma, lightmap::shadowmap::Arith::Separate] };
+            let mut best = (ariths[0], 0usize);
+            for ar in &ariths {
+                let mut tot = (0, 0, 0, 0, 0f32);
+                for d in &casters {
+                    if let Some((n, same, ulp1, worse, maxd)) = lightmap::shadowmap::check_vsout(d, &cam, *ar) {
+                        println!("  VS {ar:?} eid {}: {same} of {n} clip components bit-identical, {ulp1} within 1 ulp, {worse} worse (max |Δ| {maxd:.3e})", d.eid);
+                        tot.0 += n; tot.1 += same; tot.2 += ulp1; tot.3 += worse; tot.4 = tot.4.max(maxd);
+                    }
+                }
+                println!("VS {ar:?}: {} of {} bit-identical, {} within 1 ulp, {} worse (max |Δ| {:.3e})", tot.1, tot.0, tot.2, tot.3, tot.4);
+                if tot.1 > best.1 { best = (*ar, tot.1); }
+            }
+            let arith = best.0;
+            // 2. the pass, per UNORM rounding model
+            let unorms: Vec<lightmap::shadowmap::UnormRounding> = match f("--unorm").as_deref() { Some("truncate") => vec![lightmap::shadowmap::UnormRounding::Truncate], Some("nearest") => vec![lightmap::shadowmap::UnormRounding::Nearest], _ => vec![lightmap::shadowmap::UnormRounding::Nearest, lightmap::shadowmap::UnormRounding::Truncate] };
+            let game = lightmap::passdiff::load_entry(&root, m.passes.iter().find(|e| e.pass == "sun_shadow" && e.frame == Some(frame)).expect("sun_shadow entry")).expect("captured shadow map");
+            println!("captured D16 {}×{}", game.w, game.h);
+            let worst_n: usize = f("--worst").map(|v| v.parse().unwrap()).unwrap_or(0);
+            let mut best_tgt: Option<(lightmap::shadowmap::ShadowTarget, usize)> = None;
+            for un in &unorms {
+                let o = lightmap::shadowmap::RunOpts { arith, unorm: *un, alpha_test: !has("--no-alpha-test"), depth_fixed_bits: f("--depth-fixed-bits").map(|v| v.parse().unwrap()).unwrap_or(0), fixed_before_bias: has("--fixed-before-bias"), step_fixed_k: f("--fixed-k").map(|v| v.parse().unwrap()).unwrap_or(20), bias_round: f("--bias-round").map(|v| v.parse().unwrap()).unwrap_or(3), scale_ulps: f("--scale-ulps").map(|v| v.parse().unwrap()).unwrap_or(0.0) };
+                let mut tgt = lightmap::shadowmap::ShadowTarget::new(game.w, game.h);
+                let t0 = std::time::Instant::now();
+                for (k, d) in casters.iter().enumerate() {
+                    let s = lightmap::shadowmap::draw_caster(d, &cam, &st, &mut tgt, (k + 1) as u8, &o);
+                    println!("  {un:?} eid {}: {} triangles ({} culled), {} fragments, {} depth-clipped, {} alpha-discarded, {} depth writes", d.eid, s.triangles, s.culled, s.fragments, s.depth_clipped, s.alpha_discarded, s.depth_passed);
+                }
+                println!("{un:?}: rasterised in {:.1} s", t0.elapsed().as_secs_f32());
+                let cs = lightmap::shadowmap::compare_d16(&tgt, &game, casters.len());
+                let written = cs.texels - cs.both_clear;
+                println!("{arith:?}/{un:?} vs the captured D16: {} texels written on either side; {} bit-identical ({:.3} %), {} off by one 16-bit step ({:.3} %; ours = game + 1 for {} of them), {} further ({:.3} %); coverage: {} only ours, {} only game{}", written, cs.identical, 100.0 * cs.identical as f64 / written.max(1) as f64, cs.off_by_one, 100.0 * cs.off_by_one as f64 / written.max(1) as f64, cs.off_plus, cs.worse, 100.0 * cs.worse as f64 / written.max(1) as f64, cs.only_ours, cs.only_game, cs.worst.map(|(x, y, g, o)| format!("; worst texel ({x},{y}): game {g} ours {o} (Δ {} steps = {:.3} m of the 1224.7 m depth range)", o as i32 - g as i32, (o as i32 - g as i32).abs() as f32 / 65535.0 * 1224.67)).unwrap_or_default());
+                for (k, d) in casters.iter().enumerate() {
+                    let (n, same, one, worse, only_ours) = cs.per_tag[k + 1];
+                    println!("    eid {}: {n} texels (ours last writer): {same} identical, {one} off by one, {worse} further, {only_ours} where the game has 0", d.eid);
+                }
+                let (n, same, one, worse, _) = cs.per_tag[0];
+                println!("    game-only texels (ours 0): {n} → {same} identical, {one} off by one, {worse} further");
+                if has("--frac-hist") {
+                    // the mismatch fraction by the fragment's offset from its triangle's reference vertex (bins of 4 px in
+                    // dx and dy, signed), for the largest draw
+                    let big = casters.iter().enumerate().max_by_key(|(_, d)| d.instance_count as usize * d.mesh.indices.len()).map(|(k, _)| (k + 1) as u8).unwrap_or(1);
+                    let mut by_dy = vec![(0usize, 0usize); 24];
+                    let mut by_dx = vec![(0usize, 0usize); 24];
+                    for y in 0..tgt.h { for x in 0..tgt.w { let i = (y * tgt.w + x) as usize; if tgt.source[i] != big { continue; } let g = (game.get(x, y, 0) * 65535.0 + 0.5) as i32; let o = tgt.depth[i] as i32; let bx = (((tgt.dxy[i][0] + 48.0) / 4.0) as i64).clamp(0, 23) as usize; let by = (((tgt.dxy[i][1] + 48.0) / 4.0) as i64).clamp(0, 23) as usize; by_dx[bx].0 += 1; by_dy[by].0 += 1; if o != g { by_dx[bx].1 += 1; by_dy[by].1 += 1; } } }
+                    let pct = |v: &[(usize, usize)]| v.iter().map(|(n, m)| if *n > 0 { format!("{:.4}", *m as f64 / *n as f64) } else { "-".into() }).collect::<Vec<_>>().join(" ");
+                    println!("    largest draw: mismatch fraction by dx from vertex a (−48..48 in 4 px): {}", pct(&by_dx));
+                    println!("    largest draw: mismatch fraction by dy from vertex a (−48..48 in 4 px): {}", pct(&by_dy));
+                    // the mismatch fraction over the screen (8 × 8 bands) for the two big draws — a growth with the
+                    // distance from some origin would betray an incremental evaluation
+                    for (k, d) in casters.iter().enumerate() {
+                        if d.instance_count as usize * d.mesh.indices.len() < 500 { continue; }
+                        let tag = (k + 1) as u8;
+                        let mut grid = vec![(0usize, 0usize); 64];
+                        for y in 0..tgt.h { for x in 0..tgt.w { let i = (y * tgt.w + x) as usize; if tgt.source[i] != tag { continue; } let g = (game.get(x, y, 0) * 65535.0 + 0.5) as i32; let o = tgt.depth[i] as i32; let b = ((y * 8 / tgt.h) * 8 + x * 8 / tgt.w) as usize; grid[b].0 += 1; if o != g { grid[b].1 += 1; } } }
+                        println!("    eid {}: mismatch fraction over the screen (rows top→bottom, 8 columns each):", d.eid);
+                        for r in 0..8 { println!("      {}", (0..8).map(|c| { let (n, m) = grid[r * 8 + c]; if n > 0 { format!("{:.4}", m as f64 / n as f64) } else { "  -   ".into() } }).collect::<Vec<_>>().join(" ")); }
+                    }
+                    // the transition band in fine bins (0.002) around 0.5 for the tiles (tag of the largest draw): sharp = a
+                    // constant δ, gradual = a varying one
+                    let big = casters.iter().enumerate().max_by_key(|(_, d)| d.instance_count as usize * d.mesh.indices.len()).map(|(k, _)| (k + 1) as u8).unwrap_or(1);
+                    let mut same = vec![0usize; 60];
+                    let mut plus = vec![0usize; 60];
+                    for y in 0..tgt.h { for x in 0..tgt.w { let i = (y * tgt.w + x) as usize; if tgt.source[i] != big { continue; } let g = (game.get(x, y, 0) * 65535.0 + 0.5) as i32; let o = tgt.depth[i] as i32; let v = tgt.raw[i] as f64 * 65535.0; let fr = v - v.floor(); if fr < 0.47 || fr >= 0.59 { continue; } let b = ((fr - 0.47) / 0.002) as usize; if o == g { same[b.min(59)] += 1; } else if o == g + 1 { plus[b.min(59)] += 1; } } }
+                    println!("    transition band (fraction 0.470..0.590 in 0.002 bins), P(ours = game + 1): {}", same.iter().zip(plus.iter()).map(|(s, p)| if s + p > 0 { format!("{:.2}", *p as f64 / (*s + *p) as f64) } else { "-".into() }).collect::<Vec<_>>().join(" "));
+                    // δ per class: the mismatch fraction of a class with a constant GPU-vs-ours offset δ (in steps) IS δ (uniform
+                    // fractions) — by draw and by depth decile, and by the slope term of the fragment (bins of 2 steps)
+                    for (k, d) in casters.iter().enumerate() {
+                        let tag = (k + 1) as u8;
+                        let mut by_z = vec![(0usize, 0usize); 10];
+                        let mut by_slope = vec![(0usize, 0usize); 40];
+                        for y in 0..tgt.h { for x in 0..tgt.w { let i = (y * tgt.w + x) as usize; if tgt.source[i] != tag { continue; } let g = (game.get(x, y, 0) * 65535.0 + 0.5) as i32; let o = tgt.depth[i] as i32; let zb = ((o as f64 / 65535.0) * 10.0) as usize; let sb = ((tgt.slope[i] * 65535.0 / 2.0) as usize).min(39); by_z[zb.min(9)].0 += 1; by_slope[sb].0 += 1; if o != g { by_z[zb.min(9)].1 += 1; by_slope[sb].1 += 1; } } }
+                        let pct = |v: &[(usize, usize)]| v.iter().map(|(n, m)| if *n > 0 { format!("{:.4}", *m as f64 / *n as f64) } else { "-".into() }).collect::<Vec<_>>().join(" ");
+                        println!("    eid {}: mismatch fraction by depth decile: {}", d.eid, pct(&by_z));
+                        println!("    eid {}: by slope term (bins of 2 steps/px): {}", d.eid, pct(&by_slope));
+                    }
+                    // where in the quantisation interval do the disagreements sit? the fraction of raw·65535 in 20 bins,
+                    // for the identical texels and for the off-by-one ones (ours = game + 1 / − 1)
+                    let mut same = [0usize; 20];
+                    let mut plus = [0usize; 20];
+                    let mut minus = [0usize; 20];
+                    for y in 0..tgt.h { for x in 0..tgt.w { let i = (y * tgt.w + x) as usize; if tgt.depth[i] == 0 { continue; } let g = (game.get(x, y, 0) * 65535.0 + 0.5) as i32; let o = tgt.depth[i] as i32; let v = tgt.raw[i] as f64 * 65535.0; let fr = v - v.floor(); let b = ((fr * 20.0) as usize).min(19); if o == g { same[b] += 1; } else if o == g + 1 { plus[b] += 1; } else if o == g - 1 { minus[b] += 1; } } }
+                    println!("    fraction of raw·65535 (bins of 0.05): identical {:?}", same);
+                    println!("    ours = game + 1: {:?}", plus);
+                    println!("    ours = game − 1: {:?}", minus);
+                }
+                if worst_n > 0 {
+                    // the largest differences, with what each side has
+                    let mut diffs: Vec<(i32, u32, u32)> = Vec::new();
+                    for y in 0..tgt.h { for x in 0..tgt.w { let o = tgt.depth[(y * tgt.w + x) as usize] as i32; let g = (game.get(x, y, 0) * 65535.0 + 0.5) as i32; if o != g { diffs.push(((o - g).abs(), x, y)); } } }
+                    diffs.sort_by(|a, b| b.0.cmp(&a.0));
+                    for (d, x, y) in diffs.iter().take(worst_n) { let i = (y * tgt.w + x) as usize; println!("      ({x},{y}): game {} ours {} (Δ {d}), ours written by eid {}", (game.get(*x, *y, 0) * 65535.0 + 0.5) as i32, tgt.depth[i], (tgt.source[i] as usize).checked_sub(1).and_then(|k| casters.get(k)).map(|c| c.eid.to_string()).unwrap_or_else(|| "none".into())); }
+                }
+                if best_tgt.as_ref().map(|b| cs.identical > b.1).unwrap_or(true) { best_tgt = Some((tgt, cs.identical)); }
+            }
+            if let Some(out) = f("--dump") {
+                let (tgt, _) = best_tgt.as_ref().unwrap();
+                std::fs::write(&out, tgt.to_dds()).expect("dump");
+                println!("wrote {out} (DDS R16_UNORM {}×{})", tgt.w, tgt.h);
+            }
         }
         "encode-check" => {
             // lmtool encode-check PASSCAP_ROOT [--frame N] [--fma] [--half-up] [--all]
