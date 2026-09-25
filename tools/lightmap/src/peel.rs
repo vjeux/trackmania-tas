@@ -1366,6 +1366,184 @@ pub fn exact_item_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &B
     (kept, fractions)
 }
 
+/// `exact_item_layers` without the dense A-buffer: the band raster of the whole frame (the same visits,
+/// the same z per fragment), each band's fragments sorted by (pixel, z, triangle) — equal depths keep the
+/// triangle order, as the dense build's stable sort — and scanned run by run with the layer logic of
+/// `extract_layers`; pixels without a fragment hold no item layer. No 16.7 M-entry tables.
+pub fn exact_item_layers_direct(tris: &[WTri], frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm: &BakeParams, threads: usize, zmin: f32, zmax: f32, masks: &[crate::geometry::AlphaMask]) -> (usize, Vec<f64>) {
+    let (w, h) = (frame.res, frame.res_y);
+    let n = (w * h) as usize;
+    let cull_back = {
+        static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *V.get_or_init(|| std::env::var("LMTOOL_PEEL_CULL_BACK").map(|v| v == "1").unwrap_or(false))
+    };
+    let cards_occlude = cards_occlude();
+    let d = frame.d;
+    let inset = frame.inset_px;
+    let clip = (0i32, 0i32, w as i32 - 1, h as i32 - 1);
+    let rows = h as usize;
+    let n_bands = threads.max(1).min(rows.max(1));
+    let band_rows = (rows + n_bands - 1) / n_bands.max(1);
+    let band_of = |y: i32| -> usize { ((y.max(0) as usize) / band_rows.max(1)).min(n_bands - 1) };
+    let rows_of = |t: &WTri| -> Option<(i32, i32)> {
+        let p0 = t.p0;
+        let p1 = [p0[0] + t.e1[0], p0[1] + t.e1[1], p0[2] + t.e1[2]];
+        let p2 = [p0[0] + t.e2[0], p0[1] + t.e2[1], p0[2] + t.e2[2]];
+        let (_, y0, z0) = frame.project(p0);
+        let (_, y1, z1) = frame.project(p1);
+        let (_, y2, z2) = frame.project(p2);
+        if z0.min(z1).min(z2) >= zmax || z0.max(z1).max(z2) < zmin {
+            return None;
+        }
+        if cull_back && t.inst != DECOR_INST {
+            let ng = cross(t.e1, t.e2);
+            if dot(ng, d) > 0.0 {
+                return None;
+            }
+        }
+        if !cards_occlude && t.alpha != u16::MAX {
+            return None;
+        }
+        let (miny, maxy) = (y0.min(y1).min(y2), y0.max(y1).max(y2));
+        if !(miny.is_finite() && maxy.is_finite()) {
+            return None;
+        }
+        let ry0 = ((miny - 0.5).ceil() as i64).max(clip.1 as i64) as i32;
+        let ry1 = ((maxy - 0.5).floor() as i64).min(clip.3 as i64) as i32;
+        if ry0 > ry1 {
+            return None;
+        }
+        Some((ry0, ry1))
+    };
+    let prep_chunk = (tris.len() / (threads * 4).max(1)).max(4096);
+    let n_prep = (tris.len() + prep_chunk - 1) / prep_chunk;
+    let binned: Vec<Vec<Vec<u32>>> = crate::pool::pool().map(n_prep, |ci| {
+        let mut out: Vec<Vec<u32>> = (0..n_bands).map(|_| Vec::new()).collect();
+        let a = ci * prep_chunk;
+        for (k, t) in tris[a..(a + prep_chunk).min(tris.len())].iter().enumerate() {
+            if let Some((ry0, ry1)) = rows_of(t) {
+                for b in band_of(ry0)..=band_of(ry1) {
+                    out[b].push((a + k) as u32);
+                }
+            }
+        }
+        out
+    });
+    // the layer logic per pixel run (fragments sorted by z, triangle order on ties)
+    let is_env = |tri: u32| -> bool { let wt = &bvh.tris[tri as usize]; wt.inst == DECOR_INST && scene.decor.get(wt.tri as usize).map(|d| d.env).unwrap_or(false) };
+    let env_drawn = |tri: u32| -> bool {
+        let wt = &bvh.tris[tri as usize];
+        match scene.decor.get(wt.tri as usize) {
+            Some(dt) if dt.env_far_only => { let n = cross(wt.e1, wt.e2); dot(n, frame.d) > 0.0 }
+            _ => true,
+        }
+    };
+    let count_run = |list: &[(u32, Frag)]| -> usize {
+        let mut d_prev = f32::NEG_INFINITY;
+        if prm.dome_layer {
+            let mut env_d = 0.0f32;
+            for (_, f) in list {
+                if is_env(f.tri) && env_drawn(f.tri) {
+                    let z01 = frame.z01(f.z);
+                    if z01 >= 0.0 && z01 <= 1.0 { env_d = env_d.max(z01); }
+                }
+            }
+            d_prev = if env_d > 0.0 { if prm.depth_bits == 16 { (env_d * 65535.0).round() / 65535.0 } else { env_d } } else { 0.0 };
+        }
+        let mut items = 0usize;
+        for (_, f) in list {
+            if prm.dome_layer && is_env(f.tri) {
+                continue;
+            }
+            let z01 = frame.z01(f.z).max(0.0);
+            if z01 < d_prev {
+                continue;
+            }
+            if items >= MAX_LAYERS {
+                break;
+            }
+            let wt = &bvh.tris[f.tri as usize];
+            let (slope, zmax_prim) = tri_slope(wt, frame);
+            let mut dd = z01 + d3d_depth_bias_fmt(zmax_prim, slope.min(1e6), prm.depth_bias, prm.depth_bits);
+            if prm.depth_bits == 16 {
+                dd = (dd.clamp(0.0, 1.0) * 65535.0).round() / 65535.0;
+            }
+            items += 1;
+            d_prev = dd;
+        }
+        items
+    };
+    // per band: raster its rows, sort, scan
+    let hists: Vec<([usize; MAX_LAYERS + 1], usize)> = crate::pool::pool().map(n_bands, |b| {
+        let by0 = (b * band_rows) as i32;
+        let by1 = (((b + 1) * band_rows) as i32 - 1).min(clip.3);
+        let mut hist = [0usize; MAX_LAYERS + 1];
+        if by0 > by1 {
+            return (hist, 0);
+        }
+        let band_clip = (clip.0, by0, clip.2, by1);
+        let mut frags: Vec<(u32, Frag)> = Vec::new();
+        for chunk_lists in &binned {
+            for &ti in &chunk_lists[b] {
+                let t = &tris[ti as usize];
+                let p0 = t.p0;
+                let p1 = [p0[0] + t.e1[0], p0[1] + t.e1[1], p0[2] + t.e1[2]];
+                let p2 = [p0[0] + t.e2[0], p0[1] + t.e2[1], p0[2] + t.e2[2]];
+                let (x0, y0, z0) = frame.project(p0);
+                let (x1, y1, z1) = frame.project(p1);
+                let (x2, y2, z2) = frame.project(p2);
+                let mask = if t.alpha != u16::MAX { masks.get(t.alpha as usize) } else { None };
+                let mut fp_tex: Option<Option<(&crate::alphatex::AlphaTex, crate::alphatex::Footprint)>> = None;
+                raster::triangle_clipped_masked(w, h, [[x0, y0], [x1, y1], [x2, y2]], band_clip, None, |x, y, bc| {
+                    if x < inset || y < inset || x + inset >= w || y + inset >= h {
+                        return;
+                    }
+                    let z = z0 * bc[0] + z1 * bc[1] + z2 * bc[2];
+                    if z < zmax && z >= zmin {
+                        if let Some(m) = mask {
+                            let u = t.uv0[0][0] * bc[0] + t.uv0[1][0] * bc[1] + t.uv0[2][0] * bc[2];
+                            let v = t.uv0[0][1] * bc[0] + t.uv0[1][1] * bc[1] + t.uv0[2][1] * bc[2];
+                            let fp = fp_tex.get_or_insert_with(|| m.tex.as_ref().map(|tx| (tx.as_ref(), crate::alphatex::Footprint::of_triangle([[x0, y0], [x1, y1], [x2, y2]], t.uv0, tx.w(), tx.h()))));
+                            let op = match fp {
+                                Some((tx, fp)) if !*ALPHA_POINT => tx.passes(u, v, fp, ALPHA_THRESHOLD, crate::alphatex::Address::ClampEdge, *ALPHA_ANISO),
+                                _ => m.opaque(u, v),
+                            };
+                            if !op {
+                                return;
+                            }
+                        }
+                        frags.push((y * w + x, Frag { z, tri: ti }));
+                    }
+                });
+            }
+        }
+        // (pixel, z, triangle): the z key orders as f32 (z is finite; total_cmp handles the sign)
+        frags.sort_by(|p, q| p.0.cmp(&q.0).then_with(|| p.1.z.total_cmp(&q.1.z)).then_with(|| p.1.tri.cmp(&q.1.tri)));
+        let mut covered = 0usize;
+        let mut i = 0usize;
+        while i < frags.len() {
+            let mut j = i + 1;
+            while j < frags.len() && frags[j].0 == frags[i].0 { j += 1; }
+            hist[count_run(&frags[i..j]).min(MAX_LAYERS)] += 1;
+            covered += 1;
+            i = j;
+        }
+        (hist, covered)
+    });
+    let mut hist = [0usize; MAX_LAYERS + 1];
+    let mut covered = 0usize;
+    for (hh, c) in &hists { for k in 0..=MAX_LAYERS { hist[k] += hh[k]; } covered += c; }
+    hist[0] += n - covered;
+    let mut fractions: Vec<f64> = Vec::with_capacity(MAX_LAYERS);
+    let mut at_least = n;
+    for k in 0..MAX_LAYERS {
+        at_least -= hist[k];
+        fractions.push(at_least as f64 / n.max(1) as f64);
+    }
+    let kept = prm.peel_stop.layers_rendered(&fractions);
+    (kept, fractions)
+}
+
 /// The census stride of the sparse layer-count estimate (every 8th pixel in x and y: 1/64 of the frame).
 pub const CENSUS_STEP: u32 = 8;
 
@@ -1850,9 +2028,13 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             let exact_layers: Option<usize> = if prm.game_peel && !want_dir_dump && !prm.layers_estimate {
                 let known = if prm.layers_from_capture { prm.peel_layer_counts.as_ref().and_then(|c| c.get(di)).and_then(|v| v.get(pi)).copied().flatten() } else { prm.peel_layers_fixed };
                 if known.is_none() {
-                    let dense = build_abuffer_wanted(&bvh.tris, frame, threads, if prm.depth_clip { frame.z_from_z01(0.0) } else { f32::NEG_INFINITY }, frame.z_from_z01(1.0), &prm.alpha_masks, None);
-                    let (kept, fractions) = exact_item_layers(&dense, frame, scene, bvh, prm, threads);
-                    if peel_layers_debug() { eprintln!("peel layers (exact, {} fragments): fractions {:?} → {kept} rendered", dense.len(), fractions.iter().take_while(|f| **f > 0.0).map(|f| format!("{f:.6}")).collect::<Vec<_>>()); }
+                    let (kept, fractions) = if std::env::var_os("LMTOOL_EXACT_DENSE").is_some() {
+                        let dense = build_abuffer_wanted(&bvh.tris, frame, threads, if prm.depth_clip { frame.z_from_z01(0.0) } else { f32::NEG_INFINITY }, frame.z_from_z01(1.0), &prm.alpha_masks, None);
+                        exact_item_layers(&dense, frame, scene, bvh, prm, threads)
+                    } else {
+                        exact_item_layers_direct(&bvh.tris, frame, scene, bvh, prm, threads, if prm.depth_clip { frame.z_from_z01(0.0) } else { f32::NEG_INFINITY }, frame.z_from_z01(1.0), &prm.alpha_masks)
+                    };
+                    if peel_layers_debug() { eprintln!("peel layers (exact, sweep {} direction {di} peel {pi}): fractions {:?} → {kept} rendered", prm.sweep, fractions.iter().take_while(|f| **f > 0.0).map(|f| format!("{f:.6}")).collect::<Vec<_>>()); }
                     Some(kept)
                 } else { None }
             } else { None };
