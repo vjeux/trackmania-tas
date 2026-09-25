@@ -2098,7 +2098,31 @@ fn run(a: Vec<String>) {
             let tm = tpl.chunk.data.as_ref().unwrap().cache.mapping().unwrap();
             // the probe volume: ours unless --template-probes
             let vp8_q: Option<u8> = f("--vp8").map(|s| s.parse().unwrap());
-            let probes = if has("--template-probes") { None } else {
+            // THE PROBES from the bake's ProbeBake (probebake.rs): downloaded → the four atlases → the WEBPs (the blob) + the trailer
+            // with the download's scales / validity — for BOTH writers (the port's chunk writer takes the blob as well): the no-box
+            // path's probes come from the transcribed passes over the port's own peels, the port's Monte-Carlo probes are the fallback
+            // when the passes did not run. (The record's LAmbient = the AddAmbient accumulator is engineer A's BakeParams::ambient_out →
+            // transcribed_images' ambient_xyz; None here until it lands.)
+            let ambient_xyz: Option<[f32; 3]> = None;
+            let transcribed_probes: Option<lightmap::synth::ProbeBlob> = match (&prm.probe_bake, &probe_layout) {
+                (Some(pb), Some(src)) => {
+                    let tp = std::time::Instant::now();
+                    let pbl = pb.lock().unwrap();
+                    match pbl.finish(&src.tiles, src.atlas) {
+                        Some(r) => {
+                            let aw = src.atlas.0;
+                            let vol = src.volume(r.scales, r.ends, &|x, y| !r.valid[(y * aw + x) as usize]);
+                            if let Some(dir) = f("--chain-final-dir") { let _ = pbl.dump(std::path::Path::new(&dir)); }
+                            eprintln!("probes: TRANSCRIBED — {} directions, {} world layers, {} probe writes, {} sky-visibility adds; {} of {} probes valid; scales max0 {} max2 {}; blob {} B (parts {:?}) ({:.1}s)", pbl.n_dirs, pbl.n_layers, pbl.n_written, pbl.n_sky_adds, r.n_valid, r.n_probes, r.scales[0], r.scales[1], r.blob.len(), r.ends, tp.elapsed().as_secs_f32());
+                            if let Some(dir) = f("--chain-final-dir") { for (k, im) in r.images.iter().enumerate() { let _ = std::fs::write(format!("{dir}/probe-image{k}.rgb"), im); } }
+                            Some(lightmap::synth::ProbeBlob { blob: r.blob, trailer: vol.write() })
+                        }
+                        None => { eprintln!("probes: the transcribed probe WEBPs need libwebp; the port's probes are used"); None }
+                    }
+                }
+                _ => None,
+            };
+            let probes = if let Some(tp) = transcribed_probes { Some(tp) } else if has("--template-probes") { None } else {
                 let (tv, grid) = build_slot_grid(&prm);
                 let mut pp = prm.clone();
                 pp.sky_samples = f("--probe-samples").map(|s| s.parse().unwrap()).unwrap_or(48);
@@ -2139,27 +2163,7 @@ fn run(a: Vec<String>) {
             // over our peels in the bake; the LAmbient triple stays the template's — both flagged in the log.
             let writer_transcribed = match f("--writer").as_deref() { Some("port") => false, Some("transcribed") => true, Some(o) => panic!("--writer {o}: port|transcribed"), None => chain_finals.is_some() };
             let mood_max_hdr_for_encode: f32 = frame_params.as_ref().map(|fp| fp.max_hdr_mood).unwrap_or(7.519885063171387);
-            // THE PROBES of the transcribed writer: the bake's ProbeBake (probebake.rs) downloaded → the four atlases → the WEBPs
-            // (the blob) + the trailer with the download's scales / validity. The record's LAmbient = engineer A's AddAmbient
-            // accumulator (BakeParams::ambient_out → chain_ambient_xyz → transcribed_images' ambient_xyz).
-            let probes_for_transcribed: Option<lightmap::synth::ProbeBlob> = match (&prm.probe_bake, &probe_layout) {
-                (Some(pb), Some(src)) if writer_transcribed => {
-                    let tp = std::time::Instant::now();
-                    let pbl = pb.lock().unwrap();
-                    match pbl.finish(&src.tiles, src.atlas) {
-                        Some(r) => {
-                            let aw = src.atlas.0;
-                            let vol = src.volume(r.scales, r.ends, &|x, y| !r.valid[(y * aw + x) as usize]);
-                            if let Some(dir) = f("--chain-final-dir") { let _ = pbl.dump(std::path::Path::new(&dir)); }
-                            eprintln!("probes: TRANSCRIBED — {} directions, {} world layers, {} probe writes, {} sky-visibility adds; {} of {} probes valid; scales max0 {} max2 {}; blob {} B (parts {:?}) ({:.1}s)", pbl.n_dirs, pbl.n_layers, pbl.n_written, pbl.n_sky_adds, r.n_valid, r.n_probes, r.scales[0], r.scales[1], r.blob.len(), r.ends, tp.elapsed().as_secs_f32());
-                            if let Some(dir) = f("--chain-final-dir") { for (k, im) in r.images.iter().enumerate() { let _ = std::fs::write(format!("{dir}/probe-image{k}.rgb"), im); } }
-                            Some(lightmap::synth::ProbeBlob { blob: r.blob, trailer: vol.write() })
-                        }
-                        None => { eprintln!("probes: the transcribed probe WEBPs need libwebp; the port's probes are used"); probes.clone() }
-                    }
-                }
-                _ => if writer_transcribed { probes.clone() } else { None },
-            };
+            let probes_for_transcribed = if writer_transcribed { probes.clone() } else { None };
             let frame_params_for_transcribed = if writer_transcribed { frame_params.clone() } else { None };
             let s = lightmap::synth::build_full2_placed(out_charts, (tm.bbox_min, tm.bbox_max), &tpl.chunk, probes, vp8_q, frame_params, fixed_pos.as_ref()).expect("build");
             let s = match (writer_transcribed, &chain_finals) {

@@ -1220,12 +1220,13 @@ impl Layers {
     /// the synthetic dome layer (`skip` = 1) is not a render target of the game's.
     pub fn depth_image(&self, k: usize, skip: usize) -> Vec<f32> {
         let k = k + skip;
-        (0..(self.w * self.h) as usize).map(|i| { let (a, c) = (self.start[i] as usize, self.start[i + 1] as usize); if a + k < c { self.frags[a + k].d } else { 1.0 } }).collect()
+        // (through `at`: the sparse form indexes `start` by the wanted pixels' dense index)
+        (0..self.h).flat_map(|y| (0..self.w).map(move |x| (x, y))).map(|(x, y)| { let f = self.at(x, y); if k < f.len() { f[k].d } else { 1.0 } }).collect()
     }
     /// Layer `k`'s colour image (the clear = black where the pixel has fewer layers).
     pub fn colour_image(&self, k: usize, skip: usize) -> Vec<[f32; 3]> {
         let k = k + skip;
-        (0..(self.w * self.h) as usize).map(|i| { let (a, c) = (self.start[i] as usize, self.start[i + 1] as usize); if a + k < c { self.frags[a + k].rgb } else { [0.0; 3] } }).collect()
+        (0..self.h).flat_map(|y| (0..self.w).map(move |x| (x, y))).map(|(x, y)| { let f = self.at(x, y); if k < f.len() { f[k].rgb } else { [0.0; 3] } }).collect()
     }
 }
 
@@ -2382,7 +2383,8 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             let want_probes = pi == 0 && prm.probe_bake.is_some();
             if let Some(ly) = layers.as_ref().filter(|_| prm.lm_scene.is_some() || want_probes) {
                 let tlm = std::time::Instant::now();
-                let nl = (0..(ly.w * ly.h) as usize).map(|i| (ly.start[i + 1] - ly.start[i]) as usize).max().unwrap_or(0);
+                // the layer count over the pixels present (`start` is per wanted pixel in the sparse form)
+                let nl = ly.start.windows(2).map(|w| (w[1] - w[0]) as usize).max().unwrap_or(0).max(ly.max_layers.min(ly.item_layers + 1));
                 let lm_draws: Option<(&crate::lmaccum::LmScene, Vec<crate::lmaccum::SetDraw>)> = prm.lm_scene.as_ref().filter(|_| dir_lm.is_some()).map(|lm| {
                     let raster = crate::lmaccum::LmRasterCb::for_offset(di, 2048, 2048);
                     let cb = crate::lmaccum::SetCb { world_pw01_shadow: frame.world_pw01(), peel_dir: *d };
