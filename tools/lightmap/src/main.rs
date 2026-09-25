@@ -6656,7 +6656,7 @@ fn run(a: Vec<String>) {
             //   [--giant-pattern Giant] [--tmp DIR] [-- EXTRA BAKE ARGS]: THE RE-LIGHT FLEET RUN, one invocation per box
             //   (K = 0..N−1), all sharing the work directory on the store. The GIANTS (the maps whose file name carries the
             //   pattern) go first, every box cooperating on each through the in-process split (box 0 writes the map); then
-            //   every box bakes its shard of the SMALL maps whole (map i goes to box i mod N). Per map: the bake with the
+            //   every box bakes its share of the SMALL maps whole (dealt by file size and --weights). Per map: the bake with the
             //   creation time pinned to the source map's own modification time (LMTOOL_BAKE_TIME — the run is reproducible
             //   byte for byte), `lmtool check` on the written file by the box that wrote it, a result record
             //   (W/<name>/result-box<K>.json) and a done marker (W/<name>/done-box<K>): a restarted run skips the maps it
@@ -6727,8 +6727,23 @@ fn run(a: Vec<String>) {
             // the plan: the giants (everyone), then this box's shard of the small maps
             let giants: Vec<&String> = maps.iter().filter(|m| name_of(m).to_lowercase().contains(&pattern)).collect();
             let smalls: Vec<&String> = maps.iter().filter(|m| !name_of(m).to_lowercase().contains(&pattern)).collect();
-            let mine: Vec<&String> = smalls.iter().enumerate().filter(|(i, _)| i % boxes == k).map(|(_, m)| *m).collect();
-            eprintln!("relight-fleet: box {k} of {boxes} ({host}): {} giant(s) with everyone, then {} of {} small maps; work {}, out {}", giants.len(), mine.len(), smalls.len(), work.display(), out_dir.display());
+            // the small maps dealt to the boxes by weight: every map (its file size as the cost — the bake time
+            // follows it) goes to the box whose load per unit of weight is lowest so far (deterministic: every box
+            // computes the same deal; the dry run's 80-core box took 2.9× longer than the 176-core boxes on a map
+            // of the same kind, so an equal deal leaves the fast boxes idle)
+            let mine: Vec<&String> = {
+                let mut load: Vec<f64> = vec![0.0; boxes];
+                let mut deal: Vec<Vec<&String>> = vec![Vec::new(); boxes];
+                for m in &smalls {
+                    let cost = std::fs::metadata(m).map(|md| md.len() as f64).unwrap_or(1.0).max(1.0);
+                    let mut best = 0usize;
+                    for b in 1..boxes { if (load[b] + cost) / weights[b] < (load[best] + cost) / weights[best] { best = b; } }
+                    load[best] += cost;
+                    deal[best].push(*m);
+                }
+                deal.swap_remove(k)
+            };
+            eprintln!("relight-fleet: box {k} of {boxes} ({host}): {} giant(s) with everyone, then {} of {} small maps (dealt by size and weight); work {}, out {}", giants.len(), mine.len(), smalls.len(), work.display(), out_dir.display());
             let t_all = std::time::Instant::now();
             let queue: Vec<(&String, bool)> = giants.iter().map(|m| (*m, true)).chain(mine.iter().map(|m| (*m, false))).collect();
             for (m, giant) in queue {
