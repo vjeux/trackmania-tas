@@ -448,7 +448,9 @@ pub fn build_abuffer_sparse(tris: &[WTri], frame: &PeelFrame, threads: usize, zm
                 let mask = if t.alpha != u16::MAX { masks.get(t.alpha as usize) } else { None };
                 // THE FILTERED ALPHA TEST (engineer D; PS 17134: the opacity texture sampled at TexCoord0 with the
                 // material sampler, alpha ≥ GbxShadowAlphaThreshold): the triangle's uv footprint gives the level of detail
-                let fp_tex = mask.and_then(|m| m.tex.as_ref().map(|tx| (tx, crate::alphatex::Footprint::of_triangle([[x0, y0], [x1, y1], [x2, y2]], t.uv0, tx.w(), tx.h()))));
+                // (the footprint is computed on the first fragment that needs it: most leaf triangles cover
+                // no pixel centre at all)
+                let mut fp_tex: Option<Option<(&crate::alphatex::AlphaTex, crate::alphatex::Footprint)>> = None;
                 if raster_stats { RS_TRIS.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
                 raster::triangle_clipped_masked(res, res_y, [[x0, y0], [x1, y1], [x2, y2]], band_clip, Some(bitmap), |x, y, bc| {
                     if raster_stats { RS_VISITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
@@ -461,7 +463,8 @@ pub fn build_abuffer_sparse(tris: &[WTri], frame: &PeelFrame, threads: usize, zm
                         if let Some(m) = mask {
                             let u = t.uv0[0][0] * bc[0] + t.uv0[1][0] * bc[1] + t.uv0[2][0] * bc[2];
                             let v = t.uv0[0][1] * bc[0] + t.uv0[1][1] * bc[1] + t.uv0[2][1] * bc[2];
-                            let op = match &fp_tex {
+                            let fp = fp_tex.get_or_insert_with(|| m.tex.as_ref().map(|tx| (tx.as_ref(), crate::alphatex::Footprint::of_triangle([[x0, y0], [x1, y1], [x2, y2]], t.uv0, tx.w(), tx.h()))));
+                            let op = match fp {
                                 Some((tx, fp)) if !*ALPHA_POINT => tx.passes(u, v, fp, ALPHA_THRESHOLD, crate::alphatex::Address::ClampEdge, *ALPHA_ANISO),
                                 _ => m.opaque(u, v),
                             };
@@ -596,7 +599,9 @@ pub fn build_abuffer_wanted(tris: &[WTri], frame: &PeelFrame, threads: usize, zm
                         // THE FILTERED ALPHA TEST (PS 17134: the material's opacity texture sampled at TexCoord0 with
                         // the material sampler, alpha ≥ GbxShadowAlphaThreshold = 128/255): the triangle's uv footprint
                         // per pixel gives the level of detail (alphatex::Footprint), the sample is trilinear / anisotropic
-                        let fp_tex = mask.and_then(|m| m.tex.as_ref().map(|tx| (tx, crate::alphatex::Footprint::of_triangle([[x0, y0], [x1, y1], [x2, y2]], t.uv0, tx.w(), tx.h()))));
+                        // (the footprint is computed on the first fragment that needs it: most leaf triangles cover
+                // no pixel centre at all)
+                let mut fp_tex: Option<Option<(&crate::alphatex::AlphaTex, crate::alphatex::Footprint)>> = None;
                         raster::triangle(res, res_y, [[x0, y0], [x1, y1], [x2, y2]], |x, y, b| {
                             // the game's viewport (1, 1, w−2, h−2): the outer ring is never drawn
                             if x < inset || y < inset || x + inset >= res || y + inset >= res_y {
@@ -608,7 +613,8 @@ pub fn build_abuffer_wanted(tris: &[WTri], frame: &PeelFrame, threads: usize, zm
                                 if let Some(m) = mask {
                                     let u = t.uv0[0][0] * b[0] + t.uv0[1][0] * b[1] + t.uv0[2][0] * b[2];
                                     let v = t.uv0[0][1] * b[0] + t.uv0[1][1] * b[1] + t.uv0[2][1] * b[2];
-                                    let op = match &fp_tex {
+                                    let fp = fp_tex.get_or_insert_with(|| m.tex.as_ref().map(|tx| (tx.as_ref(), crate::alphatex::Footprint::of_triangle([[x0, y0], [x1, y1], [x2, y2]], t.uv0, tx.w(), tx.h()))));
+                                    let op = match fp {
                                         Some((tx, fp)) if !*ALPHA_POINT => tx.passes(u, v, fp, ALPHA_THRESHOLD, crate::alphatex::Address::ClampEdge, *ALPHA_ANISO),
                                         _ => m.opaque(u, v),
                                     };
@@ -1137,6 +1143,12 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
                 }
             }
         }
+        // the census positions outside the wanted rectangle hold no item layer (see the wanted-index
+        // construction): they count as 0-layer pixels
+        let n_census_total = if fixed_layers.is_none() { ((w as usize + CENSUS_STEP as usize - 1) / CENSUS_STEP as usize) * ((h as usize + CENSUS_STEP as usize - 1) / CENSUS_STEP as usize) } else { 0 };
+        let n_census_total = n_census_total.max(n_census);
+        hist[0] += n_census_total - n_census;
+        let n_census = n_census_total;
         let mut fractions: Vec<f64> = Vec::with_capacity(MAX_LAYERS);
         let mut at_least = n_census;
         for k in 0..MAX_LAYERS {
@@ -1670,16 +1682,36 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                 // and y), unless this peel's item-layer count is known (captured or fixed)
                 let fixed_layers_known = if prm.layers_from_capture { prm.peel_layer_counts.as_ref().and_then(|c| c.get(di)).and_then(|v| v.get(pi)).copied().flatten().is_some() } else { prm.peel_layers_fixed.is_some() };
                 if !fixed_layers_known {
+                    // only inside the texels' bounding rectangle: an item layer can only be written where an
+                    // item's texels project (every item has charts), so the census pixels outside it hold no
+                    // item layer and are counted analytically (extract_layers)
                     let (w, h) = (frame.res as usize, frame.res_y as usize);
-                    let mut y = 0usize;
-                    while y < h {
-                        let mut x = 0usize;
-                        while x < w {
-                            let i = y * w + x;
-                            m[i >> 6] |= 1u64 << (i & 63);
-                            x += CENSUS_STEP as usize;
+                    let (mut x0, mut y0, mut x1, mut y1) = (usize::MAX, usize::MAX, 0usize, 0usize);
+                    for (wi, word) in m.iter().enumerate() {
+                        if *word == 0 { continue; }
+                        let mut v = *word;
+                        while v != 0 {
+                            let b = v.trailing_zeros() as usize;
+                            v &= v - 1;
+                            let i = wi * 64 + b;
+                            let (x, y) = (i % w, i / w);
+                            x0 = x0.min(x); x1 = x1.max(x); y0 = y0.min(y); y1 = y1.max(y);
                         }
-                        y += CENSUS_STEP as usize;
+                    }
+                    if x0 <= x1 {
+                        let step = CENSUS_STEP as usize;
+                        let mut y = (y0 / step) * step;
+                        while y <= y1 && y < h {
+                            let mut x = (x0 / step) * step;
+                            while x <= x1 && x < w {
+                                if x >= x0 && y >= y0 {
+                                    let i = y * w + x;
+                                    m[i >> 6] |= 1u64 << (i & 63);
+                                }
+                                x += step;
+                            }
+                            y += step;
+                        }
                     }
                 }
                 Some(std::sync::Arc::new(PixelIndex::new(frame.res, frame.res_y, m)))

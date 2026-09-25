@@ -35,6 +35,45 @@ pub struct AlphaLevel {
     pub w: usize,
     pub h: usize,
     pub a: Vec<u8>,
+    /// Per 8×8 texel block the level's (min, max) alpha — the filtered sample of a footprint whose
+    /// touched texels are all ≥ 129 passes the 128/255 test and one whose texels are all ≤ 127 fails it,
+    /// so most fragments of a card skip the taps (`AlphaTex::passes`). Built by `with_blocks`.
+    pub blocks: Vec<(u8, u8)>,
+    pub bw: usize,
+}
+
+impl AlphaLevel {
+    pub const BLOCK: usize = 8;
+    /// The block table of a level.
+    pub fn with_blocks(w: usize, h: usize, a: Vec<u8>) -> AlphaLevel {
+        let bw = (w + Self::BLOCK - 1) / Self::BLOCK;
+        let bh = (h + Self::BLOCK - 1) / Self::BLOCK;
+        let mut blocks = vec![(255u8, 0u8); bw * bh];
+        for y in 0..h {
+            for x in 0..w {
+                let v = a[y * w + x];
+                let b = &mut blocks[(y / Self::BLOCK) * bw + x / Self::BLOCK];
+                b.0 = b.0.min(v);
+                b.1 = b.1.max(v);
+            }
+        }
+        AlphaLevel { w, h, a, blocks, bw }
+    }
+    /// The (min, max) alpha over the texels [x0, x1] × [y0, y1] (inclusive, clamped to the level).
+    #[inline]
+    pub fn minmax(&self, x0: i64, y0: i64, x1: i64, y1: i64) -> (u8, u8) {
+        let (x0, x1) = (x0.clamp(0, self.w as i64 - 1) as usize, x1.clamp(0, self.w as i64 - 1) as usize);
+        let (y0, y1) = (y0.clamp(0, self.h as i64 - 1) as usize, y1.clamp(0, self.h as i64 - 1) as usize);
+        let (mut mn, mut mx) = (255u8, 0u8);
+        for by in y0 / Self::BLOCK..=y1 / Self::BLOCK {
+            for bx in x0 / Self::BLOCK..=x1 / Self::BLOCK {
+                let b = self.blocks[by * self.bw + bx];
+                mn = mn.min(b.0);
+                mx = mx.max(b.1);
+            }
+        }
+        (mn, mx)
+    }
 }
 
 /// The sampler's addressing.
@@ -139,7 +178,7 @@ impl AlphaTex {
                 }
             }
             o += bw * bh * bpb;
-            levels.push(AlphaLevel { w: mw, h: mh, a });
+            levels.push(AlphaLevel::with_blocks(mw, mh, a));
         }
         if levels.is_empty() {
             return Err("no mip level decoded".into());
@@ -214,6 +253,44 @@ impl AlphaTex {
 
     /// The alpha test of PS 17134 at one fragment: the filtered alpha ≥ `threshold` (128/255).
     pub fn passes(&self, u: f32, v: f32, fp: &Footprint, threshold: f32, addr: Address, aniso: usize) -> bool {
+        // THE EXACT EARLY-OUT: every tap is a convex combination (8-bit weights, 1 − t exact) of texels of
+        // the two levels around the lod, within the taps' span along the major axis ± one texel; when
+        // those texels are all ≥ 129/255 the filtered alpha is ≥ 129/255 − ε > 128/255, when all ≤ 127/255
+        // it is < 128/255 — the test's answer without the taps (a texel of exactly 128 forces the taps)
+        if addr == Address::ClampEdge && threshold > 127.5 / 255.0 && threshold < 128.5 / 255.0 {
+            let (lod, axis, n) = if aniso > 1 { (fp.lod_aniso(aniso), fp.major_axis(), fp.taps(aniso).max(1)) } else { (fp.lod_iso(), [0.0, 0.0], 1) };
+            let last = (self.levels.len() - 1) as f32;
+            let lod = lod.clamp(0.0, last);
+            let l0 = lod.floor() as usize;
+            let two = lod - lod.floor() > 0.0 && (l0 as f32) < last;
+            // the taps' span in texture coordinates (s from −0.5 + 0.5/n to 0.5 − 0.5/n)
+            let half = if n > 1 { 0.5 - 0.5 / n as f32 } else { 0.0 };
+            let (u0, u1) = ((u - axis[0].abs() * half).clamp(0.0, 1.0), (u + axis[0].abs() * half).clamp(0.0, 1.0));
+            let (v0, v1) = ((v - axis[1].abs() * half).clamp(0.0, 1.0), (v + axis[1].abs() * half).clamp(0.0, 1.0));
+            let mut mn = 255u8;
+            let mut mx = 0u8;
+            for lv in [l0, if two { l0 + 1 } else { l0 }] {
+                let l = &self.levels[lv.min(self.levels.len() - 1)];
+                // texel index range touched by bilinear at any point of the span: floor(f·w − 0.5) .. +1
+                let (x0, x1) = ((u0 * l.w as f32 - 0.5).floor() as i64, (u1 * l.w as f32 - 0.5).floor() as i64 + 1);
+                let (y0, y1) = ((v0 * l.h as f32 - 0.5).floor() as i64, (v1 * l.h as f32 - 0.5).floor() as i64 + 1);
+                let (a, b) = l.minmax(x0, y0, x1, y1);
+                mn = mn.min(a);
+                mx = mx.max(b);
+            }
+            if mn >= 129 {
+                return true;
+            }
+            if mx <= 127 {
+                return false;
+            }
+        }
+        let a = if aniso > 1 { self.sample_aniso(u, v, fp.lod_aniso(aniso), fp.major_axis(), fp.taps(aniso), addr) } else { self.sample_lod(u, v, fp.lod_iso(), addr) };
+        a - threshold >= 0.0
+    }
+
+    /// The test without the early-out (for the check below).
+    pub fn passes_sampled(&self, u: f32, v: f32, fp: &Footprint, threshold: f32, addr: Address, aniso: usize) -> bool {
         let a = if aniso > 1 { self.sample_aniso(u, v, fp.lod_aniso(aniso), fp.major_axis(), fp.taps(aniso), addr) } else { self.sample_lod(u, v, fp.lod_iso(), addr) };
         a - threshold >= 0.0
     }
@@ -283,6 +360,39 @@ impl Footprint {
 }
 
 #[cfg(test)]
+mod early_out_tests {
+    use super::*;
+
+    #[test]
+    fn the_early_out_never_changes_the_answer() {
+        let mut seed = 987654321u64;
+        let mut rnd = || { seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17; (seed % 100_000) as f32 / 100_000.0 };
+        // a 64×64 texture with blotches around the threshold, and its 2× down-sampled chain
+        let w = 64usize;
+        let mut a0 = vec![0u8; w * w];
+        for y in 0..w { for x in 0..w { let d = (((x as f32 - 32.0).powi(2) + (y as f32 - 32.0).powi(2)).sqrt() / 20.0).min(1.0); a0[y * w + x] = ((1.0 - d) * 255.0 + (rnd() - 0.5) * 60.0).clamp(0.0, 255.0) as u8; } }
+        let mut levels = vec![AlphaLevel::with_blocks(w, w, a0.clone())];
+        let mut cur = a0; let mut cw = w;
+        while cw > 1 {
+            let nw = cw / 2;
+            let mut n = vec![0u8; nw * nw];
+            for y in 0..nw { for x in 0..nw { let s = cur[2 * y * cw + 2 * x] as u32 + cur[2 * y * cw + 2 * x + 1] as u32 + cur[(2 * y + 1) * cw + 2 * x] as u32 + cur[(2 * y + 1) * cw + 2 * x + 1] as u32; n[y * nw + x] = (s / 4) as u8; } }
+            levels.push(AlphaLevel::with_blocks(nw, nw, n.clone()));
+            cur = n; cw = nw;
+        }
+        let tex = AlphaTex { levels, flipped: false };
+        let thr = 0.501_960_813_999_176f32;
+        for _ in 0..20000 {
+            let (u, v) = (rnd(), rnd());
+            let fp = Footprint { dx: [(rnd() - 0.5) * 6.0, (rnd() - 0.5) * 6.0], dy: [(rnd() - 0.5) * 6.0, (rnd() - 0.5) * 6.0], w: w as f32, h: w as f32 };
+            for aniso in [1usize, 16] {
+                assert_eq!(tex.passes(u, v, &fp, thr, Address::ClampEdge, aniso), tex.passes_sampled(u, v, &fp, thr, Address::ClampEdge, aniso), "u {u} v {v} fp {fp:?} aniso {aniso}");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -294,7 +404,7 @@ mod tests {
                 a0[y * 4 + x] = 255;
             }
         }
-        AlphaTex { levels: vec![AlphaLevel { w: 4, h: 4, a: a0 }, AlphaLevel { w: 2, h: 2, a: vec![128; 4] }], flipped: false }
+        AlphaTex { levels: vec![AlphaLevel::with_blocks(4, 4, a0), AlphaLevel::with_blocks(2, 2, vec![128; 4])], flipped: false }
     }
 
     #[test]
