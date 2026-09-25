@@ -1203,10 +1203,28 @@ checks it against a capture.
   (RedIsland 221 vertices / 354 triangles each, WhiteShore 222 / 355, GreenCoast
   223 / 356; `PxzScaleTrans` 0.001 on RedIsland / WhiteShore), four Water
   quadrants excluded, one ShadowCaster64 (262) in the peel and the sun map.
-  Stadium's decoration collection `Stadium256` has `Stadium256\GameCtnDecoration
-  \Scene3d\Base16x12.Scene3d.Gbx`: ONE mobil `SkyDome` at (0, 3000, 0) drawing
-  `Sky\Media\Solid\SkyDomeDouble.Solid.Gbx` (whose second tree's visual chunk
-  0x0902C004 mapgeom does not read yet), no ground solids.
+  Stadium: EVERY Stadium decoration (Base48x48*, NoStadium48x48*, Screen155*
+  — one `CGameCtnDecorationSize` E2159DF0…) references `Stadium256\GameCtnDecoration
+  \Scene3d\Base16x12.Scene3d.Gbx` (hashed D16267E8…): ONE mobil `SkyDome` at
+  (0, 3000, 0) drawing `Sky\Media\Solid\SkyDomeDouble.Solid.Gbx` — tree `Desert` >
+  `Snow` = a dome of the SkyDomeMirror radii (2143 vertices / 3968 triangles, its
+  own vertex order, u ∈ [−1, 1], v ∈ [0, 1], closed: every edge on two triangles;
+  world y −6751..12751) + `Stars` = a `CPlugVisualSprite` (8952 star sprites,
+  material `Tech3 Stars`, pass bits 0x0401; its 24-byte vertices = position + three
+  floats — `CPlugVisual3D::ArchiveChunk` 0x14049a160 never packs a sprite's normal;
+  sprite chunks 0x09010005/6/8/9 per 0x14045bec0). No ground solids: the NoStadium
+  difference is the decoration MAP (RE 7), not the Scene3d. No Stadium capture exists;
+  the dome is proved structurally (`stadium_dome_is_the_double_dome_at_3000`).
+* **The WarpSand's texture transform**: `GbxWorldPosToTexCoord_MapPyDiffuse` =
+  0.0005·R(15°) in the capture; the 15° is `CPlugBitmap` member `DefaultTexCoordRotate`
+  (0x0901101D, degrees) = the 5th word of `WarpSand_D.Texture.gbx`'s chunk 0x09011025
+  {Vec2 scale → +0x30, Vec2 trans → +0x38, f32 rotate → +0x40, u32 colour → +0x1c}
+  (reader 0x1403f7550). `envblock::TexCoordTransform::world_pos_to_texcoord`: a =
+  deg·(π/180 = 0x3c8efa35), rows x = (cos a·su, sin a·sv), z = (sin a·su, −cos a·sv),
+  w = trans — the captured rows 0x39fd3630 / 0x3907b21b bit for bit (the constant
+  provider is case 0xca of 0x1409f87a0 → 0x1409f8570 from an Iso4 the texture binding
+  holds; that Iso4's builder was not located — the arithmetic is transcribed from the
+  reproduced bits). `EnvLeaf.texcoord` carries it per texture slot.
 * **What is not the environment block**: the zone tiles (the Sea quad, draw 365,
   4096 instances — E's tile path), the items (draws 347–410), the clouds
   (`GbxClouds3dInst0`, `clouds.rs`), and the WarpSand's colour (A's shading).

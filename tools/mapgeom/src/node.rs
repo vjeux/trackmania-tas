@@ -307,9 +307,12 @@ pub struct ImageArrayRaw {
 /// `CPlugBitmap` (0x09011000) — the fields of a texture / texture-array file this reader keeps.
 #[derive(Clone, Debug, Default)]
 pub struct BitmapRaw {
-    /// 0x09011025: {f32 scale u, f32 scale v, f32 trans u, f32 trans v, u32, u32} — the
-    /// `GbxSamplerTcScaleTrans_<Map>` / `GbxWorldPosToTexCoord_<Map>` scale of a projected
-    /// texture (TrackWallPxzInWorld_D: 1/32, 1/32, 0, 0, 0, 0xff000000).
+    /// 0x09011025 (reader 0x1403f7550 case 0x9011025): {Vec2 scale (u, v) → bitmap+0x30, Vec2 trans
+    /// (u, v) → +0x38, f32 `DefaultTexCoordRotate` in DEGREES → +0x40 (CPlugBitmap member 0x0901101D,
+    /// range 0..360), u32 colour → +0x1c} — the `GbxSamplerTcScaleTrans_<Map>` /
+    /// `GbxWorldPosToTexCoord_<Map>` transform of a projected texture (TrackWallPxzInWorld_D: 1/32,
+    /// 1/32, 0, 0, 0°, 0xff000000; BlueBay WarpSand_D: 0.0005, 0.0005, 0, 0, 15°, 0xff000000 — the
+    /// 15° the capture's WarpSand draws carry; `envblock::world_pos_to_texcoord`).
     pub tc_scale_trans: Option<[u32; 6]>,
     /// 0x09011030: the image node (a `CPlugFileGen` for a generated texture array, else the
     /// external `.dds` reference).

@@ -483,6 +483,27 @@ impl<'a> Graph<'a> {
                 acc.touched = true;
                 self.visual_inline_vertices(acc)
             }
+            // ----------------------------------------- CPlugVisualSprite (0x09010000)
+            // CPlugVisualSprite::ArchiveChunk 0x14045bec0: 0x09010005 = {4 bytes → +0x1d0, 5 × f32 → +0x1a8..+0x1b8};
+            // 0x09010006 = 2 × u16; 0x09010008 = the embedded CPlugSpriteParam at +0x180 archived through its
+            // vtable (its chunk 0x090AC001 v1 = {version, 4 bytes → +0x50, 5 f32 (+0x28..), 2 f32 (+0x40, +0x44),
+            // v ≥ 1 f32 (+0x48), f32 (+0x4c)}, reader 0x140498500) ending in the embedded node's terminator;
+            // 0x09010009 = the array at +0x1f0 (0x1401b7110 → 0x1401b73c0 count, 0x1401b7460 count × 16 bytes).
+            // The sprite parameters are not geometry: the embedded body is stepped over to its terminator.
+            0x09010005 => {
+                self.r.take(4 + 5 * 4)?;
+                Ok(())
+            }
+            0x09010006 => {
+                self.r.take(4)?;
+                Ok(())
+            }
+            0x09010008 => self.skip_embedded_to_facade(cid),
+            0x09010009 => {
+                let n = self.r.u32()? as usize;
+                self.r.take(16 * n)?;
+                Ok(())
+            }
             0x0906A000 => {
                 acc.touched = true;
                 let idx = self.r.array(|r| r.u16())?;
@@ -2226,8 +2247,14 @@ impl<'a> Graph<'a> {
     /// blocks that walked 604 bytes past the chunk and then read a 4-billion
     /// element tangent array, and the file failed to open at all.
     fn visual_inline_vertices(&mut self, acc: &mut Acc) -> R<()> {
-        let f = acc.visual_flags;
+        let mut f = acc.visual_flags;
         let n = acc.visual.count as usize;
+        // CPlugVisual3D::ArchiveChunk 0x14049a160, the 0x0902C004 vertex loop: the normal is stored PACKED
+        // (Dec3N, FUN_141403d50) only when the compress bit is set AND the node is not a CPlugVisualSprite
+        // (`IsKindOf(0x09010000)` → three floats): a sprite's 24-byte vertex is position + three floats.
+        if acc.class_id == 0x09010000 {
+            f.compress_float3_local3d = false;
+        }
         if acc.visual.vertex_streams.is_empty() {
             if !f.bit22 && !f.compress_float4_color && f.use_vertex_color {
                 for _ in 0..n {
@@ -2353,6 +2380,20 @@ impl<'a> Graph<'a> {
         Ok(())
     }
 
+    /// An embedded object body (a chunk whose content is another object's archive ending in its own
+    /// `0xFACADE01`): step over it. Unlike `recover_to_facade` this is the FORMAT, not a recovery.
+    fn skip_embedded_to_facade(&mut self, cid: u32) -> R<()> {
+        let mut i = self.r.o;
+        while i + 4 <= self.r.b.len() {
+            if u32::from_le_bytes(self.r.b[i..i + 4].try_into().unwrap()) == 0xFACADE01 {
+                self.r.o = i + 4;
+                return Ok(());
+            }
+            i += 4;
+        }
+        Err(format!("chunk 0x{cid:08X}: embedded object without a terminator"))
+    }
+
     /// Skip to this node's terminator after meeting a layout we do not know.
     ///
     /// A GBX node ends with `0xFACADE01`, and that word is not a plausible
@@ -2471,6 +2512,10 @@ fn known(_class_id: u32, cid: u32) -> bool {
             | 0x09006010
             | 0x0902C002
             | 0x0902C004
+            | 0x09010005
+            | 0x09010006
+            | 0x09010008
+            | 0x09010009
             | 0x0906A000
             | 0x0906A001
             | 0x09056000

@@ -93,6 +93,9 @@ pub struct EnvLeaf {
     /// The custom part's texture slots (name, texture path) and float parameters.
     pub bitmaps: Vec<(String, String)>,
     pub params: Vec<(String, Vec<f32>)>,
+    /// Per texture slot, the texture's `0x09011025` projection transform (slot name → transform) —
+    /// what `GbxWorldPosToTexCoord_Map<Slot>` / `GbxSamplerTcScaleTrans_<Slot>` are built from.
+    pub texcoord: Vec<(String, TexCoordTransform)>,
     /// The vertex stream as stored: positions (metres, the solid's own space), Dec3N normals, uv0.
     pub positions: Vec<[f32; 3]>,
     pub normals_dec3n: Vec<u32>,
@@ -100,6 +103,31 @@ pub struct EnvLeaf {
     pub uv0: Vec<[f32; 2]>,
     /// Absolute triangle-list indices.
     pub indices: Vec<u32>,
+}
+
+/// A projected texture's world → texcoord transform: `CPlugBitmap` chunk `0x09011025` = {Vec2 scale,
+/// Vec2 trans, f32 rotate (degrees, member `DefaultTexCoordRotate`), u32 colour}.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TexCoordTransform {
+    pub scale: [f32; 2],
+    pub trans: [f32; 2],
+    pub rotate_deg: f32,
+    pub colour: u32,
+}
+
+impl TexCoordTransform {
+    /// The shader constant `GbxWorldPosToTexCoord_Map<Slot>` (a float4x2 as HLSL rows x, y, z, w →
+    /// (u, v)): u = su·(cos a·x + sin a·z) + tu, v = sv·(sin a·x − cos a·z) + tv with a = deg·(π/180)
+    /// in f32 (π/180 = 0x3c8efa35, the CRT cosf/sinf, the products in that order) — the capture's
+    /// WarpSand rows (0x39fd3630, 0x3907b21b) / (0x3907b21b, 0xb9fd3630) bit for bit. The code site
+    /// that fills the constant (case 0xca of the constant provider 0x1409f87a0 → 0x1409f8570 from an
+    /// Iso4 the texture binding holds at +0x48) was read; the Iso4's own builder was not located, so
+    /// the arithmetic is transcribed from the reproduced bits, not from its instructions.
+    pub fn world_pos_to_texcoord(&self) -> [[f32; 2]; 4] {
+        let a = self.rotate_deg * f32::from_bits(0x3c8e_fa35);
+        let (s, c) = (a.sin(), a.cos());
+        [[c * self.scale[0], s * self.scale[1]], [0.0, 0.0], [s * self.scale[0], -c * self.scale[1]], [self.trans[0], self.trans[1]]]
+    }
 }
 
 /// The `CPlugShaderApply` chunk `0x09002020` words (reader 0x1403da430 case 0x9002020).
@@ -383,6 +411,7 @@ fn walk_tree(store: &mut DataStore, slots: &[Slot], root: i32, tree: i32, path: 
             has_custom: chain.has_custom,
             bitmaps: chain.bitmaps,
             params: chain.params,
+            texcoord: chain.texcoord,
             positions,
             normals_dec3n,
             normals,
@@ -437,6 +466,7 @@ pub struct MaterialChain {
     pub has_custom: bool,
     pub bitmaps: Vec<(String, String)>,
     pub params: Vec<(String, Vec<f32>)>,
+    pub texcoord: Vec<(String, TexCoordTransform)>,
 }
 
 /// `X.Material.Gbx` → (its CPlugMaterialCustom: bitmaps + params) and, through the parent
@@ -481,6 +511,20 @@ pub fn material_chain(store: &mut DataStore, material: &str) -> MaterialChain {
         drop(g);
         if let Some(s) = shader {
             out.shader = s.clone();
+            // the bitmaps' 0x09011025 transforms (the texture files of the custom part)
+            let slots: Vec<(String, String)> = out.bitmaps.clone();
+            for (name, path) in slots {
+                if path.is_empty() { continue; }
+                if let Ok(bm) = store.load_model(&path) {
+                    if let Ok(bg) = bm.graph() {
+                        if let Some(Node::Bitmap(b)) = &bg.root {
+                            if let Some(v) = b.tc_scale_trans {
+                                out.texcoord.push((name.clone(), TexCoordTransform { scale: [f32::from_bits(v[0]), f32::from_bits(v[1])], trans: [f32::from_bits(v[2]), f32::from_bits(v[3])], rotate_deg: f32::from_bits(v[4]), colour: v[5] }));
+                            }
+                        }
+                    }
+                }
+            }
             if let Ok(sm) = store.load_model(&s) {
                 out.flags = shader_flags(&sm.body);
             }
@@ -567,8 +611,8 @@ pub fn obj_text(block: &EnvBlock, roles: &[EnvRole]) -> String {
 pub fn describe(l: &EnvLeaf) -> String {
     let fl = l.shader_flags.map(|f| format!("A 0x{:08x} B 0x{:08x} C 0x{:x} f {} pass 0x{:04x}", f.a, f.b, f.c, f.f, f.pass_bits)).unwrap_or_else(|| "shader flags: not read".into());
     format!(
-        "mobil {} {:?} kind 0x{:x} pos {:?} | {} | {} flags 0x{:x} (root 0x{:x}) | {} verts {} tris | uv {} | material {} → {} → {} | custom {} bitmaps {:?} params {:?} | {} | {:?}",
-        l.mobil, l.mobil_name, l.mobil_kind, l.pos, l.solid, l.path.join(" > "), l.flags, l.root_flags, l.positions.len(), l.triangles(), !l.uv0.is_empty(), l.material_stem, l.parent_material.rsplit('\\').next().unwrap_or(""), l.shader.rsplit('\\').next().unwrap_or(""), l.has_custom, l.bitmaps.iter().map(|(n, p)| format!("{n}={}", p.rsplit('\\').next().unwrap_or(p))).collect::<Vec<_>>(), l.params, fl, l.role()
+        "mobil {} {:?} kind 0x{:x} pos {:?} | {} | {} flags 0x{:x} (root 0x{:x}) | {} verts {} tris | uv {} | material {} → {} → {} | custom {} bitmaps {:?} params {:?} texcoord {:?} | {} | {:?}",
+        l.mobil, l.mobil_name, l.mobil_kind, l.pos, l.solid, l.path.join(" > "), l.flags, l.root_flags, l.positions.len(), l.triangles(), !l.uv0.is_empty(), l.material_stem, l.parent_material.rsplit('\\').next().unwrap_or(""), l.shader.rsplit('\\').next().unwrap_or(""), l.has_custom, l.bitmaps.iter().map(|(n, p)| format!("{n}={}", p.rsplit('\\').next().unwrap_or(p))).collect::<Vec<_>>(), l.params, l.texcoord.iter().map(|(n, t)| format!("{n}: scale {:?} trans {:?} rot {}°", t.scale, t.trans, t.rotate_deg)).collect::<Vec<_>>(), fl, l.role()
     )
 }
 
@@ -836,6 +880,21 @@ mod tests {
     }
 
     #[test]
+    fn warpsand_py_texcoord_is_the_captured_15_degree_matrix() {
+        // WarpSand_D.Texture.gbx chunk 0x09011025: scale 0.0005, trans 0, DefaultTexCoordRotate 15°
+        let t = TexCoordTransform { scale: [0.0005, 0.0005], trans: [0.0, 0.0], rotate_deg: 15.0, colour: 0xff00_0000 };
+        let m = t.world_pos_to_texcoord();
+        // pwc-day frame 127448 draw 1028, ShaderV.GbxWorldPosToTexCoord_MapPyDiffuse
+        assert_eq!([m[0][0].to_bits(), m[0][1].to_bits()], [0x39fd3630, 0x3907b21b]);
+        assert_eq!([m[2][0].to_bits(), m[2][1].to_bits()], [0x3907b21b, 0xb9fd3630]);
+        assert_eq!(m[1], [0.0, 0.0]);
+        assert_eq!(m[3], [0.0, 0.0]);
+        // TrackWallPxzInWorld_D (RE 8): 1/32, no rotation → the plain scale with v down
+        let w = TexCoordTransform { scale: [1.0 / 32.0, 1.0 / 32.0], trans: [0.0, 0.0], rotate_deg: 0.0, colour: 0xff00_0000 }.world_pos_to_texcoord();
+        assert_eq!(w, [[1.0 / 32.0, 0.0], [0.0, 0.0], [0.0, -1.0 / 32.0], [0.0, 0.0]]);
+    }
+
+    #[test]
     fn bluebay_roles_and_materials_from_the_pack() {
         let Some(mut store) = island_store("BlueBay") else { return };
         let b = load(&mut store, "BlueBay").unwrap();
@@ -856,6 +915,8 @@ mod tests {
         assert_eq!(sand.shader_flags.unwrap(), ShaderFlags { a: 0x0c007800, b: 0x0018fff0, c: 0, f: 1.0, pass_bits: 0x0441 });
         assert_eq!(sand.params, vec![("PxzScaleTrans".to_string(), vec![0.0005, 0.0005, 0.5])]);
         assert_eq!(sand.bitmaps.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(), ["PyDiffuse", "PxzDiffuse", "PxzNormal"]);
+        let py = sand.texcoord.iter().find(|(n, _)| n == "PyDiffuse").map(|(_, t)| *t).expect("PyDiffuse texcoord transform");
+        assert_eq!(py, TexCoordTransform { scale: [0.0005, 0.0005], trans: [0.0, 0.0], rotate_deg: 15.0, colour: 0xff00_0000 });
         let water = b.by_role(EnvRole::Excluded).next().unwrap();
         assert_eq!(water.flags, 0x1a80a, "no IsShadowCaster bit");
         assert!(water.shader_flags.unwrap().never_casts());
@@ -877,6 +938,61 @@ mod tests {
             assert_eq!(b.by_role(EnvRole::PeelOnly).count(), 4, "{coll}: four WarpGround quadrants");
             assert!(b.by_role(EnvRole::PeelOnly).all(|l| l.material_stem == "WarpGround"), "{coll}");
         }
+    }
+
+    /// Stadium has no capture: the proof is structural — the Stadium256 layout's one mobil is the SkyDome at
+    /// (0, 3000, 0) drawing `SkyDomeDouble.Solid.Gbx`, whose "Snow" tree is a 2143-vertex / 3968-triangle
+    /// closed ellipsoid of the SkyDomeMirror radii with u in [−1, 1] and v in [0, 1] (its "Stars" tree is a CPlugVisualSprite
+    /// layer: 8952 sprites, not a mesh).
+    #[test]
+    fn stadium_dome_is_the_double_dome_at_3000() {
+        let dir = paks_dir();
+        let sp = format!("{dir}/Stadium.pak");
+        let mp = format!("{dir}/Maniaplanet.pak");
+        if !std::path::Path::new(&sp).exists() || !std::path::Path::new(&mp).exists() {
+            eprintln!("skipped: {sp} / {mp} not on this box");
+            return;
+        }
+        let mut store = DataStore::empty();
+        store.add_pak(&sp, "B773D73047A4104857722366D78D28A6").unwrap();
+        store.add_pak(&mp, "9A93723447347A8CE336CCFC49E65449").unwrap();
+        let b = load(&mut store, "Stadium").unwrap();
+        assert!(b.layout_path.ends_with("Base16x12.Scene3d.Gbx"));
+        assert_eq!(b.leaves.len(), 2);
+        assert!(b.leaves.iter().all(|l| l.role() == EnvRole::SkyDome && l.pos == [0.0, 3000.0, 0.0] && l.solid.ends_with("SkyDomeDouble.Solid.Gbx")));
+        let dome = b.leaves.iter().find(|l| l.path.last().map(|s| s.as_str()) == Some("Snow")).unwrap();
+        assert_eq!((dome.positions.len(), dome.indices.len(), dome.uv0.len(), dome.normals_dec3n.len()), (2143, 11904, 2143, 2143));
+        assert!(dome.indices.iter().all(|i| (*i as usize) < 2143));
+        // u = the azimuth in [−1, 1], v = the elevation in [0, 1] (the manifest's table; ±1e-5 of float slop)
+        assert!(dome.uv0.iter().all(|uv| (-1.00001..=1.00001).contains(&uv[0]) && (-0.00001..=1.00001).contains(&uv[1])), "u in [−1, 1], v in [0, 1]");
+        // the ellipsoid: every vertex on the SkyDomeMirror radii (x/z 22265.23, y 9751.16) within 1e-3 relative
+        for p in &dome.positions {
+            let r = (p[0] / 22265.227).powi(2) + (p[1] / 9751.161).powi(2) + (p[2] / 22265.227).powi(2);
+            assert!((r - 1.0).abs() < 2e-3, "vertex {p:?} off the ellipsoid: r² {r}");
+        }
+        // closed: every edge of the triangle list is shared by exactly two triangles (the poles' degenerate
+        // edges excluded: a ring of 65 duplicates the seam vertex, so edges are compared by position)
+        let key = |i: u32| { let p = dome.positions[i as usize]; (p[0].to_bits(), p[1].to_bits(), p[2].to_bits()) };
+        let mut edges: std::collections::HashMap<((u32, u32, u32), (u32, u32, u32)), u32> = std::collections::HashMap::new();
+        for t in dome.indices.chunks_exact(3) {
+            for (a, b2) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+                let (ka, kb) = (key(a), key(b2));
+                if ka == kb { continue; }
+                let e = if ka < kb { (ka, kb) } else { (kb, ka) };
+                *edges.entry(e).or_insert(0) += 1;
+            }
+        }
+        let open = edges.values().filter(|c| **c != 2).count();
+        assert_eq!(open, 0, "{open} of {} edges are not shared by exactly two triangles", edges.len());
+        // the world placement
+        let w = dome.world_positions();
+        let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+        for p in &w { lo = lo.min(p[1]); hi = hi.max(p[1]); }
+        assert!((lo - (3000.0 - 9751.161)).abs() < 0.01 && (hi - (3000.0 + 9751.161)).abs() < 0.01, "y {lo}..{hi}");
+        // NOT the SkyDomeMirror vertex order: a different dome file
+        let mut island = island_store("BlueBay").unwrap();
+        let mirror = load(&mut island, "BlueBay").unwrap();
+        assert_ne!(mirror.sky_dome().unwrap().gpu_vertex_buffer(), dome.gpu_vertex_buffer());
     }
 
     #[test]
