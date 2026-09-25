@@ -2843,7 +2843,7 @@ fn main() {
                             for q in v.iter_mut() {
                                 *q = [q[0] + offset[0], q[1] + offset[1], q[2] + offset[2]];
                             }
-                            tris.push((v[0], v[1], v[2], terrain, who.to_string()));
+                            tris.push((v[0], v[1], v[2], terrain, format!("{mat}\u{1}{who}")));
                         }
                     }
                 };
@@ -2907,9 +2907,14 @@ fn main() {
             };
             let (mut n, mut inter, mut missing, mut shifted, mut ok) = (0usize, 0usize, 0usize, 0usize, 0usize);
             let mut next = i32::MIN;
-            let mut out = String::from("t	x	y	z	src_under	src_terrain	port_under	port_terrain	verdict	owner
-");
+            let mut out = String::from("t\tx\ty\tz\tsrc_under\tsrc_terrain\tport_under\tport_terrain\tverdict\towner\tsrc_surface\tport_surface\n");
             let mut owners: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+            // surface under the wheels: (source material -> port material) tallies where they differ
+            let mut surf_diff: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+            let mut surf_same = 0usize;
+            let split = |who: &str| -> (String, String) { match who.split_once('\u{1}') { Some((m, o)) => (m.to_string(), o.to_string()), None => (String::new(), who.to_string()) } };
+            // the SUPPORT within 0.6 m under the car only (a wheel is on it), else "air"
+            let surface_of = |u: &Option<(f32, bool, String)>, y: f32| -> String { match u { Some((h, _, who)) if y - h <= 0.6 => split(who).0, _ => "air".to_string() } };
             for smp in &d.samples {
                 if every > 0 && smp.time_ms < next {
                     continue;
@@ -2919,23 +2924,29 @@ fn main() {
                 let s_u = under(&src_tris, smp.x, smp.y, smp.z);
                 let p_u = under(&port_tris, smp.x, smp.y, smp.z);
                 let p_a = above_terrain(&port_tris, smp.x, smp.y, smp.z);
+                let (ss, ps) = (surface_of(&s_u, smp.y), surface_of(&p_u, smp.y));
+                if ss == ps { surf_same += 1; } else { *surf_diff.entry(format!("{ss} -> {ps}")).or_default() += 1; }
                 let (verdict, owner) = match (&s_u, &p_u, &p_a) {
-                    (_, _, Some((_, who))) => { inter += 1; ("INTERSECT", who.clone()) }
+                    (_, _, Some((_, who))) => { inter += 1; ("INTERSECT", split(who).1) }
                     (Some((sh, true, who)), pu, _) if pu.as_ref().map(|(ph, _, _)| (ph - sh).abs() > 0.5).unwrap_or(true) && (smp.y - sh) < 1.5 => {
                         // the source car rides terrain within 1.5 m; the port has nothing (or something else) there
-                        if pu.is_none() { missing += 1; ("MISSING", who.clone()) } else { shifted += 1; ("SHIFTED", who.clone()) }
+                        if pu.is_none() { missing += 1; ("MISSING", split(who).1) } else { shifted += 1; ("SHIFTED", split(who).1) }
                     }
                     _ => { ok += 1; ("ok", String::new()) }
                 };
                 if !owner.is_empty() {
                     *owners.entry(format!("{verdict} {owner}")).or_default() += 1;
                 }
-                if rows || verdict != "ok" {
-                    out.push_str(&format!("{:.1}	{:.1}	{:.2}	{:.1}	{}	{}	{}	{}	{verdict}	{owner}
-", smp.time_ms as f64 / 1000.0, smp.x, smp.y, smp.z, s_u.as_ref().map(|(h, _, _)| format!("{h:.2}")).unwrap_or("-".into()), s_u.as_ref().map(|(_, t, _)| *t).unwrap_or(false), p_u.as_ref().map(|(h, _, _)| format!("{h:.2}")).unwrap_or("-".into()), p_u.as_ref().map(|(_, t, _)| *t).unwrap_or(false)));
+                if rows || verdict != "ok" || ss != ps {
+                    out.push_str(&format!("{:.1}\t{:.1}\t{:.2}\t{:.1}\t{}\t{}\t{}\t{}\t{verdict}\t{owner}\t{ss}\t{ps}\n", smp.time_ms as f64 / 1000.0, smp.x, smp.y, smp.z, s_u.as_ref().map(|(h, _, _)| format!("{h:.2}")).unwrap_or("-".into()), s_u.as_ref().map(|(_, t, _)| *t).unwrap_or(false), p_u.as_ref().map(|(h, _, _)| format!("{h:.2}")).unwrap_or("-".into()), p_u.as_ref().map(|(_, t, _)| *t).unwrap_or(false)));
                 }
             }
-            println!("{}: {n} samples ({every} ms): INTERSECT {inter}, MISSING {missing}, SHIFTED {shifted}, ok {ok}", std::path::Path::new(&port_p).file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default());
+            println!("{}: {n} samples ({every} ms): INTERSECT {inter}, MISSING {missing}, SHIFTED {shifted}, ok {ok}; surface under the wheels same {surf_same}, differs {}", std::path::Path::new(&port_p).file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(), surf_diff.values().sum::<usize>());
+            let mut sd: Vec<(String, usize)> = surf_diff.into_iter().collect();
+            sd.sort_by(|a, b| b.1.cmp(&a.1));
+            for (kk, v) in sd.iter().take(8) {
+                println!("  surface {v:>5}  {kk}");
+            }
             let mut top: Vec<(String, usize)> = owners.into_iter().collect();
             top.sort_by(|a, b| b.1.cmp(&a.1));
             for (who, k) in top.iter().take(12) {

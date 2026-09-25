@@ -44,6 +44,7 @@ mod motion;
 mod nadeo;
 mod roundpub;
 mod remoteshots;
+mod portlayers;
 mod batch;
 mod customsheet;
 mod thumbs;
@@ -213,6 +214,7 @@ fn main() {
         "publish-batch" => batch::publish_batch_cmd(rest),
         "round-publish" => roundpub::cmd(rest),
         "port-fix-publish" => roundpub::port_fix_publish(rest),
+        "port-layers" => portlayers::cmd(rest),
         "remote-shots" => remoteshots::cmd(rest),
         "remote-drive" => remoteshots::drive_cmd(rest),
         "skip-manifest" => batch::skip_manifest_cmd(rest),
