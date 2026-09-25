@@ -4488,6 +4488,27 @@ fn run(a: Vec<String>) {
                 }
             }
         }
+        "prepass-check" => {
+            // lmtool prepass-check PASSCAP_ROOT [--frame 127447] [--run K] [--all-runs] [--coverage] [--bc1 ideal|expand8-trunc|expand8-round]
+            //   [--aniso N] [--weight-bits B|none] [--our-ids] [--show N] [--alpha-report] — ROW 1: the attribute pre-pass emulated draw by
+            //   draw (prepass.rs) against every banked snapshot of the frame (prepass_check.rs)
+            lightmap::prepass_check::run(a.clone());
+        }
+        "texstat" => {
+            // lmtool texstat FILE.dds[.gz]: per mip the min / mean / max of each channel (a look at a texture the pass samples)
+            let t = lightmap::texsample::load_dds(std::path::Path::new(&a[1]), lightmap::texsample::Bc1Decode::Ideal).unwrap_or_else(|e| panic!("{e}"));
+            println!("{}: {:?} {}×{} × {} slices, {} mips in file, complete {}", a[1], t.fmt, t.w, t.h, t.slices, t.levels[0].len(), t.complete);
+            for (si, sl) in t.levels.iter().enumerate() {
+                for (mi, lv) in sl.iter().enumerate() {
+                    let mut lo = [f32::MAX; 4]; let mut hi = [f32::MIN; 4]; let mut sum = [0f64; 4];
+                    let mut a_hist = [0usize; 11];
+                    for p in &lv.texels() { for k in 0..4 { lo[k] = lo[k].min(p[k]); hi[k] = hi[k].max(p[k]); sum[k] += p[k] as f64; } a_hist[((p[3] * 10.0) as usize).min(10)] += 1; }
+                    let n = lv.len() as f64;
+                    println!("  slice {si} mip {mi} {}×{}: min [{:.3}, {:.3}, {:.3}, {:.3}] mean [{:.3}, {:.3}, {:.3}, {:.3}] max [{:.3}, {:.3}, {:.3}, {:.3}] alpha deciles {:?}", lv.w, lv.h, lo[0], lo[1], lo[2], lo[3], sum[0] / n, sum[1] / n, sum[2] / n, sum[3] / n, hi[0], hi[1], hi[2], hi[3], a_hist);
+                    if mi >= 4 && si > 0 { break; }
+                }
+            }
+        }
         "encode-check" => {
             // lmtool encode-check PASSCAP_ROOT [--frame N] [--fma] [--half-up] [--all]
             //   the transcribed finalisation (gpuenc.rs: the |rgb| max reduction + CS 23025 LmCompress_HBasis_YCbCr4)
