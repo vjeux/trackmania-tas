@@ -2642,7 +2642,29 @@ fn run(a: Vec<String>) {
             });
             // the game's positions when --layout-game: stored texel (px, py) = ((X + 1)/2, (Y + 1)/2) of the layout rect, for every chart
             // (the tiles included — their objects are the 4096 first)
-            let fixed_pos: Option<std::collections::HashMap<(u32, u32), (u32, u32)>> = game_layout.as_ref().map(|gl| gl.charts.iter().filter(|c| c.charted == lightmap::layout::Charted::Bound).map(|c| ((c.obj, 0u32), (((c.x + 1) / 2) as u32, ((c.y + 1) / 2) as u32))).collect());
+            let mut fixed_pos: Option<std::collections::HashMap<(u32, u32), (u32, u32)>> = game_layout.as_ref().map(|gl| gl.charts.iter().filter(|c| c.charted == lightmap::layout::Charted::Bound).map(|c| ((c.obj, 0u32), (((c.x + 1) / 2) as u32, ((c.y + 1) / 2) as u32))).collect());
+            // THE RECORD PIPELINE'S CHART LIST (Stadium: blocks, tiles, clips with their sub-records, walls, items — the game's object
+            // ids and subs): one chart per layout record at its fixed position; the item charts keep the port's lighting where the port
+            // has it, the others carry the ground stand-in (the transcribed writer takes every chart's texels from the H-basis images)
+            if let Some(gl) = game_layout.as_ref().filter(|gl| !gl.records.is_empty()) {
+                let port_items: std::collections::HashMap<usize, &lightmap::bake::ChartBake> = charts.iter().map(|c| (c.item, c)).collect();
+                let mut recs_out: Vec<lightmap::synth::Chart> = Vec::with_capacity(gl.records.len());
+                let mut fp: std::collections::HashMap<(u32, u32), (u32, u32)> = Default::default();
+                for (kk, r) in gl.records.iter().enumerate() {
+                    let c = &gl.charts[kk];
+                    let (tw, th) = ((c.w as u32 / 2).max(1), (c.h as u32 / 2).max(1));
+                    let mut ch = match r.item.as_ref().and_then(|(ii, _)| port_items.get(ii)) {
+                        Some(pc) if pc.w == tw && pc.h == th => lightmap::synth::Chart::from_hdr2(r.obj, pc.w, pc.h, &pc.rgb, &pc.rgb1, k, 128),
+                        _ => lightmap::synth::Chart::from_hdr(r.obj, tw, th, &vec![ground_e; (tw * th) as usize], k, 128),
+                    };
+                    ch.sub = r.sub;
+                    recs_out.push(ch);
+                    fp.insert((r.obj, r.sub), (((c.x + 1) / 2) as u32, ((c.y + 1) / 2) as u32));
+                }
+                eprintln!("writer: {} charts from the layout's records ({} with the port's item lighting)", recs_out.len(), recs_out.iter().filter(|c| !c.a.is_empty() && c.a.iter().any(|p| *p != recs_out[0].a[0])).count());
+                out_charts = recs_out;
+                fixed_pos = Some(fp);
+            }
             // THE TRANSCRIBED FILE WRITER (--writer transcribed|port; default: transcribed whenever the transcribed chain produced
             // its finalised images, i.e. with --lm-from): the four finalised coefficient images → PS 1034 → PS 1332 × 8 → the max
             // reduce → CS 23025 → the client's CPU steps (filecheck::frame0_blobs: YCbCr_to_RGB_Down2x2, per-chart fb0, the greys,
