@@ -3219,14 +3219,19 @@ fn run(a: Vec<String>) {
             let ent = |pass: &str| -> Vec<lightmap::passdump::Entry> { m.passes.iter().filter(|e| e.pass == pass && e.frame == Some(frame)).cloned().collect() };
             // the four coefficient images after the dilation, in the CS's SRV order t0..t3 = the manifest order of
             // the final_04 entries (24858, 24752, 24749, 24852: the rotated MRT0..3)
-            let dil = ent("final_04_after_dilate8_ps1332");
-            assert_eq!(dil.len(), 4, "final_04 entries for frame {frame}: {}", dil.len());
+            // --chain: start from final_03 (before the dilation) and run OUR transcribed PS 1332 ×8 first — two closed
+            // passes chained, our output feeding our next pass, compared with the capture at the end
+            let chain = has("--chain");
+            let dil = ent(if chain { "final_03_after_colormat_ps1034" } else { "final_04_after_dilate8_ps1332" });
+            assert_eq!(dil.len(), 4, "final_0x entries for frame {frame}: {}", dil.len());
             let order = ["24858", "24752", "24749", "24852"];
             let mut imgs: Vec<lightmap::passdiff::Buf> = Vec::new();
             for id in order {
-                let e = dil.iter().find(|e| e.file.contains(&format!("_{id}.dds"))).unwrap_or_else(|| panic!("no final_04 image {id}"));
-                imgs.push(lightmap::passdiff::load_entry(&root, e).expect("load"));
-                println!("image {id}: {}×{} ×{}", imgs.last().unwrap().w, imgs.last().unwrap().h, imgs.last().unwrap().channels);
+                let e = dil.iter().find(|e| e.file.contains(&format!("_{id}.dds"))).unwrap_or_else(|| panic!("no final image {id}"));
+                let mut img = lightmap::passdiff::load_entry(&root, e).expect("load");
+                if chain { for _ in 0..8 { img = lightmap::gpuenc::dilate_ps1332(&img); } }
+                println!("image {id}: {}×{} ×{}{}", img.w, img.h, img.channels, if chain { " (final_03 → our 8 × PS 1332)" } else { "" });
+                imgs.push(img);
             }
             let maxhdr = [lightmap::gpuenc::maxhdr_hbasis(&imgs[0]), lightmap::gpuenc::maxhdr_hbasis(&imgs[1]), lightmap::gpuenc::maxhdr_hbasis(&imgs[2]), lightmap::gpuenc::maxhdr_hbasis(&imgs[3])];
             println!("MaxHdr (ours, f16 max |rgb| per image): {maxhdr:?}");
