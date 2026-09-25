@@ -186,8 +186,9 @@ pub fn lm_mesh_of_item(bytes: &[u8]) -> Result<Option<LmMesh>, String> {
 /// The instance of a placed item: RE 4's quaternion, the translation, the uniform scale, the chart ST of its layout
 /// rect (`peelcolor::chart_st` with the model's PreLightGen bounds).
 pub fn lm_instance(pose: &crate::geometry::ItemPose, st: [f32; 4]) -> LmInstance {
+    // ypr_to_quat returns (w, x, y, z) = the game's stream quaternion NEGATED (the same rotation; the stream is (x, y, z, w))
     let q = mapgeom::veget_instance::ypr_to_quat(pose.yaw, pose.pitch, pose.roll);
-    LmInstance { q: [q[0], q[1], q[2], q[3]], t: pose.pos, scale: if pose.scale > 0.0 { pose.scale } else { 1.0 }, st, st_x_bits: st[0].to_bits() }
+    LmInstance { q: [-q[1], -q[2], -q[3], -q[0]], t: pose.pos, scale: if pose.scale > 0.0 { pose.scale } else { 1.0 }, st, st_x_bits: st[0].to_bits() }
 }
 
 /// A vertex-by-vertex comparison of two LM meshes (ours vs the captured): counts of exact positions / normals / uvs /
@@ -301,4 +302,58 @@ pub fn lm_mesh_of_zone(store: &mut mapgeom::store::DataStore, collection: &str, 
         }
     }
     Ok(None)
+}
+
+/// THE LM SCENE FROM THE MAP: one LM mesh per distinct item model (instanced over its items) plus the zone tile mesh
+/// instanced over the 4096 cells, every instance carrying its chart ST from the game's layout (`layout::for_map`) —
+/// what `--lm-from PASSCAP` took from the capture's vertex/instance streams. The instance order is the object order
+/// (items first — model by model in first-appearance order — then the tiles in chart-array order); only overlapping
+/// charts could make the order matter, and charts never overlap.
+pub fn lm_scene_from_map(scene: &crate::geometry::Scene, layout: &crate::layout::GameLayout, base: u32, item_bytes: &dyn Fn(&str) -> Option<Vec<u8>>, tile_mesh: Option<LmMesh>, tile_plg: crate::layout::TilePlg, atlas: f32) -> Result<crate::lmaccum::LmScene, String> {
+    use crate::lmaccum::LmScene;
+    let mut sc = LmScene { meshes: Vec::new(), inst_first: Vec::new(), inst_count: Vec::new(), instances: Vec::new(), table: Vec::new(), eids: Vec::new() };
+    let rect_of: std::collections::HashMap<u32, [i32; 4]> = layout.charts.iter().filter(|c| c.charted == crate::layout::Charted::Bound).map(|c| (c.obj, [c.x, c.y, c.w, c.h])).collect();
+    // items, grouped by model in first-appearance order
+    let mut by_model: Vec<(usize, Vec<usize>)> = Vec::new(); // (model index, instance indices)
+    for (ii, inst) in scene.instances.iter().enumerate() {
+        match by_model.iter_mut().find(|(m, _)| *m == inst.model) {
+            Some((_, v)) => v.push(ii),
+            None => by_model.push((inst.model, vec![ii])),
+        }
+    }
+    for (mi, insts) in &by_model {
+        let name = &scene.model_names[*mi];
+        let Some(bytes) = item_bytes(name) else { continue };
+        let Some(mesh) = lm_mesh_of_item(&bytes)? else { continue };
+        let bounds = scene.models[*mi].plg_bounds.unwrap_or([0.0, 0.0, 1.0, 1.0]);
+        let first = sc.instances.len();
+        let mut n = 0usize;
+        for &ii in insts {
+            let inst = &scene.instances[ii];
+            let Some(r) = rect_of.get(&(base + inst.item as u32)) else { continue };
+            let st = crate::peelcolor::chart_st(*r, bounds, atlas);
+            sc.instances.push(lm_instance(&inst.pose, st));
+            n += 1;
+        }
+        if n == 0 { continue; }
+        sc.meshes.push(mesh);
+        sc.inst_first.push(first);
+        sc.inst_count.push(n);
+        sc.eids.push(0);
+    }
+    if let Some(tm) = tile_mesh {
+        let first = sc.instances.len();
+        let mut n = 0usize;
+        for c in layout.charts.iter().filter(|c| c.obj < base) {
+            let (cx, cz) = layout.cell_of[c.obj as usize];
+            let st = crate::peelcolor::chart_st([c.x, c.y, c.w, c.h], tile_plg.bounds, atlas);
+            sc.instances.push(LmInstance { q: [0.0, 0.0, 0.0, 1.0], t: [cx as f32 * 32.0, 0.0, cz as f32 * 32.0], scale: 1.0, st, st_x_bits: st[0].to_bits() });
+            n += 1;
+        }
+        sc.meshes.push(tm);
+        sc.inst_first.push(first);
+        sc.inst_count.push(n);
+        sc.eids.push(0);
+    }
+    Ok(sc)
 }

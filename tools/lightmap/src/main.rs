@@ -1471,6 +1471,38 @@ fn run(a: Vec<String>) {
                 }
                 prm.tile_st = Some(std::sync::Arc::new(table));
             }
+            // --lm-from-map (with --layout-game [--pak FILE:KEY]): THE LM SCENE FROM THE MAP — the transcribed rows 7–9 over OUR peel
+            // layers with the game's LM vertex stream rebuilt from the models (lmmesh.rs: bit-identical to pwc-day's captured
+            // streams) and every instance's chart ST from the game's layout; no capture needed. The fitted blocks' world box =
+            // the items' block-record boxes (lmtiles) unless --fitted-world-box. --lm-game-manifest FILE (+ --lm-cap-root DIR) still
+            // compares every direction with the capture's banked buffers.
+            if has("--lm-from-map") && prm.lm_scene.is_none() {
+                let Some(gl) = game_layout.as_ref() else { panic!("--lm-from-map needs --layout-game") };
+                let pak_arg = f("--pak");
+                let pak: Option<(&str, &str)> = pak_arg.as_deref().and_then(|p| p.rsplit_once(':'));
+                let tile_mesh = match pak { Some((pp, key)) => { let mut store = mapgeom::store::DataStore::empty(); store.add_pak(pp, key).expect("pak"); lightmap::lmmesh::lm_mesh_of_zone(&mut store, &f("--collection").unwrap_or_else(|| "BlueBay".into()), &f("--zone").unwrap_or_else(|| "Sea".into())).expect("zone tile mesh") } None => { eprintln!("lm-from-map: no --pak — the zone tiles have no LM mesh (items only)"); None } };
+                let mf = tmmaps::map::MapFile::load(std::path::Path::new(&map_path));
+                let files = mapgeom::embedded::files(&mf).expect("embedded items");
+                let by_name: std::collections::BTreeMap<String, Vec<u8>> = files.iter().map(|(k, v)| (k.rsplit(['/', '\\']).next().unwrap_or(k).to_string(), v.clone())).collect();
+                let sc = lightmap::lmmesh::lm_scene_from_map(&scene, gl, base, &|name| by_name.get(name).cloned(), tile_mesh, lightmap::layout::TilePlg::BLUEBAY_SEA, 2048.0).unwrap_or_else(|e| panic!("--lm-from-map: {e}"));
+                eprintln!("lm-from-map: {} LM meshes, {} instances from the map's models + the layout", sc.meshes.len(), sc.instances.len());
+                prm.fitted_world_box = match f("--fitted-world-box") {
+                    Some(v) => { let c: Vec<f32> = v.split(',').map(|x| x.trim().parse().expect("--fitted-world-box x0,z0,x1,z1")).collect(); Some([[c[0], c[1]], [c[2], c[3]]]) }
+                    None => {
+                        // the items' block records' union box (RE 6: the fitted peel tile = the records' cell of the tiling; pwc-day: one cell)
+                        let recs: Vec<lightmap::lmtiles::BlockRecord> = lightmap::lmtiles::item_records(&scene, 1.0, false).iter().filter_map(|it| it.record).collect();
+                        if recs.is_empty() { None } else { let sbox = lightmap::lmtiles::scene_box(&recs); Some([[sbox.min()[0], sbox.min()[2]], [sbox.max()[0], sbox.max()[2]]]) }
+                    }
+                };
+                eprintln!("lm-from-map: the fitted blocks' world box {:?}", prm.fitted_world_box);
+                if let Some(mp) = f("--lm-game-manifest").map(std::path::PathBuf::from) {
+                    let root = f("--lm-cap-root").map(std::path::PathBuf::from).unwrap_or_else(|| mp.parent().map(|p| p.to_path_buf()).unwrap_or_default());
+                    let entries = lightmap::lmaccum::load_capture_entries(&mp).unwrap_or_else(|e| panic!("{}: {e}", mp.display()));
+                    eprintln!("lm-from-map: {} capture entries from {} for the comparison", entries.len(), mp.display());
+                    prm.hbasis_game = Some((root, std::sync::Arc::new(entries)));
+                }
+                prm.lm_scene = Some(std::sync::Arc::new(sc));
+            }
             // THE ZONE TILES' CHART ST from the capture's instance buffer (`lmaccum::load_lm_scene`: the 4096-instance
             // object's g_InstanceDatas — t = the cell's corner, st = its chart ST; the mapping's obj index = the instance
             // index, a traversal RE-6's block records describe): the harness's tile colour path
@@ -4907,6 +4939,77 @@ fn run(a: Vec<String>) {
                     }
                     Ok(None) => println!("mesh {mi}: item {item_i} {} — no lightmapped visual in the model", it.model),
                     Err(e) => println!("mesh {mi}: item {item_i} {} — {e}", it.model),
+                }
+            }
+            // --scene: the whole LM scene from the map + the game's layout (lmmesh::lm_scene_from_map) against the capture's instances
+            if a.iter().any(|x| x == "--scene") {
+                let pak_arg = f("--pak"); let pak: Option<(&str, &str)> = pak_arg.as_deref().and_then(|p| p.rsplit_once(':'));
+                let base = 4096u32;
+                let gl = lightmap::layout::for_map(&a[1], &scene, base, f("--layout-quality").map(|v| v.parse().unwrap()).unwrap_or(2), lightmap::layout::TilePlg::BLUEBAY_SEA, pak, "BlueBay", "Sea").expect("layout");
+                let tile_mesh = match pak { Some((pp, key)) => { let mut store = mapgeom::store::DataStore::empty(); store.add_pak(pp, key).expect("pak"); lightmap::lmmesh::lm_mesh_of_zone(&mut store, "BlueBay", "Sea").expect("zone") } None => None };
+                let dir = items_dir.clone();
+                let ours = lightmap::lmmesh::lm_scene_from_map(&scene, &gl, base, &|name| dir.as_ref().and_then(|d| std::fs::read(format!("{d}/Items/{name}")).ok()), tile_mesh, lightmap::layout::TilePlg::BLUEBAY_SEA, 2048.0).expect("lm scene");
+                println!("LM scene from the map: {} meshes, {} instances (captured: {} meshes, {} instances)", ours.meshes.len(), ours.instances.len(), sc.meshes.len(), sc.instances.len());
+                // pair instances by translation: q (up to sign), scale, st bits
+                let (mut n, mut q_eq, mut st_eq, mut st_1ulp, mut sc_eq) = (0, 0, 0, 0, 0);
+                let mut shown = 0;
+                for o in &ours.instances { if let Some(c) = sc.instances.iter().find(|c| c.t == o.t) { n += 1; if o.q == c.q || o.q.iter().zip(c.q.iter()).all(|(a, b)| *a == -*b) { q_eq += 1; } if o.scale == c.scale { sc_eq += 1; } if o.st == c.st { st_eq += 1; } else { if (0..4).all(|k| (o.st[k].to_bits() as i64 - c.st[k].to_bits() as i64).abs() <= 1) { st_1ulp += 1; } if shown < 6 { shown += 1; println!("  st differs at t {:?}: ours {:?} captured {:?}", o.t, o.st, c.st); } } } }
+                println!("  {n} instances paired by translation: q equal (up to sign) {q_eq}, scale equal {sc_eq}, st bit-identical {st_eq}, st within 1 ulp {st_1ulp}");
+                // the ST formula study: which operation order reproduces every captured S / T bit for bit? (D's rule: S = (w − 1/4)/2048/(b_hi − b_lo),
+                // T = (x + 1/8)/2048 − b_lo·S) — the variants differ in the last bit
+                {
+                    let b = lightmap::layout::TilePlg::BLUEBAY_SEA.bounds;
+                    // every chart with its captured instance and its uv bounds: the tiles (the Sea bounds) and the items (their PreLightGen)
+                    let mut tiles: Vec<(&lightmap::layout::LayoutChart, &lightmap::sunpass::LmInstance, [f32; 4])> = gl.charts.iter().filter(|c| c.obj < base).filter_map(|c| { let (cx, cz) = gl.cell_of[c.obj as usize]; sc.instances.iter().find(|i| i.t == [cx as f32 * 32.0, 0.0, cz as f32 * 32.0]).map(|i| (c, i, b)) }).collect();
+                    for c in gl.charts.iter().filter(|c| c.obj >= base) { if let Some(inst) = scene.instances.iter().find(|i| base + i.item as u32 == c.obj) { if let Some(ci) = sc.instances.iter().find(|i| i.t == inst.pose.pos) { tiles.push((c, ci, scene.models[inst.model].plg_bounds.unwrap_or([0.0, 0.0, 1.0, 1.0]))); } } }
+                    let variants: Vec<(&str, Box<dyn Fn(f32, f32, f32, f32) -> (f32, f32)>)> = vec![
+                        ("(w-1/4)/2048/dv ; (x+1/8)/2048 - lo*S", Box::new(|w: f32, x: f32, lo: f32, hi: f32| { let s = (w - 0.25) / 2048.0 / (hi - lo); (s, (x + 0.125) / 2048.0 - lo * s) })),
+                        ("(w-1/4)/(2048*dv)", Box::new(|w: f32, x: f32, lo: f32, hi: f32| { let s = (w - 0.25) / (2048.0 * (hi - lo)); (s, (x + 0.125) / 2048.0 - lo * s) })),
+                        ("((w-1/4)/dv)/2048", Box::new(|w: f32, x: f32, lo: f32, hi: f32| { let s = ((w - 0.25) / (hi - lo)) / 2048.0; (s, (x + 0.125) / 2048.0 - lo * s) })),
+                        ("(w-1/4)*(1/2048)*rcp(dv)", Box::new(|w: f32, x: f32, lo: f32, hi: f32| { let s = (w - 0.25) * (1.0 / 2048.0) * (1.0 / (hi - lo)); (s, (x + 0.125) / 2048.0 - lo * s) })),
+                        ("(w*(1/2048) - 1/8192)/dv", Box::new(|w: f32, x: f32, lo: f32, hi: f32| { let s = (w * (1.0 / 2048.0) - 0.25 / 2048.0) / (hi - lo); (s, (x + 0.125) / 2048.0 - lo * s) })),
+                        ("fma: (x+1/8)/2048 − lo·S fused", Box::new(|w: f32, x: f32, lo: f32, hi: f32| { let s = (w - 0.25) / 2048.0 / (hi - lo); (s, (-lo).mul_add(s, (x + 0.125) / 2048.0)) })),
+                        ("S=(w-0.25)/dv/2048; T=(x+0.125 - lo*(w-0.25)/dv)/2048", Box::new(|w: f32, x: f32, lo: f32, hi: f32| { let sd = (w - 0.25) / (hi - lo); (sd / 2048.0, (x + 0.125 - lo * sd) / 2048.0) })),
+                        ("S=(w-0.25)/dv/2048; T=(x+0.125 - lo*sd)*(1/2048)", Box::new(|w: f32, x: f32, lo: f32, hi: f32| { let sd = (w - 0.25) / (hi - lo); (sd * (1.0 / 2048.0), (x + 0.125 - lo * sd) * (1.0 / 2048.0)) })),
+                        ("S rcp; T = (x+1/8)*(1/2048) - lo*S", Box::new(|w: f32, x: f32, lo: f32, hi: f32| { let s = (w - 0.25) * (1.0 / 2048.0) * (1.0 / (hi - lo)); (s, (x + 0.125) * (1.0 / 2048.0) - lo * s) })),
+                        ("S rcp; T = (x+1/8 - lo*(w-1/4)*rcp(dv))*(1/2048)", Box::new(|w: f32, x: f32, lo: f32, hi: f32| { let r = 1.0 / (hi - lo); let s = (w - 0.25) * (1.0 / 2048.0) * r; (s, (x + 0.125 - lo * ((w - 0.25) * r)) * (1.0 / 2048.0)) })),
+                        ("S rcp; T = (x+1/8)/2048 - (lo*(w-1/4))*(1/2048)*rcp", Box::new(|w: f32, x: f32, lo: f32, hi: f32| { let r = 1.0 / (hi - lo); let s = (w - 0.25) * (1.0 / 2048.0) * r; (s, (x + 0.125) / 2048.0 - (lo * (w - 0.25)) * (1.0 / 2048.0) * r) })),
+                        ("S rcp; T = fma(-lo, S, (x+1/8)/2048)", Box::new(|w: f32, x: f32, lo: f32, hi: f32| { let s = (w - 0.25) * (1.0 / 2048.0) * (1.0 / (hi - lo)); (s, (-lo).mul_add(s, (x + 0.125) / 2048.0)) })),
+                        ("S rcp; T = (x+1/8)/2048 + (-lo*S) via fma(x+1/8, 1/2048, -lo*S)", Box::new(|w: f32, x: f32, lo: f32, hi: f32| { let s = (w - 0.25) * (1.0 / 2048.0) * (1.0 / (hi - lo)); (s, (x + 0.125).mul_add(1.0 / 2048.0, -(lo * s))) })),
+                        ("S rcp; T = -(lo*S - (x+1/8)/2048)", Box::new(|w: f32, x: f32, lo: f32, hi: f32| { let s = (w - 0.25) * (1.0 / 2048.0) * (1.0 / (hi - lo)); (s, -(lo * s - (x + 0.125) / 2048.0)) })),
+                        ("S rcp; T = (x*(1/2048) + 1/16384) - lo*S", Box::new(|w: f32, x: f32, lo: f32, hi: f32| { let s = (w - 0.25) * (1.0 / 2048.0) * (1.0 / (hi - lo)); (s, (x * (1.0 / 2048.0) + 0.125 / 2048.0) - lo * s) })),
+                        ("S rcp; T = fma(x, 1/2048, 1/16384) - lo*S", Box::new(|w: f32, x: f32, lo: f32, hi: f32| { let s = (w - 0.25) * (1.0 / 2048.0) * (1.0 / (hi - lo)); (s, x.mul_add(1.0 / 2048.0, 0.125 / 2048.0) - lo * s) })),
+                        ("S rcp; T = fma(-lo, S, fma(x, 1/2048, 1/16384))", Box::new(|w: f32, x: f32, lo: f32, hi: f32| { let s = (w - 0.25) * (1.0 / 2048.0) * (1.0 / (hi - lo)); (s, (-lo).mul_add(s, x.mul_add(1.0 / 2048.0, 0.125 / 2048.0))) })),
+                    ];
+                    // the cross product: the stored S from one form, T's S from another (the game may keep an unrounded intermediate)
+                    {
+                        let sforms: Vec<(&str, Box<dyn Fn(f32, f32, f32) -> f32>)> = vec![
+                            ("A=((w-¼)·(1/2048))·rcp", Box::new(|w: f32, lo: f32, hi: f32| ((w - 0.25) * (1.0 / 2048.0)) * (1.0 / (hi - lo)))),
+                            ("B=((w-¼)·rcp)·(1/2048)", Box::new(|w: f32, lo: f32, hi: f32| ((w - 0.25) * (1.0 / (hi - lo))) * (1.0 / 2048.0))),
+                            ("C=(w-¼)/2048/dv", Box::new(|w: f32, lo: f32, hi: f32| (w - 0.25) / 2048.0 / (hi - lo))),
+                            ("D=(w-¼)/dv/2048", Box::new(|w: f32, lo: f32, hi: f32| (w - 0.25) / (hi - lo) / 2048.0)),
+                            ("E=(w-¼)·rcp(dv·2048)", Box::new(|w: f32, lo: f32, hi: f32| (w - 0.25) * (1.0 / ((hi - lo) * 2048.0)))),
+                            ("F=(w-¼)·rcp(dv)·(1/2048) as f64→f32", Box::new(|w: f32, lo: f32, hi: f32| (((w - 0.25) as f64) / ((hi - lo) as f64) / 2048.0) as f32)),
+                        ];
+                        for (sn, sf) in &sforms { for (tn, tf) in &sforms {
+                            let (mut s_ok, mut t_ok, mut t_ok_f) = (0, 0, 0);
+                            for (c, i, bb) in &tiles {
+                                let (sx, sy) = (sf(c.w as f32, bb[0], bb[2]), sf(c.h as f32, bb[1], bb[3]));
+                                let (tsx, tsy) = (tf(c.w as f32, bb[0], bb[2]), tf(c.h as f32, bb[1], bb[3]));
+                                if sx == i.st[0] && sy == i.st[1] { s_ok += 1; }
+                                let (tx, ty) = ((c.x as f32 + 0.125) / 2048.0 - bb[0] * tsx, (c.y as f32 + 0.125) / 2048.0 - bb[1] * tsy);
+                                if tx == i.st[2] && ty == i.st[3] { t_ok += 1; }
+                                let (txf, tyf) = ((-bb[0]).mul_add(tsx, (c.x as f32 + 0.125) / 2048.0), (-bb[1]).mul_add(tsy, (c.y as f32 + 0.125) / 2048.0));
+                                if txf == i.st[2] && tyf == i.st[3] { t_ok_f += 1; }
+                            }
+                            if s_ok == tiles.len() || t_ok == tiles.len() || t_ok_f == tiles.len() { println!("  cross: stored S {sn:<36} T's S {tn:<36}: S both {s_ok}, T both {t_ok} (fused {t_ok_f}) of {}", tiles.len()); }
+                        } }
+                    }
+                    for (name, fv) in &variants {
+                        let (mut sx, mut sy, mut tx, mut ty) = (0, 0, 0, 0);
+                        for (c, i, bb) in &tiles { let (s0, t0) = fv(c.w as f32, c.x as f32, bb[0], bb[2]); let (s1, t1) = fv(c.h as f32, c.y as f32, bb[1], bb[3]); if s0 == i.st[0] { sx += 1; } if s1 == i.st[1] { sy += 1; } if t0 == i.st[2] { tx += 1; } if t1 == i.st[3] { ty += 1; } }
+                        println!("  ST variant {name:<52}: S.x {sx} S.y {sy} T.x {tx} T.y {ty} of {}", tiles.len());
+                    }
                 }
             }
             for (mi, m) in sc.meshes.iter().enumerate() { if sc.inst_count[mi] > 1 { println!("mesh {mi} (eid {}): {} vertices, {} triangles × {} instances — the zone tiles (the Sea prefab's SeaFloor plane)", sc.eids[mi], m.verts.len(), m.indices.len() / 3, sc.inst_count[mi]);

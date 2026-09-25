@@ -99,8 +99,11 @@ impl AtlasTex {
 pub fn chart_st(rect: [i32; 4], bounds: [f32; 4], atlas: f32) -> [f32; 4] {
     let (x, y, w, h) = (rect[0] as f32, rect[1] as f32, rect[2] as f32, rect[3] as f32);
     let (du, dv) = ((bounds[2] - bounds[0]).max(1e-9), (bounds[3] - bounds[1]).max(1e-9));
-    let sx = (w - 0.25) / atlas / du;
-    let sy = (h - 0.25) / atlas / dv;
+    // S = (w − ¼) · (1/atlas) · rcp(b_hi − b_lo) — a RECIPROCAL multiply, not a division: the captured 4096 tile
+    // instances' S.y are bit-identical only under this order (the division forms match 1384 of 4096; S.x matches under
+    // every order); T = (x + ⅛)/atlas − b_lo·S with the product and the subtraction separate (the fused form misses 23)
+    let sx = (w - 0.25) * (1.0 / atlas) * (1.0 / du);
+    let sy = (h - 0.25) * (1.0 / atlas) * (1.0 / dv);
     [sx, sy, (x + 0.125) / atlas - bounds[0] * sx, (y + 0.125) / atlas - bounds[1] * sy]
 }
 
