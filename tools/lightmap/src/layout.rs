@@ -519,6 +519,13 @@ pub fn allocate_grouped(input: &LayoutInput, groups: &[u64]) -> Result<GameLayou
 /// `pos` = an optional per-record GROUP POSITION rank (the order the records entered the static pool when it is not the
 /// record order — the study of the clip records); the ordinals are computed over the members sorted by it.
 pub fn allocate_grouped_pos(input: &LayoutInput, groups: &[u64], pos: Option<&[u32]>) -> Result<GameLayout, String> {
+    allocate_grouped_walls(input, groups, pos, None)
+}
+
+/// `walls[k]` = Some((facing code, height 2·h.y)) for a WALL record (RE 7's FUN_14028ff90: the Base_VFCMiddle_Air model with an
+/// axis-aligned third Iso4 row): walls leave the solo / hash grouping and the chunk count and become 1 × N vertical STRIP
+/// entries appended after the split (itemrule::wall_strips), their cells the members in ascending y.
+pub fn allocate_grouped_walls(input: &LayoutInput, groups: &[u64], pos: Option<&[u32]>, walls: Option<&[Option<(u8, f32)>]>) -> Result<GameLayout, String> {
     use crate::itemrule as ir;
     let (g, pad, m) = crate::pack::layout_params(input.w_atlas, input.w_atlas);
     let max_iter = max_iter_for_quality(input.quality_index);
@@ -547,7 +554,12 @@ pub fn allocate_grouped_pos(input: &LayoutInput, groups: &[u64], pos: Option<&[u
     let mut members: Vec<Vec<usize>> = Vec::new();
     let mut key_of: std::collections::HashMap<u64, usize> = Default::default();
     let mut model_of_record: Vec<usize> = vec![0; n];
+    let is_wall = |k: usize| -> bool { walls.map(|w| w[k].is_some()).unwrap_or(false) };
     for k in 0..n {
+        if is_wall(k) {
+            model_of_record[k] = usize::MAX;
+            continue;
+        }
         if ir::is_solo(exts[k], d1) {
             model_of_record[k] = members.len();
             members.push(vec![k]);
@@ -574,8 +586,25 @@ pub fn allocate_grouped_pos(input: &LayoutInput, groups: &[u64], pos: Option<&[u
     // 8 and 6 — c = 8 whenever chunking applies (k = ceil(1000 / nModels) > 1) until a third map pins the divisor
     // RE 7's FUN_140292740 chunk size (tiny 16: 458 groups → 8; stpad: 735 → 8; tiny03 WhiteShore: 279 → 6); LMTOOL_CHUNK=N overrides
     let chunk = match std::env::var("LMTOOL_CHUNK").ok().and_then(|v| v.parse::<u32>().ok()) { Some(c) => Some(c), None => ir::chunk_size(n as u32, members.len() as u32) };
-    let entries = ir::split_chunks(&counts, chunk);
+    let mut entries = ir::split_chunks(&counts, chunk);
     let c = chunk.unwrap_or(u32::MAX);
+    // THE WALL STRIPS (RE 7, 19:45Z): per facing bucket, keyed by (code, lroundf(plane)), sub-runs of the same along coordinate
+    // sorted by y and cut at 0.9·Δy > height or 9 members; each strip = one entry appended to the list, nb 1 × na N; a wall
+    // record's ordinal = its position in the strip (its cell (0, position)); its "group" = a synthetic index past the groups
+    let n_groups = members.len();
+    let mut strip_of: std::collections::HashMap<usize, (usize, u32)> = Default::default(); // record → (entry index, position)
+    if let Some(w) = walls {
+        let wall_recs: Vec<usize> = (0..n).filter(|&k| w[k].is_some()).collect();
+        let wrs: Vec<ir::WallRec> = wall_recs.iter().map(|&k| { let (facing, height) = w[k].unwrap(); ir::WallRec { facing, centre: keys[k].centre, height } }).collect();
+        let strips = ir::wall_strips(&wrs);
+        for (si, strip) in strips.iter().enumerate() {
+            let ei = entries.len();
+            entries.push(ir::ModelChart { group: n_groups + si, chunk: 0, count: strip.len() as u32 });
+            members.push(strip.iter().map(|&wi| wall_recs[wi]).collect());
+            for (pos_in, &wi) in strip.iter().enumerate() { strip_of.insert(wall_recs[wi], (ei, pos_in as u32)); model_of_record[wall_recs[wi]] = n_groups + si; ordinal[wall_recs[wi]] = pos_in as u32; }
+        }
+    }
+    let is_strip = |ei: usize| entries[ei].group >= n_groups;
     // the entry of a record: its group's chunk `ordinal / c` — the chunk-0 entry sits at the group's place, the others where
     // split_chunks appended them
     let mut entry_of: std::collections::HashMap<(usize, u32), usize> = Default::default();
@@ -587,8 +616,10 @@ pub fn allocate_grouped_pos(input: &LayoutInput, groups: &[u64], pos: Option<&[u
     let mut ekeys: Vec<ChartKey> = Vec::with_capacity(entries.len());
     let mut dims: Vec<(u32, u32)> = Vec::with_capacity(entries.len());
     let mut first_member: Vec<Option<usize>> = vec![None; entries.len()];
+    let entry_index = |k: usize| -> usize { if let Some(&(ei, _)) = strip_of.get(&k) { ei } else { entry_of[&(model_of_record[k], if chunk.is_some() { ordinal[k] / c } else { 0 })] } };
+    let cell_index = |k: usize| -> u32 { if let Some(&(_, p)) = strip_of.get(&k) { p } else if chunk.is_some() { ordinal[k] % c } else { ordinal[k] } };
     for k in 0..n {
-        let ei = entry_of[&(model_of_record[k], if chunk.is_some() { ordinal[k] / c } else { 0 })];
+        let ei = entry_index(k);
         if first_member[ei].is_none() {
             first_member[ei] = Some(k);
         }
@@ -600,7 +631,7 @@ pub fn allocate_grouped_pos(input: &LayoutInput, groups: &[u64], pos: Option<&[u
         let k0 = members[e.group][0];
         first_member[ei] = Some(k0);
         let ext = exts[k0];
-        let (nb, na) = ir::grid_dims(e.count, ext, d1, m as u32);
+        let (nb, na) = if is_strip(ei) { (1u32, e.count) } else { ir::grid_dims(e.count, ext, d1, m as u32) };
         let (gext, _area) = ir::grid_chart(ext, nb, na);
         charts.push(ChartExt { ext: gext, mins: [nb as u16, na as u16] });
         ekeys.push(keys[k0]);
@@ -615,7 +646,7 @@ pub fn allocate_grouped_pos(input: &LayoutInput, groups: &[u64], pos: Option<&[u
         match std::env::var("LMTOOL_GROUP_TIE").ok().as_deref() {
             // the study: ties by the first member's record index / by the smallest member record index / by the Morton-first member
             Some("first") => { let mut idx: Vec<usize> = (0..charts.len()).collect(); idx.sort_by_key(|&i| (areas[i].to_bits(), first_member[i].unwrap_or(0))); idx }
-            Some("minrec") => { let mut idx: Vec<usize> = (0..charts.len()).collect(); let minrec: Vec<usize> = (0..charts.len()).map(|ei| (0..n).filter(|&k| entry_of[&(model_of_record[k], if chunk.is_some() { ordinal[k] / c } else { 0 })] == ei).min().unwrap_or(0)).collect(); idx.sort_by_key(|&i| (areas[i].to_bits(), minrec[i])); idx }
+            Some("minrec") => { let mut idx: Vec<usize> = (0..charts.len()).collect(); let minrec: Vec<usize> = (0..charts.len()).map(|ei| (0..n).filter(|&k| entry_index(k) == ei).min().unwrap_or(0)).collect(); idx.sort_by_key(|&i| (areas[i].to_bits(), minrec[i])); idx }
             Some("revidx") => { let mut idx: Vec<usize> = (0..charts.len()).collect(); idx.sort_by_key(|&i| (areas[i].to_bits(), std::cmp::Reverse(i))); idx }
             _ => ir::grouped_pack_order(&areas),
         }
@@ -633,12 +664,11 @@ pub fn allocate_grouped_pos(input: &LayoutInput, groups: &[u64], pos: Option<&[u
     // the cells: each record's rect inside its entry's placed rect
     let mut out: Vec<LayoutChart> = Vec::with_capacity(n);
     for k in 0..n {
-        let ei = entry_of[&(model_of_record[k], if chunk.is_some() { ordinal[k] / c } else { 0 })];
+        let ei = entry_index(k);
         let (nb, na) = dims[ei];
         let p = &placed[ei];
-        let cells = ir::zorder_cells(nb, na);
-        let o = if chunk.is_some() { ordinal[k] % c } else { ordinal[k] };
-        let (cx, cy) = cells.get(o as usize).copied().unwrap_or((0, 0));
+        let o = cell_index(k);
+        let (cx, cy) = if is_strip(ei) { (0u32, o) } else { let cells = ir::zorder_cells(nb, na); cells.get(o as usize).copied().unwrap_or((0, 0)) };
         let ex = ir::cell_edges(p.w as u32, nb, g as u32);
         let ey = ir::cell_edges(p.h as u32, na, g as u32);
         let (x0, x1) = (ex[cx as usize], ex[cx as usize + 1]);
@@ -651,8 +681,8 @@ pub fn allocate_grouped_pos(input: &LayoutInput, groups: &[u64], pos: Option<&[u
     }
     let mut entry_out: Vec<((i32, i32, i32, i32), (u32, u32), Vec<(usize, u32)>)> = entries.iter().enumerate().map(|(ei, _)| { let p = &placed[ei]; ((p.x as i32, p.y as i32, p.w as i32, p.h as i32), dims[ei], Vec::new()) }).collect();
     for k in 0..n {
-        let ei = entry_of[&(model_of_record[k], if chunk.is_some() { ordinal[k] / c } else { 0 })];
-        let o = if chunk.is_some() { ordinal[k] % c } else { ordinal[k] };
+        let ei = entry_index(k);
+        let o = cell_index(k);
         entry_out[ei].2.push((k, o));
     }
     // (the walk position: the packer places `order` from its end — position 0 = placed first)

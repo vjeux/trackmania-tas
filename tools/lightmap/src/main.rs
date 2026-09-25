@@ -5943,7 +5943,7 @@ fn run(a: Vec<String>) {
                 let Some(ir) = irecs.iter().find(|r| r.item == inst.item) else { continue };
                 let Some(rec) = &ir.record else { continue };
                 let q = lightmap::layout::item_quality(inst.lm_quality);
-                recs.push(lightmap::records::Rec { class: "item", obj: item_obj0 + k as u32, sub: 0, meter_by_uv: m.plg_u02, uv: b, quality: q, centre: rec.world.c, half: rec.world.h, group: ((inst.model as u64) << 32) | q.to_bits() as u64, key_centre: None, pos_rank: None });
+                recs.push(lightmap::records::Rec { class: "item", obj: item_obj0 + k as u32, sub: 0, meter_by_uv: m.plg_u02, uv: b, quality: q, centre: rec.world.c, half: rec.world.h, group: ((inst.model as u64) << 32) | q.to_bits() as u64, key_centre: None, pos_rank: None, wall: None });
                 n_item_recs += 1;
             }
             println!("{} items → {n_item_recs} records (objects from {item_obj0})", scene.instances.len());

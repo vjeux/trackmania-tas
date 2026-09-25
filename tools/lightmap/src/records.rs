@@ -22,6 +22,8 @@ pub struct Rec {
     pub key_centre: Option<[f32; 3]>,
     /// The record's rank in the static pool (its group position) when that is not the record order.
     pub pos_rank: Option<u32>,
+    /// A WALL record (RE 7: the Base_VFCMiddle_Air model with an axis-aligned third Iso4 row): (facing code, height 2·h.y).
+    pub wall: Option<(u8, f32)>,
 }
 
 impl Rec {
@@ -112,7 +114,7 @@ pub fn zone_tiles(store: &mut mapgeom::store::DataStore, collection: &str, zone:
             let iso: crate::lmtiles::Iso4 = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, cx as f32 * 32.0, cell_y * 8.0 + yoff, cz as f32 * 32.0];
             let w = mb.transformed(&iso);
             let q = quality(cx, cz);
-            out.push(Rec { class: "tile", obj: 0, sub: 0, meter_by_uv: mbu, uv, quality: q, centre: w.c, half: w.h, group: 0xF000_0000_0000_0000 | q.to_bits() as u64, key_centre: None, pos_rank: None });
+            out.push(Rec { class: "tile", obj: 0, sub: 0, meter_by_uv: mbu, uv, quality: q, centre: w.c, half: w.h, group: 0xF000_0000_0000_0000 | q.to_bits() as u64, key_centre: None, pos_rank: None, wall: None });
         }
     }
     Ok(out)
@@ -150,7 +152,8 @@ pub fn layout_of(recs: &[Rec], quality_index: u32) -> Result<crate::layout::Game
     let groups: Vec<u64> = recs.iter().map(|r| r.group).collect();
     let any_pos = recs.iter().any(|r| r.pos_rank.is_some());
     let pos: Vec<u32> = recs.iter().enumerate().map(|(i, r)| r.pos_rank.unwrap_or(i as u32)).collect();
-    crate::layout::allocate_grouped_pos(&crate::layout::LayoutInput { tiles: Vec::new(), items, w_atlas: 2048, quality_index }, &groups, if any_pos { Some(&pos) } else { None })
+    let walls: Vec<Option<(u8, f32)>> = recs.iter().map(|r| if std::env::var("LMTOOL_NO_WALLS").is_ok() { None } else { r.wall }).collect();
+    crate::layout::allocate_grouped_walls(&crate::layout::LayoutInput { tiles: Vec::new(), items, w_atlas: 2048, quality_index }, &groups, if any_pos { Some(&pos) } else { None }, Some(&walls))
 }
 
 /// Match our records to the dump's by centre (within 1e-2 m) and MeterByUv (within 1e-4 relative); prints the per-class
@@ -248,7 +251,10 @@ pub fn prefab_entity_records_in(store: &mut mapgeom::store::DataStore, free: boo
                 use std::hash::{Hash, Hasher};
                 (free, prefab_path, ei).hash(&mut h);
                 let group = (h.finish() & 0x0000_FFFF_FFFF_0000) | quality.to_bits() as u64;
-                out.push(Rec { class, obj, sub: *sub, meter_by_uv: plg.u02, uv: [plg.u04[0], plg.u04[1], plg.u04[2], plg.u04[3]], quality, centre: w.c, half: w.h, group, key_centre: None, pos_rank: None });
+                // THE WALL TEST (RE 7's FUN_14028ff90): this exact model file, and the entity's world Iso4 third row (m2, m5, m8) axis-aligned
+                let iso = crate::lmtiles::from_xform(&e_xf);
+                let wall = if prefab_path == crate::itemrule::WALL_MODEL_FILE { crate::itemrule::wall_facing(iso[2], iso[5], iso[8]).map(|code| (code, 2.0 * w.h[1])) } else { None };
+                out.push(Rec { class, obj, sub: *sub, meter_by_uv: plg.u02, uv: [plg.u04[0], plg.u04[1], plg.u04[2], plg.u04[3]], quality, centre: w.c, half: w.h, group, key_centre: None, pos_rank: None, wall });
                 *sub += 1;
             }
             None if e.model.index >= 0 => {
