@@ -58,6 +58,7 @@ pub mod probecheck;
 pub mod probepass;
 pub mod probebake;
 pub mod probesafety;
+pub mod probetiles;
 pub mod setupmap;
 pub mod probes;
 pub mod raster;

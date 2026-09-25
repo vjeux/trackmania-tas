@@ -5442,6 +5442,18 @@ fn run(a: Vec<String>) {
             println!("TILING {p:?}: ext {:.2} layout units → peel target {}², n = {} cells per axis, {} fitted tile(s){}", t.ext, t.size, t.n, t.tiles.len(), if t.tiles.is_empty() { " (world pass only)" } else { "" });
             for tile in &t.tiles { println!("  tile c {:?} h {:?} = x [{}, {}] y [{}, {}] z [{}, {}]", tile.c, tile.h, tile.min()[0], tile.max()[0], tile.min()[1], tile.max()[1], tile.min()[2], tile.max()[2]); }
         }
+        "probe-slices" => {
+            // lmtool probe-slices EDITOR.Map.Gbx…: re-tile each save's probe trailer from its own stored-level pattern with the
+            // transcribed packer (probetiles.rs) and compare every (x, y) slice + the image size with the save
+            for p in &a[1..] {
+                let m = lightmap::mapio::load(p).expect("map");
+                let d = m.chunk.data.as_ref().expect("no lightmap data");
+                let v = lightmap::volume::Volume::parse(&d.cache.trailer).expect("trailer");
+                let (w, h, diffs) = lightmap::probetiles::check_against(&v);
+                let n: usize = v.blocks.iter().map(|b| b.slices.iter().filter(|s| s.is_some()).count()).sum();
+                if diffs.is_empty() { println!("{p}: {} blocks, {n} stored levels → image {w}×{h}: every slice BIT-EXACT", v.blocks.len()); } else { println!("{p}: {} blocks, {n} stored levels → image {w}×{h}: {} differences", v.blocks.len(), diffs.len()); for x in diffs.iter().take(20) { println!("  {x}"); } }
+            }
+        }
         "probe-layout" => {
             // lmtool probe-layout MAP --against EDITOR.Map.Gbx [--records-tsv DUMP.tsv] [--block-size 32,8,32] [--offset 0,-40,0]
             //   [--level-h 0] [--global-quality 1] [--max-dim 2048] [-v]

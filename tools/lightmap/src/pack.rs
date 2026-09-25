@@ -23,28 +23,29 @@ pub struct Placed {
 }
 
 #[derive(Clone, Copy)]
-struct Node {
-    x: u16,
-    y: u16,
-    w: u16,
-    h: u16,
-    used: bool,
-    child: [i32; 2],
+pub struct Node {
+    pub x: u16,
+    pub y: u16,
+    pub w: u16,
+    pub h: u16,
+    pub used: bool,
+    pub child: [i32; 2],
 }
 
-struct Packer {
-    nodes: Vec<Node>,
+/// The game's binary-tree rect packer (FUN_140492930's node tree) — shared with the probe-image tiling (`probetiles`).
+pub struct Packer {
+    pub nodes: Vec<Node>,
 }
 
 static SPLIT_TIE_VERTICAL: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("LMTOOL_SPLIT_TIE_VERTICAL").is_some());
 
 impl Packer {
-    fn new(w: u16, h: u16) -> Packer {
+    pub fn new(w: u16, h: u16) -> Packer {
         Packer { nodes: vec![Node { x: 0, y: 0, w, h, used: false, child: [-1, -1] }] }
     }
 
     /// The classic binary-tree insert; returns the node index or −1.
-    fn insert(&mut self, mut n: usize, w: u16, h: u16) -> i32 {
+    pub fn insert(&mut self, mut n: usize, w: u16, h: u16) -> i32 {
         loop {
             let node = self.nodes[n];
             if w > node.w || h > node.h {
