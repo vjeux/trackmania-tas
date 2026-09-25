@@ -2868,8 +2868,12 @@ fn main() {
                     let Some(lm) = asm.item_model(&it.model) else { continue };
                     let lm = lm.clone();
                     let xf = mapgeom::place::anchored(it.pos, [it.yaw, it.pitch, it.roll], it.pivot, it.scale);
-                    // a port's baked terrain is an `AC…` item; a vista's own items are decoration
-                    let terrain = if only_terrain_tag { it.model.starts_with("AC") } else { is_terrain_name(&it.model) };
+                    // a port's baked terrain is an `AC…` item whose collision is all natural
+                    // ground (sand/dirt/grass/snow/rock); a wood layer's baked LOOPS are `AC…`
+                    // items too (Wood/Metal) and a loop's ceiling over the car is not clipping
+                    // (Summer 07, 2026-09-25); a vista's own items are decoration
+                    let natural = |mat: &str| matches!(mat, "Sand" | "Dirt" | "Grass" | "Snow" | "Rock" | "DirtRoad" | "Visual" | "NotCollidable" | "Water" | "Concrete" | "Stone");
+                    let terrain = if only_terrain_tag { it.model.starts_with("AC") && lm.scene.groups.keys().all(|mat| natural(mat)) } else { is_terrain_name(&it.model) };
                     push(&xf, &lm, &format!("item {}", it.model), terrain, &mut tris);
                 }
                 tris
