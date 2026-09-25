@@ -2264,6 +2264,64 @@ fn main() {
             println!("  {} triangles in all", r.triangles);
             write_scene(&c.scene, &out);
         }
+        // mapgeom envblock --collection C [--out F.obj] [--sky F.obj] [--shadow F.obj] [--gpu DIR] [--compare-capture PASSCAP_ROOT [--frame N]]
+        // — the lightmapper's environment block from the pack (envblock.rs): every leaf of the decoration's
+        // Scene3d mobils with its role (peel caster + sun shadow / peel only / sky dome / excluded), the
+        // OBJ of the peel casters, the dome, the sun-shadow subset, the GPU vertex/index buffers as the game
+        // uploads them (--gpu DIR: <leaf>.vb / .ib), and the bit-for-bit comparison with a capture's
+        // environment draws (passcap root: env/frame<N>/mesh.json + logs/mesh-frame<N>.json, the VB/IB dumps under env/frame<N>/mesh and mesh/frame<N>).
+        "envblock" => {
+            let mut store = open(&a);
+            let coll = flag(&a.rest, "--collection").unwrap_or_else(|| "BlueBay".to_string());
+            let b = mapgeom::envblock::load(&mut store, &coll).unwrap_or_else(die);
+            println!("{}: {} leaves", b.layout_path, b.leaves.len());
+            for l in &b.leaves {
+                println!("  {}", mapgeom::envblock::describe(l));
+            }
+            let count = |role| b.by_role(role).map(|l| l.triangles()).sum::<usize>();
+            println!(
+                "  peel layer 0: {} triangles (caster+shadow {} + peel-only {}); sun shadow map: {}; sky dome: {}; excluded: {}",
+                b.peel_leaves().map(|l| l.triangles()).sum::<usize>(),
+                count(mapgeom::envblock::EnvRole::CasterAndShadow),
+                count(mapgeom::envblock::EnvRole::PeelOnly),
+                count(mapgeom::envblock::EnvRole::CasterAndShadow),
+                count(mapgeom::envblock::EnvRole::SkyDome),
+                count(mapgeom::envblock::EnvRole::Excluded)
+            );
+            use mapgeom::envblock::EnvRole::*;
+            if let Some(o) = flag(&a.rest, "--out") {
+                std::fs::write(&o, mapgeom::envblock::obj_text(&b, &[CasterAndShadow, PeelOnly])).unwrap_or_else(|e| die(format!("{o}: {e}")));
+                println!("  wrote {o} (the peel's layer-0 casters)");
+            }
+            if let Some(o) = flag(&a.rest, "--shadow") {
+                std::fs::write(&o, mapgeom::envblock::obj_text(&b, &[CasterAndShadow])).unwrap_or_else(|e| die(format!("{o}: {e}")));
+                println!("  wrote {o} (the sun shadow map's casters)");
+            }
+            if let Some(o) = flag(&a.rest, "--sky") {
+                std::fs::write(&o, mapgeom::envblock::obj_text(&b, &[SkyDome])).unwrap_or_else(|e| die(format!("{o}: {e}")));
+                println!("  wrote {o} (the sky dome)");
+            }
+            if let Some(dir) = flag(&a.rest, "--gpu") {
+                std::fs::create_dir_all(&dir).unwrap_or_else(|e| die(format!("{dir}: {e}")));
+                for (i, l) in b.leaves.iter().enumerate() {
+                    let stem = format!("{dir}/{i:02}_{}_{}", l.mobil, l.path.last().cloned().unwrap_or_default().replace([' ', '-'], "_"));
+                    std::fs::write(format!("{stem}.vb"), l.gpu_vertex_buffer()).unwrap_or_else(|e| die(e.to_string()));
+                    std::fs::write(format!("{stem}.ib"), l.gpu_index_buffer()).unwrap_or_else(|e| die(e.to_string()));
+                }
+                println!("  wrote {} vertex/index buffer pairs under {dir}", b.leaves.len());
+            }
+            if let Some(root) = flag(&a.rest, "--compare-capture") {
+                let frame: u32 = flag(&a.rest, "--frame").and_then(|f| f.parse().ok()).unwrap_or(127448);
+                let r = mapgeom::envblock::compare_capture(&b, std::path::Path::new(&root), frame).unwrap_or_else(die);
+                for line in &r.lines {
+                    println!("  {line}");
+                }
+                println!("  {} captured buffers matched bit for bit, {} differ, {} unmatched", r.exact, r.differ, r.unmatched);
+                if r.differ + r.unmatched > 0 {
+                    std::process::exit(1);
+                }
+            }
+        }
         "collhash" => {
             if a.rest.iter().any(|x| x == "--triage") {
                 let mut store = open(&a);

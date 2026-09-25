@@ -1676,15 +1676,20 @@ impl<'a> Graph<'a> {
                 self.material_bitmaps(0, acc)
             }
             0x0903A00A => {
+                acc.touched = true;
                 for _ in 0..2 {
                     let n = self.r.u32()? as usize;
                     for _ in 0..n {
                         // GpuFx: id, count1, count2, bool, count2 x count1 floats
-                        self.r.lookback()?;
+                        let name = self.r.lookback()?;
                         let c1 = self.r.u32()? as usize;
                         let c2 = self.r.u32()? as usize;
                         self.r.bool32()?;
-                        self.r.take(4 * c1 * c2)?;
+                        let mut vals = Vec::with_capacity(c1 * c2);
+                        for _ in 0..c1 * c2 {
+                            vals.push(self.r.f32()?);
+                        }
+                        acc.mat_custom_mut().params.push((name, vals));
                     }
                 }
                 Ok(())
@@ -2305,6 +2310,7 @@ impl<'a> Graph<'a> {
         let compress_local3d = self.r.bool32()?;
         for d in &decls {
             let stored = d.stored_type(compress_local3d);
+            out.decls.push((d.name(), stored));
             match (d.name(), stored) {
                 (N_POSITION, T_FLOAT3) => {
                     self.r.mark(3 * num);
@@ -2322,7 +2328,9 @@ impl<'a> Graph<'a> {
                 }
                 (N_NORMAL, T_DEC3N) => {
                     for _ in 0..num {
-                        out.normals.push(dec3n(self.r.u32()?));
+                        let w = self.r.u32()?;
+                        out.normals_dec3n.push(w);
+                        out.normals.push(dec3n(w));
                     }
                 }
                 (N_NORMAL, T_FLOAT3) => {

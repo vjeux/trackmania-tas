@@ -36,6 +36,7 @@ pub mod waterblocks;
 pub mod giantwater;
 pub mod coverage;
 pub mod embedded;
+pub mod envblock;
 pub mod fillers;
 pub mod bake;
 pub mod bake_cache;

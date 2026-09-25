@@ -129,6 +129,13 @@ pub struct VertexStream {
     pub positions: Vec<[f32; 3]>,
     pub normals: Vec<[f32; 3]>,
     pub uv0: Vec<[f32; 2]>,
+    /// The normals as STORED when the stream packs them (Dec3N words, one per
+    /// vertex; empty for float3 normals) — what `envblock` re-encodes for the
+    /// GPU without a lossy float round trip.
+    pub normals_dec3n: Vec<u32>,
+    /// Every declaration of the stream, as (name, stored type) — `envblock`
+    /// reproduces the game's upload layout from it.
+    pub decls: Vec<(u32, u32)>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -340,6 +347,9 @@ pub struct MaterialCustomRaw {
     /// 0x0903A015: the terrain layer names in FILE order = (Pxz, Py, X2, H2) — the material's
     /// +0xe8 / +0xd8 / +0xf8 / +0x108 (reader 0x1404415c0); an empty name = no layer (−1).
     pub layer_names: [String; 4],
+    /// 0x0903A00A: the GpuFx parameters (the two lists concatenated), as (name, floats) — a
+    /// material's constant overrides (`PxzScaleTrans` = (0.0005, 0.0005, 0.5) on WarpSand).
+    pub params: Vec<(String, Vec<f32>)>,
 }
 
 #[derive(Clone, Debug)]

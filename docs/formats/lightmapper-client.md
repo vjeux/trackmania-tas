@@ -1123,6 +1123,94 @@ from the pack (`lmtool pak-tables --pak F:K … --collection C --material LINK �
   `WaterFogDayTimed`; the Day bake took column 0; other columns differ by
   ≤ 13/255 (alpha at depth) — one Sunset capture settles the column rule.
 
+## 6c. The ENVIRONMENT BLOCK from the collection pack [DISASSEMBLY + FILE, RE child 9, 2026-09-25; bit-exact vs pwc-day frame 127448]
+
+Layer 0 of every peel (and, a subset, the sun shadow map) is the DECORATION's
+own geometry: the mobil solids of `<Coll>\GameCtnDecoration\Scene3d\Base64x64.
+Scene3d.Gbx` (`scene3d-cscenelayout.md`), drawn through the legacy `CPlugSolid`
+→ `CPlugTree` render with their own materials — `mapgeom envblock --collection C
+[--out peel.obj] [--sky dome.obj] [--shadow sun.obj] [--gpu DIR]
+[--compare-capture PASSCAP [--frame N]]` (`mapgeom::envblock`) rebuilds it and
+checks it against a capture.
+
+* **What the capture holds** (frame 127448, direction 0's world peel, then the
+  sun shadow map eids 347–410): the peel's layer 0 = draw 1009 = the `ShadowCaster64`
+  solid (272 vertices / 262 triangles, `Effects\…\InvisibleShadowCaster.Material`,
+  an inverted skirt x/z −198..2246 × y −1020..4 — the "sea box"), draws 1028 /
+  1033 / 1071 / 1076 = the four `Warp-C00x_1` leaves of the `Square64Water`
+  solid (184 vertices / 280 triangles each, `WarpSand.Material` — the "terrain
+  patches" are a MESH of the pack, not a heightmap: the two R16 1024×1 textures
+  of those draws are the Warp shader's `ACosSmooth` LUTs, §6b), draw 1051 = the
+  SKY DOME (`Sky\Media\Solid\SkyDomeMirror.Solid.Gbx` of Maniaplanet.pak: 2143
+  vertices in 33 rings × 65, 3968 triangles, radii 22265.23 (x, z) × 9751.16 (y),
+  material `Tech3 Sky`), then the 177 cloud sprites (a separate system). The sun
+  shadow map holds the ShadowCaster64 alone of these (draw 377, VS 1142 / PS 937).
+  NOT drawn anywhere: the four `Warp-C00x_0` Water leaves (83 vertices / 84
+  triangles each, `Water.Material` → `Tech3_Water_MultiH`).
+  `mapgeom envblock … --compare-capture` reproduces all seven draws' vertex
+  buffers (positions f32×3, normals snorm16×4, the dome's uv f32×2) and index
+  lists BIT FOR BIT; the normals' re-encoding is `trunc((s/511) · 32767)` per
+  Dec3N component (a float round trip, not a shift: −16 → −1025).
+* **The selection rule** (`CVisionViewport::Shadow_RenderDelayed` 0x140a4fab0 →
+  per CHmsItem 0x140970070 → per leaf 0x14096fee0 → 0x1409514c0 → shader pick
+  0x140950f80):
+  1. `CPlugTree` flags (chunk `0x0904F01A`, in memory +0xa8 = file word | 0x2000):
+     the ROOT renders when `& 0x8` (IsVisible) or, in a SHADOW-MODE render
+     (`ctx+0xb0 & 4` — the lightmapper's sun shadow map AND its peels), when
+     `& 0x4000` (IsShadowCaster); a LEAF is submitted in shadow mode only when
+     ITS `& 0x4000`. Square64Water root 0x1e88a, WarpSand leaves 0x1e80a,
+     Water leaves 0x1a80a (visible, not a caster → out of every lightmapper
+     render), ShadowCaster64 0x1e802 (caster, invisible → in every lightmapper
+     render, never in the game view), the dome's `Desert` tree 0x1e88a.
+  2. The material's compiled shader (`CPlugShaderApply`; `.Shader.Gbx` chunk
+     `0x09002020` v3 = {u32 A → +0x140, u32 B → +0x144, u32 → +0x150, f32, ref,
+     u16 PASS BITS → +0x154}, reader 0x1403da430): 0x1409514c0 draws the leaf
+     iff `(passBits & ctx.mask) == ctx.required`, default mask 0x8130 /
+     required 0 (0x140408a70) — ShadowCaster 0x0401, Tech3 Warp PyPxzDiff 0x0441,
+     Tech3_Water_MultiH 0x0041 all pass; 0x140950f80 refuses in shadow mode a
+     shader whose `B & 0x40000` (never casts): Water's B = 0x004c0020 has it,
+     WarpSand's 0x0018fff0 and the ShadowCaster's 0x0008ff00 do not.
+  3. The PASS KIND separates the sun shadow map from the peel: the shadow-map
+     render asks 0x1403de0d0(shader, kind 6 | 0xb) for the shader's SHADOW
+     variant and draws nothing without one (0x140950f80, `ctx+0xbc` = no
+     fallback). A pure-shader material (no `CPlugMaterialCustom`:
+     InvisibleShadowCaster) gets the default caster program (VS 1142 / PS 937);
+     a material WITH a custom part only when its pass-0 program declares itself a
+     caster (program object +0x248 bit 0 — the bit's source is not located; the
+     `IsShadowCaster` / `ShadowCasterCond` strings are its likely annotations) or
+     carries an alpha parameter (0x1403de6f0: a pass-0 parameter of kind 0x77 →
+     the alpha-cut `ShadowCasterCond` variant = PS 1147 `discard
+     TMapAlpha01.a − GbxShadowAlphaThreshold < 0`, threshold 0.50196 = 128/255,
+     which the capture applies to the vegetation card's leaf textures 14579 /
+     14585, not to any terrain). Tech3 Warp PyPxzDiff has neither → WarpSand is
+     absent from the sun shadow map; it has NO alpha texture and its peel shader
+     PS 16752 (= `Tech3/Warp_PyPxz_p`) has no discard — no cut-out anywhere.
+  4. The peel draws each caster with its OWN colour program under the
+     `RenderPath_DblSideBlackBack` permutation: `ShadowCaster.PHlsl` blob 1 =
+     PS 17316 `discard_nz is_front_face; o0 = 0` (the box is black, back faces
+     only), `Warp_PyPxz_p` = PS 16752 (`and o0.xyz, colour, isfrontface`: the
+     WarpSand's forward-lit colour — `PyDiffuse` = `WarpSand_D` (tc scale 0.0005
+     from its texture chunk 0x09011025), `PxzDiffuse`/`PxzNormal` = `CliffPxz_D`
+     / `_N`, the two `ACosSmooth` LUTs, `PxzScaleTrans` = (0.0005, 0.0005, 0.5)
+     from the material's `CPlugMaterialCustom` chunk 0x0903A00A GpuFx parameter,
+     lit by `GbxP_LightDirRgbLinear0/DirInWorld0` = the mood sun, ambient 0,
+     × the clouds shadow, × 2, fog lerp — on black back faces).
+* **Per collection**: BlueBay (inline solids), GreenCoast, RedIsland, WhiteShore
+  (external `<Coll>\Media\Solid\Warp\{Square64Water,ShadowCaster64}.Solid.Gbx`)
+  all follow the rule: the dome (`SkyDomeMirror`, at the origin on BlueBay /
+  GreenCoast, at (1024, 0, 1024) on RedIsland / WhiteShore — `GbxSkyV0.
+  VisualToWorld` = the mobil pose), four `WarpGround` quadrants in the peel only
+  (RedIsland 221 vertices / 354 triangles each, WhiteShore 222 / 355, GreenCoast
+  223 / 356; `PxzScaleTrans` 0.001 on RedIsland / WhiteShore), four Water
+  quadrants excluded, one ShadowCaster64 (262) in the peel and the sun map.
+  Stadium's decoration collection `Stadium256` has `Stadium256\GameCtnDecoration
+  \Scene3d\Base16x12.Scene3d.Gbx`: ONE mobil `SkyDome` at (0, 3000, 0) drawing
+  `Sky\Media\Solid\SkyDomeDouble.Solid.Gbx` (whose second tree's visual chunk
+  0x0902C004 mapgeom does not read yet), no ground solids.
+* **What is not the environment block**: the zone tiles (the Sea quad, draw 365,
+  4096 instances — E's tile path), the items (draws 347–410), the clouds
+  (`GbxClouds3dInst0`, `clouds.rs`), and the WarpSand's colour (A's shading).
+
 ## 7. Alignment list for `lmtool bake` (what lmtool does → what the client does → fix)
 
 1. **Encoding is sqrt, not linear.** lmtool `synth.rs from_hdr`: `pixel =
