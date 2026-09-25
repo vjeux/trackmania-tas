@@ -529,6 +529,7 @@ pub fn tables_from_paktables(f: &mut FrozenTables, store: &mut mapgeom::store::D
     let tile = crate::paktables::material_constant(store, tile_link)?;
     got.push(format!("tiles {tile_link} → {:?} ({:?}, ids {:?}, {} at uv {:?}; frozen {:?})", tile.rgb, tile.family, tile.ids, tile.image, tile.uv, f.tile_rgb));
     f.tile_rgb = tile.rgb;
+    f.tile_slices = (tile.ids[0].max(0) as u32, tile.ids[1].max(0) as u32);
     // the items' constant materials: every game-material link of the scene's models that the pack resolves
     let mut links: Vec<String> = Vec::new();
     for m in &scene.models {

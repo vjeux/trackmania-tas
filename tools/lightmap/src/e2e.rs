@@ -598,3 +598,16 @@ pub fn atlas_diff(a: Vec<String>) {
     for (o, (n, mx)) in &by_owner { println!("  {o}: {n} texels differ (max |Δ| {mx:.6})"); }
     for (d, px, py, p, q) in &worst { println!("  ({px}, {py}) Δ {d:.6}: A {:?} B {:?}", p, q); }
 }
+
+/// `lmtool frozen-tables ROOT`: print the capture-derived tables the from-map chain used to take from the environment
+/// (the water draw's cbuffer template, the samplers, the id map's size) — the values a capture-free constructor has to produce.
+pub fn frozen_tables_print(a: Vec<String>) {
+    let root = PathBuf::from(&a[1]);
+    let f = crate::prepass_check::frozen_tables(&root, 127447, 127448).unwrap_or_else(|e| panic!("{e}"));
+    println!("tile_rgb {:?} wall_rgb {:?} pad_rgb {:?} tile_slices {:?}", f.tile_rgb, f.wall_rgb, f.pad_rgb, f.tile_slices);
+    println!("ids {}×{}×{}; top_by_plane {:?}; depth_by_id {:?}", f.ids.w, f.ids.h, f.ids.channels, f.top_by_plane, f.depth_by_id);
+    println!("sampler {:?}", f.sampler);
+    println!("water_sampler {:?}", f.water_sampler);
+    println!("water_template {:?}", f.water_template);
+    println!("fog {}×{} {:?}; transmittance {}×{} {:?}", f.fog.w, f.fog.h, f.fog.fmt, f.transmittance.w, f.transmittance.h, f.transmittance.fmt);
+}

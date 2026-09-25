@@ -656,3 +656,23 @@ pub fn tint_from_map(f: &FrozenTables, lm: &crate::lmaccum::LmScene, k: usize, t
     let water = WaterData { ids: &f.ids, top_by_plane: f.top_by_plane.clone(), depth_by_id: f.depth_by_id.clone(), fog: &f.fog, transmittance: &f.transmittance, sampler: f.water_sampler };
     prepass::run_water_draws(&draws, &lm.meshes, &lm.instances, &lm.table, &water, tgt);
 }
+
+impl FrozenTables {
+    /// The capture-free form (the product path): the material samplers are the pipeline's fixed configurations (the pre-pass's
+    /// SGbxWrap_Aniso: trilinear, wrap, 16 ×, 8-bit weights; the water tables' SGbxClamp_Bilinear: no mip, clamp); the water
+    /// draw's cbuffer template = the water-id map over the map's world XZ at one texel per metre (`World_To_i2WaterId` =
+    /// (x, size_z − z), `WorldMinXZ` (0, 0), `WorldMaxXZ` the map's size, `ScaleOut` 1/9 — frame 127447 eid 12457); the material
+    /// constants, the id map's content, the plane / depth tables and the two LUTs are filled from the packs
+    /// (`setupmap::tables_from_paktables`).
+    pub fn capture_free(map_size_m: [f32; 2]) -> FrozenTables {
+        let mut sampler = Sampler::trilinear(Address::Wrap);
+        sampler.max_aniso = 16;
+        sampler.weight_bits = Some(8);
+        let mut ws = Sampler::bilinear_no_mip(Address::Clamp);
+        ws.weight_bits = Some(8);
+        let (w, h) = (map_size_m[0].round().max(1.0) as u32, map_size_m[1].round().max(1.0) as u32);
+        let template = WaterDraw { eid: 0, mesh: 0, instance_first: 0, instance_count: 0, scale_ss: [2.0, -2.0], trans_ss: [-1.0, 1.0], world_to_id: [[1.0, 0.0, 0.0, 0.0], [-0.0, -0.0, -1.0, map_size_m[1]]], world_min_xz: [0.0, 0.0], world_max_xz: map_size_m, scale_out: 1.0 / 9.0 };
+        let dummy = || Texture { fmt: texsample::TexFmt::Rgba8, w: 1, h: 1, mips: 1, slices: 1, levels: vec![vec![texsample::Level::from_f32(1, 1, vec![[0.0; 4]])]], complete: true };
+        FrozenTables { tile_rgb: [0.0; 3], wall_rgb: [0.0; 3], pad_rgb: [0.0; 3], ids: Buf::new(w, h, 2), top_by_plane: Vec::new(), depth_by_id: Vec::new(), fog: dummy(), transmittance: dummy(), water_template: Some(template), sampler, water_sampler: ws, tile_slices: (0, 0) }
+    }
+}

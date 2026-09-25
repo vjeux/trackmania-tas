@@ -1566,8 +1566,13 @@ fn run(a: Vec<String>) {
                 if f("--ilightinput-from").as_deref() == Some("map") {
                     let ti = std::time::Instant::now();
                     let lm = prm.lm_scene.clone().expect("--ilightinput-from map needs --lm-from-map");
-                    let env_root = std::path::PathBuf::from(f("--env-from").expect("--ilightinput-from map needs --env-from PASSCAP_ROOT for the frozen collection tables"));
-                    let mut frozen = lightmap::prepass_check::frozen_tables(&env_root, 127447, 127448).unwrap_or_else(|e| panic!("frozen tables: {e}"));
+                    // the collection tables: capture-free when the packs are on the line (--pak FILE:KEY, RE 8's paktables fill them), else from
+                    // the captured environment (--env-from ROOT: the comparisons' and the fallback's source)
+                    let map_size_m = { let mf = tmmaps::map::MapFile::load(std::path::Path::new(&map_path)); [mf.size[0] as f32 * 32.0, mf.size[2] as f32 * 32.0] };
+                    let mut frozen = match f("--env-from") {
+                        Some(env) => lightmap::prepass_check::frozen_tables(std::path::Path::new(&env), 127447, 127448).unwrap_or_else(|e| panic!("frozen tables: {e}")),
+                        None => { if !a.iter().any(|x| x == "--pak") { panic!("--ilightinput-from map needs --pak FILE:KEY (the collection tables from the packs) or --env-from PASSCAP_ROOT"); } lightmap::prepass_check::FrozenTables::capture_free(map_size_m) }
+                    };
                     // the collection tables from the pak(s) (RE 8's chain): every --pak FILE:KEY on the line opens a store; the zone tiles'
                     // Pxz texture name from --tile-pxz (SeaFloor for BlueBay's Sea zone), the mood from --mood-name (Day)
                     let mut pak_notes = Vec::new();
@@ -6338,6 +6343,9 @@ fn run(a: Vec<String>) {
         "atlas-diff" => {
             // lmtool atlas-diff A B [--insts vb_17033.bin]: two 2048² atlas dumps texel by texel, the differences per LM instance
             lightmap::e2e::atlas_diff(a.clone());
+        }
+        "frozen-tables" => {
+            lightmap::e2e::frozen_tables_print(a.clone());
         }
         "texstat" => {
             // lmtool texstat FILE.dds[.gz]: per mip the min / mean / max of each channel (a look at a texture the pass samples)
