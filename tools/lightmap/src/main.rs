@@ -2052,7 +2052,9 @@ fn run(a: Vec<String>) {
             // --tile-vram-mb N (8192), --tile-max N (4)
             let peel_plan: Option<lightmap::tiledpeel::PeelPlan> = if prm.game_peel && prm.raster_peel && prm.frustums.is_none() && !has("--no-tiles") {
                 let gq: f32 = f("--global-quality").map(|v| v.parse().unwrap()).unwrap_or(1.0);
-                let recs: Vec<lightmap::lmtiles::BlockRecord> = lightmap::lmtiles::item_records(&scene, gq, has("--lod0")).iter().filter_map(|it| it.record).collect();
+                // the map's ITEMS (the record scene's block / clip / tile instances are peel geometry, not the tiling's records —
+                // whether the game's tiled peel also takes the block records is RE 6's open item for Stadium)
+                let recs: Vec<lightmap::lmtiles::BlockRecord> = lightmap::lmtiles::item_records(&scene, gq, has("--lod0")).iter().filter(|it| it.item < scene.item_count).filter_map(|it| it.record).collect();
                 let mf = tmmaps::map::MapFile::load(std::path::Path::new(&map_path));
                 let size = [mf.size[0].max(0) as u32, mf.size[1].max(0) as u32, mf.size[2].max(0) as u32];
                 // the zone tiles' box: the seabed quads over the map footprint (see the zone tiles above)
@@ -2063,7 +2065,10 @@ fn run(a: Vec<String>) {
                     Some(lightmap::lmtiles::CBox::from_min_max([0.0, sea_y - 3.0, 0.0], [w, sea_y - 3.0, d]))
                 } else { None };
                 let scene_ch = { let mut s = lightmap::lmtiles::scene_box(&recs); if let Some(t) = &tiles_box { if s.is_valid() { s.union_into(t); } else { s = *t; } } s };
-                let (_, _, _, chunks_aabb) = lightmap::probechunk::for_records(size, [32.0, 8.0, 32.0], [0.0, -38.0, 0.0], 0.0, &recs, &scene_ch, 2048);
+                // the probe grid of the collection (probechunk::deco_offsets + 2, level_h) — BlueBay's −38 / 0 as before
+                let coll_id_pp: u32 = match f("--collection").unwrap_or_else(|| hdr.as_ref().map(|h| h.envir.clone()).unwrap_or_else(|| "BlueBay".into())).as_str() { "Stadium" | "Stadium256" => 26, "GreenCoast" => 15, "RedIsland" => 16, "WhiteShore" => 29, _ => 28 };
+                let pp_off = [0.0, lightmap::probechunk::deco_offsets(coll_id_pp).map(|(_, p)| p + 2.0).unwrap_or(-38.0), 0.0];
+                let (_, _, _, chunks_aabb) = lightmap::probechunk::for_records(size, [32.0, 8.0, 32.0], pp_off, lightmap::probechunk::level_h(coll_id_pp), &recs, &scene_ch, 2048);
                 let alloc_scale: f32 = f("--tile-scale").map(|v| v.parse().unwrap()).unwrap_or(prm.texels_per_m * 2.0);
                 let tq: u32 = f("--tile-quality").map(|v| v.parse().unwrap()).unwrap_or(3);
                 let vram: i64 = f("--tile-vram-mb").map(|v| v.parse::<i64>().unwrap() << 20).unwrap_or(8 << 30);
