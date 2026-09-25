@@ -5481,6 +5481,9 @@ fn run(a: Vec<String>) {
             println!("layout {w_atlas}: g {g} pad {pad} min {mmin}");
             let max_iter: u32 = f("--iter").map(|s| s.parse().unwrap()).unwrap_or(8);
             let tile_ext: f32 = f("--tile-ext").map(|s| s.parse().unwrap()).unwrap_or(0.0);
+            // --tile-ext-xy X,Y: a non-square tile extent (the tile mesh's uv1 extents scaled to the 2 m² area: the pwc-day
+            // tile mesh spans u 0.047975..0.947050, v 0.052767..0.959441 — aspect 1.00845 — so ext = (1.40827, 1.42017))
+            let tile_ext_xy: [f32; 2] = f("--tile-ext-xy").map(|s| { let v: Vec<f32> = s.split(',').map(|t| t.parse().unwrap()).collect(); [v[0], v[1]] }).unwrap_or([tile_ext, tile_ext]);
             let scene = lightmap::geometry::Scene::from_map(&a[1]).expect("scene");
             let own = lightmap::mapio::load(&a[1]).expect("own");
             let d = own.chunk.data.as_ref().unwrap();
@@ -5489,11 +5492,23 @@ fn run(a: Vec<String>) {
             let mut ed: std::collections::HashMap<u32, (u16, u16, u16, u16)> = Default::default();
             for i in 0..mp.count as usize { let obj = mp.binds[i].obj_group_idx / 4; ed.insert(obj, (mp.pos[i].0, mp.pos[i].1, mp.size[i].0, mp.size[i].1)); }
             let n_tiles = ed.keys().filter(|&&o| o < base).count();
+            if a.iter().any(|x| x == "--bind-order") {
+                // the mapping's bind order (the order the chart records were appended = the block-array order?) — the first and
+                // last tile objects, and the rank of the tiles the editor placed first (obj 128, 3377, 2169, …)
+                let objs: Vec<u32> = (0..mp.count as usize).map(|i| mp.binds[i].obj_group_idx / 4).collect();
+                println!("bind order: {} entries; first 24: {:?}", objs.len(), &objs[..objs.len().min(24)]);
+                println!("  last 24: {:?}", &objs[objs.len().saturating_sub(24)..]);
+                for want in [128u32, 3377, 2169, 2164, 2153, 2148, 2133, 2117, 1828, 116, 104, 2174, 2159] { if let Some(r) = objs.iter().position(|&o| o == want) { println!("  obj {want} at bind rank {r} (cell x {} z {})", want % 64, want / 64); } }
+                return;
+            }
             if a.iter().any(|x| x == "--tile-order") {
                 // the editor's tile charts by atlas row then column: the object-id pattern reveals the placement order
                 let mut tiles: Vec<(u32, (u16, u16, u16, u16))> = ed.iter().filter(|(&o, _)| o < base).map(|(&o, &r)| (o, r)).collect();
                 tiles.sort_by_key(|(_, r)| (r.1, r.0));
-                for (o, r) in tiles.iter().take(40) { println!("  tile obj {o:>5} (cell x {:>2} z {:>2}) at ({:>4}, {:>4}) {}×{}", o % 64, o / 64, r.0, r.1, r.2, r.3); }
+                let take: usize = f("--take").map(|s| s.parse().unwrap()).unwrap_or(40);
+                if let Some(col) = f("--col") { let cx: u16 = col.parse().unwrap(); tiles.retain(|(_, r)| r.0 == cx); tiles.sort_by_key(|(_, r)| r.1); }
+                if let Some(row) = f("--row") { let cy: u16 = row.parse().unwrap(); tiles.retain(|(_, r)| r.1 == cy); tiles.sort_by_key(|(_, r)| r.0); }
+                for (o, r) in tiles.iter().take(take) { println!("  tile obj {o:>5} (cell x {:>2} z {:>2}) at ({:>4}, {:>4}) {}×{}", o % 64, o / 64, r.0, r.1, r.2, r.3); }
                 return;
             }
             {
@@ -5507,7 +5522,7 @@ fn run(a: Vec<String>) {
             // our chart list in IdForLightMap order: tiles (ids 0..base) then items (base + item)
             let mut charts: Vec<lightmap::pack::ChartExt> = Vec::new();
             let mut ids: Vec<u32> = Vec::new();
-            for o in 0..base { if ed.contains_key(&o) { charts.push(lightmap::pack::ChartExt { ext: [tile_ext, tile_ext], mins: [1, 1] }); ids.push(o); } }
+            for o in 0..base { if ed.contains_key(&o) { charts.push(lightmap::pack::ChartExt { ext: tile_ext_xy, mins: [1, 1] }); ids.push(o); } }
             for inst in &scene.instances {
                 let m = &scene.models[inst.model];
                 let sc = ((inst.xf[0] * inst.xf[0] + inst.xf[1] * inst.xf[1] + inst.xf[2] * inst.xf[2]) as f32).sqrt();
@@ -5600,6 +5615,12 @@ fn run(a: Vec<String>) {
             }
             let items_ok = placed.iter().enumerate().filter(|(k, p)| ids[*k] >= base && ed.get(&ids[*k]).map(|&(ex, ey, ew, eh)| { let (ox, oy, ow, oh) = if pad > 0 { (p.x as u32 + pad, p.y as u32 + pad, (p.w as u32).saturating_sub(2 * pad), (p.h as u32).saturating_sub(2 * pad)) } else { (2 * p.x as u32 + 1, 2 * p.y as u32 + 1, 2 * (p.w as u32).saturating_sub(1), 2 * (p.h as u32).saturating_sub(1)) }; (ox, oy, ow, oh) == (ex as u32, ey as u32, ew as u32, eh as u32) }).unwrap_or(false)).count();
             println!("compared {n_cmp}: sizes equal {size_ok}, positions equal {pos_ok} (items fully equal: {items_ok} of {})", scene.instances.len());
+            if a.iter().any(|x| x == "--show-order") {
+                // our first placed tiles in walk order (largest area first = the end of placed_order) with their atlas positions
+                println!("our walk (from the end of the order): the first 24 tiles");
+                let mut shown = 0;
+                for &k in placed_order.iter().rev() { if ids[k] >= base { continue; } let p = &placed[k]; let o = ids[k]; println!("  tile obj {o:>5} (cell x {:>2} z {:>2}) at ({:>4}, {:>4}) {}×{}", o % 64, o / 64, p.x as u32 + pad, p.y as u32 + pad, (p.w as u32).saturating_sub(2 * pad), (p.h as u32).saturating_sub(2 * pad)); shown += 1; if shown >= 24 { break; } }
+            }
         }
         "points" => {
             // lmtool points [FILE]: the game's sphere point sets — set sizes, and the zenith cone counts at 30°
