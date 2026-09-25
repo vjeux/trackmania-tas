@@ -455,6 +455,67 @@ pub fn split_chunks(counts: &[u32], chunk: Option<u32>) -> Vec<ModelChart> {
     out
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+// THE GROUPED PACK ORDER (RE 7, 2026-09-25 15:00Z). BlockSplit (0x1402954f0) receives AllocateBlocks_'s radix sorter
+// (state+0x18, passed down as AllocateWithScale_'s 7th argument → BlockSplit's 11th; asm 0x140290da9 / 0x140294e30 /
+// 0x1402955ec) and sorts it by the chart areas with one more stable LSD pass (FUN_14012c850). For the per-record
+// path the sorter still holds the (|h|², x, y, z) passes over the records → the 5-key order E has (area, z, y, x,
+// |h|², index). For the GROUPED path the key array is the model list (count = entries ≠ records): FUN_14012c850 sees
+// the count change and RESETS the index array to the identity (FUN_14012cce0: `for i < cap: idx[i] = i`) before the
+// area pass → the grouped order is (area' f32 bits ascending, then MODEL-LIST INDEX) — no centre, no |h|², no record
+// key enters. The model-list index = order of first appearance of the (PreLightGen, blockparam) key in record order
+// (solo entries at their record's position), then the appended chunk entries (for each original in list order, its
+// chunks 1..k−1). Only when nModels == nRecords (no group of ≥ 2) does the old (z, y, x, |h|²) order survive as the
+// tie-break. TryPack walks the order from the largest down (`order[count − 1 − i]`) and the mins are m·(nb, na).
+
+/// The grouped path's radix order: ascending area' (by f32 bits), ties by model-list index. Returns the permutation
+/// (index list) TryPack walks backwards.
+pub fn grouped_pack_order(areas: &[f32]) -> Vec<usize> {
+    let mut idx: Vec<usize> = (0..areas.len()).collect();
+    idx.sort_by_key(|&i| (areas[i].to_bits(), i));
+    idx
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+// THE STADIUM DECORATION'S RECORDS (RE 7, 2026-09-25 15:30Z — CORRECTED by the baker's /lmrecords dump of stpad,
+// passcap/stpad-records/: 12 141 records, ALL kind 2, 40 model pointers, 49 (PLG, q) groups). The decoration meshes
+// (Stade4096/Stade1536/NoStadium prefabs of the decoration map) produce NO record on stpad, and there are NO kind-0
+// records (the Grass.EDFlat old Solid is not charted). What the "≈8 500 decoration charts" are:
+// * 9 216 = 96 × 96 terrain TILES of the "Grass" zone (model 32.0641 m MeterByUv, uv0 [0.001 0.001 0.999 0.999], one
+//   record per cell over the whole 3072-m map at y 8.125), FLOAT q by the ring rule (0.0442 × 7 073, 1.0 × 8, 0.707 ×
+//   319, 0.5 × 240, 0.354 × 274, 0.25 × 280, 0.177 × 270, 0.125 × 272, 0.0884 × 246, 0.0625 × 234) — E's BlueBay tile
+//   rule, Stadium tile prefab.
+// * 2 925 records of the map's 180 WaterBase blocks: EVERY prefab entity with a PreLightGen of every mobil the block
+//   instantiates — its own prefab (Water\Base_Air entity 0 → 1 record) AND its CLIPS' prefabs (WaterFCCenter →
+//   FCCenter_Air = the 32×8 border mesh (MeterByUv 32.1998 uv0 [0.0224 0.0142 0.5535 0.2601]) + 2 nested TreeGen\
+//   RoadBorderSpot (11.7644, [0.0075 0.0079 0.1204 0.1191], with a light) + 2 nested TreeGen\BarrierSupport (7.6495,
+//   [0.0085 0.0065 0.1938 0.1317]) → 5 records under the block's object id (key sub 0..4); the HFC left/right clips →
+//   3 records) — nested external prefab entities are flattened into the static pool with the parent's object id and
+//   a running sub index. q = 1.0 (the map's own blocks; the decoration G would apply only to the decoration map's
+//   blocks, which produce nothing here). 40 distinct model pointers = one Solid2Model CLONE per (prefab entity, block
+//   variant) — the same mesh reached through two clips is two clones with two PLG pointers (e.g. BarrierSupport
+//   912 + 360), so the (PLG, q) grouping splits them.
+// * stpad has NO multi-sub-visual chart (uvGroups = 0 everywhere) → the GROUPED path runs there too (state+0x138 = 1);
+//   the file's 3-/5-chart objects are these per-entity records, not two-record items.
+// Σ check on the dump: per-record Σ₁ = 820 854.3 (f32); grouped with the 2048² D₁ (946 model entries: 916 solos,
+// 30 groups) and chunks of c = 8 → Σ = 843 229.5 vs the file's 843 235.75 (f32 order) — the grid/chunk rule holds,
+// BUT `chunk_size(12141, 946)` gives 6 (k = 2, 12141/1892 = 6.4), not 8: the divisor in FUN_140292740 is not
+// k·nModels as read (c = 8 needs k·nModels ∈ (1349, 1517]); OPEN — E: use the chunk that reproduces Σ, and the exact
+// formula needs a third data point (a map with a different nModels).
+/// The decoration challenge's G (CGameCtnApp::HmsLightMapUpdateBlocksAndItemsQuality, RE 6 + RE 2): 1.0 for the
+/// map's own objects; a decoration challenge's objects get 0.0625 on the Stadium collection (id 25) and 0.5 elsewhere
+/// (kept for completeness — on stpad no decoration-map object produced a record).
+pub fn quality_g(is_decoration: bool, collection_id: u32) -> f32 {
+    if !is_decoration {
+        1.0
+    } else if collection_id == 25 {
+        0.0625
+    } else {
+        0.5
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -609,6 +670,26 @@ mod tests {
         assert_eq!(list[4], ModelChart { group: 1, chunk: 1, count: 4 });
         assert_eq!(list[5], ModelChart { group: 3, chunk: 1, count: 1 });
         assert_eq!(split_chunks(&[1, 12], None).len(), 2);
+    }
+
+    #[test]
+    fn grouped_order_and_decoration_quality() {
+        // equal areas keep the model-list order; the identity reset means no centre key enters
+        let order = grouped_pack_order(&[4.0, 1.0, 4.0, 0.5, 1.0]);
+        assert_eq!(order, vec![3, 1, 4, 0, 2]);
+        assert_eq!(quality_g(false, 25), 1.0);
+        assert_eq!(quality_g(true, 25), 0.0625);
+        assert_eq!(quality_g(true, 26), 0.5);
+        // stpad's WaterBase clip entities (the baker's dump): FCCenter_Air border mesh and its nested RoadBorderSpot /
+        // BarrierSupport — one kind-2 record each at q 1.0
+        let border = PreLightGen { u01: 1, meter_by_uv: 32.1997643, uv0: [0.0223656, 0.014208376, 0.5534582, 0.26005277], uv1: [f32::MAX, f32::MAX, f32::MIN, f32::MIN], sprite_count: [0, 0], uv_groups: Vec::new() };
+        let e = chart_ext(&border, 1.0, 0);
+        assert!((e[0] - 17.10).abs() < 0.01 && (e[1] - 7.92).abs() < 0.01, "{e:?}");
+        let spot = PreLightGen { u01: 1, meter_by_uv: 11.7644405, uv0: [0.0074898615, 0.007874399, 0.12044389, 0.11907996], ..border.clone() };
+        let e = chart_ext(&spot, 1.0, 0);
+        assert!((e[0] - 1.329).abs() < 0.002 && (e[1] - 1.308).abs() < 0.002, "{e:?}");
+        // the 5-record WaterBase object: all five pass the static filter
+        assert_eq!(static_item_record(Some(&spot), true, false), Ok(()));
     }
 
     #[test]
