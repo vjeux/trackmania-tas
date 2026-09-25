@@ -177,12 +177,16 @@ fn accumulate(acc: &mut Buf, src: &Buf) {
     }
 }
 
-pub fn run(a: Vec<String>) {
-    let root = PathBuf::from(&a[1]);
-    let frame: u32 = arg(&a, "--frame").map(|v| v.parse().expect("--frame")).unwrap_or(127447);
-    let env_frame: u32 = arg(&a, "--env-frame").map(|v| v.parse().expect("--env-frame")).unwrap_or(127448);
-    let show: usize = arg(&a, "--show").map(|v| v.parse().expect("--show")).unwrap_or(0);
-    let only_run: Option<usize> = arg(&a, "--run").map(|v| v.parse().expect("--run"));
+/// Everything the emulation loads once: the manifest, the frame's runs, the textures.
+pub struct Setup {
+    pub m: Manifest,
+    pub runs: Vec<Vec<DrawRec>>,
+    pub tex: Textures,
+    pub draws_len: usize,
+}
+
+/// Load the frame's draws (+ their blend states), split them into runs, and load the textures they bind.
+pub fn load_setup(a: &[String], root: &Path, frame: u32, env_frame: u32, quiet: bool) -> Setup {
     let txt = std::fs::read_to_string(root.join("MANIFEST.json")).expect("MANIFEST.json");
     let m = read_manifest(&txt).expect("manifest");
     let env = root.join(format!("env/frame{env_frame}"));
@@ -190,15 +194,15 @@ pub fn run(a: Vec<String>) {
     let t0 = std::time::Instant::now();
     let mut draws = prepass::read_draws(&root.join(format!("logs/draws-frame{frame}.json.gz"))).unwrap_or_else(|e| panic!("{e}"));
     match prepass::apply_state(&mut draws, &env_pre.join("state.json")) {
-        Ok(n) => println!("state.json: {n} draws with alpha-to-coverage"),
+        Ok(n) => if !quiet { println!("state.json: {n} draws with alpha-to-coverage") },
         Err(e) => println!("state.json: {e} (no alpha-to-coverage applied)"),
     }
     let runs = prepass::split_runs(&draws);
-    println!("frame {frame}: {} actions, {} runs of {:?} draws ({:.1} s)", draws.len(), runs.len(), runs.iter().map(|r| r.len()).collect::<Vec<_>>(), t0.elapsed().as_secs_f32());
-    let meshes = Meshes::load(&env_pre).or_else(|_| Meshes::load(&env)).unwrap_or_else(|e| panic!("{e}"));
-
+    if !quiet {
+        println!("frame {frame}: {} actions, {} runs of {:?} draws ({:.1} s)", draws.len(), runs.len(), runs.iter().map(|r| r.len()).collect::<Vec<_>>(), t0.elapsed().as_secs_f32());
+    }
     // the textures the runs bind, from both frames' exports; the *_TYPELESS ones through their _UNORM_SRGB views
-    let bc1 = match arg(&a, "--bc1").as_deref() {
+    let bc1 = match arg(a, "--bc1").as_deref() {
         Some("ideal") => Bc1Decode::Ideal,
         Some("expand8-trunc") => Bc1Decode::Expand8Trunc,
         _ => Bc1Decode::Expand8Round,
@@ -223,10 +227,10 @@ pub fn run(a: Vec<String>) {
             }
             match texsample::load_dds(&e.path(), bc1) {
                 Ok(mut t) => {
-                    if srgb_ids.contains(&id.as_str()) && !flag(&a, "--no-srgb-textures") {
+                    if srgb_ids.contains(&id.as_str()) && !flag(a, "--no-srgb-textures") {
                         t.decode_srgb();
                     }
-                    if show > 0 {
+                    if !quiet && flag(a, "--show-textures") {
                         println!("  texture {id}: {:?} {}×{} × {} slices, {} mips in the file{}", t.fmt, t.w, t.h, t.slices, t.levels[0].len(), if t.complete { "" } else { " (top level only)" });
                     }
                     tex.by_id.insert(id, t);
@@ -235,12 +239,19 @@ pub fn run(a: Vec<String>) {
             }
         }
     }
+    Setup { m, runs, tex, draws_len: draws.len() }
+}
+
+/// The emulation context over a `Setup`.
+pub fn make_ctx<'a>(a: &[String], root: &Path, frame: u32, env_frame: u32, s: &'a Setup) -> Ctx<'a> {
+    let env = root.join(format!("env/frame{env_frame}"));
+    let env_pre = root.join(format!("env/frame{frame}"));
+    let meshes = Meshes::load(&env_pre).or_else(|_| Meshes::load(&env)).unwrap_or_else(|e| panic!("{e}"));
     // the material samplers of the frame (env/frame127447/samplers.json): anisotropic 16×, wrap, no bias / clamp
     let mut sampler = Sampler::trilinear(Address::Wrap);
-    sampler.max_aniso = arg(&a, "--aniso").map(|v| v.parse().expect("--aniso")).unwrap_or(16);
-    sampler.lod_bias = arg(&a, "--lod-bias").map(|v| v.parse().expect("--lod-bias")).unwrap_or(0.0);
-    sampler.weight_bits = arg(&a, "--weight-bits").map(|v| if v == "none" { None } else { Some(v.parse().expect("--weight-bits")) }).unwrap_or(Some(8));
-
+    sampler.max_aniso = arg(a, "--aniso").map(|v| v.parse().expect("--aniso")).unwrap_or(16);
+    sampler.lod_bias = arg(a, "--lod-bias").map(|v| v.parse().expect("--lod-bias")).unwrap_or(0.0);
+    sampler.weight_bits = arg(a, "--weight-bits").map(|v| if v == "none" { None } else { Some(v.parse().expect("--weight-bits")) }).unwrap_or(Some(8));
     let mesh_dir = env_pre.join("mesh");
     let bufs = env_pre.join("bufs");
     let rd = |p: &Path| prepass::read_maybe_gz(p).unwrap_or_else(|e| panic!("{e}"));
@@ -255,12 +266,12 @@ pub fn run(a: Vec<String>) {
         .collect();
     let top = rd(&bufs.join("e012448_Pixel_srv3_17007.bin"));
     let dep = rd(&bufs.join("e012448_Pixel_srv4_17009.bin"));
-    let ctx = Ctx {
-        root: root.clone(),
+    Ctx {
+        root: root.to_path_buf(),
         frame,
-        m: &m,
+        m: &s.m,
         meshes,
-        tex: &tex,
+        tex: &s.tex,
         sampler,
         lm_meshes,
         instances: crate::sunpass::parse_instances(&rd(&mesh_dir.join("vb_17033.bin"))),
@@ -270,9 +281,38 @@ pub fn run(a: Vec<String>) {
         id_verts: prepass::parse_id_vertices(&rd(&mesh_dir.join("vb_5392.bin"))),
         id_indices: rd(&mesh_dir.join("e012420_vsout_indices.bin")).chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]]) as u32).collect(),
         id_instances: prepass::parse_id_instances(&rd(&mesh_dir.join("vb_17032.bin"))),
-        atc_threshold: arg(&a, "--atc-threshold").map(|v| v.parse().expect("--atc-threshold")).unwrap_or(0.5),
-        coverage_only: flag(&a, "--coverage"),
-    };
+        atc_threshold: arg(a, "--atc-threshold").map(|v| v.parse().expect("--atc-threshold")).unwrap_or(0.5),
+        coverage_only: flag(a, "--coverage"),
+    }
+}
+
+/// The nine runs summed into 16963 from the captured frame's first run (the others rebuilt from the instance STs) —
+/// stage 1 of `lmtool e2e-check`.
+pub fn nine_run_sum(root: &Path, frame: u32, env_frame: u32) -> Buf {
+    let a: Vec<String> = Vec::new();
+    let s = load_setup(&a, root, frame, env_frame, true);
+    let ctx = make_ctx(&a, root, frame, env_frame, &s);
+    let base = &s.runs[0];
+    let ids = ctx.entries("atlas_ids").first().map(|e| ctx.load(e)).or_else(|| ctx.ids(base)).expect("an id map");
+    let mut acc = Buf::new(W, H, 4);
+    for k in 0..9usize {
+        let run = if k >= 6 && k - 6 < s.runs.len() { s.runs[k - 6].clone() } else { prepass::rebuild_run(base, k, &ctx.instances) };
+        let mut tgt = ctx.attr(&run);
+        ctx.tint(&run, &ids, &mut tgt);
+        accumulate(&mut acc, &tgt.buf);
+    }
+    acc
+}
+
+pub fn run(a: Vec<String>) {
+    let root = PathBuf::from(&a[1]);
+    let frame: u32 = arg(&a, "--frame").map(|v| v.parse().expect("--frame")).unwrap_or(127447);
+    let env_frame: u32 = arg(&a, "--env-frame").map(|v| v.parse().expect("--env-frame")).unwrap_or(127448);
+    let show: usize = arg(&a, "--show").map(|v| v.parse().expect("--show")).unwrap_or(0);
+    let only_run: Option<usize> = arg(&a, "--run").map(|v| v.parse().expect("--run"));
+    let s = load_setup(&a, &root, frame, env_frame, false);
+    let ctx = make_ctx(&a, &root, frame, env_frame, &s);
+    let (m, runs, tex) = (&s.m, &s.runs, &s.tex);
     if let Some(t) = ctx.terrain() {
         let d0 = runs[0].iter().find(|d| d.ps == "8401").unwrap();
         let c = prepass::ps_8401(&t, [0.0; 3], [0.0; 3], [0.0; 3], d0.i_py, d0.i_pxz, d0.i_pyx2, d0.i_pyh2, [0.0; 3], [0.0; 3]);

@@ -4816,6 +4816,12 @@ fn run(a: Vec<String>) {
             //   draw (prepass.rs) against every banked snapshot of the frame (prepass_check.rs)
             lightmap::prepass_check::run(a.clone());
         }
+        "e2e-check" => {
+            // lmtool e2e-check PASSCAP_ROOT [--pre-frame 127447] [--frame 127448] [--skip-prepass] [--dump-dir DIR] [--tol F]: the transcribed
+            //   passes CHAINED on our own outputs (pre-pass → MDiffuse → shadow map → direct sun → ILightInput chain), each stage against
+            //   its captured intermediate, the first divergent stage named (e2e.rs)
+            lightmap::e2e::run(a.clone());
+        }
         "texstat" => {
             // lmtool texstat FILE.dds[.gz]: per mip the min / mean / max of each channel (a look at a texture the pass samples)
             let t = lightmap::texsample::load_dds(std::path::Path::new(&a[1]), lightmap::texsample::Bc1Decode::Ideal).unwrap_or_else(|e| panic!("{e}"));

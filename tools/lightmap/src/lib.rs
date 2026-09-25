@@ -30,6 +30,7 @@ pub mod finalprep;
 pub mod ilightin;
 pub mod prepass;
 pub mod prepass_check;
+pub mod e2e;
 pub mod texsample;
 pub mod sunpass;
 pub mod lmaccum;
