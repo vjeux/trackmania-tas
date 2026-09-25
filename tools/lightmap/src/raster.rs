@@ -58,6 +58,14 @@ pub fn triangle<F: FnMut(u32, u32, Bary)>(w: u32, h: u32, p: [[f32; 2]; 3], f: F
     triangle_clipped(w, h, p, (0, 0, w as i32 - 1, h as i32 - 1), f)
 }
 
+/// How many pixels `triangle_clipped_masked` would test for `p` (its bounding box within the clip) — stats.
+pub fn bbox_pixels(p: [[f32; 2]; 3], w: u32, h: u32, clip: (i32, i32, i32, i32)) -> u64 {
+    let Some((x0, x1, y0, y1)) = bounds(&p, w, h) else { return 0 };
+    let (x0, x1, y0, y1) = (x0.max(clip.0), x1.min(clip.2), y0.max(clip.1), y1.min(clip.3));
+    if x0 > x1 || y0 > y1 { return 0; }
+    (x1 - x0 + 1) as u64 * (y1 - y0 + 1) as u64
+}
+
 /// Whether `triangle` would visit pixel (x, y) for `p`: the same orientation, edge functions and
 /// top-left rule (the lazy dome raster asks per pixel instead of filling the frame).
 #[inline]
@@ -99,10 +107,39 @@ pub fn triangle_clipped_masked<F: FnMut(u32, u32, Bary)>(w: u32, h: u32, p: [[f3
     }
     let tl = [top_left(a, b), top_left(b, c), top_left(c, a)];
     let inv = 1.0 / area;
+    // THE ROW SPANS: per row the x-interval the three half-planes leave for the pixel centres, from the
+    // edges' crossings (f64, widened by a pixel each side) — the exact per-pixel test below is unchanged and
+    // still decides every pixel of the span; the span only skips pixels more than a pixel outside an edge
+    // (a large ground quad's bounding box is half outside the triangle: 2.9 G pixel tests per direction on
+    // the giant's tiles before this, 0.6 G after). `None` slope = a horizontal edge (no x constraint).
+    let edges = [(a, b), (b, c), (c, a)];
+    let slopes: [Option<(f64, f64, f64, bool)>; 3] = [0, 1, 2].map(|i| {
+        let (p, q) = edges[i];
+        let dy = q[1] as f64 - p[1] as f64;
+        if dy == 0.0 { None } else { Some((p[0] as f64, p[1] as f64, (q[0] as f64 - p[0] as f64) / dy, dy > 0.0)) }
+    });
     for y in y0..=y1 {
         let py = y as f32 + 0.5;
-        let mut x = x0;
-        while x <= x1 {
+        let (mut lo, mut hi) = (x0, x1);
+        for sl in &slopes {
+            if let Some((ax, ay, m, upward)) = sl {
+                let xc = ax + (py as f64 - ay) * m;
+                if *upward {
+                    // inside ⇔ q.x ≤ xc ⇔ x ≤ floor(xc − 0.5)
+                    let h = (xc - 0.5).floor();
+                    if h < hi as f64 { hi = (h.max(-1.0) as i32).saturating_add(1); }
+                } else {
+                    let l = (xc - 0.5).ceil();
+                    if l > lo as f64 { lo = (l.min(w as f64 + 1.0) as i32).saturating_sub(1); }
+                }
+            }
+        }
+        let (lo, hi) = (lo.max(x0), hi.min(x1));
+        if lo > hi {
+            continue;
+        }
+        let mut x = lo;
+        while x <= hi {
             if let Some(m) = mask {
                 let i = y as usize * w as usize + x as usize;
                 if (m[i >> 6] >> (i & 63)) == 0 {
@@ -171,6 +208,34 @@ pub fn lerp3(v: [f32; 3], b: Bary) -> f32 {
 #[inline]
 pub fn lerp3v(v: [[f32; 3]; 3], b: Bary) -> [f32; 3] {
     [lerp3([v[0][0], v[1][0], v[2][0]], b), lerp3([v[0][1], v[1][1], v[2][1]], b), lerp3([v[0][2], v[1][2], v[2][2]], b)]
+}
+
+#[cfg(test)]
+mod span_tests {
+    use super::*;
+
+    /// The span-limited clipped raster visits exactly the pixels (with the same barycentrics) the plain
+    /// `triangle` does, over random triangles of every shape: tiny, huge, thin, axis-aligned, degenerate.
+    #[test]
+    fn the_row_spans_skip_only_outside_pixels() {
+        let mut seed = 0x9e3779b97f4a7c15u64;
+        let mut rnd = || { seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17; (seed % 1_000_000) as f32 / 1_000_000.0 };
+        let (w, h) = (96u32, 80u32);
+        for k in 0..3000 {
+            let scale = match k % 4 { 0 => 3.0, 1 => 30.0, 2 => 150.0, _ => 1.0 };
+            let (cx, cy) = (rnd() * 110.0 - 7.0, rnd() * 90.0 - 5.0);
+            let mut p = [[0.0f32; 2]; 3];
+            for v in p.iter_mut() { *v = [cx + (rnd() - 0.5) * scale, cy + (rnd() - 0.5) * scale * if k % 5 == 0 { 0.02 } else { 1.0 }]; }
+            if k % 7 == 0 { p[1][1] = p[0][1]; } // a horizontal edge
+            if k % 11 == 0 { p[2][0] = p[0][0]; } // a vertical edge
+            if k % 13 == 0 { p[0] = [p[0][0].round() + 0.5, p[0][1].round() + 0.5]; } // a vertex on a pixel centre
+            let mut plain: Vec<(u32, u32, [f32; 3])> = Vec::new();
+            triangle(w, h, p, |x, y, b| plain.push((x, y, b)));
+            let mut spanned: Vec<(u32, u32, [f32; 3])> = Vec::new();
+            triangle_clipped_masked(w, h, p, (0, 0, w as i32 - 1, h as i32 - 1), None, |x, y, b| spanned.push((x, y, b)));
+            assert_eq!(plain, spanned, "triangle {k}: {p:?}");
+        }
+    }
 }
 
 #[cfg(test)]

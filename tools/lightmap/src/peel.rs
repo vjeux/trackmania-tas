@@ -360,6 +360,7 @@ pub fn bit(mask: &[u64], i: usize) -> bool {
 /// harness; the dump of a direction wants every pixel and passes None).
 pub static RS_TRIS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 pub static RS_VISITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static RS_TESTED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// LMTOOL_RASTER_STATS=1 counts the rasterised triangles and pixel visits per peel (read once).
 fn raster_stats_on() -> bool {
     static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -496,16 +497,51 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
     let sparse_buckets = (threads as u32).clamp(1, 256);
     let sparse_bucket_size = ((px.len() as u32 + sparse_buckets - 1) / sparse_buckets).max(1);
     let band_ns: Vec<std::sync::atomic::AtomicU64> = if raster_stats { (0..n_bands).map(|_| std::sync::atomic::AtomicU64::new(0)).collect() } else { Vec::new() };
-    let parts_all: Vec<(Vec<Vec<(u32, Frag)>>, Vec<(u32, Frag)>, Vec<f32>)> = crate::pool::pool().map(n_bands, |b| {
+    // THE COUNT'S LAYER LOGIC per pixel (counting mode): `list` = the pixel's item fragments sorted by (z,
+    // triangle) each carrying its triangle's depth-bias term, `env_d` = the environment layer's z01 maximum
+    // at the pixel (0 = none) — `extract_layers`' depth rules, no colour
+    let count_run = |list: &[CFrag], env_d: f32| -> usize {
+        let cx = count.as_ref().unwrap();
+        let prm = cx.prm;
+        let mut d_prev = f32::NEG_INFINITY;
+        if prm.dome_layer {
+            d_prev = if env_d > 0.0 { if prm.depth_bits == 16 { (env_d * 65535.0).round() / 65535.0 } else { env_d } } else { 0.0 };
+        }
+        let mut items = 0usize;
+        for f in list {
+            let z01 = frame.z01(f.z).max(0.0);
+            if z01 < d_prev {
+                continue;
+            }
+            if items >= MAX_LAYERS {
+                break;
+            }
+            let mut dd = z01 + f.bias;
+            if prm.depth_bits == 16 {
+                dd = (dd.clamp(0.0, 1.0) * 65535.0).round() / 65535.0;
+            }
+            items += 1;
+            d_prev = dd;
+        }
+        items
+    };
+    let parts_all: Vec<(Vec<Vec<(u32, Frag)>>, [usize; MAX_LAYERS + 1], usize)> = crate::pool::pool().map(n_bands, |b| {
         let t_band = std::time::Instant::now();
+        let (mut rs_tris, mut rs_tested, mut rs_visits) = (0u64, 0u64, 0u64);
         let by0 = clip.1 + (b * band_rows) as i32;
         let by1 = (clip.1 + ((b + 1) * band_rows) as i32 - 1).min(clip.3);
         let mut out: Vec<Vec<(u32, Frag)>> = (0..sparse_buckets).map(|_| Vec::new()).collect();
-        let mut all: Vec<(u32, Frag)> = Vec::new();
-        // (counting) the environment layer's z01 maximum per pixel of the band (0 = none drawn)
-        let mut env_max: Vec<f32> = if counting { vec![0.0; ((by1 - by0 + 1).max(0) as usize) * res as usize] } else { Vec::new() };
+        let mut hist = [0usize; MAX_LAYERS + 1];
+        let mut covered = 0usize;
+        // (counting) THE BAND'S PIXEL SLOTS: per pixel the environment layer's z01 maximum (0 = none drawn)
+        // and up to SLOT_K item fragments inline, the rest in the overflow list — no fragment list to sort
+        // (the tiles of a giant produce 400 M fragments per direction), the band's slots stay in cache
+        let band_px = if counting { ((by1 - by0 + 1).max(0) as usize) * res as usize } else { 0 };
+        let mut env_max: Vec<f32> = vec![0.0; band_px];
+        let mut slots: Vec<Slot> = vec![Slot::EMPTY; band_px];
+        let mut overflow: Vec<(u32, CFrag)> = Vec::new();
         if by0 > by1 {
-            return (out, all, env_max);
+            return (out, hist, covered);
         }
         let band_clip = (clip.0, by0, clip.2, by1);
         for chunk_lists in &binned {
@@ -523,11 +559,17 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
                 // (the footprint is computed on the first fragment that needs it: most leaf triangles cover
                 // no pixel centre at all)
                 let mut fp_tex: Option<Option<(&crate::alphatex::AlphaTex, crate::alphatex::TapPlan)>> = None;
-                if raster_stats { RS_TRIS.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
-                // (counting) an environment triangle: Some(drawn)
+                if raster_stats { rs_tris += 1; rs_tested += raster::bbox_pixels([[x0, y0], [x1, y1], [x2, y2]], res, res_y, band_clip); }
+                // (counting) an environment triangle: Some(drawn); an item triangle: its depth-bias term (once
+                // per triangle — `tri_slope` per fragment was 8 % of a bake)
                 let env_t = if counting { env_class(t) } else { None };
+                let bias_term = if counting && env_t.is_none() {
+                    let cx = count.as_ref().unwrap();
+                    let (slope, zmax_prim) = tri_slope(t, frame);
+                    d3d_depth_bias_fmt(zmax_prim, slope.min(1e6), cx.prm.depth_bias, cx.prm.depth_bits)
+                } else { 0.0 };
                 raster::triangle_clipped_masked(res, res_y, [[x0, y0], [x1, y1], [x2, y2]], band_clip, if counting { None } else { Some(bitmap) }, |x, y, bc| {
-                    if raster_stats { RS_VISITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
+                    if raster_stats { rs_visits += 1; }
                     // the game's viewport (1, 1, w−2, h−2): the outer ring is never drawn
                     if x < inset || y < inset || x + inset >= res || y + inset >= res_y {
                         return;
@@ -549,17 +591,23 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
                         } else if let Some((dx, dy)) = *ABUF_DEBUG { if x == dx && y == dy { eprintln!("abuf debug ({x},{y}): tri {ti} inst {} model tri {} z {z:.3} z01 {:.5}", t.inst, t.tri, frame.z01(z)); } }
                         let id = y * res + x;
                         if counting {
+                            let li = ((y as i32 - by0) as usize) * res as usize + x as usize;
                             match env_t {
                                 Some(drawn) => {
                                     if drawn {
                                         let z01 = frame.z01(z);
                                         if z01 >= 0.0 && z01 <= 1.0 {
-                                            let e = &mut env_max[((y as i32 - by0) as usize) * res as usize + x as usize];
+                                            let e = &mut env_max[li];
                                             if z01 > *e { *e = z01; }
                                         }
                                     }
                                 }
-                                None => all.push((id, Frag { z, tri: ti })),
+                                None => {
+                                    let sl = &mut slots[li];
+                                    let cf = CFrag { z, tri: ti, bias: bias_term };
+                                    if (sl.n as usize) < SLOT_K { sl.f[sl.n as usize] = cf; } else { overflow.push((li as u32, cf)); }
+                                    sl.n += 1;
+                                }
                             }
                             if !bit(bitmap, id as usize) {
                                 return;
@@ -571,8 +619,31 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
                 });
             }
         }
-        if raster_stats { band_ns[b].store(t_band.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed); }
-        (out, all, env_max)
+        if counting {
+            // THE SCAN: the overflow grouped by pixel (sorted by pixel, then merged with the inline slots), every
+            // covered pixel's fragments ordered by (z, triangle) — the order the sorted list had — then the
+            // layer logic
+            overflow.sort_by(|p, q| p.0.cmp(&q.0));
+            let mut oi = 0usize;
+            let mut buf: Vec<CFrag> = Vec::with_capacity(64);
+            for (li, sl) in slots.iter().enumerate() {
+                if sl.n == 0 { continue; }
+                covered += 1;
+                let n = sl.n as usize;
+                buf.clear();
+                buf.extend_from_slice(&sl.f[..n.min(SLOT_K)]);
+                if n > SLOT_K {
+                    while oi < overflow.len() && (overflow[oi].0 as usize) < li { oi += 1; }
+                    while oi < overflow.len() && overflow[oi].0 as usize == li { buf.push(overflow[oi].1); oi += 1; }
+                }
+                if buf.len() > 1 {
+                    buf.sort_by(|p, q| p.z.total_cmp(&q.z).then_with(|| p.tri.cmp(&q.tri)));
+                }
+                hist[count_run(&buf, env_max[li]).min(MAX_LAYERS)] += 1;
+            }
+        }
+        if raster_stats { band_ns[b].store(t_band.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed); RS_TRIS.fetch_add(rs_tris, std::sync::atomic::Ordering::Relaxed); RS_TESTED.fetch_add(rs_tested, std::sync::atomic::Ordering::Relaxed); RS_VISITS.fetch_add(rs_visits, std::sync::atomic::Ordering::Relaxed); }
+        (out, hist, covered)
     });
     if raster_stats {
         let v: Vec<u64> = band_ns.iter().map(|a| a.load(std::sync::atomic::Ordering::Relaxed)).collect();
@@ -580,77 +651,13 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
         let mean = v.iter().sum::<u64>() as f64 / v.len().max(1) as f64;
         eprintln!("raster bands: {} bands of {} rows, slowest {:.1} ms, mean {:.1} ms (ratio {:.2}), wall {:.1} ms", n_bands, band_rows, mx as f64 / 1e6, mean / 1e6, mx as f64 / mean.max(1.0), t_raster.elapsed().as_secs_f64() * 1e3);
     }
-    // the exact statistic from the bands' complete fragment lists
-    let counted: Option<(usize, Vec<f64>)> = count.map(|cx| {
-        let (scene, bvh, prm) = (cx.scene, cx.bvh, cx.prm);
+    // the exact statistic from the bands' histograms
+    let counted: Option<(usize, Vec<f64>)> = count.as_ref().map(|cx| {
+        let prm = cx.prm;
         let n = (res * res_y) as usize;
-        let is_env = |tri: u32| -> bool { let wt = &bvh.tris[tri as usize]; wt.inst == DECOR_INST && scene.decor.get(wt.tri as usize).map(|d| d.env).unwrap_or(false) };
-        let env_drawn = |tri: u32| -> bool {
-            let wt = &bvh.tris[tri as usize];
-            match scene.decor.get(wt.tri as usize) {
-                Some(dt) if dt.env_far_only => { let n = cross(wt.e1, wt.e2); dot(n, frame.d) > 0.0 }
-                _ => true,
-            }
-        };
-        let _ = (&is_env, &env_drawn);
-        // `list` = the pixel's non-environment fragments sorted by depth; `env_d` = the environment layer's z01
-        // maximum at the pixel (0 = none)
-        let count_run = |list: &[(u32, Frag)], env_d: f32| -> usize {
-            let mut d_prev = f32::NEG_INFINITY;
-            if prm.dome_layer {
-                d_prev = if env_d > 0.0 { if prm.depth_bits == 16 { (env_d * 65535.0).round() / 65535.0 } else { env_d } } else { 0.0 };
-            }
-            let mut items = 0usize;
-            for (_, f) in list {
-                let z01 = frame.z01(f.z).max(0.0);
-                if z01 < d_prev {
-                    continue;
-                }
-                if items >= MAX_LAYERS {
-                    break;
-                }
-                let wt = &bvh.tris[f.tri as usize];
-                let (slope, zmax_prim) = tri_slope(wt, frame);
-                let mut dd = z01 + d3d_depth_bias_fmt(zmax_prim, slope.min(1e6), prm.depth_bias, prm.depth_bits);
-                if prm.depth_bits == 16 {
-                    dd = (dd.clamp(0.0, 1.0) * 65535.0).round() / 65535.0;
-                }
-                items += 1;
-                d_prev = dd;
-            }
-            items
-        };
-        // per band (in parallel): sort the item fragments by (pixel, z, triangle), scan the runs with the
-        // band's environment maxima; a pixel with no item fragment holds no item layer whatever its environment
-        let all_ptrs: Vec<usize> = parts_all.iter().map(|(_, a, _)| a.as_ptr() as usize).collect();
-        let all_lens: Vec<usize> = parts_all.iter().map(|(_, a, _)| a.len()).collect();
-        let env_ptrs: Vec<usize> = parts_all.iter().map(|(_, _, e)| e.as_ptr() as usize).collect();
-        let env_lens: Vec<usize> = parts_all.iter().map(|(_, _, e)| e.len()).collect();
-        let hists: Vec<([usize; MAX_LAYERS + 1], usize)> = crate::pool::pool().map(parts_all.len(), |b| {
-            // SAFETY: each task sorts its own band's list in place (disjoint bands; the lists are not read
-            // again afterwards) and reads its own environment maxima
-            let frags: &mut [(u32, Frag)] = unsafe { std::slice::from_raw_parts_mut(all_ptrs[b] as *mut (u32, Frag), all_lens[b]) };
-            let env: &[f32] = unsafe { std::slice::from_raw_parts(env_ptrs[b] as *const f32, env_lens[b]) };
-            let by0 = clip.1 + (b * band_rows) as i32;
-            frags.sort_by(|p, q| p.0.cmp(&q.0).then_with(|| p.1.z.total_cmp(&q.1.z)).then_with(|| p.1.tri.cmp(&q.1.tri)));
-            let mut hist = [0usize; MAX_LAYERS + 1];
-            let mut covered = 0usize;
-            let mut i = 0usize;
-            while i < frags.len() {
-                let mut j = i + 1;
-                while j < frags.len() && frags[j].0 == frags[i].0 { j += 1; }
-                let id = frags[i].0;
-                let (x, y) = (id % res, id / res);
-                let env_d = env[((y as i32 - by0) as usize) * res as usize + x as usize];
-                hist[count_run(&frags[i..j], env_d).min(MAX_LAYERS)] += 1;
-                covered += 1;
-                i = j;
-            }
-            (hist, covered)
-        });
         let mut hist = [0usize; MAX_LAYERS + 1];
         let mut covered = 0usize;
-        for (hh, c) in &hists { for k in 0..=MAX_LAYERS { hist[k] += hh[k]; } covered += c; }
+        for (_, hh, c) in &parts_all { for k in 0..=MAX_LAYERS { hist[k] += hh[k]; } covered += c; }
         hist[0] += n - covered;
         let mut fractions: Vec<f64> = Vec::with_capacity(MAX_LAYERS);
         let mut at_least = n;
@@ -662,7 +669,7 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
     });
     let parts: Vec<Vec<Vec<(u32, Frag)>>> = parts_all.into_iter().map(|(o, _, _)| o).collect();
     prof::add(&prof::B_RASTER, t_raster);
-    if raster_stats { eprintln!("raster stats (sparse, {n_bands} bands): {} triangles rasterised, {} pixel visits, clip {:?}, wanted {}, {:.3}s", RS_TRIS.swap(0, std::sync::atomic::Ordering::Relaxed), RS_VISITS.swap(0, std::sync::atomic::Ordering::Relaxed), clip, px.len(), t_raster.elapsed().as_secs_f32()); }
+    if raster_stats { eprintln!("raster stats (sparse, {n_bands} bands): {} triangles rasterised, {} bbox pixels tested, {} pixel visits, clip {:?}, wanted {}, {:.3}s", RS_TRIS.swap(0, std::sync::atomic::Ordering::Relaxed), RS_TESTED.swap(0, std::sync::atomic::Ordering::Relaxed), RS_VISITS.swap(0, std::sync::atomic::Ordering::Relaxed), clip, px.len(), t_raster.elapsed().as_secs_f32()); }
     let t_sort = std::time::Instant::now();
     let npx = px.len();
     let bucket_results: Vec<(Vec<u32>, Vec<Frag>)> = crate::pool::pool().map(sparse_buckets as usize, |b| {
@@ -1785,6 +1792,27 @@ pub fn exact_item_layers_direct(tris: &[WTri], frame: &PeelFrame, scene: &Scene,
     }
     let kept = prm.peel_stop.layers_rendered(&fractions);
     (kept, fractions)
+}
+
+/// A fragment of the exact layer count: depth, triangle (the tie order), the triangle's depth-bias term.
+#[derive(Clone, Copy, Debug)]
+pub struct CFrag {
+    pub z: f32,
+    pub tri: u32,
+    pub bias: f32,
+}
+
+/// Inline item fragments per pixel slot of a raster band (the rest overflow).
+pub const SLOT_K: usize = 5;
+
+#[derive(Clone, Copy)]
+pub struct Slot {
+    pub n: u32,
+    pub f: [CFrag; SLOT_K],
+}
+
+impl Slot {
+    pub const EMPTY: Slot = Slot { n: 0, f: [CFrag { z: 0.0, tri: 0, bias: 0.0 }; SLOT_K] };
 }
 
 /// Raster bands per pool thread (LMTOOL_BANDS_PER_THREAD, default 4).
