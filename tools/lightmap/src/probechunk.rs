@@ -32,6 +32,13 @@
 //! 5. `chunks_aabb` — FUN_140233150: the AABB over c(i) = (float(i) − 0.5)·cell + origin' for i = +0xc and +0x18 of
 //!    every record, as {c = (max + min)·0.5, h = (max − min)·0.5}.
 //!
+//! hill4 (RE 7, 2026-09-25 22:30Z): the save's block 0 (min (20,2,18), max (30,8,28)) needs boxes no ITEM has — they are two
+//! ZONE TILE records (the LandHill tiles under the items, cells (26,11) and (27,10)) whose quality is 1.0 by the tile quality
+//! rule (a tile touching a q-1 item takes its quality, RE 6 10:25Z/10:55Z) → q² > 0.9 → their 32 × 3 × 32 m boxes join the
+//! probe boxes. With the baker's hill4 record dump as the box source (`lmtool probe-layout … --records-tsv`) the layout is
+//! BIT-EXACT; with the port's item records alone it is a probe short on three sides. So the probe-box set = every record with
+//! q² > 0.9, tiles included — E's tile records must carry the rule's quality, not the 0.0442 default.
+//!
 //! pwc-day (`lmtool probe-chunks MAP`): size (64, 64, 64), BlueBay (32, 8, 32), offset y −40 (the decoration's base
 //! height, `deco_offsets`; the level alignment puts the first row at −30 — probes.rs's empirical "−38" is that
 //! origin minus the half cell) → 128 × 32 × 128 probes of 16 m at origin (8, −30, 8); the three items (q = 1) touch one chunk, (1, 0, 0) → the record's world origin (472, −46, −8), atlas 32 × 16 ×
