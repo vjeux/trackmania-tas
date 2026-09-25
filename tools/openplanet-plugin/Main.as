@@ -133,6 +133,7 @@ HttpResponse@ RouteRequests(const string &in type, const string &in route, dicti
     if (r == "/treeinst") return HttpResponse(200, TreeInst(qs));
     // the lightmapper's record array during a bake (LmRecords.as): /lmrecords[?info=1|src=L|arm=1|disarm=1|status=1]
     if (r == "/lmrecords") return HttpResponse(200, LmRecords(qs));
+    if (r == "/lmforest") return HttpResponse(200, LmForestRoute(qs));
     if (r == "/state") return HttpResponse(200, GetState());
     if (r == "/tree") return HttpResponse(200, DumpTree());
     if (r == "/dialogtree") return HttpResponse(200, DumpDialogTree());

@@ -42,6 +42,7 @@ const uint64 LM_VT_LIGHTMAP = 0x1b683e0;
 const uint64 LM_VT_CACHE = 0x1b6aea8;
 const uint64 LM_REC_STRIDE = 0x58;
 string g_lmStep = "";
+bool g_lmForestDumped = false;
 
 class LmChain {
     bool ok = false;
@@ -319,10 +320,26 @@ void LmWatch() {
                     LmAppend("lmrecords-trace.txt", "load-time dump threw at " + g_lmStep + ": " + getExceptionInfo() + "\n");
                 }
             }
+            // the zone's forest (NHmsForestVis at zone+0x260): its tree array fills during the compute — dump it once
+            // when the count turns non-zero (RE 7's probe-box source for the zone trees)
+            if (!g_lmForestDumped) {
+                try {
+                    LmForest fo = LmForestFind();
+                    if (fo.ok && fo.nTrees > 0) {
+                        string sf = LmForestDump(fo);
+                        g_lmForestDumped = true;
+                        LmAppend("lmrecords-trace.txt", "== forest dump at " + Time::Stamp + "\n" + sf);
+                    }
+                } catch {
+                    LmAppend("lmrecords-trace.txt", "forest probe threw: " + getExceptionInfo() + "\n");
+                }
+            }
             uint64 now = Time::Stamp;
             if (now - lastTrace >= 2) {
                 lastTrace = now;
-                LmAppend("lmrecords-trace.txt", "t=" + now + " stage=" + g_lmStage + " nH=" + nH + " nL=" + nL + " s=" + Text::Format("%.9g", sc) + " alloc=" + Hex64(alloc) + " cache=" + Hex64(cache) + "\n");
+                uint nForest = 0;
+                try { LmForest fo2 = LmForestFind(); if (fo2.ok) nForest = fo2.nTrees; } catch {}
+                LmAppend("lmrecords-trace.txt", "t=" + now + " stage=" + g_lmStage + " nH=" + nH + " nL=" + nL + " s=" + Text::Format("%.9g", sc) + " alloc=" + Hex64(alloc) + " cache=" + Hex64(cache) + " forestTrees=" + nForest + "\n");
             }
             bool changed = (nH != lastNH) || (nL != lastNL) || (cache != lastCache) || (PlausiblePtr(alloc) != PlausiblePtr(lastAlloc)) || ((sc != 0) != lastSNonZero);
             if (changed && lastNH != 0xffffffff && changeDumps < 12) {
@@ -377,6 +394,7 @@ string LmRecords(const string &in qs) {
         // re-arm: a running watcher restarts its stage machine (stage 0 → the chain and the baselines anew)
         g_lmArmed = true;
         g_lmStage = 0;
+        g_lmForestDumped = false;
         if (!g_lmRunning) startnew(LmWatch);
         return "armed (stage " + g_lmStage + ", running " + g_lmRunning + ")";
     }
