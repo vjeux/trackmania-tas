@@ -65,6 +65,13 @@ pub struct ModelGeom {
     pub diff_tex: Vec<String>,
     /// Per material link: the diffuse albedo the bounce uses (`crate::albedo`).
     pub mat_albedo: Vec<[f32; 3]>,
+    /// The union of the visuals' STORED bounding boxes (CPlugVisual `bounding_box` = centre xyz, half xyz — the tiny
+    /// library writes each half at least 0.02), in model space, as (min, max): the box the game's block record
+    /// carries (`|M|·h + T`), which the light-camera fit (lightcam) works from — the wall's ±0.02 thickness is here,
+    /// not in its triangles.
+    pub stored_bbox: Option<([f32; 3], [f32; 3])>,
+    /// The visuals' stored boxes themselves, as written: (centre, half) per visual (the record arithmetic works on this form).
+    pub stored_boxes: Vec<([f32; 3], [f32; 3])>,
 }
 
 pub fn sub(a: V3, b: V3) -> V3 {
@@ -151,6 +158,14 @@ pub fn load_model(bytes: &[u8]) -> Result<ModelGeom, String> {
         }
         let Some(vr) = s2.visuals.get(sg.visual_index as usize) else { continue };
         let Some(Node::Visual(v)) = vr.inline.as_deref() else { continue };
+        if let Some(mm) = v.main.as_ref() {
+            let b = mm.bounding_box;
+            if b[3] >= 0.0 && b[3].is_finite() {
+                let (lo, hi) = ([b[0] - b[3], b[1] - b[4], b[2] - b[5]], [b[0] + b[3], b[1] + b[4], b[2] + b[5]]);
+                g.stored_bbox = Some(match g.stored_bbox { None => (lo, hi), Some((a, c)) => ([a[0].min(lo[0]), a[1].min(lo[1]), a[2].min(lo[2])], [c[0].max(hi[0]), c[1].max(hi[1]), c[2].max(hi[2])]) });
+                g.stored_boxes.push(([b[0], b[1], b[2]], [b[3], b[4], b[5]]));
+            }
+        }
         // the shaded geom's material link → an index into mat_links (deduplicated)
         // (the tiny items carry their materials as `custom_materials` — name + CPlugMaterialUserInst whose
         // link is the game material; `materials` is the older list)

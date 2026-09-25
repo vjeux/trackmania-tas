@@ -4306,7 +4306,7 @@ fn run(a: Vec<String>) {
             let root = std::path::PathBuf::from(&a[1]);
             let frame: u32 = f("--frame").map(|v| v.parse().expect("--frame")).unwrap_or(127448);
             let env = root.join(format!("env/frame{frame}"));
-            let rules = lightmap::lightcam::FitRules { expand_eps: f("--eps").map(|v| v.parse().unwrap()).unwrap_or(1e-4), far_pad: f("--far-pad").map(|v| v.parse().unwrap()).unwrap_or(5.0), normalise: match f("--norm").as_deref() { Some("rsqrt") => lightmap::lightcam::Normalise::MulRsqrt, Some("rsqrt64") => lightmap::lightcam::Normalise::MulRsqrtF64, Some("newton") => lightmap::lightcam::Normalise::MulRsqrtNewton, Some("xz") => lightmap::lightcam::Normalise::MulRsqrtXZ, Some("magic1") => lightmap::lightcam::Normalise::Magic1, Some("magic2") => lightmap::lightcam::Normalise::Magic2, Some("div") => lightmap::lightcam::Normalise::DivSqrt, _ => lightmap::lightcam::Normalise::MulRsqrt }, dot: if has("--fma") { lightmap::lightcam::DotOrder::Fma } else { lightmap::lightcam::DotOrder::Separate }, expand_by_scale: has("--expand-scale"), centre_from_half: !has("--centre-mean"), norm_forward: has("--norm-fwd"), norm_up: has("--norm-up") };
+            let rules = lightmap::lightcam::FitRules { expand_eps: f("--eps").map(|v| v.parse().unwrap()).unwrap_or(1e-4), far_pad: f("--far-pad").map(|v| v.parse().unwrap()).unwrap_or(5.0), normalise: match f("--norm").as_deref() { Some("rsqrt") => lightmap::lightcam::Normalise::MulRsqrt, Some("rsqrt64") => lightmap::lightcam::Normalise::MulRsqrtF64, Some("newton") => lightmap::lightcam::Normalise::MulRsqrtNewton, Some("xz") => lightmap::lightcam::Normalise::MulRsqrtXZ, Some("magic1") => lightmap::lightcam::Normalise::Magic1, Some("magic2") => lightmap::lightcam::Normalise::Magic2, Some("div") => lightmap::lightcam::Normalise::DivSqrt, _ => lightmap::lightcam::Normalise::MulRsqrt }, dot: if has("--fma") { lightmap::lightcam::DotOrder::Fma } else { lightmap::lightcam::DotOrder::Separate }, expand_by_scale: has("--expand-scale"), centre_from_half: !has("--centre-mean"), norm_forward: has("--norm-fwd"), norm_up: has("--norm-up"), game_basis: !has("--no-game-basis"), game_renorm: match f("--renorm").as_deref() { Some("none") => lightmap::lightcam::GameRenorm::None, Some("forward") => lightmap::lightcam::GameRenorm::Forward, Some("all") => lightmap::lightcam::GameRenorm::All, Some("cross") => lightmap::lightcam::GameRenorm::CrossOnly, _ => lightmap::lightcam::GameRenorm::None } };
             println!("rules: {rules:?}");
             let draws_bytes = lightmap::passdiff::read_entry_bytes(&root, &format!("logs/draws-frame{frame}.json")).expect("draws log");
             let draws: serde_json::Value = serde_json::from_slice(&draws_bytes).expect("draws json");
@@ -4461,11 +4461,54 @@ fn run(a: Vec<String>) {
             let mut f_box = lightmap::lightcam::Aabb { min: [items_box.min[0], scene_box.min[1], items_box.min[2]], max: [items_box.max[0], scene_box.max[1], items_box.max[2]] };
             // --f-box xmin,zmin,xmax,zmax: the item RECORDS' x/z box (the models' own bounding boxes, not the meshes' vertices)
             if let Some(s) = f("--f-box") { let v: Vec<f32> = s.split(',').map(|x| x.parse().unwrap()).collect(); f_box.min[0] = v[0]; f_box.min[2] = v[1]; f_box.max[0] = v[2]; f_box.max[2] = v[3]; }
+            // --map MAP.Gbx: the item RECORDS' boxes from the map's own items — each model's stored bounding box (the
+            // CPlugVisual bounding_box, ±0.02 minimum half) through its placement as |M|·h + T (the block-record form) —
+            // the fitted peel's box source without a capture
+            if let Some(map) = f("--map") {
+                let scene = lightmap::geometry::Scene::from_map(&map).expect("map scene");
+                // per item: one record per stored visual box (--record-per-visual) or one per model (the union of its
+                // visual boxes in centre/half form, the default), through FUN_140185f70's arithmetic
+                let mut recs: Vec<([f32; 3], [f32; 3])> = Vec::new();
+                for inst in &scene.instances {
+                    let mdl = &scene.models[inst.model];
+                    if mdl.stored_boxes.is_empty() { println!("  item {} ({}): no stored bounding box", inst.item, inst.model_name); continue; }
+                    let boxes: Vec<([f32; 3], [f32; 3])> = if has("--record-per-visual") { mdl.stored_boxes.clone() } else {
+                        let u = lightmap::lightcam::union_of_records(&mdl.stored_boxes);
+                        vec![(u.centre(), u.half())]
+                    };
+                    for (c, h) in boxes {
+                        let (wc, wh) = lightmap::lightcam::record_box(c, h, &inst.xf);
+                        println!("  item {} ({}): model box centre {:?} half {:?} → record centre {:?} half {:?}", inst.item, inst.model_name, c, h, wc, wh);
+                        recs.push((wc, wh));
+                    }
+                }
+                let rec_union = lightmap::lightcam::union_of_records(&recs);
+                println!("  item records' union: min {:?} max {:?}", rec_union.min, rec_union.max);
+                if !rec_union.is_empty() {
+                    f_box.min[0] = rec_union.min[0]; f_box.min[2] = rec_union.min[2]; f_box.max[0] = rec_union.max[0]; f_box.max[2] = rec_union.max[2];
+                }
+                if !rec_union.is_empty() {
+                    f_box.min[0] = rec_union.min[0]; f_box.min[2] = rec_union.min[2]; f_box.max[0] = rec_union.max[0]; f_box.max[2] = rec_union.max[2];
+                }
+            }
             println!("PEEL boxes: W min {:?} max {:?}; F min {:?} max {:?}", w_box.min, w_box.max, f_box.min, f_box.max);
+            // the ORIGINAL direction of each peel camera: the game re-normalises D inside the basis (FUN_140186d40), so the
+            // cbuffer's forward is d̂ = D · fl(1/√|D|²), not the table's D — the fit must start from the table's
+            let table_dirs: Vec<[f32; 3]> = lightmap::dome::PointSets::load(&f("--points").unwrap_or_else(lightmap::dome::default_path)).ok().and_then(|ps| {
+                let q: u32 = f("--quality").map(|v| v.parse().unwrap()).unwrap_or(3);
+                let mut all = Vec::new();
+                for sw in 0..3 { if let Some(d) = lightmap::dome::sweep_directions(&ps, q, sw, false) { all.extend(d); } }
+                Some(all)
+            }).unwrap_or_default();
+            let original_dir = |dhat: [f32; 3]| -> Option<[f32; 3]> {
+                table_dirs.iter().copied().filter(|t| { let c = t[0] * dhat[0] + t[1] * dhat[1] + t[2] * dhat[2]; c > 0.999_999 }).min_by(|a, b| { let da = (a[0] - dhat[0]).abs() + (a[1] - dhat[1]).abs() + (a[2] - dhat[2]).abs(); let db = (b[0] - dhat[0]).abs() + (b[1] - dhat[1]).abs() + (b[2] - dhat[2]).abs(); da.partial_cmp(&db).unwrap() })
+            };
+            println!("{} table directions loaded for the original-D lookup", table_dirs.len());
             for cap in &caps {
                 if cap.eye[0] == 0.0 && cap.eye[2] == 0.0 { continue; }
                 if sun_cap.map(|s| s.eid == cap.eid).unwrap_or(false) { continue; }
-                let d = [cap.w2c[0][2], cap.w2c[1][2], cap.w2c[2][2]];
+                let dhat = [cap.w2c[0][2], cap.w2c[1][2], cap.w2c[2][2]];
+                let d = match (has("--dhat"), original_dir(dhat)) { (false, Some(o)) => { println!("  original D from the table: ({:.9}, {:.9}, {:.9}) vs the cbuffer's forward ({:.9}, {:.9}, {:.9}): {:+}/{:+}/{:+} ulp", o[0], o[1], o[2], dhat[0], dhat[1], dhat[2], lightmap::lightcam::ulps(o[0], dhat[0]), lightmap::lightcam::ulps(o[1], dhat[1]), lightmap::lightcam::ulps(o[2], dhat[2])); o } _ => dhat };
                 // which box: the eye tells (W's centre y 71 vs F's 49.75)
                 let (name, b) = if (cap.eye[0] - w_box.centre()[0]).abs() < 1.0 && (cap.eye[2] - w_box.centre()[2]).abs() < 1.0 { ("world peel", w_box) } else { ("fitted peel", f_box) };
                 let cam = lightmap::lightcam::fit_camera(&b, d, &rules);

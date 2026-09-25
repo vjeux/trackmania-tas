@@ -33,16 +33,20 @@
 //!
 //! Verified (`lmtool frustum-check`, frame 127448, 55 cbuffer values per camera): the sun camera from the capture's
 //! own caster geometry — ALL 55 BIT-IDENTICAL; the world peel of D (0.445, 0.293, 0.846) (eid 7272) with y max 138 —
-//! ALL 55 BIT-IDENTICAL; the world peel of direction 0 (eid 1028) — 44 identical, 11 within 2 ulps (the basis of
-//! that one direction rounds differently from every normalisation tried: the game's 1/√ is probably the SSE
-//! `rsqrtss` + Newton approximation, CPU-specific in its last bit), its accumulate's WorldPw01Shadow 13 of 16
-//! bit-identical, 3 within 1 ulp; the fitted peel of direction 0 with the records' box — within 3 ulps (the box's
-//! last bits are back-solved: the models' stored bounding boxes are the missing input, not in the GPU capture).
+//! ALL 55 BIT-IDENTICAL; the world peel of direction 0 (eid 1028) — 44 identical, 11 within 2 ulps: for that one
+//! direction the game's 1/√|Y × D|² is ONE ULP BELOW the correctly rounded value (1.006924868 vs 1.006924987 — both
+//! right components reproduce with the lower one), which no f32/f64 sqrt-divide, Newton step, or 0x5f3759df variant
+//! gives; the table direction is the cbuffer's forward bit for bit, so RE 5's re-normalised d̂ is not it either
+//! (`GameRenorm` keeps the hypotheses; an `rsqrtss`-family approximation of the capture machine's CPU would explain
+//! a low-biased last bit — this box is AMD, the capture's was not, so it cannot be checked here). Its accumulate's
+//! WorldPw01Shadow: 13 of 16 bit-identical, 3 within 1 ulp. The fitted peel of direction 0 with the item RECORDS'
+//! box (`--map`: the models' stored bounding boxes × placements, x ∈ [861.00995, 880.0], z ∈ [336.98, 369.0]) —
+//! within 26 ulps: the record box's last bits depend on the game's own centre/half merge arithmetic (a 2e-5 m
+//! difference on an 861 m coordinate = its f32 ulp), the structure (records' x/z, the scene's y) is what the numbers
+//! show.
 //!
-//! `lmtool frustum-check ROOT [--manifest FROZEN.json] [--f-box xmin,zmin,xmax,zmax] [--world-ymax Y] [--norm …]`
-//! recomputes every distinct camera of the draws log from these rules and prints each cbuffer value against the
-//! captured one in f32 ulps; `peel_frusta` hands the two peels of any direction to the port (passdiff's
-//! `peel_frustums_for` for the directions the capture lacks).
+//! `lmtool frustum-check ROOT [--manifest FROZEN.json] [--map MAP.Gbx] [--f-box xmin,zmin,xmax,zmax] [--world-ymax Y]
+//! [--renorm none|cross|forward|all] [--no-game-basis --norm …]`
 
 /// An axis-aligned world box as min/max corners.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -167,6 +171,53 @@ pub fn basis_from_dir_opts(d: [f32; 3], how: Normalise, norm_forward: bool, norm
     (right, up, fwd)
 }
 
+
+/// THE GAME'S BASIS, FUN_140186d40(out, D, up_hint) as decompiled by RE child 5 (called by FUN_140187d30 with the
+/// hint (0, 1, 0) unless fl(dz²) + fl(dx²) ≤ 1e-10, then (1, 0, 0)) — every operation an f32 mulss/subss/addss/
+/// sqrtss/divss, no fused multiply-add, in this exact order:
+///   v = hint × D as (fl(uy·dz) − fl(uz·dy), fl(dx·uz) − fl(ux·dz), fl(ux·dy) − fl(dx·uy));
+///   n² = (fl(v1²) + fl(v0²)) + fl(v2²)  (v1² FIRST);  s = √n²;  inv = 1/s;  right = v·inv;
+///   m² = (fl(dx²) + fl(dy²)) + fl(dz²);  inv2 = 1/√m²;  forward = D·inv2  (D is RE-NORMALISED even when |D| ≈ 1);
+///   up = forward × right as (fl(fy·rz) − fl(fz·ry), fl(fz·rx) − fl(rz·fx), fl(ry·fx) − fl(fy·rx)).
+/// Returns (right, up, forward); the identity when n² is not within (1e-10, FLT_MAX).
+pub fn basis_game(d: [f32; 3]) -> ([f32; 3], [f32; 3], [f32; 3]) {
+    basis_game_opts(d, GameRenorm::None)
+}
+
+/// Where the re-normalised d̂ = D · fl(1/√|D|²) enters FUN_140186d40's arithmetic.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GameRenorm {
+    /// nowhere: v = hint × D, up = D × right, forward = D
+    None,
+    /// v = hint × d̂ (so |v|² carries d̂'s length), up = d̂ × right, forward = D as given (what the cbuffers show)
+    CrossOnly,
+    /// RE 5's literal reading: v = hint × D, forward = d̂, up = d̂ × right
+    Forward,
+    /// everything from d̂: v = hint × d̂, forward = d̂, up = d̂ × right
+    All,
+}
+
+/// `basis_game` with the re-normalisation placed per `GameRenorm`.
+pub fn basis_game_opts(d: [f32; 3], renorm: GameRenorm) -> ([f32; 3], [f32; 3], [f32; 3]) {
+    let (dx, dy, dz) = (d[0], d[1], d[2]);
+    let m2 = (dx * dx + dy * dy) + dz * dz;
+    let inv2 = 1.0 / m2.sqrt();
+    let dh = [dx * inv2, dy * inv2, dz * inv2];
+    let (cx, cy, cz) = match renorm { GameRenorm::CrossOnly | GameRenorm::All => (dh[0], dh[1], dh[2]), _ => (dx, dy, dz) };
+    let hint: [f32; 3] = if dz * dz + dx * dx > 1e-10 { [0.0, 1.0, 0.0] } else { [1.0, 0.0, 0.0] };
+    let (ux, uy, uz) = (hint[0], hint[1], hint[2]);
+    let v = [uy * cz - uz * cy, cx * uz - ux * cz, ux * cy - cx * uy];
+    let n2 = (v[1] * v[1] + v[0] * v[0]) + v[2] * v[2];
+    if !(n2 > 1e-10 && n2 < f32::MAX) {
+        return ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]);
+    }
+    let inv = 1.0 / n2.sqrt();
+    let r = [v[0] * inv, v[1] * inv, v[2] * inv];
+    let f = match renorm { GameRenorm::Forward | GameRenorm::All => dh, _ => d };
+    let g = match renorm { GameRenorm::None => d, _ => dh };
+    let u = [g[1] * r[2] - g[2] * r[1], g[2] * r[0] - r[2] * g[0], r[1] * g[0] - g[1] * r[0]];
+    (r, u, f)
+}
 /// How a dot product / a three-term sum is evaluated: separately rounded products summed left to right, or a chain
 /// of fused multiply-adds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -201,11 +252,15 @@ pub struct FitRules {
     pub centre_from_half: bool,
     pub norm_forward: bool,
     pub norm_up: bool,
+    /// the basis by the game's own FUN_140186d40 (`basis_game`) instead of the `normalise` variants
+    pub game_basis: bool,
+    /// with `game_basis`: re-normalise D (forward = D · 1/√|D|²) as RE 5 reads FUN_140186d40, or keep D as given
+    pub game_renorm: GameRenorm,
 }
 
 impl Default for FitRules {
     fn default() -> FitRules {
-        FitRules { expand_eps: 1e-4, far_pad: 5.0, normalise: Normalise::MulRsqrt, dot: DotOrder::Separate, expand_by_scale: false, centre_from_half: true, norm_forward: false, norm_up: false }
+        FitRules { expand_eps: 1e-4, far_pad: 5.0, normalise: Normalise::MulRsqrt, dot: DotOrder::Separate, expand_by_scale: false, centre_from_half: true, norm_forward: false, norm_up: false, game_basis: true, game_renorm: GameRenorm::None }
     }
 }
 
@@ -304,7 +359,7 @@ pub fn mat4_mul(a: &[[f32; 4]; 4], b: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
 /// its own centre (the light's position) → the frustum {0, |R|·h}; SetFar(far + pad); the ±|·|·eps expansion of the
 /// min/max corners; c = (max + min)·0.5, h = (max − min)·0.5.
 pub fn fit_camera(b: &Aabb, d: [f32; 3], r: &FitRules) -> OrthoCamera {
-    let (right, up, forward) = basis_from_dir_opts(d, r.normalise, r.norm_forward, r.norm_up);
+    let (right, up, forward) = if r.game_basis { basis_game_opts(d, r.game_renorm) } else { basis_from_dir_opts(d, r.normalise, r.norm_forward, r.norm_up) };
     let hb = b.half();
     let abs3 = |v: [f32; 3]| [v[0].abs(), v[1].abs(), v[2].abs()];
     // (b) h' = |R|·h — row k of the world→light rotation is the k-th axis
@@ -444,4 +499,31 @@ pub fn peel_frusta(d: [f32; 3], boxes: &PeelBoxes, size: u32, rules: &FitRules) 
             crate::passdump::Frustum::from_pw01(&cam.world_pw01_shadow(size, size))
         })
         .collect()
+}
+
+/// A block record's world box from a model's stored box (centre, half) and its placement (mapgeom Xform: columns
+/// m[0..3] = the x axis, m[3..6] = y, m[6..9] = z, m[9..12] = the translation): c' = R·c + T, h' = |R|·h
+/// (FUN_140185f70 — RE 4's block record fill), every term an f32 in this order.
+pub fn record_box(centre: [f32; 3], half: [f32; 3], m: &[f32; 12]) -> ([f32; 3], [f32; 3]) {
+    let c = [
+        ((m[0] * centre[0] + m[3] * centre[1]) + m[6] * centre[2]) + m[9],
+        ((m[1] * centre[0] + m[4] * centre[1]) + m[7] * centre[2]) + m[10],
+        ((m[2] * centre[0] + m[5] * centre[1]) + m[8] * centre[2]) + m[11],
+    ];
+    let h = [
+        (m[0].abs() * half[0] + m[3].abs() * half[1]) + m[6].abs() * half[2],
+        (m[1].abs() * half[0] + m[4].abs() * half[1]) + m[7].abs() * half[2],
+        (m[2].abs() * half[0] + m[5].abs() * half[1]) + m[8].abs() * half[2],
+    ];
+    (c, h)
+}
+
+/// The union of (centre, half) boxes as an Aabb (min = c − h, max = c + h per record, f32).
+pub fn union_of_records(recs: &[([f32; 3], [f32; 3])]) -> Aabb {
+    let mut b = Aabb::empty();
+    for (c, h) in recs {
+        b.add_point([c[0] - h[0], c[1] - h[1], c[2] - h[2]]);
+        b.add_point([c[0] + h[0], c[1] + h[1], c[2] + h[2]]);
+    }
+    b
 }
