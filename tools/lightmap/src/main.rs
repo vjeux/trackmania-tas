@@ -1994,6 +1994,8 @@ fn run(a: Vec<String>) {
                     Err(e) => eprintln!("probes: transcribed passes skipped ({e})"),
                 }
             }
+            let probe_bake_for_field = prm.probe_bake.clone();
+            let (field_flip_v, field_uv_bounds) = (prm.flip_v, prm.uv_bounds);
             let write_field = |path: &str, charts: &[lightmap::bake::ChartBake]| {
                 // the sweep's field as the next sweep reads it: per instance (w, h, the plain irradiance)
                 let inst_of_item: std::collections::HashMap<usize, usize> = scene.instances.iter().enumerate().map(|(ii, inst)| (inst.item, ii)).collect();
@@ -2009,7 +2011,7 @@ fn run(a: Vec<String>) {
                     }
                 }
                 // the probe accumulators after this sweep (they fold across sweeps: the next sweep's merge continues them)
-                match &prm.probe_bake {
+                match &probe_bake_for_field {
                     Some(pb) => {
                         let pb = pb.lock().unwrap();
                         v.extend_from_slice(&1u32.to_le_bytes());
@@ -2050,7 +2052,7 @@ fn run(a: Vec<String>) {
                         vols.push(lightmap::probepass::Volume3 { w, h, d, channels: c, data });
                     }
                     let sky_adds = u64::from_le_bytes(b[o..o + 8].try_into().unwrap()) as usize;
-                    if let Some(pb) = &prm.probe_bake {
+                    if let Some(pb) = &probe_bake_for_field {
                         let mut pb = pb.lock().unwrap();
                         assert_eq!((pb.colour.w, pb.colour.h, pb.colour.d), (vols[0].w, vols[0].h, vols[0].d), "--field-from: the probe grid differs");
                         pb.skyvis = vols.pop().unwrap();
@@ -2061,17 +2063,74 @@ fn run(a: Vec<String>) {
                     }
                 }
                 eprintln!("field-from: {path} ({n} instances)");
-                lightmap::bake::RadianceField { charts, flip_v: prm.flip_v, uv_bounds: prm.uv_bounds }
+                lightmap::bake::RadianceField { charts, flip_v: field_flip_v, uv_bounds: field_uv_bounds }
             };
             let dir_range_for = |n: usize| -> Option<(usize, usize)> { dir_range_arg.as_ref().map(|a| lightmap::contrib::parse_range(a, n).unwrap_or_else(|e| panic!("{e}"))) };
+            // THE IN-PROCESS SPLIT (--split-box K/N --split-work W [--split-weights w0,w1,…]): one process per box for
+            // the whole bake — box K bakes its range of every sweep live; box 0 then replays the other boxes' packs
+            // in issue order (awaiting them on the shared store) and writes the sweep's field for the workers, who
+            // await it and continue with the next sweep in the same process (the scene, BVH and layout set up once)
+            let split: Option<(usize, usize, Vec<f64>, std::path::PathBuf)> = f("--split-box").map(|kn| {
+                let (k, n) = kn.split_once('/').expect("--split-box K/N");
+                let (k, n): (usize, usize) = (k.trim().parse().expect("--split-box"), n.trim().parse().expect("--split-box"));
+                assert!(k < n, "--split-box: K below N");
+                let w: Vec<f64> = f("--split-weights").map(|v| v.split(',').map(|x| x.trim().parse::<f64>().expect("--split-weights")).collect()).unwrap_or_else(|| vec![1.0; n]);
+                assert_eq!(w.len(), n, "--split-weights: one weight per box");
+                (k, n, w, std::path::PathBuf::from(f("--split-work").expect("--split-work W")))
+            });
+            let split_ranges = |n_dirs: usize| -> Vec<(usize, usize)> {
+                let (_, n, w, _) = split.as_ref().unwrap();
+                let total: f64 = w.iter().sum();
+                let mut out = Vec::new();
+                let mut acc = 0.0f64;
+                for k in 0..*n {
+                    let a = ((acc / total) * n_dirs as f64).round() as usize;
+                    acc += w[k];
+                    let b = if k + 1 == *n { n_dirs } else { ((acc / total) * n_dirs as f64).round() as usize };
+                    out.push((a.min(n_dirs), b.min(n_dirs)));
+                }
+                out
+            };
+            let apply_split = |p: &mut lightmap::bake::BakeParams, sweep: usize| {
+                if let Some((k, n, _, work)) = &split {
+                    // (over the directions the sweep actually bakes: --max-dirs truncates the list)
+                    let n_eff = if p.max_dirs > 0 { p.sphere_dirs.len().min(p.max_dirs) } else { p.sphere_dirs.len() };
+                    let r = split_ranges(n_eff);
+                    p.dir_range = Some(r[*k]);
+                    if *k == 0 {
+                        p.merge_ranges = Some((1..*n).map(|j| (r[j], work.join(format!("sweep{sweep}-box{j}.contribs")))).collect());
+                        p.contrib_out = None;
+                    } else {
+                        p.contrib_out = Some(work.join(format!("sweep{sweep}-box{k}.contribs")));
+                        p.merge_ranges = None;
+                    }
+                    eprintln!("split: sweep {sweep}: box {k} of {n} takes the directions {}..{} of {} ({})", r[*k].0, r[*k].1, n_eff, if *k == 0 { "and merges the others' packs" } else { "and writes its pack" });
+                }
+            };
+            let await_file = |path: &std::path::Path| {
+                let t = std::time::Instant::now();
+                let mut said = false;
+                while !path.exists() {
+                    if !said { eprintln!("split: waiting for {}", path.display()); said = true; }
+                    if t.elapsed().as_secs() > 8 * 3600 { panic!("split: {} never appeared", path.display()); }
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                }
+            };
+            let split_field_path = |sweep: usize| -> Option<std::path::PathBuf> { split.as_ref().map(|(_, _, _, w)| w.join(format!("field{sweep}.bin"))) };
             let run_sweep0 = sweep_only.map(|s| s == 0).unwrap_or(true);
             let mut charts = if run_sweep0 {
                 prm.dir_range = dir_range_for(prm.sphere_dirs.len());
-                if let Some(r) = prm.dir_range { eprintln!("dir-range: sweep 0: directions {}..{} of {}", r.0, r.1, prm.sphere_dirs.len()); }
+                apply_split(&mut prm, 0);
+                if let (Some(r), true) = (prm.dir_range, split.is_none()) { eprintln!("dir-range: sweep 0: directions {}..{} of {}", r.0, r.1, prm.sphere_dirs.len()); }
                 if prm.raster_peel { lightmap::peel::bake_peel_raster(&scene, &bvh, &prm, &chart_sizes(&prm)) } else { lightmap::bake::bake(&scene, &bvh, &prm, &lights) }
             } else { Vec::new() };
             if run_sweep0 { eprintln!("baked {} charts ({:.1}s)", charts.len(), t0.elapsed().as_secs_f32()); }
             if let (Some(fo), true) = (&field_out, sweep_only == Some(0)) { write_field(fo, &charts); }
+            // the split's field hand-off after sweep 0: box 0 writes it (the file appears whole: written to a temporary
+            // name, then renamed), the workers await it
+            if let (Some((k, _, _, _)), Some(fp)) = (&split, split_field_path(0)) {
+                if *k == 0 { let tmp = fp.with_extension("bin.tmp"); write_field(&tmp.to_string_lossy(), &charts); std::fs::rename(&tmp, &fp).expect("field rename"); }
+            }
             // --- THE CHAIN through the sweeps (--ilightinput-from): the sweep's transcribed H-basis MRTs (E's lm-from targets)
             //     are the next sweep's ILightInput through C's sweep-transition chain (sweep1::ilightinput_from_c0: PS 25113 resolve,
             //     PS 1038 × κ = 1/√(2π), the alpha mask, PS 1109 × MDiffuse, PS 1335 × 8) and, after the last sweep, the finalisation
@@ -2130,6 +2189,12 @@ fn run(a: Vec<String>) {
                 if let Some(s) = sweep_only { if it != s { continue; } }
                 let field = match (&field_from, sweep_only) {
                     (Some(ff), Some(_)) => read_field(ff),
+                    _ if split.as_ref().map(|(k, _, _, _)| *k > 0).unwrap_or(false) => {
+                        // a split worker: the previous sweep's merged field from box 0
+                        let fp = split_field_path(it - 1).unwrap();
+                        await_file(&fp);
+                        read_field(&fp.to_string_lossy())
+                    }
                     _ => {
                         let mut field = lightmap::bake::RadianceField { charts: vec![None; scene.instances.len()], flip_v: prm.flip_v, uv_bounds: prm.uv_bounds };
                         let inst_of_item: std::collections::HashMap<usize, usize> = scene.instances.iter().enumerate().map(|(ii, inst)| (inst.item, ii)).collect();
@@ -2232,9 +2297,13 @@ fn run(a: Vec<String>) {
                 }
                 if let Some(d) = &prm.dump { let mut dm = d.lock().unwrap(); let n = p2.sphere_dirs.len() as u32; dm.manifest.sweeps.push(lightmap::passdump::Sweep { sweep: it as u32, n_dirs: n, scale: 4.0 / n.max(1) as f32, dirs: p2.sphere_dirs.iter().copied().collect() }); }
                 p2.dir_range = dir_range_for(p2.sphere_dirs.len());
-                if let Some(r) = p2.dir_range { eprintln!("dir-range: sweep {it}: directions {}..{} of {}", r.0, r.1, p2.sphere_dirs.len()); }
+                apply_split(&mut p2, it);
+                if let (Some(r), true) = (p2.dir_range, split.is_none()) { eprintln!("dir-range: sweep {it}: directions {}..{} of {}", r.0, r.1, p2.sphere_dirs.len()); }
                 charts = if prm.raster_peel { lightmap::peel::bake_peel_raster(&scene, &bvh, &p2, &chart_sizes(&p2)) } else { lightmap::bake::bake(&scene, &bvh, &p2, &lights) };
                 if let (Some(fo), Some(s)) = (&field_out, sweep_only) { if s == it { write_field(fo, &charts); } }
+                if let (Some((k, _, _, _)), Some(fp)) = (&split, split_field_path(it)) {
+                    if *k == 0 && it + 1 < iterations { let tmp = fp.with_extension("bin.tmp"); write_field(&tmp.to_string_lossy(), &charts); std::fs::rename(&tmp, &fp).expect("field rename"); }
+                }
                 let mean: f32 = charts.iter().flat_map(|c| c.rgb.iter()).map(|c| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]).sum::<f32>() / charts.iter().map(|c| c.rgb.len()).sum::<usize>().max(1) as f32;
                 eprintln!("bounce iteration {it}: mean texel {mean:.4} ({:.1}s)", t0.elapsed().as_secs_f32());
                 if let Some(hb) = take_hb(&p2) { eprintln!("chain: sweep {it}'s H-basis MRTs taken"); hb_sweeps.push(hb); }
@@ -6407,14 +6476,43 @@ fn run(a: Vec<String>) {
                     maps.sort();
                     for mdir in maps {
                         let Ok(rd2) = std::fs::read_dir(&mdir) else { continue };
-                        let mut plans: Vec<std::path::PathBuf> = rd2.flatten().map(|e| e.path()).filter(|p| p.file_name().map(|n| n.to_string_lossy().starts_with("plan-sweep")).unwrap_or(false)).collect();
+                        let mut plans: Vec<std::path::PathBuf> = rd2.flatten().map(|e| e.path()).filter(|p| p.file_name().map(|n| { let n = n.to_string_lossy(); n.starts_with("plan-sweep") || n == "plan-map.json" }).unwrap_or(false)).collect();
                         plans.sort();
                         for pp in plans {
                             let Ok(txt) = std::fs::read_to_string(&pp) else { continue };
                             let Ok(plan) = serde_json::from_str::<serde_json::Value>(&txt) else { continue };
-                            let sw = plan["sweep"].as_u64().unwrap_or(0);
                             let boxes = plan["boxes"].as_u64().unwrap_or(1) as usize;
                             if k >= boxes { continue; }
+                            if plan["mode"].as_str() == Some("split") {
+                                // THE IN-PROCESS SPLIT: one bake for the whole map as box k
+                                let claim = mdir.join(format!("claim-map-box{k}"));
+                                let done = mdir.join(format!("done-map-box{k}"));
+                                if done.exists() || claim.exists() { continue; }
+                                if std::fs::write(&claim, format!("{}\n", std::env::var("HOSTNAME").unwrap_or_default())).is_err() { continue; }
+                                did = true;
+                                let map = plan["map"].as_str().unwrap_or("").to_string();
+                                let name = std::path::Path::new(&map).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                                let local_map = tmp.join(&name);
+                                if !local_map.exists() { if let Err(e) = std::fs::copy(&map, &local_map) { let _ = std::fs::write(&done, format!("FAILED: copy {map}: {e}")); continue; } }
+                                let mut args: Vec<String> = vec!["bake".into(), local_map.to_string_lossy().to_string()];
+                                for v in plan["args"].as_array().cloned().unwrap_or_default() { if let Some(s) = v.as_str() { args.push(s.to_string()); } }
+                                args.extend(["--split-box".into(), format!("{k}/{boxes}"), "--split-weights".into(), plan["weights"].as_str().unwrap_or("1").to_string(), "--split-work".into(), mdir.to_string_lossy().to_string(), "--out".into(), tmp.join(format!("{name}.box{k}.Map.Gbx")).to_string_lossy().to_string()]);
+                                eprintln!("relight-worker: {name}: the whole map as box {k} of {boxes}");
+                                let t = std::time::Instant::now();
+                                let out = std::process::Command::new(&exe).args(&args).output();
+                                let status = match out {
+                                    Ok(o) => {
+                                        let err = String::from_utf8_lossy(&o.stderr).to_string();
+                                        let _ = std::fs::write(mdir.join(format!("map-box{k}.log")), &err);
+                                        if o.status.success() { format!("ok {:.1}s\n{}", t.elapsed().as_secs_f32(), err.lines().filter(|l| l.starts_with("profile [sweep ") || l.starts_with("split:")).collect::<Vec<_>>().join("\n")) } else { format!("FAILED: {}", err.lines().rev().take(3).collect::<Vec<_>>().join(" | ")) }
+                                    }
+                                    Err(e) => format!("FAILED: spawn: {e}"),
+                                };
+                                eprintln!("relight-worker: {name}: {}", status.lines().next().unwrap_or(""));
+                                let _ = std::fs::write(&done, status);
+                                continue;
+                            }
+                            let sw = plan["sweep"].as_u64().unwrap_or(0);
                             let claim = mdir.join(format!("claim-sweep{sw}-box{k}"));
                             let done = mdir.join(format!("done-sweep{sw}-box{k}"));
                             if done.exists() || claim.exists() { continue; }
@@ -6619,6 +6717,24 @@ fn run(a: Vec<String>) {
                             cmd.arg("bake").arg(m).arg("--raster").arg("--quality").arg(&quality).arg("--game-peel").arg("--profile").arg("--out").arg(&out);
                             for e in &extra { cmd.arg(e); }
                             cmd.output()
+                        } else if coop {
+                            // THE IN-PROCESS SPLIT: one plan per map for the workers (`lmtool relight-worker`), one bake
+                            // process per box for the whole map — box 0 (this process's child) bakes its ranges live,
+                            // merges the workers' packs in issue order and writes the map; the workers await the fields
+                            let wroot = std::path::PathBuf::from(work.clone().unwrap_or_else(|| out_dir.join("work").to_string_lossy().to_string())).join(&name);
+                            let _ = std::fs::create_dir_all(&wroot);
+                            let bake_args: Vec<String> = { let mut v: Vec<String> = vec!["--raster".into(), "--quality".into(), quality.clone(), "--game-peel".into(), "--profile".into()]; v.extend(extra.iter().cloned()); v };
+                            let w: Vec<f64> = if weights.len() == boxes { weights.clone() } else { vec![1.0; boxes] };
+                            let wstr = w.iter().map(|x| format!("{x}")).collect::<Vec<_>>().join(",");
+                            let plan = serde_json::json!({ "mode": "split", "map": m, "args": bake_args, "boxes": boxes, "weights": wstr, "work": wroot.to_string_lossy() });
+                            std::fs::write(wroot.join("plan-map.json"), serde_json::to_string_pretty(&plan).unwrap()).expect("plan");
+                            let mut cmd = std::process::Command::new(&exe);
+                            cmd.arg("bake").arg(m);
+                            for e in &bake_args { cmd.arg(e); }
+                            cmd.arg("--split-box").arg(format!("0/{boxes}")).arg("--split-weights").arg(&wstr).arg("--split-work").arg(&wroot).arg("--out").arg(&out);
+                            let r = cmd.output();
+                            if !keep_work { if let Ok(o) = &r { if o.status.success() { for e in std::fs::read_dir(&wroot).into_iter().flatten().flatten() { let p = e.path(); if p.extension().map(|x| x == "contribs" || x == "bin").unwrap_or(false) { let _ = std::fs::remove_file(p); } } } } }
+                            r
                         } else {
                             // THE SPLIT: per sweep the N range bakes (local, or one per host), then the merge
                             let n_sweeps = lightmap::dome::sweep_counts(quality.parse().unwrap_or(3)).len().max(1);

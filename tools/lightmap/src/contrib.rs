@@ -205,6 +205,51 @@ impl ContribPack {
     }
 }
 
+/// Wait for a pack to appear on the shared store (the box writing it may still be baking), then read it.
+pub fn await_pack(path: &Path, timeout: std::time::Duration) -> Result<ContribPack, String> {
+    let t0 = std::time::Instant::now();
+    let mut said = false;
+    loop {
+        if path.exists() {
+            // the writer renames the finished file into place: a present file is whole
+            return ContribPack::read(path);
+        }
+        if t0.elapsed() > timeout { return Err(format!("{}: not written within {:?}", path.display(), timeout)); }
+        if !said { eprintln!("merge: waiting for {}", path.display()); said = true; }
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+}
+
+/// The in-process merge's reader: the directions outside the live range, each range's pack awaited when its
+/// first direction is needed (the ranges come in issue order, so a later box's pack is asked for last).
+pub struct RangeReader {
+    ranges: Vec<((usize, usize), PathBuf)>,
+    loaded: Vec<Option<std::collections::BTreeMap<u32, Vec<u8>>>>,
+    sweep: u32,
+}
+
+impl RangeReader {
+    pub fn new(ranges: Vec<((usize, usize), PathBuf)>, sweep: u32) -> RangeReader {
+        let n = ranges.len();
+        RangeReader { ranges, loaded: (0..n).map(|_| None).collect(), sweep }
+    }
+    /// Which range holds `di` (None = none: the direction is not merged from a pack).
+    pub fn range_of(&self, di: usize) -> Option<usize> {
+        self.ranges.iter().position(|((a, b), _)| di >= *a && di < *b)
+    }
+    pub fn take(&mut self, di: usize) -> Result<DirContrib, String> {
+        let r = self.range_of(di).ok_or_else(|| format!("direction {di}: no pack range covers it"))?;
+        if self.loaded[r].is_none() {
+            let pk = await_pack(&self.ranges[r].1, std::time::Duration::from_secs(8 * 3600))?;
+            if pk.sweep != self.sweep { return Err(format!("{}: a sweep {} pack, sweep {} expected", self.ranges[r].1.display(), pk.sweep, self.sweep)); }
+            eprintln!("merge: {} read ({} directions)", self.ranges[r].1.display(), pk.entries.len());
+            self.loaded[r] = Some(pk.entries);
+        }
+        let b = self.loaded[r].as_ref().unwrap().get(&(di as u32)).ok_or_else(|| format!("{}: direction {di} missing", self.ranges[r].1.display()))?;
+        DirContrib::from_file_bytes(b)
+    }
+}
+
 /// Is this contribution source a pack file (else a directory of per-direction files)?
 pub fn is_pack(p: &Path) -> bool {
     p.extension().map(|e| e == "contribs").unwrap_or(false)

@@ -204,6 +204,11 @@ pub struct BakeParams {
     /// … or no direction is baked and every direction's contribution is replayed from these directories in
     /// issue order (`--merge-contrib`).
     pub merge_contrib: Option<Vec<std::path::PathBuf>>,
+    /// THE IN-PROCESS SPLIT: with `dir_range` = this box's live range, the OTHER directions are replayed from
+    /// these (range, pack) sources — each pack awaited on the shared store (the other boxes write them as they
+    /// finish) — so box 0 accumulates its own range live, then the later ranges in issue order: the merge
+    /// without a second process or a second setup.
+    pub merge_ranges: Option<Vec<((usize, usize), std::path::PathBuf)>>,
     /// The game's sky dome MESH (capture e001051), rasterised per peel with VS 16773's constants; None =
     /// the analytic ellipsoid model (`SkyGradient::dome_radiance`).
     pub dome_mesh: Option<std::sync::Arc<crate::domemesh::DomeMesh>>,
@@ -340,6 +345,7 @@ impl Default for BakeParams {
             dir_range: None,
             contrib_out: None,
             merge_contrib: None,
+            merge_ranges: None,
             dome_mesh: None,
             lm_scene: None,
             ilatlas: None,

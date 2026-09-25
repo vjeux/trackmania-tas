@@ -2313,15 +2313,26 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         let order: Vec<u32> = (0..dirs.len()).filter(|di| prm.dir_range.map(|(a, b)| *di >= a && *di < b).unwrap_or(true)).map(|di| di as u32).collect();
         crate::contrib::Prefetch::new(dirs_in.clone(), prm.sweep, order, 8, 24)
     });
+    // the in-process merge: the directions outside the live range from the other boxes' packs
+    let mut range_reader: Option<crate::contrib::RangeReader> = prm.merge_ranges.as_ref().map(|r| crate::contrib::RangeReader::new(r.clone(), prm.sweep));
     for (di, d) in dirs.iter().enumerate() {
-        if let Some((a, b)) = prm.dir_range {
-            if di < a || di >= b { continue; }
+        let live = prm.dir_range.map(|(a, b)| di >= a && di < b).unwrap_or(true);
+        if !live && range_reader.is_none() {
+            continue;
         }
-        let replay: Option<crate::contrib::DirContrib> = prefetch.as_ref().map(|pf| {
-            let c = pf.take(di as u32).unwrap_or_else(|e| panic!("merge-contrib: {e}"));
+        let replay: Option<crate::contrib::DirContrib> = if live {
+            prefetch.as_ref().map(|pf| {
+                let c = pf.take(di as u32).unwrap_or_else(|e| panic!("merge-contrib: {e}"));
+                n_replayed += 1;
+                c
+            })
+        } else {
+            let rr = range_reader.as_mut().unwrap();
+            if rr.range_of(di).is_none() { continue; }
+            let c = rr.take(di).unwrap_or_else(|e| panic!("merge: {e}"));
             n_replayed += 1;
-            c
-        });
+            Some(c)
+        };
         let t_dir = std::time::Instant::now();
         let g = di % groups;
         let scale = 4.0 / group_count[g].max(1) as f32;
@@ -2845,7 +2856,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             prof::add(&prof::GATHER, tg);
         }
         } // (the live direction)
-        if let Some(tx) = &contrib_tx {
+        if let (Some(tx), true) = (&contrib_tx, replay.is_none()) {
             // THE CONTRIBUTION of this direction: sel of the facing sub-samples, the occl bits, the probes
             let mut c = crate::contrib::DirContrib { sweep: prm.sweep, di: di as u32, n_subs: cur.len() as u32, ..Default::default() };
             c.occl_bits = vec![0u64; (cur.len() + 63) / 64];
@@ -3157,7 +3168,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
     }
     drop(contrib_tx);
     for h in contrib_writers { h.join().expect("contribution writer"); }
-    if prm.merge_contrib.is_some() { eprintln!("merge-contrib: sweep {}: {n_replayed} directions replayed in issue order", prm.sweep); }
+    if prm.merge_contrib.is_some() || prm.merge_ranges.is_some() { eprintln!("merge: sweep {}: {n_replayed} directions replayed in issue order{}", prm.sweep, if let Some((a, b)) = prm.dir_range { format!(" around the live range {a}..{b}") } else { String::new() }); }
     if let Some(dir) = &prm.contrib_out {
         if pack_mode {
             let entries = std::mem::take(&mut *pack_entries.lock().unwrap());
