@@ -24,7 +24,7 @@
 HttpServer@ server = null;
 const uint16 PORT = 29800;
 
-void Main() { StartServer(); }
+void Main() { StartServer(); LmArmFromStorage(); }
 
 void StartServer() {
     if (server !is null) return;
@@ -131,6 +131,8 @@ HttpResponse@ RouteRequests(const string &in type, const string &in route, dicti
     if (r == "/mobils") return HttpResponse(200, SceneMobils(qs));
     // the live forest instances of the vegetation items (TreeInst.as): /treeinst[?raw=1|info=1]
     if (r == "/treeinst") return HttpResponse(200, TreeInst(qs));
+    // the lightmapper's record array during a bake (LmRecords.as): /lmrecords[?info=1|src=L|arm=1|disarm=1|status=1]
+    if (r == "/lmrecords") return HttpResponse(200, LmRecords(qs));
     if (r == "/state") return HttpResponse(200, GetState());
     if (r == "/tree") return HttpResponse(200, DumpTree());
     if (r == "/dialogtree") return HttpResponse(200, DumpDialogTree());
