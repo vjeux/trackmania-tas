@@ -238,9 +238,54 @@ the set folded onto one hemisphere). A uniform **sphere** set with `Scale =
 4/N` makes `Σ_D Scale·max(0,n·D)` exactly 1 for a uniform environment
 (downward directions see the peeled ground = bounce, upward ones the sky);
 the underside readings (0.37–0.4 of the floor) say the fold is off for the
-campaign moods. The sweep order interleaves the list into ss² groups (ss =
-the supersample factor, 3 → 9; `FUN_140460270` round-robin) — order only.
-`PeelDirInW` = the list direction itself. The LCG
+campaign moods.
+
+**The ISSUE ORDER of a sweep** [DISASSEMBLY, RE child 5 2026-09-25;
+`SPlugGroupOfPointInSphere::Compute` 0x140460270 and
+`::InsertPointAt_Group_IndexInGroup` 0x14045fdc0; transcribed as
+`lightmap::dome::group_issue_order`, verified against the pwc-day capture]:
+`RenderLightIndirectBounces` (0x140230ac0 l.926–940) builds one
+`SPlugGroupOfPointInSphere` at `lm+0x918` per sweep over the ROTATED list
+(`+0x8` = `lm+0x4c8`, `+0x10` = N = `lm+0x4d0`, `+0` = G = ss² from
+`FUN_140201580`, ss = 0x141e6f260[q] = {1,2,3,3,3,3} unless
+`CHmsLightMapParam+0x128` overrides; nothing is built when ss < 2), and
+`RenderLightIndirectDome` (0x140233b50 l.238–246) issues, at issue index
+`i = lm+0x4a0`, the direction `list[order[i]]` with `order = grp+0x18` (the
+identity when `lm+0x48c < 2 && lm+0x490 < 2`). `Compute` fills `order` by
+rounds: `k = 0, 1, …`, within a round the groups `g = 0..G` (a group's size
+is `N/G + (g < N mod G)`), slot `G·k + g` — so issue index `i` is group
+`i mod G`, rank `i div G`. `InsertPointAt(g, k)` picks, among the points
+not yet placed (`grp+0x28` = point → slot, −1 free): `(k=0, g=0)` → point 0;
+`(k=0, g>0)` → the point with the LARGEST dot with point 0 (strict `>`,
+first wins: the first round is point 0 and its G−1 nearest neighbours);
+`(k≥1)` → the point whose largest dot with the points already in group g
+is SMALLEST (`maxss` over the members, strict `<`, first wins: a
+farthest-point greedy per group, so round 1 starts with the antipode of
+point 0). The dots are f32 `fl(fl(y·Y + x·X) + z·Z)` on the rotated
+values, and the rotation itself is `M = I; Rx·M; Ry·M; Rz·M` in f32 with
+the CRT `sinf/cosf` (`dome::rotation_matrix`, bit patterns pinned in its
+test) — near-ties (the 128-set's points 49/116 at round 0, 8/104 at
+round 2) flip with anything less exact. Checked: pwc2's 124 sweep-0 draws
+are an ordered subsequence of the true order (the capture's counter
+skipped 42 of the first 166 directions — the H-basis MRT alpha = the
+1/N count says so at all 59 banked snapshots: capture index 9 is issue
+10, 29 is 41, 123 is 165), pwc6's last ten sweep-0 directions are issues
+246..255 exactly, and pwc6's 127 sweep-1 directions are issues 1..127 of
+the 128-set's order exactly (its first block, set point 0, sits unrecorded
+in frame 7533's eid gap 13903–28208; the alpha count there starts at
+2/128). pwc1's frame 40648 saw set points 9 then 89 back to back = issues
+20, 21 of the order. **The 9 raster sub-samples index by the issue
+index**: `FUN_14023dde0` (top of every direction) sets `lm+0x494/+0x498 =
+(i mod ss², …) = (g mod ss, g div ss)` with `g = i mod ss²` — the group of
+the direction — and `FUN_14023de40` turns them into the ST offset
+`2·off/W, 2·off/H` with `off` = `FUN_140436200` (the ROTATED grid `a =
+(ix − (nx−1)/2)/nx, b = …, x = a + b/nx, y = b − a/nx`; in ninths of a
+texel g = 0..8 → (−4,−2) (−1,−3) (2,−4) (−3,1) (0,0) (3,−1) (−2,4) (1,3)
+(4,2), the capture's LM01_Trans_RasterSS cycle with y flipped) when the
+supersampled raster bitmap `lm+0x708` is absent (H-basis moods: `mood+0xbc`
+= 3 releases it, 0x140217e10 l.209–235), else `FUN_140436170` (the plain
+grid `(ix − (nx−1)/2)/nx`). The LCG block below is also chained by the
+issue index. `PeelDirInW` = the list direction itself. The LCG
 `FUN_140238b60` (seed 0x7d3fb6ac at index 0; `x' = (0x3039 − x·0x3e39b193)
 mod 2³² & 0x7fffffff`, `r = (x'>>16)/32767`, index k > 0 re-seeds from the
 saved state plus one discarded draw) produces per direction a 6-float
@@ -954,7 +999,8 @@ render lock needed; do that first for any new crash instead of guessing.
    and `up`.
 5. **Sky = the rendered sky dome over a uniform sphere set.** lmtool: 64
    cosine-weighted hemisphere rays × a fitted sky colour. Client: N = 256
-   directions of the PointsInSphere 256-set (order interleaved in 9 groups),
+   directions of the PointsInSphere 256-set (in the game's issue order:
+   `dome::group_issue_order`, §2.3),
    each an orthographic depth-peel; a texel that sees no surface along `D`
    sees `Sky_p(D)` = `SkyColor.dds` (u shifted by the sun azimuth) ×
    ScaleGrad0 + clouds layer + the two `Atmo` glow lobes around the sun,

@@ -962,7 +962,14 @@ fn run(a: Vec<String>) {
                     let counts = lightmap::dome::sweep_counts(q);
                     let n0 = counts.first().copied().unwrap_or(256);
                     let pp = f("--points").unwrap_or_else(lightmap::dome::default_path);
-                    if let Ok(ps) = lightmap::dome::PointSets::load(&pp) { if let Some(set) = ps.nearest(n0) { prm.sphere_dirs = std::sync::Arc::new(lightmap::dome::rotate_set(set)); eprintln!("peel: quality {q}, sweeps {:?}, first set {} directions (rotated)", counts, set.len()); } }
+                    // the directions come IN THE GAME'S ISSUE ORDER (RE child 5: SPlugGroupOfPointInSphere, ss²
+                    // interleaved groups — `dome::sweep_directions`; direction k carries raster sub-sample k mod 9),
+                    // so the accumulation after direction k is the game's after k; --table-order keeps the table's
+                    if let Ok(ps) = lightmap::dome::PointSets::load(&pp) {
+                        if has("--table-order") { if let Some(set) = ps.nearest(n0) { prm.sphere_dirs = std::sync::Arc::new(lightmap::dome::rotate_set(set)); } }
+                        else if let Some(d) = lightmap::dome::sweep_directions(&ps, q, 0, false) { prm.sphere_dirs = std::sync::Arc::new(d); }
+                        eprintln!("peel: quality {q}, sweeps {:?}, first set {} directions (rotated{})", counts, prm.sphere_dirs.len(), if has("--table-order") { ", table order" } else { ", the game's issue order" });
+                    }
                     // the lightmap-so-far is read back divided by BounceFactor (RE child 2 (d)); the Day-quarter
                     // test bake confirms a weak bounce (a pad under an 8 m plate: 51 % of open, walls 43 % of floors)
                     // the read-back divisor: 1 (DIFFERENTIAL, 2026-09-23 21:35Z — the pad-only test map's post
@@ -1456,7 +1463,10 @@ fn run(a: Vec<String>) {
                 if prm.peel {
                     if let Some(&n) = q_sweeps.get(it) {
                         let pp = f("--points").unwrap_or_else(lightmap::dome::default_path);
-                        if let Ok(ps) = lightmap::dome::PointSets::load(&pp) { if let Some(set) = ps.nearest(n) { p2.sphere_dirs = std::sync::Arc::new(lightmap::dome::rotate_set(set)); } }
+                        if let Ok(ps) = lightmap::dome::PointSets::load(&pp) {
+                            if has("--table-order") { if let Some(set) = ps.nearest(n) { p2.sphere_dirs = std::sync::Arc::new(lightmap::dome::rotate_set(set)); } }
+                            else if let Some(d) = lightmap::dome::sweep_directions(&ps, f("--quality").map(|s| s.parse().unwrap()).unwrap_or(3), it, false) { p2.sphere_dirs = std::sync::Arc::new(d); }
+                        }
                     }
                 }
                 if let Some(gm) = &game_manifest {
@@ -4885,6 +4895,27 @@ fn run(a: Vec<String>) {
                 let norms: Vec<f32> = ps.set(n).map(|s| s.iter().map(|p| (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt()).collect()).unwrap_or_default();
                 let (nmin, nmax) = norms.iter().fold((f32::MAX, f32::MIN), |(a, b), &x| (a.min(x), b.max(x)));
                 println!("  set {n}: {} points within 30° of +y (mean cosθ {mean_y:.4}; expected uniform (1+cos30)/2 = {:.4}); |p| {nmin:.4}..{nmax:.4}", c.len(), (1.0 + 30f64.to_radians().cos()) / 2.0);
+            }
+        }
+        "dome-order" => {
+            // lmtool dome-order [--quality Q] [--sweep S] [--points FILE] [--fold]: the game's ISSUE ORDER of a dome
+            // sweep (RE child 5: SPlugGroupOfPointInSphere) — one line per issue index: set index, raster sub-sample
+            // (ix, iy) and its rotated-grid offset in ninths of a texel, the direction
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let q: u32 = f("--quality").map(|s| s.parse().unwrap()).unwrap_or(3);
+            let sweep: usize = f("--sweep").map(|s| s.parse().unwrap()).unwrap_or(0);
+            let ps = lightmap::dome::PointSets::load(&f("--points").unwrap_or_else(lightmap::dome::default_path)).expect("point sets");
+            let n = *lightmap::dome::sweep_counts(q).get(sweep).expect("the quality has no such sweep");
+            let mut list = lightmap::dome::rotate_set(ps.nearest(n).expect("set"));
+            if a.iter().any(|x| x == "--fold") { lightmap::dome::fold_down(&mut list); }
+            let ss = lightmap::dome::supersample(q);
+            let order = lightmap::dome::issue_order(&list, ss);
+            println!("quality {q} sweep {sweep}: {} directions, {ss}² = {} interleaved groups; issue → set index, sub-sample (ix, iy), offset/9 texel, direction", list.len(), ss * ss);
+            for (i, &o) in order.iter().enumerate() {
+                let (ix, iy) = lightmap::dome::raster_subsample(i, ss);
+                let off = lightmap::dome::raster_offset_rotated(ix, iy, ss, ss);
+                let d = list[o as usize];
+                println!("{i:4} {o:4}  ({ix}, {iy}) ({:+.0}, {:+.0})  {:+.6} {:+.6} {:+.6}", off[0] * 9.0, off[1] * 9.0, d[0], d[1], d[2]);
             }
         }
         "conefit" => {

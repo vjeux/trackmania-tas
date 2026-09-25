@@ -9,6 +9,8 @@ pub mod bc6h;
 pub mod bvh;
 pub mod chartraster;
 pub mod dome;
+#[cfg(test)]
+mod dome_oracle;
 pub mod pack;
 pub mod passdiff;
 pub mod envcap;
