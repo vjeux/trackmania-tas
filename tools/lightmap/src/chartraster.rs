@@ -46,6 +46,12 @@ impl ChartRaster {
 /// `use_bounds` are the atlas conventions the rest of the baker uses (the PreLightGen uv bounds
 /// normalise the object's TexCoord1 to [0, 1]).
 pub fn raster_chart(scene: &Scene, ii: usize, w: u32, h: u32, ss: u32, flip_v: bool, use_bounds: bool) -> ChartRaster {
+    raster_chart_shifted(scene, ii, w, h, ss, flip_v, use_bounds, [0.0, 0.0])
+}
+
+/// `raster_chart` with the geometry shifted by `shift` layout pixels before the raster — the game's
+/// `LM01_Trans_RasterSS` sub-texel jitter (the pixel centre then samples the geometry at centre − shift).
+pub fn raster_chart_shifted(scene: &Scene, ii: usize, w: u32, h: u32, ss: u32, flip_v: bool, use_bounds: bool, shift: [f32; 2]) -> ChartRaster {
     let inst = &scene.instances[ii];
     let m = &scene.models[inst.model];
     let (u0, v0, su, sv) = match (use_bounds, m.plg_bounds) {
@@ -65,7 +71,7 @@ pub fn raster_chart(scene: &Scene, ii: usize, w: u32, h: u32, ss: u32, flip_v: b
                 let u = (uv[0] - u0) * su;
                 let v = (uv[1] - v0) * sv;
                 let v = if flip_v { 1.0 - v } else { v };
-                [fss * (0.5 + u * (w as f32 - 1.0)), fss * (0.5 + v * (h as f32 - 1.0))]
+                [fss * (0.5 + u * (w as f32 - 1.0) + shift[0]), fss * (0.5 + v * (h as f32 - 1.0) + shift[1])]
             })
             .collect();
         let wp = [xf_point(&inst.xf, t.p[0]), xf_point(&inst.xf, t.p[1]), xf_point(&inst.xf, t.p[2])];

@@ -765,6 +765,20 @@ fn run(a: Vec<String>) {
                     }
                 }
             }
+            // --env-from PASSCAP_DIR: the game's environment block read off the capture (the sea box and the
+            // four terrain patches as black occluders; the sky dome is `dome_radiance`) in place of the
+            // Scene3d decoration
+            if let Some(dir) = f("--env-from") {
+                match lightmap::envcap::load_env(std::path::Path::new(&dir)) {
+                    Ok(meshes) => {
+                        let n_before = scene.decor.len();
+                        scene.decor.clear();
+                        scene.decor.extend(lightmap::envcap::env_decor(&meshes));
+                        eprintln!("env-from {dir}: {} environment triangles replace the {n_before} decoration triangles", scene.decor.len());
+                    }
+                    Err(e) => eprintln!("env-from {dir}: {e} (the decoration stays)"),
+                }
+            }
             // THE ZONE TILES the game regenerates from the genealogy (chunk 0x03043043: one CurrentZoneId per
             // cell; the tiny maps' BlueBay genealogy is Sea ×4096) — the Scene3d meshes leave the whole map
             // area open (the Water and WarpSand have a hole over 0..2048 × 0..2048), the tiles fill it. Each
@@ -806,8 +820,8 @@ fn run(a: Vec<String>) {
                     let mut quad = |cx: u32, cz: u32, y: f32, alb: [f32; 3], water: bool| {
                         let (x0, z0) = (cx as f32 * 32.0, cz as f32 * 32.0);
                         let q = [[x0, y, z0], [x0 + 32.0, y, z0], [x0 + 32.0, y, z0 + 32.0], [x0, y, z0 + 32.0]];
-                        scene.decor.push(lightmap::geometry::DecorTri { p: [q[0], q[2], q[1]], albedo: alb, water });
-                        scene.decor.push(lightmap::geometry::DecorTri { p: [q[0], q[3], q[2]], albedo: alb, water });
+                        scene.decor.push(lightmap::geometry::DecorTri { p: [q[0], q[2], q[1]], albedo: alb, water, env: false, env_far_only: false });
+                        scene.decor.push(lightmap::geometry::DecorTri { p: [q[0], q[3], q[2]], albedo: alb, water, env: false, env_far_only: false });
                     };
                     // THE CAPTURE (2026-09-24, passcap-info on the world peel's layer 0): the game's zone tile is ONE flat
                     // surface at y = 3.76 + bias ≈ 4.0 = the SEABED, 3 m under the collection's sea level — the water
@@ -831,8 +845,8 @@ fn run(a: Vec<String>) {
                 let ga: f32 = f("--ground-bounce").map(|s| s.parse().unwrap()).unwrap_or(0.37);
                 let (lo, hi) = (-4096.0f32, 8192.0f32);
                 let q = [[lo, gy, lo], [hi, gy, lo], [hi, gy, hi], [lo, gy, hi]];
-                scene.decor.push(lightmap::geometry::DecorTri { p: [q[0], q[1], q[2]], albedo: [ga; 3], water: false });
-                scene.decor.push(lightmap::geometry::DecorTri { p: [q[0], q[2], q[3]], albedo: [ga; 3], water: false });
+                scene.decor.push(lightmap::geometry::DecorTri { p: [q[0], q[1], q[2]], albedo: [ga; 3], water: false, env: false, env_far_only: false });
+                scene.decor.push(lightmap::geometry::DecorTri { p: [q[0], q[2], q[3]], albedo: [ga; 3], water: false, env: false, env_far_only: false });
                 eprintln!("decoration: none — a ground quad at y = {gy} (albedo {ga}) stands in");
             }
             eprintln!("scene: {} models, {} instances, {} triangles (+ {} decoration) ({:.1}s)", scene.models.len(), scene.instances.len(), scene.tri_count(), scene.decor.len(), t0.elapsed().as_secs_f32());
@@ -1241,7 +1255,7 @@ fn run(a: Vec<String>) {
                 // the product path stays f32 until the capture says otherwise
                 prm.quant_peel = lightmap::gpufmt::Quant::None; prm.quant_ilightdir = lightmap::gpufmt::Quant::None; prm.quant_accum = lightmap::gpufmt::Quant::None;
             }
-            prm.rounding = match f("--rounding").as_deref() { Some("rtz") | Some("truncate") => lightmap::gpufmt::Rounding::Truncate, _ => lightmap::gpufmt::Rounding::NearestEven };
+            prm.rounding = match f("--rounding").as_deref() { Some("rtne") | Some("nearest") => lightmap::gpufmt::Rounding::NearestEven, _ => lightmap::gpufmt::Rounding::Truncate }; // the capture: the R11G11B10 target conversion truncates (the dome colours land exactly with it, one quantum high with RTNE)
             if let Some(v) = f("--depth-bias") { let p: Vec<&str> = v.split(',').collect(); prm.depth_bias = (p[0].trim().parse().unwrap(), p.get(1).map(|s| s.trim().parse().unwrap()).unwrap_or(1.0)); }
             prm.dome_layer = !has("--no-dome-layer");
             // the capture (2026-09-24): DepthClip ON, D16 depth target, viewport inset by 1 px (the Bias rows'
@@ -1256,14 +1270,21 @@ fn run(a: Vec<String>) {
             if let Some(k) = f("--hbasis-kappa") { prm.hbasis_kappa = k.parse().expect("--hbasis-kappa"); }
             prm.sweep0_sun = has("--sweep0-sun");
             prm.dome_exact = !has("--dome-per-direction");
+            // --raster-jitter / --no-raster-jitter: the game's per-direction LM raster offsets (default on under
+            // --game-peel with --ss 1); --jitter-sign +1|-1 (the sampling side of the offset, under test)
+            prm.raster_jitter = if has("--no-raster-jitter") { false } else if has("--raster-jitter") { true } else { prm.game_peel };
+            if let Some(v) = f("--jitter-sign") { prm.jitter_sign = v.parse().expect("--jitter-sign"); }
+            if let Some(v) = f("--max-dirs") { prm.max_dirs = v.parse().expect("--max-dirs"); }
             prm.obj_base = base;
             let game_manifest: Option<lightmap::passdump::Manifest> = f("--frustum-from").map(|p| {
                 let txt = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("--frustum-from {p}: {e}"));
                 lightmap::passdiff::read_manifest(&txt).unwrap_or_else(|e| panic!("--frustum-from {p}: {e}"))
             });
             if let Some(gm) = &game_manifest {
-                // the sun shadow map's frustum and the per-direction peel frustums of sweep 0 (later sweeps below)
-                if let Some(e) = gm.passes.iter().find(|e| e.pass == "sun_shadow") { if let Some(fr) = &e.frustum { prm.shadow_frustum = Some(fr.clone()); eprintln!("frustum-from: the sun shadow map's frustum adopted (centre {:?}, half {:?})", fr.center, fr.half); } }
+                // the sun shadow map's frustum (only with --shadow-frustum-from-capture: the sun pass's
+                // conventions are the baker's transcription; the port's own frame otherwise) and the
+                // per-direction peel frustums of sweep 0 (later sweeps below)
+                if has("--shadow-frustum-from-capture") { if let Some(e) = gm.passes.iter().find(|e| e.pass == "sun_shadow") { if let Some(fr) = &e.frustum { prm.shadow_frustum = Some(fr.clone()); eprintln!("frustum-from: the sun shadow map's frustum adopted (centre {:?}, half {:?})", fr.center, fr.half); } } }
                 let fs = lightmap::passdiff::peel_frustums_for(gm, 0, &prm.sphere_dirs);
                 if !fs.is_empty() { eprintln!("frustum-from: sweep 0: {} directions' peels adopted ({} peels per direction)", fs.len(), fs.iter().map(|v| v.len()).max().unwrap_or(0)); prm.frustums = Some(std::sync::Arc::new(fs)); }
                 if let Some(e) = gm.passes.iter().find(|e| e.pass == "peel_depth") { if e.width > 0 && e.width != prm.peel_res { eprintln!("frustum-from: peel resolution {} → {}", prm.peel_res, e.width); prm.peel_res = e.width; } }
@@ -1295,6 +1316,8 @@ fn run(a: Vec<String>) {
                 dmp.convention("obj_base", serde_json::json!(base));
                 dmp.convention("game_peel", serde_json::json!(prm.game_peel));
                 dmp.convention("sweep0_sun", serde_json::json!(prm.sweep0_sun));
+                dmp.convention("raster_jitter", serde_json::json!({"on": prm.raster_jitter, "cycle_texels_x9": prm.jitter_cycle, "sign": prm.jitter_sign, "rule": "direction k (issue order) at cycle[k mod 9]/9 layout texels; the sun pass walks all nine × 1/9"}));
+                dmp.convention("dome", serde_json::json!(if prm.dome_exact { "transcribed dome per peel pixel (VS 16773 / PS 16774, mesh e001051 at the world origin)" } else { "one sky colour per direction" }));
                 dmp.convention("accumulate", serde_json::json!(if prm.accum_hbasis { format!("H-basis C0: E += (4π/N)·P(n·D)·L × κ, P = 0.093506(3s²−1) + 0.398928 s + 0.199472, κ = {}", prm.hbasis_kappa) } else { "RNM: E += 4/N·max(0, n·D)·L".to_string() }));
                 dmp.convention("frustum_source", serde_json::json!(if game_manifest.is_some() { "the captured MANIFEST (--frustum-from)" } else { "the receivers' bbox + 1 m, square, (res − 1) px over the larger extent; the far plane pushed out to every occluder (ground, sea, decoration)" }));
                 prm.dump = Some(std::sync::Arc::new(std::sync::Mutex::new(dmp)));
@@ -1383,7 +1406,7 @@ fn run(a: Vec<String>) {
                 for (d, g, di, pi, fr) in &domes {
                     let o_old = lightmap::bake::sky_radiance(&prm, *d);
                     let centre = fr.as_ref().map(|f| f.center).unwrap_or([1024.0, 71.0, 1024.0]);
-                    let o = match &prm.sky_grad { Some(sg) => { let v = sg.dome_radiance(centre, *d, centre); lightmap::gpufmt::quantise_r11g11b10(v, lightmap::gpufmt::Rounding::NearestEven) } None => o_old };
+                    let o = match &prm.sky_grad { Some(sg) => { let v = sg.dome_radiance(centre, *d, centre); lightmap::gpufmt::quantise_r11g11b10(v, prm.rounding) } None => o_old };
                     let r = [o[0] / g[0].max(1e-6), o[1] / g[1].max(1e-6), o[2] / g[2].max(1e-6)];
                     let r_old = [o_old[0] / g[0].max(1e-6), o_old[1] / g[1].max(1e-6), o_old[2] / g[2].max(1e-6)];
                     println!("| {di} / {pi} | ({:.3}, {:.3}, {:.3}) | {:+.1}° | ({:.0}, {:.0}, {:.0}) | ({:.4}, {:.4}, {:.4}) | ({:.4}, {:.4}, {:.4}) | ({:.3}, {:.3}, {:.3}) | ({:.4}, {:.4}, {:.4}) | ({:.3}, {:.3}, {:.3}) |", d[0], d[1], d[2], d[1].asin().to_degrees(), centre[0], centre[1], centre[2], g[0], g[1], g[2], o[0], o[1], o[2], r[0], r[1], r[2], o_old[0], o_old[1], o_old[2], r_old[0], r_old[1], r_old[2]);
@@ -3306,6 +3329,7 @@ fn run(a: Vec<String>) {
             if let Some(v) = f("--threshold") { opts.pass_threshold = v.parse().expect("--threshold"); }
             opts.game_map = f("--game-map");
             opts.game_manifest = f("--game-manifest");
+            opts.delta_from = f("--delta-from").map(|v| v.parse().expect("--delta-from"));
             let heat = f("--heat");
             opts.keep_pairs = heat.is_some();
             let t0 = std::time::Instant::now();

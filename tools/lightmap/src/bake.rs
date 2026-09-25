@@ -168,6 +168,15 @@ pub struct BakeParams {
     /// The transcribed sky dome per peel pixel (the ellipsoid at the world origin, the mesh's uv, the
     /// game's VS/PS) instead of one sky colour per direction.
     pub dome_exact: bool,
+    /// The game's per-direction LM raster jitter: direction k (issue order) rasterises the lightmap quad
+    /// shifted by `jitter_cycle[k mod 9]` layout texels (LM01_Trans_RasterSS, read off the capture: the
+    /// sun pass walks the nine, the sweep one per direction); `jitter_sign` = −1 samples the geometry at
+    /// centre − shift (the geometry moved by +shift), +1 the mirror reading.
+    /// The harness: stop a sweep after this many directions (0 = all).
+    pub max_dirs: usize,
+    pub raster_jitter: bool,
+    pub jitter_cycle: [[f32; 2]; 9],
+    pub jitter_sign: f32,
 }
 
 impl Default for BakeParams {
@@ -243,10 +252,16 @@ impl Default for BakeParams {
             depth_clip: false,
             depth_bits: 16,
             accum_hbasis: false,
-            hbasis_kappa: 0.398_942_28,
+            // the game stores 2·C0 (the finalisation's PS 1109 ScaleSrc 2; the baker's encode reading) and the
+            // port's decode carries the 1/√(2π) of the frame's MaxHDR record: E_port = 2·C0/√(2π)
+            hbasis_kappa: 0.797_884_56,
             sweep0_sun: false,
             lightsum_after: Default::default(),
             dome_exact: true,
+            max_dirs: 0,
+            raster_jitter: false,
+            jitter_cycle: [[-4.0, 2.0], [-1.0, 3.0], [2.0, 4.0], [-3.0, -1.0], [0.0, 0.0], [3.0, 1.0], [-2.0, -4.0], [1.0, -3.0], [4.0, -2.0]],
+            jitter_sign: -1.0,
         }
     }
 }

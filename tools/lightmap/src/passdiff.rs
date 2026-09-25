@@ -227,6 +227,13 @@ pub fn read_manifest(txt: &str) -> Result<Manifest, String> {
             }
         }
     }
+    // a per-direction entry without a sweep index belongs to the first sweep (the capture's directions
+    // are the 256-set's)
+    for e in m.passes.iter_mut() {
+        if e.sweep.is_none() && e.direction.is_some() && matches!(e.pass.as_str(), "peel_depth" | "peel_color" | "peel_sky" | "ilightdir" | "hbasis0" | "hbasis1" | "hbasis2" | "hbasis3" | "probe" | "probe_aux" | "probe_fold") {
+            e.sweep = Some(0);
+        }
+    }
     // (a capture's entries carry their run's name; our own dump's indices are already one space)
     if m.passes.iter().any(|e| e.capture.is_some()) {
         reindex_directions(&mut m);
@@ -772,6 +779,11 @@ pub struct Stats {
     pub mean_ref: f64,
     /// Where the worst texel is (x, y, channel, game value, our value).
     pub worst: (u32, u32, u32, f32, f32),
+    /// Per channel: the mean of the game's values and of ours (the ratio per channel tells a colour cast
+    /// from a level difference).
+    pub ch_game: [f64; 4],
+    pub ch_ours: [f64; 4],
+    pub ch_n: [usize; 4],
 }
 
 impl Stats {
@@ -799,6 +811,7 @@ pub fn compare(game: &Buf, ours: &Buf, channels: u32, tol: f32, floor: f32, stri
                     }
                     let d = b - a;
                     s.n += 1;
+                    if (c as usize) < 4 { s.ch_game[c as usize] += a as f64; s.ch_ours[c as usize] += b as f64; s.ch_n[c as usize] += 1; }
                     sum_abs += d.abs() as f64;
                     sum_sq += (d as f64) * (d as f64);
                     sum_signed += d as f64;
@@ -826,7 +839,7 @@ pub fn compare(game: &Buf, ours: &Buf, channels: u32, tol: f32, floor: f32, stri
 }
 
 /// The pipeline order of the passes.
-pub const PIPELINE: &[&str] = &["lm_pos", "lm_nrm", "mdiffuse", "sun_shadow", "sun_direct", "ilightinput", "peel_sky", "peel_depth", "peel_color", "ilightdir", "lightsum", "lightsum_resolved", "probe_skyvis", "probe_ilightdir", "probe_isvalid", "hbasis0", "hbasis1", "hbasis2", "hbasis3", "final_hdr", "final_atlas"];
+pub const PIPELINE: &[&str] = &["lm_pos", "lm_nrm", "mdiffuse", "sun_shadow", "sun_direct", "ilightinput", "peel_sky_depth", "peel_sky", "peel_depth", "peel_color", "ilightdir", "lightsum", "lightsum_resolved", "probe_skyvis", "probe_ilightdir", "probe_isvalid", "hbasis0", "hbasis1", "hbasis2", "hbasis3", "final_hdr", "final_atlas"];
 
 pub fn pipeline_rank(pass: &str) -> usize {
     PIPELINE.iter().position(|p| *p == pass).unwrap_or(PIPELINE.len())
@@ -1029,18 +1042,20 @@ pub struct Opts {
     pub game_map: Option<String>,
     /// The capture manifest to read instead of GAME_DIR/MANIFEST.json (a frozen copy).
     pub game_manifest: Option<String>,
+    /// Compare accumulation snapshots as increments since the snapshot after this direction.
+    pub delta_from: Option<u32>,
     pub keep_pairs: bool,
     pub quiet: bool,
 }
 
 impl Default for Opts {
     fn default() -> Self {
-        Opts { hbasis_scale: 1.0, game_manifest: None, pass: None, tol: 0.02, floor: 1e-3, stride: 1, pass_threshold: 99.0, game_map: None, keep_pairs: true, quiet: false }
+        Opts { hbasis_scale: 1.0, game_manifest: None, delta_from: None, pass: None, tol: 0.02, floor: 1e-3, stride: 1, pass_threshold: 99.0, game_map: None, keep_pairs: true, quiet: false }
     }
 }
 
 fn is_depth_pass(p: &str) -> bool {
-    p == "peel_depth" || p == "sun_shadow"
+    p == "peel_depth" || p == "sun_shadow" || p == "peel_sky_depth"
 }
 
 /// Match the game's direction list to ours (nearest vector) for a sweep: game index → our index.
@@ -1286,8 +1301,22 @@ pub fn run(game_root: &std::path::Path, ours_root: &std::path::Path, opts: &Opts
         };
         let ge = &game.passes[ge_i];
         let mut transforms: Vec<String> = Vec::new();
-        let ob = match load_entry(ours_root, oe) { Ok(b) => b, Err(e) => { eprintln!("passdiff: ours {}: {e}", oe.file); continue; } };
+        let mut ob = match load_entry(ours_root, oe) { Ok(b) => b, Err(e) => { eprintln!("passdiff: ours {}: {e}", oe.file); continue; } };
         let mut gb = match load_entry(game_root, ge) { Ok(b) => b, Err(e) => { eprintln!("passdiff: game {}: {e}", ge.file); continue; } };
+        // --delta-from J: an accumulation snapshot compared as its INCREMENT since the snapshot after
+        // direction J (both sides) — the directions between the two, isolated
+        if let (Some(j), "lightsum", Some(k)) = (opts.delta_from, oe.pass.as_str(), oe.direction) {
+            if k <= j { continue; }
+            let op = ours.passes.iter().find(|e| e.pass == "lightsum" && e.sweep == oe.sweep && e.direction == Some(j) && e.chart.as_ref().map(|c| c.obj) == obj);
+            let gp = game_idx.get(&("lightsum".to_string(), oe.sweep, Some(j), None, None, None)).and_then(pick).map(|i| &game.passes[i]);
+            let (Some(op), Some(gp)) = (op, gp) else { continue };
+            let (Ok(opb), Ok(gpb)) = (load_entry(ours_root, op), load_entry(game_root, gp)) else { continue };
+            if opb.data.len() == ob.data.len() && gpb.data.len() == gb.data.len() {
+                for (a, b) in ob.data.iter_mut().zip(opb.data.iter()) { *a -= *b; }
+                for (a, b) in gb.data.iter_mut().zip(gpb.data.iter()) { *a -= *b; }
+                transforms.push(format!("delta_from(direction {j}: the increment of directions {}..={k})", j + 1));
+            }
+        }
         if let Some((s, name)) = pre_scale { for v in gb.data.iter_mut() { *v *= s; } transforms.push(name.into()); }
         let depth = is_depth_pass(&oe.pass);
         let channels = if depth { 1 } else { ob.channels.min(gb.channels).min(3) };
@@ -1405,7 +1434,10 @@ pub fn run(game_root: &std::path::Path, ours_root: &std::path::Path, opts: &Opts
             }
         }
         // the bias line (a systematic offset is a convention smell: depth bias, a scale, the sky ×2)
-        let mut note = if stats.n > 0 && stats.mean_ref > 0.0 && stats.mean_signed.abs() > 0.25 * stats.mean_abs && stats.mean_abs > opts.floor as f64 { format!("systematic: mean Δ {:+.4} ({:+.1} % of the game's mean {:.4})", stats.mean_signed, 100.0 * stats.mean_signed / stats.mean_ref, stats.mean_ref) } else { String::new() };
+        let mut note = if stats.n > 0 && stats.mean_ref > 0.0 && stats.mean_signed.abs() > 0.25 * stats.mean_abs && stats.mean_abs > opts.floor as f64 {
+            let per_ch: Vec<String> = (0..channels as usize).filter(|&c| stats.ch_n[c] > 0 && stats.ch_game[c] != 0.0).map(|c| format!("{:.3}", stats.ch_ours[c] / stats.ch_game[c])).collect();
+            format!("systematic: mean Δ {:+.4} ({:+.1} % of the game's mean {:.4}; ours/game per channel {})", stats.mean_signed, 100.0 * stats.mean_signed / stats.mean_ref, stats.mean_ref, per_ch.join("/"))
+        } else { String::new() };
         if !coverage_note.is_empty() { if !note.is_empty() { note += "; "; } note += &coverage_note; }
         compared_passes.insert(oe.pass.clone());
         rows.push(Row { pass: oe.pass.clone(), sweep: oe.sweep, direction: oe.direction, peel: oe.peel, layer: oe.layer, chart: obj, stats, transforms, note, pair: if opts.keep_pairs { Some((g, o, channels)) } else { None } });

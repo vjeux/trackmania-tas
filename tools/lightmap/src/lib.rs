@@ -11,6 +11,7 @@ pub mod chartraster;
 pub mod dome;
 pub mod pack;
 pub mod passdiff;
+pub mod envcap;
 pub mod passdump;
 pub mod peel;
 pub mod png;

@@ -1,0 +1,181 @@
+//! The game's ENVIRONMENT BLOCK of a peel, read off the capture (pwc-day frame 127448, the world peel of
+//! its first direction): the sea box (draw eid 1009 — an inverted box, black on its GPU-back faces), the
+//! four terrain patches (eids 1028 / 1033 / 1071 / 1076, VS 16748: world = VB position × GbxVisualToWorld
+//! = identity) and — elsewhere — the sky dome (`skygrad::dome_radiance`). The terrain's colour in the
+//! peel is black in the first sweep (its ILightInput is 0 there); what it shows in later sweeps is not
+//! transcribed yet.
+//!
+//! Sources: `logs/mesh-frame127448.json` (input layouts, VB files), `mesh/frame127448/e00XXXX_vb0_*.bin.gz`
+//! (VB bytes), `env/frame127448/mesh/e00XXXX_vsout.bin` + `_vsout_indices.bin` (post-VS positions in the
+//! peel's clip space and the index buffer — the patches whose VB was not banked are recovered by inverting
+//! the peel camera `GbxV_WorldPrCamera` of that draw, an affine orthographic map).
+
+use crate::geometry::{DecorTri, V3};
+use std::path::Path;
+
+/// A world-space triangle list with a name, for the peel scene.
+pub struct EnvMesh {
+    pub name: String,
+    pub tris: Vec<[V3; 3]>,
+}
+
+fn read_maybe_gz(p: &Path) -> Result<Vec<u8>, String> {
+    if p.exists() {
+        return std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()));
+    }
+    let gz = p.with_extension(format!("{}.gz", p.extension().and_then(|e| e.to_str()).unwrap_or("")));
+    if gz.exists() {
+        let d = std::fs::read(&gz).map_err(|e| format!("{}: {e}", gz.display()))?;
+        return crate::passdiff::gunzip(&d);
+    }
+    Err(format!("{}: not found (nor .gz)", p.display()))
+}
+
+fn u16s(b: &[u8]) -> Vec<u16> {
+    b.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect()
+}
+
+fn f32_at(b: &[u8], off: usize) -> f32 {
+    f32::from_le_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]])
+}
+
+/// Invert the row-vector affine map clip = [p, 1]·M (M 4×4, the last column (0,0,0,1)) for p.
+fn unproject_affine(m: &[[f32; 4]; 4], clip: [f32; 3]) -> V3 {
+    // p·A + t = c  →  p = (c − t)·A⁻¹, A = the 3×3 of rows 0..2, t = row 3
+    let a = [[m[0][0] as f64, m[0][1] as f64, m[0][2] as f64], [m[1][0] as f64, m[1][1] as f64, m[1][2] as f64], [m[2][0] as f64, m[2][1] as f64, m[2][2] as f64]];
+    let c = [clip[0] as f64 - m[3][0] as f64, clip[1] as f64 - m[3][1] as f64, clip[2] as f64 - m[3][2] as f64];
+    // solve p·A = c  ⇔  Aᵀ·pᵀ = cᵀ
+    let at = [[a[0][0], a[1][0], a[2][0]], [a[0][1], a[1][1], a[2][1]], [a[0][2], a[1][2], a[2][2]]];
+    let det = at[0][0] * (at[1][1] * at[2][2] - at[1][2] * at[2][1]) - at[0][1] * (at[1][0] * at[2][2] - at[1][2] * at[2][0]) + at[0][2] * (at[1][0] * at[2][1] - at[1][1] * at[2][0]);
+    let inv = |i: usize, j: usize| -> f64 {
+        // cofactor-based inverse element (j, i)
+        let (r0, r1) = ((i + 1) % 3, (i + 2) % 3);
+        let (c0, c1) = ((j + 1) % 3, (j + 2) % 3);
+        (at[r0][c0] * at[r1][c1] - at[r0][c1] * at[r1][c0]) / det
+    };
+    let mut p = [0f64; 3];
+    for i in 0..3 {
+        p[i] = c[0] * inv(0, i) + c[1] * inv(1, i) + c[2] * inv(2, i);
+    }
+    [p[0] as f32, p[1] as f32, p[2] as f32]
+}
+
+/// Load the environment meshes of the capture under `passcap` (the pwc-day layout).
+pub fn load_env(passcap: &Path) -> Result<Vec<EnvMesh>, String> {
+    let frame = 127448u32;
+    let mesh_json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(passcap.join(format!("logs/mesh-frame{frame}.json"))).map_err(|e| format!("mesh json: {e}"))?).map_err(|e| format!("mesh json: {e}"))?;
+    // the peel camera of the environment draws (any of them shares it): GbxV_WorldPrCamera from draws.json
+    let draws_gz = std::fs::read(passcap.join(format!("logs/draws-frame{frame}.json.gz"))).map_err(|e| format!("draws: {e}"))?;
+    let draws: serde_json::Value = serde_json::from_slice(&crate::passdiff::gunzip(&draws_gz)?).map_err(|e| format!("draws json: {e}"))?;
+    let mut cam: Option<[[f32; 4]; 4]> = None;
+    if let Some(arr) = draws.as_array() {
+        for a in arr {
+            if a.get("eid").and_then(|v| v.as_u64()) == Some(1028) {
+                if let Some(m) = a.pointer("/Vertex/cbuffers/SceneV/GbxV_WorldPrCamera").and_then(|v| v.as_array()) {
+                    let mut out = [[0f32; 4]; 4];
+                    for (i, row) in m.iter().enumerate().take(4) {
+                        for (j, x) in row.as_array().into_iter().flatten().enumerate().take(4) {
+                            out[i][j] = x.as_f64().unwrap_or(0.0) as f32;
+                        }
+                    }
+                    cam = Some(out);
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    // (eid, name): the sea box and the four terrain patches
+    for (eid, name) in [(1009u32, "sea_box"), (1028, "terrain_0"), (1033, "terrain_1"), (1071, "terrain_2"), (1076, "terrain_3")] {
+        // indices: the vsout index buffer (u16), from either dump location
+        let idx_bytes = read_maybe_gz(&passcap.join(format!("env/frame{frame}/mesh/e{eid:06}_vsout_indices.bin"))).or_else(|_| read_maybe_gz(&passcap.join(format!("mesh/frame{frame}/e{eid:06}_vsout_indices.bin"))))?;
+        let indices = u16s(&idx_bytes);
+        // positions: the VB (world space, VisualToWorld = identity) when banked, else the post-VS clip positions
+        // inverted through the peel camera
+        let mut positions: Vec<V3> = Vec::new();
+        let entry = mesh_json.as_array().and_then(|a| a.iter().find(|e| e.get("eid").and_then(|v| v.as_u64()) == Some(eid as u64)));
+        let mut from_vb = false;
+        if let Some(e) = entry {
+            if let Some(vb) = e.get("vertex_buffers").and_then(|v| v.as_array()).and_then(|v| v.first()) {
+                let file = vb.get("file").and_then(|v| v.as_str()).unwrap_or("");
+                let stride = vb.get("stride").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                let pos_off = e.get("input_layout").and_then(|v| v.as_array()).and_then(|l| l.iter().find(|x| x.get("semantic").and_then(|s| s.as_str()) == Some("POSITION"))).and_then(|x| x.get("offset")).and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                if let Ok(bytes) = read_maybe_gz(&passcap.join(format!("mesh/frame{frame}/{file}"))) {
+                    if stride >= 12 {
+                        let n = bytes.len() / stride;
+                        for i in 0..n {
+                            let o = i * stride + pos_off;
+                            positions.push([f32_at(&bytes, o), f32_at(&bytes, o + 4), f32_at(&bytes, o + 8)]);
+                        }
+                        from_vb = true;
+                    }
+                }
+            }
+        }
+        if !from_vb {
+            let Some(m) = &cam else { return Err("no GbxV_WorldPrCamera at eid 1028 in draws.json".into()) };
+            let vs = read_maybe_gz(&passcap.join(format!("env/frame{frame}/mesh/e{eid:06}_vsout.bin")))?;
+            // the post-VS stride: from mesh json (vsout.vertexByteStride) else 96 (the terrain's), 16 (the box's)
+            let stride = entry.and_then(|e| e.pointer("/vsout/vertexByteStride")).and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(if eid == 1009 { 16 } else { 96 });
+            let n = vs.len() / stride;
+            for i in 0..n {
+                let o = i * stride;
+                let clip = [f32_at(&vs, o), f32_at(&vs, o + 4), f32_at(&vs, o + 8)];
+                positions.push(unproject_affine(m, clip));
+            }
+        }
+        let mut tris = Vec::new();
+        for t in indices.chunks_exact(3) {
+            let (a, b, c) = (t[0] as usize, t[1] as usize, t[2] as usize);
+            if a < positions.len() && b < positions.len() && c < positions.len() {
+                tris.push([positions[a], positions[b], positions[c]]);
+            }
+        }
+        let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+        for p in &positions { for k in 0..3 { lo[k] = lo[k].min(p[k]); hi[k] = hi[k].max(p[k]); } }
+        eprintln!("env: {name} (eid {eid}): {} vertices ({}), {} triangles, bbox ({:.1}, {:.1}, {:.1})..({:.1}, {:.1}, {:.1})", positions.len(), if from_vb { "VB, world space" } else { "post-VS, un-projected" }, tris.len(), lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]);
+        out.push(EnvMesh { name: name.into(), tris });
+    }
+    Ok(out)
+}
+
+/// The environment as peel occluders: black (the first sweep's ILightInput), not water.
+pub fn env_decor(meshes: &[EnvMesh]) -> Vec<DecorTri> {
+    let mut out = Vec::new();
+    for m in meshes {
+        let is_box = m.name == "sea_box";
+        // the box's centre, to orient every face's winding outward
+        let centre = if is_box {
+            let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+            for t in &m.tris { for p in t { for k in 0..3 { lo[k] = lo[k].min(p[k]); hi[k] = hi[k].max(p[k]); } } }
+            [(lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5, (lo[2] + hi[2]) * 0.5]
+        } else { [0.0; 3] };
+        for t in &m.tris {
+            let mut tri = *t;
+            if is_box {
+                let e1 = [tri[1][0] - tri[0][0], tri[1][1] - tri[0][1], tri[1][2] - tri[0][2]];
+                let e2 = [tri[2][0] - tri[0][0], tri[2][1] - tri[0][1], tri[2][2] - tri[0][2]];
+                let n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+                let c = [(tri[0][0] + tri[1][0] + tri[2][0]) / 3.0 - centre[0], (tri[0][1] + tri[1][1] + tri[2][1]) / 3.0 - centre[1], (tri[0][2] + tri[1][2] + tri[2][2]) / 3.0 - centre[2]];
+                if n[0] * c[0] + n[1] * c[1] + n[2] * c[2] < 0.0 { tri.swap(1, 2); }
+            }
+            out.push(DecorTri { p: tri, albedo: [0.0; 3], water: false, env: true, env_far_only: is_box });
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unproject_inverts_a_row_vector_affine_map() {
+        let m = [[2.0, 0.0, 0.0, 0.0], [0.0, 3.0, 0.0, 0.0], [0.0, 0.0, 0.5, 0.0], [1.0, -2.0, 4.0, 1.0]];
+        let p = [3.0f32, -1.0, 7.0];
+        let clip = [p[0] * m[0][0] + m[3][0], p[1] * m[1][1] + m[3][1], p[2] * m[2][2] + m[3][2]];
+        let q = unproject_affine(&m, clip);
+        for k in 0..3 {
+            assert!((q[k] - p[k]).abs() < 1e-4, "{q:?} vs {p:?}");
+        }
+    }
+}

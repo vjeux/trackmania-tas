@@ -336,6 +336,12 @@ pub struct DecorTri {
     pub albedo: [f32; 3],
     /// A water surface: it also mirrors the sky (the peel reads the sky along the reflected direction).
     pub water: bool,
+    /// Part of the game's ENVIRONMENT render (sea box, terrain): drawn once with the sky dome as the
+    /// peel's first layer (nearest env surface wins, black), never as a geometry layer.
+    pub env: bool,
+    /// The sea box: only its FAR faces are drawn (the PS discards front faces) — the triangle's winding
+    /// is outward, and a face whose outward normal points along the view direction is a far face.
+    pub env_far_only: bool,
 }
 
 /// Load a Wavefront OBJ (v / f lines, polygons fanned; `usemtl NAME` selects the albedo by the
@@ -367,7 +373,7 @@ pub fn load_obj_decor(path: &str, scale: f32, offset: V3) -> Result<Vec<DecorTri
                 for k in 1..idx.len().saturating_sub(1) {
                     let (a, b, c) = (idx[0], idx[k], idx[k + 1]);
                     if a < verts.len() && b < verts.len() && c < verts.len() {
-                        out.push(DecorTri { p: [verts[a], verts[b], verts[c]], albedo, water });
+                        out.push(DecorTri { p: [verts[a], verts[b], verts[c]], albedo, water, env: false, env_far_only: false });
                     }
                 }
             }
