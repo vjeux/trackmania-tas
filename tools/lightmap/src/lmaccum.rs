@@ -527,6 +527,7 @@ pub fn frag_model() -> FragModel {
 pub fn run_hbasis_probe(meshes: &[LmMesh], instances: &[LmInstance], table: &[[f32; 4]], draws: &[HbDraw], ilightdir: &DirTarget, tgt: &mut HbTargets, blend: crate::sunpass::BlendModel, mut owner: Option<&mut Vec<u8>>, probe: Option<(u32, u32)>) {
     let (w, h) = (tgt.w, tgt.h);
     let model = frag_model();
+    let imode = interp_mode();
     // the coalesced model: the f32 running sum of this direction's fragments per pixel and their count
     let mut acc: Vec<[[f32; 4]; 4]> = if model == FragModel::F32Coalesced { vec![[[0.0; 4]; 4]; (w * h) as usize] } else { Vec::new() };
     let mut count: Vec<u8> = if model == FragModel::F32Coalesced { vec![0; (w * h) as usize] } else { Vec::new() };
@@ -540,13 +541,31 @@ pub fn run_hbasis_probe(meshes: &[LmMesh], instances: &[LmInstance], table: &[[f
                 let (a, b, c) = (&vs[tri[0] as usize], &vs[tri[1] as usize], &vs[tri[2] as usize]);
                 let v3 = a.o3;
                 rasterise_triangle([a.clip, b.clip, c.clip], w, h, |x, y, b0, b1, b2| {
-                    let v2 = [a.o2[0] * b0 + b.o2[0] * b1 + c.o2[0] * b2, a.o2[1] * b0 + b.o2[1] * b1 + c.o2[1] * b2, a.o2[2] * b0 + b.o2[2] * b1 + c.o2[2] * b2];
+                    let v2 = if imode == 0 { [a.o2[0] * b0 + b.o2[0] * b1 + c.o2[0] * b2, a.o2[1] * b0 + b.o2[1] * b1 + c.o2[1] * b2, a.o2[2] * b0 + b.o2[2] * b1 + c.o2[2] * b2] } else { interp3(imode, [crate::sunpass::screen_snapped([a.clip[0], a.clip[1]], w, h), crate::sunpass::screen_snapped([b.clip[0], b.clip[1]], w, h), crate::sunpass::screen_snapped([c.clip[0], c.clip[1]], w, h)], [a.o2, b.o2, c.o2], [b0, b1, b2], x as f32 + 0.5, y as f32 + 0.5) };
                     let l = ilightdir.rgb(x, y);
                     let o = ps_17122(v2, v3, l, &d.cb);
                     let i = (y * w + x) as usize;
                     if probe == Some((x, y)) {
                         eprintln!("probe ({x},{y}): mesh {} instance {ii} tri {ti} [{},{},{}] bary ({b0:.6},{b1:.6},{b2:.6}) v2 ({:.7},{:.7},{:.7}) v3 {:?} L ({:.5},{:.5},{:.5}); before {:?}", d.mesh, tri[0], tri[1], tri[2], v2[0], v2[1], v2[2], v3, l[0], l[1], l[2], [tgt.mrt[0][i], tgt.mrt[1][i], tgt.mrt[2][i], tgt.mrt[3][i]]);
                         for k in 0..4 { eprintln!("    C{k} src f32 {:?} → f16 rtz {:?}", o[k], o[k].map(|v| quantise_f16(v, Rounding::Truncate))); }
+                        // the interpolation study: the third weight derived (1 − the other two) for each vertex, and the plane-equation
+                        // form a = A·x + B·y + C from the snapped vertex positions — which one moves C0.r across its f16 boundary?
+                        let bary = [b0, b1, b2];
+                        for dv in 0..3 {
+                            let mut bb = bary; bb[dv] = 1.0 - bary[(dv + 1) % 3] - bary[(dv + 2) % 3];
+                            let v2b = [a.o2[0] * bb[0] + b.o2[0] * bb[1] + c.o2[0] * bb[2], a.o2[1] * bb[0] + b.o2[1] * bb[1] + c.o2[1] * bb[2], a.o2[2] * bb[0] + b.o2[2] * bb[1] + c.o2[2] * bb[2]];
+                            let ob = ps_17122(v2b, v3, l, &d.cb);
+                            eprintln!("    derived weight for vertex slot {dv}: b {:?} v2 {:?} C0 {:?} → rtz {:?}", bb, v2b, ob[0], ob[0].map(|v| quantise_f16(v, Rounding::Truncate)));
+                        }
+                        for dv in 0..3 {
+                            // a(x,y) = a_dv + (a_j − a_dv)·b_j + (a_k − a_dv)·b_k (the differences from the reference vertex, two fmas)
+                            let os = [&a.o2, &b.o2, &c.o2];
+                            let (j, k) = ((dv + 1) % 3, (dv + 2) % 3);
+                            let mut v2b = [0f32; 3];
+                            for ch in 0..3 { v2b[ch] = (os[k][ch] - os[dv][ch]).mul_add(bary[k], (os[j][ch] - os[dv][ch]).mul_add(bary[j], os[dv][ch])); }
+                            let ob = ps_17122(v2b, v3, l, &d.cb);
+                            eprintln!("    reference vertex slot {dv} (delta form, fma): v2 {:?} C0 {:?} → rtz {:?}", v2b, ob[0], ob[0].map(|v| quantise_f16(v, Rounding::Truncate)));
+                        }
                     }
                     if let Some(ow) = owner.as_deref_mut() { ow[i] = d.mesh as u8 + 1; }
                     match model {
@@ -979,4 +998,43 @@ pub fn compare_mrt(ours: &[[f32; 4]], game: &Buf, ch: usize) -> (usize, usize, u
         }
     }
     (n, exact, ulp1, worse, maxd, worst)
+}
+
+/// The attribute interpolation model of the H-basis raster (HB_INTERP): `bary` (Σ a_k·b_k, the default), `plane-abs`
+/// (the plane a = A·x + B·y + C through the three snapped vertices, evaluated at the absolute pixel centre — the setup
+/// engine's form), `plane-ref0` (a = a₀ + A·(x − x₀) + B·(y − y₀) from the first vertex), `plane-fma` (plane-abs with
+/// fused evaluation). The vegetation's varying normals are the only attribute that tells them apart (the flat meshes
+/// interpolate constants).
+pub fn interp_mode() -> u8 {
+    match std::env::var("HB_INTERP").as_deref() {
+        Ok("plane-abs") => 1,
+        Ok("plane-ref0") => 2,
+        Ok("plane-fma") => 3,
+        Ok("plane-abs-sep") => 4,
+        _ => 0,
+    }
+}
+
+/// Interpolate one 3-vector attribute at the pixel centre (cx, cy) under `mode` — `p` = the snapped screen positions of
+/// the three vertices, `at` = their attribute values, `b` = the rasteriser's barycentrics.
+pub fn interp3(mode: u8, p: [[f32; 2]; 3], at: [[f32; 3]; 3], b: [f32; 3], cx: f32, cy: f32) -> [f32; 3] {
+    if mode == 0 {
+        return [at[0][0] * b[0] + at[1][0] * b[1] + at[2][0] * b[2], at[0][1] * b[0] + at[1][1] * b[1] + at[2][1] * b[2], at[0][2] * b[0] + at[1][2] * b[1] + at[2][2] * b[2]];
+    }
+    let (x0, y0) = (p[0][0], p[0][1]);
+    let (dx1, dy1, dx2, dy2) = (p[1][0] - x0, p[1][1] - y0, p[2][0] - x0, p[2][1] - y0);
+    let area = dx1 * dy2 - dx2 * dy1;
+    let mut out = [0f32; 3];
+    for ch in 0..3 {
+        let (a0, da1, da2) = (at[0][ch], at[1][ch] - at[0][ch], at[2][ch] - at[0][ch]);
+        let aa = (da1 * dy2 - da2 * dy1) / area; // ∂a/∂x
+        let bb = (da2 * dx1 - da1 * dx2) / area; // ∂a/∂y
+        out[ch] = match mode {
+            1 => { let c = a0 - aa * x0 - bb * y0; aa * cx + bb * cy + c }
+            2 => a0 + aa * (cx - x0) + bb * (cy - y0),
+            3 => { let c = a0 - aa * x0 - bb * y0; aa.mul_add(cx, bb.mul_add(cy, c)) }
+            _ => { let c = (a0 - aa * x0) - bb * y0; (aa * cx + bb * cy) + c }
+        };
+    }
+    out
 }

@@ -233,14 +233,40 @@ pub struct Target {
 /// positions snap to the 1/256 grid by rounding (default) or by truncation, and whether the attributes are
 /// interpolated from the snapped positions (default) or the unsnapped ones.
 pub static RASTER_SNAP_FLOOR: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// The rasteriser's 1/256-pixel snapping TIE rule: 2 = round half to EVEN (the default — the GPU's: on the captured
+/// H-basis pass the vegetation's varying normals go from 99.69 % to 99.99 % exact single-fragment values with it, the
+/// flat meshes and the coverage unchanged; `hbasis-check --snap-tie N`), 0 = round half away from zero (the old
+/// default), 3 = round half down (toward −∞).
+pub static RASTER_SNAP_TIE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(2);
+/// Snap a screen coordinate to the 1/256-pixel grid under the study switches.
+pub fn snap256(c: f32) -> f32 {
+    if RASTER_SNAP_FLOOR.load(std::sync::atomic::Ordering::Relaxed) {
+        return (c * 256.0).floor() / 256.0;
+    }
+    let s = c * 256.0;
+    let r = match RASTER_SNAP_TIE.load(std::sync::atomic::Ordering::Relaxed) {
+        2 => { let f = s.floor(); let d = s - f; if d > 0.5 { f + 1.0 } else if d < 0.5 { f } else if (f as i64) % 2 == 0 { f } else { f + 1.0 } }
+        3 => (s - 0.5).ceil(),
+        _ => s.round(),
+    };
+    r / 256.0
+}
 pub static RASTER_INTERP_UNSNAPPED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// D3D11 rasterisation of one triangle at 8 sub-pixel bits with the top-left rule; calls `f(x, y, b0, b1, b2)`
 /// for every covered pixel centre with the barycentric weights of the three vertices (w ≡ 1 → linear).
+/// The rasteriser's snapped screen position of a clip-space vertex (the viewport transform, 1/256-pixel snapping) — for
+/// the attribute-plane study (`lmaccum::interp_mode`).
+pub fn screen_snapped(clip: [f32; 2], w: u32, h: u32) -> [f32; 2] {
+    let floor_snap = RASTER_SNAP_FLOOR.load(std::sync::atomic::Ordering::Relaxed);
+    let snap = |c: f32| { let _ = floor_snap; snap256(c) };
+    [snap((clip[0] * 0.5 + 0.5) * w as f32), snap((0.5 - clip[1] * 0.5) * h as f32)]
+}
+
 pub fn rasterise_triangle(v: [[f32; 2]; 3], w: u32, h: u32, mut f: impl FnMut(u32, u32, f32, f32, f32)) {
     // viewport: x = (ndc.x + 1)/2 · W, y = (1 − ndc.y)/2 · H, snapped to 1/256 pixel
     let floor_snap = RASTER_SNAP_FLOOR.load(std::sync::atomic::Ordering::Relaxed);
-    let snap = |c: f32| if floor_snap { (c * 256.0).floor() / 256.0 } else { (c * 256.0).round() / 256.0 };
+    let snap = |c: f32| { let _ = floor_snap; snap256(c) };
     let ux: Vec<f32> = v.iter().map(|p| (p[0] * 0.5 + 0.5) * w as f32).collect();
     let uy: Vec<f32> = v.iter().map(|p| (0.5 - p[1] * 0.5) * h as f32).collect();
     let sx: Vec<f32> = ux.iter().map(|&c| snap(c)).collect();

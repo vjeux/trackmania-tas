@@ -3778,6 +3778,7 @@ fn run(a: Vec<String>) {
             //   chained (our target carried from block to block, as the game's) and per block (each block started from
             //   the game's own previous snapshot, isolating the block's error)
             let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            if let Some(t) = f("--snap-tie") { lightmap::sunpass::RASTER_SNAP_TIE.store(t.parse().unwrap(), std::sync::atomic::Ordering::Relaxed); }
             let has = |k: &str| a.iter().any(|x| x == k);
             let root = std::path::PathBuf::from(&a[1]);
             let frame: u32 = f("--frame").map(|v| v.parse().expect("--frame")).unwrap_or(127448);
@@ -3886,6 +3887,8 @@ fn run(a: Vec<String>) {
             if has("--coalesced") { lightmap::lmaccum::HB_FRAG_MODEL.store(1, std::sync::atomic::Ordering::Relaxed); }
             if has("--no-fma") { lightmap::lmaccum::HB_FMA.store(false, std::sync::atomic::Ordering::Relaxed); }
             if has("--snap-floor") { lightmap::sunpass::RASTER_SNAP_FLOOR.store(true, std::sync::atomic::Ordering::Relaxed); }
+            if let Some(t) = f("--snap-tie") { lightmap::sunpass::RASTER_SNAP_TIE.store(t.parse().unwrap(), std::sync::atomic::Ordering::Relaxed); }
+            // --tie-census: how many vegetation vertices sit exactly on a half 1/256 step (the tie rule matters only for those)
             if has("--interp-unsnapped") { lightmap::sunpass::RASTER_INTERP_UNSNAPPED.store(true, std::sync::atomic::Ordering::Relaxed); }
             let t0 = std::time::Instant::now();
             let sc = lightmap::lmaccum::load_lm_scene(&root, env_frame).expect("LM scene");
@@ -3934,6 +3937,14 @@ fn run(a: Vec<String>) {
                 let pct = |v: usize| if n > 0 { 100.0 * v as f64 / n as f64 } else { 0.0 };
                 println!("  {name:22} rgb of C0..C3: {n:>9} values  exact {exact:>9} ({:6.2} %)  1 ulp {ulp1:>7} ({:5.2} %)  worse {worse:>5} ({:5.3} %)", pct(exact), pct(ulp1), pct(worse));
             }
+            // the vegetation alone by fragment count (its single-fragment pixels test the interpolation of a VARYING attribute
+            // without the two-fragment blend in the way; the flat pad / wall / tiles cannot)
+            {
+                let n_dirs = (1.0 / cb.inv_dir_count).round();
+                let mut by = std::collections::BTreeMap::<u32, (usize, usize, usize, usize)>::new();
+                for y in 0..2048u32 { for x in 0..2048u32 { let i = (y * 2048 + x) as usize; if owner[i] != 3 { continue; } let frags = (tgt.mrt[0][i][3] * n_dirs).round() as u32; let e = by.entry(frags).or_insert((0, 0, 0, 0)); for m in 0..4 { for ch in 0..3 { let g = game[m].get(x, y, ch as u32); let o = tgt.mrt[m][i][ch]; e.0 += 1; if g == o { e.1 += 1; } else { let ulps = (lightmap::gpufmt::encode_f16(g, lightmap::gpufmt::Rounding::NearestEven) as i32 - lightmap::gpufmt::encode_f16(o, lightmap::gpufmt::Rounding::NearestEven) as i32).abs(); if ulps <= 1 { e.2 += 1; } else { e.3 += 1; } } } } } }
+                for (k, (n, ex, u1, w)) in &by { println!("  vegetation pixels with {k} fragment(s): {n:>9} values  exact {ex:>9} ({:6.2} %)  1 ulp {u1:>7} ({:5.2} %)  worse {w:>5}", 100.0 * *ex as f64 / (*n).max(1) as f64, 100.0 * *u1 as f64 / (*n).max(1) as f64); }
+            }
             // by the number of fragments the pixel received this direction (alpha increment × N): the multi-fragment
             // (two-sided / overlapping card) pixels are where the blend order and rounding show
             {
@@ -3949,6 +3960,12 @@ fn run(a: Vec<String>) {
                     let pct = |v: usize| if n > 0 { 100.0 * v as f64 / n as f64 } else { 0.0 };
                     println!("  C{m}.{}: {n:>8} values  exact {exact:>8} ({:6.2} %)  1 ulp {ulp1:>7} ({:5.2} %)  worse {worse:>6} ({:5.3} %)  max |Δ| {maxd:.6} at ({},{}) game {:.6} ours {:.6}", ["r", "g", "b", "a"][ch], pct(exact), pct(ulp1), pct(worse), worst.0, worst.1, worst.2, worst.3);
                 }
+            }
+            // --list-worse N: the first N mismatching vegetation values (pixel, MRT, channel, game, ours, fragments) — the probe targets
+            if let Some(n) = f("--list-worse").map(|v| v.parse::<usize>().unwrap()) {
+                let n_dirs = (1.0 / cb.inv_dir_count).round();
+                let mut shown = 0usize;
+                'outer: for y in 0..2048u32 { for x in 0..2048u32 { let i = (y * 2048 + x) as usize; if owner[i] != 3 { continue; } let frags = (tgt.mrt[0][i][3] * n_dirs).round() as u32; if f("--list-frags").map(|v| v.parse::<u32>().unwrap()) .map_or(false, |k| k != frags) { continue; } for m in 0..4 { for ch in 0..3 { let g = game[m].get(x, y, ch as u32); let o = tgt.mrt[m][i][ch]; if g != o { let ulps = (lightmap::gpufmt::encode_f16(g, lightmap::gpufmt::Rounding::NearestEven) as i32 - lightmap::gpufmt::encode_f16(o, lightmap::gpufmt::Rounding::NearestEven) as i32).abs(); println!("  worse: ({x},{y}) C{m}.{} game {g:.7} ours {o:.7} ({ulps} f16 ulp) fragments {frags}", ["r", "g", "b"][ch]); shown += 1; if shown >= n { break 'outer; } } } } } }
             }
             // alpha = the coverage count: where do the two rasters disagree?
             let (mut ours_only, mut game_only) = (0usize, 0usize);
@@ -6497,7 +6514,9 @@ fn run(a: Vec<String>) {
             let tile_quality: Vec<f32> = {
                 let mf = tmmaps::map::MapFile::load(std::path::Path::new(&a[1]));
                 let tile_y: i32 = mf.baked.first().map(|b| b.coords().1).unwrap_or(5);
-                let marked: std::collections::HashSet<(i32, i32, i32)> = mf.items.iter().map(|it| (it.file_cell[0] as i32, it.file_cell[1] as i32, it.file_cell[2] as i32)).collect();
+                // --tile-mark K: an item marks its cell at the tile level when |item level − tile level| ≤ K (default 0 = its own level only; 99 = any level)
+                let mark_k: i32 = f("--tile-mark").map(|v| v.parse().unwrap()).unwrap_or(0);
+                let marked: std::collections::HashSet<(i32, i32, i32)> = mf.items.iter().flat_map(|it| { let (x, y, z) = (it.file_cell[0] as i32, it.file_cell[1] as i32, it.file_cell[2] as i32); (-mark_k..=mark_k).map(move |d| (x, y + d, z)) }).collect();
                 // --quant-byte [F]: RE 6's reading — the record carries byte = clamp(int(255·q), 1, 255) and the chart scale is byte/255 (× F)
                 let quant: Option<f32> = a.iter().position(|x| x == "--quant-byte").map(|i| a.get(i + 1).and_then(|v| v.parse().ok()).unwrap_or(1.0));
                 let f_of = |r: u32| -> f32 { let q = (0.5f32).powf((r as f32 + 1.0) * 0.5); match quant { Some(ff) => { let b = ((q * 255.0) as i32).clamp(1, 255); b as f32 / 255.0 * ff } None => q } };
@@ -6519,6 +6538,10 @@ fn run(a: Vec<String>) {
             };
             for o in 0..base { if ed.contains_key(&o) { // the tile's chart scale = its quality q ITSELF (1.0 on an item's cell = the same ext as a tile-quad item → an exact area tie the z key resolves; the far tiles' 0.5^4.5 = 0x3d3504f3 = tile_k)
                 let q = if a.iter().any(|x| x == "--uniform-tiles") { tile_k } else { tile_quality.get(o as usize).copied().unwrap_or(tile_k) }; let e = if f("--tile-ext-xy").is_some() || tile_ext > 0.0 { tile_ext_xy } else { tile_ext_of(&tile_plg.1, tile_plg.0, q, korder) }; charts.push(lightmap::pack::ChartExt { ext: e, mins: [1, 1] }); ids.push(o); } }
+            // --kept FILE (RE 7): the item indices the REDUCED map kept (the editor baked the reduced map; `transplant --kept`
+            // renumbered) — only those items exist in the editor's table; --tile-mark MODE: the item-cell marking variant for
+            // the ring rule (same = the item's own level only (default), any = every level, near = |Δlevel| ≤ 1)
+            let kept: Option<std::collections::HashSet<usize>> = f("--kept").map(|p| std::fs::read_to_string(&p).expect("--kept").split(|c: char| c == ',' || c.is_whitespace()).filter_map(|t| t.trim().parse().ok()).collect());
             // WHICH ITEMS GET A CHART (tiny 16's editor table as the oracle, `--item-audit`): an item whose Solid2 carries
             // LIGHTS is not charted (49 of the 50 uncharted models there have lights, all 446 charted have none); the one
             // light-less uncharted model is the finish trigger FX (material RaceTriggerFXFinish) — the material-class flag
@@ -6529,7 +6552,9 @@ fn run(a: Vec<String>) {
             for inst in &scene.instances {
                 let m = &scene.models[inst.model];
                 let fx_only = !m.mat_links.is_empty() && m.mat_links.iter().all(|l| l.contains("RaceTriggerFX"));
-                if !chart_all && (!m.lights.is_empty() || fx_only) { skipped_items += 1; continue; }
+                if let Some(k) = &kept { if !k.contains(&inst.item) { skipped_items += 1; continue; } }
+                let one_uv_set = m.plg_bounds.map_or(true, |b| !(b[2] > b[0] && b[3] > b[1]));
+                if kept.is_some() { if one_uv_set || fx_only { skipped_items += 1; continue; } } else if !chart_all && (!m.lights.is_empty() || fx_only) { skipped_items += 1; continue; }
                 let sc = ((inst.xf[0] * inst.xf[0] + inst.xf[1] * inst.xf[1] + inst.xf[2] * inst.xf[2]) as f32).sqrt();
                 // the item's chart scale = its quality q (MapElemLightmapQuality e → (√2)^e · G, FUN_140dcc1c0) × the placement scale
                 let e: i32 = match inst.lm_quality { 0 => 0, 1 => 1, 2 => 2, 3 => 3, 4 => -1, 5 => -2, 6 => -3, _ => 0 };
