@@ -4630,6 +4630,110 @@ fn run(a: Vec<String>) {
             for r in &c.records { println!("  chunk {:?}: probes {:?}..={:?} → slot {:?}, atlas {:?}..{:?}, world origin of atlas index 0 {:?} (ProbeToWorld = diag(cell) + this), cells [{}, {}] × [{}, {}] × [{}, {}]", r.chunk, r.imin, r.imax, r.slot, r.amin, r.amax, r.origin, (r.amin[0] as f32 - 0.5) * r.cell[0] + r.origin[0], (r.amax[0] as f32 - 0.5) * r.cell[0] + r.origin[0], (r.amin[1] as f32 - 0.5) * r.cell[1] + r.origin[1], (r.amax[1] as f32 - 0.5) * r.cell[1] + r.origin[1], (r.amin[2] as f32 - 0.5) * r.cell[2] + r.origin[2], (r.amax[2] as f32 - 0.5) * r.cell[2] + r.origin[2]); }
             if let Some(b) = aabb { println!("CHUNKS AABB (FUN_140233150, ∪ into the world peel box): c {:?} h {:?} = [{}, {}] × [{}, {}] × [{}, {}]", b.c, b.h, b.min()[0], b.max()[0], b.min()[1], b.max()[1], b.min()[2], b.max()[2]); let w = lightmap::lmtiles::world_peel_box(&scene_ch, Some(&b)); println!("WORLD PEEL BOX = scene ∪ chunks: c {:?} h {:?} = [{}, {}] × [{}, {}] × [{}, {}]", w.c, w.h, w.min()[0], w.max()[0], w.min()[1], w.max()[1], w.min()[2], w.max()[2]); }
         }
+        "genealogy" => {
+            // lmtool genealogy MAP: the zone genealogy records (chunk 0x03043043) — per cell the CurrentZoneId and its Dir,
+            // as a histogram and the first few records; plus the baked block list (the generated tiles when the file has them)
+            let m = tmmaps::map::MapFile::load(std::path::Path::new(&a[1]));
+            let chunks = tmmaps::gbx::all_skip_chunks(&m.gbx.body);
+            let Some(&(_, _, payload, size)) = chunks.iter().find(|(c, ..)| *c == 0x0304_3043) else { println!("no genealogy chunk"); return };
+            let recs = tmmaps::map::genealogy_full(&m.gbx.body[payload..payload + size]).expect("genealogy");
+            println!("{} genealogy records (size {:?})", recs.len(), m.size);
+            let mut hist: std::collections::BTreeMap<(String, u32), usize> = Default::default();
+            for r in &recs { *hist.entry((r.current.clone(), r.dir)).or_insert(0) += 1; }
+            for ((z, d), n) in &hist { println!("  zone {z:?} dir {d}: {n}"); }
+            for (i, r) in recs.iter().enumerate().take(4) { println!("  rec {i}: chain {:?} current_index {} dir {} current {:?}", r.ids, r.current_index, r.dir, r.current); }
+            println!("blocks {} baked {}", m.blocks.len(), m.baked.len());
+            for b in m.baked.iter().take(4) { println!("  baked {:?} coords {:?} dir {} flags {:#x}", b.name, b.coords(), b.dir, b.flags); }
+        }
+        "tile-boxes" => {
+            // lmtool tile-boxes MAP.Gbx --pak FILE:KEY [--collection BlueBay] [--yoff Y] [--zone Sea] [--out TSV]
+            //   the zone tiles' BLOCK RECORDS the way the game builds them: per cell (the genealogy's CurrentZoneId + Dir, or
+            //   --zone for every cell of a size-64 map without a genealogy) the zone block info's ground variant → its mobil's
+            //   prefab → entity 0's static-object solid → the stored visual bounding boxes (all geoms, geom order) →
+            //   lmtiles::model_box; the block Iso4 (cell·(32, 8, 32) + the decoration offset, the Dir rotation about the unit's
+            //   centre) → CBox::transformed; then lmtiles::scene_box (the FUN_140184fa0 fold in cell order) — the sun camera's
+            //   focus box S from the map alone (frustum-check --scene takes the printed min/max)
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let has = |k: &str| a.iter().any(|x| x == k);
+            let m = tmmaps::map::MapFile::load(std::path::Path::new(&a[1]));
+            let coll = f("--collection").unwrap_or_else(|| "BlueBay".into());
+            let pak = f("--pak").expect("--pak FILE:KEY");
+            let (pak_path, key) = pak.rsplit_once(':').expect("--pak FILE:KEY");
+            let mut store = mapgeom::store::DataStore::empty();
+            store.add_pak(pak_path, key).expect("pak");
+            // the per-cell zone + dir: the genealogy, else --zone everywhere (the capture's 4096 Sea tiles on a cleared genealogy)
+            let chunks = tmmaps::gbx::all_skip_chunks(&m.gbx.body);
+            let gen: Vec<(String, u32)> = chunks.iter().find(|(c, ..)| *c == 0x0304_3043).and_then(|&(_, _, payload, size)| tmmaps::map::genealogy_full(&m.gbx.body[payload..payload + size]).ok()).map(|recs| recs.into_iter().map(|r| (r.current, r.dir)).collect()).unwrap_or_default();
+            let (sx, sz) = (m.size[0].max(0) as usize, m.size[2].max(0) as usize);
+            let cells: Vec<(usize, usize, String, u32)> = if gen.len() == sx * sz {
+                // records are indexed x·64 + z (map-genealogy.md §1)
+                (0..gen.len()).map(|i| (i / sz, i % sz, gen[i].0.clone(), gen[i].1)).collect()
+            } else {
+                let z = f("--zone").unwrap_or_else(|| "Sea".into());
+                let mut v = Vec::new();
+                for cz in 0..sz { for cx in 0..sx { v.push((cx, cz, z.clone(), 0u32)); } }
+                v
+            };
+            let yoff: f32 = f("--yoff").map(|v| v.parse().unwrap()).unwrap_or(-38.0);
+            // per zone: the prefab's visual boxes + the ground variant's cell height (the block y) — cached
+            let mut zone_boxes: std::collections::BTreeMap<String, (String, Vec<lightmap::lmtiles::CBox>)> = Default::default();
+            let mut records: Vec<lightmap::lmtiles::BlockRecord> = Vec::with_capacity(cells.len());
+            let mut out_rows: Vec<String> = Vec::new();
+            for (cx, cz, zone, dir) in &cells {
+                if !zone_boxes.contains_key(zone) {
+                    let mut found: Option<(String, Vec<lightmap::lmtiles::CBox>)> = None;
+                    for fam in ["GameCtnBlockInfoFlat", "GameCtnBlockInfoFrontier", "GameCtnBlockInfoTransition", "GameCtnBlockInfoClassic"] {
+                        let ext = match fam { "GameCtnBlockInfoFlat" => "EDFlat", "GameCtnBlockInfoFrontier" => "EDFrontier", "GameCtnBlockInfoTransition" => "EDTransition", _ => "EDClassic" };
+                        let path = format!("{coll}\\GameCtnBlockInfo\\{fam}\\{zone}.{ext}.Gbx");
+                        let Ok(bi) = mapgeom::blockinfo::load(&mut store, &path) else { continue };
+                        let Some(v) = bi.variant_base_ground.as_ref() else { continue };
+                        let Some(pp) = v.mobils.iter().flatten().find_map(|mb| mb.prefab.clone()) else { continue };
+                        let pm = store.load_model(&pp).expect("prefab");
+                        let pf = mapgeom::static_item::prefab::CPlugPrefab::from_model(&pm).expect("prefab parse");
+                        let mut boxes = Vec::new();
+                        for e in &pf.ents {
+                            let Some(mapgeom::static_item::Node::StaticObject(so)) = e.model.inline.as_deref() else { continue };
+                            let Some(s2) = so.solid2() else { continue };
+                            for sg in &s2.shaded_geoms {
+                                let Some(vr) = s2.visuals.get(sg.visual_index as usize) else { continue };
+                                let Some(mapgeom::static_item::Node::Visual(vis)) = vr.inline.as_deref() else { continue };
+                                if let Some(mm) = vis.main.as_ref() { let b = mm.bounding_box; boxes.push(lightmap::lmtiles::CBox::new([b[0], b[1], b[2]], [b[3], b[4], b[5]])); }
+                            }
+                            break; // entity 0 = the tile mesh
+                        }
+                        println!("zone {zone}: {path} → {pp}: {} visual boxes: {:?}", boxes.len(), boxes);
+                        found = Some((pp, boxes));
+                        break;
+                    }
+                    zone_boxes.insert(zone.clone(), found.unwrap_or_else(|| { eprintln!("zone {zone}: no block info found"); (String::new(), Vec::new()) }));
+                }
+                let (pp, boxes) = &zone_boxes[zone];
+                let Some(mb) = lightmap::lmtiles::model_box(boxes) else { continue };
+                // the block Iso4: the Dir rotation about the unit's centre (16, ·, 16), translation = cell·(32, 8, 32) + yoff
+                let cy = f("--cell-y").map(|v| v.parse::<f32>().unwrap()).unwrap_or(5.0);
+                let (s, c) = match dir { 0 => (0.0f32, 1.0f32), 1 => (1.0, 0.0), 2 => (0.0, -1.0), _ => (-1.0, 0.0) };
+                // R = Ry(dir·90°) in the engine's row-major layout: world = R·local + t; rotation about (16, 0, 16) inside the cell
+                let (px, pz) = (16.0f32, 16.0f32);
+                let r: [f32; 9] = [c, 0.0, s, 0.0, 1.0, 0.0, -s, 0.0, c];
+                let tx = *cx as f32 * 32.0 + (px - (c * px + s * pz));
+                let tz = *cz as f32 * 32.0 + (pz - (-s * px + c * pz));
+                let iso: lightmap::lmtiles::Iso4 = [r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], tx, cy * 8.0 + yoff, tz];
+                let rec = lightmap::lmtiles::block_record(&mb, &iso, lightmap::lmtiles::quality_byte(0, 0.5));
+                if has("--verbose") || out_rows.len() < 3 { println!("  cell ({cx}, {cz}) {zone} dir {dir}: model box c {:?} h {:?} → record c {:?} h {:?} q {:.4}", mb.c, mb.h, rec.world.c, rec.world.h, rec.quality); }
+                out_rows.push(format!("{cx}\t{cz}\t{zone}\t{dir}\t{pp}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", rec.world.c[0], rec.world.c[1], rec.world.c[2], rec.world.h[0], rec.world.h[1], rec.world.h[2], rec.quality));
+                records.push(rec);
+            }
+            let s = lightmap::lmtiles::scene_box(&records);
+            println!("{} tile records; SCENE BOX (tiles only, cell order) c {:?} h {:?} = [{}, {}] × [{}, {}] × [{}, {}]", records.len(), s.c, s.h, s.min()[0], s.max()[0], s.min()[1], s.max()[1], s.min()[2], s.max()[2]);
+            // + the items (the map's own records) in the game's bind order: --items-first puts them before the tiles
+            let scene = lightmap::geometry::Scene::from_map(&a[1]).expect("map scene");
+            let item_recs: Vec<lightmap::lmtiles::BlockRecord> = lightmap::lmtiles::item_records(&scene, 1.0, false).iter().filter_map(|it| it.record).collect();
+            let all: Vec<lightmap::lmtiles::BlockRecord> = if has("--items-first") { item_recs.iter().chain(records.iter()).copied().collect() } else { records.iter().chain(item_recs.iter()).copied().collect() };
+            let s_all = lightmap::lmtiles::scene_box(&all);
+            println!("SCENE BOX S (tiles + {} items, {}): c {:?} h {:?} = [{}, {}] × [{}, {}] × [{}, {}]  → --scene {},{},{},{},{},{}", item_recs.len(), if has("--items-first") { "items first" } else { "tiles first" }, s_all.c, s_all.h, s_all.min()[0], s_all.max()[0], s_all.min()[1], s_all.max()[1], s_all.min()[2], s_all.max()[2], s_all.min()[0], s_all.min()[1], s_all.min()[2], s_all.max()[0], s_all.max()[1], s_all.max()[2]);
+            println!("  bits: c {:08x} {:08x} {:08x} h {:08x} {:08x} {:08x}", s_all.c[0].to_bits(), s_all.c[1].to_bits(), s_all.c[2].to_bits(), s_all.h[0].to_bits(), s_all.h[1].to_bits(), s_all.h[2].to_bits());
+            if let Some(out) = f("--out") { let mut t = String::from("cx\tcz\tzone\tdir\tprefab\tcx_w\tcy_w\tcz_w\thx\thy\thz\tquality\n"); for r in &out_rows { t.push_str(r); t.push('\n'); } std::fs::write(&out, t).expect("write"); println!("wrote {out}"); }
+        }
         "frustum-check" => {
             // lmtool frustum-check PASSCAP_ROOT [--frame N] [--manifest FROZEN.json] [--eps E] [--far-pad P] [--norm div|rsqrt] [--fma] [--expand-scale]
             //   the CPU light-camera fit (lightcam.rs) against the capture's SceneV cbuffers: every distinct camera of the
@@ -4705,7 +4809,27 @@ fn run(a: Vec<String>) {
             // shadow-map casters of VS 5394 — the same buffers as shadow-check)
             // --scene xmin,ymin,zmin,xmax,ymax,zmax: the scene box given (a frame without the sun shadow pass / env: the
             // peel cameras of the other frames against frame 127448's casters)
-            let scene_override: Option<lightmap::lightcam::Aabb> = f("--scene").map(|s| { let v: Vec<f32> = s.split(',').map(|x| x.trim().parse().unwrap()).collect(); lightmap::lightcam::Aabb { min: [v[0], v[1], v[2]], max: [v[3], v[4], v[5]] } });
+            let mut scene_override: Option<lightmap::lightcam::Aabb> = f("--scene").map(|s| { let v: Vec<f32> = s.split(',').map(|x| x.trim().parse().unwrap()).collect(); lightmap::lightcam::Aabb { min: [v[0], v[1], v[2]], max: [v[3], v[4], v[5]] } });
+            // --tiles-from-pak FILE:KEY [--collection BlueBay] [--zone Sea] [--cell-y 5] [--yoff -40]: S from the map + pak alone
+            // (lmtiles::tile_records + the items, the FUN_140184fa0 fold) — the capture-less route; its exact {c, h} feeds the fits
+            let mut scene_ch_override: Option<lightmap::lmtiles::CBox> = None;
+            if let (Some(pak), Some(map)) = (f("--tiles-from-pak"), f("--map")) {
+                let (pak_path, key) = pak.rsplit_once(':').expect("--tiles-from-pak FILE:KEY");
+                let mut store = mapgeom::store::DataStore::empty();
+                store.add_pak(pak_path, key).expect("pak");
+                let mf = tmmaps::map::MapFile::load(std::path::Path::new(&map));
+                let chunks = tmmaps::gbx::all_skip_chunks(&mf.gbx.body);
+                let gen: Vec<(String, u32)> = chunks.iter().find(|(c, ..)| *c == 0x0304_3043).and_then(|&(_, _, payload, size)| tmmaps::map::genealogy_full(&mf.gbx.body[payload..payload + size]).ok()).map(|recs| recs.into_iter().map(|r| (r.current, r.dir)).collect()).unwrap_or_default();
+                let size = [mf.size[0].max(0) as usize, mf.size[1].max(0) as usize, mf.size[2].max(0) as usize];
+                let tiles = lightmap::lmtiles::tile_records(&mut store, &f("--collection").unwrap_or_else(|| "BlueBay".into()), size, &gen, &f("--zone").unwrap_or_else(|| "Sea".into()), f("--cell-y").map(|v| v.parse().unwrap()).unwrap_or(5.0), f("--yoff").map(|v| v.parse().unwrap()).unwrap_or(-40.0), 0.5).expect("tile records");
+                let scene = lightmap::geometry::Scene::from_map(&map).expect("map scene");
+                let mut recs: Vec<lightmap::lmtiles::BlockRecord> = tiles.iter().map(|t| t.4).collect();
+                recs.extend(lightmap::lmtiles::item_records(&scene, 1.0, false).iter().filter_map(|it| it.record));
+                let s = lightmap::lmtiles::scene_box(&recs);
+                println!("SCENE BOX S from the pak tiles ({}) + the items ({}): c {:?} h {:?} = [{}, {}] × [{}, {}] × [{}, {}]", tiles.len(), recs.len() - tiles.len(), s.c, s.h, s.min()[0], s.max()[0], s.min()[1], s.max()[1], s.min()[2], s.max()[2]);
+                scene_ch_override = Some(s);
+                scene_override = Some(s.aabb());
+            }
             let mtxt = std::fs::read_to_string(f("--manifest").map(std::path::PathBuf::from).unwrap_or_else(|| root.join("MANIFEST.json"))).expect("MANIFEST.json");
             let mval: serde_json::Value = serde_json::from_str(&lightmap::passdiff::repair_truncated_json(&mtxt)).expect("manifest json");
             let shadow_ent = mval["passes"].as_array().unwrap().iter().find(|e| e["pass"].as_str() == Some("sun_shadow") && e["frame"].as_u64() == Some(frame as u64));
@@ -4749,6 +4873,8 @@ fn run(a: Vec<String>) {
                 }
                 println!("  scene box after eid {eid} ({inst} instance(s)): min {:?} max {:?}", scene_box.min, scene_box.max);
             }
+            // with --scene the caster walk is skipped: the sun camera is the first camera inside the manifest's sun_shadow eid range
+            if scene_override.is_some() && sun_cap.is_none() { sun_cap = caps.iter().find(|c| c.eid >= eid_first && c.eid <= eid_last); }
             println!("SCENE BOX from the casters: centre {:?} half {:?}; items' box: centre {:?} half {:?}", scene_box.centre(), scene_box.half(), items_box.centre(), items_box.half());
             // the PROBE GRID box (the world peel's focus box = the scene box ∪ this one, RE 5): the probe draw's
             // ProbeToShadow (PS 17151, grid coords → the sun shadow map's uvz) times the inverse of the sun's
@@ -4787,7 +4913,7 @@ fn run(a: Vec<String>) {
             }
             if let Some(cap) = sun_cap {
                 let d = [cap.w2c[0][2], cap.w2c[1][2], cap.w2c[2][2]];
-                let cam = lightmap::lightcam::fit_camera(&scene_box, d, &rules);
+                let cam = match scene_ch_override { Some(s) => lightmap::lightcam::fit_camera_ch(s.c, s.h, d, &rules), None => lightmap::lightcam::fit_camera(&scene_box, d, &rules) };
                 println!("SUN CAMERA (eid {}) from the scene box and the rules:", cap.eid);
                 report("sun camera", &cam, cap);
             }
@@ -4847,7 +4973,7 @@ fn run(a: Vec<String>) {
                     // the scene box for the tiling: the captured casters' (the tiles are not in the map's item list)
                     // the captured casters give S as min/max; the game holds {c, h} — --scene-centre mean|half picks the round
                     // trip (half = min + (max − min)·0.5, the sun camera's bit-exact form)
-                    let scene_ch = if f("--scene-centre").as_deref() == Some("mean") { lightmap::lmtiles::CBox::from_min_max(scene_box.min, scene_box.max) } else { lightmap::lmtiles::CBox::new(scene_box.centre_from_half(), scene_box.half()) };
+                    let scene_ch = if let Some(s) = scene_ch_override { s } else if f("--scene-centre").as_deref() == Some("mean") { lightmap::lmtiles::CBox::from_min_max(scene_box.min, scene_box.max) } else { lightmap::lmtiles::CBox::new(scene_box.centre_from_half(), scene_box.half()) };
                     let params = lightmap::lmtiles::TileParams::pwc_day(s_alloc);
                     let t = lightmap::lmtiles::peel_tiling(&scene_ch, &recs, &params);
                     println!("  TILING (s {s_alloc}): ext {:.1} layout units → target {}², n {} → {} fitted tile(s)", t.ext, t.size, t.n, t.tiles.len());

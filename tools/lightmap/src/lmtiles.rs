@@ -673,3 +673,72 @@ mod tests {
         assert_eq!((two.c[0], two.h[0]), (1.5, 2.5));
     }
 }
+
+/// The zone tiles' block records of a map the way the game builds them (`lmtool tile-boxes`; RE child 6): per cell
+/// the genealogy's CurrentZoneId + Dir (or `zone_default` on every cell of a map without a genealogy — the capture's
+/// 4096 Sea tiles), the zone block info's ground variant → its mobil's prefab → entity 0's solid → the stored visual
+/// boxes in geom order → `model_box`; the block Iso4 = the Dir rotation (Ry(dir·90°)) about the unit's centre
+/// (16, ·, 16), translation (cx·32, cell_y·8 + yoff, cz·32) — BlueBay: cell_y 5, yoff −40 → the tiles at y 0
+/// (the sea quad at 7.0, the seabed at 3.9999785 as the capture has it); quality = the decoration's 0.5 → byte 127.
+/// Returns (cell x, cell z, zone, dir, record) in cell order (z rows, x columns = the genealogy's x·64 + z order
+/// transposed — the game's bind order for generated tiles is its own BakedBlocks order; the fold is order-independent
+/// up to the last bit).
+pub fn tile_records(store: &mut mapgeom::store::DataStore, collection: &str, size: [usize; 3], genealogy: &[(String, u32)], zone_default: &str, cell_y: f32, yoff: f32, global_quality: f32) -> Result<Vec<(usize, usize, String, u32, BlockRecord)>, String> {
+    let (sx, sz) = (size[0], size[2]);
+    let cells: Vec<(usize, usize, String, u32)> = if genealogy.len() == sx * sz {
+        (0..genealogy.len()).map(|i| (i / sz, i % sz, genealogy[i].0.clone(), genealogy[i].1)).collect()
+    } else {
+        let mut v = Vec::new();
+        for cz in 0..sz {
+            for cx in 0..sx {
+                v.push((cx, cz, zone_default.to_string(), 0u32));
+            }
+        }
+        v
+    };
+    let mut zone_boxes: std::collections::BTreeMap<String, Option<CBox>> = Default::default();
+    let mut out = Vec::with_capacity(cells.len());
+    for (cx, cz, zone, dir) in cells {
+        if !zone_boxes.contains_key(&zone) {
+            let mut mb: Option<CBox> = None;
+            for (fam, ext) in [("GameCtnBlockInfoFlat", "EDFlat"), ("GameCtnBlockInfoFrontier", "EDFrontier"), ("GameCtnBlockInfoTransition", "EDTransition"), ("GameCtnBlockInfoClassic", "EDClassic")] {
+                let path = format!("{collection}\\GameCtnBlockInfo\\{fam}\\{zone}.{ext}.Gbx");
+                let Ok(bi) = mapgeom::blockinfo::load(store, &path) else { continue };
+                let Some(v) = bi.variant_base_ground.as_ref() else { continue };
+                let Some(pp) = v.mobils.iter().flatten().find_map(|m| m.prefab.clone()) else { continue };
+                let pm = store.load_model(&pp)?;
+                let pf = mapgeom::static_item::prefab::CPlugPrefab::from_model(&pm)?;
+                let mut boxes = Vec::new();
+                for e in &pf.ents {
+                    let Some(mapgeom::static_item::Node::StaticObject(so)) = e.model.inline.as_deref() else { continue };
+                    let Some(s2) = so.solid2() else { continue };
+                    for sg in &s2.shaded_geoms {
+                        let Some(vr) = s2.visuals.get(sg.visual_index as usize) else { continue };
+                        let Some(mapgeom::static_item::Node::Visual(vis)) = vr.inline.as_deref() else { continue };
+                        if let Some(mm) = vis.main.as_ref() {
+                            let b = mm.bounding_box;
+                            boxes.push(CBox::new([b[0], b[1], b[2]], [b[3], b[4], b[5]]));
+                        }
+                    }
+                    break;
+                }
+                mb = model_box(&boxes);
+                break;
+            }
+            zone_boxes.insert(zone.clone(), mb);
+        }
+        let Some(mb) = zone_boxes[&zone] else { continue };
+        let (s, c) = match dir % 4 {
+            0 => (0.0f32, 1.0f32),
+            1 => (1.0, 0.0),
+            2 => (0.0, -1.0),
+            _ => (-1.0, 0.0),
+        };
+        let (px, pz) = (16.0f32, 16.0f32);
+        let tx = cx as f32 * 32.0 + (px - (c * px + s * pz));
+        let tz = cz as f32 * 32.0 + (pz - (-s * px + c * pz));
+        let iso: Iso4 = [c, 0.0, s, 0.0, 1.0, 0.0, -s, 0.0, c, tx, cell_y * 8.0 + yoff, tz];
+        out.push((cx, cz, zone, dir, block_record(&mb, &iso, quality_byte(0, global_quality))));
+    }
+    Ok(out)
+}
