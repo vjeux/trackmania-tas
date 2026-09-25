@@ -70,6 +70,11 @@ pub struct Opts {
     pub ghost_offset: String,
     /// `--ghost-query "&layer=0&phys=1"`: extra /pgghost parameters.
     pub ghost_query: String,
+    /// `--stay`: leave the playground open when done (no trip back to the
+    /// menu) — the way to hand vjeux a race with the CPU ghosts loaded:
+    /// `playshots --map M --mode TrackMania/TM_PlayMap_Local --shots 0 --stay
+    /// --ghost … ×7`.
+    pub stay: bool,
     /// `--mode SCRIPT`: the game mode PlayMap runs the map in (empty = the
     /// map's own declared mode). `TrackMania/TM_TimeAttack_Local.Script.txt`
     /// is the solo mode with a ghost manager.
@@ -113,6 +118,7 @@ pub fn parse_opts(args: &[String]) -> Result<Opts, String> {
         restart_at_ms: num("--restart-at-ms", 0)?,
         ghost_offset: val("--ghost-offset").unwrap_or_else(|| "start".into()),
         ghost_query: val("--ghost-query").unwrap_or_default(),
+        stay: args.iter().any(|a| a == "--stay"),
         mode: val("--mode").unwrap_or_default(),
         skin: val("--skin"),
         detach: args.iter().any(|a| a == "--detach"),
@@ -409,7 +415,11 @@ fn run_shots(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
             Err(_) => lines.push("drive\tFAILED: the key thread panicked".to_string()),
         }
     }
-    let _ = super::to_menu();
+    if opts.stay {
+        lines.push("stay\tthe playground is left open".to_string());
+    } else {
+        let _ = super::to_menu();
+    }
     Ok(lines)
 }
 
@@ -741,4 +751,52 @@ impl Drop for SkinSwap {
             let _ = std::fs::rename(a, format!("{}.loc", Self::CACHE));
         }
     }
+}
+
+/// `shootctl race "<Course>" [--player NAME] [playshots flags…]`: open
+/// `Maps/MK64/MK64 <Course>.Map.Gbx` in `TrackMania/TM_PlayMap_Local` with
+/// every `Replays/MK64/cpu/MK64 <Course> - *.Ghost.Gbx` added as a ghost
+/// (the seven MK64 CPUs, one skin each), no shots, playground left open.
+/// The CPUs appear when the countdown ends and restart with the player.
+pub fn race(args: &[String]) -> i32 {
+    let Some(course) = args.first().filter(|a| !a.starts_with("--")) else {
+        eprintln!("usage: shootctl race \"Luigi Raceway\" [--player Mario] [more playshots flags]");
+        return 2;
+    };
+    let docs = "/mnt/c/Users/vjeux/OneDrive/Documents/Trackmania";
+    let map = format!("{docs}/Maps/MK64/MK64 {course}.Map.Gbx");
+    let player = args.iter().position(|a| a == "--player").and_then(|i| args.get(i + 1)).cloned();
+    let dir = format!("{docs}/Replays/MK64/cpu");
+    let prefix = format!("MK64 {course} - ");
+    let mut ghosts: Vec<String> = std::fs::read_dir(&dir)
+        .map(|rd| rd.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).filter(|n| n.starts_with(&prefix) && n.ends_with(".Ghost.Gbx")).collect())
+        .unwrap_or_default();
+    ghosts.sort();
+    if let Some(p) = &player {
+        // the human drives this character: drop its CPU
+        ghosts.retain(|g| !g.to_lowercase().contains(&format!("- {}.", p.to_lowercase())));
+    }
+    if ghosts.is_empty() {
+        eprintln!("no CPU ghosts for {course:?} in {dir}");
+        return 2;
+    }
+    let mut a: Vec<String> = vec!["--map".into(), map, "--mode".into(), "TrackMania/TM_PlayMap_Local".into(), "--outdir".into(), "/mnt/c/Users/vjeux/mk64qa/race".into(), "--tag".into(), "race".into(), "--shots".into(), "0".into(), "--stay".into(), "--ghost-query".into(), "&layer=0".into()];
+    for g in &ghosts {
+        a.push("--ghost".into());
+        a.push(format!("{dir}/{g}"));
+    }
+    let mut skip = 0;
+    for x in &args[1..] {
+        if skip > 0 {
+            skip -= 1;
+            continue;
+        }
+        if x == "--player" {
+            skip = 1;
+            continue;
+        }
+        a.push(x.clone());
+    }
+    println!("race: {} CPU ghosts", ghosts.len());
+    run(&a)
 }

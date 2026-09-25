@@ -1261,6 +1261,9 @@ usage:
         // PLAY-mode timed screenshots under the lock: does a moving item's
         // collision move (pushers around the spawn shove the car)? playshots.rs.
         "playshots" => playshots::run(&args[1..]),
+        // `shootctl race "Luigi Raceway"`: the MK64 map in solo play with its seven
+        // CPU ghosts (Replays/MK64/cpu/MK64 <Course> - *.Ghost.Gbx), left open to drive.
+        "race" => playshots::race(&args[1..]),
         // ONE ghost video on the SHARED game: lock held for the game part only,
         // game left up, done file + contact sheets for a remote caller. render.rs.
         "render" => render::run(&args[1..]),
