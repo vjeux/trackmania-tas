@@ -13,7 +13,25 @@ fn main() {
     store.add_pak(pp, key).expect("pak");
     for p in &a[i..] {
         let m = match store.load_model(p) { Ok(m) => m, Err(e) => { println!("{p}: {e}"); continue } };
-        if m.class_id != 0x090BB000 { println!("{p}: class {:#010x} (not a Solid2Model)", m.class_id); continue; }
+        if m.class_id == 0x2F086000 {
+            // a chunkless VegetTreeModel: the PLG sits before the file's trailing (0, 1) — needs the whole file
+            let bytes = store.read(p).map(|b| b.to_vec()).unwrap_or_default();
+            match mapgeom::static_item::legacy_plg::veget_tree_prelight(&bytes) {
+                Ok(Some(g)) => println!("{p}: VegetTreeModel PLG v{} u01 {} MeterByUv {} ({:#010x}) flag {} uv0 {:?} uv1 {:?} sprite {:?}", g.version, g.u01, g.u02, g.u02.to_bits(), g.u03, &g.u04[..4], &g.u04[4..], g.sprite_count),
+                Ok(None) => println!("{p}: VegetTreeModel without a PLG (no lightmap record)"),
+                Err(e) => println!("{p}: {e}"),
+            }
+            continue;
+        }
+        if m.class_id == 0x09005000 {
+            match mapgeom::static_item::legacy_plg::solid_prelight(&m.body) {
+                Ok(Some(g)) => println!("{p}: CPlugSolid 0x09005017 PLG v{} u01 {} MeterByUv {} ({:#010x}) flag {} uv0 {:?} sprite {:?}", g.version, g.u01, g.u02, g.u02.to_bits(), g.u03, &g.u04[..4], g.sprite_count),
+                Ok(None) => println!("{p}: CPlugSolid without a PLG"),
+                Err(e) => println!("{p}: {e}"),
+            }
+            continue;
+        }
+        if m.class_id != 0x090BB000 { println!("{p}: class {:#010x} (not a Solid2Model / CPlugSolid / VegetTreeModel)", m.class_id); continue; }
         let mut lb = mapgeom::static_item::LookbackState::default();
         lb.defined_nodes.extend(m.external_indices().iter().copied());
         let mut r = mapgeom::static_item::Rd::new(&m.body, 0, lb);

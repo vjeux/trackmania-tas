@@ -306,15 +306,15 @@ pub fn grid_dims(n: u32, ext: [f32; 2], d1: f32, m: u32) -> (u32, u32) {
 /// FUN_140294220: the group chart's extent and area from the grid — `ext' = (nb·ext.x, na·ext.y)`,
 /// `area' = ((float)(nb·na) · ext.y) · ext.x` (f32, in this order).
 pub fn grid_chart(ext: [f32; 2], nb: u32, na: u32) -> ([f32; 2], f32) {
-    ([nb as f32 * ext[0], na as f32 * ext[1]], ((nb * na) as f32 * ext[1]) * ext[0])
+    // asm 0x1402942ae: xmm0 = ey · ex first, then × (float)(nb · na) — that order for the bit-exact Σ
+    ([nb as f32 * ext[0], na as f32 * ext[1]], (nb * na) as f32 * (ext[1] * ext[0]))
 }
 
-/// FUN_1402938c0's solo test: a record whose extent × D₁ exceeds 100 is not grouped. The asm (0x140293ac4: two `ja`
-/// to the solo label) reads as EITHER side; the stpad dump says BOTH (the 152 + 60 records of ext (32, 8) — 163 × 41
-/// texels — are grouped into grids, and only the AND count (735 entries) gives the observed chunk size 8 and Σ):
-/// `is_solo` follows the data (AND); tiny 16 cannot tell the two apart (no side over 339 m).
+/// FUN_1402938c0's solo test (asm 0x140293ac4: two `ja` to the solo label): a record whose extent × D₁ exceeds 100 on
+/// EITHER side is not grouped. (RE7/0005 read it as AND from the stpad 66×14 charts — wrong: those records are the
+/// DecoWall VFCMiddle WALLS, which leave the grouping before this test; see `wall_facing`.)
 pub fn is_solo(ext: [f32; 2], d1: f32) -> bool {
-    100.0 < ext[0] * d1 && 100.0 < ext[1] * d1
+    100.0 < ext[0] * d1 || 100.0 < ext[1] * d1
 }
 
 /// FUN_140291b10: the Z-order cell list of an nb × na grid — the k-th instance of the group takes `cells[k]`
@@ -401,7 +401,9 @@ pub fn avoid_bad_chunk(x: u32) -> u32 {
 }
 
 /// FUN_140292740's chunk size: `Some(c)` when the split runs (k > 1), `None` when the map has so many models that
-/// k = ceil(1000 / n_models) ≤ 1 (≥ 1000 groups).
+/// k = ceil(1000 / n_models) ≤ 1 (≥ 1000 groups). `n_models` = the model list at that moment = hash groups + solos —
+/// WITHOUT the wall strips, which FUN_1402938c0 appends after the split (stpad: 946 − 212 = 734 → k 2 → 12141 / 1468
+/// = 8.27 → 8, the file's chunk); `n_records` = every record (the +0x70 pair array), walls included.
 pub fn chunk_size(n_records: u32, n_models: u32) -> Option<u32> {
     if n_models == 0 {
         return None;
@@ -526,6 +528,135 @@ pub fn quality_g(is_decoration: bool, collection_id: u32) -> f32 {
     }
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+// THE WALL STRIPS (RE 7, 2026-09-25 19:45Z; FUN_14028ff90 / FUN_140293180 / FUN_140292e40 / FUN_140292d10). A static
+// record whose model FILE is exactly `Stadium\Media\Prefab\DecoWall\Base_VFCMiddle_Air.Prefab.Gbx` (AllocateBlocks_
+// resolves that path once, 0x140290cb2; the entry's +0x338 fid — through its +0x98 alias — must equal it; the
+// +0x54 & 3 test is always true for kind-2 records) and whose Iso4's third row (m[2], m[5], m[8]) — normalised when
+// its length² ∈ (1e-10, FLT_MAX) — is axis-aligned (|m5| < 0.01 ∧ (|m2| < 0.01 ∨ |m8| < 0.01)) with m2 > 0.99 → code 1,
+// m8 > 0.99 → 5, m2 < −0.99 → 0, m8 < −0.99 → 4 (else it stays an ordinary record) is a WALL: param+0x24 = 1,
+// +0x28 = the code, +0x30 = 2·h.y (height), +0x2c = 2·(code > 1 ? h.x : h.z). Walls skip the solo/hash grouping and
+// the chunk split; afterwards, per facing bucket 0..5 in code order, they are keyed by (code, lroundf(code < 2 ?
+// centre.z : centre.x)) — a hash map in first-appearance order — and inside a key the records with the SAME f32
+// (code < 2 ? centre.x : centre.z) (after a radix sort of that value) form a sub-run; FUN_140292e40 sorts a sub-run
+// by centre.y and splits it where height < 0.9·Δy or after 9 members; every piece is one model entry appended to the
+// list (nb = 1, na = N, ext = the record's ext, area = ex·ey, count N, +0x28 = 1) whose cells are the members in
+// ascending y (ordinal 0..N−1). stpad: all 212 VFCMiddle records are lone strips (no two share an (x, z)) → 212
+// plain rects, placed by TryPack after every other equal-area entry (their list index is the highest).
+
+/// FUN_14028ff90's facing code of a wall from the Iso4's third row `(m2, m5, m8)`; `None` = not axis-aligned (not a
+/// wall).
+pub fn wall_facing(m2: f32, m5: f32, m8: f32) -> Option<u8> {
+    let l2 = m2 * m2 + m5 * m5 + m8 * m8;
+    let (x, y, z) = if l2 > 1e-10 && l2 < f32::MAX {
+        let inv = 1.0 / l2.sqrt();
+        (m2 * inv, m5 * inv, m8 * inv)
+    } else {
+        (m2, m5, m8)
+    };
+    if !(y.abs() < 0.01 && (x.abs() < 0.01 || z.abs() < 0.01)) {
+        return None;
+    }
+    if x > 0.99 {
+        Some(1)
+    } else if z > 0.99 {
+        Some(5)
+    } else if x < -0.99 {
+        Some(0)
+    } else if z < -0.99 {
+        Some(4)
+    } else {
+        None
+    }
+}
+
+/// The file that makes a record a wall.
+pub const WALL_MODEL_FILE: &str = "Stadium\\Media\\Prefab\\DecoWall\\Base_VFCMiddle_Air.Prefab.Gbx";
+
+/// A wall record for `wall_strips`: its facing code, centre and height (2·h.y).
+#[derive(Clone, Copy, Debug)]
+pub struct WallRec {
+    pub facing: u8,
+    pub centre: [f32; 3],
+    pub height: f32,
+}
+
+fn lroundf(v: f32) -> i32 {
+    (v.abs() + 0.5).floor().copysign(v) as i32
+}
+
+/// FUN_140293180 + FUN_140292e40: the strips, as lists of indices into `walls`, in the order the entries are
+/// appended to the model list.
+pub fn wall_strips(walls: &[WallRec]) -> Vec<Vec<usize>> {
+    let mut out = Vec::new();
+    for code in 0u8..6 {
+        // the (code, lroundf(plane)) map in first-appearance order
+        let mut keys: Vec<i32> = Vec::new();
+        let mut groups: Vec<Vec<usize>> = Vec::new();
+        for (i, w) in walls.iter().enumerate() {
+            if w.facing != code {
+                continue;
+            }
+            let plane = if code < 2 { w.centre[2] } else { w.centre[0] };
+            let k = lroundf(plane);
+            match keys.iter().position(|&x| x == k) {
+                Some(g) => groups[g].push(i),
+                None => {
+                    keys.push(k);
+                    groups.push(vec![i]);
+                }
+            }
+        }
+        for g in groups {
+            // radix (stable) sort by the along value; sub-runs = equal values
+            let along = |i: usize| if code < 2 { walls[i].centre[0] } else { walls[i].centre[2] };
+            let mut order = g.clone();
+            order.sort_by(|&a, &b| along(a).to_bits().cmp(&along(b).to_bits()));
+            let mut subs: Vec<Vec<usize>> = Vec::new();
+            for i in order {
+                match subs.last_mut() {
+                    Some(last) if along(*last.last().unwrap()).to_bits() == along(i).to_bits() => last.push(i),
+                    _ => subs.push(vec![i]),
+                }
+            }
+            for mut sub in subs {
+                // FUN_140292e40: by centre.y, split at 0.9·Δy > height or 9 members
+                sub.sort_by(|&a, &b| walls[a].centre[1].to_bits().cmp(&walls[b].centre[1].to_bits()));
+                let mut cur: Vec<usize> = Vec::new();
+                let mut prev_y = walls[sub[0]].centre[1];
+                for i in sub {
+                    let y = walls[i].centre[1];
+                    if !cur.is_empty() && (walls[cur[0]].height < (y - prev_y) * 0.9 || cur.len() > 8) {
+                        out.push(std::mem::take(&mut cur));
+                    }
+                    cur.push(i);
+                    prev_y = y;
+                }
+                out.push(cur);
+            }
+        }
+    }
+    out
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+// THE LEGACY (kind 0) ITEM RECORDS (RE 7, 2026-09-25 19:50Z; WhiteShore tiny 03 dump: 380 kind-0 records, GreenCoast
+// tiny 04: 23). An item whose model is a legacy solid — a `CPlugVegetTreeModel` (0x2F086000; the WhiteShore
+// TreeFir*/TreePineDead* items, directly or through an NPlugItem::SVariantList) or a CGameItemModel over a `CPlugSolid`
+// (0x09005000) — is instantiated as a CHmsItem mobil and takes FUN_14020e3c0: one record iff the solid's PreLightGen
+// exists (`mapgeom::static_item::legacy_plg`: the VegetTreeModel's tail block, hasPLG = 1; the CPlugSolid's chunk
+// 0x09005017) and its u01 ≠ 0 (`mobil_item_record`); quality = the BYTE clamp(int(255·G·√2^e), 1, 255) / 255 (q 1 →
+// 255 → 1.0; the record keeps the byte, not the float); ext = `chart_ext(plg, byte / 255, 0)` (tiny 03 TreeFirSmallA1:
+// MeterByUv 5.46512127, uv0 [0.0206467 0.0122045 0.4564332 0.9874748] → (2.382, 5.330) m, area 12.70); the box
+// (+0x38 centre, +0x44 half) = |M|·h and M·c + T of the solid's local bbox (built from the tree's visuals at load:
+// TreeFirSmallA1 c ≈ (0, 2.647, 0), h ≈ (0.79, 3.17, 0.79)) with M = the item's Iso4 — the dump shows a per-instance
+// yaw and a ~0.7° lean on top of the map's (0, 0, 0) rotation (half.x/z 0.79 … 1.10 = h(|cos| + |sin|), half.y
+// 3.158 … 3.179): the vegetation placer's per-instance transform (open, with its species pick). The bushes
+// (BushSmallA/B: hasPLG 0) get no record; every TreeFirSmall placement got one (230 = A1 153 + PineDead 35 + A3 31 +
+// A2 11: the variant pick is not uniform). The records follow the static items in the array and take the same
+// grouping (PLG, q) → chunks → grids as kind-2 records.
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -643,13 +774,14 @@ mod tests {
         assert_eq!(ext2, [3.0 * 32.02, 3.0 * 32.08]);
         assert!((area2 - 9.0 * 32.08 * 32.02).abs() < 0.01);
         assert!(!is_solo(e, d1));
-        assert!(is_solo([400.0, 400.0], d1)); // 400·0.295 = 118 > 100 on both sides
-        // stpad (D₁ 5.1097): the 66×14 border charts (32 × 8 m) are grouped, the 32 × 32 bases and the 22.6-m tiles solo
-        assert!(!is_solo([32.0, 8.0], 5.1097));
+        assert!(is_solo([400.0, 30.0], d1)); // 400·0.295 = 118 > 100 on one side is enough
+        // stpad (D₁ 5.1097): the 32 × 32 bases and the 22.6-m tiles are solo; the 32 × 8 VFCMiddle walls would be too
+        // but leave the grouping as walls
         assert!(is_solo([32.0, 32.0], 5.1097));
         assert!(is_solo([22.63, 22.63], 5.1097));
-        // stpad's chunk: 735 entries (AND) → k = 2 → 12141 / 1470 = 8.26 → 8
-        assert_eq!(chunk_size(12141, 735), Some(8));
+        // stpad's chunk: 946 entries − 212 walls = 734 → k = 2 → 12141 / 1468 = 8.27 → 8 (the file's 3×3 grids)
+        assert_eq!(chunk_size(12141, 734), Some(8));
+        assert_eq!(chunk_size(12141, 946), Some(6)); // what counting the walls would give — not the file
         // Z-order cells of a 3×3 grid: the 7 instances fill (0,0) (1,0) (0,1) (1,1) (2,0) (2,1) (0,2) — the two
         // empty cells are (1,2) and (2,2)
         assert_eq!(zorder_cells(3, 3), vec![(0, 0), (1, 0), (0, 1), (1, 1), (2, 0), (2, 1), (0, 2), (1, 2), (2, 2)]);
@@ -706,6 +838,32 @@ mod tests {
         assert!((e[0] - 1.329).abs() < 0.002 && (e[1] - 1.308).abs() < 0.002, "{e:?}");
         // the 5-record WaterBase object: all five pass the static filter
         assert_eq!(static_item_record(Some(&spot), true, false), Ok(()));
+    }
+
+    #[test]
+    fn walls_and_legacy_items() {
+        // facing codes from the Iso4's third row
+        assert_eq!(wall_facing(0.0, 0.0, 1.0), Some(5));
+        assert_eq!(wall_facing(0.0, 0.0, -1.0), Some(4));
+        assert_eq!(wall_facing(1.0, 0.0, 0.0), Some(1));
+        assert_eq!(wall_facing(-1.0, 0.0, 0.0), Some(0));
+        assert_eq!(wall_facing(0.7071, 0.0, 0.7071), None);
+        assert_eq!(wall_facing(0.0, 1.0, 0.0), None);
+        // strips: two walls stacked at one (x, z) 8 m apart → one strip of 2 in y order; a third 40 m up → its own
+        let w = |x: f32, y: f32, z: f32, f: u8| WallRec { facing: f, centre: [x, y, z], height: 8.0 };
+        let walls = [w(2080.0, 28.0, 1552.0, 5), w(2080.0, 20.0, 1552.0, 5), w(2080.0, 68.0, 1552.0, 5), w(2080.0, 20.0, 1584.0, 5), w(100.0, 20.0, 300.0, 0)];
+        let strips = wall_strips(&walls);
+        assert_eq!(strips, vec![vec![4], vec![1, 0], vec![2], vec![3]]); // bucket 0 first, then code 5's key (2080) in along order
+        // area' order (asm): n · (ey · ex)
+        let (e, a) = grid_chart([32.0000114, 8.0], 1, 2);
+        assert_eq!(e, [32.0000114, 16.0]);
+        assert_eq!(a.to_bits(), (2.0f32 * (8.0f32 * 32.0000114f32)).to_bits());
+        // the legacy TreeFirSmallA1 record: byte quality 255 → 1.0, ext (2.382, 5.330)
+        let plg = PreLightGen { u01: 1, meter_by_uv: 5.46512127, uv0: [0.02064667083323002, 0.01220446266233921, 0.4564332067966461, 0.987474799156189], uv1: [f32::MAX, f32::MAX, f32::MIN, f32::MIN], sprite_count: [0, 0], uv_groups: Vec::new() };
+        assert_eq!(mobil_item_record(Some(&plg)), Ok(()));
+        assert_eq!(quality_byte(quality_float(0, 1.0)), 255);
+        let e = chart_ext(&plg, quality_from_byte(255), 0);
+        assert!((e[0] - 2.3818).abs() < 0.001 && (e[1] - 5.3298).abs() < 0.001, "{e:?}");
     }
 
     #[test]

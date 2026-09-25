@@ -198,6 +198,11 @@ fn write_light(w: &mut Wr, l: &Light) {
     }
 }
 
+/// The PreLightGen block as CPlugSolid2Model (0x090BB000 v3+) and CPlugSolid (0x09005017 v3+) store it.
+pub fn read_prelight_pub(r: &mut Rd) -> R<PreLightGen> {
+    read_prelight(r)
+}
+
 fn read_prelight(r: &mut Rd) -> R<PreLightGen> {
     let version = r.u32()?;
     let u01 = r.i32()?;

@@ -29,6 +29,7 @@ pub mod oldmat;
 pub mod vstream;
 pub mod visual;
 pub mod solid2;
+pub mod legacy_plg;
 pub mod surface;
 pub mod item;
 pub mod file;
