@@ -1096,11 +1096,32 @@ from the pack (`lmtool pak-tables --pak F:K … --collection C --material LINK �
   engine's 4096-entry table (0x141a64760 = `round(255·IEC(i/4095))`, index
   `trunc(x·4095 + 0.5)` clamped; 0x14018cdf0), alpha 0xff — 2048/2048.
   `paktables::water_tables`.
-* **Not in the collection packs** (Maniaplanet.pak, `Techno3\Media\…`): the
-  parent materials, `ACosSmoothDefaultPyPxz.Texture.Gbx` (5457/5459),
-  `DisabledModX2.Texture.gbx` (5468 = 127/255), the Techno3 `SeaRender*`
-  water bitmaps. Their pre-pass roles above are the capture's; the values are
-  engine constants shared by every collection.
+* **The Techno3 defaults** (Maniaplanet.pak, key `9A93…`, banked under
+  tm-paks/ 2026-09-25): the parent materials are one shader reference each
+  (`Tech3 Block PyPxz_Ids.Material.gbx` → `…\Shader\Tech3 Block PyPxz_Ids.
+  Shader.Gbx`; `paktables::material_constant` reads the family off the shader
+  name when the pack is in the store). `ACosSmoothDefaultPyPxz.Texture.Gbx`
+  (5459) is a GENERATED R16 1024×1 LUT — `CPlugFileGen` kind 0x21 `{1024,
+  smooth 1, degrees 0}`, f32 `{0.45, 0.7}` — by 0x14041b290: `t = acos(i/1024)
+  / (π/2)`, `(t − 0.45)/(0.7 − 0.45)` clamped, smoothstep `3t² − 2t³`,
+  `× 65535` truncated (`paktables::acos_smooth_lut`, 1024/1024 vs the
+  capture; texel 0 = 65535 → the Py term's weight 0 at the zero matrix).
+  `DisabledModX2.Texture.gbx` (5468) → `Image\DisabledModX2.tga`, a 4×4
+  24-bit RLE TGA of one colour 0x7f7f7f (`paktables::constant_tga_rgba`).
+  `SeaWaterFog.Texture.gbx` → `Image\SeaWaterFog.tga`, a 256×256 GREY default
+  (245,245,240,3 → 52,51,49,253): the bitmap object the weather model hands to
+  `CHmsZone+0x3b8` carries the COLLECTION's fog image at runtime — the
+  default's pixels never reach the lightmapper.
+* **Which fog table for a non-Day mood** [DISASSEMBLY 0x1406a3400,
+  0x1407b1d50, FILE `mapgeom who-refs`]: `CHmsZone+0x3b8` is written from the
+  decoration layout's env-bitmap 0 (−1 in every collection's Scene3d) and from
+  `CPlugWeatherModel::BitmapWaterFog` of the ONE `Techno3\MotionManagerWeathers
+  \DayTime.MotionManagerWeathers.Gbx` (all collections, all moods). Nothing
+  references `Moods\<Mood>\WaterColor.tga` (0 of 5593 GBX files in BlueBay.pak;
+  no exe string): Night/Sunrise/Sunset use the same collection image. OPEN
+  (bounded): the image is 32 columns wide and the runtime texture is named
+  `WaterFogDayTimed`; the Day bake took column 0; other columns differ by
+  ≤ 13/255 (alpha at depth) — one Sunset capture settles the column rule.
 
 ## 7. Alignment list for `lmtool bake` (what lmtool does → what the client does → fix)
 

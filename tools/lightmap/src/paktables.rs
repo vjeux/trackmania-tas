@@ -13,9 +13,12 @@
 //!   (SeaFloor (0.85107964, 0.7339805, 0.32585403), Land (0.11579…), TrackWall (0.43581…)).
 //! * `projected_constant` — PS 17025 (`Tech3 Block PyPxzDiff_Spec_Norm_LM1` family) at the zero
 //!   matrix: `TMapPxzBaseColor` at (0, 0) (the Pxz uv rows are `(±z, y)·GbxSamplerTcScaleTrans −
-//!   trans`, all 0), and `TMapACosSmoothPy(|n.y| = 0)` = texel 0 = 1.0 of the Techno3 default LUT
-//!   `ACosSmoothDefaultPyPxz` (Maniaplanet.pak — not in a collection pack; the capture's 5459 has
-//!   65535 there) so the Py term's weight `1 − 1 = 0` and the constant is the Pxz corner mean.
+//!   trans`, all 0), and `TMapACosSmoothPy(|n.y| = 0)` = texel 0 of the material's `ACosSmoothPy`
+//!   slot — the Techno3 `ACosSmoothDefaultPyPxz.Texture.Gbx` (Maniaplanet.pak), a GENERATED 1-D
+//!   R16 LUT (`acos_smooth_lut`, CPlugFileGen kind 0x21: smoothstep of acos(u)/(π/2) between 0.45
+//!   and 0.7; texel 0 = 65535, the captured 5459 1024/1024) — so the Py term's weight is `1 − 1 = 0`
+//!   and the constant is the Pxz image's sample. The X2 slot's default `DisabledModX2` (a 4×4 TGA of
+//!   0x7f7f7f = the captured 5468) multiplies nothing at the zero matrix.
 //! * `water_tables` — `Collections\<Coll>.Collection.Gbx` chunk 0x03033038: `g_WaterTop_ByPlanes`
 //!   = WaterTop, `g_WaterDepth_FogMaxDepthInv_ByIds` = (WaterTop − WaterFloor, 1/FogMaxDepth)
 //!   (0x1402255a0 l.430–466), the fog LUT = column 0 of the descriptor's fog TGA read top-down
@@ -41,6 +44,8 @@ pub struct MaterialConstant {
     pub uv: [f32; 2],
     /// The shader ids (iPy, iPxz, iPyX2, iPyH2) for the terrain family.
     pub ids: [i32; 4],
+    /// Slots that had to be assumed (a Techno3 pack not in the store).
+    pub notes: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -136,7 +141,7 @@ pub fn terrain_constant_of(store: &mut DataStore, tm: &TerrainMaterial) -> Resul
     let uv = [0.0f32, -buf[i * 4 + 2][2]];
     let dds = store.read(&image)?;
     let rgb = mip0_bilinear_wrap_srgb(&dds, uv)?;
-    Ok(MaterialConstant { rgb, family: Family::PyPxzIds, image, uv, ids: [tm.i_py, tm.i_pxz, tm.i_py_x2, tm.i_py_h2] })
+    Ok(MaterialConstant { rgb, family: Family::PyPxzIds, image, uv, ids: [tm.i_py, tm.i_pxz, tm.i_py_x2, tm.i_py_h2], notes: tm.notes.clone() })
 }
 
 /// PS 17025's pre-pass constant of a single-texture Py/Pxz material (`…\TrackWallInWorld`): the
@@ -170,8 +175,33 @@ pub fn projected_constant(store: &mut DataStore, link: &str) -> Result<MaterialC
     let dds = store.read(&image)?;
     // v1 = 0: r1.x = ±(v1.z · s.x) = 0, r1.w = v1.y · s.y − s.w = −trans.y
     let uv = [0.0f32, -trans[1]];
-    let rgb = mip0_bilinear_wrap_srgb(&dds, uv)?;
-    Ok(MaterialConstant { rgb, family: Family::PyPxzProjected, image, uv, ids: [-1; 4] })
+    let pxz = mip0_bilinear_wrap_srgb(&dds, uv)?;
+    // The Py term: weight = 1 − TMapACosSmoothPy(|n.y| = 0) = 1 − LUT[0]/65535. With the Techno3
+    // default LUT that is 0 (texel 0 = 65535, the captured 5459); read the material's own slot when
+    // the pack holding it is in the store, else assume the default (and say so in `notes`).
+    let mut notes = Vec::new();
+    let py_weight = match slot("ACosSmoothPy") {
+        Some(t) => match acos_smooth_of_slot(store, &t) {
+            Ok(lut) => 1.0 - lut.first().copied().unwrap_or(65535) as f32 / 65535.0,
+            Err(e) => {
+                notes.push(format!("ACosSmoothPy {t}: {e} — assuming the Techno3 default (texel 0 = 65535)"));
+                0.0
+            }
+        },
+        None => 0.0,
+    };
+    let rgb = if py_weight == 0.0 {
+        pxz
+    } else {
+        // the Py image at (0, 0) blended in — never the case for the shipped defaults
+        let py_tex = slot("PyBaseColor").ok_or_else(|| format!("{file}: ACosSmoothPy weight {py_weight} needs a PyBaseColor slot"))?;
+        let pm = store.load_model(&py_tex)?;
+        let pg = pm.graph()?;
+        let py_img = match &pg.root { Some(mapgeom::node::Node::Bitmap(b)) => pg.external(b.image).map(|s| s.to_string()), _ => None }.ok_or_else(|| format!("{py_tex}: no image"))?;
+        let py = mip0_bilinear_wrap_srgb(&store.read(&py_img)?, [0.0, 0.0])?;
+        [pxz[0] * (1.0 - py_weight) + py[0] * py_weight, pxz[1] * (1.0 - py_weight) + py[1] * py_weight, pxz[2] * (1.0 - py_weight) + py[2] * py_weight]
+    };
+    Ok(MaterialConstant { rgb, family: Family::PyPxzProjected, image, uv, ids: [-1; 4], notes })
 }
 
 /// The constant of any world-projected material, by its parent shader family; an error names a
@@ -181,12 +211,23 @@ pub fn material_constant(store: &mut DataStore, link: &str) -> Result<MaterialCo
     let file = if link.to_ascii_lowercase().ends_with(".gbx") { link.to_string() } else { format!("{link}.Material.Gbx") };
     let m = store.load_model(&file)?;
     let parent = m.externals.iter().map(|(_, p)| p.to_ascii_lowercase()).find(|p| p.ends_with(".material.gbx") && !p.eq_ignore_ascii_case(&file.to_ascii_lowercase())).unwrap_or_default();
-    if parent.contains("pypxz_ids") {
+    // The parent material (Maniaplanet.pak `Techno3\Media\Material\Tech3 Block PyPxz_Ids.Material.gbx`)
+    // names its shader (`…\Shader\Tech3 Block PyPxz_Ids.Shader.Gbx`): when the pack is in the store the
+    // family comes from the SHADER name, else from the parent material's name (the same words).
+    let shader = if parent.is_empty() {
+        String::new()
+    } else {
+        match store.load_model(&parent) {
+            Ok(pm) => pm.externals.iter().map(|(_, p)| p.to_ascii_lowercase()).find(|p| p.ends_with(".shader.gbx")).unwrap_or_else(|| parent.clone()),
+            Err(_) => parent.clone(),
+        }
+    };
+    if shader.contains("pypxz_ids") {
         terrain_constant(store, link)
-    } else if parent.contains("pypxz") {
+    } else if shader.contains("pypxz") {
         projected_constant(store, link)
     } else {
-        Err(format!("{link}: parent {parent:?} is not a world-projected (PyPxz) material — its pre-pass colour is per texel"))
+        Err(format!("{link}: parent {parent:?} (shader {shader:?}) is not a world-projected (PyPxz) material — its pre-pass colour is per texel"))
     }
 }
 
@@ -250,6 +291,115 @@ pub fn water_transmittance_lut(gen: &FileGenRaw) -> Result<Vec<[u8; 4]>, String>
 /// f32 power for these inputs (every captured texel agrees).
 pub fn crt_powf(x: f32, y: f32) -> f32 {
     (x as f64).powf(y as f64) as f32
+}
+
+/// `ACosSmooth*.Texture.Gbx` (CPlugFileGen kind 0x21) as the game generates it (0x14041b290,
+/// reached from the kind switch 0x140418530 case 0x21 with `width = u32s[0]`, `smooth = u32s[1]`,
+/// `degrees = u32s.get(2)`, `a0 = f32s[0]`, `a1 = f32s[1]`): a 1-D R16_UNORM LUT over u = i/width,
+/// `t = acos(u)` (CRT acosf), `/ (π/2)` (or `/π·180` when `degrees`), `(t − a0)/(a1 − a0)` clamped
+/// to [0, 1], smoothstep `3t² − 2t³` when `smooth`, `× 65535` truncated and clamped. `a0`/`a1` are
+/// clamped to [0, 1] (or [0, 90]) and ordered first. Mip 0 only (the sampler reads mip 0 at a
+/// constant uv). The Techno3 default (0.45, 0.7, smooth) reproduces the captured 5459 1024/1024.
+pub fn acos_smooth_lut(gen: &FileGenRaw) -> Result<Vec<u16>, String> {
+    if gen.kind != 0x21 {
+        return Err(format!("CPlugFileGen kind {} is not the ACosSmooth generator (0x21)", gen.kind));
+    }
+    let width = *gen.u32s.first().ok_or("kind 0x21 without a width")? as usize;
+    let smooth = gen.u32s.get(1).copied().unwrap_or(0) != 0;
+    let degrees = gen.u32s.get(2).copied().unwrap_or(0) != 0;
+    if gen.f32s.len() < 2 {
+        return Err(format!("kind 0x21 with {} floats (two angles needed)", gen.f32s.len()));
+    }
+    let max = if degrees { 90.0f32 } else { 1.0f32 };
+    let a0 = gen.f32s[0].clamp(0.0, max);
+    let a1 = if gen.f32s[0] <= gen.f32s[1] { gen.f32s[1].min(max) } else { a0 };
+    let a1 = if gen.f32s[0] <= gen.f32s[1] && gen.f32s[1] <= max { gen.f32s[1] } else { a1 };
+    let mut out = Vec::with_capacity(width);
+    for i in 0..width {
+        let mut t = ((i as f32 / width as f32) as f64).acos() as f32;
+        t = if degrees { (t / 3.1415927f32) * 180.0f32 } else { t / 1.5707964f32 };
+        t = (t - a0) / (a1 - a0);
+        t = if t <= 0.0 { 0.0 } else if t >= 1.0 { 1.0 } else { t };
+        let v: i32 = if smooth {
+            if t <= 0.0 {
+                0
+            } else if t < 1.0 {
+                let t = t * 3.0 * t - (t + t) * t * t;
+                (t * 65535.0) as i32
+            } else {
+                0xffff
+            }
+        } else {
+            (t * 65535.0) as i32
+        };
+        out.push(if v <= 0 { 0 } else { v.min(0xffff) as u16 });
+    }
+    Ok(out)
+}
+
+/// The material slot's `.Texture.Gbx` resolved to its generated LUT (kind 0x21), or an error naming
+/// what the slot is.
+pub fn acos_smooth_of_slot(store: &mut DataStore, texture: &str) -> Result<Vec<u16>, String> {
+    let m = store.load_model(texture)?;
+    let g = m.graph()?;
+    let Some(mapgeom::node::Node::Bitmap(b)) = &g.root else { return Err(format!("{texture}: not a CPlugBitmap")) };
+    match g.node(b.image) {
+        Some(mapgeom::node::Node::FileGen(f)) => acos_smooth_lut(f),
+        _ => Err(format!("{texture}: the image is not a generated LUT (node {})", b.image)),
+    }
+}
+
+/// The single colour of a constant TGA such as `Techno3\Media\Texture\Image\DisabledModX2.tga`
+/// (4×4, 24-bit, RLE): (r, g, b, a) with a = 255 — the X2 modulation's neutral 0x7f (the captured
+/// 5468). Errors when the image is not one colour.
+pub fn constant_tga_rgba(tga: &[u8]) -> Result<[u8; 4], String> {
+    if tga.len() < 18 {
+        return Err("TGA shorter than its header".into());
+    }
+    let idlen = tga[0] as usize;
+    let kind = tga[2];
+    let w = u16::from_le_bytes([tga[12], tga[13]]) as usize;
+    let h = u16::from_le_bytes([tga[14], tga[15]]) as usize;
+    let bpp = tga[16] as usize / 8;
+    if !(bpp == 3 || bpp == 4) {
+        return Err(format!("TGA at {} bpp", bpp * 8));
+    }
+    let mut px: Vec<[u8; 4]> = Vec::with_capacity(w * h);
+    let mut o = 18 + idlen;
+    let take = |o: usize| -> Result<[u8; 4], String> {
+        let p = tga.get(o..o + bpp).ok_or("TGA truncated")?;
+        Ok([p[2], p[1], p[0], if bpp == 4 { p[3] } else { 255 }])
+    };
+    match kind {
+        2 => {
+            for i in 0..w * h {
+                px.push(take(o + i * bpp)?);
+            }
+        }
+        10 => {
+            while px.len() < w * h {
+                let hdr = *tga.get(o).ok_or("TGA truncated")?;
+                o += 1;
+                let n = (hdr & 0x7f) as usize + 1;
+                if hdr & 0x80 != 0 {
+                    let p = take(o)?;
+                    o += bpp;
+                    px.extend(std::iter::repeat(p).take(n));
+                } else {
+                    for _ in 0..n {
+                        px.push(take(o)?);
+                        o += bpp;
+                    }
+                }
+            }
+        }
+        k => return Err(format!("TGA type {k}: only uncompressed / RLE truecolor is read")),
+    }
+    let first = *px.first().ok_or("empty TGA")?;
+    if px.iter().any(|p| *p != first) {
+        return Err("TGA is not a single colour".into());
+    }
+    Ok(first)
 }
 
 /// A 1-D RGBA8 LUT as a sampleable `Texture` (one level, `Rgba8`), sRGB-decoded when `srgb`
@@ -326,6 +476,76 @@ mod tests {
         for (i, want) in [(0usize, [0xff, 0xff, 0xff, 0xff]), (2, [0xfe, 0xfe, 0xfe, 0xff]), (3, [0xfe, 0xfe, 0xfd, 0xff]), (16, [0xf8, 0xf9, 0xf7, 0xff]), (256, [0xa0, 0xa7, 0x90, 0xff]), (512, [0x5b, 0x65, 0x48, 0xff]), (768, [0x30, 0x3a, 0x20, 0xff]), (1024, [0x17, 0x1f, 0x0a, 0xff]), (1280, [0x0a, 0x10, 0x02, 0xff]), (1536, [0x04, 0x07, 0x01, 0xff]), (1792, [0x02, 0x04, 0x01, 0xff]), (2047, [0x02, 0x03, 0x00, 0xff])] {
             assert_eq!(lut[i], want, "texel {i}");
         }
+    }
+
+    /// The Techno3 default (0.45, 0.7, smooth) → the captured 5459 (R16, 1024): 65535 up to texel 464,
+    /// 65534 at 465, 62606 at 510, 0 from 779 (every texel checked against the capture bytes).
+    #[test]
+    fn acos_smooth_default_matches_the_captured_5459() {
+        let gen = FileGenRaw { version: 6, kind: 0x21, u32s: vec![1024, 1, 0], float4s: vec![], f32s: vec![0.45, 0.7], name: String::new() };
+        let lut = acos_smooth_lut(&gen).unwrap();
+        assert_eq!(lut.len(), 1024);
+        assert_eq!(lut[0], 65535);
+        assert_eq!(lut[464], 65535);
+        assert_eq!(&lut[465..470], &[65534, 65533, 65528, 65520, 65509]);
+        assert_eq!(&lut[510..514], &[62606, 62479, 62350, 62218]);
+        assert_eq!(&lut[776..780], &[20, 7, 1, 0]);
+        assert_eq!(lut[1023], 0);
+    }
+
+    /// Every texel against the capture file itself (pwc-day env/frame127447/textures/e012380_5459.dds.gz,
+    /// a plain-header DDS of R16 1024×1) when the passcap is on this box.
+    #[test]
+    fn acos_smooth_default_matches_the_whole_captured_5459() {
+        let path = format!("{}/persistent/private-30d/tm-player/tiny/lightmap-re/passcap/pwc-day/env/frame127447/textures/e012380_5459.dds.gz", std::env::var("HOME").unwrap_or_default());
+        let Ok(gz) = std::fs::read(&path) else { eprintln!("skipped: {path} is not on this box"); return };
+        let d = crate::passdiff::gunzip(&gz).unwrap();
+        let gen = FileGenRaw { version: 6, kind: 0x21, u32s: vec![1024, 1, 0], float4s: vec![], f32s: vec![0.45, 0.7], name: String::new() };
+        let lut = acos_smooth_lut(&gen).unwrap();
+        let cap: Vec<u16> = (0..1024).map(|i| u16::from_le_bytes([d[128 + i * 2], d[129 + i * 2]])).collect();
+        assert_eq!(lut, cap);
+    }
+
+    #[test]
+    fn disabled_mod_x2_is_the_neutral_grey() {
+        // the pack file: 4×4, 24-bit RLE, one packet per row of 0x7f7f7f
+        let mut t = vec![0u8; 18];
+        t[2] = 10;
+        t[12] = 4;
+        t[14] = 4;
+        t[16] = 24;
+        for _ in 0..4 {
+            t.extend_from_slice(&[0x83, 0x7f, 0x7f, 0x7f]);
+        }
+        assert_eq!(constant_tga_rgba(&t).unwrap(), [0x7f, 0x7f, 0x7f, 0xff]);
+    }
+
+    /// With Maniaplanet.pak in the store nothing is assumed: the ACosSmoothPy slot's LUT is read and
+    /// the X2 default is the 0x7f grey.
+    #[test]
+    fn techno3_defaults_from_maniaplanet_pak() {
+        let dir = std::env::var("TM_PAKS").unwrap_or_else(|_| format!("{}/persistent/private-30d/tm-paks", std::env::var("HOME").unwrap_or_default()));
+        let mp = format!("{dir}/Maniaplanet.pak");
+        if !std::path::Path::new(&mp).is_file() {
+            eprintln!("skipped: {mp} is not on this box");
+            return;
+        }
+        let mut store = DataStore::empty();
+        store.add_pak(&mp, "9A93723447347A8CE336CCFC49E65449").unwrap();
+        let lut = acos_smooth_of_slot(&mut store, "Techno3\\Media\\Texture\\ACosSmoothDefaultPyPxz.Texture.Gbx").unwrap();
+        assert_eq!(lut[0], 65535);
+        assert_eq!(lut[510], 62606);
+        let tga = store.read("Techno3\\Media\\Texture\\Image\\DisabledModX2.tga").unwrap();
+        assert_eq!(constant_tga_rgba(&tga).unwrap(), [0x7f, 0x7f, 0x7f, 0xff]);
+        let Some(bb) = pak_store("BlueBay") else { return };
+        let mut both = bb;
+        both.add_pak(&mp, "9A93723447347A8CE336CCFC49E65449").unwrap();
+        both.add_pak(&format!("{dir}/Stadium.pak"), "B773D73047A4104857722366D78D28A6").unwrap();
+        let c = material_constant(&mut both, "BlueBay\\Media\\Modifier\\StadiumOnTerrain\\TrackWallInWorld").unwrap();
+        assert!(c.notes.is_empty(), "{:?}", c.notes);
+        assert_eq!(c.family, Family::PyPxzProjected);
+        let sea = material_constant(&mut both, "BlueBay\\Media\\Material\\SeaFloor").unwrap();
+        assert_eq!(sea.family, Family::PyPxzIds);
     }
 
     #[test]

@@ -5905,7 +5905,12 @@ fn run(a: Vec<String>) {
             }
             for link in &links {
                 match lightmap::paktables::material_constant(&mut store, link) {
-                    Ok(c) => println!("{link}: {:?} constant ({:.8}, {:.8}, {:.8}) = bits {:08x} {:08x} {:08x}  image {} uv {:?} ids {:?}", c.family, c.rgb[0], c.rgb[1], c.rgb[2], c.rgb[0].to_bits(), c.rgb[1].to_bits(), c.rgb[2].to_bits(), c.image, c.uv, c.ids),
+                    Ok(c) => {
+                        println!("{link}: {:?} constant ({:.8}, {:.8}, {:.8}) = bits {:08x} {:08x} {:08x}  image {} uv {:?} ids {:?}", c.family, c.rgb[0], c.rgb[1], c.rgb[2], c.rgb[0].to_bits(), c.rgb[1].to_bits(), c.rgb[2].to_bits(), c.image, c.uv, c.ids);
+                        for n in &c.notes {
+                            println!("  note: {n}");
+                        }
+                    }
                     Err(e) => println!("{link}: {e}"),
                 }
             }
