@@ -5776,20 +5776,25 @@ fn run(a: Vec<String>) {
             let mut store = mapgeom::store::DataStore::empty();
             store.add_pak(pp, key).expect("pak");
             let dump = lightmap::records::read_dump(&f("--dump").expect("--dump TSV")).expect("dump");
+            // the collection's profile gives the defaults: the ground grid, the tile row (layout::tile_level — the baked / flat zone
+            // block row, else the profile's ground row) and yoff; --zone defaults to the profile's first flat zone
             let coll = f("--collection").unwrap_or_else(|| "Stadium".into());
-            let zone = f("--zone").unwrap_or_else(|| "Grass".into());
-            let grid: usize = f("--grid").map(|v| v.parse().unwrap()).unwrap_or(96);
-            let cell_y: f32 = f("--cell-y").map(|v| v.parse().unwrap()).unwrap_or(1.0);
-            let yoff: f32 = f("--yoff").map(|v| v.parse().unwrap()).unwrap_or(0.0);
-            // the items' cells for the ring rule: the map's items at their file cells (x, y, z) — the tile level = the ground row
+            let prof0 = lightmap::layout::CollectionProfile::of(&coll);
             let mf = tmmaps::map::MapFile::load(std::path::Path::new(&a[1]));
-            // the marked cells: the items' file cells AND the blocks' cells (the WaterBase blocks one level above the ground mark
-            // their tiles at ring 1)
-            let tile_y0: i32 = f("--tile-level").map(|v| v.parse().unwrap()).unwrap_or(9);
+            // the ground zone: the map's ground-flagged flat zone blocks name it (the resaved tiny maps: 4 096 Water / Lake), else
+            // the profile's first zone
+            let zone = f("--zone").unwrap_or_else(|| lightmap::layout::ground_zone(&mf, &coll));
+            let grid: usize = f("--grid").map(|v| v.parse().unwrap()).unwrap_or(if (mf.size[0].max(0) * mf.size[2].max(0)) as i32 == prof0.grid * prof0.grid || coll != "Stadium" { mf.size[0].max(1) as usize } else { prof0.grid as usize });
+            let tile_y0: i32 = f("--tile-level").map(|v| v.parse().unwrap()).unwrap_or_else(|| lightmap::layout::tile_level(&mf, &coll));
+            // the tiles sit at cell_y·8 + yoff = tile_y0·8 + the profile's yoff
+            let yoff: f32 = f("--yoff").map(|v| v.parse().unwrap()).unwrap_or(prof0.yoff);
+            let cell_y: f32 = f("--cell-y").map(|v| v.parse().unwrap()).unwrap_or(tile_y0 as f32);
+            // the marked cells: the items' file cells at the tile level AND the blocks' cells (3-D; the WaterBase blocks one level
+            // above the ground mark their tiles at ring 1)
             let mut item_cells: std::collections::HashSet<(i32, i32, i32)> = mf.items.iter().map(|it| (it.file_cell[0] as i32, it.file_cell[1] as i32, it.file_cell[2] as i32)).filter(|c| a.iter().any(|x| x == "--items-3d") || c.1 == tile_y0).collect();
             // (a GHOST block — flags bit 28 — marks nothing: stpad's 12 flagged WaterBase blocks leave their tiles at ring ≥ 2)
-            if !a.iter().any(|x| x == "--no-block-cells") { for b in &mf.blocks { if b.flags & 0x1000_0000 != 0 && !a.iter().any(|x| x == "--ghost-marks") { continue; } let (x, y, z) = b.coords(); item_cells.insert((x, y, z)); } }
-            let tile_y: i32 = f("--tile-level").map(|v| v.parse().unwrap()).unwrap_or(9);
+            if !a.iter().any(|x| x == "--no-block-cells") { for b in &mf.blocks { if b.flags & 0x1000_0000 != 0 && !a.iter().any(|x| x == "--ghost-marks") { continue; } if b.flags & 0x1000 != 0 && prof0.flat_zones.contains(&b.name.as_str()) { continue; } let (x, y, z) = b.coords(); item_cells.insert((x, y, z)); } }
+            let tile_y: i32 = tile_y0;
             println!("marked cells: {} (items {}, blocks {}); tile level {tile_y}; item cell y values {:?}", item_cells.len(), mf.items.len(), mf.blocks.len(), { let mut v: Vec<i32> = mf.items.iter().map(|it| it.file_cell[1] as i32).collect(); v.sort(); v.dedup(); v });
             let cells: Vec<(i32, i32)> = (0..grid as i32).flat_map(|cx| (0..grid as i32).map(move |cz| (cx, cz))).collect();
             let tq = lightmap::layout::tile_quality(&cells, tile_y, &item_cells);
@@ -5801,10 +5806,15 @@ fn run(a: Vec<String>) {
             // THE BLOCKS (authored, in block order — one obj each) and THE ENGINE'S CLIPS (mapgeom::bake::simulate: the free clips the
             // client instantiates at load, 1 028 drawn on stpad = the dump's 1 028 clip objects), then THE ITEMS
             let mut recs: Vec<lightmap::records::Rec> = Vec::new();
-            let yoff_blocks: f32 = f("--block-yoff").map(|v| v.parse().unwrap()).unwrap_or(-64.0);
+            // the blocks' world y = cy·8 + the collection's yoff (Stadium −64, WhiteShore −120, …); a ground-flagged FLAT ZONE block
+            // (the resaved tiny maps carry their 4 096 Water / Lake / Grass tiles as blocks) IS a tile — no block record for it
+            let prof = lightmap::layout::CollectionProfile::of(&coll);
+            let yoff_blocks: f32 = f("--block-yoff").map(|v| v.parse().unwrap()).unwrap_or(prof.yoff);
+            let is_zone_block = |b: &tmmaps::map::BlockRec| b.flags & 0x1000 != 0 && prof.flat_zones.contains(&b.name.as_str());
             let mut idx = mapgeom::blockmap::BlockInfoIndex::build(&store, &coll);
             let mut n_block_recs = 0usize;
             for (bi_, b) in mf.blocks.iter().enumerate() {
+                if is_zone_block(b) { continue; }
                 let Some(path) = idx.path_for(&b.name) else { eprintln!("block {}: no block info for {}", bi_, b.name); continue };
                 let bi = match idx.load(&mut store, &path) { Ok(bi) => bi.clone(), Err(e) => { eprintln!("block {}: {e}", bi_); continue } };
                 let (x, y, z) = b.coords();

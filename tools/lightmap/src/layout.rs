@@ -352,9 +352,20 @@ pub fn tile_level(mf: &tmmaps::map::MapFile, collection: &str) -> i32 {
         .unwrap_or(prof.ground_row)
 }
 
+/// The ground zone of a map: the name of its ground-flagged flat zone blocks (the resaved tiny maps carry the tiles as 4 096
+/// Water / Lake blocks; a map with several takes the most frequent), else the collection's first flat zone.
+pub fn ground_zone(mf: &tmmaps::map::MapFile, collection: &str) -> String {
+    let prof = CollectionProfile::of(collection);
+    let mut counts: std::collections::HashMap<&str, usize> = Default::default();
+    for b in &mf.blocks { if b.flags & 0x1000 != 0 && prof.flat_zones.contains(&b.name.as_str()) { *counts.entry(b.name.as_str()).or_default() += 1; } }
+    counts.into_iter().max_by_key(|(_, n)| *n).map(|(z, _)| z.to_string()).unwrap_or_else(|| prof.flat_zones[0].to_string())
+}
+
 pub fn for_map(map_path: &str, scene: &crate::geometry::Scene, base: u32, quality_index: u32, tile_plg: TilePlg, pak: Option<(&str, &str)>, collection: &str, zone: &str, kept: Option<&std::collections::HashSet<usize>>) -> Result<GameLayout, String> {
     let mf = tmmaps::map::MapFile::load(std::path::Path::new(map_path));
     let prof = CollectionProfile::of(collection);
+    let zone_owned = if mf.blocks.iter().any(|b| b.flags & 0x1000 != 0 && prof.flat_zones.contains(&b.name.as_str())) { ground_zone(&mf, collection) } else { zone.to_string() };
+    let zone: &str = &zone_owned;
     // the ground grid: the map's own size when its cell count is the tile base (the 64 × 64 tiny maps), else the collection's
     // decoration grid (Stadium's 96 × 96 ground under a 48 × 48 map)
     let (sx, sz) = if (mf.size[0].max(0) * mf.size[2].max(0)) as u32 == base { (mf.size[0], mf.size[2]) } else { (prof.grid, prof.grid) };
