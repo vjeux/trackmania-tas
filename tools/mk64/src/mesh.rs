@@ -358,6 +358,99 @@ pub fn colour_census(mesh: &Mesh, levels: u32) -> (usize, usize, usize, usize) {
     (flat, grad, colours.len(), pairs.len())
 }
 
+/// Smooth the vertex colours of the GROUND (face normal mostly up): MK64
+/// tints its road and grass quads individually — Luigi Raceway's asphalt
+/// triangles agree within 8/255 inside a triangle but differ by ±51 across
+/// them (`mk64 colours`), a flat-shaded patchwork that the N64's blur and
+/// dithering hid and that TM draws as a crisp, flickering mosaic (vjeux,
+/// 2026-09-24 "the map is super flickery"). Each ground triangle's colour
+/// becomes the Gaussian-weighted mean of the colours of the ground triangles
+/// of the same material within `radius` metres (σ = radius/2), so large-scale
+/// shading survives and per-quad noise goes. Vertical faces (walls, signs,
+/// tunnel sides) keep their own colours: there the steps are real shading.
+/// Returns the number of triangles smoothed.
+pub fn smooth_ground_colours(mesh: &mut Mesh, radius: f32) -> usize {
+    let is_ground = |t: &Tri| {
+        let n = face_normal(&[t.c[0].pos, t.c[1].pos, t.c[2].pos]);
+        n[1].abs() > 0.7 && !t.lit
+    };
+    let centroid = |t: &Tri| {
+        let mut c = [0.0f32; 3];
+        for k in &t.c {
+            for i in 0..3 {
+                c[i] += k.pos[i] / 3.0;
+            }
+        }
+        c
+    };
+    let mean_col = |t: &Tri| {
+        let mut m = [0.0f32; 3];
+        for k in &t.c {
+            for i in 0..3 {
+                m[i] += k.rgba[i] as f32 / 3.0;
+            }
+        }
+        m
+    };
+    // per material: the ground triangles, bucketed on a grid of `radius` cells
+    let mut by_mat: HashMap<Option<usize>, Vec<usize>> = HashMap::new();
+    for (i, t) in mesh.tris.iter().enumerate() {
+        if is_ground(t) {
+            by_mat.entry(t.mat).or_default().push(i);
+        }
+    }
+    let sigma2 = (radius * 0.5).powi(2);
+    let mut new_cols: Vec<Option<[u8; 3]>> = vec![None; mesh.tris.len()];
+    let mut n = 0usize;
+    for (_, idx) in &by_mat {
+        let cents: Vec<[f32; 3]> = idx.iter().map(|&i| centroid(&mesh.tris[i])).collect();
+        let cols: Vec<[f32; 3]> = idx.iter().map(|&i| mean_col(&mesh.tris[i])).collect();
+        let cell = |p: [f32; 3]| ((p[0] / radius).floor() as i32, (p[2] / radius).floor() as i32);
+        let mut grid: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
+        for (k, c) in cents.iter().enumerate() {
+            grid.entry(cell(*c)).or_default().push(k);
+        }
+        for (k, &ti) in idx.iter().enumerate() {
+            let c0 = cents[k];
+            let (cx, cz) = cell(c0);
+            let mut acc = [0.0f32; 3];
+            let mut wsum = 0.0f32;
+            for dx in -1..=1 {
+                for dz in -1..=1 {
+                    if let Some(list) = grid.get(&(cx + dx, cz + dz)) {
+                        for &j in list {
+                            let d2 = (cents[j][0] - c0[0]).powi(2) + (cents[j][2] - c0[2]).powi(2);
+                            if d2 > radius * radius {
+                                continue;
+                            }
+                            let w = (-d2 / (2.0 * sigma2)).exp();
+                            for i in 0..3 {
+                                acc[i] += w * cols[j][i];
+                            }
+                            wsum += w;
+                        }
+                    }
+                }
+            }
+            if wsum > 0.0 {
+                new_cols[ti] = Some([(acc[0] / wsum).round() as u8, (acc[1] / wsum).round() as u8, (acc[2] / wsum).round() as u8]);
+                n += 1;
+            }
+        }
+    }
+    for (i, t) in mesh.tris.iter_mut().enumerate() {
+        if let Some(c) = new_cols[i] {
+            for k in t.c.iter_mut() {
+                k.rgba[0] = c[0];
+                k.rgba[1] = c[1];
+                k.rgba[2] = c[2];
+            }
+        }
+    }
+    n
+}
+
+
 /// TM's item shaders ignore vertex colours (`TDSN`/`TDOSN` never read
 /// colour0 — verified 2026-09), and MK64 shades everything with them: the
 /// tunnel's darkness, the hill's greens, Bowser's Castle's gloom, the sand's

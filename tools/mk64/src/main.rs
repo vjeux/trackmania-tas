@@ -73,6 +73,8 @@ fn main() {
         "stats" => cmd_stats(&args),
         "textures" => cmd_textures(&args),
         "sprites" => cmd_sprites(&args),
+        "overlaps" => cmd_overlaps(&args),
+        "colours" => cmd_colours(&args),
         "skins" => mk64::skins::cmd(&args, &decomp_dir(&args), &rom_path(&args).expect("--rom FILE ($MK64_ROM)")),
         "texture" => cmd_texture(&args),
         "render" => cmd_render(&args),
@@ -380,4 +382,135 @@ fn cmd_sprites(args: &[String]) {
         Err(e) => println!("  portrait: {e}"),
     }
     println!("wrote sheets to {}", out.display());
+}
+
+/// `mk64 overlaps COURSE`: coplanar overlapping triangle pairs between materials
+/// (the z-fighting candidates), by material pair.
+fn cmd_overlaps(args: &[String]) {
+    let (mut c, _decomp) = load_course(args);
+    let dir = course_arg(args);
+    let pieces = c.visual_pieces();
+    let frame = frame_for(&c, args);
+    let m = mesh::visual_mesh(&c, &pieces, None, &frame);
+    let name = |t: &mk64::mesh::Tri| t.mat.map(|i| m.materials[i].stem()).unwrap_or_else(|| "(untextured)".into());
+    // plane of each tri; bucket by (rounded normal, rounded d)
+    let mut buckets: std::collections::HashMap<(i32, i32, i32, i32), Vec<usize>> = std::collections::HashMap::new();
+    let plane = |t: &mk64::mesh::Tri| -> Option<([f32; 3], f32)> {
+        let (a, b, cc) = (t.c[0].pos, t.c[1].pos, t.c[2].pos);
+        let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        let v = [cc[0] - a[0], cc[1] - a[1], cc[2] - a[2]];
+        let mut n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+        let l = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+        if l < 1e-6 {
+            return None;
+        }
+        for k in 0..3 {
+            n[k] /= l;
+        }
+        if n[1] < 0.0 || (n[1] == 0.0 && (n[0] < 0.0 || (n[0] == 0.0 && n[2] < 0.0))) {
+            for k in 0..3 {
+                n[k] = -n[k];
+            }
+        }
+        Some((n, n[0] * a[0] + n[1] * a[1] + n[2] * a[2]))
+    };
+    for (i, t) in m.tris.iter().enumerate() {
+        if let Some((n, d)) = plane(t) {
+            buckets.entry(((n[0] * 50.0).round() as i32, (n[1] * 50.0).round() as i32, (n[2] * 50.0).round() as i32, (d / 0.05).round() as i32)).or_default().push(i);
+        }
+    }
+    let mut pairs: std::collections::BTreeMap<(String, String), (usize, f32)> = std::collections::BTreeMap::new();
+    let bbox = |t: &mk64::mesh::Tri| {
+        let mut lo = [f32::MAX; 3];
+        let mut hi = [f32::MIN; 3];
+        for c in &t.c {
+            for k in 0..3 {
+                lo[k] = lo[k].min(c.pos[k]);
+                hi[k] = hi[k].max(c.pos[k]);
+            }
+        }
+        (lo, hi)
+    };
+    // real overlap: project both triangles onto the plane's dominant axes and
+    // test whether one's centroid or an edge midpoint lies strictly inside the other
+    let inside = |p: [f32; 2], t: [[f32; 2]; 3]| -> bool {
+        let s = |a: [f32; 2], b: [f32; 2], c: [f32; 2]| (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+        let (d1, d2, d3) = (s(t[0], t[1], p), s(t[1], t[2], p), s(t[2], t[0], p));
+        let eps = 1e-3;
+        (d1 > eps && d2 > eps && d3 > eps) || (d1 < -eps && d2 < -eps && d3 < -eps)
+    };
+    for (key, idx) in &buckets {
+        let n = [key.0 as f32 / 50.0, key.1 as f32 / 50.0, key.2 as f32 / 50.0];
+        let (ax, ay) = if n[1].abs() >= n[0].abs() && n[1].abs() >= n[2].abs() { (0usize, 2usize) } else if n[0].abs() >= n[2].abs() { (1, 2) } else { (0, 1) };
+        let proj = |t: &mk64::mesh::Tri| [[t.c[0].pos[ax], t.c[0].pos[ay]], [t.c[1].pos[ax], t.c[1].pos[ay]], [t.c[2].pos[ax], t.c[2].pos[ay]]];
+        let probes = |t: [[f32; 2]; 3]| {
+            let c = [(t[0][0] + t[1][0] + t[2][0]) / 3.0, (t[0][1] + t[1][1] + t[2][1]) / 3.0];
+            [c, [(t[0][0] + t[1][0]) / 2.0, (t[0][1] + t[1][1]) / 2.0], [(t[1][0] + t[2][0]) / 2.0, (t[1][1] + t[2][1]) / 2.0], [(t[2][0] + t[0][0]) / 2.0, (t[2][1] + t[0][1]) / 2.0]]
+        };
+        for a in 0..idx.len() {
+            for b in a + 1..idx.len() {
+                let (ta, tb) = (&m.tris[idx[a]], &m.tris[idx[b]]);
+                let (pa, pb) = (proj(ta), proj(tb));
+                let hit = probes(pa).iter().any(|p| inside(*p, pb)) || probes(pb).iter().any(|p| inside(*p, pa));
+                if !hit {
+                    continue;
+                }
+                let (la, ha) = bbox(ta);
+                let (lb, hb) = bbox(tb);
+                let area = |lo: [f32; 3], hi: [f32; 3]| (hi[0] - lo[0]).max(hi[2] - lo[2]);
+                let key = {
+                    let (x, y) = (name(ta), name(tb));
+                    if x <= y { (x, y) } else { (y, x) }
+                };
+                let e = pairs.entry(key).or_insert((0, 0.0));
+                e.0 += 1;
+                e.1 = e.1.max(area(la, ha).min(area(lb, hb)));
+            }
+        }
+    }
+    println!("{dir}: {} tris; coplanar overlapping pairs by material pair (count, largest extent m):", m.tris.len());
+    let mut v: Vec<_> = pairs.into_iter().collect();
+    v.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
+    for ((a, b), (n, ext)) in v.iter().take(25) {
+        println!("  {n:5}  {ext:6.1} m  {a}  ×  {b}");
+    }
+}
+
+/// `mk64 colours COURSE [--mat SUBSTR]`: vertex-colour statistics per material
+/// (how much the tints vary within a triangle and across the material).
+fn cmd_colours(args: &[String]) {
+    let (mut c, _decomp) = load_course(args);
+    let pieces = c.visual_pieces();
+    let frame = frame_for(&c, args);
+    let m = mesh::visual_mesh(&c, &pieces, None, &frame);
+    let want = flag(args, "--mat").map(String::from);
+    let mut per: std::collections::BTreeMap<String, Vec<&mesh::Tri>> = std::collections::BTreeMap::new();
+    for t in &m.tris {
+        let n = t.mat.map(|i| m.materials[i].stem()).unwrap_or_else(|| "(untextured)".into());
+        if let Some(w) = &want {
+            if !n.contains(w.as_str()) {
+                continue;
+            }
+        }
+        per.entry(n).or_default().push(t);
+    }
+    println!("{:<34} {:>5} {:>8} {:>8} {:>8} {:>6}", "material", "tris", "mean", "within", "across", "lit");
+    for (n, tris) in &per {
+        let lum = |c: [u8; 4]| (c[0] as f32 * 0.3 + c[1] as f32 * 0.59 + c[2] as f32 * 0.11);
+        let mut within = 0.0f32;
+        let mut means = Vec::new();
+        let mut lit = 0;
+        for t in tris {
+            let l: Vec<f32> = t.c.iter().map(|k| lum(k.rgba)).collect();
+            let (lo, hi) = (l.iter().cloned().fold(f32::MAX, f32::min), l.iter().cloned().fold(f32::MIN, f32::max));
+            within += hi - lo;
+            means.push((l[0] + l[1] + l[2]) / 3.0);
+            if t.lit {
+                lit += 1;
+            }
+        }
+        let mean = means.iter().sum::<f32>() / means.len() as f32;
+        let across = (means.iter().map(|x| (x - mean).powi(2)).sum::<f32>() / means.len() as f32).sqrt();
+        println!("{:<34} {:>5} {:>8.1} {:>8.1} {:>8.1} {:>6}", n, tris.len(), mean, within / tris.len() as f32, across, lit);
+    }
 }

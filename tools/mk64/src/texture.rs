@@ -35,6 +35,79 @@ impl Image {
         }
         Image { w, h, rgba }
     }
+    /// Bilinear upscale by an integer factor, edges WRAPPING (the textures tile):
+    /// the N64 draws every texture through its 3-point filter, so texel edges
+    /// were never sharp on the console — the nearest upscale drew the asphalt's
+    /// 19 cm texels as a crisp shimmering mosaic (vjeux, 2026-09-24). Alpha is
+    /// interpolated too; the cut-out edge stays where the N64 put it (the
+    /// alpha test at 128).
+    pub fn upscale_bilinear(&self, f: u32) -> Image {
+        let (w, h) = (self.w * f, self.h * f);
+        let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+        let (sw, sh) = (self.w as i64, self.h as i64);
+        for y in 0..h {
+            // sample position in source texel space, texel centres at +0.5
+            let ty = (y as f32 + 0.5) / f as f32 - 0.5;
+            let y0 = ty.floor();
+            let fy = ty - y0;
+            for x in 0..w {
+                let tx = (x as f32 + 0.5) / f as f32 - 0.5;
+                let x0 = tx.floor();
+                let fx = tx - x0;
+                let px = |ix: i64, iy: i64| self.pixel(ix.rem_euclid(sw) as u32, iy.rem_euclid(sh) as u32);
+                let (a, b, c, d) = (px(x0 as i64, y0 as i64), px(x0 as i64 + 1, y0 as i64), px(x0 as i64, y0 as i64 + 1), px(x0 as i64 + 1, y0 as i64 + 1));
+                for ch in 0..4 {
+                    let top = a[ch] as f32 * (1.0 - fx) + b[ch] as f32 * fx;
+                    let bot = c[ch] as f32 * (1.0 - fx) + d[ch] as f32 * fx;
+                    rgba.push((top * (1.0 - fy) + bot * fy).round().clamp(0.0, 255.0) as u8);
+                }
+            }
+        }
+        Image { w, h, rgba }
+    }
+    /// The share of neighbouring texel pairs that differ by more than `step`
+    /// in some channel: ~0 on the noise-like ground textures (asphalt, grass,
+    /// sand), ≥ 0.1 on pixel art with hard edges (signs, checkerboards, road
+    /// lines). Decides the upscale filter: soft for noise, crisp for art.
+    pub fn hard_edge_share(&self, step: u8) -> f32 {
+        self.edge_shares(step).0
+    }
+    /// (share of neighbour pairs differing by more than `step`, share differing
+    /// by at most 8 = "flat"). Pixel art is mostly flat with some hard edges;
+    /// asphalt is flat with almost no hard edge; grass is neither flat nor
+    /// hard-edged — speckle.
+    pub fn edge_shares(&self, step: u8) -> (f32, f32) {
+        let mut hard = 0usize;
+        let mut flat = 0usize;
+        let mut total = 0usize;
+        for y in 0..self.h {
+            for x in 0..self.w {
+                let a = self.pixel(x, y);
+                for (nx, ny) in [((x + 1) % self.w, y), (x, (y + 1) % self.h)] {
+                    let b = self.pixel(nx, ny);
+                    if a[3] < 128 || b[3] < 128 {
+                        continue;
+                    }
+                    total += 1;
+                    let d = (0..3).map(|c| (a[c] as i32 - b[c] as i32).abs()).max().unwrap_or(0);
+                    if d > step as i32 {
+                        hard += 1;
+                    }
+                    if d <= 8 {
+                        flat += 1;
+                    }
+                }
+            }
+        }
+        if total == 0 { (0.0, 1.0) } else { (hard as f32 / total as f32, flat as f32 / total as f32) }
+    }
+    /// Soft (bilinear) or crisp (nearest) upscale for this texture: soft for the
+    /// noise-like ground textures (few hard edges — asphalt; or speckle with
+    /// few flat pairs — grass, sand), crisp for pixel art (signs, checkerboards).
+    pub fn wants_soft_upscale(&self) -> bool {
+        let (hard, flat) = self.edge_shares(48);
+        hard < 0.08 || flat < 0.3
+    }
     /// The image mirrored into a 2× tile along the axes asked for (the N64
     /// `G_TX_MIRROR` wrap: texel u in [w, 2w) reads w-1-(u-w)).
     pub fn mirrored(&self, s: bool, t: bool) -> Image {

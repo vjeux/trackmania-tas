@@ -61,8 +61,9 @@ pub fn physics_for_surface(s: u8) -> Option<(u8, u8)> {
     })
 }
 
-/// Texture upscale before DXT (nearest): at ×4 every 4×4 DXT block is ONE
-/// texel, so the compression is exact and the N64 pixels stay crisp.
+/// Texture upscale before DXT: ×4, BILINEAR like the N64's texture filter
+/// (`--crisp` keeps the nearest upscale, where every 4×4 DXT block is one
+/// sharp texel — the look that shimmered on the asphalt).
 pub const TEXTURE_UPSCALE: u32 = 4;
 
 fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
@@ -187,11 +188,27 @@ pub fn cmd_build(args: &[String]) {
             println!("  actors: Thwomps ({t} triangles)");
         }
     }
+    // ground tints smoothed over 12 m before the bake (--ground-smooth M; 0 = off)
+    let smooth_r: f32 = flag(args, "--ground-smooth").and_then(|s| s.parse().ok()).unwrap_or(12.0);
+    if smooth_r > 0.0 && !args.iter().any(|a| a == "--no-vertex-colours") {
+        let n = mesh::smooth_ground_colours(&mut m, smooth_r);
+        println!("  ground colours smoothed over {smooth_r} m: {n} triangles");
+    }
     let (splits, variants) = if args.iter().any(|a| a == "--no-vertex-colours") { (0, m.materials.len()) } else { mesh::bake_vertex_colours(&mut m, 16, 24, 4) };
     println!("  vertex colours baked: {splits} triangle splits, {variants} texture variants");
     let want_skirt = if args.iter().any(|a| a == "--no-skirt") { false } else if args.iter().any(|a| a == "--skirt") { true } else { !kind.void };
     let skirts = if want_skirt { mesh::add_skirt(&mut m, STADIUM_GROUND_Y - 0.2) } else { 0 };
-    let soup = mesh::collision_mesh(&c, &coll, &frame);
+    let mut soup = mesh::collision_mesh(&c, &coll, &frame);
+    // --coll-dy M: the collision mesh shifted vertically (probe: does the coplanar
+    // MK64 collision mesh make the lightmapper paint the road in a texel mosaic?)
+    if let Some(dy) = flag(args, "--coll-dy").and_then(|s| s.parse::<f32>().ok()) {
+        for t in soup.iter_mut() {
+            for p in t.p.iter_mut() {
+                p[1] += dy;
+            }
+        }
+        println!("  collision shifted by {dy} m");
+    }
     println!(
         "{}: {} visual tris in {} pieces ({skirts} skirt quads), {} collision tris; scale {scale:.5} m/unit, offset ({:.1}, {:.1}, {:.1}); extent x {:.0}..{:.0} z {:.0}..{:.0}",
         dir,
@@ -214,10 +231,23 @@ pub fn cmd_build(args: &[String]) {
         println!("  texture missing: {x}");
     }
     let mut pictures: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    let crisp = args.iter().any(|a| a == "--crisp");
+    let mut soft_n = 0usize;
     for (i, mat) in m.materials.iter().enumerate() {
-        let img = images[&i].upscale(TEXTURE_UPSCALE);
+        // noise-like textures (asphalt, grass, sand: few hard texel edges) get the
+        // N64's soft filter; pixel art (signs, checkerboards, lines) stays crisp
+        let soft = !crisp && images[&i].wants_soft_upscale();
+        // soft textures ship at their native size: the GPU's bilinear filter IS
+        // the N64 look, and a 64×32 DXT block set is a fraction of a ×4 one
+        // (the ×4 bilinear build pushed D.K.'s Jungle to 8.1 MB, over the 7 MB
+        // server cap); crisp pixel art keeps the ×4 nearest upscale (exact DXT)
+        let img = if soft { images[&i].clone() } else { images[&i].upscale(TEXTURE_UPSCALE) };
+        if soft {
+            soft_n += 1;
+        }
         pictures.insert(format!("{tag}_{}.dds", mat.stem()), write_dds_picture(img.w, img.h, &img.rgba));
     }
+    println!("  textures: {soft_n} of {} upscaled soft (bilinear), the rest crisp", m.materials.len());
 
     // waypoints along the centre path
     let path: Vec<[f32; 3]> = c.path.iter().map(|p| frame.to_tm(p.pos)).collect();

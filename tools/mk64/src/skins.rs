@@ -9,8 +9,8 @@
 //! sheets make the kart readable from every side: the back-view frame facing
 //! the chase camera, the front-view frame facing forward, the right-profile
 //! frame on the right and the same frame seen from the other side on the left
-//! (the N64 mirrors sprites for that half too). A chassis slab in the kart's
-//! colour sits between the game's own wheels, which stay.
+//! (the N64 mirrors sprites for that half too), laid out as a convex box so
+//! no face shadows another. The game's own wheels stay.
 //!
 //! Frames (measured on the contact sheets, `mk64 sprites`): the game stores
 //! the right half of the turn only (the left is mirrored at draw time) in 21
@@ -36,17 +36,17 @@ pub const FRAME_FRONT: usize = 208;
 pub const M_PER_PX: f32 = 2.05 / 40.0;
 /// The atlas upscale (nearest): DXT blocks then straddle no pixel edge.
 pub const ATLAS_UPSCALE: u32 = 4;
-/// Half-thickness of the standee cross: the back and front sheets sit this far
-/// behind/ahead of the centre, the side sheets this far right/left.
-pub const SHEET_OFFSET: f32 = 0.06;
-/// The back sheet sits this far behind the car origin: the game draws its pilot
-/// avatar at the template's PlayerSeat joint near the origin, and the chase
-/// camera must not see him through the kart (00:24 shot).
-pub const BACK_SHEET_Z: f32 = -0.75;
-pub const FRONT_SHEET_Z: f32 = 0.75;
-/// Side sheets shifted forward: the profile sprite spans ~±1.3 m about the
-/// origin; +0.55 puts its rear edge at the back sheet.
-pub const SIDE_SHIFT_Z: f32 = 0.55;
+/// The four sprites form a CONVEX BOX: back and front faces at ∓L/2 (L = the
+/// profile sprite's length), side faces at ∓W/2 (W = the back sprite's width),
+/// all facing outward. A convex shape never shadows itself — the first cross
+/// layout (sheets through the centre) drew a side sheet's shadow as a dark
+/// diagonal band across the driver and a seam down the middle (vjeux's shot,
+/// 2026-09-24 17:01). The game's pilot avatar sits inside the box.
+#[derive(Clone, Copy, Debug)]
+pub struct BoxDims {
+    pub half_w: f32,
+    pub half_l: f32,
+}
 
 pub struct Sheets {
     pub back: Image,
@@ -161,7 +161,7 @@ pub enum View {
 
 /// One standee sheet: a quad per opaque pixel of `frame`, in the plane of `view`.
 /// `ground_y` is the skin-frame height of the sprite's lowest opaque row.
-pub fn standee(frame: &Image, slot: usize, view: View, ground_y: f32, texset: &str) -> Part {
+pub fn standee(frame: &Image, slot: usize, view: View, ground_y: f32, texset: &str, dims: BoxDims) -> Part {
     let s = M_PER_PX;
     let (_, _, _, y_bottom) = opaque_extent(frame);
     let (ax, ay) = ATLAS_SLOTS[slot];
@@ -179,16 +179,13 @@ pub fn standee(frame: &Image, slot: usize, view: View, ground_y: f32, texset: &s
             let sy1 = sy0 + s;
             // screen → skin frame per view (right-handed, y up; the viewer looks
             // along `fwd`, screen-right = fwd × up)
-            // side views slide forward so their rear edge meets the back sheet's plane
-            // (their shadow fell across the back sprite in the 00:28 shot)
-            let side_shift = SIDE_SHIFT_Z;
             let to_world = |sx: f32, sy: f32| -> [f32; 3] {
                 match view {
-                    View::Back => [-sx, sy, BACK_SHEET_Z],    // viewer behind, looking +z: right = −x
-                    View::Front => [sx, sy, FRONT_SHEET_Z],   // viewer ahead, looking −z: right = +x
-                    View::Right => [-SHEET_OFFSET, sy, sx + side_shift],  // viewer at the car's right (−x), looking +x: right = +z
-                    View::Left => [SHEET_OFFSET, sy, sx + side_shift],    // viewer at the car's left (+x), looking −x: right = −z … the same
-                                                             // frame seen from behind the sheet = the mirrored sprite
+                    View::Back => [-sx, sy, -dims.half_l],  // viewer behind, looking +z: right = −x
+                    View::Front => [sx, sy, dims.half_l],   // viewer ahead, looking −z: right = +x
+                    View::Right => [-dims.half_w, sy, sx],  // viewer at the car's right (−x), looking +x: right = +z
+                    View::Left => [dims.half_w, sy, sx],    // viewer at the car's left (+x), looking −x: right = −z … the same
+                                                            // frame seen from the other side = the mirrored sprite (nose stays at +z)
                 }
             };
             let n = match view {
@@ -324,11 +321,15 @@ pub fn build_character(
     let colour = kart_colour(&sh.back);
     let portrait = ks.portrait(rom, assets).ok();
     let at = atlas(&sh, colour, portrait.as_ref());
+    // the box: as wide as the back sprite, as long as the profile sprite
+    let (bx0, _, bx1, _) = opaque_extent(&sh.back);
+    let (rx0, _, rx1, _) = opaque_extent(&sh.right);
+    let dims = BoxDims { half_w: (bx1 + 1 - bx0) as f32 * M_PER_PX * 0.5, half_l: (rx1 + 1 - rx0) as f32 * M_PER_PX * 0.5 };
     let mut parts = vec![
-        standee(&sh.back, 0, View::Back, ground_y, "Details"),
-        standee(&sh.front, 1, View::Front, ground_y, "Details"),
-        standee(&sh.right, 2, View::Right, ground_y, "Details"),
-        standee(&sh.right, 2, View::Left, ground_y, "Details"),
+        standee(&sh.back, 0, View::Back, ground_y, "Details", dims),
+        standee(&sh.front, 1, View::Front, ground_y, "Details", dims),
+        standee(&sh.right, 2, View::Right, ground_y, "Details", dims),
+        standee(&sh.right, 2, View::Left, ground_y, "Details", dims),
     ];
     if with_slab {
         parts.push(slab(ground_y, "Details"));
@@ -396,7 +397,7 @@ pub fn build_character(
     Ok(SkinOut { name: format!("MK64 {display}"), zip, atlas_png: contact_sheet(&[at.img.clone()], 1, 2).png(), report })
 }
 
-/// `mk64 skins --template MainBody.Mesh.gbx --out DIR [--chars a,b] [--ground Y] [--no-slab]`
+/// `mk64 skins --template MainBody.Mesh.gbx --out DIR [--chars a,b] [--ground Y] [--slab]`
 pub fn cmd(args: &[String], decomp: &Path, rom_path: &Path) {
     let flag = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1)).cloned();
     let tpl = flag("--template").expect("--template <community MainBody.Mesh.gbx>");
@@ -406,14 +407,47 @@ pub fn cmd(args: &[String], decomp: &Path, rom_path: &Path) {
     let assets = AssetIndex::load(decomp).expect("asset index");
     let bytes = std::fs::read(&tpl).expect("template");
     let model = mapgeom::store::Model::parse(&bytes, &tpl).expect("template model");
-    let template = skin::template_from_body(&model.body).expect("template solid2");
+    let mut template = skin::template_from_body(&model.body).expect("template solid2");
+    // the game draws its pilot avatar and steering wheel at the skeleton's
+    // PlayerSeat / SteeringWheel joints; the sprite has its own driver, and the
+    // avatar's blue arms showed through the transparent pixels beside Mario's
+    // shoulders (17:07 shot) — sink both joints 50 m (`--keep-pilot` to leave them)
+    if !args.iter().any(|a| a == "--keep-pilot") {
+        if let Some(mapgeom::static_item::Node::Skel(sk)) = template.skel.inline.as_deref_mut() {
+            println!("skel v{} joints_lods {:?} c_lod {} lod_max_dists {:?} u10 {:?}", sk.version, sk.joints_lods, sk.c_lod, sk.lod_max_dists, sk.u10);
+            // per-joint LOD: the stock SkelLodSetup caps PlayerSeat_* at a LOD; if the
+            // pilot hangs off a joint whose LOD never renders, he is not drawn
+            let seat: Vec<usize> = sk.joints.iter().enumerate().filter(|(_, j)| j.name.as_str().unwrap_or("").starts_with("PlayerSeat")).map(|(i, _)| i).collect();
+            for i in &seat {
+                if let Some(l) = sk.joints_lods.get_mut(*i) {
+                    println!("joint {i} lod {} -> 255", *l);
+                    *l = 255;
+                }
+            }
+            for j in sk.joints.iter_mut() {
+                let n = j.name.as_str().unwrap_or("").to_string();
+                if n.starts_with("PlayerSeat") || n == "SteeringWheel" {
+                    // neither sinking the joint 50 m nor a zero-scale transform moved
+                    // the avatar (17:10, 17:12 shots) — the game looks the seat up BY
+                    // NAME; an unfindable name is the remaining lever
+                    let renamed = format!("No{n}");
+                    j.name = mapgeom::static_item::Id::Str(renamed.clone());
+                    println!("renamed joint {n} -> {renamed}");
+                }
+            }
+            for so in sk.sockets.iter() {
+                println!("socket {:?} linked to joint {}", so.name.as_str(), so.linked_joint);
+            }
+        }
+    }
     let tb = template_bounds(&template);
     if let Some((lo, hi)) = tb {
         println!("template body: x {:.2}..{:.2} y {:.2}..{:.2} z {:.2}..{:.2}", lo[0], hi[0], lo[1], hi[1], lo[2], hi[2]);
     }
     // the sprite's ground row: the template body's lowest point by default
     let ground_y: f32 = flag("--ground").and_then(|s| s.parse().ok()).unwrap_or_else(|| tb.map(|(lo, _)| lo[1]).unwrap_or(0.0));
-    let with_slab = !args.iter().any(|a| a == "--no-slab");
+    // the stand is OFF by default: vjeux 2026-09-24 "there's a weird red pane under"
+    let with_slab = args.iter().any(|a| a == "--slab");
     let want: Vec<String> = flag("--chars").map(|s| s.split(',').map(|x| x.trim().to_string()).collect()).unwrap_or_default();
     for (stem, face_stem, display) in CHARACTERS {
         if !want.is_empty() && !want.iter().any(|w| w == stem) {
@@ -434,6 +468,23 @@ pub fn cmd(args: &[String], decomp: &Path, rom_path: &Path) {
                 println!("{}  → {}", s.report, file.display());
             }
             Err(e) => println!("{display}: {e}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod template_tests {
+    #[test]
+    fn list_template_joints() {
+        let Ok(tpl) = std::env::var("MK64_SKIN_TEMPLATE") else { return };
+        let bytes = std::fs::read(&tpl).unwrap();
+        let model = mapgeom::store::Model::parse(&bytes, &tpl).unwrap();
+        let t = mapgeom::static_item::skin::template_from_body(&model.body).unwrap();
+        if let Some(mapgeom::static_item::Node::Skel(sk)) = t.skel.inline.as_deref() {
+            for (i, j) in sk.joints.iter().enumerate() {
+                let g = &j.global_loc;
+                eprintln!("joint {i:2} {:<24} parent {:3} pos ({:.3}, {:.3}, {:.3})", j.name.as_str().unwrap_or("?"), j.parent, g[9], g[10], g[11]);
+            }
         }
     }
 }
