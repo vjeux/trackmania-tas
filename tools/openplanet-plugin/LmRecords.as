@@ -164,13 +164,15 @@ string LmState(LmChain@ c) {
     return s;
 }
 
-// one TSV of `cnt` records at `arr`
-string LmDump(uint64 arr, uint cnt) {
-    if (!PlausiblePtr(arr) || cnt == 0 || cnt > 400000) return "# records array not plausible (" + Hex64(arr) + ", " + cnt + ")\n";
+// one TSV of `cnt` records at `arr`, APPENDED to the storage file `name` in slices of 300 records with a yield
+// between slices (the script runtime aborts any single slice over ~1 s; 12 214 records took longer)
+void LmDumpTo(const string &in name, uint64 arr, uint cnt) {
+    if (!PlausiblePtr(arr) || cnt == 0 || cnt > 400000) { LmWriteFile(name, "# records array not plausible (" + Hex64(arr) + ", " + cnt + ")\n"); return; }
     g_lmStep = "dump:array ends " + Hex64(arr) + " n=" + cnt;
     Dev::SafeReadUInt64(arr);
     Dev::SafeReadUInt64(arr + uint64(cnt) * LM_REC_STRIDE - 8);
-    string sb = "i\tkind\tflags\tquality\tmodel\tp8\tkey\tlmdata\tplg\tmeterByUv\tu0\tv0\tu1\tv1\tu0b\tv0b\tu1b\tv1b\tspriteW\tspriteH\tuvGroups\tu01\tchart\tcx\tcy\tcw\tch\tst0\tst1\tst2\tst3\tgroup\tcenterX\tcenterY\tcenterZ\thalfX\thalfY\thalfZ\n";
+    LmWriteFile(name, "i\tkind\tflags\tquality\tmodel\tp8\tkey\tlmdata\tplg\tmeterByUv\tu0\tv0\tu1\tv1\tu0b\tv0b\tu1b\tv1b\tspriteW\tspriteH\tuvGroups\tu01\tchart\tcx\tcy\tcw\tch\tst0\tst1\tst2\tst3\tgroup\tcenterX\tcenterY\tcenterZ\thalfX\thalfY\thalfZ\n");
+    string sb = "";
     for (uint i = 0; i < cnt; i++) {
         uint64 r = arr + uint64(i) * LM_REC_STRIDE;
         g_lmStep = "dump:record " + i;
@@ -186,7 +188,6 @@ string LmDump(uint64 arr, uint cnt) {
         uint flags = Dev::ReadUInt32(r + 0x54);
         sb += i + "\t" + (flags & 3) + "\t" + Text::Format("%08x", flags) + "\t" + Text::Format("%.9g", q) + "\t" + Hex64(model) + "\t" + Hex64(p8) + "\t" + Hex64(key) + "\t" + Hex64(lmdata) + "\t" + Hex64(plg);
         if (PlausiblePtr(plg)) {
-            // the PreLightGen: probed once per record (0x58 B)
             g_lmStep = "dump:record " + i + " plg " + Hex64(plg);
             Dev::SafeReadUInt64(plg + 0x50);
             sb += "\t" + Text::Format("%.9g", Dev::ReadFloat(plg + 0x0));
@@ -208,8 +209,24 @@ string LmDump(uint64 arr, uint cnt) {
             for (uint k = 0; k < 9; k++) sb += "\t";
         }
         sb += "\t" + Text::Format("%.9g", cx) + "\t" + Text::Format("%.9g", cy) + "\t" + Text::Format("%.9g", cz) + "\t" + Text::Format("%.9g", hx) + "\t" + Text::Format("%.9g", hy) + "\t" + Text::Format("%.9g", hz) + "\n";
+        if ((i % 300) == 299) {
+            LmAppend(name, sb);
+            sb = "";
+            yield();
+        }
     }
-    return sb;
+    if (sb.Length > 0) LmAppend(name, sb);
+}
+
+// the request-time form (no yields inside a request): the first `cnt` records as one string
+string LmDump(uint64 arr, uint cnt) {
+    if (cnt > 300) cnt = 300;
+    string tmp = "lmrecords-req.tsv";
+    LmDumpTo(tmp, arr, cnt);
+    IO::File f(IO::FromStorageFolder(tmp), IO::FileMode::Read);
+    string txt = f.ReadToEnd();
+    f.Close();
+    return txt;
 }
 
 void LmWriteFile(const string &in name, const string &in text) {
@@ -224,17 +241,21 @@ bool g_lmRunning = false;
 string g_lmStatus = "idle";
 int g_lmStage = 0; // 0 waiting for the chain, 1 waiting for A, 2 waiting for B, 3 done
 
+string g_lmRunTag = "";
+
 string LmDumpBoth(LmChain@ c, const string &in tag) {
     g_lmStep = "dumpboth:state";
     string st = c.info + LmState(c);
     uint64 aH = Dev::SafeReadUInt64(c.H + 0xa8);
     uint nH = Dev::SafeReadUInt32(c.H + 0xb0);
-    LmWriteFile("lmrecords-" + tag + "-info.txt", st);
-    LmWriteFile("lmrecords-" + tag + "-H.tsv", LmDump(aH, nH));
+    string pre = "lmrecords-" + g_lmRunTag + tag;
+    LmWriteFile(pre + "-info.txt", st);
+    LmDumpTo(pre + "-H.tsv", aH, nH);
     if (PlausiblePtr(c.L)) {
         uint64 aL = Dev::SafeReadUInt64(c.L + 0xd8);
         uint nL = Dev::SafeReadUInt32(c.L + 0xe0);
-        LmWriteFile("lmrecords-" + tag + "-L.tsv", LmDump(aL, nL));
+        if (aL != aH) LmDumpTo(pre + "-L.tsv", aL, nL);
+        else LmWriteFile(pre + "-L.txt", "L's array == H's array (" + Hex64(aH) + ", " + nL + " records)\n");
     }
     return st;
 }
@@ -285,8 +306,9 @@ void LmWatch() {
                 s0 = sc;
                 nH0 = nH;
                 g_lmStage = 1;
-                g_lmStatus = "armed: chain found, cache0=" + Hex64(cache0);
-                LmAppend("lmrecords-trace.txt", "== chain found " + Time::Stamp + "\n" + c.info);
+                g_lmRunTag = "r" + Time::Stamp + "-";
+                g_lmStatus = "armed: chain found, cache0=" + Hex64(cache0) + " run " + g_lmRunTag;
+                LmAppend("lmrecords-trace.txt", "== chain found " + Time::Stamp + " run " + g_lmRunTag + "\n" + c.info);
             }
             uint64 now = Time::Stamp;
             if (now - lastTrace >= 2) {
@@ -343,8 +365,11 @@ void LmArmFromStorage() {
 string LmRecords(const string &in qs) {
     if (QArg(qs, "arm") == "1") {
         LmWriteFile("lmrecords-arm.txt", "armed " + Time::Stamp);
-        if (!g_lmRunning) { g_lmArmed = true; startnew(LmWatch); }
-        return "armed (stage " + g_lmStage + ")";
+        // re-arm: a running watcher restarts its stage machine (stage 0 → the chain and the baselines anew)
+        g_lmArmed = true;
+        g_lmStage = 0;
+        if (!g_lmRunning) startnew(LmWatch);
+        return "armed (stage " + g_lmStage + ", running " + g_lmRunning + ")";
     }
     if (QArg(qs, "disarm") == "1") {
         g_lmArmed = false;
