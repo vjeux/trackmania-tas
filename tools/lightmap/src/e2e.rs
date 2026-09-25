@@ -537,3 +537,64 @@ pub fn transcribed_images(enc: &crate::gpuenc::YCbCr4, maxhdr: [f32; 4], mood_ma
     let lambient_f16 = ambient_xyz.map(|a| [0, 1, 2].map(|k| crate::gpufmt::encode_f16(a[k], Rounding::NearestEven)));
     Some(crate::synth::TranscribedImages { blob0, blob1, fb0, max_hdr, hbasis234, lambient_f16 })
 }
+
+/// `lmtool atlas-diff A B [--insts vb_17033.bin]`: two 2048² atlases (a packed R11G11B10 dump, 16 MiB, or an f32 ×3 dump, 48 MiB)
+/// texel by texel; the differing texels are counted per LM instance rect (the captured instance stream's STs: items first,
+/// then the tiles) so the residue has an owner.
+pub fn atlas_diff(a: Vec<String>) {
+    let load = |p: &str| -> Buf {
+        let b = std::fs::read(p).unwrap_or_else(|e| panic!("{p}: {e}"));
+        let mut out = Buf::new(W, H, 3);
+        if b.len() == (W * H * 4) as usize {
+            for i in 0..(W * H) as usize {
+                let v = crate::gpufmt::unpack_r11g11b10(u32::from_le_bytes(b[i * 4..i * 4 + 4].try_into().unwrap()));
+                out.data[i * 3..i * 3 + 3].copy_from_slice(&v);
+            }
+        } else if b.len() == (W * H * 12) as usize {
+            for (i, c) in b.chunks_exact(4).enumerate() { out.data[i] = f32::from_le_bytes(c.try_into().unwrap()); }
+        } else {
+            panic!("{p}: {} bytes is neither a packed R11G11B10 nor an f32×3 2048² dump", b.len());
+        }
+        out
+    };
+    let (x, y) = (load(&a[1]), load(&a[2]));
+    let insts = arg(&a, "--insts").map(|p| crate::sunpass::parse_instances(&std::fs::read(&p).unwrap_or_else(|e| panic!("{p}: {e}"))));
+    let owner = |px: u32, py: u32| -> String {
+        let Some(ins) = &insts else { return "?".into() };
+        let (u, v) = ((px as f32 + 0.5) / W as f32, (py as f32 + 0.5) / H as f32);
+        // the smallest rect that covers the texel (the pad's near-identity ST covers everything)
+        let mut best: Option<(f32, usize)> = None;
+        for (k, i) in ins.iter().enumerate() {
+            let (x0, y0, x1, y1) = (i.st[2], i.st[3], i.st[2] + i.st[0], i.st[3] + i.st[1]);
+            if u >= x0.min(x1) && u <= x0.max(x1) && v >= y0.min(y1) && v <= y0.max(y1) {
+                let area = (i.st[0] * i.st[1]).abs();
+                if best.map_or(true, |(ba, _)| area < ba) { best = Some((area, k)); }
+            }
+        }
+        match best { Some((_, k)) if k < 3 => format!("item {k}"), Some(_) => "tiles".into(), None => "uncovered".into() }
+    };
+    let (mut n_diff, mut n_texels) = (0usize, 0usize);
+    let mut by_owner: std::collections::BTreeMap<String, (usize, f32)> = std::collections::BTreeMap::new();
+    let mut worst: Vec<(f32, u32, u32, [f32; 3], [f32; 3])> = Vec::new();
+    for py in 0..H {
+        for px in 0..W {
+            let (p, q) = ([x.get(px, py, 0), x.get(px, py, 1), x.get(px, py, 2)], [y.get(px, py, 0), y.get(px, py, 1), y.get(px, py, 2)]);
+            if p != [0.0; 3] || q != [0.0; 3] { n_texels += 1; }
+            if p != q {
+                n_diff += 1;
+                let d = (0..3).map(|c| (p[c] - q[c]).abs()).fold(0f32, f32::max);
+                let e = by_owner.entry(owner(px, py)).or_insert((0, 0.0));
+                e.0 += 1;
+                e.1 = e.1.max(d);
+                if worst.len() < 8 || d > worst.last().unwrap().0 {
+                    worst.push((d, px, py, p, q));
+                    worst.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+                    worst.truncate(8);
+                }
+            }
+        }
+    }
+    println!("{} vs {}: {n_diff} of {n_texels} non-zero texels differ", a[1], a[2]);
+    for (o, (n, mx)) in &by_owner { println!("  {o}: {n} texels differ (max |Δ| {mx:.6})"); }
+    for (d, px, py, p, q) in &worst { println!("  ({px}, {py}) Δ {d:.6}: A {:?} B {:?}", p, q); }
+}

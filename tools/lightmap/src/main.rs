@@ -6258,6 +6258,10 @@ fn run(a: Vec<String>) {
             //   finalisation and the save's blobs (e2e.rs)
             lightmap::e2e::chain_final(a.clone());
         }
+        "atlas-diff" => {
+            // lmtool atlas-diff A B [--insts vb_17033.bin]: two 2048² atlas dumps texel by texel, the differences per LM instance
+            lightmap::e2e::atlas_diff(a.clone());
+        }
         "texstat" => {
             // lmtool texstat FILE.dds[.gz]: per mip the min / mean / max of each channel (a look at a texture the pass samples)
             let t = lightmap::texsample::load_dds(std::path::Path::new(&a[1]), lightmap::texsample::Bc1Decode::Ideal).unwrap_or_else(|e| panic!("{e}"));

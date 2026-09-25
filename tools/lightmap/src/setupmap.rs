@@ -201,7 +201,7 @@ pub fn attr_from_map(scene: &crate::geometry::Scene, lm: &LmScene, frozen: &Froz
         }
     }
     let key = |p: [f32; 3]| -> [i32; 3] { [(p[0] * 1024.0).round() as i32, (p[1] * 1024.0).round() as i32, (p[2] * 1024.0).round() as i32] };
-    struct ItemMat { class: MatClass, uv0: [f32; 2], diff: u16 }
+    struct ItemMat { class: MatClass, uv0: [f32; 2], diff: u16, uv1: [f32; 2] }
     // each LM mesh is paired with the port model whose triangle vertices it shares (E's mesh order is by model, but the
     // pairing is made on the geometry itself)
     let lookups: Vec<(usize, std::collections::HashMap<[i32; 3], ItemMat>)> = by_model.iter().map(|&model_idx| {
@@ -211,7 +211,7 @@ pub fn attr_from_map(scene: &crate::geometry::Scene, lm: &LmScene, frozen: &Froz
         for t in &model.tris {
             let class = classify(model, name, t);
             for v in 0..3 {
-                map.entry(key(t.p[v])).or_insert(ItemMat { class, uv0: t.uv0[v], diff: t.diff });
+                map.entry(key(t.p[v])).or_insert(ItemMat { class, uv0: t.uv0[v], diff: t.diff, uv1: t.uv[v] });
             }
         }
         (model_idx, map)
@@ -236,20 +236,45 @@ pub fn attr_from_map(scene: &crate::geometry::Scene, lm: &LmScene, frozen: &Froz
             let model = &scene.models[model_idx];
             let name = &scene.model_names[model_idx];
             let default_class = if model.mat_links.iter().any(|l| { let l = l.to_ascii_lowercase(); l.contains("trackwall") || l.contains("\\modifier\\") }) { MatClass::Pad } else { MatClass::Wall };
-            for inst in lm.instances.iter().skip(lm.inst_first[*mk]).take(lm.inst_count[*mk]) {
-                let rlm = prepass::raster_lm_for(inst.st, k);
-                for tri in mesh.indices.chunks_exact(3) {
+            // the pre-pass draws the VISUAL stream (VS 17021 / 17024 / 8400: its f32 TexCoord1 / TexCoord0), the H-basis passes the
+            // snorm16 LM stream. When the port's model carries the same lightmap uv as the LM stream (the tree: TexCoord1), the
+            // port's f32 triangles are rasterised (the LM stream's quantised uv moves trunk-edge texels); a model without lightmap
+            // uvs in the port's reading (Land, TrackWall: the port falls back to TexCoord0 / a planar map) takes E's LM mesh.
+            let port_uv_matches = {
+                // every LM vertex must find a port vertex at its position with the same lightmap uv (a seam vertex carries several)
+                let mut uvs_at: std::collections::HashMap<[i32; 3], Vec<[f32; 2]>> = std::collections::HashMap::new();
+                for t in &model.tris { for v in 0..3 { uvs_at.entry(key(t.p[v])).or_default().push(t.uv[v]); } }
+                let (mut n, mut ok) = (0usize, 0usize);
+                for v in &mesh.verts {
+                    if let Some(list) = uvs_at.get(&key(v.pos)) { n += 1; if list.iter().any(|u| (u[0] - v.uv[0]).abs() < 2e-3 && (u[1] - v.uv[1]).abs() < 2e-3) { ok += 1; } }
+                }
+                if k == 0 { notes.push(format!("item mesh {mk}: {ok} of {n} LM vertices have a port vertex with the same lightmap uv (±2e-3)")); }
+                n > 0 && ok * 10 >= n * 9
+            };
+            if k == 0 { notes.push(format!("item mesh {mk} ({}): the port's TexCoord1 {} the LM stream's uv → the pre-pass rasterises {}", name, if port_uv_matches { "matches" } else { "does not match" }, if port_uv_matches { format!("the port's {} f32 triangles", model.tris.len()) } else { format!("E's LM mesh ({} triangles)", mesh.indices.len() / 3) })); }
+            // the triangles to draw: (positions-in-LM-space uv, uv0, class, diff)
+            let tris: Vec<([[f32; 2]; 3], [[f32; 2]; 3], MatClass, u16)> = if port_uv_matches {
+                model.tris.iter().map(|t| (t.uv, t.uv0, classify(model, name, t), t.diff)).collect()
+            } else {
+                mesh.indices.chunks_exact(3).map(|tri| {
                     let vs = [&mesh.verts[tri[0] as usize], &mesh.verts[tri[1] as usize], &mesh.verts[tri[2] as usize]];
                     let mats: [Option<&ItemMat>; 3] = [lookup.get(&key(vs[0].pos)), lookup.get(&key(vs[1].pos)), lookup.get(&key(vs[2].pos))];
                     let class = mats.iter().flatten().next().map(|m| m.class).unwrap_or(default_class);
-                    let p = [prepass::viewport(prepass::lm_ndc(vs[0].uv, &rlm), W, H), prepass::viewport(prepass::lm_ndc(vs[1].uv, &rlm), W, H), prepass::viewport(prepass::lm_ndc(vs[2].uv, &rlm), W, H)];
                     let uv0 = [mats[0].map(|m| m.uv0).unwrap_or([0.0; 2]), mats[1].map(|m| m.uv0).unwrap_or([0.0; 2]), mats[2].map(|m| m.uv0).unwrap_or([0.0; 2])];
+                    let diff = mats.iter().flatten().next().map(|m| m.diff).unwrap_or(u16::MAX);
+                    ([vs[0].uv, vs[1].uv, vs[2].uv], uv0, class, diff)
+                }).collect()
+            };
+            for inst in lm.instances.iter().skip(lm.inst_first[*mk]).take(lm.inst_count[*mk]) {
+                let rlm = prepass::raster_lm_for(inst.st, k);
+                for (uv, uv0, class, diff) in &tris {
+                    let (class, uv0) = (*class, *uv0);
+                    let p = [prepass::viewport(prepass::lm_ndc(uv[0], &rlm), W, H), prepass::viewport(prepass::lm_ndc(uv[1], &rlm), W, H), prepass::viewport(prepass::lm_ndc(uv[2], &rlm), W, H)];
                     let (dudx, dudy) = prepass::attr_gradient(p, [uv0[0][0], uv0[1][0], uv0[2][0]]);
                     let (dvdx, dvdy) = prepass::attr_gradient(p, [uv0[0][1], uv0[1][1], uv0[2][1]]);
                     let tex = match class {
                         MatClass::Textured => {
-                            let diff = mats.iter().flatten().next().map(|m| m.diff).unwrap_or(u16::MAX);
-                            let tn = model.diff_tex.get(diff as usize).cloned().unwrap_or_default();
+                            let tn = model.diff_tex.get(*diff as usize).cloned().unwrap_or_default();
                             tex_cache.entry(tn.clone()).or_insert_with(|| item_bytes(&tn).and_then(|b| texsample::parse_dds(&b, Bc1Decode::Expand8Round).ok()).map(|mut tx| { tx.decode_srgb(); tx })).as_ref()
                         }
                         _ => None,
@@ -268,8 +293,8 @@ pub fn attr_from_map(scene: &crate::geometry::Scene, lm: &LmScene, frozen: &Froz
                                 Some(tx) => {
                                     // the game uploads the zip's DDS bottom-up (D's rule): the GPU texture's row y is the file's row h − 1 − y, so
                                     // the file image is sampled at (u, 1 − v)
-                                    let uv = [b[0] * uv0[0][0] + b[1] * uv0[1][0] + b[2] * uv0[2][0], 1.0 - (b[0] * uv0[0][1] + b[1] * uv0[1][1] + b[2] * uv0[2][1])];
-                                    match prepass::ps_basecolor(tx, &sampler, uv, [dudx, -dvdx], [dudy, -dvdy], None, lm_scale) { Some(s) => s, None => return }
+                                    let uvs = [b[0] * uv0[0][0] + b[1] * uv0[1][0] + b[2] * uv0[2][0], 1.0 - (b[0] * uv0[0][1] + b[1] * uv0[1][1] + b[2] * uv0[2][1])];
+                                    match prepass::ps_basecolor(tx, &sampler, uvs, [dudx, -dvdx], [dudy, -dvdy], None, lm_scale) { Some(s) => s, None => return }
                                 }
                                 None => [0.0, 0.0, 0.0, lm_scale],
                             },
