@@ -21,7 +21,13 @@ the route list is from `Main.as::RouteRequests` at main `62352d44`.
   item census; `cam.txt`, camera aiming).
 * A plugin compile error takes the whole plugin down and `shootctl install`
   rolls back to the last good copy AND restarts the game; a failed install
-  restarts the game (a loaded map is lost). Openplanet 1.29.14:
+  restarts the game (a loaded map is lost). Two errors `shootctl lint` cannot
+  see (2026-09-24, each took every driver's plugin down): iso4 members are
+  get-only properties (`loc.tx += 1` → "no set accessor"; write through
+  `Dev::SetOffset` at the reflected offset), and the plugin is ONE
+  AngelScript namespace (a second `MemberOffset()` collides with Camera.as).
+  Check `Openplanet.log` for "Script compilation failed!" in the same lock
+  slot as the push. Openplanet 1.29.14:
   `Viewport.Cameras[0].NextLocation` + `Fov` work; there is no `Camera::`
   namespace.
 * Context (`/ctx`): `0` = no playground (NOT necessarily the menu: a running
@@ -56,6 +62,7 @@ the route list is from `Main.as::RouteRequests` at main `62352d44`.
 | the held run | `/authghost[?clear=]` (`RaceValidateGhost` + `AuthorTime` of the loaded map), `/refghost`, `/refsave?name=`, `/refupload`, `/ghostsink` (`RefGhost.as`: the run the client holds for the loaded map, written out by the game) | `RaceValidateGhost` and `Map_GetAuthorGhost` are NULL in the editor and the MT on these maps — the disk file (`ghost-caches.md`) is the source |
 | dialogs / menus | `/yes`, `/no`, `/dlgok`, `/dlghide`, `/dismiss`, `/dlgtext`, `/dlgstring`, `/setdlgstring`, `/dlgnods`, `/focusdlg`, `/menus`, `/menutree`, `/rmenu`, `/rselall`, `/rok`, `/rrefresh`, `/back` | |
 | Nadeo services | `/nadeoauth`, `/nadeotoken` (re-mints the game's own token: it rotates ~hourly → HTTP 401 on GET /maps means retry), `/nadeoget`, `/nadeopost` (`arg.txt` line 1 = URL, rest = JSON body), `/nadeowho` | the upload cap is 25 MiB; `POST /maps/{mapId}` re-uploads in place |
+| kinematic items (`Kine.as`) | `/kine[?name=SUBSTR]` (the playground physics dyna manager: kinematic shared signals = the item model's `NPlugDyna_SKinematicConstraint` + phase; the mobils' `Corpus.Location`; the map's anchored objects), `/kineset?i=N&tmin=&tmax=[&amin=&amax=][&phase=]` (lock token: writes the model's ranges / the signal's phase — `tmin=tmax=X` holds every instance at X, physics and picture alike), `/kinemove?i=MOBIL&dx=&dy=&dz=` (lock token: a mobil's visual translation via `Dev::SetOffset`) | `prefab-and-dyna.md` §2; the 2026-09-24 Yannex door test |
 | plugin | `/reload` (self-reload armed in the handler, performed in `Update()` so the response is on the wire first) | |
 
 ## 3. Facts the plugin measured that live in other pages

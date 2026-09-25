@@ -85,6 +85,36 @@ vertices, 18 faces); a rotor's a Compound of nine.
 * The race clock in play mode starts ~13 s after the playground opens; the
   kinematic clock runs in the editor too (`tinyctl motion`).
 
+### The kinematic constraint at RUN TIME — writable, and the physics follows **[VERIFIED-GAME]** (2026-09-24)
+
+Yannex's question — can an Openplanet plugin move a PHYSICAL obstacle? — has
+a yes, measured on `YannexDoor.Map.Gbx` (four stock `ObstaclePusher8mLevel1`
+across a straight road; `tm-player/yannex/plugin-test/REPORT.md`). The
+playground's physics scene keeps, per (model, phase) pair, one SHARED SIGNAL:
+
+```text
+CSmArenaClient.Arena.ArenaPhysics.ScenePhy (IScenePhy) .Dyna (NSceneDyna_SMgr)
+  .KinematicConstraints           MwFastBuffer<NSceneDyna_SKinematicConstraint>   one per instance (opaque, 64 B)
+  .KinematicSharedSignals[i]      { Model: NPlugDyna_SKinematicConstraint@, Phase: float, cRef }
+```
+
+`Model` IS the item's `KinematicConstraint` nod (`TransAxis/TransMin/TransMax`,
+`RotAxis/AngleMinDeg/AngleMaxDeg`, the anim funcs), reachable and WRITABLE
+through Openplanet's reflected members — no hook, no scan. The pose of every
+instance is `TransMin + (TransMax − TransMin)·f(t, Phase)`, evaluated each tick
+by the physics AND the visual side from the same nod, so `TransMin = TransMax
+= X` holds the part at X for both: the door held closed (8) stops the car
+dead at z 292.0 against the bar at z 294.15–297.85 and keeps it there (a stock
+bar retracts within 2 s; twice, identical), held open (0) the same restart
+passes at x 784.00 without a wobble. Writing the pair every frame animates the
+part along any trajectory; writing the signal's `Phase` time-shifts the stock
+cycle. The write is model-wide (every placement of the item: `cRef` 4 on the
+test map); per-door control = one item ident per door. Re-validation sees
+none of it: the server re-simulates the ORIGINAL map, so a run through a
+plugin-opened door does not validate. Plugin: `tools/openplanet-plugin/Kine.as`
+(`/kine`, `/kineset`), rig: `tools/doorrig`. The pistons are NOT
+`CSceneMobil`s in a playground (the HackScene had one mobil).
+
 ### The vertex-tween cloth — a wall **[EXE]** (`tm2020-tween-anim-re.md`, `TINY.md` "Animated items")
 
 The flag cloth is a visual-only dyna (kind `0x914E000`; the kinematic kind is
