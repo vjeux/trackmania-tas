@@ -117,6 +117,9 @@ pub enum Rule {
     RefShift { sx: f32, sy: f32 },
     /// The reference rule at (u, 1 − v).
     RefVFlip,
+    /// The reference rule with the level of detail quantised to 1/q after the log2 (q < 0: truncated instead of rounded) and
+    /// the anisotropy ratio quantised to 1/ratio_q (0 = exact) — the sampler's fixed-point arithmetic.
+    RefQuantLod { q: f32, ratio_q: f32 },
 }
 
 impl Rule {
@@ -154,6 +157,11 @@ impl Rule {
             ("ref shifted by (−½, 0) px".into(), Rule::RefShift { sx: -0.5, sy: 0.0 }),
             ("ref shifted by (0, −½) px".into(), Rule::RefShift { sx: 0.0, sy: -0.5 }),
             ("ref with v mirrored (1 − v)".into(), Rule::RefVFlip),
+            ("ref, lod quantised to 1/256".into(), Rule::RefQuantLod { q: 256.0, ratio_q: 0.0 }),
+            ("ref, lod quantised to 1/64".into(), Rule::RefQuantLod { q: 64.0, ratio_q: 0.0 }),
+            ("ref, lod quantised to 1/32".into(), Rule::RefQuantLod { q: 32.0, ratio_q: 0.0 }),
+            ("ref, lod 1/256 + ratio 1/16".into(), Rule::RefQuantLod { q: 256.0, ratio_q: 16.0 }),
+            ("ref, lod floor to 1/64 (truncated)".into(), Rule::RefQuantLod { q: -64.0, ratio_q: 0.0 }),
             ("aniso N=16 fixed, lod=log2(major/16)".into(), Rule::Fixed16 { lod_from_span: true }),
             ("aniso N=16 fixed, lod=log2(minor)".into(), Rule::Fixed16 { lod_from_span: false }),
             ("aniso N=ceil(ratio), lod=log2(major/ratio) − 1".into(), Rule::AnisoBias { bias: -1.0 }),
@@ -280,6 +288,13 @@ impl Rule {
             Rule::RefVFlip => {
                 let ratio = (major / minor).min(16.0).max(1.0);
                 Self::taps_along(tex, u, 1.0 - v, (major / ratio).log2(), fp.major_axis(), ratio.ceil() as usize, &centred, false, false)
+            }
+            Rule::RefQuantLod { q, ratio_q } => {
+                let mut ratio = (major / minor).min(16.0).max(1.0);
+                if ratio_q > 0.0 { ratio = (ratio * ratio_q).round() / ratio_q; }
+                let lod = (major / ratio).log2();
+                let lod = if q > 0.0 { (lod * q).round() / q } else { (lod * -q).floor() / -q };
+                Self::taps_along(tex, u, v, lod, fp.major_axis(), ratio.ceil() as usize, &centred, false, false)
             }
         }
     }
@@ -415,6 +430,58 @@ pub fn card_fit(a: Vec<String>) {
             }
             println!("{nm} [per depth group, WITH the peel test]: {g_agree} agree / {g_fp} pass-but-discarded / {g_fd} discard-but-kept  ({:.3} % agree); {peeled} alpha-passing groups peeled away by the previous layer's bias", 100.0 * g_agree as f64 / groups.len().max(1) as f64);
             if matches!(rule, Rule::RefAniso { max_aniso: 16 }) {
+                // the remaining misses (with the peel test) by the group's best alpha margin and by texture / anisotropy
+                let mut hp = [0usize; 6]; let mut hd = [0usize; 6];
+                let bin = |d: f32| if d < 0.005 { 0 } else if d < 0.01 { 1 } else if d < 0.02 { 2 } else if d < 0.05 { 3 } else if d < 0.1 { 4 } else { 5 };
+                let mut by_tex: HashMap<u32, (usize, usize)> = HashMap::new();
+                let mut by_ratio = [(0usize, 0usize); 5];
+                for (&(x, y, zs), idx) in &groups {
+                    let survived = scorable[idx[0]].survived;
+                    let zq = zs as f32 / 65535.0;
+                    let prev = prev_layer(x, y, zq);
+                    let mut best_a = f32::MIN; let mut any_pass = false; let mut ratio_max = 0f32;
+                    for &i in idx { let l = scorable[i]; let tex = &masks[&l.frag.mask]; let fp = Footprint { dx: l.frag.fp_dx, dy: l.frag.fp_dy, w: tex.w() as f32, h: tex.h() as f32 }; let a = rule.alpha(tex, l.frag.u, l.frag.v, &fp); let (ma, mi) = Rule::lens(&fp); ratio_max = ratio_max.max(ma / mi); if l.frag.z01 >= prev { best_a = best_a.max(a); if a - crate::peel::ALPHA_THRESHOLD >= 0.0 { any_pass = true; } } }
+                    let e = by_tex.entry(scorable[idx[0]].frag.mask).or_default(); e.0 += 1;
+                    let rb = if ratio_max < 2.0 { 0 } else if ratio_max < 4.0 { 1 } else if ratio_max < 8.0 { 2 } else if ratio_max < 16.0 { 3 } else { 4 };
+                    by_ratio[rb].0 += 1;
+                    if any_pass != survived {
+                        e.1 += 1; by_ratio[rb].1 += 1;
+                        let d = if best_a == f32::MIN { 1.0 } else { (best_a - crate::peel::ALPHA_THRESHOLD).abs() };
+                        if any_pass { hp[bin(d)] += 1 } else { hd[bin(d)] += 1 }
+                    }
+                }
+                println!("    remaining misses by |best alpha − threshold| <0.005 / <0.01 / <0.02 / <0.05 / <0.1 / ≥0.1: pass-but-discarded {hp:?}, discard-but-kept {hd:?}");
+                println!("    groups / misses by texture {:?}; by anisotropy ratio <2 / <4 / <8 / <16 / ≥16 {:?}", by_tex, by_ratio);
+                // the far pass-but-discarded misses that survive the peel model: the pixel's game layers and our fragments
+                let mut shown = 0;
+                for (&(x, y, zs), idx) in &groups {
+                    if shown >= 8 { break; }
+                    let survived = scorable[idx[0]].survived;
+                    if survived { continue; }
+                    let zq = zs as f32 / 65535.0;
+                    let prev = prev_layer(x, y, zq);
+                    let mut best_a = f32::MIN;
+                    for &i in idx { let l = scorable[i]; let tex = &masks[&l.frag.mask]; let fp = Footprint { dx: l.frag.fp_dx, dy: l.frag.fp_dy, w: tex.w() as f32, h: tex.h() as f32 }; let a = rule.alpha(tex, l.frag.u, l.frag.v, &fp); if l.frag.z01 >= prev { best_a = best_a.max(a); } }
+                    if best_a < crate::peel::ALPHA_THRESHOLD + 0.05 { continue; }
+                    let vals: Vec<String> = layers.iter().map(|l| { let d = l.data[(y * l.w + x) as usize]; if d >= 0.999 || d <= 0.0 { "—".into() } else { format!("{}", (d * 65535.0).round() as i32) } }).collect();
+                    let mut ours: Vec<(i32, i32, u32, bool)> = dump.frags.iter().filter(|f| f.x == x && f.y == y).map(|f| ((f.zq * 65535.0).round() as i32, (f.z01 * 65535.0).round() as i32, f.tri, f.port_pass != 0)).collect();
+                    ours.sort(); ours.dedup();
+                    println!("    far miss after the peel model at ({x}, {y}): group zq {zs} best alpha {best_a:.3}, prev layer {}; game layers [{}]; ours (zq z01 tri α) {:?}", (prev * 65535.0).round() as i32, vals.join(" "), ours.iter().take(10).collect::<Vec<_>>());
+                    if shown < 2 {
+                        // the 9×9 neighbourhood: does the game hold this depth (±3 steps) somewhere nearby? per pixel the nearest layer offset in steps or '.'
+                        for dy in -4i32..=4 {
+                            let mut row = String::new();
+                            for dx in -4i32..=4 {
+                                let (xx, yy) = ((x as i32 + dx) as u32, (y as i32 + dy) as u32);
+                                let mut best: Option<i32> = None;
+                                for l in &layers { let d = l.data[(yy * l.w + xx) as usize]; if d > 0.0 && d < 0.999 { let o = ((d - zq) * 65535.0).round() as i32; if best.map_or(true, |b: i32| o.abs() < b.abs()) { best = Some(o); } } }
+                                row += &match best { Some(o) if o.abs() <= 3 => format!("{:>6}", "HIT"), Some(o) => format!("{o:>+6}"), None => format!("{:>6}", ".") };
+                            }
+                            println!("        {row}");
+                        }
+                    }
+                    shown += 1;
+                }
                 let mut shown = 0;
                 for (&(x, y, zs), idx) in &groups {
                     if shown >= 8 { break; }

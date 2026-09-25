@@ -934,9 +934,15 @@ pub fn build_abuffer_wanted(tris: &[WTri], frame: &PeelFrame, threads: usize, zm
                         let p0 = t.p0;
                         let p1 = [p0[0] + t.e1[0], p0[1] + t.e1[1], p0[2] + t.e1[2]];
                         let p2 = [p0[0] + t.e2[0], p0[1] + t.e2[1], p0[2] + t.e2[2]];
-                        let (x0, y0, z0) = frame.project(p0);
-                        let (x1, y1, z1) = frame.project(p1);
-                        let (x2, y2, z2) = frame.project(p2);
+                        let (mut x0, mut y0, z0) = frame.project(p0);
+                        let (mut x1, mut y1, z1) = frame.project(p1);
+                        let (mut x2, mut y2, z2) = frame.project(p2);
+                        // LMTOOL_PEEL_SNAP=1: the GPU's fixed-point vertex snap (1/256 px, ties to even) before the edge tests (a probe
+                        // of the item raster's edge coverage against the captured layers)
+                        if *PEEL_SNAP {
+                            let sn = |v: f32| { let s = v * 256.0; let r = s.round(); let r = if (s - s.trunc()).abs() == 0.5 && (r as i64) % 2 != 0 { r - s.signum() } else { r }; r / 256.0 };
+                            x0 = sn(x0); y0 = sn(y0); x1 = sn(x1); y1 = sn(y1); x2 = sn(x2); y2 = sn(y2);
+                        }
                         if z0.min(z1).min(z2) >= zmax || z0.max(z1).max(z2) < zmin {
                             continue;
                         }
@@ -3428,6 +3434,8 @@ mod tests {
 /// peel) as `DIR/cardfrags-d{di}-p{pi}.bin` for `lmtool card-fit` (the anisotropic footprint rule against the capture).
 pub static CARD_DUMP: std::sync::LazyLock<Option<std::path::PathBuf>> = std::sync::LazyLock::new(|| std::env::var_os("LMTOOL_CARD_DUMP").map(std::path::PathBuf::from));
 pub static CARD_FRAGS: std::sync::Mutex<Vec<CardFrag>> = std::sync::Mutex::new(Vec::new());
+/// LMTOOL_PEEL_SNAP=1: snap the projected item vertices to the GPU's 1/256-pixel grid (ties to even) in the A-buffer raster.
+pub static PEEL_SNAP: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_PEEL_SNAP").map(|v| v == "1").unwrap_or(false));
 /// The peel item draws' depth state for the dump's `zq` (the capture's: DepthBias 1, SlopeScaledDepthBias 1.0, a D16 target).
 pub const CARD_DUMP_BIAS: ((i32, f32), u32) = ((1, 1.0), 16);
 
