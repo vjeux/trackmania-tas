@@ -483,8 +483,11 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
     let res_y = frame.res_y;
     let t_clip = std::time::Instant::now();
     let counting = count.is_some();
-    // the count needs every pixel: the whole frame is the clip then
+    // the count needs every pixel: the whole frame is the clip then — minus the game's viewport ring (the
+    // viewport is (1, 1, w−2, h−2): the outer ring is never drawn; clipping it here spares the per-visit test)
+    let ins = frame.inset_px as i32;
     let clip = if counting { (0i32, 0i32, res as i32 - 1, res_y as i32 - 1) } else { px.bbox };
+    let clip = (clip.0.max(ins), clip.1.max(ins), clip.2.min(res as i32 - 1 - ins), clip.3.min(res_y as i32 - 1 - ins));
     // in counting mode the environment fragments (the dome layer's sea box / terrain, `is_env`) feed a
     // per-pixel MAX of their z01 instead of the fragment list: the layer logic reads only that maximum of
     // them (the environment layer's depth), and they are the bulk of the pixel visits (32 m ground quads)
@@ -681,10 +684,8 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
                 };
                 raster::triangle_clipped_masked(res, res_y, [[x0, y0], [x1, y1], [x2, y2]], band_clip, if counting { None } else { Some(bitmap) }, |x, y, bc| {
                     if raster_stats { rs_visits += 1; }
-                    // the game's viewport (1, 1, w−2, h−2): the outer ring is never drawn
-                    if x < inset || y < inset || x + inset >= res || y + inset >= res_y {
-                        return;
-                    }
+                    // (the game's viewport ring is outside the clip rectangle: never visited)
+                    debug_assert!(!(x < inset || y < inset || x + inset >= res || y + inset >= res_y));
                     let z = z0 * bc[0] + z1 * bc[1] + z2 * bc[2];
                     if z < zmax && z >= zmin {
                         if let Some(m) = mask {
