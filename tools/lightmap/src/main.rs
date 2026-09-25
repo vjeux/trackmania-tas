@@ -820,7 +820,8 @@ fn run(a: Vec<String>) {
                     let paks: Vec<String> = a.iter().enumerate().filter(|(_, x)| *x == "--pak").filter_map(|(i, _)| a.get(i + 1).cloned()).collect();
                     let mut store = mapgeom::store::DataStore::empty();
                     for p in &paks { if let Some((pp, key)) = p.rsplit_once(':') { if let Err(e) = store.add_pak(pp, key) { eprintln!("decoration: --pak {p}: {e}"); } } }
-                    let s3 = format!("{coll}\\GameCtnDecoration\\Scene3d\\Base64x64.Scene3d.Gbx");
+                    // the collection's decoration layout (RE 9's envblock::layout_path: Base64x64 for the islands, Stadium256's Base16x12 for Stadium)
+                    let s3 = mapgeom::envblock::layout_path(&store, &coll);
                     match lightmap::envcap::env_block_from_pak(&mut store, &s3) {
                         Ok((t, dropped)) => { eprintln!("decoration: the game's environment block from the packs ({s3}): {} triangles ({dropped} water / sky triangles left out)", t.len()); scene.decor.extend(t); pak_block_done = true; }
                         Err(e) => eprintln!("decoration: the environment block from the packs failed ({e}) — the Scene3d export is used"),
@@ -1375,7 +1376,7 @@ fn run(a: Vec<String>) {
                     let mut store = mapgeom::store::DataStore::empty();
                     for p in &paks { if let Some((pp, key)) = p.rsplit_once(':') { if let Err(e) = store.add_pak(pp, key) { eprintln!("dome mesh from the packs: --pak {p}: {e}"); } } }
                     let coll = f("--collection").unwrap_or_else(|| hdr.as_ref().map(|h| h.envir.clone()).unwrap_or_else(|| "BlueBay".into()));
-                    let s3 = format!("{coll}\\GameCtnDecoration\\Scene3d\\Base64x64.Scene3d.Gbx");
+                    let s3 = mapgeom::envblock::layout_path(&store, &coll);
                     // RE 9's environment block names the collection's dome (Stadium: Base16x12's SkyDomeDouble at (0, 3000, 0)); the
                     // Base64x64 Scene3d walk stays the fallback
                     let from_env = lightmap::domemesh::DomeMesh::from_envblock(&mut store, &coll);
