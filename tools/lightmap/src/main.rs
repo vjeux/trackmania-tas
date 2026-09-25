@@ -4681,6 +4681,22 @@ fn run(a: Vec<String>) {
             for r in &c.records { println!("  chunk {:?}: probes {:?}..={:?} → slot {:?}, atlas {:?}..{:?}, world origin of atlas index 0 {:?} (ProbeToWorld = diag(cell) + this), cells [{}, {}] × [{}, {}] × [{}, {}]", r.chunk, r.imin, r.imax, r.slot, r.amin, r.amax, r.origin, (r.amin[0] as f32 - 0.5) * r.cell[0] + r.origin[0], (r.amax[0] as f32 - 0.5) * r.cell[0] + r.origin[0], (r.amin[1] as f32 - 0.5) * r.cell[1] + r.origin[1], (r.amax[1] as f32 - 0.5) * r.cell[1] + r.origin[1], (r.amin[2] as f32 - 0.5) * r.cell[2] + r.origin[2], (r.amax[2] as f32 - 0.5) * r.cell[2] + r.origin[2]); }
             if let Some(b) = aabb { println!("CHUNKS AABB (FUN_140233150, ∪ into the world peel box): c {:?} h {:?} = [{}, {}] × [{}, {}] × [{}, {}]", b.c, b.h, b.min()[0], b.max()[0], b.min()[1], b.max()[1], b.min()[2], b.max()[2]); let w = lightmap::lmtiles::world_peel_box(&scene_ch, Some(&b)); println!("WORLD PEEL BOX = scene ∪ chunks: c {:?} h {:?} = [{}, {}] × [{}, {}] × [{}, {}]", w.c, w.h, w.min()[0], w.max()[0], w.min()[1], w.max()[1], w.min()[2], w.max()[2]); }
         }
+        "lmquality" => {
+            // lmtool lmquality MAP: the MapElemLightmapQuality chunk 0x03043068 — its header words and the byte histogram over the
+            // blocks / baked blocks / items ranges (one byte per element, in that order per the spec)
+            let mf = tmmaps::map::MapFile::load(std::path::Path::new(&a[1]));
+            let chunks = tmmaps::gbx::all_skip_chunks(&mf.gbx.body);
+            let Some(&(_, _, payload, size)) = chunks.iter().find(|(c, ..)| *c == 0x0304_3068) else { println!("no 0x03043068 chunk"); return };
+            let b = &mf.gbx.body[payload..payload + size];
+            println!("chunk 0x03043068: {} bytes; header words {:?}; blocks {} baked {} items {} (sum {})", b.len(), (0..4.min(b.len() / 4)).map(|i| u32::from_le_bytes(b[4 * i..4 * i + 4].try_into().unwrap())).collect::<Vec<_>>(), mf.blocks.len(), mf.baked.len(), mf.items.len(), mf.blocks.len() + mf.baked.len() + mf.items.len());
+            let body = &b[4.min(b.len())..];
+            let mut hist: std::collections::BTreeMap<u8, usize> = Default::default();
+            for &x in body { *hist.entry(x).or_default() += 1; }
+            println!("byte histogram (whole body): {:?}", hist);
+            let ranges = [("blocks", 0usize, mf.blocks.len()), ("baked", mf.blocks.len(), mf.blocks.len() + mf.baked.len()), ("items", mf.blocks.len() + mf.baked.len(), mf.blocks.len() + mf.baked.len() + mf.items.len())];
+            for (name, s, e) in ranges { let mut h: std::collections::BTreeMap<u8, usize> = Default::default(); for &x in body.get(s..e.min(body.len())).unwrap_or(&[]) { *h.entry(x).or_default() += 1; } println!("  {name} [{s}..{e}): {:?}", h); }
+            if a.iter().any(|x| x == "--list") { let s = mf.blocks.len() + mf.baked.len(); for (i, &x) in body.get(s..).unwrap_or(&[]).iter().enumerate() { if x != 0 { println!("  item {i} ({}) quality byte {x}", mf.items.get(i).map(|it| it.model.as_str()).unwrap_or("?")); } } }
+        }
         "genealogy" => {
             // lmtool genealogy MAP: the zone genealogy records (chunk 0x03043043) — per cell the CurrentZoneId and its Dir,
             // as a histogram and the first few records; plus the baked block list (the generated tiles when the file has them)
@@ -6263,13 +6279,26 @@ fn run(a: Vec<String>) {
             };
             for o in 0..base { if ed.contains_key(&o) { // the tile's chart scale = its quality q ITSELF (1.0 on an item's cell = the same ext as a tile-quad item → an exact area tie the z key resolves; the far tiles' 0.5^4.5 = 0x3d3504f3 = tile_k)
                 let q = if a.iter().any(|x| x == "--uniform-tiles") { tile_k } else { tile_quality.get(o as usize).copied().unwrap_or(tile_k) }; let e = if f("--tile-ext-xy").is_some() || tile_ext > 0.0 { tile_ext_xy } else { tile_ext_of(&tile_plg.1, tile_plg.0, q, korder) }; charts.push(lightmap::pack::ChartExt { ext: e, mins: [1, 1] }); ids.push(o); } }
+            // WHICH ITEMS GET A CHART (tiny 16's editor table as the oracle, `--item-audit`): an item whose Solid2 carries
+            // LIGHTS is not charted (49 of the 50 uncharted models there have lights, all 446 charted have none); the one
+            // light-less uncharted model is the finish trigger FX (material RaceTriggerFXFinish) — the material-class flag
+            // 0x4 of spec §3.1 (DAT_141e7c768), read here by the material name until RE 7 pins the class. --chart-all-items
+            // keeps them. Their ids stay (IdForLightMap runs over every item).
+            let chart_all = a.iter().any(|x| x == "--chart-all-items");
+            let mut skipped_items = 0usize;
             for inst in &scene.instances {
                 let m = &scene.models[inst.model];
+                let fx_only = !m.mat_links.is_empty() && m.mat_links.iter().all(|l| l.contains("RaceTriggerFX"));
+                if !chart_all && (!m.lights.is_empty() || fx_only) { skipped_items += 1; continue; }
                 let sc = ((inst.xf[0] * inst.xf[0] + inst.xf[1] * inst.xf[1] + inst.xf[2] * inst.xf[2]) as f32).sqrt();
-                let ext = match m.plg_bounds { Some(b) => [(b[2] - b[0]) * m.plg_u02 * sc, (b[3] - b[1]) * m.plg_u02 * sc], None => [0.0, 0.0] };
+                // the item's chart scale = its quality q (MapElemLightmapQuality e → (√2)^e · G, FUN_140dcc1c0) × the placement scale
+                let e: i32 = match inst.lm_quality { 0 => 0, 1 => 1, 2 => 2, 3 => 3, 4 => -1, 5 => -2, 6 => -3, _ => 0 };
+                let q = (0.5f32).powf(-(e as f32) * 0.5);
+                let ext = match m.plg_bounds { Some(b) => { let fq = m.plg_u02 * (q * sc); [(b[2] - b[0]) * fq, (b[3] - b[1]) * fq] } None => [0.0, 0.0] };
                 charts.push(lightmap::pack::ChartExt { ext, mins: [1, 1] });
                 ids.push(base + inst.item as u32);
             }
+            if skipped_items > 0 { println!("items without a chart (lights / FX material): {skipped_items} of {}", scene.instances.len()); }
             let sum_area: f32 = charts.iter().map(|c| c.ext[0] * c.ext[1]).sum();
             println!("{} charts ({n_tiles} tiles in the editor's table, {} items), Σarea {sum_area:.1} m², W {w_atlas} g {g} maxIter {max_iter}", charts.len(), scene.instances.len());
             { let items: f64 = charts.iter().zip(&ids).filter(|(_, &o)| o >= base).map(|(c, _)| c.ext[0] as f64 * c.ext[1] as f64).sum(); for c in &d.cache.chunks { if c.id == 0x0602_200B { if let lightmap::format::ChunkBody::Raw(b) = &c.body { if b.len() >= 8 { let total = f32::from_le_bytes([b[4], b[5], b[6], b[7]]) as f64; println!("items Σarea {items:.6} m² (f32 {}); editor total {total}; residual per tile ({total} − items)/{n_tiles} = {:.9} m²", items as f32, (total - items) / n_tiles as f64); } } } } }
@@ -6296,6 +6325,99 @@ fn run(a: Vec<String>) {
                     s += 0.004;
                 }
                 println!("best: s {:.3} with {} of {} sizes equal", best.1, best.0, charts.len());
+                return;
+            }
+            if a.iter().any(|x| x == "--editor-holes") {
+                // the atlas cells no chart of the editor's mapping covers (packer units, incl. the 1-unit gutter): the charts the mapping
+                // does not list (the light-carrying items?) would show as rectangular holes
+                let mut cov = vec![false; 2048 * 2048];
+                for (_, &(x, y, w, h)) in ed.iter() { for yy in (y as usize).saturating_sub(1)..(y as usize + h as usize + 1).min(2048) { for xx in (x as usize).saturating_sub(1)..(x as usize + w as usize + 1).min(2048) { cov[yy * 2048 + xx] = true; } } }
+                let free = cov.iter().filter(|c| !**c).count();
+                println!("editor layout: {} of {} atlas cells uncovered ({:.2} %)", free, 2048 * 2048, 100.0 * free as f64 / (2048.0 * 2048.0));
+                // greedy maximal free rectangles (row scan): report the 20 largest
+                let mut rects: Vec<(usize, usize, usize, usize)> = Vec::new();
+                let mut used = cov.clone();
+                for y in 0..2048usize { for x in 0..2048usize {
+                    if used[y * 2048 + x] { continue; }
+                    let mut w = 0; while x + w < 2048 && !used[y * 2048 + x + w] { w += 1; }
+                    let mut h = 1; 'h: while y + h < 2048 { for xx in x..x + w { if used[(y + h) * 2048 + xx] { break 'h; } } h += 1; }
+                    for yy in y..y + h { for xx in x..x + w { used[yy * 2048 + xx] = true; } }
+                    rects.push((x, y, w, h));
+                } }
+                rects.sort_by_key(|r| std::cmp::Reverse(r.2 * r.3));
+                println!("{} free rectangles; the 24 largest (x, y, w, h):", rects.len());
+                for r in rects.iter().take(24) { println!("  ({}, {}) {}×{}", r.0, r.1, r.2, r.3); }
+                let big: usize = rects.iter().filter(|r| r.2 >= 6 && r.3 >= 6).map(|r| r.2 * r.3).sum();
+                println!("free area in rectangles ≥ 6×6: {big}");
+                return;
+            }
+            if a.iter().any(|x| x == "--editor-big") {
+                // the editor's largest charts and what sits at the atlas origin
+                let mut all: Vec<(u32, (u16, u16, u16, u16))> = ed.iter().map(|(&o, &r)| (o, r)).collect();
+                all.sort_by_key(|(_, r)| std::cmp::Reverse(r.2 as u32 * r.3 as u32));
+                for (o, r) in all.iter().take(12) { let who = if *o >= base { scene.instances.iter().find(|i| base + i.item as u32 == *o).map(|i| format!("item {} {}", i.item, i.model_name)).unwrap_or_else(|| format!("item {} (not in our scene)", o - base)) } else { format!("tile {o}") }; println!("  editor {}×{} at ({}, {}): {who}", r.2, r.3, r.0, r.1); }
+                for (o, r) in ed.iter() { if r.0 <= 1 && r.1 <= 1 { println!("  at the origin: obj {o} {}×{}", r.2, r.3); } }
+                for it in [1555u32, 2398, 2399, 2400] { match ed.get(&(base + it)) { Some(r) => println!("  stock-screen item {it}: editor chart {}×{} at ({}, {})", r.2, r.3, r.0, r.1), None => println!("  stock-screen item {it}: NOT in the editor's mapping") } }
+                return;
+            }
+            // --ext-ratio: per charted item the editor's chart width against our ext.x — (w + 2)/ext.x should be one constant (the
+            // editor's s) if our extents are the game's; a spread = per-item extent differences (the item-side rule)
+            if a.iter().any(|x| x == "--ext-ratio") {
+                let mut rows: Vec<(f32, String, f32, f32, u16, u16)> = Vec::new();
+                for (k, c) in charts.iter().enumerate() {
+                    if ids[k] < base || c.ext[0] <= 0.0 { continue; }
+                    let Some(&(_, _, ew, eh)) = ed.get(&ids[k]) else { continue };
+                    let inst = scene.instances.iter().find(|i| base + i.item as u32 == ids[k]).unwrap();
+                    let sc = ((inst.xf[0] * inst.xf[0] + inst.xf[1] * inst.xf[1] + inst.xf[2] * inst.xf[2]) as f32).sqrt();
+                    rows.push(((ew as f32 + 2.0) / c.ext[0], inst.model_name.clone(), c.ext[0], sc, ew, eh));
+                }
+                rows.sort_by(|p, q| p.0.partial_cmp(&q.0).unwrap());
+                let n = rows.len();
+                println!("(w + 2)/ext.x over {n} charted items: min {:.4} p10 {:.4} median {:.4} p90 {:.4} max {:.4}", rows[0].0, rows[n / 10].0, rows[n / 2].0, rows[9 * n / 10].0, rows[n - 1].0);
+                let mut by_model: std::collections::BTreeMap<String, Vec<f32>> = Default::default();
+                for r in &rows { by_model.entry(r.1.clone()).or_default().push(r.0); }
+                let mut v: Vec<(f32, String, usize, f32)> = by_model.iter().map(|(m, rs)| { let mean = rs.iter().sum::<f32>() / rs.len() as f32; let sc = rows.iter().find(|r| &r.1 == m).map(|r| r.3).unwrap_or(1.0); (mean, m.clone(), rs.len(), sc) }).collect();
+                v.sort_by(|p, q| p.0.partial_cmp(&q.0).unwrap());
+                { let s_e = rows[n / 2].0; let mut big: Vec<&(f32, String, f32, f32, u16, u16)> = rows.iter().filter(|r| r.4 >= 60).collect(); big.sort_by(|p, q| (p.0 / s_e).partial_cmp(&(q.0 / s_e)).unwrap()); println!("large charts (editor w ≥ 60): {} items; (w+2)/(ext.x·s_e) with s_e = median {s_e:.4}: min {:.4} median {:.4} max {:.4}", big.len(), big.first().map(|r| r.0 / s_e).unwrap_or(0.0), big.get(big.len() / 2).map(|r| r.0 / s_e).unwrap_or(0.0), big.last().map(|r| r.0 / s_e).unwrap_or(0.0)); for r in big.iter().take(10) { println!("    {:.4} {:<22} ext.x {:.2} editor {}×{}", r.0 / s_e, r.1, r.2, r.4, r.5); } for r in big.iter().rev().take(5) { println!("    {:.4} {:<22} ext.x {:.2} editor {}×{}", r.0 / s_e, r.1, r.2, r.4, r.5); } }
+                println!("per model (mean ratio, instances, placement scale) — the lowest 8 and the highest 8:");
+                for r in v.iter().take(8).chain(v.iter().rev().take(8)) { let ex = rows.iter().find(|x| x.1 == r.1).unwrap(); println!("  {:.4} {:<22} ×{} scale {} (e.g. ext.x {:.3} editor {}×{})", r.0, r.1, r.2, r.3, ex.2, ex.4, ex.5); }
+                return;
+            }
+            // --item-audit: which items the editor charted and which not, against what our model reader knows about them (the
+            // PreLightGen bounds/MeterByUv, the sub-visual count, the uv1 presence, the material links) — the item-chart rule's oracle
+            if a.iter().any(|x| x == "--item-audit") {
+                let mut rows: Vec<(bool, String)> = Vec::new();
+                let mut by_model: std::collections::BTreeMap<String, (usize, usize)> = Default::default();
+                for inst in &scene.instances {
+                    let m = &scene.models[inst.model];
+                    let o = base + inst.item as u32;
+                    let charted = ed.contains_key(&o);
+                    let e = by_model.entry(inst.model_name.clone()).or_default();
+                    if charted { e.0 += 1 } else { e.1 += 1 }
+                    rows.push((charted, format!("item {:>5} {:<22} charted {:<5} plg_u02 {:>10.4} bounds {:?} boxes_all {} tris {} mats {}", inst.item, inst.model_name, charted, m.plg_u02, m.plg_bounds.map(|b| format!("[{:.4} {:.4} {:.4} {:.4}]", b[0], b[1], b[2], b[3])).unwrap_or("none".into()), m.stored_boxes_all.len(), m.tris.len(), m.mat_links.len())));
+                }
+                let (nc, nu) = (rows.iter().filter(|r| r.0).count(), rows.iter().filter(|r| !r.0).count());
+                { let objs: Vec<u32> = ed.keys().copied().filter(|&o| o >= base).collect(); let mx = objs.iter().max().copied().unwrap_or(0); let beyond = objs.iter().filter(|&&o| o >= base + scene.instances.len() as u32).count(); println!("mapping: {} item entries, max obj {} (base {base} + {} items = {}), {beyond} beyond the item range; binds with (obj_group_idx & 3) != 0: {}", objs.len(), mx, scene.instances.len(), base + scene.instances.len() as u32, (0..mp.count as usize).filter(|&i| mp.binds[i].obj_group_idx & 3 != 0).count()); let mut miss: Vec<u32> = (0..scene.instances.len() as u32).filter(|i| !ed.contains_key(&(base + i))).collect(); miss.truncate(30); println!("  first uncharted item indices: {:?}", miss); }
+                println!("items: {nc} charted by the editor, {nu} not; per model (charted, not):");
+                // --items-dir DIR (mapgeom items MAP --out DIR): the raw Solid2 of every model — which property separates the
+                // charted from the uncharted?
+                if let Some(dir) = f("--items-dir") {
+                    let mut per: Vec<(bool, String, String)> = Vec::new();
+                    for (name, (c, u)) in &by_model {
+                        let p = format!("{dir}/Items/{name}");
+                        let Ok(bytes) = std::fs::read(&p) else { continue };
+                        let Ok(fl) = mapgeom::static_item::file::parse_file(&bytes) else { per.push((*u > 0, name.clone(), "unparsed".into())); continue };
+                        let Some(so) = fl.item.static_object() else { per.push((*u > 0, name.clone(), "no static object".into())); continue };
+                        let Some(s2) = so.solid2() else { per.push((*u > 0, name.clone(), "no solid2".into())); continue };
+                        let plg = s2.pre_light_gen.as_ref();
+                        let lod0 = s2.shaded_geoms.iter().filter(|g| g.lod_mask == 1 || g.lod_mask == 0).count();
+                        let desc = format!("v{} geoms {} (lod0 {}) visuals {} lods {:?} vis_cst {} dmg {} flags {:#x} u05 {} u07 {} lights {} light_insts {} boxes {} joints {} | plg {} u01 {} u03 {} sprite {:?} boxes {} uv_groups {} | u04[4..8] {:?}", s2.version, s2.shaded_geoms.len(), lod0, s2.visuals.len(), s2.lod_max_dist, s2.vis_cst_type, s2.damage_zone, s2.flags, s2.u05, s2.u07, s2.lights.len(), s2.light_insts.len(), s2.boxes.len(), s2.joints.len(), plg.map(|g| g.version.to_string()).unwrap_or("none".into()), plg.map(|g| g.u01).unwrap_or(-9), plg.map(|g| g.u03 as i32).unwrap_or(-9), plg.map(|g| g.sprite_count).unwrap_or([-9, -9]), plg.map(|g| g.boxes.len()).unwrap_or(0), plg.map(|g| g.uv_groups.len()).unwrap_or(0), plg.map(|g| g.u04[4..8].to_vec()).unwrap_or_default());
+                        per.push((*u > 0 && *c == 0, name.clone(), desc));
+                    }
+                    per.sort();
+                    for (unch, name, d) in &per { println!("  {} {name:<22} {d}", if *unch { "UNCHARTED" } else { "charted  " }); }
+                }
+                for (name, (c, u)) in &by_model { if *u > 0 || a.iter().any(|x| x == "--all-models") { let ex = &scene.models[scene.instances.iter().find(|i| i.model_name == *name).unwrap().model]; let lq: std::collections::BTreeSet<u8> = scene.instances.iter().filter(|i| i.model_name == *name).map(|i| i.lm_quality).collect(); println!("  {name:<22} charted {c:>4} not {u:>4}  lm_quality {lq:?} plg_u02 {:>10.4} bounds {} boxes_all {} tris {} mats {:?}", ex.plg_u02, ex.plg_bounds.map(|b| format!("[{:.4} {:.4} {:.4} {:.4}]", b[0], b[1], b[2], b[3])).unwrap_or("none".into()), ex.stored_boxes_all.len(), ex.tris.len(), ex.mat_links.iter().take(4).collect::<Vec<_>>()); } }
                 return;
             }
             // --ring-hist: the editor's tile chart size against the tile's Chebyshev distance to the nearest ITEM anchor cell
