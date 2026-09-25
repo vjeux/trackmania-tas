@@ -225,6 +225,7 @@ fn main() {
         "surface-batch" => surface::batch_cmd(rest),
         "hunt-publish" => hunt::cmd(rest),
         "surface-all" => surface::all_cmd(rest),
+        "surface-round" => surface::round_cmd(rest),
         "release-zips" => surface::release_zips_cmd(rest),
         "convert-all" => pipeline::convert_all_cmd(rest),
         "tracker-md" => pipeline::tracker_md_cmd(rest),

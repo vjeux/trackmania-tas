@@ -200,6 +200,7 @@ fn append(tracker: &Path, row: &[String]) -> Result<(), String> {
 /// The per-record plan's tally: (renamed, baked, same, kept, none) and the
 /// names behind `bake`.
 fn plan_tally(records: &Path) -> Result<(BTreeMap<String, usize>, Vec<String>), String> {
+    OVERLAY_NAMES.with(|o| o.borrow_mut().clear());
     let text = std::fs::read_to_string(records).map_err(|e| format!("{}: {e}", records.display()))?;
     let mut tally: BTreeMap<String, usize> = BTreeMap::new();
     let mut bake_names: Vec<String> = Vec::new();
@@ -403,9 +404,10 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             bake_models = names.clone();
             // the overlay kinds reach the library through the process environment (the
             // library command inherits it; `env` is shared read-only with the plan step)
+            // (handed to the library COMMAND below, never the process environment: surface-round
+            // builds several maps in parallel threads)
             let overlay: Vec<String> = OVERLAY_NAMES.with(|o| o.borrow().clone());
             if !overlay.is_empty() {
-                std::env::set_var("TINY_OVERLAY_NAMES", overlay.join(","));
                 println!("  water overlay: {} block kinds baked visual-only beside their kept blocks", overlay.len());
             }
             // 2. the baked copies
@@ -424,6 +426,10 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                 libcmd.arg("tiny-library").arg(&src).arg("--scale").arg("1").arg("--only").arg(names.join(",")).arg("--library-out").arg(&lib).arg("--mapping-out").arg(&mapping).arg("--report").arg(dir.join("report.tsv"));
                 let map_no: usize = nn.parse().unwrap_or(0);
                 libcmd.envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+                let overlay: Vec<String> = OVERLAY_NAMES.with(|o| o.borrow().clone());
+                if !overlay.is_empty() {
+                    libcmd.env("TINY_OVERLAY_NAMES", overlay.join(","));
+                }
                 // a custom item in the bake list was PUT there by the convert list (or the
                 // all-custom switch): the bake must dress it — otherwise it comes out as a
                 // plain copy (U10S_953's castle roads, Everios96 2026-09-15 03:00)
@@ -826,6 +832,117 @@ pub fn report_cmd(args: &[String]) -> Result<(), String> {
 /// (`<Word>U10S-partNN.zip`: the 25 maps in campaign order + `MAPS.tsv`) and a
 /// summary `O/CONVERT.tsv` — the GitHub-release layout of the tiny set
 /// (2026-09-13, vjeux: "the 1k giant and icy uploaded to github like you did for tiny").
+/// `tinyctl surface-round --src-root S --out-root O --maps FILE|N,N,… --sets a,b [--jobs 6]
+/// [--env K=V]… [--label L] [--max-bytes B]` — a FIX ROUND: the listed maps (numbers, or a file
+/// with one `NN [anything]` per line) built with `surface` for every set, N (set, part)
+/// pairs at a time, and each result copied flat into `O/stage/<set>/pNN/<name>.Map.Gbx` —
+/// the layout `tinyctl round-publish --stage O/stage` publishes in place from the devserver.
+/// `--env` sets process variables the plan/library read (TINY_WATER_OVERLAY=1, …).
+/// Rust end to end (vjeux 2026-09-24: no shell scripts).
+pub fn round_cmd(args: &[String]) -> Result<(), String> {
+    let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
+    let src_root = PathBuf::from(f("--src-root").ok_or("surface-round needs --src-root S (S/pNN/NN-*.Map.Gbx)")?);
+    let out_root = PathBuf::from(f("--out-root").ok_or("surface-round needs --out-root O")?);
+    let sets: Vec<String> = f("--sets").ok_or("surface-round needs --sets a,b")?.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect();
+    let maps_arg = f("--maps").ok_or("surface-round needs --maps FILE or N,N,…")?;
+    let mut nums: Vec<usize> = if Path::new(&maps_arg).is_file() {
+        std::fs::read_to_string(&maps_arg).map_err(|e| format!("{maps_arg}: {e}"))?.lines().filter_map(|l| l.split_whitespace().next().and_then(|w| w.parse().ok())).collect()
+    } else {
+        maps_arg.split(',').filter_map(|w| w.trim().parse().ok()).collect()
+    };
+    nums.sort();
+    nums.dedup();
+    if nums.is_empty() {
+        return Err("surface-round: no map numbers".into());
+    }
+    let jobs: usize = f("--jobs").and_then(|j| j.parse().ok()).unwrap_or(6).max(1);
+    // --env K=V (repeatable): the plan and the library read these
+    let mut i = 0;
+    while i + 1 < args.len() {
+        if args[i] == "--env" {
+            if let Some((k, v)) = args[i + 1].split_once('=') {
+                std::env::set_var(k, v);
+                println!("env {k}={v}");
+            }
+        }
+        i += 1;
+    }
+    // (set, part) → the part's listed maps
+    let mut work: Vec<(String, String, Vec<String>)> = Vec::new();
+    for set in &sets {
+        let mut by_part: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+        for n in &nums {
+            let part = format!("{:02}", (n - 1) / 25 + 1);
+            by_part.entry(part).or_default().push(format!("{n:02}"));
+        }
+        for (part, ms) in by_part {
+            work.push((set.clone(), part, ms));
+        }
+    }
+    let total = work.len();
+    let queue = std::sync::Mutex::new(std::collections::VecDeque::from(work));
+    let results = std::sync::Mutex::new(Vec::<String>::new());
+    let t0 = Instant::now();
+    std::thread::scope(|sc| {
+        for _ in 0..jobs.min(total) {
+            sc.spawn(|| loop {
+                let (set, part, ms) = match queue.lock().unwrap().pop_front() {
+                    Some(w) => w,
+                    None => break,
+                };
+                let src_dir = src_root.join(format!("p{part}"));
+                let build_out = out_root.join("build").join(&set).join(format!("p{part}"));
+                let stage_out = out_root.join("stage").join(&set).join(format!("p{part}"));
+                let _ = std::fs::create_dir_all(&build_out);
+                let _ = std::fs::create_dir_all(&stage_out);
+                let t1 = Instant::now();
+                let mut pargs: Vec<String> = ms.clone();
+                pargs.extend(["--src-dir".to_string(), src_dir.display().to_string(), "--out-root".into(), build_out.display().to_string(), "--surface".into(), set.clone(), "--name-style".into(), "everios".into(), "--no-publish".into(), "--no-shoot".into()]);
+                if set == "ice" {
+                    pargs.extend(["--label".to_string(), "Icy".into()]);
+                }
+                for k in ["--lod-pick", "--max-bytes"] {
+                    if let Some(v) = f(k) {
+                        pargs.push(k.into());
+                        pargs.push(v);
+                    }
+                }
+                let r = cmd(&pargs);
+                // flat copies for round-publish
+                let mut copied = 0usize;
+                for nn in &ms {
+                    let dir = build_out.join(format!("{set}{nn}"));
+                    if let Ok(rd) = std::fs::read_dir(&dir) {
+                        for e in rd.flatten() {
+                            let p = e.path();
+                            if p.to_string_lossy().ends_with(".Map.Gbx") && std::fs::copy(&p, stage_out.join(p.file_name().unwrap())).is_ok() {
+                                copied += 1;
+                            }
+                        }
+                    }
+                }
+                let line = match r {
+                    Ok(()) => format!("{set}\tp{part}\tOK\t{copied}/{} maps\t{:.0}s", ms.len(), t1.elapsed().as_secs_f64()),
+                    Err(e) => format!("{set}\tp{part}\tPARTIAL\t{copied}/{} maps\t{:.0}s\t{}", ms.len(), t1.elapsed().as_secs_f64(), e.lines().next().unwrap_or("")),
+                };
+                eprintln!("[{:>5.0}s] {line}", t0.elapsed().as_secs_f64());
+                results.lock().unwrap().push(line);
+            });
+        }
+    });
+    let mut lines = results.into_inner().unwrap();
+    lines.sort();
+    let summary = out_root.join("ROUND.tsv");
+    std::fs::write(&summary, lines.join("\n") + "\n").map_err(|e| format!("{}: {e}", summary.display()))?;
+    let staged = sets.iter().map(|s| std::fs::read_dir(out_root.join("stage").join(s)).map(|rd| rd.flatten().filter_map(|p| std::fs::read_dir(p.path()).ok()).map(|r| r.flatten().count()).sum::<usize>()).unwrap_or(0)).sum::<usize>();
+    println!("surface-round: {} (set, part) jobs, {staged} maps staged under {} in {:.0}s — see {}", total, out_root.join("stage").display(), t0.elapsed().as_secs_f64(), summary.display());
+    let bad = lines.iter().filter(|l| !l.contains("\tOK\t")).count();
+    if bad > 0 {
+        return Err(format!("{bad} of {total} jobs not fully built — see {}", summary.display()));
+    }
+    Ok(())
+}
+
 pub fn all_cmd(args: &[String]) -> Result<(), String> {
     let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
     let src_root = PathBuf::from(f("--src-root").ok_or("surface-all needs --src-root S")?);
