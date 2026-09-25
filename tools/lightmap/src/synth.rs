@@ -236,9 +236,13 @@ fn patch_raw_chunk(id: u32, b: &[u8], fp: Option<&FrameParams>) -> Vec<u8> {
             }
         }
         0x0602_2013 if o.len() >= 16 => {
-            // FILETIME (100-ns ticks since 1601-01-01) — only when asked; the default keeps the template's word so the
-            // output is deterministic
-            if let Some(ft) = fp.filetime {
+            // FILETIME (100-ns ticks since 1601-01-01) — the bake's creation time, the ONE field of a written map that
+            // differed between two identical bakes (and, deflated with the trailer, re-encodes the 30 KB after it).
+            // Precedence: FrameParams::filetime (`--bake-time now|TICKS`), else LMTOOL_BAKE_TIME=<unix seconds> /
+            // SOURCE_DATE_EPOCH (engineer 2's pin), else THE TEMPLATE'S WORD IS KEPT — the default output is deterministic
+            let pinned: Option<u64> = std::env::var("LMTOOL_BAKE_TIME").ok().or_else(|| std::env::var("SOURCE_DATE_EPOCH").ok()).and_then(|v| v.trim().parse::<u64>().ok());
+            let ft: Option<u64> = fp.filetime.or_else(|| pinned.map(|secs| secs * 10_000_000 + 116_444_736_000_000_000));
+            if let Some(ft) = ft {
                 o[8..16].copy_from_slice(&ft.to_le_bytes());
             }
         }
