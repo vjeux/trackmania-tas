@@ -24,6 +24,8 @@ pub mod img;
 pub mod mapio;
 pub mod moods;
 pub mod probe;
+pub mod probecheck;
+pub mod probepass;
 pub mod probes;
 pub mod raster;
 pub mod skycube;

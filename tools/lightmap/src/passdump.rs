@@ -178,6 +178,19 @@ pub struct Entry {
     pub raster: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub depthstate: Option<serde_json::Value>,
+    /// The capture's peel phase of a per-direction buffer: `world` (the whole-environment frustum)
+    /// or `fitted` (the map-sized one).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+    /// The first event id of the run that produced the buffer (the capture's `eid_first`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eid_first: Option<u64>,
+    /// A 3D texture's depth (the probe volumes: 32 slices).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depth: Option<u32>,
+    /// The RenderDoc resource id of the buffer (a number or a string in the capture manifests).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub texture_id: Option<serde_json::Value>,
 }
 
 /// A chart's rectangle in the layout (2048-unit space, the mapping's convention) and its stored size.
@@ -278,6 +291,9 @@ pub struct Manifest {
     /// The capture's finalisation record (CS 23025's cbuffers/SRVs/UAVs, the reduce dispatches, the chain).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub final_encode: Option<serde_json::Value>,
+    /// The capture's probe-draw state record (samplers, scissors, viewports at the probe draws).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probe_draw_state: Option<serde_json::Value>,
 }
 
 /// The dump writer.
@@ -315,6 +331,7 @@ impl PassDump {
                 conventions: serde_json::Map::new(),
                 passes: Vec::new(),
                 final_encode: None,
+                probe_draw_state: None,
             },
             dirs: None,
             bytes_written: 0,
@@ -441,6 +458,10 @@ pub fn entry(pass: &str, file: String, space: &str) -> Entry {
         banked: None,
         frame: None,
         eid: None,
+        phase: None,
+        eid_first: None,
+        depth: None,
+        texture_id: None,
         chart: None,
         file,
         format: String::new(),
@@ -498,7 +519,7 @@ mod tests {
 
     #[test]
     fn manifest_round_trips_through_json() {
-        let mut d = PassDump { root: "/tmp".into(), manifest: Manifest { producer: "t".into(), map: "m".into(), baked_map: None, quality: 3, daytime_word: Some(7), mood: "BlueBay/Day".into(), atlas: Atlas { w: 2048, h: 2048, ss: 3, stored_w: 1024, stored_h: 1024 }, sun_dir: [0.0, 1.0, 0.0], sun_rgb: [1.0; 3], sweeps: vec![], layout: vec![], conventions: serde_json::Map::new(), passes: vec![], final_encode: None }, dirs: Some(vec![0, 3]), bytes_written: 0 };
+        let mut d = PassDump { root: "/tmp".into(), manifest: Manifest { producer: "t".into(), map: "m".into(), baked_map: None, quality: 3, daytime_word: Some(7), mood: "BlueBay/Day".into(), atlas: Atlas { w: 2048, h: 2048, ss: 3, stored_w: 1024, stored_h: 1024 }, sun_dir: [0.0, 1.0, 0.0], sun_rgb: [1.0; 3], sweeps: vec![], layout: vec![], conventions: serde_json::Map::new(), passes: vec![], final_encode: None, probe_draw_state: None }, dirs: Some(vec![0, 3]), bytes_written: 0 };
         let mut e = entry("peel_depth", "peel_depth/s0/d000/l00.bin".into(), "peel");
         e.sweep = Some(0);
         e.direction = Some(0);

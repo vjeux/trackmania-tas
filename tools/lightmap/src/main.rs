@@ -3181,6 +3181,24 @@ fn run(a: Vec<String>) {
                 println!("wrote {out} (raw RGBA16F {}×{})", ours.w, ours.h);
             }
         }
+        "probe-check" => {
+            // lmtool probe-check PASSCAP_ROOT [--frame N] [--fma] [--no-ref-clamp] [--rtne] [--pcf-bits B] [-v]
+            //   ROW 10: the transcribed PROBE passes (probepass.rs: PS 17151 ProbeGrid_SetILightDir per world-peel layer,
+            //   PS 17154 AddSkyVisibility, PS 1112 folds) run from the capture's own inputs (the layers' colour + depth,
+            //   the TMapProbeSafetyOffset volume, the draws' cbuffers + GS slice range + scissor) and compared f16 for f16
+            //   with the captured 32×16×32 volumes after every draw
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let has = |k: &str| a.iter().any(|x| x == k);
+            let root = std::path::PathBuf::from(&a[1]);
+            let frame: u32 = f("--frame").map(|v| v.parse().expect("--frame")).unwrap_or(127448);
+            let mut opts = lightmap::probepass::ProbeOpts::default();
+            opts.fma = has("--fma");
+            opts.clamp_ref = !has("--no-ref-clamp");
+            if has("--rtne") { opts.store = lightmap::gpufmt::Rounding::NearestEven; }
+            if let Some(b) = f("--pcf-bits") { opts.pcf_frac_bits = b.parse().expect("--pcf-bits"); }
+            let co = lightmap::probecheck::CheckOpts { frame, opts, verbose: has("-v") };
+            if let Err(e) = lightmap::probecheck::run(&root, &co) { eprintln!("probe-check: {e}"); std::process::exit(1); }
+        }
         "dilate-check" => {
             // lmtool dilate-check PASSCAP_ROOT [--frame N]: the transcribed PS 1332 gutter dilation (gpuenc::dilate_ps1332), 8 passes on
             // each captured final_03 image, compared f16 for f16 with the captured final_04 images
