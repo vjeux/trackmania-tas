@@ -488,3 +488,38 @@ pub fn check_direction(root: &std::path::Path, frame: u32, index: u32, env_frame
     println!("done in {:.1} s", t0.elapsed().as_secs_f32());
     Ok(())
 }
+
+/// The GPU's sRGB→linear table as the capture bounds it (the intervals of `fit_srgb_table` on pwc6's sweep-0 end
+/// C0 × the MDiffuse against the captured sweep-1 ILightInput; a cell the capture does not observe, or whose
+/// interval is empty, keeps the IEC value; an observed cell whose interval excludes the IEC value takes the
+/// interval's midpoint). Returns the table and (observed, off-IEC) counts.
+pub fn fitted_srgb_table(root: &std::path::Path) -> Result<([[f32; 256]; 3], usize, usize), String> {
+    let txt = std::fs::read_to_string(root.join("MANIFEST.json")).map_err(|e| format!("MANIFEST.json: {e}"))?;
+    let m = crate::passdiff::read_manifest(&txt)?;
+    let last0 = m.passes.iter().filter(|e| e.pass == "hbasis0" && e.sweep == Some(0) && e.banked != Some(false)).max_by_key(|e| e.sweep_direction_index.unwrap_or(0)).cloned().ok_or("no banked sweep-0 hbasis0 snapshot")?;
+    let c0 = crate::passdiff::load_entry(root, &last0)?;
+    let md = m.passes.iter().find(|e| e.pass == "setup_ps17043" && e.frame == Some(127448) && e.file.contains("_16969")).cloned().ok_or("no setup_ps17043 16969 entry")?;
+    let mdiffuse8 = crate::passdiff::load_entry(root, &md)?;
+    let target_e = m.passes.iter().filter(|e| e.pass == "ilightinput" && e.frame == Some(7534)).min_by_key(|e| e.eid.unwrap_or(u64::MAX)).cloned().ok_or("no ilightinput entry for frame 7534")?;
+    let target = crate::passdiff::load_entry(root, &target_e)?;
+    let resolved_mask = {
+        let r = crate::finalprep::resolve_ps25113(&c0, false, crate::gpufmt::Rounding::Truncate);
+        let mut m8 = Buf::new(c0.w, c0.h, 1);
+        for y in 0..c0.h { for x in 0..c0.w { m8.set(x, y, 0, crate::ilightin::unorm8_rt(r.get(x, y, 3), crate::gpuenc::UnormRounding::NearestEven)); } }
+        m8
+    };
+    let cells = fit_srgb_table(&c0, &mdiffuse8, &resolved_mask, &target, 0.3989423);
+    let mut table = [[0f32; 256]; 3];
+    let (mut observed, mut off_iec) = (0usize, 0usize);
+    for c in 0..3 {
+        for b in 0..256 {
+            let iec = crate::gpufmt::srgb_to_linear(b as f32 / 255.0);
+            let (lo, hi, n) = cells[c][b];
+            table[c][b] = iec;
+            if n == 0 || lo >= hi { continue; }
+            observed += 1;
+            if !(lo <= iec && iec < hi) { off_iec += 1; table[c][b] = 0.5 * (lo + hi); }
+        }
+    }
+    Ok((table, observed, off_iec))
+}

@@ -15,9 +15,11 @@
 //! | 4 | direct sun (sunpass.rs, the baker) | stage 3 | sun_direct |
 //! | 5 | PS 1038 mask, PS 17043 + PS 1109 multiply, PS 1335 × 8 (ilightin.rs) | stages 2 + 4 | setup_ps1038, setup_ps1109 (17095), setup_ps1335 |
 //!
-//! The sweep stages (the peels, LmILightDir_Set, AddAmbient, the probes, the H-basis accumulate, sweep 1, the
-//! finalisation) follow in the bake path (`lmtool bake --raster --game-peel …`, engineers 2 / D / E) — this command
-//! stops where the standalone kernels end and prints what the next stage would consume.
+//! The sweep stages follow in the bake path: `lmtool bake … --lm-from PASSCAP --ilightinput-from e2e` (main.rs) runs this
+//! chain first and hands its dilated ILightInput to the peels (ilatlas.rs: the fragment's lightmap coordinate through
+//! the LM instance stream's ST), E's transcribed LmILightDir_Set / H-basis over D's peel layers, C's sweep-transition
+//! chain on OUR sweep-0 C0 for sweep 1, the finalisation on OUR MRTs (`--chain-final-dir`), and `lmtool chain-final`
+//! (below) takes the images through PS 1034, PS 1332 × 8, the max reduce, CS 23025 and the file writer.
 
 use crate::gpucmp::{compare, compare_where, Fmt, Report};
 use crate::gpufmt::{quantise_f16, Rounding};

@@ -212,6 +212,10 @@ pub fn load_setup(a: &[String], root: &Path, frame: u32, env_frame: u32, quiet: 
         needed.insert(id.to_string());
     }
     let srgb_ids = ["14585", "14579", "14609", "14627", "5354", "16796", "14508", "15075", "15078"];
+    // --srgb-table fit: the GPU's decode table as the capture bounds it (sweep1::fitted_srgb_table) instead of the IEC curve
+    let fitted: Option<[[f32; 256]; 3]> = if arg(a, "--srgb-table").as_deref() == Some("fit") {
+        match crate::sweep1::fitted_srgb_table(root) { Ok((t, n, off)) => { if !quiet { println!("sRGB decode table fitted from the capture: {n} (channel, byte) cells observed, {off} off the IEC curve"); } Some(t) } Err(e) => { println!("srgb-table fit: {e} (the IEC curve stays)"); None } }
+    } else { None };
     let mut tex = Textures { by_id: Default::default() };
     for dir in [env.join("textures"), env_pre.join("textures")] {
         let Ok(rd) = std::fs::read_dir(&dir) else { continue };
@@ -228,7 +232,7 @@ pub fn load_setup(a: &[String], root: &Path, frame: u32, env_frame: u32, quiet: 
             match texsample::load_dds(&e.path(), bc1) {
                 Ok(mut t) => {
                     if srgb_ids.contains(&id.as_str()) && !flag(a, "--no-srgb-textures") {
-                        t.decode_srgb();
+                        match &fitted { Some(tb) => t.decode_srgb_table(tb), None => t.decode_srgb() }
                     }
                     if !quiet && flag(a, "--show-textures") {
                         println!("  texture {id}: {:?} {}×{} × {} slices, {} mips in the file{}", t.fmt, t.w, t.h, t.slices, t.levels[0].len(), if t.complete { "" } else { " (top level only)" });

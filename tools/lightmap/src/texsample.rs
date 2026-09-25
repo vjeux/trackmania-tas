@@ -553,3 +553,34 @@ impl Texture {
         }
     }
 }
+
+impl Texture {
+    /// Decode the colour channels through a measured per-channel table (the GPU's sRGB→linear table as the capture
+    /// bounds it, `sweep1::fitted_srgb_table`) instead of the IEC curve — 8-bit levels only (the f32 levels keep the curve).
+    pub fn decode_srgb_table(&mut self, table: &[[f32; 256]; 3]) {
+        // one LUT per level: the U8 path applies the same table to r, g and b — use the per-channel tables through a
+        // combined lookup: Level::get reads lut[byte] for every channel, so the three tables must agree; where they
+        // differ (a cell fitted in one channel only) take the channel that was observed (the others hold the IEC value)
+        let mut t = [0f32; 256];
+        for b in 0..256 {
+            let iec = crate::gpufmt::srgb_to_linear(b as f32 / 255.0);
+            let fitted: Vec<f32> = (0..3).map(|c| table[c][b]).filter(|v| *v != iec).collect();
+            t[b] = if fitted.is_empty() { iec } else { fitted.iter().sum::<f32>() / fitted.len() as f32 };
+        }
+        let lut = std::sync::Arc::new(t);
+        for sl in &mut self.levels {
+            for lv in sl {
+                match &mut lv.px {
+                    Px::U8(_) => lv.lut = lut.clone(),
+                    Px::F32(v) => {
+                        for p in v.iter_mut() {
+                            for k in 0..3 {
+                                p[k] = crate::gpufmt::srgb_to_linear(p[k]);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

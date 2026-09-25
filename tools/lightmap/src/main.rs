@@ -1730,12 +1730,18 @@ fn run(a: Vec<String>) {
                     let ts = std::time::Instant::now();
                     let atlas = lightmap::sweep1::ilightinput_from_c0(&c0, &mdl, None, 0.3989423);
                     if let Some(gm) = &game_manifest {
-                        if let Some(e) = gm.passes.iter().filter(|e| e.pass == "ilightinput" && e.sweep == Some(it as u32)).min_by_key(|e| e.eid_last.unwrap_or(0)) {
+                        if let Some(e) = gm.passes.iter().filter(|e| e.pass == "ilightinput" && (e.sweep == Some(it as u32) || (it == 1 && e.frame == Some(7534)))).min_by_key(|e| e.eid.unwrap_or(u64::MAX)) {
                             match lightmap::passdiff::load_entry(std::path::Path::new(&f("--lm-from").unwrap()), e) {
                                 Ok(cap) => { let r = lightmap::gpucmp::compare(&atlas, &cap, 3, lightmap::gpucmp::Fmt::R11G11B10); eprintln!("chain: the sweep-{it} ILightInput from OUR sweep-{} C0 vs the captured {} ({:?}): {}", it - 1, e.file, e.capture, r.line()); }
                                 Err(err) => eprintln!("chain: the captured sweep-{it} ILightInput {}: {err}", e.file),
                             }
                         } else { eprintln!("chain: no captured sweep-{it} ILightInput entry in the manifest"); }
+                    }
+                    if let Some(dir) = f("--chain-final-dir") {
+                        std::fs::create_dir_all(&dir).expect("--chain-final-dir");
+                        let mut r11 = Vec::with_capacity(2048 * 2048 * 4);
+                        for i in 0..(2048 * 2048) as usize { r11.extend_from_slice(&lightmap::gpufmt::pack_r11g11b10([atlas.data[i * 3], atlas.data[i * 3 + 1], atlas.data[i * 3 + 2]], lightmap::gpufmt::Rounding::Truncate).to_le_bytes()); }
+                        std::fs::write(format!("{dir}/chain-sweep{it}-ilightinput.r11g11b10"), r11).expect("write");
                     }
                     let n_items = scene.item_count.max(1);
                     let lm_root = std::path::PathBuf::from(f("--lm-from").unwrap());
