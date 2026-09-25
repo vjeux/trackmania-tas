@@ -60,7 +60,14 @@ pub fn triangle<F: FnMut(u32, u32, Bary)>(w: u32, h: u32, p: [[f32; 2]; 3], f: F
 
 /// `triangle` visiting only the pixels inside `clip` = (x0, y0, x1, y1) inclusive — the same pixels,
 /// the same barycentrics, just the rows and columns outside the clip skipped.
-pub fn triangle_clipped<F: FnMut(u32, u32, Bary)>(w: u32, h: u32, p: [[f32; 2]; 3], clip: (i32, i32, i32, i32), mut f: F) {
+pub fn triangle_clipped<F: FnMut(u32, u32, Bary)>(w: u32, h: u32, p: [[f32; 2]; 3], clip: (i32, i32, i32, i32), f: F) {
+    triangle_clipped_masked(w, h, p, clip, None, f)
+}
+
+/// `triangle_clipped` that also skips, 64 pixels at a time, the runs of a row whose word of `mask`
+/// (one bit per pixel, row-major, pixel id = y·w + x) is zero — the pixels nobody wants are never
+/// tested; the visited pixels get exactly the tests and barycentrics of the unmasked walk.
+pub fn triangle_clipped_masked<F: FnMut(u32, u32, Bary)>(w: u32, h: u32, p: [[f32; 2]; 3], clip: (i32, i32, i32, i32), mask: Option<&[u64]>, mut f: F) {
     let area = edge(p[0], p[1], p[2]);
     if area == 0.0 || !area.is_finite() {
         return;
@@ -77,7 +84,20 @@ pub fn triangle_clipped<F: FnMut(u32, u32, Bary)>(w: u32, h: u32, p: [[f32; 2]; 
     let inv = 1.0 / area;
     for y in y0..=y1 {
         let py = y as f32 + 0.5;
-        for x in x0..=x1 {
+        let mut x = x0;
+        while x <= x1 {
+            if let Some(m) = mask {
+                let i = y as usize * w as usize + x as usize;
+                if (m[i >> 6] >> (i & 63)) == 0 {
+                    // no wanted pixel from here to the end of this word
+                    x += 64 - (i & 63) as i32;
+                    continue;
+                }
+                if (m[i >> 6] >> (i & 63)) & 1 == 0 {
+                    x += 1;
+                    continue;
+                }
+            }
             let q = [x as f32 + 0.5, py];
             // e0 opposite c (edge a→b), e1 opposite a (b→c), e2 opposite b (c→a)
             let e0 = edge(a, b, q);
@@ -85,12 +105,14 @@ pub fn triangle_clipped<F: FnMut(u32, u32, Bary)>(w: u32, h: u32, p: [[f32; 2]; 
             let e2 = edge(c, a, q);
             let inside = (e0 > 0.0 || (e0 == 0.0 && tl[0])) && (e1 > 0.0 || (e1 == 0.0 && tl[1])) && (e2 > 0.0 || (e2 == 0.0 && tl[2]));
             if !inside {
+                x += 1;
                 continue;
             }
             // barycentrics: weight of a = e1/area (the edge opposite a), etc.
             let (wa, wb, wc) = (e1 * inv, e2 * inv, e0 * inv);
             let bary = if swapped { [wa, wc, wb] } else { [wa, wb, wc] };
             f(x as u32, y as u32, bary);
+            x += 1;
         }
     }
 }

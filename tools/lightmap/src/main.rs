@@ -769,12 +769,13 @@ fn run(a: Vec<String>) {
             // four terrain patches as black occluders; the sky dome is `dome_radiance`) in place of the
             // Scene3d decoration
             if let Some(dir) = f("--env-from") {
+                let te = std::time::Instant::now();
                 match lightmap::envcap::load_env(std::path::Path::new(&dir)) {
                     Ok(meshes) => {
                         let n_before = scene.decor.len();
                         scene.decor.clear();
                         scene.decor.extend(lightmap::envcap::env_decor(&meshes));
-                        eprintln!("env-from {dir}: {} environment triangles replace the {n_before} decoration triangles", scene.decor.len());
+                        eprintln!("env-from {dir}: {} environment triangles replace the {n_before} decoration triangles ({:.2}s)", scene.decor.len(), te.elapsed().as_secs_f32());
                     }
                     Err(e) => eprintln!("env-from {dir}: {e} (the decoration stays)"),
                 }
@@ -850,9 +851,11 @@ fn run(a: Vec<String>) {
                 eprintln!("decoration: none — a ground quad at y = {gy} (albedo {ga}) stands in");
             }
             eprintln!("scene: {} models, {} instances, {} triangles (+ {} decoration) ({:.1}s)", scene.models.len(), scene.instances.len(), scene.tri_count(), scene.decor.len(), t0.elapsed().as_secs_f32());
+            let tb = std::time::Instant::now();
             let (tris, alpha_masks) = lightmap::bake::world_tris_masks(&scene);
+            let t_masks = tb.elapsed().as_secs_f32();
             let bvh = lightmap::bvh::Bvh::build(tris);
-            eprintln!("bvh: {} nodes ({:.1}s)", bvh.node_count(), t0.elapsed().as_secs_f32());
+            eprintln!("bvh: {} nodes ({:.1}s; the masks {t_masks:.2}s, the build {:.2}s)", bvh.node_count(), t0.elapsed().as_secs_f32(), tb.elapsed().as_secs_f32() - t_masks);
             let parse_rgb = |s: &str| -> [f32; 3] { let v: Vec<f32> = s.split(',').map(|x| x.trim().parse().unwrap()).collect(); [v[0], v[1], v[2]] };
             let mut prm = lightmap::bake::BakeParams::default();
             prm.alpha_masks = std::sync::Arc::new(alpha_masks);
@@ -1294,7 +1297,7 @@ fn run(a: Vec<String>) {
                 // per-direction peel frustums of sweep 0 (later sweeps below)
                 if has("--shadow-frustum-from-capture") { if let Some(e) = gm.passes.iter().find(|e| e.pass == "sun_shadow") { if let Some(fr) = &e.frustum { prm.shadow_frustum = Some(fr.clone()); eprintln!("frustum-from: the sun shadow map's frustum adopted (centre {:?}, half {:?})", fr.center, fr.half); } } }
                 let fs = lightmap::passdiff::peel_frustums_for(gm, 0, &prm.sphere_dirs);
-                if !fs.is_empty() { eprintln!("frustum-from: sweep 0: {} directions' peels adopted ({} peels per direction)", fs.len(), fs.iter().map(|v| v.len()).max().unwrap_or(0)); prm.frustums = Some(std::sync::Arc::new(fs)); }
+                if !fs.is_empty() { eprintln!("frustum-from: sweep 0: {} directions' peels adopted ({} peels per direction) ({:.1}s since start)", fs.len(), fs.iter().map(|v| v.len()).max().unwrap_or(0), t0.elapsed().as_secs_f32()); prm.frustums = Some(std::sync::Arc::new(fs)); }
                 if let Some(e) = gm.passes.iter().find(|e| e.pass == "peel_depth") { if e.width > 0 && e.width != prm.peel_res { eprintln!("frustum-from: peel resolution {} → {}", prm.peel_res, e.width); prm.peel_res = e.width; } }
             }
             if let Some(dir) = &dump_dir {
@@ -1372,7 +1375,7 @@ fn run(a: Vec<String>) {
                 }
                 let matched = new_dirs.len();
                 for (i, d) in prm.sphere_dirs.iter().enumerate() { if !used[i] { new_dirs.push(*d); } }
-                eprintln!("dir-order: {matched} of {} directions in the game's issue order (worst match {worst:.3}°), the rest in ours", new_dirs.len());
+                eprintln!("dir-order: {matched} of {} directions in the game's issue order (worst match {worst:.3}°), the rest in ours ({:.1}s since start)", new_dirs.len(), t0.elapsed().as_secs_f32());
                 prm.sphere_dirs = std::sync::Arc::new(new_dirs);
                 if let Some(v) = f("--dump-lightsum-after") {
                     prm.lightsum_after = if v == "game" {
@@ -1410,6 +1413,40 @@ fn run(a: Vec<String>) {
                         acc += v[0];
                     }
                     eprintln!("bench: 1 M dome_radiance in {:.3}s ({:.0} ns each), checksum {acc}", t.elapsed().as_secs_f32(), t.elapsed().as_nanos() as f64 / 1e6);
+                    // pure-compute scaling (no shared memory at all), short and long workloads
+                    for (nt, total) in [(4usize, 40_000_000u32), (16, 40_000_000), (64, 40_000_000), (160, 40_000_000), (16, 800_000_000), (64, 800_000_000), (160, 800_000_000)] {
+                        let t = std::time::Instant::now();
+                        std::thread::scope(|sc| {
+                            for k in 0..nt {
+                                sc.spawn(move || {
+                                    let mut acc = 0.0f64;
+                                    for i in 0..(total / nt as u32) {
+                                        acc += ((i + k as u32) as f64 * 1e-3).sin();
+                                    }
+                                    std::hint::black_box(acc);
+                                });
+                            }
+                        });
+                        eprintln!("bench: {} M sin on {nt} threads in {:.3}s", total / 1_000_000, t.elapsed().as_secs_f32());
+                    }
+                    for nt in [4usize, 16, 64, 160] {
+                        let t = std::time::Instant::now();
+                        std::thread::scope(|sc| {
+                            for k in 0..nt {
+                                let sg = sg.clone();
+                                sc.spawn(move || {
+                                    let mut acc = 0.0f32;
+                                    for i in 0..(4_000_000u32 / nt as u32) {
+                                        let q = [871.0 + ((i + k as u32 * 7) % 1000) as f32 * 0.01, 50.0, 353.0 + (i / 1000) as f32 * 0.01];
+                                        let v = sg.dome_radiance(q, [0.345, 0.117, 0.931], [871.0, 50.0, 353.0]);
+                                        acc += v[0];
+                                    }
+                                    std::hint::black_box(acc);
+                                });
+                            }
+                        });
+                        eprintln!("bench: 4 M dome_radiance on {nt} threads in {:.3}s ({:.0} ns each per thread)", t.elapsed().as_secs_f32(), t.elapsed().as_nanos() as f64 / 4e6 * nt as f64);
+                    }
                 }
                 return;
             }

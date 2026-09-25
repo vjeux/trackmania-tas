@@ -60,8 +60,72 @@ fn unproject_affine(m: &[[f32; 4]; 4], clip: [f32; 3]) -> V3 {
     [p[0] as f32, p[1] as f32, p[2] as f32]
 }
 
-/// Load the environment meshes of the capture under `passcap` (the pwc-day layout).
+/// `load_env` through a binary cache in the temp dir (the capture sits on a network file system and its
+/// draw log is a 15 MB JSON: the first load takes seconds, the cached one milliseconds).
 pub fn load_env(passcap: &Path) -> Result<Vec<EnvMesh>, String> {
+    let key = { let mut h: u64 = 0xcbf2_9ce4_8422_2325; for b in passcap.to_string_lossy().bytes() { h ^= b as u64; h = h.wrapping_mul(0x0100_0000_01b3); } h };
+    let cache = std::env::temp_dir().join(format!("lmtool-env-{key:016x}.bin"));
+    if let Ok(bytes) = std::fs::read(&cache) {
+        if let Some(m) = decode_cache(&bytes) {
+            return Ok(m);
+        }
+    }
+    let meshes = load_env_uncached(passcap)?;
+    let _ = std::fs::write(&cache, encode_cache(&meshes));
+    Ok(meshes)
+}
+
+fn encode_cache(meshes: &[EnvMesh]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(b"LMENV1\0\0");
+    out.extend_from_slice(&(meshes.len() as u32).to_le_bytes());
+    for m in meshes {
+        let name = m.name.as_bytes();
+        out.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        out.extend_from_slice(name);
+        out.extend_from_slice(&(m.tris.len() as u32).to_le_bytes());
+        for t in &m.tris {
+            for p in t {
+                for c in p {
+                    out.extend_from_slice(&c.to_le_bytes());
+                }
+            }
+        }
+    }
+    out
+}
+
+fn decode_cache(b: &[u8]) -> Option<Vec<EnvMesh>> {
+    if b.len() < 12 || &b[..8] != b"LMENV1\0\0" {
+        return None;
+    }
+    let mut o = 8usize;
+    let rd_u32 = |o: &mut usize| -> Option<u32> { let v = u32::from_le_bytes(b.get(*o..*o + 4)?.try_into().ok()?); *o += 4; Some(v) };
+    let n = rd_u32(&mut o)? as usize;
+    let mut out = Vec::with_capacity(n);
+    for _ in 0..n {
+        let nl = rd_u32(&mut o)? as usize;
+        let name = String::from_utf8(b.get(o..o + nl)?.to_vec()).ok()?;
+        o += nl;
+        let nt = rd_u32(&mut o)? as usize;
+        let mut tris = Vec::with_capacity(nt);
+        for _ in 0..nt {
+            let mut t = [[0f32; 3]; 3];
+            for p in t.iter_mut() {
+                for c in p.iter_mut() {
+                    *c = f32::from_le_bytes(b.get(o..o + 4)?.try_into().ok()?);
+                    o += 4;
+                }
+            }
+            tris.push(t);
+        }
+        out.push(EnvMesh { name, tris });
+    }
+    Some(out)
+}
+
+/// Load the environment meshes of the capture under `passcap` (the pwc-day layout).
+pub fn load_env_uncached(passcap: &Path) -> Result<Vec<EnvMesh>, String> {
     let frame = 127448u32;
     let mesh_json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(passcap.join(format!("logs/mesh-frame{frame}.json"))).map_err(|e| format!("mesh json: {e}"))?).map_err(|e| format!("mesh json: {e}"))?;
     // the peel camera of the environment draws (any of them shares it): GbxV_WorldPrCamera from draws.json

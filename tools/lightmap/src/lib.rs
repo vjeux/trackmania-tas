@@ -14,6 +14,7 @@ mod dome_oracle;
 pub mod pack;
 pub mod passdiff;
 pub mod envcap;
+pub mod pool;
 pub mod passdump;
 pub mod peel;
 pub mod png;

@@ -147,17 +147,86 @@ pub struct Frag {
 /// The peel's layer cap (the client's state machine stops after layer 20).
 pub const MAX_LAYERS: usize = 20;
 
+/// The WANTED pixels of a peel as a rank structure: a bitmap over the frame plus the prefix popcount
+/// per 64-pixel word, so a pixel's dense index among the wanted ones is O(1) — the sparse A-buffer and
+/// layer tables are sized by the wanted count (a million) instead of the frame (17 million).
+pub struct PixelIndex {
+    pub res: u32,
+    pub res_y: u32,
+    pub words: Vec<u64>,
+    pub rank: Vec<u32>,
+    /// The wanted pixels in index order (pixel id = y·res + x).
+    pub pixels: Vec<u32>,
+    /// Their bounding rectangle (x0, y0, x1, y1) inclusive; (0, 0, −1, −1) when empty.
+    pub bbox: (i32, i32, i32, i32),
+}
+
+impl PixelIndex {
+    pub fn new(res: u32, res_y: u32, words: Vec<u64>) -> PixelIndex {
+        let mut rank = Vec::with_capacity(words.len() + 1);
+        let mut acc = 0u32;
+        let mut pixels = Vec::new();
+        let (mut x0, mut y0, mut x1, mut y1) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
+        for (wi, w) in words.iter().enumerate() {
+            rank.push(acc);
+            acc += w.count_ones();
+            let mut m = *w;
+            while m != 0 {
+                let b = m.trailing_zeros();
+                m &= m - 1;
+                let id = wi as u32 * 64 + b;
+                pixels.push(id);
+                let (x, y) = ((id % res) as i32, (id / res) as i32);
+                x0 = x0.min(x); x1 = x1.max(x); y0 = y0.min(y); y1 = y1.max(y);
+            }
+        }
+        rank.push(acc);
+        let bbox = if x0 > x1 { (0, 0, -1, -1) } else { (x0, y0, x1, y1) };
+        PixelIndex { res, res_y, words, rank, pixels, bbox }
+    }
+    pub fn len(&self) -> usize {
+        self.pixels.len()
+    }
+    /// The dense index of pixel (x, y), or None when it is not wanted.
+    #[inline]
+    pub fn index(&self, x: u32, y: u32) -> Option<u32> {
+        let i = (y as usize) * self.res as usize + x as usize;
+        let w = self.words[i >> 6];
+        let b = (i & 63) as u32;
+        if (w >> b) & 1 == 0 {
+            return None;
+        }
+        Some(self.rank[i >> 6] + (w & ((1u64 << b) - 1)).count_ones())
+    }
+    #[inline]
+    pub fn index_of_id(&self, id: u32) -> u32 {
+        let i = id as usize;
+        let w = self.words[i >> 6];
+        let b = (i & 63) as u32;
+        self.rank[i >> 6] + (w & ((1u64 << b) - 1)).count_ones()
+    }
+}
+
 pub struct ABuffer {
     pub res: u32,
     /// Rows per band; the bands' CSR tables stay separate (no serial stitch of ~100 M fragments).
     pub band_h: u32,
     pub bands: Vec<(Vec<u32>, Vec<Frag>)>,
+    /// The sparse form: one CSR over the wanted pixels' dense indices (`bands[0]`), `sparse` the index.
+    pub sparse: Option<std::sync::Arc<PixelIndex>>,
 }
 
 impl ABuffer {
     /// The fragments of pixel (x, y), nearest first.
     #[inline]
     pub fn at(&self, x: u32, y: u32) -> &[Frag] {
+        if let Some(px) = &self.sparse {
+            let Some(k) = px.index(x, y) else { return &[] };
+            let b = &self.bands[0];
+            let (a, c) = (b.0[k as usize] as usize, b.0[k as usize + 1] as usize);
+            static LAYERS_NEAR2: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            return if *LAYERS_NEAR2.get_or_init(|| std::env::var_os("LMTOOL_LAYERS_NEAR").is_some()) { &b.1[c.saturating_sub(MAX_LAYERS).max(a)..c] } else { &b.1[a..c.min(a + MAX_LAYERS)] };
+        }
         let b = &self.bands[(y / self.band_h) as usize];
         let i = ((y - (y / self.band_h) * self.band_h) * self.res + x) as usize;
         // the game peels at most 20 layers per direction (RenderLightIndirectPeel, counter > 0x13 stops):
@@ -178,6 +247,11 @@ impl ABuffer {
     /// Every fragment of pixel (x, y), nearest the sky first, without the layer cap.
     #[inline]
     pub fn at_all(&self, x: u32, y: u32) -> &[Frag] {
+        if let Some(px) = &self.sparse {
+            let Some(k) = px.index(x, y) else { return &[] };
+            let b = &self.bands[0];
+            return &b.1[b.0[k as usize] as usize..b.0[k as usize + 1] as usize];
+        }
         let b = &self.bands[(y / self.band_h) as usize];
         let i = ((y - (y / self.band_h) * self.band_h) * self.res + x) as usize;
         &b.1[b.0[i] as usize..b.0[i + 1] as usize]
@@ -240,39 +314,203 @@ pub fn bit(mask: &[u64], i: usize) -> bool {
 /// `build_abuffer_range` keeping only the fragments of the `wanted` pixels (the layers of a pixel depend
 /// on that pixel's fragments alone, so the pixels no texel looks up are never derived — the speed of the
 /// harness; the dump of a direction wants every pixel and passes None).
-pub fn build_abuffer_wanted(tris: &[WTri], frame: &PeelFrame, threads: usize, zmin: f32, zmax: f32, masks: &[crate::geometry::AlphaMask], wanted: Option<&[u64]>) -> ABuffer {
+pub static RS_TRIS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static RS_VISITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// LMTOOL_RASTER_STATS=1 counts the rasterised triangles and pixel visits per peel (read once).
+fn raster_stats_on() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var_os("LMTOOL_RASTER_STATS").is_some())
+}
+
+/// The sparse A-buffer of the wanted pixels: the raster runs in parallel over horizontal BANDS of the
+/// wanted rectangle (every thread walks every triangle that reaches its rows — a huge triangle no longer
+/// pins one thread), fragments bucketed by the dense index, one CSR over the wanted pixels. A pixel's
+/// fragments are produced by one band thread in triangle order, as the dense build orders them.
+pub fn build_abuffer_sparse(tris: &[WTri], frame: &PeelFrame, threads: usize, zmin: f32, zmax: f32, masks: &[crate::geometry::AlphaMask], px: &std::sync::Arc<PixelIndex>) -> ABuffer {
     let res = frame.res;
     let res_y = frame.res_y;
-    // the wanted pixels' bounding rectangle: the raster visits nothing outside it
-    let clip: (i32, i32, i32, i32) = match wanted {
-        Some(m) => {
-            let (mut x0, mut y0, mut x1, mut y1) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
-            for (wi, word) in m.iter().enumerate() {
-                if *word == 0 { continue; }
-                let mut w = *word;
-                while w != 0 {
-                    let b = w.trailing_zeros() as usize;
-                    w &= w - 1;
-                    let i = wi * 64 + b;
-                    let (x, y) = ((i % res as usize) as i32, (i / res as usize) as i32);
-                    x0 = x0.min(x); x1 = x1.max(x); y0 = y0.min(y); y1 = y1.max(y);
+    let t_clip = std::time::Instant::now();
+    let clip = px.bbox;
+    let cull_back = {
+        static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *V.get_or_init(|| std::env::var("LMTOOL_PEEL_CULL_BACK").map(|v| v == "1").unwrap_or(false))
+    };
+    let cards_occlude = cards_occlude();
+    let d = frame.d;
+    // the triangles that reach the frame's depth range, projected once: (index, [x, y, z]×3, y-range)
+    struct Prep {
+        ti: u32,
+        p: [[f32; 2]; 3],
+        z: [f32; 3],
+        y0: i32,
+        y1: i32,
+    }
+    let prep: Vec<Prep> = tris
+        .iter()
+        .enumerate()
+        .filter_map(|(ti, t)| {
+            let p0 = t.p0;
+            let p1 = [p0[0] + t.e1[0], p0[1] + t.e1[1], p0[2] + t.e1[2]];
+            let p2 = [p0[0] + t.e2[0], p0[1] + t.e2[1], p0[2] + t.e2[2]];
+            let (x0, y0, z0) = frame.project(p0);
+            let (x1, y1, z1) = frame.project(p1);
+            let (x2, y2, z2) = frame.project(p2);
+            if z0.min(z1).min(z2) >= zmax || z0.max(z1).max(z2) < zmin {
+                return None;
+            }
+            if cull_back && t.inst != DECOR_INST {
+                let ng = cross(t.e1, t.e2);
+                if dot(ng, d) > 0.0 {
+                    return None;
                 }
             }
-            if x0 > x1 { (0, 0, -1, -1) } else { (x0, y0, x1, y1) }
+            if !cards_occlude && t.alpha != u16::MAX {
+                return None;
+            }
+            let (miny, maxy) = (y0.min(y1).min(y2), y0.max(y1).max(y2));
+            if !(miny.is_finite() && maxy.is_finite()) {
+                return None;
+            }
+            // pixel rows whose centres the triangle can reach (as raster::bounds computes them)
+            let ry0 = ((miny - 0.5).ceil() as i64).max(clip.1 as i64) as i32;
+            let ry1 = ((maxy - 0.5).floor() as i64).min(clip.3 as i64) as i32;
+            if ry0 > ry1 {
+                return None;
+            }
+            Some(Prep { ti: ti as u32, p: [[x0, y0], [x1, y1], [x2, y2]], z: [z0, z1, z2], y0: ry0, y1: ry1 })
+        })
+        .collect();
+    prof::add(&prof::B_CLIP, t_clip);
+    let t_raster = std::time::Instant::now();
+    let raster_stats = raster_stats_on();
+    let bitmap: &[u64] = px.words.as_slice();
+    let sparse_buckets = 32u32;
+    let sparse_bucket_size = ((px.len() as u32 + sparse_buckets - 1) / sparse_buckets).max(1);
+    // the bands: the wanted rectangle's rows split evenly over the threads
+    let rows = (clip.3 - clip.1 + 1).max(0) as usize;
+    let n_bands = threads.max(1).min(rows.max(1));
+    let band_rows = (rows + n_bands - 1) / n_bands.max(1);
+    let parts: Vec<Vec<Vec<(u32, Frag)>>> = crate::pool::pool().map(n_bands, |b| {
+                let prep = &prep;
+                {
+                    let by0 = clip.1 + (b * band_rows) as i32;
+                    let by1 = (clip.1 + ((b + 1) * band_rows) as i32 - 1).min(clip.3);
+                    let mut out: Vec<Vec<(u32, Frag)>> = (0..sparse_buckets).map(|_| Vec::new()).collect();
+                    if by0 > by1 {
+                        return out;
+                    }
+                    let band_clip = (clip.0, by0, clip.2, by1);
+                    for pr in prep.iter() {
+                        if pr.y1 < by0 || pr.y0 > by1 {
+                            continue;
+                        }
+                        let t = &tris[pr.ti as usize];
+                        let mask = if t.alpha != u16::MAX { masks.get(t.alpha as usize) } else { None };
+                        let [z0, z1, z2] = pr.z;
+                        if raster_stats { RS_TRIS.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
+                        raster::triangle_clipped_masked(res, res_y, pr.p, band_clip, Some(bitmap), |x, y, bc| {
+                            if raster_stats { RS_VISITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
+                            let z = z0 * bc[0] + z1 * bc[1] + z2 * bc[2];
+                            if z < zmax && z >= zmin {
+                                if let Some(m) = mask {
+                                    let u = t.uv0[0][0] * bc[0] + t.uv0[1][0] * bc[1] + t.uv0[2][0] * bc[2];
+                                    let v = t.uv0[0][1] * bc[0] + t.uv0[1][1] * bc[1] + t.uv0[2][1] * bc[2];
+                                    if !m.opaque(u, v) {
+                                        return;
+                                    }
+                                }
+                                let k = px.index_of_id(y * res + x);
+                                out[(k / sparse_bucket_size) as usize].push((k, Frag { z, tri: pr.ti }));
+                            }
+                        });
+                    }
+                    out
+                }
+    });
+    prof::add(&prof::B_RASTER, t_raster);
+    if raster_stats { eprintln!("raster stats (sparse, {n_bands} bands): {} triangles rasterised, {} pixel visits, clip {:?}, wanted {}, {:.3}s", RS_TRIS.swap(0, std::sync::atomic::Ordering::Relaxed), RS_VISITS.swap(0, std::sync::atomic::Ordering::Relaxed), clip, px.len(), t_raster.elapsed().as_secs_f32()); }
+    let t_sort = std::time::Instant::now();
+    let npx = px.len();
+    let bucket_results: Vec<(Vec<u32>, Vec<Frag>)> = crate::pool::pool().map(sparse_buckets as usize, |b| {
+                let b = b as u32;
+                let parts = &parts;
+                {
+                    let k0 = (b * sparse_bucket_size) as usize;
+                    let k1 = ((b + 1) * sparse_bucket_size).min(npx as u32) as usize;
+                    let nb = k1.saturating_sub(k0);
+                    let mut count = vec![0u32; nb + 1];
+                    for part in parts {
+                        for (k, _) in &part[b as usize] {
+                            count[*k as usize - k0 + 1] += 1;
+                        }
+                    }
+                    for i in 0..nb {
+                        count[i + 1] += count[i];
+                    }
+                    let total = count[nb] as usize;
+                    let mut frags = vec![Frag { z: 0.0, tri: 0 }; total];
+                    let mut fill = count.clone();
+                    for part in parts {
+                        for (k, f) in &part[b as usize] {
+                            let i = fill[*k as usize - k0] as usize;
+                            frags[i] = *f;
+                            fill[*k as usize - k0] += 1;
+                        }
+                    }
+                    for i in 0..nb {
+                        let (a, c) = (count[i] as usize, count[i + 1] as usize);
+                        if c - a > 1 {
+                            frags[a..c].sort_by(|p, q| p.z.partial_cmp(&q.z).unwrap_or(std::cmp::Ordering::Equal));
+                        }
+                    }
+                    (count, frags)
+                }
+    });
+    let mut start = Vec::with_capacity(npx + 1);
+    let mut frags = Vec::with_capacity(bucket_results.iter().map(|b| b.1.len()).sum());
+    start.push(0u32);
+    for (count, f) in bucket_results {
+        let base = *start.last().unwrap();
+        for c in count.iter().skip(1) {
+            start.push(base + c);
         }
+        frags.extend(f);
+    }
+    prof::add(&prof::B_SORT, t_sort);
+    ABuffer { res, band_h: res_y.max(1), bands: vec![(start, frags)], sparse: Some(px.clone()) }
+}
+
+pub fn build_abuffer_wanted(tris: &[WTri], frame: &PeelFrame, threads: usize, zmin: f32, zmax: f32, masks: &[crate::geometry::AlphaMask], wanted: Option<&std::sync::Arc<PixelIndex>>) -> ABuffer {
+    if let Some(px) = wanted {
+        return build_abuffer_sparse(tris, frame, threads, zmin, zmax, masks, px);
+    }
+    let res = frame.res;
+    let res_y = frame.res_y;
+    let t_clip = std::time::Instant::now();
+    // the wanted pixels' bounding rectangle: the raster visits nothing outside it
+    let clip: (i32, i32, i32, i32) = match wanted {
+        Some(px) => px.bbox,
         None => (0, 0, res as i32 - 1, res_y as i32 - 1),
     };
+    prof::add(&prof::B_CLIP, t_clip);
+    let t_raster = std::time::Instant::now();
+    let raster_stats = raster_stats_on();
+    let bitmap: Option<&[u64]> = wanted.map(|p| p.words.as_slice());
+    // the sparse form's buckets: ranges of the dense index (one CSR builder thread per bucket)
+    let sparse_buckets = 32u32;
+    let sparse_bucket_size = wanted.map(|p| ((p.len() as u32 + sparse_buckets - 1) / sparse_buckets).max(1)).unwrap_or(1);
     // LMTOOL_PEEL_CULL_BACK=1 (hypothesis under test): the peel renders only the faces turned toward
     // the receivers' side (geometric normal against D); back faces are culled, not drawn black — so a
     // thin wall's own far face does not occlude its texels and a hollow tower sees out
     let cull_back = std::env::var("LMTOOL_PEEL_CULL_BACK").map(|v| v == "1").unwrap_or(false);
     let cards_occlude = cards_occlude();
     let d = frame.d;
-    let bands = 128u32.min(res_y);
+    // (a wanted set keeps few fragments: fewer bands and chunks — every band and every chunk is a thread)
+    let bands = if wanted.is_some() { 16u32.min(res_y) } else { 128u32.min(res_y) };
     let band_h = (res_y + bands - 1) / bands;
     // small chunks so the few huge decoration triangles (each covering the whole frame) spread over
     // the threads; the per-chunk overhead is a band vector set
-    let chunk = (tris.len() / (threads.max(1) * 4)).max(256);
+    let chunk = if wanted.is_some() { (tris.len() / threads.max(1)).max(64) } else { (tris.len() / (threads.max(1) * 4)).max(256) };
     // parts[thread][band] = (pixel, frag)
     let parts: Vec<Vec<Vec<(u32, Frag)>>> = std::thread::scope(|sc| {
         let hs: Vec<_> = tris
@@ -281,7 +519,8 @@ pub fn build_abuffer_wanted(tris: &[WTri], frame: &PeelFrame, threads: usize, zm
             .map(|(ci, ch)| {
                 let frame = frame.clone();
                 sc.spawn(move || {
-                    let mut out: Vec<Vec<(u32, Frag)>> = (0..bands).map(|_| Vec::new()).collect();
+                    let t_start = t_raster.elapsed().as_secs_f32();
+                    let mut out: Vec<Vec<(u32, Frag)>> = (0..bands.max(if wanted.is_some() { sparse_buckets } else { 0 })).map(|_| Vec::new()).collect();
                     for (k, t) in ch.iter().enumerate() {
                         let ti = (ci * chunk + k) as u32;
                         let p0 = t.p0;
@@ -303,8 +542,10 @@ pub fn build_abuffer_wanted(tris: &[WTri], frame: &PeelFrame, threads: usize, zm
                             continue;
                         }
                         let mask = if t.alpha != u16::MAX { masks.get(t.alpha as usize) } else { None };
-                        raster::triangle_clipped(res, res_y, [[x0, y0], [x1, y1], [x2, y2]], clip, |x, y, b| {
-                            if let Some(m) = wanted {
+                        if raster_stats { RS_TRIS.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
+                        raster::triangle_clipped_masked(res, res_y, [[x0, y0], [x1, y1], [x2, y2]], clip, bitmap, |x, y, b| {
+                            if raster_stats { RS_VISITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
+                            if let Some(m) = bitmap {
                                 if !bit(m, (y * res + x) as usize) {
                                     return;
                                 }
@@ -319,16 +560,86 @@ pub fn build_abuffer_wanted(tris: &[WTri], frame: &PeelFrame, threads: usize, zm
                                         return;
                                     }
                                 }
-                                out[(y / band_h) as usize].push((y * res + x, Frag { z, tri: ti }));
+                                if let Some(px) = wanted {
+                                    // (the bit test above passed: the pixel is wanted)
+                                    let k = px.index_of_id(y * res + x);
+                                    out[(k / sparse_bucket_size) as usize].push((k, Frag { z, tri: ti }));
+                                } else {
+                                    out[(y / band_h) as usize].push((y * res + x, Frag { z, tri: ti }));
+                                }
                             }
                         });
                     }
+                    if raster_stats && ci < 2 { eprintln!("raster: worker {ci} started at {t_start:.3}s, done at {:.3}s ({} triangles)", t_raster.elapsed().as_secs_f32(), ch.len()); }
                     out
                 })
             })
             .collect();
-        hs.into_iter().map(|h| h.join().unwrap()).collect()
+        if raster_stats { eprintln!("raster: {} threads spawned at {:.3}s", hs.len(), t_raster.elapsed().as_secs_f32()); }
+        let r: Vec<Vec<Vec<(u32, Frag)>>> = hs.into_iter().map(|h| h.join().unwrap()).collect();
+        if raster_stats { eprintln!("raster: joined at {:.3}s", t_raster.elapsed().as_secs_f32()); }
+        r
     });
+    prof::add(&prof::B_RASTER, t_raster);
+    if raster_stats { eprintln!("raster stats: {} triangles rasterised, {} pixel visits, clip {:?}, wanted {}, {:.3}s", RS_TRIS.swap(0, std::sync::atomic::Ordering::Relaxed), RS_VISITS.swap(0, std::sync::atomic::Ordering::Relaxed), clip, wanted.map(|p| p.len()).unwrap_or(0), t_raster.elapsed().as_secs_f32()); }
+    let t_sort = std::time::Instant::now();
+    if let Some(px) = wanted {
+        // SPARSE: per bucket of the dense index (in parallel) a counting sort by index and the depth sort
+        // per pixel — the same fragments per pixel in the same order as the dense form; the buckets are
+        // then stitched into one CSR (a million cells)
+        let npx = px.len();
+        let bucket_results: Vec<(Vec<u32>, Vec<Frag>)> = std::thread::scope(|sc| {
+            let hs: Vec<_> = (0..sparse_buckets)
+                .map(|b| {
+                    let parts = &parts;
+                    sc.spawn(move || {
+                        let k0 = (b * sparse_bucket_size) as usize;
+                        let k1 = ((b + 1) * sparse_bucket_size).min(npx as u32) as usize;
+                        let nb = k1.saturating_sub(k0);
+                        let mut count = vec![0u32; nb + 1];
+                        for part in parts {
+                            for (k, _) in &part[b as usize] {
+                                count[*k as usize - k0 + 1] += 1;
+                            }
+                        }
+                        for i in 0..nb {
+                            count[i + 1] += count[i];
+                        }
+                        let total = count[nb] as usize;
+                        let mut frags = vec![Frag { z: 0.0, tri: 0 }; total];
+                        let mut fill = count.clone();
+                        for part in parts {
+                            for (k, f) in &part[b as usize] {
+                                let i = fill[*k as usize - k0] as usize;
+                                frags[i] = *f;
+                                fill[*k as usize - k0] += 1;
+                            }
+                        }
+                        for i in 0..nb {
+                            let (a, c) = (count[i] as usize, count[i + 1] as usize);
+                            if c - a > 1 {
+                                frags[a..c].sort_by(|p, q| p.z.partial_cmp(&q.z).unwrap_or(std::cmp::Ordering::Equal));
+                            }
+                        }
+                        (count, frags)
+                    })
+                })
+                .collect();
+            hs.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        let mut start = Vec::with_capacity(npx + 1);
+        let mut frags = Vec::with_capacity(bucket_results.iter().map(|b| b.1.len()).sum());
+        start.push(0u32);
+        for (count, f) in bucket_results {
+            let base = *start.last().unwrap();
+            for c in count.iter().skip(1) {
+                start.push(base + c);
+            }
+            frags.extend(f);
+        }
+        prof::add(&prof::B_SORT, t_sort);
+        return ABuffer { res, band_h: res_y.max(1), bands: vec![(start, frags)], sparse: Some(px.clone()) };
+    }
     // per band: counting sort by pixel + depth sort, in parallel
     let n = (res * res_y) as usize;
     let band_results: Vec<(Vec<u32>, Vec<Frag>)> = std::thread::scope(|sc| {
@@ -372,7 +683,7 @@ pub fn build_abuffer_wanted(tris: &[WTri], frame: &PeelFrame, threads: usize, zm
         hs.into_iter().map(|h| h.join().unwrap()).collect()
     });
     let _ = n;
-    ABuffer { res, band_h, bands: band_results }
+    ABuffer { res, band_h, bands: band_results, sparse: None }
 }
 
 /// A depth-only orthographic raster along the sun (the direct pass' shadow map).
@@ -510,9 +821,13 @@ fn fragment_radiance(scene: &Scene, bvh: &Bvh, prm: &BakeParams, shadow: Option<
     // RE reading of FUN_140234df0 (sun-visibility scale 1.0 in the first sweep)
     let sun_on = prm.sweep > 0 || prm.sweep0_sun;
     let lit = if sun_on && ndl > 0.0 && prm.sun_dir[1] > 0.0 { shadow.map(|s| s.lit(hit_p, sun_bias)).unwrap_or(1.0) } else { 0.0 };
-    SUN_STATS[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    if ndl > 0.0 { SUN_STATS[1].fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
-    if lit > 0.0 { SUN_STATS[2].fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
+    // (the counters are three atomics every thread hammers — one contended cache line per fragment;
+    // they are kept only under LMTOOL_SUN_STATS=1)
+    if sun_stats_on() {
+        SUN_STATS[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if ndl > 0.0 { SUN_STATS[1].fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
+        if lit > 0.0 { SUN_STATS[2].fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
+    }
     let mut out = [0f32; 3];
     for k in 0..3 {
         out[k] = alb[k] * (stored[k] + prm.sun[k] * ndl * lit);
@@ -546,6 +861,10 @@ fn fragment_radiance(scene: &Scene, bvh: &Bvh, prm: &BakeParams, shadow: Option<
 
 /// Diagnostics: fragment radiance calls, of which facing the sun, of which lit.
 pub static SUN_STATS: [std::sync::atomic::AtomicUsize; 3] = [std::sync::atomic::AtomicUsize::new(0), std::sync::atomic::AtomicUsize::new(0), std::sync::atomic::AtomicUsize::new(0)];
+fn sun_stats_on() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var_os("LMTOOL_SUN_STATS").is_some())
+}
 
 /// One lightmap sub-sample awaiting its dome gather.
 struct SubSample {
@@ -578,11 +897,17 @@ pub struct Layers {
     pub start: Vec<u32>,
     pub frags: Vec<LayerFrag>,
     pub max_layers: usize,
+    /// The sparse form: `start` indexed by the wanted pixels' dense index.
+    pub sparse: Option<std::sync::Arc<PixelIndex>>,
 }
 
 impl Layers {
     #[inline]
     pub fn at(&self, x: u32, y: u32) -> &[LayerFrag] {
+        if let Some(px) = &self.sparse {
+            let Some(k) = px.index(x, y) else { return &[] };
+            return &self.frags[self.start[k as usize] as usize..self.start[k as usize + 1] as usize];
+        }
         let i = (y * self.w + x) as usize;
         &self.frags[self.start[i] as usize..self.start[i + 1] as usize]
     }
@@ -640,85 +965,113 @@ fn tri_slope(wt: &WTri, frame: &PeelFrame) -> (f32, f32) {
 /// previous layer's STORED depth by at least the rasteriser bias (fragments within the bias of the
 /// previous layer are never rendered again — merged), at most `MAX_LAYERS` layers. The colour is the
 /// fragment's `ILightInput` radiance at the pixel centre, quantised as the colour target stores it.
-fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm: &BakeParams, shadow: Option<&ShadowMap>, sun_bias: f32, sky: [f32; 3], threads: usize, wanted: Option<&[u64]>) -> Layers {
+fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm: &BakeParams, shadow: Option<&ShadowMap>, sun_bias: f32, sky: [f32; 3], threads: usize, wanted: Option<&std::sync::Arc<PixelIndex>>) -> Layers {
     let (w, h) = (frame.res, frame.res_y);
     let n = (w * h) as usize;
-    let rows_per = ((h as usize) / threads.max(1)).max(1);
     let sky_q = prm.quant_peel.apply(sky, prm.rounding);
+    // one pixel's layers appended to `out`
+    let derive_pixel = |x: usize, y: usize, out: &mut Vec<LayerFrag>| {
+        let list = ab.at_all(x as u32, y as u32);
+        let before = out.len();
+        let mut d_prev = f32::NEG_INFINITY;
+        // THE ENVIRONMENT LAYER (the game's first render of every peel: the sea box and the
+        // terrain over the cleared depth 0, nearest wins, then the sky dome at depth 0 where
+        // nothing else was drawn): black where an environment surface sits, the dome elsewhere
+        let is_env = |tri: u32| -> bool { let wt = &bvh.tris[tri as usize]; wt.inst == DECOR_INST && scene.decor.get(wt.tri as usize).map(|d| d.env).unwrap_or(false) };
+        // a sea-box face is drawn only when it is a FAR face for this view (outward normal along D)
+        let env_drawn = |tri: u32| -> bool {
+            let wt = &bvh.tris[tri as usize];
+            match scene.decor.get(wt.tri as usize) {
+                Some(dt) if dt.env_far_only => { let n = cross(wt.e1, wt.e2); dot(n, frame.d) > 0.0 }
+                _ => true,
+            }
+        };
+        if prm.dome_layer {
+            let mut env_d = 0.0f32;
+            for f in list {
+                if is_env(f.tri) && env_drawn(f.tri) {
+                    let z01 = frame.z01(f.z);
+                    if z01 >= 0.0 && z01 <= 1.0 { env_d = env_d.max(z01); }
+                }
+            }
+            if env_d > 0.0 {
+                let d = if prm.depth_bits == 16 { (env_d * 65535.0).round() / 65535.0 } else { env_d };
+                out.push(LayerFrag { d, rgb: [0.0; 3] });
+                d_prev = d;
+            } else {
+                out.push(LayerFrag { d: 0.0, rgb: sky_q });
+                d_prev = 0.0;
+            }
+        }
+        for f in list {
+            // (the environment is not re-drawn in the geometry layers)
+            if prm.dome_layer && is_env(f.tri) {
+                continue;
+            }
+            // pancaking: a fragment beyond the far plane lands on it (z01 = 0)
+            let z01 = frame.z01(f.z).max(0.0);
+            if z01 < d_prev {
+                continue;
+            }
+            if out.len() - before >= MAX_LAYERS {
+                break;
+            }
+            let wt = &bvh.tris[f.tri as usize];
+            let (slope, zmax_prim) = tri_slope(wt, frame);
+            // an edge-on triangle's slope is huge (D3D applies it uncapped, DepthBiasClamp 0)
+            let mut d = z01 + d3d_depth_bias_fmt(zmax_prim, slope.min(1e6), prm.depth_bias, prm.depth_bits);
+            if prm.depth_bits == 16 {
+                // the D16_UNORM target stores 65535 steps
+                d = (d.clamp(0.0, 1.0) * 65535.0).round() / 65535.0;
+            }
+            let hit_p = frame.unproject(x as f32 + 0.5, y as f32 + 0.5, f.z);
+            let rgb = prm.quant_peel.apply(fragment_radiance(scene, bvh, prm, shadow, f.tri, frame.d, hit_p, sun_bias), prm.rounding);
+            out.push(LayerFrag { d, rgb });
+            d_prev = d;
+        }
+    };
+    if let Some(px) = wanted {
+        // SPARSE: the wanted pixels only, in parallel chunks of the dense index
+        let npx = px.len();
+        let chunk = (npx / threads.max(1)).max(2048);
+        let n_chunks = (npx + chunk - 1) / chunk;
+        let parts: Vec<(Vec<u32>, Vec<LayerFrag>)> = crate::pool::pool().map(n_chunks, |ci| {
+            let ids = &px.pixels[ci * chunk..((ci + 1) * chunk).min(npx)];
+            let mut counts = Vec::with_capacity(ids.len());
+            let mut out: Vec<LayerFrag> = Vec::new();
+            for &id in ids {
+                let before = out.len();
+                derive_pixel((id % w) as usize, (id / w) as usize, &mut out);
+                counts.push((out.len() - before) as u32);
+            }
+            (counts, out)
+        });
+        let mut start = Vec::with_capacity(npx + 1);
+        let mut frags = Vec::with_capacity(parts.iter().map(|p| p.1.len()).sum());
+        start.push(0u32);
+        for (counts, out) in parts {
+            for c in counts {
+                let last = *start.last().unwrap();
+                start.push(last + c);
+            }
+            frags.extend(out);
+        }
+        return Layers { w, h, start, frags, max_layers: MAX_LAYERS, sparse: Some(px.clone()) };
+    }
+    let rows_per = ((h as usize) / threads.max(1)).max(1);
     let parts: Vec<(Vec<u32>, Vec<LayerFrag>)> = std::thread::scope(|sc| {
         let hs: Vec<_> = (0..h as usize)
             .step_by(rows_per)
             .map(|y0| {
                 let y1 = (y0 + rows_per).min(h as usize);
+                let derive_pixel = &derive_pixel;
                 sc.spawn(move || {
                     let mut counts = Vec::with_capacity((y1 - y0) * w as usize);
                     let mut out: Vec<LayerFrag> = Vec::new();
                     for y in y0..y1 {
                         for x in 0..w as usize {
-                            if let Some(m) = wanted {
-                                if !bit(m, y * w as usize + x) {
-                                    counts.push(0);
-                                    continue;
-                                }
-                            }
-                            let list = ab.at_all(x as u32, y as u32);
                             let before = out.len();
-                            let mut d_prev = f32::NEG_INFINITY;
-                            // THE ENVIRONMENT LAYER (the game's first render of every peel: the sea box and the
-                            // terrain over the cleared depth 0, nearest wins, then the sky dome at depth 0 where
-                            // nothing else was drawn): black where an environment surface sits, the dome elsewhere
-                            let is_env = |tri: u32| -> bool { let wt = &bvh.tris[tri as usize]; wt.inst == DECOR_INST && scene.decor.get(wt.tri as usize).map(|d| d.env).unwrap_or(false) };
-                            // a sea-box face is drawn only when it is a FAR face for this view (outward normal along D)
-                            let env_drawn = |tri: u32| -> bool {
-                                let wt = &bvh.tris[tri as usize];
-                                match scene.decor.get(wt.tri as usize) {
-                                    Some(dt) if dt.env_far_only => { let n = cross(wt.e1, wt.e2); dot(n, frame.d) > 0.0 }
-                                    _ => true,
-                                }
-                            };
-                            if prm.dome_layer {
-                                let mut env_d = 0.0f32;
-                                for f in list {
-                                    if is_env(f.tri) && env_drawn(f.tri) {
-                                        let z01 = frame.z01(f.z);
-                                        if z01 >= 0.0 && z01 <= 1.0 { env_d = env_d.max(z01); }
-                                    }
-                                }
-                                if env_d > 0.0 {
-                                    let d = if prm.depth_bits == 16 { (env_d * 65535.0).round() / 65535.0 } else { env_d };
-                                    out.push(LayerFrag { d, rgb: [0.0; 3] });
-                                    d_prev = d;
-                                } else {
-                                    out.push(LayerFrag { d: 0.0, rgb: sky_q });
-                                    d_prev = 0.0;
-                                }
-                            }
-                            for f in list {
-                                // (the environment is not re-drawn in the geometry layers)
-                                if prm.dome_layer && is_env(f.tri) {
-                                    continue;
-                                }
-                                // pancaking: a fragment beyond the far plane lands on it (z01 = 0)
-                                let z01 = frame.z01(f.z).max(0.0);
-                                if z01 < d_prev {
-                                    continue;
-                                }
-                                if out.len() - before >= MAX_LAYERS {
-                                    break;
-                                }
-                                let wt = &bvh.tris[f.tri as usize];
-                                let (slope, zmax_prim) = tri_slope(wt, frame);
-                                // an edge-on triangle's slope is huge (D3D applies it uncapped, DepthBiasClamp 0)
-                                let mut d = z01 + d3d_depth_bias_fmt(zmax_prim, slope.min(1e6), prm.depth_bias, prm.depth_bits);
-                                if prm.depth_bits == 16 {
-                                    // the D16_UNORM target stores 65535 steps
-                                    d = (d.clamp(0.0, 1.0) * 65535.0).round() / 65535.0;
-                                }
-                                let hit_p = frame.unproject(x as f32 + 0.5, y as f32 + 0.5, f.z);
-                                let rgb = prm.quant_peel.apply(fragment_radiance(scene, bvh, prm, shadow, f.tri, frame.d, hit_p, sun_bias), prm.rounding);
-                                out.push(LayerFrag { d, rgb });
-                                d_prev = d;
-                            }
+                            derive_pixel(x, y, &mut out);
                             counts.push((out.len() - before) as u32);
                         }
                     }
@@ -738,7 +1091,7 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
         }
         frags.extend(out);
     }
-    Layers { w, h, start, frags, max_layers: MAX_LAYERS }
+    Layers { w, h, start, frags, max_layers: MAX_LAYERS, sparse: None }
 }
 
 /// Stage timers for `--profile` (nanoseconds, summed over the bake).
@@ -750,13 +1103,20 @@ pub mod prof {
     pub static GATHER: AtomicU64 = AtomicU64::new(0);
     pub static ACCUM: AtomicU64 = AtomicU64::new(0);
     pub static SNAP: AtomicU64 = AtomicU64::new(0);
+    pub static B_CLIP: AtomicU64 = AtomicU64::new(0);
+    pub static B_RASTER: AtomicU64 = AtomicU64::new(0);
+    pub static B_SORT: AtomicU64 = AtomicU64::new(0);
+    pub static B_INDEX: AtomicU64 = AtomicU64::new(0);
+    pub static DIR: AtomicU64 = AtomicU64::new(0);
+    pub static FRAMES: AtomicU64 = AtomicU64::new(0);
     pub fn add(c: &AtomicU64, t: std::time::Instant) {
         c.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
     pub fn report(label: &str, total: f32) {
         let g = |c: &AtomicU64| c.load(Ordering::Relaxed) as f64 / 1e9;
-        eprintln!("profile [{label}]: A-buffer build {:.2}s, layer derivation {:.2}s, per-direction dumps {:.2}s, gather {:.2}s, accumulate {:.2}s, accumulation snapshots {:.2}s; sweep total {total:.2}s", g(&BUILD), g(&LAYERS), g(&DUMP), g(&GATHER), g(&ACCUM), g(&SNAP));
-        for c in [&BUILD, &LAYERS, &DUMP, &GATHER, &ACCUM, &SNAP] { c.store(0, Ordering::Relaxed); }
+        let staged = g(&BUILD) + g(&LAYERS) + g(&DUMP) + g(&GATHER) + g(&ACCUM) + g(&SNAP) + g(&FRAMES);
+        eprintln!("profile [{label}]: A-buffer build {:.2}s (wanted index {:.2}s, clip {:.2}s, raster {:.2}s, CSR {:.2}s), layer derivation {:.2}s, per-direction dumps {:.2}s, gather {:.2}s, accumulate {:.2}s, accumulation snapshots {:.2}s, frames {:.2}s; directions total {:.2}s (unstaged {:.2}s); sweep total {total:.2}s", g(&BUILD), g(&B_INDEX), g(&B_CLIP), g(&B_RASTER), g(&B_SORT), g(&LAYERS), g(&DUMP), g(&GATHER), g(&ACCUM), g(&SNAP), g(&FRAMES), g(&DIR), g(&DIR) - staged);
+        for c in [&BUILD, &LAYERS, &DUMP, &GATHER, &ACCUM, &SNAP, &B_CLIP, &B_RASTER, &B_SORT, &B_INDEX, &DIR, &FRAMES] { c.store(0, Ordering::Relaxed); }
     }
 }
 
@@ -1061,6 +1421,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
     let game_dbg = &game_dbg;
     let dbg_printed = &dbg_printed;
     for (di, d) in dirs.iter().enumerate() {
+        let t_dir = std::time::Instant::now();
         let g = di % groups;
         let scale = 4.0 / group_count[g].max(1) as f32;
         // THE PEELS of this direction: the captured frustums (the game runs two — the whole-scene frustum,
@@ -1078,6 +1439,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                 vec![fr]
             }
         };
+        prof::add(&prof::FRAMES, t_dir);
         let tb = std::time::Instant::now();
         // the sky term's per-direction constant is w·4·d.y·SkyFactor (RE child 3, AddSkyVisibility /
         // SetILightDir 0x140234df0): the sky colour along d is weighted by the direction's elevation cosine
@@ -1124,25 +1486,34 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             // the pixels this direction's texels read (the game's lookup of every sub-sample of the
             // current set): only their fragments are kept and only their layers derived — unless the
             // direction is dumped, when every pixel is wanted
-            let wanted: Option<Vec<u64>> = if prm.game_peel && !want_dir_dump {
+            let t_idx = std::time::Instant::now();
+            let wanted: Option<std::sync::Arc<PixelIndex>> = if prm.game_peel && !want_dir_dump {
                 let n = (frame.res as usize * frame.res_y as usize + 63) / 64;
-                let mut m = vec![0u64; n];
-                for s in cur.iter() {
-                    let (x, y, _) = frame.project(s.p);
-                    let (px, py) = (lookup_pixel(x, frame.res, prm.peel_inset), lookup_pixel(y, frame.res_y, prm.peel_inset));
-                    let i = py as usize * frame.res as usize + px as usize;
-                    m[i >> 6] |= 1u64 << (i & 63);
-                }
-                Some(m)
+                // one shared bitmap, the bits OR-ed in atomically (neighbouring sub-samples share words,
+                // and neighbours sit in the same chunk — the contention is nil)
+                let nch = (threads * 2).max(1);
+                let per = (cur.len() + nch - 1) / nch;
+                let m: Vec<std::sync::atomic::AtomicU64> = (0..n).map(|_| std::sync::atomic::AtomicU64::new(0)).collect();
+                crate::pool::pool().run(nch, |ci| {
+                    for s in &cur[ci * per..((ci + 1) * per).min(cur.len())] {
+                        let (x, y, _) = frame.project(s.p);
+                        let (px, py) = (lookup_pixel(x, frame.res, prm.peel_inset), lookup_pixel(y, frame.res_y, prm.peel_inset));
+                        let i = py as usize * frame.res as usize + px as usize;
+                        m[i >> 6].fetch_or(1u64 << (i & 63), std::sync::atomic::Ordering::Relaxed);
+                    }
+                });
+                let m: Vec<u64> = m.into_iter().map(|a| a.into_inner()).collect();
+                Some(std::sync::Arc::new(PixelIndex::new(frame.res, frame.res_y, m)))
             } else { None };
-            let ab = if prm.game_peel { build_abuffer_wanted(&bvh.tris, frame, threads, if prm.depth_clip { frame.z_from_z01(0.0) } else { f32::NEG_INFINITY }, frame.z_from_z01(1.0), &prm.alpha_masks, wanted.as_deref()) } else { build_abuffer_upto(&bvh.tris, frame, threads, zmax, &prm.alpha_masks) };
+            prof::add(&prof::B_INDEX, t_idx);
+            let ab = if prm.game_peel { build_abuffer_wanted(&bvh.tris, frame, threads, if prm.depth_clip { frame.z_from_z01(0.0) } else { f32::NEG_INFINITY }, frame.z_from_z01(1.0), &prm.alpha_masks, wanted.as_ref()) } else { build_abuffer_upto(&bvh.tris, frame, threads, zmax, &prm.alpha_masks) };
             t_build_total += tb2.elapsed().as_secs_f32();
             prof::add(&prof::BUILD, tb2);
             frag_total += ab.len();
             // the game's layers of this peel (game-peel mode), and their dump
             // (the layers are also extracted for the dump alone, so the port's own gather can be dumped and compared)
             let tl = std::time::Instant::now();
-            let layers: Option<Layers> = if prm.game_peel || want_dir_dump { Some(extract_layers(&ab, frame, scene, bvh, prm, shadow.as_ref(), sun_bias, sky, threads, wanted.as_deref())) } else { None };
+            let layers: Option<Layers> = if prm.game_peel || want_dir_dump { Some(extract_layers(&ab, frame, scene, bvh, prm, shadow.as_ref(), sun_bias, sky, threads, wanted.as_ref())) } else { None };
             prof::add(&prof::LAYERS, tl);
             let td = std::time::Instant::now();
             if let (Some(ly), Some(dump), true) = (&layers, &prm.dump, want_dir_dump) {
@@ -1214,14 +1585,16 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             // else the port's A-buffer walk), written into `sel` (last peel wins where it has a layer)
             let sel_ptr = sel.as_mut_ptr() as usize;
             let occl_ptr = occl.as_mut_ptr() as usize;
-            std::thread::scope(|sc| {
-                for ch in range.chunks(chunk) {
+            let n_chunks = (range.len() + chunk - 1) / chunk;
+            crate::pool::pool().run(n_chunks, |ci| {
+                let ch = &range[ci * chunk..((ci + 1) * chunk).min(range.len())];
+                {
                     let ab = &ab;
                     let frame = &frame;
                     let subs = cur;
                     let shadow = shadow.as_ref();
                     let layers = layers.as_ref();
-                    sc.spawn(move || {
+                    {
                         for &i in ch {
                             let s = &subs[i as usize];
                             let ndd = dot(s.n, *d);
@@ -1298,7 +1671,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                                 *o = occluded;
                             }
                         }
-                    });
+                    }
                 }
             });
             prof::add(&prof::GATHER, tg);
@@ -1311,15 +1684,17 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         let mut ldir: Vec<[f32; 3]> = if want_dir_dump { vec![[0.0; 3]; cur.len()] } else { Vec::new() };
         let ldir_ptr = ldir.as_mut_ptr() as usize;
         let ldir_on = want_dir_dump;
-        std::thread::scope(|sc| {
-            for ch in range.chunks(chunk) {
+        let n_chunks = (range.len() + chunk - 1) / chunk;
+        crate::pool::pool().run(n_chunks, |ci| {
+            let ch = &range[ci * chunk..((ci + 1) * chunk).min(range.len())];
+            {
                 let subs = cur;
                 let sel = &sel;
                 let occl = &occl;
                 let acc_ptrs = &acc_ptrs;
                 let cover_ptrs = &cover_ptrs;
                 let pix_of = &pix_of;
-                sc.spawn(move || {
+                {
                     for &i in ch {
                         let s = &subs[i as usize];
                         let (pc, pi) = pix_of(s);
@@ -1360,7 +1735,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                         // the accumulation target's own storage (an f16 target rounds after every add)
                         *slot = prm.quant_accum.apply(*slot, prm.rounding);
                     }
-                });
+                }
             }
         });
         prof::add(&prof::ACCUM, ta);
@@ -1403,6 +1778,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         if di % 64 == 0 || di + 1 == n_dirs {
             eprintln!("peel: direction {}/{} ({} peel(s), {} fragments, build {:.2}s, gather {:.2}s; {:.1}s)", di + 1, n_dirs, peels.len(), ab_len, t_build, tb.elapsed().as_secs_f32() - t_build, t0.elapsed().as_secs_f32());
         }
+        prof::add(&prof::DIR, t_dir);
     }
     // 5. resolve: per colour texel the mean over its covered sub-samples
     let mut out: Vec<ChartBake> = scene
