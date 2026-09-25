@@ -332,6 +332,7 @@ pub fn lm_scene_from_map(scene: &crate::geometry::Scene, layout: &crate::layout:
             let inst = &scene.instances[ii];
             let Some(r) = rect_of.get(&(base + inst.item as u32)) else { continue };
             let st = crate::peelcolor::chart_st(*r, bounds, atlas);
+            if std::env::var_os("LM_ST_TRACE").is_some() { eprintln!("  item {} rect {:?} bounds bits [{:#x} {:#x} {:#x} {:#x}] st bits [{:#x} {:#x} {:#x} {:#x}]", inst.item, r, bounds[0].to_bits(), bounds[1].to_bits(), bounds[2].to_bits(), bounds[3].to_bits(), st[0].to_bits(), st[1].to_bits(), st[2].to_bits(), st[3].to_bits()); }
             sc.instances.push(lm_instance(&inst.pose, st));
             n += 1;
         }

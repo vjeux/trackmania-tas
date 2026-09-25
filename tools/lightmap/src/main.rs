@@ -5223,7 +5223,9 @@ fn run(a: Vec<String>) {
                     let b = lightmap::layout::TilePlg::BLUEBAY_SEA.bounds;
                     // every chart with its captured instance and its uv bounds: the tiles (the Sea bounds) and the items (their PreLightGen)
                     let mut tiles: Vec<(&lightmap::layout::LayoutChart, &lightmap::sunpass::LmInstance, [f32; 4])> = gl.charts.iter().filter(|c| c.obj < base).filter_map(|c| { let (cx, cz) = gl.cell_of[c.obj as usize]; sc.instances.iter().find(|i| i.t == [cx as f32 * 32.0, 0.0, cz as f32 * 32.0]).map(|i| (c, i, b)) }).collect();
-                    for c in gl.charts.iter().filter(|c| c.obj >= base) { if let Some(inst) = scene.instances.iter().find(|i| base + i.item as u32 == c.obj) { if let Some(ci) = sc.instances.iter().find(|i| i.t == inst.pose.pos) { tiles.push((c, ci, scene.models[inst.model].plg_bounds.unwrap_or([0.0, 0.0, 1.0, 1.0]))); } } }
+                    // --st-mesh-bounds: the items' bounds from the MESH's TexCoord1 range (the lightmap-uv stats) instead of the PLG u04
+                    let mesh_b = a.iter().any(|x| x == "--st-mesh-bounds");
+                    for c in gl.charts.iter().filter(|c| c.obj >= base) { if let Some(inst) = scene.instances.iter().find(|i| base + i.item as u32 == c.obj) { if let Some(ci) = sc.instances.iter().find(|i| i.t == inst.pose.pos) { let m = &scene.models[inst.model]; let bb = if mesh_b { [m.uv_min[0], m.uv_min[1], m.uv_max[0], m.uv_max[1]] } else { m.plg_bounds.unwrap_or([0.0, 0.0, 1.0, 1.0]) }; if mesh_b { println!("  item {} bounds: PLG {:?} mesh {:?}", inst.item, m.plg_bounds, [m.uv_min[0], m.uv_min[1], m.uv_max[0], m.uv_max[1]]); } tiles.push((c, ci, bb)); } } }
                     let variants: Vec<(&str, Box<dyn Fn(f32, f32, f32, f32) -> (f32, f32)>)> = vec![
                         ("(w-1/4)/2048/dv ; (x+1/8)/2048 - lo*S", Box::new(|w: f32, x: f32, lo: f32, hi: f32| { let s = (w - 0.25) / 2048.0 / (hi - lo); (s, (x + 0.125) / 2048.0 - lo * s) })),
                         ("(w-1/4)/(2048*dv)", Box::new(|w: f32, x: f32, lo: f32, hi: f32| { let s = (w - 0.25) / (2048.0 * (hi - lo)); (s, (x + 0.125) / 2048.0 - lo * s) })),
