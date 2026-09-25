@@ -871,9 +871,10 @@ pub fn round_cmd(args: &[String]) -> Result<(), String> {
     let mut work: Vec<(String, String, Vec<String>)> = Vec::new();
     for set in &sets {
         let mut by_part: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+        // map N lives in part (N-1)/25+1 as its two-digit slot ((N-1)%25+1): U10S_37 = p02/12
         for n in &nums {
             let part = format!("{:02}", (n - 1) / 25 + 1);
-            by_part.entry(part).or_default().push(format!("{n:02}"));
+            by_part.entry(part).or_default().push(format!("{:02}", (n - 1) % 25 + 1));
         }
         for (part, ms) in by_part {
             work.push((set.clone(), part, ms));

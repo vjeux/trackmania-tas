@@ -219,7 +219,7 @@ fn read_identical(results: &Path) -> BTreeMap<String, String> {
 
 /// The plugin mints both tokens under the game lock (a few seconds), the files come over
 /// the bridge into `token_dir` (`token-NadeoServices.txt`, `token-NadeoLiveServices.txt`).
-fn mint_tokens(wsx: &Wsx, token_dir: &Path) -> Result<(), String> {
+pub fn mint_tokens(wsx: &Wsx, token_dir: &Path) -> Result<(), String> {
     // The box may be held by another job for a long time, and one bridge call is capped
     // at 150 s: wait for the box in ≤120-second slices, then mint in one short call
     // (the two `tmdrive run` steps take a few seconds each; a lost race just loops).
@@ -320,4 +320,88 @@ fn live_thumbnail_one(st: &Staged, auth: &str) -> Result<(), String> {
     std::fs::rename(&tmp, &st.path).map_err(|e| e.to_string())?;
     std::fs::write(st.path.with_extension("thumb.ok"), format!("{} bytes", jpeg.len())).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// `tinyctl port-fix-publish --fixed-dir D --club C --campaign K --campaign-name N --prefix StaF
+/// --out-dir O [--jobs 6]` — the fixed Stadium ports (`mapgeom route-fix` output, the LIVE uid in
+/// their headers) go up under FRESH uids (the console caches a uid's first bytes: json9841's
+/// stale-cache finding of 2026-09-23, records reset agreed), and the campaign playlist is
+/// rewritten with the new uids in their slots. Tokens minted on the box, bytes from here.
+pub fn port_fix_publish(args: &[String]) -> Result<(), String> {
+    let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
+    let fixed_dir = PathBuf::from(f("--fixed-dir").ok_or("--fixed-dir D")?);
+    let club = f("--club").ok_or("--club C")?;
+    let campaign = f("--campaign").ok_or("--campaign K")?;
+    let cname = f("--campaign-name").ok_or("--campaign-name N")?;
+    let prefix = f("--prefix").ok_or("--prefix XXXX (4 chars)")?;
+    if prefix.len() != 4 {
+        return Err("--prefix is 4 characters".into());
+    }
+    let out_dir = PathBuf::from(f("--out-dir").ok_or("--out-dir O")?);
+    let jobs = f("--jobs").unwrap_or_else(|| "6".into());
+    let only: Option<Vec<String>> = f("--only").map(|v| v.split(',').map(|s| s.trim().to_string()).collect());
+    let token_dir = out_dir.join("tokens");
+    let staged_dir = out_dir.join("staged");
+    std::fs::create_dir_all(&token_dir).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&staged_dir).map_err(|e| e.to_string())?;
+    let wsx = Wsx::new(args);
+    mint_tokens(&wsx, &token_dir)?;
+    let (core, live) = crate::nadeo::fresh_tokens_in(token_dir.to_str().unwrap()).ok_or("no tokens after the mint")?;
+    let curl = |args: &[&str]| -> Result<String, String> {
+        let out = std::process::Command::new("curl").arg("-s").arg("--max-time").arg("120").args(args).output().map_err(|e| format!("curl: {e}"))?;
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    };
+    // the live playlist, in order
+    let camp = curl(&["-H", &format!("Authorization: {live}"), &format!("{}/api/token/club/{club}/campaign/{campaign}", crate::publish::LIVE)])?;
+    let playlist: Vec<String> = crate::publish::json_strs(&camp, "mapUid");
+    if playlist.is_empty() {
+        return Err(format!("campaign {campaign}: no playlist read ({})", camp.chars().take(200).collect::<String>()));
+    }
+    println!("campaign {campaign} `{cname}`: {} maps in the playlist", playlist.len());
+    // the fixed files: live uid → fresh uid, staged
+    let mut fixed: Vec<PathBuf> = std::fs::read_dir(&fixed_dir).map_err(|e| format!("{}: {e}", fixed_dir.display()))?.flatten().map(|e| e.path()).filter(|p| p.to_string_lossy().ends_with(".Map.Gbx")).collect();
+    fixed.sort();
+    let mut slot_of: BTreeMap<usize, (PathBuf, String)> = BTreeMap::new();
+    for p in &fixed {
+        let nn: String = p.file_name().unwrap().to_string_lossy().chars().take(2).collect();
+        if let Some(o) = &only {
+            if !o.contains(&nn) {
+                continue;
+            }
+        }
+        let hdr = tmmaps::header::read(p.to_str().unwrap()).map_err(|e| format!("{}: {e}", p.display()))?;
+        let Some(slot) = playlist.iter().position(|u| *u == hdr.uid) else {
+            println!("  {}: uid {} not in the playlist — skipped", p.display(), hdr.uid);
+            continue;
+        };
+        let new_uid = format!("{prefix}{}", &hdr.uid[4..]);
+        let mut m = tmmaps::map::MapFile::load(p);
+        m.set_map_uid(&new_uid);
+        let dst = staged_dir.join(p.file_name().unwrap());
+        m.write_to(&dst).map_err(|e| format!("{}: {e}", dst.display()))?;
+        let name = if hdr.name == "-" { p.file_name().unwrap().to_string_lossy().trim_end_matches(".Map.Gbx").to_string() } else { hdr.name.clone() };
+        println!("  slot {:>2}: {} {} -> {new_uid}", slot + 1, name, hdr.uid);
+        slot_of.insert(slot, (dst, name));
+    }
+    if slot_of.is_empty() {
+        return Err("nothing to publish".into());
+    }
+    // the manifest: every slot, fixed ones as uploads, the rest as skip rows (playlist only)
+    let manifest = out_dir.join("manifest.tsv");
+    let mut text = String::new();
+    for (i, uid) in playlist.iter().enumerate() {
+        match slot_of.get(&i) {
+            Some((p, name)) => text.push_str(&format!("{}\t{}\n", p.display(), name)),
+            None => text.push_str(&format!("-\tslot{}\t{uid}\tskip\n", i + 1)),
+        }
+    }
+    std::fs::write(&manifest, text).map_err(|e| e.to_string())?;
+    let results = out_dir.join("results.tsv");
+    let batch_args: Vec<String> = vec![
+        "publish-batch".into(), "--manifest".into(), manifest.to_string_lossy().into_owned(), "--results".into(), results.to_string_lossy().into_owned(),
+        "--outdir".into(), out_dir.join("readback").to_string_lossy().into_owned(), "--jobs".into(), jobs, "--files-only".into(), "--token-dir".into(), token_dir.to_string_lossy().into_owned(),
+        "--club".into(), club, "--campaign".into(), campaign, "--campaign-name".into(), cname,
+    ];
+    let _ = core;
+    batch::publish_batch_cmd(&batch_args)
 }

@@ -705,6 +705,11 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
     }
     let mut m = crate::static_item::build::Merged::default();
     m.keep_water = crate::static_item::build::keep_water_for(collection);
+    // TINY_WATER_VISUAL=drop: the water quad leaves the VISUAL too (the custom-block water
+    // test, 2026-09-24: with no quad at all, a floating car means the base block's volume)
+    if std::env::var("TINY_WATER_VISUAL").map(|v| v == "drop").unwrap_or(false) {
+        m.keep_water = false;
+    }
     // a water OVERLAY dresses the water quad as the deck: planar UVs at the deck's 4 m tile
     if std::env::var("TINY_OVERLAY_NAMES").ok().map(|v| v.split(',').any(|n| n == name)).unwrap_or(false) {
         m.water_planar_uv = Some(std::env::var("TINY_OVERLAY_UV_TILE").ok().and_then(|v| v.parse().ok()).unwrap_or(4.0));

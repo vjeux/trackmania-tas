@@ -2945,6 +2945,202 @@ fn main() {
                 std::fs::write(&o, out).unwrap_or_else(|e| die(format!("{o}: {e}")));
             }
         }
+        // route-fix SRC.Map.Gbx PORT.Map.Gbx --out OUT.Map.Gbx [--shift dx,dy,dz] [--every MS]
+        //   [--report R.tsv] [--no-prune] [--no-corridor]
+        //   The algorithmic terrain fix (json9841 2026-09-25 "iterate through each map and fix
+        //   them, algorithmic"). Two rules, both from the game's own behaviour:
+        //   1. PRUNE — a zone piece in the cells of an authored block is hidden by the game (the
+        //      block's auto-terrain replaces it): every baked terrain item whose cells (its
+        //      footprint at its row, and the rows the block spans) meet an authored block's
+        //      cells goes. The vista sources place a `Dirt` tile AND the road in one cell; the
+        //      port baked both, and a road dug 0.5 m into its tile got the tile through it.
+        //   2. CORRIDOR — any terrain item still standing INSIDE the author ghost's route (a
+        //      triangle 0.3–1.6 m above the car) goes; the route needs the corridor free.
+        //   Then the audit runs again and the result is printed; OUT is the map without those items.
+        "route-fix" => {
+            let mut store = open(&a);
+            let src_p = a.rest.get(1).cloned().unwrap_or_default();
+            let port_p = a.rest.get(2).cloned().unwrap_or_default();
+            let out_p = flag(&a.rest, "--out").unwrap_or_else(|| die("--out OUT.Map.Gbx".into()));
+            let every: i32 = flag(&a.rest, "--every").and_then(|s| s.parse().ok()).unwrap_or(200);
+            let do_prune = !a.rest.iter().any(|s| s == "--no-prune");
+            let do_corridor = !a.rest.iter().any(|s| s == "--no-corridor");
+            let port = tmmaps::map::MapFile::load(std::path::Path::new(&port_p));
+            let gport = tmmaps::map::ground_y(26);
+            let mut drop: Vec<bool> = vec![false; port.items.len()];
+            let mut why: Vec<String> = vec![String::new(); port.items.len()];
+            // ---- rule 1: same-cell prune
+            if do_prune {
+                let mut asm = mapgeom::assemble::Assembler::new(&mut store);
+                asm.with_embedded(&port).ok();
+                // the authored blocks' cells (x, row, z) — every row the block spans
+                let mut occupied: std::collections::HashSet<(i32, i32, i32)> = std::collections::HashSet::new();
+                for b in &port.blocks {
+                    if b.free_pos.is_some() {
+                        continue;
+                    }
+                    let (cx, cy, cz) = b.coords();
+                    let (sx, sz, h) = asm.block_model(&b.name).map(|lm| {
+                        // the model's height from its scene bounds
+                        let mut ymin = f32::MAX;
+                        let mut ymax = f32::MIN;
+                        for g in lm.scene.groups.values() {
+                            for v in &g.verts {
+                                ymin = ymin.min(v[1]);
+                                ymax = ymax.max(v[1]);
+                            }
+                        }
+                        (((lm.size.0 / 32.0).round() as i32).max(1), ((lm.size.1 / 32.0).round() as i32).max(1), if ymax > ymin { ((ymax - ymin) / 8.0).ceil() as i32 } else { 1 })
+                    }).unwrap_or((1, 1, 1));
+                    // footprint turned by dir
+                    let (fx, fz) = if b.dir % 2 == 1 { (sz, sx) } else { (sx, sz) };
+                    for dx in 0..fx {
+                        for dz in 0..fz {
+                            for dy in 0..h.max(1) {
+                                occupied.insert((cx + dx, cy + dy, cz + dz));
+                            }
+                        }
+                    }
+                }
+                for it in &port.items {
+                    if !it.model.starts_with("AC") {
+                        continue;
+                    }
+                    let Some(lm) = asm.item_model(&it.model) else { continue };
+                    let lm = lm.clone();
+                    let xf = mapgeom::place::anchored(it.pos, [it.yaw, it.pitch, it.roll], it.pivot, it.scale);
+                    // world bbox → cells
+                    let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+                    for g in lm.scene.groups.values() {
+                        for v in &g.verts {
+                            let w = mapgeom::geom::apply(&xf, *v);
+                            for k in 0..3 {
+                                lo[k] = lo[k].min(w[k]);
+                                hi[k] = hi[k].max(w[k]);
+                            }
+                        }
+                    }
+                    if lo[0] > hi[0] {
+                        continue;
+                    }
+                    let row = ((it.pos[1] - gport) / 8.0).round() as i32;
+                    let (x0, x1) = (((lo[0] + 0.5) / 32.0).floor() as i32, ((hi[0] - 0.5) / 32.0).floor() as i32);
+                    let (z0, z1) = (((lo[2] + 0.5) / 32.0).floor() as i32, ((hi[2] - 0.5) / 32.0).floor() as i32);
+                    let rows = (((hi[1] - lo[1]) / 8.0).ceil() as i32).max(1);
+                    let mut hit = None;
+                    'cells: for cx in x0..=x1 {
+                        for cz in z0..=z1 {
+                            for r in row..row + rows {
+                                if occupied.contains(&(cx, r, cz)) {
+                                    hit = Some((cx, r, cz));
+                                    break 'cells;
+                                }
+                            }
+                        }
+                    }
+                    if let Some(c) = hit {
+                        drop[it.index] = true;
+                        why[it.index] = format!("prune: block in cell {:?}", c);
+                    }
+                }
+                eprintln!("prune: {} terrain items in authored blocks' cells", drop.iter().filter(|d| **d).count());
+            }
+            // ---- rule 2: the route corridor
+            let src = tmmaps::map::MapFile::load(std::path::Path::new(&src_p));
+            let d = gbx::record::decode_ghost(&src_p).ok();
+            let mut shift: Vec<f32> = flag(&a.rest, "--shift").map(|v| v.split(',').filter_map(|x| x.trim().parse().ok()).collect()).unwrap_or_default();
+            if shift.len() != 3 {
+                let start = |m: &tmmaps::map::MapFile| m.blocks.iter().find(|b| b.name.contains("Start") && b.free_pos.is_none()).map(|b| (b.name.clone(), b.coords()));
+                if let (Some((sn, (sx, sy, sz))), Some((pn, (px, py, pz)))) = (start(&src), start(&port)) {
+                    if sn == pn {
+                        shift = vec![(px - sx) as f32, (py - sy) as f32, (pz - sz) as f32];
+                    }
+                }
+            }
+            let gsrc = tmmaps::map::ground_y(src.items.first().map(|it| it.collection_raw).unwrap_or(0x10));
+            let corridor = |store: &mut DataStore, port: &tmmaps::map::MapFile, drop: &[bool]| -> Vec<(usize, f32, f32, f32, f32)> {
+                // (item index, t, x, y, z) of every terrain item over the car
+                let Some(d) = d.as_ref() else { return Vec::new() };
+                if shift.len() != 3 {
+                    return Vec::new();
+                }
+                let world = [shift[0] * 32.0, shift[1] * 8.0 + (gport - gsrc), shift[2] * 32.0];
+                let mut asm = mapgeom::assemble::Assembler::new(store);
+                asm.with_embedded(port).ok();
+                let mut tris: Vec<([f32; 3], [f32; 3], [f32; 3], usize)> = Vec::new();
+                for it in &port.items {
+                    if !it.model.starts_with("AC") || drop[it.index] {
+                        continue;
+                    }
+                    let Some(lm) = asm.item_model(&it.model) else { continue };
+                    let lm = lm.clone();
+                    let xf = mapgeom::place::anchored(it.pos, [it.yaw, it.pitch, it.roll], it.pivot, it.scale);
+                    for (mat, g) in &lm.scene.groups {
+                        if mat == "NotCollidable" || mat == "Water" {
+                            continue;
+                        }
+                        for t in &g.tris {
+                            let mut v = [mapgeom::geom::apply(&xf, g.verts[t[0] as usize]), mapgeom::geom::apply(&xf, g.verts[t[1] as usize]), mapgeom::geom::apply(&xf, g.verts[t[2] as usize])];
+                            for q in v.iter_mut() {
+                                *q = [q[0] - world[0], q[1] - world[1], q[2] - world[2]];
+                            }
+                            tris.push((v[0], v[1], v[2], it.index));
+                        }
+                    }
+                }
+                let mut hits = Vec::new();
+                let mut next = i32::MIN;
+                for smp in &d.samples {
+                    if every > 0 && smp.time_ms < next {
+                        continue;
+                    }
+                    next = smp.time_ms + every;
+                    for (a3, b3, c3, idx) in &tris {
+                        if let Some(h) = mapgeom::probe::height_at(*a3, *b3, *c3, smp.x, smp.z) {
+                            if h > smp.y + 0.3 && h < smp.y + 1.6 {
+                                hits.push((*idx, smp.time_ms as f32 / 1000.0, smp.x, smp.y, smp.z));
+                            }
+                        }
+                    }
+                }
+                hits
+            };
+            let mut corridor_dropped = 0usize;
+            if do_corridor {
+                let hits = corridor(&mut store, &port, &drop);
+                for (idx, t, x, y, z) in &hits {
+                    if !drop[*idx] {
+                        drop[*idx] = true;
+                        why[*idx] = format!("corridor: over the car at t={t:.1}s ({x:.0},{y:.1},{z:.0})");
+                        corridor_dropped += 1;
+                    }
+                }
+                eprintln!("corridor: {} more terrain items over the route", corridor_dropped);
+            }
+            // ---- write OUT (items removed; a fresh load for the variable-length edit)
+            let keep: Vec<bool> = drop.iter().map(|d| !d).collect();
+            let n_drop = drop.iter().filter(|d| **d).count();
+            let mut m2 = tmmaps::map::MapFile::load(std::path::Path::new(&port_p));
+            let removed = m2.remove_items(&keep);
+            m2.write_to(std::path::Path::new(&out_p)).unwrap_or_else(|e| die(format!("{out_p}: {e}")));
+            // ---- the audit again
+            let port2 = tmmaps::map::MapFile::load(std::path::Path::new(&out_p));
+            let none = vec![false; port2.items.len()];
+            let left = corridor(&mut store, &port2, &none);
+            let left_items: std::collections::BTreeSet<usize> = left.iter().map(|h| h.0).collect();
+            println!("{}: {n_drop} terrain items removed ({removed} records) — {} still over the route after the fix", std::path::Path::new(&out_p).file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(), left_items.len());
+            if let Some(r) = flag(&a.rest, "--report") {
+                let mut text = String::from("item_index	model	x	y	z	why
+");
+                for it in &port.items {
+                    if drop[it.index] {
+                        text.push_str(&format!("{}	{}	{:.1}	{:.1}	{:.1}	{}
+", it.index, it.model, it.pos[0], it.pos[1], it.pos[2], why[it.index]));
+                    }
+                }
+                std::fs::write(&r, text).unwrap_or_else(|e| die(format!("{r}: {e}")));
+            }
+        }
         // route-audit-all --src-dir A --port-dir B --out-dir D [--every MS] [--jobs 4]: every
         // `NN-*.Map.Gbx` of B paired with A's `NN-*` (the vista source), one `route-audit`
         // child per pair (this binary, the same --pak set), `--jobs` at a time; D/route-NN.tsv
