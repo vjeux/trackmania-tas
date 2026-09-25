@@ -15,6 +15,7 @@
 //!    like every other driver.
 
 mod captest;
+mod reactortest;
 
 use std::fs;
 use std::path::PathBuf;
@@ -327,7 +328,7 @@ fn dur(v: Option<&String>, default: u64) -> Duration {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() {
-        eprintln!("usage: jumprig <launch|state|waitfor|cmd|jumptest|kill|captest|capstate|capcmd> [args]");
+        eprintln!("usage: jumprig <launch|state|waitfor|cmd|jumptest|kill|captest|capstate|capcmd|reactortest|reactorstate|reactorcmd> [args]");
         eprintln!("  waitfor <event> [timeout_s]  process exit lock-free alive hooked in-map");
         eprintln!("                               car ticking grounded airborne apex landed");
         eprintln!("Every game-driving subcommand takes the tmdrive lock first.");
@@ -458,6 +459,37 @@ fn main() {
             let verb = args.get(1).cloned().unwrap_or_default();
             let arg = args[2..].join(" ");
             captest::send_cap_command(lock.host(), &verb, &arg, Duration::from_secs(30)).map(|_| ())
+        }),
+
+        // REACTOR CONTACT (AR's tm_Reactor-Duration ask, 2026-09-25): prove
+        // that car+0x13B0 is refreshed on every physics tick the car touches
+        // a reactor surface and only then, on a purpose-built straight with
+        // pads and a ring, across a respawn and a map restart; and that the
+        // CSmPlayer leads to that car without the hook.
+        //   jumprig reactortest [--map PATH] [--install]
+        //   jumprig reactorstate            (read-only)
+        //   jumprig reactorcmd <verb> [arg] (car <hex> | scan | discover | flush | reset | log on|off | members <Class>)
+        "reactortest" => {
+            let map = arg_after(&args, "--map").unwrap_or_else(|| reactortest::REACTOR_MAP.to_string());
+            let install = args.iter().any(|a| a == "--install");
+            match tmdrive::loadable_map_path(&map) {
+                Ok(map) => with_lock(host.clone(), "reactor contact: verification run", |lock| {
+                    reactortest::reactor_test(lock, &map, install)
+                }),
+                Err(e) => Err(e),
+            }
+        }
+        "reactorstate" => match reactortest::read_probe_state() {
+            Some(s) => {
+                reactortest::print_probe_state(&s);
+                Ok(())
+            }
+            None => Err("no readable Reactor Probe state (is the plugin loaded?)".into()),
+        },
+        "reactorcmd" => with_lock(host.clone(), "reactor-probe command", |lock| {
+            let verb = args.get(1).cloned().unwrap_or_default();
+            let arg = args[2..].join(" ");
+            reactortest::send_probe_command(lock.host(), &verb, &arg, Duration::from_secs(30)).map(|_| ())
         }),
 
         other => Err(format!("unknown subcommand '{}'", other)),

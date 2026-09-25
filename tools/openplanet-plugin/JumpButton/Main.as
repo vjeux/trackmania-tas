@@ -477,6 +477,15 @@ string RunCommand(const string &in verb, const string &in arg) {
     if (verb == "requireground") { S_RequireGround = (arg == "1" || arg == "true"); return "requireground=" + S_RequireGround; }
     if (verb == "cooldown") { S_Cooldown = Text::ParseFloat(arg); return "cooldown=" + S_Cooldown; }
     if (verb == "setspeed") return SetSpeed(arg);
+    if (verb == "reloadplugin") {
+        // Recompile ANOTHER plugin in place (the harness iterating on a probe
+        // without a game restart: a plugin that failed to compile at start
+        // is never reloaded by a file change). Armed here, done next frame.
+        auto p = Meta::GetPluginFromID(arg.Trim());
+        if (p is null) return "reloadplugin: no plugin with id '" + arg + "'";
+        g_ReloadPluginId = arg.Trim();
+        return "reloadplugin: " + p.Name + " reloads on the next frame";
+    }
     if (verb == "restartmap") {
         // The game's own restart, asked through the playground API instead of
         // a synthesised key: a key needs the game window in the foreground
@@ -595,6 +604,17 @@ void OnKeyPress(bool down, VirtualKey key) {
 /// the harness's reads constantly.
 uint64 g_LastIoMs = 0;
 const uint64 IO_PERIOD_MS = 50; // 20 Hz — the rate the harness polls at
+string g_ReloadPluginId = "";
+
+void ReloadOtherPluginTick() {
+    if (g_ReloadPluginId.Length == 0) return;
+    string id = g_ReloadPluginId;
+    g_ReloadPluginId = "";
+    auto p = Meta::GetPluginFromID(id);
+    if (p is null) return;
+    trace("[Jump] reloading plugin " + p.Name + " on request");
+    Meta::ReloadPlugin(p);
+}
 
 void Update(float dt) {
     g_Heartbeat++;
@@ -604,6 +624,7 @@ void Update(float dt) {
     uint64 now = Time::Now;
     if (now - g_LastIoMs < IO_PERIOD_MS) return;
     g_LastIoMs = now;
+    ReloadOtherPluginTick();
     PollCommand();
     WriteState();
 }

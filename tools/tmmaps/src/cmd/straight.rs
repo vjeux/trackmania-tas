@@ -1,5 +1,6 @@
 //! `tmmaps straight SOURCE.Map.Gbx --out F [--name N] [--blocks 24] [--cps 12,18,24]
-//!     [--x-cell 24] [--z0 6] [--tree-step 12] [--no-hills] [--no-trees]`
+//!     [--x-cell 24] [--z0 6] [--tree-step 12] [--no-hills] [--no-trees]
+//!     [--specials CZ[-CZ2]:BLOCK[@DIR][^DY],…]`
 //!
 //! A purpose-built showcase map (vjeux, 2026-09-14): ONE straight RoadTech road along +z
 //! at ground level, start at one end, finish at the other, checkpoints at regular
@@ -166,13 +167,74 @@ pub fn straight(args: &[String]) {
         let grid = |name: &str, cx: i32, cy: i32, cz: i32, dir: u8| FreeBlockSpec { name: name.to_string(), author: None, flags: 0, pos: [0.0; 3], rot: [0.0; 3], grid: Some([cx, cy, cz]), dir };
         let n_goal = m.blocks.iter().filter(|b| b.waypoint_tag.as_deref() == Some("Goal")).count() as i32;
         let waypoint_cells: Vec<i32> = std::iter::once(z_start).chain(cps.iter().cloned()).chain((0..n_goal).map(|k| z_finish + k)).collect();
+        // --specials CZ[-CZ2]:BLOCK[@DIR][^DY][,…]: the road cell(s) at CZ (a range CZ-CZ2
+        // inclusive) carry BLOCK instead of the plain RoadTechStraight (a RoadTechSpecialBoost
+        // reactor pad, a PlatformTechBase run…). A `Gate*` block is ADDED to its cell on top of
+        // whatever the cell's ground block is (another special, else the plain road), the way
+        // the editor stacks a ring gate over a surface (the reactor-contact probe map,
+        // 2026-09-25). @DIR rotates it (0..3, default 0), ^DY lifts it DY cells. A ring gate
+        // over a RoadTech piece is a WALL at either dir 0 or dir 1 (the 13:44 and 13:56 runs
+        // stopped dead in the gate's cell): the road surface stands 2 m above the cell floor the
+        // gate is built for, so rings go on a platform run.
+        // ~YM (or ~~YM): a FREE block instead of a grid one, YM metres above the cell floor,
+        // its position at the cell's min corner (~) or centre (~~) -- the stock ring gates
+        // stand on the cell floor with their hoop's hole starting ~2.4 m up, above a car
+        // on the 2 m road/platform surface, so a hoop a car can drive through is sunk.
+        let mut specials: Vec<(i32, String, u8, i32)> = Vec::new();
+        let mut free_specials: Vec<(i32, String, u8, f32, bool)> = Vec::new();
+        for s in cli::flag(args, "--specials").unwrap_or("").split(',').filter(|s| !s.is_empty()) {
+            let (cells, rest) = s.split_once(':').expect("--specials CZ[-CZ2]:BLOCK[@DIR][^DY][~YM],…");
+            let (rest, free_y) = match rest.split_once('~') {
+                Some((a, b)) => { let centre = b.starts_with('~'); (a, Some((b.trim_start_matches('~').trim().parse::<f32>().expect("--specials: ~YM is metres"), centre))) }
+                None => (rest, None),
+            };
+            let (rest, dy) = match rest.split_once('^') {
+                Some((a, b)) => (a, b.trim().parse::<i32>().expect("--specials: ^DY is a cell count")),
+                None => (rest, 0),
+            };
+            let (name, dir) = match rest.split_once('@') {
+                Some((a, b)) => (a, b.trim().parse::<u8>().expect("--specials: @DIR is 0..3")),
+                None => (rest, 0u8),
+            };
+            let (a, b) = match cells.split_once('-') {
+                Some((a, b)) => (a.trim().parse::<i32>().expect("--specials: CZ"), b.trim().parse::<i32>().expect("--specials: CZ2")),
+                None => { let c = cells.trim().parse::<i32>().expect("--specials: CZ is a cell number"); (c, c) }
+            };
+            for cz in a..=b {
+                match free_y {
+                    Some((ym, centre)) => free_specials.push((cz, name.trim().to_string(), dir, ym, centre)),
+                    None => specials.push((cz, name.trim().to_string(), dir, dy)),
+                }
+            }
+        }
+        for (cz, name, _, _) in &specials {
+            assert!(*cz > z_start && *cz < z_finish && !waypoint_cells.contains(cz), "--specials cell {cz} ({name}) must be a plain road cell strictly between start {z_start} and finish {z_finish}");
+        }
         let mut n_road = 0;
+        let mut n_special = 0;
         for cz in z_start..=z_finish {
             if waypoint_cells.contains(&cz) {
                 continue;
             }
-            specs.push(grid("RoadTechStraight", x_cell, GROUND_CY, cz, 0));
+            let here: Vec<&(i32, String, u8, i32)> = specials.iter().filter(|(c, _, _, _)| *c == cz).collect();
+            if !here.iter().any(|(_, name, _, _)| !name.starts_with("Gate")) {
+                specs.push(grid("RoadTechStraight", x_cell, GROUND_CY, cz, 0));
+            }
+            for (_, name, dir, dy) in &here {
+                specs.push(grid(name, x_cell, GROUND_CY + dy, cz, *dir));
+                n_special += 1;
+            }
+            for (_, name, dir, ym, centre) in free_specials.iter().filter(|(c, _, _, _, _)| *c == cz) {
+                let half = if *centre { 16.0 } else { 0.0 };
+                let floor_y = 8.0 * (GROUND_CY as f32 - 8.0);
+                specs.push(FreeBlockSpec { name: name.to_string(), author: None, flags: 0, pos: [x_cell as f32 * 32.0 + half, floor_y + ym, cz as f32 * 32.0 + half], rot: [(*dir as f32) * std::f32::consts::FRAC_PI_2, 0.0, 0.0], grid: None, dir: *dir });
+                println!("  free {name} at ({:.1}, {:.1}, {:.1}) yaw {} quarter turn(s)", x_cell as f32 * 32.0 + half, floor_y + ym, cz as f32 * 32.0 + half, dir);
+                n_special += 1;
+            }
             n_road += 1;
+        }
+        if n_special > 0 {
+            println!("stage 4: {n_special} special cell(s): {}", specials.iter().map(|(c, n, d, dy)| format!("{c}:{n}@{d}^{dy}")).collect::<Vec<_>>().join(" "));
         }
         let mut n_hill = 0;
         if hills {
