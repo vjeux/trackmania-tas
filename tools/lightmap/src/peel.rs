@@ -2043,6 +2043,12 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
     // MRTs kept across the sweep — rows 7–9 as transcribed, so that what remains against the capture is the peel content
     let mut hb_lm: Option<crate::lmaccum::HbTargets> = prm.lm_scene.as_ref().map(|_| crate::lmaccum::HbTargets::cleared(2048, 2048));
     let mut lm_rows: Vec<String> = Vec::new();
+    // the per-direction buffers, allocated once (their fills run on the pool): the selected radiance and
+    // occlusion flag per sub-sample, and the identity index range of the jitter sets
+    let max_set = if jitter { jit_sets.iter().map(|s| s.len()).max().unwrap_or(0) } else { subs.len() };
+    let mut sel_buf: Vec<[f32; 3]> = vec![[0.0; 3]; max_set];
+    let mut occl_buf: Vec<bool> = vec![false; max_set];
+    let range_all_buf: Vec<u32> = if jitter { (0..max_set as u32).collect() } else { Vec::new() };
     for (di, d) in dirs.iter().enumerate() {
         let t_dir = std::time::Instant::now();
         let g = di % groups;
@@ -2076,8 +2082,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         // overwrite where they pass — `sel` holds the running value, `occl` whether a surface wrote it
         // the sub-sample set of this direction (the jittered raster) and its index range
         let cur: &Vec<SubSample> = if jitter { &jit_sets[di % 9] } else { &subs };
-        let range_all: Vec<u32> = if jitter { (0..cur.len() as u32).collect() } else { Vec::new() };
-        let range: &[u32] = if jitter { &range_all } else { range };
+        let range: &[u32] = if jitter { &range_all_buf[..cur.len()] } else { range };
         let chunk = (range.len() / threads.max(1)).max(1024);
         let sky_fill = prm.quant_ilightdir.apply(prm.quant_peel.apply(sky, prm.rounding), prm.rounding);
         // THE DOME PER PIXEL (the transcribed sky dome, `SkyGradient::dome_radiance`): the peel pixel's ray
@@ -2106,8 +2111,20 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                 _ => sky_fill,
             }
         };
-        let mut sel: Vec<[f32; 3]> = vec![sky_fill; cur.len()];
-        let mut occl: Vec<bool> = vec![false; cur.len()];
+        // (the reused buffers, filled in parallel)
+        let sel: &mut [[f32; 3]] = &mut sel_buf[..cur.len()];
+        let occl: &mut [bool] = &mut occl_buf[..cur.len()];
+        {
+            let n = cur.len();
+            let per = (n / (threads * 2).max(1)).max(4096);
+            let (sp, op) = (sel.as_mut_ptr() as usize, occl.as_mut_ptr() as usize);
+            crate::pool::pool().run((n + per - 1) / per, |ci| {
+                for i in ci * per..((ci + 1) * per).min(n) {
+                    // SAFETY: disjoint index ranges per task
+                    unsafe { *(sp as *mut [f32; 3]).add(i) = sky_fill; *(op as *mut bool).add(i) = false; }
+                }
+            });
+        }
         let mut t_build_total = 0.0f32;
         // the transcribed accumulate's TMapILightDir of this direction (cleared before the first block)
         let mut dir_lm: Option<crate::lmaccum::DirTarget> = prm.lm_scene.as_ref().map(|_| crate::lmaccum::DirTarget::cleared(2048, 2048));
