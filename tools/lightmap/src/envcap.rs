@@ -222,7 +222,7 @@ pub fn env_decor(meshes: &[EnvMesh]) -> Vec<DecorTri> {
                 let c = [(tri[0][0] + tri[1][0] + tri[2][0]) / 3.0 - centre[0], (tri[0][1] + tri[1][1] + tri[2][1]) / 3.0 - centre[1], (tri[0][2] + tri[1][2] + tri[2][2]) / 3.0 - centre[2]];
                 if n[0] * c[0] + n[1] * c[1] + n[2] * c[2] < 0.0 { tri.swap(1, 2); }
             }
-            out.push(DecorTri { p: tri, albedo: [0.0; 3], water: false, env: true, env_far_only: is_box });
+            out.push(DecorTri { p: tri, albedo: [0.0; 3], water: false, env: true, env_far_only: is_box, sun_caster: is_box || !m.name.to_ascii_lowercase().contains("warp") });
         }
     }
     out

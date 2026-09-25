@@ -897,8 +897,8 @@ fn run(a: Vec<String>) {
                     let mut quad = |cx: u32, cz: u32, y: f32, alb: [f32; 3], water: bool| {
                         let (x0, z0) = (cx as f32 * 32.0, cz as f32 * 32.0);
                         let q = [[x0, y, z0], [x0 + 32.0, y, z0], [x0 + 32.0, y, z0 + 32.0], [x0, y, z0 + 32.0]];
-                        scene.decor.push(lightmap::geometry::DecorTri { p: [q[0], q[2], q[1]], albedo: alb, water, env: false, env_far_only: false });
-                        scene.decor.push(lightmap::geometry::DecorTri { p: [q[0], q[3], q[2]], albedo: alb, water, env: false, env_far_only: false });
+                        scene.decor.push(lightmap::geometry::DecorTri { p: [q[0], q[2], q[1]], albedo: alb, water, env: false, env_far_only: false, sun_caster: true });
+                        scene.decor.push(lightmap::geometry::DecorTri { p: [q[0], q[3], q[2]], albedo: alb, water, env: false, env_far_only: false, sun_caster: true });
                     };
                     // THE CAPTURE (2026-09-24, passcap-info on the world peel's layer 0): the game's zone tile is ONE flat
                     // surface at y = 3.76 + bias ≈ 4.0 = the SEABED, 3 m under the collection's sea level — the water
@@ -922,8 +922,8 @@ fn run(a: Vec<String>) {
                 let ga: f32 = f("--ground-bounce").map(|s| s.parse().unwrap()).unwrap_or(0.37);
                 let (lo, hi) = (-4096.0f32, 8192.0f32);
                 let q = [[lo, gy, lo], [hi, gy, lo], [hi, gy, hi], [lo, gy, hi]];
-                scene.decor.push(lightmap::geometry::DecorTri { p: [q[0], q[1], q[2]], albedo: [ga; 3], water: false, env: false, env_far_only: false });
-                scene.decor.push(lightmap::geometry::DecorTri { p: [q[0], q[2], q[3]], albedo: [ga; 3], water: false, env: false, env_far_only: false });
+                scene.decor.push(lightmap::geometry::DecorTri { p: [q[0], q[1], q[2]], albedo: [ga; 3], water: false, env: false, env_far_only: false, sun_caster: true });
+                scene.decor.push(lightmap::geometry::DecorTri { p: [q[0], q[2], q[3]], albedo: [ga; 3], water: false, env: false, env_far_only: false, sun_caster: true });
                 eprintln!("decoration: none — a ground quad at y = {gy} (albedo {ga}) stands in");
             }
             eprintln!("scene: {} models, {} instances, {} triangles (+ {} decoration) ({:.1}s)", scene.models.len(), scene.instances.len(), scene.tri_count(), scene.decor.len(), t0.elapsed().as_secs_f32());

@@ -115,7 +115,7 @@ pub fn shadow_from_map(scene: &crate::geometry::Scene, lm: &LmScene, cam: &Ortho
         // the game's environment block = the decoration Scene3d without its Water mobil (pwc-day: WarpSand 1 120 + InvisibleShadowCaster
         // 262 = the captured 1 382 triangles; the 336 Water triangles are not cast — with them the sea surface shadows 11 733 sun texels)
         for (i, t) in scene.decor.iter().enumerate() {
-            if t.water { skipped_water += 1; continue; }
+            if t.water || !t.sun_caster { skipped_water += 1; continue; }
             if m.pos.len() + 3 > 65535 {
                 let d = CasterDraw { eid: n_draws as u64, mesh: std::mem::replace(&mut m, CasterMesh { pos: Vec::new(), uv0: Vec::new(), indices: Vec::new() }), instance_start: 0xffff_ffff, instance_count: 1, visual_to_world: Some([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [0.0; 3]]), tables: InstanceTables { dyna_u32: Vec::new(), static_meshs: Vec::new() }, alpha: None, vsout: None };
                 shadowmap::draw_caster(&d, &lcam, &st, &mut tgt, 4, &o);
@@ -132,7 +132,7 @@ pub fn shadow_from_map(scene: &crate::geometry::Scene, lm: &LmScene, cam: &Ortho
             n_draws += 1;
         }
     }
-    notes.push(format!("shadow: {n_draws} caster draws ({} item instances, {} decoration triangles, {skipped_water} water triangles not cast)", scene.instances.len(), scene.decor.len()));
+    notes.push(format!("shadow: {n_draws} caster draws ({} item instances, {} decoration triangles, {skipped_water} water / peel-only triangles not cast)", scene.instances.len(), scene.decor.len()));
     tgt
 }
 
