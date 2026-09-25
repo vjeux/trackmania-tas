@@ -78,6 +78,7 @@ fn main() {
         "clones" => cmd_clones(&args),
         "cpus" => cmd_cpus(&args),
         "ghost-compress" => cmd_ghost_compress(&args),
+        "ghost-at" => cmd_ghost_at(&args),
         "ghost-all" => cmd_ghost_all(&args),
         "mux" => cmd_mux(&args),
         "colours" => cmd_colours(&args),
@@ -858,6 +859,7 @@ fn ghost_identity(path: &str, skin: &str, name: &str, skin_dir: Option<&std::pat
     let mut body = c.body().to_vec();
     let fields = ghost::ident::scan(&c);
     let mut edits: Vec<(usize, usize, Vec<u8>)> = Vec::new();
+    let probe = std::env::var("MK64_IDENT_PROBE").unwrap_or_default();
     // The PackDesc checksum is the zip's SHA-256: the play-mode ghost loader
     // (Ghost_Download) REFUSED a ghost with a zeroed checksum ("Unable to load
     // ghost file", 2026-09-25 bisect: path+name edits alone load; the zeroed
@@ -876,8 +878,9 @@ fn ghost_identity(path: &str, skin: &str, name: &str, skin_dir: Option<&std::pat
             // the donor's account id: the game resolves a ghost's name tag from
             // it ("hobbi." over every CPU, 2026-09-25) — blanked so the
             // nickname field is what shows
-            ghost::ident::Role::AccountId | ghost::ident::Role::Login | ghost::ident::Role::Trigram | ghost::ident::Role::ClubTag => edits.push((f.at, f.len, Vec::new())),
-            ghost::ident::Role::Zone => edits.push((f.at, f.len, b"World".to_vec())),
+            ghost::ident::Role::AccountId if !probe.contains("keepids") => edits.push((f.at, f.len, Vec::new())),
+            ghost::ident::Role::Login | ghost::ident::Role::Trigram | ghost::ident::Role::ClubTag if !probe.contains("keepids") && !probe.contains("blankacct") => edits.push((f.at, f.len, Vec::new())),
+            ghost::ident::Role::Zone if !probe.contains("keepids") && !probe.contains("blankacct") => edits.push((f.at, f.len, b"World".to_vec())),
             _ => {}
         }
     }
@@ -975,4 +978,34 @@ fn cmd_ghost_compress(args: &[String]) {
     let c = ghost::Container::load(inp).unwrap_or_else(|e| die(format!("{inp}: {e}")));
     write_gbx_compressed(&c.gbx, c.body(), out).unwrap_or_else(|e| die(e));
     println!("{out}: {} bytes", std::fs::metadata(out).map(|m| m.len()).unwrap_or(0));
+}
+
+/// `mk64 ghost-at GHOST X,Z [X,Z …]`: for each point, the sample time(s) at
+/// which the ghost's car passes nearest to it — where a played ghost is on its
+/// own clock (the /vis probe gave the CPUs' positions; this says what time
+/// they were at).
+fn cmd_ghost_at(args: &[String]) {
+    let path = args.get(2).unwrap_or_else(|| die("ghost-at GHOST X,Z …"));
+    // the vehicle entity's samples: transform at byte 47 of each (ghost.rs writes it there)
+    let (ss, raw) = ghost::regen::raw_vehicle_samples(path).unwrap_or_else(|e| die(format!("{path}: {e}")));
+    let n = raw.len() / ss.max(1);
+    let pos: Vec<[f32; 3]> = (0..n).map(|k| { let (p, ..) = gbx::record::read_transform_pub(&raw[k * ss..(k + 1) * ss], 47); [p[0] as f32, p[1] as f32, p[2] as f32] }).collect();
+    println!("{path}: {n} samples (50 ms grid), first ({:.1}, {:.1}, {:.1}) last ({:.1}, {:.1}, {:.1})", pos[0][0], pos[0][1], pos[0][2], pos[n - 1][0], pos[n - 1][1], pos[n - 1][2]);
+    for q in &args[3..] {
+        let Some((xs, zs)) = q.split_once(',') else { continue };
+        let (x, z): (f32, f32) = (xs.parse().unwrap_or(0.0), zs.parse().unwrap_or(0.0));
+        let mut best: Vec<(f32, usize)> = pos.iter().enumerate().map(|(k, p)| (((p[0] - x).powi(2) + (p[2] - z).powi(2)).sqrt(), k)).collect();
+        best.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        // distinct passes: keep hits at least 5 s apart
+        let mut hits: Vec<(f32, usize)> = Vec::new();
+        for h in best {
+            if hits.iter().all(|k| (k.1 as i64 - h.1 as i64).abs() > 100) {
+                hits.push(h);
+            }
+            if hits.len() == 3 {
+                break;
+            }
+        }
+        println!("({x}, {z}): {}", hits.iter().map(|(d, k)| format!("{:.2}s (±{:.1} m)", *k as f32 * 0.05, d)).collect::<Vec<_>>().join(", "));
+    }
 }

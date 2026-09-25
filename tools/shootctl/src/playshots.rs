@@ -68,6 +68,8 @@ pub struct Opts {
     /// `--ghost-offset now|MS` (default `now`): the race time the ghosts'
     /// t=0 maps to.
     pub ghost_offset: String,
+    /// `--ghost-query "&layer=0&phys=1"`: extra /pgghost parameters.
+    pub ghost_query: String,
     /// `--mode SCRIPT`: the game mode PlayMap runs the map in (empty = the
     /// map's own declared mode). `TrackMania/TM_TimeAttack_Local.Script.txt`
     /// is the solo mode with a ghost manager.
@@ -109,7 +111,8 @@ pub fn parse_opts(args: &[String]) -> Result<Opts, String> {
         probes: args.iter().enumerate().filter(|(_, a)| *a == "--probe").filter_map(|(i, _)| args.get(i + 1).cloned()).collect(),
         ghost_at_ms: num("--ghost-at-ms", 0)?,
         restart_at_ms: num("--restart-at-ms", 0)?,
-        ghost_offset: val("--ghost-offset").unwrap_or_else(|| "now".into()),
+        ghost_offset: val("--ghost-offset").unwrap_or_else(|| "start".into()),
+        ghost_query: val("--ghost-query").unwrap_or_default(),
         mode: val("--mode").unwrap_or_default(),
         skin: val("--skin"),
         detach: args.iter().any(|a| a == "--detach"),
@@ -258,7 +261,7 @@ fn run_shots(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
         // /pgghost waits for the GhostMgr itself (up to 40 s after the playground)
         // offset=now: the ghost's clock starts this instant (added mid-race it
         // pulls away from the grid now instead of being minutes ahead)
-        let r = super::http_get(&format!("/pgghost?offset={}", opts.ghost_offset), 90).unwrap_or_default();
+        let r = super::http_get(&format!("/pgghost?offset={}{}", opts.ghost_offset, opts.ghost_query), 90).unwrap_or_default();
         println!("{} /pgghost: {}", el(), r.trim());
         if !r.contains("\"ok\":1") {
             return Err(format!("the ghost did not load: {}", r.trim()));

@@ -91,8 +91,18 @@ string PgGhostAdd(const string &in qs) {
         if (phys) {
             id = gm.Ghost_AddPhysicalized(dl, offset, speed, CGameGhostMgrScript::EGhostPhyMode::SoftCollisions, false);
         } else {
-            // IsGhostLayer = true: rendered in the ghost layer
-            id = gm.Ghost_Add(dl, true, offset);
+            // ?layer=0: a plain opponent ghost (the mode's own PB ghost is one);
+            // default the ghost layer
+            id = gm.Ghost_Add(dl, QArg(qs, "layer") != "0", offset);
+        }
+        // offset=start: every managed ghost's clock zero = the player's race
+        // start (the mode's own call for its PB ghost). With TimeOffset 0 a
+        // ghost's zero was the PLAYGROUND's (~3 s before the countdown ended;
+        // measured 2026-09-25 with /vis: ghost time = race time + 3 s).
+        if (so == "start") {
+            auto rules3 = cast<CSmArenaRulesMode>(app.PlaygroundScript);
+            auto sp3 = ScriptPlayer();
+            if (rules3 !is null && sp3 !is null) rules3.Ghosts_SetStartTime(sp3.StartTime);
         }
         return "{\"path\":\"" + path + "\",\"via\":\"" + how + " [" + tried + "]\",\"ok\":1,\"ghosts\":1,\"offset\":" + offset + ",\"phys\":" + (phys ? 1 : 0) + ",\"added\":[{\"instance\":" + id.Value + ",\"nickname\":\"" + string(dl.Nickname) + "\"}]}";
     }
@@ -146,5 +156,23 @@ string PgGhostCount() {
     auto rules = cast<CSmArenaRulesMode>(app.PlaygroundScript);
     if (rules is null || rules.GhostMgr is null) return "{\"error\":\"no mode GhostMgr\"}";
     auto sp = ScriptPlayer();
-    return "{\"ghosts\":" + rules.Ghosts.Length + ",\"race_ms\":" + (sp is null ? -1 : sp.CurrentRaceTime) + "}";
+    return "{\"ghosts\":" + rules.Ghosts.Length + ",\"race_ms\":" + (sp is null ? -1 : sp.CurrentRaceTime) + ",\"start_ms\":" + (sp is null ? -1 : sp.StartTime) + ",\"now\":" + rules.Now + "}";
+}
+
+// /vis  every vehicle visual in the scene (the player's car AND the ghosts'),
+// position + speed — the ground truth of whether an added ghost is being
+// played, and where (VehicleState::GetAllVis)
+string VisList() {
+    auto scene = GetApp().GameScene;
+    if (scene is null) return "{\"error\":\"no GameScene\"}";
+    auto all = VehicleState::GetAllVis(scene);
+    string s = "{\"n\":" + all.Length + ",\"cars\":[";
+    for (uint i = 0; i < all.Length; i++) {
+        auto v = all[i];
+        if (v is null || v.AsyncState is null) continue;
+        vec3 p = v.AsyncState.Position;
+        if (i > 0) s += ",";
+        s += "[" + Text::Format("%.1f", p.x) + "," + Text::Format("%.1f", p.y) + "," + Text::Format("%.1f", p.z) + "," + Text::Format("%.1f", v.AsyncState.WorldVel.Length() * 3.6) + "]";
+    }
+    return s + "]}";
 }

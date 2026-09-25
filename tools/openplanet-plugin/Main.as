@@ -65,6 +65,7 @@ HttpResponse@ RouteRequests(const string &in type, const string &in route, dicti
     if (r == "/greplayers") return HttpResponse(200, GrepLayers(PathArg()));
     if (r == "/pgghost") return HttpResponse(200, PgGhostAdd(qs));
     if (r == "/pgghosts") return HttpResponse(200, PgGhostCount());
+    if (r == "/vis") return HttpResponse(200, VisList());
     // /file?p=C:/…  the file's bytes (a ghost the game fetches back from us:
     // Ghost_Download wants an http URL, not a path — PgGhost.as, 2026-09-25)
     if (r == "/file") return ServeFile(QArg(qs, "p"));
