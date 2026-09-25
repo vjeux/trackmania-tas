@@ -1289,6 +1289,7 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
         let npx = px.len();
         let chunk = (npx / threads.max(1)).max(2048);
         let n_chunks = (npx + chunk - 1) / chunk;
+        let t_par = std::time::Instant::now();
         let parts: Vec<(Vec<u32>, Vec<LayerFrag>)> = crate::pool::pool().map(n_chunks, |ci| {
             let ids = &px.pixels[ci * chunk..((ci + 1) * chunk).min(npx)];
             let mut counts = Vec::with_capacity(ids.len());
@@ -1300,27 +1301,29 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
             }
             (counts, out)
         });
-        // THE LAYER COUNT on the sparse form: the written fraction per item layer is estimated on the CENSUS
-        // pixels (every 4th pixel in x and y, added to the wanted set when the stop rule is in force — the
-        // wanted pixels alone sit where the items are and would overstate the fractions); with a captured
-        // count nothing is estimated
+        prof::add(&prof::L_PAR, t_par);
+        // THE LAYER COUNT on the sparse form: with a known count (captured, fixed, or the exact pass) nothing
+        // is estimated; otherwise (--layers-estimate) the written fraction per item layer is estimated on the
+        // CENSUS pixels (every CENSUS_STEP-th pixel in x and y inside the texels' rectangle — the wanted pixels
+        // alone sit where the items are and would overstate the fractions; the census positions outside the
+        // rectangle hold no item layer and count as 0-layer pixels)
         let mut hist = vec![0usize; MAX_LAYERS + 1];
         let mut n_census = 0usize;
-        let mut ci_all = 0usize;
-        for (counts, _) in &parts {
-            for c in counts {
-                let id = px.pixels[ci_all];
-                ci_all += 1;
-                let (x, y) = (id % w, id / w);
-                if fixed_layers.is_none() && x % CENSUS_STEP == 0 && y % CENSUS_STEP == 0 {
-                    n_census += 1;
-                    let items = (*c as usize).saturating_sub(skip_n).min(MAX_LAYERS);
-                    hist[items] += 1;
+        if fixed_layers.is_none() {
+            let mut ci_all = 0usize;
+            for (counts, _) in &parts {
+                for c in counts {
+                    let id = px.pixels[ci_all];
+                    ci_all += 1;
+                    let (x, y) = (id % w, id / w);
+                    if x % CENSUS_STEP == 0 && y % CENSUS_STEP == 0 {
+                        n_census += 1;
+                        let items = (*c as usize).saturating_sub(skip_n).min(MAX_LAYERS);
+                        hist[items] += 1;
+                    }
                 }
             }
         }
-        // the census positions outside the wanted rectangle hold no item layer (see the wanted-index
-        // construction): they count as 0-layer pixels
         let n_census_total = if fixed_layers.is_none() { ((w as usize + CENSUS_STEP as usize - 1) / CENSUS_STEP as usize) * ((h as usize + CENSUS_STEP as usize - 1) / CENSUS_STEP as usize) } else { 0 };
         let n_census_total = n_census_total.max(n_census);
         hist[0] += n_census_total - n_census;
@@ -1340,22 +1343,48 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
         if kept < candidates {
             LAYER_STATS.1.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
-        if peel_layers_debug() {
-            eprintln!("peel layers (sparse, {n_census} census pixels): {} candidate item layers, fractions {:?} → {} rendered ({})", candidates, fractions.iter().take(candidates).map(|f| format!("{f:.6}")).collect::<Vec<_>>(), kept, if fixed_layers.is_some() { "the captured count" } else { "the stop rule" });
+        if peel_layers_debug() && fixed_layers.is_none() {
+            eprintln!("peel layers (sparse census, {n_census} census pixels): {} candidate item layers, fractions {:?} → {} rendered (the stop rule)", candidates, fractions.iter().take(candidates).map(|f| format!("{f:.6}")).collect::<Vec<_>>(), kept);
         }
-        let mut start = Vec::with_capacity(npx + 1);
-        let mut frags = Vec::with_capacity(parts.iter().map(|p| p.1.len()).sum());
-        start.push(0u32);
-        for (counts, out) in parts {
-            let mut o = 0usize;
-            for c in counts {
-                let c = c as usize;
-                let keep = c.min(skip_n + kept);
-                frags.extend_from_slice(&out[o..o + keep]);
-                o += c;
-                let last = *start.last().unwrap();
-                start.push(last + keep as u32);
-            }
+        // THE CSR over the wanted pixels, assembled in parallel: per part the kept count of every pixel
+        // (cut to skip_n + kept) and its total, a prefix over the parts, then every part copies its kept
+        // fragments into its slice
+        let cap = skip_n + kept;
+        let part_totals: Vec<usize> = crate::pool::pool().map(parts.len(), |pi| parts[pi].0.iter().map(|c| (*c as usize).min(cap)).sum());
+        let mut part_base = Vec::with_capacity(parts.len() + 1);
+        part_base.push(0usize);
+        for t in &part_totals { let last = *part_base.last().unwrap(); part_base.push(last + t); }
+        let mut part_pix = Vec::with_capacity(parts.len() + 1);
+        part_pix.push(0usize);
+        for (counts, _) in &parts { let last = *part_pix.last().unwrap(); part_pix.push(last + counts.len()); }
+        let total = *part_base.last().unwrap();
+        let mut start: Vec<u32> = Vec::with_capacity(npx + 1);
+        let mut frags: Vec<LayerFrag> = Vec::with_capacity(total);
+        // SAFETY: every slot of both vectors is written exactly once below, by the part that owns it
+        unsafe { start.set_len(npx + 1); frags.set_len(total); }
+        start[npx] = total as u32;
+        let (sp, fp) = (start.as_mut_ptr() as usize, frags.as_mut_ptr() as usize);
+        {
+            let parts = &parts;
+            let part_base = &part_base;
+            let part_pix = &part_pix;
+            crate::pool::pool().run(parts.len(), |pi| {
+                let (counts, out) = &parts[pi];
+                let mut o = 0usize;
+                let mut dst = part_base[pi];
+                let mut pix = part_pix[pi];
+                for c in counts {
+                    let c = *c as usize;
+                    let keep = c.min(cap);
+                    unsafe {
+                        *(sp as *mut u32).add(pix) = dst as u32;
+                        std::ptr::copy_nonoverlapping(out.as_ptr().add(o), (fp as *mut LayerFrag).add(dst), keep);
+                    }
+                    o += c;
+                    dst += keep;
+                    pix += 1;
+                }
+            });
         }
         return Layers { w, h, start, frags, max_layers: MAX_LAYERS, sparse: Some(px.clone()), item_layers: kept, fractions };
     }
@@ -1706,14 +1735,15 @@ pub mod prof {
     pub static DIR: AtomicU64 = AtomicU64::new(0);
     pub static FRAMES: AtomicU64 = AtomicU64::new(0);
     pub static EXACT: AtomicU64 = AtomicU64::new(0);
+    pub static L_PAR: AtomicU64 = AtomicU64::new(0);
     pub fn add(c: &AtomicU64, t: std::time::Instant) {
         c.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
     pub fn report(label: &str, total: f32) {
         let g = |c: &AtomicU64| c.load(Ordering::Relaxed) as f64 / 1e9;
         let staged = g(&BUILD) + g(&LAYERS) + g(&DUMP) + g(&GATHER) + g(&ACCUM) + g(&SNAP) + g(&FRAMES) + g(&EXACT);
-        eprintln!("profile [{label}]: A-buffer build {:.2}s (wanted index {:.2}s, clip {:.2}s, raster {:.2}s, CSR {:.2}s), exact layer count {:.2}s, layer derivation {:.2}s, per-direction dumps {:.2}s, gather {:.2}s, accumulate {:.2}s, accumulation snapshots {:.2}s, frames {:.2}s; directions total {:.2}s (unstaged {:.2}s); sweep total {total:.2}s", g(&BUILD), g(&B_INDEX), g(&B_CLIP), g(&B_RASTER), g(&B_SORT), g(&EXACT), g(&LAYERS), g(&DUMP), g(&GATHER), g(&ACCUM), g(&SNAP), g(&FRAMES), g(&DIR), g(&DIR) - staged);
-        for c in [&BUILD, &LAYERS, &DUMP, &GATHER, &ACCUM, &SNAP, &B_CLIP, &B_RASTER, &B_SORT, &B_INDEX, &DIR, &FRAMES, &EXACT] { c.store(0, Ordering::Relaxed); }
+        eprintln!("profile [{label}]: A-buffer build {:.2}s (wanted index {:.2}s, clip {:.2}s, raster {:.2}s, CSR {:.2}s), exact layer count {:.2}s, layer derivation {:.2}s (parallel part {:.2}s), per-direction dumps {:.2}s, gather {:.2}s, accumulate {:.2}s, accumulation snapshots {:.2}s, frames {:.2}s; directions total {:.2}s (unstaged {:.2}s); sweep total {total:.2}s", g(&BUILD), g(&B_INDEX), g(&B_CLIP), g(&B_RASTER), g(&B_SORT), g(&EXACT), g(&LAYERS), g(&L_PAR), g(&DUMP), g(&GATHER), g(&ACCUM), g(&SNAP), g(&FRAMES), g(&DIR), g(&DIR) - staged);
+        for c in [&BUILD, &LAYERS, &DUMP, &GATHER, &ACCUM, &SNAP, &B_CLIP, &B_RASTER, &B_SORT, &B_INDEX, &DIR, &FRAMES, &EXACT, &L_PAR] { c.store(0, Ordering::Relaxed); }
     }
 }
 
