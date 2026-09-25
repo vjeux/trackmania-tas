@@ -14,6 +14,7 @@
 pub type Bary = [f32; 3];
 
 /// A rasterised triangle's pixel bounds, clipped to the target.
+#[inline(always)]
 fn bounds(p: &[[f32; 2]; 3], w: u32, h: u32) -> Option<(i32, i32, i32, i32)> {
     let minx = p.iter().map(|q| q[0]).fold(f32::MAX, f32::min);
     let maxx = p.iter().map(|q| q[0]).fold(f32::MIN, f32::max);
@@ -35,6 +36,7 @@ fn bounds(p: &[[f32; 2]; 3], w: u32, h: u32) -> Option<(i32, i32, i32, i32)> {
 
 /// Is the directed edge a→b a "top" or "left" edge of a triangle wound so that the inside is on the
 /// positive side of `edge()` (D3D: y down)? Top: horizontal with the inside below; left: going up.
+#[inline(always)]
 fn top_left(a: [f32; 2], b: [f32; 2]) -> bool {
     let dy = b[1] - a[1];
     let dx = b[0] - a[0];
@@ -46,7 +48,7 @@ fn top_left(a: [f32; 2], b: [f32; 2]) -> bool {
 
 /// The edge function: positive when p is to the left of a→b (in a y-up frame) — the sign is what
 /// matters; `triangle()` orients the triangle so inside is positive.
-#[inline]
+#[inline(always)]
 fn edge(a: [f32; 2], b: [f32; 2], p: [f32; 2]) -> f32 {
     (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0])
 }
@@ -112,12 +114,17 @@ pub fn triangle_clipped_masked<F: FnMut(u32, u32, Bary)>(w: u32, h: u32, p: [[f3
     // still decides every pixel of the span; the span only skips pixels more than a pixel outside an edge
     // (a large ground quad's bounding box is half outside the triangle: 2.9 G pixel tests per direction on
     // the giant's tiles before this, 0.6 G after). `None` slope = a horizontal edge (no x constraint).
-    let edges = [(a, b), (b, c), (c, a)];
-    let slopes: [Option<(f64, f64, f64, bool)>; 3] = [0, 1, 2].map(|i| {
-        let (p, q) = edges[i];
+    // (straight-line: the array `map` with a closure was an out-of-line call per triangle with every live
+    // value spilled around it — 6 % of the raster)
+    #[inline(always)]
+    fn slope_of(p: [f32; 2], q: [f32; 2]) -> Option<(f64, f64, f64, bool)> {
         let dy = q[1] as f64 - p[1] as f64;
         if dy == 0.0 { None } else { Some((p[0] as f64, p[1] as f64, (q[0] as f64 - p[0] as f64) / dy, dy > 0.0)) }
-    });
+    }
+    // a narrow bounding box (most leaf triangles: a few pixels wide) is tested pixel by pixel — the three
+    // crossings per row cost more than the exact tests they would skip
+    let narrow = x1 - x0 < 4;
+    let slopes: [Option<(f64, f64, f64, bool)>; 3] = if narrow { [None, None, None] } else { [slope_of(a, b), slope_of(b, c), slope_of(c, a)] };
     for y in y0..=y1 {
         let py = y as f32 + 0.5;
         let (mut lo, mut hi) = (x0, x1);
