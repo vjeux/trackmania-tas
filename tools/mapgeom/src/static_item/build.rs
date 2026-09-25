@@ -3200,6 +3200,65 @@ pub fn shell_offset(v: &mut super::visual::CPlugVisualIndexedTriangles, d: f32) 
     Ok(())
 }
 
+/// Planar UVs from the XZ position, `scale` metres per texture tile — for a face whose
+/// own UVs are meaningless under a new dress (a water quad's are all zero: the water
+/// shader never used them; dressed as wood it drew one flat colour, 2026-09-24).
+pub fn planar_uv(v: &mut super::visual::CPlugVisualIndexedTriangles, scale: f32) -> Result<(), String> {
+    let Some(main) = v.main.as_mut() else { return Ok(()) };
+    let Some(Node::VertexStream(s)) = main.vertex_streams.first_mut().and_then(|r| r.inline.as_deref_mut()) else { return Ok(()) };
+    let mut positions: Vec<[f32; 3]> = Vec::new();
+    for (dcl, e) in s.decls.iter().zip(s.elems.iter()) {
+        if dcl.name() == N_POSITION {
+            if let Elem::Float3(x) = e {
+                positions = x.clone();
+            }
+        }
+    }
+    if positions.is_empty() || scale <= 0.0 {
+        if std::env::var("MAPGEOM_DEBUG_WATER").map(|x| x == "1").unwrap_or(false) {
+            eprintln!("planar_uv: no positions ({} decls: {:?})", s.decls.len(), s.decls.iter().map(|d| (d.name(), d.stored_type(s.compress_local3d.unwrap_or(false)))).collect::<Vec<_>>());
+        }
+        return Ok(());
+    }
+    let mut changed = 0usize;
+    let compress = s.compress_local3d.unwrap_or(false);
+    let uvs: Vec<[f32; 2]> = positions.iter().map(|p| [p[2] / scale, p[0] / scale]).collect();
+    if !s.decls.iter().any(|d| d.name() == N_TEXCOORD0) {
+        // the water shader wants no UVs, so the quad carries none: a TexCoord0 element is
+        // ADDED and the whole layout re-laid (offsets, stride) — harmonize only rebuilds
+        // streams that miss a name, so the layout has to be right here
+        use super::vstream::{Decl, SPACE_GLOBAL2D, T_FLOAT2};
+        let mut specs: Vec<(u32, u32, u32, u32)> = s.decls.iter().map(|d| (d.name(), d.ty(), d.space(), super::vstream::type_size(d.stored_type(compress)).unwrap_or(4) as u32)).collect();
+        specs.push((N_TEXCOORD0, T_FLOAT2, SPACE_GLOBAL2D, 8));
+        let stride: u32 = specs.iter().map(|x| x.3).sum();
+        let mut off = 0u32;
+        let mut decls = Vec::new();
+        for (name, ty, space, size) in specs {
+            decls.push(Decl::with_stride(name, ty, space, off, stride / 4));
+            off += size;
+        }
+        s.decls = decls;
+        changed = uvs.len();
+        s.elems.push(Elem::Float2(uvs));
+    } else {
+        for (dcl, e) in s.decls.iter().zip(s.elems.iter_mut()) {
+            if dcl.name() != N_TEXCOORD0 {
+                continue;
+            }
+            if let Elem::Float2(uv) = e {
+                for (t, p) in uv.iter_mut().zip(positions.iter()) {
+                    *t = [p[2] / scale, p[0] / scale];
+                    changed += 1;
+                }
+            }
+        }
+    }
+    if std::env::var("MAPGEOM_DEBUG_WATER").map(|x| x == "1").unwrap_or(false) {
+        eprintln!("planar_uv: {changed} uvs set over {} positions", positions.len());
+    }
+    Ok(())
+}
+
 pub fn double_sided(v: &mut super::visual::CPlugVisualIndexedTriangles) -> Result<(), String> {
     use super::vstream::T_DEC3N;
     let Some(main) = v.main.as_mut() else { return Ok(()) };

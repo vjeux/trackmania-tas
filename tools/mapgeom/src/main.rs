@@ -3944,12 +3944,22 @@ fn describe(n: &Node) -> String {
             v.vertex_streams.len()
         ),
         Node::VertexStream(v) => {
-            format!(
+            let mut d = format!(
                 "CPlugVertexStream, {} positions, {} normals, decls {:?}",
                 v.positions.len(),
                 v.normals.len(),
                 v.decl_names
-            )
+            );
+            // MAPGEOM_DUMP_VERTS=1: the first 12 vertices (position, normal, uv0)
+            if std::env::var("MAPGEOM_DUMP_VERTS").map(|x| x == "1").unwrap_or(false) {
+                for i in 0..v.positions.len().min(48) {
+                    let p = v.positions[i];
+                    let n = v.normals.get(i).copied().unwrap_or([0.0; 3]);
+                    let uv = v.uv0.get(i).copied().unwrap_or([0.0; 2]);
+                    d.push_str(&format!("\n        v{i} pos [{:.2}, {:.2}, {:.2}] nrm [{:.2}, {:.2}, {:.2}] uv [{:.3}, {:.3}]", p[0], p[1], p[2], n[0], n[1], n[2], uv[0], uv[1]));
+                }
+            }
+            d
         }
         Node::Crystal(c) => format!(
             "CPlugCrystal, {} meshes, {} faces, materials [{}]",

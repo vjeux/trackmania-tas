@@ -582,7 +582,9 @@ fn plan_one_dry(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, cou
         // TINY_WATER_OVERLAY=1: a water block OUTSIDE the surface families (`WaterBase`, the
         // pool walls and floors — Everios96 2026-09-24: "all blocks with water present")
         // keeps its volume and gets the visual-only re-dressed copy too
-        if std::env::var("TINY_WATER_OVERLAY").map(|v| v == "1").unwrap_or(false) && s != "Water" {
+        // (TINY_WATER_OVERLAY_ALL=1 only: Everios96 2026-09-24 23:48 "the wood shouldn't be
+        // where the water is, it should be where the drivable ground is" — the deep pools stay)
+        if std::env::var("TINY_WATER_OVERLAY_ALL").map(|v| v == "1").unwrap_or(false) && s != "Water" {
             if let Some(b) = idx.path_for(name).and_then(|p| idx.load(store, &p).ok().cloned()) {
                 let water_here = b.variant_base_ground.as_ref().map(|v| v.water_volumes > 0).unwrap_or(false) || b.variant_base_air.as_ref().map(|v| v.water_volumes > 0).unwrap_or(false);
                 if water_here && base_prefab(&b).is_some() {
@@ -618,7 +620,7 @@ fn plan_one_dry(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, cou
     if deck_only(s) && is_terrain_family(name) {
         // TINY_WATER_OVERLAY=1: a WATER piece of the terrain families (`WaterBase`, the pool
         // walls and floors) keeps its volume and gets the visual-only re-dressed copy
-        if name.contains("Water") && std::env::var("TINY_WATER_OVERLAY").map(|v| v == "1").unwrap_or(false) {
+        if name.contains("Water") && std::env::var("TINY_WATER_OVERLAY_ALL").map(|v| v == "1").unwrap_or(false) {
             if let Some(b) = idx.path_for(name).and_then(|p| idx.load(store, &p).ok().cloned()) {
                 let water_here = b.variant_base_ground.as_ref().map(|v| v.water_volumes > 0).unwrap_or(false) || b.variant_base_air.as_ref().map(|v| v.water_volumes > 0).unwrap_or(false);
                 if water_here && base_prefab(&b).is_some() {

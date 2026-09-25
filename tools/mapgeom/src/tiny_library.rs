@@ -705,6 +705,10 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
     }
     let mut m = crate::static_item::build::Merged::default();
     m.keep_water = crate::static_item::build::keep_water_for(collection);
+    // a water OVERLAY dresses the water quad as the deck: planar UVs at the deck's 4 m tile
+    if std::env::var("TINY_OVERLAY_NAMES").ok().map(|v| v.split(',').any(|n| n == name)).unwrap_or(false) {
+        m.water_planar_uv = Some(std::env::var("TINY_OVERLAY_UV_TILE").ok().and_then(|v| v.parse().ok()).unwrap_or(4.0));
+    }
     m.modifier = modifier_links(store, &plan.effective_mods);
     m.collision_redress = modifier_redress(store, &plan.effective_mods, &m.modifier);
     apply_surface_swap(store, &mut m, name);
@@ -1147,8 +1151,12 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
         // no second start/finish/checkpoint: the block keeps the waypoint
         m.waypoint_type = None;
         let before = m.visuals.len();
-        // the WATER quads go (the block draws its water); the pool floor and walls
-        // (`Underwater`, the plastic parts) stay and take the swap's dress
+        // The WATER surface is what the car drives on (physics 13 at the block's top: the
+        // whole 819 m² of a RoadWater straight) — Everios96 2026-09-24 23:37 "the ground
+        // plastic where you drive on is not looking like wood": so the water quad STAYS in
+        // the copy and takes the swap's dress like the floor and walls (`Water` is a deck
+        // stem in the rows); the block's own water beneath keeps the physics. A water quad
+        // the rows did not re-dress (still `Material\Water`) goes — the block draws it.
         let water_mat: Vec<usize> = m.materials.iter().enumerate().filter(|(_, mat)| mat.link().map(|l| l.ends_with("\\Material\\Water")).unwrap_or(false)).map(|(i, _)| i).collect();
         m.visuals.retain(|v| !water_mat.contains(&v.material));
         // a 3 cm shell: the copy's faces are the block's own faces, coplanar ones z-fight

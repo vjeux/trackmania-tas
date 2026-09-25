@@ -228,6 +228,10 @@ pub struct Merged {
     /// Keep `…\Material\Water` visuals (Stadium: the pool blocks draw their
     /// own water; the terrain collections regenerate theirs from the zone).
     pub keep_water: bool,
+    /// Some(metres per tile): a kept WATER quad (source material `Material\Water`) gets
+    /// planar XZ UVs at that scale — the water overlays dress the driving surface as the
+    /// deck, and the quad's own UVs are all zero (2026-09-24)
+    pub water_planar_uv: Option<f32>,
     /// The source model's CPlugGameSkin header chunk (0x090F4000), verbatim
     /// — see `BuildOpts::skin`. Set from the pack item file or the block
     /// info file; the built item carries it in its own header.
@@ -1341,6 +1345,18 @@ impl Merged {
             // (`--debug decls` on Special24m.Prefab.Gbx: u01 -1, same lod
             // mask, u02 0; no u10/u12/u19 tables, flags 0) — no on/off flag.)
             let mut v = vis.clone();
+            if std::env::var("MAPGEOM_DEBUG_WATER").map(|x| x == "1").unwrap_or(false) {
+                eprintln!("visual mi={mi} mat={mat} src_link={:?} link={:?} planar={:?}", src_links.get(mi).cloned().flatten(), self.materials.get(mat).and_then(|m| m.link()), self.water_planar_uv);
+            }
+            if let Some(scale) = self.water_planar_uv {
+                // the source link may carry the `.Material.Gbx` suffix: judge the file stem
+                let is_water = src_links.get(mi).cloned().flatten().map(|l| l.rsplit('\\').next().unwrap_or("").trim_end_matches(".Material.Gbx").trim_end_matches(".Material.gbx") == "Water").unwrap_or(false)
+                    || self.materials.get(mat).and_then(|m| m.link()).map(|l| l.rsplit('\\').next().unwrap_or("").trim_end_matches(".Material.Gbx") == "Water").unwrap_or(false);
+                if is_water {
+                    let _ = crate::static_item::build::planar_uv(&mut v, scale);
+                    self.notes.push(format!("water quad: planar UVs at {scale} m per tile"));
+                }
+            }
             if !self.two_sided_links.is_empty() {
                 let src_link: Option<String> = src_links.get(mi).cloned().flatten();
                 let hit = src_link.as_deref().map(|l| self.two_sided_links.iter().any(|t| l == t || l.rsplit('\\').next() == Some(t.as_str()) || l.ends_with(&format!("{t}.Material.Gbx")))).unwrap_or(false);
