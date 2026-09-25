@@ -1930,7 +1930,10 @@ fn to_menu() -> Result<(), String> {
         // loop below then spent 24 minutes of 20 s timeouts holding the lock
         // over nothing (20:20–20:44). No process = relaunch, which comes up
         // at the menu — the state this function exists to reach.
-        if !tm_running() {
+        // BOTH signs, not one: tasklist.exe answered empty for a game that was
+        // up (20:33 — the check killed a good game and relaunched into a
+        // connect timeout); the plugin's port is the liveness `launch` trusts.
+        if !plugin_up() && !tm_running() {
             println!("the game is gone (crashed on the way to the menu?) — relaunching");
             if launch(180, true) != 0 {
                 return Err("the game died on the way to the menu and did not come back".into());
