@@ -202,6 +202,11 @@ pub struct BakeParams {
     pub lm_scene: Option<std::sync::Arc<crate::lmaccum::LmScene>>,
     pub fitted_world_box: Option<[[f32; 2]; 2]>,
     pub hbasis_game: Option<(std::path::PathBuf, std::sync::Arc<Vec<crate::lmaccum::CapEntry>>)>,
+    /// The ILightInput atlas the peel colour samples (PS 17131 SRV1; `peelcolor`): the capture's texture
+    /// under --ilightinput-from, else None = the per-fragment albedo × light model.
+    pub ilight_atlas: Option<std::sync::Arc<crate::peelcolor::AtlasTex>>,
+    /// Per instance the layout rect (x, y, w, h in the 2048-unit layout) — the chart ST's input.
+    pub chart_rects: Option<std::sync::Arc<Vec<Option<[i32; 4]>>>>,
 }
 
 impl Default for BakeParams {
@@ -297,6 +302,8 @@ impl Default for BakeParams {
             lm_scene: None,
             fitted_world_box: None,
             hbasis_game: None,
+            ilight_atlas: None,
+            chart_rects: None,
         }
     }
 }

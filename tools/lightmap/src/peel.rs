@@ -16,7 +16,7 @@
 
 use crate::bake::{hit_albedo, sky_radiance, BakeParams, ChartBake};
 use crate::bvh::{Bvh, Hit, WTri};
-use crate::geometry::{cross, dot, norm, sub, Scene, V3, DECOR_INST};
+use crate::geometry::{add, cross, dot, norm, sub, Scene, V3, DECOR_INST};
 use crate::raster;
 
 /// The peel's orthographic frame: pixel (x, y) ↔ (p·r, p·u) scaled into `res`×`res_y` pixels over
@@ -820,7 +820,7 @@ pub fn scene_bounds(tris: &[WTri]) -> (V3, V3) {
 
 /// The outgoing radiance of a peel fragment: albedo × (lightmap-so-far ÷ decode + sun), 0 for a back
 /// face (the peel's camera at +D sees the face whose normal points toward +D).
-fn fragment_radiance(scene: &Scene, bvh: &Bvh, prm: &BakeParams, shadow: Option<&ShadowMap>, tri: u32, d: V3, hit_p: V3, sun_bias: f32) -> [f32; 3] {
+fn fragment_radiance(scene: &Scene, bvh: &Bvh, prm: &BakeParams, shadow: Option<&ShadowMap>, frame: &PeelFrame, tri: u32, d: V3, hit_p: V3, sun_bias: f32) -> [f32; 3] {
     let wt = &bvh.tris[tri as usize];
     let ng = norm(cross(wt.e1, wt.e2));
     // The face that counts is the one turned TOWARD the receiving texel, i.e. whose normal points
@@ -854,6 +854,42 @@ fn fragment_radiance(scene: &Scene, bvh: &Bvh, prm: &BakeParams, shadow: Option<
     };
     if !is_front {
         return [0.0; 3];
+    }
+    // THE GAME'S COLOUR PATH (PS 17131/17134, `peelcolor`): the ILightInput atlas sampled at the fragment's LM
+    // uv — TexCoord1 interpolated at the hit, through the instance's chart ST — with SGbxClamp_Aniso (one
+    // bilinear tap at magnification, up to 16 along the footprint's major axis at minification), G ≥ 1e-5.
+    // Runs when the harness holds the atlas (--ilightinput-from) and the instance a layout rect; the
+    // decoration (the zone tiles: no rect in the port's layout) keeps the per-fragment model below.
+    if let (Some(atlas), Some(rects), true) = (&prm.ilight_atlas, &prm.chart_rects, wt.inst != DECOR_INST) {
+        if let Some(Some(rect)) = rects.get(wt.inst as usize) {
+            let inst = &scene.instances[wt.inst as usize];
+            let m = &scene.models[inst.model];
+            if let Some(t) = m.tris.get(wt.tri as usize) {
+                let st = crate::peelcolor::chart_st(*rect, m.plg_bounds.unwrap_or([0.0, 0.0, 1.0, 1.0]), atlas.w as f32);
+                // the barycentrics of the hit in the world triangle (p0 + b1·e1 + b2·e2)
+                let v = sub(hit_p, wt.p0);
+                let (d00, d01, d11, d20, d21) = (dot(wt.e1, wt.e1), dot(wt.e1, wt.e2), dot(wt.e2, wt.e2), dot(v, wt.e1), dot(v, wt.e2));
+                let den = d00 * d11 - d01 * d01;
+                if den.abs() > 1e-18 {
+                    let b1 = ((d11 * d20 - d01 * d21) / den).clamp(0.0, 1.0);
+                    let b2 = ((d00 * d21 - d01 * d20) / den).clamp(0.0, 1.0);
+                    let b0 = (1.0 - b1 - b2).max(0.0);
+                    let uv1 = [t.uv[0][0] * b0 + t.uv[1][0] * b1 + t.uv[2][0] * b2, t.uv[0][1] * b0 + t.uv[1][1] * b1 + t.uv[2][1] * b2];
+                    let uv_lm = [uv1[0] * st[0] + st[2], uv1[1] * st[1] + st[3]];
+                    // the footprint of the LM uv per peel pixel: the triangle's uv Jacobian in atlas texels
+                    let p1 = add(wt.p0, wt.e1);
+                    let p2 = add(wt.p0, wt.e2);
+                    let (x0, y0, _) = frame.project(wt.p0);
+                    let (x1, y1, _) = frame.project(p1);
+                    let (x2, y2, _) = frame.project(p2);
+                    let uv_lm_of = |uv: [f32; 2]| [uv[0] * st[0] + st[2], uv[1] * st[1] + st[3]];
+                    let fp = crate::alphatex::Footprint::of_triangle([[x0, y0], [x1, y1], [x2, y2]], [uv_lm_of(t.uv[0]), uv_lm_of(t.uv[1]), uv_lm_of(t.uv[2])], atlas.w, atlas.h);
+                    let taps = fp.taps(16);
+                    let axis = fp.major_axis();
+                    return crate::peelcolor::peel_color(atlas, uv_lm, axis, taps, true);
+                }
+            }
+        }
     }
     let h = Hit { t: 0.0, tri };
     let alb = hit_albedo(scene, bvh, prm, &h);
@@ -1106,7 +1142,7 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
                 d = (d.clamp(0.0, 1.0) * 65535.0).round() / 65535.0;
             }
             let hit_p = frame.unproject(x as f32 + 0.5, y as f32 + 0.5, f.z);
-            let rgb = prm.quant_peel.apply(fragment_radiance(scene, bvh, prm, shadow, f.tri, frame.d, hit_p, sun_bias), prm.rounding);
+            let rgb = prm.quant_peel.apply(fragment_radiance(scene, bvh, prm, shadow, frame, f.tri, frame.d, hit_p, sun_bias), prm.rounding);
             out.push(LayerFrag { d, rgb });
             d_prev = d;
         }
@@ -2026,7 +2062,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                                         if f.z >= z - bias.max(px_m * slope_f) {
                                             continue;
                                         }
-                                        hit = Some((fragment_radiance(scene, bvh, prm, shadow, f.tri, *d, [s.p[0] + d[0] * (z - f.z), s.p[1] + d[1] * (z - f.z), s.p[2] + d[2] * (z - f.z)], sun_bias), true));
+                                        hit = Some((fragment_radiance(scene, bvh, prm, shadow, frame, f.tri, *d, [s.p[0] + d[0] * (z - f.z), s.p[1] + d[1] * (z - f.z), s.p[2] + d[2] * (z - f.z)], sun_bias), true));
                                         break;
                                     }
                                 }

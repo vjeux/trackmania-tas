@@ -371,3 +371,48 @@ pub fn layer_gap(args: &[String]) {
     }
     println!("{n} pixels with both layers; B − A in D16 steps: {}", hist.iter().filter(|(_, v)| **v * 1000 >= n).map(|(k, v)| format!("{k:+}: {v}")).collect::<Vec<_>>().join(", "));
 }
+
+/// `lmtool lm-st PASSCAP_ROOT MAP.Gbx [--base B]` — the chart ST of every LM object as the capture's
+/// g_InstanceDatas / g_TcLM_ST_LM01 hold it (`lmaccum::load_lm_scene`), next to the mapping rect of the
+/// baked map (layout units of the 2048² atlas): the formula that turns a rect into the VS's ST.
+pub fn lm_st(args: &[String]) {
+    let f = |k: &str| args.iter().position(|x| x == k).and_then(|i| args.get(i + 1)).cloned();
+    let root = std::path::PathBuf::from(&args[1]);
+    let base: u32 = f("--base").map(|v| v.parse().unwrap()).unwrap_or(4096);
+    let sc = crate::lmaccum::load_lm_scene(&root, 127448).expect("lm scene");
+    let empty: crate::passdump::Manifest = serde_json::from_str("{}").expect("an empty manifest");
+    let rects = crate::passdiff::chart_rects(&empty, Some(&args[2]));
+    println!("{} objects, {} instances, ST table {} entries, {} mapping rects", sc.meshes.len(), sc.instances.len(), sc.table.len(), rects.len());
+    for (k, eid) in sc.eids.iter().enumerate() {
+        let first = sc.inst_first[k];
+        let n = sc.inst_count[k];
+        for i in first..(first + n).min(first + 3) {
+            let inst = &sc.instances[i];
+            // a vertex with chart_idx 0xffff reads the instance's own ST; the item meshes' vertices carry an index
+            let v0 = &sc.meshes[k].verts[0];
+            let st = crate::lmaccum::chart_st(v0, inst, &sc.table);
+            println!("eid {eid} instance {i}: chart_idx {} st_x_bits {} own st ({:.7}, {:.7}, {:.7}, {:.7}) → ST ({:.7}, {:.7}, {:.7}, {:.7}); t ({:.2}, {:.2}, {:.2}) scale {}", v0.chart_idx, inst.st_x_bits, inst.st[0], inst.st[1], inst.st[2], inst.st[3], st[0], st[1], st[2], st[3], inst.t[0], inst.t[1], inst.t[2], inst.scale);
+        }
+    }
+    // --scene SOURCE.Map.Gbx: the models' PreLightGen uv bounds, and the ST each formula predicts per instance
+    if let Some(src) = f("--scene") {
+        let scene = crate::geometry::Scene::from_map(&src).expect("scene");
+        for (ii, inst) in scene.instances.iter().enumerate() {
+            let m = &scene.models[inst.model];
+            let b = m.plg_bounds.unwrap_or([0.0, 0.0, 1.0, 1.0]);
+            let Some(r) = rects.iter().find(|r| r.obj == base + inst.item as u32) else { continue };
+            let w = 2048.0f32;
+            // candidate: local u = (u − b0)/(b2 − b0) then atlas = (x + 0.5 + local·(w − 1))/W
+            let (sx, sy) = ((r.w as f32 - 1.0) / w / (b[2] - b[0]), (r.h as f32 - 1.0) / w / (b[3] - b[1]));
+            let (tx, ty) = ((r.x as f32 + 0.5) / w - b[0] * sx, (r.y as f32 + 0.5) / w - b[1] * sy);
+            // candidate B: atlas = (x + 1 + local·(w − 2))/W (the stored footprint x+1 … x+w−1)
+            let (sx2, sy2) = ((r.w as f32 - 2.0) / w / (b[2] - b[0]), (r.h as f32 - 2.0) / w / (b[3] - b[1]));
+            let (tx2, ty2) = ((r.x as f32 + 1.0) / w - b[0] * sx2, (r.y as f32 + 1.0) / w - b[1] * sy2);
+            println!("instance {ii} item {} at ({:.2}, {:.2}, {:.2}) model {} bounds ({:.5}, {:.5}, {:.5}, {:.5}) rect x {} y {} w {} h {}: A ST = ({:.7}, {:.7}, {:.7}, {:.7}); B ST = ({:.7}, {:.7}, {:.7}, {:.7})", inst.item, inst.xf[9], inst.xf[10], inst.xf[11], scene.model_names.get(inst.model).cloned().unwrap_or_default(), b[0], b[1], b[2], b[3], r.x, r.y, r.w, r.h, sx, sy, tx, ty, sx2, sy2, tx2, ty2);
+        }
+    }
+    for r in rects.iter().filter(|r| r.obj >= base).take(8) {
+        let w = 2048.0f32;
+        println!("rect obj {} (item {}): x {} y {} w {} h {} → candidates: ((w−1)/W, (h−1)/W, (x+0.5)/W, (y+0.5)/W) = ({:.7}, {:.7}, {:.7}, {:.7}); (w/W, h/W, x/W, y/W) = ({:.7}, {:.7}, {:.7}, {:.7})", r.obj, r.obj - base, r.x, r.y, r.w, r.h, (r.w as f32 - 1.0) / w, (r.h as f32 - 1.0) / w, (r.x as f32 + 0.5) / w, (r.y as f32 + 0.5) / w, r.w as f32 / w, r.h as f32 / w, r.x as f32 / w, r.y as f32 / w);
+    }
+}

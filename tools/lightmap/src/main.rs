@@ -1345,6 +1345,18 @@ fn run(a: Vec<String>) {
                 if has("--shadow-frustum-from-capture") { if let Some(e) = gm.passes.iter().find(|e| e.pass == "sun_shadow") { if let Some(fr) = &e.frustum { prm.shadow_frustum = Some(fr.clone()); eprintln!("frustum-from: the sun shadow map's frustum adopted (centre {:?}, half {:?})", fr.center, fr.half); } } }
                 let fs = lightmap::passdiff::peel_frustums_for(gm, 0, &prm.sphere_dirs);
                 if !fs.is_empty() { eprintln!("frustum-from: sweep 0: {} directions' peels adopted ({} peels per direction) ({:.1}s since start)", fs.len(), fs.iter().map(|v| v.len()).max().unwrap_or(0), t0.elapsed().as_secs_f32()); prm.frustums = Some(std::sync::Arc::new(fs)); }
+                // which of OUR direction indices carry a captured peel (the ones worth --dump-dirs)
+                {
+                    let mut seen: Vec<([f32; 3], String, u32)> = Vec::new();
+                    for e in gm.passes.iter().filter(|e| (e.pass == "peel_depth" || e.pass == "peel_color") && e.sweep.unwrap_or(0) == 0) {
+                        if let Some(d) = e.dir { if !seen.iter().any(|(v, _, _)| (v[0] - d[0]).abs() < 1e-4 && (v[1] - d[1]).abs() < 1e-4 && (v[2] - d[2]).abs() < 1e-4) { seen.push((d, e.capture.clone().unwrap_or_default(), e.frame.unwrap_or(0))); } }
+                    }
+                    let hits: Vec<String> = seen.iter().filter_map(|(d, cap, fr)| {
+                        let (i, c) = prm.sphere_dirs.iter().enumerate().map(|(i, o)| (i, o[0] * d[0] + o[1] * d[1] + o[2] * d[2])).max_by(|a, b| a.1.partial_cmp(&b.1).unwrap()).unwrap();
+                        (c >= 0.999_99).then(|| format!("{cap} frame {fr} ({:.3}, {:.3}, {:.3}) = our direction {i}", d[0], d[1], d[2]))
+                    }).collect();
+                    if !hits.is_empty() && f("--dir-order").is_none() { eprintln!("frustum-from: captured peel directions: {}", hits.join("; ")); }
+                }
                 // the captured ITEM-LAYER COUNTS per direction and peel (the game's count is timing-dependent —
                 // the pixel-count query is polled without waiting — so the harness renders as many layers as
                 // the capture shows; --layers-by-rule uses the stop rule instead)
@@ -1389,15 +1401,32 @@ fn run(a: Vec<String>) {
             // --layout-from REF.Map.Gbx: every item chart takes the reference bake's chart SIZE (its object id
             // = base + item), so the two bakes share texel grids — the gate then measures the lighting alone, not
             // the packer (a measurement aid; the product sizes charts by the game's allocation walk)
+            let mut ref_rects: std::collections::HashMap<usize, [i32; 4]> = std::collections::HashMap::new();
             let ref_sizes: Option<std::collections::HashMap<usize, (u32, u32)>> = f("--layout-from").map(|rp| {
                 let r = lightmap::mapio::load(&rp).expect("--layout-from");
                 let d = r.chunk.data.expect("reference lightmap");
                 let mp = d.cache.mapping().unwrap();
                 let mut out = std::collections::HashMap::new();
-                for i in 0..mp.count as usize { let obj = mp.binds[i].obj_group_idx / 4; if obj >= base { out.insert((obj - base) as usize, ((mp.size[i].0 as u32 / 2).max(1), (mp.size[i].1 as u32 / 2).max(1))); } }
+                for i in 0..mp.count as usize { let obj = mp.binds[i].obj_group_idx / 4; if obj >= base { out.insert((obj - base) as usize, ((mp.size[i].0 as u32 / 2).max(1), (mp.size[i].1 as u32 / 2).max(1))); ref_rects.insert((obj - base) as usize, [mp.pos[i].0 as i32, mp.pos[i].1 as i32, mp.size[i].0 as i32, mp.size[i].1 as i32]); } }
                 eprintln!("layout from {rp}: {} item chart sizes", out.len());
                 out
             });
+            // the items' layout rects per instance (the peel colour's chart ST: `peelcolor::chart_st`)
+            if !ref_rects.is_empty() {
+                prm.chart_rects = Some(std::sync::Arc::new(scene.instances.iter().map(|inst| ref_rects.get(&inst.item).copied()).collect()));
+            }
+            // --ilightinput-from FILE.dds[.gz]: the captured ILightInput atlas (PS 17131's SRV1) as the peel
+            // colour's texture — the harness's transcription of the colour path on the game's own input
+            if let Some(path) = f("--ilightinput-from") {
+                let pb = std::path::PathBuf::from(&path);
+                let (root, file) = (pb.parent().map(|p| p.to_path_buf()).unwrap_or_default(), pb.file_name().unwrap().to_string_lossy().to_string());
+                let mut e = lightmap::passdump::entry("ilightinput", file, "atlas");
+                e.format = "R11G11B10_FLOAT".into();
+                let b = lightmap::passdiff::load_entry(&root, &e).unwrap_or_else(|er| panic!("--ilightinput-from {path}: {er}"));
+                let nz = (0..b.h).flat_map(|y| (0..b.w).map(move |x| (x, y))).filter(|&(x, y)| b.get(x, y, 0) != 0.0 || b.get(x, y, 1) != 0.0 || b.get(x, y, 2) != 0.0).count();
+                eprintln!("ilightinput-from {path}: {}×{} atlas, {nz} non-zero texels — the peel colour samples it at the LM uv", b.w, b.h);
+                prm.ilight_atlas = Some(std::sync::Arc::new(lightmap::peelcolor::AtlasTex::from_buf(&b)));
+            }
             let chart_sizes = |p: &lightmap::bake::BakeParams| -> Vec<(u32, u32)> {
                 scene.instances.iter().map(|inst| {
                     if let Some(rs) = &ref_sizes { if let Some(&s) = rs.get(&inst.item) { return s; } }
@@ -1416,6 +1445,8 @@ fn run(a: Vec<String>) {
                 let ord = lightmap::passdiff::game_issue_order(&game, 0, &prm.sphere_dirs);
                 let mut used = vec![false; prm.sphere_dirs.len()];
                 let mut new_dirs: Vec<[f32; 3]> = Vec::new();
+                // the source index of every new position (the per-direction tables below follow the permutation)
+                let mut src: Vec<usize> = Vec::new();
                 let mut worst = 0.0f32;
                 for (k, oi) in &ord {
                     if new_dirs.len() != *k as usize { eprintln!("dir-order: the capture's issue order has a gap before position {k} (have {}); the order is followed as far as it goes", new_dirs.len()); break; }
@@ -1425,11 +1456,35 @@ fn run(a: Vec<String>) {
                     let od = prm.sphere_dirs[*oi as usize];
                     worst = worst.max((od[0] * gd[0] + od[1] * gd[1] + od[2] * gd[2]).clamp(-1.0, 1.0).acos().to_degrees());
                     new_dirs.push(od);
+                    src.push(*oi as usize);
                 }
                 let matched = new_dirs.len();
-                for (i, d) in prm.sphere_dirs.iter().enumerate() { if !used[i] { new_dirs.push(*d); } }
+                for (i, d) in prm.sphere_dirs.iter().enumerate() { if !used[i] { new_dirs.push(*d); src.push(i); } }
                 eprintln!("dir-order: {matched} of {} directions in the game's issue order (worst match {worst:.3}°), the rest in ours ({:.1}s since start)", new_dirs.len(), t0.elapsed().as_secs_f32());
                 prm.sphere_dirs = std::sync::Arc::new(new_dirs);
+                // THE PER-DIRECTION TABLES FOLLOW THE REORDER: --frustum-from filled the peel frusta and the captured
+                // item-layer counts per direction of the ORIGINAL list; direction k of the reordered list is the
+                // original src[k] (without this, every direction but the first peeled through another one's frustum)
+                if let Some(fs) = &prm.frustums {
+                    let re: Vec<Vec<lightmap::passdump::Frustum>> = src.iter().map(|&i| fs.get(i).cloned().unwrap_or_default()).collect();
+                    prm.frustums = Some(std::sync::Arc::new(re));
+                }
+                if let Some(lc) = &prm.peel_layer_counts {
+                    let re: Vec<Vec<Option<usize>>> = src.iter().map(|&i| lc.get(i).cloned().unwrap_or_default()).collect();
+                    prm.peel_layer_counts = Some(std::sync::Arc::new(re));
+                }
+                // which of the reordered directions carry a captured peel (the ones worth --dump-dirs)
+                if let Some(gm) = &game_manifest {
+                    let mut seen: Vec<([f32; 3], String, u32)> = Vec::new();
+                    for e in gm.passes.iter().filter(|e| (e.pass == "peel_depth" || e.pass == "peel_color") && e.sweep.unwrap_or(0) == 0) {
+                        if let Some(d) = e.dir { if !seen.iter().any(|(v, _, _)| (v[0] - d[0]).abs() < 1e-4 && (v[1] - d[1]).abs() < 1e-4 && (v[2] - d[2]).abs() < 1e-4) { seen.push((d, e.capture.clone().unwrap_or_default(), e.frame.unwrap_or(0))); } }
+                    }
+                    let hits: Vec<String> = seen.iter().filter_map(|(d, cap, fr)| {
+                        let (i, c) = prm.sphere_dirs.iter().enumerate().map(|(i, o)| (i, o[0] * d[0] + o[1] * d[1] + o[2] * d[2])).max_by(|a, b| a.1.partial_cmp(&b.1).unwrap()).unwrap();
+                        (c >= 0.999_99).then(|| format!("{cap} frame {fr} ({:.3}, {:.3}, {:.3}) = direction {i}", d[0], d[1], d[2]))
+                    }).collect();
+                    if !hits.is_empty() { eprintln!("dir-order: captured peel directions after the reorder: {}", hits.join("; ")); }
+                }
                 if let Some(v) = f("--dump-lightsum-after") {
                     prm.lightsum_after = if v == "game" {
                         game.passes.iter().filter(|e| e.pass == "hbasis0" && e.banked.unwrap_or(true) && e.sweep.unwrap_or(0) == 0).filter_map(|e| e.sweep_direction_index).filter(|k| (*k as usize) < matched).collect()
@@ -3147,6 +3202,8 @@ fn run(a: Vec<String>) {
         "peel-layers" => lightmap::peelcap::run(&a),
         "quanta-diff" => lightmap::peelcap::quanta_diff(&a),
         "layer-gap" => lightmap::peelcap::layer_gap(&a),
+        "lm-st" => lightmap::peelcap::lm_st(&a),
+        "clouds-check" => { if let Err(e) = lightmap::clouds::check(&a) { eprintln!("clouds-check: {e}"); std::process::exit(1); } }
         "passcap-info" => {
             // lmtool passcap-info DIR [--pass P] [--max N]: per entry of a MANIFEST.json the buffer's statistics
             // (min / max / mean per channel, the fraction of clear pixels) and the derived frustum — a look at a

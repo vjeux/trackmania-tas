@@ -1193,6 +1193,9 @@ fn direction_map(game: &Manifest, ours: &Manifest, sweep: u32) -> (HashMap<u32, 
             permuted += 1;
         }
         worst_deg = worst_deg.max(best.1.clamp(-1.0, 1.0).acos().to_degrees());
+        if std::env::var_os("LMTOOL_PASSDIFF_DEBUG").is_some() && game.passes.iter().any(|e| e.pass == "peel_depth" && e.direction == Some(gi as u32) && e.sweep.unwrap_or(0) == sweep) {
+            eprintln!("direction_map: sweep {sweep} game direction {gi} ({:.3}, {:.3}, {:.3}) → ours {} ({:.3}, {:.3}, {:.3}), {:.3}°", gd[0], gd[1], gd[2], best.0, os.dirs[best.0][0], os.dirs[best.0][1], os.dirs[best.0][2], best.1.clamp(-1.0, 1.0).acos().to_degrees());
+        }
         map.insert(gi as u32, best.0 as u32);
     }
     let note = if permuted > 0 { Some(format!("direction_permute(sweep {sweep}: {permuted} of {} directions re-matched by nearest vector, worst {worst_deg:.2}°{})", gdirs.len(), if unknown > 0 { format!(", {unknown} without a vector kept by index") } else { String::new() })) } else if worst_deg > 0.05 { Some(format!("direction_set(sweep {sweep}: same order, worst angle {worst_deg:.2}°)")) } else { None };

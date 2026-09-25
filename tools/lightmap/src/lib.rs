@@ -20,6 +20,8 @@ pub mod peel;
 pub mod peelcap;
 pub mod domemesh;
 pub mod alphatex;
+pub mod peelcolor;
+pub mod clouds;
 pub mod png;
 pub mod gpufmt;
 pub mod gpuenc;
