@@ -142,8 +142,12 @@ fn to_index(g: &GridDef, w: [f32; 3]) -> [f32; 3] {
 }
 
 /// The CRT int-ceil (FUN_1418f6954).
+/// FUN_1418f6954 = the CRT's lroundf (round half AWAY from zero — the 0x14190c9d8 helper snaps to the 0.5 grid, then
+/// FUN_1418f76e4 adds ±1 when bits were dropped; NaN → 0). RE 6 read it as ceil: on the tiny 16 save that puts every
+/// unclamped block min one probe too high and max.y one too high (the boxes sit on the 8/16-m grid: lo − 1.01 ends in
+/// .49 → rounds DOWN, hi + 1.01 ends in .51 → rounds up = ceil, hence the asymmetric-looking deltas).
 fn ceil_i(x: f32) -> i32 {
-    if !x.is_finite() { 0 } else { x.ceil() as i32 }
+    if !x.is_finite() { 0 } else { x.round() as i32 }
 }
 
 /// RenderLighting_Frames l.1296–1370: the grid grown to the boxes' corners (index-space ceil, clamped to −32 / n + 32).
@@ -382,6 +386,85 @@ pub fn for_records(size: [u32; 3], block_size: [f32; 3], offset: [f32; 3], level
     (g, boxes, c, aabb)
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+// THE PROBE TRAILER'S LAYOUT FIELDS from the chunking (RE 7, 2026-09-25): what `volume::Volume` reads back.
+
+/// The trailer's per-block record as the chunking predicts it: `origin` = the atlas slot (+0), `min` = +0xc, `max` =
+/// +0x18, `cell` = +0x24, `pos` = +0x30 (the record's first 0x3c bytes verbatim).
+#[derive(Clone, Debug, PartialEq)]
+pub struct TrailerLayout {
+    /// grid = the atlas (columns·32, rows·16, 32)
+    pub grid: [u32; 3],
+    pub blocks: Vec<crate::volume::Block>,
+    /// slot_grid = (cx, cy, cz); slot_tile = (30, 14, 30); block_size = (32, 16, 32)
+    pub slot_grid: [u32; 3],
+    pub slot_tile: [u32; 3],
+    pub block_size: [u32; 3],
+    /// 1 / (cell · (30, 14, 30))
+    pub inv_scale: [f32; 3],
+    /// −((−0.5·cell + origin) · inv_scale)
+    pub unk_f: [f32; 3],
+    /// per chunk (i + cx·j + cx·cy·k): the block index or −1
+    pub slots: Vec<i32>,
+}
+
+/// out[12..18] of FUN_14021c980 in its f32 order: inv = 1 / (cell · pitch); unk = −((−0.5 · cell + origin) · inv).
+pub fn trailer_scale(g: &GridDef) -> ([f32; 3], [f32; 3]) {
+    let mut inv = [0f32; 3];
+    let mut unk = [0f32; 3];
+    for a in 0..3 {
+        inv[a] = 1.0 / (g.cell[a] * CHUNK[a] as f32);
+        unk[a] = -((-0.5 * g.cell[a] + g.origin[a]) * inv[a]);
+    }
+    (inv, unk)
+}
+
+impl Chunking {
+    /// The trailer fields this chunking writes.
+    pub fn trailer_layout(&self) -> TrailerLayout {
+        let (inv_scale, unk_f) = trailer_scale(&self.grid);
+        let [cx, cy, cz] = self.chunk_counts;
+        let mut slots = vec![-1i32; (cx * cy * cz) as usize];
+        let mut blocks = Vec::with_capacity(self.records.len());
+        for (bi, r) in self.records.iter().enumerate() {
+            slots[(r.chunk[0] + cx * r.chunk[1] + cx * cy * r.chunk[2]) as usize] = bi as i32;
+            blocks.push(crate::volume::Block {
+                origin: r.slot.map(|v| v as u32),
+                min: r.amin.map(|v| v as u32),
+                max: r.amax.map(|v| v as u32),
+                cell: r.cell,
+                pos: r.origin,
+                slices: Vec::new(),
+            });
+        }
+        TrailerLayout { grid: self.atlas, blocks, slot_grid: self.chunk_counts, slot_tile: CHUNK.map(|v| v as u32), block_size: TILE.map(|v| v as u32), inv_scale, unk_f, slots }
+    }
+}
+
+/// Field-by-field comparison with a saved map's trailer (floats as bits). Returns the list of differences (empty =
+/// the layout is the save's).
+pub fn compare_trailer(ours: &TrailerLayout, save: &crate::volume::Volume) -> Vec<String> {
+    let mut d = Vec::new();
+    if ours.grid != save.grid { d.push(format!("grid (atlas): ours {:?} save {:?}", ours.grid, save.grid)); }
+    if ours.slot_grid != save.slot_grid { d.push(format!("slot_grid: ours {:?} save {:?}", ours.slot_grid, save.slot_grid)); }
+    if ours.slot_tile != save.slot_tile { d.push(format!("slot_tile: ours {:?} save {:?}", ours.slot_tile, save.slot_tile)); }
+    if ours.block_size != save.block_size { d.push(format!("block_size: ours {:?} save {:?}", ours.block_size, save.block_size)); }
+    let bits = |v: [f32; 3]| v.map(f32::to_bits);
+    if bits(ours.inv_scale) != bits(save.inv_scale) { d.push(format!("inv_scale: ours {:?} save {:?}", ours.inv_scale, save.inv_scale)); }
+    if bits(ours.unk_f) != bits(save.unk_f) { d.push(format!("unk_f: ours {:?} save {:?}", ours.unk_f, save.unk_f)); }
+    if ours.slots != save.slots { d.push(format!("slot table: ours {:?} save {:?}", ours.slots, save.slots)); }
+    if ours.blocks.len() != save.blocks.len() { d.push(format!("block count: ours {} save {}", ours.blocks.len(), save.blocks.len())); }
+    for (i, (o, s)) in ours.blocks.iter().zip(save.blocks.iter()).enumerate() {
+        if o.origin != s.origin { d.push(format!("block {i} slot: ours {:?} save {:?}", o.origin, s.origin)); }
+        if o.min != s.min { d.push(format!("block {i} min: ours {:?} save {:?}", o.min, s.min)); }
+        if o.max != s.max { d.push(format!("block {i} max: ours {:?} save {:?}", o.max, s.max)); }
+        if bits(o.cell) != bits(s.cell) { d.push(format!("block {i} cell: ours {:?} save {:?}", o.cell, s.cell)); }
+        if bits(o.pos) != bits(s.pos) { d.push(format!("block {i} pos: ours {:?} save {:?}", o.pos, s.pos)); }
+    }
+    d
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -422,9 +505,11 @@ mod tests {
         assert_eq!(r.amax[1], 12, "RE 5's imax.y = 12 → the world peel's y max (12 − 0.5)·16 − 46 = 138");
         let a = aabb.unwrap();
         assert_eq!(a.max()[1], 138.0);
-        assert_eq!((r.amin, r.amax), ([23, 4, 20], [29, 12, 27]), "slot + (imin − 30·1), + (imax − imin) + 3");
-        assert_eq!(r.imin, [53, 4, 20]);
-        assert_eq!(r.imax, [56, 9, 24], "the pad/wall reach x 880 → ceil(54.5 + 1.01) = 56, z 369 → ceil(22.56 + 1.01) = 24");
+        // the save's trailer block: min (22, 4, 20), max (29, 12, 27) — lroundf, not ceil: the palm's x 861.01 → 53.31 − 1.01 =
+        // 52.30 → 52 (ceil gave 53 = RE 6's "amin.x 23 vs the save's 22")
+        assert_eq!((r.amin, r.amax), ([22, 4, 20], [29, 12, 27]), "slot + (imin − 30·1), + (imax − imin) + 3");
+        assert_eq!(r.imin, [52, 4, 20]);
+        assert_eq!(r.imax, [56, 9, 24], "the pad/wall reach x 880 → round(54.5 + 1.01) = 56, z 369 → round(22.56 + 1.01) = 24");
     }
 
     #[test]
@@ -454,9 +539,9 @@ mod tests {
     fn the_grid_expands_to_boxes_outside_the_map() {
         let g = grid_def([64, 64, 64], [32.0, 8.0, 32.0], [0.0, -38.0, 0.0], 0.0, true);
         let e = expand_grid(&g, [-100.0, -30.0, 8.0], [2100.0, 100.0, 2000.0]);
-        // x: lo = ceil((−100 − 8)/16) = −6 → n += 6, origin −= 96; hi = ceil((2100 − 8)/16) = 131 → n += 3
-        assert_eq!(e.n[0], 128 + 6 + 3);
-        assert_eq!(e.origin[0], 8.0 - 96.0);
+        // x: lo = round((−100 − 8)/16 = −6.75) = −7 → n += 7, origin −= 112; hi = round((2100 − 8)/16 = 130.75) = 131 → n += 3
+        assert_eq!(e.n[0], 128 + 7 + 3);
+        assert_eq!(e.origin[0], 8.0 - 112.0);
         assert_eq!(e.n[2], 128);
         // clamped at 32 cells each way
         let e = expand_grid(&g, [-10000.0, 0.0, 0.0], [10000.0, 1.0, 1.0]);

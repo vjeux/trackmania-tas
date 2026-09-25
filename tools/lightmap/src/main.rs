@@ -5442,6 +5442,49 @@ fn run(a: Vec<String>) {
             println!("TILING {p:?}: ext {:.2} layout units → peel target {}², n = {} cells per axis, {} fitted tile(s){}", t.ext, t.size, t.n, t.tiles.len(), if t.tiles.is_empty() { " (world pass only)" } else { "" });
             for tile in &t.tiles { println!("  tile c {:?} h {:?} = x [{}, {}] y [{}, {}] z [{}, {}]", tile.c, tile.h, tile.min()[0], tile.max()[0], tile.min()[1], tile.max()[1], tile.min()[2], tile.max()[2]); }
         }
+        "probe-layout" => {
+            // lmtool probe-layout MAP --against EDITOR.Map.Gbx [--records-tsv DUMP.tsv] [--block-size 32,8,32] [--offset 0,-40,0]
+            //   [--level-h 0] [--global-quality 1] [--max-dim 2048] [-v]
+            //   the probe trailer's layout (block count, per-block slot/min/max/cell/pos, slot grid, inv_scale, unk_f, slot
+            //   table) from the transcribed chunking (probechunk.rs), compared field by field with a saved map's trailer;
+            //   --records-tsv takes the baker's /lmrecords dump as the box source (the game's own record boxes) instead of
+            //   the port's item records
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let has = |k: &str| a.iter().any(|x| x == k);
+            let v3 = |s: String| -> [f32; 3] { let v: Vec<f32> = s.split(',').map(|x| x.trim().parse().unwrap()).collect(); [v[0], v[1], v[2]] };
+            let mf = tmmaps::map::MapFile::load(std::path::Path::new(&a[1]));
+            let size = [mf.size[0].max(0) as u32, mf.size[1].max(0) as u32, mf.size[2].max(0) as u32];
+            let gq: f32 = f("--global-quality").map(|v| v.parse().unwrap()).unwrap_or(1.0);
+            let recs: Vec<lightmap::lmtiles::BlockRecord> = match f("--records-tsv") {
+                Some(t) => {
+                    let text = std::fs::read_to_string(&t).unwrap_or_else(|e| panic!("{t}: {e}"));
+                    let mut lines = text.lines();
+                    let head: Vec<&str> = lines.next().unwrap_or("").split('\t').collect();
+                    let col = |n: &str| head.iter().position(|h| *h == n).unwrap_or_else(|| panic!("{t}: no column {n}"));
+                    let (cq, cx, cy, cz, hx, hy, hz) = (col("quality"), col("centerX"), col("centerY"), col("centerZ"), col("halfX"), col("halfY"), col("halfZ"));
+                    let g = |v: &Vec<&str>, i: usize| -> f32 { v[i].trim().parse::<f32>().unwrap_or(0.0) };
+                    lines.filter(|l| !l.trim().is_empty()).map(|l| { let v: Vec<&str> = l.split('\t').collect(); lightmap::lmtiles::BlockRecord { world: lightmap::lmtiles::CBox::new([g(&v, cx), g(&v, cy), g(&v, cz)], [g(&v, hx), g(&v, hy), g(&v, hz)]), quality: g(&v, cq) } }).collect()
+                }
+                None => { let scene = lightmap::geometry::Scene::from_map(&a[1]).expect("map scene"); lightmap::lmtiles::item_records(&scene, gq, false).iter().filter_map(|it| it.record).collect() }
+            };
+            let scene_ch = lightmap::lmtiles::scene_box(&recs);
+            let bs = f("--block-size").map(v3).unwrap_or([32.0, 8.0, 32.0]);
+            let off = f("--offset").map(v3).unwrap_or([0.0, -40.0, 0.0]);
+            let h: f32 = f("--level-h").map(|v| v.parse().unwrap()).unwrap_or(0.0);
+            let max_dim: u32 = f("--max-dim").map(|v| v.parse().unwrap()).unwrap_or(2048);
+            let (g, boxes, c, _aabb) = lightmap::probechunk::for_records(size, bs, off, h, &recs, &scene_ch, max_dim);
+            println!("{} records → {} probe boxes; grid {:?} cell {:?} origin {:?}; {} chunks non-empty → atlas {:?}", recs.len(), boxes.len(), g.n, g.cell, g.origin, c.records.len(), c.atlas);
+            let ours = c.trailer_layout();
+            if has("-v") { for (i, b) in ours.blocks.iter().enumerate() { println!("  ours block {i}: slot {:?} min {:?} max {:?} pos {:?} (chunk {:?}, probes {:?}..={:?})", b.origin, b.min, b.max, b.pos, c.records[i].chunk, c.records[i].imin, c.records[i].imax); } }
+            if let Some(ed) = f("--against") {
+                let m = lightmap::mapio::load(&ed).expect("editor map");
+                let d = m.chunk.data.as_ref().expect("editor map: no lightmap data");
+                let save = lightmap::volume::Volume::parse(&d.cache.trailer).expect("trailer");
+                if has("-v") { for (i, b) in save.blocks.iter().enumerate() { println!("  save block {i}: slot {:?} min {:?} max {:?} pos {:?}", b.origin, b.min, b.max, b.pos); } }
+                let diffs = lightmap::probechunk::compare_trailer(&ours, &save);
+                if diffs.is_empty() { println!("LAYOUT == the save's trailer ({} blocks, atlas {:?}, slot grid {:?}): BIT-EXACT", save.blocks.len(), save.grid, save.slot_grid); } else { println!("LAYOUT differs from the save in {} fields:", diffs.len()); for x in &diffs { println!("  {x}"); } }
+            }
+        }
         "probe-chunks" => {
             // lmtool probe-chunks MAP.Gbx [--scene xmin,ymin,zmin,xmax,ymax,zmax] [--block-size 32,8,32] [--offset 0,-38,0]
             //   [--level-h 0] [--global-quality 1] [--max-dim 2048]
