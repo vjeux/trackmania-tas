@@ -189,6 +189,9 @@ pub struct BakeParams {
     /// game, so the comparison takes the count the capture shows).
     pub peel_layer_counts: Option<std::sync::Arc<Vec<Vec<Option<usize>>>>>,
     pub layers_from_capture: bool,
+    /// The layer-count rule on a census ESTIMATE of the written fractions (--layers-estimate) instead of
+    /// the exact dense depth-only pass over the whole viewport.
+    pub layers_estimate: bool,
     /// The game's sky dome MESH (capture e001051), rasterised per peel with VS 16773's constants; None =
     /// the analytic ellipsoid model (`SkyGradient::dome_radiance`).
     pub dome_mesh: Option<std::sync::Arc<crate::domemesh::DomeMesh>>,
@@ -289,6 +292,7 @@ impl Default for BakeParams {
             peel_layers_fixed: None,
             peel_layer_counts: None,
             layers_from_capture: true,
+            layers_estimate: false,
             dome_mesh: None,
             lm_scene: None,
             fitted_world_box: None,

@@ -140,26 +140,11 @@ impl PeelFrame {
     /// Push the far plane out to cover every vertex of `tris` (the occluders below / beyond the
     /// receivers: the ground, the sea, the decoration), keeping the near plane where it is — without
     /// it everything beyond the receivers' bbox would pancake onto one far-plane layer and merge.
-    pub fn extend_far(&mut self, tris: &[WTri]) {
+    pub fn extend_far(&mut self, bvh: &Bvh) {
         let zmax = self.z_from_z01(1.0);
         let zmin0 = self.z_from_z01(0.0);
-        let d = self.d;
-        // the minimum over every vertex, in parallel chunks (millions of triangles on the big maps)
-        let chunk = (tris.len() / (crate::pool::pool().threads * 4).max(1)).max(4096);
-        let n_chunks = (tris.len() + chunk - 1) / chunk;
-        let mins: Vec<f32> = crate::pool::pool().map(n_chunks, |ci| {
-            let mut zmin = zmin0;
-            for t in &tris[ci * chunk..((ci + 1) * chunk).min(tris.len())] {
-                for p in [t.p0, [t.p0[0] + t.e1[0], t.p0[1] + t.e1[1], t.p0[2] + t.e1[2]], [t.p0[0] + t.e2[0], t.p0[1] + t.e2[1], t.p0[2] + t.e2[2]]] {
-                    let z = -dot(p, d);
-                    if z.is_finite() {
-                        zmin = zmin.min(z);
-                    }
-                }
-            }
-            zmin
-        });
-        let zmin = mins.into_iter().fold(zmin0, f32::min);
+        // z = −p·d: its minimum over every vertex = the BVH's exact extreme along −d (a pruned descent)
+        let zmin = zmin0.min(bvh.min_dot([-self.d[0], -self.d[1], -self.d[2]]));
         self.half_d = (0.5 * (zmax - zmin)).max(1e-3);
         self.zc = -0.5 * (zmin + zmax);
     }
@@ -1268,6 +1253,83 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
     Layers { w, h, start, frags, max_layers: MAX_LAYERS, sparse: None, item_layers: kept, fractions }
 }
 
+/// THE EXACT LAYER-COUNT STATISTIC (the coordinator's requirement): over EVERY pixel of the viewport the
+/// number of item layers the peel renders — the depth logic of `extract_layers` (env layer, bias, D16
+/// quantisation, the cap) on a dense depth-only A-buffer, no colour, no lookups — then the game's stop
+/// rule (`prm.peel_stop`, with its readback lag) on the exact written fractions. Cost: the dense raster of
+/// the frame plus a per-pixel scan.
+pub fn exact_item_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm: &BakeParams, threads: usize) -> (usize, Vec<f64>) {
+    let (w, h) = (frame.res, frame.res_y);
+    let n = (w * h) as usize;
+    let skip_n = if prm.dome_layer { 1usize } else { 0 };
+    let is_env = |tri: u32| -> bool { let wt = &bvh.tris[tri as usize]; wt.inst == DECOR_INST && scene.decor.get(wt.tri as usize).map(|d| d.env).unwrap_or(false) };
+    let env_drawn = |tri: u32| -> bool {
+        let wt = &bvh.tris[tri as usize];
+        match scene.decor.get(wt.tri as usize) {
+            Some(dt) if dt.env_far_only => { let n = cross(wt.e1, wt.e2); dot(n, frame.d) > 0.0 }
+            _ => true,
+        }
+    };
+    let count_pixel = |x: u32, y: u32| -> usize {
+        let list = ab.at_all(x, y);
+        let mut d_prev = f32::NEG_INFINITY;
+        if prm.dome_layer {
+            let mut env_d = 0.0f32;
+            for f in list {
+                if is_env(f.tri) && env_drawn(f.tri) {
+                    let z01 = frame.z01(f.z);
+                    if z01 >= 0.0 && z01 <= 1.0 { env_d = env_d.max(z01); }
+                }
+            }
+            d_prev = if env_d > 0.0 { if prm.depth_bits == 16 { (env_d * 65535.0).round() / 65535.0 } else { env_d } } else { 0.0 };
+        }
+        let mut items = 0usize;
+        for f in list {
+            if prm.dome_layer && is_env(f.tri) {
+                continue;
+            }
+            let z01 = frame.z01(f.z).max(0.0);
+            if z01 < d_prev {
+                continue;
+            }
+            if items >= MAX_LAYERS {
+                break;
+            }
+            let wt = &bvh.tris[f.tri as usize];
+            let (slope, zmax_prim) = tri_slope(wt, frame);
+            let mut d = z01 + d3d_depth_bias_fmt(zmax_prim, slope.min(1e6), prm.depth_bias, prm.depth_bits);
+            if prm.depth_bits == 16 {
+                d = (d.clamp(0.0, 1.0) * 65535.0).round() / 65535.0;
+            }
+            items += 1;
+            d_prev = d;
+        }
+        let _ = skip_n;
+        items
+    };
+    let rows_per = ((h as usize) / (threads * 2).max(1)).max(1);
+    let n_chunks = (h as usize + rows_per - 1) / rows_per;
+    let hists: Vec<[usize; MAX_LAYERS + 1]> = crate::pool::pool().map(n_chunks, |ci| {
+        let mut hist = [0usize; MAX_LAYERS + 1];
+        for y in ci * rows_per..((ci + 1) * rows_per).min(h as usize) {
+            for x in 0..w as usize {
+                hist[count_pixel(x as u32, y as u32).min(MAX_LAYERS)] += 1;
+            }
+        }
+        hist
+    });
+    let mut hist = [0usize; MAX_LAYERS + 1];
+    for hh in &hists { for k in 0..=MAX_LAYERS { hist[k] += hh[k]; } }
+    let mut fractions: Vec<f64> = Vec::with_capacity(MAX_LAYERS);
+    let mut at_least = n;
+    for k in 0..MAX_LAYERS {
+        at_least -= hist[k];
+        fractions.push(at_least as f64 / n.max(1) as f64);
+    }
+    let kept = prm.peel_stop.layers_rendered(&fractions);
+    (kept, fractions)
+}
+
 /// The census stride of the sparse layer-count estimate (every 8th pixel in x and y: 1/64 of the frame).
 pub const CENSUS_STEP: u32 = 8;
 
@@ -1292,14 +1354,15 @@ pub mod prof {
     pub static B_INDEX: AtomicU64 = AtomicU64::new(0);
     pub static DIR: AtomicU64 = AtomicU64::new(0);
     pub static FRAMES: AtomicU64 = AtomicU64::new(0);
+    pub static EXACT: AtomicU64 = AtomicU64::new(0);
     pub fn add(c: &AtomicU64, t: std::time::Instant) {
         c.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
     pub fn report(label: &str, total: f32) {
         let g = |c: &AtomicU64| c.load(Ordering::Relaxed) as f64 / 1e9;
-        let staged = g(&BUILD) + g(&LAYERS) + g(&DUMP) + g(&GATHER) + g(&ACCUM) + g(&SNAP) + g(&FRAMES);
-        eprintln!("profile [{label}]: A-buffer build {:.2}s (wanted index {:.2}s, clip {:.2}s, raster {:.2}s, CSR {:.2}s), layer derivation {:.2}s, per-direction dumps {:.2}s, gather {:.2}s, accumulate {:.2}s, accumulation snapshots {:.2}s, frames {:.2}s; directions total {:.2}s (unstaged {:.2}s); sweep total {total:.2}s", g(&BUILD), g(&B_INDEX), g(&B_CLIP), g(&B_RASTER), g(&B_SORT), g(&LAYERS), g(&DUMP), g(&GATHER), g(&ACCUM), g(&SNAP), g(&FRAMES), g(&DIR), g(&DIR) - staged);
-        for c in [&BUILD, &LAYERS, &DUMP, &GATHER, &ACCUM, &SNAP, &B_CLIP, &B_RASTER, &B_SORT, &B_INDEX, &DIR, &FRAMES] { c.store(0, Ordering::Relaxed); }
+        let staged = g(&BUILD) + g(&LAYERS) + g(&DUMP) + g(&GATHER) + g(&ACCUM) + g(&SNAP) + g(&FRAMES) + g(&EXACT);
+        eprintln!("profile [{label}]: A-buffer build {:.2}s (wanted index {:.2}s, clip {:.2}s, raster {:.2}s, CSR {:.2}s), exact layer count {:.2}s, layer derivation {:.2}s, per-direction dumps {:.2}s, gather {:.2}s, accumulate {:.2}s, accumulation snapshots {:.2}s, frames {:.2}s; directions total {:.2}s (unstaged {:.2}s); sweep total {total:.2}s", g(&BUILD), g(&B_INDEX), g(&B_CLIP), g(&B_RASTER), g(&B_SORT), g(&EXACT), g(&LAYERS), g(&DUMP), g(&GATHER), g(&ACCUM), g(&SNAP), g(&FRAMES), g(&DIR), g(&DIR) - staged);
+        for c in [&BUILD, &LAYERS, &DUMP, &GATHER, &ACCUM, &SNAP, &B_CLIP, &B_RASTER, &B_SORT, &B_INDEX, &DIR, &FRAMES, &EXACT] { c.store(0, Ordering::Relaxed); }
     }
 }
 
@@ -1614,7 +1677,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                 // the receivers, so the far plane is pushed out to every occluder — otherwise the ground,
                 // the sea and the decoration would pancake onto one far-plane layer and merge into its
                 // farthest (often invisible / black) member (found by the dry run, 2026-09-24 18:10 PT)
-                if prm.game_peel { fr.extend_far(&bvh.tris); }
+                if prm.game_peel { fr.extend_far(bvh); }
                 vec![fr]
             }
         };
@@ -1708,7 +1771,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                 // the CENSUS pixels for the layer-count rule's written fractions (every CENSUS_STEP-th pixel in x
                 // and y), unless this peel's item-layer count is known (captured or fixed)
                 let fixed_layers_known = if prm.layers_from_capture { prm.peel_layer_counts.as_ref().and_then(|c| c.get(di)).and_then(|v| v.get(pi)).copied().flatten().is_some() } else { prm.peel_layers_fixed.is_some() };
-                if !fixed_layers_known {
+                if !fixed_layers_known && prm.layers_estimate {
                     // only inside the texels' bounding rectangle: an item layer can only be written where an
                     // item's texels project (every item has charts), so the census pixels outside it hold no
                     // item layer and are counted analytically (extract_layers)
@@ -1744,6 +1807,20 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                 Some(std::sync::Arc::new(PixelIndex::new(frame.res, frame.res_y, m)))
             } else { None };
             prof::add(&prof::B_INDEX, t_idx);
+            // THE EXACT LAYER COUNT (default): with no captured or fixed count for this peel, a dense depth-only
+            // build of the whole frame gives the written fraction of every item layer exactly, then the stop
+            // rule; --layers-estimate takes the census estimate on the sparse build instead
+            let t_exact = std::time::Instant::now();
+            let exact_layers: Option<usize> = if prm.game_peel && !want_dir_dump && !prm.layers_estimate {
+                let known = if prm.layers_from_capture { prm.peel_layer_counts.as_ref().and_then(|c| c.get(di)).and_then(|v| v.get(pi)).copied().flatten() } else { prm.peel_layers_fixed };
+                if known.is_none() {
+                    let dense = build_abuffer_wanted(&bvh.tris, frame, threads, if prm.depth_clip { frame.z_from_z01(0.0) } else { f32::NEG_INFINITY }, frame.z_from_z01(1.0), &prm.alpha_masks, None);
+                    let (kept, fractions) = exact_item_layers(&dense, frame, scene, bvh, prm, threads);
+                    if peel_layers_debug() { eprintln!("peel layers (exact, {} fragments): fractions {:?} → {kept} rendered", dense.len(), fractions.iter().take_while(|f| **f > 0.0).map(|f| format!("{f:.6}")).collect::<Vec<_>>()); }
+                    Some(kept)
+                } else { None }
+            } else { None };
+            prof::add(&prof::EXACT, t_exact);
             let ab = if prm.game_peel { build_abuffer_wanted(&bvh.tris, frame, threads, if prm.depth_clip { frame.z_from_z01(0.0) } else { f32::NEG_INFINITY }, frame.z_from_z01(1.0), &prm.alpha_masks, wanted.as_ref()) } else { build_abuffer_upto(&bvh.tris, frame, threads, zmax, &prm.alpha_masks) };
             t_build_total += tb2.elapsed().as_secs_f32();
             prof::add(&prof::BUILD, tb2);
@@ -1776,6 +1853,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             } else {
                 None
             };
+            let fixed_layers = fixed_layers.or(exact_layers);
             let layers: Option<Layers> = if prm.game_peel || want_dir_dump { Some(extract_layers(&ab, frame, scene, bvh, prm, shadow.as_ref(), sun_bias, sky, threads, wanted.as_ref(), fixed_layers, dome_img.as_deref())) } else { None };
             prof::add(&prof::LAYERS, tl);
             let td = std::time::Instant::now();
@@ -2331,7 +2409,7 @@ mod tests {
         // (beyond = farther along d, the sky side; a point behind the near plane would not move it)
         let far = [850.0 + 300.0 * d[0], 40.0 + 300.0 * d[1], 340.0 + 300.0 * d[2]];
         let tri = WTri { p0: far, e1: [1.0, 0.0, 0.0], e2: [0.0, 0.0, 1.0], inst: DECOR_INST, tri: 0, alpha: u16::MAX, uv0: [[0.0; 2]; 3] };
-        f2.extend_far(&[tri]);
+        f2.extend_far(&Bvh::build(vec![tri]));
         assert!((f2.z_from_z01(1.0) - f.z_from_z01(1.0)).abs() < 1e-3, "near plane unchanged");
         let (_, _, zt) = f2.project(tri.p0);
         assert!(f2.z01(zt) >= 0.0 && f2.z01(zt) < 0.05, "the far triangle is now inside, at the far end: {}", f2.z01(zt));

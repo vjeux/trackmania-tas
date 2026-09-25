@@ -58,6 +58,23 @@ pub fn triangle<F: FnMut(u32, u32, Bary)>(w: u32, h: u32, p: [[f32; 2]; 3], f: F
     triangle_clipped(w, h, p, (0, 0, w as i32 - 1, h as i32 - 1), f)
 }
 
+/// Whether `triangle` would visit pixel (x, y) for `p`: the same orientation, edge functions and
+/// top-left rule (the lazy dome raster asks per pixel instead of filling the frame).
+#[inline]
+pub fn covers(p: [[f32; 2]; 3], x: u32, y: u32) -> bool {
+    let area = edge(p[0], p[1], p[2]);
+    if area == 0.0 || !area.is_finite() {
+        return false;
+    }
+    let (a, b, c) = if area > 0.0 { (p[0], p[1], p[2]) } else { (p[0], p[2], p[1]) };
+    let tl = [top_left(a, b), top_left(b, c), top_left(c, a)];
+    let q = [x as f32 + 0.5, y as f32 + 0.5];
+    let e0 = edge(a, b, q);
+    let e1 = edge(b, c, q);
+    let e2 = edge(c, a, q);
+    (e0 > 0.0 || (e0 == 0.0 && tl[0])) && (e1 > 0.0 || (e1 == 0.0 && tl[1])) && (e2 > 0.0 || (e2 == 0.0 && tl[2]))
+}
+
 /// `triangle` visiting only the pixels inside `clip` = (x0, y0, x1, y1) inclusive — the same pixels,
 /// the same barycentrics, just the rows and columns outside the clip skipped.
 pub fn triangle_clipped<F: FnMut(u32, u32, Bary)>(w: u32, h: u32, p: [[f32; 2]; 3], clip: (i32, i32, i32, i32), f: F) {

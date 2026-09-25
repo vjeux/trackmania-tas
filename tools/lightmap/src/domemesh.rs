@@ -57,15 +57,37 @@ pub struct DomeTri {
 pub struct DomeRaster {
     pub w: u32,
     pub h: u32,
+    /// The per-pixel triangle table when filled (`rasterise_filled`); empty = LAZY: `at` asks the kept
+    /// triangles in order with the rasteriser's own coverage test (the last covering one wins, as the
+    /// fill's overwrites) — the frame has 16.7 M pixels and two to four kept triangles, the peel reads a
+    /// million of them.
     pub tri: Vec<u16>,
     pub tris: Vec<DomeTri>,
+    pub inset: u32,
 }
 
 impl DomeRaster {
+    /// The kept triangle covering pixel (x, y): the table, or the lazy search.
+    #[inline]
+    fn tri_at(&self, x: u32, y: u32) -> u16 {
+        if !self.tri.is_empty() {
+            return self.tri[(y * self.w + x) as usize];
+        }
+        if x < self.inset || y < self.inset || x + self.inset >= self.w || y + self.inset >= self.h {
+            return u16::MAX;
+        }
+        let mut hit = u16::MAX;
+        for (i, tr) in self.tris.iter().enumerate() {
+            if crate::raster::covers(tr.px, x, y) {
+                hit = i as u16;
+            }
+        }
+        hit
+    }
     /// The interpolated (uv, view) at pixel (x, y), None where no front-facing dome triangle covers it.
     #[inline]
     pub fn at(&self, x: u32, y: u32) -> Option<([f32; 2], V3)> {
-        let t = self.tri[(y * self.w + x) as usize];
+        let t = self.tri_at(x, y);
         if t == u16::MAX {
             return None;
         }
@@ -81,7 +103,7 @@ impl DomeRaster {
     }
     #[inline]
     pub fn covered(&self, x: u32, y: u32) -> bool {
-        self.tri[(y * self.w + x) as usize] != u16::MAX
+        self.tri_at(x, y) != u16::MAX
     }
     /// Kept triangles.
     pub fn triangles(&self) -> usize {
@@ -147,9 +169,19 @@ impl DomeMesh {
     /// in NDC with y up = a negative signed area in pixel space, y down) and rasterised with the D3D
     /// rules (`raster::triangle`); the depth test GreaterEqual at the common depth 0 lets every dome
     /// fragment through and the mesh's front faces do not overlap, so the draw order is immaterial.
+    /// The lazy raster (no per-pixel table): the kept triangles, coverage decided per queried pixel.
     pub fn rasterise(&self, frame: &PeelFrame, eye: V3, light_dir_angle: f32, force_x: f32, invert_y: bool) -> DomeRaster {
+        self.rasterise_impl(frame, eye, light_dir_angle, force_x, invert_y, false)
+    }
+
+    /// The filled raster (the per-pixel table, as the GPU's target).
+    pub fn rasterise_filled(&self, frame: &PeelFrame, eye: V3, light_dir_angle: f32, force_x: f32, invert_y: bool) -> DomeRaster {
+        self.rasterise_impl(frame, eye, light_dir_angle, force_x, invert_y, true)
+    }
+
+    fn rasterise_impl(&self, frame: &PeelFrame, eye: V3, light_dir_angle: f32, force_x: f32, invert_y: bool, fill: bool) -> DomeRaster {
         let (w, h) = (frame.res, frame.res_y);
-        let mut tri = vec![u16::MAX; (w * h) as usize];
+        let mut tri = if fill { vec![u16::MAX; (w * h) as usize] } else { Vec::new() };
         let mut px: Vec<[f32; 2]> = Vec::with_capacity(self.pos.len());
         let mut o1: Vec<[f32; 2]> = Vec::with_capacity(self.pos.len());
         let mut o2: Vec<V3> = Vec::with_capacity(self.pos.len());
@@ -182,6 +214,9 @@ impl DomeMesh {
             let id = tris.len() as u16;
             tris.push(DomeTri { px: [pa, pb, pc], uv: [o1[a], o1[b], o1[c]], view: [o2[a], o2[b], o2[c]] });
             let inset = frame.inset_px;
+            if !fill {
+                continue;
+            }
             crate::raster::triangle(w, h, [pa, pb, pc], |x, y, _bary| {
                 // the game's viewport (1, 1, w−2, h−2): the outer ring is never drawn
                 if x < inset || y < inset || x + inset >= w || y + inset >= h {
@@ -190,7 +225,7 @@ impl DomeMesh {
                 tri[(y * w + x) as usize] = id;
             });
         }
-        DomeRaster { w, h, tri, tris }
+        DomeRaster { w, h, tri, tris, inset: frame.inset_px }
     }
 }
 
@@ -239,6 +274,27 @@ mod tests {
         let r2 = mesh.rasterise(&frame, [0.0; 3], 0.8137630820274353, 0.25, false);
         let (uv2, _) = r2.at(8, 8).unwrap();
         assert!((uv2[0] - 0.25).abs() < 1e-6 && (uv2[1] - 0.2).abs() < 1e-6, "{uv2:?}");
+    }
+
+    #[test]
+    fn the_lazy_raster_answers_as_the_filled_one() {
+        let d = [0.0f32, 0.0, 1.0];
+        let mut frame = PeelFrame::new(d, [-10.0, -10.0, -10.0], [10.0, 10.0, 10.0], 96);
+        frame.inset_px = 1;
+        // two far facets side by side (front-facing: reversed winding, as the first test) whose shared edge
+        // crosses the frame, plus a back-facing one
+        let pos: Vec<V3> = vec![[-100.0, -100.0, 1000.0], [3.3, -100.0, 1000.0], [3.3, 100.0, 1000.0], [-100.0, 100.0, 1000.0], [100.0, -100.0, 1000.0], [100.0, 100.0, 1000.0], [-100.0, -100.0, -1000.0], [100.0, -100.0, -1000.0], [100.0, 100.0, -1000.0]];
+        let uv: Vec<[f32; 2]> = pos.iter().map(|p| [p[0] * 0.001 + 0.5, p[1] * 0.001 + 0.5]).collect();
+        let mesh = DomeMesh { pos, uv, indices: vec![0, 2, 1, 0, 3, 2, 1, 5, 4, 1, 2, 5, 6, 7, 8] };
+        let filled = mesh.rasterise_filled(&frame, [0.0; 3], 0.3, -1.0, true);
+        let lazy = mesh.rasterise(&frame, [0.0; 3], 0.3, -1.0, true);
+        assert_eq!(filled.triangles(), lazy.triangles());
+        let mut covered = 0;
+        for y in 0..96 { for x in 0..96 {
+            assert_eq!(filled.covered(x, y), lazy.covered(x, y), "({x},{y})");
+            if let (Some(a), Some(b)) = (filled.at(x, y), lazy.at(x, y)) { assert_eq!(a.0, b.0, "({x},{y})"); assert_eq!(a.1, b.1); covered += 1; }
+        } }
+        assert!(covered > 8000, "the facets cover the frame but the inset ring: {covered}");
     }
 
     #[test]

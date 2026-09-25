@@ -1304,6 +1304,9 @@ fn run(a: Vec<String>) {
             if let Some(v) = f("--peel-stop-lag") { prm.peel_stop.lag = v.parse().expect("--peel-stop-lag"); }
             if let Some(v) = f("--peel-layers") { prm.peel_layers_fixed = Some(v.parse().expect("--peel-layers")); }
             prm.layers_from_capture = !has("--layers-by-rule");
+            // --layers-estimate: the stop rule on a census estimate (every 8th pixel) instead of the exact
+            // dense depth-only pass (the default: the game's statistic over the whole viewport)
+            prm.layers_estimate = has("--layers-estimate");
             prm.obj_base = base;
             let game_manifest: Option<lightmap::passdump::Manifest> = f("--frustum-from").map(|p| {
                 let txt = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("--frustum-from {p}: {e}"));
