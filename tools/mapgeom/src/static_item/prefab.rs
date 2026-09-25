@@ -28,6 +28,9 @@ pub struct CPlugPrefab {
     pub u01: i32,
     pub u02: i32,
     pub ents: Vec<Entity>,
+    /// True when the parse stopped at an entity this reader cannot follow (MAPGEOM_PREFAB_LENIENT=1: the entities read so
+    /// far are kept — the lightmapper only needs the first static object; a truncated prefab is never written back).
+    pub truncated: bool,
 }
 
 fn read_params(r: &mut Rd, id: i32) -> R<Vec<u8>> {
@@ -102,10 +105,12 @@ impl CPlugPrefab {
         let n = r.count()?;
         let u02 = r.i32()?;
         let mut ents = Vec::with_capacity(n);
+        let lenient = std::env::var_os("MAPGEOM_PREFAB_LENIENT").is_some();
+        let mut truncated = false;
         for i in 0..n {
             let ctx = |e: String| format!("prefab entity {i}/{n}: {e}");
             let at = r.o;
-            let model = read_ref(r).map_err(ctx)?;
+            let model = match read_ref(r).map_err(ctx) { Ok(m) => m, Err(e) => { if lenient && i > 0 { eprintln!("prefab: {e} — keeping the {i} entities read (lenient)"); truncated = true; break; } return Err(e); } };
             if std::env::var_os("MAPGEOM_PREFAB_TRACE").is_some() {
                 let kind = match model.inline.as_deref() { Some(n) => format!("inline {:?}", std::mem::discriminant(n)), None => format!("index {} (external/back-ref)", model.index) };
                 eprintln!("prefab entity {i}/{n} at 0x{at:x}: model {kind}, reader now at 0x{:x}", r.o);
@@ -114,15 +119,20 @@ impl CPlugPrefab {
             let pos = r.vec3()?;
             let params_id = r.i32()?;
             if std::env::var_os("MAPGEOM_PREFAB_TRACE").is_some() { eprintln!("  rot {rot:?} pos {pos:?} params id 0x{params_id:08X}"); }
-            let params = read_params(r, params_id).map_err(ctx)?;
+            let params = match read_params(r, params_id).map_err(ctx) { Ok(p) => p, Err(e) => { if lenient && i > 0 { eprintln!("prefab: {e} — keeping the {i} entities read (lenient)"); truncated = true; break; } return Err(e); } };
             let k = r.count()?;
             let u01 = r.take(k)?.to_vec();
             ents.push(Entity { model, rot, pos, params_id, params, u01 });
         }
-        Ok(CPlugPrefab { version, file_write_time, url, u01, u02, ents })
+        if truncated {
+            // the rest of the body is unknown: park the reader at its end so the caller's framing checks do not fire
+            r.o = r.b.len();
+        }
+        Ok(CPlugPrefab { version, file_write_time, url, u01, u02, ents, truncated })
     }
 
     pub fn write(&self) -> Vec<u8> {
+        assert!(!self.truncated, "a truncated (leniently parsed) prefab cannot be written back");
         let mut out = Vec::new();
         let mut lb = super::LookbackState::default();
         let mut w = Wr { w: &mut out, lb: &mut lb };

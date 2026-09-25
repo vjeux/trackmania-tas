@@ -117,12 +117,65 @@ pub fn dec3n(w: u32) -> V3 {
 pub fn load_model(bytes: &[u8]) -> Result<ModelGeom, String> {
     let f = mapgeom::static_item::file::parse_file(bytes)?;
     let mut g = ModelGeom::default();
-    let Some(so) = f.item.static_object() else {
-        return Ok(g);
+    // the item's static object: the entity model's own, or — a PREFAB item (several entities: a static object plus a
+    // waypoint trigger, the stock Screen items, …) — the first entity whose model is a static object (the record the
+    // game's static-item path makes: FUN_1404382c0 folds that entity's visual boxes); its pose is applied to the triangles
+    let mut ent_pose: Option<([f32; 4], [f32; 3])> = None;
+    let so: &mapgeom::static_item::item::CPlugStaticObjectModel = match f.item.static_object() {
+        Some(so) => so,
+        None => {
+            let Some(pf) = f.item.prefab() else { return Ok(g) };
+            let Some((e, so)) = pf.ents.iter().find_map(|e| match e.model.inline.as_deref() { Some(Node::StaticObject(so)) => Some((e, so)), _ => None }) else { return Ok(g) };
+            if e.rot != [0.0, 0.0, 0.0, 1.0] || e.pos != [0.0, 0.0, 0.0] { ent_pose = Some((e.rot, e.pos)); }
+            so
+        }
     };
     let Some(s2) = so.solid2() else {
         return Ok(g);
     };
+    Ok(geom_from_solid2(s2, ent_pose))
+}
+
+/// THE STOCK ITEMS (a placed item whose model the map does not embed — `Screen2x1Small`, …): the pack's
+/// `<Collection>\Items\<name>.Item.Gbx` references its model as an EXTERNAL prefab (`…\2x1Small.Prefab.Gbx`) whose
+/// entities carry the static object inline; resolved through the store.
+pub fn load_model_from_store(store: &mut mapgeom::store::DataStore, logical: &str) -> Result<ModelGeom, String> {
+    let m = store.load_model(logical)?;
+    let trace = std::env::var_os("LMTOOL_STOCK_TRACE").is_some();
+    let item = mapgeom::static_item::file::parse_body_with(&m.body, &m.external_indices()).map_err(|e| format!("{logical}: {e}"))?;
+    // the entity model's reference (the edition slot first, as the game writes it)
+    let Some(mc) = item.model() else { if trace { eprintln!("{logical}: no model chunk"); } return Ok(ModelGeom::default()) };
+    if trace { eprintln!("{logical}: externals {:?}; edition index {} entity_model index {}", m.externals, mc.entity_model_edition.index, mc.entity_model.index); }
+    let mut prefab_path: Option<String> = None;
+    for slot in [&mc.entity_model_edition, &mc.entity_model] {
+        if slot.index >= 0 {
+            if let Some((_, path)) = m.externals.iter().find(|(i, _)| *i == slot.index as u32) { prefab_path = Some(path.clone()); break; }
+        }
+    }
+    if prefab_path.is_none() {
+        // any prefab among the externals (the entity model slot may be a variant list whose members are the prefabs)
+        prefab_path = m.externals.iter().map(|(_, p)| p.clone()).find(|p| p.ends_with(".Prefab.Gbx"));
+    }
+    if trace { eprintln!("{logical}: prefab {prefab_path:?}"); }
+    let Some(pp) = prefab_path else {
+        // the model is inline after all
+        return load_model(&std::fs::read(logical).unwrap_or_default()).or_else(|_| Ok(ModelGeom::default()));
+    };
+    let pm = store.load_model(&pp)?;
+    let pf = mapgeom::static_item::prefab::CPlugPrefab::from_model(&pm)?;
+    for e in &pf.ents {
+        let Some(Node::StaticObject(so)) = e.model.inline.as_deref() else { continue };
+        let Some(s2) = so.solid2() else { continue };
+        let pose = if e.rot != [0.0, 0.0, 0.0, 1.0] || e.pos != [0.0, 0.0, 0.0] { Some((e.rot, e.pos)) } else { None };
+        return Ok(geom_from_solid2(s2, pose));
+    }
+    Ok(ModelGeom::default())
+}
+
+/// A `ModelGeom` from a solid: the PreLightGen, lights, the LOD-0 shaded geoms' triangles (TexCoord1 = the lightmap uv),
+/// materials / cut-out textures, the uv range and the metres-per-uv; `ent_pose` = a prefab entity's (quaternion, position).
+fn geom_from_solid2(s2: &mapgeom::static_item::solid2::CPlugSolid2Model, ent_pose: Option<([f32; 4], [f32; 3])>) -> ModelGeom {
+    let mut g = ModelGeom::default();
     if let Some(plg) = &s2.pre_light_gen {
         g.plg_u02 = plg.u02;
         if plg.u04[2] > plg.u04[0] && plg.u04[3] > plg.u04[1] && plg.u04[2].is_finite() {
@@ -288,7 +341,27 @@ pub fn load_model(bytes: &[u8]) -> Result<ModelGeom, String> {
     g.metres_per_uv = if au > 1e-9 && aw > 1e-9 { (aw / au).sqrt() as f32 } else { 0.0 };
     g.uv_min = umin;
     g.uv_max = umax;
-    Ok(g)
+    // a prefab entity's pose: rotate (quaternion x, y, z, w) and translate the triangles (the stored boxes stay in the
+    // entity's frame — the record boxes come from lmtiles::item_records)
+    if let Some((q, t)) = ent_pose {
+        let rot = |v: V3| -> V3 {
+            let (x, y, z, w) = (q[0], q[1], q[2], q[3]);
+            let (xx, yy, zz, xy, xz, yz, wx, wy, wz) = (x * x, y * y, z * z, x * y, x * z, y * z, w * x, w * y, w * z);
+            [
+                (1.0 - 2.0 * (yy + zz)) * v[0] + 2.0 * (xy - wz) * v[1] + 2.0 * (xz + wy) * v[2],
+                2.0 * (xy + wz) * v[0] + (1.0 - 2.0 * (xx + zz)) * v[1] + 2.0 * (yz - wx) * v[2],
+                2.0 * (xz - wy) * v[0] + 2.0 * (yz + wx) * v[1] + (1.0 - 2.0 * (xx + yy)) * v[2],
+            ]
+        };
+        for tri in g.tris.iter_mut() {
+            for k in 0..3 {
+                let r = rot(tri.p[k]);
+                tri.p[k] = [r[0] + t[0], r[1] + t[1], r[2] + t[2]];
+                tri.n[k] = rot(tri.n[k]);
+            }
+        }
+    }
+    g
 }
 
 /// A map item's placement fields as the file carries them (CGameCtnAnchoredObject): the game builds the mobil's
@@ -476,19 +549,26 @@ impl Scene {
             let mi = match index.get(&it.model) {
                 Some(&k) => k,
                 None => {
-                    let embedded: Option<Vec<u8>> = by_name.get(&it.model).map(|b| (*b).clone());
-                    let bytes: Option<Vec<u8>> = embedded.or_else(|| {
-                        let st = stock_store.as_mut()?;
-                        let name = it.model.trim_end_matches(".Item.Gbx");
-                        for coll in [collection_name.as_str(), "Stadium"] {
-                            let logical = format!("{coll}\\Items\\{name}.Item.Gbx");
-                            if let Ok(b) = st.read(&logical) { stock_bytes.insert(it.model.clone(), (*b).clone()); return Some((*b).clone()); }
+                    // embedded: the zip's bytes; else a stock item through the packs (its model is an external prefab)
+                    let geom: Option<ModelGeom> = match by_name.get(&it.model) {
+                        Some(bytes) => Some(load_model(bytes).map_err(|e| format!("{}: {e}", it.model))?),
+                        None => {
+                            let mut found = None;
+                            if let Some(st) = stock_store.as_mut() {
+                                let name = it.model.trim_end_matches(".Item.Gbx");
+                                for coll in [collection_name.as_str(), "Stadium"] {
+                                    let logical = format!("{coll}\\Items\\{name}.Item.Gbx");
+                                    match load_model_from_store(st, &logical) {
+                                        Ok(g) => { stock_bytes.insert(it.model.clone(), Vec::new()); found = Some(g); break; }
+                                        Err(_) => continue,
+                                    }
+                                }
+                            }
+                            found
                         }
-                        None
-                    });
-                    match bytes {
-                        Some(bytes) => {
-                            let g = load_model(&bytes).map_err(|e| format!("{}: {e}", it.model))?;
+                    };
+                    match geom {
+                        Some(g) => {
                             models.push(g);
                             model_names.push(it.model.clone());
                             index.insert(it.model.clone(), models.len() - 1);

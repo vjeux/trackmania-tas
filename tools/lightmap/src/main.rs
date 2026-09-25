@@ -5281,6 +5281,34 @@ fn run(a: Vec<String>) {
                 if let Some(pak) = f("--pak") { let (pak_path, key) = pak.rsplit_once(':').expect("--pak FILE:KEY"); let mut store = mapgeom::store::DataStore::empty(); store.add_pak(pak_path, key).expect("pak"); match lightmap::lmmesh::lm_mesh_of_zone(&mut store, &f("--collection").unwrap_or_else(|| "BlueBay".into()), &f("--zone").unwrap_or_else(|| "Sea".into())) { Ok(Some(ours)) => { let d = lightmap::lmmesh::diff_meshes(&ours, m); println!("    from the pak: ours {} verts / {} tris; positions exact {} (worst {:.2e}); normals exact {}, uvs exact {}, tangents exact {}, psize exact {}; triangle list {}", d.n_ours, ours.indices.len() / 3, d.pos_exact, d.pos_worst, d.nrm_exact, d.uv_exact, d.tan_exact, d.psize_exact, if d.tris_equal { "IDENTICAL" } else { "differs" }); if a.iter().any(|x| x == "--verbose") { for i in 0..ours.verts.len().min(m.verts.len()) { let (o, t) = (&ours.verts[i], &m.verts[i]); println!("      v{i}: ours pos {:?} uv {:?} | captured pos {:?} uv {:?}", o.pos, o.uv, t.pos, t.uv); } } } Ok(None) => println!("    from the pak: no lightmapped visual"), Err(e) => println!("    from the pak: {e}") } }
             } }
         }
+        "item-parse" => {
+            // lmtool item-parse ITEM.Item.Gbx: the typed static-item parse (geometry::load_model) with MAPGEOM_NODE_TRACE — which nodes define
+            // --store LOGICAL --pak FILE:KEY: the stock-item route (geometry::load_model_from_store)
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            if let Some(logical) = f("--store") {
+                let pak_arg = f("--pak").expect("--pak FILE:KEY");
+                let (pp, key) = pak_arg.rsplit_once(':').expect("--pak FILE:KEY");
+                let mut store = mapgeom::store::DataStore::empty();
+                store.add_pak(pp, key).expect("pak");
+                match lightmap::geometry::load_model_from_store(&mut store, &logical) {
+                    Ok(g) => println!("{logical}: {} tris, PLG u02 {} bounds {:?}, uv range {:?}..{:?}", g.tris.len(), g.plg_u02, g.plg_bounds, g.uv_min, g.uv_max),
+                    Err(e) => println!("{logical}: {e}"),
+                }
+                return;
+            }
+            let bytes = std::fs::read(&a[1]).expect("item");
+            match mapgeom::static_item::file::parse_file(&bytes) {
+                Ok(f) => {
+                    println!("typed parse ok: prefab {:?} (entities, truncated), static object {}", f.item.prefab().map(|p| (p.ents.len(), p.truncated)), f.item.static_object().is_some());
+                    if let Some(p) = f.item.prefab() { for (i, e) in p.ents.iter().enumerate() { println!("  entity {i}: model index {} inline {:?}", e.model.index, e.model.inline.as_deref().map(|n| std::mem::discriminant(n))); } }
+                }
+                Err(e) => println!("typed parse FAILED: {e}"),
+            }
+            match lightmap::geometry::load_model(&bytes) {
+                Ok(g) => println!("{}: {} tris, PLG u02 {} bounds {:?}, uv range {:?}..{:?}", a[1], g.tris.len(), g.plg_u02, g.plg_bounds, g.uv_min, g.uv_max),
+                Err(e) => println!("{}: {e}", a[1]),
+            }
+        }
         "dome-check" => {
             // lmtool dome-check PASSCAP [--frame 127448] [--direction 0] [--filter f32|f16|f16sum] [--weights floor|round|f32] [--rsq-approx]
             //   [--half H] [--top N]: PS 16774 transcribed on the frame's own inputs against the captured environment layer (domecheck.rs)

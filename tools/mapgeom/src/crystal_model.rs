@@ -241,6 +241,7 @@ impl<'a> Rd<'a> {
         }
         self.lb.defined_nodes.insert(index as u32);
         let class_id = self.u32()?;
+        if std::env::var_os("MAPGEOM_NODE_TRACE").is_some() { eprintln!("noderef {index} class 0x{class_id:08X} body at 0x{:x}", self.o); }
         let body = read(self, class_id).map_err(|e| format!("node {} (class 0x{:08X}): {}", index, class_id, e))?;
         Ok(NodeRef { index, inline: Some(Box::new(body)) })
     }
