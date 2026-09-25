@@ -6372,6 +6372,69 @@ fn run(a: Vec<String>) {
                 println!("{o:?}: Cr4 {}×{}: {d} of {n} bytes differ (max |Δ| {mx}) per channel {ch:?}", e.w / 2, e.h / 2);
             }
         }
+        "relight-worker" => {
+            // lmtool relight-worker --work W --box K [--poll SECS] [--tmp DIR]: a box of a cooperative split (no ssh): polls
+            //   W/*/plan-sweep*.json, claims the plans it has not done (claim-sweep<S>-box<K>), bakes its range with the
+            //   plan's arguments (the map copied to --tmp once), writes the pack the plan names and a done marker
+            //   (done-sweep<S>-box<K>: "ok" or "FAILED: …"); stops when W/stop exists
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let work = std::path::PathBuf::from(f("--work").expect("--work W"));
+            let k: usize = f("--box").expect("--box K").parse().expect("--box");
+            let poll: u64 = f("--poll").map(|v| v.parse().unwrap()).unwrap_or(5);
+            let tmp = std::path::PathBuf::from(f("--tmp").unwrap_or_else(|| std::env::temp_dir().join("lmtool-worker").to_string_lossy().to_string()));
+            std::fs::create_dir_all(&tmp).expect("tmp");
+            let exe = std::env::current_exe().expect("exe");
+            eprintln!("relight-worker: box {k}, work {}, polling every {poll}s ({})", work.display(), std::env::var("HOSTNAME").unwrap_or_default());
+            loop {
+                if work.join("stop").exists() { eprintln!("relight-worker: stop"); break; }
+                let mut did = false;
+                if let Ok(rd) = std::fs::read_dir(&work) {
+                    let mut maps: Vec<std::path::PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
+                    maps.sort();
+                    for mdir in maps {
+                        let Ok(rd2) = std::fs::read_dir(&mdir) else { continue };
+                        let mut plans: Vec<std::path::PathBuf> = rd2.flatten().map(|e| e.path()).filter(|p| p.file_name().map(|n| n.to_string_lossy().starts_with("plan-sweep")).unwrap_or(false)).collect();
+                        plans.sort();
+                        for pp in plans {
+                            let Ok(txt) = std::fs::read_to_string(&pp) else { continue };
+                            let Ok(plan) = serde_json::from_str::<serde_json::Value>(&txt) else { continue };
+                            let sw = plan["sweep"].as_u64().unwrap_or(0);
+                            let boxes = plan["boxes"].as_u64().unwrap_or(1) as usize;
+                            if k >= boxes { continue; }
+                            let claim = mdir.join(format!("claim-sweep{sw}-box{k}"));
+                            let done = mdir.join(format!("done-sweep{sw}-box{k}"));
+                            if done.exists() || claim.exists() { continue; }
+                            if std::fs::write(&claim, format!("{}\n", std::env::var("HOSTNAME").unwrap_or_default())).is_err() { continue; }
+                            did = true;
+                            let map = plan["map"].as_str().unwrap_or("").to_string();
+                            let name = std::path::Path::new(&map).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                            let local_map = tmp.join(&name);
+                            if !local_map.exists() { if let Err(e) = std::fs::copy(&map, &local_map) { let _ = std::fs::write(&done, format!("FAILED: copy {map}: {e}")); continue; } }
+                            let range = plan["ranges"][k].as_str().unwrap_or("0..").to_string();
+                            let mut args: Vec<String> = vec!["bake".into(), local_map.to_string_lossy().to_string()];
+                            for v in plan["args"].as_array().cloned().unwrap_or_default() { if let Some(s) = v.as_str() { args.push(s.to_string()); } }
+                            let pack = mdir.join(format!("sweep{sw}-box{k}.contribs"));
+                            args.extend(["--sweep-only".into(), sw.to_string(), "--dir-range".into(), range.clone(), "--contrib-out".into(), pack.to_string_lossy().to_string(), "--out".into(), tmp.join(format!("{name}.s{sw}-box{k}.Map.Gbx")).to_string_lossy().to_string()]);
+                            if let Some(ff) = plan["field_from"].as_str() { args.extend(["--field-from".into(), ff.to_string()]); }
+                            eprintln!("relight-worker: {name} sweep {sw} range {range} → {}", pack.display());
+                            let t = std::time::Instant::now();
+                            let out = std::process::Command::new(&exe).args(&args).output();
+                            let status = match out {
+                                Ok(o) => {
+                                    let err = String::from_utf8_lossy(&o.stderr).to_string();
+                                    let _ = std::fs::write(mdir.join(format!("sweep{sw}-box{k}.log")), &err);
+                                    if o.status.success() { format!("ok {:.1}s\n{}", t.elapsed().as_secs_f32(), err.lines().filter(|l| l.starts_with("profile [sweep ")).collect::<Vec<_>>().join("\n")) } else { format!("FAILED: {}", err.lines().rev().take(3).collect::<Vec<_>>().join(" | ")) }
+                                }
+                                Err(e) => format!("FAILED: spawn: {e}"),
+                            };
+                            eprintln!("relight-worker: {name} sweep {sw}: {}", status.lines().next().unwrap_or(""));
+                            let _ = std::fs::write(&done, status);
+                        }
+                    }
+                }
+                if !did { std::thread::sleep(std::time::Duration::from_secs(poll)); }
+            }
+        }
         "bench" => {
             // lmtool bench MAP... [--quality Q] [--jobs J] [--out TABLE.md] [--dir OUTDIR] [-- EXTRA BAKE ARGS]:
             // bake every map with `lmtool bake --raster --game-peel --profile` (J at a time, each a child
@@ -6488,6 +6551,11 @@ fn run(a: Vec<String>) {
             let mut hosts: Vec<String> = Vec::new();
             let mut work: Option<String> = None;
             let mut keep_work = false;
+            // --coop: no ssh — this process is box 0, the other boxes run `lmtool relight-worker --work W --box k`
+            //   and pick their ranges up from the plan files the driver writes into the work directory (a
+            //   shared store); --weights w0,w1,…: the ranges proportional to the boxes' speeds (cores)
+            let mut coop = false;
+            let mut weights: Vec<f64> = Vec::new();
             let mut i = 1;
             let mut in_extra = false;
             while i < a.len() {
@@ -6504,6 +6572,8 @@ fn run(a: Vec<String>) {
                     "--hosts" => { hosts = a[i + 1].split(',').map(|h| h.trim().to_string()).filter(|h| !h.is_empty()).collect(); i += 1; }
                     "--work" => { work = Some(a[i + 1].clone()); i += 1; }
                     "--keep-work" => keep_work = true,
+                    "--coop" => coop = true,
+                    "--weights" => { weights = a[i + 1].split(',').map(|w| w.trim().parse::<f64>().expect("--weights")).collect(); i += 1; }
                     "--maps" => { let txt = std::fs::read_to_string(&a[i + 1]).expect("--maps list"); for l in txt.lines() { let l = l.trim(); if !l.is_empty() && !l.starts_with('#') { maps.push(l.to_string()); } } i += 1; }
                     _ => maps.push(x.clone()),
                 }
@@ -6543,15 +6613,39 @@ fn run(a: Vec<String>) {
                             let mut all_err = String::new();
                             let mut all_out = String::new();
                             let mut ok = true;
+                            // the ranges of the boxes as "a..b" strings over n directions (the last open-ended: the
+                            // sweep's true count is the point set's, near the nominal one)
+                            let ranges_for = |n: usize| -> Vec<String> {
+                                let w: Vec<f64> = if weights.len() == boxes { weights.clone() } else { vec![1.0; boxes] };
+                                let total: f64 = w.iter().sum();
+                                let mut out = Vec::new();
+                                let mut acc = 0.0f64;
+                                for k in 0..boxes {
+                                    let a = ((acc / total) * n as f64).round() as usize;
+                                    acc += w[k];
+                                    let b = ((acc / total) * n as f64).round() as usize;
+                                    out.push(if k + 1 == boxes { format!("{a}..") } else { format!("{a}..{b}") });
+                                }
+                                out
+                            };
+                            let sweep_n = lightmap::dome::sweep_counts(quality.parse().unwrap_or(3));
                             for sw in 0..n_sweeps {
                                 let field_prev = wroot.join(format!("field{}.bin", sw.wrapping_sub(1)));
                                 let mut children: Vec<(usize, std::process::Child)> = Vec::new();
                                 let t_sw = std::time::Instant::now();
+                                let ranges = ranges_for(sweep_n[sw]);
+                                let bake_args: Vec<String> = { let mut v: Vec<String> = vec!["--raster".into(), "--quality".into(), quality.clone(), "--game-peel".into(), "--profile".into()]; v.extend(extra.iter().cloned()); v };
+                                if coop {
+                                    // THE PLAN for the workers (boxes 1..N−1), then box 0's own range inline
+                                    let plan = serde_json::json!({ "map": m, "args": bake_args, "sweep": sw, "boxes": boxes, "ranges": ranges, "field_from": if sw > 0 { serde_json::Value::String(field_prev.to_string_lossy().to_string()) } else { serde_json::Value::Null }, "work": wroot.to_string_lossy() });
+                                    std::fs::write(wroot.join(format!("plan-sweep{sw}.json")), serde_json::to_string_pretty(&plan).unwrap()).expect("plan");
+                                }
                                 for k in 0..boxes {
+                                    if coop && k > 0 { continue; }
                                     let cdir = wroot.join(format!("sweep{sw}-box{k}.contribs"));
-                                    let mut args: Vec<String> = vec!["bake".into(), m.clone(), "--raster".into(), "--quality".into(), quality.clone(), "--game-peel".into(), "--profile".into()];
-                                    args.extend(extra.iter().cloned());
-                                    args.extend(["--sweep-only".into(), sw.to_string(), "--dir-range".into(), format!("{k}/{boxes}"), "--contrib-out".into(), cdir.to_string_lossy().to_string(), "--out".into(), wroot.join(format!("s{sw}-box{k}.Map.Gbx")).to_string_lossy().to_string()]);
+                                    let mut args: Vec<String> = vec!["bake".into(), m.clone()];
+                                    args.extend(bake_args.iter().cloned());
+                                    args.extend(["--sweep-only".into(), sw.to_string(), "--dir-range".into(), ranges[k].clone(), "--contrib-out".into(), cdir.to_string_lossy().to_string(), "--out".into(), wroot.join(format!("s{sw}-box{k}.Map.Gbx")).to_string_lossy().to_string()]);
                                     if sw > 0 { args.extend(["--field-from".into(), field_prev.to_string_lossy().to_string()]); }
                                     let mut cmd = if hosts.is_empty() {
                                         let mut c = std::process::Command::new(&exe);
@@ -6578,6 +6672,22 @@ fn run(a: Vec<String>) {
                                             if !o.status.success() { ok = false; all_err += &format!("sweep {sw} box {k} FAILED: {}\n", err.lines().rev().take(3).collect::<Vec<_>>().join(" | ")); }
                                         }
                                         Err(e) => { ok = false; all_err += &format!("sweep {sw} box {k}: {e}\n"); }
+                                    }
+                                }
+                                if coop && ok {
+                                    // wait for the workers' done markers
+                                    let t_w = std::time::Instant::now();
+                                    let mut pending: Vec<usize> = (1..boxes).collect();
+                                    while !pending.is_empty() {
+                                        pending.retain(|k| {
+                                            let done = wroot.join(format!("done-sweep{sw}-box{k}"));
+                                            match std::fs::read_to_string(&done) {
+                                                Ok(txt) => { if !txt.starts_with("ok") { ok = false; all_err += &format!("sweep {sw} box {k} (worker): {}\n", txt.lines().next().unwrap_or("")); } false }
+                                                Err(_) => true,
+                                            }
+                                        });
+                                        if !pending.is_empty() { std::thread::sleep(std::time::Duration::from_secs(3)); }
+                                        if t_w.elapsed().as_secs() > 6 * 3600 { ok = false; all_err += &format!("sweep {sw}: workers {pending:?} never finished\n"); break; }
                                     }
                                 }
                                 let range_s = t_sw.elapsed().as_secs_f32();
