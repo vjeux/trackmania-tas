@@ -273,3 +273,93 @@ fn sheets(webm: &str, outdir: &Path, name: &str) -> Result<(f64, PathBuf, PathBu
     println!("dense {} ({dfps:.3} fps, 6x{rows})", dense.display());
     Ok((secs, sheet, dense))
 }
+
+/// `shootctl render-batch --outdir /mnt/c/DIR [--cam N] [--load-timeout S] LIST.tsv`
+/// — one `render` per row of LIST.tsv (`name<TAB>map<TAB>ghost[<TAB>footage_s]`,
+/// `#` comments), each under its own hold of the game lock so the other
+/// sessions on the box get a turn between maps. A row that fails is reported
+/// and the batch goes on; `DIR/done-batch.txt` lists every row's outcome
+/// (`OK name webm bytes seconds` | `FAILED name reason`). Written for the 16
+/// MK64 centreline-ghost laps (2026-09-24).
+pub fn run_batch(args: &[String]) -> i32 {
+    let mut outdir: Option<PathBuf> = None;
+    let mut cam = 2u8;
+    let mut load_timeout_s = 120u64;
+    let mut list: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--outdir" => { outdir = args.get(i + 1).map(PathBuf::from); i += 2; }
+            "--cam" => { cam = args.get(i + 1).and_then(|v| v.parse().ok()).unwrap_or(2); i += 2; }
+            "--load-timeout" => { load_timeout_s = args.get(i + 1).and_then(|v| v.parse().ok()).unwrap_or(120); i += 2; }
+            other => { list = Some(other.to_string()); i += 1; }
+        }
+    }
+    let (Some(outdir), Some(list)) = (outdir, list) else {
+        eprintln!("render-batch --outdir /mnt/c/DIR [--cam N] [--load-timeout S] LIST.tsv");
+        return 2;
+    };
+    let text = match std::fs::read_to_string(&list) {
+        Ok(t) => t,
+        Err(e) => { eprintln!("{list}: {e}"); return 2; }
+    };
+    if let Err(e) = std::fs::create_dir_all(&outdir) {
+        eprintln!("{}: {e}", outdir.display());
+        return 2;
+    }
+    let done = outdir.join("done-batch.txt");
+    let _ = std::fs::remove_file(&done);
+    let mut report = String::new();
+    let mut failures = 0;
+    let t_batch = Instant::now();
+    for (ln, row) in text.lines().enumerate() {
+        let row = row.trim();
+        if row.is_empty() || row.starts_with('#') {
+            continue;
+        }
+        let f: Vec<&str> = row.split('\t').collect();
+        if f.len() < 3 {
+            eprintln!("{list}:{}: want name<TAB>map<TAB>ghost[<TAB>footage]", ln + 1);
+            failures += 1;
+            report.push_str(&format!("FAILED row{} malformed\n", ln + 1));
+            continue;
+        }
+        let footage_s: f64 = f.get(3).and_then(|v| v.parse().ok()).unwrap_or(0.0);
+        let opts = Opts { map: f[1].to_string(), name: f[0].to_string(), outdir: outdir.clone(), cam, load_timeout_s, footage_s, quit: false, detach: false, ghosts: vec![f[2].to_string()] };
+        if !Path::new(&opts.map).is_file() || !Path::new(&opts.ghosts[0]).is_file() {
+            eprintln!("{}: map or ghost missing ({} / {})", opts.name, opts.map, opts.ghosts[0]);
+            failures += 1;
+            report.push_str(&format!("FAILED {} missing map or ghost\n", opts.name));
+            continue;
+        }
+        // a clip of this name already rendered (a rerun after a failure) is kept
+        let webm = format!("{SCREENSHOTS}/{}.webm", opts.name);
+        if let Ok(d) = duration_s(&webm) {
+            if footage_s <= 0.0 || (d - footage_s).abs() < 2.0 {
+                println!("=== {} already rendered ({d:.1} s) — kept", opts.name);
+                report.push_str(&format!("OK {} {webm} kept {d:.3}\n", opts.name));
+                continue;
+            }
+        }
+        println!("=== {} [{:.0}s into the batch]", opts.name, t_batch.elapsed().as_secs_f64());
+        let t0 = Instant::now();
+        match render(&opts, t0) {
+            Ok((w, bytes, secs)) => {
+                println!("OK {} {w} {bytes} {secs:.3} ({:.0}s)", opts.name, t0.elapsed().as_secs_f64());
+                report.push_str(&format!("OK {} {w} {bytes} {secs:.3}\n", opts.name));
+            }
+            Err(e) => {
+                eprintln!("FAILED {}: {e}", opts.name);
+                failures += 1;
+                report.push_str(&format!("FAILED {} {e}\n", opts.name));
+            }
+        }
+        let tmp = outdir.join("done-batch.tmp");
+        let _ = std::fs::write(&tmp, format!("{report}(in progress)\n")).and_then(|_| std::fs::rename(&tmp, &done));
+    }
+    report.push_str(&format!("batch done in {:.0}s, {failures} failure(s)\n", t_batch.elapsed().as_secs_f64()));
+    print!("{report}");
+    let tmp = outdir.join("done-batch.tmp");
+    let _ = std::fs::write(&tmp, &report).and_then(|_| std::fs::rename(&tmp, &done));
+    if failures == 0 { 0 } else { 1 }
+}

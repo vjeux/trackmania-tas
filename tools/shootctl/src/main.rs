@@ -1264,6 +1264,7 @@ usage:
         // ONE ghost video on the SHARED game: lock held for the game part only,
         // game left up, done file + contact sheets for a remote caller. render.rs.
         "render" => render::run(&args[1..]),
+        "render-batch" => render::run_batch(&args[1..]),
         "loadprof" => loadprof::run(&args[1..]),
         // N loads of one map (or an A,B,A,B sequence), each classified from the object graph. loadloop.rs.
         "loadloop" => loadloop::run(&args[1..]),
