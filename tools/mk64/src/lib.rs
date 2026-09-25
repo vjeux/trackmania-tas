@@ -18,5 +18,7 @@ pub mod skins;
 pub mod ghost;
 pub mod moles;
 pub mod objects;
+pub mod clones;
+pub mod cpus;
 pub mod texture;
 pub mod tm;

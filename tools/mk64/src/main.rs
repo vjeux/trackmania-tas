@@ -75,6 +75,8 @@ fn main() {
         "sprites" => cmd_sprites(&args),
         "overlaps" => cmd_overlaps(&args),
         "ghost" => cmd_ghost(&args),
+        "clones" => cmd_clones(&args),
+        "cpus" => cmd_cpus(&args),
         "ghost-all" => cmd_ghost_all(&args),
         "mux" => cmd_mux(&args),
         "colours" => cmd_colours(&args),
@@ -741,5 +743,184 @@ fn cmd_routes(args: &[String]) {
     for k in 1..=cps {
         let idx = (k * n) / (cps + 1);
         println!("  checkpoint {k} at {:>5.1}%: {}", idx as f32 * 100.0 / n as f32, if shared[idx] { "ok (all routes pass)" } else { "MISSED by some route" });
+    }
+}
+
+/// `mk64 clones --map MAP --ghost GHOST.Ghost.Gbx --out OUT [--n 7] [--skin "MK64 Bowser.zip"]
+/// [--name Bowser] [--near 2.5 --far 9.5 --slow-near 1.35 --slow-far 1.08]`:
+/// the map with the ghost as its validation ghost and `n` collidable clones of
+/// it in solo play (the January 2026 Clones feature). The author time becomes
+/// the ghost's; gold/silver/bronze ×1.06/1.2/1.5.
+fn cmd_clones(args: &[String]) {
+    let map = flag(args, "--map").unwrap_or_else(|| die("--map MAP.Map.Gbx"));
+    let ghost_path = flag(args, "--ghost").unwrap_or_else(|| die("--ghost GHOST.Ghost.Gbx"));
+    let out = flag(args, "--out").unwrap_or_else(|| die("--out OUT.Map.Gbx"));
+    let n: usize = flag(args, "--n").and_then(|s| s.parse().ok()).unwrap_or(7);
+    let near: f32 = flag(args, "--near").and_then(|s| s.parse().ok()).unwrap_or(2.5);
+    let far: f32 = flag(args, "--far").and_then(|s| s.parse().ok()).unwrap_or(9.5);
+    let slow_near: f32 = flag(args, "--slow-near").and_then(|s| s.parse().ok()).unwrap_or(1.35);
+    let slow_far: f32 = flag(args, "--slow-far").and_then(|s| s.parse().ok()).unwrap_or(1.08);
+    let skin = flag(args, "--skin");
+    let name = flag(args, "--name");
+
+    // the ghost: skin + name rewritten, its splits = the waypoint times
+    let c = ghost::Container::load(&ghost_path).unwrap_or_else(|e| die(format!("{ghost_path}: {e}")));
+    let mut body = c.body().to_vec();
+    let fields = ghost::ident::scan(&c);
+    let mut edits: Vec<(usize, usize, Vec<u8>)> = Vec::new();
+    for f in &fields {
+        match f.role {
+            ghost::ident::Role::Skin if skin.is_some() => edits.push((f.at, f.len, format!("Skins\\Models\\CarSport\\{}", skin.as_deref().unwrap()).into_bytes())),
+            ghost::ident::Role::Locator if skin.is_some() => edits.push((f.at, f.len, Vec::new())),
+            ghost::ident::Role::Nickname if name.is_some() => edits.push((f.at, f.len, name.as_deref().unwrap().as_bytes().to_vec())),
+            _ => {}
+        }
+    }
+    if !edits.is_empty() {
+        body = gbx::container::replace_strings(&body, &edits, None).unwrap_or_else(|e| die(format!("ghost strings: {e}")));
+    }
+    if skin.is_some() {
+        // a local skin: zero checksum (the 32 bytes before the skin path's length word)
+        if let Some(f) = fields.iter().find(|f| f.role == ghost::ident::Role::Skin) {
+            let at = f.at - 4 - 32;
+            for b in &mut body[at..at + 32] {
+                *b = 0;
+            }
+        }
+    }
+    let c2 = ghost::Container { path: c.path.clone(), gbx: gbx::container::Gbx { body: body.clone(), ..c.gbx.clone() } };
+    let splits = c2.splits();
+    let race_ms = c2.declared_times().first().map(|d| d.1).unwrap_or(0);
+    if splits.is_empty() || race_ms == 0 {
+        die(format!("{ghost_path}: no split list / declared time (rebuild the ghost with the current `mk64 ghost`)"));
+    }
+    println!("ghost: {} waypoints, race {:.3} s, {} clones", splits.len(), race_ms as f32 / 1000.0, n);
+
+    // the map
+    let mut m = tmmaps::map::MapFile::load(std::path::Path::new(&map));
+    // --probe ghost|meta: only one of the two edits (which one breaks a load)
+    let probe = flag(args, "--probe");
+    let blob = if has(args, "--dummy-ghost") { tmmaps::map::DUMMY_GHOST.to_vec() } else { mk64::clones::ghost_blob(&body).unwrap_or_else(|e| die(e)) };
+    if probe.as_deref() != Some("meta") {
+        mk64::clones::set_skip_chunk(&mut m, 0x0305_B00F, &blob).unwrap_or_else(|e| die(e));
+    }
+    let clones = mk64::clones::schedule(n, near, far, slow_near, slow_far);
+    let meta = mk64::clones::metadata_payload(true, &splits, &clones);
+    if probe.as_deref() != Some("ghost") {
+        mk64::clones::set_skip_chunk(&mut m, 0x0304_3044, &meta).unwrap_or_else(|e| die(e));
+    }
+    // laps from the body chunk 0x03043018; checkpoints per lap = splits / laps
+    let laps = tmmaps::gbx::all_skip_chunks(&m.gbx.body)
+        .iter()
+        .find(|c| c.0 == 0x0304_3018)
+        .map(|&(_, _, p, _)| {
+            let lap_race = u32::from_le_bytes(m.gbx.body[p..p + 4].try_into().unwrap());
+            let nb = u32::from_le_bytes(m.gbx.body[p + 4..p + 8].try_into().unwrap());
+            if lap_race != 0 { nb.max(1) } else { 1 }
+        })
+        .unwrap_or(1);
+    let per_lap = (splits.len() as u32 / laps).max(1);
+    let times = [race_ms, (race_ms as f32 * 1.06) as u32, (race_ms as f32 * 1.2) as u32, (race_ms as f32 * 1.5) as u32];
+    mk64::clones::set_header_times(&mut m, times, laps, per_lap);
+    // the body medal chunk 0x0305B00A: tip string, bronze, silver, gold, author
+    if let Some(&(_, _, payload, size)) = tmmaps::gbx::all_skip_chunks(&m.gbx.body).iter().find(|c| c.0 == 0x0305_B00A) {
+        let tip_len = u32::from_le_bytes(m.gbx.body[payload..payload + 4].try_into().unwrap()) as usize;
+        let at = payload + 4 + tip_len;
+        if at + 16 <= payload + size {
+            let mut b = Vec::new();
+            for t in [times[3], times[2], times[1], times[0]] {
+                b.extend_from_slice(&t.to_le_bytes());
+            }
+            m.raw_patches.push((at, b));
+        }
+    }
+    let (a, g, s, br) = (times[0], times[1], times[2], times[3]);
+    m.edit_header_xml(&|x: &str| {
+        let i = x.find("<times ")?;
+        let j = x[i..].find("/>")? + i + 2;
+        Some(format!("{}<times bronze=\"{br}\" silver=\"{s}\" gold=\"{g}\" authortime=\"{a}\" authorscore=\"0\" hasclones=\"1\"/>{}", &x[..i], &x[j..]))
+    });
+    m.edit_header_xml(&|x: &str| {
+        let i = x.find("validated=\"")?;
+        Some(format!("{}validated=\"1{}", &x[..i], &x[i + 12..]))
+    });
+    m.write_to(std::path::Path::new(&out)).unwrap_or_else(|e| die(format!("{out}: {e}")));
+    let back = tmmaps::map::MapFile::load(std::path::Path::new(&out));
+    let has = |id: u32| tmmaps::gbx::all_skip_chunks(&back.gbx.body).iter().find(|c| c.0 == id).map(|c| c.3);
+    println!("{out}: validation ghost {} bytes, metadata {} bytes, author {:.3} s, {laps} laps × {per_lap} waypoints; clones {:?}", has(0x0305_B00F).unwrap_or(0), has(0x0304_3044).unwrap_or(0), a as f32 / 1000.0, clones.iter().map(|c| format!("{:+.1}s ×{:.2}", c.offset_ms as f32 / 1000.0, c.slow_e6 as f32 / 1e6)).collect::<Vec<_>>());
+}
+
+/// Rewrite a ghost file's identity: skin (local zip in `Skins\Models\CarSport`,
+/// zero checksum, no locator) and display name. In place.
+fn ghost_identity(path: &str, skin: &str, name: &str) -> Result<(), String> {
+    let c = ghost::Container::load(path)?;
+    let mut body = c.body().to_vec();
+    let fields = ghost::ident::scan(&c);
+    let mut edits: Vec<(usize, usize, Vec<u8>)> = Vec::new();
+    for f in &fields {
+        match f.role {
+            ghost::ident::Role::Skin => edits.push((f.at, f.len, format!("Skins\\Models\\CarSport\\{skin}").into_bytes())),
+            ghost::ident::Role::Locator => edits.push((f.at, f.len, Vec::new())),
+            ghost::ident::Role::Nickname => edits.push((f.at, f.len, name.as_bytes().to_vec())),
+            _ => {}
+        }
+    }
+    // the checksum: the 32 bytes before the skin path's length word (zero = local)
+    if let Some(f) = fields.iter().find(|f| f.role == ghost::ident::Role::Skin) {
+        let at = f.at - 4 - 32;
+        for b in &mut body[at..at + 32] {
+            *b = 0;
+        }
+    }
+    let body = gbx::container::replace_strings(&body, &edits, None)?;
+    gbx::container::write_gbx(&c.gbx, body, path)
+}
+
+/// `mk64 cpus COURSE --host MAP --out-dir DIR --donor GHOST [--map BUILT.Map.Gbx]
+/// [--player mario] [--laps 3] [--vmax KMH] [--half-width M]`: the seven MK64 CPU
+/// racers as ghosts (`<Course> - <Driver>.Ghost.Gbx`), each wearing its
+/// character's skin — routes, lateral behaviours and drift zones from the
+/// game's tables (see `cpus.rs`).
+fn cmd_cpus(args: &[String]) {
+    let (mut c, decomp) = load_course(args);
+    let dir = course_arg(args);
+    let out_dir = std::path::PathBuf::from(flag(args, "--out-dir").unwrap_or_else(|| die("--out-dir DIR")));
+    let donor = flag(args, "--donor").unwrap_or_else(|| die("--donor GHOST"));
+    let host = flag(args, "--host").unwrap_or_else(|| die("--host MAP"));
+    let laps: u32 = flag(args, "--laps").and_then(|s| s.parse().ok()).unwrap_or(3);
+    let player_name = flag(args, "--player").unwrap_or("mario").to_lowercase();
+    let player = mk64::cpus::DRIVERS.iter().position(|d| d.0.to_lowercase().starts_with(&player_name)).unwrap_or(0);
+    let half_width: f32 = flag(args, "--half-width").and_then(|s| s.parse().ok()).unwrap_or(4.0);
+    let mut base = mk64::ghost::Drive::default();
+    if let Some(v) = flag(args, "--vmax").and_then(|s| s.parse::<f32>().ok()) {
+        base.vmax = v / 3.6;
+    }
+    let rom_path = std::env::var("MK64_ROM").unwrap_or_else(|_| die("MK64_ROM=/path/to/baserom.us.z64"));
+    let rom = std::fs::read(&rom_path).unwrap_or_else(|e| die(format!("{rom_path}: {e}")));
+    let assets = mk64::texture::AssetIndex::load(&decomp).expect("asset index");
+    let pieces = c.visual_pieces();
+    let coll = c.collision_pieces();
+    let kind = mk64::tm::host_kind(&tmmaps::map::MapFile::load(std::path::Path::new(host)));
+    let frame = mk64::tm::course_frame(&c, &pieces, &coll, &assets, &kind, args);
+    let soup = mesh::collision_mesh(&c, &coll, &frame);
+    let uid: Option<String> = flag(args, "--map").map(|m| {
+        let data = std::fs::read(m).unwrap_or_else(|e| die(format!("{m}: {e}")));
+        gbx::map_uid_of(&data).unwrap_or_else(|| die(format!("{m}: no map uid in the header")))
+    });
+    let beh = mk64::cpus::behaviours(&rom, &dir);
+    let n_routes = mk64::cpus::routes(&c, &frame).len();
+    println!("{dir}: {} route(s), {} CPU behaviour rows ({} drift zones, {} lateral); human = {}", n_routes, beh.len(), beh.iter().filter(|b| b.kind == mk64::cpus::BEHAVIOUR_DRIFT).count(), beh.iter().filter(|b| matches!(b.kind, 3..=5)).count(), mk64::cpus::DRIVERS[player].0);
+    std::fs::create_dir_all(&out_dir).unwrap_or_else(|e| die(format!("{}: {e}", out_dir.display())));
+    let title = mk64::course::COURSES.iter().find(|x| x.0 == dir).map(|x| x.1.to_string()).unwrap_or_else(|| dir.clone());
+    for cpu in mk64::cpus::field(&c, &frame, &rom, player, &base, half_width) {
+        let traj = mk64::cpus::trajectory(&c, &frame, &soup, &cpu, laps, 50);
+        let out = out_dir.join(format!("MK64 {title} - {}.Ghost.Gbx", cpu.name));
+        let out_s = out.to_string_lossy().to_string();
+        match mk64::ghost::write(&traj, donor, &out_s, uid.as_deref(), 50) {
+            Ok(_) => {}
+            Err(e) => die(format!("{out_s}: {e}")),
+        }
+        ghost_identity(&out_s, cpu.skin, cpu.name).unwrap_or_else(|e| die(format!("{out_s}: {e}")));
+        println!("  {:<12} route {} grid +{:.0} m lat {:+.1} m vmax {:.0} km/h — laps at {:?} s", cpu.name, cpu.route, cpu.line.start_ahead_m, cpu.line.base_lateral, cpu.drive.vmax * 3.6, traj.lap_ms.iter().map(|m| (*m as f64 / 100.0).round() / 10.0).collect::<Vec<_>>());
     }
 }

@@ -63,6 +63,9 @@ pub struct Trajectory {
     pub lap_ms: Vec<i64>,
     /// the closed centre path's length, m
     pub lap_len: f32,
+    /// every waypoint crossing in driving order (the map's checkpoint
+    /// fractions, then the lap line, per lap), ms — the ghost's split list
+    pub wp_ms: Vec<i64>,
 }
 
 fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
@@ -200,8 +203,43 @@ fn speed_profile(pts: &[[f32; 3]], step: f32, d: &Drive, from_rest: bool) -> Vec
 /// `dt_ms`.
 pub fn centreline(c: &Course, frame: &Frame, soup: &[CollTri], laps: u32, d: &Drive, dt_ms: i64) -> Trajectory {
     let path: Vec<[f32; 3]> = c.path.iter().map(|p| frame.to_tm(p.pos)).collect();
+    drive_route(c, frame, soup, laps, d, dt_ms, &path, &Line::default())
+}
+
+/// How a driver deviates from the route: a lateral offset (m, + = right of
+/// travel) as a function of the lap fraction, a start offset along the route
+/// (m ahead of the line — a grid slot), and DRIFT zones (lap-fraction ranges
+/// where the kart slides through the bend, yawed toward its inside).
+#[derive(Default, Clone)]
+pub struct Line {
+    pub lateral: Vec<(f32, f32, f32)>, // (from fraction, to fraction, offset m)
+    pub base_lateral: f32,
+    pub start_ahead_m: f32,
+    pub drift: Vec<(f32, f32)>,
+    pub drift_deg: f32,
+}
+
+impl Line {
+    fn lateral_at(&self, f: f32) -> f32 {
+        for (a, b, off) in &self.lateral {
+            if f >= *a && f < *b {
+                return self.base_lateral + off;
+            }
+        }
+        self.base_lateral
+    }
+    fn drifting(&self, f: f32) -> bool {
+        self.drift.iter().any(|(a, b)| f >= *a && f < *b)
+    }
+}
+
+/// A trajectory along `route` (TM space, closed) with the driver's `line`.
+pub fn drive_route(c: &Course, frame: &Frame, soup: &[CollTri], laps: u32, d: &Drive, dt_ms: i64, route: &[[f32; 3]], line: &Line) -> Trajectory {
+    // the checkpoints' lap fractions (the same plan the map's gates follow)
+    let mut cp_fr = crate::tm::checkpoint_fractions(c, frame, 4);
+    cp_fr.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let step = 0.5f32;
-    let (pts, lap_len) = resample(&path, soup, step);
+    let (pts, lap_len) = resample(route, soup, step);
     let n = pts.len();
     {
         let kappa = curvature(&smooth(&pts, (6.0 / step) as usize), step, (4.0 / step) as usize);
@@ -217,7 +255,12 @@ pub fn centreline(c: &Course, frame: &Frame, soup: &[CollTri], laps: u32, d: &Dr
     let smoothed = smooth(&pts, (2.0 / step) as usize);
     let mut poses = Vec::new();
     let mut lap_ms = Vec::new();
-    let mut s = 0.0f32; // distance along the current lap
+    let mut wp_ms = Vec::new();
+    let mut next_cp = 0usize;
+    let mut s = line.start_ahead_m.max(0.0); // distance along the current lap (a grid slot starts ahead)
+    while next_cp < cp_fr.len() && s >= cp_fr[next_cp] * lap_len {
+        next_cp += 1;
+    }
     let mut lap = 0u32;
     let mut t_ms: i64 = 0;
     let mut v = 0.0f32;
@@ -260,19 +303,49 @@ pub fn centreline(c: &Course, frame: &Frame, soup: &[CollTri], laps: u32, d: &Dr
         let rl = len(right).max(1e-6);
         let right = [right[0] / rl, right[1] / rl, right[2] / rl];
         let up = cross(fwd, right);
-        poses.push(Pose { pos: [pos[0], pos[1] + CAR_ORIGIN_Y, pos[2]], fwd, up, speed: v });
+        // the driver's line: sideways by the lateral offset (the road height
+        // re-read there), and yawed into the bend through a drift zone
+        let frac = s / lap_len;
+        let lat = line.lateral_at(frac);
+        let mut pos = pos;
+        if lat.abs() > 1e-3 {
+            let (x, z) = (pos[0] + right[0] * lat, pos[2] + right[2] * lat);
+            let y = road_y(soup, x, z, pos[1]).unwrap_or(pos[1]);
+            pos = [x, y, z];
+        }
+        let mut fwd_out = fwd;
+        if line.drifting(frac) && line.drift_deg != 0.0 {
+            // slide: the nose points into the bend (the sign of the curvature)
+            let turn = {
+                let a2 = interp(((s + 6.0) / step).rem_euclid(n as f32).floor() as usize % n, 0.0, &smoothed);
+                let b2 = interp(((s - 6.0) / step).rem_euclid(n as f32).floor() as usize % n, 0.0, &smoothed);
+                let d1 = sub(a2, pos);
+                let d0 = sub(pos, b2);
+                d0[2] * d1[0] - d0[0] * d1[2]
+            };
+            let ang = line.drift_deg.to_radians() * if turn > 0.0 { 1.0 } else { -1.0 };
+            let (sn, cs) = (ang.sin(), ang.cos());
+            fwd_out = [cs * fwd[0] + sn * fwd[2], fwd[1], -sn * fwd[0] + cs * fwd[2]];
+        }
+        poses.push(Pose { pos: [pos[0], pos[1] + CAR_ORIGIN_Y, pos[2]], fwd: fwd_out, up, speed: v });
         // advance
         let s_next = s + v * dt;
+        while next_cp < cp_fr.len() && s_next >= cp_fr[next_cp] * lap_len {
+            wp_ms.push(t_ms + dt_ms);
+            next_cp += 1;
+        }
         if s_next >= lap_len {
             lap += 1;
             lap_ms.push(t_ms + dt_ms);
+            wp_ms.push(t_ms + dt_ms);
+            next_cp = 0;
             s = s_next - lap_len;
         } else {
             s = s_next;
         }
         t_ms += dt_ms;
     }
-    Trajectory { poses, lap_ms, lap_len }
+    Trajectory { poses, lap_ms, lap_len, wp_ms }
 }
 
 /// The (x, y, z, w) quaternion rotating local axes (+x left, +y up, +z
@@ -336,6 +409,19 @@ pub fn write(traj: &Trajectory, donor: &str, out: &str, uid: Option<&str>, dt_ms
     let mut body = c.body().to_vec();
     let finish_ms = traj.lap_ms.last().copied().unwrap_or(span_ms) as u32;
     ghost::trim::set_all_declared(&mut body, finish_ms);
+    // the split list: our waypoint crossings (the donor's three checkpoints
+    // rode along until 2026-09-25 — a validation ghost's list must be the
+    // map's, in driving order, the last entry the race time)
+    if !traj.wp_ms.is_empty() {
+        if let Some(mut r) = gbx::container::read_result(&body) {
+            r.race_ms = finish_ms as i32;
+            r.entries = traj.wp_ms.iter().map(|t| (*t as i32, 1)).collect();
+            if let Some(last) = r.entries.last_mut() {
+                last.0 = finish_ms as i32;
+            }
+            body = gbx::container::write_result(&body, &r)?;
+        }
+    }
     // map uid: every 27-char uid literal becomes the map's
     let mut uids = 0usize;
     if let Some(u) = uid {

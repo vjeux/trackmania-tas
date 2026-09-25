@@ -310,91 +310,8 @@ pub fn cmd_build(args: &[String]) {
         mesh::normalize([b[0] - a[0], 0.0, b[2] - a[2]])
     };
     reqs.push(WaypointReq { pos: path[0], dir: dir_at(0), kind: 4, tag: "StartFinish", order: 0, width_m: 40.0 });
-    // Checkpoints: one GROUP per lap fraction. A course with alternate routes
-    // (Yoshi Valley's four `_track_path_N`, split over 18–41 % of the lap;
-    // Koopa Beach's shortcut) gets a gate on EVERY route at that fraction,
-    // all in one linked group (same order) — crossing any one counts, and a
-    // respawn never has to backtrack a whole branch (vjeux, 2026-09-25).
-    // Gates within 25 units of each other merge (the routes run together).
-    let routes: Vec<Vec<[f32; 3]>> = {
-        let mut r: Vec<Vec<[f32; 3]>> = vec![path.clone()];
-        let mut alts: Vec<(&String, &Vec<[i16; 3]>)> = c.other_paths.iter().filter(|(nm, _)| nm.contains("_track_path_")).collect();
-        alts.sort();
-        for (_, alt) in alts {
-            r.push(alt.iter().map(|p| frame.to_tm(*p)).collect());
-        }
-        r
-    };
-    // arc-length position along a closed route at fraction f
-    let at_fraction = |route: &[[f32; 3]], f: f32| -> ([f32; 3], [f32; 3]) {
-        let m = route.len();
-        let mut cum = vec![0.0f32; m + 1];
-        for i in 0..m {
-            let (a, b) = (route[i], route[(i + 1) % m]);
-            cum[i + 1] = cum[i] + ((b[0] - a[0]).powi(2) + (b[2] - a[2]).powi(2)).sqrt();
-        }
-        let s = f * cum[m];
-        let mut i = 0;
-        while i + 1 < m && cum[i + 1] < s {
-            i += 1;
-        }
-        let (a, b) = (route[i], route[(i + 1) % m]);
-        let l = (cum[i + 1] - cum[i]).max(1e-6);
-        let t = ((s - cum[i]) / l).clamp(0.0, 1.0);
-        ([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t], mesh::normalize([b[0] - a[0], 0.0, b[2] - a[2]]))
-    };
-    // an alternate route needs its own gate only when it never comes within
-    // `near_m` of the main gate (it runs a different road there); the routes'
-    // arc fractions drift apart by tens of metres on one road otherwise
-    let near_m = 20.0f32;
-    let dist_xz = |a: [f32; 3], b: [f32; 3]| ((a[0] - b[0]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
-    // where the routes split: the runs of main-path points that some alternate
-    // route never comes within `near_m` of, as lap fractions [a, b]
-    let split_zones: Vec<(f32, f32)> = {
-        let together: Vec<bool> = (0..n).map(|i| routes.iter().skip(1).all(|alt| alt.iter().any(|q| dist_xz(*q, path[i]) < near_m))).collect();
-        let mut zones = Vec::new();
-        let mut i = 0;
-        while i < n {
-            if together[i] {
-                i += 1;
-                continue;
-            }
-            let j0 = i;
-            while i < n && !together[i] {
-                i += 1;
-            }
-            zones.push((j0 as f32 / n as f32, i as f32 / n as f32));
-        }
-        zones
-    };
-    // The checkpoint fractions: evenly spaced, then per split zone — a SHORT
-    // zone (< 8 % of the lap, Koopa Beach's waterfall shortcut) just pushes any
-    // checkpoint inside it to its nearer edge; a LONG one (Yoshi Valley's
-    // maze, 18–41 %) gets a gate just before the fork, a LINKED group in the
-    // middle (one gate per branch) and a gate just after the join, so a
-    // respawn never costs half a lap and every branch is covered.
-    let mut fractions: Vec<(f32, bool)> = (1..=n_cps).map(|k| (k as f32 / (n_cps + 1) as f32, false)).collect();
-    for &(a, b) in &split_zones {
-        let inside = |f: f32| f > a - 0.005 && f < b + 0.005;
-        if b - a < 0.08 {
-            for fr in fractions.iter_mut() {
-                if inside(fr.0) {
-                    fr.0 = if fr.0 - a < b - fr.0 { a - 0.01 } else { b + 0.01 };
-                }
-            }
-        } else {
-            fractions.retain(|fr| !inside(fr.0));
-            fractions.push((a - 0.01, false));
-            fractions.push(((a + b) / 2.0, true));
-            fractions.push((b + 0.01, false));
-        }
-    }
-    fractions.retain(|fr| fr.0 > 0.02 && fr.0 < 0.98);
-    fractions.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap());
-    fractions.dedup_by(|x, y| (x.0 - y.0).abs() < 0.02);
-    if !split_zones.is_empty() {
-        println!("  routes split over {:?} of the lap; checkpoints at {:?} %", split_zones.iter().map(|(a, b)| format!("{:.0}–{:.0} %", a * 100.0, b * 100.0)).collect::<Vec<_>>(), fractions.iter().map(|f| (f.0 * 100.0).round()).collect::<Vec<_>>());
-    }
+    // Checkpoints: one GROUP per lap fraction (see `checkpoint_fractions`)
+    let (fractions, routes, at_fraction, near_m, dist_xz) = checkpoint_plan(&c, &frame, &path, n_cps);
     for (k, &(f, linked)) in fractions.iter().enumerate() {
         let (p0, d0) = at_fraction(&routes[0], f);
         let mut gates: Vec<([f32; 3], [f32; 3])> = vec![(p0, d0)];
@@ -667,6 +584,109 @@ pub fn height_under(t: &mesh::CollTri, x: f32, z: f32) -> Option<f32> {
         return None;
     }
     Some(u * p[0][1] + v * p[1][1] + w * p[2][1])
+}
+
+
+/// The checkpoint plan of a course: the lap fractions where the gates go
+/// (`linked` = a group with one gate per alternate route), the routes in TM
+/// space (main first), the arc-length locator and the merge distance. Shared
+/// by the map build (the gates) and the ghost (its waypoint crossing times).
+#[allow(clippy::type_complexity)]
+pub fn checkpoint_plan<'a>(c: &'a Course, frame: &'a Frame, path: &'a [[f32; 3]], n_cps: usize) -> (Vec<(f32, bool)>, Vec<Vec<[f32; 3]>>, impl Fn(&[[f32; 3]], f32) -> ([f32; 3], [f32; 3]) + 'a, f32, impl Fn([f32; 3], [f32; 3]) -> f32) {
+    let n = path.len();
+    // Checkpoints: one GROUP per lap fraction. A course with alternate routes
+    // (Yoshi Valley's four `_track_path_N`, split over 18–41 % of the lap;
+    // Koopa Beach's shortcut) gets a gate on EVERY route at that fraction,
+    // all in one linked group (same order) — crossing any one counts, and a
+    // respawn never has to backtrack a whole branch (vjeux, 2026-09-25).
+    // Gates within 25 units of each other merge (the routes run together).
+    let routes: Vec<Vec<[f32; 3]>> = {
+        let mut r: Vec<Vec<[f32; 3]>> = vec![path.to_vec()];
+        let mut alts: Vec<(&String, &Vec<[i16; 3]>)> = c.other_paths.iter().filter(|(nm, _)| nm.contains("_track_path_")).collect();
+        alts.sort();
+        for (_, alt) in alts {
+            r.push(alt.iter().map(|p| frame.to_tm(*p)).collect());
+        }
+        r
+    };
+    // arc-length position along a closed route at fraction f
+    let at_fraction = |route: &[[f32; 3]], f: f32| -> ([f32; 3], [f32; 3]) {
+        let m = route.len();
+        let mut cum = vec![0.0f32; m + 1];
+        for i in 0..m {
+            let (a, b) = (route[i], route[(i + 1) % m]);
+            cum[i + 1] = cum[i] + ((b[0] - a[0]).powi(2) + (b[2] - a[2]).powi(2)).sqrt();
+        }
+        let s = f * cum[m];
+        let mut i = 0;
+        while i + 1 < m && cum[i + 1] < s {
+            i += 1;
+        }
+        let (a, b) = (route[i], route[(i + 1) % m]);
+        let l = (cum[i + 1] - cum[i]).max(1e-6);
+        let t = ((s - cum[i]) / l).clamp(0.0, 1.0);
+        ([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t], mesh::normalize([b[0] - a[0], 0.0, b[2] - a[2]]))
+    };
+    // an alternate route needs its own gate only when it never comes within
+    // `near_m` of the main gate (it runs a different road there); the routes'
+    // arc fractions drift apart by tens of metres on one road otherwise
+    let near_m = 20.0f32;
+    let dist_xz = |a: [f32; 3], b: [f32; 3]| ((a[0] - b[0]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
+    // where the routes split: the runs of main-path points that some alternate
+    // route never comes within `near_m` of, as lap fractions [a, b]
+    let split_zones: Vec<(f32, f32)> = {
+        let together: Vec<bool> = (0..n).map(|i| routes.iter().skip(1).all(|alt| alt.iter().any(|q| dist_xz(*q, path[i]) < near_m))).collect();
+        let mut zones = Vec::new();
+        let mut i = 0;
+        while i < n {
+            if together[i] {
+                i += 1;
+                continue;
+            }
+            let j0 = i;
+            while i < n && !together[i] {
+                i += 1;
+            }
+            zones.push((j0 as f32 / n as f32, i as f32 / n as f32));
+        }
+        zones
+    };
+    // The checkpoint fractions: evenly spaced, then per split zone — a SHORT
+    // zone (< 8 % of the lap, Koopa Beach's waterfall shortcut) just pushes any
+    // checkpoint inside it to its nearer edge; a LONG one (Yoshi Valley's
+    // maze, 18–41 %) gets a gate just before the fork, a LINKED group in the
+    // middle (one gate per branch) and a gate just after the join, so a
+    // respawn never costs half a lap and every branch is covered.
+    let mut fractions: Vec<(f32, bool)> = (1..=n_cps).map(|k| (k as f32 / (n_cps + 1) as f32, false)).collect();
+    for &(a, b) in &split_zones {
+        let inside = |f: f32| f > a - 0.005 && f < b + 0.005;
+        if b - a < 0.08 {
+            for fr in fractions.iter_mut() {
+                if inside(fr.0) {
+                    fr.0 = if fr.0 - a < b - fr.0 { a - 0.01 } else { b + 0.01 };
+                }
+            }
+        } else {
+            fractions.retain(|fr| !inside(fr.0));
+            fractions.push((a - 0.01, false));
+            fractions.push(((a + b) / 2.0, true));
+            fractions.push((b + 0.01, false));
+        }
+    }
+    fractions.retain(|fr| fr.0 > 0.02 && fr.0 < 0.98);
+    fractions.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap());
+    fractions.dedup_by(|x, y| (x.0 - y.0).abs() < 0.02);
+    if !split_zones.is_empty() {
+        println!("  routes split over {:?} of the lap; checkpoints at {:?} %", split_zones.iter().map(|(a, b)| format!("{:.0}–{:.0} %", a * 100.0, b * 100.0)).collect::<Vec<_>>(), fractions.iter().map(|f| (f.0 * 100.0).round()).collect::<Vec<_>>());
+    }
+    (fractions, routes, at_fraction, near_m, dist_xz)
+}
+
+/// The checkpoint lap fractions alone (driving order), for the ghost.
+pub fn checkpoint_fractions(c: &Course, frame: &Frame, n_cps: usize) -> Vec<f32> {
+    let path: Vec<[f32; 3]> = c.path.iter().map(|p| frame.to_tm(p.pos)).collect();
+    let (fr, ..) = checkpoint_plan(c, frame, &path, n_cps);
+    fr.iter().map(|f| f.0).collect()
 }
 
 /// A checkpoint on its own: an invisible item (one millimetre of nothing) whose

@@ -50,6 +50,9 @@ pub struct Opts {
     /// GhostMgr.Ghost_Add — the way a leaderboard ghost is shown), so the shots
     /// show it driving. The plugin's JSON answer goes into the report.
     pub ghost: Option<String>,
+    /// `--ghost FILE` repeated: every file is loaded and added (seven MK64
+    /// CPU racers, one skin each).
+    pub ghosts: Vec<String>,
     /// `--mode SCRIPT`: the game mode PlayMap runs the map in (empty = the
     /// map's own declared mode). `TrackMania/TM_TimeAttack_Local.Script.txt`
     /// is the solo mode with a ghost manager.
@@ -85,7 +88,9 @@ pub fn parse_opts(args: &[String]) -> Result<Opts, String> {
         drive_at_ms: num("--drive-at-ms", 13500)?,
         camlog_ms: num("--camlog-ms", 0)?,
         wheels_ms: num("--wheels-ms", 0)?,
-        ghost: val("--ghost"),
+        ghost: None,
+        // every --ghost FILE, in order
+        ghosts: args.iter().enumerate().filter(|(_, a)| *a == "--ghost").filter_map(|(i, _)| args.get(i + 1).cloned()).collect(),
         mode: val("--mode").unwrap_or_default(),
         skin: val("--skin"),
         detach: args.iter().any(|a| a == "--detach"),
@@ -220,7 +225,8 @@ fn run_shots(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
     let opened = load0.elapsed();
     println!("{} playground after {:.1}s (ctx {})", el(), opened.as_secs_f64(), super::http_get("/ctx", 10).unwrap_or_default().trim());
     let mut lines = Vec::new();
-    if let Some(g) = &opts.ghost {
+    let all_ghosts: Vec<String> = opts.ghost.iter().cloned().chain(opts.ghosts.iter().cloned()).collect();
+    for g in &all_ghosts {
         // the plugin reads the file from arg.txt (a C:/ path)
         let game_ghost = super::game_path(g)?;
         std::fs::write(format!("{store}/arg.txt"), &game_ghost).map_err(|e| format!("arg.txt: {e}"))?;
