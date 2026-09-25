@@ -77,6 +77,7 @@ fn main() {
         "ghost" => cmd_ghost(&args),
         "clones" => cmd_clones(&args),
         "cpus" => cmd_cpus(&args),
+        "ghost-compress" => cmd_ghost_compress(&args),
         "ghost-all" => cmd_ghost_all(&args),
         "mux" => cmd_mux(&args),
         "colours" => cmd_colours(&args),
@@ -782,7 +783,7 @@ fn cmd_clones(args: &[String]) {
     if skin.is_some() {
         // a local skin: zero checksum (the 32 bytes before the skin path's length word)
         if let Some(f) = fields.iter().find(|f| f.role == ghost::ident::Role::Skin) {
-            let at = f.at - 4 - 32;
+            let at = f.at - 32;
             for b in &mut body[at..at + 32] {
                 *b = 0;
             }
@@ -852,28 +853,59 @@ fn cmd_clones(args: &[String]) {
 
 /// Rewrite a ghost file's identity: skin (local zip in `Skins\Models\CarSport`,
 /// zero checksum, no locator) and display name. In place.
-fn ghost_identity(path: &str, skin: &str, name: &str) -> Result<(), String> {
+fn ghost_identity(path: &str, skin: &str, name: &str, skin_dir: Option<&std::path::Path>, locator: Option<&str>) -> Result<(), String> {
     let c = ghost::Container::load(path)?;
     let mut body = c.body().to_vec();
     let fields = ghost::ident::scan(&c);
     let mut edits: Vec<(usize, usize, Vec<u8>)> = Vec::new();
+    // The PackDesc checksum is the zip's SHA-256: the play-mode ghost loader
+    // (Ghost_Download) REFUSED a ghost with a zeroed checksum ("Unable to load
+    // ghost file", 2026-09-25 bisect: path+name edits alone load; the zeroed
+    // checksum alone fails) — so it is computed from the skin file when the
+    // directory is given, else the donor's stays. The locator: `locator` when
+    // given (a URL the game downloads the zip from), else the donor's stays.
     for f in &fields {
         match f.role {
             ghost::ident::Role::Skin => edits.push((f.at, f.len, format!("Skins\\Models\\CarSport\\{skin}").into_bytes())),
-            ghost::ident::Role::Locator => edits.push((f.at, f.len, Vec::new())),
+            ghost::ident::Role::Locator => {
+                if let Some(u) = locator {
+                    edits.push((f.at, f.len, u.as_bytes().to_vec()));
+                }
+            }
             ghost::ident::Role::Nickname => edits.push((f.at, f.len, name.as_bytes().to_vec())),
             _ => {}
         }
     }
-    // the checksum: the 32 bytes before the skin path's length word (zero = local)
-    if let Some(f) = fields.iter().find(|f| f.role == ghost::ident::Role::Skin) {
-        let at = f.at - 4 - 32;
-        for b in &mut body[at..at + 32] {
-            *b = 0;
+    if let (Some(dir), Some(f)) = (skin_dir, fields.iter().find(|f| f.role == ghost::ident::Role::Skin)) {
+        let zip = dir.join(skin);
+        let sum = gbx::sha::sha256_file(&zip).map_err(|e| format!("{}: {e}", zip.display()))?;
+        // `f.at` is the path's LENGTH word; the PackDesc is `u8 version(3)`,
+        // 32-byte checksum, then the path — the checksum ends right at `f.at`
+        // (an earlier `f.at - 36` zeroed the version byte: "Unable to load
+        // ghost file")
+        let at = f.at - 32;
+        if body[at - 1] != 3 {
+            return Err(format!("{path}: PackDesc version byte {} at {} (expected 3)", body[at - 1], at - 1));
         }
+        body[at..at + 32].copy_from_slice(&sum);
     }
     let body = gbx::container::replace_strings(&body, &edits, None)?;
-    gbx::container::write_gbx(&c.gbx, body, path)
+    write_gbx_compressed(&c.gbx, &body, path)
+}
+
+/// A Gbx with an LZO-COMPRESSED body ('C'): the game's `Ghost_Download`
+/// loader answered "Unable to load ghost file" to our uncompressed ('U')
+/// ghosts and loaded a game-written compressed one (2026-09-25); the
+/// MediaTracker import takes both.
+fn write_gbx_compressed(g: &gbx::container::Gbx, body: &[u8], out: &str) -> Result<(), String> {
+    let mut file = g.header_bytes_u();
+    // the body-compression byte: "GBX" + u16 version + format + ref_comp + BODY
+    file[7] = b'C';
+    let comp = tmmaps::gbx::lzo_compress(body);
+    file.extend_from_slice(&(body.len() as u32).to_le_bytes());
+    file.extend_from_slice(&(comp.len() as u32).to_le_bytes());
+    file.extend_from_slice(&comp);
+    std::fs::write(out, file).map_err(|e| format!("{out}: {e}"))
 }
 
 /// `mk64 cpus COURSE --host MAP --out-dir DIR --donor GHOST [--map BUILT.Map.Gbx]
@@ -895,6 +927,12 @@ fn cmd_cpus(args: &[String]) {
     if let Some(v) = flag(args, "--vmax").and_then(|s| s.parse::<f32>().ok()) {
         base.vmax = v / 3.6;
     }
+    // --skin-dir DIR: the skin zips (their SHA-256 goes into the PackDesc);
+    // --skin-url-base URL: where the game downloads `<zip>` from (the locator);
+    // without it the donor's locator stays (a local skin of the same name wins)
+    let skin_dir = flag(args, "--skin-dir").map(std::path::PathBuf::from);
+    let url_base = flag(args, "--skin-url-base").map(|s| s.to_string());
+    let locator_for = |zip: &str| -> Option<String> { url_base.as_ref().map(|b| format!("{}{}", b, zip.replace(' ', "%20"))) };
     let rom_path = std::env::var("MK64_ROM").unwrap_or_else(|_| die("MK64_ROM=/path/to/baserom.us.z64"));
     let rom = std::fs::read(&rom_path).unwrap_or_else(|e| die(format!("{rom_path}: {e}")));
     let assets = mk64::texture::AssetIndex::load(&decomp).expect("asset index");
@@ -920,7 +958,16 @@ fn cmd_cpus(args: &[String]) {
             Ok(_) => {}
             Err(e) => die(format!("{out_s}: {e}")),
         }
-        ghost_identity(&out_s, cpu.skin, cpu.name).unwrap_or_else(|e| die(format!("{out_s}: {e}")));
+        ghost_identity(&out_s, cpu.skin, cpu.name, skin_dir.as_deref(), locator_for(cpu.skin).as_deref()).unwrap_or_else(|e| die(format!("{out_s}: {e}")));
         println!("  {:<12} route {} grid +{:.0} m lat {:+.1} m vmax {:.0} km/h — laps at {:?} s", cpu.name, cpu.route, cpu.line.start_ahead_m, cpu.line.base_lateral, cpu.drive.vmax * 3.6, traj.lap_ms.iter().map(|m| (*m as f64 / 100.0).round() / 10.0).collect::<Vec<_>>());
     }
+}
+
+/// `mk64 ghost-compress IN OUT`: the same ghost with an LZO-compressed body.
+fn cmd_ghost_compress(args: &[String]) {
+    let inp = args.get(2).unwrap_or_else(|| die("ghost-compress IN OUT"));
+    let out = args.get(3).unwrap_or_else(|| die("ghost-compress IN OUT"));
+    let c = ghost::Container::load(inp).unwrap_or_else(|e| die(format!("{inp}: {e}")));
+    write_gbx_compressed(&c.gbx, c.body(), out).unwrap_or_else(|e| die(e));
+    println!("{out}: {} bytes", std::fs::metadata(out).map(|m| m.len()).unwrap_or(0));
 }

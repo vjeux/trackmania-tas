@@ -53,6 +53,10 @@ pub struct Opts {
     /// `--ghost FILE` repeated: every file is loaded and added (seven MK64
     /// CPU racers, one skin each).
     pub ghosts: Vec<String>,
+    /// `--probe ROUTE` (repeatable): a plugin route queried right after each
+    /// shot, its answer in the report (`/mobils?name=Car` — are the ghosts'
+    /// cars in the scene, and visible?).
+    pub probes: Vec<String>,
     /// `--mode SCRIPT`: the game mode PlayMap runs the map in (empty = the
     /// map's own declared mode). `TrackMania/TM_TimeAttack_Local.Script.txt`
     /// is the solo mode with a ghost manager.
@@ -91,6 +95,7 @@ pub fn parse_opts(args: &[String]) -> Result<Opts, String> {
         ghost: None,
         // every --ghost FILE, in order
         ghosts: args.iter().enumerate().filter(|(_, a)| *a == "--ghost").filter_map(|(i, _)| args.get(i + 1).cloned()).collect(),
+        probes: args.iter().enumerate().filter(|(_, a)| *a == "--probe").filter_map(|(i, _)| args.get(i + 1).cloned()).collect(),
         mode: val("--mode").unwrap_or_default(),
         skin: val("--skin"),
         detach: args.iter().any(|a| a == "--detach"),
@@ -342,6 +347,12 @@ fn run_shots(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
         let line = format!("shot {k}\t{at:.1}s after the playground opened\t{}\t{size}", file.display());
         println!("{} {line}", el());
         lines.push(line);
+        for route in &opts.probes {
+            let r = super::http_get(route, 15).unwrap_or_else(|e| format!("ERROR {e}"));
+            let one: String = r.lines().take(40).collect::<Vec<_>>().join(" | ");
+            println!("{} probe {route}: {}", el(), one);
+            lines.push(format!("probe {k}\t{route}\t{one}"));
+        }
     }
     if let Some(c) = camlog {
         match c.join() {
