@@ -290,3 +290,52 @@ pub fn add_scaled_ps1109(dst: &Buf, src: &Buf, scale: [f32; 4]) -> Buf {
     }
     out
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// THE SWEEPS' FINALISATION AS A LIBRARY — from a bake's own H-basis accumulation targets to the finalised (×2-added)
+// coefficient images `e2e::finalise_tail` consumes (E; the sequence and the rounding are the inline chain's, which
+// reproduces the captured finalisation frame 74490 pass by pass)
+// ---------------------------------------------------------------------------------------------------------------
+
+/// An H-basis accumulation target (the four RGBA16F MRTs of one sweep) as passdiff buffers.
+pub fn mrt_bufs(hb: &crate::lmaccum::HbTargets) -> [Buf; 4] {
+    let one = |m: usize| -> Buf {
+        let mut b = Buf::new(hb.w, hb.h, 4);
+        for i in 0..(hb.w * hb.h) as usize {
+            for c in 0..4 {
+                b.data[i * 4 + c] = hb.mrt[m][i][c];
+            }
+        }
+        b
+    };
+    [one(0), one(1), one(2), one(3)]
+}
+
+/// The finalised images of a bake: per coefficient image Σ over the sweeps of 2 · PS 25113(the sweep's MRT) — the game
+/// adds each sweep's resolved image × 2 (PS 1109) into the previous sweep's finalised targets (RGBA16F: the source
+/// truncated, the sum RTNE); the alpha channel carries the LAST sweep's resolve alpha (1 where covered) for the tail's
+/// PS 1034 target.
+pub fn finalise_sweeps(sweeps: &[crate::lmaccum::HbTargets]) -> [Buf; 4] {
+    let (w, h) = sweeps.first().map(|s| (s.w, s.h)).unwrap_or((2048, 2048));
+    let mut out: Vec<Buf> = Vec::with_capacity(4);
+    for m in 0..4 {
+        let mut acc = Buf::new(w, h, 4);
+        let mut last: Option<Buf> = None;
+        for hb in sweeps {
+            let res = resolve_ps25113(&mrt_bufs(hb)[m], false, Rounding::Truncate);
+            acc = add_scaled_ps1109(&acc, &res, [2.0, 2.0, 2.0, 0.0]);
+            last = Some(res);
+        }
+        if let Some(res) = last {
+            for i in 0..(w * h) as usize {
+                acc.data[i * 4 + 3] = res.data[i * 4 + 3];
+            }
+        }
+        out.push(acc);
+    }
+    let mut it = out.into_iter();
+    [it.next().unwrap(), it.next().unwrap(), it.next().unwrap(), it.next().unwrap()]
+}
+
+/// BlueBay Day's `Mood_MaxHdr` as the captured encode cbuffer carries it.
+pub const MOOD_MAX_HDR_BLUEBAY_DAY: f32 = 7.519885063171387;

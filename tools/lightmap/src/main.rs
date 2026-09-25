@@ -1835,17 +1835,8 @@ fn run(a: Vec<String>) {
                 let n_sw = hb_sweeps.len();
                 // per coefficient image: Σ_sweeps 2 · resolve(MRT) — the game adds each sweep's resolved image × 2 into the previous
                 // sweep's finalised targets (f16: source truncated, sum RTNE)
-                let mut finals: Vec<lightmap::passdiff::Buf> = Vec::new();
-                for m in 0..4 {
-                    let mut acc = lightmap::passdiff::Buf::new(2048, 2048, 4);
-                    for hb in &hb_sweeps {
-                        let res = lightmap::finalprep::resolve_ps25113(&mrt_buf(hb, m), false, lightmap::gpufmt::Rounding::Truncate);
-                        acc = lightmap::finalprep::add_scaled_ps1109(&acc, &res, [2.0, 2.0, 2.0, 0.0]);
-                    }
-                    // the alpha channel carries the last resolve's alpha (1 where covered) for the tail's PS 1034 target
-                    if let Some(hb) = hb_sweeps.last() { let res = lightmap::finalprep::resolve_ps25113(&mrt_buf(hb, m), false, lightmap::gpufmt::Rounding::Truncate); for i in 0..(2048 * 2048) as usize { acc.data[i * 4 + 3] = res.data[i * 4 + 3]; } }
-                    finals.push(acc);
-                }
+                // (`finalprep::finalise_sweeps` — the library form of this step)
+                let finals: Vec<lightmap::passdiff::Buf> = lightmap::finalprep::finalise_sweeps(&hb_sweeps).into_iter().collect();
                 if let Some(gm) = &game_manifest {
                     let root = std::path::PathBuf::from(f("--lm-from").unwrap());
                     let mut ents: Vec<&lightmap::passdump::Entry> = gm.passes.iter().filter(|e| e.pass == "final_02_scaled_x2_ps1109").collect();
@@ -4818,6 +4809,47 @@ fn run(a: Vec<String>) {
             for (name, s, e) in ranges { let mut h: std::collections::BTreeMap<u8, usize> = Default::default(); for &x in body.get(s..e.min(body.len())).unwrap_or(&[]) { *h.entry(x).or_default() += 1; } println!("  {name} [{s}..{e}): {:?}", h); }
             if a.iter().any(|x| x == "--list") { let s = mf.blocks.len() + mf.baked.len(); for (i, &x) in body.get(s..).unwrap_or(&[]).iter().enumerate() { if x != 0 { println!("  item {i} ({}) quality byte {x}", mf.items.get(i).map(|it| it.model.as_str()).unwrap_or("?")); } } }
         }
+        "filecheck" => {
+            // lmtool filecheck OURS.Map.Gbx --against EDITOR.Map.Gbx: two WRITTEN maps side by side — the mapping (count, order,
+            // rects), frame 0's blobs (bytes, decoded values), the per-chart frame bytes, the three frame records' scale words,
+            // the probe blob and the trailer — the gate of the transcribed file writer over a bake's own output
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let other = f("--against").expect("--against EDITOR.Map.Gbx");
+            let ours = lightmap::mapio::load(&a[1]).unwrap_or_else(|e| panic!("{}: {e}", a[1]));
+            let theirs = lightmap::mapio::load(&other).unwrap_or_else(|e| panic!("{other}: {e}"));
+            let (Some(d1), Some(d2)) = (ours.chunk.data.as_ref(), theirs.chunk.data.as_ref()) else { println!("a map without a lightmap"); return };
+            let (Some(m1), Some(m2)) = (d1.cache.mapping(), d2.cache.mapping()) else { println!("a map without a mapping chunk"); return };
+            println!("mapping: ours {} charts, theirs {} charts; atlas {}×{} vs {}×{}; bbox {:?}..{:?} vs {:?}..{:?}", m1.count, m2.count, m1.atlas_w, m1.atlas_h, m2.atlas_w, m2.atlas_h, m1.bbox_min, m1.bbox_max, m2.bbox_min, m2.bbox_max);
+            let n = (m1.count.min(m2.count)) as usize;
+            let (mut same_bind, mut same_rect) = (0usize, 0usize);
+            for i in 0..n { if m1.binds[i].obj_group_idx == m2.binds[i].obj_group_idx && m1.binds[i].obj_idx == m2.binds[i].obj_idx { same_bind += 1; } if m1.pos[i] == m2.pos[i] && m1.size[i] == m2.size[i] { same_rect += 1; } }
+            println!("  entry by entry: {same_bind} of {n} same bind words, {same_rect} of {n} same rects");
+            for (k, (fb1, fb2)) in m1.frame_bytes.iter().zip(m2.frame_bytes.iter()).enumerate() {
+                let nn = fb1.len().min(fb2.len());
+                let eq = (0..nn).filter(|&i| fb1[i] == fb2[i]).count();
+                let w1 = (0..nn).filter(|&i| fb1[i].abs_diff(fb2[i]) <= 1).count();
+                let mx = (0..nn).map(|i| fb1[i].abs_diff(fb2[i])).max().unwrap_or(0);
+                println!("  frame {k} bytes: {eq} of {nn} identical, {w1} within 1, max |Δ| {mx}");
+            }
+            // the frame records' scale words (head: 3 × 66 bytes from offset 60: +16 MaxHdrMood, +20 MaxHDR, +24 bounce, +28 sky)
+            for i in 0..3 {
+                let r = 60 + 66 * i;
+                if r + 32 > m1.head.len() || r + 32 > m2.head.len() { break; }
+                let w = |h: &[u8], o: usize| f32::from_le_bytes(h[r + o..r + o + 4].try_into().unwrap());
+                println!("  frame record {i}: MaxHdrMood {} vs {}, MaxHDR {} vs {}, bounce {} vs {}, sky {} vs {}{}", w(&m1.head, 16), w(&m2.head, 16), w(&m1.head, 20), w(&m2.head, 20), w(&m1.head, 24), w(&m2.head, 24), w(&m1.head, 28), w(&m2.head, 28), if m1.head[r..r + 66] == m2.head[r..r + 66] { "  (record bytes identical)" } else { "" });
+            }
+            for (fi, (f1, f2)) in d1.frames.iter().zip(d2.frames.iter()).enumerate() {
+                for (k, (b1, b2)) in f1.images.iter().zip(f2.images.iter()).enumerate() {
+                    if b1.is_empty() && b2.is_empty() { continue; }
+                    println!("  frame {fi} image {k}: {}", lightmap::filecheck::cmp_bytes(b2, b1));
+                    if let Some((nv, ex, w1, w2, mx)) = lightmap::filecheck::cmp_decoded(b2, b1) { println!("      decoded: {ex} of {nv} values identical ({:.3} %), {w1} within 1, {w2} within 2, max |Δ| {mx}", 100.0 * ex as f64 / nv.max(1) as f64); } else { println!("      (decode: no libwebp in this build, or different sizes)"); }
+                }
+            }
+            let (t1, t2) = (&d1.cache.trailer, &d2.cache.trailer);
+            println!("  cache trailer: {}", lightmap::filecheck::cmp_bytes(t2, t1));
+            let ids = |d: &lightmap::format::LightmapData| d.cache.chunks.iter().map(|c| format!("{:08x}", c.id)).collect::<Vec<_>>().join(" ");
+            if ids(d1) != ids(d2) { println!("  cache chunk ids differ: ours [{}] theirs [{}]", ids(d1), ids(d2)); } else { println!("  cache chunk ids identical ({} chunks)", d1.cache.chunks.len()); }
+        }
         "genealogy" => {
             // lmtool genealogy MAP: the zone genealogy records (chunk 0x03043043) — per cell the CurrentZoneId and its Dir,
             // as a histogram and the first few records; plus the baked block list (the generated tiles when the file has them)
@@ -6461,6 +6493,12 @@ fn run(a: Vec<String>) {
                 for (o, r) in ed.iter() { match ed2.get(o) { Some(r2) => { n += 1; if r == r2 { eq += 1; } if r.2 == r2.2 && r.3 == r2.3 { size_eq += 1; } else if shown < 8 { shown += 1; println!("  obj {o}: ours {}×{} at ({}, {}) vs {}×{} at ({}, {})", r.2, r.3, r.0, r.1, r2.2, r2.3, r2.0, r2.1); } } None => only_here += 1 } }
                 for o in ed2.keys() { if !ed.contains_key(o) { only_there += 1; } }
                 println!("against {other}: {n} shared objects, {eq} identical rects, {size_eq} equal sizes; {only_here} only here, {only_there} only there");
+                // the mapping ORDER (frame0_blobs' fb0 indexing follows it): is each table sorted by object id, and do the two agree?
+                let order = |m: &lightmap::format::Mapping| -> Vec<u32> { (0..m.count as usize).map(|i| m.binds[i].obj_group_idx / 4).collect() };
+                let (o1, o2) = (order(mp), order(mp2));
+                let sorted = |v: &Vec<u32>| v.windows(2).all(|w| w[0] <= w[1]);
+                let same = o1 == o2;
+                println!("  mapping order: ours sorted by object {} ({} entries), theirs sorted {} ({} entries), identical sequences {same}; first 6 ours {:?} theirs {:?}", sorted(&o1), o1.len(), sorted(&o2), o2.len(), &o1[..6.min(o1.len())], &o2[..6.min(o2.len())]);
                 return;
             }
             if a.iter().any(|x| x == "--tile-order") {
