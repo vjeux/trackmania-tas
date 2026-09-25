@@ -1264,9 +1264,9 @@ fn fragment_radiance(scene: &Scene, bvh: &Bvh, prm: &BakeParams, shadow: Option<
         let is_tile = scene.decor.get(wt.tri as usize).map(|d| !d.env && !d.water).unwrap_or(false);
         if is_tile {
             let (cx, cz) = ((hit_p[0] / 32.0).floor(), (hit_p[2] / 32.0).floor());
-            if cx >= 0.0 && cx < 64.0 && cz >= 0.0 && cz < 64.0 {
-                if let Some(Some(st)) = tst.get((cz as usize) * 64 + cx as usize) {
-                    let b = crate::bake::TILE_UV_BOUNDS;
+            if cx >= 0.0 && cx < tst.grid as f32 && cz >= 0.0 && cz < tst.grid as f32 {
+                if let Some(st) = tst.get(cx as i64, cz as i64) {
+                    let b = tst.uv_bounds;
                     let uv1_of = |x: f32, z: f32| -> [f32; 2] { [b[0] + (x - cx * 32.0) / 32.0 * (b[2] - b[0]), b[3] - (z - cz * 32.0) / 32.0 * (b[3] - b[1])] };
                     let uv_lm_of = |uv: [f32; 2]| [uv[0] * st[0] + st[2], uv[1] * st[1] + st[3]];
                     let uv_lm = uv_lm_of(uv1_of(hit_p[0], hit_p[2]));

@@ -337,6 +337,23 @@ impl DomeMesh {
         Ok(DomeMesh { pos: g.verts.clone(), uv: g.uvs.clone(), indices })
     }
 
+    /// THE DOME MESH FROM THE COLLECTION'S ENVIRONMENT BLOCK (RE 9's `mapgeom::envblock`: the decoration Scene3d's SkyDome mobil —
+    /// BlueBay / GreenCoast SkyDomeMirror at the origin, RedIsland / WhiteShore at (1024, 0, 1024), Stadium's Base16x12 Scene3d
+    /// with SkyDomeDouble at (0, 3000, 0) — Maniaplanet.pak carries the solids): the leaf's world positions, uv0 and indices.
+    pub fn from_envblock(store: &mut mapgeom::store::DataStore, collection: &str) -> Result<DomeMesh, String> {
+        let env = mapgeom::envblock::load(store, collection)?;
+        let leaf = env.sky_dome().ok_or_else(|| format!("{collection}: no sky dome leaf in the environment block"))?;
+        if leaf.uv0.len() != leaf.positions.len() {
+            return Err(format!("{}: {} vertices but {} texture coordinates", leaf.solid, leaf.positions.len(), leaf.uv0.len()));
+        }
+        let mut indices = Vec::with_capacity(leaf.indices.len());
+        for &i in &leaf.indices {
+            if i > u16::MAX as u32 { return Err(format!("{}: vertex index {i} beyond u16", leaf.solid)); }
+            indices.push(i as u16);
+        }
+        Ok(DomeMesh { pos: leaf.world_positions(), uv: leaf.uv0.clone(), indices })
+    }
+
     /// Compare two dome meshes as triangle sets (the vertex order may differ): triangles whose three (position, uv) match.
     pub fn compare(&self, other: &DomeMesh) -> (usize, usize, usize) {
         let key = |m: &DomeMesh, i: u16| -> ([i64; 3], [i64; 2]) { let p = m.pos[i as usize]; let u = m.uv[i as usize]; ([(p[0] * 64.0).round() as i64, (p[1] * 64.0).round() as i64, (p[2] * 64.0).round() as i64], [(u[0] * 1e6).round() as i64, (u[1] * 1e6).round() as i64]) };

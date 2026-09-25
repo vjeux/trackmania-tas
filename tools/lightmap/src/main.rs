@@ -1376,7 +1376,11 @@ fn run(a: Vec<String>) {
                     for p in &paks { if let Some((pp, key)) = p.rsplit_once(':') { if let Err(e) = store.add_pak(pp, key) { eprintln!("dome mesh from the packs: --pak {p}: {e}"); } } }
                     let coll = f("--collection").unwrap_or_else(|| hdr.as_ref().map(|h| h.envir.clone()).unwrap_or_else(|| "BlueBay".into()));
                     let s3 = format!("{coll}\\GameCtnDecoration\\Scene3d\\Base64x64.Scene3d.Gbx");
-                    match lightmap::domemesh::DomeMesh::from_scene3d(&mut store, &s3) {
+                    // RE 9's environment block names the collection's dome (Stadium: Base16x12's SkyDomeDouble at (0, 3000, 0)); the
+                    // Base64x64 Scene3d walk stays the fallback
+                    let from_env = lightmap::domemesh::DomeMesh::from_envblock(&mut store, &coll);
+                    if let Err(e) = &from_env { eprintln!("dome mesh from the environment block: {e} — trying the Scene3d walk"); }
+                    match from_env.or_else(|_| lightmap::domemesh::DomeMesh::from_scene3d(&mut store, &s3)) {
                         Ok(m) => {
                             let cmp = f("--lm-from").and_then(|d| lightmap::domemesh::DomeMesh::load(std::path::Path::new(&d)).ok()).map(|c| { let (same, ours, theirs) = m.compare(&c); format!("; vs the captured e001051: {same} of {ours} triangles identical (position + uv; captured {theirs})") }).unwrap_or_default();
                             eprintln!("dome mesh from the packs ({s3}): {} vertices, {} triangles rasterised per peel{cmp}", m.pos.len(), m.indices.len() / 3);
@@ -1588,22 +1592,26 @@ fn run(a: Vec<String>) {
             if let Some(gl) = &game_layout {
                 // (the table is 64 × 64 cells — the peel's tile ST lookup; a 96-cell Stadium grid keeps its first 64 × 64 here until
                 // the peel's tile table grows with the grid)
-                let mut table: Vec<Option<[f32; 4]>> = vec![None; 64 * 64];
+                // the table grows with the grid (BlueBay 64, Stadium 96) and carries the tile mesh's TexCoord1 bounds
+                let grid: usize = gl.cell_of.iter().map(|c| c.0.max(c.1) + 1).max().unwrap_or(64).max(64) as usize;
+                let mut table: Vec<Option<[f32; 4]>> = vec![None; grid * grid];
+                let mut uv_bounds = lightmap::layout::TilePlg::BLUEBAY_SEA.bounds;
                 if !gl.records.is_empty() {
                     let mut ti = 0usize;
                     for (k, r) in gl.records.iter().enumerate() {
                         if r.class != "tile" { continue; }
                         let (cx, cz) = gl.cell_of[ti]; ti += 1;
                         let c = &gl.charts[k];
-                        if (0..64).contains(&cx) && (0..64).contains(&cz) { table[(cz * 64 + cx) as usize] = Some(lightmap::peelcolor::chart_st([c.x, c.y, c.w, c.h], r.uv, 2048.0)); }
+                        uv_bounds = r.uv;
+                        if cx >= 0 && cz >= 0 && (cx as usize) < grid && (cz as usize) < grid { table[cz as usize * grid + cx as usize] = Some(lightmap::peelcolor::chart_st([c.x, c.y, c.w, c.h], r.uv, 2048.0)); }
                     }
                 } else {
                     for c in gl.charts.iter().filter(|c| c.obj < base) {
                         let (cx, cz) = gl.cell_of[c.obj as usize];
-                        if (0..64).contains(&cx) && (0..64).contains(&cz) { table[(cz * 64 + cx) as usize] = Some(lightmap::peelcolor::chart_st([c.x, c.y, c.w, c.h], lightmap::layout::TilePlg::BLUEBAY_SEA.bounds, 2048.0)); }
+                        if cx >= 0 && cz >= 0 && (cx as usize) < grid && (cz as usize) < grid { table[cz as usize * grid + cx as usize] = Some(lightmap::peelcolor::chart_st([c.x, c.y, c.w, c.h], lightmap::layout::TilePlg::BLUEBAY_SEA.bounds, 2048.0)); }
                     }
                 }
-                prm.tile_st = Some(std::sync::Arc::new(table));
+                prm.tile_st = Some(std::sync::Arc::new(lightmap::bake::TileSt { grid, uv_bounds, st: table }));
             }
             // --lm-from-map (with --layout-game [--pak FILE:KEY]): THE LM SCENE FROM THE MAP — the transcribed rows 7–9 over OUR peel
             // layers with the game's LM vertex stream rebuilt from the models (lmmesh.rs: bit-identical to pwc-day's captured
@@ -1799,7 +1807,7 @@ fn run(a: Vec<String>) {
                                 if (0..64).contains(&cx) && (0..64).contains(&cz) { table[(cz * 64 + cx) as usize] = Some(inst.st); n += 1; }
                             }
                         }
-                        if n > 0 { eprintln!("env-from {dir}: the zone tiles' chart ST of {n} cells from the captured instance buffer"); prm.tile_st = Some(std::sync::Arc::new(table)); }
+                        if n > 0 { eprintln!("env-from {dir}: the zone tiles' chart ST of {n} cells from the captured instance buffer"); prm.tile_st = Some(std::sync::Arc::new(lightmap::bake::TileSt { grid: 64, uv_bounds: lightmap::bake::TILE_UV_BOUNDS, st: table })); }
                     }
                     Err(e) => eprintln!("env-from {dir}: no tile ST table ({e})"),
                 }

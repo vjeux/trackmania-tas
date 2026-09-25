@@ -5,6 +5,23 @@
 use crate::bvh::{Bvh, WTri};
 use crate::geometry::{add, cross, dot, mul, norm, sub, xf_normal, xf_point, Scene, V3};
 
+/// The zone tiles' chart ST per cell for the peel's atlas lookup: a `grid` × `grid` table (BlueBay 64, Stadium 96) in
+/// (cz · grid + cx) order and the tile mesh's TexCoord1 bounds (the affine uv over the 32 m cell: BlueBay's Sea
+/// [0.048, 0.0406, 0.947, 0.9594], Stadium's Grass [0.001, 0.001, 0.999, 0.999]).
+#[derive(Clone, Debug)]
+pub struct TileSt {
+    pub grid: usize,
+    pub uv_bounds: [f32; 4],
+    pub st: Vec<Option<[f32; 4]>>,
+}
+
+impl TileSt {
+    pub fn get(&self, cx: i64, cz: i64) -> Option<[f32; 4]> {
+        if cx < 0 || cz < 0 || cx >= self.grid as i64 || cz >= self.grid as i64 { return None; }
+        self.st.get(cz as usize * self.grid + cx as usize).copied().flatten()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct BakeParams {
     /// Irradiance of an unoccluded, up-facing surface from the sky alone.
@@ -245,7 +262,7 @@ pub struct BakeParams {
     /// (their LM uv = the tile mesh's TexCoord1 — `TILE_UV_BOUNDS` over the cell — through this ST);
     /// the harness fills it from the capture's g_InstanceDatas (`--env-from` + `--frustum-from`), the
     /// port's own layout will (the tiles' rects in instance order — RE-6's block records).
-    pub tile_st: Option<std::sync::Arc<Vec<Option<[f32; 4]>>>>,
+    pub tile_st: Option<std::sync::Arc<TileSt>>,
 }
 
 /// The zone tile mesh's TexCoord1 over the 32 m cell (the capture's tile vertex buffer, 9 vertices on a
