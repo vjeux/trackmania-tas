@@ -228,13 +228,22 @@ pub struct Target {
     pub px: Vec<[f32; 4]>,
 }
 
+/// Rasteriser variants under test (the D3D11 rules leave two things to the implementation): whether the vertex
+/// positions snap to the 1/256 grid by rounding (default) or by truncation, and whether the attributes are
+/// interpolated from the snapped positions (default) or the unsnapped ones.
+pub static RASTER_SNAP_FLOOR: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub static RASTER_INTERP_UNSNAPPED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// D3D11 rasterisation of one triangle at 8 sub-pixel bits with the top-left rule; calls `f(x, y, b0, b1, b2)`
 /// for every covered pixel centre with the barycentric weights of the three vertices (w ≡ 1 → linear).
 pub fn rasterise_triangle(v: [[f32; 2]; 3], w: u32, h: u32, mut f: impl FnMut(u32, u32, f32, f32, f32)) {
     // viewport: x = (ndc.x + 1)/2 · W, y = (1 − ndc.y)/2 · H, snapped to 1/256 pixel
-    let snap = |c: f32| (c * 256.0).round() / 256.0;
-    let sx: Vec<f32> = v.iter().map(|p| snap((p[0] * 0.5 + 0.5) * w as f32)).collect();
-    let sy: Vec<f32> = v.iter().map(|p| snap((0.5 - p[1] * 0.5) * h as f32)).collect();
+    let floor_snap = RASTER_SNAP_FLOOR.load(std::sync::atomic::Ordering::Relaxed);
+    let snap = |c: f32| if floor_snap { (c * 256.0).floor() / 256.0 } else { (c * 256.0).round() / 256.0 };
+    let ux: Vec<f32> = v.iter().map(|p| (p[0] * 0.5 + 0.5) * w as f32).collect();
+    let uy: Vec<f32> = v.iter().map(|p| (0.5 - p[1] * 0.5) * h as f32).collect();
+    let sx: Vec<f32> = ux.iter().map(|&c| snap(c)).collect();
+    let sy: Vec<f32> = uy.iter().map(|&c| snap(c)).collect();
     let area = (sx[1] - sx[0]) * (sy[2] - sy[0]) - (sx[2] - sx[0]) * (sy[1] - sy[0]);
     if area == 0.0 {
         return;
@@ -244,6 +253,11 @@ pub fn rasterise_triangle(v: [[f32; 2]; 3], w: u32, h: u32, mut f: impl FnMut(u3
     let ax = [sx[ia], sx[ib], sx[ic]];
     let ay = [sy[ia], sy[ib], sy[ic]];
     let area = area.abs();
+    // the unsnapped positions in the same order, for the attribute barycentrics when asked
+    let unsnapped = RASTER_INTERP_UNSNAPPED.load(std::sync::atomic::Ordering::Relaxed);
+    let bx = [ux[ia], ux[ib], ux[ic]];
+    let by = [uy[ia], uy[ib], uy[ic]];
+    let uarea = ((bx[1] - bx[0]) * (by[2] - by[0]) - (bx[2] - bx[0]) * (by[1] - by[0])).abs();
     let minx = ax.iter().cloned().fold(f32::INFINITY, f32::min).floor().max(0.0) as i64;
     let maxx = ax.iter().cloned().fold(f32::NEG_INFINITY, f32::max).ceil().min(w as f32) as i64;
     let miny = ay.iter().cloned().fold(f32::INFINITY, f32::min).floor().max(0.0) as i64;
@@ -270,7 +284,14 @@ pub fn rasterise_triangle(v: [[f32; 2]; 3], w: u32, h: u32, mut f: impl FnMut(u3
                 continue;
             }
             // barycentrics: weight of vertex k = the edge opposite to it / area
-            let (b0, b1, b2) = (e1 / area, e2 / area, e0 / area);
+            let (b0, b1, b2) = if unsnapped && uarea > 0.0 {
+                let f0 = edge(bx[0], by[0], bx[1], by[1], cx, cy);
+                let f1 = edge(bx[1], by[1], bx[2], by[2], cx, cy);
+                let f2 = edge(bx[2], by[2], bx[0], by[0], cx, cy);
+                (f1 / uarea, f2 / uarea, f0 / uarea)
+            } else {
+                (e1 / area, e2 / area, e0 / area)
+            };
             // map back to the original vertex order
             let mut b = [0f32; 3];
             b[ia] = b0;

@@ -3310,6 +3310,22 @@ fn run(a: Vec<String>) {
             }
             // the tiles: the ST of the first few tile instances
             for i in 3..sc.instances.len().min(6) { let t = &sc.instances[i]; println!("tile instance {i}: q {:?} t {:?} scale {} st {:?}", t.q, t.t, t.scale, t.st); }
+            // --mesh M --tri T [--dir x,y,z]: one triangle's vertices and their VS 17118 outputs
+            if let (Some(mi), Some(ti)) = (f("--mesh"), f("--tri")) {
+                let (mi, ti): (usize, usize) = (mi.parse().unwrap(), ti.parse().unwrap());
+                let m = &sc.meshes[mi];
+                let inst = &sc.instances[sc.inst_first[mi]];
+                let d: [f32; 3] = f("--dir").map(|s| { let v: Vec<f32> = s.split(',').map(|t| t.trim().parse().unwrap()).collect(); [v[0], v[1], v[2]] }).unwrap_or([0.3454768657684326, 0.11707823723554611, 0.9310952425003052]);
+                let cb = lightmap::lmaccum::LmRasterCb::for_offset(0, 2048, 2048);
+                for &vi in &m.indices[ti * 3..ti * 3 + 3] {
+                    let v = &m.verts[vi as usize];
+                    let o = lightmap::lmaccum::vs_17118(v, inst, &sc.table, &cb, d);
+                    let nl = (v.normal[0].powi(2) + v.normal[1].powi(2) + v.normal[2].powi(2)).sqrt();
+                    let tl = (v.tangent[0].powi(2) + v.tangent[1].powi(2) + v.tangent[2].powi(2)).sqrt();
+                    let ndt = v.normal[0] * v.tangent[0] + v.normal[1] * v.tangent[1] + v.normal[2] * v.tangent[2];
+                    println!("  vertex {vi}: pos {:?} n {:?} (|n| {nl:.5}) t {:?} (|t| {tl:.5}, n·t {ndt:.5}) psize {} uv {:?} → clip {:?} o2 {:?} (|o2| {:.5}) o3 {:?}", v.pos, v.normal, v.tangent, v.psize, v.uv, o.clip, o.o2, (o.o2[0].powi(2) + o.o2[1].powi(2) + o.o2[2].powi(2)).sqrt(), o.o3);
+                }
+            }
         }
         "ilightdir-check" => {
             // lmtool ilightdir-check PASSCAP_ROOT [--frame 127448] [--env-frame 127448] [--cmp unorm|float] [--only-chained]
@@ -3418,10 +3434,15 @@ fn run(a: Vec<String>) {
             //   direction's last accumulate, added onto the CAPTURED MRTs after the previous direction, compared f16 for f16 with the
             //   CAPTURED four MRTs after the direction (hbasis0..3)
             let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let has = |k: &str| a.iter().any(|x| x == k);
             let root = std::path::PathBuf::from(&a[1]);
             let env_frame: u32 = f("--env-frame").map(|v| v.parse().expect("--env-frame")).unwrap_or(127448);
             let manifest = f("--manifest").map(std::path::PathBuf::from).unwrap_or_else(|| root.join("MANIFEST.json"));
             let blend = match f("--blend").as_deref() { Some("round-src") => lightmap::sunpass::BlendModel::RoundSrcAndSum, Some("trunc") => lightmap::sunpass::BlendModel::TruncSum, Some("trunc-src") => lightmap::sunpass::BlendModel::TruncSrcAndSum, Some("round") => lightmap::sunpass::BlendModel::RoundSum, _ => lightmap::sunpass::BlendModel::TruncSrcRoundSum };
+            if has("--coalesced") { lightmap::lmaccum::HB_FRAG_MODEL.store(1, std::sync::atomic::Ordering::Relaxed); }
+            if has("--no-fma") { lightmap::lmaccum::HB_FMA.store(false, std::sync::atomic::Ordering::Relaxed); }
+            if has("--snap-floor") { lightmap::sunpass::RASTER_SNAP_FLOOR.store(true, std::sync::atomic::Ordering::Relaxed); }
+            if has("--interp-unsnapped") { lightmap::sunpass::RASTER_INTERP_UNSNAPPED.store(true, std::sync::atomic::Ordering::Relaxed); }
             let t0 = std::time::Instant::now();
             let sc = lightmap::lmaccum::load_lm_scene(&root, env_frame).expect("LM scene");
             let entries = lightmap::lmaccum::load_capture_entries(&manifest).expect("manifest");
@@ -3442,7 +3463,8 @@ fn run(a: Vec<String>) {
                 Some((0..4).map(|m| entries.iter().find(|e| e.pass == format!("hbasis{m}") && e.capture == capture && e.frame == p0.frame && e.eid_last == p0.eid_last && e.banked).unwrap_or_else(|| panic!("hbasis{m} after direction {} not banked", k - 1))).collect())
             };
             // the ilightdir after the direction's last accumulate: the snapshot with the greatest eid_last before the H-basis draws
-            let ild = entries.iter().filter(|e| e.pass == "ilightdir" && e.capture == capture && e.frame == target.frame && e.eid_last < target.eid_first).max_by_key(|e| e.eid_last).unwrap_or_else(|| panic!("no ilightdir snapshot before the H-basis draws of direction {k} (frame {} eid {})", target.frame, target.eid_first));
+            // the ilightdir the H-basis draw reads: the `ilightdir_final` bank (17098 at the H-basis draw) or the last per-layer snapshot before it
+            let ild = entries.iter().filter(|e| (e.pass == "ilightdir_final" || e.pass == "ilightdir") && e.capture == capture && e.frame == target.frame && e.eid_last <= target.eid_first).max_by_key(|e| (e.eid_last, e.pass == "ilightdir_final")).unwrap_or_else(|| panic!("no ilightdir snapshot before the H-basis draws of direction {k} (frame {} eid {})", target.frame, target.eid_first));
             println!("  inputs: ilightdir {} (eids {}-{}); MRTs before: {}", ild.file, ild.eid_first, ild.eid_last, prev.as_ref().map(|p| p[0].file.clone()).unwrap_or_else(|| "cleared (0)".into()));
             let ildb = ild.load(&root).expect("ilightdir");
             let mut ilt = lightmap::lmaccum::DirTarget::cleared(ildb.w, ildb.h);
@@ -3455,9 +3477,28 @@ fn run(a: Vec<String>) {
             let order = [0usize, 1, 2, 3];
             let draws: Vec<lightmap::lmaccum::HbDraw> = order.iter().map(|&m| lightmap::lmaccum::HbDraw { eid: target.eid_first, mesh: m, instance_first: sc.inst_first[m], instance_count: sc.inst_count[m], raster, cb }).collect();
             let t1 = std::time::Instant::now();
-            lightmap::lmaccum::run_hbasis(&sc.meshes, &sc.instances, &sc.table, &draws, &ilt, &mut tgt, blend);
+            let probe: Option<(u32, u32)> = f("--probe").map(|s| { let v: Vec<u32> = s.split(',').map(|t| t.trim().parse().expect("--probe x,y")).collect(); (v[0], v[1]) });
+            let mut owner = vec![0u8; 2048 * 2048];
+            lightmap::lmaccum::run_hbasis_probe(&sc.meshes, &sc.instances, &sc.table, &draws, &ilt, &mut tgt, blend, Some(&mut owner), probe);
             println!("  rasterised in {:.1} s ({blend:?})", t1.elapsed().as_secs_f32());
             let game: Vec<lightmap::passdiff::Buf> = mrt_after.iter().map(|e| e.load(&root).expect("MRT after")).collect();
+            if let Some((x, y)) = probe { println!("  game at ({x},{y}): {:?}; ours {:?}", (0..4).map(|m| [game[m].get(x, y, 0), game[m].get(x, y, 1), game[m].get(x, y, 2), game[m].get(x, y, 3)]).collect::<Vec<_>>(), (0..4).map(|m| tgt.mrt[m][(y * 2048 + x) as usize]).collect::<Vec<_>>()); }
+            // per object (the mesh that wrote the pixel): exact / 1 ulp / worse over rgb of every MRT
+            for (mi, name) in ["pad (24 idx)", "wall (12 idx)", "vegetation (5751 idx)", "tiles (24 × 4096)"].iter().enumerate() {
+                let (mut n, mut exact, mut ulp1, mut worse) = (0usize, 0usize, 0usize, 0usize);
+                for y in 0..2048u32 { for x in 0..2048u32 { let i = (y * 2048 + x) as usize; if owner[i] != mi as u8 + 1 { continue; } for m in 0..4 { for ch in 0..3 { let g = game[m].get(x, y, ch as u32); let o = tgt.mrt[m][i][ch]; if g == 0.0 && o == 0.0 { continue; } n += 1; let d = (o - g).abs(); if d == 0.0 { exact += 1; } else { let ulp = (lightmap::gpufmt::decode_f16(lightmap::gpufmt::encode_f16(g, lightmap::gpufmt::Rounding::NearestEven).wrapping_add(1)) - g).abs(); if d <= ulp * 1.001 { ulp1 += 1 } else { worse += 1 } } } } } }
+                let pct = |v: usize| if n > 0 { 100.0 * v as f64 / n as f64 } else { 0.0 };
+                println!("  {name:22} rgb of C0..C3: {n:>9} values  exact {exact:>9} ({:6.2} %)  1 ulp {ulp1:>7} ({:5.2} %)  worse {worse:>5} ({:5.3} %)", pct(exact), pct(ulp1), pct(worse));
+            }
+            // by the number of fragments the pixel received this direction (alpha increment × N): the multi-fragment
+            // (two-sided / overlapping card) pixels are where the blend order and rounding show
+            {
+                let n_dirs = (1.0 / cb.inv_dir_count).round();
+                let mut by = std::collections::BTreeMap::<u32, (usize, usize, usize, usize)>::new();
+                let before_alpha = |x: u32, y: u32| -> f32 { prev.as_ref().map(|_| 0.0).unwrap_or(0.0) + 0.0 * (x + y) as f32 };
+                for y in 0..2048u32 { for x in 0..2048u32 { let i = (y * 2048 + x) as usize; if owner[i] == 0 { continue; } let frags = ((tgt.mrt[0][i][3] - before_alpha(x, y)) * n_dirs).round() as u32; let e = by.entry(frags).or_insert((0, 0, 0, 0)); for m in 0..4 { for ch in 0..3 { let g = game[m].get(x, y, ch as u32); let o = tgt.mrt[m][i][ch]; if g == 0.0 && o == 0.0 { continue; } e.0 += 1; let d = (o - g).abs(); if d == 0.0 { e.1 += 1; } else { let ulp = (lightmap::gpufmt::decode_f16(lightmap::gpufmt::encode_f16(g, lightmap::gpufmt::Rounding::NearestEven).wrapping_add(1)) - g).abs(); if d <= ulp * 1.001 { e.2 += 1 } else { e.3 += 1 } } } } } }
+                if prev.is_none() { for (k, (n, ex, u1, w)) in &by { println!("  pixels with {k} fragment(s): {n:>9} values  exact {ex:>9} ({:6.2} %)  1 ulp {u1:>7} ({:5.2} %)  worse {w:>5}", 100.0 * *ex as f64 / (*n).max(1) as f64, 100.0 * *u1 as f64 / (*n).max(1) as f64); } }
+            }
             for m in 0..4 {
                 for ch in 0..4 {
                     let (n, exact, ulp1, worse, maxd, worst) = lightmap::lmaccum::compare_mrt(&tgt.mrt[m], &game[m], ch);
@@ -3497,49 +3538,98 @@ fn run(a: Vec<String>) {
             // direction k precedes k's blocks: the snapshot includes k when k's hbasis eid_last > eid in the same frame or later
             let mut prev: Option<([f32; 4], u32)> = None;
             let (mut n_w_ok, mut n_w) = (0usize, 0usize);
-            let mut running = [0f32; 4];
-            let mut running_known = false;
+            let (mut n_cs_ok, mut n_cs) = (0usize, 0usize);
             for e in &acc {
                 let v = load4(e);
-                // the first direction NOT yet accumulated at this snapshot: the smallest (frame, eid_last) > (e.frame, e.eid)
+                // the direction this dispatch belongs to: the one whose H-basis draws come next after it — the dispatch
+                // of direction k opens k's iteration (right after k's environment render, before its first accumulate)
                 let next = dirs.iter().find(|d| (d.1, d.2) > (e.frame, e.eid_last)).map(|d| d.0);
-                let Some(next) = next else { println!("frame {} eid {}: {:?} (after the last known direction)", e.frame, e.eid_last, v); continue; };
-                // directions 0..next-1 are in the sum (the dispatch of `next − 1` has run: it precedes its blocks — the snapshot after the dispatch of direction j includes j)
-                let count = next; // directions 0..=next-1
-                let w_expect: f32 = dirs.iter().filter(|d| d.0 < count).fold(0f32, |s, d| d.3[1] / 32.0 * 0.5 + s);
-                let w_ok = (v[3] - w_expect).abs() <= 1e-6 * v[3].abs().max(1.0);
-                n_w += 1; if w_ok { n_w_ok += 1; }
-                let mut line = format!("frame {:6} eid {:5}: after direction {:3}: w {:.7} (Σ D.y/64 over 0..={}: {:.7} {})  xyz ({:.6},{:.6},{:.6})", e.frame, e.eid_last, count as i64 - 1, v[3], count as i64 - 1, w_expect, if w_ok { "OK" } else { "MISMATCH" }, v[0], v[1], v[2]);
-                if let Some((pv, pcount)) = prev {
-                    if pcount + 1 == count {
-                        // one direction between the two snapshots: its centre colour = Δ / Scale
-                        let d = dirs.iter().find(|d| d.0 == count - 1).unwrap();
-                        let scale = d.3[1] / 32.0;
-                        let c = [(v[0] - pv[0]) / scale, (v[1] - pv[1]) / scale, (v[2] - pv[2]) / scale];
-                        line += &format!("  Δ/Scale = centre colour ({:.4},{:.4},{:.4}) [D.y {:.4}]", c[0], c[1], c[2], d.3[1]);
-                        // the banked environment render of that direction: the peel_color with the greatest (frame, eid_last) before the dispatch
-                        let env = entries.iter().filter(|x| x.pass == "peel_color" && x.capture == capture && (x.frame, x.eid_last) < (e.frame, e.eid_last)).max_by_key(|x| (x.frame, x.eid_last));
-                        if let Some(env) = env {
-                            if (e.frame, e.eid_last).0 == env.frame || e.eid_last < 100 {
-                                let b = env.load(&root).expect("env colour");
-                                let (cx, cy) = lightmap::lmaccum::ambient_pixel(b.w, b.h);
-                                let g = [b.get(cx, cy, 0), b.get(cx, cy, 1), b.get(cx, cy, 2)];
-                                let mut acc2 = pv;
-                                lightmap::lmaccum::cs_17125(&mut acc2, g, scale);
-                                let exact = acc2 == v;
-                                line += &format!("; banked env {} centre ({:.4},{:.4},{:.4}) → CS 17125 gives ({:.7},{:.7},{:.7},{:.7}) {}", env.file.rsplit('/').next().unwrap_or(""), g[0], g[1], g[2], acc2[0], acc2[1], acc2[2], acc2[3], if exact { "EXACT" } else { "differs" });
-                                if running_known { lightmap::lmaccum::cs_17125(&mut running, g, scale); line += &format!("; running from our chain ({:.7},{:.7},{:.7},{:.7})", running[0], running[1], running[2], running[3]); }
-                            }
-                        }
-                    } else {
-                        line += &format!("  ({} directions since the previous snapshot)", count - pcount);
-                    }
+                let Some(k) = next else { println!("frame {} eid {}: {:?} (after the last known direction)", e.frame, e.eid_last, v); continue; };
+                // the snapshot holds the directions 0..=k: only the UPWARD ones dispatch (FUN_140234df0: the dispatch runs
+                // when 4·w·D.y·Sky > 0) with Scale = D.y/32 — checkable when every index ≤ k has a captured vector
+                let count = k + 1;
+                let complete = (0..count).all(|j| dirs.iter().any(|d| d.0 == j));
+                let w_expect: f32 = dirs.iter().filter(|d| d.0 < count && d.3[1] > 0.0).fold(0f32, |s, d| d.3[1] / 32.0 * 0.5 + s);
+                let w_ok = complete && (v[3] - w_expect).abs() <= 2e-7 * v[3].abs().max(1.0);
+                if complete { n_w += 1; if w_ok { n_w_ok += 1; } }
+                let mut line = format!("frame {:6} eid {:5}: through direction {:3}: w {:.7} (Σ max(D.y,0)/64 over 0..={k}: {:.7} {})  xyz ({:.6},{:.6},{:.6})", e.frame, e.eid_last, k, v[3], w_expect, if !complete { "gap: uncaptured directions" } else if w_ok { "OK" } else { "MISMATCH" }, v[0], v[1], v[2]);
+                // the previous snapshot (or the cleared buffer before direction 0)
+                let (pv, pcount) = prev.unwrap_or(([0.0f32; 4], 0));
+                if pcount + 1 == count {
+                    // one direction between the two snapshots: its Scale = 2·Δw (the .w channel adds Scale/2), its centre
+                    // colour = Δxyz / Scale
+                    let d = dirs.iter().find(|d| d.0 == k).unwrap();
+                    let scale_meas = (v[3] - pv[3]) * 2.0;
+                    let c = [(v[0] - pv[0]) / scale_meas, (v[1] - pv[1]) / scale_meas, (v[2] - pv[2]) / scale_meas];
+                    line += &format!("  Scale = 2Δw = {:.7} (×32 = {:.5}; D ({:.4},{:.4},{:.4}), D.y/32 = {:.7} {})  Δ/Scale = centre colour ({:.4},{:.4},{:.4})", scale_meas, scale_meas * 32.0, d.3[0], d.3[1], d.3[2], d.3[1] / 32.0, if scale_meas == d.3[1] / 32.0 { "EXACT" } else { "differs" }, c[0], c[1], c[2]);
+                } else {
+                    line += &format!("  ({} directions since the previous snapshot)", count - pcount);
+                }
+                // the transcribed CS over the banked environment renders: for every upward direction j in (pcount, k],
+                // its env render = the first peel_color banked between direction j−1's H-basis and direction j's
+                // (the env block opens the iteration, before the dispatch); when every one is banked the chain from the
+                // previous snapshot must land on this one exactly
+                let mut acc2 = pv;
+                let mut all_env = true;
+                let mut used: Vec<String> = Vec::new();
+                for j in pcount..count {
+                    let Some(d) = dirs.iter().find(|d| d.0 == j) else { all_env = false; break };
+                    if d.3[1] <= 0.0 { continue; }
+                    let lo = dirs.iter().filter(|p| p.0 < j).map(|p| (p.1, p.2)).max().unwrap_or((0, 0));
+                    let hi = (d.1, d.2);
+                    let env = entries.iter().filter(|x| x.pass == "peel_color" && x.capture == capture && (x.frame, x.eid_last) > lo && (x.frame, x.eid_last) < hi).min_by_key(|x| (x.frame, x.eid_first));
+                    let Some(env) = env else { all_env = false; break };
+                    let b = env.load(&root).expect("env colour");
+                    let (cx, cy) = lightmap::lmaccum::ambient_pixel(b.w, b.h);
+                    let g = [b.get(cx, cy, 0), b.get(cx, cy, 1), b.get(cx, cy, 2)];
+                    lightmap::lmaccum::cs_17125(&mut acc2, g, d.3[1] / 32.0);
+                    used.push(format!("{} centre ({:.4},{:.4},{:.4})", env.file.rsplit('/').next().unwrap_or(""), g[0], g[1], g[2]));
+                }
+                if all_env && !used.is_empty() {
+                    let exact = acc2 == v;
+                    n_cs += 1; if exact { n_cs_ok += 1; }
+                    line += &format!("; CS 17125 over the banked env renders [{}] → ({:.7},{:.7},{:.7},{:.7}) {}", used.join(", "), acc2[0], acc2[1], acc2[2], acc2[3], if exact { "EXACT" } else { "differs" });
                 }
                 println!("{line}");
-                if !running_known { running = v; running_known = true; }
                 prev = Some((v, count));
             }
-            println!("w channel: {n_w_ok} of {n_w} snapshots equal Σ D.y/64 over the directions issued (Scale = 8·D.y/N, N = 256)");
+            println!("w channel: {n_w_ok} of {n_w} gap-free snapshots equal Σ max(D.y, 0)/64 over the directions issued (the upward directions dispatch with Scale = 8·D.y/N, N = 256; the downward ones do not); CS 17125 over banked env renders: {n_cs_ok} of {n_cs} snapshots reproduced bit for bit");
+        }
+        "dxbc-literals" => {
+            // lmtool dxbc-literals FILE.dxbc: every IMMEDIATE32 literal of the shader's token stream, in instruction order,
+            //   with its exact bits (the disassembly prints six decimals)
+            let b = std::fs::read(&a[1]).expect("dxbc file");
+            let (ptype, major, minor, t) = lightmap::dxbc::tokens(&b).expect("no SHEX/SHDR chunk");
+            println!("{}: program type {ptype}, sm {major}.{minor}, {} tokens", a[1], t.len());
+            for (name, idx, reg, mask) in lightmap::dxbc::signature(&b, b"ISGN") { println!("  input  v{reg} = {name}{idx} (mask {mask:#x})"); }
+            for (name, idx, reg, mask) in lightmap::dxbc::signature(&b, b"OSGN") { println!("  output o{reg} = {name}{idx} (mask {mask:#x})"); }
+            for (idx, op, v, bits) in lightmap::dxbc::literal_f32s(&b) {
+                println!("  inst {idx:3} opcode {op:#04x}: {v:>14.9} ({bits:#010x}){}", if bits & 0x7f80_0000 == 0 && bits != 0 { " denormal" } else if v.is_nan() { " NaN" } else { "" });
+            }
+        }
+        "cappixel" => {
+            // lmtool cappixel PASSCAP_ROOT --pass hbasis0 [--index K | --frame N --eid E] --at x,y [--manifest M] [--capture pwc2]
+            //   one pixel of a captured buffer (every channel), for quick looks at the capture
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let root = std::path::PathBuf::from(&a[1]);
+            let manifest = f("--manifest").map(std::path::PathBuf::from).unwrap_or_else(|| root.join("MANIFEST.json"));
+            let entries = lightmap::lmaccum::load_capture_entries(&manifest).expect("manifest");
+            let pass = f("--pass").unwrap_or_else(|| "hbasis0".into());
+            let capture = f("--capture").unwrap_or_else(|| "pwc2".into());
+            let at: Vec<u32> = f("--at").expect("--at x,y").split(',').map(|t| t.trim().parse().expect("--at x,y")).collect();
+            let sel: Vec<&lightmap::lmaccum::CapEntry> = entries.iter().filter(|e| e.pass == pass && e.capture == capture && e.banked).filter(|e| {
+                match (f("--index"), f("--frame"), f("--eid")) {
+                    (Some(k), _, _) => e.sweep_direction_index == Some(k.parse().expect("--index")),
+                    (None, Some(fr), Some(eid)) => e.frame == fr.parse::<u32>().expect("--frame") && e.eid_last == eid.parse::<u64>().expect("--eid"),
+                    (None, Some(fr), None) => e.frame == fr.parse::<u32>().expect("--frame"),
+                    _ => true,
+                }
+            }).collect();
+            for e in sel {
+                let b = e.load(&root).expect("load");
+                let v: Vec<f32> = (0..b.channels).map(|c| b.get(at[0], at[1], c)).collect();
+                println!("{} frame {} eids {}-{} sdi {:?} dir {:?}: ({},{}) = {:?}", e.file, e.frame, e.eid_first, e.eid_last, e.sweep_direction_index, e.dir.map(|d| [(d[0] * 1000.0).round() / 1000.0, (d[1] * 1000.0).round() / 1000.0, (d[2] * 1000.0).round() / 1000.0]), at[0], at[1], v);
+            }
         }
         "sweep1-check" => {
             // lmtool sweep1-check PASSCAP_ROOT [--kappa K] [--fit-srgb]: ROW 11 — the sweep-1 ILightInput chain (sweep1.rs:

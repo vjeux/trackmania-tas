@@ -352,59 +352,95 @@ pub fn vs_17118(v: &LmVertex, inst: &LmInstance, table: &[[f32; 4]], cb: &LmRast
     HbVsOut { clip, o2: [dot(peel_dir, r2), dot(peel_dir, r3), dot(peel_dir, r6)], o3: [0.0; 4] }
 }
 
+/// The literals of PS 17122 as the token stream holds them (`lmtool dxbc-literals shaders-frame127448/bin/
+/// Pixel_17122.dxbc`; the disassembly prints six decimals).
+pub const HB_FOUR_PI: f32 = f32::from_bits(0x41490fdb); //  12.566370964
+pub const HB_C_LIN: f32 = f32::from_bits(0xbe6bdbc1); //  −0.230330482 (the sx / sy / sz linear terms)
+pub const HB_C_Z: f32 = f32::from_bits(0x3ecc403f); //   0.398927659 (C0's sz term)
+pub const HB_C_ONE: f32 = f32::from_bits(0x3e4c4267); //   0.199472055 (C0's constant)
+pub const HB_C_Q2: f32 = f32::from_bits(0x3ddd1d80); //   0.107966423 (C2's (3sz² − 1) term)
+pub const HB_C_Q0: f32 = f32::from_bits(0x3dbf7fec); //   0.093505710 (C0's (3sz² − 1) term)
+pub const HB_C_XZ: f32 = f32::from_bits(0xbe25d689); //  −0.161951199 (C1 / C3's sy·sz / sx·sz term)
+pub const HB_SWITCH: f32 = f32::from_bits(0x3f3504f3); //   0.707106769 (the |n.y| frame switch)
+
+/// Whether `mad` is executed as a fused multiply-add (the GPU's FFMA; default) or as mul + add.
+pub static HB_FMA: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+#[inline]
+fn mad(a: f32, b: f32, c: f32) -> f32 {
+    if HB_FMA.load(std::sync::atomic::Ordering::Relaxed) { a.mul_add(b, c) } else { a * b + c }
+}
+
+/// `dp3` as the GPU evaluates it (a multiply then two fused adds when `HB_FMA`).
+#[inline]
+fn dp3(a: [f32; 3], b: [f32; 3]) -> f32 {
+    if HB_FMA.load(std::sync::atomic::Ordering::Relaxed) { a[2].mul_add(b[2], a[1].mul_add(b[1], a[0] * b[0])) } else { a[0] * b[0] + a[1] * b[1] + a[2] * b[2] }
+}
+
+/// `mul r, a.yzx, b.zxy; mad r, a.zxy, b.yzx, -r`: r.x = a.z·b.y ... as the bytecode pairs them —
+/// r = (a.y b.z − a.z b.y, a.z b.x − a.x b.z, a.x b.y − a.y b.x) with the second product fused when `HB_FMA`.
+#[inline]
+fn cross_mad(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    // the DXBC: mul r, a.zxy(=a.z,a.x,a.y), b.yzx(=b.y,b.z,b.x) → r = (a.z b.y, a.x b.z, a.y b.x); mad r, a.yzx, b.zxy, -r
+    let r = [a[2] * b[1], a[0] * b[2], a[1] * b[0]];
+    [mad(a[1], b[2], -r[0]), mad(a[2], b[0], -r[1]), mad(a[0], b[1], -r[2])]
+}
+
 /// The four MRT outputs of PS 17122 for one pixel: `v2` = the interpolated o2, `v3` = the provoking vertex's o3
-/// (nointerpolation), `l` = `TMapILightDir[px, py]`.
+/// (nointerpolation), `l` = `TMapILightDir[px, py]`. Instruction by instruction (Pixel_17122.txt), the literals
+/// from the token stream, `mad` fused (`HB_FMA`).
 #[inline]
 pub fn ps_17122(v2: [f32; 3], v3: [f32; 4], l: [f32; 3], cb: &HbCb) -> [[f32; 4]; 4] {
     // 1-34: (sx, sy, sz) = r1
     let r1: [f32; 3] = if 0.5 < v3[3] {
         let t = [v3[0], v3[1], v3[2]];
-        // 3-9: r1 = normalize(cross(v2, v3)) (0 when degenerate) — the bitangent from the tangent
-        let c = cross(v2, t);
-        let l2 = dot(c, c);
+        // 3-4: r1 = cross(v2, v3); 5-9: normalize (0 when degenerate) — the bitangent from the tangent
+        let c = cross_mad(v2, t);
+        let l2 = dp3(c, c);
         let b = if 0.0 < l2 { let s = 1.0 / l2.sqrt(); [c[0] * s, c[1] * s, c[2] * s] } else { [0.0; 3] };
         // 10-11: r2 = cross(r1, v2) — the re-orthogonalised tangent
-        let tt = cross(b, v2);
-        // 12-19: r3 = normalize(v2.z, 0, −v2.x) (0 when degenerate)
-        let l2 = v2[2] * v2[2] + v2[0] * v2[0];
-        let t0 = if 0.0 < l2 { let s = 1.0 / l2.sqrt(); [v2[2] * s, 0.0, -v2[0] * s] } else { [0.0; 3] };
-        // 20-21: r4 = cross(v2, r3)
-        let b0 = cross(v2, t0);
+        let tt = cross_mad(b, v2);
+        // 12-19: r3 = normalize(v2.z, 0, −v2.x) (0 when degenerate): 12: r3.xy = (v2.z, −v2.x); 13: dp2
+        let r3xy = [v2[2] * 1.0, v2[0] * -1.0];
+        let l2 = if HB_FMA.load(std::sync::atomic::Ordering::Relaxed) { r3xy[1].mul_add(r3xy[1], r3xy[0] * r3xy[0]) } else { r3xy[0] * r3xy[0] + r3xy[1] * r3xy[1] };
+        let t0 = if 0.0 < l2 { let s = 1.0 / l2.sqrt(); [(v2[2] * 1.0) * s, 0.0 * s, (v2[0] * -1.0) * s] } else { [0.0; 3] };
+        // 20-21: r4 = cross(r3, v2)?? — 20: mul r4, r3.yzx, v2.zxy ; 21: mad r4, v2.yzx, r3.zxy, -r4 → r4 = cross(v2, r3)
+        let b0 = cross_mad(v2, t0);
         // 22-26: |v2.y| > 0.707107 → the mesh tangent's frame (r3 = r2, r4 = r1)
-        let (tx, bx) = if 0.707107 < v2[1].abs() { (tt, b) } else { (t0, b0) };
+        let (tx, bx) = if HB_SWITCH < v2[1].abs() { (tt, b) } else { (t0, b0) };
         // 27-29
-        [dot(cb.peel_dir, tx), dot(cb.peel_dir, bx), dot(cb.peel_dir, v2)]
+        [dp3(cb.peel_dir, tx), dp3(cb.peel_dir, bx), dp3(cb.peel_dir, v2)]
     } else {
         // 31-33: normalize(v2)
-        let l2 = dot(v2, v2);
+        let l2 = dp3(v2, v2);
         let s = 1.0 / l2.sqrt();
         [v2[0] * s, v2[1] * s, v2[2] * s]
     };
     let (sx, sy, sz) = (r1[0], r1[1], r1[2]);
     // 35: r1.w = InvDirCount · 4π ; 38: L' = L · r1.w
-    let k = cb.inv_dir_count * 12.566371;
+    let k = cb.inv_dir_count * HB_FOUR_PI;
     let lp = [l[0] * k, l[1] * k, l[2] * k];
     // 39: r2 = (sz·sz, sy·sz, sx·sz)
     let r2 = [sz * sz, sy * sz, sx * sz];
-    // 40: r0.w = 3·sz² − 1
-    let q = r2[0] * 3.0 + -1.0;
+    // 40: r0.w = 3·sz² − 1 (mad)
+    let q = mad(r2[0], 3.0, -1.0);
     // 41: r1.xy = (sy, sx) · −0.230330
-    let mut r1x = sy * -0.230330;
-    let mut r1y = sx * -0.230330;
-    // 42: r1.w = sz · 0.398928 + 0.199472
-    let r1w = sz * 0.398928 + 0.199472;
-    // 43: r2.x = q · 0.107966 ; 44: r0.w = q · 0.093506 + r1.w
-    let r2x = q * 0.107966;
-    let p0 = q * 0.093506 + r1w;
+    let mut r1x = sy * HB_C_LIN;
+    let mut r1y = sx * HB_C_LIN;
+    // 42: r1.w = sz · 0.398928 + 0.199472 (mad)
+    let r1w = mad(sz, HB_C_Z, HB_C_ONE);
+    // 43: r2.x = q · 0.107966 ; 44: r0.w = q · 0.093506 + r1.w (mad)
+    let r2x = q * HB_C_Q2;
+    let p0 = mad(q, HB_C_Q0, r1w);
     // 45: o0 = P0 · L'
     let o0 = [p0 * lp[0], p0 * lp[1], p0 * lp[2], cb.inv_dir_count];
-    // 46: r1.xy = (sy·sz, sx·sz) · −0.161951 + r1.xy
-    r1x = r2[1] * -0.161951 + r1x;
-    r1y = r2[2] * -0.161951 + r1y;
+    // 46: r1.xy = (sy·sz, sx·sz) · −0.161951 + r1.xy (mad)
+    r1x = mad(r2[1], HB_C_XZ, r1x);
+    r1y = mad(r2[2], HB_C_XZ, r1y);
     // 47: o1 = L' · r1.x
     let o1 = [lp[0] * r1x, lp[1] * r1x, lp[2] * r1x, cb.inv_dir_count];
-    // 48: r0.w = sz · −0.230330 − r2.x ; 49: o2 = r0.w · L'
-    let p2 = sz * -0.230330 - r2x;
+    // 48: r0.w = sz · −0.230330 − r2.x (mad) ; 49: o2 = r0.w · L'
+    let p2 = mad(sz, HB_C_LIN, -r2x);
     let o2 = [p2 * lp[0], p2 * lp[1], p2 * lp[2], cb.inv_dir_count];
     // 50: o3 = L' · r1.y
     let o3 = [lp[0] * r1y, lp[1] * r1y, lp[2] * r1y, cb.inv_dir_count];
@@ -466,14 +502,41 @@ pub fn blend_f16(dst: f32, src: f32, model: crate::sunpass::BlendModel) -> f32 {
 
 /// Run the direction's four H-basis draws over `ilightdir` (the target after the direction's last accumulate)
 /// into `tgt` (the MRTs before the direction). The provoking vertex of a triangle is its first index (D3D11).
+/// `owner[i]` (when given) receives the mesh index of the last draw that touched pixel i; `probe` prints every
+/// fragment of that pixel with its unquantised outputs.
 pub fn run_hbasis(meshes: &[LmMesh], instances: &[LmInstance], table: &[[f32; 4]], draws: &[HbDraw], ilightdir: &DirTarget, tgt: &mut HbTargets, blend: crate::sunpass::BlendModel) {
+    run_hbasis_probe(meshes, instances, table, draws, ilightdir, tgt, blend, None, None);
+}
+
+/// How the fragments of ONE pixel within the direction's draws reach the f16 target.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum FragModel {
+    /// every fragment blended on its own: dst = f16(dst + f16(src)) per `BlendModel`
+    Sequential,
+    /// the ROP keeps the pixel in f32 while its fragments arrive: acc = dst + Σ src (f32), rounded once at the end —
+    /// RTNE when two or more fragments landed, the lone fragment as the sequential model (src truncated, sum RTNE)
+    F32Coalesced,
+}
+
+pub static HB_FRAG_MODEL: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+pub fn frag_model() -> FragModel {
+    if HB_FRAG_MODEL.load(std::sync::atomic::Ordering::Relaxed) == 1 { FragModel::F32Coalesced } else { FragModel::Sequential }
+}
+
+pub fn run_hbasis_probe(meshes: &[LmMesh], instances: &[LmInstance], table: &[[f32; 4]], draws: &[HbDraw], ilightdir: &DirTarget, tgt: &mut HbTargets, blend: crate::sunpass::BlendModel, mut owner: Option<&mut Vec<u8>>, probe: Option<(u32, u32)>) {
     let (w, h) = (tgt.w, tgt.h);
+    let model = frag_model();
+    // the coalesced model: the f32 running sum of this direction's fragments per pixel and their count
+    let mut acc: Vec<[[f32; 4]; 4]> = if model == FragModel::F32Coalesced { vec![[[0.0; 4]; 4]; (w * h) as usize] } else { Vec::new() };
+    let mut count: Vec<u8> = if model == FragModel::F32Coalesced { vec![0; (w * h) as usize] } else { Vec::new() };
+    let mut first: Vec<[[f32; 4]; 4]> = if model == FragModel::F32Coalesced { vec![[[0.0; 4]; 4]; (w * h) as usize] } else { Vec::new() };
     for d in draws {
         let mesh = &meshes[d.mesh];
         for ii in d.instance_first..d.instance_first + d.instance_count {
             let inst = &instances[ii];
             let vs: Vec<HbVsOut> = mesh.verts.iter().map(|v| vs_17118(v, inst, table, &d.raster, d.cb.peel_dir)).collect();
-            for tri in mesh.indices.chunks_exact(3) {
+            for (ti, tri) in mesh.indices.chunks_exact(3).enumerate() {
                 let (a, b, c) = (&vs[tri[0] as usize], &vs[tri[1] as usize], &vs[tri[2] as usize]);
                 let v3 = a.o3;
                 rasterise_triangle([a.clip, b.clip, c.clip], w, h, |x, y, b0, b1, b2| {
@@ -481,12 +544,35 @@ pub fn run_hbasis(meshes: &[LmMesh], instances: &[LmInstance], table: &[[f32; 4]
                     let l = ilightdir.rgb(x, y);
                     let o = ps_17122(v2, v3, l, &d.cb);
                     let i = (y * w + x) as usize;
-                    for k in 0..4 {
-                        for ch in 0..4 {
-                            tgt.mrt[k][i][ch] = blend_f16(tgt.mrt[k][i][ch], o[k][ch], blend);
+                    if probe == Some((x, y)) {
+                        eprintln!("probe ({x},{y}): mesh {} instance {ii} tri {ti} [{},{},{}] bary ({b0:.6},{b1:.6},{b2:.6}) v2 ({:.7},{:.7},{:.7}) v3 {:?} L ({:.5},{:.5},{:.5}); before {:?}", d.mesh, tri[0], tri[1], tri[2], v2[0], v2[1], v2[2], v3, l[0], l[1], l[2], [tgt.mrt[0][i], tgt.mrt[1][i], tgt.mrt[2][i], tgt.mrt[3][i]]);
+                        for k in 0..4 { eprintln!("    C{k} src f32 {:?} → f16 rtz {:?}", o[k], o[k].map(|v| quantise_f16(v, Rounding::Truncate))); }
+                    }
+                    if let Some(ow) = owner.as_deref_mut() { ow[i] = d.mesh as u8 + 1; }
+                    match model {
+                        FragModel::Sequential => {
+                            for k in 0..4 {
+                                for ch in 0..4 {
+                                    tgt.mrt[k][i][ch] = blend_f16(tgt.mrt[k][i][ch], o[k][ch], blend);
+                                }
+                            }
+                        }
+                        FragModel::F32Coalesced => {
+                            if count[i] == 0 { first[i] = o; }
+                            for k in 0..4 { for ch in 0..4 { acc[i][k][ch] += o[k][ch]; } }
+                            count[i] = count[i].saturating_add(1);
                         }
                     }
                 });
+            }
+        }
+    }
+    if model == FragModel::F32Coalesced {
+        for i in 0..(w * h) as usize {
+            match count[i] {
+                0 => {}
+                1 => { for k in 0..4 { for ch in 0..4 { tgt.mrt[k][i][ch] = blend_f16(tgt.mrt[k][i][ch], first[i][k][ch], blend); } } }
+                _ => { for k in 0..4 { for ch in 0..4 { tgt.mrt[k][i][ch] = quantise_f16(tgt.mrt[k][i][ch] + acc[i][k][ch], Rounding::NearestEven); } } }
             }
         }
     }
@@ -496,14 +582,16 @@ pub fn run_hbasis(meshes: &[LmMesh], instances: &[LmInstance], table: &[[f32; 4]
 // AddAmbient
 // ---------------------------------------------------------------------------------------------------------------
 
-/// CS 17125 for one dispatch: `accum.xyz += Scale · color[W >> 1, H >> 1]`, `accum.w += Scale · 0.5` (f32 buffer,
-/// `mad` per component in the bytecode's order).
+/// CS 17125 for one dispatch: `accum.xyz += Scale · color[W >> 1, H >> 1]`, `accum.w += Scale · 0.5` — an f32 buffer,
+/// the `mad`s FUSED (the captured UAV reproduces bit for bit with fma, one f32 ulp off without). The dispatch runs
+/// for the UPWARD directions of the first sweep only (FUN_140234df0 l.562–594: `0 < 4·w·D.y·Sky`; w = 2/N), with
+/// Scale = 4·w·D.y·Sky = D.y/32 for N = 256 — the downward directions add nothing.
 #[inline]
 pub fn cs_17125(accum: &mut [f32; 4], centre_rgb: [f32; 3], scale: f32) {
     for k in 0..3 {
-        accum[k] = centre_rgb[k] * scale + accum[k];
+        accum[k] = centre_rgb[k].mul_add(scale, accum[k]);
     }
-    accum[3] = scale * 0.5 + accum[3];
+    accum[3] = scale.mul_add(0.5, accum[3]);
 }
 
 /// The pixel the compute shader reads: `resinfo` → (W, H) >> 1.
