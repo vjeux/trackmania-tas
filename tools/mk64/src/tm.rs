@@ -731,13 +731,13 @@ fn local_frame(pts: impl Iterator<Item = [f32; 3]>, wp: Option<&WaypointReq>) ->
         Some(w) if w.kind == 4 => [snap(w.pos[0]), snap(lo[1]), snap(w.pos[2])],
         _ => [snap((lo[0] + hi[0]) / 2.0), snap(lo[1]), snap((lo[2] + hi[2]) / 2.0)],
     };
-    // the game spawns the car facing the item's local −z (Luigi Raceway,
-    // 2026-09-22: yaw = atan2(dx, dz) put the car backwards on the straight)
+    // The game spawns the car facing the item's local +z: yaw = atan2(dx, dz)
+    // points it down the path. (2026-09-22 added a +π after eyeballing a
+    // screenshot as "backwards"; 2026-09-25 the /vis probe settled it — the
+    // spawned car drove +z while the path, the checkpoints and the MK64 CPU
+    // ghosts run −z from the line, i.e. every map was driven in reverse.)
     let yaw = match wp {
-        Some(w) if w.kind == 4 => {
-            let y = w.dir[0].atan2(w.dir[2]) + std::f32::consts::PI;
-            if y > std::f32::consts::PI { y - 2.0 * std::f32::consts::PI } else { y }
-        }
+        Some(w) if w.kind == 4 => w.dir[0].atan2(w.dir[2]),
         _ => 0.0,
     };
     (origin, yaw)

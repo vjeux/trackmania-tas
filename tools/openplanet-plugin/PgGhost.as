@@ -21,6 +21,12 @@ string PgGhostAdd(const string &in qs) {
     if (so == "now") {
         auto sp = ScriptPlayer();
         if (sp !is null) offset = sp.CurrentRaceTime;
+    } else if (so == "start") {
+        // the player's StartTime on the playground clock: with TimeOffset 0 a
+        // ghost's zero was the playground's own zero (~7 s + the countdown
+        // before the race), 300 m ahead at race time 4 s (/vis, 2026-09-25)
+        auto sp = ScriptPlayer();
+        if (sp !is null) offset = sp.StartTime;
     } else if (so != "") {
         offset = Text::ParseInt(so);
     }

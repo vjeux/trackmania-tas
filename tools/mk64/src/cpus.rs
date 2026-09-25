@@ -190,9 +190,11 @@ pub fn field(c: &Course, frame: &Frame, rom: &[u8], player: usize, base: &Drive,
         if k == player {
             continue;
         }
-        // grid: slot 1 = front left … 7 = back left; rows 5 m apart, columns ±1.6 m
+        // grid: slot 1 = front left … 7 = back left; rows 5 m apart, columns
+        // ±1.6 m; the human's row is the line itself, so the CPUs' rows sit
+        // 5..20 m ahead of it
         let (row, col) = (slot / 2, slot % 2);
-        let start_ahead_m = (3 - row.min(3)) as f32 * 5.0;
+        let start_ahead_m = (4 - row.min(3)) as f32 * 5.0;
         let base_lateral = if col == 0 { -1.6 } else { 1.6 };
         let vmax = cap_mps.min(base.vmax) * (top / 320.0) * (1.0 - 0.02 * slot as f32);
         out.push(Cpu {
