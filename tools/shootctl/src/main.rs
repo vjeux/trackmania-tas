@@ -1924,6 +1924,20 @@ fn to_menu() -> Result<(), String> {
         // menu one level at a time, raising the save prompt on the way out.
         // So /back is the only mover, and it is called repeatedly.
         if ctx() == Some(0) { return Ok(()); }
+        // A DEAD GAME IS NOT A GAME AT SOME LEVEL. BackToMainMenu out of a
+        // playground crashes the client about four times in five on this box
+        // (2026-09-24, Openplanet.dll+0xc0480, every plugin set tried); the
+        // loop below then spent 24 minutes of 20 s timeouts holding the lock
+        // over nothing (20:20–20:44). No process = relaunch, which comes up
+        // at the menu — the state this function exists to reach.
+        if !tm_running() {
+            println!("the game is gone (crashed on the way to the menu?) — relaunching");
+            if launch(180, true) != 0 {
+                return Err("the game died on the way to the menu and did not come back".into());
+            }
+            if ctx() == Some(0) { return Ok(()); }
+            continue;
+        }
         let _ = http_get("/back", 20);
         // Answer whatever modal the exit raised; /dismiss picks the right answer
         // per dialog and defaults to declining. Each answer is followed by a
