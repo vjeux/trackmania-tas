@@ -58,6 +58,7 @@ fn no_body_chunks(class_id: u32) -> bool {
             | 0x2F0BC000
             | 0x2F086000
             | 0x2F0CA000
+            | 0x0902F000
     )
 }
 
@@ -247,6 +248,100 @@ pub struct LightInfo {
     pub spot_bytes: [u8; 2],
 }
 
+
+/// One layer of a `CPlugImageArray` (0x0914C000, chunk 0x0914C000 v7; reader 0x1404d4b00): the
+/// terrain "layer" of a texture array — the world-position → texture-coordinate mapping the
+/// terrain shader (`Tech3/Block_PyPxz_ids_p`) reads per slice from `g_WorldPosToTcPyPxz` /
+/// `g_WorldPosToTcPyX2` / `g_WorldPosToTcPyH2` (the buffer is built from these fields by
+/// 0x1409f2e50 + 0x1404d49d0, see `terrain::world_pos_to_tc`). Stride 0x50 in memory.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ImageArrayLayer {
+    /// +0: the layer name (`Land`, `SeaFloor`, …) — what a material's chunk 0x0903A015 names
+    /// select (`SubIndexPyPxz`), and the stem of the slice image `<folder><name><suffix>.dds`.
+    pub name: String,
+    /// +0x10/+0x14: the Py (top) projection's texture size in metres (x, y).
+    pub py_scale: [f32; 2],
+    /// +0x18/+0x1c: the Py projection's offsets (the `.w` of the two uv rows, scaled by 1/size).
+    pub py_offset: [f32; 2],
+    /// +0x20/+0x24: the Pxz (side) projection's texture size in metres (x, y); version < 3 files
+    /// copy the Py values.
+    pub pxz_scale: [f32; 2],
+    /// +0x28/+0x2c: the Pxz projection's offsets — only `.y` reaches the buffer (`[2].z = offset.y / scale.y`).
+    pub pxz_offset: [f32; 2],
+    /// +0x30: the Py projection's rotation in degrees.
+    pub rotation_deg: f32,
+    /// +0x34/+0x38: the side blend's start / end angles in degrees (`[3].y = cos(start)`, `[3].x = cos(end)`);
+    /// version 0 files default to 40 / 50.
+    pub blend_pxz_deg: [f32; 2],
+    /// +0x3c/+0x40: the top blend's start / end angles in degrees (`[3].w = cos(start)`, `[3].z = cos(end)`).
+    pub blend_py_deg: [f32; 2],
+    /// +0x44/+0x48: two ids (version < 2 files: both = the layer index); the SECOND one is what
+    /// the buffer carries in `[2].w` (as raw bits).
+    pub ids: [u32; 2],
+}
+
+/// `CPlugImageArray` (0x0914C000): the layer table of a terrain texture array.
+#[derive(Clone, Debug, Default)]
+pub struct ImageArrayRaw {
+    pub version: u32,
+    /// +0x28: the folder the slice images live in (`BlueBay\Media\Texture\Image\`).
+    pub folder: String,
+    pub layers: Vec<ImageArrayLayer>,
+    /// v ≥ 4: a node reference (−1 in every shipped file).
+    pub node_ref: i32,
+    /// v ≥ 5: +0x40 (1.0 in every shipped file).
+    pub f_v5: f32,
+    /// v ≥ 6: +0x30, a second folder (`…\Texture\Decal\`).
+    pub decal_folder: String,
+    /// v ≥ 7: +0x48.
+    pub u_v7: u32,
+}
+
+/// `CPlugBitmap` (0x09011000) — the fields of a texture / texture-array file this reader keeps.
+#[derive(Clone, Debug, Default)]
+pub struct BitmapRaw {
+    /// 0x09011025: {f32 scale u, f32 scale v, f32 trans u, f32 trans v, u32, u32} — the
+    /// `GbxSamplerTcScaleTrans_<Map>` / `GbxWorldPosToTexCoord_<Map>` scale of a projected
+    /// texture (TrackWallPxzInWorld_D: 1/32, 1/32, 0, 0, 0, 0xff000000).
+    pub tc_scale_trans: Option<[u32; 6]>,
+    /// 0x09011030: the image node (a `CPlugFileGen` for a generated texture array, else the
+    /// external `.dds` reference).
+    pub image: i32,
+    /// 0x09011034: {v4, ref ImageArray, string suffix, refs[] slices, ref, 8 bytes} — for a texture
+    /// ARRAY the ImageArray node and the slice images IN GPU SLICE ORDER (each uploaded vertically
+    /// flipped, see `terrain`).
+    pub array_image_array: i32,
+    pub array_suffix: String,
+    pub array_slices: Vec<i32>,
+}
+
+/// `CPlugFileGen` (0x0902F000; archive 0x1404179a0 read / 0x140417c20 write, no chunk framing):
+/// a GENERATED image — the texture array of a terrain material (kind 0x1d: u32s {w, h, slices,
+/// 1, 3, mips, 1, 1, 0}) or a 1-D lookup table such as `WaterTransmittance.ImageGen.Gbx`
+/// (kind 0x33: u32s {2048, 1}, one float4, six f32 parameters).
+#[derive(Clone, Debug, Default)]
+pub struct FileGenRaw {
+    pub version: u32,
+    pub kind: u32,
+    pub u32s: Vec<u32>,
+    pub float4s: Vec<[f32; 4]>,
+    pub f32s: Vec<f32>,
+    pub name: String,
+}
+
+/// `CPlugMaterialCustom` (0x0903A000) — the fields of a material's custom block this reader keeps.
+#[derive(Clone, Debug, Default)]
+pub struct MaterialCustomRaw {
+    /// 0x0903A013 (and 0x0903A006): the texture slots as (slot name, node reference) — `BaseColor`,
+    /// `PyX2`, `PyH2`, `PyBaseColor`, `PxzBaseColor`, …
+    pub bitmaps: Vec<(String, i32)>,
+    /// 0x0903A015: the u32 that precedes the names (0 = names follow; ≠ 0 = none).
+    pub layer_mode: i32,
+    /// 0x0903A015: the terrain layer names in FILE order = (Pxz, Py, X2, H2) — the material's
+    /// +0xe8 / +0xd8 / +0xf8 / +0x108 (reader 0x1404415c0); an empty name = no layer (−1).
+    pub layer_names: [String; 4],
+}
+
 #[derive(Clone, Debug)]
 pub enum Node {
     Prefab(Prefab),
@@ -282,6 +377,14 @@ pub enum Node {
     Tree(Box<Tree>),
     /// `CSceneLayout` chunk 0x0A00301C: the decoration's light rig and solids.
     Layout(Box<Layout>),
+    /// `CPlugImageArray`: a terrain texture array's layer table.
+    ImageArray(Box<ImageArrayRaw>),
+    /// `CPlugBitmap`: the texture-array / projection fields of a texture file.
+    Bitmap(Box<BitmapRaw>),
+    /// `CPlugFileGen`: a generated image's parameters.
+    FileGen(Box<FileGenRaw>),
+    /// `CPlugMaterialCustom`: the texture slots and the terrain layer names.
+    MaterialCustom(Box<MaterialCustomRaw>),
     Other(u32),
 }
 
@@ -380,6 +483,10 @@ impl Node {
             Node::Light(c, _) => *c,
             Node::Tree(_) => 0x0904F000,
             Node::Layout(_) => 0x0A003000,
+            Node::ImageArray(_) => 0x0914C000,
+            Node::Bitmap(_) => 0x09011000,
+            Node::FileGen(_) => 0x0902F000,
+            Node::MaterialCustom(_) => 0x0903A000,
             Node::Other(c) => *c,
         }
     }
@@ -601,6 +708,9 @@ pub struct Acc {
     pub light: Option<Box<LightInfo>>,
     pub tree: Option<Box<Tree>>,
     pub layout: Option<Box<Layout>>,
+    pub image_array: Option<Box<ImageArrayRaw>>,
+    pub bitmap: Option<Box<BitmapRaw>>,
+    pub mat_custom: Option<Box<MaterialCustomRaw>>,
     pub touched: bool,
 }
 
@@ -624,6 +734,9 @@ impl Acc {
             light: None,
             tree: None,
             layout: None,
+            image_array: None,
+            bitmap: None,
+            mat_custom: None,
             touched: false,
         }
     }
@@ -631,6 +744,16 @@ impl Acc {
     pub fn tree_mut(&mut self) -> &mut Tree {
         self.touched = true;
         self.tree.get_or_insert_with(|| Box::new(Tree { visual: -1, shader: -1, surface: -1, ..Tree::default() }))
+    }
+    /// The bitmap accumulator, created on the first CPlugBitmap chunk this reader keeps.
+    pub fn bitmap_mut(&mut self) -> &mut BitmapRaw {
+        self.touched = true;
+        self.bitmap.get_or_insert_with(|| Box::new(BitmapRaw { image: -1, array_image_array: -1, ..BitmapRaw::default() }))
+    }
+    /// The custom-material accumulator.
+    pub fn mat_custom_mut(&mut self) -> &mut MaterialCustomRaw {
+        self.touched = true;
+        self.mat_custom.get_or_insert_with(|| Box::new(MaterialCustomRaw::default()))
     }
     /// The light accumulator, created on the first light chunk.
     pub fn light_mut(&mut self) -> &mut LightInfo {
@@ -652,6 +775,15 @@ impl Acc {
         }
         if let Some(l) = self.layout {
             return Node::Layout(l);
+        }
+        if let Some(a) = self.image_array {
+            return Node::ImageArray(a);
+        }
+        if let Some(b) = self.bitmap {
+            return Node::Bitmap(b);
+        }
+        if let Some(m) = self.mat_custom {
+            return Node::MaterialCustom(m);
         }
         match class_id {
             C_SURFACE => Node::Surface(self.surface),
@@ -705,6 +837,10 @@ pub fn node_kind_name(n: &Node) -> &'static str {
         Node::Light(c, _) => if *c == 0x0901D000 { "CPlugLight" } else { "GxLight" },
         Node::Tree(_) => "CPlugTree",
         Node::Layout(_) => "CSceneLayout",
+        Node::ImageArray(_) => "CPlugImageArray",
+        Node::Bitmap(_) => "CPlugBitmap",
+        Node::FileGen(_) => "CPlugFileGen",
+        Node::MaterialCustom(_) => "CPlugMaterialCustom",
         Node::Other(_) => "other",
     }
 }

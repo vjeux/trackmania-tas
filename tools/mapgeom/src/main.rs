@@ -21,6 +21,9 @@ COMMANDS
   resolve <logical-path>        which pack entry a logical path is stored under
   refs <logical-path>           a file's external reference table
   raw <path> --out F            the decoded bytes of any pack entry (dds, tga, xml)
+  terrain-material LINK…        a terrain material's layer names, texture arrays (slices in GPU
+                                order), shader ids and g_WorldPosToTc* buffers (mapgeom::terrain)
+  collection-water --collection C   the collection's water type (top, floor, FogMaxDepth, fog LUT)
   dump <path> [--body F]        walk a file's node graph and summarise it;
                                 --body writes the decompressed body out
   model <path> --out F          a single file's geometry, as .glb or .obj
@@ -1223,6 +1226,72 @@ fn main() {
             }
             std::fs::write(&out, &bytes).unwrap_or_else(|e| die(e.to_string()));
             println!("{p}: {streams} vertex streams, {moved} positions moved by {dy} in y -> {out}");
+        }
+        // terrain-material LINK… : a terrain material (`BlueBay\Media\Material\SeaFloor`) resolved through the
+        // pack the way the game does (mapgeom::terrain): the layer names of chunk 0x0903A015, the BaseColor /
+        // PyX2 / PyH2 texture arrays (ImageArray layers + slice images in GPU order), the shader ids
+        // (iPy, iPxz, iPyX2, iPyH2 = SubIndexPyPxz) and the g_WorldPosToTc* buffers as uploaded (4 float4 per
+        // layer, printed as floats and bits). `--buffers OUT` writes the BaseColor buffer's bytes (= the
+        // captured 5352 for BlueBay) to a file.
+        "terrain-material" => {
+            let mut store = open(&a);
+            let out_path = flag(&a.rest, "--buffers");
+            let links: Vec<String> = a.rest.iter().skip(1).filter(|x| !x.starts_with("--") && *x != out_path.as_ref().unwrap_or(&String::new())).cloned().collect();
+            for link in &links {
+                let tm = mapgeom::terrain::load_terrain_material(&mut store, link).unwrap_or_else(die);
+                println!("{link}\n  parent {}\n  layer names (Pxz, Py, X2, H2) {:?}\n  ids iPy {} iPxz {} iPyX2 {} iPyH2 {}", tm.parent, tm.layer_names, tm.i_py, tm.i_pxz, tm.i_py_x2, tm.i_py_h2);
+                for n in &tm.notes { println!("  note: {n}"); }
+                for (slot, arr) in [("BaseColor", &tm.base), ("PyX2", &tm.x2), ("PyH2", &tm.h2)] {
+                    let Some(arr) = arr else { println!("  {slot}: (no slot)"); continue };
+                    println!("  {slot}: {} (gen {:?})\n    image array {} ({} layers)", arr.bitmap_path, arr.gen, arr.image_array_path, arr.layers.len());
+                    for (i, sl) in arr.slices.iter().enumerate() {
+                        println!("    slice {i}: {sl}");
+                    }
+                    let buf = mapgeom::terrain::world_pos_to_tc(&arr.layers);
+                    for (i, l) in arr.layers.iter().enumerate() {
+                        println!("    layer {i} {:<14} Py {:?} rot {}° Pxz {:?} off {:?} blendPxz {:?} blendPy {:?} ids {:?}", l.name, l.py_scale, l.rotation_deg, l.pxz_scale, l.pxz_offset, l.blend_pxz_deg, l.blend_py_deg, l.ids);
+                        for k in 0..4 {
+                            let v = buf[i * 4 + k];
+                            println!("      [{k}] {:>13.9} {:>13.9} {:>13.9} {:>13.9}   {:08x} {:08x} {:08x} {:08x}", v[0], v[1], v[2], v[3], v[0].to_bits(), v[1].to_bits(), v[2].to_bits(), v[3].to_bits());
+                        }
+                    }
+                }
+                if let (Some(o), Some(b)) = (&out_path, &tm.base) {
+                    let buf = mapgeom::terrain::world_pos_to_tc(&b.layers);
+                    let bytes: Vec<u8> = buf.iter().flat_map(|v| v.iter().flat_map(|f| f.to_le_bytes())).collect();
+                    std::fs::write(o, &bytes).unwrap_or_else(|e| die(format!("{o}: {e}")));
+                    println!("  wrote {o} ({} bytes)", bytes.len());
+                }
+            }
+        }
+        // collection-water --collection C : the collection's water type (Collections\C.Collection.Gbx chunk
+        // 0x03033038): name, top, floor, FogMaxDepth, the fog / transmittance / normal references, and the two
+        // lightmapper table entries (g_WaterTop_ByPlanes = top; g_WaterDepth_FogMaxDepthInv_ByIds =
+        // (top − floor, 1/FogMaxDepth)). `--fog-lut OUT` writes the 256 RGBA texels of the fog LUT (column 0 of
+        // the fog TGA, top-down — the captured 15075).
+        "collection-water" => {
+            let mut store = open(&a);
+            let coll = flag(&a.rest, "--collection").unwrap_or_else(|| "BlueBay".to_string());
+            let w = mapgeom::terrain::collection_water(&mut store, &coll).unwrap_or_else(die);
+            let d = w.depth_and_inv();
+            println!("{coll}: water type {:?} top {} floor {} FogMaxDepth {} params {:?} tail {:?}\n  fog image {}\n  transmittance {}\n  normal {}\n  g_WaterTop_ByPlanes[0] = {} ; g_WaterDepth_FogMaxDepthInv_ByIds[0] = ({}, {} = 0x{:08x})", w.name, w.top, w.floor, w.fog_max_depth, w.params, w.tail, w.fog_image, w.transmittance, w.normal, w.top, d[0], d[1], d[1].to_bits());
+            if !w.transmittance.is_empty() {
+                if let Ok(m) = store.load_model(&w.transmittance) {
+                    if let Ok(g) = m.graph() {
+                        if let Some(root) = &g.root { println!("  transmittance generator: {}", describe(root)); }
+                    }
+                }
+            }
+            if !w.fog_image.is_empty() {
+                let bytes = store.read(&w.fog_image).unwrap_or_else(die);
+                let col = mapgeom::terrain::water_fog_lut(&bytes).unwrap_or_else(die);
+                println!("  fog LUT (the first line along the long axis from the top-left, {} texels): [0] = {:?} … [{}] = {:?}", col.len(), col[0], col.len() - 1, col[col.len() - 1]);
+                if let Some(o) = flag(&a.rest, "--fog-lut") {
+                    let raw: Vec<u8> = col.iter().flat_map(|p| p.iter().copied()).collect();
+                    std::fs::write(&o, &raw).unwrap_or_else(|e| die(format!("{o}: {e}")));
+                    println!("  wrote {o} ({} bytes RGBA)", raw.len());
+                }
+            }
         }
         "deco-size" => {
             // mapgeom deco-size [--collection BlueBay]: every CGameCtnDecorationSize (0x0303B000) of the collection —
@@ -3979,6 +4048,26 @@ fn describe(n: &Node) -> String {
                 )
             }
         }
+        Node::ImageArray(a) => {
+            let mut s = format!("CPlugImageArray v{} folder {:?} ({} layers; decal folder {:?})", a.version, a.folder, a.layers.len(), a.decal_folder);
+            for (i, l) in a.layers.iter().enumerate() {
+                s.push_str(&format!(
+                    "\n      [{i}] {:<14} Py {:?} off {:?}  Pxz {:?} off {:?}  rot {}°  blendPxz {:?}°  blendPy {:?}°  ids {:?}",
+                    l.name, l.py_scale, l.py_offset, l.pxz_scale, l.pxz_offset, l.rotation_deg, l.blend_pxz_deg, l.blend_py_deg, l.ids
+                ));
+            }
+            s
+        }
+        Node::Bitmap(b) => format!(
+            "CPlugBitmap image {} tc_scale_trans {:?} array: image-array {} suffix {:?} slices {:?}",
+            b.image,
+            b.tc_scale_trans.map(|v| [f32::from_bits(v[0]), f32::from_bits(v[1]), f32::from_bits(v[2]), f32::from_bits(v[3])]),
+            b.array_image_array,
+            b.array_suffix,
+            b.array_slices
+        ),
+        Node::FileGen(g) => format!("CPlugFileGen v{} kind {} u32s {:?} float4s {:?} f32s {:?} name {:?}", g.version, g.kind, g.u32s, g.float4s, g.f32s, g.name),
+        Node::MaterialCustom(m) => format!("CPlugMaterialCustom layer names (Pxz, Py, X2, H2) {:?} (mode {}) bitmaps {:?}", m.layer_names, m.layer_mode, m.bitmaps),
         Node::Other(c) => format!("class 0x{:08X}", c),
     }
 }

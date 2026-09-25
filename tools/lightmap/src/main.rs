@@ -5472,6 +5472,52 @@ fn run(a: Vec<String>) {
             println!("  bits: c {:08x} {:08x} {:08x} h {:08x} {:08x} {:08x}", s_all.c[0].to_bits(), s_all.c[1].to_bits(), s_all.c[2].to_bits(), s_all.h[0].to_bits(), s_all.h[1].to_bits(), s_all.h[2].to_bits());
             if let Some(out) = f("--out") { let mut t = String::from("cx\tcz\tzone\tdir\tprefab\tcx_w\tcy_w\tcz_w\thx\thy\thz\tquality\n"); for r in &out_rows { t.push_str(r); t.push('\n'); } std::fs::write(&out, t).expect("write"); println!("wrote {out}"); }
         }
+        "pak-tables" => {
+            // lmtool pak-tables --pak FILE:KEY [--pak FILE:KEY …] --collection C [--material LINK …] [--out-fog F] [--out-transmittance F]
+            //   the attribute pre-pass's collection inputs FROM THE PACK (paktables.rs, RE 8): the constant of every
+            //   world-projected material named (PS 8401 terrain slices / PS 17025 projected textures at the zero
+            //   world matrix), and the water pass's tables: g_WaterTop_ByPlanes, g_WaterDepth_FogMaxDepthInv_ByIds,
+            //   the fog LUT (15075) and the transmittance LUT (15078), written as raw RGBA8 when asked.
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let mut store = mapgeom::store::DataStore::empty();
+            let mut it = a.iter();
+            while let Some(x) = it.next() {
+                if x == "--pak" {
+                    let spec = it.next().expect("--pak FILE:KEY");
+                    let (pp, key) = spec.rsplit_once(':').expect("--pak FILE:KEY");
+                    store.add_pak(pp, key).unwrap_or_else(|e| panic!("{pp}: {e}"));
+                }
+            }
+            let coll = f("--collection").unwrap_or_else(|| "BlueBay".into());
+            let mut links: Vec<String> = Vec::new();
+            let mut it = a.iter();
+            while let Some(x) = it.next() {
+                if x == "--material" {
+                    links.push(it.next().expect("--material LINK").clone());
+                }
+            }
+            for link in &links {
+                match lightmap::paktables::material_constant(&mut store, link) {
+                    Ok(c) => println!("{link}: {:?} constant ({:.8}, {:.8}, {:.8}) = bits {:08x} {:08x} {:08x}  image {} uv {:?} ids {:?}", c.family, c.rgb[0], c.rgb[1], c.rgb[2], c.rgb[0].to_bits(), c.rgb[1].to_bits(), c.rgb[2].to_bits(), c.image, c.uv, c.ids),
+                    Err(e) => println!("{link}: {e}"),
+                }
+            }
+            match lightmap::paktables::water_tables(&mut store, &coll) {
+                Ok(w) => {
+                    println!("{coll} water: type {:?} top {} floor {} FogMaxDepth {} → g_WaterTop_ByPlanes [{}], g_WaterDepth_FogMaxDepthInv_ByIds [({}, {} = {:08x})]", w.desc.name, w.desc.top, w.desc.floor, w.desc.fog_max_depth, w.top, w.depth_inv[0], w.depth_inv[1], w.depth_inv[1].to_bits());
+                    println!("  fog LUT {} ({} texels; [0] {:?} [255] {:?}); transmittance {} ({} texels; [1024] {:?} [2047] {:?})", w.desc.fog_image, w.fog.len(), w.fog[0], w.fog[w.fog.len() - 1], w.desc.transmittance, w.transmittance.len(), w.transmittance[w.transmittance.len() / 2], w.transmittance[w.transmittance.len() - 1]);
+                    if let Some(o) = f("--out-fog") {
+                        std::fs::write(&o, w.fog.iter().flat_map(|p| p.iter().copied()).collect::<Vec<u8>>()).expect("--out-fog");
+                        println!("  wrote {o} (RGBA8, {} texels)", w.fog.len());
+                    }
+                    if let Some(o) = f("--out-transmittance") {
+                        std::fs::write(&o, w.transmittance.iter().flat_map(|p| p.iter().copied()).collect::<Vec<u8>>()).expect("--out-transmittance");
+                        println!("  wrote {o} (RGBA8, {} texels)", w.transmittance.len());
+                    }
+                }
+                Err(e) => println!("{coll} water: {e}"),
+            }
+        }
         "frustum-check" => {
             // lmtool frustum-check PASSCAP_ROOT [--frame N] [--manifest FROZEN.json] [--eps E] [--far-pad P] [--norm div|rsqrt] [--fma] [--expand-scale]
             //   the CPU light-camera fit (lightcam.rs) against the capture's SceneV cbuffers: every distinct camera of the

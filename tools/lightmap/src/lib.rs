@@ -33,6 +33,7 @@ pub mod ilightin;
 pub mod ilatlas;
 pub mod prepass;
 pub mod prepass_check;
+pub mod paktables;
 pub mod e2e;
 pub mod texsample;
 pub mod sunpass;

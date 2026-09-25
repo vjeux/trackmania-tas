@@ -62,6 +62,7 @@ pub mod render;
 pub mod scene;
 pub mod scene3d;
 pub mod store;
+pub mod terrain;
 pub mod crystal;
 pub mod debug;
 pub mod crystal_model;

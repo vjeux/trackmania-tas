@@ -200,6 +200,62 @@ impl<'a> Graph<'a> {
                     static_shape,
                 }))
             }
+            // `CPlugFileGen` (a GENERATED image: a terrain texture array, a 1-D LUT such as
+            // `WaterTransmittance.ImageGen.Gbx`). Archive 0x1404179a0 (read) / 0x140417c20
+            // (write), no chunk framing: u32 version (0x80000006: the sign bit marks the
+            // "generated" form, low bits = 6), u32 kind (+0x7c), u32[] (+0x80: count, count
+            // words), float4[] (+0x90: count, count × 16 B), f32[] (+0xa0), v ≥ 3 a string,
+            // v ≥ 4 a node array (count + inline nodes — none in any shipped file), v ≥ 6 an
+            // array of CPlugFileImg references (count + refs).
+            0x0902F000 => {
+                let raw = self.r.u32()?;
+                if raw & 0x8000_0000 == 0 {
+                    return Err(format!("CPlugFileGen with the plain (non-generated) archive form 0x{raw:08x} is not read"));
+                }
+                let version = raw & 0x7fff_ffff;
+                let kind = self.r.u32()?;
+                let n = self.r.u32()? as usize;
+                if n > 0x1000_0000 {
+                    return Err(format!("CPlugFileGen claims {n} words"));
+                }
+                let mut u32s = Vec::with_capacity(n);
+                for _ in 0..n {
+                    u32s.push(self.r.u32()?);
+                }
+                let n = self.r.u32()? as usize;
+                if n > 0x400_0000 {
+                    return Err(format!("CPlugFileGen claims {n} float4s"));
+                }
+                let mut float4s = Vec::with_capacity(n);
+                for _ in 0..n {
+                    float4s.push([self.r.f32()?, self.r.f32()?, self.r.f32()?, self.r.f32()?]);
+                }
+                let n = self.r.u32()? as usize;
+                if n > 0x1000_0000 {
+                    return Err(format!("CPlugFileGen claims {n} floats"));
+                }
+                let mut f32s = Vec::with_capacity(n);
+                for _ in 0..n {
+                    f32s.push(self.r.f32()?);
+                }
+                let name = if version >= 3 { self.r.string()? } else { String::new() };
+                if version >= 4 {
+                    let nodes = self.r.u32()?;
+                    if nodes != 0 {
+                        return Err(format!("CPlugFileGen with {nodes} inline nodes is not read"));
+                    }
+                }
+                if version >= 6 {
+                    let refs = self.r.u32()? as usize;
+                    if refs > 64 {
+                        return Err(format!("CPlugFileGen claims {refs} image references"));
+                    }
+                    for _ in 0..refs {
+                        self.noderef()?;
+                    }
+                }
+                Ok(Node::FileGen(Box::new(FileGenRaw { version, kind, u32s, float4s, f32s, name })))
+            }
             // NPlugDyna_SConstraintModel: a spring, no geometry.
             0x2F074000 => {
                 self.r.take(4 * 5)?;
@@ -287,7 +343,7 @@ impl<'a> Graph<'a> {
         if let Some(res) = self.bi_chunk(class_id, cid) {
             return res;
         }
-        if let Some(res) = self.fx_chunk(cid) {
+        if let Some(res) = self.fx_chunk(cid, acc) {
             return res;
         }
         match cid {
@@ -1617,7 +1673,7 @@ impl<'a> Graph<'a> {
                 Ok(())
             }
             0x0903A006 => {
-                self.material_bitmaps(0)
+                self.material_bitmaps(0, acc)
             }
             0x0903A00A => {
                 for _ in 0..2 {
@@ -1685,7 +1741,7 @@ impl<'a> Graph<'a> {
             }
             0x0903A013 => {
                 let _v = self.r.u32()?;
-                self.material_bitmaps(1)
+                self.material_bitmaps(1, acc)
             }
             0x0903A014 => {
                 let _v = self.r.u32()?;
@@ -1696,17 +1752,26 @@ impl<'a> Graph<'a> {
                 }
                 Ok(())
             }
+            // The terrain layer NAMES (reader 0x1404415c0): a u32 (0 = names follow), then the
+            // Pxz name (+0xe8), the Py name (+0xd8), and from v2 the X2 (+0xf8) and H2 (+0x108)
+            // names. They select the slices of the material's texture arrays by name
+            // (0x1404429f0 / 0x1404d4550: the first ImageArray layer of that name, −1 for an
+            // empty name) — the `SubIndexPyPxz` of `Tech3/Block_PyPxz_ids_p`.
             0x0903A015 => {
                 let v = self.r.u32()?;
                 let u01 = if v >= 1 { self.r.i32()? } else { 0 };
+                let mut names: [String; 4] = Default::default();
                 if u01 == 0 {
-                    self.r.string()?;
-                    self.r.string()?;
+                    names[0] = self.r.string()?;
+                    names[1] = self.r.string()?;
                     if v >= 2 {
-                        self.r.string()?;
-                        self.r.string()?;
+                        names[2] = self.r.string()?;
+                        names[3] = self.r.string()?;
                     }
                 }
+                let m = acc.mat_custom_mut();
+                m.layer_mode = u01;
+                m.layer_names = names;
                 Ok(())
             }
 
@@ -1738,16 +1803,19 @@ impl<'a> Graph<'a> {
 
     /// `CPlugMaterialCustom::Bitmap[]`: id, int, texture ref, and two more
     /// ints from version 1 (the chunk passes 1 whatever its own version).
-    fn material_bitmaps(&mut self, version: u32) -> R<()> {
+    fn material_bitmaps(&mut self, version: u32, acc: &mut Acc) -> R<()> {
         let n = self.r.u32()? as usize;
+        let mut slots = Vec::with_capacity(n);
         for _ in 0..n {
-            self.r.lookback()?;
+            let name = self.r.lookback()?;
             self.r.i32()?;
-            self.noderef()?;
+            let tex = self.noderef()?;
             if version >= 1 {
                 self.r.take(8)?;
             }
+            slots.push((name, tex));
         }
+        acc.mat_custom_mut().bitmaps = slots;
         Ok(())
     }
 
@@ -2487,7 +2555,7 @@ impl<'a> Graph<'a> {
     /// `CPlugParticleEmitterModel` 0x090B3000 and the sub-model chain. Read
     /// here so the generic walk (dump, the pak decrypt's node starts) gets
     /// through them; the geometry accumulator learns nothing from them.
-    fn fx_chunk(&mut self, cid: u32) -> Option<R<()>> {
+    fn fx_chunk(&mut self, cid: u32, acc: &mut Acc) -> Option<R<()>> {
         use crate::static_item::particle as p;
         let r: R<()> = match cid {
             p::C_FX_SYSTEM => (|| {
@@ -2565,25 +2633,82 @@ impl<'a> Graph<'a> {
                 self.r.take(16 * n)?;
                 Ok(())
             })(),
-            0x09011030 => (|| {
-                let _version = self.r.u32()?;
-                self.noderef()?;
-                self.r.take(28)?;
+            // {f32 scale u, f32 scale v, f32 trans u, f32 trans v, u32, u32}: the projected
+            // texture's `GbxSamplerTcScaleTrans` (TrackWallPxzInWorld_D: 1/32, 1/32, 0, 0).
+            0x09011025 => (|| {
+                let mut v = [0u32; 6];
+                for x in v.iter_mut() {
+                    *x = self.r.u32()?;
+                }
+                acc.bitmap_mut().tc_scale_trans = Some(v);
                 Ok(())
             })(),
+            0x09011030 => (|| {
+                let _version = self.r.u32()?;
+                let image = self.noderef()?;
+                self.r.take(28)?;
+                acc.bitmap_mut().image = image;
+                Ok(())
+            })(),
+            // {v4, ref ImageArray, string suffix ("_D", "_X2", "_HX2"), count, refs[count] = the
+            // slice images IN GPU SLICE ORDER, ref, 8 bytes}. Read off Terrain_D / Terrain_X2 /
+            // Terrain_H2.TextureArray.Gbx (the earlier reader took the suffix for a word and
+            // could only walk an empty suffix).
             0x09011034 => (|| {
                 let _version = self.r.u32()?;
-                self.noderef()?;
-                self.r.u32()?;
+                let image_array = self.noderef()?;
+                let suffix = self.r.string()?;
                 let n = self.r.u32()? as usize;
                 if n > 64 {
                     return Err(format!("bitmap claims {n} frames"));
                 }
+                let mut slices = Vec::with_capacity(n);
                 for _ in 0..n {
-                    self.noderef()?;
+                    slices.push(self.noderef()?);
                 }
                 self.noderef()?;
                 self.r.take(8)?;
+                let b = acc.bitmap_mut();
+                b.array_image_array = image_array;
+                b.array_suffix = suffix;
+                b.array_slices = slices;
+                Ok(())
+            })(),
+            // `CPlugImageArray` (0x0914C000) chunk 0x0914C000 (reader 0x1404d4b00): version,
+            // folder, layers (stride 0x50 in memory), then v ≥ 4 a node ref, v ≥ 5 a float,
+            // v ≥ 6 a second folder, v ≥ 7 a word.
+            0x0914C000 => (|| {
+                let version = self.r.u32()?;
+                let folder = self.r.string()?;
+                let n = self.r.u32()? as usize;
+                if n > 256 {
+                    return Err(format!("image array claims {n} layers"));
+                }
+                let mut layers = Vec::with_capacity(n);
+                for i in 0..n {
+                    let name = self.r.string()?;
+                    let py_scale = [self.r.f32()?, self.r.f32()?];
+                    let py_offset = [self.r.f32()?, self.r.f32()?];
+                    let (pxz_scale, pxz_offset) = if version < 3 {
+                        (py_scale, py_offset)
+                    } else {
+                        ([self.r.f32()?, self.r.f32()?], [self.r.f32()?, self.r.f32()?])
+                    };
+                    let rotation_deg = self.r.f32()?;
+                    let (blend_pxz_deg, blend_py_deg) = if version == 0 {
+                        ([40.0, 50.0], [40.0, 50.0])
+                    } else {
+                        ([self.r.f32()?, self.r.f32()?], [self.r.f32()?, self.r.f32()?])
+                    };
+                    let ids = if version < 2 { [i as u32, i as u32] } else { [self.r.u32()?, self.r.u32()?] };
+                    layers.push(ImageArrayLayer { name, py_scale, py_offset, pxz_scale, pxz_offset, rotation_deg, blend_pxz_deg, blend_py_deg, ids });
+                }
+                let node_ref = if version >= 4 { self.noderef()? } else { -1 };
+                let f_v5 = if version >= 5 { self.r.f32()? } else { 0.0 };
+                let decal_folder = if version >= 6 { self.r.string()? } else { String::new() };
+                let u_v7 = if version >= 7 { self.r.u32()? } else { 0 };
+                acc.touched = true;
+                acc.image_array = Some(Box::new(ImageArrayRaw { version, folder, layers, node_ref, f_v5, decal_folder, u_v7 }));
                 Ok(())
             })(),
             0x0901102A | 0x0901102C => self.noderef().map(|_| ()),

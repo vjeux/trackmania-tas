@@ -402,6 +402,7 @@ impl<'a> Collector<'a> {
                 }
             }
             Node::Variant(_) | Node::BlockUnit(_) | Node::Mobil(_) | Node::AutoTerrain(_) | Node::Genealogy(_) | Node::RoadChunk(_) | Node::Light(..) => {}
+            Node::ImageArray(_) | Node::Bitmap(_) | Node::FileGen(_) | Node::MaterialCustom(_) => {}
             Node::Other(c) => {
                 *self.stats.unhandled.entry(*c).or_insert(0) += 1;
             }
