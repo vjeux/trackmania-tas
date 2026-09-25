@@ -1467,7 +1467,9 @@ fn run(a: Vec<String>) {
             }
             // --ilightinput-from FILE.dds[.gz]: the captured ILightInput atlas (PS 17131's SRV1) as the peel
             // colour's texture — the harness's transcription of the colour path on the game's own input
-            if let Some(path) = f("--ilightinput-from") {
+            // (integration: the value `e2e` belongs to the chain's handler above — ilatlas from the transcribed setup
+            // chain — and is not a file; D's peelcolor path takes a file only)
+            if let Some(path) = f("--ilightinput-from").filter(|p| p != "e2e") {
                 let pb = std::path::PathBuf::from(&path);
                 let (root, file) = (pb.parent().map(|p| p.to_path_buf()).unwrap_or_default(), pb.file_name().unwrap().to_string_lossy().to_string());
                 let mut e = lightmap::passdump::entry("ilightinput", file, "atlas");
