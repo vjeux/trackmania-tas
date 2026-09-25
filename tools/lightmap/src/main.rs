@@ -3502,6 +3502,103 @@ fn run(a: Vec<String>) {
                 println!("image {id}: 8 × PS 1332 in {:.1} s → {exact} of {n} values bit-identical, {ulp1} within 1 f16 ulp, {worse} worse (max |Δ| {maxd:.5}); covered texels after: {covered}", t0.elapsed().as_secs_f32());
             }
         }
+        "finalprep-check" => {
+            // lmtool finalprep-check PASSCAP_ROOT [--frame 74490] [--rtne] [--show N]
+            //   ROW 12: the transcribed finalisation prep (finalprep.rs — PS 25113 resolve, PS 1109 ×2, PS 1034 copy) run on the
+            //   captured final_00 images and compared f16 for f16 with the captured final_01 / final_02 / final_03, step by step
+            //   (each kernel on the captured input of its step) and chained (final_00 → our three kernels → final_03)
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let root = std::path::PathBuf::from(&a[1]);
+            let frame: u32 = f("--frame").map(|v| v.parse().expect("--frame")).unwrap_or(74490);
+            let show: usize = f("--show").map(|v| v.parse().expect("--show")).unwrap_or(0);
+            let store = if a.iter().any(|x| x == "--rtne") { lightmap::gpufmt::Rounding::NearestEven } else { lightmap::gpufmt::Rounding::Truncate };
+            let txt = std::fs::read_to_string(root.join("MANIFEST.json")).expect("MANIFEST.json");
+            let m = lightmap::passdiff::read_manifest(&txt).expect("manifest");
+            let entry = |pass: &str, id: &str| m.passes.iter().find(|e| e.pass == pass && e.frame == Some(frame) && e.file.contains(&format!("_{id}.dds"))).unwrap_or_else(|| panic!("no {pass} entry for texture {id} in frame {frame}"));
+            let load = |pass: &str, id: &str| lightmap::passdiff::load_entry(&root, entry(pass, id)).unwrap_or_else(|e| panic!("{e}"));
+            use lightmap::gpucmp::{compare, Fmt};
+            // the chain's texture ids (draws-frame74490.json eids 34675–34917): PS 25113 src → dst, PS 1109 src → dst, PS 1034 src → dst
+            const ROT: [(&str, &str); 4] = [("24752", "24858"), ("24749", "24752"), ("24852", "24749"), ("24855", "24852")];
+            const SCL: [(&str, &str); 4] = [("24858", "24911"), ("24752", "24914"), ("24749", "24917"), ("24852", "24920")];
+            const CPY: [(&str, &str); 4] = [("24911", "24858"), ("24914", "24752"), ("24917", "24749"), ("24920", "24852")];
+            let mut all_closed = true;
+            println!("PS 25113 (final_00 → final_01), RGBA16F store {:?}:", store);
+            let mut chained: Vec<lightmap::passdiff::Buf> = Vec::new();
+            for (src, dst) in ROT {
+                let s = load("final_00_hbasis_sweep_end", src);
+                let t = load("final_01_after_rotate_ps25113", dst);
+                let t0 = std::time::Instant::now();
+                let ours = lightmap::finalprep::resolve_ps25113(&s, false, store);
+                let r = compare(&ours, &t, 4, Fmt::F16);
+                let covered = (0..t.h).flat_map(|y| (0..t.w).map(move |x| (x, y))).filter(|&(x, y)| t.get(x, y, 3) > 0.99).count();
+                println!("  {src} → {dst} ({:.1} s): {} — {covered} texels with alpha > 0.99 after", t0.elapsed().as_secs_f32(), r.line());
+                if show > 0 { lightmap::gpucmp::print_diffs(&ours, &t, 4, show); }
+                all_closed &= r.closed();
+                chained.push(ours);
+            }
+            // PS 1109 blends One/One onto whatever the targets 24911/24914/24917/24920 hold: the capture shows they are NOT empty
+            // (final_02 ≠ 2 × final_01) — the hypothesis tested here: they hold the PREVIOUS SWEEP's finalised images (the same
+            // chain run at the end of sweep 0: PS 25113 on the sweep-0 H-basis MRTs, × 2), so the ×2 step is where the sweeps add up.
+            // --prior FRAME:EID names the banked hbasis0..3 snapshot at the end of the previous sweep (default 7533:13903 = pwc6's
+            // sweep-0 end); --prior none tests the cleared-target reading.
+            let prior = f("--prior").unwrap_or_else(|| "7533:13903".to_string());
+            let prior_imgs: Option<Vec<lightmap::passdiff::Buf>> = if prior == "none" { None } else {
+                let (pf, pe) = prior.split_once(':').expect("--prior FRAME:EID");
+                let (pf, pe): (u32, u64) = (pf.parse().unwrap(), pe.parse().unwrap());
+                let imgs: Vec<lightmap::passdiff::Buf> = (0..4).map(|k| {
+                    let e = m.passes.iter().find(|e| e.pass == format!("hbasis{k}") && e.frame == Some(pf) && e.eid_last == Some(pe)).unwrap_or_else(|| panic!("no hbasis{k} entry at frame {pf} eid {pe}"));
+                    let b = lightmap::passdiff::load_entry(&root, e).unwrap_or_else(|e| panic!("{e}"));
+                    // the previous sweep's finalisation: PS 25113 then × 2 (its own 1109 onto a cleared target)
+                    lightmap::finalprep::scale_ps1109(&lightmap::finalprep::resolve_ps25113(&b, false, store), [2.0, 2.0, 2.0, 0.0], lightmap::gpufmt::Rounding::Truncate, lightmap::gpufmt::Rounding::NearestEven)
+                }).collect();
+                println!("PS 1109 × ScaleSrc (2, 2, 2, 0), blend One/One onto the previous sweep's finalised images (hbasis0..3 at frame {pf} eid {pe} → our 25113 → × 2) (final_01 → final_02):");
+                Some(imgs)
+            };
+            if prior_imgs.is_none() { println!("PS 1109 × ScaleSrc (2, 2, 2, 0), blend One/One onto a cleared target (final_01 → final_02):"); }
+            for (i, (src, dst)) in SCL.iter().enumerate() {
+                let s = load("final_01_after_rotate_ps25113", src);
+                let t = load("final_02_scaled_x2_ps1109", dst);
+                let blend = |src_img: &lightmap::passdiff::Buf| -> lightmap::passdiff::Buf {
+                    let scaled = lightmap::finalprep::scale_ps1109(src_img, [2.0, 2.0, 2.0, 0.0], lightmap::gpufmt::Rounding::Truncate, lightmap::gpufmt::Rounding::Truncate);
+                    match &prior_imgs {
+                        None => scaled,
+                        Some(p) => {
+                            // the blend: dst = f16_rtne(prior + f16_rtz(src)) per channel (the baker's blended-f16 rule)
+                            let mut out = scaled.clone();
+                            for y in 0..out.h { for x in 0..out.w { for k in 0..4 {
+                                let v = p[i].get(x, y, k) + scaled.get(x, y, k);
+                                out.set(x, y, k, lightmap::gpufmt::quantise_f16(v, lightmap::gpufmt::Rounding::NearestEven));
+                            } } }
+                            out
+                        }
+                    }
+                };
+                let ours = blend(&s);
+                let r = compare(&ours, &t, 4, Fmt::F16);
+                println!("  {src} → {dst}: {}", r.line());
+                if show > 0 { lightmap::gpucmp::print_diffs(&ours, &t, 4, show); }
+                all_closed &= r.closed();
+                chained[i] = blend(&chained[i]);
+            }
+            println!("PS 1034 copy, write mask RGB, Raster_ST_Input (1, 1, 0, 0) (final_02 → final_03, alpha kept from final_01):");
+            for (i, (src, dst)) in CPY.iter().enumerate() {
+                let s = load("final_02_scaled_x2_ps1109", src);
+                let base = load("final_01_after_rotate_ps25113", dst);
+                let t = load("final_03_after_colormat_ps1034", dst);
+                let ours = lightmap::finalprep::write_masked(&base, &lightmap::finalprep::copy_ps1034(&s, [1.0, 1.0, 0.0, 0.0], s.w, s.h), 7, store);
+                let r = compare(&ours, &t, 4, Fmt::F16);
+                println!("  {src} → {dst}: {}", r.line());
+                if show > 0 { lightmap::gpucmp::print_diffs(&ours, &t, 4, show); }
+                all_closed &= r.closed();
+                // the chain: our resolve → our ×2 → our copy, against the captured final_03
+                let rot_out = &chained[i];
+                let ours_chain = lightmap::finalprep::write_masked(&lightmap::finalprep::resolve_ps25113(&load("final_00_hbasis_sweep_end", ROT[i].0), false, store), &lightmap::finalprep::copy_ps1034(rot_out, [1.0, 1.0, 0.0, 0.0], s.w, s.h), 7, store);
+                let rc = compare(&ours_chain, &t, 4, Fmt::F16);
+                println!("    chained final_00 {} → our 25113 → our 1109 → our 1034 vs captured final_03 {dst}: {}", ROT[i].0, rc.line());
+                all_closed &= rc.closed();
+            }
+            println!("ROW 12 {}", if all_closed { "CLOSED: every value bit-identical or within one f16 quantum" } else { "NOT closed (values beyond one quantum above)" });
+        }
         "encode-check" => {
             // lmtool encode-check PASSCAP_ROOT [--frame N] [--fma] [--half-up] [--all]
             //   the transcribed finalisation (gpuenc.rs: the |rgb| max reduction + CS 23025 LmCompress_HBasis_YCbCr4)

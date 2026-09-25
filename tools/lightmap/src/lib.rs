@@ -17,6 +17,8 @@ pub mod peel;
 pub mod png;
 pub mod gpufmt;
 pub mod gpuenc;
+pub mod gpucmp;
+pub mod finalprep;
 pub mod sunpass;
 pub mod lmaccum;
 pub mod format;

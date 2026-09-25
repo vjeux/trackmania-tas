@@ -579,6 +579,10 @@ pub enum Fmt {
     Unorm8Srgb(u32),
     Unorm16(u32),
     D24S8,
+    /// Unsigned integers, one byte per channel (R8_UINT, R8G8_UINT): the value itself, not k/255.
+    Uint8(u32),
+    /// B8G8R8A8: four UNORM bytes in memory order B, G, R, A — decoded into R, G, B, A channels.
+    Bgra8,
     Unknown,
 }
 
@@ -598,6 +602,10 @@ pub fn parse_format(name: &str) -> Fmt {
         "R8G8_UNORM" => Fmt::Unorm8(2),
         "R8G8B8_UNORM" => Fmt::Unorm8(3),
         "R8G8B8A8_UNORM" | "B8G8R8A8_UNORM" | "R8G8B8A8_TYPELESS" => Fmt::Unorm8(4),
+        "B8G8R8A8_TYPELESS" => Fmt::Bgra8,
+        "R8_UINT" => Fmt::Uint8(1),
+        "R8G8_UINT" => Fmt::Uint8(2),
+        "R8G8B8A8_UINT" => Fmt::Uint8(4),
         "R8G8B8A8_UNORM_SRGB" | "B8G8R8A8_UNORM_SRGB" => Fmt::Unorm8Srgb(4),
         "R16_UNORM" | "D16_UNORM" | "R16_TYPELESS" => Fmt::Unorm16(1),
         "R16G16B16A16_UNORM" => Fmt::Unorm16(4),
@@ -616,7 +624,8 @@ pub fn decode_raw(bytes: &[u8], fmt: Fmt, w: u32, h: u32, row_pitch: u32) -> Res
         Fmt::F32(c) => (4 * c, c),
         Fmt::R11G11B10 => (4, 3),
         Fmt::F16(c) => (2 * c, c),
-        Fmt::Unorm8(c) | Fmt::Unorm8Srgb(c) => (c, c),
+        Fmt::Unorm8(c) | Fmt::Unorm8Srgb(c) | Fmt::Uint8(c) => (c, c),
+        Fmt::Bgra8 => (4, 4),
         Fmt::Unorm16(c) => (2 * c, c),
         Fmt::D24S8 => (4, 1),
         Fmt::Unknown => return Err("unknown format".into()),
@@ -636,6 +645,8 @@ pub fn decode_raw(bytes: &[u8], fmt: Fmt, w: u32, h: u32, row_pitch: u32) -> Res
                 Fmt::R11G11B10 => { let v = crate::gpufmt::unpack_r11g11b10(u32::from_le_bytes(px[..4].try_into().unwrap())); out.data[o..o + 3].copy_from_slice(&v); }
                 Fmt::F16(c) => { for k in 0..c as usize { out.data[o + k] = crate::gpufmt::decode_f16(u16::from_le_bytes(px[k * 2..k * 2 + 2].try_into().unwrap())); } }
                 Fmt::Unorm8(c) => { for k in 0..c as usize { out.data[o + k] = px[k] as f32 / 255.0; } }
+                Fmt::Uint8(c) => { for k in 0..c as usize { out.data[o + k] = px[k] as f32; } }
+                Fmt::Bgra8 => { out.data[o] = px[2] as f32 / 255.0; out.data[o + 1] = px[1] as f32 / 255.0; out.data[o + 2] = px[0] as f32 / 255.0; out.data[o + 3] = px[3] as f32 / 255.0; }
                 Fmt::Unorm8Srgb(c) => { for k in 0..c as usize { out.data[o + k] = if k < 3 { srgb_to_linear(px[k] as f32 / 255.0) } else { px[k] as f32 / 255.0 }; } }
                 Fmt::Unorm16(c) => { for k in 0..c as usize { out.data[o + k] = u16::from_le_bytes(px[k * 2..k * 2 + 2].try_into().unwrap()) as f32 / 65535.0; } }
                 Fmt::D24S8 => { let v = u32::from_le_bytes(px[..4].try_into().unwrap()) & 0x00ff_ffff; out.data[o] = v as f32 / 16_777_215.0; }
@@ -699,6 +710,10 @@ pub fn dxgi_fmt(id: u32) -> Fmt {
         53 | 55 => Fmt::Unorm16(1),
         56 => Fmt::Unorm16(1),
         61 => Fmt::Unorm8(1),
+        50 => Fmt::Uint8(2),
+        62 => Fmt::Uint8(1),
+        30 => Fmt::Uint8(4),
+        90 => Fmt::Bgra8,
         0xffff => Fmt::Unorm8(3),
         _ => Fmt::Unknown,
     }

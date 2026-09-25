@@ -265,3 +265,15 @@ mod tests {
         assert!((s16 - 1.0).abs() < 1e-3, "f16 accumulation of 256 terms stays exact: {s16}");
     }
 }
+
+/// The sRGB transfer curve of a `_UNORM_SRGB` render-target store (D3D11 3.2.3 / IEC 61966-2-1): linear → encoded.
+pub fn linear_to_srgb(v: f32) -> f32 {
+    if v.is_nan() { return 0.0; }
+    let v = v.clamp(0.0, 1.0);
+    if v <= 0.0031308 { 12.92 * v } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 }
+}
+
+/// The inverse curve: what a `ld`/`sample` of a `_UNORM_SRGB` view returns for the stored byte's k/255.
+pub fn srgb_to_linear(v: f32) -> f32 {
+    if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+}
