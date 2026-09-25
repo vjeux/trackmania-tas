@@ -3599,6 +3599,291 @@ fn run(a: Vec<String>) {
             }
             println!("ROW 12 {}", if all_closed { "CLOSED: every value bit-identical or within one f16 quantum" } else { "NOT closed (values beyond one quantum above)" });
         }
+        "ilightin-check" => {
+            // lmtool ilightin-check PASSCAP_ROOT [--frame 127448] [--pre-frame 127447] [--fma] [--show N]
+            //   ROW 4: the transcribed ILightInput chain (ilightin.rs) of the first compute frame, step by step against the banked
+            //   setup_ps* snapshots: PS 17043 (the MDiffuse resolve into B8G8R8A8, eid 27), the cleared-target 1332/1034 steps,
+            //   PS 1038 (the coverage mask from the direct sun's alpha, eid 791), PS 17043 + PS 1109 DstCol (eids 812/836),
+            //   PS 1335 × 8 (eids 857–927, colour + coverage MRT)
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let root = std::path::PathBuf::from(&a[1]);
+            let frame: u32 = f("--frame").map(|v| v.parse().expect("--frame")).unwrap_or(127448);
+            let pre_frame: u32 = f("--pre-frame").map(|v| v.parse().expect("--pre-frame")).unwrap_or(127447);
+            let show: usize = f("--show").map(|v| v.parse().expect("--show")).unwrap_or(0);
+            let fma = !a.iter().any(|x| x == "--no-fma");
+            let dm = if a.iter().any(|x| x == "--div-ieee") { lightmap::gpucmp::DivModel::Ieee } else { lightmap::gpucmp::DivModel::MulRcp };
+            let txt = std::fs::read_to_string(root.join("MANIFEST.json")).expect("MANIFEST.json");
+            let m = lightmap::passdiff::read_manifest(&txt).expect("manifest");
+            let find = |pass: &str, fr: u32, sub: &str| m.passes.iter().find(|e| e.pass == pass && e.frame == Some(fr) && e.file.contains(sub)).unwrap_or_else(|| panic!("no {pass} entry matching {sub} in frame {fr}"));
+            let load = |pass: &str, fr: u32, sub: &str| lightmap::passdiff::load_entry(&root, find(pass, fr, sub)).unwrap_or_else(|e| panic!("{e}"));
+            use lightmap::gpucmp::{compare, Fmt};
+            use lightmap::gpuenc::UnormRounding;
+            use lightmap::gpufmt::Rounding;
+            let unorm_modes = [UnormRounding::NearestEven, UnormRounding::HalfUp, UnormRounding::Truncate, UnormRounding::Trunc12];
+            let mut all_closed = true;
+            // A. eid 27: the 9-run MDiffuse accumulation (16963 at the end of the pre-pass frame) resolved into 16969 B8G8R8A8 — the
+            //    capture shows the store goes through an sRGB view (0.435 linear → the byte 176 = 0.690 encoded): rgb are encoded
+            //    by the store, alpha is not
+            {
+                let pre = m.passes.iter().filter(|e| e.pass == "setup_ps1109" && e.frame == Some(pre_frame)).max_by_key(|e| e.eid_last.unwrap_or(0)).expect("the pre-pass frame's last setup_ps1109 snapshot (16963)");
+                let src = lightmap::passdiff::load_entry(&root, pre).unwrap_or_else(|e| panic!("{e}"));
+                let t = load("setup_ps17043", frame, "_16969");
+                let ours = lightmap::ilightin::resolve_ps17043(&src, false);
+                println!("A. PS 17043 (eid 27): {} (16963 after the last pre-pass run) → 16969 B8G8R8A8 through an _SRGB view, per UNORM8 store rounding:", pre.file);
+                let mut best: Option<(UnormRounding, bool, lightmap::gpucmp::Report, lightmap::passdiff::Buf)> = None;
+                for srgb in [true, false] {
+                    for mode in unorm_modes {
+                        let mut q = lightmap::passdiff::Buf::new(ours.w, ours.h, 4);
+                        for y in 0..ours.h { for x in 0..ours.w { for k in 0..4 {
+                            let v = ours.get(x, y, k);
+                            let v = if srgb && k < 3 { lightmap::gpufmt::linear_to_srgb(v) } else { v };
+                            q.set(x, y, k, lightmap::ilightin::unorm8_rt(v, mode));
+                        } } }
+                        let r = compare(&q, &t, 4, Fmt::Unorm8);
+                        println!("  srgb {srgb} {mode:?}: {}", r.line());
+                        if best.as_ref().map_or(true, |(_, _, b, _)| r.exact > b.exact) { best = Some((mode, srgb, r, q)); }
+                    }
+                }
+                let (mode, srgb, r, q) = best.unwrap();
+                println!("  → best srgb {srgb} {mode:?}: {} exact of {}", r.exact, r.values);
+                if show > 0 { lightmap::gpucmp::print_diffs(&q, &t, 4, show); }
+                all_closed &= r.closed();
+            }
+            // B/C. the cleared 16963 through PS 1332 × 8 and the two PS 1034 copies: every snapshot is zero
+            {
+                let mut nz = 0usize;
+                let mut n = 0usize;
+                for e in m.passes.iter().filter(|e| (e.pass == "setup_ps1332" || e.pass == "setup_ps1034") && e.frame == Some(frame)) {
+                    let b = lightmap::passdiff::load_entry(&root, e).unwrap_or_else(|e| panic!("{e}"));
+                    let k = b.data.iter().filter(|v| **v != 0.0).count();
+                    nz += k;
+                    n += 1;
+                    if k > 0 { println!("  {} has {k} non-zero values", e.file); }
+                }
+                println!("B/C. PS 1332 × 8 + PS 1034 × 2 on the cleared 16963: {n} snapshots, {nz} non-zero values (a dilation and two copies of zeros)");
+                all_closed &= nz == 0;
+            }
+            // D. eid 791: PS 1038 — the direct-sun target's alpha into the R8 coverage 17104
+            let sun = load("sun_direct", frame, "");
+            let mask_rows = [[0.0f32; 4], [0.0; 4], [0.0; 4], [1.0; 4]];
+            let mask_f = lightmap::ilightin::mask_ps1038(&sun, [1.0, 1.0, 0.0, 0.0], mask_rows, sun.w, sun.h);
+            let mask_t = load("setup_ps1038", frame, "_17104");
+            let mut mask_q = lightmap::passdiff::Buf::new(sun.w, sun.h, 1);
+            {
+                println!("D. PS 1038 (eid 791): sun_direct alpha → 17104 R8_UNORM, per UNORM8 store rounding:");
+                let mut best: Option<(UnormRounding, lightmap::gpucmp::Report, lightmap::passdiff::Buf)> = None;
+                for mode in unorm_modes {
+                    let q = lightmap::ilightin::quantise_unorm8(&mask_f, mode);
+                    let r = compare(&q, &mask_t, 1, Fmt::Unorm8);
+                    println!("  {mode:?}: {}", r.line());
+                    if best.as_ref().map_or(true, |(_, b, _)| r.exact > b.exact) { best = Some((mode, r, q)); }
+                }
+                let (mode, r, q) = best.unwrap();
+                println!("  → best {mode:?}: {} exact of {}", r.exact, r.values);
+                if show > 0 { lightmap::gpucmp::print_diffs(&q, &mask_t, 1, show); }
+                all_closed &= r.closed();
+                mask_q = q;
+            }
+            // E. eids 812 + 836: PS 17043 blended One/One onto the zeroed 17095, then PS 1109 DstCol/Zero with the MDiffuse 16969
+            let mdiff_raw = load("setup_ps17043", frame, "_16969");
+            // the SRV of 16969 is an _SRGB view: `ld` returns the decoded (linear) value of each byte
+            let mut mdiff = mdiff_raw.clone();
+            for y in 0..mdiff.h { for x in 0..mdiff.w { for k in 0..3 { mdiff.set(x, y, k, lightmap::gpufmt::srgb_to_linear(mdiff_raw.get(x, y, k))); } } }
+            let il_t = load("setup_ps1109", frame, "_17095");
+            let mut il_q = lightmap::passdiff::Buf::new(sun.w, sun.h, 3);
+            {
+                println!("E. PS 17043 (eid 812, One/One onto zeros) then PS 1109 (eid 836, DstCol/Zero × 16969) → 17095 R11G11B10, per store rounding (resolve store, product store):");
+                if a.iter().any(|x| x == "--fit-srgb") {
+                    // the sRGB decode table this GPU applies to the 16969 bytes, bounded from the data: every texel with a non-zero
+                    // R11-truncated resolve value d and a captured product q gives q ≤ d·L(byte) < q + quantum(q), i.e.
+                    // L(byte) ∈ [q/d, (q + quantum)/d); the intersection over the texels sharing a byte value is printed against the
+                    // formula's value (an empty intersection would refute the product-then-truncate model)
+                    let res = lightmap::ilightin::resolve_ps17043(&sun, false);
+                    let stage = lightmap::ilightin::quantise_r11(&res, Rounding::Truncate);
+                    let mut lo = vec![[0.0f64; 3]; 256];
+                    let mut hi = vec![[f64::INFINITY; 3]; 256];
+                    let mut cnt = vec![[0usize; 3]; 256];
+                    for y in 0..sun.h { for x in 0..sun.w { for k in 0..3u32 {
+                        let d = stage.get(x, y, k) as f64;
+                        if d <= 0.0 { continue; }
+                        let q = il_t.get(x, y, k);
+                        let mb = if k == 2 { 5 } else { 6 };
+                        let e = lightmap::gpufmt::encode_unsigned(q, mb, Rounding::Truncate);
+                        let qn = lightmap::gpufmt::decode_unsigned(e + 1, mb) as f64;
+                        let b = (mdiff_raw.get(x, y, k) * 255.0).round() as usize;
+                        let (l, h) = (q as f64 / d, qn / d);
+                        if l > lo[b][k as usize] { lo[b][k as usize] = l; }
+                        if h < hi[b][k as usize] { hi[b][k as usize] = h; }
+                        cnt[b][k as usize] += 1;
+                    } } }
+                    println!("  sRGB decode table bounds from the capture (byte: formula | [lo, hi) per channel R G B | texels):");
+                    let mut inside = 0; let mut outside = 0; let mut empty = 0;
+                    for b in 0..256 {
+                        let formula = lightmap::gpufmt::srgb_to_linear(b as f32 / 255.0) as f64;
+                        let mut line = format!("    {b:3}: {formula:.9}");
+                        let mut any = false;
+                        for k in 0..3 {
+                            if cnt[b][k] == 0 { line.push_str(" | –"); continue; }
+                            any = true;
+                            let (l, h) = (lo[b][k], hi[b][k]);
+                            let tag = if l >= h { empty += 1; "EMPTY" } else if formula >= l && formula < h { inside += 1; "ok" } else { outside += 1; if formula < l { "formula LOW" } else { "formula HIGH" } };
+                            line.push_str(&format!(" | [{l:.9}, {h:.9}) {tag} ×{}", cnt[b][k]));
+                        }
+                        if any { println!("{line}"); }
+                    }
+                    println!("  → formula inside the interval: {inside}, outside: {outside}, empty intersections: {empty}");
+                    // UNORM-n tables (k / (2^n − 1)): the formula rounded to the nearest step, and — rounding aside — whether ANY step
+                    // of the table falls inside every interval (a table of that precision can reproduce the capture)
+                    for n in 8..=16u32 {
+                        let s = ((1u64 << n) - 1) as f64;
+                        let (mut ins, mut outs, mut any_ok, mut any_no) = (0, 0, 0, 0);
+                        for b in 0..256 { for k in 0..3 {
+                            if cnt[b][k] == 0 || lo[b][k] >= hi[b][k] { continue; }
+                            let v = (lightmap::gpufmt::srgb_to_linear(b as f32 / 255.0) as f64 * s).round() / s;
+                            if v >= lo[b][k] && v < hi[b][k] { ins += 1 } else { outs += 1 }
+                            // any k/s in [lo, hi)?
+                            let kmin = (lo[b][k] * s).ceil();
+                            if kmin / s < hi[b][k] { any_ok += 1 } else { any_no += 1 }
+                        } }
+                        println!("    candidate UNORM{n} (k/{s}): formula rounded inside {ins}, outside {outs}; some step inside {any_ok}, none {any_no}");
+                    }
+                    // candidate precisions of the decode table: the formula's value rounded to m mantissa bits (RTNE / RTZ) or to
+                    // 2^−k fixed point — how many observed (byte, channel) intervals each candidate lands in
+                    let round_mant = |v: f64, m: u32, rtz: bool| -> f64 { if v <= 0.0 { return 0.0; } let e = v.log2().floor(); let q = (2f64).powf(e - m as f64); let n = v / q; let n = if rtz { n.floor() } else { n.round() }; n * q };
+                    let mut cands: Vec<(String, Box<dyn Fn(f64) -> f64>)> = Vec::new();
+                    for m in 6..=16u32 { cands.push((format!("{m}-bit mantissa RTNE"), Box::new(move |v| round_mant(v, m, false)))); cands.push((format!("{m}-bit mantissa RTZ"), Box::new(move |v| round_mant(v, m, true)))); }
+                    for k in 8..=16u32 { let s = (1u64 << k) as f64; cands.push((format!("fixed 2^-{k} RTNE"), Box::new(move |v| (v * s).round() / s))); cands.push((format!("fixed 2^-{k} RTZ"), Box::new(move |v| (v * s).floor() / s))); }
+                    for (name, fun) in &cands {
+                        let (mut ins, mut outs) = (0, 0);
+                        for b in 0..256 { for k in 0..3 { if cnt[b][k] == 0 || lo[b][k] >= hi[b][k] { continue; } let v = fun(lightmap::gpufmt::srgb_to_linear(b as f32 / 255.0) as f64); if v >= lo[b][k] && v < hi[b][k] { ins += 1 } else { outs += 1 } } }
+                        println!("    candidate {name}: inside {ins}, outside {outs}");
+                    }
+                }
+                if let Some(t) = f("--debug-e") {
+                    let (dx, dy) = t.split_once(',').expect("--debug-e X,Y");
+                    let (tx, ty): (u32, u32) = (dx.parse().unwrap(), dy.parse().unwrap());
+                    let s = [sun.get(tx, ty, 0), sun.get(tx, ty, 1), sun.get(tx, ty, 2), sun.get(tx, ty, 3)];
+                    let res = lightmap::ilightin::resolve_ps17043_texel(&sun, tx, ty, false);
+                    let q = lightmap::gpufmt::quantise_r11g11b10([res[0], res[1], res[2]], Rounding::Truncate);
+                    let bytes = [(mdiff_raw.get(tx, ty, 0) * 255.0).round(), (mdiff_raw.get(tx, ty, 1) * 255.0).round(), (mdiff_raw.get(tx, ty, 2) * 255.0).round()];
+                    let lin = [mdiff.get(tx, ty, 0), mdiff.get(tx, ty, 1), mdiff.get(tx, ty, 2)];
+                    let prod = [q[0] * lin[0], q[1] * lin[1], q[2] * lin[2]];
+                    let pq = lightmap::gpufmt::quantise_r11g11b10(prod, Rounding::Truncate);
+                    println!("  texel ({tx}, {ty}): sun_direct {s:?}; resolve rgb/a {res:?}; R11 trunc {q:?}; albedo bytes {bytes:?} → linear {lin:?}; product {prod:?} → R11 trunc {pq:?}; captured 17095 [{}, {}, {}]", il_t.get(tx, ty, 0), il_t.get(tx, ty, 1), il_t.get(tx, ty, 2));
+                    // the R11 quantum boundaries around the product
+                    for k in 0..3 {
+                        let mb = if k == 2 { 5 } else { 6 };
+                        let e = lightmap::gpufmt::encode_unsigned(prod[k], mb, Rounding::Truncate);
+                        println!("    ch {k}: product {:.9} sits between quanta {:.9} and {:.9}; captured/product − 1 = {:+.3e}", prod[k], lightmap::gpufmt::decode_unsigned(e, mb), lightmap::gpufmt::decode_unsigned(e + 1, mb), il_t.get(tx, ty, k as u32) / prod[k] - 1.0);
+                    }
+                }
+                let res = lightmap::ilightin::resolve_ps17043(&sun, false);
+                let mut best: Option<((Rounding, Rounding), lightmap::gpucmp::Report, lightmap::passdiff::Buf)> = None;
+                for r1 in [Rounding::Truncate, Rounding::NearestEven] {
+                    let stage = lightmap::ilightin::quantise_r11(&res, r1);
+                    let prod = lightmap::finalprep::multiply_ps1109(&stage, &mdiff, [1.0, 1.0, 1.0, 1.0]);
+                    for r2 in [Rounding::Truncate, Rounding::NearestEven] {
+                        let q = lightmap::ilightin::quantise_r11(&prod, r2);
+                        let r = compare(&q, &il_t, 3, Fmt::R11G11B10);
+                        println!("  ({r1:?}, {r2:?}): {}", r.line());
+                        if best.as_ref().map_or(true, |(_, b, _)| r.exact > b.exact) { best = Some(((r1, r2), r, q)); }
+                    }
+                }
+                let (modes, r, q) = best.unwrap();
+                println!("  → best {modes:?}: {} exact of {}", r.exact, r.values);
+                if show > 0 { lightmap::gpucmp::print_diffs(&q, &il_t, 3, show); }
+                all_closed &= r.closed();
+                il_q = q;
+            }
+            // F. eids 857–927: PS 1335 × 8 from the captured (17095, 17104): each pass against its banked MRTs, chained (our previous
+            //    output feeds the next pass) and stepwise (the captured previous pass feeds ours)
+            {
+                println!("F. PS 1335 × 8 (colour R11G11B10 store RTZ, coverage R8):");
+                if let Some(t) = f("--debug-texel") {
+                    // the 3×3 neighbourhood of one texel at pass 1: captured colour + coverage inputs, our sum / weight / quotient, the captured output
+                    let (dx, dy) = t.split_once(',').expect("--debug-texel X,Y");
+                    let (tx, ty): (i64, i64) = (dx.parse().unwrap(), dy.parse().unwrap());
+                    let first = m.passes.iter().filter(|e| e.pass == "setup_ps1335" && e.frame == Some(frame) && e.file.contains("_rt0_")).min_by_key(|e| e.eid_last.unwrap_or(u64::MAX)).unwrap();
+                    let out1 = lightmap::passdiff::load_entry(&root, first).unwrap();
+                    println!("  texel ({tx}, {ty}) before pass 1 (captured 17095 / 17104) and its neighbours:");
+                    for ddy in -1..=1i64 { for ddx in -1..=1i64 {
+                        let (x, y) = (tx + ddx, ty + ddy);
+                        if x < 0 || y < 0 || x >= il_t.w as i64 || y >= il_t.h as i64 { continue; }
+                        let (x, y) = (x as u32, y as u32);
+                        println!("    ({ddx:+},{ddy:+}) colour [{:.6}, {:.6}, {:.6}] coverage {:.6} (= {}/255)", il_t.get(x, y, 0), il_t.get(x, y, 1), il_t.get(x, y, 2), mask_t.get(x, y, 0), (mask_t.get(x, y, 0) * 255.0).round());
+                    } }
+                    let (c, w) = lightmap::ilightin::dilate_ps1335_texel(&il_t, &mask_t, tx as u32, ty as u32, false);
+                    let (cf, _) = lightmap::ilightin::dilate_ps1335_texel(&il_t, &mask_t, tx as u32, ty as u32, true);
+                    println!("    ours f32 [{:.7}, {:.7}, {:.7}] (fma [{:.7}, {:.7}, {:.7}]) coverage {w}; captured after pass 1 [{:.6}, {:.6}, {:.6}]", c[0], c[1], c[2], cf[0], cf[1], cf[2], out1.get(tx as u32, ty as u32, 0), out1.get(tx as u32, ty as u32, 1), out1.get(tx as u32, ty as u32, 2));
+                }
+                let snaps: Vec<&lightmap::passdump::Entry> = m.passes.iter().filter(|e| e.pass == "setup_ps1335" && e.frame == Some(frame)).collect();
+                let mut cur_c = il_t.clone();
+                let mut cur_w = mask_t.clone();
+                let (mut step_c, mut step_w) = (il_t.clone(), mask_t.clone());
+                let mut eids: Vec<u64> = snaps.iter().filter_map(|e| e.eid_last).collect();
+                eids.sort();
+                eids.dedup();
+                // pass 1 is where the weights are fractional (the R8 coverage in ninths): the arithmetic model (fused mad, the
+                // division as a × rcp(b)) decides the truncation of the many quotients that land on an R11G11B10 quantum
+                if a.iter().any(|x| x == "--variants") {
+                    let first = *eids.first().unwrap();
+                    let tc = lightmap::passdiff::load_entry(&root, snaps.iter().find(|e| e.eid_last == Some(first) && e.file.contains("_rt0_")).unwrap()).unwrap();
+                    for (fm, dm) in [(false, lightmap::gpucmp::DivModel::Ieee), (true, lightmap::gpucmp::DivModel::Ieee), (false, lightmap::gpucmp::DivModel::MulRcp), (true, lightmap::gpucmp::DivModel::MulRcp)] {
+                        let (oc, _) = lightmap::ilightin::dilate_ps1335_div(&il_t, &mask_t, fm, dm);
+                        for st in [Rounding::Truncate, Rounding::NearestEven] {
+                            let q = lightmap::ilightin::quantise_r11(&oc, st);
+                            let r = compare(&q, &tc, 3, Fmt::R11G11B10);
+                            println!("  pass 1 arithmetic model fma {fm} div {dm:?} store {st:?}: {} exact of {}, {} within 1 quantum, {} beyond", r.exact, r.values, r.ulp1, r.beyond);
+                        }
+                    }
+                }
+                let t0 = std::time::Instant::now();
+                for (k, eid) in eids.iter().enumerate() {
+                    let rt0 = snaps.iter().find(|e| e.eid_last == Some(*eid) && e.file.contains("_rt0_")).expect("rt0");
+                    let rt1 = snaps.iter().find(|e| e.eid_last == Some(*eid) && e.file.contains("_rt1_")).expect("rt1");
+                    let tc = lightmap::passdiff::load_entry(&root, rt0).unwrap_or_else(|e| panic!("{e}"));
+                    let tw = lightmap::passdiff::load_entry(&root, rt1).unwrap_or_else(|e| panic!("{e}"));
+                    // chained
+                    let (oc, ow) = lightmap::ilightin::dilate_ps1335_div(&cur_c, &cur_w, fma, dm);
+                    let oc = lightmap::ilightin::quantise_r11(&oc, Rounding::Truncate);
+                    let ow = lightmap::ilightin::quantise_unorm8(&ow, UnormRounding::NearestEven);
+                    let rc = compare(&oc, &tc, 3, Fmt::R11G11B10);
+                    let rw = compare(&ow, &tw, 1, Fmt::Unorm8);
+                    // stepwise: from the captured previous
+                    let (sc, sw) = lightmap::ilightin::dilate_ps1335_div(&step_c, &step_w, fma, dm);
+                    let sc = lightmap::ilightin::quantise_r11(&sc, Rounding::Truncate);
+                    let sw = lightmap::ilightin::quantise_unorm8(&sw, UnormRounding::NearestEven);
+                    let rsc = compare(&sc, &tc, 3, Fmt::R11G11B10);
+                    let rsw = compare(&sw, &tw, 1, Fmt::Unorm8);
+                    let covered = (0..tw.h).flat_map(|y| (0..tw.w).map(move |x| (x, y))).filter(|&(x, y)| tw.get(x, y, 0) > 0.0).count();
+                    println!("  pass {} (eid {eid}) colour chained: {}", k + 1, rc.line());
+                    println!("           colour stepwise: {}", rsc.line());
+                    println!("           coverage chained: {} | stepwise: {} exact of {} ({covered} texels covered after)", rw.line(), rsw.exact, rsw.values);
+                    if show > 0 && !rc.closed() { lightmap::gpucmp::print_diffs(&oc, &tc, 3, show); }
+                    all_closed &= rc.closed() && rw.closed();
+                    cur_c = oc;
+                    cur_w = ow;
+                    step_c = tc;
+                    step_w = tw;
+                }
+                println!("  8 passes in {:.1} s", t0.elapsed().as_secs_f32());
+                // the whole chain from our own D/E outputs
+                let (mut cc, mut cw) = (il_q.clone(), mask_q.clone());
+                for _ in 0..eids.len() {
+                    let (oc, ow) = lightmap::ilightin::dilate_ps1335_div(&cc, &cw, fma, dm);
+                    cc = lightmap::ilightin::quantise_r11(&oc, Rounding::Truncate);
+                    cw = lightmap::ilightin::quantise_unorm8(&ow, UnormRounding::NearestEven);
+                }
+                let last = *eids.last().unwrap();
+                let tc = lightmap::passdiff::load_entry(&root, snaps.iter().find(|e| e.eid_last == Some(last) && e.file.contains("_rt0_")).unwrap()).unwrap();
+                let tw = lightmap::passdiff::load_entry(&root, snaps.iter().find(|e| e.eid_last == Some(last) && e.file.contains("_rt1_")).unwrap()).unwrap();
+                let rc = compare(&cc, &tc, 3, Fmt::R11G11B10);
+                let rw = compare(&cw, &tw, 1, Fmt::Unorm8);
+                println!("  whole chain from sun_direct + 16969 through our D, E and 8 × F vs the captured last pass: colour {} | coverage {} exact of {}", rc.line(), rw.exact, rw.values);
+                all_closed &= rc.closed() && rw.closed();
+            }
+            println!("ROW 4 {}", if all_closed { "CLOSED: every value bit-identical or within one quantum of its target" } else { "NOT closed (values beyond one quantum above)" });
+        }
         "encode-check" => {
             // lmtool encode-check PASSCAP_ROOT [--frame N] [--fma] [--half-up] [--all]
             //   the transcribed finalisation (gpuenc.rs: the |rgb| max reduction + CS 23025 LmCompress_HBasis_YCbCr4)

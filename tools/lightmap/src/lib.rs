@@ -19,6 +19,7 @@ pub mod gpufmt;
 pub mod gpuenc;
 pub mod gpucmp;
 pub mod finalprep;
+pub mod ilightin;
 pub mod sunpass;
 pub mod lmaccum;
 pub mod format;
