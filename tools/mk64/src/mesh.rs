@@ -542,3 +542,110 @@ pub fn bake_vertex_colours(mesh: &mut Mesh, levels: u32, max_spread: u8, max_dep
     mesh.tris = out;
     (splits, n_variants)
 }
+
+/// Coplanar overlaps lifted apart (vjeux, 2026-09-24: "a lot of places are
+/// flickering when two textures overlap"). MK64 stacks surfaces on one plane
+/// — a road-detail strip over the road, a shadow patch over the grass, one
+/// grass sheet over another — and drew them in display-list order; TM's depth
+/// test sees two coplanar triangles and picks a different one every frame.
+///
+/// Every pair of triangles on the same plane whose projections overlap gets
+/// the LATER one (higher piece index = drawn later by the N64, i.e. on top)
+/// lifted by `step` metres along the plane normal — a stack of three lifts the
+/// third by two steps. Only the lifted triangle's own vertices move, so its
+/// edges shared with unlifted neighbours open a hairline; at 3 mm that is
+/// below what the eye picks up at kart range. Returns the triangles lifted.
+pub fn lift_coplanar_overlaps(mesh: &mut Mesh, step: f32) -> usize {
+    use std::collections::HashMap;
+    let plane = |t: &Tri| -> Option<([f32; 3], f32)> {
+        let (a, b, c) = (t.c[0].pos, t.c[1].pos, t.c[2].pos);
+        let n = face_normal(&[a, b, c]);
+        if n[0] == 0.0 && n[1] == 0.0 && n[2] == 0.0 {
+            return None;
+        }
+        // one orientation per plane
+        let mut n = n;
+        if n[1] < 0.0 || (n[1] == 0.0 && (n[0] < 0.0 || (n[0] == 0.0 && n[2] < 0.0))) {
+            n = [-n[0], -n[1], -n[2]];
+        }
+        Some((n, n[0] * a[0] + n[1] * a[1] + n[2] * a[2]))
+    };
+    // bucket by (rounded normal, rounded d); a 5 cm plane tolerance
+    let mut buckets: HashMap<(i32, i32, i32, i32), Vec<usize>> = HashMap::new();
+    let mut planes: Vec<Option<([f32; 3], f32)>> = Vec::with_capacity(mesh.tris.len());
+    for (i, t) in mesh.tris.iter().enumerate() {
+        let p = plane(t);
+        planes.push(p);
+        if let Some((n, d)) = p {
+            buckets.entry(((n[0] * 50.0).round() as i32, (n[1] * 50.0).round() as i32, (n[2] * 50.0).round() as i32, (d / 0.05).round() as i32)).or_default().push(i);
+        }
+    }
+    let inside = |p: [f32; 2], t: [[f32; 2]; 3]| -> bool {
+        let s = |a: [f32; 2], b: [f32; 2], c: [f32; 2]| (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+        let (d1, d2, d3) = (s(t[0], t[1], p), s(t[1], t[2], p), s(t[2], t[0], p));
+        let eps = 1e-3;
+        (d1 > eps && d2 > eps && d3 > eps) || (d1 < -eps && d2 < -eps && d3 < -eps)
+    };
+    // how many triangles each triangle sits over (its lift count)
+    let mut lifts: Vec<u32> = vec![0; mesh.tris.len()];
+    for (key, idx) in &buckets {
+        if idx.len() < 2 {
+            continue;
+        }
+        let n = [key.0 as f32 / 50.0, key.1 as f32 / 50.0, key.2 as f32 / 50.0];
+        let (ax, ay) = if n[1].abs() >= n[0].abs() && n[1].abs() >= n[2].abs() { (0usize, 2usize) } else if n[0].abs() >= n[2].abs() { (1, 2) } else { (0, 1) };
+        let proj = |t: &Tri| [[t.c[0].pos[ax], t.c[0].pos[ay]], [t.c[1].pos[ax], t.c[1].pos[ay]], [t.c[2].pos[ax], t.c[2].pos[ay]]];
+        let probes = |t: [[f32; 2]; 3]| {
+            let c = [(t[0][0] + t[1][0] + t[2][0]) / 3.0, (t[0][1] + t[1][1] + t[2][1]) / 3.0];
+            [c, [(t[0][0] + t[1][0]) / 2.0, (t[0][1] + t[1][1]) / 2.0], [(t[1][0] + t[2][0]) / 2.0, (t[1][1] + t[2][1]) / 2.0], [(t[2][0] + t[0][0]) / 2.0, (t[2][1] + t[0][1]) / 2.0]]
+        };
+        // bounding boxes first: the buckets of a big grass sheet hold hundreds
+        let bb: Vec<([f32; 2], [f32; 2])> = idx
+            .iter()
+            .map(|&i| {
+                let p = proj(&mesh.tris[i]);
+                let lo = [p.iter().map(|q| q[0]).fold(f32::MAX, f32::min), p.iter().map(|q| q[1]).fold(f32::MAX, f32::min)];
+                let hi = [p.iter().map(|q| q[0]).fold(f32::MIN, f32::max), p.iter().map(|q| q[1]).fold(f32::MIN, f32::max)];
+                (lo, hi)
+            })
+            .collect();
+        for a in 0..idx.len() {
+            for b in a + 1..idx.len() {
+                let (ia, ib) = (idx[a], idx[b]);
+                if mesh.tris[ia].piece == mesh.tris[ib].piece && mesh.tris[ia].mat == mesh.tris[ib].mat {
+                    // one sheet's own tessellation (fans and strips share edges,
+                    // never areas) — not an overlap
+                    continue;
+                }
+                if bb[a].0[0] > bb[b].1[0] || bb[b].0[0] > bb[a].1[0] || bb[a].0[1] > bb[b].1[1] || bb[b].0[1] > bb[a].1[1] {
+                    continue;
+                }
+                let (pa, pb) = (proj(&mesh.tris[ia]), proj(&mesh.tris[ib]));
+                let hit = probes(pa).iter().any(|p| inside(*p, pb)) || probes(pb).iter().any(|p| inside(*p, pa));
+                if !hit {
+                    continue;
+                }
+                // the later-drawn one goes up
+                let (lo, hi) = if (mesh.tris[ia].piece, ia) < (mesh.tris[ib].piece, ib) { (ia, ib) } else { (ib, ia) };
+                lifts[hi] = lifts[hi].max(lifts[lo] + 1);
+            }
+        }
+    }
+    let mut n = 0;
+    for (i, t) in mesh.tris.iter_mut().enumerate() {
+        if lifts[i] == 0 {
+            continue;
+        }
+        let Some((nrm, _)) = planes[i] else { continue };
+        // lift along the triangle's OWN facing (the plane normal was oriented
+        // to +y for bucketing; a downward-facing tri lifts the other way)
+        let own = face_normal(&[t.c[0].pos, t.c[1].pos, t.c[2].pos]);
+        let sign = if own[0] * nrm[0] + own[1] * nrm[1] + own[2] * nrm[2] >= 0.0 { 1.0 } else { -1.0 };
+        let d = step * lifts[i] as f32 * sign;
+        for c in t.c.iter_mut() {
+            c.pos = [c.pos[0] + nrm[0] * d, c.pos[1] + nrm[1] * d, c.pos[2] + nrm[2] * d];
+        }
+        n += 1;
+    }
+    n
+}

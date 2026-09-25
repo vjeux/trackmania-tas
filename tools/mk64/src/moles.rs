@@ -123,14 +123,18 @@ fn plastic(rgb: [u8; 3], physics: u8) -> CPlugMaterialUserInst {
 /// stands with its bottom row at local y = 0, centred on x, facing −z (the
 /// viewer at −z sees the image the right way round: image left = viewer's left
 /// = local +x… so image x maps to −x).
-fn relief(img: &Image, px_m: f32, depth: f32) -> BTreeMap<[u8; 3], Vec<[Corner; 3]>> {
+pub fn relief(img: &Image, px_m: f32, depth: f32) -> BTreeMap<[u8; 3], Vec<[Corner; 3]>> {
+    relief_with(img, px_m, depth, quantise)
+}
+
+pub fn relief_with(img: &Image, px_m: f32, depth: f32, quant: impl Fn([u8; 3]) -> [u8; 3]) -> BTreeMap<[u8; 3], Vec<[Corner; 3]>> {
     let (w, h) = (img.w as i32, img.h as i32);
     let at = |x: i32, y: i32| -> Option<[u8; 3]> {
         if x < 0 || y < 0 || x >= w || y >= h {
             return None;
         }
         let p = img.pixel(x as u32, y as u32);
-        if p[3] < 128 { None } else { Some(quantise([p[0], p[1], p[2]])) }
+        if p[3] < 128 { None } else { Some(quant([p[0], p[1], p[2]])) }
     };
     let mut out: BTreeMap<[u8; 3], Vec<[Corner; 3]>> = BTreeMap::new();
     // pixel (x, y) occupies local x in [-(x+1-w/2), -(x-w/2)]·px, y in [(h-1-y), (h-y)]·px
@@ -241,7 +245,7 @@ fn relief(img: &Image, px_m: f32, depth: f32) -> BTreeMap<[u8; 3], Vec<[Corner; 
 }
 
 /// The full mole: the stored left half and its mirror, side by side.
-fn full_sprite(half: &Image) -> Image {
+pub fn full_sprite(half: &Image) -> Image {
     let (w, h) = (half.w, half.h);
     let mut rgba = Vec::with_capacity((w * 2 * h * 4) as usize);
     for y in 0..h {
@@ -400,4 +404,87 @@ pub fn build(store: &mut DataStore, name: &str, decomp: &Path, path_tm: &[[f32; 
     let mounds_bytes = write_file(&assemble(&mounds, &mopts)?);
     println!("  moles: {} at {:.1} units wide, {} colours, {} triangles each, rise {:.2} m; first three at {:?}", spawns.len(), SPRITE_UNITS_WIDE, faces.len(), tris_total, rise_m, spawns.iter().take(3).map(|sp| { let p = frame.to_tm(*sp); [(p[0] * 10.0).round() / 10.0, (p[1] * 10.0).round() / 10.0, (p[2] * 10.0).round() / 10.0] }).collect::<Vec<_>>());
     Ok(Some(Moles { bytes: write_file(&f), mounds: mounds_bytes, pos: origin, pictures, count: spawns.len() }))
+}
+
+/// The relief with a palette fitted to the image: its opaque colours clustered
+/// (k-means, k ≤ 8) so any sprite — a penguin, a crab, a Boo — gets its own
+/// handful of plastic slots.
+pub fn relief_generic(img: &Image, px_m: f32, depth: f32) -> BTreeMap<[u8; 3], Vec<[Corner; 3]>> {
+    let pal = palette_of(img, 6);
+    let snapped = Image {
+        w: img.w,
+        h: img.h,
+        rgba: img
+            .rgba
+            .chunks(4)
+            .flat_map(|p| {
+                if p[3] < 128 {
+                    return [0u8, 0, 0, 0];
+                }
+                let c = nearest(&pal, [p[0], p[1], p[2]]);
+                [c[0], c[1], c[2], 255]
+            })
+            .collect(),
+    };
+    // `relief` quantises through the mole palette; feed it an image already
+    // on its own palette and bypass by identity: the snapped colours ARE the
+    // slots — so run the same builder with the palette-snapped image and no
+    // further quantisation
+    relief_with(&snapped, px_m, depth, |c| c)
+}
+
+fn nearest(pal: &[[u8; 3]], rgb: [u8; 3]) -> [u8; 3] {
+    let mut best = pal[0];
+    let mut bd = i64::MAX;
+    for p in pal {
+        let d = (p[0] as i64 - rgb[0] as i64).pow(2) + (p[1] as i64 - rgb[1] as i64).pow(2) + (p[2] as i64 - rgb[2] as i64).pow(2);
+        if d < bd {
+            bd = d;
+            best = *p;
+        }
+    }
+    best
+}
+
+/// k-means over the opaque pixels (seeded on the most frequent colours).
+pub fn palette_of(img: &Image, k: usize) -> Vec<[u8; 3]> {
+    let mut count: BTreeMap<[u8; 3], usize> = BTreeMap::new();
+    for p in img.rgba.chunks(4) {
+        if p[3] >= 128 {
+            *count.entry([p[0], p[1], p[2]]).or_default() += 1;
+        }
+    }
+    if count.is_empty() {
+        return vec![[128, 128, 128]];
+    }
+    let mut by_freq: Vec<([u8; 3], usize)> = count.iter().map(|(c, n)| (*c, *n)).collect();
+    by_freq.sort_by(|a, b| b.1.cmp(&a.1));
+    // seeds: frequent colours far enough from the ones already taken
+    let mut cents: Vec<[f32; 3]> = Vec::new();
+    for (c, _) in &by_freq {
+        let cf = [c[0] as f32, c[1] as f32, c[2] as f32];
+        if cents.iter().all(|s| (s[0] - cf[0]).powi(2) + (s[1] - cf[1]).powi(2) + (s[2] - cf[2]).powi(2) > 40.0f32.powi(2)) {
+            cents.push(cf);
+        }
+        if cents.len() >= k {
+            break;
+        }
+    }
+    for _ in 0..12 {
+        let mut acc = vec![([0.0f32; 3], 0usize); cents.len()];
+        for (c, n) in &by_freq {
+            let cf = [c[0] as f32, c[1] as f32, c[2] as f32];
+            let (bi, _) = cents.iter().enumerate().map(|(i, s)| (i, (s[0] - cf[0]).powi(2) + (s[1] - cf[1]).powi(2) + (s[2] - cf[2]).powi(2))).min_by(|a, b| a.1.partial_cmp(&b.1).unwrap()).unwrap();
+            for ch in 0..3 {
+                acc[bi].0[ch] += cf[ch] * *n as f32;
+            }
+            acc[bi].1 += n;
+        }
+        for (i, (sum, n)) in acc.iter().enumerate() {
+            if *n > 0 {
+                cents[i] = [sum[0] / *n as f32, sum[1] / *n as f32, sum[2] / *n as f32];
+            }
+        }
+    }
+    cents.iter().map(|c| [c[0].round() as u8, c[1].round() as u8, c[2].round() as u8]).collect()
 }

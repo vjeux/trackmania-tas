@@ -172,6 +172,16 @@ pub fn cmd_build(args: &[String]) {
         mesh::bbox(mesh0.tris.iter().flat_map(|t| t.c.iter().map(|k| k.pos))).expect("course has geometry")
     };
     let mut m = mesh::visual_mesh(&c, &pieces, Some(&assets), &frame);
+    // the code-placed objects (signs, snowmen, crabs, neon signs, penguins, the
+    // parked train …): statics into the mesh here, moving ones as an item below
+    let path_tm_all: Vec<[f32; 3]> = c.path.iter().map(|p| frame.to_tm(p.pos)).collect();
+    let objects = if args.iter().any(|a| a == "--no-objects") { Vec::new() } else { crate::objects::course_objects(&c, &frame, &path_tm_all, &decomp) };
+    for obj in &objects {
+        let (np, nt) = crate::objects::add_static(&c, &mut m, &frame, obj, &mut rom, &assets);
+        if np > 0 {
+            println!("  objects: {} × {} static ({nt} triangles)", np, obj.name);
+        }
+    }
     if !args.iter().any(|a| a == "--no-actors") {
         for kind in ["tree", "cow", "piranha_plant", "cactus"] {
             let (n, t) = crate::actors::add_billboards(&c, &mut m, &frame, kind);
@@ -190,13 +200,21 @@ pub fn cmd_build(args: &[String]) {
             let t = crate::actors::add_lakitu(&mut m, &frame, at, d);
             println!("  actors: Lakitu over the start ({t} triangles)");
         }
-        // Bowser's Thwomps, static, 2 m over the road
-        if dir == "bowsers_castle" {
+        // Bowser's Thwomps, static, 2 m over the road (the moving ones live in
+        // the objects item; --no-objects keeps these)
+        if dir == "bowsers_castle" && objects.is_empty() {
             let soup = mesh::collision_mesh(&c, &coll, &frame);
             let floor = |x: f32, z: f32| -> Option<f32> { soup.iter().filter_map(|t| height_under(t, x, z)).fold(None, |m: Option<f32>, h| Some(m.map_or(h, |v| v.max(h)))) };
             let t = crate::actors::add_thwomps(&c, &mut m, &frame, &floor, 2.0);
             println!("  actors: Thwomps ({t} triangles)");
         }
+    }
+    // coplanar overlaps lifted apart (--decal-lift MM; 0 = off): the z-fight
+    // flicker where MK64 stacks two surfaces on one plane
+    let lift_mm: f32 = flag(args, "--decal-lift").and_then(|s| s.parse().ok()).unwrap_or(4.0);
+    if lift_mm > 0.0 {
+        let n = mesh::lift_coplanar_overlaps(&mut m, lift_mm / 1000.0);
+        println!("  decal lift: {n} overlapping triangles raised by {lift_mm} mm steps");
     }
     // ground tints smoothed over 12 m before the bake (--ground-smooth M; 0 = off)
     let smooth_r: f32 = flag(args, "--ground-smooth").and_then(|s| s.parse().ok()).unwrap_or(12.0);
@@ -396,6 +414,18 @@ pub fn cmd_build(args: &[String]) {
                 }
                 Ok(None) => {}
                 Err(e) => println!("  moles: {e}"),
+            }
+        }
+        // the moving objects (Thwomps, chomps, rocks, the balloon, hedgehogs …)
+        if !objects.is_empty() {
+            let name = format!("MK64_{}_{}_objects.Item.Gbx", dir, tag);
+            match crate::objects::build_moving(&mut store, &name, &c, &objects, &frame, &mut rom, &assets) {
+                Ok(Some(mv)) => {
+                    println!("  objects: {} moving parts in one item ({} bytes)", mv.parts, mv.bytes.len());
+                    specs.push(ItemSpec { name, bytes: mv.bytes, pos: mv.pos, yaw: 0.0, tag: None, order: 0 });
+                }
+                Ok(None) => {}
+                Err(e) => println!("  objects: {e}"),
             }
         }
     } else if paks.is_empty() {
