@@ -68,9 +68,16 @@ pub fn chart_st(v: &LmVertex, inst: &LmInstance, table: &[[f32; 4]]) -> [f32; 4]
 /// (Scale·ST.zw + Trans)`, z = 0.5, w = 1.
 #[inline]
 pub fn lm_clip(v: &LmVertex, st: [f32; 4], cb: &LmRasterCb) -> [f32; 2] {
+    // the DXBC's two `mad`s are FUSED on this GPU (as the pixel shaders' are): r5.zw = mad(Scale, ST.zw, Trans),
+    // o0.xy = mad(r5.xy, uv, r5.zw) — the unfused form (LM_CLIP_UNFUSED=1) leaves 1-ulp clip positions that snap one 1/256
+    // step off at the half-way ties
     let sxy = [st[0] * cb.scale_ss[0], st[1] * cb.scale_ss[1]];
-    let tzw = [cb.scale_ss[0] * st[2] + cb.trans_ss[0], cb.scale_ss[1] * st[3] + cb.trans_ss[1]];
-    [sxy[0] * v.uv[0] + tzw[0], sxy[1] * v.uv[1] + tzw[1]]
+    if std::env::var_os("LM_CLIP_UNFUSED").is_some() {
+        let tzw = [cb.scale_ss[0] * st[2] + cb.trans_ss[0], cb.scale_ss[1] * st[3] + cb.trans_ss[1]];
+        return [sxy[0] * v.uv[0] + tzw[0], sxy[1] * v.uv[1] + tzw[1]];
+    }
+    let tzw = [cb.scale_ss[0].mul_add(st[2], cb.trans_ss[0]), cb.scale_ss[1].mul_add(st[3], cb.trans_ss[1])];
+    [sxy[0].mul_add(v.uv[0], tzw[0]), sxy[1].mul_add(v.uv[1], tzw[1])]
 }
 
 /// `rows · p·scale + t` (the world position of a vertex, VS 17111 20–33 / VS 17118 30–37).
