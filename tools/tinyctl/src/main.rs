@@ -43,6 +43,7 @@ mod video;
 mod motion;
 mod nadeo;
 mod roundpub;
+mod remoteshots;
 mod batch;
 mod customsheet;
 mod thumbs;
@@ -211,6 +212,7 @@ fn main() {
         "nadeo-here" => nadeo::cmd(rest),
         "publish-batch" => batch::publish_batch_cmd(rest),
         "round-publish" => roundpub::cmd(rest),
+        "remote-shots" => remoteshots::cmd(rest),
         "skip-manifest" => batch::skip_manifest_cmd(rest),
         "custom-sheet" => customsheet::cmd(rest),
         "thumbs" => thumbs::cmd(rest),

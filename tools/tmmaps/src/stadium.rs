@@ -151,7 +151,17 @@ fn block_cell(b: &crate::map::BlockRec, ground: f32) -> [i32; 3] {
 }
 
 fn plan(m: &MapFile, input: &Path) -> Result<Plan, String> {
-    let collection = m.items.first().map(|it| it.collection_raw).unwrap_or(26);
+    // the collection: the items' (every vista item carries it), else the header's
+    // environment (an `isolate`d probe map has no items)
+    let collection = m.items.first().map(|it| it.collection_raw).unwrap_or_else(|| {
+        match crate::header::read(input.to_str().unwrap_or("")).map(|h| h.envir).as_deref() {
+            Ok("RedIsland") => 0x10,
+            Ok("Desert") => 0x1c,
+            Ok("Rally") => 0x1d,
+            Ok("Snow") => 0x1e,
+            _ => 26,
+        }
+    });
     if collection == STADIUM {
         return Err("already a Stadium map".into());
     }
@@ -282,6 +292,10 @@ fn plan(m: &MapFile, input: &Path) -> Result<Plan, String> {
                 fits = false; // a waypoint past the 48-cell window: the port cannot hold the route
                 continue;
             }
+            // (an `isolate`d probe map keeps its one template item wherever it is)
+            if m.items.len() == 1 {
+                continue;
+            }
             *k = false;
             items_trimmed += 1;
         }
@@ -299,8 +313,15 @@ fn plan(m: &MapFile, input: &Path) -> Result<Plan, String> {
             fits = false; // even sunk two rows it does not fit under the roof
         }
     }
-    let dx = (SIZE[0] - (hi[0] - lo[0] + 1)) / 2 - lo[0];
-    let dz = (SIZE[2] - (hi[2] - lo[2] + 1)) / 2 - lo[2];
+    let mut dx = (SIZE[0] - (hi[0] - lo[0] + 1)) / 2 - lo[0];
+    let mut dz = (SIZE[2] - (hi[2] - lo[2] + 1)) / 2 - lo[2];
+    // TMMAPS_PORT_SHIFT=dx,dy,dz: a fixed shift (an `isolate`d probe map ported with the
+    // full map's shift, so the same relative cameras frame both — the piece A/B of 2026-09-24)
+    if let Some(v) = std::env::var("TMMAPS_PORT_SHIFT").ok().map(|v| v.split(',').filter_map(|x| x.trim().parse::<i32>().ok()).collect::<Vec<_>>()).filter(|v| v.len() == 3) {
+        dx = v[0];
+        dy = v[1];
+        dz = v[2];
+    }
     for (it, k) in m.items.iter().zip(item_keep.iter_mut()) {
         if *k {
             let row = ((it.pos[1] - ground) / 8.0).floor() as i32 + dy;

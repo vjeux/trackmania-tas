@@ -505,6 +505,42 @@ fn main() {
                 println!("{}: name `{old}` -> `{new}` ({h} header, {b} body)", out.display());
             }
         }
+        // tmmaps isolate MAP --out OUT --keep NAME@x,y,z[;NAME@x,y,z…]: every authored block
+        // but the listed ones goes, every generated record and every item too — a one- or
+        // two-block probe map for a piece A/B in the editor (json9841's terrain, 2026-09-24)
+        "isolate" => {
+            let out = tmmaps::cli::flag(&args, "--out").expect("--out OUT");
+            let keep_arg = tmmaps::cli::flag(&args, "--keep").expect("--keep NAME@x,y,z[;…]");
+            let keep: Vec<(String, [i32; 3])> = keep_arg
+                .split(';')
+                .filter_map(|k| {
+                    let (n, c) = k.trim().split_once('@')?;
+                    let v: Vec<i32> = c.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                    (v.len() == 3).then(|| (n.to_string(), [v[0], v[1], v[2]]))
+                })
+                .collect();
+            assert!(!keep.is_empty(), "--keep needs NAME@x,y,z entries");
+            let mut m = tmmaps::map::MapFile::load(std::path::Path::new(&args[2]));
+            let n_items = m.items.len();
+            let r = m.remove_blocks(
+                |b| {
+                    let (x, y, z) = b.coords();
+                    !keep.iter().any(|(n, c)| *n == b.name && c[0] == x && c[1] == y && c[2] == z)
+                },
+                |_| true,
+            );
+            // two variable-length edits: write, reload, then the items
+            m.write_to(std::path::Path::new(out)).expect("write");
+            let mut m2 = tmmaps::map::MapFile::load(std::path::Path::new(out));
+            // one plain item stays: the terrain/item tooling clones a record as its template
+            let veg = |m: &str| ["Tree", "Bush", "Grass", "Rock", "Cactus", "Palm", "Fir", "Flower", "Plant"].iter().any(|w| m.contains(w));
+            let first_plain = m2.items.iter().position(|it| it.waypoint_tag.is_none() && !veg(&it.model)).or_else(|| m2.items.iter().position(|it| it.waypoint_tag.is_none()));
+            let keep_items: Vec<bool> = (0..m2.items.len()).map(|i| Some(i) == first_plain).collect();
+            let dropped_items = m2.remove_items(&keep_items);
+            m2.write_to(std::path::Path::new(out)).expect("write (items)");
+            let _ = n_items;
+            println!("{out}: {} blocks kept ({} dropped, {} generated records dropped, {dropped_items} items dropped)", keep.len(), r.blocks, r.baked);
+        }
         // tmmaps unlock MAP --out OUT: drop the editor-password controls (needUnlock + the
         // 0x03043029 password-hash/CRC chunk) — the editor-refusal bisect of 2026-09-24
         "unlock" => {
