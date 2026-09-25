@@ -1582,7 +1582,9 @@ fn run(a: Vec<String>) {
                         if let Ok(txt) = std::fs::read_to_string(root.join("MANIFEST.json")) {
                             if let Ok(m) = lightmap::passdiff::read_manifest(&txt) {
                                 let cmp = |name: &str, ours: &lightmap::passdiff::Buf, pass: &str, frame: u32, suffix: &str, ch: u32, fmt: lightmap::gpucmp::Fmt| {
-                                    let e = m.passes.iter().filter(|e| e.pass == pass && e.frame == Some(frame) && e.file.contains(suffix)).max_by_key(|e| e.eid_last.unwrap_or(0));
+                                    let cands = m.passes.iter().filter(|e| e.pass == pass && e.frame == Some(frame) && e.file.contains(suffix));
+                                    // the sun shadow map = the pass's first snapshot (the later ones are the peel-phase depth targets); the others = the last
+                                    let e = if pass == "sun_shadow" { cands.min_by_key(|e| e.eid_last.unwrap_or(0)) } else { cands.max_by_key(|e| e.eid_last.unwrap_or(0)) };
                                     match e.and_then(|e| lightmap::passdiff::load_entry(&root, e).ok()) {
                                         Some(cap) => { let r = lightmap::gpucmp::compare_where(ours, &cap, ch, fmt, &|_x, _y| true); eprintln!("setup-from-map: {name} vs the captured {pass}: {} exact / {} within 1 quantum / {} beyond of {} (max |Δ| {:.6} at {:?})", r.exact, r.ulp1, r.beyond, r.values, r.max_abs, r.worst); }
                                         None => eprintln!("setup-from-map: {name}: no captured {pass} entry"),
@@ -2061,9 +2063,11 @@ fn run(a: Vec<String>) {
                 }
                 // the sweep-transition chain: OUR sweep-(it−1) C0 → the sweep-it ILightInput atlas (C's transcription), compared with the
                 // capture's sweep-1 ILightInput when banked (pwc6's, another run of the same bake)
-                if let (Some(hb), Some(e2e), Some(il0)) = (hb_sweeps.last(), e2e_out.as_ref(), prm.ilatlas.as_ref()) {
+                // (the MDiffuse: the capture-driven chain's (e2e) or the from-map setup's — setupmap.rs)
+                let mdiffuse8_src: Option<&lightmap::passdiff::Buf> = e2e_out.as_ref().map(|e| &e.mdiffuse8).or(from_map_setup.as_ref().map(|fm| &fm.mdiffuse8));
+                if let (Some(hb), Some(md8), Some(il0)) = (hb_sweeps.last(), mdiffuse8_src, prm.ilatlas.as_ref()) {
                     let c0 = mrt_buf(hb, 0);
-                    let mdl = lightmap::sweep1::mdiffuse_linear(&e2e.mdiffuse8, None);
+                    let mdl = lightmap::sweep1::mdiffuse_linear(md8, None);
                     let ts = std::time::Instant::now();
                     let atlas = lightmap::sweep1::ilightinput_from_c0(&c0, &mdl, None, 0.3989423);
                     if let Some(gm) = &game_manifest {
@@ -2080,13 +2084,19 @@ fn run(a: Vec<String>) {
                         for i in 0..(2048 * 2048) as usize { r11.extend_from_slice(&lightmap::gpufmt::pack_r11g11b10([atlas.data[i * 3], atlas.data[i * 3 + 1], atlas.data[i * 3 + 2]], lightmap::gpufmt::Rounding::Truncate).to_le_bytes()); }
                         std::fs::write(format!("{dir}/chain-sweep{it}-ilightinput.r11g11b10"), r11).expect("write");
                     }
-                    let n_items = scene.item_count.max(1);
-                    let lm_root = std::path::PathBuf::from(f("--lm-from").unwrap());
-                    let env_frame: u32 = f("--lm-env-frame").map(|v| v.parse().expect("--lm-env-frame")).unwrap_or(127448);
-                    let mesh_dir = lm_root.join(format!("env/frame{env_frame}/mesh"));
-                    let insts = lightmap::prepass::read_maybe_gz(&mesh_dir.join("vb_17033.bin")).unwrap_or_else(|e| panic!("{e}"));
-                    let tile_vb = lightmap::prepass::read_maybe_gz(&mesh_dir.join("vb_5350.bin")).unwrap_or_else(|e| panic!("{e}"));
-                    let il = lightmap::ilatlas::IlAtlas::new(atlas, &insts, &tile_vb, n_items);
+                    // the LM instance stream: the from-map scene's when the setup came from the map, else the capture's
+                    let il = match (from_map_setup.as_ref(), prm.lm_scene.as_ref()) {
+                        (Some(_), Some(lm)) => lightmap::ilatlas::IlAtlas::from_lm_scene(atlas, lm),
+                        _ => {
+                            let n_items = scene.item_count.max(1);
+                            let lm_root = std::path::PathBuf::from(f("--lm-from").unwrap());
+                            let env_frame: u32 = f("--lm-env-frame").map(|v| v.parse().expect("--lm-env-frame")).unwrap_or(127448);
+                            let mesh_dir = lm_root.join(format!("env/frame{env_frame}/mesh"));
+                            let insts = lightmap::prepass::read_maybe_gz(&mesh_dir.join("vb_17033.bin")).unwrap_or_else(|e| panic!("{e}"));
+                            let tile_vb = lightmap::prepass::read_maybe_gz(&mesh_dir.join("vb_5350.bin")).unwrap_or_else(|e| panic!("{e}"));
+                            lightmap::ilatlas::IlAtlas::new(atlas, &insts, &tile_vb, n_items)
+                        }
+                    };
                     let item_map = il0.item_map.clone();
                     p2.ilatlas = Some(std::sync::Arc::new(lightmap::ilatlas::IlSource { atlas: il, item_map }));
                     p2.hb_out = Some(std::sync::Arc::new(lightmap::ilatlas::HbSlot(std::sync::Mutex::new(None))));
