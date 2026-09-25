@@ -25,10 +25,70 @@ use crate::gpufmt::{Quant, Rounding};
 use crate::passdump::{ChartRect, Entry, Frustum, Manifest};
 use std::collections::HashMap;
 
+/// Close the brackets of a JSON text cut off mid-write (the capture writer streams its manifest): the
+/// depth is scanned outside strings, a dangling comma dropped, the missing closers appended.
+pub fn repair_truncated_json(txt: &str) -> String {
+    let mut stack: Vec<char> = Vec::new();
+    let mut in_str = false;
+    let mut esc = false;
+    let mut last_sig = 0usize;
+    for (i, ch) in txt.char_indices() {
+        if in_str {
+            if esc { esc = false; } else if ch == '\\' { esc = true; } else if ch == '"' { in_str = false; }
+            last_sig = i + ch.len_utf8();
+            continue;
+        }
+        match ch {
+            '"' => { in_str = true; last_sig = i + 1; }
+            '{' => { stack.push('}'); last_sig = i + 1; }
+            '[' => { stack.push(']'); last_sig = i + 1; }
+            '}' | ']' => { stack.pop(); last_sig = i + 1; }
+            c if c.is_whitespace() => {}
+            _ => { last_sig = i + ch.len_utf8(); }
+        }
+    }
+    let mut out = txt[..last_sig].to_string();
+    if in_str {
+        out.push('"');
+    }
+    // a dangling comma or colon before the cut
+    while out.ends_with(',') || out.ends_with(':') {
+        out.pop();
+        if out.ends_with(':') { out.push_str(":null"); break; }
+    }
+    while let Some(c) = stack.pop() {
+        out.push(c);
+    }
+    out
+}
+
 /// Read a MANIFEST.json (ours or the game's — tolerant of missing fields, of numbers written as
-/// strings, of a `dir` given as {x, y, z}, of `layer`/`direction`/`sweep` written as null).
+/// strings, of a `dir` given as {x, y, z}, of `layer`/`direction`/`sweep` written as null, and of a
+/// file cut off mid-write).
 pub fn read_manifest(txt: &str) -> Result<Manifest, String> {
-    let mut v: serde_json::Value = serde_json::from_str(txt).map_err(|e| format!("MANIFEST.json: {e}"))?;
+    let mut v: serde_json::Value = match serde_json::from_str(txt) {
+        Ok(v) => v,
+        Err(e) => {
+            // cut off mid-write: close the brackets; if the tail is an unfinished token, back up to the
+            // previous line end and try again (a few hundred lines at most)
+            let mut cut = txt.len();
+            let mut parsed: Option<serde_json::Value> = None;
+            for _ in 0..400 {
+                let fixed = repair_truncated_json(&txt[..cut]);
+                if let Ok(v) = serde_json::from_str(&fixed) {
+                    parsed = Some(v);
+                    break;
+                }
+                match txt[..cut.saturating_sub(1)].rfind('\n') {
+                    Some(p) if p > 0 => cut = p,
+                    _ => break,
+                }
+            }
+            let v = parsed.ok_or_else(|| format!("MANIFEST.json: {e} (and no repair of the cut-off tail parsed)"))?;
+            eprintln!("passdiff: MANIFEST.json is cut off ({e}) — read after closing its brackets at byte {cut} of {}", txt.len());
+            v
+        }
+    };
     fn num(v: &mut serde_json::Value) {
         if let Some(s) = v.as_str() {
             if let Ok(n) = s.trim().parse::<f64>() {
@@ -49,6 +109,24 @@ pub fn read_manifest(txt: &str) -> Result<Manifest, String> {
             }
         }
     }
+    // a null field is an absent field (the defaults apply)
+    fn strip_nulls(v: &mut serde_json::Value) {
+        match v {
+            serde_json::Value::Object(o) => {
+                o.retain(|_, x| !x.is_null());
+                for x in o.values_mut() {
+                    strip_nulls(x);
+                }
+            }
+            serde_json::Value::Array(a) => {
+                for x in a.iter_mut() {
+                    strip_nulls(x);
+                }
+            }
+            _ => {}
+        }
+    }
+    strip_nulls(&mut v);
     if let Some(passes) = v.get_mut("passes").and_then(|p| p.as_array_mut()) {
         for e in passes.iter_mut() {
             let Some(o) = e.as_object_mut() else { continue };
@@ -58,7 +136,12 @@ pub fn read_manifest(txt: &str) -> Result<Manifest, String> {
                         o.remove(k);
                     } else {
                         num(x);
-                        if let Some(f) = x.as_f64() { *x = serde_json::json!(f.round() as i64); }
+                        match x.as_f64() {
+                            // a negative index (the capture's "-1" = none) is no index
+                            Some(f) if f < 0.0 => { o.remove(k); }
+                            Some(f) => { *x = serde_json::json!(f.round() as i64); }
+                            None => {}
+                        }
                     }
                 }
             }
@@ -85,67 +168,116 @@ pub fn read_manifest(txt: &str) -> Result<Manifest, String> {
         }
     }
     if let Some(x) = v.get_mut("sun_dir") { vec3(x); }
-    serde_json::from_value::<Manifest>(v).map_err(|e| format!("MANIFEST.json: {e}"))
+    let mut m = serde_json::from_value::<Manifest>(v).map_err(|e| format!("MANIFEST.json: {e}"))?;
+    // a capture entry without a `frustum` but with the peel camera's matrix gets its frustum from it
+    for e in m.passes.iter_mut() {
+        if e.frustum.is_none() {
+            if let Some(pw) = &e.pw01 {
+                e.frustum = Frustum::from_pw01(pw);
+            }
+        }
+        if e.dir.is_none() {
+            if let Some(f) = &e.frustum {
+                if e.space == "peel" && e.pass != "sun_shadow" {
+                    e.dir = Some(f.forward);
+                }
+            }
+        }
+    }
+    assign_peels(&mut m);
+    Ok(m)
 }
 
 /// The per-direction peel frustums of a sweep, indexed by direction (from the `peel_depth` entries,
 /// else `peel_color`); directions without an entry are filled from the nearest lower direction so
 /// the list is dense up to the last captured direction.
-pub fn peel_frustums(m: &Manifest, sweep: u32) -> Vec<Frustum> {
+/// The game's peels of one direction (ordered by first event id): each distinct frustum among the
+/// direction's `peel_depth` / `peel_color` entries is one peel; the entries' `peel` field is filled
+/// from it by `read_manifest`.
+fn peels_of(m: &Manifest, sweep: u32, direction: u32) -> Vec<Frustum> {
+    let mut es: Vec<&Entry> = m.passes.iter().filter(|e| (e.pass == "peel_depth" || e.pass == "peel_color") && e.sweep.unwrap_or(0) == sweep && e.direction == Some(direction) && e.frustum.is_some()).collect();
+    es.sort_by_key(|e| e.eid_last.unwrap_or(0));
+    let mut out: Vec<Frustum> = Vec::new();
+    for e in es {
+        let f = e.frustum.as_ref().unwrap();
+        if !out.iter().any(|g| same_frustum(g, f)) {
+            out.push(f.clone());
+        }
+    }
+    out
+}
+
+/// Fill every peel entry's `peel` index (0 = the first frustum seen for the direction, 1 = the next…).
+pub fn assign_peels(m: &mut Manifest) {
+    let keys: std::collections::BTreeSet<(u32, u32)> = m.passes.iter().filter(|e| (e.pass == "peel_depth" || e.pass == "peel_color") && e.direction.is_some()).map(|e| (e.sweep.unwrap_or(0), e.direction.unwrap())).collect();
+    for (sw, d) in keys {
+        let peels = peels_of(m, sw, d);
+        for e in m.passes.iter_mut() {
+            if (e.pass == "peel_depth" || e.pass == "peel_color") && e.sweep.unwrap_or(0) == sw && e.direction == Some(d) && e.peel.is_none() {
+                if let Some(f) = &e.frustum {
+                    e.peel = peels.iter().position(|g| same_frustum(g, f)).map(|i| i as u32);
+                }
+            }
+        }
+    }
+}
+
+/// `peel_frustums_for` with our direction list empty: indexed by the game's own direction index.
+pub fn peel_frustums(m: &Manifest, sweep: u32) -> Vec<Vec<Frustum>> {
     peel_frustums_for(m, sweep, &[])
 }
 
-/// `peel_frustums` for OUR direction list: each of our directions takes the captured frustum of the
-/// game direction with the nearest VECTOR (the game draws its list in an interleaved order, so the
-/// indices differ); without vectors on the game side the indices are matched directly, and a direction
-/// the capture lacks takes the nearest captured one — a peel frustum only differs per direction by its
-/// orientation, so the nearest vector's is the right fit.
-pub fn peel_frustums_for(m: &Manifest, sweep: u32, ours: &[[f32; 3]]) -> Vec<Frustum> {
-    let mut by_dir: HashMap<u32, (Frustum, Option<[f32; 3]>)> = HashMap::new();
+/// The captured PEELS for OUR direction list: each of our directions takes the ordered peel frustums
+/// of the game direction with the nearest VECTOR (the game draws its list in an interleaved order, so
+/// the indices differ); without vectors on the game side the indices are matched directly. A direction
+/// the capture lacks takes the nearest captured direction's peels re-oriented to our direction (a peel
+/// frustum only differs per direction by its orientation and its fitted extents).
+pub fn peel_frustums_for(m: &Manifest, sweep: u32, ours: &[[f32; 3]]) -> Vec<Vec<Frustum>> {
+    let mut by_dir: HashMap<u32, (Vec<Frustum>, Option<[f32; 3]>)> = HashMap::new();
     for e in &m.passes {
         if (e.pass == "peel_depth" || e.pass == "peel_color") && e.sweep.unwrap_or(0) == sweep {
             if let (Some(d), Some(f)) = (e.direction, &e.frustum) {
-                let v = e.dir.or_else(|| f.forward.into());
-                by_dir.entry(d).or_insert_with(|| (f.clone(), v));
+                by_dir.entry(d).or_insert_with(|| (peels_of(m, sweep, d), e.dir.or(Some(f.forward))));
             }
         }
     }
     if by_dir.is_empty() {
         return Vec::new();
     }
+    let reorient = |fs: &Vec<Frustum>, v: [f32; 3], od: [f32; 3]| -> Vec<Frustum> {
+        let c = v[0] * od[0] + v[1] * od[1] + v[2] * od[2];
+        if c >= 0.999_99 {
+            return fs.clone();
+        }
+        fs.iter()
+            .map(|f0| {
+                let mut f = f0.clone();
+                let helper = if od[1].abs() < 0.99 { [0.0, 1.0, 0.0] } else { [1.0, 0.0, 0.0] };
+                let r = crate::geometry::norm(crate::geometry::cross(helper, od));
+                let u = crate::geometry::cross(od, r);
+                f.forward = od;
+                f.right = r;
+                f.up = [-u[0], -u[1], -u[2]];
+                f
+            })
+            .collect()
+    };
     if !ours.is_empty() && by_dir.values().all(|(_, v)| v.is_some()) {
-        // by vector: every one of our directions gets the frustum of the game direction nearest to it
-        // (the capture may hold only a subset — then the nearest captured direction's frustum stands
-        // in, re-oriented to our direction by `PeelFrame::from_frustum` only if the vectors agree; a
-        // stand-in for a different direction is flagged by the caller through `dir` mismatch)
         return ours
             .iter()
             .map(|od| {
                 let best = by_dir.values().max_by(|a, b| { let ca = a.1.map(|v| v[0] * od[0] + v[1] * od[1] + v[2] * od[2]).unwrap_or(-2.0); let cb = b.1.map(|v| v[0] * od[0] + v[1] * od[1] + v[2] * od[2]).unwrap_or(-2.0); ca.partial_cmp(&cb).unwrap_or(std::cmp::Ordering::Equal) }).unwrap();
-                let mut f = best.0.clone();
-                // the captured frustum of another direction: keep its extents, turn its axes to ours
-                let v = best.1.unwrap();
-                let c = v[0] * od[0] + v[1] * od[1] + v[2] * od[2];
-                if c < 0.999_99 {
-                    let helper = if od[1].abs() < 0.99 { [0.0, 1.0, 0.0] } else { [1.0, 0.0, 0.0] };
-                    let r = crate::geometry::norm(crate::geometry::cross(helper, *od));
-                    let u = crate::geometry::cross(*od, r);
-                    f.forward = *od;
-                    f.right = r;
-                    f.up = [-u[0], -u[1], -u[2]];
-                }
-                f
+                reorient(&best.0, best.1.unwrap(), *od)
             })
             .collect();
     }
     let max = *by_dir.keys().max().unwrap();
-    let mut out = Vec::with_capacity(max as usize + 1);
-    for d in 0..=max {
-        // the captured direction nearest in index (ties → the lower)
-        let nearest = by_dir.keys().min_by_key(|k| ((**k as i64 - d as i64).abs(), **k)).copied().unwrap();
-        out.push(by_dir[&nearest].0.clone());
-    }
-    out
+    (0..=max)
+        .map(|d| {
+            let nearest = by_dir.keys().min_by_key(|k| ((**k as i64 - d as i64).abs(), **k)).copied().unwrap();
+            by_dir[&nearest].0.clone()
+        })
+        .collect()
 }
 
 /// A decoded buffer: `channels` f32 per pixel, row-major, top row first.
@@ -304,7 +436,7 @@ pub fn parse_format(name: &str) -> Fmt {
         "R8G8B8_UNORM" => Fmt::Unorm8(3),
         "R8G8B8A8_UNORM" | "B8G8R8A8_UNORM" | "R8G8B8A8_TYPELESS" => Fmt::Unorm8(4),
         "R8G8B8A8_UNORM_SRGB" | "B8G8R8A8_UNORM_SRGB" => Fmt::Unorm8Srgb(4),
-        "R16_UNORM" | "D16_UNORM" => Fmt::Unorm16(1),
+        "R16_UNORM" | "D16_UNORM" | "R16_TYPELESS" => Fmt::Unorm16(1),
         "R16G16B16A16_UNORM" => Fmt::Unorm16(4),
         "D24_UNORM_S8_UINT" | "R24_UNORM_X8_TYPELESS" | "R24G8_TYPELESS" => Fmt::D24S8,
         _ => Fmt::Unknown,
@@ -401,6 +533,7 @@ pub fn dxgi_fmt(id: u32) -> Fmt {
         39 | 40 | 41 => Fmt::F32(1),
         44 | 45 | 46 => Fmt::D24S8,
         54 => Fmt::F16(1),
+        53 | 55 => Fmt::Unorm16(1),
         56 => Fmt::Unorm16(1),
         61 => Fmt::Unorm8(1),
         0xffff => Fmt::Unorm8(3),
@@ -408,10 +541,63 @@ pub fn dxgi_fmt(id: u32) -> Fmt {
     }
 }
 
-/// Load one entry's buffer from its root: a raw dump by the manifest's format, or a DDS.
+/// The bytes of an entry's file: `file`, or `file.gz` (a gzip member, inflated).
+pub fn read_entry_bytes(root: &std::path::Path, file: &str) -> Result<Vec<u8>, String> {
+    let p = root.join(file);
+    let (bytes, gz) = match std::fs::read(&p) {
+        Ok(b) => (b, false),
+        Err(e) => {
+            let pg = root.join(format!("{file}.gz"));
+            match std::fs::read(&pg) {
+                Ok(b) => (b, true),
+                Err(_) => return Err(format!("{}: {e} (no .gz either)", p.display())),
+            }
+        }
+    };
+    if gz || (bytes.len() > 2 && bytes[0] == 0x1f && bytes[1] == 0x8b) {
+        return gunzip(&bytes).map_err(|e| format!("{}: {e}", p.display()));
+    }
+    Ok(bytes)
+}
+
+/// Inflate one gzip member (RFC 1952 header, raw deflate body).
+pub fn gunzip(b: &[u8]) -> Result<Vec<u8>, String> {
+    if b.len() < 18 || b[0] != 0x1f || b[1] != 0x8b || b[2] != 8 {
+        return Err("not a gzip member".into());
+    }
+    let flg = b[3];
+    let mut o = 10usize;
+    if flg & 4 != 0 {
+        let xlen = u16::from_le_bytes([b[o], b[o + 1]]) as usize;
+        o += 2 + xlen;
+    }
+    if flg & 8 != 0 {
+        while o < b.len() && b[o] != 0 { o += 1; }
+        o += 1;
+    }
+    if flg & 16 != 0 {
+        while o < b.len() && b[o] != 0 { o += 1; }
+        o += 1;
+    }
+    if flg & 2 != 0 {
+        o += 2;
+    }
+    if o >= b.len() {
+        return Err("truncated gzip header".into());
+    }
+    let body = &b[o..b.len() - 8];
+    let isize = u32::from_le_bytes(b[b.len() - 4..].try_into().unwrap()) as usize;
+    let out = miniz_oxide::inflate::decompress_to_vec(body).map_err(|e| format!("gzip inflate: {e:?}"))?;
+    if isize != 0 && out.len() % (1usize << 32) != isize {
+        return Err(format!("gzip: inflated {} B, header says {isize}", out.len()));
+    }
+    Ok(out)
+}
+
+/// Load one entry's buffer from its root: a raw dump by the manifest's format, or a DDS (optionally gzipped).
 pub fn load_entry(root: &std::path::Path, e: &Entry) -> Result<Buf, String> {
     let p = root.join(&e.file);
-    let bytes = std::fs::read(&p).map_err(|err| format!("{}: {err}", p.display()))?;
+    let bytes = read_entry_bytes(root, &e.file)?;
     if bytes.len() >= 4 && &bytes[..4] == b"DDS " {
         let (dxgi, w, h, pitch, off) = parse_dds(&bytes)?;
         let fmt = if !e.format.is_empty() && parse_format(&e.format) != Fmt::Unknown { parse_format(&e.format) } else { dxgi_fmt(dxgi) };
@@ -498,7 +684,7 @@ pub fn compare(game: &Buf, ours: &Buf, channels: u32, tol: f32, floor: f32, stri
 }
 
 /// The pipeline order of the passes.
-pub const PIPELINE: &[&str] = &["lm_pos", "lm_nrm", "mdiffuse", "sun_shadow", "ilightinput", "peel_depth", "peel_color", "ilightdir", "lightsum", "lightsum_resolved", "probe_skyvis", "probe_ilightdir", "probe_isvalid", "hbasis0", "hbasis1", "hbasis2", "hbasis3", "final_hdr", "final_atlas"];
+pub const PIPELINE: &[&str] = &["lm_pos", "lm_nrm", "mdiffuse", "sun_shadow", "ilightinput", "peel_sky", "peel_depth", "peel_color", "ilightdir", "lightsum", "lightsum_resolved", "probe_skyvis", "probe_ilightdir", "probe_isvalid", "hbasis0", "hbasis1", "hbasis2", "hbasis3", "final_hdr", "final_atlas"];
 
 pub fn pipeline_rank(pass: &str) -> usize {
     PIPELINE.iter().position(|p| *p == pass).unwrap_or(PIPELINE.len())
@@ -510,6 +696,7 @@ pub struct Row {
     pub pass: String,
     pub sweep: Option<u32>,
     pub direction: Option<u32>,
+    pub peel: Option<u32>,
     pub layer: Option<u32>,
     pub chart: Option<u32>,
     pub stats: Stats,
@@ -525,6 +712,7 @@ impl Row {
         let mut k = self.pass.clone();
         if let Some(s) = self.sweep { k += &format!(" s{s}"); }
         if let Some(d) = self.direction { k += &format!(" d{d:03}"); }
+        if let Some(p) = self.peel { k += &format!(" p{p}"); }
         if let Some(l) = self.layer { k += &format!(" l{l:02}"); }
         if let Some(c) = self.chart { k += &format!(" obj{c}"); }
         k
@@ -611,15 +799,30 @@ fn best_orientation(game: &Buf, ours: &Buf, channels: u32, floor: f32) -> (Buf, 
     }
 }
 
+/// The clear value of a depth target: the entry's `cleared_to` when given, else inferred from the
+/// buffer (a reversed-z peel clears to 1.0 = near; a target cleared to 0 shows exact zeros).
+pub fn depth_clear(e: &Entry, b: &Buf) -> f32 {
+    if let Some(c) = e.cleared_to.as_ref().and_then(|v| v.as_f64()) {
+        return c as f32;
+    }
+    let (mut ones, mut zeros) = (0usize, 0usize);
+    for v in b.data.iter().step_by(7) {
+        if *v == 1.0 { ones += 1; } else if *v == 0.0 { zeros += 1; }
+    }
+    if ones > zeros { 1.0 } else { 0.0 }
+}
+
 /// Resample a peel-space buffer of ours into the game's pixel grid through the world: for every
 /// game pixel centre, the world point on the game's near plane → our pixel (nearest). Depth channels
-/// (channels == 1 and `depth`) are converted to metres along the game's forward axis on both sides.
-/// The third buffer marks (1.0) the game pixels to compare: inside our frame, and not a clear
-/// (z01 = 0) on BOTH sides — a clear against a surface stays in as the divergence it is.
-fn remap_peel(game: &Buf, gf: &Frustum, ours: &Buf, of: &Frustum, depth: bool) -> (Buf, Buf, Buf) {
+/// (channels == 1 and `depth`) are converted to metres along the game's forward axis on both sides,
+/// a cleared pixel (`clear_g` / `clear_o`) becoming NaN. The third buffer marks (1.0) the game pixels
+/// to compare: inside our frame and a surface on BOTH sides; the counts are the one-sided pixels
+/// (a surface in the game where ours is clear, and the reverse) — the coverage divergence.
+fn remap_peel(game: &Buf, gf: &Frustum, ours: &Buf, of: &Frustum, depth: bool, clear_g: f32, clear_o: f32) -> (Buf, Buf, Buf, (usize, usize)) {
     let mut o2 = Buf::new(game.w, game.h, ours.channels);
     let mut g2 = game.clone();
     let mut valid = Buf::new(game.w, game.h, 1);
+    let (mut only_g, mut only_o) = (0usize, 0usize);
     let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
     for y in 0..game.h {
         for x in 0..game.w {
@@ -630,23 +833,32 @@ fn remap_peel(game: &Buf, gf: &Frustum, ours: &Buf, of: &Frustum, depth: bool) -
                 if depth { g2.set(x, y, 0, f32::NAN); }
                 continue;
             }
-            let both_clear = (0..ours.channels).all(|c| ours.get(oxi as u32, oyi as u32, c) == 0.0) && (0..game.channels).all(|c| game.get(x, y, c) == 0.0);
-            valid.set(x, y, 0, if both_clear { 0.0 } else { 1.0 });
-            for c in 0..ours.channels {
-                let v = ours.get(oxi as u32, oyi as u32, c);
-                if depth && c == 0 {
-                    // both depths → the world point's coordinate along the game's forward axis (metres)
-                    let po = of.unproject(oxi as f32 + 0.5, oyi as f32 + 0.5, v, ours.w, ours.h);
-                    let pg = gf.unproject(x as f32 + 0.5, y as f32 + 0.5, game.get(x, y, 0), game.w, game.h);
-                    o2.set(x, y, 0, dot(po, gf.forward));
-                    g2.set(x, y, 0, dot(pg, gf.forward));
-                } else {
-                    o2.set(x, y, c, v);
+            if depth {
+                let (zg, zo) = (game.get(x, y, 0), ours.get(oxi as u32, oyi as u32, 0));
+                let (cg, co) = (zg == clear_g, zo == clear_o);
+                match (cg, co) {
+                    (true, true) => { g2.set(x, y, 0, f32::NAN); o2.set(x, y, 0, f32::NAN); }
+                    (true, false) => { only_o += 1; g2.set(x, y, 0, f32::NAN); o2.set(x, y, 0, f32::NAN); }
+                    (false, true) => { only_g += 1; g2.set(x, y, 0, f32::NAN); o2.set(x, y, 0, f32::NAN); }
+                    (false, false) => {
+                        // both depths → the world point's coordinate along the game's forward axis (metres)
+                        let po = of.unproject(oxi as f32 + 0.5, oyi as f32 + 0.5, zo, ours.w, ours.h);
+                        let pg = gf.unproject(x as f32 + 0.5, y as f32 + 0.5, zg, game.w, game.h);
+                        o2.set(x, y, 0, dot(po, gf.forward));
+                        g2.set(x, y, 0, dot(pg, gf.forward));
+                        valid.set(x, y, 0, 1.0);
+                    }
+                }
+            } else {
+                let both_clear = (0..ours.channels).all(|c| ours.get(oxi as u32, oyi as u32, c) == 0.0) && (0..game.channels).all(|c| game.get(x, y, c) == 0.0);
+                valid.set(x, y, 0, if both_clear { 0.0 } else { 1.0 });
+                for c in 0..ours.channels {
+                    o2.set(x, y, c, ours.get(oxi as u32, oyi as u32, c));
                 }
             }
         }
     }
-    (g2, o2, valid)
+    (g2, o2, valid, (only_g, only_o))
 }
 
 fn same_frustum(a: &Frustum, b: &Frustum) -> bool {
@@ -706,6 +918,21 @@ fn game_dirs(game: &Manifest, sweep: u32) -> Vec<[f32; 3]> {
     (0..=max).map(|d| by.get(&d).copied().unwrap_or([0.0; 3])).collect()
 }
 
+/// Our indices of the directions the game captured in a sweep (by nearest vector), sorted.
+pub fn game_dir_indices(game: &Manifest, sweep: u32, ours: &[[f32; 3]]) -> Vec<u32> {
+    let mut out: Vec<u32> = Vec::new();
+    for gd in game_dirs(game, sweep) {
+        if gd == [0.0; 3] || ours.is_empty() {
+            continue;
+        }
+        let best = (0..ours.len()).max_by(|&a, &b| { let ca = ours[a][0] * gd[0] + ours[a][1] * gd[1] + ours[a][2] * gd[2]; let cb = ours[b][0] * gd[0] + ours[b][1] * gd[1] + ours[b][2] * gd[2]; ca.partial_cmp(&cb).unwrap_or(std::cmp::Ordering::Equal) }).unwrap();
+        out.push(best as u32);
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
 fn direction_map(game: &Manifest, ours: &Manifest, sweep: u32) -> (HashMap<u32, u32>, Option<String>) {
     let gdirs = game_dirs(game, sweep);
     let os = ours.sweeps.iter().find(|s| s.sweep == sweep);
@@ -741,9 +968,46 @@ fn direction_map(game: &Manifest, ours: &Manifest, sweep: u32) -> (HashMap<u32, 
 
 /// Run the differential. Returns the rows in pipeline order and the convention findings.
 pub fn run(game_root: &std::path::Path, ours_root: &std::path::Path, opts: &Opts) -> Result<(Vec<Row>, Vec<String>), String> {
-    let game = read_manifest(&std::fs::read_to_string(game_root.join("MANIFEST.json")).map_err(|e| format!("{}: {e}", game_root.join("MANIFEST.json").display()))?)?;
-    let ours = read_manifest(&std::fs::read_to_string(ours_root.join("MANIFEST.json")).map_err(|e| format!("{}: {e}", ours_root.join("MANIFEST.json").display()))?)?;
+    let mut game = read_manifest(&std::fs::read_to_string(game_root.join("MANIFEST.json")).map_err(|e| format!("{}: {e}", game_root.join("MANIFEST.json").display()))?)?;
     let mut findings: Vec<String> = Vec::new();
+    // THE GAME'S DOME LAYER: a peel whose first layer's depth is 0 over (nearly) the whole frame is the sky
+    // dome drawn into the peel targets before the geometry layers — relabelled `peel_sky` (its colour is
+    // the sky radiance the accumulate fills the facing texels with) and the later layers re-indexed from 0
+    {
+        let mut groups: std::collections::BTreeMap<(Option<u32>, Option<u32>, Option<u32>), Vec<usize>> = Default::default();
+        for (i, e) in game.passes.iter().enumerate() {
+            if e.pass == "peel_depth" && e.direction.is_some() {
+                groups.entry((e.sweep, e.direction, e.peel)).or_default().push(i);
+            }
+        }
+        let mut dome_groups: Vec<(Option<u32>, Option<u32>, Option<u32>)> = Vec::new();
+        for (key, idx) in &groups {
+            let first = idx.iter().copied().min_by_key(|&i| (game.passes[i].layer.unwrap_or(0), game.passes[i].eid_last.unwrap_or(0))).unwrap();
+            let e = &game.passes[first];
+            if let Ok(b) = load_entry(game_root, e) {
+                let n = b.data.len().max(1);
+                let zeros = b.data.iter().step_by(3).filter(|v| **v == 0.0).count() * 3;
+                if zeros as f64 / n as f64 > 0.9 {
+                    dome_groups.push(*key);
+                }
+            }
+        }
+        for key in &dome_groups {
+            let first_layer = game.passes.iter().filter(|e| (e.pass == "peel_depth" || e.pass == "peel_color") && (e.sweep, e.direction, e.peel) == *key).map(|e| e.layer.unwrap_or(0)).min().unwrap_or(0);
+            for e in game.passes.iter_mut() {
+                if (e.pass == "peel_depth" || e.pass == "peel_color") && (e.sweep, e.direction, e.peel) == *key {
+                    let l = e.layer.unwrap_or(0);
+                    if l == first_layer {
+                        if e.pass == "peel_color" { e.pass = "peel_sky".into(); e.layer = None; } else { e.pass = "peel_sky_depth".into(); e.layer = None; }
+                    } else {
+                        e.layer = Some(l - first_layer - 1);
+                    }
+                }
+            }
+            findings.push(format!("dome_layer(game sweep {:?} direction {:?} peel {:?}: its first layer is the sky dome at depth 0 → `peel_sky`, the geometry layers re-indexed from 0)", key.0, key.1, key.2));
+        }
+    }
+    let ours = read_manifest(&std::fs::read_to_string(ours_root.join("MANIFEST.json")).map_err(|e| format!("{}: {e}", ours_root.join("MANIFEST.json").display()))?)?;
     // the game's chart rects (its layout, or the baked map's mapping); ours from our layout
     let game_map_path: Option<String> = opts.game_map.clone().or_else(|| game.baked_map.clone()).or(if game.map.is_empty() { None } else { Some(game.map.clone()) });
     let game_rects = chart_rects(&game, game_map_path.as_deref());
@@ -776,10 +1040,10 @@ pub fn run(game_root: &std::path::Path, ours_root: &std::path::Path, opts: &Opts
     let ours_has_dome = ours.conventions.get("layer0").and_then(|v| v.as_str()).map(|s| s.to_ascii_lowercase().contains("dome")).unwrap_or(false);
     if game_near_first { findings.push("layer_order: the game's k = 0 is the NEAREST layer — its layers are re-indexed far-to-near before the comparison".into()); }
     // index the game's entries by (pass, sweep, our-direction, layer, chart)
-    let mut game_idx: HashMap<(String, Option<u32>, Option<u32>, Option<u32>, Option<u32>), Vec<usize>> = HashMap::new();
-    let game_layer_count: HashMap<(Option<u32>, Option<u32>), u32> = {
-        let mut m: HashMap<(Option<u32>, Option<u32>), u32> = HashMap::new();
-        for e in game.passes.iter().filter(|e| e.pass == "peel_depth") { let k = (e.sweep, e.direction); let c = m.entry(k).or_insert(0); *c = (*c).max(e.layer.unwrap_or(0) + 1); }
+    let mut game_idx: HashMap<(String, Option<u32>, Option<u32>, Option<u32>, Option<u32>, Option<u32>), Vec<usize>> = HashMap::new();
+    let game_layer_count: HashMap<(Option<u32>, Option<u32>, Option<u32>), u32> = {
+        let mut m: HashMap<(Option<u32>, Option<u32>, Option<u32>), u32> = HashMap::new();
+        for e in game.passes.iter().filter(|e| e.pass == "peel_depth") { let k = (e.sweep, e.direction, e.peel); let c = m.entry(k).or_insert(0); *c = (*c).max(e.layer.unwrap_or(0) + 1); }
         m
     };
     for (i, e) in game.passes.iter().enumerate() {
@@ -787,19 +1051,19 @@ pub fn run(game_root: &std::path::Path, ours_root: &std::path::Path, opts: &Opts
         let dir = e.direction.map(|d| dir_maps.get(&sweep.unwrap_or(0)).and_then(|m| m.get(&d).copied()).unwrap_or(d));
         let mut layer = e.layer;
         if let (Some(l), true) = (layer, game_near_first) {
-            let n = game_layer_count.get(&(e.sweep, e.direction)).copied().unwrap_or(l + 1);
+            let n = game_layer_count.get(&(e.sweep, e.direction, e.peel)).copied().unwrap_or(l + 1);
             layer = Some(n - 1 - l);
         }
         if let Some(l) = layer {
             // our layer 0 is the synthetic dome: the game's real layer k ↔ our k + 1 when the game has none
             if ours_has_dome && !game_has_dome { layer = Some(l + 1); }
         }
-        game_idx.entry((e.pass.clone(), sweep, dir, layer, e.chart.as_ref().map(|c| c.obj))).or_default().push(i);
+        game_idx.entry((e.pass.clone(), sweep, dir, e.peel, layer, e.chart.as_ref().map(|c| c.obj))).or_default().push(i);
     }
     if ours_has_dome && !game_has_dome { findings.push("strip_dome: the game has no dome layer — our synthetic layer 0 is skipped, our layer k + 1 ↔ the game's layer k".into()); }
     // walk OUR entries in pipeline order
     let mut order: Vec<usize> = (0..ours.passes.len()).collect();
-    order.sort_by_key(|&i| { let e = &ours.passes[i]; (pipeline_rank(&e.pass), e.sweep.unwrap_or(0), e.direction.unwrap_or(0), e.layer.unwrap_or(0), e.chart.as_ref().map(|c| c.obj).unwrap_or(0)) });
+    order.sort_by_key(|&i| { let e = &ours.passes[i]; (pipeline_rank(&e.pass), e.sweep.unwrap_or(0), e.direction.unwrap_or(0), e.peel.unwrap_or(0), e.layer.unwrap_or(0), e.chart.as_ref().map(|c| c.obj).unwrap_or(0)) });
     let mut rows: Vec<Row> = Vec::new();
     let mut compared_passes: std::collections::BTreeSet<String> = Default::default();
     let mut missing: HashMap<String, usize> = HashMap::new();
@@ -810,12 +1074,14 @@ pub fn run(game_root: &std::path::Path, ours_root: &std::path::Path, opts: &Opts
         let obj = oe.chart.as_ref().map(|c| c.obj);
         // the game's matching entry: same chart, or an atlas-space one to cut; our `final_hdr` (E) also
         // matches the game's `hbasis0` (C0 = √(2π)·E for a flat normal) through a named scale
-        let key_chart = (oe.pass.clone(), oe.sweep, oe.direction, oe.layer, obj);
-        let key_atlas = (oe.pass.clone(), oe.sweep, oe.direction, oe.layer, None);
+        let key_chart = (oe.pass.clone(), oe.sweep, oe.direction, oe.peel, oe.layer, obj);
+        let key_atlas = (oe.pass.clone(), oe.sweep, oe.direction, oe.peel, oe.layer, None);
         let mut pre_scale: Option<(f32, &str)> = None;
-        let mut ge_i = game_idx.get(&key_chart).and_then(|v| v.first().copied()).or_else(|| if obj.is_some() { game_idx.get(&key_atlas).and_then(|v| v.first().copied()) } else { None });
+        // several capture snapshots of one target (the accumulation after every layer) → the LAST one
+        let pick = |v: &Vec<usize>| -> Option<usize> { v.iter().copied().max_by_key(|&i| game.passes[i].eid_last.unwrap_or(0)) };
+        let mut ge_i = game_idx.get(&key_chart).and_then(pick).or_else(|| if obj.is_some() { game_idx.get(&key_atlas).and_then(pick) } else { None });
         if ge_i.is_none() && oe.pass == "final_hdr" {
-            ge_i = game_idx.get(&("hbasis0".to_string(), None, None, None, None)).and_then(|v| v.first().copied());
+            ge_i = game_idx.get(&("hbasis0".to_string(), None, None, None, None, None)).and_then(|v| v.first().copied());
             if ge_i.is_some() { pre_scale = Some((0.398_942_28, "hbasis_c0_to_irradiance(game C0 × 1/√(2π))")); }
         }
         let Some(ge_i) = ge_i else { *missing.entry(oe.pass.clone()).or_insert(0) += 1; continue };
@@ -829,18 +1095,32 @@ pub fn run(game_root: &std::path::Path, ours_root: &std::path::Path, opts: &Opts
         let floor = if depth { opts.floor.max(1e-3) } else { opts.floor };
         let (mut g, mut o): (Buf, Buf);
         let mut remap_valid: Option<Buf> = None;
+        let mut coverage_note = String::new();
+        // a depth target's clear (1.0 = near for the reversed-z LESS peel) is not a surface
+        let (clear_g, clear_o) = if depth { (depth_clear(ge, &gb), depth_clear(oe, &ob)) } else { (f32::NAN, f32::NAN) };
         if oe.space == "peel" || ge.space == "peel" {
             // peel space: the same frustum → pixel to pixel; else remap through the world
             match (&ge.frustum, &oe.frustum) {
                 (Some(gf), Some(of)) if !same_frustum(gf, of) || gb.w != ob.w || gb.h != ob.h => {
                     transforms.push(format!("frustum_remap(game centre {:?} half {:?} {}×{} ← ours centre {:?} half {:?} {}×{})", gf.center, gf.half, gb.w, gb.h, of.center, of.half, ob.w, ob.h));
-                    if depth { transforms.push("depth_to_metres(along the game's forward)".into()); }
-                    let (g2, o2, v) = remap_peel(&gb, gf, &ob, of, depth);
+                    if depth { transforms.push(format!("depth_to_metres(along the game's forward; clears {clear_g} / {clear_o})")); }
+                    let (g2, o2, v, (only_g, only_o)) = remap_peel(&gb, gf, &ob, of, depth, clear_g, clear_o);
+                    if depth && (only_g > 0 || only_o > 0) { coverage_note = format!("coverage: {only_g} px with a game surface where ours is clear, {only_o} the reverse"); }
                     g = g2; o = o2; remap_valid = Some(v);
                 }
                 (Some(gf), Some(_)) if depth => {
-                    transforms.push("depth_to_metres".into());
-                    g = depth_to_metres(&gb, gf); o = depth_to_metres(&ob, gf);
+                    transforms.push(format!("depth_to_metres(clears {clear_g} / {clear_o})"));
+                    // the same grid: clears → NaN (skipped), one-sided pixels counted as coverage
+                    let (mut g2, mut o2) = (depth_to_metres(&gb, gf), depth_to_metres(&ob, gf));
+                    let (mut only_g, mut only_o) = (0usize, 0usize);
+                    for i in 0..(gb.w * gb.h) as usize {
+                        let (cg, co) = (gb.data[i] == clear_g, ob.data[i] == clear_o);
+                        if cg || co { g2.data[i] = f32::NAN; o2.data[i] = f32::NAN; }
+                        if cg && !co { only_o += 1; }
+                        if co && !cg { only_g += 1; }
+                    }
+                    if only_g > 0 || only_o > 0 { coverage_note = format!("coverage: {only_g} px with a game surface where ours is clear, {only_o} the reverse"); }
+                    g = g2; o = o2;
                 }
                 (None, _) | (_, None) if gb.w != ob.w || gb.h != ob.h => {
                     transforms.push(format!("resample(no frustum: ours {}×{} → game {}×{})", ob.w, ob.h, gb.w, gb.h));
@@ -851,6 +1131,32 @@ pub fn run(game_root: &std::path::Path, ours_root: &std::path::Path, opts: &Opts
             // orientation
             let (o3, name) = best_orientation(&g, &o, channels, floor);
             if let Some(n) = name { transforms.push(format!("{n}(the game's target is ours mirrored/transposed)")); o = o3; }
+            // a layer's COLOUR is meaningful only where the layer has a fragment on both sides: mask the
+            // peel_color comparison by the two depth buffers of the same layer (through the same remap)
+            if oe.pass == "peel_color" && remap_valid.is_none() {
+                let od = ours.passes.iter().find(|e| e.pass == "peel_depth" && e.sweep == oe.sweep && e.direction == oe.direction && e.peel == oe.peel && e.layer == oe.layer);
+                let gd = game_idx.get(&("peel_depth".to_string(), oe.sweep, oe.direction, oe.peel, oe.layer, None)).and_then(pick).map(|i| &game.passes[i]);
+                if let (Some(od), Some(gd), Some(gf), Some(of)) = (od, gd, &ge.frustum, &oe.frustum) {
+                    if let (Ok(odb), Ok(gdb)) = (load_entry(ours_root, od), load_entry(game_root, gd)) {
+                        let (cg, co) = (depth_clear(gd, &gdb), depth_clear(od, &odb));
+                        let (_, _, v, (only_g, only_o)) = remap_peel(&gdb, gf, &odb, of, true, cg, co);
+                        transforms.push(format!("depth_mask(colour compared where both layers have a fragment; {only_g} px game-only, {only_o} ours-only)"));
+                        remap_valid = Some(v);
+                    }
+                }
+            } else if oe.pass == "peel_color" {
+                // remapped through the frustums already: mask by the depth pair through the same remap
+                let od = ours.passes.iter().find(|e| e.pass == "peel_depth" && e.sweep == oe.sweep && e.direction == oe.direction && e.peel == oe.peel && e.layer == oe.layer);
+                let gd = game_idx.get(&("peel_depth".to_string(), oe.sweep, oe.direction, oe.peel, oe.layer, None)).and_then(pick).map(|i| &game.passes[i]);
+                if let (Some(od), Some(gd), Some(gf), Some(of)) = (od, gd, &ge.frustum, &oe.frustum) {
+                    if let (Ok(odb), Ok(gdb)) = (load_entry(ours_root, od), load_entry(game_root, gd)) {
+                        let (cg, co) = (depth_clear(gd, &gdb), depth_clear(od, &odb));
+                        let (_, _, v, (only_g, only_o)) = remap_peel(&gdb, gf, &odb, of, true, cg, co);
+                        transforms.push(format!("depth_mask(colour compared where both layers have a fragment; {only_g} px game-only, {only_o} ours-only)"));
+                        remap_valid = Some(v);
+                    }
+                }
+            }
         } else {
             // chart space: cut the game's atlas by the chart rect when the game entry is atlas-wide
             if ge.chart.is_none() {
@@ -868,16 +1174,16 @@ pub fn run(game_root: &std::path::Path, ours_root: &std::path::Path, opts: &Opts
         }
         // masks: compare where either side is non-zero (uncovered texels / clears are skipped); a depth
         // buffer's clear is z01 = 0 BEFORE the metre conversion, so the mask is taken on the raw buffers
-        let raw_mask: Option<(Buf, Buf)> = if depth && remap_valid.is_none() { Some((gb.clone(), ob.clone())) } else { None };
         let (gc, oc) = (g.clone(), o.clone());
         let mask = move |x: u32, y: u32| -> bool {
             if let Some(v) = &remap_valid {
                 return v.get(x, y, 0) != 0.0;
             }
-            match &raw_mask {
-                Some((rg, ro)) if rg.w == gc.w && rg.h == gc.h && ro.w == oc.w && ro.h == oc.h => rg.get(x, y, 0) != 0.0 || ro.get(x, y, 0) != 0.0,
-                _ => (0..channels).any(|c| gc.get(x, y, c) != 0.0 || oc.get(x, y, c) != 0.0),
+            if depth {
+                // clears became NaN above; compare() skips non-finite values
+                return gc.get(x, y, 0).is_finite() && oc.get(x, y, 0).is_finite();
             }
+            (0..channels).any(|c| gc.get(x, y, c) != 0.0 || oc.get(x, y, c) != 0.0)
         };
         let mut stats = compare(&g, &o, channels, opts.tol, floor, opts.stride, &mask);
         // quantisation conventions for colour passes: does a storage rounding explain the residual?
@@ -900,9 +1206,10 @@ pub fn run(game_root: &std::path::Path, ours_root: &std::path::Path, opts: &Opts
             }
         }
         // the bias line (a systematic offset is a convention smell: depth bias, a scale, the sky ×2)
-        let note = if stats.n > 0 && stats.mean_ref > 0.0 && stats.mean_signed.abs() > 0.25 * stats.mean_abs && stats.mean_abs > opts.floor as f64 { format!("systematic: mean Δ {:+.4} ({:+.1} % of the game's mean {:.4})", stats.mean_signed, 100.0 * stats.mean_signed / stats.mean_ref, stats.mean_ref) } else { String::new() };
+        let mut note = if stats.n > 0 && stats.mean_ref > 0.0 && stats.mean_signed.abs() > 0.25 * stats.mean_abs && stats.mean_abs > opts.floor as f64 { format!("systematic: mean Δ {:+.4} ({:+.1} % of the game's mean {:.4})", stats.mean_signed, 100.0 * stats.mean_signed / stats.mean_ref, stats.mean_ref) } else { String::new() };
+        if !coverage_note.is_empty() { if !note.is_empty() { note += "; "; } note += &coverage_note; }
         compared_passes.insert(oe.pass.clone());
-        rows.push(Row { pass: oe.pass.clone(), sweep: oe.sweep, direction: oe.direction, layer: oe.layer, chart: obj, stats, transforms, note, pair: if opts.keep_pairs { Some((g, o, channels)) } else { None } });
+        rows.push(Row { pass: oe.pass.clone(), sweep: oe.sweep, direction: oe.direction, peel: oe.peel, layer: oe.layer, chart: obj, stats, transforms, note, pair: if opts.keep_pairs { Some((g, o, channels)) } else { None } });
     }
     for (p, n) in &missing {
         findings.push(format!("not compared: {n} of our `{p}` buffers have no game entry"));
@@ -1139,7 +1446,7 @@ mod tests {
         for y in 0..16 { for x in 0..16 { let (_, _, z) = of.project(plane, 16, 16); o.set(x, y, 0, z); } }
         assert!((g.get(0, 0, 0) - 0.45).abs() < 1e-6, "game z01 of y = 3 (below the centre, farther from a camera looking down): 0.5 + (−5 + 3)/40");
         assert!((o.get(0, 0, 0) - (0.5 + 3.0 / 16.0)).abs() < 1e-6);
-        let (g2, o2, _valid) = remap_peel(&g, &gf, &o, &of, true);
+        let (g2, o2, _valid, _cov) = remap_peel(&g, &gf, &o, &of, true, 1.0, 1.0);
         let s = compare(&g2, &o2, 1, 0.0, 1e-4, 1, &|_, _| true);
         assert_eq!(s.n, 64);
         assert_eq!(s.within, 64, "both sides → −3 m along the game's forward (0, −1, 0): {:?}", s);
@@ -1150,8 +1457,8 @@ mod tests {
     fn pipeline_order_and_report_name_the_first_divergent_pass() {
         assert!(pipeline_rank("sun_shadow") < pipeline_rank("peel_depth"));
         assert!(pipeline_rank("peel_depth") < pipeline_rank("lightsum"));
-        let ok = Row { pass: "sun_shadow".into(), sweep: None, direction: None, layer: None, chart: None, stats: Stats { n: 100, within: 100, ..Default::default() }, transforms: vec![], note: String::new(), pair: None };
-        let bad = Row { pass: "peel_color".into(), sweep: Some(0), direction: Some(3), layer: Some(1), chart: None, stats: Stats { n: 100, within: 50, rmse: 0.2, max_abs: 0.9, mean_ref: 1.0, mean_signed: -0.1, ..Default::default() }, transforms: vec!["mirror_x(...)".into()], note: String::new(), pair: None };
+        let ok = Row { pass: "sun_shadow".into(), sweep: None, direction: None, peel: None, layer: None, chart: None, stats: Stats { n: 100, within: 100, ..Default::default() }, transforms: vec![], note: String::new(), pair: None };
+        let bad = Row { pass: "peel_color".into(), sweep: Some(0), direction: Some(3), peel: None, layer: Some(1), chart: None, stats: Stats { n: 100, within: 50, rmse: 0.2, max_abs: 0.9, mean_ref: 1.0, mean_signed: -0.1, ..Default::default() }, transforms: vec!["mirror_x(...)".into()], note: String::new(), pair: None };
         let r = report(&[ok, bad], &[], 99.0, 0.02);
         assert!(r.contains("FIRST DIVERGENT PASS: `peel_color`"), "{r}");
         assert!(r.contains("| sun_shadow | 1 | 100 |"), "{r}");

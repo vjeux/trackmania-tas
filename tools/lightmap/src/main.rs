@@ -1225,9 +1225,12 @@ fn run(a: Vec<String>) {
             }
             prm.rounding = match f("--rounding").as_deref() { Some("rtz") | Some("truncate") => lightmap::gpufmt::Rounding::Truncate, _ => lightmap::gpufmt::Rounding::NearestEven };
             if let Some(v) = f("--depth-bias") { let p: Vec<&str> = v.split(',').collect(); prm.depth_bias = (p[0].trim().parse().unwrap(), p.get(1).map(|s| s.trim().parse().unwrap()).unwrap_or(1.0)); }
-            prm.peel_inset = !has("--no-inset");
             prm.dome_layer = !has("--no-dome-layer");
-            prm.depth_clip = has("--depth-clip");
+            // the capture (2026-09-24): DepthClip ON, D16 depth target, viewport inset by 1 px (the Bias rows'
+            // (w−2)/w inset registers to it, so the lookup takes no extra shift)
+            prm.depth_clip = !has("--no-depth-clip");
+            prm.depth_bits = f("--depth-bits").map(|v| v.parse().unwrap()).unwrap_or(16);
+            prm.peel_inset = has("--inset");
             prm.obj_base = base;
             let game_manifest: Option<lightmap::passdump::Manifest> = f("--frustum-from").map(|p| {
                 let txt = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("--frustum-from {p}: {e}"));
@@ -1237,7 +1240,7 @@ fn run(a: Vec<String>) {
                 // the sun shadow map's frustum and the per-direction peel frustums of sweep 0 (later sweeps below)
                 if let Some(e) = gm.passes.iter().find(|e| e.pass == "sun_shadow") { if let Some(fr) = &e.frustum { prm.shadow_frustum = Some(fr.clone()); eprintln!("frustum-from: the sun shadow map's frustum adopted (centre {:?}, half {:?})", fr.center, fr.half); } }
                 let fs = lightmap::passdiff::peel_frustums_for(gm, 0, &prm.sphere_dirs);
-                if !fs.is_empty() { eprintln!("frustum-from: {} peel frustums of sweep 0 adopted", fs.len()); prm.frustums = Some(std::sync::Arc::new(fs)); }
+                if !fs.is_empty() { eprintln!("frustum-from: sweep 0: {} directions' peels adopted ({} peels per direction)", fs.len(), fs.iter().map(|v| v.len()).max().unwrap_or(0)); prm.frustums = Some(std::sync::Arc::new(fs)); }
                 if let Some(e) = gm.passes.iter().find(|e| e.pass == "peel_depth") { if e.width > 0 && e.width != prm.peel_res { eprintln!("frustum-from: peel resolution {} → {}", prm.peel_res, e.width); prm.peel_res = e.width; } }
             }
             if let Some(dir) = &dump_dir {
@@ -1246,6 +1249,8 @@ fn run(a: Vec<String>) {
                 let mut dmp = lightmap::passdump::PassDump::new(dir, &map_path, q, &mood_name, prm.ss).expect("--dump-passes dir");
                 dmp.dirs = match f("--dump-dirs").as_deref() {
                     Some("all") => None,
+                    // the directions the capture holds (by nearest vector; --frustum-from names the capture)
+                    Some("game") => { let gm = game_manifest.as_ref().expect("--dump-dirs game needs --frustum-from GAME/MANIFEST.json"); let v = lightmap::passdiff::game_dir_indices(gm, 0, &prm.sphere_dirs); eprintln!("dump-dirs game: sweep 0 → our directions {:?}", v); Some(v) }
                     Some(s) if s.contains(',') => Some(s.split(',').map(|t| t.trim().parse().expect("--dump-dirs")).collect()),
                     Some(s) => Some((0..s.parse::<u32>().expect("--dump-dirs N|i,j,k|all")).collect()),
                     None => Some((0..8).collect()),
@@ -1254,11 +1259,11 @@ fn run(a: Vec<String>) {
                 dmp.manifest.sun_rgb = prm.sun;
                 dmp.manifest.daytime_word = { let mf0 = tmmaps::map::MapFile::load(std::path::Path::new(&map_path)); lightmap::mapio::daytime(&mf0.gbx.body) };
                 dmp.convention("depth", serde_json::json!("reversed_z01: 0.5 + (center·forward − p·forward)/(2·half.z); forward = the peel direction D (the camera looks from the receivers towards the sky)"));
-                dmp.convention("layer0", serde_json::json!(if prm.dome_layer { "the sky dome, synthetic (depth 0, colour = the mood's Sky_p radiance along D)" } else { "the farthest real surface" }));
+                dmp.convention("layer0", serde_json::json!("the farthest real surface; the sky (the mood's Sky_p radiance along D) fills the facing texels before layer 0 as the game's first accumulate does (internally a synthetic dome layer)"));
                 dmp.convention("layer_order", serde_json::json!("far-to-near (k = 0 farthest from the camera = nearest the sky)"));
-                dmp.convention("depth_bias", serde_json::json!({"const": prm.depth_bias.0, "slope": prm.depth_bias.1, "target": "D32_FLOAT", "applied_to": "peel_depth (stored), the layer selection"}));
+                dmp.convention("depth_bias", serde_json::json!({"const": prm.depth_bias.0, "slope": prm.depth_bias.1, "target": format!("D{}", prm.depth_bits), "applied_to": "peel_depth (stored), the layer selection"}));
                 dmp.convention("depth_clip", serde_json::json!(if prm.depth_clip { "fragments beyond the far plane dropped (DepthClipEnable)" } else { "pancaked: fragments beyond the far plane land on it at z01 = 0" }));
-                dmp.convention("lookup_inset", serde_json::json!(prm.peel_inset));
+                dmp.convention("lookup_inset", serde_json::json!(if prm.peel_inset { "the Bias rows' (w−2)/w applied to the lookup alone (misregistered)" } else { "none: the layer viewport is inset by 1 px and the Bias rows' (w−2)/w registers to it (the capture)" }));
                 dmp.convention("gather", serde_json::json!(if prm.per_subsample { "per sub-sample (ss² per layout texel)" } else { "per layout texel at the centroid of its covered sub-samples" }));
                 dmp.convention("quantisers", serde_json::json!({"peel_color": prm.quant_peel.dxgi_rgb(), "ilightdir": prm.quant_ilightdir.dxgi_rgb(), "lightsum": prm.quant_accum.dxgi_rgb(), "rounding": format!("{:?}", prm.rounding)}));
                 dmp.convention("chart_ss", serde_json::json!(format!("per-chart buffers at (2·w·{ss})×(2·h·{ss}) = the layout footprint × ss (the game's atlas × ss, cut by chart); `chart` = stored texels", ss = if prm.per_subsample { prm.ss } else { 1 })));
@@ -1301,7 +1306,11 @@ fn run(a: Vec<String>) {
                         if let Ok(ps) = lightmap::dome::PointSets::load(&pp) { if let Some(set) = ps.nearest(n) { p2.sphere_dirs = std::sync::Arc::new(lightmap::dome::rotate_set(set)); } }
                     }
                 }
-                if let Some(gm) = &game_manifest { let fs = lightmap::passdiff::peel_frustums_for(gm, it as u32, &p2.sphere_dirs); p2.frustums = if fs.is_empty() { None } else { Some(std::sync::Arc::new(fs)) }; }
+                if let Some(gm) = &game_manifest {
+                    let fs = lightmap::passdiff::peel_frustums_for(gm, it as u32, &p2.sphere_dirs);
+                    p2.frustums = if fs.is_empty() { None } else { Some(std::sync::Arc::new(fs)) };
+                    if f("--dump-dirs").as_deref() == Some("game") { if let Some(d) = &prm.dump { let v = lightmap::passdiff::game_dir_indices(gm, it as u32, &p2.sphere_dirs); eprintln!("dump-dirs game: sweep {it} → our directions {:?}", v); d.lock().unwrap().dirs = Some(v); } }
+                }
                 if let Some(d) = &prm.dump { let mut dm = d.lock().unwrap(); let n = p2.sphere_dirs.len() as u32; dm.manifest.sweeps.push(lightmap::passdump::Sweep { sweep: it as u32, n_dirs: n, scale: 4.0 / n.max(1) as f32, dirs: p2.sphere_dirs.iter().copied().collect() }); }
                 charts = if prm.raster_peel { lightmap::peel::bake_peel_raster(&scene, &bvh, &p2, &chart_sizes(&p2)) } else { lightmap::bake::bake(&scene, &bvh, &p2, &lights) };
                 let mean: f32 = charts.iter().flat_map(|c| c.rgb.iter()).map(|c| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]).sum::<f32>() / charts.iter().map(|c| c.rgb.len()).sum::<usize>().max(1) as f32;
@@ -2863,6 +2872,58 @@ fn run(a: Vec<String>) {
                     let mut rgb = lightmap::img::Rgb::new(dds.w as u32, dds.h as u32);
                     for (i, p) in im.iter().enumerate() { let q = |v: f32| ((v / (1.0 + v)).powf(1.0 / 2.2) * 255.0).clamp(0.0, 255.0) as u8; rgb.px[i * 3] = q(p[0]); rgb.px[i * 3 + 1] = q(p[1]); rgb.px[i * 3 + 2] = q(p[2]); }
                     lightmap::img::write_ppm(&rgb, &format!("{dir}/face{fi}.ppm")).unwrap();
+                }
+            }
+        }
+        "passcap-info" => {
+            // lmtool passcap-info DIR [--pass P] [--max N]: per entry of a MANIFEST.json the buffer's statistics
+            // (min / max / mean per channel, the fraction of clear pixels) and the derived frustum — a look at a
+            // capture (or a dump) before comparing it
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let root = std::path::PathBuf::from(&a[1]);
+            let m = lightmap::passdiff::read_manifest(&std::fs::read_to_string(root.join("MANIFEST.json")).expect("MANIFEST.json")).unwrap_or_else(|e| panic!("{e}"));
+            let max: usize = f("--max").map(|s| s.parse().unwrap()).unwrap_or(400);
+            println!("{}: map {} baked {:?} quality {} mood {} sweeps {:?} layout {} passes {}", a[1], m.map, m.baked_map, m.quality, m.mood, m.sweeps.iter().map(|s| (s.sweep, s.dirs.len())).collect::<Vec<_>>(), m.layout.len(), m.passes.len());
+            for (k, v) in &m.conventions { println!("  convention {k}: {v}"); }
+            let mut n = 0;
+            for e in &m.passes {
+                if let Some(p) = f("--pass") { if e.pass != p { continue; } }
+                if n >= max { break; }
+                n += 1;
+                let head = format!("{} s{:?} d{:?} l{:?} {} {}×{} {}", e.pass, e.sweep, e.direction, e.layer, e.format, e.width, e.height, e.file);
+                match lightmap::passdiff::load_entry(&root, e) {
+                    Ok(b) => {
+                        let ch = b.channels as usize;
+                        let mut lo = vec![f32::MAX; ch]; let mut hi = vec![f32::MIN; ch]; let mut sum = vec![0f64; ch];
+                        let mut zero = 0usize;
+                        let npx = (b.w * b.h) as usize;
+                        for i in 0..npx {
+                            let mut allz = true;
+                            for c in 0..ch { let v = b.data[i * ch + c]; if v.is_finite() { lo[c] = lo[c].min(v); hi[c] = hi[c].max(v); sum[c] += v as f64; } if v != 0.0 { allz = false; } }
+                            if allz { zero += 1; }
+                        }
+                        let mean: Vec<String> = (0..ch).map(|c| format!("{:.4}", sum[c] / npx as f64)).collect();
+                        let los: Vec<String> = lo.iter().map(|v| format!("{v:.4}")).collect();
+                        let his: Vec<String> = hi.iter().map(|v| format!("{v:.4}")).collect();
+                        println!("{head}: min [{}] max [{}] mean [{}] clear {:.1} %", los.join(","), his.join(","), mean.join(","), 100.0 * zero as f64 / npx as f64);
+                        // a few samples: the centre and the corners
+                        let sample = |x: u32, y: u32| -> String { (0..ch).map(|c| format!("{:.4}", b.get(x.min(b.w - 1), y.min(b.h - 1), c as u32))).collect::<Vec<_>>().join(",") };
+                        println!("    centre ({}) corners ({}) ({}) ({}) ({})", sample(b.w / 2, b.h / 2), sample(0, 0), sample(b.w - 1, 0), sample(0, b.h - 1), sample(b.w - 1, b.h - 1));
+                        // the distribution of a depth buffer: the histogram over 8 bins
+                        if ch == 1 {
+                            let mut bins = [0usize; 8];
+                            for i in 0..npx { let v = b.data[i]; if v > 0.0 && v.is_finite() { bins[((v.clamp(0.0, 0.99999) * 8.0) as usize).min(7)] += 1; } }
+                            println!("    depth bins (z01 0..1 in 8): {:?}", bins);
+                        }
+                    }
+                    Err(err) => println!("{head}: {err}"),
+                }
+                if let Some(fr) = &e.frustum {
+                    println!("    frustum: centre ({:.2},{:.2},{:.2}) half ({:.2},{:.2},{:.2}) right ({:.3},{:.3},{:.3}) up ({:.3},{:.3},{:.3}) forward ({:.3},{:.3},{:.3}){}", fr.center[0], fr.center[1], fr.center[2], fr.half[0], fr.half[1], fr.half[2], fr.right[0], fr.right[1], fr.right[2], fr.up[0], fr.up[1], fr.up[2], fr.forward[0], fr.forward[1], fr.forward[2], e.viewport.as_ref().map(|v| format!(" viewport {:?}", v)).unwrap_or_default());
+                }
+                if let (Some(d), Some(fr)) = (e.dir, &e.frustum) {
+                    let c = d[0] * fr.forward[0] + d[1] * fr.forward[1] + d[2] * fr.forward[2];
+                    if (c - 1.0).abs() > 1e-3 { println!("    NOTE: dir vs frustum forward: cos {c:.5} ({:.2}°)", c.clamp(-1.0, 1.0).acos().to_degrees()); }
                 }
             }
         }

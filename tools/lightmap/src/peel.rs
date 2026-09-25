@@ -539,12 +539,17 @@ impl Layers {
         let i = (y * self.w + x) as usize;
         &self.frags[self.start[i] as usize..self.start[i + 1] as usize]
     }
-    /// Layer `k`'s depth image (the clear value 0 = far where the pixel has fewer layers).
-    pub fn depth_image(&self, k: usize) -> Vec<f32> {
-        (0..(self.w * self.h) as usize).map(|i| { let (a, c) = (self.start[i] as usize, self.start[i + 1] as usize); if a + k < c { self.frags[a + k].d } else { 0.0 } }).collect()
+    /// Layer `k`'s depth image as the game's target holds it after the layer render: the stored
+    /// (biased, quantised) depth where the pixel has that layer, the CLEAR (1.0 = the near plane, so
+    /// that the LESS test lets the farthest fragment through) elsewhere. `k` counts the REAL layers —
+    /// the synthetic dome layer (`skip` = 1) is not a render target of the game's.
+    pub fn depth_image(&self, k: usize, skip: usize) -> Vec<f32> {
+        let k = k + skip;
+        (0..(self.w * self.h) as usize).map(|i| { let (a, c) = (self.start[i] as usize, self.start[i + 1] as usize); if a + k < c { self.frags[a + k].d } else { 1.0 } }).collect()
     }
-    /// Layer `k`'s colour image (black where the pixel has fewer layers).
-    pub fn colour_image(&self, k: usize) -> Vec<[f32; 3]> {
+    /// Layer `k`'s colour image (the clear = black where the pixel has fewer layers).
+    pub fn colour_image(&self, k: usize, skip: usize) -> Vec<[f32; 3]> {
+        let k = k + skip;
         (0..(self.w * self.h) as usize).map(|i| { let (a, c) = (self.start[i] as usize, self.start[i + 1] as usize); if a + k < c { self.frags[a + k].rgb } else { [0.0; 3] } }).collect()
     }
 }
@@ -554,6 +559,16 @@ impl Layers {
 pub fn d3d_depth_bias(zmax_prim: f32, slope: f32, bias: (i32, f32)) -> f32 {
     let e = if zmax_prim > 0.0 { zmax_prim.log2().floor() } else { -126.0 };
     bias.0 as f32 * 2f32.powf(e - 23.0) + bias.1 * slope
+}
+
+/// `d3d_depth_bias` for the target's format: a UNORM depth buffer's unit is its smallest step
+/// (D16: 1/65535), a float one's the ulp of the primitive's maximum depth.
+pub fn d3d_depth_bias_fmt(zmax_prim: f32, slope: f32, bias: (i32, f32), bits: u32) -> f32 {
+    if bits == 16 {
+        bias.0 as f32 / 65535.0 + bias.1 * slope
+    } else {
+        d3d_depth_bias(zmax_prim, slope, bias)
+    }
 }
 
 /// The depth gradient (per pixel) of a world triangle in a frame, in z01 units.
@@ -612,7 +627,11 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
                                 let wt = &bvh.tris[f.tri as usize];
                                 let (slope, zmax_prim) = tri_slope(wt, frame);
                                 // an edge-on triangle's slope is huge (D3D applies it uncapped, DepthBiasClamp 0)
-                                let d = z01 + d3d_depth_bias(zmax_prim, slope.min(1e6), prm.depth_bias);
+                                let mut d = z01 + d3d_depth_bias_fmt(zmax_prim, slope.min(1e6), prm.depth_bias, prm.depth_bits);
+                                if prm.depth_bits == 16 {
+                                    // the D16_UNORM target stores 65535 steps
+                                    d = (d.clamp(0.0, 1.0) * 65535.0).round() / 65535.0;
+                                }
                                 let hit_p = frame.unproject(x as f32 + 0.5, y as f32 + 0.5, f.z);
                                 let rgb = prm.quant_peel.apply(fragment_radiance(scene, bvh, prm, shadow, f.tri, frame.d, hit_p, sun_bias), prm.rounding);
                                 out.push(LayerFrag { d, rgb });
@@ -903,8 +922,11 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
     for (di, d) in dirs.iter().enumerate() {
         let g = di % groups;
         let scale = 4.0 / group_count[g].max(1) as f32;
-        let frame = match prm.frustums.as_ref().and_then(|fs| fs.get(di)) {
-            Some(fr) => PeelFrame::from_frustum(fr, prm.peel_res, prm.peel_res),
+        // THE PEELS of this direction: the captured frustums (the game runs two — the whole-scene frustum,
+        // then one fitted to the items — and the accumulate takes the later peel's layer wherever it has
+        // one), or the port's own single frame fit to the receivers
+        let peels: Vec<PeelFrame> = match prm.frustums.as_ref().and_then(|fs| fs.get(di)).filter(|v| !v.is_empty()) {
+            Some(frs) => frs.iter().map(|fr| PeelFrame::from_frustum(fr, prm.peel_res, prm.peel_res)).collect(),
             None => {
                 let mut fr = PeelFrame::new(*d, bmin, bmax, prm.peel_res);
                 // the game's frustum covers its whole scene (the ground tiles included); ours is fit to
@@ -912,18 +934,10 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                 // the sea and the decoration would pancake onto one far-plane layer and merge into its
                 // farthest (often invisible / black) member (found by the dry run, 2026-09-24 18:10 PT)
                 if prm.game_peel { fr.extend_far(&bvh.tris); }
-                fr
+                vec![fr]
             }
         };
         let tb = std::time::Instant::now();
-        // the deepest receiver along this direction: nothing beyond it can occlude
-        let zmax = (0..8).map(|i| { let p = [if i & 1 == 0 { bmin[0] } else { bmax[0] }, if i & 2 == 0 { bmin[1] } else { bmax[1] }, if i & 4 == 0 { bmin[2] } else { bmax[2] }]; frame.project(p).2 }).fold(f32::MIN, f32::max);
-        // the game's peel renders everything inside the frustum's depth range; beyond the far plane the
-        // fragments are CLAMPED to it unless `prm.depth_clip` (D3D DepthClipEnable: not read off the state
-        // yet — pancaking keeps the ground far below the receivers as an occluder, clipping would drop it);
-        // fragments nearer than the near plane can never be selected (they are on the receivers' side)
-        let ab = if prm.game_peel { build_abuffer_range(&bvh.tris, &frame, threads, if prm.depth_clip { frame.z_from_z01(0.0) } else { f32::NEG_INFINITY }, frame.z_from_z01(1.0), &prm.alpha_masks) } else { build_abuffer_upto(&bvh.tris, &frame, threads, zmax, &prm.alpha_masks) };
-        let t_build = tb.elapsed().as_secs_f32();
         // the sky term's per-direction constant is w·4·d.y·SkyFactor (RE child 3, AddSkyVisibility /
         // SetILightDir 0x140234df0): the sky colour along d is weighted by the direction's elevation cosine
         // and below-horizon directions carry no sky (they see the ground); SkyFactor rides in sky_radiance
@@ -931,71 +945,167 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         let bias = bias_m;
         let range = &order[group_start[g]..group_start[g + 1]];
         let chunk = (range.len() / threads.max(1)).max(1024);
-        // the game's layers of this direction (game-peel mode), and their dump
         let want_dir_dump = prm.dump.as_ref().map(|dm| dm.lock().unwrap().wants_dir(di as u32)).unwrap_or(false);
-        // (the layers are also extracted for the dump alone, so the port's own gather can be dumped and compared)
-        let layers: Option<Layers> = if prm.game_peel || want_dir_dump { Some(extract_layers(&ab, &frame, scene, bvh, prm, shadow.as_ref(), sun_bias, sky, threads)) } else { None };
-        if let (Some(ly), Some(dump), true) = (&layers, &prm.dump, want_dir_dump) {
-            let mut dmp = dump.lock().unwrap();
-            let nl = (0..(ly.w * ly.h) as usize).map(|i| (ly.start[i + 1] - ly.start[i]) as usize).max().unwrap_or(0);
-            for k in 0..nl {
-                let mut e = crate::passdump::entry("peel_depth", format!("peel_depth/s{}/d{di:03}/l{k:02}.bin", prm.sweep), "peel");
-                e.sweep = Some(prm.sweep); e.direction = Some(di as u32); e.layer = Some(k as u32);
-                e.dir = Some(*d); e.frustum = Some(frame.frustum()); e.format = "R32_FLOAT".into();
-                e.cleared_to = Some(serde_json::json!(0.0));
-                e.notes = Some(format!("stored depth = z01 + D3D bias ({}, {:.2}) on D32; layer 0 = {}; far-to-near", prm.depth_bias.0, prm.depth_bias.1, if prm.dome_layer { "the sky dome (synthetic: depth 0, the sky radiance)" } else { "the farthest surface" }));
-                dmp.write_f32(e, ly.w, ly.h, 1, &ly.depth_image(k)).expect("dump peel_depth");
-                let mut e = crate::passdump::entry("peel_color", format!("peel_color/s{}/d{di:03}/l{k:02}.bin", prm.sweep), "peel");
-                e.sweep = Some(prm.sweep); e.direction = Some(di as u32); e.layer = Some(k as u32);
-                e.dir = Some(*d); e.frustum = Some(frame.frustum());
-                e.cleared_to = Some(serde_json::json!([0.0, 0.0, 0.0]));
-                e.notes = Some("ILightInput of the layer's surface at the pixel centre (front faces; back faces black)".into());
-                dmp.write_rgb(e, ly.w, ly.h, &ly.colour_image(k), prm.quant_peel, prm.rounding).expect("dump peel_color");
+        // the per-sub-sample incoming radiance of this direction (TMapILightDir): the game's target is
+        // cleared, the first accumulate fills the facing texels with the sky, every peel's layers then
+        // overwrite where they pass — `sel` holds the running value, `occl` whether a surface wrote it
+        let sky_fill = prm.quant_ilightdir.apply(prm.quant_peel.apply(sky, prm.rounding), prm.rounding);
+        let mut sel: Vec<[f32; 3]> = vec![sky_fill; subs.len()];
+        let mut occl: Vec<bool> = vec![false; subs.len()];
+        let mut t_build_total = 0.0f32;
+        let mut frag_total = 0usize;
+        for (pi, frame) in peels.iter().enumerate() {
+            let tb2 = std::time::Instant::now();
+            // the deepest receiver along this direction: nothing beyond it can occlude
+            let zmax = (0..8).map(|i| { let p = [if i & 1 == 0 { bmin[0] } else { bmax[0] }, if i & 2 == 0 { bmin[1] } else { bmax[1] }, if i & 4 == 0 { bmin[2] } else { bmax[2] }]; frame.project(p).2 }).fold(f32::MIN, f32::max);
+            // the game's peel renders everything inside the frustum's depth range; beyond the far plane the
+            // fragments are dropped (DepthClipEnable, the capture) or pancaked onto it (--no-depth-clip);
+            // fragments nearer than the near plane can never be selected (they are on the receivers' side)
+            let ab = if prm.game_peel { build_abuffer_range(&bvh.tris, frame, threads, if prm.depth_clip { frame.z_from_z01(0.0) } else { f32::NEG_INFINITY }, frame.z_from_z01(1.0), &prm.alpha_masks) } else { build_abuffer_upto(&bvh.tris, frame, threads, zmax, &prm.alpha_masks) };
+            t_build_total += tb2.elapsed().as_secs_f32();
+            frag_total += ab.len();
+            // the game's layers of this peel (game-peel mode), and their dump
+            // (the layers are also extracted for the dump alone, so the port's own gather can be dumped and compared)
+            let layers: Option<Layers> = if prm.game_peel || want_dir_dump { Some(extract_layers(&ab, frame, scene, bvh, prm, shadow.as_ref(), sun_bias, sky, threads)) } else { None };
+            if let (Some(ly), Some(dump), true) = (&layers, &prm.dump, want_dir_dump) {
+                let mut dmp = dump.lock().unwrap();
+                let skip = if prm.dome_layer { 1 } else { 0 };
+                if prm.dome_layer {
+                    // the sky layer the game draws into the peel targets before the geometry layers (the dome
+                    // mesh at the far plane): our colour is the mood's Sky_p radiance along D, uniform
+                    let mut e = crate::passdump::entry("peel_sky", format!("peel_sky/s{}/d{di:03}/p{pi}/color.bin", prm.sweep), "peel");
+                    e.sweep = Some(prm.sweep); e.direction = Some(di as u32); e.peel = Some(pi as u32);
+                    e.dir = Some(*d); e.frustum = Some(frame.frustum());
+                    e.notes = Some("the dome layer: the sky radiance along D (uniform; the game's dome mesh varies slightly across a large frame), depth 0 everywhere".into());
+                    let sky_img = vec![prm.quant_peel.apply(sky, prm.rounding); (ly.w * ly.h) as usize];
+                    dmp.write_rgb(e, ly.w, ly.h, &sky_img, prm.quant_peel, prm.rounding).expect("dump peel_sky");
+                }
+                let nl = (0..(ly.w * ly.h) as usize).map(|i| (ly.start[i + 1] - ly.start[i]) as usize).max().unwrap_or(0).saturating_sub(skip);
+                for k in 0..nl {
+                    let mut e = crate::passdump::entry("peel_depth", format!("peel_depth/s{}/d{di:03}/p{pi}/l{k:02}.bin", prm.sweep), "peel");
+                    e.sweep = Some(prm.sweep); e.direction = Some(di as u32); e.layer = Some(k as u32); e.peel = Some(pi as u32);
+                    e.dir = Some(*d); e.frustum = Some(frame.frustum()); e.format = "R32_FLOAT".into();
+                    e.cleared_to = Some(serde_json::json!(1.0));
+                    e.notes = Some(format!("stored depth = z01 + D3D bias ({}, {:.2}) on D{}, quantised to the target; layer 0 = the farthest real surface (the sky fills the uncovered texels through the accumulate, as the game's first accumulate does); clear 1.0 = near", prm.depth_bias.0, prm.depth_bias.1, prm.depth_bits));
+                    dmp.write_f32(e, ly.w, ly.h, 1, &ly.depth_image(k, skip)).expect("dump peel_depth");
+                    let mut e = crate::passdump::entry("peel_color", format!("peel_color/s{}/d{di:03}/p{pi}/l{k:02}.bin", prm.sweep), "peel");
+                    e.sweep = Some(prm.sweep); e.direction = Some(di as u32); e.layer = Some(k as u32); e.peel = Some(pi as u32);
+                    e.dir = Some(*d); e.frustum = Some(frame.frustum());
+                    e.cleared_to = Some(serde_json::json!([0.0, 0.0, 0.0]));
+                    e.notes = Some("ILightInput of the layer's surface at the pixel centre (front faces; back faces black)".into());
+                    dmp.write_rgb(e, ly.w, ly.h, &ly.colour_image(k, skip), prm.quant_peel, prm.rounding).expect("dump peel_color");
+                }
             }
+            if !dbg_subs.is_empty() && di < 40 {
+                if let Ok(k) = std::env::var("LMTOOL_PEEL_DEBUG_ITEM") {
+                    let k: u32 = k.parse().unwrap_or(0);
+                    let n = ab.iter().filter(|f| bvh.tris[f.tri as usize].inst == k).count();
+                    eprintln!("  dir {di} peel {pi}: instance {k} has {n} fragments in the A-buffer (res {}×{}); frame r ({:.2},{:.2},{:.2}) u ({:.2},{:.2},{:.2}) s0 {:.1} t0 {:.1} scale {:.3}", frame.res, frame.res_y, frame.r[0], frame.r[1], frame.r[2], frame.u[0], frame.u[1], frame.u[2], frame.s0, frame.t0, frame.scale);
+                }
+            }
+            // THE GATHER of this peel: per sub-sample the layer it reads (game mode: the game's lookup;
+            // else the port's A-buffer walk), written into `sel` (last peel wins where it has a layer)
+            let sel_ptr = sel.as_mut_ptr() as usize;
+            let occl_ptr = occl.as_mut_ptr() as usize;
+            std::thread::scope(|sc| {
+                for ch in range.chunks(chunk) {
+                    let ab = &ab;
+                    let frame = &frame;
+                    let subs = &subs;
+                    let shadow = shadow.as_ref();
+                    let layers = layers.as_ref();
+                    sc.spawn(move || {
+                        for &i in ch {
+                            let s = &subs[i as usize];
+                            let ndd = dot(s.n, *d);
+                            if ndd <= 0.0 {
+                                continue;
+                            }
+                            let (x, y, z) = frame.project(s.p);
+                            let mut hit: Option<([f32; 3], bool)> = None;
+                            if let (Some(ly), true) = (layers, prm.game_peel) {
+                                // THE GAME'S LOOKUP (LmILightDir_Set_p): point-sample the layer targets (the Bias rows'
+                                // inset registers to the 1-px-inset render viewport, so no extra shift) at the texel's own
+                                // reversed depth; the nearest layer still beyond the texel by its stored bias gives the
+                                // colour; nothing → this peel leaves the texel as it was
+                                let (px, py) = (lookup_pixel(x, ly.w, prm.peel_inset), lookup_pixel(y, ly.h, prm.peel_inset));
+                                let z01 = frame.z01(z);
+                                if let Some(&(dd, cc, nn)) = game_dbg.as_ref() {
+                                    if dd == di && cc == s.chart as usize && dbg_printed.load(std::sync::atomic::Ordering::Relaxed) < nn {
+                                        let k = dbg_printed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                        if k < nn {
+                                            let list = ly.at(px, py);
+                                            let selq = select_layer(list, z01).map(|f| format!("d {:.5} rgb ({:.3},{:.3},{:.3})", f.d, f.rgb[0], f.rgb[1], f.rgb[2])).unwrap_or("NONE".into());
+                                            eprintln!("game-peel debug: dir {di} peel {pi} d ({:.3},{:.3},{:.3}) chart {} sub ({},{}) p ({:.2},{:.2},{:.2}) n ({:.2},{:.2},{:.2}) ndd {ndd:.3}: px ({x:.2},{y:.2}) → lookup ({px},{py}), z_port {z:.3} z01 {z01:.5}; {} layers: [{}]; selected {selq}", d[0], d[1], d[2], s.chart, s.sx, s.sy, s.p[0], s.p[1], s.p[2], s.n[0], s.n[1], s.n[2], list.len(), list.iter().map(|f| format!("d {:.5} rgb ({:.2},{:.2},{:.2})", f.d, f.rgb[0], f.rgb[1], f.rgb[2])).collect::<Vec<_>>().join(" | "));
+                                        }
+                                    }
+                                }
+                                if px < ly.w && py < ly.h && z01 >= 0.0 && z01 <= 1.0 {
+                                    // (a texel outside this peel's frustum reads nothing from it)
+                                    match select_layer(ly.at(px, py), z01) {
+                                        Some(f) if f.d > 0.0 || !prm.dome_layer => hit = Some((f.rgb, true)),
+                                        Some(f) => hit = Some((f.rgb, false)), // the dome: the sky fill
+                                        None => {}
+                                    }
+                                }
+                            } else {
+                                let (xi, yi) = (x.round() as i64, y.round() as i64);
+                                if xi >= 0 && yi >= 0 && xi < frame.res as i64 && yi < frame.res_y as i64 {
+                                    let list = ab.at(xi as u32, yi as u32);
+                                    // the first surface along D beyond the texel by more than the rasteriser's depth bias:
+                                    // one depth unit plus one pixel's worth of the FRAGMENT's own depth slope (a sea plane half a
+                                    // metre under a deck counts, a coplanar neighbour of the texel's own surface at grazing
+                                    // angle does not); fragments are sorted by z, the walk goes from the texel outward
+                                    let limit_min = z - bias;
+                                    let mut lo = 0usize;
+                                    let mut hi = list.len();
+                                    while lo < hi {
+                                        let mid = (lo + hi) / 2;
+                                        if list[mid].z < limit_min { lo = mid + 1 } else { hi = mid }
+                                    }
+                                    let px_m = frame.pixel_m();
+                                    let mut k = lo;
+                                    while k > 0 {
+                                        k -= 1;
+                                        let f = list[k];
+                                        if f.tri == s.own_tri {
+                                            continue;
+                                        }
+                                        let wt = &bvh.tris[f.tri as usize];
+                                        let nf = norm(cross(wt.e1, wt.e2));
+                                        let c = dot(nf, *d).abs().max(1e-3);
+                                        let slope_f = ((1.0 - c * c).max(0.0).sqrt() / c).min(64.0);
+                                        if f.z >= z - bias.max(px_m * slope_f) {
+                                            continue;
+                                        }
+                                        hit = Some((fragment_radiance(scene, bvh, prm, shadow, f.tri, *d, [s.p[0] + d[0] * (z - f.z), s.p[1] + d[1] * (z - f.z), s.p[2] + d[2] * (z - f.z)], sun_bias), true));
+                                        break;
+                                    }
+                                }
+                            }
+                            if let Some((l, occluded)) = hit {
+                                // SAFETY: each chunk owns a disjoint set of indices i; no other thread touches sel[i] / occl[i]
+                                let slot = unsafe { &mut *(sel_ptr as *mut [f32; 3]).add(i as usize) };
+                                *slot = prm.quant_ilightdir.apply(l, prm.rounding);
+                                let o = unsafe { &mut *(occl_ptr as *mut bool).add(i as usize) };
+                                *o = occluded;
+                            }
+                        }
+                    });
+                }
+            });
         }
-        // the per-sub-sample incoming radiance of this direction (TMapILightDir), kept when dumped
+        let t_build = t_build_total;
+        // THE ACCUMULATE (LmLBumpILighting): E += 4/N · max(0, n·D) · TMapILightDir[texel]
+        let acc_ptr = acc.as_mut_ptr() as usize;
         let mut ldir: Vec<[f32; 3]> = if want_dir_dump { vec![[0.0; 3]; subs.len()] } else { Vec::new() };
         let ldir_ptr = ldir.as_mut_ptr() as usize;
         let ldir_on = want_dir_dump;
-        // the gather writes acc[i] for i in its own range only
-        if !dbg_subs.is_empty() && di < 40 {
-            if let Ok(k) = std::env::var("LMTOOL_PEEL_DEBUG_ITEM") {
-                let k: u32 = k.parse().unwrap_or(0);
-                let n = ab.iter().filter(|f| bvh.tris[f.tri as usize].inst == k).count();
-                let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
-                let mut ntri = 0;
-                for t in bvh.tris.iter().filter(|t| t.inst == k) {
-                    for p in [t.p0, [t.p0[0] + t.e1[0], t.p0[1] + t.e1[1], t.p0[2] + t.e1[2]], [t.p0[0] + t.e2[0], t.p0[1] + t.e2[1], t.p0[2] + t.e2[2]]] { let (x, y, _) = frame.project(p); lo[0] = lo[0].min(x); lo[1] = lo[1].min(y); hi[0] = hi[0].max(x); hi[1] = hi[1].max(y); }
-                    ntri += 1;
-                }
-                let (mut wlo, mut whi) = ([f32::MAX; 3], [f32::MIN; 3]);
-                for t in bvh.tris.iter().filter(|t| t.inst == k) { for q in [t.p0, [t.p0[0] + t.e1[0], t.p0[1] + t.e1[1], t.p0[2] + t.e1[2]], [t.p0[0] + t.e2[0], t.p0[1] + t.e2[1], t.p0[2] + t.e2[2]]] { for c in 0..3 { wlo[c] = wlo[c].min(q[c]); whi[c] = whi[c].max(q[c]); } } }
-                eprintln!("  dir {di}: instance {k} has {ntri} tris, world {:?}..{:?}, projecting to x {:.1}..{:.1} y {:.1}..{:.1}, {n} fragments in the A-buffer (res {}); frame r ({:.2},{:.2},{:.2}) u ({:.2},{:.2},{:.2}) s0 {:.1} t0 {:.1} scale {:.3}", wlo, whi, lo[0], hi[0], lo[1], hi[1], frame.res, frame.r[0], frame.r[1], frame.r[2], frame.u[0], frame.u[1], frame.u[2], frame.s0, frame.t0, frame.scale);
-            }
-        }
-        if !dbg_subs.is_empty() && (dbg_printed.load(std::sync::atomic::Ordering::Relaxed) < 40 || std::env::var_os("LMTOOL_PEEL_DEBUG_ALL").is_some()) {
-            for &i in &dbg_subs {
-                let s = &subs[i as usize];
-                if s.group as usize != g { continue; }
-                let ndd = dot(s.n, *d);
-                if ndd <= 0.0 { continue; }
-                let (x, y, z) = frame.project(s.p);
-                let (xi, yi) = (x.round() as i64, y.round() as i64);
-                let list = if xi >= 0 && yi >= 0 && xi < frame.res as i64 && yi < frame.res as i64 { ab.at(xi as u32, yi as u32) } else { &[] };
-                let bias = bias_m;
-                let front: Vec<String> = list.iter().filter(|f| f.z < z - bias).map(|f| { let wt = &bvh.tris[f.tri as usize]; format!("tri {} inst {} z {:.2}{}", f.tri, wt.inst, f.z, if f.tri == s.own_tri { " OWN" } else { "" }) }).collect();
-                eprintln!("  dir {di} d ({:.2},{:.2},{:.2}) ndd {ndd:.2}: pixel ({xi},{yi}) z {z:.2} bias {bias:.2}; {} frags, in front: [{}]; sky ({:.2},{:.2},{:.2})", d[0], d[1], d[2], list.len(), front.join(" | "), sky[0], sky[1], sky[2]);
-                dbg_printed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            }
-        }
-        let acc_ptr = acc.as_mut_ptr() as usize;
         std::thread::scope(|sc| {
             for ch in range.chunks(chunk) {
-                let ab = &ab;
-                let frame = &frame;
                 let subs = &subs;
-                let shadow = shadow.as_ref();
-                let layers = layers.as_ref();
+                let sel = &sel;
+                let occl = &occl;
                 sc.spawn(move || {
                     for &i in ch {
                         let s = &subs[i as usize];
@@ -1003,83 +1113,11 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                         if ndd <= 0.0 {
                             continue;
                         }
-                        let (x, y, z) = frame.project(s.p);
-                        let mut l = sky;
-                        let mut occluded = false;
-                        if let (Some(ly), true) = (layers, prm.game_peel) {
-                            // THE GAME'S LOOKUP (LmILightDir_Set_p): point-sample the layer targets after the one-texel
-                            // inset, at the texel's own reversed depth; the nearest layer still beyond the texel by its
-                            // stored bias gives the colour (the dome layer catches the open sky); nothing → the clear
-                            let (px, py) = (lookup_pixel(x, ly.w, prm.peel_inset), lookup_pixel(y, ly.h, prm.peel_inset));
-                            let z01 = frame.z01(z);
-                            // LMTOOL_GAME_PEEL_DEBUG=dir,chart,count: print the layer list and the selection of the
-                            // first `count` gathering sub-samples of that chart for that direction
-                            if let Some(&(dd, cc, nn)) = game_dbg.as_ref() {
-                                if dd == di && cc == s.chart as usize && dbg_printed.load(std::sync::atomic::Ordering::Relaxed) < nn {
-                                    let k = dbg_printed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                    if k < nn {
-                                        let list = ly.at(px, py);
-                                        let sel = select_layer(list, z01).map(|f| format!("d {:.5} rgb ({:.3},{:.3},{:.3})", f.d, f.rgb[0], f.rgb[1], f.rgb[2])).unwrap_or("NONE".into());
-                                        eprintln!("game-peel debug: dir {di} d ({:.3},{:.3},{:.3}) chart {} sub ({},{}) p ({:.2},{:.2},{:.2}) n ({:.2},{:.2},{:.2}) ndd {ndd:.3}: px ({x:.2},{y:.2}) → lookup ({px},{py}), z_port {z:.3} z01 {z01:.5}; {} layers: [{}]; selected {sel}", d[0], d[1], d[2], s.chart, s.sx, s.sy, s.p[0], s.p[1], s.p[2], s.n[0], s.n[1], s.n[2], list.len(), list.iter().map(|f| format!("d {:.5} rgb ({:.2},{:.2},{:.2})", f.d, f.rgb[0], f.rgb[1], f.rgb[2])).collect::<Vec<_>>().join(" | "));
-                                    }
-                                }
-                            }
-                            match select_layer(ly.at(px, py), z01) {
-                                Some(f) => { l = f.rgb; occluded = f.d > 0.0 || !prm.dome_layer; }
-                                None => { l = if prm.dome_layer { [0.0; 3] } else { sky }; }
-                            }
-                        } else {
-                        let (xi, yi) = (x.round() as i64, y.round() as i64);
-                        if xi >= 0 && yi >= 0 && xi < frame.res as i64 && yi < frame.res_y as i64 {
-                            let list = ab.at(xi as u32, yi as u32);
-                            // the first surface along D beyond the texel by more than the rasteriser's depth bias
-                            // (DepthBias 1 + SlopeScaledDepthBias 1.0, RE child 3): one depth unit plus one pixel's
-                            // worth of the receiver's own depth slope, tan θ = √(1 − (n·D)²)/(n·D), capped
-                            let _ = ndd;
-                            // The game's peel layers are rasterised with D3D DepthBias 1 + SlopeScaledDepthBias 1.0
-                            // (RE child 4): every stored layer depth is pushed toward the camera by one depth ulp
-                            // plus ONE PIXEL of the fragment's own depth slope, and the texel takes the last layer
-                            // still beyond it — so a surface occludes when it lies beyond the texel by more than
-                            // (ε + pixel · tan θ_f), θ_f the angle between that surface and the peel direction: a
-                            // sea plane half a metre under a deck counts (its slope is ~0 along a downward peel),
-                            // a coplanar neighbour of the texel's own surface at grazing angle does not.
-                            let limit_min = z - bias;
-                            // fragments are sorted by z: binary search the first with z >= limit_min
-                            let mut lo = 0usize;
-                            let mut hi = list.len();
-                            while lo < hi {
-                                let mid = (lo + hi) / 2;
-                                if list[mid].z < limit_min { lo = mid + 1 } else { hi = mid }
-                            }
-                            let px_m = frame.pixel_m();
-                            let mut k = lo;
-                            while k > 0 {
-                                k -= 1;
-                                let f = list[k];
-                                if f.tri == s.own_tri {
-                                    continue;
-                                }
-                                // the fragment's slope: tan of the angle between its triangle and D
-                                let wt = &bvh.tris[f.tri as usize];
-                                let nf = norm(cross(wt.e1, wt.e2));
-                                let c = dot(nf, *d).abs().max(1e-3);
-                                let slope_f = ((1.0 - c * c).max(0.0).sqrt() / c).min(64.0);
-                                if f.z >= z - bias.max(px_m * slope_f) {
-                                    continue;
-                                }
-                                l = fragment_radiance(scene, bvh, prm, shadow, f.tri, *d, [s.p[0] + d[0] * (z - f.z), s.p[1] + d[1] * (z - f.z), s.p[2] + d[2] * (z - f.z)], sun_bias);
-                                occluded = true;
-                                break;
-                            }
-                        }
-                        }
+                        let l = sel[i as usize];
                         // LMTOOL_SKY_NO_COS=1: the sky pass (AddSkyVisibility) without the receiver's cosine — the
-                        // per-direction constant 4·w·d.y·SkyFactor times the visibility only (a hypothesis under test:
-                        // the editor's walls exceed its open floors even at sunrise)
-                        let hit_sky = !occluded;
+                        // per-direction constant 4·w·d.y·SkyFactor times the visibility only (a hypothesis under test)
+                        let hit_sky = !occl[i as usize];
                         let w = if hit_sky && sky_no_cos { scale } else { scale * ndd };
-                        // the TMapILightDir value as its target stores it
-                        let l = prm.quant_ilightdir.apply(l, prm.rounding);
                         if ldir_on {
                             // SAFETY: as for acc — disjoint indices per chunk
                             let lslot = unsafe { &mut *(ldir_ptr as *mut [f32; 3]).add(i as usize) };
@@ -1096,6 +1134,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                 });
             }
         });
+        let ab_len = frag_total;
         if want_dir_dump {
             if let Some(dump) = &prm.dump {
                 let mut dmp = dump.lock().unwrap();
@@ -1109,13 +1148,13 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                     let mut e = crate::passdump::entry("ilightdir", chart_file("ilightdir", Some(prm.sweep), Some(di as u32), ii), "chart_ss");
                     e.chart = Some(chart_ref(ii)); e.sweep = Some(prm.sweep); e.direction = Some(di as u32); e.dir = Some(*d);
                     e.cleared_to = Some(serde_json::json!([0.0, 0.0, 0.0]));
-                    e.notes = Some("incoming radiance from D per sub-sample (0 where n·D ≤ 0 or uncovered); the accumulate adds 4/N·max(0,n·D) × this".into());
+                    e.notes = Some(format!("incoming radiance from D per sub-sample after the direction's {} peel(s) (0 where n·D ≤ 0 or uncovered); the accumulate adds 4/N·max(0,n·D) × this", peels.len()));
                     dmp.write_rgb(e, cw * 2 * ss_eff, ch * 2 * ss_eff, &imgs[ii], prm.quant_ilightdir, prm.rounding).expect("dump ilightdir");
                 }
             }
         }
         if di % 64 == 0 || di + 1 == n_dirs {
-            eprintln!("peel: direction {}/{} ({} fragments, build {:.2}s, gather {:.2}s; {:.1}s)", di + 1, n_dirs, ab.len(), t_build, tb.elapsed().as_secs_f32() - t_build, t0.elapsed().as_secs_f32());
+            eprintln!("peel: direction {}/{} ({} peel(s), {} fragments, build {:.2}s, gather {:.2}s; {:.1}s)", di + 1, n_dirs, peels.len(), ab_len, t_build, tb.elapsed().as_secs_f32() - t_build, t0.elapsed().as_secs_f32());
         }
     }
     // 5. resolve: per colour texel the mean over its covered sub-samples

@@ -69,6 +69,33 @@ impl Frustum {
     pub fn depth_metres(&self, z01: f32) -> f32 {
         (1.0 - z01) * 2.0 * self.half[2]
     }
+
+    /// The frustum behind the game's `WorldPw01Shadow` = Bias·Proj·View in the row-vector convention
+    /// `(u, v, z01, 1) = (x, y, z, 1)·M`: u, v are the lookup's texture coordinates over the whole target
+    /// (the Bias rows' one-texel inset is inside them, and the layer render's 1-px-inset viewport
+    /// registers to the same pixels), z01 the reversed depth. Columns 0–2 of the upper 3×3 are the
+    /// three axes scaled by the inverse extents, row 3 the offsets.
+    pub fn from_pw01(m: &[[f32; 4]; 4]) -> Option<Frustum> {
+        let a = [m[0][0], m[1][0], m[2][0]];
+        let b = [m[0][1], m[1][1], m[2][1]];
+        let c = [m[0][2], m[1][2], m[2][2]];
+        let (a0, b0, c0) = (m[3][0], m[3][1], m[3][2]);
+        let len = |v: [f32; 3]| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+        let (la, lb, lc) = (len(a), len(b), len(c));
+        if !(la > 0.0 && lb > 0.0 && lc > 0.0) || !la.is_finite() || !lb.is_finite() || !lc.is_finite() {
+            return None;
+        }
+        let right = [a[0] / la, a[1] / la, a[2] / la];
+        let up = [-b[0] / lb, -b[1] / lb, -b[2] / lb];
+        let forward = [-c[0] / lc, -c[1] / lc, -c[2] / lc];
+        let half = [0.5 / la, 0.5 / lb, 0.5 / lc];
+        let (cr, cu, cf) = ((0.5 - a0) / la, (b0 - 0.5) / lb, (c0 - 0.5) / lc);
+        let mut center = [0f32; 3];
+        for k in 0..3 {
+            center[k] = cr * right[k] + cu * up[k] + cf * forward[k];
+        }
+        Some(Frustum { ortho: true, center, half, right, up, forward, depth: Frustum::REVERSED.into() })
+    }
 }
 
 /// Which chart an atlas-space buffer belongs to (our buffers are written per chart; the game's atlas
@@ -93,6 +120,11 @@ pub struct Entry {
     pub direction: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub layer: Option<u32>,
+    /// Which of the direction's peels (the game runs two per direction: 0 = the whole-scene frustum,
+    /// 1 = the frustum fitted to the lightmapped items; the accumulate takes the later peel's layer
+    /// where it has one).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peel: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chart: Option<ChartRef>,
     #[serde(default)]
@@ -119,6 +151,18 @@ pub struct Entry {
     pub cleared_to: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
+    /// Capture-side extras (RenderDoc): the peel camera's `WorldPw01Shadow` (Bias·Proj·View, row-vector
+    /// convention), the viewport, the last event id of the buffer's snapshot, the raster / depth state.
+    #[serde(default, rename = "view_proj_bias_GbxWorldPw01Shadow", skip_serializing_if = "Option::is_none")]
+    pub pw01: Option<[[f32; 4]; 4]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub viewport: Option<Vec<f32>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eid_last: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raster: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depthstate: Option<serde_json::Value>,
 }
 
 /// A chart's rectangle in the layout (2048-unit space, the mapping's convention) and its stored size.
@@ -157,15 +201,29 @@ pub struct Sweep {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Atlas {
     /// The layout size (2048) and the ss factor.
+    #[serde(default = "Atlas::d2048")]
     pub w: u32,
+    #[serde(default = "Atlas::d2048")]
     pub h: u32,
+    #[serde(default = "Atlas::d3")]
     pub ss: u32,
     /// The stored image size (1024).
+    #[serde(default = "Atlas::d1024")]
     pub stored_w: u32,
+    #[serde(default = "Atlas::d1024")]
     pub stored_h: u32,
 }
 
 impl Atlas {
+    fn d2048() -> u32 {
+        2048
+    }
+    fn d3() -> u32 {
+        3
+    }
+    fn d1024() -> u32 {
+        1024
+    }
     pub fn default_atlas() -> Atlas {
         Atlas { w: 2048, h: 2048, ss: 3, stored_w: 1024, stored_h: 1024 }
     }
@@ -358,6 +416,7 @@ pub fn entry(pass: &str, file: String, space: &str) -> Entry {
         sweep: None,
         direction: None,
         layer: None,
+        peel: None,
         chart: None,
         file,
         format: String::new(),
@@ -370,6 +429,11 @@ pub fn entry(pass: &str, file: String, space: &str) -> Entry {
         frustum: None,
         cleared_to: None,
         notes: None,
+        pw01: None,
+        viewport: None,
+        eid_last: None,
+        raster: None,
+        depthstate: None,
     }
 }
 

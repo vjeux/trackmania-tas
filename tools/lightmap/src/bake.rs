@@ -130,8 +130,10 @@ pub struct BakeParams {
     /// Gather at every ss² sub-sample of a texel (the game's supersampled raster) instead of once at the
     /// texel's centroid; the resolve box-averages the covered sub-samples either way.
     pub per_subsample: bool,
-    /// Per-direction frustums to rasterise the peel in (a captured MANIFEST's), indexed like `sphere_dirs`.
-    pub frustums: Option<std::sync::Arc<Vec<crate::passdump::Frustum>>>,
+    /// Per-direction PEELS to rasterise (a captured MANIFEST's frustums), indexed like `sphere_dirs`: the
+    /// game runs two per direction — the whole-scene frustum, then one fitted to the items — and the
+    /// accumulate takes the later peel's layer wherever it has one (last write wins).
+    pub frustums: Option<std::sync::Arc<Vec<Vec<crate::passdump::Frustum>>>>,
     /// The sun shadow map's frustum, when captured.
     pub shadow_frustum: Option<crate::passdump::Frustum>,
     /// The storage formats the game's targets quantise to: the peel colour, TMapILightDir, the
@@ -151,6 +153,8 @@ pub struct BakeParams {
     /// D3D DepthClipEnable on the peel layers: true drops fragments beyond the frustum's far plane, false
     /// (pancaking) clamps them onto it.
     pub depth_clip: bool,
+    /// The peel depth target's bits: 16 (D16_UNORM, the capture) or 32 (D32_FLOAT).
+    pub depth_bits: u32,
 }
 
 impl Default for BakeParams {
@@ -224,6 +228,7 @@ impl Default for BakeParams {
             dome_layer: true,
             obj_base: 4096,
             depth_clip: false,
+            depth_bits: 16,
         }
     }
 }
