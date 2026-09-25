@@ -411,9 +411,9 @@ pub fn chain_final(a: Vec<String>) {
         if let Some(e) = ent("final_02_scaled_x2_ps1109", X2[k]) {
             let cap = load_entry(&root, &e).unwrap();
             let r = compare(&finals[k], &cap, 4, Fmt::F16);
-            let (mut n, mut within) = (0usize, 0usize);
-            for i in 0..(W * H) as usize { for c in 0..3 { let g = cap.data[i * 4 + c]; let o = finals[k].data[i * 4 + c]; if g != 0.0 || o != 0.0 { n += 1; if (o - g).abs() <= 0.02 * g.abs().max(1e-6) { within += 1; } } } }
-            println!("[final ×2] image {k} vs captured {} ({:?}): {} — rgb within 2 %: {within}/{n} ({:.2} %)", e.file, e.capture, r.line(), 100.0 * within as f64 / n.max(1) as f64);
+            let (mut n, mut within, mut so, mut sg, mut sabs) = (0usize, 0usize, 0f64, 0f64, 0f64);
+            for i in 0..(W * H) as usize { for c in 0..3 { let g = cap.data[i * 4 + c]; let o = finals[k].data[i * 4 + c]; if g != 0.0 || o != 0.0 { n += 1; so += o as f64; sg += g as f64; sabs += (o - g).abs() as f64; if (o - g).abs() <= 0.02 * g.abs().max(1e-6) { within += 1; } } } }
+            println!("[final ×2] image {k} vs captured {} ({:?}): {} — rgb within 2 %: {within}/{n} ({:.2} %); mean ours {:.5} captured {:.5} (ratio {:.4}), mean |Δ| {:.5}", e.file, e.capture, r.line(), 100.0 * within as f64 / n.max(1) as f64, so / n.max(1) as f64, sg / n.max(1) as f64, so / sg.abs().max(1e-12), sabs / n.max(1) as f64);
         }
         // PS 1034: rgb of the ×2 image into the target whose alpha the resolve left (1 where covered; the ×2 add writes alpha × 0,
         // so the bake stores the resolve's alpha in the finals' alpha channel; --from-capture takes final_01's)

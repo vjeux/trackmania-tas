@@ -169,6 +169,14 @@ impl IlSource {
     /// The peel colour of a fragment on triangle `wt` (BVH world triangle) at `hit_p`, or None when the fragment
     /// has no lightmap coordinate in the game (the environment block; an unmapped item).
     pub fn colour(&self, scene: &crate::geometry::Scene, wt: &crate::bvh::WTri, hit_p: [f32; 3], front: bool) -> Option<[f32; 3]> {
+        let r = self.colour_inner(scene, wt, hit_p, front);
+        if r.is_none() {
+            self.atlas.misses.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        r
+    }
+
+    fn colour_inner(&self, scene: &crate::geometry::Scene, wt: &crate::bvh::WTri, hit_p: [f32; 3], front: bool) -> Option<[f32; 3]> {
         let uv = if wt.inst == crate::geometry::DECOR_INST {
             let dt = scene.decor.get(wt.tri as usize)?;
             if dt.env || dt.water {

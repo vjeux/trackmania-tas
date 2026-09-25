@@ -3967,6 +3967,11 @@ fn run(a: Vec<String>) {
             }).collect();
             for e in sel {
                 let b = e.load(&root).expect("load");
+                if a.iter().any(|x| x == "--stats") {
+                    let (mut nz, mut sum) = (0usize, [0f64; 4]);
+                    for y in 0..b.h { for x in 0..b.w { let mut any = false; for c in 0..b.channels.min(4) { let v = b.get(x, y, c); sum[c as usize] += v as f64; if v != 0.0 { any = true; } } if any { nz += 1; } } }
+                    println!("{} frame {} eids {}-{} sdi {:?}: {}×{}×{}, {nz} non-zero pixels ({:.2} %), channel means {:?}", e.file, e.frame, e.eid_first, e.eid_last, e.sweep_direction_index, b.w, b.h, b.channels, 100.0 * nz as f64 / (b.w * b.h) as f64, sum.iter().map(|s| s / (b.w * b.h) as f64).collect::<Vec<_>>());
+                }
                 let v: Vec<f32> = (0..b.channels).map(|c| b.get(at[0], at[1], c)).collect();
                 println!("{} frame {} eids {}-{} sdi {:?} dir {:?}: ({},{}) = {:?}", e.file, e.frame, e.eid_first, e.eid_last, e.sweep_direction_index, e.dir.map(|d| [(d[0] * 1000.0).round() / 1000.0, (d[1] * 1000.0).round() / 1000.0, (d[2] * 1000.0).round() / 1000.0]), at[0], at[1], v);
             }

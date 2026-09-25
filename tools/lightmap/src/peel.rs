@@ -1219,7 +1219,11 @@ fn tri_slope(wt: &WTri, frame: &PeelFrame) -> (f32, f32) {
 fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm: &BakeParams, shadow: Option<&ShadowMap>, sun_bias: f32, sky: [f32; 3], threads: usize, wanted: Option<&std::sync::Arc<PixelIndex>>, fixed_layers: Option<usize>, dome_img: Option<&[[f32; 3]]>) -> Layers {
     let (w, h) = (frame.res, frame.res_y);
     let n = (w * h) as usize;
-    let sky_q = prm.quant_peel.apply(sky, prm.rounding);
+    // THE CAPTURE (pwc6 frame 7534, the first sweep-1 direction's layer 0): the environment render of a LATER sweep is
+    // BLACK — the sky enters the accumulation once, in sweep 0 (the sweep-1 layer-0 snapshots hold 0 at every dome
+    // pixel; the geometry layers carry the bounce ILightInput)
+    let sky_q = if prm.sweep > 0 { [0.0f32; 3] } else { prm.quant_peel.apply(sky, prm.rounding) };
+    let dome_img = if prm.sweep > 0 { None } else { dome_img };
     let skip_n = if prm.dome_layer { 1usize } else { 0 };
     // one pixel's layers appended to `out`
     let derive_pixel = |x: usize, y: usize, out: &mut Vec<LayerFrag>| {
@@ -2756,6 +2760,9 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
     // the sweep's transcribed H-basis MRTs to the caller (the sweep-transition chain / the finalisation)
     if let (Some(slot), Some(hb)) = (&prm.hb_out, hb_lm.take()) {
         *slot.0.lock().unwrap() = Some(hb);
+    }
+    if let Some(il) = &prm.ilatlas {
+        eprintln!("ilightinput atlas (sweep {}): {} fragments coloured from the atlas, {} without a lightmap coordinate (the port's model)", prm.sweep, il.atlas.hits.load(std::sync::atomic::Ordering::Relaxed), il.atlas.misses.load(std::sync::atomic::Ordering::Relaxed));
     }
     eprintln!("peel: done, {} directions over {} sub-samples ({:.1}s); fragment radiance calls {}, facing the sun {}, lit {}", n_dirs, subs.len(), t0.elapsed().as_secs_f32(), SUN_STATS[0].load(std::sync::atomic::Ordering::Relaxed), SUN_STATS[1].load(std::sync::atomic::Ordering::Relaxed), SUN_STATS[2].load(std::sync::atomic::Ordering::Relaxed));
     out
