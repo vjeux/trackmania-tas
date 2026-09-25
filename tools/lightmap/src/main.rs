@@ -3745,6 +3745,13 @@ fn run(a: Vec<String>) {
                 println!("items' world AABB: x {:.4}..{:.4}  y {:.4}..{:.4}  z {:.4}..{:.4} (the captured fitted-block box: x 861.01..880.0, z 336.98..369.0)", lo[0], hi[0], lo[1], hi[1], lo[2], hi[2]);
                 for mi in 0..sc.meshes.len() { if sc.inst_count[mi] > 1 { continue; } let inst = &sc.instances[sc.inst_first[mi]]; let rows = lightmap::sunpass::rotation_rows(inst.q); let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]); for v in &sc.meshes[mi].verts { let p = lightmap::lmaccum::world_pos(v, inst, &rows); for k in 0..3 { lo[k] = lo[k].min(p[k]); hi[k] = hi[k].max(p[k]); } } println!("  mesh {mi}: translation {:?} scale {}  AABB x {:.4}..{:.4} y {:.4}..{:.4} z {:.4}..{:.4}", inst.t, inst.scale, lo[0], hi[0], lo[1], hi[1], lo[2], hi[2]); }
             }
+            // --dump-mesh M: every vertex (model space) and triangle of LM mesh M — the oracle for a mesh built from the map
+            if let Some(mi) = f("--dump-mesh").map(|v| v.parse::<usize>().unwrap()) {
+                let m = &sc.meshes[mi];
+                println!("mesh {mi}: {} vertices, {} triangles", m.verts.len(), m.indices.len() / 3);
+                for (i, v) in m.verts.iter().enumerate() { println!("  v{i:<4} pos [{:.6}, {:.6}, {:.6}] n [{:.6}, {:.6}, {:.6}] t [{:.6}, {:.6}, {:.6}, {}] psize {} uv [{:.7}, {:.7}] chart {}", v.pos[0], v.pos[1], v.pos[2], v.normal[0], v.normal[1], v.normal[2], v.tangent[0], v.tangent[1], v.tangent[2], v.tangent[3], v.psize, v.uv[0], v.uv[1], v.chart_idx); }
+                for (t, tri) in m.indices.chunks_exact(3).enumerate() { println!("  tri{t:<3} [{}, {}, {}]", tri[0], tri[1], tri[2]); }
+            }
             // --mesh M --tri T [--dir x,y,z]: one triangle's vertices and their VS 17118 outputs
             if let (Some(mi), Some(ti)) = (f("--mesh"), f("--tri")) {
                 let (mi, ti): (usize, usize) = (mi.parse().unwrap(), ti.parse().unwrap());
@@ -4849,6 +4856,63 @@ fn run(a: Vec<String>) {
             println!("  cache trailer: {}", lightmap::filecheck::cmp_bytes(t2, t1));
             let ids = |d: &lightmap::format::LightmapData| d.cache.chunks.iter().map(|c| format!("{:08x}", c.id)).collect::<Vec<_>>().join(" ");
             if ids(d1) != ids(d2) { println!("  cache chunk ids differ: ours [{}] theirs [{}]", ids(d1), ids(d2)); } else { println!("  cache chunk ids identical ({} chunks)", d1.cache.chunks.len()); }
+        }
+        "lmmesh-check" => {
+            // lmtool lmmesh-check MAP.Gbx PASSCAP_ROOT [--env-frame 127448] [--items-dir DIR]: the LM meshes BUILT FROM THE MAP's
+            // models (lmmesh::lm_mesh_of_item) against the captured LM vertex streams, mesh by mesh (the pad, the wall, the
+            // vegetation, the tile) — vertex order, positions, snorm16 normals / uvs / tangents, psize, the triangle list
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let root = std::path::PathBuf::from(&a[2]);
+            let env_frame: u32 = f("--env-frame").map(|v| v.parse().unwrap()).unwrap_or(127448);
+            let sc = lightmap::lmaccum::load_lm_scene(&root, env_frame).expect("captured LM scene");
+            let mf = tmmaps::map::MapFile::load(std::path::Path::new(&a[1]));
+            let scene = lightmap::geometry::Scene::from_map(&a[1]).expect("scene");
+            let items_dir = f("--items-dir");
+            // every item's LM mesh from its model, paired with the captured one-instance mesh of the same vertex + triangle count
+            // (the capture's draw order is the bind order, not the file order)
+            for (item_i, it) in mf.items.iter().enumerate() {
+                let inst = scene.instances.iter().find(|i| i.item == item_i);
+                let bytes = match &items_dir { Some(d) => std::fs::read(format!("{d}/Items/{}", it.model)).ok(), None => None };
+                let Some(bytes) = bytes else { println!("item {item_i} {} — no item file (--items-dir DIR from `mapgeom items MAP --out DIR`)", it.model); continue };
+                if a.iter().any(|x| x == "--geoms") { if let Ok(fl) = mapgeom::static_item::file::parse_file(&bytes) { if let Some(s2) = fl.item.static_object().and_then(|so| so.solid2()) { for l in lightmap::lmmesh::geom_summary(s2) { println!("    {l}"); } } } }
+                let ours_opt = lightmap::lmmesh::lm_mesh_of_item(&bytes);
+                let mi = match &ours_opt { Ok(Some(o)) => (0..sc.meshes.len()).find(|&k| sc.inst_count[k] == 1 && sc.meshes[k].verts.len() == o.verts.len() && sc.meshes[k].indices.len() == o.indices.len()).or_else(|| (0..sc.meshes.len()).find(|&k| sc.inst_count[k] == 1 && sc.meshes[k].indices.len() == o.indices.len())), _ => None };
+                let Some(mi) = mi else { println!("item {item_i} {}: {}", it.model, match &ours_opt { Ok(Some(o)) => format!("ours {} verts / {} tris — no captured one-instance mesh of that size", o.verts.len(), o.indices.len() / 3), Ok(None) => "no lightmapped visual in the model".into(), Err(e) => e.clone() }); continue };
+                let m = &sc.meshes[mi];
+                match ours_opt {
+                    Ok(Some(ours)) => {
+                        let d = lightmap::lmmesh::diff_meshes(&ours, m);
+                        println!("mesh {mi} (eid {}): item {item_i} {}: ours {} verts / {} tris, captured {} / {}; positions exact {} within 1e-4 {} (worst {:.2e}); normals exact {}, uvs exact {}, tangents exact {}, psize exact {}; triangle list {}", sc.eids[mi], it.model, d.n_ours, ours.indices.len() / 3, d.n_theirs, m.indices.len() / 3, d.pos_exact, d.pos_within_1e4, d.pos_worst, d.nrm_exact, d.uv_exact, d.tan_exact, d.psize_exact, if d.tris_equal { "IDENTICAL" } else { "differs" });
+                        if a.iter().any(|x| x == "--uv-study") { let raw = lightmap::lmmesh::raw_lm_uvs(&bytes).unwrap_or_default(); for i in 0..raw.len().min(m.verts.len()).min(12) { let r = raw[i]; let t = m.verts[i].uv; println!("    v{i}: raw uv [{:.9}, {:.9}] ×32767 = [{:.3}, {:.3}]; captured [{:.9}, {:.9}] = [{}, {}]/32767; 1−v: (1−raw.v)·32767 = {:.3}, captured 1−v → {:.3}", r[0], r[1], r[0] * 32767.0, r[1] * 32767.0, t[0], t[1], (t[0] * 32767.0).round(), (t[1] * 32767.0).round(), (1.0 - r[1]) * 32767.0, ((1.0 - t[1]) * 32767.0)); } }
+                        // --perm: the captured vertex order against ours by position (the builder's order study): the runs of our indices
+                        if a.iter().any(|x| x == "--perm") {
+                            // match on the whole vertex when possible (duplicate positions on the two-sided cards), else on the position
+                            let mut map: Vec<Option<usize>> = Vec::with_capacity(m.verts.len());
+                            for t in &m.verts { map.push(ours.verts.iter().position(|o| o.pos == t.pos && o.uv == t.uv && o.normal == t.normal).or_else(|| ours.verts.iter().position(|o| o.pos == t.pos))); }
+                            // the first-use re-indexing hypothesis: our vertices renumbered in order of first appearance in our index list
+                            { let mut first: Vec<usize> = Vec::new(); let mut seen = vec![false; ours.verts.len()]; for &i in &ours.indices { if !seen[i as usize] { seen[i as usize] = true; first.push(i as usize); } } let ok = first.iter().zip(m.verts.iter()).filter(|(&o, t)| ours.verts[o].pos == t.pos).count(); println!("    first-use re-indexing: {} of {} captured vertices at the position our first-use order predicts", ok, m.verts.len().min(first.len())); }
+                            let unmatched = map.iter().filter(|x| x.is_none()).count();
+                            let mut runs: Vec<(usize, usize, usize)> = Vec::new(); // (captured start, ours start, len)
+                            let mut i = 0; while i < map.len() { let Some(o0) = map[i] else { i += 1; continue }; let mut len = 1; while i + len < map.len() && map[i + len] == Some(o0 + len) { len += 1; } runs.push((i, o0, len)); i += len; }
+                            println!("    permutation: {unmatched} captured vertices without a position match; {} runs of consecutive ours-indices; first 12 runs (captured start → ours start, len): {:?}", runs.len(), runs.iter().take(12).collect::<Vec<_>>());
+                            // per captured vertex in a matched pair: are the normal / tangent / uv / psize equal after the permutation?
+                            let (mut n_eq, mut t_eq, mut uv_eq, mut ps_eq, mut n_tr) = (0, 0, 0, 0, 0);
+                            for (i, mo) in map.iter().enumerate() { if let Some(o) = mo { let (a, b) = (&ours.verts[*o], &m.verts[i]); if a.normal == b.normal { n_eq += 1; } if a.tangent == b.tangent { t_eq += 1; } if a.uv == b.uv { uv_eq += 1; } if a.psize == b.psize { ps_eq += 1; } n_tr += 1; } }
+                            println!("    after the permutation ({n_tr} matched): normals equal {n_eq}, tangents equal {t_eq}, uvs equal {uv_eq}, psize equal {ps_eq}");
+                            let words = lightmap::lmmesh::raw_normal_words(&bytes).unwrap_or_default();
+                            for (i, mo) in map.iter().enumerate().take(4) { if let Some(o) = mo { let (a, b) = (&ours.verts[*o], &m.verts[i]); println!("      captured v{i} = ours v{o}: n ours {:?} capt {:?}; t ours {:?} capt {:?}; ps {} vs {}", a.normal, b.normal, a.tangent, b.tangent, a.psize, b.psize); if let Some((nw, tu, tv, nf)) = words.get(*o) { let cap_units: Vec<f32> = b.normal.iter().map(|v| v * 32767.0).collect(); println!("        raw words: normal {:?} tanU {:?} tanV {:?} normal f32 {:?}; dec3n/511 {:?} dec3n/512 {:?} dec3n/1023·2 {:?}; captured n × 32767 = {:?}; tanU/511 {:?}", nw.map(|w| format!("{w:#010x}")), tu.map(|w| format!("{w:#010x}")), tv.map(|w| format!("{w:#010x}")), nf, nw.map(|w| lightmap::lmmesh::dec3n_raw(w, 511.0)), nw.map(|w| lightmap::lmmesh::dec3n_raw(w, 512.0)), nw.map(|w| lightmap::lmmesh::dec3n_raw(w, 511.5)), cap_units, tu.map(|w| lightmap::lmmesh::dec3n_raw(w, 511.0))); } } }
+                        }
+                        if a.iter().any(|x| x == "--verbose") { for i in 0..ours.verts.len().min(m.verts.len()).min(12) { let (o, t) = (&ours.verts[i], &m.verts[i]); println!("    v{i}: ours pos {:?} n {:?} uv {:?} t {:?} ps {} | captured pos {:?} n {:?} uv {:?} t {:?} ps {}", o.pos, o.normal, o.uv, o.tangent, o.psize, t.pos, t.normal, t.uv, t.tangent, t.psize); } if !d.tris_equal { println!("    tris ours {:?}", &ours.indices[..ours.indices.len().min(24)]); println!("    tris capt {:?}", &m.indices[..m.indices.len().min(24)]); } }
+                        if let Some(inst) = inst { let li = lightmap::lmmesh::lm_instance(&inst.pose, [0.0; 4]); let ci = &sc.instances[sc.inst_first[mi]]; println!("    instance: ours q {:?} t {:?} scale {} | captured q {:?} t {:?} scale {} st {:?}", li.q, li.t, li.scale, ci.q, ci.t, ci.scale, ci.st); }
+                    }
+                    Ok(None) => println!("mesh {mi}: item {item_i} {} — no lightmapped visual in the model", it.model),
+                    Err(e) => println!("mesh {mi}: item {item_i} {} — {e}", it.model),
+                }
+            }
+            for (mi, m) in sc.meshes.iter().enumerate() { if sc.inst_count[mi] > 1 { println!("mesh {mi} (eid {}): {} vertices, {} triangles × {} instances — the zone tiles (the Sea prefab's SeaFloor plane)", sc.eids[mi], m.verts.len(), m.indices.len() / 3, sc.inst_count[mi]);
+                // --pak FILE:KEY: the tile mesh from the zone prefab
+                if let Some(pak) = f("--pak") { let (pak_path, key) = pak.rsplit_once(':').expect("--pak FILE:KEY"); let mut store = mapgeom::store::DataStore::empty(); store.add_pak(pak_path, key).expect("pak"); match lightmap::lmmesh::lm_mesh_of_zone(&mut store, &f("--collection").unwrap_or_else(|| "BlueBay".into()), &f("--zone").unwrap_or_else(|| "Sea".into())) { Ok(Some(ours)) => { let d = lightmap::lmmesh::diff_meshes(&ours, m); println!("    from the pak: ours {} verts / {} tris; positions exact {} (worst {:.2e}); normals exact {}, uvs exact {}, tangents exact {}, psize exact {}; triangle list {}", d.n_ours, ours.indices.len() / 3, d.pos_exact, d.pos_worst, d.nrm_exact, d.uv_exact, d.tan_exact, d.psize_exact, if d.tris_equal { "IDENTICAL" } else { "differs" }); if a.iter().any(|x| x == "--verbose") { for i in 0..ours.verts.len().min(m.verts.len()) { let (o, t) = (&ours.verts[i], &m.verts[i]); println!("      v{i}: ours pos {:?} uv {:?} | captured pos {:?} uv {:?}", o.pos, o.uv, t.pos, t.uv); } } } Ok(None) => println!("    from the pak: no lightmapped visual"), Err(e) => println!("    from the pak: {e}") } }
+            } }
         }
         "genealogy" => {
             // lmtool genealogy MAP: the zone genealogy records (chunk 0x03043043) — per cell the CurrentZoneId and its Dir,

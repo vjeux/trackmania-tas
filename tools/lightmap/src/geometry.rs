@@ -103,7 +103,7 @@ pub fn norm(a: V3) -> V3 {
 }
 
 /// Decode a Dec3N packed normal (10:10:10 signed).
-fn dec3n(w: u32) -> V3 {
+pub fn dec3n(w: u32) -> V3 {
     let f = |s: u32| {
         let v = ((w >> s) & 0x3ff) as i32;
         let v = if v >= 512 { v - 1024 } else { v };

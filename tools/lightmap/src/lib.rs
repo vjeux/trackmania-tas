@@ -40,6 +40,7 @@ pub mod lmaccum;
 pub mod shadowmap;
 pub mod dxbc;
 pub mod layout;
+pub mod lmmesh;
 pub mod lightcam;
 pub mod lmtiles;
 pub mod probechunk;
