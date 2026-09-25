@@ -3019,6 +3019,87 @@ fn run(a: Vec<String>) {
                 }
             }
         }
+        "sun-check" => {
+            // lmtool sun-check PASSCAP_ROOT [--frame N] [--blend round-sum|round-src] [--dump OUT.dds]
+            //   the transcribed DIRECT SUN pass (sunpass.rs: VS 15183 + PS 15187, D3D11 rasterisation, 2×2 PCF GreaterEqual)
+            //   run from the capture's own inputs (the LM meshes + instance stream + chart table in env/frame<N>/, the 36
+            //   draws' cbuffers in logs/draws-frame<N>.json.gz, the captured D16 shadow map) and compared f16 for f16
+            //   with the captured sun_direct target
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let root = std::path::PathBuf::from(&a[1]);
+            let frame: u32 = f("--frame").map(|v| v.parse().expect("--frame")).unwrap_or(127448);
+            let blend = match f("--blend").as_deref() { Some("round-src") => lightmap::sunpass::BlendModel::RoundSrcAndSum, _ => lightmap::sunpass::BlendModel::RoundSum };
+            let txt = std::fs::read_to_string(root.join("MANIFEST.json")).expect("MANIFEST.json");
+            let m = lightmap::passdiff::read_manifest(&txt).expect("manifest");
+            let env = root.join(format!("env/frame{frame}"));
+            let mesh_json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(env.join("mesh.json")).expect("mesh.json")).expect("mesh.json");
+            let draws_bytes = lightmap::passdiff::read_entry_bytes(&root, &format!("logs/draws-frame{frame}.json")).expect("draws log");
+            let t0 = std::time::Instant::now();
+            let draws: serde_json::Value = serde_json::from_slice(&draws_bytes).expect("draws json");
+            println!("draws log parsed in {:.1} s", t0.elapsed().as_secs_f32());
+            let sun: Vec<&serde_json::Value> = draws.as_array().unwrap().iter().filter(|e| e.pointer("/Pixel/shader").and_then(|v| v.as_str()) == Some("15187")).collect();
+            println!("{} sun draws (PS 15187)", sun.len());
+            // the four objects of the first block, in issue order, give the meshes; later blocks repeat the order
+            let first_block: Vec<u64> = sun.iter().take(4).map(|e| e["eid"].as_u64().unwrap()).collect();
+            let mut meshes = Vec::new();
+            let mut inst_first = Vec::new();
+            let mut instance_bytes: Option<Vec<u8>> = None;
+            for eid in &first_block {
+                let rec = mesh_json.as_array().unwrap().iter().find(|r| r["eid"].as_u64() == Some(*eid)).unwrap_or_else(|| panic!("mesh.json has no eid {eid}"));
+                let vbs = rec["vertex_buffers"].as_array().unwrap();
+                let vb0 = std::fs::read(env.join("mesh").join(vbs[0]["file"].as_str().unwrap())).expect("vb0");
+                let idx_file = rec["vsout"]["index_file"].as_str().expect("index file");
+                let ib = std::fs::read(env.join("mesh").join(idx_file)).expect("indices");
+                let indices: Vec<u16> = ib.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+                let verts = lightmap::sunpass::parse_lm_vertices(&vb0);
+                println!("  eid {eid}: {} vertices, {} indices, instance stream offset {}", verts.len(), indices.len(), vbs[1]["offset"]);
+                meshes.push(lightmap::sunpass::LmMesh { verts, indices });
+                inst_first.push((vbs[1]["offset"].as_u64().unwrap_or(0) / 48) as usize);
+                if instance_bytes.is_none() { instance_bytes = Some(std::fs::read(env.join("mesh").join(vbs[1]["file"].as_str().unwrap())).expect("instance vb")); }
+            }
+            let instances = lightmap::sunpass::parse_instances(instance_bytes.as_ref().unwrap());
+            println!("  {} instances", instances.len());
+            let table_bytes = std::fs::read(env.join("bufs").join(format!("e{:06}_Vertex_srv0_16959.bin", first_block[0]))).unwrap_or_default();
+            let table: Vec<[f32; 4]> = table_bytes.chunks_exact(16).map(|c| [f32::from_le_bytes(c[0..4].try_into().unwrap()), f32::from_le_bytes(c[4..8].try_into().unwrap()), f32::from_le_bytes(c[8..12].try_into().unwrap()), f32::from_le_bytes(c[12..16].try_into().unwrap())]).collect();
+            let m4 = |v: &serde_json::Value| -> [[f32; 4]; 4] { let mut o = [[0f32; 4]; 4]; for i in 0..4 { for j in 0..4 { o[i][j] = v[i][j].as_f64().unwrap() as f32; } } o };
+            let v3 = |v: &serde_json::Value| -> [f32; 3] { [v[0].as_f64().unwrap() as f32, v[1].as_f64().unwrap() as f32, v[2].as_f64().unwrap() as f32] };
+            let v2 = |v: &serde_json::Value| -> [f32; 2] { [v[0].as_f64().unwrap() as f32, v[1].as_f64().unwrap() as f32] };
+            let mut sd = Vec::new();
+            for (k, e) in sun.iter().enumerate() {
+                let ps = &e["Pixel"]["cbuffers"]["ShaderP"]["g_CBufferP"];
+                let vs = &e["Vertex"]["cbuffers"]["ShaderV"]["g_CBuffer"];
+                let inst = e["inst"].as_u64().unwrap_or(0).max(1) as usize;
+                sd.push(lightmap::sunpass::SunDraw { eid: e["eid"].as_u64().unwrap(), mesh: k % 4, instance_first: inst_first[k % 4], instance_count: inst, scale_ss: v2(&vs["LM01_Scale_RasterSS"]), trans_ss: v2(&vs["LM01_Trans_RasterSS"]), world_pw01_shadow: m4(&ps["WorldPw01Shadow"]), dir_in_world: v3(&ps["DirInWorld"]), light_rgb: v3(&ps["LightRgb"]), out_scale: ps["OutScale"].as_f64().unwrap() as f32 });
+            }
+            let ent = |pass: &str| m.passes.iter().find(|e| e.pass == pass && e.frame == Some(frame)).unwrap_or_else(|| panic!("no {pass} entry for frame {frame}"));
+            let shadow = lightmap::passdiff::load_entry(&root, ent("sun_shadow")).expect("shadow map");
+            let target = lightmap::passdiff::load_entry(&root, ent("sun_direct")).expect("sun_direct");
+            println!("shadow map {}×{} (D16 as UNORM16), target {}×{}×{}", shadow.w, shadow.h, target.w, target.h, target.channels);
+            let sm = lightmap::sunpass::ShadowMap { depth: &shadow };
+            let t1 = std::time::Instant::now();
+            let ours = lightmap::sunpass::run_sun_pass(&meshes, &instances, &table, &sd, &sm, target.w, target.h, blend);
+            println!("rasterised {} draws in {:.1} s", sd.len(), t1.elapsed().as_secs_f32());
+            let (covered, exact, ulp1, worse, maxd) = lightmap::sunpass::compare_f16(&ours, &target);
+            println!("{blend:?}: texels touched (either side) {covered}; channel values: {exact} exact, {ulp1} within 1 f16 ulp, {worse} worse (max |Δ| {maxd:.5})");
+            // coverage agreement: alpha = the summed OutScale (1 where all 9 jitters hit)
+            let mut cov_ours = 0usize; let mut cov_theirs = 0usize; let mut cov_both = 0usize;
+            for i in 0..ours.px.len() { let (x, y) = ((i as u32) % ours.w, (i as u32) / ours.w); let o = ours.px[i][3] > 0.0; let t = target.get(x, y, 3) > 0.0; if o { cov_ours += 1; } if t { cov_theirs += 1; } if o && t { cov_both += 1; } }
+            println!("coverage (alpha > 0): ours {cov_ours}, game {cov_theirs}, both {cov_both}");
+            // value statistics over the covered texels + a few samples
+            let mut so = [0f64; 4]; let mut st = [0f64; 4]; let mut n = 0usize; let mut shown = 0;
+            for i in 0..ours.px.len() { let (x, y) = ((i as u32) % ours.w, (i as u32) / ours.w); if target.get(x, y, 3) > 0.0 { n += 1; for k in 0..4 { so[k] += ours.px[i][k] as f64; st[k] += target.get(x, y, k as u32) as f64; } if shown < 8 && (ours.px[i][0] - target.get(x, y, 0)).abs() > 0.01 && x % 37 == 0 { println!("  sample ({x},{y}): ours {:?} game {:?}", ours.px[i], [target.get(x, y, 0), target.get(x, y, 1), target.get(x, y, 2), target.get(x, y, 3)]); shown += 1; } } }
+            println!("mean over the game's covered texels: ours {:?} game {:?}", so.iter().map(|v| (v / n as f64) as f32).collect::<Vec<_>>(), st.iter().map(|v| (v / n as f64) as f32).collect::<Vec<_>>());
+            // where are the mismatches? by the game's alpha (1 = one chart, 2 = two charts overlap, else partial coverage)
+            let mut by = std::collections::BTreeMap::<String, (usize, usize, f32)>::new();
+            for i in 0..ours.px.len() { let (x, y) = ((i as u32) % ours.w, (i as u32) / ours.w); let ta = target.get(x, y, 3); if ta == 0.0 && ours.px[i][3] == 0.0 { continue; } let key = if (ta - 1.0).abs() < 1e-3 { "alpha=1".to_string() } else if (ta - 2.0).abs() < 1e-3 { "alpha=2".to_string() } else { "partial".to_string() }; let e = by.entry(key).or_insert((0, 0, 0.0)); e.0 += 1; let d = (0..3).map(|k| (ours.px[i][k] - target.get(x, y, k as u32)).abs()).fold(0f32, f32::max); if d > 0.0 { e.1 += 1; if d > e.2 { e.2 = d; } } }
+            for (k, (n, bad, mx)) in by { println!("  {k}: {n} texels, {bad} with an rgb difference (max |Δ| {mx:.4})"); }
+            if let Some(out) = f("--dump") {
+                let mut bytes = Vec::with_capacity(ours.px.len() * 8);
+                for p in &ours.px { for k in 0..4 { bytes.extend_from_slice(&lightmap::gpufmt::encode_f16(p[k], lightmap::gpufmt::Rounding::NearestEven).to_le_bytes()); } }
+                std::fs::write(&out, &bytes).expect("dump");
+                println!("wrote {out} (raw RGBA16F {}×{})", ours.w, ours.h);
+            }
+        }
         "encode-check" => {
             // lmtool encode-check PASSCAP_ROOT [--frame N] [--fma] [--half-up] [--all]
             //   the transcribed finalisation (gpuenc.rs: the |rgb| max reduction + CS 23025 LmCompress_HBasis_YCbCr4)

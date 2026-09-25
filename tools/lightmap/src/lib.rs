@@ -16,6 +16,7 @@ pub mod peel;
 pub mod png;
 pub mod gpufmt;
 pub mod gpuenc;
+pub mod sunpass;
 pub mod format;
 pub mod geometry;
 pub mod img;
