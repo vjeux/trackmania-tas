@@ -156,6 +156,38 @@ pub fn read_manifest(txt: &str) -> Result<Manifest, String> {
                     if let Some(x) = c.get_mut(k) { num(x); if let Some(f) = x.as_f64() { *x = serde_json::json!(f.round() as i64); } }
                 }
             }
+            // the peel camera's matrix may sit inside the recorded cbuffers (`WorldPw01Shadow` of the
+            // accumulate / sun pass, `GbxV_WorldTo01ShadowLDir0` of the shadow-map pass) rather than at
+            // the top level: lift the first non-degenerate 4×4 (or 4×3) found
+            if !o.contains_key("view_proj_bias_GbxWorldPw01Shadow") {
+                fn find_mat(v: &serde_json::Value, depth: usize) -> Option<serde_json::Value> {
+                    if depth > 8 { return None; }
+                    if let Some(obj) = v.as_object() {
+                        for (k, x) in obj {
+                            if k == "WorldPw01Shadow" || k == "GbxWorldPw01Shadow" || k == "GbxV_WorldTo01ShadowLDir0" {
+                                if let Some(rows) = x.as_array() {
+                                    if rows.len() == 4 {
+                                        // degenerate (all-zero linear part) matrices are skipped
+                                        let lin: f64 = rows.iter().take(3).filter_map(|r| r.as_array()).flat_map(|r| r.iter().filter_map(|c| c.as_f64())).map(|c| c.abs()).sum();
+                                        if lin > 1e-12 {
+                                            // a 4×3 (row-vector affine, w column dropped) is padded to 4×4
+                                            let padded: Vec<serde_json::Value> = rows.iter().enumerate().map(|(i, r)| { let mut c: Vec<serde_json::Value> = r.as_array().cloned().unwrap_or_default(); while c.len() < 4 { c.push(serde_json::json!(if i == 3 { 1.0 } else { 0.0 })); } serde_json::Value::Array(c) }).collect();
+                                            return Some(serde_json::Value::Array(padded));
+                                        }
+                                    }
+                                }
+                            }
+                            if let Some(f) = find_mat(x, depth + 1) { return Some(f); }
+                        }
+                    }
+                    None
+                }
+                if let Some(cb) = o.get("cbuffers") {
+                    if let Some(mtx) = find_mat(cb, 0) {
+                        o.insert("view_proj_bias_GbxWorldPw01Shadow".into(), mtx);
+                    }
+                }
+            }
         }
     }
     if let Some(sweeps) = v.get_mut("sweeps").and_then(|p| p.as_array_mut()) {
@@ -184,7 +216,21 @@ pub fn read_manifest(txt: &str) -> Result<Manifest, String> {
             }
         }
     }
-    reindex_directions(&mut m);
+    // the shadow-map pass's own cbuffer may be degenerate in a capture; the direct-sun pass looks the
+    // map up through `WorldPw01Shadow`, which is the same frustum
+    let sun_fr = m.passes.iter().find(|e| e.pass == "sun_direct" && e.frustum.is_some()).and_then(|e| e.frustum.clone());
+    if let Some(fr) = sun_fr {
+        for e in m.passes.iter_mut() {
+            if e.pass == "sun_shadow" && e.frustum.is_none() {
+                e.frustum = Some(fr.clone());
+                e.notes = Some(format!("{}frustum taken from the direct-sun pass's WorldPw01Shadow", e.notes.as_deref().map(|n| format!("{n}; ")).unwrap_or_default()));
+            }
+        }
+    }
+    // (a capture's entries carry their run's name; our own dump's indices are already one space)
+    if m.passes.iter().any(|e| e.capture.is_some()) {
+        reindex_directions(&mut m);
+    }
     assign_peels(&mut m);
     Ok(m)
 }
@@ -284,7 +330,7 @@ pub fn assign_peels(m: &mut Manifest) {
 /// is the sky layer (≥ 30 % of its depth at 0), the colour target's central value (the median of a
 /// 9×9 block at the frame centre, R11G11B10 as stored) with the direction vector — the sky radiance
 /// the game renders along D, as many directions as the capture holds.
-pub fn dome_colours(game: &Manifest, root: &std::path::Path) -> Vec<([f32; 3], [f32; 3], u32, u32)> {
+pub fn dome_colours(game: &Manifest, root: &std::path::Path) -> Vec<([f32; 3], [f32; 3], u32, u32, Option<Frustum>)> {
     let mut groups: std::collections::BTreeMap<(Option<u32>, Option<u32>, Option<u32>), Vec<usize>> = Default::default();
     for (i, e) in game.passes.iter().enumerate() {
         if e.pass == "peel_depth" && e.direction.is_some() {
@@ -313,7 +359,7 @@ pub fn dome_colours(game: &Manifest, root: &std::path::Path) -> Vec<([f32; 3], [
             med[ch as usize] = v[v.len() / 2];
         }
         let dir = c.dir.or(e.dir).or_else(|| e.frustum.as_ref().map(|f| f.forward)).unwrap_or([0.0; 3]);
-        out.push((dir, med, key.1.unwrap_or(0), key.2.unwrap_or(0)));
+        out.push((dir, med, key.1.unwrap_or(0), key.2.unwrap_or(0), e.frustum.clone().or_else(|| c.frustum.clone())));
     }
     out
 }
@@ -780,7 +826,7 @@ pub fn compare(game: &Buf, ours: &Buf, channels: u32, tol: f32, floor: f32, stri
 }
 
 /// The pipeline order of the passes.
-pub const PIPELINE: &[&str] = &["lm_pos", "lm_nrm", "mdiffuse", "sun_shadow", "ilightinput", "peel_sky", "peel_depth", "peel_color", "ilightdir", "lightsum", "lightsum_resolved", "probe_skyvis", "probe_ilightdir", "probe_isvalid", "hbasis0", "hbasis1", "hbasis2", "hbasis3", "final_hdr", "final_atlas"];
+pub const PIPELINE: &[&str] = &["lm_pos", "lm_nrm", "mdiffuse", "sun_shadow", "sun_direct", "ilightinput", "peel_sky", "peel_depth", "peel_color", "ilightdir", "lightsum", "lightsum_resolved", "probe_skyvis", "probe_ilightdir", "probe_isvalid", "hbasis0", "hbasis1", "hbasis2", "hbasis3", "final_hdr", "final_atlas"];
 
 pub fn pipeline_rank(pass: &str) -> usize {
     PIPELINE.iter().position(|p| *p == pass).unwrap_or(PIPELINE.len())
@@ -981,13 +1027,15 @@ pub struct Opts {
     pub stride: u32,
     pub pass_threshold: f64,
     pub game_map: Option<String>,
+    /// The capture manifest to read instead of GAME_DIR/MANIFEST.json (a frozen copy).
+    pub game_manifest: Option<String>,
     pub keep_pairs: bool,
     pub quiet: bool,
 }
 
 impl Default for Opts {
     fn default() -> Self {
-        Opts { hbasis_scale: 1.0, pass: None, tol: 0.02, floor: 1e-3, stride: 1, pass_threshold: 99.0, game_map: None, keep_pairs: true, quiet: false }
+        Opts { hbasis_scale: 1.0, game_manifest: None, pass: None, tol: 0.02, floor: 1e-3, stride: 1, pass_threshold: 99.0, game_map: None, keep_pairs: true, quiet: false }
     }
 }
 
@@ -1083,7 +1131,10 @@ fn direction_map(game: &Manifest, ours: &Manifest, sweep: u32) -> (HashMap<u32, 
 
 /// Run the differential. Returns the rows in pipeline order and the convention findings.
 pub fn run(game_root: &std::path::Path, ours_root: &std::path::Path, opts: &Opts) -> Result<(Vec<Row>, Vec<String>), String> {
-    let mut game = read_manifest(&std::fs::read_to_string(game_root.join("MANIFEST.json")).map_err(|e| format!("{}: {e}", game_root.join("MANIFEST.json").display()))?)?;
+    // (--game-manifest FILE: a frozen copy of the capture's manifest — the live one grows while the baker
+    // banks; the dump that was matched against a copy is compared against the same copy)
+    let gm_path = opts.game_manifest.clone().map(std::path::PathBuf::from).unwrap_or_else(|| game_root.join("MANIFEST.json"));
+    let mut game = read_manifest(&std::fs::read_to_string(&gm_path).map_err(|e| format!("{}: {e}", gm_path.display()))?)?;
     let mut findings: Vec<String> = Vec::new();
     // THE GAME'S DOME LAYER: a peel whose first layer's depth is 0 over (nearly) the whole frame is the sky
     // dome drawn into the peel targets before the geometry layers — relabelled `peel_sky` (its colour is
@@ -1143,6 +1194,9 @@ pub fn run(game_root: &std::path::Path, ours_root: &std::path::Path, opts: &Opts
             }
         }
         if n > 0 { findings.push(format!("accumulation_snapshots(the game's {n} banked `hbasis0` snapshots after direction k → `lightsum` after direction k; compare with ours baked in the game's order (--dir-order) and κ = 1)")); }
+        if std::env::var_os("LMTOOL_PASSDIFF_DEBUG").is_some() {
+            for e in game.passes.iter().filter(|e| e.pass == "lightsum") { eprintln!("game lightsum: sweep {:?} direction {:?} peel {:?} layer {:?} chart {:?} eid {:?} {}", e.sweep, e.direction, e.peel, e.layer, e.chart.as_ref().map(|c| c.obj), e.eid_last, e.file); }
+        }
     }
     let ours = read_manifest(&std::fs::read_to_string(ours_root.join("MANIFEST.json")).map_err(|e| format!("{}: {e}", ours_root.join("MANIFEST.json").display()))?)?;
     // the game's chart rects (its layout, or the baked map's mapping); ours from our layout
@@ -1185,7 +1239,9 @@ pub fn run(game_root: &std::path::Path, ours_root: &std::path::Path, opts: &Opts
     };
     for (i, e) in game.passes.iter().enumerate() {
         let sweep = e.sweep;
-        let dir = e.direction.map(|d| dir_maps.get(&sweep.unwrap_or(0)).and_then(|m| m.get(&d).copied()).unwrap_or(d));
+        // (an accumulation snapshot's direction is the issue-order index, which ours shares through
+        // --dir-order — no vector re-matching for it)
+        let dir = if e.pass == "lightsum" { e.direction } else { e.direction.map(|d| dir_maps.get(&sweep.unwrap_or(0)).and_then(|m| m.get(&d).copied()).unwrap_or(d)) };
         let mut layer = e.layer;
         if let (Some(l), true) = (layer, game_near_first) {
             let n = game_layer_count.get(&(e.sweep, e.direction, e.peel)).copied().unwrap_or(l + 1);
@@ -1223,7 +1279,11 @@ pub fn run(game_root: &std::path::Path, ours_root: &std::path::Path, opts: &Opts
             ge_i = game_idx.get(&("hbasis0".to_string(), None, None, None, None, None)).and_then(pick);
             if ge_i.is_some() && (opts.hbasis_scale - 1.0).abs() > 1e-6 { pre_scale = Some((opts.hbasis_scale, "hbasis_c0_scale(game C0 × --hbasis-scale)")); }
         }
-        let Some(ge_i) = ge_i else { *missing.entry(oe.pass.clone()).or_insert(0) += 1; continue };
+        let Some(ge_i) = ge_i else {
+            if std::env::var_os("LMTOOL_PASSDIFF_DEBUG").is_some() { eprintln!("no game entry for ours: {} sweep {:?} direction {:?} peel {:?} layer {:?} chart {:?} ({})", oe.pass, oe.sweep, oe.direction, oe.peel, oe.layer, obj, oe.file); }
+            *missing.entry(oe.pass.clone()).or_insert(0) += 1;
+            continue
+        };
         let ge = &game.passes[ge_i];
         let mut transforms: Vec<String> = Vec::new();
         let ob = match load_entry(ours_root, oe) { Ok(b) => b, Err(e) => { eprintln!("passdiff: ours {}: {e}", oe.file); continue; } };

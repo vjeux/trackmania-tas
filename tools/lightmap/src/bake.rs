@@ -165,6 +165,9 @@ pub struct BakeParams {
     pub sweep0_sun: bool,
     /// Directions (indices in the sweep's issue order) after which the accumulation target is dumped.
     pub lightsum_after: std::collections::BTreeSet<u32>,
+    /// The transcribed sky dome per peel pixel (the ellipsoid at the world origin, the mesh's uv, the
+    /// game's VS/PS) instead of one sky colour per direction.
+    pub dome_exact: bool,
 }
 
 impl Default for BakeParams {
@@ -243,6 +246,7 @@ impl Default for BakeParams {
             hbasis_kappa: 0.398_942_28,
             sweep0_sun: false,
             lightsum_after: Default::default(),
+            dome_exact: true,
         }
     }
 }

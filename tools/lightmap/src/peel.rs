@@ -844,6 +844,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         let mut dmp = dump.lock().unwrap();
         // the per-sub-sample ILightInput of this sweep: (C0 so far ÷ decode + sun·max(0, n·L)·shadow) × MDiffuse
         let mut ilight: Vec<Vec<[f32; 3]>> = chart_meta.iter().map(|(cw, ch)| vec![[0.0f32; 3]; (cw * 2 * ss_eff * ch * 2 * ss_eff) as usize]).collect();
+        let mut sun_direct: Vec<Vec<[f32; 3]>> = chart_meta.iter().map(|(cw, ch)| vec![[0.0f32; 3]; (cw * 2 * ss_eff * ch * 2 * ss_eff) as usize]).collect();
         for s in &subs {
             let ii = s.chart as usize;
             let gw = chart_meta[ii].0 * 2 * ss_eff;
@@ -861,11 +862,19 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             let mut v = [0f32; 3];
             for k in 0..3 { v[k] = alb[k] * (stored[k] + prm.sun[k] * ndl * lit); }
             ilight[ii][gi] = v;
+            // the game's `sun_direct` pass (frame 127448, PS 15187: LightRgb·max(0, n·L)·shadow, no albedo, the
+            // 9 raster jitters × 1/9): the sun on this sub-sample whatever the sweep
+            let lit_any = if ndl > 0.0 && prm.sun_dir[1] > 0.0 { shadow.as_ref().map(|sm| sm.lit(s.p, sun_bias)).unwrap_or(1.0) } else { 0.0 };
+            sun_direct[ii][gi] = [prm.sun[0] * ndl * lit_any, prm.sun[1] * ndl * lit_any, prm.sun[2] * ndl * lit_any];
         }
         for ii in 0..chart_meta.len() {
             let (cw, ch) = chart_meta[ii];
             let (gw, gh) = (cw * 2 * ss_eff, ch * 2 * ss_eff);
             if prm.sweep == 0 {
+                let mut e = crate::passdump::entry("sun_direct", chart_file("sun_direct", None, None, ii), "chart_ss");
+                e.chart = Some(chart_ref(ii));
+                e.notes = Some("LDirSun·max(0, n·L)·shadow per sub-sample, no albedo (the game's direct-sun atlas pass; its 9 raster jitters average to this)".into());
+                dmp.write_rgb(e, gw, gh, &sun_direct[ii], crate::gpufmt::Quant::None, prm.rounding).expect("dump sun_direct");
                 let mut e = crate::passdump::entry("lm_pos", chart_file("lm_pos", None, None, ii), "chart_ss");
                 e.chart = Some(chart_ref(ii));
                 e.notes = Some(format!("world position of every covered sub-sample (0 where uncovered); item {} = model {}", scene.instances[ii].item, scene.instances[ii].model_name));
@@ -956,6 +965,21 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         // cleared, the first accumulate fills the facing texels with the sky, every peel's layers then
         // overwrite where they pass — `sel` holds the running value, `occl` whether a surface wrote it
         let sky_fill = prm.quant_ilightdir.apply(prm.quant_peel.apply(sky, prm.rounding), prm.rounding);
+        // THE DOME PER PIXEL (the transcribed sky dome, `SkyGradient::dome_radiance`): the peel pixel's ray
+        // meets the ellipsoid at a point whose azimuth/height differ slightly from D's across a frame (the
+        // dome sits at the world origin, 22 km out); the colour the layer target holds is R11G11B10
+        let dome_px = |frame: &PeelFrame, px: u32, py: u32| -> [f32; 3] {
+            match &prm.sky_grad {
+                Some(sg) if prm.dome_exact => {
+                    let q = frame.unproject(px as f32 + 0.5, py as f32 + 0.5, frame.z_from_z01(1.0));
+                    let c = frame.frustum().center;
+                    let v = sg.dome_radiance(q, *d, c);
+                    // (the dome layer's colour goes through the R11G11B10 target, then the ILightDir target)
+                    prm.quant_ilightdir.apply(prm.quant_peel.apply(v, prm.rounding), prm.rounding)
+                }
+                _ => sky_fill,
+            }
+        };
         let mut sel: Vec<[f32; 3]> = vec![sky_fill; subs.len()];
         let mut occl: Vec<bool> = vec![false; subs.len()];
         let mut t_build_total = 0.0f32;
@@ -983,7 +1007,25 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                     e.sweep = Some(prm.sweep); e.direction = Some(di as u32); e.peel = Some(pi as u32);
                     e.dir = Some(*d); e.frustum = Some(frame.frustum());
                     e.notes = Some("the dome layer: the sky radiance along D (uniform; the game's dome mesh varies slightly across a large frame), depth 0 everywhere".into());
-                    let sky_img = vec![prm.quant_peel.apply(sky, prm.rounding); (ly.w * ly.h) as usize];
+                    let sky_img: Vec<[f32; 3]> = if prm.dome_exact && prm.sky_grad.is_some() {
+                        let sg = prm.sky_grad.as_ref().unwrap();
+                        let c = frame.frustum().center;
+                        let mut img = vec![[0.0f32; 3]; (ly.w * ly.h) as usize];
+                        let rows_per = (ly.h as usize / threads.max(1)).max(1);
+                        std::thread::scope(|sc| {
+                            for (ti, chunk) in img.chunks_mut(rows_per * ly.w as usize).enumerate() {
+                                let y0 = ti * rows_per;
+                                sc.spawn(move || {
+                                    for (i, px) in chunk.iter_mut().enumerate() {
+                                        let (x, y) = ((i % ly.w as usize) as f32 + 0.5, (y0 + i / ly.w as usize) as f32 + 0.5);
+                                        let q = frame.unproject(x, y, frame.z_from_z01(1.0));
+                                        *px = prm.quant_peel.apply(sg.dome_radiance(q, *d, c), prm.rounding);
+                                    }
+                                });
+                            }
+                        });
+                        img
+                    } else { vec![prm.quant_peel.apply(sky, prm.rounding); (ly.w * ly.h) as usize] };
                     dmp.write_rgb(e, ly.w, ly.h, &sky_img, prm.quant_peel, prm.rounding).expect("dump peel_sky");
                 }
                 let nl = (0..(ly.w * ly.h) as usize).map(|i| (ly.start[i + 1] - ly.start[i]) as usize).max().unwrap_or(0).saturating_sub(skip);
@@ -1050,7 +1092,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                                     // (a texel outside this peel's frustum reads nothing from it)
                                     match select_layer(ly.at(px, py), z01) {
                                         Some(f) if f.d > 0.0 || !prm.dome_layer => hit = Some((f.rgb, true)),
-                                        Some(f) => hit = Some((f.rgb, false)), // the dome: the sky fill
+                                        Some(_) => hit = Some((dome_px(frame, px, py), false)), // the dome: the sky at this pixel
                                         None => {}
                                     }
                                 }

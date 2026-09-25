@@ -933,6 +933,8 @@ fn run(a: Vec<String>) {
                                 if f("--sky-grad-scale").is_none() { g.global_scale = g.scale * x.sky_factor; g.scale = 1.0; }
                                 // --sky-global-scale G: Sky_p's GlobalScale (after the fog blend) — the per-mood fitted number
                                 if let Some(v) = f("--sky-global-scale") { g.global_scale = v.parse().unwrap(); }
+                                // --dome-u-mode wrap|mirror|clamp: the gradient sampler's u addressing in the dome transcription
+                                g.dome_u_mode = match f("--dome-u-mode").as_deref() { Some("wrap") => 0, Some("clamp") => 2, Some("mirror") | None => 1, Some(o) => panic!("--dome-u-mode wrap|mirror|clamp, not {o}") };
                                 eprintln!("sky: {} ({}×{}), grad scale {}, global scale {}, fog {:?}, lobes {:?}", path.rsplit('/').next().unwrap(), g.w, g.h, g.scale, g.global_scale, g.fog, g.lobes.iter().map(|l| (l.0, l.2)).collect::<Vec<_>>());
                                 prm.sky_grad = Some(std::sync::Arc::new(g));
                             }
@@ -1253,6 +1255,7 @@ fn run(a: Vec<String>) {
             prm.accum_hbasis = match f("--accum").as_deref() { Some("hbasis") => true, Some("rnm") => false, Some(o) => panic!("--accum hbasis|rnm, not {o}"), None => prm.game_peel };
             if let Some(k) = f("--hbasis-kappa") { prm.hbasis_kappa = k.parse().expect("--hbasis-kappa"); }
             prm.sweep0_sun = has("--sweep0-sun");
+            prm.dome_exact = !has("--dome-per-direction");
             prm.obj_base = base;
             let game_manifest: Option<lightmap::passdump::Manifest> = f("--frustum-from").map(|p| {
                 let txt = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("--frustum-from {p}: {e}"));
@@ -1349,21 +1352,70 @@ fn run(a: Vec<String>) {
             } else if let Some(v) = f("--dump-lightsum-after") {
                 prm.lightsum_after = v.split(',').map(|x| x.trim().parse().expect("--dump-lightsum-after")).collect();
             }
+            // --sun-dir-in-world x,y,z: the bake's light direction as the capture's cbuffer holds it
+            // (GbxP_LightDirDirInWorld0 / DirInWorld, the direction the light travels; the sun is at −it)
+            if let Some(v) = f("--sun-dir-in-world") {
+                let c: Vec<f32> = v.split(',').map(|x| x.trim().parse().expect("--sun-dir-in-world x,y,z")).collect();
+                let l = (c[0] * c[0] + c[1] * c[1] + c[2] * c[2]).sqrt();
+                prm.sun_dir = [-c[0] / l, -c[1] / l, -c[2] / l];
+                eprintln!("sun from the capture: toward the sun ({:.5}, {:.5}, {:.5}) = az {:.2}° el {:.2}°", prm.sun_dir[0], prm.sun_dir[1], prm.sun_dir[2], prm.sun_dir[0].atan2(prm.sun_dir[2]).to_degrees().rem_euclid(360.0), prm.sun_dir[1].asin().to_degrees());
+            }
+            // the sky's lobes are around the SUN — the gradient was built before the mood fixed the sun
+            // direction, so it carried the parameter default (0.508, 0.609, 0.609) until now
+            if let Some(g) = &prm.sky_grad {
+                if g.sun_dir != prm.sun_dir {
+                    let mut g2 = (**g).clone();
+                    g2.sun_dir = prm.sun_dir;
+                    prm.sky_grad = Some(std::sync::Arc::new(g2));
+                }
+            }
             if let Some(gm) = f("--sky-probe") {
-                let root = std::path::Path::new(&gm).parent().unwrap().to_path_buf();
+                // (--game-dir DIR: where the capture's files live when the manifest is a frozen copy elsewhere)
+                let root = f("--game-dir").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::Path::new(&gm).parent().unwrap().to_path_buf());
                 let game = lightmap::passdiff::read_manifest(&std::fs::read_to_string(&gm).expect("--sky-probe manifest")).expect("--sky-probe manifest");
                 let mut domes = lightmap::passdiff::dome_colours(&game, &root);
                 domes.sort_by(|a, b| a.0[1].partial_cmp(&b.0[1]).unwrap());
-                println!("| game dir / peel | D (x, y, z) | elevation | game dome | ours | ratio ours/game |");
-                println!("|---|---|---|---|---|---|");
-                let (mut lr, mut n) = ([0f64; 3], 0usize);
-                for (d, g, di, pi) in &domes {
-                    let o = lightmap::bake::sky_radiance(&prm, *d);
+                // ours: the transcribed dome (`SkyGradient::dome_radiance`, per pixel: the frame-centre ray of the
+                // peel, the eye at the frustum centre) next to the port's old per-direction model
+                println!("| game dir / peel | D (x, y, z) | elevation | frame centre | game dome (R11G11B10) | dome transcription | ratio | old model | ratio |");
+                println!("|---|---|---|---|---|---|---|---|---|");
+                let (mut lr, mut lr_old, mut n) = ([0f64; 3], [0f64; 3], 0usize);
+                for (d, g, di, pi, fr) in &domes {
+                    let o_old = lightmap::bake::sky_radiance(&prm, *d);
+                    let centre = fr.as_ref().map(|f| f.center).unwrap_or([1024.0, 71.0, 1024.0]);
+                    let o = match &prm.sky_grad { Some(sg) => { let v = sg.dome_radiance(centre, *d, centre); lightmap::gpufmt::quantise_r11g11b10(v, lightmap::gpufmt::Rounding::NearestEven) } None => o_old };
                     let r = [o[0] / g[0].max(1e-6), o[1] / g[1].max(1e-6), o[2] / g[2].max(1e-6)];
-                    println!("| {di} / {pi} | ({:.3}, {:.3}, {:.3}) | {:+.1}° | ({:.4}, {:.4}, {:.4}) | ({:.4}, {:.4}, {:.4}) | ({:.3}, {:.3}, {:.3}) |", d[0], d[1], d[2], d[1].asin().to_degrees(), g[0], g[1], g[2], o[0], o[1], o[2], r[0], r[1], r[2]);
-                    if g[1] > 1e-3 { for c in 0..3 { lr[c] += (r[c] as f64).ln(); } n += 1; }
+                    let r_old = [o_old[0] / g[0].max(1e-6), o_old[1] / g[1].max(1e-6), o_old[2] / g[2].max(1e-6)];
+                    println!("| {di} / {pi} | ({:.3}, {:.3}, {:.3}) | {:+.1}° | ({:.0}, {:.0}, {:.0}) | ({:.4}, {:.4}, {:.4}) | ({:.4}, {:.4}, {:.4}) | ({:.3}, {:.3}, {:.3}) | ({:.4}, {:.4}, {:.4}) | ({:.3}, {:.3}, {:.3}) |", d[0], d[1], d[2], d[1].asin().to_degrees(), centre[0], centre[1], centre[2], g[0], g[1], g[2], o[0], o[1], o[2], r[0], r[1], r[2], o_old[0], o_old[1], o_old[2], r_old[0], r_old[1], r_old[2]);
+                    if g[1] > 1e-3 { for c in 0..3 { lr[c] += (r[c] as f64).ln(); lr_old[c] += (r_old[c] as f64).ln(); } n += 1; }
                 }
-                if n > 0 { println!("\ngeometric mean ratio ours/game over {n} directions: ({:.4}, {:.4}, {:.4})", (lr[0] / n as f64).exp(), (lr[1] / n as f64).exp(), (lr[2] / n as f64).exp()); }
+                if n > 0 { println!("\ngeometric mean ratio ours/game over {n} dome layers: transcription ({:.4}, {:.4}, {:.4}), old model ({:.4}, {:.4}, {:.4})", (lr[0] / n as f64).exp(), (lr[1] / n as f64).exp(), (lr[2] / n as f64).exp(), (lr_old[0] / n as f64).exp(), (lr_old[1] / n as f64).exp(), (lr_old[2] / n as f64).exp()); }
+                // --sky-probe-fit: which VS u shift (in the mesh's az/π units) each dome layer fits best, and the
+                // best common shift — the LightDirAngle_m11Zx convention under test
+                if has("--sky-probe-fit") {
+                    if let Some(sg) = &prm.sky_grad {
+                        let err = |shift: f32, only: Option<usize>| -> f64 {
+                            let mut e = 0.0f64;
+                            for (i, (d, g, _, _, fr)) in domes.iter().enumerate() {
+                                if let Some(o) = only { if o != i { continue; } }
+                                if g[1] <= 1e-3 { continue; }
+                                let centre = fr.as_ref().map(|f| f.center).unwrap_or([1024.0, 71.0, 1024.0]);
+                                let o = sg.dome_radiance_shift(centre, *d, centre, Some(shift));
+                                for c in 0..3 { e += ((o[c] / g[c].max(1e-6)) as f64).ln().powi(2); }
+                            }
+                            e
+                        };
+                        let mut best = (f64::MAX, 0.0f32);
+                        for i in 0..400 { let s = -1.0 + i as f32 / 200.0; let e = err(s, None); if e < best.0 { best = (e, s); } }
+                        println!("\nbest common u shift: {:.3} (rms log-ratio {:.4}); per layer:", best.1, (best.0 / (3.0 * n as f64)).sqrt());
+                        for (i, (d, _, di, pi, _)) in domes.iter().enumerate() {
+                            let mut b = (f64::MAX, 0.0f32);
+                            for k in 0..400 { let s = -1.0 + k as f32 / 200.0; let e = err(s, Some(i)); if e < b.0 { b = (e, s); } }
+                            println!("  dir {di} peel {pi} D ({:.3}, {:.3}, {:.3}): best shift {:.3} (rms {:.4}); u_mesh {:.4}", d[0], d[1], d[2], b.1, (b.0 / 3.0).sqrt(), d[0].atan2(d[2]) / std::f32::consts::PI);
+                        }
+                        println!("  the capture's LightDirAngle_m11Zx = sun az/π = {:.4}", prm.sun_dir[0].atan2(prm.sun_dir[2]) / std::f32::consts::PI);
+                    }
+                }
                 return;
             }
             // (the sweep's direction list goes into the manifest before the sweep bakes, so a manifest written
@@ -3253,6 +3305,7 @@ fn run(a: Vec<String>) {
             if let Some(v) = f("--stride") { opts.stride = v.parse().expect("--stride"); }
             if let Some(v) = f("--threshold") { opts.pass_threshold = v.parse().expect("--threshold"); }
             opts.game_map = f("--game-map");
+            opts.game_manifest = f("--game-manifest");
             let heat = f("--heat");
             opts.keep_pairs = heat.is_some();
             let t0 = std::time::Instant::now();
@@ -3836,7 +3889,15 @@ fn run(a: Vec<String>) {
             let g = lightmap::skygrad::SkyGradient::load(&a[1]).expect("SkyColor");
             println!("{}: {}×{}", a[1].rsplit('/').next().unwrap(), g.w, g.h);
             println!("{}", g.profile());
-            // the column profile of the row through the brightest texel (the sun glow's u)
+            // --row V: the texel values along the row at texture v = V (u = 0..1 in 1/20 steps), bilinear
+            if let Some(v) = a.iter().position(|x| x == "--row").and_then(|i| a.get(i + 1)) {
+                let v: f32 = v.parse().unwrap();
+                for i in 0..=20 {
+                    let u = i as f32 / 20.0;
+                    let t = g.sample_linear(u, v, 2);
+                    println!("  u {u:.2} v {v:.3}: ({:.4}, {:.4}, {:.4})", t[0], t[1], t[2]);
+                }
+            }
         }
         "skyprofile" => {
             // lmtool skyprofile CUBE.dds: radiance by elevation band (mean over azimuth) and the share of the

@@ -10,6 +10,7 @@ impl std::fmt::Debug for SkyGradient {
     }
 }
 
+#[derive(Clone)]
 pub struct SkyGradient {
     pub w: usize,
     pub h: usize,
@@ -38,6 +39,9 @@ pub struct SkyGradient {
     pub blend_t: f32,
     /// v = sin(elevation) (a dome whose texture v follows the height) instead of elevation/90°.
     pub v_sin: bool,
+    /// `dome_radiance`'s u addressing for the gradient texture: 0 wrap, 1 mirror, 2 clamp (the sampler
+    /// state is not in the capture's action list; mirror is the reading that fits the u = az/π mesh).
+    pub dome_u_mode: u8,
 }
 
 impl SkyGradient {
@@ -45,7 +49,7 @@ impl SkyGradient {
         let d = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
         let dds = crate::bc6h::parse_dds(&d)?;
         let px = crate::bc6h::decode_image(dds.data, dds.w, dds.h, dds.format == 96);
-        Ok(SkyGradient { w: dds.w, h: dds.h, px, sun_az: 0.0, u_sun: 0.0, u_sign: 1.0, v_top_is_zenith: true, v_full: false, scale: 1.0, lobes: Vec::new(), sun_dir: [0.0, 1.0, 0.0], fog: None, global_scale: 1.0, px2: None, blend_t: 0.0, v_sin: false })
+        Ok(SkyGradient { w: dds.w, h: dds.h, px, sun_az: 0.0, u_sun: 0.0, u_sign: 1.0, v_top_is_zenith: true, v_full: false, scale: 1.0, lobes: Vec::new(), sun_dir: [0.0, 1.0, 0.0], fog: None, global_scale: 1.0, px2: None, blend_t: 0.0, v_sin: false, dome_u_mode: 1 })
     }
 
     /// The texel at (u, v) in 0..1 (u wraps, v clamps), nearest.
@@ -78,6 +82,112 @@ impl SkyGradient {
             self.px2 = Some(q);
         }
         self.blend_t = t;
+    }
+
+    /// The texture sampled with bilinear filtering at (u, v) in texture units, u addressed by `u_mode`
+    /// (0 wrap, 1 mirror, 2 clamp), v clamped — `sample_indexable` with SMapGradientV.
+    pub fn sample_linear(&self, u: f32, v: f32, u_mode: u8) -> [f32; 3] {
+        let wrap_u = |x: f32| -> f32 {
+            match u_mode {
+                1 => { let m = x.rem_euclid(2.0); if m > 1.0 { 2.0 - m } else { m } }
+                2 => x.clamp(0.0, 1.0),
+                _ => x.rem_euclid(1.0),
+            }
+        };
+        let fx = wrap_u(u) * self.w as f32 - 0.5;
+        let fy = (v.clamp(0.0, 1.0) * self.h as f32 - 0.5).clamp(0.0, (self.h - 1) as f32);
+        let (x0, y0) = (fx.floor(), fy.floor());
+        let (tx, ty) = (fx - x0, fy - y0);
+        let xi = |x: f32| -> usize {
+            match u_mode {
+                0 => (x.rem_euclid(self.w as f32)) as usize % self.w,
+                _ => (x.clamp(0.0, (self.w - 1) as f32)) as usize,
+            }
+        };
+        let (xa, xb) = (xi(x0), xi(x0 + 1.0));
+        let (ya, yb) = (y0 as usize, ((y0 + 1.0) as usize).min(self.h - 1));
+        let p = |x: usize, y: usize| -> [f32; 3] { self.px[y * self.w + x] };
+        let (p00, p10, p01, p11) = (p(xa, ya), p(xb, ya), p(xa, yb), p(xb, yb));
+        let mut out = [0f32; 3];
+        for k in 0..3 {
+            out[k] = (p00[k] * (1.0 - tx) + p10[k] * tx) * (1.0 - ty) + (p01[k] * (1.0 - tx) + p11[k] * tx) * ty;
+        }
+        out
+    }
+
+    /// THE GAME'S SKY DOME, transcribed from the capture (pwc-day frame 127448, draw eid 1051: VS 16773
+    /// `GbxSkyV0`, PS 16774; mesh e001051: an ellipsoid of 2143 vertices in 33 rings, radii 22265.2265625
+    /// (x, z) and 9751.1611328125 (y), centred at the WORLD ORIGIN with VisualToWorld = identity; 65 vertices
+    /// per ring, u = atan2(x, z)/π; v per ring from the table below (InvertY: the texture v = 1 − v)).
+    /// The peel's pixel ray `q + t·d` (orthographic) meets the dome's inner face at P (the far root); the
+    /// mesh interpolates u linearly around the ring and v linearly in the height between the two rings of
+    /// P's band; the vertex shader shifts u by `LightDirAngle_m11Zx` = the sun's azimuth/π and inverts v;
+    /// the pixel shader samples TMapGradientV1 (ScaleGrad1 = 1; TMapGradientV × ScaleGrad0 = 0 adds
+    /// nothing), adds the two Atmo lobes `Scale·max(0, view·L)^Power·Rgb` with view = normalize(P − eye),
+    /// blends toward the fog colour by FogIntens, multiplies by GlobalScale and clamps to 16375.
+    pub fn dome_radiance(&self, q: [f32; 3], d: [f32; 3], eye: [f32; 3]) -> [f32; 3] {
+        self.dome_radiance_shift(q, d, eye, None)
+    }
+
+    /// `dome_radiance` with the vertex shader's u shift overridden (a probe: which shift the capture fits).
+    pub fn dome_radiance_shift(&self, q: [f32; 3], d: [f32; 3], eye: [f32; 3], shift: Option<f32>) -> [f32; 3] {
+        const A: f64 = 22265.2265625;
+        const B: f64 = 9751.1611328125;
+        // the 17 rings of the upper half: (y of the ring, v of the ring); the lower half mirrors them
+        const RINGS: [(f32, f32); 17] = [
+            (0.0, 0.0), (955.8, 0.0248), (1902.4, 0.0574), (2830.6, 0.0976), (3731.6, 0.1449), (4596.7, 0.1989), (5417.5, 0.2591), (6186.1, 0.3249),
+            (6895.1, 0.3956), (7537.7, 0.4706), (8107.8, 0.5492), (8599.8, 0.6305), (9008.9, 0.7139), (9331.3, 0.7985), (9563.8, 0.8835), (9704.2, 0.9680), (9751.1611328125, 1.0),
+        ];
+        // the far intersection of q + t·d with (x² + z²)/A² + y²/B² = 1
+        let (qx, qy, qz) = (q[0] as f64, q[1] as f64, q[2] as f64);
+        let (dx, dy, dz) = (d[0] as f64, d[1] as f64, d[2] as f64);
+        let aa = (dx * dx + dz * dz) / (A * A) + dy * dy / (B * B);
+        let bb = 2.0 * ((qx * dx + qz * dz) / (A * A) + qy * dy / (B * B));
+        let cc = (qx * qx + qz * qz) / (A * A) + qy * qy / (B * B) - 1.0;
+        let disc = (bb * bb - 4.0 * aa * cc).max(0.0);
+        let t = (-bb + disc.sqrt()) / (2.0 * aa);
+        let p = [qx + t * dx, qy + t * dy, qz + t * dz];
+        // the mesh's texture coordinates at P: u around the ring, v by the band's height
+        let u_mesh = (p[0].atan2(p[2]) / std::f64::consts::PI) as f32;
+        let ay = p[1].abs() as f32;
+        let mut v_mesh = 1.0f32;
+        for k in 0..16 {
+            let (y0, v0) = RINGS[k];
+            let (y1, v1) = RINGS[k + 1];
+            if ay <= y1 {
+                v_mesh = v0 + (v1 - v0) * ((ay - y0) / (y1 - y0)).clamp(0.0, 1.0);
+                break;
+            }
+        }
+        // VS: o1.x = u − LightDirAngle_m11Zx (GradientV_ForceX < 0), o1.y = 1 − v (GradientV_InvertY)
+        let sun_u = shift.unwrap_or_else(|| (self.sun_dir[0].atan2(self.sun_dir[2]) / std::f32::consts::PI) as f32);
+        let u = u_mesh - sun_u;
+        let v = 1.0 - v_mesh;
+        // PS: the second gradient × ScaleGrad1 (the first × ScaleGrad0 = 0), the lobes, the fog, GlobalScale
+        let g = self.sample_linear(u, v, self.dome_u_mode);
+        if std::env::var_os("LMTOOL_DOME_DEBUG").is_some() {
+            eprintln!("dome: q ({:.1},{:.1},{:.1}) d ({:.3},{:.3},{:.3}) t {t:.0} P ({:.0},{:.0},{:.0}) u_mesh {u_mesh:.4} v_mesh {v_mesh:.4} sun_u {sun_u:.4} u {u:.4} v {v:.4} tex ({:.4},{:.4},{:.4}) sun_dir ({:.3},{:.3},{:.3}) scale {} fog {:?} global {}", q[0], q[1], q[2], d[0], d[1], d[2], p[0], p[1], p[2], g[0], g[1], g[2], self.sun_dir[0], self.sun_dir[1], self.sun_dir[2], self.scale, self.fog, self.global_scale);
+        }
+        let mut out = [g[0] * self.scale, g[1] * self.scale, g[2] * self.scale];
+        let view = { let v = [p[0] as f32 - eye[0], p[1] as f32 - eye[1], p[2] as f32 - eye[2]]; let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt().max(1e-9); [v[0] / l, v[1] / l, v[2] / l] };
+        let cos_t = (view[0] * self.sun_dir[0] + view[1] * self.sun_dir[1] + view[2] * self.sun_dir[2]).max(0.0);
+        for (power, rgb, scale) in &self.lobes {
+            // log/exp as the shader: exp(power·log(cos)) → 0 at cos = 0
+            let f = if cos_t > 0.0 { scale * (power * cos_t.ln()).exp() } else { 0.0 };
+            for k in 0..3 {
+                out[k] += f * rgb[k];
+            }
+        }
+        if let Some((fog, fi)) = self.fog {
+            let w = (1.0 - fi).clamp(0.0, 1.0);
+            for k in 0..3 {
+                out[k] = (out[k] - fog[k]) * w + fog[k];
+            }
+        }
+        for k in 0..3 {
+            out[k] = (out[k] * self.global_scale).min(16375.0);
+        }
+        out
     }
 
     /// The sky radiance in direction `d` (unit).
