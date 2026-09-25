@@ -60,6 +60,17 @@ pub struct GameLayout {
     pub entries: Vec<((i32, i32, i32, i32), (u32, u32), Vec<(usize, u32)>)>,
     /// Per entry: (group index, chunk index, the area whose bits the walk sorts by).
     pub entry_keys: Vec<(usize, u32, f32)>,
+    /// The record CENTRES in chart order (rec+0x38): the mapping header's bbox is their min / max fold (RE 7's 0008,
+    /// itemrule::mapping_bbox — every record at write time, no half extents).
+    pub centres: Vec<[f32; 3]>,
+}
+
+impl GameLayout {
+    /// The mapping header's bbox_min / bbox_max (FUN_140287730): the fold of every record centre.
+    pub fn mapping_bbox(&self) -> Option<([f32; 3], [f32; 3])> {
+        if self.centres.is_empty() { return None; }
+        Some(crate::itemrule::mapping_bbox(&self.centres))
+    }
 }
 
 /// The zone tile's PreLightGen constants: MeterByUv and the uv bounds (u0, v0, u1, v1). The BlueBay `Zone\Sea\Base.Prefab.Gbx`
@@ -247,7 +258,8 @@ pub fn allocate(input: &LayoutInput) -> Result<GameLayout, String> {
         .enumerate()
         .map(|(k, p)| LayoutChart { obj: objs[k].0, ext: charts[k].ext, charted: objs[k].1, x: p.x as i32 + pad as i32, y: p.y as i32 + pad as i32, w: p.w as i32 - 2 * pad as i32, h: p.h as i32 - 2 * pad as i32 })
         .collect();
-    Ok(GameLayout { charts: out, s, sum_area, w_atlas: input.w_atlas, params: (g, pad, m), max_iter, cell_of: Vec::new(), tile_quality: Vec::new(), entries: Vec::new(), entry_keys: Vec::new() })
+    let centres: Vec<[f32; 3]> = keys.iter().map(|k| k.centre).collect();
+    Ok(GameLayout { charts: out, s, sum_area, w_atlas: input.w_atlas, params: (g, pad, m), max_iter, cell_of: Vec::new(), tile_quality: Vec::new(), entries: Vec::new(), entry_keys: Vec::new(), centres })
 }
 
 #[cfg(test)]
@@ -372,7 +384,8 @@ pub fn for_map(map_path: &str, scene: &crate::geometry::Scene, base: u32, qualit
     // (REPORT-5 §4-E.10: 12 141 / 12 141 rects on stpad) — the game's object ids (blocks from 16384, tiles, clips, items by
     // record rank); LMTOOL_LAYOUT_TILES_ITEMS=1 keeps the tiles + items path
     let has_authored = mf.blocks.iter().any(|b| !(b.flags & 0x1000 != 0 && prof.flat_zones.contains(&b.name.as_str())));
-    if has_authored && std::env::var_os("LMTOOL_LAYOUT_TILES_ITEMS").is_none() {
+    // (tiny16 through it: 12 214 / 12 214 — the same charts as the tiles + items path below, which stays for a run without a pak)
+    if (has_authored || pak.is_some()) && std::env::var_os("LMTOOL_LAYOUT_TILES_ITEMS").is_none() {
         let Some((pak_path, key)) = pak else { return Err("a map with authored blocks needs --pak FILE:KEY (the block infos and clip prefabs)".into()) };
         let mut store = mapgeom::store::DataStore::empty();
         store.add_pak(pak_path, key).map_err(|e| format!("pak: {e}"))?;
@@ -712,5 +725,6 @@ pub fn allocate_grouped_walls(input: &LayoutInput, groups: &[u64], pos: Option<&
     let entry_keys: Vec<(usize, u32, f32)> = entries.iter().enumerate().map(|(ei, e)| (e.group, e.chunk, areas[ei])).collect();
     let _ = &walk_pos;
     WALK_POS.with(|w| *w.borrow_mut() = walk_pos.clone());
-    Ok(GameLayout { charts: out, s, sum_area, w_atlas: input.w_atlas, params: (g, pad, m), max_iter, cell_of: Vec::new(), tile_quality: Vec::new(), entries: entry_out, entry_keys })
+    let centres: Vec<[f32; 3]> = keys.iter().map(|k| k.centre).collect();
+    Ok(GameLayout { charts: out, s, sum_area, w_atlas: input.w_atlas, params: (g, pad, m), max_iter, cell_of: Vec::new(), tile_quality: Vec::new(), entries: entry_out, entry_keys, centres })
 }

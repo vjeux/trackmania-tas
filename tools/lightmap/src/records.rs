@@ -26,11 +26,14 @@ pub struct Rec {
     pub wall: Option<(u8, f32)>,
     /// The map item index for an item record, and its model / species name.
     pub item: Option<(usize, String)>,
+    /// The placement's scale word (1.0 unless the item is scaled): the chart extent is uv · MeterByUv · quality · scale.
+    pub scale: f32,
 }
 
 impl Rec {
     pub fn ext(&self) -> [f32; 2] {
-        let f = self.meter_by_uv * self.quality;
+        // the placement's scale word rides with the quality (layout::for_map's `plg_u02 * (q * sc)` — the same rounding)
+        let f = self.meter_by_uv * (self.quality * self.scale);
         [(self.uv[2] - self.uv[0]) * f, (self.uv[3] - self.uv[1]) * f]
     }
 }
@@ -122,7 +125,7 @@ pub fn zone_tiles(store: &mut mapgeom::store::DataStore, collection: &str, zone:
             let iso: crate::lmtiles::Iso4 = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, cx as f32 * 32.0, cell_y * 8.0 + yoff, cz as f32 * 32.0];
             let w = mb.transformed(&iso);
             let q = quality(cx, cz);
-            out.push(Rec { class: "tile", obj: 0, sub: 0, meter_by_uv: mbu, uv, quality: q, centre: w.c, half: w.h, group: 0xF000_0000_0000_0000 | q.to_bits() as u64, key_centre: None, pos_rank: None, wall: None, item: None });
+            out.push(Rec { class: "tile", obj: 0, sub: 0, meter_by_uv: mbu, uv, quality: q, centre: w.c, half: w.h, group: 0xF000_0000_0000_0000 | q.to_bits() as u64, key_centre: None, pos_rank: None, wall: None, item: None, scale: 1.0 });
         }
     }
     Ok(out)
@@ -278,7 +281,7 @@ pub fn prefab_entity_records_in(store: &mut mapgeom::store::DataStore, free: boo
                 // THE WALL TEST (RE 7's FUN_14028ff90): this exact model file, and the entity's world Iso4 third row (m2, m5, m8) axis-aligned
                 let iso = crate::lmtiles::from_xform(&e_xf);
                 let wall = if prefab_path == crate::itemrule::WALL_MODEL_FILE { crate::itemrule::wall_facing(iso[2], iso[5], iso[8]).map(|code| (code, 2.0 * w.h[1])) } else { None };
-                out.push(Rec { class, obj, sub: *sub, meter_by_uv: plg.u02, uv: [plg.u04[0], plg.u04[1], plg.u04[2], plg.u04[3]], quality, centre: w.c, half: w.h, group, key_centre: None, pos_rank: None, wall, item: None });
+                out.push(Rec { class, obj, sub: *sub, meter_by_uv: plg.u02, uv: [plg.u04[0], plg.u04[1], plg.u04[2], plg.u04[3]], quality, centre: w.c, half: w.h, group, key_centre: None, pos_rank: None, wall, item: None, scale: 1.0 });
                 *sub += 1;
             }
             None if e.model.index >= 0 => {
@@ -412,17 +415,31 @@ pub fn build_map_records(map_path: &str, scene: &crate::geometry::Scene, store: 
         let additional = ((b.flags >> mapgeom::blockmap::FLAG_ADDITIONAL_SHIFT) & 127) as usize;
         n_block_recs += block_records_class(store, &bi, [x, y, z], b.dir, ground, variant, subvariant, additional, yoff, "block", obj, 1.0, b.flags & 0x1000_0000 != 0, &mut recs)?;
     }
-    // 2. the tiles (the zone prefab at the tile row)
+    // 2. the tiles: the map's GENEALOGY (chunk 0x03043043) names every cell's zone and direction (BlueBay tiny16: Sea, Land,
+    // frontier and transition tiles) — each cell's record is that zone prefab's PLG with its box through the cell's rotation
+    // (lmtiles::tile_records); an empty genealogy (stpad, the resaved tiny maps) means the ground zone everywhere
     let n_tiles_before = recs.len();
     {
         let cells_of: Vec<(i32, i32)> = cells.clone();
-        let tiles_all = zone_tiles(store, coll, &zone, grid, tile_y as f32, yoff, &|cx, cz| tq[cx * grid + cz])?;
-        // zone_tiles is x-major over the whole grid; take them in `cells` order
-        let mut by_cell: std::collections::HashMap<(i32, i32), Rec> = tiles_all.into_iter().enumerate().map(|(i, r)| (((i / grid) as i32, (i % grid) as i32), r)).collect();
+        let chunks = tmmaps::gbx::all_skip_chunks(&mf.gbx.body);
+        let gen: Vec<(String, u32)> = chunks.iter().find(|(c, ..)| *c == 0x0304_3043).and_then(|&(_, _, payload, size)| tmmaps::map::genealogy_full(&mf.gbx.body[payload..payload + size]).ok()).map(|recs| recs.into_iter().map(|r| (r.current, r.dir)).collect()).unwrap_or_default();
+        let tiles = crate::lmtiles::tile_records(store, coll, [grid, 1, grid], &gen, &zone, tile_y as f32, yoff, 1.0)?;
+        let mut by_cell: std::collections::HashMap<(i32, i32), (String, crate::lmtiles::BlockRecord)> = tiles.into_iter().map(|(cx, cz, z, _dir, rec)| ((cx as i32, cz as i32), (z, rec))).collect();
+        let mut plg_of_zone: std::collections::HashMap<String, Rec> = Default::default();
+        // THE TILE CHART is the GROUND zone prefab's PLG for every cell (tiny16, 12 214 / 12 214: one extent over Sea, Land and
+        // frontier cells alike — the lightmapper's tile records share the decoration's flat tile model), one clone → one group
+        // per quality; the record BOX is the cell's own zone box through its rotation (the genealogy's zone / dir)
+        {
+            let one = zone_tiles(store, coll, &zone, 1, tile_y as f32, yoff, &|_, _| 1.0)?;
+            let Some(r0) = one.into_iter().next() else { return Err(format!("{coll}/{zone}: no zone prefab PLG")) };
+            plg_of_zone.insert(zone.clone(), r0);
+        }
+        let r0 = plg_of_zone[&zone].clone();
         for (k, c) in cells_of.iter().enumerate() {
-            let Some(mut r) = by_cell.remove(c) else { return Err(format!("tile cell {c:?} missing")) };
-            r.obj = tile_obj0 + k as u32;
-            recs.push(r);
+            let Some((_z, rec)) = by_cell.remove(c) else { return Err(format!("tile cell {c:?} missing")) };
+            // tq is indexed like `cells` (the baked cells first, then x-major) — not by coordinates
+            let q = tq[k];
+            recs.push(Rec { class: "tile", obj: tile_obj0 + k as u32, sub: 0, meter_by_uv: r0.meter_by_uv, uv: r0.uv, quality: q, centre: rec.world.c, half: rec.world.h, group: 0xF000_0000_0000_0000 | q.to_bits() as u64, key_centre: None, pos_rank: None, wall: None, item: None, scale: 1.0 });
         }
     }
     let n_tiles = recs.len() - n_tiles_before;
@@ -507,7 +524,7 @@ pub fn build_map_records(map_path: &str, scene: &crate::geometry::Scene, store: 
             let q = crate::layout::item_quality(inst.lm_quality);
             let colour = colours.as_ref().map(|c| c.item(ii)).unwrap_or(0) as u64;
             let group = if std::env::var_os("LMTOOL_NO_COLOUR_CLONES").is_some() || !crate::itemrule::colour_cloned(&m.mat_links) { ((inst.model as u64) << 32) | q.to_bits() as u64 } else { ((inst.model as u64) << 40) | (colour << 32) | q.to_bits() as u64 };
-            recs.push(Rec { class: "item", obj: item_obj0 + n_items as u32, sub: 0, meter_by_uv: m.plg_u02, uv: b, quality: q, centre: rec.world.c, half: rec.world.h, group, key_centre: None, pos_rank: None, wall: None, item: Some((ii, format!("{} v{} flags {:#x}", it.model, it.variant(), it.flags))) });
+            recs.push(Rec { class: "item", obj: item_obj0 + ii as u32, sub: 0, meter_by_uv: m.plg_u02, uv: b, quality: q, centre: rec.world.c, half: rec.world.h, group, key_centre: None, pos_rank: None, wall: None, item: Some((ii, format!("{} v{} flags {:#x}", it.model, it.variant(), it.flags))), scale: if inst.pose.scale > 0.0 { inst.pose.scale } else { 1.0 } });
             n_items += 1;
             continue;
         }
@@ -537,7 +554,7 @@ pub fn build_map_records(map_path: &str, scene: &crate::geometry::Scene, store: 
         if std::env::var("LMTOOL_KIND0_GROUP").map(|v| v == "item").unwrap_or(false) { ("legacy", ii).hash(&mut hh); } else { ("legacy", species.as_str()).hash(&mut hh); }
         // LMTOOL_KIND0_KEY=pos|posc: the Morton key from the item position (+ the model box centre) instead of the record centre
         let key_centre = match std::env::var("LMTOOL_KIND0_KEY").ok().as_deref() { Some("pos") => Some(it.pos), Some("posc") => Some([it.pos[0] + c[0], it.pos[1] + c[1], it.pos[2] + c[2]]), _ => None };
-        recs.push(Rec { class: "item0", obj: item_obj0 + n_items as u32, sub: 0, meter_by_uv: plg.u02, uv: [plg.u04[0], plg.u04[1], plg.u04[2], plg.u04[3]], quality: q, centre, half, group: (hh.finish() & 0x0000_FFFF_FFFF_0000) | q.to_bits() as u64, key_centre, pos_rank: None, wall: None, item: Some((ii, species.clone())) });
+        recs.push(Rec { class: "item0", obj: item_obj0 + ii as u32, sub: 0, meter_by_uv: plg.u02, uv: [plg.u04[0], plg.u04[1], plg.u04[2], plg.u04[3]], quality: q, centre, half, group: (hh.finish() & 0x0000_FFFF_FFFF_0000) | q.to_bits() as u64, key_centre, pos_rank: None, wall: None, item: Some((ii, species.clone())), scale: 1.0 });
         n_items += 1;
         n_kind0 += 1;
     }

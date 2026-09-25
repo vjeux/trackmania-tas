@@ -2631,7 +2631,14 @@ fn run(a: Vec<String>) {
             }
             let probes_for_transcribed = if writer_transcribed { probes.clone() } else { None };
             let frame_params_for_transcribed = if writer_transcribed { frame_params.clone() } else { None };
-            let s = lightmap::synth::build_full2_placed(out_charts, (tm.bbox_min, tm.bbox_max), &tpl.chunk, probes, vp8_q, frame_params, fixed_pos.as_ref()).expect("build");
+            // THE MAPPING HEADER'S BBOX (RE 7's 0008, FUN_140287730): the min / max fold of every record's CENTRE at write time — no
+            // half extents, no padding (stpad / tiny03 / tiny16 bit-exact); the template's box only when no game layout exists
+            // (LMTOOL_BBOX_TEMPLATE=1 keeps it)
+            let mapping_bbox: ([f32; 3], [f32; 3]) = match game_layout.as_ref().and_then(|gl| gl.mapping_bbox()) {
+                Some(b) if std::env::var_os("LMTOOL_BBOX_TEMPLATE").is_none() => { eprintln!("writer: mapping bbox = the record centres' fold {:?}..{:?} (template {:?}..{:?})", b.0, b.1, tm.bbox_min, tm.bbox_max); b }
+                _ => (tm.bbox_min, tm.bbox_max),
+            };
+            let s = lightmap::synth::build_full2_placed(out_charts, mapping_bbox, &tpl.chunk, probes, vp8_q, frame_params, fixed_pos.as_ref()).expect("build");
             let s = match (writer_transcribed, &chain_finals) {
                 (true, Some(finals)) => {
                     let tw = std::time::Instant::now();
@@ -2641,7 +2648,7 @@ fn run(a: Vec<String>) {
                     // the layout rects (2048 layout units) in the mapping's order = the placed charts (obj, sub) ascending
                     let rects: Vec<(u32, u32, u32, u32)> = s.placed.iter().map(|&(_o, _s, px, py, w, h)| ((2 * px).saturating_sub(1), (2 * py).saturating_sub(1), 2 * w, 2 * h)).collect();
                     match lightmap::e2e::transcribed_images(&enc, maxhdr, mood_max_hdr_for_encode, &rects, chain_ambient_xyz) {
-                        Some(img) => match lightmap::synth::build_transcribed(&s.placed, (tm.bbox_min, tm.bbox_max), &tpl.chunk, &img, probes_for_transcribed, frame_params_for_transcribed) {
+                        Some(img) => match lightmap::synth::build_transcribed(&s.placed, mapping_bbox, &tpl.chunk, &img, probes_for_transcribed, frame_params_for_transcribed) {
                             Ok(st) => {
                                 eprintln!("writer: TRANSCRIBED — MaxHdr {maxhdr:?} (Mood {mood_max_hdr_for_encode}), record MaxHDR {} / √3κ·max {:?}; blob0 {} B, blob1 {} B, {} charts; probes {} ; LAmbient {} ({:.1}s)", img.max_hdr, img.hbasis234, img.blob0.len(), img.blob1.len(), st.charts, if prm.probe_bake.is_some() && probe_layout.is_some() { "the transcribed passes' blob" } else if st.chunk.data.as_ref().map(|d| !d.frames[0].images[2].is_empty()).unwrap_or(false) { "the port's/template's blob" } else { "none" }, match img.lambient_f16 { Some(l) => format!("= f16(AddAmbient) {l:?}"), None => "= the template's".into() }, tw.elapsed().as_secs_f32());
                                 lightmap::synth::Synth { atlas8, ..st }
@@ -8483,6 +8490,14 @@ fn run(a: Vec<String>) {
                 let (mut same_size, mut diff_size, mut shown) = (0usize, 0usize, 0usize);
                 let mut size_hist: std::collections::BTreeMap<(i32, i32, i32, i32), usize> = Default::default();
                 for c in &gl.charts { if c.charted == lightmap::layout::Charted::Bound { bound += 1; } if let Some(&(ex, ey, ew, eh)) = ed.get(&c.obj) { n += 1; if c.x == ex as i32 && c.y == ey as i32 && c.w == ew as i32 && c.h == eh as i32 { ok += 1; } else { if c.w == ew as i32 && c.h == eh as i32 { same_size += 1; } else { diff_size += 1; *size_hist.entry((c.w, c.h, ew as i32, eh as i32)).or_default() += 1; } if shown < 10 && a.iter().any(|x| x == "--show-misses") { shown += 1; println!("  miss obj {}: ours ({}, {}) {}×{} editor ({ex}, {ey}) {ew}×{eh}", c.obj, c.x, c.y, c.w, c.h); } } } }
+                // LMTOOL_CHARTS_DUMP=FILE: every chart (obj, rect, ext, charted) for a side-by-side of two layout paths
+                if let Ok(path) = std::env::var("LMTOOL_CHARTS_DUMP") {
+                    let mut out = String::new();
+                    for (k, c) in gl.charts.iter().enumerate() { out.push_str(&format!("{} {} {} {} {} {:?} {:?} {:?}\n", c.obj, c.x, c.y, c.w, c.h, c.ext, c.charted, gl.centres.get(k))); }
+                    std::fs::write(&path, out).expect("charts dump");
+                }
+                // the mapping header's bbox: our record centres' fold vs the editor's header (RE 7's 0008)
+                if let Some((bmin, bmax)) = gl.mapping_bbox() { println!("mapping bbox: ours {:?}..{:?} vs the editor's {:?}..{:?} → {}", bmin, bmax, mp.bbox_min, mp.bbox_max, if bmin == mp.bbox_min && bmax == mp.bbox_max { "EQUAL (bit-exact)" } else { "DIFFERENT" }); }
                 println!("via layout::for_map: s {} Σarea {} maxIter {}; {} charts ({bound} bound), {ok} of {n} equal to the editor's table (of {} editor entries); misses: {same_size} same size elsewhere, {diff_size} other size", gl.s, gl.sum_area, gl.max_iter, gl.charts.len(), ed.len());
                 if diff_size > 0 { let mut v: Vec<_> = size_hist.into_iter().collect(); v.sort_by_key(|(_, n)| std::cmp::Reverse(*n)); println!("  size differences (ours w×h → editor w×h: count): {:?}", v.iter().take(12).map(|((a, b, c, d), n)| format!("{a}×{b}→{c}×{d}:{n}")).collect::<Vec<_>>()); }
 
