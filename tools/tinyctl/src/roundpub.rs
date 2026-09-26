@@ -227,6 +227,17 @@ pub fn mint_tokens(wsx: &Wsx, token_dir: &Path) -> Result<(), String> {
     let t0 = Instant::now();
     let mut dead_plugin = 0u32;
     loop {
+        // another session's DIRTY-RECOVERY marker (MK64 native runs, 2026-09-26): the box is
+        // mid-restore — wait, never launch or mint over it
+        let marker = wsx.sh("test -e /mnt/c/Users/vjeux/OpenplanetNext/PluginStorage/TmDriveRecovery.v1 && echo DIRTY || echo clean").unwrap_or_default();
+        if marker.contains("DIRTY") {
+            println!("  mint: TmDriveRecovery.v1 marker present (another session restoring the box) — waiting");
+            std::thread::sleep(std::time::Duration::from_secs(60));
+            if t0.elapsed().as_secs() > 3600 {
+                return Err("mint: recovery marker still present after 60 min".into());
+            }
+            continue;
+        }
         // the game itself: launched as its own lock step when it is not running
         let up = wsx.sh("tasklist.exe 2>/dev/null | grep -ci trackmania").unwrap_or_default().trim().to_string();
         // a game left running WITHOUT Openplanet by a session that has released the lock

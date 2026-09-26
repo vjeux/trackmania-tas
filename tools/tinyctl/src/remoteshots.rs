@@ -199,7 +199,26 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
 }
 
 /// The game running (launched as its own lock step when not).
+/// Another session's dirty-recovery marker (the MK64 native runs, 2026-09-26): while
+/// `PluginStorage/TmDriveRecovery.v1` exists the box is mid-restore — every game step of
+/// ours waits (up to an hour), never launches or takes the lock over it.
+fn wait_recovery_clear(wsx: &Wsx) -> Result<(), String> {
+    let t0 = Instant::now();
+    loop {
+        let m = wsx.sh("test -e /mnt/c/Users/vjeux/OpenplanetNext/PluginStorage/TmDriveRecovery.v1 && echo DIRTY || echo clean").unwrap_or_default();
+        if !m.contains("DIRTY") {
+            return Ok(());
+        }
+        if t0.elapsed().as_secs() > 3600 {
+            return Err("TmDriveRecovery.v1 marker still present after 60 min".into());
+        }
+        println!("  TmDriveRecovery.v1 marker present (another session restoring the box) — waiting");
+        std::thread::sleep(std::time::Duration::from_secs(60));
+    }
+}
+
 fn game_up(wsx: &Wsx) -> Result<(), String> {
+    wait_recovery_clear(wsx)?;
     let up = wsx.sh("tasklist.exe 2>/dev/null | grep -ci trackmania").unwrap_or_default().trim().to_string();
     if up == "0" {
         println!("  the game is not running — launching");
@@ -210,6 +229,7 @@ fn game_up(wsx: &Wsx) -> Result<(), String> {
 
 /// Wait for the box in ≤120 s slices (the bridge caps one call at 150 s).
 fn wait_box(wsx: &Wsx, purpose: &str, max_secs: u64) -> Result<(), String> {
+    wait_recovery_clear(wsx)?;
     let t0 = Instant::now();
     loop {
         let out = wsx.sh(&format!("{ENV}; tmdrive wait --timeout 120 > /dev/null 2>&1; echo RC=$?")).unwrap_or_default();
