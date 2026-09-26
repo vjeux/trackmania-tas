@@ -2818,7 +2818,7 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
     let shade_cached = tri_shade_applies(prm);
     // (`cap_total` = the most layers a pixel keeps, the dome layer included: skip_n + the rendered item layers when
     // the count is known before the derive, else skip_n + derive_cap and the cut comes after)
-    let derive_pixel = |x: usize, y: usize, list: &[Frag], out: &mut LayerSink, cache: &mut [(u32, f32); BIAS_CACHE], shade: &mut [(u32, TriShade); BIAS_CACHE], cap_total: usize| {
+    let derive_pixel = |x: usize, y: usize, list: &[Frag], out: &mut LayerSink, cache: &mut [(u32, f32); BIAS_CACHE], shade: &mut [(u32, TriShade); BIAS_CACHE], scratch_bufs: &mut (Vec<WalkFrag>, Vec<u32>), cap_total: usize| {
         let before = out.len();
         let mut d_prev = f32::NEG_INFINITY;
         // THE ENVIRONMENT LAYER (the game's first render of every peel: the sea box and the
@@ -2863,9 +2863,11 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
         // The unbiased rule (the former one) walks `list` in its (z, tri) order.
         // the walk order: the biased rule's accepted fragments (thread-local scratch — no allocation per pixel),
         // or every fragment of the list under the former rule
+        // (the walk buffers come from the caller's per-chunk scratch: taking them from a thread-local per pixel
+        // cost a TLS access and a 48-byte copy in and out — a tenth of the derive's samples)
         let biased = *BIASED_ORDER;
-        let mut scratch = if biased { Some(DERIVE_SCRATCH.take()) } else { None };
-        if let Some((order_buf, acc)) = scratch.as_mut() {
+        let mut scratch = if biased { Some(scratch_bufs) } else { None };
+        if let Some((order_buf, acc)) = scratch.as_mut().map(|s| &mut **s) {
             order_buf.clear();
             acc.clear();
             for (i, f) in list.iter().enumerate() {
@@ -2935,7 +2937,7 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
             d_prev = d;
         }
         if traced { eprintln!("LAYERDBG px={x} py={y} derived layers={} (env {} + items {}); the frame's cut applies skip_n + rendered", out.len() - before, skip_n, out.len() - before - skip_n); }
-        if let Some(sc) = scratch { DERIVE_SCRATCH.set(sc); }
+        let _ = scratch;
     };
     if let Some(px) = wanted {
         // SPARSE: the wanted pixels only, in parallel chunks of the dense index
@@ -2979,6 +2981,7 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
                 let mut out = unsafe { LayerSink::new((fp as *mut LayerFrag).add(base[ci]), base[ci + 1] - base[ci]) };
                 let mut cache = [(u32::MAX, 0.0f32); BIAS_CACHE];
                 let mut shade = [(u32::MAX, TriShade::NONE); BIAS_CACHE];
+                    let mut scratch_bufs: (Vec<WalkFrag>, Vec<u32>) = (Vec::with_capacity(64), Vec::with_capacity(32));
                 for (i, &id) in ids.iter().enumerate() {
                     let before = out.len();
                     if i + 1 < ids.len() {
@@ -2986,7 +2989,7 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
                             crate::peel::prefetch(&bvh.tris[f.tri as usize]);
                         }
                     }
-                    derive_pixel((id % w) as usize, (id / w) as usize, ab.at_rank(k0 + i), &mut out, &mut cache, &mut shade, cap_total);
+                    derive_pixel((id % w) as usize, (id / w) as usize, ab.at_rank(k0 + i), &mut out, &mut cache, &mut shade, &mut scratch_bufs, cap_total);
                     unsafe {
                         *(sp as *mut u32).add(k0 + i) = (base[ci] + before) as u32;
                         *(cp as *mut u8).add(k0 + i) = (out.len() - before) as u8;
@@ -3022,6 +3025,7 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
             let mut out = unsafe { LayerSink::new(out_v.as_mut_ptr(), bound) };
             let mut cache = [(u32::MAX, 0.0f32); BIAS_CACHE];
             let mut shade = [(u32::MAX, TriShade::NONE); BIAS_CACHE];
+                    let mut scratch_bufs: (Vec<WalkFrag>, Vec<u32>) = (Vec::with_capacity(64), Vec::with_capacity(32));
             for (i, &id) in ids.iter().enumerate() {
                 let before = out.len();
                 // (the next pixel's fragments' triangles fetched ahead: the per-fragment `bvh.tris[tri]` read is a
@@ -3031,7 +3035,7 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
                         crate::peel::prefetch(&bvh.tris[f.tri as usize]);
                     }
                 }
-                derive_pixel((id % w) as usize, (id / w) as usize, ab.at_rank(k0 + i), &mut out, &mut cache, &mut shade, skip_n + derive_cap);
+                derive_pixel((id % w) as usize, (id / w) as usize, ab.at_rank(k0 + i), &mut out, &mut cache, &mut shade, &mut scratch_bufs, skip_n + derive_cap);
                 counts.push((out.len() - before) as u32);
             }
             // SAFETY: the sink wrote out.len() ≤ bound slots of the vector's capacity
@@ -3159,10 +3163,11 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
                     let mut out = unsafe { LayerSink::new(out_v.as_mut_ptr(), bound) };
                     let mut cache = [(u32::MAX, 0.0f32); BIAS_CACHE];
                     let mut shade = [(u32::MAX, TriShade::NONE); BIAS_CACHE];
+                    let mut scratch_bufs: (Vec<WalkFrag>, Vec<u32>) = (Vec::with_capacity(64), Vec::with_capacity(32));
                     for y in y0..y1 {
                         for x in 0..w as usize {
                             let before = out.len();
-                            derive_pixel(x, y, ab.at_all(x as u32, y as u32), &mut out, &mut cache, &mut shade, skip_n + derive_cap);
+                            derive_pixel(x, y, ab.at_all(x as u32, y as u32), &mut out, &mut cache, &mut shade, &mut scratch_bufs, skip_n + derive_cap);
                             counts.push((out.len() - before) as u32);
                         }
                     }
@@ -3941,12 +3946,6 @@ pub fn draw_rank_table(bvh: &Bvh) -> Vec<u32> {
 #[inline(always)]
 fn draw_rank_of(tri: u32) -> u32 {
     match DRAW_RANK.get() { Some(r) => r[tri as usize], None => tri }
-}
-
-thread_local! {
-    /// The derive's per-pixel walk buffers (the biased order's fragments and the accepted indices), reused
-    /// across the pixels of a thread.
-    static DERIVE_SCRATCH: std::cell::Cell<(Vec<WalkFrag>, Vec<u32>)> = const { std::cell::Cell::new((Vec::new(), Vec::new())) };
 }
 
 /// One fragment of a pixel for the biased walk: the stored (biased, quantised) depth, the unbiased depth, the
