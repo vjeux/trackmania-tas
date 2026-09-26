@@ -2077,16 +2077,20 @@ fn run(a: Vec<String>) {
                     let by_name: std::collections::BTreeMap<String, Vec<u8>> = files.iter().map(|(k, v)| (k.rsplit(['/', '\\']).next().unwrap_or(k).to_string(), v.clone())).collect();
                     let item_bytes = |name: &str| -> Option<Vec<u8>> { by_name.get(name).cloned().or_else(|| by_name.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.clone())) };
                     let dir_in_world = [-prm.sun_dir[0], -prm.sun_dir[1], -prm.sun_dir[2]];
-                    // LMTOOL_LAMP_BOUNCE=1 (STUDY, E 16:25Z): the local lights' composed frame-1 light (localdrive: the same layout + LM
-                    // scene, every baked lamp, the transcribed pass, the SumDecoded compose over the atlas) added to the sun accumulation
-                    // before the ILightInput chain — the lamps' first bounce in frame 0 (setupmap::build_with_lamps)
-                    let lamp_light: Option<lightmap::passdiff::Buf> = if std::env::var_os("LMTOOL_LAMP_BOUNCE").is_some() {
+                    // THE LAMPS IN FRAME 0 (RE 13, 2026-09-26 17:30Z / 19:25Z / 19:30Z — RenderLightDirect renders every lit lamp (mode 0, the
+                    // switch not consulted) into A_0 before the sweeps; A_0 is SS-normalised, snapshotted as D_0 (= frame 1) and joins the sun
+                    // draws in sweep 0's light input as D_0 + (L + f·S)/(1 + f); setupmap::build_with_lamps): the local-light driver runs here
+                    // (localdrive: the same layout + LM scene, every baked lamp, the transcribed pass) and its A_0 (FrameOut::direct) goes to the
+                    // setup. ON by default (verified on stpad: Sunrise within 1–7 % on every class but the thin posts, night record 0.843 vs
+                    // 0.855); --no-lamp-bounce / LMTOOL_LAMP_BOUNCE=0 turns it off, LMTOOL_LAMP_BOUNCE=s scales L (study).
+                    let lamp_bounce_on = !has("--no-lamp-bounce") && std::env::var("LMTOOL_LAMP_BOUNCE").map(|v| v != "0").unwrap_or(true);
+                    let lamp_light: Option<lightmap::passdiff::Buf> = if lamp_bounce_on {
                         let paks: Vec<(String, String)> = a.iter().enumerate().filter(|(_, x)| *x == "--pak").filter_map(|(i, _)| a.get(i + 1)).filter_map(|p| p.rsplit_once(':').map(|(x, k)| (x.to_string(), k.to_string()))).collect();
                         let coll_ll = f("--collection").unwrap_or_else(|| hdr.as_ref().map(|h| h.envir.clone()).unwrap_or_else(|| "BlueBay".into()));
                         let q_ll: u32 = f("--quality").map(|v| v.parse().unwrap()).unwrap_or(3);
-                        let mut log = |s: &str| eprintln!("lamp-bounce study: {s}");
+                        let mut log = |s: &str| eprintln!("lamps in frame 0: {s}");
                         match lightmap::localdrive::setup_from_map(&map_path, &paks, &coll_ll, q_ll, &mut log) {
-                            Ok(su) if su.lamps.is_empty() => { eprintln!("lamp-bounce study: no lamp baked at this DayTime — nothing added"); None }
+                            Ok(su) if su.lamps.is_empty() => { eprintln!("lamps in frame 0: no lamp baked at this DayTime — the sun alone"); None }
                             Ok(su) => {
                                 let (w, h) = lightmap::localdrive::TARGET;
                                 let sc_t = lightmap::localdrive::scene_for_target(&su.sc, w, h);
@@ -2098,10 +2102,10 @@ fn run(a: Vec<String>) {
                                 let mut atlas = lightmap::passdiff::Buf::new(2048, 2048, 4);
                                 let mut lit = 0usize;
                                 for y in 0..2048u32 { for x in 0..2048u32 { let a4 = img.get(x, y, 3); if a4 > 0.0 { lit += 1; } for c in 0..3 { atlas.set(x, y, c, img.get(x, y, c) * scale); } atlas.set(x, y, 3, a4); } }
-                                eprintln!("lamp-bounce study: {} lamps → the composed lamp light on {lit} atlas texels (× {scale}) joins the sun accumulation", su.lamps.len());
+                                eprintln!("lamps in frame 0: {} lamps → A_0 on {lit} atlas texels (× {scale}) goes to sweep 0's light input", su.lamps.len());
                                 Some(atlas)
                             }
-                            Err(e) => { eprintln!("lamp-bounce study: {e} — nothing added"); None }
+                            Err(e) => { eprintln!("lamps in frame 0: {e} — the sun alone"); None }
                         }
                     } else { None };
                     if let Some(ll) = &lamp_light { *LAMP_LIGHT_ATLAS.lock().unwrap() = Some(std::sync::Arc::new(ll.clone())); }

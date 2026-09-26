@@ -656,9 +656,20 @@ pub fn mdiffuse8_of(attr: &Buf) -> Buf {
 
 /// The ILightInput chain (e2e stages 5–8): PS 1038 mask, PS 17043 resolve, PS 1109 × the sRGB-decoded MDiffuse, PS 1335 × 8.
 pub fn ilightinput_chain(sun: &Buf, mdiffuse8: &Buf) -> (Buf, Buf) {
+    ilightinput_chain_d0(sun, mdiffuse8, None)
+}
+
+/// `ilightinput_chain` with the lamps' D_0 (RE 13, 19:25Z): C0img = D_0 + NormWithA(A_0) — `d0` (RGBA, alpha 1 where the lamps cover, the
+/// gutter-filled ring included) is added to the resolved sun/lamp accumulation before × MDiffuse; the mask stays the accumulation's.
+pub fn ilightinput_chain_d0(sun: &Buf, mdiffuse8: &Buf, d0: Option<&Buf>) -> (Buf, Buf) {
     use crate::gpufmt::Rounding;
     let mask = crate::ilightin::quantise_unorm8(&crate::ilightin::mask_ps1038(sun, [1.0, 1.0, 0.0, 0.0], [[0.0; 4], [0.0; 4], [0.0; 4], [1.0; 4]], W, H), crate::gpuenc::UnormRounding::NearestEven);
-    let stage = crate::ilightin::quantise_r11(&crate::ilightin::resolve_ps17043(sun, false), Rounding::Truncate);
+    let mut resolved = crate::ilightin::resolve_ps17043(sun, false);
+    if let Some(d) = d0 {
+        // C0img := D_0 (PS 1034 copy → R11G11B10), then += the normalised accumulation (One/One)
+        for y in 0..H.min(d.h) { for x in 0..W.min(d.w) { for c in 0..3 { let v = d.get(x, y, c); if v != 0.0 { resolved.set(x, y, c, resolved.get(x, y, c) + v); } } } }
+    }
+    let stage = crate::ilightin::quantise_r11(&resolved, Rounding::Truncate);
     let mut mdiff_lin = mdiffuse8.clone();
     let ch = mdiffuse8.channels;
     mdiff_lin.fill_rows_par(|y, row| {
@@ -696,25 +707,51 @@ pub fn build_with_lamps(scene: &crate::geometry::Scene, lm: &LmScene, sbox: &Aab
     notes.push(format!("sun camera: eye {:?} h {:?} near {} far {} (the scene box {:?}–{:?})", cam.eye, cam.h, cam.near(), cam.far(), sbox.min, sbox.max));
     let shadow = shadow_from_map(scene, lm, &cam, item_bytes, &mut notes).to_buf();
     if !quiet { eprintln!("setup-from-map: shadow map ({:.1}s)", t0.elapsed().as_secs_f32()); }
+    // LMTOOL_SUN_DIRECT_SCALE=k (STUDY, RE 13's sweep-0 forms, 19:10Z): the sun / moon direct term in sweep 0's light input scaled — with
+    // LMTOOL_LAMP_BOUNCE=1.5 and 0.5 = the "1.5·L + 0.5·S" candidate (the lamps' alpha stacking with the sun's in NormWithA), with 2 and 1 =
+    // "2·L + S" (D_0 + (L + S), no alpha stacking); 1 (the default) = our verified sun chain
+    let sun_scale: f32 = std::env::var("LMTOOL_SUN_DIRECT_SCALE").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
+    let light_rgb = if sun_scale != 1.0 { eprintln!("setup-from-map: STUDY sun direct term × {sun_scale} in sweep 0's light input"); [light_rgb[0] * sun_scale, light_rgb[1] * sun_scale, light_rgb[2] * sun_scale] } else { light_rgb };
     let mut sun = sun_from_map(lm, &pw01, dir_in_world, light_rgb, &shadow);
     if !quiet { eprintln!("setup-from-map: direct sun ({:.1}s)", t0.elapsed().as_secs_f32()); }
+    // THE LAMPS IN SWEEP 0's LIGHT INPUT — the game's alpha bookkeeping (RE 13, 2026-09-26 19:25Z / 19:30Z, RenderLightDirect →
+    // RenderLightIndirectBounces state 0): after RenderLightDirect the accumulation is SS-normalised in place (LmSSNormWithA: A_0 = (L, α := 1)
+    // on every texel with coverage > 0.01); D_0 := gutter(A_0) (the frame-1 image); the 36 sun draws add (S_raw, f) with f = the texel's
+    // raster coverage (Σ 1/9 over the jitters — 1 inside, < 1 at chart edges); then C0img = D_0 + (L + S_raw)/(1 + f), × MDiffuse, the 8
+    // dilates. Interior texels: 1.5·L + 0.5·S; edge texels: (L + f·S)/(1 + f) → the lamp weight rises toward 2, the sun's falls, with the
+    // coverage. Verified on stpad (E, 19:25Z, as constants): Sunrise within 1–7 % on every class but the thin posts, night record 0.843 vs
+    // 0.855. `lamp_light` = FrameOut::direct (rgb = the raw jitter sums × LightRgb, alpha = the coverage); LMTOOL_LAMP_BOUNCE_FORM=sum keeps
+    // the first study's plain L + S.
+    let mut d0: Option<Buf> = None;
     if let Some(ll) = lamp_light {
-        // the study: the lamps' light joins the directional light in the accumulation (rgb added; coverage = the union)
+        let plain = std::env::var("LMTOOL_LAMP_BOUNCE_FORM").as_deref() == Ok("sum");
         let (mut n_tex, mut sum) = (0usize, [0.0f32; 3]);
+        // A_0 normalised: (L_raw / cov, 1) where cov > 0.01
+        let mut a0 = Buf::new(W, H, 4);
         for y in 0..H.min(ll.h) {
             for x in 0..W.min(ll.w) {
-                if ll.get(x, y, 3) <= 0.0 { continue; }
+                let cov = ll.get(x, y, 3);
+                if cov <= 0.01 { continue; }
                 n_tex += 1;
-                for c in 0..3 { let v = ll.get(x, y, c); sum[c as usize] += v; sun.set(x, y, c, sun.get(x, y, c) + v); }
-                if sun.get(x, y, 3) <= 0.0 { sun.set(x, y, 3, ll.get(x, y, 3)); }
+                for c in 0..3 { let v = ll.get(x, y, c) / cov; sum[c as usize] += v; a0.set(x, y, c, v); }
+                a0.set(x, y, 3, 1.0);
             }
         }
-        notes.push(format!("LAMP BOUNCE STUDY: the local lights' composed light added to the sun accumulation on {n_tex} texels (Σ rgb {:.1} {:.1} {:.1}) before the ILightInput chain", sum[0], sum[1], sum[2]));
+        if plain {
+            for y in 0..H { for x in 0..W { if a0.get(x, y, 3) > 0.0 { for c in 0..3 { sun.set(x, y, c, sun.get(x, y, c) + a0.get(x, y, c)); } if sun.get(x, y, 3) <= 0.0 { sun.set(x, y, 3, 1.0); } } } }
+            notes.push(format!("LAMP BOUNCE STUDY (plain L + S): the lamps' normalised light added to the sun accumulation on {n_tex} texels (Σ rgb {:.1} {:.1} {:.1})", sum[0], sum[1], sum[2]));
+        } else {
+            // D_0 = the 8 alpha-weighted gutter fills of A_0 (PS 1332), the same image the frame-1 slot stores
+            d0 = Some(crate::localdrive::frame1_dilated_n(&a0, W, 8));
+            // the sun draws add (S_raw, f) INTO A_0: (L + S_raw, 1 + f)
+            for y in 0..H { for x in 0..W { if a0.get(x, y, 3) > 0.0 { for c in 0..3 { sun.set(x, y, c, sun.get(x, y, c) + a0.get(x, y, c)); } sun.set(x, y, 3, sun.get(x, y, 3) + 1.0); } } }
+            notes.push(format!("LAMPS IN SWEEP 0 (RE 13's alpha bookkeeping): A_0 = (L, 1) on {n_tex} texels (Σ L {:.1} {:.1} {:.1}); C0img = D_0 = gutter(A_0) + NormWithA(A_0 + sun) — interior 1.5·L + 0.5·S", sum[0], sum[1], sum[2]));
+        }
     }
     let attr = attr_from_map(scene, lm, frozen, item_bytes, &mut notes);
     if !quiet { eprintln!("setup-from-map: the nine pre-pass runs ({:.1}s)", t0.elapsed().as_secs_f32()); }
     let mdiffuse8 = mdiffuse8_of(&attr);
-    let (ilightinput, coverage) = ilightinput_chain(&sun, &mdiffuse8);
+    let (ilightinput, coverage) = ilightinput_chain_d0(&sun, &mdiffuse8, d0.as_ref());
     if !quiet { eprintln!("setup-from-map: ILightInput chain ({:.1}s)", t0.elapsed().as_secs_f32()); }
     FromMap { cam, pw01, shadow, sun, attr, mdiffuse8, ilightinput, coverage, notes }
 }

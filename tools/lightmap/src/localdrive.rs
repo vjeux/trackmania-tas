@@ -409,15 +409,15 @@ impl PagedAccum {
     }
     /// The lamp's share of A_0 at its touched texels (RE 13, 17:30Z): `light_sum · (shadow_sum / coverage) · rgb` — the raw 9-jitter
     /// light sum (a texel covered by k of 9 jitters carries k/9), the shadow as the lit fraction, times the lamp's LightRgb.
-    pub fn lamp_direct(&self, rgb: [f32; 3]) -> Vec<(u32, [f32; 3])> {
+    pub fn lamp_direct(&self, rgb: [f32; 3]) -> Vec<(u32, [f32; 4])> {
         let mut out = Vec::with_capacity(self.touched_list.len());
         for &t in &self.touched_list {
             let (x, y) = ((t % self.w) as i32, (t / self.w) as i32);
             let s = self.sum(x, y);
-            if s[2] <= 0.0 || s[0] <= 0.0 { continue; }
-            let e = s[0] * (s[1] / s[2]).clamp(0.0, 1.0);
-            if e <= 0.0 { continue; }
-            out.push((t, [e * rgb[0], e * rgb[1], e * rgb[2]]));
+            if s[2] <= 0.0 { continue; }
+            let e = if s[0] > 0.0 { s[0] * (s[1] / s[2]).clamp(0.0, 1.0) } else { 0.0 };
+            // (texel, rgb, the texel's raster coverage Σ 1/9 — the same for every lamp that rasterises it)
+            out.push((t, [e * rgb[0], e * rgb[1], e * rgb[2], s[2]]));
         }
         out
     }
@@ -876,11 +876,11 @@ pub struct FrameOut {
     pub probes: ProbeState,
     pub kept: Option<(Accum, FlatCubeMap)>,
     pub results: Vec<LampResult>,
-    /// THE DIRECT-LAMP ACCUMULATION A_0 (RE 13, 2026-09-26 17:30Z): Σ over every drawn lamp of its per-texel irradiance × LightRgb —
-    /// per texel `light_sum · (shadow_sum / coverage) · rgb` from the lamp's own 9-jitter accumulation (raw: a texel covered by k of the
-    /// 9 jitters carries k/9 of the value — the game's soft edges), alpha = the coverage union. The frame-1 image is its snapshot D_0
-    /// after the 8 gutter fills, and it joins the sun's accumulation for sweep 0's light input. `w × h` of the target; the atlas is
-    /// the first 2048 columns.
+    /// THE DIRECT-LAMP ACCUMULATION A_0, RAW (RE 13, 2026-09-26 17:30Z / 19:25Z): Σ over every drawn lamp of its per-texel irradiance ×
+    /// LightRgb — per texel `light_sum · (shadow_sum / coverage) · rgb` from the lamp's own 9-jitter accumulation (light_sum carries the
+    /// k/9 raster coverage), alpha = the texel's raster coverage f (Σ 1/9 over the jitters, the max over the lamps). The game then
+    /// SS-normalises it in place (A_0 = (L/f, 1) where f > 0.01), snapshots D_0 = gutter(A_0) (the frame-1 image) and adds the sun draws
+    /// (S_raw, f) — setupmap::build_with_lamps. `w × h` of the target; the atlas is the first 2048 columns.
     pub direct: crate::passdiff::Buf,
 }
 
@@ -892,8 +892,8 @@ struct LampWork {
     frags: u64,
     weights: Vec<(u32, u8, u8)>,
     probe_vals: Vec<(u32, u8)>,
-    /// (texel, irradiance × rgb) at the touched texels — the lamp's share of A_0.
-    direct: Vec<(u32, [f32; 3])>,
+    /// (texel, irradiance × rgb, coverage) at the touched texels — the lamp's share of A_0.
+    direct: Vec<(u32, [f32; 4])>,
     /// The worker's seconds on this lamp: cull + casters, the flat cube, the probes, the draw, the weights.
     secs: [f32; 5],
 }
@@ -1002,10 +1002,10 @@ pub fn run_frame(gl: &crate::layout::GameLayout, sc: &LmScene, lamps: &[Lamp], c
                         list_updates += 1;
                     }
                 }
-                for &(i, rgb) in &work.direct {
+                for &(i, v) in &work.direct {
                     let i = i as usize;
-                    for c in 0..3 { direct.data[i * 4 + c] += rgb[c]; }
-                    direct.data[i * 4 + 3] = 1.0;
+                    for c in 0..3 { direct.data[i * 4 + c] += v[c]; }
+                    if v[3] > direct.data[i * 4 + 3] { direct.data[i * 4 + 3] = v[3]; }
                 }
                 t_lists += tl.elapsed().as_secs_f64();
                 for (a, b) in worker_secs.iter_mut().zip(work.secs) { *a += b as f64; }
@@ -1033,10 +1033,10 @@ pub fn run_frame(gl: &crate::layout::GameLayout, sc: &LmScene, lamps: &[Lamp], c
         let list_updates = resolve_lists(&acc, &mut lists, lamp.id);
         for i in 0..(w * h) as usize {
             let p = acc.px[i];
-            if p[3] > 0.0 && p[0] > 0.0 {
-                let e = p[0] * (p[1] / p[3]).clamp(0.0, 1.0);
+            if p[3] > 0.0 {
+                let e = if p[0] > 0.0 { p[0] * (p[1] / p[3]).clamp(0.0, 1.0) } else { 0.0 };
                 for c in 0..3 { direct.data[i * 4 + c] += e * lamp.rgb[c]; }
-                direct.data[i * 4 + 3] = 1.0;
+                if p[3] > direct.data[i * 4 + 3] { direct.data[i * 4 + 3] = p[3]; }
             }
         }
         if li % 25 == 0 || li + 1 == lamps.len() {
@@ -1843,7 +1843,18 @@ pub fn frame1_images(lists: &Lists, lamps: &[Lamp], charts: &[(u32, u32, u32, u3
 /// (PS 1332) and BEFORE the sun is added — no alpha normalisation, no cap, no peak normalisation; the record = the max channel.
 /// `direct` = `FrameOut::direct` (the atlas = its first `atlas` columns); the encode = the frame's own peak, √, the 2×2 fold.
 pub fn frame1_from_direct(direct: &crate::passdiff::Buf, charts: &[(u32, u32, u32, u32)], atlas: u32) -> Option<Frame1Image> {
-    let img = frame1_dilated_n(direct, atlas, 8);
+    // A_0 SS-normalised in place before the snapshot (RE 13, 19:25Z: LmSSNormWithA — rgb / coverage, alpha := 1 where the coverage > 0.01)
+    let mut a0 = crate::passdiff::Buf::new(atlas, atlas, 4);
+    for y in 0..atlas.min(direct.h) {
+        for x in 0..atlas.min(direct.w) {
+            let f = direct.get(x, y, 3);
+            if f > 0.01 {
+                for c in 0..3 { a0.set(x, y, c, direct.get(x, y, c) / f); }
+                a0.set(x, y, 3, 1.0);
+            }
+        }
+    }
+    let img = frame1_dilated_n(&a0, atlas, 8);
     let m = image_max(&img);
     if m <= 0.0 {
         return None;
