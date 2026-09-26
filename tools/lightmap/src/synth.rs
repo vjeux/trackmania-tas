@@ -531,6 +531,9 @@ pub struct TranscribedImages {
     pub max_hdr: f32,
     pub hbasis234: [f32; 3],
     pub lambient_f16: Option<[u16; 3]>,
+    /// THE LOCAL-LIGHT FRAME (frame 1, engineer F): its WebP, per-chart frame bytes and MaxHDR when the mood has the lights on
+    /// and a lamp lit something; None = the black frame at MaxHDR 1e-5 (Day, or no lamp).
+    pub frame1: Option<crate::localdrive::Frame1Image>,
 }
 
 /// Patch the frame-0 record's MaxHDR_HBasisScaled234 triple (record +54/+58/+62) and, when given, the LAmbient f16
@@ -577,7 +580,9 @@ pub fn build_transcribed(placed: &[(u32, u32, u32, u32, u32, u32)], bbox: ([f32;
         binds.push(ObjBind { obj_idx: sub, obj_group_idx: obj * 4 });
         fb[0].push(img.fb0[i]);
         for k in 1..3 {
-            fb[k].push(if same_count { tm.frame_bytes.get(k).map(|v| v[i]).unwrap_or(0) } else { 0 });
+            // frame 1's byte from the local-light frame when it was baked, else the template's (when the counts match)
+            let f1 = if k == 1 { img.frame1.as_ref().and_then(|f| f.fb1.get(i).copied()) } else { None };
+            fb[k].push(f1.unwrap_or(if same_count { tm.frame_bytes.get(k).map(|v| v[i]).unwrap_or(0) } else { 0 }));
         }
         area += (w * h) as u64;
     }
@@ -617,6 +622,13 @@ pub fn build_transcribed(placed: &[(u32, u32, u32, u32, u32, u32)], bbox: ([f32;
     if !patch_record_scales(&mut mapping.head, img.hbasis234, img.lambient_f16) {
         return Err("transcribed writer: the mapping head has no frame record (−FLT_MAX word)".into());
     }
+    // the local-light frame's record: MaxHDR = its image max (patch_frame_records wrote the black frame's 1e-5)
+    if let Some(f1) = &img.frame1 {
+        let r = 60 + 66;
+        if mapping.head.len() >= r + 24 {
+            mapping.head[r + 20..r + 24].copy_from_slice(&f1.max_hdr.to_le_bytes());
+        }
+    }
     let chunks: Vec<CacheChunk> = td
         .cache
         .chunks
@@ -648,6 +660,7 @@ pub fn build_transcribed(placed: &[(u32, u32, u32, u32, u32, u32)], bbox: ([f32;
                     Some(p) => p.blob.clone(),
                     None => src.clone(),
                 },
+                (1, 0) if img.frame1.is_some() => img.frame1.as_ref().unwrap().webp.clone(),
                 (_, 0) if !src.is_empty() => black.clone(),
                 _ => Vec::new(),
             };

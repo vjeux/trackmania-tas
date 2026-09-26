@@ -2933,13 +2933,43 @@ fn run(a: Vec<String>) {
                         eprintln!("writer: rects vs the template's mapping: {same} of {} identical{}", n.min(rects.len()), first.map(|i| format!("; first differing chart {i}: ours {:?} (placed {:?}) mapping pos {:?} size {:?} bind obj {} group {}", rects[i], s.placed[i], tm.pos[i], tm.size[i], tm.binds[i].obj_idx, tm.binds[i].obj_group_idx)).unwrap_or_default());
                     }
                     match lightmap::e2e::transcribed_images(&enc, maxhdr, mood_max_hdr_for_encode, &rects, chain_ambient_xyz) {
-                        Some(img) => match lightmap::synth::build_transcribed(&s.placed, mapping_bbox, &tpl.chunk, &img, probes_for_transcribed, frame_params_for_transcribed) {
+                        Some(mut img) => {
+                            // THE LOCAL-LIGHT FRAME (frame 1, engineer F): when the mood blender has the lights ON (Sunrise / Sunset / Night —
+                            // moods::BlenderCurve::local_lights_on for the map's DayTime) and the bake has the game layout, every lamp of the
+                            // map (localdrive::setup_from_map: the same layout + LM scene, the light list, the probe chunking) runs the
+                            // transcribed pass and the lists compose the frame-1 image; --no-local-lights skips it, --local-lights forces it
+                            // (Day → nothing lit → the black frame at 1e-5 as before); --local-lights-dilate N (default 0) = the tail's PS 1332 passes
+                            let want_ll = !has("--no-local-lights") && (has("--local-lights") || game_layout.as_ref().map(|gl| !gl.records.is_empty()).unwrap_or(false));
+                            if want_ll {
+                                let tl = std::time::Instant::now();
+                                let paks: Vec<(String, String)> = a.iter().enumerate().filter(|(_, x)| *x == "--pak").filter_map(|(i, _)| a.get(i + 1)).filter_map(|p| p.rsplit_once(':').map(|(x, k)| (x.to_string(), k.to_string()))).collect();
+                                let coll_ll = f("--collection").unwrap_or_else(|| hdr.as_ref().map(|h| h.envir.clone()).unwrap_or_else(|| "BlueBay".into()));
+                                let q_ll: u32 = f("--quality").map(|v| v.parse().unwrap()).unwrap_or(3);
+                                let mut log = |s: &str| eprintln!("local-lights: {s}");
+                                match lightmap::localdrive::setup_from_map(&map_path, &paks, &coll_ll, q_ll, &mut log) {
+                                    Ok(su) if su.lights_on == Some(false) && !has("--local-lights") => eprintln!("local-lights: the mood has the lights OFF (DayTime {:?}) — frame 1 stays black", su.daytime),
+                                    Ok(su) if su.lamps.is_empty() => eprintln!("local-lights: no lamp on the map — frame 1 stays black"),
+                                    Ok(su) => {
+                                        let (w, h) = lightmap::localdrive::TARGET;
+                                        let sc_t = lightmap::localdrive::scene_for_target(&su.sc, w, h);
+                                        let out = lightmap::localdrive::run_frame(&su.gl, &sc_t, &su.lamps, &su.chunks, su.probe_n, (w, h), None, lightmap::localdrive::Lists::cleared(w, h), &mut log);
+                                        let dil: u32 = f("--local-lights-dilate").map(|v| v.parse().unwrap()).unwrap_or(0);
+                                        if su.gl.charts.len() != rects.len() { eprintln!("local-lights: WARNING the frame's layout has {} charts, the writer {} — the frame bytes follow the writer's order only when they agree", su.gl.charts.len(), rects.len()); }
+                                        match lightmap::localdrive::frame1_images(&out.lists, &su.lamps, &rects, lightmap::localdrive::ComposeRule::SumDecoded, dil, 2048) {
+                                            Some(f1) => { eprintln!("local-lights: FRAME 1 = {} lamps, {} lit texels, MaxHDR {}, WebP {} B ({:.1}s)", su.lamps.len(), f1.lit_texels, f1.max_hdr, f1.webp.len(), tl.elapsed().as_secs_f32()); img.frame1 = Some(f1); }
+                                            None => eprintln!("local-lights: nothing lit — frame 1 stays black"),
+                                        }
+                                    }
+                                    Err(e) => eprintln!("local-lights: {e} — frame 1 stays black"),
+                                }
+                            }
+                            match lightmap::synth::build_transcribed(&s.placed, mapping_bbox, &tpl.chunk, &img, probes_for_transcribed, frame_params_for_transcribed) {
                             Ok(st) => {
                                 eprintln!("writer: TRANSCRIBED — MaxHdr {maxhdr:?} (Mood {mood_max_hdr_for_encode}), record MaxHDR {} / √3κ·max {:?}; blob0 {} B, blob1 {} B, {} charts; probes {} ; LAmbient {} ({:.1}s)", img.max_hdr, img.hbasis234, img.blob0.len(), img.blob1.len(), st.charts, if prm.probe_bake.is_some() && probe_layout.is_some() { "the transcribed passes' blob" } else if st.chunk.data.as_ref().map(|d| !d.frames[0].images[2].is_empty()).unwrap_or(false) { "the port's/template's blob" } else { "none" }, match img.lambient_f16 { Some(l) => format!("= f16(AddAmbient) {l:?}"), None => "= the template's".into() }, tw.elapsed().as_secs_f32());
                                 lightmap::synth::Synth { atlas8, ..st }
                             }
                             Err(e) => { eprintln!("writer: transcribed chunk failed ({e}); the port's writer is used"); s }
-                        },
+                        } }
                         None => { eprintln!("writer: the transcribed frame-0 blobs need libwebp (webpenc); the port's writer is used"); s }
                     }
                 }
@@ -6139,7 +6169,7 @@ fn run(a: Vec<String>) {
                         // the post-VS exports of lamp A's jitter n = 2 (eids 34..84 in f4936): the vertex path against the capture
                         for eid in [34u32, 39, 44, 49, 54, 59, 64, 69] {
                             let (vb, ib) = (std::fs::read(dir.join("mesh").join(format!("e{eid:06}_vsout.bin"))), std::fs::read(dir.join("mesh").join(format!("e{eid:06}_vsout_indices.bin"))));
-                            if let (Ok(vb), Ok(ib)) = (vb, ib) { println!("eid {eid}: {}", lightmap::localdrive::compare_vsout(&sc_t, &drawn, 2, (w, h), &vb, &ib)); }
+                            if let (Ok(vb), Ok(ib)) = (vb, ib) { println!("eid {eid}: {}", lightmap::localdrive::compare_vsout(&sc_t, &drawn, 2, (w, h), &vb, &ib)); if [39u32, 69].contains(&eid) { println!("eid {eid}: {}", lightmap::localdrive::compare_vsout_sets(&sc_t, &drawn, 2, (w, h), &vb, &ib)); } }
                         }
                     }
                     let shadow = lightmap::locallight::render_flat_cube(lamp.light.pos, lamp.r_eff, lamp.face_size, &tris, true);
@@ -6157,7 +6187,7 @@ fn run(a: Vec<String>) {
                         match lightmap::localdrive::compare_probe_volume(&ps, &rd("e001081_9783.dds")) { Ok(s) => println!("{s}"), Err(e) => println!("probe volume: {e}") }
                     }
                     let cb = lamp.light_cb();
-                    let mut acc = lightmap::localdrive::Accum::new(w, h);
+                    let mut acc = lightmap::localdrive::Accum::with_owner(w, h);
                     // the export points: lamp A after eid 547 = its 9 jitters minus the final draw group (eid 552 = eid 84's instances);
                     // lamp B after eid 1670 = its first 7 jitters (the frame ended at eid 1630)
                     let (jit, skip) = if tag == "A" {
@@ -6168,6 +6198,7 @@ fn run(a: Vec<String>) {
                     println!("lamp {tag}: {frags} fragments over jitters {jit:?} (the last one without {} instances = the export point), touched {:?} ({:.1} s)", skip.len(), acc.touched, t0.elapsed().as_secs_f32());
                     let game = lightmap::localdrive::accum_from_dds(&rd(acc_file)).expect("accum dds");
                     println!("accumulation vs {acc_file}: {}", lightmap::localdrive::compare_accum(&acc, &game));
+                    print!("{}", lightmap::localdrive::attribute_accum_diff(&acc, &game, &sc_t, &su.gl.records));
                     if let Some(out) = f("--dump-accum") { let mut b = Vec::with_capacity(acc.px.len() * 8); for p in &acc.px { for c in 0..4 { b.extend_from_slice(&lightmap::gpufmt::encode_f16(p[c], lightmap::gpufmt::Rounding::NearestEven).to_le_bytes()); } } std::fs::write(format!("{out}.{tag}"), b).expect("write"); }
                     // the lists: from the captured state before the lamp, our CS with the CAPTURE's id, against the captured state after
                     let ld = |pre: &str| -> lightmap::localdrive::Lists {
@@ -6191,7 +6222,43 @@ fn run(a: Vec<String>) {
             let sel: Option<Vec<u16>> = f("--lamps").filter(|s| s != "all").map(|s| s.split(',').map(|x| x.trim().parse().unwrap()).collect());
             let lamps: Vec<lightmap::localdrive::Lamp> = match &sel { Some(ids) => su.lamps.iter().filter(|l| ids.contains(&l.id)).cloned().collect(), None => su.lamps.clone() };
             let lists = lightmap::localdrive::Lists::cleared(w, h);
-            let out = lightmap::localdrive::run_frame(&su.gl, &sc_t, &lamps, &su.chunks, su.probe_n, (w, h), None, lists, &mut log);
+            // --load-lists FILE skips the lamps (a saved list state: id / w / lit bytes); --save-lists FILE banks this run's
+            let out = match f("--load-lists") {
+                Some(p) => {
+                    let b = std::fs::read(&p).expect("--load-lists");
+                    let n = (w * h) as usize;
+                    let l = lightmap::localdrive::Lists::from_bytes(w, h, &b[..n * 16], &b[n * 16..n * 24], &b[n * 24..n * 32]);
+                    eprintln!("local-lights: lists loaded from {p}");
+                    lightmap::localdrive::FrameOut { lists: l, probes: lightmap::localdrive::ProbeState::new(su.probe_n), kept: None, results: Vec::new() }
+                }
+                None => lightmap::localdrive::run_frame(&su.gl, &sc_t, &lamps, &su.chunks, su.probe_n, (w, h), None, lists, &mut log),
+            };
+            if let Some(p) = f("--save-lists") {
+                let mut b = out.lists.id_bytes();
+                b.extend_from_slice(&out.lists.w_bytes());
+                b.extend_from_slice(&out.lists.lit_bytes());
+                std::fs::write(&p, b).expect("--save-lists");
+                eprintln!("local-lights: lists saved to {p}");
+            }
+            // --graft MAP.Map.Gbx --out OUT.Map.Gbx: MAP with OUR frame 1 (the WebP, the fb1 bytes, the record's MaxHDR) in place of
+            // its own — `lmtool filecheck OUT --against EDITOR` then judges the frame-1 slot alone; --dilate N for the tail's passes
+            if let (Some(gm), Some(outp)) = (f("--graft"), f("--out")) {
+                let mut m = lightmap::mapio::load(&gm).expect("--graft map");
+                let d = m.chunk.data.as_mut().expect("lightmap data");
+                let mp = d.cache.mapping().expect("mapping");
+                let charts: Vec<(u32, u32, u32, u32)> = (0..mp.count as usize).map(|i| (mp.pos[i].0 as u32, mp.pos[i].1 as u32, mp.size[i].0 as u32, mp.size[i].1 as u32)).collect();
+                let dil: u32 = f("--dilate").map(|v| v.parse().unwrap()).unwrap_or(0);
+                match lightmap::localdrive::frame1_images(&out.lists, &su.lamps, &charts, lightmap::localdrive::ComposeRule::SumDecoded, dil, 2048) {
+                    Some(f1) => {
+                        println!("frame 1: {} lit texels, MaxHDR {}, WebP {} B, {} fb1 bytes ({} non-zero)", f1.lit_texels, f1.max_hdr, f1.webp.len(), f1.fb1.len(), f1.fb1.iter().filter(|&&b| b > 0).count());
+                        lightmap::localdrive::graft_frame1(d, &f1).expect("graft");
+                        let payload = m.chunk.write(true);
+                        lightmap::mapio::save_with_chunk(&m, &payload, &outp).expect("save");
+                        println!("→ {outp} (the map's frame 1 replaced)");
+                    }
+                    None => println!("nothing lit — no graft"),
+                }
+            }
             let nonempty = out.lists.l.iter().filter(|t| t.w8.iter().any(|&x| x > 0)).count();
             println!("{} lamps: {} list texels non-empty, {} probes lit", lamps.len(), nonempty, out.probes.lists.iter().filter(|t| t.w8.iter().any(|&x| x > 0)).count());
             if let Some(ed) = f("--frame1-check") {
@@ -6205,9 +6272,21 @@ fn run(a: Vec<String>) {
                 let ed_fb1: Vec<u8> = mp.frame_bytes.get(1).cloned().unwrap_or_default();
                 let charts: Vec<(u32, u32, u32, u32)> = su.gl.charts.iter().map(|c| (c.x as u32, c.y as u32, c.w as u32, c.h as u32)).collect();
                 for rule in [lightmap::localdrive::ComposeRule::SumDecoded, lightmap::localdrive::ComposeRule::SumSqrt, lightmap::localdrive::ComposeRule::MaxDecoded] {
-                    let img = lightmap::localdrive::compose(&out.lists, &su.lamps, rule);
+                    let img0 = lightmap::localdrive::compose(&out.lists, &su.lamps, rule);
+                    // the standard tail's dilation (PS 1332 × 8) over the 2048² atlas part
+                    let img = lightmap::localdrive::frame1_dilated_n(&img0, 2048, f("--dilate").map(|v| v.parse().unwrap()).unwrap_or(8));
+                    let (nm, med, q1, q3) = lightmap::localdrive::implied_scale(&img, &charts, &ed_fb1);
+                    println!("{rule:?}: the editor's fb1 imply an encode scale M = v_max/(fb/255)²: {nm} charts, median {med:.4}, quartiles {q1:.4} / {q3:.4} (image max {})", lightmap::localdrive::image_max(&img));
                     for sq in [true, false] {
-                        let (line, ours, fb) = lightmap::localdrive::frame1_compare(&img, &im.px, &charts, sq);
+                        let (line, ours, fb, pre) = lightmap::localdrive::frame1_compare_scaled(&img, &im.px, &charts, sq, if rule == lightmap::localdrive::ComposeRule::SumDecoded { f("--encode-scale").map(|v| v.parse().unwrap()).unwrap_or(med.max(1e-6)) } else { med.max(1e-6) });
+                        if sq && rule == lightmap::localdrive::ComposeRule::SumDecoded {
+                            println!("{}", lightmap::localdrive::frame1_chart_report(&pre, &im.px, &charts, &ed_fb1, &su.gl.records));
+                            println!("{}", lightmap::localdrive::byte_curve(&pre, &im.px, &charts, &ed_fb1));
+                            // --profile-chart K: one chart's middle row through the tail
+                            for k in a.iter().enumerate().filter(|(_, x)| *x == "--profile-chart").filter_map(|(i, _)| a.get(i + 1)).filter_map(|v| v.parse::<usize>().ok()) {
+                                println!("{}", lightmap::localdrive::chart_profile(&pre, &ours, &im.px, charts[k], fb[k], ed_fb1.get(k).copied().unwrap_or(0)));
+                            }
+                        }
                         let fb_same = fb.iter().zip(ed_fb1.iter()).filter(|(a, b)| a == b).count();
                         let fb_close = fb.iter().zip(ed_fb1.iter()).filter(|(a, b)| (**a as i32 - **b as i32).abs() <= 2).count();
                         println!("{rule:?}: {line}; fb1 identical {fb_same} / within 2 {fb_close} of {}", ed_fb1.len());

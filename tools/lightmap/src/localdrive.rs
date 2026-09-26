@@ -219,11 +219,18 @@ pub struct Accum {
     pub px: Vec<[f32; 4]>,
     /// x0, y0, x1, y1 (exclusive) of the texels written since the last clear.
     pub touched: Option<[u32; 4]>,
+    /// Per texel the LM instance that wrote it last (+1; 0 = none) when the diagnostics ask for it (`Accum::with_owner`).
+    pub owner: Vec<u32>,
 }
 
 impl Accum {
     pub fn new(w: u32, h: u32) -> Accum {
-        Accum { w, h, px: vec![[0.0; 4]; (w * h) as usize], touched: None }
+        Accum { w, h, px: vec![[0.0; 4]; (w * h) as usize], touched: None, owner: Vec::new() }
+    }
+    pub fn with_owner(w: u32, h: u32) -> Accum {
+        let mut a = Accum::new(w, h);
+        a.owner = vec![0; (w * h) as usize];
+        a
     }
     /// The 9-jitter sum CS 7348 reads: (light, shadow, coverage) — TMapLightSum.xyw, 0 outside the target.
     pub fn sum(&self, x: i32, y: i32) -> [f32; 3] {
@@ -332,6 +339,7 @@ pub fn draw_lamp_partial(sc: &LmScene, insts: &[usize], cb: &LightCb, shadow: &F
                             slot[ch] = blend_f16(slot[ch], o[ch], BLEND);
                         }
                         acc.touch(x, y);
+                        if !acc.owner.is_empty() { acc.owner[i] = ii as u32 + 1; }
                         frags += 1;
                     });
                 }
@@ -615,6 +623,7 @@ pub fn run_frame(gl: &crate::layout::GameLayout, sc: &LmScene, lamps: &[Lamp], c
             let mut snap = Accum::new(w, h);
             snap.px.copy_from_slice(&acc.px);
             snap.touched = acc.touched;
+            snap.owner = acc.owner.clone();
             kept = Some((snap, shadow));
         }
         acc.clear_touched();
@@ -1007,8 +1016,66 @@ pub fn instances_of_vsout(sc: &LmScene, insts: &[usize], jitter: u32, target: (u
 /// candidate (`sqrt`: byte = 255·√(v/m); else linear 255·v/m; m = the image max), 2×2-averaged to 1024², chart-normalised
 /// like frame 0 (filecheck::chart_normalise over the mapping's rects), then per lit texel the byte difference. Returns the
 /// report line and (ours, fb) for a dump.
-pub fn frame1_compare(img: &crate::passdiff::Buf, editor_rgb: &[u8], charts: &[(u32, u32, u32, u32)], sqrt: bool) -> (String, Vec<u8>, Vec<u8>) {
-    let m = image_max(img).max(1e-6);
+/// The frame-1 image's standard tail before the encode: the 2048² left part of the composed target (the atlas) dilated eight
+/// times with PS 1332 (a texel with coverage < 1e-4 takes the coverage-weighted mean of its eight neighbours — the chart
+/// gutters the editor's WebP shows lit), alpha = the texel's coverage (1 where a lamp entered its list).
+pub fn frame1_dilated(img: &crate::passdiff::Buf, atlas: u32) -> crate::passdiff::Buf {
+    frame1_dilated_n(img, atlas, 8)
+}
+
+/// `frame1_dilated` with `passes` dilation passes.
+pub fn frame1_dilated_n(img: &crate::passdiff::Buf, atlas: u32, passes: u32) -> crate::passdiff::Buf {
+    let mut base = crate::passdiff::Buf::new(atlas, atlas, 4);
+    for y in 0..atlas {
+        for x in 0..atlas {
+            for c in 0..4u32 {
+                base.set(x, y, c, img.get(x, y, c));
+            }
+        }
+    }
+    let mut d = base;
+    for _ in 0..passes {
+        d = crate::gpuenc::dilate_ps1332(&d);
+    }
+    d
+}
+
+/// The encode scale the editor's frame bytes imply, per lit chart: fb = round(255·√(v_max/M)) → M = v_max/(fb/255)² with
+/// v_max our chart's brightest 2×2-averaged value; the (count, median, lower / upper quartile) over the charts.
+pub fn implied_scale(img: &crate::passdiff::Buf, charts: &[(u32, u32, u32, u32)], fb_editor: &[u8]) -> (usize, f32, f32, f32) {
+    let mut ms: Vec<f32> = Vec::new();
+    for (i, &(x, y, w, h)) in charts.iter().enumerate() {
+        let Some(&fb) = fb_editor.get(i) else { continue };
+        if fb == 0 || fb == 255 { continue; }
+        let (x0, y0, cw, ch) = crate::filecheck::chart_px(x, y, w, h);
+        let mut vmax = 0.0f32;
+        for py in y0..y0 + ch {
+            for px in x0..x0 + cw {
+                if 2 * px + 1 >= img.w || 2 * py + 1 >= img.h { continue; }
+                for c in 0..3u32 {
+                    let mut s = 0.0f32;
+                    for dy in 0..2 { for dx in 0..2 { s += img.get(2 * px + dx, 2 * py + dy, c).max(0.0); } }
+                    vmax = vmax.max(s * 0.25);
+                }
+            }
+        }
+        if vmax > 0.0 {
+            let q = fb as f32 / 255.0;
+            ms.push(vmax / (q * q));
+        }
+    }
+    ms.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let n = ms.len();
+    if n == 0 { return (0, 0.0, 0.0, 0.0); }
+    (n, ms[n / 2], ms[n / 4], ms[3 * n / 4])
+}
+
+pub fn frame1_compare(img: &crate::passdiff::Buf, editor_rgb: &[u8], charts: &[(u32, u32, u32, u32)], sqrt: bool) -> (String, Vec<u8>, Vec<u8>, Vec<u8>) {
+    frame1_compare_scaled(img, editor_rgb, charts, sqrt, image_max(img).max(1e-6))
+}
+
+/// `frame1_compare` with an explicit encode scale `m` (byte = 255·√(v/m)).
+pub fn frame1_compare_scaled(img: &crate::passdiff::Buf, editor_rgb: &[u8], charts: &[(u32, u32, u32, u32)], sqrt: bool, m: f32) -> (String, Vec<u8>, Vec<u8>, Vec<u8>) {
     let (ow, oh) = (1024u32, 1024u32);
     let mut ours = vec![0u8; (ow * oh * 3) as usize];
     for y in 0..oh {
@@ -1026,7 +1093,16 @@ pub fn frame1_compare(img: &crate::passdiff::Buf, editor_rgb: &[u8], charts: &[(
             }
         }
     }
+    let pre = ours.clone();
     let fb = crate::filecheck::chart_normalise(&mut ours, ow, oh, charts);
+    // through the codec too (libwebp q 91 like the game's blob, decoded by the same decoder as the editor's): LMTOOL_LL_NO_WEBP=1 skips
+    if std::env::var_os("LMTOOL_LL_NO_WEBP").is_none() {
+        if let Some(enc) = crate::webpenc::encode_rgb(&ours, ow, oh, 91.0) {
+            if let Ok(dec) = crate::img::decode_webp(&enc) {
+                if dec.px.len() == ours.len() { ours = dec.px; }
+            }
+        }
+    }
     let n = (ow * oh) as usize;
     let (mut lit_both, mut lit_ours, mut lit_ed) = (0usize, 0usize, 0usize);
     let (mut sum_abs, mut within3, mut within8) = (0u64, 0usize, 0usize);
@@ -1044,6 +1120,280 @@ pub fn frame1_compare(img: &crate::passdiff::Buf, editor_rgb: &[u8], charts: &[(
         }
     }
     let lit = lit_both + lit_ours + lit_ed;
-    let line = format!("frame-1 WebP ({}): lit texels both {lit_both}, ours only {lit_ours}, editor only {lit_ed}; over the {lit} lit: mean |Δ| {:.2}, within ±3 {:.1} %, within ±8 {:.1} %; |Δ| histogram (32-wide bins) {:?}; image max {m}", if sqrt { "sqrt encode" } else { "linear encode" }, sum_abs as f64 / lit.max(1) as f64, 100.0 * within3 as f64 / lit.max(1) as f64, 100.0 * within8 as f64 / lit.max(1) as f64, hist);
-    (line, ours, fb)
+    // the chart INTERIORS (the rect without its gutter row / column and its last row / column: where the tail's dilation and the
+    // 2×2 straddle cannot reach) — the local-light pass's own agreement
+    let (mut in_n, mut in_abs, mut in3, mut in8) = (0usize, 0u64, 0usize, 0usize);
+    for &(x, y, cw, ch) in charts {
+        let (x0, y0, pw, ph) = crate::filecheck::chart_px(x, y, cw, ch);
+        if pw < 4 || ph < 4 { continue; }
+        for py in y0 + 1..(y0 + ph - 1).min(oh) {
+            for px in x0 + 1..(x0 + pw - 1).min(ow) {
+                let i = (py * ow + px) as usize;
+                let (a, b) = (ours[3 * i] as i32, editor_rgb[3 * i] as i32);
+                if a == 0 && b == 0 { continue; }
+                in_n += 1;
+                let d = (a - b).abs();
+                in_abs += d as u64;
+                if d <= 3 { in3 += 1; }
+                if d <= 8 { in8 += 1; }
+            }
+        }
+    }
+    let line = format!("frame-1 WebP ({}): lit texels both {lit_both}, ours only {lit_ours}, editor only {lit_ed}; over the {lit} lit: mean |Δ| {:.2}, within ±3 {:.1} %, within ±8 {:.1} %; |Δ| histogram (32-wide bins) {:?}; chart interiors ({in_n} lit texels): mean |Δ| {:.2}, within ±3 {:.1} %, within ±8 {:.1} %; image max {m}", if sqrt { "sqrt encode" } else { "linear encode" }, sum_abs as f64 / lit.max(1) as f64, 100.0 * within3 as f64 / lit.max(1) as f64, 100.0 * within8 as f64 / lit.max(1) as f64, hist, in_abs as f64 / in_n.max(1) as f64, 100.0 * in3 as f64 / in_n.max(1) as f64, 100.0 * in8 as f64 / in_n.max(1) as f64);
+    (line, ours, fb, pre)
+}
+
+/// Per-chart diagnostics of the frame-1 image against the editor's: which charts the editor lights and we do not (by record
+/// class, with examples), and the ratio of our pre-normalisation chart max byte to the editor's fb1 over the charts both light.
+pub fn frame1_chart_report(ours_prenorm: &[u8], editor_rgb: &[u8], charts: &[(u32, u32, u32, u32)], fb_editor: &[u8], records: &[crate::records::Rec]) -> String {
+    let (w, h) = (1024u32, 1024u32);
+    let lit_frac = |rgb: &[u8], x0: u32, y0: u32, cw: u32, ch: u32| -> (usize, usize, u8) {
+        let (mut n, mut lit, mut m) = (0usize, 0usize, 0u8);
+        for y in y0..(y0 + ch).min(h) {
+            for x in x0..(x0 + cw).min(w) {
+                let o = ((y * w + x) * 3) as usize;
+                n += 1;
+                let v = rgb[o].max(rgb[o + 1]).max(rgb[o + 2]);
+                if v > 0 { lit += 1; }
+                m = m.max(v);
+            }
+        }
+        (n, lit, m)
+    };
+    let mut missing: std::collections::BTreeMap<&str, (usize, Vec<String>)> = Default::default();
+    let mut extra = 0usize;
+    let mut ratios: Vec<f32> = Vec::new();
+    let mut both = 0usize;
+    let mut by_class: std::collections::BTreeMap<&str, (usize, usize, Vec<String>, usize)> = Default::default();
+    for (i, &(x, y, cw, ch)) in charts.iter().enumerate() {
+        let (x0, y0, pw, ph) = crate::filecheck::chart_px(x, y, cw, ch);
+        let (_, le, me) = lit_frac(editor_rgb, x0, y0, pw, ph);
+        let (_, lo, mo) = lit_frac(ours_prenorm, x0, y0, pw, ph);
+        let r = records.get(i);
+        if le > 0 && lo == 0 {
+            let e = missing.entry(r.map(|r| r.class).unwrap_or("?")).or_default();
+            e.0 += 1;
+            if e.1.len() < 4 { e.1.push(format!("chart {i} rect ({x}, {y}, {cw}, {ch}) editor lit {le} px max {me}{}", r.map(|r| format!(" centre {:?} half {:?} q {}", r.centre, r.half, r.quality)).unwrap_or_default())); }
+        } else if lo > 0 && le == 0 {
+            extra += 1;
+        } else if lo > 0 && le > 0 {
+            both += 1;
+            let fe = fb_editor.get(i).copied().unwrap_or(0);
+            if fe > 0 && fe < 255 && mo > 0 {
+                let ratio = mo as f32 / fe as f32;
+                ratios.push(ratio);
+                let class = r.map(|r| r.class).unwrap_or("?");
+                let e = by_class.entry(class).or_default();
+                e.0 += 1;
+                if ratio < 0.85 { e.1 += 1; if e.2.len() < 3 { e.2.push(format!("chart {i} rect ({x}, {y}, {cw}, {ch}) ours max {mo} editor fb1 {fe} (ratio {ratio:.3}){}", r.map(|r| format!(" centre {:?} q {}", r.centre, r.quality)).unwrap_or_default())); } }
+                if ratio > 1.15 { e.3 += 1; }
+            }
+        }
+    }
+    ratios.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let n = ratios.len();
+    let q = |p: f64| if n == 0 { 0.0 } else { ratios[((n as f64 - 1.0) * p) as usize] };
+    let mut s = format!("charts lit by both {both}, by us only {extra}; the editor lights and we do not:\n");
+    for (c, (k, ex)) in &missing {
+        s.push_str(&format!("  {c}: {k} charts\n"));
+        for e in ex { s.push_str(&format!("    {e}\n")); }
+    }
+    s.push_str(&format!("  our chart max byte / the editor's fb1 over {n} charts: quartiles {:.3} / {:.3} / {:.3}, 5–95 % {:.3}–{:.3}\n", q(0.25), q(0.5), q(0.75), q(0.05), q(0.95)));
+    for (c, (k, low, ex, high)) in &by_class {
+        s.push_str(&format!("  {c}: {k} charts, {low} with ratio < 0.85, {high} with ratio > 1.15\n"));
+        for e in ex { s.push_str(&format!("    {e}\n")); }
+    }
+    s
+}
+
+/// The accumulation's disagreements (light or shadow beyond one f16 ulp) attributed to the LM instance that drew the texel:
+/// per (mesh index count, record class) the count of drawn texels and of disagreeing ones.
+pub fn attribute_accum_diff(ours: &Accum, game: &Accum, sc: &LmScene, records: &[crate::records::Rec]) -> String {
+    if ours.owner.is_empty() { return "no owner map".into(); }
+    let mut by: std::collections::BTreeMap<(usize, &str), (usize, usize, usize)> = Default::default();
+    for i in 0..ours.px.len().min(game.px.len()) {
+        let o = ours.owner[i];
+        if o == 0 { continue; }
+        let ii = (o - 1) as usize;
+        let m = mesh_of(sc, ii).map(|m| sc.meshes[m].indices.len()).unwrap_or(0);
+        let class = sc.rec_of.get(ii).and_then(|&k| records.get(k)).map(|r| r.class).unwrap_or("?");
+        let e = by.entry((m, class)).or_default();
+        e.0 += 1;
+        let (a, b) = (ours.px[i], game.px[i]);
+        let far = |c: usize| { let ex = crate::gpufmt::encode_f16(a[c], Rounding::NearestEven) as i32; let ey = crate::gpufmt::encode_f16(b[c], Rounding::NearestEven) as i32; (ex - ey).abs() > 1 };
+        if far(0) { e.1 += 1; }
+        if far(1) { e.2 += 1; }
+    }
+    let mut s = String::from("disagreements by the drawing instance's (mesh index count, class): drawn texels / light beyond 1 ulp / shadow beyond 1 ulp\n");
+    for ((m, c), (n, l, sh)) in &by { s.push_str(&format!("  {m} idx {c}: {n} / {l} / {sh}\n")); }
+    s
+}
+
+/// A captured draw's post-VS instances against ours as VERTEX SETS (the game's vertex order may differ from the LM
+/// builder's): per game instance the nearest instance of ours by world bounding box, then how many of its vertices have a
+/// vertex of ours at the same world position (< 1 mm) with the same normal (< 1e-3) and the same clip position (< 1e-3 px).
+pub fn compare_vsout_sets(sc: &LmScene, insts: &[usize], jitter: u32, target: (u32, u32), bytes: &[u8], indices: &[u8]) -> String {
+    let n = bytes.len() / 80;
+    let f = |i: usize, k: usize| f32::from_le_bytes(bytes[i * 80 + k * 4..i * 80 + k * 4 + 4].try_into().unwrap());
+    let ni = indices.len() / 2;
+    let per = (0..ni).map(|i| u16::from_le_bytes([indices[2 * i], indices[2 * i + 1]]) as usize).max().map(|m| m + 1).unwrap_or(n);
+    let count = if per > 0 { n / per } else { 0 };
+    let cb = jitter_cb(jitter, target.0, target.1);
+    let cands: Vec<usize> = insts.iter().copied().filter(|&ii| mesh_of(sc, ii).map(|m| sc.meshes[m].indices.len() == ni).unwrap_or(false)).collect();
+    let mut s = format!("vsout sets ({ni} indices, {count} game instances × {per} vertices; ours with that index count: {})", cands.len());
+    for gi in 0..count {
+        let mut gb = ([f32::MAX; 3], [f32::MIN; 3]);
+        for v in gi * per..(gi + 1) * per { for k in 0..3 { let p = f(v, 4 + k); gb.0[k] = gb.0[k].min(p); gb.1[k] = gb.1[k].max(p); } }
+        let mut best: Option<(usize, f32, Vec<Vs7303Out>)> = None;
+        for &ii in &cands {
+            let m = mesh_of(sc, ii).unwrap();
+            let vs: Vec<Vs7303Out> = sc.meshes[m].verts.iter().map(|v| vs_7303(v, &sc.instances[ii], &sc.table, &cb)).collect();
+            let mut ob = ([f32::MAX; 3], [f32::MIN; 3]);
+            for v in &vs { for k in 0..3 { ob.0[k] = ob.0[k].min(v.world[k]); ob.1[k] = ob.1[k].max(v.world[k]); } }
+            let d = (0..3).map(|k| (ob.0[k] - gb.0[k]).abs().max((ob.1[k] - gb.1[k]).abs())).fold(0.0f32, f32::max);
+            if best.as_ref().map(|b| d < b.1).unwrap_or(true) { best = Some((ii, d, vs)); }
+        }
+        let Some((ii, d, vs)) = best else { continue };
+        let (mut pos_hit, mut nrm_hit, mut clip_hit) = (0usize, 0usize, 0usize);
+        let mut worst_clip = 0.0f32;
+        for v in gi * per..(gi + 1) * per {
+            let gw = [f(v, 4), f(v, 5), f(v, 6)];
+            let gn = [f(v, 11), f(v, 12), f(v, 13)];
+            let gc = [f(v, 0), f(v, 1)];
+            // the vertex of ours at that position with the closest normal
+            let mut hit: Option<&Vs7303Out> = None;
+            for o in &vs {
+                if (0..3).all(|k| (o.world[k] - gw[k]).abs() < 1e-3) {
+                    if hit.map(|h| (0..3).map(|k| (o.normal[k] - gn[k]).abs()).sum::<f32>() < (0..3).map(|k| (h.normal[k] - gn[k]).abs()).sum::<f32>()).unwrap_or(true) { hit = Some(o); }
+                }
+            }
+            if let Some(o) = hit {
+                pos_hit += 1;
+                if (0..3).all(|k| (o.normal[k] - gn[k]).abs() < 1e-3) { nrm_hit += 1; }
+                let dc = ((o.clip[0] - gc[0]).abs() * 0.5 * target.0 as f32).max((o.clip[1] - gc[1]).abs() * 0.5 * target.1 as f32);
+                if dc < 1e-3 { clip_hit += 1; }
+                worst_clip = worst_clip.max(dc);
+            }
+        }
+        s.push_str(&format!("\n  game instance {gi} (box {:?}..{:?}) ↔ ours {ii} (box Δ {d:.4} m): of {per} vertices {pos_hit} at our positions, {nrm_hit} with our normal, {clip_hit} at our clip position (worst clip Δ {worst_clip:.3} px)", gb.0, gb.1));
+    }
+    s
+}
+
+/// One chart's row profile: our pre-normalisation bytes, our normalised bytes, the editor's bytes and the ratio editor/ours
+/// (normalised) along the chart's middle row — the tail's nonlinearity in one line.
+pub fn chart_profile(pre: &[u8], ours: &[u8], editor: &[u8], chart: (u32, u32, u32, u32), fb_ours: u8, fb_editor: u8) -> String {
+    let w = 1024u32;
+    let (x0, y0, pw, ph) = crate::filecheck::chart_px(chart.0, chart.1, chart.2, chart.3);
+    let y = y0 + ph / 2;
+    let mut s = format!("chart ({}, {}, {}, {}) → px ({x0}, {y0}, {pw}, {ph}) row {y}: fb ours {fb_ours} editor {fb_editor}\n  pre   :", chart.0, chart.1, chart.2, chart.3);
+    for x in x0..x0 + pw { s.push_str(&format!(" {:3}", pre[((y * w + x) * 3) as usize])); }
+    s.push_str("\n  ours  :");
+    for x in x0..x0 + pw { s.push_str(&format!(" {:3}", ours[((y * w + x) * 3) as usize])); }
+    s.push_str("\n  editor:");
+    for x in x0..x0 + pw { s.push_str(&format!(" {:3}", editor[((y * w + x) * 3) as usize])); }
+    s.push_str("\n  ed/our:");
+    for x in x0..x0 + pw { let (a, b) = (ours[((y * w + x) * 3) as usize] as f32, editor[((y * w + x) * 3) as usize] as f32); s.push_str(&if a > 0.0 { format!(" {:.2}", b / a) } else { "   -".into() }); }
+    s
+}
+
+/// The empirical byte mapping editor = F(ours) over charts whose editor fb1 ≥ 250 (their normalisation is ≈ identity): per
+/// 8-wide bin of our pre-normalisation byte the median editor byte and the count — the tail's curve for RE 7.
+pub fn byte_curve(pre: &[u8], editor: &[u8], charts: &[(u32, u32, u32, u32)], fb_editor: &[u8]) -> String {
+    let w = 1024u32;
+    let mut bins: Vec<Vec<u8>> = vec![Vec::new(); 32];
+    for (i, &(x, y, cw, ch)) in charts.iter().enumerate() {
+        if fb_editor.get(i).map(|&f| f < 250).unwrap_or(true) { continue; }
+        let (x0, y0, pw, ph) = crate::filecheck::chart_px(x, y, cw, ch);
+        if pw < 6 || ph < 6 { continue; }
+        for py in y0 + 1..y0 + ph - 1 {
+            for px in x0 + 1..x0 + pw - 1 {
+                let o = ((py * w + px) * 3) as usize;
+                let (a, b) = (pre[o], editor[o]);
+                if a == 0 && b == 0 { continue; }
+                bins[(a / 8) as usize].push(b);
+            }
+        }
+    }
+    let mut s = String::from("byte curve (charts with editor fb1 ≥ 250, interiors): our byte bin → median editor byte (count)");
+    for (k, v) in bins.iter_mut().enumerate() {
+        if v.len() < 20 { continue; }
+        v.sort_unstable();
+        s.push_str(&format!("\n  {:3}–{:3} → {:3} ({})", k * 8, k * 8 + 7, v[v.len() / 2], v.len()));
+    }
+    s
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// The frame-1 file images
+// ---------------------------------------------------------------------------------------------------------------
+
+/// The frame-1 slot of the written file: the WebP (1024², libwebp q 91), the per-chart frame bytes and the record's MaxHDR.
+#[derive(Clone, Debug)]
+pub struct Frame1Image {
+    pub webp: Vec<u8>,
+    pub fb1: Vec<u8>,
+    pub max_hdr: f32,
+    pub lit_texels: usize,
+}
+
+/// THE FRAME-1 IMAGES from the lists: the compose (`rule`), `dilate` passes of PS 1332 over the 2048² atlas part, MaxHDR = the
+/// image max (f16), the encode byte = 255·√(v / MaxHDR) (the frame-0 encoder's colour curve; the exact frame-1 tail is RE 7's
+/// pin), the 2 × 2 average to 1024², the per-chart normalisation (filecheck::chart_normalise → fb1), libwebp at q 91. None
+/// when nothing was lit (the writer then keeps the black frame with MaxHDR 1e-5). `charts` = the mapping's rects in order.
+pub fn frame1_images(lists: &Lists, lamps: &[Lamp], charts: &[(u32, u32, u32, u32)], rule: ComposeRule, dilate: u32, atlas: u32) -> Option<Frame1Image> {
+    let img0 = compose(lists, lamps, rule);
+    let img = frame1_dilated_n(&img0, atlas, dilate);
+    let m = image_max(&img);
+    if m <= 0.0 {
+        return None;
+    }
+    let (ow, oh) = (atlas / 2, atlas / 2);
+    let mut rgb = vec![0u8; (ow * oh * 3) as usize];
+    let mut lit = 0usize;
+    for y in 0..oh {
+        for x in 0..ow {
+            let mut any = false;
+            for c in 0..3u32 {
+                let mut s = 0.0f32;
+                for dy in 0..2 {
+                    for dx in 0..2 {
+                        let v = img.get(2 * x + dx, 2 * y + dy, c) / m;
+                        s += v.max(0.0).sqrt().min(1.0);
+                    }
+                }
+                let b = (s * 0.25 * 255.0 + 0.5).floor().clamp(0.0, 255.0) as u8;
+                if b > 0 { any = true; }
+                rgb[((y * ow + x) * 3 + c) as usize] = b;
+            }
+            if any { lit += 1; }
+        }
+    }
+    let fb1 = crate::filecheck::chart_normalise(&mut rgb, ow, oh, charts);
+    let webp = crate::webpenc::encode_rgb(&rgb, ow, oh, 91.0)?;
+    Some(Frame1Image { webp, fb1, max_hdr: m, lit_texels: lit })
+}
+
+/// The frame-1 slot of a lightmap chunk replaced: frame 1 image 0 = the WebP, the mapping's frame bytes 1 = fb1, the frame-1
+/// record's MaxHDR (record 1 at head 60 + 66, the word at +20) = `max_hdr`. The chunk is re-serialised by the caller.
+pub fn graft_frame1(d: &mut crate::format::LightmapData, f1: &Frame1Image) -> Result<(), String> {
+    let fr = d.frames.get_mut(1).ok_or("the chunk has no frame 1")?;
+    if fr.images.is_empty() {
+        fr.images.push(Vec::new());
+    }
+    fr.images[0] = f1.webp.clone();
+    let mp = d.cache.chunks.iter_mut().find_map(|c| match &mut c.body { crate::format::ChunkBody::Mapping(m) => Some(m), _ => None }).ok_or("no mapping chunk")?;
+    if mp.frame_bytes.len() < 2 {
+        return Err(format!("the mapping has {} frame byte tables", mp.frame_bytes.len()));
+    }
+    if f1.fb1.len() != mp.count as usize {
+        return Err(format!("fb1 has {} bytes for {} charts", f1.fb1.len(), mp.count));
+    }
+    mp.frame_bytes[1] = f1.fb1.clone();
+    mp.mark_edited();
+    let r = 60 + 66;
+    if mp.head.len() >= r + 24 {
+        mp.head[r + 20..r + 24].copy_from_slice(&f1.max_hdr.to_le_bytes());
+    }
+    Ok(())
 }

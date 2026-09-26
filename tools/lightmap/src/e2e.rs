@@ -555,7 +555,7 @@ pub fn transcribed_images(enc: &crate::gpuenc::YCbCr4, maxhdr: [f32; 4], mood_ma
     let (blob0, blob1, _sizes, fb0) = crate::filecheck::frame0_blobs(&enc.y4, &enc.cb4, &enc.cr4, enc.w as usize, enc.h as usize, charts)?;
     let (max_hdr, hbasis234) = crate::filecheck::record_scales(maxhdr, mood_max_hdr);
     let lambient_f16 = ambient_xyz.map(|a| [0, 1, 2].map(|k| crate::gpufmt::encode_f16(a[k], Rounding::NearestEven)));
-    Some(crate::synth::TranscribedImages { blob0, blob1, fb0, max_hdr, hbasis234, lambient_f16 })
+    Some(crate::synth::TranscribedImages { blob0, blob1, fb0, max_hdr, hbasis234, lambient_f16, frame1: None })
 }
 
 /// `lmtool atlas-diff A B [--insts vb_17033.bin]`: two 2048² atlases (a packed R11G11B10 dump, 16 MiB, or an f32 ×3 dump, 48 MiB)
