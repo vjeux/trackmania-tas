@@ -25,6 +25,10 @@ struct Shared {
     f_data: AtomicPtr<()>,
     f_vtable: AtomicPtr<()>,
     n: AtomicUsize,
+    /// How many workers the current job takes (worker k joins iff k < participants) and the generation it
+    /// belongs to — both published before the generation bump.
+    participants: AtomicUsize,
+    job_gen: AtomicU64,
     /// Bumped per job; the workers wait for a value they have not seen.
     generation: AtomicU64,
     /// Tasks handed out of the current job.
@@ -76,6 +80,8 @@ impl Pool {
             f_data: AtomicPtr::new(std::ptr::null_mut()),
             f_vtable: AtomicPtr::new(std::ptr::null_mut()),
             n: AtomicUsize::new(0),
+            participants: AtomicUsize::new(0),
+            job_gen: AtomicU64::new(0),
             generation: AtomicU64::new(0),
             next: AtomicUsize::new(0),
             active: AtomicUsize::new(0),
@@ -127,13 +133,20 @@ impl Pool {
         // SAFETY: the pointer is used only until every worker has left the job, below in this function
         let fptr: *const (dyn Fn(usize) + Sync) = unsafe { std::mem::transmute::<&(dyn Fn(usize) + Sync), &'static (dyn Fn(usize) + Sync)>(fref) };
         let (data, vtable): (*mut (), *mut ()) = unsafe { std::mem::transmute(fptr) };
+        // A RUN TAKES NO MORE WORKERS THAN TASKS (perf 6 / engineer 8's 8.9): worker k joins iff k < participants =
+        // min(threads, n) — a run of 40 tasks does not wake, nor wait for, 128 workers; the wake tree stops at the
+        // set's edge (children carry greater indices, so every participant is still reached). The job's generation
+        // rides with it so a worker left out of a run never joins the next one twice.
+        let participants = self.threads.min(n);
         // the previous job's workers must all have left before the job slot is reused
         while sh.active.load(Ordering::Acquire) != 0 {
             std::hint::spin_loop();
         }
         sh.next.store(0, Ordering::Relaxed);
         sh.panicked.store(false, Ordering::Relaxed);
-        sh.active.store(self.threads, Ordering::Relaxed);
+        sh.active.store(participants, Ordering::Relaxed);
+        sh.participants.store(participants, Ordering::Relaxed);
+        sh.job_gen.store(sh.generation.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
         if timed {
             for s in &sh.slot_busy { s.store(0, Ordering::Relaxed); }
             for s in &sh.slot_tasks { s.store(0, Ordering::Relaxed); }
@@ -146,7 +159,7 @@ impl Pool {
         sh.generation.fetch_add(1, Ordering::Release);
         // the wake tree's roots (a parked worker wakes; a spinning one finds a token it clears at its next park)
         if let Some(hs) = sh.handles.get() {
-            for h in hs.iter().take(FANOUT) {
+            for h in hs.iter().take(FANOUT.min(participants)) {
                 h.unpark();
             }
         }
@@ -166,7 +179,7 @@ impl Pool {
             if spins < 20_000 { std::hint::spin_loop(); } else { std::thread::yield_now(); }
         }
         if timed {
-            stats::record(sh, n, t_run.elapsed().as_nanos() as u64);
+            stats::record(sh, n, participants + 1, t_run.elapsed().as_nanos() as u64);
         }
         if sh.panicked.load(Ordering::Relaxed) {
             panic!("a pool task panicked");
@@ -186,7 +199,33 @@ impl Pool {
     }
 }
 
+/// LMTOOL_PIN=1 pins worker k to logical CPU k (mod the CPU count). MEASURED NEGATIVE on a Genoa guest whose vCPUs
+/// float over the host's cores (128 pinned: directions 2.16 → 2.29 s; 159 pinned: any other process on the box
+/// stalls a band, 2.15 → 5.13 s median). Off by default; the knob is for a quiet bare-metal box with fixed SMT pairs.
+#[cfg(target_os = "linux")]
+fn pin_worker(k: usize) {
+    static PIN: OnceLock<bool> = OnceLock::new();
+    if !*PIN.get_or_init(|| std::env::var_os("LMTOOL_PIN").is_some()) {
+        return;
+    }
+    extern "C" {
+        fn sched_setaffinity(pid: i32, cpusetsize: usize, mask: *const u64) -> i32;
+    }
+    let ncpu = std::thread::available_parallelism().map(|x| x.get()).unwrap_or(1);
+    let cpu = k % ncpu;
+    let mut mask = [0u64; 16];
+    if cpu / 64 < mask.len() {
+        mask[cpu / 64] |= 1u64 << (cpu % 64);
+        // SAFETY: a plain syscall wrapper over a mask on this stack
+        unsafe { sched_setaffinity(0, std::mem::size_of_val(&mask), mask.as_ptr()); }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn pin_worker(_k: usize) {}
+
 fn worker(sh: Arc<Shared>, me: usize) {
+    pin_worker(me);
     let mut seen = 0u64;
     loop {
         // a new generation: spin first, then park (an unpark token left by a wake we did not need is
@@ -206,15 +245,22 @@ fn worker(sh: Arc<Shared>, me: usize) {
             std::thread::park();
             spins = SPIN / 2;
         }
-        // pass the wake down the tree (cheap when the child is not parked: a token, no syscall)
+        // the job, published before the generation bump we just saw — of THIS generation (a worker left out of a run
+        // may see the next job already: it waits for that job's own bump), and only if this worker is in its set
+        let participants = sh.participants.load(Ordering::Relaxed);
+        if sh.job_gen.load(Ordering::Relaxed) != seen || me >= participants {
+            continue;
+        }
+        // pass the wake down the tree, inside the set (cheap when the child is not parked: a token, no syscall)
         if let Some(hs) = sh.handles.get() {
             for c in me * FANOUT + 1..=me * FANOUT + FANOUT {
-                if let Some(h) = hs.get(c) {
-                    h.unpark();
+                if c < participants {
+                    if let Some(h) = hs.get(c) {
+                        h.unpark();
+                    }
                 }
             }
         }
-        // the job, published before the generation bump we just saw
         let (data, vtable, n) = (sh.f_data.load(Ordering::Relaxed), sh.f_vtable.load(Ordering::Relaxed), sh.n.load(Ordering::Relaxed));
         let fptr: *const (dyn Fn(usize) + Sync) = unsafe { std::mem::transmute((data, vtable)) };
         let f: &(dyn Fn(usize) + Sync) = unsafe { &*fptr };
@@ -265,9 +311,17 @@ pub mod stats {
         pub tasks: u64,
         /// Participants that ran at least one task, summed over the runs (the mean is Σ / runs).
         pub participants: u64,
-        /// Runs whose task count was below the participant count (the pool could not be filled).
+        /// Runs whose task count was below the pool's participant count (the run took fewer workers).
         pub starved_runs: u64,
+        /// Serial time (ns) between the previous pool run's end (or the direction's start, `epoch`) and this
+        /// stage's runs' starts — the glue the calling thread spends outside the pool while the workers idle.
+        pub gap_ns: u64,
+        /// Σ over the runs of wall × the run's participants (ns): the capacity util% is measured against.
+        pub cap_ns: u64,
     }
+
+    /// When the last pool run ended (the serial gaps are measured from it).
+    static LAST_END: Mutex<Option<std::time::Instant>> = Mutex::new(None);
 
     static ACCS: Mutex<Vec<StageAcc>> = Mutex::new(Vec::new());
 
@@ -281,6 +335,29 @@ pub mod stats {
         ENABLED.store(true, Ordering::Relaxed);
     }
 
+    /// Marks the start of a direction: the serial gap before the direction's first pool run is measured from
+    /// here (not from the previous direction's last run, which would count the setup between them).
+    pub fn epoch() {
+        if enabled() {
+            *LAST_END.lock().unwrap() = Some(std::time::Instant::now());
+        }
+    }
+
+    /// A serial CHECKPOINT: the time since the last pool run ended (or the last checkpoint) is booked as the gap
+    /// of a pseudo-stage `label` (no runs), so a long serial stretch can be attributed piecewise.
+    pub fn checkpoint(label: &'static str) {
+        if !enabled() {
+            return;
+        }
+        let now = std::time::Instant::now();
+        let gap = { let mut le = LAST_END.lock().unwrap(); let g = le.map(|t| now.duration_since(t).as_nanos() as u64).unwrap_or(0); *le = Some(now); g };
+        let mut accs = ACCS.lock().unwrap();
+        match accs.iter_mut().find(|a| a.label == label) {
+            Some(a) => a.gap_ns += gap,
+            None => accs.push(StageAcc { label, gap_ns: gap, ..Default::default() }),
+        }
+    }
+
     /// Books the runs that follow under `label`.
     pub fn stage(label: &'static str) {
         if enabled() {
@@ -288,8 +365,10 @@ pub mod stats {
         }
     }
 
-    pub(super) fn record(sh: &Shared, n: usize, wall_ns: u64) {
+    pub(super) fn record(sh: &Shared, n: usize, run_participants: usize, wall_ns: u64) {
         let label = *STAGE.lock().unwrap();
+        let now = std::time::Instant::now();
+        let gap = { let mut le = LAST_END.lock().unwrap(); let g = le.map(|t| now.duration_since(t).as_nanos() as u64).unwrap_or(0).saturating_sub(wall_ns); *le = Some(now); g };
         let mut busy = 0u64;
         let mut tail = 0u64;
         let mut participants = 0u64;
@@ -318,6 +397,8 @@ pub mod stats {
         acc.task_peak_ns = acc.task_peak_ns.max(tmax);
         acc.tasks += n as u64;
         acc.participants += participants;
+        acc.gap_ns += gap;
+        acc.cap_ns += wall_ns * run_participants as u64;
         if (n as u64) < sh.slot_busy.len() as u64 {
             acc.starved_runs += 1;
         }
@@ -333,6 +414,7 @@ pub mod stats {
     /// Clears the accumulators (after a report).
     pub fn reset() {
         ACCS.lock().unwrap().clear();
+        *LAST_END.lock().unwrap() = None;
     }
 
     /// Prints the per-stage table and the whole-pool line against `outer_wall_s` (the wall the runs were
@@ -358,7 +440,7 @@ pub mod stats {
             s(wall), accs.iter().map(|a| a.runs).sum::<u64>(), 100.0 * s(wall) / outer_wall_s.max(1e-9), outer_wall_s - s(wall), 100.0 * (outer_wall_s - s(wall)) / outer_wall_s.max(1e-9),
             s(busy), 100.0 * s(busy) / (s(wall) * p).max(1e-9), 100.0 * s(busy) / (outer_wall_s * p).max(1e-9)
         );
-        eprintln!("pool [{label}]: {:<12} {:>7} {:>8} {:>6} {:>7} {:>8} {:>9} {:>9} {:>9} {:>7}", "stage", "runs", "wall s", "util%", "tail×", "task×", "mean ms", "max ms", "peak ms", "tasks");
+        eprintln!("pool [{label}]: {:<18} {:>7} {:>8} {:>7} {:>6} {:>6} {:>7} {:>8} {:>9} {:>9} {:>9} {:>7}", "stage", "runs", "wall s", "gap s", "util%", "busy P", "tail×", "task×", "mean ms", "max ms", "peak ms", "tasks");
         for a in &accs {
             let runs = a.runs.max(1) as f64;
             let mean_participant_busy = a.busy_ns as f64 / a.participants.max(1) as f64; // per run-participant
@@ -366,13 +448,13 @@ pub mod stats {
             let mean_task = a.busy_ns as f64 / a.tasks.max(1) as f64;
             let task_x = (a.task_max_ns as f64 / runs) / mean_task.max(1.0);
             eprintln!(
-                "pool [{label}]: {:<12} {:>7} {:>8.3} {:>6.1} {:>7.2} {:>8.1} {:>9.3} {:>9.3} {:>9.3} {:>7}{}",
-                a.label, a.runs, s(a.wall_ns), 100.0 * a.busy_ns as f64 / (a.wall_ns as f64 * p).max(1.0), tail_x, task_x,
+                "pool [{label}]: {:<18} {:>7} {:>8.3} {:>7.3} {:>6.1} {:>6.1} {:>7.2} {:>8.1} {:>9.3} {:>9.3} {:>9.3} {:>7}{}",
+                a.label, a.runs, s(a.wall_ns), s(a.gap_ns), 100.0 * a.busy_ns as f64 / a.cap_ns.max(1) as f64, a.busy_ns as f64 / a.wall_ns.max(1) as f64, tail_x, task_x,
                 mean_task / 1e6, a.task_max_ns as f64 / runs / 1e6, a.task_peak_ns as f64 / 1e6, a.tasks,
-                if a.starved_runs > 0 { format!("  ({} runs with fewer tasks than participants)", a.starved_runs) } else { String::new() }
+                if a.starved_runs > 0 { format!("  ({} runs with fewer tasks than the pool: fewer workers taken)", a.starved_runs) } else { String::new() }
             );
         }
-        eprintln!("pool [{label}]: util% = Σbusy / (wall × P); tail× = slowest participant / mean participant per run; task× = slowest task / mean task per run; ms per task");
+        eprintln!("pool [{label}]: gap s = serial time before the stage's runs (the caller working alone; a (name) row is a checkpoint); util% = Σbusy / Σ(wall × the run's participants); busy P = Σbusy / wall = participants busy on average; tail× = slowest participant / mean participant per run; task× = slowest task / mean task per run; ms per task");
         reset();
     }
 }
