@@ -192,9 +192,35 @@ impl LayerRead for LayerTargets<'_> {
 pub struct LayerSparse<'a> {
     pub w: u32,
     pub h: u32,
+    /// The layer table's `start` — dense (per pixel, `start[p]..start[p + 1]`) when `px` is None; per WANTED pixel
+    /// (rank k from `px`, the list `start[k]..start[k] + cnt[k]` — the in-place derive's gapped layout, or
+    /// `start[k]..start[k + 1]` without `cnt`) otherwise. (perf 3: the dense offsets were a 67 MB array built per frame
+    /// plus a compaction copy of the fragments; the rank lookup is two loads and a popcount.)
     pub start: &'a [u32],
+    pub cnt: Option<&'a [u8]>,
+    pub px: Option<&'a crate::peel::PixelIndex>,
     pub frags: &'a [crate::peel::LayerFrag],
     pub k: usize,
+}
+
+impl LayerSparse<'_> {
+    /// Pixel (x, y)'s layer `k`, if it has one.
+    #[inline(always)]
+    fn frag(&self, x: u32, y: u32) -> Option<&crate::peel::LayerFrag> {
+        let (a, n) = match self.px {
+            Some(px) => {
+                let k = px.index(x, y)? as usize;
+                let a = self.start[k] as usize;
+                (a, match self.cnt { Some(c) => c[k] as usize, None => self.start[k + 1] as usize - a })
+            }
+            None => {
+                let p = (y * self.w + x) as usize;
+                let a = self.start[p] as usize;
+                (a, self.start[p + 1] as usize - a)
+            }
+        };
+        if self.k < n { Some(&self.frags[a + self.k]) } else { None }
+    }
 }
 
 impl LayerRead for LayerSparse<'_> {
@@ -204,15 +230,11 @@ impl LayerRead for LayerSparse<'_> {
     fn color_size(&self) -> (u32, u32) { (self.w, self.h) }
     #[inline]
     fn depth(&self, x: u32, y: u32) -> f32 {
-        let p = (y * self.w + x) as usize;
-        let (a, b) = (self.start[p] as usize, self.start[p + 1] as usize);
-        if self.k < b - a { self.frags[a + self.k].d } else { 1.0 }
+        match self.frag(x, y) { Some(f) => f.d, None => 1.0 }
     }
     #[inline]
     fn rgb(&self, x: u32, y: u32) -> [f32; 3] {
-        let p = (y * self.w + x) as usize;
-        let (a, b) = (self.start[p] as usize, self.start[p + 1] as usize);
-        if self.k < b - a { self.frags[a + self.k].rgb } else { [0.0; 3] }
+        match self.frag(x, y) { Some(f) => f.rgb, None => [0.0; 3] }
     }
 }
 

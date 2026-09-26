@@ -5324,10 +5324,6 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             // world peel only) — the colour / depth Bufs of a layer are built once for both
             let want_probes = pi == 0 && prm.probe_bake.is_some();
             if let Some(ly) = layers.as_ref().filter(|_| prm.lm_scene.is_some() || want_probes) {
-                // (the transcribed accumulate and the probes read the layers through `dense_start` and `start[p]..start[p + 1]`:
-                // the in-place derive's gapped lists are compacted first — a copy this path pays, the raster paths do not)
-                let ly_contig = ly.contiguous();
-                let ly: &Layers = ly_contig.as_ref().unwrap_or(ly);
                 let tlm = std::time::Instant::now(); crate::pool::stats::stage("lmaccum");
                 // the layer count over the pixels present (`start` is per wanted pixel in the sparse form; the in-place
                 // derive's lists are not contiguous — `range`)
@@ -5370,14 +5366,16 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                 let chunk = if in_place && std::env::var_os("LMTOOL_SET_LAYER_CHUNK").is_none() { nl.max(1) } else { chunk };
                 let t_bufs = std::time::Instant::now();
                 crate::pool::stats::checkpoint("(set preamble)");
-                let dstart: Option<std::borrow::Cow<[u32]>> = if in_place { Some(ly.dense_start()) } else { None };
+                // (LayerSparse reads the sparse table itself now — no dense offsets, no compaction copy; `dstart` only gates the branch)
+                let dstart: Option<()> = if in_place { Some(()) } else { None };
                 prof::add(&prof::LM_BUFS, t_bufs);
                 crate::pool::stats::checkpoint("(dense_start tail)");
                 let mut k = 0usize;
                 while k < nl {
                     let k_end = if per_block { k + 1 } else { (k + chunk).min(nl) };
                     if let Some(ds) = &dstart {
-                        let layers: Vec<crate::lmaccum::LayerSparse> = (k..k_end).map(|kk| crate::lmaccum::LayerSparse { w: ly.w, h: ly.h, start: ds, frags: &ly.frags, k: kk }).collect();
+                        let layers: Vec<crate::lmaccum::LayerSparse> = (k..k_end).map(|kk| crate::lmaccum::LayerSparse { w: ly.w, h: ly.h, start: &ly.start, cnt: ly.cnt.as_deref(), px: ly.sparse.as_deref(), frags: &ly.frags, k: kk }).collect();
+                        let _ = ds;
                         let t_set = std::time::Instant::now();
                         if let (Some((lm, draws)), Some(dt), Some(fl)) = (&lm_draws, dir_lm.as_mut(), &frag_list) {
                             if !draws.is_empty() { crate::lmaccum::replay_set_layers(fl, lm, &draws[0].cb, draws[0].world_box, &layers, crate::lmaccum::DepthCompare::Float, dt); }
