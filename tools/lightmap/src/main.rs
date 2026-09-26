@@ -27,12 +27,16 @@ fn t_quarter(dt: Option<u32>, x: &lightmap::moods::MoodXml) -> bool {
 /// trimmed back to the kernel (the default mmap threshold hands every buffer over 128 KB — the per-frame
 /// fragment lists, indices, layer tables — to mmap/munmap: 63 k page faults per direction on a tiny map, a
 /// tenth of its time). 32 MB is glibc's ceiling for the threshold; the few larger buffers still round-trip.
-/// THE NON-EXACT PRESET (perf engineer 7, 2026-09-25): `--preset exact|fast|faster` sets the bake's non-exact
-/// knobs together; each knob's own flag overrides its preset value; everything defaults OFF, and with the
-/// preset off the bake is the exact one (the harness: the 9-direction passdiff at --tol 0, the tiled tiny-16
+/// THE NON-EXACT PRESET (perf engineer 7, 2026-09-25): `--preset exact|fast|faster|fastest` sets the bake's
+/// non-exact knobs together; each knob's own flag overrides its preset value; everything defaults OFF, and with
+/// the preset off the bake is the exact one (the harness: the 9-direction passdiff at --tol 0, the tiled tiny-16
 /// lightsum, byte-identical files with LMTOOL_BAKE_TIME pinned).
-///   fast   = --tile-res 2048 --layers-estimate --dirs-scale 0.5 --max-layers 8
-///   faster = fast + --alpha-point --sweeps 3
+///   fast    = --layers-estimate --dirs-scale 0.5 --tile-res 2048
+///   faster  = fast + --alpha-point
+///   fastest = --layers-estimate --dirs-scale 0.5 --tiles-from-world --world-res 8192 --alpha-point
+/// Measured on Summer-16-Tiny q4 against the exact bake (tiny/lightmap-re/preset-fast/README.md): --max-layers 8
+/// shifts the mean −3.4 % and --sweeps 3 −9 % (the missing fourth bounce term), so neither is in a preset;
+/// --alpha-point only acts on maps with alpha-tested cards (the giant's fir leaves), tiny 16 has none.
 #[derive(Clone, Debug, PartialEq)]
 struct Preset {
     /// `--tile-res N`: the fitted tiles' frame size (0 = the tiling rule's, 4096² on the real maps).
@@ -45,6 +49,8 @@ struct Preset {
     layers_estimate: bool,
     /// `--dirs-scale S`: every sweep's direction count × S, the game's own table set of that size.
     dirs_scale: f32,
+    /// `--bounce-dirs-scale S`: the BOUNCE sweeps' (sweep ≥ 1) counts × S on top of `dirs_scale` — the sky sweep keeps its density, the bounce light (smooth, a fifth of the total) takes the cut.
+    bounce_dirs_scale: f32,
     /// `--max-layers N`: the peel's render cap (the game's 21, the environment block included).
     max_layers: usize,
     /// `--alpha-point`: the cards' alpha test as one nearest-mip point sample.
@@ -55,14 +61,15 @@ struct Preset {
 
 impl Preset {
     fn exact() -> Preset {
-        Preset { tile_res: 0, world_res: 0, tiles_from_world: false, layers_estimate: false, dirs_scale: 1.0, max_layers: lightmap::peelcap::PeelStop::default().max_renders, alpha_point: false, sweeps: 0 }
+        Preset { tile_res: 0, world_res: 0, tiles_from_world: false, layers_estimate: false, dirs_scale: 1.0, bounce_dirs_scale: 1.0, max_layers: lightmap::peelcap::PeelStop::default().max_renders, alpha_point: false, sweeps: 0 }
     }
     fn named(name: &str) -> Preset {
         match name {
             "exact" | "off" | "none" => Preset::exact(),
-            "fast" => Preset { tile_res: 2048, layers_estimate: true, dirs_scale: 0.5, max_layers: 8, ..Preset::exact() },
-            "faster" => Preset { alpha_point: true, sweeps: 3, ..Preset::named("fast") },
-            o => panic!("--preset exact|fast|faster, not {o}"),
+            "fast" => Preset { tile_res: 2048, layers_estimate: true, dirs_scale: 0.5, ..Preset::exact() },
+            "faster" => Preset { alpha_point: true, ..Preset::named("fast") },
+            "fastest" => Preset { tiles_from_world: true, world_res: 8192, layers_estimate: true, dirs_scale: 0.5, alpha_point: true, ..Preset::exact() },
+            o => panic!("--preset exact|fast|faster|fastest, not {o}"),
         }
     }
     fn from_args(a: &[String]) -> Preset {
@@ -75,6 +82,7 @@ impl Preset {
         if has("--layers-estimate") { p.layers_estimate = true; }
         if has("--layers-exact") { p.layers_estimate = false; }
         if let Some(v) = f("--dirs-scale") { p.dirs_scale = v.parse().expect("--dirs-scale S"); assert!(p.dirs_scale > 0.0 && p.dirs_scale <= 1.0, "--dirs-scale in (0, 1]"); }
+        if let Some(v) = f("--bounce-dirs-scale") { p.bounce_dirs_scale = v.parse().expect("--bounce-dirs-scale S"); assert!(p.bounce_dirs_scale > 0.0 && p.bounce_dirs_scale <= 1.0, "--bounce-dirs-scale in (0, 1]"); }
         if let Some(v) = f("--max-layers") { p.max_layers = v.parse().expect("--max-layers N"); assert!(p.max_layers >= 2, "--max-layers ≥ 2"); }
         if has("--alpha-point") { p.alpha_point = true; }
         if let Some(v) = f("--sweeps") { p.sweeps = v.parse().expect("--sweeps N"); }
@@ -91,6 +99,7 @@ impl Preset {
         if self.tiles_from_world { v.push("--tiles-from-world".into()); }
         if self.layers_estimate { v.push("--layers-estimate".into()); }
         if self.dirs_scale != 1.0 { v.push(format!("--dirs-scale {}", self.dirs_scale)); }
+        if self.bounce_dirs_scale != 1.0 { v.push(format!("--bounce-dirs-scale {}", self.bounce_dirs_scale)); }
         if self.max_layers != Preset::exact().max_layers { v.push(format!("--max-layers {}", self.max_layers)); }
         if self.alpha_point { v.push("--alpha-point".into()); }
         if self.sweeps != 0 { v.push(format!("--sweeps {}", self.sweeps)); }
@@ -2515,8 +2524,9 @@ fn run(a: Vec<String>) {
                     if let Some(&n) = q_sweeps.get(it) {
                         let pp = f("--points").unwrap_or_else(lightmap::dome::default_path);
                         if let Ok(ps) = lightmap::dome::PointSets::load(&pp) {
-                            if has("--table-order") { if let Some(set) = ps.nearest(lightmap::dome::scaled_count(n, preset.dirs_scale)) { p2.sphere_dirs = std::sync::Arc::new(lightmap::dome::rotate_set(set)); } }
-                            else if let Some(d) = lightmap::dome::sweep_directions_scaled(&ps, f("--quality").map(|s| s.parse().unwrap()).unwrap_or(3), it, false, preset.dirs_scale) { p2.sphere_dirs = std::sync::Arc::new(d); }
+                            if has("--table-order") { if let Some(set) = ps.nearest(lightmap::dome::scaled_count(n, preset.dirs_scale * preset.bounce_dirs_scale)) { p2.sphere_dirs = std::sync::Arc::new(lightmap::dome::rotate_set(set)); } }
+                            else if let Some(d) = lightmap::dome::sweep_directions_scaled(&ps, f("--quality").map(|s| s.parse().unwrap()).unwrap_or(3), it, false, preset.dirs_scale * preset.bounce_dirs_scale) { p2.sphere_dirs = std::sync::Arc::new(d); }
+                            if preset.bounce_dirs_scale != 1.0 { eprintln!("NON-EXACT --bounce-dirs-scale {}: sweep {it} runs {} directions", preset.bounce_dirs_scale, p2.sphere_dirs.len()); }
                         }
                     }
                 }
