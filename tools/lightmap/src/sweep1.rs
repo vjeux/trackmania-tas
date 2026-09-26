@@ -434,7 +434,7 @@ pub fn check_direction(root: &std::path::Path, frame: u32, index: u32, env_frame
         let sc_rect = crate::probecheck::scissor_for(probe_state.as_ref(), eid).unwrap_or(Some([22, 4, 7, 8]));
         let Some(d) = crate::probecheck::probe_draw_from_action(a, sc_rect) else { continue };
         let Some((cb, db, cname)) = load_layer(eid)? else { println!("  probe draw eid {eid}: no layer before it"); continue };
-        let written = crate::probepass::probe_set_ilightdir(&mut probe_target, &d, &cb, &db, offsets.as_ref(), crate::probepass::ProbeOpts::default());
+        let written = crate::probepass::probe_set_ilightdir(&mut probe_target, &d, &crate::lmaccum::LayerTargets { color: &cb, depth: &db }, offsets.as_ref(), crate::probepass::ProbeOpts::default());
         match probes.iter().find(|e| e.eid_last == eid) {
             Some(pe) => {
                 let theirs = crate::probepass::load_dds_volume(&crate::passdiff::read_entry_bytes(root, &pe.file)?, crate::probepass::VolFmt::from_name(&pe.format), 32)?;

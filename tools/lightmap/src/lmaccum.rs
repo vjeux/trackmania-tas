@@ -88,6 +88,8 @@ pub fn lm_clip(v: &LmVertex, st: [f32; 4], cb: &LmRasterCb) -> [f32; 2] {
     [sxy[0].mul_add(v.uv[0], tzw[0]), sxy[1].mul_add(v.uv[1], tzw[1])]
 }
 
+// (perf 8's lm_clip_unfused and E's clip_unfused were the same OnceLock fix; `clip_unfused` above is the one kept)
+
 /// `rows · p·scale + t` (the world position of a vertex, VS 17111 20–33 / VS 17118 30–37).
 #[inline]
 pub fn world_pos(v: &LmVertex, inst: &LmInstance, rows: &[[f32; 3]; 3]) -> [f32; 3] {
@@ -160,6 +162,58 @@ pub enum DepthCompare {
 pub struct LayerTargets<'a> {
     pub color: &'a Buf,
     pub depth: &'a Buf,
+}
+
+/// A peel layer's two targets as the pixel shaders read them (PS 17112, the probe passes): the depth and the colour at a
+/// texel, each with its own size — the dense `LayerTargets` pair, or `LayerSparse` reading the sparse layer table in
+/// place (perf 8: no per-layer 4096² images materialised for the transcribed accumulate).
+pub trait LayerRead: Sync {
+    fn depth_size(&self) -> (u32, u32);
+    fn color_size(&self) -> (u32, u32);
+    fn depth(&self, x: u32, y: u32) -> f32;
+    fn rgb(&self, x: u32, y: u32) -> [f32; 3];
+}
+
+impl LayerRead for LayerTargets<'_> {
+    #[inline]
+    fn depth_size(&self) -> (u32, u32) { (self.depth.w, self.depth.h) }
+    #[inline]
+    fn color_size(&self) -> (u32, u32) { (self.color.w, self.color.h) }
+    #[inline]
+    fn depth(&self, x: u32, y: u32) -> f32 { self.depth.get(x, y, 0) }
+    #[inline]
+    fn rgb(&self, x: u32, y: u32) -> [f32; 3] { [self.color.get(x, y, 0), self.color.get(x, y, 1), self.color.get(x, y, 2)] }
+}
+
+/// Layer `k` of a peel's layer table read in place: `start` = the DENSE per-pixel fragment offsets (`w · h + 1` entries,
+/// `Layers::dense_start`), `frags` = the fragments (stored depths increase with the layer index). A pixel with fewer than
+/// k + 1 layers reads the targets' CLEAR — depth 1.0 (the near plane), colour black — exactly what `Layers::depth_image` /
+/// `colour_image` put there.
+pub struct LayerSparse<'a> {
+    pub w: u32,
+    pub h: u32,
+    pub start: &'a [u32],
+    pub frags: &'a [crate::peel::LayerFrag],
+    pub k: usize,
+}
+
+impl LayerRead for LayerSparse<'_> {
+    #[inline]
+    fn depth_size(&self) -> (u32, u32) { (self.w, self.h) }
+    #[inline]
+    fn color_size(&self) -> (u32, u32) { (self.w, self.h) }
+    #[inline]
+    fn depth(&self, x: u32, y: u32) -> f32 {
+        let p = (y * self.w + x) as usize;
+        let (a, b) = (self.start[p] as usize, self.start[p + 1] as usize);
+        if self.k < b - a { self.frags[a + self.k].d } else { 1.0 }
+    }
+    #[inline]
+    fn rgb(&self, x: u32, y: u32) -> [f32; 3] {
+        let p = (y * self.w + x) as usize;
+        let (a, b) = (self.start[p] as usize, self.start[p + 1] as usize);
+        if self.k < b - a { self.frags[a + self.k].rgb } else { [0.0; 3] }
+    }
 }
 
 /// Point sampling with ClampEdge addressing (s0 / s1 of PS 17112: `SGbxClamp_Point`): the texel `floor(u·W)`,
@@ -1519,9 +1573,10 @@ fn ps_17112_project(p: [f32; 3], n: [f32; 3], cb: &SetCb) -> Option<(f32, f32, f
 /// PS 17112's layer-dependent tail: the depth compare at the undivided (u, v), then the colour at (u, v)/w — instructions
 /// 10–18 of `ps_17112`, bit for bit.
 #[inline]
-fn ps_17112_layer((z, u, v, cu, cv): (f32, f32, f32, f32, f32), layer: &LayerTargets, cmp: DepthCompare) -> Option<[f32; 3]> {
-    let (tx, ty) = (point_texel(u, layer.depth.w), point_texel(v, layer.depth.h));
-    let stored = layer.depth.get(tx, ty, 0);
+fn ps_17112_layer<L: LayerRead>((z, u, v, cu, cv): (f32, f32, f32, f32, f32), layer: &L, cmp: DepthCompare) -> Option<[f32; 3]> {
+    let (dw, dh) = layer.depth_size();
+    let (tx, ty) = (point_texel(u, dw), point_texel(v, dh));
+    let stored = layer.depth(tx, ty);
     let pass = match cmp {
         DepthCompare::Unorm16Round => {
             let rq = (z.clamp(0.0, 1.0) * 65535.0).round();
@@ -1533,8 +1588,9 @@ fn ps_17112_layer((z, u, v, cu, cv): (f32, f32, f32, f32, f32), layer: &LayerTar
     if !pass {
         return None;
     }
-    let (cx, cy) = (point_texel(cu, layer.color.w), point_texel(cv, layer.color.h));
-    let mut c = [layer.color.get(cx, cy, 0), layer.color.get(cx, cy, 1), layer.color.get(cx, cy, 2)];
+    let (cw, ch) = layer.color_size();
+    let (cx, cy) = (point_texel(cu, cw), point_texel(cv, ch));
+    let mut c = layer.rgb(cx, cy);
     for k in 0..3 {
         let v = c[k].max(0.0).min(99999996802856930000000000000000000000.0);
         c[k] = if v < 49999998401428460000000000000000000000.0 { v } else { 0.0 };
@@ -1555,7 +1611,7 @@ fn pixel_chunks(n_px: usize, threads: usize) -> (usize, usize) {
 /// blocks' result (`run_set_layers_par` called once per block), without the raster. The clip distances of a fitted
 /// block are VS 17115's per-vertex `(x − MinX, z − MinZ, MaxX − x, MaxZ − z)` interpolated with the fragment's
 /// barycentrics, as the raster path evaluates them.
-pub fn replay_set_layers(fl: &LmFragList, sc: &LmScene, cb: &SetCb, world_box: Option<[[f32; 2]; 2]>, layers: &[LayerTargets], cmp: DepthCompare, tgt: &mut DirTarget) {
+pub fn replay_set_layers<L: LayerRead>(fl: &LmFragList, sc: &LmScene, cb: &SetCb, world_box: Option<[[f32; 2]; 2]>, layers: &[L], cmp: DepthCompare, tgt: &mut DirTarget) {
     assert_eq!((fl.w, fl.h), (tgt.w, tgt.h));
     if layers.is_empty() { return; }
     let threads = crate::pool::pool().threads.max(1);

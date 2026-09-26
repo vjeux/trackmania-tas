@@ -135,7 +135,7 @@ pub fn run(root: &std::path::Path, co: &CheckOpts) -> Result<(), String> {
         let color: Buf = load_entry(root, ce)?;
         let depth: Buf = load_entry(root, de)?;
         let before = target.clone();
-        let written = probe_set_ilightdir(&mut target, &d, &color, &depth, offsets.as_ref(), co.opts);
+        let written = probe_set_ilightdir(&mut target, &d, &crate::lmaccum::LayerTargets { color: &color, depth: &depth }, offsets.as_ref(), co.opts);
         let changed = (0..target.d).flat_map(|z| (0..target.h).flat_map(move |y| (0..target.w).map(move |x| (x, y, z)))).filter(|&(x, y, z)| (0..4).any(|c| target.get(x, y, z, c) != before.get(x, y, z, c))).count();
         let cap = captured.iter().find(|e| e.eid == Some(eid));
         let line = match cap {
@@ -164,7 +164,7 @@ pub fn run(root: &std::path::Path, co: &CheckOpts) -> Result<(), String> {
         let depth: Buf = load_entry(root, de)?;
         // the target accumulates over the bake: the first compute frame starts from the clear
         let mut sky = Volume3::new(32, 16, 32, 1);
-        let added = probe_add_sky_visibility(&mut sky, &d, &depth, offsets.as_ref(), co.opts);
+        let added = probe_add_sky_visibility(&mut sky, &d, &crate::lmaccum::LayerTargets { color: &depth, depth: &depth }, offsets.as_ref(), co.opts);
         let cap = entries(&m, "probe3d_skyvis", frame).into_iter().find(|e| e.eid == Some(eid));
         let line = match cap {
             Some(e) => {

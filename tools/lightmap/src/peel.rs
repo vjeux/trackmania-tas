@@ -1556,6 +1556,9 @@ impl ShadowMap {
     }
     /// A shadow map rasterised in a given frame (a captured frustum, or the default fit).
     pub fn build_in(tris: &[WTri], frame: PeelFrame, masks: &[crate::geometry::AlphaMask]) -> ShadowMap {
+        if std::env::var_os("LMTOOL_SHADOW_SERIAL").is_none() {
+            return Self::build_in_bands(tris, frame, masks);
+        }
         let (res, res_y) = (frame.res, frame.res_y);
         let mut depth = raster::Depth::new(res, res_y);
         for t in tris {
@@ -1583,6 +1586,80 @@ impl ShadowMap {
         }
         ShadowMap { frame, depth }
     }
+    /// `build_in` BAND-PARALLEL (perf 8): the triangles binned into pixel-row bands (in triangle order), every band
+    /// rasterising its list with the rows clipped to the band — a pixel lies in one band, whose triangles arrive in the
+    /// serial order, so its depth test sees the same fragments in the same order: the same map (the serial build
+    /// took 8.2 s on Stadium stpad, 1 s on the giant; LMTOOL_SHADOW_SERIAL=1 keeps it).
+    pub fn build_in_bands(tris: &[WTri], frame: PeelFrame, masks: &[crate::geometry::AlphaMask]) -> ShadowMap {
+        let (res, res_y) = (frame.res, frame.res_y);
+        let threads = crate::pool::pool().threads.max(1);
+        let n_bands = (threads * 2).clamp(1, res_y as usize);
+        let rows = (res_y as usize + n_bands - 1) / n_bands;
+        let skip_cards = !cards_occlude() || !cards_shadow();
+        // 1. the bands each triangle touches (from its projected y range, as the rasteriser bounds it), per chunk of
+        //    triangles in order
+        let n = tris.len();
+        let n_chunks = (threads * 4).max(1);
+        let per = (n + n_chunks - 1) / n_chunks;
+        let frame_ref = &frame;
+        let binned: Vec<Vec<Vec<u32>>> = crate::pool::pool().map(n_chunks, |ci| {
+            let mut out: Vec<Vec<u32>> = vec![Vec::new(); n_bands];
+            for ti in (ci * per).min(n)..((ci + 1) * per).min(n) {
+                let t = &tris[ti];
+                if skip_cards && t.alpha != u16::MAX { continue; }
+                let p0 = t.p0;
+                let p1 = [p0[0] + t.e1[0], p0[1] + t.e1[1], p0[2] + t.e1[2]];
+                let p2 = [p0[0] + t.e2[0], p0[1] + t.e2[1], p0[2] + t.e2[2]];
+                let ys = [frame_ref.project(p0).1, frame_ref.project(p1).1, frame_ref.project(p2).1];
+                if !ys.iter().all(|y| y.is_finite()) { continue; }
+                let (miny, maxy) = (ys.iter().cloned().fold(f32::MAX, f32::min), ys.iter().cloned().fold(f32::MIN, f32::max));
+                // pixel centres y + 0.5 in [miny, maxy] (raster::bounds), a row each side to be safe
+                let y0 = ((miny - 0.5).floor() as i64 - 1).max(0);
+                let y1 = ((maxy - 0.5).ceil() as i64 + 1).min(res_y as i64 - 1);
+                if y0 > y1 { continue; }
+                let (b0, b1) = ((y0 as usize) / rows, ((y1 as usize) / rows).min(n_bands - 1));
+                for b in b0..=b1 { out[b].push(ti as u32); }
+            }
+            out
+        });
+        // 2. the bands, each over its triangles in order with the rows clipped to it
+        let mut depth = raster::Depth::new(res, res_y);
+        let zp = depth.z.as_mut_ptr() as usize;
+        crate::pool::pool().run(n_bands, |b| {
+            let (y_lo, y_hi) = ((b * rows).min(res_y as usize) as i32, (((b + 1) * rows).min(res_y as usize)) as i32);
+            if y_lo >= y_hi { return; }
+            let clip = (0i32, y_lo, res as i32 - 1, y_hi - 1);
+            for chunk in &binned {
+                for &ti in &chunk[b] {
+                    let t = &tris[ti as usize];
+                    let p0 = t.p0;
+                    let p1 = [p0[0] + t.e1[0], p0[1] + t.e1[1], p0[2] + t.e1[2]];
+                    let p2 = [p0[0] + t.e2[0], p0[1] + t.e2[1], p0[2] + t.e2[2]];
+                    let (x0, y0, z0) = frame_ref.project(p0);
+                    let (x1, y1, z1) = frame_ref.project(p1);
+                    let (x2, y2, z2) = frame_ref.project(p2);
+                    let mask = if t.alpha != u16::MAX { masks.get(t.alpha as usize) } else { None };
+                    raster::triangle_clipped(res, res_y, [[x0, y0], [x1, y1], [x2, y2]], clip, |x, y, bb| {
+                        if let Some(m) = mask {
+                            let u = t.uv0[0][0] * bb[0] + t.uv0[1][0] * bb[1] + t.uv0[2][0] * bb[2];
+                            let v = t.uv0[0][1] * bb[0] + t.uv0[1][1] * bb[1] + t.uv0[2][1] * bb[2];
+                            if !m.opaque(u, v) {
+                                return;
+                            }
+                        }
+                        let z = z0 * bb[0] + z1 * bb[1] + z2 * bb[2];
+                        let i = (y * res + x) as usize;
+                        // SAFETY: the bands own disjoint pixel rows
+                        unsafe {
+                            let slot = (zp as *mut f32).add(i);
+                            if z < *slot { *slot = z; }
+                        }
+                    });
+                }
+            }
+        });
+        ShadowMap { frame, depth }
+    }
     /// 1 when the point sees the sun (its depth is not behind the map's by more than `bias` metres).
     #[inline]
     pub fn lit(&self, p: V3, bias: f32) -> f32 {
@@ -1600,13 +1677,27 @@ impl ShadowMap {
 /// is left out: the peel frame must resolve the play area, and geometry beyond it is simply clipped),
 /// padded.
 pub fn scene_bounds(tris: &[WTri]) -> (V3, V3) {
-    let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
-    for t in tris.iter().filter(|t| t.inst != DECOR_INST) {
-        for p in [t.p0, [t.p0[0] + t.e1[0], t.p0[1] + t.e1[1], t.p0[2] + t.e1[2]], [t.p0[0] + t.e2[0], t.p0[1] + t.e2[1], t.p0[2] + t.e2[2]]] {
-            for k in 0..3 {
-                lo[k] = lo[k].min(p[k]);
-                hi[k] = hi[k].max(p[k]);
+    // (a min / max fold: order-free, so in parallel chunks — the serial fold over the giant's 27 M triangles was 0.2 s per sweep)
+    let n = tris.len();
+    let threads = crate::pool::pool().threads.max(1);
+    let chunk = (n / (threads * 2).max(1)).max(4096);
+    let parts: Vec<(V3, V3)> = crate::pool::pool().map((n + chunk - 1) / chunk, |ci| {
+        let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+        for t in tris[ci * chunk..((ci + 1) * chunk).min(n)].iter().filter(|t| t.inst != DECOR_INST) {
+            for p in [t.p0, [t.p0[0] + t.e1[0], t.p0[1] + t.e1[1], t.p0[2] + t.e1[2]], [t.p0[0] + t.e2[0], t.p0[1] + t.e2[1], t.p0[2] + t.e2[2]]] {
+                for k in 0..3 {
+                    lo[k] = lo[k].min(p[k]);
+                    hi[k] = hi[k].max(p[k]);
+                }
             }
+        }
+        (lo, hi)
+    });
+    let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+    for (l, h) in &parts {
+        for k in 0..3 {
+            lo[k] = lo[k].min(l[k]);
+            hi[k] = hi[k].max(h[k]);
         }
     }
     for k in 0..3 {
@@ -1879,6 +1970,29 @@ impl Layers {
     }
     /// A per-pixel image of layer `k` (`clear` where a pixel has fewer layers), built in parallel: the dense
     /// form by pixel chunks, the sparse form as the clear everywhere then the wanted pixels' values.
+    /// The per-pixel fragment offsets of the WHOLE frame (`w · h + 1` entries): the dense form's `start` as it is; the sparse
+    /// form's spread over every pixel — an unwanted pixel gets an empty range (its offset = the next wanted pixel's), so
+    /// `frags[start[p] + k]` for `start[p] + k < start[p + 1]` is layer k at pixel p, the clear otherwise — what `layer_image`
+    /// materialises per layer, read in place instead (perf 8, `lmaccum::LayerSparse`).
+    pub fn dense_start(&self) -> std::borrow::Cow<'_, [u32]> {
+        let Some(px) = &self.sparse else { return std::borrow::Cow::Borrowed(&self.start) };
+        let n = (self.w * self.h) as usize;
+        let mut out: Vec<u32> = Vec::with_capacity(n + 1);
+        // SAFETY: every entry is written below by the chunk that owns it
+        unsafe { out.set_len(n + 1); }
+        out[n] = *self.start.last().unwrap_or(&0);
+        let op = out.as_mut_ptr() as usize;
+        let threads = crate::pool::pool().threads.max(1);
+        let chunk = (n / (threads * 4).max(1)).max(4096);
+        crate::pool::pool().run((n + chunk - 1) / chunk, |ci| {
+            for p in ci * chunk..((ci + 1) * chunk).min(n) {
+                // the rank of pixel p = the wanted pixels before it = its dense index when wanted, else the next one's
+                let k = px.index_of_id(p as u32) as usize;
+                unsafe { *(op as *mut u32).add(p) = self.start[k]; }
+            }
+        });
+        std::borrow::Cow::Owned(out)
+    }
     fn layer_image<T: Copy + Send + Sync>(&self, k: usize, clear: T, get: impl Fn(&LayerFrag) -> T + Sync) -> Vec<T> {
         let n = (self.w * self.h) as usize;
         let mut img: Vec<T> = Vec::with_capacity(n);
@@ -3527,9 +3641,35 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                 // fused raster path (and the serial / per-block study switches take theirs)
                 let replay = !per_block && crate::lmaccum::frag_list_on() && std::env::var_os("LMTOOL_LMACCUM_SERIAL").is_none();
                 let frag_list = if replay { lm_draws.as_ref().map(|(lm, _)| lm.frag_list(di, 2048, 2048)) } else { None };
+                // THE LAYERS READ IN PLACE (perf 8, lmaccum::LayerSparse): the replay and the probe passes read the layer table
+                // through the frame's dense offsets — no per-layer 4096² colour / depth images (stpad: 13 layers × 268 MB per
+                // direction, 0.4–0.7 s); the raster paths keep the images
+                let in_place = frag_list.is_some() || lm_draws.is_none();
+                let t_bufs = std::time::Instant::now();
+                let dstart: Option<std::borrow::Cow<[u32]>> = if in_place { Some(ly.dense_start()) } else { None };
+                prof::add(&prof::LM_BUFS, t_bufs);
                 let mut k = 0usize;
                 while k < nl {
                     let k_end = if per_block { k + 1 } else { (k + chunk).min(nl) };
+                    if let Some(ds) = &dstart {
+                        let layers: Vec<crate::lmaccum::LayerSparse> = (k..k_end).map(|kk| crate::lmaccum::LayerSparse { w: ly.w, h: ly.h, start: ds, frags: &ly.frags, k: kk }).collect();
+                        let t_set = std::time::Instant::now();
+                        if let (Some((lm, draws)), Some(dt), Some(fl)) = (&lm_draws, dir_lm.as_mut(), &frag_list) {
+                            if !draws.is_empty() { crate::lmaccum::replay_set_layers(fl, lm, &draws[0].cb, draws[0].world_box, &layers, crate::lmaccum::DepthCompare::Float, dt); }
+                        }
+                        prof::add(&prof::LM_SET, t_set);
+                        if want_probes {
+                            let t_pl = std::time::Instant::now();
+                            if let Some(pb) = &prm.probe_bake {
+                                for (j, l) in layers.iter().enumerate() {
+                                    pb.lock().unwrap().world_layer(k + j, &pw01, l, *d, prm.sphere_dirs.len(), prm.sweep == 0);
+                                }
+                            }
+                            prof::add(&prof::PROBE_LAYER, t_pl);
+                        }
+                        k = k_end;
+                        continue;
+                    }
                     let t_bufs = std::time::Instant::now();
                     let bufs: Vec<(crate::passdiff::Buf, crate::passdiff::Buf)> = (k..k_end).map(|kk| (ly.colour_buf(kk, 0), crate::passdiff::Buf { w: ly.w, h: ly.h, channels: 1, data: ly.depth_image(kk, 0) })).collect();
                     prof::add(&prof::LM_BUFS, t_bufs);
@@ -3539,11 +3679,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                             crate::lmaccum::run_set_block(&lm.meshes, &lm.instances, &lm.table, draws, &crate::lmaccum::LayerTargets { color: &bufs[0].0, depth: &bufs[0].1 }, crate::lmaccum::DepthCompare::Float, dt);
                         } else {
                             let layers: Vec<crate::lmaccum::LayerTargets> = bufs.iter().map(|(c, dd)| crate::lmaccum::LayerTargets { color: c, depth: dd }).collect();
-                            match &frag_list {
-                                Some(fl) if !draws.is_empty() => crate::lmaccum::replay_set_layers(fl, lm, &draws[0].cb, draws[0].world_box, &layers, crate::lmaccum::DepthCompare::Float, dt),
-                                Some(_) => {}
-                                None => crate::lmaccum::run_set_layers_par(&lm.meshes, &lm.instances, &lm.table, draws, &layers, crate::lmaccum::DepthCompare::Float, dt, &mut dir_best_k, dir_block_base + k),
-                            }
+                            crate::lmaccum::run_set_layers_par(&lm.meshes, &lm.instances, &lm.table, draws, &layers, crate::lmaccum::DepthCompare::Float, dt, &mut dir_best_k, dir_block_base + k);
                         }
                     }
                     prof::add(&prof::LM_SET, t_set);
@@ -3553,7 +3689,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                         let t_pl = std::time::Instant::now();
                         if let Some(pb) = &prm.probe_bake {
                             for (j, (color, depth)) in bufs.iter().enumerate() {
-                                pb.lock().unwrap().world_layer(k + j, &pw01, color, depth, *d, prm.sphere_dirs.len(), prm.sweep == 0);
+                                pb.lock().unwrap().world_layer(k + j, &pw01, &crate::lmaccum::LayerTargets { color, depth }, *d, prm.sphere_dirs.len(), prm.sweep == 0);
                             }
                         }
                         prof::add(&prof::PROBE_LAYER, t_pl);

@@ -337,28 +337,30 @@ pub fn texel_point(u: f32, w: u32) -> u32 {
 
 /// `SampleCmpLevelZero` with a POINT comparison sampler, GreaterEqual: 1 where `reference ≥ stored`.
 #[inline]
-pub fn sample_cmp_point_ge(depth: &Buf, u: f32, v: f32, reference: f32) -> f32 {
-    let x = texel_point(u, depth.w);
-    let y = texel_point(v, depth.h);
-    if reference >= depth.get(x, y, 0) { 1.0 } else { 0.0 }
+pub fn sample_cmp_point_ge<L: crate::lmaccum::LayerRead>(layer: &L, u: f32, v: f32, reference: f32) -> f32 {
+    let (w, h) = layer.depth_size();
+    let x = texel_point(u, w);
+    let y = texel_point(v, h);
+    if reference >= layer.depth(x, y) { 1.0 } else { 0.0 }
 }
 
 /// `SampleCmpLevelZero` with a LINEAR comparison sampler, GreaterEqual, ClampEdge: the bilinear blend
 /// of the four texels' compare results; the weights' fraction quantised to `frac_bits`.
-pub fn sample_cmp_linear_ge(depth: &Buf, u: f32, v: f32, reference: f32, frac_bits: u32) -> f32 {
-    let fx = u * depth.w as f32 - 0.5;
-    let fy = v * depth.h as f32 - 0.5;
+pub fn sample_cmp_linear_ge<L: crate::lmaccum::LayerRead>(layer: &L, u: f32, v: f32, reference: f32, frac_bits: u32) -> f32 {
+    let (dw, dh) = layer.depth_size();
+    let fx = u * dw as f32 - 0.5;
+    let fy = v * dh as f32 - 0.5;
     let x0 = fx.floor();
     let y0 = fy.floor();
     let q = (1u32 << frac_bits) as f32;
     let wx = ((fx - x0) * q).floor() / q;
     let wy = ((fy - y0) * q).floor() / q;
     let clampi = |t: f32, n: u32| -> u32 { if t.is_nan() || t < 0.0 { 0 } else if t >= n as f32 { n - 1 } else { t as u32 } };
-    let xa = clampi(x0, depth.w);
-    let xb = clampi(x0 + 1.0, depth.w);
-    let ya = clampi(y0, depth.h);
-    let yb = clampi(y0 + 1.0, depth.h);
-    let c = |x: u32, y: u32| -> f32 { if reference >= depth.get(x, y, 0) { 1.0 } else { 0.0 } };
+    let xa = clampi(x0, dw);
+    let xb = clampi(x0 + 1.0, dw);
+    let ya = clampi(y0, dh);
+    let yb = clampi(y0 + 1.0, dh);
+    let c = |x: u32, y: u32| -> f32 { if reference >= layer.depth(x, y) { 1.0 } else { 0.0 } };
     let top = c(xa, ya) * (1.0 - wx) + c(xb, ya) * wx;
     let bot = c(xa, yb) * (1.0 - wx) + c(xb, yb) * wx;
     top * (1.0 - wy) + bot * wy
@@ -366,10 +368,11 @@ pub fn sample_cmp_linear_ge(depth: &Buf, u: f32, v: f32, reference: f32, frac_bi
 
 /// Point sample of an RGB target.
 #[inline]
-pub fn sample_point_rgb(color: &Buf, u: f32, v: f32) -> [f32; 3] {
-    let x = texel_point(u, color.w);
-    let y = texel_point(v, color.h);
-    [color.get(x, y, 0), color.get(x, y, 1), color.get(x, y, 2)]
+pub fn sample_point_rgb<L: crate::lmaccum::LayerRead>(layer: &L, u: f32, v: f32) -> [f32; 3] {
+    let (w, h) = layer.color_size();
+    let x = texel_point(u, w);
+    let y = texel_point(v, h);
+    layer.rgb(x, y)
 }
 
 /// The (x, y) cells a draw covers: the scissor rect (or the whole viewport).
@@ -395,7 +398,7 @@ pub fn blend_add_f16(dst: f32, src: f32) -> f32 {
 
 /// **PS 17151** `ProbeGrid_SetILightDir` for one layer: overwrite the probes the layer lies beyond.
 /// Returns the number of probes written.
-pub fn probe_set_ilightdir(target: &mut Volume3, d: &ProbeDraw, color: &Buf, depth: &Buf, offsets: Option<&Volume3>, o: ProbeOpts) -> usize {
+pub fn probe_set_ilightdir<L: crate::lmaccum::LayerRead>(target: &mut Volume3, d: &ProbeDraw, layer: &L, offsets: Option<&Volume3>, o: ProbeOpts) -> usize {
     assert_eq!(target.channels, 4);
     let (x0, y0, x1, y1) = draw_rect(d, target.w, target.h);
     // every probe writes its own slot: the slices in parallel (a block of the giant's grid is 458 k probes per
@@ -415,8 +418,8 @@ pub fn probe_set_ilightdir(target: &mut Volume3, d: &ProbeDraw, color: &Buf, dep
                 let p = probe_point(x, y, z, offsets);
                 let s = to_shadow(p, &d.regs, o.fma);
                 let reference = if o.clamp_ref { s[2].clamp(0.0, 1.0) } else { s[2] };
-                let vis = sample_cmp_point_ge(depth, s[0], s[1], reference);
-                let rgb = sample_point_rgb(color, s[0], s[1]);
+                let vis = sample_cmp_point_ge(layer, s[0], s[1], reference);
+                let rgb = sample_point_rgb(layer, s[0], s[1]);
                 if vis - 0.5 < 0.0 {
                     continue; // discard: the layer is behind the probe, the previous layer's value stays
                 }
@@ -438,13 +441,13 @@ pub fn probe_set_ilightdir(target: &mut Volume3, d: &ProbeDraw, color: &Buf, dep
 
 /// **PS 17154** `ProbeGrid_AddSkyVisibility`: `+= OutScale` (One/One f16) where the 2×2 PCF against the
 /// layer's depth is < 0.5, i.e. the probe is not behind the surface nearest the sky along D.
-pub fn probe_add_sky_visibility(target: &mut Volume3, d: &ProbeDraw, depth: &Buf, offsets: Option<&Volume3>, o: ProbeOpts) -> usize {
-    probe_add_sky_visibility_logged(target, d, depth, offsets, o, None)
+pub fn probe_add_sky_visibility<L: crate::lmaccum::LayerRead>(target: &mut Volume3, d: &ProbeDraw, layer: &L, offsets: Option<&Volume3>, o: ProbeOpts) -> usize {
+    probe_add_sky_visibility_logged(target, d, layer, offsets, o, None)
 }
 
 /// `probe_add_sky_visibility`, logging the non-zero adds (flat probe index of channel 0, src) in order when
 /// `log` is given — the direction-range split replays them (an add of 0 leaves an f16 value as it is).
-pub fn probe_add_sky_visibility_logged(target: &mut Volume3, d: &ProbeDraw, depth: &Buf, offsets: Option<&Volume3>, o: ProbeOpts, log: Option<&mut Vec<(u32, f32)>>) -> usize {
+pub fn probe_add_sky_visibility_logged<L: crate::lmaccum::LayerRead>(target: &mut Volume3, d: &ProbeDraw, layer: &L, offsets: Option<&Volume3>, o: ProbeOpts, log: Option<&mut Vec<(u32, f32)>>) -> usize {
     let (x0, y0, x1, y1) = draw_rect(d, target.w, target.h);
     let z0 = d.slice_start;
     let z1 = (d.slice_start + d.slice_count).min(target.d);
@@ -465,7 +468,7 @@ pub fn probe_add_sky_visibility_logged(target: &mut Volume3, d: &ProbeDraw, dept
                 let p = probe_point(x, y, z, offsets);
                 let s = to_shadow(p, &d.regs, o.fma);
                 let reference = if o.clamp_ref { s[2].clamp(0.0, 1.0) } else { s[2] };
-                let pcf = sample_cmp_linear_ge(depth, s[0], s[1], reference, o.pcf_frac_bits);
+                let pcf = sample_cmp_linear_ge(layer, s[0], s[1], reference, o.pcf_frac_bits);
                 // `lt r0.x, r0.x, 0.5` then `and o0, r0.xxxx, OutScale`: the value or 0, on every channel
                 let src = if pcf < 0.5 { d.out_scale } else { 0.0 };
                 let base = ((z as usize * h + y as usize) * w + x as usize) * ch;
@@ -642,13 +645,13 @@ mod tests {
         }
         let depth = depth_buf(4, 4, 0.5); // the layer at z01 0.5 → probes with z/32 ≥ 0.5 (z ≥ 16) pass
         let mut t = Volume3::new(32, 16, 32, 4);
-        let n = probe_set_ilightdir(&mut t, &d, &color, &depth, None, ProbeOpts::default());
+        let n = probe_set_ilightdir(&mut t, &d, &crate::lmaccum::LayerTargets { color: &color, depth: &depth }, None, ProbeOpts::default());
         assert_eq!(n, 32 * 16 * 16);
         assert_eq!(t.get(0, 0, 15, 0), 0.0);
         assert_eq!([t.get(0, 0, 16, 0), t.get(0, 0, 16, 1), t.get(0, 0, 16, 2), t.get(0, 0, 16, 3)], [0.25, 0.5, 0.75, 1.0]);
         // a black layer beyond the probe writes (0, 0, 0, 0): alpha needs a non-black colour
         let black = Buf::new(4, 4, 3);
-        let n2 = probe_set_ilightdir(&mut t, &d, &black, &depth_buf(4, 4, 0.25), None, ProbeOpts::default());
+        let n2 = probe_set_ilightdir(&mut t, &d, &crate::lmaccum::LayerTargets { color: &black, depth: &depth_buf(4, 4, 0.25) }, None, ProbeOpts::default());
         assert_eq!(n2, 32 * 16 * 24);
         assert_eq!(t.get(0, 0, 16, 3), 0.0);
         assert_eq!(t.get(0, 0, 7, 3), 0.0);
@@ -661,13 +664,13 @@ mod tests {
         let d = ProbeDraw { eid: 0, regs, out_scale: scale, slice_start: 0, slice_count: 32, scissor: None };
         let depth = depth_buf(4, 4, 0.5);
         let mut t = Volume3::new(32, 16, 32, 1);
-        let n = probe_add_sky_visibility(&mut t, &d, &depth, None, ProbeOpts::default());
+        let n = probe_add_sky_visibility(&mut t, &d, &crate::lmaccum::LayerTargets { color: &depth, depth: &depth }, None, ProbeOpts::default());
         assert_eq!(n, 32 * 16 * 16); // z < 16: the probe is before the surface → sees the sky
         // the stored value is the source truncated to f16 (0.0018293474 → 0.0018291473), as the capture shows
         assert_eq!(t.get(0, 0, 0, 0), 0.0018291473388671875);
         assert_eq!(t.get(0, 0, 20, 0), 0.0);
         // a second add rounds the f16 sum to nearest-even
-        probe_add_sky_visibility(&mut t, &d, &depth, None, ProbeOpts::default());
+        probe_add_sky_visibility(&mut t, &d, &crate::lmaccum::LayerTargets { color: &depth, depth: &depth }, None, ProbeOpts::default());
         assert_eq!(t.get(0, 0, 0, 0), decode_f16(encode_f16(2.0 * 0.0018291473388671875, Rounding::NearestEven)));
     }
 

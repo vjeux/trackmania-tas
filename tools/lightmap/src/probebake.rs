@@ -156,7 +156,7 @@ impl ProbeBake {
     /// `n_dirs` directions: the SetILightDir draw of every block; after layer 1 of the sky sweep's upward
     /// directions the sky visibility. `colour` (3 channels) and `depth` (1 channel, z01) are the layer's targets,
     /// `pw01` the peel's WorldPw01Shadow.
-    pub fn world_layer(&mut self, k: usize, pw01: &[[f32; 4]; 4], colour: &Buf, depth: &Buf, dir: [f32; 3], n_dirs: usize, sky_sweep: bool) {
+    pub fn world_layer<L: crate::lmaccum::LayerRead>(&mut self, k: usize, pw01: &[[f32; 4]; 4], layer: &L, dir: [f32; 3], n_dirs: usize, sky_sweep: bool) {
         self.n_layers += 1;
         let mut written = 0;
         for b in &self.blocks {
@@ -169,15 +169,16 @@ impl ProbeBake {
                             let p = crate::probepass::probe_point(x, y, z, self.offsets.as_ref());
                             let sh = crate::probepass::to_shadow(p, &d.regs, self.opts.fma);
                             let reference = if self.opts.clamp_ref { sh[2].clamp(0.0, 1.0) } else { sh[2] };
-                            let (tx, ty) = (crate::probepass::texel_point(sh[0], depth.w), crate::probepass::texel_point(sh[1], depth.h));
-                            let stored = depth.get(tx, ty, 0);
-                            let c = [colour.get(tx, ty, 0), colour.get(tx, ty, 1), colour.get(tx, ty, 2)];
+                            let (dw, dh) = layer.depth_size();
+                            let (tx, ty) = (crate::probepass::texel_point(sh[0], dw), crate::probepass::texel_point(sh[1], dh));
+                            let stored = layer.depth(tx, ty);
+                            let c = layer.rgb(tx, ty);
                             self.trace.push(format!("layer {k}\tprobe {x} {y} {z}\tuv {:.5} {:.5}\tz {:.5}\ttexel {tx} {ty}\tstored {stored:.5}\tpass {}\tcolour {:.5} {:.5} {:.5}", sh[0], sh[1], sh[2], reference >= stored, c[0], c[1], c[2]));
                         }
                     }
                 }
             }
-            written += crate::probepass::probe_set_ilightdir(&mut self.cur, &d, colour, depth, self.offsets.as_ref(), self.opts);
+            written += crate::probepass::probe_set_ilightdir(&mut self.cur, &d, layer, self.offsets.as_ref(), self.opts);
         }
         self.n_written += written;
         self.cur_writes.push(written);
@@ -187,7 +188,7 @@ impl ProbeBake {
             let s = 4.0f32 * dir[1] / n_dirs as f32;
             for b in &self.blocks {
                 let d = b.draw(pw01, s);
-                self.n_sky_adds += crate::probepass::probe_add_sky_visibility_logged(&mut self.skyvis, &d, depth, self.offsets.as_ref(), self.opts, self.sky_log.as_mut());
+                self.n_sky_adds += crate::probepass::probe_add_sky_visibility_logged(&mut self.skyvis, &d, layer, self.offsets.as_ref(), self.opts, self.sky_log.as_mut());
             }
         }
     }
@@ -369,7 +370,7 @@ mod tests {
         let mut depth = Buf::new(4, 4, 1);
         for y in 0..4 { for x in 0..4 { colour.set(x, y, 0, 0.5); depth.set(x, y, 0, 0.25); } }
         pb.begin_direction();
-        pb.world_layer(0, &pw01, &colour, &depth, [0.0, -1.0, 0.0], 256, true);
+        pb.world_layer(0, &pw01, &crate::lmaccum::LayerTargets { color: &colour, depth: &depth }, [0.0, -1.0, 0.0], 256, true);
         assert_eq!(pb.n_written, 2);
         assert_eq!(pb.cur.get(0, 0, 0, 0), 0.5);
         assert_eq!(pb.cur.get(0, 0, 0, 3), 1.0);
@@ -382,7 +383,7 @@ mod tests {
         assert_eq!(pb.n_sky_adds, 0);
         // sweep 1 adds no alpha
         pb.begin_direction();
-        pb.world_layer(0, &pw01, &colour, &depth, [0.0, -1.0, 0.0], 128, false);
+        pb.world_layer(0, &pw01, &crate::lmaccum::LayerTargets { color: &colour, depth: &depth }, [0.0, -1.0, 0.0], 128, false);
         let a_before = pb.colour.get(0, 0, 0, 3);
         pb.end_direction([0.0, -1.0, 0.0], 128, 1);
         assert_eq!(pb.colour.get(0, 0, 0, 3), a_before);
