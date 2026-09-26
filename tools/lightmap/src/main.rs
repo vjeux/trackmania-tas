@@ -1116,8 +1116,33 @@ fn run(a: Vec<String>) {
                     // water quad at the sea level (with the old sand floor under it: --sand-floor)
                     let tile_water = has("--tile-water");
                     let sand = has("--sand-floor");
+                    // THE SEABED HEIGHT = THE RECEIVING TILE'S (V's GreenCoast / WhiteShore finding, 2026-09-26 17:55Z): the peel quad stood at
+                    // the BlueBay-fitted `sea_y − 3` (GreenCoast −3.8) while the LM tile mesh — the zone block's ground prefab placed at
+                    // tile_level·8 + yoff — receives at its own vertices (GreenCoast's Lake bed −6.0), so the receivers sat 2.2 m UNDER an
+                    // opaque black quad and every seabed tile went black (0.004 of the editor, lit 32 %). The quad now sits at the LM tile
+                    // mesh's height (its mean local y + the world level) whenever the pak gives the zone mesh; `sea_y − 3` is the fallback
+                    // (BlueBay: 4.0 either way — the captured seabed 3.76 + bias ≈ 4.0). The water surface itself stays OUT of the peel
+                    // (RE 11, 09:20Z: Tech3_Water_MultiH has no PreLightGen binding and a pass word without 0x1000 — it is in no
+                    // lightmapper pass; --tile-water restores the old study quad).
+                    let seabed_y: f32 = {
+                        let coll_name = hdr.as_ref().map(|h| h.envir.clone()).unwrap_or_else(|| "BlueBay".into());
+                        let paks: Vec<String> = a.iter().enumerate().filter(|(_, x)| *x == "--pak").filter_map(|(i, _)| a.get(i + 1).cloned()).collect();
+                        let mut st = mapgeom::store::DataStore::empty();
+                        for p in &paks { if let Some((pp, key)) = p.rsplit_once(':') { let _ = st.add_pak(pp, key); } }
+                        let zone = lightmap::layout::ground_zone(&mf, &coll_name);
+                        let level = lightmap::layout::tile_level(&mf, &coll_name) as f32 * 8.0 + lightmap::layout::CollectionProfile::of(&coll_name).yoff;
+                        match (paks.is_empty(), lightmap::lmmesh::lm_mesh_of_zone(&mut st, &coll_name, &zone)) {
+                            (false, Ok(Some(m))) if !m.verts.is_empty() => {
+                                let mean_y = m.verts.iter().map(|v| v.pos[1]).sum::<f32>() / m.verts.len() as f32;
+                                let y = level + mean_y;
+                                eprintln!("zone tiles: the seabed quad at the LM tile mesh's height {y:.3} (level {level} + the {zone} mesh's mean local y {mean_y:.3}; the sea_y − 3 stand-in would be {:.1})", sea_y - 3.0);
+                                y
+                            }
+                            _ => sea_y - 3.0,
+                        }
+                    };
                     for &(cx, cz) in &water_cells {
-                        if tile_water { quad(cx, cz, sea_y, water_alb, true); if sand { quad(cx, cz, sea_y - 3.0, sand_alb, false); } } else { quad(cx, cz, sea_y - 3.0, sand_alb, false); }
+                        if tile_water { quad(cx, cz, sea_y, water_alb, true); if sand { quad(cx, cz, seabed_y, sand_alb, false); } } else { quad(cx, cz, seabed_y, sand_alb, false); }
                     }
                     for &(cx, cz) in &land_cells { quad(cx, cz, sea_y + 3.0, land_alb, false); }
                     eprintln!("zone tiles: {} water cells (sea level {sea_y}), {} land cells ({})", water_cells.len(), land_cells.len(), if zones.len() == 4096 { "from the genealogy" } else { "from the map's Sea blocks — the genealogy is empty" });
