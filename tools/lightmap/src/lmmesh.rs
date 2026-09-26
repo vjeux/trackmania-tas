@@ -25,6 +25,46 @@ pub fn snorm16_roundtrip(v: f32) -> f32 {
     q / 32767.0
 }
 
+/// THE LIGHTMAP UV SET PER MATERIAL (RE 7, 2026-09-26 03:10Z, hill4's tiny items against the editor's charts): the geoms of
+/// the world-projected TERRAIN game materials — `BlueBay\Media\Material\{TransitionToSand, TransitionToLand,
+/// TransitionToSeaFloor, Sand, Land, SeaFloor, HillPxz}` (the Pxz shaders texture from the world position, so their mesh
+/// uv is free for the lightmap) — carry the lightmap in TEXCOORD0; stock models, Technics / LightSpot and the TD* user
+/// material models carry it in TEXCOORD1 (the converter's assumption). Rasterising hill4's transition item through
+/// TEXCOORD0 covers 67 % of its chart with 97 % of the covered texels lit, as the editor's file; through TEXCOORD1 the
+/// charts are 31 % / 24 % covered and the lit texels sit elsewhere. The flag the CPU LM builder reads is not located; this
+/// is the observed material table (LMTOOL_LM_UV_TC1_ALL=1 restores TEXCOORD1 for everything).
+pub fn terrain_material_takes_tc0(link: &str) -> bool {
+    if std::env::var_os("LMTOOL_LM_UV_TC1_ALL").is_some() { return false; }
+    let l = link.to_ascii_lowercase();
+    let Some(pos) = l.rfind("\\media\\material\\") else { return false };
+    let name = &l[pos + "\\media\\material\\".len()..];
+    matches!(name, "transitiontosand" | "transitiontoland" | "transitiontoseafloor" | "sand" | "land" | "seafloor" | "hillpxz")
+}
+
+/// The game-material link of a shaded geom (the custom material's link, else its name, else the older material list).
+pub fn geom_material_link(s2: &mapgeom::static_item::solid2::CPlugSolid2Model, sg: &mapgeom::static_item::solid2::ShadedGeom) -> String {
+    usize::try_from(sg.material_index).ok().and_then(|mi| {
+        s2.custom_materials.get(mi).and_then(|cm| cm.inst().and_then(|m| m.link().map(|l| l.to_string())).or_else(|| if cm.name.is_empty() { None } else { Some(cm.name.clone()) }))
+            .or_else(|| s2.materials.get(mi).and_then(|mr| match mr.inline.as_deref() { Some(mapgeom::static_item::Node::Material(m)) => m.link().map(|l| l.to_string()), _ => None }))
+    }).unwrap_or_default()
+}
+
+/// The lightmap uvs of a shaded geom's visual: TEXCOORD0 for the terrain materials, else the TexCoord1 rule below.
+pub fn lightmap_uvs_of_geom(s2: &mapgeom::static_item::solid2::CPlugSolid2Model, sg: &mapgeom::static_item::solid2::ShadedGeom, vis: &mapgeom::static_item::visual::CPlugVisualIndexedTriangles) -> Option<Vec<[f32; 2]>> {
+    if terrain_material_takes_tc0(&geom_material_link(s2, sg)) {
+        use mapgeom::static_item::vstream::Elem;
+        let st = vis.stream()?;
+        let get = |name: u32| st.decls.iter().zip(st.elems.iter()).find(|(d, _)| d.name() == name).map(|(_, e)| e);
+        if let Some(Elem::Float2(u)) = get(mapgeom::static_item::vstream::N_TEXCOORD0) {
+            return Some(u.clone());
+        }
+        if let Some(s) = vis.main.as_ref().and_then(|m| m.tex_coord_sets.get(0)) {
+            return Some(s.coords.iter().map(|c| c.0).collect());
+        }
+    }
+    lightmap_uvs(vis)
+}
+
 /// Whether a visual carries the lightmap uv set (TexCoord1 in the stream or the visual's own second set).
 fn lightmap_uvs(vis: &mapgeom::static_item::visual::CPlugVisualIndexedTriangles) -> Option<Vec<[f32; 2]>> {
     use mapgeom::static_item::vstream::Elem;
@@ -115,7 +155,7 @@ pub fn lm_mesh_of_solid_ordered(s2: &mapgeom::static_item::solid2::CPlugSolid2Mo
         }
         let Some(vr) = s2.visuals.get(sg.visual_index as usize) else { continue };
         let Some(mapgeom::static_item::Node::Visual(vis)) = vr.inline.as_deref() else { continue };
-        let Some(uv1) = lightmap_uvs(vis) else { continue };
+        let Some(uv1) = lightmap_uvs_of_geom(s2, sg, vis) else { continue };
         let Some(st) = vis.stream() else { continue };
         let Some(ib) = vis.index_buffer.as_ref() else { continue };
         let get = |name: u32| st.decls.iter().zip(st.elems.iter()).find(|(d, _)| d.name() == name).map(|(_, e)| e);
@@ -257,7 +297,7 @@ pub fn raw_lm_uvs(bytes: &[u8]) -> Result<Vec<[f32; 2]>, String> {
         if sg.lod_mask != 0 && sg.lod_mask & 1 == 0 { continue; }
         let Some(vr) = s2.visuals.get(sg.visual_index as usize) else { continue };
         let Some(mapgeom::static_item::Node::Visual(vis)) = vr.inline.as_deref() else { continue };
-        let Some(uv1) = lightmap_uvs(vis) else { continue };
+        let Some(uv1) = lightmap_uvs_of_geom(s2, sg, vis) else { continue };
         out.extend(uv1);
     }
     Ok(out)
@@ -274,7 +314,7 @@ pub fn raw_normal_words(bytes: &[u8]) -> Result<Vec<(Option<u32>, Option<u32>, O
         if sg.lod_mask != 0 && sg.lod_mask & 1 == 0 { continue; }
         let Some(vr) = s2.visuals.get(sg.visual_index as usize) else { continue };
         let Some(mapgeom::static_item::Node::Visual(vis)) = vr.inline.as_deref() else { continue };
-        if lightmap_uvs(vis).is_none() { continue; }
+        if lightmap_uvs_of_geom(s2, sg, vis).is_none() { continue; }
         let Some(st) = vis.stream() else { continue };
         let get = |name: u32| st.decls.iter().zip(st.elems.iter()).find(|(d, _)| d.name() == name).map(|(_, e)| e);
         let n = match get(mapgeom::static_item::vstream::N_POSITION) { Some(Elem::Float3(p)) => p.len(), _ => 0 };

@@ -4952,9 +4952,9 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                     let mut per = String::new();
                     for (mi, nm) in names.iter().enumerate() {
                         // the SIGN of the residue per object: Σ ours / Σ game over C0's rgb where they differ (1 = no bias)
-                        let (mut so, mut sg, mut nd) = (0f64, 0f64, 0usize);
-                        for y in 0..2048u32 { for x in 0..2048u32 { let i = (y * 2048 + x) as usize; if owner[i] != mi as u8 + 1 { continue; } for ch in 0..3 { let gg = gs[0].get(x, y, ch as u32); let o = hb.mrt[0][i][ch]; if gg != o { so += o as f64; sg += gg as f64; nd += 1; } } } }
-                        if nd > 0 { per += &format!(" [{nm} C0 differing {nd}: Σours/Σgame {:.4}]", so / sg.max(1e-12)); }
+                        let (mut so, mut sg, mut nd, mut ours0, mut game0) = (0f64, 0f64, 0usize, 0usize, 0usize);
+                        for y in 0..2048u32 { for x in 0..2048u32 { let i = (y * 2048 + x) as usize; if owner[i] != mi as u8 + 1 { continue; } for ch in 0..3 { let gg = gs[0].get(x, y, ch as u32); let o = hb.mrt[0][i][ch]; if gg != o { so += o as f64; sg += gg as f64; nd += 1; if o == 0.0 { ours0 += 1; } if gg == 0.0 { game0 += 1; } } } } }
+                        if nd > 0 { per += &format!(" [{nm} C0 differing {nd}: Σours/Σgame {:.4}; ours 0 in {ours0}, game 0 in {game0}]", so / sg.max(1e-12)); }
                         let (mut n, mut ex, mut u1) = (0usize, 0usize, 0usize);
                         for y in 0..2048u32 { for x in 0..2048u32 { let i = (y * 2048 + x) as usize; if owner[i] != mi as u8 + 1 { continue; } for m in 0..4 { for ch in 0..3 { let gg = gs[m].get(x, y, ch as u32); let o = hb.mrt[m][i][ch]; if gg == 0.0 && o == 0.0 { continue; } n += 1; let dd = (o - gg).abs(); if dd == 0.0 { ex += 1; } else { let ulp = (crate::gpufmt::decode_f16(crate::gpufmt::encode_f16(gg, crate::gpufmt::Rounding::NearestEven).wrapping_add(1)) - gg).abs(); if dd <= ulp * 1.001 { u1 += 1; } } } } } }
                         per += &format!(" {nm} exact {ex}/{n} ({:.2} %), 1 ulp {u1}", 100.0 * ex as f64 / n.max(1) as f64);

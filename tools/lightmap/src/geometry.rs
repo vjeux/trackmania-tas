@@ -399,12 +399,17 @@ pub fn geom_from_solid2(s2: &mapgeom::static_item::solid2::CPlugSolid2Model, ent
         let Some(st) = v.stream() else { continue };
         let get = |name: u32| st.decls.iter().zip(st.elems.iter()).find(|(d, _)| d.name() == name).map(|(_, e)| e);
         let Some(Elem::Float3(pos)) = get(N_POSITION) else { continue };
-        let uv1: Option<&Vec<[f32; 2]>> = match get(N_TEXCOORD0 + 1) {
+        // the lightmap uv set per material (lmmesh::terrain_material_takes_tc0 — RE 7: the terrain game materials' geoms carry
+        // it in TEXCOORD0, everything else in TEXCOORD1)
+        let tc0_is_lm = crate::lmmesh::terrain_material_takes_tc0(&link);
+        let uv1: Option<&Vec<[f32; 2]>> = match get(if tc0_is_lm { N_TEXCOORD0 } else { N_TEXCOORD0 + 1 }) {
             Some(Elem::Float2(u)) => Some(u),
             _ => None,
         };
         // TexCoord1 may also live in the visual's own tex_coord_sets (set 1)
-        let uv1_alt: Option<Vec<[f32; 2]>> = if uv1.is_none() {
+        let uv1_alt: Option<Vec<[f32; 2]>> = if uv1.is_none() && tc0_is_lm {
+            v.main.as_ref().and_then(|m| m.tex_coord_sets.get(0)).map(|s| s.coords.iter().map(|c| c.0).collect())
+        } else if uv1.is_none() {
             v.main.as_ref().and_then(|m| m.tex_coord_sets.get(1)).map(|s| s.coords.iter().map(|c| c.0).collect())
         } else {
             None
