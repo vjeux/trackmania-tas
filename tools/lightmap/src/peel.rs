@@ -2488,6 +2488,31 @@ impl Layers {
     /// form's spread over every pixel — an unwanted pixel gets an empty range (its offset = the next wanted pixel's), so
     /// `frags[start[p] + k]` for `start[p] + k < start[p + 1]` is layer k at pixel p, the clear otherwise — what `layer_image`
     /// materialises per layer, read in place instead (perf 8, `lmaccum::LayerSparse`).
+    /// The layers with every pixel's list contiguous (`start[k]..start[k + 1]`): the layers themselves when they are
+    /// (`cnt` None), else a compacted copy of the in-place derive's gapped array — for the readers that index
+    /// `start[p + 1]` directly (`dense_start` / `LayerSparse`); `at`, `range` and the images need no copy.
+    pub fn contiguous(&self) -> Option<Layers> {
+        let cnt = self.cnt.as_ref()?;
+        let n = cnt.len();
+        let mut start: Vec<u32> = U32S.take_with_capacity(n + 1);
+        start.clear();
+        start.push(0);
+        for i in 0..n { let l = *start.last().unwrap(); start.push(l + cnt[i] as u32); }
+        let total = start[n] as usize;
+        let mut frags: Vec<LayerFrag> = LAYER_FRAGS.take_with_capacity(total);
+        // SAFETY: every slot [start[i], start[i + 1]) is written below by the chunk owning pixel i
+        unsafe { frags.set_len(total); }
+        let (fp, sp) = (frags.as_mut_ptr() as usize, &start);
+        let threads = crate::pool::pool().threads.max(1);
+        let chunk = (n / (threads * 4).max(1)).max(1024);
+        crate::pool::pool().run((n + chunk - 1) / chunk, |ci| {
+            for i in ci * chunk..((ci + 1) * chunk).min(n) {
+                let (a, c) = self.range(i);
+                unsafe { std::ptr::copy_nonoverlapping(self.frags.as_ptr().add(a), (fp as *mut LayerFrag).add(sp[i] as usize), c - a); }
+            }
+        });
+        Some(Layers { w: self.w, h: self.h, start, cnt: None, frags, max_layers: self.max_layers, sparse: self.sparse.clone(), item_layers: self.item_layers, fractions: self.fractions.clone() })
+    }
     pub fn dense_start(&self) -> std::borrow::Cow<'_, [u32]> {
         let Some(px) = &self.sparse else { return std::borrow::Cow::Borrowed(&self.start) };
         let n = (self.w * self.h) as usize;
@@ -2764,7 +2789,7 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
             ab.bands[0].0[k1] as usize - ab.bands[0].0[k0] as usize + (k1 - k0)
         };
         let t_par = std::time::Instant::now();
-        if let Some(kept) = fixed_layers {
+        if let (Some(kept), false) = (fixed_layers, *INPLACE_OFF || INPLACE_OFF_FORCE.load(std::sync::atomic::Ordering::Relaxed)) {
             // THE DIRECT FORM (the count known before the derive — the exact count pass or the captured one):
             // every chunk writes its pixels' lists straight into the final array at a base sized from its
             // A-buffer bound, the pixels' starts and counts beside them — no per-chunk vectors, no totals pass,
@@ -2807,7 +2832,22 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
             });
             prof::add(&prof::L_PAR, t_par);
             LAYER_STATS.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            return Layers { w, h, start, cnt: Some(cnt), frags, max_layers: MAX_LAYERS, sparse: Some(px.clone()), item_layers: kept, fractions: Vec::new() };
+            let inplace = Layers { w, h, start, cnt: Some(cnt), frags, max_layers: MAX_LAYERS, sparse: Some(px.clone()), item_layers: kept, fractions: Vec::new() };
+            if std::env::var_os("LMTOOL_INPLACE_CHECK").is_some() {
+                // THE CHECK: the vector form of the same derive, pixel by pixel
+                INPLACE_OFF_FORCE.store(true, std::sync::atomic::Ordering::Relaxed);
+                let vector = extract_layers(ab, frame, scene, bvh, prm, shadow, sun_bias, sky, threads, wanted, fixed_layers, dome_img);
+                INPLACE_OFF_FORCE.store(false, std::sync::atomic::Ordering::Relaxed);
+                let mut bad = 0usize;
+                for k in 0..npx {
+                    let (a, c) = inplace.range(k); let (a2, c2) = vector.range(k);
+                    let (la, lb) = (&inplace.frags[a..c], &vector.frags[a2..c2]);
+                    let same = la.len() == lb.len() && la.iter().zip(lb.iter()).all(|(p, q)| p.d.to_bits() == q.d.to_bits() && p.rgb.iter().zip(q.rgb.iter()).all(|(u, v)| u.to_bits() == v.to_bits()));
+                    if !same { bad += 1; if bad <= 5 { let id = px.pixels[k]; eprintln!("INPLACE CHECK: pixel ({}, {}) rank {k}: in-place {:?} vs vector {:?}", id % w, id / w, la, lb); } }
+                }
+                eprintln!("INPLACE CHECK: {} of {npx} pixels differ (kept {kept}, cap_total {cap_total}, skip_n {skip_n}, item_layers {} vs {})", bad, inplace.item_layers, vector.item_layers);
+            }
+            return inplace;
         }
         let parts: Vec<(Vec<u32>, Vec<LayerFrag>)> = crate::pool::pool().map(n_chunks, |ci| {
             let ids = &px.pixels[ci * chunk..((ci + 1) * chunk).min(npx)];
@@ -4896,6 +4936,10 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             // world peel only) — the colour / depth Bufs of a layer are built once for both
             let want_probes = pi == 0 && prm.probe_bake.is_some();
             if let Some(ly) = layers.as_ref().filter(|_| prm.lm_scene.is_some() || want_probes) {
+                // (the transcribed accumulate and the probes read the layers through `dense_start` and `start[p]..start[p + 1]`:
+                // the in-place derive's gapped lists are compacted first — a copy this path pays, the raster paths do not)
+                let ly_contig = ly.contiguous();
+                let ly: &Layers = ly_contig.as_ref().unwrap_or(ly);
                 let tlm = std::time::Instant::now(); crate::pool::stats::stage("lmaccum");
                 // the layer count over the pixels present (`start` is per wanted pixel in the sparse form; the in-place
                 // derive's lists are not contiguous — `range`)
@@ -5122,7 +5166,8 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                         let mut q = 0usize;
                         for j in 0..m {
                             let (i, pix, z01, k, _, _) = pend[j];
-                            let (a, b) = (ly.start[k as usize], ly.start[k as usize + 1]);
+                            // (through `range`: the in-place derive's lists are not contiguous across its chunks)
+                            let (a, b) = { let (a, b) = ly.range(k as usize); (a as u32, b as u32) };
                             if a == b { continue; }
                             prefetch(ly.frags.as_ptr().wrapping_add(a as usize));
                             pend[q] = (i, pix, z01, k, a, b);
@@ -5887,6 +5932,11 @@ mod scan16_audit_tests {
         }
     }
 }
+
+/// LMTOOL_NO_INPLACE=1: the sparse layer derivation's vector form even with a known layer count (the check's
+/// reference); the force flag serves the in-process comparison.
+pub static INPLACE_OFF: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("LMTOOL_NO_INPLACE").is_some());
+pub static INPLACE_OFF_FORCE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[cfg(test)]
 mod biased_order_tests {
