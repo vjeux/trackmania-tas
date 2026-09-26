@@ -312,14 +312,19 @@ impl AlphaTex {
     /// expressions `lod_aniso` / `taps` / `major_axis` evaluate — the same values to the bit.
     pub fn plan_for(&self, fp: &Footprint, aniso: usize, early: bool) -> TapPlan {
         let (lod, axis, n) = if aniso > 1 {
-            let (lx, ly) = (fp.len_dx(), fp.len_dy());
-            let (major, minor) = (lx.max(ly).max(1e-30), lx.min(ly).max(1e-30));
-            let ratio = (major / minor).min(aniso as f32).max(1.0);
-            let lod = (major / ratio).log2();
-            let a = if lx >= ly { fp.dx } else { fp.dy };
-            let axis = [a[0] / fp.w, a[1] / fp.h];
-            let ratio_t = (lx.max(ly) / lx.min(ly).max(1e-30)).min(aniso as f32).max(1.0);
-            (lod, axis, (ratio_t.ceil() as usize).max(1))
+            // THE FOOTPRINT ELLIPSE (2026-09-26, engineer 4; REPORT-4 §11d). D3D's text — and this function until then —
+            // approximated the pixel's footprint by the two screen-axis images |∂uv/∂x|, |∂uv/∂y| (the longer = the major
+            // axis, the shorter = the minor, the level from the minor). The hardware ("angle-independent" anisotropic
+            // filtering) uses the footprint ellipse: σ1 ≥ σ2, the singular values of the Jacobian J = [dx dy], the major
+            // direction J·v1 (`Footprint::ellipse`). For a card aligned with the screen axes the two coincide; for a card
+            // seen diagonally at a grazing angle σ2 ≪ min(|dx|, |dy|) — a finer level and more taps, along the true major
+            // direction. RE 11's read of the opacity sampler (plain anisotropic ×16, no bias, no LOD clamp, the view all
+            // mips) left the footprint as the only degree of freedom; on pwc-day direction 0 the ellipse takes the visible
+            // extra-layer alpha residue 186 → 65 texels with the reverse side unchanged, and the steep cards that carried it
+            // from 48 % to 1 %. LMTOOL_ALPHA_FOOTPRINT=axes restores the former rule (the references before that date).
+            let (s1, s2, a) = fp.ellipse();
+            let ratio = (s1 / s2).min(aniso as f32).max(1.0);
+            ((s1 / ratio).log2(), [a[0] / fp.w, a[1] / fp.h], (ratio.ceil() as usize).max(1))
         } else {
             (fp.lod_iso(), [0.0, 0.0], 1)
         };
@@ -598,22 +603,42 @@ impl Footprint {
         let m = self.len_dx().max(self.len_dy()).max(1e-30);
         m.log2()
     }
+    /// The anisotropic footprint's (σ1, σ2, major direction in texels): the ELLIPSE — σ1 ≥ σ2 the singular values of the
+    /// Jacobian [dx dy] (from JᵀJ's eigenvalues), the major direction J·v1 — or, under LMTOOL_ALPHA_FOOTPRINT=axes, the
+    /// two screen-axis lengths with the longer one's direction (D3D's text; the port's rule before 2026-09-26). See
+    /// `plan_for` for why the ellipse.
+    pub fn ellipse(&self) -> (f32, f32, [f32; 2]) {
+        if footprint_ellipse() {
+            let (e, f_, g) = (self.dx[0] * self.dx[0] + self.dx[1] * self.dx[1], self.dx[0] * self.dy[0] + self.dx[1] * self.dy[1], self.dy[0] * self.dy[0] + self.dy[1] * self.dy[1]);
+            let (h, r) = ((e + g) * 0.5, (((e - g) * 0.5).powi(2) + f_ * f_).sqrt());
+            let (s1, s2) = ((h + r).max(0.0).sqrt().max(1e-30), (h - r).max(0.0).sqrt().max(1e-30));
+            // v1: JᵀJ's eigenvector for λ1 = σ1², in the better-conditioned of its two forms
+            let l1 = s1 * s1;
+            let (vx, vy) = if (l1 - e).abs() >= (l1 - g).abs() { (f_, l1 - e) } else { (l1 - g, f_) };
+            let vn = (vx * vx + vy * vy).sqrt();
+            let (vx, vy) = if vn > 0.0 { (vx / vn, vy / vn) } else { (1.0, 0.0) };
+            (s1, s2, [self.dx[0] * vx + self.dy[0] * vy, self.dx[1] * vx + self.dy[1] * vy])
+        } else {
+            let (lx, ly) = (self.len_dx(), self.len_dy());
+            let a = if lx >= ly { self.dx } else { self.dy };
+            (lx.max(ly).max(1e-30), lx.min(ly).max(1e-30), a)
+        }
+    }
     /// The anisotropic level of detail: the major length over the (clamped) anisotropy ratio.
     pub fn lod_aniso(&self, max_aniso: usize) -> f32 {
-        let (lx, ly) = (self.len_dx(), self.len_dy());
-        let (major, minor) = (lx.max(ly).max(1e-30), lx.min(ly).max(1e-30));
-        let ratio = (major / minor).min(max_aniso as f32).max(1.0);
-        (major / ratio).log2()
+        let (s1, s2, _) = self.ellipse();
+        let ratio = (s1 / s2).min(max_aniso as f32).max(1.0);
+        (s1 / ratio).log2()
     }
     /// The number of taps along the major axis: ceil(ratio), at most `max_aniso`.
     pub fn taps(&self, max_aniso: usize) -> usize {
-        let (lx, ly) = (self.len_dx(), self.len_dy());
-        let ratio = (lx.max(ly) / lx.min(ly).max(1e-30)).min(max_aniso as f32).max(1.0);
-        ratio.ceil() as usize
+        let (s1, s2, _) = self.ellipse();
+        let ratio = (s1 / s2).min(max_aniso as f32).max(1.0);
+        (ratio.ceil() as usize).max(1)
     }
     /// The major axis in texture coordinates (the full footprint extent along it).
     pub fn major_axis(&self) -> [f32; 2] {
-        let a = if self.len_dx() >= self.len_dy() { self.dx } else { self.dy };
+        let (_, _, a) = self.ellipse();
         [a[0] / self.w, a[1] / self.h]
     }
 }
@@ -775,6 +800,13 @@ mod tests {
 }
 
 /// LMTOOL_ALPHA_EARLY=always|never: force the exact early-outs on or off for every plan (the measurement of
+
+/// The anisotropic footprint: the ellipse (the default — the hardware's) or, with LMTOOL_ALPHA_FOOTPRINT=axes, the two
+/// screen-axis lengths (D3D's text, the port's rule until 2026-09-26; the references before that date were cut with it).
+pub fn footprint_ellipse() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("LMTOOL_ALPHA_FOOTPRINT").map(|v| v != "axes").unwrap_or(true))
+}
 /// the decided fraction; the default weighs them per plan). 1 = always, 2 = never, 0 = default.
 pub fn early_mode() -> u8 {
     static V: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
