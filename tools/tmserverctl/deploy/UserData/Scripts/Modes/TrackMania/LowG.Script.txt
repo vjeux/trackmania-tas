@@ -31,7 +31,7 @@
 #Setting S_LowG_DefaultGravity 0.5 as "Gravity coefficient (0..1) of players who did not choose one"
 #Setting S_LowG_Collisions True as "Car-to-car collisions"
 #Setting S_LowG_Bots 0 as "Balloon bots parked on the start line at each map start"
-#Setting S_LowG_BotGravity 0.15 as "Gravity coefficient of the balloon bots"
+#Setting S_LowG_BotGravity 0.2 as "Gravity coefficient of the balloon bots"
 #Setting S_LowG_BotAdherence 0.0 as "Grip of the balloon bots (0 = no friction, they slide; 1 = normal tyres)"
 #Setting S_LowG_MaxBots 16 as "Upper bound for /bots"
 #Setting S_LowG_BotsAreFakeUsers False as "Balloons are fake users (named, in the player list) instead of engine bots"
