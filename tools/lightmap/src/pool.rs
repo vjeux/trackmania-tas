@@ -58,8 +58,14 @@ pub struct Pool {
     caller: Mutex<()>,
 }
 
-/// Idle spins on the generation counter before a worker parks (~10–50 µs).
-const SPIN: usize = 4000;
+/// Idle spins on the generation counter before a worker parks (LMTOOL_POOL_SPIN, default 4000 iterations ≈ 100 µs).
+/// Measured (perf 6, giant 4-dir directions total, 128 threads, 2 runs each): 500 / 1000 / 4000 / 16000 iterations =
+/// 1.34 / 1.32 / 1.38 / 1.30 s — within the run-to-run noise (±0.04), so the default stays; a knob for other boxes
+/// (a spinning worker sits on a working thread's SMT sibling: on the previous pool a 5 ms spin cost 5 %).
+fn spin_limit() -> usize {
+    static V: OnceLock<usize> = OnceLock::new();
+    *V.get_or_init(|| std::env::var("LMTOOL_POOL_SPIN").ok().and_then(|v| v.parse().ok()).unwrap_or(4000))
+}
 const FANOUT: usize = 4;
 
 /// One task, timed per participant when the stats are on (perf engineer 6); a panic is recorded, not propagated.
@@ -244,12 +250,12 @@ fn worker(sh: Arc<Shared>, me: usize) {
                 break;
             }
             spins += 1;
-            if spins < SPIN {
+            if spins < spin_limit() {
                 std::hint::spin_loop();
                 continue;
             }
             std::thread::park();
-            spins = SPIN / 2;
+            spins = spin_limit() / 2;
         }
         // the job, published before the generation bump we just saw — of THIS generation (a worker left out of a run
         // may see the next job already: it waits for that job's own bump), and only if this worker is in its set
