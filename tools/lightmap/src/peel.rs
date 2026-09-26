@@ -5172,7 +5172,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             // — the game's env render is per pixel, the uniform sky is only the gather's fallback
             // (the derivation takes the dome image in sweep 0 only — the bounce sweeps' layer 0 is black: not computed there)
             let dome_img: Option<Vec<[f32; 3]>> = if prm.lm_scene.is_some() && prm.sky_grad.is_some() && prm.dome_exact && prm.sweep == 0 {
-                let t_dome_img = std::time::Instant::now();
+                let t_dome_img = std::time::Instant::now(); crate::pool::stats::stage("dome-img");
                 let (w, h) = (frame.res as usize, frame.res_y as usize);
                 let mut img = vec![[0.0f32; 3]; w * h];
                 let dome_px = &dome_px;

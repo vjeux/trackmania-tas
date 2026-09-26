@@ -881,12 +881,20 @@ pub fn run_frame(gl: &crate::layout::GameLayout, sc: &LmScene, lamps: &[Lamp], c
         let next = std::sync::atomic::AtomicUsize::new(0);
         let slots: Vec<std::sync::Mutex<Option<LampWork>>> = (0..n).map(|_| std::sync::Mutex::new(None)).collect();
         let done = std::sync::atomic::AtomicUsize::new(0);
+        // the workers alive (a drop guard per worker counts it out, a panic included): the consumer must not wait on a slot no
+        // worker will ever fill (engineer 3's review note on 8.15)
+        let live = std::sync::atomic::AtomicUsize::new(k);
+        struct LiveGuard<'a>(&'a std::sync::atomic::AtomicUsize);
+        impl Drop for LiveGuard<'_> {
+            fn drop(&mut self) { self.0.fetch_sub(1, std::sync::atomic::Ordering::Release); }
+        }
         let mut probes = ProbeState::new(probe_n);
         let mut results = Vec::with_capacity(n);
         let t0 = std::time::Instant::now();
         std::thread::scope(|sc_| {
             for _ in 0..k {
                 sc_.spawn(|| {
+                    let _guard = LiveGuard(&live);
                     let mut acc = PagedAccum::new(w, h);
                     let mut visited = vec![0u64; ((w * h) as usize + 63) / 64];
                     let mut probe_scratch = ProbeState::new(probe_n);
@@ -920,6 +928,11 @@ pub fn run_frame(gl: &crate::layout::GameLayout, sc: &LmScene, lamps: &[Lamp], c
                 let tw = std::time::Instant::now();
                 let work = loop {
                     if let Some(wk) = slots[li].lock().unwrap().take() { break wk; }
+                    if live.load(std::sync::atomic::Ordering::Acquire) == 0 {
+                        // every worker has left; the slot is still empty → a worker panicked on this lamp (the scope re-raises
+                        // the panic after this thread returns, so make the failure loud here rather than spin forever)
+                        panic!("local-lights: lamp {li} was never drawn — a lamp worker panicked");
+                    }
                     std::thread::sleep(std::time::Duration::from_micros(200));
                 };
                 t_wait += tw.elapsed().as_secs_f64();
