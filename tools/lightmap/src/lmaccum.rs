@@ -373,6 +373,72 @@ pub fn run_set_block_par(meshes: &[LmMesh], instances: &[LmInstance], table: &[[
     });
 }
 
+/// THE WORLD BLOCKS FUSED (Stadium: 21 blocks × 45.8 M triangles per direction): the vertex shader and the band plan run ONCE
+/// and every fragment is compared against the layer targets of all the blocks in `layers` (block k0 + j reads layers[j]).
+/// The sequential semantics are kept exactly: the blocks' passes run in order and the last write wins, so a pixel ends as the
+/// LAST fragment (in raster order) of the HIGHEST block that wrote it — here `best_k[px]` carries the highest block that has
+/// written the pixel so far (across calls: the fitted peels' blocks follow the world peel's, hence `k0`); a fragment of block k
+/// writes when k ≥ best_k[px]. The fragment order is the plan's, the same for every block, so the result is identical to
+/// `run_set_block_par` called once per block. `best_k` is w × h, u16::MAX = never written.
+pub fn run_set_layers_par(meshes: &[LmMesh], instances: &[LmInstance], table: &[[f32; 4]], draws: &[SetDraw], layers: &[LayerTargets], cmp: DepthCompare, tgt: &mut DirTarget, best_k: &mut Vec<u16>, k0: usize) {
+    let (w, h) = (tgt.w, tgt.h);
+    if best_k.len() != (w * h) as usize { *best_k = vec![u16::MAX; (w * h) as usize]; }
+    let threads = crate::pool::pool().threads.max(1);
+    let bounds = mesh_bounds(meshes);
+    let cull = std::env::var_os("LMTOOL_NO_BLOCK_CULL").is_none();
+    let pairs: Vec<(usize, usize)> = draws.iter().enumerate().flat_map(|(di, d)| (d.instance_first..d.instance_first + d.instance_count).map(move |ii| (di, ii))).filter(|&(di, ii)| {
+        if !cull { return true; }
+        match &draws[di].world_box { Some(b) => !culled_by_world_box(&instance_aabb(&bounds[draws[di].mesh], &instances[ii]), b), None => true }
+    }).collect();
+    let preps: Vec<SetPrep> = crate::pool::pool().map(pairs.len(), |k| {
+        let (di, ii) = pairs[k];
+        let d = &draws[di];
+        let mesh = &meshes[d.mesh];
+        let inst = &instances[ii];
+        let vs: Vec<SetVsOut> = mesh.verts.iter().map(|v| vs_17111(v, inst, table, &d.raster)).collect();
+        let cds: Vec<[f32; 4]> = match &d.world_box { Some(b) => vs.iter().map(|o| clip_distances(o.pos, b)).collect(), None => Vec::new() };
+        SetPrep { di, vs, cds }
+    });
+    let plan = band_plan(&preps, |p, t| { let idx = &meshes[draws[p.di].mesh].indices[t * 3..t * 3 + 3]; [p.vs[idx[0] as usize].clip, p.vs[idx[1] as usize].clip, p.vs[idx[2] as usize].clip] }, |p| meshes[draws[p.di].mesh].indices.len() / 3, h, threads);
+    let px_ptr = tgt.px.as_mut_ptr() as usize;
+    let bk_ptr = best_k.as_mut_ptr() as usize;
+    crate::pool::pool().run(plan.n_bands, |b| {
+        let (y_lo, y_hi) = ((b * plan.rows) as i64, (((b + 1) * plan.rows).min(h as usize)) as i64);
+        for &(k, t) in &plan.lists[b] {
+            let p = &preps[k as usize];
+            let d = &draws[p.di];
+            let mesh = &meshes[d.mesh];
+            let tri = &mesh.indices[t as usize * 3..t as usize * 3 + 3];
+            let (a, bb, c) = (&p.vs[tri[0] as usize], &p.vs[tri[1] as usize], &p.vs[tri[2] as usize]);
+            let cd: Option<[[f32; 4]; 3]> = if p.cds.is_empty() { None } else { Some([p.cds[tri[0] as usize], p.cds[tri[1] as usize], p.cds[tri[2] as usize]]) };
+            crate::sunpass::rasterise_triangle_rows([a.clip, bb.clip, c.clip], w, h, y_lo, y_hi, |x, y, b0, b1, b2| {
+                if let Some(cd) = &cd {
+                    for i in 0..4 {
+                        if cd[0][i] * b0 + cd[1][i] * b1 + cd[2][i] * b2 < 0.0 {
+                            return;
+                        }
+                    }
+                }
+                let pos = [a.pos[0] * b0 + bb.pos[0] * b1 + c.pos[0] * b2, a.pos[1] * b0 + bb.pos[1] * b1 + c.pos[1] * b2, a.pos[2] * b0 + bb.pos[2] * b1 + c.pos[2] * b2];
+                let n = [a.nrm[0] * b0 + bb.nrm[0] * b1 + c.nrm[0] * b2, a.nrm[1] * b0 + bb.nrm[1] * b1 + c.nrm[1] * b2, a.nrm[2] * b0 + bb.nrm[2] * b1 + c.nrm[2] * b2];
+                let pi = (y * w + x) as usize;
+                // SAFETY: the bands own disjoint pixel rows
+                let cur = unsafe { *(bk_ptr as *const u16).add(pi) };
+                for (j, layer) in layers.iter().enumerate() {
+                    let kk = (k0 + j) as u16;
+                    if cur != u16::MAX && kk < cur { continue; }
+                    if let Some(rgb) = ps_17112(pos, n, &d.cb, layer, cmp) {
+                        unsafe {
+                            *(px_ptr as *mut u32).add(pi) = crate::gpufmt::pack_r11g11b10(rgb, Rounding::Truncate);
+                            *(bk_ptr as *mut u16).add(pi) = kk;
+                        }
+                    }
+                }
+            });
+        }
+    });
+}
+
 /// The per-pixel trace of a block: the last fragment's projected (u, v, z), the layer depth it compared with, n·D.
 pub type SetTrace = Vec<Option<(f32, f32, f32, f32, f32)>>;
 

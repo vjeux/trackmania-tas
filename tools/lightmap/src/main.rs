@@ -2052,9 +2052,14 @@ fn run(a: Vec<String>) {
             // --tile-vram-mb N (8192), --tile-max N (4)
             let peel_plan: Option<lightmap::tiledpeel::PeelPlan> = if prm.game_peel && prm.raster_peel && prm.frustums.is_none() && !has("--no-tiles") {
                 let gq: f32 = f("--global-quality").map(|v| v.parse().unwrap()).unwrap_or(1.0);
-                // the map's ITEMS (the record scene's block / clip / tile instances are peel geometry, not the tiling's records —
-                // whether the game's tiled peel also takes the block records is RE 6's open item for Stadium)
-                let recs: Vec<lightmap::lmtiles::BlockRecord> = lightmap::lmtiles::item_records(&scene, gq, has("--lod0")).iter().filter(|it| it.item < scene.item_count).filter_map(|it| it.record).collect();
+                // THE PLAN'S RECORD SET (RE 7, FUN_140230080 l.164–262): the lightmapper's FULL record array — items, kind-0 trees, the
+                // zone tiles, the block / clip entities — the per-cell spans from the records with quality > 0.51 (lmtiles::in_fitted_tiles;
+                // stpad: the 180 WaterBase records, the 1 028 drawn clips' records, the items and every tile down to the q 0.707 ring),
+                // the box from the record fold: the layout's records when the record pipeline ran, else the map's item records
+                let recs: Vec<lightmap::lmtiles::BlockRecord> = match game_layout.as_ref().filter(|gl| !gl.records.is_empty()) {
+                    Some(gl) => gl.records.iter().map(|r| lightmap::lmtiles::BlockRecord { world: lightmap::lmtiles::CBox::new(r.centre, r.half), quality: r.quality }).collect(),
+                    None => lightmap::lmtiles::item_records(&scene, gq, has("--lod0")).iter().filter(|it| it.item < scene.item_count).filter_map(|it| it.record).collect(),
+                };
                 let mf = tmmaps::map::MapFile::load(std::path::Path::new(&map_path));
                 let size = [mf.size[0].max(0) as u32, mf.size[1].max(0) as u32, mf.size[2].max(0) as u32];
                 // the zone tiles' box: the seabed quads over the map footprint (see the zone tiles above)

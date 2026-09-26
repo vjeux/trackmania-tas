@@ -2607,6 +2607,9 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         let mut t_build_total = 0.0f32;
         // the transcribed accumulate's TMapILightDir of this direction (cleared before the first block)
         let mut dir_lm: Option<crate::lmaccum::DirTarget> = prm.lm_scene.as_ref().map(|_| crate::lmaccum::DirTarget::cleared(2048, 2048));
+        // the fused blocks' per-pixel "highest block that wrote" and the block numbering across this direction's peels
+        let mut dir_best_k: Vec<u16> = Vec::new();
+        let mut dir_block_base: usize = 0;
         let mut frag_total = 0usize;
         if let Some(c) = &replay {
             // THE REPLAY: the contribution's sel for the facing sub-samples (in set order), its occl bits, the
@@ -2872,20 +2875,36 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                     (lm.as_ref(), (0..lm.meshes.len()).map(|m| crate::lmaccum::SetDraw { eid: 0, mesh: m, instance_first: lm.inst_first[m], instance_count: lm.inst_count[m], raster, cb, world_box }).collect())
                 });
                 let pw01 = frame.world_pw01();
-                for k in 0..nl {
-                    let color = ly.colour_buf(k, 0);
-                    let depth = crate::passdiff::Buf { w: ly.w, h: ly.h, channels: 1, data: ly.depth_image(k, 0) };
+                // THE BLOCKS FUSED (lmaccum::run_set_layers_par): the LM raster runs once per chunk of layers instead of once per
+                // block — the same result (the last write of the highest block wins, tracked per pixel across chunks and peels);
+                // LMTOOL_SET_LAYER_CHUNK=N (default 8) bounds the layer buffers held at once; LMTOOL_SET_PER_BLOCK=1 keeps the
+                // block-by-block path
+                let chunk: usize = std::env::var("LMTOOL_SET_LAYER_CHUNK").ok().and_then(|v| v.parse().ok()).unwrap_or(8).max(1);
+                let per_block = std::env::var_os("LMTOOL_SET_PER_BLOCK").is_some() || lm_draws.is_none();
+                let mut k = 0usize;
+                while k < nl {
+                    let k_end = if per_block { k + 1 } else { (k + chunk).min(nl) };
+                    let bufs: Vec<(crate::passdiff::Buf, crate::passdiff::Buf)> = (k..k_end).map(|kk| (ly.colour_buf(kk, 0), crate::passdiff::Buf { w: ly.w, h: ly.h, channels: 1, data: ly.depth_image(kk, 0) })).collect();
                     if let (Some((lm, draws)), Some(dt)) = (&lm_draws, dir_lm.as_mut()) {
-                        crate::lmaccum::run_set_block(&lm.meshes, &lm.instances, &lm.table, draws, &crate::lmaccum::LayerTargets { color: &color, depth: &depth }, crate::lmaccum::DepthCompare::Float, dt);
+                        if per_block {
+                            crate::lmaccum::run_set_block(&lm.meshes, &lm.instances, &lm.table, draws, &crate::lmaccum::LayerTargets { color: &bufs[0].0, depth: &bufs[0].1 }, crate::lmaccum::DepthCompare::Float, dt);
+                        } else {
+                            let layers: Vec<crate::lmaccum::LayerTargets> = bufs.iter().map(|(c, dd)| crate::lmaccum::LayerTargets { color: c, depth: dd }).collect();
+                            crate::lmaccum::run_set_layers_par(&lm.meshes, &lm.instances, &lm.table, draws, &layers, crate::lmaccum::DepthCompare::Float, dt, &mut dir_best_k, dir_block_base + k);
+                        }
                     }
                     // THE PROBES after every WORLD-peel layer (PS 17151 per block; the sky visibility after layer 1 and the
                     // AddAmbient dispatch after layer 0 for the sky sweep's upward directions) — probebake.rs
                     if want_probes {
                         if let Some(pb) = &prm.probe_bake {
-                            pb.lock().unwrap().world_layer(k, &pw01, &color, &depth, *d, prm.sphere_dirs.len(), prm.sweep == 0);
+                            for (j, (color, depth)) in bufs.iter().enumerate() {
+                                pb.lock().unwrap().world_layer(k + j, &pw01, color, depth, *d, prm.sphere_dirs.len(), prm.sweep == 0);
+                            }
                         }
                     }
+                    k = k_end;
                 }
+                dir_block_base += nl;
                 if (di < 2 || di % 32 == 0) && lm_draws.is_some() { eprintln!("lm-accumulate: direction {di} peel {pi}: {nl} blocks over the transcribed LM raster ({:.1}s)", tlm.elapsed().as_secs_f32()); }
             }
             if let (Some(ly), Some(dump), true) = (&layers, &prm.dump, want_dir_dump) {
