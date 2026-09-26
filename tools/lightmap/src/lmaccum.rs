@@ -1669,8 +1669,15 @@ pub fn replay_set_layers<L: LayerRead>(fl: &LmFragList, sc: &LmScene, cb: &SetCb
 /// (`run_hbasis_par` with the sequential fragment model and the barycentric interpolation, without the raster).
 /// VS 17118's `o2` / `o3` are recomputed per vertex for this direction (`vs_17118_o23`); the provoking vertex is the
 /// triangle's first index. `owner[i]` (when given) receives the mesh index + 1 of the pixel's last fragment.
+/// LMTOOL_LMACCUM_TRACE=1: the replays' wall times per call.
+pub fn lmaccum_trace() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var_os("LMTOOL_LMACCUM_TRACE").is_some())
+}
+
 pub fn replay_hbasis(fl: &LmFragList, sc: &LmScene, cb: &HbCb, ilightdir: &DirTarget, tgt: &mut HbTargets, blend: crate::sunpass::BlendModel, owner: Option<&mut Vec<u8>>) {
     assert_eq!((fl.w, fl.h), (tgt.w, tgt.h));
+    let t_trace = std::time::Instant::now();
     let threads = crate::pool::pool().threads.max(1);
     let n_px = (fl.w * fl.h) as usize;
     let (n_chunks, per) = pixel_chunks(n_px, threads);
@@ -1708,4 +1715,5 @@ pub fn replay_hbasis(fl: &LmFragList, sc: &LmScene, cb: &HbCb, ilightdir: &DirTa
             }
         }
     });
+    if lmaccum_trace() { eprintln!("lmaccum trace: replay_hbasis {} fragments, {} chunks: {:.1} ms", fl.frags.len(), n_chunks, t_trace.elapsed().as_secs_f64() * 1e3); }
 }

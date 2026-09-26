@@ -317,22 +317,25 @@ pub fn mrt_bufs(hb: &crate::lmaccum::HbTargets) -> [Buf; 4] {
 /// PS 1034 target.
 pub fn finalise_sweeps(sweeps: &[crate::lmaccum::HbTargets]) -> [Buf; 4] {
     let (w, h) = sweeps.first().map(|s| (s.w, s.h)).unwrap_or((2048, 2048));
-    let mut out: Vec<Buf> = Vec::with_capacity(4);
-    for m in 0..4 {
-        let mut acc = Buf::new(w, h, 4);
-        let mut last: Option<Buf> = None;
-        for hb in sweeps {
-            let res = resolve_ps25113(&mrt_bufs(hb)[m], false, Rounding::Truncate);
-            acc = add_scaled_ps1109(&acc, &res, [2.0, 2.0, 2.0, 0.0]);
-            last = Some(res);
-        }
-        if let Some(res) = last {
-            for i in 0..(w * h) as usize {
-                acc.data[i * 4 + 3] = res.data[i * 4 + 3];
+    // the four MRTs are independent: one thread each (perf 8)
+    let out: Vec<Buf> = std::thread::scope(|sc| {
+        let hs: Vec<_> = (0..4).map(|m| sc.spawn(move || {
+            let mut acc = Buf::new(w, h, 4);
+            let mut last: Option<Buf> = None;
+            for hb in sweeps {
+                let res = resolve_ps25113(&mrt_bufs(hb)[m], false, Rounding::Truncate);
+                acc = add_scaled_ps1109(&acc, &res, [2.0, 2.0, 2.0, 0.0]);
+                last = Some(res);
             }
-        }
-        out.push(acc);
-    }
+            if let Some(res) = last {
+                for i in 0..(w * h) as usize {
+                    acc.data[i * 4 + 3] = res.data[i * 4 + 3];
+                }
+            }
+            acc
+        })).collect();
+        hs.into_iter().map(|h| h.join().expect("finalise")).collect()
+    });
     let mut it = out.into_iter();
     [it.next().unwrap(), it.next().unwrap(), it.next().unwrap(), it.next().unwrap()]
 }

@@ -529,19 +529,22 @@ pub fn chain_final(a: Vec<String>) {
 /// buffer and the encoded Y4/Cb4/Cr4.
 pub fn finalise_tail(finals: &[Buf], mood_max_hdr: f32) -> (Vec<Buf>, [f32; 4], crate::gpuenc::YCbCr4) {
     let store = Rounding::Truncate;
-    let mut imgs: Vec<Buf> = Vec::with_capacity(4);
-    for k in 0..4 {
-        let (w, h) = (finals[k].w, finals[k].h);
-        let mut base = Buf::new(w, h, 4);
-        for i in 0..(w * h) as usize {
-            base.data[i * 4 + 3] = finals[k].data[i * 4 + 3];
-        }
-        let mut img = crate::finalprep::write_masked(&base, &crate::finalprep::copy_ps1034(&finals[k], [1.0, 1.0, 0.0, 0.0], w, h), 7, store);
-        for _ in 0..8 {
-            img = crate::gpuenc::dilate_ps1332(&img);
-        }
-        imgs.push(img);
-    }
+    // the four coefficient images are independent: one thread each (perf 8; the chain was 3–5 s serial on 2048²)
+    let imgs: Vec<Buf> = std::thread::scope(|sc| {
+        let hs: Vec<_> = (0..4).map(|k| { let f = &finals[k]; sc.spawn(move || {
+            let (w, h) = (f.w, f.h);
+            let mut base = Buf::new(w, h, 4);
+            for i in 0..(w * h) as usize {
+                base.data[i * 4 + 3] = f.data[i * 4 + 3];
+            }
+            let mut img = crate::finalprep::write_masked(&base, &crate::finalprep::copy_ps1034(f, [1.0, 1.0, 0.0, 0.0], w, h), 7, store);
+            for _ in 0..8 {
+                img = crate::gpuenc::dilate_ps1332(&img);
+            }
+            img
+        }) }).collect();
+        hs.into_iter().map(|h| h.join().expect("finalise")).collect()
+    });
     let maxhdr = [crate::gpuenc::maxhdr_hbasis(&imgs[0]), crate::gpuenc::maxhdr_hbasis(&imgs[1]), crate::gpuenc::maxhdr_hbasis(&imgs[2]), crate::gpuenc::maxhdr_hbasis(&imgs[3])];
     let enc = crate::gpuenc::encode_ycbcr4([&imgs[0], &imgs[1], &imgs[2], &imgs[3]], maxhdr, mood_max_hdr, crate::gpuenc::EncodeOpts::default());
     (imgs, maxhdr, enc)

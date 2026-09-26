@@ -467,23 +467,36 @@ pub fn build_full2_placed(mut charts: Vec<Chart>, bbox: ([f32; 3], [f32; 3]), te
         }
     };
     let enc = |im: &Rgb| enc_q(im, 91.0);
-    let black = enc(&Rgb::new(1024, 1024))?;
+    // THE ENCODES CONCURRENTLY (perf 8): the black frame-1 image, the colour atlas, the grey directional image and the
+    // lights' atlas are independent encodes — one thread each (the same bytes: every encode is single-threaded libwebp
+    // on its own input)
+    let need_lights = any_lights && td.frames.len() > 1;
+    let (black, im00, one, im10) = std::thread::scope(|sc| {
+        let h_black = sc.spawn(|| enc(&Rgb::new(1024, 1024)));
+        let h_atlas = sc.spawn(|| enc(&ia));
+        let h_grey = sc.spawn(|| -> Result<Vec<u8>, String> {
+            // the greys go in as a Y plane with flat chroma (the game's FUN_14029bf40)
+            let grey: Vec<u8> = ib.px.chunks(3).map(|c| c[1]).collect();
+            match vp8_q {
+                None => crate::webpenc::encode_grey(&grey, ib.w, ib.h, 30.0).map(Ok).unwrap_or_else(|| enc_q(&ib, 30.0)),
+                Some(_) => enc_q(&ib, 30.0),
+            }
+        });
+        let h_lights = if need_lights { Some(sc.spawn(|| enc(&i1))) } else { None };
+        (h_black.join().expect("encode"), h_atlas.join().expect("encode"), h_grey.join().expect("encode"), h_lights.map(|h| h.join().expect("encode")))
+    });
+    let (black, im00, one) = (black?, im00?, one?);
+    let im10 = match im10 { Some(r) => Some(r?), None => None };
     let mut frames = Vec::new();
     for fi in 0..td.frames.len() {
         let mut images = Vec::new();
         for ii in 0..td.frames[fi].images.len() {
             let src = &td.frames[fi].images[ii];
             let im = match (fi, ii) {
-                (0, 0) => enc(&ia)?,
+                (0, 0) => im00.clone(),
                 // frame 0 image 1 = THREE concatenated WebPs (the H-basis directional coefficients C1..C3,
                 // sign-sqrt encoded with 128 = zero); a flat-normal bake writes three neutral images
                 (0, 1) => {
-                    // the greys go in as a Y plane with flat chroma (the game's FUN_14029bf40)
-                    let grey: Vec<u8> = ib.px.chunks(3).map(|c| c[1]).collect();
-                    let one = match vp8_q {
-                        None => crate::webpenc::encode_grey(&grey, ib.w, ib.h, 30.0).map(Ok).unwrap_or_else(|| enc_q(&ib, 30.0))?,
-                        Some(_) => enc_q(&ib, 30.0)?,
-                    };
                     let mut three = one.clone();
                     three.extend_from_slice(&one);
                     three.extend_from_slice(&one);
@@ -493,7 +506,7 @@ pub fn build_full2_placed(mut charts: Vec<Chart>, bbox: ([f32; 3], [f32; 3]), te
                     Some(p) => p.blob.clone(),
                     None => src.clone(),
                 },
-                (1, 0) if any_lights => enc(&i1)?,
+                (1, 0) if any_lights => im10.clone().unwrap_or_default(),
                 (_, 0) if !src.is_empty() => black.clone(),
                 _ => Vec::new(),
             };

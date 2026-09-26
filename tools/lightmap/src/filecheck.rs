@@ -694,12 +694,17 @@ pub fn frame0_blobs(y4: &[[u8; 4]], cb4: &[[u8; 4]], cr4: &[[u8; 4]], w: usize, 
     let mut rgb = ycbcr_to_rgb_down2x2(&plane(y4, 0), &plane(cb4, 0), &plane(cr4, 0), w, h);
     let (ow, oh) = ((w / 2) as u32, (h / 2) as u32);
     let fb = chart_normalise(&mut rgb, ow, oh, charts);
-    let blob0 = crate::webpenc::encode_rgb(&rgb, ow, oh, 91.0)?;
+    // the four encodes concurrently (perf 8): independent single-threaded libwebp encodes, the same bytes
+    let (blob0, parts) = std::thread::scope(|sc| {
+        let h0 = sc.spawn(|| crate::webpenc::encode_rgb(&rgb, ow, oh, 91.0));
+        let hs: Vec<_> = (0..3).map(|k| { let y4 = &y4; sc.spawn(move || { let small = downsample_gamma(&expand_grey(&plane(y4, k + 1)), w, h); crate::webpenc::encode_grey(&small, ow, oh, 30.0) }) }).collect();
+        (h0.join().expect("encode"), hs.into_iter().map(|h| h.join().expect("encode")).collect::<Vec<_>>())
+    });
+    let blob0 = blob0?;
     let mut blob1 = Vec::new();
     let mut sizes = [0usize; 2];
-    for k in 0..3 {
-        let small = downsample_gamma(&expand_grey(&plane(y4, k + 1)), w, h);
-        let part = crate::webpenc::encode_grey(&small, ow, oh, 30.0)?;
+    for (k, part) in parts.into_iter().enumerate() {
+        let part = part?;
         if k < 2 { sizes[k] = part.len(); }
         blob1.extend_from_slice(&part);
     }

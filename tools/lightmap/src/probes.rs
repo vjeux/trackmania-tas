@@ -572,14 +572,21 @@ pub fn build(_scene: &Scene, bvh: &Bvh, prm: &BakeParams, lights: &[(usize, Ligh
             }
         }
     }
-    // unused pixels: a neutral fill
+    // unused pixels: a neutral fill (the covered pixels marked per slice first — the per-pixel search over every
+    // slice was 1.3 G tests on the giant's 1166 slices, most of its 1.75 s probe stage)
     let mean = [160u8, 150, 160];
+    let mut covered_px = vec![false; (aw * ah) as usize];
+    for (si, s) in slices.iter().enumerate() {
+        let (tx, ty) = placements[si];
+        for y in ty..(ty + s.h).min(ah) {
+            for x in tx..(tx + s.w).min(aw) {
+                covered_px[(y * aw + x) as usize] = true;
+            }
+        }
+    }
     for y in 0..ah {
         for x in 0..aw {
-            let covered = slices.iter().enumerate().any(|(si, s)| {
-                let (tx, ty) = placements[si];
-                x >= tx && x < tx + s.w && y >= ty && y < ty + s.h
-            });
+            let covered = covered_px[(y * aw + x) as usize];
             if !covered {
                 imgs[0].set(x, y, mean);
                 imgs[1].set(x, y, [149, 149, 149]);
@@ -590,10 +597,11 @@ pub fn build(_scene: &Scene, bvh: &Bvh, prm: &BakeParams, lights: &[(usize, Ligh
     }
     // the game writes the probe images with libwebp at quality 91 (RE child); our own encoder is the
     // fallback (`vp8_q` on its 0–10 scale)
-    let images: Vec<Vec<u8>> = imgs
-        .iter()
-        .map(|im| crate::webpenc::encode_rgb(&im.px, im.w, im.h, 91.0).unwrap_or_else(|| crate::vp8enc::encode(&im.px, im.w, im.h, vp8_q)))
-        .collect();
+    // (the four encodes are independent: one thread each)
+    let images: Vec<Vec<u8>> = std::thread::scope(|sc| {
+        let hs: Vec<_> = imgs.iter().map(|im| sc.spawn(move || crate::webpenc::encode_rgb(&im.px, im.w, im.h, 91.0).unwrap_or_else(|| crate::vp8enc::encode(&im.px, im.w, im.h, vp8_q)))).collect();
+        hs.into_iter().map(|h| h.join().expect("probe image encode")).collect()
+    });
     let (blob, ends) = crate::volume::join_probe_blob(&images);
     let mut frame_info = template.frame_info.clone();
     while frame_info.len() < 3 {
