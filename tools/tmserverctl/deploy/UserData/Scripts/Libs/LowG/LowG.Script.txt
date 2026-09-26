@@ -29,6 +29,7 @@ declare Integer G_WantedBots;
 declare Integer G_MaxBots;
 declare Boolean G_BotsAreFakeUsers;
 declare Integer G_LastBotSync;
+declare CUILayer G_HintLayer;				///< the one-line command reminder at the top of every screen
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
 // Functions
@@ -95,6 +96,12 @@ Void Apply(CSmPlayer _Player) {
 	if (SetPlayer_DelayedIsFull(_Player)) return;
 
 	SetPlayer_Delayed_GravityCoef(_Player, Wanted);
+	// The welcome line goes out on the first spawn: at OnPlayerAdded the player has no UI yet.
+	declare Boolean LowG_Welcomed for _Player = False;
+	if (!LowG_Welcomed && !IsBalloon(_Player)) {
+		LowG_Welcomed = True;
+		Tell(_Player, "low gravity server: yours is " ^ Fmt(Wanted) ^ " -- /gravity <0..1> to change it, /bots <n> parks balloons, /collisions on|off, /status");
+	}
 	// Balloons must not drive away.
 	if (IsBalloon(_Player) && Fresh && !SetPlayer_DelayedIsFull(_Player)) {
 		SetPlayer_Delayed_NoEngine(_Player, True);
@@ -288,11 +295,26 @@ Void HandleEvents() {
 			SendStatus();
 		}
 	}
-	foreach (Event in PendingEvents) {
-		if (Event.Type == CSmModeEvent::EType::OnPlayerAdded && Event.Player != Null && !IsBalloon(Event.Player)) {
-			Tell(Event.Player, "low gravity server -- /gravity <0..1> picks yours (now " ^ Fmt(WantedGravity(Event.Player)) ^ "), /bots <n> parks balloons, /collisions on|off");
-		}
-	}
+}
+
+/// A permanent one-line reminder of the chat commands (a chat message is gone in a minute).
+Void CreateHint() {
+	if (G_HintLayer != Null) return;
+	G_HintLayer <=> UIManager.UILayerCreate();
+	G_HintLayer.ManialinkPage = """<manialink version="3" name="LowG_Hint">
+	<frame pos="0 85" z-index="20">
+		<quad pos="0 0" size="190 7" halign="center" valign="center" bgcolor="00000099" z-index="0"/>
+		<label pos="0 0" size="186 6" halign="center" valign="center2" textsize="1.3" textcolor="FFFFFF" textemboss="1" text="$0cfLOW-G$fff  chat:  /gravity 0..1 (toi)   /gravity all 0.3   /bots 4 (ballons)   /collisions on|off   /status" z-index="1"/>
+	</frame>
+</manialink>""";
+	UIManager.UIAll.UILayers.add(G_HintLayer);
+}
+
+Void DestroyHint() {
+	if (G_HintLayer == Null) return;
+	UIManager.UIAll.UILayers.remove(G_HintLayer);
+	UIManager.UILayerDestroy(G_HintLayer);
+	G_HintLayer <=> Null;
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
@@ -313,6 +335,7 @@ Void Load(Real _DefaultGravity, Boolean _Collisions, Integer _Bots, Real _BotGra
 	Scores_AutoUploadPersonalBests = False;
 	SetGameModeNameAndCustomData("LowG", "", "");
 	ApplyCollisions();
+	CreateHint();
 	log("LowG " ^ Version ^ " loaded: default gravity " ^ G_DefaultGravity ^ ", collisions " ^ G_Collisions ^ ", bots " ^ G_WantedBots);
 }
 
@@ -350,5 +373,6 @@ Void Yield() {
 }
 
 Void Unload() {
+	DestroyHint();
 	G_GravityByLogin.clear();
 }
