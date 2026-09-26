@@ -616,3 +616,74 @@ pub fn wipe_cmd(args: &[String]) -> Result<(), String> {
     println!("[{:>5.0}s] round-wipe: {} maps re-created and swapped{}; pairs -> {}", t0.elapsed().as_secs_f64(), created.len(), if swap_ok { "" } else { " (SWAP FAILED — rerun reuid-swap with pairs2.tsv)" }, pairs_out.display());
     if swap_ok { Ok(()) } else { Err("reuid-swap failed twice".into()) }
 }
+
+/// `tinyctl round-inplace --stage DIR --out DIR --sets a,b [--jobs N] [--pairs-dir D]` — an
+/// IN-PLACE round: every staged map goes up under its LIVE uid (the pairs chain), with the
+/// live record's thumbnail, records untouched (Everios96's "in place" answer). The same
+/// staging as `round-wipe` minus the new uid and the swap; `publish-batch --files-only`
+/// with IDENTICAL read-back, a stale token re-minted between sets.
+pub fn inplace_cmd(args: &[String]) -> Result<(), String> {
+    let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/home/vjeux".into());
+    let stage_root = PathBuf::from(f("--stage").ok_or("round-inplace needs --stage DIR")?);
+    let out_root = PathBuf::from(f("--out").ok_or("round-inplace needs --out DIR")?);
+    let sets: Vec<String> = f("--sets").ok_or("round-inplace needs --sets a,b")?.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+    let jobs: usize = f("--jobs").and_then(|v| v.parse().ok()).unwrap_or(6).max(1);
+    let pairs_dir = PathBuf::from(f("--pairs-dir").unwrap_or_else(|| format!("{home}/u10s-keep/pairs")));
+    let pairs = load_pairs(&pairs_dir)?;
+    std::fs::create_dir_all(&out_root).map_err(|e| e.to_string())?;
+    let token_dir = out_root.join("tokens");
+    std::fs::create_dir_all(&token_dir).map_err(|e| e.to_string())?;
+    let wsx = Wsx::new(args);
+    let t0 = Instant::now();
+    let mut all: Vec<(String, Staged)> = Vec::new();
+    for set in &sets {
+        let list = stage_set(&stage_root.join(set), &out_root.join("stage").join(set), set, &pairs)?;
+        println!("[{:>5.0}s] {set}: {} maps staged under their live uid", t0.elapsed().as_secs_f64(), list.len());
+        for st in list {
+            all.push((set.clone(), st));
+        }
+    }
+    if all.is_empty() {
+        return Err("nothing staged".into());
+    }
+    if crate::nadeo::fresh_tokens_in(token_dir.to_str().unwrap()).is_none() {
+        mint_tokens(&wsx, &token_dir)?;
+    }
+    let refs: Vec<&Staged> = all.iter().map(|(_, st)| st).collect();
+    let n = live_thumbnails(&refs, &token_dir, jobs)?;
+    println!("[{:>5.0}s] {n} thumbnails taken from the live records", t0.elapsed().as_secs_f64());
+    let mut total_ok = 0usize;
+    for set in &sets {
+        let rows: Vec<&Staged> = all.iter().filter(|(s, _)| s == set).map(|(_, st)| st).collect();
+        let manifest = out_root.join(format!("manifest-{set}.tsv"));
+        let results = out_root.join(format!("results-{set}.tsv"));
+        std::fs::write(&manifest, rows.iter().map(|st| format!("{}\t{}\n", st.path.display(), st.name)).collect::<String>()).map_err(|e| e.to_string())?;
+        for attempt in 0..3 {
+            if crate::nadeo::fresh_tokens_in(token_dir.to_str().unwrap()).is_none() {
+                mint_tokens(&wsx, &token_dir)?;
+            }
+            let batch_args: Vec<String> = vec![
+                "publish-batch".into(), "--manifest".into(), manifest.to_string_lossy().into_owned(), "--results".into(), results.to_string_lossy().into_owned(),
+                "--outdir".into(), out_root.join("readback").to_string_lossy().into_owned(), "--jobs".into(), jobs.to_string(), "--files-only".into(), "--token-dir".into(), token_dir.to_string_lossy().into_owned(),
+            ];
+            let r = batch::publish_batch_cmd(&batch_args);
+            let ok = read_identical(&results);
+            if ok.len() >= rows.len() {
+                break;
+            }
+            println!("[{:>5.0}s] {set}: {} of {} IDENTICAL after attempt {} ({})", t0.elapsed().as_secs_f64(), ok.len(), rows.len(), attempt + 1, r.err().unwrap_or_default().lines().next().unwrap_or(""));
+            let text: String = rows.iter().filter(|st| !ok.contains_key(&st.path.to_string_lossy().to_string())).map(|st| format!("{}\t{}\n", st.path.display(), st.name)).collect();
+            if text.is_empty() {
+                break;
+            }
+            std::fs::write(&manifest, text).map_err(|e| e.to_string())?;
+        }
+        let ok = read_identical(&results);
+        let missing: Vec<&str> = rows.iter().filter(|st| !ok.contains_key(&st.path.to_string_lossy().to_string())).map(|st| st.name.as_str()).collect();
+        println!("[{:>5.0}s] {set}: {} of {} updated in place IDENTICAL{}", t0.elapsed().as_secs_f64(), rows.len() - missing.len(), rows.len(), if missing.is_empty() { String::new() } else { format!("; MISSING: {}", missing.join(", ")) });
+        total_ok += rows.len() - missing.len();
+    }
+    println!("[{:>5.0}s] round-inplace: {total_ok} of {} maps updated", t0.elapsed().as_secs_f64(), all.len());
+    if total_ok == all.len() { Ok(()) } else { Err(format!("{} map(s) not updated", all.len() - total_ok)) }
+}

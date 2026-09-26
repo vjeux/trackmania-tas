@@ -217,6 +217,7 @@ fn main() {
         "publish-batch" => batch::publish_batch_cmd(rest),
         "round-publish" => roundpub::cmd(rest),
         "round-wipe" => roundpub::wipe_cmd(rest),
+        "round-inplace" => roundpub::inplace_cmd(rest),
         "port-fix-publish" => roundpub::port_fix_publish(rest),
         "port-layers" => portlayers::cmd(rest),
         "gist-publish" => gistpub::cmd(rest),
