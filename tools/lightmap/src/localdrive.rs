@@ -49,6 +49,11 @@ pub struct Lamp {
     pub id: u16,
     pub owner: String,
     pub light: LightDef,
+    /// THE EMITTER-AREA SAMPLE POSITIONS (RE 13, 2026-09-26 21:20Z, GetLocalLightDescs 0x140226f30 l.519–690 + RenderLightSpotMulti
+    /// 0x1402398f0): every sample is a full lamp pass (its own flat cube, its own draw) at pos' = pos + u·a·LEFT + v·b·UP with the flat
+    /// weight 1/(N·SS²); one entry (= pos) when the game takes the single-position path. Filled by `area_samples` from the bake quality
+    /// and the texel density (`Lamp::with_area`); `Lamp::new` leaves the single position.
+    pub samples: Vec<[f32; 3]>,
     /// The instance radius the pass reads (the attenuation zero, the cull radius, the shadow far plane).
     pub r_eff: f32,
     pub back_offset: f32,
@@ -97,6 +102,62 @@ pub fn light_rgb(l: &LightDef) -> [f32; 3] {
     [l.color[0] * l.intensity, l.color[1] * l.intensity, l.color[2] * l.intensity]
 }
 
+/// THE EMITTER-AREA SAMPLE POSITIONS of a light (RE 13, 2026-09-26 21:20Z — GetLocalLightDescs 0x140226f30 l.519–690, RenderLightSpotMulti
+/// 0x1402398f0 asm 0x140239bd1–0x140239d40): S_full = {1, 7, 25, 25, 25, 25}[quality] (a map override params+0x124 aside), k = 0.5 below
+/// quality 2 else 1; area sampling is attempted only when S_full > 3 and r_emit = Emissive_Length_Left ≥ 0.01; the count is capped by the
+/// emitter's texel footprint: R75 = 0.75·R, t = max(0.1, max(2·r_emit, 0.5/density)), d = min(0.17·R75, r_emit·R75/t), F = (d·density)²·k,
+/// S_eff = S_full > F ? floor(F) : S_full; S_eff < 2 → the single position. (N_x, N_y) = the smallest grid with N_x·N_y ≥ S_eff grown by the
+/// aspect loop from (1, 1): a/N_x ≤ b/N_y → N_y += 1 else N_x += 1, a = Left half-length, b = Up half-length (b ≤ 0 → a). The offsets:
+/// fx = (2·ix + 1 − N_x)/N_x, fy likewise; a square emitter (|a − b| ≤ 1e-5·max(1, |a|, |b|)) rotates the grid by 30° — (x', y') =
+/// (fx·c + fy·s, −fx·s + fy·c) with (c, s) = (cos 30°, sin 30°) — else (x', y') = (fx, fy); each wrapped into (−1, 1) by u = 2·fract((x' + 1)/2) − 1;
+/// pos' = pos + u·a·LEFT + v·b·UP with LEFT / UP the light instance's frame columns 0 / 1 (the third = the spot axis). Every sample is a full
+/// lamp pass with the flat weight 1/(N·SS²). The RoadBorderSpot (0.2 / 0.2 m) at stpad's density gives 5 × 5 on the 30°-rotated grid.
+pub fn area_samples(l: &LightDef, r: f32, quality: u32, density: f32) -> Vec<[f32; 3]> {
+    static FORCE: std::sync::LazyLock<Option<u32>> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_LL_AREA").ok().and_then(|v| v.parse().ok()));
+    const TABLE: [u32; 6] = [1, 7, 25, 25, 25, 25];
+    let s_full = FORCE.unwrap_or(TABLE[(quality as usize).min(5)]);
+    let k = if quality < 2 { 0.5f32 } else { 1.0 };
+    let a = l.emitting[0];
+    let b = if l.emitting[1] > 0.0 { l.emitting[1] } else { a };
+    if s_full <= 3 || a < 0.01 || density <= 0.0 {
+        return vec![l.pos];
+    }
+    let r75 = 0.75 * r;
+    let t = 0.1f32.max((2.0 * a).max(0.5 / density));
+    let d = (0.17 * r75).min(a * r75 / t);
+    let f = (d * density) * (d * density) * k;
+    let s_eff = if (s_full as f32) > f { f.floor() as u32 } else { s_full };
+    if s_eff < 2 {
+        return vec![l.pos];
+    }
+    let (mut nx, mut ny) = (1u32, 1u32);
+    while nx * ny < s_eff {
+        if a / nx as f32 <= b / ny as f32 { ny += 1; } else { nx += 1; }
+    }
+    let square = (a - b).abs() <= 1e-5 * 1.0f32.max(a.abs()).max(b.abs());
+    let (c, sn) = ((std::f32::consts::PI / 6.0).cos(), (std::f32::consts::PI / 6.0).sin());
+    let wrap = |x: f32| 2.0 * ((x + 1.0) * 0.5).fract() - 1.0;
+    let (left, up) = if l.left == [0.0; 3] || l.up == [0.0; 3] {
+        // no frame from the source: an orthonormal pair around the axis (the roll matters only for a rectangular emitter)
+        let d = l.dir;
+        let h = if d[1].abs() < 0.9 { [0.0, 1.0, 0.0] } else { [1.0, 0.0, 0.0] };
+        let left = crate::geometry::norm([d[1] * h[2] - d[2] * h[1], d[2] * h[0] - d[0] * h[2], d[0] * h[1] - d[1] * h[0]]);
+        let up = [d[1] * left[2] - d[2] * left[1], d[2] * left[0] - d[0] * left[2], d[0] * left[1] - d[1] * left[0]];
+        (left, up)
+    } else { (l.left, l.up) };
+    let mut out = Vec::with_capacity((nx * ny) as usize);
+    for iy in 0..ny {
+        for ix in 0..nx {
+            let fx = (2.0 * ix as f32 + 1.0 - nx as f32) / nx as f32;
+            let fy = (2.0 * iy as f32 + 1.0 - ny as f32) / ny as f32;
+            let (x1, y1) = if square { (fx * c + fy * sn, -fx * sn + fy * c) } else { (fx, fy) };
+            let (u, v) = (wrap(x1), wrap(y1));
+            out.push([l.pos[0] + u * a * left[0] + v * b * up[0], l.pos[1] + u * a * left[1] + v * b * up[1], l.pos[2] + u * a * left[2] + v * b * up[2]]);
+        }
+    }
+    out
+}
+
 /// The face size of the lamp's flat cube: FUN_14023cb30's ceilf(2 · R_eff · s) clamped to [8, 1024], s = the bake's texel
 /// density — 173 for the stpad lamp (2 · 40.707722 · 2.1194804 = 172.56).
 pub fn face_size(r_eff: f32, texels_per_m: f32) -> u32 {
@@ -122,7 +183,14 @@ impl Lamp {
     /// `texels_per_m` = the bake's layout density (`GameLayout::s`): the instance radius and the flat-cube face follow it.
     pub fn new(id: u16, owner: &str, light: LightDef, texels_per_m: f32) -> Lamp {
         let r_eff = effective_radius(&light, texels_per_m);
-        Lamp { id, owner: owner.to_string(), light, r_eff, back_offset: spot_falloff_back_offset(&light), face_size: face_size(r_eff, texels_per_m), rgb: light_rgb(&light) }
+        Lamp { id, owner: owner.to_string(), light, r_eff, back_offset: spot_falloff_back_offset(&light), face_size: face_size(r_eff, texels_per_m), rgb: light_rgb(&light), samples: vec![light.pos] }
+    }
+
+    /// The lamp with its emitter-area sample positions for a bake at `quality` (the game's index 0..5) and the chart-allocation texel
+    /// density at the light (texels / m). `LMTOOL_LL_AREA=0` keeps the single position; `LMTOOL_LL_AREA=N` forces S_full = N (study).
+    pub fn with_area(mut self, quality: u32, density: f32) -> Lamp {
+        self.samples = area_samples(&self.light, self.r_eff, quality, density);
+        self
     }
 
     pub fn is_spot(&self) -> bool {
@@ -133,6 +201,12 @@ impl Lamp {
     /// the FULL cone angles halved (CosOuter = cos(outer/2), InvCosRange = 1/(cos(inner/2) − cos(outer/2))), SpotDirNeg = −dir,
     /// AttHN2 = moods::att_hn2(R, hyper2), OutScale 1/9.
     pub fn light_cb(&self) -> LightCb {
+        self.light_cb_at(self.light.pos, 1)
+    }
+
+    /// The lighting cbuffer of one emitter-area sample: the light at `pos`, OutScale = 1/(N·SS²) (RE 13 21:20Z: FUN_14023dcd0(zone, N_x·N_y, 1.0)
+    /// once — the flat per-sample weight; SpotDirNeg / the cone / the attenuation unchanged).
+    pub fn light_cb_at(&self, pos: [f32; 3], n_samples: usize) -> LightCb {
         let l = &self.light;
         let s = 1.0f32 / 999.0;
         let cos_outer = (l.cone.1.to_radians() * 0.5).cos();
@@ -143,14 +217,14 @@ impl Lamp {
             faces: flat_cube_faces(self.face_size, SHADOW_TARGET),
             z_scale: -s,
             z_trans: self.r_eff * s,
-            light_pos: l.pos,
+            light_pos: pos,
             inv_radius2: 1.0 / (self.r_eff * self.r_eff),
             inv_cos_range,
             cos_outer,
             spot_dir_neg: [-d[0], -d[1], -d[2]],
             spot_falloff_back_offset: self.back_offset,
             att_hn2: crate::moods::att_hn2(self.r_eff, l.hyper2[0], l.hyper2[1]),
-            out_scale: [1.0 / 9.0; 4],
+            out_scale: [1.0 / (9.0 * n_samples.max(1) as f32); 4],
             is_light_spot: self.is_spot(),
             is_att_hn2: true,
         }
@@ -1041,18 +1115,26 @@ pub fn run_frame(gl: &crate::layout::GameLayout, sc: &LmScene, lamps: &[Lamp], c
                         let tris = casters_masked(sc, &drawn);
                         if std::env::var_os("LMTOOL_LL_CASTER_TRACE").is_some() { let na = tris.iter().filter(|t| t.alpha.is_some()).count(); if na > 0 { eprintln!("lamp {} ({}): {} casters, {na} alpha-tested", lamp.id, lamp.owner, tris.len()); } }
                         let t1 = t.elapsed().as_secs_f32();
-                        let shadow = crate::locallight::render_flat_cube_masked(lamp.light.pos, lamp.r_eff, lamp.face_size, &tris, *CULL_BACK);
-                        let t2 = t.elapsed().as_secs_f32();
-                        let cb = lamp.light_cb();
-                        let probe_vals = probe_values(chunks, lamp, &shadow, &mut probe_scratch);
-                        let t3 = t.elapsed().as_secs_f32();
-                        let frags = draw_lamp(sc, &drawn, &cb, &shadow, &mut acc);
+                        // THE EMITTER-AREA SAMPLES (RE 13 21:20Z): every sample = a full lamp pass — its own flat cube from the shifted position
+                        // (the soft shadow) and its own draw at the shifted LightPos, OutScale 1/(N·SS²); the probes take the centre sample's cube
+                        let n_s = lamp.samples.len().max(1);
+                        let mut frags = 0u64;
+                        let (mut t2, mut t3) = (t1, t1);
+                        let mut probe_vals = Vec::new();
+                        let mut n_casters = 0usize;
+                        for (si, &sp) in lamp.samples.iter().enumerate() {
+                            let shadow = crate::locallight::render_flat_cube_masked(sp, lamp.r_eff, lamp.face_size, &tris, *CULL_BACK);
+                            if si == 0 { t2 = t.elapsed().as_secs_f32(); probe_vals = probe_values(chunks, lamp, &shadow, &mut probe_scratch); t3 = t.elapsed().as_secs_f32(); n_casters = tris.len(); }
+                            let cb = lamp.light_cb_at(sp, n_s);
+                            frags += draw_lamp(sc, &drawn, &cb, &shadow, &mut acc);
+                        }
+                        let tris_len = n_casters;
                         let t4 = t.elapsed().as_secs_f32();
                         let weights = acc.lamp_weights(&mut visited);
                         let direct = acc.lamp_direct(lamp.rgb);
                         acc.clear();
                         let t5 = t.elapsed().as_secs_f32();
-                        *slots[li].lock().unwrap() = Some(LampWork { drawn, n_casters: tris.len(), frags, weights, probe_vals, direct, secs: [t1, t2 - t1, t3 - t2, t4 - t3, t5 - t4] });
+                        *slots[li].lock().unwrap() = Some(LampWork { drawn, n_casters: tris_len, frags, weights, probe_vals, direct, secs: [t1, t2 - t1, t3 - t2, t4 - t3, t5 - t4] });
                         done.fetch_add(1, std::sync::atomic::Ordering::Release);
                     }
                 });
@@ -1111,10 +1193,18 @@ pub fn run_frame(gl: &crate::layout::GameLayout, sc: &LmScene, lamps: &[Lamp], c
     for (li, lamp) in lamps.iter().enumerate() {
         let drawn = cull(gl, sc, lamp);
         let tris = casters_masked(sc, &drawn);
-        let shadow = crate::locallight::render_flat_cube_masked(lamp.light.pos, lamp.r_eff, lamp.face_size, &tris, *CULL_BACK);
-        let cb = lamp.light_cb();
-        let probe_updates = probe_pass(chunks, lamp, &shadow, &mut probes);
-        let frags = draw_lamp(sc, &drawn, &cb, &shadow, &mut acc);
+        let n_s = lamp.samples.len().max(1);
+        let mut frags = 0u64;
+        let mut probe_updates = 0u64;
+        let mut shadow_first: Option<FlatCubeMap> = None;
+        for (si, &sp) in lamp.samples.iter().enumerate() {
+            let shadow = crate::locallight::render_flat_cube_masked(sp, lamp.r_eff, lamp.face_size, &tris, *CULL_BACK);
+            if si == 0 { probe_updates = probe_pass(chunks, lamp, &shadow, &mut probes); }
+            let cb = lamp.light_cb_at(sp, n_s);
+            frags += draw_lamp(sc, &drawn, &cb, &shadow, &mut acc);
+            if si == 0 { shadow_first = Some(shadow); }
+        }
+        let shadow = shadow_first.expect("a lamp has at least one sample");
         let list_updates = resolve_lists(&acc, &mut lists, lamp.id);
         for i in 0..(w * h) as usize {
             let p = acc.px[i];
@@ -1253,6 +1343,24 @@ pub fn setup_from_map(map_path: &str, paks: &[(String, String)], collection: &st
     let n_all = all.len();
     let n_night = all.iter().filter(|l| l.light.night_only).count();
     let lamps: Vec<Lamp> = if std::env::var_os("LMTOOL_LL_ALL_LAMPS").is_some() { all } else { all.into_iter().filter(|l| daytime.map(|w| crate::moods::lamp_is_baked(l.light.night_only, &gate, w)).unwrap_or(!l.light.night_only)).collect() };
+    // THE EMITTER-AREA SAMPLES per lamp (RE 13 21:20Z; `area_samples`): the bake quality's S_full and the chart-allocation texel density at the
+    // light — gl.s scaled by the tile quality of the light's cell when the layout carries one (the game refines zone+0x488 at the light
+    // position; stpad: uniform). LMTOOL_LL_AREA=0 = the single position.
+    let q_idx = quality.min(5);
+    let lamps: Vec<Lamp> = lamps.into_iter().map(|l| {
+        let dens = {
+            let (cx, cz) = ((l.light.pos[0] / 32.0).floor() as i32, (l.light.pos[2] / 32.0).floor() as i32);
+            let tq = gl.cell_of.iter().position(|&c| c == (cx, cz)).and_then(|k| gl.tile_quality.get(k).copied()).unwrap_or(1.0);
+            gl.s * tq.max(0.0).sqrt().max(0.05)
+        };
+        l.with_area(q_idx, dens)
+    }).collect();
+    {
+        let mut hist: std::collections::BTreeMap<usize, usize> = std::collections::BTreeMap::new();
+        for l in &lamps { *hist.entry(l.samples.len()).or_default() += 1; }
+        let ex = lamps.first().map(|l| format!("; lamp {}: a = {:.3} b = {:.3} → {} samples, e.g. {:?}", l.id, l.light.emitting[0], l.light.emitting[1], l.samples.len(), l.samples.get(1).map(|p| [p[0] - l.light.pos[0], p[1] - l.light.pos[1], p[2] - l.light.pos[2]]))).unwrap_or_default();
+        log(&format!("emitter-area sampling: quality index {q_idx} → S_full {}, samples per lamp {:?}{ex}", [1, 7, 25, 25, 25, 25][q_idx as usize], hist));
+    }
     log(&format!("{n_all} lamps ({} item, {} block/clip), {n_night} NightOnly; DayTime {:?} → the mood switch {} → {} lamps baked", scene.world_lights().len(), mr.block_lights.len(), daytime.map(|w| format!("{w:#x}")), match lights_on { Some(true) => "ON", Some(false) => "OFF", None => "n/a (no DayTime word)" }, lamps.len()));
     // the probe chunking (the bake's probe-boxes rule: quality² > 0.9 records; the collection's offset and level height)
     let recs: Vec<crate::lmtiles::BlockRecord> = gl.records.iter().map(|r| crate::lmtiles::BlockRecord { world: crate::lmtiles::CBox::new(r.centre, r.half), quality: r.quality }).collect();

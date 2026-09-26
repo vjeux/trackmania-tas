@@ -343,8 +343,12 @@ pub fn prefab_entity_lights_in(store: &mut mapgeom::store::DataStore, prefab_pat
                 for mut l in crate::geometry::solid2_lights_ext(s2, None, Some((store, &pm.externals))) {
                     let p = mapgeom::geom::apply(&e_xf, l.pos);
                     let tip = mapgeom::geom::apply(&e_xf, [l.pos[0] + l.dir[0], l.pos[1] + l.dir[1], l.pos[2] + l.dir[2]]);
+                    let tl = mapgeom::geom::apply(&e_xf, [l.pos[0] + l.left[0], l.pos[1] + l.left[1], l.pos[2] + l.left[2]]);
+                    let tu = mapgeom::geom::apply(&e_xf, [l.pos[0] + l.up[0], l.pos[1] + l.up[1], l.pos[2] + l.up[2]]);
                     l.pos = p;
                     l.dir = crate::geometry::norm([tip[0] - p[0], tip[1] - p[1], tip[2] - p[2]]);
+                    l.left = crate::geometry::norm([tl[0] - p[0], tl[1] - p[1], tl[2] - p[2]]);
+                    l.up = crate::geometry::norm([tu[0] - p[0], tu[1] - p[1], tu[2] - p[2]]);
                     out.push(l);
                 }
             }
