@@ -120,6 +120,13 @@ pub enum Rule {
     /// The reference rule with the level of detail quantised to 1/q after the log2 (q < 0: truncated instead of rounded) and
     /// the anisotropy ratio quantised to 1/ratio_q (0 = exact) — the sampler's fixed-point arithmetic.
     RefQuantLod { q: f32, ratio_q: f32 },
+    /// Taps N = the next power of two ≥ ratio, the level of detail from the minor axis (D3D's).
+    Pow2LodMinor,
+    /// The reference taps with the vendor's "optimised" trilinear: the two-level blend only when the LOD fraction lies within
+    /// `band` of a level boundary (rescaled over that band), the nearer level alone otherwise.
+    RefReducedTrilinear { band: f32 },
+    /// N = pow2 ≥ ratio with the reduced trilinear.
+    Pow2Reduced { band: f32 },
 }
 
 impl Rule {
@@ -157,6 +164,10 @@ impl Rule {
             ("ref shifted by (−½, 0) px".into(), Rule::RefShift { sx: -0.5, sy: 0.0 }),
             ("ref shifted by (0, −½) px".into(), Rule::RefShift { sx: 0.0, sy: -0.5 }),
             ("ref with v mirrored (1 − v)".into(), Rule::RefVFlip),
+            ("aniso N=pow2≥ratio, lod=log2(minor)".into(), Rule::Pow2LodMinor),
+            ("ref, reduced trilinear (blend only within ¼ of a level boundary)".into(), Rule::RefReducedTrilinear { band: 0.25 }),
+            ("ref, reduced trilinear (½)".into(), Rule::RefReducedTrilinear { band: 0.5 }),
+            ("aniso N=pow2≥ratio, reduced trilinear ¼".into(), Rule::Pow2Reduced { band: 0.25 }),
             ("ref, lod quantised to 1/256".into(), Rule::RefQuantLod { q: 256.0, ratio_q: 0.0 }),
             ("ref, lod quantised to 1/64".into(), Rule::RefQuantLod { q: 64.0, ratio_q: 0.0 }),
             ("ref, lod quantised to 1/32".into(), Rule::RefQuantLod { q: 32.0, ratio_q: 0.0 }),
@@ -288,6 +299,32 @@ impl Rule {
             Rule::RefVFlip => {
                 let ratio = (major / minor).min(16.0).max(1.0);
                 Self::taps_along(tex, u, 1.0 - v, (major / ratio).log2(), fp.major_axis(), ratio.ceil() as usize, &centred, false, false)
+            }
+            Rule::Pow2LodMinor => {
+                let ratio = (major / minor).min(16.0).max(1.0);
+                let n = 2f32.powf(ratio.log2().ceil()).max(1.0) as usize;
+                Self::taps_along(tex, u, v, minor.log2(), fp.major_axis(), n, &centred, false, false)
+            }
+            Rule::RefReducedTrilinear { band } | Rule::Pow2Reduced { band } => {
+                let ratio = (major / minor).min(16.0).max(1.0);
+                let n = if matches!(self, Rule::Pow2Reduced { .. }) { 2f32.powf(ratio.log2().ceil()).max(1.0) as usize } else { ratio.ceil() as usize };
+                let lod = (major / ratio).log2();
+                // the reduced blend: fraction f → 0 for f < ½ − band/2, 1 for f > ½ + band/2, linear between (a narrowed transition)
+                let last = (tex.levels.len() - 1) as f32;
+                let l = lod.clamp(0.0, last);
+                let l0 = l.floor();
+                let f = l - l0;
+                let t = ((f - (0.5 - band * 0.5)) / band).clamp(0.0, 1.0);
+                let axis = fp.major_axis();
+                let mut sum = 0.0f32;
+                for i in 0..n.max(1) {
+                    let sp = centred(i, n.max(1));
+                    let (uu, vv) = (u + axis[0] * sp, v + axis[1] * sp);
+                    let a0 = tex.sample_level(l0 as usize, uu, vv, Address::ClampEdge);
+                    let a = if t <= 0.0 || l0 >= last { a0 } else if t >= 1.0 { tex.sample_level(l0 as usize + 1, uu, vv, Address::ClampEdge) } else { let a1 = tex.sample_level(l0 as usize + 1, uu, vv, Address::ClampEdge); a0 + (a1 - a0) * t };
+                    sum += a;
+                }
+                sum / n.max(1) as f32
             }
             Rule::RefQuantLod { q, ratio_q } => {
                 let mut ratio = (major / minor).min(16.0).max(1.0);
