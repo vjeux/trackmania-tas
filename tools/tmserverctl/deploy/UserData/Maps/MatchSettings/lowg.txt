@@ -32,7 +32,7 @@
 	</mode_script_settings>
 
 	<startindex>0</startindex>
-	<map><file>Yannex/RL_test_map3.Map.Gbx</file></map>
+	<map><file>Yannex/RL_test_map4.Map.Gbx</file></map>
 	<map><file>Yannex/YOTW179_-_SkateMania.Map.Gbx</file></map>
 	<map><file>Yannex/YannexDoor.Map.Gbx</file></map>
 	<map><file>Campaigns/Training/Training - 01.Map.Gbx</file></map>

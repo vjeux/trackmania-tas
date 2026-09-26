@@ -17,6 +17,7 @@
 #Const C_Event_Cmd "LowG.Cmd"			///< TriggerModeScriptEventArray("LowG.Cmd", [Login, Command, Args...])
 #Const C_Event_Status "LowG.Status"	///< sent back with one Text per line
 #Const C_BalloonName "$fa0Ballon"		///< nickname prefix of the fake-user balloons
+#Const C_KeepModelMs 1000				///< balloons pushed through a transform gate get their vehicle re-imposed this often
 #Const C_ReactorRefreshMs 2000			///< the engine gives no readback of a reactor order: re-issue this often to keep it on
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
@@ -42,6 +43,7 @@ declare Text G_Reactor;					///< players' permanent reactor: "off" | "down" | "u
 declare Integer G_ReactorLvl;				///< 1 = ReactorBoost, 2 = ReactorBoost2
 declare Text G_SettingReactor;
 declare Integer G_SettingReactorLvl;
+declare Boolean G_KeepBotModel;			///< re-impose the balloons' vehicle (transform gates on the map turn them into Rally cars)
 declare Boolean G_ItemListOk;				///< the one-line command reminder at the top of every screen
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
@@ -143,6 +145,27 @@ Void Apply(CSmPlayer _Player) {
 	LowG_AppliedCoef = Wanted;
 	LowG_AppliedStartTime = _Player.StartTime;
 	LowG_AppliedAt = Now;
+}
+
+/**
+ *	A balloon pushed through a transform gate becomes a Rally/Snow/Desert car. There is no
+ *	server-side event or readback for a vehicle transform (doc.h: CSmModeEvent has no such type,
+ *	CSmPlayer no vehicle field), so the wanted vehicle is re-imposed every C_KeepModelMs with
+ *	SetPlayer_Delayed_VehicleTransform (doc.h 2044; enum Reset/CarSnow/CarRally/CarDesert at 1671),
+ *	matching /botmodel: sport, skin, default -> Reset; snow/rally/desert -> that car.
+ */
+Void KeepBotModel(CSmPlayer _Bot) {
+	if (!G_KeepBotModel || !IsBalloon(_Bot)) return;
+	if (_Bot.SpawnStatus != CSmPlayer::ESpawnStatus::Spawned) return;
+	declare Integer LowG_KeepModelAt for _Bot = -1;
+	if (LowG_KeepModelAt > 0 && Now - LowG_KeepModelAt < C_KeepModelMs) return;
+	if (SetPlayer_DelayedIsFull(_Bot)) return;
+	declare CSmMode::EVehicleTransformType Wanted = CSmMode::EVehicleTransformType::Reset;
+	if (G_BotModel == "snow") Wanted = CSmMode::EVehicleTransformType::CarSnow;
+	else if (G_BotModel == "rally") Wanted = CSmMode::EVehicleTransformType::CarRally;
+	else if (G_BotModel == "desert") Wanted = CSmMode::EVehicleTransformType::CarDesert;
+	SetPlayer_Delayed_VehicleTransform(_Bot, Wanted);
+	LowG_KeepModelAt = Now;
 }
 
 /**
@@ -315,7 +338,7 @@ Boolean RegisterBotSkin(Text _Skin) {
 /// Snapshot for tmserverctl / debugging: one callback with one Text per line.
 Void SendStatus() {
 	declare Text[] Lines;
-	Lines.add("default=" ^ Fmt(G_DefaultGravity) ^ " collisions=" ^ G_Collisions ^ " balloons=" ^ BalloonCount() ^ "/" ^ G_WantedBots ^ " botgravity=" ^ Fmt(G_BotGravity) ^ " botadherence=" ^ Fmt(G_BotAdherence) ^ " botmodel=" ^ G_BotModel ^ " botskin=" ^ G_BotSkin ^ " reactor=" ^ G_Reactor ^ G_ReactorLvl ^ " fakeusers=" ^ G_BotsAreFakeUsers ^ " players=" ^ Players.count ^ " bots=" ^ BotPlayers.count);
+	Lines.add("default=" ^ Fmt(G_DefaultGravity) ^ " collisions=" ^ G_Collisions ^ " balloons=" ^ BalloonCount() ^ "/" ^ G_WantedBots ^ " botgravity=" ^ Fmt(G_BotGravity) ^ " botadherence=" ^ Fmt(G_BotAdherence) ^ " botmodel=" ^ G_BotModel ^ " botskin=" ^ G_BotSkin ^ " reactor=" ^ G_Reactor ^ G_ReactorLvl ^ " keepmodel=" ^ G_KeepBotModel ^ " fakeusers=" ^ G_BotsAreFakeUsers ^ " players=" ^ Players.count ^ " bots=" ^ BotPlayers.count);
 	declare CSmPlayer[] Everyone;
 	foreach (Player in Players) Everyone.add(Player);
 	foreach (Bot in BotPlayers) {
@@ -496,7 +519,8 @@ Void DestroyHint() {
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
 
 /// Match_StartServer: take the settings, reset the state.
-Void Load(Real _DefaultGravity, Boolean _Collisions, Integer _Bots, Real _BotGravity, Real _BotAdherence, Integer _MaxBots, Boolean _BotsAreFakeUsers, Text _BotSkin, Text _Reactor, Integer _ReactorLvl) {
+Void Load(Real _DefaultGravity, Boolean _Collisions, Integer _Bots, Real _BotGravity, Real _BotAdherence, Integer _MaxBots, Boolean _BotsAreFakeUsers, Text _BotSkin, Text _Reactor, Integer _ReactorLvl, Boolean _KeepBotModel) {
+	G_KeepBotModel = _KeepBotModel;
 	G_Reactor = TL::ToLowerCase(_Reactor);
 	if (G_Reactor != "down" && G_Reactor != "up") G_Reactor = "off";
 	G_ReactorLvl = ML::Clamp(_ReactorLvl, 1, 2);
@@ -528,7 +552,8 @@ Void Load(Real _DefaultGravity, Boolean _Collisions, Integer _Bots, Real _BotGra
 /// A setting is applied when ITS value changes, so a value set in chat (/grip, /botgravity)
 /// holds until the setting itself is edited. (The balloon kind is only taken at load time:
 /// /bots N fake|bot changes it live.)
-Void UpdateSettings(Real _BotGravity, Real _BotAdherence, Integer _MaxBots, Text _BotSkin, Text _Reactor, Integer _ReactorLvl) {
+Void UpdateSettings(Real _BotGravity, Real _BotAdherence, Integer _MaxBots, Text _BotSkin, Text _Reactor, Integer _ReactorLvl, Boolean _KeepBotModel) {
+	G_KeepBotModel = _KeepBotModel;
 	if (_Reactor != G_SettingReactor) {
 		G_SettingReactor = _Reactor;
 		G_Reactor = TL::ToLowerCase(_Reactor);
@@ -574,6 +599,10 @@ Void Yield() {
 	}
 	foreach (Bot in BotPlayers) {
 		Apply(Bot);
+		KeepBotModel(Bot);
+	}
+	foreach (Player in Players) {
+		if (IsBalloon(Player)) KeepBotModel(Player);
 	}
 	SpawnBots();
 	if (G_WantedBots > 0 && Now - G_LastBotSync > 5000) {

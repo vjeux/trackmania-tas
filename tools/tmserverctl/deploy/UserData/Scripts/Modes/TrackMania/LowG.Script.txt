@@ -38,6 +38,7 @@
 #Setting S_LowG_BotSkin "" as "Balloon skin: zip URL or Skins/Models/CarSport/Name.zip (empty = default livery); /botskin changes it live"
 #Setting S_LowG_PlayerReactor "down" as "Permanent reactor boost of the PLAYERS (not the balloons): off | down | up"
 #Setting S_LowG_PlayerReactorLvl 2 as "Reactor level: 1 = ReactorBoost, 2 = ReactorBoost2"
+#Setting S_LowG_BotKeepModel True as "Balloons keep their vehicle through transform gates (re-imposed every second)"
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
 // Extends
@@ -45,7 +46,7 @@
 
 ***Match_StartServer***
 ***
-LowG::Load(S_LowG_DefaultGravity, S_LowG_Collisions, S_LowG_Bots, S_LowG_BotGravity, S_LowG_BotAdherence, S_LowG_MaxBots, S_LowG_BotsAreFakeUsers, S_LowG_BotSkin, S_LowG_PlayerReactor, S_LowG_PlayerReactorLvl);
+LowG::Load(S_LowG_DefaultGravity, S_LowG_Collisions, S_LowG_Bots, S_LowG_BotGravity, S_LowG_BotAdherence, S_LowG_MaxBots, S_LowG_BotsAreFakeUsers, S_LowG_BotSkin, S_LowG_PlayerReactor, S_LowG_PlayerReactorLvl, S_LowG_BotKeepModel);
 ***
 
 ***Match_StartMap***
@@ -55,7 +56,7 @@ LowG::StartMap();
 
 ***Match_Yield***
 ***
-LowG::UpdateSettings(S_LowG_BotGravity, S_LowG_BotAdherence, S_LowG_MaxBots, S_LowG_BotSkin, S_LowG_PlayerReactor, S_LowG_PlayerReactorLvl);
+LowG::UpdateSettings(S_LowG_BotGravity, S_LowG_BotAdherence, S_LowG_MaxBots, S_LowG_BotSkin, S_LowG_PlayerReactor, S_LowG_PlayerReactorLvl, S_LowG_BotKeepModel);
 LowG::Yield();
 ***
 
