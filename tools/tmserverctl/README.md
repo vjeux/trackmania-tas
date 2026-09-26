@@ -210,27 +210,40 @@ printf 'lan = true\n' > tmserverctl.conf
 mode compiles, maps load, fake players spawn and take the gravity, and every XML-RPC path is
 the real one.
 
+## How players find the server
+
+TM2020 has no public browser for standalone dedicated servers (wiki.trackmania.io, "Dedicated
+server / Setup"): a server is joined (a) by **join link** — the server log prints
+`URL: trackmania://#join=<login>@Trackmania` once online; open that link from a browser (the game
+registers the trackmania:// protocol) or paste `#join=<login>@Trackmania` into the game's
+Main menu → Settings → System → Join link; (b) through a **club room**: the owner of the server
+account, in his club, Administration → Club Activities (+) → Room → Use Dedicated Server →
+pick the server login → Create; the room then shows under Play → Live → Clubs → that club (and
+in the Arcade list when public). Only the Ubisoft account that owns the server account can bind
+it to a club; the API route is `POST live-services .../api/token/club/{clubId}/room/create-from-server`.
+(c) Play → Local → Local network only sees servers on the same LAN. Dedicated servers are PC only.
+
 ## Pour Yannex — comment rejoindre (FR)
 
-> Salut Yannex ! Le serveur **« Yannex — low-g »** tourne sur Trackmania 2020 :
+> Salut Yannex ! Le serveur **« Yannex — low-g »** tourne sur Trackmania 2020 (PC uniquement,
+> les serveurs dédiés ne sont pas accessibles depuis les consoles).
 >
-> 1. Dans le jeu : **Multijoueur → Serveurs** (la liste des serveurs), puis dans la recherche
->    tape **Yannex**. Le serveur s'appelle « Yannex — low-g » ; il est public, sans mot de passe.
->    Si tu ne le vois pas : clique sur l'onglet *Tous* / rafraîchis, et vérifie que le filtre
->    « serveurs pleins/vides » est désactivé.
-> 2. Alternative : ouvre le lien `trackmania://#join=195.154.114.196:2350` ou, une fois qu'on
->    aura le login du serveur, `trackmania://#join=<login-du-serveur>` (marche depuis le
->    navigateur ou avec *Rejoindre par login* dans la liste des serveurs).
-> 3. Une fois dedans, tout se règle dans le **chat** :
->    - `/gravity 0.3` → ta gravité (1 = normale, 0 = apesanteur). Appliquée tout de suite et à
->      chaque respawn. `/gravity all 0.3` pour tout le monde, `/gravity reset` pour revenir au
->      réglage du serveur (0.5 par défaut).
->    - `/bots 4` → 4 voitures « ballons » sans pilote, quasi sans gravité, posées sur la ligne
->      de départ : fonce dedans pour les envoyer en l'air (`/bots 0` pour les retirer).
->    - `/collisions off` / `/collisions on` → collisions entre voitures.
->    - `/status` → les réglages du moment.
-> 4. Le mode est un Time Attack normal (chrono, respawn, classement), sans limite de temps :
->    la map reste tant qu'on ne vote pas *Passer la map*. Tes maps s'ajoutent en les envoyant
->    à vjeux ; la première en ligne est YannexDoor.
+> **Rejoindre** — il n'y a pas de liste publique des serveurs dédiés dans TM2020, on passe par un lien :
+> 1. Clique sur `trackmania://#join=SERVEUR_LOGIN@Trackmania` — ou colle
+>    `#join=SERVEUR_LOGIN@Trackmania` dans **Menu principal → Paramètres → Système → Lien de
+>    connexion (Join link)** puis Entrée. (SERVEUR_LOGIN = le login du serveur, envoyé avec ce message.)
+> 2. Quand la room de club sera créée : **Jouer → Live → Clubs → le club de vjeux → la room « Yannex low-g »**.
 >
-> Les temps faits en gravité réduite ne sont pas envoyés sur les classements officiels.
+> **Une fois dedans**, tout se règle dans le **chat** :
+> - `/gravity 0.3` → ta gravité (1 = normale, 0 = apesanteur). Appliquée tout de suite et à chaque
+>   respawn. `/gravity all 0.3` pour tout le monde, `/gravity reset` pour revenir au réglage du
+>   serveur (0.5 par défaut).
+> - `/bots 4` → 4 voitures « ballons » sans pilote, quasi sans gravité, posées sur la ligne de
+>   départ : fonce dedans pour les envoyer en l'air (`/bots 0` pour les retirer).
+> - `/collisions off` / `/collisions on` → collisions entre voitures.
+> - `/status` → les réglages du moment.
+>
+> Le mode est un Time Attack normal (chrono, respawn, classement), sans limite de temps : la map
+> reste tant qu'on ne vote pas *Passer la map*. Tes maps s'ajoutent en les envoyant à vjeux ; la
+> première en ligne est YannexDoor. Les temps faits en gravité réduite ne sont pas envoyés sur
+> les classements officiels.
