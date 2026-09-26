@@ -277,10 +277,16 @@ fn worker(sh: Arc<Shared>, me: usize) {
 
 static POOL: OnceLock<Pool> = OnceLock::new();
 
-/// The process-wide pool (LMTOOL_THREADS sets its size; default = the available parallelism, at most 160).
+/// The process-wide pool. LMTOOL_THREADS sets its size; the default is the available parallelism less the calling
+/// thread (it takes tasks too), AT MOST 128: the Genoa boxes are 80–88 physical cores behind 160–176 logical CPUs,
+/// and past the physical cores a thread only shares a core. Measured (perf 6, directions total, 2 runs each) — a
+/// 166-cpu guest with the SMT pairs exposed: giant 4 dirs 83 / 128 / 165 threads = 1.43 / 1.30 / 1.33 s, tiny 16 sweep 0
+/// × 64 dirs 5.53 / 5.18 / 5.53; a 160-cpu guest with the pairs hidden: giant 88 / 128 / 159 = 2.23 / 2.14 / 2.12,
+/// tiny 7.3 / 7.1 / 7.2; engineer 2 on the 176-thread bare-metal box: 128 vs 176 = 0 %. 128 is best or equal
+/// everywhere; every logical CPU costs the tiny maps 3–7 %.
 pub fn pool() -> &'static Pool {
     POOL.get_or_init(|| {
-        let n = std::env::var("LMTOOL_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or_else(|| std::thread::available_parallelism().map(|x| x.get()).unwrap_or(8).min(160));
+        let n = std::env::var("LMTOOL_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or_else(|| std::thread::available_parallelism().map(|x| x.get().saturating_sub(1).max(1)).unwrap_or(8).min(128));
         Pool::new(n)
     })
 }
