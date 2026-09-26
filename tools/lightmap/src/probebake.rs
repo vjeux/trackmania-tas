@@ -77,6 +77,8 @@ impl ProbeBlockDef {
 
 /// The probe state of a bake: the accumulators and the per-direction volume.
 pub struct ProbeBake {
+    /// The mood's BounceFactor (blended) — the per-direction fold scale's numerator; the bake sets it (default 2.0 = BlueBay Day).
+    pub bounce_factor: f32,
     pub dims: [u32; 3],
     pub blocks: Vec<ProbeBlockDef>,
     /// `TMapProbeSafetyOffset` (SNORM16 ×4, in cells): the game nudges probes that sit inside geometry (one
@@ -111,7 +113,7 @@ pub struct ProbeBake {
 impl ProbeBake {
     pub fn new(dims: [u32; 3], blocks: Vec<ProbeBlockDef>, offsets: Option<Volume3>) -> ProbeBake {
         let [w, h, d] = dims;
-        ProbeBake {
+        ProbeBake { bounce_factor: 2.0,
             dims,
             blocks,
             offsets,
@@ -207,7 +209,9 @@ impl ProbeBake {
         let writes = std::mem::take(&mut self.cur_writes);
         self.dir_log.push((sweep, dir, writes, nz, na));
         let n = n_dirs as f32;
-        let two = 2.0f32 / n;
+        // the fold's scale = the BLENDED mood's BounceFactor / N (RE 13, 18:15Z: params+0x20 / N_dirs — PS 1112's (2/256 …) on BlueBay
+        // Day is BounceFactor 2), `bounce_factor` set by the bake (2.0 until set)
+        let two = self.bounce_factor / n;
         let a = if sweep == 0 { 1.0f32 / n } else { 0.0 };
         let s = 4.0f32 * dir[1] / n;
         let depth = self.dims[2];

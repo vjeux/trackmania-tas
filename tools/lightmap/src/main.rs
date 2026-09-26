@@ -140,6 +140,10 @@ fn tune_malloc() {
 #[global_allocator]
 static GLOBAL: lightmap::hugealloc::HugeAlloc = lightmap::hugealloc::HugeAlloc;
 
+/// The lamp-bounce study's composed lamp light over the atlas (LMTOOL_LAMP_BOUNCE), shared between the setup (sweep 0's sun
+/// accumulation) and the bounce sweeps' light input (LMTOOL_LAMP_BOUNCE_ACCUM).
+static LAMP_LIGHT_ATLAS: std::sync::Mutex<Option<std::sync::Arc<lightmap::passdiff::Buf>>> = std::sync::Mutex::new(None);
+
 fn main() {
     // FIRST: a build for a CPU this host is not (the znver4 default on a Skylake OD) execs its fallback or explains
     lightmap::hostcpu::guard();
@@ -150,7 +154,10 @@ fn main() {
     // (--hbasis-kappa 1), the first sweep's sun through the ILightInput chain (--sweep0-sun) and the game's layout
     // (--layout-game) — a run without them wrote an all-zero lightmap. --legacy-port keeps the flags as given.
     if a.first().map(|s| s.as_str()) == Some("bake") && a.iter().any(|x| x == "--lm-from-map") && !a.iter().any(|x| x == "--legacy-port") {
-        let implied: &[(&str, Option<&str>)] = &[("--game-peel", None), ("--ss", Some("1")), ("--sky-global-scale", Some("1")), ("--hbasis-kappa", Some("1")), ("--sweep0-sun", None), ("--layout-game", None)];
+        // (--sky-global-scale mood, V's row 1j 2026-09-26: the implied "1" overrode the mood's SkyFactor in the dome — invisible on
+        // BlueBay / Stadium (SkyFactor 1) but WhiteShore Day (0.5) had our items at 2.67 / 2.34 / 2.04× the editor; "mood" = the game's
+        // GlobalScale 1 × the blended mood's SkyFactor; an explicit number still overrides)
+        let implied: &[(&str, Option<&str>)] = &[("--game-peel", None), ("--ss", Some("1")), ("--sky-global-scale", Some("mood")), ("--hbasis-kappa", Some("1")), ("--sweep0-sun", None), ("--layout-game", None)];
         let mut added: Vec<String> = Vec::new();
         // the peel COLOURS: the setup chain from the map (A's setupmap.rs, `--ilightinput-from map`) — the collection tables
         // come from the paks (RE 8's paktables, A 0016) or, when `--env-from ROOT` is given, from the capture's frozen tables;
@@ -1014,7 +1021,7 @@ fn run(a: Vec<String>) {
                 let doff: [f32; 3] = f("--decoration-offset").map(|s| { let v: Vec<f32> = s.split(',').map(|x| x.trim().parse().unwrap()).collect(); [v[0], v[1], v[2]] }).unwrap_or([0.0; 3]);
                 // the transcribed chain (--lm-from-map / --game-peel) takes the Scene3d as the GAME's environment block (envcap::env_block_from_scene3d:
                 // the sea box far faces + the terrain patches as the peels' environment layer and the shadow casters, the Water surface dropped)
-                let game_block = has("--lm-from-map") || has("--game-peel");
+                let game_block = (has("--lm-from-map") || has("--game-peel")) && !has("--no-decoration");
                 // straight from the packs when --pak lines are given (the Scene3d through mapgeom's model walk); the OBJ export is the fallback
                 let mut pak_block_done = false;
                 if game_block && a.iter().any(|x| x == "--pak") {
@@ -1144,6 +1151,9 @@ fn run(a: Vec<String>) {
             // NO direct sun (real-time; it only feeds the bounce), absolute HDR units; `fitted` = the 2026-09-22 rows
             let model = f("--model").unwrap_or_else(|| "xml".into());
             let mut xml_sel: Option<&lightmap::moods::MoodXml> = None;
+            // the frame record's mood constants (MaxHdrMood / Bounce / Sky) are the BLENDED mood's (V's residue, 18:00Z: the editor writes
+            // 2.2009425 at stpad 0x4e4b, 1.0378075 / 1.6075615 at np-tk3 0x5000)
+            let mut xml_blended_rec: Option<lightmap::moods::MoodXml> = None;
             if a[0] == "bake" && model == "xml" {
                 let h = hdr.as_ref().expect("map header");
                 let mf0 = tmmaps::map::MapFile::load(std::path::Path::new(&map_path));
@@ -1164,6 +1174,7 @@ fn run(a: Vec<String>) {
                 let x: &lightmap::moods::MoodXml = &x_blended;
                 if let Some((a, b, t)) = blend { eprintln!("mood blend: time {:.2} h → key {:.4} = {} {:.1} % + {} {:.1} % (record mood {mood}; MaxHDR_Mood {} Bounce {} Sky {})", key * 24.0, x.daytime01, a.mood, (1.0 - t) * 100.0, b.mood, t * 100.0, x.max_hdr, x.bounce_factor, x.sky_factor); }
                 xml_sel = Some(x_pure);
+                xml_blended_rec = Some(x_blended);
                 // the dome model: sky = 1.55·LAmbient·SkyFactor (an open floor on the BlueBay Sunset-quarter test
                 // bakes reads (0.61, 0.58, 0.77) = 1.55 × LAmbient in LAmbient's hue), no separate ambient term
                 let dome = !has("--hemi");
@@ -1231,7 +1242,7 @@ fn run(a: Vec<String>) {
                                 // with the fog blend the fitted per-mood number is GlobalScale (the gradient's own ScaleGrad0 = 1 for the HDR BC6H texture)
                                 if f("--sky-grad-scale").is_none() { g.global_scale = g.scale * x.sky_factor; g.scale = 1.0; }
                                 // --sky-global-scale G: Sky_p's GlobalScale (after the fog blend) — the per-mood fitted number
-                                if let Some(v) = f("--sky-global-scale") { g.global_scale = v.parse().unwrap(); }
+                                if let Some(v) = f("--sky-global-scale") { g.global_scale = if v == "mood" { 1.0 * x.sky_factor } else { v.parse().unwrap() }; }
                                 // --dome-u-mode wrap|mirror|clamp: the gradient sampler's u addressing in the dome transcription
                                 g.dome_u_mode = match f("--dome-u-mode").as_deref() { Some("wrap") => 0, Some("clamp") => 2, Some("mirror") | None => 1, Some(o) => panic!("--dome-u-mode wrap|mirror|clamp, not {o}") };
                                 eprintln!("sky: {} ({}×{}), grad scale {}, global scale {}, fog {:?}, lobes {:?}", path.rsplit('/').next().unwrap(), g.w, g.h, g.scale, g.global_scale, g.fog, g.lobes.iter().map(|l| (l.0, l.2)).collect::<Vec<_>>());
@@ -2055,7 +2066,9 @@ fn run(a: Vec<String>) {
                                 let (w, h) = lightmap::localdrive::TARGET;
                                 let sc_t = lightmap::localdrive::scene_for_target(&su.sc, w, h);
                                 let out = lightmap::localdrive::run_frame(&su.gl, &sc_t, &su.lamps, &su.chunks, su.probe_n, (w, h), None, lightmap::localdrive::Lists::cleared(w, h), &mut log);
-                                let img = lightmap::localdrive::compose(&out.lists, &su.lamps, lightmap::localdrive::ComposeRule::SumDecoded);
+                                // the lamp irradiance = A_0 itself (FrameOut::direct, RE 13's structure); LMTOOL_LAMP_BOUNCE_FROM=lists keeps the
+                                // list compose of the first study
+                                let img = if std::env::var("LMTOOL_LAMP_BOUNCE_FROM").as_deref() == Ok("lists") { lightmap::localdrive::compose(&out.lists, &su.lamps, lightmap::localdrive::ComposeRule::SumDecoded) } else { out.direct.clone() };
                                 let scale: f32 = std::env::var("LMTOOL_LAMP_BOUNCE").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
                                 let mut atlas = lightmap::passdiff::Buf::new(2048, 2048, 4);
                                 let mut lit = 0usize;
@@ -2066,6 +2079,7 @@ fn run(a: Vec<String>) {
                             Err(e) => { eprintln!("lamp-bounce study: {e} — nothing added"); None }
                         }
                     } else { None };
+                    if let Some(ll) = &lamp_light { *LAMP_LIGHT_ATLAS.lock().unwrap() = Some(std::sync::Arc::new(ll.clone())); }
                     let fm = lightmap::setupmap::build_with_lamps(&scene, &lm, &sbox, dir_in_world, prm.sun, &frozen, &item_bytes, false, lamp_light.as_ref());
                     for n in &fm.notes { eprintln!("setup-from-map: {n}"); }
                     // against the capture: the stages the e2e chain compares (the same entries) — --lm-from ROOT, or --lm-cap-root ROOT
@@ -2513,7 +2527,9 @@ fn run(a: Vec<String>) {
                             }
                         };
                         eprintln!("probes: TRANSCRIBED passes in the bake — volume {:?}, {} blocks ({}), atlas {}×{}, offsets {}, layout {}", dims, src.blocks.len(), src.blocks.iter().map(|b| format!("cells {:?}..{:?} pos {:?}", b.min, b.max, b.pos)).collect::<Vec<_>>().join("; "), src.atlas.0, src.atlas.1, if f("--probe-offsets-from").is_some() { "the capture's" } else { "from the scene (RE 7's ProbeCpt_SafetyOffset_Compute)" }, if f("--probe-layout-from").is_some() { "the saved map's trailer" } else if f("--probe-layout").as_deref() == Some("port") { "the port's" } else { "the transcribed chunking (RE 6 + RE 7's lroundf: pwc-day bit-exact to the editor's trailer)" });
-                        prm.probe_bake = Some(std::sync::Arc::new(std::sync::Mutex::new(lightmap::probebake::ProbeBake::new(dims, src.blocks.clone(), offsets))));
+                        let mut pbk = lightmap::probebake::ProbeBake::new(dims, src.blocks.clone(), offsets);
+                        pbk.bounce_factor = prm.bounce;
+                        prm.probe_bake = Some(std::sync::Arc::new(std::sync::Mutex::new(pbk)));
                         probe_layout = Some(src);
                     }
                     Err(e) => eprintln!("probes: transcribed passes skipped ({e})"),
@@ -2789,7 +2805,14 @@ fn run(a: Vec<String>) {
                     let c0 = mrt_buf(hb, 0);
                     let mdl = lightmap::sweep1::mdiffuse_linear(md8, None);
                     let ts = std::time::Instant::now();
-                    let atlas = lightmap::sweep1::ilightinput_from_c0(&c0, &mdl, None, 0.3989423);
+                    // LMTOOL_LAMP_BOUNCE_ACCUM=1[×scale] (STUDY, E 17:05Z): the composed lamp light re-injected into every bounce sweep's light
+                    // input (sweep1::ilightinput_from_c0_extra) — the accumulation form; needs LMTOOL_LAMP_BOUNCE for the atlas
+                    let lamp_atlas = LAMP_LIGHT_ATLAS.lock().unwrap().clone();
+                    let lamp_accum: Option<lightmap::passdiff::Buf> = match (std::env::var("LMTOOL_LAMP_BOUNCE_ACCUM").ok(), lamp_atlas.as_deref()) {
+                        (Some(v), Some(ll)) => { let sc: f32 = v.parse().unwrap_or(1.0); let mut b = ll.clone(); for i in 0..(b.w * b.h) as usize { for c in 0..3 { b.data[i * 4 + c] *= sc; } } eprintln!("chain: sweep {it}: the lamp direct term re-injected into the light input (× {sc})"); Some(b) }
+                        _ => None,
+                    };
+                    let atlas = lightmap::sweep1::ilightinput_from_c0_extra(&c0, &mdl, None, 0.3989423, lamp_accum.as_ref());
                     if let Some(gm) = &game_manifest {
                         if let Some(e) = gm.passes.iter().filter(|e| e.pass == "ilightinput" && (e.sweep == Some(it as u32) || (it == 1 && e.frame == Some(7534)))).min_by_key(|e| e.eid.unwrap_or(u64::MAX)) {
                             match lightmap::passdiff::load_entry(std::path::Path::new(&f("--lm-from").unwrap()), e) {
@@ -2859,7 +2882,9 @@ fn run(a: Vec<String>) {
                 // per coefficient image: Σ_sweeps 2 · resolve(MRT) — the game adds each sweep's resolved image × 2 into the previous
                 // sweep's finalised targets (f16: source truncated, sum RTNE)
                 // (`finalprep::finalise_sweeps` — the library form of this step)
-                let finals: Vec<lightmap::passdiff::Buf> = lightmap::finalprep::finalise_sweeps(&hb_sweeps).into_iter().collect();
+                // ScaleSrc = the BLENDED mood's BounceFactor for every sweep (RE 13, 18:15Z); prm.bounce carries it (--bounce overrides)
+                eprintln!("chain: finalisation ScaleSrc = BounceFactor {} per sweep ({} sweeps)", prm.bounce, hb_sweeps.len());
+                let finals: Vec<lightmap::passdiff::Buf> = lightmap::finalprep::finalise_sweeps_scaled(&hb_sweeps, prm.bounce).into_iter().collect();
                 if let (Some(gm), Some(lm_root)) = (&game_manifest, f("--lm-from").or_else(|| f("--lm-cap-root"))) {
                     let root = std::path::PathBuf::from(lm_root);
                     let mut ents: Vec<&lightmap::passdump::Entry> = gm.passes.iter().filter(|e| e.pass == "final_02_scaled_x2_ps1109").collect();
@@ -2890,7 +2915,9 @@ fn run(a: Vec<String>) {
                 Some(s) => s.parse().unwrap(),
                 None if xml_sel.is_some() => {
                     // absolute units: the frame's MaxHDR = min(the brightest chart, the mood's MaxHDR); fb = 255·chartMax/K
-                    let x = xml_sel.unwrap();
+                    // the clamp = the BLENDED mood's MaxHDR (V, 18:15Z: pwc-day at 0x6000 "Sunrise 6.3 % + Day 93.7 %" clipped at the pure
+                    // Sunrise's 1.0 instead of the blended 2.8738 — every texel above 1 HDR saturated)
+                    let x = xml_blended_rec.as_ref().unwrap_or_else(|| xml_sel.unwrap());
                     let max_e = charts.iter().flat_map(|c| c.rgb.iter()).flat_map(|c| c.iter().copied()).fold(0.0f32, f32::max);
                     let kk = max_e.min(x.max_hdr).max(0.05);
                     eprintln!("frame MaxHDR = min(max E {max_e:.3}, mood MaxHDR {}) = {kk:.4}", x.max_hdr);
@@ -3026,7 +3053,8 @@ fn run(a: Vec<String>) {
                 let items_area: f32 = scene.instances.iter().map(|inst| { let mdl = &scene.models[inst.model]; let sc = (inst.xf[0] * inst.xf[0] + inst.xf[1] * inst.xf[1] + inst.xf[2] * inst.xf[2]).sqrt(); match mdl.plg_bounds { Some(b) => (b[2] - b[0]) * mdl.plg_u02 * sc * (b[3] - b[1]) * mdl.plg_u02 * sc, None => 0.0 } }).sum();
                 let n_tiles = base.saturating_sub(deco_const) as f32;
                 let quality: u32 = f("--quality").map(|s| s.parse::<u32>().unwrap()).unwrap_or(3).saturating_sub(1);
-                lightmap::synth::FrameParams { daytime, max_hdr_mood: x.max_hdr, max_hdr: k, bounce: x.bounce_factor, sky: x.sky_factor, sum_area: Some(items_area + 2.0 * n_tiles), quality: Some(quality), filetime: bake_filetime, decoration: Some(mf0.decoration_id.clone()) }
+                let xb = xml_blended_rec.as_ref().unwrap_or(x);
+                lightmap::synth::FrameParams { daytime, max_hdr_mood: xb.max_hdr, max_hdr: k, bounce: xb.bounce_factor, sky: xb.sky_factor, sum_area: Some(items_area + 2.0 * n_tiles), quality: Some(quality), filetime: bake_filetime, decoration: Some(mf0.decoration_id.clone()) }
             });
             // the game's positions when --layout-game: stored texel (px, py) = ((X + 1)/2, (Y + 1)/2) of the layout rect, for every chart
             // (the tiles included — their objects are the 4096 first)
@@ -3154,9 +3182,12 @@ fn run(a: Vec<String>) {
                                         let dil: u32 = f("--local-lights-dilate").map(|v| v.parse().unwrap()).unwrap_or(0);
                                         if su.gl.charts.len() != rects.len() { eprintln!("local-lights: WARNING the frame's layout has {} charts, the writer {} — the frame bytes follow the writer's order only when they agree", su.gl.charts.len(), rects.len()); }
                                         // --local-lights-tail simple|chain[:S] (localdrive::frame1_images_by)
-                                        let tail = f("--local-lights-tail").unwrap_or_else(|| "simple".into());
+                                        // THE FRAME-1 IMAGE = D_0 (RE 13, 17:30Z): the direct-lamp accumulation after 8 gutter fills — the default;
+                                        // --local-lights-tail lists|simple|chain[:S] keeps the light-ID-list compose (F's model of the file)
+                                        let tail = f("--local-lights-tail").unwrap_or_else(|| "d0".into());
                                         let mood_word = frame_params_for_transcribed.as_ref().map(|fp| fp.max_hdr_mood).unwrap_or(mood_max_hdr_for_encode / SQRT_2PI);
-                                        match lightmap::localdrive::frame1_images_by(&tail, &out.lists, &su.lamps, &rects, mood_word, dil, 2048) {
+                                        let f1 = if tail == "d0" { lightmap::localdrive::frame1_from_direct(&out.direct, &rects, 2048) } else { lightmap::localdrive::frame1_images_by(if tail == "lists" { "simple" } else { &tail }, &out.lists, &su.lamps, &rects, mood_word, dil, 2048) };
+                                        match f1 {
                                             Some(f1) => { eprintln!("local-lights: FRAME 1 = {} lamps, {} lit texels, MaxHDR {}, WebP {} B ({:.1}s)", su.lamps.len(), f1.lit_texels, f1.max_hdr, f1.webp.len(), tl.elapsed().as_secs_f32()); img.frame1 = Some(f1); }
                                             None => eprintln!("local-lights: nothing lit — frame 1 stays black"),
                                         }
@@ -6557,7 +6588,7 @@ fn run(a: Vec<String>) {
                     let n = (w * h) as usize;
                     let l = lightmap::localdrive::Lists::from_bytes(w, h, &b[..n * 16], &b[n * 16..n * 24], &b[n * 24..n * 32]);
                     eprintln!("local-lights: lists loaded from {p}");
-                    lightmap::localdrive::FrameOut { lists: l, probes: lightmap::localdrive::ProbeState::new(su.probe_n), kept: None, results: Vec::new() }
+                    lightmap::localdrive::FrameOut { lists: l, probes: lightmap::localdrive::ProbeState::new(su.probe_n), kept: None, results: Vec::new(), direct: lightmap::passdiff::Buf::new(w, h, 4) }
                 }
                 None => lightmap::localdrive::run_frame(&su.gl, &sc_t, &lamps, &su.chunks, su.probe_n, (w, h), None, lists, &mut log),
             };

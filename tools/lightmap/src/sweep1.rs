@@ -184,6 +184,14 @@ pub fn mdiffuse_linear(mdiffuse8: &Buf, table: Option<&[[f32; 256]; 3]>) -> Buf 
 /// `lmtool sweep1-check`: the covered texels reproduce the captured 8490 of frame 7534 exactly up to the
 /// GPU's sRGB table; `coverage` = None takes the chain's own mask (step 3), Some(m) another one.
 pub fn ilightinput_from_c0(c0: &Buf, mdiffuse_lin: &Buf, coverage: Option<&Buf>, kappa: f32) -> Buf {
+    ilightinput_from_c0_extra(c0, mdiffuse_lin, coverage, kappa, None)
+}
+
+/// `ilightinput_from_c0` with a DIRECT term re-injected into the bounce sweep's light input (STUDY, E 2026-09-26 17:05Z,
+/// LMTOOL_LAMP_BOUNCE_ACCUM): `extra` (the composed lamp light in the sun accumulation's units, RGBA over the atlas) is added to
+/// resolve(C0)·κ before × MDiffuse — the form where the direct term stays in the accumulation the later sweeps read (RE 13's
+/// interim "A_0 = the accumulation so far"), so the lamp light bounces a second time inside the enclosed pools.
+pub fn ilightinput_from_c0_extra(c0: &Buf, mdiffuse_lin: &Buf, coverage: Option<&Buf>, kappa: f32, extra: Option<&Buf>) -> Buf {
     let resolved = crate::finalprep::resolve_ps25113(c0, false, crate::gpufmt::Rounding::Truncate);
     // the coverage mask of the chain: PS 1038 with ColorMat4 = the alpha column on the RESOLVED image (alpha 1 where
     // w ≥ 0.01, the raw w below), stored R8_UNORM (round to nearest) — frame 7533 eid 14177
@@ -196,7 +204,8 @@ pub fn ilightinput_from_c0(c0: &Buf, mdiffuse_lin: &Buf, coverage: Option<&Buf>,
     let mut cur = Buf::new(c0.w, c0.h, 3);
     for y in 0..c0.h {
         for x in 0..c0.w {
-            let v = crate::gpufmt::quantise_r11g11b10([resolved.get(x, y, 0) * kappa, resolved.get(x, y, 1) * kappa, resolved.get(x, y, 2) * kappa], crate::gpufmt::Rounding::Truncate);
+            let ex = match extra { Some(e) if x < e.w && y < e.h && e.get(x, y, 3) > 0.0 => [e.get(x, y, 0), e.get(x, y, 1), e.get(x, y, 2)], _ => [0.0; 3] };
+            let v = crate::gpufmt::quantise_r11g11b10([resolved.get(x, y, 0) * kappa + ex[0], resolved.get(x, y, 1) * kappa + ex[1], resolved.get(x, y, 2) * kappa + ex[2]], crate::gpufmt::Rounding::Truncate);
             let m = crate::gpufmt::quantise_r11g11b10([v[0] * mdiffuse_lin.get(x, y, 0), v[1] * mdiffuse_lin.get(x, y, 1), v[2] * mdiffuse_lin.get(x, y, 2)], crate::gpufmt::Rounding::Truncate);
             cur.set(x, y, 0, m[0]);
             cur.set(x, y, 1, m[1]);

@@ -407,6 +407,21 @@ impl PagedAccum {
         for &i in &marked { visited[i as usize >> 6] &= !(1u64 << (i & 63)); }
         out
     }
+    /// The lamp's share of A_0 at its touched texels (RE 13, 17:30Z): `light_sum · (shadow_sum / coverage) · rgb` — the raw 9-jitter
+    /// light sum (a texel covered by k of 9 jitters carries k/9), the shadow as the lit fraction, times the lamp's LightRgb.
+    pub fn lamp_direct(&self, rgb: [f32; 3]) -> Vec<(u32, [f32; 3])> {
+        let mut out = Vec::with_capacity(self.touched_list.len());
+        for &t in &self.touched_list {
+            let (x, y) = ((t % self.w) as i32, (t / self.w) as i32);
+            let s = self.sum(x, y);
+            if s[2] <= 0.0 || s[0] <= 0.0 { continue; }
+            let e = s[0] * (s[1] / s[2]).clamp(0.0, 1.0);
+            if e <= 0.0 { continue; }
+            out.push((t, [e * rgb[0], e * rgb[1], e * rgb[2]]));
+        }
+        out
+    }
+
     /// Back to the cleared state: the used pages zeroed (and kept in the arena), the hit bits and the list dropped.
     pub fn clear(&mut self) {
         for &t in &self.used {
@@ -861,6 +876,12 @@ pub struct FrameOut {
     pub probes: ProbeState,
     pub kept: Option<(Accum, FlatCubeMap)>,
     pub results: Vec<LampResult>,
+    /// THE DIRECT-LAMP ACCUMULATION A_0 (RE 13, 2026-09-26 17:30Z): Σ over every drawn lamp of its per-texel irradiance × LightRgb —
+    /// per texel `light_sum · (shadow_sum / coverage) · rgb` from the lamp's own 9-jitter accumulation (raw: a texel covered by k of the
+    /// 9 jitters carries k/9 of the value — the game's soft edges), alpha = the coverage union. The frame-1 image is its snapshot D_0
+    /// after the 8 gutter fills, and it joins the sun's accumulation for sweep 0's light input. `w × h` of the target; the atlas is
+    /// the first 2048 columns.
+    pub direct: crate::passdiff::Buf,
 }
 
 /// One lamp's independent work (perf 8): the cull, the casters, the flat cube, the 9-jitter draw on a worker's own target,
@@ -871,6 +892,8 @@ struct LampWork {
     frags: u64,
     weights: Vec<(u32, u8, u8)>,
     probe_vals: Vec<(u32, u8)>,
+    /// (texel, irradiance × rgb) at the touched texels — the lamp's share of A_0.
+    direct: Vec<(u32, [f32; 3])>,
     /// The worker's seconds on this lamp: cull + casters, the flat cube, the probes, the draw, the weights.
     secs: [f32; 5],
 }
@@ -915,6 +938,7 @@ pub fn run_frame(gl: &crate::layout::GameLayout, sc: &LmScene, lamps: &[Lamp], c
         }
         let mut probes = ProbeState::new(probe_n);
         let mut results = Vec::with_capacity(n);
+        let mut direct = crate::passdiff::Buf::new(w, h, 4);
         let t0 = std::time::Instant::now();
         std::thread::scope(|sc_| {
             for _ in 0..k {
@@ -940,9 +964,10 @@ pub fn run_frame(gl: &crate::layout::GameLayout, sc: &LmScene, lamps: &[Lamp], c
                         let frags = draw_lamp(sc, &drawn, &cb, &shadow, &mut acc);
                         let t4 = t.elapsed().as_secs_f32();
                         let weights = acc.lamp_weights(&mut visited);
+                        let direct = acc.lamp_direct(lamp.rgb);
                         acc.clear();
                         let t5 = t.elapsed().as_secs_f32();
-                        *slots[li].lock().unwrap() = Some(LampWork { drawn, n_casters: tris.len(), frags, weights, probe_vals, secs: [t1, t2 - t1, t3 - t2, t4 - t3, t5 - t4] });
+                        *slots[li].lock().unwrap() = Some(LampWork { drawn, n_casters: tris.len(), frags, weights, probe_vals, direct, secs: [t1, t2 - t1, t3 - t2, t4 - t3, t5 - t4] });
                         done.fetch_add(1, std::sync::atomic::Ordering::Release);
                     }
                 });
@@ -977,6 +1002,11 @@ pub fn run_frame(gl: &crate::layout::GameLayout, sc: &LmScene, lamps: &[Lamp], c
                         list_updates += 1;
                     }
                 }
+                for &(i, rgb) in &work.direct {
+                    let i = i as usize;
+                    for c in 0..3 { direct.data[i * 4 + c] += rgb[c]; }
+                    direct.data[i * 4 + 3] = 1.0;
+                }
                 t_lists += tl.elapsed().as_secs_f64();
                 for (a, b) in worker_secs.iter_mut().zip(work.secs) { *a += b as f64; }
                 if li % 25 == 0 || li + 1 == n {
@@ -985,12 +1015,13 @@ pub fn run_frame(gl: &crate::layout::GameLayout, sc: &LmScene, lamps: &[Lamp], c
                 results.push(LampResult { drawn: work.drawn, frags: work.frags, list_updates, probe_updates });
             }
         });
-        return FrameOut { lists, probes, kept: None, results };
+        return FrameOut { lists, probes, kept: None, results, direct };
     }
     let mut acc = Accum::new(w, h);
     let mut probes = ProbeState::new(probe_n);
     let mut kept = None;
     let mut results = Vec::with_capacity(lamps.len());
+    let mut direct = crate::passdiff::Buf::new(w, h, 4);
     let t0 = std::time::Instant::now();
     for (li, lamp) in lamps.iter().enumerate() {
         let drawn = cull(gl, sc, lamp);
@@ -1000,6 +1031,14 @@ pub fn run_frame(gl: &crate::layout::GameLayout, sc: &LmScene, lamps: &[Lamp], c
         let probe_updates = probe_pass(chunks, lamp, &shadow, &mut probes);
         let frags = draw_lamp(sc, &drawn, &cb, &shadow, &mut acc);
         let list_updates = resolve_lists(&acc, &mut lists, lamp.id);
+        for i in 0..(w * h) as usize {
+            let p = acc.px[i];
+            if p[3] > 0.0 && p[0] > 0.0 {
+                let e = p[0] * (p[1] / p[3]).clamp(0.0, 1.0);
+                for c in 0..3 { direct.data[i * 4 + c] += e * lamp.rgb[c]; }
+                direct.data[i * 4 + 3] = 1.0;
+            }
+        }
         if li % 25 == 0 || li + 1 == lamps.len() {
             log(&format!("lamp {}/{} id {} ({}): {} records drawn, {} casters, {frags} fragments, {list_updates} list texels, {probe_updates} probes ({:.1} s)", li + 1, lamps.len(), lamp.id, lamp.owner, drawn.len(), tris.len(), t0.elapsed().as_secs_f32()));
         }
@@ -1013,7 +1052,7 @@ pub fn run_frame(gl: &crate::layout::GameLayout, sc: &LmScene, lamps: &[Lamp], c
         }
         acc.clear_touched();
     }
-    FrameOut { lists, probes, kept, results }
+    FrameOut { lists, probes, kept, results, direct }
 }
 
 #[cfg(test)]
@@ -1796,6 +1835,43 @@ pub fn frame1_images(lists: &Lists, lamps: &[Lamp], charts: &[(u32, u32, u32, u3
     // 1e-5 without lamps; not divided by √(2π) (tiny16's 1.285 · √(2π) would exceed the mood's 3.0 and be clamped). Our stpad peak
     // 1.116 vs the editor's exactly 1.0 = the compose (the per-lamp colour / the weight sum at the peak texel), the (c) read.
     eprintln!("local-lights: frame-1 peak {m} = the record MaxHDR");
+    Some(Frame1Image { webp, fb1, max_hdr: m, lit_texels: lit })
+}
+
+/// THE FRAME-1 IMAGE AS THE GAME MAKES IT (RE 13, 2026-09-26 17:30Z, RenderLighting_Frames 0x14021e340 l.807–834 / 0x140230ac0
+/// l.346–373): D_0 = a plain copy (PS 1034) of frame 0's direct-lamp accumulation A_0 after its 8 alpha-weighted gutter fills
+/// (PS 1332) and BEFORE the sun is added — no alpha normalisation, no cap, no peak normalisation; the record = the max channel.
+/// `direct` = `FrameOut::direct` (the atlas = its first `atlas` columns); the encode = the frame's own peak, √, the 2×2 fold.
+pub fn frame1_from_direct(direct: &crate::passdiff::Buf, charts: &[(u32, u32, u32, u32)], atlas: u32) -> Option<Frame1Image> {
+    let img = frame1_dilated_n(direct, atlas, 8);
+    let m = image_max(&img);
+    if m <= 0.0 {
+        return None;
+    }
+    let (ow, oh) = (atlas / 2, atlas / 2);
+    let mut rgb = vec![0u8; (ow * oh * 3) as usize];
+    let mut lit = 0usize;
+    for y in 0..oh {
+        for x in 0..ow {
+            let mut any = false;
+            for c in 0..3u32 {
+                let mut s = 0.0f32;
+                for dy in 0..2 {
+                    for dx in 0..2 {
+                        let v = img.get(2 * x + dx, 2 * y + dy, c) / m;
+                        s += v.max(0.0).sqrt().min(1.0);
+                    }
+                }
+                let b = (s * 0.25 * 255.0 + 0.5).floor().clamp(0.0, 255.0) as u8;
+                if b > 0 { any = true; }
+                rgb[((y * ow + x) * 3 + c) as usize] = b;
+            }
+            if any { lit += 1; }
+        }
+    }
+    let fb1 = crate::filecheck::chart_normalise(&mut rgb, ow, oh, charts);
+    let webp = crate::webpenc::encode_rgb(&rgb, ow, oh, 91.0)?;
+    eprintln!("local-lights: frame 1 = D_0 (the direct-lamp accumulation after 8 gutter fills): peak {m} = the record MaxHDR, {lit} lit texels");
     Some(Frame1Image { webp, fb1, max_hdr: m, lit_texels: lit })
 }
 

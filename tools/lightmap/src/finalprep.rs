@@ -346,6 +346,15 @@ pub fn mrt_bufs(hb: &crate::lmaccum::HbTargets) -> [Buf; 4] {
 /// truncated, the sum RTNE); the alpha channel carries the LAST sweep's resolve alpha (1 where covered) for the tail's
 /// PS 1034 target.
 pub fn finalise_sweeps(sweeps: &[crate::lmaccum::HbTargets]) -> [Buf; 4] {
+    finalise_sweeps_scaled(sweeps, 2.0)
+}
+
+/// `finalise_sweeps` with the game's per-sweep scale: PS 1109's ScaleSrc = (BounceFactor, BounceFactor, BounceFactor, 0) — the
+/// BLENDED mood's T3LightMap BounceFactor (RE 13, 2026-09-26 18:15Z: RenderLightIndirectBounces 0x140230ac0 l.1425–1437 adds each
+/// normalised sweep plane, the sky sweep included, with k4 = (params+0x20, …, 0); FUN_14020d170 l.26–29 loads params+0x20 from the
+/// blended mood). pwc-day's captured (2, 2, 2, 0) = BlueBay Day's 2.0; BlueBay Sunrise is 1.6 — the port's hard-coded 2.0 was V's
+/// uniform +24 % on np-tk3 / tk3nl2 at 0x5000.
+pub fn finalise_sweeps_scaled(sweeps: &[crate::lmaccum::HbTargets], bounce_factor: f32) -> [Buf; 4] {
     let (w, h) = sweeps.first().map(|s| (s.w, s.h)).unwrap_or((2048, 2048));
     // the four MRTs are independent: one thread each (perf 8)
     let out: Vec<Buf> = std::thread::scope(|sc| {
@@ -354,7 +363,7 @@ pub fn finalise_sweeps(sweeps: &[crate::lmaccum::HbTargets]) -> [Buf; 4] {
             let mut last: Option<Buf> = None;
             for hb in sweeps {
                 let res = resolve_ps25113(&mrt_bufs(hb)[m], false, Rounding::Truncate);
-                acc = add_scaled_ps1109(&acc, &res, [2.0, 2.0, 2.0, 0.0]);
+                acc = add_scaled_ps1109(&acc, &res, [bounce_factor, bounce_factor, bounce_factor, 0.0]);
                 last = Some(res);
             }
             if let Some(res) = last {
