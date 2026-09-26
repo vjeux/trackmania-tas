@@ -257,6 +257,16 @@ pub struct LightList {
 /// of the texel's 8 entries when that entry is weaker than it (ties keep the earlier slot; an empty list has weight 0 entries).
 /// Returns the updated list (unchanged when the stored weight is 0).
 pub fn cs_7348(sum: &dyn Fn(i32, i32) -> [f32; 3], x: i32, y: i32, light_id: u16, list: LightList) -> LightList {
+    let (w8, sh) = cs_7348_weight(sum, x, y);
+    if w8 == 0 {
+        return list;
+    }
+    cs_7348_insert(list, light_id, w8 as u8, (sh * 255.0) as u32 as u8)
+}
+
+/// CS 7348's first half (instructions 3–39): the lamp's stored weight `ftou(√w · 255)` and its lit fraction at the texel, from
+/// the sums alone — no dependence on the texel's list, so a lamp's weights can be computed away from the frame's lists (perf 8).
+pub fn cs_7348_weight(sum: &dyn Fn(i32, i32) -> [f32; 3], x: i32, y: i32) -> (u32, f32) {
     let s = sum(x, y);
     // 3–5 / 7–32
     let (w, sh) = if 0.01 < s[2] {
@@ -281,9 +291,13 @@ pub fn cs_7348(sum: &dyn Fn(i32, i32) -> [f32; 3], x: i32, y: i32, light_id: u16
     };
     // 34–39
     let w8 = (w.sqrt() * 255.0) as u32;
-    if w8 == 0 {
-        return list;
-    }
+    (w8, sh)
+}
+
+/// CS 7348's second half (instructions 102–121): the lamp (id, weight byte, lit byte) replaces the weakest entry below its weight
+/// (the first of equals); a zero weight never reaches here (the caller returns the list unchanged).
+pub fn cs_7348_insert(list: LightList, light_id: u16, w8: u8, lit8: u8) -> LightList {
+    let w8 = w8 as u32;
     // 102–121: the weakest entry below the new weight (the first of equals)
     let mut slot = 8usize;
     let mut thr = w8;
@@ -296,7 +310,7 @@ pub fn cs_7348(sum: &dyn Fn(i32, i32) -> [f32; 3], x: i32, y: i32, light_id: u16
     let mut out = list;
     if slot < 8 {
         out.w8[slot] = w8 as u8;
-        out.lit8[slot] = (sh * 255.0) as u32 as u8;
+        out.lit8[slot] = lit8;
         out.id[slot] = light_id;
     }
     out

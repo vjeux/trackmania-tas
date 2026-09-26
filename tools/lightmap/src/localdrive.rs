@@ -221,11 +221,16 @@ pub struct Accum {
     pub touched: Option<[u32; 4]>,
     /// Per texel the LM instance that wrote it last (+1; 0 = none) when the diagnostics ask for it (`Accum::with_owner`).
     pub owner: Vec<u32>,
+    /// The texels written since the last clear: a bit per texel and the list in first-write order (perf 8: the clear and
+    /// the list resolve visit these, not the touched box — a lamp's charts sit all over the atlas).
+    pub hit: Vec<u64>,
+    pub touched_list: Vec<u32>,
 }
 
 impl Accum {
     pub fn new(w: u32, h: u32) -> Accum {
-        Accum { w, h, px: vec![[0.0; 4]; (w * h) as usize], touched: None, owner: Vec::new() }
+        let n = (w * h) as usize;
+        Accum { w, h, px: vec![[0.0; 4]; n], touched: None, owner: Vec::new(), hit: vec![0u64; (n + 63) / 64], touched_list: Vec::new() }
     }
     pub fn with_owner(w: u32, h: u32) -> Accum {
         let mut a = Accum::new(w, h);
@@ -241,20 +246,194 @@ impl Accum {
         [p[0], p[1], p[3]]
     }
     pub fn clear_touched(&mut self) {
-        if let Some([x0, y0, x1, y1]) = self.touched.take() {
-            for y in y0..y1 {
-                for x in x0..x1 {
-                    self.px[(y * self.w + x) as usize] = [0.0; 4];
-                }
-            }
+        // (the written texels only — the box could be most of the atlas)
+        for &i in &self.touched_list {
+            self.px[i as usize] = [0.0; 4];
+            self.hit[i as usize >> 6] &= !(1u64 << (i & 63));
         }
+        self.touched_list.clear();
+        self.touched = None;
     }
     fn touch(&mut self, x: u32, y: u32) {
         self.touched = Some(match self.touched {
             None => [x, y, x + 1, y + 1],
             Some([x0, y0, x1, y1]) => [x0.min(x), y0.min(y), x1.max(x + 1), y1.max(y + 1)],
         });
+        let i = y * self.w + x;
+        let (wi, b) = ((i >> 6) as usize, 1u64 << (i & 63));
+        if self.hit[wi] & b == 0 {
+            self.hit[wi] |= b;
+            self.touched_list.push(i);
+        }
     }
+    /// CS 7348's weights for this lamp at every texel it can change — the written texels and their 3×3 rings (a texel whose
+    /// own and ring sums are all 0 gets weight 0 and keeps its list, so the rest of the atlas needs no visit): the list of
+    /// (texel, weight byte, lit byte) with non-zero weight, in no particular order (the texels are independent). `visited`
+    /// is scratch of the accumulation's bitmap size, left clear.
+    pub fn lamp_weights(&self, visited: &mut [u64]) -> Vec<(u32, u8, u8)> {
+        let sum = |x: i32, y: i32| self.sum(x, y);
+        let mut out = Vec::with_capacity(self.touched_list.len() * 2);
+        let mut marked: Vec<u32> = Vec::with_capacity(self.touched_list.len() * 4);
+        let (w, h) = (self.w as i32, self.h as i32);
+        for &t in &self.touched_list {
+            let (tx, ty) = ((t % self.w) as i32, (t / self.w) as i32);
+            for dy in -1..=1i32 {
+                for dx in -1..=1i32 {
+                    let (x, y) = (tx + dx, ty + dy);
+                    if x < 0 || y < 0 || x >= w || y >= h { continue; }
+                    let i = (y as u32) * self.w + x as u32;
+                    let (wi, b) = ((i >> 6) as usize, 1u64 << (i & 63));
+                    if visited[wi] & b != 0 { continue; }
+                    visited[wi] |= b;
+                    marked.push(i);
+                    let (w8, sh) = crate::locallight::cs_7348_weight(&sum, x, y);
+                    if w8 != 0 {
+                        out.push((i, w8 as u8, (sh * 255.0) as u32 as u8));
+                    }
+                }
+            }
+        }
+        for &i in &marked { visited[i as usize >> 6] &= !(1u64 << (i & 63)); }
+        out
+    }
+}
+
+/// What a lamp's draw writes into: the dense `Accum` (the serial frame and the diagnostics) or the paged one (the parallel
+/// frame's workers). `slot` hands out the texel's RGBA16F value to blend into and marks it touched.
+pub trait LampTarget {
+    fn size(&self) -> (u32, u32);
+    fn slot(&mut self, x: u32, y: u32) -> &mut [f32; 4];
+    fn set_owner(&mut self, x: u32, y: u32, inst: u32);
+}
+
+impl LampTarget for Accum {
+    fn size(&self) -> (u32, u32) { (self.w, self.h) }
+    #[inline]
+    fn slot(&mut self, x: u32, y: u32) -> &mut [f32; 4] {
+        self.touch(x, y);
+        &mut self.px[(y * self.w + x) as usize]
+    }
+    #[inline]
+    fn set_owner(&mut self, x: u32, y: u32, inst: u32) {
+        if !self.owner.is_empty() { self.owner[(y * self.w + x) as usize] = inst; }
+    }
+}
+
+/// THE PAGED ACCUMULATION TARGET (perf 8): a lamp's charts sit all over the 2048² atlas but cover a small part of it, and a
+/// dense 64 MB target per worker had 64 workers' random blends thrashing DRAM (the draw ran 4× slower than alone). The atlas
+/// in 64 × 64-texel pages allocated on first touch from an arena kept across lamps: a lamp's working set is a few MB, in
+/// cache. Reads (`sum`) see 0 where no page is — as the cleared dense target does.
+pub struct PagedAccum {
+    pub w: u32,
+    pub h: u32,
+    tiles_x: u32,
+    /// Per page its arena slot, or NONE.
+    page_of: Vec<u32>,
+    arena: Vec<[f32; 4]>,
+    used: Vec<u32>,
+    pub hit: Vec<u64>,
+    pub touched_list: Vec<u32>,
+}
+
+const PAGE_SHIFT: u32 = 6;
+const PAGE_TEXELS: usize = 1 << (2 * PAGE_SHIFT);
+const NO_PAGE: u32 = u32::MAX;
+
+impl PagedAccum {
+    pub fn new(w: u32, h: u32) -> PagedAccum {
+        let tiles_x = (w + (1 << PAGE_SHIFT) - 1) >> PAGE_SHIFT;
+        let tiles_y = (h + (1 << PAGE_SHIFT) - 1) >> PAGE_SHIFT;
+        PagedAccum { w, h, tiles_x, page_of: vec![NO_PAGE; (tiles_x * tiles_y) as usize], arena: Vec::new(), used: Vec::new(), hit: vec![0u64; ((w * h) as usize + 63) / 64], touched_list: Vec::new() }
+    }
+    #[inline]
+    fn tile_of(&self, x: u32, y: u32) -> usize {
+        ((y >> PAGE_SHIFT) * self.tiles_x + (x >> PAGE_SHIFT)) as usize
+    }
+    #[inline]
+    fn offset_in_page(x: u32, y: u32) -> usize {
+        (((y & ((1 << PAGE_SHIFT) - 1)) << PAGE_SHIFT) | (x & ((1 << PAGE_SHIFT) - 1))) as usize
+    }
+    pub fn sum(&self, x: i32, y: i32) -> [f32; 3] {
+        if x < 0 || y < 0 || x >= self.w as i32 || y >= self.h as i32 {
+            return [0.0; 3];
+        }
+        let (x, y) = (x as u32, y as u32);
+        let pg = self.page_of[self.tile_of(x, y)];
+        if pg == NO_PAGE {
+            return [0.0; 3];
+        }
+        let p = self.arena[pg as usize * PAGE_TEXELS + Self::offset_in_page(x, y)];
+        [p[0], p[1], p[3]]
+    }
+    /// The lamp's CS 7348 weights — as `Accum::lamp_weights`, over the paged values.
+    pub fn lamp_weights(&self, visited: &mut [u64]) -> Vec<(u32, u8, u8)> {
+        let sum = |x: i32, y: i32| self.sum(x, y);
+        let mut out = Vec::with_capacity(self.touched_list.len() * 2);
+        let mut marked: Vec<u32> = Vec::with_capacity(self.touched_list.len() * 4);
+        let (w, h) = (self.w as i32, self.h as i32);
+        for &t in &self.touched_list {
+            let (tx, ty) = ((t % self.w) as i32, (t / self.w) as i32);
+            for dy in -1..=1i32 {
+                for dx in -1..=1i32 {
+                    let (x, y) = (tx + dx, ty + dy);
+                    if x < 0 || y < 0 || x >= w || y >= h { continue; }
+                    let i = (y as u32) * self.w + x as u32;
+                    let (wi, b) = ((i >> 6) as usize, 1u64 << (i & 63));
+                    if visited[wi] & b != 0 { continue; }
+                    visited[wi] |= b;
+                    marked.push(i);
+                    let (w8, sh) = crate::locallight::cs_7348_weight(&sum, x, y);
+                    if w8 != 0 {
+                        out.push((i, w8 as u8, (sh * 255.0) as u32 as u8));
+                    }
+                }
+            }
+        }
+        for &i in &marked { visited[i as usize >> 6] &= !(1u64 << (i & 63)); }
+        out
+    }
+    /// Back to the cleared state: the used pages zeroed (and kept in the arena), the hit bits and the list dropped.
+    pub fn clear(&mut self) {
+        for &t in &self.used {
+            let pg = self.page_of[t as usize];
+            if pg != NO_PAGE {
+                self.arena[pg as usize * PAGE_TEXELS..(pg as usize + 1) * PAGE_TEXELS].fill([0.0; 4]);
+                self.page_of[t as usize] = NO_PAGE;
+            }
+        }
+        self.used.clear();
+        for &i in &self.touched_list {
+            self.hit[i as usize >> 6] &= !(1u64 << (i & 63));
+        }
+        self.touched_list.clear();
+    }
+}
+
+impl LampTarget for PagedAccum {
+    fn size(&self) -> (u32, u32) { (self.w, self.h) }
+    #[inline]
+    fn slot(&mut self, x: u32, y: u32) -> &mut [f32; 4] {
+        let i = y * self.w + x;
+        let (wi, b) = ((i >> 6) as usize, 1u64 << (i & 63));
+        if self.hit[wi] & b == 0 {
+            self.hit[wi] |= b;
+            self.touched_list.push(i);
+        }
+        let t = self.tile_of(x, y);
+        let mut pg = self.page_of[t];
+        if pg == NO_PAGE {
+            // a fresh page: the arena grows by one (zeroed) page the first time, else a cleared one is reused in place
+            pg = (self.used.len()) as u32;
+            if (pg as usize + 1) * PAGE_TEXELS > self.arena.len() {
+                self.arena.resize((pg as usize + 1) * PAGE_TEXELS, [0.0; 4]);
+            }
+            self.page_of[t] = pg;
+            self.used.push(t as u32);
+        }
+        &mut self.arena[pg as usize * PAGE_TEXELS + Self::offset_in_page(x, y)]
+    }
+    #[inline]
+    fn set_owner(&mut self, _x: u32, _y: u32, _inst: u32) {}
 }
 
 /// The LM01 raster constants of jitter `n` for a `w` × `h` target: Trans = (−1 + ox·2/W, 1 + oy·2/H) (RE 7's 00:35Z; eid 34's
@@ -282,13 +461,20 @@ pub fn vs_7303(v: &crate::sunpass::LmVertex, inst: &crate::sunpass::LmInstance, 
 /// The shadow lookup of the pass: the LINEAR comparison sample (UseSoftShadow 1 — the captured shadow channel holds values
 /// between the ninths); LMTOOL_LL_SHADOW=point for the point sample, LMTOOL_LL_SHADOW_BITS=N for the weights' sub-texel bits.
 pub fn shadow_sample(shadow: &FlatCubeMap, uv: [f32; 2], r: f32) -> f32 {
-    match std::env::var("LMTOOL_LL_SHADOW").as_deref() {
-        Ok("point") => return shadow.sample_cmp_ge(uv, r, SHADOW_TARGET),
-        Ok("none") => return 1.0,
+    // (the two study switches read ONCE — perf 8: two std::env::var per fragment and per probe were 52 % of a frame-1 bake's
+    // samples, the environment's RwLock contended by every worker: getenv + CStr + read_contended)
+    static MODE: std::sync::OnceLock<(u8, u32)> = std::sync::OnceLock::new();
+    let (mode, bits) = *MODE.get_or_init(|| {
+        let mode = match std::env::var("LMTOOL_LL_SHADOW").as_deref() { Ok("point") => 1u8, Ok("none") => 2, _ => 0 };
+        // f32 weights (0 bits) measure best against the captured accumulation (lamp A: 433 list texels differ vs 512 at 8 bits, 862 at 4)
+        let bits: u32 = std::env::var("LMTOOL_LL_SHADOW_BITS").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+        (mode, bits)
+    });
+    match mode {
+        1 => return shadow.sample_cmp_ge(uv, r, SHADOW_TARGET),
+        2 => return 1.0,
         _ => {}
     }
-    // f32 weights (0 bits) measure best against the captured accumulation (lamp A: 433 list texels differ vs 512 at 8 bits, 862 at 4)
-    let bits: u32 = std::env::var("LMTOOL_LL_SHADOW_BITS").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
     shadow.sample_cmp_ge_linear(uv, r, SHADOW_TARGET, bits)
 }
 
@@ -298,15 +484,15 @@ pub const BLEND: BlendModel = BlendModel::TruncSrcRoundSum;
 /// THE LIGHTING DRAWS of one lamp: nine jitters × the drawn instances (jitter-major, then the LM scene's mesh order, the
 /// instances in record order — the capture's 9 × 11 draws) through VS 7303 → the D3D11 raster (`rasterise_triangle_rows`,
 /// the pixel-centre barycentrics, no depth, NoCull) → PS 7343 → One / One into `acc`.
-pub fn draw_lamp(sc: &LmScene, insts: &[usize], cb: &LightCb, shadow: &FlatCubeMap, acc: &mut Accum) -> u64 {
+pub fn draw_lamp<T: LampTarget>(sc: &LmScene, insts: &[usize], cb: &LightCb, shadow: &FlatCubeMap, acc: &mut T) -> u64 {
     draw_lamp_partial(sc, insts, cb, shadow, acc, 0..9, &[])
 }
 
 /// `draw_lamp` over the jitters `jitters` only, the instances `skip_last` left out of the LAST jitter of the range — the
 /// capture's export points (9768 after eid 547 = lamp A's 9 jitters minus the final draw group; after eid 1670 = lamp B's
 /// first 7 jitters, the frame ended there).
-pub fn draw_lamp_partial(sc: &LmScene, insts: &[usize], cb: &LightCb, shadow: &FlatCubeMap, acc: &mut Accum, jitters: std::ops::Range<u32>, skip_last: &[usize]) -> u64 {
-    let (w, h) = (acc.w, acc.h);
+pub fn draw_lamp_partial<T: LampTarget>(sc: &LmScene, insts: &[usize], cb: &LightCb, shadow: &FlatCubeMap, acc: &mut T, jitters: std::ops::Range<u32>, skip_last: &[usize]) -> u64 {
+    let (w, h) = acc.size();
     let last = jitters.end.saturating_sub(1);
     let sample = |uv: [f32; 2], r: f32| shadow_sample(shadow, uv, r);
     let mut frags = 0u64;
@@ -336,13 +522,11 @@ pub fn draw_lamp_partial(sc: &LmScene, insts: &[usize], cb: &LightCb, shadow: &F
                         let p = [a.world[0] * b0 + b.world[0] * b1 + c.world[0] * b2, a.world[1] * b0 + b.world[1] * b1 + c.world[1] * b2, a.world[2] * b0 + b.world[2] * b1 + c.world[2] * b2];
                         let nrm = [a.normal[0] * b0 + b.normal[0] * b1 + c.normal[0] * b2, a.normal[1] * b0 + b.normal[1] * b1 + c.normal[1] * b2, a.normal[2] * b0 + b.normal[2] * b1 + c.normal[2] * b2];
                         let o = ps_7343(cb, p, nrm, &sample);
-                        let i = (y * w + x) as usize;
-                        let slot = &mut acc.px[i];
+                        let slot = acc.slot(x, y);
                         for ch in 0..4 {
                             slot[ch] = blend_f16(slot[ch], o[ch], BLEND);
                         }
-                        acc.touch(x, y);
-                        if !acc.owner.is_empty() { acc.owner[i] = ii as u32 + 1; }
+                        acc.set_owner(x, y, ii as u32 + 1);
                         frags += 1;
                     });
                 }
@@ -489,6 +673,65 @@ pub fn unorm8_rt(v: f32) -> u8 {
 
 /// THE PROBE PASS of one lamp: PS 7351 over every chunk the lamp reaches (blend MAX into the R8 volume cleared per lamp),
 /// then CS 7357 per touched probe into the probe lists.
+/// `probe_pass` split for the parallel frame (perf 8): the lamp's R8 volume values — PS 7351 at every probe of its range in
+/// every chunk, the max per probe as the volume's `b > volume[i]` writes leave it — as the list of (probe, byte) with a non-zero
+/// byte, computed on a worker with its own scratch volume (the same size as the frame's, left clear). No dependence on the
+/// frame's lists, so lamps can run side by side; the lists then take the lamps in order (`probe_apply`).
+pub fn probe_values(chunks: &[crate::probechunk::ChunkRecord], lamp: &Lamp, shadow: &FlatCubeMap, scratch: &mut ProbeState) -> Vec<(u32, u8)> {
+    let sample = |uv: [f32; 2], r: f32| shadow_sample(shadow, uv, r);
+    let st = scratch;
+    for rec in chunks {
+        let Some((lo, hi)) = probe_range(rec, lamp) else { continue };
+        let cb = lamp.probe_cb([[rec.cell[0], rec.origin[0]], [rec.cell[1], rec.origin[1]], [rec.cell[2], rec.origin[2]]]);
+        for z in lo[2]..=hi[2] {
+            for y in lo[1]..=hi[1] {
+                for x in lo[0]..=hi[0] {
+                    if x < 0 || y < 0 || z < 0 || x as u32 >= st.n[0] || y as u32 >= st.n[1] || z as u32 >= st.n[2] {
+                        continue;
+                    }
+                    let v = ps_7351(&cb, x as u32, y as u32, z as u32, &sample);
+                    let b = unorm8_rt(v);
+                    let i = st.index(x as u32, y as u32, z as u32);
+                    if b > st.volume[i] {
+                        if st.volume[i] == 0 {
+                            st.touched.push(i);
+                        }
+                        st.volume[i] = b;
+                    }
+                }
+            }
+        }
+    }
+    let out: Vec<(u32, u8)> = st.touched.iter().map(|&i| (i as u32, st.volume[i])).collect();
+    for &i in &st.touched {
+        st.volume[i] = 0;
+    }
+    st.touched.clear();
+    out
+}
+
+/// `probe_pass`'s second half: the lamp's values into the frame's volume (cleared of the previous lamp's, as the pass leaves it)
+/// and its lists (CS 7357, in lamp order). Returns the lists changed.
+pub fn probe_apply(st: &mut ProbeState, lamp_id: u16, vals: &[(u32, u8)]) -> u64 {
+    for &i in &st.touched {
+        st.volume[i] = 0;
+    }
+    st.touched.clear();
+    let mut lit = 0u64;
+    for &(i, b) in vals {
+        let i = i as usize;
+        st.volume[i] = b;
+        st.touched.push(i);
+        let w = b as f32 / 255.0;
+        let l = cs_7357(w, lamp_id, st.lists[i]);
+        if l != st.lists[i] {
+            st.lists[i] = l;
+            lit += 1;
+        }
+    }
+    lit
+}
+
 pub fn probe_pass(chunks: &[crate::probechunk::ChunkRecord], lamp: &Lamp, shadow: &FlatCubeMap, st: &mut ProbeState) -> u64 {
     let sample = |uv: [f32; 2], r: f32| shadow_sample(shadow, uv, r);
     for &i in &st.touched {
@@ -605,8 +848,106 @@ pub struct FrameOut {
     pub results: Vec<LampResult>,
 }
 
+/// One lamp's independent work (perf 8): the cull, the casters, the flat cube, the 9-jitter draw on a worker's own target,
+/// and CS 7348's weights at the texels it can change; the frame's lists then take the lamps in order (`cs_7348_insert`).
+struct LampWork {
+    drawn: Vec<usize>,
+    n_casters: usize,
+    frags: u64,
+    weights: Vec<(u32, u8, u8)>,
+    probe_vals: Vec<(u32, u8)>,
+    /// The worker's seconds on this lamp: cull + casters, the flat cube, the probes, the draw, the weights.
+    secs: [f32; 5],
+}
+
+/// How many lamps are drawn at once (each worker holds a full accumulation target: 64 MB at 2048²); LMTOOL_LAMP_WORKERS=N.
+fn lamp_workers(n_lamps: usize) -> usize {
+    let threads = crate::pool::pool().threads.max(1);
+    let cap = std::env::var("LMTOOL_LAMP_WORKERS").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(64);
+    threads.min(cap).min(n_lamps).max(1)
+}
+
 pub fn run_frame(gl: &crate::layout::GameLayout, sc: &LmScene, lamps: &[Lamp], chunks: &[crate::probechunk::ChunkRecord], probe_n: [u32; 3], target: (u32, u32), keep_accum_for: Option<u16>, mut lists: Lists, log: &mut dyn FnMut(&str)) -> FrameOut {
     let (w, h) = target;
+    // THE LAMPS IN PARALLEL (perf 8): a lamp's cull, casters, flat-cube shadow and 9-jitter draw depend on nothing but the
+    // lamp, so K workers each draw lamps on their own accumulation target and hand the touched rectangle over; the frame's
+    // per-texel lists (CS 7348) and the probe volume / lists (PS 7351 / CS 7357) take the lamps IN ORDER on this thread, as
+    // before — the same bytes. The serial loop stays for the diagnostics that keep a lamp's full target (`keep_accum_for`)
+    // and under LMTOOL_LAMPS_SERIAL=1. (982 lamps on tiny 16 were 287 s, 0.29 s each, one thread.)
+    let parallel = keep_accum_for.is_none() && std::env::var_os("LMTOOL_LAMPS_SERIAL").is_none() && lamps.len() > 1;
+    if parallel {
+        let k = lamp_workers(lamps.len());
+        let n = lamps.len();
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let slots: Vec<std::sync::Mutex<Option<LampWork>>> = (0..n).map(|_| std::sync::Mutex::new(None)).collect();
+        let done = std::sync::atomic::AtomicUsize::new(0);
+        let mut probes = ProbeState::new(probe_n);
+        let mut results = Vec::with_capacity(n);
+        let t0 = std::time::Instant::now();
+        std::thread::scope(|sc_| {
+            for _ in 0..k {
+                sc_.spawn(|| {
+                    let mut acc = PagedAccum::new(w, h);
+                    let mut visited = vec![0u64; ((w * h) as usize + 63) / 64];
+                    let mut probe_scratch = ProbeState::new(probe_n);
+                    loop {
+                        let li = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if li >= n { break; }
+                        let lamp = &lamps[li];
+                        let t = std::time::Instant::now();
+                        let drawn = cull(gl, sc, lamp);
+                        let tris = casters(sc, &drawn);
+                        let t1 = t.elapsed().as_secs_f32();
+                        let shadow = render_flat_cube(lamp.light.pos, lamp.r_eff, lamp.face_size, &tris, true);
+                        let t2 = t.elapsed().as_secs_f32();
+                        let cb = lamp.light_cb();
+                        let probe_vals = probe_values(chunks, lamp, &shadow, &mut probe_scratch);
+                        let t3 = t.elapsed().as_secs_f32();
+                        let frags = draw_lamp(sc, &drawn, &cb, &shadow, &mut acc);
+                        let t4 = t.elapsed().as_secs_f32();
+                        let weights = acc.lamp_weights(&mut visited);
+                        acc.clear();
+                        let t5 = t.elapsed().as_secs_f32();
+                        *slots[li].lock().unwrap() = Some(LampWork { drawn, n_casters: tris.len(), frags, weights, probe_vals, secs: [t1, t2 - t1, t3 - t2, t4 - t3, t5 - t4] });
+                        done.fetch_add(1, std::sync::atomic::Ordering::Release);
+                    }
+                });
+            }
+            // the consumer, in lamp order
+            let (mut t_wait, mut t_probe, mut t_lists) = (0.0f64, 0.0f64, 0.0f64);
+            let mut worker_secs = [0.0f64; 5];
+            for li in 0..n {
+                let tw = std::time::Instant::now();
+                let work = loop {
+                    if let Some(wk) = slots[li].lock().unwrap().take() { break wk; }
+                    std::thread::sleep(std::time::Duration::from_micros(200));
+                };
+                t_wait += tw.elapsed().as_secs_f64();
+                let lamp = &lamps[li];
+                let tp = std::time::Instant::now();
+                let probe_updates = probe_apply(&mut probes, lamp.id, &work.probe_vals);
+                t_probe += tp.elapsed().as_secs_f64();
+                let tl = std::time::Instant::now();
+                // the lists, in lamp order: the same insertion `resolve_lists` made, at the texels whose weight is not 0
+                let mut list_updates = 0u64;
+                for &(i, w8, lit8) in &work.weights {
+                    let before = lists.l[i as usize];
+                    let after = crate::locallight::cs_7348_insert(before, lamp.id, w8, lit8);
+                    if after != before {
+                        lists.l[i as usize] = after;
+                        list_updates += 1;
+                    }
+                }
+                t_lists += tl.elapsed().as_secs_f64();
+                for (a, b) in worker_secs.iter_mut().zip(work.secs) { *a += b as f64; }
+                if li % 25 == 0 || li + 1 == n {
+                    log(&format!("lamp {}/{} id {} ({}): {} records drawn, {} casters, {} fragments, {list_updates} list texels, {probe_updates} probes ({:.1} s; {k} workers; the consumer waited {t_wait:.1} s, probes {t_probe:.1} s, lists {t_lists:.1} s; worker-seconds so far: cull+casters {:.1}, flat cube {:.1}, probes {:.1}, draw {:.1}, weights {:.1})", li + 1, n, lamp.id, lamp.owner, work.drawn.len(), work.n_casters, work.frags, t0.elapsed().as_secs_f32(), worker_secs[0], worker_secs[1], worker_secs[2], worker_secs[3], worker_secs[4]));
+                }
+                results.push(LampResult { drawn: work.drawn, frags: work.frags, list_updates, probe_updates });
+            }
+        });
+        return FrameOut { lists, probes, kept: None, results };
+    }
     let mut acc = Accum::new(w, h);
     let mut probes = ProbeState::new(probe_n);
     let mut kept = None;
