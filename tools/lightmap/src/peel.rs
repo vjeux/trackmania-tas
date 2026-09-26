@@ -841,30 +841,51 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
         }
         false
     };
-    let (cell_pairs, cell_cost, cell_wanted_v): (Vec<usize>, Vec<u64>, Vec<bool>) = {
+    // (the same pass lists, per cell, the chunks with an entry for it — `cell_chunks` as a CSR over the cells —
+    // so a job walks its ~30 chunks instead of testing all ~600: 2 M random reads per tiny frame, 4–8 % of it)
+    let (cell_pairs, cell_cost, cell_wanted_v, cell_chunks): (Vec<usize>, Vec<u64>, Vec<bool>, (Vec<u32>, Vec<u32>)) = {
         let n_blk = (n_cells / 64).clamp(1, 256);
         let blk = (n_cells + n_blk - 1) / n_blk;
         let zblk = (npx + 1 + n_blk - 1) / n_blk;
-        let per_blk: Vec<(Vec<usize>, Vec<u64>, Vec<bool>)> = crate::pool::pool().map(n_blk, |b| {
+        let per_blk: Vec<(Vec<usize>, Vec<u64>, Vec<bool>, Vec<u32>, Vec<u32>)> = crate::pool::pool().map(n_blk, |b| {
             let (z0, z1) = ((b * zblk).min(npx + 1), ((b + 1) * zblk).min(npx + 1));
             unsafe { std::ptr::write_bytes((csr_sp as *mut u32).add(z0), 0, z1 - z0); }
             let (c0, c1) = ((b * blk).min(n_cells), ((b + 1) * blk).min(n_cells));
             let mut pairs = vec![0usize; c1 - c0];
             let mut cost = vec![0u64; c1 - c0];
+            let mut n_ch = vec![0u32; c1 - c0 + 1];
             for (counts, _, _, cst) in &binned {
                 for cell in c0..c1 {
-                    pairs[cell - c0] += (counts[cell + 1] - counts[cell]) as usize;
+                    let n = counts[cell + 1] - counts[cell];
+                    pairs[cell - c0] += n as usize;
                     cost[cell - c0] += cst[cell];
+                    n_ch[cell - c0 + 1] += (n > 0) as u32;
+                }
+            }
+            for i in 0..c1 - c0 { n_ch[i + 1] += n_ch[i]; }
+            let mut ids = vec![0u32; n_ch[c1 - c0] as usize];
+            let mut fill = n_ch.clone();
+            for (ci, (counts, _, _, _)) in binned.iter().enumerate() {
+                for cell in c0..c1 {
+                    if counts[cell + 1] > counts[cell] { ids[fill[cell - c0] as usize] = ci as u32; fill[cell - c0] += 1; }
                 }
             }
             let wanted: Vec<bool> = (c0..c1).map(|cell| pairs[cell - c0] > 0 && cell_has_wanted(cell)).collect();
-            (pairs, cost, wanted)
+            (pairs, cost, wanted, n_ch, ids)
         });
         let mut pairs = Vec::with_capacity(n_cells);
         let mut cost = Vec::with_capacity(n_cells);
         let mut wanted = Vec::with_capacity(n_cells);
-        for (p, c, w) in per_blk { pairs.extend(p); cost.extend(c); wanted.extend(w); }
-        (pairs, cost, wanted)
+        let mut off: Vec<u32> = Vec::with_capacity(n_cells + 1);
+        let mut ids: Vec<u32> = Vec::new();
+        off.push(0);
+        for (p, c, w, n_ch, id) in per_blk {
+            pairs.extend(p); cost.extend(c); wanted.extend(w);
+            let base = ids.len() as u32;
+            for i in 1..n_ch.len() { off.push(base + n_ch[i]); }
+            ids.extend(id);
+        }
+        (pairs, cost, wanted, (off, ids))
     };
     let cell_wanted = |cell: usize| -> bool { cell_wanted_v[cell] };
     // THE JOBS: (cell, rows y0..=y1, columns x0..=x1, the strip bits its entries must carry) with an
@@ -1001,7 +1022,9 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
         // would not have listed it.
         let mut job_list: Vec<u32> = JOB_LIST.take();
         job_list.clear();
-        for (counts, entries, ebits, _) in &binned {
+        // (engineer 3, 500dd311: only the chunks holding an entry for this cell — the per-cell chunk CSR from the totals pass)
+        for &ci in &cell_chunks.1[cell_chunks.0[cell] as usize..cell_chunks.0[cell + 1] as usize] {
+            let (counts, entries, ebits, _) = &binned[ci as usize];
             let (c0, c1) = (counts[cell] as usize, counts[cell + 1] as usize);
             if c0 == c1 { continue; }
             match hier {
