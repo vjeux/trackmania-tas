@@ -1365,7 +1365,7 @@ pub fn instances_for_target(sc: &LmScene, w: u32, h: u32) -> Vec<crate::sunpass:
 /// The LM scene with the target's STs (a shallow copy of the meshes is avoided: the caller keeps `sc` and passes the
 /// instance vector) — `draw_lamp` takes the scene, so build a scene value whose instances are the target's.
 pub fn scene_for_target(sc: &LmScene, w: u32, h: u32) -> LmScene {
-    LmScene { meshes: sc.meshes.clone(), inst_first: sc.inst_first.clone(), inst_count: sc.inst_count.clone(), instances: instances_for_target(sc, w, h), table: sc.table.clone(), eids: sc.eids.clone(), rec_of: sc.rec_of.clone(), st_src: sc.st_src.clone(), frag_lists: Default::default(), fitted_world_box: sc.fitted_world_box /* perf 8: the LM fragment lists are per target size — a fresh set for this frame */ }
+    LmScene { meshes: sc.meshes.clone(), inst_first: sc.inst_first.clone(), inst_count: sc.inst_count.clone(), instances: instances_for_target(sc, w, h), table: sc.table.clone(), eids: sc.eids.clone(), rec_of: sc.rec_of.clone(), st_src: sc.st_src.clone(), port_inst: sc.port_inst.clone(), frag_lists: Default::default(), fitted_world_box: sc.fitted_world_box /* perf 8: the LM fragment lists are per target size — a fresh set for this frame */ }
 }
 
 /// The post-VS export of a captured lighting draw (mesh/e<EID>_vsout.bin, stride 80: o0 xyzw, o1 xyz, o2 xyzw, o3 xyz, o4 xyz,

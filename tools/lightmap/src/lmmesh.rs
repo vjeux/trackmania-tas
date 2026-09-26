@@ -479,7 +479,7 @@ pub fn lm_scene_from_map(scene: &crate::geometry::Scene, layout: &crate::layout:
 /// `lm_scene_from_map` with the tiles' world y (the tile row · 8 + the collection's yoff; BlueBay's is 0).
 pub fn lm_scene_from_map_at(scene: &crate::geometry::Scene, layout: &crate::layout::GameLayout, base: u32, item_bytes: &dyn Fn(&str) -> Option<Vec<u8>>, tile_mesh: Option<LmMesh>, tile_plg: crate::layout::TilePlg, atlas: f32, tile_world_y: f32) -> Result<crate::lmaccum::LmScene, String> {
     use crate::lmaccum::LmScene;
-    let mut sc = LmScene { meshes: Vec::new(), inst_first: Vec::new(), inst_count: Vec::new(), instances: Vec::new(), table: Vec::new(), eids: Vec::new(), frag_lists: Default::default(), fitted_world_box: None, rec_of: Vec::new(), st_src: Vec::new() };
+    let mut sc = LmScene { meshes: Vec::new(), inst_first: Vec::new(), inst_count: Vec::new(), instances: Vec::new(), table: Vec::new(), eids: Vec::new(), frag_lists: Default::default(), fitted_world_box: None, rec_of: Vec::new(), st_src: Vec::new(), port_inst: Vec::new() };
     // the item's rect: by its map item index when the layout carries its records (chart k ↔ record k), else by obj = base + item
     let rect_of: std::collections::HashMap<u32, [i32; 4]> = if !layout.records.is_empty() {
         layout.records.iter().enumerate().filter_map(|(k, r)| { let (ii, _) = r.item.as_ref()?; let c = &layout.charts[k]; (c.charted == crate::layout::Charted::Bound).then_some((base + *ii as u32, [c.x, c.y, c.w, c.h])) }).collect()
@@ -511,6 +511,7 @@ pub fn lm_scene_from_map_at(scene: &crate::geometry::Scene, layout: &crate::layo
             sc.instances.push(lm_instance(&inst.pose, st));
             sc.rec_of.push(rec_of_item.get(&inst.item).copied().unwrap_or(usize::MAX));
             sc.st_src.push((*r, bounds));
+            sc.port_inst.push(ii);
             n += 1;
         }
         if n == 0 { continue; }
@@ -535,6 +536,7 @@ pub fn lm_scene_from_map_at(scene: &crate::geometry::Scene, layout: &crate::layo
             sc.instances.push(LmInstance { q: [0.0, 0.0, 0.0, 1.0], t: [cx as f32 * 32.0, tile_world_y, cz as f32 * 32.0], scale: 1.0, st, st_x_bits: st[0].to_bits() });
             sc.rec_of.push(if layout.records.is_empty() { usize::MAX } else { k });
             sc.st_src.push(([c.x, c.y, c.w, c.h], tile_plg.bounds));
+            sc.port_inst.push(usize::MAX);
             n += 1;
         }
         sc.meshes.push(tm);
@@ -647,6 +649,7 @@ pub fn lm_scene_add_entities(store: &mut mapgeom::store::DataStore, layout: &cra
             sc.instances.push(crate::sunpass::LmInstance { q: [q[1], q[2], q[3], q[0]], t: [iso[9], iso[10], iso[11]], scale: 1.0, st, st_x_bits: st[0].to_bits() });
             sc.rec_of.push(k);
             sc.st_src.push(([c.x, c.y, c.w, c.h], r.uv));
+            sc.port_inst.push(usize::MAX);
             n += 1;
         }
         if n == 0 { continue; }

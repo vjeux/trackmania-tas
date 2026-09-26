@@ -5457,7 +5457,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                             // the probe fires on the first two directions, or on the steep ones (D.y > 0.8) with LMTOOL_SET_PROBE_UP=1
                             // LMTOOL_SET_PROBE_DOWN=1: the downward directions (D.y < −0.3) — the base texels of a vertical looking at the ground (port engineer G)
                             let fire = set_probe.is_some() && (if std::env::var_os("LMTOOL_SET_PROBE_UP").is_some() { d[1] > 0.8 } else if let Ok(t) = std::env::var("LMTOOL_SET_PROBE_DOWN") { d[1] < -t.parse::<f32>().unwrap_or(0.3) } else { di < 2 });
-                            if fire { eprintln!("set probe: direction {di} peel {pi} block {k} (D {:.3},{:.3},{:.3})", d[0], d[1], d[2]); }
+                            if fire { eprintln!("set probe: sweep {} direction {di} peel {pi} block {k} (D {:.3},{:.3},{:.3})", prm.sweep, d[0], d[1], d[2]); }
                             crate::lmaccum::run_set_block_probe(&lm.meshes, &lm.instances, &lm.table, draws, &crate::lmaccum::LayerTargets { color: &bufs[0].0, depth: &bufs[0].1 }, crate::lmaccum::DepthCompare::Float, dt, if fire { set_probe } else { None });
                         } else {
                             let layers: Vec<crate::lmaccum::LayerTargets> = bufs.iter().map(|(c, dd)| crate::lmaccum::LayerTargets { color: c, depth: dd }).collect();

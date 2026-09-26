@@ -1180,6 +1180,11 @@ pub struct LmScene {
     /// Per instance: the layout rect and the uv bounds its ST was computed from (peelcolor::chart_st) — the local-light frame
     /// recomputes the STs for its own target size (localdrive::instances_for_target); empty for a captured scene.
     pub st_src: Vec<([i32; 4], [f32; 4])>,
+    /// Per LM instance: the PORT scene instance it was built from (`lm_scene_from_map_at`: the items grouped by model), or
+    /// usize::MAX for a synthetic instance (the zone tiles) — the exact port → LM map the atlas colour lookup needs (two items at
+    /// one translation — np-tk3's pillar on its plate — defeat a nearest-translation search: the plate read the pillar's chart
+    /// and the pillar's base lost the plate's bounce; port engineer G, 2026-09-26). Empty for a captured scene.
+    pub port_inst: Vec<usize>,
 }
 
 impl LmScene {
@@ -1230,7 +1235,7 @@ pub fn load_lm_scene(root: &Path, env_frame: u32) -> Result<LmScene, String> {
     if sun.len() != 4 {
         return Err(format!("frame {env_frame}: {} sun draws (PS 15187) in the log, 4 expected", sun.len()));
     }
-    let mut sc = LmScene { meshes: Vec::new(), inst_first: Vec::new(), inst_count: Vec::new(), instances: Vec::new(), table: Vec::new(), eids: Vec::new(), frag_lists: Default::default(), fitted_world_box: None, rec_of: Vec::new(), st_src: Vec::new() };
+    let mut sc = LmScene { meshes: Vec::new(), inst_first: Vec::new(), inst_count: Vec::new(), instances: Vec::new(), table: Vec::new(), eids: Vec::new(), frag_lists: Default::default(), fitted_world_box: None, rec_of: Vec::new(), st_src: Vec::new(), port_inst: Vec::new() };
     let mut instance_bytes: Option<Vec<u8>> = None;
     for e in &sun {
         let eid = e["eid"].as_u64().unwrap();

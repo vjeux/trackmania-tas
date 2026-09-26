@@ -27,6 +27,8 @@ pub struct IlAtlas {
     pub tile_size: f32,
     /// The game instances that are items (index < first tile).
     pub n_items: usize,
+    /// Per LM instance the PORT scene instance it was built from (`LmScene::port_inst`; usize::MAX = none); empty when unknown.
+    pub port_inst: Vec<usize>,
     /// Every instance by its translation rounded to half a metre (any_by_translation).
     pub by_pos: HashMap<(i32, i32, i32), Vec<usize>>,
     /// Counters (fragments coloured from the atlas, fragments with no mapping) — sharded by thread (perf 3: one shared
@@ -112,7 +114,9 @@ impl IlAtlas {
         let tile_k = lm.meshes.iter().enumerate().find(|(k, _)| lm.inst_count[*k] >= 1000).map(|(k, _)| k);
         let verts: Vec<([f32; 3], [f32; 2])> = tile_k.map(|k| lm.meshes[k].verts.iter().map(|v| (v.pos, v.uv)).collect()).unwrap_or_default();
         let n_items = tile_k.map(|k| lm.inst_first[k]).unwrap_or(lm.instances.len());
-        IlAtlas::from_parts(atlas, lm.instances.clone(), &verts, n_items)
+        let mut il = IlAtlas::from_parts(atlas, lm.instances.clone(), &verts, n_items);
+        il.port_inst = lm.port_inst.clone();
+        il
     }
 
     pub fn from_parts(atlas: Buf, insts: Vec<LmInstance>, verts: &[([f32; 3], [f32; 2])], n_items: usize) -> IlAtlas {
@@ -145,7 +149,7 @@ impl IlAtlas {
         let mut by_pos: HashMap<(i32, i32, i32), Vec<usize>> = HashMap::new();
         for (k, inst) in insts.iter().enumerate() { by_pos.entry(((inst.t[0] * 2.0).round() as i32, (inst.t[1] * 2.0).round() as i32, (inst.t[2] * 2.0).round() as i32)).or_default().push(k); }
         let (grid, grid_org, grid_dim) = IlAtlas::grid_of(&tile_of);
-        IlAtlas { buf: atlas, insts, rows, tile_of, tile_uv, tile_size, n_items, by_pos, hits: IlAtlas::counters(), misses: IlAtlas::counters(), grid, grid_org, grid_dim }
+        IlAtlas { buf: atlas, insts, rows, tile_of, tile_uv, tile_size, n_items, port_inst: Vec::new(), by_pos, hits: IlAtlas::counters(), misses: IlAtlas::counters(), grid, grid_org, grid_dim }
     }
 
     /// The atlas coordinate of a point on a zone tile (world x / z), or None off every tile.
@@ -236,9 +240,21 @@ impl IlAtlas {
     /// The port's item instances → the game's instances (by world translation); the result indexes
     /// `scene.instances`.
     pub fn map_items(&self, scene: &crate::geometry::Scene) -> Vec<Option<usize>> {
-        scene.instances.iter().map(|inst| {
+        // the exact inverse when the LM scene was built from this scene (lm_scene_from_map_at records each item's port
+        // instance): a nearest-translation search cannot tell two items placed at one point apart (np-tk3: the pillar and
+        // the plate it stands on share a translation — the plate took the pillar's chart and lit the pillar's base with it)
+        let exact: std::collections::HashMap<usize, usize> = self.port_inst.iter().enumerate().filter(|(_, p)| **p != usize::MAX).map(|(k, p)| (*p, k)).collect();
+        scene.instances.iter().enumerate().map(|(ii, inst)| {
+            if let Some(&k) = exact.get(&ii) {
+                return Some(k);
+            }
             let t = mapgeom::geom::apply(&inst.xf, [0.0, 0.0, 0.0]);
-            if inst.item < scene.item_count { self.item_by_translation(t) } else { self.any_by_translation(t) }
+            if inst.item < scene.item_count {
+                // an item the exact map does not name (no layout rect: uncharted) stays unmapped rather than borrowing a
+                // neighbour's chart by translation when the exact map exists at all
+                if !exact.is_empty() { return None; }
+                self.item_by_translation(t)
+            } else { self.any_by_translation(t) }
         }).collect()
     }
 }

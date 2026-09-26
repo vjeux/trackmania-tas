@@ -2142,6 +2142,29 @@ fn run(a: Vec<String>) {
                         let dump = |name: &str, b: &lightmap::passdiff::Buf| { let mut out = Vec::with_capacity(b.data.len() * 4); for x in &b.data { out.extend_from_slice(&x.to_le_bytes()); } std::fs::write(format!("{dir}/{name}"), out).expect("write"); };
                         dump("frommap-shadow.f32", &fm.shadow); dump("frommap-sun.f32", &fm.sun); dump("frommap-attr.f32", &fm.attr); dump("frommap-mdiffuse8.f32", &fm.mdiffuse8); dump("frommap-ilightinput.f32", &fm.ilightinput);
                     }
+                    // LMTOOL_FROMMAP_CHART_MEAN=i[,j,…] (diagnostic, port engineer G): the from-map stages averaged over a chart's atlas rect
+                    // (the layout's rect × 2 in the 2048² atlas) — the sun pass (rgb, w), MDiffuse (sRGB bytes as 0..1 + the linear mean),
+                    // the dilated ILightInput — the anatomy of what a chart CONTRIBUTES to the peel (the np-tk3 plate's bounce colour)
+                    if let Ok(list) = std::env::var("LMTOOL_FROMMAP_CHART_MEAN") {
+                        for ci in list.split(',').filter_map(|t| t.trim().parse::<usize>().ok()) {
+                            // the LM instance's chart ST: uv_lm = uv1·s + t over the 2048² atlas → the rect (t·W, s·W)
+                            if let Some(inst) = lm.instances.get(ci) {
+                                let wa = fm.ilightinput.w as f32;
+                                let (x0, y0, w, h) = ((inst.st[2] * wa).round().max(0.0) as u32, (inst.st[3] * wa).round().max(0.0) as u32, (inst.st[0].abs() * wa).round() as u32, (inst.st[1].abs() * wa).round() as u32);
+                                let mut sun = [0f64; 4]; let mut md = [0f64; 4]; let mut mdl = [0f64; 3]; let mut il = [0f64; 3]; let mut sh = 0f64; let mut n = 0f64;
+                                let lin = |c: f32| -> f64 { let c = c as f64; if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) } };
+                                for y in y0..(y0 + h).min(fm.ilightinput.h) { for x in x0..(x0 + w).min(fm.ilightinput.w) {
+                                    n += 1.0;
+                                    for c in 0..4u32 { sun[c as usize] += fm.sun.get(x, y, c) as f64; md[c as usize] += fm.mdiffuse8.get(x, y, c) as f64; }
+                                    for c in 0..3u32 { mdl[c as usize] += lin(fm.mdiffuse8.get(x, y, c)); il[c as usize] += fm.ilightinput.get(x, y, c) as f64; }
+                                    if fm.shadow.w > 0 { sh += fm.shadow.get(x * fm.shadow.w / fm.ilightinput.w, y * fm.shadow.h / fm.ilightinput.h, 0) as f64; }
+                                } }
+                                let n = n.max(1.0);
+                                eprintln!("frommap chart {ci} rect ({x0},{y0}) {w}×{h} ({} texels): sun_direct mean ({:.4}, {:.4}, {:.4}; w {:.4}); MDiffuse8 mean stored ({:.4}, {:.4}, {:.4}; a {:.4}) linear ({:.4}, {:.4}, {:.4}); ILightInput mean ({:.4}, {:.4}, {:.4})", n as u64, sun[0] / n, sun[1] / n, sun[2] / n, sun[3] / n, md[0] / n, md[1] / n, md[2] / n, md[3] / n, mdl[0] / n, mdl[1] / n, mdl[2] / n, il[0] / n, il[1] / n, il[2] / n);
+                                let _ = sh;
+                            } else { eprintln!("frommap chart {ci}: no rect"); }
+                        }
+                    }
                     // the atlas lookup (PS 17131) reads the peel vertex stream's f32 TexCoord1: the zone tile's VISUAL vertices from the pak, not
                     // the LM stream's snorm16 uv (a 1e-5 uv difference moves the bilinear taps: direction 0's tiles fell to 69 % exact with them)
                     let tile_visual: Vec<([f32; 3], [f32; 2])> = {
@@ -2150,11 +2173,15 @@ fn run(a: Vec<String>) {
                         for p in &paks { if let Some((pp, key)) = p.rsplit_once(':') { let _ = store.add_pak(pp, key); } }
                         lightmap::lmmesh::visual_tile_verts_of_zone(&mut store, &f("--collection").unwrap_or_else(|| "BlueBay".into()), &f("--zone").unwrap_or_else(|| "Sea".into())).unwrap_or_default()
                     };
-                    let il = if tile_visual.is_empty() { lightmap::ilatlas::IlAtlas::from_lm_scene(fm.ilightinput.clone(), &lm) } else {
+                    let mut il = if tile_visual.is_empty() { lightmap::ilatlas::IlAtlas::from_lm_scene(fm.ilightinput.clone(), &lm) } else {
                         let n_items = lm.meshes.iter().enumerate().find(|(k, _)| lm.inst_count[*k] >= 1000).map(|(k, _)| lm.inst_first[k]).unwrap_or(lm.instances.len());
                         lightmap::ilatlas::IlAtlas::from_parts(fm.ilightinput.clone(), lm.instances.clone(), &tile_visual, n_items)
                     };
+                    // the exact port → LM instance map (LmScene::port_inst): the atlas lookup's colour source per port instance
+                    il.port_inst = lm.port_inst.clone();
                     let item_map = il.map_items(&scene);
+                    let dup = { let mut seen = std::collections::HashSet::new(); item_map.iter().flatten().filter(|k| !seen.insert(**k)).count() };
+                    if dup > 0 { eprintln!("setup-from-map: WARNING {dup} port instances share an LM instance in the atlas map (a translation collision)"); }
                     eprintln!("setup-from-map: the peels colour from OUR from-map ILightInput atlas — {} LM instances ({} items, {} tiles by footprint), port items mapped {:?}; tile_uv {:?} tile_size {} ({:.1}s total)", il.insts.len(), il.n_items, il.tile_of.len(), item_map, il.tile_uv, il.tile_size, ti.elapsed().as_secs_f32());
                     prm.ilatlas = Some(std::sync::Arc::new(lightmap::ilatlas::IlSource { atlas: il, item_map }));
                     if prm.hb_out.is_none() { prm.hb_out = Some(std::sync::Arc::new(lightmap::ilatlas::HbSlot(std::sync::Mutex::new(None)))); }
