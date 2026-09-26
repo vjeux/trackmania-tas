@@ -1172,17 +1172,50 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
                 csr[*f as usize] = *cf;
                 *f += 1;
             }
-            for li in 0..band_px {
-                if cnt[li] == 0 && !saturated {
-                    // no item fragment: nothing to count (an environment-only pixel resets its maximum)
-                    env_max[li] = 0.0;
-                    continue;
+            // THE WALK IN LANES (scan_block16): the pixels with one or two fragments — nearly all — sixteen at a
+            // time; the others (and every pixel when the frame's depth rules differ) take the scalar walk below
+            let cx0 = count.as_ref().unwrap();
+            let vector_scan = cx0.prm.dome_layer && cx0.prm.depth_bits == 16 && !bound_stats && *SCAN16_ON;
+            let mut pixels: Vec<(usize, f32)> = Vec::new();
+            #[allow(unused_mut, unused_variables)]
+            let mut vector_done = false;
+            #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+            if vector_scan {
+                let mut li0 = 0usize;
+                while li0 + 16 <= band_px {
+                    let mut env16 = [0f32; 16];
+                    env16.copy_from_slice(&env_max[li0..li0 + 16]);
+                    let (h, has, big) = scan_block16(&offs[li0..li0 + 17], &csr, &env16, frame);
+                    if raster_stats { for l in 0..16 { let n = (offs[li0 + l + 1] - offs[li0 + l]) as usize; if n >= 1 { RS_NFRAG[match n { 1 | 2 => 0, 3 => 1, 4 => 2, 5 => 3, _ => 4 }].fetch_add(1, std::sync::atomic::Ordering::Relaxed); } } }
+                    covered += has as usize;
+                    for k in 0..=SCAN_K { hist[k] += h[k] as usize; }
+                    let mut m = big;
+                    while m != 0 { let l = m.trailing_zeros() as usize; m &= m - 1; pixels.push((li0 + l, env16[l])); }
+                    env_max[li0..li0 + 16].fill(0.0);
+                    cnt[li0..li0 + 16].fill(0);
+                    li0 += 16;
                 }
-                let env_d = std::mem::replace(&mut env_max[li], 0.0);
+                for li in li0..band_px { let e = std::mem::replace(&mut env_max[li], 0.0); cnt[li] = 0; if offs[li] != offs[li + 1] { covered += 1; pixels.push((li, e)); } }
+                vector_done = true;
+            }
+            // (the scalar walk over the pixels the lanes left — every pixel without the lane walk; no list then)
+            let mut pi = 0usize;
+            let mut li_scalar = 0usize;
+            loop {
+                let (li, env_d) = if vector_done {
+                    if pi >= pixels.len() { break; }
+                    let p = pixels[pi]; pi += 1; p
+                } else {
+                    if li_scalar >= band_px { break; }
+                    let li = li_scalar; li_scalar += 1;
+                    if cnt[li] == 0 && !saturated { env_max[li] = 0.0; continue; }
+                    let env_d = std::mem::replace(&mut env_max[li], 0.0);
+                    cnt[li] = 0;
+                    if offs[li] == offs[li + 1] { continue; }
+                    covered += 1;
+                    (li, env_d)
+                };
                 let (a, c) = (offs[li] as usize, offs[li + 1] as usize);
-                cnt[li] = 0;
-                if a == c { continue; }
-                covered += 1;
                 let n = c - a;
                 if bound_stats {
                     // how many item fragments the depth rules drop without needing their alpha result:
@@ -1320,6 +1353,7 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
     let parts: Vec<Vec<(u32, Frag)>> = parts_all.into_iter().map(|(o, _, _)| o).collect();
     prof::add(&prof::B_RASTER, t_raster);
     if raster_stats { eprintln!("raster stats (sparse, {n_jobs} jobs over {n_cells} cells): {} triangles rasterised, {} bbox pixels tested, {} pixel visits, clip {:?}, wanted {}, {:.3}s", RS_TRIS.swap(0, std::sync::atomic::Ordering::Relaxed), RS_TESTED.swap(0, std::sync::atomic::Ordering::Relaxed), RS_VISITS.swap(0, std::sync::atomic::Ordering::Relaxed), clip, px.len(), t_raster.elapsed().as_secs_f32()); }
+        if raster_stats { let f = |i: usize| RS_NFRAG[i].swap(0, std::sync::atomic::Ordering::Relaxed); eprintln!("scan pixels by fragment count: 1–2: {}, 3: {}, 4: {}, 5: {}, ≥ 6: {}", f(0), f(1), f(2), f(3), f(4)); }
     if *raster::EDGE_AUDIT { let t: Vec<u64> = raster::EDGE_AUDIT_TALLY.iter().map(|a| a.load(std::sync::atomic::Ordering::Relaxed)).collect(); eprintln!("edge audit (cumulative): {} candidate pixels, f32 inside only {} ({:.4} %), integer inside only {} ({:.4} %), {} triangles degenerate after snapping", t[0], t[1], 100.0 * t[1] as f64 / t[0].max(1) as f64, t[2], 100.0 * t[2] as f64 / t[0].max(1) as f64, t[3]); }
     let t_sort = std::time::Instant::now(); crate::pool::stats::stage("csr");
     // THE SPARSE CSR: a counting sort of every job's fragments by wanted rank — the counts were taken by the
@@ -2873,6 +2907,115 @@ pub fn prefetch<T>(p: &T) {
     #[cfg(not(target_arch = "x86_64"))]
     { let _ = p; }
 }
+
+/// THE SCAN SIXTEEN PIXELS AT A TIME — the layer walk of the pixels holding one or two fragments (nearly all of
+/// them), in lanes, with the scalar walk's operations per lane: the environment depth stored as D16
+/// (`(env_d·65535).round()/65535`), each fragment's `z01 = (0.5 + (zc + z)/(2·half_d)).max(0)`, the (z, tri)
+/// order of two fragments by the total order on their bits, the accept test `z01 ≥ d_prev`, the accepted
+/// depth `((z01 + bias).clamp(0, 1)·65535).round()/65535` — the round-half-away built from truncate, the
+/// division kept as a division. Lanes with three or more fragments are reported for the scalar walk. Returns
+/// (pixels with fragments, pixels with one layer, pixels with two layers, the lanes for the scalar walk).
+/// Only for a frame with the environment layer and a 16-bit depth store — the scalar walk's initial d_prev
+/// and quantisation otherwise differ.
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+#[inline(always)]
+pub fn scan_block16(offs: &[u32], csr: &[CFrag], env_d: &[f32; 16], frame: &PeelFrame) -> ([u32; 5], u32, u16) {
+    use std::arch::x86_64::*;
+    unsafe {
+        let o0 = _mm512_loadu_si512(offs.as_ptr() as *const _);
+        let o1 = _mm512_loadu_si512(offs.as_ptr().add(1) as *const _);
+        let n = _mm512_sub_epi32(o1, o0);
+        let zero_i = _mm512_setzero_si512();
+        let has = _mm512_cmpgt_epi32_mask(n, zero_i);
+        if has == 0 { return ([0; 5], 0, 0); }
+        // the lanes the network handles: one to four fragments; the rest go to the scalar walk
+        let small = _mm512_cmple_epi32_mask(n, _mm512_set1_epi32(SCAN_K as i32));
+        let lanes = has & small;
+        let big = has & !small;
+        let ed = _mm512_loadu_ps(env_d.as_ptr());
+        let zero = _mm512_setzero_ps();
+        let k65535 = _mm512_set1_ps(65535.0);
+        // round half away from zero of a value in [0, 65535]: truncate, then one more where the remainder ≥ ½
+        let round_away = |x: __m512| -> __m512 {
+            let t = _mm512_roundscale_ps::<{ _MM_FROUND_TO_ZERO | _MM_FROUND_NO_EXC }>(x);
+            let r = _mm512_sub_ps(x, t);
+            let up = _mm512_cmp_ps_mask::<_CMP_GE_OQ>(r, _mm512_set1_ps(0.5));
+            _mm512_mask_add_ps(t, up, t, _mm512_set1_ps(1.0))
+        };
+        let q16 = |x: __m512| -> __m512 { _mm512_div_ps(round_away(_mm512_mul_ps(x, k65535)), k65535) };
+        let env_pos = _mm512_cmp_ps_mask::<_CMP_GT_OQ>(ed, zero);
+        let env_q = _mm512_mask_blend_ps(env_pos, zero, q16(ed));
+        // the fragments j = 0..K of every lane: csr[o0 + j] (12-byte records: z at +0, tri at +1, bias at +2, in
+        // u32 units); a missing fragment (j ≥ n) sorts last with the largest key
+        let base = csr.as_ptr() as *const f32;
+        let three = _mm512_set1_epi32(3);
+        let one_i = _mm512_set1_epi32(1);
+        let two_i = _mm512_set1_epi32(2);
+        let maxk = _mm512_set1_epi32(i32::MAX);
+        // the (z, tri) order by `total_cmp`: the float's bits as a signed key (negative floats reversed)
+        let tkey = |z: __m512| -> __m512i {
+            let bits = _mm512_castps_si512(z);
+            let sign = _mm512_srai_epi32::<31>(bits);
+            _mm512_xor_si512(bits, _mm512_srli_epi32::<1>(sign))
+        };
+        let mut key = [zero_i; SCAN_K];
+        let mut tri = [zero_i; SCAN_K];
+        let mut zf = [zero; SCAN_K];
+        let mut bf = [zero; SCAN_K];
+        let mut idx = _mm512_mullo_epi32(o0, three);
+        for j in 0..SCAN_K {
+            let valid = lanes & _mm512_cmpgt_epi32_mask(n, _mm512_set1_epi32(j as i32));
+            zf[j] = _mm512_mask_i32gather_ps::<4>(zero, valid, idx, base);
+            tri[j] = _mm512_mask_i32gather_epi32::<4>(maxk, valid, _mm512_add_epi32(idx, one_i), base as *const i32);
+            bf[j] = _mm512_mask_i32gather_ps::<4>(zero, valid, _mm512_add_epi32(idx, two_i), base);
+            key[j] = _mm512_mask_blend_epi32(valid, maxk, tkey(zf[j]));
+            idx = _mm512_add_epi32(idx, three);
+        }
+        // the sorting network (ascending (key, tri)): compare-exchange pairs
+        let mut cex = |i: usize, j: usize, key: &mut [__m512i; SCAN_K], tri: &mut [__m512i; SCAN_K], zf: &mut [__m512; SCAN_K], bf: &mut [__m512; SCAN_K]| {
+            let gt = _mm512_cmpgt_epi32_mask(key[i], key[j]) | (_mm512_cmpeq_epi32_mask(key[i], key[j]) & _mm512_cmpgt_epi32_mask(tri[i], tri[j]));
+            let (ki, kj) = (_mm512_mask_blend_epi32(gt, key[i], key[j]), _mm512_mask_blend_epi32(gt, key[j], key[i]));
+            let (ti, tj) = (_mm512_mask_blend_epi32(gt, tri[i], tri[j]), _mm512_mask_blend_epi32(gt, tri[j], tri[i]));
+            let (zi, zj) = (_mm512_mask_blend_ps(gt, zf[i], zf[j]), _mm512_mask_blend_ps(gt, zf[j], zf[i]));
+            let (bi, bj) = (_mm512_mask_blend_ps(gt, bf[i], bf[j]), _mm512_mask_blend_ps(gt, bf[j], bf[i]));
+            key[i] = ki; key[j] = kj; tri[i] = ti; tri[j] = tj; zf[i] = zi; zf[j] = zj; bf[i] = bi; bf[j] = bj;
+        };
+        // 4 elements: (0,1) (2,3) (0,2) (1,3) (1,2)
+        cex(0, 1, &mut key, &mut tri, &mut zf, &mut bf);
+        cex(2, 3, &mut key, &mut tri, &mut zf, &mut bf);
+        cex(0, 2, &mut key, &mut tri, &mut zf, &mut bf);
+        cex(1, 3, &mut key, &mut tri, &mut zf, &mut bf);
+        cex(1, 2, &mut key, &mut tri, &mut zf, &mut bf);
+        // the walk
+        let zc = _mm512_set1_ps(frame.zc);
+        let den = _mm512_set1_ps(2.0 * frame.half_d);
+        let half = _mm512_set1_ps(0.5);
+        let one = _mm512_set1_ps(1.0);
+        let z01 = |z: __m512| -> __m512 { _mm512_max_ps(_mm512_add_ps(half, _mm512_div_ps(_mm512_add_ps(zc, z), den)), zero) };
+        let mut d_prev = env_q;
+        let mut items = zero_i;
+        for j in 0..SCAN_K {
+            let valid = lanes & _mm512_cmpgt_epi32_mask(n, _mm512_set1_epi32(j as i32));
+            let zj = z01(zf[j]);
+            let acc = valid & _mm512_cmp_ps_mask::<_CMP_GE_OQ>(zj, d_prev);
+            let dd = q16(_mm512_min_ps(_mm512_max_ps(_mm512_add_ps(zj, bf[j]), zero), one));
+            d_prev = _mm512_mask_blend_ps(acc, d_prev, dd);
+            items = _mm512_mask_add_epi32(items, acc, items, one_i);
+        }
+        let mut hist = [0u32; 5];
+        for k in 0..=SCAN_K {
+            hist[k] = (lanes & _mm512_cmpeq_epi32_mask(items, _mm512_set1_epi32(k as i32))).count_ones();
+        }
+        (hist, has.count_ones(), big)
+    }
+}
+/// The most fragments per pixel the lane walk takes (a 4-element sorting network).
+pub const SCAN_K: usize = 4;
+
+/// LMTOOL_RASTER_STATS: pixels with 1–2 fragments, 3, 4, 5, ≥ 6.
+pub static RS_NFRAG: [std::sync::atomic::AtomicU64; 5] = [std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0)];
+/// LMTOOL_NO_SCAN16=1 keeps the scan's per-pixel walk scalar (the A/B switch).
+pub static SCAN16_ON: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("LMTOOL_NO_SCAN16").is_none());
 
 thread_local! {
     /// The raster band's slot and environment tables, kept per pool thread across bands (see the fused count).
