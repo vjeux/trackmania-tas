@@ -319,6 +319,35 @@ pub fn geom_from_solid2(s2: &mapgeom::static_item::solid2::CPlugSolid2Model, ent
 /// charts are the brightest objects of the map: the game does not peel the water, as it leaves the Scene3d's Water mobil
 /// out of the environment block). The port's items keep the fallback (a single-set pad IS lightmap geometry).
 pub fn geom_from_solid2_opts(s2: &mapgeom::static_item::solid2::CPlugSolid2Model, ent_pose: Option<([f32; 4], [f32; 3])>, skip_no_lm_uv: bool) -> ModelGeom {
+    geom_from_solid2_ext(s2, ent_pose, skip_no_lm_uv, None)
+}
+
+/// THE LIGHTMAPPER'S DRAW RULE PER MATERIAL (RE 7 04:20Z / RE 9 §2, the stpad capture): a geom whose material's SHADER
+/// carries `B & 0x40000` (never a shadow caster — Water's 0x004c0020) or fails the lightmapper's pass mask, or whose shader
+/// is of the VDepLight class (Tech3 GrassFence_VDepLight), is drawn in NO lightmapper pass — not peeled, not a sun-map
+/// caster, not lit; Waterground and the single-uv terrain quads stay. `ext` = (store, the model file's external refs) to
+/// resolve the geom's material file and its shader (mapgeom::envblock::material_chain); without it the uv rule alone applies.
+pub fn geom_from_solid2_ext(s2: &mapgeom::static_item::solid2::CPlugSolid2Model, ent_pose: Option<([f32; 4], [f32; 3])>, skip_no_lm_uv: bool, mut ext: Option<(&mut mapgeom::store::DataStore, &[(u32, String)])>) -> ModelGeom {
+    // per material index: excluded by its shader (resolved once per material)
+    let mut excluded: std::collections::HashMap<usize, bool> = std::collections::HashMap::new();
+    let mut material_excluded = |mi: usize, ext: &mut Option<(&mut mapgeom::store::DataStore, &[(u32, String)])>| -> bool {
+        if let Some(v) = excluded.get(&mi) { return *v; }
+        let mut v = false;
+        if let Some((store, externals)) = ext.as_mut() {
+            let path: Option<String> = s2.materials.get(mi).and_then(|r| if r.index >= 0 { externals.iter().find(|(i, _)| *i == r.index as u32).map(|(_, p)| p.clone()) } else { None })
+                .or_else(|| s2.custom_materials.get(mi).and_then(|cm| cm.inst().and_then(|m| m.link().map(|l| l.to_string()))));
+            if let Some(p) = path {
+                let up = p.to_ascii_uppercase();
+                let mat = if up.ends_with(".MATERIAL.GBX") { p.clone() } else { format!("{p}.Material.Gbx") };
+                let chain = mapgeom::envblock::material_chain(store, &mat);
+                let vdep = chain.shader.to_ascii_uppercase().contains("VDEPLIGHT");
+                v = vdep || chain.flags.map(|f| f.never_casts() || !f.passes_default_mask()).unwrap_or(false);
+                if std::env::var_os("LMTOOL_MATERIAL_TRACE").is_some() { eprintln!("material {mat}: shader {} flags {:?} → {}", chain.shader, chain.flags, if v { "EXCLUDED from the lightmapper" } else { "drawn" }); }
+            }
+        }
+        excluded.insert(mi, v);
+        v
+    };
     let mut g = ModelGeom::default();
     if let Some(plg) = &s2.pre_light_gen {
         g.plg_u02 = plg.u02;
@@ -406,6 +435,9 @@ pub fn geom_from_solid2_opts(s2: &mapgeom::static_item::solid2::CPlugSolid2Model
             }
         };
         let Some(ib) = v.index_buffer.as_ref() else { continue };
+        if usize::try_from(sg.material_index).ok().map(|mi| material_excluded(mi, &mut ext)).unwrap_or(false) && std::env::var_os("LMTOOL_KEEP_EXCLUDED_MATERIALS").is_none() {
+            continue;
+        }
         let Some(st) = v.stream() else { continue };
         let get = |name: u32| st.decls.iter().zip(st.elems.iter()).find(|(d, _)| d.name() == name).map(|(_, e)| e);
         let Some(Elem::Float3(pos)) = get(N_POSITION) else { continue };

@@ -919,10 +919,11 @@ fn run(a: Vec<String>) {
                 let prof = lightmap::layout::CollectionProfile::of(&coll_name);
                 let has_authored = mf0.blocks.iter().any(|b| !(b.flags & 0x1000 != 0 && prof.flat_zones.contains(&b.name.as_str())));
                 if has_authored || std::env::var_os("LMTOOL_RECORD_SCENE").is_some() {
-                    let pak_arg = f("--pak").unwrap();
-                    let (pp, key) = pak_arg.rsplit_once(':').expect("--pak FILE:KEY");
+                    // every --pak (the record scene's materials chain into Maniaplanet.pak's Techno3 parents for their shader flags)
                     let mut store = mapgeom::store::DataStore::empty();
-                    store.add_pak(pp, key).expect("pak");
+                    for (i, arg) in a.iter().enumerate() {
+                        if arg == "--pak" { if let Some(v) = a.get(i + 1) { let (pp, key) = v.rsplit_once(':').expect("--pak FILE:KEY"); store.add_pak(pp, key).expect("pak"); } }
+                    }
                     let kept: Option<std::collections::HashSet<usize>> = f("--kept").map(|p| std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("--kept {p}: {e}")).split(|c: char| c == ',' || c.is_whitespace()).filter_map(|t| t.trim().parse().ok()).collect());
                     let zone_name = f("--zone").unwrap_or_else(|| lightmap::layout::ground_zone(&mf0, &coll_name));
                     let opts = lightmap::records::BuildOpts { collection: coll_name.clone(), zone: Some(zone_name.clone()), kept, ..Default::default() };

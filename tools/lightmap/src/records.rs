@@ -665,7 +665,7 @@ pub fn add_record_geometry(scene: &mut crate::geometry::Scene, store: &mut mapge
                     let Some(e) = pf.ents.get(m.entity) else { continue };
                     let Some(mapgeom::static_item::Node::StaticObject(so)) = e.model.inline.as_deref() else { continue };
                     let Some(s2) = so.solid2() else { continue };
-                    let g = crate::geometry::geom_from_solid2_opts(s2, None, std::env::var_os("LMTOOL_RECORD_SCENE_KEEP_NO_LMUV").is_none());
+                    let g = crate::geometry::geom_from_solid2_ext(s2, None, std::env::var_os("LMTOOL_RECORD_SCENE_SKIP_NO_LMUV").is_some(), Some((store, &pm.externals)));
                     scene.models.push(g);
                     scene.model_names.push(format!("{}#{}", m.prefab, m.entity));
                     model_of.insert(key, scene.models.len() - 1);
@@ -690,7 +690,7 @@ pub fn add_record_geometry(scene: &mut crate::geometry::Scene, store: &mut mapge
                         for e in &pf.ents {
                             let Some(mapgeom::static_item::Node::StaticObject(so)) = e.model.inline.as_deref() else { continue };
                             let Some(s2) = so.solid2() else { continue };
-                            let g = crate::geometry::geom_from_solid2_opts(s2, None, std::env::var_os("LMTOOL_RECORD_SCENE_KEEP_NO_LMUV").is_none());
+                            let g = crate::geometry::geom_from_solid2_ext(s2, None, std::env::var_os("LMTOOL_RECORD_SCENE_SKIP_NO_LMUV").is_some(), Some((store, &pm.externals)));
                             scene.models.push(g);
                             scene.model_names.push(format!("{pp}#tile"));
                             found = Some(scene.models.len() - 1);
