@@ -66,10 +66,16 @@ pub fn decode_unsigned(q: u32, mbits: u32) -> f32 {
         return if m != 0 { f32::NAN } else { f32::INFINITY };
     }
     let scale = 1.0 / (1u32 << mbits) as f32;
+    // (2^k as its bit pattern: exactly what `2f32.powi(k)` returns for these k — the powers of two are exact —
+    // without the call; the decode runs per fragment channel in the layer derivation)
+    #[inline(always)]
+    fn pow2(k: i32) -> f32 {
+        f32::from_bits(((k + 127) as u32) << 23)
+    }
     if e == 0 {
-        m as f32 * scale * 2f32.powi(-14)
+        m as f32 * scale * pow2(-14)
     } else {
-        (1.0 + m as f32 * scale) * 2f32.powi(e as i32 - 15)
+        (1.0 + m as f32 * scale) * pow2(e as i32 - 15)
     }
 }
 
@@ -286,4 +292,22 @@ pub fn f16_ulp(v: f32) -> f32 {
     }
     let e = a.log2().floor() as i32;
     2f32.powi(e - 10)
+}
+
+#[cfg(test)]
+mod pow2_probe {
+    use super::*;
+    #[test]
+    fn decode_unsigned_matches_the_powi_form() {
+        for mbits in [5u32, 6] {
+            for q in 0..(1u32 << (5 + mbits)) {
+                let e = (q >> mbits) & 0x1f;
+                let m = q & ((1u32 << mbits) - 1);
+                let scale = 1.0 / (1u32 << mbits) as f32;
+                let reference = if e == 31 { if m != 0 { f32::NAN } else { f32::INFINITY } } else if e == 0 { m as f32 * scale * 2f32.powi(-14) } else { (1.0 + m as f32 * scale) * 2f32.powi(e as i32 - 15) };
+                let got = decode_unsigned(q, mbits);
+                assert!(got.to_bits() == reference.to_bits() || (got.is_nan() && reference.is_nan()), "q {q} mbits {mbits}: {got} vs {reference}");
+            }
+        }
+    }
 }
