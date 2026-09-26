@@ -98,6 +98,9 @@ struct SlotTable {
     two: [i32; LANES],
     ax: [f32; LANES],
     ay: [f32; LANES],
+    /// The tap count as f32 and as i32.
+    nf: [f32; LANES],
+    n: [i32; LANES],
 }
 
 /// Which kernel runs the batches (LMTOOL_ALPHA_SIMD=scalar|avx2|avx512 overrides the detection — the A/B
@@ -139,41 +142,48 @@ pub fn kernel() -> Kernel {
     })
 }
 
-/// One queue: up to 16 pending (uv, payload) pairs of triangles with ONE tap count `n`, and the slot table
-/// of their plans.
+/// A slot's texture and levels for the scalar fallback (the plan is rebuilt from the slot's fields).
+#[derive(Clone, Copy)]
+struct SlotRef {
+    tex: *const AlphaTex,
+    l0: u8,
+    l1: u8,
+    /// The slot's triangle and whether its fragments take a count record (per triangle, not per fragment).
+    ti: u32,
+    count: bool,
+}
+
+/// THE queue: up to 16 pending fragments (uv + payload, SoA) of up to 16 triangles with their own tap counts,
+/// and the slot table of their plans — one per thread, ~2 KB, so it stays in L1 beside the job's tables
+/// (one queue per tap count kept 4–6 of them warm: measured slower).
 ///
 /// The slots hold raw pointers into the textures' level tables: a queue must be flushed (or dropped) before
-/// the textures it was fed are — the raster flushes at the end of every band, and the textures live for the
+/// the textures it was fed are — the raster flushes at the end of every job, and the textures live for the
 /// whole bake.
 pub struct AlphaQueue {
     len: usize,
     slots: usize,
     last_key: u64,
-    /// The queue's tap count; `s[i]` = the tap offsets `(i + 0.5)/n − 0.5` (the scalar sampler's expression).
-    n: u32,
-    s: [f32; LANES],
-    /// A plan with another tap count was pushed (the last queue takes every count ≥ 16): the scalar path.
-    mixed: bool,
+    /// The largest tap count among the slots (the kernel's tap loop runs to it; lanes past their own count
+    /// are masked).
+    nmax: u32,
     slot_of: [i32; LANES],
     u: [f32; LANES],
     v: [f32; LANES],
-    payload: [Pend; LANES],
+    px: [u32; LANES],
+    py: [u32; LANES],
+    pz: [f32; LANES],
     table: Box<SlotTable>,
-    /// The scalar fallback's inputs per slot (the texture and the plan).
-    plans: [Option<(*const AlphaTex, TapPlan)>; LANES],
+    refs: [SlotRef; LANES],
     kernel: Kernel,
+    /// Batches flushed, fragments tested, fragments passed.
+    pub stats: [u64; 3],
 }
 
 impl AlphaQueue {
-    /// A queue for plans with `n` taps.
-    pub fn new(n: u32) -> Self {
-        let table = Box::new(SlotTable { base0: [0; LANES], base1: [0; LANES], wf0: [1.0; LANES], hf0: [1.0; LANES], qs0: [2; LANES], wf1: [1.0; LANES], hf1: [1.0; LANES], qs1: [2; LANES], t: [0.0; LANES], two: [0; LANES], ax: [0.0; LANES], ay: [0.0; LANES] });
-        let n = n.max(1);
-        let mut s = [0f32; LANES];
-        for i in 0..(n as usize).min(LANES) {
-            s[i] = (i as f32 + 0.5) / n as f32 - 0.5;
-        }
-        AlphaQueue { len: 0, slots: 0, last_key: u64::MAX, n, s, mixed: false, slot_of: [0; LANES], u: [0.0; LANES], v: [0.0; LANES], payload: [Pend::default(); LANES], table, plans: [None; LANES], kernel: kernel() }
+    pub fn new() -> Self {
+        let table = Box::new(SlotTable { base0: [0; LANES], base1: [0; LANES], wf0: [1.0; LANES], hf0: [1.0; LANES], qs0: [2; LANES], wf1: [1.0; LANES], hf1: [1.0; LANES], qs1: [2; LANES], t: [0.0; LANES], two: [0; LANES], ax: [0.0; LANES], ay: [0.0; LANES], nf: [1.0; LANES], n: [1; LANES] });
+        AlphaQueue { len: 0, slots: 0, last_key: u64::MAX, nmax: 1, slot_of: [0; LANES], u: [0.0; LANES], v: [0.0; LANES], px: [0; LANES], py: [0; LANES], pz: [0.0; LANES], table, refs: [SlotRef { tex: std::ptr::null(), l0: 0, l1: 0, ti: 0, count: false }; LANES], kernel: kernel(), stats: [0; 3] }
     }
 
     #[inline]
@@ -184,31 +194,35 @@ impl AlphaQueue {
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
+    /// The queue of a plan — this one (the interface the raster hook uses).
+    #[inline(always)]
+    pub fn of(&mut self, _plan: &TapPlan) -> &mut AlphaQueue {
+        self
+    }
 
     /// Queue one fragment: `key` identifies its triangle (consecutive pushes with one key share a slot),
     /// `plan` is that triangle's plan for `tex`. Returns true when the batch is full — the caller flushes.
     #[inline(always)]
     pub fn push(&mut self, tex: &AlphaTex, plan: &TapPlan, key: u64, u: f32, v: f32, payload: Pend) -> bool {
         if key != self.last_key {
-            self.open_slot(tex, plan, key);
+            self.open_slot(tex, plan, key, payload.ti, payload.count);
         }
         let i = self.len;
         self.slot_of[i] = (self.slots - 1) as i32;
         self.u[i] = u;
         self.v[i] = v;
-        self.payload[i] = payload;
+        self.px[i] = payload.x;
+        self.py[i] = payload.y;
+        self.pz[i] = payload.z;
         self.len = i + 1;
         self.len == LANES
     }
 
     #[inline(never)]
-    fn open_slot(&mut self, tex: &AlphaTex, plan: &TapPlan, key: u64) {
+    fn open_slot(&mut self, tex: &AlphaTex, plan: &TapPlan, key: u64, ti: u32, count: bool) {
         let s = self.slots;
         debug_assert!(s < LANES);
         let lp = LanePlan::of(tex, plan);
-        if lp.n != self.n {
-            self.mixed = true;
-        }
         let tb = &mut self.table;
         tb.base0[s] = lp.base0 as u64;
         tb.base1[s] = lp.base1 as u64;
@@ -222,9 +236,19 @@ impl AlphaQueue {
         tb.two[s] = if lp.two { -1 } else { 0 };
         tb.ax[s] = lp.ax;
         tb.ay[s] = lp.ay;
-        self.plans[s] = Some((tex as *const AlphaTex, *plan));
+        tb.nf[s] = lp.n as f32;
+        tb.n[s] = lp.n as i32;
+        self.refs[s] = SlotRef { tex: tex as *const AlphaTex, l0: plan.l0 as u8, l1: plan.l1 as u8, ti, count };
+        self.nmax = self.nmax.max(lp.n);
         self.slots = s + 1;
         self.last_key = key;
+    }
+
+    /// The payload of pending fragment `i`.
+    #[inline]
+    fn pend(&self, i: usize) -> Pend {
+        let r = &self.refs[self.slot_of[i] as usize];
+        Pend { x: self.px[i], y: self.py[i], z: self.pz[i], ti: r.ti, count: r.count }
     }
 
     /// Run the test on the pending fragments and call `emit` with every PASSING payload, in push order;
@@ -239,14 +263,22 @@ impl AlphaQueue {
         let passed = mask.count_ones();
         while mask != 0 {
             let i = mask.trailing_zeros() as usize;
-            emit(&self.payload[i]);
+            emit(&self.pend(i));
             mask &= mask - 1;
         }
         self.len = 0;
         self.slots = 0;
         self.last_key = u64::MAX;
-        self.mixed = false;
+        self.nmax = 1;
+        self.stats[0] += 1;
+        self.stats[1] += len as u64;
+        self.stats[2] += passed as u64;
         (len as u32, passed)
+    }
+
+    /// `flush` (the end of a job).
+    pub fn flush_all(&mut self, threshold: f32, emit: impl FnMut(&Pend)) {
+        self.flush(threshold, emit);
     }
 
     /// The pass bits of the pending fragments (bit i = fragment i), the queue untouched.
@@ -259,87 +291,51 @@ impl AlphaQueue {
             self.u[i] = 0.0;
             self.v[i] = 0.0;
         }
-        let mask: u32 = if self.mixed || self.n as usize > LANES {
-            self.scalar_mask(threshold)
-        } else {
-            match self.kernel {
-                #[cfg(target_arch = "x86_64")]
-                Kernel::Avx512 => match unsafe { avx512::test16(&self.table, &self.slot_of, &self.u, &self.v, self.n, &self.s, threshold) } {
-                    Some(m) => m as u32,
-                    None => self.scalar_mask(threshold),
-                },
-                #[cfg(target_arch = "x86_64")]
-                Kernel::Avx2 => match unsafe { avx2::test16(&self.table, &self.slot_of, &self.u, &self.v, self.n, &self.s, threshold) } {
-                    Some(m) => m as u32,
-                    None => self.scalar_mask(threshold),
-                },
-                _ => self.scalar_mask(threshold),
-            }
+        let mask: u32 = match self.kernel {
+            #[cfg(target_arch = "x86_64")]
+            Kernel::Avx512 => match unsafe { avx512::test16(&self.table, &self.slot_of, &self.u, &self.v, self.nmax, threshold) } {
+                Some(m) => m as u32,
+                None => self.scalar_mask(threshold),
+            },
+            #[cfg(target_arch = "x86_64")]
+            Kernel::Avx2 => match unsafe { avx2::test16(&self.table, &self.slot_of, &self.u, &self.v, self.nmax, threshold) } {
+                Some(m) => m as u32,
+                None => self.scalar_mask(threshold),
+            },
+            _ => self.scalar_mask(threshold),
         };
         mask & if len >= 32 { u32::MAX } else { (1u32 << len) - 1 }
+    }
+
+    /// A slot's plan for the scalar test, rebuilt from the slot's fields (the same levels, fraction, axis and
+    /// tap count; `aniso` only decides the tap loop together with n > 1; the early-outs off).
+    fn slot_plan(&self, s: usize) -> TapPlan {
+        let tb = &self.table;
+        let n = tb.n[s].max(1) as usize;
+        TapPlan { lod: 0.0, l0: self.refs[s].l0 as usize, l1: self.refs[s].l1 as usize, two: tb.two[s] != 0, t: tb.t[s], axis: [tb.ax[s], tb.ay[s]], n, aniso: if n > 1 { 2 } else { 1 }, try_early: false }
     }
 
     /// The scalar test lane by lane (the fallback, and the reference of the tests).
     fn scalar_mask(&self, threshold: f32) -> u32 {
         let mut m = 0u32;
         for i in 0..self.len {
-            let (tex, plan) = self.plans[self.slot_of[i] as usize].expect("a queued fragment's slot");
+            let s = self.slot_of[i] as usize;
             // SAFETY: the queue's contract — the textures outlive the pending fragments
-            let tex = unsafe { &*tex };
-            if tex.passes_planned(self.u[i], self.v[i], &plan, threshold, Address::ClampEdge) {
+            let tex = unsafe { &*self.refs[s].tex };
+            if tex.passes_planned(self.u[i], self.v[i], &self.slot_plan(s), threshold, Address::ClampEdge) {
                 m |= 1 << i;
             }
         }
         m
     }
-}
 
-/// The band's queues, one per tap count (n = 1..=16, made when first needed; larger counts share the last,
-/// which then takes the scalar path).
-pub struct AlphaQueues {
-    pub q: [Option<Box<AlphaQueue>>; LANES],
-    /// The kernel the queues run (the detected one; the tests set it).
-    pub kernel: Kernel,
-    /// Batches flushed, fragments tested, fragments passed.
-    pub stats: [u64; 3],
-}
-
-impl AlphaQueues {
-    pub fn new() -> Self {
-        AlphaQueues { q: Default::default(), kernel: kernel(), stats: [0; 3] }
+    /// A recycled queue from this thread's pool (the raster runs one job at a time per thread).
+    pub fn take() -> Box<AlphaQueue> {
+        POOL.take().unwrap_or_else(|| Box::new(AlphaQueue::new()))
     }
-    /// The queue of a plan (by its tap count).
-    #[inline]
-    pub fn of(&mut self, plan: &TapPlan) -> &mut AlphaQueue {
-        let n = if plan.aniso > 1 { plan.n.max(1) } else { 1 };
-        let k = (n - 1).min(LANES - 1);
-        let kernel = self.kernel;
-        self.q[k].get_or_insert_with(|| { let mut q = Box::new(AlphaQueue::new(k as u32 + 1)); q.kernel = kernel; q })
-    }
-    /// Every queue there is.
-    pub fn queues_mut(&mut self) -> impl Iterator<Item = &mut AlphaQueue> {
-        self.q.iter_mut().filter_map(|q| q.as_deref_mut())
-    }
-    /// Flush every queue (the end of a band), passing payloads to `emit` queue by queue in push order.
-    pub fn flush_all(&mut self, threshold: f32, mut emit: impl FnMut(&Pend)) {
-        let mut stats = self.stats;
-        for q in self.queues_mut() {
-            if !q.is_empty() {
-                let (t, p) = q.flush(threshold, &mut emit);
-                stats[0] += 1;
-                stats[1] += t as u64;
-                stats[2] += p as u64;
-            }
-        }
-        self.stats = stats;
-    }
-    /// A recycled set from this thread's pool (the raster runs one band at a time per thread).
-    pub fn take() -> Box<AlphaQueues> {
-        POOL.take().unwrap_or_else(|| Box::new(AlphaQueues::new()))
-    }
-    /// Back to the pool (every queue empty — the caller flushed).
-    pub fn give(mut self: Box<AlphaQueues>) {
-        debug_assert!(self.q.iter().all(|q| q.as_ref().map_or(true, |q| q.is_empty())));
+    /// Back to the pool (empty — the caller flushed), its totals banked.
+    pub fn give(mut self: Box<AlphaQueue>) {
+        debug_assert!(self.is_empty());
         ALPHA_TOTALS[0].fetch_add(self.stats[0], std::sync::atomic::Ordering::Relaxed);
         ALPHA_TOTALS[1].fetch_add(self.stats[1], std::sync::atomic::Ordering::Relaxed);
         ALPHA_TOTALS[2].fetch_add(self.stats[2], std::sync::atomic::Ordering::Relaxed);
@@ -348,14 +344,17 @@ impl AlphaQueues {
     }
 }
 
-impl Default for AlphaQueues {
+impl Default for AlphaQueue {
     fn default() -> Self {
         Self::new()
     }
 }
 
+/// The raster hook's name for the thread's queue (one queue now; the per-tap-count set was slower in situ).
+pub type AlphaQueues = AlphaQueue;
+
 thread_local! {
-    static POOL: std::cell::Cell<Option<Box<AlphaQueues>>> = const { std::cell::Cell::new(None) };
+    static POOL: std::cell::Cell<Option<Box<AlphaQueue>>> = const { std::cell::Cell::new(None) };
 }
 
 /// Bake-wide totals: batches, fragments tested through the queues, fragments passed (`alpha_queue_report`).
@@ -431,11 +430,10 @@ mod avx512 {
         _mm512_add_ps(_mm512_mul_ps(top, omty), _mm512_mul_ps(bot, ty))
     }
 
-    /// The 16 lanes' pass bits, or None when a coordinate is NaN (the scalar path decides those).
-    /// The 16 lanes' pass bits for a batch of `n`-tap plans (`s` = the tap offsets), or None when a
-    /// coordinate is NaN (the scalar path decides those).
+    /// The 16 lanes' pass bits (each lane its slot's tap count, up to `nmax`), or None when a coordinate is
+    /// NaN (the scalar path decides those).
     #[target_feature(enable = "avx512f,avx512bw,avx512vl,avx512dq")]
-    pub unsafe fn test16(tb: &SlotTable, slot_of: &[i32; LANES], us: &[f32; LANES], vs: &[f32; LANES], n: u32, s: &[f32; LANES], threshold: f32) -> Option<u16> {
+    pub unsafe fn test16(tb: &SlotTable, slot_of: &[i32; LANES], us: &[f32; LANES], vs: &[f32; LANES], nmax: u32, threshold: f32) -> Option<u16> {
         let idx = _mm512_loadu_si512(slot_of.as_ptr() as *const _);
         let u = _mm512_loadu_ps(us.as_ptr());
         let v = _mm512_loadu_ps(vs.as_ptr());
@@ -456,28 +454,30 @@ mod avx512 {
         let two = _mm512_test_epi32_mask(two_v, two_v);
         let ax = pf(&tb.ax);
         let ay = pf(&tb.ay);
+        let nf = pf(&tb.nf);
+        let n = pi(&tb.n);
         let zero = _mm512_setzero_ps();
         let one = _mm512_set1_ps(1.0);
+        let half = _mm512_set1_ps(0.5);
+        let single = _mm512_cmpeq_epi32_mask(n, _mm512_set1_epi32(1));
         let mut sum = zero;
-        for i in 0..n as usize {
-            // the tap at (u + ax·s, v + ay·s), s = (i + 0.5)/n − 0.5 — the fragment's own uv when n = 1; the
-            // clamp to [0, 1] once for both levels (the same value either way)
-            let (uu, vv) = if n == 1 {
-                (u, v)
-            } else {
-                let si = _mm512_set1_ps(s[i]);
-                (_mm512_add_ps(u, _mm512_mul_ps(ax, si)), _mm512_add_ps(v, _mm512_mul_ps(ay, si)))
-            };
+        for i in 0..nmax {
+            // s = (i + 0.5)/n − 0.5 per lane (the scalar sampler's expression); the tap at (u + ax·s, v + ay·s) —
+            // the fragment's own uv when n = 1; the clamp to [0, 1] once for both levels (the same value either way)
+            let s = _mm512_sub_ps(_mm512_div_ps(_mm512_add_ps(_mm512_set1_ps(i as f32), half), nf), half);
+            let uu = _mm512_mask_blend_ps(single, _mm512_add_ps(u, _mm512_mul_ps(ax, s)), u);
+            let vv = _mm512_mask_blend_ps(single, _mm512_add_ps(v, _mm512_mul_ps(ay, s)), v);
             let cu = _mm512_max_ps(_mm512_min_ps(uu, one), zero);
             let cv = _mm512_max_ps(_mm512_min_ps(vv, one), zero);
             let a = bilinear(cu, cv, wf0, hf0, qs0, b0_lo, b0_hi);
             let b = bilinear(cu, cv, wf1, hf1, qs1, b1_lo, b1_hi);
             let ab = _mm512_add_ps(a, _mm512_mul_ps(_mm512_sub_ps(b, a), t));
             let val = _mm512_mask_blend_ps(two, a, ab);
-            sum = _mm512_add_ps(sum, val);
+            let active = _mm512_cmpgt_epi32_mask(n, _mm512_set1_epi32(i as i32));
+            sum = _mm512_mask_add_ps(sum, active, sum, val);
         }
-        // `sum / n` — the scalar sampler divides only when it averaged taps (n > 1); x / 1.0 = x anyway
-        let res = if n == 1 { sum } else { _mm512_div_ps(sum, _mm512_set1_ps(n as f32)) };
+        // `sum / n` — the scalar sampler divides only when it averaged taps; x / 1.0 = x exactly, so one form
+        let res = _mm512_div_ps(sum, nf);
         let pass = _mm512_cmp_ps_mask::<_CMP_GE_OQ>(_mm512_sub_ps(res, _mm512_set1_ps(threshold)), zero);
         Some(pass)
     }
@@ -527,7 +527,7 @@ mod avx2 {
         _mm256_setr_epi64x(a[ix[0] as usize] as i64, a[ix[1] as usize] as i64, a[ix[2] as usize] as i64, a[ix[3] as usize] as i64)
     }
 
-    /// fl(a / 255) for the byte at position K of each dword: the division itself (correctly rounded, as the
+    /// fl(a / 255) for the byte SHIFT bits up in each dword: the division itself (correctly rounded, as the
     /// scalar `as f32 / 255.0`; AVX2 has no rounding-mode conversion).
     #[inline]
     #[target_feature(enable = "avx2,fma")]
@@ -575,9 +575,9 @@ mod avx2 {
         _mm256_add_ps(_mm256_mul_ps(top, omty), _mm256_mul_ps(bot, ty))
     }
 
-    /// Eight lanes (lanes `off..off+8` of the batch) of `n`-tap plans.
+    /// Eight lanes (lanes `off..off+8` of the batch), each its slot's tap count up to `nmax`.
     #[target_feature(enable = "avx2,fma")]
-    unsafe fn test8(tb: &SlotTable, slot_of: &[i32; LANES], us: &[f32; LANES], vs: &[f32; LANES], off: usize, n: u32, s: &[f32; LANES], threshold: f32) -> Option<u8> {
+    unsafe fn test8(tb: &SlotTable, slot_of: &[i32; LANES], us: &[f32; LANES], vs: &[f32; LANES], off: usize, nmax: u32, threshold: f32) -> Option<u8> {
         let idx = _mm256_loadu_si256(slot_of.as_ptr().add(off) as *const _);
         let u = _mm256_loadu_ps(us.as_ptr().add(off));
         let v = _mm256_loadu_ps(vs.as_ptr().add(off));
@@ -593,33 +593,35 @@ mod avx2 {
         let two = _mm256_castsi256_ps(perm16_epi32(idx, &tb.two));
         let ax = perm16_ps(idx, &tb.ax);
         let ay = perm16_ps(idx, &tb.ay);
+        let nf = perm16_ps(idx, &tb.nf);
+        let n = perm16_epi32(idx, &tb.n);
         let zero = _mm256_setzero_ps();
         let one = _mm256_set1_ps(1.0);
+        let half = _mm256_set1_ps(0.5);
+        let single = _mm256_castsi256_ps(_mm256_cmpeq_epi32(n, _mm256_set1_epi32(1)));
         let mut sum = zero;
-        for i in 0..n as usize {
-            let (uu, vv) = if n == 1 {
-                (u, v)
-            } else {
-                let si = _mm256_set1_ps(s[i]);
-                (_mm256_add_ps(u, _mm256_mul_ps(ax, si)), _mm256_add_ps(v, _mm256_mul_ps(ay, si)))
-            };
+        for i in 0..nmax {
+            let s = _mm256_sub_ps(_mm256_div_ps(_mm256_add_ps(_mm256_set1_ps(i as f32), half), nf), half);
+            let uu = _mm256_blendv_ps(_mm256_add_ps(u, _mm256_mul_ps(ax, s)), u, single);
+            let vv = _mm256_blendv_ps(_mm256_add_ps(v, _mm256_mul_ps(ay, s)), v, single);
             let cu = _mm256_max_ps(_mm256_min_ps(uu, one), zero);
             let cv = _mm256_max_ps(_mm256_min_ps(vv, one), zero);
             let a = bilinear(cu, cv, wf0, hf0, qs0, b0_lo, b0_hi);
             let b = bilinear(cu, cv, wf1, hf1, qs1, b1_lo, b1_hi);
             let ab = _mm256_add_ps(a, _mm256_mul_ps(_mm256_sub_ps(b, a), t));
             let val = _mm256_blendv_ps(a, ab, two);
-            sum = _mm256_add_ps(sum, val);
+            let active = _mm256_castsi256_ps(_mm256_cmpgt_epi32(n, _mm256_set1_epi32(i as i32)));
+            sum = _mm256_blendv_ps(sum, _mm256_add_ps(sum, val), active);
         }
-        let res = if n == 1 { sum } else { _mm256_div_ps(sum, _mm256_set1_ps(n as f32)) };
+        let res = _mm256_div_ps(sum, nf);
         let pass = _mm256_cmp_ps::<_CMP_GE_OQ>(_mm256_sub_ps(res, _mm256_set1_ps(threshold)), zero);
         Some(_mm256_movemask_ps(pass) as u8)
     }
 
     #[target_feature(enable = "avx2,fma")]
-    pub unsafe fn test16(tb: &SlotTable, slot_of: &[i32; LANES], us: &[f32; LANES], vs: &[f32; LANES], n: u32, s: &[f32; LANES], threshold: f32) -> Option<u16> {
-        let lo = test8(tb, slot_of, us, vs, 0, n, s, threshold)?;
-        let hi = test8(tb, slot_of, us, vs, 8, n, s, threshold)?;
+    pub unsafe fn test16(tb: &SlotTable, slot_of: &[i32; LANES], us: &[f32; LANES], vs: &[f32; LANES], nmax: u32, threshold: f32) -> Option<u16> {
+        let lo = test8(tb, slot_of, us, vs, 0, nmax, threshold)?;
+        let hi = test8(tb, slot_of, us, vs, 8, nmax, threshold)?;
         Some(lo as u16 | ((hi as u16) << 8))
     }
 }
@@ -691,7 +693,7 @@ pub(crate) mod tests {
         ]
     }
 
-    fn set_kernel(qs: &mut AlphaQueues, k: Kernel) {
+    fn set_kernel(qs: &mut AlphaQueue, k: Kernel) {
         qs.kernel = k;
     }
 
@@ -843,8 +845,7 @@ pub(crate) mod tests {
             if k != Kernel::Scalar && kernel() == Kernel::Scalar || k == Kernel::Avx512 && kernel() != Kernel::Avx512 {
                 continue;
             }
-            let plan_n = plan.n as u32;
-            let mut q = AlphaQueue::new(plan_n);
+            let mut q = AlphaQueue::new();
             q.kernel = k;
             q.push(tex, &plan, 1, f32::NAN, 0.5, Pend { x: 1, ..Pend::default() });
             q.push(tex, &plan, 1, 0.5, 0.5, Pend { x: 2, ..Pend::default() });
@@ -936,13 +937,13 @@ pub(crate) mod tests {
                         q.len = 0;
                         q.slots = 0;
                         q.last_key = u64::MAX;
-                        q.mixed = false;
+                        q.nmax = 1;
                     }
                 }
             }
             let push_ns = t1.elapsed().as_nanos() as f64 / n as f64;
             // the kernel alone on one full batch of three-tap fragments
-            let mut q = AlphaQueue::new(3);
+            let mut q = AlphaQueue::new();
             q.kernel = k;
             let p3: Vec<usize> = (0..64).filter(|&i| plans[i].n == 3).collect();
             for (i, &(_, u, v)) in frags[..16].iter().enumerate() {

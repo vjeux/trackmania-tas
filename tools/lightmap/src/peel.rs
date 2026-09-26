@@ -1092,10 +1092,7 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
                                     // queued: tested sixteen at a time, the passing ones emitted at the flush
                                     let q = aq.of(plan);
                                     if q.push(tx, plan, ti as u64, u, v, crate::alphasimd::Pend { x, y, z, ti, count: count_it }) {
-                                        let (tested, passed) = q.flush(ALPHA_THRESHOLD, |p| emit_frag(&mut cnt, &mut list, &mut saturated, &mut out, p.x, p.y, p.z, p.ti, p.count, None));
-                                        aq.stats[0] += 1;
-                                        aq.stats[1] += tested as u64;
-                                        aq.stats[2] += passed as u64;
+                                        q.flush(ALPHA_THRESHOLD, |p| emit_frag(&mut cnt, &mut list, &mut saturated, &mut out, p.x, p.y, p.z, p.ti, p.count, None));
                                     }
                                     continue;
                                 }
