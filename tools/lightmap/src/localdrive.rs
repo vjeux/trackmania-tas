@@ -216,6 +216,72 @@ pub fn mesh_of(sc: &LmScene, ii: usize) -> Option<usize> {
     (0..sc.meshes.len()).find(|&m| ii >= sc.inst_first[m] && ii < sc.inst_first[m] + sc.inst_count[m])
 }
 
+/// THE FLAT CUBE'S CASTER SOURCE FOR THE ITEMS (E, 2026-09-26 21:00Z): per scene instance its visual's world triangles with TexCoord0 and
+/// the cut-out texture of an alpha-tested material — the item's whole visual (every geom, lightmapped or not: the lamp housing included),
+/// the cards alpha-tested and two-sided in `locallight::render_flat_cube_masked` (RE 13 19:55Z / 20:15Z: the game's spatial cull takes
+/// every instance of a record, the caster pass draws them with PS 937's alpha test; RE 7's 0018 rule). Set by the bake from `Setup`
+/// (`set_caster_source`); without it the casters are the LM meshes as opaque triangles (the pre-21:00Z form, LMTOOL_LL_LM_CASTERS=1).
+pub struct CasterSource {
+    /// Per scene instance: the world triangles (positions, TexCoord0, the cut-out texture).
+    pub items: Vec<Vec<crate::locallight::CasterTri>>,
+    /// Per layout record: the scene instance it is (None for tiles / blocks / clips).
+    pub rec_item: Vec<Option<usize>>,
+}
+
+static CASTER_SRC: std::sync::Mutex<Option<std::sync::Arc<CasterSource>>> = std::sync::Mutex::new(None);
+
+pub fn set_caster_source(src: Option<std::sync::Arc<CasterSource>>) {
+    *CASTER_SRC.lock().unwrap() = src;
+}
+
+/// Build the caster source from a `Setup` (the scene, its cut-out textures, the layout records).
+pub fn caster_source_of(su: &Setup) -> CasterSource {
+    let mut items: Vec<Vec<crate::locallight::CasterTri>> = Vec::with_capacity(su.scene.instances.len());
+    for inst in &su.scene.instances {
+        let m = &su.scene.models[inst.model];
+        let mut v = Vec::with_capacity(m.tris.len());
+        for t in &m.tris {
+            let alpha = if t.alpha == u16::MAX { None } else { m.alpha_tex.get(t.alpha as usize).and_then(|n| su.alpha_tex.get(n)).cloned() };
+            v.push(crate::locallight::CasterTri { p: [crate::geometry::xf_point(&inst.xf, t.p[0]), crate::geometry::xf_point(&inst.xf, t.p[1]), crate::geometry::xf_point(&inst.xf, t.p[2])], uv0: t.uv0, alpha });
+        }
+        items.push(v);
+    }
+    let rec_item: Vec<Option<usize>> = su.gl.records.iter().map(|r| r.item.as_ref().map(|(ii, _)| *ii).filter(|&ii| ii < items.len())).collect();
+    let n_alpha: usize = items.iter().flatten().filter(|t| t.alpha.is_some()).count();
+    if std::env::var_os("LMTOOL_LL_CASTER_TRACE").is_some() {
+        let ks: Vec<String> = rec_item.iter().enumerate().filter(|(_, r)| r.is_some()).take(6).map(|(k, r)| format!("rec {k} → item {}", r.unwrap())).collect();
+        eprintln!("caster source: item records {}; LM instances of mesh 0: rec_of {:?}", ks.join(", "), (su.sc.inst_first[0]..su.sc.inst_first[0] + su.sc.inst_count[0].min(6)).map(|ii| su.sc.rec_of.get(ii).copied()).collect::<Vec<_>>());
+    }
+    eprintln!("local-lights: flat-cube caster source: {} item instances ({} triangles, {n_alpha} alpha-tested), {} of {} records are items, {} cut-out textures", items.len(), items.iter().map(|v| v.len()).sum::<usize>(), rec_item.iter().filter(|r| r.is_some()).count(), rec_item.len(), su.alpha_tex.len());
+    CasterSource { items, rec_item }
+}
+
+/// The casters of the flat cube for the drawn LM instances: an item's record → its visual (alpha-tested cards included), everything
+/// else → the LM mesh's triangles, opaque.
+pub fn casters_masked(sc: &LmScene, insts: &[usize]) -> Vec<crate::locallight::CasterTri> {
+    static LM_ONLY: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("LMTOOL_LL_LM_CASTERS").is_some());
+    let src = CASTER_SRC.lock().unwrap().clone();
+    let mut out = Vec::new();
+    let mut done_items: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    for &ii in insts {
+        if let (Some(src), false) = (&src, *LM_ONLY) {
+            if let Some(Some(item)) = sc.rec_of.get(ii).and_then(|&k| src.rec_item.get(k)) {
+                if done_items.insert(*item) { out.extend(src.items[*item].iter().cloned()); }
+                continue;
+            }
+        }
+        let Some(m) = mesh_of(sc, ii) else { continue };
+        let mesh = &sc.meshes[m];
+        let inst = &sc.instances[ii];
+        let rows = rotation_rows(inst.q);
+        let wp: Vec<[f32; 3]> = mesh.verts.iter().map(|v| world_pos(v, inst, &rows)).collect();
+        for t in mesh.indices.chunks_exact(3) {
+            out.push(crate::locallight::CasterTri { p: [wp[t[0] as usize], wp[t[1] as usize], wp[t[2] as usize]], uv0: [[0.0; 2]; 3], alpha: None });
+        }
+    }
+    out
+}
+
 /// The world triangles of the drawn instances (the casters of the flat cube), in the LM mesh's index order.
 pub fn casters(sc: &LmScene, insts: &[usize]) -> Vec<[[f32; 3]; 3]> {
     let mut out = Vec::new();
@@ -959,9 +1025,10 @@ pub fn run_frame(gl: &crate::layout::GameLayout, sc: &LmScene, lamps: &[Lamp], c
                         let lamp = &lamps[li];
                         let t = std::time::Instant::now();
                         let drawn = cull(gl, sc, lamp);
-                        let tris = casters(sc, &drawn);
+                        let tris = casters_masked(sc, &drawn);
+                        if std::env::var_os("LMTOOL_LL_CASTER_TRACE").is_some() { let na = tris.iter().filter(|t| t.alpha.is_some()).count(); if na > 0 { eprintln!("lamp {} ({}): {} casters, {na} alpha-tested", lamp.id, lamp.owner, tris.len()); } }
                         let t1 = t.elapsed().as_secs_f32();
-                        let shadow = render_flat_cube(lamp.light.pos, lamp.r_eff, lamp.face_size, &tris, true);
+                        let shadow = crate::locallight::render_flat_cube_masked(lamp.light.pos, lamp.r_eff, lamp.face_size, &tris, true);
                         let t2 = t.elapsed().as_secs_f32();
                         let cb = lamp.light_cb();
                         let probe_vals = probe_values(chunks, lamp, &shadow, &mut probe_scratch);
@@ -1030,8 +1097,8 @@ pub fn run_frame(gl: &crate::layout::GameLayout, sc: &LmScene, lamps: &[Lamp], c
     let t0 = std::time::Instant::now();
     for (li, lamp) in lamps.iter().enumerate() {
         let drawn = cull(gl, sc, lamp);
-        let tris = casters(sc, &drawn);
-        let shadow = render_flat_cube(lamp.light.pos, lamp.r_eff, lamp.face_size, &tris, true);
+        let tris = casters_masked(sc, &drawn);
+        let shadow = crate::locallight::render_flat_cube_masked(lamp.light.pos, lamp.r_eff, lamp.face_size, &tris, true);
         let cb = lamp.light_cb();
         let probe_updates = probe_pass(chunks, lamp, &shadow, &mut probes);
         let frags = draw_lamp(sc, &drawn, &cb, &shadow, &mut acc);
@@ -1124,6 +1191,8 @@ mod tests {
 /// Everything the frame needs from the map and the packs.
 pub struct Setup {
     pub scene: crate::geometry::Scene,
+    /// The items' cut-out textures by name (the alpha-tested casters of the flat cube), loaded once from the map's embedded files.
+    pub alpha_tex: std::collections::HashMap<String, std::sync::Arc<crate::shadowmap::AlphaTexture>>,
     pub gl: crate::layout::GameLayout,
     pub sc: LmScene,
     pub lamps: Vec<Lamp>,
@@ -1180,7 +1249,10 @@ pub fn setup_from_map(map_path: &str, paks: &[(String, String)], collection: &st
     let scene_ch = crate::lmtiles::scene_box(&recs);
     let (_, _, chunking, _) = crate::probechunk::for_records(size, [32.0, 8.0, 32.0], probe_off, crate::probechunk::level_h(coll_id), &recs, &scene_ch, 2048);
     log(&format!("probe atlas {:?}: {} chunks", chunking.atlas, chunking.records.len()));
-    Ok(Setup { scene, gl, sc, lamps, daytime, lights_on, chunks: chunking.records.clone(), probe_n: chunking.atlas, collection: collection.to_string() })
+    // the items' cut-out textures (the same source and decoder as the sun shadow map's alpha-tested casters, setupmap::shadow_from_map)
+    let mut alpha_tex: std::collections::HashMap<String, std::sync::Arc<crate::shadowmap::AlphaTexture>> = std::collections::HashMap::new();
+    for m in &scene.models { for t in &m.tris { if t.alpha == u16::MAX { continue; } let name = m.alpha_tex.get(t.alpha as usize).cloned().unwrap_or_default(); if !alpha_tex.contains_key(&name) { if let Some(tex) = by_name.get(&name).and_then(|b| crate::shadowmap::AlphaTexture::from_dds(b).ok()) { alpha_tex.insert(name, std::sync::Arc::new(tex)); } } } }
+    Ok(Setup { alpha_tex, scene, gl, sc, lamps, daytime, lights_on, chunks: chunking.records.clone(), probe_n: chunking.atlas, collection: collection.to_string() })
 }
 
 /// A DDS export's payload (DX10 header → offset 148) and its header fields (w, h, depth, array size, dxgi).

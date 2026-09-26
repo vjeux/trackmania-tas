@@ -2107,6 +2107,7 @@ fn run(a: Vec<String>) {
                             Ok(su) => {
                                 let (w, h) = lightmap::localdrive::TARGET;
                                 let sc_t = lightmap::localdrive::scene_for_target(&su.sc, w, h);
+                                lightmap::localdrive::set_caster_source(Some(std::sync::Arc::new(lightmap::localdrive::caster_source_of(&su))));
                                 let out = lightmap::localdrive::run_frame(&su.gl, &sc_t, &su.lamps, &su.chunks, su.probe_n, (w, h), None, lightmap::localdrive::Lists::cleared(w, h), &mut log);
                                 // the lamp irradiance = A_0 itself (FrameOut::direct, RE 13's structure); LMTOOL_LAMP_BOUNCE_FROM=lists keeps the
                                 // list compose of the first study
@@ -3264,6 +3265,7 @@ fn run(a: Vec<String>) {
                                     Ok(su) => {
                                         let (w, h) = lightmap::localdrive::TARGET;
                                         let sc_t = lightmap::localdrive::scene_for_target(&su.sc, w, h);
+                                        lightmap::localdrive::set_caster_source(Some(std::sync::Arc::new(lightmap::localdrive::caster_source_of(&su))));
                                         let out = lightmap::localdrive::run_frame(&su.gl, &sc_t, &su.lamps, &su.chunks, su.probe_n, (w, h), None, lightmap::localdrive::Lists::cleared(w, h), &mut log);
                                         let dil: u32 = f("--local-lights-dilate").map(|v| v.parse().unwrap()).unwrap_or(0);
                                         if su.gl.charts.len() != rects.len() { eprintln!("local-lights: WARNING the frame's layout has {} charts, the writer {} — the frame bytes follow the writer's order only when they agree", su.gl.charts.len(), rects.len()); }
@@ -6756,7 +6758,7 @@ fn run(a: Vec<String>) {
                     eprintln!("local-lights: lists loaded from {p}");
                     lightmap::localdrive::FrameOut { lists: l, probes: lightmap::localdrive::ProbeState::new(su.probe_n), kept: None, results: Vec::new(), direct: lightmap::passdiff::Buf::new(w, h, 4) }
                 }
-                None => lightmap::localdrive::run_frame(&su.gl, &sc_t, &lamps, &su.chunks, su.probe_n, (w, h), None, lists, &mut log),
+                None => { lightmap::localdrive::set_caster_source(Some(std::sync::Arc::new(lightmap::localdrive::caster_source_of(&su)))); lightmap::localdrive::run_frame(&su.gl, &sc_t, &lamps, &su.chunks, su.probe_n, (w, h), None, lists, &mut log) }
             };
             if let Some(p) = f("--save-lists") {
                 let mut b = out.lists.id_bytes();

@@ -701,15 +701,31 @@ impl FlatCubeMap {
 /// Render the casters (world triangles, the model's winding) into the lamp's flat-cube map. Clipping against the D3D
 /// z range 0 ≤ z' ≤ w' (the near plane at dom = R·s/(1 + s), the far at dom = R), the perspective divide, screen-space
 /// linear z, the top-left rule of `raster::triangle`, cull Back with the clockwise front (frontCCW false).
+/// One flat-cube caster triangle: world positions, TexCoord0 and the cut-out texture of an alpha-tested material (None = opaque).
+#[derive(Clone)]
+pub struct CasterTri {
+    pub p: [[f32; 3]; 3],
+    pub uv0: [[f32; 2]; 3],
+    pub alpha: Option<std::sync::Arc<crate::shadowmap::AlphaTexture>>,
+}
+
 pub fn render_flat_cube(l: [f32; 3], r_eff: f32, size: u32, tris: &[[[f32; 3]; 3]], cull_back: bool) -> FlatCubeMap {
+    let ct: Vec<CasterTri> = tris.iter().map(|t| CasterTri { p: *t, uv0: [[0.0; 2]; 3], alpha: None }).collect();
+    render_flat_cube_masked(l, r_eff, size, &ct, cull_back)
+}
+
+/// `render_flat_cube` with ALPHA-TESTED, TWO-SIDED casters (E, 2026-09-26 21:00Z; RE 13 19:55Z: the editor's dark vegetation under a lamp
+/// comes from the flat cube with the crown cards as alpha-tested casters — RE 7's 0018 / F's SHADOW_ALPHA_THRESHOLD 128/255, the sun
+/// shadow map's rule): a triangle with a cut-out texture is rasterised without back-face culling and its fragments discarded where the
+/// texture's alpha (anisotropic sample at the fragment's TexCoord0) − 0.50196 < 0; opaque triangles keep `cull_back` (F's validated state).
+/// (perf 8.21's fixed arrays kept; the vertices carry (clip xyzw, u, v).)
+pub fn render_flat_cube_masked(l: [f32; 3], r_eff: f32, size: u32, tris: &[CasterTri], cull_back: bool) -> FlatCubeMap {
     let (w, h) = ((size * 3) as usize, (size * 2) as usize);
     let mut depth = vec![0.0f32; w * h];
     for face in 0..6 {
         let m = flat_cube_face_matrix(face, l, r_eff);
         let (ox, oy) = flat_cube_face_viewport(face, size);
-        // (perf 8.21: the polygons in fixed arrays — a triangle clipped by two planes has at most five vertices; the four
-        // heap allocations per (face, triangle) were most of a lamp's flat-cube time on the giant)
-        let clip_plane = |poly: &[[f32; 4]], n: usize, inside: &dyn Fn(&[f32; 4]) -> f32, out: &mut [[f32; 4]; 8]| -> usize {
+        let clip_plane = |poly: &[[f32; 6]], n: usize, inside: &dyn Fn(&[f32; 6]) -> f32, out: &mut [[f32; 6]; 8]| -> usize {
             let mut k = 0usize;
             for i in 0..n {
                 let (a, b) = (poly[i], poly[(i + 1) % n]);
@@ -717,25 +733,25 @@ pub fn render_flat_cube(l: [f32; 3], r_eff: f32, size: u32, tris: &[[[f32; 3]; 3
                 if da >= 0.0 { out[k] = a; k += 1; }
                 if (da >= 0.0) != (db >= 0.0) {
                     let tt = da / (da - db);
-                    out[k] = [a[0] + (b[0] - a[0]) * tt, a[1] + (b[1] - a[1]) * tt, a[2] + (b[2] - a[2]) * tt, a[3] + (b[3] - a[3]) * tt];
+                    let mut v = [0f32; 6];
+                    for c in 0..6 { v[c] = a[c] + (b[c] - a[c]) * tt; }
+                    out[k] = v;
                     k += 1;
                 }
             }
             k
         };
-        let mut poly1 = [[0.0f32; 4]; 8];
-        let mut poly = [[0.0f32; 4]; 8];
-        for t in tris {
-            // clip coordinates
-            let mut clip = [[0.0f32; 4]; 3];
+        let mut poly1 = [[0.0f32; 6]; 8];
+        let mut poly = [[0.0f32; 6]; 8];
+        for ct in tris {
+            let t = &ct.p;
+            // clip coordinates (+ TexCoord0 carried along)
+            let mut clip = [[0.0f32; 6]; 3];
             for (i, p) in t.iter().enumerate() {
                 let q = [p[0], p[1], p[2], 1.0f32];
-                clip[i] = [q[0] * m[0][0] + q[1] * m[1][0] + q[2] * m[2][0] + q[3] * m[3][0], q[0] * m[0][1] + q[1] * m[1][1] + q[2] * m[2][1] + q[3] * m[3][1], q[0] * m[0][2] + q[1] * m[1][2] + q[2] * m[2][2] + q[3] * m[3][2], q[0] * m[0][3] + q[1] * m[1][3] + q[2] * m[2][3] + q[3] * m[3][3]];
+                clip[i] = [q[0] * m[0][0] + q[1] * m[1][0] + q[2] * m[2][0] + q[3] * m[3][0], q[0] * m[0][1] + q[1] * m[1][1] + q[2] * m[2][1] + q[3] * m[3][1], q[0] * m[0][2] + q[1] * m[1][2] + q[2] * m[2][2] + q[3] * m[3][2], q[0] * m[0][3] + q[1] * m[1][3] + q[2] * m[2][3] + q[3] * m[3][3], ct.uv0[i][0], ct.uv0[i][1]];
             }
-            // a triangle wholly beyond one lateral frustum plane covers no pixel of the face (perf 8.25): with w' > 0 at every
-            // vertex, x' > w' (or < −w', or the same in y) at all three puts the whole triangle outside the viewport, where the
-            // rasteriser's bbox clamp would produce nothing — skipped before the clip and the raster setup (five faces of six
-            // see most casters this way)
+            // a triangle wholly beyond one lateral frustum plane covers no pixel of the face (perf 8.25)
             if clip.iter().all(|c| c[3] > 0.0) {
                 let out_right = clip.iter().all(|c| c[0] > c[3]);
                 let out_left = clip.iter().all(|c| c[0] < -c[3]);
@@ -749,15 +765,22 @@ pub fn render_flat_cube(l: [f32; 3], r_eff: f32, size: u32, tris: &[[[f32; 3]; 3
             let n2 = clip_plane(&poly1, n1, &|v| v[3] - v[2], &mut poly);
             if n2 < 3 { continue; }
             let poly = &poly[..n2];
+            let masked = ct.alpha.is_some();
             // the clipped polygon's fan triangles through the D16 depth pipeline engineer B pinned on the sun shadow map
             // (shadowmap::rasterise: the 1/256-px snapped vertices, the plane through them evaluated at the pixel centres, the
             // D3D11 bias DepthBias·(1/65535) + Slope·max(|∂z/∂x|, |∂z/∂y|) added in float, the sum TRUNCATED to 2^-20, then
             // UNORM16 round-to-nearest, Greater on the 16-bit value); the viewport = the face's tile
-            let st = crate::shadowmap::RasterState { viewport: [ox as f32, oy as f32, size as f32, size as f32, 0.0, 1.0], depth_bias: -1, slope_scaled_depth_bias: -1.0, depth_bias_clamp: 0.0, cull_back, front_ccw: false, depth_clip: true, plane: crate::shadowmap::PlaneEval::F64Snapped, coef_bits: 0, vertex_z_bits: 0 };
+            let st = crate::shadowmap::RasterState { viewport: [ox as f32, oy as f32, size as f32, size as f32, 0.0, 1.0], depth_bias: -1, slope_scaled_depth_bias: -1.0, depth_bias_clamp: 0.0, cull_back: cull_back && !masked, front_ccw: false, depth_clip: true, plane: crate::shadowmap::PlaneEval::F64Snapped, coef_bits: 0, vertex_z_bits: 0 };
             for k in 1..poly.len() - 1 {
-                let tri = [poly[0], poly[k], poly[k + 1]];
-                crate::shadowmap::rasterise(tri, [[0.0; 2]; 3], &st, (size * 3) as u32, (size * 2) as u32, |fr| {
+                let tri = [[poly[0][0], poly[0][1], poly[0][2], poly[0][3]], [poly[k][0], poly[k][1], poly[k][2], poly[k][3]], [poly[k + 1][0], poly[k + 1][1], poly[k + 1][2], poly[k + 1][3]]];
+                let uvs = [[poly[0][4], poly[0][5]], [poly[k][4], poly[k][5]], [poly[k + 1][4], poly[k + 1][5]]];
+                crate::shadowmap::rasterise(tri, uvs, &st, (size * 3) as u32, (size * 2) as u32, |fr| {
                     if !(fr.z >= 0.0 && fr.z <= 1.0) { return; }
+                    if let Some(at) = &ct.alpha {
+                        // PS 937's alpha test: discard where alpha − GbxShadowAlphaThreshold (128/255) < 0
+                        let a = at.sample_aniso(fr.uv, fr.duv_dx, fr.duv_dy, 16.0);
+                        if a - 0.501960813999176 < 0.0 { return; }
+                    }
                     let bias = crate::shadowmap::depth_bias_d16(&st, fr.max_depth_slope);
                     let zb = fr.z + bias;
                     let zt = ((zb as f64 * 1048576.0).floor() / 1048576.0) as f32;
