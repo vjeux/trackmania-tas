@@ -100,6 +100,22 @@ fn start(cfg: &Config) -> Result<(), String> {
             return Ok(());
         }
     }
+    // A server whose supervisor died would keep the ports; a second one would bind the next
+    // port and never be found by players.
+    if let Some(pid) = procs::read_pid(&cfg.server_pid_file()) {
+        if procs::alive(pid) {
+            println!("a server without supervisor is running (pid {pid}); terminating it first");
+            procs::terminate(pid);
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while Instant::now() < deadline && procs::alive(pid) {
+                thread::sleep(Duration::from_millis(200));
+            }
+            if procs::alive(pid) {
+                procs::kill9(pid);
+            }
+        }
+        let _ = std::fs::remove_file(cfg.server_pid_file());
+    }
     check_layout(cfg)?;
     std::fs::create_dir_all(cfg.log_dir()).map_err(|e| e.to_string())?;
     std::fs::create_dir_all(cfg.run_dir()).map_err(|e| e.to_string())?;
