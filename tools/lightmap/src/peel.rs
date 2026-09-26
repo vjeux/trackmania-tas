@@ -2753,7 +2753,7 @@ fn tri_slope_projected(frame: &PeelFrame, (x0, y0, z0): (f32, f32, f32), (x1, y1
 /// cut to the number of item layers the game renders (`fixed_layers` = the captured count when the
 /// harness has it, else `prm.peel_stop`). An empty layer still counts as rendered (the capture's first
 /// direction ran 18 empty layers to the cap while its query never answered).
-fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm: &BakeParams, shadow: Option<&ShadowMap>, sun_bias: f32, sky: [f32; 3], threads: usize, wanted: Option<&std::sync::Arc<PixelIndex>>, fixed_layers: Option<usize>, dome_img: Option<&[[f32; 3]]>) -> Layers {
+fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm: &BakeParams, shadow: Option<&ShadowMap>, sun_bias: f32, sky: [f32; 3], threads: usize, wanted: Option<&std::sync::Arc<PixelIndex>>, fixed_layers: Option<usize>, dome_img: Option<&(dyn Fn(u32, u32) -> [f32; 3] + Sync)>) -> Layers {
     let (w, h) = (frame.res, frame.res_y);
     let n = (w * h) as usize;
     // THE CAPTURE (pwc6 frame 7534, the first sweep-1 direction's layer 0): the environment render of a LATER sweep is
@@ -2820,7 +2820,9 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
                 d_prev = d;
             } else {
                 // the environment render's dome pixel: the transcribed dome per pixel when given, else the direction's uniform sky
-                out.push(LayerFrag { d: 0.0, rgb: dome_img.map(|img| img[y * w as usize + x]).unwrap_or(sky_q) });
+                // (perf 8: the dome colour evaluated HERE, at the pixels the environment mesh leaves uncovered — not an image
+                // over every wanted pixel first: on the giant 14 core-seconds per direction, most of it under the terrain)
+                out.push(LayerFrag { d: 0.0, rgb: dome_img.map(|f| f(x as u32, y as u32)).unwrap_or(sky_q) });
                 d_prev = 0.0;
             }
         }
@@ -5185,46 +5187,12 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             // dome as `dome_px` transcribes it (the game's dome mesh rasterised in this frame, PS 16774, the R11G11B10 target)
             // — the game's env render is per pixel, the uniform sky is only the gather's fallback
             // (the derivation takes the dome image in sweep 0 only — the bounce sweeps' layer 0 is black: not computed there)
-            let dome_img: Option<Vec<[f32; 3]>> = if prm.lm_scene.is_some() && prm.sky_grad.is_some() && prm.dome_exact && prm.sweep == 0 {
-                let t_dome_img = std::time::Instant::now(); crate::pool::stats::stage("dome-img");
-                let (w, h) = (frame.res as usize, frame.res_y as usize);
-                let mut img = vec![[0.0f32; 3]; w * h];
-                let dome_px = &dome_px;
-                match wanted.as_ref() {
-                    // the sparse derivation reads the dome only at the wanted pixels (perf 8: 3.2 M of 16.8 M on stpad)
-                    Some(px) => {
-                        let m = px.pixels.len();
-                        let per = (m / (threads * 4).max(1)).max(1024);
-                        let ip = img.as_mut_ptr() as usize;
-                        crate::pool::pool().run((m + per - 1) / per, |ci| {
-                            for &id in &px.pixels[(ci * per).min(m)..((ci + 1) * per).min(m)] {
-                                // SAFETY: the wanted pixel ids are distinct; each chunk owns its ids
-                                unsafe { *(ip as *mut [f32; 3]).add(id as usize) = dome_px(frame, dome_r, id % w as u32, id / w as u32); }
-                            }
-                        });
-                    }
-                    None => {
-                        let rows_per = (h / threads.max(1)).max(1);
-                        std::thread::scope(|sc| {
-                            for (ti, chunk) in img.chunks_mut(rows_per * w).enumerate() {
-                                let y0 = ti * rows_per;
-                                sc.spawn(move || {
-                                    for (i, px) in chunk.iter_mut().enumerate() {
-                                        // (dome_px quantises through the peel target and the ILightDir target — the same R11G11B10 twice)
-                                        *px = dome_px(frame, dome_r, (i % w) as u32, (y0 + i / w) as u32);
-                                    }
-                                });
-                            }
-                        });
-                    }
-                }
-                prof::add(&prof::DOME_IMG, t_dome_img);
-                Some(img)
-            } else {
-                None
-            };
+            // (perf 8.18: no image any more — the derivation calls `dome_at` at the pixels whose environment layer is the dome;
+            // dome_px quantises through the peel target and the ILightDir target — the same R11G11B10 twice)
+            let dome_at = |x: u32, y: u32| -> [f32; 3] { dome_px(frame, dome_r, x, y) };
+            let dome_img: Option<&(dyn Fn(u32, u32) -> [f32; 3] + Sync)> = if prm.lm_scene.is_some() && prm.sky_grad.is_some() && prm.dome_exact && prm.sweep == 0 { Some(&dome_at) } else { None };
             let fixed_layers = fixed_layers.or(exact_layers);
-            let layers: Option<Layers> = if prm.game_peel || want_dir_dump { Some(extract_layers(&ab, frame, scene, bvh, prm, shadow.as_deref(), sun_bias, sky, threads, wanted.as_ref(), fixed_layers, dome_img.as_deref())) } else { None };
+            let layers: Option<Layers> = if prm.game_peel || want_dir_dump { Some(extract_layers(&ab, frame, scene, bvh, prm, shadow.as_deref(), sun_bias, sky, threads, wanted.as_ref(), fixed_layers, dome_img)) } else { None };
             crate::pool::stats::checkpoint("(layers tail)");
             prof::add(&prof::LAYERS, tl);
             let td = std::time::Instant::now(); crate::pool::stats::stage("dump");

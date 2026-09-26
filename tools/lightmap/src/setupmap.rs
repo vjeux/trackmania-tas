@@ -471,6 +471,9 @@ pub fn attr_from_map(scene: &crate::geometry::Scene, lm: &LmScene, frozen: &Froz
                 for inst in lm.instances.iter().skip(lm.inst_first[*mk]).take(lm.inst_count[*mk]) {
                     let rlm = prepass::raster_lm_for(inst.st, k);
                     for d in draws {
+                        // a cut-out triangle blends nothing (AlphaToCoverage with alpha 1/9 on the 1-sample target: coverage 0 for
+                        // every fragment) — its raster is skipped whole (the giant: 17.4 M of a run's 27 M triangles)
+                        if d.class == MatClass::CutOut { continue; }
                         let p = [prepass::viewport(prepass::lm_ndc(d.uv[0], &rlm), W, H), prepass::viewport(prepass::lm_ndc(d.uv[1], &rlm), W, H), prepass::viewport(prepass::lm_ndc(d.uv[2], &rlm), W, H)];
                         if !meets(&p) { continue; }
                         let uv0 = d.uv0;

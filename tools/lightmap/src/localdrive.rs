@@ -860,10 +860,10 @@ struct LampWork {
     secs: [f32; 5],
 }
 
-/// How many lamps are drawn at once (each worker holds a full accumulation target: 64 MB at 2048²); LMTOOL_LAMP_WORKERS=N.
+/// How many lamps are drawn at once (one per pool thread: a worker holds a paged target of a few MB); LMTOOL_LAMP_WORKERS=N caps it.
 fn lamp_workers(n_lamps: usize) -> usize {
     let threads = crate::pool::pool().threads.max(1);
-    let cap = std::env::var("LMTOOL_LAMP_WORKERS").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(64);
+    let cap = std::env::var("LMTOOL_LAMP_WORKERS").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(usize::MAX);
     threads.min(cap).min(n_lamps).max(1)
 }
 
