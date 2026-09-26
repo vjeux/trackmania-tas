@@ -2423,6 +2423,14 @@ fn run(a: Vec<String>) {
                 let plan = if preset.world_res != 0 { plan.with_world_size(preset.world_res) } else if preset.world_res_scale > 1 { let s = (plan.size * preset.world_res_scale).min(16384); plan.with_world_size(s) } else { plan };
                 eprintln!("peel cameras: {} item records, scene box [{:.1}, {:.1}]×[{:.1}, {:.1}]×[{:.1}, {:.1}], world peel box [{:.1}, {:.1}]×[{:.1}, {:.1}]×[{:.1}, {:.1}]; tiling at scale {alloc_scale:.3} layout units/m: ext {:.1} → target {}², n = {}, {} fitted tile(s){}{}", recs.len(), plan.scene.min()[0], plan.scene.max()[0], plan.scene.min()[1], plan.scene.max()[1], plan.scene.min()[2], plan.scene.max()[2], plan.world.min[0], plan.world.max[0], plan.world.min[1], plan.world.max[1], plan.world.min[2], plan.world.max[2], plan.ext, plan.size, plan.n, plan.tiles.len(), if plan.tiles.is_empty() { " (the world pass only)" } else { "" }, if plan.tile_size != plan.size { format!(" at {}² (NON-EXACT --tile-res)", plan.tile_size) } else { String::new() });
                 for (i, t) in plan.tiles.iter().enumerate() { eprintln!("  tile {i}: [{:.1}, {:.1}]×[{:.1}, {:.1}]×[{:.1}, {:.1}]", t.min[0], t.max[0], t.min[1], t.max[1], t.min[2], t.max[2]); }
+                // LMTOOL_FRUSTUM_TSV=FILE (study, port engineer G, 2026-09-26): RE 13's captured peel frusta (stsun-peel-frusta.tsv: frame, eye,
+                // MinZ, MaxZ, px, py, R0, R1, R2, T) against (a) the plan box's fit and (b) the union of the scene casters' light-space
+                // AABBs about the eye — the per-caster refit RE 13 reads in render 0x140a4fab0 (near = min(c_z − h_z), far = max(c_z + h_z))
+                // — under several caster sets, to find the game's rule from the numbers. Prints and exits.
+                if let Ok(tsv) = std::env::var("LMTOOL_FRUSTUM_TSV") {
+                    lightmap::frustumstudy::run(&tsv, &plan, &scene, &prm.sphere_dirs);
+                    std::process::exit(0);
+                }
                 if plan.size != prm.peel_res { eprintln!("peel cameras: peel resolution {} → {}", prm.peel_res, plan.size); prm.peel_res = plan.size; }
                 // THE CLOUD GUARD (port engineer G; clouds.rs, lightmapper-client.md §6e): the BlueBay-family environment block draws
                 // 177 cloud-sprite instances whose pixel shader (PS 14515) is NOT transcribed — no capture has a fragment of it — and

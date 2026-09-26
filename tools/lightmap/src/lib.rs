@@ -55,6 +55,7 @@ pub mod lightcam;
 pub mod lmtiles;
 pub mod probechunk;
 pub mod format;
+pub mod frustumstudy;
 pub mod geometry;
 pub mod hostcpu;
 pub mod hugealloc;
