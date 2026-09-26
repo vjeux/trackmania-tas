@@ -4782,6 +4782,48 @@ fn run(a: Vec<String>) {
         // (G's classcmp dispatch dropped at integration: V's classcmp — landed first, with --own-rects,
         //  --coverage, the spread column and the pairing guard — owns the subcommand; G's --ents table is
         //  the duplicate. His dome-rings and the study knobs below are kept.)
+        "chart-texels" => {
+            // lmtool chart-texels OURS.Map.Gbx --against EDITOR.Map.Gbx --chart N [--frame 0] [--tsv OUT.tsv] : one chart's texels side by
+            // side (the decoded HDR per texel, ours / editor, the ratio) with the ROW and COLUMN profiles of the ratio — where in a chart the
+            // deficit or excess sits (port engineer G: the np-tk3 StructureInWorld's anatomy; V's classcmp gives the class means)
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let ours = lightmap::mapio::load(&a[1]).unwrap_or_else(|e| panic!("{e}"));
+            let theirs = lightmap::mapio::load(&f("--against").expect("--against EDITOR.Map.Gbx")).unwrap_or_else(|e| panic!("{e}"));
+            let chart: usize = f("--chart").expect("--chart N").parse().unwrap();
+            let frame: usize = f("--frame").map(|v| v.parse().unwrap()).unwrap_or(0);
+            let (d1, d2) = (ours.chunk.data.as_ref().expect("ours: no lightmap"), theirs.chunk.data.as_ref().expect("theirs: no lightmap"));
+            let (m1, m2) = (d1.cache.mapping().expect("ours: no mapping"), d2.cache.mapping().expect("theirs: no mapping"));
+            let (b1, b2) = (d1.frames[frame].images.first().expect("ours: image 0"), d2.frames[frame].images.first().expect("theirs: image 0"));
+            let i1 = lightmap::img::decode_webp(b1).unwrap_or_else(|e| panic!("{e}"));
+            let i2 = lightmap::img::decode_webp(b2).unwrap_or_else(|e| panic!("{e}"));
+            let (k1, k2) = (lightmap::classcmp::record_maxhdr(&m1, frame).expect("ours: frame record"), lightmap::classcmp::record_maxhdr(&m2, frame).expect("theirs: frame record"));
+            let s1 = (m1.frame_bytes[frame].get(chart).copied().unwrap_or(0) as f64 / 255.0).powi(2) * k1 as f64;
+            let s2 = (m2.frame_bytes[frame].get(chart).copied().unwrap_or(0) as f64 / 255.0).powi(2) * k2 as f64;
+            let (px, py, pw, ph) = lightmap::classcmp::chart_own_px(m1.pos[chart], m1.size[chart]);
+            let (qx, qy, _, _) = lightmap::classcmp::chart_own_px(m2.pos[chart], m2.size[chart]);
+            println!("chart {chart}: ours at ({px},{py}) {pw}×{ph} fb {} MaxHDR {k1}; editor at ({qx},{qy}) fb {} MaxHDR {k2}; bind obj {} sub {}", m1.frame_bytes[frame].get(chart).copied().unwrap_or(0), m2.frame_bytes[frame].get(chart).copied().unwrap_or(0), m1.binds[chart].obj_group_idx / 4, m1.binds[chart].obj_idx & 0x00ff_ffff);
+            let mut rows: Vec<([f64; 3], [f64; 3], usize)> = vec![([0.0; 3], [0.0; 3], 0); ph as usize];
+            let mut cols: Vec<([f64; 3], [f64; 3], usize)> = vec![([0.0; 3], [0.0; 3], 0); pw as usize];
+            let mut tsv = f("--tsv").map(|p| std::fs::File::create(p).expect("--tsv"));
+            if let Some(t) = tsv.as_mut() { use std::io::Write; writeln!(t, "x\ty\tours_r\tours_g\tours_b\ted_r\ted_g\ted_b").unwrap(); }
+            let (mut tot_o, mut tot_e) = ([0f64; 3], [0f64; 3]);
+            for y in 0..ph { for x in 0..pw {
+                let (a, e) = (i1.get(px + x, py + y), i2.get(qx + x, qy + y));
+                if e[0].max(e[1]).max(e[2]) < 8 { continue; }
+                let ho = [0, 1, 2].map(|c| (a[c] as f64 / 255.0).powi(2) * s1);
+                let he = [0, 1, 2].map(|c| (e[c] as f64 / 255.0).powi(2) * s2);
+                for c in 0..3 { rows[y as usize].0[c] += ho[c]; rows[y as usize].1[c] += he[c]; cols[x as usize].0[c] += ho[c]; cols[x as usize].1[c] += he[c]; tot_o[c] += ho[c]; tot_e[c] += he[c]; }
+                rows[y as usize].2 += 1; cols[x as usize].2 += 1;
+                if let Some(t) = tsv.as_mut() { use std::io::Write; writeln!(t, "{x}\t{y}\t{:.5}\t{:.5}\t{:.5}\t{:.5}\t{:.5}\t{:.5}", ho[0], ho[1], ho[2], he[0], he[1], he[2]).unwrap(); }
+            } }
+            println!("whole chart ours/editor {:.3} / {:.3} / {:.3} (ours mean {:.4} {:.4} {:.4}, editor {:.4} {:.4} {:.4})", tot_o[0] / tot_e[0].max(1e-12), tot_o[1] / tot_e[1].max(1e-12), tot_o[2] / tot_e[2].max(1e-12), tot_o[0] / (pw * ph) as f64, tot_o[1] / (pw * ph) as f64, tot_o[2] / (pw * ph) as f64, tot_e[0] / (pw * ph) as f64, tot_e[1] / (pw * ph) as f64, tot_e[2] / (pw * ph) as f64);
+            let prof = |name: &str, v: &[([f64; 3], [f64; 3], usize)]| {
+                println!("{name} profile (index: n, ours/editor r/g/b, editor mean r/g/b):");
+                for (i, (o, e, n)) in v.iter().enumerate() { if *n > 0 { println!("  {i:4}: {n:4}  {:.3} / {:.3} / {:.3}   ed {:.4} {:.4} {:.4}", o[0] / e[0].max(1e-12), o[1] / e[1].max(1e-12), o[2] / e[2].max(1e-12), e[0] / *n as f64, e[1] / *n as f64, e[2] / *n as f64); } }
+            };
+            prof("row", &rows);
+            prof("column", &cols);
+        }
         "dds-mean" => {
             // lmtool dds-mean FILE.dds [--level L] : per-channel mean of one mip level, as stored (0..1) and sRGB-decoded to linear
             // (port engineer G: the pack textures' albedo means — Grass_D / Grass_X2 for the Stadium tiles' pre-pass class)
