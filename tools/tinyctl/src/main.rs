@@ -213,6 +213,7 @@ fn main() {
         "nadeo-here" => nadeo::cmd(rest),
         "publish-batch" => batch::publish_batch_cmd(rest),
         "round-publish" => roundpub::cmd(rest),
+        "round-wipe" => roundpub::wipe_cmd(rest),
         "port-fix-publish" => roundpub::port_fix_publish(rest),
         "port-layers" => portlayers::cmd(rest),
         // tinyctl mint-tokens --token-dir DIR: a fresh Nadeo token pair pulled from the box

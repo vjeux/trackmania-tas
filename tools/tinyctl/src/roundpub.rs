@@ -438,3 +438,159 @@ pub fn port_fix_publish(args: &[String]) -> Result<(), String> {
     ];
     batch::publish_batch_cmd(&batch_args)
 }
+
+/// `tinyctl round-wipe --stage DIR --out DIR --sets a,b --prefixes a=PlaE,b=DirE --jobs N
+/// [--pairs-dir D] [--pairs-out F] [--club 145872] [--dry-run]` — a RECORDS WIPE round, the
+/// `resetN.sh` chain as a program (Everios96's call per round: "record wipe for sure").
+/// Per staged map: build uid → LIVE uid (the pairs chain) → the live record's thumbnail →
+/// a NEW uid `<prefix><live[4..]>` → wood stamp; every file CREATED on Nadeo (6-wide, from
+/// here) and read back IDENTICAL; only then `reuid-swap` moves every campaign/room slot
+/// from the live uid to the new one, and the (live, new, set, file) pairs are appended to
+/// `--pairs-out` (default `<pairs-dir>/resetNN.tsv`, NN = next) so later rounds chain
+/// through them. A create failure aborts before the swap: the club keeps the old maps.
+pub fn wipe_cmd(args: &[String]) -> Result<(), String> {
+    let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/home/vjeux".into());
+    let stage_root = PathBuf::from(f("--stage").ok_or("round-wipe needs --stage DIR")?);
+    let out_root = PathBuf::from(f("--out").ok_or("round-wipe needs --out DIR")?);
+    let sets: Vec<String> = f("--sets").ok_or("round-wipe needs --sets a,b")?.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+    let prefixes: BTreeMap<String, String> = f("--prefixes").ok_or("round-wipe needs --prefixes set=XXXX,…")?.split(',').filter_map(|kv| kv.split_once('=').map(|(a, b)| (a.trim().to_string(), b.trim().to_string()))).collect();
+    for s in &sets {
+        match prefixes.get(s) {
+            Some(p) if p.len() == 4 => {}
+            _ => return Err(format!("--prefixes: set `{s}` needs a 4-character prefix")),
+        }
+    }
+    let jobs: usize = f("--jobs").and_then(|v| v.parse().ok()).unwrap_or(6).max(1);
+    let club = f("--club").unwrap_or_else(|| "145872".into());
+    let pairs_dir = PathBuf::from(f("--pairs-dir").unwrap_or_else(|| format!("{home}/u10s-keep/pairs")));
+    let dry = tmmaps::cli::has(args, "--dry-run");
+    let pairs = load_pairs(&pairs_dir)?;
+    let next_n = 1 + pairs.len().max(1);
+    let pairs_out = f("--pairs-out").map(PathBuf::from).unwrap_or_else(|| pairs_dir.join(format!("reset{next_n}.tsv")));
+    if pairs_out.exists() {
+        return Err(format!("{} exists — give --pairs-out", pairs_out.display()));
+    }
+    std::fs::create_dir_all(&out_root).map_err(|e| e.to_string())?;
+    let token_dir = out_root.join("tokens");
+    std::fs::create_dir_all(&token_dir).map_err(|e| e.to_string())?;
+    let wsx = Wsx::new(args);
+    let t0 = Instant::now();
+    println!("round-wipe: {} sets, {} chained pair files, new pairs -> {}", sets.len(), pairs.len(), pairs_out.display());
+    // ---- stage: live uid, live thumbnail, then the NEW uid
+    let mut staged_all: Vec<(String, Staged, String, String)> = Vec::new(); // (set, staged, live, new)
+    for set in &sets {
+        let src_set = stage_root.join(set);
+        let out_set = out_root.join("stage").join(set);
+        let list = stage_set(&src_set, &out_set, set, &pairs)?; // copies under the LIVE uid (+ wood stamp)
+        println!("[{:>5.0}s] {set}: {} maps staged under their live uid", t0.elapsed().as_secs_f64(), list.len());
+        for st in list {
+            // the LIVE uid from the SOURCE file through the chain — never from the staged copy
+            // (a copy left by a dry run already carries the NEW uid: wipe #12's first run
+            // produced (new, new) pairs and swapped nothing, 2026-09-25)
+            let src = src_set.join(st.path.strip_prefix(&out_set).map_err(|e| e.to_string())?);
+            let src_hdr = tmmaps::header::read(src.to_str().unwrap()).map_err(|e| format!("{}: {e}", src.display()))?;
+            let live = chain_uid(&pairs, &src_hdr.uid);
+            let new = format!("{}{}", prefixes[set], &live[4..]);
+            let hdr = tmmaps::header::read(st.path.to_str().unwrap()).map_err(|e| e.to_string())?;
+            if hdr.uid != live && hdr.uid != new {
+                return Err(format!("{}: staged uid {} is neither live {live} nor new {new}", st.path.display(), hdr.uid));
+            }
+            staged_all.push((set.clone(), st, live, new));
+        }
+    }
+    if staged_all.is_empty() {
+        return Err("nothing staged".into());
+    }
+    if crate::nadeo::fresh_tokens_in(token_dir.to_str().unwrap()).is_none() {
+        mint_tokens(&wsx, &token_dir)?;
+    }
+    let refs: Vec<&Staged> = staged_all.iter().map(|(_, st, _, _)| st).collect();
+    let n = live_thumbnails(&refs, &token_dir, jobs)?;
+    println!("[{:>5.0}s] {n} thumbnails taken from the live records", t0.elapsed().as_secs_f64());
+    // the new uid, on a fresh load (after the thumbnail splice)
+    for (_, st, live, new) in &staged_all {
+        let hdr = tmmaps::header::read(st.path.to_str().unwrap()).map_err(|e| e.to_string())?;
+        if hdr.uid == *new {
+            continue;
+        }
+        if hdr.uid != *live {
+            return Err(format!("{}: uid {} is neither live {live} nor new {new}", st.path.display(), hdr.uid));
+        }
+        let mut m = tmmaps::map::MapFile::load(&st.path);
+        m.set_map_uid(new);
+        let tmp = st.path.with_extension("reuid.tmp.Map.Gbx");
+        m.write_to(&tmp).map_err(|e| e.to_string())?;
+        std::fs::rename(&tmp, &st.path).map_err(|e| e.to_string())?;
+    }
+    println!("[{:>5.0}s] {} maps carry their new uid", t0.elapsed().as_secs_f64(), staged_all.len());
+    if dry {
+        for (set, st, live, new) in &staged_all {
+            println!("  {set}\t{}\t{live} -> {new}", st.name);
+        }
+        return Ok(());
+    }
+    // ---- create on Nadeo, per set, IDENTICAL or abort
+    let mut created: Vec<(String, String, String, String)> = Vec::new(); // (live, new, set, file)
+    for set in &sets {
+        let rows: Vec<&(String, Staged, String, String)> = staged_all.iter().filter(|(s, _, _, _)| s == set).collect();
+        let manifest = out_root.join(format!("manifest-{set}.tsv"));
+        let text: String = rows.iter().map(|(_, st, _, _)| format!("{}\t{}\n", st.path.display(), st.name)).collect();
+        std::fs::write(&manifest, text).map_err(|e| e.to_string())?;
+        let results = out_root.join(format!("results-{set}.tsv"));
+        // a stale token → re-mint and resume (publish-batch skips nothing here: create = new uid)
+        for attempt in 0..3 {
+            if crate::nadeo::fresh_tokens_in(token_dir.to_str().unwrap()).is_none() {
+                mint_tokens(&wsx, &token_dir)?;
+            }
+            let batch_args: Vec<String> = vec![
+                "publish-batch".into(), "--manifest".into(), manifest.to_string_lossy().into_owned(), "--results".into(), results.to_string_lossy().into_owned(),
+                "--outdir".into(), out_root.join("readback").to_string_lossy().into_owned(), "--jobs".into(), jobs.to_string(), "--files-only".into(), "--token-dir".into(), token_dir.to_string_lossy().into_owned(),
+            ];
+            let r = batch::publish_batch_cmd(&batch_args);
+            let ok = read_identical(&results);
+            if ok.len() == rows.len() {
+                break;
+            }
+            println!("[{:>5.0}s] {set}: {} of {} IDENTICAL after attempt {} ({})", t0.elapsed().as_secs_f64(), ok.len(), rows.len(), attempt + 1, r.err().unwrap_or_default().lines().next().unwrap_or(""));
+            // the manifest for the retry: only the rows not yet IDENTICAL
+            let text: String = rows.iter().filter(|(_, st, _, _)| !ok.contains_key(&st.path.to_string_lossy().to_string())).map(|(_, st, _, _)| format!("{}\t{}\n", st.path.display(), st.name)).collect();
+            if text.is_empty() {
+                break;
+            }
+            std::fs::write(&manifest, text).map_err(|e| e.to_string())?;
+        }
+        let ok = read_identical(&results);
+        let missing: Vec<&str> = rows.iter().filter(|(_, st, _, _)| !ok.contains_key(&st.path.to_string_lossy().to_string())).map(|(_, st, _, _)| st.name.as_str()).collect();
+        if !missing.is_empty() {
+            return Err(format!("{set}: {} map(s) not created IDENTICAL ({}) — NO swap done, the club is untouched", missing.len(), missing.join(", ")));
+        }
+        for (s, st, live, new) in &rows {
+            created.push((live.clone(), new.clone(), s.clone(), st.path.file_name().unwrap().to_string_lossy().into_owned()));
+        }
+        println!("[{:>5.0}s] {set}: {} created IDENTICAL", t0.elapsed().as_secs_f64(), rows.len());
+    }
+    // ---- the swap (campaigns + rooms), then the pairs file
+    let swap_pairs = out_root.join("pairs2.tsv");
+    std::fs::write(&swap_pairs, created.iter().map(|(l, n, _, _)| format!("{l}\t{n}\n")).collect::<String>()).map_err(|e| e.to_string())?;
+    if crate::nadeo::fresh_tokens_in(token_dir.to_str().unwrap()).is_none() {
+        mint_tokens(&wsx, &token_dir)?;
+    }
+    std::env::set_var("TINYCTL_TOKEN_DIR", token_dir.to_str().unwrap());
+    let swap_args: Vec<String> = vec!["reuid-swap".into(), "--club".into(), club.clone(), "--pairs".into(), swap_pairs.to_string_lossy().into_owned(), "--no-lock".into(), "--outdir".into(), out_root.join("swap").to_string_lossy().into_owned()];
+    std::fs::create_dir_all(out_root.join("swap")).map_err(|e| e.to_string())?;
+    let mut swap_ok = false;
+    for attempt in 0..2 {
+        match crate::nadeo::cmd(&swap_args) {
+            Ok(()) => { swap_ok = true; break; }
+            Err(e) => {
+                println!("[{:>5.0}s] swap attempt {}: {}", t0.elapsed().as_secs_f64(), attempt + 1, e.lines().next().unwrap_or(""));
+                mint_tokens(&wsx, &token_dir)?;
+            }
+        }
+    }
+    let text: String = created.iter().map(|(l, n, s, fnm)| format!("{l}\t{n}\t{s}\t{fnm}\n")).collect();
+    std::fs::write(&pairs_out, &text).map_err(|e| format!("{}: {e}", pairs_out.display()))?;
+    println!("[{:>5.0}s] round-wipe: {} maps re-created and swapped{}; pairs -> {}", t0.elapsed().as_secs_f64(), created.len(), if swap_ok { "" } else { " (SWAP FAILED — rerun reuid-swap with pairs2.tsv)" }, pairs_out.display());
+    if swap_ok { Ok(()) } else { Err("reuid-swap failed twice".into()) }
+}
