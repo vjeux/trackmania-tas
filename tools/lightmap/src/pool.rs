@@ -25,10 +25,7 @@ struct Shared {
     f_data: AtomicPtr<()>,
     f_vtable: AtomicPtr<()>,
     n: AtomicUsize,
-    /// Bumped per job; the workers wait for a value they have not seen. The word is `(generation << 16) | participants`:
-    /// a job with fewer tasks than workers takes only the first `participants` workers (perf 8: a run of 40 tasks had
-    /// every one of 160 workers check in before it could complete — the slowest parked worker's wake, ~0.4 ms, was the
-    /// floor of every small stage), and a worker outside the set skips the generation without touching `active`.
+    /// Bumped per job; the workers wait for a value they have not seen.
     generation: AtomicU64,
     /// Tasks handed out of the current job.
     next: AtomicUsize,
@@ -134,11 +131,9 @@ impl Pool {
         while sh.active.load(Ordering::Acquire) != 0 {
             std::hint::spin_loop();
         }
-        // the participants: no more workers than tasks (the caller helps as well)
-        let participants = n.min(self.threads).min(0xffff);
         sh.next.store(0, Ordering::Relaxed);
         sh.panicked.store(false, Ordering::Relaxed);
-        sh.active.store(participants, Ordering::Relaxed);
+        sh.active.store(self.threads, Ordering::Relaxed);
         if timed {
             for s in &sh.slot_busy { s.store(0, Ordering::Relaxed); }
             for s in &sh.slot_tasks { s.store(0, Ordering::Relaxed); }
@@ -147,14 +142,11 @@ impl Pool {
         sh.f_data.store(data, Ordering::Relaxed);
         sh.f_vtable.store(vtable, Ordering::Relaxed);
         sh.n.store(n, Ordering::Relaxed);
-        // the release publishes the job; a worker's acquire load of the generation sees it whole (the caller is the
-        // one writer of the word)
-        let g = (sh.generation.load(Ordering::Relaxed) >> 16) + 1;
-        sh.generation.store((g << 16) | participants as u64, Ordering::Release);
-        // the wake tree's roots (a parked worker wakes; a spinning one finds a token it clears at its next park);
-        // a worker's children have greater indices, so every participant is reached through participants only
+        // the release publishes the job; a worker's acquire load of the generation sees it whole
+        sh.generation.fetch_add(1, Ordering::Release);
+        // the wake tree's roots (a parked worker wakes; a spinning one finds a token it clears at its next park)
         if let Some(hs) = sh.handles.get() {
-            for h in hs.iter().take(FANOUT.min(participants)) {
+            for h in hs.iter().take(FANOUT) {
                 h.unpark();
             }
         }
@@ -200,13 +192,10 @@ fn worker(sh: Arc<Shared>, me: usize) {
         // a new generation: spin first, then park (an unpark token left by a wake we did not need is
         // consumed by the first park, which then returns at once and re-checks)
         let mut spins = 0usize;
-        let participants: usize;
         loop {
-            let w = sh.generation.load(Ordering::Acquire);
-            let g = w >> 16;
+            let g = sh.generation.load(Ordering::Acquire);
             if g != seen {
                 seen = g;
-                participants = (w & 0xffff) as usize;
                 break;
             }
             spins += 1;
@@ -217,15 +206,9 @@ fn worker(sh: Arc<Shared>, me: usize) {
             std::thread::park();
             spins = SPIN / 2;
         }
-        // not in this job's participant set: back to waiting (`active` does not count this worker; the children, of
-        // greater index, are outside the set as well)
-        if me >= participants {
-            continue;
-        }
         // pass the wake down the tree (cheap when the child is not parked: a token, no syscall)
         if let Some(hs) = sh.handles.get() {
             for c in me * FANOUT + 1..=me * FANOUT + FANOUT {
-                if c >= participants { break; }
                 if let Some(h) = hs.get(c) {
                     h.unpark();
                 }
@@ -458,8 +441,7 @@ mod latency2 {
             sh.f_data.store(data, std::sync::atomic::Ordering::Relaxed);
             sh.f_vtable.store(vtable, std::sync::atomic::Ordering::Relaxed);
             sh.n.store(n, std::sync::atomic::Ordering::Relaxed);
-            let g = (sh.generation.load(std::sync::atomic::Ordering::Relaxed) >> 16) + 1;
-            sh.generation.store((g << 16) | n as u64, std::sync::atomic::Ordering::Release);
+            sh.generation.fetch_add(1, std::sync::atomic::Ordering::Release);
             let tb = t.elapsed();
             for h in sh.handles.get().unwrap().iter().take(super::FANOUT) { h.unpark(); }
             let t1 = t.elapsed();
