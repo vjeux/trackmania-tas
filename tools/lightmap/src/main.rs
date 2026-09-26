@@ -2017,7 +2017,32 @@ fn run(a: Vec<String>) {
                     let by_name: std::collections::BTreeMap<String, Vec<u8>> = files.iter().map(|(k, v)| (k.rsplit(['/', '\\']).next().unwrap_or(k).to_string(), v.clone())).collect();
                     let item_bytes = |name: &str| -> Option<Vec<u8>> { by_name.get(name).cloned().or_else(|| by_name.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.clone())) };
                     let dir_in_world = [-prm.sun_dir[0], -prm.sun_dir[1], -prm.sun_dir[2]];
-                    let fm = lightmap::setupmap::build(&scene, &lm, &sbox, dir_in_world, prm.sun, &frozen, &item_bytes, false);
+                    // LMTOOL_LAMP_BOUNCE=1 (STUDY, E 16:25Z): the local lights' composed frame-1 light (localdrive: the same layout + LM
+                    // scene, every baked lamp, the transcribed pass, the SumDecoded compose over the atlas) added to the sun accumulation
+                    // before the ILightInput chain — the lamps' first bounce in frame 0 (setupmap::build_with_lamps)
+                    let lamp_light: Option<lightmap::passdiff::Buf> = if std::env::var_os("LMTOOL_LAMP_BOUNCE").is_some() {
+                        let paks: Vec<(String, String)> = a.iter().enumerate().filter(|(_, x)| *x == "--pak").filter_map(|(i, _)| a.get(i + 1)).filter_map(|p| p.rsplit_once(':').map(|(x, k)| (x.to_string(), k.to_string()))).collect();
+                        let coll_ll = f("--collection").unwrap_or_else(|| hdr.as_ref().map(|h| h.envir.clone()).unwrap_or_else(|| "BlueBay".into()));
+                        let q_ll: u32 = f("--quality").map(|v| v.parse().unwrap()).unwrap_or(3);
+                        let mut log = |s: &str| eprintln!("lamp-bounce study: {s}");
+                        match lightmap::localdrive::setup_from_map(&map_path, &paks, &coll_ll, q_ll, &mut log) {
+                            Ok(su) if su.lamps.is_empty() => { eprintln!("lamp-bounce study: no lamp baked at this DayTime — nothing added"); None }
+                            Ok(su) => {
+                                let (w, h) = lightmap::localdrive::TARGET;
+                                let sc_t = lightmap::localdrive::scene_for_target(&su.sc, w, h);
+                                let out = lightmap::localdrive::run_frame(&su.gl, &sc_t, &su.lamps, &su.chunks, su.probe_n, (w, h), None, lightmap::localdrive::Lists::cleared(w, h), &mut log);
+                                let img = lightmap::localdrive::compose(&out.lists, &su.lamps, lightmap::localdrive::ComposeRule::SumDecoded);
+                                let scale: f32 = std::env::var("LMTOOL_LAMP_BOUNCE").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
+                                let mut atlas = lightmap::passdiff::Buf::new(2048, 2048, 4);
+                                let mut lit = 0usize;
+                                for y in 0..2048u32 { for x in 0..2048u32 { let a4 = img.get(x, y, 3); if a4 > 0.0 { lit += 1; } for c in 0..3 { atlas.set(x, y, c, img.get(x, y, c) * scale); } atlas.set(x, y, 3, a4); } }
+                                eprintln!("lamp-bounce study: {} lamps → the composed lamp light on {lit} atlas texels (× {scale}) joins the sun accumulation", su.lamps.len());
+                                Some(atlas)
+                            }
+                            Err(e) => { eprintln!("lamp-bounce study: {e} — nothing added"); None }
+                        }
+                    } else { None };
+                    let fm = lightmap::setupmap::build_with_lamps(&scene, &lm, &sbox, dir_in_world, prm.sun, &frozen, &item_bytes, false, lamp_light.as_ref());
                     for n in &fm.notes { eprintln!("setup-from-map: {n}"); }
                     // against the capture: the stages the e2e chain compares (the same entries) — --lm-from ROOT, or --lm-cap-root ROOT
                     // when the LM scene is the map's (the capture-less run compared stage by stage without switching its inputs)

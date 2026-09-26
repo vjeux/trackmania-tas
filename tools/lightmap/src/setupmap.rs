@@ -654,6 +654,15 @@ pub fn ilightinput_chain(sun: &Buf, mdiffuse8: &Buf) -> (Buf, Buf) {
 
 /// The whole setup chain from the map.
 pub fn build(scene: &crate::geometry::Scene, lm: &LmScene, sbox: &Aabb, dir_in_world: [f32; 3], light_rgb: [f32; 3], frozen: &FrozenTables, item_bytes: &dyn Fn(&str) -> Option<Vec<u8>>, quiet: bool) -> FromMap {
+    build_with_lamps(scene, lm, sbox, dir_in_world, light_rgb, frozen, item_bytes, quiet, None)
+}
+
+/// `build` with the LOCAL LIGHTS' composed light (STUDY, E 2026-09-26 16:25Z): `lamp_light` = the frame-1 compose over the 2048² atlas
+/// (localdrive::compose, Σ w²·rgb per texel, alpha 1 where any lamp) ADDED to the sun accumulation before the ILightInput chain — the
+/// hypothesis under test: the editor's night frame 0 carries the lamps' first bounce (objects seeing a lamp-lit floor 2–10× brighter
+/// than ours, in the floor's colour; REPORT-5-E §4-E.21) and the Sunrise thin-vertical excess is the same term. Not a transcription:
+/// RE 13 reads what feeds frame 0; LMTOOL_LAMP_BOUNCE=1 in the bake turns it on.
+pub fn build_with_lamps(scene: &crate::geometry::Scene, lm: &LmScene, sbox: &Aabb, dir_in_world: [f32; 3], light_rgb: [f32; 3], frozen: &FrozenTables, item_bytes: &dyn Fn(&str) -> Option<Vec<u8>>, quiet: bool, lamp_light: Option<&Buf>) -> FromMap {
     let mut notes = Vec::new();
     let t0 = std::time::Instant::now();
     let cam = sun_camera(sbox, dir_in_world);
@@ -661,8 +670,21 @@ pub fn build(scene: &crate::geometry::Scene, lm: &LmScene, sbox: &Aabb, dir_in_w
     notes.push(format!("sun camera: eye {:?} h {:?} near {} far {} (the scene box {:?}–{:?})", cam.eye, cam.h, cam.near(), cam.far(), sbox.min, sbox.max));
     let shadow = shadow_from_map(scene, lm, &cam, item_bytes, &mut notes).to_buf();
     if !quiet { eprintln!("setup-from-map: shadow map ({:.1}s)", t0.elapsed().as_secs_f32()); }
-    let sun = sun_from_map(lm, &pw01, dir_in_world, light_rgb, &shadow);
+    let mut sun = sun_from_map(lm, &pw01, dir_in_world, light_rgb, &shadow);
     if !quiet { eprintln!("setup-from-map: direct sun ({:.1}s)", t0.elapsed().as_secs_f32()); }
+    if let Some(ll) = lamp_light {
+        // the study: the lamps' light joins the directional light in the accumulation (rgb added; coverage = the union)
+        let (mut n_tex, mut sum) = (0usize, [0.0f32; 3]);
+        for y in 0..H.min(ll.h) {
+            for x in 0..W.min(ll.w) {
+                if ll.get(x, y, 3) <= 0.0 { continue; }
+                n_tex += 1;
+                for c in 0..3 { let v = ll.get(x, y, c); sum[c as usize] += v; sun.set(x, y, c, sun.get(x, y, c) + v); }
+                if sun.get(x, y, 3) <= 0.0 { sun.set(x, y, 3, ll.get(x, y, 3)); }
+            }
+        }
+        notes.push(format!("LAMP BOUNCE STUDY: the local lights' composed light added to the sun accumulation on {n_tex} texels (Σ rgb {:.1} {:.1} {:.1}) before the ILightInput chain", sum[0], sum[1], sum[2]));
+    }
     let attr = attr_from_map(scene, lm, frozen, item_bytes, &mut notes);
     if !quiet { eprintln!("setup-from-map: the nine pre-pass runs ({:.1}s)", t0.elapsed().as_secs_f32()); }
     let mdiffuse8 = mdiffuse8_of(&attr);
