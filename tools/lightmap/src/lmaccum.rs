@@ -1772,6 +1772,7 @@ pub fn replay_set_layers_sparse(fl: &LmFragList, sc: &LmScene, cb: &SetCb, world
         // per fragment of the chunk: the projection (None = facing away or clipped) with its depth texel's range and its
         // colour texel's range (the same one when the texels coincide)
         struct Pf { z: f32, drange: Option<(usize, usize)>, crange: Option<(usize, usize)> }
+        let t_proj = std::time::Instant::now();
         let mut proj: Vec<Option<Pf>> = Vec::with_capacity((fl.start[p1] - fl.start[p0]) as usize);
         for (k, f) in fl.frags[fl.start[p0] as usize..fl.start[p1] as usize].iter().enumerate() {
             let fi = fl.start[p0] as usize + k;
@@ -1797,13 +1798,27 @@ pub fn replay_set_layers_sparse(fl: &LmFragList, sc: &LmScene, cb: &SetCb, world
                 Pf { z, drange, crange }
             }));
         }
+        SET_PROJ_NS.fetch_add(t_proj.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
+        let t_walk = std::time::Instant::now();
         let base = fl.start[p0] as usize;
         for p in p0..p1 {
             let (a, b) = (fl.start[p] as usize, fl.start[p + 1] as usize);
             if a == b { continue; }
             let mut out: Option<[f32; 3]> = None;
-            for k in 0..nl {
-                for pf in proj[a - base..b - base].iter().flatten() {
+            // THE LAYERS WORTH WALKING (perf 8.24): past the deepest layer any of the pixel's fragments can read, every read is
+            // the clear (depth 1.0) and the compare `z ≥ 1.0` fails for every fragment with z < 1 — so when all of them have
+            // z < 1 the walk stops at that layer; a fragment at z ≥ 1 keeps the full walk (it would pass on the clear and write
+            // black, as before)
+            let frs = &proj[a - base..b - base];
+            let mut kmax = 0usize;
+            let mut all_below = true;
+            for pf in frs.iter().flatten() {
+                if let Some((_, n)) = pf.drange { kmax = kmax.max(n); }
+                if !(pf.z < 1.0) { all_below = false; }
+            }
+            let k_end = if all_below { kmax.min(nl) } else { nl };
+            for k in 0..k_end {
+                for pf in frs.iter().flatten() {
                     // the layer's stored depth at the depth texel: the fragment when the pixel has layer k, else the clear (1.0)
                     let stored = match pf.drange { Some((f0, n)) if k < n => l0.frags[f0 + k].d, _ => 1.0 };
                     let pass = match cmp {
@@ -1828,9 +1843,16 @@ pub fn replay_set_layers_sparse(fl: &LmFragList, sc: &LmScene, cb: &SetCb, world
                 unsafe { *(px_ptr as *mut u32).add(p) = crate::gpufmt::pack_r11g11b10(rgb, Rounding::Truncate); }
             }
         }
+        SET_WALK_NS.fetch_add(t_walk.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
     });
+    if lmaccum_trace() {
+        eprintln!("lmaccum trace: replay_set_layers_sparse {} fragments, {} layers: projection {:.1} ms, walk {:.1} ms of task time", fl.frags.len(), nl, SET_PROJ_NS.swap(0, std::sync::atomic::Ordering::Relaxed) as f64 * 1e-6, SET_WALK_NS.swap(0, std::sync::atomic::Ordering::Relaxed) as f64 * 1e-6);
+    }
     true
 }
+
+static SET_PROJ_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static SET_WALK_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 pub fn replay_set_layers<L: LayerRead>(fl: &LmFragList, sc: &LmScene, cb: &SetCb, world_box: Option<[[f32; 2]; 2]>, layers: &[L], cmp: DepthCompare, tgt: &mut DirTarget) {
     assert_eq!((fl.w, fl.h), (tgt.w, tgt.h));

@@ -237,6 +237,20 @@ pub fn decode_f16_slow(h: u16) -> f32 {
 
 /// The value an R16_FLOAT channel holds after `v` is written to it.
 pub fn quantise_f16(v: f32, r: Rounding) -> f32 {
+    // THE FAST PATH (perf 8.24: the f16 blend runs this three times per channel of every H-basis / pre-pass / local-light
+    // fragment): a magnitude that is a normal of binary16 and stays finite after rounding — 2^−14 ≤ |v| < 65520 — keeps
+    // its sign and exponent and drops 13 mantissa bits: truncation clears them; nearest-even adds 0xfff plus the kept
+    // lsb and clears them (the carry runs into the exponent exactly as `encode_f16`'s does, and `decode_f16` rebuilds
+    // the same bit pattern). Zero, denormals, ±Inf, NaN, |v| ≥ 65520 take the general path.
+    let bits = v.to_bits();
+    let mag = bits & 0x7fff_ffff;
+    if (0x3880_0000..0x477f_f000).contains(&mag) {
+        let q = match r {
+            Rounding::Truncate => mag & !0x1fff,
+            Rounding::NearestEven => mag.wrapping_add(0xfff).wrapping_add((mag >> 13) & 1) & !0x1fff,
+        };
+        return f32::from_bits((bits & 0x8000_0000) | q);
+    }
     decode_f16(encode_f16(v, r))
 }
 
@@ -295,6 +309,28 @@ mod tests {
         }
         for k in -126..=127 {
             assert_eq!(pow2(k).to_bits(), 2f32.powi(k).to_bits(), "2^{k}");
+        }
+    }
+
+    #[test]
+    fn quantise_f16_fast_path_equals_encode_decode() {
+        // every f32 exponent with a sweep of mantissas and both signs, the fast range's boundaries, zero, denormals, huge, NaN
+        let mut vals: Vec<f32> = vec![0.0, -0.0, 1e-30, -1e-30, 65504.0, 65519.9, 65520.0, 65536.0, 1e6, f32::MAX, f32::MIN_POSITIVE, f32::NAN, f32::INFINITY];
+        for e in 0u32..=254 {
+            for m in [0u32, 1, 0xfff, 0x1000, 0x1001, 0x1fff, 0x2000, 0x2fff, 0x3000, 0x7f_ffff, 0x12_3456, 0x6a_bcde, 0x40_0fff, 0x40_1000] {
+                vals.push(f32::from_bits((e << 23) | m));
+                vals.push(-f32::from_bits((e << 23) | m));
+            }
+        }
+        for b in [0x3880_0000u32 - 1, 0x3880_0000, 0x477f_e000, 0x477f_efff, 0x477f_f000, 0x477f_ffff, 0x4780_0000] {
+            vals.push(f32::from_bits(b));
+            vals.push(-f32::from_bits(b));
+        }
+        for r in [Rounding::Truncate, Rounding::NearestEven] {
+            for &v in &vals {
+                let (a, b) = (quantise_f16(v, r), decode_f16(encode_f16(v, r)));
+                assert!(a.to_bits() == b.to_bits() || (a.is_nan() && b.is_nan()), "{r:?} {v:?} ({:#x}): {a:?} ({:#x}) vs {b:?} ({:#x})", v.to_bits(), a.to_bits(), b.to_bits());
+            }
         }
     }
 
