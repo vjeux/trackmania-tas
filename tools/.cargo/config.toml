@@ -1,7 +1,15 @@
-# The x86-64 devservers all have AVX2/FMA/BMI2 (x86-64-v3, Haswell 2013+): with it rustc inlines floor/round
-# as single instructions (libm calls otherwise — 9 % of a bake's samples) and vectorises the plain loops. Floating-
-# point results are unchanged: Rust never contracts a·b+c into an FMA or reassociates a sum without explicit
-# fast-math, so every bake stays bit-identical to the generic build (checked on the harness dump).
+# THE SHIPPED x86-64 LINUX BUILD IS FOR ZEN 4 (`-C target-cpu=znver4`): the render boxes and the fleet's ODs are
+# EPYC Genoa, and the Zen 4 schedule + AVX-512 is worth 3–6 % of a bake over the x86-64-v3 build (perf 2 / perf 6,
+# measured on the giant's 4-direction bench). Floating-point results are unchanged: Rust never contracts a·b+c into
+# an FMA or reassociates a sum without explicit fast-math, so every bake stays bit-identical to the generic build
+# (checked on the harness: the giant's and tiny 16's files, the pass dumps and the probe volumes byte for byte).
+#
+# A znver4 binary dies with SIGILL on a CPU without AVX-512 (the Skylake ODs). `lmtool` guards against that in main
+# (lightmap::hostcpu): it execs a fallback build found beside it as `lmtool-x86-64-v3` (or LMTOOL_CPU_FALLBACK=PATH),
+# else exits 3 with the build line. The fallback / generic-devserver build:
+#     RUSTFLAGS='-C target-cpu=x86-64-v3' cargo build --release -p lightmap --target-dir target-v3
+# (RUSTFLAGS replaces this file's flags entirely; a separate target dir keeps the two builds from evicting each
+# other). `lmperf cpu` prints what the host supports; the guard's message names what is missing.
 [target.x86_64-unknown-linux-gnu]
 # znver4 (AVX-512, the EPYC Genoa boxes): the giant's 4-direction bench 2.82 → 2.68 s over x86-64-v3, bit-identical
 # (the harness dump, the tiny-16 and giant-8 files); a binary built with it does not run on older CPUs — build with

@@ -137,6 +137,8 @@ fn tune_malloc() {
 }
 
 fn main() {
+    // FIRST: a build for a CPU this host is not (the znver4 default on a Skylake OD) execs its fallback or explains
+    lightmap::hostcpu::guard();
     tune_malloc();
     let mut a: Vec<String> = std::env::args().skip(1).collect();
     // `bake … --lm-from-map` IMPLIES the transcribed chain: the game's peel and accumulation (--game-peel), one raster

@@ -54,6 +54,7 @@ pub mod lmtiles;
 pub mod probechunk;
 pub mod format;
 pub mod geometry;
+pub mod hostcpu;
 pub mod img;
 pub mod mapio;
 pub mod moods;
