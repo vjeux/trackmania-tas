@@ -24,6 +24,7 @@
 declare Real[Text] G_GravityByLogin;	///< login => coefficient chosen in chat
 declare Real G_DefaultGravity;			///< for players without a choice
 declare Real G_BotGravity;
+declare Real G_BotAdherence;			///< grip of the balloons: 0 = they slide like on ice
 declare Boolean G_Collisions;
 declare Integer G_WantedBots;
 declare Integer G_MaxBots;
@@ -102,9 +103,12 @@ Void Apply(CSmPlayer _Player) {
 		LowG_Welcomed = True;
 		Tell(_Player, "low gravity server: yours is " ^ Fmt(Wanted) ^ " -- /gravity <0..1> to change it, /bots <n> parks balloons, /collisions on|off, /status");
 	}
-	// Balloons must not drive away.
+	// Balloons must not drive away, and slide with as little grip as asked (0 = no friction).
 	if (IsBalloon(_Player) && Fresh && !SetPlayer_DelayedIsFull(_Player)) {
 		SetPlayer_Delayed_NoEngine(_Player, True);
+	}
+	if (IsBalloon(_Player) && !SetPlayer_DelayedIsFull(_Player)) {
+		SetPlayer_Delayed_AdherenceCoef(_Player, ML::Clamp(G_BotAdherence, 0., 1.));
 	}
 	declare Integer LowG_ApplyCount for _Player = 0;
 	LowG_ApplyCount += 1;
@@ -201,7 +205,7 @@ Void SpawnBots() {
 /// Snapshot for tmserverctl / debugging: one callback with one Text per line.
 Void SendStatus() {
 	declare Text[] Lines;
-	Lines.add("default=" ^ Fmt(G_DefaultGravity) ^ " collisions=" ^ G_Collisions ^ " balloons=" ^ BalloonCount() ^ "/" ^ G_WantedBots ^ " fakeusers=" ^ G_BotsAreFakeUsers ^ " players=" ^ Players.count ^ " bots=" ^ BotPlayers.count);
+	Lines.add("default=" ^ Fmt(G_DefaultGravity) ^ " collisions=" ^ G_Collisions ^ " balloons=" ^ BalloonCount() ^ "/" ^ G_WantedBots ^ " botgravity=" ^ Fmt(G_BotGravity) ^ " botadherence=" ^ Fmt(G_BotAdherence) ^ " fakeusers=" ^ G_BotsAreFakeUsers ^ " players=" ^ Players.count ^ " bots=" ^ BotPlayers.count);
 	declare CSmPlayer[] Everyone;
 	foreach (Player in Players) Everyone.add(Player);
 	foreach (Bot in BotPlayers) {
@@ -211,7 +215,7 @@ Void SendStatus() {
 		declare Text Login = "";
 		if (Player.User != Null) Login = Player.User.Login;
 		declare Integer LowG_ApplyCount for Player = 0;
-		Lines.add(Login ^ " spawn=" ^ Player.SpawnStatus ^ " gravity=" ^ Fmt(Player.GravityCoef) ^ " wanted=" ^ Fmt(WantedGravity(Player)) ^ " balloon=" ^ IsBalloon(Player) ^ " orders=" ^ LowG_ApplyCount ^ " kmh=" ^ ML::NearestInteger(Player.Speed * 3.6));
+		Lines.add(Login ^ " spawn=" ^ Player.SpawnStatus ^ " gravity=" ^ Fmt(Player.GravityCoef) ^ " wanted=" ^ Fmt(WantedGravity(Player)) ^ " adherence=" ^ Fmt(Player.AdherenceCoef) ^ " balloon=" ^ IsBalloon(Player) ^ " orders=" ^ LowG_ApplyCount ^ " kmh=" ^ ML::NearestInteger(Player.Speed * 3.6));
 	}
 	XmlRpc.SendCallbackArray(C_Event_Status, Lines);
 }
@@ -322,8 +326,9 @@ Void DestroyHint() {
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
 
 /// Match_StartServer: take the settings, reset the state.
-Void Load(Real _DefaultGravity, Boolean _Collisions, Integer _Bots, Real _BotGravity, Integer _MaxBots, Boolean _BotsAreFakeUsers) {
+Void Load(Real _DefaultGravity, Boolean _Collisions, Integer _Bots, Real _BotGravity, Real _BotAdherence, Integer _MaxBots, Boolean _BotsAreFakeUsers) {
 	G_DefaultGravity = ML::Clamp(_DefaultGravity, 0., 1.);
+	G_BotAdherence = ML::Clamp(_BotAdherence, 0., 1.);
 	G_Collisions = _Collisions;
 	G_WantedBots = _Bots;
 	G_BotGravity = ML::Clamp(_BotGravity, 0., 1.);
@@ -341,8 +346,9 @@ Void Load(Real _DefaultGravity, Boolean _Collisions, Integer _Bots, Real _BotGra
 
 /// Settings may change at runtime (SetModeScriptSettings); the mode passes them every tick.
 /// (The balloon kind is only taken from the setting at load time: /bots N fake|bot changes it live.)
-Void UpdateSettings(Real _BotGravity, Integer _MaxBots) {
+Void UpdateSettings(Real _BotGravity, Real _BotAdherence, Integer _MaxBots) {
 	G_BotGravity = ML::Clamp(_BotGravity, 0., 1.);
+	G_BotAdherence = ML::Clamp(_BotAdherence, 0., 1.);
 	G_MaxBots = _MaxBots;
 }
 

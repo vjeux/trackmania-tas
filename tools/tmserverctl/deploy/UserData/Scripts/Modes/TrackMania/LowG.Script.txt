@@ -32,6 +32,7 @@
 #Setting S_LowG_Collisions True as "Car-to-car collisions"
 #Setting S_LowG_Bots 0 as "Balloon bots parked on the start line at each map start"
 #Setting S_LowG_BotGravity 0.05 as "Gravity coefficient of the balloon bots"
+#Setting S_LowG_BotAdherence 0.0 as "Grip of the balloon bots (0 = no friction, they slide; 1 = normal tyres)"
 #Setting S_LowG_MaxBots 16 as "Upper bound for /bots"
 #Setting S_LowG_BotsAreFakeUsers False as "Balloons are fake users (named, in the player list) instead of engine bots"
 
@@ -41,7 +42,7 @@
 
 ***Match_StartServer***
 ***
-LowG::Load(S_LowG_DefaultGravity, S_LowG_Collisions, S_LowG_Bots, S_LowG_BotGravity, S_LowG_MaxBots, S_LowG_BotsAreFakeUsers);
+LowG::Load(S_LowG_DefaultGravity, S_LowG_Collisions, S_LowG_Bots, S_LowG_BotGravity, S_LowG_BotAdherence, S_LowG_MaxBots, S_LowG_BotsAreFakeUsers);
 ***
 
 ***Match_StartMap***
@@ -51,7 +52,7 @@ LowG::StartMap();
 
 ***Match_Yield***
 ***
-LowG::UpdateSettings(S_LowG_BotGravity, S_LowG_MaxBots);
+LowG::UpdateSettings(S_LowG_BotGravity, S_LowG_BotAdherence, S_LowG_MaxBots);
 LowG::Yield();
 ***
 
