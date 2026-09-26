@@ -22,6 +22,9 @@ pub struct RecRow {
     pub name: String,
     pub quality: f32,
     pub centre_y: f32,
+    /// centre x / z when the table carries them (the 9-column form)
+    pub centre_x: Option<f32>,
+    pub centre_z: Option<f32>,
 }
 
 /// Parse the table (header line optional; tab-separated: chart, class, obj, sub, name, quality, centre_y).
@@ -40,6 +43,8 @@ pub fn read_records_tsv(path: &str) -> Result<Vec<RecRow>, String> {
             name: f[4].trim().to_string(),
             quality: f.get(5).and_then(|v| v.trim().parse().ok()).unwrap_or(0.0),
             centre_y: f.get(6).and_then(|v| v.trim().parse().ok()).unwrap_or(0.0),
+            centre_x: f.get(7).and_then(|v| v.trim().parse().ok()),
+            centre_z: f.get(8).and_then(|v| v.trim().parse().ok()),
         });
     }
     Ok(out)
@@ -319,12 +324,12 @@ pub fn print(r: &Report, o: &Options, tsv: Option<&str>) -> Result<(), String> {
 pub fn write_records_tsv(path: &str, gl: &crate::layout::GameLayout) -> Result<(), String> {
     use std::io::Write;
     let mut fh = std::fs::File::create(path).map_err(|e| format!("{path}: {e}"))?;
-    writeln!(fh, "chart\tclass\tobj\tsub\tname\tquality\tcentre_y").map_err(|e| e.to_string())?;
+    writeln!(fh, "chart\tclass\tobj\tsub\tname\tquality\tcentre_y\tcentre_x\tcentre_z").map_err(|e| e.to_string())?;
     for (k, r) in gl.records.iter().enumerate() {
         let name = if let Some((_, s)) = &r.item { s.split(' ').next().unwrap_or(s).rsplit('\\').next().unwrap_or(s).to_string() }
             else if let Some(mr) = &r.mesh { format!("{}#{}", mr.prefab.rsplit('\\').next().unwrap_or(&mr.prefab), mr.entity) }
             else { r.class.to_string() };
-        writeln!(fh, "{k}\t{}\t{}\t{}\t{name}\t{}\t{:.3}", r.class, r.obj, r.sub, r.quality, r.centre[1]).map_err(|e| e.to_string())?;
+        writeln!(fh, "{k}\t{}\t{}\t{}\t{name}\t{}\t{:.3}\t{:.3}\t{:.3}", r.class, r.obj, r.sub, r.quality, r.centre[1], r.centre[0], r.centre[2]).map_err(|e| e.to_string())?;
     }
     Ok(())
 }

@@ -2121,6 +2121,8 @@ fn run(a: Vec<String>) {
                                 let mut lit = 0usize;
                                 for y in 0..2048u32 { for x in 0..2048u32 { let a4 = img.get(x, y, 3); if a4 > 0.0 { lit += 1; } for c in 0..3 { atlas.set(x, y, c, img.get(x, y, c) * scale); } atlas.set(x, y, 3, a4); } }
                                 eprintln!("lamps in frame 0: {} lamps → A_0 on {lit} atlas texels (× {scale}) goes to sweep 0's light input", su.lamps.len());
+                                // --lights-tsv FILE: every lamp the bake drives (id, owner, model, position, radius, r_eff, colour, flags, samples) — `lmtool lampnear`
+                                if let Some(p) = f("--lights-tsv") { lightmap::lampnear::write_lights_tsv(&p, &su.lamps, &map_path).unwrap_or_else(|e| panic!("--lights-tsv: {e}")); eprintln!("lights table: {} lamps → {p}", su.lamps.len()); }
                                 Some(atlas)
                             }
                             Err(e) => { eprintln!("lamps in frame 0: {e} — the sun alone"); None }
@@ -6372,6 +6374,18 @@ fn run(a: Vec<String>) {
             let ranges = [("blocks", 0usize, mf.blocks.len()), ("baked", mf.blocks.len(), mf.blocks.len() + mf.baked.len()), ("items", mf.blocks.len() + mf.baked.len(), mf.blocks.len() + mf.baked.len() + mf.items.len())];
             for (name, s, e) in ranges { let mut h: std::collections::BTreeMap<u8, usize> = Default::default(); for &x in body.get(s..e.min(body.len())).unwrap_or(&[]) { *h.entry(x).or_default() += 1; } println!("  {name} [{s}..{e}): {:?}", h); }
             if a.iter().any(|x| x == "--list") { let s = mf.blocks.len() + mf.baked.len(); for (i, &x) in body.get(s..).unwrap_or(&[]).iter().enumerate() { if x != 0 { println!("  item {i} ({}) quality byte {x}", mf.items.get(i).map(|it| it.model.as_str()).unwrap_or("?")); } } }
+        }
+        "lampnear" => {
+            // lmtool lampnear EDITOR.Map.Gbx --records REC.tsv --lights LIGHTS.tsv [--frame 1] [--lit 8] [--min-lit 0.05] [--out TSV]: lampnear.rs
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let editor = lightmap::mapio::load(&a[1]).unwrap_or_else(|e| panic!("{e}"));
+            let records = lightmap::classcmp::read_records_tsv(&f("--records").expect("--records REC.tsv")).unwrap_or_else(|e| panic!("{e}"));
+            let lamps = lightmap::lampnear::read_lights_tsv(&f("--lights").expect("--lights LIGHTS.tsv")).unwrap_or_else(|e| panic!("{e}"));
+            let frame: usize = f("--frame").map(|v| v.parse().expect("--frame N")).unwrap_or(1);
+            let lit: u8 = f("--lit").map(|v| v.parse().expect("--lit N")).unwrap_or(8);
+            let min_lit: f64 = f("--min-lit").map(|v| v.parse().expect("--min-lit F")).unwrap_or(0.05);
+            let rows = lightmap::lampnear::table(&editor, &records, &lamps, frame, lit).unwrap_or_else(|e| panic!("lampnear: {e}"));
+            lightmap::lampnear::print(&rows, &lamps, min_lit, f("--out").as_deref()).unwrap_or_else(|e| panic!("lampnear: {e}"));
         }
         "daytime-sweep" => {
             // lmtool daytime-sweep SRC --words W1,W2,… --out-dir DIR [--records TSV] -- <bake args…>: sweep.rs
