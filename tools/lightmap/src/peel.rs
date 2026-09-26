@@ -691,47 +691,67 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
                         d3d_depth_bias_fmt(zmax_prim, slope.min(1e6), cx.prm.depth_bias, cx.prm.depth_bits)
                     })
                 };
-                raster::triangle_clipped_masked(res, res_y, [[x0, y0], [x1, y1], [x2, y2]], band_clip, if counting { None } else { Some(bitmap) }, |x, y, bc| {
-                    if raster_stats { rs_visits += 1; }
-                    // (the game's viewport ring is outside the clip rectangle: never visited)
-                    debug_assert!(!(x < inset || y < inset || x + inset >= res || y + inset >= res_y));
-                    let z = z0 * bc[0] + z1 * bc[1] + z2 * bc[2];
-                    if z < zmax && z >= zmin {
-                        if let Some(m) = mask {
+                // THE VISIT BODY, SIXTEEN PIXELS AT A TIME (engineer 3's span interface: one call per block of up
+                // to 16 consecutive pixels of a row, `cov` bit l = pixel x0 + l inside and wanted-or-counted,
+                // `bary[k][l]` = vertex k's weight there, exactly the per-pixel raster's). Per lane the same f32
+                // operations in the same order as the scalar body — z = (z0·b0 + z1·b1) + z2·b2, the range test,
+                // z01 = 0.5 + (zc + z) / (2·half_d), the strict maximum — so every lane's value is the scalar
+                // body's to the bit; the per-fragment scalar work (the alpha test, the count record, the wanted
+                // fragment) runs over the set lanes. The environment triangles (the ground plane: every pixel of
+                // every frame, twice, on a tiny map) never leave the lanes.
+                let env_drawn_t = matches!(env_t, Some(true));
+                let env_skip_t = matches!(env_t, Some(false));
+                raster::triangle_clipped_masked_spans(res, res_y, [[x0, y0], [x1, y1], [x2, y2]], band_clip, if counting { None } else { Some(bitmap) }, |bx, y, cov, bary| {
+                    if raster_stats { rs_visits += cov.count_ones() as u64; }
+                    let lanes = lanes_z_range(bary, [z0, z1, z2], zmin, zmax, cov);
+                    let mut live = lanes.live;
+                    if live == 0 { return; }
+                    let id0 = y * res + bx;
+                    // the wanted bits of the 16 pixels (bitmap bits id0..id0+16)
+                    let wanted16: u16 = wanted_bits16(bitmap, id0 as usize);
+                    if counting && env_skip_t {
+                        // an environment face not drawn for this view: nothing counted, only the wanted fragments
+                        live &= wanted16;
+                    }
+                    if counting && env_drawn_t {
+                        // the environment layer's depth maximum, sixteen lanes: z01 in [0, 1] and strictly greater
+                        let li0 = ((y as i32 - by0) as usize) * res as usize + bx as usize;
+                        env_max_update16(&mut env_max[li0..(li0 + 16).min(band_px)], &lanes.z, live, frame);
+                        live &= wanted16;
+                        if live == 0 { return; }
+                    }
+                    let mut m = live;
+                    while m != 0 {
+                        let l = m.trailing_zeros() as usize;
+                        m &= m - 1;
+                        let x = bx + l as u32;
+                        let z = lanes.z[l];
+                        let bc = [bary[0][l], bary[1][l], bary[2][l]];
+                        // (the game's viewport ring is outside the clip rectangle: never visited)
+                        debug_assert!(!(x < inset || y < inset || x + inset >= res || y + inset >= res_y));
+                        if let Some(mk) = mask {
                             let u = t.uv0[0][0] * bc[0] + t.uv0[1][0] * bc[1] + t.uv0[2][0] * bc[2];
                             let v = t.uv0[0][1] * bc[0] + t.uv0[1][1] * bc[1] + t.uv0[2][1] * bc[2];
-                            let fp = fp_tex.get_or_insert_with(|| m.tex.as_ref().map(|tx| (tx.as_ref(), tx.plan(&crate::alphatex::Footprint::of_triangle([[x0, y0], [x1, y1], [x2, y2]], t.uv0, tx.w(), tx.h()), *ALPHA_ANISO))));
+                            let fp = fp_tex.get_or_insert_with(|| mk.tex.as_ref().map(|tx| (tx.as_ref(), tx.plan(&crate::alphatex::Footprint::of_triangle([[x0, y0], [x1, y1], [x2, y2]], t.uv0, tx.w(), tx.h()), *ALPHA_ANISO))));
                             let op = match fp {
                                 Some((tx, fp)) if !*ALPHA_POINT => tx.passes_planned(u, v, fp, ALPHA_THRESHOLD, crate::alphatex::Address::ClampEdge),
-                                _ => m.opaque(u, v),
+                                _ => mk.opaque(u, v),
                             };
                             if let Some((dx, dy)) = *ABUF_DEBUG { if x == dx && y == dy { eprintln!("abuf debug ({x},{y}): card tri {ti} inst {} model tri {} mask {} uv ({u:.4},{v:.4}) opaque {op} z {z:.3} z01 {:.5}", t.inst, t.tri, t.alpha, frame.z01(z)); } }
                             if !op {
-                                return;
+                                continue;
                             }
                         } else if let Some((dx, dy)) = *ABUF_DEBUG { if x == dx && y == dy { eprintln!("abuf debug ({x},{y}): tri {ti} inst {} model tri {} z {z:.3} z01 {:.5}", t.inst, t.tri, frame.z01(z)); } }
-                        let id = y * res + x;
-                        if counting {
+                        let id = id0 + l as u32;
+                        if counting && env_t.is_none() {
+                            // an item fragment: its count record
                             let li = ((y as i32 - by0) as usize) * res as usize + x as usize;
-                            match env_t {
-                                Some(drawn) => {
-                                    if drawn {
-                                        let z01 = frame.z01(z);
-                                        if z01 >= 0.0 && z01 <= 1.0 {
-                                            let e = &mut env_max[li];
-                                            if z01 > *e { *e = z01; }
-                                        }
-                                    }
-                                }
-                                None => {
-                                    let c = &mut cnt[li];
-                                    if *c == u16::MAX { saturated = true; } else { *c += 1; }
-                                    list.push((li as u32, CFrag { z, tri: ti, bias: bias_term_of(&mut bias_term_cache) }));
-                                }
-                            }
-                            if !bit(bitmap, id as usize) {
-                                return;
-                            }
+                            let c = &mut cnt[li];
+                            if *c == u16::MAX { saturated = true; } else { *c += 1; }
+                            list.push((li as u32, CFrag { z, tri: ti, bias: bias_term_of(&mut bias_term_cache) }));
+                        }
+                        if counting && (wanted16 >> l) & 1 == 0 {
+                            continue;
                         }
                         let k = px.index_of_id(id);
                         out[(k / sparse_bucket_size) as usize].push((k, Frag { z, tri: ti }));
@@ -2160,6 +2180,93 @@ pub static CENSUS_LB: [std::sync::atomic::AtomicUsize; 2] = [std::sync::atomic::
 pub static CERT_STATS: [std::sync::atomic::AtomicU64; 4] = [std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0)];
 /// LMTOOL_BOUND_STATS: [frames, decided-and-right (census/4), decided-and-right (census/8), decided-WRONG].
 pub static BOUND_TOTALS: [std::sync::atomic::AtomicU64; 4] = [std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0)];
+
+/// The sixteen lanes' z and the in-range mask of a block (see the visit body): `z[l] = (z0·b0 + z1·b1) + z2·b2`
+/// exactly as the scalar body computes it, `live` = cov ∧ (z < zmax) ∧ (z ≥ zmin) — the same f32 operations per
+/// lane, in the same order (no fused multiply-add: the scalar form has none).
+pub struct LaneZ {
+    pub z: [f32; 16],
+    pub live: u16,
+}
+
+#[inline(always)]
+pub fn lanes_z_range(bary: &[[f32; 16]; 3], zv: [f32; 3], zmin: f32, zmax: f32, cov: u16) -> LaneZ {
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+    unsafe {
+        use std::arch::x86_64::*;
+        let b0 = _mm512_loadu_ps(bary[0].as_ptr());
+        let b1 = _mm512_loadu_ps(bary[1].as_ptr());
+        let b2 = _mm512_loadu_ps(bary[2].as_ptr());
+        let t0 = _mm512_mul_ps(_mm512_set1_ps(zv[0]), b0);
+        let t1 = _mm512_mul_ps(_mm512_set1_ps(zv[1]), b1);
+        let t2 = _mm512_mul_ps(_mm512_set1_ps(zv[2]), b2);
+        let z = _mm512_add_ps(_mm512_add_ps(t0, t1), t2);
+        let lt = _mm512_cmp_ps_mask::<_CMP_LT_OQ>(z, _mm512_set1_ps(zmax));
+        let ge = _mm512_cmp_ps_mask::<_CMP_GE_OQ>(z, _mm512_set1_ps(zmin));
+        let mut out = LaneZ { z: [0.0; 16], live: 0 };
+        _mm512_storeu_ps(out.z.as_mut_ptr(), z);
+        out.live = cov & lt & ge;
+        out
+    }
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512f")))]
+    {
+        let mut out = LaneZ { z: [0.0; 16], live: 0 };
+        for l in 0..16 {
+            let z = zv[0] * bary[0][l] + zv[1] * bary[1][l] + zv[2] * bary[2][l];
+            out.z[l] = z;
+            if (cov >> l) & 1 == 1 && z < zmax && z >= zmin { out.live |= 1 << l; }
+        }
+        out
+    }
+}
+
+/// The wanted bits of pixels id0..id0+16 from the wanted bitmap (bit l = pixel id0 + l; pixels past the bitmap
+/// read as not wanted).
+#[inline(always)]
+pub fn wanted_bits16(bitmap: &[u64], id0: usize) -> u16 {
+    let w = id0 >> 6;
+    let s = id0 & 63;
+    let lo = bitmap.get(w).copied().unwrap_or(0) >> s;
+    let v = if s + 16 > 64 { lo | (bitmap.get(w + 1).copied().unwrap_or(0) << (64 - s)) } else { lo };
+    v as u16
+}
+
+/// The environment layer's depth maximum over sixteen lanes: `z01 = 0.5 + (zc + z) / (2·half_d)` per lane (the
+/// scalar `PeelFrame::z01`), kept where `0 ≤ z01 ≤ 1` and `z01 > e` (the strict maximum the scalar body takes);
+/// `env` holds the lanes' current maxima (its length may fall short of 16 at a band's end: those lanes are off).
+#[inline(always)]
+pub fn env_max_update16(env: &mut [f32], z: &[f32; 16], live: u16, frame: &PeelFrame) {
+    let n = env.len().min(16);
+    let lane_mask: u16 = if n >= 16 { 0xffff } else { ((1u32 << n) - 1) as u16 };
+    let live = live & lane_mask;
+    if live == 0 { return; }
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+    unsafe {
+        use std::arch::x86_64::*;
+        let zv = _mm512_loadu_ps(z.as_ptr());
+        let zc = _mm512_set1_ps(frame.zc);
+        let den = _mm512_set1_ps(2.0 * frame.half_d);
+        let z01 = _mm512_add_ps(_mm512_set1_ps(0.5), _mm512_div_ps(_mm512_add_ps(zc, zv), den));
+        let ge0 = _mm512_cmp_ps_mask::<_CMP_GE_OQ>(z01, _mm512_setzero_ps());
+        let le1 = _mm512_cmp_ps_mask::<_CMP_LE_OQ>(z01, _mm512_set1_ps(1.0));
+        let e = _mm512_maskz_loadu_ps(live, env.as_ptr());
+        let gt = _mm512_mask_cmp_ps_mask::<_CMP_GT_OQ>(live & ge0 & le1, z01, e);
+        _mm512_mask_storeu_ps(env.as_mut_ptr(), gt, z01);
+    }
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512f")))]
+    {
+        let mut m = live;
+        while m != 0 {
+            let l = m.trailing_zeros() as usize;
+            m &= m - 1;
+            let z01 = frame.z01(z[l]);
+            if z01 >= 0.0 && z01 <= 1.0 {
+                let e = &mut env[l];
+                if z01 > *e { *e = z01; }
+            }
+        }
+    }
+}
 
 thread_local! {
     /// The raster band's slot and environment tables, kept per pool thread across bands (see the fused count).
