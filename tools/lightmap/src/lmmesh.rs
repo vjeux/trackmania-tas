@@ -35,23 +35,131 @@ pub fn snorm16_roundtrip(v: f32) -> f32 {
 /// is the observed material table (LMTOOL_LM_UV_TC1_ALL=1 restores TEXCOORD1 for everything).
 pub fn terrain_material_takes_tc0(link: &str) -> bool {
     if std::env::var_os("LMTOOL_LM_UV_TC1_ALL").is_some() { return false; }
+    // THE GAME'S SELECTOR (RE 11, 2026-09-26 09:20Z, NHmsLightMap::NLocal::CreateVStreamTcLM 0x140a3a6f0 → FUN_140216b30): the
+    // lightmap uv = TEXCOORD[TexCoordIndex] of the material's SHADER's "PreLightGen" bitmap binding (CPlugBitmapAddress chunk
+    // 0x09047007 in the .Shader.Gbx); read from the pack when the link was prefetched (`prefetch_lm_uv_index`), else the observed table
+    if let Some(Some(idx)) = lm_uv_index_cached(link) { return idx == 0; }
     let l = link.to_ascii_lowercase();
     let Some(pos) = l.rfind("\\media\\material\\") else { return false };
     let name = &l[pos + "\\media\\material\\".len()..];
+    // the observed table (RE 7, 03:10Z) — RE 11's shader read moves TransitionTo* to index 1 (PyPxz_Ids_Tex); kept as the fallback only
     matches!(name, "transitiontosand" | "transitiontoland" | "transitiontoseafloor" | "sand" | "land" | "seafloor" | "hillpxz")
+}
+
+/// The per-link cache of the shader's PreLightGen TexCoordIndex: `None` = the shader has no PreLightGen binding or its pass word
+/// lacks 0x1000 — the geom is in NO lightmap pass (RE 11: this ONE field + ONE bit is both of RE 7's observed tables).
+static LM_UV_UNKNOWN: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+static LM_UV_INDEX: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, Option<u32>>>> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+/// The pack store the selector resolves unknown links against (set once by the bake before the scene is built:
+/// `set_lm_uv_store`); without it only prefetched links are known.
+static LM_UV_STORE: std::sync::Mutex<Option<mapgeom::store::DataStore>> = std::sync::Mutex::new(None);
+
+pub fn set_lm_uv_store(store: mapgeom::store::DataStore) {
+    *LM_UV_STORE.lock().unwrap() = Some(store);
+}
+
+/// The cached selector for a link: `Some(Some(idx))` lightmapped with TEXCOORD[idx]; `Some(None)` not lightmapped; `None` unknown
+/// (no store and not prefetched). A miss is resolved through the bake's store when one was set.
+pub fn lm_uv_index_cached(link: &str) -> Option<Option<u32>> {
+    if link.is_empty() { return None; }
+    let key = link.to_ascii_lowercase();
+    if let Some(v) = LM_UV_INDEX.lock().unwrap().get(&key).copied() { return Some(v); }
+    if LM_UV_UNKNOWN.lock().unwrap().contains(&key) { return None; }
+    let mut guard = LM_UV_STORE.lock().unwrap();
+    let store = guard.as_mut()?;
+    let (n, _) = prefetch_lm_uv_index(store, &[link.to_string()]);
+    if n == 0 {
+        // unresolvable (an embedded user material, a missing pack): remember the miss so the fallback table answers next time
+        LM_UV_UNKNOWN.lock().unwrap().insert(key);
+        return None;
+    }
+    LM_UV_INDEX.lock().unwrap().get(&link.to_ascii_lowercase()).copied()
+}
+
+/// Read a shader file's `PreLightGen*` binding: the Id string, then the following chunk 0x09047007 / 0x09047006 (u32 flags, i32
+/// TexCoordIndex, u8) or 0x09047004 (i32 TexCoordIndex) — RE 11's re11_plgtc scan.
+pub fn shader_prelightgen_tc(bytes: &[u8]) -> Option<u32> {
+    for name in ["PreLightGenTx", "PreLightGen", "PreLightGenTy", "PreLightGenTz", "PreLightGenSH0", "PreLightGenSprite"] {
+        let nb = name.as_bytes();
+        let mut i = 4usize;
+        while i + nb.len() <= bytes.len() {
+            if &bytes[i..i + nb.len()] == nb && u32::from_le_bytes(bytes[i - 4..i].try_into().unwrap()) as usize == nb.len() {
+                let p = i + nb.len();
+                let mut q = p;
+                while q + 12 <= bytes.len() && q < p + 64 {
+                    let w = u32::from_le_bytes(bytes[q..q + 4].try_into().unwrap());
+                    if w == 0x0904_7007 || w == 0x0904_7006 {
+                        let tc = i32::from_le_bytes(bytes[q + 8..q + 12].try_into().unwrap());
+                        return u32::try_from(tc).ok();
+                    }
+                    if w == 0x0904_7004 {
+                        let tc = i32::from_le_bytes(bytes[q + 4..q + 8].try_into().unwrap());
+                        return u32::try_from(tc).ok();
+                    }
+                    q += 1;
+                }
+                i = p;
+            } else {
+                i += 1;
+            }
+        }
+    }
+    None
+}
+
+/// Resolve and cache the LM uv selector of every link: the material chain → the shader file → its pass word (0x09002020: bit 0x1000 =
+/// lightmapped) and its PreLightGen binding's TexCoordIndex. Returns (resolved, lightmapped) counts for the log.
+pub fn prefetch_lm_uv_index(store: &mut mapgeom::store::DataStore, links: &[String]) -> (usize, usize) {
+    let (mut resolved, mut lit) = (0usize, 0usize);
+    for l in links {
+        if l.is_empty() { continue; }
+        let key = l.to_ascii_lowercase();
+        if LM_UV_INDEX.lock().unwrap().contains_key(&key) { continue; }
+        let mat = if key.ends_with(".material.gbx") { l.clone() } else { format!("{l}.Material.Gbx") };
+        let chain = mapgeom::envblock::material_chain(store, &mat);
+        let mut v: Option<Option<u32>> = None;
+        if !chain.shader.is_empty() {
+            let pass_ok = chain.flags.map(|f| f.pass_bits & 0x1000 != 0).unwrap_or(true);
+            match store.read(&chain.shader) {
+                Ok(bytes) => { let tc = shader_prelightgen_tc(&bytes); v = Some(if pass_ok { tc } else { None }); }
+                Err(_) => {}
+            }
+        }
+        if let Some(val) = v {
+            resolved += 1;
+            if val.is_some() { lit += 1; }
+            LM_UV_INDEX.lock().unwrap().insert(key, val);
+        }
+    }
+    (resolved, lit)
 }
 
 /// The game-material link of a shaded geom (the custom material's link, else its name, else the older material list).
 pub fn geom_material_link(s2: &mapgeom::static_item::solid2::CPlugSolid2Model, sg: &mapgeom::static_item::solid2::ShadedGeom) -> String {
+    geom_material_link_ext(s2, sg, None)
+}
+
+/// `geom_material_link` with the model FILE's external references: a pack prefab's material is an external ref (RE 11's 0003), the
+/// link = `materials::material_link(path)`.
+pub fn geom_material_link_ext(s2: &mapgeom::static_item::solid2::CPlugSolid2Model, sg: &mapgeom::static_item::solid2::ShadedGeom, externals: Option<&[(u32, String)]>) -> String {
     usize::try_from(sg.material_index).ok().and_then(|mi| {
         s2.custom_materials.get(mi).and_then(|cm| cm.inst().and_then(|m| m.link().map(|l| l.to_string())).or_else(|| if cm.name.is_empty() { None } else { Some(cm.name.clone()) }))
             .or_else(|| s2.materials.get(mi).and_then(|mr| match mr.inline.as_deref() { Some(mapgeom::static_item::Node::Material(m)) => m.link().map(|l| l.to_string()), _ => None }))
+            .or_else(|| externals.and_then(|ex| s2.materials.get(mi).and_then(|r| if r.index >= 0 { ex.iter().find(|(i, _)| *i == r.index as u32).map(|(_, p)| mapgeom::static_item::materials::material_link(p)) } else { None })))
     }).unwrap_or_default()
 }
 
 /// The lightmap uvs of a shaded geom's visual: TEXCOORD0 for the terrain materials, else the TexCoord1 rule below.
 pub fn lightmap_uvs_of_geom(s2: &mapgeom::static_item::solid2::CPlugSolid2Model, sg: &mapgeom::static_item::solid2::ShadedGeom, vis: &mapgeom::static_item::visual::CPlugVisualIndexedTriangles) -> Option<Vec<[f32; 2]>> {
-    if terrain_material_takes_tc0(&geom_material_link(s2, sg)) {
+    lightmap_uvs_of_geom_ext(s2, sg, vis, None)
+}
+
+pub fn lightmap_uvs_of_geom_ext(s2: &mapgeom::static_item::solid2::CPlugSolid2Model, sg: &mapgeom::static_item::solid2::ShadedGeom, vis: &mapgeom::static_item::visual::CPlugVisualIndexedTriangles, externals: Option<&[(u32, String)]>) -> Option<Vec<[f32; 2]>> {
+    let link = geom_material_link_ext(s2, sg, externals);
+    // a link whose shader is known NOT lightmapped (no PreLightGen binding / pass word without 0x1000): no LM geometry (RE 11)
+    if let Some(None) = lm_uv_index_cached(&link) { return None; }
+    if terrain_material_takes_tc0(&link) {
         use mapgeom::static_item::vstream::Elem;
         let st = vis.stream()?;
         let get = |name: u32| st.decls.iter().zip(st.elems.iter()).find(|(d, _)| d.name() == name).map(|(_, e)| e);
@@ -131,6 +239,12 @@ impl Default for GeomOrder {
 }
 
 pub fn lm_mesh_of_solid_ordered(s2: &mapgeom::static_item::solid2::CPlugSolid2Model, order: GeomOrder) -> Option<LmMesh> {
+    lm_mesh_of_solid_ext(s2, order, None)
+}
+
+/// `lm_mesh_of_solid_ordered` with the model file's external references (pack prefabs: the material links, hence the lightmap uv set
+/// and the lightmapped test, come from them).
+pub fn lm_mesh_of_solid_ext(s2: &mapgeom::static_item::solid2::CPlugSolid2Model, order: GeomOrder, externals: Option<&[(u32, String)]>) -> Option<LmMesh> {
     use mapgeom::static_item::vstream::Elem;
     let mut verts: Vec<LmVertex> = Vec::new();
     let mut indices: Vec<u16> = Vec::new();
@@ -155,7 +269,7 @@ pub fn lm_mesh_of_solid_ordered(s2: &mapgeom::static_item::solid2::CPlugSolid2Mo
         }
         let Some(vr) = s2.visuals.get(sg.visual_index as usize) else { continue };
         let Some(mapgeom::static_item::Node::Visual(vis)) = vr.inline.as_deref() else { continue };
-        let Some(uv1) = lightmap_uvs_of_geom(s2, sg, vis) else { continue };
+        let Some(uv1) = lightmap_uvs_of_geom_ext(s2, sg, vis, externals) else { continue };
         let Some(st) = vis.stream() else { continue };
         let Some(ib) = vis.index_buffer.as_ref() else { continue };
         let get = |name: u32| st.decls.iter().zip(st.elems.iter()).find(|(d, _)| d.name() == name).map(|(_, e)| e);
@@ -482,7 +596,7 @@ pub fn lm_scene_add_entities(store: &mut mapgeom::store::DataStore, layout: &cra
         let Some(e) = pf.ents.get(*entity) else { continue };
         let Some(mapgeom::static_item::Node::StaticObject(so)) = e.model.inline.as_deref() else { continue };
         let Some(s2) = so.solid2() else { continue };
-        let Some(mesh) = lm_mesh_of_solid(s2) else { continue };
+        let Some(mesh) = lm_mesh_of_solid_ext(s2, GeomOrder::default(), Some(&pm.externals)) else { continue };
         // LMTOOL_LM_ENTITY_TRACE_TSV=FILE: one line per record — record index (= chart index), prefab#entity, class, world centre y —
         // for per-prefab / per-height statistics over the charts table
         if let Ok(path) = std::env::var("LMTOOL_LM_ENTITY_TRACE_TSV") {
@@ -495,7 +609,7 @@ pub fn lm_scene_add_entities(store: &mut mapgeom::store::DataStore, layout: &cra
         if std::env::var_os("LMTOOL_LM_ENTITY_TRACE").is_some() {
             let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
             for v in &mesh.verts { for a in 0..2 { lo[a] = lo[a].min(v.uv[a]); hi[a] = hi[a].max(v.uv[a]); } }
-            let mats: Vec<String> = s2.shaded_geoms.iter().map(|sg| { let l = geom_material_link(s2, sg); format!("{}{}", l.rsplit('\\').next().unwrap_or(&l), if terrain_material_takes_tc0(&l) { "[tc0]" } else { "[tc1]" }) }).collect();
+            let mats: Vec<String> = s2.shaded_geoms.iter().map(|sg| { let l = geom_material_link_ext(s2, sg, Some(&pm.externals)); format!("{}{}", l.rsplit('\\').next().unwrap_or(&l), match lm_uv_index_cached(&l) { Some(Some(i)) => format!("[tc{i}]"), Some(None) => "[not lightmapped]".to_string(), None => (if terrain_material_takes_tc0(&l) { "[tc0?]" } else { "[tc1?]" }).to_string() }) }).collect();
             let r0 = &layout.records[recs[0]];
             // the first triangle's winding normal vs its vertex normal (the peel's front-face test is the winding)
             let wind = if mesh.indices.len() >= 3 {

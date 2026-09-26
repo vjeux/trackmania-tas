@@ -342,6 +342,11 @@ pub fn geom_from_solid2_ext(s2: &mapgeom::static_item::solid2::CPlugSolid2Model,
                 let chain = mapgeom::envblock::material_chain(store, &mat);
                 let vdep = chain.shader.to_ascii_uppercase().contains("VDEPLIGHT");
                 v = vdep || chain.flags.map(|f| f.never_casts() || !f.passes_default_mask()).unwrap_or(false);
+                // THE GAME'S OWN TEST (RE 11, 09:20Z): a shader without a PreLightGen binding, or whose pass word lacks 0x1000, gets no
+                // TcLM stream — the geom is in NO lightmap pass (Water_MultiH, Warp PyPxzDiff, GrassFence_VDepLight, DecalGeom, TAddModCV,
+                // ShadowCaster); this supersedes the never_casts / VDepLight reading above (they agree on every pack material read so far)
+                let link_for_lm = mapgeom::static_item::materials::material_link(&mat);
+                if let Some(None) = crate::lmmesh::lm_uv_index_cached(&link_for_lm) { v = true; }
                 if std::env::var_os("LMTOOL_MATERIAL_TRACE").is_some() { eprintln!("material {mat}: shader {} flags {:?} → {}", chain.shader, chain.flags, if v { "EXCLUDED from the lightmapper" } else { "drawn" }); }
             }
         }
