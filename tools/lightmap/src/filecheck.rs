@@ -203,13 +203,31 @@ pub fn chart_px(x: u32, y: u32, w: u32, h: u32) -> (u32, u32, u32, u32) {
     (x / 2, y / 2, (x + w) / 2 - x / 2 + 1, (y + h) / 2 - y / 2 + 1)
 }
 
+/// The chart's own pixels alone: the game's stored texel origin ((X + 1)/2, (Y + 1)/2) and w/2 × h/2 pixels (the layout sizes are even;
+/// an odd size keeps its floor) — no gutter pixel before or after.
+pub fn chart_px_shrunk(x: u32, y: u32, w: u32, h: u32) -> (u32, u32, u32, u32) {
+    ((x + 1) / 2, (y + 1) / 2, w / 2, h / 2)
+}
+
 /// The per-chart normalisation of the colour image (client 0x14029add0): per chart the largest R/G/B byte over
 /// its pixels (`fb0`; charts stacked without a gap — a chart whose top-left is another's bottom-left — form a
 /// chain sharing the chain's maximum; an empty or out-of-image chart gets 0xff); then every pixel of a chart
 /// with 1 ≤ fb0 ≤ 254 is multiplied by 255/fb0 and truncated. Returns (fb0 per chart, the scaled image).
 pub fn chart_normalise(rgb: &mut [u8], w: u32, h: u32, charts: &[(u32, u32, u32, u32)]) -> Vec<u8> {
+    chart_normalise_by(rgb, w, h, charts, false)
+}
+
+/// `chart_normalise` over each chart's OWN shrunk rectangle — the layout rect scaled to the 8-bit image with the straddling pad pixels
+/// excluded (start ceil(x/2), end floor((x + w)/2) exclusive) — RE 13's 20:15Z read of FUN_14029add0 → FUN_14029ac70 mode 9 (the
+/// SetUvTransfo node + pad, size − 2·pad): a chart no lamp drew keeps the byte 0 even when the gutter fill bled a neighbour's light into
+/// the pad ring beside it (the lamp frame; frame 0's bytes are the same under both rules on pwc-day's 4 099 charts).
+pub fn chart_normalise_shrunk(rgb: &mut [u8], w: u32, h: u32, charts: &[(u32, u32, u32, u32)]) -> Vec<u8> {
+    chart_normalise_by(rgb, w, h, charts, true)
+}
+
+fn chart_normalise_by(rgb: &mut [u8], w: u32, h: u32, charts: &[(u32, u32, u32, u32)], shrunk: bool) -> Vec<u8> {
     let n = charts.len();
-    let px: Vec<(u32, u32, u32, u32)> = charts.iter().map(|&(x, y, cw, ch)| chart_px(x, y, cw, ch)).collect();
+    let px: Vec<(u32, u32, u32, u32)> = charts.iter().map(|&(x, y, cw, ch)| if shrunk { chart_px_shrunk(x, y, cw, ch) } else { chart_px(x, y, cw, ch) }).collect();
     // the chains: position (x, y + h) → the chart starting there
     let mut by_pos = std::collections::HashMap::<(u32, u32), usize>::new();
     for (i, &(x, y, cw, ch)) in charts.iter().enumerate() {

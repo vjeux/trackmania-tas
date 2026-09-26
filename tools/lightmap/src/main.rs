@@ -3272,7 +3272,7 @@ fn run(a: Vec<String>) {
                                         // --local-lights-tail lists|simple|chain[:S] keeps the light-ID-list compose (F's model of the file)
                                         let tail = f("--local-lights-tail").unwrap_or_else(|| "d0".into());
                                         let mood_word = frame_params_for_transcribed.as_ref().map(|fp| fp.max_hdr_mood).unwrap_or(mood_max_hdr_for_encode / SQRT_2PI);
-                                        let f1 = if tail == "d0" { lightmap::localdrive::frame1_from_direct(&out.direct, &rects, 2048) } else { lightmap::localdrive::frame1_images_by(if tail == "lists" { "simple" } else { &tail }, &out.lists, &su.lamps, &rects, mood_word, dil, 2048) };
+                                        let f1 = if tail == "d0" { lightmap::localdrive::frame1_from_direct(&out.direct, from_map_setup.as_ref().map(|fm| &fm.sun), &rects, 2048) } else { lightmap::localdrive::frame1_images_by(if tail == "lists" { "simple" } else { &tail }, &out.lists, &su.lamps, &rects, mood_word, dil, 2048) };
                                         match f1 {
                                             Some(f1) => { eprintln!("local-lights: FRAME 1 = {} lamps, {} lit texels, MaxHDR {}, WebP {} B ({:.1}s)", su.lamps.len(), f1.lit_texels, f1.max_hdr, f1.webp.len(), tl.elapsed().as_secs_f32()); img.frame1 = Some(f1); }
                                             None => eprintln!("local-lights: nothing lit — frame 1 stays black"),

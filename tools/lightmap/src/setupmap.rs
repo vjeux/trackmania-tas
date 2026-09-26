@@ -429,6 +429,8 @@ pub fn attr_from_map(scene: &crate::geometry::Scene, lm: &LmScene, frozen: &Froz
     let mesh_tris = &mesh_tris;
     // LMTOOL_TILE_ALBEDO_SCALE=K (study): the tiles' sampled albedo scaled — the ground-bounce lever test on stpad's posts
     static ASCALE: std::sync::LazyLock<f32> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_TILE_ALBEDO_SCALE").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0));
+    static GRASS_NO2: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("LMTOOL_GRASS_NO2").is_some());
+    static GRASS_TEXTURED: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_GRASS_X2").as_deref() == Ok("textured"));
     static TILE_TRACE: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("LMTOOL_PREPASS_TILE_TRACE").is_some());
     static TILE_TRACE_N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let ascale: f32 = *ASCALE;
@@ -567,6 +569,25 @@ pub fn attr_from_map(scene: &crate::geometry::Scene, lm: &LmScene, frozen: &Froz
                                 // 0.088 / 0.142 / 0.056 ± 0.5 %), so the footprint LOD (7.55 here) is not a factor either.
                                 let x2 = frozen.tile_x2.as_ref();
                                 let wp = [0, 1, 2].map(|i| { let v = mesh.verts[tri[i] as usize].pos; [v[0] + inst.t[0], v[2] + inst.t[2]] });
+                                // THE GRASS MDIFFUSE IS ONE CONSTANT (E, 2026-09-26 20:30Z, from the banked f4468 draws.json + VS 9513's text):
+                                // GbxVisualToWorld is the ZERO matrix in every one of the 9 217 grass draws, so the VS's world position is
+                                // (0, 0, 0, 1) and the positional uvs collapse to the translation rows — BaseColor at (0, 0), GrassX2 at
+                                // (0.25, 0.25) (GbxWorldPosToTexCoord_MapGrassX2 row 4) — the pre-pass colour of every grass tile texel is
+                                // 2 · Grass_D_lin(0, 0) · Grass_X2_raw(0.25, 0.25) (stpad: (0.0798, 0.1356, 0.0339)), sampled with the texture's own
+                                // WRAP sampler at zero derivatives (mip 0, the four corner texels' bilinear mix — RE 8's corner rule, now read as
+                                // the LM pre-pass's rule for every world-position material, not a pwc-day accident). LMTOOL_GRASS_X2=textured
+                                // keeps the per-texel study sampling.
+                                if let (Some(t2), false) = (x2, *GRASS_TEXTURED) {
+                                    let cd = texsample::sample(tx, 0, &sampler, [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]);
+                                    let c2 = texsample::sample(t2, 0, &sampler, [0.25, 0.25], [0.0, 0.0], [0.0, 0.0]);
+                                    // LMTOOL_GRASS_NO2=1 (study): the constant WITHOUT the shader's ×2 — G's measured game albedo (0.0409, 0.0755, 0.0229)
+                                    // is D(0,0)·X2(0.25,0.25) = (0.0399, 0.0678, 0.0170) to 2 % in R, 10 % in G; the ×2 read from the DXBC gives twice that
+                                    let two = if *GRASS_NO2 { 1.0 } else { 2.0 };
+                                    let k = [two * cd[0] * c2[0] * ascale * lm_scale, two * cd[1] * c2[1] * ascale * lm_scale, two * cd[2] * c2[2] * ascale * lm_scale, lm_scale];
+                                    if TILE_TRACE_N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0 { eprintln!("tile pre-pass: the grass constant {two} · D_lin(0, 0) ({:.4}, {:.4}, {:.4}) · X2_raw(0.25, 0.25) ({:.4}, {:.4}, {:.4}) = ({:.4}, {:.4}, {:.4})", cd[0], cd[1], cd[2], c2[0], c2[1], c2[2], k[0] * 9.0 / ascale, k[1] * 9.0 / ascale, k[2] * 9.0 / ascale); }
+                                    prepass::raster_tri_rows(p, W, H, y_lo, y_hi, |x, y, _| blend_at(tp, x, y, k, 6));
+                                    continue;
+                                }
                                 prepass::raster_tri_rows(p, W, H, y_lo, y_hi, |x, y, b| {
                                     let uvs = [b[0] * uv0[0][0] + b[1] * uv0[1][0] + b[2] * uv0[2][0], 1.0 - (b[0] * uv0[0][1] + b[1] * uv0[1][1] + b[2] * uv0[2][1])];
                                     if let Some(mut s) = prepass::ps_basecolor(tx, &sampler, uvs, [dudx, -dvdx], [dudy, -dvdy], None, lm_scale) {
@@ -726,15 +747,20 @@ pub fn build_with_lamps(scene: &crate::geometry::Scene, lm: &LmScene, sbox: &Aab
     if let Some(ll) = lamp_light {
         let plain = std::env::var("LMTOOL_LAMP_BOUNCE_FORM").as_deref() == Ok("sum");
         let (mut n_tex, mut sum) = (0usize, [0.0f32; 3]);
-        // A_0 normalised: (L_raw / cov, 1) where cov > 0.01
+        // A_0 normalised: (L_raw / cov, 1) where the lamps' coverage > 0.01; alpha 1 on EVERY rasterised texel of the atlas (RE 13, 20:15Z:
+        // RenderAddAlphaSSAA's coverage pass before the lamps — the sun accumulation's alpha is that raster coverage), so the gutter fill
+        // stays in the pad rings and gaps
         let mut a0 = Buf::new(W, H, 4);
         for y in 0..H.min(ll.h) {
             for x in 0..W.min(ll.w) {
                 let cov = ll.get(x, y, 3);
-                if cov <= 0.01 { continue; }
-                n_tex += 1;
-                for c in 0..3 { let v = ll.get(x, y, c) / cov; sum[c as usize] += v; a0.set(x, y, c, v); }
-                a0.set(x, y, 3, 1.0);
+                if cov > 0.01 {
+                    n_tex += 1;
+                    for c in 0..3 { let v = ll.get(x, y, c) / cov; sum[c as usize] += v; a0.set(x, y, c, v); }
+                    a0.set(x, y, 3, 1.0);
+                } else if sun.get(x, y, 3) > 0.01 {
+                    a0.set(x, y, 3, 1.0);
+                }
             }
         }
         if plain {
@@ -743,7 +769,8 @@ pub fn build_with_lamps(scene: &crate::geometry::Scene, lm: &LmScene, sbox: &Aab
         } else {
             // D_0 = the 8 alpha-weighted gutter fills of A_0 (PS 1332), the same image the frame-1 slot stores
             d0 = Some(crate::localdrive::frame1_dilated_n(&a0, W, 8));
-            // the sun draws add (S_raw, f) INTO A_0: (L + S_raw, 1 + f)
+            // the sun draws add (S_raw, f) INTO A_0 = (L, 1) on every covered texel (L = 0 where no lamp reached): (L + S_raw, 1 + f) — so the
+            // sun's own weight is 1/(1 + f) ≈ 0.5 on every interior texel of a lamp map, lamp-lit or not (RE 13, 20:15Z)
             for y in 0..H { for x in 0..W { if a0.get(x, y, 3) > 0.0 { for c in 0..3 { sun.set(x, y, c, sun.get(x, y, c) + a0.get(x, y, c)); } sun.set(x, y, 3, sun.get(x, y, 3) + 1.0); } } }
             notes.push(format!("LAMPS IN SWEEP 0 (RE 13's alpha bookkeeping): A_0 = (L, 1) on {n_tex} texels (Σ L {:.1} {:.1} {:.1}); C0img = D_0 = gutter(A_0) + NormWithA(A_0 + sun) — interior 1.5·L + 0.5·S", sum[0], sum[1], sum[2]));
         }
@@ -967,6 +994,7 @@ pub fn tables_from_paktables_with_records(f: &mut FrozenTables, store: &mut mapg
                 // | srgb (the refuted sRGB-view form) stay as study switches; the measured ~½ against the game is OURS to find elsewhere
                 // (G: a tile double-count between the fitted-tile and world peels, or the tile chart resolution).
                 let x2_mode = std::env::var("LMTOOL_GRASS_X2").unwrap_or_else(|_| "stored".into());
+                let x2_mode = if x2_mode == "textured" { "stored".to_string() } else { x2_mode };
                 match if x2_mode == "off" { Ok(None) } else { slot_texture(store, tile_link, "GrassX2", x2_mode == "srgb") } {
                     Ok(Some((p2, t2))) => { got.push(format!("tiles {tile_link} → GrassX2 {p2} ({}×{}, {} mips; {} , positional over 1024 m; ×2 on rgb)", t2.w, t2.h, t2.mips, if x2_mode == "srgb" { "sRGB-decoded" } else { "stored bytes / 255" })); f.tile_x2 = Some(t2); }
                     Ok(None) => {}
