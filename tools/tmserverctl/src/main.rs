@@ -271,6 +271,9 @@ fn status(cfg: &Config) -> Result<(), String> {
     if let Ok(v) = c.call("GetSystemInfo", &[]) {
         server_login = v.field_str("ServerLogin");
         println!("public ip:  {} port {} (login {})", v.field_str("PublishedIp"), v.field_str("Port"), server_login);
+        if !cfg.lan && !server_login.is_empty() {
+            println!("join link:  trackmania://#join={server_login}@Trackmania");
+        }
     }
     if let Ok(v) = c.call("GetCurrentMapInfo", &[]) {
         println!("map:        {} by {} [{}]", v.field_str("Name"), v.field_str("Author"), v.field_str("FileName"));
