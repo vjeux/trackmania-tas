@@ -922,8 +922,11 @@ pub fn basecolor_texture(store: &mut mapgeom::store::DataStore, link: &str) -> R
     let mat = if link.to_ascii_uppercase().ends_with(".MATERIAL.GBX") { link.to_string() } else { format!("{link}.Material.Gbx") };
     let chain = mapgeom::envblock::material_chain(store, &mat);
     let pick = |name: &str| chain.bitmaps.iter().find(|(n, p)| n.eq_ignore_ascii_case(name) && !p.is_empty()).map(|(_, p)| p.clone());
-    // BaseColor (CubeOut / TDSN), else Diffuse (PDiff), else BaseColorOp (DispIn: alpha varies → alpha-tested, RE 12's Q1 inference)
-    let (slot, alpha_tested) = match pick("BaseColor").or_else(|| pick("Diffuse")) { Some(p) => (Some(p), false), None => (pick("BaseColorOp"), true) };
+    // BaseColor (CubeOut / TDSN), else Diffuse (PDiff), else BaseColorOp — DispIn: OPAQUE (RE 13, 2026-09-26 17:55Z, f4468 PS 9529 DXBC:
+    // TMapBaseColorOp(uv), no alpha test, no discard, alpha := 1 — RE 12's "alpha varies → alpha-tested" inference was wrong; the cards'
+    // 0x8000 discard at 128/255 (PS 9530, TDOSN) is the flag path in attr_from_map, not this slot). LMTOOL_DISPIN_ALPHA_TEST=1 = the old inference.
+    let dispin_at = std::env::var_os("LMTOOL_DISPIN_ALPHA_TEST").is_some();
+    let (slot, alpha_tested) = match pick("BaseColor").or_else(|| pick("Diffuse")) { Some(p) => (Some(p), false), None => (pick("BaseColorOp"), dispin_at) };
     let Some(slot) = slot else { return Ok(None) };
     let dds = {
         let mut out: Option<String> = None;
@@ -997,7 +1000,7 @@ pub fn tables_from_paktables_with_records(f: &mut FrozenTables, store: &mut mapg
                 // TrackWallClipsInWorld / StructureInWorld, tiny-16's Technics, ScreenBack …) takes its BaseColor slot texture from the pack
                 // at the mesh TEXCOORD0 (VS 17021 o1 = v1, PS 17023: TMapBaseColor × 1/9, alpha forced 1) — never a constant, never black
                 match basecolor_texture(store, l) {
-                    Ok(Some((path, tx, at))) => { got.push(format!("{l} → {} {path} ({}×{}, {} mips; the {} class)", if at { "BaseColorOp" } else { "BaseColor" }, tx.w, tx.h, tx.mips, if at { "17022 alpha-tested (A2C off: an inference)" } else { "17023 textured" })); f.link_tex.insert(l.to_ascii_lowercase(), (tx, at)); }
+                    Ok(Some((path, tx, at))) => { got.push(format!("{l} → {} {path} ({}×{}, {} mips; the {} class)", if at { "BaseColorOp" } else { "BaseColor" }, tx.w, tx.h, tx.mips, if at { "17022 alpha-tested (LMTOOL_DISPIN_ALPHA_TEST: the refuted inference)" } else { "17023 / 9529 textured, opaque" })); f.link_tex.insert(l.to_ascii_lowercase(), (tx, at)); }
                     Ok(None) => notes.push(format!("pak: {l}: {e}; no BaseColor slot in its chain — the constant path keeps it")),
                     Err(e2) => notes.push(format!("pak: {l}: BaseColor: {e2}")),
                 }

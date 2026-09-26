@@ -199,8 +199,15 @@ pub fn lamps(item_lights: &[(usize, LightDef)], block_lights: &[(String, LightDe
 
 /// THE RECORD CULL of one lamp over the layout's records → the LM instances to draw (in LM scene order = the draw order).
 pub fn cull(gl: &crate::layout::GameLayout, sc: &LmScene, lamp: &Lamp) -> Vec<usize> {
+    // THE ZONE TILES ARE NOT IN THE LAMP DRAW LIST (E, 2026-09-26 19:55Z, from the editor's stpad night save: 0 of the 9 216 Grass tile
+    // charts carry a frame-1 byte (fb1 = 0 on every one) while 1 175 / 1 272 BarrierSupport, 240 / 424 RoadBorderSpot and every pool
+    // prefab do — the game's local-light instance stream (RE 13 19:55Z, FUN_14023ea90 over the 0x58-stride RECORD array) holds the
+    // item / block / clip records, not the flat-zone ground; our driver lit 265 tile charts, and their bounce of the lamp light was
+    // the night pools' remaining excess). LMTOOL_LL_TILES=1 restores the old behaviour.
+    static TILES_TOO: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("LMTOOL_LL_TILES").is_some());
     let mut seen = vec![false; gl.records.len()];
     for (k, r) in gl.records.iter().enumerate() {
+        if r.class == "tile" && !*TILES_TOO { continue; }
         seen[k] = crate::lightcull::local_light_sees(r.centre, r.half, &lamp.light, lamp.r_eff);
     }
     (0..sc.instances.len()).filter(|&ii| sc.rec_of.get(ii).map(|&k| k < seen.len() && seen[k]).unwrap_or(false)).collect()
