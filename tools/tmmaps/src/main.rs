@@ -250,6 +250,12 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        "changelog-scan" => {
+            if let Err(e) = tmmaps::changelog_scan::cmd(&args[1..]) {
+                eprintln!("tmmaps changelog-scan: {e}");
+                std::process::exit(1);
+            }
+        }
         "changelog" => {
             if let Err(e) = tmmaps::changelog::cmd(&args[1..]) {
                 eprintln!("tmmaps changelog: {e}");
