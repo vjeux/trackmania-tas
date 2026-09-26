@@ -1167,13 +1167,21 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
         // 600 M random cache-line writes per direction into a table larger than L2 — a quarter of the raster.)
         // The tables come from a per-thread pool; the scan resets what it read.
         let mut bufs = SLOT_BUFS.take();
-        let (mut cnt, mut env_max, mut list, mut csr, mut offs, mut fill) = (std::mem::take(&mut bufs.0), std::mem::take(&mut bufs.1), std::mem::take(&mut bufs.2), std::mem::take(&mut bufs.3), std::mem::take(&mut bufs.4), std::mem::take(&mut bufs.5));
+        let (mut cnt, mut env_max, list_v, mut csr, mut offs, mut fill) = (std::mem::take(&mut bufs.0), std::mem::take(&mut bufs.1), std::mem::take(&mut bufs.2), std::mem::take(&mut bufs.3), std::mem::take(&mut bufs.4), std::mem::take(&mut bufs.5));
         if cnt.len() < band_px { cnt.resize(band_px, 0); }
         if env_max.len() < band_px { env_max.resize(band_px, 0.0); }
-        list.clear();
+        // the slot form applies where the lane walk does (the dome layer, a 16-bit store, the biased order) and
+        // no measurement mode wants the full list
+        let slot_mode = counting && *SCAN_SLOTS && *BIASED_ORDER && *SCAN16_ON && !bound_stats && count.as_ref().map_or(false, |cx| cx.prm.dome_layer && cx.prm.depth_bits == 16);
+        let mut slots_v = if slot_mode { SLOT_TABLE.take() } else { Vec::new() };
+        if slot_mode && slots_v.len() < band_px * SLOTS_PER_PX { slots_v.resize(band_px * SLOTS_PER_PX, CFrag { z: 0.0, tri: 0, bias: 0.0 }); }
+        let mut list = Recs { list: list_v, slots: slots_v, slot_mode };
+        list.list.clear();
         let mut saturated = false;
         if by0 > by1 || bx0 > bx1 {
-            SLOT_BUFS.set((cnt, env_max, list, csr, offs, fill));
+            let Recs { list: list_v, slots: slots_v, .. } = list;
+            if slot_mode { SLOT_TABLE.set(slots_v); }
+            SLOT_BUFS.set((cnt, env_max, list_v, csr, offs, fill));
             return (out, hist, covered);
         }
         let band_clip = (bx0, by0, bx1, by1);
@@ -1204,7 +1212,7 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
         // path did not record): the count record, the wanted test, the fragment push. `bias` = Some(the
         // triangle's bias term) from the inline path, None for a deferred fragment (computed here from its
         // triangle). The job's tables come in as arguments (the opaque block path writes them directly).
-        let mut emit_frag = |cnt: &mut Vec<u16>, list: &mut Vec<(u32, CFrag)>, saturated: &mut bool, out: &mut Vec<(u32, Frag)>, x: u32, y: u32, z: f32, ti: u32, count_it: bool, bias: Option<f32>| {
+        let mut emit_frag = |cnt: &mut Vec<u16>, list: &mut Recs, saturated: &mut bool, out: &mut Vec<(u32, Frag)>, x: u32, y: u32, z: f32, ti: u32, count_it: bool, bias: Option<f32>| {
             let id = y * res + x;
             if count_it {
                 let bias = bias.unwrap_or_else(|| {
@@ -1214,10 +1222,11 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
                 let li = ((y as i32 - by0) as usize) * bw + (x as i32 - bx0) as usize;
                 let c = &mut cnt[li];
                 if *c == u16::MAX { *saturated = true; } else { *c += 1; }
+                let c_after = *c;
                 // (the record's tie key is the triangle's DRAW RANK under the biased order — looked up once
                 // per triangle here rather than per fragment in the scan)
                 if rank_run.0 != ti { rank_run = (ti, draw_rank_of(ti)); }
-                list.push((li as u32, CFrag { z, tri: rank_run.1, bias }));
+                list.push(li as u32, c_after, CFrag { z, tri: rank_run.1, bias });
             }
             if counting && !bit(bitmap, id as usize) {
                 return;
@@ -1338,7 +1347,7 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
                         while m != 0 {
                             let l = m.trailing_zeros() as usize;
                             m &= m - 1;
-                            list.push(((li0 + l) as u32, CFrag { z: lanes.z[l], tri: rank_ti, bias }));
+                            list.push((li0 + l) as u32, cnt[li0 + l], CFrag { z: lanes.z[l], tri: rank_ti, bias });
                         }
                         live &= wanted16;
                         if live == 0 { return; }
@@ -1404,27 +1413,42 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
             if offs.len() < band_px + 1 { offs.resize(band_px + 1, 0); }
             if fill.len() < band_px { fill.resize(band_px, 0); }
             offs[0] = 0;
-            if saturated {
-                offs[..band_px + 1].fill(0);
-                for (li, _) in &list { offs[*li as usize + 1] += 1; }
-                for i in 0..band_px { offs[i + 1] += offs[i]; }
-            } else {
+            if slot_mode {
+                // THE SLOT FORM: the first SLOTS_PER_PX records of every pixel sit in its slots already; only the
+                // overflow (the canopy's pixels beyond the fourth record) is counting-sorted here — offs/csr hold
+                // the overflow ranges
+                assert!(!saturated, "a pixel of the job holds 65535 records: the slot form has no saturation path");
                 let mut acc = 0u32;
-                for i in 0..band_px { fill[i] = acc; acc += cnt[i] as u32; offs[i + 1] = acc; }
-            }
-            if saturated { fill[..band_px].copy_from_slice(&offs[..band_px]); }
-            if csr.len() < list.len() { csr.resize(list.len(), CFrag { z: 0.0, tri: 0, bias: 0.0 }); }
-            // the scatter: fill[li] walks forward as its pixel's fragments land
-            for (li, cf) in &list {
-                let f = &mut fill[*li as usize];
-                csr[*f as usize] = *cf;
-                *f += 1;
+                for i in 0..band_px { let o = (cnt[i] as u32).saturating_sub(SLOTS_PER_PX as u32); fill[i] = acc; acc += o; offs[i + 1] = acc; }
+                if csr.len() < list.list.len() { csr.resize(list.list.len(), CFrag { z: 0.0, tri: 0, bias: 0.0 }); }
+                for (li, cf) in &list.list {
+                    let f = &mut fill[*li as usize];
+                    csr[*f as usize] = *cf;
+                    *f += 1;
+                }
+            } else {
+                if saturated {
+                    offs[..band_px + 1].fill(0);
+                    for (li, _) in &list.list { offs[*li as usize + 1] += 1; }
+                    for i in 0..band_px { offs[i + 1] += offs[i]; }
+                } else {
+                    let mut acc = 0u32;
+                    for i in 0..band_px { fill[i] = acc; acc += cnt[i] as u32; offs[i + 1] = acc; }
+                }
+                if saturated { fill[..band_px].copy_from_slice(&offs[..band_px]); }
+                if csr.len() < list.list.len() { csr.resize(list.list.len(), CFrag { z: 0.0, tri: 0, bias: 0.0 }); }
+                // the scatter: fill[li] walks forward as its pixel's fragments land
+                for (li, cf) in &list.list {
+                    let f = &mut fill[*li as usize];
+                    csr[*f as usize] = *cf;
+                    *f += 1;
+                }
             }
             // THE WALK IN LANES (scan_block16): the pixels with one or two fragments — nearly all — sixteen at a
             // time; the others (and every pixel when the frame's depth rules differ) take the scalar walk below
             let cx0 = count.as_ref().unwrap();
             let vector_scan = cx0.prm.dome_layer && cx0.prm.depth_bits == 16 && !bound_stats && *SCAN16_ON;
-            let mut pixels: Vec<(usize, f32)> = Vec::new();
+            let mut pixels: Vec<(usize, f32, u32)> = Vec::new();
             // (the fragment-count statistic per job, added to the shared counters once — an atomic per pixel
             // made the stats mode 20× slower)
             let mut nfrag_local = [0u64; 9];
@@ -1439,25 +1463,26 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
                     let mut env16_a = Align64([0f32; 16]);
                     let env16 = &mut env16_a.0;
                     env16.copy_from_slice(&env_max[li0..li0 + 16]);
-                    let (h, has, big) = scan_block16(&offs[li0..li0 + 17], &csr, env16, frame);
-                    if raster_stats { for l in 0..16 { let n = (offs[li0 + l + 1] - offs[li0 + l]) as usize; if n >= 1 { nfrag_local[match n { 1 | 2 => 0, 3 => 1, 4 => 2, 5 => 3, 6..=8 => 4, 9..=16 => 5, 17..=32 => 6, 33..=64 => 7, _ => 8 }] += 1; } } }
+                    let (h, has, big) = if slot_mode { scan_block16_slots(&cnt[li0..li0 + 16], &list.slots[li0 * SLOTS_PER_PX..], env16, frame) } else { scan_block16(&offs[li0..li0 + 17], &csr, env16, frame) };
+                    if raster_stats { for l in 0..16 { let n = if slot_mode { cnt[li0 + l] as usize } else { (offs[li0 + l + 1] - offs[li0 + l]) as usize }; if n >= 1 { nfrag_local[match n { 1 | 2 => 0, 3 => 1, 4 => 2, 5 => 3, 6..=8 => 4, 9..=16 => 5, 17..=32 => 6, 33..=64 => 7, _ => 8 }] += 1; } } }
                     covered += has as usize;
                     for k in 0..=SCAN_K { hist[k] += h[k] as usize; }
                     let mut m = big;
-                    while m != 0 { let l = m.trailing_zeros() as usize; m &= m - 1; pixels.push((li0 + l, env16[l])); }
+                    while m != 0 { let l = m.trailing_zeros() as usize; m &= m - 1; pixels.push((li0 + l, env16[l], cnt[li0 + l] as u32)); }
                     env_max[li0..li0 + 16].fill(0.0);
                     cnt[li0..li0 + 16].fill(0);
                     li0 += 16;
                 }
-                for li in li0..band_px { let e = std::mem::replace(&mut env_max[li], 0.0); cnt[li] = 0; if offs[li] != offs[li + 1] { covered += 1; pixels.push((li, e)); } }
+                for li in li0..band_px { let e = std::mem::replace(&mut env_max[li], 0.0); let c = std::mem::replace(&mut cnt[li], 0); if (slot_mode && c > 0) || (!slot_mode && offs[li] != offs[li + 1]) { covered += 1; pixels.push((li, e, c as u32)); } }
                 vector_done = true;
             }
             if raster_stats { for k in 0..9 { if nfrag_local[k] > 0 { RS_NFRAG[k].fetch_add(nfrag_local[k], std::sync::atomic::Ordering::Relaxed); } } }
             // (the scalar walk over the pixels the lanes left — every pixel without the lane walk; no list then)
             let mut pi = 0usize;
             let mut li_scalar = 0usize;
+            let mut slot_buf: Vec<CFrag> = Vec::new();
             loop {
-                let (li, env_d) = if vector_done {
+                let (li, env_d, n_slot) = if vector_done {
                     if pi >= pixels.len() { break; }
                     let p = pixels[pi]; pi += 1; p
                 } else {
@@ -1465,12 +1490,23 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
                     let li = li_scalar; li_scalar += 1;
                     if cnt[li] == 0 && !saturated { env_max[li] = 0.0; continue; }
                     let env_d = std::mem::replace(&mut env_max[li], 0.0);
-                    cnt[li] = 0;
-                    if offs[li] == offs[li + 1] { continue; }
+                    let c = std::mem::replace(&mut cnt[li], 0);
+                    if !slot_mode && offs[li] == offs[li + 1] { continue; }
                     covered += 1;
-                    (li, env_d)
+                    (li, env_d, c as u32)
                 };
                 let (a, c) = (offs[li] as usize, offs[li + 1] as usize);
+                if slot_mode {
+                    // the pixel's records: its slots, then its overflow range
+                    let ns = (n_slot as usize).min(SLOTS_PER_PX);
+                    slot_buf.clear();
+                    slot_buf.extend_from_slice(&list.slots[li * SLOTS_PER_PX..li * SLOTS_PER_PX + ns]);
+                    slot_buf.extend_from_slice(&csr[a..c]);
+                    if *MEASURE_NOWALK { hist[1] += 1; continue; }
+                    let cx = count.as_ref().unwrap();
+                    hist[layer_walk_biased_cfrags(&slot_buf, env_d, cx.prm.dome_layer, cx.prm.depth_bits, frame).min(MAX_LAYERS)] += 1;
+                    continue;
+                }
                 let n = c - a;
                 if bound_stats {
                     // how many item fragments the depth rules drop without needing their alpha result:
@@ -1542,7 +1578,9 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
             }
         }
         if bound_stats { let mut g = bound_acc.lock().unwrap(); for k in 0..=MAX_LAYERS { g.0[k] += hist_u[k]; g.1[k] += hist_l4[k]; g.2[k] += hist_l8[k]; } }
-        SLOT_BUFS.set((cnt, env_max, list, csr, offs, fill));
+        let Recs { list: list_v, slots: slots_v, .. } = list;
+        if slot_mode { SLOT_TABLE.set(slots_v); }
+        SLOT_BUFS.set((cnt, env_max, list_v, csr, offs, fill));
         JOB_LIST.set(job_list);
         if raster_stats { band_ns[j].store(t_band.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed); RS_TRIS.fetch_add(rs_tris, std::sync::atomic::Ordering::Relaxed); RS_TESTED.fetch_add(rs_tested, std::sync::atomic::Ordering::Relaxed); RS_VISITS.fetch_add(rs_visits, std::sync::atomic::Ordering::Relaxed); }
         (out, hist, covered)
@@ -3641,6 +3679,36 @@ pub fn scan_block16(offs: &[u32], csr: &[CFrag], env_d: &[f32; 16], frame: &Peel
         let o0 = _mm512_loadu_si512(offs.as_ptr() as *const _);
         let o1 = _mm512_loadu_si512(offs.as_ptr().add(1) as *const _);
         let n = _mm512_sub_epi32(o1, o0);
+        // the records of lane l start at csr[o0[l]] (12-byte records: ×3 in u32 units)
+        let idx0 = _mm512_mullo_epi32(o0, _mm512_set1_epi32(3));
+        scan_block16_core(n, idx0, csr.as_ptr() as *const f32, env_d, frame)
+    }
+}
+
+/// `scan_block16` over the SLOT form: the counts from the u16 table, lane l's records at slots[l·SLOTS_PER_PX..]
+/// (`slots` starts at the block's first pixel); lanes with more records than slots go to the scalar walk.
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+#[inline(always)]
+pub fn scan_block16_slots(cnt16: &[u16], slots: &[CFrag], env_d: &[f32; 16], frame: &PeelFrame) -> ([u32; SCAN_K + 1], u32, u16) {
+    use std::arch::x86_64::*;
+    unsafe {
+        debug_assert!(cnt16.len() >= 16 && slots.len() >= 16 * SLOTS_PER_PX);
+        let n = _mm512_cvtepu16_epi32(_mm256_loadu_si256(cnt16.as_ptr() as *const _));
+        let lane = _mm512_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
+        let idx0 = _mm512_mullo_epi32(lane, _mm512_set1_epi32((SLOTS_PER_PX * 3) as i32));
+        // (a lane with more records than slots must not read past its slots: SCAN_K ≤ SLOTS_PER_PX)
+        const _: () = assert!(SCAN_K <= SLOTS_PER_PX);
+        scan_block16_core(n, idx0, slots.as_ptr() as *const f32, env_d, frame)
+    }
+}
+
+/// The lane walk proper: `n` records per lane, lane l's first record at `base[idx0[l]]` (u32 units, 12-byte
+/// records: z at +0, the tie key at +1, the bias at +2).
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+#[inline(always)]
+unsafe fn scan_block16_core(n: std::arch::x86_64::__m512i, idx0: std::arch::x86_64::__m512i, base: *const f32, env_d: &[f32; 16], frame: &PeelFrame) -> ([u32; SCAN_K + 1], u32, u16) {
+    use std::arch::x86_64::*;
+    unsafe {
         let zero_i = _mm512_setzero_si512();
         let has = _mm512_cmpgt_epi32_mask(n, zero_i);
         if has == 0 { return ([0; SCAN_K + 1], 0, 0); }
@@ -3663,9 +3731,8 @@ pub fn scan_block16(offs: &[u32], csr: &[CFrag], env_d: &[f32; 16], frame: &Peel
         let q16 = |x: __m512| -> __m512 { _mm512_div_ps(round_away(_mm512_mul_ps(x, k65535)), k65535) };
         let env_pos = _mm512_cmp_ps_mask::<_CMP_GT_OQ>(ed, zero);
         let env_q = _mm512_mask_blend_ps(env_pos, zero, q16(ed));
-        // the fragments j = 0..K of every lane: csr[o0 + j] (12-byte records: z at +0, tri at +1, bias at +2, in
-        // u32 units); a missing fragment (j ≥ n) sorts last with the largest key
-        let base = csr.as_ptr() as *const f32;
+        // the fragments j = 0..K of every lane: base[idx0 + 3j] (12-byte records: z at +0, tri at +1, bias at +2,
+        // in u32 units); a missing fragment (j ≥ n) sorts last with the largest key
         let three = _mm512_set1_epi32(3);
         let one_i = _mm512_set1_epi32(1);
         let two_i = _mm512_set1_epi32(2);
@@ -3687,7 +3754,7 @@ pub fn scan_block16(offs: &[u32], csr: &[CFrag], env_d: &[f32; 16], frame: &Peel
         let one = _mm512_set1_ps(1.0);
         let z01 = |z: __m512| -> __m512 { _mm512_max_ps(_mm512_add_ps(half, _mm512_div_ps(_mm512_add_ps(zc, z), den)), zero) };
         let biased = *BIASED_ORDER;
-        let mut idx = _mm512_mullo_epi32(o0, three);
+        let mut idx = idx0;
         for j in 0..k {
             let valid = lanes & _mm512_cmpgt_epi32_mask(n, _mm512_set1_epi32(j as i32));
             let z = _mm512_mask_i32gather_ps::<4>(zero, valid, idx, base);
@@ -4092,9 +4159,39 @@ pub static RS_NFRAG: [std::sync::atomic::AtomicU64; 9] = [const { std::sync::ato
 /// LMTOOL_NO_SCAN16=1 keeps the scan's per-pixel walk scalar (the A/B switch).
 pub static SCAN16_ON: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("LMTOOL_NO_SCAN16").is_none());
 
+/// THE SLOT FORM of the count records (the default; LMTOOL_SCAN_SLOTS=0 restores the list form): the records
+/// written into per-pixel SLOTS at visit time (`SLOTS_PER_PX` × 12 B per pixel of the job's rect, the rest to an
+/// overflow list) instead of a sequential list counting-sorted by a prefix + scatter pass; the lane walk gathers
+/// at li·SLOTS_PER_PX + j and only the overflow is scattered. (The 0053 form wrote 64-byte slots into a per-band
+/// table larger than L2 and lost; a 128 × 128 job's 4-slot table is 786 KB, L2-resident: tiny raster −3 %, giant
+/// neutral, measured 2026-09-26.)
+pub static SCAN_SLOTS: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_SCAN_SLOTS").map(|v| v != "0").unwrap_or(true));
+pub const SLOTS_PER_PX: usize = 4;
+
+/// The count records of a job: the sequential list (the scatter form), or the per-pixel slots + the overflow list.
+pub struct Recs {
+    pub list: Vec<(u32, CFrag)>,
+    pub slots: Vec<CFrag>,
+    pub slot_mode: bool,
+}
+impl Recs {
+    /// Record `rec` of pixel `li` whose count (after the bump) is `c_after`.
+    #[inline(always)]
+    pub fn push(&mut self, li: u32, c_after: u16, rec: CFrag) {
+        if self.slot_mode && (c_after as usize) <= SLOTS_PER_PX && c_after >= 1 {
+            // SAFETY-free: the table is sized band_px × SLOTS_PER_PX before the job's visits
+            self.slots[li as usize * SLOTS_PER_PX + c_after as usize - 1] = rec;
+        } else {
+            self.list.push((li, rec));
+        }
+    }
+}
+
 thread_local! {
     /// The raster band's slot and environment tables, kept per pool thread across bands (see the fused count).
     static SLOT_BUFS: std::cell::Cell<(Vec<u16>, Vec<f32>, Vec<(u32, CFrag)>, Vec<CFrag>, Vec<u32>, Vec<u32>)> = const { std::cell::Cell::new((Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new())) };
+    /// The per-pixel slot table of the slot form, per pool thread.
+    static SLOT_TABLE: std::cell::Cell<Vec<CFrag>> = const { std::cell::Cell::new(Vec::new()) };
     /// A raster job's gathered triangle list, kept per pool thread across jobs.
     static JOB_LIST: std::cell::Cell<Vec<u32>> = const { std::cell::Cell::new(Vec::new()) };
 }
