@@ -3272,7 +3272,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                 // clip rule below) — the others' pixels are not wanted (a giant's tile holds a ninth of them)
                 let clip_box: Option<[f32; 4]> = tile_clip.get(pi).copied().flatten();
                 crate::pool::pool().run(nch, |ci| {
-                    for s in &cur[ci * per..((ci + 1) * per).min(cur.len())] {
+                    for s in &cur[(ci * per).min(cur.len())..((ci + 1) * per).min(cur.len())] {
                         if let Some(b) = clip_box {
                             if !(s.p[0] - b[0] >= 0.0 && s.p[2] - b[1] >= 0.0 && b[2] - s.p[0] >= 0.0 && b[3] - s.p[2] >= 0.0) { continue; }
                         }
