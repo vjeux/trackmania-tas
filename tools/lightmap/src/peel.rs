@@ -403,6 +403,32 @@ impl<T> Recycle<T> {
     }
 }
 
+/// Drops a set of heap-owning values on the pool, 64 per task (perf 6): the tiled raster's ~4 500 per-job output lists
+/// and its 2 000 per-chunk binning tables were freed by the calling thread alone at the end of every build — 1.3 ms
+/// per giant frame of serial time with 128 workers idle (each glibc free locks the allocating thread's arena, and
+/// the caller owns none of them). Measured and rejected first: a global recycler for the same lists (raster +7 %:
+/// a list last written through another core's cache is colder than a fresh thread-local malloc — glibc's
+/// per-thread arenas hand a job memory it freed itself a frame earlier). So the frees stay; they are spread.
+pub fn parallel_drop<T: Send>(items: Vec<T>) {
+    const PER: usize = 64;
+    if items.len() <= PER {
+        return;
+    }
+    let slots: Vec<std::sync::Mutex<Vec<T>>> = {
+        let mut slots = Vec::with_capacity(items.len() / PER + 1);
+        let mut it = items.into_iter();
+        loop {
+            let batch: Vec<T> = it.by_ref().take(PER).collect();
+            if batch.is_empty() { break; }
+            slots.push(std::sync::Mutex::new(batch));
+        }
+        slots
+    };
+    crate::pool::pool().run(slots.len(), |i| {
+        drop(std::mem::take(&mut *slots[i].lock().unwrap()));
+    });
+}
+
 pub static LAYER_FRAGS: Recycle<LayerFrag> = Recycle::new();
 pub static ABUF_FRAGS: Recycle<Frag> = Recycle::new();
 pub static U32S: Recycle<u32> = Recycle::new();
@@ -1498,6 +1524,11 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
     });
     let parts: Vec<Vec<(u32, Frag)>> = parts_all.into_iter().map(|(o, _, _)| o).collect();
     prof::add(&prof::B_RASTER, t_raster);
+    // the binning's per-chunk tables are read no more: DROPPED IN PARALLEL (perf 6) — the caller freeing 2 000 vectors the
+    // workers allocated (glibc: each free locks the allocating thread's arena) was 0.5 ms of serial time per frame;
+    // a global recycler instead was measured SLOWER (raster +7 %: a list last written by another core's cache is
+    // colder than a fresh thread-local malloc), so the frees stay, spread over the pool
+    parallel_drop(binned);
     if raster_stats { eprintln!("raster stats (sparse, {n_jobs} jobs over {n_cells} cells): {} triangles rasterised, {} bbox pixels tested, {} pixel visits, clip {:?}, wanted {}, {:.3}s", RS_TRIS.swap(0, std::sync::atomic::Ordering::Relaxed), RS_TESTED.swap(0, std::sync::atomic::Ordering::Relaxed), RS_VISITS.swap(0, std::sync::atomic::Ordering::Relaxed), clip, px.len(), t_raster.elapsed().as_secs_f32()); }
         if raster_stats { let f = |i: usize| RS_NFRAG[i].swap(0, std::sync::atomic::Ordering::Relaxed); eprintln!("scan pixels by fragment count: 1–2: {}, 3: {}, 4: {}, 5: {}, ≥ 6: {}", f(0), f(1), f(2), f(3), f(4)); }
     if *raster::EDGE_AUDIT { let t: Vec<u64> = raster::EDGE_AUDIT_TALLY.iter().map(|a| a.load(std::sync::atomic::Ordering::Relaxed)).collect(); eprintln!("edge audit (cumulative): {} candidate pixels, f32 inside only {} ({:.4} %), integer inside only {} ({:.4} %), {} triangles degenerate after snapping", t[0], t[1], 100.0 * t[1] as f64 / t[0].max(1) as f64, t[2], 100.0 * t[2] as f64 / t[0].max(1) as f64, t[3]); }
@@ -1606,7 +1637,7 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
         });
     }
     U32S.give(fill);
-    drop(parts);
+    parallel_drop(parts);
     if raster_stats { eprintln!("csr phases: prefix {:.2} ms, scatter + sort {:.2} ms (per-thread: scatter {:.2} ms, sort {:.2} ms) ({} fragments, {} wanted)", (t_c2 - t_sort).as_secs_f64() * 1e3, t_c2.elapsed().as_secs_f64() * 1e3, ns_scatter.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e6 / (crate::pool::pool().threads + 1) as f64, ns_sort.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e6 / (crate::pool::pool().threads + 1) as f64, total, npx); }
     prof::add(&prof::B_SORT, t_sort);
     (ABuffer { res, band_h: res_y.max(1), bands: vec![(start, frags)], sparse: Some(px.clone()) }, counted)
@@ -2631,6 +2662,7 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
         // chunk of open ground, and one chunk per thread left the others waiting for it)
         let chunk = (npx / (threads.max(1) * 8)).max(1024);
         let n_chunks = (npx + chunk - 1) / chunk;
+        crate::pool::stats::checkpoint("(layers preamble)");
         let t_par = std::time::Instant::now(); crate::pool::stats::stage("layers");
         let parts: Vec<(Vec<u32>, Vec<LayerFrag>)> = crate::pool::pool().map(n_chunks, |ci| {
             let ids = &px.pixels[ci * chunk..((ci + 1) * chunk).min(npx)];
@@ -3646,6 +3678,7 @@ pub mod prof {
         eprintln!("profile [{label}]: A-buffer build {:.2}s (wanted index {:.2}s, clip {:.2}s, raster {:.2}s, CSR {:.2}s), exact layer count {:.2}s, layer derivation {:.2}s (parallel part {:.2}s), per-direction dumps {:.2}s, gather {:.2}s, accumulate {:.2}s, accumulation snapshots {:.2}s, frames {:.2}s; directions total {:.2}s (unstaged {:.2}s); sweep total {total:.2}s", g(&BUILD), g(&B_INDEX), g(&B_CLIP), g(&B_RASTER), g(&B_SORT), g(&EXACT), g(&LAYERS), g(&L_PAR), g(&DUMP), g(&GATHER), g(&ACCUM), g(&SNAP), g(&FRAMES), g(&DIR), g(&DIR) - staged);
         // the pool's per-stage utilisation table (per-thread busy time; pool::stats), against the directions total
         crate::pool::stats::report(label, g(&DIR));
+        if crate::hugealloc::HUGE_ALLOCS.load(Ordering::Relaxed) > 0 { eprintln!("profile [{label}] {}", crate::hugealloc::report()); }
         eprintln!("profile [{label}] non-raster: layer bufs {:.2}s, LmILightDir_Set {:.2}s, probe layers {:.2}s, dome image {:.2}s (in layer derivation), AddAmbient {:.2}s, H-basis {:.2}s, probe folds {:.2}s, sub-sample accumulate {:.2}s; outside the loop: sub-samples {:.2}s, jitter sets {:.2}s, shadow map {:.2}s, pre-loop dumps {:.2}s, resolve {:.2}s; gather lookups: {} sky (dome_px), {} surface; task CPU: gather {:.2}s, accumulate {:.2}s", g(&LM_BUFS), g(&LM_SET), g(&PROBE_LAYER), g(&DOME_IMG), g(&AMBIENT), g(&HB), g(&PROBE_END), g(&ACC_SUB), g(&PRE_SUBS), g(&PRE_JITTER), g(&PRE_SHADOW), g(&PRE_DUMP), g(&POST_RESOLVE), crate::peel::GATHER_COUNTS[0].swap(0, Ordering::Relaxed), crate::peel::GATHER_COUNTS[1].swap(0, Ordering::Relaxed), g(&GATHER_CPU), g(&ACC_CPU));
         for c in [&BUILD, &LAYERS, &DUMP, &GATHER, &ACCUM, &SNAP, &B_CLIP, &B_RASTER, &B_SORT, &B_INDEX, &DIR, &FRAMES, &EXACT, &L_PAR, &DOME, &BITMAP, &CLEAR, &CONTRIB, &CULL, &L_CSR, &LM_BUFS, &LM_SET, &PROBE_LAYER, &DOME_IMG, &AMBIENT, &HB, &PROBE_END, &ACC_SUB, &PRE_SUBS, &PRE_JITTER, &PRE_SHADOW, &PRE_DUMP, &POST_RESOLVE, &GATHER_CPU, &ACC_CPU] { c.store(0, Ordering::Relaxed); }
     }
@@ -4074,7 +4107,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             n_replayed += 1;
             Some(c)
         };
-        let t_dir = std::time::Instant::now(); crate::pool::stats::stage("frames");
+        let t_dir = std::time::Instant::now(); crate::pool::stats::stage("frames"); crate::pool::stats::epoch();
         let g = di % groups;
         let scale = 4.0 / group_count[g].max(1) as f32;
         // THE PEELS of this direction: the captured frustums (the game runs two — the whole-scene frustum,
@@ -4447,6 +4480,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             card_dump_flush(prm.sweep, di, pi, frame, &prm.alpha_masks);
             t_build_total += tb2.elapsed().as_secs_f32();
             prof::add(&prof::BUILD, tb2);
+            crate::pool::stats::checkpoint("(build tail)");
             frag_total += ab.len();
             // the game's layers of this peel (game-peel mode), and their dump
             // (the layers are also extracted for the dump alone, so the port's own gather can be dumped and compared)
@@ -4497,6 +4531,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             };
             let fixed_layers = fixed_layers.or(exact_layers);
             let layers: Option<Layers> = if prm.game_peel || want_dir_dump { Some(extract_layers(&ab, frame, scene, bvh, prm, shadow.as_deref(), sun_bias, sky, threads, wanted.as_ref(), fixed_layers, dome_img.as_deref())) } else { None };
+            crate::pool::stats::checkpoint("(layers tail)");
             prof::add(&prof::LAYERS, tl);
             let td = std::time::Instant::now(); crate::pool::stats::stage("dump");
             if let Some(ly) = &layers {
