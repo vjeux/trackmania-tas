@@ -29,9 +29,48 @@ pub struct IlAtlas {
     pub n_items: usize,
     /// Every instance by its translation rounded to half a metre (any_by_translation).
     pub by_pos: HashMap<(i32, i32, i32), Vec<usize>>,
-    /// Counters (fragments coloured from the atlas, fragments with no mapping).
-    pub hits: std::sync::atomic::AtomicUsize,
-    pub misses: std::sync::atomic::AtomicUsize,
+    /// Counters (fragments coloured from the atlas, fragments with no mapping) — sharded by thread (perf 3: one shared
+    /// atomic per fragment from 128 threads was the derive's cost on the product path); `hits()` / `misses()` sum them.
+    pub hits: Vec<std::sync::atomic::AtomicUsize>,
+    pub misses: Vec<std::sync::atomic::AtomicUsize>,
+    /// `tile_of` as a dense grid over the tiles' key range (a hash lookup per fragment before): `grid[(kz − kz0) · nx + (kx − kx0)]`,
+    /// u32::MAX where there is no tile.
+    pub grid: Vec<u32>,
+    pub grid_org: (i32, i32),
+    pub grid_dim: (usize, usize),
+}
+
+/// The counter shards: a thread's shard index, handed out once per thread.
+const COUNTER_SHARDS: usize = 64;
+thread_local! {
+    static SHARD: std::cell::Cell<u32> = const { std::cell::Cell::new(u32::MAX) };
+}
+static NEXT_SHARD: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+#[inline(always)]
+fn shard() -> usize {
+    SHARD.with(|s| {
+        let v = s.get();
+        if v != u32::MAX { return v as usize; }
+        let n = NEXT_SHARD.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % COUNTER_SHARDS as u32;
+        s.set(n);
+        n as usize
+    })
+}
+
+impl IlAtlas {
+    pub fn hits(&self) -> usize { self.hits.iter().map(|c| c.load(std::sync::atomic::Ordering::Relaxed)).sum() }
+    pub fn misses(&self) -> usize { self.misses.iter().map(|c| c.load(std::sync::atomic::Ordering::Relaxed)).sum() }
+    fn counters() -> Vec<std::sync::atomic::AtomicUsize> { (0..COUNTER_SHARDS).map(|_| std::sync::atomic::AtomicUsize::new(0)).collect() }
+    /// The dense grid over `tile_of`.
+    fn grid_of(tile_of: &HashMap<(i32, i32), usize>) -> (Vec<u32>, (i32, i32), (usize, usize)) {
+        if tile_of.is_empty() { return (Vec::new(), (0, 0), (0, 0)); }
+        let (kx0, kx1) = (tile_of.keys().map(|k| k.0).min().unwrap(), tile_of.keys().map(|k| k.0).max().unwrap());
+        let (kz0, kz1) = (tile_of.keys().map(|k| k.1).min().unwrap(), tile_of.keys().map(|k| k.1).max().unwrap());
+        let (nx, nz) = ((kx1 - kx0 + 1) as usize, (kz1 - kz0 + 1) as usize);
+        let mut grid = vec![u32::MAX; nx * nz];
+        for (&(kx, kz), &k) in tile_of { grid[(kz - kz0) as usize * nx + (kx - kx0) as usize] = k as u32; }
+        (grid, (kx0, kz0), (nx, nz))
+    }
 }
 
 /// A raw R11G11B10 image (2048² u32 LE) or an RGBA16F one (2048² × 4 halves) → the atlas buffer.
@@ -105,13 +144,19 @@ impl IlAtlas {
         }
         let mut by_pos: HashMap<(i32, i32, i32), Vec<usize>> = HashMap::new();
         for (k, inst) in insts.iter().enumerate() { by_pos.entry(((inst.t[0] * 2.0).round() as i32, (inst.t[1] * 2.0).round() as i32, (inst.t[2] * 2.0).round() as i32)).or_default().push(k); }
-        IlAtlas { buf: atlas, insts, rows, tile_of, tile_uv, tile_size, n_items, by_pos, hits: Default::default(), misses: Default::default() }
+        let (grid, grid_org, grid_dim) = IlAtlas::grid_of(&tile_of);
+        IlAtlas { buf: atlas, insts, rows, tile_of, tile_uv, tile_size, n_items, by_pos, hits: IlAtlas::counters(), misses: IlAtlas::counters(), grid, grid_org, grid_dim }
     }
 
     /// The atlas coordinate of a point on a zone tile (world x / z), or None off every tile.
     pub fn tile_uv_at(&self, p: [f32; 3]) -> Option<[f32; 2]> {
         let key = ((p[0] / self.tile_size).floor() as i32, (p[2] / self.tile_size).floor() as i32);
-        let k = *self.tile_of.get(&key)?;
+        // (the dense grid: the same k `tile_of` holds, without the hash)
+        let (gx, gz) = ((key.0 - self.grid_org.0) as i64, (key.1 - self.grid_org.1) as i64);
+        if gx < 0 || gz < 0 || gx >= self.grid_dim.0 as i64 || gz >= self.grid_dim.1 as i64 { return None; }
+        let k = self.grid[gz as usize * self.grid_dim.0 + gx as usize];
+        if k == u32::MAX { return None; }
+        let k = k as usize;
         let (inst, r) = (&self.insts[k], &self.rows[k]);
         // local = rowsᵀ · (p − t) (the rows are orthonormal)
         let d = [p[0] - inst.t[0], p[1] - inst.t[1], p[2] - inst.t[2]];
@@ -210,7 +255,7 @@ impl IlSource {
     pub fn colour(&self, scene: &crate::geometry::Scene, wt: &crate::bvh::WTri, hit_p: [f32; 3], front: bool) -> Option<[f32; 3]> {
         let r = self.colour_inner(scene, wt, hit_p, front);
         if r.is_none() {
-            self.atlas.misses.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.atlas.misses[shard()].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         r
     }
@@ -241,7 +286,7 @@ impl IlSource {
             let uv1 = [t.uv[0][0] + b1 * (t.uv[1][0] - t.uv[0][0]) + b2 * (t.uv[2][0] - t.uv[0][0]), t.uv[0][1] + b1 * (t.uv[1][1] - t.uv[0][1]) + b2 * (t.uv[2][1] - t.uv[0][1])];
             self.atlas.item_uv(g, uv1)?
         };
-        self.atlas.hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.atlas.hits[shard()].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Some(self.atlas.colour(uv, front))
     }
 }

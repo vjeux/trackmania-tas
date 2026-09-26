@@ -144,9 +144,31 @@ pub fn quantise_r11g11b10(rgb: [f32; 3], r: Rounding) -> [f32; 3] {
         // q's exponent field is 1..=30 here (the range test above), so decode is the rebiased pattern
         Some(f32::from_bits((q << shift).wrapping_add(0x3800_0000)))
     }
-    if r == Rounding::NearestEven {
-        if let (Some(a), Some(b), Some(c)) = (fast(rgb[0], 6), fast(rgb[1], 6), fast(rgb[2], 5)) {
-            return [a, b, c];
+    // the truncating store (the atlas colour of the product path's peel, sweep1::peel_color): the same range, the dropped
+    // bits cut — no carry, so the exponent never moves
+    #[inline(always)]
+    fn fast_trunc(v: f32, mbits: u32) -> Option<f32> {
+        let bits = v.to_bits();
+        if bits & 0x7fff_ffff == 0 {
+            return Some(0.0);
+        }
+        if bits < 0x3880_0000 || bits >= 0x477e_0000 {
+            return None;
+        }
+        let shift = 23 - mbits;
+        let q = bits.wrapping_add(0xc800_0000) >> shift;
+        Some(f32::from_bits((q << shift).wrapping_add(0x3800_0000)))
+    }
+    match r {
+        Rounding::NearestEven => {
+            if let (Some(a), Some(b), Some(c)) = (fast(rgb[0], 6), fast(rgb[1], 6), fast(rgb[2], 5)) {
+                return [a, b, c];
+            }
+        }
+        Rounding::Truncate => {
+            if let (Some(a), Some(b), Some(c)) = (fast_trunc(rgb[0], 6), fast_trunc(rgb[1], 6), fast_trunc(rgb[2], 5)) {
+                return [a, b, c];
+            }
         }
     }
     unpack_r11g11b10(pack_r11g11b10(rgb, r))

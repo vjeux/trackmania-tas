@@ -6054,7 +6054,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         *slot.0.lock().unwrap() = Some(hb);
     }
     if let Some(il) = &prm.ilatlas {
-        eprintln!("ilightinput atlas (sweep {}): {} fragments coloured from the atlas, {} without a lightmap coordinate (the port's model)", prm.sweep, il.atlas.hits.load(std::sync::atomic::Ordering::Relaxed), il.atlas.misses.load(std::sync::atomic::Ordering::Relaxed));
+        eprintln!("ilightinput atlas (sweep {}): {} fragments coloured from the atlas, {} without a lightmap coordinate (the port's model)", prm.sweep, il.atlas.hits(), il.atlas.misses());
     }
     eprintln!("peel: done, {} directions over {} sub-samples ({:.1}s); fragment radiance calls {}, facing the sun {}, lit {}", n_dirs, subs.len(), t0.elapsed().as_secs_f32(), SUN_STATS[0].load(std::sync::atomic::Ordering::Relaxed), SUN_STATS[1].load(std::sync::atomic::Ordering::Relaxed), SUN_STATS[2].load(std::sync::atomic::Ordering::Relaxed));
     out
