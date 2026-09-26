@@ -2636,7 +2636,7 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
                 }
                 let z01 = frame.z01(f.z).max(0.0);
                 let wt = &bvh.tris[f.tri as usize];
-                order_buf.push(WalkFrag { dd: stored_depth(z01, bias_term(cache, f.tri, wt), prm.depth_bits), z01, tri: f.tri, idx: i as u32 });
+                order_buf.push(WalkFrag { dd: stored_depth(z01, bias_term(cache, f.tri, wt), prm.depth_bits), z01, tri: draw_rank_of(f.tri), idx: i as u32 });
             }
             let env_q = if prm.dome_layer { d_prev } else { f32::NEG_INFINITY };
             // (the walk's own env start equals d_prev here: the env layer above set it to the stored env depth or 0)
@@ -2973,7 +2973,7 @@ pub fn exact_item_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &B
                 let z01 = frame.z01(f.z).max(0.0);
                 let wt = &bvh.tris[f.tri as usize];
                 let (slope, zmax_prim) = tri_slope(wt, frame);
-                v.push(WalkFrag { dd: stored_depth(z01, d3d_depth_bias_fmt(zmax_prim, slope.min(1e6), prm.depth_bias, prm.depth_bits), prm.depth_bits), z01, tri: f.tri, idx: i as u32 });
+                v.push(WalkFrag { dd: stored_depth(z01, d3d_depth_bias_fmt(zmax_prim, slope.min(1e6), prm.depth_bias, prm.depth_bits), prm.depth_bits), z01, tri: draw_rank_of(f.tri), idx: i as u32 });
             }
             let mut acc = Vec::new();
             return layer_walk_biased_from(&mut v, d_prev, &mut acc);
@@ -3127,7 +3127,7 @@ pub fn exact_item_layers_direct(tris: &[WTri], frame: &PeelFrame, scene: &Scene,
                 let z01 = frame.z01(f.z).max(0.0);
                 let wt = &bvh.tris[f.tri as usize];
                 let (slope, zmax_prim) = tri_slope(wt, frame);
-                v.push(WalkFrag { dd: stored_depth(z01, d3d_depth_bias_fmt(zmax_prim, slope.min(1e6), prm.depth_bias, prm.depth_bits), prm.depth_bits), z01, tri: f.tri, idx: i as u32 });
+                v.push(WalkFrag { dd: stored_depth(z01, d3d_depth_bias_fmt(zmax_prim, slope.min(1e6), prm.depth_bias, prm.depth_bits), prm.depth_bits), z01, tri: draw_rank_of(f.tri), idx: i as u32 });
             }
             let mut acc = Vec::new();
             return layer_walk_biased_from(&mut v, d_prev, &mut acc);
@@ -3464,12 +3464,16 @@ pub fn scan_block16(offs: &[u32], csr: &[CFrag], env_d: &[f32; 16], frame: &Peel
             let b = _mm512_mask_i32gather_ps::<4>(zero, valid, _mm512_add_epi32(idx, two_i), base);
             if biased {
                 // THE BIASED ORDER: zf carries the unbiased depth z01 (the compare), bf the stored depth (the key
-                // and the next d_prev): q16((z01 + bias).clamp(0, 1)) — non-negative, so its bits order as ints
+                // and the next d_prev): q16((z01 + bias).clamp(0, 1)) — non-negative, so its bits order as ints;
+                // the tie key is the triangle's DRAW RANK (E's (class, instance, model triangle))
                 let zj = z01(z);
                 let dd = q16(_mm512_min_ps(_mm512_max_ps(_mm512_add_ps(zj, b), zero), one));
                 zf[j] = zj;
                 bf[j] = dd;
                 key[j] = _mm512_mask_blend_epi32(valid, maxk, _mm512_castps_si512(dd));
+                if let Some(rank) = DRAW_RANK.get() {
+                    tri[j] = _mm512_mask_i32gather_epi32::<4>(maxk, valid, tri[j], rank.as_ptr() as *const i32);
+                }
             } else {
                 zf[j] = z;
                 bf[j] = b;
@@ -3535,21 +3539,41 @@ pub fn total_order_key(z: f32) -> u32 {
 /// fragment with the smallest BIASED, stored depth among those whose UNBIASED depth passes the previous layer's
 /// stored depth — the peel compare in the shader reads the interpolated depth, the depth test that picks the
 /// nearest fragment of the pass runs on the rasteriser's biased depth. The port ordered by the unbiased (z, tri),
-/// which swaps a steep card (slope bias ~100 quanta) and a flatter trunk within a few quanta. OPT-IN for now:
-/// LMTOOL_LAYER_ORDER=biased — the default stays the former rule (the references were cut with it) until E's
-/// rule is stated as a function (its tie key at an equal stored depth is the DRAW order — alpha class, instance,
-/// model triangle — where this walk still breaks ties by the world triangle index, which carries no draw-order
-/// meaning) and engineer 4's differential test exists; then the default flips and the baker re-cuts the refs.
-/// Verified on engineer 5's worked example (fitted pixel (3263, 2742) of pwc-day direction 0): the biased walk
-/// forms layer 1 from the trunk (q 34891, the game's) and merges the cards (q 34937) away, as the game does.
-pub static BIASED_ORDER: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_LAYER_ORDER").map(|v| v == "biased").unwrap_or(false));
+/// which swaps a steep card (slope bias ~100 quanta) and a flatter trunk within a few quanta. THE DEFAULT since
+/// 2026-09-26 (E's rule stated as a function; engineer 4's differential test: the count and the stored-depth
+/// sequence equal the iterated argmin on 60 000 tie-heavy pixels; the tie key at an equal stored depth is the
+/// DRAW ORDER — class, instance, model triangle — as `DRAW_RANK`). LMTOOL_LAYER_ORDER=unbiased restores the
+/// former rule (the references cut before the flip were made with it). Verified on engineer 5's worked example
+/// (fitted pixel (3263, 2742) of pwc-day direction 0): layer 1 = the trunk (q 34891, the game's), the cards
+/// (q 34937) merged away, as the game does.
+pub static BIASED_ORDER: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_LAYER_ORDER").map(|v| v != "unbiased").unwrap_or(true));
+
+/// THE DRAW ORDER of the world triangles (E's tie key at an equal stored depth: LESS keeps the first writer):
+/// class (0 = the opaque item draw, 1 = the alpha-tested card draw), then the scene instance, then the
+/// triangle's index in the model — as ONE u32 rank per world (BVH) triangle, computed once per bake.
+pub static DRAW_RANK: std::sync::OnceLock<Vec<u32>> = std::sync::OnceLock::new();
+
+pub fn draw_rank_table(bvh: &Bvh) -> Vec<u32> {
+    let mut order: Vec<u32> = (0..bvh.tris.len() as u32).collect();
+    let key = |t: u32| -> (u8, u32, u32) { let w = &bvh.tris[t as usize]; ((w.alpha != u16::MAX) as u8, w.inst, w.tri) };
+    order.sort_unstable_by_key(|t| key(*t));
+    let mut rank = vec![0u32; bvh.tris.len()];
+    for (r, t) in order.iter().enumerate() { rank[*t as usize] = r as u32; }
+    rank
+}
+
+#[inline(always)]
+fn draw_rank_of(tri: u32) -> u32 {
+    match DRAW_RANK.get() { Some(r) => r[tri as usize], None => tri }
+}
 
 /// One fragment of a pixel for the biased walk: the stored (biased, quantised) depth, the unbiased depth, the
-/// triangle, and the caller's index into its own list.
+/// tie key (the draw rank), and the caller's index into its own list.
 #[derive(Clone, Copy, Debug)]
 pub struct WalkFrag {
     pub dd: f32,
     pub z01: f32,
+    /// The tie key at an equal stored depth: the triangle's draw rank (`DRAW_RANK`).
     pub tri: u32,
     pub idx: u32,
 }
@@ -3616,11 +3640,11 @@ pub fn layer_walk_biased_cfrags(buf: &[CFrag], env_d: f32, dome_layer: bool, dep
     if buf.len() <= 64 {
         for (i, f) in buf.iter().enumerate() {
             let z01 = frame.z01(f.z).max(0.0);
-            tmp[i] = WalkFrag { dd: stored_depth(z01, f.bias, depth_bits), z01, tri: f.tri, idx: i as u32 };
+            tmp[i] = WalkFrag { dd: stored_depth(z01, f.bias, depth_bits), z01, tri: draw_rank_of(f.tri), idx: i as u32 };
         }
         layer_walk_biased(&mut tmp[..buf.len()], env_d, dome_layer, depth_bits, &mut acc)
     } else {
-        let mut v: Vec<WalkFrag> = buf.iter().enumerate().map(|(i, f)| { let z01 = frame.z01(f.z).max(0.0); WalkFrag { dd: stored_depth(z01, f.bias, depth_bits), z01, tri: f.tri, idx: i as u32 } }).collect();
+        let mut v: Vec<WalkFrag> = buf.iter().enumerate().map(|(i, f)| { let z01 = frame.z01(f.z).max(0.0); WalkFrag { dd: stored_depth(z01, f.bias, depth_bits), z01, tri: draw_rank_of(f.tri), idx: i as u32 } }).collect();
         layer_walk_biased(&mut v, env_d, dome_layer, depth_bits, &mut acc)
     }
 }
@@ -3900,6 +3924,11 @@ pub fn select_layer(list: &[LayerFrag], z01: f32) -> Option<&LayerFrag> {
 /// The whole dome sweep, rasterised. `sizes[ii]` = the colour-resolution chart size of instance `ii`
 /// (the layout rect is twice that; the raster runs at `prm.ss` sub-samples per layout texel).
 pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u32, u32)]) -> Vec<ChartBake> {
+    if *BIASED_ORDER {
+        // (one BVH per bake; a second call with another BVH would need a per-bake table instead of the static)
+        let _ = DRAW_RANK.set(draw_rank_table(bvh));
+        assert_eq!(DRAW_RANK.get().map(|r| r.len()), Some(bvh.tris.len()), "the draw-rank table belongs to another BVH");
+    }
     // the decoration's stand-in lightmap = what an unoccluded up-facing surface gets from this sky
     // (the sea and sand are lit by the sky like everything else; they have no lightmap of their own)
     let mut prm_local = prm.clone();
