@@ -2790,13 +2790,13 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
                 }
                 let z01 = frame.z01(f.z).max(0.0);
                 let wt = &bvh.tris[f.tri as usize];
-                order_buf.push(WalkFrag { dd: stored_depth(z01, bias_term(cache, f.tri, wt), prm.depth_bits), z01, tri: draw_rank_of(f.tri), idx: i as u32 });
+                order_buf.push(WalkFrag::from_depths(z01, bias_term(cache, f.tri, wt), prm.depth_bits, draw_rank_of(f.tri), i as u32));
             }
             // (d_prev = the env layer's stored depth, or 0 at the dome, or −∞ without the dome layer)
-            layer_walk_biased_capped(order_buf, d_prev, item_cap(prm.dome_layer), acc);
+            layer_walk_biased_capped(order_buf, d_prev, item_cap(prm.dome_layer), prm.depth_bits, acc);
             if traced {
                 for wf in order_buf.iter() {
-                    if !acc.contains(&wf.idx) { let f = &list[wf.idx as usize]; let wt = &bvh.tris[f.tri as usize]; eprintln!("LAYERDBG px={x} py={y} frag tri={} inst={} mtri={} z={:.6} z01={:.6} q16={} skipped=merged (biased order)", f.tri, wt.inst, wt.tri, f.z, wf.z01, (wf.dd * 65535.0).round() as u32); }
+                    if !acc.contains(&wf.idx) { let f = &list[wf.idx as usize]; let wt = &bvh.tris[f.tri as usize]; eprintln!("LAYERDBG px={x} py={y} frag tri={} inst={} mtri={} z={:.6} z01={:.6} q16={} skipped=merged (biased order)", f.tri, wt.inst, wt.tri, f.z, wf.z01, (wf.dd(prm.depth_bits) * 65535.0).round() as u32); }
                 }
             }
         }
@@ -3195,9 +3195,9 @@ pub fn exact_item_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &B
                 let z01 = frame.z01(f.z).max(0.0);
                 let wt = &bvh.tris[f.tri as usize];
                 let (slope, zmax_prim) = tri_slope(wt, frame);
-                v.push(WalkFrag { dd: stored_depth(z01, d3d_depth_bias_fmt(zmax_prim, slope.min(1e6), prm.depth_bias, prm.depth_bits), prm.depth_bits), z01, tri: draw_rank_of(f.tri), idx: i as u32 });
+                v.push(WalkFrag::from_depths(z01, d3d_depth_bias_fmt(zmax_prim, slope.min(1e6), prm.depth_bias, prm.depth_bits), prm.depth_bits, draw_rank_of(f.tri), i as u32));
             }
-            return layer_walk_biased_count(&mut v, d_prev, item_cap(prm.dome_layer));
+            return layer_walk_biased_count(&mut v, d_prev, item_cap(prm.dome_layer), prm.depth_bits);
         }
         let mut items = 0usize;
         for f in list {
@@ -3348,9 +3348,9 @@ pub fn exact_item_layers_direct(tris: &[WTri], frame: &PeelFrame, scene: &Scene,
                 let z01 = frame.z01(f.z).max(0.0);
                 let wt = &bvh.tris[f.tri as usize];
                 let (slope, zmax_prim) = tri_slope(wt, frame);
-                v.push(WalkFrag { dd: stored_depth(z01, d3d_depth_bias_fmt(zmax_prim, slope.min(1e6), prm.depth_bias, prm.depth_bits), prm.depth_bits), z01, tri: draw_rank_of(f.tri), idx: i as u32 });
+                v.push(WalkFrag::from_depths(z01, d3d_depth_bias_fmt(zmax_prim, slope.min(1e6), prm.depth_bias, prm.depth_bits), prm.depth_bits, draw_rank_of(f.tri), i as u32));
             }
-            return layer_walk_biased_count(&mut v, d_prev, item_cap(prm.dome_layer));
+            return layer_walk_biased_count(&mut v, d_prev, item_cap(prm.dome_layer), prm.depth_bits);
         }
         let mut items = 0usize;
         for (_, f) in list {
@@ -3796,11 +3796,37 @@ thread_local! {
 /// tie key (the draw rank), and the caller's index into its own list.
 #[derive(Clone, Copy, Debug)]
 pub struct WalkFrag {
-    pub dd: f32,
+    /// The sort key: the stored depth's bits (non-negative f32 — its bits order as its value) above the tie key
+    /// (the triangle's draw rank, `DRAW_RANK`) — one u64 compare per step of the sort.
+    pub key: u64,
     pub z01: f32,
-    /// The tie key at an equal stored depth: the triangle's draw rank (`DRAW_RANK`).
-    pub tri: u32,
     pub idx: u32,
+}
+
+impl WalkFrag {
+    /// From the unbiased depth and the bias: the upper key is the D16 QUANTUM (no division — the division to
+    /// the stored value happens once per ACCEPTED fragment in the walk) when the store is 16-bit, else the
+    /// bits of the stored f32 (non-negative: they order as the value).
+    #[inline(always)]
+    pub fn from_depths(z01: f32, bias: f32, depth_bits: u32, tie: u32, idx: u32) -> WalkFrag {
+        let dd = z01 + bias;
+        // (round half away from zero on a non-negative value = trunc + (frac ≥ 0.5): the lane walk's q16,
+        // proven equal to `.round()` by the lane-vs-scalar tests; cheaper than the library round)
+        let hi: u32 = if depth_bits == 16 {
+            let v = dd.clamp(0.0, 1.0) * 65535.0;
+            let t = v.trunc();
+            (t as u32) + ((v - t) >= 0.5) as u32
+        } else {
+            dd.to_bits()
+        };
+        WalkFrag { key: (hi as u64) << 32 | tie as u64, z01, idx }
+    }
+    /// The stored depth back from the key (`stored_depth`'s value: q / 65535 for the 16-bit store).
+    #[inline(always)]
+    pub fn dd(&self, depth_bits: u32) -> f32 {
+        let hi = (self.key >> 32) as u32;
+        if depth_bits == 16 { hi as f32 / 65535.0 } else { f32::from_bits(hi) }
+    }
 }
 
 /// The stored depth of a fragment: `(z01 + bias)`, clamped and quantised to D16 when the store is 16-bit.
@@ -3823,12 +3849,12 @@ pub fn env_start(env_d: f32, dome_layer: bool, depth_bits: u32) -> f32 {
 /// the previous. Returns the item count; `frags` is left in the walk order with `accept(i)` telling the caller
 /// which were accepted (the derive uses it for the layers).
 pub fn layer_walk_biased(frags: &mut [WalkFrag], env_d: f32, dome_layer: bool, depth_bits: u32, accepted: &mut Vec<u32>) -> usize {
-    layer_walk_biased_capped(frags, env_start(env_d, dome_layer, depth_bits), item_cap(dome_layer), accepted)
+    layer_walk_biased_capped(frags, env_start(env_d, dome_layer, depth_bits), item_cap(dome_layer), depth_bits, accepted)
 }
 
 /// `layer_walk_biased` from a given starting stored depth (the derive's environment layer already resolved).
-pub fn layer_walk_biased_from(frags: &mut [WalkFrag], d_start: f32, accepted: &mut Vec<u32>) -> usize {
-    layer_walk_biased_capped(frags, d_start, MAX_LAYERS, accepted)
+pub fn layer_walk_biased_from(frags: &mut [WalkFrag], d_start: f32, depth_bits: u32, accepted: &mut Vec<u32>) -> usize {
+    layer_walk_biased_capped(frags, d_start, MAX_LAYERS, depth_bits, accepted)
 }
 
 /// The item cap of a peel: the render counter's 21 minus the environment render (sweep 0: 20 item layers;
@@ -3839,7 +3865,7 @@ pub fn item_cap(dome_layer: bool) -> usize {
 }
 
 /// The count alone (no accepted list — the scan's and the census' form: no allocation).
-pub fn layer_walk_biased_count(frags: &mut [WalkFrag], d_start: f32, cap: usize) -> usize {
+pub fn layer_walk_biased_count(frags: &mut [WalkFrag], d_start: f32, cap: usize, depth_bits: u32) -> usize {
     sort_walk_frags(frags);
     let mut d_prev = d_start;
     let mut items = 0usize;
@@ -3851,7 +3877,7 @@ pub fn layer_walk_biased_count(frags: &mut [WalkFrag], d_start: f32, cap: usize)
             break;
         }
         items += 1;
-        d_prev = f.dd;
+        d_prev = f.dd(depth_bits);
     }
     items
 }
@@ -3859,24 +3885,28 @@ pub fn layer_walk_biased_count(frags: &mut [WalkFrag], d_start: f32, cap: usize)
 /// The walk's order: (stored depth, tie key, unbiased depth) ascending — insertion for the short lists.
 #[inline(always)]
 fn sort_walk_frags(frags: &mut [WalkFrag]) {
+    // (the key is total over a pixel's real records — a triangle visits a pixel once, so the ranks differ;
+    // the z01 tie-break only orders synthetic duplicates in the tests)
+    #[inline(always)]
+    fn gt(a: &WalkFrag, b: &WalkFrag) -> bool { a.key > b.key || (a.key == b.key && a.z01.to_bits() > b.z01.to_bits()) }
     let n = frags.len();
     if n <= 64 {
         for i in 1..n {
             let cur = frags[i];
             let mut j = i;
-            while j > 0 && (frags[j - 1].dd.to_bits(), frags[j - 1].tri, frags[j - 1].z01.to_bits()) > (cur.dd.to_bits(), cur.tri, cur.z01.to_bits()) {
+            while j > 0 && gt(&frags[j - 1], &cur) {
                 frags[j] = frags[j - 1];
                 j -= 1;
             }
             frags[j] = cur;
         }
     } else {
-        frags.sort_unstable_by(|p, q| p.dd.to_bits().cmp(&q.dd.to_bits()).then_with(|| p.tri.cmp(&q.tri)).then_with(|| p.z01.to_bits().cmp(&q.z01.to_bits())));
+        frags.sort_unstable_by(|p, q| p.key.cmp(&q.key).then_with(|| p.z01.to_bits().cmp(&q.z01.to_bits())));
     }
 }
 
 /// `layer_walk_biased_from` with an explicit item cap.
-pub fn layer_walk_biased_capped(frags: &mut [WalkFrag], d_start: f32, cap: usize, accepted: &mut Vec<u32>) -> usize {
+pub fn layer_walk_biased_capped(frags: &mut [WalkFrag], d_start: f32, cap: usize, depth_bits: u32, accepted: &mut Vec<u32>) -> usize {
     sort_walk_frags(frags);
     let mut d_prev = d_start;
     let mut items = 0usize;
@@ -3888,7 +3918,7 @@ pub fn layer_walk_biased_capped(frags: &mut [WalkFrag], d_start: f32, cap: usize
             break;
         }
         items += 1;
-        d_prev = f.dd;
+        d_prev = f.dd(depth_bits);
         accepted.push(f.idx);
     }
     items
@@ -3898,15 +3928,18 @@ pub fn layer_walk_biased_capped(frags: &mut [WalkFrag], d_start: f32, cap: usize
 pub fn layer_walk_biased_cfrags(buf: &[CFrag], env_d: f32, dome_layer: bool, depth_bits: u32, frame: &PeelFrame) -> usize {
     let (d0, cap) = (env_start(env_d, dome_layer, depth_bits), item_cap(dome_layer));
     if buf.len() <= 64 {
-        let mut tmp: [WalkFrag; 64] = [WalkFrag { dd: 0.0, z01: 0.0, tri: 0, idx: 0 }; 64];
+        // (uninitialised: zeroing the kilobyte per pixel was 45 % of this function's samples)
+        let mut tmp: [std::mem::MaybeUninit<WalkFrag>; 64] = [const { std::mem::MaybeUninit::uninit() }; 64];
         for (i, f) in buf.iter().enumerate() {
             let z01 = frame.z01(f.z).max(0.0);
-            tmp[i] = WalkFrag { dd: stored_depth(z01, f.bias, depth_bits), z01, tri: f.tri, idx: i as u32 };
+            tmp[i].write(WalkFrag::from_depths(z01, f.bias, depth_bits, f.tri, i as u32));
         }
-        layer_walk_biased_count(&mut tmp[..buf.len()], d0, cap)
+        // SAFETY: the first buf.len() slots were written just above; WalkFrag is Copy with no drop
+        let init: &mut [WalkFrag] = unsafe { std::slice::from_raw_parts_mut(tmp.as_mut_ptr() as *mut WalkFrag, buf.len()) };
+        layer_walk_biased_count(init, d0, cap, depth_bits)
     } else {
-        let mut v: Vec<WalkFrag> = buf.iter().enumerate().map(|(i, f)| { let z01 = frame.z01(f.z).max(0.0); WalkFrag { dd: stored_depth(z01, f.bias, depth_bits), z01, tri: f.tri, idx: i as u32 } }).collect();
-        layer_walk_biased_count(&mut v, d0, cap)
+        let mut v: Vec<WalkFrag> = buf.iter().enumerate().map(|(i, f)| { let z01 = frame.z01(f.z).max(0.0); WalkFrag::from_depths(z01, f.bias, depth_bits, f.tri, i as u32) }).collect();
+        layer_walk_biased_count(&mut v, d0, cap, depth_bits)
     }
 }
 
@@ -6121,12 +6154,12 @@ mod biased_order_tests {
                 if used[i] || f.z01 < d_prev { continue; }
                 match best {
                     None => best = Some(i),
-                    Some(b) => { if (f.dd.to_bits(), f.tri, f.z01.to_bits()) < (frags[b].dd.to_bits(), frags[b].tri, frags[b].z01.to_bits()) { best = Some(i); } }
+                    Some(b) => { if (f.key, f.z01.to_bits()) < (frags[b].key, frags[b].z01.to_bits()) { best = Some(i); } }
                 }
             }
             let Some(b) = best else { break };
             used[b] = true;
-            d_prev = frags[b].dd;
+            d_prev = frags[b].dd(16);
             acc.push(frags[b].idx);
         }
         (acc.len(), acc)
@@ -6141,13 +6174,13 @@ mod biased_order_tests {
             let frags: Vec<WalkFrag> = (0..n).map(|i| {
                 let z01 = (rnd() % 65536) as f32 / 65535.0;
                 let bias = match rnd() % 4 { 0 => 0.0, 1 => 8.0 / 65535.0, 2 => 100.0 / 65535.0, _ => (rnd() % 300) as f32 / 65535.0 };
-                WalkFrag { dd: stored_depth(z01, bias, 16), z01, tri: (rnd() % 6) as u32, idx: i as u32 }
+                WalkFrag::from_depths(z01, bias, 16, i as u32 * 7 % 13, i as u32)
             }).collect();
             let d_start = if round % 3 == 0 { 0.0 } else { (rnd() % 65536) as f32 / 65535.0 };
             let (want, want_acc) = brute(&frags, d_start);
             let mut fr = frags.clone();
             let mut acc = Vec::new();
-            let got = layer_walk_biased_from(&mut fr, d_start, &mut acc);
+            let got = layer_walk_biased_from(&mut fr, d_start, 16, &mut acc);
             assert_eq!(got, want, "round {round}: {frags:?}");
             assert_eq!(acc, want_acc, "round {round}: the accepted order");
         }
