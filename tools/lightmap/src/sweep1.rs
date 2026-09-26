@@ -227,7 +227,7 @@ pub fn peel_color(ilightinput: &Buf, u: f32, v: f32, front_face: bool) -> [f32; 
     if !front_face {
         return [0.0; 3];
     }
-    let s = crate::finalprep::sample_bilinear_clamp(ilightinput, u, v);
+    let s = crate::finalprep::sample_bilinear_clamp_rgb(ilightinput, u, v);
     let rgb = [s[0], s[1].max(1e-5), s[2]];
     crate::gpufmt::quantise_r11g11b10(rgb, crate::gpufmt::Rounding::Truncate)
 }

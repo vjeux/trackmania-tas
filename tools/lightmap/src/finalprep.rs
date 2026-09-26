@@ -196,6 +196,35 @@ pub fn sample_bilinear_clamp(src: &Buf, u: f32, v: f32) -> [f32; 4] {
     o
 }
 
+/// `sample_bilinear_clamp`'s first three channels, the taps read directly (perf 8.22: this runs once per fragment the peel
+/// colours from the ILightInput atlas — the four `ld`s with their bounds and channel tests were 18 % of a product bake). The
+/// clamped tap coordinates are always inside the buffer, so `ld`'s out-of-range zero never applies; a buffer with fewer
+/// than three channels takes the general sampler. The same taps, weights and operation order.
+pub fn sample_bilinear_clamp_rgb(src: &Buf, u: f32, v: f32) -> [f32; 3] {
+    if src.channels < 3 {
+        let s = sample_bilinear_clamp(src, u, v);
+        return [s[0], s[1], s[2]];
+    }
+    let fx = u * src.w as f32 - 0.5;
+    let fy = v * src.h as f32 - 0.5;
+    let x0 = fx.floor();
+    let y0 = fy.floor();
+    let (tx, ty) = (fx - x0, fy - y0);
+    let cl = |a: f32, n: u32| (a.max(0.0).min(n as f32 - 1.0)) as i64;
+    let (xa, xb) = (cl(x0, src.w), cl(x0 + 1.0, src.w));
+    let (ya, yb) = (cl(y0, src.h), cl(y0 + 1.0, src.h));
+    let c = src.channels as usize;
+    let at = |x: i64, y: i64| -> &[f32] { let i = (y as usize * src.w as usize + x as usize) * c; &src.data[i..i + 3] };
+    let (p00, p10, p01, p11) = (at(xa, ya), at(xb, ya), at(xa, yb), at(xb, yb));
+    let mut o = [0.0f32; 3];
+    for k in 0..3 {
+        let top = p00[k] * (1.0 - tx) + p10[k] * tx;
+        let bot = p01[k] * (1.0 - tx) + p11[k] * tx;
+        o[k] = top * (1.0 - ty) + bot * ty;
+    }
+    o
+}
+
 /// Apply a render-target write mask: channels whose bit is set in `mask` take `src`'s value (after `store`
 /// rounding to f16), the others keep `dst`'s.
 pub fn write_masked(dst: &Buf, src: &Buf, mask: u32, store: Rounding) -> Buf {
