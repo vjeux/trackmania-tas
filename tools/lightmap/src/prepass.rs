@@ -253,7 +253,13 @@ pub const SUBPIX: f32 = 256.0;
 /// Rasterise one triangle (pixel coordinates, y down) with D3D11 rules: vertices snapped to the 1/256
 /// grid, exact integer edge functions, the top-left fill rule, pixel centres at + 0.5. `f(x, y, bary)`
 /// receives the barycentrics (of the vertices as given) evaluated from the snapped positions.
-pub fn raster_tri<F: FnMut(u32, u32, [f32; 3])>(p: [[f32; 2]; 3], w: u32, h: u32, mut f: F) {
+pub fn raster_tri<F: FnMut(u32, u32, [f32; 3])>(p: [[f32; 2]; 3], w: u32, h: u32, f: F) {
+    raster_tri_rows(p, w, h, 0, h as i64, f)
+}
+
+/// `raster_tri` visiting only the pixel rows in [y_lo, y_hi) — the same pixels and barycentrics on those rows (the
+/// band-parallel pre-pass: every band walks every triangle, each pixel decided by one band). Perf 8.
+pub fn raster_tri_rows<F: FnMut(u32, u32, [f32; 3])>(p: [[f32; 2]; 3], w: u32, h: u32, y_lo: i64, y_hi: i64, mut f: F) {
     // the conversion to the 1/256 grid rounds ties to even: run 3's trunk triangle 29 has a vertex at exactly
     // 1010.978515625 px = 258810.5 units, and the capture covers texel (1012, 266) only with the even choice
     let snap = |v: f32| -> i64 { (v * SUBPIX).round_ties_even() as i64 };
@@ -274,8 +280,8 @@ pub fn raster_tri<F: FnMut(u32, u32, [f32; 3])>(p: [[f32; 2]; 3], w: u32, h: u32
     // pixel centres c = 256·x + 128 inside [minx, maxx]
     let x0 = ((minx - half).div_euclid(256)).max(0);
     let x1 = ((maxx - half).div_euclid(256)).min(w as i64 - 1);
-    let y0 = ((miny - half).div_euclid(256)).max(0);
-    let y1 = ((maxy - half).div_euclid(256)).min(h as i64 - 1);
+    let y0 = ((miny - half).div_euclid(256)).max(0).max(y_lo);
+    let y1 = ((maxy - half).div_euclid(256)).min(h as i64 - 1).min(y_hi - 1);
     if x0 > x1 || y0 > y1 {
         return;
     }

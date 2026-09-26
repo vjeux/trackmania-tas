@@ -139,14 +139,15 @@ pub fn scale_ps1109(src: &Buf, scale: [f32; 4], src_round: Rounding, sum_round: 
 /// per channel (`R11G11B10` there — the caller quantises, this returns f32).
 pub fn multiply_ps1109(dst: &Buf, src: &Buf, scale: [f32; 4]) -> Buf {
     let mut out = Buf::new(dst.w, dst.h, dst.channels);
-    for y in 0..dst.h {
-        for x in 0..dst.w {
+    let (w, ch) = (dst.w, dst.channels);
+    out.fill_rows_par(|y, row| {
+        for x in 0..w {
             let s = ld(src, x as i64, y as i64);
-            for k in 0..dst.channels {
-                out.set(x, y, k, s[k as usize] * scale[k as usize] * dst.get(x, y, k));
+            for k in 0..ch {
+                row[(x * ch + k) as usize] = s[k as usize] * scale[k as usize] * dst.get(x, y, k);
             }
         }
-    }
+    });
     out
 }
 
@@ -157,17 +158,17 @@ pub fn multiply_ps1109(dst: &Buf, src: &Buf, scale: [f32; 4]) -> Buf {
 /// finalisation, RGBA in frame 127448's copies) is applied by the caller through `write_masked`.
 pub fn copy_ps1034(src: &Buf, st: [f32; 4], w: u32, h: u32) -> Buf {
     let mut out = Buf::new(w, h, 4);
-    for y in 0..h {
+    out.fill_rows_par(|y, row| {
         for x in 0..w {
             // VS 870: o1 = (ndc.x · 0.5 + 0.5, ndc.y · −0.5 + 0.5) at the pixel centre = ((x + 0.5)/W, (y + 0.5)/H)
             let u = ((x as f32 + 0.5) / w as f32) * st[0] + st[2];
             let v = ((y as f32 + 0.5) / h as f32) * st[1] + st[3];
             let s = sample_bilinear_clamp(src, u, v);
             for k in 0..4 {
-                out.set(x, y, k, s[k as usize]);
+                row[(x * 4 + k) as usize] = s[k as usize];
             }
         }
-    }
+    });
     out
 }
 

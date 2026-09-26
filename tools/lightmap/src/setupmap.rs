@@ -324,10 +324,26 @@ pub fn attr_from_map(scene: &crate::geometry::Scene, lm: &LmScene, frozen: &Froz
         }
         (model_idx, map)
     }).collect();
-    let item_meshes: Vec<(usize, usize)> = lm.meshes.iter().enumerate().filter(|(k, _)| lm.inst_count[*k] < 1000).map(|(k, mesh)| {
-        let best = lookups.iter().enumerate().max_by_key(|(_, (_, map))| mesh.verts.iter().filter(|v| map.contains_key(&key(v.pos))).count()).map(|(li, _)| li).unwrap_or(0);
-        (k, best)
-    }).collect();
+    // (perf 8: the pairing was every LM mesh against every model's map — 455 × 455 × 13 k vertex lookups, 12.6 s of the tiny
+    // map's setup; one multimap vertex key → the models holding it, a vote per vertex, the same argmax with the same tie
+    // rule — `max_by_key` keeps the LAST of equal maxima — and the meshes in parallel)
+    let mut by_key: std::collections::HashMap<[i32; 3], Vec<u32>> = std::collections::HashMap::new();
+    for (li, (_, map)) in lookups.iter().enumerate() {
+        for k in map.keys() { by_key.entry(*k).or_default().push(li as u32); }
+    }
+    let by_key = &by_key;
+    let candidates: Vec<usize> = lm.meshes.iter().enumerate().filter(|(k, _)| lm.inst_count[*k] < 1000).map(|(k, _)| k).collect();
+    let best_of: Vec<usize> = crate::pool::pool().map(candidates.len(), |ci| {
+        let mesh = &lm.meshes[candidates[ci]];
+        let mut votes = vec![0usize; lookups.len()];
+        for v in &mesh.verts {
+            if let Some(list) = by_key.get(&key(v.pos)) { for &li in list { votes[li as usize] += 1; } }
+        }
+        let mut best = 0usize;
+        for li in 0..lookups.len() { if votes[li] >= votes[best] { best = li; } }
+        best
+    });
+    let item_meshes: Vec<(usize, usize)> = candidates.iter().zip(best_of).map(|(&k, best)| (k, best)).collect();
     for (mk, li) in &item_meshes {
         let (model_idx, map) = &lookups[*li];
         let mesh = &lm.meshes[*mk];
@@ -335,12 +351,18 @@ pub fn attr_from_map(scene: &crate::geometry::Scene, lm: &LmScene, frozen: &Froz
         notes.push(format!("item mesh {mk} ↔ model {} ({}): {} of {} LM verts matched by position ({} port triangles)", model_idx, scene.model_names[*model_idx], hits, mesh.verts.len(), scene.models[*model_idx].tris.len()));
         notes.push(format!("  model {} materials: links {:?}, diffuse textures {:?}, cut-out textures {:?}; LM uv range {:?}", model_idx, scene.models[*model_idx].mat_links, scene.models[*model_idx].diff_tex, scene.models[*model_idx].alpha_tex, mesh.verts.iter().fold(([f32::MAX; 2], [f32::MIN; 2]), |(lo, hi), v| ([lo[0].min(v.uv[0]), lo[1].min(v.uv[1])], [hi[0].max(v.uv[0]), hi[1].max(v.uv[1])]))));
     }
-    // THE NINE RUNS IN PARALLEL: each run renders its own target (independent), the accumulation into 16963 follows in run
-    // order (the f16 add chain is sequential, so the result is bit-identical to the serial loop)
-    let run_k = |k: usize| -> (Target, Vec<String>, [usize; 4]) {
-        let mut notes: Vec<String> = Vec::new();
-        let mut class_count = [0usize; 4];
-        let mut tgt = Target::new();
+    // THE NINE RUNS × THE PIXEL-ROW BANDS IN PARALLEL (perf 8: nine tasks, one per run, kept nine threads busy for 16 s on the
+    // tiny map, 36 s on the giant). Per mesh the triangles' materials are resolved once (below: E's per-link constants, the
+    // textured sampling, the alpha-test rule — the same values, no longer a String and a hash lookup per instance per triangle
+    // per run, nor per fragment); then every (run, band) task walks every instance's triangles in the draw order and
+    // rasterises the rows of its band — a texel's fragments arrive in the same order as in the serial run, so the f16 blend
+    // chain is bit-identical; the accumulation into 16963 follows in run order per texel.
+    // 1. per mesh: the port model it pairs with and its triangles' (LM uv, uv0, class, texture, constant, class id, alpha test)
+    struct TriDraw<'a> { uv: [[f32; 2]; 3], uv0: [[f32; 2]; 3], class: MatClass, tex: Option<&'a Texture>, konst: Option<[f32; 3]>, cls: u8, at: Option<f32> }
+    let mut class_count = [0usize; 4];
+    let mut mesh_tris: Vec<Vec<TriDraw>> = Vec::with_capacity(item_meshes.len());
+    {
+        let k = 0usize;
         for (mk, li) in item_meshes.iter() {
             let mesh = &lm.meshes[*mk];
             let (model_idx, lookup) = &lookups[*li];
@@ -364,6 +386,7 @@ pub fn attr_from_map(scene: &crate::geometry::Scene, lm: &LmScene, frozen: &Froz
                 n > 0 && ok * 10 >= n * 9
             };
             if k == 0 { notes.push(format!("item mesh {mk} ({}): the port's TexCoord1 {} the LM stream's uv → the pre-pass rasterises {}", name, if port_uv_matches { "matches" } else { "does not match" }, if port_uv_matches { format!("the port's {} f32 triangles", model.tris.len()) } else { format!("E's LM mesh ({} triangles)", mesh.indices.len() / 3) })); }
+            let _ = k;
             // the triangles to draw: (positions-in-LM-space uv, uv0, class, diff)
             let tris: Vec<([[f32; 2]; 3], [[f32; 2]; 3], MatClass, u16)> = if port_uv_matches {
                 model.tris.iter().map(|t| (t.uv, t.uv0, classify_with(model, name, t, link_tex), diff_index(t))).collect()
@@ -377,103 +400,167 @@ pub fn attr_from_map(scene: &crate::geometry::Scene, lm: &LmScene, frozen: &Froz
                     ([vs[0].uv, vs[1].uv, vs[2].uv], uv0, class, diff)
                 }).collect()
             };
-            for inst in lm.instances.iter().skip(lm.inst_first[*mk]).take(lm.inst_count[*mk]) {
-                let rlm = prepass::raster_lm_for(inst.st, k);
-                for (uv, uv0, class, diff) in &tris {
-                    let (class, uv0) = (*class, *uv0);
-                    let p = [prepass::viewport(prepass::lm_ndc(uv[0], &rlm), W, H), prepass::viewport(prepass::lm_ndc(uv[1], &rlm), W, H), prepass::viewport(prepass::lm_ndc(uv[2], &rlm), W, H)];
-                    let (dudx, dudy) = prepass::attr_gradient(p, [uv0[0][0], uv0[1][0], uv0[2][0]]);
-                    let (dvdx, dvdy) = prepass::attr_gradient(p, [uv0[0][1], uv0[1][1], uv0[2][1]]);
-                    let tex = match class {
-                        MatClass::Textured => {
-                            let tn = diff_name(model, *diff);
-                            tex_cache.get(&tn).and_then(|t| t.as_ref())
-                        }
-                        _ => None,
-                    };
-                    // the constant per LINK when the pack gave one (diff carries the material index for a linked material), else the class global
-                    let link_const = if *diff & 0xC000 == 0x4000 { model.mat_links.get((*diff & 0x3fff) as usize).and_then(|l| frozen.link_rgb.get(&l.to_ascii_lowercase())).copied() } else { None };
-                    let konst = match class {
-                        MatClass::Pad => Some(link_const.unwrap_or(frozen.pad_rgb)),
-                        MatClass::Wall => Some(link_const.unwrap_or(frozen.wall_rgb)),
-                        _ => None,
-                    };
-                    let cls = match class { MatClass::Textured => 6u8, MatClass::CutOut => 7, MatClass::Pad => 3, MatClass::Wall => 4 };
-                    if k == 0 { class_count[match class { MatClass::Textured => 0, MatClass::CutOut => 1, MatClass::Pad => 2, MatClass::Wall => 3 }] += 1; }
-                    prepass::raster_tri(p, W, H, |x, y, b| {
-                        let src = match class {
-                            MatClass::CutOut => return, // AlphaToCoverage with alpha 1/9 on the 1-sample target: coverage 0
-                            MatClass::Textured => match tex {
-                                Some(tx) => {
-                                    // the game uploads the zip's DDS bottom-up (D's rule): the GPU texture's row y is the file's row h − 1 − y, so
-                                    // the file image is sampled at (u, 1 − v)
-                                    let uvs = [b[0] * uv0[0][0] + b[1] * uv0[1][0] + b[2] * uv0[2][0], 1.0 - (b[0] * uv0[0][1] + b[1] * uv0[1][1] + b[2] * uv0[2][1])];
-                                    // a card under the study switch: the 128/255 alpha test (GbxShadowAlphaThreshold) discards the cut-out
-                                    let at = if *diff & 0x8000 != 0 || (*diff & 0xC000 == 0x4000 && link_alpha_tested.contains(&diff_name(model, *diff))) { Some(SHADOW_ALPHA_THRESHOLD) } else { None };
-                                    match prepass::ps_basecolor(tx, &sampler, uvs, [dudx, -dvdx], [dudy, -dvdy], at, lm_scale) { Some(s) => s, None => return }
-                                }
-                                None => [0.0, 0.0, 0.0, lm_scale],
-                            },
-                            _ => { let c = konst.unwrap(); [c[0] * lm_scale, c[1] * lm_scale, c[2] * lm_scale, lm_scale] }
-                        };
-                        tgt.blend(x, y, src, cls);
-                    });
-                }
-            }
+            let n_inst = lm.inst_count[*mk];
+            let draws: Vec<TriDraw> = tris.iter().map(|(uv, uv0, class, diff)| {
+                let tex = match class {
+                    MatClass::Textured => {
+                        let tn = diff_name(model, *diff);
+                        tex_cache.get(&tn).and_then(|t| t.as_ref())
+                    }
+                    _ => None,
+                };
+                // the constant per LINK when the pack gave one (diff carries the material index for a linked material), else the class global
+                let link_const = if *diff & 0xC000 == 0x4000 { model.mat_links.get((*diff & 0x3fff) as usize).and_then(|l| frozen.link_rgb.get(&l.to_ascii_lowercase())).copied() } else { None };
+                let konst = match class {
+                    MatClass::Pad => Some(link_const.unwrap_or(frozen.pad_rgb)),
+                    MatClass::Wall => Some(link_const.unwrap_or(frozen.wall_rgb)),
+                    _ => None,
+                };
+                let cls = match class { MatClass::Textured => 6u8, MatClass::CutOut => 7, MatClass::Pad => 3, MatClass::Wall => 4 };
+                // a card under the study switch: the 128/255 alpha test (GbxShadowAlphaThreshold) discards the cut-out
+                let at = if *diff & 0x8000 != 0 || (*diff & 0xC000 == 0x4000 && link_alpha_tested.contains(&diff_name(model, *diff))) { Some(SHADOW_ALPHA_THRESHOLD) } else { None };
+                // (the class census of run 0: once per instance and triangle, as the serial run counted)
+                class_count[match class { MatClass::Textured => 0, MatClass::CutOut => 1, MatClass::Pad => 2, MatClass::Wall => 3 }] += n_inst;
+                TriDraw { uv: *uv, uv0: *uv0, class: *class, tex, konst, cls, at }
+            }).collect();
+            mesh_tris.push(draws);
         }
-        // the zone tiles: the terrain constant over the tile mesh — or, for a textured tile material (Stadium's Grass), the 17023
-        // class sampling the BaseColor texture at the quad's single uv set (= its lightmap uv; the file image at (u, 1 − v))
-        for (mk, mesh) in lm.meshes.iter().enumerate() {
-            if lm.inst_count[mk] < 1000 {
-                continue;
+    }
+    let mesh_tris = &mesh_tris;
+    // LMTOOL_TILE_ALBEDO_SCALE=K (study): the tiles' sampled albedo scaled — the ground-bounce lever test on stpad's posts
+    static ASCALE: std::sync::LazyLock<f32> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_TILE_ALBEDO_SCALE").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0));
+    let ascale: f32 = *ASCALE;
+    // 2. the runs' targets, each written by the bands of its (run, band) tasks — disjoint rows, so through raw pointers
+    let threads = crate::pool::pool().threads.max(1);
+    let n_bands = (threads * 2).clamp(1, H as usize);
+    let rows = (H as usize + n_bands - 1) / n_bands;
+    let mut targets: Vec<Target> = (0..9).map(|_| Target::new()).collect();
+    let tptrs: Vec<(usize, usize, usize)> = targets.iter_mut().map(|t| (t.buf.data.as_mut_ptr() as usize, t.frags.as_mut_ptr() as usize, t.class.as_mut_ptr() as usize)).collect();
+    // Target::blend on the raw target (the same f16 arithmetic)
+    let blend_at = |tp: (usize, usize, usize), x: u32, y: u32, src: [f32; 4], class: u8| {
+        let i = (y * W + x) as usize;
+        // SAFETY: the (run, band) task alone writes the rows of its band of its run's target
+        unsafe {
+            let data = tp.0 as *mut f32;
+            for k in 0..4 {
+                let s = crate::gpufmt::quantise_f16(src[k], crate::gpufmt::Rounding::Truncate);
+                let d = *data.add(i * 4 + k);
+                *data.add(i * 4 + k) = crate::gpufmt::quantise_f16(d + s, crate::gpufmt::Rounding::NearestEven);
             }
-            let c = frozen.tile_rgb;
-            let src = [c[0] * lm_scale, c[1] * lm_scale, c[2] * lm_scale, lm_scale];
-            for inst in lm.instances.iter().skip(lm.inst_first[mk]).take(lm.inst_count[mk]) {
-                let rlm = prepass::raster_lm_for(inst.st, k);
-                for tri in mesh.indices.chunks_exact(3) {
-                    let p = [0, 1, 2].map(|i| prepass::viewport(prepass::lm_ndc(mesh.verts[tri[i] as usize].uv, &rlm), W, H));
-                    match &frozen.tile_tex {
-                        Some(tx) => {
-                            let uv0 = [0, 1, 2].map(|i| mesh.verts[tri[i] as usize].uv);
-                            let (dudx, dudy) = prepass::attr_gradient(p, [uv0[0][0], uv0[1][0], uv0[2][0]]);
-                            let (dvdx, dvdy) = prepass::attr_gradient(p, [uv0[0][1], uv0[1][1], uv0[2][1]]);
-                            // LMTOOL_TILE_ALBEDO_SCALE=K (study): the tiles' sampled albedo scaled — the ground-bounce lever test on stpad's posts
-                            static ASCALE: std::sync::LazyLock<f32> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_TILE_ALBEDO_SCALE").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0));
-                            let ascale: f32 = *ASCALE;
-                            prepass::raster_tri(p, W, H, |x, y, b| {
-                                let uvs = [b[0] * uv0[0][0] + b[1] * uv0[1][0] + b[2] * uv0[2][0], 1.0 - (b[0] * uv0[0][1] + b[1] * uv0[1][1] + b[2] * uv0[2][1])];
-                                if let Some(mut s) = prepass::ps_basecolor(tx, &sampler, uvs, [dudx, -dvdx], [dudy, -dvdy], None, lm_scale) { s[0] *= ascale; s[1] *= ascale; s[2] *= ascale; tgt.blend(x, y, s, 6); }
-                            });
-                        }
-                        None => prepass::raster_tri(p, W, H, |x, y, _| tgt.blend(x, y, src, 1)),
+            *(tp.1 as *mut u32).add(i) += 1;
+            *(tp.2 as *mut u8).add(i) = class;
+        }
+    };
+    {
+        let tptrs = &tptrs;
+        let blend_at = &blend_at;
+        crate::pool::pool().run(9 * n_bands, |t| {
+            let (k, band) = (t / n_bands, t % n_bands);
+            let (y_lo, y_hi) = ((band * rows).min(H as usize) as i64, ((band + 1) * rows).min(H as usize) as i64);
+            if y_lo >= y_hi { return; }
+            let tp = tptrs[k];
+            // a triangle whose snapped rows cannot meet the band is skipped before its setup (a row each side to be safe;
+            // a non-finite coordinate is left to the raster to decide)
+            let meets = |p: &[[f32; 2]; 3]| -> bool {
+                let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
+                for q in p { if !q[1].is_finite() { return true; } lo = lo.min(q[1]); hi = hi.max(q[1]); }
+                ((hi + 1.0) as i64) >= y_lo && ((lo - 1.0).floor() as i64) < y_hi
+            };
+            for (mi, (mk, _li)) in item_meshes.iter().enumerate() {
+                let draws = &mesh_tris[mi];
+                for inst in lm.instances.iter().skip(lm.inst_first[*mk]).take(lm.inst_count[*mk]) {
+                    let rlm = prepass::raster_lm_for(inst.st, k);
+                    for d in draws {
+                        let p = [prepass::viewport(prepass::lm_ndc(d.uv[0], &rlm), W, H), prepass::viewport(prepass::lm_ndc(d.uv[1], &rlm), W, H), prepass::viewport(prepass::lm_ndc(d.uv[2], &rlm), W, H)];
+                        if !meets(&p) { continue; }
+                        let uv0 = d.uv0;
+                        let (dudx, dudy) = prepass::attr_gradient(p, [uv0[0][0], uv0[1][0], uv0[2][0]]);
+                        let (dvdx, dvdy) = prepass::attr_gradient(p, [uv0[0][1], uv0[1][1], uv0[2][1]]);
+                        prepass::raster_tri_rows(p, W, H, y_lo, y_hi, |x, y, b| {
+                            let src = match d.class {
+                                MatClass::CutOut => return, // AlphaToCoverage with alpha 1/9 on the 1-sample target: coverage 0
+                                MatClass::Textured => match d.tex {
+                                    Some(tx) => {
+                                        // the game uploads the zip's DDS bottom-up (D's rule): the GPU texture's row y is the file's row h − 1 − y, so
+                                        // the file image is sampled at (u, 1 − v)
+                                        let uvs = [b[0] * uv0[0][0] + b[1] * uv0[1][0] + b[2] * uv0[2][0], 1.0 - (b[0] * uv0[0][1] + b[1] * uv0[1][1] + b[2] * uv0[2][1])];
+                                        match prepass::ps_basecolor(tx, &sampler, uvs, [dudx, -dvdx], [dudy, -dvdy], d.at, lm_scale) { Some(s) => s, None => return }
+                                    }
+                                    None => [0.0, 0.0, 0.0, lm_scale],
+                                },
+                                _ => { let c = d.konst.unwrap(); [c[0] * lm_scale, c[1] * lm_scale, c[2] * lm_scale, lm_scale] }
+                            };
+                            blend_at(tp, x, y, src, d.cls);
+                        });
                     }
                 }
             }
-        }
-        // the water tint (PS 17018 over the tile mesh with the frozen id map / tables)
-        crate::prepass_check::tint_from_map(frozen, lm, k, &mut tgt);
-        if k == 8 {
-            let mut hist: std::collections::BTreeMap<u32, usize> = std::collections::BTreeMap::new();
-            for i in 0..(W * H) as usize { let a = tgt.buf.data[i * 4 + 3]; if a > 0.0 { *hist.entry((a * 9.0).round() as u32).or_default() += 1; } }
-            notes.push(format!("pre-pass run 8: alpha histogram (fragments per texel → texels) {:?}; items-only check: tiles {} instances", hist, lm.meshes.iter().enumerate().filter(|(k, _)| lm.inst_count[*k] >= 1000).map(|(k, _)| lm.inst_count[k]).sum::<usize>()));
-        }
-        (tgt, notes, class_count)
-    };
-    let runs: Vec<(Target, Vec<String>, [usize; 4])> = crate::pool::pool().map(9, |k| run_k(k));
-    let mut class_count = [0usize; 4];
-    for (k, (tgt, nts, cc)) in runs.into_iter().enumerate() {
-        notes.extend(nts);
-        if k == 0 { class_count = cc; }
-        // PS 1109: run k accumulated into 16963
-        for y in 0..H {
-            for x in 0..W {
-                for c in 0..4 {
-                    let s = crate::gpufmt::quantise_f16(tgt.buf.get(x, y, c), crate::gpufmt::Rounding::Truncate);
-                    acc.set(x, y, c, crate::gpufmt::quantise_f16(acc.get(x, y, c) + s, crate::gpufmt::Rounding::NearestEven));
+            // the zone tiles: the terrain constant over the tile mesh — or, for a textured tile material (Stadium's Grass), the
+            // 17023 class sampling the BaseColor texture at the quad's single uv set (= its lightmap uv; the file image at (u, 1 − v))
+            for (mk, mesh) in lm.meshes.iter().enumerate() {
+                if lm.inst_count[mk] < 1000 {
+                    continue;
+                }
+                let c = frozen.tile_rgb;
+                let src = [c[0] * lm_scale, c[1] * lm_scale, c[2] * lm_scale, lm_scale];
+                for inst in lm.instances.iter().skip(lm.inst_first[mk]).take(lm.inst_count[mk]) {
+                    let rlm = prepass::raster_lm_for(inst.st, k);
+                    for tri in mesh.indices.chunks_exact(3) {
+                        let p = [0, 1, 2].map(|i| prepass::viewport(prepass::lm_ndc(mesh.verts[tri[i] as usize].uv, &rlm), W, H));
+                        if !meets(&p) { continue; }
+                        match &frozen.tile_tex {
+                            Some(tx) => {
+                                let uv0 = [0, 1, 2].map(|i| mesh.verts[tri[i] as usize].uv);
+                                let (dudx, dudy) = prepass::attr_gradient(p, [uv0[0][0], uv0[1][0], uv0[2][0]]);
+                                let (dvdx, dvdy) = prepass::attr_gradient(p, [uv0[0][1], uv0[1][1], uv0[2][1]]);
+                                prepass::raster_tri_rows(p, W, H, y_lo, y_hi, |x, y, b| {
+                                    let uvs = [b[0] * uv0[0][0] + b[1] * uv0[1][0] + b[2] * uv0[2][0], 1.0 - (b[0] * uv0[0][1] + b[1] * uv0[1][1] + b[2] * uv0[2][1])];
+                                    if let Some(mut s) = prepass::ps_basecolor(tx, &sampler, uvs, [dudx, -dvdx], [dudy, -dvdy], None, lm_scale) { s[0] *= ascale; s[1] *= ascale; s[2] *= ascale; blend_at(tp, x, y, s, 6); }
+                                });
+                            }
+                            None => prepass::raster_tri_rows(p, W, H, y_lo, y_hi, |x, y, _| blend_at(tp, x, y, src, 1)),
+                        }
+                    }
                 }
             }
-        }
+        });
+    }
+    // 3. the water tint per run (PS 17018 over the tile mesh with the frozen id map / tables), the nine in parallel as before
+    {
+        let tps: Vec<usize> = targets.iter_mut().map(|t| t as *mut Target as usize).collect();
+        let tps = &tps;
+        crate::pool::pool().run(9, |k| {
+            // SAFETY: one task per target
+            let tgt = unsafe { &mut *(tps[k] as *mut Target) };
+            crate::prepass_check::tint_from_map(frozen, lm, k, tgt);
+        });
+    }
+    {
+        let tgt = &targets[8];
+        let mut hist: std::collections::BTreeMap<u32, usize> = std::collections::BTreeMap::new();
+        for i in 0..(W * H) as usize { let a = tgt.buf.data[i * 4 + 3]; if a > 0.0 { *hist.entry((a * 9.0).round() as u32).or_default() += 1; } }
+        notes.push(format!("pre-pass run 8: alpha histogram (fragments per texel → texels) {:?}; items-only check: tiles {} instances", hist, lm.meshes.iter().enumerate().filter(|(k, _)| lm.inst_count[*k] >= 1000).map(|(k, _)| lm.inst_count[k]).sum::<usize>()));
+    }
+    // 4. PS 1109: the runs accumulated into 16963 in run order, per texel (parallel over texel chunks: a texel's chain is its own)
+    {
+        let n = (W * H) as usize;
+        let per = (n / (threads * 2).max(1)).max(4096);
+        let ap = acc.data.as_mut_ptr() as usize;
+        let targets = &targets;
+        crate::pool::pool().run((n + per - 1) / per, |ci| {
+            let (a, e) = ((ci * per).min(n), ((ci + 1) * per).min(n));
+            for i in a..e {
+                for c in 0..4 {
+                    let mut v = 0.0f32;
+                    for tgt in targets.iter() {
+                        let s = crate::gpufmt::quantise_f16(tgt.buf.data[i * 4 + c], crate::gpufmt::Rounding::Truncate);
+                        v = crate::gpufmt::quantise_f16(v + s, crate::gpufmt::Rounding::NearestEven);
+                    }
+                    // SAFETY: the chunks partition the texels
+                    unsafe { *(ap as *mut f32).add(i * 4 + c) = v; }
+                }
+            }
+        });
     }
     notes.push(format!("pre-pass: {} item instances → per run {} textured / {} cut-out (ATC: nothing) / {} pad / {} wall triangles; tiles at the frozen terrain constant {:?}, wall {:?}, pad {:?}", scene.instances.len(), class_count[0], class_count[1], class_count[2], class_count[3], frozen.tile_rgb, frozen.wall_rgb, frozen.pad_rgb));
     acc
@@ -483,15 +570,16 @@ pub fn attr_from_map(scene: &crate::geometry::Scene, lm: &LmScene, frozen: &Froz
 pub fn mdiffuse8_of(attr: &Buf) -> Buf {
     let res = crate::ilightin::resolve_ps17043(attr, false);
     let mut out = Buf::new(W, H, 4);
-    for y in 0..H {
+    let res = &res;
+    out.fill_rows_par(|y, row| {
         for x in 0..W {
             for c in 0..4 {
                 let v = res.get(x, y, c);
                 let v = if c < 3 { crate::gpufmt::linear_to_srgb(v) } else { v };
-                out.set(x, y, c, crate::ilightin::unorm8_rt(v, crate::gpuenc::UnormRounding::NearestEven));
+                row[(x * 4 + c) as usize] = crate::ilightin::unorm8_rt(v, crate::gpuenc::UnormRounding::NearestEven);
             }
         }
-    }
+    });
     out
 }
 
@@ -501,13 +589,14 @@ pub fn ilightinput_chain(sun: &Buf, mdiffuse8: &Buf) -> (Buf, Buf) {
     let mask = crate::ilightin::quantise_unorm8(&crate::ilightin::mask_ps1038(sun, [1.0, 1.0, 0.0, 0.0], [[0.0; 4], [0.0; 4], [0.0; 4], [1.0; 4]], W, H), crate::gpuenc::UnormRounding::NearestEven);
     let stage = crate::ilightin::quantise_r11(&crate::ilightin::resolve_ps17043(sun, false), Rounding::Truncate);
     let mut mdiff_lin = mdiffuse8.clone();
-    for y in 0..H {
+    let ch = mdiffuse8.channels;
+    mdiff_lin.fill_rows_par(|y, row| {
         for x in 0..W {
             for c in 0..3 {
-                mdiff_lin.set(x, y, c, crate::gpufmt::srgb_to_linear(mdiffuse8.get(x, y, c)));
+                row[(x * ch + c) as usize] = crate::gpufmt::srgb_to_linear(mdiffuse8.get(x, y, c));
             }
         }
-    }
+    });
     let mut c = crate::ilightin::quantise_r11(&crate::finalprep::multiply_ps1109(&stage, &mdiff_lin, [1.0; 4]), Rounding::Truncate);
     let mut w = mask;
     for _ in 0..8 {

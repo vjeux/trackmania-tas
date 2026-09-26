@@ -79,14 +79,15 @@ pub fn resolve_ps17043_texel_div(src: &Buf, x: u32, y: u32, debug_show_overlap: 
 /// PS 17043 over a target (f32 values, 4 channels).
 pub fn resolve_ps17043(src: &Buf, debug_show_overlap: bool) -> Buf {
     let mut out = Buf::new(src.w, src.h, 4);
-    for y in 0..src.h {
-        for x in 0..src.w {
+    let w = src.w;
+    out.fill_rows_par(|y, row| {
+        for x in 0..w {
             let o = resolve_ps17043_texel(src, x, y, debug_show_overlap);
             for k in 0..4 {
-                out.set(x, y, k, o[k as usize]);
+                row[(x * 4 + k) as usize] = o[k as usize];
             }
         }
-    }
+    });
     out
 }
 
@@ -100,17 +101,18 @@ pub fn mask_ps1038(src: &Buf, st: [f32; 4], color_mat4_rows: [[f32; 4]; 4], w: u
     let col = |k: usize| [color_mat4_rows[0][k], color_mat4_rows[1][k], color_mat4_rows[2][k], color_mat4_rows[3][k]];
     let cols = [col(0), col(1), col(2), col(3)];
     let mut out = Buf::new(w, h, 4);
-    for y in 0..h {
+    let sampled = &sampled;
+    out.fill_rows_par(|y, row| {
         for x in 0..w {
             let s = [sampled.get(x, y, 0), sampled.get(x, y, 1), sampled.get(x, y, 2), sampled.get(x, y, 3)];
             for k in 0..4 {
                 let c = cols[k];
                 // dp4: the products summed left to right
                 let v = ((s[0] * c[0] + s[1] * c[1]) + s[2] * c[2]) + s[3] * c[3];
-                out.set(x, y, k as u32, v);
+                row[(x * 4) as usize + k] = v;
             }
         }
-    }
+    });
     out
 }
 
@@ -167,15 +169,23 @@ pub fn dilate_ps1335(input: &Buf, coverage: &Buf) -> (Buf, Buf) {
 pub fn dilate_ps1335_div(input: &Buf, coverage: &Buf, fma: bool, dm: crate::gpucmp::DivModel) -> (Buf, Buf) {
     let mut oc = Buf::new(input.w, input.h, 3);
     let mut ow = Buf::new(input.w, input.h, 1);
-    for y in 0..input.h {
-        for x in 0..input.w {
-            let (c, w) = dilate_ps1335_texel_div(input, coverage, x, y, fma, dm);
-            oc.set(x, y, 0, c[0]);
-            oc.set(x, y, 1, c[1]);
-            oc.set(x, y, 2, c[2]);
-            ow.set(x, y, 0, w);
+    // (the colour rows in parallel, then the coverage rows from the same texel function — the texel evaluated once per
+    // output rather than one task writing rows of two buffers)
+    let wd = input.w;
+    oc.fill_rows_par(|y, row| {
+        for x in 0..wd {
+            let (c, _) = dilate_ps1335_texel_div(input, coverage, x, y, fma, dm);
+            row[(x * 3) as usize] = c[0];
+            row[(x * 3 + 1) as usize] = c[1];
+            row[(x * 3 + 2) as usize] = c[2];
         }
-    }
+    });
+    ow.fill_rows_par(|y, row| {
+        for x in 0..wd {
+            let (_, w) = dilate_ps1335_texel_div(input, coverage, x, y, fma, dm);
+            row[x as usize] = w;
+        }
+    });
     (oc, ow)
 }
 
@@ -188,25 +198,27 @@ pub fn unorm8_rt(v: f32, mode: crate::gpuenc::UnormRounding) -> f32 {
 /// Quantise a 3-channel f32 buffer to the R11G11B10 target.
 pub fn quantise_r11(b: &Buf, r: crate::gpufmt::Rounding) -> Buf {
     let mut out = Buf::new(b.w, b.h, 3);
-    for y in 0..b.h {
-        for x in 0..b.w {
+    let w = b.w;
+    out.fill_rows_par(|y, row| {
+        for x in 0..w {
             let q = crate::gpufmt::quantise_r11g11b10([b.get(x, y, 0), b.get(x, y, 1), b.get(x, y, 2)], r);
-            out.set(x, y, 0, q[0]);
-            out.set(x, y, 1, q[1]);
-            out.set(x, y, 2, q[2]);
+            row[(x * 3) as usize] = q[0];
+            row[(x * 3 + 1) as usize] = q[1];
+            row[(x * 3 + 2) as usize] = q[2];
         }
-    }
+    });
     out
 }
 
 /// Quantise a buffer's channel 0 to UNORM8 (an R8_UNORM target).
 pub fn quantise_unorm8(b: &Buf, mode: crate::gpuenc::UnormRounding) -> Buf {
     let mut out = Buf::new(b.w, b.h, 1);
-    for y in 0..b.h {
-        for x in 0..b.w {
-            out.set(x, y, 0, unorm8_rt(b.get(x, y, 0), mode));
+    let w = b.w;
+    out.fill_rows_par(|y, row| {
+        for x in 0..w {
+            row[x as usize] = unorm8_rt(b.get(x, y, 0), mode);
         }
-    }
+    });
     out
 }
 

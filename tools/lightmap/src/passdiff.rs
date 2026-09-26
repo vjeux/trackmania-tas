@@ -480,6 +480,26 @@ impl Buf {
     pub fn set(&mut self, x: u32, y: u32, c: u32, v: f32) {
         self.data[((y * self.w + x) * self.channels + c) as usize] = v;
     }
+    /// The rows filled in parallel (perf 8): `f(y, row)` writes row y (w × channels values, `row[x * channels + c]`) — the
+    /// per-texel arithmetic is the caller's, unchanged; a band of rows per pool task. The full-frame passes of the setup
+    /// chain (PS 17043 / 1038 / 1109 / 1335 × 8 and their quantisations) were serial walks over 4 M texels each.
+    pub fn fill_rows_par<F: Fn(u32, &mut [f32]) + Sync>(&mut self, f: F) {
+        let (w, h, c) = (self.w, self.h, self.channels);
+        let row_len = (w * c) as usize;
+        if h == 0 || row_len == 0 { return; }
+        let threads = crate::pool::pool().threads.max(1);
+        let per = ((h as usize + threads * 2 - 1) / (threads * 2)).max(1);
+        let n_tasks = (h as usize + per - 1) / per;
+        let p = self.data.as_mut_ptr() as usize;
+        let f = &f;
+        crate::pool::pool().run(n_tasks, |t| {
+            for y in (t * per)..((t + 1) * per).min(h as usize) {
+                // SAFETY: the tasks own disjoint rows
+                let row = unsafe { std::slice::from_raw_parts_mut((p as *mut f32).add(y * row_len), row_len) };
+                f(y as u32, row);
+            }
+        });
+    }
     /// Crop a pixel rectangle (clamped to the buffer).
     pub fn crop(&self, x0: i64, y0: i64, w: u32, h: u32) -> Buf {
         let mut out = Buf::new(w, h, self.channels);
