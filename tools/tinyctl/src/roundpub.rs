@@ -226,6 +226,10 @@ pub fn mint_tokens(wsx: &Wsx, token_dir: &Path) -> Result<(), String> {
     let env = "cd /home/vjeux/shoot/hunt; export TM_SESSION=080a15b8-2c6a-4fff-9d8a-db7d0072ee43; export TM_SESSION_TITLE=\"Tiny u10s publish\"; export PATH=/home/vjeux/bin:$PATH";
     let t0 = Instant::now();
     let mut dead_plugin = 0u32;
+    // the game the MINT launched (or relaunched) is closed again once the tokens are
+    // pulled: the other lanes on the shared box need the game ABSENT to launch their own
+    // (MK64 sessions, 2026-09-26 13:52) — a game that was already running is left alone
+    let mut launched_here = false;
     loop {
         // another session's DIRTY-RECOVERY marker (MK64 native runs, 2026-09-26): the box is
         // mid-restore — wait, never launch or mint over it
@@ -244,12 +248,14 @@ pub fn mint_tokens(wsx: &Wsx, token_dir: &Path) -> Result<(), String> {
         // (the MK64 session's "without Openplanet" runs, 2026-09-26) never answers the token
         // route: after 3 answered-but-empty mints, relaunch it as own lock steps
         if up != "0" && dead_plugin >= 3 {
+            launched_here = true;
             println!("  mint: the game answers no token {dead_plugin}× (no plugin?) — relaunching (own lock steps)");
             let _ = wsx.sh(&format!("{env}; tmdrive kill --purpose \"mint: relaunch with Openplanet\" --wait 100"));
             let _ = wsx.sh(&format!("{env}; sed -i \"s/^DeveloperMode=false/DeveloperMode=true/\" /mnt/c/Users/vjeux/OpenplanetNext/Settings.ini; tmdrive launch --timeout 120 --purpose \"mint: relaunch with Openplanet\" --wait 100"));
             dead_plugin = 0;
         }
         if up == "0" {
+            launched_here = true;
             println!("  mint: the game is not running — launching (own lock step)");
             let _ = wsx.sh(&format!("{env}; sed -i \"s/^DeveloperMode=false/DeveloperMode=true/\" /mnt/c/Users/vjeux/OpenplanetNext/Settings.ini; tmdrive launch --timeout 120 --purpose \"mint (launch)\" --wait 100"));
         }
@@ -270,6 +276,10 @@ pub fn mint_tokens(wsx: &Wsx, token_dir: &Path) -> Result<(), String> {
         if t0.elapsed().as_secs() > 3600 {
             return Err("mint: no tokens after 60 min (box held?)".into());
         }
+    }
+    if launched_here {
+        let _ = wsx.sh(&format!("{env}; tmdrive kill --purpose \"mint: closing the game it launched\" --wait 60 > /dev/null 2>&1; true"));
+        println!("  mint: the game launched for the mint is closed again");
     }
     for aud in ["NadeoServices", "NadeoLiveServices"] {
         let local = token_dir.join(format!("token-{aud}.txt"));
