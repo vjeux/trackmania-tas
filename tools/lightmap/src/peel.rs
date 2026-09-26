@@ -3155,6 +3155,9 @@ pub mod prof {
     pub static HB: AtomicU64 = AtomicU64::new(0);
     pub static PROBE_END: AtomicU64 = AtomicU64::new(0);
     pub static ACC_SUB: AtomicU64 = AtomicU64::new(0);
+    /// The gather's and the accumulate's summed task times (CPU busy inside the pool tasks) beside their wall times.
+    pub static GATHER_CPU: AtomicU64 = AtomicU64::new(0);
+    pub static ACC_CPU: AtomicU64 = AtomicU64::new(0);
     pub static AMBIENT: AtomicU64 = AtomicU64::new(0);
     /// The sweep's stages outside the direction loop: the layout raster (the sub-samples), the nine jitter sets, the
     /// shadow map, the harness dumps before the loop, the resolve after it.
@@ -3190,8 +3193,8 @@ pub mod prof {
         eprintln!("profile [{label}]: A-buffer build {:.2}s (wanted index {:.2}s, clip {:.2}s, raster {:.2}s, CSR {:.2}s), exact layer count {:.2}s, layer derivation {:.2}s (parallel part {:.2}s), per-direction dumps {:.2}s, gather {:.2}s, accumulate {:.2}s, accumulation snapshots {:.2}s, frames {:.2}s; directions total {:.2}s (unstaged {:.2}s); sweep total {total:.2}s", g(&BUILD), g(&B_INDEX), g(&B_CLIP), g(&B_RASTER), g(&B_SORT), g(&EXACT), g(&LAYERS), g(&L_PAR), g(&DUMP), g(&GATHER), g(&ACCUM), g(&SNAP), g(&FRAMES), g(&DIR), g(&DIR) - staged);
         // the pool's per-stage utilisation table (per-thread busy time; pool::stats), against the directions total
         crate::pool::stats::report(label, g(&DIR));
-        eprintln!("profile [{label}] non-raster: layer bufs {:.2}s, LmILightDir_Set {:.2}s, probe layers {:.2}s, dome image {:.2}s (in layer derivation), AddAmbient {:.2}s, H-basis {:.2}s, probe folds {:.2}s, sub-sample accumulate {:.2}s; outside the loop: sub-samples {:.2}s, jitter sets {:.2}s, shadow map {:.2}s, pre-loop dumps {:.2}s, resolve {:.2}s; gather lookups: {} sky (dome_px), {} surface", g(&LM_BUFS), g(&LM_SET), g(&PROBE_LAYER), g(&DOME_IMG), g(&AMBIENT), g(&HB), g(&PROBE_END), g(&ACC_SUB), g(&PRE_SUBS), g(&PRE_JITTER), g(&PRE_SHADOW), g(&PRE_DUMP), g(&POST_RESOLVE), crate::peel::GATHER_COUNTS[0].swap(0, Ordering::Relaxed), crate::peel::GATHER_COUNTS[1].swap(0, Ordering::Relaxed));
-        for c in [&BUILD, &LAYERS, &DUMP, &GATHER, &ACCUM, &SNAP, &B_CLIP, &B_RASTER, &B_SORT, &B_INDEX, &DIR, &FRAMES, &EXACT, &L_PAR, &DOME, &BITMAP, &CLEAR, &CONTRIB, &CULL, &L_CSR, &LM_BUFS, &LM_SET, &PROBE_LAYER, &DOME_IMG, &AMBIENT, &HB, &PROBE_END, &ACC_SUB, &PRE_SUBS, &PRE_JITTER, &PRE_SHADOW, &PRE_DUMP, &POST_RESOLVE, &PROBE_PX] { c.store(0, Ordering::Relaxed); }
+        eprintln!("profile [{label}] non-raster: layer bufs {:.2}s, LmILightDir_Set {:.2}s, probe layers {:.2}s, dome image {:.2}s (in layer derivation), AddAmbient {:.2}s, H-basis {:.2}s, probe folds {:.2}s, sub-sample accumulate {:.2}s; outside the loop: sub-samples {:.2}s, jitter sets {:.2}s, shadow map {:.2}s, pre-loop dumps {:.2}s, resolve {:.2}s; gather lookups: {} sky (dome_px), {} surface; task CPU: gather {:.2}s, accumulate {:.2}s", g(&LM_BUFS), g(&LM_SET), g(&PROBE_LAYER), g(&DOME_IMG), g(&AMBIENT), g(&HB), g(&PROBE_END), g(&ACC_SUB), g(&PRE_SUBS), g(&PRE_JITTER), g(&PRE_SHADOW), g(&PRE_DUMP), g(&POST_RESOLVE), crate::peel::GATHER_COUNTS[0].swap(0, Ordering::Relaxed), crate::peel::GATHER_COUNTS[1].swap(0, Ordering::Relaxed), g(&GATHER_CPU), g(&ACC_CPU));
+        for c in [&BUILD, &LAYERS, &DUMP, &GATHER, &ACCUM, &SNAP, &B_CLIP, &B_RASTER, &B_SORT, &B_INDEX, &DIR, &FRAMES, &EXACT, &L_PAR, &DOME, &BITMAP, &CLEAR, &CONTRIB, &CULL, &L_CSR, &LM_BUFS, &LM_SET, &PROBE_LAYER, &DOME_IMG, &AMBIENT, &HB, &PROBE_END, &ACC_SUB, &PRE_SUBS, &PRE_JITTER, &PRE_SHADOW, &PRE_DUMP, &POST_RESOLVE, &GATHER_CPU, &ACC_CPU] { c.store(0, Ordering::Relaxed); }
     }
 }
 
@@ -3519,7 +3522,8 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
     // meshes: vertex normals, tangents, PSIZE frame modes, the two-sided cards) runs LmILightDir_Set (lmaccum::run_set_block)
     // over OUR peel layers after every layer of both peels, then the H-basis draws (lmaccum::run_hbasis) into four RGBA16F
     // MRTs kept across the sweep — rows 7–9 as transcribed, so that what remains against the capture is the peel content
-    let mut hb_lm: Option<crate::lmaccum::HbTargets> = prm.lm_scene.as_ref().map(|_| crate::lmaccum::HbTargets::cleared(2048, 2048));
+    let mut dir_lm_buf: Option<crate::lmaccum::DirTarget> = None;
+    let mut hb_lm: Option<crate::lmaccum::HbTargets> = prm.lm_scene.as_ref().map(|_| { let t = std::time::Instant::now(); let hb = crate::lmaccum::HbTargets::cleared(2048, 2048); if crate::lmaccum::lmaccum_trace() { eprintln!("lmaccum trace: HbTargets::cleared {:.1} ms", t.elapsed().as_secs_f64() * 1e3); } hb });
     let mut lm_rows: Vec<String> = Vec::new();
     // the per-direction buffers, allocated once (their fills run on the pool): the selected radiance and
     // occlusion flag per sub-sample, and the identity index range of the jitter sets
@@ -3661,7 +3665,9 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         prof::add(&prof::CLEAR, t_clear);
         let mut t_build_total = 0.0f32;
         // the transcribed accumulate's TMapILightDir of this direction (cleared before the first block)
-        let mut dir_lm: Option<crate::lmaccum::DirTarget> = prm.lm_scene.as_ref().map(|_| crate::lmaccum::DirTarget::cleared(2048, 2048));
+        // (one allocation per sweep, cleared per direction — perf 8: a fresh 16 MB target per direction faulted its pages in
+        // from every pool thread at once)
+        let mut dir_lm: Option<crate::lmaccum::DirTarget> = match dir_lm_buf.take() { Some(mut t) => { t.clear(); Some(t) } None => prm.lm_scene.as_ref().map(|_| crate::lmaccum::DirTarget::cleared(2048, 2048)) };
         // the fused blocks' per-pixel "highest block that wrote" and the block numbering across this direction's peels
         let mut dir_best_k: Vec<u16> = Vec::new();
         let mut dir_block_base: usize = 0;
@@ -3946,23 +3952,40 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             // the environment render's dome colour PER PIXEL for the transcribed accumulate's layer-0 colour target: the
             // dome as `dome_px` transcribes it (the game's dome mesh rasterised in this frame, PS 16774, the R11G11B10 target)
             // — the game's env render is per pixel, the uniform sky is only the gather's fallback
-            let dome_img: Option<Vec<[f32; 3]>> = if prm.lm_scene.is_some() && prm.sky_grad.is_some() && prm.dome_exact {
+            // (the derivation takes the dome image in sweep 0 only — the bounce sweeps' layer 0 is black: not computed there)
+            let dome_img: Option<Vec<[f32; 3]>> = if prm.lm_scene.is_some() && prm.sky_grad.is_some() && prm.dome_exact && prm.sweep == 0 {
                 let t_dome_img = std::time::Instant::now();
                 let (w, h) = (frame.res as usize, frame.res_y as usize);
                 let mut img = vec![[0.0f32; 3]; w * h];
-                let rows_per = (h / threads.max(1)).max(1);
                 let dome_px = &dome_px;
-                std::thread::scope(|sc| {
-                    for (ti, chunk) in img.chunks_mut(rows_per * w).enumerate() {
-                        let y0 = ti * rows_per;
-                        sc.spawn(move || {
-                            for (i, px) in chunk.iter_mut().enumerate() {
-                                // (dome_px quantises through the peel target and the ILightDir target — the same R11G11B10 twice)
-                                *px = dome_px(frame, dome_r, (i % w) as u32, (y0 + i / w) as u32);
+                match wanted.as_ref() {
+                    // the sparse derivation reads the dome only at the wanted pixels (perf 8: 3.2 M of 16.8 M on stpad)
+                    Some(px) => {
+                        let m = px.pixels.len();
+                        let per = (m / (threads * 4).max(1)).max(1024);
+                        let ip = img.as_mut_ptr() as usize;
+                        crate::pool::pool().run((m + per - 1) / per, |ci| {
+                            for &id in &px.pixels[(ci * per).min(m)..((ci + 1) * per).min(m)] {
+                                // SAFETY: the wanted pixel ids are distinct; each chunk owns its ids
+                                unsafe { *(ip as *mut [f32; 3]).add(id as usize) = dome_px(frame, dome_r, id % w as u32, id / w as u32); }
                             }
                         });
                     }
-                });
+                    None => {
+                        let rows_per = (h / threads.max(1)).max(1);
+                        std::thread::scope(|sc| {
+                            for (ti, chunk) in img.chunks_mut(rows_per * w).enumerate() {
+                                let y0 = ti * rows_per;
+                                sc.spawn(move || {
+                                    for (i, px) in chunk.iter_mut().enumerate() {
+                                        // (dome_px quantises through the peel target and the ILightDir target — the same R11G11B10 twice)
+                                        *px = dome_px(frame, dome_r, (i % w) as u32, (y0 + i / w) as u32);
+                                    }
+                                });
+                            }
+                        });
+                    }
+                }
                 prof::add(&prof::DOME_IMG, t_dome_img);
                 Some(img)
             } else {
@@ -4157,6 +4180,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             crate::pool::pool().run(n_chunks, |ci| {
                 let ch = &range[ci * chunk..((ci + 1) * chunk).min(range.len())];
                 let (mut n_dome, mut n_surface) = (0u64, 0u64);
+                let t_chunk = std::time::Instant::now();
                 // THE GATHER PIPELINED (perf 8): the game-peel lookup is four dependent random reads per sub-sample (the
                 // wanted bitmap's word and rank, the layer table's start, the fragment list — a cache miss each: 68 % of the
                 // gather's samples sat on the binary search's first load), so the sub-samples go through in blocks of
@@ -4339,6 +4363,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                     GATHER_COUNTS[0].fetch_add(n_dome, std::sync::atomic::Ordering::Relaxed);
                     GATHER_COUNTS[1].fetch_add(n_surface, std::sync::atomic::Ordering::Relaxed);
                 }
+                prof::add(&prof::GATHER_CPU, t_chunk);
             });
             prof::add(&prof::GATHER, tg);
         }
@@ -4446,9 +4471,12 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         let mut ldir: Vec<[f32; 3]> = if want_dir_dump { vec![[0.0; 3]; cur.len()] } else { Vec::new() };
         let ldir_ptr = ldir.as_mut_ptr() as usize;
         let ldir_on = want_dir_dump;
-        let n_chunks = (range.len() + chunk - 1) / chunk;
+        // (eight tasks per thread: the facing fraction differs per chunk — perf 8)
+        let chunk_acc = (range.len() / (threads * 8).max(1)).max(1024);
+        let n_chunks = (range.len() + chunk_acc - 1) / chunk_acc;
         crate::pool::pool().run(n_chunks, |ci| {
-            let ch = &range[ci * chunk..((ci + 1) * chunk).min(range.len())];
+            let ch = &range[ci * chunk_acc..((ci + 1) * chunk_acc).min(range.len())];
+            let t_chunk = std::time::Instant::now();
             {
                 let subs = cur;
                 let sel = &sel;
@@ -4499,6 +4527,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                     }
                 }
             }
+            prof::add(&prof::ACC_CPU, t_chunk);
         });
         prof::add(&prof::ACC_SUB, t_acc_sub);
         prof::add(&prof::ACCUM, ta);
@@ -4541,6 +4570,8 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         if di % 64 == 0 || di + 1 == n_dirs {
             eprintln!("peel: direction {}/{} ({} peel(s), {} fragments, build {:.2}s, gather {:.2}s; {:.1}s)", di + 1, n_dirs, peels.len(), ab_len, t_build, tb.elapsed().as_secs_f32() - t_build, t0.elapsed().as_secs_f32());
         }
+        // the direction's ILightDir target kept for the next direction
+        dir_lm_buf = dir_lm.take();
         prof::add(&prof::DIR, t_dir);
     }
     // 5. resolve: per colour texel the mean over its covered sub-samples

@@ -287,6 +287,19 @@ pub fn clip_distances(pos: [f32; 3], world_box: &[[f32; 2]; 2]) -> [f32; 4] {
     [pos[0] - world_box[0][0], pos[2] - world_box[0][1], -pos[0] + world_box[1][0], -pos[2] + world_box[1][1]]
 }
 
+/// Write one element per page of a fresh zeroed buffer so its pages are mapped here, on one thread, rather than by the
+/// first parallel pass over it (the kernel's fault path contended by every pool thread). The writes are zeros into
+/// zeroed memory — volatile, so they are not elided.
+pub fn touch_pages<T: Copy + Default>(v: &mut [T]) {
+    let step = (4096 / std::mem::size_of::<T>().max(1)).max(1);
+    let mut i = 0;
+    while i < v.len() {
+        // SAFETY: i < len
+        unsafe { std::ptr::write_volatile(v.as_mut_ptr().add(i), T::default()); }
+        i += step;
+    }
+}
+
 /// The 2048² R11G11B10 `TMapILightDir` target as the GPU holds it (packed u32 per pixel).
 pub struct DirTarget {
     pub w: u32,
@@ -296,7 +309,13 @@ pub struct DirTarget {
 
 impl DirTarget {
     pub fn cleared(w: u32, h: u32) -> DirTarget {
-        DirTarget { w, h, px: vec![0; (w * h) as usize] }
+        let mut px = vec![0u32; (w * h) as usize];
+        touch_pages(&mut px);
+        DirTarget { w, h, px }
+    }
+    /// The target cleared for the next direction (the same allocation: no fresh pages to fault in).
+    pub fn clear(&mut self) {
+        self.px.fill(0);
     }
     #[inline]
     pub fn rgb(&self, x: u32, y: u32) -> [f32; 3] {
@@ -728,8 +747,12 @@ pub struct HbTargets {
 
 impl HbTargets {
     pub fn cleared(w: u32, h: u32) -> HbTargets {
-        let z = vec![[0.0f32; 4]; (w * h) as usize];
-        HbTargets { w, h, mrt: [z.clone(), z.clone(), z.clone(), z] }
+        // four zeroed targets, each PRE-TOUCHED here (perf 8): a fresh zeroed allocation is mapped lazily, and the first
+        // direction's H-basis draw then took 16 k page faults per target from 160 threads at once — 250 ms of contended
+        // faulting per sweep (the three clones were touched by the copy, the fourth was not)
+        let n = (w * h) as usize;
+        let mk = || { let mut v = vec![[0.0f32; 4]; n]; touch_pages(&mut v); v };
+        HbTargets { w, h, mrt: [mk(), mk(), mk(), mk()] }
     }
     /// From four captured buffers (RGBA16F decoded).
     pub fn from_bufs(b: [&Buf; 4]) -> HbTargets {
@@ -1675,6 +1698,8 @@ pub fn lmaccum_trace() -> bool {
     *V.get_or_init(|| std::env::var_os("LMTOOL_LMACCUM_TRACE").is_some())
 }
 
+static HB_TASK_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 pub fn replay_hbasis(fl: &LmFragList, sc: &LmScene, cb: &HbCb, ilightdir: &DirTarget, tgt: &mut HbTargets, blend: crate::sunpass::BlendModel, owner: Option<&mut Vec<u8>>) {
     assert_eq!((fl.w, fl.h), (tgt.w, tgt.h));
     let t_trace = std::time::Instant::now();
@@ -1687,6 +1712,7 @@ pub fn replay_hbasis(fl: &LmFragList, sc: &LmScene, cb: &HbCb, ilightdir: &DirTa
     crate::pool::pool().run(n_chunks, |ci| {
         let (p0, p1) = (ci * per, ((ci + 1) * per).min(n_px));
         if fl.start[p0] == fl.start[p1] { return; }
+        let t_task = std::time::Instant::now();
         for p in p0..p1 {
             let (a, b) = (fl.start[p] as usize, fl.start[p + 1] as usize);
             if a == b { continue; }
@@ -1714,6 +1740,10 @@ pub fn replay_hbasis(fl: &LmFragList, sc: &LmScene, cb: &HbCb, ilightdir: &DirTa
                 }
             }
         }
+        HB_TASK_NS.fetch_add(t_task.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
     });
-    if lmaccum_trace() { eprintln!("lmaccum trace: replay_hbasis {} fragments, {} chunks: {:.1} ms", fl.frags.len(), n_chunks, t_trace.elapsed().as_secs_f64() * 1e3); }
+    if lmaccum_trace() {
+        // the per-task busy sum beside the wall: the difference is the dispatch / the first touch of the targets
+        eprintln!("lmaccum trace: replay_hbasis {} fragments, {} chunks: {:.1} ms wall, {:.1} ms of task time", fl.frags.len(), n_chunks, t_trace.elapsed().as_secs_f64() * 1e3, HB_TASK_NS.swap(0, std::sync::atomic::Ordering::Relaxed) as f64 / 1e6);
+    }
 }
