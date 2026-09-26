@@ -354,6 +354,22 @@ impl DomeMesh {
         Ok(DomeMesh { pos: leaf.world_positions(), uv: leaf.uv0.clone(), indices })
     }
 
+    /// The mesh's RING TABLE: the distinct vertex heights (world y, rounded to 0.01 m) with the v range of the vertices on each
+    /// (and the u range) — the dome's elevation → texture-v mapping as the asset defines it (port engineer G: the Stadium
+    /// SkyDomeDouble vs the BlueBay SkyDomeMirror).
+    pub fn rings(&self) -> Vec<(f32, usize, f32, f32, f32, f32)> {
+        let mut m: std::collections::BTreeMap<i64, (usize, f32, f32, f32, f32)> = std::collections::BTreeMap::new();
+        for (p, uv) in self.pos.iter().zip(self.uv.iter()) {
+            let e = m.entry((p[1] * 100.0).round() as i64).or_insert((0, f32::MAX, f32::MIN, f32::MAX, f32::MIN));
+            e.0 += 1;
+            e.1 = e.1.min(uv[1]);
+            e.2 = e.2.max(uv[1]);
+            e.3 = e.3.min(uv[0]);
+            e.4 = e.4.max(uv[0]);
+        }
+        m.into_iter().map(|(y, (n, v0, v1, u0, u1))| (y as f32 / 100.0, n, v0, v1, u0, u1)).collect()
+    }
+
     /// Compare two dome meshes as triangle sets (the vertex order may differ): triangles whose three (position, uv) match.
     pub fn compare(&self, other: &DomeMesh) -> (usize, usize, usize) {
         let key = |m: &DomeMesh, i: u16| -> ([i64; 3], [i64; 2]) { let p = m.pos[i as usize]; let u = m.uv[i as usize]; ([(p[0] * 64.0).round() as i64, (p[1] * 64.0).round() as i64, (p[2] * 64.0).round() as i64], [(u[0] * 1e6).round() as i64, (u[1] * 1e6).round() as i64]) };

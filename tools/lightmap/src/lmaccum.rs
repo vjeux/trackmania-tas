@@ -1531,6 +1531,21 @@ impl LmScene {
             let t = std::time::Instant::now();
             let fl = build_frag_list(self, offset % 9, w, h);
             eprintln!("lm-accumulate: the LM raster of offset {} built once: {} fragments over {} pixels ({} pairs, {:.2}s)", offset % 9, fl.frags.len(), fl.start.windows(2).filter(|s| s[1] > s[0]).count(), fl.pairs.len(), t.elapsed().as_secs_f32());
+            // LMTOOL_LM_TEXEL_TRACE=x0,y0,x1,y1 (diagnostic, port engineer G): every fragment of the atlas rect [x0,x1)×[y0,y1) of this
+            // offset — pixel, (mesh, instance), triangle, VS 17111's world position and normal — the anatomy of a small chart
+            if let Some(r) = std::env::var("LMTOOL_LM_TEXEL_TRACE").ok().and_then(|s| { let v: Vec<u32> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect(); if v.len() == 4 { Some(v) } else { None } }) {
+                for y in r[1]..r[3].min(h) {
+                    for x in r[0]..r[2].min(w) {
+                        let p = (y * w + x) as usize;
+                        for i in fl.start[p] as usize..fl.start[p + 1] as usize {
+                            let f = &fl.frags[i];
+                            let (m, ii) = fl.pairs[f.pair as usize];
+                            eprintln!("lm-texel-trace: offset {} px ({x},{y}) mesh {m} inst {ii} tri {} bary ({:.3},{:.3},{:.3}) pos ({:.3},{:.3},{:.3}) n ({:.3},{:.3},{:.3})", offset % 9, f.tri, f.b[0], f.b[1], f.b[2], f.pos[0], f.pos[1], f.pos[2], f.nrm[0], f.nrm[1], f.nrm[2]);
+                        }
+                        if fl.start[p] == fl.start[p + 1] { eprintln!("lm-texel-trace: offset {} px ({x},{y}) NO fragment", offset % 9); }
+                    }
+                }
+            }
             std::sync::Arc::new(fl)
         }).clone()
     }

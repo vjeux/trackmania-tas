@@ -235,6 +235,9 @@ pub fn abuf_debug_line(x: u32, y: u32, kind: &str, ti: u32, t: &WTri, frame: &Pe
 pub const ALPHA_THRESHOLD: f32 = 0.501_960_813_999_176;
 /// LMTOOL_ALPHA_POINT=1: the point-sampled cut-out mask instead of the filtered texture (a probe).
 pub static ALPHA_POINT: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_ALPHA_POINT").map(|v| v == "1").unwrap_or(false));
+/// LMTOOL_TILE_CLIP_ITEMS=1: the fitted peels' accumulate clipped by the ITEMS' union box for every tile (the pre-2026-09-26 form)
+/// instead of each tile's own cell (port engineer G; read once).
+pub static TILE_CLIP_ITEMS: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_TILE_CLIP_ITEMS").map(|v| v == "1").unwrap_or(false));
 /// LMTOOL_ALPHA_ANISO=N: the alpha sampler's anisotropy (16 = the capture's card sampler; 1 = trilinear).
 pub static ALPHA_ANISO: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_ALPHA_ANISO").ok().and_then(|v| v.parse().ok()).unwrap_or(16));
 /// LMTOOL_ALPHA_QUEUE=0: the alpha test inline per fragment instead of queued sixteen wide (alphasimd; the A/B
@@ -4752,6 +4755,30 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
     // editor's 1.2–1.5); with the d.y factor the walls come out at 0.4 × — RE child 3's 4·w·d.y·SkyFactor
     // constant is then the AddSkyVisibility scalar's weight, not the radiance weight (to be confirmed)
     let sky_dy = std::env::var("LMTOOL_SKY_DY").map(|v| v == "1").unwrap_or(false);
+    let sky_up_only = std::env::var("LMTOOL_SKY_UP_ONLY").map(|v| v == "1").unwrap_or(false);
+    // LMTOOL_SKY_CONST=1 (DIAGNOSTIC, port engineer G 2026-09-26, the thin-vertical study): every sky pixel of every
+    // direction takes ONE direction-independent value K = Σ_{D.y>0} D.y·L(D) / Σ_{D.y>0} D.y over this sweep's full set
+    // (L(D) = the transcribed dome at the frame centre) — the cos-weighted upper-hemisphere mean, so an up-facing
+    // receiver's sky integral is unchanged while the horizon band a vertical receiver sees is flattened to K. Stadium
+    // draws no dome (stpad f4788): if the game's per-direction clear colour is flat, this is what the verticals get.
+    // LMTOOL_SKY_CONST=r,g,b: that constant instead. Prints K once per sweep.
+    let sky_const: Option<[f32; 3]> = std::env::var("LMTOOL_SKY_CONST").ok().and_then(|s| {
+        let v: Vec<f32> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+        if v.len() == 3 { return Some([v[0], v[1], v[2]]); }
+        if s != "1" { return None; }
+        let sg = prm.sky_grad.as_ref()?;
+        let (mut acc, mut wsum) = ([0f64; 3], 0f64);
+        // the frame centre of the world peel as the eye/ray origin: the dome sits 22 km out, the centre's choice moves L by < 1e-3
+        let eye = prm.frustums.as_ref().and_then(|t| t.first()).and_then(|f| f.first()).map(|f| f.center).unwrap_or([1024.0, 100.0, 1024.0]);
+        for d in prm.sphere_dirs.iter().filter(|d| d[1] > 0.0) {
+            let l = sg.dome_radiance(eye, *d, eye);
+            for k in 0..3 { acc[k] += (d[1] * l[k]) as f64; }
+            wsum += d[1] as f64;
+        }
+        let k = [(acc[0] / wsum.max(1e-9)) as f32, (acc[1] / wsum.max(1e-9)) as f32, (acc[2] / wsum.max(1e-9)) as f32];
+        eprintln!("LMTOOL_SKY_CONST: the sky is the constant K = ({:.5}, {:.5}, {:.5}) — the cos-weighted upper-hemisphere mean of the dome over {} directions (sweep {})", k[0], k[1], k[2], prm.sphere_dirs.iter().filter(|d| d[1] > 0.0).count(), prm.sweep);
+        Some(k)
+    });
     // LMTOOL_PEEL_DEBUG=x,y,z,r: trace the gather of the sub-samples within r of a world point
     let dbg: Option<(V3, f32)> = std::env::var("LMTOOL_PEEL_DEBUG").ok().and_then(|s| { let v: Vec<f32> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect(); if v.len() == 4 { Some(([v[0], v[1], v[2]], v[3])) } else { None } });
     let mut dbg_subs: Vec<u32> = match dbg { Some((c, r)) => subs.iter().enumerate().filter(|(_, s)| { let e = sub(s.p, c); dot(e, e) < r * r }).map(|(i, _)| i as u32).take(3).collect(), None => Vec::new() };
@@ -4897,7 +4924,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         // the sky term's per-direction constant is w·4·d.y·SkyFactor (RE child 3, AddSkyVisibility /
         // SetILightDir 0x140234df0): the sky colour along d is weighted by the direction's elevation cosine
         // and below-horizon directions carry no sky (they see the ground); SkyFactor rides in sky_radiance
-        let sky = { let s = sky_radiance(prm, *d); let dy = if sky_dy { d[1].max(0.0) } else if d[1] > 0.0 { 1.0 } else { 0.0 }; [s[0] * dy, s[1] * dy, s[2] * dy] };
+        let sky = match sky_const { Some(k) if d[1] > 0.0 => k, Some(_) => [0.0; 3], None => { let s = sky_radiance(prm, *d); let dy = if sky_dy { d[1].max(0.0) } else if d[1] > 0.0 { 1.0 } else { 0.0 }; [s[0] * dy, s[1] * dy, s[2] * dy] } };
         let bias = bias_m;
         let range = &order[group_start[g]..group_start[g + 1]];
         let want_dir_dump = prm.dump.as_ref().map(|dm| dm.lock().unwrap().wants_dir(di as u32)).unwrap_or(false);
@@ -4918,6 +4945,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         // (--dome-analytic) the analytic ellipsoid model stands in.
         let dome_px = |frame: &PeelFrame, dome_r: Option<&crate::domemesh::DomeRaster>, px: u32, py: u32| -> [f32; 3] {
             match &prm.sky_grad {
+                Some(_) if sky_const.is_some() => sky_fill,
                 Some(sg) if prm.dome_exact => {
                     let v = match dome_r {
                         // the mesh: the covering triangle's interpolated attributes; a pixel no front face covers
@@ -4930,6 +4958,13 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                         }
                     };
                     // (the dome layer's colour goes through the R11G11B10 target, then the ILightDir target)
+                    // LMTOOL_SKY_DY=1 (diagnostic): the dome's value × max(0, D.y) — the "sky × D.y" weighting hypothesis for
+                    // the Stadium clear colour (port engineer G, 2026-09-26)
+                    let v = if sky_dy { let dy = d[1].max(0.0); [v[0] * dy, v[1] * dy, v[2] * dy] } else { v };
+                    // LMTOOL_SKY_UP_ONLY=1 (diagnostic): the dome only for UPWARD directions — a downward direction's dome (the
+                    // SkyDomeDouble's below-equator rows on Stadium, the mirrored sky on BlueBay) is black, as a clear colour that
+                    // exists only for D.y > 0 would be (port engineer G, 2026-09-26: the thin verticals' grazing ground misses)
+                    let v = if sky_up_only && d[1] <= 0.0 { [0.0; 3] } else { v };
                     prm.quant_ilightdir.apply(prm.quant_peel.apply(v, prm.rounding), prm.rounding)
                 }
                 _ => sky_fill,
@@ -5345,7 +5380,18 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                 let lm_draws: Option<(&crate::lmaccum::LmScene, Vec<crate::lmaccum::SetDraw>)> = prm.lm_scene.as_ref().filter(|_| dir_lm.is_some()).map(|lm| {
                     let raster = crate::lmaccum::LmRasterCb::for_offset(di, 2048, 2048);
                     let cb = crate::lmaccum::SetCb { world_pw01_shadow: frame.world_pw01(), peel_dir: *d };
-                    let world_box = if pi > 0 { prm.fitted_world_box } else { None };
+                    // THE TILE'S CLIP IS ITS OWN CELL (port engineer G, 2026-09-26): VS 17115's four clip distances are the WorldBoxMin/MaxXZ of
+                    // the peel being accumulated — for a tiled plan the TILE's cell (RE 7; `prm.peel_tile_clip`, filled by the plan), for the
+                    // captured single-cell pwc-day the items' box (the two coincide there). The items' union box (`fitted_world_box`) stood in for
+                    // every tile before: on stpad it is the 21 palms' 220 × 320 m box, so every texel of the pool / pad area was clipped out of
+                    // BOTH fitted peels' accumulates and lit by the 0.76 m-per-pixel world peel alone (the thin-vertical excess: the brackets'
+                    // dark faces saw no near occluder). LMTOOL_TILE_CLIP_ITEMS=1 restores the old box (the study knob).
+                    let world_box = if pi > 0 {
+                        match tile_clip.get(pi).copied().flatten() {
+                            Some(c) if !*TILE_CLIP_ITEMS => Some([[c[0], c[1]], [c[2], c[3]]]),
+                            _ => prm.fitted_world_box,
+                        }
+                    } else { None };
                     (lm.as_ref(), (0..lm.meshes.len()).map(|m| crate::lmaccum::SetDraw { eid: 0, mesh: m, instance_first: lm.inst_first[m], instance_count: lm.inst_count[m], raster, cb, world_box }).collect())
                 });
                 let pw01 = frame.world_pw01();
@@ -5450,7 +5496,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                     ed.cleared_to = Some(serde_json::json!(0.0));
                     ed.notes = Some("the environment render's depth: 0 = the sky dome, else the nearest sea-box / terrain surface (D16 steps)".into());
                     dmp.write_f32(ed, ly.w, ly.h, 1, &env_depth).expect("dump peel_sky_depth");
-                    let sky_img: Vec<[f32; 3]> = if prm.dome_exact && prm.sky_grad.is_some() {
+                    let sky_img: Vec<[f32; 3]> = if prm.dome_exact && prm.sky_grad.is_some() && sky_const.is_none() {
                         let sg = prm.sky_grad.as_ref().unwrap();
                         let c = frame.frustum().center;
                         let mut img = vec![[0.0f32; 3]; (ly.w * ly.h) as usize];

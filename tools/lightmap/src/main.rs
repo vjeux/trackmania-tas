@@ -977,6 +977,28 @@ fn run(a: Vec<String>) {
                     record_scene = Some((inst_of, n_before));
                 }
             }
+            // LMTOOL_SCENE_NEAR=x,y,z,r (diagnostic, port engineer G): every scene triangle with a vertex within r of the point —
+            // instance, model name, material link, the world vertices and the face normal (the occluders around a small chart)
+            if let Some(v) = std::env::var("LMTOOL_SCENE_NEAR").ok().map(|s| s.split(',').filter_map(|x| x.trim().parse::<f32>().ok()).collect::<Vec<f32>>()).filter(|v| v.len() == 4) {
+                let (c, r) = ([v[0], v[1], v[2]], v[3]);
+                let mut n = 0usize;
+                for (ii, inst) in scene.instances.iter().enumerate() {
+                    let m = &scene.models[inst.model];
+                    for (ti, t) in m.tris.iter().enumerate() {
+                        let w: Vec<[f32; 3]> = t.p.iter().map(|p| mapgeom::geom::apply(&inst.xf, *p)).collect();
+                        if w.iter().any(|p| { let d = [p[0] - c[0], p[1] - c[1], p[2] - c[2]]; d[0] * d[0] + d[1] * d[1] + d[2] * d[2] <= r * r }) {
+                            let e1 = [w[1][0] - w[0][0], w[1][1] - w[0][1], w[1][2] - w[0][2]];
+                            let e2 = [w[2][0] - w[0][0], w[2][1] - w[0][1], w[2][2] - w[0][2]];
+                            let fnrm = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+                            let l = (fnrm[0] * fnrm[0] + fnrm[1] * fnrm[1] + fnrm[2] * fnrm[2]).sqrt().max(1e-12);
+                            let link = m.mat_links.get(t.mat as usize).cloned().unwrap_or_default();
+                            eprintln!("scene-near: inst {ii} model {} ({}) tri {ti} mat {link}: ({:.3},{:.3},{:.3}) ({:.3},{:.3},{:.3}) ({:.3},{:.3},{:.3}) n ({:.3},{:.3},{:.3})", inst.model, inst.model_name, w[0][0], w[0][1], w[0][2], w[1][0], w[1][1], w[1][2], w[2][0], w[2][1], w[2][2], fnrm[0] / l, fnrm[1] / l, fnrm[2] / l);
+                            n += 1;
+                        }
+                    }
+                }
+                eprintln!("scene-near: {n} triangles within {r} m of ({}, {}, {})", c[0], c[1], c[2]);
+            }
             // the decoration's surroundings: --decoration FILE.obj[,FILE…] [--decoration-scale S --decoration-offset x,y,z],
             // or by default lightmap-re/scene3d/<Collection>.obj when it exists (RE child 3's Scene3d export),
             // --no-decoration to leave it out
@@ -4697,6 +4719,20 @@ fn run(a: Vec<String>) {
         "sweep1-annotate" => { if let Err(e) = lightmap::peelcap::sweep1_annotate(&a) { eprintln!("sweep1-annotate: {e}"); std::process::exit(1); } }
         "clouds-check" => { if let Err(e) = lightmap::clouds::check(&a) { eprintln!("clouds-check: {e}"); std::process::exit(1); } }
         "clouds-reach" => { if let Err(e) = lightmap::clouds::reach(&a) { eprintln!("clouds-reach: {e}"); std::process::exit(1); } }
+        // (G's classcmp dispatch dropped at integration: V's classcmp — landed first, with --own-rects,
+        //  --coverage, the spread column and the pairing guard — owns the subcommand; G's --ents table is
+        //  the duplicate. His dome-rings and the study knobs below are kept.)
+        "dome-rings" => {
+            // lmtool dome-rings --collection C --pak FILE:KEY … : the collection's LM sky dome (the environment block's SkyDome
+            // leaf) as a ring table — world y, vertices, the texture v range and u range per ring (port engineer G)
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let mut store = mapgeom::store::DataStore::empty();
+            for (i, arg) in a.iter().enumerate() { if arg == "--pak" { if let Some(v) = a.get(i + 1) { let (pp, key) = v.rsplit_once(':').expect("--pak FILE:KEY"); store.add_pak(pp, key).expect("pak"); } } }
+            let coll = f("--collection").unwrap_or_else(|| "Stadium".into());
+            let m = lightmap::domemesh::DomeMesh::from_envblock(&mut store, &coll).unwrap_or_else(|e| panic!("{e}"));
+            println!("{coll}: {} vertices, {} triangles; rings (world y, vertices, v min..max, u min..max):", m.pos.len(), m.indices.len() / 3);
+            for (y, n, v0, v1, u0, u1) in m.rings() { println!("  y {y:>10.3}  n {n:>3}  v {v0:.5}..{v1:.5}  u {u0:.4}..{u1:.4}"); }
+        }
         "draw-classes" => { if let Err(e) = lightmap::drawclasses::run(&a) { eprintln!("draw-classes: {e}"); std::process::exit(1); } }
         "veg-diag" => { if let Err(e) = lightmap::vegdiag::run(&a) { eprintln!("veg-diag: {e}"); std::process::exit(1); } }
         "passcap-info" => {

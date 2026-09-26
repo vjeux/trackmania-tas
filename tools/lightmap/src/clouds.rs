@@ -578,7 +578,10 @@ pub fn world_box_reaches_clouds(world: &crate::lightcam::Aabb, dirs: &[[f32; 3]]
 /// world-peel miss covers it.
 pub fn reach(args: &[String]) -> Result<(), String> {
     let f = |k: &str| args.iter().position(|x| x == k).and_then(|i| args.get(i + 1)).cloned();
-    let root = std::path::PathBuf::from(&args[1]);
+    let root = std::path::PathBuf::from(args.get(1).ok_or("usage: lmtool clouds-reach PASSCAP_DIR [--frame F] [--box xmin,ymin,zmin,xmax,ymax,zmax] [--quality Q] [--scan-ymax Y1,Y2,…] [--verbose] — PASSCAP_DIR = a capture directory (passcap/pwc-day: env/frame<F>/mesh.json + logs/draws-frame<F>.json.gz), not a .Map.Gbx; the world box is --box (default pwc-day's)")?);
+    if !root.is_dir() {
+        return Err(format!("{}: not a directory — clouds-reach wants the CAPTURE directory (passcap/pwc-day with env/frame<F>/ and logs/), not a map file; the map's world box goes in --box xmin,ymin,zmin,xmax,ymax,zmax (the bake prints it as \"world peel box\")", root.display()));
+    }
     let frame: u32 = f("--frame").map(|v| v.parse().unwrap()).unwrap_or(127448);
     let quality: u32 = f("--quality").map(|v| v.parse().unwrap()).unwrap_or(4);
     let verbose = args.iter().any(|x| x == "--verbose");
