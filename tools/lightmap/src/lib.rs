@@ -56,6 +56,7 @@ pub mod probechunk;
 pub mod format;
 pub mod geometry;
 pub mod hostcpu;
+pub mod hugealloc;
 pub mod img;
 pub mod mapio;
 pub mod moods;

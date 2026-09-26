@@ -136,6 +136,10 @@ fn tune_malloc() {
     }
 }
 
+/// The huge-page path for the big tables (lightmap::hugealloc): measured negative on the Genoa guests, so it is OFF unless LMTOOL_HUGEPAGES=1.
+#[global_allocator]
+static GLOBAL: lightmap::hugealloc::HugeAlloc = lightmap::hugealloc::HugeAlloc;
+
 fn main() {
     // FIRST: a build for a CPU this host is not (the znver4 default on a Skylake OD) execs its fallback or explains
     lightmap::hostcpu::guard();
