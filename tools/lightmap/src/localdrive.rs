@@ -878,6 +878,16 @@ pub fn run_frame(gl: &crate::layout::GameLayout, sc: &LmScene, lamps: &[Lamp], c
     if parallel {
         let k = lamp_workers(lamps.len());
         let n = lamps.len();
+        // THE BIG LAMPS FIRST (perf 8.19): the workers take the lamps in decreasing culled-instance count (the cull is cheap and
+        // is what the draw's cost follows), so the one lamp with 400 records does not start last and hold the frame alone; the
+        // consumer still applies them in lamp order (the slots are by lamp index), so the frame's bytes do not depend on it.
+        let order: Vec<usize> = {
+            let counts: Vec<usize> = crate::pool::pool().map(n, |li| cull(gl, sc, &lamps[li]).len());
+            let mut o: Vec<usize> = (0..n).collect();
+            o.sort_by(|&a, &b| counts[b].cmp(&counts[a]).then(a.cmp(&b)));
+            o
+        };
+        let order = &order;
         let next = std::sync::atomic::AtomicUsize::new(0);
         let slots: Vec<std::sync::Mutex<Option<LampWork>>> = (0..n).map(|_| std::sync::Mutex::new(None)).collect();
         let done = std::sync::atomic::AtomicUsize::new(0);
@@ -899,8 +909,9 @@ pub fn run_frame(gl: &crate::layout::GameLayout, sc: &LmScene, lamps: &[Lamp], c
                     let mut visited = vec![0u64; ((w * h) as usize + 63) / 64];
                     let mut probe_scratch = ProbeState::new(probe_n);
                     loop {
-                        let li = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        if li >= n { break; }
+                        let oi = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if oi >= n { break; }
+                        let li = order[oi];
                         let lamp = &lamps[li];
                         let t = std::time::Instant::now();
                         let drawn = cull(gl, sc, lamp);

@@ -2632,8 +2632,27 @@ impl Layers {
         let n = cnt.len();
         let mut start: Vec<u32> = U32S.take_with_capacity(n + 1);
         start.clear();
-        start.push(0);
-        for i in 0..n { let l = *start.last().unwrap(); start.push(l + cnt[i] as u32); }
+        // the prefix sum of the counts in parallel (perf 8.19: 5 M serial pushes per peel, ten peels per giant direction —
+        // 0.1 s of serial glue per direction): per-chunk totals, then each chunk's offsets from its base; integer sums, so
+        // the same array
+        let threads = crate::pool::pool().threads.max(1);
+        let chunk = (n / (threads * 4).max(1)).max(4096);
+        let n_chunks = (n + chunk - 1) / chunk;
+        let sums: Vec<u32> = crate::pool::pool().map(n_chunks, |ci| cnt[ci * chunk..((ci + 1) * chunk).min(n)].iter().map(|&c| c as u32).sum());
+        let mut base: Vec<u32> = Vec::with_capacity(n_chunks + 1);
+        base.push(0);
+        for s in &sums { let l = *base.last().unwrap(); base.push(l + s); }
+        // SAFETY: every entry 0..=n is written below (entry n = the total, the chunks their own ranges)
+        unsafe { start.set_len(n + 1); }
+        start[n] = base[n_chunks];
+        let sp = start.as_mut_ptr() as usize;
+        crate::pool::pool().run(n_chunks, |ci| {
+            let mut l = base[ci];
+            for i in ci * chunk..((ci + 1) * chunk).min(n) {
+                unsafe { *(sp as *mut u32).add(i) = l; }
+                l += cnt[i] as u32;
+            }
+        });
         let total = start[n] as usize;
         let mut frags: Vec<LayerFrag> = LAYER_FRAGS.take_with_capacity(total);
         // SAFETY: every slot [start[i], start[i + 1]) is written below by the chunk owning pixel i
@@ -5271,7 +5290,14 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                 let tlm = std::time::Instant::now(); crate::pool::stats::stage("lmaccum");
                 // the layer count over the pixels present (`start` is per wanted pixel in the sparse form; the in-place
                 // derive's lists are not contiguous — `range`)
-                let nl = (0..ly.start.len() - 1).map(|i| { let (a, c) = ly.range(i); c - a }).max().unwrap_or(0).max(ly.max_layers.min(ly.item_layers + 1));
+                // (the deepest pixel's layer count, in parallel — perf 8.19: a serial scan of every pixel per peel was 0.1 s per giant direction)
+                let nl = {
+                    let n = ly.start.len() - 1;
+                    let threads = crate::pool::pool().threads.max(1);
+                    let chunk = (n / (threads * 4).max(1)).max(4096);
+                    let maxes: Vec<usize> = crate::pool::pool().map((n + chunk - 1) / chunk, |ci| (ci * chunk..((ci + 1) * chunk).min(n)).map(|i| { let (a, c) = ly.range(i); c - a }).max().unwrap_or(0));
+                    maxes.into_iter().max().unwrap_or(0).max(ly.max_layers.min(ly.item_layers + 1))
+                };
                 let lm_draws: Option<(&crate::lmaccum::LmScene, Vec<crate::lmaccum::SetDraw>)> = prm.lm_scene.as_ref().filter(|_| dir_lm.is_some()).map(|lm| {
                     let raster = crate::lmaccum::LmRasterCb::for_offset(di, 2048, 2048);
                     let cb = crate::lmaccum::SetCb { world_pw01_shadow: frame.world_pw01(), peel_dir: *d };
