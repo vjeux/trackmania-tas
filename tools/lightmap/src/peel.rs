@@ -1265,6 +1265,13 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
                     }
                     let block_counted = counting && env_t.is_none() && mask.is_none();
                     let count_it = counting && env_t.is_none() && !block_counted;
+                    // the card's tap plan: computed on the triangle's first block with live lanes (the same value
+                    // as on its first live lane — the plan is the triangle's), ONCE per block rather than a
+                    // ten-capture closure built on every lane (engineer 4's census: 88 instructions per block)
+                    let fp_block: Option<(&crate::alphatex::AlphaTex, crate::alphatex::TapPlan)> = match mask {
+                        Some(mk) => *fp_tex.get_or_insert_with(|| mk.tex.as_ref().map(|tx| (tx.as_ref(), tx.plan_for(&crate::alphatex::Footprint::of_triangle([[x0, y0], [x1, y1], [x2, y2]], t.uv0, tx.w(), tx.h()), *ALPHA_ANISO, !alpha_queue)))),
+                        None => None,
+                    };
                     let mut m = live;
                     while m != 0 {
                         let l = m.trailing_zeros() as usize;
@@ -1277,7 +1284,7 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
                         if let Some(mk) = mask {
                             let u = t.uv0[0][0] * bc[0] + t.uv0[1][0] * bc[1] + t.uv0[2][0] * bc[2];
                             let v = t.uv0[0][1] * bc[0] + t.uv0[1][1] * bc[1] + t.uv0[2][1] * bc[2];
-                            let fp = fp_tex.get_or_insert_with(|| mk.tex.as_ref().map(|tx| (tx.as_ref(), tx.plan_for(&crate::alphatex::Footprint::of_triangle([[x0, y0], [x1, y1], [x2, y2]], t.uv0, tx.w(), tx.h()), *ALPHA_ANISO, !alpha_queue))));
+                            let fp = &fp_block;
                             if alpha_queue {
                                 if let Some((tx, plan)) = fp {
                                     // queued: tested sixteen at a time, the passing ones emitted at the flush
@@ -1347,9 +1354,12 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
             if vector_scan {
                 let mut li0 = 0usize;
                 while li0 + 16 <= band_px {
-                    let mut env16 = [0f32; 16];
+                    // (64-byte aligned: a 16-lane array split across two cache lines by the stack address made the
+                    // zmm loads/stores 5–10 % slower — engineer 4's alignment finding)
+                    let mut env16_a = Align64([0f32; 16]);
+                    let env16 = &mut env16_a.0;
                     env16.copy_from_slice(&env_max[li0..li0 + 16]);
-                    let (h, has, big) = scan_block16(&offs[li0..li0 + 17], &csr, &env16, frame);
+                    let (h, has, big) = scan_block16(&offs[li0..li0 + 17], &csr, env16, frame);
                     if raster_stats { for l in 0..16 { let n = (offs[li0 + l + 1] - offs[li0 + l]) as usize; if n >= 1 { nfrag_local[match n { 1 | 2 => 0, 3 => 1, 4 => 2, 5 => 3, _ => 4 }] += 1; } } }
                     covered += has as usize;
                     for k in 0..=SCAN_K { hist[k] += h[k] as usize; }
@@ -3191,6 +3201,10 @@ pub static CERT_STATS: [std::sync::atomic::AtomicU64; 4] = [std::sync::atomic::A
 /// The gather's sky lookups (the dome colour per sub-sample, `dome_px`) and its surface hits, summed per sweep (perf 8).
 pub static GATHER_COUNTS: [std::sync::atomic::AtomicU64; 2] = [std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0)];
 pub static BOUND_TOTALS: [std::sync::atomic::AtomicU64; 4] = [std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0)];
+
+/// A 64-byte aligned wrapper for a 16-lane stack array (one cache line for the zmm loads and stores).
+#[repr(C, align(64))]
+pub struct Align64<T>(pub T);
 
 /// The sixteen lanes' z and the in-range mask of a block (see the visit body): `z[l] = (z0·b0 + z1·b1) + z2·b2`
 /// exactly as the scalar body computes it, `live` = cov ∧ (z < zmax) ∧ (z ≥ zmin) — the same f32 operations per
