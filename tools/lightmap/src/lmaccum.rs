@@ -410,7 +410,7 @@ pub fn run_set_block_par(meshes: &[LmMesh], instances: &[LmInstance], table: &[[
     let (w, h) = (tgt.w, tgt.h);
     let threads = crate::pool::pool().threads.max(1);
     let bounds = mesh_bounds(meshes);
-    let cull = std::env::var_os("LMTOOL_NO_BLOCK_CULL").is_none();
+    let cull = *BLOCK_CULL;
     let pairs: Vec<(usize, usize)> = draws.iter().enumerate().flat_map(|(di, d)| (d.instance_first..d.instance_first + d.instance_count).map(move |ii| (di, ii))).filter(|&(di, ii)| {
         if !cull { return true; }
         match &draws[di].world_box { Some(b) => !culled_by_world_box(&instance_aabb(&bounds[draws[di].mesh], &instances[ii]), b), None => true }
@@ -466,7 +466,7 @@ pub fn run_set_layers_par(meshes: &[LmMesh], instances: &[LmInstance], table: &[
     if best_k.len() != (w * h) as usize { *best_k = vec![u16::MAX; (w * h) as usize]; }
     let threads = crate::pool::pool().threads.max(1);
     let bounds = mesh_bounds(meshes);
-    let cull = std::env::var_os("LMTOOL_NO_BLOCK_CULL").is_none();
+    let cull = *BLOCK_CULL;
     let pairs: Vec<(usize, usize)> = draws.iter().enumerate().flat_map(|(di, d)| (d.instance_first..d.instance_first + d.instance_count).map(move |ii| (di, ii))).filter(|&(di, ii)| {
         if !cull { return true; }
         match &draws[di].world_box { Some(b) => !culled_by_world_box(&instance_aabb(&bounds[draws[di].mesh], &instances[ii]), b), None => true }
@@ -1413,6 +1413,9 @@ pub fn interp3(mode: u8, p: [[f32; 2]; 3], at: [[f32; 3]; 3], b: [f32; 3], cx: f
     }
     out
 }
+
+/// LMTOOL_NO_BLOCK_CULL, read once (the block cull runs per instance per block per direction from every thread).
+pub static BLOCK_CULL: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("LMTOOL_NO_BLOCK_CULL").is_none());
 
 // ---------------------------------------------------------------------------------------------------------------
 // THE LM RASTER ONCE PER JITTER OFFSET (perf 8): the fragment list
