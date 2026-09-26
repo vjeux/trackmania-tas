@@ -2489,6 +2489,8 @@ pub static CENSUS_LB: [std::sync::atomic::AtomicUsize; 2] = [std::sync::atomic::
 /// LMTOOL_BOUND_STATS: wanted-pixel certification [frames, certified by census/4 (1/16 of the pixels), by census/8 (1/64), M_w ≤ exact (sanity)].
 pub static CERT_STATS: [std::sync::atomic::AtomicU64; 4] = [std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0)];
 /// LMTOOL_BOUND_STATS: [frames, decided-and-right (census/4), decided-and-right (census/8), decided-WRONG].
+/// The gather's sky lookups (the dome colour per sub-sample, `dome_px`) and its surface hits, summed per sweep (perf 8).
+pub static GATHER_COUNTS: [std::sync::atomic::AtomicU64; 2] = [std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0)];
 pub static BOUND_TOTALS: [std::sync::atomic::AtomicU64; 4] = [std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0)];
 
 /// The sixteen lanes' z and the in-range mask of a block (see the visit body): `z[l] = (z0·b0 + z1·b1) + z2·b2`
@@ -2659,6 +2661,25 @@ pub mod prof {
     pub static CLEAR: AtomicU64 = AtomicU64::new(0);
     pub static CONTRIB: AtomicU64 = AtomicU64::new(0);
     pub static CULL: AtomicU64 = AtomicU64::new(0);
+    /// The non-raster stages inside a direction (perf 8): the transcribed accumulate's pieces — the layer Bufs handed to
+    /// the LM raster and the probes, LmILightDir_Set (the LM raster per chunk of layers), the probe passes per world layer,
+    /// the dome image per pixel (inside the layer-derivation timer), the H-basis draw, the probes' end-of-direction folds,
+    /// the sub-sample accumulate — and the pieces of the gather (the dome colour per sky sub-sample).
+    pub static LM_BUFS: AtomicU64 = AtomicU64::new(0);
+    pub static LM_SET: AtomicU64 = AtomicU64::new(0);
+    pub static PROBE_LAYER: AtomicU64 = AtomicU64::new(0);
+    pub static DOME_IMG: AtomicU64 = AtomicU64::new(0);
+    pub static HB: AtomicU64 = AtomicU64::new(0);
+    pub static PROBE_END: AtomicU64 = AtomicU64::new(0);
+    pub static ACC_SUB: AtomicU64 = AtomicU64::new(0);
+    pub static AMBIENT: AtomicU64 = AtomicU64::new(0);
+    /// The sweep's stages outside the direction loop: the layout raster (the sub-samples), the nine jitter sets, the
+    /// shadow map, the harness dumps before the loop, the resolve after it.
+    pub static PRE_SUBS: AtomicU64 = AtomicU64::new(0);
+    pub static PRE_JITTER: AtomicU64 = AtomicU64::new(0);
+    pub static PRE_SHADOW: AtomicU64 = AtomicU64::new(0);
+    pub static PRE_DUMP: AtomicU64 = AtomicU64::new(0);
+    pub static POST_RESOLVE: AtomicU64 = AtomicU64::new(0);
     pub fn add(c: &AtomicU64, t: std::time::Instant) {
         c.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
@@ -2672,7 +2693,8 @@ pub mod prof {
         if crate::peel::BOUND_TOTALS[0].load(Ordering::Relaxed) > 0 { eprintln!("bound stats [{label}]: {} frames, stop certified right by the census/4 bounds {} and by census/8 {}, certified WRONG {}", crate::peel::BOUND_TOTALS[0].swap(0, Ordering::Relaxed), crate::peel::BOUND_TOTALS[1].swap(0, Ordering::Relaxed), crate::peel::BOUND_TOTALS[2].swap(0, Ordering::Relaxed), crate::peel::BOUND_TOTALS[3].swap(0, Ordering::Relaxed)); }
         eprintln!("profile [{label}] glue: dome raster {:.2}s, wanted bitmap {:.2}s, BVH cull {:.2}s, sel/occl clear {:.2}s, contribution {:.2}s; layer CSR {:.2}s", g(&DOME), g(&BITMAP), g(&CULL), g(&CLEAR), g(&CONTRIB), g(&L_CSR));
         eprintln!("profile [{label}]: A-buffer build {:.2}s (wanted index {:.2}s, clip {:.2}s, raster {:.2}s, CSR {:.2}s), exact layer count {:.2}s, layer derivation {:.2}s (parallel part {:.2}s), per-direction dumps {:.2}s, gather {:.2}s, accumulate {:.2}s, accumulation snapshots {:.2}s, frames {:.2}s; directions total {:.2}s (unstaged {:.2}s); sweep total {total:.2}s", g(&BUILD), g(&B_INDEX), g(&B_CLIP), g(&B_RASTER), g(&B_SORT), g(&EXACT), g(&LAYERS), g(&L_PAR), g(&DUMP), g(&GATHER), g(&ACCUM), g(&SNAP), g(&FRAMES), g(&DIR), g(&DIR) - staged);
-        for c in [&BUILD, &LAYERS, &DUMP, &GATHER, &ACCUM, &SNAP, &B_CLIP, &B_RASTER, &B_SORT, &B_INDEX, &DIR, &FRAMES, &EXACT, &L_PAR, &DOME, &BITMAP, &CLEAR, &CONTRIB, &CULL, &L_CSR] { c.store(0, Ordering::Relaxed); }
+        eprintln!("profile [{label}] non-raster: layer bufs {:.2}s, LmILightDir_Set {:.2}s, probe layers {:.2}s, dome image {:.2}s (in layer derivation), AddAmbient {:.2}s, H-basis {:.2}s, probe folds {:.2}s, sub-sample accumulate {:.2}s; outside the loop: sub-samples {:.2}s, jitter sets {:.2}s, shadow map {:.2}s, pre-loop dumps {:.2}s, resolve {:.2}s; gather lookups: {} sky (dome_px), {} surface", g(&LM_BUFS), g(&LM_SET), g(&PROBE_LAYER), g(&DOME_IMG), g(&AMBIENT), g(&HB), g(&PROBE_END), g(&ACC_SUB), g(&PRE_SUBS), g(&PRE_JITTER), g(&PRE_SHADOW), g(&PRE_DUMP), g(&POST_RESOLVE), crate::peel::GATHER_COUNTS[0].swap(0, Ordering::Relaxed), crate::peel::GATHER_COUNTS[1].swap(0, Ordering::Relaxed));
+        for c in [&BUILD, &LAYERS, &DUMP, &GATHER, &ACCUM, &SNAP, &B_CLIP, &B_RASTER, &B_SORT, &B_INDEX, &DIR, &FRAMES, &EXACT, &L_PAR, &DOME, &BITMAP, &CLEAR, &CONTRIB, &CULL, &L_CSR, &LM_BUFS, &LM_SET, &PROBE_LAYER, &DOME_IMG, &AMBIENT, &HB, &PROBE_END, &ACC_SUB, &PRE_SUBS, &PRE_JITTER, &PRE_SHADOW, &PRE_DUMP, &POST_RESOLVE] { c.store(0, Ordering::Relaxed); }
     }
 }
 
@@ -2810,6 +2832,8 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         subs.extend(chart_subs);
     }
     eprintln!("peel: {} layout texels over {} charts (ss {ss} for coverage) ({:.1}s)", subs.len(), scene.instances.len(), t0.elapsed().as_secs_f32());
+    prof::add(&prof::PRE_SUBS, t0);
+    let t_jit = std::time::Instant::now();
     // THE GAME'S RASTER JITTER: nine sub-sample sets, one per LM01_Trans_RasterSS offset — direction k
     // gathers and accumulates at set (k mod 9); the pixel centre samples the geometry at centre − shift/9
     // (the geometry itself is drawn shifted by +shift/9 texels)
@@ -2838,6 +2862,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         }).collect()
     } else { Vec::new() };
     if jitter { eprintln!("peel: raster jitter on — nine sub-sample sets ({} .. {} samples), direction k at offset k mod 9 of {:?}/9 texels", jit_sets.iter().map(|s| s.len()).min().unwrap_or(0), jit_sets.iter().map(|s| s.len()).max().unwrap_or(0), prm.jitter_cycle); }
+    prof::add(&prof::PRE_JITTER, t_jit);
     // 2. group the sub-samples so each direction touches one contiguous range
     let mut order: Vec<u32> = (0..subs.len() as u32).collect();
     order.sort_by_key(|&i| subs[i as usize].group);
@@ -2854,6 +2879,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
     let mut cover: Vec<Vec<u16>> = chart_meta.iter().map(|(cw, ch)| vec![0u16; (cw * 2 * ss_eff * ch * 2 * ss_eff) as usize]).collect();
     let pix_of = |s: &SubSample| -> (usize, usize) { (s.chart as usize, (s.sy * chart_meta[s.chart as usize].0 * 2 * ss_eff + s.sx) as usize) };
     // 3. the sun shadow map for the fragment radiance
+    let t_shadow = std::time::Instant::now();
     let (bmin, bmax) = scene_bounds(&bvh.tris);
     let shadow = if prm.sun_dir[1] > 0.0 && prm.sun.iter().any(|c| *c > 0.0) {
         let frame = match &prm.shadow_frustum {
@@ -2862,6 +2888,8 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         };
         Some(ShadowMap::build_in(&bvh.tris, frame, &prm.alpha_masks))
     } else { None };
+    prof::add(&prof::PRE_SHADOW, t_shadow);
+    let t_predump = std::time::Instant::now();
     let sun_bias = 2.5 * (bmax[0] - bmin[0]).max(bmax[2] - bmin[2]) / prm.peel_res.max(1024) as f32 + 0.05;
     // --- the differential harness: the once-per-bake buffers and this sweep's ILightInput ---
     let chart_file = |pass: &str, sweep: Option<u32>, dir: Option<u32>, ii: usize| -> String {
@@ -2940,6 +2968,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         }
     }
     // 4. the directions, interleaved into the groups
+    prof::add(&prof::PRE_DUMP, t_predump);
     // (--max-dirs N: the harness stops the sweep after N directions — the accumulation snapshots against
     // the capture's first directions take a minute instead of twenty; the weights stay those of the full set)
     let dirs: Vec<V3> = prm.sphere_dirs.iter().copied().take(if prm.max_dirs > 0 { prm.max_dirs } else { usize::MAX }).collect();
@@ -3321,6 +3350,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             // dome as `dome_px` transcribes it (the game's dome mesh rasterised in this frame, PS 16774, the R11G11B10 target)
             // — the game's env render is per pixel, the uniform sky is only the gather's fallback
             let dome_img: Option<Vec<[f32; 3]>> = if prm.lm_scene.is_some() && prm.sky_grad.is_some() && prm.dome_exact {
+                let t_dome_img = std::time::Instant::now();
                 let (w, h) = (frame.res as usize, frame.res_y as usize);
                 let mut img = vec![[0.0f32; 3]; w * h];
                 let rows_per = (h / threads.max(1)).max(1);
@@ -3336,6 +3366,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                         });
                     }
                 });
+                prof::add(&prof::DOME_IMG, t_dome_img);
                 Some(img)
             } else {
                 None
@@ -3354,6 +3385,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             // render — `accum.xyz += Scale · colour[W/2, H/2]`, `.w += Scale/2`, Scale = 4·w·D.y·Sky with w = 2/N (= D.y/32 at N = 256)
             // (the accumulator after every direction is kept: entry di = the value once direction di has been issued)
             if let (Some(acc), Some(ly), true) = (&prm.ambient_out, &layers, prm.sweep == 0 && pi == 0) {
+                let t_amb = std::time::Instant::now();
                 let mut g = acc.lock().unwrap();
                 let mut v = g.last().copied().unwrap_or([0.0; 4]);
                 if d[1] > 0.0 {
@@ -3364,6 +3396,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                 }
                 while g.len() < di { let l = g.last().copied().unwrap_or([0.0; 4]); g.push(l); }
                 g.push(v);
+                prof::add(&prof::AMBIENT, t_amb);
             }
             // the transcribed LmILightDir_Set blocks over this peel's layers: block k reads layer k's colour + depth targets
             // (k = 0 the environment render; the clear 1.0 / black where a pixel has fewer layers); the fitted peel's blocks
@@ -3388,26 +3421,41 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                 // block-by-block path
                 let chunk: usize = std::env::var("LMTOOL_SET_LAYER_CHUNK").ok().and_then(|v| v.parse().ok()).unwrap_or(8).max(1);
                 let per_block = std::env::var_os("LMTOOL_SET_PER_BLOCK").is_some() || lm_draws.is_none();
+                // THE LM RASTER ONCE (perf 8, lmaccum::replay_set_layers): the direction's blocks replay the fragment list of its
+                // raster offset — the same fragments in the same order, no raster per block; LMTOOL_LMACCUM_FRAGLIST=0 keeps the
+                // fused raster path (and the serial / per-block study switches take theirs)
+                let replay = !per_block && crate::lmaccum::frag_list_on() && std::env::var_os("LMTOOL_LMACCUM_SERIAL").is_none();
+                let frag_list = if replay { lm_draws.as_ref().map(|(lm, _)| lm.frag_list(di, 2048, 2048)) } else { None };
                 let mut k = 0usize;
                 while k < nl {
                     let k_end = if per_block { k + 1 } else { (k + chunk).min(nl) };
+                    let t_bufs = std::time::Instant::now();
                     let bufs: Vec<(crate::passdiff::Buf, crate::passdiff::Buf)> = (k..k_end).map(|kk| (ly.colour_buf(kk, 0), crate::passdiff::Buf { w: ly.w, h: ly.h, channels: 1, data: ly.depth_image(kk, 0) })).collect();
+                    prof::add(&prof::LM_BUFS, t_bufs);
+                    let t_set = std::time::Instant::now();
                     if let (Some((lm, draws)), Some(dt)) = (&lm_draws, dir_lm.as_mut()) {
                         if per_block {
                             crate::lmaccum::run_set_block(&lm.meshes, &lm.instances, &lm.table, draws, &crate::lmaccum::LayerTargets { color: &bufs[0].0, depth: &bufs[0].1 }, crate::lmaccum::DepthCompare::Float, dt);
                         } else {
                             let layers: Vec<crate::lmaccum::LayerTargets> = bufs.iter().map(|(c, dd)| crate::lmaccum::LayerTargets { color: c, depth: dd }).collect();
-                            crate::lmaccum::run_set_layers_par(&lm.meshes, &lm.instances, &lm.table, draws, &layers, crate::lmaccum::DepthCompare::Float, dt, &mut dir_best_k, dir_block_base + k);
+                            match &frag_list {
+                                Some(fl) if !draws.is_empty() => crate::lmaccum::replay_set_layers(fl, lm, &draws[0].cb, draws[0].world_box, &layers, crate::lmaccum::DepthCompare::Float, dt),
+                                Some(_) => {}
+                                None => crate::lmaccum::run_set_layers_par(&lm.meshes, &lm.instances, &lm.table, draws, &layers, crate::lmaccum::DepthCompare::Float, dt, &mut dir_best_k, dir_block_base + k),
+                            }
                         }
                     }
+                    prof::add(&prof::LM_SET, t_set);
                     // THE PROBES after every WORLD-peel layer (PS 17151 per block; the sky visibility after layer 1 and the
                     // AddAmbient dispatch after layer 0 for the sky sweep's upward directions) — probebake.rs
                     if want_probes {
+                        let t_pl = std::time::Instant::now();
                         if let Some(pb) = &prm.probe_bake {
                             for (j, (color, depth)) in bufs.iter().enumerate() {
                                 pb.lock().unwrap().world_layer(k + j, &pw01, color, depth, *d, prm.sphere_dirs.len(), prm.sweep == 0);
                             }
                         }
+                        prof::add(&prof::PROBE_LAYER, t_pl);
                     }
                     k = k_end;
                 }
@@ -3489,6 +3537,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             let n_chunks = (range.len() + chunk - 1) / chunk;
             crate::pool::pool().run(n_chunks, |ci| {
                 let ch = &range[ci * chunk..((ci + 1) * chunk).min(range.len())];
+                let (mut n_dome, mut n_surface) = (0u64, 0u64);
                 {
                     let ab = &ab;
                     let frame = &frame;
@@ -3534,8 +3583,8 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                                 if px < ly.w && py < ly.h && z01 >= 0.0 && z01 <= 1.0 {
                                     // (a texel outside this peel's frustum reads nothing from it)
                                     match select_layer(ly.at(px, py), z01) {
-                                        Some(f) if f.d > 0.0 || !prm.dome_layer => hit = Some((f.rgb, true)),
-                                        Some(_) => hit = Some((dome_px(frame, dome_r, px, py), false)), // the dome: the sky at this pixel
+                                        Some(f) if f.d > 0.0 || !prm.dome_layer => { hit = Some((f.rgb, true)); n_surface += 1; }
+                                        Some(_) => { hit = Some((dome_px(frame, dome_r, px, py), false)); n_dome += 1; } // the dome: the sky at this pixel
                                         None => {}
                                     }
                                 }
@@ -3584,6 +3633,10 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                         }
                     }
                 }
+                if n_dome + n_surface > 0 {
+                    GATHER_COUNTS[0].fetch_add(n_dome, std::sync::atomic::Ordering::Relaxed);
+                    GATHER_COUNTS[1].fetch_add(n_surface, std::sync::atomic::Ordering::Relaxed);
+                }
             });
             prof::add(&prof::GATHER, tg);
         }
@@ -3610,6 +3663,8 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         // THE PROBES: the direction's two folds (PS 1112) — the game issues them after the H-basis, the order is immaterial
         // (they read the direction's volume, which the fitted peel and the H-basis never touch)
         if let Some(pb) = &prm.probe_bake { pb.lock().unwrap().end_direction(*d, prm.sphere_dirs.len(), prm.sweep); }
+        prof::add(&prof::PROBE_END, ta);
+        let t_hb = std::time::Instant::now();
         // THE ACCUMULATE (LmLBumpILighting): E += 4/N · max(0, n·D) · TMapILightDir[texel]
         // the transcribed H-basis accumulate of this direction, and the comparison with the capture's banked buffers
         if let (Some(lm), Some(dt), Some(hb)) = (&prm.lm_scene, &dir_lm, hb_lm.as_mut()) {
@@ -3617,8 +3672,18 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             let cb = crate::lmaccum::HbCb { peel_dir: *d, inv_dir_count: 1.0 / n_full };
             let raster = crate::lmaccum::LmRasterCb::for_offset(di, 2048, 2048);
             let draws: Vec<crate::lmaccum::HbDraw> = (0..lm.meshes.len()).map(|m| crate::lmaccum::HbDraw { eid: 0, mesh: m, instance_first: lm.inst_first[m], instance_count: lm.inst_count[m], raster, cb }).collect();
-            let mut owner = vec![0u8; 2048 * 2048];
-            crate::lmaccum::run_hbasis_probe(&lm.meshes, &lm.instances, &lm.table, &draws, dt, hb, crate::sunpass::BlendModel::TruncSrcRoundSum, Some(&mut owner), None);
+            // (the per-pixel owner is for the comparison with the capture's banked MRTs only)
+            let mut owner = if prm.hbasis_game.is_some() { vec![0u8; 2048 * 2048] } else { Vec::new() };
+            let owner_ref = if owner.is_empty() { None } else { Some(&mut owner) };
+            // THE LM RASTER ONCE (perf 8): the H-basis draw replays the direction's fragment list (the sequential fragment model,
+            // the barycentric interpolation — the study switches keep the raster path)
+            let replay_hb = crate::lmaccum::frag_list_on() && std::env::var_os("LMTOOL_LMACCUM_SERIAL").is_none() && crate::lmaccum::interp_mode() == 0 && crate::lmaccum::frag_model() == crate::lmaccum::FragModel::Sequential;
+            if replay_hb {
+                let fl = lm.frag_list(di, 2048, 2048);
+                crate::lmaccum::replay_hbasis(&fl, lm, &cb, dt, hb, crate::sunpass::BlendModel::TruncSrcRoundSum, owner_ref);
+            } else {
+                crate::lmaccum::run_hbasis_probe(&lm.meshes, &lm.instances, &lm.table, &draws, dt, hb, crate::sunpass::BlendModel::TruncSrcRoundSum, owner_ref, None);
+            }
             // (the capture's sweep-1 snapshots come from another run (pwc6) with its own MRT history: sweep 0 only)
             if let Some((root, entries)) = prm.hbasis_game.as_ref().filter(|_| prm.sweep == 0) {
                 // the game's ilightdir at its H-basis draw and its four MRTs after this direction (by the true issue index)
@@ -3672,6 +3737,8 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                 }
             }
         }
+        prof::add(&prof::HB, t_hb);
+        let t_acc_sub = std::time::Instant::now();
         let acc_ptrs: Vec<usize> = acc_tex.iter_mut().map(|v| v.as_mut_ptr() as usize).collect();
         let cover_ptrs: Vec<usize> = cover.iter_mut().map(|v| v.as_mut_ptr() as usize).collect();
         let mut ldir: Vec<[f32; 3]> = if want_dir_dump { vec![[0.0; 3]; cur.len()] } else { Vec::new() };
@@ -3731,6 +3798,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                 }
             }
         });
+        prof::add(&prof::ACC_SUB, t_acc_sub);
         prof::add(&prof::ACCUM, ta);
         let ab_len = frag_total;
         let tsn = std::time::Instant::now();
@@ -3774,6 +3842,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         prof::add(&prof::DIR, t_dir);
     }
     // 5. resolve: per colour texel the mean over its covered sub-samples
+    let t_resolve = std::time::Instant::now();
     let mut out: Vec<ChartBake> = scene
         .instances
         .iter()
@@ -3850,6 +3919,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         if card_prelit { c.rgb_irr = std::mem::take(&mut irr[ci]); }
     }
     if std::env::var_os("LMTOOL_PROFILE").is_some() || prm.profile {
+        prof::add(&prof::POST_RESOLVE, t_resolve);
         prof::report(&format!("sweep {}", prm.sweep), t0.elapsed().as_secs_f32());
     }
     // --- the differential harness: this sweep's accumulation target and its resolve ---

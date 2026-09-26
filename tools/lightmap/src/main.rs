@@ -2693,8 +2693,9 @@ fn run(a: Vec<String>) {
                 // the probe images are Monte-Carlo noisy: a coarser quantizer than the atlases (Nadeo's 874² probe
                 // blob is 394 KB; ours at q 8 was 1.5 MB — over the 25 MiB file cap on the ×4 maps)
                 let probe_q: u8 = f("--probe-vp8").map(|s| s.parse().unwrap()).unwrap_or(28);
+                let t_probes = std::time::Instant::now();
                 let po = lightmap::probes::build(&scene, &bvh, &pp, &lights, prm.light_k, &tv, probe_q, &grid).expect("probes");
-                eprintln!("probe volume: {} blocks, {} slices, atlas {}x{}, blob {} B ({:.1}s)", po.blocks, po.slices, po.atlas_w, po.atlas_h, po.blob.len(), t0.elapsed().as_secs_f32());
+                eprintln!("probe volume: {} blocks, {} slices, atlas {}x{}, blob {} B ({:.1}s; end-of-bake: the port probes {:.2}s)", po.blocks, po.slices, po.atlas_w, po.atlas_h, po.blob.len(), t0.elapsed().as_secs_f32(), t_probes.elapsed().as_secs_f32());
                 Some(lightmap::synth::ProbeBlob { blob: po.blob, trailer: po.volume.write() })
             };
             // the frame records' time-of-day word: the MAP's (chunk 0x03043056), or the mood's default word
@@ -2802,7 +2803,9 @@ fn run(a: Vec<String>) {
                 Some(b) if std::env::var_os("LMTOOL_BBOX_TEMPLATE").is_none() => { eprintln!("writer: mapping bbox = the record centres' fold {:?}..{:?} (template {:?}..{:?})", b.0, b.1, tm.bbox_min, tm.bbox_max); b }
                 _ => (tm.bbox_min, tm.bbox_max),
             };
+            let t_writer = std::time::Instant::now();
             let s = lightmap::synth::build_full2_placed(out_charts, mapping_bbox, &tpl.chunk, probes, vp8_q, frame_params, fixed_pos.as_ref()).expect("build");
+            eprintln!("end-of-bake: the port writer (charts → atlas → WebP encodes) {:.2}s", t_writer.elapsed().as_secs_f32());
             let s = match (writer_transcribed, &chain_finals) {
                 (true, Some(finals)) => {
                     let tw = std::time::Instant::now();
@@ -2861,9 +2864,11 @@ fn run(a: Vec<String>) {
                 dm.finish().expect("write MANIFEST.json");
                 eprintln!("dump-passes: {} entries, {:.1} MB under {}", dm.manifest.passes.len(), dm.bytes_written as f64 / 1e6, dm.root.display());
             }
+            let t_save = std::time::Instant::now();
             let payload = s.chunk.write(false);
             let out = f("--out").expect("--out");
             lightmap::mapio::save_with_chunk(&m, &payload, &out).expect("save");
+            eprintln!("end-of-bake: the chunk write + file save {:.2}s", t_save.elapsed().as_secs_f32());
             println!("{} charts, atlas fill {:.1}%, chunk {} B; wrote {out} ({:.1}s)", s.charts, s.fill * 100.0, payload.len(), t0.elapsed().as_secs_f32());
             // the process's peak resident set (Linux: VmHWM of /proc/self/status) — `lmtool bench` reads it
             if let Ok(st) = std::fs::read_to_string("/proc/self/status") {
