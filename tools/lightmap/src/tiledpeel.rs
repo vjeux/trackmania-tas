@@ -56,6 +56,12 @@ impl PeelPlan {
         if n >= 64 { self.tile_size = n; }
         self
     }
+    /// THE NON-EXACT `--world-res N`: the world peel's frame at N² instead of the rule's size (with
+    /// `world_only` a finer single frame stands in for the fitted tiles). The tiles keep their own size.
+    pub fn with_world_size(mut self, n: u32) -> PeelPlan {
+        if n >= 64 { self.size = n; }
+        self
+    }
     /// THE NON-EXACT `--tiles-from-world`: no fitted tiles at all — every texel reads the world peel alone
     /// (the composition rule "a later peel wins where it has a layer" then has one peel to compose).
     pub fn world_only(mut self) -> PeelPlan {

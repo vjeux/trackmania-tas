@@ -37,6 +37,8 @@ fn t_quarter(dt: Option<u32>, x: &lightmap::moods::MoodXml) -> bool {
 struct Preset {
     /// `--tile-res N`: the fitted tiles' frame size (0 = the tiling rule's, 4096² on the real maps).
     tile_res: u32,
+    /// `--world-res N`: the WORLD peel's frame size (0 = the tiling rule's) — with --tiles-from-world a finer single frame stands in for the tiles.
+    world_res: u32,
     /// `--tiles-from-world`: no fitted tiles — every texel reads the world peel alone.
     tiles_from_world: bool,
     /// `--layers-estimate`: the census layer statistic instead of the exact whole-frame count (`--layers-exact` undoes a preset's).
@@ -53,7 +55,7 @@ struct Preset {
 
 impl Preset {
     fn exact() -> Preset {
-        Preset { tile_res: 0, tiles_from_world: false, layers_estimate: false, dirs_scale: 1.0, max_layers: lightmap::peelcap::PeelStop::default().max_renders, alpha_point: false, sweeps: 0 }
+        Preset { tile_res: 0, world_res: 0, tiles_from_world: false, layers_estimate: false, dirs_scale: 1.0, max_layers: lightmap::peelcap::PeelStop::default().max_renders, alpha_point: false, sweeps: 0 }
     }
     fn named(name: &str) -> Preset {
         match name {
@@ -68,6 +70,7 @@ impl Preset {
         let has = |k: &str| a.iter().any(|x| x == k);
         let mut p = f("--preset").map(|n| Preset::named(&n)).unwrap_or_else(Preset::exact);
         if let Some(v) = f("--tile-res") { p.tile_res = v.parse().expect("--tile-res N"); }
+        if let Some(v) = f("--world-res") { p.world_res = v.parse().expect("--world-res N"); }
         if has("--tiles-from-world") { p.tiles_from_world = true; }
         if has("--layers-estimate") { p.layers_estimate = true; }
         if has("--layers-exact") { p.layers_estimate = false; }
@@ -84,6 +87,7 @@ impl Preset {
     fn describe(&self) -> String {
         let mut v: Vec<String> = Vec::new();
         if self.tile_res != 0 { v.push(format!("--tile-res {}", self.tile_res)); }
+        if self.world_res != 0 { v.push(format!("--world-res {}", self.world_res)); }
         if self.tiles_from_world { v.push("--tiles-from-world".into()); }
         if self.layers_estimate { v.push("--layers-estimate".into()); }
         if self.dirs_scale != 1.0 { v.push(format!("--dirs-scale {}", self.dirs_scale)); }
@@ -2160,6 +2164,7 @@ fn run(a: Vec<String>) {
                 let plan = lightmap::tiledpeel::plan(&recs, tiles_box, chunks_aabb.as_ref(), alloc_scale, tq, vram, max_tiles);
                 // the non-exact knobs on the plan: the tiles at --tile-res, or none at all (--tiles-from-world)
                 let plan = if preset.tiles_from_world { plan.world_only() } else if preset.tile_res != 0 { plan.with_tile_size(preset.tile_res) } else { plan };
+                let plan = if preset.world_res != 0 { plan.with_world_size(preset.world_res) } else { plan };
                 eprintln!("peel cameras: {} item records, scene box [{:.1}, {:.1}]×[{:.1}, {:.1}]×[{:.1}, {:.1}], world peel box [{:.1}, {:.1}]×[{:.1}, {:.1}]×[{:.1}, {:.1}]; tiling at scale {alloc_scale:.3} layout units/m: ext {:.1} → target {}², n = {}, {} fitted tile(s){}{}", recs.len(), plan.scene.min()[0], plan.scene.max()[0], plan.scene.min()[1], plan.scene.max()[1], plan.scene.min()[2], plan.scene.max()[2], plan.world.min[0], plan.world.max[0], plan.world.min[1], plan.world.max[1], plan.world.min[2], plan.world.max[2], plan.ext, plan.size, plan.n, plan.tiles.len(), if plan.tiles.is_empty() { " (the world pass only)" } else { "" }, if plan.tile_size != plan.size { format!(" at {}² (NON-EXACT --tile-res)", plan.tile_size) } else { String::new() });
                 for (i, t) in plan.tiles.iter().enumerate() { eprintln!("  tile {i}: [{:.1}, {:.1}]×[{:.1}, {:.1}]×[{:.1}, {:.1}]", t.min[0], t.max[0], t.min[1], t.max[1], t.min[2], t.max[2]); }
                 if plan.size != prm.peel_res { eprintln!("peel cameras: peel resolution {} → {}", prm.peel_res, plan.size); prm.peel_res = plan.size; }
@@ -9652,6 +9657,97 @@ variants: ");
                 charts += 1;
             }
             println!("{charts} charts at ss {ss}: ours {ours} colour texels, {:.2} % of them written by the editor; editor {ed} texels, {ed_not_ours} not covered by us ({:.2} %): {} adjacent to ours (gutter), {} isolated (our misses)", 100.0 * ours_in_ed as f64 / ours.max(1) as f64, 100.0 * ed_not_ours as f64 / ed.max(1) as f64, ring[0], ring[1]);
+        }
+        "atlas-png" => {
+            // lmtool atlas-png OURS.Map.Gbx --out PREFIX [--against EXACT.Map.Gbx] [--gain G]: the lightmap's atlases as PNGs
+            // (perf engineer 7's side-by-side material for the non-exact presets): PREFIX-A.png / -B.png / -F1.png / -F2.png =
+            // the four WEBP atlases as stored (frame 0 images 0/1, frames 1/2 image 0: the colour atlas, the second atlas, the
+            // per-frame greys), PREFIX-hdr.png = the colour atlas DECODED per chart (synth::decode_value with the chart's frame
+            // byte × the frame's MaxHDR) and displayed as 255·√(v / (G·MaxHDR)) (G = 1: the frame's brightest texel is white).
+            // With --against: PREFIX-diff.png (signed: red = ours brighter, blue = darker, full at 10 % of MaxHDR) and the
+            // decoded-texel statistics over the charts' texels — RMSE, max |Δ| (HDR units and display steps of 255) and the
+            // share within 1 / 2 / 4 display steps — printed and written to PREFIX-stats.md.
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let prefix = f("--out").expect("--out PREFIX");
+            let gain: f32 = f("--gain").map(|s| s.parse().expect("--gain")).unwrap_or(1.0);
+            let load = |p: &str| {
+                let own = lightmap::mapio::load(p).unwrap_or_else(|e| panic!("{p}: {e}"));
+                let d = own.chunk.data.clone().unwrap_or_else(|| panic!("{p}: no lightmap"));
+                let fm = d.cache.frame_max_hdr().unwrap_or(1.0);
+                (d, fm)
+            };
+            let (d, fm) = load(&a[1]);
+            let mp = d.cache.mapping().expect("mapping").clone();
+            let write = |name: &str, im: &lightmap::img::Rgb| { let p = format!("{prefix}-{name}.png"); lightmap::png::write_rgb(&p, im.w, im.h, &im.px).unwrap_or_else(|e| panic!("{p}: {e}")); eprintln!("atlas-png: {p} ({}×{})", im.w, im.h); };
+            for (name, blob) in [("A", d.frames.first().and_then(|fr| fr.images.first())), ("B", d.frames.first().and_then(|fr| fr.images.get(1))), ("F1", d.frames.get(1).and_then(|fr| fr.images.first())), ("F2", d.frames.get(2).and_then(|fr| fr.images.first()))] {
+                if let Some(b) = blob.filter(|b| !b.is_empty()) {
+                    match lightmap::img::decode_webp(b) { Ok(im) => write(name, &im), Err(e) => eprintln!("atlas-png: {name}: {e}") }
+                }
+            }
+            // the decoded colour atlas: per chart rect (half-unit pos/size → pixels as the chart raster reads them), the
+            // chart's frame byte; texels outside every chart stay black and are excluded from the statistics
+            let decode_atlas = |d: &lightmap::format::LightmapData, fm: f32| -> (Vec<[f32; 3]>, Vec<bool>, u32, u32) {
+                let ia = lightmap::img::decode_webp(&d.frames[0].images[0]).expect("atlas");
+                let mp = d.cache.mapping().expect("mapping");
+                let (w, h) = (ia.w, ia.h);
+                let mut hdr = vec![[0.0f32; 3]; (w * h) as usize];
+                let mut inside = vec![false; (w * h) as usize];
+                for i in 0..mp.count as usize {
+                    let (x, y) = mp.pos[i]; let (cw, ch) = mp.size[i];
+                    let (px, py, pw, ph) = ((x as u32 + 1) / 2, (y as u32 + 1) / 2, (cw as u32 / 2).max(1), (ch as u32 / 2).max(1));
+                    let fb = mp.frame_bytes[0][i];
+                    if fb == 0 { continue; }
+                    for yy in py..(py + ph).min(h) { for xx in px..(px + pw).min(w) {
+                        let c = ia.get(xx, yy);
+                        let k = (yy * w + xx) as usize;
+                        hdr[k] = [lightmap::synth::decode_value(c[0], fb) * fm, lightmap::synth::decode_value(c[1], fb) * fm, lightmap::synth::decode_value(c[2], fb) * fm];
+                        inside[k] = true;
+                    } }
+                }
+                (hdr, inside, w, h)
+            };
+            let (hdr, inside, w, h) = decode_atlas(&d, fm);
+            let disp = |v: f32, fmx: f32| -> u8 { (255.0 * (v / (gain * fmx)).clamp(0.0, 1.0).sqrt()).round() as u8 };
+            let mut im = lightmap::img::Rgb::new(w, h);
+            for y in 0..h { for x in 0..w { let v = hdr[(y * w + x) as usize]; im.set(x, y, [disp(v[0], fm), disp(v[1], fm), disp(v[2], fm)]); } }
+            write("hdr", &im);
+            eprintln!("atlas-png: {} charts, frame MaxHDR {fm:.4}, {} of {} texels inside a chart", mp.count, inside.iter().filter(|b| **b).count(), inside.len());
+            if let Some(refp) = f("--against") {
+                let (dr, fmr) = load(&refp);
+                let (hr, ir, wr, hh) = decode_atlas(&dr, fmr);
+                assert_eq!((w, h), (wr, hh), "the atlases differ in size ({w}×{h} vs {wr}×{hh})");
+                // the display scale of the REFERENCE (the exact bake) for both: a step = one of its 255
+                let mut diff = lightmap::img::Rgb::new(w, h);
+                let (mut n, mut se, mut mx, mut w1, mut w2, mut w4, mut sum_o, mut sum_r) = (0usize, 0.0f64, 0.0f32, 0usize, 0usize, 0usize, 0.0f64, 0.0f64);
+                let mut mx_step = 0.0f32;
+                let lum = |c: [f32; 3]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+                for k in 0..(w * h) as usize {
+                    if !(inside[k] && ir[k]) { continue; }
+                    let (o, r) = (hdr[k], hr[k]);
+                    let (lo, lr) = (lum(o), lum(r));
+                    let dl = lo - lr;
+                    n += 1; se += (dl as f64) * (dl as f64); mx = mx.max(dl.abs()); sum_o += lo as f64; sum_r += lr as f64;
+                    // display steps: 255·√(v / MaxHDR_ref) for both
+                    let step = (255.0 * (lo / fmr).max(0.0).sqrt() - 255.0 * (lr / fmr).max(0.0).sqrt()).abs();
+                    mx_step = mx_step.max(step);
+                    if step <= 1.0 { w1 += 1; }
+                    if step <= 2.0 { w2 += 1; }
+                    if step <= 4.0 { w4 += 1; }
+                    let t = (dl / (0.1 * fmr)).clamp(-1.0, 1.0);
+                    let (x, y) = ((k as u32) % w, (k as u32) / w);
+                    let g = (255.0 * (lr / fmr).clamp(0.0, 1.0).sqrt() * 0.25) as u8; // a faint copy of the reference under the heat
+                    diff.set(x, y, if t > 0.0 { [g.saturating_add((255.0 * t) as u8), g, g] } else { [g, g, g.saturating_add((255.0 * -t) as u8)] });
+                }
+                write("diff", &diff);
+                let rmse = (se / n.max(1) as f64).sqrt();
+                let (mo, mr) = (sum_o / n.max(1) as f64, sum_r / n.max(1) as f64);
+                let md = format!("| bake | texels | mean lum (ours / exact) | ratio | RMSE (HDR) | RMSE / exact mean | max abs Δ (HDR) | max Δ (display steps) | within 1 step | within 2 | within 4 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| {} vs {} | {n} | {mo:.4} / {mr:.4} | {:.4} | {rmse:.5} | {:.2} % | {mx:.4} | {mx_step:.1} | {:.2} % | {:.2} % | {:.2} % |
+", std::path::Path::new(&a[1]).file_name().unwrap().to_string_lossy(), std::path::Path::new(&refp).file_name().unwrap().to_string_lossy(), mo / mr.max(1e-9), 100.0 * rmse / mr.max(1e-9), 100.0 * w1 as f64 / n.max(1) as f64, 100.0 * w2 as f64 / n.max(1) as f64, 100.0 * w4 as f64 / n.max(1) as f64);
+                print!("{md}");
+                std::fs::write(format!("{prefix}-stats.md"), &md).expect("stats");
+            }
         }
         "atlascmp" => {
             // lmtool atlascmp REF.Map.Gbx OURS.Map.Gbx [--base N] [--items N]: the gate, camera-free — for every texel
