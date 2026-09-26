@@ -285,7 +285,8 @@ pub fn shadow_sample(shadow: &FlatCubeMap, uv: [f32; 2], r: f32) -> f32 {
     if std::env::var_os("LMTOOL_LL_SHADOW").map(|v| v == "point").unwrap_or(false) {
         return shadow.sample_cmp_ge(uv, r, SHADOW_TARGET);
     }
-    let bits: u32 = std::env::var("LMTOOL_LL_SHADOW_BITS").ok().and_then(|v| v.parse().ok()).unwrap_or(8);
+    // f32 weights (0 bits) measure best against the captured accumulation (lamp A: 433 list texels differ vs 512 at 8 bits, 862 at 4)
+    let bits: u32 = std::env::var("LMTOOL_LL_SHADOW_BITS").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
     shadow.sample_cmp_ge_linear(uv, r, SHADOW_TARGET, bits)
 }
 
@@ -886,12 +887,32 @@ pub fn compare_lists(ours: &Lists, game: &Lists) -> String {
     let n = ours.l.len().min(game.l.len());
     let (mut same, mut diff, mut nonempty) = (0usize, 0usize, 0usize);
     let mut ex = String::new();
+    // the differing texels by kind: the lamp entered one side only (ours / game), or both with the weight byte differing by |Δ|
+    let (mut only_ours, mut only_game, mut lit_only) = (0usize, 0usize, 0usize);
+    let mut dw: std::collections::BTreeMap<i32, usize> = Default::default();
     for i in 0..n {
         let (a, b) = (&ours.l[i], &game.l[i]);
         if b.w8.iter().any(|&w| w > 0) { nonempty += 1; }
-        if a == b { same += 1; } else { diff += 1; if ex.len() < 600 { ex.push_str(&format!("\n    ({}, {}): ours {:?}/{:?}/{:?} game {:?}/{:?}/{:?}", i as u32 % ours.w, i as u32 / ours.w, a.id, a.w8, a.lit8, b.id, b.w8, b.lit8)); } }
+        if a == b { same += 1; } else {
+            diff += 1;
+            if ex.len() < 600 { ex.push_str(&format!("\n    ({}, {}): ours {:?}/{:?}/{:?} game {:?}/{:?}/{:?}", i as u32 % ours.w, i as u32 / ours.w, a.id, a.w8, a.lit8, b.id, b.w8, b.lit8)); }
+            // the slot the two sides disagree on: the entry present in one and not the other, else the weight difference
+            let ids_a: Vec<u16> = a.id.iter().copied().filter(|&x| x != 0xffff).collect();
+            let ids_b: Vec<u16> = b.id.iter().copied().filter(|&x| x != 0xffff).collect();
+            let new_a: Vec<u16> = ids_a.iter().copied().filter(|x| !ids_b.contains(x)).collect();
+            let new_b: Vec<u16> = ids_b.iter().copied().filter(|x| !ids_a.contains(x)).collect();
+            if !new_a.is_empty() && new_b.is_empty() { only_ours += 1; }
+            else if new_a.is_empty() && !new_b.is_empty() { only_game += 1; }
+            else {
+                let mut any_w = false;
+                for j in 0..8 { if a.id[j] == b.id[j] && a.id[j] != 0xffff && a.w8[j] != b.w8[j] { *dw.entry(a.w8[j] as i32 - b.w8[j] as i32).or_default() += 1; any_w = true; } }
+                if !any_w { lit_only += 1; }
+            }
+        }
     }
-    format!("lists: {same} texels identical, {diff} differ ({nonempty} non-empty in the game's){ex}")
+    let mut dwv: Vec<(i32, usize)> = dw.into_iter().collect();
+    dwv.sort_by_key(|x| std::cmp::Reverse(x.1));
+    format!("lists: {same} texels identical, {diff} differ ({nonempty} non-empty in the game's); of the differing: entered ours-only {only_ours}, game-only {only_game}, lit byte only {lit_only}, weight Δ (ours − game → count, top 12) {:?}{ex}", &dwv[..dwv.len().min(12)])
 }
 
 /// The scene's instances with their chart STs recomputed for a `w` × `h` accumulation target (the local-light frame's
