@@ -1313,12 +1313,19 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
                 let mut bias_term_cache: Option<f32> = None;
                 // the record's tie key under the biased order: the triangle's draw rank, once per triangle
                 let rank_ti = draw_rank_of(ti);
+                // (a plain match, not Option::get_or_insert_with: passing the closure by value to the generic std
+                // function materialised its 88-byte environment on the stack and made an out-of-line call on EVERY
+                // block — a third of the visit body's samples on the tiny map sat on that copy)
+                let compute_bias = || -> f32 {
+                    let cx = count.as_ref().unwrap();
+                    let (slope, zmax_prim) = tri_slope_projected(frame, (x0, y0, z0), (x1, y1, z1), (x2, y2, z2));
+                    d3d_depth_bias_fmt(zmax_prim, slope.min(1e6), cx.prm.depth_bias, cx.prm.depth_bits)
+                };
                 let bias_term_of = |cache: &mut Option<f32>| -> f32 {
-                    *cache.get_or_insert_with(|| {
-                        let cx = count.as_ref().unwrap();
-                        let (slope, zmax_prim) = tri_slope_projected(frame, (x0, y0, z0), (x1, y1, z1), (x2, y2, z2));
-                        d3d_depth_bias_fmt(zmax_prim, slope.min(1e6), cx.prm.depth_bias, cx.prm.depth_bits)
-                    })
+                    match *cache {
+                        Some(b) => b,
+                        None => { let b = compute_bias(); *cache = Some(b); b }
+                    }
                 };
                 // THE VISIT BODY, SIXTEEN PIXELS AT A TIME (engineer 3's span interface: one call per block of up
                 // to 16 consecutive pixels of a row, `cov` bit l = pixel x0 + l inside and wanted-or-counted,
@@ -1356,13 +1363,13 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
                         // triangle visits a pixel once, so a pixel's records have distinct (z, tri) keys and one
                         // bias per tri — the (z, tri) order is total over them
                         let li0 = ((y as i32 - by0) as usize) * bw + (bx as i32 - bx0) as usize;
-                        count_add16(&mut cnt[li0..(li0 + 16).min(band_px)], live, &mut saturated);
+                        let after = count_add16(&mut cnt[li0..(li0 + 16).min(band_px)], live, &mut saturated);
                         let bias = bias_term_of(&mut bias_term_cache);
                         let mut m = live;
                         while m != 0 {
                             let l = m.trailing_zeros() as usize;
                             m &= m - 1;
-                            list.push((li0 + l) as u32, cnt[li0 + l], CFrag { z: lanes.z[l], tri: rank_ti, bias });
+                            list.push((li0 + l) as u32, after.0[l], CFrag { z: lanes.z[l], tri: rank_ti, bias });
                         }
                         live &= wanted16;
                         if live == 0 { return; }
@@ -3663,19 +3670,34 @@ pub fn env_max_update16(env: &mut [f32], z: &[f32; 16], live: u16, frame: &PeelF
 /// The count's per-pixel fragment counters of a block bumped by one for the live lanes (u16, saturating; a lane
 /// already at the ceiling sets `saturated`); `cnt` starts at pixel li0 and may fall short of 16 at the band's end.
 #[inline(always)]
-pub fn count_add16(cnt: &mut [u16], live: u16, saturated: &mut bool) {
+pub fn count_add16(cnt: &mut [u16], live: u16, saturated: &mut bool) -> Align64<[u16; 16]> {
     let n = cnt.len().min(16);
     let lane_mask: u16 = if n >= 16 { 0xffff } else { ((1u32 << n) - 1) as u16 };
     let live = live & lane_mask;
-    if live == 0 { return; }
+    let mut after = Align64([0u16; 16]);
+    if live == 0 { return after; }
     #[cfg(all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512bw", target_feature = "avx512vl"))]
     unsafe {
         use std::arch::x86_64::*;
-        let v = _mm256_maskz_loadu_epi16(live, cnt.as_ptr() as *const i16);
-        let full = _mm256_mask_cmpeq_epu16_mask(live, v, _mm256_set1_epi16(-1));
-        if full != 0 { *saturated = true; }
-        let bumped = _mm256_mask_adds_epu16(v, live, v, _mm256_set1_epi16(1));
-        _mm256_mask_storeu_epi16(cnt.as_mut_ptr() as *mut i16, live, bumped);
+        if n >= 16 {
+            // the whole block: an UNMASKED load and store — the bumped counts come back to the caller through
+            // `after` (the pushes read their pixel's count after the bump: a masked 256-bit store cannot
+            // forward to the scalar loads that followed it, and every lane paid the store-buffer round trip)
+            let v = _mm256_loadu_si256(cnt.as_ptr() as *const _);
+            let full = _mm256_mask_cmpeq_epu16_mask(live, v, _mm256_set1_epi16(-1));
+            if full != 0 { *saturated = true; }
+            let bumped = _mm256_mask_adds_epu16(v, live, v, _mm256_set1_epi16(1));
+            _mm256_storeu_si256(cnt.as_mut_ptr() as *mut _, bumped);
+            _mm256_store_si256(after.0.as_mut_ptr() as *mut _, bumped);
+        } else {
+            let v = _mm256_maskz_loadu_epi16(live, cnt.as_ptr() as *const i16);
+            let full = _mm256_mask_cmpeq_epu16_mask(live, v, _mm256_set1_epi16(-1));
+            if full != 0 { *saturated = true; }
+            let bumped = _mm256_mask_adds_epu16(v, live, v, _mm256_set1_epi16(1));
+            _mm256_mask_storeu_epi16(cnt.as_mut_ptr() as *mut i16, live, bumped);
+            _mm256_store_si256(after.0.as_mut_ptr() as *mut _, bumped);
+        }
+        return after;
     }
     #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512bw", target_feature = "avx512vl")))]
     {
@@ -3685,7 +3707,9 @@ pub fn count_add16(cnt: &mut [u16], live: u16, saturated: &mut bool) {
             m &= m - 1;
             let c = &mut cnt[l];
             if *c == u16::MAX { *saturated = true; } else { *c += 1; }
+            after.0[l] = *c;
         }
+        after
     }
 }
 
