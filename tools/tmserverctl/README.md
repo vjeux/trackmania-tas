@@ -6,9 +6,11 @@ Time Attack plus a gravity coefficient per player, car-to-car collisions and "ba
 to push around. Everything lives under `~/tmserver/` and is driven by `tmserverctl`, a Rust
 supervisor from `trackmania-tas/tools/tmserverctl` (no root, no systemd, no shell scripts).
 
-Status of this document: written and tested on a devserver against the real server binary in
-`/lan` mode (the mode compiles and runs; commands, bots, gravity verified on live cars). The VPS
-steps run the moment SSH works.
+Status (2026-09-26 04:31Z): INSTALLED on the VPS under ~/tmserver (archive md5
+b2de4fca0e42e9800f82e6df55df32bf, 386 MB), smoke-tested there in `/lan` mode (mode compiles, YannexDoor
+loads, bots take gravity 0.05, 2350 TCP+UDP listening, XML-RPC on 127.0.0.1:5000, RSS ~160 MB), then
+stopped with `lan = false`. Waiting for the server account (Invalid credentials otherwise) and the
+security-group rules; activation = `tmserverctl account <login> <pw> && tmserverctl start` + the cron lines.
 
 ## What is where
 
@@ -38,9 +40,15 @@ and the deploy files (`~/trackmania-tas/tools/tmserverctl/deploy/`). From a Meta
 is reachable only through fwdproxy:
 
 ```
-alias vps='ssh -i ~/.ssh/id_ed25519_fooo -o ProxyCommand="ncat --proxy fwdproxy:8080 --proxy-type http %h %p" vjeux@195.154.114.196'
-alias vpscp='scp -i ~/.ssh/id_ed25519_fooo -o ProxyCommand="ncat --proxy fwdproxy:8080 --proxy-type http %h %p"'
+# ~/.ssh/config on the devserver
+Host fooo
+    HostName 195.154.114.196
+    User vjeux
+    IdentityFile ~/.ssh/id_ed25519_fooo
+    IdentitiesOnly yes
+    ProxyCommand ncat --proxy fwdproxy:8080 --proxy-type http %h %p
 ```
+then `ssh fooo ...` and `scp ... fooo:...` below (`vps` = `ssh fooo`, `vpscp` = `scp`).
 
 1. Layout and the Nadeo archive (253 MB, downloaded by the VPS itself):
    ```
@@ -71,8 +79,9 @@ alias vpscp='scp -i ~/.ssh/id_ed25519_fooo -o ProxyCommand="ncat --proxy fwdprox
    vps '~/tmserver/bin/tmserverctl logs -n 40'      # "...Load succeeds", "Script 'Mode:LowG': LowG ... loaded"
    vps '~/tmserver/bin/tmserverctl status'          # status "Running - Play", public ip 195.154.114.196:2350
    ```
-   A wrong account shows in the log as the server refusing to start online ("Not connected to
-   the masterserver..."); fix with `account` and `restart`.
+   A wrong account shows in the log as `Connecting to master server... ...ERROR: Invalid
+   credentials. (code NadeoServices/0x00000191)` and the server exits (the supervisor retries
+   with a 5..60 s backoff); fix with `account` and `restart`.
 5. Survive reboots (cron, like the WhiteStick relay does):
    ```
    vps '(crontab -l 2>/dev/null; ~/tmserver/bin/tmserverctl cron) | crontab -'
