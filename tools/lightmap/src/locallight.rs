@@ -234,3 +234,99 @@ mod tests {
         }
     }
 }
+
+/// One texel's light list as CS 7348 keeps it: 8 slots of (light id, weight8 = ftou(√w·255), lit8 = ftou(shadow·255)) —
+/// TexLightId (4 R16G16 slices, two 16-bit ids each), TexLightW (2 RGBA8 slices), TexLightIsLit (2 RGBA8 slices per frame).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LightList {
+    pub id: [u16; 8],
+    pub w8: [u8; 8],
+    pub lit8: [u8; 8],
+}
+
+/// CS 7348 at one texel: the 9-jitter sum `sum(x, y)` = TMapLightSum (light·OutScale summed, shadow·OutScale summed, coverage
+/// = Σ OutScale) → the lamp's weight w = light / coverage and its lit fraction, a one-texel dilation over the 3×3 ring where
+/// the texel itself was not drawn (coverage ≤ 0.01), the weight stored as ftou(√w · 255); the lamp then REPLACES the weakest
+/// of the texel's 8 entries when that entry is weaker than it (ties keep the earlier slot; an empty list has weight 0 entries).
+/// Returns the updated list (unchanged when the stored weight is 0).
+pub fn cs_7348(sum: &dyn Fn(i32, i32) -> [f32; 3], x: i32, y: i32, light_id: u16, list: LightList) -> LightList {
+    let s = sum(x, y);
+    // 3–5 / 7–32
+    let (w, sh) = if 0.01 < s[2] {
+        ((s[0] / s[2]).clamp(0.0, 1.0), (s[1] / s[2]).clamp(0.0, 1.0))
+    } else {
+        let mut acc = [0.0f32; 2];
+        let mut cov = 0.0f32;
+        // the ring in the shader's order: (−1,−1), (0,−1), (1,−1), (−1,0), (1,0), (−1,1), (0,1), (1,1) — fused mads, the coverage summed in order
+        let first = sum(x - 1, y - 1);
+        let second = sum(x, y - 1);
+        acc = [second[2] * second[0], second[2] * second[1]];
+        acc = [first[0] * first[2] + acc[0], first[1] * first[2] + acc[1]];
+        cov = first[2] + second[2];
+        for (dx, dy) in [(1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)] {
+            let n = sum(x + dx, y + dy);
+            acc = [n[0] * n[2] + acc[0], n[1] * n[2] + acc[1]];
+            cov = n[2] + cov;
+        }
+        let ok = 0.01 < cov;
+        let d = [(acc[0] / cov).clamp(0.0, 1.0), (acc[1] / cov).clamp(0.0, 1.0)];
+        if ok { (d[0], d[1]) } else { (0.0, 0.0) }
+    };
+    // 34–39
+    let w8 = (w.sqrt() * 255.0) as u32;
+    if w8 == 0 {
+        return list;
+    }
+    // 102–121: the weakest entry below the new weight (the first of equals)
+    let mut slot = 8usize;
+    let mut thr = w8;
+    for j in 0..8 {
+        if (list.w8[j] as u32) < thr {
+            slot = j;
+            thr = list.w8[j] as u32;
+        }
+    }
+    let mut out = list;
+    if slot < 8 {
+        out.w8[slot] = w8 as u8;
+        out.lit8[slot] = (sh * 255.0) as u32 as u8;
+        out.id[slot] = light_id;
+    }
+    out
+}
+
+#[cfg(test)]
+mod list_tests {
+    use super::*;
+
+    #[test]
+    fn a_lamp_enters_the_weakest_slot_and_a_weaker_one_does_not() {
+        let covered = |_: i32, _: i32| [0.5f32 * 9.0 / 9.0, 1.0, 1.0]; // w = 0.5, shadow 1, coverage 1 (nine jitters of 1/9)
+        let l0 = LightList::default();
+        let l1 = cs_7348(&covered, 5, 5, 243, l0);
+        assert_eq!(l1.id[0], 243);
+        assert_eq!(l1.w8[0], (0.5f32.sqrt() * 255.0) as u8);
+        assert_eq!(l1.lit8[0], 255);
+        // a full list of stronger entries: the new lamp is dropped
+        let full = LightList { id: [1; 8], w8: [200; 8], lit8: [255; 8] };
+        assert_eq!(cs_7348(&covered, 5, 5, 243, full), full);
+        // one weak entry among strong ones: it is the one replaced
+        let mut mixed = full;
+        mixed.w8[5] = 10;
+        let r = cs_7348(&covered, 5, 5, 243, mixed);
+        assert_eq!(r.id[5], 243);
+        assert_eq!(r.w8[5], (0.5f32.sqrt() * 255.0) as u8);
+    }
+
+    #[test]
+    fn an_undrawn_texel_takes_its_neighbours_average() {
+        // the centre undrawn (coverage 0), the ring drawn with w 0.25
+        let f = |x: i32, y: i32| if (x, y) == (5, 5) { [0.0f32, 0.0, 0.0] } else { [0.25, 1.0, 1.0] };
+        let l = cs_7348(&f, 5, 5, 7, LightList::default());
+        assert_eq!(l.id[0], 7);
+        assert_eq!(l.w8[0], (0.25f32.sqrt() * 255.0) as u8);
+        // an isolated undrawn texel with an undrawn ring: nothing
+        let g = |_: i32, _: i32| [0.0f32; 3];
+        assert_eq!(cs_7348(&g, 5, 5, 7, LightList::default()), LightList::default());
+    }
+}
