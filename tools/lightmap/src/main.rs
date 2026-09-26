@@ -912,6 +912,19 @@ fn run(a: Vec<String>) {
                     None => { if f("--model").as_deref() == Some("fitted") { panic!("no fitted mood parameters for {} / {} — known:\n{}", h.envir, mood_name, lightmap::moods::table()); } None }
                 }
             } else { None };
+            // THE LM UV-SET SELECTOR'S STORE (RE 11, 09:20Z): every --pak plus LMTOOL_STOCK_PAKS, handed to lmmesh before the scene is
+            // built so each pack material's shader decides its lightmap uv set (PreLightGen TexCoordIndex) and whether it is lit at all
+            {
+                let mut st = mapgeom::store::DataStore::empty();
+                let mut n = 0usize;
+                for (i, arg) in a.iter().enumerate() {
+                    if arg == "--pak" { if let Some(v) = a.get(i + 1) { if let Some((pp, key)) = v.rsplit_once(':') { if st.add_pak(pp, key).is_ok() { n += 1; } } } }
+                }
+                if let Ok(v) = std::env::var("LMTOOL_STOCK_PAKS") {
+                    for spec in v.split(',') { if let Some((pp, key)) = spec.trim().rsplit_once(':') { if st.add_pak(pp, key).is_ok() { n += 1; } } }
+                }
+                if n > 0 { lightmap::lmmesh::set_lm_uv_store(st); }
+            }
             let mut scene = lightmap::geometry::Scene::from_map(&map_path).expect("scene");
             // THE RECORD SCENE (--lm-from-map on a map with authored blocks — Stadium): every block / clip / wall prefab entity and
             // every zone tile of the record pipeline becomes a scene instance (records::add_record_geometry) — the peel's geometry,
@@ -1265,6 +1278,12 @@ fn run(a: Vec<String>) {
                 // at 4.1°, u 0.607 → 67° high. --sunrise/--sunfall/--sun-w override the curve, --sun-lat the latitude.
                 let t_r: f32 = f("--sunrise").map(|s| s.parse().unwrap()).unwrap_or(0.25);
                 // the decoration blenders (RE child 4, the five CPlugMoodBlender XMLs): SunRise 06:00, SunFall 21:00
+                // THE SUNFALL PER DECORATION (RE 11, 09:30Z, CHmsMoodBlender::ApplyToZone → FUN_140494690 on the decoration's curve): BlueBay's
+                // curve ends the arc at 21:00 (the pwc-day cbuffer DirInWorld reproduced with 0.875), Stadium's at 18:30 (0.7708 —
+                // Sunrise 0x5148 = 07:37 → b 0.1296, Day 0x8111 = 12:06 → b 0.488); --sunfall overrides
+                // MEASURED (09:55Z, the full stpad bake vs the editor): 18:30 moves the tiles from 1.005 to 1.015 of the editor, the posts
+                // 1.377 → 1.395 and MaxHDR 1.089 → 1.415 (vs 1.145) — the oracle prefers 21:00 for the lightmapper's arc on Stadium too, so
+                // the default stays 0.875 for every decoration until the Stadium sun pass is captured; --sunfall 0.7708 = RE 11's read
                 let t_s: f32 = f("--sunfall").map(|s| s.parse().unwrap()).unwrap_or(0.875);
                 let w_b: f32 = f("--sun-w").map(|s| s.parse().unwrap()).unwrap_or(1.0 / 48.0);
                 let lat_d: f32 = f("--sun-lat").map(|s| s.parse().unwrap()).unwrap_or(x.latitude);
@@ -6522,10 +6541,53 @@ fn run(a: Vec<String>) {
             let (n_night, n_baked) = item_lights.iter().map(|(_, l)| l).chain(mr.block_lights.iter().map(|(_, l)| l)).fold((0usize, 0usize), |(n, b), l| (n + l.night_only as usize, b + dt.map(|w| lightmap::moods::lamp_is_baked(l.night_only, &gate, w)).unwrap_or(!l.night_only) as usize));
             println!("NightOnly lamps: {n_night}; lamps the local-light frame bakes at this DayTime: {n_baked}");
             println!("{}: {} item lights + {} block/clip lights; DayTime {:?} → local lights {}", a[1], n_items, mr.block_lights.len(), dt.map(|w| format!("{w:#x} = {:.2} h", lightmap::moods::time_of_word(w) * 24.0)), match on { Some(true) => "switch ON (NightOnly lamps lit too)", Some(false) => "switch OFF (NightOnly lamps dark; the others bake)", None => "unknown (no DayTime)" });
-            let mut t = String::from("owner\tx\ty\tz\tdx\tdy\tdz\tr\tg\tb\tintensity\tradius\tcone_inner\tcone_outer\tanimated\tnight_only\n");
-            let row = |o: &str, l: &lightmap::geometry::LightDef| format!("{o}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", l.pos[0], l.pos[1], l.pos[2], l.dir[0], l.dir[1], l.dir[2], l.color[0], l.color[1], l.color[2], l.intensity, l.radius, l.cone.0, l.cone.1, l.animated, l.night_only);
-            for (i, l) in &item_lights { t.push_str(&row(&format!("item {i}"), l)); }
-            for (o, l) in &mr.block_lights { t.push_str(&row(o, l)); }
+            // THE LIGHT-INSTANCE ORDER = the file's TexLightId (RE 11, 09:45Z, 49/49 captured ids exact, 0 inversions of 1 176 pairs): an
+            // 8 m grid anchored at the lamps' bbox min (the robust anchor (xmin + 4, zmin + 4) gives the same order and is immune to the f32
+            // edge of the E-wall lamps at 575.99994 m), cell (cx, cz) = floor((x − ax)/8), floor((z − az)/8); key = Morton(cx, cz) with x in
+            // the EVEN bits; LightId = the lamp's rank in ascending key (ties: the map-lights record order). Items first, then the
+            // block / clip lamps, as the scene instance list registers them.
+            let mut all: Vec<(String, lightmap::geometry::LightDef)> = item_lights.iter().map(|(i, l)| (format!("item {i}"), *l)).collect();
+            all.extend(mr.block_lights.iter().cloned());
+            // TRANSCRIBED (RE 11, 10:00Z, the scene light group's rebuild FUN_1401ec8d0): min = the component-wise min of every light's
+            // position (f32); per light cell = (int)floorf((p − min) · 0.125f) per axis; FUN_141401210 = the 30-bit 3-D Morton code — x in
+            // bit 0, y in bit 1, z in bit 2, 10 bits each — sorted by a stable LSD radix sort (ties keep the creation = record order);
+            // FUN_1401f60e0 permutes the light arrays into that order = the array the lightmapper indexes (FUN_140226f30's counter =
+            // LightId). The anchor is the light set's own min, in f32 exactly as written — a shifted anchor re-cells every lattice lamp
+            // (+4: 283 / 424 of the oracle's ranks, −4: 68 / 424); --light-anchor-shift D is the study knob.
+            let (mut xmin, mut ymin, mut zmin) = (f32::MAX, f32::MAX, f32::MAX);
+            for (_, l) in &all { xmin = xmin.min(l.pos[0]); ymin = ymin.min(l.pos[1]); zmin = zmin.min(l.pos[2]); }
+            let shift: f32 = f("--light-anchor-shift").map(|v| v.parse().unwrap()).unwrap_or(0.0);
+            let (ax, ay, az) = (xmin + shift, ymin + shift, zmin + shift);
+            let cell = |p: f32, a: f32| -> u32 { (((p - a) * 0.125f32).floor() as i32).clamp(0, 1023) as u32 };
+            let morton3 = |x: u32, y: u32, z: u32| -> u64 { let mut m = 0u64; for b in 0..10 { m |= (((x >> b) & 1) as u64) << (3 * b); m |= (((y >> b) & 1) as u64) << (3 * b + 1); m |= (((z >> b) & 1) as u64) << (3 * b + 2); } m };
+            let mut keyed: Vec<(u64, usize, u32, u32)> = all.iter().enumerate().map(|(k, (_, l))| {
+                let (cx, cy, cz) = (cell(l.pos[0], ax), cell(l.pos[1], ay), cell(l.pos[2], az));
+                (morton3(cx, cy, cz), k, cx, cz)
+            }).collect();
+            keyed.sort_by_key(|k| (k.0, k.1));
+            let mut light_id = vec![0u32; all.len()];
+            let mut cell_of = vec![(0u32, 0u32); all.len()];
+            for (rank, (_, k, cx, cz)) in keyed.iter().enumerate() { light_id[*k] = rank as u32; cell_of[*k] = (*cx, *cz); }
+            println!("light ids: {} lamps, anchor ({ax:.4}, {ay:.4}, {az:.4}) = the light set's min, 8 m cells, 3-D Morton (x bit 0, y bit 1, z bit 2), LightId = the rank", all.len());
+            // --check-ids TSV: RE 11's predictions (predicted_light_id, map_lights_index, …) — count the agreements
+            if let Some(pred) = f("--check-ids") {
+                let txt = std::fs::read_to_string(&pred).expect("--check-ids");
+                let (mut n, mut ok) = (0usize, 0usize);
+                let mut bad = Vec::new();
+                for (li, line) in txt.lines().enumerate() {
+                    if li == 0 { continue; }
+                    let cols: Vec<&str> = line.split('\t').collect();
+                    if cols.len() < 2 { continue; }
+                    let (pid, idx): (u32, usize) = (cols[0].parse().unwrap_or(u32::MAX), cols[1].parse().unwrap_or(usize::MAX));
+                    if idx >= all.len() { continue; }
+                    n += 1;
+                    if light_id[idx] == pid { ok += 1; } else if bad.len() < 8 { bad.push(format!("lamp {idx}: ours {} predicted {pid} (cell {:?})", light_id[idx], cell_of[idx])); }
+                }
+                println!("light ids vs {pred}: {ok} of {n} agree{}", if bad.is_empty() { String::new() } else { format!("; first differences: {}", bad.join("; ")) });
+            }
+            let mut t = String::from("owner\tx\ty\tz\tdx\tdy\tdz\tr\tg\tb\tintensity\tradius\tcone_inner\tcone_outer\tanimated\tnight_only\tlight_id\tcell_x\tcell_z\n");
+            let row = |o: &str, l: &lightmap::geometry::LightDef, id: u32, c: (u32, u32)| format!("{o}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{id}\t{}\t{}\n", l.pos[0], l.pos[1], l.pos[2], l.dir[0], l.dir[1], l.dir[2], l.color[0], l.color[1], l.color[2], l.intensity, l.radius, l.cone.0, l.cone.1, l.animated, l.night_only, c.0, c.1);
+            for (k, (o, l)) in all.iter().enumerate() { t.push_str(&row(o, l, light_id[k], cell_of[k])); }
             if let Some(out) = f("--out") { std::fs::write(&out, t).expect("write"); println!("→ {out}"); } else { for line in t.lines().take(12) { println!("{line}"); } }
         }
         "records-check" => {
