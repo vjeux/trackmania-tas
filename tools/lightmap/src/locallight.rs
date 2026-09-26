@@ -330,3 +330,240 @@ mod list_tests {
         assert_eq!(cs_7348(&g, 5, 5, 7, LightList::default()), LightList::default());
     }
 }
+
+/// PS 7351's g_CBufferP (the probe light pass): the probe grid (cell, origin per axis), the flat-cube faces / the shadow
+/// matrix, the light, the cone, the attenuation, cSamplePerAxe.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ProbeLightCb {
+    /// ProbeStWorld.X / .Y / .Z = (cell, origin): world = probe · cell + origin
+    pub st: [[f32; 2]; 3],
+    pub faces: [FlatCubeFace; 6],
+    pub z_scale: f32,
+    pub z_trans: f32,
+    pub world_pw01_shadow: [[f32; 4]; 4],
+    pub light_pos_or_dir: [f32; 3],
+    pub is_light_pos: bool,
+    pub inv_radius2: f32,
+    pub inv_cos_range: f32,
+    pub cos_outer: f32,
+    pub spot_dir_neg: [f32; 3],
+    pub samples_per_axis: u32,
+    pub att_hn2: [f32; 4],
+    pub is_light_spot: bool,
+    pub is_shadow_cube: bool,
+    pub is_att_hn2: bool,
+    pub is_att_1minus_d2: bool,
+}
+
+impl ProbeLightCb {
+    /// stpad f4936 eid 1081 (lamp B).
+    pub fn stpad_f4936_eid1081() -> ProbeLightCb {
+        let l = LightCb::stpad_f4936_eid34();
+        ProbeLightCb {
+            st: [[16.0, 408.0], [16.0, -582.0], [16.0, 1432.0]],
+            faces: l.faces,
+            z_scale: l.z_scale,
+            z_trans: l.z_trans,
+            world_pw01_shadow: [[-0.0007834314019419253, -0.0004416711162775755, 0.0003324841964058578, 0.0], [0.0, -0.0003677427303045988, -0.0013488430995494127, 0.0], [-0.0005080567207187414, 0.000681063742376864, -0.0005126958712935448, 0.0], [2.8060648441314697, 0.29622262716293335, 0.8521682024002075, 1.0]],
+            light_pos_or_dir: [1512.0999755859375, 23.358840942382812, 1663.4326171875],
+            is_light_pos: true,
+            inv_radius2: 0.0006034570978954434,
+            inv_cos_range: 3.9236578941345215,
+            cos_outer: 0.08715580403804779,
+            spot_dir_neg: [-1.0636256320140092e-09, 0.11013313382863998, 0.9939168691635132],
+            samples_per_axis: 3,
+            att_hn2: l.att_hn2,
+            is_light_spot: true,
+            is_shadow_cube: true,
+            is_att_hn2: true,
+            is_att_1minus_d2: false,
+        }
+    }
+}
+
+/// PS 7351 at one probe (x, y, z): the MAX over cSamplePerAxe³ sub-cell samples of shadow · attenuation · linear cone
+/// term (1 when the light sits inside the sub-cell or on the sample); a sample outside the spot cone is moved toward the
+/// cone within the sub-cell's half extent first (lines 56–87). `shadow(uv, ref)` is the comparison sample of TMapShadow.
+pub fn ps_7351(cb: &ProbeLightCb, x: u32, y: u32, z: u32, shadow: &dyn Fn([f32; 2], f32) -> f32) -> f32 {
+    let n = cb.samples_per_axis.max(1);
+    let total = n * n * n;
+    let (px, py, pz) = (x as f32, y as f32, z as f32);
+    // 6–8: half a sub-cell per axis
+    let half = [cb.st[0][0] * 0.5 / n as f32, cb.st[1][0] * 0.5 / n as f32, cb.st[2][0] * 0.5 / n as f32];
+    // 9–14
+    let nm1 = (n - 1) as f32;
+    let cos_inner = 1.0 / cb.inv_cos_range + cb.cos_outer;
+    let sin_inner = (1.0 - cos_inner * cos_inner).sqrt();
+    let mut best = 0.0f32;
+    let (mut i, mut j, mut l) = (0u32, 0u32, 0u32);
+    for _ in 0..total {
+        // 27–32: the next (i, j, l) — computed before use for the following iteration
+        let (ni, nj, nl) = {
+            let i1 = i + 1;
+            let j1 = j + 1;
+            let l1 = l + 1;
+            if i1 >= n { (0, if j1 >= n { 0 } else { j1 }, if j1 >= n { l1 } else { l }) } else { (i1, j, l) }
+        };
+        // 33–39: the sample's world position
+        let s = [(i as f32 - nm1 * 0.5) / n as f32 + px, (j as f32 - nm1 * 0.5) / n as f32 + py, (l as f32 - nm1 * 0.5) / n as f32 + pz];
+        let p = [s[0] * cb.st[0][0] + cb.st[0][1], s[1] * cb.st[1][0] + cb.st[1][1], s[2] * cb.st[2][0] + cb.st[2][1]];
+        // r9 = the light vector (x, y, z here; the shader keeps (x, z, y) in .xyw for the cube lookup)
+        let mut d: [f32; 3];
+        let mut inside = false;
+        if cb.is_light_pos {
+            d = [cb.light_pos_or_dir[0] - p[0], cb.light_pos_or_dir[1] - p[1], cb.light_pos_or_dir[2] - p[2]];
+            // 42–52: the light inside this sub-cell
+            if d[0].abs() < half[0] && d[1].abs() < half[1] && d[2].abs() < half[2] {
+                best = 1.0f32.max(best);
+                inside = true;
+            }
+            if !inside {
+                // 53–87: the cone snap for spots — r10 = d̂ as (z, x, y); c = d̂·SpotDirNeg; outside = ((c − CosOuter)·InvCosRange) < 0.8
+                let d2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+                let rs = 1.0 / d2.sqrt();
+                let dn = [d[0] * rs, d[1] * rs, d[2] * rs];
+                let c = dn[0] * cb.spot_dir_neg[0] + dn[1] * cb.spot_dir_neg[1] + dn[2] * cb.spot_dir_neg[2];
+                let outside = (c - cb.cos_outer) * cb.inv_cos_range < 0.8;
+                let dist = d2.sqrt();
+                let sin_c = (1.0 - c * c).sqrt();
+                // 63–66: t = SpotDirNeg × (SpotDirNeg × d̂)  — the component of d̂ perpendicular to the axis, negated
+                let cr = [dn[1] * cb.spot_dir_neg[2] - dn[2] * cb.spot_dir_neg[1], dn[2] * cb.spot_dir_neg[0] - dn[0] * cb.spot_dir_neg[2], dn[0] * cb.spot_dir_neg[1] - dn[1] * cb.spot_dir_neg[0]];
+                let t = [cb.spot_dir_neg[1] * cr[2] - cb.spot_dir_neg[2] * cr[1], cb.spot_dir_neg[2] * cr[0] - cb.spot_dir_neg[0] * cr[2], cb.spot_dir_neg[0] * cr[1] - cb.spot_dir_neg[1] * cr[0]];
+                // 67–69: the move = t · (dist·sin_c − sin_inner·dist)
+                let m = dist * sin_c - sin_inner * dist;
+                let mut mv = [t[0] * m, t[1] * m, t[2] * m];
+                // 70–74: clamped to the sub-cell's half extent (the largest ratio)
+                let r = [(mv[0].abs() / half[0]).max(1.0), (mv[1].abs() / half[1]).max(1.0), (mv[2].abs() / half[2]).max(1.0)];
+                let rmax = r[2].max(r[1]).max(r[0]);
+                mv = [mv[0] / rmax, mv[1] / rmax, mv[2] / rmax];
+                // 75–79: only when outside and a spot
+                let moved = [d[0] + mv[0], d[1] + mv[1], d[2] + mv[2]];
+                let (d1, mv1) = if outside { (moved, mv) } else { (d, [0.0; 3]) };
+                let (d1, mv1) = if cb.is_light_spot { (d1, mv1) } else { (d, [0.0; 3]) };
+                // 80–87: the second clamp: (mv − d1) clamped to the half extent, then d = d1 + (that − mv)
+                let e = [mv1[0] - d1[0], mv1[1] - d1[1], mv1[2] - d1[2]];
+                let r2 = [(e[0].abs() / half[0]).max(1.0), (e[1].abs() / half[1]).max(1.0), (e[2].abs() / half[2]).max(1.0)];
+                let r2max = r2[2].max(r2[1]).max(r2[0]);
+                let e = [e[0] / r2max, e[1] / r2max, e[2] / r2max];
+                let g = [e[0] - mv1[0], e[1] - mv1[1], e[2] - mv1[2]];
+                d = [d1[0] + g[0], d1[1] + g[1], d1[2] + g[2]];
+            }
+        } else {
+            d = [-cb.light_pos_or_dir[0], -cb.light_pos_or_dir[1], -cb.light_pos_or_dir[2]];
+        }
+        if !inside {
+            // 91–93
+            let d2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+            if d2 < 0.0001 {
+                best = 1.0f32.max(best);
+            } else {
+                let dist = d2.sqrt();
+                let rs = 1.0 / d2.sqrt();
+                let dn = [d[0] * rs, d[1] * rs, d[2] * rs];
+                // 99–148: the shadow
+                let sh = if cb.is_shadow_cube {
+                    let lcb = LightCb { faces: cb.faces, z_scale: cb.z_scale, z_trans: cb.z_trans, light_pos: cb.light_pos_or_dir, inv_radius2: cb.inv_radius2, inv_cos_range: cb.inv_cos_range, cos_outer: cb.cos_outer, spot_dir_neg: cb.spot_dir_neg, spot_falloff_back_offset: 0.0, att_hn2: cb.att_hn2, out_scale: [1.0; 4], is_light_spot: cb.is_light_spot, is_att_hn2: cb.is_att_hn2 };
+                    let (_f, uv, depth) = flat_cube_lookup(&lcb, d[0], d[1], d[2]);
+                    shadow(uv, depth)
+                } else {
+                    let m = &cb.world_pw01_shadow;
+                    let q = [p[0], p[1], p[2], 1.0];
+                    let hx = q[0] * m[0][0] + q[1] * m[1][0] + q[2] * m[2][0] + q[3] * m[3][0];
+                    let hy = q[0] * m[0][1] + q[1] * m[1][1] + q[2] * m[2][1] + q[3] * m[3][1];
+                    let hz = q[0] * m[0][2] + q[1] * m[1][2] + q[2] * m[2][2] + q[3] * m[3][2];
+                    let hw = q[0] * m[0][3] + q[1] * m[1][3] + q[2] * m[2][3] + q[3] * m[3][3];
+                    shadow([hx / hw, hy / hw], hz / hw)
+                };
+                // 149–157: the attenuation
+                let mut h = cb.att_hn2[1] * dist + cb.att_hn2[0];
+                h = cb.att_hn2[2] * d2 + h;
+                h = 1.0 / h + cb.att_hn2[3];
+                let h = h.max(0.0);
+                let q = (1.0 - d2 * cb.inv_radius2).max(0.0);
+                let att = if cb.is_att_hn2 { h } else if cb.is_att_1minus_d2 { q } else { 1.0 };
+                // 158–162: the linear cone term
+                let c = dn[0] * cb.spot_dir_neg[0] + dn[1] * cb.spot_dir_neg[1] + dn[2] * cb.spot_dir_neg[2];
+                let cone = ((c - cb.cos_outer) * cb.inv_cos_range).clamp(0.0, 1.0);
+                let att = if cb.is_light_spot { att * cone } else { att };
+                // 163–164
+                best = (sh * att).max(best);
+            }
+        }
+        i = ni;
+        j = nj;
+        l = nl;
+    }
+    best
+}
+
+#[cfg(test)]
+mod probe_tests {
+    use super::*;
+
+    #[test]
+    fn a_probe_in_the_cone_is_lit_and_one_behind_the_lamp_is_dark() {
+        let cb = ProbeLightCb::stpad_f4936_eid1081();
+        let lit = |_: [f32; 2], _: f32| 1.0f32;
+        // the lamp at (1512.1, 23.36, 1663.43) shines along −SpotDirNeg = (0, −0.11, −0.994): a probe 10 m along that
+        let dir = [-cb.spot_dir_neg[0], -cb.spot_dir_neg[1], -cb.spot_dir_neg[2]];
+        let target = [cb.light_pos_or_dir[0] + 10.0 * dir[0], cb.light_pos_or_dir[1] + 10.0 * dir[1], cb.light_pos_or_dir[2] + 10.0 * dir[2]];
+        let probe = |k: usize| ((target[k] - cb.st[k][1]) / cb.st[k][0]).round() as u32;
+        let v = ps_7351(&cb, probe(0), probe(1), probe(2), &lit);
+        assert!(v > 0.3 && v <= 1.0, "{v}");
+        // the probe holding the lamp itself: 1 (the light inside a sub-cell)
+        let at = |k: usize| ((cb.light_pos_or_dir[k] - cb.st[k][1]) / cb.st[k][0]).round() as u32; // the probe whose samples surround the lamp
+        let v1 = ps_7351(&cb, at(0), at(1), at(2), &lit);
+        assert_eq!(v1, 1.0);
+        // far behind the lamp (+SpotDirNeg, 60 m): beyond the radius and outside the cone → 0
+        let behind = [cb.light_pos_or_dir[0] + 60.0 * cb.spot_dir_neg[0], cb.light_pos_or_dir[1] + 60.0 * cb.spot_dir_neg[1], cb.light_pos_or_dir[2] + 60.0 * cb.spot_dir_neg[2]];
+        let pb = |k: usize| ((behind[k] - cb.st[k][1]) / cb.st[k][0]).round() as u32;
+        assert_eq!(ps_7351(&cb, pb(0), pb(1), pb(2), &lit), 0.0);
+    }
+}
+
+/// One probe's light list as CS 7357 keeps it: 8 (light id, weight8) slots (TexLightIds: four R16G16 volumes, two ids each;
+/// TexLightWs: two RGBA8 volumes) — no lit byte.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ProbeLightList {
+    pub id: [u16; 8],
+    pub w8: [u8; 8],
+}
+
+/// CS 7357 at one probe: the lamp's probe weight (PS 7351's R8 volume value) as ftou(w · 255) — no square root here —
+/// replaces the weakest of the 8 entries when that entry is weaker (ties keep the earlier slot); 0 leaves the list.
+pub fn cs_7357(weight: f32, light_id: u16, list: ProbeLightList) -> ProbeLightList {
+    let w8 = (weight * 255.0) as u32;
+    if w8 == 0 {
+        return list;
+    }
+    let mut slot = 8usize;
+    let mut thr = w8;
+    for j in 0..8 {
+        if (list.w8[j] as u32) < thr {
+            slot = j;
+            thr = list.w8[j] as u32;
+        }
+    }
+    let mut out = list;
+    if slot < 8 {
+        out.w8[slot] = w8 as u8;
+        out.id[slot] = light_id;
+    }
+    out
+}
+
+#[cfg(test)]
+mod probe_list_tests {
+    use super::*;
+
+    #[test]
+    fn the_probe_list_takes_the_linear_weight() {
+        let l = cs_7357(0.5, 243, ProbeLightList::default());
+        assert_eq!((l.id[0], l.w8[0]), (243, 127));
+        assert_eq!(cs_7357(0.001, 9, l), l);
+        let full = ProbeLightList { id: [1; 8], w8: [40; 8] };
+        let r = cs_7357(0.5, 243, full);
+        assert_eq!((r.id[0], r.w8[0]), (243, 127));
+        assert_eq!(&r.w8[1..], &[40; 7]);
+    }
+}
