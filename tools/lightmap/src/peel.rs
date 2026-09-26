@@ -783,7 +783,8 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
                 for &(a, b) in subs.iter() {
                     for (k, t) in tris[a as usize..b as usize].iter().enumerate() {
                         if let Some((ry0, ry1, rx0, rx1)) = rows_of(t) {
-                            place(&mut st, a + k as u32, ry0, ry1, rx0, rx1, 1);
+                            // (a card triangle weighs three: its visits pay the alpha queue and the per-lane records)
+                            place(&mut st, a + k as u32, ry0, ry1, rx0, rx1, if t.alpha != u16::MAX { *CARD_WEIGHT_V } else { 1 });
                         }
                     }
                 }
@@ -1439,10 +1440,12 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
     }
     if start[npx] as usize != total { panic!("sparse CSR: the jobs counted {} wanted fragments but pushed {} (npx {npx}, {} jobs)", start[npx], total, parts.len()); }
     let t_c2 = std::time::Instant::now();
+    let (ns_scatter, ns_sort) = (std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0));
     {
         let parts = &parts;
         let start = &start;
         crate::pool::pool().run(parts.len(), |j| {
+            let t_s = std::time::Instant::now();
             // the scatter, then the sort of each of the job's pixels (its cursor marked done: u32::MAX)
             for (k, f) in &parts[j] {
                 unsafe {
@@ -1451,6 +1454,7 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
                     *c += 1;
                 }
             }
+            let t_m = std::time::Instant::now();
             for (k, _) in &parts[j] {
                 let c = unsafe { &mut *(cp as *mut u32).add(*k as usize) };
                 if *c == u32::MAX { continue; }
@@ -1472,11 +1476,12 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
                     }
                 }
             }
+            if raster_stats { ns_scatter.fetch_add((t_m - t_s).as_nanos() as u64, std::sync::atomic::Ordering::Relaxed); ns_sort.fetch_add(t_m.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed); }
         });
     }
     U32S.give(fill);
     drop(parts);
-    if raster_stats { eprintln!("csr phases: prefix {:.2} ms, scatter + sort {:.2} ms ({} fragments, {} wanted)", (t_c2 - t_sort).as_secs_f64() * 1e3, t_c2.elapsed().as_secs_f64() * 1e3, total, npx); }
+    if raster_stats { eprintln!("csr phases: prefix {:.2} ms, scatter + sort {:.2} ms (per-thread: scatter {:.2} ms, sort {:.2} ms) ({} fragments, {} wanted)", (t_c2 - t_sort).as_secs_f64() * 1e3, t_c2.elapsed().as_secs_f64() * 1e3, ns_scatter.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e6 / (crate::pool::pool().threads + 1) as f64, ns_sort.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e6 / (crate::pool::pool().threads + 1) as f64, total, npx); }
     prof::add(&prof::B_SORT, t_sort);
     (ABuffer { res, band_h: res_y.max(1), bands: vec![(start, frags)], sparse: Some(px.clone()) }, counted)
 }
@@ -3107,6 +3112,8 @@ pub static TILE_ROWS: std::sync::LazyLock<u32> = std::sync::LazyLock::new(|| std
 pub static TILE_COLS: std::sync::LazyLock<u32> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_TILE_COLS").ok().and_then(|v| v.parse().ok()).filter(|&v: &u32| v > 0).unwrap_or(64));
 /// The cost estimate of one band-triangle pair in pixel-test units (LMTOOL_PAIR_COST, default 48).
 pub static PAIR_COST_V: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_PAIR_COST").ok().and_then(|v| v.parse().ok()).unwrap_or(48));
+/// The cost weight of a card (alpha-tested) triangle relative to an opaque one (LMTOOL_CARD_WEIGHT, default 3).
+pub static CARD_WEIGHT_V: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_CARD_WEIGHT").ok().and_then(|v| v.parse().ok()).unwrap_or(3));
 /// The heavy-cell split limit as a divisor of a thread's share of the frame (LMTOOL_TILE_SPLIT, default 8).
 pub static TILE_SPLIT_V: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_TILE_SPLIT").ok().and_then(|v| v.parse().ok()).filter(|&v: &u64| v > 0).unwrap_or(8));
 

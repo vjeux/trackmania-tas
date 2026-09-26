@@ -367,6 +367,8 @@ pub fn triangle_rows_scalar<F: FnMut(u32, u32, Bary)>(w: u32, h: u32, p: [[f32; 
 #[target_feature(enable = "avx512f,avx512bw,avx512dq,avx512vl")]
 pub unsafe fn triangle_rows_avx512<G: SpanFn>(w: u32, h: u32, p: [[f32; 2]; 3], clip: (i32, i32, i32, i32), mask: Option<&[u64]>, mut emit: G) {
     use std::arch::x86_64::*;
+    // (LMTOOL_EDGE_RULE=snap) the vertices on the 1/256-pixel grid before anything else
+    let p = if *EDGE_RULE_SNAP { let sn = |v: f32| -> f32 { ((v as f64 * 256.0).round_ties_even() / 256.0) as f32 }; [[sn(p[0][0]), sn(p[0][1])], [sn(p[1][0]), sn(p[1][1])], [sn(p[2][0]), sn(p[2][1])]] } else { p };
     let Some(s) = setup(w, h, p, clip) else { return };
     let (a, b, c) = (s.a, s.b, s.c);
     // per edge (a→b, b→c, c→a): the scalar test's (b−a).x and (b−a).y, and the origin
@@ -382,7 +384,8 @@ pub unsafe fn triangle_rows_avx512<G: SpanFn>(w: u32, h: u32, p: [[f32; 2]; 3], 
     // back when the orientation swapped them
     let (wi_b, wi_c) = if s.swapped { (2usize, 1usize) } else { (1, 2) };
     // (LMTOOL_EDGE_AUDIT) the specification's snapped integer triangle beside the f32 one
-    let audit: Option<IntTri> = if *EDGE_AUDIT { let it = IntTri::new(p); if it.degenerate { EDGE_AUDIT_TALLY[3].fetch_add(1, std::sync::atomic::Ordering::Relaxed); } Some(it) } else { None };
+    let audit: Option<IntTri> = if *EDGE_AUDIT || *EDGE_RULE_INT { let it = IntTri::new(p); if it.degenerate { EDGE_AUDIT_TALLY[3].fetch_add(1, std::sync::atomic::Ordering::Relaxed); } Some(it) } else { None };
+    let rule_int = *EDGE_RULE_INT;
     let mut bary = [[0f32; 16]; 3];
     for y in s.y0..=s.y1 {
         let py = y as f32 + 0.5;
@@ -437,6 +440,19 @@ pub unsafe fn triangle_rows_avx512<G: SpanFn>(w: u32, h: u32, p: [[f32; 2]; 3], 
                 EDGE_AUDIT_TALLY[1].fetch_add(f_only, std::sync::atomic::Ordering::Relaxed);
                 EDGE_AUDIT_TALLY[2].fetch_add(i_only, std::sync::atomic::Ordering::Relaxed);
             }
+            if rule_int {
+                // the specification's decision replaces the f32 one, lane by lane (the candidate lanes only)
+                if let Some(it) = &audit {
+                    let mut m = lanes;
+                    let mut dec: __mmask16 = 0;
+                    while m != 0 {
+                        let l = m.trailing_zeros();
+                        m &= m - 1;
+                        if it.covers(x + l as i32, y) { dec |= 1 << l; }
+                    }
+                    inside = dec;
+                }
+            }
             if inside != 0 {
                 // the scalar `e * inv` per lane
                 _mm512_storeu_ps(bary[0].as_mut_ptr(), _mm512_mul_ps(e[1], invv));
@@ -455,6 +471,14 @@ pub unsafe fn triangle_rows_avx512<G: SpanFn>(w: u32, h: u32, p: [[f32; 2]; 3], 
 /// f32 test are tallied (`EDGE_AUDIT_TALLY`: candidates, f32-inside-only, integer-inside-only, triangles the
 /// snapping degenerates). A measurement of how far the f32 test sits from the specification, not a change.
 pub static EDGE_AUDIT: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_EDGE_AUDIT").map(|v| v == "1").unwrap_or(false));
+/// LMTOOL_EDGE_RULE=int: the coverage DECIDED by the specification's integer rule (the snapped vertices, the exact
+/// i64 edge functions, top-left on integer zero; a snapped zero-area triangle covers nothing) while the barycentrics
+/// stay the f32 raster's — the switchable kernel for the empirical check against the captured peel layers (RE 7's
+/// request). Default: the f32 rule.
+pub static EDGE_RULE_INT: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_EDGE_RULE").map(|v| v == "int").unwrap_or(false));
+/// LMTOOL_EDGE_RULE=snap: the vertices snapped to 1/256 px (round to nearest even) and then the f32 raster as it is
+/// (edges, barycentrics) — the LM raster's form, which engineer 8 measured exact against the capture's fragment counts.
+pub static EDGE_RULE_SNAP: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_EDGE_RULE").map(|v| v == "snap").unwrap_or(false));
 pub static EDGE_AUDIT_TALLY: [std::sync::atomic::AtomicU64; 4] = [std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0)];
 
 /// The specification's triangle: vertices in 1/256-pixel integers, oriented so the inside is positive.

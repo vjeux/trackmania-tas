@@ -1109,11 +1109,14 @@ pub struct Opts {
     pub delta_from: Option<u32>,
     pub keep_pairs: bool,
     pub quiet: bool,
+    /// Write every one-sided depth pixel of the same-grid peel comparisons ("key x y game ours" per line: a game
+    /// surface where ours is clear and the reverse) — the edge-rule check reads two of these and compares them.
+    pub coverage_dump: Option<String>,
 }
 
 impl Default for Opts {
     fn default() -> Self {
-        Opts { hbasis_scale: 1.0, game_manifest: None, delta_from: None, pass: None, tol: 0.02, floor: 1e-3, stride: 1, pass_threshold: 99.0, game_map: None, keep_pairs: true, quiet: false }
+        Opts { hbasis_scale: 1.0, game_manifest: None, delta_from: None, pass: None, tol: 0.02, floor: 1e-3, stride: 1, pass_threshold: 99.0, game_map: None, keep_pairs: true, quiet: false, coverage_dump: None }
     }
 }
 
@@ -1407,11 +1410,19 @@ pub fn run(game_root: &std::path::Path, ours_root: &std::path::Path, opts: &Opts
                     // the same grid: clears → NaN (skipped), one-sided pixels counted as coverage
                     let (mut g2, mut o2) = (depth_to_metres(&gb, gf), depth_to_metres(&ob, gf));
                     let (mut only_g, mut only_o) = (0usize, 0usize);
+                    let mut cov_lines: Vec<String> = Vec::new();
                     for i in 0..(gb.w * gb.h) as usize {
                         let (cg, co) = (gb.data[i] == clear_g, ob.data[i] == clear_o);
                         if cg || co { g2.data[i] = f32::NAN; o2.data[i] = f32::NAN; }
                         if cg && !co { only_o += 1; }
                         if co && !cg { only_g += 1; }
+                        if opts.coverage_dump.is_some() && (cg != co) {
+                            cov_lines.push(format!("{} s{} d{:03} p{} l{:02} {} {} {} {}", oe.pass, oe.sweep.unwrap_or(0), oe.direction.unwrap_or(0), oe.peel.unwrap_or(0), oe.layer.unwrap_or(0), i as u32 % gb.w, i as u32 / gb.w, gb.data[i], ob.data[i]));
+                        }
+                    }
+                    if let (Some(path), false) = (&opts.coverage_dump, cov_lines.is_empty()) {
+                        use std::io::Write;
+                        if let Ok(mut fh) = std::fs::OpenOptions::new().create(true).append(true).open(path) { for l in &cov_lines { let _ = writeln!(fh, "{l}"); } }
                     }
                     if only_g > 0 || only_o > 0 { coverage_note = format!("coverage: {only_g} px with a game surface where ours is clear, {only_o} the reverse"); }
                     g = g2; o = o2;

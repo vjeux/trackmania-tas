@@ -7981,6 +7981,7 @@ variants: ");
             opts.game_map = f("--game-map");
             opts.game_manifest = f("--game-manifest");
             opts.delta_from = f("--delta-from").map(|v| v.parse().expect("--delta-from"));
+            opts.coverage_dump = f("--coverage-dump");
             let heat = f("--heat");
             opts.keep_pairs = heat.is_some();
             let t0 = std::time::Instant::now();
