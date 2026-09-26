@@ -2797,6 +2797,21 @@ fn main() {
         //   the car's height (an intersection). Verdicts: INTERSECT (port terrain through the
         //   route), MISSING (the source car rides terrain the port lacks under it), SHIFTED (the
         //   support height differs by more than 0.5 m), ok.
+        // mapgeom ghost-start G.Ghost.Gbx… — the first samples of each ghost (time, x, y, z,
+        // speed): where the car RESTS at the start = the map's height when the record was
+        // driven (the Tiny height investigation, Everios96 2026-09-26)
+        "ghost-start" => {
+            for g in a.rest.iter().filter(|x| !x.starts_with("--")) {
+                match gbx::record::decode_ghost(g) {
+                    Ok(d) => {
+                        let n = flag(&a.rest, "--samples").and_then(|v| v.parse().ok()).unwrap_or(3usize);
+                        let first: Vec<String> = d.samples.iter().take(n).map(|s| format!("t={} ({:.2},{:.3},{:.2}) v={:.0}", s.time_ms, s.x, s.y, s.z, s.speed_kmh)).collect();
+                        println!("{}\t{} samples\t{}", std::path::Path::new(g).file_name().unwrap().to_string_lossy(), d.samples.len(), first.join(" | "));
+                    }
+                    Err(e) => println!("{g}\tERR {e}"),
+                }
+            }
+        }
         "route-audit" => {
             let mut store = open(&a);
             let src_p = a.rest.get(1).cloned().unwrap_or_default();

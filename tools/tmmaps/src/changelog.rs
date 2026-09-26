@@ -195,6 +195,47 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         std::fs::write(Path::new(out).join(format!("{s}.md")), md).map_err(|e| e.to_string())?;
     }
     readme.push_str(&format!("| **total** | **{total_maps}** | **{total_rows}** |\n"));
+    // WIPES.md — every records reset ever, per alteration: one line per wipe round (date,
+    // label, how many maps, which), then per map the dates its leaderboard was reset
+    // (Everios96 2026-09-26: "give a list of all record wipes")
+    let mut wipes = String::new();
+    wipes.push_str(&format!("# {title} — record wipes\n\nGenerated {generated}. A wipe = the map re-created under a new id: the leaderboard starts empty from that date. Maps not listed under an alteration were never wiped there (their records run since the first publish).\n\n"));
+    let mut grand = 0usize;
+    for s in order.iter().chain(by_set.keys().filter(|k| !order.contains(&k.as_str())).map(|k| k.as_str()).collect::<Vec<_>>().iter()) {
+        let Some(rs) = by_set.get(*s) else { continue };
+        let ws: Vec<&Row> = rs.iter().filter(|r| r.wipe).collect();
+        if ws.is_empty() {
+            continue;
+        }
+        let mut by_round: BTreeMap<(String, String), Vec<u32>> = BTreeMap::new();
+        for r in &ws {
+            by_round.entry((r.date.clone(), r.round.clone())).or_default().push(r.map);
+        }
+        let wiped_maps: std::collections::BTreeSet<u32> = ws.iter().map(|r| r.map).collect();
+        grand += ws.len();
+        wipes.push_str(&format!("## {}\n\n{} wipe round{}, {} map-resets, {} distinct maps ever wiped (of 975).\n\n", set_label(s), by_round.len(), if by_round.len() == 1 { "" } else { "s" }, ws.len(), wiped_maps.len()));
+        for ((date, round), mut maps) in by_round {
+            maps.sort_unstable();
+            maps.dedup();
+            let label = rounds.get(&round).map(|(_, l)| l.clone()).unwrap_or_else(|| round.clone());
+            let list = if maps.len() == 975 { "all 975".to_string() } else { maps.iter().map(|m| m.to_string()).collect::<Vec<_>>().join(", ") };
+            wipes.push_str(&format!("- **{date}** · {label} · {} map{}: {list}\n", maps.len(), if maps.len() == 1 { "" } else { "s" }));
+        }
+        wipes.push_str("\n<details><summary>per map</summary>\n\n");
+        let mut per_map: BTreeMap<u32, Vec<String>> = BTreeMap::new();
+        for r in &ws {
+            per_map.entry(r.map).or_default().push(r.date.clone());
+        }
+        for (m, mut dates) in per_map {
+            dates.sort();
+            dates.dedup();
+            wipes.push_str(&format!("U10S_{m}: {}  \n", dates.join(", ")));
+        }
+        wipes.push_str("\n</details>\n\n");
+    }
+    wipes.push_str(&format!("**Total: {grand} map-resets across all alterations.**\n"));
+    std::fs::write(Path::new(out).join("WIPES.md"), wipes).map_err(|e| e.to_string())?;
+    readme.push_str("\nEvery records reset, per alteration and per map: [WIPES.md](WIPES.md).\n");
     std::fs::write(Path::new(out).join("README.md"), readme).map_err(|e| e.to_string())?;
     println!("changelog: {} alterations, {total_maps} maps, {total_rows} versions -> {out}", by_set.len());
     Ok(())
