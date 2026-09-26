@@ -163,6 +163,32 @@ impl CPlugLight {
 
     /// Driven by an animation image (chunk 003 `ImageAnim`) or a `CFuncLight`
     /// (chunk 000/002/004): the light's output is not constant.
+    /// The CPlugLight flags word (+0x40 in the game: bit 0 NightOnly, 1 ReflectByGround, 2 DuplicateGxLight, 3
+    /// SceneLightOnlyWhenTreeVisible, 4 SceneLightAlwaysActive — the reflection getters 0x14043fb50..): archived by chunk
+    /// 0x0901D002 (after the 4 refs), by 0x0901D001 (then `& ~2`), and by 0x0901D004 (after the base refs, before the
+    /// colour-table ref — the reader 0x14043ffbb). A file with none of them keeps the CONSTRUCTOR default 1 = NightOnly
+    /// (0x14043fc84: `flags = (0 & ~6) | 1`).
+    pub fn flags(&self) -> u32 {
+        let mut f: Option<u32> = None;
+        for c in &self.chunks {
+            match c {
+                LightChunk::Base { flags: Some(v), .. } => f = Some(*v),
+                LightChunk::Model { flags, .. } => f = Some(*flags),
+                _ => {}
+            }
+        }
+        f.unwrap_or(1)
+    }
+
+    /// NightOnly (flags bit 0): the lamp follows the mood blender's local-light switch — its scene instance is lit only
+    /// while `time < LocalLight_SwitchOff || time > LocalLight_SwitchOn` (FUN_1401e58d0 at creation, FUN_1401e6270 on a
+    /// change: instance+0x20 bit 0 = night && the GxLight's own bit 0), and the lightmapper's local-light pass keeps a
+    /// lamp iff that bit is set (FUN_140226f30: `(instance+0x20 & mask) == mask`, mask 1 or 9). A lamp without the flag
+    /// is lit at every DayTime (stpad's RoadBorderSpot: chunk 0x0901D004 flags 0 → baked at 07:37).
+    pub fn night_only(&self) -> bool {
+        self.flags() & 1 != 0
+    }
+
     pub fn is_animated(&self) -> bool {
         self.chunks.iter().any(|c| match c {
             LightChunk::Anim { image_anim, .. } => image_anim.index >= 0 || image_anim.inline.is_some(),

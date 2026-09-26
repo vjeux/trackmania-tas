@@ -656,11 +656,17 @@ impl BlenderCurve {
         }
     }
 
-    /// The mood blender's local-light flag (FUN_1402697e0 → vc+8, FUN_14020d170's per-mood table, 0x14028aea0 l.685): ON iff
-    /// time < LocalLight_SwitchOff || time > LocalLight_SwitchOn, with time = the DayTime word / 65536. 0x4e4b 07:20 → off,
-    /// 0x5148 07:37 → off, 0x9b59 14:34 → off, 0xdaab 20:30 → on, 0x199a 02:24 → on. The lightmapper bakes the local-light
-    /// frame (frame 1) whenever the map has lamps regardless of this flag (stpad at 07:37 is lit): the switch is the RUNTIME
-    /// toggle of the colourless per-texel light list (RE 7); the frame record's LocalLight_Switch stays 2 (Unknown).
+    /// The mood blender's local-light switch (FUN_1402697e0 → vc+8, FUN_14020d170's per-mood table, 0x14028aea0 l.685): ON
+    /// iff time < LocalLight_SwitchOff || time > LocalLight_SwitchOn, with time = the DayTime word / 65536. 0x4e4b 07:20 →
+    /// off, 0x5148 07:37 → off, 0x9b59 14:34 → off, 0xdaab 20:30 → on, 0x199a 02:24 → on.
+    ///
+    /// WHAT IT GATES IN THE BAKE (DISASSEMBLY): only NightOnly lamps (CPlugLight flags bit 0). The scene's light instance
+    /// (0x50-B entry: +8 the GxLight instance, +0x48 flags) is created by FUN_1401e58d0 with flags bit 0 = NightOnly, bit 1 =
+    /// the GxLight model's bit 0, bit 2 = its bit 3; for a NightOnly lamp the instance's GxLight +0x20 bit 0 = (switch on &&
+    /// model bit 0) at creation and on every change (FUN_1401e6270 ← ApplyToZone 0x14028ce60), and the local-light pass
+    /// keeps a lamp iff `(instance+0x20 & mask) == mask` (FUN_140226f30, mask 1 or 9). A lamp that is not NightOnly keeps
+    /// the model's bit 0 (lit) at every DayTime — stpad's 424 RoadBorderSpot lamps (0x0901D004 flags 0) are baked at 07:37
+    /// with the switch OFF. The frame record's LocalLight_Switch stays 2 (Unknown) either way.
     pub fn local_lights_on(&self, daytime_word: u32) -> bool {
         let t = time_of_word(daytime_word);
         t < self.switch_off || t > self.switch_on
@@ -670,6 +676,12 @@ impl BlenderCurve {
     pub fn default_word(&self, daytime01: f32) -> u32 {
         word_of_time(self.key_to_time(daytime01))
     }
+}
+
+/// Whether the local-light frame (frame 1) bakes a lamp at a DayTime word: every lamp that is not NightOnly, and a
+/// NightOnly lamp only while the switch is on (see `BlenderCurve::local_lights_on`).
+pub fn lamp_is_baked(night_only: bool, curve: &BlenderCurve, daytime_word: u32) -> bool {
+    !night_only || curve.local_lights_on(daytime_word)
 }
 
 #[cfg(test)]
@@ -810,6 +822,8 @@ mod mood_blender_tests {
         assert!(c.local_lights_on(0x199a), "02:24 → on");
         let g = BlenderCurve::for_collection("GreenCoast");
         assert!(!g.local_lights_on(word_of_time(hms(19, 0, 0))) && g.local_lights_on(word_of_time(hms(19, 20, 0))));
+        // stpad's RoadBorderSpot lamps are not NightOnly → baked at 07:37 (the editor's frame 1 is lit); a NightOnly lamp is not
+        assert!(lamp_is_baked(false, &c, 0x5148) && !lamp_is_baked(true, &c, 0x5148) && lamp_is_baked(true, &c, 0xdaab));
     }
 
     #[test]

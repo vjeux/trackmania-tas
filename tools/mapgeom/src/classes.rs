@@ -1369,6 +1369,9 @@ impl<'a> Graph<'a> {
                 let l = acc.light_mut();
                 l.gx_node = gx;
                 l.tail = tail;
+                // [FuncLight, BitmapFlare, BitmapProjector, FLAGS, ColorTargetTable]: the fourth int is the +0x40
+                // flags word (the 0x0901D004 reader 0x14043ffbb archives the 0x0901D000 refs, then 4 B → +0x40, then a ref)
+                l.flags = tail[3] as u32;
                 Ok(())
             }
             // GxLight (0x04001000) and its subclasses, inline in a CPlugLight.

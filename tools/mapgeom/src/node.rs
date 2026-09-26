@@ -212,8 +212,10 @@ pub struct LightInfo {
     /// Chunk 0x0901D003: the animation image node, its period range.
     pub image_anim: i32,
     pub anim_period: [f32; 2],
-    /// CPlugLight flags (0x0901D002): 1 NightOnly, 2 ReflectByGround, 4
-    /// DuplicateGxLight, 8 SceneLightOnlyWhenTreeVisible.
+    /// CPlugLight flags (chunk 0x0901D002's word, or the fourth int of 0x0901D004): 1 NightOnly, 2 ReflectByGround, 4
+    /// DuplicateGxLight, 8 SceneLightOnlyWhenTreeVisible, 16 SceneLightAlwaysActive. A file with neither chunk keeps the
+    /// game's constructor default 1 (NightOnly) — this field then reads 0; `static_item::light::CPlugLight::flags()` applies
+    /// the default.
     pub flags: u32,
     /// The five ints of chunk 0x0901D004 (a noderef among them?).
     pub tail: [i32; 5],

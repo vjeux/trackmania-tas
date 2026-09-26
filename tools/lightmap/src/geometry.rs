@@ -40,6 +40,10 @@ pub struct LightDef {
     /// (inner, outer) cone angles in degrees; (180, 180) for a ball light.
     pub cone: (f32, f32),
     pub animated: bool,
+    /// CPlugLight NightOnly (flags bit 0): the lamp is lit — and baked into frame 1 — only while the mood blender's
+    /// local-light switch is on (`moods::BlenderCurve::local_lights_on(word)`); a lamp without it is baked at every
+    /// DayTime (`moods::lamp_is_baked`).
+    pub night_only: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -237,7 +241,7 @@ pub fn solid2_lights_ext(s2: &mapgeom::static_item::solid2::CPlugSolid2Model, po
             pos = [r[0] + p[0], r[1] + p[1], r[2] + p[2]];
             dir = quat_rot(q, dir);
         }
-        out.push(LightDef { pos, dir, color, intensity, radius, cone, animated: pl.is_animated() });
+        out.push(LightDef { pos, dir, color, intensity, radius, cone, animated: pl.is_animated(), night_only: pl.night_only() });
     }
     out
 }

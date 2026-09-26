@@ -6104,9 +6104,12 @@ fn run(a: Vec<String>) {
             let on = dt.map(|w| gate.local_lights_on(w));
             let item_lights = scene.world_lights();
             let n_items = item_lights.len();
-            println!("{}: {} item lights + {} block/clip lights; DayTime {:?} → local lights {}", a[1], n_items, mr.block_lights.len(), dt.map(|w| format!("{w:#x} = {:.2} h", lightmap::moods::time_of_word(w) * 24.0)), match on { Some(true) => "ON (frame 1 lit)", Some(false) => "OFF (frame 1 black)", None => "unknown (no DayTime)" });
-            let mut t = String::from("owner\tx\ty\tz\tdx\tdy\tdz\tr\tg\tb\tintensity\tradius\tcone_inner\tcone_outer\tanimated\n");
-            let row = |o: &str, l: &lightmap::geometry::LightDef| format!("{o}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", l.pos[0], l.pos[1], l.pos[2], l.dir[0], l.dir[1], l.dir[2], l.color[0], l.color[1], l.color[2], l.intensity, l.radius, l.cone.0, l.cone.1, l.animated);
+            // the switch gates NightOnly lamps only (CPlugLight flags bit 0; FUN_1401e58d0 / FUN_1401e6270): count what frame 1 bakes
+            let (n_night, n_baked) = item_lights.iter().map(|(_, l)| l).chain(mr.block_lights.iter().map(|(_, l)| l)).fold((0usize, 0usize), |(n, b), l| (n + l.night_only as usize, b + dt.map(|w| lightmap::moods::lamp_is_baked(l.night_only, &gate, w)).unwrap_or(!l.night_only) as usize));
+            println!("NightOnly lamps: {n_night}; lamps the local-light frame bakes at this DayTime: {n_baked}");
+            println!("{}: {} item lights + {} block/clip lights; DayTime {:?} → local lights {}", a[1], n_items, mr.block_lights.len(), dt.map(|w| format!("{w:#x} = {:.2} h", lightmap::moods::time_of_word(w) * 24.0)), match on { Some(true) => "switch ON (NightOnly lamps lit too)", Some(false) => "switch OFF (NightOnly lamps dark; the others bake)", None => "unknown (no DayTime)" });
+            let mut t = String::from("owner\tx\ty\tz\tdx\tdy\tdz\tr\tg\tb\tintensity\tradius\tcone_inner\tcone_outer\tanimated\tnight_only\n");
+            let row = |o: &str, l: &lightmap::geometry::LightDef| format!("{o}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", l.pos[0], l.pos[1], l.pos[2], l.dir[0], l.dir[1], l.dir[2], l.color[0], l.color[1], l.color[2], l.intensity, l.radius, l.cone.0, l.cone.1, l.animated, l.night_only);
             for (i, l) in &item_lights { t.push_str(&row(&format!("item {i}"), l)); }
             for (o, l) in &mr.block_lights { t.push_str(&row(o, l)); }
             if let Some(out) = f("--out") { std::fs::write(&out, t).expect("write"); println!("→ {out}"); } else { for line in t.lines().take(12) { println!("{line}"); } }
