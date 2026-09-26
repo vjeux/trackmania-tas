@@ -1003,6 +1003,111 @@ render lock needed; do that first for any new crash instead of guessing.
   1.833, 1.116); Tiny 11: (1.581, 1.792, 1.614)) — a derived reference the
   runtime scales by; treat as opaque.
 
+## 6a. THE MOOD BLENDER — the DayTime word is a TIME, the blend is the MoodWeights smoothstep [DISASSEMBLY, RE child 10, 2026-09-26; 5 frame-record oracles; `moods::blend_weights`]
+
+Corrects §6's first bullet and the "quarter" model: the game blends the moods
+for every map, with a weight that is PURE (t ≤ 1.2e-7) at each mood's
+default word and a real blend for custom words.
+
+* **The map's DayTime word is the time of day**, `t = word · 2^-16`
+  (`RenderLighting_Frames` 0x14021e340 l.312 → zone+0x754; zone+0x750 =
+  lroundf(t·65536)). The moods' default words are `key_to_time(DayTime01)`
+  (FUN_14020d170 lists each mood as that word): BlueBay Sunrise 0.515 →
+  07:20:24 = 0x4e4b, Day 0.644 → 14:34 = 0x9b59, Sunset 0.75 → 20:30 =
+  0xdaab, Night 0.15 → 02:24 = 0x199a; Stadium 0.52/0.6/0.73 → 0x5148 /
+  0x8111 / 0xceb8. The editor's day-time slider is a key whose quarters are
+  the four moods (0x1407b1d50: < ¼ Night, < ½ Sunrise, < ¾ Day, else
+  Sunset), stored as `key_to_time(slider)` — the origin of the quarter rule.
+* **Time → blend key** (FUN_140494690, `BlenderCurve::time_to_key`): the
+  blender curve is CPlugMoodBlender+0x18 `{Latitude, w = 1/48 (0x3caaaaab,
+  not in the XML), SunRise t_r, LocalLight_SwitchOff, LocalLight_SwitchOn,
+  SunFall t_s}` (decoration blenders: 06:00 / 06:30 / 18:30 (GreenCoast
+  19:10) / 21:00; defaults FUN_140494530 = 48, 1/48, 06:00, 06:30, 17:00,
+  18:00). Day (t_r ≤ t ≤ t_s): `b = clamp((t − t_r)/(t_s − t_r))`; t < t_r +
+  w → `key = 0.25 + ((t − t_r)·¼)/w`; t < t_s − w → `key = 0.5 + (((t − t_r)
+  − w)·¼)/((t_s − t_r) − 2w)`; else `key = 0.75 + (((t − t_s) + w)·¼)/w`.
+  Night: `mid = (t_s + t_r)/2`, `span = (t_r + 1) − t_s`; t > mid → b = 1,
+  `key = ((t − t_s)·¼)/span`; else b = 0, `key = (((1 − t_s) + t)·¼)/span`.
+  FUN_140494560 (`key_to_time`) is the inverse. `b` is the sun-arc parameter
+  of FUN_140494810 (D = (cos πb, −cos lat·sin πb, −sin lat·sin πb)).
+* **The weight curve** (CPlugMoodCurve = CPlugMoodBlender+0x48, keys
+  `{X, Weight, moodIndex}` stride 0xc; ctor 0x1404baad0 sets +0x38 = 1 =
+  SMOOTHSTEP, nothing turns it off): the XML `<MoodWeights><Key X Weight>`
+  entries (moodIndex −1; 0.08 / 0.2 / 0.55 / 0.69, Weight 0 on all five
+  decoration blenders) MERGED (FUN_1404bab70, a mood before an equal XML
+  key) with the collection's moods sorted by DayTime01 (CHmsMoodBlender
+  build 0x14028aea0: CRT qsort by +4; with 4 moods the base setting = the
+  sorted 3rd), each mood `{DayTime01, Weight = (k & 1), k}` (k = sorted
+  index). BlueBay: `0.08₀ 0.15 Night(k0,W0) 0.2₀ 0.515 Sunrise(k1,W1) 0.55₀
+  0.644 Day(k2,W0) 0.69₀ 0.75 Sunset(k3,W1)`.
+* **Evaluation** (FUN_1404bae10 ← 0x14028d0b0 l.147): bracket the key
+  (FUN_14018c4b0 with period 1: wrap into [0,1); below the first key → +1;
+  past the last → the wrap interval (n−1 → 0) with `frac = (key − last)/
+  ((first + 1) − last)`; inside: FUN_14018c240 scans consecutive pairs from
+  0 for `X[i] − 1e-5 ≤ key ≤ X[i+1] + 1e-5` — an exact or near hit on a key
+  is the END of the previous interval; FUN_14018c3a0 `frac = (key −
+  X[i0])/(X[i1] − X[i0])`, 0 when i0 == i1 or |ΔX| < 1e-5); `s = fl(fl(f·3)·f)
+  − fl(fl(fl(f·2)·f)·f)` (0 / 1 outside (0,1)); `w = fl(fl(1 − s)·W[i0]) +
+  fl(s·W[i1])` (FUN_1404bace0); A = the first MOOD walking backward
+  (cyclic) from i0, B = the first mood walking forward from i1 (i0 + 1 when
+  i0 == i1); **t toward B = (B.k odd) ? w : 1 − w**. Between two moods the
+  weight runs W_A → 0 at the XML key → W_B, so the blend is PINNED at the
+  XML key: BlueBay [0.55, 0.69] = pure Day, [0.15, 0.2] ∪ [1.08, 1.15] =
+  pure Night, [0.2, 0.515] Night→Sunrise, [0.515, 0.55] Sunrise→Day, [0.69,
+  0.75] Day→Sunset, [0.75, 1.08] Sunset→Night (all smoothstep).
+* **The blended CPlugMoodSetting** (CHmsMoodBlender::Update 0x14028d0b0 ←
+  FUN_14028d040(key of zone+0x754) ← FUN_1402692b0): every field
+  `a + fl(fl(b − a)·t)` — Latitude (+0x1c: the MOODS' XML latitude; the
+  blender XML's 47.5 only with CPlugMoodBlender+0x30 ≠ 0, which nothing
+  sets), LocalLightX, HelperHdrX, LAmbient rgb + scale (+0x2c/+0x38),
+  LDirSun (+0x3c/+0x48), LDirMoon (+0x4c/+0x58), T3SpecularLocal
+  (+0x68/+0x6c), T3LightMap MaxHDR/BounceFactor/SkyFactor (+0x70/+0x74/
+  +0x78; SkyUseClouds +0x7c = the NEARER mood's, t < 0.5 → A),
+  HdrScales.Player (+0x8c), the whole <Atmo> block (+0x90..+0x158: HdrSun
+  Power, Atmo1/Atmo2 Power/Scale/Color — colours are stored LINEAR (hex →
+  LUT 0x141a64360 = client-re/srgb_to_linear_f32_256.bin), so the lerp is
+  linear), the FogMatter entries; the <Fog> block (+0x1ac) by FUN_141418090
+  as `fl(1 − t)·a + t·b` (DepthMin/Max, Exponant, Intens, Height, Clouds,
+  SkyClouds.GlobalIntens = Sky_p's FogIntens, Color, WaterFog, Noise).
+  DayTime01 = the key; EnableStars = near's. Applied to the zone: the sky
+  material = A's (GradientV = A's SkyColor, GradientV1 = B's — the NEXT
+  mood's texture is the material's second slot), vc+0xf8 = t → `ScaleGrad0
+  = 1 − t`, `ScaleGrad1 = t` (pwc-day at 14:34: key 0.6439972 → t = 1 →
+  (0, 1) as captured); FUN_1402697e0 = sun/moon/ambient from the blended
+  fields (sun colour = LDirSun·scale, or the moon when |LDirSun|·s ≤
+  |LDirMoon|·s' with the fixed direction +0x5c; direction FUN_140494810
+  (blended Latitude, b); vc+8 = **local lights on iff time < SwitchOff ||
+  time > SwitchOn** — on the TIME, the word itself: 0x5148 07:37 off,
+  0x9b59 off, 0xdaab 20:30 on; the lightmapper bakes frame 1 whenever the
+  map has lamps regardless — stpad at 07:37 is lit; the flag is the runtime
+  toggle of the colourless light list); FUN_1402694c0 = the Sky_p lobes
+  verbatim; FUN_14020d370 → FUN_14020d170: the compute params' MaxHDR /
+  Bounce / Sky / Clouds = the BLENDED mood's → the frame record's
+  MaxHDR_Mood / BounceFactor / SkyFactor / SkyUseClouds.
+* **Oracles** (`clientre lmimages` on refs/): np-tk3 0x5000 (07:30) → key
+  0.5178571 in [Sunrise, 0.55]: frac 0.0816, s 0.0189 → A Sunrise, B Day
+  (even) → t = 0.0189037: MaxHDR_Mood 1.0378075 = 1 + 2t ✓, Bounce
+  1.6075615 = 1.6 + 0.4t ✓, Sky 1 ✓ (a linear weight would give 0.0816 ✗).
+  0x9b59 → key 0.6439972 → t = 1 pure Day ✓ (the captured dome). 0xC000
+  (18:00) → key 0.7053571 → Day → Sunset t 0.163. 0xdaab (20:30) → key
+  0.750061 (the word's 1/65536) → wrap interval, frac 1.85e-4, s 1.03e-7 →
+  w = 0.99999988 → t = 1.19e-7 toward Night: MaxHDR 3 + (1.7 − 3)t =
+  2.9999998 ✓, Sky 1 + 2t = 1.0000002 ✓, Bounce 2 ✓ — hill4 and np-tk3's
+  "lerp artefacts" are this 1e-7; hill4 is a PURE Sunset bake. stpad 0x5148
+  (Stadium, 07:37) → key 0.5200021, 2e-6 above Sunrise's 0.52 → the
+  lookup's tolerance puts it at the end of [0.2, 0.52] → t = 1 toward
+  Sunrise → MaxHDR_Mood 2.2 ✓. `cargo test -p lightmap --lib moods` holds
+  all of these (the 0xdaab record values to the bit).
+* **The port** (`moods.rs`): `blend_weights(word, collection)` → `MoodBlend
+  {a, b, t, time, key, sun_arc}` (+ `near()`, `scale_grad()`, `pure()`),
+  `blended_xml`/`blended_xml_of` (every field `lerp_field`, MaxHDR included),
+  `lerp_fog_field` for the <Fog> block, `nearest_mood_name` (FUN_14028ccb0:
+  the mood the editor calls current for a key), `BlenderCurve::time_to_key /
+  key_to_time / local_lights_on / default_word`, `word_of_time` /
+  `time_of_word`, `merge_mood_curve` / `curve_lookup` / `curve_weight` /
+  `curve_moods`. `lmtool bake` blends by default (`--no-mood-blend` = the
+  nearer mood alone; identical at the default words to 1e-7).
+
 ## 6b. What the attribute pre-pass reads from the COLLECTION PACK [DISASSEMBLY + FILE, RE child 8, 2026-09-25; every rule bit-exact vs pwc-day frame 127447]
 
 The pre-pass (`Lightmap/…` PS 8401 = `Tech3/Block_PyPxz_ids_p`, PS 17025 = the
