@@ -495,3 +495,32 @@ mod tests {
         assert!(sweep_directions(&ps, 3, 2, false).is_none());
     }
 }
+
+#[cfg(test)]
+mod subset_probe {
+    use super::*;
+    /// Are the smaller sweeps' direction sets subsets of sweep 0's? (The sweep-reuse lever needs it.)
+    #[test]
+    #[ignore]
+    fn smaller_sets_versus_the_1024_set() {
+        let ps = PointSets::load(&default_path()).expect("point sets");
+        let big = rotate_set(ps.nearest(1024).unwrap());
+        for n in [512usize, 256, 128] {
+            let small = rotate_set(ps.nearest(n).unwrap());
+            let mut exact = 0usize;
+            let mut near = 0usize;
+            let mut worst = 0.0f32;
+            for s in &small {
+                let mut best = f32::INFINITY;
+                for b in &big {
+                    let d = ((s[0] - b[0]).powi(2) + (s[1] - b[1]).powi(2) + (s[2] - b[2]).powi(2)).sqrt();
+                    if d < best { best = d; }
+                }
+                if best == 0.0 { exact += 1; }
+                if best < 1e-4 { near += 1; }
+                worst = worst.max(best);
+            }
+            eprintln!("set {n}: {} points; exact matches in the 1024-set {exact}, within 1e-4 {near}, worst nearest distance {worst:.4}", small.len());
+        }
+    }
+}
