@@ -7036,8 +7036,8 @@ fn run(a: Vec<String>) {
                 }
                 println!("light ids vs {pred}: {ok} of {n} agree{}", if bad.is_empty() { String::new() } else { format!("; first differences: {}", bad.join("; ")) });
             }
-            let mut t = String::from("owner\tx\ty\tz\tdx\tdy\tdz\tr\tg\tb\tintensity\tradius\tcone_inner\tcone_outer\tanimated\tnight_only\tlight_id\tcell_x\tcell_z\n");
-            let row = |o: &str, l: &lightmap::geometry::LightDef, id: u32, c: (u32, u32)| format!("{o}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{id}\t{}\t{}\n", l.pos[0], l.pos[1], l.pos[2], l.dir[0], l.dir[1], l.dir[2], l.color[0], l.color[1], l.color[2], l.intensity, l.radius, l.cone.0, l.cone.1, l.animated, l.night_only, c.0, c.1);
+            let mut t = String::from("owner\tx\ty\tz\tdx\tdy\tdz\tr\tg\tb\tintensity\tradius\tcone_inner\tcone_outer\tanimated\tnight_only\tlight_id\tcell_x\tcell_z\tgx_flags\tball_flags\temit_left\temit_up\n");
+            let row = |o: &str, l: &lightmap::geometry::LightDef, id: u32, c: (u32, u32)| format!("{o}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{id}\t{}\t{}\t{:#x}\t{:#x}\t{}\t{}\n", l.pos[0], l.pos[1], l.pos[2], l.dir[0], l.dir[1], l.dir[2], l.color[0], l.color[1], l.color[2], l.intensity, l.radius, l.cone.0, l.cone.1, l.animated, l.night_only, c.0, c.1, l.gx_flags, l.ball_flags, l.emitting[0], l.emitting[1]);
             for (k, (o, l)) in all.iter().enumerate() { t.push_str(&row(o, l, light_id[k], cell_of[k])); }
             if let Some(out) = f("--out") { std::fs::write(&out, t).expect("write"); println!("→ {out}"); } else { for line in t.lines().take(12) { println!("{line}"); } }
         }

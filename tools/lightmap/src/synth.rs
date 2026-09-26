@@ -218,6 +218,26 @@ pub struct FrameParams {
     pub filetime: Option<u64>,
 }
 
+/// THE FRAME RECORD COUNT (V's scan of all 30 editor refs, 2026-09-26 22:50Z; RE 13 0x140229620 l.524–560): every editor bake
+/// carries exactly TWO frame records — rec 0 {StoreLAmbient 1, Storage 0}, rec 1 {StoreLAmbient 0, Storage 1} — and two image
+/// frames (mapping head 60 + 66·2 + 12 = 204 bytes); a Storage-2 record exists only when the frame list has one (the between-pass
+/// snapshot of the two-pass lamp render — no oracle carries it). Our templates carried three (the third, Storage 2, MaxHDR 1e-5 with
+/// a black frame): the writer now emits the records the frame list calls for — two, unless LMTOOL_WRITE_RECORDS=3 asks for the old
+/// three. Returns the number of records kept.
+pub fn frame_records_wanted() -> usize {
+    std::env::var("LMTOOL_WRITE_RECORDS").ok().and_then(|v| v.parse().ok()).unwrap_or(2)
+}
+
+/// Cut a mapping head (60 constants + 66·k records + the 12-byte tail) down to `want` records; a head with fewer stays.
+pub fn cut_head_records(head: &mut Vec<u8>, want: usize) -> usize {
+    let have = head.len().saturating_sub(72) / 66;
+    if have <= want || head.len() != 60 + 66 * have + 12 { return have; }
+    let tail = head[60 + 66 * have..].to_vec();
+    head.truncate(60 + 66 * want);
+    head.extend_from_slice(&tail);
+    want
+}
+
 /// Patch the three 66-byte frame records inside a mapping head (see `CacheBlob::frame_max_hdr`).
 /// The small per-bake cache chunks: 0x0602200B (1, Σarea), 0x0602200F (quality, 0), 0x06022013
 /// (1, 1, FILETIME), 0x06022015 (5, hash, 3, 0x1c, Id decoration, 1, 0, DayTime, zeros).
@@ -635,13 +655,20 @@ pub fn build_transcribed(placed: &[(u32, u32, u32, u32, u32, u32)], bbox: ([f32;
     if !patch_record_scales(&mut mapping.head, img.hbasis234, img.lambient_f16) {
         return Err("transcribed writer: the mapping head has no frame record (−FLT_MAX word)".into());
     }
-    // the local-light frame's record: MaxHDR = its image max (patch_frame_records wrote the black frame's 1e-5)
-    if let Some(f1) = &img.frame1 {
+    // the local-light frame's record: MaxHDR = its image max (patch_frame_records wrote the black frame's 1e-5) when lamps rendered;
+    // WHEN NO LAMP RENDERED the record KEEPS FRAME 0's MaxHDR (RE 13, 2026-09-26 23:10Z: the per-frame records are built from one
+    // template and the MaxHDR write — FUN_14022b370, rec+0xc — never lands for the empty image, so the Storage-1 record inherits frame
+    // 0's value; a reduce over a black D_0 would give 0, never pwc-day's 2.1193807. The exact guard site is READ-PENDING; the oracle is
+    // every no-lamp editor ref: pwc-day, np-tk3, the hill family — rec 1 MaxHDR = rec 0's.)
+    {
         let r = 60 + 66;
         if mapping.head.len() >= r + 24 {
-            mapping.head[r + 20..r + 24].copy_from_slice(&f1.max_hdr.to_le_bytes());
+            let v = match &img.frame1 { Some(f1) if f1.lit_texels > 0 => f1.max_hdr, _ => f32::from_le_bytes([mapping.head[80], mapping.head[81], mapping.head[82], mapping.head[83]]) };
+            mapping.head[r + 20..r + 24].copy_from_slice(&v.to_le_bytes());
         }
     }
+    // the records the frame list calls for (two on every editor bake — V's scan; `frame_records_wanted`)
+    let n_records = cut_head_records(&mut mapping.head, frame_records_wanted());
     let chunks: Vec<CacheChunk> = td
         .cache
         .chunks
@@ -662,7 +689,7 @@ pub fn build_transcribed(placed: &[(u32, u32, u32, u32, u32, u32)], bbox: ([f32;
         None => return Err("transcribed writer needs libwebp (webpenc) for the frame-1 image".into()),
     };
     let mut frames = Vec::new();
-    for fi in 0..td.frames.len() {
+    for fi in 0..td.frames.len().min(n_records) {
         let mut images = Vec::new();
         for ii in 0..td.frames[fi].images.len() {
             let src = &td.frames[fi].images[ii];

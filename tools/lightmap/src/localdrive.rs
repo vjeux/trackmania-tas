@@ -246,7 +246,11 @@ pub fn caster_source_of(su: &Setup) -> CasterSource {
         }
         items.push(v);
     }
-    let rec_item: Vec<Option<usize>> = su.gl.records.iter().map(|r| r.item.as_ref().map(|(ii, _)| *ii).filter(|&ii| ii < items.len())).collect();
+    // a record's `item` is the MAP item index (mf.items); the scene instance is the one whose `item` field carries it (items without a
+    // model are not instances — tiny16's indices shift; E 22:30Z: indexing the instances by the map index put wrong visuals as casters,
+    // so nothing shadowed and 100+ lamps summed on one texel — the frame-1 record 168)
+    let by_item: std::collections::HashMap<usize, usize> = su.scene.instances.iter().enumerate().map(|(k, inst)| (inst.item, k)).collect();
+    let rec_item: Vec<Option<usize>> = su.gl.records.iter().map(|r| r.item.as_ref().and_then(|(ii, _)| by_item.get(ii).copied())).collect();
     let n_alpha: usize = items.iter().flatten().filter(|t| t.alpha.is_some()).count();
     if std::env::var_os("LMTOOL_LL_CASTER_TRACE").is_some() {
         let ks: Vec<String> = rec_item.iter().enumerate().filter(|(_, r)| r.is_some()).take(6).map(|(k, r)| format!("rec {k} → item {}", r.unwrap())).collect();
@@ -1934,13 +1938,20 @@ pub fn frame1_from_direct(direct: &crate::passdiff::Buf, coverage: Option<&crate
     // chart before the lamps, the lamp draws add rgb with alpha suppressed) — so PS 1332's gutter fill (alpha < 1e-4 only) lands in the pad
     // rings and gaps alone and an undrawn chart's texels stay exactly 0 (its frame byte 0, as the editor's zone tiles). `coverage` = a buffer
     // whose alpha is > 0 on every rasterised texel (the sun accumulation's); None = the lamps' own coverage alone (the pre-20:15Z form).
+    // THE SS-NORMALISE: A_0.rgb / A_0.a with a = the accumulated raster coverage of the texel (the max over the lamps' coverage sums:
+    // k/9 jitters × the overlapping LM fragments) — LmSSNormWithA (RE 13 19:25Z). A study form without the division (alpha := 1 where
+    // covered, the raw sum — E 22:15Z, from a reading of "RenderAddAlphaSSAA writes alpha = 1 once") put tiny16's record at 19–27 vs
+    // 2.39 with the division (the vegetation items' overlapping LM fragments sum without it) — LMTOOL_LL_A0_FLAG=1 keeps it for the
+    // export; the accumulated form is the default. (The 13.86 of the 0001-on-c357 form was the item-caster index bug, not this.)
+    static A0_FLAG: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("LMTOOL_LL_A0_FLAG").is_some());
     let mut a0 = crate::passdiff::Buf::new(atlas, atlas, 4);
     for y in 0..atlas.min(direct.h) {
         for x in 0..atlas.min(direct.w) {
             let f = direct.get(x, y, 3);
             let covered = coverage.map(|c| x < c.w && y < c.h && c.get(x, y, 3) > 0.01).unwrap_or(false);
             if f > 0.01 {
-                for c in 0..3 { a0.set(x, y, c, direct.get(x, y, c) / f); }
+                let d = if *A0_FLAG { 1.0 } else { f };
+                for c in 0..3 { a0.set(x, y, c, direct.get(x, y, c) / d); }
                 a0.set(x, y, 3, 1.0);
             } else if covered {
                 a0.set(x, y, 3, 1.0);

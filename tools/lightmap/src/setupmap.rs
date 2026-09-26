@@ -750,13 +750,17 @@ pub fn build_with_lamps(scene: &crate::geometry::Scene, lm: &LmScene, sbox: &Aab
         // A_0 normalised: (L_raw / cov, 1) where the lamps' coverage > 0.01; alpha 1 on EVERY rasterised texel of the atlas (RE 13, 20:15Z:
         // RenderAddAlphaSSAA's coverage pass before the lamps — the sun accumulation's alpha is that raster coverage), so the gutter fill
         // stays in the pad rings and gaps
+        // (the SS-normalise divides by the accumulated coverage — LmSSNormWithA; LMTOOL_LL_A0_FLAG=1 = the raw-sum study form, see
+        // localdrive::frame1_from_direct)
+        let a0_flag = std::env::var_os("LMTOOL_LL_A0_FLAG").is_some();
         let mut a0 = Buf::new(W, H, 4);
         for y in 0..H.min(ll.h) {
             for x in 0..W.min(ll.w) {
                 let cov = ll.get(x, y, 3);
                 if cov > 0.01 {
                     n_tex += 1;
-                    for c in 0..3 { let v = ll.get(x, y, c) / cov; sum[c as usize] += v; a0.set(x, y, c, v); }
+                    let d = if a0_flag { 1.0 } else { cov };
+                    for c in 0..3 { let v = ll.get(x, y, c) / d; sum[c as usize] += v; a0.set(x, y, c, v); }
                     a0.set(x, y, 3, 1.0);
                 } else if sun.get(x, y, 3) > 0.01 {
                     a0.set(x, y, 3, 1.0);
