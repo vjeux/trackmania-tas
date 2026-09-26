@@ -447,6 +447,20 @@ impl AlphaTex {
         a - threshold >= 0.0
     }
 
+    /// THE NON-EXACT `--alpha-point` (perf engineer 7, 2026-09-25; the point-sample branch behind the flag,
+    /// the filtered sampler above is engineer 4's): ONE tap at the nearest texel of the level nearest the
+    /// plan's lod (the level the filtered test weights most), ClampEdge — no bilinear weights, no taps along
+    /// the major axis, no early-out pre-checks to pay for. The nearest-mip test keeps the filter's mean
+    /// coverage (the coarse levels ARE the averaged coverage) and trades the anisotropic taps for per-pixel
+    /// noise; it is not the game's test.
+    #[inline]
+    pub fn passes_point(&self, u: f32, v: f32, p: &TapPlan, threshold: f32) -> bool {
+        let l = &self.levels[if p.two && p.t >= 0.5 { p.l1 } else { p.l0 }];
+        let x = ((u.clamp(0.0, 1.0) * l.wf) as i32).clamp(0, l.w as i32 - 1) as usize;
+        let y = ((v.clamp(0.0, 1.0) * l.hf) as i32).clamp(0, l.h as i32 - 1) as usize;
+        l.af[y * l.w + x] - threshold >= 0.0
+    }
+
     /// The alpha test of PS 17134 at one fragment: the filtered alpha ≥ `threshold` (128/255).
     pub fn passes(&self, u: f32, v: f32, fp: &Footprint, threshold: f32, addr: Address, aniso: usize) -> bool {
         // THE EXACT EARLY-OUT: every tap is a convex combination (8-bit weights, 1 − t exact) of texels of

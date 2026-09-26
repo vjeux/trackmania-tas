@@ -214,6 +214,11 @@ pub struct BakeParams {
     /// chart and clips each LM fragment by its world XZ against the tile (RE 7), so a texel reads only the
     /// tile whose cell holds it.
     pub peel_tile_clip: Option<std::sync::Arc<Vec<Option<[f32; 4]>>>>,
+    /// THE NON-EXACT `--tile-res N` (perf engineer 7): the fitted tiles' frame size; 0 = `peel_res` (exact).
+    pub tile_res: u32,
+    /// THE NON-EXACT `--alpha-point`: the cards' alpha test point-samples the nearest mip level (one tap)
+    /// instead of the anisotropic filter (alphatex::AlphaTex::passes_point).
+    pub alpha_point: bool,
     /// THE DIRECTION-RANGE SPLIT (contrib.rs): only the directions [a, b) of the sweep are baked …
     pub dir_range: Option<(usize, usize)>,
     /// … and each one's contribution is written to this directory (`--contrib-out`) …
@@ -359,6 +364,8 @@ impl Default for BakeParams {
             layers_from_capture: true,
             layers_estimate: false,
             peel_tile_clip: None,
+            tile_res: 0,
+            alpha_point: false,
             dir_range: None,
             contrib_out: None,
             merge_contrib: None,

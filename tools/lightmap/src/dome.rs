@@ -311,13 +311,29 @@ fn group_issue_order_literal(points: &[[f32; 3]], groups: u32) -> Vec<u32> {
 /// `dirs[i]` is the direction the game issues at issue index `i` — so the raster sub-sample of that pass is
 /// `raster_subsample(i, ss)` and the peel-camera LCG block is the i-th draw of the chain.
 pub fn sweep_directions(sets: &PointSets, quality: u32, sweep: usize, fold: bool) -> Option<Vec<[f32; 3]>> {
-    let n = *sweep_counts(quality).get(sweep)?;
+    sweep_directions_scaled(sets, quality, sweep, fold, 1.0)
+}
+
+/// THE NON-EXACT `--dirs-scale S` (perf engineer 7, 2026-09-25): the sweep's direction count scaled by `S`
+/// before the table pick — q4's {1024, 512, 256, 128} at S = 0.5 become {512, 256, 128, 64}, each the game's
+/// own set of that size (`PointSets::nearest`: the q4 sweep-1 set, the q3 sweep-0 set, …), rotated and
+/// issue-ordered exactly as the full sets are. The accumulate's weight is 4/N per jitter group and every
+/// other per-direction constant (AddAmbient's 2/N, the probes' 4·D.y/N) reads the list's length, so the
+/// brightness is unchanged; what changes is the sampling density. S = 1 is the exact list.
+pub fn sweep_directions_scaled(sets: &PointSets, quality: u32, sweep: usize, fold: bool, scale: f32) -> Option<Vec<[f32; 3]>> {
+    let n = scaled_count(*sweep_counts(quality).get(sweep)?, scale);
     let mut list = rotate_set(sets.nearest(n)?);
     if fold {
         fold_down(&mut list);
     }
     let order = issue_order(&list, supersample(quality));
     Some(order.iter().map(|&i| list[i as usize]).collect())
+}
+
+/// A sweep's direction count under `--dirs-scale` (1 → unchanged; else round(n·scale), at least 4 = the
+/// smallest table set).
+pub fn scaled_count(n: usize, scale: f32) -> usize {
+    if !(scale > 0.0) || scale == 1.0 { n } else { ((n as f32 * scale).round() as usize).max(4) }
 }
 
 /// `group_issue_order` with the game's gate: ss < 2 → the identity (no `SPlugGroupOfPointInSphere` is built).

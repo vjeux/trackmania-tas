@@ -26,6 +26,9 @@ pub struct PeelPlan {
     pub n: u32,
     pub ext: f32,
     pub rules: FitRules,
+    /// The fitted tiles' frame size — `size` (the game's) unless the non-exact `--tile-res` lowers it (the
+    /// tiles exist for the items' fine shadows; a 2048² tile has 4× fewer pixels per direction).
+    pub tile_size: u32,
 }
 
 fn cbox_to_aabb(b: &CBox) -> Aabb {
@@ -43,17 +46,35 @@ pub fn plan(records: &[BlockRecord], tiles_box: Option<CBox>, chunks_aabb: Optio
     let world = world_peel_box(&scene, chunks_aabb);
     let p = TileParams { alloc_scale, quality, half_at_low_quality: true, size_override: 0, vram_bytes, max_tiles };
     let t: Tiling = peel_tiling(&scene, records, &p);
-    PeelPlan { scene, world: cbox_to_aabb(&world), tiles: t.tiles.iter().map(cbox_to_aabb).collect(), size: t.size, n: t.n, ext: t.ext, rules: FitRules::default() }
+    PeelPlan { scene, world: cbox_to_aabb(&world), tiles: t.tiles.iter().map(cbox_to_aabb).collect(), size: t.size, n: t.n, ext: t.ext, rules: FitRules::default(), tile_size: t.size }
 }
 
 impl PeelPlan {
+    /// THE NON-EXACT `--tile-res N` (perf engineer 7): the fitted tiles rendered at N² instead of the rule's
+    /// size — the same boxes and cameras, a coarser pixel; the world peel keeps its size.
+    pub fn with_tile_size(mut self, n: u32) -> PeelPlan {
+        if n >= 64 { self.tile_size = n; }
+        self
+    }
+    /// THE NON-EXACT `--tiles-from-world`: no fitted tiles at all — every texel reads the world peel alone
+    /// (the composition rule "a later peel wins where it has a layer" then has one peel to compose).
+    pub fn world_only(mut self) -> PeelPlan {
+        self.tiles.clear();
+        self
+    }
+    /// The frame size of peel `pi` (0 = the world peel, then the tiles).
+    pub fn frame_size(&self, pi: usize) -> u32 {
+        if pi == 0 { self.size } else { self.tile_size }
+    }
     /// The ordered frusta of one direction: the world peel, then every tile (each fit on its own box, its own
-    /// depth range), read back through `Frustum::from_pw01` as the captured frusta are.
+    /// depth range), read back through `Frustum::from_pw01` as the captured frusta are. (The shadow matrix's
+    /// (w − 2)/w inset scale is the frame's own: a tile at `tile_size` is fit for that size.)
     pub fn frusta(&self, d: [f32; 3]) -> Vec<Frustum> {
         let mut out = Vec::with_capacity(1 + self.tiles.len());
-        for b in std::iter::once(&self.world).chain(self.tiles.iter()) {
+        for (pi, b) in std::iter::once(&self.world).chain(self.tiles.iter()).enumerate() {
             let cam = fit_camera(b, d, &self.rules);
-            if let Some(fr) = Frustum::from_pw01(&cam.world_pw01_shadow(self.size, self.size)) {
+            let s = self.frame_size(pi);
+            if let Some(fr) = Frustum::from_pw01(&cam.world_pw01_shadow(s, s)) {
                 out.push(fr);
             }
         }

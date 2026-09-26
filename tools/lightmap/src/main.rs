@@ -27,6 +27,73 @@ fn t_quarter(dt: Option<u32>, x: &lightmap::moods::MoodXml) -> bool {
 /// trimmed back to the kernel (the default mmap threshold hands every buffer over 128 KB — the per-frame
 /// fragment lists, indices, layer tables — to mmap/munmap: 63 k page faults per direction on a tiny map, a
 /// tenth of its time). 32 MB is glibc's ceiling for the threshold; the few larger buffers still round-trip.
+/// THE NON-EXACT PRESET (perf engineer 7, 2026-09-25): `--preset exact|fast|faster` sets the bake's non-exact
+/// knobs together; each knob's own flag overrides its preset value; everything defaults OFF, and with the
+/// preset off the bake is the exact one (the harness: the 9-direction passdiff at --tol 0, the tiled tiny-16
+/// lightsum, byte-identical files with LMTOOL_BAKE_TIME pinned).
+///   fast   = --tile-res 2048 --layers-estimate --dirs-scale 0.5 --max-layers 8
+///   faster = fast + --alpha-point --sweeps 3
+#[derive(Clone, Debug, PartialEq)]
+struct Preset {
+    /// `--tile-res N`: the fitted tiles' frame size (0 = the tiling rule's, 4096² on the real maps).
+    tile_res: u32,
+    /// `--tiles-from-world`: no fitted tiles — every texel reads the world peel alone.
+    tiles_from_world: bool,
+    /// `--layers-estimate`: the census layer statistic instead of the exact whole-frame count (`--layers-exact` undoes a preset's).
+    layers_estimate: bool,
+    /// `--dirs-scale S`: every sweep's direction count × S, the game's own table set of that size.
+    dirs_scale: f32,
+    /// `--max-layers N`: the peel's render cap (the game's 21, the environment block included).
+    max_layers: usize,
+    /// `--alpha-point`: the cards' alpha test as one nearest-mip point sample.
+    alpha_point: bool,
+    /// `--sweeps N`: only the first N sweeps (bounces) of the quality's list; 0 = all.
+    sweeps: usize,
+}
+
+impl Preset {
+    fn exact() -> Preset {
+        Preset { tile_res: 0, tiles_from_world: false, layers_estimate: false, dirs_scale: 1.0, max_layers: lightmap::peelcap::PeelStop::default().max_renders, alpha_point: false, sweeps: 0 }
+    }
+    fn named(name: &str) -> Preset {
+        match name {
+            "exact" | "off" | "none" => Preset::exact(),
+            "fast" => Preset { tile_res: 2048, layers_estimate: true, dirs_scale: 0.5, max_layers: 8, ..Preset::exact() },
+            "faster" => Preset { alpha_point: true, sweeps: 3, ..Preset::named("fast") },
+            o => panic!("--preset exact|fast|faster, not {o}"),
+        }
+    }
+    fn from_args(a: &[String]) -> Preset {
+        let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+        let has = |k: &str| a.iter().any(|x| x == k);
+        let mut p = f("--preset").map(|n| Preset::named(&n)).unwrap_or_else(Preset::exact);
+        if let Some(v) = f("--tile-res") { p.tile_res = v.parse().expect("--tile-res N"); }
+        if has("--tiles-from-world") { p.tiles_from_world = true; }
+        if has("--layers-estimate") { p.layers_estimate = true; }
+        if has("--layers-exact") { p.layers_estimate = false; }
+        if let Some(v) = f("--dirs-scale") { p.dirs_scale = v.parse().expect("--dirs-scale S"); assert!(p.dirs_scale > 0.0 && p.dirs_scale <= 1.0, "--dirs-scale in (0, 1]"); }
+        if let Some(v) = f("--max-layers") { p.max_layers = v.parse().expect("--max-layers N"); assert!(p.max_layers >= 2, "--max-layers ≥ 2"); }
+        if has("--alpha-point") { p.alpha_point = true; }
+        if let Some(v) = f("--sweeps") { p.sweeps = v.parse().expect("--sweeps N"); }
+        p
+    }
+    fn is_exact(&self) -> bool {
+        *self == Preset::exact()
+    }
+    /// The knobs that are on, as the flags that set them (the bake's log line).
+    fn describe(&self) -> String {
+        let mut v: Vec<String> = Vec::new();
+        if self.tile_res != 0 { v.push(format!("--tile-res {}", self.tile_res)); }
+        if self.tiles_from_world { v.push("--tiles-from-world".into()); }
+        if self.layers_estimate { v.push("--layers-estimate".into()); }
+        if self.dirs_scale != 1.0 { v.push(format!("--dirs-scale {}", self.dirs_scale)); }
+        if self.max_layers != Preset::exact().max_layers { v.push(format!("--max-layers {}", self.max_layers)); }
+        if self.alpha_point { v.push("--alpha-point".into()); }
+        if self.sweeps != 0 { v.push(format!("--sweeps {}", self.sweeps)); }
+        if v.is_empty() { "exact (no non-exact knob on)".into() } else { v.join(" ") }
+    }
+}
+
 fn tune_malloc() {
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     unsafe {
@@ -785,6 +852,10 @@ fn run(a: Vec<String>) {
             let has = |k: &str| a.iter().any(|x| x == k);
             let map_path = a[1].clone();
             let t0 = std::time::Instant::now();
+            // THE NON-EXACT PRESET (`Preset`, perf engineer 7): --preset fast|faster, or the knobs one by one; all off = exact
+            let preset = Preset::from_args(&a);
+            if !preset.is_exact() { eprintln!("NON-EXACT bake: {}", preset.describe()); }
+            lightmap::peel::set_alpha_point_mip(preset.alpha_point);
             // --mood auto (the default without --template): the header's collection + mood select the
             // fitted lighting (moods.rs) and the template chunk `<Collection>-<Mood>.lmchunk` from the bank
             // (--templates DIR, $LMTOOL_TEMPLATES, or the store's lightmap-re/templates)
@@ -1070,9 +1141,9 @@ fn run(a: Vec<String>) {
                     // interleaved groups — `dome::sweep_directions`; direction k carries raster sub-sample k mod 9),
                     // so the accumulation after direction k is the game's after k; --table-order keeps the table's
                     if let Ok(ps) = lightmap::dome::PointSets::load(&pp) {
-                        if has("--table-order") { if let Some(set) = ps.nearest(n0) { prm.sphere_dirs = std::sync::Arc::new(lightmap::dome::rotate_set(set)); } }
-                        else if let Some(d) = lightmap::dome::sweep_directions(&ps, q, 0, false) { prm.sphere_dirs = std::sync::Arc::new(d); }
-                        eprintln!("peel: quality {q}, sweeps {:?}, first set {} directions (rotated{})", counts, prm.sphere_dirs.len(), if has("--table-order") { ", table order" } else { ", the game's issue order" });
+                        if has("--table-order") { if let Some(set) = ps.nearest(lightmap::dome::scaled_count(n0, preset.dirs_scale)) { prm.sphere_dirs = std::sync::Arc::new(lightmap::dome::rotate_set(set)); } }
+                        else if let Some(d) = lightmap::dome::sweep_directions_scaled(&ps, q, 0, false, preset.dirs_scale) { prm.sphere_dirs = std::sync::Arc::new(d); }
+                        eprintln!("peel: quality {q}, sweeps {:?}, first set {} directions (rotated{}){}", counts, prm.sphere_dirs.len(), if has("--table-order") { ", table order" } else { ", the game's issue order" }, if preset.dirs_scale != 1.0 { format!(" — NON-EXACT --dirs-scale {}: the counts × {} → {:?}", preset.dirs_scale, preset.dirs_scale, counts.iter().map(|&n| lightmap::dome::scaled_count(n, preset.dirs_scale)).collect::<Vec<_>>()) } else { String::new() });
                     }
                     // the lightmap-so-far is read back divided by BounceFactor (RE child 2 (d)); the Day-quarter
                     // test bake confirms a weak bounce (a pad under an 8 m plate: 51 % of open, walls 43 % of floors)
@@ -1350,6 +1421,8 @@ fn run(a: Vec<String>) {
             // estimate, every further pass reads the previous pass's charts at the hit points
             let q_sweeps = lightmap::dome::sweep_counts(f("--quality").map(|s| s.parse().unwrap()).unwrap_or(3));
             let iterations: usize = f("--bounces").map(|s| s.parse().unwrap()).unwrap_or(if prm.peel && !q_sweeps.is_empty() { q_sweeps.len() } else if xml_sel.is_some() { 2 } else { 1 });
+            // (the non-exact --sweeps N: the quality's first N sweeps only — the 4th q4 sweep is the 128-direction bounce)
+            let iterations: usize = if preset.sweeps > 0 && f("--bounces").is_none() { let n = iterations.min(preset.sweeps); if n != iterations { eprintln!("NON-EXACT --sweeps {}: {n} of the quality's {iterations} sweeps", preset.sweeps); } n } else { iterations };
             // --raster: the dome peel as a software raster (crate::peel) — the game's own pipeline; --ss N
             // sub-samples per axis (the quality table: 1/2/3/3/3/3), --peel-res PX, --peel-bias M
             prm.raster_peel = has("--raster");
@@ -1435,7 +1508,11 @@ fn run(a: Vec<String>) {
             prm.layers_from_capture = !has("--layers-by-rule");
             // --layers-estimate: the stop rule on a census estimate (every 8th pixel) instead of the exact
             // dense depth-only pass (the default: the game's statistic over the whole viewport)
-            prm.layers_estimate = has("--layers-estimate");
+            prm.layers_estimate = preset.layers_estimate;
+            // the non-exact --max-layers N: the peel's render cap (the game's 21 incl. the environment block)
+            if preset.max_layers != prm.peel_stop.max_renders { prm.peel_stop.max_renders = preset.max_layers; }
+            prm.tile_res = preset.tile_res;
+            prm.alpha_point = preset.alpha_point;
             // THE DIRECTION-RANGE SPLIT (contrib.rs): --dir-range a..b|k/N --contrib-out DIR writes the range's
             // per-direction contributions; --merge-contrib DIR[,DIR…] replays every direction's in issue order;
             // --sweep-only S runs sweep S alone (S ≥ 1 needs --field-from F = the previous sweep's merged field,
@@ -2081,7 +2158,9 @@ fn run(a: Vec<String>) {
                 let vram: i64 = f("--tile-vram-mb").map(|v| v.parse::<i64>().unwrap() << 20).unwrap_or(8 << 30);
                 let max_tiles: u32 = f("--tile-max").map(|v| v.parse().unwrap()).unwrap_or(4);
                 let plan = lightmap::tiledpeel::plan(&recs, tiles_box, chunks_aabb.as_ref(), alloc_scale, tq, vram, max_tiles);
-                eprintln!("peel cameras: {} item records, scene box [{:.1}, {:.1}]×[{:.1}, {:.1}]×[{:.1}, {:.1}], world peel box [{:.1}, {:.1}]×[{:.1}, {:.1}]×[{:.1}, {:.1}]; tiling at scale {alloc_scale:.3} layout units/m: ext {:.1} → target {}², n = {}, {} fitted tile(s){}", recs.len(), plan.scene.min()[0], plan.scene.max()[0], plan.scene.min()[1], plan.scene.max()[1], plan.scene.min()[2], plan.scene.max()[2], plan.world.min[0], plan.world.max[0], plan.world.min[1], plan.world.max[1], plan.world.min[2], plan.world.max[2], plan.ext, plan.size, plan.n, plan.tiles.len(), if plan.tiles.is_empty() { " (the world pass only)" } else { "" });
+                // the non-exact knobs on the plan: the tiles at --tile-res, or none at all (--tiles-from-world)
+                let plan = if preset.tiles_from_world { plan.world_only() } else if preset.tile_res != 0 { plan.with_tile_size(preset.tile_res) } else { plan };
+                eprintln!("peel cameras: {} item records, scene box [{:.1}, {:.1}]×[{:.1}, {:.1}]×[{:.1}, {:.1}], world peel box [{:.1}, {:.1}]×[{:.1}, {:.1}]×[{:.1}, {:.1}]; tiling at scale {alloc_scale:.3} layout units/m: ext {:.1} → target {}², n = {}, {} fitted tile(s){}{}", recs.len(), plan.scene.min()[0], plan.scene.max()[0], plan.scene.min()[1], plan.scene.max()[1], plan.scene.min()[2], plan.scene.max()[2], plan.world.min[0], plan.world.max[0], plan.world.min[1], plan.world.max[1], plan.world.min[2], plan.world.max[2], plan.ext, plan.size, plan.n, plan.tiles.len(), if plan.tiles.is_empty() { " (the world pass only)" } else { "" }, if plan.tile_size != plan.size { format!(" at {}² (NON-EXACT --tile-res)", plan.tile_size) } else { String::new() });
                 for (i, t) in plan.tiles.iter().enumerate() { eprintln!("  tile {i}: [{:.1}, {:.1}]×[{:.1}, {:.1}]×[{:.1}, {:.1}]", t.min[0], t.max[0], t.min[1], t.max[1], t.min[2], t.max[2]); }
                 if plan.size != prm.peel_res { eprintln!("peel cameras: peel resolution {} → {}", prm.peel_res, plan.size); prm.peel_res = plan.size; }
                 prm.frustums = Some(std::sync::Arc::new(plan.table(&prm.sphere_dirs)));
@@ -2427,8 +2506,8 @@ fn run(a: Vec<String>) {
                     if let Some(&n) = q_sweeps.get(it) {
                         let pp = f("--points").unwrap_or_else(lightmap::dome::default_path);
                         if let Ok(ps) = lightmap::dome::PointSets::load(&pp) {
-                            if has("--table-order") { if let Some(set) = ps.nearest(n) { p2.sphere_dirs = std::sync::Arc::new(lightmap::dome::rotate_set(set)); } }
-                            else if let Some(d) = lightmap::dome::sweep_directions(&ps, f("--quality").map(|s| s.parse().unwrap()).unwrap_or(3), it, false) { p2.sphere_dirs = std::sync::Arc::new(d); }
+                            if has("--table-order") { if let Some(set) = ps.nearest(lightmap::dome::scaled_count(n, preset.dirs_scale)) { p2.sphere_dirs = std::sync::Arc::new(lightmap::dome::rotate_set(set)); } }
+                            else if let Some(d) = lightmap::dome::sweep_directions_scaled(&ps, f("--quality").map(|s| s.parse().unwrap()).unwrap_or(3), it, false, preset.dirs_scale) { p2.sphere_dirs = std::sync::Arc::new(d); }
                         }
                     }
                 }
@@ -7170,12 +7249,16 @@ fn run(a: Vec<String>) {
             }
         }
         "bench" => {
-            // lmtool bench MAP... [--quality Q] [--jobs J] [--out TABLE.md] [--dir OUTDIR] [-- EXTRA BAKE ARGS]:
+            // lmtool bench MAP... [--quality Q] [--jobs J] [--out TABLE.md] [--dir OUTDIR] [--variant NAME=ARGS]... [-- EXTRA BAKE ARGS]:
             // bake every map with `lmtool bake --raster --game-peel --profile` (J at a time, each a child
             // process of this binary), read the profile lines, and write a Markdown timing table (map,
-            // triangles, instances, layout texels, per-sweep seconds, total, peak RSS) — the fleet-sizing table
+            // triangles, instances, layout texels, per-sweep seconds, total, peak RSS) — the fleet-sizing table.
+            // --variant NAME=ARGS (repeatable; ARGS space-separated, "" = none): every map is baked once per variant,
+            // in order, and each row says whether its file is byte-identical to the map's FIRST variant's — the
+            // non-exact knobs' A/B (perf engineer 7): `--variant base= --variant est=--layers-estimate …`
             let mut maps: Vec<String> = Vec::new();
             let mut extra: Vec<String> = Vec::new();
+            let mut variants: Vec<(String, Vec<String>)> = Vec::new();
             let mut quality = "4".to_string();
             let mut jobs = 1usize;
             let mut table = "bench.md".to_string();
@@ -7191,14 +7274,16 @@ fn run(a: Vec<String>) {
                     "--jobs" => { jobs = a[i + 1].parse().expect("--jobs"); i += 1; }
                     "--out" => { table = a[i + 1].clone(); i += 1; }
                     "--dir" => { outdir = std::path::PathBuf::from(&a[i + 1]); i += 1; }
+                    "--variant" => { let v = &a[i + 1]; let (n, args) = v.split_once('=').expect("--variant NAME=ARGS"); variants.push((n.to_string(), args.split_whitespace().map(|s| s.to_string()).collect())); i += 1; }
                     _ => maps.push(x.clone()),
                 }
                 i += 1;
             }
+            if variants.is_empty() { variants.push((String::new(), Vec::new())); }
             std::fs::create_dir_all(&outdir).expect("bench dir");
             let exe = std::env::current_exe().expect("exe");
             #[derive(Default, Clone)]
-            struct Row { map: String, tris: String, insts: String, texels: String, sweeps: Vec<f32>, total: f32, rss: String, ok: bool, note: String }
+            struct Row { map: String, variant: String, tris: String, insts: String, texels: String, sweeps: Vec<f32>, total: f32, rss: String, ok: bool, note: String, identical: Option<bool>, dirs: Vec<usize> }
             let rows: std::sync::Mutex<Vec<Row>> = std::sync::Mutex::new(Vec::new());
             let next = std::sync::atomic::AtomicUsize::new(0);
             let t_all = std::time::Instant::now();
@@ -7209,19 +7294,23 @@ fn run(a: Vec<String>) {
                         if k >= maps.len() { break; }
                         let m = &maps[k];
                         let name = std::path::Path::new(m).file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or(m.clone());
-                        let out = outdir.join(format!("{name}.baked.Map.Gbx"));
+                        let mut first_out: Option<std::path::PathBuf> = None;
+                        for (vi, (vname, vargs)) in variants.iter().enumerate() {
+                        let tag = if vname.is_empty() { String::new() } else { format!(".{vname}") };
+                        let out = outdir.join(format!("{name}{tag}.baked.Map.Gbx"));
                         let t = std::time::Instant::now();
                         let mut cmd = std::process::Command::new(&exe);
                         cmd.arg("bake").arg(m).arg("--raster").arg("--quality").arg(&quality).arg("--game-peel").arg("--profile").arg("--out").arg(&out);
                         for e in &extra { cmd.arg(e); }
+                        for e in vargs { cmd.arg(e); }
                         let output = cmd.output();
                         let wall = t.elapsed().as_secs_f32();
-                        let mut row = Row { map: name.clone(), total: wall, ..Default::default() };
+                        let mut row = Row { map: name.clone(), variant: vname.clone(), total: wall, ..Default::default() };
                         match output {
                             Ok(o) => {
                                 row.ok = o.status.success();
                                 let err = String::from_utf8_lossy(&o.stderr).to_string();
-                                let log = outdir.join(format!("{name}.log"));
+                                let log = outdir.join(format!("{name}{tag}.log"));
                                 let _ = std::fs::write(&log, format!("{}
 {}", String::from_utf8_lossy(&o.stdout), err));
                                 for l in err.lines() {
@@ -7232,29 +7321,49 @@ fn run(a: Vec<String>) {
                                     }
                                     if l.starts_with("peel: ") && l.contains(" layout texels over ") && row.texels.is_empty() { row.texels = l["peel: ".len()..].split(' ').next().unwrap_or("").to_string(); }
                                     if l.starts_with("profile [sweep ") { if let Some(p) = l.rfind("sweep total ") { row.sweeps.push(l[p + "sweep total ".len()..].trim_end_matches('s').parse().unwrap_or(0.0)); } }
+                                    // "peel: done, N directions over …" — the directions a sweep ran (per-direction cost = sweep total / N)
+                                    if let Some(r) = l.strip_prefix("peel: done, ") { if let Some(n) = r.split(' ').next().and_then(|s| s.parse().ok()) { row.dirs.push(n); } }
                                     if let Some(r) = l.strip_prefix("peak RSS ") { row.rss = r.to_string(); }
                                 }
                                 if !row.ok { row.note = err.lines().rev().take(2).collect::<Vec<_>>().join(" | "); }
                             }
                             Err(e) => { row.note = e.to_string(); }
                         }
-                        eprintln!("bench: {name}: {:.1}s ({}) sweeps {:?} RSS {}", wall, if row.ok { "ok" } else { "FAILED" }, row.sweeps, row.rss);
+                        if row.ok {
+                            match &first_out {
+                                None => { first_out = Some(out.clone()); }
+                                Some(f) => { row.identical = match (std::fs::read(f), std::fs::read(&out)) { (Ok(x), Ok(y)) => Some(x == y), _ => None }; }
+                            }
+                        }
+                        let per_dir: Vec<String> = row.sweeps.iter().zip(row.dirs.iter()).map(|(s, n)| format!("{:.3}", s / (*n).max(1) as f32)).collect();
+                        eprintln!("bench: {name}{tag}: {:.1}s ({}) sweeps {:?} per direction [{}] RSS {}{}", wall, if row.ok { "ok" } else { "FAILED" }, row.sweeps, per_dir.join(" / "), row.rss, match row.identical { Some(true) => " — byte-identical to the first variant", Some(false) => " — DIFFERS from the first variant", None => "" });
+                        let _ = vi;
                         rows.lock().unwrap().push(row);
+                        }
                     });
                 }
             });
             let mut rows = rows.into_inner().unwrap();
-            rows.sort_by(|a, b| a.map.cmp(&b.map));
+            let vpos = |v: &str| variants.iter().position(|(n, _)| n == v).unwrap_or(0);
+            rows.sort_by(|a, b| a.map.cmp(&b.map).then(vpos(&a.variant).cmp(&vpos(&b.variant))));
             let mut md = String::new();
             md.push_str(&format!("# lmtool bench — quality {quality}, {} maps, {} at a time, extra args {:?}, {:.0} s wall in all ({})
-
 ", rows.len(), jobs, extra, t_all.elapsed().as_secs_f32(), std::env::var("HOSTNAME").unwrap_or_default()));
-            md.push_str("| map | triangles | items | layout texels | sweeps (s) | total (s) | peak RSS | |
-|---|---|---|---|---|---|---|---|
+            if variants.len() > 1 || !variants[0].0.is_empty() {
+                md.push_str("
+variants: ");
+                md.push_str(&variants.iter().map(|(n, v)| format!("`{n}` = `{}`", if v.is_empty() { "(none)".to_string() } else { v.join(" ") })).collect::<Vec<_>>().join("; "));
+                md.push_str("
+");
+            }
+            md.push_str("
+| map | variant | triangles | items | layout texels | sweeps (s) | s / direction | total (s) | peak RSS | file vs first | |
+|---|---|---|---|---|---|---|---|---|---|---|
 ");
             for r in &rows {
-                md.push_str(&format!("| {} | {} | {} | {} | {} | {:.1} | {} | {} |
-", r.map, r.tris, r.insts, r.texels, r.sweeps.iter().map(|s| format!("{s:.1}")).collect::<Vec<_>>().join(" / "), r.total, r.rss, if r.ok { "ok".to_string() } else { format!("FAILED: {}", r.note) }));
+                let per_dir: Vec<String> = r.sweeps.iter().zip(r.dirs.iter()).map(|(s, n)| format!("{:.3}", s / (*n).max(1) as f32)).collect();
+                md.push_str(&format!("| {} | {} | {} | {} | {} | {} | {} | {:.1} | {} | {} | {} |
+", r.map, r.variant, r.tris, r.insts, r.texels, r.sweeps.iter().map(|s| format!("{s:.1}")).collect::<Vec<_>>().join(" / "), per_dir.join(" / "), r.total, r.rss, match r.identical { Some(true) => "identical", Some(false) => "differs", None => "—" }, if r.ok { "ok".to_string() } else { format!("FAILED: {}", r.note) }));
             }
             std::fs::write(&table, &md).expect("bench table");
             print!("{md}");

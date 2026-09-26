@@ -185,6 +185,17 @@ pub fn alpha_queue_on() -> bool {
     *V.get_or_init(|| std::env::var("LMTOOL_ALPHA_QUEUE").map(|v| v != "0").unwrap_or(true))
 }
 
+/// THE NON-EXACT `--alpha-point` (perf engineer 7): the cards' alpha test as one nearest-mip point sample
+/// (`AlphaTex::passes_point`) instead of the filtered sampler — set once from the flags before the bake.
+static ALPHA_POINT_MIP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub fn set_alpha_point_mip(on: bool) {
+    ALPHA_POINT_MIP.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+#[inline(always)]
+pub fn alpha_point_mip() -> bool {
+    ALPHA_POINT_MIP.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// One fragment of the A-buffer: depth and the world triangle (index into the BVH's triangle list).
 #[derive(Clone, Copy, Debug)]
 pub struct Frag {
@@ -872,7 +883,8 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
         // sorted (z, triangle) at the scan, the CSR's per-pixel sort is keyed (z, triangle) too — so the
         // deferred order gives the same A-buffer and the same count. LMTOOL_ALPHA_QUEUE=0 keeps the scalar
         // test inline (the A/B switch; the point-sampled probe and the pixel debug print use it too).
-        let alpha_queue = alpha_queue_on() && !*ALPHA_POINT && ABUF_DEBUG.is_none();
+        // (perf 7's non-exact --alpha-point knob takes the inline path: the queue samples the filtered sampler only)
+        let alpha_queue = alpha_queue_on() && !*ALPHA_POINT && !alpha_point_mip() && ABUF_DEBUG.is_none();
         let mut aq = crate::alphasimd::AlphaQueues::take();
         // the depth-bias term of a triangle from its index (a deferred fragment's; the same expression as
         // `bias_term_of` below), cached for the run of one triangle's fragments
@@ -1029,7 +1041,7 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
                                 }
                             }
                             let op = match fp {
-                                Some((tx, fp)) if !*ALPHA_POINT => tx.passes_planned(u, v, fp, ALPHA_THRESHOLD, crate::alphatex::Address::ClampEdge),
+                                Some((tx, fp)) if !*ALPHA_POINT => if alpha_point_mip() { tx.passes_point(u, v, fp, ALPHA_THRESHOLD) } else { tx.passes_planned(u, v, fp, ALPHA_THRESHOLD, crate::alphatex::Address::ClampEdge) },
                                 _ => mk.opaque(u, v),
                             };
                             if let Some((dx, dy)) = *ABUF_DEBUG { if x == dx && y == dy { eprintln!("abuf debug ({x},{y}): card tri {ti} inst {} model tri {} mask {} uv ({u:.4},{v:.4}) opaque {op} z {z:.3} z01 {:.5}", t.inst, t.tri, t.alpha, frame.z01(z)); } }
@@ -1382,7 +1394,7 @@ pub fn build_abuffer_wanted(tris: &[WTri], frame: &PeelFrame, threads: usize, zm
                                     let v = t.uv0[0][1] * b[0] + t.uv0[1][1] * b[1] + t.uv0[2][1] * b[2];
                                     let fp = fp_tex.get_or_insert_with(|| m.tex.as_ref().map(|tx| (tx.as_ref(), tx.plan(&crate::alphatex::Footprint::of_triangle([[x0, y0], [x1, y1], [x2, y2]], t.uv0, tx.w(), tx.h()), *ALPHA_ANISO))));
                                     let op = match fp {
-                                        Some((tx, fp)) if !*ALPHA_POINT => tx.passes_planned(u, v, fp, ALPHA_THRESHOLD, crate::alphatex::Address::ClampEdge),
+                                        Some((tx, fp)) if !*ALPHA_POINT => if alpha_point_mip() { tx.passes_point(u, v, fp, ALPHA_THRESHOLD) } else { tx.passes_planned(u, v, fp, ALPHA_THRESHOLD, crate::alphatex::Address::ClampEdge) },
                                         _ => m.opaque(u, v),
                                     };
                                     if CARD_DUMP.is_some() {
@@ -1939,6 +1951,10 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
     let sky_q = if prm.sweep > 0 { [0.0f32; 3] } else { prm.quant_peel.apply(sky, prm.rounding) };
     let dome_img = if prm.sweep > 0 { None } else { dome_img };
     let skip_n = if prm.dome_layer { 1usize } else { 0 };
+    // the item layers derived per pixel: MAX_LAYERS (the exact path, untouched), or under the non-exact
+    // `--max-layers N` (prm.peel_stop.max_renders < the game's 21) the cap's item count — the stop rule
+    // never keeps more, so the derivations past it were wasted
+    let derive_cap: usize = if prm.peel_stop.max_renders < crate::peelcap::PeelStop::default().max_renders { prm.peel_stop.max_renders.saturating_sub(skip_n).clamp(1, MAX_LAYERS) } else { MAX_LAYERS };
     // one pixel's layers appended to `out`
     // (the depth-bias term of the last triangle seen by this thread: consecutive wanted pixels mostly read
     // the same large triangle — the ground — and `tri_slope` re-projects three vertices per fragment)
@@ -1987,7 +2003,7 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
             if z01 < d_prev {
                 continue;
             }
-            if out.len() - before - skip_n >= MAX_LAYERS {
+            if out.len() - before - skip_n >= derive_cap {
                 break;
             }
             let wt = &bvh.tris[f.tri as usize];
@@ -2057,7 +2073,7 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
             fractions.push(if n_census > 0 { at_least as f64 / n_census as f64 } else { 0.0 });
         }
         let kept = match fixed_layers {
-            Some(k) => k.min(MAX_LAYERS),
+            Some(k) => k.min(derive_cap),
             None => prm.peel_stop.layers_rendered_after(&fractions, skip_n),
         };
         let candidates = fractions.iter().take_while(|f| **f > 0.0).count();
@@ -2164,7 +2180,7 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
         fractions.push(at_least as f64 / n.max(1) as f64);
     }
     let kept = match fixed_layers {
-        Some(k) => k.min(MAX_LAYERS),
+        Some(k) => k.min(derive_cap),
         None => prm.peel_stop.layers_rendered_after(&fractions, skip_n),
     };
     let candidates = fractions.iter().take_while(|f| **f > 0.0).count();
@@ -2419,7 +2435,7 @@ pub fn exact_item_layers_direct(tris: &[WTri], frame: &PeelFrame, scene: &Scene,
                             let v = t.uv0[0][1] * bc[0] + t.uv0[1][1] * bc[1] + t.uv0[2][1] * bc[2];
                             let fp = fp_tex.get_or_insert_with(|| m.tex.as_ref().map(|tx| (tx.as_ref(), tx.plan(&crate::alphatex::Footprint::of_triangle([[x0, y0], [x1, y1], [x2, y2]], t.uv0, tx.w(), tx.h()), *ALPHA_ANISO))));
                             let op = match fp {
-                                Some((tx, fp)) if !*ALPHA_POINT => tx.passes_planned(u, v, fp, ALPHA_THRESHOLD, crate::alphatex::Address::ClampEdge),
+                                Some((tx, fp)) if !*ALPHA_POINT => if alpha_point_mip() { tx.passes_point(u, v, fp, ALPHA_THRESHOLD) } else { tx.passes_planned(u, v, fp, ALPHA_THRESHOLD, crate::alphatex::Address::ClampEdge) },
                                 _ => m.opaque(u, v),
                             };
                             if !op {
@@ -3068,7 +3084,8 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         // then one fitted to the items — and the accumulate takes the later peel's layer wherever it has
         // one), or the port's own single frame fit to the receivers
         let peels: Vec<PeelFrame> = match prm.frustums.as_ref().and_then(|fs| fs.get(di)).filter(|v| !v.is_empty()) {
-            Some(frs) => frs.iter().map(|fr| PeelFrame::from_frustum(fr, prm.peel_res, prm.peel_res)).collect(),
+            // (the non-exact --tile-res: the fitted tiles — every peel after the world's — at their own size)
+            Some(frs) => frs.iter().enumerate().map(|(pi, fr)| { let r = if pi > 0 && prm.tile_res > 0 { prm.tile_res } else { prm.peel_res }; PeelFrame::from_frustum(fr, r, r) }).collect(),
             None => {
                 let mut fr = PeelFrame::new(*d, bmin, bmax, prm.peel_res);
                 // the game's frustum covers its whole scene (the ground tiles included); ours is fit to
