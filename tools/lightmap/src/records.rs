@@ -581,28 +581,52 @@ pub fn build_map_records(map_path: &str, scene: &crate::geometry::Scene, store: 
     // so the records of two colours never share a group
     let colours = mf.colors();
     let no_lm: Vec<String> = std::env::var("LMTOOL_NO_LM_MATERIALS").map(|v| v.split(',').map(|t| t.to_string()).collect()).unwrap_or_else(|_| vec!["RaceTriggerFX".into(), "\\Decal".into()]);
+    // LMTOOL_ITEM_FILTER_TRACE=1 (port engineer G): which placed items the record walk skips and why — the item the game drops on
+    // load (tiny03: the editor's resave keeps 2 919 of 2 943) against ours
+    let filter_trace = std::env::var_os("LMTOOL_ITEM_FILTER_TRACE").is_some();
     let mut species_cache: std::collections::HashMap<String, Option<Vec<String>>> = Default::default();
     let mut model_cache: std::collections::HashMap<String, Option<(Option<mapgeom::static_item::solid2::PreLightGen>, Option<([f32; 3], [f32; 3])>, mapgeom::veget_instance::TreeParams)>> = Default::default();
     let mut n_kind0 = 0usize;
+    // THE GAME'S ITEM INDEX (port engineer G, 2026-09-26; the WhiteShore "object order" row): the game DROPS an embedded item whose
+    // every material is a decal (no-LM) from its item list on load — tiny03's editor resave holds 2 919 of the source's 2 943 items,
+    // the 24 missing are exactly the placements of AC00000063/64/72/75/76/79/82/101/102/106/140/141 (Stadium\Media\Material\
+    // DecalPlatform, …\Modifier\PlatformGrass\DecalPlatform: nothing else on the model), and the editor's chart obj ids run
+    // compactly over the 2 919 — so every obj id after the first dropped item is one lower per dropped item before it. The chart's
+    // obj id is the game's index into ITS list; `Rec.item` keeps the file index for everything on our side. LMTOOL_ITEM_DROP=none
+    // keeps the file numbering (the pre-rule form). Whether the game's test is "decal-only" or "no material resolves in the
+    // collection's pak set" is RE 13's to pin — on this map the two readings name the same 24.
+    let drop_rule = std::env::var("LMTOOL_ITEM_DROP").unwrap_or_else(|_| "nolm".into());
+    let game_index: Vec<u32> = {
+        let mut out = Vec::with_capacity(mf.items.len());
+        let mut next = 0u32;
+        for (ii, _it) in mf.items.iter().enumerate() {
+            let dropped = drop_rule == "nolm" && inst_of_item.get(&ii).map(|&ki| { let m = &scene.models[scene.instances[ki].model]; !m.mat_links.is_empty() && m.mat_links.iter().all(|l| no_lm.iter().any(|n| l.contains(n.as_str()))) }).unwrap_or(false);
+            out.push(next);
+            if !dropped { next += 1; }
+        }
+        let n_dropped = mf.items.len() as u32 - next;
+        if n_dropped > 0 { notes.push(format!("{n_dropped} decal-only items are not in the game's item list: the chart obj ids of the {} items after the first of them are renumbered (LMTOOL_ITEM_DROP=none keeps the file numbering)", next)); }
+        out
+    };
     for (ii, it) in mf.items.iter().enumerate() {
         if let Some(k) = &opts.kept { if !k.contains(&ii) { continue; } }
         if let Some(&ki) = inst_of_item.get(&ii) {
             let inst = &scene.instances[ki];
             let m = &scene.models[inst.model];
-            let Some(b) = m.plg_bounds else { continue };
-            if !(b[2] > b[0] && b[3] > b[1]) { continue; }
-            if !m.mat_links.is_empty() && m.mat_links.iter().all(|l| no_lm.iter().any(|n| l.contains(n.as_str()))) { continue; }
-            let Some(ir) = irecs.iter().find(|r| r.item == inst.item) else { continue };
-            let Some(rec) = &ir.record else { continue };
+            let Some(b) = m.plg_bounds else { if filter_trace { eprintln!("item-filter: item {ii} {} skipped: no PLG bounds; materials {:?}", it.model, m.mat_links); } continue };
+            if !(b[2] > b[0] && b[3] > b[1]) { if filter_trace { eprintln!("item-filter: item {ii} {} skipped: empty PLG bounds {b:?}; materials {:?}", it.model, m.mat_links); } continue; }
+            if !m.mat_links.is_empty() && m.mat_links.iter().all(|l| no_lm.iter().any(|n| l.contains(n.as_str()))) { if filter_trace { eprintln!("item-filter: item {ii} {} skipped: every material is no-LM {:?}", it.model, m.mat_links); } continue; }
+            let Some(ir) = irecs.iter().find(|r| r.item == inst.item) else { if filter_trace { eprintln!("item-filter: item {ii} {} skipped: no item record", it.model); } continue };
+            let Some(rec) = &ir.record else { if filter_trace { eprintln!("item-filter: item {ii} {} skipped: item record without a box", it.model); } continue };
             let q = crate::layout::item_quality(inst.lm_quality);
             let colour = colours.as_ref().map(|c| c.item(ii)).unwrap_or(0) as u64;
             let group = if std::env::var_os("LMTOOL_NO_COLOUR_CLONES").is_some() || !crate::itemrule::colour_cloned(&m.mat_links) { ((inst.model as u64) << 32) | q.to_bits() as u64 } else { ((inst.model as u64) << 40) | (colour << 32) | q.to_bits() as u64 };
-            recs.push(Rec { class: "item", obj: item_obj0 + ii as u32, sub: 0, meter_by_uv: m.plg_u02, uv: b, quality: q, centre: rec.world.c, half: rec.world.h, group, key_centre: None, pos_rank: None, wall: None, item: Some((ii, format!("{} v{} flags {:#x}", it.model, it.variant(), it.flags))), scale: if inst.pose.scale > 0.0 { inst.pose.scale } else { 1.0 }, mesh: None });
+            recs.push(Rec { class: "item", obj: item_obj0 + game_index[ii], sub: 0, meter_by_uv: m.plg_u02, uv: b, quality: q, centre: rec.world.c, half: rec.world.h, group, key_centre: None, pos_rank: None, wall: None, item: Some((ii, format!("{} v{} flags {:#x}", it.model, it.variant(), it.flags))), scale: if inst.pose.scale > 0.0 { inst.pose.scale } else { 1.0 }, mesh: None });
             n_items += 1;
             continue;
         }
         let list = species_cache.entry(it.model.clone()).or_insert_with(|| { let file = mapgeom::tiny_library::find_item_file(store, &it.model)?; mapgeom::veget::item_species(store, &file).ok() }).clone();
-        let Some(list) = list else { continue };
+        let Some(list) = list else { if filter_trace && inst_of_item.get(&ii).is_none() { eprintln!("item-filter: item {ii} {} skipped: no scene instance and no species list", it.model); } continue };
         if list.is_empty() { continue; }
         let v = it.variant() as usize;
         let Some(species) = list.get(v).or_else(|| list.first()).cloned() else { continue };
@@ -627,7 +651,7 @@ pub fn build_map_records(map_path: &str, scene: &crate::geometry::Scene, store: 
         if std::env::var("LMTOOL_KIND0_GROUP").map(|v| v == "item").unwrap_or(false) { ("legacy", ii).hash(&mut hh); } else { ("legacy", species.as_str()).hash(&mut hh); }
         // LMTOOL_KIND0_KEY=pos|posc: the Morton key from the item position (+ the model box centre) instead of the record centre
         let key_centre = match std::env::var("LMTOOL_KIND0_KEY").ok().as_deref() { Some("pos") => Some(it.pos), Some("posc") => Some([it.pos[0] + c[0], it.pos[1] + c[1], it.pos[2] + c[2]]), Some("zero") => Some([0.0, 0.0, 0.0]), Some("cell") => Some([it.file_cell[0] as f32 * 32.0, it.file_cell[1] as f32 * 8.0, it.file_cell[2] as f32 * 32.0]), _ => None };
-        recs.push(Rec { class: "item0", obj: item_obj0 + ii as u32, sub: 0, meter_by_uv: plg.u02, uv: [plg.u04[0], plg.u04[1], plg.u04[2], plg.u04[3]], quality: q, centre, half, group: (hh.finish() & 0x0000_FFFF_FFFF_0000) | q.to_bits() as u64, key_centre, pos_rank: None, wall: None, item: Some((ii, species.clone())), scale: 1.0, mesh: None });
+        recs.push(Rec { class: "item0", obj: item_obj0 + game_index[ii], sub: 0, meter_by_uv: plg.u02, uv: [plg.u04[0], plg.u04[1], plg.u04[2], plg.u04[3]], quality: q, centre, half, group: (hh.finish() & 0x0000_FFFF_FFFF_0000) | q.to_bits() as u64, key_centre, pos_rank: None, wall: None, item: Some((ii, species.clone())), scale: 1.0, mesh: None });
         n_items += 1;
         n_kind0 += 1;
     }
