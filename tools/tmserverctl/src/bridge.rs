@@ -29,6 +29,7 @@ pub fn parse_chat_command(text: &str) -> Option<Vec<String>> {
         "bots" | "bot" | "balloons" | "ballons" => "bots",
         "grip" | "adherence" | "friction" => "grip",
         "botgravity" | "bg" | "botg" | "ballongravity" => "botgravity",
+        "botmodel" | "botcar" | "model" => "botmodel",
         "collisions" | "collision" | "col" => "collisions",
         "status" | "lowg" | "low-g" | "lowgravity" => "status",
         _ => return None,

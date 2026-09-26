@@ -32,7 +32,11 @@ declare Integer G_WantedBots;
 declare Integer G_MaxBots;
 declare Boolean G_BotsAreFakeUsers;
 declare Integer G_LastBotSync;
-declare CUILayer G_HintLayer;				///< the one-line command reminder at the top of every screen
+declare CUILayer G_HintLayer;
+declare Ident[Text] G_BotModels;			///< "sport"|"snow"|"rally"|"desert"|"skin" => item-list Ident for CreateBotPlayer
+declare Text G_BotModel;					///< which of them new balloons get ("" = engine default via SetNbBotPlayers)
+declare Text G_BotSkinUrl;				///< skin (zip URL or Skins/Models/... path) registered as "skin"
+declare Boolean G_ItemListOk;				///< the one-line command reminder at the top of every screen
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
 // Functions
@@ -197,7 +201,17 @@ Void SyncBots() {
 			DestroyAllBotPlayers();
 			return;
 		}
-		SetNbBotPlayers(Want, 0);
+		if (G_BotModel != "" && G_BotModels.existskey(G_BotModel) && G_BotModels[G_BotModel] != NullId) {
+			// A chosen vehicle/skin: bots are created one by one with that model.
+			if (BotPlayers.count > Want) {
+				DestroyAllBotPlayers();
+			}
+			for (I, BotPlayers.count + 1, Want) {
+				declare CSmPlayer Bot <=> CreateBotPlayer(G_BotModels[G_BotModel], 0);
+			}
+		} else {
+			SetNbBotPlayers(Want, 0);
+		}
 	}
 }
 
@@ -216,7 +230,7 @@ Void SpawnBots() {
 /// Snapshot for tmserverctl / debugging: one callback with one Text per line.
 Void SendStatus() {
 	declare Text[] Lines;
-	Lines.add("default=" ^ Fmt(G_DefaultGravity) ^ " collisions=" ^ G_Collisions ^ " balloons=" ^ BalloonCount() ^ "/" ^ G_WantedBots ^ " botgravity=" ^ Fmt(G_BotGravity) ^ " botadherence=" ^ Fmt(G_BotAdherence) ^ " fakeusers=" ^ G_BotsAreFakeUsers ^ " players=" ^ Players.count ^ " bots=" ^ BotPlayers.count);
+	Lines.add("default=" ^ Fmt(G_DefaultGravity) ^ " collisions=" ^ G_Collisions ^ " balloons=" ^ BalloonCount() ^ "/" ^ G_WantedBots ^ " botgravity=" ^ Fmt(G_BotGravity) ^ " botadherence=" ^ Fmt(G_BotAdherence) ^ " botmodel=" ^ G_BotModel ^ " itemlist=" ^ G_ItemListOk ^ " fakeusers=" ^ G_BotsAreFakeUsers ^ " players=" ^ Players.count ^ " bots=" ^ BotPlayers.count);
 	declare CSmPlayer[] Everyone;
 	foreach (Player in Players) Everyone.add(Player);
 	foreach (Bot in BotPlayers) {
@@ -226,7 +240,7 @@ Void SendStatus() {
 		declare Text Login = "";
 		if (Player.User != Null) Login = Player.User.Login;
 		declare Integer LowG_ApplyCount for Player = 0;
-		Lines.add(Login ^ " spawn=" ^ Player.SpawnStatus ^ " gravity=" ^ Fmt(Player.GravityCoef) ^ " wanted=" ^ Fmt(WantedGravity(Player)) ^ " adherence=" ^ Fmt(Player.AdherenceCoef) ^ " balloon=" ^ IsBalloon(Player) ^ " orders=" ^ LowG_ApplyCount ^ " kmh=" ^ ML::NearestInteger(Player.Speed * 3.6));
+		Lines.add(Login ^ " spawn=" ^ Player.SpawnStatus ^ " gravity=" ^ Fmt(Player.GravityCoef) ^ " wanted=" ^ Fmt(WantedGravity(Player)) ^ " adherence=" ^ Fmt(Player.AdherenceCoef) ^ " balloon=" ^ IsBalloon(Player) ^ " model=" ^ Player.ForceModelId ^ " orders=" ^ LowG_ApplyCount ^ " kmh=" ^ ML::NearestInteger(Player.Speed * 3.6));
 	}
 	XmlRpc.SendCallbackArray(C_Event_Status, Lines);
 }
@@ -297,6 +311,26 @@ Void HandleCommand(Text[] _Params) {
 			G_BotGravity = ML::Clamp(TL::ToReal(_Params[2]), 0., 1.);
 			TellAll(NameOf(Caller, Login) ^ "$z set the balloons' gravity to " ^ Fmt(G_BotGravity));
 		}
+		case "botmodel": {
+			if (_Params.count < 3) {
+				declare Text Current = G_BotModel;
+				if (Current == "") Current = "default";
+				Tell(Caller, "balloon model: " ^ Current ^ " -- /botmodel sport|snow|rally|desert|skin|default (item list ok=" ^ G_ItemListOk ^ ")");
+				return;
+			}
+			declare Text Model = TL::ToLowerCase(_Params[2]);
+			if (Model == "default" || Model == "reset") {
+				G_BotModel = "";
+			} else if (!G_BotModels.existskey(Model) || G_BotModels[Model] == NullId) {
+				Tell(Caller, "unknown or unregistered model " ^ Model ^ " -- sport|snow|rally|desert|skin|default");
+				return;
+			} else {
+				G_BotModel = Model;
+			}
+			if (BotPlayers.count > 0) DestroyAllBotPlayers();
+			SyncBots();
+			TellAll(NameOf(Caller, Login) ^ "$z set the balloons' model to " ^ Model);
+		}
 		case "collisions": {
 			if (_Params.count < 3) {
 				Tell(Caller, "collisions: " ^ G_Collisions ^ " -- /collisions on|off");
@@ -328,6 +362,27 @@ Void HandleEvents() {
 	}
 }
 
+/**
+ *	Register the vehicle models (and one skinned CarSport) the balloons may use. The item list is
+ *	the engine's registry of spawnable models; FlagRush registers "CarSport"/"CarSnow"/"CarRally"/
+ *	"CarDesert" and skinned variants ("CarSport" + a skin URL) this way and sets ForceModelId.
+ *	Whether a second ItemList_Begin() is accepted after the Time Attack base built its own list is
+ *	what the harness test establishes (G_ItemListOk + the Idents are logged).
+ */
+Void RegisterBotModels(Text _SkinUrl) {
+	G_BotModels.clear();
+	G_BotSkinUrl = _SkinUrl;
+	ItemList_Begin();
+	G_ItemListOk = True;
+	G_BotModels["sport"] = ItemList_Add("CarSport");
+	G_BotModels["snow"] = ItemList_Add("CarSnow");
+	G_BotModels["rally"] = ItemList_Add("CarRally");
+	G_BotModels["desert"] = ItemList_Add("CarDesert");
+	if (_SkinUrl != "") G_BotModels["skin"] = ItemList_AddWithSkin("CarSport", _SkinUrl);
+	ItemList_End();
+	log("LowG item list: begin=" ^ G_ItemListOk ^ " sport=" ^ G_BotModels["sport"] ^ " snow=" ^ G_BotModels["snow"] ^ " rally=" ^ G_BotModels["rally"] ^ " desert=" ^ G_BotModels["desert"] ^ " skin=" ^ (G_BotModels.existskey("skin") && G_BotModels["skin"] != NullId));
+}
+
 /// A permanent one-line reminder of the chat commands (a chat message is gone in a minute).
 Void CreateHint() {
 	if (G_HintLayer != Null) return;
@@ -353,7 +408,7 @@ Void DestroyHint() {
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
 
 /// Match_StartServer: take the settings, reset the state.
-Void Load(Real _DefaultGravity, Boolean _Collisions, Integer _Bots, Real _BotGravity, Real _BotAdherence, Integer _MaxBots, Boolean _BotsAreFakeUsers) {
+Void Load(Real _DefaultGravity, Boolean _Collisions, Integer _Bots, Real _BotGravity, Real _BotAdherence, Integer _MaxBots, Boolean _BotsAreFakeUsers, Text _BotSkinUrl) {
 	G_DefaultGravity = ML::Clamp(_DefaultGravity, 0., 1.);
 	G_BotAdherence = ML::Clamp(_BotAdherence, 0., 1.);
 	G_SettingBotGravity = _BotGravity;
@@ -365,6 +420,8 @@ Void Load(Real _DefaultGravity, Boolean _Collisions, Integer _Bots, Real _BotGra
 	G_BotsAreFakeUsers = _BotsAreFakeUsers;
 	G_GravityByLogin.clear();
 	G_LastBotSync = 0;
+	G_BotModel = "";
+	RegisterBotModels(_BotSkinUrl);
 	// Low-gravity times must not pollute the normal leaderboards.
 	Scores_AutoUploadPersonalBests = False;
 	SetGameModeNameAndCustomData("LowG", "", "");
