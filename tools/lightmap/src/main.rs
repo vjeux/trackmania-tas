@@ -33,7 +33,7 @@ fn t_quarter(dt: Option<u32>, x: &lightmap::moods::MoodXml) -> bool {
 /// lightsum, byte-identical files with LMTOOL_BAKE_TIME pinned).
 ///   fast    = --layers-estimate --early-dirs-scale 0.25 (every frame exact: giant 28.5 → 5.0 min, RMSE 2.5 %)
 ///   faster  = fast + --alpha-point
-///   fastest = --layers-estimate --early-dirs-scale 0.25 --tiles-from-world --world-res 8192 --alpha-point
+///   fastest = --layers-estimate --early-dirs-scale 0.25 --tiles-from-world --world-res-scale 2 --alpha-point (one world frame at twice the rule's size: giant 1.7 min = 16.6×, RMSE 6.7 %)
 /// Measured on Summer-16-Tiny and Summer-23-Giant q4 against the exact bake (tiny/lightmap-re/preset-fast/README.md):
 /// every sweep re-integrates the sky with its own direction set and the written map is the LAST sweep's, so the
 /// last sweep keeps its 128 directions (`--early-dirs-scale` cuts the earlier ones, which only feed the smooth
@@ -46,6 +46,8 @@ struct Preset {
     tile_res: u32,
     /// `--world-res N`: the WORLD peel's frame size (0 = the tiling rule's) — with --tiles-from-world a finer single frame stands in for the tiles.
     world_res: u32,
+    /// `--world-res-scale K`: the world peel's frame at K × the tiling rule's target size (4096 → 8192 on the 2048 m maps, 2048 → 4096 where the rule chose 2048²), capped at 16384; 0 = off. Relative, so a map whose rule picked 2048² does not get a 7 cm pixel and its self-shadowing acne (Summer-20 GreenCoast under an absolute 8192: RMSE 19 %).
+    world_res_scale: u32,
     /// `--tiles-from-world`: no fitted tiles — every texel reads the world peel alone.
     tiles_from_world: bool,
     /// `--layers-estimate`: the census layer statistic instead of the exact whole-frame count (`--layers-exact` undoes a preset's).
@@ -66,14 +68,14 @@ struct Preset {
 
 impl Preset {
     fn exact() -> Preset {
-        Preset { tile_res: 0, world_res: 0, tiles_from_world: false, layers_estimate: false, dirs_scale: 1.0, bounce_dirs_scale: 1.0, early_dirs_scale: 1.0, max_layers: lightmap::peelcap::PeelStop::default().max_renders, alpha_point: false, sweeps: 0 }
+        Preset { tile_res: 0, world_res: 0, world_res_scale: 0, tiles_from_world: false, layers_estimate: false, dirs_scale: 1.0, bounce_dirs_scale: 1.0, early_dirs_scale: 1.0, max_layers: lightmap::peelcap::PeelStop::default().max_renders, alpha_point: false, sweeps: 0 }
     }
     fn named(name: &str) -> Preset {
         match name {
             "exact" | "off" | "none" => Preset::exact(),
             "fast" => Preset { layers_estimate: true, early_dirs_scale: 0.25, ..Preset::exact() },
             "faster" => Preset { alpha_point: true, ..Preset::named("fast") },
-            "fastest" => Preset { tiles_from_world: true, world_res: 8192, layers_estimate: true, early_dirs_scale: 0.25, alpha_point: true, ..Preset::exact() },
+            "fastest" => Preset { tiles_from_world: true, world_res_scale: 2, layers_estimate: true, early_dirs_scale: 0.25, alpha_point: true, ..Preset::exact() },
             o => panic!("--preset exact|fast|faster|fastest, not {o}"),
         }
     }
@@ -83,6 +85,7 @@ impl Preset {
         let mut p = f("--preset").map(|n| Preset::named(&n)).unwrap_or_else(Preset::exact);
         if let Some(v) = f("--tile-res") { p.tile_res = v.parse().expect("--tile-res N"); }
         if let Some(v) = f("--world-res") { p.world_res = v.parse().expect("--world-res N"); }
+        if let Some(v) = f("--world-res-scale") { p.world_res_scale = v.parse().expect("--world-res-scale K"); }
         if has("--tiles-from-world") { p.tiles_from_world = true; }
         if has("--layers-estimate") { p.layers_estimate = true; }
         if has("--layers-exact") { p.layers_estimate = false; }
@@ -102,6 +105,7 @@ impl Preset {
         let mut v: Vec<String> = Vec::new();
         if self.tile_res != 0 { v.push(format!("--tile-res {}", self.tile_res)); }
         if self.world_res != 0 { v.push(format!("--world-res {}", self.world_res)); }
+        if self.world_res_scale != 0 { v.push(format!("--world-res-scale {}", self.world_res_scale)); }
         if self.tiles_from_world { v.push("--tiles-from-world".into()); }
         if self.layers_estimate { v.push("--layers-estimate".into()); }
         if self.dirs_scale != 1.0 { v.push(format!("--dirs-scale {}", self.dirs_scale)); }
@@ -2188,7 +2192,7 @@ fn run(a: Vec<String>) {
                 let plan = lightmap::tiledpeel::plan(&recs, tiles_box, chunks_aabb.as_ref(), alloc_scale, tq, vram, max_tiles);
                 // the non-exact knobs on the plan: the tiles at --tile-res, or none at all (--tiles-from-world)
                 let plan = if preset.tiles_from_world { plan.world_only() } else if preset.tile_res != 0 { plan.with_tile_size(preset.tile_res) } else { plan };
-                let plan = if preset.world_res != 0 { plan.with_world_size(preset.world_res) } else { plan };
+                let plan = if preset.world_res != 0 { plan.with_world_size(preset.world_res) } else if preset.world_res_scale > 1 { let s = (plan.size * preset.world_res_scale).min(16384); plan.with_world_size(s) } else { plan };
                 eprintln!("peel cameras: {} item records, scene box [{:.1}, {:.1}]×[{:.1}, {:.1}]×[{:.1}, {:.1}], world peel box [{:.1}, {:.1}]×[{:.1}, {:.1}]×[{:.1}, {:.1}]; tiling at scale {alloc_scale:.3} layout units/m: ext {:.1} → target {}², n = {}, {} fitted tile(s){}{}", recs.len(), plan.scene.min()[0], plan.scene.max()[0], plan.scene.min()[1], plan.scene.max()[1], plan.scene.min()[2], plan.scene.max()[2], plan.world.min[0], plan.world.max[0], plan.world.min[1], plan.world.max[1], plan.world.min[2], plan.world.max[2], plan.ext, plan.size, plan.n, plan.tiles.len(), if plan.tiles.is_empty() { " (the world pass only)" } else { "" }, if plan.tile_size != plan.size { format!(" at {}² (NON-EXACT --tile-res)", plan.tile_size) } else { String::new() });
                 for (i, t) in plan.tiles.iter().enumerate() { eprintln!("  tile {i}: [{:.1}, {:.1}]×[{:.1}, {:.1}]×[{:.1}, {:.1}]", t.min[0], t.max[0], t.min[1], t.max[1], t.min[2], t.max[2]); }
                 if plan.size != prm.peel_res { eprintln!("peel cameras: peel resolution {} → {}", prm.peel_res, plan.size); prm.peel_res = plan.size; }
