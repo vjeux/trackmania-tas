@@ -98,6 +98,9 @@ pub struct BakeParams {
     pub ambient_la: [f32; 3],
     /// 1 = the direct sun is baked (the pre-2026-09-23 model); 0 = the sun only feeds the bounce
     /// (the game: the sun is real-time, the lightmap is diffuse AMBIENT — RE child, disassembly).
+    /// The MOON is the directional light (RE 11, 15:25Z: |LDirSun| ≤ |LDirMoon| on the blended mood — every Night mood): `sun`
+    /// carries LDirMoon.HdrColor and `sun_dir` the constant moon position (−2/3, 1/3, −2/3); the dome's sun disc is off.
+    pub moon: bool,
     pub direct_sun: f32,
     /// Multiply the ambient term by the dome visibility (the editor's enclosed texels go to ~0).
     pub ambient_ao: bool,
@@ -320,6 +323,7 @@ impl Default for BakeParams {
             light_k: 0.27,
             ambient_la: [0.0; 3],
             direct_sun: 1.0,
+            moon: false,
             ambient_ao: false,
             dome_deg: 90.0,
             ground_bounce: 0.37,

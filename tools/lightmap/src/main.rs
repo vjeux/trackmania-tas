@@ -1240,7 +1240,18 @@ fn run(a: Vec<String>) {
                         Err(e) => eprintln!("dome: {e}; using stratified random directions"),
                     }
                 }
-                prm.sun = if has("--no-sun-bounce") { [0.0; 3] } else { x.l_dir_sun };
+                // THE MOON BRANCH (RE 11, 2026-09-26 15:25Z, decomp57): on the BLENDED mood, |LDirSun.HdrColor| ≤ |LDirMoon.HdrColor| →
+                // the zone's directional light is the MOON: colour = LDirMoon.HdrColor exactly (the parser's scale/rgb split recombines;
+                // no MoonHdrScale), direction = the CONSTANT CPlugMoodSetting+0x5c = normalize(0.8, −0.4, 0.8) = (2/3, −1/3, 2/3) (the
+                // ctor 0x1405142c0; no XML tag, the blender lerps the same constant, the arc FUN_140494810 is NOT called) — the light
+                // travels toward +x/+z and down at asin(1/3) = 19.47°, identical for every mood / collection / latitude; the same light
+                // object (flag |= 4) casts the sun-pass shadow map and takes the N-direction set exactly as the sun; only the dome's
+                // sun disc is disabled (SunIsVisible 0). Every Night mood has LDirSun = 0 → the moon, always. --no-moon keeps the sun.
+                let norm3 = |v: [f32; 3]| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+                let moon_branch = !has("--no-moon") && norm3(x.l_dir_sun) <= norm3(x.l_dir_moon);
+                prm.moon = moon_branch;
+                if moon_branch { eprintln!("moon: |LDirSun| {:.4} ≤ |LDirMoon| {:.4} → the moon is the directional light: colour {:?}, D = (2/3, −1/3, 2/3) (az 225.0° el 19.5°), the sun disc off", norm3(x.l_dir_sun), norm3(x.l_dir_moon), x.l_dir_moon); }
+                prm.sun = if has("--no-sun-bounce") { [0.0; 3] } else if moon_branch { x.l_dir_moon } else { x.l_dir_sun };
                 if let Some(v) = f("--decor-ambient") { prm.decor_ambient = v.parse().unwrap(); }
                 if let Some(v) = f("--water-reflect") { prm.water_reflect = v.parse().unwrap(); }
                 if let Some(v) = f("--water-sun") { prm.water_sun = v.parse().unwrap(); }
@@ -1312,10 +1323,18 @@ fn run(a: Vec<String>) {
                     eprintln!("sun: blend key {u:.4} → time {time:.4} → arc b {b:.4}, latitude {lat_d}°");
                     (sp[0].atan2(sp[2]).to_degrees().rem_euclid(360.0), sp[1].clamp(-1.0, 1.0).asin().to_degrees())
                 };
+                if moon_branch {
+                    // the moon's position = −D = (−2/3, 1/3, −2/3): az = atan2(−2/3, −2/3) = 225°, el = asin(1/3) = 19.47° (the port's
+                    // az from +z toward +x)
+                    let sp = [-2.0f32 / 3.0, 1.0 / 3.0, -2.0 / 3.0];
+                    az_d = sp[0].atan2(sp[2]).to_degrees().rem_euclid(360.0);
+                    el_d = sp[1].asin().to_degrees();
+                }
                 if let Some(v) = f("--sun-az") { az_d = v.parse().unwrap(); }
                 if let Some(v) = f("--sun-el") { el_d = v.parse().unwrap(); }
                 let (ar, er) = (az_d.to_radians(), el_d.to_radians());
                 prm.sun_dir = [er.cos() * ar.sin(), er.sin(), er.cos() * ar.cos()];
+                if moon_branch { prm.sun_dir = [-2.0 / 3.0, 1.0 / 3.0, -2.0 / 3.0]; }
                 eprintln!("model xml: {} {} (decoration {}, daytime {}) — LAmbient {:?} SkyFactor {} Bounce {} MaxHDR {}; sun az {az_d:.1}° el {el_d:.1}° (direct {})", x.collection, x.mood, mf0.decoration_id, match dt { Some(v) if v != 0xffff_ffff => format!("{:.3}", v as f32 / 65536.0), _ => format!("default → {t:.3}") }, x.l_ambient, x.sky_factor, x.bounce_factor, x.max_hdr, prm.direct_sun > 0.0);
             } else if let Some(p) = mood_sel {
                 prm.sky = p.sky; prm.sun = p.sun; prm.ambient = p.ambient; prm.up = p.up; prm.light_k = p.light_k;
