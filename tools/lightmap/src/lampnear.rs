@@ -41,7 +41,7 @@ pub fn write_lights_tsv(path: &str, lamps: &[crate::localdrive::Lamp], map_path:
         let model = match l.owner.strip_prefix("item ").and_then(|n| n.trim().parse::<usize>().ok()).and_then(|i| mf.items.get(i)) { Some(it) => it.model.rsplit('\\').next().unwrap_or(&it.model).to_string(), None => l.owner.clone() };
         let p = l.light.pos;
         let dd = l.light.dir;
-        writeln!(fh, "{}\t{}\t{model}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{}\t{:#x}\t{:#x}\t{}\t{:.4}\t{:.4}\t{:.4}\t{:.1}\t{:.1}", l.id, l.owner, p[0], p[1], p[2], l.light.radius, l.r_eff, l.light.intensity, l.light.color[0], l.light.color[1], l.light.color[2], l.light.night_only, l.light.ball_flags, l.light.gx_flags, l.samples.len(), dd[0], dd[1], dd[2], l.light.cone.0, l.light.cone.1).map_err(|e| e.to_string())?;
+        writeln!(fh, "{}\t{}\t{model}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{}\t{:#x}\t{:#x}\t{}\t{:.4}\t{:.4}\t{:.4}\t{:.1}\t{:.1}", l.id, l.owner, p[0], p[1], p[2], l.light.radius, l.r_eff, l.light.intensity, l.light.color[0], l.light.color[1], l.light.color[2], l.light.night_only, l.light.ball_flags, l.light.gx_flags, 1usize /* the emitter-sample count: E's emitter-area commit is reverted in this base, so every lamp is one sample */, dd[0], dd[1], dd[2], l.light.cone.0, l.light.cone.1).map_err(|e| e.to_string())?;
     }
     Ok(())
 }
