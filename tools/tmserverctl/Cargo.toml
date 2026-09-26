@@ -1,0 +1,8 @@
+[package]
+name = "tmserverctl"
+version.workspace = true
+edition = "2021"
+description = "Supervisor, XML-RPC client and chat-command bridge for a Trackmania 2020 dedicated server on a no-root host"
+
+[dependencies]
+libc = "0.2"

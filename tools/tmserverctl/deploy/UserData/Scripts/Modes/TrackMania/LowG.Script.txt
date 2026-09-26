@@ -1,0 +1,61 @@
+/**
+ *	LowG -- Nadeo's online Time Attack plus:
+ *	  - a gravity coefficient per player (0 = weightless .. 1 = normal), chosen in chat
+ *	  - car-to-car collisions (UsePvPCollisions)
+ *	  - "balloon" bots: driverless cars parked on the start, very light, to be pushed around
+ *
+ *	This script EXTENDS TM_TimeAttack_Online, so everything Time Attack does (spawns,
+ *	chrono, scores, map rotation, warm-up settings...) is untouched; the labels below are
+ *	appended to the base ones. The logic and state live in Libs/LowG/LowG.Script.txt.
+ *
+ *	The game gives a mode script no access to chat, so commands arrive as XML-RPC
+ *	mode-script events. tmserverctl (the supervisor next to the server) reads the chat
+ *	through XML-RPC and forwards a line such as "/gravity 0.3" as
+ *	    TriggerModeScriptEventArray("LowG.Cmd", [Login, "gravity", "0.3"])
+ *	Commands (all arguments are Text):
+ *	    LowG.Cmd [Login, "gravity", "<0..1>"]          gravity of the caller, applied to the live car
+ *	    LowG.Cmd [Login, "gravity", "all", "<0..1>"]   everyone's gravity + the default for newcomers
+ *	    LowG.Cmd [Login, "gravity", "reset"]           back to the server default
+ *	    LowG.Cmd [Login, "bots", "<0..N>"]             park N balloon bots on the start line
+ *	    LowG.Cmd [Login, "collisions", "on"|"off"]     car-to-car collisions
+ *	    LowG.Cmd [Login, "status"]                     what is set right now (+ "LowG.Status" callback)
+ *	Replies go back to the caller as chat lines.
+ */
+#Extends "Modes/Trackmania/TM_TimeAttack_Online.Script.txt"
+
+#Include "Libs/LowG/LowG.Script.txt" as LowG
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
+// Settings (matchsettings <mode_script_settings>, or SetModeScriptSettings at runtime)
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
+#Setting S_LowG_DefaultGravity 0.5 as "Gravity coefficient (0..1) of players who did not choose one"
+#Setting S_LowG_Collisions True as "Car-to-car collisions"
+#Setting S_LowG_Bots 0 as "Balloon bots parked on the start line at each map start"
+#Setting S_LowG_BotGravity 0.05 as "Gravity coefficient of the balloon bots"
+#Setting S_LowG_MaxBots 16 as "Upper bound for /bots"
+#Setting S_LowG_BotsAreFakeUsers False as "Balloons are fake users (named, in the player list) instead of engine bots"
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
+// Extends
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
+
+***Match_StartServer***
+***
+LowG::Load(S_LowG_DefaultGravity, S_LowG_Collisions, S_LowG_Bots, S_LowG_BotGravity, S_LowG_MaxBots, S_LowG_BotsAreFakeUsers);
+***
+
+***Match_StartMap***
+***
+LowG::StartMap();
+***
+
+***Match_Yield***
+***
+LowG::UpdateSettings(S_LowG_BotGravity, S_LowG_MaxBots);
+LowG::Yield();
+***
+
+***Match_EndServer***
+***
+LowG::Unload();
+***

@@ -1,0 +1,331 @@
+/**
+ *	LowG library -- the state and logic behind the LowG mode (Modes/TrackMania/LowG.Script.txt).
+ *
+ *	A mode that #Extends another script cannot own top-level variables (the compiler
+ *	stops with "unexpected end of file"), so everything with state lives here, as
+ *	Nadeo's and FlagRush's libraries do.
+ *
+ *	#RequireContext CSmMode
+ */
+#Include "TextLib" as TL
+#Include "MathLib" as ML
+
+#Const Version "2026-09-26"
+#Const ScriptName "Libs/LowG/LowG.Script.txt"
+
+#Const C_Prefix "$0cf[low-g]$z "
+#Const C_Event_Cmd "LowG.Cmd"			///< TriggerModeScriptEventArray("LowG.Cmd", [Login, Command, Args...])
+#Const C_Event_Status "LowG.Status"	///< sent back with one Text per line
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
+// Globals
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
+declare Real[Text] G_GravityByLogin;	///< login => coefficient chosen in chat
+declare Real G_DefaultGravity;			///< for players without a choice
+declare Real G_BotGravity;
+declare Boolean G_Collisions;
+declare Integer G_WantedBots;
+declare Integer G_MaxBots;
+declare Boolean G_BotsAreFakeUsers;
+declare Integer G_LastBotSync;
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
+// Functions
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
+
+Text Fmt(Real _Coef) {
+	return TL::FormatReal(_Coef, 2, False, False);
+}
+
+/// Chat line to one player (Null-safe; bots have no UI).
+Void Tell(CSmPlayer _Player, Text _Message) {
+	if (_Player == Null) return;
+	declare CUIConfig UI <=> UIManager.GetUI(_Player);
+	if (UI == Null) return;
+	UI.SendChat(C_Prefix ^ _Message);
+}
+
+/// Chat line to everyone.
+Void TellAll(Text _Message) {
+	UIManager.UIAll.SendChat(C_Prefix ^ _Message);
+}
+
+Text NameOf(CSmPlayer _Player, Text _Fallback) {
+	if (_Player != Null && _Player.User != Null) return _Player.User.Name;
+	return _Fallback;
+}
+
+Boolean IsBalloon(CSmPlayer _Player) {
+	return _Player.IsBot || _Player.IsFakePlayer;
+}
+
+/// The coefficient a player should be driving with right now.
+Real WantedGravity(CSmPlayer _Player) {
+	if (IsBalloon(_Player)) return G_BotGravity;
+	if (_Player.User != Null && G_GravityByLogin.existskey(_Player.User.Login)) {
+		return G_GravityByLogin[_Player.User.Login];
+	}
+	return G_DefaultGravity;
+}
+
+/**
+ *	Push the wanted coefficient to a car. The Delayed setters act on the live vehicle
+ *	(that is how FlagRush tunes its cars), but the engine keeps only a few pending
+ *	orders per player, so try again next tick when the queue is full. A spawn (StartTime
+ *	changes) gives a fresh car, so the order is repeated then.
+ */
+Void Apply(CSmPlayer _Player) {
+	declare Real LowG_AppliedCoef for _Player = -1.;
+	declare Integer LowG_AppliedStartTime for _Player = -1;
+	declare Integer LowG_AppliedAt for _Player = -1;
+
+	if (_Player.SpawnStatus != CSmPlayer::ESpawnStatus::Spawned) {
+		LowG_AppliedStartTime = -1;
+		return;
+	}
+	declare Real Wanted = ML::Clamp(WantedGravity(_Player), 0., 1.);
+	declare Boolean Fresh = (LowG_AppliedStartTime != _Player.StartTime);
+	declare Boolean Changed = (LowG_AppliedCoef != Wanted);
+	// The engine may drop an order that lands during the spawn animation: one more try a
+	// second later if the car still reports another value.
+	declare Boolean Confirm = (LowG_AppliedAt > 0 && Now - LowG_AppliedAt > 1000 && Now - LowG_AppliedAt < 1500 && _Player.GravityCoef != Wanted);
+	if (!Fresh && !Changed && !Confirm) return;
+	if (SetPlayer_DelayedIsFull(_Player)) return;
+
+	SetPlayer_Delayed_GravityCoef(_Player, Wanted);
+	// Balloons must not drive away.
+	if (IsBalloon(_Player) && Fresh && !SetPlayer_DelayedIsFull(_Player)) {
+		SetPlayer_Delayed_NoEngine(_Player, True);
+	}
+	LowG_AppliedCoef = Wanted;
+	LowG_AppliedStartTime = _Player.StartTime;
+	LowG_AppliedAt = Now;
+}
+
+Void ApplyCollisions() {
+	if (UsePvPCollisions != G_Collisions) UsePvPCollisions = G_Collisions;
+	if (!G_Collisions) return;
+	foreach (Player in Players) {
+		// Time Attack lets each client simulate itself (nobody interacts). With collisions
+		// the server must own the simulation, as FlagRush does.
+		if (Player.TrustClientSimu) Player.TrustClientSimu = False;
+		if (Player.UseCrudeExtrapolation) Player.UseCrudeExtrapolation = False;
+	}
+}
+
+Integer BalloonCount() {
+	declare Integer N = 0;
+	foreach (Player in Players) {
+		if (IsBalloon(Player)) N += 1;
+	}
+	return N;
+}
+
+Integer FakeUserCount() {
+	declare Integer Have = 0;
+	foreach (User in Users) {
+		if (User.IsFakeUser) Have += 1;
+	}
+	return Have;
+}
+
+/**
+ *	Make the number of balloons match G_WantedBots.
+ *	Fake users (default) join like players, so Time Attack itself puts them on the start
+ *	line and they show in the player list as "Ballon N". Engine bots (SetNbBotPlayers)
+ *	live in BotPlayers only, outside Time Attack's spawn loop, so SpawnBots() below parks
+ *	them on the first start block.
+ */
+Void SyncBots() {
+	declare Integer Want = ML::Clamp(G_WantedBots, 0, G_MaxBots);
+	if (G_BotsAreFakeUsers) {
+		if (BotPlayers.count > 0) DestroyAllBotPlayers();
+		declare Integer Have = FakeUserCount();
+		if (Have == Want) return;
+		if (Want < Have) {
+			Users_DestroyAllFakes();
+			Have = 0;
+		}
+		for (I, Have + 1, Want) {
+			declare CUser Fake <=> Users_CreateFake("$fa0Ballon " ^ I, 0);
+		}
+	} else {
+		if (FakeUserCount() > 0) Users_DestroyAllFakes();
+		if (BotPlayers.count == Want) return;
+		if (Want == 0) {
+			DestroyAllBotPlayers();
+			return;
+		}
+		SetNbBotPlayers(Want, 0);
+	}
+}
+
+/// Engine bots are not spawned by anyone else: park the idle ones on the start block.
+Void SpawnBots() {
+	if (MapLandmarks_PlayerSpawn.count == 0) return;
+	foreach (Bot in BotPlayers) {
+		if (Bot.SpawnStatus != CSmPlayer::ESpawnStatus::NotSpawned) continue;
+		declare Integer LowG_BotSpawnRequestedAt for Bot = -1;
+		if (LowG_BotSpawnRequestedAt > 0 && Now - LowG_BotSpawnRequestedAt < 3000) continue;
+		LowG_BotSpawnRequestedAt = Now;
+		SpawnBotPlayer(Bot, 0, 100, MapLandmarks_PlayerSpawn[0].PlayerSpawn, Now);
+	}
+}
+
+/// Snapshot for tmserverctl / debugging: one callback with one Text per line.
+Void SendStatus() {
+	declare Text[] Lines;
+	Lines.add("default=" ^ Fmt(G_DefaultGravity) ^ " collisions=" ^ G_Collisions ^ " balloons=" ^ BalloonCount() ^ "/" ^ G_WantedBots ^ " fakeusers=" ^ G_BotsAreFakeUsers ^ " players=" ^ Players.count ^ " bots=" ^ BotPlayers.count);
+	declare CSmPlayer[] Everyone;
+	foreach (Player in Players) Everyone.add(Player);
+	foreach (Bot in BotPlayers) {
+		if (!Everyone.exists(Bot)) Everyone.add(Bot);
+	}
+	foreach (Player in Everyone) {
+		declare Text Login = "";
+		if (Player.User != Null) Login = Player.User.Login;
+		Lines.add(Login ^ " spawn=" ^ Player.SpawnStatus ^ " gravity=" ^ Fmt(Player.GravityCoef) ^ " wanted=" ^ Fmt(WantedGravity(Player)) ^ " balloon=" ^ IsBalloon(Player) ^ " kmh=" ^ ML::NearestInteger(Player.Speed * 3.6));
+	}
+	XmlRpc.SendCallbackArray(C_Event_Status, Lines);
+}
+
+Void HandleCommand(Text[] _Params) {
+	if (_Params.count < 2) return;
+	declare Text Login = _Params[0];
+	declare Text Cmd = TL::ToLowerCase(_Params[1]);
+	declare CSmPlayer Caller <=> GetPlayer(Login);
+
+	switch (Cmd) {
+		case "gravity": {
+			if (_Params.count < 3) {
+				declare Text Current = "server default " ^ Fmt(G_DefaultGravity);
+				if (G_GravityByLogin.existskey(Login)) Current = "yours " ^ Fmt(G_GravityByLogin[Login]);
+				Tell(Caller, "gravity: " ^ Current ^ " -- /gravity <0..1>, /gravity all <0..1>, /gravity reset");
+				return;
+			}
+			declare Text Arg = TL::ToLowerCase(_Params[2]);
+			if (Arg == "reset") {
+				G_GravityByLogin.removekey(Login);
+				Tell(Caller, "gravity back to the server default " ^ Fmt(G_DefaultGravity));
+				return;
+			}
+			if (Arg == "all") {
+				if (_Params.count < 4) {
+					Tell(Caller, "usage: /gravity all <0..1>");
+					return;
+				}
+				declare Real CoefAll = ML::Clamp(TL::ToReal(_Params[3]), 0., 1.);
+				G_DefaultGravity = CoefAll;
+				G_GravityByLogin.clear();
+				TellAll(NameOf(Caller, Login) ^ "$z set everyone's gravity to " ^ Fmt(CoefAll));
+				return;
+			}
+			declare Real Coef = ML::Clamp(TL::ToReal(Arg), 0., 1.);
+			G_GravityByLogin[Login] = Coef;
+			Tell(Caller, "your gravity is now " ^ Fmt(Coef) ^ " (1 = normal, 0 = weightless)");
+		}
+		case "bots": {
+			if (_Params.count < 3) {
+				Tell(Caller, "balloons: " ^ BalloonCount() ^ " -- /bots <0.." ^ G_MaxBots ^ ">");
+				return;
+			}
+			declare Integer N = ML::Clamp(TL::ToInteger(_Params[2]), 0, G_MaxBots);
+			if (_Params.count >= 4) {
+				declare Text Kind = TL::ToLowerCase(_Params[3]);
+				if (Kind == "fake" || Kind == "fakes" || Kind == "user" || Kind == "users") G_BotsAreFakeUsers = True;
+				if (Kind == "bot" || Kind == "bots" || Kind == "engine") G_BotsAreFakeUsers = False;
+			}
+			G_WantedBots = N;
+			SyncBots();
+			TellAll(NameOf(Caller, Login) ^ "$z asked for " ^ N ^ " balloon(s)");
+		}
+		case "collisions": {
+			if (_Params.count < 3) {
+				Tell(Caller, "collisions: " ^ G_Collisions ^ " -- /collisions on|off");
+				return;
+			}
+			declare Text Arg = TL::ToLowerCase(_Params[2]);
+			G_Collisions = (Arg == "on" || Arg == "1" || Arg == "true" || Arg == "yes");
+			ApplyCollisions();
+			TellAll(NameOf(Caller, Login) ^ "$z turned collisions " ^ Arg);
+		}
+		case "status": {
+			Tell(Caller, "gravity default " ^ Fmt(G_DefaultGravity) ^ ", collisions " ^ G_Collisions ^ ", balloons " ^ BalloonCount() ^ ", players " ^ Players.count);
+			SendStatus();
+		}
+		default: {
+			Tell(Caller, "commands: /gravity <0..1> | /gravity all <0..1> | /gravity reset | /bots <n> | /collisions on|off | /status");
+		}
+	}
+}
+
+Void HandleEvents() {
+	foreach (Event in XmlRpc.PendingEvents) {
+		if (Event.Type != CXmlRpcEvent::EType::CallbackArray) continue;
+		if (Event.ParamArray1 == C_Event_Cmd) {
+			HandleCommand(Event.ParamArray2);
+		} else if (Event.ParamArray1 == C_Event_Status) {
+			SendStatus();
+		}
+	}
+	foreach (Event in PendingEvents) {
+		if (Event.Type == CSmModeEvent::EType::OnPlayerAdded && Event.Player != Null && !IsBalloon(Event.Player)) {
+			Tell(Event.Player, "low gravity server -- /gravity <0..1> picks yours (now " ^ Fmt(WantedGravity(Event.Player)) ^ "), /bots <n> parks balloons, /collisions on|off");
+		}
+	}
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
+// Lifecycle, called from the mode's labels
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
+
+/// Match_StartServer: take the settings, reset the state.
+Void Load(Real _DefaultGravity, Boolean _Collisions, Integer _Bots, Real _BotGravity, Integer _MaxBots, Boolean _BotsAreFakeUsers) {
+	G_DefaultGravity = ML::Clamp(_DefaultGravity, 0., 1.);
+	G_Collisions = _Collisions;
+	G_WantedBots = _Bots;
+	G_BotGravity = ML::Clamp(_BotGravity, 0., 1.);
+	G_MaxBots = _MaxBots;
+	G_BotsAreFakeUsers = _BotsAreFakeUsers;
+	G_GravityByLogin.clear();
+	G_LastBotSync = 0;
+	// Low-gravity times must not pollute the normal leaderboards.
+	Scores_AutoUploadPersonalBests = False;
+	SetGameModeNameAndCustomData("LowG", "", "");
+	ApplyCollisions();
+	log("LowG " ^ Version ^ " loaded: default gravity " ^ G_DefaultGravity ^ ", collisions " ^ G_Collisions ^ ", bots " ^ G_WantedBots);
+}
+
+/// Settings may change at runtime (SetModeScriptSettings); the mode passes them every tick.
+/// (The balloon kind is only taken from the setting at load time: /bots N fake|bot changes it live.)
+Void UpdateSettings(Real _BotGravity, Integer _MaxBots) {
+	G_BotGravity = ML::Clamp(_BotGravity, 0., 1.);
+	G_MaxBots = _MaxBots;
+}
+
+/// Match_StartMap
+Void StartMap() {
+	ApplyCollisions();
+	SyncBots();
+}
+
+/// Match_Yield
+Void Yield() {
+	HandleEvents();
+	ApplyCollisions();
+	foreach (Player in Players) {
+		Apply(Player);
+	}
+	foreach (Bot in BotPlayers) {
+		Apply(Bot);
+	}
+	SpawnBots();
+	if (G_WantedBots > 0 && Now - G_LastBotSync > 5000) {
+		G_LastBotSync = Now;
+		SyncBots();
+	}
+}
+
+Void Unload() {
+	G_GravityByLogin.clear();
+}
