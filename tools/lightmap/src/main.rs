@@ -6094,7 +6094,7 @@ fn run(a: Vec<String>) {
             let theirs = lightmap::mapio::load(&other).unwrap_or_else(|e| panic!("{other}: {e}"));
             let records = f("--records").map(|p| lightmap::classcmp::read_records_tsv(&p).unwrap_or_else(|e| panic!("{e}")));
             let by = match f("--by").as_deref() { None | Some("class") => lightmap::classcmp::GroupBy::Class, Some("name") => lightmap::classcmp::GroupBy::Name, Some("obj") => lightmap::classcmp::GroupBy::Obj, Some(o) => panic!("--by {o}: class|name|obj") };
-            let o = lightmap::classcmp::Options { frame: f("--frame").map(|v| v.parse().expect("--frame N")).unwrap_or(0), lit: f("--lit").map(|v| v.parse().expect("--lit N")).unwrap_or(8), by, worst: f("--worst").map(|v| v.parse().expect("--worst N")).unwrap_or(0) };
+            let o = lightmap::classcmp::Options { frame: f("--frame").map(|v| v.parse().expect("--frame N")).unwrap_or(0), lit: f("--lit").map(|v| v.parse().expect("--lit N")).unwrap_or(8), by, worst: f("--worst").map(|v| v.parse().expect("--worst N")).unwrap_or(0), own_rects: a.iter().any(|x| x == "--own-rects") };
             let r = lightmap::classcmp::compare(&ours, &theirs, records.as_deref(), &o).unwrap_or_else(|e| panic!("classcmp: {e}"));
             lightmap::classcmp::print(&r, &o, f("--tsv").as_deref()).unwrap_or_else(|e| panic!("classcmp: {e}"));
         }

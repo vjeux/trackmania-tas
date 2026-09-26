@@ -1,5 +1,5 @@
 //! `lmtool classcmp OURS.Map.Gbx --against EDITOR.Map.Gbx [--records TSV] [--by class|name|obj] [--frame 0] [--lit 8]
-//! [--tsv OUT.tsv] [--worst N]` — two WRITTEN maps side by side, per CLASS of chart: the decoded HDR texels
+//! [--tsv OUT.tsv] [--worst N] [--own-rects]` — two WRITTEN maps side by side, per CLASS of chart: the decoded HDR texels
 //! (HDR = (A/255)² · (fb/255)² · the frame record's MaxHDR, `synth::decode_value` × the record) averaged over the
 //! oracle's LIT texels (image-A max channel ≥ `--lit`, the `charts` convention), ours / editor per channel, the lit
 //! fractions, the byte identity of the stored image over the class's texels (identical / within 1 / within 2 / max |Δ|)
@@ -71,8 +71,10 @@ pub struct ClassAcc {
     pub texels: usize,
     pub lit_ours: usize,
     pub lit_theirs: usize,
-    /// the texels the means run over (lit in the oracle)
+    /// the texels our mean runs over (the oracle's lit texels; in --own-rects mode OUR lit texels over our rect)
     pub used: usize,
+    /// the texels the oracle's mean runs over (= `used` unless --own-rects)
+    pub used_t: usize,
     pub sum_ours: [f64; 3],
     pub sum_theirs: [f64; 3],
     pub sum_sq: [f64; 3],
@@ -88,12 +90,12 @@ pub struct ClassAcc {
 
 impl ClassAcc {
     pub fn mean_ours(&self) -> [f64; 3] { let n = self.used.max(1) as f64; [self.sum_ours[0] / n, self.sum_ours[1] / n, self.sum_ours[2] / n] }
-    pub fn mean_theirs(&self) -> [f64; 3] { let n = self.used.max(1) as f64; [self.sum_theirs[0] / n, self.sum_theirs[1] / n, self.sum_theirs[2] / n] }
+    pub fn mean_theirs(&self) -> [f64; 3] { let n = self.used_t.max(1) as f64; [self.sum_theirs[0] / n, self.sum_theirs[1] / n, self.sum_theirs[2] / n] }
     pub fn ratio(&self) -> [f64; 3] { let (a, b) = (self.mean_ours(), self.mean_theirs()); [a[0] / b[0].max(1e-12), a[1] / b[1].max(1e-12), a[2] / b[2].max(1e-12)] }
     /// RMSE of the HDR difference over the used texels, relative to the oracle's mean (per channel).
     pub fn rmse_rel(&self) -> [f64; 3] { let n = self.used.max(1) as f64; let b = self.mean_theirs(); [(self.sum_sq[0] / n).sqrt() / b[0].max(1e-12), (self.sum_sq[1] / n).sqrt() / b[1].max(1e-12), (self.sum_sq[2] / n).sqrt() / b[2].max(1e-12)] }
     pub fn merge(&mut self, o: &ClassAcc) {
-        self.charts += o.charts; self.texels += o.texels; self.lit_ours += o.lit_ours; self.lit_theirs += o.lit_theirs; self.used += o.used;
+        self.charts += o.charts; self.texels += o.texels; self.lit_ours += o.lit_ours; self.lit_theirs += o.lit_theirs; self.used += o.used; self.used_t += o.used_t;
         for c in 0..3 { self.sum_ours[c] += o.sum_ours[c]; self.sum_theirs[c] += o.sum_theirs[c]; self.sum_sq[c] += o.sum_sq[c]; }
         self.bytes += o.bytes; self.exact += o.exact; self.within1 += o.within1; self.within2 += o.within2; self.max_delta = self.max_delta.max(o.max_delta);
         self.worst.extend(o.worst.iter().cloned());
@@ -109,6 +111,9 @@ pub struct Options {
     pub lit: u8,
     pub by: GroupBy,
     pub worst: usize,
+    /// Each file's class means over ITS OWN rects, charts matched by the (obj, sub) bind word — for two layouts that
+    /// differ (a q2 / q5 bake against the q3 / q4 oracle); no byte identity, no RMSE.
+    pub own_rects: bool,
 }
 
 /// The class key of chart `i`.
@@ -139,8 +144,10 @@ pub struct Report {
 pub fn compare(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLightmap, records: Option<&[RecRow]>, o: &Options) -> Result<Report, String> {
     let (Some(d1), Some(d2)) = (ours.chunk.data.as_ref(), theirs.chunk.data.as_ref()) else { return Err("a map without a lightmap".into()) };
     let (Some(m1), Some(m2)) = (d1.cache.mapping(), d2.cache.mapping()) else { return Err("a map without a mapping chunk".into()) };
-    if m1.count != m2.count { return Err(format!("chart counts differ: ours {} vs theirs {} — the layout gate first", m1.count, m2.count)); }
+    if m1.count != m2.count && !o.own_rects { return Err(format!("chart counts differ: ours {} vs theirs {} — the layout gate first (or --own-rects)", m1.count, m2.count)); }
     let n = m1.count as usize;
+    // --own-rects: the oracle's chart of the same (obj, sub) bind word
+    let theirs_of: std::collections::HashMap<(u32, u32), usize> = (0..m2.count as usize).map(|j| ((m2.binds[j].obj_group_idx / 4, m2.binds[j].obj_idx & 0x00ff_ffff), j)).collect();
     let f = o.frame;
     let (Some(f1), Some(f2)) = (d1.frames.get(f), d2.frames.get(f)) else { return Err(format!("frame {f}: not in both files")) };
     let (Some(b1), Some(b2)) = (f1.images.first(), f2.images.first()) else { return Err(format!("frame {f}: no image 0")) };
@@ -164,6 +171,40 @@ pub fn compare(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLight
     let mut total = ClassAcc::default();
     let mut rect_mismatch = 0usize;
     for i in 0..n {
+        if o.own_rects {
+            // each side over its own rect; the oracle's chart by bind word
+            let key_bind = (m1.binds[i].obj_group_idx / 4, m1.binds[i].obj_idx & 0x00ff_ffff);
+            let Some(&j) = theirs_of.get(&key_bind) else { rect_mismatch += 1; continue };
+            let key = class_key(&m1, i, &rows, records, o.by);
+            let mut acc = ClassAcc { charts: 1, ..Default::default() };
+            let s1 = (fb1.get(i).copied().unwrap_or(0) as f64 / 255.0).powi(2) * k1 as f64;
+            let s2 = (fb2.get(j).copied().unwrap_or(0) as f64 / 255.0).powi(2) * k2 as f64;
+            let (mut co, mut ct) = ([0f64; 3], [0f64; 3]);
+            let (px, py, pw, ph) = chart_own_px(m1.pos[i], m1.size[i]);
+            for y in py..(py + ph).min(i1.h) { for x in px..(px + pw).min(i1.w) {
+                let a = i1.get(x, y);
+                acc.texels += 1;
+                if a[0].max(a[1]).max(a[2]) >= o.lit { acc.lit_ours += 1; acc.used += 1; for c in 0..3 { let ho = (a[c] as f64 / 255.0).powi(2) * s1; acc.sum_ours[c] += ho; co[c] += ho; } }
+            } }
+            let (qx, qy, qw, qh) = chart_own_px(m2.pos[j], m2.size[j]);
+            let mut tex_t = 0usize;
+            for y in qy..(qy + qh).min(i2.h) { for x in qx..(qx + qw).min(i2.w) {
+                let b = i2.get(x, y);
+                tex_t += 1;
+                if b[0].max(b[1]).max(b[2]) >= o.lit { acc.lit_theirs += 1; acc.used_t += 1; for c in 0..3 { let ht = (b[c] as f64 / 255.0).powi(2) * s2; acc.sum_theirs[c] += ht; ct[c] += ht; } }
+            } }
+            // lit % of the oracle side is over ITS texel count: scale lit_theirs onto our texel count for the shared column
+            if tex_t > 0 && acc.texels > 0 { acc.lit_theirs = (acc.lit_theirs as f64 * acc.texels as f64 / tex_t as f64).round() as usize; }
+            if acc.used > 0 && acc.used_t > 0 {
+                let (u, ut) = (acc.used as f64, acc.used_t as f64);
+                let (mo, mt) = ([co[0] / u, co[1] / u, co[2] / u], [ct[0] / ut, ct[1] / ut, ct[2] / ut]);
+                let dev = (0..3).map(|c| if mt[c] > 1e-9 { (mo[c] / mt[c] - 1.0).abs() } else { 0.0 }).fold(0.0, f64::max);
+                acc.worst.push((i, dev, mo, mt, acc.used));
+            }
+            total.merge(&acc);
+            match classes.iter_mut().find(|(k, _)| *k == key) { Some((_, c)) => c.merge(&acc), None => classes.push((key, acc)) }
+            continue;
+        }
         if m1.pos[i] != m2.pos[i] || m1.size[i] != m2.size[i] { rect_mismatch += 1; continue; }
         let key = class_key(&m1, i, &rows, records, o.by);
         let (px, py, pw, ph) = chart_own_px(m1.pos[i], m1.size[i]);
@@ -188,7 +229,7 @@ pub fn compare(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLight
                     acc.max_delta = acc.max_delta.max(d);
                 }
                 if lt {
-                    acc.used += 1;
+                    acc.used += 1; acc.used_t += 1;
                     for c in 0..3 {
                         let ho = (a[c] as f64 / 255.0).powi(2) * s1;
                         let ht = (b[c] as f64 / 255.0).powi(2) * s2;
@@ -218,7 +259,8 @@ fn f3(v: [f64; 3], p: usize) -> String { format!("{:.*} / {:.*} / {:.*}", p, v[0
 /// The table on stdout (and, when asked, as TSV).
 pub fn print(r: &Report, o: &Options, tsv: Option<&str>) -> Result<(), String> {
     println!("frame {}: record MaxHDR ours {} vs editor {} ({:+.2} %); image {}×{}; lit threshold {} (image-A max channel); means over the EDITOR's lit texels; HDR = (A/255)²·(fb/255)²·MaxHDR", o.frame, r.maxhdr_ours, r.maxhdr_theirs, 100.0 * (r.maxhdr_ours as f64 / r.maxhdr_theirs.max(1e-12) as f64 - 1.0), r.image_w, r.image_h, o.lit);
-    if r.rect_mismatch > 0 { println!("  WARNING: {} charts have a different rect in the two files (the layout gate failed for them) — SKIPPED in the table below", r.rect_mismatch); }
+    if r.rect_mismatch > 0 { println!("  WARNING: {} charts {} — SKIPPED in the table below", r.rect_mismatch, if o.own_rects { "have no oracle chart of the same (obj, sub) bind word" } else { "have a different rect in the two files (the layout gate failed for them)" }); }
+    if o.own_rects { println!("  --own-rects: each side's means over its own rects and its own lit texels (layouts differ); byte identity / RMSE columns are void"); }
     if r.unmatched_rows > 0 { println!("  note: {} records rows match no chart's (obj, sub)", r.unmatched_rows); }
     println!("class\tcharts\ttexels\tlit% ours\tlit% editor\tmean HDR ours (r/g/b)\tmean HDR editor (r/g/b)\tratio ours/editor (r/g/b)\tRMSE/mean (r/g/b)\tbytes identical %\twithin 1 %\twithin 2 %\tmax|Δ|");
     let mut out = String::new();
