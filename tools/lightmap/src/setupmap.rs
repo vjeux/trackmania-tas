@@ -227,9 +227,28 @@ pub enum MatClass {
     Wall,
 }
 
+/// LMTOOL_PREPASS_CARDS=textured (a STUDY switch, hill4's jungle cards): the alpha-tested card triangles run the textured
+/// path (PS 17023 with the cut-out file as the diffuse and the 128/255 alpha test) instead of the AlphaToCoverage path that
+/// writes nothing — the question being whether the TDOSN material model's cards carry albedo into MDiffuse (the palm's did
+/// not, per the pwc-day capture). The card's diffuse texture index is flagged 0x8000 | its alpha-texture index.
+pub fn cards_textured() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("LMTOOL_PREPASS_CARDS").map(|v| v == "textured").unwrap_or(false))
+}
+
+/// The diffuse texture file of a pre-pass triangle: the model's diffuse list, or (flag 0x8000) its cut-out list.
+pub fn diff_name(model: &crate::geometry::ModelGeom, diff: u16) -> String {
+    if diff & 0x8000 != 0 { model.alpha_tex.get((diff & 0x7fff) as usize).cloned().unwrap_or_default() } else { model.diff_tex.get(diff as usize).cloned().unwrap_or_default() }
+}
+
+/// A triangle's diffuse index for the pre-pass (a card under the study switch takes its cut-out texture, flagged).
+pub fn diff_index(t: &crate::geometry::Tri) -> u16 {
+    if t.alpha != u16::MAX && cards_textured() { 0x8000 | t.alpha } else { t.diff }
+}
+
 pub fn classify(model: &crate::geometry::ModelGeom, name: &str, t: &crate::geometry::Tri) -> MatClass {
     if t.alpha != u16::MAX {
-        return MatClass::CutOut;
+        return if cards_textured() { MatClass::Textured } else { MatClass::CutOut };
     }
     if t.diff != u16::MAX {
         return MatClass::Textured;
@@ -257,7 +276,7 @@ pub fn attr_from_map(scene: &crate::geometry::Scene, lm: &LmScene, frozen: &Froz
         let name = &scene.model_names[inst.model];
         for t in &model.tris {
             if classify(model, name, t) != MatClass::Textured { continue; }
-            let tn = model.diff_tex.get(t.diff as usize).cloned().unwrap_or_default();
+            let tn = diff_name(model, diff_index(t));
             tex_cache.entry(tn.clone()).or_insert_with(|| item_bytes(&tn).and_then(|b| texsample::parse_dds(&b, Bc1Decode::Expand8Round).ok()).map(|mut tx| { tx.decode_srgb(); tx }));
         }
     }
@@ -283,7 +302,7 @@ pub fn attr_from_map(scene: &crate::geometry::Scene, lm: &LmScene, frozen: &Froz
         for t in &model.tris {
             let class = classify(model, name, t);
             for v in 0..3 {
-                map.entry(key(t.p[v])).or_insert(ItemMat { class, uv0: t.uv0[v], diff: t.diff, uv1: t.uv[v] });
+                map.entry(key(t.p[v])).or_insert(ItemMat { class, uv0: t.uv0[v], diff: diff_index(t), uv1: t.uv[v] });
             }
         }
         (model_idx, map)
@@ -330,7 +349,7 @@ pub fn attr_from_map(scene: &crate::geometry::Scene, lm: &LmScene, frozen: &Froz
             if k == 0 { notes.push(format!("item mesh {mk} ({}): the port's TexCoord1 {} the LM stream's uv → the pre-pass rasterises {}", name, if port_uv_matches { "matches" } else { "does not match" }, if port_uv_matches { format!("the port's {} f32 triangles", model.tris.len()) } else { format!("E's LM mesh ({} triangles)", mesh.indices.len() / 3) })); }
             // the triangles to draw: (positions-in-LM-space uv, uv0, class, diff)
             let tris: Vec<([[f32; 2]; 3], [[f32; 2]; 3], MatClass, u16)> = if port_uv_matches {
-                model.tris.iter().map(|t| (t.uv, t.uv0, classify(model, name, t), t.diff)).collect()
+                model.tris.iter().map(|t| (t.uv, t.uv0, classify(model, name, t), diff_index(t))).collect()
             } else {
                 mesh.indices.chunks_exact(3).map(|tri| {
                     let vs = [&mesh.verts[tri[0] as usize], &mesh.verts[tri[1] as usize], &mesh.verts[tri[2] as usize]];
@@ -350,7 +369,7 @@ pub fn attr_from_map(scene: &crate::geometry::Scene, lm: &LmScene, frozen: &Froz
                     let (dvdx, dvdy) = prepass::attr_gradient(p, [uv0[0][1], uv0[1][1], uv0[2][1]]);
                     let tex = match class {
                         MatClass::Textured => {
-                            let tn = model.diff_tex.get(*diff as usize).cloned().unwrap_or_default();
+                            let tn = diff_name(model, *diff);
                             tex_cache.get(&tn).and_then(|t| t.as_ref())
                         }
                         _ => None,
@@ -370,7 +389,9 @@ pub fn attr_from_map(scene: &crate::geometry::Scene, lm: &LmScene, frozen: &Froz
                                     // the game uploads the zip's DDS bottom-up (D's rule): the GPU texture's row y is the file's row h − 1 − y, so
                                     // the file image is sampled at (u, 1 − v)
                                     let uvs = [b[0] * uv0[0][0] + b[1] * uv0[1][0] + b[2] * uv0[2][0], 1.0 - (b[0] * uv0[0][1] + b[1] * uv0[1][1] + b[2] * uv0[2][1])];
-                                    match prepass::ps_basecolor(tx, &sampler, uvs, [dudx, -dvdx], [dudy, -dvdy], None, lm_scale) { Some(s) => s, None => return }
+                                    // a card under the study switch: the 128/255 alpha test (GbxShadowAlphaThreshold) discards the cut-out
+                                    let at = if *diff & 0x8000 != 0 { Some(SHADOW_ALPHA_THRESHOLD) } else { None };
+                                    match prepass::ps_basecolor(tx, &sampler, uvs, [dudx, -dvdx], [dudy, -dvdy], at, lm_scale) { Some(s) => s, None => return }
                                 }
                                 None => [0.0, 0.0, 0.0, lm_scale],
                             },
