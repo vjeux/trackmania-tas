@@ -1802,6 +1802,8 @@ fn run(a: Vec<String>) {
                 let gl = lightmap::layout::for_map(&map_path, &scene, base, q, lightmap::layout::TilePlg::BLUEBAY_SEA, pak, &f("--collection").unwrap_or_else(|| "BlueBay".into()), &f("--zone").unwrap_or_else(|| "Sea".into()), layout_kept.as_ref()).unwrap_or_else(|e| panic!("--layout-game: {e}"));
                 let bound = gl.charts.iter().filter(|c| c.charted == lightmap::layout::Charted::Bound).count();
                 eprintln!("layout-game: {} charts ({bound} bound), s {} layout units/m, Σarea {} m², quality index {q} ({} iterations), keys from {} ({:.1}s)", gl.charts.len(), gl.s, gl.sum_area, gl.max_iter, if pak.is_some() { "the block records (pak)" } else { "the cell / triangle centres" }, t0.elapsed().as_secs_f32());
+                // --records-tsv FILE: the layout's records per chart (class, obj, sub, name, quality, centre y) — `lmtool classcmp --records`
+                if let Some(p) = f("--records-tsv") { lightmap::classcmp::write_records_tsv(&p, &gl).unwrap_or_else(|e| panic!("--records-tsv: {e}")); eprintln!("records table: {} rows → {p}", gl.records.len()); }
                 game_layout = Some(gl);
             }
             if let (Some(gl), Some((inst_of, _))) = (game_layout.as_ref(), record_scene.as_ref()) {
@@ -6082,6 +6084,19 @@ fn run(a: Vec<String>) {
             let ranges = [("blocks", 0usize, mf.blocks.len()), ("baked", mf.blocks.len(), mf.blocks.len() + mf.baked.len()), ("items", mf.blocks.len() + mf.baked.len(), mf.blocks.len() + mf.baked.len() + mf.items.len())];
             for (name, s, e) in ranges { let mut h: std::collections::BTreeMap<u8, usize> = Default::default(); for &x in body.get(s..e.min(body.len())).unwrap_or(&[]) { *h.entry(x).or_default() += 1; } println!("  {name} [{s}..{e}): {:?}", h); }
             if a.iter().any(|x| x == "--list") { let s = mf.blocks.len() + mf.baked.len(); for (i, &x) in body.get(s..).unwrap_or(&[]).iter().enumerate() { if x != 0 { println!("  item {i} ({}) quality byte {x}", mf.items.get(i).map(|it| it.model.as_str()).unwrap_or("?")); } } }
+        }
+        "classcmp" => {
+            // lmtool classcmp OURS.Map.Gbx --against EDITOR.Map.Gbx [--records TSV] [--by class|name|obj] [--frame 0] [--lit 8]
+            // [--tsv OUT] [--worst N]: the per-class HDR table of two written maps (classcmp.rs) — the verification rows' numbers
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let other = f("--against").expect("--against EDITOR.Map.Gbx");
+            let ours = lightmap::mapio::load(&a[1]).unwrap_or_else(|e| panic!("{}: {e}", a[1]));
+            let theirs = lightmap::mapio::load(&other).unwrap_or_else(|e| panic!("{other}: {e}"));
+            let records = f("--records").map(|p| lightmap::classcmp::read_records_tsv(&p).unwrap_or_else(|e| panic!("{e}")));
+            let by = match f("--by").as_deref() { None | Some("class") => lightmap::classcmp::GroupBy::Class, Some("name") => lightmap::classcmp::GroupBy::Name, Some("obj") => lightmap::classcmp::GroupBy::Obj, Some(o) => panic!("--by {o}: class|name|obj") };
+            let o = lightmap::classcmp::Options { frame: f("--frame").map(|v| v.parse().expect("--frame N")).unwrap_or(0), lit: f("--lit").map(|v| v.parse().expect("--lit N")).unwrap_or(8), by, worst: f("--worst").map(|v| v.parse().expect("--worst N")).unwrap_or(0) };
+            let r = lightmap::classcmp::compare(&ours, &theirs, records.as_deref(), &o).unwrap_or_else(|e| panic!("classcmp: {e}"));
+            lightmap::classcmp::print(&r, &o, f("--tsv").as_deref()).unwrap_or_else(|e| panic!("classcmp: {e}"));
         }
         "filecheck" => {
             // lmtool filecheck OURS.Map.Gbx --against EDITOR.Map.Gbx: two WRITTEN maps side by side — the mapping (count, order,
