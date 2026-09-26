@@ -119,7 +119,17 @@ impl SkyGradient {
         };
         let (xa, xb) = (xi(x0), xi(x0 + 1.0));
         let (ya, yb) = (y0 as usize, ((y0 + 1.0) as usize).min(self.h - 1));
-        let p = |x: usize, y: usize| -> [f32; 3] { self.px[y * self.w + x] };
+        // THE MOOD BLEND (V's finding, 2026-09-26 16:35Z): a blended DayTime word loads mood A's gradient and `blend_with` mood B's
+        // (px2, blend_t) — `texel` blended them, this sampler (the transcribed dome's) read `px` alone, so stpad at 0x4e4b
+        // (Night 0.1 % + Sunrise 99.9 %) rendered the NIGHT sky at full weight (AddAmbient 0.554/0.665/0.813 → 0.088/0.071/0.051).
+        // The texel = lerp(A, B, t) before the bilinear weights — the same value `texel` returns at the texel centre.
+        let p = |x: usize, y: usize| -> [f32; 3] {
+            let a = self.px[y * self.w + x];
+            match &self.px2 {
+                Some(q) if self.blend_t > 0.0 => { let b = q[(y * self.w + x).min(q.len() - 1)]; let t = self.blend_t; [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t] }
+                _ => a,
+            }
+        };
         let (p00, p10, p01, p11) = (p(xa, ya), p(xb, ya), p(xa, yb), p(xb, yb));
         let mut out = [0f32; 3];
         let (w00, w10, w01, w11) = ((1.0 - tx) * (1.0 - ty), tx * (1.0 - ty), (1.0 - tx) * ty, tx * ty);
@@ -261,7 +271,7 @@ impl SkyGradient {
             let mut n = 0usize;
             for y in y0..y1 {
                 for x in (0..self.w).step_by(8) {
-                    let p = self.px[y * self.w + x];
+                    let p = self.texel((x as f32 + 0.5) / self.w as f32, (y as f32 + 0.5) / self.h as f32);
                     for k in 0..3 { acc[k] += p[k] as f64; }
                     n += 1;
                     let lum = 0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2];
