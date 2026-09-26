@@ -741,6 +741,26 @@ fn run(a: Vec<String>) {
             lightmap::mapio::save_with_chunk(&m, &payload, &a[3]).expect("save");
             println!("chunk {} B; wrote {}", payload.len(), a[3]);
         }
+        "framerecords" => {
+            // lmtool framerecords MAP…: the three 66-byte frame records of the mapping head decoded (RE 5's layout: u32 0, DayTime,
+            // ReplayTime, f32 MaxHDR_Mood, MaxHDR, Bounce, Sky, u32 Clouds, f16×3 LAmbient, u32 StoreLAmbient, Storage, Switch,
+            // f32×3 HBasis234, Bump) — the Storage word tells which stored image a frame is (RE 13, 22:37Z: 1 = every lit lamp
+            // (D_0), 2 = the pass-0 snapshot of the GxLightBall bits-10–12 lamps only)
+            for f in a[1..].iter().filter(|x| !x.starts_with("--")) {
+                let m = lightmap::mapio::load(f).unwrap_or_else(|e| panic!("{e}"));
+                let d = m.chunk.data.as_ref().expect("lightmap data");
+                let h = &d.cache.mapping().expect("mapping").head;
+                println!("{}: head {} bytes, {} image frames", f.rsplit('/').next().unwrap_or(f), h.len(), d.frames.len());
+                for i in 0..3 {
+                    let r = 60 + 66 * i;
+                    if r + 66 > h.len() { println!("  record {i}: absent (head ends at {})", h.len()); continue; }
+                    let u = |o: usize| u32::from_le_bytes(h[r + o..r + o + 4].try_into().unwrap());
+                    let fl = |o: usize| f32::from_le_bytes(h[r + o..r + o + 4].try_into().unwrap());
+                    let f16 = |o: usize| lightmap::gpufmt::decode_f16(u16::from_le_bytes([h[r + o], h[r + o + 1]]));
+                    println!("  record {i}: w0 {} u1 {} DayTime {:#x} u3 {} MaxHDR_Mood {} MaxHDR {} Bounce {} Sky {} Clouds {} LAmbient [{:.4}, {:.4}, {:.4}] StoreLAmbient {} **Storage {}** Switch {} HBasis234 [{}, {}, {}]", u(0), u(4), u(8), u(12), fl(16), fl(20), fl(24), fl(28), u(32), f16(36), f16(38), f16(40), u(42), u(46), u(50), fl(54), fl(58), fl(62));
+                }
+            }
+        }
         "head" => {
             // lmtool head MAP... : the mapping head words side by side
             let mut heads = Vec::new();
