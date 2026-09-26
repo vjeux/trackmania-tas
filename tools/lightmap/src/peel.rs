@@ -664,7 +664,7 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
     // here. `tri_src` / `tri_id` are the records and their BVH indices (the fragments' `tri` keys) either way.
     let (tri_src, tri_id): (&[WTri], Option<&[u32]>) = match hier { Some((h, _)) => (h.tris.as_slice(), Some(h.bvh_id.as_slice())), None => (tris, None) };
     let n_items: usize = match hier { Some((_, jobs)) => jobs.len(), None => ranges.iter().map(|r| (r.1 - r.0) as usize).sum() };
-    let prep_chunk = (n_items / (threads * 4).max(1)).max(if hier.is_some() { 256 } else { 4096 });
+    let prep_chunk = (n_items / (threads * 4).max(1)).max(if hier.is_some() { 256 } else { 1024 });
     // a chunk = consecutive (sub)ranges totalling about prep_chunk items, in ascending index order (the BVH cull
     // hands over thousands of small ranges: one chunk each would mean thousands of CSRs per frame)
     let mut chunks: Vec<Vec<(u32, u32)>> = Vec::new();
@@ -811,30 +811,9 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
     // SAFETY: zeroed below in parallel blocks before any job runs; every slot written
     unsafe { csr_start.set_len(npx + 1); }
     let csr_sp = csr_start.as_mut_ptr() as usize;
-    let (cell_pairs, cell_cost): (Vec<usize>, Vec<u64>) = {
-        let n_blk = (n_cells / 64).clamp(1, 256);
-        let blk = (n_cells + n_blk - 1) / n_blk;
-        let zblk = (npx + 1 + n_blk - 1) / n_blk;
-        let per_blk: Vec<(Vec<usize>, Vec<u64>)> = crate::pool::pool().map(n_blk, |b| {
-            let (z0, z1) = ((b * zblk).min(npx + 1), ((b + 1) * zblk).min(npx + 1));
-            unsafe { std::ptr::write_bytes((csr_sp as *mut u32).add(z0), 0, z1 - z0); }
-            let (c0, c1) = ((b * blk).min(n_cells), ((b + 1) * blk).min(n_cells));
-            let mut pairs = vec![0usize; c1 - c0];
-            let mut cost = vec![0u64; c1 - c0];
-            for (counts, _, _, cst) in &binned {
-                for cell in c0..c1 {
-                    pairs[cell - c0] += (counts[cell + 1] - counts[cell]) as usize;
-                    cost[cell - c0] += cst[cell];
-                }
-            }
-            (pairs, cost)
-        });
-        let mut pairs = Vec::with_capacity(n_cells);
-        let mut cost = Vec::with_capacity(n_cells);
-        for (p, c) in per_blk { pairs.extend(p); cost.extend(c); }
-        (pairs, cost)
-    };
-    let cell_wanted = |cell: usize| -> bool {
+    // (a cell's wanted flag — any wanted pixel inside it — is computed in the parallel totals pass below;
+    // serially per cell it was ~0.4 ms of the frame's setup)
+    let cell_has_wanted = |cell: usize| -> bool {
         if counting { return true; }
         let (bx0, by0, bx1, by1) = cell_rect(cell);
         for y in by0..=by1 {
@@ -848,6 +827,32 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
         }
         false
     };
+    let (cell_pairs, cell_cost, cell_wanted_v): (Vec<usize>, Vec<u64>, Vec<bool>) = {
+        let n_blk = (n_cells / 64).clamp(1, 256);
+        let blk = (n_cells + n_blk - 1) / n_blk;
+        let zblk = (npx + 1 + n_blk - 1) / n_blk;
+        let per_blk: Vec<(Vec<usize>, Vec<u64>, Vec<bool>)> = crate::pool::pool().map(n_blk, |b| {
+            let (z0, z1) = ((b * zblk).min(npx + 1), ((b + 1) * zblk).min(npx + 1));
+            unsafe { std::ptr::write_bytes((csr_sp as *mut u32).add(z0), 0, z1 - z0); }
+            let (c0, c1) = ((b * blk).min(n_cells), ((b + 1) * blk).min(n_cells));
+            let mut pairs = vec![0usize; c1 - c0];
+            let mut cost = vec![0u64; c1 - c0];
+            for (counts, _, _, cst) in &binned {
+                for cell in c0..c1 {
+                    pairs[cell - c0] += (counts[cell + 1] - counts[cell]) as usize;
+                    cost[cell - c0] += cst[cell];
+                }
+            }
+            let wanted: Vec<bool> = (c0..c1).map(|cell| pairs[cell - c0] > 0 && cell_has_wanted(cell)).collect();
+            (pairs, cost, wanted)
+        });
+        let mut pairs = Vec::with_capacity(n_cells);
+        let mut cost = Vec::with_capacity(n_cells);
+        let mut wanted = Vec::with_capacity(n_cells);
+        for (p, c, w) in per_blk { pairs.extend(p); cost.extend(c); wanted.extend(w); }
+        (pairs, cost, wanted)
+    };
+    let cell_wanted = |cell: usize| -> bool { cell_wanted_v[cell] };
     // THE JOBS: (cell, rows y0..=y1, columns x0..=x1, the strip bits its entries must carry) with an
     // estimated cost; a cell above the split limit (a thread's share of the frame over LMTOOL_TILE_SPLIT) is
     // split into 2, 4 or 8 row strips, each a job over the same list filtered by the strip bits
