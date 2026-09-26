@@ -442,6 +442,27 @@ pub fn model_color_slot(model: &str) -> Option<i32> {
     Some(if model.starts_with("TDO") { 1 } else { 0 })
 }
 
+/// Whether a user-material shading model is DOUBLE-SIDED in the game: only the `…2Sided` models
+/// (`TDOSN2Sided`, MaterialChar_TDOSN2Sided in CPlugModelShading) render both faces; every other
+/// `TD…` model (`TDOSN` included — the vegetation cards of the tiny items) is single-sided, the
+/// back faces culled in the game view and BLACK in the lightmapper's peel (PeelZDiffuse writes
+/// `o0.xyz & isfrontface`; NoCull). Items that want visible backs carry them as separate geometry
+/// (the `…_in0` inner-face geom + texture of the jungle hills). RE 7, 2026-09-26.
+pub fn model_two_sided(model: &str) -> bool {
+    model.ends_with("2Sided")
+}
+
+/// Whether the game ALPHA-TESTS a shading model in the lightmapper's peel and shadow passes: the
+/// `TDO…` models (DiffuseO in slot 1) are cut where alpha < GbxShadowAlphaThreshold = 128/255 =
+/// 0.50196 (PeelZDiffuse with opacity, PS 17548 of the pwc-day capture; ShadowCasterCond PS 1147 for
+/// the sun map, RE 9) — every other `TD…` model draws its alpha as nothing and occludes fully.
+pub fn model_alpha_tested(model: &str) -> bool {
+    model.starts_with("TDO")
+}
+
+/// The game's alpha cut of an alpha-tested model in the lightmapper (GbxShadowAlphaThreshold).
+pub const SHADOW_ALPHA_THRESHOLD: f32 = 128.0 / 255.0;
+
 /// Chunk 0x090FD000.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MaterialMain {
@@ -2095,6 +2116,8 @@ mod user_texture_slot_tests {
         assert_eq!(model_color_slot("TDOSN"), Some(1));
         assert_eq!(model_color_slot("TDOBSN"), Some(1));
         assert_eq!(model_color_slot("TDOSN2Sided"), Some(1));
+        assert!(model_two_sided("TDOSN2Sided") && !model_two_sided("TDOSN") && !model_two_sided("TDSN"));
+        assert!(model_alpha_tested("TDOSN") && model_alpha_tested("TDOBSN") && !model_alpha_tested("TDSN") && !model_alpha_tested("TDSNI"));
         assert_eq!(model_color_slot("TIAdd"), None);
         assert_eq!(USER_TEXTURE_MAX, 8);
     }
