@@ -1411,20 +1411,27 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
     // job owning its pixel
     unsafe { fill.set_len(npx + 1); frags.set_len(total); }
     let (sp, cp, fp) = (start.as_mut_ptr() as usize, fill.as_mut_ptr() as usize, frags.as_mut_ptr() as usize);
-    let n_blk = crate::pool::pool().threads.clamp(1, 256);
-    let blk = (npx + 1 + n_blk - 1) / n_blk.max(1);
-    let block = |b: usize| -> (usize, usize) { ((b * blk).min(npx + 1), ((b + 1) * blk).min(npx + 1)) };
-    let sums: Vec<u32> = crate::pool::pool().map(n_blk, |b| {
-        let (i0, i1) = block(b);
-        start[i0..i1].iter().sum()
-    });
-    let mut base: Vec<u32> = Vec::with_capacity(n_blk + 1);
+    // THE PREFIX IN ONE PASS: its blocks are the CELL ROWS — a block's fragments are exactly its row's jobs'
+    // (a job pushes only its own cell's pixels, the ring rows hold none), so the block bases come from the
+    // jobs' list lengths (5 000 adds, serial) instead of a parallel sum pass over the counts (one pool call
+    // and one read of the array fewer). Block br's slots: [rank(first pixel of its first row) + 1, the next
+    // block's) — slot i holds pixel (i − 1)'s count; block 0 starts at slot 0, the last ends at npx.
+    let mut row_frags: Vec<u32> = vec![0; n_brows];
+    for (j, p) in parts.iter().enumerate() { row_frags[jobs[j].cell / n_bcols] += p.len() as u32; }
+    let mut row_slot: Vec<usize> = Vec::with_capacity(n_brows + 1);
+    row_slot.push(0);
+    for br in 1..n_brows {
+        let y = (clip.1 as usize + br * tile_rows).min(res_y as usize);
+        row_slot.push(px.index_of_id((y * res as usize) as u32) as usize + 1);
+    }
+    row_slot.push(npx + 1);
+    let mut base: Vec<u32> = Vec::with_capacity(n_brows + 1);
     base.push(0);
-    for s in &sums { let l = *base.last().unwrap(); base.push(l + s); }
+    for s in &row_frags { let l = *base.last().unwrap(); base.push(l + s); }
     {
-        let base = &base;
-        crate::pool::pool().run(n_blk, |b| {
-            let (i0, i1) = block(b);
+        let (base, row_slot) = (&base, &row_slot);
+        crate::pool::pool().run(n_brows, |b| {
+            let (i0, i1) = (row_slot[b], row_slot[b + 1]);
             let mut acc = base[b];
             for i in i0..i1 {
                 unsafe {
@@ -1439,12 +1446,17 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
         });
     }
     if start[npx] as usize != total { panic!("sparse CSR: the jobs counted {} wanted fragments but pushed {} (npx {npx}, {} jobs)", start[npx], total, parts.len()); }
+    // the scatter jobs longest-first (a job's cost here is its fragment count, not its raster estimate)
+    let mut scatter_order: Vec<u32> = (0..parts.len() as u32).collect();
+    scatter_order.sort_unstable_by_key(|&j| std::cmp::Reverse(parts[j as usize].len()));
     let t_c2 = std::time::Instant::now();
     let (ns_scatter, ns_sort) = (std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0));
     {
         let parts = &parts;
         let start = &start;
-        crate::pool::pool().run(parts.len(), |j| {
+        let scatter_order = &scatter_order;
+        crate::pool::pool().run(parts.len(), |jj| {
+            let j = scatter_order[jj] as usize;
             let t_s = std::time::Instant::now();
             // the scatter, then the sort of each of the job's pixels (its cursor marked done: u32::MAX)
             for (k, f) in &parts[j] {
