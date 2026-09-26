@@ -870,6 +870,23 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
                         live &= wanted16;
                         if live == 0 { return; }
                     }
+                    if counting && env_t.is_none() && mask.is_none() {
+                        // an opaque item triangle: every live lane is a fragment — the block's count records at
+                        // once (the counters bumped sixteen wide, the records compress-stored per column), then
+                        // only the wanted lanes go on to the fragment push
+                        let li0 = ((y as i32 - by0) as usize) * bw + (bx as i32 - bx0) as usize;
+                        count_add16(&mut cnt[li0..(li0 + 16).min(band_px)], live, &mut saturated);
+                        let bias = bias_term_of(&mut bias_term_cache);
+                        let mut m = live;
+                        while m != 0 {
+                            let l = m.trailing_zeros() as usize;
+                            m &= m - 1;
+                            list.push(((li0 + l) as u32, CFrag { z: lanes.z[l], tri: ti, bias }));
+                        }
+                        live &= wanted16;
+                        if live == 0 { return; }
+                    }
+                    let block_counted = counting && env_t.is_none() && mask.is_none();
                     let mut m = live;
                     while m != 0 {
                         let l = m.trailing_zeros() as usize;
@@ -893,8 +910,8 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
                             }
                         } else if let Some((dx, dy)) = *ABUF_DEBUG { if x == dx && y == dy { eprintln!("abuf debug ({x},{y}): tri {ti} inst {} model tri {} z {z:.3} z01 {:.5}", t.inst, t.tri, frame.z01(z)); } }
                         let id = id0 + l as u32;
-                        if counting && env_t.is_none() {
-                            // an item fragment: its count record
+                        if counting && env_t.is_none() && !block_counted {
+                            // an alpha-tested item fragment that passed: its count record
                             let li = ((y as i32 - by0) as usize) * bw + (x as i32 - bx0) as usize;
                             let c = &mut cnt[li];
                             if *c == u16::MAX { saturated = true; } else { *c += 1; }
@@ -2436,6 +2453,35 @@ pub fn env_max_update16(env: &mut [f32], z: &[f32; 16], live: u16, frame: &PeelF
                 let e = &mut env[l];
                 if z01 > *e { *e = z01; }
             }
+        }
+    }
+}
+
+/// The count's per-pixel fragment counters of a block bumped by one for the live lanes (u16, saturating; a lane
+/// already at the ceiling sets `saturated`); `cnt` starts at pixel li0 and may fall short of 16 at the band's end.
+#[inline(always)]
+pub fn count_add16(cnt: &mut [u16], live: u16, saturated: &mut bool) {
+    let n = cnt.len().min(16);
+    let lane_mask: u16 = if n >= 16 { 0xffff } else { ((1u32 << n) - 1) as u16 };
+    let live = live & lane_mask;
+    if live == 0 { return; }
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512bw", target_feature = "avx512vl"))]
+    unsafe {
+        use std::arch::x86_64::*;
+        let v = _mm256_maskz_loadu_epi16(live, cnt.as_ptr() as *const i16);
+        let full = _mm256_mask_cmpeq_epu16_mask(live, v, _mm256_set1_epi16(-1));
+        if full != 0 { *saturated = true; }
+        let bumped = _mm256_mask_adds_epu16(v, live, v, _mm256_set1_epi16(1));
+        _mm256_mask_storeu_epi16(cnt.as_mut_ptr() as *mut i16, live, bumped);
+    }
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512bw", target_feature = "avx512vl")))]
+    {
+        let mut m = live;
+        while m != 0 {
+            let l = m.trailing_zeros() as usize;
+            m &= m - 1;
+            let c = &mut cnt[l];
+            if *c == u16::MAX { *saturated = true; } else { *c += 1; }
         }
     }
 }
