@@ -58,81 +58,138 @@ pub fn sun_camera(sbox: &Aabb, dir_in_world: [f32; 3]) -> OrthoCamera {
 /// The shadow map from the map: every item instance's visual mesh (the alpha-tested materials through B's alpha test
 /// with the zip's cut-out texture), every zone tile (the LM tile mesh at the instance's translation), the decoration.
 pub fn shadow_from_map(scene: &crate::geometry::Scene, lm: &LmScene, cam: &OrthoCamera, item_bytes: &dyn Fn(&str) -> Option<Vec<u8>>, notes: &mut Vec<String>) -> ShadowTarget {
+    // THE CASTER JOBS in the sequential draw order: items (one opaque caster per instance + one alpha-tested caster per cut-out
+    // texture), the zone tiles (the LM tile mesh at each tile instance), the decoration chunks
+    #[derive(Clone)]
+    enum Job { Item(usize), Tile(usize, usize), Decor(Vec<usize>) }
+    let mut jobs: Vec<Job> = Vec::new();
+    let mut weight: Vec<usize> = Vec::new();
+    for (ii, inst) in scene.instances.iter().enumerate() { jobs.push(Job::Item(ii)); weight.push(scene.models[inst.model].tris.len().max(1)); }
+    for (k, mesh) in lm.meshes.iter().enumerate() {
+        if lm.inst_count[k] < 1000 { continue; }
+        for ii in lm.inst_first[k]..lm.inst_first[k] + lm.inst_count[k] { jobs.push(Job::Tile(k, ii)); weight.push(mesh.indices.len() / 3); }
+    }
+    let mut skipped_water = 0usize;
+    if !scene.decor.is_empty() {
+        let mut chunk: Vec<usize> = Vec::new();
+        for (i, t) in scene.decor.iter().enumerate() {
+            if t.water || !t.sun_caster { skipped_water += 1; continue; }
+            if chunk.len() * 3 + 3 > 65535 { jobs.push(Job::Decor(std::mem::take(&mut chunk))); weight.push(21845); }
+            chunk.push(i);
+        }
+        if !chunk.is_empty() { weight.push(chunk.len()); jobs.push(Job::Decor(chunk)); }
+    }
     let lcam = LightCamera { world_pr_camera: cam.world_pr_camera() };
     let st = shadow_state();
     let o = shadowmap::RunOpts { arith: shadowmap::Arith::Fma, unorm: shadowmap::UnormRounding::Nearest, alpha_test: true, depth_fixed_bits: 0, fixed_before_bias: false, step_fixed_k: 20, bias_round: 3, scale_ulps: 0.0 };
-    let mut tgt = ShadowTarget::new(4096, 4096);
-    let empty = InstanceTables { dyna_u32: Vec::new(), static_meshs: Vec::new() };
-    let mut n_draws = 0usize;
+    // THE WORKERS: contiguous job ranges balanced by triangle count, each into its own target; the merge keeps, per pixel, the
+    // greater 16-bit depth and on a tie the EARLIER worker's fragment — exactly the sequential draw's strict `q > depth` test
+    // (within a worker the first fragment with that depth already won). LMTOOL_SHADOW_WORKERS=N (default 16, 1 = the serial pass).
+    let total: usize = weight.iter().sum();
+    let workers: usize = std::env::var("LMTOOL_SHADOW_WORKERS").ok().and_then(|v| v.parse().ok()).unwrap_or(16).clamp(1, jobs.len().max(1));
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    {
+        let mut start = 0usize;
+        let mut acc = 0usize;
+        for (k, wgt) in weight.iter().enumerate() {
+            acc += wgt;
+            if acc * workers >= total * (ranges.len() + 1) && ranges.len() + 1 < workers { ranges.push((start, k + 1)); start = k + 1; }
+        }
+        if start < jobs.len() { ranges.push((start, jobs.len())); }
+    }
+    // the cut-out textures, loaded once up front (the byte source is not Sync)
     let mut alpha_cache: std::collections::HashMap<String, Option<std::sync::Arc<shadowmap::AlphaTexture>>> = std::collections::HashMap::new();
-    // items: one opaque caster per instance + one alpha-tested caster per cut-out texture
     for inst in &scene.instances {
         let model = &scene.models[inst.model];
-        let rows = rows_of_xform(&inst.xf);
-        let mut opaque = CasterMesh { pos: Vec::new(), uv0: Vec::new(), indices: Vec::new() };
-        let mut cut: std::collections::BTreeMap<u16, CasterMesh> = std::collections::BTreeMap::new();
         for t in &model.tris {
-            let m = if t.alpha == u16::MAX { &mut opaque } else { cut.entry(t.alpha).or_insert_with(|| CasterMesh { pos: Vec::new(), uv0: Vec::new(), indices: Vec::new() }) };
-            let base = m.pos.len() as u16;
-            for k in 0..3 {
-                m.pos.push(t.p[k]);
-                m.uv0.push(t.uv0[k]);
+            if t.alpha == u16::MAX { continue; }
+            let name = model.alpha_tex.get(t.alpha as usize).cloned().unwrap_or_default();
+            alpha_cache.entry(name.clone()).or_insert_with(|| item_bytes(&name).and_then(|b| shadowmap::AlphaTexture::from_dds(&b).ok()).map(std::sync::Arc::new));
+        }
+    }
+    let alpha_cache = &alpha_cache;
+    let draw_job = |job: &Job, tgt: &mut ShadowTarget, n_draws: &mut usize, notes: &mut Vec<String>| {
+        let empty = InstanceTables { dyna_u32: Vec::new(), static_meshs: Vec::new() };
+        match job {
+            Job::Item(ii) => {
+                let inst = &scene.instances[*ii];
+                let model = &scene.models[inst.model];
+                let rows = rows_of_xform(&inst.xf);
+                let mut opaque = CasterMesh { pos: Vec::new(), uv0: Vec::new(), indices: Vec::new() };
+                let mut cut: std::collections::BTreeMap<u16, CasterMesh> = std::collections::BTreeMap::new();
+                for t in &model.tris {
+                    let m = if t.alpha == u16::MAX { &mut opaque } else { cut.entry(t.alpha).or_insert_with(|| CasterMesh { pos: Vec::new(), uv0: Vec::new(), indices: Vec::new() }) };
+                    let base = m.pos.len() as u16;
+                    for k in 0..3 {
+                        m.pos.push(t.p[k]);
+                        m.uv0.push(t.uv0[k]);
+                    }
+                    m.indices.extend_from_slice(&[base, base + 1, base + 2]);
+                }
+                if !opaque.indices.is_empty() {
+                    let d = CasterDraw { eid: *n_draws as u64, mesh: CasterMesh { uv0: Vec::new(), ..opaque }, instance_start: 0xffff_ffff, instance_count: 1, visual_to_world: Some(rows), tables: InstanceTables { dyna_u32: Vec::new(), static_meshs: Vec::new() }, alpha: None, vsout: None };
+                    shadowmap::draw_caster(&d, &lcam, &st, tgt, 1, &o);
+                    *n_draws += 1;
+                }
+                for (a, mesh) in cut {
+                    let name = model.alpha_tex.get(a as usize).cloned().unwrap_or_default();
+                    let tex = alpha_cache.get(&name).cloned().flatten();
+                    let Some(texture) = tex else { notes.push(format!("shadow: cut-out texture {name} not loaded — the caster is skipped")); continue };
+                    let texture = shadowmap::AlphaTexture { w: texture.w, h: texture.h, mips: texture.mips.clone() };
+                    let d = CasterDraw { eid: *n_draws as u64, mesh, instance_start: 0xffff_ffff, instance_count: 1, visual_to_world: Some(rows), tables: InstanceTables { dyna_u32: Vec::new(), static_meshs: Vec::new() }, alpha: Some(shadowmap::AlphaTest { threshold: SHADOW_ALPHA_THRESHOLD, texture, max_anisotropy: 16.0 }), vsout: None };
+                    shadowmap::draw_caster(&d, &lcam, &st, tgt, 2, &o);
+                    *n_draws += 1;
+                }
             }
-            m.indices.extend_from_slice(&[base, base + 1, base + 2]);
-        }
-        if !opaque.indices.is_empty() {
-            let d = CasterDraw { eid: n_draws as u64, mesh: CasterMesh { uv0: Vec::new(), ..opaque }, instance_start: 0xffff_ffff, instance_count: 1, visual_to_world: Some(rows), tables: InstanceTables { dyna_u32: Vec::new(), static_meshs: Vec::new() }, alpha: None, vsout: None };
-            shadowmap::draw_caster(&d, &lcam, &st, &mut tgt, 1, &o);
-            n_draws += 1;
-        }
-        for (a, mesh) in cut {
-            let name = model.alpha_tex.get(a as usize).cloned().unwrap_or_default();
-            let tex = alpha_cache.entry(name.clone()).or_insert_with(|| item_bytes(&name).and_then(|b| shadowmap::AlphaTexture::from_dds(&b).ok()).map(std::sync::Arc::new)).clone();
-            let Some(texture) = tex else { notes.push(format!("shadow: cut-out texture {name} not loaded — the caster is skipped")); continue };
-            let texture = shadowmap::AlphaTexture { w: texture.w, h: texture.h, mips: texture.mips.clone() };
-            let d = CasterDraw { eid: n_draws as u64, mesh, instance_start: 0xffff_ffff, instance_count: 1, visual_to_world: Some(rows), tables: InstanceTables { dyna_u32: Vec::new(), static_meshs: Vec::new() }, alpha: Some(shadowmap::AlphaTest { threshold: SHADOW_ALPHA_THRESHOLD, texture, max_anisotropy: 16.0 }), vsout: None };
-            shadowmap::draw_caster(&d, &lcam, &st, &mut tgt, 2, &o);
-            n_draws += 1;
-        }
-    }
-    // the zone tiles: the LM tile mesh (the game's own vertex stream) at each tile instance's translation
-    for (k, mesh) in lm.meshes.iter().enumerate() {
-        if lm.inst_count[k] < 1000 {
-            continue;
-        }
-        let cm = CasterMesh { pos: mesh.verts.iter().map(|v| v.pos).collect(), uv0: Vec::new(), indices: mesh.indices.clone() };
-        for inst in lm.instances.iter().skip(lm.inst_first[k]).take(lm.inst_count[k]) {
-            let rows = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], inst.t];
-            let d = CasterDraw { eid: n_draws as u64, mesh: CasterMesh { pos: cm.pos.clone(), uv0: Vec::new(), indices: cm.indices.clone() }, instance_start: 0xffff_ffff, instance_count: 1, visual_to_world: Some(rows), tables: InstanceTables { dyna_u32: Vec::new(), static_meshs: Vec::new() }, alpha: None, vsout: None };
-            shadowmap::draw_caster(&d, &lcam, &st, &mut tgt, 3, &o);
-            n_draws += 1;
-        }
-    }
-    // the decoration (sea box, terrain): opaque casters
-    let mut skipped_water = 0usize;
-    if !scene.decor.is_empty() {
-        let mut m = CasterMesh { pos: Vec::new(), uv0: Vec::new(), indices: Vec::new() };
-        // the game's environment block = the decoration Scene3d without its Water mobil (pwc-day: WarpSand 1 120 + InvisibleShadowCaster
-        // 262 = the captured 1 382 triangles; the 336 Water triangles are not cast — with them the sea surface shadows 11 733 sun texels)
-        for (i, t) in scene.decor.iter().enumerate() {
-            if t.water || !t.sun_caster { skipped_water += 1; continue; }
-            if m.pos.len() + 3 > 65535 {
-                let d = CasterDraw { eid: n_draws as u64, mesh: std::mem::replace(&mut m, CasterMesh { pos: Vec::new(), uv0: Vec::new(), indices: Vec::new() }), instance_start: 0xffff_ffff, instance_count: 1, visual_to_world: Some([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [0.0; 3]]), tables: InstanceTables { dyna_u32: Vec::new(), static_meshs: Vec::new() }, alpha: None, vsout: None };
-                shadowmap::draw_caster(&d, &lcam, &st, &mut tgt, 4, &o);
-                n_draws += 1;
+            Job::Tile(k, ii) => {
+                let mesh = &lm.meshes[*k];
+                let inst = &lm.instances[*ii];
+                let rows = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], inst.t];
+                let d = CasterDraw { eid: *n_draws as u64, mesh: CasterMesh { pos: mesh.verts.iter().map(|v| v.pos).collect(), uv0: Vec::new(), indices: mesh.indices.clone() }, instance_start: 0xffff_ffff, instance_count: 1, visual_to_world: Some(rows), tables: InstanceTables { dyna_u32: Vec::new(), static_meshs: Vec::new() }, alpha: None, vsout: None };
+                shadowmap::draw_caster(&d, &lcam, &st, tgt, 3, &o);
+                *n_draws += 1;
             }
-            let _ = i;
-            let base = m.pos.len() as u16;
-            m.pos.extend_from_slice(&t.p);
-            m.indices.extend_from_slice(&[base, base + 1, base + 2]);
+            Job::Decor(idx) => {
+                let mut m = CasterMesh { pos: Vec::new(), uv0: Vec::new(), indices: Vec::new() };
+                for &i in idx {
+                    let t = &scene.decor[i];
+                    let base = m.pos.len() as u16;
+                    m.pos.extend_from_slice(&t.p);
+                    m.indices.extend_from_slice(&[base, base + 1, base + 2]);
+                }
+                let d = CasterDraw { eid: *n_draws as u64, mesh: m, instance_start: 0xffff_ffff, instance_count: 1, visual_to_world: Some([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [0.0; 3]]), tables: empty, alpha: None, vsout: None };
+                shadowmap::draw_caster(&d, &lcam, &st, tgt, 4, &o);
+                *n_draws += 1;
+            }
         }
-        if !m.indices.is_empty() {
-            let d = CasterDraw { eid: n_draws as u64, mesh: m, instance_start: 0xffff_ffff, instance_count: 1, visual_to_world: Some([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [0.0; 3]]), tables: empty, alpha: None, vsout: None };
-            shadowmap::draw_caster(&d, &lcam, &st, &mut tgt, 4, &o);
-            n_draws += 1;
+    };
+    let results: Vec<(ShadowTarget, usize, Vec<String>)> = crate::pool::pool().map(ranges.len(), |r| {
+        let (a, b) = ranges[r];
+        let mut tgt = ShadowTarget::new(4096, 4096);
+        let mut n = 0usize;
+        let mut nts = Vec::new();
+        for job in &jobs[a..b] { draw_job(job, &mut tgt, &mut n, &mut nts); }
+        (tgt, n, nts)
+    });
+    let mut n_draws = 0usize;
+    let mut it = results.into_iter();
+    let (mut tgt, n0, nts0) = it.next().unwrap_or_else(|| (ShadowTarget::new(4096, 4096), 0, Vec::new()));
+    n_draws += n0;
+    notes.extend(nts0);
+    for (t, n, nts) in it {
+        n_draws += n;
+        notes.extend(nts);
+        for i in 0..tgt.depth.len() {
+            if t.depth[i] > tgt.depth[i] {
+                tgt.depth[i] = t.depth[i];
+                tgt.source[i] = t.source[i];
+                tgt.raw[i] = t.raw[i];
+                tgt.slope[i] = t.slope[i];
+                tgt.dxy[i] = t.dxy[i];
+            }
         }
     }
-    notes.push(format!("shadow: {n_draws} caster draws ({} item instances, {} decoration triangles, {skipped_water} water / peel-only triangles not cast)", scene.instances.len(), scene.decor.len()));
+    notes.push(format!("shadow: {n_draws} caster draws ({} item instances, {} decoration triangles, {skipped_water} water / peel-only triangles not cast; {} workers)", scene.instances.len(), scene.decor.len(), ranges.len()));
     tgt
 }
 
@@ -193,10 +250,20 @@ pub fn classify(model: &crate::geometry::ModelGeom, name: &str, t: &crate::geome
 /// tiles with the terrain constant, then the water tint), accumulated with PS 1109 into 16963.
 pub fn attr_from_map(scene: &crate::geometry::Scene, lm: &LmScene, frozen: &FrozenTables, item_bytes: &dyn Fn(&str) -> Option<Vec<u8>>, notes: &mut Vec<String>) -> Buf {
     let sampler = frozen.sampler;
+    // the diffuse textures, loaded once up front (the byte source is not Sync; the nine runs read them in parallel)
     let mut tex_cache: std::collections::HashMap<String, Option<Texture>> = std::collections::HashMap::new();
+    for inst in &scene.instances {
+        let model = &scene.models[inst.model];
+        let name = &scene.model_names[inst.model];
+        for t in &model.tris {
+            if classify(model, name, t) != MatClass::Textured { continue; }
+            let tn = model.diff_tex.get(t.diff as usize).cloned().unwrap_or_default();
+            tex_cache.entry(tn.clone()).or_insert_with(|| item_bytes(&tn).and_then(|b| texsample::parse_dds(&b, Bc1Decode::Expand8Round).ok()).map(|mut tx| { tx.decode_srgb(); tx }));
+        }
+    }
+    let tex_cache = &tex_cache;
     let mut acc = Buf::new(W, H, 4);
     let lm_scale = 1.0f32 / 9.0;
-    let mut class_count = [0usize; 4];
     // the items: E's LM meshes (the game's own LM stream: exact TexCoord1) per model in first-appearance order; the material
     // of an LM triangle is looked up in the port's model triangles by vertex position (uv0 / the texture / the cut-out)
     let mut by_model: Vec<usize> = Vec::new();
@@ -232,7 +299,11 @@ pub fn attr_from_map(scene: &crate::geometry::Scene, lm: &LmScene, frozen: &Froz
         notes.push(format!("item mesh {mk} ↔ model {} ({}): {} of {} LM verts matched by position ({} port triangles)", model_idx, scene.model_names[*model_idx], hits, mesh.verts.len(), scene.models[*model_idx].tris.len()));
         notes.push(format!("  model {} materials: links {:?}, diffuse textures {:?}, cut-out textures {:?}; LM uv range {:?}", model_idx, scene.models[*model_idx].mat_links, scene.models[*model_idx].diff_tex, scene.models[*model_idx].alpha_tex, mesh.verts.iter().fold(([f32::MAX; 2], [f32::MIN; 2]), |(lo, hi), v| ([lo[0].min(v.uv[0]), lo[1].min(v.uv[1])], [hi[0].max(v.uv[0]), hi[1].max(v.uv[1])]))));
     }
-    for k in 0..9usize {
+    // THE NINE RUNS IN PARALLEL: each run renders its own target (independent), the accumulation into 16963 follows in run
+    // order (the f16 add chain is sequential, so the result is bit-identical to the serial loop)
+    let run_k = |k: usize| -> (Target, Vec<String>, [usize; 4]) {
+        let mut notes: Vec<String> = Vec::new();
+        let mut class_count = [0usize; 4];
         let mut tgt = Target::new();
         for (mk, li) in item_meshes.iter() {
             let mesh = &lm.meshes[*mk];
@@ -280,7 +351,7 @@ pub fn attr_from_map(scene: &crate::geometry::Scene, lm: &LmScene, frozen: &Froz
                     let tex = match class {
                         MatClass::Textured => {
                             let tn = model.diff_tex.get(*diff as usize).cloned().unwrap_or_default();
-                            tex_cache.entry(tn.clone()).or_insert_with(|| item_bytes(&tn).and_then(|b| texsample::parse_dds(&b, Bc1Decode::Expand8Round).ok()).map(|mut tx| { tx.decode_srgb(); tx })).as_ref()
+                            tex_cache.get(&tn).and_then(|t| t.as_ref())
                         }
                         _ => None,
                     };
@@ -332,6 +403,13 @@ pub fn attr_from_map(scene: &crate::geometry::Scene, lm: &LmScene, frozen: &Froz
             for i in 0..(W * H) as usize { let a = tgt.buf.data[i * 4 + 3]; if a > 0.0 { *hist.entry((a * 9.0).round() as u32).or_default() += 1; } }
             notes.push(format!("pre-pass run 8: alpha histogram (fragments per texel → texels) {:?}; items-only check: tiles {} instances", hist, lm.meshes.iter().enumerate().filter(|(k, _)| lm.inst_count[*k] >= 1000).map(|(k, _)| lm.inst_count[k]).sum::<usize>()));
         }
+        (tgt, notes, class_count)
+    };
+    let runs: Vec<(Target, Vec<String>, [usize; 4])> = crate::pool::pool().map(9, |k| run_k(k));
+    let mut class_count = [0usize; 4];
+    for (k, (tgt, nts, cc)) in runs.into_iter().enumerate() {
+        notes.extend(nts);
+        if k == 0 { class_count = cc; }
         // PS 1109: run k accumulated into 16963
         for y in 0..H {
             for x in 0..W {
