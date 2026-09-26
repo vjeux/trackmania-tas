@@ -1334,6 +1334,62 @@ checks it against a capture.
   4096 instances — E's tile path), the items (draws 347–410), the clouds
   (`GbxClouds3dInst0`, `clouds.rs`), and the WarpSand's colour (A's shading).
 
+## 6d. THE UNDERWATER TERM — `BlendWaterFog` on the pre-pass MDiffuse [CAPTURE pwc-day f127447 + the port's own atlas, RE child 11, 2026-09-26]
+
+The game attenuates submerged surfaces in ONE place: the attribute pre-pass. After
+each of the nine jittered material runs (§6b) it draws, into that run's RGBA16F
+MDiffuse scratch, `SetWaterId` (VS 17011 / PS 17012: every water quad of the
+scene rasterised TOP-DOWN into an R8G8_UINT map at one texel per metre over the
+map's world XZ — `(BLENDINDICES.x + 1, TEXCOORD7.x)` = the water type + 1 and
+the PLANE index; no depth test, the last quad wins) and then `BlendWaterFog`
+(VS 17017 / PS 17018) over EVERY LM object with the dual-source blend
+`One / Src1Color`:
+
+```text
+(id1, plane) = WaterIdMap[(x, size_z − z)]          id1 == 0 → untouched (no water over this xz)
+top = g_WaterTop_ByPlanes[plane]                     top < P.y → untouched (above the surface)
+(depth, inv) = g_WaterDepth_FogMaxDepthInv_ByIds[id1 − 1]
+P.y < top − depth − 0.1 → untouched (more than 10 cm under the water FLOOR)
+u = 2·(top − P.y)·inv                                twice the fragment's own depth: the round trip, no eye ray
+fog = TMapWaterFog.SampleBilinearClamp(u)            256 texels, rgb sRGB → linear, alpha LINEAR = the fog amount α
+T   = TMapWaterTransmittance.Sample(u)               2048 texels, sRGB → linear, per channel
+dst.rgb = α·fog.rgb·ScaleOut + dst.rgb·T·(1 − α)     ScaleOut = 1/9 per run; alpha untouched
+```
+
+Over the nine runs: `MDiffuse = α·fog + T·(1 − α)·mean(albedo)`. It multiplies
+the ALBEDO of the submerged texels — the light they bounce (the peel colour,
+`ILightInput = sun/w × MDiffuse`, §2.4) — and nothing else: the direct sun, the
+sky through the un-peeled water plane (§6c: Water never casts, never peels) and
+the local lights on a submerged wall are not attenuated. Bilinear at texel
+`u·W − 0.5`, clamped: pwc-day's seabed at depth 3 m under a 3.5 m FogMaxDepth has
+`u = 1.71` → the deepest texel, `T ≈ 0`: the seabed's albedo is REPLACED by the
+fog colour (A's `prepass_check` reproduces the captured atlas after the tint,
+1 654 008 texels changed on both sides).
+
+The constants: `g_WaterDepth_FogMaxDepthInv_ByIds` and the two LUTs are the
+COLLECTION's (§6b; Stadium Shallow: `(3.0, 0.02)`, the transmittance generator
+`(0.84, 0.95, 0.97)^(50·curve(u))`, the fog image `WaterFog.dds` whose row the
+port reads carries alpha 0 on all 256 texels — Stadium's tint is then
+transmittance only, pending the stpad pre-pass capture's t1 export for the
+256 × 32 image's axis); `g_WaterTop_ByPlanes` are the zone's water PLANES in
+WORLD y, not the collection's block-local WaterTop 7: stpad's pools sit at
+23, 119 and 231 (156 / 12 / 12 blocks), and a fragment at 20–23 under a plane
+"7" would never qualify. The water quad = the shaded geom whose material's
+shader is the water shader (`Tech3_Water_MultiH`, B 0x004c0020: `never_casts`
++ "water" in the shader path; Stadium's `Water\Base_Air.Prefab` entity 0
+visual 1 — 9 vertices at local y 7, POSITION + BLENDINDICES(Int32, the type
+in the low byte) + NORMAL + COLOR0, no uv), placed by the record's Iso4.
+
+Port: `lightmap::waterid` (the id map + plane table from the records;
+`lmtool water-ids MAP --pak … --collection C [--out ids.png] [--quads]`),
+`setupmap::water_tables_from_records` (the inputs on both setup paths),
+`prepass_check::tint_from_map` over every LM mesh, `prepass::{vs_17017,
+ps_17018, run_water_draws}` (A's transcription). On stpad the pool floor's
+MDiffuse becomes Waterground × T(3 m) = (0.0344, 0.2544, 0.3765) — once the
+record materials carry their own constant (the per-link map of RE11/0003;
+before it every block / clip record was black on Stadium, so the tint had
+nothing to act on and the port's Stadium bake had no first bounce at all).
+
 ## 7. Alignment list for `lmtool bake` (what lmtool does → what the client does → fix)
 
 1. **Encoding is sqrt, not linear.** lmtool `synth.rs from_hdr`: `pixel =
