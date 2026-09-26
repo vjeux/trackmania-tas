@@ -86,6 +86,10 @@ pub struct ClassAcc {
     pub max_delta: u8,
     /// per-chart: (chart, ratio of the per-chart HDR means (max channel deviation from 1), used texels)
     pub worst: Vec<(usize, f64, [f64; 3], [f64; 3], usize)>,
+    /// The per-chart ratio spread (charts with ≥ 16 used texels): (n, median of the per-chart ratio of the channel-summed means,
+    /// σ of ln(ratio)) — a global factor (a wrong SkyFactor, a MaxHDR split) leaves σ untouched, a wrong sun direction or a
+    /// per-object defect widens it.
+    pub spread: Option<(usize, f64, f64)>,
 }
 
 impl ClassAcc {
@@ -138,6 +142,8 @@ pub struct Report {
     pub image_h: u32,
     pub unmatched_rows: usize,
     pub rect_mismatch: usize,
+    /// --own-rects pairs refused by the rect-area guard (a numbering mismatch between the two files)
+    pub pair_refused: usize,
 }
 
 /// The whole comparison: both maps' frame `frame` image 0 decoded, per class.
@@ -170,11 +176,16 @@ pub fn compare(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLight
     let mut classes: Vec<(String, ClassAcc)> = Vec::new();
     let mut total = ClassAcc::default();
     let mut rect_mismatch = 0usize;
+    let mut pair_refused = 0usize;
     for i in 0..n {
         if o.own_rects {
             // each side over its own rect; the oracle's chart by bind word
             let key_bind = (m1.binds[i].obj_group_idx / 4, m1.binds[i].obj_idx & 0x00ff_ffff);
             let Some(&j) = theirs_of.get(&key_bind) else { rect_mismatch += 1; continue };
+            // the pairing guard: the same object at (almost) the same texel density has (almost) the same rect area — a pair whose
+            // areas differ by more than 30 % is a NUMBERING mismatch (tiny03: our kind-0 trees at obj 4096… vs the editor's road
+            // items), refused and counted rather than averaged
+            { let (a1, a2) = (m1.size[i].0 as f64 * m1.size[i].1 as f64, m2.size[j].0 as f64 * m2.size[j].1 as f64); if a1 > 0.0 && a2 > 0.0 && (a1 / a2 > 1.3 || a2 / a1 > 1.3) { pair_refused += 1; continue; } }
             let key = class_key(&m1, i, &rows, records, o.by);
             let mut acc = ClassAcc { charts: 1, ..Default::default() };
             let s1 = (fb1.get(i).copied().unwrap_or(0) as f64 / 255.0).powi(2) * k1 as f64;
@@ -248,10 +259,22 @@ pub fn compare(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLight
         total.merge(&acc);
         match classes.iter_mut().find(|(k, _)| *k == key) { Some((_, c)) => c.merge(&acc), None => classes.push((key, acc)) }
     }
+    let spread_of = |c: &ClassAcc| -> Option<(usize, f64, f64)> {
+        let mut ls: Vec<f64> = c.worst.iter().filter(|w| w.4 >= 16).map(|w| { let (a, b) = (w.2[0] + w.2[1] + w.2[2], w.3[0] + w.3[1] + w.3[2]); if a > 1e-9 && b > 1e-9 { (a / b).ln() } else { f64::NAN } }).filter(|v| v.is_finite()).collect();
+        if ls.len() < 2 { return None; }
+        ls.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let n = ls.len();
+        let median = ls[n / 2].exp();
+        let mean = ls.iter().sum::<f64>() / n as f64;
+        let sigma = (ls.iter().map(|v| (v - mean) * (v - mean)).sum::<f64>() / (n - 1) as f64).sqrt();
+        Some((n, median, sigma))
+    };
+    for (_, c) in classes.iter_mut() { c.spread = spread_of(c); }
+    total.spread = spread_of(&total);
     let trim = |c: &mut ClassAcc| { c.worst.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)); c.worst.truncate(o.worst); };
     for (_, c) in classes.iter_mut() { trim(c); }
     trim(&mut total);
-    Ok(Report { classes, total, maxhdr_ours: k1, maxhdr_theirs: k2, image_w: i1.w, image_h: i1.h, unmatched_rows, rect_mismatch })
+    Ok(Report { classes, total, maxhdr_ours: k1, maxhdr_theirs: k2, image_w: i1.w, image_h: i1.h, unmatched_rows, rect_mismatch, pair_refused })
 }
 
 fn f3(v: [f64; 3], p: usize) -> String { format!("{:.*} / {:.*} / {:.*}", p, v[0], p, v[1], p, v[2]) }
@@ -260,15 +283,16 @@ fn f3(v: [f64; 3], p: usize) -> String { format!("{:.*} / {:.*} / {:.*}", p, v[0
 pub fn print(r: &Report, o: &Options, tsv: Option<&str>) -> Result<(), String> {
     println!("frame {}: record MaxHDR ours {} vs editor {} ({:+.2} %); image {}×{}; lit threshold {} (image-A max channel); means over the EDITOR's lit texels; HDR = (A/255)²·(fb/255)²·MaxHDR", o.frame, r.maxhdr_ours, r.maxhdr_theirs, 100.0 * (r.maxhdr_ours as f64 / r.maxhdr_theirs.max(1e-12) as f64 - 1.0), r.image_w, r.image_h, o.lit);
     if r.rect_mismatch > 0 { println!("  WARNING: {} charts {} — SKIPPED in the table below", r.rect_mismatch, if o.own_rects { "have no oracle chart of the same (obj, sub) bind word" } else { "have a different rect in the two files (the layout gate failed for them)" }); }
+    if r.pair_refused > 0 { println!("  WARNING: {} pairs REFUSED by the rect-area guard (> 30 % apart): the two files number their objects differently — the item rows below are NOT trustworthy until the numbering is settled", r.pair_refused); }
     if o.own_rects { println!("  --own-rects: each side's means over its own rects and its own lit texels (layouts differ); byte identity / RMSE columns are void"); }
     if r.unmatched_rows > 0 { println!("  note: {} records rows match no chart's (obj, sub)", r.unmatched_rows); }
-    println!("class\tcharts\ttexels\tlit% ours\tlit% editor\tmean HDR ours (r/g/b)\tmean HDR editor (r/g/b)\tratio ours/editor (r/g/b)\tRMSE/mean (r/g/b)\tbytes identical %\twithin 1 %\twithin 2 %\tmax|Δ|");
+    println!("class\tcharts\ttexels\tlit% ours\tlit% editor\tmean HDR ours (r/g/b)\tmean HDR editor (r/g/b)\tratio ours/editor (r/g/b)\tRMSE/mean (r/g/b)	bytes identical %	within 1 %	within 2 %	max|Δ|	per-chart ratio: n, median, σ(ln)");
     let mut out = String::new();
     let mut row = |name: &str, c: &ClassAcc| {
-        let line = format!("{name}\t{}\t{}\t{:.1}\t{:.1}\t{}\t{}\t{}\t{}\t{:.2}\t{:.2}\t{:.2}\t{}",
+        let line = format!("{name}	{}	{}	{:.1}	{:.1}	{}	{}	{}	{}	{:.2}	{:.2}	{:.2}	{}	{}",
             c.charts, c.texels, 100.0 * c.lit_ours as f64 / c.texels.max(1) as f64, 100.0 * c.lit_theirs as f64 / c.texels.max(1) as f64,
             f3(c.mean_ours(), 4), f3(c.mean_theirs(), 4), f3(c.ratio(), 3), f3(c.rmse_rel(), 3),
-            100.0 * c.exact as f64 / c.bytes.max(1) as f64, 100.0 * c.within1 as f64 / c.bytes.max(1) as f64, 100.0 * c.within2 as f64 / c.bytes.max(1) as f64, c.max_delta);
+            100.0 * c.exact as f64 / c.bytes.max(1) as f64, 100.0 * c.within1 as f64 / c.bytes.max(1) as f64, 100.0 * c.within2 as f64 / c.bytes.max(1) as f64, c.max_delta, match c.spread { Some((n, med, sg)) => format!("{n}, {med:.3}, {sg:.3}"), None => "—".to_string() });
         println!("{line}");
         out.push_str(&line); out.push('\n');
     };
@@ -284,7 +308,7 @@ pub fn print(r: &Report, o: &Options, tsv: Option<&str>) -> Result<(), String> {
         }
     }
     if let Some(p) = tsv {
-        let mut s = String::from("class\tcharts\ttexels\tlit_ours_pct\tlit_editor_pct\tmean_ours_rgb\tmean_editor_rgb\tratio_rgb\trmse_rel_rgb\tidentical_pct\twithin1_pct\twithin2_pct\tmax_delta\n");
+        let mut s = String::from("class\tcharts\ttexels\tlit_ours_pct\tlit_editor_pct\tmean_ours_rgb\tmean_editor_rgb\tratio_rgb\trmse_rel_rgb\tidentical_pct\twithin1_pct\twithin2_pct\tmax_delta\tchart_ratio_n_median_sigma\n");
         s.push_str(&out);
         std::fs::write(p, s).map_err(|e| format!("{p}: {e}"))?;
     }
