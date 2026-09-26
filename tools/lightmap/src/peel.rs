@@ -711,30 +711,37 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
     let sub_shift = row_shift.saturating_sub(3); // tile_rows / SUB rows per sub-strip (SUB = 8)
     let sub_of = |y: i32, by0: i32| -> usize { (((y - by0).max(0) as usize) >> sub_shift).min(SUB - 1) };
     // per chunk: the CSR over the cells (offsets, then the item indices in item order with their strip bits)
-    // and the cells' estimated costs — `items` yields (index, rows, columns, weight in pairs)
-    let bin_chunk = |items: &mut dyn Iterator<Item = (u32, i32, i32, i32, i32, u64)>, n_hint: usize| -> (Vec<u32>, Vec<u32>, Vec<u8>, Vec<u64>) {
-        // pass 1: the cells of every item (kept: the projection is the cost), the counts and costs per cell
-        // (sized up front: a 50 k-triangle chunk grew this by doubling — 2.6 MB of copies per chunk)
-        let mut hits: Vec<(u32, u16, u16, u16, u16, i32, i32)> = Vec::with_capacity(n_hint); // (idx, brow0, brow1, bcol0, bcol1, ry0, ry1)
-        let mut counts: Vec<u32> = vec![0; n_cells + 1];
-        let mut cost: Vec<u64> = vec![0; n_cells];
-        for (idx, ry0, ry1, rx0, rx1, weight) in items {
-            let (br0, br1) = (brow_of(ry0), brow_of(ry1));
-            let (bc0, bc1) = (bcol_of(rx0), bcol_of(rx1));
-            for br in br0..=br1 {
-                // the rows of the bounding box inside this cell row (no division: the cell's rows from br)
-                let cy0 = clip.1 + (br * tile_rows) as i32;
-                let h_in = (ry1.min(cy0 + tile_rows as i32 - 1) - ry0.max(cy0) + 1).max(0) as u64;
-                for bc in bc0..=bc1 {
-                    let cell = cell_at(br, bc);
-                    counts[cell + 1] += 1;
-                    let cx0 = clip.0 + (bc * tile_cols) as i32;
-                    let w_in = (rx1.min(cx0 + tile_cols as i32 - 1) - rx0.max(cx0) + 1).max(0) as u64;
-                    cost[cell] += weight * pair_cost + w_in * h_in;
-                }
+    // and the cells' estimated costs. `place` takes one item (index, rows, columns, weight in pairs) — a plain
+    // closure the item loops call directly (an iterator through `dyn Iterator` cost a virtual call and three
+    // uninlined closures per triangle); `finish` builds the CSR from the placed items.
+    struct BinState {
+        hits: Vec<(u32, u16, u16, u16, u16, i32, i32)>, // (idx, brow0, brow1, bcol0, bcol1, ry0, ry1)
+        counts: Vec<u32>,
+        cost: Vec<u64>,
+    }
+    let bin_state = |n_hint: usize| -> BinState {
+        // (sized up front: a 50 k-triangle chunk grew the hits by doubling — 2.6 MB of copies per chunk)
+        BinState { hits: Vec::with_capacity(n_hint), counts: vec![0; n_cells + 1], cost: vec![0; n_cells] }
+    };
+    let place = |st: &mut BinState, idx: u32, ry0: i32, ry1: i32, rx0: i32, rx1: i32, weight: u64| {
+        let (br0, br1) = (brow_of(ry0), brow_of(ry1));
+        let (bc0, bc1) = (bcol_of(rx0), bcol_of(rx1));
+        for br in br0..=br1 {
+            // the rows of the bounding box inside this cell row (no division: the cell's rows from br)
+            let cy0 = clip.1 + (br * tile_rows) as i32;
+            let h_in = (ry1.min(cy0 + tile_rows as i32 - 1) - ry0.max(cy0) + 1).max(0) as u64;
+            for bc in bc0..=bc1 {
+                let cell = cell_at(br, bc);
+                st.counts[cell + 1] += 1;
+                let cx0 = clip.0 + (bc * tile_cols) as i32;
+                let w_in = (rx1.min(cx0 + tile_cols as i32 - 1) - rx0.max(cx0) + 1).max(0) as u64;
+                st.cost[cell] += weight * pair_cost + w_in * h_in;
             }
-            hits.push((idx, br0 as u16, br1 as u16, bc0 as u16, bc1 as u16, ry0, ry1));
         }
+        st.hits.push((idx, br0 as u16, br1 as u16, bc0 as u16, bc1 as u16, ry0, ry1));
+    };
+    let finish = |st: BinState| -> (Vec<u32>, Vec<u32>, Vec<u8>, Vec<u64>) {
+        let BinState { hits, mut counts, cost } = st;
         for i in 0..n_cells { counts[i + 1] += counts[i]; }
         let mut entries: Vec<u32> = vec![0; counts[n_cells] as usize];
         let mut ebits: Vec<u8> = vec![0; counts[n_cells] as usize];
@@ -754,23 +761,43 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
         }
         (counts, entries, ebits, cost)
     };
+    let bin_ns: Vec<std::sync::atomic::AtomicU64> = if raster_stats { (0..n_prep).map(|_| std::sync::atomic::AtomicU64::new(0)).collect() } else { Vec::new() };
     let binned: Vec<(Vec<u32>, Vec<u32>, Vec<u8>, Vec<u64>)> = crate::pool::pool().map(n_prep, |ci| {
+        let t_ch = std::time::Instant::now();
         let subs = &chunks[ci];
+        let mut st = bin_state(subs.iter().map(|&(a, b)| (b - a) as usize).sum());
         match hier {
             Some((_, jobs)) => {
                 // a job's rectangle is already clipped to the frame; its weight is its triangle count
-                let mut it = subs.iter().flat_map(|&(a, b)| (a..b).map(|j| { let g = &jobs[j as usize]; (j, g.y0, g.y1, g.x0, g.x1, g.count as u64) }));
-                bin_chunk(&mut it, subs.iter().map(|&(a, b)| (b - a) as usize).sum())
+                for &(a, b) in subs.iter() {
+                    for j in a..b {
+                        let g = &jobs[j as usize];
+                        place(&mut st, j, g.y0, g.y1, g.x0, g.x1, g.count as u64);
+                    }
+                }
             }
             None => {
                 // (the records projected sixteen at a time — binproj::project16, gathers from the 72-byte records —
                 // measured SLOWER here than the scalar stream: clip 0.31 → 0.35 s per 4 directions; kept for a
                 // contiguous layout where the gathers become loads)
-                let mut it = subs.iter().flat_map(|&(a, b)| tris[a as usize..b as usize].iter().enumerate().filter_map(move |(k, t)| rows_of(t).map(|(ry0, ry1, rx0, rx1)| (a + k as u32, ry0, ry1, rx0, rx1, 1u64))));
-                bin_chunk(&mut it, subs.iter().map(|&(a, b)| (b - a) as usize).sum())
+                for &(a, b) in subs.iter() {
+                    for (k, t) in tris[a as usize..b as usize].iter().enumerate() {
+                        if let Some((ry0, ry1, rx0, rx1)) = rows_of(t) {
+                            place(&mut st, a + k as u32, ry0, ry1, rx0, rx1, 1);
+                        }
+                    }
+                }
             }
         }
+        let r = finish(st);
+        if raster_stats { bin_ns[ci].store(t_ch.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed); }
+        r
     });
+    if raster_stats {
+        let v: Vec<u64> = bin_ns.iter().map(|a| a.load(std::sync::atomic::Ordering::Relaxed)).collect();
+        let (mx, sum) = (v.iter().copied().max().unwrap_or(0), v.iter().sum::<u64>());
+        eprintln!("binning: {} items in {n_prep} chunks: slowest chunk {:.2} ms, mean {:.2} ms, ideal wall {:.1} ms, wall {:.1} ms", n_items, mx as f64 / 1e6, sum as f64 / n_prep.max(1) as f64 / 1e6, sum as f64 / (crate::pool::pool().threads + 1) as f64 / 1e6, t_clip.elapsed().as_secs_f64() * 1e3);
+    }
     prof::add(&prof::B_CLIP, t_clip);
     let t_raster = std::time::Instant::now(); crate::pool::stats::stage("raster");
     // the cells' totals over the chunks (chunk-outer, cell-inner: sequential over each chunk's arrays — the

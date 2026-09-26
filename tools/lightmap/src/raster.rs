@@ -104,7 +104,7 @@ pub struct CoverTest {
 
 impl CoverTest {
     /// None for a degenerate (zero-area or non-finite) triangle — the raster visits nothing for it.
-    #[inline]
+    #[inline(always)]
     pub fn new(p: [[f32; 2]; 3]) -> Option<CoverTest> {
         let area = edge(p[0], p[1], p[2]);
         if area == 0.0 || !area.is_finite() {
@@ -113,7 +113,7 @@ impl CoverTest {
         let (a, b, c) = if area > 0.0 { (p[0], p[1], p[2]) } else { (p[0], p[2], p[1]) };
         Some(CoverTest { a, b, c, tl: [top_left(a, b), top_left(b, c), top_left(c, a)] })
     }
-    #[inline]
+    #[inline(always)]
     pub fn covers(&self, x: u32, y: u32) -> bool {
         let q = [x as f32 + 0.5, y as f32 + 0.5];
         let e0 = edge(self.a, self.b, q);
@@ -125,7 +125,7 @@ impl CoverTest {
     /// The coverage of the pixel centres of the box [x0, x1] × [y0, y1] (at most 16 of them), row-major: bit
     /// (y − y0)·w + (x − x0) set when the centre is covered — the sixteen tests in one 16-lane pass on the
     /// AVX-512 build (each lane the scalar `edge` operations at its own centre), scalar otherwise.
-    #[inline]
+    #[inline(always)]
     pub fn covers_box(&self, x0: i32, y0: i32, x1: i32, y1: i32) -> u16 {
         let w = (x1 - x0 + 1).max(0) as usize;
         let h = (y1 - y0 + 1).max(0) as usize;
@@ -150,7 +150,10 @@ impl CoverTest {
     }
 
     #[cfg(target_arch = "x86_64")]
-    #[target_feature(enable = "avx512f,avx512bw,avx512dq,avx512vl")]
+    // (no target_feature attribute: under the avx512 cfg the build has the features everywhere, and the attribute
+    // kept LLVM from inlining this into the binning — three calls per micro triangle)
+    #[cfg_attr(all(target_feature = "avx512f", target_feature = "avx512bw"), inline(always))]
+    #[cfg_attr(not(all(target_feature = "avx512f", target_feature = "avx512bw")), target_feature(enable = "avx512f,avx512bw,avx512dq,avx512vl"))]
     pub unsafe fn covers_box_avx512(&self, x0: i32, y0: i32, w: usize, h: usize) -> u16 {
         use std::arch::x86_64::*;
         let n = (w * h).min(16);
