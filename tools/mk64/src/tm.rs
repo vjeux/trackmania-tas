@@ -467,6 +467,21 @@ pub fn cmd_build(args: &[String]) {
         // (Default yellow, White, Green, Blue, Red, Black through
         // `ItemInflatableMat`): the N64's rainbow box; MK64_IB_MONO=1 keeps the
         // one-material gold cube
+        // THE REAL BOX (2026-09-25): the ROM's octahedron with its per-vertex
+        // rainbow and the real "?" texture (`itembox::build_real`).
+        // MK64_IB_LEGACY=1 brings back the gold cube + six colour bands.
+        if std::env::var("MK64_IB_LEGACY").as_deref() != Ok("1") {
+            let name = format!("MK64_{}_{}_itemboxes.Item.Gbx", dir, tag);
+            match crate::itembox::build_real(&mut store, &name, &spawns, &frame, &mut rom, &tag) {
+                Ok(Some(ib)) => {
+                    println!("  item boxes: {} octahedra{} ({} bytes/item)", ib.count, if std::env::var("MK64_IB_SPIN").as_deref() == Ok("1") { " (spinning probe)" } else { "" }, ib.bytes.len());
+                    pictures.extend(ib.pictures);
+                    specs.push(ItemSpec { name, bytes: ib.bytes, pos: ib.pos, yaw: 0.0, tag: None, order: 0, color: 0 });
+                }
+                Ok(None) => {}
+                Err(e) => println!("  item boxes: {e}"),
+            }
+        } else {
         // the translucent gold cube with the "?" inside (None) plus six coloured
         // border-band items, one per face; MK64_IB_MONO=1 keeps the cube alone
         let faces: Vec<Option<usize>> = if std::env::var("MK64_IB_MONO").is_ok() { vec![None] } else { std::iter::once(None).chain((0..6).map(Some)).collect() };
@@ -501,6 +516,8 @@ pub fn cmd_build(args: &[String]) {
                 Err(e) => println!("  item boxes: {e}"),
             }
         }
+        }
+
         // Moo Moo Farm's moles: mounds + popping moles (kinematic, like the boxes)
         if dir == "moo_moo_farm" && !args.iter().any(|a| a == "--no-moles") {
             let name = format!("MK64_{}_{}_moles.Item.Gbx", dir, tag);
@@ -882,13 +899,39 @@ pub fn custom_material(mat: &mesh::Material, alpha: bool, physics: u8, tag: &str
     let mut inst = CPlugMaterialUserInst::game_material("Stadium\\Media\\Material\\PlatformTech", physics);
     let stem = mat.stem();
     let file = format!("{tag}_{stem}.dds");
-    let illum = ILLUM.load(std::sync::atomic::Ordering::Relaxed) && !alpha;
+    // ADDITIVE (`TIAdd`): what the N64 does with Rainbow Road's neon signs —
+    // the tubes are added to whatever is behind them and the black background
+    // adds nothing, so they glow at night and need no alpha at all (they were
+    // black-keyed before, which made them alpha-cut, which barred the self-lit
+    // model, which is why they came out as dark outlines — vjeux 2026-09-25:
+    // "the color isn't working").
+    if mat.additive {
+        if let Some(main) = inst.main.as_mut() {
+            main.is_using_game_material = false;
+            main.model = Id::Str("TIAdd".into());
+            main.material_name = Id::Str(stem.clone());
+            main.link = Id::Null;
+            let slot: i32 = std::env::var("MK64_ADD_SLOT").ok().and_then(|s| s.parse().ok()).unwrap_or(0);
+            main.user_textures = vec![UserTexture { u01: slot, texture: file }];
+        }
+        return inst;
+    }
+    let illum = ILLUM.load(std::sync::atomic::Ordering::Relaxed);
     if let Some(main) = inst.main.as_mut() {
         main.is_using_game_material = false;
         main.model = Id::Str(if alpha { "TDOSN".into() } else if illum { "TDSNI".into() } else { "TDSN".into() });
         main.material_name = Id::Str(stem.clone());
         main.link = Id::Null;
-        main.user_textures = if illum { vec![UserTexture { u01: 0, texture: file.clone() }, UserTexture { u01: 8, texture: file }] } else { vec![UserTexture { u01: if alpha { 1 } else { 0 }, texture: file }] };
+        // the N64 lights nothing, so on a night course every material is
+        // self-lit: the DDS goes in the model's colour slot AND in SelfIllum
+        // (8). An alpha-cut material keeps TDOSN — its colour slot is DiffuseO
+        // (1) — and takes the SelfIllum slot too, which is what stopped the
+        // item boxes rendering as black diamonds on Rainbow Road (2026-09-25).
+        main.user_textures = match (illum, alpha) {
+            (true, false) => vec![UserTexture { u01: 0, texture: file.clone() }, UserTexture { u01: 8, texture: file }],
+            (true, true) => vec![UserTexture { u01: 1, texture: file.clone() }, UserTexture { u01: 8, texture: file }],
+            (false, a) => vec![UserTexture { u01: if a { 1 } else { 0 }, texture: file }],
+        };
     }
     inst
 }
@@ -1240,7 +1283,9 @@ pub fn material_images(mesh: &Mesh, assets: &AssetIndex, rom: &mut Rom) -> (Hash
             Ok(Image::solid(4, 4, [255, 255, 255, 255]))
         } else {
             assets.locate(&m.sym).ok_or_else(|| "not in the asset index".to_string()).and_then(|loc| {
-                let tlut = loc.tlut.as_deref().and_then(|t| assets.locate(t));
+                // the material's own palette wins: a CI texture whose TLUT the
+                // game's CODE sets is not the one the asset index names
+                let tlut = m.tlut.as_deref().or(loc.tlut.as_deref()).and_then(|t| assets.locate(t));
                 rom.texture(&loc, tlut.as_ref())
             })
         };
@@ -1249,7 +1294,8 @@ pub fn material_images(mesh: &Mesh, assets: &AssetIndex, rom: &mut Rom) -> (Hash
                 // the Rainbow Road neon signs are drawn ADDITIVELY by the N64 over an
                 // opaque black background (black adds nothing); here black becomes
                 // transparent so the tubes float
-                let img = if m.sym.contains("RainbowRoadNeon") { img.black_keyed(24) } else { img };
+                // an additive material needs its black: black adds nothing
+                let img = if m.sym.contains("RainbowRoadNeon") && !m.additive { img.black_keyed(24) } else { img };
                 out.insert(i, img.mirrored(m.mirror_s, m.mirror_t).tinted(m.tint));
             }
             Err(e) => {

@@ -292,7 +292,7 @@ pub fn build(store: &mut DataStore, name: &str, decomp: &Path, path_tm: &[[f32; 
     let mut mounds = Merged::default();
     mounds.file_write_time = merged.file_write_time;
     let mut pictures: BTreeMap<String, Vec<u8>> = BTreeMap::new();
-    let dirt_mat = Material { sym: "MoleDirt".into(), mirror_s: false, mirror_t: false, clamp_s: true, clamp_t: true, w: dirt.w, h: dirt.h, fmt: 0, tint: [255, 255, 255] };
+    let dirt_mat = Material { sym: "MoleDirt".into(), mirror_s: false, mirror_t: false, clamp_s: true, clamp_t: true, w: dirt.w, h: dirt.h, fmt: 0, tint: [255, 255, 255], tlut: None, additive: false };
     pictures.insert(format!("{tag}_{}.dds", dirt_mat.stem()), mapgeom::static_item::texture::write_dds_picture(dirt.w, dirt.h, &dirt.rgba));
     let dirt_slot = {
         mounds.materials.push(crate::tm::custom_material(&dirt_mat, false, crate::tm::PHYS_CONCRETE, tag));

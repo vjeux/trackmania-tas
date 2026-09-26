@@ -680,6 +680,7 @@ string TitleReady() {
 // happens: arming in the request handler and performing it here means the HTTP
 // response is already on the wire when the script engine tears this module down.
 void Update(float dt) {
+    PgSyncTick();
     ReloadTick();
 }
 

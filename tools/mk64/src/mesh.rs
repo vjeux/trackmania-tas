@@ -51,6 +51,16 @@ pub struct Material {
     /// The vertex-colour tint baked into this variant of the texture
     /// (255,255,255 = the texture as is). `Flat` materials are a tint alone.
     pub tint: [u8; 3],
+    /// The palette a colour-indexed texture needs, when the CODE picks it
+    /// rather than the asset index (Rainbow Road's neon signs: the sign is a
+    /// CI texture whose TLUT the object sets — `init_texture_object`, an
+    /// animated list for Mushroom/Mario/Boo, one palette for the characters —
+    /// and decoding it without that palette is what made them colourless,
+    /// 2026-09-25).
+    pub tlut: Option<String>,
+    /// Drawn ADDITIVELY (shading model `TIAdd`): the N64's neon signs and other
+    /// glow sprites, whose black background adds nothing.
+    pub additive: bool,
 }
 
 /// The synthetic "texture" of untextured (vertex-coloured) faces.
@@ -139,8 +149,7 @@ pub fn visual_mesh(course: &Course, pieces: &[Piece], assets: Option<&AssetIndex
                     w,
                     h,
                     fmt: st.fmt,
-                    tint: [255, 255, 255],
-                };
+                    tint: [255, 255, 255], tlut: None, additive: false };
                 *mat_index.entry(m.clone()).or_insert_with(|| {
                     mesh.materials.push(m);
                     mesh.materials.len() - 1
@@ -514,7 +523,7 @@ pub fn bake_vertex_colours(mesh: &mut Mesh, levels: u32, max_spread: u8, max_dep
             let mi = *variants.entry(key).or_insert_with(|| {
                 let mut m = match t.mat {
                     Some(i) => base_materials[i].clone(),
-                    None => Material { sym: FLAT_SYM.to_string(), mirror_s: false, mirror_t: false, clamp_s: false, clamp_t: false, w: 4, h: 4, fmt: 0, tint: [255, 255, 255] },
+                    None => Material { sym: FLAT_SYM.to_string(), mirror_s: false, mirror_t: false, clamp_s: false, clamp_t: false, w: 4, h: 4, fmt: 0, tint: [255, 255, 255], tlut: None, additive: false },
                 };
                 m.tint = tint;
                 mesh.materials.push(m);

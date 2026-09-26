@@ -101,15 +101,9 @@ string PgGhostAdd(const string &in qs) {
             // default the ghost layer
             id = gm.Ghost_Add(dl, QArg(qs, "layer") != "0", offset);
         }
-        // offset=start: every managed ghost's clock zero = the player's race
-        // start (the mode's own call for its PB ghost). With TimeOffset 0 a
-        // ghost's zero was the PLAYGROUND's (~3 s before the countdown ended;
-        // measured 2026-09-25 with /vis: ghost time = race time + 3 s).
-        if (so == "start") {
-            auto rules3 = cast<CSmArenaRulesMode>(app.PlaygroundScript);
-            auto sp3 = ScriptPlayer();
-            if (rules3 !is null && sp3 !is null) rules3.Ghosts_SetStartTime(sp3.StartTime);
-        }
+        // from now on the ghosts follow the player's StartTime (PgSyncTick)
+        g_pgSyncOn = true;
+        g_pgSyncStart = -1;
         return "{\"path\":\"" + path + "\",\"via\":\"" + how + " [" + tried + "]\",\"ok\":1,\"ghosts\":1,\"offset\":" + offset + ",\"phys\":" + (phys ? 1 : 0) + ",\"added\":[{\"instance\":" + id.Value + ",\"nickname\":\"" + string(dl.Nickname) + "\"}]}";
     }
     uint t0 = Time::Now;
@@ -134,6 +128,8 @@ string PgGhostAdd(const string &in qs) {
 }
 
 string PgGhostRm() {
+    g_pgSyncOn = false;
+    g_pgSyncStart = -1;
     auto app = GetApp();
     if (app.Network is null || app.Network.ClientManiaAppPlayground is null) return "{\"error\":\"not in a playground\"}";
     CGameGhostMgrScript@ gm = null;
@@ -181,4 +177,25 @@ string VisList() {
         s += "[" + Text::Format("%.1f", p.x) + "," + Text::Format("%.1f", p.y) + "," + Text::Format("%.1f", p.z) + "," + Text::Format("%.1f", v.AsyncState.WorldVel.Length() * 3.6) + "]";
     }
     return s + "]}";
+}
+
+// Keep the added ghosts on the player's clock. A ghost added BEFORE the race
+// start plays from the moment it was added (measured 2026-09-25: the CPUs were
+// 145 m down the road at race time 1 s); the mode itself re-times its own
+// ghosts on every (re)spawn with Ghosts_SetStartTime, so we do the same for
+// ours: whenever the player's StartTime changes, set the ghosts' start to it.
+// Armed by /pgghost, disarmed by /pgghostrm and when the playground closes.
+bool g_pgSyncOn = false;
+int g_pgSyncStart = -1;
+void PgSyncTick() {
+    if (!g_pgSyncOn) return;
+    auto app = GetApp();
+    if (app.CurrentPlayground is null) { g_pgSyncOn = false; g_pgSyncStart = -1; return; }
+    auto rules = cast<CSmArenaRulesMode>(app.PlaygroundScript);
+    auto sp = ScriptPlayer();
+    if (rules is null || sp is null) return;
+    if (sp.StartTime != g_pgSyncStart && sp.StartTime > 0) {
+        g_pgSyncStart = sp.StartTime;
+        rules.Ghosts_SetStartTime(sp.StartTime);
+    }
 }

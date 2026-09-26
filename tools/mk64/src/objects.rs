@@ -121,7 +121,7 @@ pub fn add_static(course: &Course, mesh: &mut Mesh, frame: &Frame, obj: &CourseO
                 for t in &model {
                     let mat = t.tex.as_ref().map(|(sym, w, h, cs, ct)| {
                         *mats.entry((sym.clone(), *cs, *ct)).or_insert_with(|| {
-                            mesh.materials.push(Material { sym: sym.clone(), mirror_s: false, mirror_t: false, clamp_s: *cs, clamp_t: *ct, w: *w, h: *h, fmt: 2, tint: [255, 255, 255] });
+                            mesh.materials.push(Material { sym: sym.clone(), mirror_s: false, mirror_t: false, clamp_s: *cs, clamp_t: *ct, w: *w, h: *h, fmt: 2, tint: [255, 255, 255], tlut: None, additive: false });
                             mesh.materials.len() - 1
                         })
                     });
@@ -166,7 +166,9 @@ pub fn add_static(course: &Course, mesh: &mut Mesh, frame: &Frame, obj: &CourseO
             // picture by `sym` through the asset index (an invented name drew the
             // magenta placeholder — Rainbow Road's neon signs, 2026-09-25)
             let mi = *mats.entry((sym.clone(), true, true)).or_insert_with(|| {
-                mesh.materials.push(Material { sym: sym.clone(), mirror_s: *mirror, mirror_t: false, clamp_s: true, clamp_t: true, w: img.w, h: img.h, fmt: 2, tint: [255, 255, 255] });
+                // the neon signs are the N64's additive glow sprites
+                let additive = sym.contains("RainbowRoadNeon");
+                mesh.materials.push(Material { sym: sym.clone(), mirror_s: *mirror, mirror_t: false, clamp_s: true, clamp_t: true, w: img.w, h: img.h, fmt: 2, tint: [255, 255, 255], tlut: tlut.clone(), additive });
                 mesh.materials.len() - 1
             });
             let hw = width_units / 2.0;

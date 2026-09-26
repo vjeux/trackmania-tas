@@ -77,6 +77,9 @@ fn main() {
         "ghost" => cmd_ghost(&args),
         "clones" => cmd_clones(&args),
         "cpus" => cmd_cpus(&args),
+        "common-dl" => cmd_common_dl(&args),
+        "spawns" => cmd_spawns(&args),
+        "tex" => cmd_tex(&args),
         "ghost-compress" => cmd_ghost_compress(&args),
         "ghost-at" => cmd_ghost_at(&args),
         "ghost-all" => cmd_ghost_all(&args),
@@ -1008,5 +1011,122 @@ fn cmd_ghost_at(args: &[String]) {
             }
         }
         println!("({x}, {z}): {}", hits.iter().map(|(d, k)| format!("{:.2}s (±{:.1} m)", *k as f32 * 0.05, d)).collect::<Vec<_>>().join(", "));
+    }
+}
+
+/// `mk64 common-dl OFFSET [--out DIR]`: the triangles a display list in the
+/// shared segment 0xD draws — positions, uv, vertex colours, texture — and its
+/// textures as PNG. `mk64 common-dl itembox` dumps the item box's own lists.
+fn cmd_common_dl(args: &[String]) {
+    let rom_path = std::env::var("MK64_ROM").unwrap_or_else(|_| die("MK64_ROM=/path/to/baserom.us.z64"));
+    let rom = mk64::texture::Rom::load(std::path::Path::new(&rom_path)).unwrap_or_else(|e| die(e));
+    let seg = mk64::common::Seg::load(&rom).unwrap_or_else(|e| die(e));
+    println!("segment 0xD: {} bytes", seg.data.len());
+    let out = flag(args, "--out").map(std::path::PathBuf::from);
+    let what = args.get(2).map(|s| s.as_str()).unwrap_or("itembox");
+    let lists: Vec<(String, usize)> = if what == "itembox" {
+        vec![("item box body (D_0D003090)".into(), mk64::common::DL_ITEMBOX_BODY), ("question mark (itemBoxQuestionMarkModel)".into(), mk64::common::DL_ITEMBOX_Q)]
+    } else {
+        let off = usize::from_str_radix(what.trim_start_matches("0x"), 16).unwrap_or_else(|_| die("OFFSET in hex, or `itembox`"));
+        vec![(format!("0x{off:X}"), off)]
+    };
+    for (name, off) in lists {
+        if args.iter().any(|a| a == "--raw") {
+            println!("\nraw {name} at 0x{off:X}:");
+            for k in 0..24 {
+                let at = off + 8 * k;
+                let (w0, w1) = (u32::from_be_bytes(seg.data[at..at + 4].try_into().unwrap()), u32::from_be_bytes(seg.data[at + 4..at + 8].try_into().unwrap()));
+                println!("  +{:>3}  {w0:08X} {w1:08X}   op {:02X}", 8 * k, w0 >> 24);
+                if (w0 >> 24) as u8 == 0xB8 {
+                    break;
+                }
+            }
+        }
+        let tris = seg.dl_tris(off);
+        println!("\n{name} at 0x{off:X}: {} triangles", tris.len());
+        let mut texes: Vec<mk64::common::TexRef> = Vec::new();
+        for (i, t) in tris.iter().enumerate() {
+            if let Some(tx) = t.tex {
+                if !texes.contains(&tx) {
+                    texes.push(tx);
+                }
+            }
+            if i < 24 {
+                let v = |k: usize| format!("({:>5},{:>5},{:>5}) uv({:>5},{:>5}) rgba({:>3},{:>3},{:>3},{:>3})", t.c[k].pos[0], t.c[k].pos[1], t.c[k].pos[2], t.c[k].uv[0], t.c[k].uv[1], t.c[k].rgba[0], t.c[k].rgba[1], t.c[k].rgba[2], t.c[k].rgba[3]);
+                println!("  {i:>3} {}\n      {}\n      {}", v(0), v(1), v(2));
+            }
+        }
+        for tx in &texes {
+            println!("  texture at 0x{:X}: fmt {} siz {} {}×{}", tx.off, tx.fmt, tx.siz, tx.w, tx.h);
+            if let Some(dir) = &out {
+                let _ = std::fs::create_dir_all(dir);
+                let img = seg.rgba16(tx.off, tx.w, tx.h);
+                let p = dir.join(format!("seg0D_{:X}_{}x{}.png", tx.off, tx.w, tx.h));
+                std::fs::write(&p, img.png()).unwrap_or_else(|e| die(format!("{}: {e}", p.display())));
+                println!("    → {}", p.display());
+            }
+        }
+    }
+    // the item box's vertex array, whatever the lists referenced
+    let vtx: Vec<mk64::common::CVert> = (0..32).map(|k| seg.vertex(mk64::common::VTX_ITEMBOX + 16 * k)).collect();
+    println!("\ncommon_vtx_itembox (32):");
+    for (k, v) in vtx.iter().enumerate() {
+        println!("  {k:>2} ({:>5},{:>5},{:>5}) uv({:>6},{:>6}) rgba({:>3},{:>3},{:>3},{:>3})", v.pos[0], v.pos[1], v.pos[2], v.uv[0], v.uv[1], v.rgba[0], v.rgba[1], v.rgba[2], v.rgba[3]);
+    }
+}
+
+/// `mk64 spawns COURSE --host MAP [--kind item_box]`: where the course's item
+/// boxes sit in TM coordinates — for pointing a camera at one.
+fn cmd_spawns(args: &[String]) {
+    let (mut c, decomp) = load_course(args);
+    let host = flag(args, "--host").unwrap_or_else(|| die("--host MAP"));
+    let assets = mk64::texture::AssetIndex::load(&decomp).expect("asset index");
+    let pieces = c.visual_pieces();
+    let coll = c.collision_pieces();
+    let kind = mk64::tm::host_kind(&tmmaps::map::MapFile::load(std::path::Path::new(host)));
+    let frame = mk64::tm::course_frame(&c, &pieces, &coll, &assets, &kind, args);
+    let start = frame.to_tm(c.path[0].pos);
+    let mut rows: Vec<(f32, [f32; 3])> = c
+        .item_boxes
+        .iter()
+        .map(|s| {
+            let p = frame.to_tm_f([s.pos[0] as f32, s.pos[1] as f32 + mk64::itembox::HOVER_UNITS, s.pos[2] as f32]);
+            (((p[0] - start[0]).powi(2) + (p[2] - start[2]).powi(2)).sqrt(), p)
+        })
+        .collect();
+    rows.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    println!("start ({:.1}, {:.1}, {:.1}); {} item boxes, nearest first:", start[0], start[1], start[2], rows.len());
+    for (d, p) in rows.iter().take(10) {
+        println!("  {d:>7.1} m  ({:.1}, {:.1}, {:.1})", p[0], p[1], p[2]);
+    }
+}
+
+/// `mk64 tex SYM [--tlut SYM] [--out FILE.png]`: one texture out of the ROM,
+/// decoded with the palette the game's code picks.
+fn cmd_tex(args: &[String]) {
+    let decomp = std::path::PathBuf::from(flag(args, "--decomp").map(|s| s.to_string()).unwrap_or_else(|| std::env::var("MK64_DECOMP").unwrap_or_else(|_| die("MK64_DECOMP=..."))));
+    let sym = args.get(2).unwrap_or_else(|| die("tex SYM [--tlut SYM] [--out FILE.png]"));
+    let rom_path = std::env::var("MK64_ROM").unwrap_or_else(|_| die("MK64_ROM=..."));
+    let mut rom = mk64::texture::Rom::load(std::path::Path::new(&rom_path)).unwrap_or_else(|e| die(e));
+    let assets = mk64::texture::AssetIndex::load(&decomp).expect("asset index");
+    let loc = assets.locate(sym).unwrap_or_else(|| die(format!("{sym}: not in the asset index")));
+    let tl = flag(args, "--tlut").map(|s| s.to_string()).or_else(|| loc.tlut.clone()).and_then(|t| assets.locate(&t));
+    println!("{sym}: {}×{} fmt {} at ROM 0x{:X}+0x{:X}, palette {:?}", loc.w, loc.h, loc.fmt, loc.rom_offset, loc.block_offset, flag(args, "--tlut").map(|s| s.to_string()).or_else(|| loc.tlut.clone()));
+    let img = rom.texture(&loc, tl.as_ref()).unwrap_or_else(|e| die(e));
+    // what the pixels actually are: the brightest and the histogram of colours
+    let mut n_opaque = 0usize;
+    let mut maxc = [0u8; 3];
+    for px in img.rgba.chunks(4) {
+        if px[3] > 0 {
+            n_opaque += 1;
+            for k in 0..3 {
+                maxc[k] = maxc[k].max(px[k]);
+            }
+        }
+    }
+    println!("  {} × {}, {n_opaque} opaque texels, brightest ({},{},{})", img.w, img.h, maxc[0], maxc[1], maxc[2]);
+    if let Some(out) = flag(args, "--out") {
+        std::fs::write(out, img.png()).unwrap_or_else(|e| die(format!("{out}: {e}")));
+        println!("  → {out}");
     }
 }

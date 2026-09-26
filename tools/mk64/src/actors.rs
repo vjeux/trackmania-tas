@@ -260,7 +260,7 @@ pub fn add_billboards(course: &Course, mesh: &mut Mesh, frame: &Frame, kind: &st
                 let mirror_s = t.tex.as_ref().map(|x| x.0.contains("PiranhaPlant")).unwrap_or(false);
                 let mat = t.tex.as_ref().map(|(sym, w, h, cs, ct)| {
                     *mats.entry((sym.clone(), *cs, *ct)).or_insert_with(|| {
-                        mesh.materials.push(Material { sym: sym.clone(), mirror_s, mirror_t: false, clamp_s: *cs, clamp_t: *ct, w: *w, h: *h, fmt: 2, tint: [255, 255, 255] });
+                        mesh.materials.push(Material { sym: sym.clone(), mirror_s, mirror_t: false, clamp_s: *cs, clamp_t: *ct, w: *w, h: *h, fmt: 2, tint: [255, 255, 255], tlut: None, additive: false });
                         mesh.materials.len() - 1
                     })
                 });
@@ -307,7 +307,7 @@ pub fn add_lakitu(mesh: &mut Mesh, frame: &Frame, at: [f32; 3], dir: [f32; 3]) -
     let centre = [at[0] + dir[0] * AHEAD, at[1] + UP, at[2] + dir[2] * AHEAD];
     let piece = mesh.piece_names.len() as u32;
     mesh.piece_names.push("actors:lakitu".to_string());
-    mesh.materials.push(Material { sym: SYM.to_string(), mirror_s: false, mirror_t: false, clamp_s: true, clamp_t: true, w: 56, h: 72, fmt: 2, tint: [255, 255, 255] });
+    mesh.materials.push(Material { sym: SYM.to_string(), mirror_s: false, mirror_t: false, clamp_s: true, clamp_t: true, w: 56, h: 72, fmt: 2, tint: [255, 255, 255], tlut: None, additive: false });
     let mat = Some(mesh.materials.len() - 1);
     // the first quad faces the travel direction (the drivers see him), the
     // second is perpendicular
@@ -362,7 +362,7 @@ pub fn add_thwomps(course: &Course, mesh: &mut Mesh, frame: &Frame, floor_tm: &d
             let mat = t.tex.as_ref().map(|(sym, w, h, cs, ct)| {
                 *mats.entry((sym.clone(), *cs, *ct)).or_insert_with(|| {
                     let mirror_s = sym.contains("ThwompFace");
-                    mesh.materials.push(Material { sym: sym.clone(), mirror_s, mirror_t: false, clamp_s: *cs, clamp_t: *ct, w: *w, h: *h, fmt: 2, tint: [255, 255, 255] });
+                    mesh.materials.push(Material { sym: sym.clone(), mirror_s, mirror_t: false, clamp_s: *cs, clamp_t: *ct, w: *w, h: *h, fmt: 2, tint: [255, 255, 255], tlut: None, additive: false });
                     mesh.materials.len() - 1
                 })
             });
