@@ -291,17 +291,23 @@ impl<T> Recycle<T> {
     pub fn take(&self) -> Vec<T> {
         self.pool.lock().unwrap().pop().unwrap_or_default()
     }
-    /// A vector with at least `cap` capacity (the largest recycled one is preferred when it fits).
+    /// A vector with at least `cap` capacity: the smallest recycled one that fits, else the largest one grown
+    /// (with a quarter of slack, so the next frame's slightly larger table fits without another growth — a
+    /// table above glibc's 32 MB mmap ceiling is a fresh mapping every time it grows, and its page faults land
+    /// in the parallel fill: 4.7 ms per direction of the tiny's layer CSR).
     pub fn take_with_capacity(&self, cap: usize) -> Vec<T> {
         let mut v = {
             let mut p = self.pool.lock().unwrap();
-            match p.iter().position(|v| v.capacity() >= cap) {
+            let fit = p.iter().enumerate().filter(|(_, v)| v.capacity() >= cap).min_by_key(|(_, v)| v.capacity()).map(|(i, _)| i);
+            match fit {
                 Some(i) => p.swap_remove(i),
-                None => p.pop().unwrap_or_default(),
+                None => match p.iter().enumerate().max_by_key(|(_, v)| v.capacity()).map(|(i, _)| i) { Some(i) => p.swap_remove(i), None => Vec::new() },
             }
         };
         v.clear();
-        v.reserve(cap);
+        if v.capacity() < cap {
+            v.reserve(cap + cap / 4);
+        }
         v
     }
     pub fn give(&self, mut v: Vec<T>) {
@@ -312,6 +318,9 @@ impl<T> Recycle<T> {
         let mut p = self.pool.lock().unwrap();
         if p.len() < 12 {
             p.push(v);
+        } else if let Some((i, _)) = p.iter().enumerate().min_by_key(|(_, w)| w.capacity()) {
+            // the pool is full: keep the twelve largest
+            if p[i].capacity() < v.capacity() { p[i] = v; }
         }
     }
 }
@@ -1653,6 +1662,8 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
     let dome_img = if prm.sweep > 0 { None } else { dome_img };
     let skip_n = if prm.dome_layer { 1usize } else { 0 };
     // one pixel's layers appended to `out`
+    // (the depth-bias term of the last triangle seen by this thread: consecutive wanted pixels mostly read
+    // the same large triangle — the ground — and `tri_slope` re-projects three vertices per fragment)
     let derive_pixel = |x: usize, y: usize, out: &mut Vec<LayerFrag>| {
         let list = ab.at_all(x as u32, y as u32);
         let before = out.len();
@@ -1718,7 +1729,9 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
     if let Some(px) = wanted {
         // SPARSE: the wanted pixels only, in parallel chunks of the dense index
         let npx = px.len();
-        let chunk = (npx / threads.max(1)).max(2048);
+        // (eight tasks per thread: a chunk in a dense region — many fragments per pixel — takes several times a
+        // chunk of open ground, and one chunk per thread left the others waiting for it)
+        let chunk = (npx / (threads.max(1) * 8)).max(1024);
         let n_chunks = (npx + chunk - 1) / chunk;
         let t_par = std::time::Instant::now();
         let parts: Vec<(Vec<u32>, Vec<LayerFrag>)> = crate::pool::pool().map(n_chunks, |ci| {
@@ -1793,6 +1806,7 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
         // THE CSR over the wanted pixels, assembled in parallel: per part the kept count of every pixel
         // (cut to skip_n + kept) and its total, a prefix over the parts, then every part copies its kept
         // fragments into its slice
+        let t_csr = std::time::Instant::now();
         let cap = skip_n + kept;
         let part_totals: Vec<usize> = crate::pool::pool().map(parts.len(), |pi| parts[pi].0.iter().map(|c| (*c as usize).min(cap)).sum());
         let mut part_base = Vec::with_capacity(parts.len() + 1);
@@ -1830,6 +1844,7 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
                 }
             });
         }
+        prof::add(&prof::L_CSR, t_csr);
         return Layers { w, h, start, frags, max_layers: MAX_LAYERS, sparse: Some(px.clone()), item_layers: kept, fractions };
     }
     let rows_per = ((h as usize) / threads.max(1)).max(1);
@@ -2319,6 +2334,7 @@ pub mod prof {
     pub static FRAMES: AtomicU64 = AtomicU64::new(0);
     pub static EXACT: AtomicU64 = AtomicU64::new(0);
     pub static L_PAR: AtomicU64 = AtomicU64::new(0);
+    pub static L_CSR: AtomicU64 = AtomicU64::new(0);
     /// The per-direction glue outside the stages: the dome raster, the wanted bitmap, the sel/occl clear.
     pub static DOME: AtomicU64 = AtomicU64::new(0);
     pub static BITMAP: AtomicU64 = AtomicU64::new(0);
@@ -2335,9 +2351,9 @@ pub mod prof {
         if crate::peel::DROP_STATS[3].load(Ordering::Relaxed) > 0 { let d = |i: usize| crate::peel::DROP_STATS[i].swap(0, Ordering::Relaxed); let (a, b, c, k) = (d(0), d(1), d(2), d(3)); let t = (a + b + c + k).max(1); eprintln!("drop stats [{label}]: of {t} alpha-passing item fragments: behind the environment {a} ({:.1} %), in a bias window {b} ({:.1} %), past the cap {c} ({:.1} %), accepted as layers {k} ({:.1} %)", a as f64 * 100.0 / t as f64, b as f64 * 100.0 / t as f64, c as f64 * 100.0 / t as f64, k as f64 * 100.0 / t as f64); }
         if crate::peel::CERT_STATS[0].load(Ordering::Relaxed) > 0 { let c = |i: usize| crate::peel::CERT_STATS[i].swap(0, Ordering::Relaxed); eprintln!("cert stats [{label}]: {} frames; the wanted pixels' layers all within the census lower bound: {} frames (1/16 census), {} (1/64); within the exact count {} (sanity: must be all)", c(0), c(1), c(2), c(3)); }
         if crate::peel::BOUND_TOTALS[0].load(Ordering::Relaxed) > 0 { eprintln!("bound stats [{label}]: {} frames, stop certified right by the census/4 bounds {} and by census/8 {}, certified WRONG {}", crate::peel::BOUND_TOTALS[0].swap(0, Ordering::Relaxed), crate::peel::BOUND_TOTALS[1].swap(0, Ordering::Relaxed), crate::peel::BOUND_TOTALS[2].swap(0, Ordering::Relaxed), crate::peel::BOUND_TOTALS[3].swap(0, Ordering::Relaxed)); }
-        eprintln!("profile [{label}] glue: dome raster {:.2}s, wanted bitmap {:.2}s, BVH cull {:.2}s, sel/occl clear {:.2}s, contribution {:.2}s", g(&DOME), g(&BITMAP), g(&CULL), g(&CLEAR), g(&CONTRIB));
+        eprintln!("profile [{label}] glue: dome raster {:.2}s, wanted bitmap {:.2}s, BVH cull {:.2}s, sel/occl clear {:.2}s, contribution {:.2}s; layer CSR {:.2}s", g(&DOME), g(&BITMAP), g(&CULL), g(&CLEAR), g(&CONTRIB), g(&L_CSR));
         eprintln!("profile [{label}]: A-buffer build {:.2}s (wanted index {:.2}s, clip {:.2}s, raster {:.2}s, CSR {:.2}s), exact layer count {:.2}s, layer derivation {:.2}s (parallel part {:.2}s), per-direction dumps {:.2}s, gather {:.2}s, accumulate {:.2}s, accumulation snapshots {:.2}s, frames {:.2}s; directions total {:.2}s (unstaged {:.2}s); sweep total {total:.2}s", g(&BUILD), g(&B_INDEX), g(&B_CLIP), g(&B_RASTER), g(&B_SORT), g(&EXACT), g(&LAYERS), g(&L_PAR), g(&DUMP), g(&GATHER), g(&ACCUM), g(&SNAP), g(&FRAMES), g(&DIR), g(&DIR) - staged);
-        for c in [&BUILD, &LAYERS, &DUMP, &GATHER, &ACCUM, &SNAP, &B_CLIP, &B_RASTER, &B_SORT, &B_INDEX, &DIR, &FRAMES, &EXACT, &L_PAR, &DOME, &BITMAP, &CLEAR, &CONTRIB, &CULL] { c.store(0, Ordering::Relaxed); }
+        for c in [&BUILD, &LAYERS, &DUMP, &GATHER, &ACCUM, &SNAP, &B_CLIP, &B_RASTER, &B_SORT, &B_INDEX, &DIR, &FRAMES, &EXACT, &L_PAR, &DOME, &BITMAP, &CLEAR, &CONTRIB, &CULL, &L_CSR] { c.store(0, Ordering::Relaxed); }
     }
 }
 
@@ -2732,7 +2748,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         // the sub-sample set of this direction (the jittered raster) and its index range
         let cur: &Vec<SubSample> = if jitter { &jit_sets[di % 9] } else { &subs };
         let range: &[u32] = if jitter { &range_all_buf[..cur.len()] } else { range };
-        let chunk = (range.len() / threads.max(1)).max(1024);
+        let chunk = (range.len() / (threads.max(1) * 8)).max(1024); // (eight tasks per thread: the sky-hit sub-samples cost the dome evaluation, the others a lookup)
         let sky_fill = prm.quant_ilightdir.apply(prm.quant_peel.apply(sky, prm.rounding), prm.rounding);
         // THE DOME PER PIXEL (the transcribed sky dome, `SkyGradient::dome_radiance`): the peel pixel's ray
         // meets the ellipsoid at a point whose azimuth/height differ slightly from D's across a frame (the
