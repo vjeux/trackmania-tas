@@ -1235,7 +1235,7 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
                         if key(&buf[1], &buf[2]) { buf.swap(1, 2); }
                         if key(&buf[0], &buf[1]) { buf.swap(0, 1); }
                     }
-                    _ => buf.sort_by(|p, q| p.z.total_cmp(&q.z).then_with(|| p.tri.cmp(&q.tri))),
+                    _ => buf.sort_unstable_by(|p, q| p.z.total_cmp(&q.z).then_with(|| p.tri.cmp(&q.tri))),
                 }
                 hist[count_run(buf, env_d).min(MAX_LAYERS)] += 1;
             }
@@ -2955,6 +2955,18 @@ pub mod prof {
         crate::alphatex::alpha_stats_report();
         crate::alphasimd::alpha_queue_report();
         if crate::peel::DROP_STATS[3].load(Ordering::Relaxed) > 0 { let d = |i: usize| crate::peel::DROP_STATS[i].swap(0, Ordering::Relaxed); let (a, b, c, k) = (d(0), d(1), d(2), d(3)); let t = (a + b + c + k).max(1); eprintln!("drop stats [{label}]: of {t} alpha-passing item fragments: behind the environment {a} ({:.1} %), in a bias window {b} ({:.1} %), past the cap {c} ({:.1} %), accepted as layers {k} ({:.1} %)", a as f64 * 100.0 / t as f64, b as f64 * 100.0 / t as f64, c as f64 * 100.0 / t as f64, k as f64 * 100.0 / t as f64); }
+        if *crate::pool::POOL_STATS {
+          let mut log = crate::pool::RUN_LOG.lock().unwrap();
+          let (wall_all, runs_all): (u64, usize) = (log.iter().map(|r| r.0).sum(), log.len());
+          eprintln!("pool regions [{label}]: {} runs, {:.2}s inside the parallel regions (the rest of the directions total is serial glue)", runs_all, wall_all as f64 * 1e-9);
+          // group by task count n: wall, busy, threads·wall (capacity), the mean max-task share
+          let mut by_n: std::collections::BTreeMap<usize, (u64, u64, u64, u64, usize)> = std::collections::BTreeMap::new();
+          for (wall, busy, maxt, n, thr) in log.iter() { let e = by_n.entry(*n).or_insert((0, 0, 0, 0, 0)); e.0 += wall; e.1 += busy; e.2 += wall * *thr as u64; e.3 += maxt; e.4 += 1; }
+          let mut rows: Vec<_> = by_n.into_iter().collect();
+          rows.sort_by(|a, b| b.1.0.cmp(&a.1.0));
+          eprintln!("pool regions by task count (top 12 by wall): n | runs | wall s | busy s | busy / capacity | mean max-task / mean wall");
+          for (n, (wall, busy, cap, maxt, runs)) in rows.iter().take(12) { eprintln!("  {n:6} | {runs:5} | {:7.3} | {:8.3} | {:5.1} % | {:5.1} %", *wall as f64 * 1e-9, *busy as f64 * 1e-9, *busy as f64 * 100.0 / (*cap).max(1) as f64, *maxt as f64 * 100.0 / (*wall).max(1) as f64); }
+          log.clear(); }
         if crate::peel::CERT_STATS[0].load(Ordering::Relaxed) > 0 { let c = |i: usize| crate::peel::CERT_STATS[i].swap(0, Ordering::Relaxed); eprintln!("cert stats [{label}]: {} frames; the wanted pixels' layers all within the census lower bound: {} frames (1/16 census), {} (1/64); within the exact count {} (sanity: must be all)", c(0), c(1), c(2), c(3)); }
         if crate::peel::BOUND_TOTALS[0].load(Ordering::Relaxed) > 0 { eprintln!("bound stats [{label}]: {} frames, stop certified right by the census/4 bounds {} and by census/8 {}, certified WRONG {}", crate::peel::BOUND_TOTALS[0].swap(0, Ordering::Relaxed), crate::peel::BOUND_TOTALS[1].swap(0, Ordering::Relaxed), crate::peel::BOUND_TOTALS[2].swap(0, Ordering::Relaxed), crate::peel::BOUND_TOTALS[3].swap(0, Ordering::Relaxed)); }
         eprintln!("profile [{label}] glue: dome raster {:.2}s, wanted bitmap {:.2}s, BVH cull {:.2}s, sel/occl clear {:.2}s, contribution {:.2}s; layer CSR {:.2}s, probe pixels {:.2}s", g(&DOME), g(&BITMAP), g(&CULL), g(&CLEAR), g(&CONTRIB), g(&L_CSR), g(&PROBE_PX));
@@ -3331,6 +3343,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
     });
     // the in-process merge: the directions outside the live range from the other boxes' packs
     let mut range_reader: Option<crate::contrib::RangeReader> = prm.merge_ranges.as_ref().map(|r| crate::contrib::RangeReader::new(r.clone(), prm.sweep));
+    if *crate::pool::POOL_STATS { crate::pool::RUN_LOG.lock().unwrap().clear(); }
     for (di, d) in dirs.iter().enumerate() {
         let live = prm.dir_range.map(|(a, b)| di >= a && di < b).unwrap_or(true);
         if !live && range_reader.is_none() {

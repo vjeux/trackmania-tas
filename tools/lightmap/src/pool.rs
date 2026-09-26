@@ -104,6 +104,22 @@ impl Pool {
         if n == 0 {
             return;
         }
+        // LMTOOL_POOL_STATS=1: every task timed — the regions' busy / capacity table in the profile report
+        let stats = *POOL_STATS;
+        let busy = AtomicU64::new(0);
+        let maxt = AtomicU64::new(0);
+        let f = |i: usize| {
+            if stats {
+                let t = std::time::Instant::now();
+                f(i);
+                let ns = t.elapsed().as_nanos() as u64;
+                busy.fetch_add(ns, Ordering::Relaxed);
+                maxt.fetch_max(ns, Ordering::Relaxed);
+            } else {
+                f(i);
+            }
+        };
+        let _rec = if stats { Some(RunRecord { busy: &busy, maxt: &maxt, n, threads: self.threads, t0: std::time::Instant::now() }) } else { None };
         let sh = &self.shared;
         let timed = stats::enabled();
         let t_run = std::time::Instant::now();
@@ -435,5 +451,20 @@ mod latency2 {
             let t3 = t.elapsed();
             eprintln!("round {round}: prev left {:.1} µs, bumped {:.1} µs, publish {:.1} µs, all claimed {:.1} µs, all left {:.1} µs", ta.as_secs_f64() * 1e6, tb.as_secs_f64() * 1e6, t1.as_secs_f64() * 1e6, t2.as_secs_f64() * 1e6, t3.as_secs_f64() * 1e6);
         }
+    }
+}
+
+
+/// LMTOOL_POOL_STATS=1 (measurement): every task of every run timed; the profile report prints, per task
+/// count, the runs' wall, the tasks' busy sum, busy / (threads · wall) and the longest task's share of the wall.
+pub static POOL_STATS: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("LMTOOL_POOL_STATS").is_some());
+
+/// MEASUREMENT: per run (wall ns, busy ns, max task ns, n, threads).
+pub static RUN_LOG: std::sync::Mutex<Vec<(u64, u64, u64, usize, usize)>> = std::sync::Mutex::new(Vec::new());
+struct RunRecord<'a> { busy: &'a AtomicU64, maxt: &'a AtomicU64, n: usize, threads: usize, t0: std::time::Instant }
+impl Drop for RunRecord<'_> {
+    fn drop(&mut self) {
+        let wall = self.t0.elapsed().as_nanos() as u64;
+        if let Ok(mut l) = RUN_LOG.lock() { l.push((wall, self.busy.load(Ordering::Relaxed), self.maxt.load(Ordering::Relaxed), self.n, self.threads)); }
     }
 }
