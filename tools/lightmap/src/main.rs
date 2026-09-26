@@ -4778,6 +4778,44 @@ fn run(a: Vec<String>) {
         // (G's classcmp dispatch dropped at integration: V's classcmp — landed first, with --own-rects,
         //  --coverage, the spread column and the pairing guard — owns the subcommand; G's --ents table is
         //  the duplicate. His dome-rings and the study knobs below are kept.)
+        "dds-mean" => {
+            // lmtool dds-mean FILE.dds [--level L] : per-channel mean of one mip level, as stored (0..1) and sRGB-decoded to linear
+            // (port engineer G: the pack textures' albedo means — Grass_D / Grass_X2 for the Stadium tiles' pre-pass class)
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let tex = lightmap::texsample::load_dds(std::path::Path::new(&a[1]), lightmap::texsample::Bc1Decode::Ideal).unwrap_or_else(|e| panic!("{e}"));
+            let level: usize = f("--level").map(|v| v.parse().unwrap()).unwrap_or(0);
+            let lv = &tex.levels[0][level.min(tex.levels[0].len() - 1)];
+            let n = lv.len().max(1) as f64;
+            let (mut s, mut sl) = ([0f64; 4], [0f64; 4]);
+            let lin = |c: f32| -> f64 { let c = c as f64; if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) } };
+            for p in lv.texels() { for k in 0..4 { s[k] += p[k] as f64; if k < 3 { sl[k] += lin(p[k]); } } }
+            println!("{}: {:?} {}×{} mips {} slices {}; level {} mean stored ({:.4}, {:.4}, {:.4}, a {:.4}); sRGB→linear mean ({:.4}, {:.4}, {:.4})", a[1], tex.fmt, tex.w, tex.h, tex.mips, tex.slices, level, s[0] / n, s[1] / n, s[2] / n, s[3] / n, sl[0] / n, sl[1] / n, sl[2] / n);
+            // --grid x0,z0,x1,z1,step : the texture sampled (bilinear, wrap, the level above) at the GrassX2 pre-pass's POSITIONAL uv
+            // (RE 13, f4468 VS 9513: uv2 = (−x/1024 + 0.25, z/1024 + 0.25)) over a world rectangle, both row conventions
+            // (v as is / the file image at 1 − v), stored values — the one-lookup check of the Stadium tile albedo
+            if let Some(g) = f("--grid").map(|v| v.split(',').filter_map(|x| x.trim().parse::<f32>().ok()).collect::<Vec<f32>>()).filter(|g| g.len() == 5) {
+                let sm = lightmap::texsample::Sampler::bilinear_no_mip(lightmap::texsample::Address::Wrap);
+                for (name, flip) in [("v as is", false), ("file row 1 − v", true)] {
+                    let (mut acc, mut lo, mut hi, mut cnt) = ([0f64; 3], [f32::MAX; 3], [f32::MIN; 3], 0usize);
+                    let mut x = g[0];
+                    while x <= g[2] {
+                        let mut z = g[1];
+                        while z <= g[3] {
+                            let (u, v) = (-x / 1024.0 + 0.25, z / 1024.0 + 0.25);
+                            let (u, v) = (u.rem_euclid(1.0), v.rem_euclid(1.0));
+                            let v = if flip { 1.0 - v } else { v };
+                            let p = lightmap::texsample::fetch_level(lv, &sm, u, v);
+                            for k in 0..3 { acc[k] += p[k] as f64; lo[k] = lo[k].min(p[k]); hi[k] = hi[k].max(p[k]); }
+                            cnt += 1;
+                            z += g[4];
+                        }
+                        x += g[4];
+                    }
+                    let n = cnt.max(1) as f64;
+                    println!("  grid x {}..{} z {}..{} step {} ({} samples), uv2 = (−x/1024 + 0.25, z/1024 + 0.25) wrap, {name}: mean stored ({:.4}, {:.4}, {:.4}); min ({:.3}, {:.3}, {:.3}) max ({:.3}, {:.3}, {:.3})", g[0], g[2], g[1], g[3], g[4], cnt, acc[0] / n, acc[1] / n, acc[2] / n, lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]);
+                }
+            }
+        }
         "dome-rings" => {
             // lmtool dome-rings --collection C --pak FILE:KEY … : the collection's LM sky dome (the environment block's SkyDome
             // leaf) as a ring table — world y, vertices, the texture v range and u range per ring (port engineer G)
