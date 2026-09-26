@@ -345,6 +345,16 @@ impl<T> Recycle<T> {
 pub static LAYER_FRAGS: Recycle<LayerFrag> = Recycle::new();
 pub static ABUF_FRAGS: Recycle<Frag> = Recycle::new();
 pub static U32S: Recycle<u32> = Recycle::new();
+/// The wanted bitmaps' words (one 2 MB vector per frame of a direction).
+pub static U64S: Recycle<u64> = Recycle::new();
+
+impl Drop for PixelIndex {
+    fn drop(&mut self) {
+        U64S.give(std::mem::take(&mut self.words));
+        U32S.give(std::mem::take(&mut self.rank));
+        U32S.give(std::mem::take(&mut self.pixels));
+    }
+}
 
 impl Drop for Layers {
     fn drop(&mut self) {
@@ -2882,6 +2892,7 @@ pub mod prof {
     pub static EXACT: AtomicU64 = AtomicU64::new(0);
     pub static L_PAR: AtomicU64 = AtomicU64::new(0);
     pub static L_CSR: AtomicU64 = AtomicU64::new(0);
+    pub static PROBE_PX: AtomicU64 = AtomicU64::new(0);
     /// The per-direction glue outside the stages: the dome raster, the wanted bitmap, the sel/occl clear.
     pub static DOME: AtomicU64 = AtomicU64::new(0);
     pub static BITMAP: AtomicU64 = AtomicU64::new(0);
@@ -2918,12 +2929,12 @@ pub mod prof {
         if crate::peel::DROP_STATS[3].load(Ordering::Relaxed) > 0 { let d = |i: usize| crate::peel::DROP_STATS[i].swap(0, Ordering::Relaxed); let (a, b, c, k) = (d(0), d(1), d(2), d(3)); let t = (a + b + c + k).max(1); eprintln!("drop stats [{label}]: of {t} alpha-passing item fragments: behind the environment {a} ({:.1} %), in a bias window {b} ({:.1} %), past the cap {c} ({:.1} %), accepted as layers {k} ({:.1} %)", a as f64 * 100.0 / t as f64, b as f64 * 100.0 / t as f64, c as f64 * 100.0 / t as f64, k as f64 * 100.0 / t as f64); }
         if crate::peel::CERT_STATS[0].load(Ordering::Relaxed) > 0 { let c = |i: usize| crate::peel::CERT_STATS[i].swap(0, Ordering::Relaxed); eprintln!("cert stats [{label}]: {} frames; the wanted pixels' layers all within the census lower bound: {} frames (1/16 census), {} (1/64); within the exact count {} (sanity: must be all)", c(0), c(1), c(2), c(3)); }
         if crate::peel::BOUND_TOTALS[0].load(Ordering::Relaxed) > 0 { eprintln!("bound stats [{label}]: {} frames, stop certified right by the census/4 bounds {} and by census/8 {}, certified WRONG {}", crate::peel::BOUND_TOTALS[0].swap(0, Ordering::Relaxed), crate::peel::BOUND_TOTALS[1].swap(0, Ordering::Relaxed), crate::peel::BOUND_TOTALS[2].swap(0, Ordering::Relaxed), crate::peel::BOUND_TOTALS[3].swap(0, Ordering::Relaxed)); }
-        eprintln!("profile [{label}] glue: dome raster {:.2}s, wanted bitmap {:.2}s, BVH cull {:.2}s, sel/occl clear {:.2}s, contribution {:.2}s; layer CSR {:.2}s", g(&DOME), g(&BITMAP), g(&CULL), g(&CLEAR), g(&CONTRIB), g(&L_CSR));
+        eprintln!("profile [{label}] glue: dome raster {:.2}s, wanted bitmap {:.2}s, BVH cull {:.2}s, sel/occl clear {:.2}s, contribution {:.2}s; layer CSR {:.2}s, probe pixels {:.2}s", g(&DOME), g(&BITMAP), g(&CULL), g(&CLEAR), g(&CONTRIB), g(&L_CSR), g(&PROBE_PX));
         eprintln!("profile [{label}]: A-buffer build {:.2}s (wanted index {:.2}s, clip {:.2}s, raster {:.2}s, CSR {:.2}s), exact layer count {:.2}s, layer derivation {:.2}s (parallel part {:.2}s), per-direction dumps {:.2}s, gather {:.2}s, accumulate {:.2}s, accumulation snapshots {:.2}s, frames {:.2}s; directions total {:.2}s (unstaged {:.2}s); sweep total {total:.2}s", g(&BUILD), g(&B_INDEX), g(&B_CLIP), g(&B_RASTER), g(&B_SORT), g(&EXACT), g(&LAYERS), g(&L_PAR), g(&DUMP), g(&GATHER), g(&ACCUM), g(&SNAP), g(&FRAMES), g(&DIR), g(&DIR) - staged);
         // the pool's per-stage utilisation table (per-thread busy time; pool::stats), against the directions total
         crate::pool::stats::report(label, g(&DIR));
         eprintln!("profile [{label}] non-raster: layer bufs {:.2}s, LmILightDir_Set {:.2}s, probe layers {:.2}s, dome image {:.2}s (in layer derivation), AddAmbient {:.2}s, H-basis {:.2}s, probe folds {:.2}s, sub-sample accumulate {:.2}s; outside the loop: sub-samples {:.2}s, jitter sets {:.2}s, shadow map {:.2}s, pre-loop dumps {:.2}s, resolve {:.2}s; gather lookups: {} sky (dome_px), {} surface", g(&LM_BUFS), g(&LM_SET), g(&PROBE_LAYER), g(&DOME_IMG), g(&AMBIENT), g(&HB), g(&PROBE_END), g(&ACC_SUB), g(&PRE_SUBS), g(&PRE_JITTER), g(&PRE_SHADOW), g(&PRE_DUMP), g(&POST_RESOLVE), crate::peel::GATHER_COUNTS[0].swap(0, Ordering::Relaxed), crate::peel::GATHER_COUNTS[1].swap(0, Ordering::Relaxed));
-        for c in [&BUILD, &LAYERS, &DUMP, &GATHER, &ACCUM, &SNAP, &B_CLIP, &B_RASTER, &B_SORT, &B_INDEX, &DIR, &FRAMES, &EXACT, &L_PAR, &DOME, &BITMAP, &CLEAR, &CONTRIB, &CULL, &L_CSR, &LM_BUFS, &LM_SET, &PROBE_LAYER, &DOME_IMG, &AMBIENT, &HB, &PROBE_END, &ACC_SUB, &PRE_SUBS, &PRE_JITTER, &PRE_SHADOW, &PRE_DUMP, &POST_RESOLVE] { c.store(0, Ordering::Relaxed); }
+        for c in [&BUILD, &LAYERS, &DUMP, &GATHER, &ACCUM, &SNAP, &B_CLIP, &B_RASTER, &B_SORT, &B_INDEX, &DIR, &FRAMES, &EXACT, &L_PAR, &DOME, &BITMAP, &CLEAR, &CONTRIB, &CULL, &L_CSR, &LM_BUFS, &LM_SET, &PROBE_LAYER, &DOME_IMG, &AMBIENT, &HB, &PROBE_END, &ACC_SUB, &PRE_SUBS, &PRE_JITTER, &PRE_SHADOW, &PRE_DUMP, &POST_RESOLVE, &PROBE_PX] { c.store(0, Ordering::Relaxed); }
     }
 }
 
@@ -3447,7 +3458,27 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                 // and neighbours sit in the same chunk — the contention is nil)
                 let nch = (threads * 2).max(1);
                 let per = (cur.len() + nch - 1) / nch;
-                let m: Vec<std::sync::atomic::AtomicU64> = (0..n).map(|_| std::sync::atomic::AtomicU64::new(0)).collect();
+                // (the bitmap's words come from the recycler and are cleared in parallel — a fresh 2 MB vector
+                // per frame was a serial fill, then a serial copy out of the atomics)
+                let mut m_words: Vec<u64> = U64S.take_with_capacity(n);
+                // SAFETY: capacity ≥ n; every word is written by the parallel clear below before any read
+                unsafe { m_words.set_len(n); }
+                {
+                    let mp = m_words.as_mut_ptr() as usize;
+                    let zc = (n + nch - 1) / nch;
+                    crate::pool::pool().run(nch, |ci| {
+                        let (a, b) = (ci * zc, ((ci + 1) * zc).min(n));
+                        if a < b {
+                            // SAFETY: the chunks partition the vector
+                            unsafe { std::ptr::write_bytes((mp as *mut u64).add(a), 0, b - a); }
+                        }
+                    });
+                }
+                // SAFETY: AtomicU64 has u64's size, alignment and bit validity
+                let m: Vec<std::sync::atomic::AtomicU64> = unsafe {
+                    let mut v = std::mem::ManuallyDrop::new(m_words);
+                    Vec::from_raw_parts(v.as_mut_ptr() as *mut std::sync::atomic::AtomicU64, v.len(), v.capacity())
+                };
                 // a tile's frame: only the sub-samples inside the tile's world-XZ cell read it (the gather's
                 // clip rule below) — the others' pixels are not wanted (a giant's tile holds a ninth of them)
                 let clip_box: Option<[f32; 4]> = tile_clip.get(pi).copied().flatten();
@@ -3487,29 +3518,44 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                     let c = (fh as usize / 2) * fw as usize + fw as usize / 2;
                     m[c >> 6].fetch_or(1u64 << (c & 63), std::sync::atomic::Ordering::Relaxed);
                 }
-                let mut m: Vec<u64> = m.into_iter().map(|a| a.into_inner()).collect();
+                // SAFETY: as above, back to plain words (no copy)
+                let mut m: Vec<u64> = unsafe {
+                    let mut v = std::mem::ManuallyDrop::new(m);
+                    Vec::from_raw_parts(v.as_mut_ptr() as *mut u64, v.len(), v.capacity())
+                };
                 // THE PROBES' PIXELS (the transcribed probe passes read the world peel's layer targets at every
                 // probe's shadow coordinate — a 2×2 comparison filter and a point colour sample): the 3×3 around
                 // each probe's texel joins the wanted set, so the sparse layers hold what the passes read
                 if pi == 0 {
                     if let Some(pb) = &prm.probe_bake {
+                        let t_probe_px = std::time::Instant::now();
                         let pb = pb.lock().unwrap();
                         let pw01 = frame.world_pw01();
                         let (w, h) = (frame.res as i64, frame.res_y as i64);
-                        for b in &pb.blocks {
-                            let dr = b.draw(&pw01, 1.0);
-                            for z in b.min[2]..b.max[2] { for y in b.min[1]..b.max[1] { for x in b.min[0]..b.max[0] {
-                                let p = crate::probepass::probe_point(x, y, z, pb.offsets.as_ref());
-                                let sh = crate::probepass::to_shadow(p, &dr.regs, pb.opts.fma);
+                        // (in parallel over the blocks' z slices: the bits are OR-ed atomically into the words)
+                        let slices: Vec<(usize, u32)> = pb.blocks.iter().enumerate().flat_map(|(bi, b)| (b.min[2]..b.max[2]).map(move |z| (bi, z))).collect();
+                        let draws: Vec<_> = pb.blocks.iter().map(|b| b.draw(&pw01, 1.0)).collect();
+                        let mp = m.as_mut_ptr() as usize;
+                        let pbr = &*pb;
+                        crate::pool::pool().run(slices.len(), |si| {
+                            let (bi, z) = slices[si];
+                            let b = &pbr.blocks[bi];
+                            let dr = &draws[bi];
+                            // SAFETY: the words are shared read-write across the tasks through atomic ORs only
+                            let words: &[std::sync::atomic::AtomicU64] = unsafe { std::slice::from_raw_parts(mp as *const std::sync::atomic::AtomicU64, n) };
+                            for y in b.min[1]..b.max[1] { for x in b.min[0]..b.max[0] {
+                                let p = crate::probepass::probe_point(x, y, z, pbr.offsets.as_ref());
+                                let sh = crate::probepass::to_shadow(p, &dr.regs, pbr.opts.fma);
                                 let (fx, fy) = ((sh[0] * w as f32 - 0.5).floor(), (sh[1] * h as f32 - 0.5).floor());
                                 if !(fx.is_finite() && fy.is_finite()) { continue; }
                                 for dy in -1..=2i64 { for dx in -1..=2i64 {
                                     let (px, py) = ((fx as i64 + dx).clamp(0, w - 1), (fy as i64 + dy).clamp(0, h - 1));
                                     let i = (py * w + px) as usize;
-                                    m[i >> 6] |= 1u64 << (i & 63);
+                                    words[i >> 6].fetch_or(1u64 << (i & 63), std::sync::atomic::Ordering::Relaxed);
                                 } }
-                            } } }
-                        }
+                            } }
+                        });
+                        prof::add(&prof::PROBE_PX, t_probe_px);
                     }
                 }
                 // the CENSUS pixels for the layer-count rule's written fractions (every CENSUS_STEP-th pixel in x
