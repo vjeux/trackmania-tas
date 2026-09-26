@@ -31,7 +31,7 @@ fn t_quarter(dt: Option<u32>, x: &lightmap::moods::MoodXml) -> bool {
 /// non-exact knobs together; each knob's own flag overrides its preset value; everything defaults OFF, and with
 /// the preset off the bake is the exact one (the harness: the 9-direction passdiff at --tol 0, the tiled tiny-16
 /// lightsum, byte-identical files with LMTOOL_BAKE_TIME pinned).
-///   fast    = --layers-estimate --early-dirs-scale 0.25 --tile-res 2048
+///   fast    = --layers-estimate --early-dirs-scale 0.25 (every frame exact: giant 28.5 → 5.0 min, RMSE 2.5 %)
 ///   faster  = fast + --alpha-point
 ///   fastest = --layers-estimate --early-dirs-scale 0.25 --tiles-from-world --world-res 8192 --alpha-point
 /// Measured on Summer-16-Tiny and Summer-23-Giant q4 against the exact bake (tiny/lightmap-re/preset-fast/README.md):
@@ -71,7 +71,7 @@ impl Preset {
     fn named(name: &str) -> Preset {
         match name {
             "exact" | "off" | "none" => Preset::exact(),
-            "fast" => Preset { tile_res: 2048, layers_estimate: true, early_dirs_scale: 0.25, ..Preset::exact() },
+            "fast" => Preset { layers_estimate: true, early_dirs_scale: 0.25, ..Preset::exact() },
             "faster" => Preset { alpha_point: true, ..Preset::named("fast") },
             "fastest" => Preset { tiles_from_world: true, world_res: 8192, layers_estimate: true, early_dirs_scale: 0.25, alpha_point: true, ..Preset::exact() },
             o => panic!("--preset exact|fast|faster|fastest, not {o}"),
