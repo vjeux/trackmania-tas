@@ -223,6 +223,37 @@ in the Arcade list when public). Only the Ubisoft account that owns the server a
 it to a club; the API route is `POST live-services .../api/token/club/{clubId}/room/create-from-server`.
 (c) Play → Local → Local network only sees servers on the same LAN. Dedicated servers are PC only.
 
+## Binding the server to vjeux's club (room) — the exact calls
+
+Needs a **NadeoLiveServices** access token of vjeux's Ubisoft account (the WhiteStick box mints
+one: `tinyctl nadeo-here` / the GhostShooter `/nadeotoken` route; valid ~1 h). From an agent-first
+devserver the Nadeo hosts are reachable directly (`live-services.trackmania.nadeo.live` answers).
+`$T` below is the raw token; every call carries `Authorization: nadeo_v1 t=$T` and a User-Agent.
+
+```
+UA='User-Agent: vjeux tmserverctl (Yannex low-g server)'
+L=https://live-services.trackmania.nadeo.live
+# 1. the club id (expected: 43788 "Vjeux")
+curl -sS -H "Authorization: nadeo_v1 t=$T" -H "$UA" "$L/api/token/club/mine?length=20&offset=0" | jq '.clubList[] | {id, name, role}'
+# 2. the server accounts of the Ubisoft account (login, accountId, alreadyUsed, clubRoomId)
+curl -sS -H "Authorization: nadeo_v1 t=$T" -H "$UA" "$L/api/token/server/player-server/account" | jq .
+# 3. the room, bound to the server login (name <= 20 chars; folderId 0 = club root)
+curl -sS -X POST -H "Authorization: nadeo_v1 t=$T" -H "$UA" -H 'Content-Type: application/json' \
+  -d '{"name":"Yannex low-g","login":"<SERVER_LOGIN>","folderId":0}' "$L/api/token/club/43788/room/create-from-server" | jq '{id, activityId, name, playerServerLogin, public, active}'
+# 4. the club-room join link (starts the room if inactive; retry every 2 s while "starting")
+curl -sS -X POST -H "Authorization: nadeo_v1 t=$T" -H "$UA" "$L/api/token/club/43788/room/<ACTIVITY_ID>/join" | jq .
+# 5. check
+curl -sS -H "Authorization: nadeo_v1 t=$T" -H "$UA" "$L/api/token/club/43788/room/<ACTIVITY_ID>" | jq '{name, public, active, room: .room.serverInfo, playerServerLogin}'
+```
+
+Errors to expect: `clubMemberRole:error-notContentCreator` (the token's account cannot create rooms in
+that club), `serverLogin:error-inArray` (login is not one of the account's server logins). The
+same login may be bound more than once without an error. Public/active flags are edited with
+`POST /api/token/club/{clubId}/activity/{activityId}/edit` (`{"public":true,"active":true}`).
+
+Players then find it under Play → Live → Clubs → Vjeux → « Yannex low-g », or through the
+server's own link `trackmania://#join=<SERVER_LOGIN>@Trackmania` (`tmserverctl status` prints it).
+
 ## Pour Yannex — comment rejoindre (FR)
 
 > Salut Yannex ! Le serveur **« Yannex — low-g »** tourne sur Trackmania 2020 (PC uniquement,
