@@ -1543,6 +1543,12 @@ pub struct ShadowMap {
     pub depth: raster::Depth,
 }
 
+impl std::fmt::Debug for ShadowMap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ShadowMap {{ {}×{} }}", self.frame.res, self.frame.res_y)
+    }
+}
+
 impl ShadowMap {
     pub fn build(tris: &[WTri], sun_dir: V3, bmin: V3, bmax: V3, res: u32, masks: &[crate::geometry::AlphaMask]) -> ShadowMap {
         let frame = PeelFrame::new(sun_dir, bmin, bmax, res);
@@ -2935,12 +2941,21 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
     // 3. the sun shadow map for the fragment radiance
     let t_shadow = std::time::Instant::now();
     let (bmin, bmax) = scene_bounds(&bvh.tris);
-    let shadow = if prm.sun_dir[1] > 0.0 && prm.sun.iter().any(|c| *c > 0.0) {
-        let frame = match &prm.shadow_frustum {
-            Some(f) => PeelFrame::from_frustum(f, prm.peel_res.max(1024), prm.peel_res.max(1024)),
-            None => PeelFrame::new(prm.sun_dir, bmin, bmax, prm.peel_res.max(1024)),
-        };
-        Some(ShadowMap::build_in(&bvh.tris, frame, &prm.alpha_masks))
+    // (built once per bake when the caller shares a cache across the sweeps: the same scene, sun and frame every sweep)
+    let shadow: Option<std::sync::Arc<ShadowMap>> = if prm.sun_dir[1] > 0.0 && prm.sun.iter().any(|c| *c > 0.0) {
+        let cached = prm.shadow_cache.as_ref().and_then(|c| c.lock().unwrap().clone());
+        match cached {
+            Some(sm) => Some(sm),
+            None => {
+                let frame = match &prm.shadow_frustum {
+                    Some(f) => PeelFrame::from_frustum(f, prm.peel_res.max(1024), prm.peel_res.max(1024)),
+                    None => PeelFrame::new(prm.sun_dir, bmin, bmax, prm.peel_res.max(1024)),
+                };
+                let sm = std::sync::Arc::new(ShadowMap::build_in(&bvh.tris, frame, &prm.alpha_masks));
+                if let Some(c) = &prm.shadow_cache { *c.lock().unwrap() = Some(sm.clone()); }
+                Some(sm)
+            }
+        }
     } else { None };
     prof::add(&prof::PRE_SHADOW, t_shadow);
     let t_predump = std::time::Instant::now();
@@ -3427,7 +3442,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                 None
             };
             let fixed_layers = fixed_layers.or(exact_layers);
-            let layers: Option<Layers> = if prm.game_peel || want_dir_dump { Some(extract_layers(&ab, frame, scene, bvh, prm, shadow.as_ref(), sun_bias, sky, threads, wanted.as_ref(), fixed_layers, dome_img.as_deref())) } else { None };
+            let layers: Option<Layers> = if prm.game_peel || want_dir_dump { Some(extract_layers(&ab, frame, scene, bvh, prm, shadow.as_deref(), sun_bias, sky, threads, wanted.as_ref(), fixed_layers, dome_img.as_deref())) } else { None };
             prof::add(&prof::LAYERS, tl);
             let td = std::time::Instant::now(); crate::pool::stats::stage("dump");
             if let Some(ly) = &layers {
@@ -3597,7 +3612,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                     let ab = &ab;
                     let frame = &frame;
                     let subs = cur;
-                    let shadow = shadow.as_ref();
+                    let shadow = shadow.as_deref();
                     let layers = layers.as_ref();
                     {
                         for &i in ch {

@@ -1034,6 +1034,8 @@ fn run(a: Vec<String>) {
             eprintln!("bvh: {} nodes ({:.1}s; the masks {t_masks:.2}s, the build {:.2}s)", bvh.node_count(), t0.elapsed().as_secs_f32(), tb.elapsed().as_secs_f32() - t_masks);
             let parse_rgb = |s: &str| -> [f32; 3] { let v: Vec<f32> = s.split(',').map(|x| x.trim().parse().unwrap()).collect(); [v[0], v[1], v[2]] };
             let mut prm = lightmap::bake::BakeParams::default();
+            // the sun shadow map of the peel sweeps, built once per bake (perf 8; every sweep would build the same one)
+            prm.shadow_cache = Some(std::sync::Arc::new(std::sync::Mutex::new(None)));
             prm.alpha_masks = std::sync::Arc::new(alpha_masks);
             // --model xml (default) | fitted: the game's model (RE child, 2026-09-23) — the effective mood by the
             // map's DayTime quarter, E = LAmbient·(0.8+0.2n.y) + LAmbient·SkyFactor·skyVis·S + BounceFactor·albedo·bounce,

@@ -239,6 +239,10 @@ pub struct BakeParams {
     /// layers and the H-basis MRTs; `fitted_world_box` = the fitted blocks' WorldBoxMinXZ / MaxXZ (the clip distances
     /// of VS 17115); `hbasis_game` = the capture (root, entries) to compare each direction's ilightdir / MRTs with.
     pub lm_scene: Option<std::sync::Arc<crate::lmaccum::LmScene>>,
+    /// THE SUN SHADOW MAP ONCE PER BAKE (perf 8): the peel sweep's shadow map depends on the scene, the sun and the
+    /// frame alone — the same every sweep — so the first sweep's build is kept here for the others (the bake's
+    /// sweeps share the cell; None = build per sweep).
+    pub shadow_cache: Option<std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<crate::peel::ShadowMap>>>>>,
     /// The peel colours from the game's ILightInput atlas (`--ilightinput-from`, ilatlas.rs): a fragment's colour =
     /// the atlas sampled at its lightmap coordinate through the LM instance stream's ST, as PS 17131 / 17134 do.
     pub ilatlas: Option<std::sync::Arc<crate::ilatlas::IlSource>>,
@@ -372,6 +376,7 @@ impl Default for BakeParams {
             merge_ranges: None,
             dome_mesh: None,
             lm_scene: None,
+            shadow_cache: None,
             ilatlas: None,
             hb_out: None,
             probe_bake: None,
