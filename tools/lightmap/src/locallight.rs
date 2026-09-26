@@ -623,3 +623,125 @@ mod face_tests {
         assert_eq!(flat_cube_face_viewport(4, 173), (173, 173));
     }
 }
+
+/// The flat-cube shadow map of one lamp: six `size`² D16 tiles (face f at `flat_cube_face_viewport(f, size)` of a
+/// 3·size × 2·size sheet), depth = the caster's z'/w' (R·s/dom − s) with the casters' D3D11 depth bias (DepthBias −1 unit,
+/// SlopeScaledDepthBias −1.0 × the triangle's max depth slope per pixel) and the D16 rounding, Greater on a 0 clear.
+pub struct FlatCubeMap {
+    pub size: u32,
+    /// row-major, 3·size wide, 2·size high
+    pub depth: Vec<f32>,
+}
+
+impl FlatCubeMap {
+    pub fn width(&self) -> u32 {
+        self.size * 3
+    }
+    /// The texel the receivers' uv (in the 4096² target's normalised coordinates, tile at Trans ± MaxAbs) addresses:
+    /// the target is `target` wide (4096); the sheet occupies its top-left 3·size × 2·size texels.
+    pub fn texel(&self, uv: [f32; 2], target: u32) -> (i64, i64) {
+        (((uv[0] * target as f32).floor()) as i64, ((uv[1] * target as f32).floor()) as i64)
+    }
+    /// The point comparison sample GreaterEqual (ref ≥ stored → 1): the receiver's rebuilt depth against the caster's.
+    pub fn sample_cmp_ge(&self, uv: [f32; 2], reference: f32, target: u32) -> f32 {
+        let (x, y) = self.texel(uv, target);
+        let (w, h) = (self.width() as i64, (self.size * 2) as i64);
+        let (x, y) = (x.clamp(0, w - 1), y.clamp(0, h - 1));
+        let stored = self.depth[(y * w + x) as usize];
+        if reference >= stored { 1.0 } else { 0.0 }
+    }
+}
+
+/// Render the casters (world triangles, the model's winding) into the lamp's flat-cube map. Clipping against the D3D
+/// z range 0 ≤ z' ≤ w' (the near plane at dom = R·s/(1 + s), the far at dom = R), the perspective divide, screen-space
+/// linear z, the top-left rule of `raster::triangle`, cull Back with the clockwise front (frontCCW false).
+pub fn render_flat_cube(l: [f32; 3], r_eff: f32, size: u32, tris: &[[[f32; 3]; 3]], cull_back: bool) -> FlatCubeMap {
+    let (w, h) = ((size * 3) as usize, (size * 2) as usize);
+    let mut depth = vec![0.0f32; w * h];
+    let one_unit = 1.0 / 65535.0;
+    for face in 0..6 {
+        let m = flat_cube_face_matrix(face, l, r_eff);
+        let (ox, oy) = flat_cube_face_viewport(face, size);
+        for t in tris {
+            // clip coordinates
+            let clip: Vec<[f32; 4]> = t.iter().map(|p| {
+                let q = [p[0], p[1], p[2], 1.0f32];
+                [q[0] * m[0][0] + q[1] * m[1][0] + q[2] * m[2][0] + q[3] * m[3][0], q[0] * m[0][1] + q[1] * m[1][1] + q[2] * m[2][1] + q[3] * m[3][1], q[0] * m[0][2] + q[1] * m[1][2] + q[2] * m[2][2] + q[3] * m[3][2], q[0] * m[0][3] + q[1] * m[1][3] + q[2] * m[2][3] + q[3] * m[3][3]]
+            }).collect();
+            // Sutherland–Hodgman against z' ≥ 0 and z' ≤ w'
+            let clip_plane = |poly: &[[f32; 4]], inside: &dyn Fn(&[f32; 4]) -> f32| -> Vec<[f32; 4]> {
+                let mut out = Vec::new();
+                let n = poly.len();
+                for i in 0..n {
+                    let (a, b) = (poly[i], poly[(i + 1) % n]);
+                    let (da, db) = (inside(&a), inside(&b));
+                    if da >= 0.0 { out.push(a); }
+                    if (da >= 0.0) != (db >= 0.0) {
+                        let tt = da / (da - db);
+                        out.push([a[0] + (b[0] - a[0]) * tt, a[1] + (b[1] - a[1]) * tt, a[2] + (b[2] - a[2]) * tt, a[3] + (b[3] - a[3]) * tt]);
+                    }
+                }
+                out
+            };
+            let poly = clip_plane(&clip, &|v| v[2]);
+            if poly.len() < 3 { continue; }
+            let poly = clip_plane(&poly, &|v| v[3] - v[2]);
+            if poly.len() < 3 { continue; }
+            // the divide → window coordinates in the face tile (y down), z in [0, 1]
+            let win: Vec<[f32; 3]> = poly.iter().map(|v| { let iw = 1.0 / v[3]; [(v[0] * iw * 0.5 + 0.5) * size as f32, (0.5 - v[1] * iw * 0.5) * size as f32, v[2] * iw] }).collect();
+            // culling on the polygon's winding (all fan triangles share it)
+            let area = { let mut a = 0.0f32; for i in 0..win.len() { let (p, q) = (win[i], win[(i + 1) % win.len()]); a += p[0] * q[1] - q[0] * p[1]; } a };
+            // window y is down: a clockwise triangle on screen has a positive signed area here
+            if cull_back && area <= 0.0 { continue; }
+            // the depth slope of the primitive (plane fit on the first fan triangle: z is affine in window x, y)
+            let slope = {
+                let (a, b, c) = (win[0], win[1], win[2]);
+                let det = (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]);
+                if det.abs() < 1e-12 { 0.0 } else { let dzdx = ((b[2] - a[2]) * (c[1] - a[1]) - (c[2] - a[2]) * (b[1] - a[1])) / det; let dzdy = ((c[2] - a[2]) * (b[0] - a[0]) - (b[2] - a[2]) * (c[0] - a[0])) / det; dzdx.abs().max(dzdy.abs()) }
+            };
+            let bias = -one_unit - 1.0 * slope;
+            for k in 1..win.len() - 1 {
+                let (a, b, c) = (win[0], win[k], win[k + 1]);
+                crate::raster::triangle(size, size, [[a[0], a[1]], [b[0], b[1]], [c[0], c[1]]], |x, y, bc| {
+                    let z = a[2] * bc[0] + b[2] * bc[1] + c[2] * bc[2];
+                    let zq = ((z + bias).clamp(0.0, 1.0) * 65535.0).round() / 65535.0;
+                    let i = (oy as usize + y as usize) * w + ox as usize + x as usize;
+                    if zq > depth[i] { depth[i] = zq; }
+                });
+            }
+        }
+    }
+    FlatCubeMap { size, depth }
+}
+
+#[cfg(test)]
+mod cube_tests {
+    use super::*;
+
+    #[test]
+    fn a_wall_in_front_of_the_lamp_shadows_the_point_behind_it() {
+        let l = [100.0f32, 10.0, 100.0];
+        let r = 40.707722f32;
+        // a 6 m square wall at x = 110 facing the lamp (both windings, so culling cannot drop it)
+        let quad = [[110.0f32, 7.0, 97.0], [110.0, 13.0, 97.0], [110.0, 13.0, 103.0], [110.0, 7.0, 103.0]];
+        let tris = vec![[quad[0], quad[1], quad[2]], [quad[0], quad[2], quad[3]], [quad[2], quad[1], quad[0]], [quad[3], quad[2], quad[0]]];
+        let map = render_flat_cube(l, r, 173, &tris, false);
+        // face 0 (+X) holds the wall: its tile has written texels, the others none
+        let tile_sum = |f: usize| { let (ox, oy) = flat_cube_face_viewport(f, 173); let mut n = 0; for y in 0..173 { for x in 0..173 { if map.depth[((oy + y) * map.width() + ox + x) as usize] > 0.0 { n += 1; } } } n };
+        assert!(tile_sum(0) > 100, "{}", tile_sum(0));
+        for f in 1..6 { assert_eq!(tile_sum(f), 0, "face {f}"); }
+        // a receiver at x = 120 behind the wall: its cube lookup (through LightCb's faces = the capture's layout) is shadowed;
+        // one at x = 105 in front is lit
+        let cb = {
+            let mut c = LightCb::stpad_f4936_eid34();
+            c.light_pos = l;
+            c.z_trans = r / 999.0;
+            c
+        };
+        let shadow = |uv: [f32; 2], reference: f32| map.sample_cmp_ge(uv, reference, 4096);
+        let (_f, uv_b, ref_b) = flat_cube_lookup(&cb, l[0] - 120.0, l[1] - 10.0, l[2] - 100.0);
+        let (_f2, uv_f, ref_f) = flat_cube_lookup(&cb, l[0] - 105.0, l[1] - 10.0, l[2] - 100.0);
+        assert_eq!(shadow(uv_b, ref_b), 0.0, "behind the wall: uv {uv_b:?} ref {ref_b}");
+        assert_eq!(shadow(uv_f, ref_f), 1.0, "in front of the wall: uv {uv_f:?} ref {ref_f}");
+    }
+}
