@@ -70,6 +70,7 @@ pub mod localdrive;
 pub mod setupmap;
 pub mod probes;
 pub mod raster;
+pub mod runrec;
 pub mod skycube;
 pub mod skygrad;
 pub mod sweep1;
