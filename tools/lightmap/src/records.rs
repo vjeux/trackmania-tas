@@ -591,7 +591,13 @@ pub fn build_map_records(map_path: &str, scene: &crate::geometry::Scene, store: 
     // obj id is the game's index into ITS list; `Rec.item` keeps the file index for everything on our side. LMTOOL_ITEM_DROP=none
     // keeps the file numbering (the pre-rule form). Whether the game's test is "decal-only" or "no material resolves in the
     // collection's pak set" is RE 13's to pin — on this map the two readings name the same 24.
-    let drop_rule = std::env::var("LMTOOL_ITEM_DROP").unwrap_or_else(|_| "nolm".into());
+    // ⚠ REVERTED TO THE FILE NUMBERING BY DEFAULT (G, 2026-09-26 23:20Z, V's fix9 tables): the chart's obj id indexes the item list
+    // OF THE FILE THAT CARRIES THE MAPPING. The editor's DIRECT bakes keep every item (tiny04ac-GreenCoast-Day-q4-editor: 2 106 items,
+    // the 75 decal-only ones included, obj ids over all 2 106 — V's Day comparison was 6 082 / 6 082 by file numbering and fell to
+    // 5 709 under the compaction); only the RESAVED / "-reduced" refs (2 031 / 2 919 items, U 4096 materialised ground) carry a
+    // compacted list, and those were the files 0009 was verified against. Our output keeps every item of the source, so its obj ids
+    // must be file indices. LMTOOL_ITEM_DROP=decal compacts (for a comparison against a resaved ref only); "none" is the default.
+    let drop_rule = std::env::var("LMTOOL_ITEM_DROP").unwrap_or_else(|_| "none".into());
     let game_index: Vec<u32> = {
         let mut out = Vec::with_capacity(mf.items.len());
         let mut next = 0u32;
