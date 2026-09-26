@@ -10,6 +10,10 @@
 //! * `lmperf bench --bin A[,B,…] [--runs 2] [--threads 128] [--map g23.Map.Gbx] [--max-dirs 4] [--quality 4] [--dir D] [-- extra…]`
 //!   The A/B instrument: the binaries interleaved (A B A B …), the `profile [sweep 0]:` line parsed,
 //!   raster / directions total / sweep total per run, min and median per binary.
+//! * `lmperf hangloop --bin A[,B] --runs N --timeout S [--dir D] [--threads T] [--logs DIR] -- <lmtool args…>`
+//!   The hang hunter: the given lmtool command line N times per binary, interleaved, each run under a wall-clock
+//!   timeout; a run that outlives it has its threads' stacks taken (eu-stack), is killed and counted as HUNG; per
+//!   binary completed / hung / failed and the walls (engineer P, the pool hang of 2026-09-26).
 //! * `lmperf perfstat --bin BIN [--events E] [--threads 128] [--map …] [--max-dirs 4] [--dir D] [-- extra…]`
 //!   `perf stat` around the bench bake (IPC, cache misses, DTLB, page faults) plus the raster's visit
 //!   counters (LMTOOL_RASTER_STATS) → misses per visit.
@@ -28,6 +32,7 @@ fn main() {
     let code = match args.first().map(|s| s.as_str()) {
         Some("identity") => identity(&args[1..]),
         Some("bench") => bench(&args[1..]),
+        Some("hangloop") => hangloop(&args[1..]),
         Some("perfstat") => perfstat(&args[1..]),
         Some("pgo") => pgo(&args[1..]),
         Some("concurrent") => concurrent(&args[1..]),
@@ -36,7 +41,7 @@ fn main() {
         Some("hog") => hog(&args[1..]),
         Some("cpu") => { println!("{}", cpu_report()); 0 }
         _ => {
-            eprintln!("usage: lmperf identity|bench|perfstat|pgo|concurrent|cpu … (see the module doc in tools/lmperf/src/main.rs)");
+            eprintln!("usage: lmperf identity|bench|hangloop|perfstat|pgo|concurrent|cpu … (see the module doc in tools/lmperf/src/main.rs)");
             2
         }
     };
@@ -305,6 +310,84 @@ fn bench(args: &[String]) -> i32 {
         println!("{:<28} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3}{rel}", format!("{} T={}", b.file_name().unwrap().to_string_lossy(), bin_threads[k]), mra, ra[0], mdi, di[0], msw, sw[0]);
     }
     0
+}
+
+// ---------------------------------------------------------------------------------------------------
+// hangloop
+
+/// `lmperf hangloop --bin A[,B] --runs N --timeout S [--dir D] [--threads T] [--logs DIR] -- <lmtool args…>`: the given
+/// lmtool command line N times per binary, interleaved (A B A B …), each run under a wall-clock timeout — a run that
+/// outlives it is a HANG: its threads' stacks are taken (`eu-stack -p`), it is killed, its log's last progress line
+/// says where it stood. Every run's stderr goes to LOGS/<binary>-run<k>.log (default DIR/hangloop/). The report per
+/// binary: completed / hung / failed, the walls' min / median / max. Exit 1 when any run hung or failed.
+/// (The pool hang of 2026-09-26: `lmperf hangloop --bin lmtool-base,lmtool-new --runs 15 --timeout 600 -- bake stpad-day.Map.Gbx …`.)
+fn hangloop(args: &[String]) -> i32 {
+    let o = parse(args, &["bin", "runs", "timeout", "dir", "threads", "logs"]);
+    let dir = abs(o.get_or("dir", "."));
+    let bins: Vec<PathBuf> = o.need("bin").split(',').map(abs).collect();
+    let runs: usize = o.get_or("runs", "10").parse().unwrap_or(10);
+    let timeout = std::time::Duration::from_secs_f64(o.get_or("timeout", "600").parse().unwrap_or(600.0));
+    let logs = o.get("logs").map(abs).unwrap_or_else(|| dir.join("hangloop"));
+    if let Err(e) = std::fs::create_dir_all(&logs) { eprintln!("hangloop: {}: {e}", logs.display()); return 2; }
+    if o.extra.is_empty() { eprintln!("hangloop: the lmtool arguments follow `--`"); return 2; }
+    #[derive(Default)]
+    struct Tally { walls: Vec<f64>, hung: usize, failed: usize }
+    let mut tally: Vec<Tally> = bins.iter().map(|_| Tally::default()).collect();
+    let name = |b: &Path| b.file_name().unwrap().to_string_lossy().to_string();
+    for r in 0..runs {
+        for (k, b) in bins.iter().enumerate() {
+            let log = logs.join(format!("{}-run{:02}.log", name(b), r + 1));
+            let file = match std::fs::File::create(&log) { Ok(f) => f, Err(e) => { eprintln!("hangloop: {}: {e}", log.display()); return 2; } };
+            let mut c = Command::new(b);
+            c.args(&o.extra).current_dir(&dir).stdout(Stdio::null()).stderr(Stdio::from(file));
+            if let Some(t) = o.get("threads") { c.env("LMTOOL_THREADS", t); }
+            let t0 = Instant::now();
+            let mut child = match c.spawn() { Ok(c) => c, Err(e) => { eprintln!("hangloop: cannot run {}: {e}", b.display()); return 2; } };
+            let status = loop {
+                match child.try_wait() {
+                    Ok(Some(s)) => break Some(s),
+                    Ok(None) => {}
+                    Err(e) => { eprintln!("hangloop: wait: {e}"); break None; }
+                }
+                if t0.elapsed() > timeout { break None; }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            };
+            let wall = t0.elapsed().as_secs_f64();
+            let last_line = || std::fs::read_to_string(&log).ok().and_then(|s| s.lines().rev().find(|l| !l.trim().is_empty()).map(|l| l.to_string())).unwrap_or_default();
+            match status {
+                Some(s) if s.success() => {
+                    eprintln!("hangloop: run {:>2} {:<20} completed in {wall:.1}s", r + 1, name(b));
+                    tally[k].walls.push(wall);
+                }
+                Some(s) => {
+                    eprintln!("hangloop: run {:>2} {:<20} FAILED ({s}) after {wall:.1}s: {}", r + 1, name(b), last_line());
+                    tally[k].failed += 1;
+                }
+                None => {
+                    // the stacks of the live process, then the kill
+                    let stack_path = logs.join(format!("{}-run{:02}.eu-stack", name(b), r + 1));
+                    match Command::new("eu-stack").arg("-p").arg(child.id().to_string()).output() {
+                        Ok(out) => { let _ = std::fs::write(&stack_path, [out.stdout, out.stderr].concat()); }
+                        Err(e) => { let _ = std::fs::write(&stack_path, format!("eu-stack failed: {e}\n")); }
+                    }
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    eprintln!("hangloop: run {:>2} {:<20} HUNG (killed after {wall:.0}s; stacks in {}); last line: {}", r + 1, name(b), stack_path.display(), last_line());
+                    tally[k].hung += 1;
+                }
+            }
+        }
+    }
+    let mut bad = false;
+    println!("{:<20} {:>9} {:>5} {:>6} {:>9} {:>9} {:>9}   ({runs} run(s) each, timeout {:.0}s, {} {})", "binary", "completed", "hung", "failed", "min s", "median s", "max s", timeout.as_secs_f64(), if let Some(t) = o.get("threads") { format!("LMTOOL_THREADS={t},") } else { String::new() }, o.extra.join(" "));
+    for (k, b) in bins.iter().enumerate() {
+        let t = &tally[k];
+        let mut w = t.walls.clone();
+        let (mn, md, mx) = if w.is_empty() { (0.0, 0.0, 0.0) } else { (w.iter().cloned().fold(f64::MAX, f64::min), median(&mut w), w.iter().cloned().fold(0.0, f64::max)) };
+        println!("{:<20} {:>9} {:>5} {:>6} {:>9.1} {:>9.1} {:>9.1}", name(b), t.walls.len(), t.hung, t.failed, mn, md, mx);
+        bad |= t.hung > 0 || t.failed > 0;
+    }
+    if bad { 1 } else { 0 }
 }
 
 // ---------------------------------------------------------------------------------------------------
