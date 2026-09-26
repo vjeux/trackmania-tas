@@ -21,6 +21,7 @@ pub mod tiledpeel;
 pub mod contrib;
 pub mod passdump;
 pub mod binproj;
+pub mod binsimd;
 pub mod insthier;
 pub mod peel;
 pub mod peelcap;

@@ -194,6 +194,43 @@ pub fn abuf_debug_at(x: u32, y: u32) -> bool {
     match LAYER_DEBUG_SET.as_ref() { Some(set) => set.contains(&(x, y)), None => false }
 }
 
+/// The same list for perf engineer 5's veg-diag: the listed pixels' fragments and alpha-tested candidates as machine-readable
+/// `ABUFDBG` lines from the raster (before the derivation) — keyed by (peel, x, y) when the line carries the peel token, else
+/// by (x, y) for every peel (kind, triangle, instance, model triangle, mask, uv, the alpha verdict, z, z01, the stored q the
+/// layer would carry, front/back); `lmtool veg-diag --frags LOG` reads them.
+pub static ABUF_DEBUG_LIST: std::sync::LazyLock<Option<std::collections::HashSet<(u32, u32, u32)>>> = std::sync::LazyLock::new(|| {
+    let path = std::env::var("LMTOOL_ABUF_DEBUG_LIST").ok()?;
+    let txt = std::fs::read_to_string(&path).ok()?;
+    let mut set = std::collections::HashSet::new();
+    for line in txt.lines() {
+        let v: Vec<u32> = line.split(|c: char| c == ',' || c.is_whitespace()).filter_map(|x| x.parse().ok()).collect();
+        match v.len() { 3 => { set.insert((v[0], v[1], v[2])); } 2 => { set.insert((u32::MAX, v[0], v[1])); } _ => {} }
+    }
+    Some(set)
+});
+/// The peel index the A-buffer build is running for (the debug list is keyed by it).
+pub static CURRENT_PEEL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// The peel state's depth bias ((DepthBias, SlopeScaledDepthBias), depth bits) the debug lines quantise the stored depth with.
+pub static ABUF_DEBUG_BIAS: std::sync::Mutex<((i32, f32), u32)> = std::sync::Mutex::new(((1, 1.0), 16));
+#[inline]
+pub fn abuf_debug_wants(x: u32, y: u32) -> bool {
+    match ABUF_DEBUG_LIST.as_ref() {
+        None => false,
+        Some(set) => { let p = CURRENT_PEEL.load(std::sync::atomic::Ordering::Relaxed); set.contains(&(p, x, y)) || set.contains(&(u32::MAX, x, y)) }
+    }
+}
+/// One ABUFDBG line for a fragment (or alpha-tested candidate) of a listed pixel.
+pub fn abuf_debug_line(x: u32, y: u32, kind: &str, ti: u32, t: &WTri, frame: &PeelFrame, uv: Option<(f32, f32)>, op: Option<bool>, z: f32) {
+    let bias = *ABUF_DEBUG_BIAS.lock().unwrap();
+    let z01 = frame.z01(z);
+    let (slope, zmax_prim) = tri_slope(t, frame);
+    let dd = z01 + d3d_depth_bias_fmt(zmax_prim, slope.min(1e6), bias.0, bias.1);
+    let q = if bias.1 == 16 { (dd.clamp(0.0, 1.0) * 65535.0).round() as u32 } else { (dd * 65535.0) as u32 };
+    let front = dot(cross(t.e1, t.e2), frame.d) < 0.0;
+    let (u, v) = uv.unwrap_or((f32::NAN, f32::NAN));
+    eprintln!("ABUFDBG peel={} x={x} y={y} kind={kind} ti={ti} inst={} mtri={} mask={} u={u:.5} v={v:.5} op={} z={z:.4} z01={z01:.6} q={q} front={}", CURRENT_PEEL.load(std::sync::atomic::Ordering::Relaxed), t.inst, t.tri, t.alpha, op.map(|b| if b { 1 } else { 0 }).unwrap_or(1), front as u8);
+}
+
 /// The cards' alpha test threshold: GbxShadowAlphaThreshold = 128/255 (the capture's ShaderP cbuffer).
 pub const ALPHA_THRESHOLD: f32 = 0.501_960_813_999_176;
 /// LMTOOL_ALPHA_POINT=1: the point-sampled cut-out mask instead of the filtered texture (a probe).
@@ -545,12 +582,12 @@ pub fn build_abuffer_sparse_counted(tris: &[WTri], frame: &PeelFrame, threads: u
 /// meeting the frame: `Bvh::ranges_where` with `PeelFrame::box_class`) — a tile of a giant considers a
 /// ninth of the scene. The ranges must be sorted and disjoint (the triangle order within a pixel).
 pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: &PeelFrame, threads: usize, zmin: f32, zmax: f32, masks: &[crate::geometry::AlphaMask], px: &std::sync::Arc<PixelIndex>, count: Option<CountCtx>) -> (ABuffer, Option<(usize, Vec<f64>)>) {
-    build_abuffer_sparse_items(tris, ranges, None, frame, threads, zmin, zmax, masks, px, count)
+    build_abuffer_sparse_items(tris, ranges, None, None, frame, threads, zmin, zmax, masks, px, count)
 }
 
 /// `build_abuffer_sparse_ranges` over the instance hierarchy's jobs when `hier` is given (the ranges are then
 /// unused: the jobs hold the frame's triangles).
-pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Option<(&crate::insthier::InstHier, &[crate::insthier::GeomJob])>, frame: &PeelFrame, threads: usize, zmin: f32, zmax: f32, masks: &[crate::geometry::AlphaMask], px: &std::sync::Arc<PixelIndex>, count: Option<CountCtx>) -> (ABuffer, Option<(usize, Vec<f64>)>) {
+pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Option<(&crate::insthier::InstHier, &[crate::insthier::GeomJob])>, soa: Option<&crate::bvh::TriSoa>, frame: &PeelFrame, threads: usize, zmin: f32, zmax: f32, masks: &[crate::geometry::AlphaMask], px: &std::sync::Arc<PixelIndex>, count: Option<CountCtx>) -> (ABuffer, Option<(usize, Vec<f64>)>) {
     let res = frame.res;
     let res_y = frame.res_y;
     let t_clip = std::time::Instant::now(); crate::pool::stats::stage("clip");
@@ -607,6 +644,43 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
     let n_cells = n_brows * n_bcols;
     let brow_of = |y: i32| -> usize { (((y - clip.1).max(0) as usize) >> row_shift).min(n_brows - 1) };
     let bcol_of = |x: i32| -> usize { (((x - clip.0).max(0) as usize) >> col_shift).min(n_bcols - 1) };
+    // THE CULL BETWEEN PIXEL CENTRES, EXACT (perf engineer 5's hook, OpenSWR's "cull between pixel centres",
+    // here as one 16-lane pass): a small triangle — up to `micro_cull_max` candidate centres in its clipped
+    // bounding box — is tested at every candidate with the raster's own inside predicate (`raster::CoverTest`:
+    // the same edge functions, orientation and top-left rule, on the same projected f32 vertices), and binned
+    // into the rows AND columns holding a covered centre only — none covered, not binned at all. The raster's
+    // visited set is unchanged (a cell it would have walked without a covered centre produced nothing); half of
+    // the giant's leaf pairs cover no centre. Shared by the scalar `rows_of_projected` and the 16-wide binning.
+    // the covered rows and columns from a candidate box's coverage mask (row-major, w = rx1 − rx0 + 1)
+    let rect_of_mask = |m: u16, ry0: i32, rx0: i32, bw: u32, bh: u32| -> Option<(i32, i32, i32, i32)> {
+        if m == 0 {
+            return None;
+        }
+        let (mut cy0, mut cy1) = (i32::MAX, i32::MIN);
+        let rowbits = (1u32 << bw) - 1;
+        let mut colmask = 0u32;
+        for j in 0..bh {
+            let r = (m as u32 >> (j * bw)) & rowbits;
+            if r != 0 {
+                colmask |= r;
+                cy0 = cy0.min(ry0 + j as i32);
+                cy1 = ry0 + j as i32;
+            }
+        }
+        let cx0 = rx0 + colmask.trailing_zeros() as i32;
+        let cx1 = rx0 + (31 - colmask.leading_zeros()) as i32;
+        Some((cy0, cy1, cx0, cx1))
+    };
+    let micro_rect = |p: [[f32; 2]; 3], ry0: i32, ry1: i32, rx0: i32, rx1: i32| -> Option<(i32, i32, i32, i32)> {
+        if micro_cull_max > 0 {
+            let (bw, bh) = ((rx1 - rx0 + 1) as u32, (ry1 - ry0 + 1) as u32);
+            if bw * bh <= micro_cull_max.min(16) {
+                let cover = raster::CoverTest::new(p)?;
+                return rect_of_mask(cover.covers_box(rx0, ry0, rx1, ry1), ry0, rx0, bw, bh);
+            }
+        }
+        Some((ry0, ry1, rx0, rx1))
+    };
     // a triangle's projected pixel rows and columns (as raster::bounds computes them), clipped to the rectangle
     // (the projected form: the binning projects sixteen records at a time — binproj::project16 — and hands each
     // lane's nine values here; `rows_of` projects one record itself)
@@ -644,38 +718,7 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
             return None;
         }
         let (rx0, rx1) = (rx0 as i32, rx1 as i32);
-        // THE CULL BETWEEN PIXEL CENTRES, EXACT (perf engineer 5's hook, OpenSWR's "cull between pixel centres",
-        // here as one 16-lane pass): a small triangle — up to `micro_cull_max` candidate centres in its clipped
-        // bounding box — is tested at every candidate with the raster's own inside predicate (`raster::CoverTest`:
-        // the same edge functions, orientation and top-left rule, on the same projected f32 vertices), and binned
-        // into the rows AND columns holding a covered centre only — none covered, not binned at all. The raster's
-        // visited set is unchanged (a cell it would have walked without a covered centre produced nothing); half of
-        // the giant's leaf pairs cover no centre.
-        if micro_cull_max > 0 {
-            let (bw, bh) = ((rx1 - rx0 + 1) as u32, (ry1 - ry0 + 1) as u32);
-            if bw * bh <= micro_cull_max.min(16) {
-                let Some(cover) = raster::CoverTest::new([[x0, y0], [x1, y1], [x2, y2]]) else { return None };
-                let m = cover.covers_box(rx0, ry0, rx1, ry1);
-                if m == 0 {
-                    return None;
-                }
-                let (mut cy0, mut cy1) = (i32::MAX, i32::MIN);
-                let rowbits = (1u32 << bw) - 1;
-                let mut colmask = 0u32;
-                for j in 0..bh {
-                    let r = (m as u32 >> (j * bw)) & rowbits;
-                    if r != 0 {
-                        colmask |= r;
-                        cy0 = cy0.min(ry0 + j as i32);
-                        cy1 = ry0 + j as i32;
-                    }
-                }
-                let cx0 = rx0 + colmask.trailing_zeros() as i32;
-                let cx1 = rx0 + (31 - colmask.leading_zeros()) as i32;
-                return Some((cy0, cy1, cx0, cx1));
-            }
-        }
-        Some((ry0, ry1, rx0, rx1))
+        micro_rect([[x0, y0], [x1, y1], [x2, y2]], ry0, ry1, rx0, rx1)
     };
     let rows_of = |t: &WTri| -> Option<(i32, i32, i32, i32)> {
         let (a, b, c) = crate::binproj::project_one(t, frame);
@@ -687,6 +730,9 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
     // range, culls, the exact centre cull) inside its cell; without it an item is one culled triangle projected
     // here. `tri_src` / `tri_id` are the records and their BVH indices (the fragments' `tri` keys) either way.
     let (tri_src, tri_id): (&[WTri], Option<&[u32]>) = match hier { Some((h, _)) => (h.tris.as_slice(), Some(h.bvh_id.as_slice())), None => (tris, None) };
+    let simd_bin = hier.is_none() && crate::binsimd::available() && !cull_back && cards_occlude && soa.map_or(false, |s| s.blocks.len() * 16 >= tris.len());
+    let simd_check = simd_bin && crate::binsimd::check_on();
+    let framek = crate::binsimd::FrameK::new(frame, zmin, zmax, clip);
     let n_items: usize = match hier { Some((_, jobs)) => jobs.len(), None => ranges.iter().map(|r| (r.1 - r.0) as usize).sum() };
     let prep_chunk = (n_items / (threads * 4).max(1)).max(if hier.is_some() { 256 } else { 1024 });
     // a chunk = consecutive (sub)ranges totalling about prep_chunk items, in ascending index order (the BVH cull
@@ -801,9 +847,62 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
                 }
             }
             None => {
-                // (the records projected sixteen at a time — binproj::project16, gathers from the 72-byte records —
-                // measured SLOWER here than the scalar stream: clip 0.31 → 0.35 s per 4 directions; kept for a
-                // contiguous layout where the gathers become loads)
+                // THE BINNING 16 WIDE (PERF 5.3 / 5.3b, binsimd.rs): the projection, depth test and candidate test
+                // over blocks of 16 triangles from the BVH's position table (bvh::TriSoa, 36 B per triangle), the
+                // ≤ 4-candidate lanes' exact centre cull sixteen triangles at a time (micro_16), covers_box for the
+                // 5–16-candidate lanes — the same decisions as `rows_of` (checked lane by lane under
+                // LMTOOL_BIN_SIMD_CHECK=1), the survivors placed in ascending index order. The scalar loop below
+                // stays for the switches that read the record (cull_back, cards that do not occlude), for machines
+                // without AVX-512 and for LMTOOL_BIN_SIMD=0. (Engineer 3's binproj::project16 — gathers from the
+                // 72-byte records — measured slower than the scalar stream; the SoA table is what makes it pay.)
+                if simd_bin {
+                    let soa = soa.unwrap();
+                    let mut blk = crate::binsimd::Block16::ZERO;
+                    let mut mic = crate::binsimd::Micro16::ZERO;
+                    let mic_ok = micro_cull_max >= 4;
+                    for &(a, b) in subs.iter() {
+                        let (bl0, bl1) = ((a / 16) as usize, ((b - 1) / 16) as usize);
+                        for bi in bl0..=bl1 {
+                            let lo = (bi as u32 * 16).max(a);
+                            let hi = (bi as u32 * 16 + 16).min(b);
+                            let lanes: u16 = (((1u32 << (hi - bi as u32 * 16)) - 1) & !((1u32 << (lo - bi as u32 * 16)) - 1)) as u16;
+                            crate::binsimd::rows_of_16(&soa.blocks[bi], &framek, lanes, &mut blk);
+                            if mic_ok { crate::binsimd::micro_16(&blk, &framek, &mut mic); } else { mic.small = 0; }
+                            let mut m = blk.mask as u32;
+                            let mut decided: u16 = 0;
+                            while m != 0 {
+                                let l = m.trailing_zeros() as usize;
+                                m &= m - 1;
+                                let ti = bi as u32 * 16 + l as u32;
+                                // the clipped ranges (micro_16 clamps the block's ceil/floor'd extents in lanes exactly as
+                                // `rows_of_projected` does — its unit test checks the equality — else the scalar clamps)
+                                let (ry0, ry1, rx0, rx1) = if mic_ok { (mic.ry0[l], mic.ry1[l], mic.rx0[l], mic.rx1[l]) } else { (((blk.cy0[l] as i64).max(clip.1 as i64)) as i32, ((blk.fy1[l] as i64).min(clip.3 as i64)) as i32, ((blk.cx0[l] as i64).max(clip.0 as i64)) as i32, ((blk.fx1[l] as i64).min(clip.2 as i64)) as i32) };
+                                let rect = if (mic.small >> l) & 1 == 1 {
+                                    rect_of_mask(mic.cov[l] as u16, ry0, rx0, (rx1 - rx0 + 1) as u32, (ry1 - ry0 + 1) as u32)
+                                } else {
+                                    micro_rect([[blk.xy[0][l], blk.xy[1][l]], [blk.xy[2][l], blk.xy[3][l]], [blk.xy[4][l], blk.xy[5][l]]], ry0, ry1, rx0, rx1)
+                                };
+                                if simd_check {
+                                    assert_eq!(rect, rows_of(&tris[ti as usize]), "binning 16 wide: triangle {ti} differs from the scalar decision");
+                                    decided |= 1 << l;
+                                }
+                                if let Some((ry0, ry1, rx0, rx1)) = rect {
+                                    let t = &tris[ti as usize];
+                                    place(&mut st, ti, ry0, ry1, rx0, rx1, if t.alpha != u16::MAX { *CARD_WEIGHT_V } else { 1 });
+                                }
+                            }
+                            if simd_check {
+                                let mut rej = (lanes & !blk.mask & !decided) as u32;
+                                while rej != 0 {
+                                    let l = rej.trailing_zeros() as usize;
+                                    rej &= rej - 1;
+                                    let ti = bi as u32 * 16 + l as u32;
+                                    assert_eq!(rows_of(&tris[ti as usize]), None, "binning 16 wide: triangle {ti} rejected by the lanes, kept by the scalar path");
+                                }
+                            }
+                        }
+                    }
+                } else {
                 for &(a, b) in subs.iter() {
                     for (k, t) in tris[a as usize..b as usize].iter().enumerate() {
                         if let Some((ry0, ry1, rx0, rx1)) = rows_of(t) {
@@ -811,6 +910,7 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
                             place(&mut st, a + k as u32, ry0, ry1, rx0, rx1, if t.alpha != u16::MAX { *CARD_WEIGHT_V } else { 1 });
                         }
                     }
+                }
                 }
             }
         }
@@ -1166,11 +1266,12 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
                                 Some((tx, fp)) if !*ALPHA_POINT => if alpha_point_mip() { tx.passes_point(u, v, fp, ALPHA_THRESHOLD) } else { tx.passes_planned(u, v, fp, ALPHA_THRESHOLD, crate::alphatex::Address::ClampEdge) },
                                 _ => mk.opaque(u, v),
                             };
+                            if abuf_debug_wants(x, y) { abuf_debug_line(x, y, "card", ti, t, frame, Some((u, v)), Some(op), z); }
                             if abuf_debug_at(x, y) { let plan_s = match fp { Some((tx, p)) => format!(" lod {:.3} levels {}/{} two {} taps {} axis ({:.4},{:.4}) alpha {:.5} one-tap-l0 {:.5} one-tap-l1 {:.5} by-taps {} taps-of-plan [{}]", p.lod, p.l0, p.l1, p.two, p.n, p.axis[0], p.axis[1], tx.sample_planned_clamp(u, v, p), tx.bilinear_tap(u, v, 0), tx.bilinear_tap(u, v, 1), (1..=8usize).map(|k| { let mut pk = p.clone(); pk.n = k; format!("{k}:{:.5}", tx.sample_planned_clamp(u, v, &pk)) }).collect::<Vec<_>>().join(" "), (0..p.n).map(|i| { let sft = if p.n > 1 { (i as f32 + 0.5) / p.n as f32 - 0.5 } else { 0.0 }; format!("{:.5}", tx.bilinear_tap(u + p.axis[0] * sft, v + p.axis[1] * sft, p.l0)) }).collect::<Vec<_>>().join(" ")), None => String::new() }; eprintln!("abuf debug ({x},{y}) hd={:.2}: card tri {ti} inst {} model tri {} mask {} uv ({u:.4},{v:.4}) opaque {op} z {z:.3} z01 {:.5}{plan_s}", frame.half_d, t.inst, t.tri, t.alpha, frame.z01(z));  }
                             if !op {
                                 continue;
                             }
-                        } else if abuf_debug_at(x, y) { eprintln!("abuf debug ({x},{y}) hd={:.2}: tri {ti} inst {} model tri {} z {z:.3} z01 {:.5}", frame.half_d, t.inst, t.tri, frame.z01(z));  }
+                        } else if abuf_debug_wants(x, y) { abuf_debug_line(x, y, "opaque", ti, t, frame, None, None, z); } else if abuf_debug_at(x, y) { eprintln!("abuf debug ({x},{y}) hd={:.2}: tri {ti} inst {} model tri {} z {z:.3} z01 {:.5}", frame.half_d, t.inst, t.tri, frame.z01(z));  }
                         // the tail (the wanted bit of lane l is the bitmap's bit at id0 + l, as emit_frag reads it)
                         let bias = if count_it { Some(bias_term_of(&mut bias_term_cache)) } else { None };
                         emit_frag(&mut cnt, &mut list, &mut saturated, &mut out, x, y, z, ti, count_it, bias);
@@ -1610,11 +1711,12 @@ pub fn build_abuffer_wanted(tris: &[WTri], frame: &PeelFrame, threads: usize, zm
                                         let zq = if CARD_DUMP_BIAS.1 == 16 { (dd.clamp(0.0, 1.0) * 65535.0).round() / 65535.0 } else { dd };
                                         CARD_FRAGS.lock().unwrap().push(CardFrag { x, y, z01, tri: ti, u, v, mask: t.alpha as u32, fp_dx: fdx, fp_dy: fdy, port_pass: op as u32, zq });
                                     }
+                                    if abuf_debug_wants(x, y) { abuf_debug_line(x, y, "card", ti, t, &frame, Some((u, v)), Some(op), z); }
                                     if abuf_debug_at(x, y) { let plan_s = match fp { Some((tx, p)) => format!(" lod {:.3} levels {}/{} two {} taps {} axis ({:.4},{:.4}) alpha {:.5} one-tap-l0 {:.5} one-tap-l1 {:.5} by-taps {} taps-of-plan [{}]", p.lod, p.l0, p.l1, p.two, p.n, p.axis[0], p.axis[1], tx.sample_planned_clamp(u, v, p), tx.bilinear_tap(u, v, 0), tx.bilinear_tap(u, v, 1), (1..=8usize).map(|k| { let mut pk = p.clone(); pk.n = k; format!("{k}:{:.5}", tx.sample_planned_clamp(u, v, &pk)) }).collect::<Vec<_>>().join(" "), (0..p.n).map(|i| { let sft = if p.n > 1 { (i as f32 + 0.5) / p.n as f32 - 0.5 } else { 0.0 }; format!("{:.5}", tx.bilinear_tap(u + p.axis[0] * sft, v + p.axis[1] * sft, p.l0)) }).collect::<Vec<_>>().join(" ")), None => String::new() }; eprintln!("abuf debug ({x},{y}) hd={:.2}: card tri {ti} inst {} model tri {} mask {} uv ({u:.4},{v:.4}) opaque {op} z {z:.3} z01 {:.5}{plan_s}", frame.half_d, t.inst, t.tri, t.alpha, frame.z01(z));  }
                                     if !op {
                                         return;
                                     }
-                                } else if abuf_debug_at(x, y) { eprintln!("abuf debug ({x},{y}) hd={:.2}: tri {ti} inst {} model tri {} z {z:.3} z01 {:.5}", frame.half_d, t.inst, t.tri, frame.z01(z));  }
+                                } else if abuf_debug_wants(x, y) { abuf_debug_line(x, y, "opaque", ti, t, &frame, None, None, z); } else if abuf_debug_at(x, y) { eprintln!("abuf debug ({x},{y}) hd={:.2}: tri {ti} inst {} model tri {} z {z:.3} z01 {:.5}", frame.half_d, t.inst, t.tri, frame.z01(z));  }
                                 out[(y / band_h) as usize].push((y * res + x, Frag { z, tri: ti }));
                             }
                         });
@@ -4071,6 +4173,8 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             if let Some(pb) = &prm.probe_bake { pb.lock().unwrap().import_direction(&c.probe_cur, &c.sky_adds); }
         } else {
         for (pi, frame) in peels.iter().enumerate() {
+            CURRENT_PEEL.store(pi as u32, std::sync::atomic::Ordering::Relaxed);
+            if ABUF_DEBUG_LIST.is_some() { *ABUF_DEBUG_BIAS.lock().unwrap() = (prm.depth_bias, prm.depth_bits); }
             let tb2 = std::time::Instant::now();
             let t_dome = std::time::Instant::now();
             // the game's dome mesh rasterised in this peel's frame (the eye = GbxV_EyeInWorld = the frustum's
@@ -4328,7 +4432,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                             }
                             jobs
                         });
-                        let (ab, counted) = build_abuffer_sparse_items(&bvh.tris, &ranges, insthier.as_ref().zip(hier_jobs.as_deref()), frame, threads, zmin_f, zmax_f, &prm.alpha_masks, px, if fuse { Some(CountCtx { scene, bvh, prm }) } else { None });
+                        let (ab, counted) = build_abuffer_sparse_items(&bvh.tris, &ranges, insthier.as_ref().zip(hier_jobs.as_deref()), Some(&bvh.soa), frame, threads, zmin_f, zmax_f, &prm.alpha_masks, px, if fuse { Some(CountCtx { scene, bvh, prm }) } else { None });
                         if let Some((kept, fractions)) = counted {
                             if peel_layers_debug() { eprintln!("peel layers (exact, sweep {} direction {di} peel {pi}): fractions {:?} → {kept} rendered", prm.sweep, fractions.iter().take_while(|f| **f > 0.0).map(|f| format!("{f:.6}")).collect::<Vec<_>>()); }
                             exact_layers = Some(kept);

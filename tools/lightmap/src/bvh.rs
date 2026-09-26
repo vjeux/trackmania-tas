@@ -35,6 +35,51 @@ pub struct Bvh {
     pub perm: Vec<u32>,
     pub tris: Vec<WTri>,
     nodes: Vec<Node>,
+    /// The triangles' positions again, blocked 16 wide (perf engineer 5, PERF 5.3): the binning's projection and
+    /// candidate-centre test run over a block in AVX-512 lanes — the same f32 operations in the same order as the
+    /// scalar path, so the same decisions — reading 36 bytes per triangle instead of the 72-byte record.
+    pub soa: TriSoa,
+}
+
+/// The triangle positions in blocks of 16: `blocks[i / 16].v[k][i % 16]` = coordinate k of triangle i, k = p0.xyz,
+/// e1.xyz, e2.xyz (0..9). The lanes past the last triangle repeat it (harmless: the binning masks them off).
+pub struct TriSoa {
+    pub blocks: Vec<SoaBlock>,
+}
+
+#[derive(Clone, Copy)]
+#[repr(C, align(64))]
+pub struct SoaBlock {
+    pub v: [[f32; 16]; 9],
+}
+
+impl TriSoa {
+    pub fn build(tris: &[WTri]) -> TriSoa {
+        let n = tris.len();
+        let nb = (n + 15) / 16;
+        let mut blocks: Vec<SoaBlock> = Vec::with_capacity(nb);
+        // SAFETY: every block is written below before use
+        unsafe { blocks.set_len(nb); }
+        let bp = blocks.as_mut_ptr() as usize;
+        let per = 4096usize; // blocks per task
+        crate::pool::pool().run((nb + per - 1) / per, |ci| {
+            for bi in ci * per..((ci + 1) * per).min(nb) {
+                let mut b = SoaBlock { v: [[0.0; 16]; 9] };
+                for l in 0..16 {
+                    let t = &tris[(bi * 16 + l).min(n - 1)];
+                    b.v[0][l] = t.p0[0]; b.v[1][l] = t.p0[1]; b.v[2][l] = t.p0[2];
+                    b.v[3][l] = t.e1[0]; b.v[4][l] = t.e1[1]; b.v[5][l] = t.e1[2];
+                    b.v[6][l] = t.e2[0]; b.v[7][l] = t.e2[1]; b.v[8][l] = t.e2[2];
+                }
+                // SAFETY: disjoint blocks per task
+                unsafe { std::ptr::write((bp as *mut SoaBlock).add(bi), b); }
+            }
+        });
+        TriSoa { blocks }
+    }
+    pub fn empty() -> TriSoa {
+        TriSoa { blocks: Vec::new() }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -381,8 +426,8 @@ mod build_tests {
         let n_new = build_top_down(&mut o2, &bounds, &cents);
         assert_eq!(o1, o2, "the triangle order");
         let t1: Vec<WTri> = o1.iter().map(|&i| tris[i as usize]).collect();
-        let b_old = Bvh { tris: t1.clone(), nodes: n_old, perm: vec![0; tris.len()] };
-        let b_new = Bvh { tris: t1, nodes: n_new, perm: vec![0; tris.len()] };
+        let b_old = Bvh { tris: t1.clone(), nodes: n_old, perm: vec![0; tris.len()], soa: TriSoa::empty() };
+        let b_new = Bvh { tris: t1, nodes: n_new, perm: vec![0; tris.len()], soa: TriSoa::empty() };
         for _ in 0..50 {
             let d = crate::geometry::norm([rnd() - 0.5, rnd() - 0.5, rnd() - 0.5]);
             let brute = b_new.tris.iter().flat_map(|t| [t.p0, [t.p0[0] + t.e1[0], t.p0[1] + t.e1[1], t.p0[2] + t.e1[2]], [t.p0[0] + t.e2[0], t.p0[1] + t.e2[1], t.p0[2] + t.e2[2]]]).map(|p| dot(p, d)).fold(f32::INFINITY, f32::min);
@@ -483,17 +528,17 @@ impl Bvh {
             });
         }
         drop(tris);
-        Bvh { tris: reordered, nodes, perm }
+        let soa = TriSoa::build(&reordered);
+        Bvh { tris: reordered, nodes, perm, soa }
     }
 
     /// The triangle ranges (`first..first + count` of `tris`, in leaf order) whose nodes' boxes meet an
     /// oriented slab: `inside(bmin, bmax) -> Option<bool>` answers None (disjoint), Some(false) (partly) or
     /// Some(true) (wholly inside — the subtree's whole range is taken without descending). A conservative
     /// culling of the scene per peel frame: the frustum of a tile of a giant holds a ninth of the map.
-    pub fn ranges_where<F: Fn(V3, V3) -> Option<bool>>(&self, inside: F) -> Vec<(u32, u32)> {
-        let mut out: Vec<(u32, u32)> = Vec::new();
+    pub fn ranges_where<F: Fn(V3, V3) -> Option<bool> + Sync>(&self, inside: F) -> Vec<(u32, u32)> {
         if self.nodes.is_empty() {
-            return out;
+            return Vec::new();
         }
         // the whole range under a node = its leftmost leaf's first .. its rightmost leaf's end: found by descent
         fn range_of(nodes: &[Node], i: usize) -> (u32, u32) {
@@ -503,22 +548,64 @@ impl Bvh {
             while nodes[hi].count == 0 { hi = nodes[hi].first as usize + 1; }
             (nodes[lo].first, nodes[hi].first + nodes[hi].count)
         }
-        let mut stack: Vec<u32> = vec![0];
-        while let Some(i) = stack.pop() {
-            let n = &self.nodes[i as usize];
-            match inside(n.bmin, n.bmax) {
-                None => {}
-                Some(true) => out.push(range_of(&self.nodes, i as usize)),
-                Some(false) => {
-                    if n.count > 0 {
-                        out.push((n.first, n.first + n.count));
-                    } else {
-                        // right first so the left pops first: the ranges come out in leaf (triangle) order
-                        stack.push(n.first + 1);
-                        stack.push(n.first);
+        // the descent from `root`, appending to `out`
+        let descend = |root: u32, out: &mut Vec<(u32, u32)>| {
+            let mut stack: Vec<u32> = vec![root];
+            while let Some(i) = stack.pop() {
+                let n = &self.nodes[i as usize];
+                match inside(n.bmin, n.bmax) {
+                    None => {}
+                    Some(true) => out.push(range_of(&self.nodes, i as usize)),
+                    Some(false) => {
+                        if n.count > 0 {
+                            out.push((n.first, n.first + n.count));
+                        } else {
+                            // right first so the left pops first: the ranges come out in leaf (triangle) order
+                            stack.push(n.first + 1);
+                            stack.push(n.first);
+                        }
                     }
                 }
             }
+        };
+        // THE TRAVERSAL IN PARALLEL (perf engineer 5): the top of the tree is walked here until it holds enough
+        // partly-inside subtrees for the pool (or the tree is small), then every subtree descends on its own
+        // task; the ranges are sorted and merged afterwards, so the result does not depend on the task order.
+        // (The sequential walk took 2–3 ms per fitted tile of a giant — 20 ms per direction — with 127 threads idle.)
+        let mut out: Vec<(u32, u32)> = Vec::new();
+        let want = crate::pool::pool().threads.max(1) * 4;
+        let mut frontier: Vec<u32> = vec![0];
+        let mut level = 0usize;
+        while frontier.len() < want && level < 24 {
+            let mut next: Vec<u32> = Vec::with_capacity(frontier.len() * 2);
+            for &i in &frontier {
+                let n = &self.nodes[i as usize];
+                match inside(n.bmin, n.bmax) {
+                    None => {}
+                    Some(true) => out.push(range_of(&self.nodes, i as usize)),
+                    Some(false) => {
+                        if n.count > 0 {
+                            out.push((n.first, n.first + n.count));
+                        } else {
+                            next.push(n.first);
+                            next.push(n.first + 1);
+                        }
+                    }
+                }
+            }
+            frontier = next;
+            level += 1;
+            if frontier.is_empty() { break; }
+        }
+        if frontier.len() >= 32 {
+            let parts: Vec<Vec<(u32, u32)>> = crate::pool::pool().map(frontier.len(), |k| {
+                let mut v: Vec<(u32, u32)> = Vec::new();
+                descend(frontier[k], &mut v);
+                v
+            });
+            for p in parts { out.extend(p); }
+        } else {
+            for &root in &frontier { descend(root, &mut out); }
         }
         // merge adjacent ranges
         out.sort_unstable();
