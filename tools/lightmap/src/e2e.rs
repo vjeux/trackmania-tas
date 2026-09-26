@@ -556,7 +556,12 @@ pub fn finalise_tail(finals: &[Buf], mood_max_hdr: f32) -> (Vec<Buf>, [f32; 4], 
 /// layout units) in the mapping's order; `ambient_xyz` = the AddAmbient accumulator at the end of sweep 0 when known.
 pub fn transcribed_images(enc: &crate::gpuenc::YCbCr4, maxhdr: [f32; 4], mood_max_hdr: f32, charts: &[(u32, u32, u32, u32)], ambient_xyz: Option<[f32; 3]>) -> Option<crate::synth::TranscribedImages> {
     let (blob0, blob1, _sizes, fb0) = crate::filecheck::frame0_blobs(&enc.y4, &enc.cb4, &enc.cr4, enc.w as usize, enc.h as usize, charts)?;
-    let (max_hdr, hbasis234) = crate::filecheck::record_scales(maxhdr, mood_max_hdr);
+    // `mood_max_hdr` here is the cb Mood_MaxHdr the ENCODE clips at (the mood's MaxHDR · √(2π), A's 0033 — C0 is the radiance ·
+    // √(2π)); `record_scales` takes the mood's RAW MaxHDR and applies the √(2π) itself (its CPU clip is `max[0] / (Mood · 2.5066)`),
+    // so it gets the raw value back: with the scaled value passed twice the clip sat at Mood · 2π and a clipped record came out as
+    // Mood · √(2π) — the tiny-16 product file's 7.5198846 (= 3 · 2.5066283) against the editor's 2.9999995 (E, 2026-09-26 05:50Z).
+    // Unclipped records (hill4: 5.367 · κ = 2.141 vs the editor's 2.133) are untouched.
+    let (max_hdr, hbasis234) = crate::filecheck::record_scales(maxhdr, mood_max_hdr / 2.506_628_3);
     let lambient_f16 = ambient_xyz.map(|a| [0, 1, 2].map(|k| crate::gpufmt::encode_f16(a[k], Rounding::NearestEven)));
     Some(crate::synth::TranscribedImages { blob0, blob1, fb0, max_hdr, hbasis234, lambient_f16, frame1: None })
 }
