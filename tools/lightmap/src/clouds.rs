@@ -795,3 +795,172 @@ mod tests {
         assert!((t - 1950.2).abs() < 1.0 && d == dirs[0], "{t} {d:?}");
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+// PS 14515 — THE CLOUD SPRITE'S PIXEL SHADER, transcribed from the banked DXBC (passcap/pwc-day/shaders-frame127448/
+// Pixel_14515.txt, hash 2b00f069-d5e42a6e-d8c10cdd-19beb5fb; ps_5_0, 63 instructions) — A SCAFFOLD (port engineer G, 2026-09-26):
+// pwc-day has no cloud fragment, so nothing here is closed against a capture; it is the fill-in for the tall-box WhiteShore
+// capture (the g23 cell: `clouds-reach` shows the sprite field inside 241 of 256 sweep-0 world frusta). Inputs = VS 14514's
+// o1..o4 (`CloudVsOut`): v1 = (atlas uv, in-sprite offset), v2 = (world − LightningPosW, fog factor), v3 = (world − eye, opacity),
+// v4 = (the sprite axis, the folded sun-angle blend). Textures: TMapSkyClouds (texture2darray: slice iTexture0 = mood A's
+// SkyClouds.dds, slice iTexture1 = mood B's, blended by wTexture1 when > 0.01), TMapAmbientSky (texturecubearray, the moods' AmbCubeP,
+// same slices). Constants: cb0 ShaderP (g_CBuffer), cb13 SceneP (GbxP_*), cb1 DrawP. Outputs: o0 = (alpha·rgb, alpha) —
+// PREMULTIPLIED, blended One / InvSrcAlpha over the dome — and o1 = (0, 0, 0, alpha).
+
+/// cb0 ShaderP + the cb13 SceneP words PS 14515 reads.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CloudPsConstants {
+    /// g_CBuffer.iTexture0.x / iTexture1.x: the two mood slices; wTexture1.x: mood B's weight (the blend runs when > 0.01).
+    pub i_texture0: f32,
+    pub i_texture1: f32,
+    pub w_texture1: f32,
+    /// g_CBuffer.IsRadial.x (movc: non-zero picks the view-built axis over v4.xyz).
+    pub is_radial: bool,
+    /// g_CBuffer.LDirFront / LDirBack: (Dot_BF01_Scale, Dot_BF01_Trans, BF01_Intens_Scale, BF01_Intens_Trans).
+    pub ldir_front: [f32; 4],
+    pub ldir_back: [f32; 4],
+    pub global_scale: f32,
+    /// SceneP: GbxP_LightDirDirInWorld0.xyz (the shader dots with its NEGATION), GbxP_LightDirRgbLinear0.xyz.
+    pub light_dir_in_world: [f32; 3],
+    pub light_rgb_linear: [f32; 3],
+    /// SceneP: LightningRgb_IRad2 (rgb, 1/r²), GbxP_Fog_LinearRGB.xyz.
+    pub lightning_rgb_irad2: [f32; 4],
+    pub fog_linear_rgb: [f32; 3],
+}
+
+/// The two outputs of PS 14515: o0 = (alpha·rgb, alpha), o1 = (0, 0, 0, alpha).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CloudPsOut {
+    pub o0: [f32; 4],
+    pub o1: [f32; 4],
+}
+
+/// PS 14515 on one fragment. `clouds(slice, uv)` = TMapSkyClouds sampled with SGbxClamp_Aniso (a 2D-array fetch at (uv, slice));
+/// `ambient(slice, dir)` = TMapAmbientSky (cube array) with SMapAmbientSky. Instruction numbers as the DXBC.
+pub fn ps_14515(v: &CloudVsOut, k: &CloudPsConstants, clouds: &dyn Fn(f32, [f32; 2]) -> [f32; 4], ambient: &dyn Fn(f32, [f32; 3]) -> [f32; 3]) -> CloudPsOut {
+    let (v1, v2, v3, v4) = (v.o1, v.o2, v.o3, v.o4);
+    // 0–2: r0 = normalize(v3.xyz) — the view vector (world − eye)
+    let l = rsq(v3[0] * v3[0] + v3[1] * v3[1] + v3[2] * v3[2]);
+    let r0 = [l * v3[0], l * v3[1], l * v3[2]];
+    // 3–5: r1 = TMapSkyClouds[iTexture0](v1.xy); 6–13: blended toward slice iTexture1 by wTexture1 when 0.01 < wTexture1
+    let mut r1 = clouds(k.i_texture0, [v1[0], v1[1]]);
+    let blend = 0.01 < k.w_texture1;
+    if blend {
+        let r2 = clouds(k.i_texture1, [v1[0], v1[1]]);
+        for c in 0..4 {
+            r1[c] = k.w_texture1 * (r2[c] - r1[c]) + r1[c];
+        }
+    }
+    // 14–18: r2 = normalize(cross(r0, Z) folded into the XZ plane) — the radial sprite axis from the view vector:
+    //   r2 = r0.zxy·(1,0,0) − r0.yzx·(0,0,1) = (r0.z, 0, −r0.x), normalised over its xz
+    let mut r2 = [r0[2], 0.0, -r0[0]];
+    let n = rsq(r2[0] * r2[0] + r2[2] * r2[2]);
+    r2 = [r2[0] * n, r2[1] * n, r2[2] * n];
+    // 19–20: r3 = cross(r0, r2)  (r0.zxy·r2.yzx − r0.yzx·r2.zxy)
+    let r3 = [r0[2] * r2[1] - r0[1] * r2[2], r0[0] * r2[2] - r0[2] * r2[0], r0[1] * r2[0] - r0[0] * r2[1]];
+    // 21–22: r4 = cross(r0, v4.xyz) — the axis-given frame
+    let r4 = [r0[2] * v4[1] - r0[1] * v4[2], r0[0] * v4[2] - r0[2] * v4[0], r0[1] * v4[0] - r0[0] * v4[1]];
+    // 23–24: IsRadial picks (r2, r3), else (v4.xyz, r4)
+    let (ax, ay) = if k.is_radial { (r2, r3) } else { ([v4[0], v4[1], v4[2]], r4) };
+    // 25–28: r2.w = sqrt(max(0, 1 − |v1.zw|²)) — the sprite's hemisphere height at this offset
+    let h = (1.0 - (v1[2] * v1[2] + v1[3] * v1[3])).max(0.0).sqrt();
+    // 29–31: the pseudo-normal n = v1.z·ax + v1.w·ay − h·view
+    let mut nrm = [0f32; 3];
+    for c in 0..3 {
+        nrm[c] = v1[2] * ax[c] + (ay[c] * v1[3]) - h * r0[c];
+    }
+    // 32: r0.x = n · −LightDir
+    let ndl = -(nrm[0] * k.light_dir_in_world[0] + nrm[1] * k.light_dir_in_world[1] + nrm[2] * k.light_dir_in_world[2]);
+    // 33–34: front = sat(ndl·S + T)·IS + IT; 35–36: back likewise; 37–38: lerp by v4.w
+    let front = sat(ndl * k.ldir_front[0] + k.ldir_front[1]) * k.ldir_front[2] + k.ldir_front[3];
+    let back = sat(ndl * k.ldir_back[0] + k.ldir_back[1]) * k.ldir_back[2] + k.ldir_back[3];
+    let direct = v4[3] * (front - back) + back;
+    // 39–46: r3 = TMapAmbientSky[iTexture0](n), blended to slice iTexture1 by wTexture1 under the same test
+    let mut amb = ambient(k.i_texture0, nrm);
+    if blend {
+        let a2 = ambient(k.i_texture1, nrm);
+        for c in 0..3 {
+            amb[c] = k.w_texture1 * (a2[c] - amb[c]) + amb[c];
+        }
+    }
+    // 47: rgb = direct·LightRgbLinear + ambient; 48–49: × the cloud texel (rgba), alpha = texel.a × opacity (v3.w)
+    let mut rgb = [0f32; 3];
+    for c in 0..3 {
+        rgb[c] = (direct * k.light_rgb_linear[c] + amb[c]) * r1[c];
+    }
+    let alpha = r1[3] * v3[3];
+    // 50–54: the lightning glow — f = sat(1 − |v2.xyz|²·IRad2)⁴ → + f·LightningRgb
+    let d2 = v2[0] * v2[0] + v2[1] * v2[1] + v2[2] * v2[2];
+    let mut f = sat(-d2 * k.lightning_rgb_irad2[3] + 1.0);
+    f = f * f;
+    f = f * f;
+    for c in 0..3 {
+        rgb[c] = f * k.lightning_rgb_irad2[c] + rgb[c];
+    }
+    // 55–57: the fog lerp: rgb = sat(v2.w)·(rgb − fog) + fog
+    let fw = sat(v2[3]);
+    for c in 0..3 {
+        rgb[c] = fw * (rgb[c] - k.fog_linear_rgb[c]) + k.fog_linear_rgb[c];
+    }
+    // 58: × GlobalScale; 59–62: o0 = (alpha·rgb, alpha), o1 = (0, 0, 0, alpha)
+    for c in 0..3 {
+        rgb[c] *= k.global_scale;
+    }
+    CloudPsOut { o0: [alpha * rgb[0], alpha * rgb[1], alpha * rgb[2], alpha], o1: [0.0, 0.0, 0.0, alpha] }
+}
+
+/// The sprite draw's blend state over the dome: One / InvSrcAlpha (premultiplied source): dst' = src.rgb + dst·(1 − src.a).
+pub fn blend_one_inv_src_alpha(dst: [f32; 3], src: [f32; 4]) -> [f32; 3] {
+    [src[0] + dst[0] * (1.0 - src[3]), src[1] + dst[1] * (1.0 - src[3]), src[2] + dst[2] * (1.0 - src[3])]
+}
+
+#[cfg(test)]
+mod ps_tests {
+    use super::*;
+
+    fn k() -> CloudPsConstants {
+        CloudPsConstants { i_texture0: 0.0, i_texture1: 1.0, w_texture1: 0.0, is_radial: true, ldir_front: [1.0, 0.0, 1.0, 0.0], ldir_back: [1.0, 0.0, 0.5, 0.0], global_scale: 1.0, light_dir_in_world: [0.0, -1.0, 0.0], light_rgb_linear: [2.0, 2.0, 2.0], lightning_rgb_irad2: [0.0, 0.0, 0.0, 1e-6], fog_linear_rgb: [0.4, 0.6, 0.9] }
+    }
+
+    #[test]
+    fn a_transparent_texel_leaves_the_dome_alone() {
+        let v = CloudVsOut { o0: [0.0; 4], o1: [0.3, 0.3, 0.0, 0.0], o2: [1e4, 0.0, 0.0, 1.0], o3: [0.0, 0.0, 100.0, 1.0], o4: [0.0, 1.0, 0.0, 1.0] };
+        let out = ps_14515(&v, &k(), &|_, _| [1.0, 1.0, 1.0, 0.0], &|_, _| [0.2, 0.2, 0.2]);
+        assert_eq!(out.o0[3], 0.0);
+        assert_eq!(out.o1, [0.0, 0.0, 0.0, 0.0]);
+        let dome = [0.5, 0.7, 1.0];
+        assert_eq!(blend_one_inv_src_alpha(dome, out.o0), dome);
+    }
+
+    #[test]
+    fn an_opaque_white_texel_facing_the_sun_is_lit_direct_plus_ambient_and_fogged() {
+        // a sprite seen straight along +z from the eye, its centre offset (v1.zw = 0) → the pseudo-normal = −view = (0, 0, −1)
+        // hmm: with v1.zw = 0, h = 1 and n = −r0 = (0, 0, −1); the light comes from above (dir (0, −1, 0)) → n·−L = 0 → the front/back
+        // terms are their translations (0 here) → rgb = ambient × texel, then the fog lerp with v2.w = 1 (no fog) and GlobalScale 1
+        let v = CloudVsOut { o0: [0.0; 4], o1: [0.5, 0.5, 0.0, 0.0], o2: [1e4, 0.0, 0.0, 1.0], o3: [0.0, 0.0, 100.0, 1.0], o4: [0.0, 1.0, 0.0, 1.0] };
+        let out = ps_14515(&v, &k(), &|_, _| [1.0, 1.0, 1.0, 1.0], &|_, _| [0.2, 0.3, 0.4]);
+        assert!((out.o0[0] - 0.2).abs() < 1e-6 && (out.o0[1] - 0.3).abs() < 1e-6 && (out.o0[2] - 0.4).abs() < 1e-6, "{:?}", out.o0);
+        assert_eq!(out.o0[3], 1.0);
+        // premultiplied over the dome: an opaque sprite replaces it
+        assert_eq!(blend_one_inv_src_alpha([0.5, 0.7, 1.0], out.o0), [out.o0[0], out.o0[1], out.o0[2]]);
+        // the fog: v2.w = 0 → the fog colour
+        let v2 = CloudVsOut { o2: [1e4, 0.0, 0.0, 0.0], ..v };
+        let out2 = ps_14515(&v2, &k(), &|_, _| [1.0, 1.0, 1.0, 1.0], &|_, _| [0.2, 0.3, 0.4]);
+        assert!((out2.o0[0] - 0.4).abs() < 1e-6 && (out2.o0[2] - 0.9).abs() < 1e-6, "{:?}", out2.o0);
+    }
+
+    #[test]
+    fn the_sun_side_of_a_sprite_gets_the_front_term() {
+        // the sprite offset toward the axis' +x (v1.z = 1 → h = 0): n = ax; radial ax from the view (0, 0, 1) is (1, 0, 0)·norm →
+        // with the light along −x (dir (1, 0, 0) → −L = (−1, 0, 0)) n·−L = −1 → sat → 0; flip the light: dir (−1, 0, 0) → n·−L = 1
+        let v = CloudVsOut { o0: [0.0; 4], o1: [0.5, 0.5, 1.0, 0.0], o2: [1e4, 0.0, 0.0, 1.0], o3: [0.0, 0.0, 100.0, 1.0], o4: [0.0, 1.0, 0.0, 1.0] };
+        let mut kk = k();
+        kk.light_dir_in_world = [-1.0, 0.0, 0.0];
+        let out = ps_14515(&v, &kk, &|_, _| [1.0, 1.0, 1.0, 1.0], &|_, _| [0.0, 0.0, 0.0]);
+        // front = sat(1·1 + 0)·1 + 0 = 1 → direct = 1 (v4.w = 1) → rgb = 1 × LightRgb (2) → 2
+        assert!((out.o0[0] - 2.0).abs() < 1e-5, "{:?}", out.o0);
+        kk.light_dir_in_world = [1.0, 0.0, 0.0];
+        let out = ps_14515(&v, &kk, &|_, _| [1.0, 1.0, 1.0, 1.0], &|_, _| [0.0, 0.0, 0.0]);
+        assert!(out.o0[0].abs() < 1e-6, "{:?}", out.o0);
+    }
+}
