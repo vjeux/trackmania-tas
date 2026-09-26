@@ -2180,7 +2180,8 @@ fn fragment_radiance(scene: &Scene, bvh: &Bvh, prm: &BakeParams, shadow: Option<
             } else {
                 let b1 = ((d11 * d20 - d01 * d21) / den).clamp(0.0, 1.0);
                 let b2 = ((d00 * d21 - d01 * d20) / den).clamp(0.0, 1.0);
-                f.lookup(scene, wt.inst, wt.tri, b1, b2).map(|e| [e[0] / prm.bounce_decode, e[1] / prm.bounce_decode, e[2] / prm.bounce_decode]).unwrap_or([0.0; 3])
+                // (÷ 1 is the identity — the default BounceFactor — so the three divisions run only for another factor)
+                f.lookup(scene, wt.inst, wt.tri, b1, b2).map(|e| if prm.bounce_decode == 1.0 { e } else { [e[0] / prm.bounce_decode, e[1] / prm.bounce_decode, e[2] / prm.bounce_decode] }).unwrap_or([0.0; 3])
             }
         }
         // the decoration (and any geometry without a lightmap) has no C0 of its own: the game's
@@ -2339,7 +2340,8 @@ pub fn fragment_radiance_at(scene: &Scene, bvh: &Bvh, prm: &BakeParams, shadow: 
             } else {
                 let b1 = ((d11 * d20 - d01 * d21) / den).clamp(0.0, 1.0);
                 let b2 = ((d00 * d21 - d01 * d20) / den).clamp(0.0, 1.0);
-                f.lookup(scene, wt.inst, wt.tri, b1, b2).map(|e| [e[0] / prm.bounce_decode, e[1] / prm.bounce_decode, e[2] / prm.bounce_decode]).unwrap_or([0.0; 3])
+                // (÷ 1 is the identity — the default BounceFactor — so the three divisions run only for another factor)
+                f.lookup(scene, wt.inst, wt.tri, b1, b2).map(|e| if prm.bounce_decode == 1.0 { e } else { [e[0] / prm.bounce_decode, e[1] / prm.bounce_decode, e[2] / prm.bounce_decode] }).unwrap_or([0.0; 3])
             }
         }
     };

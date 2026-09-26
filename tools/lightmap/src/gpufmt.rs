@@ -118,6 +118,33 @@ pub fn unpack_r11g11b10(v: u32) -> [f32; 3] {
 
 /// The value an R11G11B10 target holds after `rgb` is written to it.
 pub fn quantise_r11g11b10(rgb: [f32; 3], r: Rounding) -> [f32; 3] {
+    // THE FAST PATH (the layer derivation quantises three channels per fragment): a channel that is a positive
+    // normal number of the small format's normal range rounds to its 6 (5) mantissa bits with the exponent kept
+    // — the same integer arithmetic `encode_unsigned` does (rebias, add half an lsb minus one plus the lsb's
+    // parity, shift) followed by `decode_unsigned`'s reconstruction, which for e ∉ {0, 31} is exactly the
+    // rounded bit pattern rebiased back: no branches, no float rebuild. Anything else (zero, negative, tiny,
+    // huge, NaN, truncation) takes the general path.
+    #[inline(always)]
+    fn fast(v: f32, mbits: u32) -> Option<f32> {
+        let bits = v.to_bits();
+        // positive, ≥ 2^−14 (a normal of the small format), and small enough that rounding cannot reach the
+        // exponent 31: below 2^15·(2 − 2^−mbits) minus half an lsb, i.e. bits < the largest finite's pattern
+        // with the dropped bits zero — conservatively bits < 0x477e_0000 (65024 = 2^15·1.984375)
+        if bits < 0x3880_0000 || bits >= 0x477e_0000 {
+            return None;
+        }
+        let shift = 23 - mbits;
+        let i = bits.wrapping_add(0xc800_0000); // − 112 << 23
+        let half = (1u32 << (shift - 1)) - 1;
+        let q = (i.wrapping_add(half).wrapping_add((i >> shift) & 1)) >> shift;
+        // q's exponent field is 1..=30 here (the range test above), so decode is the rebiased pattern
+        Some(f32::from_bits((q << shift).wrapping_add(0x3800_0000)))
+    }
+    if r == Rounding::NearestEven {
+        if let (Some(a), Some(b), Some(c)) = (fast(rgb[0], 6), fast(rgb[1], 6), fast(rgb[2], 5)) {
+            return [a, b, c];
+        }
+    }
     unpack_r11g11b10(pack_r11g11b10(rgb, r))
 }
 
@@ -373,6 +400,39 @@ mod pow2_probe {
                 let reference = if e == 31 { if m != 0 { f32::NAN } else { f32::INFINITY } } else if e == 0 { m as f32 * scale * 2f32.powi(-14) } else { (1.0 + m as f32 * scale) * 2f32.powi(e as i32 - 15) };
                 let got = decode_unsigned(q, mbits);
                 assert!(got.to_bits() == reference.to_bits() || (got.is_nan() && reference.is_nan()), "q {q} mbits {mbits}: {got} vs {reference}");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod fast_path_tests {
+    use super::*;
+
+    /// The R11G11B10 fast path equals the pack/unpack round trip bit for bit: random values over the whole f32
+    /// range, the format's edges (2^−14, the largest finite, the first value rounding to Inf), ties, zeros, negatives.
+    #[test]
+    fn the_r11g11b10_fast_path_is_the_round_trip() {
+        let general = |rgb: [f32; 3], r: Rounding| unpack_r11g11b10(pack_r11g11b10(rgb, r));
+        let mut seed = 0x1234_5678_9abc_def0u64;
+        let mut next = || { seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17; seed };
+        let mut vals: Vec<f32> = vec![0.0, -0.0, 1.0, -1.0, 2f32.powi(-14), 2f32.powi(-14) * 0.999, 2f32.powi(-15), 65024.0, 65023.99, 65504.0, 65535.0, 64512.0, 65000.0, 1e-30, 3e38, f32::INFINITY, f32::NAN, 0.1, 0.2, 0.5, 0.75, 1.5, 100.5, 1024.0, 1023.5];
+        for _ in 0..200_000 {
+            let bits = (next() & 0xffff_ffff) as u32;
+            vals.push(f32::from_bits(bits));
+            // values with the dropped bits at a tie (the rounding's hard case), for both mantissa widths
+            vals.push(f32::from_bits((bits & 0xfffe_0000) | 0x0001_0000));
+            vals.push(f32::from_bits((bits & 0xfffc_0000) | 0x0002_0000));
+            // the format's own range, densely
+            vals.push(f32::from_bits(0x3880_0000 + (bits % (0x4780_0000 - 0x3880_0000))));
+        }
+        for r in [Rounding::NearestEven, Rounding::Truncate] {
+            for w in vals.windows(3) {
+                let rgb = [w[0], w[1], w[2]];
+                let (a, b) = (quantise_r11g11b10(rgb, r), general(rgb, r));
+                for k in 0..3 {
+                    assert!(a[k].to_bits() == b[k].to_bits() || (a[k].is_nan() && b[k].is_nan()), "{r:?} channel {k} of {rgb:?}: fast {:08x} general {:08x}", a[k].to_bits(), b[k].to_bits());
+                }
             }
         }
     }
