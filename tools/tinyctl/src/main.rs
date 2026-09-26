@@ -45,6 +45,7 @@ mod nadeo;
 mod roundpub;
 mod remoteshots;
 mod portlayers;
+mod gistpub;
 mod batch;
 mod customsheet;
 mod thumbs;
@@ -216,6 +217,7 @@ fn main() {
         "round-wipe" => roundpub::wipe_cmd(rest),
         "port-fix-publish" => roundpub::port_fix_publish(rest),
         "port-layers" => portlayers::cmd(rest),
+        "gist-publish" => gistpub::cmd(rest),
         // tinyctl mint-tokens --token-dir DIR: a fresh Nadeo token pair pulled from the box
         // (a 4-second game-lock step there); every devserver-side Nadeo read/write takes
         // TINYCTL_TOKEN_DIR=DIR afterwards
