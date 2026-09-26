@@ -1,0 +1,13 @@
+[package]
+name = "credread"
+version.workspace = true
+edition = "2021"
+
+[[bin]]
+name = "credread"
+path = "src/main.rs"
+
+# src/bin/xbuild.rs (auto-discovered) is the Linux-hosted cross-build driver
+# that links the Windows binaries with rust-lld and generated import libs.
+# src/payload.rs is built only by xbuild via direct rustc (--crate-type=cdylib);
+# cargo never sees it.
