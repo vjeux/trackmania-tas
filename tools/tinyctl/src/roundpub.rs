@@ -225,9 +225,19 @@ pub fn mint_tokens(wsx: &Wsx, token_dir: &Path) -> Result<(), String> {
     // (the two `tmdrive run` steps take a few seconds each; a lost race just loops).
     let env = "cd /home/vjeux/shoot/hunt; export TM_SESSION=080a15b8-2c6a-4fff-9d8a-db7d0072ee43; export TM_SESSION_TITLE=\"Tiny u10s publish\"; export PATH=/home/vjeux/bin:$PATH";
     let t0 = Instant::now();
+    let mut dead_plugin = 0u32;
     loop {
         // the game itself: launched as its own lock step when it is not running
         let up = wsx.sh("tasklist.exe 2>/dev/null | grep -ci trackmania").unwrap_or_default().trim().to_string();
+        // a game left running WITHOUT Openplanet by a session that has released the lock
+        // (the MK64 session's "without Openplanet" runs, 2026-09-26) never answers the token
+        // route: after 3 answered-but-empty mints, relaunch it as own lock steps
+        if up != "0" && dead_plugin >= 3 {
+            println!("  mint: the game answers no token {dead_plugin}× (no plugin?) — relaunching (own lock steps)");
+            let _ = wsx.sh(&format!("{env}; tmdrive kill --purpose \"mint: relaunch with Openplanet\" --wait 100"));
+            let _ = wsx.sh(&format!("{env}; sed -i \"s/^DeveloperMode=false/DeveloperMode=true/\" /mnt/c/Users/vjeux/OpenplanetNext/Settings.ini; tmdrive launch --timeout 120 --purpose \"mint: relaunch with Openplanet\" --wait 100"));
+            dead_plugin = 0;
+        }
         if up == "0" {
             println!("  mint: the game is not running — launching (own lock step)");
             let _ = wsx.sh(&format!("{env}; sed -i \"s/^DeveloperMode=false/DeveloperMode=true/\" /mnt/c/Users/vjeux/OpenplanetNext/Settings.ini; tmdrive launch --timeout 120 --purpose \"mint (launch)\" --wait 100"));
@@ -241,6 +251,7 @@ pub fn mint_tokens(wsx: &Wsx, token_dir: &Path) -> Result<(), String> {
             if r.lines().last().map(|l| l.trim() == "2").unwrap_or(false) {
                 break;
             }
+            dead_plugin += 1;
             println!("  mint: no token files yet ({}) — retrying", r.replace('\n', " ").trim());
         } else if t0.elapsed().as_secs() % 600 < 130 {
             println!("  mint: waiting for the box ({}s)", t0.elapsed().as_secs());
