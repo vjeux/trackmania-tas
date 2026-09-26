@@ -130,6 +130,10 @@ pub fn quantise_r11g11b10(rgb: [f32; 3], r: Rounding) -> [f32; 3] {
         // positive, ≥ 2^−14 (a normal of the small format), and small enough that rounding cannot reach the
         // exponent 31: below 2^15·(2 − 2^−mbits) minus half an lsb, i.e. bits < the largest finite's pattern
         // with the dropped bits zero — conservatively bits < 0x477e_0000 (65024 = 2^15·1.984375)
+        // ±0 (a black channel — every back face, the first sweep's items): the format stores 0, decoded +0.0
+        if bits & 0x7fff_ffff == 0 {
+            return Some(0.0);
+        }
         if bits < 0x3880_0000 || bits >= 0x477e_0000 {
             return None;
         }
