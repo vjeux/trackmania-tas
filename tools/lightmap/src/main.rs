@@ -528,16 +528,30 @@ fn run(a: Vec<String>) {
             let from: usize = a.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
             let n: usize = a.get(3).and_then(|s| s.parse().ok()).unwrap_or(40);
             println!("images A {}x{} B {}x{} F1 {}x{}", ia.w, ia.h, ib.w, ib.h, i1.w, i1.h);
-            println!("chart\tobj\tx\ty\tw\th\tfb0\tfb1\tfb2\tA(rgb)\tB(rgb)\tF1(rgb)");
+            // LMTOOL_CHARTS_COVER=1: an extra column — the fraction of the chart's pixels whose image-A max channel is ≥ 8 (lit)
+            let cover = std::env::var_os("LMTOOL_CHARTS_COVER").is_some();
+            println!("chart\tobj\tx\ty\tw\th\tfb0\tfb1\tfb2\tA(rgb)\tB(rgb)\tF1(rgb){}", if cover { "\tlit%\tA(rgb) over lit" } else { "" });
             for i in from..(from + n).min(m.count as usize) {
                 let (x, y) = m.pos[i];
                 let (w, h) = m.size[i];
                 let (px, py, pw, ph) = ((x as u32 + 1) / 2, (y as u32 + 1) / 2, (w as u32) / 2, (h as u32) / 2);
+                let cov = if cover {
+                    let (mut lit, mut tot) = (0usize, 0usize);
+                    let mut acc = [0f64; 3];
+                    for yy in py..(py + ph).min(ia.h) { for xx in px..(px + pw).min(ia.w) {
+                        let idx = ((yy * ia.w + xx) * 3) as usize;
+                        let (r, g, b) = (ia.px[idx] as u32, ia.px[idx + 1] as u32, ia.px[idx + 2] as u32);
+                        tot += 1;
+                        if r.max(g).max(b) >= 8 { lit += 1; acc[0] += r as f64; acc[1] += g as f64; acc[2] += b as f64; }
+                    } }
+                    let l = lit.max(1) as f64;
+                    format!("\t{:.1}\t{:.0} {:.0} {:.0}", lit as f64 * 100.0 / tot.max(1) as f64, acc[0] / l, acc[1] / l, acc[2] / l)
+                } else { String::new() };
                 let ma = ia.mean(px, py, pw, ph);
                 let mb = ib.mean(px, py, pw, ph);
                 let m1 = i1.mean(px, py, pw, ph);
                 let fb = |k: usize| m.frame_bytes.get(k).and_then(|v| v.get(i)).copied().unwrap_or(0);
-                println!("{i}\t{}\t{x}\t{y}\t{w}\t{h}\t{}\t{}\t{}\t{:.0} {:.0} {:.0}\t{:.0} {:.0} {:.0}\t{:.0} {:.0} {:.0}", m.binds[i].obj_group_idx / 4, fb(0), fb(1), fb(2), ma[0], ma[1], ma[2], mb[0], mb[1], mb[2], m1[0], m1[1], m1[2]);
+                println!("{i}\t{}\t{x}\t{y}\t{w}\t{h}\t{}\t{}\t{}\t{:.0} {:.0} {:.0}\t{:.0} {:.0} {:.0}\t{:.0} {:.0} {:.0}{cov}", m.binds[i].obj_group_idx / 4, fb(0), fb(1), fb(2), ma[0], ma[1], ma[2], mb[0], mb[1], mb[2], m1[0], m1[1], m1[2]);
             }
         }
         "crop" => {
@@ -1785,6 +1799,40 @@ fn run(a: Vec<String>) {
                     match lightmap::lmmesh::lm_scene_add_entities(st, gl, &mut sc, 2048.0) { Ok(n) if n > 0 => eprintln!("lm-from-map: {n} prefab entity instances (blocks / clips / walls) added"), Ok(_) => {}, Err(e) => eprintln!("lm-from-map: prefab entities: {e}") }
                 }
                 eprintln!("lm-from-map: {} LM meshes, {} instances from the map's models + the layout (mesh sizes: {})", sc.meshes.len(), sc.instances.len(), sc.meshes.iter().zip(sc.inst_count.iter()).map(|(m, n)| format!("{}v/{}t×{}", m.verts.len(), m.indices.len() / 3, n)).collect::<Vec<_>>().join(" "));
+                // LMTOOL_LM_COVER=1: THE LM RASTER'S CHART COVERAGE per item instance — the mesh's triangles through the H-basis
+                // vertex shader's clip (lm_clip at raster offset 0) into a 2048² mask; per instance: its chart rect, the covered
+                // fraction of the rect, the uv-area fraction its triangles span (the study of hill4's 35 % vs the editor's 79 % lit)
+                if std::env::var_os("LMTOOL_LM_COVER").is_some() {
+                    let cb0 = lightmap::lmaccum::LmRasterCb::for_offset(0, 2048, 2048);
+                    let mut mask = vec![0u8; 2048 * 2048];
+                    let mut lines: Vec<String> = Vec::new();
+                    for (mi, mesh) in sc.meshes.iter().enumerate() {
+                        for ii in sc.inst_first[mi]..sc.inst_first[mi] + sc.inst_count[mi] {
+                            if sc.inst_count[mi] >= 1000 { break; }
+                            let inst = &sc.instances[ii];
+                            let clips: Vec<[f32; 2]> = mesh.verts.iter().map(|v| { let st = lightmap::lmaccum::chart_st(v, inst, &sc.table); lightmap::lmaccum::lm_clip(v, st, &cb0) }).collect();
+                            let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+                            let mut area = 0f64;
+                            for c in &clips { for a in 0..2 { lo[a] = lo[a].min(c[a]); hi[a] = hi[a].max(c[a]); } }
+                            for m in &mut mask { *m = 0; }
+                            for t in mesh.indices.chunks_exact(3) {
+                                let (a, b, c) = (clips[t[0] as usize], clips[t[1] as usize], clips[t[2] as usize]);
+                                area += (((b[0] - a[0]) as f64) * ((c[1] - a[1]) as f64) - ((c[0] - a[0]) as f64) * ((b[1] - a[1]) as f64)).abs() * 0.5;
+                                lightmap::sunpass::rasterise_triangle_rows([a, b, c], 2048, 2048, 0, 2048, |x, y, _, _, _| { mask[(y * 2048 + x) as usize] = 1; });
+                            }
+                            // the clip box in pixels (clip is NDC-like: x → (x + 1)/2 · w, y → (1 − y)/2 · h)
+                            let px = |c: f32, n: f32, flip: bool| -> f32 { if flip { (1.0 - c) * 0.5 * n } else { (c + 1.0) * 0.5 * n } };
+                            let (x0, x1) = (px(lo[0], 2048.0, false), px(hi[0], 2048.0, false));
+                            let (y0, y1) = (px(hi[1], 2048.0, true), px(lo[1], 2048.0, true));
+                            let bw = (x1 - x0).max(1.0); let bh = (y1 - y0).max(1.0);
+                            let covered = mask.iter().filter(|m| **m != 0).count() as f64;
+                            let area_px = area * 2048.0 * 2048.0 * 0.25; // clip units (2 wide) → pixels
+                            let obj = inst.st_x_bits;
+                            lines.push(format!("  mesh {mi} inst {ii} (st_x {obj}): {} tris, clip box [{x0:.1}, {x1:.1}]×[{y0:.1}, {y1:.1}] = {bw:.0}×{bh:.0} px; covered {covered:.0} px = {:.1} % of the box; triangle area {area_px:.0} px = {:.1} % of the box; st {:?}", mesh.indices.len() / 3, covered * 100.0 / (bw * bh) as f64, area_px * 100.0 / (bw * bh) as f64, inst.st));
+                        }
+                    }
+                    eprintln!("lm cover ({} item instances):\n{}", lines.len(), lines.join("\n"));
+                }
                 // against the captured stream (--lm-from): the instances (q, t, st) in order and as sets, the tile mesh's vertices and table
                 if let Some(cap) = &captured_lm {
                     let same_order = sc.instances.iter().zip(cap.instances.iter()).filter(|(a, b)| a.t == b.t && a.st == b.st && a.q == b.q).count();
