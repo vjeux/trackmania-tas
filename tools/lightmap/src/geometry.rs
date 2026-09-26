@@ -53,6 +53,10 @@ pub struct LightDef {
     pub emitting: [f32; 2],
     pub gx_flags: u32,
     pub radii: [f32; 3],
+    /// The socket's LEFT and UP axes (the light matrix's columns 0 and 1; column 2 = `dir`) — the emitter rectangle's axes for the
+    /// area sampling (RE 13, 2026-09-26 21:20Z: pos' = pos + u·a·LEFT + v·b·UP). Zero when the source carries no frame.
+    pub left: V3,
+    pub up: V3,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -250,12 +254,15 @@ pub fn solid2_lights_ext(s2: &mapgeom::static_item::solid2::CPlugSolid2Model, po
         }
         let t = &l.u05;
         let (mut pos, mut dir) = ([t[9], t[10], t[11]], norm([t[6], t[7], t[8]]));
+        let (mut left, mut up) = (norm([t[0], t[1], t[2]]), norm([t[3], t[4], t[5]]));
         if let Some((q, p)) = pose {
             let r = quat_rot(q, pos);
             pos = [r[0] + p[0], r[1] + p[1], r[2] + p[2]];
             dir = quat_rot(q, dir);
+            left = quat_rot(q, left);
+            up = quat_rot(q, up);
         }
-        out.push(LightDef { pos, dir, color, intensity, radius, cone, animated: pl.is_animated(), night_only: pl.night_only(), hyper2, att_htnlr, ball_flags, emitting, gx_flags, radii });
+        out.push(LightDef { pos, dir, color, intensity, radius, cone, animated: pl.is_animated(), night_only: pl.night_only(), hyper2, att_htnlr, ball_flags, emitting, gx_flags, radii, left, up });
     }
     out
 }
@@ -862,6 +869,8 @@ impl Scene {
                 let mut w = *l;
                 w.pos = xf_point(&inst.xf, l.pos);
                 w.dir = xf_normal(&inst.xf, l.dir);
+                w.left = xf_normal(&inst.xf, l.left);
+                w.up = xf_normal(&inst.xf, l.up);
                 w.radius = l.radius * scale;
                 out.push((ii, w));
             }
