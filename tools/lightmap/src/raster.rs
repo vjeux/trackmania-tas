@@ -670,7 +670,10 @@ impl<G: FnMut(u32, u32, u16, &[[f32; 16]; 3])> SpanFn for Spans<G> {
 /// per-lane work for the set bits. The 16-wide build hands the blocks straight from the kernel; the scalar
 /// build assembles them from the per-pixel walk (the same pixels, the same weights).
 #[inline]
-pub fn triangle_clipped_masked_spans<G: FnMut(u32, u32, u16, &[[f32; 16]; 3])>(w: u32, h: u32, p: [[f32; 2]; 3], clip: (i32, i32, i32, i32), mask: Option<&[u64]>, g: G) {
+/// (`g` BY REFERENCE: the visit body is a closure of some forty captures — passed by value it was moved into the
+/// `Spans` wrapper on every triangle, 300 bytes of stores per call: a fifth of the raster job's per-triangle instructions
+/// on the giant)
+pub fn triangle_clipped_masked_spans<G: FnMut(u32, u32, u16, &[[f32; 16]; 3])>(w: u32, h: u32, p: [[f32; 2]; 3], clip: (i32, i32, i32, i32), mask: Option<&[u64]>, g: &mut G) {
     #[cfg(all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512bw"))]
     {
         // SAFETY: the build enables avx512f/bw for every function, so the processor has them

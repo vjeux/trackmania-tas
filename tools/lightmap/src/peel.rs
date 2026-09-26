@@ -1337,7 +1337,7 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
                 // every frame, twice, on a tiny map) never leave the lanes.
                 let env_drawn_t = matches!(env_t, Some(true));
                 let env_skip_t = matches!(env_t, Some(false));
-                raster::triangle_clipped_masked_spans(res, res_y, [[x0, y0], [x1, y1], [x2, y2]], band_clip, if counting { None } else { Some(bitmap) }, |bx, y, cov, bary| {
+                raster::triangle_clipped_masked_spans(res, res_y, [[x0, y0], [x1, y1], [x2, y2]], band_clip, if counting { None } else { Some(bitmap) }, &mut |bx, y, cov, bary| {
                     if raster_stats { rs_visits += cov.count_ones() as u64; }
                     let lanes = lanes_z_range(bary, [z0, z1, z2], zmin, zmax, cov);
                     let mut live = lanes.live;

@@ -48,6 +48,10 @@ pub struct AlphaLevel {
     /// levels of a leaf texture average to ~0.5 everywhere) the early-outs cost more than they save and
     /// `passes_planned` samples directly.
     pub mixed_frac: f32,
+    /// The largest tap × level check count for which the early-outs are worth trying at this level — the same
+    /// `(1 − m)^checks ≥ 0.3` decision `plan_for` made per triangle, tabulated once per level (a `powi` per card triangle
+    /// otherwise).
+    pub early_max_checks: i32,
     /// The texels as the sampler reads them: `a[i] as f32 / 255.0`, precomputed (the conversion and the
     /// division were four of every tap's operations; the levels the taps read are small).
     pub af: Vec<f32>,
@@ -100,7 +104,9 @@ impl AlphaLevel {
                 quad[(yi + 1) as usize * (w + 1) + (xi + 1) as usize] = a[ya * w + xa] as u32 | (a[ya * w + xb] as u32) << 8 | (a[yb * w + xa] as u32) << 16 | (a[yb * w + xb] as u32) << 24;
             }
         }
-        AlphaLevel { w, h, a, blocks, bw, cls, mixed_frac, af, wf: w as f32, hf: h as f32, quad, quad_stride }
+        // ((1 − m)^c is non-increasing in c, so the qualifying counts are a prefix 1..=max; a level with no mixed texel qualifies at every count)
+        let early_max_checks = { let q = |c: i32| (1.0f32 - mixed_frac).powi(c) >= 0.3; if q(256) { i32::MAX } else { (1..=256i32).filter(|&c| q(c)).max().unwrap_or(0) } };
+        AlphaLevel { w, h, a, blocks, bw, cls, mixed_frac, early_max_checks, af, wf: w as f32, hf: h as f32, quad, quad_stride }
     }
     /// The (min, max) alpha over the texels [x0, x1] × [y0, y1] (inclusive, clamped to the level).
     #[inline]
@@ -342,9 +348,9 @@ impl AlphaTex {
                 1 => true,
                 2 => false,
                 _ => {
-                    let m = self.levels[l0 as usize].mixed_frac;
+                    // (the level's tabulated threshold: the same (1 − m)^checks ≥ 0.3, without a powi per card triangle)
                     let checks = (n * if two { 2 } else { 1 }) as i32;
-                    (1.0 - m).powi(checks) >= 0.3
+                    checks <= self.levels[l0 as usize].early_max_checks
                 }
             };
         TapPlan { lod, l0: l0 as usize, l1: if two { l0 as usize + 1 } else { l0 as usize }, two, t, axis, n, aniso, try_early }
