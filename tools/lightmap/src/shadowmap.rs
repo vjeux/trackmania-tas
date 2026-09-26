@@ -498,7 +498,9 @@ pub struct Fragment {
 /// Rasterise one triangle (clip-space vertices, per-vertex TEXCOORD0) with the D3D11 rules; `f` gets every
 /// covered pixel centre. Returns false when the triangle was culled or degenerate.
 pub fn rasterise(clip: [[f32; 4]; 3], uv: [[f32; 2]; 3], st: &RasterState, w: u32, h: u32, mut f: impl FnMut(Fragment)) -> bool {
-    let v: Vec<ScreenVertex> = (0..3).map(|i| { let mut s = to_screen(clip[i], uv[i], &st.viewport); if st.vertex_z_bits > 0 { let q = (1u64 << st.vertex_z_bits) as f64; s.z = ((s.z as f64 * q).floor() / q) as f32; } s }).collect();
+    // (an array, not a Vec: this runs per caster triangle per cube face in the local-light pass — perf 8.21)
+    let sv = |i: usize| { let mut s = to_screen(clip[i], uv[i], &st.viewport); if st.vertex_z_bits > 0 { let q = (1u64 << st.vertex_z_bits) as f64; s.z = ((s.z as f64 * q).floor() / q) as f32; } s };
+    let v: [ScreenVertex; 3] = [sv(0), sv(1), sv(2)];
     // twice the signed area in sub-pixel units; with x right and y down a positive value is a CLOCKWISE triangle
     // on the render target
     let area2 = (v[1].fx - v[0].fx) * (v[2].fy - v[0].fy) - (v[2].fx - v[0].fx) * (v[1].fy - v[0].fy);

@@ -707,31 +707,37 @@ pub fn render_flat_cube(l: [f32; 3], r_eff: f32, size: u32, tris: &[[[f32; 3]; 3
     for face in 0..6 {
         let m = flat_cube_face_matrix(face, l, r_eff);
         let (ox, oy) = flat_cube_face_viewport(face, size);
+        // (perf 8.21: the polygons in fixed arrays — a triangle clipped by two planes has at most five vertices; the four
+        // heap allocations per (face, triangle) were most of a lamp's flat-cube time on the giant)
+        let clip_plane = |poly: &[[f32; 4]], n: usize, inside: &dyn Fn(&[f32; 4]) -> f32, out: &mut [[f32; 4]; 8]| -> usize {
+            let mut k = 0usize;
+            for i in 0..n {
+                let (a, b) = (poly[i], poly[(i + 1) % n]);
+                let (da, db) = (inside(&a), inside(&b));
+                if da >= 0.0 { out[k] = a; k += 1; }
+                if (da >= 0.0) != (db >= 0.0) {
+                    let tt = da / (da - db);
+                    out[k] = [a[0] + (b[0] - a[0]) * tt, a[1] + (b[1] - a[1]) * tt, a[2] + (b[2] - a[2]) * tt, a[3] + (b[3] - a[3]) * tt];
+                    k += 1;
+                }
+            }
+            k
+        };
+        let mut poly1 = [[0.0f32; 4]; 8];
+        let mut poly = [[0.0f32; 4]; 8];
         for t in tris {
             // clip coordinates
-            let clip: Vec<[f32; 4]> = t.iter().map(|p| {
+            let mut clip = [[0.0f32; 4]; 3];
+            for (i, p) in t.iter().enumerate() {
                 let q = [p[0], p[1], p[2], 1.0f32];
-                [q[0] * m[0][0] + q[1] * m[1][0] + q[2] * m[2][0] + q[3] * m[3][0], q[0] * m[0][1] + q[1] * m[1][1] + q[2] * m[2][1] + q[3] * m[3][1], q[0] * m[0][2] + q[1] * m[1][2] + q[2] * m[2][2] + q[3] * m[3][2], q[0] * m[0][3] + q[1] * m[1][3] + q[2] * m[2][3] + q[3] * m[3][3]]
-            }).collect();
+                clip[i] = [q[0] * m[0][0] + q[1] * m[1][0] + q[2] * m[2][0] + q[3] * m[3][0], q[0] * m[0][1] + q[1] * m[1][1] + q[2] * m[2][1] + q[3] * m[3][1], q[0] * m[0][2] + q[1] * m[1][2] + q[2] * m[2][2] + q[3] * m[3][2], q[0] * m[0][3] + q[1] * m[1][3] + q[2] * m[2][3] + q[3] * m[3][3]];
+            }
             // Sutherland–Hodgman against z' ≥ 0 and z' ≤ w'
-            let clip_plane = |poly: &[[f32; 4]], inside: &dyn Fn(&[f32; 4]) -> f32| -> Vec<[f32; 4]> {
-                let mut out = Vec::new();
-                let n = poly.len();
-                for i in 0..n {
-                    let (a, b) = (poly[i], poly[(i + 1) % n]);
-                    let (da, db) = (inside(&a), inside(&b));
-                    if da >= 0.0 { out.push(a); }
-                    if (da >= 0.0) != (db >= 0.0) {
-                        let tt = da / (da - db);
-                        out.push([a[0] + (b[0] - a[0]) * tt, a[1] + (b[1] - a[1]) * tt, a[2] + (b[2] - a[2]) * tt, a[3] + (b[3] - a[3]) * tt]);
-                    }
-                }
-                out
-            };
-            let poly = clip_plane(&clip, &|v| v[2]);
-            if poly.len() < 3 { continue; }
-            let poly = clip_plane(&poly, &|v| v[3] - v[2]);
-            if poly.len() < 3 { continue; }
+            let n1 = clip_plane(&clip, 3, &|v| v[2], &mut poly1);
+            if n1 < 3 { continue; }
+            let n2 = clip_plane(&poly1, n1, &|v| v[3] - v[2], &mut poly);
+            if n2 < 3 { continue; }
+            let poly = &poly[..n2];
             // the clipped polygon's fan triangles through the D16 depth pipeline engineer B pinned on the sun shadow map
             // (shadowmap::rasterise: the 1/256-px snapped vertices, the plane through them evaluated at the pixel centres, the
             // D3D11 bias DepthBias·(1/65535) + Slope·max(|∂z/∂x|, |∂z/∂y|) added in float, the sum TRUNCATED to 2^-20, then
