@@ -905,28 +905,7 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
     // at the pixel (0 = none) — `extract_layers`' depth rules, no colour
     let count_run = |list: &[CFrag], env_d: f32| -> usize {
         let cx = count.as_ref().unwrap();
-        let prm = cx.prm;
-        let mut d_prev = f32::NEG_INFINITY;
-        if prm.dome_layer {
-            d_prev = if env_d > 0.0 { if prm.depth_bits == 16 { (env_d * 65535.0).round() / 65535.0 } else { env_d } } else { 0.0 };
-        }
-        let mut items = 0usize;
-        for f in list {
-            let z01 = frame.z01(f.z).max(0.0);
-            if z01 < d_prev {
-                continue;
-            }
-            if items >= MAX_LAYERS {
-                break;
-            }
-            let mut dd = z01 + f.bias;
-            if prm.depth_bits == 16 {
-                dd = (dd.clamp(0.0, 1.0) * 65535.0).round() / 65535.0;
-            }
-            items += 1;
-            d_prev = dd;
-        }
-        items
+        layer_walk_sorted(list, env_d, cx.prm.dome_layer, cx.prm.depth_bits, frame)
     };
     // LMTOOL_BOUND_STATS=1 (measurement): per frame the fragment-count histogram (an upper bound on the layer
     // fractions) and the exact layer histogram on the census pixels (every 4th / 8th in x and y: a lower
@@ -1291,44 +1270,11 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
                         if key(&buf[0], &buf[1]) { buf.swap(0, 1); }
                     }
                     _ => {
-                        // many fragments (the canopy): the (z, tri) order as ONE u64 key — z's bits in the
-                        // total order (negatives reversed) above the triangle index — sorted by insertion
-                        // (the pixels here hold 4–20 fragments), with z01 taken once per fragment; then the
-                        // walk over the sorted keys. The same order and the same operations as the sort +
-                        // count_run above.
+                        // many fragments (the canopy): `layer_walk_keyed` — the (z, tri) order as ONE u64 key
+                        // (z's bits in the total order above the triangle index), an insertion sort, z01 once per
+                        // fragment, then the walk; the same order and operations as the sort + count_run above
                         let cx = count.as_ref().unwrap();
-                        let prm = cx.prm;
-                        let mut keyed: [(u64, f32, f32); 64] = [(0, 0.0, 0.0); 64];
-                        let m = n.min(64);
-                        for (i, f) in buf[..m].iter().enumerate() {
-                            keyed[i] = ((total_order_key(f.z) as u64) << 32 | f.tri as u64, frame.z01(f.z).max(0.0), f.bias);
-                        }
-                        if n > 64 {
-                            // (beyond the fixed buffer: the general sort)
-                            buf.sort_unstable_by(|p, q| p.z.total_cmp(&q.z).then_with(|| p.tri.cmp(&q.tri)));
-                            hist[count_run(buf, env_d).min(MAX_LAYERS)] += 1;
-                            continue;
-                        }
-                        for i in 1..m {
-                            let cur = keyed[i];
-                            let mut j = i;
-                            while j > 0 && keyed[j - 1].0 > cur.0 { keyed[j] = keyed[j - 1]; j -= 1; }
-                            keyed[j] = cur;
-                        }
-                        let mut d_prev = f32::NEG_INFINITY;
-                        if prm.dome_layer {
-                            d_prev = if env_d > 0.0 { if prm.depth_bits == 16 { (env_d * 65535.0).round() / 65535.0 } else { env_d } } else { 0.0 };
-                        }
-                        let mut items = 0usize;
-                        for &(_, z01, bias) in &keyed[..m] {
-                            if z01 < d_prev { continue; }
-                            if items >= MAX_LAYERS { break; }
-                            let mut dd = z01 + bias;
-                            if prm.depth_bits == 16 { dd = (dd.clamp(0.0, 1.0) * 65535.0).round() / 65535.0; }
-                            items += 1;
-                            d_prev = dd;
-                        }
-                        hist[items.min(MAX_LAYERS)] += 1;
+                        hist[layer_walk_keyed(buf, env_d, cx.prm.dome_layer, cx.prm.depth_bits, frame).min(MAX_LAYERS)] += 1;
                         continue;
                     }
                 }
@@ -3274,6 +3220,121 @@ pub fn total_order_key(z: f32) -> u32 {
     let bits = z.to_bits() as i32;
     let folded = bits ^ (((bits >> 31) as u32) >> 1) as i32;
     (folded as u32) ^ 0x8000_0000
+}
+
+
+/// THE LAYER WALK over a pixel's fragments already in (z, tri) order (`extract_layers`' depth rules, no colour):
+/// `d_prev` starts at the environment layer's D16-stored depth (dome layer on; 0 when none), a fragment is a
+/// layer when its `z01 = frame.z01(z).max(0)` is not in front of `d_prev`, and the accepted depth
+/// `z01 + bias` — quantised to D16 when the depth store is 16-bit — becomes the next `d_prev`; at most
+/// MAX_LAYERS. The scalar reference every lane and keyed variant is held to.
+pub fn layer_walk_sorted(list: &[CFrag], env_d: f32, dome_layer: bool, depth_bits: u32, frame: &PeelFrame) -> usize {
+    let mut d_prev = f32::NEG_INFINITY;
+    if dome_layer {
+        d_prev = if env_d > 0.0 { if depth_bits == 16 { (env_d * 65535.0).round() / 65535.0 } else { env_d } } else { 0.0 };
+    }
+    let mut items = 0usize;
+    for f in list {
+        let z01 = frame.z01(f.z).max(0.0);
+        if z01 < d_prev {
+            continue;
+        }
+        if items >= MAX_LAYERS {
+            break;
+        }
+        let mut dd = z01 + f.bias;
+        if depth_bits == 16 {
+            dd = (dd.clamp(0.0, 1.0) * 65535.0).round() / 65535.0;
+        }
+        items += 1;
+        d_prev = dd;
+    }
+    items
+}
+
+/// `layer_walk_sorted` of an UNSORTED pixel list with many fragments (the canopy: 4–20): the (z, tri) order as one
+/// u64 key — `total_order_key(z)` above the triangle index — sorted by insertion in a fixed buffer, z01 taken once
+/// per fragment, then the walk. Beyond 64 fragments the general sort. The same order and operations as
+/// `sort_unstable_by(total_cmp, tri)` + `layer_walk_sorted`.
+pub fn layer_walk_keyed(buf: &mut [CFrag], env_d: f32, dome_layer: bool, depth_bits: u32, frame: &PeelFrame) -> usize {
+    let n = buf.len();
+    if n > 64 {
+        buf.sort_unstable_by(|p, q| p.z.total_cmp(&q.z).then_with(|| p.tri.cmp(&q.tri)));
+        return layer_walk_sorted(buf, env_d, dome_layer, depth_bits, frame);
+    }
+    let mut keyed: [(u64, f32, f32); 64] = [(0, 0.0, 0.0); 64];
+    for (i, f) in buf.iter().enumerate() {
+        keyed[i] = ((total_order_key(f.z) as u64) << 32 | f.tri as u64, frame.z01(f.z).max(0.0), f.bias);
+    }
+    for i in 1..n {
+        let cur = keyed[i];
+        let mut j = i;
+        while j > 0 && keyed[j - 1].0 > cur.0 {
+            keyed[j] = keyed[j - 1];
+            j -= 1;
+        }
+        keyed[j] = cur;
+    }
+    let mut d_prev = f32::NEG_INFINITY;
+    if dome_layer {
+        d_prev = if env_d > 0.0 { if depth_bits == 16 { (env_d * 65535.0).round() / 65535.0 } else { env_d } } else { 0.0 };
+    }
+    let mut items = 0usize;
+    for &(_, z01, bias) in &keyed[..n] {
+        if z01 < d_prev {
+            continue;
+        }
+        if items >= MAX_LAYERS {
+            break;
+        }
+        let mut dd = z01 + bias;
+        if depth_bits == 16 {
+            dd = (dd.clamp(0.0, 1.0) * 65535.0).round() / 65535.0;
+        }
+        items += 1;
+        d_prev = dd;
+    }
+    items
+}
+
+#[cfg(test)]
+mod keyed_walk_audit_tests {
+    use super::*;
+
+    /// The keyed walk (0072's path for pixels with five or more fragments) equals the sort + walk reference on
+    /// random pixels of 4–80 fragments — depths of BOTH signs (the unsigned key's sign fold), ±0.0, equal depths
+    /// on different triangles, biases of both signs (the triangle's term), the environment depth absent and
+    /// present, the dome layer and the depth store in all four combinations.
+    #[test]
+    fn the_keyed_walk_is_the_sorted_walk_with_negative_depths() {
+        let frame = PeelFrame::new([0.0, -1.0, 0.0], [-10.0, -3.0, -10.0], [10.0, 7.0, 10.0], 64);
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut rnd = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let zs: [f32; 12] = [-3.0, -2.5, -1.0, -0.0, 0.0, 0.25, 1.0, 2.0, 3.0, 4.0, 4.999, 7.5];
+        let biases: [f32; 5] = [0.0, 1.5e-5, -1.5e-5, 3e-4, 1.0 / 65535.0];
+        for round in 0..20_000 {
+            let n = 4 + (rnd() % 77) as usize;
+            let mut list: Vec<CFrag> = (0..n)
+                .map(|_| {
+                    let z = if rnd() % 3 == 0 { zs[(rnd() % 12) as usize] } else { (rnd() % 20000) as f32 / 1000.0 - 5.0 };
+                    let tri = (rnd() % 40) as u32;
+                    CFrag { z, tri, bias: biases[(tri % 5) as usize] }
+                })
+                .collect();
+            let env_d = match rnd() % 4 { 0 => 0.0, 1 => 0.5, 2 => (rnd() % 65535) as f32 / 65535.0, _ => ((rnd() % 100000) as f32 / 100000.0).max(1e-6) };
+            let (dome, bits) = (round % 2 == 0, if round % 4 < 2 { 16 } else { 32 });
+            let mut sorted = list.clone();
+            sorted.sort_by(|p, q| p.z.total_cmp(&q.z).then_with(|| p.tri.cmp(&q.tri)));
+            let want = layer_walk_sorted(&sorted, env_d, dome, bits, &frame);
+            let got = layer_walk_keyed(&mut list, env_d, dome, bits, &frame);
+            assert_eq!(got, want, "round {round}: n {n} env {env_d} dome {dome} bits {bits}");
+        }
+    }
 }
 
 #[cfg(test)]
