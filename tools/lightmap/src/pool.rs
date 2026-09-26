@@ -51,6 +51,11 @@ struct Shared {
 pub struct Pool {
     shared: Arc<Shared>,
     pub threads: usize,
+    /// One caller at a time: two threads calling `run` together both passed the `active == 0` wait and the second
+    /// overwrote the first's job — its tasks never ran (`map` panicked on an empty slot; the probepass / probebake
+    /// unit tests, run in parallel by the harness, hit it on the base). The bake calls from one thread, so the
+    /// lock is uncontended (a task must never call `run` itself: it would wait on its own run).
+    caller: Mutex<()>,
 }
 
 /// Idle spins on the generation counter before a worker parks (~10–50 µs).
@@ -101,7 +106,7 @@ impl Pool {
             handles.push(h.thread().clone());
         }
         shared.handles.set(handles).ok();
-        Pool { shared, threads }
+        Pool { shared, threads, caller: Mutex::new(()) }
     }
 
     /// Run `f(i)` for every i in 0..n across the pool (the caller's thread joins in); returns when all
@@ -110,6 +115,7 @@ impl Pool {
         if n == 0 {
             return;
         }
+        let _one_caller = self.caller.lock().unwrap_or_else(|e| e.into_inner());
         // LMTOOL_POOL_STATS=1: every task timed — the regions' busy / capacity table in the profile report
         let stats = *POOL_STATS;
         let busy = AtomicU64::new(0);
