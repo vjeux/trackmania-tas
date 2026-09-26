@@ -567,3 +567,59 @@ mod probe_list_tests {
         assert_eq!(&r.w8[1..], &[40; 7]);
     }
 }
+
+/// THE FLAT-CUBE SHADOW MAP's six face cameras (the casters' VS 5397: world · GbxV_WorldPrCamera → clip; viewport 173² per face
+/// at the face's tile of the 4096² D16 target; depth Greater on a 0 clear, DepthBias −1 / SlopeScaled −1.0, cull Back):
+/// face 0 looks +X (viewport (0, 0)), 1 −X ((173, 0)), 2 +Y ((346, 0)), 3 −Y ((0, 173)), 4 +Z ((173, 173)), 5 −Z ((346, 173)).
+/// With L the lamp, R the attenuation zero, s = 1/999: the clip w = the distance along the face axis, (x', y') the two other
+/// coordinates as the capture orders them, z' = −s·coord + (R·s + s·L_coord) → z'/w = R·s / dom − s (the depth PS 7343 rebuilds
+/// as ZTrans/dom + ZScale). The matrices below equal the stpad f4936 eids 651 / 722 / 804 / 847 / 906 / 960 (lamp B) bit for bit.
+pub fn flat_cube_face_matrix(face: usize, l: [f32; 3], r_eff: f32) -> [[f32; 4]; 4] {
+    let s = 1.0f32 / 999.0;
+    let zt = r_eff * s;
+    // rows = the world axes (x, y, z, 1) → columns (x', y', z', w')
+    match face {
+        0 => [[0.0, 0.0, -s, 1.0], [0.0, 1.0, 0.0, 0.0], [-1.0, 0.0, 0.0, 0.0], [l[2], -l[1], zt + s * l[0], -l[0]]],
+        1 => [[0.0, 0.0, s, -1.0], [0.0, 1.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0], [-l[2], -l[1], zt - s * l[0], l[0]]],
+        2 => [[1.0, 0.0, 0.0, 0.0], [0.0, 0.0, -s, 1.0], [0.0, -1.0, 0.0, 0.0], [-l[0], l[2], zt + s * l[1], -l[1]]],
+        3 => [[1.0, 0.0, 0.0, 0.0], [0.0, 0.0, s, -1.0], [0.0, 1.0, 0.0, 0.0], [-l[0], -l[2], zt - s * l[1], l[1]]],
+        4 => [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, -s, 1.0], [-l[0], -l[1], zt + s * l[2], -l[2]]],
+        _ => [[-1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, s, -1.0], [l[0], -l[1], zt - s * l[2], l[2]]],
+    }
+}
+
+/// The face's viewport origin in the 4096² target (173² tiles: (0,0) (173,0) (346,0) (0,173) (173,173) (346,173)).
+pub fn flat_cube_face_viewport(face: usize, size: u32) -> (u32, u32) {
+    ((face as u32 % 3) * size, (face as u32 / 3) * size)
+}
+
+#[cfg(test)]
+mod face_tests {
+    use super::*;
+
+    #[test]
+    fn the_six_face_cameras_are_the_captured_ones() {
+        let l = [1512.0999755859375f32, 23.358840942382812, 1663.4326171875];
+        let r = 40.707722f32;
+        let captured: [[[f32; 4]; 4]; 6] = [
+            [[0.0, 0.0, -0.0010010009864345193, 1.0], [0.0, 1.0, 0.0, 0.0], [-1.0, 0.0, 0.0, 0.0], [1663.4326171875, -23.358840942382812, 1.5543620586395264, -1512.0999755859375]],
+            [[0.0, 0.0, 0.0010010009864345193, -1.0], [0.0, 1.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0], [-1663.4326171875, -23.358840942382812, -1.472865104675293, 1512.0999755859375]],
+            [[1.0, 0.0, 0.0, 0.0], [0.0, 0.0, -0.0010010009864345193, 1.0], [0.0, -1.0, 0.0, 0.0], [-1512.0999755859375, 1663.4326171875, 0.06413069367408752, -23.358840942382812]],
+            [[1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0010010009864345193, -1.0], [0.0, 1.0, 0.0, 0.0], [-1512.0999755859375, -1663.4326171875, 0.01736624725162983, 23.358840942382812]],
+            [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, -0.0010010009864345193, 1.0], [-1512.0999755859375, -23.358840942382812, 1.7058461904525757, -1663.4326171875]],
+            [[-1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 0.0010010009864345193, -1.0], [1512.0999755859375, -23.358840942382812, -1.6243492364883423, 1663.4326171875]],
+        ];
+        for f in 0..6 {
+            let m = flat_cube_face_matrix(f, l, r);
+            for r_ in 0..4 {
+                for c in 0..4 {
+                    let (a, b) = (m[r_][c], captured[f][r_][c]);
+                    // the z' translation is the one derived term (R·s + s·L): within 2 f32 ulps of the captured
+                    let tol = if c == 2 && r_ == 3 { 4.0 * f32::EPSILON * b.abs().max(1.0) } else { 0.0 };
+                    assert!((a - b).abs() <= tol, "face {f} [{r_}][{c}]: {a} vs {b}");
+                }
+            }
+        }
+        assert_eq!(flat_cube_face_viewport(4, 173), (173, 173));
+    }
+}
