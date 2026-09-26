@@ -72,17 +72,109 @@ pub fn bbox_pixels(p: [[f32; 2]; 3], w: u32, h: u32, clip: (i32, i32, i32, i32))
 /// top-left rule (the lazy dome raster asks per pixel instead of filling the frame).
 #[inline]
 pub fn covers(p: [[f32; 2]; 3], x: u32, y: u32) -> bool {
-    let area = edge(p[0], p[1], p[2]);
-    if area == 0.0 || !area.is_finite() {
-        return false;
+    match CoverTest::new(p) { Some(c) => c.covers(x, y), None => false }
+}
+
+/// Per box width w (index; 0 unused) the lane offsets (l mod w, l div w) of `CoverTest::covers_box`'s lanes.
+static LANE_OFFSETS: [([i32; 16], [i32; 16]); 17] = {
+    let mut t = [([0i32; 16], [0i32; 16]); 17];
+    let mut w = 1;
+    while w <= 16 {
+        let mut l = 0;
+        while l < 16 {
+            t[w].0[l] = (l % w) as i32;
+            t[w].1[l] = (l / w) as i32;
+            l += 1;
+        }
+        w += 1;
     }
-    let (a, b, c) = if area > 0.0 { (p[0], p[1], p[2]) } else { (p[0], p[2], p[1]) };
-    let tl = [top_left(a, b), top_left(b, c), top_left(c, a)];
-    let q = [x as f32 + 0.5, y as f32 + 0.5];
-    let e0 = edge(a, b, q);
-    let e1 = edge(b, c, q);
-    let e2 = edge(c, a, q);
-    (e0 > 0.0 || (e0 == 0.0 && tl[0])) && (e1 > 0.0 || (e1 == 0.0 && tl[1])) && (e2 > 0.0 || (e2 == 0.0 && tl[2]))
+    t
+};
+
+/// `covers` with the per-triangle part (the orientation and the top-left flags) done once: the binning's exact
+/// cull between pixel centres asks the same question at every candidate centre of a small triangle. Bit-for-bit
+/// the raster's decision: `edge` on the same oriented vertices, the same inside predicate.
+#[derive(Clone, Copy)]
+pub struct CoverTest {
+    a: [f32; 2],
+    b: [f32; 2],
+    c: [f32; 2],
+    tl: [bool; 3],
+}
+
+impl CoverTest {
+    /// None for a degenerate (zero-area or non-finite) triangle — the raster visits nothing for it.
+    #[inline]
+    pub fn new(p: [[f32; 2]; 3]) -> Option<CoverTest> {
+        let area = edge(p[0], p[1], p[2]);
+        if area == 0.0 || !area.is_finite() {
+            return None;
+        }
+        let (a, b, c) = if area > 0.0 { (p[0], p[1], p[2]) } else { (p[0], p[2], p[1]) };
+        Some(CoverTest { a, b, c, tl: [top_left(a, b), top_left(b, c), top_left(c, a)] })
+    }
+    #[inline]
+    pub fn covers(&self, x: u32, y: u32) -> bool {
+        let q = [x as f32 + 0.5, y as f32 + 0.5];
+        let e0 = edge(self.a, self.b, q);
+        let e1 = edge(self.b, self.c, q);
+        let e2 = edge(self.c, self.a, q);
+        (e0 > 0.0 || (e0 == 0.0 && self.tl[0])) && (e1 > 0.0 || (e1 == 0.0 && self.tl[1])) && (e2 > 0.0 || (e2 == 0.0 && self.tl[2]))
+    }
+
+    /// The coverage of the pixel centres of the box [x0, x1] × [y0, y1] (at most 16 of them), row-major: bit
+    /// (y − y0)·w + (x − x0) set when the centre is covered — the sixteen tests in one 16-lane pass on the
+    /// AVX-512 build (each lane the scalar `edge` operations at its own centre), scalar otherwise.
+    #[inline]
+    pub fn covers_box(&self, x0: i32, y0: i32, x1: i32, y1: i32) -> u16 {
+        let w = (x1 - x0 + 1).max(0) as usize;
+        let h = (y1 - y0 + 1).max(0) as usize;
+        let n = w * h;
+        debug_assert!(n <= 16);
+        if n == 0 { return 0; }
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512bw"))]
+        {
+            // SAFETY: the build enables avx512f/bw for every function
+            return unsafe { self.covers_box_avx512(x0, y0, w, h) };
+        }
+        #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512bw")))]
+        {
+            let mut m = 0u16;
+            for j in 0..h {
+                for i in 0..w {
+                    if self.covers((x0 + i as i32) as u32, (y0 + j as i32) as u32) { m |= 1 << (j * w + i); }
+                }
+            }
+            m
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx512f,avx512bw,avx512dq,avx512vl")]
+    pub unsafe fn covers_box_avx512(&self, x0: i32, y0: i32, w: usize, h: usize) -> u16 {
+        use std::arch::x86_64::*;
+        let n = (w * h).min(16);
+        // lane l = centre (x0 + l mod w, y0 + l div w): the offsets from a table per box width
+        let (lx, ly) = &LANE_OFFSETS[w.min(16)];
+        let half = _mm512_set1_ps(0.5);
+        let qx = _mm512_add_ps(_mm512_cvtepi32_ps(_mm512_add_epi32(_mm512_set1_epi32(x0), _mm512_loadu_si512(lx.as_ptr() as *const _))), half);
+        let qy = _mm512_add_ps(_mm512_cvtepi32_ps(_mm512_add_epi32(_mm512_set1_epi32(y0), _mm512_loadu_si512(ly.as_ptr() as *const _))), half);
+        let zero = _mm512_setzero_ps();
+        let lanes: u16 = if n >= 16 { u16::MAX } else { ((1u32 << n) - 1) as u16 };
+        let mut inside: __mmask16 = lanes;
+        let es: [([f32; 2], [f32; 2]); 3] = [(self.a, self.b), (self.b, self.c), (self.c, self.a)];
+        for k in 0..3 {
+            let (a, b) = es[k];
+            // e = (b−a).x·(q−a).y − (b−a).y·(q−a).x, the scalar `edge` operation order per lane
+            let p1 = _mm512_mul_ps(_mm512_set1_ps(b[0] - a[0]), _mm512_sub_ps(qy, _mm512_set1_ps(a[1])));
+            let p2 = _mm512_mul_ps(_mm512_set1_ps(b[1] - a[1]), _mm512_sub_ps(qx, _mm512_set1_ps(a[0])));
+            let e = _mm512_sub_ps(p1, p2);
+            let gt = _mm512_cmp_ps_mask::<_CMP_GT_OQ>(e, zero);
+            let on = if self.tl[k] { _mm512_cmp_ps_mask::<_CMP_EQ_OQ>(e, zero) } else { 0 };
+            inside &= gt | on;
+        }
+        inside
+    }
 }
 
 /// `triangle` visiting only the pixels inside `clip` = (x0, y0, x1, y1) inclusive — the same pixels,
@@ -581,6 +673,28 @@ mod span_tests {
                 for (i, (pp, g)) in plain.iter().zip(spans.iter()).enumerate() {
                     assert_eq!((pp.0, pp.1), (g.0, g.1), "{label}, triangle {k} visit {i}");
                     assert_eq!(pp.2.map(f32::to_bits), g.2.map(f32::to_bits), "{label}, triangle {k} visit {i}: barycentrics differ");
+                }
+            }
+        }
+    }
+
+    /// `CoverTest::covers_box` (the 16-lane pass on the AVX-512 build) agrees with `covers` at every centre of
+    /// random small boxes around random small triangles.
+    #[test]
+    fn the_box_coverage_is_the_per_centre_test() {
+        let (w, h) = (64u32, 64u32);
+        let mut seed = 0x1234_5678_9abc_def1u64;
+        let mut rnd = || { seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17; seed };
+        for (k, p) in random_triangles(6000, w, h).into_iter().enumerate() {
+            let Some(c) = CoverTest::new(p) else { continue };
+            let bw = 1 + (rnd() % 4) as i32;
+            let bh = 1 + (rnd() % (16 / bw as u64)) as i32;
+            let (x0, y0) = ((p[0][0].floor() as i32 - (rnd() % 3) as i32).max(0), (p[0][1].floor() as i32 - (rnd() % 3) as i32).max(0));
+            let m = c.covers_box(x0, y0, x0 + bw - 1, y0 + bh - 1);
+            for j in 0..bh {
+                for i in 0..bw {
+                    let want = covers(p, (x0 + i) as u32, (y0 + j) as u32);
+                    assert_eq!((m >> (j * bw + i)) & 1 == 1, want, "triangle {k} {p:?} centre ({}, {})", x0 + i, y0 + j);
                 }
             }
         }

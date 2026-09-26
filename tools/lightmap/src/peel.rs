@@ -530,15 +530,20 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
     // (4 k pixels: 8 KB of u16 counts, 16 KB of environment depths) sit in L1 instead of L2; its row
     // spans are 64 pixels long.
     let raster_stats = raster_stats_on();
+    // LMTOOL_MICRO_CULL_MAX=N (default 16; 0 = off): the candidate-centre count up to which a triangle is tested
+    // exactly at the binning (`rows_of` below) — engineer 5's knob
+    let micro_cull_max: u32 = { static V: std::sync::OnceLock<u32> = std::sync::OnceLock::new(); *V.get_or_init(|| std::env::var("LMTOOL_MICRO_CULL_MAX").ok().and_then(|v| v.parse().ok()).unwrap_or(16)) };
     let bitmap: &[u64] = px.words.as_slice();
     let rows = (clip.3 - clip.1 + 1).max(0) as usize;
     let cols = (clip.2 - clip.0 + 1).max(0) as usize;
-    let (tile_rows, tile_cols) = (*TILE_ROWS as usize, *TILE_COLS as usize);
+    // (powers of two: the binning divides by them per triangle — shifts, not divisions)
+    let (tile_rows, tile_cols) = ((*TILE_ROWS).next_power_of_two().max(8) as usize, (*TILE_COLS).next_power_of_two().max(16) as usize);
+    let (row_shift, col_shift) = (tile_rows.trailing_zeros(), tile_cols.trailing_zeros());
     let n_brows = ((rows + tile_rows - 1) / tile_rows).max(1);
     let n_bcols = ((cols + tile_cols - 1) / tile_cols).max(1);
     let n_cells = n_brows * n_bcols;
-    let brow_of = |y: i32| -> usize { (((y - clip.1).max(0) as usize) / tile_rows).min(n_brows - 1) };
-    let bcol_of = |x: i32| -> usize { (((x - clip.0).max(0) as usize) / tile_cols).min(n_bcols - 1) };
+    let brow_of = |y: i32| -> usize { (((y - clip.1).max(0) as usize) >> row_shift).min(n_brows - 1) };
+    let bcol_of = |x: i32| -> usize { (((x - clip.0).max(0) as usize) >> col_shift).min(n_bcols - 1) };
     // a triangle's projected pixel rows and columns (as raster::bounds computes them), clipped to the rectangle
     let rows_of = |t: &WTri| -> Option<(i32, i32, i32, i32)> {
         let p0 = t.p0;
@@ -579,20 +584,63 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
         if rx0 > rx1 {
             return None;
         }
-        Some((ry0, ry1, rx0 as i32, rx1 as i32))
+        let (rx0, rx1) = (rx0 as i32, rx1 as i32);
+        // THE CULL BETWEEN PIXEL CENTRES, EXACT (perf engineer 5's hook, OpenSWR's "cull between pixel centres",
+        // here as one 16-lane pass): a small triangle — up to `micro_cull_max` candidate centres in its clipped
+        // bounding box — is tested at every candidate with the raster's own inside predicate (`raster::CoverTest`:
+        // the same edge functions, orientation and top-left rule, on the same projected f32 vertices), and binned
+        // into the rows AND columns holding a covered centre only — none covered, not binned at all. The raster's
+        // visited set is unchanged (a cell it would have walked without a covered centre produced nothing); half of
+        // the giant's leaf pairs cover no centre.
+        if micro_cull_max > 0 {
+            let (bw, bh) = ((rx1 - rx0 + 1) as u32, (ry1 - ry0 + 1) as u32);
+            if bw * bh <= micro_cull_max.min(16) {
+                let Some(cover) = raster::CoverTest::new([[x0, y0], [x1, y1], [x2, y2]]) else { return None };
+                let m = cover.covers_box(rx0, ry0, rx1, ry1);
+                if m == 0 {
+                    return None;
+                }
+                let (mut cy0, mut cy1) = (i32::MAX, i32::MIN);
+                let rowbits = (1u32 << bw) - 1;
+                let mut colmask = 0u32;
+                for j in 0..bh {
+                    let r = (m as u32 >> (j * bw)) & rowbits;
+                    if r != 0 {
+                        colmask |= r;
+                        cy0 = cy0.min(ry0 + j as i32);
+                        cy1 = ry0 + j as i32;
+                    }
+                }
+                let cx0 = rx0 + colmask.trailing_zeros() as i32;
+                let cx1 = rx0 + (31 - colmask.leading_zeros()) as i32;
+                return Some((cy0, cy1, cx0, cx1));
+            }
+        }
+        Some((ry0, ry1, rx0, rx1))
     };
     // the culled triangle set as chunks of index ranges (each chunk ~ n_total / (4·threads) triangles)
     let n_total: usize = ranges.iter().map(|r| (r.1 - r.0) as usize).sum();
     let prep_chunk = (n_total / (threads * 4).max(1)).max(4096);
-    let mut chunks: Vec<(u32, u32)> = Vec::new();
+    // a chunk = consecutive (sub)ranges totalling about prep_chunk triangles, in ascending index order (the
+    // BVH cull hands over thousands of small ranges: one chunk each would mean thousands of CSRs per frame)
+    let mut chunks: Vec<Vec<(u32, u32)>> = Vec::new();
+    let mut cur: Vec<(u32, u32)> = Vec::new();
+    let mut cur_n = 0usize;
     for &(a, b) in ranges {
         let mut x = a;
         while x < b {
-            let y = (x as usize + prep_chunk).min(b as usize) as u32;
-            chunks.push((x, y));
+            let room = prep_chunk.saturating_sub(cur_n).max(1);
+            let y = (x as usize + room).min(b as usize) as u32;
+            cur.push((x, y));
+            cur_n += (y - x) as usize;
             x = y;
+            if cur_n >= prep_chunk {
+                chunks.push(std::mem::take(&mut cur));
+                cur_n = 0;
+            }
         }
     }
+    if !cur.is_empty() { chunks.push(cur); }
     let n_prep = chunks.len();
     // the cell (brow, bcol) as an index
     let cell_at = |br: usize, bc: usize| -> usize { br * n_bcols + bc };
@@ -612,15 +660,17 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
     // touch, so a heavy cell's job for some strips walks the cell's list and skips the other entries without
     // projecting them — the split costs no re-binning
     const SUB: usize = 8;
-    let sub_of = |y: i32, by0: i32| -> usize { (((y - by0).max(0) as usize) * SUB / tile_rows).min(SUB - 1) };
+    let sub_shift = row_shift.saturating_sub(3); // tile_rows / SUB rows per sub-strip (SUB = 8)
+    let sub_of = |y: i32, by0: i32| -> usize { (((y - by0).max(0) as usize) >> sub_shift).min(SUB - 1) };
     // per chunk: the CSR over the cells (offsets, then the triangle indices in triangle order with their
     // strip bits) and the cells' estimated costs
     let binned: Vec<(Vec<u32>, Vec<u32>, Vec<u8>, Vec<u64>)> = crate::pool::pool().map(n_prep, |ci| {
-        let (a, b) = chunks[ci];
+        let subs = &chunks[ci];
         // pass 1: the cells of every triangle (kept: the projection is the cost), the counts and costs per cell
         let mut hits: Vec<(u32, u16, u16, u16, u16, i32, i32)> = Vec::new(); // (ti, brow0, brow1, bcol0, bcol1, ry0, ry1)
         let mut counts: Vec<u32> = vec![0; n_cells + 1];
         let mut cost: Vec<u64> = vec![0; n_cells];
+        for &(a, b) in subs.iter() {
         for (k, t) in tris[a as usize..b as usize].iter().enumerate() {
             if let Some((ry0, ry1, rx0, rx1)) = rows_of(t) {
                 let (br0, br1) = (brow_of(ry0), brow_of(ry1));
@@ -639,6 +689,7 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
                 }
                 hits.push((a + k as u32, br0 as u16, br1 as u16, bc0 as u16, bc1 as u16, ry0, ry1));
             }
+        }
         }
         for i in 0..n_cells { counts[i + 1] += counts[i]; }
         let mut entries: Vec<u32> = vec![0; counts[n_cells] as usize];
@@ -808,12 +859,24 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
             return (out, hist, covered);
         }
         let band_clip = (bx0, by0, bx1, by1);
-        // the cell's chunk slices in chunk order (ascending triangle index); a strip job skips the entries
-        // whose strip bits miss its rows
-        let tri_lists: Vec<(&[u32], &[u8])> = binned.iter().map(|(counts, entries, ebits, _)| (&entries[counts[cell] as usize..counts[cell + 1] as usize], &ebits[counts[cell] as usize..counts[cell + 1] as usize])).collect();
-        for (lst, bits) in &tri_lists {
-            for (ei, &ti) in lst.iter().enumerate() {
-                if bits[ei] & smask == 0 { continue; }
+        // the cell's entries gathered from the chunk slices in chunk order (ascending triangle index) into a
+        // per-thread list — a strip job keeps only the entries whose strip bits touch its rows (one sequential
+        // list to walk instead of hundreds of slices)
+        let mut job_list: Vec<u32> = JOB_LIST.take();
+        job_list.clear();
+        for (counts, entries, ebits, _) in &binned {
+            let (c0, c1) = (counts[cell] as usize, counts[cell + 1] as usize);
+            if c0 == c1 { continue; }
+            if smask == u8::MAX {
+                job_list.extend_from_slice(&entries[c0..c1]);
+            } else {
+                for (ei, &ti) in entries[c0..c1].iter().enumerate() {
+                    if ebits[c0 + ei] & smask != 0 { job_list.push(ti); }
+                }
+            }
+        }
+        {
+            for &ti in job_list.iter() {
                 let t = &tris[ti as usize];
                 let p0 = t.p0;
                 let p1 = [p0[0] + t.e1[0], p0[1] + t.e1[1], p0[2] + t.e1[2]];
@@ -1022,6 +1085,7 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
         }
         if bound_stats { let mut g = bound_acc.lock().unwrap(); for k in 0..=MAX_LAYERS { g.0[k] += hist_u[k]; g.1[k] += hist_l4[k]; g.2[k] += hist_l8[k]; } }
         SLOT_BUFS.set((cnt, env_max, list, csr, offs, fill));
+        JOB_LIST.set(job_list);
         if raster_stats { band_ns[j].store(t_band.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed); RS_TRIS.fetch_add(rs_tris, std::sync::atomic::Ordering::Relaxed); RS_TESTED.fetch_add(rs_tested, std::sync::atomic::Ordering::Relaxed); RS_VISITS.fetch_add(rs_visits, std::sync::atomic::Ordering::Relaxed); }
         (out, hist, covered)
     });
@@ -2489,6 +2553,8 @@ pub fn count_add16(cnt: &mut [u16], live: u16, saturated: &mut bool) {
 thread_local! {
     /// The raster band's slot and environment tables, kept per pool thread across bands (see the fused count).
     static SLOT_BUFS: std::cell::Cell<(Vec<u16>, Vec<f32>, Vec<(u32, CFrag)>, Vec<CFrag>, Vec<u32>, Vec<u32>)> = const { std::cell::Cell::new((Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new())) };
+    /// A raster job's gathered triangle list, kept per pool thread across jobs.
+    static JOB_LIST: std::cell::Cell<Vec<u32>> = const { std::cell::Cell::new(Vec::new()) };
 }
 
 /// Raster bands per pool thread (LMTOOL_BANDS_PER_THREAD, default 4).
