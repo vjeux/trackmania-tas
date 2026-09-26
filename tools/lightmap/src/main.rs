@@ -5587,6 +5587,42 @@ fn run(a: Vec<String>) {
             let ps = lightmap::dome::PointSets::load(&f("--points").unwrap_or_else(lightmap::dome::default_path)).expect("point sets");
             print!("{}", lightmap::sweep1::report(&m, &ps));
         }
+        "dirs-census" => {
+            // lmtool dirs-census [--quality Q] [--points FILE] [--manifest GAME/MANIFEST.json]: per sweep OUR direction set
+            // (dome::sweep_directions — the rotated Std.PointsInSphere set in issue order): how many directions look DOWN (D.y < 0)
+            // and up, their cos-weight sums, the y-moments — is the set hemispheric / y-biased? — and, with a capture manifest,
+            // the captured sweep directions' same census (port engineer G, 2026-09-26: an underside's dome share)
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let q: u32 = f("--quality").map(|v| v.parse().expect("--quality")).unwrap_or(3);
+            let ps = lightmap::dome::PointSets::load(&f("--points").unwrap_or_else(lightmap::dome::default_path)).expect("point sets");
+            let census = |name: &str, d: &[[f32; 3]]| {
+                let (mut down, mut up, mut zero) = (0usize, 0usize, 0usize);
+                let (mut wd, mut wu) = (0f64, 0f64);
+                let (mut sy, mut sy2, mut min_y, mut max_y) = (0f64, 0f64, f32::MAX, f32::MIN);
+                for v in d {
+                    let y = v[1];
+                    if y < 0.0 { down += 1; wd += -y as f64; } else if y > 0.0 { up += 1; wu += y as f64; } else { zero += 1; }
+                    sy += y as f64; sy2 += (y * y) as f64; min_y = min_y.min(y); max_y = max_y.max(y);
+                }
+                let n = d.len().max(1) as f64;
+                println!("{name}: {} directions — down {down} (Σ|D.y| {wd:.3}), up {up} (Σ D.y {wu:.3}), horizontal {zero}; mean D.y {:+.4}, mean D.y² {:.4} (uniform sphere 0.3333), D.y range [{min_y:+.4}, {max_y:+.4}]", d.len(), sy / n, sy2 / n);
+            };
+            for sweep in 0..4 {
+                if let Some(d) = lightmap::dome::sweep_directions(&ps, q, sweep, false) { census(&format!("ours q{q} sweep {sweep}"), &d); }
+            }
+            if let Some(mp) = f("--manifest") {
+                let txt = std::fs::read_to_string(&mp).expect("manifest");
+                let m = lightmap::passdiff::read_manifest(&txt).expect("manifest");
+                for sweep in 0..2u32 {
+                    let mut d: Vec<[f32; 3]> = Vec::new();
+                    let mut seen = std::collections::HashSet::new();
+                    for e in &m.passes {
+                        if e.sweep == Some(sweep) { if let Some(v) = e.dir { let k = (v[0].to_bits(), v[1].to_bits(), v[2].to_bits()); if seen.insert(k) { d.push(v); } } }
+                    }
+                    if !d.is_empty() { census(&format!("captured sweep {sweep} (distinct directions in the manifest)"), &d); }
+                }
+            }
+        }
         "probe-download-check" => {
             // lmtool probe-download-check PASSCAP_ROOT MAP.Gbx [--frame 74490]: the end-state probe volumes through the CPU download
             //   model (probepass::download_probes) vs the baked map's trailer scales and its stored WEBP probe images
