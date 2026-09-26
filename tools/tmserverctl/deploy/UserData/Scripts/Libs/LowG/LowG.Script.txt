@@ -35,7 +35,8 @@ declare Integer G_LastBotSync;
 declare CUILayer G_HintLayer;
 declare Ident[Text] G_BotModels;			///< "sport"|"snow"|"rally"|"desert"|"skin" => item-list Ident for CreateBotPlayer
 declare Text G_BotModel;					///< which of them new balloons get ("" = engine default via SetNbBotPlayers)
-declare Text G_BotSkinUrl;				///< skin (zip URL or Skins/Models/... path) registered as "skin"
+declare Text G_BotSkin;					///< skin (zip URL or Skins/Models/... path) registered as "skin"
+declare Text G_SettingBotSkin;			///< last seen value of S_LowG_BotSkin (change detection)
 declare Boolean G_ItemListOk;				///< the one-line command reminder at the top of every screen
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
@@ -227,10 +228,46 @@ Void SpawnBots() {
 	}
 }
 
+/**
+ *	Register the vehicle models (and one skinned CarSport) the balloons may use. The item list is
+ *	the engine's registry of spawnable models; FlagRush registers "CarSport"/"CarSnow"/"CarRally"/
+ *	"CarDesert" and skinned variants ("CarSport" + a skin URL) this way and sets ForceModelId.
+ *	Whether a second ItemList_Begin() is accepted after the Time Attack base built its own list is
+ *	what the harness test establishes (G_ItemListOk + the Idents are logged).
+ */
+Void RegisterBotModels() {
+	G_BotModels.clear();
+	ItemList_Begin();
+	G_ItemListOk = True;
+	G_BotModels["sport"] = ItemList_Add("CarSport");
+	G_BotModels["snow"] = ItemList_Add("CarSnow");
+	G_BotModels["rally"] = ItemList_Add("CarRally");
+	G_BotModels["desert"] = ItemList_Add("CarDesert");
+	if (G_BotSkin != "" && G_BotSkin != "default") {
+		G_BotModels["skin"] = ItemList_AddWithSkin("CarSport", G_BotSkin);
+	}
+	ItemList_End();
+	declare Text SkinId = "-";
+	if (G_BotModels.existskey("skin")) SkinId = "" ^ G_BotModels["skin"];
+	log("LowG item list: sport=" ^ G_BotModels["sport"] ^ " snow=" ^ G_BotModels["snow"] ^ " rally=" ^ G_BotModels["rally"] ^ " desert=" ^ G_BotModels["desert"] ^ " skin=" ^ SkinId ^ " (" ^ G_BotSkin ^ ")");
+}
+
+/**
+ *	The item list can only be built in Match_StartServer: on this server (2026-05-16) an
+ *	ItemList_Begin() during play OR at Match_StartMap halts the script ("The procedure
+ *	ItemList_Begin failed to complete") and the mode reloads. So the balloon skin is fixed at
+ *	start from S_LowG_BotSkin; changing it needs `tmserverctl restart`.
+ */
+Boolean RegisterBotSkin(Text _Skin) {
+	G_BotSkin = _Skin;
+	if (_Skin == "default") G_BotSkin = "";
+	RegisterBotModels();
+	return G_BotModels.existskey("skin") && G_BotModels["skin"] != NullId;
+}
 /// Snapshot for tmserverctl / debugging: one callback with one Text per line.
 Void SendStatus() {
 	declare Text[] Lines;
-	Lines.add("default=" ^ Fmt(G_DefaultGravity) ^ " collisions=" ^ G_Collisions ^ " balloons=" ^ BalloonCount() ^ "/" ^ G_WantedBots ^ " botgravity=" ^ Fmt(G_BotGravity) ^ " botadherence=" ^ Fmt(G_BotAdherence) ^ " botmodel=" ^ G_BotModel ^ " itemlist=" ^ G_ItemListOk ^ " fakeusers=" ^ G_BotsAreFakeUsers ^ " players=" ^ Players.count ^ " bots=" ^ BotPlayers.count);
+	Lines.add("default=" ^ Fmt(G_DefaultGravity) ^ " collisions=" ^ G_Collisions ^ " balloons=" ^ BalloonCount() ^ "/" ^ G_WantedBots ^ " botgravity=" ^ Fmt(G_BotGravity) ^ " botadherence=" ^ Fmt(G_BotAdherence) ^ " botmodel=" ^ G_BotModel ^ " botskin=" ^ G_BotSkin ^ " fakeusers=" ^ G_BotsAreFakeUsers ^ " players=" ^ Players.count ^ " bots=" ^ BotPlayers.count);
 	declare CSmPlayer[] Everyone;
 	foreach (Player in Players) Everyone.add(Player);
 	foreach (Bot in BotPlayers) {
@@ -331,6 +368,15 @@ Void HandleCommand(Text[] _Params) {
 			SyncBots();
 			TellAll(NameOf(Caller, Login) ^ "$z set the balloons' model to " ^ Model);
 		}
+		case "skin": {
+			declare Text Current = G_BotSkin;
+			if (Current == "") Current = "default livery";
+			if (_Params.count >= 3 && _Params[2] != Current) {
+				Tell(Caller, "the balloon skin is fixed when the server starts (S_LowG_BotSkin in the matchsettings + restart); now: " ^ Current);
+			} else {
+				Tell(Caller, "balloon skin: " ^ Current ^ " (change: S_LowG_BotSkin + restart; /botmodel skin|sport|snow|rally|desert switches the model)");
+			}
+		}
 		case "collisions": {
 			if (_Params.count < 3) {
 				Tell(Caller, "collisions: " ^ G_Collisions ^ " -- /collisions on|off");
@@ -362,26 +408,6 @@ Void HandleEvents() {
 	}
 }
 
-/**
- *	Register the vehicle models (and one skinned CarSport) the balloons may use. The item list is
- *	the engine's registry of spawnable models; FlagRush registers "CarSport"/"CarSnow"/"CarRally"/
- *	"CarDesert" and skinned variants ("CarSport" + a skin URL) this way and sets ForceModelId.
- *	Whether a second ItemList_Begin() is accepted after the Time Attack base built its own list is
- *	what the harness test establishes (G_ItemListOk + the Idents are logged).
- */
-Void RegisterBotModels(Text _SkinUrl) {
-	G_BotModels.clear();
-	G_BotSkinUrl = _SkinUrl;
-	ItemList_Begin();
-	G_ItemListOk = True;
-	G_BotModels["sport"] = ItemList_Add("CarSport");
-	G_BotModels["snow"] = ItemList_Add("CarSnow");
-	G_BotModels["rally"] = ItemList_Add("CarRally");
-	G_BotModels["desert"] = ItemList_Add("CarDesert");
-	if (_SkinUrl != "") G_BotModels["skin"] = ItemList_AddWithSkin("CarSport", _SkinUrl);
-	ItemList_End();
-	log("LowG item list: begin=" ^ G_ItemListOk ^ " sport=" ^ G_BotModels["sport"] ^ " snow=" ^ G_BotModels["snow"] ^ " rally=" ^ G_BotModels["rally"] ^ " desert=" ^ G_BotModels["desert"] ^ " skin=" ^ (G_BotModels.existskey("skin") && G_BotModels["skin"] != NullId));
-}
 
 /// A permanent one-line reminder of the chat commands (a chat message is gone in a minute).
 Void CreateHint() {
@@ -408,7 +434,7 @@ Void DestroyHint() {
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
 
 /// Match_StartServer: take the settings, reset the state.
-Void Load(Real _DefaultGravity, Boolean _Collisions, Integer _Bots, Real _BotGravity, Real _BotAdherence, Integer _MaxBots, Boolean _BotsAreFakeUsers, Text _BotSkinUrl) {
+Void Load(Real _DefaultGravity, Boolean _Collisions, Integer _Bots, Real _BotGravity, Real _BotAdherence, Integer _MaxBots, Boolean _BotsAreFakeUsers, Text _BotSkin) {
 	G_DefaultGravity = ML::Clamp(_DefaultGravity, 0., 1.);
 	G_BotAdherence = ML::Clamp(_BotAdherence, 0., 1.);
 	G_SettingBotGravity = _BotGravity;
@@ -421,7 +447,8 @@ Void Load(Real _DefaultGravity, Boolean _Collisions, Integer _Bots, Real _BotGra
 	G_GravityByLogin.clear();
 	G_LastBotSync = 0;
 	G_BotModel = "";
-	RegisterBotModels(_BotSkinUrl);
+	G_SettingBotSkin = _BotSkin;
+	if (RegisterBotSkin(_BotSkin)) G_BotModel = "skin";
 	// Low-gravity times must not pollute the normal leaderboards.
 	Scores_AutoUploadPersonalBests = False;
 	SetGameModeNameAndCustomData("LowG", "", "");
@@ -434,7 +461,13 @@ Void Load(Real _DefaultGravity, Boolean _Collisions, Integer _Bots, Real _BotGra
 /// A setting is applied when ITS value changes, so a value set in chat (/grip, /botgravity)
 /// holds until the setting itself is edited. (The balloon kind is only taken at load time:
 /// /bots N fake|bot changes it live.)
-Void UpdateSettings(Real _BotGravity, Real _BotAdherence, Integer _MaxBots) {
+Void UpdateSettings(Real _BotGravity, Real _BotAdherence, Integer _MaxBots, Text _BotSkin) {
+	if (_BotSkin != G_SettingBotSkin) {
+		// Cannot rebuild the item list now (see RegisterBotSkin): say so once, apply at the next start.
+		G_SettingBotSkin = _BotSkin;
+		log("LowG: S_LowG_BotSkin changed to " ^ _BotSkin ^ " -- takes effect after a server restart");
+		TellAll("balloon skin setting changed; it applies after the next server restart");
+	}
 	if (_BotGravity != G_SettingBotGravity) {
 		G_SettingBotGravity = _BotGravity;
 		G_BotGravity = ML::Clamp(_BotGravity, 0., 1.);

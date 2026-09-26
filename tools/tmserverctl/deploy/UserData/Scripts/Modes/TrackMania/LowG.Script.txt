@@ -35,7 +35,7 @@
 #Setting S_LowG_BotAdherence 0.0 as "Grip of the balloon bots (0 = no friction, they slide; 1 = normal tyres)"
 #Setting S_LowG_MaxBots 16 as "Upper bound for /bots"
 #Setting S_LowG_BotsAreFakeUsers False as "Balloons are fake users (named, in the player list) instead of engine bots"
-#Setting S_LowG_BotSkinUrl "" as "Skin (zip URL or Skins/Models/CarSport/... path) offered as /botmodel skin"
+#Setting S_LowG_BotSkin "" as "Balloon skin: zip URL or Skins/Models/CarSport/Name.zip (empty = default livery); /botskin changes it live"
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
 // Extends
@@ -43,7 +43,7 @@
 
 ***Match_StartServer***
 ***
-LowG::Load(S_LowG_DefaultGravity, S_LowG_Collisions, S_LowG_Bots, S_LowG_BotGravity, S_LowG_BotAdherence, S_LowG_MaxBots, S_LowG_BotsAreFakeUsers, S_LowG_BotSkinUrl);
+LowG::Load(S_LowG_DefaultGravity, S_LowG_Collisions, S_LowG_Bots, S_LowG_BotGravity, S_LowG_BotAdherence, S_LowG_MaxBots, S_LowG_BotsAreFakeUsers, S_LowG_BotSkin);
 ***
 
 ***Match_StartMap***
@@ -53,7 +53,7 @@ LowG::StartMap();
 
 ***Match_Yield***
 ***
-LowG::UpdateSettings(S_LowG_BotGravity, S_LowG_BotAdherence, S_LowG_MaxBots);
+LowG::UpdateSettings(S_LowG_BotGravity, S_LowG_BotAdherence, S_LowG_MaxBots, S_LowG_BotSkin);
 LowG::Yield();
 ***
 
