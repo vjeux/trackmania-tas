@@ -511,6 +511,12 @@ pub fn build_abuffer_sparse_counted(tris: &[WTri], frame: &PeelFrame, threads: u
 /// meeting the frame: `Bvh::ranges_where` with `PeelFrame::box_class`) — a tile of a giant considers a
 /// ninth of the scene. The ranges must be sorted and disjoint (the triangle order within a pixel).
 pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: &PeelFrame, threads: usize, zmin: f32, zmax: f32, masks: &[crate::geometry::AlphaMask], px: &std::sync::Arc<PixelIndex>, count: Option<CountCtx>) -> (ABuffer, Option<(usize, Vec<f64>)>) {
+    build_abuffer_sparse_items(tris, ranges, None, frame, threads, zmin, zmax, masks, px, count)
+}
+
+/// `build_abuffer_sparse_ranges` over the instance hierarchy's jobs when `hier` is given (the ranges are then
+/// unused: the jobs hold the frame's triangles).
+pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Option<(&crate::insthier::InstHier, &[crate::insthier::GeomJob])>, frame: &PeelFrame, threads: usize, zmin: f32, zmax: f32, masks: &[crate::geometry::AlphaMask], px: &std::sync::Arc<PixelIndex>, count: Option<CountCtx>) -> (ABuffer, Option<(usize, Vec<f64>)>) {
     let res = frame.res;
     let res_y = frame.res_y;
     let t_clip = std::time::Instant::now(); crate::pool::stats::stage("clip");
@@ -641,29 +647,38 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
         }
         Some((ry0, ry1, rx0, rx1))
     };
-    // the culled triangle set as chunks of index ranges (each chunk ~ n_total / (4·threads) triangles)
-    let n_total: usize = ranges.iter().map(|r| (r.1 - r.0) as usize).sum();
-    let prep_chunk = (n_total / (threads * 4).max(1)).max(4096);
-    // a chunk = consecutive (sub)ranges totalling about prep_chunk triangles, in ascending index order (the
-    // BVH cull hands over thousands of small ranges: one chunk each would mean thousands of CSRs per frame)
+    // THE ITEMS TO BIN: with the instance hierarchy (perf engineer 5's insthier.rs) an item is a GeomJob — a
+    // contiguous range of `hier.tris` with a conservative pixel rectangle, produced from the model trees without
+    // touching a triangle record — and the raster job expands it per triangle (the same `rows_of` test: depth
+    // range, culls, the exact centre cull) inside its cell; without it an item is one culled triangle projected
+    // here. `tri_src` / `tri_id` are the records and their BVH indices (the fragments' `tri` keys) either way.
+    let (tri_src, tri_id): (&[WTri], Option<&[u32]>) = match hier { Some((h, _)) => (h.tris.as_slice(), Some(h.bvh_id.as_slice())), None => (tris, None) };
+    let n_items: usize = match hier { Some((_, jobs)) => jobs.len(), None => ranges.iter().map(|r| (r.1 - r.0) as usize).sum() };
+    let prep_chunk = (n_items / (threads * 4).max(1)).max(if hier.is_some() { 256 } else { 4096 });
+    // a chunk = consecutive (sub)ranges totalling about prep_chunk items, in ascending index order (the BVH cull
+    // hands over thousands of small ranges: one chunk each would mean thousands of CSRs per frame)
     let mut chunks: Vec<Vec<(u32, u32)>> = Vec::new();
-    let mut cur: Vec<(u32, u32)> = Vec::new();
-    let mut cur_n = 0usize;
-    for &(a, b) in ranges {
-        let mut x = a;
-        while x < b {
-            let room = prep_chunk.saturating_sub(cur_n).max(1);
-            let y = (x as usize + room).min(b as usize) as u32;
-            cur.push((x, y));
-            cur_n += (y - x) as usize;
-            x = y;
-            if cur_n >= prep_chunk {
-                chunks.push(std::mem::take(&mut cur));
-                cur_n = 0;
+    {
+        let mut cur: Vec<(u32, u32)> = Vec::new();
+        let mut cur_n = 0usize;
+        let job_range = [(0u32, n_items as u32)];
+        let src_ranges: &[(u32, u32)] = if hier.is_some() { &job_range } else { ranges };
+        for &(a, b) in src_ranges {
+            let mut x = a;
+            while x < b {
+                let room = prep_chunk.saturating_sub(cur_n).max(1);
+                let y = (x as usize + room).min(b as usize) as u32;
+                cur.push((x, y));
+                cur_n += (y - x) as usize;
+                x = y;
+                if cur_n >= prep_chunk {
+                    chunks.push(std::mem::take(&mut cur));
+                    cur_n = 0;
+                }
             }
         }
+        if !cur.is_empty() { chunks.push(cur); }
     }
-    if !cur.is_empty() { chunks.push(cur); }
     let n_prep = chunks.len();
     // the cell (brow, bcol) as an index
     let cell_at = |br: usize, bc: usize| -> usize { br * n_bcols + bc };
@@ -685,53 +700,62 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
     const SUB: usize = 8;
     let sub_shift = row_shift.saturating_sub(3); // tile_rows / SUB rows per sub-strip (SUB = 8)
     let sub_of = |y: i32, by0: i32| -> usize { (((y - by0).max(0) as usize) >> sub_shift).min(SUB - 1) };
-    // per chunk: the CSR over the cells (offsets, then the triangle indices in triangle order with their
-    // strip bits) and the cells' estimated costs
-    let binned: Vec<(Vec<u32>, Vec<u32>, Vec<u8>, Vec<u64>)> = crate::pool::pool().map(n_prep, |ci| {
-        let subs = &chunks[ci];
-        // pass 1: the cells of every triangle (kept: the projection is the cost), the counts and costs per cell
-        let mut hits: Vec<(u32, u16, u16, u16, u16, i32, i32)> = Vec::new(); // (ti, brow0, brow1, bcol0, bcol1, ry0, ry1)
+    // per chunk: the CSR over the cells (offsets, then the item indices in item order with their strip bits)
+    // and the cells' estimated costs — `items` yields (index, rows, columns, weight in pairs)
+    let bin_chunk = |items: &mut dyn Iterator<Item = (u32, i32, i32, i32, i32, u64)>| -> (Vec<u32>, Vec<u32>, Vec<u8>, Vec<u64>) {
+        // pass 1: the cells of every item (kept: the projection is the cost), the counts and costs per cell
+        let mut hits: Vec<(u32, u16, u16, u16, u16, i32, i32)> = Vec::new(); // (idx, brow0, brow1, bcol0, bcol1, ry0, ry1)
         let mut counts: Vec<u32> = vec![0; n_cells + 1];
         let mut cost: Vec<u64> = vec![0; n_cells];
-        for &(a, b) in subs.iter() {
-        for (k, t) in tris[a as usize..b as usize].iter().enumerate() {
-            if let Some((ry0, ry1, rx0, rx1)) = rows_of(t) {
-                let (br0, br1) = (brow_of(ry0), brow_of(ry1));
-                let (bc0, bc1) = (bcol_of(rx0), bcol_of(rx1));
-                for br in br0..=br1 {
-                    // the rows of the bounding box inside this cell row (no division: the cell's rows from br)
-                    let cy0 = clip.1 + (br * tile_rows) as i32;
-                    let h_in = (ry1.min(cy0 + tile_rows as i32 - 1) - ry0.max(cy0) + 1).max(0) as u64;
-                    for bc in bc0..=bc1 {
-                        let cell = cell_at(br, bc);
-                        counts[cell + 1] += 1;
-                        let cx0 = clip.0 + (bc * tile_cols) as i32;
-                        let w_in = (rx1.min(cx0 + tile_cols as i32 - 1) - rx0.max(cx0) + 1).max(0) as u64;
-                        cost[cell] += pair_cost + w_in * h_in;
-                    }
+        for (idx, ry0, ry1, rx0, rx1, weight) in items {
+            let (br0, br1) = (brow_of(ry0), brow_of(ry1));
+            let (bc0, bc1) = (bcol_of(rx0), bcol_of(rx1));
+            for br in br0..=br1 {
+                // the rows of the bounding box inside this cell row (no division: the cell's rows from br)
+                let cy0 = clip.1 + (br * tile_rows) as i32;
+                let h_in = (ry1.min(cy0 + tile_rows as i32 - 1) - ry0.max(cy0) + 1).max(0) as u64;
+                for bc in bc0..=bc1 {
+                    let cell = cell_at(br, bc);
+                    counts[cell + 1] += 1;
+                    let cx0 = clip.0 + (bc * tile_cols) as i32;
+                    let w_in = (rx1.min(cx0 + tile_cols as i32 - 1) - rx0.max(cx0) + 1).max(0) as u64;
+                    cost[cell] += weight * pair_cost + w_in * h_in;
                 }
-                hits.push((a + k as u32, br0 as u16, br1 as u16, bc0 as u16, bc1 as u16, ry0, ry1));
             }
-        }
+            hits.push((idx, br0 as u16, br1 as u16, bc0 as u16, bc1 as u16, ry0, ry1));
         }
         for i in 0..n_cells { counts[i + 1] += counts[i]; }
         let mut entries: Vec<u32> = vec![0; counts[n_cells] as usize];
         let mut ebits: Vec<u8> = vec![0; counts[n_cells] as usize];
         let mut fill = counts.clone();
-        for &(ti, br0, br1, bc0, bc1, ry0, ry1) in &hits {
+        for &(idx, br0, br1, bc0, bc1, ry0, ry1) in &hits {
             for br in br0 as usize..=br1 as usize {
                 let by0 = clip.1 + (br * tile_rows) as i32;
                 let (s0, s1) = (sub_of(ry0, by0), sub_of(ry1, by0));
                 let bits = (((1u16 << (s1 + 1)) - 1) & !((1u16 << s0) - 1)) as u8;
                 for bc in bc0 as usize..=bc1 as usize {
                     let cell = cell_at(br, bc);
-                    entries[fill[cell] as usize] = ti;
+                    entries[fill[cell] as usize] = idx;
                     ebits[fill[cell] as usize] = bits;
                     fill[cell] += 1;
                 }
             }
         }
         (counts, entries, ebits, cost)
+    };
+    let binned: Vec<(Vec<u32>, Vec<u32>, Vec<u8>, Vec<u64>)> = crate::pool::pool().map(n_prep, |ci| {
+        let subs = &chunks[ci];
+        match hier {
+            Some((_, jobs)) => {
+                // a job's rectangle is already clipped to the frame; its weight is its triangle count
+                let mut it = subs.iter().flat_map(|&(a, b)| (a..b).map(|j| { let g = &jobs[j as usize]; (j, g.y0, g.y1, g.x0, g.x1, g.count as u64) }));
+                bin_chunk(&mut it)
+            }
+            None => {
+                let mut it = subs.iter().flat_map(|&(a, b)| tris[a as usize..b as usize].iter().enumerate().filter_map(move |(k, t)| rows_of(t).map(|(ry0, ry1, rx0, rx1)| (a + k as u32, ry0, ry1, rx0, rx1, 1u64))));
+                bin_chunk(&mut it)
+            }
+        }
     });
     prof::add(&prof::B_CLIP, t_clip);
     let t_raster = std::time::Instant::now(); crate::pool::stats::stage("raster");
@@ -928,25 +952,45 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
             // SAFETY: pixel k belongs to this job alone (the jobs partition the frame)
             unsafe { *(csr_sp as *mut u32).add(k as usize + 1) += 1; }
         };
-        // the cell's entries gathered from the chunk slices in chunk order (ascending triangle index) into a
-        // per-thread list — a strip job keeps only the entries whose strip bits touch its rows (one sequential
-        // list to walk instead of hundreds of slices)
+        // the cell's entries gathered from the chunk slices in chunk order into a per-thread list — a strip job
+        // keeps only the entries whose strip bits touch its rows (one sequential list to walk instead of
+        // hundreds of slices). With the instance hierarchy an entry is a GeomJob: its contiguous triangles are
+        // walked here (576 bytes per eight, prefetch-friendly) and each is kept when `rows_of` — the depth range,
+        // the culls, the exact centre test — leaves it a candidate centre inside this job's rows and columns;
+        // a triangle the hierarchy placed here without one visits nothing, exactly as the per-triangle binning
+        // would not have listed it.
         let mut job_list: Vec<u32> = JOB_LIST.take();
         job_list.clear();
         for (counts, entries, ebits, _) in &binned {
             let (c0, c1) = (counts[cell] as usize, counts[cell + 1] as usize);
             if c0 == c1 { continue; }
-            if smask == u8::MAX {
-                job_list.extend_from_slice(&entries[c0..c1]);
-            } else {
-                for (ei, &ti) in entries[c0..c1].iter().enumerate() {
-                    if ebits[c0 + ei] & smask != 0 { job_list.push(ti); }
+            match hier {
+                None => {
+                    if smask == u8::MAX {
+                        job_list.extend_from_slice(&entries[c0..c1]);
+                    } else {
+                        for (ei, &ti) in entries[c0..c1].iter().enumerate() {
+                            if ebits[c0 + ei] & smask != 0 { job_list.push(ti); }
+                        }
+                    }
+                }
+                Some((_, jobs)) => {
+                    for (ei, &ji) in entries[c0..c1].iter().enumerate() {
+                        if smask != u8::MAX && ebits[c0 + ei] & smask == 0 { continue; }
+                        let g = &jobs[ji as usize];
+                        for i in g.first..g.first + g.count {
+                            let Some((ry0, ry1, rx0, rx1)) = rows_of(&tri_src[i as usize]) else { continue };
+                            if ry1 < by0 || ry0 > by1 || rx1 < bx0 || rx0 > bx1 { continue; }
+                            job_list.push(i);
+                        }
+                    }
                 }
             }
         }
         {
-            for &ti in job_list.iter() {
-                let t = &tris[ti as usize];
+            for &tidx in job_list.iter() {
+                let t = &tri_src[tidx as usize];
+                let ti = match tri_id { Some(ids) => ids[tidx as usize], None => tidx };
                 let p0 = t.p0;
                 let p1 = [p0[0] + t.e1[0], p0[1] + t.e1[1], p0[2] + t.e1[2]];
                 let p2 = [p0[0] + t.e2[0], p0[1] + t.e2[1], p0[2] + t.e2[2]];
@@ -2945,6 +2989,16 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
     // `prm.per_subsample` (the differential harness's default) gathers at every covered sub-sample
     // instead — the game's supersampled raster as read — and the resolve averages them.
     let groups = 1usize;
+    // THE INSTANCE HIERARCHY (perf engineer 5's insthier.rs; LMTOOL_INSTHIER=1 turns it on — OFF by default: measured on
+    // the giant it moves the per-triangle test from the binning into the cell jobs and inflates it (the world frame's
+    // jobs hold 27 M triangles for 9.8 M with a candidate centre, ×1.3 cells per job): binning 0.32 → 0.03 s but raster
+    // 1.30 → 1.75 s per 4 directions; the visited set is identical (VIOLATIONS 0). LMTOOL_INSTHIER_GRAIN =
+    // the jobs' pixel grain, default 16): built once per bake; per peel frame its jobs replace the per-triangle
+    // binning's projection of every culled triangle (see build_abuffer_sparse_items)
+    let insthier_on = std::env::var("LMTOOL_INSTHIER").map(|v| v == "1").unwrap_or(false);
+    let insthier_grain: i32 = std::env::var("LMTOOL_INSTHIER_GRAIN").ok().and_then(|v| v.parse().ok()).unwrap_or(16);
+    let insthier_check = std::env::var_os("LMTOOL_INSTHIER_CHECK").is_some();
+    let insthier: Option<crate::insthier::InstHier> = if insthier_on && prm.game_peel { Some(crate::insthier::InstHier::build(scene, bvh, &tri_base)) } else { None };
     // the dump's chart_ss raster: (2·cw·ss_eff) × (2·ch·ss_eff)
     let ss_eff = if prm.per_subsample { ss } else { 1 };
     // chart metadata for the dump: (item, chart_ss w, h, covered mask per texel is implied by counts)
@@ -3543,7 +3597,19 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                             eprintln!("cull: direction {di} peel {pi}: {} of {} triangles in {} BVH ranges (p0 inside the frame: {inside}); frame res {}×{} scale {:.4} s0 {:.1} t0 {:.1} zc {:.1} half_d {:.1}", n, bvh.tris.len(), ranges.len(), frame.res, frame.res_y, frame.scale, frame.s0, frame.t0, frame.zc, frame.half_d);
                         }
                         prof::add(&prof::CULL, t_cull);
-                        let (ab, counted) = build_abuffer_sparse_ranges(&bvh.tris, &ranges, frame, threads, zmin_f, zmax_f, &prm.alpha_masks, px, if fuse { Some(CountCtx { scene, bvh, prm }) } else { None });
+                        // the frame's jobs from the instance hierarchy (its BVH ranges then only serve the check / the fallback)
+                        let hier_jobs: Option<Vec<crate::insthier::GeomJob>> = insthier.as_ref().map(|h| {
+                            let clip = (frame.inset_px as i32, frame.inset_px as i32, frame.res as i32 - 1 - frame.inset_px as i32, frame.res_y as i32 - 1 - frame.inset_px as i32);
+                            let t_j = std::time::Instant::now();
+                            let jobs = h.frame_jobs(scene, frame, zmin_f, zmax_f, clip, insthier_grain);
+                            prof::add(&prof::CULL, t_j);
+                            if insthier_check {
+                                let (nj, ntj, held, bad, worst) = h.check_frame(scene, frame, zmin_f, zmax_f, clip, &jobs);
+                                eprintln!("insthier: direction {di} peel {pi}: {nj} jobs holding {ntj} triangles (the frame holds {held}), VIOLATIONS {bad}, worst excursion {worst:.4} px (margin {})", crate::insthier::MARGIN_PX);
+                            }
+                            jobs
+                        });
+                        let (ab, counted) = build_abuffer_sparse_items(&bvh.tris, &ranges, insthier.as_ref().zip(hier_jobs.as_deref()), frame, threads, zmin_f, zmax_f, &prm.alpha_masks, px, if fuse { Some(CountCtx { scene, bvh, prm }) } else { None });
                         if let Some((kept, fractions)) = counted {
                             if peel_layers_debug() { eprintln!("peel layers (exact, sweep {} direction {di} peel {pi}): fractions {:?} → {kept} rendered", prm.sweep, fractions.iter().take_while(|f| **f > 0.0).map(|f| format!("{f:.6}")).collect::<Vec<_>>()); }
                             exact_layers = Some(kept);

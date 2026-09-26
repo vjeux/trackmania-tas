@@ -20,6 +20,7 @@ pub mod pool;
 pub mod tiledpeel;
 pub mod contrib;
 pub mod passdump;
+pub mod insthier;
 pub mod peel;
 pub mod peelcap;
 pub mod domemesh;
