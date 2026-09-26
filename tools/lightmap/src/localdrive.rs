@@ -57,14 +57,28 @@ pub struct Lamp {
     pub rgb: [f32; 3],
 }
 
-/// The pinned instance radius: 40.707722 for a radius-40 lamp with hyper2 (−1.24, 0.206) (the RoadBorderSpot; RE 7 pins
-/// the source of the +0.7077 from the light instance's +0xa0 table), else the file radius.
-pub fn effective_radius(l: &LightDef) -> f32 {
-    if (l.radius - 40.0).abs() < 1e-4 && (l.hyper2[0] + 1.24).abs() < 1e-4 && (l.hyper2[1] - 0.206).abs() < 1e-4 {
-        40.707722
-    } else {
-        l.radius
-    }
+/// THE INSTANCE RADIUS OF THE BAKE (RE 11, 2026-09-26 14:50Z, FUN_1402414f0 → FUN_141416390): R_eff = R_file + m/s with m = 1.5f
+/// (CHmsLightMap+0x920, its ctor's constant — a margin of 1.5 TEXELS) and s = the bake's texel density in texels per metre (the
+/// allocator's result, `layout::GameLayout::s`); the enlargement lives only during the bake (FUN_140241b20 restores the saved
+/// radii at the pass end). stpad: 40 + 1.5/2.1194804 = 40.707722 (the captured eid 34 cbuffer), and the flat-cube face
+/// ceilf(2 · 40.707722 · 2.1194804) = 173 (the captured shadow map) — two captured numbers, one s.
+pub fn effective_radius(l: &LightDef, texels_per_m: f32) -> f32 {
+    l.radius + radius_margin_texels() / texels_per_m
+}
+
+/// CHmsLightMap+0x920 — the radius margin in texels (the only writer is the ctor, 0x1402091c4).
+pub const LM_RADIUS_MARGIN_TEXELS: f32 = 1.5;
+
+/// The margin in use: LMTOOL_LL_RADIUS_MARGIN=T (texels; 0 = the file radius, the pre-transcription behaviour) — a study knob,
+/// read once.
+pub fn radius_margin_texels() -> f32 {
+    static V: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("LMTOOL_LL_RADIUS_MARGIN").ok().and_then(|v| v.parse().ok()).unwrap_or(LM_RADIUS_MARGIN_TEXELS))
+}
+
+/// The specular radius of the bake (+0xa4): the enlarged radius × (spec / R) — the same ratio (FUN_141416390's second argument).
+pub fn effective_spec_radius(l: &LightDef, r_eff: f32) -> f32 {
+    if l.radius > 0.0 { r_eff * (l.radii[0] / l.radius) } else { l.radii[0] }
 }
 
 /// `SpotFalloffBackOffset` of the lamp's cbuffer — 0.33362 on the RoadBorderSpot (capture f4936 eid 34); its derivation
@@ -83,10 +97,10 @@ pub fn light_rgb(l: &LightDef) -> [f32; 3] {
     [l.color[0] * l.intensity, l.color[1] * l.intensity, l.color[2] * l.intensity]
 }
 
-/// The face size of the lamp's flat cube: FUN_14023cb30's ceilf(2·R·density) clamped to [8, max] — 173 for the pinned
-/// lamp (R 40.7077); scaled with R for the others (the density is the pinned ratio).
-pub fn face_size(r_eff: f32) -> u32 {
-    ((2.0 * r_eff * (FACE_SIZE_R40 as f32 / (2.0 * 40.707722))).ceil() as u32).clamp(8, 1024)
+/// The face size of the lamp's flat cube: FUN_14023cb30's ceilf(2 · R_eff · s) clamped to [8, 1024], s = the bake's texel
+/// density — 173 for the stpad lamp (2 · 40.707722 · 2.1194804 = 172.56).
+pub fn face_size(r_eff: f32, texels_per_m: f32) -> u32 {
+    ((2.0 * r_eff * texels_per_m).ceil() as u32).clamp(8, 1024)
 }
 
 /// The six flat-cube faces' Scale_MaxAbs / Trans for `size`² faces in the `target`² D16 texture: face f's tile at
@@ -105,9 +119,10 @@ pub fn flat_cube_faces(size: u32, target: u32) -> [FlatCubeFace; 6] {
 }
 
 impl Lamp {
-    pub fn new(id: u16, owner: &str, light: LightDef) -> Lamp {
-        let r_eff = effective_radius(&light);
-        Lamp { id, owner: owner.to_string(), light, r_eff, back_offset: spot_falloff_back_offset(&light), face_size: face_size(r_eff), rgb: light_rgb(&light) }
+    /// `texels_per_m` = the bake's layout density (`GameLayout::s`): the instance radius and the flat-cube face follow it.
+    pub fn new(id: u16, owner: &str, light: LightDef, texels_per_m: f32) -> Lamp {
+        let r_eff = effective_radius(&light, texels_per_m);
+        Lamp { id, owner: owner.to_string(), light, r_eff, back_offset: spot_falloff_back_offset(&light), face_size: face_size(r_eff, texels_per_m), rgb: light_rgb(&light) }
     }
 
     pub fn is_spot(&self) -> bool {
@@ -169,15 +184,15 @@ impl Lamp {
 /// The frame's light list: the items' lights (the scene's, in item order) then the blocks' and clips' (records::MapRecords::
 /// block_lights) — `lmtool map-lights`' order; the ids are the list indices (the capture numbers lamp B 243 in the scene
 /// instance-list order — the ORDER is verified only for the two captured lamps' neighbourhood).
-pub fn lamps(item_lights: &[(usize, LightDef)], block_lights: &[(String, LightDef)]) -> Vec<Lamp> {
+pub fn lamps(item_lights: &[(usize, LightDef)], block_lights: &[(String, LightDef)], texels_per_m: f32) -> Vec<Lamp> {
     let mut out = Vec::with_capacity(item_lights.len() + block_lights.len());
     for (i, l) in item_lights {
         let id = out.len() as u16;
-        out.push(Lamp::new(id, &format!("item {i}"), *l));
+        out.push(Lamp::new(id, &format!("item {i}"), *l, texels_per_m));
     }
     for (o, l) in block_lights {
         let id = out.len() as u16;
-        out.push(Lamp::new(id, o, *l));
+        out.push(Lamp::new(id, o, *l, texels_per_m));
     }
     out
 }
@@ -1018,7 +1033,10 @@ mod tests {
     fn the_lamp_cbuffer_is_the_captured_one() {
         // the RoadBorderSpot of block 97 (lamp A): the file fields → the eid 34 cbuffer
         let l = LightDef { pos: [1504.5673828125, 23.358840942382812, 1655.9000244140625], dir: [0.9939168691635132, -0.11013312637805939, -3.9683811792201595e-09], color: [0.945, 0.929, 0.886], intensity: 1.1, radius: 40.0, cone: (140.0, 170.0), hyper2: [-1.24, 0.206], att_htnlr: [0.0, 8.121213], ..Default::default() };
-        let lamp = Lamp::new(242, "clipE waterfccenter of block 97", l);
+        // stpad's layout density (layout-game: s 2.1194804 layout units/m) → R_eff 40.707722, face 173
+        let lamp = Lamp::new(242, "clipE waterfccenter of block 97", l, 2.1194804);
+        assert!((lamp.r_eff - 40.707722).abs() < 1e-5, "R_eff {}", lamp.r_eff);
+        assert_eq!(lamp.face_size, 173);
         let cb = lamp.light_cb();
         let cap = LightCb::stpad_f4936_eid34();
         let close = |a: f32, b: f32| (a - b).abs() <= 4.0 * f32::EPSILON * b.abs().max(1e-6);
@@ -1104,7 +1122,8 @@ pub fn setup_from_map(map_path: &str, paks: &[(String, String)], collection: &st
     let lights_on = daytime.map(|w| gate.local_lights_on(w));
     // THE GATE (RE 10, 2026-09-26): the mood switch gates only the NightOnly lamps (CPlugLight flags bit 0); the others are baked
     // at any DayTime — the lamps kept are the baked ones (LMTOOL_LL_ALL_LAMPS=1 keeps every lamp for a study)
-    let all = lamps(&scene.world_lights(), &mr.block_lights);
+    let all = lamps(&scene.world_lights(), &mr.block_lights, gl.s);
+    log(&format!("lamp radii: R_eff = R + {} texels / s, s = {:.6} texels/m → +{:.6} m; the flat-cube face = ceil(2 · R_eff · s)", radius_margin_texels(), gl.s, radius_margin_texels() / gl.s));
     let n_all = all.len();
     let n_night = all.iter().filter(|l| l.light.night_only).count();
     let lamps: Vec<Lamp> = if std::env::var_os("LMTOOL_LL_ALL_LAMPS").is_some() { all } else { all.into_iter().filter(|l| daytime.map(|w| crate::moods::lamp_is_baked(l.light.night_only, &gate, w)).unwrap_or(!l.light.night_only)).collect() };
