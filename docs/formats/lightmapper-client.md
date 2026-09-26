@@ -189,9 +189,19 @@ includes the mood's **sky dome**, which peels as the farthest layer with the
 radiance the runtime sky shader gives it. Nothing is cleared to a constant
 "sky colour"; texels that see no surface see the dome. `Tech3/Sky_p`
 (constants from `Mood.MoodSetting.xml` `<Atmo><HdrSun Power><Atmo1 Power
-Color Scale/><Atmo2 …/>`, the gradient textures `<Collection>\Media\Moods\
-<Mood>\SkyColor.dds` (TMapGradientV, BC6H_UF16 HDR 2048×1024, 12 mips) and
-`SkyClouds.dds` (TMapGradientV1, the clouds layer, `SkyUseClouds`)):
+Color Scale/><Atmo2 …/>`; the two gradient textures are the two moods the
+blender mixes — `TMapGradientV` = mood A's `<Collection>\Media\Moods\<Mood>\
+SkyColor.dds` (BC6H_UF16 HDR 2048×1024, 12 mips), `TMapGradientV1` = mood
+B's, with ScaleGrad0 = (1 − t)·s0, ScaleGrad1 = t·s1 (t = the blender weight,
+s0 = s1 = 1; filler `0x1409f7a40`, NOTES.md §(3)). CAPTURE (pwc-day, BlueBay
+Day, DayTime01 0.644 = the Day key → t = 1): t0 = texture 16801 is BlueBay-
+**Sunrise**-SkyColor.dds mip 0 and t1 = 16803 is BlueBay-**Day**-SkyColor.dds
+mip 0, both BYTE-IDENTICAL to the banked mood files (md5 over the 2 097 152
+mip-0 bytes), ScaleGrad0 = 0, ScaleGrad1 = 1. There is NO clouds term in the
+dome: PS 16774's 29 instructions are the gradient pair, the sun disc (off),
+the two Atmo lobes, the fog lerp, GlobalScale and the 16375 clamp; the mood's
+`SkyClouds.dds` (DXT5 1024², a runtime sky-layer texture) is bound in no
+lightmapper draw (port engineer G, 2026-09-26; §11 for the cloud sprites)):
 
 ```text
 uv     = dome vertex uv ; u = GradientV_ForceX ≥ 0 ? GradientV_ForceX : u − LightDirAngle_m11Zx     (azimuth RELATIVE TO THE SUN)
@@ -950,7 +960,7 @@ render lock needed; do that first for any new crash instead of guessing.
   fffef1 × 2.86, T3LightMap MaxHDR 5 Bounce 3 Sky 0.3`) [FILE].
 * The sky the dome pass renders comes from the mood folder
   `<Collection>\Media\Moods\<Mood>\`: `SkyColor.dds` (BC6H_UF16 2048×1024,
-  12 mips — `TMapGradientV`), `SkyClouds.dds` (`TMapGradientV1`),
+  12 mips — `TMapGradientV`; the other blended mood's is `TMapGradientV1`, §6e), `SkyClouds.dds` (a runtime sky-layer texture, in no lightmapper draw),
   `AmbCubeP.dds`, `EnvCubicHdr.dds`, `Clouds.tga`, `Mood.MoodSetting.xml`
   (`<Atmo><HdrSun Power><Atmo1/2 Power Color Scale>` = the `Sky_p` lobes,
   `<Fog Color IntensMax …>`). All 20 collection×mood sets are banked under
@@ -1334,6 +1344,61 @@ checks it against a capture.
   4096 instances — E's tile path), the items (draws 347–410), the clouds
   (`GbxClouds3dInst0`, `clouds.rs`), and the WarpSand's colour (A's shading).
 
+## 6e. CLOUDS NEVER REACH THE LIGHTMAP [CAPTURE pwc-day f127448 + stpad f4788; port engineer G, 2026-09-26; `lmtool clouds-reach`]
+
+Two places a cloud could enter a bake, both closed on captured data:
+
+* **The dome has no clouds term.** PS 16774 (29 instructions, transcribed in
+  `skygrad::sky_ps` / `domecheck::ps_16774`) reads two BC6 2048×1024 gradients:
+  `TMapGradientV` × ScaleGrad0 + `TMapGradientV1` × ScaleGrad1, then the (off) sun
+  disc, the two Atmo lobes, the fog lerp, GlobalScale, min 16375. The two textures
+  are the TWO BLENDED MOODS' `SkyColor.dds` — in pwc-day (BlueBay Day, t = 1)
+  t0 = 16801 = BlueBay-Sunrise-SkyColor.dds mip 0, t1 = 16803 = BlueBay-Day-
+  SkyColor.dds mip 0, byte-identical to the banked mood files (md5 of the 2 097 152
+  mip-0 bytes; the other 18 moods' gradients differ), ScaleGrad0 = 0, ScaleGrad1 = 1
+  (the filler `0x1409f7a40`: (1 − t)·s0, t·s1, s0 = s1 = 1). `SkyClouds.dds` (DXT5
+  1024², 11 mips) matches no texture bound in any lightmapper draw of the capture
+  (neither the gradients nor the sprite atlas 14508's four slices). The mood's
+  `SkyUseClouds` (1 for BlueBay Day, the frame record's `Clouds` word) therefore
+  adds nothing to the dome; with it ON the dome was cloud-free.
+* **The cloud SPRITES cannot produce a fragment.** They are the environment block's
+  177 draws of VS 14514 / PS 14515 (One/InvSrcAlpha, GreaterEqual, no depth write,
+  the same draws in every peel of every direction: 531 = 3 × 177 in frame 127448).
+  Each draw is one `GbxClouds3dInst0` instance (VisualToWorld = a pure translation;
+  the instances tile every 16 km over ±64 km in x/z at y 2 101–3 000 m) holding
+  1–201 camera-facing sprites (8 113 in all): centres y 574–5 706 m, half extents up
+  to 2 241 m, opacity 1. For the ORTHOGRAPHIC peel camera the sprite is a quad
+  perpendicular to D: corner = centre + R·(a·size)·(±½) + U·size·(±½) with R/U =
+  `GbxV_WorldToCamera` columns 0/1 (= `AxeXinV`/`AxeYinV`; GlobalDir_Branch.w = 0,
+  IsRadial = 0, pivots −0, vortex off on all 177 draws) — so the test against the
+  frustum (the light-space AABB of the world box, `lightcam::fit_camera`, +5 m far,
+  ×1.0001) is exact per axis: `lmtool clouds-reach PASSCAP [--box …] [--quality Q]
+  [--scan-ymax …]`. RESULT on pwc-day's world box (x/z 0…2048, y 4.0…138.0) over the
+  game's q4 sets (1032 + 512 + 256 + 128 directions; q3's 256 + 128 are subsets of
+  the same tables): **0 sprites inside in 0 directions**; the least separation is
+  245.5 m (sweep 1, direction (0.5212, 0.5966, −0.6103), a sprite of eid 1848 — the
+  instance over the map at (0, 3000, 0) — centre (−45, 3042, 682), half 504 × 1482);
+  the frustum's highest world point over all directions is 1 588 m, the sprites'
+  lowest corner over all camera orientations −405 m (a far instance, outside the
+  frustum in x/z). Engineer D's clip test on the captured post-VS positions of
+  direction 0 (568 triangles in depth, 12 in x/y, none in both) is the same fact for
+  one direction. THE MARGIN IS GEOMETRIC, NOT LARGE: raising the world box's top
+  (`--scan-ymax`) the least separation falls 263.5 → 93.6 (350 m) → 53.1 (400) →
+  16.5 (450) m and at **500 m one sprite enters one direction** (600 m: 22 sprites in
+  17 directions of the 1032-set) — a BlueBay-family scene whose world box (scene ∪
+  probe-grid) tops ≈ 470 m would peel cloud sprites, and PS 14515 (83 instructions,
+  unexercised in every capture) would then need transcribing. No product map does:
+  **Stadium's peel has no environment block at all** — stpad f4788 (Sunrise) holds
+  11 584 draws, every one an item layer (VS 9163/9166, depth LESS, viewport
+  (1, 1, 4094, 4094)), no GreaterEqual draw, no dome, no terrain, no cloud shader;
+  the 4096² peel targets are CLEARED per direction (144 colour + 150 depth clears)
+  and the sky enters as that clear colour (E; the (b) export carries the values).
+* Consequence for the port: `skygrad.rs` is complete for the dome (gradient pair,
+  lobes, fog, scale — its "clouds layer" comment was stale); no cloud code belongs in
+  the peel for any bake whose world box stays under the threshold above. The
+  world-box top is the one quantity to watch: `clouds-reach --box` re-runs the proof
+  for any box.
+
 ## 6d. THE UNDERWATER TERM — `BlendWaterFog` on the pre-pass MDiffuse [CAPTURE pwc-day f127447 + the port's own atlas, RE child 11, 2026-09-26]
 
 The game attenuates submerged surfaces in ONE place: the attribute pre-pass. After
@@ -1418,7 +1483,7 @@ nothing to act on and the port's Stadium bake had no first bounce at all).
    `dome::group_issue_order`, §2.3),
    each an orthographic depth-peel; a texel that sees no surface along `D`
    sees `Sky_p(D)` = `SkyColor.dds` (u shifted by the sun azimuth) ×
-   ScaleGrad0 + clouds layer + the two `Atmo` glow lobes around the sun,
+   ScaleGrad0 + the other blended mood's gradient × ScaleGrad1 (no clouds term, §6e) + the two `Atmo` glow lobes around the sun,
    fogged, × GlobalScale (§2.3); accumulation `Σ_D (4/N)·max(0,n·D)·L(D)`
    (H-basis: 1/N with the projection weights). Fix: decode the mood's BC6H
    `SkyColor` (banked under client-re/moods/), implement `Sky_p`, use the

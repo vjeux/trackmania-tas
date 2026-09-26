@@ -1,8 +1,11 @@
 //! The rendered sky as the lightmapper's dome radiance (RE child 2, Tech3/Sky_p): the mood's
 //! `SkyColor.dds` (BC6H_UF16 2048×1024 gradient, u = azimuth relative to the sun, v = elevation)
 //! × ScaleGrad0, plus the sun-side glow lobes `Scale·cos(θ)^Power·Rgb` (Atmo1/Atmo2 of the mood
-//! XML, θ = the angle to the sun), then × GlobalScale. The clouds layer and the fog blend are
-//! left out until their constants are read.
+//! XML, θ = the angle to the sun), then × GlobalScale. The fog blend is in (`fog`, `sky_ps`). There is
+//! NO clouds layer in the lightmapper's dome: PS 16774's second texture `TMapGradientV1` is the OTHER
+//! blended mood's SkyColor.dds (pwc-day: t0 = Sunrise, t1 = Day, byte-identical to the banked mood
+//! files; ScaleGrad0/1 = (1 − t)·1, t·1 of the blender weight) — port engineer G, 2026-09-26;
+//! docs/formats/lightmapper-client.md §6e for the cloud sprites (`clouds.rs`).
 
 impl std::fmt::Debug for SkyGradient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

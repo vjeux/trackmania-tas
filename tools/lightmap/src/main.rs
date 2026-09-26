@@ -2359,6 +2359,16 @@ fn run(a: Vec<String>) {
                 eprintln!("peel cameras: {} item records, scene box [{:.1}, {:.1}]×[{:.1}, {:.1}]×[{:.1}, {:.1}], world peel box [{:.1}, {:.1}]×[{:.1}, {:.1}]×[{:.1}, {:.1}]; tiling at scale {alloc_scale:.3} layout units/m: ext {:.1} → target {}², n = {}, {} fitted tile(s){}{}", recs.len(), plan.scene.min()[0], plan.scene.max()[0], plan.scene.min()[1], plan.scene.max()[1], plan.scene.min()[2], plan.scene.max()[2], plan.world.min[0], plan.world.max[0], plan.world.min[1], plan.world.max[1], plan.world.min[2], plan.world.max[2], plan.ext, plan.size, plan.n, plan.tiles.len(), if plan.tiles.is_empty() { " (the world pass only)" } else { "" }, if plan.tile_size != plan.size { format!(" at {}² (NON-EXACT --tile-res)", plan.tile_size) } else { String::new() });
                 for (i, t) in plan.tiles.iter().enumerate() { eprintln!("  tile {i}: [{:.1}, {:.1}]×[{:.1}, {:.1}]×[{:.1}, {:.1}]", t.min[0], t.max[0], t.min[1], t.max[1], t.min[2], t.max[2]); }
                 if plan.size != prm.peel_res { eprintln!("peel cameras: peel resolution {} → {}", prm.peel_res, plan.size); prm.peel_res = plan.size; }
+                // THE CLOUD GUARD (port engineer G; clouds.rs, lightmapper-client.md §6e): the BlueBay-family environment block draws
+                // 177 cloud-sprite instances whose pixel shader (PS 14515) is NOT transcribed — no capture has a fragment of it — and
+                // the proof that no sprite reaches a peel is geometric (pwc-day: 245 m of margin, a sprite ENTERS once the world
+                // frustum's highest point passes ~1 900 m). A scene tall enough to cross that line is outside the transcription:
+                // say so loudly instead of baking a silently cloud-free sky. Stadium has no environment block (stpad f4788).
+                if envir_l != "stadium" && envir_l != "stadium256" {
+                    if let Some((top, d)) = lightmap::clouds::world_box_reaches_clouds(&plan.world, &prm.sphere_dirs, &plan.rules) {
+                        eprintln!("WARNING: CLOUDS MAY REACH THIS BAKE'S PEELS — the world peel frustum of direction ({:.4}, {:.4}, {:.4}) reaches y = {top:.1} m (world box top {:.1} m, the line {} m): the {} environment block's cloud sprites (VS 14514 / PS 14515, One/InvSrcAlpha over the sky) can produce fragments there and PS 14515 is NOT transcribed (no captured fragment exists) — the sky of this bake is not covered by the transcription. Lower the scene, or capture a bake of this map and transcribe PS 14515 (`lmtool clouds-reach` quantifies the overlap).", d[0], d[1], d[2], plan.world.max[1], lightmap::clouds::CLOUD_REACH_WARN_Y, envir_l);
+                    }
+                }
                 prm.frustums = Some(std::sync::Arc::new(plan.table(&prm.sphere_dirs)));
                 // the tiles' world-XZ clip for the accumulate (RE 7): the world peel unclipped, each tile its cell
                 let mut clips: Vec<Option<[f32; 4]>> = vec![None];
@@ -4686,6 +4696,7 @@ fn run(a: Vec<String>) {
         }
         "sweep1-annotate" => { if let Err(e) = lightmap::peelcap::sweep1_annotate(&a) { eprintln!("sweep1-annotate: {e}"); std::process::exit(1); } }
         "clouds-check" => { if let Err(e) = lightmap::clouds::check(&a) { eprintln!("clouds-check: {e}"); std::process::exit(1); } }
+        "clouds-reach" => { if let Err(e) = lightmap::clouds::reach(&a) { eprintln!("clouds-reach: {e}"); std::process::exit(1); } }
         "draw-classes" => { if let Err(e) = lightmap::drawclasses::run(&a) { eprintln!("draw-classes: {e}"); std::process::exit(1); } }
         "veg-diag" => { if let Err(e) = lightmap::vegdiag::run(&a) { eprintln!("veg-diag: {e}"); std::process::exit(1); } }
         "passcap-info" => {

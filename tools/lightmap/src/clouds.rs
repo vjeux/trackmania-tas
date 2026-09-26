@@ -4,11 +4,16 @@
 //!
 //! WHAT THE CAPTURE SAYS (pwc-day, frame 127448, direction (0.345, 0.117, 0.931)): of the 16 226 cloud
 //! triangles' post-VS positions, 568 have z01 in [0, 1], 11 overlap the viewport in x/y, NONE both — the
-//! sprites sit 1.9–4.8 km up, tiled every 16 km over ±64 km (VisualToWorld translations), while the peel
-//! frustum is the world box's orthographic projection (y ≤ ~570 m) with DepthClip on: zero fragments in
-//! every peel of this map. PS 14515 is therefore unexercised here (not transcribed); the VS is, so a map
-//! whose peel reaches the cloud layer is covered and the clip test can be run for any direction
-//! (`lmtool clouds-check PASSCAP [--frame F] [--dir-eid E]`).
+//! instances tile every 16 km over ±64 km at y 2.1–3.0 km (VisualToWorld translations; the sprites' centres
+//! 574–5 706 m, half extents up to 2.2 km), while the peel frustum is the world box's orthographic
+//! projection (its highest point 1 588 m over every direction of the q4 sets on pwc-day's box, top 138 m)
+//! with DepthClip on: zero fragments in every peel of this map. PS 14515 is therefore unexercised here (not
+//! transcribed); the VS is, so a map whose peel reaches the cloud layer is covered and the clip test can be
+//! run for any direction (`lmtool clouds-check PASSCAP [--frame F] [--dir-eid E]`). `lmtool clouds-reach`
+//! (port engineer G) runs the frustum test for EVERY direction of the game's sets with the sprites expanded
+//! for each peel camera: 0 fragments on pwc-day's box (least separation 245 m), the first fragment at a world
+//! box top of ≈ 470–500 m (docs/formats/lightmapper-client.md §6e). Stadium's peel has no environment block
+//! (stpad f4788), so no cloud draw at all.
 //!
 //! VS 14514, instruction by instruction (Vertex_14514.txt), inputs per the input layout (stride 28):
 //! v0 = TEXCOORD0 float4 (the sprite centre in visual space, w = its size), v1 = TEXCOORD1 snorm16×4
@@ -470,6 +475,201 @@ pub fn check(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// One cloud sprite in WORLD space as the peel's orthographic camera expands it (port engineer G): VS 14514's
+/// camera-facing branch with the capture's constants (GlobalDir_Branch.w = 0, IsRadial = 0, pivots −0, vortex
+/// off, VisualToWorld = a pure translation — all 177 draws of frame 127448): the corner = centre + R·(a·size)·(±½)
+/// + U·size·(±½) with R = AxeXinV = the camera's right axis, U = AxeYinV = its up axis (`GbxV_WorldToCamera`
+/// columns 0 and 1) and a = aspect (v2.y ≥ 0) or 1/|aspect|. The quad is perpendicular to the peel direction, so
+/// its depth along D is the centre's.
+#[derive(Clone, Copy, Debug)]
+pub struct WorldSprite {
+    pub centre: [f32; 3],
+    /// half-width along R and half-height along U (metres)
+    pub half_w: f32,
+    pub half_h: f32,
+    pub opacity: f32,
+    pub draw_eid: u64,
+}
+
+/// The sprites of every cloud draw with a banked vertex buffer (each draw = one VisualToWorld translation).
+pub fn world_sprites(root: &std::path::Path, frame: u32) -> Result<(Vec<WorldSprite>, usize), String> {
+    let draws = crate::lmaccum::load_draws(root, frame)?;
+    let env = root.join(format!("env/frame{frame}"));
+    let mesh: Value = serde_json::from_str(&std::fs::read_to_string(env.join("mesh.json")).map_err(|e| format!("mesh.json: {e}"))?).map_err(|e| format!("mesh.json: {e}"))?;
+    let mut out = Vec::new();
+    let mut n_draws = 0usize;
+    for d in draws.iter().filter(|d| d["Vertex"]["shader"].as_str() == Some("14514")) {
+        let eid = d["eid"].as_u64().unwrap_or(0);
+        let Some(rec) = mesh.as_array().and_then(|a| a.iter().find(|r| r["eid"].as_u64() == Some(eid))) else { continue };
+        let Some(vb_file) = rec["vertex_buffers"].as_array().and_then(|a| a.first()).and_then(|v| v["file"].as_str()) else { continue };
+        let vb = std::fs::read(env.join("mesh").join(vb_file)).map_err(|e| format!("{vb_file}: {e}"))?;
+        let k = constants_of(d);
+        // the branch the transcription takes for these constants — anything else is a different expansion
+        if !(k.global_dir_branch[3].abs() <= 0.01 && k.camera_z_cross_dir_is_radial[3] < 0.5 && k.vortex[2] <= 0.0 && k.axe_x_half_neg_pivot_x[3] == 0.0 && k.axe_y_half_neg_pivot_y[3] == 0.0) {
+            return Err(format!("eid {eid}: cloud constants outside the camera-facing/no-pivot/no-vortex case (branch {}, radial {}, vortex {}, pivots {} {})", k.global_dir_branch[3], k.camera_z_cross_dir_is_radial[3], k.vortex[2], k.axe_x_half_neg_pivot_x[3], k.axe_y_half_neg_pivot_y[3]));
+        }
+        let m = k.visual_to_world.0;
+        if m[0] != [1.0, 0.0, 0.0, 0.0] || m[1] != [0.0, 1.0, 0.0, 0.0] || m[2] != [0.0, 0.0, 1.0, 0.0] {
+            return Err(format!("eid {eid}: VisualToWorld is not a pure translation: {:?}", m));
+        }
+        let t = [m[3][0], m[3][1], m[3][2]];
+        // the four corners of a sprite share v0/v2; one record per distinct centre
+        let mut seen: Vec<[f32; 4]> = Vec::new();
+        for v in parse_vertices(&vb) {
+            if seen.iter().any(|s| *s == v.v0) {
+                continue;
+            }
+            seen.push(v.v0);
+            let a = if v.v2[1] >= 0.0 { v.v2[1] } else { -1.0 / v.v2[1] };
+            out.push(WorldSprite { centre: add3(xyz(v.v0), t), half_w: 0.5 * a * v.v0[3], half_h: 0.5 * v.v0[3], opacity: v.v2[0], draw_eid: eid });
+        }
+        n_draws += 1;
+    }
+    Ok((out, n_draws))
+}
+
+/// A sprite against one peel camera: the separation (metres) on each light-space axis — 0 on every axis ⇔ the
+/// quad meets the frustum (a fragment is possible). R/U: the quad's interval vs the frustum's; D: the centre's
+/// depth vs [near, far] (DepthClip on; the quad has one depth).
+pub fn sprite_separation(s: &WorldSprite, cam: &crate::lightcam::OrthoCamera) -> [f32; 3] {
+    let rel = sub3(s.centre, cam.eye);
+    let r = dot3(rel, cam.right);
+    let u = dot3(rel, cam.up);
+    let d = dot3(rel, cam.forward);
+    let sep = |x: f32, c: f32, h: f32, half: f32| ((x - c).abs() - h - half).max(0.0);
+    [sep(r, cam.c[0], cam.h[0], s.half_w), sep(u, cam.c[1], cam.h[1], s.half_h), sep(d, cam.c[2], cam.h[2], 0.0)]
+}
+
+/// The highest world y any point of the frustum reaches: eye.y + Σ_axis h_axis·|axis.y| (+ the depth centre's shift).
+pub fn frustum_top_y(cam: &crate::lightcam::OrthoCamera) -> f32 {
+    cam.eye[1] + cam.c[0] * cam.right[1] + cam.c[1] * cam.up[1] + cam.c[2] * cam.forward[1] + cam.h[0] * cam.right[1].abs() + cam.h[1] * cam.up[1].abs() + cam.h[2] * cam.forward[1].abs()
+}
+
+/// THE BAKE-TIME GUARD (coordinator, 2026-09-26): the cloud sprites of the BlueBay-family environment block are
+/// UNTRANSCRIBED (PS 14515 has no captured fragment to check against) and the proof that none reaches a peel is
+/// geometric — on pwc-day's cloud layout the least separation is 16.5 m once the world peel frustum's highest
+/// point reaches 1 900 m and a sprite ENTERS at 1 950 m (`clouds-reach --scan-ymax`: box tops 450 / 500 m on the
+/// 2048² footprint). A bake whose world box lets any direction's frustum top this line is therefore not covered
+/// by the transcription; the guard returns that top so the caller can warn loudly. Stadium has no environment
+/// block at all (stpad f4788) — the caller skips the check there.
+pub const CLOUD_REACH_WARN_Y: f32 = 1850.0;
+
+/// The highest world point any of `dirs`' world-peel frusta on `world` reaches, when it is over the line.
+pub fn world_box_reaches_clouds(world: &crate::lightcam::Aabb, dirs: &[[f32; 3]], rules: &crate::lightcam::FitRules) -> Option<(f32, [f32; 3])> {
+    let mut top = (f32::MIN, [0f32; 3]);
+    for d in dirs {
+        let t = frustum_top_y(&crate::lightcam::fit_camera(world, *d, rules));
+        if t > top.0 {
+            top = (t, *d);
+        }
+    }
+    if top.0 >= CLOUD_REACH_WARN_Y { Some(top) } else { None }
+}
+
+/// `lmtool clouds-reach PASSCAP [--frame F] [--box xmin,ymin,zmin,xmax,ymax,zmax] [--quality Q] [--scan-ymax Y1,Y2,…]
+/// [--verbose]`: can any cloud sprite of the capture's environment block produce a fragment in ANY peel of the bake?
+/// For every direction of the game's sweep sets at quality Q (the rotated table sets in issue order, `dome::
+/// sweep_directions`; q3 = 256 + 128, q4 = 1024 + 512 + 256 + 128) the WORLD peel camera is fitted to `--box`
+/// (default: pwc-day's world box, `PeelBoxes::pwc_day`) by the transcribed `lightcam::fit_camera`, and every sprite
+/// (the 177 draws' vertex buffers, expanded for THAT camera as VS 14514 does) is tested against the frustum in light
+/// space. Prints per set: sprites inside, the least separation and its direction, the frustum's highest world y vs
+/// the sprites' lowest corner. `--scan-ymax` repeats the count with the box's y max replaced by each value — the
+/// height a scene would need before a cloud reaches a peel. The fitted peel's box is inside the world box, so a
+/// world-peel miss covers it.
+pub fn reach(args: &[String]) -> Result<(), String> {
+    let f = |k: &str| args.iter().position(|x| x == k).and_then(|i| args.get(i + 1)).cloned();
+    let root = std::path::PathBuf::from(&args[1]);
+    let frame: u32 = f("--frame").map(|v| v.parse().unwrap()).unwrap_or(127448);
+    let quality: u32 = f("--quality").map(|v| v.parse().unwrap()).unwrap_or(4);
+    let verbose = args.iter().any(|x| x == "--verbose");
+    let mut boxw = crate::lightcam::PeelBoxes::pwc_day().world;
+    if let Some(b) = f("--box") {
+        let v: Vec<f32> = b.split(',').map(|x| x.trim().parse::<f32>().map_err(|e| format!("--box: {e}"))).collect::<Result<_, _>>()?;
+        if v.len() != 6 {
+            return Err("--box wants xmin,ymin,zmin,xmax,ymax,zmax".into());
+        }
+        boxw = crate::lightcam::Aabb { min: [v[0], v[1], v[2]], max: [v[3], v[4], v[5]] };
+    }
+    let scan: Vec<f32> = f("--scan-ymax").map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect()).unwrap_or_default();
+    let (sprites, n_draws) = world_sprites(&root, frame)?;
+    let sets = crate::dome::PointSets::load(&crate::dome::default_path())?;
+    let rules = crate::lightcam::FitRules::default();
+    let (mut cy_min, mut cy_max, mut sz_max) = (f32::MAX, f32::MIN, 0f32);
+    for s in &sprites {
+        cy_min = cy_min.min(s.centre[1]);
+        cy_max = cy_max.max(s.centre[1]);
+        sz_max = sz_max.max(s.half_h.max(s.half_w));
+    }
+    println!("frame {frame}: {n_draws} cloud draws with banked buffers, {} sprites; centres y {cy_min:.1} … {cy_max:.1} m, largest half extent {sz_max:.1} m", sprites.len());
+    if verbose {
+        // per draw: the instance translation's y, its sprites' centre-y range and largest extent, opacities
+        let mut eids: Vec<u64> = sprites.iter().map(|s| s.draw_eid).collect();
+        eids.dedup();
+        for e in eids {
+            let ss: Vec<&WorldSprite> = sprites.iter().filter(|s| s.draw_eid == e).collect();
+            let (mut y0, mut y1, mut hmax, mut o0, mut o1, mut x0, mut x1, mut z0, mut z1) = (f32::MAX, f32::MIN, 0f32, f32::MAX, f32::MIN, f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+            for s in &ss {
+                y0 = y0.min(s.centre[1]); y1 = y1.max(s.centre[1]); hmax = hmax.max(s.half_h.max(s.half_w)); o0 = o0.min(s.opacity); o1 = o1.max(s.opacity);
+                x0 = x0.min(s.centre[0]); x1 = x1.max(s.centre[0]); z0 = z0.min(s.centre[2]); z1 = z1.max(s.centre[2]);
+            }
+            println!("  eid {e}: {} sprites, centres x {x0:.0}…{x1:.0} y {y0:.0}…{y1:.0} z {z0:.0}…{z1:.0}, largest half extent {hmax:.0} m, opacity {o0:.3}…{o1:.3}", ss.len());
+        }
+    }
+    println!("world box {:?} … {:?} (top {} m), quality {quality} → sets {:?}", boxw.min, boxw.max, boxw.max[1], crate::dome::sweep_counts(quality));
+    let run = |b: &crate::lightcam::Aabb, verbose: bool| -> Result<usize, String> {
+        let mut total_inside = 0usize;
+        for sweep in 0..crate::dome::sweep_counts(quality).len() {
+            let dirs = crate::dome::sweep_directions(&sets, quality, sweep, false).ok_or("no direction set")?;
+            let (mut n_inside, mut n_dirs_hit) = (0usize, 0usize);
+            let mut least = (f32::MAX, [0f32; 3], 0usize, [0f32; 3]);
+            let (mut top_y, mut top_dir) = (f32::MIN, [0f32; 3]);
+            let mut bottom_y = f32::MAX;
+            for d in &dirs {
+                let cam = crate::lightcam::fit_camera(b, *d, &rules);
+                let ty = frustum_top_y(&cam);
+                if ty > top_y {
+                    top_y = ty;
+                    top_dir = *d;
+                }
+                let mut hit_here = 0usize;
+                for (i, s) in sprites.iter().enumerate() {
+                    // the quad's lowest corner for this camera
+                    let low = s.centre[1] - s.half_h * cam.up[1].abs() - s.half_w * cam.right[1].abs();
+                    bottom_y = bottom_y.min(low);
+                    let sep = sprite_separation(s, &cam);
+                    let m = sep[0].max(sep[1]).max(sep[2]);
+                    if m < least.0 {
+                        least = (m, *d, i, sep);
+                    }
+                    if m == 0.0 {
+                        hit_here += 1;
+                        if verbose {
+                            println!("  HIT dir ({:.4},{:.4},{:.4}) sprite {i} (eid {}) centre ({:.0},{:.0},{:.0}) half {:.0}×{:.0} opacity {:.3}", d[0], d[1], d[2], s.draw_eid, s.centre[0], s.centre[1], s.centre[2], s.half_w, s.half_h, s.opacity);
+                        }
+                    }
+                }
+                if hit_here > 0 {
+                    n_dirs_hit += 1;
+                }
+                n_inside += hit_here;
+            }
+            let s = &sprites[least.2];
+            println!("  sweep {sweep} ({} dirs): sprites inside {n_inside} in {n_dirs_hit} directions; least separation {:.1} m (R {:.1} / U {:.1} / D {:.1}) at dir ({:.4},{:.4},{:.4}) for sprite {} (eid {}, centre ({:.0},{:.0},{:.0}), half {:.0}×{:.0}); frustum top y {top_y:.1} m at dir ({:.4},{:.4},{:.4}); lowest sprite corner {bottom_y:.1} m", dirs.len(), least.0, least.3[0], least.3[1], least.3[2], least.1[0], least.1[1], least.1[2], least.2, s.draw_eid, s.centre[0], s.centre[1], s.centre[2], s.half_w, s.half_h, top_dir[0], top_dir[1], top_dir[2]);
+            total_inside += n_inside;
+        }
+        Ok(total_inside)
+    };
+    let total = run(&boxw, verbose)?;
+    println!("→ {}", if total == 0 { "ZERO cloud fragments in every peel of every direction".to_string() } else { format!("{total} sprite–frustum overlaps") });
+    for y in scan {
+        let mut b = boxw;
+        b.max[1] = y;
+        println!("box y max {y}:");
+        run(&b, false)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -506,5 +706,89 @@ mod tests {
         assert_eq!(m.col(0), [1.0, 4.0, 7.0, 10.0]);
         let p = m.mul4([1.0, 1.0, 1.0, 1.0]);
         assert_eq!(p, [22.0, 35.0, 48.0, 1.0]);
+    }
+
+    /// The frustum test of `clouds-reach` against the transcribed VS: a sprite's quad meets the peel frustum
+    /// exactly when the VS 14514 corners (camera-facing branch, the peel camera's R/U as AxeX/AxeY) land in the
+    /// clip volume — checked on a box looked at straight up and at 45°, with sprites just inside and just
+    /// outside on each light-space axis.
+    #[test]
+    fn sprite_separation_agrees_with_the_vertex_shader_corners() {
+        let b = crate::lightcam::Aabb { min: [0.0, 0.0, 0.0], max: [2048.0, 138.0, 2048.0] };
+        let rules = crate::lightcam::FitRules::default();
+        for d in [[0.0f32, 1.0, 0.0], [0.5102, 0.5858, -0.6297], [0.6185, -0.5848, 0.5249]] {
+            let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+            let d = [d[0] / l, d[1] / l, d[2] / l];
+            let cam = crate::lightcam::fit_camera(&b, d, &rules);
+            // the VS constants for this camera: AxeX/AxeY = right/up, a pure translation VisualToWorld (zero here)
+            let mut k = CloudConstants::default();
+            k.axe_x_half_neg_pivot_x = [cam.right[0], cam.right[1], cam.right[2], 0.0];
+            k.axe_y_half_neg_pivot_y = [cam.up[0], cam.up[1], cam.up[2], 0.0];
+            k.global_dir_branch = [0.0, 1.0, 0.0, 0.0];
+            k.visual_to_world = Mat4([[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]);
+            k.eye_in_visual = cam.eye;
+            k.eye_in_world = cam.eye;
+            k.world_pr_camera = Mat4(cam.world_pr_camera());
+            k.world_to_camera = Mat4::from_rows3(&cam.world_to_camera());
+            // sprites placed in light space: centre = eye + r·R + u·U + z·D, size s (aspect 1)
+            let place = |r: f32, u: f32, z: f32, s: f32| -> WorldSprite {
+                let c = [cam.eye[0] + r * cam.right[0] + u * cam.up[0] + z * cam.forward[0], cam.eye[1] + r * cam.right[1] + u * cam.up[1] + z * cam.forward[1], cam.eye[2] + r * cam.right[2] + u * cam.up[2] + z * cam.forward[2]];
+                WorldSprite { centre: c, half_w: 0.5 * s, half_h: 0.5 * s, opacity: 1.0, draw_eid: 0 }
+            };
+            let (hr, hu, cz, hz) = (cam.h[0], cam.h[1], cam.c[2], cam.h[2]);
+            let cases = [
+                (place(0.0, 0.0, cz, 10.0), true),                 // dead centre
+                (place(hr + 6.0, 0.0, cz, 10.0), false),           // 1 m past the right edge (half 5)
+                (place(hr + 4.0, 0.0, cz, 10.0), true),            // 1 m inside it
+                (place(0.0, -(hu + 6.0), cz, 10.0), false),        // below the bottom edge
+                (place(0.0, 0.0, cz + hz + 1.0, 10.0), false),     // behind the far plane
+                (place(0.0, 0.0, cz - hz - 1.0, 10.0), false),     // before the near plane
+                (place(0.0, 0.0, cz + hz - 1.0, 10.0), true),      // just inside the far plane
+            ];
+            for (s, inside) in cases {
+                let sep = sprite_separation(&s, &cam);
+                let ours = sep.iter().all(|x| *x == 0.0);
+                assert_eq!(ours, inside, "dir {d:?} sprite {s:?} sep {sep:?}");
+                // the VS corners: the four (sx, sy) sign corners through vs_14514, then the clip test
+                let mut any_in = false;
+                let mut all_z = true;
+                let (mut xs, mut ys) = (Vec::new(), Vec::new());
+                for (sx, sy) in [(-1.0f32, -1.0f32), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+                    let v = CloudVertex { v0: [s.centre[0], s.centre[1], s.centre[2], 2.0 * s.half_h], v1: [sx * 0.25, sy * 0.25, 0.5, 0.5], v2: [1.0, 1.0] };
+                    let o = vs_14514(&v, &k);
+                    let (x, y, z) = (o.o0[0] / o.o0[3], o.o0[1] / o.o0[3], o.o0[2] / o.o0[3]);
+                    xs.push(x);
+                    ys.push(y);
+                    if !(0.0..=1.0).contains(&z) {
+                        all_z = false;
+                    }
+                    if (-1.0..=1.0).contains(&x) && (-1.0..=1.0).contains(&y) {
+                        any_in = true;
+                    }
+                }
+                // the quad is axis-aligned in NDC: it meets the viewport iff its x and y intervals overlap [−1, 1]
+                let ov = |v: &Vec<f32>| v.iter().cloned().fold(f32::MAX, f32::min) <= 1.0 && v.iter().cloned().fold(f32::MIN, f32::max) >= -1.0;
+                let vs_in = all_z && ov(&xs) && ov(&ys);
+                let _ = any_in;
+                assert_eq!(vs_in, inside, "VS corners disagree: dir {d:?} sprite {s:?} xs {xs:?} ys {ys:?}");
+            }
+        }
+    }
+
+    /// The bake-time guard on pwc-day's world box (top 138 m → the worst frustum tops out at 1 588 m, under the line)
+    /// and on the same footprint raised to 500 m (→ 1 950 m, over it — where `clouds-reach` sees the first sprite).
+    #[test]
+    fn the_cloud_guard_trips_on_a_tall_world_box_only() {
+        let rules = crate::lightcam::FitRules::default();
+        let dirs = [[-0.5258f32, 0.6964, -0.4883], [0.5102, 0.5858, -0.6297], [0.0, 1.0, 0.0], [0.3455, 0.1171, 0.9311]];
+        let dirs: Vec<[f32; 3]> = dirs.iter().map(|d| { let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt(); [d[0] / l, d[1] / l, d[2] / l] }).collect();
+        let low = crate::lightcam::PeelBoxes::pwc_day().world;
+        assert!(world_box_reaches_clouds(&low, &dirs, &rules).is_none());
+        let top = frustum_top_y(&crate::lightcam::fit_camera(&low, dirs[0], &rules));
+        assert!((top - 1588.2).abs() < 1.0, "{top}");
+        let mut tall = low;
+        tall.max[1] = 500.0;
+        let (t, d) = world_box_reaches_clouds(&tall, &dirs, &rules).expect("over the line");
+        assert!((t - 1950.2).abs() < 1.0 && d == dirs[0], "{t} {d:?}");
     }
 }
