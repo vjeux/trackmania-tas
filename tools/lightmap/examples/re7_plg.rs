@@ -1,47 +1,9 @@
-//! `re7_plg --pak PAK:KEY PATH...` — the PreLightGen of stand-alone CPlugSolid2Model (.Mesh.Gbx) files: the
-//! decoration meshes' chart factors (RE 7).
+//! `re7_plg ITEM…` — the PreLightGen fields of items (RE 7).
 fn main() {
-    let a: Vec<String> = std::env::args().collect();
-    let mut i = 1;
-    let mut pak: Option<String> = None;
-    while i < a.len() && a[i].starts_with("--") {
-        if a[i] == "--pak" { pak = Some(a[i + 1].clone()); i += 2; } else { i += 1; }
-    }
-    let pak = pak.expect("--pak PAK:KEY");
-    let (pp, key) = pak.split_once(':').expect("PAK:KEY");
-    let mut store = mapgeom::store::DataStore::empty();
-    store.add_pak(pp, key).expect("pak");
-    for p in &a[i..] {
-        let m = match store.load_model(p) { Ok(m) => m, Err(e) => { println!("{p}: {e}"); continue } };
-        if m.class_id == 0x2F086000 {
-            // a chunkless VegetTreeModel: the PLG sits before the file's trailing (0, 1) — needs the whole file
-            let bytes = store.read(p).map(|b| b.to_vec()).unwrap_or_default();
-            match mapgeom::static_item::legacy_plg::veget_tree_prelight(&bytes) {
-                Ok(Some(g)) => println!("{p}: VegetTreeModel PLG v{} u01 {} MeterByUv {} ({:#010x}) flag {} uv0 {:?} uv1 {:?} sprite {:?}", g.version, g.u01, g.u02, g.u02.to_bits(), g.u03, &g.u04[..4], &g.u04[4..], g.sprite_count),
-                Ok(None) => println!("{p}: VegetTreeModel without a PLG (no lightmap record)"),
-                Err(e) => println!("{p}: {e}"),
-            }
-            continue;
-        }
-        if m.class_id == 0x09005000 {
-            match mapgeom::static_item::legacy_plg::solid_prelight(&m.body) {
-                Ok(Some(g)) => println!("{p}: CPlugSolid 0x09005017 PLG v{} u01 {} MeterByUv {} ({:#010x}) flag {} uv0 {:?} sprite {:?}", g.version, g.u01, g.u02, g.u02.to_bits(), g.u03, &g.u04[..4], g.sprite_count),
-                Ok(None) => println!("{p}: CPlugSolid without a PLG"),
-                Err(e) => println!("{p}: {e}"),
-            }
-            continue;
-        }
-        if m.class_id != 0x090BB000 { println!("{p}: class {:#010x} (not a Solid2Model / CPlugSolid / VegetTreeModel)", m.class_id); continue; }
-        let mut lb = mapgeom::static_item::LookbackState::default();
-        lb.defined_nodes.extend(m.external_indices().iter().copied());
-        let mut r = mapgeom::static_item::Rd::new(&m.body, 0, lb);
-        match mapgeom::static_item::solid2::CPlugSolid2Model::parse(&mut r) {
-            Ok(s2) => {
-                let plg = s2.pre_light_gen.as_ref();
-                println!("{p}: v{} visuals {} geoms {} lights {} lodMaxDist {:?} PLG {}", s2.version, s2.visuals.len(), s2.shaded_geoms.len(), s2.lights.len(), s2.lod_max_dist,
-                    plg.map(|g| format!("v{} u01 {} MeterByUv {} uv0 {:?} uv1 {:?} sprite {:?} boxes {} uvGroups {} {:?}", g.version, g.u01, g.u02, &g.u04[..4], &g.u04[4..], g.sprite_count, g.boxes.len(), g.uv_groups.len(), g.uv_groups.iter().take(6).collect::<Vec<_>>())).unwrap_or("none".into()));
-            }
-            Err(e) => println!("{p}: parse error {e}"),
-        }
+    for p in std::env::args().skip(1) {
+        let b = std::fs::read(&p).unwrap();
+        let f = mapgeom::static_item::file::parse_file(&b).unwrap();
+        let s2 = f.item.static_object().unwrap().solid2().unwrap();
+        println!("{}: plg {:?}; materials_folder {:?}; visuals {}", p.rsplit('/').next().unwrap(), s2.pre_light_gen, s2.materials_folder, s2.visuals.len());
     }
 }

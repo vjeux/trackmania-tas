@@ -23,7 +23,7 @@ fn main() {
             println!("  custom[{i}] {:?}: {}", cm.name, match main { Some(mm) => format!("name {:?} model {:?} game_material {} link {:?} base_texture {:?} physics {} gameplay {} csts {:?} color {:?} textures {:?} u01 {:?} hiding {:?}", mm.material_name, mm.model, mm.is_using_game_material, mm.link, mm.base_texture, mm.surface_physic_id, mm.surface_gameplay_id, mm.csts.iter().map(|c| format!("{:?}", c)).collect::<Vec<_>>(), mm.color, mm.user_textures.iter().map(|t| format!("{:?}", t)).collect::<Vec<_>>(), mm.u01, mm.hiding_group), None => "no main".into() });
         }
         for (gi, sg) in s2.shaded_geoms.iter().enumerate() {
-            println!("  geom {gi}: visual {} material {} lod_mask {}", sg.visual_index, sg.material_index, sg.lod_mask);
+            println!("  geom {gi}: {:?}", sg);
         }
     }
 }
