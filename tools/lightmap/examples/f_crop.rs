@@ -25,7 +25,9 @@ fn main() {
             let i = ((y0 + y) * w + x0 + x) * 3;
             let pa3 = [pa[i], pa[i + 1], pa[i + 2]];
             let pb3 = [pb[i], pb[i + 1], pb[i + 2]];
-            let d3 = [0, 1, 2].map(|k| ((pa3[k] as i32 - pb3[k] as i32).abs() * 4).min(255) as u8);
+            // the third panel: B-only texels red, A-only blue, both → 4·|A−B| grey
+            let (la, lb) = (pa3[0] > 0 || pa3[1] > 0 || pa3[2] > 0, pb3[0] > 0 || pb3[1] > 0 || pb3[2] > 0);
+            let d3 = if lb && !la { [255u8, 0, 0] } else if la && !lb { [0, 0, 255] } else { [0, 1, 2].map(|k| ((pa3[k] as i32 - pb3[k] as i32).abs() * 4).min(255) as u8) };
             for (panel, px) in [(0usize, pa3), (1, pb3), (2, d3)] {
                 for sy in 0..scale {
                     for sx in 0..scale {

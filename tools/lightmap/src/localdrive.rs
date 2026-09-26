@@ -282,8 +282,10 @@ pub fn vs_7303(v: &crate::sunpass::LmVertex, inst: &crate::sunpass::LmInstance, 
 /// The shadow lookup of the pass: the LINEAR comparison sample (UseSoftShadow 1 — the captured shadow channel holds values
 /// between the ninths); LMTOOL_LL_SHADOW=point for the point sample, LMTOOL_LL_SHADOW_BITS=N for the weights' sub-texel bits.
 pub fn shadow_sample(shadow: &FlatCubeMap, uv: [f32; 2], r: f32) -> f32 {
-    if std::env::var_os("LMTOOL_LL_SHADOW").map(|v| v == "point").unwrap_or(false) {
-        return shadow.sample_cmp_ge(uv, r, SHADOW_TARGET);
+    match std::env::var("LMTOOL_LL_SHADOW").as_deref() {
+        Ok("point") => return shadow.sample_cmp_ge(uv, r, SHADOW_TARGET),
+        Ok("none") => return 1.0,
+        _ => {}
     }
     // f32 weights (0 bits) measure best against the captured accumulation (lamp A: 433 list texels differ vs 512 at 8 bits, 862 at 4)
     let bits: u32 = std::env::var("LMTOOL_LL_SHADOW_BITS").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
@@ -541,6 +543,8 @@ pub enum ComposeRule {
 /// THE COMPOSE: the frame-1 image (w × h RGBA, alpha 1 where any lamp reached) from the per-texel lists and the lamps' colours.
 pub fn compose(lists: &Lists, lamps: &[Lamp], rule: ComposeRule) -> crate::passdiff::Buf {
     let mut out = crate::passdiff::Buf::new(lists.w, lists.h, 4);
+    // the lamps by id (the gate may have dropped some, so id ≠ index)
+    let by_id: std::collections::HashMap<u16, &Lamp> = lamps.iter().map(|l| (l.id, l)).collect();
     for y in 0..lists.h {
         for x in 0..lists.w {
             let t = &lists.l[(y * lists.w + x) as usize];
@@ -550,7 +554,7 @@ pub fn compose(lists: &Lists, lamps: &[Lamp], rule: ComposeRule) -> crate::passd
                 if t.w8[j] == 0 || t.id[j] == 0xffff {
                     continue;
                 }
-                let Some(lamp) = lamps.get(t.id[j] as usize) else { continue };
+                let Some(lamp) = by_id.get(&t.id[j]).copied() else { continue };
                 any = true;
                 let s = t.w8[j] as f32 / 255.0;
                 let wv = match rule {
@@ -733,8 +737,13 @@ pub fn setup_from_map(map_path: &str, paks: &[(String, String)], collection: &st
     let daytime = crate::mapio::daytime(&mf.gbx.body).filter(|v| *v != 0xffff_ffff);
     let gate = crate::moods::BlenderCurve::for_collection(collection);
     let lights_on = daytime.map(|w| gate.local_lights_on(w));
-    let lamps = lamps(&scene.world_lights(), &mr.block_lights);
-    log(&format!("{} lamps ({} item, {} block/clip); DayTime {:?} → local lights {:?}", lamps.len(), scene.world_lights().len(), mr.block_lights.len(), daytime.map(|w| format!("{w:#x}")), lights_on));
+    // THE GATE (RE 10, 2026-09-26): the mood switch gates only the NightOnly lamps (CPlugLight flags bit 0); the others are baked
+    // at any DayTime — the lamps kept are the baked ones (LMTOOL_LL_ALL_LAMPS=1 keeps every lamp for a study)
+    let all = lamps(&scene.world_lights(), &mr.block_lights);
+    let n_all = all.len();
+    let n_night = all.iter().filter(|l| l.light.night_only).count();
+    let lamps: Vec<Lamp> = if std::env::var_os("LMTOOL_LL_ALL_LAMPS").is_some() { all } else { all.into_iter().filter(|l| daytime.map(|w| crate::moods::lamp_is_baked(l.light.night_only, &gate, w)).unwrap_or(!l.light.night_only)).collect() };
+    log(&format!("{n_all} lamps ({} item, {} block/clip), {n_night} NightOnly; DayTime {:?} → the mood switch {} → {} lamps baked", scene.world_lights().len(), mr.block_lights.len(), daytime.map(|w| format!("{w:#x}")), match lights_on { Some(true) => "ON", Some(false) => "OFF", None => "n/a (no DayTime word)" }, lamps.len()));
     // the probe chunking (the bake's probe-boxes rule: quality² > 0.9 records; the collection's offset and level height)
     let recs: Vec<crate::lmtiles::BlockRecord> = gl.records.iter().map(|r| crate::lmtiles::BlockRecord { world: crate::lmtiles::CBox::new(r.centre, r.half), quality: r.quality }).collect();
     let size = [mf.size[0].max(0) as u32, mf.size[1].max(0) as u32, mf.size[2].max(0) as u32];
@@ -1098,14 +1107,17 @@ pub fn frame1_compare(img: &crate::passdiff::Buf, editor_rgb: &[u8], charts: &[(
 /// `frame1_compare` with an explicit encode scale `m` (byte = 255·√(v/m)).
 pub fn frame1_compare_scaled(img: &crate::passdiff::Buf, editor_rgb: &[u8], charts: &[(u32, u32, u32, u32)], sqrt: bool, m: f32) -> (String, Vec<u8>, Vec<u8>, Vec<u8>) {
     let (ow, oh) = (1024u32, 1024u32);
+    // LMTOOL_LL_SHIFT=dx,dy: the 2×2 blocks taken at (2x + dx, 2y + dy) — the down-sample's pairing under test
+    let (sx, sy): (i64, i64) = std::env::var("LMTOOL_LL_SHIFT").ok().and_then(|v| { let (a, b) = v.split_once(',')?; Some((a.parse().ok()?, b.parse().ok()?)) }).unwrap_or((0, 0));
     let mut ours = vec![0u8; (ow * oh * 3) as usize];
     for y in 0..oh {
         for x in 0..ow {
             for c in 0..3u32 {
                 let mut s = 0.0f32;
-                for dy in 0..2 {
-                    for dx in 0..2 {
-                        let v = img.get(2 * x + dx, 2 * y + dy, c) / m;
+                for dy in 0..2i64 {
+                    for dx in 0..2i64 {
+                        let (px, py) = (2 * x as i64 + dx + sx, 2 * y as i64 + dy + sy);
+                        let v = if px < 0 || py < 0 || px >= img.w as i64 || py >= img.h as i64 { 0.0 } else { img.get(px as u32, py as u32, c) / m };
                         let e = if sqrt { v.max(0.0).sqrt() } else { v.max(0.0) };
                         s += e.min(1.0);
                     }
@@ -1114,6 +1126,7 @@ pub fn frame1_compare_scaled(img: &crate::passdiff::Buf, editor_rgb: &[u8], char
             }
         }
     }
+    if let Ok(n) = std::env::var("LMTOOL_LL_FILL1024") { if let Ok(n) = n.parse::<u32>() { fill_1024(&mut ours, ow, oh, n); } }
     let pre = ours.clone();
     let fb = crate::filecheck::chart_normalise(&mut ours, ow, oh, charts);
     // through the codec too (libwebp q 91 like the game's blob, decoded by the same decoder as the editor's): LMTOOL_LL_NO_WEBP=1 skips
@@ -1417,4 +1430,148 @@ pub fn graft_frame1(d: &mut crate::format::LightmapData, f1: &Frame1Image) -> Re
         mp.head[r + 20..r + 24].copy_from_slice(&f1.max_hdr.to_le_bytes());
     }
     Ok(())
+}
+
+/// A vertical profile through a chart's middle column from 3 pixels above its rect to 3 below: ours (pre-normalisation), the
+/// editor — where the editor's lit texels extend beyond the raster footprint.
+pub fn chart_vprofile(pre: &[u8], editor: &[u8], chart: (u32, u32, u32, u32)) -> String {
+    let w = 1024u32;
+    let (x0, y0, pw, ph) = crate::filecheck::chart_px(chart.0, chart.1, chart.2, chart.3);
+    let x = x0 + pw / 2;
+    let ys = y0.saturating_sub(3)..(y0 + ph + 3).min(1024);
+    let mut s = format!("chart ({}, {}, {}, {}) px rect ({x0}, {y0}, {pw}, {ph}), column {x}, rows {}..{}:\n  y     :", chart.0, chart.1, chart.2, chart.3, ys.start, ys.end);
+    for y in ys.clone() { s.push_str(&format!(" {:3}", y % 1000)); }
+    s.push_str("\n  ours  :");
+    for y in ys.clone() { s.push_str(&format!(" {:3}", pre[((y * w + x) * 3) as usize])); }
+    s.push_str("\n  editor:");
+    for y in ys { s.push_str(&format!(" {:3}", editor[((y * w + x) * 3) as usize])); }
+    s
+}
+
+/// PS 1332's rule on the 1024² byte image (a study switch: LMTOOL_LL_FILL1024=N passes): a texel with no lit channel takes the
+/// mean of its lit 8-neighbours (each weighted 1).
+pub fn fill_1024(rgb: &mut [u8], w: u32, h: u32, passes: u32) {
+    for _ in 0..passes {
+        let src = rgb.to_vec();
+        for y in 0..h as i64 {
+            for x in 0..w as i64 {
+                let o = ((y * w as i64 + x) * 3) as usize;
+                if src[o] > 0 || src[o + 1] > 0 || src[o + 2] > 0 { continue; }
+                let (mut acc, mut n) = ([0u32; 3], 0u32);
+                for dy in -1..=1i64 { for dx in -1..=1i64 {
+                    if dx == 0 && dy == 0 { continue; }
+                    let (nx, ny) = (x + dx, y + dy);
+                    if nx < 0 || ny < 0 || nx >= w as i64 || ny >= h as i64 { continue; }
+                    let p = ((ny * w as i64 + nx) * 3) as usize;
+                    if src[p] > 0 || src[p + 1] > 0 || src[p + 2] > 0 { for c in 0..3 { acc[c] += src[p + c] as u32; } n += 1; }
+                } }
+                if n > 0 { for c in 0..3 { rgb[o + c] = ((acc[c] as f32 / n as f32) + 0.5) as u8; } }
+            }
+        }
+    }
+}
+
+/// WHY IS THIS TEXEL SHADOWED — for `lamp`, the fragments of jitter 4 (the centred one) covering the target texel (x, y): the
+/// world position and normal, the flat-cube face / uv / reference depth, the four PCF taps' stored depths (D16 steps) and the
+/// caster triangle that wrote each (re-rendered with an owner map: instance / record class / triangle), and the light terms.
+pub fn probe_shadow(gl: &crate::layout::GameLayout, sc: &LmScene, lamp: &Lamp, x: u32, y: u32, target: (u32, u32)) -> String {
+    let drawn = cull(gl, sc, lamp);
+    let tris = casters(sc, &drawn);
+    // the owner of every caster triangle: (instance, triangle index within the instance)
+    let mut owners: Vec<(usize, usize)> = Vec::new();
+    for &ii in &drawn {
+        if let Some(m) = mesh_of(sc, ii) { for t in 0..sc.meshes[m].indices.len() / 3 { owners.push((ii, t)); } }
+    }
+    let shadow = render_flat_cube(lamp.light.pos, lamp.r_eff, lamp.face_size, &tris, true);
+    // the owner map: render again per triangle, noting which triangle wrote the final depth
+    let mut owner = vec![usize::MAX; shadow.depth.len()];
+    {
+        let size = lamp.face_size;
+        let w = (size * 3) as usize;
+        for (ti, t) in tris.iter().enumerate() {
+            let one = render_flat_cube(lamp.light.pos, lamp.r_eff, size, &[*t], true);
+            for i in 0..one.depth.len() {
+                if one.depth[i] > 0.0 && (one.depth[i] - shadow.depth[i]).abs() < 1e-9 { owner[i] = ti; }
+            }
+            let _ = w;
+        }
+    }
+    let cb = lamp.light_cb();
+    let mut s = format!("lamp id {} ({}) at {:?} dir {:?}, R {}: texel ({x}, {y})", lamp.id, lamp.owner, lamp.light.pos, lamp.light.dir, lamp.r_eff);
+    let mut found = 0;
+    for jit in 0..9u32 {
+    let rcb = jitter_cb(jit, target.0, target.1);
+    let verbose = jit == 4;
+    for &ii in &drawn {
+        let Some(m) = mesh_of(sc, ii) else { continue };
+        let mesh = &sc.meshes[m];
+        let inst = &sc.instances[ii];
+        let vs: Vec<Vs7303Out> = mesh.verts.iter().map(|v| vs_7303(v, inst, &sc.table, &rcb)).collect();
+        for (t, tri) in mesh.indices.chunks_exact(3).enumerate() {
+            let (a, b, c) = (&vs[tri[0] as usize], &vs[tri[1] as usize], &vs[tri[2] as usize]);
+            rasterise_triangle_rows([a.clip, b.clip, c.clip], target.0, target.1, y as i64, y as i64 + 1, |px, py, b0, b1, b2| {
+                if px != x || py != y { return; }
+                found += 1;
+                let p = [a.world[0] * b0 + b.world[0] * b1 + c.world[0] * b2, a.world[1] * b0 + b.world[1] * b1 + c.world[1] * b2, a.world[2] * b0 + b.world[2] * b1 + c.world[2] * b2];
+                let n = [a.normal[0] * b0 + b.normal[0] * b1 + c.normal[0] * b2, a.normal[1] * b0 + b.normal[1] * b1 + c.normal[1] * b2, a.normal[2] * b0 + b.normal[2] * b1 + c.normal[2] * b2];
+                let l = [cb.light_pos[0] - p[0], cb.light_pos[1] - p[1], cb.light_pos[2] - p[2]];
+                let d = (l[0] * l[0] + l[1] * l[1] + l[2] * l[2]).sqrt();
+                let (face, uv, dref) = crate::locallight::flat_cube_lookup(&cb, l[0], l[1], l[2]);
+                let k = sc.rec_of.get(ii).copied().unwrap_or(usize::MAX);
+                let class = gl.records.get(k).map(|r| r.class).unwrap_or("?");
+                s.push_str(&format!("\n  jitter {jit}: fragment of instance {ii} ({class} record {k}, mesh {} idx, tri {t}): world {:?} normal {:?}, |L| {d:.3} m, N·L {:.4}; face {face}, uv {:?}, ref {dref:.7} ({:.1} steps); linear sample = {:.3}, point = {}", mesh.indices.len(), p, n, (n[0] * l[0] + n[1] * l[1] + n[2] * l[2]) / d, uv, dref * 65535.0, shadow.sample_cmp_ge_linear(uv, dref, SHADOW_TARGET, 0), shadow.sample_cmp_ge(uv, dref, SHADOW_TARGET)));
+                if !verbose { return; }
+                let fx = uv[0] * SHADOW_TARGET as f32 - 0.5;
+                let fy = uv[1] * SHADOW_TARGET as f32 - 0.5;
+                let (x0, y0) = (fx.floor() as i64, fy.floor() as i64);
+                for (dx, dy) in [(0i64, 0i64), (1, 0), (0, 1), (1, 1)] {
+                    let (tx, ty) = (x0 + dx, y0 + dy);
+                    let wsh = shadow.width() as i64;
+                    if tx < 0 || ty < 0 || tx >= wsh || ty >= (shadow.size * 2) as i64 { continue; }
+                    let i = (ty * wsh + tx) as usize;
+                    let st = shadow.depth[i];
+                    let own = owner[i];
+                    let who = if own == usize::MAX { "nothing".to_string() } else { let (oi, ot) = owners[own]; let om = mesh_of(sc, oi).map(|m| sc.meshes[m].indices.len()).unwrap_or(0); let ok = sc.rec_of.get(oi).copied().unwrap_or(usize::MAX); format!("instance {oi} ({} record {ok}, mesh {om} idx, tri {ot}: {:?})", gl.records.get(ok).map(|r| r.class).unwrap_or("?"), tris[own]) };
+                    s.push_str(&format!("\n    tap ({tx}, {ty}) [weights ({:.2}, {:.2})]: stored {:.7} ({:.1} steps) → {} — written by {who}", fx - x0 as f32, fy - y0 as f32, st, st * 65535.0, if dref >= st { "LIT" } else { "SHADOWED" }));
+                }
+            });
+        }
+    }
+    }
+    if found == 0 { s.push_str("\n  no fragment of the drawn set covers the texel"); }
+    s
+}
+
+/// A study filter over the composed 2048² image (LMTOOL_LL_BLUR): `box3` = the 3×3 mean over the LIT neighbours (weights 1,
+/// normalised by the lit count), `tent3` = the 3×3 tent (1 2 1 ⊗ 1 2 1) over lit neighbours, `box3all` = the plain 3×3 mean
+/// (zeros included). The editor's frame 1 shows a blur signature (lower maxima, softer shadow edges than the lists imply).
+pub fn blur_study(img: &crate::passdiff::Buf, kind: &str) -> crate::passdiff::Buf {
+    let (w, h) = (img.w as i64, img.h as i64);
+    let mut out = crate::passdiff::Buf::new(img.w, img.h, 4);
+    let tent = kind.starts_with("tent");
+    let all = kind.ends_with("all");
+    for y in 0..h {
+        for x in 0..w {
+            let here = [img.get(x as u32, y as u32, 0), img.get(x as u32, y as u32, 1), img.get(x as u32, y as u32, 2), img.get(x as u32, y as u32, 3)];
+            let lit_here = here[0] > 0.0 || here[1] > 0.0 || here[2] > 0.0;
+            if !lit_here && !all {
+                for c in 0..4 { out.set(x as u32, y as u32, c, here[c as usize]); }
+                continue;
+            }
+            let (mut acc, mut wsum) = ([0f32; 3], 0f32);
+            for dy in -1..=1i64 {
+                for dx in -1..=1i64 {
+                    let (nx, ny) = (x + dx, y + dy);
+                    if nx < 0 || ny < 0 || nx >= w || ny >= h { continue; }
+                    let v = [img.get(nx as u32, ny as u32, 0), img.get(nx as u32, ny as u32, 1), img.get(nx as u32, ny as u32, 2)];
+                    let lit = v[0] > 0.0 || v[1] > 0.0 || v[2] > 0.0;
+                    let wt = if tent { ((2 - dx.abs()) * (2 - dy.abs())) as f32 } else { 1.0 };
+                    if lit || all { for c in 0..3 { acc[c] += v[c] * wt; } wsum += wt; }
+                }
+            }
+            if wsum > 0.0 { for c in 0..3 { out.set(x as u32, y as u32, c as u32, acc[c] / wsum); } }
+            out.set(x as u32, y as u32, 3, here[3]);
+        }
+    }
+    out
 }
