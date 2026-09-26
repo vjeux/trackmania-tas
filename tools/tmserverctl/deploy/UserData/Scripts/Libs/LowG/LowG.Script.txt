@@ -16,6 +16,7 @@
 #Const C_Prefix "$0cf[low-g]$z "
 #Const C_Event_Cmd "LowG.Cmd"			///< TriggerModeScriptEventArray("LowG.Cmd", [Login, Command, Args...])
 #Const C_Event_Status "LowG.Status"	///< sent back with one Text per line
+#Const C_BalloonName "$fa0Ballon"		///< nickname prefix of the fake-user balloons
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
 // Globals
@@ -86,9 +87,10 @@ Void Apply(CSmPlayer _Player) {
 	declare Real Wanted = ML::Clamp(WantedGravity(_Player), 0., 1.);
 	declare Boolean Fresh = (LowG_AppliedStartTime != _Player.StartTime);
 	declare Boolean Changed = (LowG_AppliedCoef != Wanted);
-	// The engine may drop an order that lands during the spawn animation: one more try a
-	// second later if the car still reports another value.
-	declare Boolean Confirm = (LowG_AppliedAt > 0 && Now - LowG_AppliedAt > 1000 && Now - LowG_AppliedAt < 1500 && _Player.GravityCoef != Wanted);
+	// The car reports the coefficient it runs with (GravityCoef reads back what the Delayed
+	// order set). A checkpoint respawn or an engine reset may put it back to 1: whenever the
+	// readback disagrees for more than a second, order again (at most once a second).
+	declare Boolean Confirm = (LowG_AppliedAt > 0 && Now - LowG_AppliedAt > 1000 && _Player.GravityCoef != Wanted);
 	if (!Fresh && !Changed && !Confirm) return;
 	if (SetPlayer_DelayedIsFull(_Player)) return;
 
@@ -97,6 +99,8 @@ Void Apply(CSmPlayer _Player) {
 	if (IsBalloon(_Player) && Fresh && !SetPlayer_DelayedIsFull(_Player)) {
 		SetPlayer_Delayed_NoEngine(_Player, True);
 	}
+	declare Integer LowG_ApplyCount for _Player = 0;
+	LowG_ApplyCount += 1;
 	LowG_AppliedCoef = Wanted;
 	LowG_AppliedStartTime = _Player.StartTime;
 	LowG_AppliedAt = Now;
@@ -121,12 +125,27 @@ Integer BalloonCount() {
 	return N;
 }
 
+/// Only the fake users this library created (by name): an admin's ConnectFakePlayer is left alone.
+Boolean IsBalloonUser(CUser _User) {
+	return _User.IsFakeUser && TL::StartsWith(C_BalloonName, _User.Name, False, True);
+}
+
 Integer FakeUserCount() {
 	declare Integer Have = 0;
 	foreach (User in Users) {
-		if (User.IsFakeUser) Have += 1;
+		if (IsBalloonUser(User)) Have += 1;
 	}
 	return Have;
+}
+
+Void DestroyBalloonUsers() {
+	declare CUser[] Gone;
+	foreach (User in Users) {
+		if (IsBalloonUser(User)) Gone.add(User);
+	}
+	foreach (User in Gone) {
+		Users_DestroyFake(User);
+	}
 }
 
 /**
@@ -143,14 +162,14 @@ Void SyncBots() {
 		declare Integer Have = FakeUserCount();
 		if (Have == Want) return;
 		if (Want < Have) {
-			Users_DestroyAllFakes();
+			DestroyBalloonUsers();
 			Have = 0;
 		}
 		for (I, Have + 1, Want) {
-			declare CUser Fake <=> Users_CreateFake("$fa0Ballon " ^ I, 0);
+			declare CUser Fake <=> Users_CreateFake(C_BalloonName ^ " " ^ I, 0);
 		}
 	} else {
-		if (FakeUserCount() > 0) Users_DestroyAllFakes();
+		if (FakeUserCount() > 0) DestroyBalloonUsers();
 		if (BotPlayers.count == Want) return;
 		if (Want == 0) {
 			DestroyAllBotPlayers();
@@ -184,7 +203,8 @@ Void SendStatus() {
 	foreach (Player in Everyone) {
 		declare Text Login = "";
 		if (Player.User != Null) Login = Player.User.Login;
-		Lines.add(Login ^ " spawn=" ^ Player.SpawnStatus ^ " gravity=" ^ Fmt(Player.GravityCoef) ^ " wanted=" ^ Fmt(WantedGravity(Player)) ^ " balloon=" ^ IsBalloon(Player) ^ " kmh=" ^ ML::NearestInteger(Player.Speed * 3.6));
+		declare Integer LowG_ApplyCount for Player = 0;
+		Lines.add(Login ^ " spawn=" ^ Player.SpawnStatus ^ " gravity=" ^ Fmt(Player.GravityCoef) ^ " wanted=" ^ Fmt(WantedGravity(Player)) ^ " balloon=" ^ IsBalloon(Player) ^ " orders=" ^ LowG_ApplyCount ^ " kmh=" ^ ML::NearestInteger(Player.Speed * 3.6));
 	}
 	XmlRpc.SendCallbackArray(C_Event_Status, Lines);
 }
@@ -305,6 +325,9 @@ Void UpdateSettings(Real _BotGravity, Integer _MaxBots) {
 
 /// Match_StartMap
 Void StartMap() {
+	// Time Attack may set these per map; low-gravity times stay off the real leaderboards.
+	Scores_AutoUploadPersonalBests = False;
+	SetGameModeNameAndCustomData("LowG", "", "");
 	ApplyCollisions();
 	SyncBots();
 }
