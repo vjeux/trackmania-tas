@@ -167,14 +167,19 @@ them to the mode (a mode script has no chat access in TM2020).
 | `/bots 0`                 | remove them                                              |
 | `/grip 0.2`               | balloons' tyre grip, 0 = no friction (they slide) … 1 = normal; live |
 | `/botgravity 0.1`         | balloons' gravity coefficient; live                       |
+| `/botmodel snow`          | balloons as another vehicle: sport | snow | rally | desert | skin (the skinned CarSport from S_LowG_BotSkin) | default; live |
+| `/skin`                   | shows the balloon skin (changing it = S_LowG_BotSkin + restart: the item list is built at server start only) |
+| `/reactor down 2`         | permanent reactor boost for PLAYERS only: down | up | off, level 1 | 2; re-issued every 2 s (no readback exists) |
 | `/collisions on|off`      | car-to-car collisions                                    |
 | `/status`                 | current settings                                         |
 
 Mode settings (matchsettings `<mode_script_settings>` or `rpc SetModeScriptSettings`):
 `S_LowG_DefaultGravity` (0.5), `S_LowG_Collisions` (1), `S_LowG_Bots` (0, balloons at each map
 start), `S_LowG_BotGravity` (0.05), `S_LowG_BotAdherence` (0.0), `S_LowG_MaxBots` (16),
-`S_LowG_BotsAreFakeUsers` (0) — a setting takes effect when its value changes, chat values hold
-otherwise — plus
+`S_LowG_BotsAreFakeUsers` (0), `S_LowG_BotSkin` (''; zip URL or Skins/Models/CarSport/Name.zip, needs a
+restart), `S_LowG_PlayerReactor` (down; off|down|up) + `S_LowG_PlayerReactorLvl` (2), `S_LowG_BotKeepModel`
+(1: balloons pushed through a transform gate are put back into their vehicle every second) — a
+setting takes effect when its value changes, chat values hold otherwise — plus
 everything Time Attack has (`S_TimeLimit` 0 = no limit, `S_WarmUpNb`, `S_ChatTime`...).
 Low-gravity times are kept off the normal leaderboards
 (`Scores_AutoUploadPersonalBests = False`, mode name "LowG").
