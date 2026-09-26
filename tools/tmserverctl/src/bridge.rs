@@ -27,13 +27,15 @@ pub fn parse_chat_command(text: &str) -> Option<Vec<String>> {
     let name = match cmd.as_str() {
         "gravity" | "g" | "grav" | "gravite" | "gravité" => "gravity",
         "bots" | "bot" | "balloons" | "ballons" => "bots",
+        "grip" | "adherence" | "friction" => "grip",
+        "botgravity" | "bg" | "botg" | "ballongravity" => "botgravity",
         "collisions" | "collision" | "col" => "collisions",
         "status" | "lowg" | "low-g" | "lowgravity" => "status",
         _ => return None,
     };
     let mut out = vec![name.to_string()];
     // "/gravity 0,3" -- a French keyboard's decimal comma.
-    out.extend(rest.into_iter().map(|w| if name == "gravity" { w.replace(',', ".") } else { w }));
+    out.extend(rest.into_iter().map(|w| if matches!(name, "gravity" | "grip" | "botgravity") { w.replace(',', ".") } else { w }));
     Some(out)
 }
 
@@ -153,6 +155,8 @@ mod tests {
         assert_eq!(parse_chat_command("/bots 3"), Some(vec!["bots".into(), "3".into()]));
         assert_eq!(parse_chat_command("/collisions off"), Some(vec!["collisions".into(), "off".into()]));
         assert_eq!(parse_chat_command("/lowg"), Some(vec!["status".into()]));
+        assert_eq!(parse_chat_command("/grip 0,2"), Some(vec!["grip".into(), "0.2".into()]));
+        assert_eq!(parse_chat_command("/botgravity 0.1"), Some(vec!["botgravity".into(), "0.1".into()]));
         assert_eq!(parse_chat_command("hello /gravity"), None);
         assert_eq!(parse_chat_command("/help"), None);
         assert_eq!(parse_chat_command("/"), None);

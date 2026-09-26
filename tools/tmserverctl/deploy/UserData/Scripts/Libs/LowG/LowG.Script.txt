@@ -25,6 +25,8 @@ declare Real[Text] G_GravityByLogin;	///< login => coefficient chosen in chat
 declare Real G_DefaultGravity;			///< for players without a choice
 declare Real G_BotGravity;
 declare Real G_BotAdherence;			///< grip of the balloons: 0 = they slide like on ice
+declare Real G_SettingBotGravity;		///< last seen value of S_LowG_BotGravity (change detection)
+declare Real G_SettingBotAdherence;	///< last seen value of S_LowG_BotAdherence
 declare Boolean G_Collisions;
 declare Integer G_WantedBots;
 declare Integer G_MaxBots;
@@ -79,6 +81,7 @@ Real WantedGravity(CSmPlayer _Player) {
  */
 Void Apply(CSmPlayer _Player) {
 	declare Real LowG_AppliedCoef for _Player = -1.;
+	declare Real LowG_AppliedAdherence for _Player = -1.;
 	declare Integer LowG_AppliedStartTime for _Player = -1;
 	declare Integer LowG_AppliedAt for _Player = -1;
 
@@ -86,29 +89,37 @@ Void Apply(CSmPlayer _Player) {
 		LowG_AppliedStartTime = -1;
 		return;
 	}
+	declare Boolean Balloon = IsBalloon(_Player);
 	declare Real Wanted = ML::Clamp(WantedGravity(_Player), 0., 1.);
+	// Players keep their normal tyres; balloons get the grip asked for (0 = they slide).
+	declare Real WantedAdherence = 1.;
+	if (Balloon) WantedAdherence = ML::Clamp(G_BotAdherence, 0., 1.);
 	declare Boolean Fresh = (LowG_AppliedStartTime != _Player.StartTime);
-	declare Boolean Changed = (LowG_AppliedCoef != Wanted);
-	// The car reports the coefficient it runs with (GravityCoef reads back what the Delayed
-	// order set). A checkpoint respawn or an engine reset may put it back to 1: whenever the
-	// readback disagrees for more than a second, order again (at most once a second).
-	declare Boolean Confirm = (LowG_AppliedAt > 0 && Now - LowG_AppliedAt > 1000 && _Player.GravityCoef != Wanted);
+	declare Boolean Changed = (LowG_AppliedCoef != Wanted) || (Balloon && LowG_AppliedAdherence != WantedAdherence);
+	// The car reports the coefficients it runs with (GravityCoef / AdherenceCoef read back what
+	// the Delayed orders set). A checkpoint respawn or an engine reset may put them back to 1:
+	// whenever a readback disagrees for more than a second, order again (at most once a second).
+	declare Boolean Confirm = (LowG_AppliedAt > 0 && Now - LowG_AppliedAt > 1000 && (_Player.GravityCoef != Wanted || (Balloon && _Player.AdherenceCoef != WantedAdherence)));
 	if (!Fresh && !Changed && !Confirm) return;
 	if (SetPlayer_DelayedIsFull(_Player)) return;
 
 	SetPlayer_Delayed_GravityCoef(_Player, Wanted);
 	// The welcome line goes out on the first spawn: at OnPlayerAdded the player has no UI yet.
 	declare Boolean LowG_Welcomed for _Player = False;
-	if (!LowG_Welcomed && !IsBalloon(_Player)) {
+	if (!LowG_Welcomed && !Balloon) {
 		LowG_Welcomed = True;
-		Tell(_Player, "low gravity server: yours is " ^ Fmt(Wanted) ^ " -- /gravity <0..1> to change it, /bots <n> parks balloons, /collisions on|off, /status");
+		Tell(_Player, "low gravity server: yours is " ^ Fmt(Wanted) ^ " -- /gravity <0..1> to change it, /bots <n> parks balloons, /grip and /botgravity tune them, /collisions on|off, /status");
 	}
-	// Balloons must not drive away, and slide with as little grip as asked (0 = no friction).
-	if (IsBalloon(_Player) && Fresh && !SetPlayer_DelayedIsFull(_Player)) {
-		SetPlayer_Delayed_NoEngine(_Player, True);
-	}
-	if (IsBalloon(_Player) && !SetPlayer_DelayedIsFull(_Player)) {
-		SetPlayer_Delayed_AdherenceCoef(_Player, ML::Clamp(G_BotAdherence, 0., 1.));
+	if (Balloon) {
+		// Balloons must not drive away...
+		if (Fresh && !SetPlayer_DelayedIsFull(_Player)) {
+			SetPlayer_Delayed_NoEngine(_Player, True);
+		}
+		// ...and slide with as little grip as asked.
+		if (!SetPlayer_DelayedIsFull(_Player)) {
+			SetPlayer_Delayed_AdherenceCoef(_Player, WantedAdherence);
+			LowG_AppliedAdherence = WantedAdherence;
+		}
 	}
 	declare Integer LowG_ApplyCount for _Player = 0;
 	LowG_ApplyCount += 1;
@@ -270,6 +281,22 @@ Void HandleCommand(Text[] _Params) {
 			SyncBots();
 			TellAll(NameOf(Caller, Login) ^ "$z asked for " ^ N ^ " balloon(s)");
 		}
+		case "grip": {
+			if (_Params.count < 3) {
+				Tell(Caller, "balloon grip: " ^ Fmt(G_BotAdherence) ^ " -- /grip <0..1> (0 = no friction, 1 = normal tyres)");
+				return;
+			}
+			G_BotAdherence = ML::Clamp(TL::ToReal(_Params[2]), 0., 1.);
+			TellAll(NameOf(Caller, Login) ^ "$z set the balloons' grip to " ^ Fmt(G_BotAdherence));
+		}
+		case "botgravity": {
+			if (_Params.count < 3) {
+				Tell(Caller, "balloon gravity: " ^ Fmt(G_BotGravity) ^ " -- /botgravity <0..1>");
+				return;
+			}
+			G_BotGravity = ML::Clamp(TL::ToReal(_Params[2]), 0., 1.);
+			TellAll(NameOf(Caller, Login) ^ "$z set the balloons' gravity to " ^ Fmt(G_BotGravity));
+		}
 		case "collisions": {
 			if (_Params.count < 3) {
 				Tell(Caller, "collisions: " ^ G_Collisions ^ " -- /collisions on|off");
@@ -281,11 +308,11 @@ Void HandleCommand(Text[] _Params) {
 			TellAll(NameOf(Caller, Login) ^ "$z turned collisions " ^ Arg);
 		}
 		case "status": {
-			Tell(Caller, "gravity default " ^ Fmt(G_DefaultGravity) ^ ", collisions " ^ G_Collisions ^ ", balloons " ^ BalloonCount() ^ ", players " ^ Players.count);
+			Tell(Caller, "gravity default " ^ Fmt(G_DefaultGravity) ^ ", collisions " ^ G_Collisions ^ ", balloons " ^ BalloonCount() ^ " (gravity " ^ Fmt(G_BotGravity) ^ ", grip " ^ Fmt(G_BotAdherence) ^ "), players " ^ Players.count);
 			SendStatus();
 		}
 		default: {
-			Tell(Caller, "commands: /gravity <0..1> | /gravity all <0..1> | /gravity reset | /bots <n> | /collisions on|off | /status");
+			Tell(Caller, "commands: /gravity <0..1> | /gravity all <0..1> | /gravity reset | /bots <n> | /grip <0..1> | /botgravity <0..1> | /collisions on|off | /status");
 		}
 	}
 }
@@ -308,7 +335,7 @@ Void CreateHint() {
 	G_HintLayer.ManialinkPage = """<manialink version="3" name="LowG_Hint">
 	<frame pos="0 85" z-index="20">
 		<quad pos="0 0" size="190 7" halign="center" valign="center" bgcolor="00000099" z-index="0"/>
-		<label pos="0 0" size="186 6" halign="center" valign="center2" textsize="1.3" textcolor="FFFFFF" textemboss="1" text="$0cfLOW-G$fff  chat:  /gravity 0..1 (toi)   /gravity all 0.3   /bots 4 (ballons)   /collisions on|off   /status" z-index="1"/>
+		<label pos="0 0" size="186 6" halign="center" valign="center2" textsize="1.3" textcolor="FFFFFF" textemboss="1" text="$0cfLOW-G$fff  chat:  /gravity 0..1 (toi)   /gravity all 0.3   /bots 4 (ballons)   /grip 0..1   /botgravity 0..1   /collisions on|off   /status" z-index="1"/>
 	</frame>
 </manialink>""";
 	UIManager.UIAll.UILayers.add(G_HintLayer);
@@ -329,6 +356,8 @@ Void DestroyHint() {
 Void Load(Real _DefaultGravity, Boolean _Collisions, Integer _Bots, Real _BotGravity, Real _BotAdherence, Integer _MaxBots, Boolean _BotsAreFakeUsers) {
 	G_DefaultGravity = ML::Clamp(_DefaultGravity, 0., 1.);
 	G_BotAdherence = ML::Clamp(_BotAdherence, 0., 1.);
+	G_SettingBotGravity = _BotGravity;
+	G_SettingBotAdherence = _BotAdherence;
 	G_Collisions = _Collisions;
 	G_WantedBots = _Bots;
 	G_BotGravity = ML::Clamp(_BotGravity, 0., 1.);
@@ -345,10 +374,18 @@ Void Load(Real _DefaultGravity, Boolean _Collisions, Integer _Bots, Real _BotGra
 }
 
 /// Settings may change at runtime (SetModeScriptSettings); the mode passes them every tick.
-/// (The balloon kind is only taken from the setting at load time: /bots N fake|bot changes it live.)
+/// A setting is applied when ITS value changes, so a value set in chat (/grip, /botgravity)
+/// holds until the setting itself is edited. (The balloon kind is only taken at load time:
+/// /bots N fake|bot changes it live.)
 Void UpdateSettings(Real _BotGravity, Real _BotAdherence, Integer _MaxBots) {
-	G_BotGravity = ML::Clamp(_BotGravity, 0., 1.);
-	G_BotAdherence = ML::Clamp(_BotAdherence, 0., 1.);
+	if (_BotGravity != G_SettingBotGravity) {
+		G_SettingBotGravity = _BotGravity;
+		G_BotGravity = ML::Clamp(_BotGravity, 0., 1.);
+	}
+	if (_BotAdherence != G_SettingBotAdherence) {
+		G_SettingBotAdherence = _BotAdherence;
+		G_BotAdherence = ML::Clamp(_BotAdherence, 0., 1.);
+	}
 	G_MaxBots = _MaxBots;
 }
 
