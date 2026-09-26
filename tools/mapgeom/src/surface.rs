@@ -546,7 +546,10 @@ fn plan_one_dry(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, cou
         // … and the grass set too (Everios96 2026-09-24: "for other alterations the road part
         // is still road, it should be the alteration; the penalty stays"): the deck ends take
         // the grass platform look, the penalty floor stays the zone's grass
-        if shape.is_empty() && !matches!(s, "Ice" | "Dirt" | "Tech") {
+        // … and under DIRT with TINY_DIRT_KEEP_GEOMETRY=1 every frame bakes like wood's (the
+        // vanilla `RoadDirt…Penalty…` frame has the trough deck ends)
+        let dirt_keep_geometry = s == "Dirt" && std::env::var("TINY_DIRT_KEEP_GEOMETRY").map(|v| v == "1").unwrap_or(false);
+        if (shape.is_empty() && !matches!(s, "Ice" | "Dirt" | "Tech")) || dirt_keep_geometry {
             // fall through to the bake path below; the library adds the floor
         } else {
         let road_word = match s { "Ice" | "Dirt" | "Tech" => s.to_string(), _ => road.to_string() };
@@ -648,6 +651,20 @@ fn plan_one_dry(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, cou
     let Some(src_path) = idx.path_for(name) else {
         return mk(Action::Keep, "", "source model not in the pack".into());
     };
+    // TINY_DIRT_KEEP_GEOMETRY=1 (Everios96 2026-09-26 14:42Z, U10S_57: "change the surface of
+    // that flat road block to dirt, but keep its geometry"): under DIRT a ROAD never takes
+    // its vanilla dirt twin — the RoadDirt family is a TROUGH (deck 0.5 m at the centre vs
+    // the tech deck's flat 2.0; a platform→road joint dropped 1.5 m) — it bakes as a
+    // re-dressed copy of its OWN shape with dirt physics, like the wood/plastic decks.
+    // The platform families keep their twins (same flat mesh, another dress).
+    if s == "Dirt" && (name.starts_with("Road") || name.contains("ToRoad")) && std::env::var("TINY_DIRT_KEEP_GEOMETRY").map(|v| v == "1").unwrap_or(false) {
+        if let Ok(src) = idx.load(store, &src_path).cloned() {
+            let has_water = src.variant_base_ground.as_ref().map(|v| v.water_volumes > 0).unwrap_or(false) || src.variant_base_air.as_ref().map(|v| v.water_volumes > 0).unwrap_or(false);
+            if !has_water && base_prefab(&src).is_some() {
+                return mk(Action::Bake, "", "dirt keeps geometry: the road's own shape, dirt physics (the vanilla dirt road is a trough)".into());
+            }
+        }
+    }
     // the index answers `…Right` with its `…Left` file when the pack lacks the Right
     // one (OpenIceRoadToZoneRight): a MIRROR — good enough to verify a same-family
     // twin against, never a geometry to copy
