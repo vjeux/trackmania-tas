@@ -845,3 +845,67 @@ mod mood_blender_tests {
         assert_eq!(curve_lookup(&xs, 0.080005), (0, 0, 0.0));
     }
 }
+
+/// THE RASTER JITTERS OF THE LIGHTMAP PASSES (RE 7, 2026-09-26; DISASSEMBLY FUN_14023def0 → FUN_14023de40 → FUN_140436200,
+/// confirmed on the stpad Sunrise capture f4935 + f4936): a pass with nx × ny sub-samples (the local-light pass: 3 × 3,
+/// `OutScale` = 1/9) renders every draw once per sample (i, j) with the VS constant `LM01_Trans_RasterSS` = the layout's
+/// (−1, 1) + 2·(ox, oy)/(W, H) (W × H = the accumulation target, 3072 × 2048 on stpad; `LM01_Scale_RasterSS` = (2, −2)).
+/// The texel offset is the ROTATED GRID (FUN_140436200, used when lm+0x708 == 0; FUN_140436170 = the plain grid otherwise):
+/// a = (i − (nx − 1)/2)/nx, b = (j − (ny − 1)/2)/ny, (ox, oy) = (a + b/nx, b − a/nx). For 3 × 3 in ninths: x9 = 3i + j,
+/// y9 = 3j + 2 − i, offset ((x9 − 4)/9, (y9 − 4)/9); the capture's draw order is n = 0..8 with (i, j) = (n mod 3, n div 3):
+/// (−4,−2), (−1,−3), (2,−4), (−3,1), (0,0), (3,−1), (−2,4), (1,3), (4,2).
+pub fn raster_jitter(i: u32, j: u32, nx: u32, ny: u32) -> (f32, f32) {
+    let a = (i as f32 - (nx - 1) as f32 * 0.5) / nx as f32;
+    let b = (j as f32 - (ny - 1) as f32 * 0.5) / ny as f32;
+    (a + b / nx as f32, b - a / nx as f32)
+}
+
+/// The local-light pass's sample n of 9 (3 × 3, `raster_jitter(n % 3, n / 3, 3, 3)`).
+pub fn local_light_jitter(n: u32) -> (f32, f32) {
+    raster_jitter(n % 3, n / 3, 3, 3)
+}
+
+#[cfg(test)]
+mod jitter_tests {
+    #[test]
+    fn the_nine_offsets_of_the_capture() {
+        let seen = [(-4, -2), (-1, -3), (2, -4), (-3, 1), (0, 0), (3, -1), (-2, 4), (1, 3), (4, 2)];
+        for (n, &(x, y)) in seen.iter().enumerate() {
+            let (ox, oy) = super::local_light_jitter(n as u32);
+            assert_eq!((ox * 9.0).round() as i32, x, "n {n}");
+            assert_eq!((oy * 9.0).round() as i32, y, "n {n}");
+        }
+    }
+}
+
+/// THE HYPERBOLIC ATTENUATION DESC `AttHN2` of a local light (RE 7, 2026-09-26; FUN_141416440 in the GxLight code, called by
+/// the lightmapper through FUN_141416590 when the light's attenuation mode (light+0x9c >> 3 & 7) is 2): from the GxLight
+/// file fields `hyper2 = (h1, h2)` and the radius `r` (the lightmapper reads the light INSTANCE's radius table — 40.7077
+/// for the RoadBorderSpot whose file radius is 40; the +0.7077's source is open). The shader's attenuation is
+/// max(0, w + 1/(x + y·d + z·d²)) = 1 at d = 0 and 0 at d = r. RoadBorderSpot (−1.24, 0.206, 40.707722) →
+/// (0.679476169, 0.014063498, 0.000523755, −0.471721961) = the capture's cbuffer to the last f32 digit.
+pub fn att_hn2(r: f32, h1: f32, h2: f32) -> [f32; 4] {
+    let p3 = if h1 < -1e-5 { h1 } else { -1e-5 };
+    let p4 = (1.0 - h2).clamp(0.05, 1.0);
+    let f3 = (6.1035156e-05f32 / p3.abs()).sqrt().max(0.0004887581);
+    let f2 = p4.powf(4.0) / p3 + 1.0;
+    let x = if f3 * 1.001 <= f2 { f2 } else { f3 * 1.001 };
+    let t = (-x * x * p3).max(0.0);
+    let y = t / r;
+    let u = ((x * x) / (1.0 - x) - t).max(0.0);
+    let z = (u / r) / r;
+    let w = (x - 1.0) / x;
+    [x, y, z, w]
+}
+
+#[cfg(test)]
+mod att_hn2_tests {
+    #[test]
+    fn road_border_spot_matches_the_capture() {
+        let a = super::att_hn2(40.707722, -1.24, 0.206);
+        let cap = [0.6794761419296265f32, 0.014063496142625809, 0.0005237546865828335, -0.4717220067977905];
+        for k in 0..4 {
+            assert!((a[k] - cap[k]).abs() <= 3.0 * f32::EPSILON * cap[k].abs().max(1e-3), "{k}: {} vs {}", a[k], cap[k]);
+        }
+    }
+}
