@@ -3992,6 +3992,8 @@ pub mod prof {
     pub static L_PAR: AtomicU64 = AtomicU64::new(0);
     pub static L_CSR: AtomicU64 = AtomicU64::new(0);
     pub static PROBE_PX: AtomicU64 = AtomicU64::new(0);
+    /// The LM fragment list's pixels OR-ed into the wanted bitmap (the transcribed accumulate's sparse set), per peel.
+    pub static LM_PX: AtomicU64 = AtomicU64::new(0);
     /// The per-direction glue outside the stages: the dome raster, the wanted bitmap, the sel/occl clear.
     pub static DOME: AtomicU64 = AtomicU64::new(0);
     pub static BITMAP: AtomicU64 = AtomicU64::new(0);
@@ -4043,7 +4045,7 @@ pub mod prof {
           log.clear(); }
         if crate::peel::CERT_STATS[0].load(Ordering::Relaxed) > 0 { let c = |i: usize| crate::peel::CERT_STATS[i].swap(0, Ordering::Relaxed); eprintln!("cert stats [{label}]: {} frames; the wanted pixels' layers all within the census lower bound: {} frames (1/16 census), {} (1/64); within the exact count {} (sanity: must be all)", c(0), c(1), c(2), c(3)); }
         if crate::peel::BOUND_TOTALS[0].load(Ordering::Relaxed) > 0 { eprintln!("bound stats [{label}]: {} frames, stop certified right by the census/4 bounds {} and by census/8 {}, certified WRONG {}", crate::peel::BOUND_TOTALS[0].swap(0, Ordering::Relaxed), crate::peel::BOUND_TOTALS[1].swap(0, Ordering::Relaxed), crate::peel::BOUND_TOTALS[2].swap(0, Ordering::Relaxed), crate::peel::BOUND_TOTALS[3].swap(0, Ordering::Relaxed)); }
-        eprintln!("profile [{label}] glue: dome raster {:.2}s, wanted bitmap {:.2}s, BVH cull {:.2}s, sel/occl clear {:.2}s, contribution {:.2}s; layer CSR {:.2}s, probe pixels {:.2}s", g(&DOME), g(&BITMAP), g(&CULL), g(&CLEAR), g(&CONTRIB), g(&L_CSR), g(&PROBE_PX));
+        eprintln!("profile [{label}] glue: dome raster {:.2}s, wanted bitmap {:.2}s (of it LM fragment pixels {:.2}s), BVH cull {:.2}s, sel/occl clear {:.2}s, contribution {:.2}s; layer CSR {:.2}s, probe pixels {:.2}s", g(&DOME), g(&BITMAP), g(&LM_PX), g(&CULL), g(&CLEAR), g(&CONTRIB), g(&L_CSR), g(&PROBE_PX));
         eprintln!("profile [{label}]: A-buffer build {:.2}s (wanted index {:.2}s, clip {:.2}s, raster {:.2}s, CSR {:.2}s), exact layer count {:.2}s, layer derivation {:.2}s (parallel part {:.2}s), per-direction dumps {:.2}s, gather {:.2}s, accumulate {:.2}s, accumulation snapshots {:.2}s, frames {:.2}s; directions total {:.2}s (unstaged {:.2}s); sweep total {total:.2}s", g(&BUILD), g(&B_INDEX), g(&B_CLIP), g(&B_RASTER), g(&B_SORT), g(&EXACT), g(&LAYERS), g(&L_PAR), g(&DUMP), g(&GATHER), g(&ACCUM), g(&SNAP), g(&FRAMES), g(&DIR), g(&DIR) - staged);
         // the pool's per-stage utilisation table (per-thread busy time; pool::stats), against the directions total
         crate::pool::stats::report(label, g(&DIR));
@@ -4678,6 +4680,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                     }
                 }
                 if let (Some(lm), true) = (prm.lm_scene.as_ref(), lm_sparse) {
+                    let t_lm_px = std::time::Instant::now();
                     let fl = lm.frag_list(di, 2048, 2048);
                     let pw01 = frame.world_pw01();
                     let (fw, fh) = (frame.res, frame.res_y);
@@ -4701,6 +4704,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                     // the centre pixel: AddAmbient (CS 17125) reads layer 0's colour there
                     let c = (fh as usize / 2) * fw as usize + fw as usize / 2;
                     m[c >> 6].fetch_or(1u64 << (c & 63), std::sync::atomic::Ordering::Relaxed);
+                    prof::add(&prof::LM_PX, t_lm_px);
                 }
                 // SAFETY: as above, back to plain words (no copy)
                 let mut m: Vec<u64> = unsafe {
