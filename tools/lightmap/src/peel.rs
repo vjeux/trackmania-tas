@@ -3837,6 +3837,11 @@ unsafe fn scan_block16_core_masked<L: Fn(usize, u16) -> (std::arch::x86_64::__m5
         let biased = *BIASED_ORDER;
         for j in 0..k {
             let valid = lanes & _mm512_cmpgt_epi32_mask(n, _mm512_set1_epi32(j as i32));
+            if valid == 0 {
+                // no lane holds a (j+1)-th record: the remaining slots are padding (the largest key sorts last)
+                for jj in j..k { key[jj] = maxk; tri[jj] = maxk; zf[jj] = zero; bf[jj] = zero; }
+                break;
+            }
             let (z, t, b) = load(j, valid);
             // (the invalid lanes' key is forced to the maximum below; their z / bias values are never read after
             // the blend, but keep them finite for the arithmetic)
@@ -3844,14 +3849,15 @@ unsafe fn scan_block16_core_masked<L: Fn(usize, u16) -> (std::arch::x86_64::__m5
             tri[j] = _mm512_mask_blend_epi32(valid, maxk, t);
             let b = _mm512_mask_blend_ps(valid, zero, b);
             if biased {
-                // THE BIASED ORDER: zf carries the unbiased depth z01 (the compare), bf the stored depth (the key
-                // and the next d_prev): q16((z01 + bias).clamp(0, 1)) — non-negative, so its bits order as ints;
-                // the tie key is the triangle's DRAW RANK (E's (class, instance, model triangle))
+                // THE BIASED ORDER: zf carries the unbiased depth z01 (the compare), bf the stored depth's D16
+                // QUANTUM as a float (round_away((z01 + bias).clamp(0, 1)·65535)): the sort key is the quantum
+                // as an integer (the same order as the stored value q/65535, which the walk divides out only
+                // where a lane accepts); the tie key is the triangle's DRAW RANK (E's (class, instance, model tri))
                 let zj = z01(z);
-                let dd = q16(_mm512_min_ps(_mm512_max_ps(_mm512_add_ps(zj, b), zero), one));
+                let q = round_away(_mm512_mul_ps(_mm512_min_ps(_mm512_max_ps(_mm512_add_ps(zj, b), zero), one), k65535));
                 zf[j] = zj;
-                bf[j] = dd;
-                key[j] = _mm512_mask_blend_epi32(valid, maxk, _mm512_castps_si512(dd));
+                bf[j] = q;
+                key[j] = _mm512_mask_blend_epi32(valid, maxk, _mm512_cvtps_epi32(q));
             } else {
                 zf[j] = z;
                 bf[j] = b;
@@ -3882,10 +3888,22 @@ unsafe fn scan_block16_core_masked<L: Fn(usize, u16) -> (std::arch::x86_64::__m5
         let mut items = zero_i;
         for j in 0..k {
             let valid = lanes & _mm512_cmpgt_epi32_mask(n, _mm512_set1_epi32(j as i32));
-            let (zj, dd) = if biased { (zf[j], bf[j]) } else { let zj = z01(zf[j]); (zj, q16(_mm512_min_ps(_mm512_max_ps(_mm512_add_ps(zj, bf[j]), zero), one))) };
-            let acc = valid & _mm512_cmp_ps_mask::<_CMP_GE_OQ>(zj, d_prev);
-            d_prev = _mm512_mask_blend_ps(acc, d_prev, dd);
-            items = _mm512_mask_add_epi32(items, acc, items, one_i);
+            if valid == 0 { break; }
+            if biased {
+                let acc = valid & _mm512_cmp_ps_mask::<_CMP_GE_OQ>(zf[j], d_prev);
+                if acc != 0 {
+                    // the stored value q/65535 (`stored_depth`'s division) only for the accepting lanes
+                    let dd = _mm512_div_ps(bf[j], k65535);
+                    d_prev = _mm512_mask_blend_ps(acc, d_prev, dd);
+                    items = _mm512_mask_add_epi32(items, acc, items, one_i);
+                }
+            } else {
+                let zj = z01(zf[j]);
+                let dd = q16(_mm512_min_ps(_mm512_max_ps(_mm512_add_ps(zj, bf[j]), zero), one));
+                let acc = valid & _mm512_cmp_ps_mask::<_CMP_GE_OQ>(zj, d_prev);
+                d_prev = _mm512_mask_blend_ps(acc, d_prev, dd);
+                items = _mm512_mask_add_epi32(items, acc, items, one_i);
+            }
         }
         let mut hist = [0u32; SCAN_K + 1];
         for c in 0..=k {
