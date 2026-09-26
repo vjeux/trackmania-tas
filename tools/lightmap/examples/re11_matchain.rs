@@ -15,6 +15,6 @@ fn main() {
     }
     for l in &links {
         let c = mapgeom::envblock::material_chain(&mut store, l);
-        println!("{l}: parent {:?} shader {:?} flags {:?} custom {} bitmaps {:?}", c.parent_material, c.shader, c.flags.map(|f| format!("A {:#x} B {:#x} pass {:#x} never_casts {}", f.a, f.b, f.pass_bits, f.never_casts())), c.has_custom, c.bitmaps.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>());
+        println!("{l}: parent {:?} shader {:?} flags {:?} custom {} bitmaps {:?}", c.parent_material, c.shader, c.flags.map(|f| format!("A {:#x} B {:#x} pass {:#x} never_casts {}", f.a, f.b, f.pass_bits, f.never_casts())), c.has_custom, c.bitmaps.iter().map(|(n, p)| format!("{n}={p}")).collect::<Vec<_>>());
     }
 }
