@@ -69,10 +69,19 @@ fn spin_limit() -> usize {
 const FANOUT: usize = 4;
 
 /// One task, timed per participant when the stats are on (perf engineer 6); a panic is recorded, not propagated.
+thread_local! {
+    /// Set while this thread runs a pool task: a `run` from inside a task would wait on the lock its own caller
+    /// holds (and the caller on this worker's exit) — a silent hang; the debug assertion in `run` names it instead
+    /// (engineer 4's audit probe of 6.11, kept: nothing in release).
+    static IN_TASK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 fn run_task(sh: &Shared, f: &(dyn Fn(usize) + Sync), i: usize, slot: usize) {
     let timed = stats::enabled();
     let t0 = if timed { Some(std::time::Instant::now()) } else { None };
+    IN_TASK.with(|c| c.set(true));
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(i)));
+    IN_TASK.with(|c| c.set(false));
     if r.is_err() {
         sh.panicked.store(true, Ordering::Relaxed);
     }
@@ -121,6 +130,7 @@ impl Pool {
         if n == 0 {
             return;
         }
+        debug_assert!(!IN_TASK.with(|c| c.get()), "pool::run called from inside a pool task: it would wait on its own caller (deadlock)");
         let _one_caller = self.caller.lock().unwrap_or_else(|e| e.into_inner());
         // LMTOOL_POOL_STATS=1: every task timed — the regions' busy / capacity table in the profile report
         let stats = *POOL_STATS;
