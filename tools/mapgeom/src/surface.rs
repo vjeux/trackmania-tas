@@ -1041,6 +1041,60 @@ pub fn plan_records(store: &mut DataStore, idx: &mut BlockInfoIndex, map: &Path,
             r.detail = format!("delete: {why}");
         }
     }
+    // TINY_DIRT_FLAT_JOINS=1 (Dirt only): Nadeo's dirt roads are a TROUGH (deck 0.5 m at the
+    // centre; tech and every platform are flat at 2.0 m), so a platform→dirt-road joint is a
+    // 1.5 m drop and road→platform a step — U10S_57's start-platform→slope jump lands past its
+    // platform (shcr, 2026-09-26). Every `Road*` record that shares a FACE (same row) with a
+    // flat deck (Platform*/DecoPlatform*, a baked deck, a start pad) is baked FLAT with dirt
+    // physics instead of renamed, and the flag walks along face-adjacent road records so a
+    // run keeps one profile up to its next platform. The `Road<A>ToRoad<B>` joins and the
+    // dirt-native records (RoadDirt*) are left alone — they are the author's own shape.
+    if s == "Dirt" && std::env::var("TINY_DIRT_FLAT_JOINS").map(|v| v == "1").unwrap_or(false) {
+        let is_flat_deck = |n: &str| (n.starts_with("Platform") || n.starts_with("DecoPlatform")) && !n.contains("Water") && !n.contains("Wall") && !n.contains("Slope") && !n.contains("Ramp");
+        let is_road = |n: &str| n.starts_with("Road") && !n.starts_with("RoadDirt") && !n.starts_with("RoadWater") && !n.starts_with("RoadIce") && !n.contains("ToRoad");
+        // cell → record indices, records → their cells (unit cells from the walk)
+        let cells_of: HashMap<usize, Vec<[i32; 3]>> = placements.iter().filter(|p| !p.free && !p.baked).map(|p| (p.index, p.cells.iter().map(|(_, rel)| [p.cell[0] + rel[0], p.cell[1] + rel[1], p.cell[2] + rel[2]]).collect())).collect();
+        let name_of: HashMap<usize, &str> = m.blocks.iter().map(|b| (b.index, b.name.as_str())).collect();
+        let neighbours = |c: &[i32; 3]| [[c[0] + 1, c[1], c[2]], [c[0] - 1, c[1], c[2]], [c[0], c[1], c[2] + 1], [c[0], c[1], c[2] - 1]];
+        let mut flat: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+        let mut queue: Vec<usize> = Vec::new();
+        for (i, cells) in &cells_of {
+            let Some(n) = name_of.get(i) else { continue };
+            if !is_road(n) {
+                continue;
+            }
+            let touches_deck = cells.iter().any(|c| neighbours(c).iter().any(|nb| occ.get(nb).into_iter().flatten().any(|o| o != i && name_of.get(o).map(|on| is_flat_deck(on)).unwrap_or(false))));
+            if touches_deck && flat.insert(*i) {
+                queue.push(*i);
+            }
+        }
+        while let Some(i) = queue.pop() {
+            let Some(cells) = cells_of.get(&i) else { continue };
+            for c in cells {
+                for nb in neighbours(c) {
+                    for o in occ.get(&nb).into_iter().flatten() {
+                        if *o != i && name_of.get(o).map(|on| is_road(on)).unwrap_or(false) && flat.insert(*o) {
+                            queue.push(*o);
+                        }
+                    }
+                }
+            }
+        }
+        let mut n_flat = 0usize;
+        for r in rows.iter_mut() {
+            if flat.contains(&r.index) && !r.delete && r.action == Action::Rename {
+                r.action = Action::Bake;
+                r.new_cell = r.cell;
+                r.new_pos = None;
+                r.detail = format!("flat join: a road run touching a platform keeps the tech profile, dirt physics (was rename → {})", r.target);
+                r.target.clear();
+                n_flat += 1;
+            }
+        }
+        if n_flat > 0 {
+            eprintln!("  dirt flat joins: {n_flat} road record(s) baked flat instead of renamed");
+        }
+    }
     Ok((models.into_values().collect(), rows))
 }
 
