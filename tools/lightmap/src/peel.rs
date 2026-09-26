@@ -186,6 +186,14 @@ pub static LAYER_DEBUG_SET: std::sync::LazyLock<Option<std::collections::HashSet
     Some(set)
 });
 
+/// Whether the visit-level debug print applies at (x, y): LMTOOL_ABUF_DEBUG's one pixel or any pixel of the
+/// LMTOOL_ABUF_DEBUG_LIST set.
+#[inline(always)]
+pub fn abuf_debug_at(x: u32, y: u32) -> bool {
+    if let Some((dx, dy)) = *ABUF_DEBUG { if x == dx && y == dy { return true; } }
+    match LAYER_DEBUG_SET.as_ref() { Some(set) => set.contains(&(x, y)), None => false }
+}
+
 /// The cards' alpha test threshold: GbxShadowAlphaThreshold = 128/255 (the capture's ShaderP cbuffer).
 pub const ALPHA_THRESHOLD: f32 = 0.501_960_813_999_176;
 /// LMTOOL_ALPHA_POINT=1: the point-sampled cut-out mask instead of the filtered texture (a probe).
@@ -1158,11 +1166,11 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
                                 Some((tx, fp)) if !*ALPHA_POINT => if alpha_point_mip() { tx.passes_point(u, v, fp, ALPHA_THRESHOLD) } else { tx.passes_planned(u, v, fp, ALPHA_THRESHOLD, crate::alphatex::Address::ClampEdge) },
                                 _ => mk.opaque(u, v),
                             };
-                            if let Some((dx, dy)) = *ABUF_DEBUG { if x == dx && y == dy { let plan_s = match fp { Some((tx, p)) => format!(" lod {:.3} levels {}/{} two {} taps {} axis ({:.4},{:.4}) alpha {:.5} one-tap-l0 {:.5} one-tap-l1 {:.5} by-taps {} taps-of-plan [{}]", p.lod, p.l0, p.l1, p.two, p.n, p.axis[0], p.axis[1], tx.sample_planned_clamp(u, v, p), tx.bilinear_tap(u, v, 0), tx.bilinear_tap(u, v, 1), (1..=8usize).map(|k| { let mut pk = p.clone(); pk.n = k; format!("{k}:{:.5}", tx.sample_planned_clamp(u, v, &pk)) }).collect::<Vec<_>>().join(" "), (0..p.n).map(|i| { let sft = if p.n > 1 { (i as f32 + 0.5) / p.n as f32 - 0.5 } else { 0.0 }; format!("{:.5}", tx.bilinear_tap(u + p.axis[0] * sft, v + p.axis[1] * sft, p.l0)) }).collect::<Vec<_>>().join(" ")), None => String::new() }; eprintln!("abuf debug ({x},{y}): card tri {ti} inst {} model tri {} mask {} uv ({u:.4},{v:.4}) opaque {op} z {z:.3} z01 {:.5}{plan_s}", t.inst, t.tri, t.alpha, frame.z01(z)); } }
+                            if abuf_debug_at(x, y) { let plan_s = match fp { Some((tx, p)) => format!(" lod {:.3} levels {}/{} two {} taps {} axis ({:.4},{:.4}) alpha {:.5} one-tap-l0 {:.5} one-tap-l1 {:.5} by-taps {} taps-of-plan [{}]", p.lod, p.l0, p.l1, p.two, p.n, p.axis[0], p.axis[1], tx.sample_planned_clamp(u, v, p), tx.bilinear_tap(u, v, 0), tx.bilinear_tap(u, v, 1), (1..=8usize).map(|k| { let mut pk = p.clone(); pk.n = k; format!("{k}:{:.5}", tx.sample_planned_clamp(u, v, &pk)) }).collect::<Vec<_>>().join(" "), (0..p.n).map(|i| { let sft = if p.n > 1 { (i as f32 + 0.5) / p.n as f32 - 0.5 } else { 0.0 }; format!("{:.5}", tx.bilinear_tap(u + p.axis[0] * sft, v + p.axis[1] * sft, p.l0)) }).collect::<Vec<_>>().join(" ")), None => String::new() }; eprintln!("abuf debug ({x},{y}) hd={:.2}: card tri {ti} inst {} model tri {} mask {} uv ({u:.4},{v:.4}) opaque {op} z {z:.3} z01 {:.5}{plan_s}", frame.half_d, t.inst, t.tri, t.alpha, frame.z01(z));  }
                             if !op {
                                 continue;
                             }
-                        } else if let Some((dx, dy)) = *ABUF_DEBUG { if x == dx && y == dy { eprintln!("abuf debug ({x},{y}): tri {ti} inst {} model tri {} z {z:.3} z01 {:.5}", t.inst, t.tri, frame.z01(z)); } }
+                        } else if abuf_debug_at(x, y) { eprintln!("abuf debug ({x},{y}) hd={:.2}: tri {ti} inst {} model tri {} z {z:.3} z01 {:.5}", frame.half_d, t.inst, t.tri, frame.z01(z));  }
                         // the tail (the wanted bit of lane l is the bitmap's bit at id0 + l, as emit_frag reads it)
                         let bias = if count_it { Some(bias_term_of(&mut bias_term_cache)) } else { None };
                         emit_frag(&mut cnt, &mut list, &mut saturated, &mut out, x, y, z, ti, count_it, bias);
@@ -1602,11 +1610,11 @@ pub fn build_abuffer_wanted(tris: &[WTri], frame: &PeelFrame, threads: usize, zm
                                         let zq = if CARD_DUMP_BIAS.1 == 16 { (dd.clamp(0.0, 1.0) * 65535.0).round() / 65535.0 } else { dd };
                                         CARD_FRAGS.lock().unwrap().push(CardFrag { x, y, z01, tri: ti, u, v, mask: t.alpha as u32, fp_dx: fdx, fp_dy: fdy, port_pass: op as u32, zq });
                                     }
-                                    if let Some((dx, dy)) = *ABUF_DEBUG { if x == dx && y == dy { let plan_s = match fp { Some((tx, p)) => format!(" lod {:.3} levels {}/{} two {} taps {} axis ({:.4},{:.4}) alpha {:.5} one-tap-l0 {:.5} one-tap-l1 {:.5} by-taps {} taps-of-plan [{}]", p.lod, p.l0, p.l1, p.two, p.n, p.axis[0], p.axis[1], tx.sample_planned_clamp(u, v, p), tx.bilinear_tap(u, v, 0), tx.bilinear_tap(u, v, 1), (1..=8usize).map(|k| { let mut pk = p.clone(); pk.n = k; format!("{k}:{:.5}", tx.sample_planned_clamp(u, v, &pk)) }).collect::<Vec<_>>().join(" "), (0..p.n).map(|i| { let sft = if p.n > 1 { (i as f32 + 0.5) / p.n as f32 - 0.5 } else { 0.0 }; format!("{:.5}", tx.bilinear_tap(u + p.axis[0] * sft, v + p.axis[1] * sft, p.l0)) }).collect::<Vec<_>>().join(" ")), None => String::new() }; eprintln!("abuf debug ({x},{y}): card tri {ti} inst {} model tri {} mask {} uv ({u:.4},{v:.4}) opaque {op} z {z:.3} z01 {:.5}{plan_s}", t.inst, t.tri, t.alpha, frame.z01(z)); } }
+                                    if abuf_debug_at(x, y) { let plan_s = match fp { Some((tx, p)) => format!(" lod {:.3} levels {}/{} two {} taps {} axis ({:.4},{:.4}) alpha {:.5} one-tap-l0 {:.5} one-tap-l1 {:.5} by-taps {} taps-of-plan [{}]", p.lod, p.l0, p.l1, p.two, p.n, p.axis[0], p.axis[1], tx.sample_planned_clamp(u, v, p), tx.bilinear_tap(u, v, 0), tx.bilinear_tap(u, v, 1), (1..=8usize).map(|k| { let mut pk = p.clone(); pk.n = k; format!("{k}:{:.5}", tx.sample_planned_clamp(u, v, &pk)) }).collect::<Vec<_>>().join(" "), (0..p.n).map(|i| { let sft = if p.n > 1 { (i as f32 + 0.5) / p.n as f32 - 0.5 } else { 0.0 }; format!("{:.5}", tx.bilinear_tap(u + p.axis[0] * sft, v + p.axis[1] * sft, p.l0)) }).collect::<Vec<_>>().join(" ")), None => String::new() }; eprintln!("abuf debug ({x},{y}) hd={:.2}: card tri {ti} inst {} model tri {} mask {} uv ({u:.4},{v:.4}) opaque {op} z {z:.3} z01 {:.5}{plan_s}", frame.half_d, t.inst, t.tri, t.alpha, frame.z01(z));  }
                                     if !op {
                                         return;
                                     }
-                                } else if let Some((dx, dy)) = *ABUF_DEBUG { if x == dx && y == dy { eprintln!("abuf debug ({x},{y}): tri {ti} inst {} model tri {} z {z:.3} z01 {:.5}", t.inst, t.tri, frame.z01(z)); } }
+                                } else if abuf_debug_at(x, y) { eprintln!("abuf debug ({x},{y}) hd={:.2}: tri {ti} inst {} model tri {} z {z:.3} z01 {:.5}", frame.half_d, t.inst, t.tri, frame.z01(z));  }
                                 out[(y / band_h) as usize].push((y * res + x, Frag { z, tri: ti }));
                             }
                         });
@@ -2676,13 +2684,13 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
     });
     // THE LAYER COUNT (engineer D, 0x140234df0): the written fraction of every candidate item layer over
     // the whole viewport, the game's stop rule (or the captured count) → every pixel's list is cut
+    let part_hists: Vec<[usize; MAX_LAYERS + 1]> = crate::pool::pool().map(parts.len(), |pi| {
+        let mut h = [0usize; MAX_LAYERS + 1];
+        for c in &parts[pi].0 { h[(*c as usize).saturating_sub(skip_n).min(MAX_LAYERS)] += 1; }
+        h
+    });
     let mut hist = vec![0usize; MAX_LAYERS + 1];
-    for (counts, _) in &parts {
-        for c in counts {
-            let items = (*c as usize).saturating_sub(skip_n).min(MAX_LAYERS);
-            hist[items] += 1;
-        }
-    }
+    for h in &part_hists { for k in 0..=MAX_LAYERS { hist[k] += h[k]; } }
     let mut fractions: Vec<f64> = Vec::with_capacity(MAX_LAYERS);
     let mut at_least = n;
     for k in 0..MAX_LAYERS {
@@ -2701,19 +2709,47 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
     if peel_layers_debug() {
         eprintln!("peel layers: {} candidate item layers, fractions {:?} → {} rendered ({})", candidates, fractions.iter().take(candidates).map(|f| format!("{f:.6}")).collect::<Vec<_>>(), kept, if fixed_layers.is_some() { "the captured count" } else { "the stop rule" });
     }
-    let mut start = Vec::with_capacity(n + 1);
-    let mut frags = Vec::with_capacity(parts.iter().map(|p| p.1.len()).sum());
-    start.push(0u32);
-    for (counts, out) in parts {
-        let mut o = 0usize;
-        for c in counts {
-            let c = c as usize;
-            let keep = c.min(skip_n + kept);
-            frags.extend_from_slice(&out[o..o + keep]);
-            o += c;
-            let last = *start.last().unwrap();
-            start.push(last + keep as u32);
-        }
+    // THE DENSE CSR, assembled in parallel (the product path — the transcribed accumulate reads every pixel —
+    // came through here with a serial per-pixel copy: ~1 s per giant direction, ≈ 1000 s of a sweep): per
+    // part the kept total, a prefix over the parts, then every part writes its rows' starts and copies its
+    // kept lists into its slice
+    let cap = skip_n + kept;
+    let part_totals: Vec<usize> = crate::pool::pool().map(parts.len(), |pi| parts[pi].0.iter().map(|c| (*c as usize).min(cap)).sum());
+    let mut part_base = Vec::with_capacity(parts.len() + 1);
+    part_base.push(0usize);
+    for t in &part_totals { let last = *part_base.last().unwrap(); part_base.push(last + t); }
+    let total = *part_base.last().unwrap();
+    let mut start: Vec<u32> = U32S.take_with_capacity(n + 1);
+    let mut frags: Vec<LayerFrag> = LAYER_FRAGS.take_with_capacity(total);
+    // SAFETY: every slot of both is written below (each part its own rows / its own slice) before any read
+    unsafe { start.set_len(n + 1); frags.set_len(total); }
+    start[n] = total as u32;
+    {
+        let (sp, fp) = (start.as_mut_ptr() as usize, frags.as_mut_ptr() as usize);
+        let parts = &parts;
+        let part_base = &part_base;
+        // part pi covers pixels [pix_base[pi], pix_base[pi] + counts.len())
+        let mut pix_base = Vec::with_capacity(parts.len() + 1);
+        pix_base.push(0usize);
+        for (counts, _) in parts.iter() { let last = *pix_base.last().unwrap(); pix_base.push(last + counts.len()); }
+        let pix_base = &pix_base;
+        crate::pool::pool().run(parts.len(), |pi| {
+            let (counts, out) = &parts[pi];
+            let mut o = 0usize;
+            let mut acc = part_base[pi];
+            let p0 = pix_base[pi];
+            for (i, c) in counts.iter().enumerate() {
+                let c = *c as usize;
+                let keep = c.min(cap);
+                // SAFETY: pixel p0 + i and the slice [acc, acc + keep) belong to this part alone
+                unsafe {
+                    *(sp as *mut u32).add(p0 + i) = acc as u32;
+                    std::ptr::copy_nonoverlapping(out.as_ptr().add(o), (fp as *mut LayerFrag).add(acc), keep);
+                }
+                o += c;
+                acc += keep;
+            }
+        });
     }
     Layers { w, h, start, frags, max_layers: MAX_LAYERS, sparse: None, item_layers: kept, fractions }
 }
