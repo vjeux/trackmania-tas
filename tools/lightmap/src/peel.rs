@@ -4530,6 +4530,10 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
     // (the sets: the nine jitter sets, or the one sub-sample set of the plain path when it is one group — then a
     // direction's range is every sub-sample)
     let tile_sets: Vec<&Vec<SubSample>> = if jitter { jit_sets.iter().collect() } else if groups == 1 { vec![&subs] } else { Vec::new() };
+    // THE SUB-SAMPLES' POSITIONS, COMPACT (perf 8): the wanted-bitmap pass reads one field of the 48-byte SubSample per
+    // sub-sample — 140 MB streamed per peel on the tiny map, the pass's cost was the bandwidth, not the atomic OR (a plain
+    // store timed the same). A 12-byte position array per set, built once, is what it streams.
+    let set_pos: Vec<Vec<[f32; 3]>> = if jitter { jit_sets.iter().map(|s| s.iter().map(|x| x.p).collect()).collect() } else { vec![subs.iter().map(|x| x.p).collect()] };
     let tile_subs: Vec<Vec<Option<Vec<u32>>>> = if !tile_sets.is_empty() && tile_clip.iter().any(|c| c.is_some()) {
         let t0 = std::time::Instant::now();
         let lists: Vec<Vec<Option<Vec<u32>>>> = tile_sets.iter().map(|set| {
@@ -4770,13 +4774,15 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                 let clip_box: Option<[f32; 4]> = tile_clip.get(pi).copied().flatten();
                 let tile_list: Option<&Vec<u32>> = tile_subs.get(if jitter { di % 9 } else { 0 }).and_then(|v| v.get(pi)).and_then(|o| o.as_ref());
                 crate::pool::stats::stage("bitmap-or");
-                let pix_of_sub = |s: &SubSample| -> usize {
-                    let (x, y, _) = frame.project(s.p);
+                let pix_of_pos = |p: [f32; 3]| -> usize {
+                    let (x, y, _) = frame.project(p);
                     let (px, py) = (lookup_pixel(x, frame.res, prm.peel_inset), lookup_pixel(y, frame.res_y, prm.peel_inset));
                     py as usize * frame.res as usize + px as usize
                 };
-                let mark = |s: &SubSample| {
-                    let i = pix_of_sub(s);
+                let pix_of_sub = |s: &SubSample| -> usize { pix_of_pos(s.p) };
+                let cur_pos: &[[f32; 3]] = &set_pos[if jitter { di % 9 } else { 0 }];
+                let mark_pos = |p: [f32; 3]| {
+                    let i = pix_of_pos(p);
                     m[i >> 6].fetch_or(1u64 << (i & 63), std::sync::atomic::Ordering::Relaxed);
                 };
                 match tile_list {
@@ -4802,18 +4808,18 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                         let nch = (threads * 8).max(1);
                         let per = (nl + nch - 1) / nch;
                         crate::pool::pool().run(nch, |ci| {
-                            for &i in &list[(ci * per).min(nl)..((ci + 1) * per).min(nl)] { mark(&cur[i as usize]); }
+                            for &i in &list[(ci * per).min(nl)..((ci + 1) * per).min(nl)] { mark_pos(cur_pos[i as usize]); }
                         });
                     }
                     None => {
                         let nch = (threads * 8).max(1);
                         let per = (cur.len() + nch - 1) / nch;
                         crate::pool::pool().run(nch, |ci| {
-                            for s in &cur[(ci * per).min(cur.len())..((ci + 1) * per).min(cur.len())] {
+                            for p in &cur_pos[(ci * per).min(cur.len())..((ci + 1) * per).min(cur.len())] {
                                 if let Some(b) = clip_box {
-                                    if !(s.p[0] - b[0] >= 0.0 && s.p[2] - b[1] >= 0.0 && b[2] - s.p[0] >= 0.0 && b[3] - s.p[2] >= 0.0) { continue; }
+                                    if !(p[0] - b[0] >= 0.0 && p[2] - b[1] >= 0.0 && b[2] - p[0] >= 0.0 && b[3] - p[2] >= 0.0) { continue; }
                                 }
-                                mark(s);
+                                mark_pos(*p);
                             }
                         });
                     }
