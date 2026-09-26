@@ -143,6 +143,10 @@ pub struct Report {
     pub total: ClassAcc,
     pub maxhdr_ours: f32,
     pub maxhdr_theirs: f32,
+    /// Per file: (the decoded peak over every chart texel, texels whose image-A max channel is 255, charts whose frame byte is 255,
+    /// the MaxHdrMood record word) — the encode-scale check: a file whose peak sits at the record with saturated texels was clipped
+    pub peak_ours: (f64, usize, usize, Option<f32>),
+    pub peak_theirs: (f64, usize, usize, Option<f32>),
     pub image_w: u32,
     pub image_h: u32,
     pub unmatched_rows: usize,
@@ -279,7 +283,25 @@ pub fn compare(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLight
     let trim = |c: &mut ClassAcc| { c.worst.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)); c.worst.truncate(o.worst); };
     for (_, c) in classes.iter_mut() { trim(c); }
     trim(&mut total);
-    Ok(Report { classes, total, maxhdr_ours: k1, maxhdr_theirs: k2, image_w: i1.w, image_h: i1.h, unmatched_rows, rect_mismatch, pair_refused })
+    let peak = |img: &crate::img::Rgb, m: &Mapping, fb: &[u8], k: f32| -> (f64, usize, usize, Option<f32>) {
+        let (mut pk, mut sat, mut fb255) = (0f64, 0usize, 0usize);
+        for i in 0..m.count as usize {
+            let f = fb.get(i).copied().unwrap_or(0);
+            if f == 255 { fb255 += 1; }
+            let s = (f as f64 / 255.0).powi(2) * k as f64;
+            let (px, py, pw, ph) = chart_own_px(m.pos[i], m.size[i]);
+            for y in py..(py + ph).min(img.h) { for x in px..(px + pw).min(img.w) {
+                let a = img.get(x, y);
+                let mx = a[0].max(a[1]).max(a[2]);
+                if mx == 255 { sat += 1; }
+                pk = pk.max((mx as f64 / 255.0).powi(2) * s);
+            } }
+        }
+        (pk, sat, fb255, record_maxhdr_mood(m, o.frame))
+    };
+    let peak_ours = peak(&i1, &m1, fb1, k1);
+    let peak_theirs = peak(&i2, &m2, fb2, k2);
+    Ok(Report { classes, total, maxhdr_ours: k1, maxhdr_theirs: k2, image_w: i1.w, image_h: i1.h, unmatched_rows, rect_mismatch, pair_refused, peak_ours, peak_theirs })
 }
 
 fn f3(v: [f64; 3], p: usize) -> String { let one = |x: f64| if x.is_finite() { format!("{:.*}", p, x) } else { "—".to_string() }; format!("{} / {} / {}", one(v[0]), one(v[1]), one(v[2])) }
@@ -287,6 +309,7 @@ fn f3(v: [f64; 3], p: usize) -> String { let one = |x: f64| if x.is_finite() { f
 /// The table on stdout (and, when asked, as TSV).
 pub fn print(r: &Report, o: &Options, tsv: Option<&str>) -> Result<(), String> {
     println!("frame {}: record MaxHDR ours {} vs editor {} ({:+.2} %); image {}×{}; lit threshold {} (image-A max channel); means over the EDITOR's lit texels; HDR = (A/255)²·(fb/255)²·MaxHDR", o.frame, r.maxhdr_ours, r.maxhdr_theirs, 100.0 * (r.maxhdr_ours as f64 / r.maxhdr_theirs.max(1e-12) as f64 - 1.0), r.image_w, r.image_h, o.lit);
+    println!("  encode check — decoded PEAK vs the record (a clipped encode shows a peak at the record with many saturated texels): ours peak {:.5} = {:.4}× record, {} texels at A 255, {} charts at fb 255, MaxHdrMood {:?}; editor peak {:.5} = {:.4}× record, {} texels at A 255, {} charts at fb 255, MaxHdrMood {:?}; record ratio ours/editor {:.4}", r.peak_ours.0, r.peak_ours.0 / r.maxhdr_ours.max(1e-12) as f64, r.peak_ours.1, r.peak_ours.2, r.peak_ours.3, r.peak_theirs.0, r.peak_theirs.0 / r.maxhdr_theirs.max(1e-12) as f64, r.peak_theirs.1, r.peak_theirs.2, r.peak_theirs.3, r.maxhdr_ours as f64 / r.maxhdr_theirs.max(1e-12) as f64);
     if r.rect_mismatch > 0 { println!("  WARNING: {} charts {} — SKIPPED in the table below", r.rect_mismatch, if o.own_rects { "have no oracle chart of the same (obj, sub) bind word" } else { "have a different rect in the two files (the layout gate failed for them)" }); }
     if r.pair_refused > 0 { println!("  WARNING: {} pairs REFUSED by the rect-area guard (> 2.9× apart, beyond a quality ring step): the two files number their objects differently — the item rows below are NOT trustworthy until the numbering is settled", r.pair_refused); }
     if o.own_rects { println!("  --own-rects: each side's means over its own rects and its own lit texels (layouts differ); byte identity / RMSE columns are void"); }
