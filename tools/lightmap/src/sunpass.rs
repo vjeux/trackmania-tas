@@ -110,7 +110,7 @@ pub struct SunDraw {
     pub out_scale: f32,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct LmMesh {
     pub verts: Vec<LmVertex>,
     pub indices: Vec<u16>,

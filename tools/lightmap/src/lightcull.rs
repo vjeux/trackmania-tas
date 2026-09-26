@@ -257,7 +257,7 @@ mod tests {
 
     #[test]
     fn lamp_b_of_the_stpad_sunrise_capture() {
-        let light = LightDef { pos: [1512.0999755859375, 23.358840942382812, 1663.4326171875], dir: [0.0, -0.11013313382863998, -0.9939168691635132], color: [0.945, 0.929, 0.886], intensity: 1.1, radius: 40.0, cone: (140.0, 170.0), animated: false , night_only: false };
+        let light = LightDef { pos: [1512.0999755859375, 23.358840942382812, 1663.4326171875], dir: [0.0, -0.11013313382863998, -0.9939168691635132], color: [0.945, 0.929, 0.886], intensity: 1.1, radius: 40.0, cone: (140.0, 170.0), animated: false, night_only: false, ..Default::default() };
         let mut wrong = Vec::new();
         for (i, (c, h, drawn)) in LAMP_B_RECORDS.iter().enumerate() {
             let sees = local_light_sees(*c, *h, &light, 40.707722);
@@ -270,7 +270,7 @@ mod tests {
     fn lamp_a_of_the_stpad_sunrise_capture_65_of_65() {
         // the RoadBorderSpot lamp "clipE waterfccenter of block 97" (PS 7343's cbuffer: LightPosInWorld, −SpotDirNegInWorld,
         // CosOuter = cos 85°, InvRadius = 1/40.707722)
-        let light = LightDef { pos: [1504.5673828125, 23.358840942382812, 1655.9000244140625], dir: [0.9939168691635132, -0.11013312637805939, 0.0], color: [0.945, 0.929, 0.886], intensity: 1.1, radius: 40.0, cone: (140.0, 170.0), animated: false , night_only: false };
+        let light = LightDef { pos: [1504.5673828125, 23.358840942382812, 1655.9000244140625], dir: [0.9939168691635132, -0.11013312637805939, 0.0], color: [0.945, 0.929, 0.886], intensity: 1.1, radius: 40.0, cone: (140.0, 170.0), animated: false, night_only: false, ..Default::default() };
         let mut wrong = Vec::new();
         for (i, (c, h, drawn)) in LAMP_A_RECORDS.iter().enumerate() {
             let sees = local_light_sees(*c, *h, &light, 40.707722);

@@ -497,7 +497,7 @@ pub struct Fragment {
 
 /// Rasterise one triangle (clip-space vertices, per-vertex TEXCOORD0) with the D3D11 rules; `f` gets every
 /// covered pixel centre. Returns false when the triangle was culled or degenerate.
-fn rasterise(clip: [[f32; 4]; 3], uv: [[f32; 2]; 3], st: &RasterState, w: u32, h: u32, mut f: impl FnMut(Fragment)) -> bool {
+pub fn rasterise(clip: [[f32; 4]; 3], uv: [[f32; 2]; 3], st: &RasterState, w: u32, h: u32, mut f: impl FnMut(Fragment)) -> bool {
     let v: Vec<ScreenVertex> = (0..3).map(|i| { let mut s = to_screen(clip[i], uv[i], &st.viewport); if st.vertex_z_bits > 0 { let q = (1u64 << st.vertex_z_bits) as f64; s.z = ((s.z as f64 * q).floor() / q) as f32; } s }).collect();
     // twice the signed area in sub-pixel units; with x right and y down a positive value is a CLOCKWISE triangle
     // on the render target

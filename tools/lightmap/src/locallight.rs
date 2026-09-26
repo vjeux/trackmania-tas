@@ -131,10 +131,16 @@ pub fn flat_cube_lookup(cb: &LightCb, lx: f32, ly: f32, lz: f32) -> (usize, [f32
     let mut uv = [r0[1] * f.scale[0], r0[2] * f.scale[1]];
     uv = [(-f.max_abs[0]).max(uv[0]).min(f.max_abs[0]), (-f.max_abs[1]).max(uv[1]).min(f.max_abs[1])];
     uv = [f.trans[0] + uv[0], f.trans[1] + uv[1]];
-    // 63–65: depth = ((dominant·ZScale)·0.999 + ZTrans) / dominant
+    // 63–65: depth = ((dominant·ZScale)·0.999 + ZTrans) / dominant — the mad fused (the GPU's FFMA)
     let dom = r0[3];
-    let depth = ((dom * cb.z_scale) * 0.999 + cb.z_trans) / dom;
+    let depth = (dom * cb.z_scale).mul_add(0.999, cb.z_trans) / dom;
     (face, uv, depth)
+}
+
+/// `dp3` as the GPU evaluates it: a multiply then two fused adds in component order.
+#[inline]
+pub fn dp3f(ax: f32, ay: f32, az: f32, bx: f32, by: f32, bz: f32) -> f32 {
+    az.mul_add(bz, ay.mul_add(by, ax * bx))
 }
 
 /// PS 7343 at one fragment: `p` the world position (v1), `n` the world normal (v3), `shadow(uv, ref)` the comparison sample
@@ -144,29 +150,30 @@ pub fn ps_7343(cb: &LightCb, p: [f32; 3], n: [f32; 3], shadow: &dyn Fn([f32; 2],
     let lx = cb.light_pos[0] - p[0];
     let lz = cb.light_pos[2] - p[2];
     let ly = cb.light_pos[1] - p[1];
-    // 1–2
-    let d2 = lx * lx + lz * lz + ly * ly;
+    // 1–2: dp3 (a multiply then two fused adds, in the register's component order x, y(=Lz), w(=Ly)), sqrt
+    let d2 = dp3f(lx, lz, ly, lx, lz, ly);
     let d = d2.sqrt();
-    // 3–6: the hyperbola
-    let mut h = cb.att_hn2[1] * d + cb.att_hn2[0];
-    h = cb.att_hn2[2] * d2 + h;
+    // 3–6: the hyperbola (the mads fused: the GPU's FFMA — engineer B's and E's measured rule for every pass)
+    let mut h = cb.att_hn2[1].mul_add(d, cb.att_hn2[0]);
+    h = cb.att_hn2[2].mul_add(d2, h);
     h = 1.0 / h;
     h += cb.att_hn2[3];
-    // 7
-    let q = 1.0 - d2 * cb.inv_radius2;
+    // 7: mad(−d2, InvRadius2, 1)
+    let q = (-d2).mul_add(cb.inv_radius2, 1.0);
     // 8–9
     let h = h.max(0.0);
     let q = q.max(0.0);
     let mut att = if cb.is_att_hn2 { h } else { q };
     // 10–22: the spot cone
-    let bx = cb.spot_falloff_back_offset * cb.spot_dir_neg[0] + cb.light_pos[0] - p[0];
-    let by = cb.spot_falloff_back_offset * cb.spot_dir_neg[1] + cb.light_pos[1] - p[1];
-    let bz = cb.spot_falloff_back_offset * cb.spot_dir_neg[2] + cb.light_pos[2] - p[2];
-    let inv = 1.0 / (bx * bx + by * by + bz * bz).sqrt();
+    // 10–11: mad(BackOffset, SpotDirNeg, LightPos) − v1;  12–14: dp3, rsq, mul;  15–17: dp3, add, mul_sat;  18–20: mad(s, −2, 3), s², ·
+    let bx = cb.spot_falloff_back_offset.mul_add(cb.spot_dir_neg[0], cb.light_pos[0]) - p[0];
+    let by = cb.spot_falloff_back_offset.mul_add(cb.spot_dir_neg[1], cb.light_pos[1]) - p[1];
+    let bz = cb.spot_falloff_back_offset.mul_add(cb.spot_dir_neg[2], cb.light_pos[2]) - p[2];
+    let inv = 1.0 / dp3f(bx, by, bz, bx, by, bz).sqrt();
     let (bx, by, bz) = (bx * inv, by * inv, bz * inv);
-    let c = bx * cb.spot_dir_neg[0] + by * cb.spot_dir_neg[1] + bz * cb.spot_dir_neg[2];
+    let c = dp3f(bx, by, bz, cb.spot_dir_neg[0], cb.spot_dir_neg[1], cb.spot_dir_neg[2]);
     let s = ((c - cb.cos_outer) * cb.inv_cos_range).clamp(0.0, 1.0);
-    let sm = (s * s) * (s * -2.0 + 3.0);
+    let sm = (s * s) * s.mul_add(-2.0, 3.0);
     if cb.is_light_spot {
         att *= sm;
     }
@@ -180,7 +187,7 @@ pub fn ps_7343(cb: &LightCb, p: [f32; 3], n: [f32; 3], shadow: &dyn Fn([f32; 2],
         // 66
         let sh = shadow(uv, depth);
         // 67–70
-        let ndl = (n[0] * nx + n[1] * ny + n[2] * nz).max(0.0);
+        let ndl = dp3f(n[0], n[1], n[2], nx, ny, nz).max(0.0);
         out_x = att * (sh * ndl);
         out_y = sh;
     }
@@ -650,6 +657,31 @@ impl FlatCubeMap {
         let stored = self.depth[(y * w + x) as usize];
         if reference >= stored { 1.0 } else { 0.0 }
     }
+    /// THE LINEAR COMPARISON SAMPLE (`UseSoftShadow 1` = SMapShadow is a comparison sampler with LINEAR filtering: the four
+    /// texels around uv·target − ½ are each compared (ref ≥ stored → 1) and the results bilinearly weighted — the captured
+    /// accumulation's shadow channel holds values between the ninths a point sample would give; engineer F). The faces'
+    /// MaxAbs = (size − 1)/(2·target) keeps the 2×2 footprint inside the face tile. `frac_bits` = the sub-texel precision of
+    /// the weights (D3D11: at least 8 bits; 0 = exact f32).
+    pub fn sample_cmp_ge_linear(&self, uv: [f32; 2], reference: f32, target: u32, frac_bits: u32) -> f32 {
+        let (w, h) = (self.width() as i64, (self.size * 2) as i64);
+        let fx = uv[0] * target as f32 - 0.5;
+        let fy = uv[1] * target as f32 - 0.5;
+        let (x0, y0) = (fx.floor(), fy.floor());
+        let (mut ax, mut ay) = (fx - x0, fy - y0);
+        if frac_bits > 0 {
+            let q = (1u32 << frac_bits) as f32;
+            ax = (ax * q).floor() / q;
+            ay = (ay * q).floor() / q;
+        }
+        let tap = |x: i64, y: i64| -> f32 {
+            let (x, y) = (x.clamp(0, w - 1), y.clamp(0, h - 1));
+            if reference >= self.depth[(y * w + x) as usize] { 1.0 } else { 0.0 }
+        };
+        let (x0, y0) = (x0 as i64, y0 as i64);
+        let top = tap(x0, y0) * (1.0 - ax) + tap(x0 + 1, y0) * ax;
+        let bot = tap(x0, y0 + 1) * (1.0 - ax) + tap(x0 + 1, y0 + 1) * ax;
+        top * (1.0 - ay) + bot * ay
+    }
 }
 
 /// Render the casters (world triangles, the model's winding) into the lamp's flat-cube map. Clipping against the D3D
@@ -658,7 +690,6 @@ impl FlatCubeMap {
 pub fn render_flat_cube(l: [f32; 3], r_eff: f32, size: u32, tris: &[[[f32; 3]; 3]], cull_back: bool) -> FlatCubeMap {
     let (w, h) = ((size * 3) as usize, (size * 2) as usize);
     let mut depth = vec![0.0f32; w * h];
-    let one_unit = 1.0 / 65535.0;
     for face in 0..6 {
         let m = flat_cube_face_matrix(face, l, r_eff);
         let (ox, oy) = flat_cube_face_viewport(face, size);
@@ -687,25 +718,21 @@ pub fn render_flat_cube(l: [f32; 3], r_eff: f32, size: u32, tris: &[[[f32; 3]; 3
             if poly.len() < 3 { continue; }
             let poly = clip_plane(&poly, &|v| v[3] - v[2]);
             if poly.len() < 3 { continue; }
-            // the divide → window coordinates in the face tile (y down), z in [0, 1]
-            let win: Vec<[f32; 3]> = poly.iter().map(|v| { let iw = 1.0 / v[3]; [(v[0] * iw * 0.5 + 0.5) * size as f32, (0.5 - v[1] * iw * 0.5) * size as f32, v[2] * iw] }).collect();
-            // culling on the polygon's winding (all fan triangles share it)
-            let area = { let mut a = 0.0f32; for i in 0..win.len() { let (p, q) = (win[i], win[(i + 1) % win.len()]); a += p[0] * q[1] - q[0] * p[1]; } a };
-            // window y is down: a clockwise triangle on screen has a positive signed area here
-            if cull_back && area <= 0.0 { continue; }
-            // the depth slope of the primitive (plane fit on the first fan triangle: z is affine in window x, y)
-            let slope = {
-                let (a, b, c) = (win[0], win[1], win[2]);
-                let det = (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]);
-                if det.abs() < 1e-12 { 0.0 } else { let dzdx = ((b[2] - a[2]) * (c[1] - a[1]) - (c[2] - a[2]) * (b[1] - a[1])) / det; let dzdy = ((c[2] - a[2]) * (b[0] - a[0]) - (b[2] - a[2]) * (c[0] - a[0])) / det; dzdx.abs().max(dzdy.abs()) }
-            };
-            let bias = -one_unit - 1.0 * slope;
-            for k in 1..win.len() - 1 {
-                let (a, b, c) = (win[0], win[k], win[k + 1]);
-                crate::raster::triangle(size, size, [[a[0], a[1]], [b[0], b[1]], [c[0], c[1]]], |x, y, bc| {
-                    let z = a[2] * bc[0] + b[2] * bc[1] + c[2] * bc[2];
-                    let zq = ((z + bias).clamp(0.0, 1.0) * 65535.0).round() / 65535.0;
-                    let i = (oy as usize + y as usize) * w + ox as usize + x as usize;
+            // the clipped polygon's fan triangles through the D16 depth pipeline engineer B pinned on the sun shadow map
+            // (shadowmap::rasterise: the 1/256-px snapped vertices, the plane through them evaluated at the pixel centres, the
+            // D3D11 bias DepthBias·(1/65535) + Slope·max(|∂z/∂x|, |∂z/∂y|) added in float, the sum TRUNCATED to 2^-20, then
+            // UNORM16 round-to-nearest, Greater on the 16-bit value); the viewport = the face's tile
+            let st = crate::shadowmap::RasterState { viewport: [ox as f32, oy as f32, size as f32, size as f32, 0.0, 1.0], depth_bias: -1, slope_scaled_depth_bias: -1.0, depth_bias_clamp: 0.0, cull_back, front_ccw: false, depth_clip: true, plane: crate::shadowmap::PlaneEval::F64Snapped, coef_bits: 0, vertex_z_bits: 0 };
+            for k in 1..poly.len() - 1 {
+                let tri = [poly[0], poly[k], poly[k + 1]];
+                crate::shadowmap::rasterise(tri, [[0.0; 2]; 3], &st, (size * 3) as u32, (size * 2) as u32, |fr| {
+                    if !(fr.z >= 0.0 && fr.z <= 1.0) { return; }
+                    let bias = crate::shadowmap::depth_bias_d16(&st, fr.max_depth_slope);
+                    let zb = fr.z + bias;
+                    let zt = ((zb as f64 * 1048576.0).floor() / 1048576.0) as f32;
+                    let q = crate::shadowmap::to_unorm16(zt, crate::shadowmap::UnormRounding::Nearest);
+                    let i = fr.y as usize * w + fr.x as usize;
+                    let zq = q as f32 / 65535.0;
                     if zq > depth[i] { depth[i] = zq; }
                 });
             }

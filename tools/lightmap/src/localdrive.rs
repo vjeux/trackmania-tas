@@ -1,0 +1,1049 @@
+//! THE LOCAL-LIGHT FRAME DRIVER — lightmap FRAME 1 (engineer F, 2026-09-26). The game's lightmap carries two frames per
+//! mood; frame 1 = THE LOCAL LIGHTS (the CPlugLight spots / balls of the items and of the blocks' and clips' prefabs),
+//! rendered only when the mood blender has the lights ON (`moods::BlenderCurve::local_lights_on`: Sunrise / Sunset /
+//! Night; Day → a black frame with MaxHDR 1e-5). Everything below is the driver that ties the transcribed kernels
+//! together, per lamp in the light list's order (RE 7's `lmtool map-lights` set):
+//!
+//! 1. the RECORD CULL `lightcull::local_light_sees` over the layout's records (box within R_eff of the lamp, bounding
+//!    sphere in the spot cone) → the drawn instance set (`LmScene::rec_of`: chart k ↔ record k ↔ LM instance);
+//! 2. the FLAT-CUBE SHADOW MAP (`locallight::render_flat_cube`: six 173² D16 faces, the casters = the drawn set's
+//!    triangles, Greater on a 0 clear, bias −1 / −1.0, cull Back);
+//! 3. the probe draw (PS 7351 `locallight::ps_7351` over the lamp's probe chunks into the R8 volume) → CS 7357
+//!    (`locallight::cs_7357`: the probe light lists);
+//! 4. NINE raster jitters (`moods::local_light_jitter` → LM01_Trans_RasterSS, OutScale 1/9) × the drawn set through
+//!    VS 7303 (= the LM vertex path: `lmaccum::{chart_st, lm_clip, world_pos, rotate}`) → PS 7343 (`locallight::ps_7343`)
+//!    blended One / One into the 3072 × 2048 RGBA16F accumulation (f16 source truncation, RTNE sum — the measured ROP);
+//! 5. CS 7348 (`locallight::cs_7348`) over the touched texels (± the one-texel dilation ring) into the per-texel light
+//!    lists (TexLightId / TexLightW / TexLightIsLit; the cleared id is 0xffff); the accumulation is cleared for the next lamp.
+//!
+//! After the last lamp the lists are COMPOSED into the frame-1 image (`compose`: the literal Σ over a texel's list of the
+//! √-decoded weights × the lamp's LightRgb — the exact compose dispatch is being pinned by RE 7 from capture 2's tail;
+//! `ComposeRule` selects the candidates), MaxHDR = the image max, the frame-1 record {StoreLAmbient 0, LocalLight_Storage 1,
+//! HBasis234 −1, LAmbient −1}, the WebP through the transcribed writer.
+//!
+//! The lamp constants the capture pins and the file does not derive yet (RE 7's open items): the EFFECTIVE radius
+//! (40.707722 for the RoadBorderSpot whose file radius is 40 — `effective_radius`), `SpotFalloffBackOffset` (0.33362 for
+//! it — `spot_falloff_back_offset`) and the LightRgb factor of the local-light frame (`light_rgb`). The flat-cube face size
+//! (173 for R = 40.71) follows FUN_14023cb30's ceilf(2·R·density·lm+0x10c) — `face_size` carries the pinned value.
+//!
+//! Oracles (passcap/stpad-sunrise, f4936): 9768 after eids 547 / 1670 (the accumulation after lamps A / B), 9810 after
+//! 1080 (lamp B's flat cube), 9783 after 1081 (lamp B's probe volume), the CS UAVs after 563 / 572 (lamp A) and 1671
+//! (lamp B); the editor's stpad save (the frame-1 WebP) — `lmtool local-lights … --check DIR`.
+
+use crate::geometry::LightDef;
+use crate::gpufmt::{quantise_f16, Rounding};
+use crate::lmaccum::{blend_f16, chart_st, lm_clip, rotate, world_pos, LmRasterCb, LmScene};
+use crate::locallight::{cs_7348, cs_7357, flat_cube_face_viewport, ps_7343, ps_7351, render_flat_cube, FlatCubeFace, FlatCubeMap, LightCb, LightList, ProbeLightCb, ProbeLightList};
+use crate::sunpass::{rasterise_triangle_rows, rotation_rows, BlendModel};
+
+/// The accumulation target of the pass on stpad: 3072 × 2048 (the 2048² layout in its left part; the jitter offsets and the
+/// chart ST are relative to it — RE 7's NOTES 00:10Z).
+pub const TARGET: (u32, u32) = (3072, 2048);
+/// The flat-cube shadow depth target (D16 4096²) and the pinned face size of the RoadBorderSpot lamps.
+pub const SHADOW_TARGET: u32 = 4096;
+pub const FACE_SIZE_R40: u32 = 173;
+
+/// One local light of the frame: its id (the frame light list's index), its owner tag and the constants the pass binds.
+#[derive(Clone, Debug)]
+pub struct Lamp {
+    pub id: u16,
+    pub owner: String,
+    pub light: LightDef,
+    /// The instance radius the pass reads (the attenuation zero, the cull radius, the shadow far plane).
+    pub r_eff: f32,
+    pub back_offset: f32,
+    pub face_size: u32,
+    /// LightSH[0].xyz = the lamp colour the frame composes with.
+    pub rgb: [f32; 3],
+}
+
+/// The pinned instance radius: 40.707722 for a radius-40 lamp with hyper2 (−1.24, 0.206) (the RoadBorderSpot; RE 7 pins
+/// the source of the +0.7077 from the light instance's +0xa0 table), else the file radius.
+pub fn effective_radius(l: &LightDef) -> f32 {
+    if (l.radius - 40.0).abs() < 1e-4 && (l.hyper2[0] + 1.24).abs() < 1e-4 && (l.hyper2[1] - 0.206).abs() < 1e-4 {
+        40.707722
+    } else {
+        l.radius
+    }
+}
+
+/// `SpotFalloffBackOffset` of the lamp's cbuffer — 0.33362 on the RoadBorderSpot (capture f4936 eid 34); its derivation
+/// from the light file is open (RE 7). Other lamps: 0 until pinned.
+pub fn spot_falloff_back_offset(l: &LightDef) -> f32 {
+    if (l.radius - 40.0).abs() < 1e-4 && (l.cone.1 - 170.0).abs() < 1e-3 {
+        0.3336227238178253
+    } else {
+        0.0
+    }
+}
+
+/// LightSH[0].xyz of the frame: the desc's premultiplied colour · intensity (RE 7's binder, 23:58Z) — the local-light frame's
+/// extra curve factor is 1 until the capture's cbuffer pins it.
+pub fn light_rgb(l: &LightDef) -> [f32; 3] {
+    [l.color[0] * l.intensity, l.color[1] * l.intensity, l.color[2] * l.intensity]
+}
+
+/// The face size of the lamp's flat cube: FUN_14023cb30's ceilf(2·R·density) clamped to [8, max] — 173 for the pinned
+/// lamp (R 40.7077); scaled with R for the others (the density is the pinned ratio).
+pub fn face_size(r_eff: f32) -> u32 {
+    ((2.0 * r_eff * (FACE_SIZE_R40 as f32 / (2.0 * 40.707722))).ceil() as u32).clamp(8, 1024)
+}
+
+/// The six flat-cube faces' Scale_MaxAbs / Trans for `size`² faces in the `target`² D16 texture: face f's tile at
+/// `flat_cube_face_viewport(f, size)`, Scale = ±size/(2·target) (the capture's sign pattern), MaxAbs = (size − 1)/(2·target),
+/// Trans = the tile centre. The captured eid 34 values for size 173 / target 4096 to the bit.
+pub fn flat_cube_faces(size: u32, target: u32) -> [FlatCubeFace; 6] {
+    let a = size as f32 / (2.0 * target as f32);
+    let m = (size as f32 - 1.0) / (2.0 * target as f32);
+    let signs: [[f32; 2]; 6] = [[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [1.0, -1.0], [1.0, -1.0], [-1.0, -1.0]];
+    let mut out = [FlatCubeFace { scale: [0.0; 2], max_abs: [m, m], trans: [0.0; 2] }; 6];
+    for f in 0..6 {
+        let (ox, oy) = flat_cube_face_viewport(f, size);
+        out[f] = FlatCubeFace { scale: [signs[f][0] * a, signs[f][1] * a], max_abs: [m, m], trans: [(ox as f32 + size as f32 * 0.5) / target as f32, (oy as f32 + size as f32 * 0.5) / target as f32] };
+    }
+    out
+}
+
+impl Lamp {
+    pub fn new(id: u16, owner: &str, light: LightDef) -> Lamp {
+        let r_eff = effective_radius(&light);
+        Lamp { id, owner: owner.to_string(), light, r_eff, back_offset: spot_falloff_back_offset(&light), face_size: face_size(r_eff), rgb: light_rgb(&light) }
+    }
+
+    pub fn is_spot(&self) -> bool {
+        self.light.cone.1 < 180.0
+    }
+
+    /// PS 7343's cbuffer for this lamp: the flat-cube faces, ZScale = −1/999, ZTrans = R/999, InvRadius2, the cone terms from
+    /// the FULL cone angles halved (CosOuter = cos(outer/2), InvCosRange = 1/(cos(inner/2) − cos(outer/2))), SpotDirNeg = −dir,
+    /// AttHN2 = moods::att_hn2(R, hyper2), OutScale 1/9.
+    pub fn light_cb(&self) -> LightCb {
+        let l = &self.light;
+        let s = 1.0f32 / 999.0;
+        let cos_outer = (l.cone.1.to_radians() * 0.5).cos();
+        let cos_inner = (l.cone.0.to_radians() * 0.5).cos();
+        let inv_cos_range = 1.0 / (cos_inner - cos_outer);
+        let d = l.dir;
+        LightCb {
+            faces: flat_cube_faces(self.face_size, SHADOW_TARGET),
+            z_scale: -s,
+            z_trans: self.r_eff * s,
+            light_pos: l.pos,
+            inv_radius2: 1.0 / (self.r_eff * self.r_eff),
+            inv_cos_range,
+            cos_outer,
+            spot_dir_neg: [-d[0], -d[1], -d[2]],
+            spot_falloff_back_offset: self.back_offset,
+            att_hn2: crate::moods::att_hn2(self.r_eff, l.hyper2[0], l.hyper2[1]),
+            out_scale: [1.0 / 9.0; 4],
+            is_light_spot: self.is_spot(),
+            is_att_hn2: true,
+        }
+    }
+
+    /// PS 7351's cbuffer for one probe chunk: ProbeStWorld = (cell, the world of atlas index 0) per axis.
+    pub fn probe_cb(&self, st: [[f32; 2]; 3]) -> ProbeLightCb {
+        let cb = self.light_cb();
+        ProbeLightCb {
+            st,
+            faces: cb.faces,
+            z_scale: cb.z_scale,
+            z_trans: cb.z_trans,
+            world_pw01_shadow: [[0.0; 4]; 4],
+            light_pos_or_dir: cb.light_pos,
+            is_light_pos: true,
+            inv_radius2: cb.inv_radius2,
+            inv_cos_range: cb.inv_cos_range,
+            cos_outer: cb.cos_outer,
+            spot_dir_neg: cb.spot_dir_neg,
+            samples_per_axis: 3,
+            att_hn2: cb.att_hn2,
+            is_light_spot: cb.is_light_spot,
+            is_shadow_cube: true,
+            is_att_hn2: true,
+            is_att_1minus_d2: false,
+        }
+    }
+}
+
+/// The frame's light list: the items' lights (the scene's, in item order) then the blocks' and clips' (records::MapRecords::
+/// block_lights) — `lmtool map-lights`' order; the ids are the list indices (the capture numbers lamp B 243 in the scene
+/// instance-list order — the ORDER is verified only for the two captured lamps' neighbourhood).
+pub fn lamps(item_lights: &[(usize, LightDef)], block_lights: &[(String, LightDef)]) -> Vec<Lamp> {
+    let mut out = Vec::with_capacity(item_lights.len() + block_lights.len());
+    for (i, l) in item_lights {
+        let id = out.len() as u16;
+        out.push(Lamp::new(id, &format!("item {i}"), *l));
+    }
+    for (o, l) in block_lights {
+        let id = out.len() as u16;
+        out.push(Lamp::new(id, o, *l));
+    }
+    out
+}
+
+/// THE RECORD CULL of one lamp over the layout's records → the LM instances to draw (in LM scene order = the draw order).
+pub fn cull(gl: &crate::layout::GameLayout, sc: &LmScene, lamp: &Lamp) -> Vec<usize> {
+    let mut seen = vec![false; gl.records.len()];
+    for (k, r) in gl.records.iter().enumerate() {
+        seen[k] = crate::lightcull::local_light_sees(r.centre, r.half, &lamp.light, lamp.r_eff);
+    }
+    (0..sc.instances.len()).filter(|&ii| sc.rec_of.get(ii).map(|&k| k < seen.len() && seen[k]).unwrap_or(false)).collect()
+}
+
+/// The mesh of an LM instance (the mesh whose instance range holds it).
+pub fn mesh_of(sc: &LmScene, ii: usize) -> Option<usize> {
+    (0..sc.meshes.len()).find(|&m| ii >= sc.inst_first[m] && ii < sc.inst_first[m] + sc.inst_count[m])
+}
+
+/// The world triangles of the drawn instances (the casters of the flat cube), in the LM mesh's index order.
+pub fn casters(sc: &LmScene, insts: &[usize]) -> Vec<[[f32; 3]; 3]> {
+    let mut out = Vec::new();
+    for &ii in insts {
+        let Some(m) = mesh_of(sc, ii) else { continue };
+        let mesh = &sc.meshes[m];
+        let inst = &sc.instances[ii];
+        let rows = rotation_rows(inst.q);
+        let wp: Vec<[f32; 3]> = mesh.verts.iter().map(|v| world_pos(v, inst, &rows)).collect();
+        for t in mesh.indices.chunks_exact(3) {
+            out.push([wp[t[0] as usize], wp[t[1] as usize], wp[t[2] as usize]]);
+        }
+    }
+    out
+}
+
+/// The RGBA16F accumulation target (values as the f16 target holds them) with the rectangle its lamp touched.
+pub struct Accum {
+    pub w: u32,
+    pub h: u32,
+    pub px: Vec<[f32; 4]>,
+    /// x0, y0, x1, y1 (exclusive) of the texels written since the last clear.
+    pub touched: Option<[u32; 4]>,
+}
+
+impl Accum {
+    pub fn new(w: u32, h: u32) -> Accum {
+        Accum { w, h, px: vec![[0.0; 4]; (w * h) as usize], touched: None }
+    }
+    /// The 9-jitter sum CS 7348 reads: (light, shadow, coverage) — TMapLightSum.xyw, 0 outside the target.
+    pub fn sum(&self, x: i32, y: i32) -> [f32; 3] {
+        if x < 0 || y < 0 || x >= self.w as i32 || y >= self.h as i32 {
+            return [0.0; 3];
+        }
+        let p = self.px[(y as u32 * self.w + x as u32) as usize];
+        [p[0], p[1], p[3]]
+    }
+    pub fn clear_touched(&mut self) {
+        if let Some([x0, y0, x1, y1]) = self.touched.take() {
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    self.px[(y * self.w + x) as usize] = [0.0; 4];
+                }
+            }
+        }
+    }
+    fn touch(&mut self, x: u32, y: u32) {
+        self.touched = Some(match self.touched {
+            None => [x, y, x + 1, y + 1],
+            Some([x0, y0, x1, y1]) => [x0.min(x), y0.min(y), x1.max(x + 1), y1.max(y + 1)],
+        });
+    }
+}
+
+/// The LM01 raster constants of jitter `n` for a `w` × `h` target: Trans = (−1 + ox·2/W, 1 + oy·2/H) (RE 7's 00:35Z; eid 34's
+/// (−0.99985534, 0.99956596) for n = 2 on 3072 × 2048), Scale (2, −2).
+pub fn jitter_cb(n: u32, w: u32, h: u32) -> LmRasterCb {
+    let (ox, oy) = crate::moods::local_light_jitter(n);
+    LmRasterCb { scale_ss: [2.0, -2.0], trans_ss: [-1.0 + ox * 2.0 / w as f32, 1.0 + oy * 2.0 / h as f32] }
+}
+
+/// A vertex after VS 7303: the LM clip xy, the world position (o1), the world normal (o3).
+#[derive(Clone, Copy, Debug)]
+pub struct Vs7303Out {
+    pub clip: [f32; 2],
+    pub world: [f32; 3],
+    pub normal: [f32; 3],
+}
+
+/// VS 7303 (the lighting draw's vertex shader = the LM vertex path of VS 17111 / 17118 with the jitter constants).
+pub fn vs_7303(v: &crate::sunpass::LmVertex, inst: &crate::sunpass::LmInstance, table: &[[f32; 4]], cb: &LmRasterCb) -> Vs7303Out {
+    let rows = rotation_rows(inst.q);
+    let st = chart_st(v, inst, table);
+    Vs7303Out { clip: lm_clip(v, st, cb), world: world_pos(v, inst, &rows), normal: rotate(v.normal, &rows) }
+}
+
+/// The shadow lookup of the pass: the LINEAR comparison sample (UseSoftShadow 1 — the captured shadow channel holds values
+/// between the ninths); LMTOOL_LL_SHADOW=point for the point sample, LMTOOL_LL_SHADOW_BITS=N for the weights' sub-texel bits.
+pub fn shadow_sample(shadow: &FlatCubeMap, uv: [f32; 2], r: f32) -> f32 {
+    if std::env::var_os("LMTOOL_LL_SHADOW").map(|v| v == "point").unwrap_or(false) {
+        return shadow.sample_cmp_ge(uv, r, SHADOW_TARGET);
+    }
+    let bits: u32 = std::env::var("LMTOOL_LL_SHADOW_BITS").ok().and_then(|v| v.parse().ok()).unwrap_or(8);
+    shadow.sample_cmp_ge_linear(uv, r, SHADOW_TARGET, bits)
+}
+
+/// The blend of the pass: the source truncated to f16, the sum rounded to nearest even (the measured RGBA16F ROP).
+pub const BLEND: BlendModel = BlendModel::TruncSrcRoundSum;
+
+/// THE LIGHTING DRAWS of one lamp: nine jitters × the drawn instances (jitter-major, then the LM scene's mesh order, the
+/// instances in record order — the capture's 9 × 11 draws) through VS 7303 → the D3D11 raster (`rasterise_triangle_rows`,
+/// the pixel-centre barycentrics, no depth, NoCull) → PS 7343 → One / One into `acc`.
+pub fn draw_lamp(sc: &LmScene, insts: &[usize], cb: &LightCb, shadow: &FlatCubeMap, acc: &mut Accum) -> u64 {
+    draw_lamp_partial(sc, insts, cb, shadow, acc, 0..9, &[])
+}
+
+/// `draw_lamp` over the jitters `jitters` only, the instances `skip_last` left out of the LAST jitter of the range — the
+/// capture's export points (9768 after eid 547 = lamp A's 9 jitters minus the final draw group; after eid 1670 = lamp B's
+/// first 7 jitters, the frame ended there).
+pub fn draw_lamp_partial(sc: &LmScene, insts: &[usize], cb: &LightCb, shadow: &FlatCubeMap, acc: &mut Accum, jitters: std::ops::Range<u32>, skip_last: &[usize]) -> u64 {
+    let (w, h) = (acc.w, acc.h);
+    let last = jitters.end.saturating_sub(1);
+    let sample = |uv: [f32; 2], r: f32| shadow_sample(shadow, uv, r);
+    let mut frags = 0u64;
+    // the instances grouped by mesh in the scene's mesh order (the draw order)
+    let mut by_mesh: Vec<Vec<usize>> = vec![Vec::new(); sc.meshes.len()];
+    for &ii in insts {
+        if let Some(m) = mesh_of(sc, ii) {
+            by_mesh[m].push(ii);
+        }
+    }
+    for n in jitters {
+        let rcb = jitter_cb(n, w, h);
+        for (m, list) in by_mesh.iter().enumerate() {
+            if list.is_empty() {
+                continue;
+            }
+            let mesh = &sc.meshes[m];
+            for &ii in list {
+                if n == last && skip_last.contains(&ii) {
+                    continue;
+                }
+                let inst = &sc.instances[ii];
+                let vs: Vec<Vs7303Out> = mesh.verts.iter().map(|v| vs_7303(v, inst, &sc.table, &rcb)).collect();
+                for t in mesh.indices.chunks_exact(3) {
+                    let (a, b, c) = (&vs[t[0] as usize], &vs[t[1] as usize], &vs[t[2] as usize]);
+                    rasterise_triangle_rows([a.clip, b.clip, c.clip], w, h, 0, h as i64, |x, y, b0, b1, b2| {
+                        let p = [a.world[0] * b0 + b.world[0] * b1 + c.world[0] * b2, a.world[1] * b0 + b.world[1] * b1 + c.world[1] * b2, a.world[2] * b0 + b.world[2] * b1 + c.world[2] * b2];
+                        let nrm = [a.normal[0] * b0 + b.normal[0] * b1 + c.normal[0] * b2, a.normal[1] * b0 + b.normal[1] * b1 + c.normal[1] * b2, a.normal[2] * b0 + b.normal[2] * b1 + c.normal[2] * b2];
+                        let o = ps_7343(cb, p, nrm, &sample);
+                        let i = (y * w + x) as usize;
+                        let slot = &mut acc.px[i];
+                        for ch in 0..4 {
+                            slot[ch] = blend_f16(slot[ch], o[ch], BLEND);
+                        }
+                        acc.touch(x, y);
+                        frags += 1;
+                    });
+                }
+            }
+        }
+    }
+    frags
+}
+
+/// The per-texel light lists of the frame (TexLightId / TexLightW / TexLightIsLit as CS 7348 keeps them; the cleared id is
+/// 0xffff, the cleared weight 0).
+pub struct Lists {
+    pub w: u32,
+    pub h: u32,
+    pub l: Vec<LightList>,
+}
+
+impl Lists {
+    pub fn cleared(w: u32, h: u32) -> Lists {
+        Lists { w, h, l: vec![LightList { id: [0xffff; 8], w8: [0; 8], lit8: [0; 8] }; (w * h) as usize] }
+    }
+    /// The three UAV textures' bytes as the capture exports them: TexLightId (4 R16G16 slices: slots (2s, 2s+1) as lo / hi),
+    /// TexLightW and TexLightIsLit (2 RGBA8 slices: slots 4s..4s+3 as the bytes).
+    pub fn id_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.l.len() * 16);
+        for s in 0..4 {
+            for t in &self.l {
+                out.extend_from_slice(&t.id[2 * s].to_le_bytes());
+                out.extend_from_slice(&t.id[2 * s + 1].to_le_bytes());
+            }
+        }
+        out
+    }
+    pub fn w_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.l.len() * 8);
+        for s in 0..2 {
+            for t in &self.l {
+                out.extend_from_slice(&t.w8[4 * s..4 * s + 4]);
+            }
+        }
+        out
+    }
+    pub fn lit_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.l.len() * 8);
+        for s in 0..2 {
+            for t in &self.l {
+                out.extend_from_slice(&t.lit8[4 * s..4 * s + 4]);
+            }
+        }
+        out
+    }
+    /// The lists from the captured UAV payloads (the DDS bodies of 9771 / 9775 / 9779: slice-major, tight rows).
+    pub fn from_bytes(w: u32, h: u32, id: &[u8], wt: &[u8], lit: &[u8]) -> Lists {
+        let n = (w * h) as usize;
+        let mut l = vec![LightList { id: [0xffff; 8], w8: [0; 8], lit8: [0; 8] }; n];
+        for s in 0..4 {
+            for i in 0..n {
+                let o = (s * n + i) * 4;
+                if o + 4 <= id.len() {
+                    l[i].id[2 * s] = u16::from_le_bytes([id[o], id[o + 1]]);
+                    l[i].id[2 * s + 1] = u16::from_le_bytes([id[o + 2], id[o + 3]]);
+                }
+            }
+        }
+        for s in 0..2 {
+            for i in 0..n {
+                let o = (s * n + i) * 4;
+                if o + 4 <= wt.len() {
+                    l[i].w8[4 * s..4 * s + 4].copy_from_slice(&wt[o..o + 4]);
+                }
+                if o + 4 <= lit.len() {
+                    l[i].lit8[4 * s..4 * s + 4].copy_from_slice(&lit[o..o + 4]);
+                }
+            }
+        }
+        Lists { w, h, l }
+    }
+}
+
+/// CS 7348 over the lamp's touched rectangle grown by the dilation ring: the lamp enters the lists where its weight byte is
+/// non-zero. (The game dispatches over the whole target; a texel outside the ring has coverage 0 in itself and its ring, so
+/// nothing changes there.)
+pub fn resolve_lists(acc: &Accum, lists: &mut Lists, light_id: u16) -> u64 {
+    let Some([x0, y0, x1, y1]) = acc.touched else { return 0 };
+    let (x0, y0) = (x0.saturating_sub(1), y0.saturating_sub(1));
+    let (x1, y1) = ((x1 + 1).min(acc.w), (y1 + 1).min(acc.h));
+    let sum = |x: i32, y: i32| acc.sum(x, y);
+    let mut n = 0u64;
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let i = (y * lists.w + x) as usize;
+            let before = lists.l[i];
+            let after = cs_7348(&sum, x as i32, y as i32, light_id, before);
+            if after != before {
+                lists.l[i] = after;
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
+/// The probe volume of the pass (R8 UNORM, 96 × 80 × 32 on stpad) and the probe light lists.
+pub struct ProbeState {
+    pub n: [u32; 3],
+    /// The lamp's R8 volume after its probe draw (cleared per lamp), as bytes.
+    pub volume: Vec<u8>,
+    pub lists: Vec<ProbeLightList>,
+    pub touched: Vec<usize>,
+}
+
+impl ProbeState {
+    pub fn new(n: [u32; 3]) -> ProbeState {
+        let c = (n[0] * n[1] * n[2]) as usize;
+        ProbeState { n, volume: vec![0; c], lists: vec![ProbeLightList { id: [0xffff; 8], w8: [0; 8] }; c], touched: Vec::new() }
+    }
+    pub fn index(&self, x: u32, y: u32, z: u32) -> usize {
+        ((z * self.n[1] + y) * self.n[0] + x) as usize
+    }
+}
+
+/// The chunk range of a lamp: the atlas indices whose world cell can hold a lit sample — the lamp's box ± (R + a cell) in the
+/// chunk's ProbeStWorld; None when the lamp misses the chunk.
+pub fn probe_range(rec: &crate::probechunk::ChunkRecord, lamp: &Lamp) -> Option<([i32; 3], [i32; 3])> {
+    let mut lo = [0i32; 3];
+    let mut hi = [0i32; 3];
+    for k in 0..3 {
+        let r = lamp.r_eff + rec.cell[k];
+        let a = ((lamp.light.pos[k] - r - rec.origin[k]) / rec.cell[k]).floor() as i32;
+        let b = ((lamp.light.pos[k] + r - rec.origin[k]) / rec.cell[k]).ceil() as i32;
+        lo[k] = a.max(rec.amin[k]);
+        hi[k] = b.min(rec.amax[k]);
+        if lo[k] > hi[k] {
+            return None;
+        }
+    }
+    Some((lo, hi))
+}
+
+/// UNORM8 of a render-target store (round to nearest).
+pub fn unorm8_rt(v: f32) -> u8 {
+    (v.clamp(0.0, 1.0) * 255.0 + 0.5).floor() as u8
+}
+
+/// THE PROBE PASS of one lamp: PS 7351 over every chunk the lamp reaches (blend MAX into the R8 volume cleared per lamp),
+/// then CS 7357 per touched probe into the probe lists.
+pub fn probe_pass(chunks: &[crate::probechunk::ChunkRecord], lamp: &Lamp, shadow: &FlatCubeMap, st: &mut ProbeState) -> u64 {
+    let sample = |uv: [f32; 2], r: f32| shadow_sample(shadow, uv, r);
+    for &i in &st.touched {
+        st.volume[i] = 0;
+    }
+    st.touched.clear();
+    let mut lit = 0u64;
+    for rec in chunks {
+        let Some((lo, hi)) = probe_range(rec, lamp) else { continue };
+        let cb = lamp.probe_cb([[rec.cell[0], rec.origin[0]], [rec.cell[1], rec.origin[1]], [rec.cell[2], rec.origin[2]]]);
+        for z in lo[2]..=hi[2] {
+            for y in lo[1]..=hi[1] {
+                for x in lo[0]..=hi[0] {
+                    if x < 0 || y < 0 || z < 0 || x as u32 >= st.n[0] || y as u32 >= st.n[1] || z as u32 >= st.n[2] {
+                        continue;
+                    }
+                    let v = ps_7351(&cb, x as u32, y as u32, z as u32, &sample);
+                    let b = unorm8_rt(v);
+                    let i = st.index(x as u32, y as u32, z as u32);
+                    if b > st.volume[i] {
+                        if st.volume[i] == 0 {
+                            st.touched.push(i);
+                        }
+                        st.volume[i] = b;
+                    }
+                }
+            }
+        }
+    }
+    for &i in &st.touched {
+        let w = st.volume[i] as f32 / 255.0;
+        let l = cs_7357(w, lamp.id, st.lists[i]);
+        if l != st.lists[i] {
+            st.lists[i] = l;
+            lit += 1;
+        }
+    }
+    lit
+}
+
+/// How the lists become the frame-1 image (RE 7 is pinning the game's compose dispatch; the candidates until then).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ComposeRule {
+    /// Σ over the list of the √-decoded weights (w8/255)² × the lamp's LightRgb.
+    SumDecoded,
+    /// Σ of the stored bytes/255 (√w) × LightRgb — the byte itself as the value.
+    SumSqrt,
+    /// max over the list of (w8/255)² × LightRgb.
+    MaxDecoded,
+}
+
+/// THE COMPOSE: the frame-1 image (w × h RGBA, alpha 1 where any lamp reached) from the per-texel lists and the lamps' colours.
+pub fn compose(lists: &Lists, lamps: &[Lamp], rule: ComposeRule) -> crate::passdiff::Buf {
+    let mut out = crate::passdiff::Buf::new(lists.w, lists.h, 4);
+    for y in 0..lists.h {
+        for x in 0..lists.w {
+            let t = &lists.l[(y * lists.w + x) as usize];
+            let mut acc = [0.0f32; 3];
+            let mut any = false;
+            for j in 0..8 {
+                if t.w8[j] == 0 || t.id[j] == 0xffff {
+                    continue;
+                }
+                let Some(lamp) = lamps.get(t.id[j] as usize) else { continue };
+                any = true;
+                let s = t.w8[j] as f32 / 255.0;
+                let wv = match rule {
+                    ComposeRule::SumDecoded | ComposeRule::MaxDecoded => s * s,
+                    ComposeRule::SumSqrt => s,
+                };
+                for c in 0..3usize {
+                    let v = wv * lamp.rgb[c];
+                    acc[c] = if rule == ComposeRule::MaxDecoded { acc[c].max(v) } else { acc[c] + v };
+                }
+            }
+            for c in 0..3u32 {
+                out.set(x, y, c, acc[c as usize]);
+            }
+            out.set(x, y, 3, if any { 1.0 } else { 0.0 });
+        }
+    }
+    out
+}
+
+/// The image max (the frame record's MaxHDR: the max-reduce over the three channels, f16 like the frame-0 reduce).
+pub fn image_max(img: &crate::passdiff::Buf) -> f32 {
+    let mut m = 0.0f32;
+    for y in 0..img.h {
+        for x in 0..img.w {
+            for c in 0..3 {
+                m = m.max(img.get(x, y, c));
+            }
+        }
+    }
+    quantise_f16(m, Rounding::NearestEven)
+}
+
+/// One lamp's outputs kept for the checks.
+pub struct LampResult {
+    pub drawn: Vec<usize>,
+    pub frags: u64,
+    pub list_updates: u64,
+    pub probe_updates: u64,
+}
+
+/// THE FRAME: every lamp through steps 1–5; `keep_accum_for` = a lamp id whose accumulation and flat cube are returned
+/// un-cleared (the check against the capture's exports). Returns the lists, the probe state and the kept intermediates.
+pub struct FrameOut {
+    pub lists: Lists,
+    pub probes: ProbeState,
+    pub kept: Option<(Accum, FlatCubeMap)>,
+    pub results: Vec<LampResult>,
+}
+
+pub fn run_frame(gl: &crate::layout::GameLayout, sc: &LmScene, lamps: &[Lamp], chunks: &[crate::probechunk::ChunkRecord], probe_n: [u32; 3], target: (u32, u32), keep_accum_for: Option<u16>, mut lists: Lists, log: &mut dyn FnMut(&str)) -> FrameOut {
+    let (w, h) = target;
+    let mut acc = Accum::new(w, h);
+    let mut probes = ProbeState::new(probe_n);
+    let mut kept = None;
+    let mut results = Vec::with_capacity(lamps.len());
+    let t0 = std::time::Instant::now();
+    for (li, lamp) in lamps.iter().enumerate() {
+        let drawn = cull(gl, sc, lamp);
+        let tris = casters(sc, &drawn);
+        let shadow = render_flat_cube(lamp.light.pos, lamp.r_eff, lamp.face_size, &tris, true);
+        let cb = lamp.light_cb();
+        let probe_updates = probe_pass(chunks, lamp, &shadow, &mut probes);
+        let frags = draw_lamp(sc, &drawn, &cb, &shadow, &mut acc);
+        let list_updates = resolve_lists(&acc, &mut lists, lamp.id);
+        if li % 25 == 0 || li + 1 == lamps.len() {
+            log(&format!("lamp {}/{} id {} ({}): {} records drawn, {} casters, {frags} fragments, {list_updates} list texels, {probe_updates} probes ({:.1} s)", li + 1, lamps.len(), lamp.id, lamp.owner, drawn.len(), tris.len(), t0.elapsed().as_secs_f32()));
+        }
+        results.push(LampResult { drawn, frags, list_updates, probe_updates });
+        if keep_accum_for == Some(lamp.id) {
+            let mut snap = Accum::new(w, h);
+            snap.px.copy_from_slice(&acc.px);
+            snap.touched = acc.touched;
+            kept = Some((snap, shadow));
+        }
+        acc.clear_touched();
+    }
+    FrameOut { lists, probes, kept, results }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_flat_cube_faces_are_the_captured_cbuffer() {
+        let f = flat_cube_faces(173, 4096);
+        let cap = LightCb::stpad_f4936_eid34();
+        for k in 0..6 {
+            assert_eq!(f[k], cap.faces[k], "face {k}");
+        }
+    }
+
+    #[test]
+    fn the_lamp_cbuffer_is_the_captured_one() {
+        // the RoadBorderSpot of block 97 (lamp A): the file fields → the eid 34 cbuffer
+        let l = LightDef { pos: [1504.5673828125, 23.358840942382812, 1655.9000244140625], dir: [0.9939168691635132, -0.11013312637805939, -3.9683811792201595e-09], color: [0.945, 0.929, 0.886], intensity: 1.1, radius: 40.0, cone: (140.0, 170.0), hyper2: [-1.24, 0.206], att_htnlr: [0.0, 8.121213], ..Default::default() };
+        let lamp = Lamp::new(242, "clipE waterfccenter of block 97", l);
+        let cb = lamp.light_cb();
+        let cap = LightCb::stpad_f4936_eid34();
+        let close = |a: f32, b: f32| (a - b).abs() <= 4.0 * f32::EPSILON * b.abs().max(1e-6);
+        assert!(close(cb.inv_radius2, cap.inv_radius2), "{} vs {}", cb.inv_radius2, cap.inv_radius2);
+        // the game's cosf(70°) sits 2 ulps under Rust's (0.34202007 vs 0.34202014: its libm); InvCosRange follows at 3 ulps
+        assert!((cb.inv_cos_range - cap.inv_cos_range).abs() <= 8.0 * f32::EPSILON * cap.inv_cos_range, "{} vs {}", cb.inv_cos_range, cap.inv_cos_range);
+        assert!(close(cb.cos_outer, cap.cos_outer), "{} vs {}", cb.cos_outer, cap.cos_outer);
+        assert!(close(cb.z_scale, cap.z_scale) && close(cb.z_trans, cap.z_trans), "{} {} vs {} {}", cb.z_scale, cb.z_trans, cap.z_scale, cap.z_trans);
+        for k in 0..3 {
+            assert!(close(cb.spot_dir_neg[k], cap.spot_dir_neg[k]), "{k}: {} vs {}", cb.spot_dir_neg[k], cap.spot_dir_neg[k]);
+        }
+        for k in 0..4 {
+            assert!(close(cb.att_hn2[k], cap.att_hn2[k]), "{k}: {} vs {}", cb.att_hn2[k], cap.att_hn2[k]);
+        }
+        assert_eq!(cb.spot_falloff_back_offset, cap.spot_falloff_back_offset);
+        assert_eq!(lamp.face_size, 173);
+    }
+
+    #[test]
+    fn the_jitter_constants_are_the_captured_ones() {
+        // eid 34 (jitter n = 2 of lamp A): LM01_Trans_RasterSS (−0.9998553395271301, 0.9995659589767456)
+        let cb = jitter_cb(2, 3072, 2048);
+        assert_eq!(cb.trans_ss[0].to_bits(), (-0.9998553395271301f32).to_bits(), "{}", cb.trans_ss[0]);
+        assert_eq!(cb.trans_ss[1].to_bits(), (0.9995659589767456f32).to_bits(), "{}", cb.trans_ss[1]);
+    }
+
+    #[test]
+    fn the_list_bytes_round_trip() {
+        let mut l = Lists::cleared(4, 2);
+        l.l[5] = LightList { id: [1, 2, 3, 4, 5, 6, 7, 0xffff], w8: [10, 20, 30, 40, 50, 60, 70, 0], lit8: [255, 200, 0, 1, 2, 3, 4, 5] };
+        let (a, b, c) = (l.id_bytes(), l.w_bytes(), l.lit_bytes());
+        let r = Lists::from_bytes(4, 2, &a, &b, &c);
+        assert_eq!(r.l, l.l);
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// The setup from the map (what `bake --lm-from-map --layout-game` builds) and the checks against the capture
+// ---------------------------------------------------------------------------------------------------------------
+
+/// Everything the frame needs from the map and the packs.
+pub struct Setup {
+    pub scene: crate::geometry::Scene,
+    pub gl: crate::layout::GameLayout,
+    pub sc: LmScene,
+    pub lamps: Vec<Lamp>,
+    pub daytime: Option<u32>,
+    pub lights_on: Option<bool>,
+    pub chunks: Vec<crate::probechunk::ChunkRecord>,
+    pub probe_n: [u32; 3],
+    pub collection: String,
+}
+
+/// The LM scene, the layout's records, the light list (the mood gate) and the probe chunking of a map — the bake's
+/// `--lm-from-map --layout-game --pak` path (main.rs) in one call. `paks` = (file, key) pairs (the collection's first),
+/// `quality` = the editor quality (3 = q3 → layout quality index 2).
+pub fn setup_from_map(map_path: &str, paks: &[(String, String)], collection: &str, quality: u32, log: &mut dyn FnMut(&str)) -> Result<Setup, String> {
+    let t0 = std::time::Instant::now();
+    let scene = crate::geometry::Scene::from_map(map_path)?;
+    let mf = tmmaps::map::MapFile::load(std::path::Path::new(map_path));
+    let (pp, key) = paks.first().ok_or("--pak FILE:KEY needed")?;
+    let base: u32 = 4096;
+    let zone = crate::layout::ground_zone(&mf, collection);
+    let gl = crate::layout::for_map(map_path, &scene, base, quality.saturating_sub(1), crate::layout::TilePlg::BLUEBAY_SEA, Some((pp.as_str(), key.as_str())), collection, &zone, None)?;
+    log(&format!("layout: {} charts / {} records ({:.1} s)", gl.charts.len(), gl.records.len(), t0.elapsed().as_secs_f32()));
+    let mut store = mapgeom::store::DataStore::empty();
+    for (p, k) in paks {
+        store.add_pak(p, k).map_err(|e| format!("pak {p}: {e}"))?;
+    }
+    let tile_world_y = crate::layout::tile_level(&mf, collection) as f32 * 8.0 + crate::layout::CollectionProfile::of(collection).yoff;
+    let tile_mesh = crate::lmmesh::lm_mesh_of_zone(&mut store, collection, &zone)?;
+    let files = mapgeom::embedded::files(&mf)?;
+    let by_name: std::collections::BTreeMap<String, Vec<u8>> = files.iter().map(|(k, v)| (k.rsplit(['/', '\\']).next().unwrap_or(k).to_string(), v.clone())).collect();
+    let tile_plg = gl.records.iter().find(|r| r.class == "tile").map(|r| crate::layout::TilePlg { meter_by_uv: r.meter_by_uv, bounds: r.uv }).unwrap_or(crate::layout::TilePlg::BLUEBAY_SEA);
+    let mut sc = crate::lmmesh::lm_scene_from_map_at(&scene, &gl, base, &|name| by_name.get(name).cloned(), tile_mesh, tile_plg, 2048.0, tile_world_y)?;
+    let n_ent = crate::lmmesh::lm_scene_add_entities(&mut store, &gl, &mut sc, 2048.0)?;
+    log(&format!("LM scene: {} meshes, {} instances ({n_ent} prefab entities), rec_of {} ({:.1} s)", sc.meshes.len(), sc.instances.len(), sc.rec_of.len(), t0.elapsed().as_secs_f32()));
+    // the lights and the gate
+    let opts = crate::records::BuildOpts { collection: collection.to_string(), zone: Some(zone.clone()), kept: None, tile_level: None, yoff: None, grid: None, items_3d: false, ghost_marks: false, no_block_cells: false, clip_order_sim: false, face_order: None, one_class: Vec::new() };
+    let mr = crate::records::build_map_records(map_path, &scene, &mut store, &opts)?;
+    let daytime = crate::mapio::daytime(&mf.gbx.body).filter(|v| *v != 0xffff_ffff);
+    let gate = crate::moods::BlenderCurve::for_collection(collection);
+    let lights_on = daytime.map(|w| gate.local_lights_on(w));
+    let lamps = lamps(&scene.world_lights(), &mr.block_lights);
+    log(&format!("{} lamps ({} item, {} block/clip); DayTime {:?} → local lights {:?}", lamps.len(), scene.world_lights().len(), mr.block_lights.len(), daytime.map(|w| format!("{w:#x}")), lights_on));
+    // the probe chunking (the bake's probe-boxes rule: quality² > 0.9 records; the collection's offset and level height)
+    let recs: Vec<crate::lmtiles::BlockRecord> = gl.records.iter().map(|r| crate::lmtiles::BlockRecord { world: crate::lmtiles::CBox::new(r.centre, r.half), quality: r.quality }).collect();
+    let size = [mf.size[0].max(0) as u32, mf.size[1].max(0) as u32, mf.size[2].max(0) as u32];
+    let coll_id: u32 = match collection { "Stadium" | "Stadium256" => 26, "GreenCoast" => 15, "RedIsland" => 16, "WhiteShore" => 29, _ => 28 };
+    let probe_off = [0.0, crate::probechunk::deco_offsets(coll_id).map(|(_, p)| p + 2.0).unwrap_or(-38.0), 0.0];
+    let scene_ch = crate::lmtiles::scene_box(&recs);
+    let (_, _, chunking, _) = crate::probechunk::for_records(size, [32.0, 8.0, 32.0], probe_off, crate::probechunk::level_h(coll_id), &recs, &scene_ch, 2048);
+    log(&format!("probe atlas {:?}: {} chunks", chunking.atlas, chunking.records.len()));
+    Ok(Setup { scene, gl, sc, lamps, daytime, lights_on, chunks: chunking.records.clone(), probe_n: chunking.atlas, collection: collection.to_string() })
+}
+
+/// A DDS export's payload (DX10 header → offset 148) and its header fields (w, h, depth, array size, dxgi).
+pub fn dds_payload(bytes: &[u8]) -> Result<(&[u8], u32, u32, u32, u32, u32), String> {
+    if bytes.len() < 148 || &bytes[..4] != b"DDS " {
+        return Err("not a DX10 DDS".into());
+    }
+    let u = |o: usize| u32::from_le_bytes(bytes[o..o + 4].try_into().unwrap());
+    let (h, w, depth) = (u(12), u(16), u(24).max(1));
+    // a DX10 header (fourcc "DX10") adds 20 bytes; the legacy 8-bit luminance header (the R8 probe volume export) does not
+    if &bytes[84..88] == b"DX10" {
+        let dxgi = u(128);
+        let arr = u(140).max(1);
+        Ok((&bytes[148..], w, h, depth, arr, dxgi))
+    } else {
+        Ok((&bytes[128..], w, h, depth, 1, 0))
+    }
+}
+
+/// The accumulation export (RGBA16F) as an Accum.
+pub fn accum_from_dds(bytes: &[u8]) -> Result<Accum, String> {
+    let (p, w, h, _, _, _) = dds_payload(bytes)?;
+    let mut a = Accum::new(w, h);
+    for i in 0..(w * h) as usize {
+        for c in 0..4 {
+            let o = (i * 4 + c) * 2;
+            a.px[i][c] = crate::gpufmt::decode_f16(u16::from_le_bytes([p[o], p[o + 1]]));
+        }
+        if a.px[i][3] > 0.0 {
+            a.touch(i as u32 % w, i as u32 / w);
+        }
+    }
+    Ok(a)
+}
+
+/// Two accumulations texel by texel: per channel the identical / within one f16 ulp / beyond counts over the texels either
+/// side wrote (alpha > 0), plus the alpha (coverage) agreement = the drawn set and the raster.
+pub fn compare_accum(ours: &Accum, game: &Accum) -> String {
+    let n = ours.px.len().min(game.px.len());
+    let (mut drawn_both, mut drawn_ours_only, mut drawn_game_only) = (0usize, 0usize, 0usize);
+    let mut same = [0usize; 4];
+    let mut ulp1 = [0usize; 4];
+    let mut far = [0usize; 4];
+    let mut maxd = [0.0f32; 4];
+    let mut far_ex: Option<(usize, [f32; 4], [f32; 4])> = None;
+    for i in 0..n {
+        let (a, b) = (ours.px[i], game.px[i]);
+        let (da, db) = (a[3] > 0.0, b[3] > 0.0);
+        if !da && !db {
+            continue;
+        }
+        match (da, db) {
+            (true, true) => drawn_both += 1,
+            (true, false) => drawn_ours_only += 1,
+            (false, true) => drawn_game_only += 1,
+            _ => {}
+        }
+        for c in 0..4 {
+            let (x, y) = (a[c], b[c]);
+            if x.to_bits() == y.to_bits() || (x == 0.0 && y == 0.0) {
+                same[c] += 1;
+            } else {
+                let ex = crate::gpufmt::encode_f16(x, Rounding::NearestEven) as i32;
+                let ey = crate::gpufmt::encode_f16(y, Rounding::NearestEven) as i32;
+                if (ex - ey).abs() <= 1 {
+                    ulp1[c] += 1;
+                } else {
+                    far[c] += 1;
+                    if far_ex.is_none() && c == 0 { far_ex = Some((i, a, b)); }
+                }
+            }
+            maxd[c] = maxd[c].max((x - y).abs());
+        }
+    }
+    let ex = far_ex.map(|(i, a, b)| format!("; first far texel ({}, {}): ours {:?} game {:?}", i as u32 % ours.w, i as u32 / ours.w, a, b)).unwrap_or_default();
+    // the coverage pairs (ours × 9, game × 9) where they differ
+    let mut pairs: std::collections::BTreeMap<(i32, i32), usize> = Default::default();
+    for i in 0..n {
+        let (a, b) = (ours.px[i][3], game.px[i][3]);
+        if a == 0.0 && b == 0.0 { continue; }
+        let (ka, kb) = ((a * 9.0).round() as i32, (b * 9.0).round() as i32);
+        if ka != kb { *pairs.entry((ka, kb)).or_default() += 1; }
+    }
+    // is the game's shadow channel a count of ninths (a point comparison) or finer (PCF)?
+    let (mut ninths, mut finer) = (0usize, 0usize);
+    for i in 0..n { let y = game.px[i][1]; if game.px[i][3] > 0.0 && y > 0.0 { let k = y * 9.0; if (k - k.round()).abs() < 0.03 { ninths += 1; } else { finer += 1; } } }
+    let ex = format!("{ex}; coverage pairs (ours/9, game/9) differing: {:?}; game shadow channel: {ninths} texels at k/9, {finer} finer", pairs);
+    format!("drawn texels: both {drawn_both}, ours only {drawn_ours_only}, game only {drawn_game_only}; per channel (light, shadow, 0, coverage) identical {:?}, within 1 f16 ulp {:?}, beyond {:?}, max |Δ| {:?}{ex}", same, ulp1, far, maxd)
+}
+
+/// The flat-cube export (D16 4096²) against ours: the six face tiles, texels identical / ±1 step / beyond, and the count of
+/// written texels each side.
+pub fn compare_flat_cube(ours: &FlatCubeMap, bytes: &[u8]) -> Result<String, String> {
+    let (p, w, _h, _, _, _) = dds_payload(bytes)?;
+    let mut s = String::new();
+    let (mut tot_same, mut tot_1, mut tot_far, mut ow, mut gw) = (0usize, 0usize, 0usize, 0usize, 0usize);
+    for f in 0..6 {
+        let (ox, oy) = flat_cube_face_viewport(f, ours.size);
+        let (mut same, mut one, mut far, mut o_w, mut g_w, mut plus) = (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
+        let mut ex = String::new();
+        for y in 0..ours.size {
+            for x in 0..ours.size {
+                let o = ((oy + y) as usize * ours.width() as usize + (ox + x) as usize) as usize;
+                let g = ((oy + y) as usize * w as usize + (ox + x) as usize) * 2;
+                let gv = u16::from_le_bytes([p[g], p[g + 1]]) as i32;
+                let ov = (ours.depth[o] * 65535.0).round() as i32;
+                if ov > 0 { o_w += 1; }
+                if gv > 0 { g_w += 1; }
+                let d = ov - gv;
+                if d == 0 { same += 1; } else if d.abs() == 1 { one += 1; if d > 0 { plus += 1; } } else { far += 1; if ex.is_empty() { ex = format!(" e.g. ({x}, {y}) ours {ov} game {gv}"); } }
+            }
+        }
+        s.push_str(&format!("  face {f}: identical {same}, ±1 {one} (ours above in {plus}), beyond {far} (written ours {o_w} / game {g_w}){ex}\n"));
+        tot_same += same; tot_1 += one; tot_far += far; ow += o_w; gw += g_w;
+    }
+    s.push_str(&format!("  all faces: identical {tot_same}, ±1 {tot_1}, beyond {tot_far}; written ours {ow} / game {gw}"));
+    Ok(s)
+}
+
+/// The probe volume export (R8 96 × 80 × 32) against ours.
+pub fn compare_probe_volume(ours: &ProbeState, bytes: &[u8]) -> Result<String, String> {
+    let (p, w, h, d, _, _) = dds_payload(bytes)?;
+    if [w, h, d] != ours.n {
+        return Err(format!("probe volume {w}×{h}×{d} vs ours {:?}", ours.n));
+    }
+    let n = ((w * h * d) as usize).min(p.len());
+    let (mut same, mut one, mut far, mut o_nz, mut g_nz) = (0usize, 0usize, 0usize, 0usize, 0usize);
+    let mut ex = String::new();
+    for i in 0..n {
+        let (a, b) = (ours.volume[i] as i32, p[i] as i32);
+        if a > 0 { o_nz += 1; }
+        if b > 0 { g_nz += 1; }
+        let dd = (a - b).abs();
+        if dd == 0 { same += 1; } else if dd == 1 { one += 1; } else { far += 1; if ex.is_empty() { let (x, y, z) = (i as u32 % w, (i as u32 / w) % h, i as u32 / (w * h)); ex = format!(" e.g. ({x}, {y}, {z}) ours {a} game {b}"); } }
+    }
+    Ok(format!("probe volume: identical {same}, ±1 {one}, beyond {far} of {n}; non-zero ours {o_nz} / game {g_nz}{ex}"))
+}
+
+/// Two list states byte by byte (ids, weights, lit bytes), with the texels whose lists differ.
+pub fn compare_lists(ours: &Lists, game: &Lists) -> String {
+    let n = ours.l.len().min(game.l.len());
+    let (mut same, mut diff, mut nonempty) = (0usize, 0usize, 0usize);
+    let mut ex = String::new();
+    for i in 0..n {
+        let (a, b) = (&ours.l[i], &game.l[i]);
+        if b.w8.iter().any(|&w| w > 0) { nonempty += 1; }
+        if a == b { same += 1; } else { diff += 1; if ex.len() < 600 { ex.push_str(&format!("\n    ({}, {}): ours {:?}/{:?}/{:?} game {:?}/{:?}/{:?}", i as u32 % ours.w, i as u32 / ours.w, a.id, a.w8, a.lit8, b.id, b.w8, b.lit8)); } }
+    }
+    format!("lists: {same} texels identical, {diff} differ ({nonempty} non-empty in the game's){ex}")
+}
+
+/// The scene's instances with their chart STs recomputed for a `w` × `h` accumulation target (the local-light frame's
+/// 3072 × 2048: the layout rects sit 1:1 in its left 2048 columns, so the ST's x terms are over 3072 — the captured draws'
+/// clip positions; a captured scene without `st_src` keeps its STs).
+pub fn instances_for_target(sc: &LmScene, w: u32, h: u32) -> Vec<crate::sunpass::LmInstance> {
+    let mut out = sc.instances.clone();
+    for (i, (rect, bounds)) in sc.st_src.iter().enumerate() {
+        if i < out.len() {
+            let st = crate::peelcolor::chart_st_target(*rect, *bounds, w as f32, h as f32, 2048.0, 2048.0);
+            out[i].st = st;
+            out[i].st_x_bits = st[0].to_bits();
+        }
+    }
+    out
+}
+
+/// The LM scene with the target's STs (a shallow copy of the meshes is avoided: the caller keeps `sc` and passes the
+/// instance vector) — `draw_lamp` takes the scene, so build a scene value whose instances are the target's.
+pub fn scene_for_target(sc: &LmScene, w: u32, h: u32) -> LmScene {
+    LmScene { meshes: sc.meshes.clone(), inst_first: sc.inst_first.clone(), inst_count: sc.inst_count.clone(), instances: instances_for_target(sc, w, h), table: sc.table.clone(), eids: sc.eids.clone(), rec_of: sc.rec_of.clone(), st_src: sc.st_src.clone(), frag_lists: Default::default() /* perf 8: the LM fragment lists are per target size — a fresh set for this frame */ }
+}
+
+/// The post-VS export of a captured lighting draw (mesh/e<EID>_vsout.bin, stride 80: o0 xyzw, o1 xyz, o2 xyzw, o3 xyz, o4 xyz,
+/// o5 xyz) against our VS 7303 for the same instances: `insts` = our drawn instance indices of the mesh with the draw's index
+/// count (matched by world position of the first vertex), per matched instance the max |Δ| of the clip xy (in target
+/// texels), the world position and the normal.
+pub fn compare_vsout(sc: &LmScene, insts: &[usize], jitter: u32, target: (u32, u32), bytes: &[u8], indices: &[u8]) -> String {
+    let n = bytes.len() / 80;
+    let f = |i: usize, k: usize| f32::from_le_bytes(bytes[i * 80 + k * 4..i * 80 + k * 4 + 4].try_into().unwrap());
+    let ni = indices.len() / 2;
+    let per = (0..ni).map(|i| u16::from_le_bytes([indices[2 * i], indices[2 * i + 1]]) as usize).max().map(|m| m + 1).unwrap_or(n);
+    let count = if per > 0 { n / per } else { 0 };
+    let cb = jitter_cb(jitter, target.0, target.1);
+    let mut s = format!("vsout: {n} vertices = {count} instances × {per} (index count {ni})");
+    // our meshes with `ni` indices
+    let cands: Vec<usize> = insts.iter().copied().filter(|&ii| mesh_of(sc, ii).map(|m| sc.meshes[m].indices.len() == ni).unwrap_or(false)).collect();
+    s.push_str(&format!("; ours: {} drawn instances with that index count", cands.len()));
+    let mut matched = 0usize;
+    for gi in 0..count {
+        let gw0 = [f(gi * per, 4), f(gi * per, 5), f(gi * per, 6)];
+        // the instance whose first vertex lands there
+        let mut best: Option<(usize, f32)> = None;
+        for &ii in &cands {
+            let m = mesh_of(sc, ii).unwrap();
+            let v0 = vs_7303(&sc.meshes[m].verts[0], &sc.instances[ii], &sc.table, &cb);
+            let d = (0..3).map(|k| (v0.world[k] - gw0[k]).abs()).fold(0.0f32, f32::max);
+            if best.map(|b| d < b.1).unwrap_or(true) { best = Some((ii, d)); }
+        }
+        let Some((ii, d0)) = best else { continue };
+        if d0 > 0.01 { s.push_str(&format!("\n  game instance {gi} (first vertex {gw0:?}): no instance of ours within 1 cm (nearest {d0:.3} m)")); continue; }
+        matched += 1;
+        let m = mesh_of(sc, ii).unwrap();
+        let mesh = &sc.meshes[m];
+        let (mut dclip, mut dworld, mut dnorm) = (0.0f32, 0.0f32, 0.0f32);
+        let (mut bit_x, mut bit_y) = (0usize, 0usize);
+        let mut worst = String::new();
+        for (vi, v) in mesh.verts.iter().enumerate().take(per) {
+            let o = vs_7303(v, &sc.instances[ii], &sc.table, &cb);
+            let g = gi * per + vi;
+            let gc = [f(g, 0), f(g, 1)];
+            let dcx = ((o.clip[0] - gc[0]) * 0.5 * target.0 as f32).abs();
+            let dcy = ((o.clip[1] - gc[1]) * 0.5 * target.1 as f32).abs();
+            let dc = dcx.max(dcy);
+            if dc > dclip { dclip = dc; worst = format!("v{vi}: ours clip {:?} game {:?} (Δ {dcx:.4}, {dcy:.4} px)", o.clip, gc); }
+            if o.clip[0].to_bits() == gc[0].to_bits() { bit_x += 1; }
+            if o.clip[1].to_bits() == gc[1].to_bits() { bit_y += 1; }
+            for k in 0..3 {
+                dworld = dworld.max((o.world[k] - f(g, 4 + k)).abs());
+                dnorm = dnorm.max((o.normal[k] - f(g, 11 + k)).abs());
+            }
+        }
+        // the game's ST solved from two vertices of different u / v (our uv = the game's snorm16 stream): clip = 2·S·uv + (2·T + Trans)
+        let mut st_note = String::new();
+        if per >= 2 {
+            let (u0, v0) = (mesh.verts[0].uv[0], mesh.verts[0].uv[1]);
+            let ju = (1..per).find(|&j| (mesh.verts[j].uv[0] - u0).abs() > 1e-3);
+            let jv = (1..per).find(|&j| (mesh.verts[j].uv[1] - v0).abs() > 1e-3);
+            if let (Some(ju), Some(jv)) = (ju, jv) {
+                let g = |j: usize, k: usize| f(gi * per + j, k);
+                let sx = (g(ju, 0) - g(0, 0)) / (2.0 * (mesh.verts[ju].uv[0] - u0));
+                let tx = (g(0, 0) - 2.0 * sx * u0 - cb.trans_ss[0]) / 2.0;
+                let sy = (g(jv, 1) - g(0, 1)) / (-2.0 * (mesh.verts[jv].uv[1] - v0));
+                let ty = (g(0, 1) - (-2.0) * sy * v0 - cb.trans_ss[1]) / (-2.0);
+                let o = sc.instances[ii].st;
+                let src = sc.st_src.get(ii).map(|(r, b)| format!(" rect {r:?} bounds {b:?}")).unwrap_or_default();
+                st_note = format!("\n     ST ours {:?} | game (solved) [{sx}, {sy}, {tx}, {ty}]; ΔT·W = ({:.4}, {:.4}) texels{src}", o, (o[2] - tx) * target.0 as f32, (o[3] - ty) * target.1 as f32);
+            }
+        }
+        s.push_str(&format!("\n  game instance {gi} ↔ ours {ii}: max |Δclip| {dclip:.5} px (clip bits identical x {bit_x} y {bit_y} of {per}), |Δworld| {dworld:.5} m, |Δnormal| {dnorm:.6}{}{st_note}", if dclip > 0.002 { format!(" — {worst}") } else { String::new() }));
+    }
+    s.push_str(&format!("\n  {matched} of {count} game instances matched"));
+    s
+}
+
+/// The instances of ours whose first vertex (through VS 7303) coincides with a captured draw's post-VS instances — the
+/// game's grouping of a mesh into two draws (lamp A's eids 64 / 84) recovered from the export.
+pub fn instances_of_vsout(sc: &LmScene, insts: &[usize], jitter: u32, target: (u32, u32), bytes: &[u8], indices: &[u8]) -> Vec<usize> {
+    let n = bytes.len() / 80;
+    let f = |i: usize, k: usize| f32::from_le_bytes(bytes[i * 80 + k * 4..i * 80 + k * 4 + 4].try_into().unwrap());
+    let ni = indices.len() / 2;
+    let per = (0..ni).map(|i| u16::from_le_bytes([indices[2 * i], indices[2 * i + 1]]) as usize).max().map(|m| m + 1).unwrap_or(n);
+    let count = if per > 0 { n / per } else { 0 };
+    let cb = jitter_cb(jitter, target.0, target.1);
+    let cands: Vec<usize> = insts.iter().copied().filter(|&ii| mesh_of(sc, ii).map(|m| sc.meshes[m].indices.len() == ni).unwrap_or(false)).collect();
+    let mut out = Vec::new();
+    for gi in 0..count {
+        let gw0 = [f(gi * per, 4), f(gi * per, 5), f(gi * per, 6)];
+        for &ii in &cands {
+            let m = mesh_of(sc, ii).unwrap();
+            let v0 = vs_7303(&sc.meshes[m].verts[0], &sc.instances[ii], &sc.table, &cb);
+            if (0..3).all(|k| (v0.world[k] - gw0[k]).abs() < 0.001) {
+                out.push(ii);
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// The composed frame-1 image against the editor save's frame-1 WebP (decoded to 1024² RGB): our 2048² region encoded by a
+/// candidate (`sqrt`: byte = 255·√(v/m); else linear 255·v/m; m = the image max), 2×2-averaged to 1024², chart-normalised
+/// like frame 0 (filecheck::chart_normalise over the mapping's rects), then per lit texel the byte difference. Returns the
+/// report line and (ours, fb) for a dump.
+pub fn frame1_compare(img: &crate::passdiff::Buf, editor_rgb: &[u8], charts: &[(u32, u32, u32, u32)], sqrt: bool) -> (String, Vec<u8>, Vec<u8>) {
+    let m = image_max(img).max(1e-6);
+    let (ow, oh) = (1024u32, 1024u32);
+    let mut ours = vec![0u8; (ow * oh * 3) as usize];
+    for y in 0..oh {
+        for x in 0..ow {
+            for c in 0..3u32 {
+                let mut s = 0.0f32;
+                for dy in 0..2 {
+                    for dx in 0..2 {
+                        let v = img.get(2 * x + dx, 2 * y + dy, c) / m;
+                        let e = if sqrt { v.max(0.0).sqrt() } else { v.max(0.0) };
+                        s += e.min(1.0);
+                    }
+                }
+                ours[((y * ow + x) * 3 + c) as usize] = (s * 0.25 * 255.0 + 0.5).floor().clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+    let fb = crate::filecheck::chart_normalise(&mut ours, ow, oh, charts);
+    let n = (ow * oh) as usize;
+    let (mut lit_both, mut lit_ours, mut lit_ed) = (0usize, 0usize, 0usize);
+    let (mut sum_abs, mut within3, mut within8) = (0u64, 0usize, 0usize);
+    let mut hist = [0usize; 8];
+    for i in 0..n {
+        let (a, b) = (ours[3 * i] as i32, editor_rgb[3 * i] as i32);
+        let (la, lb) = (a > 0, b > 0);
+        if la && lb { lit_both += 1; } else if la { lit_ours += 1; } else if lb { lit_ed += 1; }
+        if la || lb {
+            let d = (a - b).abs();
+            sum_abs += d as u64;
+            if d <= 3 { within3 += 1; }
+            if d <= 8 { within8 += 1; }
+            hist[(d.min(255) as usize * 8 / 256).min(7)] += 1;
+        }
+    }
+    let lit = lit_both + lit_ours + lit_ed;
+    let line = format!("frame-1 WebP ({}): lit texels both {lit_both}, ours only {lit_ours}, editor only {lit_ed}; over the {lit} lit: mean |Δ| {:.2}, within ±3 {:.1} %, within ±8 {:.1} %; |Δ| histogram (32-wide bins) {:?}; image max {m}", if sqrt { "sqrt encode" } else { "linear encode" }, sum_abs as f64 / lit.max(1) as f64, 100.0 * within3 as f64 / lit.max(1) as f64, 100.0 * within8 as f64 / lit.max(1) as f64, hist);
+    (line, ours, fb)
+}

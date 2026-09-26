@@ -97,14 +97,38 @@ impl AtlasTex {
 /// The chart ST of an instance from its layout rect (2048-unit layout: x, y, w, h) and the model's
 /// PreLightGen uv bounds — `uv_lm = uv1 × ST.xy + ST.zw` (see the module doc for the derivation).
 pub fn chart_st(rect: [i32; 4], bounds: [f32; 4], atlas: f32) -> [f32; 4] {
+    chart_st_wh(rect, bounds, atlas, atlas)
+}
+
+/// `chart_st` for an accumulation TARGET whose size differs from the layout atlas (the local-light frame accumulates the 2048²
+/// layout in a 3072 × 2048 target, the rects 1:1 in its left part): the positions are over the target size, the quarter-texel
+/// shrink stays a quarter of an ATLAS texel — S = (w − 0.25·W/A)/W/du, T = (x + 0.125·W/A)/W − b_lo·S; the captured lighting
+/// draws' clip positions (stpad f4936: S_x = (w − 0.375)/3072/du, T_x = (x + 0.1875)/3072 − …; engineer F).
+pub fn chart_st_target(rect: [i32; 4], bounds: [f32; 4], target_w: f32, target_h: f32, atlas_w: f32, atlas_h: f32) -> [f32; 4] {
+    let (x, y, w, h) = (rect[0] as f32, rect[1] as f32, rect[2] as f32, rect[3] as f32);
+    let (du, dv) = ((bounds[2] - bounds[0]).max(1e-9), (bounds[3] - bounds[1]).max(1e-9));
+    let (kx, ky) = (0.25 * target_w / atlas_w, 0.25 * target_h / atlas_h);
+    if std::env::var_os("LMTOOL_LL_ST_B").is_some() {
+        // variant (b): the 01-space form
+        let sx = (w / target_w - 0.25 / atlas_w) * (1.0 / du);
+        let sy = (h / target_h - 0.25 / atlas_h) * (1.0 / dv);
+        return [sx, sy, (x / target_w + 0.125 / atlas_w) - bounds[0] * sx, (y / target_h + 0.125 / atlas_h) - bounds[1] * sy];
+    }
+    let sx = (w - kx) * (1.0 / target_w) * (1.0 / du);
+    let sy = (h - ky) * (1.0 / target_h) * (1.0 / dv);
+    [sx, sy, (x + kx * 0.5) / target_w - bounds[0] * sx, (y + ky * 0.5) / target_h - bounds[1] * sy]
+}
+
+/// `chart_st` with separate width and height of one atlas.
+pub fn chart_st_wh(rect: [i32; 4], bounds: [f32; 4], atlas_w: f32, atlas_h: f32) -> [f32; 4] {
     let (x, y, w, h) = (rect[0] as f32, rect[1] as f32, rect[2] as f32, rect[3] as f32);
     let (du, dv) = ((bounds[2] - bounds[0]).max(1e-9), (bounds[3] - bounds[1]).max(1e-9));
     // S = (w − ¼) · (1/atlas) · rcp(b_hi − b_lo) — a RECIPROCAL multiply, not a division: the captured 4096 tile
     // instances' S.y are bit-identical only under this order (the division forms match 1384 of 4096; S.x matches under
     // every order); T = (x + ⅛)/atlas − b_lo·S with the product and the subtraction separate (the fused form misses 23)
-    let sx = (w - 0.25) * (1.0 / atlas) * (1.0 / du);
-    let sy = (h - 0.25) * (1.0 / atlas) * (1.0 / dv);
-    [sx, sy, (x + 0.125) / atlas - bounds[0] * sx, (y + 0.125) / atlas - bounds[1] * sy]
+    let sx = (w - 0.25) * (1.0 / atlas_w) * (1.0 / du);
+    let sy = (h - 0.25) * (1.0 / atlas_h) * (1.0 / dv);
+    [sx, sy, (x + 0.125) / atlas_w - bounds[0] * sx, (y + 0.125) / atlas_h - bounds[1] * sy]
 }
 
 /// The peel pixel shader's colour: the atlas at the LM uv (one bilinear tap when the footprint is a

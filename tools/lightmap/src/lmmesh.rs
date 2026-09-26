@@ -128,6 +128,15 @@ pub fn lm_mesh_of_solid_ordered(s2: &mapgeom::static_item::solid2::CPlugSolid2Mo
             Some(Elem::Word(w)) => Some(w.iter().map(|&x| dec3n_raw(x, 511.0)).collect()),
             _ => None,
         };
+        // A VISUAL WITHOUT A NORMAL STREAM IS NOT LIGHTMAP GEOMETRY (engineer F, the stpad Sunrise capture): the Stadium Grass
+        // tile's Base prefab has a fourth LOD-0 geom — the 9 880-vertex GrassFence skirt on the "Tech3 GrassFence_VDepLight"
+        // material, a vertex-colour-lit visual with Position / Int32 colour / TexCoord0 and no normal — and the game's LM
+        // draws of the 9 216 tiles (frame 0's H-basis accumulate and the local-light pass alike) carry 9 vertices / 24
+        // indices = geom 0 alone; its PreLightGen bounds [0.001, 0.999]² are geom 0's uv range too. LMTOOL_LM_NO_NORMAL_KEEP=1
+        // restores the old inclusion (the (0, 1, 0) stand-in normal).
+        if normals.is_none() && std::env::var_os("LMTOOL_LM_NO_NORMAL_KEEP").is_none() {
+            continue;
+        }
         // the tangent: TANGENT_U the same way (w = 0); PSIZE = the tangent frame's handedness ±1 from TANGENT_V (the sign of
         // (n × tU) · tV), 3 for a mesh without tangents
         let dec_t = |e: Option<&Elem>| -> Option<Vec<[f32; 3]>> { match e { Some(Elem::Float4(t)) => Some(t.iter().map(|v| [v[0], v[1], v[2]]).collect()), Some(Elem::Float3(t)) => Some(t.clone()), Some(Elem::Word(w)) => Some(w.iter().map(|&x| dec3n_raw(x, 511.0)).collect()), _ => None } };
@@ -316,13 +325,15 @@ pub fn lm_scene_from_map(scene: &crate::geometry::Scene, layout: &crate::layout:
 /// `lm_scene_from_map` with the tiles' world y (the tile row · 8 + the collection's yoff; BlueBay's is 0).
 pub fn lm_scene_from_map_at(scene: &crate::geometry::Scene, layout: &crate::layout::GameLayout, base: u32, item_bytes: &dyn Fn(&str) -> Option<Vec<u8>>, tile_mesh: Option<LmMesh>, tile_plg: crate::layout::TilePlg, atlas: f32, tile_world_y: f32) -> Result<crate::lmaccum::LmScene, String> {
     use crate::lmaccum::LmScene;
-    let mut sc = LmScene { meshes: Vec::new(), inst_first: Vec::new(), inst_count: Vec::new(), instances: Vec::new(), table: Vec::new(), eids: Vec::new(), frag_lists: Default::default() };
+    let mut sc = LmScene { meshes: Vec::new(), inst_first: Vec::new(), inst_count: Vec::new(), instances: Vec::new(), table: Vec::new(), eids: Vec::new(), frag_lists: Default::default(), rec_of: Vec::new(), st_src: Vec::new() };
     // the item's rect: by its map item index when the layout carries its records (chart k ↔ record k), else by obj = base + item
     let rect_of: std::collections::HashMap<u32, [i32; 4]> = if !layout.records.is_empty() {
         layout.records.iter().enumerate().filter_map(|(k, r)| { let (ii, _) = r.item.as_ref()?; let c = &layout.charts[k]; (c.charted == crate::layout::Charted::Bound).then_some((base + *ii as u32, [c.x, c.y, c.w, c.h])) }).collect()
     } else {
         layout.charts.iter().filter(|c| c.charted == crate::layout::Charted::Bound).map(|c| (c.obj, [c.x, c.y, c.w, c.h])).collect()
     };
+    // the record behind an item (by map item index) — `LmScene::rec_of` for the local-light cull
+    let rec_of_item: std::collections::HashMap<usize, usize> = layout.records.iter().enumerate().filter_map(|(k, r)| r.item.as_ref().map(|(ii, _)| (*ii, k))).collect();
     // items, grouped by model in first-appearance order
     let mut by_model: Vec<(usize, Vec<usize>)> = Vec::new(); // (model index, instance indices)
     for (ii, inst) in scene.instances.iter().enumerate() {
@@ -344,6 +355,8 @@ pub fn lm_scene_from_map_at(scene: &crate::geometry::Scene, layout: &crate::layo
             let st = crate::peelcolor::chart_st(*r, bounds, atlas);
             if std::env::var_os("LM_ST_TRACE").is_some() { eprintln!("  item {} rect {:?} bounds bits [{:#x} {:#x} {:#x} {:#x}] st bits [{:#x} {:#x} {:#x} {:#x}]", inst.item, r, bounds[0].to_bits(), bounds[1].to_bits(), bounds[2].to_bits(), bounds[3].to_bits(), st[0].to_bits(), st[1].to_bits(), st[2].to_bits(), st[3].to_bits()); }
             sc.instances.push(lm_instance(&inst.pose, st));
+            sc.rec_of.push(rec_of_item.get(&inst.item).copied().unwrap_or(usize::MAX));
+            sc.st_src.push((*r, bounds));
             n += 1;
         }
         if n == 0 { continue; }
@@ -366,6 +379,8 @@ pub fn lm_scene_from_map_at(scene: &crate::geometry::Scene, layout: &crate::layo
             let c = &layout.charts[k];
             let st = crate::peelcolor::chart_st([c.x, c.y, c.w, c.h], tile_plg.bounds, atlas);
             sc.instances.push(LmInstance { q: [0.0, 0.0, 0.0, 1.0], t: [cx as f32 * 32.0, tile_world_y, cz as f32 * 32.0], scale: 1.0, st, st_x_bits: st[0].to_bits() });
+            sc.rec_of.push(if layout.records.is_empty() { usize::MAX } else { k });
+            sc.st_src.push(([c.x, c.y, c.w, c.h], tile_plg.bounds));
             n += 1;
         }
         sc.meshes.push(tm);
@@ -440,6 +455,8 @@ pub fn lm_scene_add_entities(store: &mut mapgeom::store::DataStore, layout: &cra
             // the stream quaternion is (x, y, z, w) of the rotation; mat_to_quat gives (w, x, y, z)
             let st = crate::peelcolor::chart_st([c.x, c.y, c.w, c.h], r.uv, atlas);
             sc.instances.push(crate::sunpass::LmInstance { q: [q[1], q[2], q[3], q[0]], t: [iso[9], iso[10], iso[11]], scale: 1.0, st, st_x_bits: st[0].to_bits() });
+            sc.rec_of.push(k);
+            sc.st_src.push(([c.x, c.y, c.w, c.h], r.uv));
             n += 1;
         }
         if n == 0 { continue; }

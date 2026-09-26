@@ -29,7 +29,7 @@ pub struct Tri {
 /// A light socket of a model (`CPlugSolid2Model.lights`): position and axis in
 /// model space, the `GxLight` parameters. Spot angles in degrees (a pack spot
 /// is 120–170°, nearly a hemisphere), `radius` = the ball radius (falloff range).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct LightDef {
     pub pos: V3,
     /// The socket's forward axis (the spot direction).
@@ -44,6 +44,15 @@ pub struct LightDef {
     /// local-light switch is on (`moods::BlenderCurve::local_lights_on(word)`); a lamp without it is baked at every
     /// DayTime (`moods::lamp_is_baked`).
     pub night_only: bool,
+    /// THE ATTENUATION FIELDS of the GxLightBall chunk 0x04002008 the local-light pass needs (engineer F, frame 1): `hyper2`
+    /// (h1, h2) → moods::att_hn2 with the instance radius, `att_htnlr`, the ball flags (bit 9: a shadow radius of its own),
+    /// the emitting radius / cylinder length (Emissive_Length_Left/Up), the GxLight flags and the specular / shadow / flare radii.
+    pub hyper2: [f32; 2],
+    pub att_htnlr: [f32; 2],
+    pub ball_flags: u32,
+    pub emitting: [f32; 2],
+    pub gx_flags: u32,
+    pub radii: [f32; 3],
 }
 
 #[derive(Clone, Debug, Default)]
@@ -227,10 +236,15 @@ pub fn solid2_lights_ext(s2: &mapgeom::static_item::solid2::CPlugSolid2Model, po
         let Some(gx) = pl.gx_light() else { continue };
         let (color, intensity, radius) = gx.summary();
         let mut cone = (180.0f32, 180.0f32);
+        let (mut hyper2, mut att_htnlr, mut ball_flags, mut emitting, mut gx_flags, mut radii) = ([0.0f32; 2], [0.0f32; 2], 0u32, [0.0f32; 2], 0u32, [radius; 3]);
         for ch in &gx.chunks {
+            use mapgeom::static_item::light::GxChunk as G;
             match ch {
-                mapgeom::static_item::light::GxChunk::Spot { angle_inner, angle_outer, .. } => cone = (*angle_inner, *angle_outer),
-                mapgeom::static_item::light::GxChunk::Spot01 { angle_inner, angle_outer, .. } => cone = (*angle_inner, *angle_outer),
+                G::Spot { angle_inner, angle_outer, .. } => cone = (*angle_inner, *angle_outer),
+                G::Spot01 { angle_inner, angle_outer, .. } => cone = (*angle_inner, *angle_outer),
+                G::Ball08 { flags, radius_specular, radius_shadow, radius_flare, emitting_radius, emitting_cylinder_len_z, att_htnlr: a, att_hyper2, .. } => { hyper2 = *att_hyper2; att_htnlr = *a; ball_flags = *flags; emitting = [*emitting_radius, *emitting_cylinder_len_z]; radii = [*radius_specular, *radius_shadow, *radius_flare]; }
+                G::Ball06 { flags, radius_specular, radius_shadow, radius_flare, emitting_radius, attenuation, .. } => { att_htnlr = *attenuation; ball_flags = *flags; emitting = [*emitting_radius, 0.0]; radii = [*radius_specular, *radius_shadow, *radius_flare]; }
+                G::Light08 { flags, .. } | G::Light09 { flags, .. } | G::Light0A { flags, .. } => gx_flags = *flags,
                 _ => {}
             }
         }
@@ -241,7 +255,7 @@ pub fn solid2_lights_ext(s2: &mapgeom::static_item::solid2::CPlugSolid2Model, po
             pos = [r[0] + p[0], r[1] + p[1], r[2] + p[2]];
             dir = quat_rot(q, dir);
         }
-        out.push(LightDef { pos, dir, color, intensity, radius, cone, animated: pl.is_animated(), night_only: pl.night_only() });
+        out.push(LightDef { pos, dir, color, intensity, radius, cone, animated: pl.is_animated(), night_only: pl.night_only(), hyper2, att_htnlr, ball_flags, emitting, gx_flags, radii });
     }
     out
 }

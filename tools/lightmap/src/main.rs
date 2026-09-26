@@ -6107,6 +6107,133 @@ fn run(a: Vec<String>) {
                 Err(e) => println!("{}: {e}", a[1]),
             }
         }
+        "local-lights" => {
+            // lmtool local-lights MAP --pak FILE:KEY [--pak …] [--collection Stadium] [--quality 3] [--check DIR] [--lamps A,B|all]
+            //   [--dump-accum OUT.rgba16f] [--image OUT.ppm] [--lists-from DIR]: THE LOCAL-LIGHT FRAME (frame 1) standalone
+            //   (localdrive.rs): the LM scene + layout records from the map, the light list + the mood gate, then per lamp the
+            //   cull / flat cube / probe pass / 9 jitters / CS 7348. --check DIR = the stsun f4936 export dir: lamps A and B against
+            //   the captured accumulation (9768 after eids 547 / 1670), flat cube (9810 after 1080), probe volume (9783 after 1081)
+            //   and the CS UAVs (after 564 / 1671, starting from the captured lists before each lamp).
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let paks: Vec<(String, String)> = a.iter().enumerate().filter(|(_, x)| *x == "--pak").filter_map(|(i, _)| a.get(i + 1)).filter_map(|p| p.rsplit_once(':').map(|(x, k)| (x.to_string(), k.to_string()))).collect();
+            let coll = f("--collection").unwrap_or_else(|| "Stadium".into());
+            let q: u32 = f("--quality").map(|v| v.parse().unwrap()).unwrap_or(3);
+            let mut log = |s: &str| eprintln!("local-lights: {s}");
+            let su = lightmap::localdrive::setup_from_map(&a[1], &paks, &coll, q, &mut log).unwrap_or_else(|e| panic!("local-lights: {e}"));
+            let (w, h) = lightmap::localdrive::TARGET;
+            // the frame's scene: the chart STs over the accumulation target (3072 × 2048), not the 2048² atlas
+            let sc_t = lightmap::localdrive::scene_for_target(&su.sc, w, h);
+            if let Some(dir) = f("--check") {
+                let dir = std::path::PathBuf::from(dir);
+                let rd = |name: &str| std::fs::read(dir.join("texids").join(name)).unwrap_or_else(|e| panic!("{name}: {e}"));
+                // the two captured lamps by position
+                let near = |p: [f32; 3]| su.lamps.iter().min_by(|x, y| { let d = |l: &lightmap::localdrive::Lamp| (l.light.pos[0] - p[0]).powi(2) + (l.light.pos[1] - p[1]).powi(2) + (l.light.pos[2] - p[2]).powi(2); d(x).partial_cmp(&d(y)).unwrap() }).unwrap().clone();
+                let lamp_a = near([1504.5673828125, 23.358840942382812, 1655.9000244140625]);
+                let lamp_b = near([1512.0999755859375, 23.358840942382812, 1663.4326171875]);
+                println!("lamp A = id {} ({}) at {:?}; lamp B = id {} ({}) at {:?} (the capture: A 243 (eid 563's cbuffer), B 244)", lamp_a.id, lamp_a.owner, lamp_a.light.pos, lamp_b.id, lamp_b.owner, lamp_b.light.pos);
+                for (tag, lamp, acc_file, lists_before, lists_after, cap_id) in [("A", &lamp_a, "e000547_9768.dds", "e000033", "e000564", 243u16), ("B", &lamp_b, "e001670_9768.dds", "e000564", "e001671", 244u16)] {
+                    let t0 = std::time::Instant::now();
+                    let drawn = lightmap::localdrive::cull(&su.gl, &sc_t, lamp);
+                    let tris = lightmap::localdrive::casters(&sc_t, &drawn);
+                    if tag == "A" {
+                        // the post-VS exports of lamp A's jitter n = 2 (eids 34..84 in f4936): the vertex path against the capture
+                        for eid in [34u32, 39, 44, 49, 54, 59, 64, 69] {
+                            let (vb, ib) = (std::fs::read(dir.join("mesh").join(format!("e{eid:06}_vsout.bin"))), std::fs::read(dir.join("mesh").join(format!("e{eid:06}_vsout_indices.bin"))));
+                            if let (Ok(vb), Ok(ib)) = (vb, ib) { println!("eid {eid}: {}", lightmap::localdrive::compare_vsout(&sc_t, &drawn, 2, (w, h), &vb, &ib)); }
+                        }
+                    }
+                    let shadow = lightmap::locallight::render_flat_cube(lamp.light.pos, lamp.r_eff, lamp.face_size, &tris, true);
+                    println!("lamp {tag}: {} instances drawn, {} caster triangles ({:.1} s)", drawn.len(), tris.len(), t0.elapsed().as_secs_f32());
+                    if a.iter().any(|x| x == "-v") {
+                        let mut by: std::collections::BTreeMap<(usize, &str), Vec<String>> = Default::default();
+                        for &ii in &drawn { let m = lightmap::localdrive::mesh_of(&sc_t, ii).unwrap(); let k = sc_t.rec_of[ii]; let r = &su.gl.records[k]; by.entry((sc_t.meshes[m].indices.len(), r.class)).or_default().push(format!("rec {k} c {:?} h {:?} q {} t {:?}", r.centre, r.half, r.quality, sc_t.instances[ii].t)); }
+                        for ((idx, class), v) in &by { println!("  {} × mesh {idx} idx ({class}):", v.len()); for s in v { println!("    {s}"); } }
+                    }
+                    if tag == "B" {
+                        match lightmap::localdrive::compare_flat_cube(&shadow, &rd("e001080_9810.dds")) { Ok(s) => println!("flat cube vs 9810 after eid 1080:\n{s}"), Err(e) => println!("flat cube: {e}") }
+                        let mut ps = lightmap::localdrive::ProbeState::new(su.probe_n);
+                        let n = lightmap::localdrive::probe_pass(&su.chunks, lamp, &shadow, &mut ps);
+                        println!("probe pass: {n} probes entered the lists");
+                        match lightmap::localdrive::compare_probe_volume(&ps, &rd("e001081_9783.dds")) { Ok(s) => println!("{s}"), Err(e) => println!("probe volume: {e}") }
+                    }
+                    let cb = lamp.light_cb();
+                    let mut acc = lightmap::localdrive::Accum::new(w, h);
+                    // the export points: lamp A after eid 547 = its 9 jitters minus the final draw group (eid 552 = eid 84's instances);
+                    // lamp B after eid 1670 = its first 7 jitters (the frame ended at eid 1630)
+                    let (jit, skip) = if tag == "A" {
+                        let (vb, ib) = (std::fs::read(dir.join("mesh/e000084_vsout.bin")).unwrap_or_default(), std::fs::read(dir.join("mesh/e000084_vsout_indices.bin")).unwrap_or_default());
+                        (0..9u32, lightmap::localdrive::instances_of_vsout(&sc_t, &drawn, 2, (w, h), &vb, &ib))
+                    } else { (0..7u32, Vec::new()) };
+                    let frags = lightmap::localdrive::draw_lamp_partial(&sc_t, &drawn, &cb, &shadow, &mut acc, jit.clone(), &skip);
+                    println!("lamp {tag}: {frags} fragments over jitters {jit:?} (the last one without {} instances = the export point), touched {:?} ({:.1} s)", skip.len(), acc.touched, t0.elapsed().as_secs_f32());
+                    let game = lightmap::localdrive::accum_from_dds(&rd(acc_file)).expect("accum dds");
+                    println!("accumulation vs {acc_file}: {}", lightmap::localdrive::compare_accum(&acc, &game));
+                    if let Some(out) = f("--dump-accum") { let mut b = Vec::with_capacity(acc.px.len() * 8); for p in &acc.px { for c in 0..4 { b.extend_from_slice(&lightmap::gpufmt::encode_f16(p[c], lightmap::gpufmt::Rounding::NearestEven).to_le_bytes()); } } std::fs::write(format!("{out}.{tag}"), b).expect("write"); }
+                    // the lists: from the captured state before the lamp, our CS with the CAPTURE's id, against the captured state after
+                    let ld = |pre: &str| -> lightmap::localdrive::Lists {
+                        let (id, wt, lit) = (rd(&format!("{pre}_9771.dds")), rd(&format!("{pre}_9775.dds")), rd(&format!("{pre}_9779.dds")));
+                        let (pi, ..) = lightmap::localdrive::dds_payload(&id).unwrap();
+                        let (pw, ..) = lightmap::localdrive::dds_payload(&wt).unwrap();
+                        let (pl, ..) = lightmap::localdrive::dds_payload(&lit).unwrap();
+                        lightmap::localdrive::Lists::from_bytes(w, h, pi, pw, pl)
+                    };
+                    let mut lists = ld(lists_before);
+                    let n = lightmap::localdrive::resolve_lists(&acc, &mut lists, cap_id);
+                    let after = ld(lists_after);
+                    println!("CS 7348 (light id {cap_id}): {n} texels updated; {}", lightmap::localdrive::compare_lists(&lists, &after));
+                    // the same CS on the CAPTURED accumulation: isolates the resolve from the raster
+                    let mut lists2 = ld(lists_before);
+                    let n2 = lightmap::localdrive::resolve_lists(&game, &mut lists2, cap_id);
+                    println!("CS 7348 on the captured accumulation: {n2} texels updated; {}", lightmap::localdrive::compare_lists(&lists2, &after));
+                }
+                return;
+            }
+            let sel: Option<Vec<u16>> = f("--lamps").filter(|s| s != "all").map(|s| s.split(',').map(|x| x.trim().parse().unwrap()).collect());
+            let lamps: Vec<lightmap::localdrive::Lamp> = match &sel { Some(ids) => su.lamps.iter().filter(|l| ids.contains(&l.id)).cloned().collect(), None => su.lamps.clone() };
+            let lists = lightmap::localdrive::Lists::cleared(w, h);
+            let out = lightmap::localdrive::run_frame(&su.gl, &sc_t, &lamps, &su.chunks, su.probe_n, (w, h), None, lists, &mut log);
+            let nonempty = out.lists.l.iter().filter(|t| t.w8.iter().any(|&x| x > 0)).count();
+            println!("{} lamps: {} list texels non-empty, {} probes lit", lamps.len(), nonempty, out.probes.lists.iter().filter(|t| t.w8.iter().any(|&x| x > 0)).count());
+            if let Some(ed) = f("--frame1-check") {
+                // the editor save's frame-1 WebP against our compose candidates × encodings (the tail RE 7 is pinning)
+                let m = lightmap::mapio::load(&ed).expect("editor map");
+                let d = m.chunk.data.as_ref().expect("data");
+                let blob = &d.frames.get(1).expect("frame 1").images[0];
+                let im = lightmap::img::decode_webp(blob).expect("decode");
+                assert_eq!((im.w, im.h), (1024, 1024));
+                let mp = d.cache.mapping().expect("mapping");
+                let ed_fb1: Vec<u8> = mp.frame_bytes.get(1).cloned().unwrap_or_default();
+                let charts: Vec<(u32, u32, u32, u32)> = su.gl.charts.iter().map(|c| (c.x as u32, c.y as u32, c.w as u32, c.h as u32)).collect();
+                for rule in [lightmap::localdrive::ComposeRule::SumDecoded, lightmap::localdrive::ComposeRule::SumSqrt, lightmap::localdrive::ComposeRule::MaxDecoded] {
+                    let img = lightmap::localdrive::compose(&out.lists, &su.lamps, rule);
+                    for sq in [true, false] {
+                        let (line, ours, fb) = lightmap::localdrive::frame1_compare(&img, &im.px, &charts, sq);
+                        let fb_same = fb.iter().zip(ed_fb1.iter()).filter(|(a, b)| a == b).count();
+                        let fb_close = fb.iter().zip(ed_fb1.iter()).filter(|(a, b)| (**a as i32 - **b as i32).abs() <= 2).count();
+                        println!("{rule:?}: {line}; fb1 identical {fb_same} / within 2 {fb_close} of {}", ed_fb1.len());
+                        if let Some(p) = f("--dump-frame1") {
+                            if rule == lightmap::localdrive::ComposeRule::SumDecoded && sq {
+                                let mut ppm = b"P6\n1024 1024\n255\n".to_vec();
+                                ppm.extend_from_slice(&ours);
+                                std::fs::write(format!("{p}.ours.ppm"), ppm).expect("write");
+                                let mut ppm = b"P6\n1024 1024\n255\n".to_vec();
+                                ppm.extend_from_slice(&im.px);
+                                std::fs::write(format!("{p}.editor.ppm"), ppm).expect("write");
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(p) = f("--image") {
+                let img = lightmap::localdrive::compose(&out.lists, &su.lamps, lightmap::localdrive::ComposeRule::SumDecoded);
+                let mx = lightmap::localdrive::image_max(&img);
+                println!("composed image max {mx}");
+                let mut ppm = format!("P6\n{} {}\n255\n", img.w, img.h).into_bytes();
+                for y in 0..img.h { for x in 0..img.w { for c in 0..3 { ppm.push((img.get(x, y, c) / mx.max(1e-6)).sqrt().clamp(0.0, 1.0).mul_add(255.0, 0.5) as u8); } } }
+                std::fs::write(&p, ppm).expect("write");
+                println!("→ {p} (√(v/max) for viewing)");
+            }
+        }
         "map-lights" => {
             // lmtool map-lights MAP --pak FILE:KEY [--collection C] [--out TSV]: THE LOCAL LIGHTS of a map — the items' CPlugLights
             // (the scene) and the blocks' + engine clips' (records::build_map_records, nested prefabs and external .Light.Gbx

@@ -1118,6 +1118,13 @@ pub struct LmScene {
     /// THE LM RASTER ONCE PER JITTER OFFSET (perf 8): the fragment lists of the nine raster offsets, built on first use and
     /// kept for the whole bake (`frag_list`) — every LmILightDir_Set block and every H-basis draw replays them.
     pub frag_lists: [std::sync::OnceLock<std::sync::Arc<LmFragList>>; 9],
+    /// Per instance: the layout record behind it (chart k ↔ record k) when the scene came from the map through the record
+    /// pipeline (lmmesh::lm_scene_from_map_at / lm_scene_add_entities) — the local-light pass culls records and draws
+    /// their instances; empty for a captured scene.
+    pub rec_of: Vec<usize>,
+    /// Per instance: the layout rect and the uv bounds its ST was computed from (peelcolor::chart_st) — the local-light frame
+    /// recomputes the STs for its own target size (localdrive::instances_for_target); empty for a captured scene.
+    pub st_src: Vec<([i32; 4], [f32; 4])>,
 }
 
 impl LmScene {
@@ -1168,7 +1175,7 @@ pub fn load_lm_scene(root: &Path, env_frame: u32) -> Result<LmScene, String> {
     if sun.len() != 4 {
         return Err(format!("frame {env_frame}: {} sun draws (PS 15187) in the log, 4 expected", sun.len()));
     }
-    let mut sc = LmScene { meshes: Vec::new(), inst_first: Vec::new(), inst_count: Vec::new(), instances: Vec::new(), table: Vec::new(), eids: Vec::new(), frag_lists: Default::default() };
+    let mut sc = LmScene { meshes: Vec::new(), inst_first: Vec::new(), inst_count: Vec::new(), instances: Vec::new(), table: Vec::new(), eids: Vec::new(), frag_lists: Default::default(), rec_of: Vec::new(), st_src: Vec::new() };
     let mut instance_bytes: Option<Vec<u8>> = None;
     for e in &sun {
         let eid = e["eid"].as_u64().unwrap();

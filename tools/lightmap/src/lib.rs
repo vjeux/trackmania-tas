@@ -66,6 +66,7 @@ pub mod probetiles;
 pub mod lightcull;
 pub mod cardfit;
 pub mod locallight;
+pub mod localdrive;
 pub mod setupmap;
 pub mod probes;
 pub mod raster;
