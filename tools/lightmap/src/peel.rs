@@ -4944,7 +4944,8 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         // interpolation of the covering triangle's vertex attributes, then PS 16774 (`sky_ps`). Without the mesh
         // (--dome-analytic) the analytic ellipsoid model stands in.
         let dome_px = |frame: &PeelFrame, dome_r: Option<&crate::domemesh::DomeRaster>, px: u32, py: u32| -> [f32; 3] {
-            if sky_flat.is_some() { return sky_fill; }
+            // (E's LMTOOL_SKY_FLAT was dropped at integration as a duplicate of G's landed LMTOOL_SKY_CONST;
+            //  the constant-sky short circuit below is the kept form.)
             match &prm.sky_grad {
                 Some(_) if sky_const.is_some() => sky_fill,
                 Some(sg) if prm.dome_exact => {
