@@ -2642,7 +2642,7 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
             // (the walk's own env start equals d_prev here: the env layer above set it to the stored env depth or 0)
             let _ = env_q;
             let mut acc: Vec<u32> = Vec::new();
-            layer_walk_biased_from(&mut order_buf, d_prev, &mut acc);
+            layer_walk_biased_capped(&mut order_buf, d_prev, item_cap(prm.dome_layer), &mut acc);
             if traced {
                 for wf in order_buf.iter() {
                     if !acc.contains(&wf.idx) { let f = &list[wf.idx as usize]; let wt = &bvh.tris[f.tri as usize]; eprintln!("LAYERDBG px={x} py={y} frag tri={} inst={} mtri={} z={:.6} z01={:.6} q16={} skipped=merged (biased order)", f.tri, wt.inst, wt.tri, f.z, wf.z01, (wf.dd * 65535.0).round() as u32); }
@@ -2976,7 +2976,7 @@ pub fn exact_item_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &B
                 v.push(WalkFrag { dd: stored_depth(z01, d3d_depth_bias_fmt(zmax_prim, slope.min(1e6), prm.depth_bias, prm.depth_bits), prm.depth_bits), z01, tri: draw_rank_of(f.tri), idx: i as u32 });
             }
             let mut acc = Vec::new();
-            return layer_walk_biased_from(&mut v, d_prev, &mut acc);
+            return layer_walk_biased_capped(&mut v, d_prev, item_cap(prm.dome_layer), &mut acc);
         }
         let mut items = 0usize;
         for f in list {
@@ -3130,7 +3130,7 @@ pub fn exact_item_layers_direct(tris: &[WTri], frame: &PeelFrame, scene: &Scene,
                 v.push(WalkFrag { dd: stored_depth(z01, d3d_depth_bias_fmt(zmax_prim, slope.min(1e6), prm.depth_bias, prm.depth_bits), prm.depth_bits), z01, tri: draw_rank_of(f.tri), idx: i as u32 });
             }
             let mut acc = Vec::new();
-            return layer_walk_biased_from(&mut v, d_prev, &mut acc);
+            return layer_walk_biased_capped(&mut v, d_prev, item_cap(prm.dome_layer), &mut acc);
         }
         let mut items = 0usize;
         for (_, f) in list {
@@ -3598,11 +3598,23 @@ pub fn env_start(env_d: f32, dome_layer: bool, depth_bits: u32) -> f32 {
 /// the previous. Returns the item count; `frags` is left in the walk order with `accept(i)` telling the caller
 /// which were accepted (the derive uses it for the layers).
 pub fn layer_walk_biased(frags: &mut [WalkFrag], env_d: f32, dome_layer: bool, depth_bits: u32, accepted: &mut Vec<u32>) -> usize {
-    layer_walk_biased_from(frags, env_start(env_d, dome_layer, depth_bits), accepted)
+    layer_walk_biased_capped(frags, env_start(env_d, dome_layer, depth_bits), item_cap(dome_layer), accepted)
 }
 
 /// `layer_walk_biased` from a given starting stored depth (the derive's environment layer already resolved).
 pub fn layer_walk_biased_from(frags: &mut [WalkFrag], d_start: f32, accepted: &mut Vec<u32>) -> usize {
+    layer_walk_biased_capped(frags, d_start, MAX_LAYERS, accepted)
+}
+
+/// The item cap of a peel: the render counter's 21 minus the environment render (sweep 0: 20 item layers;
+/// a sweep without the environment block: 21) — E's function stops at |layers| = the cap.
+#[inline(always)]
+pub fn item_cap(dome_layer: bool) -> usize {
+    MAX_LAYERS - dome_layer as usize
+}
+
+/// `layer_walk_biased_from` with an explicit item cap.
+pub fn layer_walk_biased_capped(frags: &mut [WalkFrag], d_start: f32, cap: usize, accepted: &mut Vec<u32>) -> usize {
     let n = frags.len();
     if n <= 64 {
         for i in 1..n {
@@ -3623,7 +3635,7 @@ pub fn layer_walk_biased_from(frags: &mut [WalkFrag], d_start: f32, accepted: &m
         if f.z01 < d_prev {
             continue;
         }
-        if items >= MAX_LAYERS {
+        if items >= cap {
             break;
         }
         items += 1;
