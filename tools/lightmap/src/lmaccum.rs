@@ -204,21 +204,28 @@ pub struct LayerSparse<'a> {
 }
 
 impl LayerSparse<'_> {
-    /// Pixel (x, y)'s layer `k`, if it has one.
+    /// Pixel (x, y)'s slots in `frags`: (first, count) — None for a pixel outside the wanted set (no layers). The same
+    /// resolution under both layouts; `replay_set_layers` resolves it ONCE per fragment and walks the layers from it
+    /// (perf 8.23) — layer k of the pixel is `frags[first + k]` when k < count, else the targets' clear.
     #[inline(always)]
-    fn frag(&self, x: u32, y: u32) -> Option<&crate::peel::LayerFrag> {
-        let (a, n) = match self.px {
+    pub fn range(&self, x: u32, y: u32) -> Option<(usize, usize)> {
+        match self.px {
             Some(px) => {
                 let k = px.index(x, y)? as usize;
                 let a = self.start[k] as usize;
-                (a, match self.cnt { Some(c) => c[k] as usize, None => self.start[k + 1] as usize - a })
+                Some((a, match self.cnt { Some(c) => c[k] as usize, None => self.start[k + 1] as usize - a }))
             }
             None => {
                 let p = (y * self.w + x) as usize;
                 let a = self.start[p] as usize;
-                (a, self.start[p + 1] as usize - a)
+                Some((a, self.start[p + 1] as usize - a))
             }
-        };
+        }
+    }
+    /// Pixel (x, y)'s layer `k`, if it has one.
+    #[inline(always)]
+    fn frag(&self, x: u32, y: u32) -> Option<&crate::peel::LayerFrag> {
+        let (a, n) = self.range(x, y)?;
         if self.k < n { Some(&self.frags[a + self.k]) } else { None }
     }
 }
@@ -1736,6 +1743,95 @@ fn pixel_chunks(n_px: usize, threads: usize) -> (usize, usize) {
 /// blocks' result (`run_set_layers_par` called once per block), without the raster. The clip distances of a fitted
 /// block are VS 17115's per-vertex `(x − MinX, z − MinZ, MaxX − x, MaxZ − z)` interpolated with the fragment's
 /// barycentrics, as the raster path evaluates them.
+/// `replay_set_layers` over the in-place layer table: the layers are `LayerSparse` views of ONE table (the same `start` /
+/// `cnt` / `px` / `frags`, k = 0, 1, 2 …), so a fragment's depth texel — and its colour texel, the same one on the ortho
+/// peel (w = 1) — resolves to a (first, count) range ONCE and every layer k reads `frags[first + k]` from it (perf 8.23:
+/// the trait path re-resolved the pixel per layer — up to 22 rank lookups per fragment, 230 M random loads per tiny
+/// direction). The walk keeps the layer-major, fragment-minor order and every comparison of `ps_17112_layer`, so the last
+/// passing (layer, fragment) — the written colour — is the same. Returns false when the views are not one table (the
+/// caller takes the general path).
+pub fn replay_set_layers_sparse(fl: &LmFragList, sc: &LmScene, cb: &SetCb, world_box: Option<[[f32; 2]; 2]>, layers: &[LayerSparse<'_>], cmp: DepthCompare, tgt: &mut DirTarget) -> bool {
+    assert_eq!((fl.w, fl.h), (tgt.w, tgt.h));
+    let Some(l0) = layers.first() else { return true };
+    // one table: the same slices and index, the layers 0, 1, 2 … in order
+    let one_table = layers.iter().enumerate().all(|(k, l)| {
+        l.k == k && l.w == l0.w && l.h == l0.h && std::ptr::eq(l.start, l0.start) && std::ptr::eq(l.frags, l0.frags)
+            && match (l.cnt, l0.cnt) { (Some(a), Some(b)) => std::ptr::eq(a, b), (None, None) => true, _ => false }
+            && match (l.px, l0.px) { (Some(a), Some(b)) => std::ptr::eq(a, b), (None, None) => true, _ => false }
+    });
+    if !one_table { return false; }
+    let nl = layers.len();
+    let (dw, dh) = l0.depth_size();
+    let threads = crate::pool::pool().threads.max(1);
+    let n_px = (fl.w * fl.h) as usize;
+    let (n_chunks, per) = pixel_chunks(n_px, threads);
+    let px_ptr = tgt.px.as_mut_ptr() as usize;
+    crate::pool::pool().run(n_chunks, |ci| {
+        let (p0, p1) = (ci * per, ((ci + 1) * per).min(n_px));
+        if fl.start[p0] == fl.start[p1] { return; }
+        // per fragment of the chunk: the projection (None = facing away or clipped) with its depth texel's range and its
+        // colour texel's range (the same one when the texels coincide)
+        struct Pf { z: f32, drange: Option<(usize, usize)>, crange: Option<(usize, usize)> }
+        let mut proj: Vec<Option<Pf>> = Vec::with_capacity((fl.start[p1] - fl.start[p0]) as usize);
+        for (k, f) in fl.frags[fl.start[p0] as usize..fl.start[p1] as usize].iter().enumerate() {
+            let fi = fl.start[p0] as usize + k;
+            let clipped = match &world_box {
+                Some(wb) if fl.clip_box.as_ref() == Some(wb) => fl.clipped(fi),
+                Some(wb) => {
+                    let (m, ii) = fl.pairs[f.pair as usize];
+                    let mesh = &sc.meshes[m as usize];
+                    let inst = &sc.instances[ii as usize];
+                    let rows = rotation_rows(inst.q);
+                    let tri = &mesh.indices[f.tri as usize * 3..f.tri as usize * 3 + 3];
+                    let cd = [clip_distances(world_pos(&mesh.verts[tri[0] as usize], inst, &rows), wb), clip_distances(world_pos(&mesh.verts[tri[1] as usize], inst, &rows), wb), clip_distances(world_pos(&mesh.verts[tri[2] as usize], inst, &rows), wb)];
+                    (0..4).any(|i| cd[0][i] * f.b[0] + cd[1][i] * f.b[1] + cd[2][i] * f.b[2] < 0.0)
+                }
+                None => false,
+            };
+            let pr = if clipped { None } else { ps_17112_project(f.pos, f.nrm, cb) };
+            proj.push(pr.map(|(z, u, v, cu, cv)| {
+                let (tx, ty) = (point_texel(u, dw), point_texel(v, dh));
+                let (cx, cy) = (point_texel(cu, dw), point_texel(cv, dh));
+                let drange = l0.range(tx, ty);
+                let crange = if (cx, cy) == (tx, ty) { drange } else { l0.range(cx, cy) };
+                Pf { z, drange, crange }
+            }));
+        }
+        let base = fl.start[p0] as usize;
+        for p in p0..p1 {
+            let (a, b) = (fl.start[p] as usize, fl.start[p + 1] as usize);
+            if a == b { continue; }
+            let mut out: Option<[f32; 3]> = None;
+            for k in 0..nl {
+                for pf in proj[a - base..b - base].iter().flatten() {
+                    // the layer's stored depth at the depth texel: the fragment when the pixel has layer k, else the clear (1.0)
+                    let stored = match pf.drange { Some((f0, n)) if k < n => l0.frags[f0 + k].d, _ => 1.0 };
+                    let pass = match cmp {
+                        DepthCompare::Unorm16Round => {
+                            let rq = (pf.z.clamp(0.0, 1.0) * 65535.0).round();
+                            let sq = (stored * 65535.0).round();
+                            rq >= sq
+                        }
+                        DepthCompare::Float => pf.z >= stored,
+                    };
+                    if !pass { continue; }
+                    let mut c = match pf.crange { Some((f0, n)) if k < n => l0.frags[f0 + k].rgb, _ => [0.0; 3] };
+                    for ch in 0..3 {
+                        let v = c[ch].max(0.0).min(99999996802856930000000000000000000000.0);
+                        c[ch] = if v < 49999998401428460000000000000000000000.0 { v } else { 0.0 };
+                    }
+                    out = Some(c);
+                }
+            }
+            if let Some(rgb) = out {
+                // SAFETY: the chunks own disjoint pixel ranges
+                unsafe { *(px_ptr as *mut u32).add(p) = crate::gpufmt::pack_r11g11b10(rgb, Rounding::Truncate); }
+            }
+        }
+    });
+    true
+}
+
 pub fn replay_set_layers<L: LayerRead>(fl: &LmFragList, sc: &LmScene, cb: &SetCb, world_box: Option<[[f32; 2]; 2]>, layers: &[L], cmp: DepthCompare, tgt: &mut DirTarget) {
     assert_eq!((fl.w, fl.h), (tgt.w, tgt.h));
     if layers.is_empty() { return; }

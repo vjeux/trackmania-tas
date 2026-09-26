@@ -5378,7 +5378,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                         let _ = ds;
                         let t_set = std::time::Instant::now();
                         if let (Some((lm, draws)), Some(dt), Some(fl)) = (&lm_draws, dir_lm.as_mut(), &frag_list) {
-                            if !draws.is_empty() { crate::lmaccum::replay_set_layers(fl, lm, &draws[0].cb, draws[0].world_box, &layers, crate::lmaccum::DepthCompare::Float, dt); }
+                            if !draws.is_empty() && !crate::lmaccum::replay_set_layers_sparse(fl, lm, &draws[0].cb, draws[0].world_box, &layers, crate::lmaccum::DepthCompare::Float, dt) { crate::lmaccum::replay_set_layers(fl, lm, &draws[0].cb, draws[0].world_box, &layers, crate::lmaccum::DepthCompare::Float, dt); }
                         }
                         prof::add(&prof::LM_SET, t_set);
                         if want_probes {
