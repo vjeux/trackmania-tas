@@ -2789,7 +2789,10 @@ pub fn exact_item_layers_direct(tris: &[WTri], frame: &PeelFrame, scene: &Scene,
 }
 
 /// A fragment of the exact layer count: depth, triangle (the tie order), the triangle's depth-bias term.
+/// (`repr(C)`: scan_block16 gathers the fields at byte offsets 0 / 4 / 8 of the 12-byte record — the layout is
+/// part of the contract, not left to the compiler's field reordering.)
 #[derive(Clone, Copy, Debug)]
+#[repr(C)]
 pub struct CFrag {
     pub z: f32,
     pub tri: u32,
@@ -4862,4 +4865,98 @@ pub fn card_dump_flush(sweep: u32, di: usize, pi: usize, frame: &PeelFrame, mask
     let p = dir.join(format!("cardfrags-s{sweep}-d{di}-p{pi}.bin"));
     if let Err(e) = std::fs::write(&p, &out) { eprintln!("card dump: {}: {e}", p.display()); } else { eprintln!("card dump: {} fragments → {}", v.len(), p.display()); }
     v.clear();
+}
+
+#[cfg(all(test, target_arch = "x86_64", target_feature = "avx512f"))]
+mod scan16_audit_tests {
+    use super::*;
+
+    /// The scalar walk of `count_run` (dome layer on, a 16-bit depth store), as the spec of `scan_block16`.
+    fn scalar_walk(list: &mut Vec<CFrag>, env_d: f32, frame: &PeelFrame) -> usize {
+        list.sort_by(|p, q| p.z.total_cmp(&q.z).then_with(|| p.tri.cmp(&q.tri)));
+        let mut d_prev = if env_d > 0.0 { (env_d * 65535.0).round() / 65535.0 } else { 0.0 };
+        let mut items = 0usize;
+        for f in list.iter() {
+            let z01 = frame.z01(f.z).max(0.0);
+            if z01 < d_prev {
+                continue;
+            }
+            if items >= MAX_LAYERS {
+                break;
+            }
+            let mut dd = z01 + f.bias;
+            dd = (dd.clamp(0.0, 1.0) * 65535.0).round() / 65535.0;
+            items += 1;
+            d_prev = dd;
+        }
+        items
+    }
+
+    #[test]
+    fn the_record_layout_is_the_gathers_offsets() {
+        assert_eq!(std::mem::size_of::<CFrag>(), 12);
+        assert_eq!(std::mem::offset_of!(CFrag, z), 0);
+        assert_eq!(std::mem::offset_of!(CFrag, tri), 4);
+        assert_eq!(std::mem::offset_of!(CFrag, bias), 8);
+    }
+
+    /// Random pixels — zero to six fragments each, depths across and outside the frame's range, ±0.0 depths,
+    /// equal depths on different triangles (the tie order), biases of both signs, environment depths absent
+    /// and present: the lane walk's layer counts equal the scalar walk's on every lane it takes, and the
+    /// lanes it hands to the scalar walk are exactly those with more than SCAN_K fragments.
+    #[test]
+    fn the_lane_walk_is_the_scalar_walk() {
+        let frame = PeelFrame::new([0.0, -1.0, 0.0], [-10.0, -3.0, -10.0], [10.0, 7.0, 10.0], 64);
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut rnd = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let zs: [f32; 12] = [-3.0, -2.5, -1.0, -0.0, 0.0, 0.25, 1.0, 2.0, 3.0, 4.0, 4.999, 7.5];
+        let biases: [f32; 5] = [0.0, 1.5e-5, -1.5e-5, 3e-4, 1.0 / 65535.0];
+        for _round in 0..50_000 {
+            let mut offs = [0u32; 17];
+            let mut csr: Vec<CFrag> = Vec::new();
+            let mut env = [0f32; 16];
+            let mut lists: Vec<Vec<CFrag>> = Vec::new();
+            for l in 0..16 {
+                let n = match rnd() % 10 { 0 | 1 => 0, 2 | 3 => 1, 4 | 5 => 2, 6 => 3, 7 => 4, 8 => 5, _ => 6 };
+                let mut list = Vec::new();
+                for _ in 0..n {
+                    let z = if rnd() % 3 == 0 { zs[(rnd() % 12) as usize] } else { (rnd() % 20000) as f32 / 1000.0 - 5.0 };
+                    let tri = (rnd() % 6) as u32;
+                    // (the bias is the TRIANGLE's term: equal (z, tri) records are identical records)
+                    let bias = biases[(tri % 5) as usize];
+                    list.push(CFrag { z, tri, bias });
+                }
+                // the records land in the scatter's (insertion) order, unsorted
+                csr.extend_from_slice(&list);
+                offs[l + 1] = csr.len() as u32;
+                env[l] = match rnd() % 4 { 0 => 0.0, 1 => 0.5, 2 => (rnd() % 65535) as f32 / 65535.0, _ => ((rnd() % 100000) as f32 / 100000.0).max(1e-6) };
+                lists.push(list);
+            }
+            let (hist, has, big) = scan_block16(&offs, &csr, &env, &frame);
+            let mut want_hist = [0u32; 5];
+            let mut want_has = 0u32;
+            let mut want_big = 0u16;
+            for l in 0..16 {
+                let n = lists[l].len();
+                if n == 0 {
+                    continue;
+                }
+                want_has += 1;
+                if n > SCAN_K {
+                    want_big |= 1 << l;
+                    continue;
+                }
+                let items = scalar_walk(&mut lists[l], env[l], &frame);
+                want_hist[items] += 1;
+            }
+            assert_eq!(has, want_has);
+            assert_eq!(big, want_big);
+            assert_eq!(hist, want_hist, "lists {:?} env {:?}", lists, env);
+        }
+    }
 }
