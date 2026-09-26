@@ -95,7 +95,7 @@ pub struct ClassAcc {
 impl ClassAcc {
     pub fn mean_ours(&self) -> [f64; 3] { let n = self.used.max(1) as f64; [self.sum_ours[0] / n, self.sum_ours[1] / n, self.sum_ours[2] / n] }
     pub fn mean_theirs(&self) -> [f64; 3] { let n = self.used_t.max(1) as f64; [self.sum_theirs[0] / n, self.sum_theirs[1] / n, self.sum_theirs[2] / n] }
-    pub fn ratio(&self) -> [f64; 3] { let (a, b) = (self.mean_ours(), self.mean_theirs()); [a[0] / b[0].max(1e-12), a[1] / b[1].max(1e-12), a[2] / b[2].max(1e-12)] }
+    pub fn ratio(&self) -> [f64; 3] { let (a, b) = (self.mean_ours(), self.mean_theirs()); let r = |x: f64, y: f64| if y > 1e-6 && self.used_t >= 16 { x / y } else { f64::NAN }; [r(a[0], b[0]), r(a[1], b[1]), r(a[2], b[2])] }
     /// RMSE of the HDR difference over the used texels, relative to the oracle's mean (per channel).
     pub fn rmse_rel(&self) -> [f64; 3] { let n = self.used.max(1) as f64; let b = self.mean_theirs(); [(self.sum_sq[0] / n).sqrt() / b[0].max(1e-12), (self.sum_sq[1] / n).sqrt() / b[1].max(1e-12), (self.sum_sq[2] / n).sqrt() / b[2].max(1e-12)] }
     pub fn merge(&mut self, o: &ClassAcc) {
@@ -277,7 +277,7 @@ pub fn compare(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLight
     Ok(Report { classes, total, maxhdr_ours: k1, maxhdr_theirs: k2, image_w: i1.w, image_h: i1.h, unmatched_rows, rect_mismatch, pair_refused })
 }
 
-fn f3(v: [f64; 3], p: usize) -> String { format!("{:.*} / {:.*} / {:.*}", p, v[0], p, v[1], p, v[2]) }
+fn f3(v: [f64; 3], p: usize) -> String { let one = |x: f64| if x.is_finite() { format!("{:.*}", p, x) } else { "—".to_string() }; format!("{} / {} / {}", one(v[0]), one(v[1]), one(v[2])) }
 
 /// The table on stdout (and, when asked, as TSV).
 pub fn print(r: &Report, o: &Options, tsv: Option<&str>) -> Result<(), String> {
