@@ -714,11 +714,13 @@ pub fn render_flat_cube(l: [f32; 3], r_eff: f32, size: u32, tris: &[[[f32; 3]; 3
     render_flat_cube_masked(l, r_eff, size, &ct, cull_back)
 }
 
-/// `render_flat_cube` with ALPHA-TESTED, TWO-SIDED casters (E, 2026-09-26 21:00Z; RE 13 19:55Z: the editor's dark vegetation under a lamp
-/// comes from the flat cube with the crown cards as alpha-tested casters — RE 7's 0018 / F's SHADOW_ALPHA_THRESHOLD 128/255, the sun
-/// shadow map's rule): a triangle with a cut-out texture is rasterised without back-face culling and its fragments discarded where the
-/// texture's alpha (anisotropic sample at the fragment's TexCoord0) − 0.50196 < 0; opaque triangles keep `cull_back` (F's validated state).
-/// (perf 8.21's fixed arrays kept; the vertices carry (clip xyzw, u, v).)
+/// `render_flat_cube` with ALPHA-TESTED casters (E, 2026-09-26 21:00Z; RE 13 19:55Z: the editor's dark vegetation under a lamp comes from
+/// the flat cube with the crown cards as alpha-tested casters — RE 7's 0018 / F's SHADOW_ALPHA_THRESHOLD 128/255, the sun shadow map's
+/// rule): a triangle with a cut-out texture has its fragments discarded where the texture's alpha (anisotropic sample at the fragment's
+/// TexCoord0) − 0.50196 < 0. EVERY caster draw of the captured pass is CullMode.Back (stsun f4908 / f4936 draws.json: all PS 937 draws
+/// {Back, DepthBias −1, Slope −1, frontCCW false}), the cards included — so `cull_back` applies to masked triangles too (a two-sided study,
+/// LMTOOL_LL_CULL=0, put every class at 0.6 of the editor and the record at 0.70). (perf 8.21's fixed arrays kept; the vertices carry
+/// (clip xyzw, u, v).)
 pub fn render_flat_cube_masked(l: [f32; 3], r_eff: f32, size: u32, tris: &[CasterTri], cull_back: bool) -> FlatCubeMap {
     let (w, h) = ((size * 3) as usize, (size * 2) as usize);
     let mut depth = vec![0.0f32; w * h];
@@ -765,12 +767,12 @@ pub fn render_flat_cube_masked(l: [f32; 3], r_eff: f32, size: u32, tris: &[Caste
             let n2 = clip_plane(&poly1, n1, &|v| v[3] - v[2], &mut poly);
             if n2 < 3 { continue; }
             let poly = &poly[..n2];
-            let masked = ct.alpha.is_some();
+            let _masked = ct.alpha.is_some();
             // the clipped polygon's fan triangles through the D16 depth pipeline engineer B pinned on the sun shadow map
             // (shadowmap::rasterise: the 1/256-px snapped vertices, the plane through them evaluated at the pixel centres, the
             // D3D11 bias DepthBias·(1/65535) + Slope·max(|∂z/∂x|, |∂z/∂y|) added in float, the sum TRUNCATED to 2^-20, then
             // UNORM16 round-to-nearest, Greater on the 16-bit value); the viewport = the face's tile
-            let st = crate::shadowmap::RasterState { viewport: [ox as f32, oy as f32, size as f32, size as f32, 0.0, 1.0], depth_bias: -1, slope_scaled_depth_bias: -1.0, depth_bias_clamp: 0.0, cull_back: cull_back && !masked, front_ccw: false, depth_clip: true, plane: crate::shadowmap::PlaneEval::F64Snapped, coef_bits: 0, vertex_z_bits: 0 };
+            let st = crate::shadowmap::RasterState { viewport: [ox as f32, oy as f32, size as f32, size as f32, 0.0, 1.0], depth_bias: -1, slope_scaled_depth_bias: -1.0, depth_bias_clamp: 0.0, cull_back, front_ccw: false, depth_clip: true, plane: crate::shadowmap::PlaneEval::F64Snapped, coef_bits: 0, vertex_z_bits: 0 };
             for k in 1..poly.len() - 1 {
                 let tri = [[poly[0][0], poly[0][1], poly[0][2], poly[0][3]], [poly[k][0], poly[k][1], poly[k][2], poly[k][3]], [poly[k + 1][0], poly[k + 1][1], poly[k + 1][2], poly[k + 1][3]]];
                 let uvs = [[poly[0][4], poly[0][5]], [poly[k][4], poly[k][5]], [poly[k + 1][4], poly[k + 1][5]]];

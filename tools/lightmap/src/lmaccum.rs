@@ -1185,6 +1185,11 @@ pub struct LmScene {
     /// one translation — np-tk3's pillar on its plate — defeat a nearest-translation search: the plate read the pillar's chart
     /// and the pillar's base lost the plate's bounce; port engineer G, 2026-09-26). Empty for a captured scene.
     pub port_inst: Vec<usize>,
+    /// Per LM mesh: the prefab entity's FULL visual as caster triangles in the entity's local frame (every geom, lightmapped or not —
+    /// the flat cube's caster set is the record's whole visual, RE 13 2026-09-26 21:20Z: the lamp housing's idx-276 draw in the caster
+    /// pass; RE 7's f4936 caster draws are all CullMode.Back). Empty for the item and tile meshes (items take the scene visual through
+    /// localdrive::CasterSource; tiles are their LM mesh).
+    pub caster_tris: Vec<Vec<[[f32; 3]; 3]>>,
 }
 
 impl LmScene {
@@ -1235,7 +1240,7 @@ pub fn load_lm_scene(root: &Path, env_frame: u32) -> Result<LmScene, String> {
     if sun.len() != 4 {
         return Err(format!("frame {env_frame}: {} sun draws (PS 15187) in the log, 4 expected", sun.len()));
     }
-    let mut sc = LmScene { meshes: Vec::new(), inst_first: Vec::new(), inst_count: Vec::new(), instances: Vec::new(), table: Vec::new(), eids: Vec::new(), frag_lists: Default::default(), fitted_world_box: None, rec_of: Vec::new(), st_src: Vec::new(), port_inst: Vec::new() };
+    let mut sc = LmScene { caster_tris: Vec::new(), meshes: Vec::new(), inst_first: Vec::new(), inst_count: Vec::new(), instances: Vec::new(), table: Vec::new(), eids: Vec::new(), frag_lists: Default::default(), fitted_world_box: None, rec_of: Vec::new(), st_src: Vec::new(), port_inst: Vec::new() };
     let mut instance_bytes: Option<Vec<u8>> = None;
     for e in &sun {
         let eid = e["eid"].as_u64().unwrap();

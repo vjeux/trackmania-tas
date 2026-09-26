@@ -258,6 +258,9 @@ pub fn caster_source_of(su: &Setup) -> CasterSource {
 
 /// The casters of the flat cube for the drawn LM instances: an item's record → its visual (alpha-tested cards included), everything
 /// else → the LM mesh's triangles, opaque.
+/// LMTOOL_LL_CULL=0: the flat-cube casters two-sided for every triangle (study: the lamp's own housing seen from inside).
+static CULL_BACK: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_LL_CULL").map(|v| v != "0").unwrap_or(true));
+
 pub fn casters_masked(sc: &LmScene, insts: &[usize]) -> Vec<crate::locallight::CasterTri> {
     static LM_ONLY: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("LMTOOL_LL_LM_CASTERS").is_some());
     let src = CASTER_SRC.lock().unwrap().clone();
@@ -274,6 +277,12 @@ pub fn casters_masked(sc: &LmScene, insts: &[usize]) -> Vec<crate::locallight::C
         let mesh = &sc.meshes[m];
         let inst = &sc.instances[ii];
         let rows = rotation_rows(inst.q);
+        // a prefab entity: its WHOLE visual (LmScene::caster_tris, local frame → the instance's rotation + translation)
+        if let Some(full) = sc.caster_tris.get(m).filter(|v| !v.is_empty() && !*LM_ONLY) {
+            let xf = |p: [f32; 3]| -> [f32; 3] { let s = inst.scale; let r = [rows[0][0] * p[0] + rows[0][1] * p[1] + rows[0][2] * p[2], rows[1][0] * p[0] + rows[1][1] * p[1] + rows[1][2] * p[2], rows[2][0] * p[0] + rows[2][1] * p[1] + rows[2][2] * p[2]]; [r[0] * s + inst.t[0], r[1] * s + inst.t[1], r[2] * s + inst.t[2]] };
+            for t in full { out.push(crate::locallight::CasterTri { p: [xf(t[0]), xf(t[1]), xf(t[2])], uv0: [[0.0; 2]; 3], alpha: None }); }
+            continue;
+        }
         let wp: Vec<[f32; 3]> = mesh.verts.iter().map(|v| world_pos(v, inst, &rows)).collect();
         for t in mesh.indices.chunks_exact(3) {
             out.push(crate::locallight::CasterTri { p: [wp[t[0] as usize], wp[t[1] as usize], wp[t[2] as usize]], uv0: [[0.0; 2]; 3], alpha: None });
@@ -1028,7 +1037,7 @@ pub fn run_frame(gl: &crate::layout::GameLayout, sc: &LmScene, lamps: &[Lamp], c
                         let tris = casters_masked(sc, &drawn);
                         if std::env::var_os("LMTOOL_LL_CASTER_TRACE").is_some() { let na = tris.iter().filter(|t| t.alpha.is_some()).count(); if na > 0 { eprintln!("lamp {} ({}): {} casters, {na} alpha-tested", lamp.id, lamp.owner, tris.len()); } }
                         let t1 = t.elapsed().as_secs_f32();
-                        let shadow = crate::locallight::render_flat_cube_masked(lamp.light.pos, lamp.r_eff, lamp.face_size, &tris, true);
+                        let shadow = crate::locallight::render_flat_cube_masked(lamp.light.pos, lamp.r_eff, lamp.face_size, &tris, *CULL_BACK);
                         let t2 = t.elapsed().as_secs_f32();
                         let cb = lamp.light_cb();
                         let probe_vals = probe_values(chunks, lamp, &shadow, &mut probe_scratch);
@@ -1098,7 +1107,7 @@ pub fn run_frame(gl: &crate::layout::GameLayout, sc: &LmScene, lamps: &[Lamp], c
     for (li, lamp) in lamps.iter().enumerate() {
         let drawn = cull(gl, sc, lamp);
         let tris = casters_masked(sc, &drawn);
-        let shadow = crate::locallight::render_flat_cube_masked(lamp.light.pos, lamp.r_eff, lamp.face_size, &tris, true);
+        let shadow = crate::locallight::render_flat_cube_masked(lamp.light.pos, lamp.r_eff, lamp.face_size, &tris, *CULL_BACK);
         let cb = lamp.light_cb();
         let probe_updates = probe_pass(chunks, lamp, &shadow, &mut probes);
         let frags = draw_lamp(sc, &drawn, &cb, &shadow, &mut acc);
@@ -1442,7 +1451,7 @@ pub fn instances_for_target(sc: &LmScene, w: u32, h: u32) -> Vec<crate::sunpass:
 /// The LM scene with the target's STs (a shallow copy of the meshes is avoided: the caller keeps `sc` and passes the
 /// instance vector) — `draw_lamp` takes the scene, so build a scene value whose instances are the target's.
 pub fn scene_for_target(sc: &LmScene, w: u32, h: u32) -> LmScene {
-    LmScene { meshes: sc.meshes.clone(), inst_first: sc.inst_first.clone(), inst_count: sc.inst_count.clone(), instances: instances_for_target(sc, w, h), table: sc.table.clone(), eids: sc.eids.clone(), rec_of: sc.rec_of.clone(), st_src: sc.st_src.clone(), port_inst: sc.port_inst.clone(), frag_lists: Default::default(), fitted_world_box: sc.fitted_world_box /* perf 8: the LM fragment lists are per target size — a fresh set for this frame */ }
+    LmScene { caster_tris: sc.caster_tris.clone(), meshes: sc.meshes.clone(), inst_first: sc.inst_first.clone(), inst_count: sc.inst_count.clone(), instances: instances_for_target(sc, w, h), table: sc.table.clone(), eids: sc.eids.clone(), rec_of: sc.rec_of.clone(), st_src: sc.st_src.clone(), port_inst: sc.port_inst.clone(), frag_lists: Default::default(), fitted_world_box: sc.fitted_world_box /* perf 8: the LM fragment lists are per target size — a fresh set for this frame */ }
 }
 
 /// The post-VS export of a captured lighting draw (mesh/e<EID>_vsout.bin, stride 80: o0 xyzw, o1 xyz, o2 xyzw, o3 xyz, o4 xyz,
