@@ -584,13 +584,9 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
     let brow_of = |y: i32| -> usize { (((y - clip.1).max(0) as usize) >> row_shift).min(n_brows - 1) };
     let bcol_of = |x: i32| -> usize { (((x - clip.0).max(0) as usize) >> col_shift).min(n_bcols - 1) };
     // a triangle's projected pixel rows and columns (as raster::bounds computes them), clipped to the rectangle
-    let rows_of = |t: &WTri| -> Option<(i32, i32, i32, i32)> {
-        let p0 = t.p0;
-        let p1 = [p0[0] + t.e1[0], p0[1] + t.e1[1], p0[2] + t.e1[2]];
-        let p2 = [p0[0] + t.e2[0], p0[1] + t.e2[1], p0[2] + t.e2[2]];
-        let (x0, y0, z0) = frame.project(p0);
-        let (x1, y1, z1) = frame.project(p1);
-        let (x2, y2, z2) = frame.project(p2);
+    // (the projected form: the binning projects sixteen records at a time — binproj::project16 — and hands each
+    // lane's nine values here; `rows_of` projects one record itself)
+    let rows_of_projected = |t: &WTri, (x0, y0, z0): (f32, f32, f32), (x1, y1, z1): (f32, f32, f32), (x2, y2, z2): (f32, f32, f32)| -> Option<(i32, i32, i32, i32)> {
         if z0.min(z1).min(z2) >= zmax || z0.max(z1).max(z2) < zmin {
             return None;
         }
@@ -657,6 +653,10 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
         }
         Some((ry0, ry1, rx0, rx1))
     };
+    let rows_of = |t: &WTri| -> Option<(i32, i32, i32, i32)> {
+        let (a, b, c) = crate::binproj::project_one(t, frame);
+        rows_of_projected(t, a, b, c)
+    };
     // THE ITEMS TO BIN: with the instance hierarchy (perf engineer 5's insthier.rs) an item is a GeomJob — a
     // contiguous range of `hier.tris` with a conservative pixel rectangle, produced from the model trees without
     // touching a triangle record — and the raster job expands it per triangle (the same `rows_of` test: depth
@@ -712,9 +712,10 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
     let sub_of = |y: i32, by0: i32| -> usize { (((y - by0).max(0) as usize) >> sub_shift).min(SUB - 1) };
     // per chunk: the CSR over the cells (offsets, then the item indices in item order with their strip bits)
     // and the cells' estimated costs — `items` yields (index, rows, columns, weight in pairs)
-    let bin_chunk = |items: &mut dyn Iterator<Item = (u32, i32, i32, i32, i32, u64)>| -> (Vec<u32>, Vec<u32>, Vec<u8>, Vec<u64>) {
+    let bin_chunk = |items: &mut dyn Iterator<Item = (u32, i32, i32, i32, i32, u64)>, n_hint: usize| -> (Vec<u32>, Vec<u32>, Vec<u8>, Vec<u64>) {
         // pass 1: the cells of every item (kept: the projection is the cost), the counts and costs per cell
-        let mut hits: Vec<(u32, u16, u16, u16, u16, i32, i32)> = Vec::new(); // (idx, brow0, brow1, bcol0, bcol1, ry0, ry1)
+        // (sized up front: a 50 k-triangle chunk grew this by doubling — 2.6 MB of copies per chunk)
+        let mut hits: Vec<(u32, u16, u16, u16, u16, i32, i32)> = Vec::with_capacity(n_hint); // (idx, brow0, brow1, bcol0, bcol1, ry0, ry1)
         let mut counts: Vec<u32> = vec![0; n_cells + 1];
         let mut cost: Vec<u64> = vec![0; n_cells];
         for (idx, ry0, ry1, rx0, rx1, weight) in items {
@@ -759,11 +760,14 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
             Some((_, jobs)) => {
                 // a job's rectangle is already clipped to the frame; its weight is its triangle count
                 let mut it = subs.iter().flat_map(|&(a, b)| (a..b).map(|j| { let g = &jobs[j as usize]; (j, g.y0, g.y1, g.x0, g.x1, g.count as u64) }));
-                bin_chunk(&mut it)
+                bin_chunk(&mut it, subs.iter().map(|&(a, b)| (b - a) as usize).sum())
             }
             None => {
+                // (the records projected sixteen at a time — binproj::project16, gathers from the 72-byte records —
+                // measured SLOWER here than the scalar stream: clip 0.31 → 0.35 s per 4 directions; kept for a
+                // contiguous layout where the gathers become loads)
                 let mut it = subs.iter().flat_map(|&(a, b)| tris[a as usize..b as usize].iter().enumerate().filter_map(move |(k, t)| rows_of(t).map(|(ry0, ry1, rx0, rx1)| (a + k as u32, ry0, ry1, rx0, rx1, 1u64))));
-                bin_chunk(&mut it)
+                bin_chunk(&mut it, subs.iter().map(|&(a, b)| (b - a) as usize).sum())
             }
         }
     });
