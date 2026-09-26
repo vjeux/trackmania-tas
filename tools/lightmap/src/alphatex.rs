@@ -361,6 +361,12 @@ impl AlphaTex {
         (paa * (1.0 - tx) + pba * tx) * (1.0 - ty) + (pab * (1.0 - tx) + pbb * tx) * ty
     }
 
+    /// Diagnostics: ONE bilinear tap of level `lv` at (u, v), ClampEdge (what a sampler without anisotropy and
+    /// without a second level would read).
+    pub fn bilinear_tap(&self, u: f32, v: f32, lv: usize) -> f32 {
+        Self::sample_level_clamp(&self.levels[lv.min(self.levels.len() - 1)], u, v)
+    }
+
     /// `sample_aniso` / `sample_lod` with the plan's levels and fraction (the same arithmetic per tap:
     /// `a + (b − a)·t`, the taps averaged), ClampEdge.
     #[inline]
