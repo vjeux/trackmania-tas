@@ -77,6 +77,7 @@ pub mod skygrad;
 pub mod sweep1;
 pub mod filecheck;
 pub mod synth;
+pub mod vegdiag;
 pub mod volume;
 pub mod vp8_tables;
 pub mod vp8enc;
