@@ -663,9 +663,23 @@ pub fn tables_from_paktables_with_records(f: &mut FrozenTables, store: &mut mapg
             Err(e) => notes.push(format!("pak: {l}: {e} (the texture path keeps it)")),
         }
     }
+    got.push(water_tables_from_records(f, store, collection, records, notes)?);
+    notes.push(format!("tables FROM THE PACK (RE 8's paktables): {}; nothing of the material inputs is frozen", got.join("; ")));
+    Ok(())
+}
+
+/// THE WATER PASS'S INPUTS, independent of the material lookups (RE 11): `g_WaterDepth_FogMaxDepthInv_ByIds` and the two LUTs
+/// from the collection's pack (RE 8's `paktables::water_tables`: the fog image and the kind-0x33 transmittance generator), the
+/// id map and `g_WaterTop_ByPlanes` from the records' water quads (`waterid`: the SetWaterId draw — Stadium's WaterBase blocks'
+/// Water geom at world 23 / 119 / 231 on stpad) when any record carries one; a record list without one (pwc-day's sea = the zone
+/// tiles, whose records carry no prefab mesh) keeps the whole-map id map at the collection's WaterTop (the captured 17004: every
+/// texel id 1, plane 0). Called by `tables_from_paktables_with_records` and by the bake's interim fallback alike, so a Stadium
+/// bake whose tile material is not a PyPxz family still gets the water term.
+pub fn water_tables_from_records(f: &mut FrozenTables, store: &mut mapgeom::store::DataStore, collection: &str, records: &[crate::records::Rec], notes: &mut Vec<String>) -> Result<String, String> {
+    let mut got = Vec::new();
     let w = crate::paktables::water_tables(store, collection)?;
     f.depth_by_id = vec![[w.depth_inv[0], w.depth_inv[1], 0.0, 1.0]];
-    // THE ID MAP AND THE PLANE TABLE (RE 11): the records' water quads — the SetWaterId draw — else the sea-zone map
+    // THE ID MAP AND THE PLANE TABLE: the records' water quads — the SetWaterId draw — else the sea-zone map
     let size_m = [f.ids.w as f32, f.ids.h as f32];
     let wm = crate::waterid::water_id_map_of_records(store, records, size_m)?;
     if wm.quads > 0 {
@@ -691,9 +705,8 @@ pub fn tables_from_paktables_with_records(f: &mut FrozenTables, store: &mut mapg
     let tr = crate::paktables::lut_texture(&w.transmittance, true);
     let (fs, fn_) = cmp(&fog, &f.fog);
     let (ts, tn) = cmp(&tr, &f.transmittance);
-    got.push(format!("water {:?}: top_by_plane [{}], depth_by_id [({}, {})], fog LUT {fs}/{fn_} texels identical to the captured 15075, transmittance LUT (the kind-0x33 generator) {ts}/{tn} identical to 15078", w.desc, w.top, w.depth_inv[0], w.depth_inv[1]));
+    got.push(format!("water {:?}: depth_by_id [({}, {})], fog LUT {} texels ({fs}/{fn_} identical to the frozen one), transmittance LUT (the kind-0x33 generator) {} texels ({ts}/{tn} identical)", w.desc, w.depth_inv[0], w.depth_inv[1], w.fog.len(), w.transmittance.len()));
     f.fog = fog;
     f.transmittance = tr;
-    notes.push(format!("tables FROM THE PACK (RE 8's paktables): {}; nothing of the material inputs is frozen", got.join("; ")));
-    Ok(())
+    Ok(got.join("; "))
 }

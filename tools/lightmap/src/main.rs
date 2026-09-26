@@ -1909,6 +1909,12 @@ fn run(a: Vec<String>) {
                                 pak_notes.push(format!("paktables: {e} — the interim pak path (corner means + WaterColor.tga + the descriptor table) is used"));
                                 let mut read = |path: &str| -> Option<Vec<u8>> { store.read(path).ok().map(|b| b.to_vec()) };
                                 lightmap::setupmap::tables_from_pak(&mut frozen, &mut read, &collection, &f("--mood-name").unwrap_or_else(|| "Day".into()), &f("--tile-pxz").unwrap_or_else(|| "SeaFloor".into()), &mut pak_notes);
+                                // THE WATER TERM does not depend on the tile material (RE 11): the collection's depth table + LUTs from the pak, the
+                                // id map + plane heights from the records' water quads — the interim path above left the transmittance LUT a dummy
+                                match lightmap::setupmap::water_tables_from_records(&mut frozen, &mut store, &collection, game_layout.as_ref().map(|gl| gl.records.as_slice()).unwrap_or(&[]), &mut pak_notes) {
+                                    Ok(line) => pak_notes.push(format!("water inputs FROM THE PACK + THE RECORDS (RE 11): {line}")),
+                                    Err(e) => pak_notes.push(format!("water inputs: {e} — the interim path's tables stand (NO transmittance LUT: the tint is wrong wherever it engages)")),
+                                }
                             }
                         }
                     }

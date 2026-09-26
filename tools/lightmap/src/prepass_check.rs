@@ -659,7 +659,46 @@ pub fn tint_from_map(f: &FrozenTables, lm: &crate::lmaccum::LmScene, k: usize, t
         draws.push(WaterDraw { eid: k as u64, mesh: mk, instance_first: lm.inst_first[mk], instance_count: lm.inst_count[mk], scale_ss: [2.0, -2.0], trans_ss: [-1.0 + (ox as f32 / 9.0) * q, 1.0 - (oy as f32 / 9.0) * q], world_to_id: tpl.world_to_id, world_min_xz: tpl.world_min_xz, world_max_xz: tpl.world_max_xz, scale_out: tpl.scale_out });
     }
     let water = WaterData { ids: &f.ids, top_by_plane: f.top_by_plane.clone(), depth_by_id: f.depth_by_id.clone(), fog: &f.fog, transmittance: &f.transmittance, sampler: f.water_sampler };
+    let trace = std::env::var_os("LMTOOL_WATER_TRACE").is_some();
+    let before = if trace { Some(tgt.buf.data.clone()) } else { None };
+    let mut samples: Vec<(u32, u32)> = Vec::new();
+    if trace && k == 0 {
+        // the first vertex of the first instance of every mesh through VS 17017 / PS 17018, for the diagnosis
+        for d in &draws {
+            let mesh = &lm.meshes[d.mesh];
+            let (Some(inst), Some(v)) = (lm.instances.get(d.instance_first), mesh.verts.first()) else { continue };
+            let o = prepass::vs_17017(v, inst, &lm.table, d);
+            let r = prepass::ps_17018(&o, &water, d.scale_out);
+            let (ix, iy) = (o.id_uv[0].trunc() as i64, o.id_uv[1].trunc() as i64);
+            let id = if ix >= 0 && iy >= 0 && (ix as u32) < f.ids.w && (iy as u32) < f.ids.h { (f.ids.get(ix as u32, iy as u32, 0), f.ids.get(ix as u32, iy as u32, 1)) } else { (-1.0, -1.0) };
+            eprintln!("  mesh {} ({} verts × {} inst): vertex pos {:?} inst t {:?} q {:?} scale {} → clip {:?} id_uv {:?} (id map {:?}) world_y {:.3} → {}", d.mesh, mesh.verts.len(), d.instance_count, v.pos, inst.t, inst.q, inst.scale, o.clip, o.id_uv, id, o.world_y, match r { Some((o0, o1)) => format!("o0 {:?} o1 {:?}", o0, o1), None => "discarded".into() });
+            // the first instance's triangles: fragments rasterised / passing PS 17018 / landing on a covered atlas texel
+            let vs: Vec<prepass::WaterVsOut> = mesh.verts.iter().map(|v| prepass::vs_17017(v, inst, &lm.table, d)).collect();
+            let (mut frags, mut passed, mut covered, mut clipped) = (0usize, 0usize, 0usize, 0usize);
+            let mut sample: Option<(u32, u32, [f32; 4], [f32; 4], [f32; 4])> = None;
+            for t in mesh.indices.chunks_exact(3) {
+                let a = [vs[t[0] as usize], vs[t[1] as usize], vs[t[2] as usize]];
+                if (0..4).any(|k| a.iter().all(|v| v.clipdist[k] < 0.0)) { clipped += 1; continue; }
+                let p = [prepass::viewport(a[0].clip, W, H), prepass::viewport(a[1].clip, W, H), prepass::viewport(a[2].clip, W, H)];
+                prepass::raster_tri(p, W, H, |x, y, b| {
+                    frags += 1;
+                    let lerp = |f: &dyn Fn(&prepass::WaterVsOut) -> f32| b[0] * f(&a[0]) + b[1] * f(&a[1]) + b[2] * f(&a[2]);
+                    let v = prepass::WaterVsOut { clip: [0.0; 2], id_uv: [lerp(&|o| o.id_uv[0]), lerp(&|o| o.id_uv[1])], world_y: lerp(&|o| o.world_y), clipdist: [0.0; 4] };
+                    if let Some((o0, o1)) = prepass::ps_17018(&v, &water, d.scale_out) { passed += 1; if tgt.buf.get(x, y, 3) > 0.0 { covered += 1; if sample.is_none() { sample = Some((x, y, o0, o1, [tgt.buf.get(x, y, 0), tgt.buf.get(x, y, 1), tgt.buf.get(x, y, 2), tgt.buf.get(x, y, 3)])); } } }
+                });
+            }
+            eprintln!("    first instance: {} triangles ({clipped} clipped away), {frags} fragments, {passed} pass PS 17018, {covered} of those on a covered atlas texel", mesh.indices.len() / 3);
+            if let Some((x, y, o0, o1, dst)) = sample { eprintln!("    sample fragment ({x}, {y}): o0 {o0:?} o1 {o1:?} dst before {dst:?}"); samples.push((x, y)); }
+        }
+    }
     prepass::run_water_draws(&draws, &lm.meshes, &lm.instances, &lm.table, &water, tgt);
+    if let Some(b) = before {
+        let ch = tgt.buf.channels as usize;
+        let changed = tgt.buf.data.chunks_exact(ch).zip(b.chunks_exact(ch)).filter(|(x, y)| x != y).count();
+        let under: usize = (0..f.ids.h).flat_map(|y| (0..f.ids.w).map(move |x| (x, y))).filter(|&(x, y)| f.ids.get(x, y, 0) > 0.0).count();
+        for (x, y) in &samples { eprintln!("    sample fragment ({x}, {y}) after run_water_draws: {:?}", [tgt.buf.get(*x, *y, 0), tgt.buf.get(*x, *y, 1), tgt.buf.get(*x, *y, 2), tgt.buf.get(*x, *y, 3)]); }
+        eprintln!("water tint run {k}: {} draws over {} meshes, id map {}×{} with {under} texels under water, planes {:?}, depth table {:?}, fog LUT {}×{} slices {}, transmittance {}×{}: {changed} atlas texels changed", draws.len(), lm.meshes.len(), f.ids.w, f.ids.h, f.top_by_plane.iter().map(|p| p[0]).collect::<Vec<_>>(), f.depth_by_id.iter().map(|p| (p[0], p[1])).collect::<Vec<_>>(), f.fog.w, f.fog.h, f.fog.slices, f.transmittance.w, f.transmittance.h);
+    }
 }
 
 impl FrozenTables {
