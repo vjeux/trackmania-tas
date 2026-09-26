@@ -483,6 +483,14 @@ pub fn lm_scene_add_entities(store: &mut mapgeom::store::DataStore, layout: &cra
         let Some(mapgeom::static_item::Node::StaticObject(so)) = e.model.inline.as_deref() else { continue };
         let Some(s2) = so.solid2() else { continue };
         let Some(mesh) = lm_mesh_of_solid(s2) else { continue };
+        // LMTOOL_LM_ENTITY_TRACE_TSV=FILE: one line per record — record index (= chart index), prefab#entity, class, world centre y —
+        // for per-prefab / per-height statistics over the charts table
+        if let Ok(path) = std::env::var("LMTOOL_LM_ENTITY_TRACE_TSV") {
+            use std::io::Write;
+            if let Ok(mut fh) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+                for &k in recs { let r = &layout.records[k]; let _ = writeln!(fh, "{k}\t{prefab}#{entity}\t{}\t{:.3}", r.class, r.centre[1]); }
+            }
+        }
         // LMTOOL_LM_ENTITY_TRACE=1: per entity the geoms' materials, the chosen uv set, the LM uv bounds and the record's PLG uv box
         if std::env::var_os("LMTOOL_LM_ENTITY_TRACE").is_some() {
             let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
@@ -496,7 +504,8 @@ pub fn lm_scene_add_entities(store: &mut mapgeom::store::DataStore, layout: &cra
                 let n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
                 format!("tri0 winding n ({:.2}, {:.2}, {:.2}) vertex n {:?} pos y {:.3}", n[0], n[1], n[2], mesh.verts[mesh.indices[0] as usize].normal, a[1])
             } else { String::new() };
-            eprintln!("lm entity {prefab}#{entity} ({} records, class {}): {} v / {} t, LM uv [{:.3}, {:.3}]..[{:.3}, {:.3}], record uv box {:?}, geoms {:?}; {wind}; psize {:?}", recs.len(), r0.class, mesh.verts.len(), mesh.indices.len() / 3, lo[0], lo[1], hi[0], hi[1], r0.uv, mats, mesh.verts.iter().map(|v| v.psize).fold((f32::MAX, f32::MIN), |acc, p| (acc.0.min(p), acc.1.max(p))));
+            let (nmin, nmax) = mesh.verts.iter().map(|v| (v.normal[0] * v.normal[0] + v.normal[1] * v.normal[1] + v.normal[2] * v.normal[2]).sqrt()).fold((f32::MAX, f32::MIN), |acc, l| (acc.0.min(l), acc.1.max(l)));
+            eprintln!("lm entity {prefab}#{entity} ({} records, class {}): {} v / {} t, LM uv [{:.3}, {:.3}]..[{:.3}, {:.3}], record uv box {:?}, geoms {:?}; {wind}; psize {:?}; |normal| {:.3}..{:.3}", recs.len(), r0.class, mesh.verts.len(), mesh.indices.len() / 3, lo[0], lo[1], hi[0], hi[1], r0.uv, mats, mesh.verts.iter().map(|v| v.psize).fold((f32::MAX, f32::MIN), |acc, p| (acc.0.min(p), acc.1.max(p))), nmin, nmax);
             if std::env::var_os("LMTOOL_LM_ENTITY_TRACE_GEOMS").is_some() {
                 for line in geom_summary(s2) { eprintln!("    {line}"); }
                 for (gi, sg) in s2.shaded_geoms.iter().enumerate() {

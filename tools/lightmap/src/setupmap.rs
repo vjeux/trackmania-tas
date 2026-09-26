@@ -39,7 +39,9 @@ pub struct FromMap {
 /// The shadow pass's pipeline state (frame 127448 eids 353…: viewport (1, 1, 4094, 4094), bias −1 / −1.0 / 0, cull
 /// back, front CCW, depth clip) — pipeline constants, not scene data.
 pub fn shadow_state() -> RasterState {
-    RasterState { viewport: [1.0, 1.0, 4094.0, 4094.0, 0.0, 1.0], depth_bias: -1, slope_scaled_depth_bias: -1.0, depth_bias_clamp: 0.0, cull_back: true, front_ccw: true, depth_clip: true, plane: PlaneEval::F64Snapped, coef_bits: 36, vertex_z_bits: 0 }
+    // LMTOOL_SUNMAP_SLOPE_BIAS=S (study): the caster pass's SlopeScaledDepthBias (the capture's −1.0) — the grazing-incidence test on
+    // stpad's pool walls (a vertical caster under a 13.6° sun has a huge depth slope; the uncapped bias moves its stored depth metres)
+    RasterState { viewport: [1.0, 1.0, 4094.0, 4094.0, 0.0, 1.0], depth_bias: -1, slope_scaled_depth_bias: std::env::var("LMTOOL_SUNMAP_SLOPE_BIAS").ok().and_then(|v| v.parse().ok()).unwrap_or(-1.0), depth_bias_clamp: 0.0, cull_back: true, front_ccw: true, depth_clip: true, plane: PlaneEval::F64Snapped, coef_bits: 36, vertex_z_bits: 0 }
 }
 
 /// `GbxShadowAlphaThreshold` of the alpha-tested caster draws (PS 1147): 128/255.
@@ -435,9 +437,11 @@ pub fn attr_from_map(scene: &crate::geometry::Scene, lm: &LmScene, frozen: &Froz
                             let uv0 = [0, 1, 2].map(|i| mesh.verts[tri[i] as usize].uv);
                             let (dudx, dudy) = prepass::attr_gradient(p, [uv0[0][0], uv0[1][0], uv0[2][0]]);
                             let (dvdx, dvdy) = prepass::attr_gradient(p, [uv0[0][1], uv0[1][1], uv0[2][1]]);
+                            // LMTOOL_TILE_ALBEDO_SCALE=K (study): the tiles' sampled albedo scaled — the ground-bounce lever test on stpad's posts
+                            let ascale: f32 = std::env::var("LMTOOL_TILE_ALBEDO_SCALE").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
                             prepass::raster_tri(p, W, H, |x, y, b| {
                                 let uvs = [b[0] * uv0[0][0] + b[1] * uv0[1][0] + b[2] * uv0[2][0], 1.0 - (b[0] * uv0[0][1] + b[1] * uv0[1][1] + b[2] * uv0[2][1])];
-                                if let Some(s) = prepass::ps_basecolor(tx, &sampler, uvs, [dudx, -dvdx], [dudy, -dvdy], None, lm_scale) { tgt.blend(x, y, s, 6); }
+                                if let Some(mut s) = prepass::ps_basecolor(tx, &sampler, uvs, [dudx, -dvdx], [dudy, -dvdy], None, lm_scale) { s[0] *= ascale; s[1] *= ascale; s[2] *= ascale; tgt.blend(x, y, s, 6); }
                             });
                         }
                         None => prepass::raster_tri(p, W, H, |x, y, _| tgt.blend(x, y, src, 1)),
