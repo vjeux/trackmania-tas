@@ -454,28 +454,69 @@ pub fn attr_from_map(scene: &crate::geometry::Scene, lm: &LmScene, frozen: &Froz
     {
         let tptrs = &tptrs;
         let blend_at = &blend_at;
-        crate::pool::pool().run(9 * n_bands, |t| {
-            let (k, band) = (t / n_bands, t % n_bands);
+        // THE ITEM TRIANGLES BINNED PER BAND, once per run (perf 8.26): every (run, band) task walked all 27 M item triangles
+        // of the giant to find the few meeting its rows — 620 core-seconds of walking per bake. The draw list (pair = (mesh,
+        // instance) in draw order, triangle) is cut into chunks, each chunk lists its triangles per band (the same
+        // conservative row test as before, a row each side; a non-finite coordinate goes to every band), and the bands'
+        // lists are the chunks' in chunk order — so a band meets its triangles in the draw order, as the walk did.
+        let pairs: Vec<(u32, u32)> = item_meshes.iter().enumerate().flat_map(|(mi, (mk, _))| (lm.inst_first[*mk]..lm.inst_first[*mk] + lm.inst_count[*mk]).map(move |ii| (mi as u32, ii as u32))).collect();
+        let pairs = &pairs;
+        let n_pairs = pairs.len();
+        let per_chunk = (n_pairs / (threads * 4).max(1)).max(1);
+        let n_chunks = (n_pairs + per_chunk - 1) / per_chunk;
+        for k in 0..9 {
+            let chunk_bins: Vec<Vec<Vec<(u32, u32)>>> = crate::pool::pool().map(n_chunks, |ci| {
+                let mut bins: Vec<Vec<(u32, u32)>> = vec![Vec::new(); n_bands];
+                for pi in ci * per_chunk..((ci + 1) * per_chunk).min(n_pairs) {
+                    let (mi, ii) = pairs[pi];
+                    let inst = &lm.instances[ii as usize];
+                    let rlm = prepass::raster_lm_for(inst.st, k);
+                    for (ti, d) in mesh_tris[mi as usize].iter().enumerate() {
+                        // a cut-out triangle blends nothing (AlphaToCoverage with alpha 1/9 on the 1-sample target: coverage 0
+                        // for every fragment) — its raster is skipped whole (the giant: 17.4 M of a run's 27 M triangles)
+                        if d.class == MatClass::CutOut { continue; }
+                        let p = [prepass::viewport(prepass::lm_ndc(d.uv[0], &rlm), W, H), prepass::viewport(prepass::lm_ndc(d.uv[1], &rlm), W, H), prepass::viewport(prepass::lm_ndc(d.uv[2], &rlm), W, H)];
+                        let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
+                        let mut finite = true;
+                        for q in &p { if !q[1].is_finite() { finite = false; } lo = lo.min(q[1]); hi = hi.max(q[1]); }
+                        let (b_lo, b_hi) = if finite {
+                            let row_lo = ((lo - 1.0).floor() as i64).max(0);
+                            let row_hi = ((hi + 1.0) as i64).min(H as i64 - 1);
+                            if row_lo > row_hi { continue; }
+                            ((row_lo as usize / rows).min(n_bands - 1), (row_hi as usize / rows).min(n_bands - 1))
+                        } else { (0, n_bands - 1) };
+                        for b in b_lo..=b_hi { bins[b].push((pi as u32, ti as u32)); }
+                    }
+                }
+                bins
+            });
+            let chunk_bins = &chunk_bins;
+            let band_lists: Vec<Vec<(u32, u32)>> = crate::pool::pool().map(n_bands, |b| {
+                let n: usize = chunk_bins.iter().map(|c| c[b].len()).sum();
+                let mut out = Vec::with_capacity(n);
+                for c in chunk_bins { out.extend_from_slice(&c[b]); }
+                out
+            });
+            drop(chunk_bins);
+            let band_lists = &band_lists;
+        crate::pool::pool().run(n_bands, |band| {
             let (y_lo, y_hi) = ((band * rows).min(H as usize) as i64, ((band + 1) * rows).min(H as usize) as i64);
             if y_lo >= y_hi { return; }
             let tp = tptrs[k];
-            // a triangle whose snapped rows cannot meet the band is skipped before its setup (a row each side to be safe;
-            // a non-finite coordinate is left to the raster to decide)
+            // (the zone tiles below keep the walk with the row test: 8 triangles per tile)
             let meets = |p: &[[f32; 2]; 3]| -> bool {
                 let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
                 for q in p { if !q[1].is_finite() { return true; } lo = lo.min(q[1]); hi = hi.max(q[1]); }
                 ((hi + 1.0) as i64) >= y_lo && ((lo - 1.0).floor() as i64) < y_hi
             };
-            for (mi, (mk, _li)) in item_meshes.iter().enumerate() {
-                let draws = &mesh_tris[mi];
-                for inst in lm.instances.iter().skip(lm.inst_first[*mk]).take(lm.inst_count[*mk]) {
-                    let rlm = prepass::raster_lm_for(inst.st, k);
-                    for d in draws {
-                        // a cut-out triangle blends nothing (AlphaToCoverage with alpha 1/9 on the 1-sample target: coverage 0 for
-                        // every fragment) — its raster is skipped whole (the giant: 17.4 M of a run's 27 M triangles)
-                        if d.class == MatClass::CutOut { continue; }
+            for &(pi, ti) in &band_lists[band] {
+                let (mi, ii) = pairs[pi as usize];
+                let inst = &lm.instances[ii as usize];
+                let rlm = prepass::raster_lm_for(inst.st, k);
+                let d = &mesh_tris[mi as usize][ti as usize];
+                {
+                    {
                         let p = [prepass::viewport(prepass::lm_ndc(d.uv[0], &rlm), W, H), prepass::viewport(prepass::lm_ndc(d.uv[1], &rlm), W, H), prepass::viewport(prepass::lm_ndc(d.uv[2], &rlm), W, H)];
-                        if !meets(&p) { continue; }
                         let uv0 = d.uv0;
                         let (dudx, dudy) = prepass::attr_gradient(p, [uv0[0][0], uv0[1][0], uv0[2][0]]);
                         let (dvdx, dvdy) = prepass::attr_gradient(p, [uv0[0][1], uv0[1][1], uv0[2][1]]);
@@ -527,6 +568,7 @@ pub fn attr_from_map(scene: &crate::geometry::Scene, lm: &LmScene, frozen: &Froz
                 }
             }
         });
+        }
     }
     // 3. the water tint per run (PS 17018 over the tile mesh with the frozen id map / tables), the nine in parallel as before
     {
