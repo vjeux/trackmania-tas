@@ -515,23 +515,32 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
     let cards_occlude = cards_occlude();
     let d = frame.d;
     let inset = frame.inset_px;
-    // THE BANDS: the wanted rectangle's rows split evenly over the threads; every triangle that reaches
-    // the frame's depth range is binned into the bands its rows touch — a per-band list of triangle
-    // indices (4 bytes each: tiny 16 has 2.4 M triangles, the giants 27 M — a projected record per
-    // triangle would be gigabytes per direction) — so a band thread walks its own triangles only and
-    // projects them again (cheaper than storing the projection). Triangle order within a band is the
-    // scene order (chunks concatenated in order), as the dense build's.
+    // THE TILE JOBS: the clip rectangle cut into cells of TILE_ROWS × TILE_COLS pixels; every triangle
+    // that reaches the frame's depth range is binned into the cells its projected bounding box touches — a
+    // per-chunk CSR of triangle indices per cell (4 bytes each: tiny 16 has 2.4 M triangles, the giants
+    // 27 M — a projected record per triangle would be gigabytes per direction), so a job walks its own
+    // triangles only and projects them again (cheaper than storing the projection). One job per non-empty
+    // cell (a heavy cell — a canopy tile with many times the mean cost — split into row strips of its own
+    // re-binned lists), the jobs handed out LONGEST FIRST by an estimated cost, so the pass's tail is a
+    // small job, not a canopy tile (the 7-row bands had the slowest band 3.5–5.4× the mean: 17 % idle).
+    // Triangle order within a cell is the scene order (chunks concatenated in order), as the dense build's;
+    // a pixel belongs to exactly one job, so its fragments arrive in triangle order.
+    // Why cells: a leaf triangle of two or three rows straddled a 7-row band a third of the time and a
+    // 64-row cell a twentieth (a fifth fewer band-triangle pairs, i.e. setups); a cell's count tables
+    // (4 k pixels: 8 KB of u16 counts, 16 KB of environment depths) sit in L1 instead of L2; its row
+    // spans are 64 pixels long.
     let raster_stats = raster_stats_on();
     let bitmap: &[u64] = px.words.as_slice();
     let rows = (clip.3 - clip.1 + 1).max(0) as usize;
-    // BANDS_PER_THREAD bands per pool thread: the pool hands them out dynamically, so a band of dense
-    // forest no longer pins the whole pass to one thread (with one band per thread the slowest band was
-    // 3–4× the mean and the other threads idled — LMTOOL_RASTER_STATS prints the band times)
-    let n_bands = (threads.max(1) * *BANDS_PER_THREAD).min(rows.max(1));
-    let band_rows = (rows + n_bands - 1) / n_bands.max(1);
-    let band_of = |y: i32| -> usize { (((y - clip.1).max(0) as usize) / band_rows.max(1)).min(n_bands - 1) };
-    // a triangle's projected rows (as raster::bounds computes them), clipped to the wanted rectangle
-    let rows_of = |t: &WTri| -> Option<(i32, i32)> {
+    let cols = (clip.2 - clip.0 + 1).max(0) as usize;
+    let (tile_rows, tile_cols) = (*TILE_ROWS as usize, *TILE_COLS as usize);
+    let n_brows = ((rows + tile_rows - 1) / tile_rows).max(1);
+    let n_bcols = ((cols + tile_cols - 1) / tile_cols).max(1);
+    let n_cells = n_brows * n_bcols;
+    let brow_of = |y: i32| -> usize { (((y - clip.1).max(0) as usize) / tile_rows).min(n_brows - 1) };
+    let bcol_of = |x: i32| -> usize { (((x - clip.0).max(0) as usize) / tile_cols).min(n_bcols - 1) };
+    // a triangle's projected pixel rows and columns (as raster::bounds computes them), clipped to the rectangle
+    let rows_of = |t: &WTri| -> Option<(i32, i32, i32, i32)> {
         let p0 = t.p0;
         let p1 = [p0[0] + t.e1[0], p0[1] + t.e1[1], p0[2] + t.e1[2]];
         let p2 = [p0[0] + t.e2[0], p0[1] + t.e2[1], p0[2] + t.e2[2]];
@@ -570,7 +579,7 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
         if rx0 > rx1 {
             return None;
         }
-        Some((ry0, ry1))
+        Some((ry0, ry1, rx0 as i32, rx1 as i32))
     };
     // the culled triangle set as chunks of index ranges (each chunk ~ n_total / (4·threads) triangles)
     let n_total: usize = ranges.iter().map(|r| (r.1 - r.0) as usize).sum();
@@ -585,26 +594,153 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
         }
     }
     let n_prep = chunks.len();
-    // per chunk: per band the triangle indices (in triangle order)
-    let binned: Vec<Vec<Vec<u32>>> = crate::pool::pool().map(n_prep, |ci| {
-        let mut out: Vec<Vec<u32>> = (0..n_bands).map(|_| Vec::new()).collect();
+    // the cell (brow, bcol) as an index
+    let cell_at = |br: usize, bc: usize| -> usize { br * n_bcols + bc };
+    let cell_rect = |cell: usize| -> (i32, i32, i32, i32) {
+        let (br, bc) = (cell / n_bcols, cell % n_bcols);
+        let by0 = clip.1 + (br * tile_rows) as i32;
+        let by1 = (clip.1 + ((br + 1) * tile_rows) as i32 - 1).min(clip.3);
+        let bx0 = clip.0 + (bc * tile_cols) as i32;
+        let bx1 = (clip.0 + ((bc + 1) * tile_cols) as i32 - 1).min(clip.2);
+        (bx0, by0, bx1, by1)
+    };
+    // THE COST ESTIMATE of a pair: its setup plus the pixels of its bounding box inside the cell (the row
+    // spans test about half of them, the visits are fewer still); a pair with visits pays the body per
+    // visit — alpha tests, count pushes — so a pair weighs about fifty pixel tests (LMTOOL_PAIR_COST)
+    let pair_cost: u64 = *PAIR_COST_V;
+    // THE SUB-STRIPS: a cell's rows in eight strips; every entry carries the bits of the strips its rows
+    // touch, so a heavy cell's job for some strips walks the cell's list and skips the other entries without
+    // projecting them — the split costs no re-binning
+    const SUB: usize = 8;
+    let sub_of = |y: i32, by0: i32| -> usize { (((y - by0).max(0) as usize) * SUB / tile_rows).min(SUB - 1) };
+    // per chunk: the CSR over the cells (offsets, then the triangle indices in triangle order with their
+    // strip bits) and the cells' estimated costs
+    let binned: Vec<(Vec<u32>, Vec<u32>, Vec<u8>, Vec<u64>)> = crate::pool::pool().map(n_prep, |ci| {
         let (a, b) = chunks[ci];
+        // pass 1: the cells of every triangle (kept: the projection is the cost), the counts and costs per cell
+        let mut hits: Vec<(u32, u16, u16, u16, u16, i32, i32)> = Vec::new(); // (ti, brow0, brow1, bcol0, bcol1, ry0, ry1)
+        let mut counts: Vec<u32> = vec![0; n_cells + 1];
+        let mut cost: Vec<u64> = vec![0; n_cells];
         for (k, t) in tris[a as usize..b as usize].iter().enumerate() {
-            if let Some((ry0, ry1)) = rows_of(t) {
-                let (b0, b1) = (band_of(ry0), band_of(ry1));
-                for bb in b0..=b1 {
-                    out[bb].push(a + k as u32);
+            if let Some((ry0, ry1, rx0, rx1)) = rows_of(t) {
+                let (br0, br1) = (brow_of(ry0), brow_of(ry1));
+                let (bc0, bc1) = (bcol_of(rx0), bcol_of(rx1));
+                for br in br0..=br1 {
+                    // the rows of the bounding box inside this cell row (no division: the cell's rows from br)
+                    let cy0 = clip.1 + (br * tile_rows) as i32;
+                    let h_in = (ry1.min(cy0 + tile_rows as i32 - 1) - ry0.max(cy0) + 1).max(0) as u64;
+                    for bc in bc0..=bc1 {
+                        let cell = cell_at(br, bc);
+                        counts[cell + 1] += 1;
+                        let cx0 = clip.0 + (bc * tile_cols) as i32;
+                        let w_in = (rx1.min(cx0 + tile_cols as i32 - 1) - rx0.max(cx0) + 1).max(0) as u64;
+                        cost[cell] += pair_cost + w_in * h_in;
+                    }
+                }
+                hits.push((a + k as u32, br0 as u16, br1 as u16, bc0 as u16, bc1 as u16, ry0, ry1));
+            }
+        }
+        for i in 0..n_cells { counts[i + 1] += counts[i]; }
+        let mut entries: Vec<u32> = vec![0; counts[n_cells] as usize];
+        let mut ebits: Vec<u8> = vec![0; counts[n_cells] as usize];
+        let mut fill = counts.clone();
+        for &(ti, br0, br1, bc0, bc1, ry0, ry1) in &hits {
+            for br in br0 as usize..=br1 as usize {
+                let by0 = clip.1 + (br * tile_rows) as i32;
+                let (s0, s1) = (sub_of(ry0, by0), sub_of(ry1, by0));
+                let bits = (((1u16 << (s1 + 1)) - 1) & !((1u16 << s0) - 1)) as u8;
+                for bc in bc0 as usize..=bc1 as usize {
+                    let cell = cell_at(br, bc);
+                    entries[fill[cell] as usize] = ti;
+                    ebits[fill[cell] as usize] = bits;
+                    fill[cell] += 1;
                 }
             }
         }
-        out
+        (counts, entries, ebits, cost)
     });
     prof::add(&prof::B_CLIP, t_clip);
     let t_raster = std::time::Instant::now();
-    // (one CSR bucket per pool thread: the per-pixel depth sorts of a dense canopy are the cost)
-    let sparse_buckets = (threads as u32).clamp(1, 256);
-    let sparse_bucket_size = ((px.len() as u32 + sparse_buckets - 1) / sparse_buckets).max(1);
-    let band_ns: Vec<std::sync::atomic::AtomicU64> = if raster_stats { (0..n_bands).map(|_| std::sync::atomic::AtomicU64::new(0)).collect() } else { Vec::new() };
+    // the cells' totals over the chunks (chunk-outer, cell-inner: sequential over each chunk's arrays — the
+    // cell-outer form touched 512 arrays per cell, 40 ms of cache misses per frame); a cell without a wanted
+    // pixel in the wanted-only build has no work. The same pass zeroes the sparse CSR's per-pixel counts
+    // (`csr_start`): the raster jobs count their wanted fragments per pixel as they push them (a pixel has
+    // one owner job, so the increments never collide), sparing the CSR a counting pass over the fragments.
+    let npx = px.len();
+    let mut csr_start: Vec<u32> = U32S.take_with_capacity(npx + 1);
+    // SAFETY: zeroed below in parallel blocks before any job runs; every slot written
+    unsafe { csr_start.set_len(npx + 1); }
+    let csr_sp = csr_start.as_mut_ptr() as usize;
+    let (cell_pairs, cell_cost): (Vec<usize>, Vec<u64>) = {
+        let n_blk = (n_cells / 64).clamp(1, 256);
+        let blk = (n_cells + n_blk - 1) / n_blk;
+        let zblk = (npx + 1 + n_blk - 1) / n_blk;
+        let per_blk: Vec<(Vec<usize>, Vec<u64>)> = crate::pool::pool().map(n_blk, |b| {
+            let (z0, z1) = ((b * zblk).min(npx + 1), ((b + 1) * zblk).min(npx + 1));
+            unsafe { std::ptr::write_bytes((csr_sp as *mut u32).add(z0), 0, z1 - z0); }
+            let (c0, c1) = ((b * blk).min(n_cells), ((b + 1) * blk).min(n_cells));
+            let mut pairs = vec![0usize; c1 - c0];
+            let mut cost = vec![0u64; c1 - c0];
+            for (counts, _, _, cst) in &binned {
+                for cell in c0..c1 {
+                    pairs[cell - c0] += (counts[cell + 1] - counts[cell]) as usize;
+                    cost[cell - c0] += cst[cell];
+                }
+            }
+            (pairs, cost)
+        });
+        let mut pairs = Vec::with_capacity(n_cells);
+        let mut cost = Vec::with_capacity(n_cells);
+        for (p, c) in per_blk { pairs.extend(p); cost.extend(c); }
+        (pairs, cost)
+    };
+    let cell_wanted = |cell: usize| -> bool {
+        if counting { return true; }
+        let (bx0, by0, bx1, by1) = cell_rect(cell);
+        for y in by0..=by1 {
+            let (i0, i1) = (y as usize * res as usize + bx0 as usize, y as usize * res as usize + bx1 as usize);
+            for wi in (i0 >> 6)..=(i1 >> 6) {
+                let mut word = bitmap[wi];
+                if wi == i0 >> 6 { word &= u64::MAX << (i0 & 63); }
+                if wi == i1 >> 6 { word &= u64::MAX >> (63 - (i1 & 63)); }
+                if word != 0 { return true; }
+            }
+        }
+        false
+    };
+    // THE JOBS: (cell, rows y0..=y1, columns x0..=x1, the strip bits its entries must carry) with an
+    // estimated cost; a cell above the split limit (a thread's share of the frame over LMTOOL_TILE_SPLIT) is
+    // split into 2, 4 or 8 row strips, each a job over the same list filtered by the strip bits
+    struct Job { cell: usize, x0: i32, y0: i32, x1: i32, y1: i32, smask: u8, cost: u64 }
+    let total_cost: u64 = cell_cost.iter().sum();
+    let split_limit = (total_cost / (threads.max(1) as u64 * *TILE_SPLIT_V)).max(pair_cost * 64);
+    let mut jobs: Vec<Job> = Vec::with_capacity(n_cells + 256);
+    let mut n_heavy = 0usize;
+    for cell in 0..n_cells {
+        if cell_pairs[cell] == 0 || !cell_wanted(cell) { continue; }
+        let (bx0, by0, bx1, by1) = cell_rect(cell);
+        let cell_h = (by1 - by0 + 1).max(1) as usize;
+        if cell_cost[cell] > split_limit && cell_h >= 2 {
+            n_heavy += 1;
+            let n_strips = (((cell_cost[cell] + split_limit - 1) / split_limit) as usize).next_power_of_two().clamp(2, SUB.min(cell_h));
+            let per = SUB / n_strips; // sub-strips per strip
+            for s in 0..n_strips {
+                let (sub0, sub1) = (s * per, (s + 1) * per - 1);
+                // the strip's rows: the sub-strips' rows (sub k = rows [k·tile_rows/SUB, (k+1)·tile_rows/SUB))
+                let (sy0, sy1) = (by0 + (sub0 * tile_rows / SUB) as i32, (by0 + ((sub1 + 1) * tile_rows / SUB) as i32 - 1).min(by1));
+                if sy0 > sy1 { continue; }
+                let smask = (((1u16 << (sub1 + 1)) - 1) & !((1u16 << sub0) - 1)) as u8;
+                jobs.push(Job { cell, x0: bx0, y0: sy0, x1: bx1, y1: sy1, smask, cost: cell_cost[cell] / n_strips as u64 });
+            }
+        } else {
+            jobs.push(Job { cell, x0: bx0, y0: by0, x1: bx1, y1: by1, smask: u8::MAX, cost: cell_cost[cell] });
+        }
+    }
+    // longest first (the pool claims job indices in order): the tail of the pass is then a small job
+    jobs.sort_by(|p, q| q.cost.cmp(&p.cost));
+    let n_jobs = jobs.len();
+    let t_jobs_ready = std::time::Instant::now();
+    let band_ns: Vec<std::sync::atomic::AtomicU64> = if raster_stats { (0..n_jobs).map(|_| std::sync::atomic::AtomicU64::new(0)).collect() } else { Vec::new() };
     // THE COUNT'S LAYER LOGIC per pixel (counting mode): `list` = the pixel's item fragments sorted by (z,
     // triangle) each carrying its triangle's depth-bias term, `env_d` = the environment layer's z01 maximum
     // at the pixel (0 = none) — `extract_layers`' depth rules, no colour
@@ -639,31 +775,22 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
     // exact count?
     let bound_stats = std::env::var_os("LMTOOL_BOUND_STATS").is_some();
     let bound_acc: std::sync::Mutex<([usize; MAX_LAYERS + 1], [usize; MAX_LAYERS + 1], [usize; MAX_LAYERS + 1])> = std::sync::Mutex::new(([0; MAX_LAYERS + 1], [0; MAX_LAYERS + 1], [0; MAX_LAYERS + 1]));
-    // HEAVIEST FIRST: the pool hands the bands out in index order; a dense band scheduled last leaves the
-    // other threads idle for its whole length (the slowest band is 3–5× the mean). The bands are handed out
-    // in descending order of their triangle count instead — the results land back in band order, and a
-    // pixel's fragments come from one band, so nothing else changes.
-    let band_weight: Vec<usize> = (0..n_bands).map(|b| binned.iter().map(|cl| cl[b].len()).sum()).collect();
-    let mut band_order: Vec<usize> = (0..n_bands).collect();
-    if std::env::var_os("LMTOOL_NO_HEAVY_FIRST").is_none() {
-        band_order.sort_by(|a, b| band_weight[*b].cmp(&band_weight[*a]).then_with(|| a.cmp(b)));
-    }
-    let mut parts_all_by_order: Vec<Option<(Vec<Vec<(u32, Frag)>>, [usize; MAX_LAYERS + 1], usize)>> = crate::pool::pool().map(n_bands, |oi| {
-        let b = band_order[oi];
+    let parts_all: Vec<(Vec<(u32, Frag)>, [usize; MAX_LAYERS + 1], usize)> = crate::pool::pool().map(n_jobs, |j| {
         let t_band = std::time::Instant::now();
+        let Job { cell, x0: bx0, y0: by0, x1: bx1, y1: by1, smask, cost: _ } = jobs[j];
+        let bw = (bx1 - bx0 + 1).max(0) as usize;
         let mut hist_u = [0usize; MAX_LAYERS + 1];
         let mut hist_l4 = [0usize; MAX_LAYERS + 1];
         let mut hist_l8 = [0usize; MAX_LAYERS + 1];
         let (mut rs_tris, mut rs_tested, mut rs_visits) = (0u64, 0u64, 0u64);
-        let by0 = clip.1 + (b * band_rows) as i32;
-        let by1 = (clip.1 + ((b + 1) * band_rows) as i32 - 1).min(clip.3);
-        let mut out: Vec<Vec<(u32, Frag)>> = (0..sparse_buckets).map(|_| Vec::new()).collect();
+        // the job's wanted fragments (dense rank, fragment) in visit order — one list per job
+        let mut out: Vec<(u32, Frag)> = Vec::new();
         let mut hist = [0usize; MAX_LAYERS + 1];
         let mut covered = 0usize;
         // (counting) THE BAND'S PIXEL SLOTS: per pixel the environment layer's z01 maximum (0 = none drawn)
         // and up to SLOT_K item fragments inline, the rest in the overflow list — no fragment list to sort
         // (the tiles of a giant produce 400 M fragments per direction), the band's slots stay in cache
-        let band_px = if counting { ((by1 - by0 + 1).max(0) as usize) * res as usize } else { 0 };
+        let band_px = if counting { ((by1 - by0 + 1).max(0) as usize) * bw } else { 0 };
         // THE COUNT'S TABLES, per band: a fragment COUNT per pixel (u16: L1-resident) and the environment
         // layer's z01 maximum; the item fragments themselves go to a sequential LIST (pixel, fragment) — the
         // scan then counting-sorts the list by pixel (a prefix over the counts, one scatter) and runs the layer
@@ -676,13 +803,17 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
         if env_max.len() < band_px { env_max.resize(band_px, 0.0); }
         list.clear();
         let mut saturated = false;
-        if by0 > by1 {
+        if by0 > by1 || bx0 > bx1 {
             SLOT_BUFS.set((cnt, env_max, list, csr, offs, fill));
-            return Some((out, hist, covered));
+            return (out, hist, covered);
         }
-        let band_clip = (clip.0, by0, clip.2, by1);
-        for chunk_lists in &binned {
-            for &ti in &chunk_lists[b] {
+        let band_clip = (bx0, by0, bx1, by1);
+        // the cell's chunk slices in chunk order (ascending triangle index); a strip job skips the entries
+        // whose strip bits miss its rows
+        let tri_lists: Vec<(&[u32], &[u8])> = binned.iter().map(|(counts, entries, ebits, _)| (&entries[counts[cell] as usize..counts[cell + 1] as usize], &ebits[counts[cell] as usize..counts[cell + 1] as usize])).collect();
+        for (lst, bits) in &tri_lists {
+            for (ei, &ti) in lst.iter().enumerate() {
+                if bits[ei] & smask == 0 { continue; }
                 let t = &tris[ti as usize];
                 let p0 = t.p0;
                 let p1 = [p0[0] + t.e1[0], p0[1] + t.e1[1], p0[2] + t.e1[2]];
@@ -734,7 +865,7 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
                     }
                     if counting && env_drawn_t {
                         // the environment layer's depth maximum, sixteen lanes: z01 in [0, 1] and strictly greater
-                        let li0 = ((y as i32 - by0) as usize) * res as usize + bx as usize;
+                        let li0 = ((y as i32 - by0) as usize) * bw + (bx as i32 - bx0) as usize;
                         env_max_update16(&mut env_max[li0..(li0 + 16).min(band_px)], &lanes.z, live, frame);
                         live &= wanted16;
                         if live == 0 { return; }
@@ -764,7 +895,7 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
                         let id = id0 + l as u32;
                         if counting && env_t.is_none() {
                             // an item fragment: its count record
-                            let li = ((y as i32 - by0) as usize) * res as usize + x as usize;
+                            let li = ((y as i32 - by0) as usize) * bw + (x as i32 - bx0) as usize;
                             let c = &mut cnt[li];
                             if *c == u16::MAX { saturated = true; } else { *c += 1; }
                             list.push((li as u32, CFrag { z, tri: ti, bias: bias_term_of(&mut bias_term_cache) }));
@@ -773,7 +904,9 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
                             continue;
                         }
                         let k = px.index_of_id(id);
-                        out[(k / sparse_bucket_size) as usize].push((k, Frag { z, tri: ti }));
+                        out.push((k, Frag { z, tri: ti }));
+                        // SAFETY: pixel k belongs to this job alone (the jobs partition the frame)
+                        unsafe { *(csr_sp as *mut u32).add(k as usize + 1) += 1; }
                     }
                 });
             }
@@ -838,7 +971,7 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
                         }
                     }
                     hist_u[n.min(MAX_LAYERS)] += 1;
-                    let (x, y) = (li % res as usize, by0 as usize + li / res as usize);
+                    let (x, y) = (bx0 as usize + li % bw, by0 as usize + li / bw);
                     if x % 4 == 0 && y % 4 == 0 {
                         let mut tmp: Vec<CFrag> = csr[a..c].to_vec();
                         tmp.sort_by(|p, q| p.z.total_cmp(&q.z).then_with(|| p.tri.cmp(&q.tri)));
@@ -872,21 +1005,23 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
         }
         if bound_stats { let mut g = bound_acc.lock().unwrap(); for k in 0..=MAX_LAYERS { g.0[k] += hist_u[k]; g.1[k] += hist_l4[k]; g.2[k] += hist_l8[k]; } }
         SLOT_BUFS.set((cnt, env_max, list, csr, offs, fill));
-        if raster_stats { band_ns[b].store(t_band.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed); RS_TRIS.fetch_add(rs_tris, std::sync::atomic::Ordering::Relaxed); RS_TESTED.fetch_add(rs_tested, std::sync::atomic::Ordering::Relaxed); RS_VISITS.fetch_add(rs_visits, std::sync::atomic::Ordering::Relaxed); }
-        Some((out, hist, covered))
+        if raster_stats { band_ns[j].store(t_band.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed); RS_TRIS.fetch_add(rs_tris, std::sync::atomic::Ordering::Relaxed); RS_TESTED.fetch_add(rs_tested, std::sync::atomic::Ordering::Relaxed); RS_VISITS.fetch_add(rs_visits, std::sync::atomic::Ordering::Relaxed); }
+        (out, hist, covered)
     });
-    // back into band order
-    let mut parts_all: Vec<(Vec<Vec<(u32, Frag)>>, [usize; MAX_LAYERS + 1], usize)> = Vec::with_capacity(n_bands);
-    {
-        let mut slots: Vec<Option<(Vec<Vec<(u32, Frag)>>, [usize; MAX_LAYERS + 1], usize)>> = (0..n_bands).map(|_| None).collect();
-        for (oi, r) in parts_all_by_order.drain(..).enumerate() { slots[band_order[oi]] = r; }
-        for sl in slots { parts_all.push(sl.expect("band result")); }
-    }
     if raster_stats {
         let v: Vec<u64> = band_ns.iter().map(|a| a.load(std::sync::atomic::Ordering::Relaxed)).collect();
         let mx = v.iter().copied().max().unwrap_or(0);
-        let mean = v.iter().sum::<u64>() as f64 / v.len().max(1) as f64;
-        eprintln!("raster bands: {} bands of {} rows, slowest {:.1} ms, mean {:.1} ms (ratio {:.2}), wall {:.1} ms", n_bands, band_rows, mx as f64 / 1e6, mean / 1e6, mx as f64 / mean.max(1.0), t_raster.elapsed().as_secs_f64() * 1e3);
+        let sum_ns: u64 = v.iter().sum();
+        // the slowest jobs against their estimated cost (their rank in the longest-first order): a slow job
+        // ranked late is a cost-model miss, a slow job ranked first is the tail the split limit must cut
+        let mut order: Vec<usize> = (0..n_jobs).collect();
+        order.sort_by_key(|&j| std::cmp::Reverse(v[j]));
+        let worst: Vec<String> = order.iter().take(6).map(|&j| format!("[rank {j}: {:.1} ms, cost {}, {} pairs in the cell{}]", v[j] as f64 / 1e6, jobs[j].cost, cell_pairs[jobs[j].cell], if jobs[j].smask != u8::MAX { format!(", strip {:08b}", jobs[j].smask) } else { String::new() })).collect();
+        eprintln!("raster slowest jobs: {} (split limit {} cost units)", worst.join(" "), split_limit);
+        let mean = sum_ns as f64 / v.len().max(1) as f64;
+        // the balance: the pass's wall against the per-thread share of the jobs' total
+        let ideal = sum_ns as f64 / (crate::pool::pool().threads + 1) as f64;
+        eprintln!("raster jobs: {} jobs over {} cells of {}×{} ({} heavy cells split), slowest {:.1} ms, mean {:.2} ms, ideal wall {:.1} ms, jobs wall {:.1} ms ({:.0} % idle), setup before the jobs {:.1} ms", n_jobs, n_cells, tile_cols, tile_rows, n_heavy, mx as f64 / 1e6, mean / 1e6, ideal / 1e6, t_jobs_ready.elapsed().as_secs_f64() * 1e3, (1.0 - ideal / t_jobs_ready.elapsed().as_nanos().max(1) as f64) * 100.0, (t_jobs_ready - t_raster).as_secs_f64() * 1e3);
     }
     // the exact statistic from the bands' histograms
     let counted: Option<(usize, Vec<f64>)> = count.as_ref().map(|cx| {
@@ -944,75 +1079,80 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
         }
         (rendered, fractions)
     });
-    let parts: Vec<Vec<Vec<(u32, Frag)>>> = parts_all.into_iter().map(|(o, _, _)| o).collect();
+    let parts: Vec<Vec<(u32, Frag)>> = parts_all.into_iter().map(|(o, _, _)| o).collect();
     prof::add(&prof::B_RASTER, t_raster);
-    if raster_stats { eprintln!("raster stats (sparse, {n_bands} bands): {} triangles rasterised, {} bbox pixels tested, {} pixel visits, clip {:?}, wanted {}, {:.3}s", RS_TRIS.swap(0, std::sync::atomic::Ordering::Relaxed), RS_TESTED.swap(0, std::sync::atomic::Ordering::Relaxed), RS_VISITS.swap(0, std::sync::atomic::Ordering::Relaxed), clip, px.len(), t_raster.elapsed().as_secs_f32()); }
+    if raster_stats { eprintln!("raster stats (sparse, {n_jobs} jobs over {n_cells} cells): {} triangles rasterised, {} bbox pixels tested, {} pixel visits, clip {:?}, wanted {}, {:.3}s", RS_TRIS.swap(0, std::sync::atomic::Ordering::Relaxed), RS_TESTED.swap(0, std::sync::atomic::Ordering::Relaxed), RS_VISITS.swap(0, std::sync::atomic::Ordering::Relaxed), clip, px.len(), t_raster.elapsed().as_secs_f32()); }
     let t_sort = std::time::Instant::now();
-    let npx = px.len();
-    let bucket_results: Vec<(Vec<u32>, Vec<Frag>)> = crate::pool::pool().map(sparse_buckets as usize, |b| {
-                let b = b as u32;
-                let parts = &parts;
-                {
-                    let k0 = (b * sparse_bucket_size) as usize;
-                    let k1 = ((b + 1) * sparse_bucket_size).min(npx as u32) as usize;
-                    let nb = k1.saturating_sub(k0);
-                    let mut count = vec![0u32; nb + 1];
-                    for part in parts {
-                        for (k, _) in &part[b as usize] {
-                            count[*k as usize - k0 + 1] += 1;
-                        }
-                    }
-                    for i in 0..nb {
-                        count[i + 1] += count[i];
-                    }
-                    let total = count[nb] as usize;
-                    let mut frags = vec![Frag { z: 0.0, tri: 0 }; total];
-                    let mut fill = count.clone();
-                    for part in parts {
-                        for (k, f) in &part[b as usize] {
-                            let i = fill[*k as usize - k0] as usize;
-                            frags[i] = *f;
-                            fill[*k as usize - k0] += 1;
-                        }
-                    }
-                    for i in 0..nb {
-                        let (a, c) = (count[i] as usize, count[i + 1] as usize);
-                        if c - a > 1 {
-                            frags[a..c].sort_by(|p, q| p.z.partial_cmp(&q.z).unwrap_or(std::cmp::Ordering::Equal));
-                        }
-                    }
-                    (count, frags)
-                }
-    });
-    // the buckets concatenated in parallel: a prefix over the buckets' totals, each bucket writes its ranks
-    // and copies its fragments into its slice
-    let total: usize = bucket_results.iter().map(|b| b.1.len()).sum();
-    let mut bucket_base: Vec<u32> = Vec::with_capacity(bucket_results.len() + 1);
-    bucket_base.push(0);
-    for (_, f) in &bucket_results { let last = *bucket_base.last().unwrap(); bucket_base.push(last + f.len() as u32); }
-    let mut start: Vec<u32> = U32S.take_with_capacity(npx + 1);
+    // THE SPARSE CSR: a counting sort of every job's fragments by wanted rank — the counts were taken by the
+    // jobs (`csr_start[k + 1]`); here the prefix in parallel blocks (block sums, then offsets and cursors),
+    // then every job scatters its own fragments at its pixels' cursors and sorts its own pixels (a pixel
+    // belongs to ONE job: disjoint writes, no atomics; its fragments arrive in triangle order). Per pixel
+    // the (depth, triangle) order — the one order a stable sort by depth alone gave on the triangle-ordered
+    // input (a triangle visits a pixel once, so the keys are distinct), whatever order the jobs ran in.
+    let total: usize = parts.iter().map(|p| p.len()).sum();
+    let mut start = csr_start;
     let mut frags: Vec<Frag> = ABUF_FRAGS.take_with_capacity(total);
-    // SAFETY: every slot is written exactly once below by the bucket that owns it
-    unsafe { start.set_len(npx + 1); frags.set_len(total); }
-    start[npx] = total as u32;
-    if npx > 0 { start[0] = 0; }
-    let (sp, fp) = (start.as_mut_ptr() as usize, frags.as_mut_ptr() as usize);
+    let mut fill: Vec<u32> = U32S.take_with_capacity(npx + 1);
+    // SAFETY: `fill` is fully written by the prefix pass; every `frags` slot is written exactly once by the
+    // job owning its pixel
+    unsafe { fill.set_len(npx + 1); frags.set_len(total); }
+    let (sp, cp, fp) = (start.as_mut_ptr() as usize, fill.as_mut_ptr() as usize, frags.as_mut_ptr() as usize);
+    let n_blk = crate::pool::pool().threads.clamp(1, 256);
+    let blk = (npx + 1 + n_blk - 1) / n_blk.max(1);
+    let block = |b: usize| -> (usize, usize) { ((b * blk).min(npx + 1), ((b + 1) * blk).min(npx + 1)) };
+    let sums: Vec<u32> = crate::pool::pool().map(n_blk, |b| {
+        let (i0, i1) = block(b);
+        start[i0..i1].iter().sum()
+    });
+    let mut base: Vec<u32> = Vec::with_capacity(n_blk + 1);
+    base.push(0);
+    for s in &sums { let l = *base.last().unwrap(); base.push(l + s); }
     {
-        let bucket_results = &bucket_results;
-        let bucket_base = &bucket_base;
-        crate::pool::pool().run(bucket_results.len(), |b| {
-            let (count, f) = &bucket_results[b];
-            let k0 = (b as u32 * sparse_bucket_size) as usize;
-            let base = bucket_base[b];
-            // count[i] = the offset of pixel k0 + i within the bucket (count[0] = 0); the global start of pixel
-            // k0 + i = base + count[i], written for i in 0..nb (pixel npx's entry is the total)
-            let nb = count.len() - 1;
-            for i in 0..nb {
-                unsafe { *(sp as *mut u32).add(k0 + i) = base + count[i]; }
+        let base = &base;
+        crate::pool::pool().run(n_blk, |b| {
+            let (i0, i1) = block(b);
+            let mut acc = base[b];
+            for i in i0..i1 {
+                unsafe {
+                    // the INCLUSIVE prefix: slot i held pixel (i − 1)'s count, so Σ_{j ≤ i} = the first
+                    // fragment of pixel i = its cursor, and start[npx] = the total (an exclusive prefix
+                    // dropped the last pixel's fragments — caught by the check below)
+                    acc += *(sp as *mut u32).add(i);
+                    *(sp as *mut u32).add(i) = acc;
+                    *(cp as *mut u32).add(i) = acc;
+                }
             }
-            unsafe { std::ptr::copy_nonoverlapping(f.as_ptr(), (fp as *mut Frag).add(base as usize), f.len()); }
         });
     }
+    if start[npx] as usize != total { panic!("sparse CSR: the jobs counted {} wanted fragments but pushed {} (npx {npx}, {} jobs)", start[npx], total, parts.len()); }
+    let t_c2 = std::time::Instant::now();
+    {
+        let parts = &parts;
+        let start = &start;
+        crate::pool::pool().run(parts.len(), |j| {
+            // the scatter, then the sort of each of the job's pixels (its cursor marked done: u32::MAX)
+            for (k, f) in &parts[j] {
+                unsafe {
+                    let c = (cp as *mut u32).add(*k as usize);
+                    *(fp as *mut Frag).add(*c as usize) = *f;
+                    *c += 1;
+                }
+            }
+            for (k, _) in &parts[j] {
+                let c = unsafe { &mut *(cp as *mut u32).add(*k as usize) };
+                if *c == u32::MAX { continue; }
+                *c = u32::MAX;
+                let (a, e) = (start[*k as usize] as usize, start[*k as usize + 1] as usize);
+                if e - a > 1 {
+                    let buf = unsafe { std::slice::from_raw_parts_mut((fp as *mut Frag).add(a), e - a) };
+                    buf.sort_unstable_by(|p, q| p.z.total_cmp(&q.z).then_with(|| p.tri.cmp(&q.tri)));
+                }
+            }
+        });
+    }
+    U32S.give(fill);
+    drop(parts);
+    if raster_stats { eprintln!("csr phases: prefix {:.2} ms, scatter + sort {:.2} ms ({} fragments, {} wanted)", (t_c2 - t_sort).as_secs_f64() * 1e3, t_c2.elapsed().as_secs_f64() * 1e3, total, npx); }
     prof::add(&prof::B_SORT, t_sort);
     (ABuffer { res, band_h: res_y.max(1), bands: vec![(start, frags)], sparse: Some(px.clone()) }, counted)
 }
@@ -2307,6 +2447,15 @@ thread_local! {
 
 /// Raster bands per pool thread (LMTOOL_BANDS_PER_THREAD, default 4).
 pub static BANDS_PER_THREAD: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_BANDS_PER_THREAD").ok().and_then(|v| v.parse().ok()).unwrap_or(4));
+
+/// The sparse raster's tile cells (LMTOOL_TILE_ROWS × LMTOOL_TILE_COLS pixels, default 64 × 64: 4 k pixels of count
+/// tables — L1-resident — and 64-pixel row spans; see `build_abuffer_sparse_ranges`).
+pub static TILE_ROWS: std::sync::LazyLock<u32> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_TILE_ROWS").ok().and_then(|v| v.parse().ok()).filter(|&v: &u32| v > 0).unwrap_or(64));
+pub static TILE_COLS: std::sync::LazyLock<u32> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_TILE_COLS").ok().and_then(|v| v.parse().ok()).filter(|&v: &u32| v > 0).unwrap_or(64));
+/// The cost estimate of one band-triangle pair in pixel-test units (LMTOOL_PAIR_COST, default 48).
+pub static PAIR_COST_V: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_PAIR_COST").ok().and_then(|v| v.parse().ok()).unwrap_or(48));
+/// The heavy-cell split limit as a divisor of a thread's share of the frame (LMTOOL_TILE_SPLIT, default 8).
+pub static TILE_SPLIT_V: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_TILE_SPLIT").ok().and_then(|v| v.parse().ok()).filter(|&v: &u64| v > 0).unwrap_or(8));
 
 /// The census stride of the sparse layer-count estimate (every 8th pixel in x and y: 1/64 of the frame).
 pub const CENSUS_STEP: u32 = 8;
