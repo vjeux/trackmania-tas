@@ -1379,9 +1379,16 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
                     // the card's tap plan: computed on the triangle's first block with live lanes (the same value
                     // as on its first live lane — the plan is the triangle's), ONCE per block rather than a
                     // ten-capture closure built on every lane (engineer 4's census: 88 instructions per block)
-                    let fp_block: Option<(&crate::alphatex::AlphaTex, crate::alphatex::TapPlan)> = match mask {
-                        Some(mk) => *fp_tex.get_or_insert_with(|| mk.tex.as_ref().map(|tx| (tx.as_ref(), tx.plan_for(&crate::alphatex::Footprint::of_triangle([[x0, y0], [x1, y1], [x2, y2]], t.uv0, tx.w(), tx.h()), *ALPHA_ANISO, !alpha_queue)))),
-                        None => None,
+                    // the card's tap plan, by REFERENCE: the Option lives for the triangle; computing it on the first live
+                    // block (a plain match, not get_or_insert_with: no by-value closure) and reading it through a
+                    // reference — the former `*get_or_insert_with(..)` copied the 72-byte Option out on every block
+                    let none_plan: Option<(&crate::alphatex::AlphaTex, crate::alphatex::TapPlan)> = None;
+                    let fp_block: &Option<(&crate::alphatex::AlphaTex, crate::alphatex::TapPlan)> = match mask {
+                        Some(mk) => {
+                            if fp_tex.is_none() { fp_tex = Some(mk.tex.as_ref().map(|tx| (tx.as_ref(), tx.plan_for(&crate::alphatex::Footprint::of_triangle([[x0, y0], [x1, y1], [x2, y2]], t.uv0, tx.w(), tx.h()), *ALPHA_ANISO, !alpha_queue)))); }
+                            fp_tex.as_ref().unwrap()
+                        }
+                        None => &none_plan,
                     };
                     let mut m = live;
                     while m != 0 {
@@ -1395,7 +1402,7 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
                         if let Some(mk) = mask {
                             let u = t.uv0[0][0] * bc[0] + t.uv0[1][0] * bc[1] + t.uv0[2][0] * bc[2];
                             let v = t.uv0[0][1] * bc[0] + t.uv0[1][1] * bc[1] + t.uv0[2][1] * bc[2];
-                            let fp = &fp_block;
+                            let fp = fp_block;
                             if alpha_queue {
                                 if let Some((tx, plan)) = fp {
                                     // queued: tested sixteen at a time, the passing ones emitted at the flush
