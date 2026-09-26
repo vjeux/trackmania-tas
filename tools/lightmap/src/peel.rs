@@ -2098,6 +2098,130 @@ fn fragment_radiance(scene: &Scene, bvh: &Bvh, prm: &BakeParams, shadow: Option<
     out
 }
 
+/// THE PER-TRIANGLE HALF OF `fragment_radiance` (the layer derivation's cache): everything the port's own colour
+/// model derives from the triangle and the frame alone — the front test, the oriented normal, the albedo, n·L,
+/// the decoration's constant stand-in for the stored lightmap, the water's sky reflection — computed once per
+/// triangle per chunk by exactly the statements `fragment_radiance` runs (the same functions on the same inputs);
+/// `fragment_radiance_at` then adds the per-fragment part (the stored field at the hit, the sun visibility) in
+/// `fragment_radiance`'s order of operations. Not for the harness's atlas paths (`--ilightinput-from`, the
+/// transcribed atlas, the tiles' ST) nor the first sweep's short cut — `tri_shade_applies` says when.
+#[derive(Clone, Copy)]
+pub struct TriShade {
+    pub front: bool,
+    pub n: V3,
+    pub alb: [f32; 3],
+    /// The decoration's stand-in for the stored lightmap (a constant); None = read the field at the hit.
+    pub stored_const: Option<[f32; 3]>,
+    pub ndl: f32,
+    /// The water's additions, in order: the reflected sky × reflectance, then the sun's glitter (when any).
+    pub water: Option<([f32; 3], Option<[f32; 3]>)>,
+}
+
+impl TriShade {
+    pub const NONE: TriShade = TriShade { front: false, n: [0.0; 3], alb: [0.0; 3], stored_const: None, ndl: 0.0, water: None };
+}
+
+pub fn tri_shade_applies(prm: &BakeParams) -> bool {
+    let shortcut = prm.sweep == 0 && !prm.sweep0_sun && prm.ilight_atlas.is_none() && prm.ilatlas.is_none() && prm.field.is_none() && prm.game_peel;
+    !shortcut && prm.ilight_atlas.is_none() && prm.ilatlas.is_none()
+}
+
+pub fn tri_shade(scene: &Scene, bvh: &Bvh, prm: &BakeParams, tri: u32, d: V3) -> TriShade {
+    let wt = &bvh.tris[tri as usize];
+    let ng = norm(cross(wt.e1, wt.e2));
+    let facing = -dot(ng, d);
+    let n = if facing >= 0.0 { ng } else { [-ng[0], -ng[1], -ng[2]] };
+    let is_front = if prm.game_peel {
+        dot(cross(wt.e1, wt.e2), d) < 0.0
+    } else if wt.inst == DECOR_INST {
+        true
+    } else {
+        let inst = &scene.instances[wt.inst as usize];
+        let m = &scene.models[inst.model];
+        match m.tris.get(wt.tri as usize) {
+            Some(t) => {
+                let vn = crate::geometry::xf_normal(&inst.xf, [t.n[0][0] + t.n[1][0] + t.n[2][0], t.n[0][1] + t.n[1][1] + t.n[2][1], t.n[0][2] + t.n[1][2] + t.n[2][2]]);
+                dot(vn, d) <= 0.0
+            }
+            None => facing >= 0.0,
+        }
+    };
+    if !is_front {
+        return TriShade { front: false, n, alb: [0.0; 3], stored_const: None, ndl: 0.0, water: None };
+    }
+    let h = Hit { t: 0.0, tri };
+    let alb = hit_albedo(scene, bvh, prm, &h);
+    let stored_const: Option<[f32; 3]> = match &prm.field {
+        Some(_) if wt.inst != DECOR_INST => None,
+        _ if wt.inst == DECOR_INST && (prm.sweep > 0 || prm.sweep0_sun) => { let s = prm.decor_sky_up; Some([s[0] * prm.decor_ambient, s[1] * prm.decor_ambient, s[2] * prm.decor_ambient]) },
+        _ => Some([0.0; 3]),
+    };
+    let is_card = wt.alpha != u16::MAX;
+    let ndl = if is_card && !prm.card_one_sided { dot(n, prm.sun_dir).abs() } else { dot(n, prm.sun_dir).max(0.0) };
+    let mut water = None;
+    if wt.inst == DECOR_INST && prm.water_reflect > 0.0 {
+        if let Some(dt) = scene.decor.get(wt.tri as usize) {
+            if dt.water {
+                let r = [d[0], -d[1], d[2]];
+                if r[1] > 0.0 {
+                    let s = sky_radiance(prm, r);
+                    let w1 = [prm.water_reflect * s[0], prm.water_reflect * s[1], prm.water_reflect * s[2]];
+                    let w2 = if prm.water_sun > 0.0 && prm.sun_dir[1] > 0.0 {
+                        let c = dot(r, prm.sun_dir).max(0.0);
+                        let f = prm.water_sun * c.powf(prm.water_sun_pow);
+                        Some([f * prm.sun[0], f * prm.sun[1], f * prm.sun[2]])
+                    } else { None };
+                    water = Some((w1, w2));
+                }
+            }
+        }
+    }
+    TriShade { front: true, n, alb, stored_const, ndl, water }
+}
+
+/// `fragment_radiance` from its cached per-triangle half: the stored field at the hit (an item with a field),
+/// the sun's visibility, then `alb · (stored + sun · ndl · lit)` and the water's additions — the same
+/// expressions in the same order as the full function.
+pub fn fragment_radiance_at(scene: &Scene, bvh: &Bvh, prm: &BakeParams, shadow: Option<&ShadowMap>, ts: &TriShade, tri: u32, hit_p: V3, sun_bias: f32) -> [f32; 3] {
+    if !ts.front {
+        return [0.0; 3];
+    }
+    let wt = &bvh.tris[tri as usize];
+    let stored: [f32; 3] = match ts.stored_const {
+        Some(s) => s,
+        None => {
+            let f = prm.field.as_ref().unwrap();
+            let v = sub(hit_p, wt.p0);
+            let (d00, d01, d11, d20, d21) = (dot(wt.e1, wt.e1), dot(wt.e1, wt.e2), dot(wt.e2, wt.e2), dot(v, wt.e1), dot(v, wt.e2));
+            let den = d00 * d11 - d01 * d01;
+            if den.abs() < 1e-12 {
+                [0.0; 3]
+            } else {
+                let b1 = ((d11 * d20 - d01 * d21) / den).clamp(0.0, 1.0);
+                let b2 = ((d00 * d21 - d01 * d20) / den).clamp(0.0, 1.0);
+                f.lookup(scene, wt.inst, wt.tri, b1, b2).map(|e| [e[0] / prm.bounce_decode, e[1] / prm.bounce_decode, e[2] / prm.bounce_decode]).unwrap_or([0.0; 3])
+            }
+        }
+    };
+    let ndl = ts.ndl;
+    let sun_on = prm.sweep > 0 || prm.sweep0_sun;
+    let lit = if sun_on && ndl > 0.0 && prm.sun_dir[1] > 0.0 { shadow.map(|s| s.lit(hit_p, sun_bias)).unwrap_or(1.0) } else { 0.0 };
+    if sun_stats_on() {
+        SUN_STATS[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if ndl > 0.0 { SUN_STATS[1].fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
+        if lit > 0.0 { SUN_STATS[2].fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
+    }
+    let mut out = [0f32; 3];
+    for k in 0..3 {
+        out[k] = ts.alb[k] * (stored[k] + prm.sun[k] * ndl * lit);
+    }
+    if let Some((w1, w2)) = ts.water {
+        for k in 0..3 { out[k] += w1[k]; }
+        if let Some(w2) = w2 { for k in 0..3 { out[k] += w2[k]; } }
+    }
+    out
+}
+
 /// Diagnostics: fragment radiance calls, of which facing the sun, of which lit.
 pub static SUN_STATS: [std::sync::atomic::AtomicUsize; 3] = [std::sync::atomic::AtomicUsize::new(0), std::sync::atomic::AtomicUsize::new(0), std::sync::atomic::AtomicUsize::new(0)];
 fn sun_stats_on() -> bool {
@@ -2320,7 +2444,8 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
         term
     };
     // one pixel's layers appended to `out`
-    let derive_pixel = |x: usize, y: usize, list: &[Frag], out: &mut Vec<LayerFrag>, cache: &mut [(u32, f32); BIAS_CACHE]| {
+    let shade_cached = tri_shade_applies(prm);
+    let derive_pixel = |x: usize, y: usize, list: &[Frag], out: &mut Vec<LayerFrag>, cache: &mut [(u32, f32); BIAS_CACHE], shade: &mut [(u32, TriShade); BIAS_CACHE]| {
         let before = out.len();
         let mut d_prev = f32::NEG_INFINITY;
         // THE ENVIRONMENT LAYER (the game's first render of every peel: the sea box and the
@@ -2385,7 +2510,15 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
                 [0.0f32; 3]
             } else {
                 let hit_p = frame.unproject(x as f32 + 0.5, y as f32 + 0.5, f.z);
-                prm.quant_peel.apply(fragment_radiance(scene, bvh, prm, shadow, frame, f.tri, frame.d, hit_p, sun_bias), prm.rounding)
+                if shade_cached {
+                    // the per-triangle half from the chunk's cache (computed on a miss by the same statements), the
+                    // per-fragment half in the full function's order
+                    let slot = &mut shade[(f.tri as usize) & (BIAS_CACHE - 1)];
+                    if slot.0 != f.tri { *slot = (f.tri, tri_shade(scene, bvh, prm, f.tri, frame.d)); }
+                    prm.quant_peel.apply(fragment_radiance_at(scene, bvh, prm, shadow, &slot.1, f.tri, hit_p, sun_bias), prm.rounding)
+                } else {
+                    prm.quant_peel.apply(fragment_radiance(scene, bvh, prm, shadow, frame, f.tri, frame.d, hit_p, sun_bias), prm.rounding)
+                }
             };
             if traced {
                 let wt = &bvh.tris[f.tri as usize];
@@ -2413,6 +2546,7 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
             let n_frags = ab.bands[0].0[k0 + ids.len()] as usize - ab.bands[0].0[k0] as usize;
             let mut out: Vec<LayerFrag> = Vec::with_capacity(n_frags + ids.len());
             let mut cache = [(u32::MAX, 0.0f32); BIAS_CACHE];
+            let mut shade = [(u32::MAX, TriShade::NONE); BIAS_CACHE];
             for (i, &id) in ids.iter().enumerate() {
                 let before = out.len();
                 // (the next pixel's fragments' triangles fetched ahead: the per-fragment `bvh.tris[tri]` read is a
@@ -2422,7 +2556,7 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
                         crate::peel::prefetch(&bvh.tris[f.tri as usize]);
                     }
                 }
-                derive_pixel((id % w) as usize, (id / w) as usize, ab.at_rank(k0 + i), &mut out, &mut cache);
+                derive_pixel((id % w) as usize, (id / w) as usize, ab.at_rank(k0 + i), &mut out, &mut cache, &mut shade);
                 counts.push((out.len() - before) as u32);
             }
             (counts, out)
@@ -2541,10 +2675,12 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
                     let mut counts = Vec::with_capacity((y1 - y0) * w as usize);
                     let mut out: Vec<LayerFrag> = Vec::new();
                     let mut cache = [(u32::MAX, 0.0f32); BIAS_CACHE];
+                    let mut shade = [(u32::MAX, TriShade::NONE); BIAS_CACHE];
+            let mut shade = [(u32::MAX, TriShade::NONE); BIAS_CACHE];
                     for y in y0..y1 {
                         for x in 0..w as usize {
                             let before = out.len();
-                            derive_pixel(x, y, ab.at_all(x as u32, y as u32), &mut out, &mut cache);
+                            derive_pixel(x, y, ab.at_all(x as u32, y as u32), &mut out, &mut cache, &mut shade);
                             counts.push((out.len() - before) as u32);
                         }
                     }
