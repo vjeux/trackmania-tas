@@ -1451,24 +1451,32 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
         let parts = &parts;
         let start = &start;
         let scatter_order = &scatter_order;
-        crate::pool::pool().run(parts.len(), |jj| {
-            let j = scatter_order[jj] as usize;
+        crate::pool::pool().run(parts.len(), |t| {
+            let j = scatter_order[t] as usize;
+            // (the fused loop has no scatter/sort split: the stats line below books the whole as sort time)
             let t_s = std::time::Instant::now();
-            // the scatter, then the sort of each of the job's pixels (its cursor marked done: u32::MAX)
-            for (k, f) in &parts[j] {
-                unsafe {
+            let t_m = t_s;
+            // the scatter, and each pixel sorted the moment its last fragment lands (perf 8: the cursor reaching the pixel's
+            // end — a pixel belongs to this one job, which writes all its fragments here — replaces the second walk over the
+            // job's entries with its cursor read and marking per fragment: a cache miss each)
+            let part = &parts[j];
+            for (idx, (k, f)) in part.iter().enumerate() {
+                // (the cursor and the range of the entry sixteen ahead prefetched: two random reads per fragment)
+                if let Some((ka, _)) = part.get(idx + 16) {
+                    #[cfg(target_arch = "x86_64")]
+                    unsafe {
+                        std::arch::x86_64::_mm_prefetch((cp as *const i8).add(*ka as usize * 4), std::arch::x86_64::_MM_HINT_T0);
+                        std::arch::x86_64::_mm_prefetch((sp as *const i8).add(*ka as usize * 4), std::arch::x86_64::_MM_HINT_T0);
+                    }
+                }
+                let (a, e) = (start[*k as usize] as usize, start[*k as usize + 1] as usize);
+                let done = unsafe {
                     let c = (cp as *mut u32).add(*k as usize);
                     *(fp as *mut Frag).add(*c as usize) = *f;
                     *c += 1;
-                }
-            }
-            let t_m = std::time::Instant::now();
-            for (k, _) in &parts[j] {
-                let c = unsafe { &mut *(cp as *mut u32).add(*k as usize) };
-                if *c == u32::MAX { continue; }
-                *c = u32::MAX;
-                let (a, e) = (start[*k as usize] as usize, start[*k as usize + 1] as usize);
-                if e - a > 1 {
+                    *c as usize == e
+                };
+                if done && e - a > 1 {
                     let buf = unsafe { std::slice::from_raw_parts_mut((fp as *mut Frag).add(a), e - a) };
                     // the (z, triangle) order — the keys are distinct within a pixel (a triangle visits a pixel once),
                     // so any correct sort gives the one order: networks for the common two and three
