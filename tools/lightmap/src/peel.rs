@@ -2284,10 +2284,29 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
     // `--max-layers N` (prm.peel_stop.max_renders < the game's 21) the cap's item count — the stop rule
     // never keeps more, so the derivations past it were wasted
     let derive_cap: usize = if prm.peel_stop.max_renders < crate::peelcap::PeelStop::default().max_renders { prm.peel_stop.max_renders.saturating_sub(skip_n).clamp(1, MAX_LAYERS) } else { MAX_LAYERS };
+    // THE FIRST SWEEP WITHOUT A COLOUR SOURCE, STORED AS R11G11B10: every item fragment's colour is ±0 (see
+    // fragment_radiance's short cut: black for a back face, alb · 0 for a front face) and the R11G11B10 target
+    // stores +0 for both (the format has no sign bit; the decode of 0 is +0.0) — so the colour path (the
+    // albedo lookup, the front test, the quantiser) is skipped for item fragments: the value is [0, 0, 0]
+    // either way. (F16 keeps the sign of −0 and Quant::None keeps the value: no short cut there.)
+    let fast_black = prm.sweep == 0 && !prm.sweep0_sun && prm.ilight_atlas.is_none() && prm.ilatlas.is_none() && prm.field.is_none() && prm.game_peel && prm.quant_peel == crate::gpufmt::Quant::R11G11B10;
+    // THE BIAS TERM PER TRIANGLE, cached: `tri_slope` re-projects the triangle's three vertices per fragment
+    // (five divisions); a chunk's pixels see the same triangles again and again (the ground, a card over
+    // many pixels), but a pixel's own fragments alternate triangles, so a one-entry cache missed — this is a
+    // direct-mapped table of 1024 (triangle, term) entries per chunk, the term computed exactly as before on
+    // a miss (the same function on the same inputs: the same value)
+    const BIAS_CACHE: usize = 4096;
+    let bias_term = |cache: &mut [(u32, f32); BIAS_CACHE], tri: u32, wt: &WTri| -> f32 {
+        let slot = &mut cache[(tri as usize) & (BIAS_CACHE - 1)];
+        if slot.0 == tri { return slot.1; }
+        let (slope, zmax_prim) = tri_slope(wt, frame);
+        // an edge-on triangle's slope is huge (D3D applies it uncapped, DepthBiasClamp 0)
+        let term = d3d_depth_bias_fmt(zmax_prim, slope.min(1e6), prm.depth_bias, prm.depth_bits);
+        *slot = (tri, term);
+        term
+    };
     // one pixel's layers appended to `out`
-    // (the depth-bias term of the last triangle seen by this thread: consecutive wanted pixels mostly read
-    // the same large triangle — the ground — and `tri_slope` re-projects three vertices per fragment)
-    let derive_pixel = |x: usize, y: usize, list: &[Frag], out: &mut Vec<LayerFrag>| {
+    let derive_pixel = |x: usize, y: usize, list: &[Frag], out: &mut Vec<LayerFrag>, cache: &mut [(u32, f32); BIAS_CACHE]| {
         let before = out.len();
         let mut d_prev = f32::NEG_INFINITY;
         // THE ENVIRONMENT LAYER (the game's first render of every peel: the sea box and the
@@ -2335,15 +2354,18 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
                 break;
             }
             let wt = &bvh.tris[f.tri as usize];
-            let (slope, zmax_prim) = tri_slope(wt, frame);
-            // an edge-on triangle's slope is huge (D3D applies it uncapped, DepthBiasClamp 0)
-            let mut d = z01 + d3d_depth_bias_fmt(zmax_prim, slope.min(1e6), prm.depth_bias, prm.depth_bits);
+            let mut d = z01 + bias_term(cache, f.tri, wt);
             if prm.depth_bits == 16 {
                 // the D16_UNORM target stores 65535 steps
                 d = (d.clamp(0.0, 1.0) * 65535.0).round() / 65535.0;
             }
-            let hit_p = frame.unproject(x as f32 + 0.5, y as f32 + 0.5, f.z);
-            let rgb = prm.quant_peel.apply(fragment_radiance(scene, bvh, prm, shadow, frame, f.tri, frame.d, hit_p, sun_bias), prm.rounding);
+            // (the decoration too, except the water: its sky reflection is the one non-zero colour of the sweep)
+            let rgb = if fast_black && (wt.inst != DECOR_INST || !scene.decor.get(wt.tri as usize).map_or(false, |dt| dt.water)) {
+                [0.0f32; 3]
+            } else {
+                let hit_p = frame.unproject(x as f32 + 0.5, y as f32 + 0.5, f.z);
+                prm.quant_peel.apply(fragment_radiance(scene, bvh, prm, shadow, frame, f.tri, frame.d, hit_p, sun_bias), prm.rounding)
+            };
             out.push(LayerFrag { d, rgb });
             d_prev = d;
         }
@@ -2363,6 +2385,7 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
             // (sized from the A-buffer's fragment count for the chunk: no growth copies)
             let n_frags = ab.bands[0].0[k0 + ids.len()] as usize - ab.bands[0].0[k0] as usize;
             let mut out: Vec<LayerFrag> = Vec::with_capacity(n_frags + ids.len());
+            let mut cache = [(u32::MAX, 0.0f32); BIAS_CACHE];
             for (i, &id) in ids.iter().enumerate() {
                 let before = out.len();
                 // (the next pixel's fragments' triangles fetched ahead: the per-fragment `bvh.tris[tri]` read is a
@@ -2372,7 +2395,7 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
                         crate::peel::prefetch(&bvh.tris[f.tri as usize]);
                     }
                 }
-                derive_pixel((id % w) as usize, (id / w) as usize, ab.at_rank(k0 + i), &mut out);
+                derive_pixel((id % w) as usize, (id / w) as usize, ab.at_rank(k0 + i), &mut out, &mut cache);
                 counts.push((out.len() - before) as u32);
             }
             (counts, out)
@@ -2489,10 +2512,11 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
                 sc.spawn(move || {
                     let mut counts = Vec::with_capacity((y1 - y0) * w as usize);
                     let mut out: Vec<LayerFrag> = Vec::new();
+                    let mut cache = [(u32::MAX, 0.0f32); BIAS_CACHE];
                     for y in y0..y1 {
                         for x in 0..w as usize {
                             let before = out.len();
-                            derive_pixel(x, y, ab.at_all(x as u32, y as u32), &mut out);
+                            derive_pixel(x, y, ab.at_all(x as u32, y as u32), &mut out, &mut cache);
                             counts.push((out.len() - before) as u32);
                         }
                     }
