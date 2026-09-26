@@ -1904,7 +1904,9 @@ fn run(a: Vec<String>) {
                             let collection = f("--collection").unwrap_or_else(|| "BlueBay".into());
                             // RE 8's paktables (the material chain, the water descriptor, the LUT image + generator) — the zone tiles' material link
                             // from --tile-material (default <Coll>\Media\Material\SeaFloor: BlueBay's Sea zone); the interim corner-mean path is the fallback
-                            let tile_link = f("--tile-material").unwrap_or_else(|| format!("{collection}\\Media\\Material\\SeaFloor"));
+                            // the zone tiles' material: BlueBay's Sea zone = SeaFloor (PyPxz constant); Stadium's Grass zone = Grass (a PDiff textured
+                            // material — the pre-pass samples its BaseColor over the quads)
+                            let tile_link = f("--tile-material").unwrap_or_else(|| format!("{collection}\\Media\\Material\\{}", if collection.eq_ignore_ascii_case("Stadium") { "Grass" } else { "SeaFloor" }));
                             if let Err(e) = lightmap::setupmap::tables_from_paktables_with_records(&mut frozen, &mut store, &collection, &tile_link, &scene, game_layout.as_ref().map(|gl| gl.records.as_slice()).unwrap_or(&[]), &mut pak_notes) {
                                 pak_notes.push(format!("paktables: {e} — the interim pak path (corner means + WaterColor.tga + the descriptor table) is used"));
                                 let mut read = |path: &str| -> Option<Vec<u8>> { store.read(path).ok().map(|b| b.to_vec()) };

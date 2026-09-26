@@ -398,6 +398,10 @@ pub fn geom_from_solid2_ext(s2: &mapgeom::static_item::solid2::CPlugSolid2Model,
         let link: String = usize::try_from(sg.material_index).ok().and_then(|mi| {
             s2.custom_materials.get(mi).and_then(|cm| cm.inst().and_then(|m| m.link().map(|l| l.to_string())).or_else(|| if cm.name.is_empty() { None } else { Some(cm.name.clone()) }))
                 .or_else(|| s2.materials.get(mi).and_then(|mr| match mr.inline.as_deref() { Some(Node::Material(m)) => m.link().map(|l| l.to_string()), _ => None }))
+                // a pack prefab's material is an EXTERNAL reference of the file (RE 11's 0003): the link from the reference path
+                // (`Stadium\Media\Material\Waterground.Material.Gbx` → `Stadium\Media\Material\Waterground`), so the record scene's
+                // models carry real links for the per-link pre-pass constants / textures
+                .or_else(|| ext.as_ref().and_then(|(_, externals)| s2.materials.get(mi).and_then(|r| if r.index >= 0 { externals.iter().find(|(i, _)| *i == r.index as u32).map(|(_, p)| mapgeom::static_item::materials::material_link(p)) } else { None })))
         }).unwrap_or_default();
         // the material's cut-out texture: the DiffuseO (slot 1) user texture
         let alpha: u16 = usize::try_from(sg.material_index).ok().and_then(|mi| s2.custom_materials.get(mi)).and_then(|cm| cm.inst()).and_then(|m| m.main.as_ref())

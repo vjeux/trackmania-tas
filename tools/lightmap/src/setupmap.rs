@@ -238,20 +238,31 @@ pub fn cards_textured() -> bool {
 
 /// The diffuse texture file of a pre-pass triangle: the model's diffuse list, or (flag 0x8000) its cut-out list.
 pub fn diff_name(model: &crate::geometry::ModelGeom, diff: u16) -> String {
-    if diff & 0x8000 != 0 { model.alpha_tex.get((diff & 0x7fff) as usize).cloned().unwrap_or_default() } else { model.diff_tex.get(diff as usize).cloned().unwrap_or_default() }
+    if diff & 0x8000 != 0 { model.alpha_tex.get((diff & 0x7fff) as usize).cloned().unwrap_or_default() }
+    else if diff & 0x4000 != 0 { format!("link:{}", model.mat_links.get((diff & 0x3fff) as usize).map(|l| l.to_ascii_lowercase()).unwrap_or_default()) }
+    else { model.diff_tex.get(diff as usize).cloned().unwrap_or_default() }
 }
 
-/// A triangle's diffuse index for the pre-pass (a card under the study switch takes its cut-out texture, flagged).
+/// A triangle's diffuse index for the pre-pass (a card under the study switch takes its cut-out texture, flagged 0x8000; a
+/// linked textured material's triangle takes its link, flagged 0x4000 — `diff_name` gives "link:<link>").
 pub fn diff_index(t: &crate::geometry::Tri) -> u16 {
-    if t.alpha != u16::MAX && cards_textured() { 0x8000 | t.alpha } else { t.diff }
+    if t.alpha != u16::MAX && cards_textured() { 0x8000 | t.alpha } else if t.diff == u16::MAX && t.mat != u16::MAX && (t.mat as u32) < 0x4000 { 0x4000 | t.mat } else { t.diff }
 }
 
 pub fn classify(model: &crate::geometry::ModelGeom, name: &str, t: &crate::geometry::Tri) -> MatClass {
+    classify_with(model, name, t, None)
+}
+
+/// `classify` knowing the linked textured materials (`FrozenTables::link_tex`): a triangle of such a material is Textured.
+pub fn classify_with(model: &crate::geometry::ModelGeom, name: &str, t: &crate::geometry::Tri, link_tex: Option<&std::collections::HashMap<String, (Texture, bool)>>) -> MatClass {
     if t.alpha != u16::MAX {
         return if cards_textured() { MatClass::Textured } else { MatClass::CutOut };
     }
     if t.diff != u16::MAX {
         return MatClass::Textured;
+    }
+    if let Some(lt) = link_tex {
+        if let Some(l) = model.mat_links.get(t.mat as usize) { if lt.contains_key(&l.to_ascii_lowercase()) { return MatClass::Textured; } }
     }
     // the game materials of pwc-day's items: `BlueBay\Media\Material\Land` runs PS 8401 with the slices (0, 0) (the capture's
     // 24-index draw, the RE's "wall" class), `…\Modifier\StadiumOnTerrain\TrackWallInWorld` runs PS 17025 (the 12-index draw,
@@ -271,11 +282,14 @@ pub fn attr_from_map(scene: &crate::geometry::Scene, lm: &LmScene, frozen: &Froz
     let sampler = frozen.sampler;
     // the diffuse textures, loaded once up front (the byte source is not Sync; the nine runs read them in parallel)
     let mut tex_cache: std::collections::HashMap<String, Option<Texture>> = std::collections::HashMap::new();
+    let link_tex = Some(&frozen.link_tex);
+    for (l, (tx, _)) in &frozen.link_tex { tex_cache.insert(format!("link:{l}"), Some(tx.clone())); }
+    let link_alpha_tested: std::collections::HashSet<String> = frozen.link_tex.iter().filter(|(_, (_, at))| *at).map(|(l, _)| format!("link:{l}")).collect();
     for inst in &scene.instances {
         let model = &scene.models[inst.model];
         let name = &scene.model_names[inst.model];
         for t in &model.tris {
-            if classify(model, name, t) != MatClass::Textured { continue; }
+            if classify_with(model, name, t, link_tex) != MatClass::Textured { continue; }
             let tn = diff_name(model, diff_index(t));
             tex_cache.entry(tn.clone()).or_insert_with(|| item_bytes(&tn).and_then(|b| texsample::parse_dds(&b, Bc1Decode::Expand8Round).ok()).map(|mut tx| { tx.decode_srgb(); tx }));
         }
@@ -300,7 +314,7 @@ pub fn attr_from_map(scene: &crate::geometry::Scene, lm: &LmScene, frozen: &Froz
         let name = &scene.model_names[model_idx];
         let mut map: std::collections::HashMap<[i32; 3], ItemMat> = std::collections::HashMap::new();
         for t in &model.tris {
-            let class = classify(model, name, t);
+            let class = classify_with(model, name, t, link_tex);
             for v in 0..3 {
                 map.entry(key(t.p[v])).or_insert(ItemMat { class, uv0: t.uv0[v], diff: diff_index(t), uv1: t.uv[v] });
             }
@@ -349,7 +363,7 @@ pub fn attr_from_map(scene: &crate::geometry::Scene, lm: &LmScene, frozen: &Froz
             if k == 0 { notes.push(format!("item mesh {mk} ({}): the port's TexCoord1 {} the LM stream's uv → the pre-pass rasterises {}", name, if port_uv_matches { "matches" } else { "does not match" }, if port_uv_matches { format!("the port's {} f32 triangles", model.tris.len()) } else { format!("E's LM mesh ({} triangles)", mesh.indices.len() / 3) })); }
             // the triangles to draw: (positions-in-LM-space uv, uv0, class, diff)
             let tris: Vec<([[f32; 2]; 3], [[f32; 2]; 3], MatClass, u16)> = if port_uv_matches {
-                model.tris.iter().map(|t| (t.uv, t.uv0, classify(model, name, t), diff_index(t))).collect()
+                model.tris.iter().map(|t| (t.uv, t.uv0, classify_with(model, name, t, link_tex), diff_index(t))).collect()
             } else {
                 mesh.indices.chunks_exact(3).map(|tri| {
                     let vs = [&mesh.verts[tri[0] as usize], &mesh.verts[tri[1] as usize], &mesh.verts[tri[2] as usize]];
@@ -374,9 +388,11 @@ pub fn attr_from_map(scene: &crate::geometry::Scene, lm: &LmScene, frozen: &Froz
                         }
                         _ => None,
                     };
+                    // the constant per LINK when the pack gave one (diff carries the material index for a linked material), else the class global
+                    let link_const = if *diff & 0xC000 == 0x4000 { model.mat_links.get((*diff & 0x3fff) as usize).and_then(|l| frozen.link_rgb.get(&l.to_ascii_lowercase())).copied() } else { None };
                     let konst = match class {
-                        MatClass::Pad => Some(frozen.pad_rgb),
-                        MatClass::Wall => Some(frozen.wall_rgb),
+                        MatClass::Pad => Some(link_const.unwrap_or(frozen.pad_rgb)),
+                        MatClass::Wall => Some(link_const.unwrap_or(frozen.wall_rgb)),
                         _ => None,
                     };
                     let cls = match class { MatClass::Textured => 6u8, MatClass::CutOut => 7, MatClass::Pad => 3, MatClass::Wall => 4 };
@@ -390,7 +406,7 @@ pub fn attr_from_map(scene: &crate::geometry::Scene, lm: &LmScene, frozen: &Froz
                                     // the file image is sampled at (u, 1 − v)
                                     let uvs = [b[0] * uv0[0][0] + b[1] * uv0[1][0] + b[2] * uv0[2][0], 1.0 - (b[0] * uv0[0][1] + b[1] * uv0[1][1] + b[2] * uv0[2][1])];
                                     // a card under the study switch: the 128/255 alpha test (GbxShadowAlphaThreshold) discards the cut-out
-                                    let at = if *diff & 0x8000 != 0 { Some(SHADOW_ALPHA_THRESHOLD) } else { None };
+                                    let at = if *diff & 0x8000 != 0 || (*diff & 0xC000 == 0x4000 && link_alpha_tested.contains(&diff_name(model, *diff))) { Some(SHADOW_ALPHA_THRESHOLD) } else { None };
                                     match prepass::ps_basecolor(tx, &sampler, uvs, [dudx, -dvdx], [dudy, -dvdy], at, lm_scale) { Some(s) => s, None => return }
                                 }
                                 None => [0.0, 0.0, 0.0, lm_scale],
@@ -402,7 +418,8 @@ pub fn attr_from_map(scene: &crate::geometry::Scene, lm: &LmScene, frozen: &Froz
                 }
             }
         }
-        // the zone tiles: the terrain constant over the tile mesh
+        // the zone tiles: the terrain constant over the tile mesh — or, for a textured tile material (Stadium's Grass), the 17023
+        // class sampling the BaseColor texture at the quad's single uv set (= its lightmap uv; the file image at (u, 1 − v))
         for (mk, mesh) in lm.meshes.iter().enumerate() {
             if lm.inst_count[mk] < 1000 {
                 continue;
@@ -413,7 +430,18 @@ pub fn attr_from_map(scene: &crate::geometry::Scene, lm: &LmScene, frozen: &Froz
                 let rlm = prepass::raster_lm_for(inst.st, k);
                 for tri in mesh.indices.chunks_exact(3) {
                     let p = [0, 1, 2].map(|i| prepass::viewport(prepass::lm_ndc(mesh.verts[tri[i] as usize].uv, &rlm), W, H));
-                    prepass::raster_tri(p, W, H, |x, y, _| tgt.blend(x, y, src, 1));
+                    match &frozen.tile_tex {
+                        Some(tx) => {
+                            let uv0 = [0, 1, 2].map(|i| mesh.verts[tri[i] as usize].uv);
+                            let (dudx, dudy) = prepass::attr_gradient(p, [uv0[0][0], uv0[1][0], uv0[2][0]]);
+                            let (dvdx, dvdy) = prepass::attr_gradient(p, [uv0[0][1], uv0[1][1], uv0[2][1]]);
+                            prepass::raster_tri(p, W, H, |x, y, b| {
+                                let uvs = [b[0] * uv0[0][0] + b[1] * uv0[1][0] + b[2] * uv0[2][0], 1.0 - (b[0] * uv0[0][1] + b[1] * uv0[1][1] + b[2] * uv0[2][1])];
+                                if let Some(s) = prepass::ps_basecolor(tx, &sampler, uvs, [dudx, -dvdx], [dudy, -dvdy], None, lm_scale) { tgt.blend(x, y, s, 6); }
+                            });
+                        }
+                        None => prepass::raster_tri(p, W, H, |x, y, _| tgt.blend(x, y, src, 1)),
+                    }
                 }
             }
         }
@@ -637,12 +665,52 @@ pub fn tables_from_paktables(f: &mut FrozenTables, store: &mut mapgeom::store::D
 /// blocks' Water geom at world 23 over their 32 × 32 footprints) when any record carries one; a record list without a
 /// water quad (pwc-day: the sea is the ZONE TILES, whose records carry no prefab mesh) keeps the whole-map id map at the
 /// collection's WaterTop (the captured 17004: every texel id 1, plane 0 — a sea zone).
+/// A game material's BaseColor slot texture from the packs (RE 12's 17023 class): the material chain's BaseColor (else Diffuse)
+/// bitmap slot is a CPlugBitmap file (`…\Texture\X.Texture.gbx`) whose image node is the external `.dds` reference
+/// (`…\Texture\Image\X.dds`; the rename is the fallback when the bitmap graph does not resolve), decoded and linearised.
+/// `Ok(None)` = no such slot; `Err` = the slot exists but its file does not load.
+pub fn basecolor_texture(store: &mut mapgeom::store::DataStore, link: &str) -> Result<Option<(String, Texture, bool)>, String> {
+    let mat = if link.to_ascii_uppercase().ends_with(".MATERIAL.GBX") { link.to_string() } else { format!("{link}.Material.Gbx") };
+    let chain = mapgeom::envblock::material_chain(store, &mat);
+    let pick = |name: &str| chain.bitmaps.iter().find(|(n, p)| n.eq_ignore_ascii_case(name) && !p.is_empty()).map(|(_, p)| p.clone());
+    // BaseColor (CubeOut / TDSN), else Diffuse (PDiff), else BaseColorOp (DispIn: alpha varies → alpha-tested, RE 12's Q1 inference)
+    let (slot, alpha_tested) = match pick("BaseColor").or_else(|| pick("Diffuse")) { Some(p) => (Some(p), false), None => (pick("BaseColorOp"), true) };
+    let Some(slot) = slot else { return Ok(None) };
+    let dds = {
+        let mut out: Option<String> = None;
+        if let Ok(m) = store.load_model(&slot) { if let Ok(g) = m.graph() { if let Some(mapgeom::node::Node::Bitmap(b)) = &g.root {
+            if b.image >= 0 { if let Some(mapgeom::node::Slot::External(dp)) = g.slots.get(b.image as usize) { out = Some(dp.clone()); } }
+        } } }
+        out.unwrap_or_else(|| {
+            if slot.to_ascii_uppercase().ends_with(".TEXTURE.GBX") {
+                let stem = &slot[..slot.len() - ".Texture.gbx".len()];
+                match stem.rsplit_once('\\') { Some((dir, name)) => format!("{dir}\\Image\\{name}.dds"), None => format!("{stem}.dds") }
+            } else { slot.clone() }
+        })
+    };
+    let bytes = store.read(&dds).map_err(|e| format!("{dds}: {e}"))?;
+    let mut tx = texsample::parse_dds(&bytes, Bc1Decode::Expand8Round).map_err(|e| format!("{dds}: {e}"))?;
+    tx.decode_srgb();
+    Ok(Some((dds, tx, alpha_tested)))
+}
+
 pub fn tables_from_paktables_with_records(f: &mut FrozenTables, store: &mut mapgeom::store::DataStore, collection: &str, tile_link: &str, scene: &crate::geometry::Scene, records: &[crate::records::Rec], notes: &mut Vec<String>) -> Result<(), String> {
     let mut got = Vec::new();
-    let tile = crate::paktables::material_constant(store, tile_link)?;
-    got.push(format!("tiles {tile_link} → {:?} ({:?}, ids {:?}, {} at uv {:?}; frozen {:?})", tile.rgb, tile.family, tile.ids, tile.image, tile.uv, f.tile_rgb));
-    f.tile_rgb = tile.rgb;
-    f.tile_slices = (tile.ids[0].max(0) as u32, tile.ids[1].max(0) as u32);
+    // the tiles' constant: a failure here (Stadium has no SeaFloor material; its Grass zone is a PDiff shader) must not take the
+    // items' constants and the WATER tables down with it (E, 06:25Z — stpad ran with the whole-map id map because of that early return)
+    match crate::paktables::material_constant(store, tile_link) {
+        Ok(tile) => {
+            got.push(format!("tiles {tile_link} → {:?} ({:?}, ids {:?}, {} at uv {:?}; frozen {:?})", tile.rgb, tile.family, tile.ids, tile.image, tile.uv, f.tile_rgb));
+            f.tile_rgb = tile.rgb;
+            f.tile_slices = (tile.ids[0].max(0) as u32, tile.ids[1].max(0) as u32);
+        }
+        Err(e) => match basecolor_texture(store, tile_link) {
+            // a textured tile material (Stadium's Grass, PDiff): the 17023 class over the tile quads at their single uv set
+            Ok(Some((path, tx, _))) => { got.push(format!("tiles {tile_link} → BaseColor {path} ({}×{}, {} mips; the textured class over the tile quads)", tx.w, tx.h, tx.mips)); f.tile_tex = Some(tx); }
+            Ok(None) => notes.push(format!("paktables: tiles {tile_link}: {e}; no BaseColor slot either (the frozen tile constant {:?} stays)", f.tile_rgb)),
+            Err(e2) => notes.push(format!("paktables: tiles {tile_link}: {e}; BaseColor: {e2} (the frozen tile constant {:?} stays)", f.tile_rgb)),
+        },
+    }
     // the items' constant materials: every game-material link of the scene's models that the pack resolves
     let mut links: Vec<String> = Vec::new();
     for m in &scene.models {
@@ -655,12 +723,22 @@ pub fn tables_from_paktables_with_records(f: &mut FrozenTables, store: &mut mapg
     for l in &links {
         match crate::paktables::material_constant(store, l) {
             Ok(mc) => {
+                f.link_rgb.insert(l.to_ascii_lowercase(), mc.rgb);
                 match mc.family {
                     crate::paktables::Family::PyPxzIds => { got.push(format!("{l} → {:?} (terrain ids {:?}; frozen Land {:?})", mc.rgb, mc.ids, f.wall_rgb)); f.wall_rgb = mc.rgb; }
                     crate::paktables::Family::PyPxzProjected => { got.push(format!("{l} → {:?} (projected, {}; frozen TrackWall {:?})", mc.rgb, mc.image, f.pad_rgb)); f.pad_rgb = mc.rgb; }
                 }
             }
-            Err(e) => notes.push(format!("pak: {l}: {e} (the texture path keeps it)")),
+            Err(e) => {
+                // THE 17023 CLASS (RE 12): an opaque textured non-PyPxz material (CubeOut / TDSN / TDSNI — np-tk3's Modifier\StadiumOnTerrain
+                // TrackWallClipsInWorld / StructureInWorld, tiny-16's Technics, ScreenBack …) takes its BaseColor slot texture from the pack
+                // at the mesh TEXCOORD0 (VS 17021 o1 = v1, PS 17023: TMapBaseColor × 1/9, alpha forced 1) — never a constant, never black
+                match basecolor_texture(store, l) {
+                    Ok(Some((path, tx, at))) => { got.push(format!("{l} → {} {path} ({}×{}, {} mips; the {} class)", if at { "BaseColorOp" } else { "BaseColor" }, tx.w, tx.h, tx.mips, if at { "17022 alpha-tested (A2C off: an inference)" } else { "17023 textured" })); f.link_tex.insert(l.to_ascii_lowercase(), (tx, at)); }
+                    Ok(None) => notes.push(format!("pak: {l}: {e}; no BaseColor slot in its chain — the constant path keeps it")),
+                    Err(e2) => notes.push(format!("pak: {l}: BaseColor: {e2}")),
+                }
+            }
         }
     }
     got.push(water_tables_from_records(f, store, collection, records, notes)?);
@@ -679,7 +757,7 @@ pub fn water_tables_from_records(f: &mut FrozenTables, store: &mut mapgeom::stor
     let mut got = Vec::new();
     let w = crate::paktables::water_tables(store, collection)?;
     f.depth_by_id = vec![[w.depth_inv[0], w.depth_inv[1], 0.0, 1.0]];
-    // THE ID MAP AND THE PLANE TABLE: the records' water quads — the SetWaterId draw — else the sea-zone map
+    // THE ID MAP AND THE PLANE TABLE (RE 11): the records' water quads — the SetWaterId draw — else the sea-zone map
     let size_m = [f.ids.w as f32, f.ids.h as f32];
     let wm = crate::waterid::water_id_map_of_records(store, records, size_m)?;
     if wm.quads > 0 {
