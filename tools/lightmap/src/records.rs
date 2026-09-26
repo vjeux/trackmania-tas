@@ -596,7 +596,10 @@ pub fn build_map_records(map_path: &str, scene: &crate::geometry::Scene, store: 
         let mut out = Vec::with_capacity(mf.items.len());
         let mut next = 0u32;
         for (ii, _it) in mf.items.iter().enumerate() {
-            let dropped = drop_rule == "nolm" && inst_of_item.get(&ii).map(|&ki| { let m = &scene.models[scene.instances[ki].model]; !m.mat_links.is_empty() && m.mat_links.iter().all(|l| no_lm.iter().any(|n| l.contains(n.as_str()))) }).unwrap_or(false);
+            // DECAL-ONLY, not no-LM-only: tiny16 (Stadium) keeps its two RaceTriggerFXFinish-only placements (8 619 = 8 619 in the editor's
+            // bake) while tiny03 / tiny04ac drop every DecalPlatform-only one; and the kept PlatformTech-only items of tiny03 sit in
+            // Stadium.pak exactly as DecalPlatform does, so pak resolution is not the test — the material KIND is (a decal has no surface)
+            let dropped = drop_rule != "none" && inst_of_item.get(&ii).map(|&ki| { let m = &scene.models[scene.instances[ki].model]; !m.mat_links.is_empty() && m.mat_links.iter().all(|l| l.contains("\\Decal")) }).unwrap_or(false);
             out.push(next);
             if !dropped { next += 1; }
         }
@@ -612,6 +615,7 @@ pub fn build_map_records(map_path: &str, scene: &crate::geometry::Scene, store: 
             let Some(b) = m.plg_bounds else { if filter_trace { eprintln!("item-filter: item {ii} {} skipped: no PLG bounds; materials {:?}", it.model, m.mat_links); } continue };
             if !(b[2] > b[0] && b[3] > b[1]) { if filter_trace { eprintln!("item-filter: item {ii} {} skipped: empty PLG bounds {b:?}; materials {:?}", it.model, m.mat_links); } continue; }
             if !m.mat_links.is_empty() && m.mat_links.iter().all(|l| no_lm.iter().any(|n| l.contains(n.as_str()))) { if filter_trace { eprintln!("item-filter: item {ii} {} skipped: every material is no-LM {:?}", it.model, m.mat_links); } continue; }
+            if filter_trace && std::env::var_os("LMTOOL_ITEM_FILTER_TRACE_ALL").is_some() { eprintln!("item-filter: item {ii} {} kept; materials {:?}", it.model, m.mat_links); }
             let Some(ir) = irecs.iter().find(|r| r.item == inst.item) else { if filter_trace { eprintln!("item-filter: item {ii} {} skipped: no item record", it.model); } continue };
             let Some(rec) = &ir.record else { if filter_trace { eprintln!("item-filter: item {ii} {} skipped: item record without a box", it.model); } continue };
             let q = crate::layout::item_quality(inst.lm_quality);
