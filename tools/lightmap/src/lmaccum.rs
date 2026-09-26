@@ -1504,7 +1504,18 @@ pub fn build_frag_list(sc: &LmScene, offset: usize, w: u32, h: u32) -> LmFragLis
         frags: Vec<LmFrag>,
         off: Vec<u32>,
     }
-    let per_pair: Vec<PairFrags> = crate::pool::pool().map(pairs.len(), |k| {
+    crate::pool::stats::stage("lm-fraglist");
+    // (perf 8: the pairs in PIECES of at most 512 triangles — one task per pair left the run 12 % busy behind the few large
+    // meshes (the slowest task 248× the mean); a pair's pieces concatenated in order are its fragments in triangle order,
+    // as one task produced them)
+    const PIECE_TRIS: usize = 512;
+    let pieces: Vec<(u32, u32, u32)> = pairs.iter().enumerate().flat_map(|(k, &(m, _))| {
+        let n_tris = sc.meshes[m as usize].indices.len() / 3;
+        (0..n_tris.max(1)).step_by(PIECE_TRIS).map(move |t0| (k as u32, t0 as u32, ((t0 + PIECE_TRIS).min(n_tris)) as u32))
+    }).collect();
+    let per_piece: Vec<Vec<LmFrag>> = crate::pool::pool().map(pieces.len(), |pi| {
+        let (k, t0, t1) = pieces[pi];
+        let k = k as usize;
         let (m, ii) = pairs[k];
         let mesh = &sc.meshes[m as usize];
         let inst = &sc.instances[ii as usize];
@@ -1512,7 +1523,7 @@ pub fn build_frag_list(sc: &LmScene, offset: usize, w: u32, h: u32) -> LmFragLis
         let mut out: Vec<LmFrag> = Vec::new();
         // the clip position of every vertex (VS 17111 / 17118 instructions 0–10: the same for both shaders)
         let clip: Vec<[f32; 2]> = mesh.verts.iter().map(|v| lm_clip(v, chart_st(v, inst, &sc.table), &cb)).collect();
-        for (t, tri) in mesh.indices.chunks_exact(3).enumerate() {
+        for (t, tri) in mesh.indices.chunks_exact(3).enumerate().skip(t0 as usize).take((t1 - t0) as usize) {
             let (i0, i1, i2) = (tri[0] as usize, tri[1] as usize, tri[2] as usize);
             // the VS outputs of the three vertices, computed on the triangle's first fragment
             let mut vs: Option<[SetVsOut; 3]> = None;
@@ -1526,6 +1537,17 @@ pub fn build_frag_list(sc: &LmScene, offset: usize, w: u32, h: u32) -> LmFragLis
                 out.push(LmFrag { px: y * w + x, pair: k as u32, tri: t as u32, b: [b0, b1, b2], pos, nrm: n });
             });
         }
+        out
+    });
+    // the pieces of each pair, in order (the first piece's index per pair), then the pair's band bucketing
+    let mut first_piece = vec![0usize; pairs.len() + 1];
+    for (pi, &(k, _, _)) in pieces.iter().enumerate() { first_piece[k as usize + 1] = pi + 1; }
+    for k in 0..pairs.len() { if first_piece[k + 1] == 0 { first_piece[k + 1] = first_piece[k]; } }
+    let per_pair: Vec<PairFrags> = crate::pool::pool().map(pairs.len(), |k| {
+        let ps = &per_piece[first_piece[k]..first_piece[k + 1]];
+        let n_out: usize = ps.iter().map(|v| v.len()).sum();
+        let mut out: Vec<LmFrag> = Vec::with_capacity(n_out);
+        for v in ps { out.extend_from_slice(v); }
         // the stable bucket sort by band
         let mut counts = vec![0u32; n_bands + 1];
         for f in &out { counts[band_of(f.px) + 1] += 1; }

@@ -276,7 +276,7 @@ pub fn rasterise_triangle(v: [[f32; 2]; 3], w: u32, h: u32, f: impl FnMut(u32, u
 /// The pixel rows `rasterise_triangle` would visit for `v`: [lo, hi) in pixels (the snapped vertices' extent,
 /// clamped to the target) — the band-parallel LM raster bins triangles with it.
 pub fn raster_rows(v: [[f32; 2]; 3], h: u32) -> (i64, i64) {
-    let sy: Vec<f32> = v.iter().map(|p| snap256((0.5 - p[1] * 0.5) * h as f32)).collect();
+    let sy: [f32; 3] = [snap256((0.5 - v[0][1] * 0.5) * h as f32), snap256((0.5 - v[1][1] * 0.5) * h as f32), snap256((0.5 - v[2][1] * 0.5) * h as f32)];
     let miny = sy.iter().cloned().fold(f32::INFINITY, f32::min).floor().max(0.0) as i64;
     let maxy = sy.iter().cloned().fold(f32::NEG_INFINITY, f32::max).ceil().min(h as f32) as i64;
     (miny, maxy)
@@ -287,10 +287,11 @@ pub fn rasterise_triangle_rows(v: [[f32; 2]; 3], w: u32, h: u32, y_lo: i64, y_hi
     // viewport: x = (ndc.x + 1)/2 · W, y = (1 − ndc.y)/2 · H, snapped to 1/256 pixel
     let floor_snap = RASTER_SNAP_FLOOR.load(std::sync::atomic::Ordering::Relaxed);
     let snap = |c: f32| { let _ = floor_snap; snap256(c) };
-    let ux: Vec<f32> = v.iter().map(|p| (p[0] * 0.5 + 0.5) * w as f32).collect();
-    let uy: Vec<f32> = v.iter().map(|p| (0.5 - p[1] * 0.5) * h as f32).collect();
-    let sx: Vec<f32> = ux.iter().map(|&c| snap(c)).collect();
-    let sy: Vec<f32> = uy.iter().map(|&c| snap(c)).collect();
+    // (arrays, not Vecs — perf 8: four heap allocations per triangle, 20 M mallocs contended across the pool per LM raster)
+    let ux: [f32; 3] = [(v[0][0] * 0.5 + 0.5) * w as f32, (v[1][0] * 0.5 + 0.5) * w as f32, (v[2][0] * 0.5 + 0.5) * w as f32];
+    let uy: [f32; 3] = [(0.5 - v[0][1] * 0.5) * h as f32, (0.5 - v[1][1] * 0.5) * h as f32, (0.5 - v[2][1] * 0.5) * h as f32];
+    let sx: [f32; 3] = [snap(ux[0]), snap(ux[1]), snap(ux[2])];
+    let sy: [f32; 3] = [snap(uy[0]), snap(uy[1]), snap(uy[2])];
     let area = (sx[1] - sx[0]) * (sy[2] - sy[0]) - (sx[2] - sx[0]) * (sy[1] - sy[0]);
     if area == 0.0 {
         return;

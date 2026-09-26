@@ -435,6 +435,73 @@ pub static U32S: Recycle<u32> = Recycle::new();
 /// The wanted bitmaps' words (one 2 MB vector per frame of a direction).
 pub static U64S: Recycle<u64> = Recycle::new();
 
+/// THE OR PASS WITHOUT CONTENTION (perf 8): `n_items` items, each naming up to two pixels (`pixels(i) -> [Option<usize>; 2]`),
+/// OR-ed into the shared bitmap `m` of `n_words` words. One task per pool participant: each ORs its contiguous share of the
+/// items into a PRIVATE bitmap (plain stores, no atomics), then every participant merges one word range across all the
+/// private bitmaps into `m`. The LM path's items arrive in instance order — neighbouring instances are neighbouring pixels,
+/// so 160 threads OR-ing atomically into the same cache lines spent 1.4 µs per item on the line ping-pong (72 ms per peel
+/// for the tiny map's 8 M LM fragments); this takes ~1 ms. The private bitmaps (threads × 2 MB) are kept across calls.
+pub fn or_pass_private<F: Fn(usize) -> [Option<usize>; 2] + Sync>(m: &[std::sync::atomic::AtomicU64], n_items: usize, pixels: F) {
+    let n_words = m.len();
+    let p = crate::pool::pool().threads.max(1);
+    // the private bitmaps, kept CLEAN between calls: the merge zeroes what it reads, and only the pages (512 words) a task
+    // dirtied are read — the dirty page set per bitmap (`DIRTY`, 8 words = 512 pages of a 2 MB bitmap) says which
+    const PAGE_WORDS: usize = 512;
+    let n_pages = (n_words + PAGE_WORDS - 1) / PAGE_WORDS;
+    let dirty_words = (n_pages + 63) / 64;
+    static PRIVATE: std::sync::Mutex<(Vec<Vec<u64>>, Vec<Vec<u64>>)> = std::sync::Mutex::new((Vec::new(), Vec::new()));
+    let (mut bitmaps, mut dirty) = std::mem::take(&mut *PRIVATE.lock().unwrap());
+    bitmaps.resize_with(p, Vec::new);
+    dirty.resize_with(p, Vec::new);
+    for b in bitmaps.iter_mut() { if b.len() < n_words { b.resize(n_words, 0); } }
+    for d in dirty.iter_mut() { if d.len() < dirty_words { d.resize(dirty_words, 0); } }
+    let ptrs: Vec<usize> = bitmaps.iter_mut().map(|b| b.as_mut_ptr() as usize).collect();
+    let dptrs: Vec<usize> = dirty.iter_mut().map(|d| d.as_mut_ptr() as usize).collect();
+    let per = (n_items + p - 1) / p;
+    {
+        let (ptrs, dptrs) = (&ptrs, &dptrs);
+        let pixels = &pixels;
+        crate::pool::pool().run(p, |t| {
+            // SAFETY: task t alone writes bitmap t and its dirty set
+            let bm: &mut [u64] = unsafe { std::slice::from_raw_parts_mut(ptrs[t] as *mut u64, n_words) };
+            let dr: &mut [u64] = unsafe { std::slice::from_raw_parts_mut(dptrs[t] as *mut u64, dirty_words) };
+            for d in dr.iter_mut() { *d = 0; }
+            for i in (t * per).min(n_items)..((t + 1) * per).min(n_items) {
+                for px in pixels(i).into_iter().flatten() {
+                    let w = px >> 6;
+                    bm[w] |= 1u64 << (px & 63);
+                    let pg = w / PAGE_WORDS;
+                    dr[pg >> 6] |= 1u64 << (pg & 63);
+                }
+            }
+        });
+    }
+    {
+        // one task per page range: for each dirty (bitmap, page) the words are OR-ed into the page's accumulator and zeroed
+        let (ptrs, dptrs) = (&ptrs, &dptrs);
+        let pg_per = (n_pages + p - 1) / p;
+        crate::pool::pool().run(p, |t| {
+            let mut acc = [0u64; PAGE_WORDS];
+            for pg in (t * pg_per).min(n_pages)..((t + 1) * pg_per).min(n_pages) {
+                let (a, e) = (pg * PAGE_WORDS, ((pg + 1) * PAGE_WORDS).min(n_words));
+                let mut any = false;
+                for b in 0..p {
+                    // SAFETY: the OR run above returned; this task alone touches page pg of every bitmap
+                    let d = unsafe { *(dptrs[b] as *const u64).add(pg >> 6) };
+                    if (d >> (pg & 63)) & 1 == 0 { continue; }
+                    let bm = unsafe { std::slice::from_raw_parts_mut((ptrs[b] as *mut u64).add(a), e - a) };
+                    if !any { acc[..e - a].fill(0); any = true; }
+                    for (k, w) in bm.iter_mut().enumerate() { acc[k] |= *w; *w = 0; }
+                }
+                if any {
+                    for k in 0..e - a { if acc[k] != 0 { m[a + k].fetch_or(acc[k], std::sync::atomic::Ordering::Relaxed); } }
+                }
+            }
+        });
+    }
+    *PRIVATE.lock().unwrap() = (bitmaps, dirty);
+}
+
 impl Drop for PixelIndex {
     fn drop(&mut self) {
         U64S.give(std::mem::take(&mut self.words));
@@ -4030,8 +4097,12 @@ pub mod prof {
     pub static L_PAR: AtomicU64 = AtomicU64::new(0);
     pub static L_CSR: AtomicU64 = AtomicU64::new(0);
     pub static PROBE_PX: AtomicU64 = AtomicU64::new(0);
-    /// The LM fragment list's pixels OR-ed into the wanted bitmap (the transcribed accumulate's sparse set), per peel.
-    pub static LM_PX: AtomicU64 = AtomicU64::new(0);
+    /// The wanted set's parts (perf 8): the LM fragment list's build (once per offset), the LM fragments' texels pass, the
+    /// census pixels, PixelIndex::new.
+    pub static W_FRAGLIST: AtomicU64 = AtomicU64::new(0);
+    pub static W_LMPASS: AtomicU64 = AtomicU64::new(0);
+    pub static W_CENSUS: AtomicU64 = AtomicU64::new(0);
+    pub static W_INDEX: AtomicU64 = AtomicU64::new(0);
     /// The per-direction glue outside the stages: the dome raster, the wanted bitmap, the sel/occl clear.
     pub static DOME: AtomicU64 = AtomicU64::new(0);
     pub static BITMAP: AtomicU64 = AtomicU64::new(0);
@@ -4083,13 +4154,13 @@ pub mod prof {
           log.clear(); }
         if crate::peel::CERT_STATS[0].load(Ordering::Relaxed) > 0 { let c = |i: usize| crate::peel::CERT_STATS[i].swap(0, Ordering::Relaxed); eprintln!("cert stats [{label}]: {} frames; the wanted pixels' layers all within the census lower bound: {} frames (1/16 census), {} (1/64); within the exact count {} (sanity: must be all)", c(0), c(1), c(2), c(3)); }
         if crate::peel::BOUND_TOTALS[0].load(Ordering::Relaxed) > 0 { eprintln!("bound stats [{label}]: {} frames, stop certified right by the census/4 bounds {} and by census/8 {}, certified WRONG {}", crate::peel::BOUND_TOTALS[0].swap(0, Ordering::Relaxed), crate::peel::BOUND_TOTALS[1].swap(0, Ordering::Relaxed), crate::peel::BOUND_TOTALS[2].swap(0, Ordering::Relaxed), crate::peel::BOUND_TOTALS[3].swap(0, Ordering::Relaxed)); }
-        eprintln!("profile [{label}] glue: dome raster {:.2}s, wanted bitmap {:.2}s (of it LM fragment pixels {:.2}s), BVH cull {:.2}s, sel/occl clear {:.2}s, contribution {:.2}s; layer CSR {:.2}s, probe pixels {:.2}s", g(&DOME), g(&BITMAP), g(&LM_PX), g(&CULL), g(&CLEAR), g(&CONTRIB), g(&L_CSR), g(&PROBE_PX));
+        eprintln!("profile [{label}] glue: dome raster {:.2}s, wanted bitmap {:.2}s, BVH cull {:.2}s, sel/occl clear {:.2}s, contribution {:.2}s; layer CSR {:.2}s, probe pixels {:.2}s; wanted parts: LM frag list {:.2}s, LM texels {:.2}s, census {:.2}s, PixelIndex::new {:.2}s", g(&DOME), g(&BITMAP), g(&CULL), g(&CLEAR), g(&CONTRIB), g(&L_CSR), g(&PROBE_PX), g(&W_FRAGLIST), g(&W_LMPASS), g(&W_CENSUS), g(&W_INDEX));
         eprintln!("profile [{label}]: A-buffer build {:.2}s (wanted index {:.2}s, clip {:.2}s, raster {:.2}s, CSR {:.2}s), exact layer count {:.2}s, layer derivation {:.2}s (parallel part {:.2}s), per-direction dumps {:.2}s, gather {:.2}s, accumulate {:.2}s, accumulation snapshots {:.2}s, frames {:.2}s; directions total {:.2}s (unstaged {:.2}s); sweep total {total:.2}s", g(&BUILD), g(&B_INDEX), g(&B_CLIP), g(&B_RASTER), g(&B_SORT), g(&EXACT), g(&LAYERS), g(&L_PAR), g(&DUMP), g(&GATHER), g(&ACCUM), g(&SNAP), g(&FRAMES), g(&DIR), g(&DIR) - staged);
         // the pool's per-stage utilisation table (per-thread busy time; pool::stats), against the directions total
         crate::pool::stats::report(label, g(&DIR));
         if crate::hugealloc::HUGE_ALLOCS.load(Ordering::Relaxed) > 0 { eprintln!("profile [{label}] {}", crate::hugealloc::report()); }
         eprintln!("profile [{label}] non-raster: layer bufs {:.2}s, LmILightDir_Set {:.2}s, probe layers {:.2}s, dome image {:.2}s (in layer derivation), AddAmbient {:.2}s, H-basis {:.2}s, probe folds {:.2}s, sub-sample accumulate {:.2}s; outside the loop: sub-samples {:.2}s, jitter sets {:.2}s, shadow map {:.2}s, pre-loop dumps {:.2}s, resolve {:.2}s; gather lookups: {} sky (dome_px), {} surface; task CPU: gather {:.2}s, accumulate {:.2}s", g(&LM_BUFS), g(&LM_SET), g(&PROBE_LAYER), g(&DOME_IMG), g(&AMBIENT), g(&HB), g(&PROBE_END), g(&ACC_SUB), g(&PRE_SUBS), g(&PRE_JITTER), g(&PRE_SHADOW), g(&PRE_DUMP), g(&POST_RESOLVE), crate::peel::GATHER_COUNTS[0].swap(0, Ordering::Relaxed), crate::peel::GATHER_COUNTS[1].swap(0, Ordering::Relaxed), g(&GATHER_CPU), g(&ACC_CPU));
-        for c in [&BUILD, &LAYERS, &DUMP, &GATHER, &ACCUM, &SNAP, &B_CLIP, &B_RASTER, &B_SORT, &B_INDEX, &DIR, &FRAMES, &EXACT, &L_PAR, &DOME, &BITMAP, &CLEAR, &CONTRIB, &CULL, &L_CSR, &LM_BUFS, &LM_SET, &PROBE_LAYER, &DOME_IMG, &AMBIENT, &HB, &PROBE_END, &ACC_SUB, &PRE_SUBS, &PRE_JITTER, &PRE_SHADOW, &PRE_DUMP, &POST_RESOLVE, &GATHER_CPU, &ACC_CPU] { c.store(0, Ordering::Relaxed); }
+        for c in [&BUILD, &LAYERS, &DUMP, &GATHER, &ACCUM, &SNAP, &B_CLIP, &B_RASTER, &B_SORT, &B_INDEX, &DIR, &FRAMES, &EXACT, &L_PAR, &DOME, &BITMAP, &CLEAR, &CONTRIB, &CULL, &L_CSR, &W_FRAGLIST, &W_LMPASS, &W_CENSUS, &W_INDEX, &LM_BUFS, &LM_SET, &PROBE_LAYER, &DOME_IMG, &AMBIENT, &HB, &PROBE_END, &ACC_SUB, &PRE_SUBS, &PRE_JITTER, &PRE_SHADOW, &PRE_DUMP, &POST_RESOLVE, &GATHER_CPU, &ACC_CPU] { c.store(0, Ordering::Relaxed); }
     }
 }
 
@@ -4289,6 +4360,17 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
     let mut acc_tex: Vec<Vec<[f32; 3]>> = chart_meta.iter().map(|(cw, ch)| vec![[0.0f32; 3]; (cw * 2 * ss_eff * ch * 2 * ss_eff) as usize]).collect();
     let mut cover: Vec<Vec<u16>> = chart_meta.iter().map(|(cw, ch)| vec![0u16; (cw * 2 * ss_eff * ch * 2 * ss_eff) as usize]).collect();
     let pix_of = |s: &SubSample| -> (usize, usize) { (s.chart as usize, (s.sy * chart_meta[s.chart as usize].0 * 2 * ss_eff + s.sx) as usize) };
+    // LMTOOL_SUBS_DUPCHECK=1: do two sub-samples of a set share an accumulation cell? (the accumulate's parallel chunks write
+    // `acc_tex[chart][cell] +=` without atomics on the promise that they never do — a duplicate would be a data race)
+    if std::env::var_os("LMTOOL_SUBS_DUPCHECK").is_some() {
+        let sets: Vec<&Vec<SubSample>> = if jitter { jit_sets.iter().collect() } else { vec![&subs] };
+        for (si, set) in sets.iter().enumerate() {
+            let mut keys: Vec<(u32, u32)> = set.iter().map(|s| { let (c, p) = pix_of(s); (c as u32, p as u32) }).collect();
+            keys.sort_unstable();
+            let dups = keys.windows(2).filter(|w| w[0] == w[1]).count();
+            eprintln!("subs dupcheck: set {si}: {} sub-samples, {} duplicate accumulation cells", set.len(), dups);
+        }
+    }
     // 3. the sun shadow map for the fragment radiance
     let t_shadow = std::time::Instant::now();
     let (bmin, bmax) = scene_bounds(&bvh.tris);
@@ -4688,13 +4770,32 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                 let clip_box: Option<[f32; 4]> = tile_clip.get(pi).copied().flatten();
                 let tile_list: Option<&Vec<u32>> = tile_subs.get(if jitter { di % 9 } else { 0 }).and_then(|v| v.get(pi)).and_then(|o| o.as_ref());
                 crate::pool::stats::stage("bitmap-or");
-                let mark = |s: &SubSample| {
+                let pix_of_sub = |s: &SubSample| -> usize {
                     let (x, y, _) = frame.project(s.p);
                     let (px, py) = (lookup_pixel(x, frame.res, prm.peel_inset), lookup_pixel(y, frame.res_y, prm.peel_inset));
-                    let i = py as usize * frame.res as usize + px as usize;
+                    py as usize * frame.res as usize + px as usize
+                };
+                let mark = |s: &SubSample| {
+                    let i = pix_of_sub(s);
                     m[i >> 6].fetch_or(1u64 << (i & 63), std::sync::atomic::Ordering::Relaxed);
                 };
                 match tile_list {
+                    // the LM path (perf 8): the sub-samples in chart order OR-ed by 160 threads into the same lines — through the
+                    // private bitmaps instead (the tile lists are not built on this path: one group, jitter off... they may be)
+                    _ if lm_sparse => {
+                        crate::pool::stats::stage("or-subs");
+                        let items: &[SubSample] = cur;
+                        match tile_list {
+                            Some(list) => or_pass_private(&m, list.len(), |i| [Some(pix_of_sub(&items[list[i] as usize])), None]),
+                            None => or_pass_private(&m, items.len(), |i| {
+                                let s = &items[i];
+                                if let Some(b) = clip_box {
+                                    if !(s.p[0] - b[0] >= 0.0 && s.p[2] - b[1] >= 0.0 && b[2] - s.p[0] >= 0.0 && b[3] - s.p[2] >= 0.0) { return [None, None]; }
+                                }
+                                [Some(pix_of_sub(s)), None]
+                            }),
+                        }
+                    }
                     // a tile peel: its sub-samples, listed once per sweep (eight tasks per thread)
                     Some(list) => {
                         let nl = list.len();
@@ -4718,31 +4819,40 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                     }
                 }
                 if let (Some(lm), true) = (prm.lm_scene.as_ref(), lm_sparse) {
-                    let t_lm_px = std::time::Instant::now();
+                    let t_fl = std::time::Instant::now();
                     let fl = lm.frag_list(di, 2048, 2048);
+                    prof::add(&prof::W_FRAGLIST, t_fl);
+                    let t_lm = std::time::Instant::now(); crate::pool::stats::stage("bitmap-lm");
                     let pw01 = frame.world_pw01();
                     let (fw, fh) = (frame.res, frame.res_y);
                     let nf = fl.frags.len();
-                    let nch = (threads * 4).max(1);
-                    let per = (nf + nch - 1) / nch;
-                    crate::pool::pool().run(nch, |ci| {
-                        for f in &fl.frags[(ci * per).min(nf)..((ci + 1) * per).min(nf)] {
-                            let p = f.pos;
-                            let u = p[0] * pw01[0][0] + p[1] * pw01[1][0] + p[2] * pw01[2][0] + pw01[3][0];
-                            let v = p[0] * pw01[0][1] + p[1] * pw01[1][1] + p[2] * pw01[2][1] + pw01[3][1];
-                            let w = p[0] * pw01[0][3] + p[1] * pw01[1][3] + p[2] * pw01[2][3] + pw01[3][3];
-                            for (uu, vv) in [(u, v), (u / w, v / w)] {
-                                if !(uu.is_finite() && vv.is_finite()) { continue; }
+                    // (the fragments in instance order name neighbouring pixels: through the private bitmaps, no atomics)
+                    let frags = &fl.frags;
+                    or_pass_private(&m, nf, |i| {
+                        let p = frags[i].pos;
+                        let u = p[0] * pw01[0][0] + p[1] * pw01[1][0] + p[2] * pw01[2][0] + pw01[3][0];
+                        let v = p[0] * pw01[0][1] + p[1] * pw01[1][1] + p[2] * pw01[2][1] + pw01[3][1];
+                        let w = p[0] * pw01[0][3] + p[1] * pw01[1][3] + p[2] * pw01[2][3] + pw01[3][3];
+                        let mut out = [None, None];
+                        if u.is_finite() && v.is_finite() {
+                            let (tx, ty) = (crate::lmaccum::point_texel(u, fw), crate::lmaccum::point_texel(v, fh));
+                            out[0] = Some(ty as usize * fw as usize + tx as usize);
+                        }
+                        // (the colour texel at (u, v)/w: the same texel for the orthographic peel, where w is exactly 1)
+                        if w != 1.0 {
+                            let (uu, vv) = (u / w, v / w);
+                            if uu.is_finite() && vv.is_finite() {
                                 let (tx, ty) = (crate::lmaccum::point_texel(uu, fw), crate::lmaccum::point_texel(vv, fh));
                                 let i = ty as usize * fw as usize + tx as usize;
-                                m[i >> 6].fetch_or(1u64 << (i & 63), std::sync::atomic::Ordering::Relaxed);
+                                if out[0] != Some(i) { out[1] = Some(i); }
                             }
                         }
+                        out
                     });
                     // the centre pixel: AddAmbient (CS 17125) reads layer 0's colour there
                     let c = (fh as usize / 2) * fw as usize + fw as usize / 2;
                     m[c >> 6].fetch_or(1u64 << (c & 63), std::sync::atomic::Ordering::Relaxed);
-                    prof::add(&prof::LM_PX, t_lm_px);
+                    prof::add(&prof::W_LMPASS, t_lm);
                 }
                 // SAFETY: as above, back to plain words (no copy)
                 let mut m: Vec<u64> = unsafe {
@@ -4754,7 +4864,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                 // each probe's texel joins the wanted set, so the sparse layers hold what the passes read
                 if pi == 0 {
                     if let Some(pb) = &prm.probe_bake {
-                        let t_probe_px = std::time::Instant::now();
+                        let t_probe_px = std::time::Instant::now(); crate::pool::stats::stage("probe-px");
                         let pb = pb.lock().unwrap();
                         let pw01 = frame.world_pw01();
                         let (w, h) = (frame.res as i64, frame.res_y as i64);
@@ -4794,6 +4904,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                 }
                 // the CENSUS pixels for the layer-count rule's written fractions (every CENSUS_STEP-th pixel in x
                 // and y), unless this peel's item-layer count is known (captured or fixed)
+                let t_census = std::time::Instant::now();
                 let fixed_layers_known = if prm.layers_from_capture { prm.peel_layer_counts.as_ref().and_then(|c| c.get(di)).and_then(|v| v.get(pi)).copied().flatten().is_some() } else { prm.peel_layers_fixed.is_some() };
                 if !fixed_layers_known && prm.layers_estimate {
                     // only inside the texels' bounding rectangle: an item layer can only be written where an
@@ -4828,10 +4939,14 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                         }
                     }
                 }
+                prof::add(&prof::W_CENSUS, t_census);
                 prof::add(&prof::BITMAP, t_idx);
                 // (the probe draws' 3×3 texel neighbourhoods were marked above, in the parallel pass)
                 crate::pool::stats::stage("pixel-index");
-                Some(std::sync::Arc::new(PixelIndex::new(frame.res, frame.res_y, m)))
+                let t_pix = std::time::Instant::now();
+                let px_new = PixelIndex::new(frame.res, frame.res_y, m);
+                prof::add(&prof::W_INDEX, t_pix);
+                Some(std::sync::Arc::new(px_new))
             } else { None };
             prof::add(&prof::B_INDEX, t_idx);
             // THE EXACT LAYER COUNT (default): with no captured or fixed count for this peel, a dense depth-only
