@@ -1095,8 +1095,10 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
                     }
                     if counting && env_t.is_none() && mask.is_none() {
                         // an opaque item triangle: every live lane is a fragment — the block's count records at
-                        // once (the counters bumped sixteen wide, the records compress-stored per column), then
-                        // only the wanted lanes go on to the fragment push
+                        // once (the counters bumped sixteen wide, the records pushed per lane), then only the
+                        // wanted lanes go on to the fragment push. INVARIANT the scan's sort relies on: a
+                        // triangle visits a pixel once, so a pixel's records have distinct (z, tri) keys and one
+                        // bias per tri — the (z, tri) order is total over them
                         let li0 = ((y as i32 - by0) as usize) * bw + (bx as i32 - bx0) as usize;
                         count_add16(&mut cnt[li0..(li0 + 16).min(band_px)], live, &mut saturated);
                         let bias = bias_term_of(&mut bias_term_cache);
