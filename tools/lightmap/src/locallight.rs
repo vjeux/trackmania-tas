@@ -732,6 +732,17 @@ pub fn render_flat_cube(l: [f32; 3], r_eff: f32, size: u32, tris: &[[[f32; 3]; 3
                 let q = [p[0], p[1], p[2], 1.0f32];
                 clip[i] = [q[0] * m[0][0] + q[1] * m[1][0] + q[2] * m[2][0] + q[3] * m[3][0], q[0] * m[0][1] + q[1] * m[1][1] + q[2] * m[2][1] + q[3] * m[3][1], q[0] * m[0][2] + q[1] * m[1][2] + q[2] * m[2][2] + q[3] * m[3][2], q[0] * m[0][3] + q[1] * m[1][3] + q[2] * m[2][3] + q[3] * m[3][3]];
             }
+            // a triangle wholly beyond one lateral frustum plane covers no pixel of the face (perf 8.25): with w' > 0 at every
+            // vertex, x' > w' (or < −w', or the same in y) at all three puts the whole triangle outside the viewport, where the
+            // rasteriser's bbox clamp would produce nothing — skipped before the clip and the raster setup (five faces of six
+            // see most casters this way)
+            if clip.iter().all(|c| c[3] > 0.0) {
+                let out_right = clip.iter().all(|c| c[0] > c[3]);
+                let out_left = clip.iter().all(|c| c[0] < -c[3]);
+                let out_top = clip.iter().all(|c| c[1] > c[3]);
+                let out_bottom = clip.iter().all(|c| c[1] < -c[3]);
+                if out_right || out_left || out_top || out_bottom { continue; }
+            }
             // Sutherland–Hodgman against z' ≥ 0 and z' ≤ w'
             let n1 = clip_plane(&clip, 3, &|v| v[2], &mut poly1);
             if n1 < 3 { continue; }
