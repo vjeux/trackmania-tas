@@ -242,7 +242,8 @@ impl PixelIndex {
         // ranks and its slice of the pixel list (a 4096² frame is 262 k words; ten frames per direction)
         let n = words.len();
         let threads = crate::pool::pool().threads.max(1);
-        let chunk = (n / (threads * 2).max(1)).max(1024);
+        // (perf 8: a task of 819 words is a 5 µs popcount under a ~100 µs hand-off — a quarter of the threads, 8 k words each)
+        let chunk = (n / (threads / 4).max(1)).max(4096);
         let n_chunks = (n + chunk - 1) / chunk;
         let counts: Vec<u32> = crate::pool::pool().map(n_chunks, |ci| words[ci * chunk..((ci + 1) * chunk).min(n)].iter().map(|w| w.count_ones()).sum());
         let mut base = Vec::with_capacity(n_chunks + 1);
@@ -1405,6 +1406,7 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
     // job owning its pixel
     unsafe { fill.set_len(npx + 1); frags.set_len(total); }
     let (sp, cp, fp) = (start.as_mut_ptr() as usize, fill.as_mut_ptr() as usize, frags.as_mut_ptr() as usize);
+    crate::pool::stats::stage("csr-prefix");
     // THE PREFIX IN ONE PASS: its blocks are the CELL ROWS — a block's fragments are exactly its row's jobs'
     // (a job pushes only its own cell's pixels, the ring rows hold none), so the block bases come from the
     // jobs' list lengths (5 000 adds, serial) instead of a parallel sum pass over the counts (one pool call
@@ -1443,7 +1445,7 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
     // the scatter jobs longest-first (a job's cost here is its fragment count, not its raster estimate)
     let mut scatter_order: Vec<u32> = (0..parts.len() as u32).collect();
     scatter_order.sort_unstable_by_key(|&j| std::cmp::Reverse(parts[j as usize].len()));
-    let t_c2 = std::time::Instant::now();
+    let t_c2 = std::time::Instant::now(); crate::pool::stats::stage("csr-scatter");
     let (ns_scatter, ns_sort) = (std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0));
     {
         let parts = &parts;
@@ -3835,6 +3837,38 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
     let range_all_buf: Vec<u32> = if jitter { (0..max_set as u32).collect() } else { Vec::new() };
     // the tiles' world-XZ clip boxes per peel index (None = the world peel: no clip), see the gather
     let tile_clip: Vec<Option<[f32; 4]>> = prm.peel_tile_clip.as_ref().map(|v| v.as_ref().clone()).unwrap_or_default();
+    // THE TILES' SUB-SAMPLES (perf 8): a tile peel's clip box is fixed for the bake, so which sub-samples of a jitter set
+    // lie inside it is decided once here — the wanted bitmap and the gather of a tile peel then walk that list instead
+    // of every sub-sample with the clip test (the tests dropped most of some chunks and none of others: the runs were
+    // 40–60 % busy; a giant's nine tiles each walked all the sub-samples). Indexed [jitter set][peel]; None = no clip
+    // (the world peel) or the non-jitter path, which keeps the plain walk. The same sub-samples in a different order
+    // (each is independent): the same bits, the same selections.
+    // (the sets: the nine jitter sets, or the one sub-sample set of the plain path when it is one group — then a
+    // direction's range is every sub-sample)
+    let tile_sets: Vec<&Vec<SubSample>> = if jitter { jit_sets.iter().collect() } else if groups == 1 { vec![&subs] } else { Vec::new() };
+    let tile_subs: Vec<Vec<Option<Vec<u32>>>> = if !tile_sets.is_empty() && tile_clip.iter().any(|c| c.is_some()) {
+        let t0 = std::time::Instant::now();
+        let lists: Vec<Vec<Option<Vec<u32>>>> = tile_sets.iter().map(|set| {
+            tile_clip.iter().map(|clip| clip.map(|b| {
+                let n = set.len();
+                let nch = (threads * 2).max(1);
+                let per = (n + nch - 1) / nch;
+                let parts: Vec<Vec<u32>> = crate::pool::pool().map(nch, |ci| {
+                    let (a, e) = ((ci * per).min(n), ((ci + 1) * per).min(n));
+                    let mut out = Vec::new();
+                    for i in a..e {
+                        let s = &set[i];
+                        if s.p[0] - b[0] >= 0.0 && s.p[2] - b[1] >= 0.0 && b[2] - s.p[0] >= 0.0 && b[3] - s.p[2] >= 0.0 { out.push(i as u32); }
+                    }
+                    out
+                });
+                parts.concat()
+            })).collect()
+        }).collect();
+        let total: usize = lists.iter().flatten().flatten().map(|v| v.len()).sum();
+        eprintln!("peel: the tiles' sub-sample lists: {} tile peels × {} sub-sample sets, {} entries ({:.2}s)", tile_clip.iter().filter(|c| c.is_some()).count(), tile_sets.len(), total, t0.elapsed().as_secs_f32());
+        lists
+    } else { Vec::new() };
     // THE DIRECTION-RANGE SPLIT (contrib.rs): a box bakes the directions of its range and writes what each
     // contributes; the merge replays every direction's contribution through the accumulate below in order
     // (eight writers: a file on the shared store costs a second of latency; one writer throttled the bake to
@@ -4030,9 +4064,13 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                 // SAFETY: capacity ≥ n; every word is written by the parallel clear below before any read
                 unsafe { m_words.set_len(n); }
                 {
+                    // (perf 8: sixteen 128 KB tasks — a serial 2 MB memset of the cold words was 0.3 ms; the pool now takes no
+                    // more workers than tasks, so this run wakes sixteen)
                     let mp = m_words.as_mut_ptr() as usize;
-                    let zc = (n + nch - 1) / nch;
-                    crate::pool::pool().run(nch, |ci| {
+                    let ncl = 16usize;
+                    let zc = (n + ncl - 1) / ncl;
+                    crate::pool::stats::stage("bitmap-clear");
+                    crate::pool::pool().run(ncl, |ci| {
                         let (a, b) = (ci * zc, ((ci + 1) * zc).min(n));
                         if a < b {
                             // SAFETY: the chunks partition the vector
@@ -4048,17 +4086,37 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                 // a tile's frame: only the sub-samples inside the tile's world-XZ cell read it (the gather's
                 // clip rule below) — the others' pixels are not wanted (a giant's tile holds a ninth of them)
                 let clip_box: Option<[f32; 4]> = tile_clip.get(pi).copied().flatten();
-                crate::pool::pool().run(nch, |ci| {
-                    for s in &cur[(ci * per).min(cur.len())..((ci + 1) * per).min(cur.len())] {
-                        if let Some(b) = clip_box {
-                            if !(s.p[0] - b[0] >= 0.0 && s.p[2] - b[1] >= 0.0 && b[2] - s.p[0] >= 0.0 && b[3] - s.p[2] >= 0.0) { continue; }
-                        }
-                        let (x, y, _) = frame.project(s.p);
-                        let (px, py) = (lookup_pixel(x, frame.res, prm.peel_inset), lookup_pixel(y, frame.res_y, prm.peel_inset));
-                        let i = py as usize * frame.res as usize + px as usize;
-                        m[i >> 6].fetch_or(1u64 << (i & 63), std::sync::atomic::Ordering::Relaxed);
+                let tile_list: Option<&Vec<u32>> = tile_subs.get(if jitter { di % 9 } else { 0 }).and_then(|v| v.get(pi)).and_then(|o| o.as_ref());
+                crate::pool::stats::stage("bitmap-or");
+                let mark = |s: &SubSample| {
+                    let (x, y, _) = frame.project(s.p);
+                    let (px, py) = (lookup_pixel(x, frame.res, prm.peel_inset), lookup_pixel(y, frame.res_y, prm.peel_inset));
+                    let i = py as usize * frame.res as usize + px as usize;
+                    m[i >> 6].fetch_or(1u64 << (i & 63), std::sync::atomic::Ordering::Relaxed);
+                };
+                match tile_list {
+                    // a tile peel: its sub-samples, listed once per sweep (eight tasks per thread)
+                    Some(list) => {
+                        let nl = list.len();
+                        let nch = (threads * 8).max(1);
+                        let per = (nl + nch - 1) / nch;
+                        crate::pool::pool().run(nch, |ci| {
+                            for &i in &list[(ci * per).min(nl)..((ci + 1) * per).min(nl)] { mark(&cur[i as usize]); }
+                        });
                     }
-                });
+                    None => {
+                        let nch = (threads * 8).max(1);
+                        let per = (cur.len() + nch - 1) / nch;
+                        crate::pool::pool().run(nch, |ci| {
+                            for s in &cur[(ci * per).min(cur.len())..((ci + 1) * per).min(cur.len())] {
+                                if let Some(b) = clip_box {
+                                    if !(s.p[0] - b[0] >= 0.0 && s.p[2] - b[1] >= 0.0 && b[2] - s.p[0] >= 0.0 && b[3] - s.p[2] >= 0.0) { continue; }
+                                }
+                                mark(s);
+                            }
+                        });
+                    }
+                }
                 if let (Some(lm), true) = (prm.lm_scene.as_ref(), lm_sparse) {
                     let fl = lm.frag_list(di, 2048, 2048);
                     let pw01 = frame.world_pw01();
@@ -4170,6 +4228,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                 }
                 prof::add(&prof::BITMAP, t_idx);
                 // (the probe draws' 3×3 texel neighbourhoods were marked above, in the parallel pass)
+                crate::pool::stats::stage("pixel-index");
                 Some(std::sync::Arc::new(PixelIndex::new(frame.res, frame.res_y, m)))
             } else { None };
             prof::add(&prof::B_INDEX, t_idx);
@@ -4468,6 +4527,9 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             // else the port's A-buffer walk), written into `sel` (last peel wins where it has a layer)
             let sel_ptr = sel.as_mut_ptr() as usize;
             let occl_ptr = occl.as_mut_ptr() as usize;
+            // a tile peel walks its own sub-sample list (perf 8; the clip test below still guards every one of them)
+            let range: &[u32] = match tile_subs.get(if jitter { di % 9 } else { 0 }).and_then(|v| v.get(pi)).and_then(|o| o.as_ref()) { Some(list) => list.as_slice(), None => range };
+            let chunk = (range.len() / (threads.max(1) * 8)).max(1024);
             let n_chunks = (range.len() + chunk - 1) / chunk;
             crate::pool::pool().run(n_chunks, |ci| {
                 let ch = &range[ci * chunk..((ci + 1) * chunk).min(range.len())];
