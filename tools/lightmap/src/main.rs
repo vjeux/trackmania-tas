@@ -6096,6 +6096,25 @@ fn run(a: Vec<String>) {
             for (name, s, e) in ranges { let mut h: std::collections::BTreeMap<u8, usize> = Default::default(); for &x in body.get(s..e.min(body.len())).unwrap_or(&[]) { *h.entry(x).or_default() += 1; } println!("  {name} [{s}..{e}): {:?}", h); }
             if a.iter().any(|x| x == "--list") { let s = mf.blocks.len() + mf.baked.len(); for (i, &x) in body.get(s..).unwrap_or(&[]).iter().enumerate() { if x != 0 { println!("  item {i} ({}) quality byte {x}", mf.items.get(i).map(|it| it.model.as_str()).unwrap_or("?")); } } }
         }
+        "daytime-sweep" => {
+            // lmtool daytime-sweep SRC --words W1,W2,… --out-dir DIR [--records TSV] -- <bake args…>: sweep.rs
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let words = lightmap::sweep::parse_words(&f("--words").expect("--words W1,W2,…")).unwrap_or_else(|e| panic!("--words: {e}"));
+            let out_dir = f("--out-dir").expect("--out-dir DIR");
+            std::fs::create_dir_all(&out_dir).expect("--out-dir");
+            let records = f("--records").map(|p| lightmap::classcmp::read_records_tsv(&p).unwrap_or_else(|e| panic!("{e}")));
+            let bake_args: Vec<String> = match a.iter().position(|x| x == "--") { Some(i) => a[i + 1..].to_vec(), None => Vec::new() };
+            let exe = std::env::current_exe().expect("current_exe");
+            let mut rows = Vec::new();
+            for w in words {
+                eprintln!("sweep: word {w:#06x} ({:.2} h) …", w as f64 / 65536.0 * 24.0);
+                match lightmap::sweep::run_word(&exe, &a[1], w, &out_dir, &bake_args, records.as_deref()) {
+                    Ok(r) => { eprintln!("sweep: word {w:#06x}: {} ({:.1} s) blend {} sun {} record {:?}", if r.bake_ok { "ok" } else { "FAILED" }, r.wall_s, r.blend, r.sun, r.record_maxhdr); rows.push(r); }
+                    Err(e) => eprintln!("sweep: word {w:#06x}: {e}"),
+                }
+            }
+            lightmap::sweep::print_rows(&rows);
+        }
         "layoutcheck" => {
             // lmtool layoutcheck MAP…: the packing invariants without an oracle (classcmp::layout_check) — rects inside the
             // atlas, no overlaps, fill, frame bytes, records finite, images decodable; exit 1 on any violation

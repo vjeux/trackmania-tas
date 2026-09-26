@@ -79,6 +79,7 @@ pub mod skygrad;
 pub mod sweep1;
 pub mod filecheck;
 pub mod classcmp;
+pub mod sweep;
 pub mod synth;
 pub mod vegdiag;
 pub mod volume;
