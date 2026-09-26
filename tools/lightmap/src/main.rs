@@ -912,19 +912,6 @@ fn run(a: Vec<String>) {
                     None => { if f("--model").as_deref() == Some("fitted") { panic!("no fitted mood parameters for {} / {} — known:\n{}", h.envir, mood_name, lightmap::moods::table()); } None }
                 }
             } else { None };
-            // THE LM UV-SET SELECTOR'S STORE (RE 11, 09:20Z): every --pak plus LMTOOL_STOCK_PAKS, handed to lmmesh before the scene is
-            // built so each pack material's shader decides its lightmap uv set (PreLightGen TexCoordIndex) and whether it is lit at all
-            {
-                let mut st = mapgeom::store::DataStore::empty();
-                let mut n = 0usize;
-                for (i, arg) in a.iter().enumerate() {
-                    if arg == "--pak" { if let Some(v) = a.get(i + 1) { if let Some((pp, key)) = v.rsplit_once(':') { if st.add_pak(pp, key).is_ok() { n += 1; } } } }
-                }
-                if let Ok(v) = std::env::var("LMTOOL_STOCK_PAKS") {
-                    for spec in v.split(',') { if let Some((pp, key)) = spec.trim().rsplit_once(':') { if st.add_pak(pp, key).is_ok() { n += 1; } } }
-                }
-                if n > 0 { lightmap::lmmesh::set_lm_uv_store(st); }
-            }
             let mut scene = lightmap::geometry::Scene::from_map(&map_path).expect("scene");
             // THE RECORD SCENE (--lm-from-map on a map with authored blocks — Stadium): every block / clip / wall prefab entity and
             // every zone tile of the record pipeline becomes a scene instance (records::add_record_geometry) — the peel's geometry,
@@ -1278,10 +1265,7 @@ fn run(a: Vec<String>) {
                 // at 4.1°, u 0.607 → 67° high. --sunrise/--sunfall/--sun-w override the curve, --sun-lat the latitude.
                 let t_r: f32 = f("--sunrise").map(|s| s.parse().unwrap()).unwrap_or(0.25);
                 // the decoration blenders (RE child 4, the five CPlugMoodBlender XMLs): SunRise 06:00, SunFall 21:00
-                // THE SUNFALL PER DECORATION (RE 11, 09:30Z, CHmsMoodBlender::ApplyToZone → FUN_140494690 on the decoration's curve): BlueBay's
-                // curve ends the arc at 21:00 (the pwc-day cbuffer DirInWorld reproduced with 0.875), Stadium's at 18:30 (0.7708 —
-                // Sunrise 0x5148 = 07:37 → b 0.1296, Day 0x8111 = 12:06 → b 0.488); --sunfall overrides
-                let t_s: f32 = f("--sunfall").map(|s| s.parse().unwrap()).unwrap_or(if x.collection.eq_ignore_ascii_case("Stadium") { 18.5 / 24.0 } else { 0.875 });
+                let t_s: f32 = f("--sunfall").map(|s| s.parse().unwrap()).unwrap_or(0.875);
                 let w_b: f32 = f("--sun-w").map(|s| s.parse().unwrap()).unwrap_or(1.0 / 48.0);
                 let lat_d: f32 = f("--sun-lat").map(|s| s.parse().unwrap()).unwrap_or(x.latitude);
                 let (mut az_d, mut el_d) = {
