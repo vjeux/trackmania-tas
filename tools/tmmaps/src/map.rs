@@ -920,6 +920,149 @@ impl MapFile {
         })
     }
 
+    /// The map's COLLECTION words — the two raw `u32`s of the body's Common chunk (0x0304301F's Ident mapInfo field 1
+    /// and Ident decoration field 4 — uid 0, collection 1, author 2, decoration 3, its collection 4, its author 5: a collection is stored as its NUMBER, `(w >> 30) == 0`, never as a lookback string)
+    /// as (field offset in the body, value). None when either is a string form (a map this tool has not seen).
+    pub fn body_collections(&self) -> Option<[(usize, u32); 2]> {
+        let a = self.body_ids.get(1)?;
+        let b = self.body_ids.get(4)?;
+        if a.name.is_some() || b.name.is_some() || a.len != 4 || b.len != 4 {
+            return None;
+        }
+        Some([(a.off, a.raw), (b.off, b.raw)])
+    }
+
+    /// The header's copy of the Common chunk (0x03043003): `u8 version`, `u32 lookback version (3)`, Ident mapInfo
+    /// (uid lookback, collection RAW word, author lookback), `string name`, `u8 kind`, `u32 locked`, `string password`,
+    /// Ident decoration (name lookback, collection RAW word, author lookback), … — returns the two collection words as
+    /// (offset in the chunk data, value); a lookback string is `u32 (index | 0x40000000)` [+ `u32 len` + bytes when the
+    /// index is 0 = a new definition].
+    pub fn header_collections(&self) -> Option<[(usize, u32); 2]> {
+        let d = self.header_chunk_data(0x0304_3003)?;
+        let mut r = crate::gbx::Reader::new(&d);
+        let _version = r.u8();
+        if r.peek_u32() == 3 {
+            r.u32();
+        }
+        // a lookback string (no table needed: only the inline definitions carry bytes)
+        let lb = |r: &mut crate::gbx::Reader| -> Option<(usize, u32, bool)> {
+            let off = r.o;
+            let w = r.u32();
+            if w == 0xFFFF_FFFF || (w >> 30) == 0 {
+                return Some((off, w, true)); // null or a collection number
+            }
+            if w & 0x3FFF_FFFF == 0 {
+                let n = r.u32() as usize;
+                r.skip(n);
+            }
+            Some((off, w, false))
+        };
+        lb(&mut r)?; // uid
+        let (o1, c1, raw1) = lb(&mut r)?; // map collection
+        lb(&mut r)?; // author
+        let _name = r.string();
+        let _kind = r.u8();
+        let _locked = r.u32();
+        let _password = r.string();
+        lb(&mut r)?; // decoration name
+        let (o2, c2, raw2) = lb(&mut r)?; // decoration collection
+        if !raw1 || !raw2 {
+            return None;
+        }
+        Some([(o1, c1), (o2, c2)])
+    }
+
+    fn header_chunk_data(&self, chunk_id: u32) -> Option<Vec<u8>> {
+        let ud = &self.gbx.user_data;
+        if ud.len() < 4 {
+            return None;
+        }
+        let n = u32::from_le_bytes(ud[0..4].try_into().unwrap()) as usize;
+        let mut off = 4 + n * 8;
+        for i in 0..n {
+            let o = 4 + i * 8;
+            let id = u32::from_le_bytes(ud[o..o + 4].try_into().unwrap());
+            let size = (u32::from_le_bytes(ud[o + 4..o + 8].try_into().unwrap()) & 0x7fff_ffff) as usize;
+            if id == chunk_id {
+                return Some(ud[off..off + size].to_vec());
+            }
+            off += size;
+        }
+        None
+    }
+
+    /// Set BOTH collection words (the map's and the decoration's) in the header's Common chunk, in place (fixed length).
+    pub fn set_header_collections(&mut self, collection: u32) -> bool {
+        let Some([(o1, _), (o2, _)]) = self.header_collections() else { return false };
+        self.edit_header_chunk(0x0304_3003, &|d: &[u8]| {
+            let mut out = d.to_vec();
+            out[o1..o1 + 4].copy_from_slice(&collection.to_le_bytes());
+            out[o2..o2 + 4].copy_from_slice(&collection.to_le_bytes());
+            Some(out)
+        })
+    }
+
+    /// Set BOTH collection words in the body's Common chunk — a fixed-length raw splice (4 bytes each); goes through the
+    /// raw-splice path, so it cannot share a write with a rename (write and reload between the two).
+    pub fn set_body_collections(&mut self, collection: u32) -> bool {
+        let Some([(o1, _), (o2, _)]) = self.body_collections() else { return false };
+        self.raw_patches.push((o1, collection.to_le_bytes().to_vec()));
+        self.raw_patches.push((o2, collection.to_le_bytes().to_vec()));
+        true
+    }
+
+    /// The embedded-object MANIFEST's collection words (chunk 0x03043054: `u32 1`, `u32 0`, `u32 byte count`,
+    /// `u32 n`, [`u32 3` when n > 0], then per entry a lookback name, the RAW collection word, a lookback author):
+    /// (absolute body offset, value) per entry — the placements' idents must match these exactly (a mismatch is the
+    /// "Missing Items … load anyway?" prompt on every load).
+    pub fn manifest_collections(&self) -> Vec<(usize, u32)> {
+        let Some((_, _, payload, size)) = crate::gbx::all_skip_chunks(&self.gbx.body).into_iter().find(|(cid, ..)| *cid == 0x0304_3054) else { return Vec::new() };
+        let d = &self.gbx.body[payload..payload + size];
+        let mut r = crate::gbx::Reader::new(d);
+        let _v = r.u32();
+        let _z = r.u32();
+        let _bytes = r.u32();
+        let n = r.u32() as usize;
+        let mut out = Vec::new();
+        if n == 0 {
+            return out;
+        }
+        if r.peek_u32() == 3 {
+            r.u32();
+        }
+        let lb = |r: &mut crate::gbx::Reader| {
+            let w = r.u32();
+            if w != 0xFFFF_FFFF && (w >> 30) != 0 && w & 0x3FFF_FFFF == 0 {
+                let len = r.u32() as usize;
+                r.skip(len);
+            }
+        };
+        for _ in 0..n {
+            lb(&mut r);
+            let off = r.o;
+            let c = r.u32();
+            out.push((payload + off, c));
+            lb(&mut r);
+        }
+        out
+    }
+
+    /// Every item placement's collection word AND the manifest's, set to `collection` (fixed-size patches).
+    /// Returns (placements patched, manifest entries patched).
+    pub fn set_all_item_collections(&mut self, collection: u32) -> (usize, usize) {
+        let n = self.items.len();
+        for i in 0..n {
+            self.set_item_collection(i, collection);
+        }
+        let m = self.manifest_collections();
+        for (off, c) in &m {
+            if *c != collection {
+                self.raw_patches.push((*off, collection.to_le_bytes().to_vec()));
+            }
+        }
+        (n, m.len())
+    }
+
     /// Remove the author's validation ghost — chunk 0x0305B00F of the
     /// original map, replayed over the tiny map as a car driving the
     /// full-size line in the air — and mark the map unvalidated.

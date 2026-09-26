@@ -116,6 +116,62 @@ fn main() {
         // (`set_header_decoration`); nothing else — the header XML's mood attribute
         // is the same mood. The Stadium arena → its NoStadium twin (2026-09-14,
         // Everios96: giant maps "don't fit inside the stadium anymore").
+        "set-collection" => {
+            // set-collection MAP --out OUT --collection N [--decoration Base64x64Day] [--envir RedIsland]: the map's
+            // COLLECTION — the two raw u32 words of the body's Common chunk (the map's and the decoration's: 28 BlueBay,
+            // 26 Stadium, 15 GreenCoast, 16 RedIsland, 29 WhiteShore) and the header 0x03043003's two copies, in place;
+            // --decoration renames the decoration ident (body + header, `set-decoration`'s path) and --envir the header
+            // XML's envir attribute (the browser's label). Two writes: the raw words cannot share a write with a rename.
+            // (Port engineer G, 2026-09-26: the RedIsland oracle — no RedIsland map exists; pwc-day-source → RedIsland.)
+            let src = args.get(2).cloned().unwrap_or_else(|| { eprintln!("tmmaps set-collection MAP --out OUT --collection N [--decoration NAME] [--envir NAME]"); std::process::exit(2) });
+            let out = tmmaps::cli::flag(&args, "--out").map(String::from).unwrap_or_else(|| { eprintln!("--out OUT"); std::process::exit(2) });
+            let coll: u32 = tmmaps::cli::flag(&args, "--collection").and_then(|v| v.parse().ok()).unwrap_or_else(|| { eprintln!("--collection N (a number: 28 BlueBay, 26 Stadium, 15 GreenCoast, 16 RedIsland, 29 WhiteShore)"); std::process::exit(2) });
+            let deco = tmmaps::cli::flag(&args, "--decoration").map(String::from);
+            let envir = tmmaps::cli::flag(&args, "--envir").map(String::from);
+            let mut m = tmmaps::map::MapFile::load(std::path::Path::new(&src));
+            let body_old = m.body_collections().unwrap_or_else(|| { eprintln!("{src}: the body's collection words are not raw numbers (fields 1 / 4 of the Common chunk)"); std::process::exit(1) });
+            let head_old = m.header_collections().unwrap_or_else(|| { eprintln!("{src}: the header 0x03043003's collection words not found"); std::process::exit(1) });
+            println!("{src}: body collections (map {}, decoration {}) at body offsets {} / {}; header (map {}, decoration {}) at chunk offsets {} / {}", body_old[0].1, body_old[1].1, body_old[0].0, body_old[1].0, head_old[0].1, head_old[1].1, head_old[0].0, head_old[1].0);
+            // pass 1: the four raw words + the XML envir (fixed-length body splices + header rewrites; no rename in play)
+            let tmp = format!("{out}.pass1.tmp");
+            let b = m.set_body_collections(coll);
+            let h = m.set_header_collections(coll);
+            // --items: the item placements' collection words + the embedded manifest's follow the map (the game matches
+            // a placement's ident against the manifest; whether a RedIsland map wants its embedded items at 16 or at the
+            // authoring collection is the loader's call — both forms are one flag apart)
+            let items = if tmmaps::cli::flag(&args, "--items").is_some() || args.iter().any(|a| a == "--items") { let (p, mm) = m.set_all_item_collections(coll); println!("  items: {p} placements + {mm} manifest entries → collection {coll}"); true } else { false };
+            let x = match &envir { Some(e) => { let e = e.clone(); m.edit_header_xml(&|s: &str| { let at = s.find("envir=\"")?; let end = s[at + 7..].find('"')? + at + 7; Some(format!("{}{}{}", &s[..at + 7], e, &s[end..])) }) } None => false };
+            // the XML's mood attribute follows the decoration's mood suffix (Base64x64Day → Day) unless --mood says otherwise
+            let mood = tmmaps::cli::flag(&args, "--mood").map(String::from).or_else(|| deco.as_ref().and_then(|d| ["Sunrise", "Sunset", "Night", "Day"].iter().find(|m| d.ends_with(*m)).map(|m| m.to_string())));
+            let xm = match &mood { Some(mo) => { let mo = mo.clone(); m.edit_header_xml(&|s: &str| { let at = s.find("mood=\"")?; let end = s[at + 6..].find('"')? + at + 6; Some(format!("{}{}{}", &s[..at + 6], mo, &s[end..])) }) } None => false };
+            if let Some(mo) = &mood { println!("  XML mood → {mo:?} ({})", if xm { "set" } else { "unchanged or not found" }); }
+            m.write_to(std::path::Path::new(&tmp)).expect("write pass 1");
+            let mut m2 = tmmaps::map::MapFile::load(std::path::Path::new(&tmp));
+            let body_new = m2.body_collections();
+            let head_new = m2.header_collections();
+            println!("  pass 1: body words {}, header words {}, XML envir {} → body now {:?}, header now {:?}", if b { "set" } else { "NOT set" }, if h { "set" } else { "NOT set" }, match &envir { Some(_) if x => "set", Some(_) => "NOT FOUND", None => "untouched" }, body_new.map(|v| [v[0].1, v[1].1]), head_new.map(|v| [v[0].1, v[1].1]));
+            // pass 2: the decoration ident (body Id slot 3 + the header's copy)
+            let mut deco_report = String::from("decoration untouched");
+            if let Some(new) = &deco {
+                let old = m2.decoration_id.clone();
+                if &old != new {
+                    m2.set_decoration(new);
+                    let hd = m2.set_header_decoration(&old, new);
+                    deco_report = format!("decoration {old:?} → {new:?} (header {})", if hd { "rewritten" } else { "NOT FOUND" });
+                } else {
+                    deco_report = format!("decoration already {new:?}");
+                }
+            }
+            m2.write_to(std::path::Path::new(&out)).expect("write");
+            let _ = std::fs::remove_file(&tmp);
+            let back = tmmaps::map::MapFile::load(std::path::Path::new(&out));
+            let items_ok = !items || (back.items.iter().all(|it| it.collection_raw == coll) && back.manifest_collections().iter().all(|(_, c)| *c == coll));
+            let ok = items_ok && back.body_collections().map(|v| v[0].1 == coll && v[1].1 == coll).unwrap_or(false) && back.header_collections().map(|v| v[0].1 == coll && v[1].1 == coll).unwrap_or(false) && deco.as_ref().map(|d| &back.decoration_id == d).unwrap_or(true);
+            let summary = |v: Vec<u32>| -> String { let mut d: Vec<u32> = v.clone(); d.sort(); d.dedup(); format!("{} words, values {:?}", v.len(), d) };
+            println!("  readback items: placements {}, manifest {}", summary(back.items.iter().map(|it| it.collection_raw).collect()), summary(back.manifest_collections().iter().map(|(_, c)| *c).collect()));
+            println!("{out}: collection → {coll} (readback body {:?}, header {:?}); {deco_report}; readback decoration {:?}{}", back.body_collections().map(|v| [v[0].1, v[1].1]), back.header_collections().map(|v| [v[0].1, v[1].1]), back.decoration_id, if ok { "" } else { " — MISMATCH" });
+            if !ok { std::process::exit(1); }
+        }
         "set-decoration" => {
             let src = args.get(2).cloned().unwrap_or_else(|| { eprintln!("tmmaps set-decoration MAP --out OUT --name NEW"); std::process::exit(2) });
             let out = tmmaps::cli::flag(&args, "--out").map(String::from).unwrap_or_else(|| { eprintln!("--out OUT"); std::process::exit(2) });
