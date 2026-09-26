@@ -3054,6 +3054,9 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
             });
         }
         prof::add(&prof::L_CSR, t_csr);
+        // the parts (8 per thread: 2 000 vectors the workers allocated) are read no more — freed on the pool, not by the
+        // caller alone (perf 6: 1.4 ms per tiny direction of serial time after the layer derivation)
+        parallel_drop(parts);
         return Layers { w, h, start, cnt: None, frags, max_layers: MAX_LAYERS, sparse: Some(px.clone()), item_layers: kept, fractions };
     }
     let rows_per = ((h as usize) / threads.max(1)).max(1);
