@@ -1046,19 +1046,21 @@ fn run(a: Vec<String>) {
                 let h = hdr.as_ref().expect("map header");
                 let mf0 = tmmaps::map::MapFile::load(std::path::Path::new(&map_path));
                 let dt = lightmap::mapio::daytime(&mf0.gbx.body);
-                let mood = match f("--mood") { Some(m) if m != "auto" => lightmap::moods::normalise_mood(&m), _ => lightmap::moods::effective_mood(&mf0.decoration_id, dt) };
-                // the mood BLEND: the map's DayTime word is a blend key between the moods' DayTime01 keys and the
-                // game lerps every mood field between the two bracketing moods (--no-mood-blend: the quarter's mood
-                // alone, the pre-2026-09-23 form; --mood M forces a pure mood)
+                // the mood NAME: the game's own = the mood whose DayTime01 is nearest the blend key of the map's time
+                // (FUN_14028ccb0; = the quarter rule at every default word)
+                let mood = match f("--mood") { Some(m) if m != "auto" => lightmap::moods::normalise_mood(&m), _ => match dt { Some(w) if w != 0xffff_ffff => lightmap::moods::nearest_mood_name(&h.envir, w).unwrap_or_else(|| lightmap::moods::effective_mood(&mf0.decoration_id, dt)), _ => lightmap::moods::effective_mood(&mf0.decoration_id, dt) } };
+                // the mood BLEND (RE 10, transcribed): the map's DayTime word is the TIME of day; the game turns it into the
+                // blender's key (BlenderCurve::time_to_key) and lerps every mood field between the two moods the MoodWeights
+                // smoothstep curve names, with its weight (moods::blend_weights) — PURE at every mood's default word (t ≤ 1e-7),
+                // a real blend only for custom words (np-tk3 0x5000 = Sunrise + 1.9 % Day). --no-mood-blend: the quarter's
+                // mood alone (the pre-2026-09-23 form; identical at the default words); --mood M forces a pure mood
                 let key: f32 = match dt { Some(t) if t != 0xffff_ffff => t as f32 / 65536.0, _ => lightmap::moods::default_daytime(&h.envir, mood) as f32 / 65536.0 };
-                // OPT-IN (--mood-blend) until the blender's semantics are pinned: at key 0.75 (pure "Sunset" by the
-                // DayTime01 keys) the editor's open pad is as blue and bright as at Day (0.85 of it), which the
-                // Sunset mood's own sky does not give — the per-mood fits are made at the moods' DEFAULT words
-                let blend = if has("--mood-blend") && f("--mood").map(|m| m == "auto").unwrap_or(true) { lightmap::moods::blend(&h.envir, key) } else { None };
+                let blend = if !has("--no-mood-blend") && f("--mood").map(|m| m == "auto").unwrap_or(true) { lightmap::moods::blend(&h.envir, key).filter(|(_, _, t)| *t > 0.0 && *t < 1.0) } else { None };
+                if has("--mood-blend") { eprintln!("--mood-blend is the default now (--no-mood-blend turns it off)"); }
                 let x_pure = lightmap::moods::mood_xml(&h.envir, mood).unwrap_or_else(|| panic!("no mood XML for {} {mood}", h.envir));
                 let x_blended: lightmap::moods::MoodXml = match blend { Some(_) => lightmap::moods::blended_xml(&h.envir, key).unwrap(), None => *x_pure };
                 let x: &lightmap::moods::MoodXml = &x_blended;
-                if let Some((a, b, t)) = blend { eprintln!("mood blend: key {key:.4} = {} {:.0} % + {} {:.0} % (record mood {mood})", a.mood, (1.0 - t) * 100.0, b.mood, t * 100.0); }
+                if let Some((a, b, t)) = blend { eprintln!("mood blend: time {:.2} h → key {:.4} = {} {:.1} % + {} {:.1} % (record mood {mood}; MaxHDR_Mood {} Bounce {} Sky {})", key * 24.0, x.daytime01, a.mood, (1.0 - t) * 100.0, b.mood, t * 100.0, x.max_hdr, x.bounce_factor, x.sky_factor); }
                 xml_sel = Some(x_pure);
                 // the dome model: sky = 1.55·LAmbient·SkyFactor (an open floor on the BlueBay Sunset-quarter test
                 // bakes reads (0.61, 0.58, 0.77) = 1.55 × LAmbient in LAmbient's hue), no separate ambient term
@@ -6102,7 +6104,7 @@ fn run(a: Vec<String>) {
             let on = dt.map(|w| gate.local_lights_on(w));
             let item_lights = scene.world_lights();
             let n_items = item_lights.len();
-            println!("{}: {} item lights + {} block/clip lights; DayTime {:?} → local lights {}", a[1], n_items, mr.block_lights.len(), dt.map(|w| format!("{w:#x} = {:.2} h", gate.key_to_time(w as f32 / 65536.0) * 24.0)), match on { Some(true) => "ON (frame 1 lit)", Some(false) => "OFF (frame 1 black)", None => "unknown (no DayTime)" });
+            println!("{}: {} item lights + {} block/clip lights; DayTime {:?} → local lights {}", a[1], n_items, mr.block_lights.len(), dt.map(|w| format!("{w:#x} = {:.2} h", lightmap::moods::time_of_word(w) * 24.0)), match on { Some(true) => "ON (frame 1 lit)", Some(false) => "OFF (frame 1 black)", None => "unknown (no DayTime)" });
             let mut t = String::from("owner\tx\ty\tz\tdx\tdy\tdz\tr\tg\tb\tintensity\tradius\tcone_inner\tcone_outer\tanimated\n");
             let row = |o: &str, l: &lightmap::geometry::LightDef| format!("{o}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", l.pos[0], l.pos[1], l.pos[2], l.dir[0], l.dir[1], l.dir[2], l.color[0], l.color[1], l.color[2], l.intensity, l.radius, l.cone.0, l.cone.1, l.animated);
             for (i, l) in &item_lights { t.push_str(&row(&format!("item {i}"), l)); }
