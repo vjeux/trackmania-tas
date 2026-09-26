@@ -368,11 +368,12 @@ impl AlphaQueues {
     }
     /// Back to the pool (empty — the caller flushed), the totals banked.
     pub fn give(mut self: Box<AlphaQueues>) {
-        for q in self.q.iter_mut() {
+        for (c, q) in self.q.iter_mut().enumerate() {
             debug_assert!(q.is_empty());
-            ALPHA_TOTALS[0].fetch_add(q.stats[0], std::sync::atomic::Ordering::Relaxed);
-            ALPHA_TOTALS[1].fetch_add(q.stats[1], std::sync::atomic::Ordering::Relaxed);
-            ALPHA_TOTALS[2].fetch_add(q.stats[2], std::sync::atomic::Ordering::Relaxed);
+            for k in 0..3 {
+                ALPHA_TOTALS[k].fetch_add(q.stats[k], std::sync::atomic::Ordering::Relaxed);
+                ALPHA_CLASS_TOTALS[c][k].fetch_add(q.stats[k], std::sync::atomic::Ordering::Relaxed);
+            }
             q.stats = [0; 3];
         }
         POOL.set(Some(self));
@@ -389,6 +390,8 @@ thread_local! {
 }
 
 /// Bake-wide totals: batches, fragments tested through the queues, fragments passed (`alpha_queue_report`).
+/// The same per tap-count class (n ≤ 4 / ≤ 8 / ≤ 16): which queue the fragments went to.
+pub static ALPHA_CLASS_TOTALS: [[std::sync::atomic::AtomicU64; 3]; 3] = [[std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0)], [std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0)], [std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0)]];
 pub static ALPHA_TOTALS: [std::sync::atomic::AtomicU64; 3] = [std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0)];
 
 /// LMTOOL_ALPHA_STATS: the queues' totals since the last report.
@@ -397,6 +400,12 @@ pub fn alpha_queue_report() {
         let g = |i: usize| ALPHA_TOTALS[i].swap(0, std::sync::atomic::Ordering::Relaxed);
         let (b, t, p) = (g(0), g(1), g(2));
         eprintln!("alpha queue ({:?}): {b} batches, {t} fragments ({:.1} per batch), {p} passed ({:.1} %)", kernel(), t as f64 / b.max(1) as f64, 100.0 * p as f64 / t.max(1) as f64);
+        let names = ["n ≤ 4", "n ≤ 8", "n ≤ 16"];
+        for c in 0..3 {
+            let gc = |k: usize| ALPHA_CLASS_TOTALS[c][k].swap(0, std::sync::atomic::Ordering::Relaxed);
+            let (cb, ct, cp) = (gc(0), gc(1), gc(2));
+            if ct > 0 { eprintln!("  queue {}: {cb} batches, {ct} fragments ({:.1} % of all, {:.1} per batch), {cp} passed ({:.1} %)", names[c], 100.0 * ct as f64 / t.max(1) as f64, ct as f64 / cb.max(1) as f64, 100.0 * cp as f64 / ct.max(1) as f64); }
+        }
     }
 }
 
