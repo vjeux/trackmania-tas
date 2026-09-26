@@ -3255,7 +3255,13 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             // direction is dumped, when every pixel is wanted
             let t_idx = std::time::Instant::now(); crate::pool::stats::stage("bitmap+index");
             // (the transcribed accumulate reads every pixel of the layers: the dense path when --lm-from is on)
-            let wanted: Option<std::sync::Arc<PixelIndex>> = if prm.game_peel && !want_dir_dump && prm.lm_scene.is_none() {
+            // THE TRANSCRIBED ACCUMULATE'S PIXELS (perf 8): the LM raster reads the peel layers only where its fragments project
+            // (PS 17112: the depth compare at the undivided (u, v), the colour at (u, v)/w — the same texel for the ortho peel), and
+            // the fragment list of the direction's raster offset names them all; so with the LM scene the wanted set is the sub-
+            // samples' pixels ∪ the LM fragments' texels ∪ the probes' texels ∪ the centre pixel (AddAmbient) — not every pixel
+            // (Stadium stpad: 3.2 M of the 16.8 M per peel). LMTOOL_LM_DENSE=1 keeps the dense path.
+            let lm_sparse = prm.lm_scene.is_some() && crate::lmaccum::frag_list_on() && std::env::var_os("LMTOOL_LM_DENSE").is_none();
+            let wanted: Option<std::sync::Arc<PixelIndex>> = if prm.game_peel && !want_dir_dump && (prm.lm_scene.is_none() || lm_sparse) {
                 let n = (frame.res as usize * frame.res_y as usize + 63) / 64;
                 // one shared bitmap, the bits OR-ed in atomically (neighbouring sub-samples share words,
                 // and neighbours sit in the same chunk — the contention is nil)
@@ -3276,6 +3282,31 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                         m[i >> 6].fetch_or(1u64 << (i & 63), std::sync::atomic::Ordering::Relaxed);
                     }
                 });
+                if let (Some(lm), true) = (prm.lm_scene.as_ref(), lm_sparse) {
+                    let fl = lm.frag_list(di, 2048, 2048);
+                    let pw01 = frame.world_pw01();
+                    let (fw, fh) = (frame.res, frame.res_y);
+                    let nf = fl.frags.len();
+                    let nch = (threads * 4).max(1);
+                    let per = (nf + nch - 1) / nch;
+                    crate::pool::pool().run(nch, |ci| {
+                        for f in &fl.frags[(ci * per).min(nf)..((ci + 1) * per).min(nf)] {
+                            let p = f.pos;
+                            let u = p[0] * pw01[0][0] + p[1] * pw01[1][0] + p[2] * pw01[2][0] + pw01[3][0];
+                            let v = p[0] * pw01[0][1] + p[1] * pw01[1][1] + p[2] * pw01[2][1] + pw01[3][1];
+                            let w = p[0] * pw01[0][3] + p[1] * pw01[1][3] + p[2] * pw01[2][3] + pw01[3][3];
+                            for (uu, vv) in [(u, v), (u / w, v / w)] {
+                                if !(uu.is_finite() && vv.is_finite()) { continue; }
+                                let (tx, ty) = (crate::lmaccum::point_texel(uu, fw), crate::lmaccum::point_texel(vv, fh));
+                                let i = ty as usize * fw as usize + tx as usize;
+                                m[i >> 6].fetch_or(1u64 << (i & 63), std::sync::atomic::Ordering::Relaxed);
+                            }
+                        }
+                    });
+                    // the centre pixel: AddAmbient (CS 17125) reads layer 0's colour there
+                    let c = (fh as usize / 2) * fw as usize + fw as usize / 2;
+                    m[c >> 6].fetch_or(1u64 << (c & 63), std::sync::atomic::Ordering::Relaxed);
+                }
                 let mut m: Vec<u64> = m.into_iter().map(|a| a.into_inner()).collect();
                 // THE PROBES' PIXELS (the transcribed probe passes read the world peel's layer targets at every
                 // probe's shadow coordinate — a 2×2 comparison filter and a point colour sample): the 3×3 around
@@ -3608,7 +3639,90 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             crate::pool::pool().run(n_chunks, |ci| {
                 let ch = &range[ci * chunk..((ci + 1) * chunk).min(range.len())];
                 let (mut n_dome, mut n_surface) = (0u64, 0u64);
-                {
+                // THE GATHER PIPELINED (perf 8): the game-peel lookup is four dependent random reads per sub-sample (the
+                // wanted bitmap's word and rank, the layer table's start, the fragment list — a cache miss each: 68 % of the
+                // gather's samples sat on the binary search's first load), so the sub-samples go through in blocks of
+                // 32 with each stage's reads prefetched a stage ahead. Every sub-sample gets the same computations on the
+                // same inputs — only the order of independent memory accesses changes (the study print keeps the plain loop).
+                let pipelined = prm.game_peel && layers.is_some() && game_dbg.is_none();
+                if pipelined {
+                    let ly = layers.as_ref().unwrap();
+                    let frame = &frame;
+                    let subs = cur;
+                    let clip_box: Option<[f32; 4]> = tile_clip.get(pi).copied().flatten();
+                    let (lw, lh) = (ly.w, ly.h);
+                    #[inline(always)]
+                    fn prefetch<T>(p: *const T) {
+                        #[cfg(target_arch = "x86_64")]
+                        unsafe { std::arch::x86_64::_mm_prefetch(p as *const i8, std::arch::x86_64::_MM_HINT_T0); }
+                        #[cfg(not(target_arch = "x86_64"))]
+                        let _ = p;
+                    }
+                    const B: usize = 32;
+                    // per pending sub-sample: (index, pixel id, z01, the dense layer-table index, the fragment range)
+                    let mut pend: [(u32, u32, f32, u32, u32, u32); B] = [(0, 0, 0.0, 0, 0, 0); B];
+                    for blk in ch.chunks(B) {
+                        // stage 1: the projection and the pixel; the bitmap word / rank (sparse) or the table start (dense) prefetched
+                        let mut n = 0usize;
+                        for &i in blk {
+                            let s = &subs[i as usize];
+                            if dot(s.n, *d) <= 0.0 { continue; }
+                            if let Some(b) = clip_box {
+                                if !(s.p[0] - b[0] >= 0.0 && s.p[2] - b[1] >= 0.0 && b[2] - s.p[0] >= 0.0 && b[3] - s.p[2] >= 0.0) { continue; }
+                            }
+                            let (x, y, z) = frame.project(s.p);
+                            let (px, py) = (lookup_pixel(x, lw, prm.peel_inset), lookup_pixel(y, lh, prm.peel_inset));
+                            let z01 = frame.z01(z);
+                            if !(px < lw && py < lh && z01 >= 0.0 && z01 <= 1.0) { continue; }
+                            let pix = py * lw + px;
+                            match &ly.sparse {
+                                Some(sp) => { prefetch(sp.words.as_ptr().wrapping_add((pix >> 6) as usize)); prefetch(sp.rank.as_ptr().wrapping_add((pix >> 6) as usize)); }
+                                None => prefetch(ly.start.as_ptr().wrapping_add(pix as usize)),
+                            }
+                            pend[n] = (i, pix, z01, 0, 0, 0);
+                            n += 1;
+                        }
+                        // stage 2: the dense index (sparse form), the table start prefetched
+                        let mut m = 0usize;
+                        for j in 0..n {
+                            let (i, pix, z01, _, _, _) = pend[j];
+                            let k = match &ly.sparse {
+                                Some(sp) => match sp.index(pix % lw, pix / lw) { Some(k) => k, None => continue },
+                                None => pix,
+                            };
+                            if ly.sparse.is_some() { prefetch(ly.start.as_ptr().wrapping_add(k as usize)); }
+                            pend[m] = (i, pix, z01, k, 0, 0);
+                            m += 1;
+                        }
+                        // stage 3: the fragment range, its first fragment prefetched
+                        let mut q = 0usize;
+                        for j in 0..m {
+                            let (i, pix, z01, k, _, _) = pend[j];
+                            let (a, b) = (ly.start[k as usize], ly.start[k as usize + 1]);
+                            if a == b { continue; }
+                            prefetch(ly.frags.as_ptr().wrapping_add(a as usize));
+                            pend[q] = (i, pix, z01, k, a, b);
+                            q += 1;
+                        }
+                        // stage 4: the game's layer selection, the colour, the store
+                        for j in 0..q {
+                            let (i, pix, z01, _, a, b) = pend[j];
+                            let list = &ly.frags[a as usize..b as usize];
+                            let hit: Option<([f32; 3], bool)> = match select_layer(list, z01) {
+                                Some(f) if f.d > 0.0 || !prm.dome_layer => { n_surface += 1; Some((f.rgb, true)) }
+                                Some(_) => { n_dome += 1; Some((dome_px(frame, dome_r, pix % lw, pix / lw), false)) }
+                                None => None,
+                            };
+                            if let Some((l, occluded)) = hit {
+                                // SAFETY: each chunk owns a disjoint set of indices i; no other thread touches sel[i] / occl[i]
+                                let slot = unsafe { &mut *(sel_ptr as *mut [f32; 3]).add(i as usize) };
+                                *slot = prm.quant_ilightdir.apply(l, prm.rounding);
+                                let o = unsafe { &mut *(occl_ptr as *mut bool).add(i as usize) };
+                                *o = occluded;
+                            }
+                        }
+                    }
+                } else {
                     let ab = &ab;
                     let frame = &frame;
                     let subs = cur;

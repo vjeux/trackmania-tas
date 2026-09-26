@@ -58,8 +58,28 @@ pub fn encode_unsigned(v: f32, mbits: u32, r: Rounding) -> u32 {
     if q >= inf { inf } else { q & mask }
 }
 
-/// Decode an unsigned small float (5 exponent bits, `mbits` mantissa bits) into f32.
+/// Decode an unsigned small float (5 exponent bits, `mbits` mantissa bits) into f32 — the value exactly (every
+/// small-float value is an f32): a normal `(1 + m/2^mbits) · 2^(e−15)` is the f32 with exponent field e − 15 + 127 and
+/// mantissa m << (23 − mbits); a denormal `m · 2^(−14−mbits)` is `m as f32` (exact) times that power of two (exact).
+/// `decode_unsigned_slow` is the arithmetic form the port used until perf 8 (`2f32.powi` = a libgcc loop, 2 % of a
+/// bake); `decode_bit_exact_over_every_pattern` proves the two equal on every UF11 / UF10 pattern.
+#[inline]
 pub fn decode_unsigned(q: u32, mbits: u32) -> f32 {
+    let e = (q >> mbits) & 0x1f;
+    let m = q & ((1u32 << mbits) - 1);
+    if e == 31 {
+        return if m != 0 { f32::NAN } else { f32::INFINITY };
+    }
+    if e == 0 {
+        // m · 2^(−14 − mbits), both factors exact
+        m as f32 * pow2(-14 - mbits as i32)
+    } else {
+        f32::from_bits(((e + 127 - 15) << 23) | (m << (23 - mbits)))
+    }
+}
+
+/// The arithmetic form of `decode_unsigned` (kept for the exhaustive equality test).
+pub fn decode_unsigned_slow(q: u32, mbits: u32) -> f32 {
     let e = (q >> mbits) & 0x1f;
     let m = q & ((1u32 << mbits) - 1);
     if e == 31 {
@@ -77,6 +97,13 @@ pub fn decode_unsigned(q: u32, mbits: u32) -> f32 {
     } else {
         (1.0 + m as f32 * scale) * pow2(e as i32 - 15)
     }
+}
+
+/// 2^k as an f32, exactly, for the normal range −126 ≤ k ≤ 127 (what `2f32.powi(k)` returns there, without its loop).
+#[inline]
+pub fn pow2(k: i32) -> f32 {
+    debug_assert!((-126..=127).contains(&k));
+    f32::from_bits(((k + 127) as u32) << 23)
 }
 
 /// Pack a linear RGB triple into `DXGI_FORMAT_R11G11B10_FLOAT` (R in bits 0–10, G 11–21, B 22–31).
@@ -119,8 +146,29 @@ pub fn encode_f16(v: f32, r: Rounding) -> u16 {
     sign | q as u16
 }
 
-/// IEEE binary16 decode.
+/// IEEE binary16 decode — the value exactly (every binary16 value is an f32): the sign bit moved up, a normal's
+/// exponent rebiased 15 → 127 and its mantissa shifted to 23 bits; a denormal `±m · 2^−24` as `m as f32` (exact) times
+/// 2^−24 (exact), the sign applied last as the arithmetic form does. `decode_f16_slow` is that arithmetic form (the port's
+/// until perf 8); `decode_bit_exact_over_every_pattern` proves them equal on all 65 536 patterns (NaN → NaN both).
+#[inline]
 pub fn decode_f16(h: u16) -> f32 {
+    let e = ((h >> 10) & 0x1f) as u32;
+    let m = (h & 0x3ff) as u32;
+    let sign = ((h as u32) & 0x8000) << 16;
+    if e == 31 {
+        return if m != 0 { f32::NAN } else { f32::from_bits(sign | 0x7f80_0000) };
+    }
+    if e == 0 {
+        let v = m as f32 * pow2(-24);
+        // (the arithmetic form multiplies by ±1.0: a −0.0 for m = 0 with the sign set, as here)
+        f32::from_bits(v.to_bits() | sign)
+    } else {
+        f32::from_bits(sign | ((e + 127 - 15) << 23) | (m << 13))
+    }
+}
+
+/// The arithmetic form of `decode_f16` (kept for the exhaustive equality test).
+pub fn decode_f16_slow(h: u16) -> f32 {
     let sign = if h & 0x8000 != 0 { -1.0 } else { 1.0 };
     let e = ((h >> 10) & 0x1f) as i32;
     let m = (h & 0x3ff) as f32;
@@ -178,6 +226,24 @@ impl Quant {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decode_bit_exact_over_every_pattern() {
+        // the fast decoders against the arithmetic forms, every bit pattern (NaN matched as NaN)
+        for h in 0..=u16::MAX {
+            let (a, b) = (decode_f16(h), decode_f16_slow(h));
+            assert!(a.to_bits() == b.to_bits() || (a.is_nan() && b.is_nan()), "f16 {h:#06x}: {a:?} vs {b:?}");
+        }
+        for mbits in [5u32, 6] {
+            for q in 0..(1u32 << (5 + mbits)) {
+                let (a, b) = (decode_unsigned(q, mbits), decode_unsigned_slow(q, mbits));
+                assert!(a.to_bits() == b.to_bits() || (a.is_nan() && b.is_nan()), "UF{} {q:#x}: {a:?} vs {b:?}", 5 + mbits);
+            }
+        }
+        for k in -126..=127 {
+            assert_eq!(pow2(k).to_bits(), 2f32.powi(k).to_bits(), "2^{k}");
+        }
+    }
 
     #[test]
     fn uf11_exact_values_round_trip() {
