@@ -71,6 +71,17 @@ pub fn drive_cmd(args: &[String]) -> Result<(), String> {
         if rows < 10 {
             failed.push(m.clone());
         }
+        // a bridge call that timed out (150 s cap) leaves ITS shootctl running on the box, and
+        // that process keeps the tmdrive lock for another session's minutes (the MK64 session
+        // waited on a dead `playshots-d57fix` hold, 2026-09-26 07:50): reap our own orphan by
+        // pid — the one shootctl whose command line names this map — then let the lock lapse.
+        if out.contains("timed out") {
+            let pids = wsx.sh(&format!("pgrep -f 'shootctl playshots .*{m}\\.Map\\.Gbx' || true")).unwrap_or_default();
+            for pid in pids.split_whitespace().filter(|p| p.chars().all(|c| c.is_ascii_digit())) {
+                println!("[{:>4.0}s] {m}: reaping the orphaned shootctl (pid {pid}) left by the timed-out bridge call", t0.elapsed().as_secs_f64());
+                let _ = wsx.sh(&format!("kill {pid} 2>/dev/null; sleep 2; kill -9 {pid} 2>/dev/null; true"));
+            }
+        }
     }
     if let Some(dir) = f("--pull") {
         let dir = PathBuf::from(dir);
