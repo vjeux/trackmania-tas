@@ -6,11 +6,11 @@ Time Attack plus a gravity coefficient per player, car-to-car collisions and "ba
 to push around. Everything lives under `~/tmserver/` and is driven by `tmserverctl`, a Rust
 supervisor from `trackmania-tas/tools/tmserverctl` (no root, no systemd, no shell scripts).
 
-Status (2026-09-26 04:31Z): INSTALLED on the VPS under ~/tmserver (archive md5
-b2de4fca0e42e9800f82e6df55df32bf, 386 MB), smoke-tested there in `/lan` mode (mode compiles, YannexDoor
-loads, bots take gravity 0.05, 2350 TCP+UDP listening, XML-RPC on 127.0.0.1:5000, RSS ~160 MB), then
-stopped with `lan = false`. Waiting for the server account (Invalid credentials otherwise) and the
-security-group rules; activation = `tmserverctl account <login> <pw> && tmserverctl start` + the cron lines.
+Status (2026-09-26 07:31Z): **ONLINE.** Server account `vjeux_lowg` (created on trackmania.com under
+vjeux's Ubisoft account; password only in the VPS's dedicated_cfg.txt, mode 600). Master server
+OK, server id `WFNQAGTiTCuUbPq8yFDTLw`, join link `trackmania://#join=WFNQAGTiTCuUbPq8yFDTLw@Trackmania`.
+Club room "Yannex low-g" (activity 1175203) bound in club Vjeux (43788), public + active. Cron lines
+installed. Not yet proven by a real client (UDP 2350 is the one thing a client join will confirm).
 
 ## What is where
 
@@ -260,10 +260,11 @@ server's own link `trackmania://#join=<SERVER_LOGIN>@Trackmania` (`tmserverctl s
 > les serveurs dédiés ne sont pas accessibles depuis les consoles).
 >
 > **Rejoindre** — il n'y a pas de liste publique des serveurs dédiés dans TM2020, on passe par un lien :
-> 1. Clique sur `trackmania://#join=SERVEUR_LOGIN@Trackmania` — ou colle
+> 1. Clique sur `trackmania://#join=WFNQAGTiTCuUbPq8yFDTLw@Trackmania` — ou colle
 >    `#join=SERVEUR_LOGIN@Trackmania` dans **Menu principal → Paramètres → Système → Lien de
->    connexion (Join link)** puis Entrée. (SERVEUR_LOGIN = le login du serveur, envoyé avec ce message.)
-> 2. Quand la room de club sera créée : **Jouer → Live → Clubs → le club de vjeux → la room « Yannex low-g »**.
+>    connexion (Join link)** puis Entrée. (SERVEUR_LOGIN = `WFNQAGTiTCuUbPq8yFDTLw`, donc
+>    `trackmania://#join=WFNQAGTiTCuUbPq8yFDTLw@Trackmania`.)
+> 2. Ou dans le jeu : **Jouer → Live → Clubs → club « Vjeux » → room « Yannex low-g »**.
 >
 > **Une fois dedans**, tout se règle dans le **chat** :
 > - `/gravity 0.3` → ta gravité (1 = normale, 0 = apesanteur). Appliquée tout de suite et à chaque
