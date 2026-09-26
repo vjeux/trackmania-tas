@@ -8293,6 +8293,10 @@ variants: ");
             //   [--game-map MAP.Gbx] [--heat DIR] [--all-heat] [--report FILE.md]
             // the per-pass differential of the game's captured render targets against our --dump-passes tree
             let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            // --require N (baker-3, 2026-09-26): the gate's invariant. A comparison that compared NOTHING
+            // (both dump directories empty because the bake never ran) printed no rows and read as a pass;
+            // with --require the run FAILS unless at least N buffers were actually compared.
+            let require: usize = f("--require").map(|s| s.parse().unwrap()).unwrap_or(0);
             let has = |k: &str| a.iter().any(|x| x == k);
             let game = std::path::PathBuf::from(&a[1]);
             let ours = std::path::PathBuf::from(&a[2]);
@@ -8310,6 +8314,17 @@ variants: ");
             let heat = f("--heat");
             opts.keep_pairs = heat.is_some();
             let t0 = std::time::Instant::now();
+            // --require's first half: a directory that does not exist or holds no dumps is a FAILED
+            // comparison, not an empty one — say so before passdiff's own reader panics on it.
+            if require > 0 {
+                for d in [&game, &ours] {
+                    let n = std::fs::read_dir(d).map(|it| it.filter_map(|e| e.ok()).count()).unwrap_or(0);
+                    if n == 0 {
+                        eprintln!("passdiff: FAIL — {} is missing or empty (--require {}): nothing to compare", d.display(), require);
+                        std::process::exit(1);
+                    }
+                }
+            }
             let (rows, findings) = lightmap::passdiff::run(&game, &ours, &opts).unwrap_or_else(|e| panic!("passdiff: {e}"));
             let rep = lightmap::passdiff::report(&rows, &findings, opts.pass_threshold, opts.tol);
             println!("{rep}");
@@ -8347,6 +8362,13 @@ variants: ");
                 eprintln!("report written to {p}");
             }
             eprintln!("passdiff: {} buffers compared ({:.1}s)", rows.len(), t0.elapsed().as_secs_f32());
+            // the gate's invariant (baker-3, 2026-09-26): a comparison of NOTHING is a failure, not a pass.
+            // Two empty dump directories (the bake never ran — a missing input, a panic) printed no rows and
+            // every "rows not 100 %" grep counted zero; --require N makes that exit 1 and say so.
+            if rows.len() < require {
+                eprintln!("passdiff: FAIL — {} buffers compared, --require {} (an empty or short comparison is not a pass)", rows.len(), require);
+                std::process::exit(1);
+            }
         }
         "transplant" => {
             // lmtool transplant --from REDUCED_BAKED.Map.Gbx --into FULL.Map.Gbx --kept i1,i2,… --out OUT [--base N]:
