@@ -26,12 +26,13 @@
 		<setting name="S_LowG_DefaultGravity" type="real" value="0.5"/>	<!-- 1 = normal gravity, 0 = weightless -->
 		<setting name="S_LowG_Collisions" type="boolean" value="1"/>
 		<setting name="S_LowG_Bots" type="integer" value="0"/>			<!-- balloons parked at each map start; /bots N changes it live -->
-		<setting name="S_LowG_BotGravity" type="real" value="0.05"/>
+		<setting name="S_LowG_BotGravity" type="real" value="0.15"/>
 		<setting name="S_LowG_MaxBots" type="integer" value="16"/>
 		<setting name="S_LowG_BotsAreFakeUsers" type="boolean" value="0"/>	<!-- 0: engine bots (not in the player list); 1: fake users named "Ballon N" -->
 	</mode_script_settings>
 
 	<startindex>0</startindex>
+	<map><file>Yannex/YOTW179_-_SkateMania.Map.Gbx</file></map>
 	<map><file>Yannex/YannexDoor.Map.Gbx</file></map>
 	<map><file>Campaigns/Training/Training - 01.Map.Gbx</file></map>
 	<map><file>Campaigns/Training/Training - 05.Map.Gbx</file></map>
