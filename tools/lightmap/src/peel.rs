@@ -507,7 +507,7 @@ pub fn build_abuffer_sparse_counted(tris: &[WTri], frame: &PeelFrame, threads: u
 pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: &PeelFrame, threads: usize, zmin: f32, zmax: f32, masks: &[crate::geometry::AlphaMask], px: &std::sync::Arc<PixelIndex>, count: Option<CountCtx>) -> (ABuffer, Option<(usize, Vec<f64>)>) {
     let res = frame.res;
     let res_y = frame.res_y;
-    let t_clip = std::time::Instant::now();
+    let t_clip = std::time::Instant::now(); crate::pool::stats::stage("clip");
     let counting = count.is_some();
     // the count needs every pixel: the whole frame is the clip then — minus the game's viewport ring (the
     // viewport is (1, 1, w−2, h−2): the outer ring is never drawn; clipping it here spares the per-visit test)
@@ -728,7 +728,7 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
         (counts, entries, ebits, cost)
     });
     prof::add(&prof::B_CLIP, t_clip);
-    let t_raster = std::time::Instant::now();
+    let t_raster = std::time::Instant::now(); crate::pool::stats::stage("raster");
     // the cells' totals over the chunks (chunk-outer, cell-inner: sequential over each chunk's arrays — the
     // cell-outer form touched 512 arrays per cell, 40 ms of cache misses per frame); a cell without a wanted
     // pixel in the wanted-only build has no work. The same pass zeroes the sparse CSR's per-pixel counts
@@ -1232,7 +1232,7 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
     let parts: Vec<Vec<(u32, Frag)>> = parts_all.into_iter().map(|(o, _, _)| o).collect();
     prof::add(&prof::B_RASTER, t_raster);
     if raster_stats { eprintln!("raster stats (sparse, {n_jobs} jobs over {n_cells} cells): {} triangles rasterised, {} bbox pixels tested, {} pixel visits, clip {:?}, wanted {}, {:.3}s", RS_TRIS.swap(0, std::sync::atomic::Ordering::Relaxed), RS_TESTED.swap(0, std::sync::atomic::Ordering::Relaxed), RS_VISITS.swap(0, std::sync::atomic::Ordering::Relaxed), clip, px.len(), t_raster.elapsed().as_secs_f32()); }
-    let t_sort = std::time::Instant::now();
+    let t_sort = std::time::Instant::now(); crate::pool::stats::stage("csr");
     // THE SPARSE CSR: a counting sort of every job's fragments by wanted rank — the counts were taken by the
     // jobs (`csr_start[k + 1]`); here the prefix in parallel blocks (block sums, then offsets and cursors),
     // then every job scatters its own fragments at its pixels' cursors and sorts its own pixels (a pixel
@@ -1313,14 +1313,14 @@ pub fn build_abuffer_wanted(tris: &[WTri], frame: &PeelFrame, threads: usize, zm
     }
     let res = frame.res;
     let res_y = frame.res_y;
-    let t_clip = std::time::Instant::now();
+    let t_clip = std::time::Instant::now(); crate::pool::stats::stage("clip");
     // the wanted pixels' bounding rectangle: the raster visits nothing outside it
     let clip: (i32, i32, i32, i32) = match wanted {
         Some(px) => px.bbox,
         None => (0, 0, res as i32 - 1, res_y as i32 - 1),
     };
     prof::add(&prof::B_CLIP, t_clip);
-    let t_raster = std::time::Instant::now();
+    let t_raster = std::time::Instant::now(); crate::pool::stats::stage("raster");
     let raster_stats = raster_stats_on();
     let bitmap: Option<&[u64]> = wanted.map(|p| p.words.as_slice());
     // the sparse form's buckets: ranges of the dense index (one CSR builder thread per bucket)
@@ -1427,7 +1427,7 @@ pub fn build_abuffer_wanted(tris: &[WTri], frame: &PeelFrame, threads: usize, zm
     });
     prof::add(&prof::B_RASTER, t_raster);
     if raster_stats { eprintln!("raster stats: {} triangles rasterised, {} pixel visits, clip {:?}, wanted {}, {:.3}s", RS_TRIS.swap(0, std::sync::atomic::Ordering::Relaxed), RS_VISITS.swap(0, std::sync::atomic::Ordering::Relaxed), clip, wanted.map(|p| p.len()).unwrap_or(0), t_raster.elapsed().as_secs_f32()); }
-    let t_sort = std::time::Instant::now();
+    let t_sort = std::time::Instant::now(); crate::pool::stats::stage("csr");
     if let Some(px) = wanted {
         // SPARSE: per bucket of the dense index (in parallel) a counting sort by index and the depth sort
         // per pixel — the same fragments per pixel in the same order as the dense form; the buckets are
@@ -2027,7 +2027,7 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
         // chunk of open ground, and one chunk per thread left the others waiting for it)
         let chunk = (npx / (threads.max(1) * 8)).max(1024);
         let n_chunks = (npx + chunk - 1) / chunk;
-        let t_par = std::time::Instant::now();
+        let t_par = std::time::Instant::now(); crate::pool::stats::stage("layers");
         let parts: Vec<(Vec<u32>, Vec<LayerFrag>)> = crate::pool::pool().map(n_chunks, |ci| {
             let ids = &px.pixels[ci * chunk..((ci + 1) * chunk).min(npx)];
             let mut counts = Vec::with_capacity(ids.len());
@@ -2709,6 +2709,8 @@ pub mod prof {
         if crate::peel::BOUND_TOTALS[0].load(Ordering::Relaxed) > 0 { eprintln!("bound stats [{label}]: {} frames, stop certified right by the census/4 bounds {} and by census/8 {}, certified WRONG {}", crate::peel::BOUND_TOTALS[0].swap(0, Ordering::Relaxed), crate::peel::BOUND_TOTALS[1].swap(0, Ordering::Relaxed), crate::peel::BOUND_TOTALS[2].swap(0, Ordering::Relaxed), crate::peel::BOUND_TOTALS[3].swap(0, Ordering::Relaxed)); }
         eprintln!("profile [{label}] glue: dome raster {:.2}s, wanted bitmap {:.2}s, BVH cull {:.2}s, sel/occl clear {:.2}s, contribution {:.2}s; layer CSR {:.2}s", g(&DOME), g(&BITMAP), g(&CULL), g(&CLEAR), g(&CONTRIB), g(&L_CSR));
         eprintln!("profile [{label}]: A-buffer build {:.2}s (wanted index {:.2}s, clip {:.2}s, raster {:.2}s, CSR {:.2}s), exact layer count {:.2}s, layer derivation {:.2}s (parallel part {:.2}s), per-direction dumps {:.2}s, gather {:.2}s, accumulate {:.2}s, accumulation snapshots {:.2}s, frames {:.2}s; directions total {:.2}s (unstaged {:.2}s); sweep total {total:.2}s", g(&BUILD), g(&B_INDEX), g(&B_CLIP), g(&B_RASTER), g(&B_SORT), g(&EXACT), g(&LAYERS), g(&L_PAR), g(&DUMP), g(&GATHER), g(&ACCUM), g(&SNAP), g(&FRAMES), g(&DIR), g(&DIR) - staged);
+        // the pool's per-stage utilisation table (per-thread busy time; pool::stats), against the directions total
+        crate::pool::stats::report(label, g(&DIR));
         eprintln!("profile [{label}] non-raster: layer bufs {:.2}s, LmILightDir_Set {:.2}s, probe layers {:.2}s, dome image {:.2}s (in layer derivation), AddAmbient {:.2}s, H-basis {:.2}s, probe folds {:.2}s, sub-sample accumulate {:.2}s; outside the loop: sub-samples {:.2}s, jitter sets {:.2}s, shadow map {:.2}s, pre-loop dumps {:.2}s, resolve {:.2}s; gather lookups: {} sky (dome_px), {} surface", g(&LM_BUFS), g(&LM_SET), g(&PROBE_LAYER), g(&DOME_IMG), g(&AMBIENT), g(&HB), g(&PROBE_END), g(&ACC_SUB), g(&PRE_SUBS), g(&PRE_JITTER), g(&PRE_SHADOW), g(&PRE_DUMP), g(&POST_RESOLVE), crate::peel::GATHER_COUNTS[0].swap(0, Ordering::Relaxed), crate::peel::GATHER_COUNTS[1].swap(0, Ordering::Relaxed));
         for c in [&BUILD, &LAYERS, &DUMP, &GATHER, &ACCUM, &SNAP, &B_CLIP, &B_RASTER, &B_SORT, &B_INDEX, &DIR, &FRAMES, &EXACT, &L_PAR, &DOME, &BITMAP, &CLEAR, &CONTRIB, &CULL, &L_CSR, &LM_BUFS, &LM_SET, &PROBE_LAYER, &DOME_IMG, &AMBIENT, &HB, &PROBE_END, &ACC_SUB, &PRE_SUBS, &PRE_JITTER, &PRE_SHADOW, &PRE_DUMP, &POST_RESOLVE] { c.store(0, Ordering::Relaxed); }
     }
@@ -2759,6 +2761,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         eprintln!("peel: open-sky irradiance of an up-facing surface ({:.3},{:.3},{:.3}) → the decoration's stand-in lightmap (× {})", e[0], e[1], e[2], prm.decor_ambient);
     }
     let prm = &prm_local;
+    if prm.profile || std::env::var_os("LMTOOL_PROFILE").is_some() || std::env::var_os("LMTOOL_POOL_STATS").is_some() { crate::pool::stats::enable(); }
     let t0 = std::time::Instant::now();
     let threads = if prm.threads == 0 { std::thread::available_parallelism().map(|x| x.get()).unwrap_or(8).min(160) } else { prm.threads };
     let ss = prm.ss.max(1);
@@ -3077,7 +3080,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             n_replayed += 1;
             Some(c)
         };
-        let t_dir = std::time::Instant::now();
+        let t_dir = std::time::Instant::now(); crate::pool::stats::stage("frames");
         let g = di % groups;
         let scale = 4.0 / group_count[g].max(1) as f32;
         // THE PEELS of this direction: the captured frustums (the game runs two — the whole-scene frustum,
@@ -3144,7 +3147,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         // (the reused buffers, filled in parallel)
         let sel: &mut [[f32; 3]] = &mut sel_buf[..cur.len()];
         let occl: &mut [bool] = &mut occl_buf[..cur.len()];
-        let t_clear = std::time::Instant::now();
+        let t_clear = std::time::Instant::now(); crate::pool::stats::stage("clear");
         {
             let n = cur.len();
             let per = (n / (threads * 2).max(1)).max(4096);
@@ -3200,7 +3203,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             // the pixels this direction's texels read (the game's lookup of every sub-sample of the
             // current set): only their fragments are kept and only their layers derived — unless the
             // direction is dumped, when every pixel is wanted
-            let t_idx = std::time::Instant::now();
+            let t_idx = std::time::Instant::now(); crate::pool::stats::stage("bitmap+index");
             // (the transcribed accumulate reads every pixel of the layers: the dense path when --lm-from is on)
             let wanted: Option<std::sync::Arc<PixelIndex>> = if prm.game_peel && !want_dir_dump && prm.lm_scene.is_none() {
                 let n = (frame.res as usize * frame.res_y as usize + 63) / 64;
@@ -3310,7 +3313,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             // THE EXACT LAYER COUNT (default): with no captured or fixed count for this peel, a dense depth-only
             // build of the whole frame gives the written fraction of every item layer exactly, then the stop
             // rule; --layers-estimate takes the census estimate on the sparse build instead
-            let t_exact = std::time::Instant::now();
+            let t_exact = std::time::Instant::now(); crate::pool::stats::stage("exact");
             let need_exact = prm.game_peel && !want_dir_dump && !prm.layers_estimate && {
                 let known = if prm.layers_from_capture { prm.peel_layer_counts.as_ref().and_then(|c| c.get(di)).and_then(|v| v.get(pi)).copied().flatten() } else { prm.peel_layers_fixed };
                 known.is_none()
@@ -3335,7 +3338,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                     Some(px) => {
                         // the triangles the frame's volume can hold, as BVH leaf ranges (a tile's frame holds a part of the scene)
                         let (zmin_f, zmax_f) = (if prm.depth_clip { frame.z_from_z01(0.0) } else { f32::NEG_INFINITY }, frame.z_from_z01(1.0));
-                        let t_cull = std::time::Instant::now();
+                        let t_cull = std::time::Instant::now(); crate::pool::stats::stage("cull");
                         let ranges = if std::env::var_os("LMTOOL_NO_CULL").is_some() { vec![(0u32, bvh.tris.len() as u32)] } else { bvh.ranges_where(|lo, hi| frame.box_class(lo, hi, zmin_f, zmax_f)) };
                         if std::env::var_os("LMTOOL_CULL_DEBUG").is_some() {
                             let n: u32 = ranges.iter().map(|r| r.1 - r.0).sum();
@@ -3360,7 +3363,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             frag_total += ab.len();
             // the game's layers of this peel (game-peel mode), and their dump
             // (the layers are also extracted for the dump alone, so the port's own gather can be dumped and compared)
-            let tl = std::time::Instant::now();
+            let tl = std::time::Instant::now(); crate::pool::stats::stage("layers");
             // the item-layer count: the captured one for this direction's peel when the harness has it, else the stop rule
             let fixed_layers: Option<usize> = if prm.layers_from_capture { prm.peel_layer_counts.as_ref().and_then(|c| c.get(di)).and_then(|v| v.get(pi)).copied().flatten() } else { prm.peel_layers_fixed };
             // the environment render's dome colour PER PIXEL for the transcribed accumulate's layer-0 colour target: the
@@ -3391,7 +3394,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             let fixed_layers = fixed_layers.or(exact_layers);
             let layers: Option<Layers> = if prm.game_peel || want_dir_dump { Some(extract_layers(&ab, frame, scene, bvh, prm, shadow.as_ref(), sun_bias, sky, threads, wanted.as_ref(), fixed_layers, dome_img.as_deref())) } else { None };
             prof::add(&prof::LAYERS, tl);
-            let td = std::time::Instant::now();
+            let td = std::time::Instant::now(); crate::pool::stats::stage("dump");
             if let Some(ly) = &layers {
                 if want_dir_dump || std::env::var_os("LMTOOL_PEEL_LAYERS_DEBUG").is_some() {
                     let cand = ly.fractions.iter().take_while(|f| **f > 0.0).count();
@@ -3422,7 +3425,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             // world peel only) — the colour / depth Bufs of a layer are built once for both
             let want_probes = pi == 0 && prm.probe_bake.is_some();
             if let Some(ly) = layers.as_ref().filter(|_| prm.lm_scene.is_some() || want_probes) {
-                let tlm = std::time::Instant::now();
+                let tlm = std::time::Instant::now(); crate::pool::stats::stage("lmaccum");
                 // the layer count over the pixels present (`start` is per wanted pixel in the sparse form)
                 let nl = ly.start.windows(2).map(|w| (w[1] - w[0]) as usize).max().unwrap_or(0).max(ly.max_layers.min(ly.item_layers + 1));
                 let lm_draws: Option<(&crate::lmaccum::LmScene, Vec<crate::lmaccum::SetDraw>)> = prm.lm_scene.as_ref().filter(|_| dir_lm.is_some()).map(|lm| {
@@ -3546,7 +3549,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                 }
             }
             prof::add(&prof::DUMP, td);
-            let tg = std::time::Instant::now();
+            let tg = std::time::Instant::now(); crate::pool::stats::stage("gather");
             // THE GATHER of this peel: per sub-sample the layer it reads (game mode: the game's lookup;
             // else the port's A-buffer walk), written into `sel` (last peel wins where it has a layer)
             let sel_ptr = sel.as_mut_ptr() as usize;
@@ -3658,7 +3661,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             prof::add(&prof::GATHER, tg);
         }
         } // (the live direction)
-        let t_contrib = std::time::Instant::now();
+        let t_contrib = std::time::Instant::now(); crate::pool::stats::stage("contrib");
         if let (Some(tx), true) = (&contrib_tx, replay.is_none()) {
             // THE CONTRIBUTION of this direction: sel of the facing sub-samples, the occl bits, the probes
             let mut c = crate::contrib::DirContrib { sweep: prm.sweep, di: di as u32, n_subs: cur.len() as u32, ..Default::default() };
@@ -3676,7 +3679,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         }
         prof::add(&prof::CONTRIB, t_contrib);
         let t_build = t_build_total;
-        let ta = std::time::Instant::now();
+        let ta = std::time::Instant::now(); crate::pool::stats::stage("accum");
         // THE PROBES: the direction's two folds (PS 1112) — the game issues them after the H-basis, the order is immaterial
         // (they read the direction's volume, which the fitted peel and the H-basis never touch)
         if let Some(pb) = &prm.probe_bake { pb.lock().unwrap().end_direction(*d, prm.sphere_dirs.len(), prm.sweep); }
@@ -3818,7 +3821,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         prof::add(&prof::ACC_SUB, t_acc_sub);
         prof::add(&prof::ACCUM, ta);
         let ab_len = frag_total;
-        let tsn = std::time::Instant::now();
+        let tsn = std::time::Instant::now(); crate::pool::stats::stage("snap");
         // the harness: the accumulation target after this direction (the game's H-basis MRT snapshot after
         // its k-th direction, `--dump-lightsum-after`); direction = the index in the sweep's issue order
         if let Some(dump) = &prm.dump {

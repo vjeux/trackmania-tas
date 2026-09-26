@@ -1,0 +1,10 @@
+[package]
+name = "lmperf"
+version.workspace = true
+edition = "2021"
+
+[[bin]]
+name = "lmperf"
+path = "src/main.rs"
+
+[dependencies]
