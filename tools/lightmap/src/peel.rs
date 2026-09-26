@@ -245,7 +245,8 @@ impl PixelIndex {
         // (perf 8: a task of 819 words is a 5 µs popcount under a ~100 µs hand-off — a quarter of the threads, 8 k words each)
         let chunk = (n / (threads / 4).max(1)).max(4096);
         let n_chunks = (n + chunk - 1) / chunk;
-        let counts: Vec<u32> = crate::pool::pool().map(n_chunks, |ci| words[ci * chunk..((ci + 1) * chunk).min(n)].iter().map(|w| w.count_ones()).sum());
+        // (perf 8: the counts on the caller — a popcount over the 2 MB of words is ~60 µs, a quarter of a pool hand-off)
+        let counts: Vec<u32> = (0..n_chunks).map(|ci| words[ci * chunk..((ci + 1) * chunk).min(n)].iter().map(|w| w.count_ones()).sum()).collect();
         let mut base = Vec::with_capacity(n_chunks + 1);
         base.push(0u32);
         for c in &counts { let last = *base.last().unwrap(); base.push(last + c); }
@@ -3842,6 +3843,12 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
     let max_set = if jitter { jit_sets.iter().map(|s| s.len()).max().unwrap_or(0) } else { subs.len() };
     let mut sel_buf: Vec<[f32; 3]> = vec![[0.0; 3]; max_set];
     let mut occl_buf: Vec<bool> = vec![false; max_set];
+    // THE GENERATION STAMP (perf 8): instead of clearing `sel` to the sky and `occl` to false for every sub-sample before
+    // each direction (38 MB of writes on the tiny map, 0.8 ms per direction), a hit stamps its sub-sample with the
+    // direction's generation; a reader takes (sel, occl) where the stamp matches and (sky_fill, false) elsewhere — the
+    // same values the clear provided. The generation never repeats within the bake.
+    let mut stamp_buf: Vec<u32> = vec![0u32; max_set];
+    let mut stamp_gen: u32 = 0;
     let range_all_buf: Vec<u32> = if jitter { (0..max_set as u32).collect() } else { Vec::new() };
     // the tiles' world-XZ clip boxes per peel index (None = the world peel: no clip), see the gather
     let tile_clip: Vec<Option<[f32; 4]>> = prm.peel_tile_clip.as_ref().map(|v| v.as_ref().clone()).unwrap_or_default();
@@ -3994,18 +4001,11 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         // (the reused buffers, filled in parallel)
         let sel: &mut [[f32; 3]] = &mut sel_buf[..cur.len()];
         let occl: &mut [bool] = &mut occl_buf[..cur.len()];
-        let t_clear = std::time::Instant::now(); crate::pool::stats::stage("clear");
-        {
-            let n = cur.len();
-            let per = (n / (threads * 2).max(1)).max(4096);
-            let (sp, op) = (sel.as_mut_ptr() as usize, occl.as_mut_ptr() as usize);
-            crate::pool::pool().run((n + per - 1) / per, |ci| {
-                for i in ci * per..((ci + 1) * per).min(n) {
-                    // SAFETY: disjoint index ranges per task
-                    unsafe { *(sp as *mut [f32; 3]).add(i) = sky_fill; *(op as *mut bool).add(i) = false; }
-                }
-            });
-        }
+        stamp_gen += 1;
+        let gen = stamp_gen;
+        let stamp: &mut [u32] = &mut stamp_buf[..cur.len()];
+        let t_clear = std::time::Instant::now();
+        // (no clear: the generation stamp above stands in for it)
         prof::add(&prof::CLEAR, t_clear);
         let mut t_build_total = 0.0f32;
         // the transcribed accumulate's TMapILightDir of this direction (cleared before the first block)
@@ -4025,8 +4025,11 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                 if dot(s.n, *d) > 0.0 {
                     sel[i] = c.sel[k];
                     k += 1;
+                } else {
+                    sel[i] = sky_fill;
                 }
                 occl[i] = c.occl(i);
+                stamp[i] = gen;
             }
             assert_eq!(k, c.sel.len(), "merge-contrib: direction {di}: {} facing sub-samples, {} stored", k, c.sel.len());
             if let Some(pb) = &prm.probe_bake { pb.lock().unwrap().import_direction(&c.probe_cur, &c.sky_adds); }
@@ -4535,6 +4538,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             // else the port's A-buffer walk), written into `sel` (last peel wins where it has a layer)
             let sel_ptr = sel.as_mut_ptr() as usize;
             let occl_ptr = occl.as_mut_ptr() as usize;
+            let stamp_ptr = stamp.as_mut_ptr() as usize;
             // a tile peel walks its own sub-sample list (perf 8; the clip test below still guards every one of them)
             let range: &[u32] = match tile_subs.get(if jitter { di % 9 } else { 0 }).and_then(|v| v.get(pi)).and_then(|o| o.as_ref()) { Some(list) => list.as_slice(), None => range };
             let chunk = (range.len() / (threads.max(1) * 8)).max(1024);
@@ -4623,6 +4627,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                                 *slot = prm.quant_ilightdir.apply(l, prm.rounding);
                                 let o = unsafe { &mut *(occl_ptr as *mut bool).add(i as usize) };
                                 *o = occluded;
+                                unsafe { *(stamp_ptr as *mut u32).add(i as usize) = gen; }
                             }
                         }
                     }
@@ -4717,6 +4722,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                                 *slot = prm.quant_ilightdir.apply(l, prm.rounding);
                                 let o = unsafe { &mut *(occl_ptr as *mut bool).add(i as usize) };
                                 *o = occluded;
+                                unsafe { *(stamp_ptr as *mut u32).add(i as usize) = gen; }
                             }
                         }
                     }
@@ -4736,8 +4742,9 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             let mut c = crate::contrib::DirContrib { sweep: prm.sweep, di: di as u32, n_subs: cur.len() as u32, ..Default::default() };
             c.occl_bits = vec![0u64; (cur.len() + 63) / 64];
             for (i, s) in cur.iter().enumerate() {
-                if dot(s.n, *d) > 0.0 { c.sel.push(sel[i]); }
-                if occl[i] { c.occl_bits[i >> 6] |= 1u64 << (i & 63); }
+                let live = stamp[i] == gen;
+                if dot(s.n, *d) > 0.0 { c.sel.push(if live { sel[i] } else { sky_fill }); }
+                if live && occl[i] { c.occl_bits[i >> 6] |= 1u64 << (i & 63); }
             }
             if let Some(pb) = &prm.probe_bake {
                 let mut pb = pb.lock().unwrap();
@@ -4859,10 +4866,12 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                         if ndd <= 0.0 {
                             continue;
                         }
-                        let l = sel[i as usize];
+                        // (the stamp: a peel wrote this sub-sample this direction; else the cleared sky and no occluder)
+                        let live = stamp[i as usize] == gen;
+                        let l = if live { sel[i as usize] } else { sky_fill };
                         // LMTOOL_SKY_NO_COS=1: the sky pass (AddSkyVisibility) without the receiver's cosine — the
                         // per-direction constant 4·w·d.y·SkyFactor times the visibility only (a hypothesis under test)
-                        let hit_sky = !occl[i as usize];
+                        let hit_sky = !(live && occl[i as usize]);
                         // THE GAME'S H-BASIS ACCUMULATE (PS 17536 read off the capture, 2026-09-24): C0 += (4π/N)·L·P(n·D)
                         // with P(s) = 0.093506·(3s² − 1) + 0.398928·s + 0.199472 (no clamp; P(1) = π/4, ∫₀¹ P = 0.399,
                         // P ≈ 0 below the horizon), i.e. the H-basis projection of the clamped cosine; the constant
