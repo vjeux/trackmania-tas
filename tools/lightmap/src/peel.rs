@@ -776,6 +776,28 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
                 covered += 1;
                 let n = c - a;
                 if bound_stats {
+                    // how many item fragments the depth rules drop without needing their alpha result:
+                    // behind the environment layer, or inside an accepted fragment's bias window
+                    {
+                        let mut tmp: Vec<CFrag> = csr[a..c].to_vec();
+                        tmp.sort_by(|p, q| p.z.total_cmp(&q.z).then_with(|| p.tri.cmp(&q.tri)));
+                        let cx = count.as_ref().unwrap();
+                        let prm = cx.prm;
+                        let mut d_prev = f32::NEG_INFINITY;
+                        let env_q = if prm.dome_layer { if env_d > 0.0 { if prm.depth_bits == 16 { (env_d * 65535.0).round() / 65535.0 } else { env_d } } else { 0.0 } } else { f32::NEG_INFINITY };
+                        d_prev = d_prev.max(env_q);
+                        let mut items = 0usize;
+                        for f in &tmp {
+                            let z01 = frame.z01(f.z).max(0.0);
+                            if z01 < env_q { DROP_STATS[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed); continue; }
+                            if z01 < d_prev { DROP_STATS[1].fetch_add(1, std::sync::atomic::Ordering::Relaxed); continue; }
+                            if items >= MAX_LAYERS { DROP_STATS[2].fetch_add(1, std::sync::atomic::Ordering::Relaxed); continue; }
+                            let mut dd = z01 + f.bias;
+                            if prm.depth_bits == 16 { dd = (dd.clamp(0.0, 1.0) * 65535.0).round() / 65535.0; }
+                            items += 1; d_prev = dd;
+                            DROP_STATS[3].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    }
                     hist_u[n.min(MAX_LAYERS)] += 1;
                     let (x, y) = (li % res as usize, by0 as usize + li / res as usize);
                     if x % 4 == 0 && y % 4 == 0 {
@@ -2112,6 +2134,8 @@ impl Slot {
     pub const EMPTY: Slot = Slot { n: 0, f: [CFrag { z: 0.0, tri: 0, bias: 0.0 }; SLOT_K] };
 }
 
+/// LMTOOL_BOUND_STATS: item fragments (alpha-passing) [behind the environment, inside a bias window, past the layer cap, accepted].
+pub static DROP_STATS: [std::sync::atomic::AtomicU64; 4] = [std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0)];
 /// LMTOOL_BOUND_STATS: [frames, decided-and-right (census/4), decided-and-right (census/8), decided-WRONG].
 pub static BOUND_TOTALS: [std::sync::atomic::AtomicU64; 4] = [std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0)];
 
@@ -2162,6 +2186,7 @@ pub mod prof {
         let g = |c: &AtomicU64| c.load(Ordering::Relaxed) as f64 / 1e9;
         let staged = g(&BUILD) + g(&LAYERS) + g(&DUMP) + g(&GATHER) + g(&ACCUM) + g(&SNAP) + g(&FRAMES) + g(&EXACT);
         crate::alphatex::alpha_stats_report();
+        if crate::peel::DROP_STATS[3].load(Ordering::Relaxed) > 0 { let d = |i: usize| crate::peel::DROP_STATS[i].swap(0, Ordering::Relaxed); let (a, b, c, k) = (d(0), d(1), d(2), d(3)); let t = (a + b + c + k).max(1); eprintln!("drop stats [{label}]: of {t} alpha-passing item fragments: behind the environment {a} ({:.1} %), in a bias window {b} ({:.1} %), past the cap {c} ({:.1} %), accepted as layers {k} ({:.1} %)", a as f64 * 100.0 / t as f64, b as f64 * 100.0 / t as f64, c as f64 * 100.0 / t as f64, k as f64 * 100.0 / t as f64); }
         if crate::peel::BOUND_TOTALS[0].load(Ordering::Relaxed) > 0 { eprintln!("bound stats [{label}]: {} frames, stop certified right by the census/4 bounds {} and by census/8 {}, certified WRONG {}", crate::peel::BOUND_TOTALS[0].swap(0, Ordering::Relaxed), crate::peel::BOUND_TOTALS[1].swap(0, Ordering::Relaxed), crate::peel::BOUND_TOTALS[2].swap(0, Ordering::Relaxed), crate::peel::BOUND_TOTALS[3].swap(0, Ordering::Relaxed)); }
         eprintln!("profile [{label}] glue: dome raster {:.2}s, wanted bitmap {:.2}s, BVH cull {:.2}s, sel/occl clear {:.2}s, contribution {:.2}s", g(&DOME), g(&BITMAP), g(&CULL), g(&CLEAR), g(&CONTRIB));
         eprintln!("profile [{label}]: A-buffer build {:.2}s (wanted index {:.2}s, clip {:.2}s, raster {:.2}s, CSR {:.2}s), exact layer count {:.2}s, layer derivation {:.2}s (parallel part {:.2}s), per-direction dumps {:.2}s, gather {:.2}s, accumulate {:.2}s, accumulation snapshots {:.2}s, frames {:.2}s; directions total {:.2}s (unstaged {:.2}s); sweep total {total:.2}s", g(&BUILD), g(&B_INDEX), g(&B_CLIP), g(&B_RASTER), g(&B_SORT), g(&EXACT), g(&LAYERS), g(&L_PAR), g(&DUMP), g(&GATHER), g(&ACCUM), g(&SNAP), g(&FRAMES), g(&DIR), g(&DIR) - staged);
