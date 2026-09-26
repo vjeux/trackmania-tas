@@ -188,7 +188,10 @@ pub fn triangle_clipped<F: FnMut(u32, u32, Bary)>(w: u32, h: u32, p: [[f32; 2]; 
 
 /// The per-triangle setup of the clipped raster: the oriented vertices, the pixel bounds within the clip,
 /// the top-left flags, 1/area, and the three edges' row-crossing slopes (f64) for the span limits.
-struct Setup {
+/// The per-triangle constants of the walk: the oriented vertices, the clipped pixel box, the top-left flags, the
+/// area's inverse — nothing per row (the row spans of a wide triangle come from `slopes_of`).
+#[derive(Clone, Copy)]
+struct SetupCore {
     a: [f32; 2],
     b: [f32; 2],
     c: [f32; 2],
@@ -199,12 +202,10 @@ struct Setup {
     y1: i32,
     tl: [bool; 3],
     inv: f32,
-    /// Per edge: (origin x, origin y, dx/dy, going down) — None for a horizontal edge or a narrow box.
-    slopes: [Option<(f64, f64, f64, bool)>; 3],
 }
 
 #[inline(always)]
-fn setup(w: u32, h: u32, p: [[f32; 2]; 3], clip: (i32, i32, i32, i32)) -> Option<Setup> {
+fn setup_core(w: u32, h: u32, p: [[f32; 2]; 3], clip: (i32, i32, i32, i32)) -> Option<SetupCore> {
     let area = edge(p[0], p[1], p[2]);
     if area == 0.0 || !area.is_finite() {
         return None;
@@ -219,47 +220,68 @@ fn setup(w: u32, h: u32, p: [[f32; 2]; 3], clip: (i32, i32, i32, i32)) -> Option
     }
     let tl = [top_left(a, b), top_left(b, c), top_left(c, a)];
     let inv = 1.0 / area;
-    // THE ROW SPANS: per row the x-interval the three half-planes leave for the pixel centres, from the
-    // edges' crossings (f64, widened by a pixel each side) — the exact per-pixel test is unchanged and
-    // still decides every pixel of the span; the span only skips pixels more than a pixel outside an edge
-    // (a large ground quad's bounding box is half outside the triangle: 2.9 G pixel tests per direction on
-    // the giant's tiles before this, 0.6 G after). `None` slope = a horizontal edge (no x constraint).
-    // (straight-line: the array `map` with a closure was an out-of-line call per triangle with every live
-    // value spilled around it — 6 % of the raster)
+    Some(SetupCore { a, b, c, swapped, x0, x1, y0, y1, tl, inv })
+}
+
+/// THE ROW SPANS of a wide triangle: per edge (origin x, origin y, dx/dy, going down) — None for a horizontal
+/// edge. Per row the x-interval the three half-planes leave for the pixel centres, from the edges' crossings
+/// (f64, widened by a pixel each side) — the exact per-pixel test is unchanged and still decides every pixel of
+/// the span; the span only skips pixels more than a pixel outside an edge (a large ground quad's bounding box is
+/// half outside the triangle: 2.9 G pixel tests per direction on the giant's tiles before this, 0.6 G after).
+/// (straight-line: an array `map` with a closure was an out-of-line call per triangle — 6 % of the raster)
+#[inline(always)]
+fn slopes_of(s: &SetupCore) -> [Option<(f64, f64, f64, bool)>; 3] {
     #[inline(always)]
     fn slope_of(p: [f32; 2], q: [f32; 2]) -> Option<(f64, f64, f64, bool)> {
         let dy = q[1] as f64 - p[1] as f64;
         if dy == 0.0 { None } else { Some((p[0] as f64, p[1] as f64, (q[0] as f64 - p[0] as f64) / dy, dy > 0.0)) }
     }
-    // a narrow bounding box (most leaf triangles: a few pixels wide) is tested pixel by pixel — the three
-    // crossings per row cost more than the exact tests they would skip
-    let narrow = x1 - x0 < 4;
-    let slopes: [Option<(f64, f64, f64, bool)>; 3] = if narrow { [None, None, None] } else { [slope_of(a, b), slope_of(b, c), slope_of(c, a)] };
-    Some(Setup { a, b, c, swapped, x0, x1, y0, y1, tl, inv, slopes })
+    [slope_of(s.a, s.b), slope_of(s.b, s.c), slope_of(s.c, s.a)]
+}
+
+/// The pixel columns [lo, hi] of the row at centre `py` the three edges leave (a pixel outside it is more than a
+/// pixel outside an edge); None = an empty row.
+#[inline(always)]
+fn span_of(s: &SetupCore, slopes: &[Option<(f64, f64, f64, bool)>; 3], w: u32, py: f32) -> Option<(i32, i32)> {
+    let (mut lo, mut hi) = (s.x0, s.x1);
+    for sl in slopes {
+        if let Some((ax, ay, m, upward)) = sl {
+            let xc = ax + (py as f64 - ay) * m;
+            if *upward {
+                // inside ⇔ q.x ≤ xc ⇔ x ≤ floor(xc − 0.5)
+                let h = (xc - 0.5).floor();
+                if h < hi as f64 { hi = (h.max(-1.0) as i32).saturating_add(1); }
+            } else {
+                let l = (xc - 0.5).ceil();
+                if l > lo as f64 { lo = (l.min(w as f64 + 1.0) as i32).saturating_sub(1); }
+            }
+        }
+    }
+    let (lo, hi) = (lo.max(s.x0), hi.min(s.x1));
+    if lo > hi { None } else { Some((lo, hi)) }
+}
+
+/// The scalar walks' set-up: the core plus the slopes (none for a narrow box, as before: the three crossings per
+/// row cost more than the exact tests they would skip).
+struct Setup {
+    core: SetupCore,
+    slopes: [Option<(f64, f64, f64, bool)>; 3],
+}
+
+#[inline(always)]
+fn setup(w: u32, h: u32, p: [[f32; 2]; 3], clip: (i32, i32, i32, i32)) -> Option<Setup> {
+    let core = setup_core(w, h, p, clip)?;
+    let slopes = if core.x1 - core.x0 < 16 { [None, None, None] } else { slopes_of(&core) };
+    Some(Setup { core, slopes })
 }
 
 impl Setup {
-    /// The pixel columns [lo, hi] of row `y` the three edges leave (a pixel outside it is more than a pixel
-    /// outside an edge); None = an empty row.
     #[inline(always)]
-    fn span(&self, w: u32, py: f32) -> Option<(i32, i32)> {
-        let (mut lo, mut hi) = (self.x0, self.x1);
-        for sl in &self.slopes {
-            if let Some((ax, ay, m, upward)) = sl {
-                let xc = ax + (py as f64 - ay) * m;
-                if *upward {
-                    // inside ⇔ q.x ≤ xc ⇔ x ≤ floor(xc − 0.5)
-                    let h = (xc - 0.5).floor();
-                    if h < hi as f64 { hi = (h.max(-1.0) as i32).saturating_add(1); }
-                } else {
-                    let l = (xc - 0.5).ceil();
-                    if l > lo as f64 { lo = (l.min(w as f64 + 1.0) as i32).saturating_sub(1); }
-                }
-            }
-        }
-        let (lo, hi) = (lo.max(self.x0), hi.min(self.x1));
-        if lo > hi { None } else { Some((lo, hi)) }
-    }
+    fn span(&self, w: u32, py: f32) -> Option<(i32, i32)> { span_of(&self.core, &self.slopes, w, py) }
+}
+impl std::ops::Deref for Setup {
+    type Target = SetupCore;
+    fn deref(&self) -> &SetupCore { &self.core }
 }
 
 
@@ -318,7 +340,7 @@ pub fn triangle_clipped_masked<F: FnMut(u32, u32, Bary)>(w: u32, h: u32, p: [[f3
     #[cfg(all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512bw"))]
     {
         // SAFETY: the build enables avx512f/bw for every function, so the processor has them
-        unsafe { triangle_rows_avx512(w, h, p, clip, mask, PerPixel(f)) }
+        unsafe { triangle_rows_avx512(w, h, p, clip, mask, &mut PerPixel(f)) }
     }
     #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512bw")))]
     {
@@ -372,34 +394,50 @@ pub fn triangle_rows_scalar<F: FnMut(u32, u32, Bary)>(w: u32, h: u32, p: [[f32; 
 #[cfg(target_arch = "x86_64")]
 #[inline(never)]
 #[target_feature(enable = "avx512f,avx512bw,avx512dq,avx512vl")]
-pub unsafe fn triangle_rows_avx512<G: SpanFn>(w: u32, h: u32, p: [[f32; 2]; 3], clip: (i32, i32, i32, i32), mask: Option<&[u64]>, mut emit: G) {
+pub unsafe fn triangle_rows_avx512<G: SpanFn>(w: u32, h: u32, p: [[f32; 2]; 3], clip: (i32, i32, i32, i32), mask: Option<&[u64]>, emit: &mut G) {
+    // the diagnostic rules (the audit, the integer and snap rules) share one gate: the production walk pays one load
+    if *DEBUG_RULES {
+        return triangle_rows_avx512_audited(w, h, p, clip, mask, emit);
+    }
+    let Some(s) = setup_core(w, h, p, clip) else { return };
+    // THE MICRO TRIANGLE (the leaves: most triangle-jobs of a bake): a bounding box at most sixteen pixels wide is
+    // one block per row — no row spans, no slopes, the edge constants as scalars re-broadcast per row (a live
+    // vector across the emit call is a spill; a broadcast from a register is one instruction)
+    if s.x1 - s.x0 < 16 {
+        walk_blocks(&s, w, mask, emit, None);
+    } else {
+        let slopes = slopes_of(&s);
+        walk_blocks(&s, w, mask, emit, Some(&slopes));
+    }
+}
+
+/// The 16-wide row walk over the set-up triangle: per row the span (all of the box for a micro triangle, the edge
+/// crossings' interval otherwise), per block of sixteen the scalar test's operations per lane, the weights stored in
+/// the caller's vertex order, one `span` call per block with a set lane.
+#[inline(always)]
+unsafe fn walk_blocks<G: SpanFn>(s: &SetupCore, w: u32, mask: Option<&[u64]>, emit: &mut G, slopes: Option<&[Option<(f64, f64, f64, bool)>; 3]>) {
     use std::arch::x86_64::*;
-    // (LMTOOL_EDGE_RULE=snap) the vertices on the 1/256-pixel grid before anything else
-    let p = if *EDGE_RULE_SNAP { let sn = |v: f32| -> f32 { ((v as f64 * 256.0).round_ties_even() / 256.0) as f32 }; [[sn(p[0][0]), sn(p[0][1])], [sn(p[1][0]), sn(p[1][1])], [sn(p[2][0]), sn(p[2][1])]] } else { p };
-    let Some(s) = setup(w, h, p, clip) else { return };
     let (a, b, c) = (s.a, s.b, s.c);
     // per edge (a→b, b→c, c→a): the scalar test's (b−a).x and (b−a).y, and the origin
-    let es: [([f32; 2], f32, f32); 3] = [(a, b[0] - a[0], b[1] - a[1]), (b, c[0] - b[0], c[1] - b[1]), (c, a[0] - c[0], a[1] - c[1])];
-    let ax = [_mm512_set1_ps(es[0].0[0]), _mm512_set1_ps(es[1].0[0]), _mm512_set1_ps(es[2].0[0])];
-    let dy = [_mm512_set1_ps(es[0].2), _mm512_set1_ps(es[1].2), _mm512_set1_ps(es[2].2)];
-    let zero = _mm512_setzero_ps();
-    let half = _mm512_set1_ps(0.5);
-    let iota = _mm512_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
-    let invv = _mm512_set1_ps(s.inv);
+    let ex = [a[0], b[0], c[0]];
+    let ey = [a[1], b[1], c[1]];
+    let edx = [b[0] - a[0], c[0] - b[0], a[0] - c[0]];
+    let edy = [b[1] - a[1], c[1] - b[1], a[1] - c[1]];
     let tl = s.tl;
-    // the weights in the caller's vertex order: a ← e1/area, b ← e2/area, c ← e0/area, b and c swapped
-    // back when the orientation swapped them
     let (wi_b, wi_c) = if s.swapped { (2usize, 1usize) } else { (1, 2) };
     // (LMTOOL_EDGE_AUDIT) the specification's snapped integer triangle beside the f32 one
-    let audit: Option<IntTri> = if *EDGE_AUDIT || *EDGE_RULE_INT { let it = IntTri::new(p); if it.degenerate { EDGE_AUDIT_TALLY[3].fetch_add(1, std::sync::atomic::Ordering::Relaxed); } Some(it) } else { None };
+    let audit: Option<IntTri> = if *EDGE_AUDIT || *EDGE_RULE_INT { let it = IntTri::new([s.a, s.b, s.c]); if it.degenerate { EDGE_AUDIT_TALLY[3].fetch_add(1, std::sync::atomic::Ordering::Relaxed); } Some(it) } else { None };
     let rule_int = *EDGE_RULE_INT;
     let mut bary_al = Bary16([[0f32; 16]; 3]);
     let bary = &mut bary_al.0;
     for y in s.y0..=s.y1 {
         let py = y as f32 + 0.5;
-        let Some((lo, hi)) = s.span(w, py) else { continue };
+        let (lo, hi) = match slopes {
+            None => (s.x0, s.x1),
+            Some(sl) => match span_of(s, sl, w, py) { Some(r) => r, None => continue },
+        };
         // the scalar test's (b−a).x·(q−a).y — one value per row per edge
-        let t1v = [_mm512_set1_ps(es[0].1 * (py - es[0].0[1])), _mm512_set1_ps(es[1].1 * (py - es[1].0[1])), _mm512_set1_ps(es[2].1 * (py - es[2].0[1]))];
+        let t1 = [edx[0] * (py - ey[0]), edx[1] * (py - ey[1]), edx[2] * (py - ey[2])];
         let row_id = y as usize * w as usize;
         let mut x = lo;
         while x <= hi {
@@ -419,11 +457,81 @@ pub unsafe fn triangle_rows_avx512<G: SpanFn>(w: u32, h: u32, p: [[f32; 2]; 3], 
                 }
             }
             // q.x = x + 0.5 per lane, exactly as `x as f32 + 0.5`
-            let qx = _mm512_add_ps(_mm512_cvtepi32_ps(_mm512_add_epi32(_mm512_set1_epi32(x), iota)), half);
+            let iota = _mm512_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
+            let qx = _mm512_add_ps(_mm512_cvtepi32_ps(_mm512_add_epi32(_mm512_set1_epi32(x), iota)), _mm512_set1_ps(0.5));
+            let zero = _mm512_setzero_ps();
             let mut e = [zero; 3];
             let mut inside: __mmask16 = lanes;
             for k in 0..3 {
                 // e = (b−a).x·(q−a).y − (b−a).y·(q−a).x, the scalar operation order
+                let d = _mm512_sub_ps(qx, _mm512_set1_ps(ex[k]));
+                let p2 = _mm512_mul_ps(_mm512_set1_ps(edy[k]), d);
+                e[k] = _mm512_sub_ps(_mm512_set1_ps(t1[k]), p2);
+                let gt = _mm512_cmp_ps_mask::<_CMP_GT_OQ>(e[k], zero);
+                let on = if tl[k] { _mm512_cmp_ps_mask::<_CMP_EQ_OQ>(e[k], zero) } else { 0 };
+                inside &= gt | on;
+            }
+            if inside != 0 {
+                // the scalar `e * inv` per lane
+                let invv = _mm512_set1_ps(s.inv);
+                _mm512_storeu_ps(bary[0].as_mut_ptr(), _mm512_mul_ps(e[1], invv));
+                _mm512_storeu_ps(bary[wi_b].as_mut_ptr(), _mm512_mul_ps(e[2], invv));
+                _mm512_storeu_ps(bary[wi_c].as_mut_ptr(), _mm512_mul_ps(e[0], invv));
+                emit.span(x as u32, y as u32, inside, &bary);
+            }
+            x += 16;
+        }
+    }
+}
+
+/// The walk with the diagnostic rules (LMTOOL_EDGE_AUDIT / LMTOOL_EDGE_RULE): the same pixels and weights as the
+/// production walk under the f32 rule, plus the tally or the substituted decision.
+#[inline(never)]
+unsafe fn triangle_rows_avx512_audited<G: SpanFn>(w: u32, h: u32, p: [[f32; 2]; 3], clip: (i32, i32, i32, i32), mask: Option<&[u64]>, emit: &mut G) {
+    use std::arch::x86_64::*;
+    // (LMTOOL_EDGE_RULE=snap) the vertices on the 1/256-pixel grid before anything else
+    let p = if *EDGE_RULE_SNAP { let sn = |v: f32| -> f32 { ((v as f64 * 256.0).round_ties_even() / 256.0) as f32 }; [[sn(p[0][0]), sn(p[0][1])], [sn(p[1][0]), sn(p[1][1])], [sn(p[2][0]), sn(p[2][1])]] } else { p };
+    let Some(s) = setup_core(w, h, p, clip) else { return };
+    let slopes = if s.x1 - s.x0 < 16 { [None, None, None] } else { slopes_of(&s) };
+    let (a, b, c) = (s.a, s.b, s.c);
+    let es: [([f32; 2], f32, f32); 3] = [(a, b[0] - a[0], b[1] - a[1]), (b, c[0] - b[0], c[1] - b[1]), (c, a[0] - c[0], a[1] - c[1])];
+    let ax = [_mm512_set1_ps(es[0].0[0]), _mm512_set1_ps(es[1].0[0]), _mm512_set1_ps(es[2].0[0])];
+    let dy = [_mm512_set1_ps(es[0].2), _mm512_set1_ps(es[1].2), _mm512_set1_ps(es[2].2)];
+    let zero = _mm512_setzero_ps();
+    let half = _mm512_set1_ps(0.5);
+    let iota = _mm512_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
+    let invv = _mm512_set1_ps(s.inv);
+    let tl = s.tl;
+    let (wi_b, wi_c) = if s.swapped { (2usize, 1usize) } else { (1, 2) };
+    // (LMTOOL_EDGE_AUDIT) the specification's snapped integer triangle beside the f32 one
+    let audit: Option<IntTri> = if *EDGE_AUDIT || *EDGE_RULE_INT { let it = IntTri::new([s.a, s.b, s.c]); if it.degenerate { EDGE_AUDIT_TALLY[3].fetch_add(1, std::sync::atomic::Ordering::Relaxed); } Some(it) } else { None };
+    let rule_int = *EDGE_RULE_INT;
+    let mut bary = [[0f32; 16]; 3];
+    for y in s.y0..=s.y1 {
+        let py = y as f32 + 0.5;
+        let Some((lo, hi)) = span_of(&s, &slopes, w, py) else { continue };
+        let t1v = [_mm512_set1_ps(es[0].1 * (py - es[0].0[1])), _mm512_set1_ps(es[1].1 * (py - es[1].0[1])), _mm512_set1_ps(es[2].1 * (py - es[2].0[1]))];
+        let row_id = y as usize * w as usize;
+        let mut x = lo;
+        while x <= hi {
+            let n = (hi - x + 1).min(16);
+            let mut lanes: u16 = if n >= 16 { u16::MAX } else { ((1u32 << n) - 1) as u16 };
+            if let Some(m) = mask {
+                let i = row_id + x as usize;
+                if m[i >> 6] == 0 {
+                    x += 64 - (i & 63) as i32;
+                    continue;
+                }
+                lanes &= wanted16(m, i);
+                if lanes == 0 {
+                    x += 16;
+                    continue;
+                }
+            }
+            let qx = _mm512_add_ps(_mm512_cvtepi32_ps(_mm512_add_epi32(_mm512_set1_epi32(x), iota)), half);
+            let mut e = [zero; 3];
+            let mut inside: __mmask16 = lanes;
+            for k in 0..3 {
                 let d = _mm512_sub_ps(qx, ax[k]);
                 let p2 = _mm512_mul_ps(dy[k], d);
                 e[k] = _mm512_sub_ps(t1v[k], p2);
@@ -462,7 +570,6 @@ pub unsafe fn triangle_rows_avx512<G: SpanFn>(w: u32, h: u32, p: [[f32; 2]; 3], 
                 }
             }
             if inside != 0 {
-                // the scalar `e * inv` per lane
                 _mm512_storeu_ps(bary[0].as_mut_ptr(), _mm512_mul_ps(e[1], invv));
                 _mm512_storeu_ps(bary[wi_b].as_mut_ptr(), _mm512_mul_ps(e[2], invv));
                 _mm512_storeu_ps(bary[wi_c].as_mut_ptr(), _mm512_mul_ps(e[0], invv));
@@ -472,6 +579,9 @@ pub unsafe fn triangle_rows_avx512<G: SpanFn>(w: u32, h: u32, p: [[f32; 2]; 3], 
         }
     }
 }
+
+/// Any diagnostic rule on (one gate for the production walk).
+pub static DEBUG_RULES: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| *EDGE_AUDIT || *EDGE_RULE_INT || *EDGE_RULE_SNAP);
 
 /// LMTOOL_EDGE_AUDIT=1: every candidate pixel the 16-wide walk tests is ALSO decided by Direct3D 11's own
 /// coverage rule — the vertices snapped to 1/256 pixel (round to nearest even) and the edge function as an
@@ -564,7 +674,7 @@ pub fn triangle_clipped_masked_spans<G: FnMut(u32, u32, u16, &[[f32; 16]; 3])>(w
     #[cfg(all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512bw"))]
     {
         // SAFETY: the build enables avx512f/bw for every function, so the processor has them
-        unsafe { triangle_rows_avx512(w, h, p, clip, mask, Spans(g)) }
+        unsafe { triangle_rows_avx512(w, h, p, clip, mask, &mut Spans(g)) }
     }
     #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512bw")))]
     {
@@ -743,7 +853,7 @@ mod span_tests {
             triangle_rows_scalar(w, h, p, clip, mask, |x, y, b| scalar.push((x, y, b)));
             assert_eq!(plain, scalar, "scalar walk, triangle {k}: {p:?} clip {clip:?}");
             let mut got: Vec<(u32, u32, [f32; 3])> = Vec::new();
-            unsafe { triangle_rows_avx512(w, h, p, clip, mask, PerPixel(|x, y, b| got.push((x, y, b)))) };
+            unsafe { triangle_rows_avx512(w, h, p, clip, mask, &mut PerPixel(|x, y, b| got.push((x, y, b)))) };
             assert_eq!(plain.len(), got.len(), "triangle {k}: {p:?} clip {clip:?}");
             for (i, (pp, g)) in plain.iter().zip(got.iter()).enumerate() {
                 assert_eq!((pp.0, pp.1), (g.0, g.1), "triangle {k} visit {i}");
@@ -759,7 +869,7 @@ mod span_tests {
             };
             let mut simd_spans: Vec<(u32, u32, [f32; 3])> = Vec::new();
             let mut simd_blocks: Vec<(u32, u32)> = Vec::new();
-            unsafe { triangle_rows_avx512(w, h, p, clip, mask, Spans(|x0, y, cov, bary: &[[f32; 16]; 3]| { simd_blocks.push((x0, y)); expand(x0, y, cov, bary, &mut simd_spans) })) };
+            unsafe { triangle_rows_avx512(w, h, p, clip, mask, &mut Spans(|x0, y, cov, bary: &[[f32; 16]; 3]| { simd_blocks.push((x0, y)); expand(x0, y, cov, bary, &mut simd_spans) })) };
             let mut scalar_spans: Vec<(u32, u32, [f32; 3])> = Vec::new();
             let mut scalar_blocks: Vec<(u32, u32)> = Vec::new();
             triangle_rows_scalar_spans(w, h, p, clip, mask, |x0, y, cov, bary| { scalar_blocks.push((x0, y)); expand(x0, y, cov, bary, &mut scalar_spans) });
