@@ -6316,3 +6316,116 @@ mod biased_order_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod biased_walk_vs_gpu_rule_tests {
+    //! E's layer rule as a pure function (2026-09-25 23:27 PT), held against engineer 2's biased walk with the DRAW
+    //! RANK tie key and the item cap (0081/0082, df635375): count, stored-depth sequence AND accepted identity.
+    use super::*;
+
+    #[derive(Clone, Copy, Debug)]
+    struct F {
+        z01: f32,
+        q: f32,
+        key: (u8, u32, u32),
+    }
+
+    /// E's WALK, literally: d_prev := d_env; repeat { C := { f ∉ taken : f.z01 ≥ d_prev }; stop when C is empty
+    /// or |layers| = cap; f* := argmin over C of (q, key); push; d_prev := f*.q }.
+    fn gpu_layers(frags: &[F], d_env: f32, cap: usize) -> Vec<usize> {
+        let mut taken = vec![false; frags.len()];
+        let mut d_prev = d_env;
+        let mut layers = Vec::new();
+        loop {
+            if layers.len() >= cap { break; }
+            let mut best: Option<usize> = None;
+            for (i, f) in frags.iter().enumerate() {
+                if taken[i] || f.z01 < d_prev { continue; }
+                match best {
+                    None => best = Some(i),
+                    Some(b) => { let g = &frags[b]; if (f.q.to_bits(), f.key) < (g.q.to_bits(), g.key) { best = Some(i); } }
+                }
+            }
+            let Some(b) = best else { break };
+            taken[b] = true;
+            layers.push(b);
+            d_prev = frags[b].q;
+        }
+        layers
+    }
+
+    /// The draw rank of each fragment's key, as `draw_rank_table` ranks the scene's triangles: the position in the
+    /// (class, inst, model tri) order — monotone in the key, so the walk's tie order is E's.
+    fn ranks(frags: &[F]) -> Vec<u32> {
+        let mut order: Vec<usize> = (0..frags.len()).collect();
+        order.sort_by_key(|&i| frags[i].key);
+        let mut rank = vec![0u32; frags.len()];
+        for (r, &i) in order.iter().enumerate() { rank[i] = r as u32; }
+        rank
+    }
+
+    #[test]
+    fn the_biased_walk_is_the_gpu_rule_count_depths_and_identities() {
+        let mut seed = 0xa5a5_1234_9876_5432u64;
+        let mut rnd = move || { seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17; seed };
+        let d16 = |x: f32| -> f32 { (x.clamp(0.0, 1.0) * 65535.0).round() / 65535.0 };
+        let mut pixels = 0usize;
+        let mut capped = 0usize;
+        for round in 0..60_000 {
+            let n = match rnd() % 7 { 0 => 1, 1 => 2, 2 => 3, 3 => 5, 4 => 9, 5 => 26, _ => 48 };
+            let mut frags: Vec<F> = Vec::new();
+            let mut mtri = 100u32;
+            while frags.len() < n {
+                let z01 = (rnd() % 65536) as f32 / 65535.0 * 0.4 + 0.5;
+                let kind = rnd() % 5;
+                let steep = rnd() % 2 == 0;
+                let bias = if steep { 100.0 / 65535.0 + (rnd() % 20) as f32 / 65535.0 } else { 8.0 / 65535.0 + (rnd() % 4) as f32 / 65535.0 };
+                let class = if steep { 1u8 } else { 0u8 };
+                let inst = (rnd() % 3) as u32;
+                let q = d16(z01 + bias);
+                match kind {
+                    0 => {
+                        // coincident copies: equal z01 and q, keys in either order relative to their creation
+                        let (m0, m1) = if rnd() % 2 == 0 { (mtri, mtri + 1) } else { (mtri + 1, mtri) };
+                        frags.push(F { z01, q, key: (class, inst, m0) });
+                        frags.push(F { z01, q, key: (class, inst, m1) });
+                    }
+                    1 => {
+                        // a q tie by rounding with different z01 and a different class
+                        let z2 = z01 + 0.4 / 65535.0;
+                        frags.push(F { z01, q, key: (class, inst, mtri) });
+                        frags.push(F { z01: z2, q: d16(z2 + bias), key: (1 - class, inst, mtri + 1) });
+                    }
+                    2 => {
+                        // the crossing: a steep card just nearer than a flat trunk
+                        let zt = z01 + (rnd() % 30) as f32 / 65535.0;
+                        frags.push(F { z01, q: d16(z01 + 110.0 / 65535.0), key: (1, inst, mtri) });
+                        frags.push(F { z01: zt, q: d16(zt + 8.0 / 65535.0), key: (0, inst, mtri + 1) });
+                    }
+                    3 => {
+                        // an exact q tie ACROSS classes at equal z01 (the opaque draw must win)
+                        frags.push(F { z01, q, key: (1, inst, mtri) });
+                        frags.push(F { z01, q, key: (0, inst, mtri + 1) });
+                    }
+                    _ => frags.push(F { z01, q, key: (class, inst, mtri) }),
+                }
+                mtri += 2;
+            }
+            frags.truncate(n.max(1));
+            let dome = rnd() % 4 != 0;
+            let d_env = if !dome { f32::NEG_INFINITY } else { match rnd() % 3 { 0 => 0.0, 1 => d16(0.55 + (rnd() % 1000) as f32 / 65535.0), _ => d16((rnd() % 65536) as f32 / 65535.0) } };
+            let cap = item_cap(dome);
+            let want = gpu_layers(&frags, d_env, cap);
+            if want.len() == cap { capped += 1; }
+            let rk = ranks(&frags);
+            let mut wf: Vec<WalkFrag> = frags.iter().enumerate().map(|(i, f)| WalkFrag { key: (((f.q * 65535.0).round() as u64) << 32) | rk[i] as u64, z01: f.z01, idx: i as u32 }).collect();
+            let mut acc: Vec<u32> = Vec::new();
+            let got = layer_walk_biased_capped(&mut wf, d_env, cap, 16, &mut acc);
+            assert_eq!(got, want.len(), "round {round}: count; frags {frags:?} d_env {d_env} cap {cap}");
+            let want_idx: Vec<u32> = want.iter().map(|&i| i as u32).collect();
+            assert_eq!(acc, want_idx, "round {round}: the accepted identities (and so the stored depths); frags {frags:?} d_env {d_env}");
+            pixels += 1;
+        }
+        eprintln!("biased walk (draw rank, item cap) vs E's rule: {pixels} pixels identical in count, stored depths and accepted identity; {capped} pixels hit the cap");
+    }
+}
