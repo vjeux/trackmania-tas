@@ -1935,6 +1935,19 @@ fn run(a: Vec<String>) {
                 if let Some(st) = lm_store.as_mut() {
                     match lightmap::lmmesh::lm_scene_add_entities(st, gl, &mut sc, 2048.0) { Ok(n) if n > 0 => eprintln!("lm-from-map: {n} prefab entity instances (blocks / clips / walls) added"), Ok(_) => {}, Err(e) => eprintln!("lm-from-map: prefab entities: {e}") }
                 }
+                // THE EXACT PORT INSTANCE OF EVERY ENTITY LM INSTANCE (port engineer G, 2026-09-26): the entity LM instances carry their
+                // record index (rec_of); the record scene knows which port instance each record became (add_record_geometry's map) — so
+                // the atlas colour lookup does not have to find them by translation, where a deco wall, a pool border and a platform
+                // generated at one block origin share a point (stpad: 820 of 2 904 entities collided and read a neighbour's chart)
+                if let Some((inst_of, _)) = record_scene.as_ref() {
+                    let mut fixed = 0usize;
+                    for li in 0..sc.instances.len() {
+                        if sc.port_inst.get(li).copied() == Some(usize::MAX) {
+                            if let Some(Some(pi)) = sc.rec_of.get(li).and_then(|k| inst_of.get(*k)) { sc.port_inst[li] = *pi; fixed += 1; }
+                        }
+                    }
+                    if fixed > 0 { eprintln!("lm-from-map: {fixed} entity LM instances mapped to their port instances by record"); }
+                }
                 eprintln!("lm-from-map: {} LM meshes, {} instances from the map's models + the layout (mesh sizes: {})", sc.meshes.len(), sc.instances.len(), sc.meshes.iter().zip(sc.inst_count.iter()).map(|(m, n)| format!("{}v/{}t×{}", m.verts.len(), m.indices.len() / 3, n)).collect::<Vec<_>>().join(" "));
                 // LMTOOL_LM_COVER=1: THE LM RASTER'S CHART COVERAGE per item instance — the mesh's triangles through the H-basis
                 // vertex shader's clip (lm_clip at raster offset 0) into a 2048² mask; per instance: its chart rect, the covered
@@ -2181,7 +2194,16 @@ fn run(a: Vec<String>) {
                     il.port_inst = lm.port_inst.clone();
                     let item_map = il.map_items(&scene);
                     let dup = { let mut seen = std::collections::HashSet::new(); item_map.iter().flatten().filter(|k| !seen.insert(**k)).count() };
-                    if dup > 0 { eprintln!("setup-from-map: WARNING {dup} port instances share an LM instance in the atlas map (a translation collision)"); }
+                    if dup > 0 {
+                        // which port instances share an LM instance (by model name), so a collision on a class shows up in the log
+                        let mut owners: std::collections::HashMap<usize, Vec<usize>> = Default::default();
+                        for (ii, k) in item_map.iter().enumerate() { if let Some(k) = k { owners.entry(*k).or_default().push(ii); } }
+                        let mut by_name: std::collections::BTreeMap<String, usize> = Default::default();
+                        for (_, v) in owners.iter().filter(|(_, v)| v.len() > 1) { for &ii in v { *by_name.entry(scene.instances[ii].model_name.rsplit('\\').next().unwrap_or("?").to_string()).or_default() += 1; } }
+                        let mut names: Vec<(String, usize)> = by_name.into_iter().collect();
+                        names.sort_by(|a, b| b.1.cmp(&a.1));
+                        eprintln!("setup-from-map: WARNING {dup} port instances share an LM instance in the atlas map (a translation collision): {}", names.iter().take(12).map(|(n, c)| format!("{n} ×{c}")).collect::<Vec<_>>().join(", "));
+                    }
                     eprintln!("setup-from-map: the peels colour from OUR from-map ILightInput atlas — {} LM instances ({} items, {} tiles by footprint), port items mapped {:?}; tile_uv {:?} tile_size {} ({:.1}s total)", il.insts.len(), il.n_items, il.tile_of.len(), item_map, il.tile_uv, il.tile_size, ti.elapsed().as_secs_f32());
                     prm.ilatlas = Some(std::sync::Arc::new(lightmap::ilatlas::IlSource { atlas: il, item_map }));
                     if prm.hb_out.is_none() { prm.hb_out = Some(std::sync::Arc::new(lightmap::ilatlas::HbSlot(std::sync::Mutex::new(None)))); }
