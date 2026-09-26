@@ -630,7 +630,17 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
     // exact count?
     let bound_stats = std::env::var_os("LMTOOL_BOUND_STATS").is_some();
     let bound_acc: std::sync::Mutex<([usize; MAX_LAYERS + 1], [usize; MAX_LAYERS + 1], [usize; MAX_LAYERS + 1])> = std::sync::Mutex::new(([0; MAX_LAYERS + 1], [0; MAX_LAYERS + 1], [0; MAX_LAYERS + 1]));
-    let parts_all: Vec<(Vec<Vec<(u32, Frag)>>, [usize; MAX_LAYERS + 1], usize)> = crate::pool::pool().map(n_bands, |b| {
+    // HEAVIEST FIRST: the pool hands the bands out in index order; a dense band scheduled last leaves the
+    // other threads idle for its whole length (the slowest band is 3–5× the mean). The bands are handed out
+    // in descending order of their triangle count instead — the results land back in band order, and a
+    // pixel's fragments come from one band, so nothing else changes.
+    let band_weight: Vec<usize> = (0..n_bands).map(|b| binned.iter().map(|cl| cl[b].len()).sum()).collect();
+    let mut band_order: Vec<usize> = (0..n_bands).collect();
+    if std::env::var_os("LMTOOL_NO_HEAVY_FIRST").is_none() {
+        band_order.sort_by(|a, b| band_weight[*b].cmp(&band_weight[*a]).then_with(|| a.cmp(b)));
+    }
+    let mut parts_all_by_order: Vec<Option<(Vec<Vec<(u32, Frag)>>, [usize; MAX_LAYERS + 1], usize)>> = crate::pool::pool().map(n_bands, |oi| {
+        let b = band_order[oi];
         let t_band = std::time::Instant::now();
         let mut hist_u = [0usize; MAX_LAYERS + 1];
         let mut hist_l4 = [0usize; MAX_LAYERS + 1];
@@ -659,7 +669,7 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
         let mut saturated = false;
         if by0 > by1 {
             SLOT_BUFS.set((cnt, env_max, list, csr, offs, fill));
-            return (out, hist, covered);
+            return Some((out, hist, covered));
         }
         let band_clip = (clip.0, by0, clip.2, by1);
         for chunk_lists in &binned {
@@ -854,8 +864,15 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
         if bound_stats { let mut g = bound_acc.lock().unwrap(); for k in 0..=MAX_LAYERS { g.0[k] += hist_u[k]; g.1[k] += hist_l4[k]; g.2[k] += hist_l8[k]; } }
         SLOT_BUFS.set((cnt, env_max, list, csr, offs, fill));
         if raster_stats { band_ns[b].store(t_band.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed); RS_TRIS.fetch_add(rs_tris, std::sync::atomic::Ordering::Relaxed); RS_TESTED.fetch_add(rs_tested, std::sync::atomic::Ordering::Relaxed); RS_VISITS.fetch_add(rs_visits, std::sync::atomic::Ordering::Relaxed); }
-        (out, hist, covered)
+        Some((out, hist, covered))
     });
+    // back into band order
+    let mut parts_all: Vec<(Vec<Vec<(u32, Frag)>>, [usize; MAX_LAYERS + 1], usize)> = Vec::with_capacity(n_bands);
+    {
+        let mut slots: Vec<Option<(Vec<Vec<(u32, Frag)>>, [usize; MAX_LAYERS + 1], usize)>> = (0..n_bands).map(|_| None).collect();
+        for (oi, r) in parts_all_by_order.drain(..).enumerate() { slots[band_order[oi]] = r; }
+        for sl in slots { parts_all.push(sl.expect("band result")); }
+    }
     if raster_stats {
         let v: Vec<u64> = band_ns.iter().map(|a| a.load(std::sync::atomic::Ordering::Relaxed)).collect();
         let mx = v.iter().copied().max().unwrap_or(0);
