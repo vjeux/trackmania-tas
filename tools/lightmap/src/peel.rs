@@ -401,6 +401,12 @@ impl ABuffer {
     }
     /// Every fragment of pixel (x, y), nearest the sky first, without the layer cap.
     #[inline]
+    /// The fragments of the wanted pixel of dense rank `k` (the sparse A-buffer's own order: no rank query).
+    #[inline(always)]
+    pub fn at_rank(&self, k: usize) -> &[Frag] {
+        let b = &self.bands[0];
+        &b.1[b.0[k] as usize..b.0[k + 1] as usize]
+    }
     pub fn at_all(&self, x: u32, y: u32) -> &[Frag] {
         if let Some(px) = &self.sparse {
             let Some(k) = px.index(x, y) else { return &[] };
@@ -1608,6 +1614,17 @@ pub fn scene_bounds(tris: &[WTri]) -> (V3, V3) {
 /// face (the peel's camera at +D sees the face whose normal points toward +D).
 fn fragment_radiance(scene: &Scene, bvh: &Bvh, prm: &BakeParams, shadow: Option<&ShadowMap>, frame: &PeelFrame, tri: u32, d: V3, hit_p: V3, sun_bias: f32) -> [f32; 3] {
     let wt = &bvh.tris[tri as usize];
+    // THE FIRST SWEEP WITHOUT A COLOUR SOURCE (no ILightInput atlas, no transcribed atlas, no stored field, the
+    // sun off): an item fragment's colour below is alb · (0 + sun · ndl · 0) = alb · (+0) — the sign of alb on a
+    // zero — or +0 for a back face; computed as such without the normal, the shadow and the field lookups
+    // (the game-peel front test is one cross product and one dot, as below)
+    if prm.sweep == 0 && !prm.sweep0_sun && prm.ilight_atlas.is_none() && prm.ilatlas.is_none() && prm.field.is_none() && wt.inst != DECOR_INST && prm.game_peel {
+        if !(dot(cross(wt.e1, wt.e2), d) < 0.0) {
+            return [0.0; 3];
+        }
+        let alb = hit_albedo(scene, bvh, prm, &Hit { t: 0.0, tri });
+        return [alb[0] * 0.0, alb[1] * 0.0, alb[2] * 0.0];
+    }
     let ng = norm(cross(wt.e1, wt.e2));
     // The face that counts is the one turned TOWARD the receiving texel, i.e. whose normal points
     // against D (the light travels along −D from the occluder to the texel). A pad under a plate sees
@@ -1958,8 +1975,7 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
     // one pixel's layers appended to `out`
     // (the depth-bias term of the last triangle seen by this thread: consecutive wanted pixels mostly read
     // the same large triangle — the ground — and `tri_slope` re-projects three vertices per fragment)
-    let derive_pixel = |x: usize, y: usize, out: &mut Vec<LayerFrag>| {
-        let list = ab.at_all(x as u32, y as u32);
+    let derive_pixel = |x: usize, y: usize, list: &[Frag], out: &mut Vec<LayerFrag>| {
         let before = out.len();
         let mut d_prev = f32::NEG_INFINITY;
         // THE ENVIRONMENT LAYER (the game's first render of every peel: the sea box and the
@@ -2031,10 +2047,20 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
         let parts: Vec<(Vec<u32>, Vec<LayerFrag>)> = crate::pool::pool().map(n_chunks, |ci| {
             let ids = &px.pixels[ci * chunk..((ci + 1) * chunk).min(npx)];
             let mut counts = Vec::with_capacity(ids.len());
-            let mut out: Vec<LayerFrag> = Vec::new();
-            for &id in ids {
+            let k0 = ci * chunk;
+            // (sized from the A-buffer's fragment count for the chunk: no growth copies)
+            let n_frags = ab.bands[0].0[k0 + ids.len()] as usize - ab.bands[0].0[k0] as usize;
+            let mut out: Vec<LayerFrag> = Vec::with_capacity(n_frags + ids.len());
+            for (i, &id) in ids.iter().enumerate() {
                 let before = out.len();
-                derive_pixel((id % w) as usize, (id / w) as usize, &mut out);
+                // (the next pixel's fragments' triangles fetched ahead: the per-fragment `bvh.tris[tri]` read is a
+                // cache miss for anything but the ground)
+                if i + 1 < ids.len() {
+                    for f in ab.at_rank(k0 + i + 1).iter().take(4) {
+                        crate::peel::prefetch(&bvh.tris[f.tri as usize]);
+                    }
+                }
+                derive_pixel((id % w) as usize, (id / w) as usize, ab.at_rank(k0 + i), &mut out);
                 counts.push((out.len() - before) as u32);
             }
             (counts, out)
@@ -2154,7 +2180,7 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
                     for y in y0..y1 {
                         for x in 0..w as usize {
                             let before = out.len();
-                            derive_pixel(x, y, &mut out);
+                            derive_pixel(x, y, ab.at_all(x as u32, y as u32), &mut out);
                             counts.push((out.len() - before) as u32);
                         }
                     }
@@ -2623,6 +2649,15 @@ pub fn count_add16(cnt: &mut [u16], live: u16, saturated: &mut bool) {
             if *c == u16::MAX { *saturated = true; } else { *c += 1; }
         }
     }
+}
+
+/// A hint to fetch `p`'s cache line (no effect on any value).
+#[inline(always)]
+pub fn prefetch<T>(p: &T) {
+    #[cfg(target_arch = "x86_64")]
+    unsafe { std::arch::x86_64::_mm_prefetch::<{ std::arch::x86_64::_MM_HINT_T0 }>(p as *const T as *const i8); }
+    #[cfg(not(target_arch = "x86_64"))]
+    { let _ = p; }
 }
 
 thread_local! {
