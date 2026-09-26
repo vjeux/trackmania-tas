@@ -1071,7 +1071,7 @@ fn run(a: Vec<String>) {
                 // a real blend only for custom words (np-tk3 0x5000 = Sunrise + 1.9 % Day). --no-mood-blend: the quarter's
                 // mood alone (the pre-2026-09-23 form; identical at the default words); --mood M forces a pure mood
                 let key: f32 = match dt { Some(t) if t != 0xffff_ffff => t as f32 / 65536.0, _ => lightmap::moods::default_daytime(&h.envir, mood) as f32 / 65536.0 };
-                let blend = if !has("--no-mood-blend") && f("--mood").map(|m| m == "auto").unwrap_or(true) { lightmap::moods::blend(&h.envir, key).filter(|(_, _, t)| *t > 0.0 && *t < 1.0) } else { None };
+                let blend = if !has("--no-mood-blend") && f("--mood").map(|m| m == "auto").unwrap_or(true) { lightmap::moods::blend(&h.envir, key).filter(|(_, _, t)| *t > 1e-6 && *t < 1.0 - 1e-6) } else { None };  // SNAPPED: a default word gives t ≈ 1e-7 (the time→key round trip), and the lerp then moved MaxHDR_Mood 3 → 2.9999998 / SkyFactor 1 → 1.0000002 — the editor writes the pure words; pure below 1e-6 (baker-3)
                 if has("--mood-blend") { eprintln!("--mood-blend is the default now (--no-mood-blend turns it off)"); }
                 let x_pure = lightmap::moods::mood_xml(&h.envir, mood).unwrap_or_else(|| panic!("no mood XML for {} {mood}", h.envir));
                 let x_blended: lightmap::moods::MoodXml = match blend { Some(_) => lightmap::moods::blended_xml(&h.envir, key).unwrap(), None => *x_pure };
