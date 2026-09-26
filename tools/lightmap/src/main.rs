@@ -2954,7 +2954,10 @@ fn run(a: Vec<String>) {
                                         let out = lightmap::localdrive::run_frame(&su.gl, &sc_t, &su.lamps, &su.chunks, su.probe_n, (w, h), None, lightmap::localdrive::Lists::cleared(w, h), &mut log);
                                         let dil: u32 = f("--local-lights-dilate").map(|v| v.parse().unwrap()).unwrap_or(0);
                                         if su.gl.charts.len() != rects.len() { eprintln!("local-lights: WARNING the frame's layout has {} charts, the writer {} — the frame bytes follow the writer's order only when they agree", su.gl.charts.len(), rects.len()); }
-                                        match lightmap::localdrive::frame1_images(&out.lists, &su.lamps, &rects, lightmap::localdrive::ComposeRule::SumDecoded, dil, 2048) {
+                                        // --local-lights-tail simple|chain[:S] (localdrive::frame1_images_by)
+                                        let tail = f("--local-lights-tail").unwrap_or_else(|| "simple".into());
+                                        let mood_word = frame_params_for_transcribed.as_ref().map(|fp| fp.max_hdr_mood).unwrap_or(mood_max_hdr_for_encode / SQRT_2PI);
+                                        match lightmap::localdrive::frame1_images_by(&tail, &out.lists, &su.lamps, &rects, mood_word, dil, 2048) {
                                             Some(f1) => { eprintln!("local-lights: FRAME 1 = {} lamps, {} lit texels, MaxHDR {}, WebP {} B ({:.1}s)", su.lamps.len(), f1.lit_texels, f1.max_hdr, f1.webp.len(), tl.elapsed().as_secs_f32()); img.frame1 = Some(f1); }
                                             None => eprintln!("local-lights: nothing lit — frame 1 stays black"),
                                         }
@@ -6254,7 +6257,9 @@ fn run(a: Vec<String>) {
                 let mp = d.cache.mapping().expect("mapping");
                 let charts: Vec<(u32, u32, u32, u32)> = (0..mp.count as usize).map(|i| (mp.pos[i].0 as u32, mp.pos[i].1 as u32, mp.size[i].0 as u32, mp.size[i].1 as u32)).collect();
                 let dil: u32 = f("--dilate").map(|v| v.parse().unwrap()).unwrap_or(0);
-                match lightmap::localdrive::frame1_images(&out.lists, &su.lamps, &charts, lightmap::localdrive::ComposeRule::SumDecoded, dil, 2048) {
+                let tail = f("--tail").unwrap_or_else(|| "simple".into());
+                let mood_word: f32 = { let r = 60; if mp.head.len() >= r + 20 { f32::from_le_bytes(mp.head[r + 16..r + 20].try_into().unwrap()) } else { 3.0 } };
+                match lightmap::localdrive::frame1_images_by(&tail, &out.lists, &su.lamps, &charts, mood_word, dil, 2048) {
                     Some(f1) => {
                         println!("frame 1: {} lit texels, MaxHDR {}, WebP {} B, {} fb1 bytes ({} non-zero)", f1.lit_texels, f1.max_hdr, f1.webp.len(), f1.fb1.len(), f1.fb1.iter().filter(|&&b| b > 0).count());
                         lightmap::localdrive::graft_frame1(d, &f1).expect("graft");
@@ -6295,6 +6300,35 @@ fn run(a: Vec<String>) {
                 let mp = d.cache.mapping().expect("mapping");
                 let ed_fb1: Vec<u8> = mp.frame_bytes.get(1).cloned().unwrap_or_default();
                 let charts: Vec<(u32, u32, u32, u32)> = su.gl.charts.iter().map(|c| (c.x as u32, c.y as u32, c.w as u32, c.h as u32)).collect();
+                // THE CHAIN (RE 7): the compose through frame 0's finalisation (PS 1034 → PS 1332 × 8 → max-reduce → CS 23025 → Down2x2 →
+                // chart_normalise → libwebp) — the file's frame 1 against ours, for the compose × `--chain-scale S` (the ×2 under test)
+                let mood_word: f32 = { let r = 60; if mp.head.len() >= r + 20 { f32::from_le_bytes(mp.head[r + 16..r + 20].try_into().unwrap()) } else { 2.2 } };
+                let ed_maxhdr1: f32 = { let r = 60 + 66; if mp.head.len() >= r + 24 { f32::from_le_bytes(mp.head[r + 20..r + 24].try_into().unwrap()) } else { 0.0 } };
+                for sc in a.iter().enumerate().filter(|(_, x)| *x == "--chain-scale").filter_map(|(i, _)| a.get(i + 1)).filter_map(|v| v.parse::<f32>().ok()) {
+                    let tc = std::time::Instant::now();
+                    if let Some(f1) = lightmap::localdrive::frame1_images_chain(&out.lists, &su.lamps, &charts, lightmap::localdrive::ComposeRule::SumDecoded, mood_word, sc, 2048) {
+                        let dec = lightmap::img::decode_webp(&f1.webp).expect("decode ours");
+                        let n = (1024 * 1024) as usize;
+                        let (mut same, mut w2, mut w8, mut lit_both, mut lit_ours, mut lit_ed) = (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
+                        let mut sum_abs = 0u64;
+                        for i in 0..n {
+                            let (a3, b3) = (&dec.px[3 * i..3 * i + 3], &im.px[3 * i..3 * i + 3]);
+                            let (la, lb) = (a3.iter().any(|&v| v > 0), b3.iter().any(|&v| v > 0));
+                            if la && lb { lit_both += 1; } else if la { lit_ours += 1; } else if lb { lit_ed += 1; }
+                            if la || lb { let dd = (a3[0] as i32 - b3[0] as i32).abs(); sum_abs += dd as u64; if dd == 0 { same += 1; } if dd <= 2 { w2 += 1; } if dd <= 8 { w8 += 1; } }
+                        }
+                        let lit = lit_both + lit_ours + lit_ed;
+                        let fb_same = f1.fb1.iter().zip(ed_fb1.iter()).filter(|(a, b)| a == b).count();
+                        let fb_close = f1.fb1.iter().zip(ed_fb1.iter()).filter(|(a, b)| (**a as i32 - **b as i32).abs() <= 2).count();
+                        let fb_lit_same = f1.fb1.iter().zip(ed_fb1.iter()).filter(|(a, b)| **b > 0 && a == b).count();
+                        let fb_lit = ed_fb1.iter().filter(|&&b| b > 0).count();
+                        println!("CHAIN ×{sc}: WebP {} B (editor {}), MaxHDR {} (editor {ed_maxhdr1}); decoded R over the {lit} lit texels (both {lit_both}, ours only {lit_ours}, editor only {lit_ed}): identical {:.1} %, within 2 {:.1} %, within 8 {:.1} %, mean |Δ| {:.2}; fb1 identical {fb_same} / within 2 {fb_close} of {} ({fb_lit_same} of the {fb_lit} lit charts identical) ({:.1}s)", f1.webp.len(), blob.len(), f1.max_hdr, 100.0 * same as f64 / lit.max(1) as f64, 100.0 * w2 as f64 / lit.max(1) as f64, 100.0 * w8 as f64 / lit.max(1) as f64, sum_abs as f64 / lit.max(1) as f64, ed_fb1.len(), tc.elapsed().as_secs_f32());
+                        if let Some(p) = f("--dump-chain") {
+                            let mut ppm = b"P6\n1024 1024\n255\n".to_vec(); ppm.extend_from_slice(&dec.px); std::fs::write(format!("{p}.chain{sc}.ppm"), ppm).expect("write");
+                            let mut ppm = b"P6\n1024 1024\n255\n".to_vec(); ppm.extend_from_slice(&im.px); std::fs::write(format!("{p}.editor.ppm"), ppm).expect("write");
+                        }
+                    }
+                }
                 for rule in [lightmap::localdrive::ComposeRule::SumDecoded, lightmap::localdrive::ComposeRule::SumSqrt, lightmap::localdrive::ComposeRule::MaxDecoded] {
                     let img0 = lightmap::localdrive::compose(&out.lists, &su.lamps, rule);
                     // the standard tail's dilation (PS 1332 × 8) over the 2048² atlas part

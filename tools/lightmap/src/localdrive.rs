@@ -1194,7 +1194,7 @@ pub fn frame1_chart_report(ours_prenorm: &[u8], editor_rgb: &[u8], charts: &[(u3
         }
         (n, lit, m)
     };
-    let mut missing: std::collections::BTreeMap<&str, (usize, Vec<String>)> = Default::default();
+    let mut missing: std::collections::BTreeMap<&str, (usize, Vec<String>, Vec<u8>)> = Default::default();
     let mut extra = 0usize;
     let mut ratios: Vec<f32> = Vec::new();
     let mut both = 0usize;
@@ -1207,7 +1207,8 @@ pub fn frame1_chart_report(ours_prenorm: &[u8], editor_rgb: &[u8], charts: &[(u3
         if le > 0 && lo == 0 {
             let e = missing.entry(r.map(|r| r.class).unwrap_or("?")).or_default();
             e.0 += 1;
-            if e.1.len() < 4 { e.1.push(format!("chart {i} rect ({x}, {y}, {cw}, {ch}) editor lit {le} px max {me}{}", r.map(|r| format!(" centre {:?} half {:?} q {}", r.centre, r.half, r.quality)).unwrap_or_default())); }
+            if e.1.len() < 4 { e.1.push(format!("chart {i} rect ({x}, {y}, {cw}, {ch}) editor lit {le} px max {me} fb1 {}{}", fb_editor.get(i).copied().unwrap_or(0), r.map(|r| format!(" centre {:?} half {:?} q {}", r.centre, r.half, r.quality)).unwrap_or_default())); }
+            e.2.push(fb_editor.get(i).copied().unwrap_or(0));
         } else if lo > 0 && le == 0 {
             extra += 1;
         } else if lo > 0 && le > 0 {
@@ -1228,8 +1229,9 @@ pub fn frame1_chart_report(ours_prenorm: &[u8], editor_rgb: &[u8], charts: &[(u3
     let n = ratios.len();
     let q = |p: f64| if n == 0 { 0.0 } else { ratios[((n as f64 - 1.0) * p) as usize] };
     let mut s = format!("charts lit by both {both}, by us only {extra}; the editor lights and we do not:\n");
-    for (c, (k, ex)) in &missing {
-        s.push_str(&format!("  {c}: {k} charts\n"));
+    for (c, (k, ex, fbs)) in &missing {
+        let mut fbs = fbs.clone(); fbs.sort_unstable();
+        s.push_str(&format!("  {c}: {k} charts (editor fb1 quartiles {} / {} / {}, max {})\n", fbs[fbs.len() / 4], fbs[fbs.len() / 2], fbs[3 * fbs.len() / 4], fbs[fbs.len() - 1]));
         for e in ex { s.push_str(&format!("    {e}\n")); }
     }
     s.push_str(&format!("  our chart max byte / the editor's fb1 over {n} charts: quartiles {:.3} / {:.3} / {:.3}, 5–95 % {:.3}–{:.3}\n", q(0.25), q(0.5), q(0.75), q(0.05), q(0.95)));
@@ -1574,4 +1576,48 @@ pub fn blur_study(img: &crate::passdiff::Buf, kind: &str) -> crate::passdiff::Bu
         }
     }
     out
+}
+
+/// THE FRAME-1 IMAGES THROUGH FRAME 0's FINALISATION CHAIN (RE 7, NOTES 03:50Z: RenderLighting_Frames keeps the frame's regular
+/// final-output slot for frame 1, so after the compose it runs the same chain as frame 0): the composed 2048² image (× `scale`,
+/// the sweep finalisation's ×2 under test) as coefficient image 0 with zero H-basis images → e2e::finalise_tail (PS 1034, PS 1332
+/// × 8, the max-reduce, CS 23025's YCbCr 4:2:0 encode against Mood_MaxHdr = MaxHdrMood·√(2π)) → filecheck::frame0_blobs (the CPU
+/// Down2x2, chart_normalise → fb1, libwebp q 91) and record_scales (MaxHDR = κ·max). `charts` = the mapping's rects in order.
+pub fn frame1_images_chain(lists: &Lists, lamps: &[Lamp], charts: &[(u32, u32, u32, u32)], rule: ComposeRule, mood_max_hdr_word: f32, scale: f32, atlas: u32) -> Option<Frame1Image> {
+    let img0 = compose(lists, lamps, rule);
+    let mut c0 = crate::passdiff::Buf::new(atlas, atlas, 4);
+    let mut lit = 0usize;
+    for y in 0..atlas {
+        for x in 0..atlas {
+            let a0 = img0.get(x, y, 3);
+            if a0 > 0.0 { lit += 1; }
+            // LMTOOL_LL_CHAIN_ALPHA1=1: the compose target's alpha 1 everywhere (PS 1332 then fills nothing — the editor's frame 1 has
+            // no 4-texel halo); default: alpha = the texel's coverage
+            let a = if std::env::var_os("LMTOOL_LL_CHAIN_ALPHA1").is_some() { 1.0 } else { a0 };
+            for c in 0..3u32 {
+                // the accumulation target is f16: the compose's values quantised like a resolve
+                c0.set(x, y, c, crate::gpufmt::quantise_f16(img0.get(x, y, c) * scale, crate::gpufmt::Rounding::NearestEven));
+            }
+            c0.set(x, y, 3, a);
+        }
+    }
+    let zero = crate::passdiff::Buf::new(atlas, atlas, 4);
+    let finals = [c0, zero.clone(), zero.clone(), zero];
+    let mood = mood_max_hdr_word * 2.506_628_3;
+    let (_imgs, maxhdr, enc) = crate::e2e::finalise_tail(&finals, mood);
+    let (blob0, _blob1, _sizes, fb) = crate::filecheck::frame0_blobs(&enc.y4, &enc.cb4, &enc.cr4, enc.w as usize, enc.h as usize, charts)?;
+    let (max_hdr, _h234) = crate::filecheck::record_scales(maxhdr, mood);
+    Some(Frame1Image { webp: blob0, fb1: fb, max_hdr, lit_texels: lit })
+}
+
+/// The frame-1 tail selector: `simple` (the default: MaxHDR = the image max, byte = 255·√(v/MaxHDR), 2×2 mean, chart_normalise,
+/// libwebp — no dilation) or `chain[:S]` (frame 0's finalisation chain on the compose × S with alpha 1 everywhere — RE 7's
+/// reading of RenderLighting_Frames; the compose dispatch itself is still being pinned from capture 2's tail).
+pub fn frame1_images_by(tail: &str, lists: &Lists, lamps: &[Lamp], charts: &[(u32, u32, u32, u32)], mood_max_hdr_word: f32, dilate: u32, atlas: u32) -> Option<Frame1Image> {
+    if let Some(rest) = tail.strip_prefix("chain") {
+        let scale: f32 = rest.strip_prefix(':').and_then(|s| s.parse().ok()).unwrap_or(1.0);
+        std::env::set_var("LMTOOL_LL_CHAIN_ALPHA1", "1");
+        return frame1_images_chain(lists, lamps, charts, ComposeRule::SumDecoded, mood_max_hdr_word, scale, atlas);
+    }
+    frame1_images(lists, lamps, charts, ComposeRule::SumDecoded, dilate, atlas)
 }
