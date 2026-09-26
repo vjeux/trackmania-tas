@@ -817,30 +817,6 @@ impl Bvh {
 mod ranges_tests {
     use super::*;
 
-    /// The parallel `ranges_where` (the top of the tree walked serially to a frontier, the subtrees by the pool)
-    /// gives the serial walk's ranges exactly, on a tree big enough to take the parallel path.
-    #[test]
-    fn parallel_ranges_equal_serial() {
-        let mut s = 0x9e3779b97f4a7c15u64;
-        let mut rnd = || { s ^= s << 13; s ^= s >> 7; s ^= s << 17; (s >> 11) as f32 / (1u64 << 53) as f32 };
-        let n = 150_000;
-        let tris: Vec<WTri> = (0..n).map(|k| {
-            let p = [rnd() * 2000.0, rnd() * 200.0, rnd() * 2000.0];
-            WTri { p0: p, e1: [rnd() * 3.0, rnd() * 3.0, rnd() * 3.0], e2: [rnd() * 3.0, rnd() * 3.0, rnd() * 3.0], inst: 0, tri: k as u32, alpha: u16::MAX, uv0: [[0.0; 2]; 3] }
-        }).collect();
-        let bvh = Bvh::build(tris);
-        assert!(bvh.nodes.len() >= 65_536, "{} nodes: the test must reach the parallel path", bvh.nodes.len());
-        // three slabs: a box in the middle, a thin slice, and everything
-        let slabs: [([f32; 3], [f32; 3]); 3] = [([500.0, -10.0, 500.0], [1200.0, 300.0, 1100.0]), ([0.0, -10.0, 990.0], [2000.0, 300.0, 1010.0]), ([-1.0, -100.0, -1.0], [3000.0, 300.0, 3000.0])];
-        for (lo, hi) in slabs {
-            let inside = |bmin: V3, bmax: V3| -> Option<bool> {
-                if (0..3).any(|k| bmax[k] < lo[k] || bmin[k] > hi[k]) { return None; }
-                Some((0..3).all(|k| bmin[k] >= lo[k] && bmax[k] <= hi[k]))
-            };
-            let par = bvh.ranges_where(inside);
-            let ser = bvh.ranges_where_serial_reference(inside);
-            assert_eq!(par, ser, "slab {lo:?}..{hi:?}");
-            assert!(!par.is_empty());
-        }
-    }
+    // (engineer 6's parallel_ranges_equal_serial test went with his bvh walk; engineer 5's parallel ranges_where landed instead
+    // and is checked by its own unit tests + LMTOOL_BIN_SIMD_CHECK — baker-3)
 }
