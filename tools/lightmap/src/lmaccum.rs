@@ -1141,6 +1141,9 @@ pub struct LmScene {
     /// THE LM RASTER ONCE PER JITTER OFFSET (perf 8): the fragment lists of the nine raster offsets, built on first use and
     /// kept for the whole bake (`frag_list`) — every LmILightDir_Set block and every H-basis draw replays them.
     pub frag_lists: [std::sync::OnceLock<std::sync::Arc<LmFragList>>; 9],
+    /// The fitted blocks' world box the tile peels clip to (LmRasterPosNrm_Inst_v's ClipWorldBoxXZ) — one box per bake, so
+    /// each fragment list carries the clip decision per fragment, computed once (perf 8.20).
+    pub fitted_world_box: Option<[[f32; 2]; 2]>,
     /// Per instance: the layout record behind it (chart k ↔ record k) when the scene came from the map through the record
     /// pipeline (lmmesh::lm_scene_from_map_at / lm_scene_add_entities) — the local-light pass culls records and draws
     /// their instances; empty for a captured scene.
@@ -1198,7 +1201,7 @@ pub fn load_lm_scene(root: &Path, env_frame: u32) -> Result<LmScene, String> {
     if sun.len() != 4 {
         return Err(format!("frame {env_frame}: {} sun draws (PS 15187) in the log, 4 expected", sun.len()));
     }
-    let mut sc = LmScene { meshes: Vec::new(), inst_first: Vec::new(), inst_count: Vec::new(), instances: Vec::new(), table: Vec::new(), eids: Vec::new(), frag_lists: Default::default(), rec_of: Vec::new(), st_src: Vec::new() };
+    let mut sc = LmScene { meshes: Vec::new(), inst_first: Vec::new(), inst_count: Vec::new(), instances: Vec::new(), table: Vec::new(), eids: Vec::new(), frag_lists: Default::default(), fitted_world_box: None, rec_of: Vec::new(), st_src: Vec::new() };
     let mut instance_bytes: Option<Vec<u8>> = None;
     for e in &sun {
         let eid = e["eid"].as_u64().unwrap();
@@ -1455,6 +1458,18 @@ pub struct LmFragList {
     pub frags: Vec<LmFrag>,
     /// The (mesh, instance) pairs in draw order (mesh m's instances `inst_first[m]..+inst_count[m]`), indexed by `LmFrag::pair`.
     pub pairs: Vec<(u32, u32)>,
+    /// Per fragment (a bit each): clipped by the scene's fitted world box — the tile peels' SV_ClipDistance test, the same
+    /// expression as before, evaluated once here instead of per peel and per layer chunk (perf 8.20). Empty when no box.
+    pub clip_mask: Vec<u64>,
+    pub clip_box: Option<[[f32; 2]; 2]>,
+}
+
+impl LmFragList {
+    /// Fragment `i` clipped by the fitted world box (false without a box).
+    #[inline(always)]
+    pub fn clipped(&self, i: usize) -> bool {
+        !self.clip_mask.is_empty() && (self.clip_mask[i >> 6] >> (i & 63)) & 1 != 0
+    }
 }
 
 impl std::fmt::Debug for LmFragList {
@@ -1605,7 +1620,40 @@ pub fn build_frag_list(sc: &LmScene, offset: usize, w: u32, h: u32) -> LmFragLis
     }
     start.push(frags.len() as u32);
     debug_assert_eq!(start.len(), (w * h) as usize + 1);
-    LmFragList { w, h, offset, start, frags, pairs }
+    // the tile peels' clip decision per fragment, once (the box is the bake's)
+    let (clip_mask, clip_box) = match sc.fitted_world_box {
+        Some(wb) => {
+            let n = frags.len();
+            let mut mask = vec![0u64; (n + 63) / 64];
+            let mp = mask.as_mut_ptr() as usize;
+            let words = mask.len();
+            let per_w = (words / (threads * 4).max(1)).max(64);
+            let frags_r = &frags;
+            let pairs_r = &pairs;
+            crate::pool::pool().run((words + per_w - 1) / per_w, |ci| {
+                for wi in ci * per_w..((ci + 1) * per_w).min(words) {
+                    let mut word = 0u64;
+                    for bit in 0..64 {
+                        let i = wi * 64 + bit;
+                        if i >= n { break; }
+                        let f = &frags_r[i];
+                        let (m, ii) = pairs_r[f.pair as usize];
+                        let mesh = &sc.meshes[m as usize];
+                        let inst = &sc.instances[ii as usize];
+                        let rows = rotation_rows(inst.q);
+                        let tri = &mesh.indices[f.tri as usize * 3..f.tri as usize * 3 + 3];
+                        let cd = [clip_distances(world_pos(&mesh.verts[tri[0] as usize], inst, &rows), &wb), clip_distances(world_pos(&mesh.verts[tri[1] as usize], inst, &rows), &wb), clip_distances(world_pos(&mesh.verts[tri[2] as usize], inst, &rows), &wb)];
+                        if (0..4).any(|k| cd[0][k] * f.b[0] + cd[1][k] * f.b[1] + cd[2][k] * f.b[2] < 0.0) { word |= 1u64 << bit; }
+                    }
+                    // SAFETY: the chunks own disjoint words
+                    unsafe { *(mp as *mut u64).add(wi) = word; }
+                }
+            });
+            (mask, Some(wb))
+        }
+        None => (Vec::new(), None),
+    };
+    LmFragList { w, h, offset, start, frags, pairs, clip_mask, clip_box }
 }
 
 /// PS 17112 split for the replay: the layer-independent part of a fragment — `None` when the texel faces away from
@@ -1678,8 +1726,11 @@ pub fn replay_set_layers<L: LayerRead>(fl: &LmFragList, sc: &LmScene, cb: &SetCb
         if fl.start[p0] == fl.start[p1] { return; }
         // per fragment of the chunk: the layer-independent projection (None = facing away or clipped)
         let mut proj: Vec<Option<(f32, f32, f32, f32, f32)>> = Vec::with_capacity((fl.start[p1] - fl.start[p0]) as usize);
-        for f in &fl.frags[fl.start[p0] as usize..fl.start[p1] as usize] {
+        for (k, f) in fl.frags[fl.start[p0] as usize..fl.start[p1] as usize].iter().enumerate() {
+            let fi = fl.start[p0] as usize + k;
             let clipped = match &world_box {
+                // the list's own clip decision when it was built for this box (perf 8.20), else the test here
+                Some(wb) if fl.clip_box.as_ref() == Some(wb) => fl.clipped(fi),
                 Some(wb) => {
                     let (m, ii) = fl.pairs[f.pair as usize];
                     let mesh = &sc.meshes[m as usize];

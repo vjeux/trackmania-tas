@@ -365,7 +365,7 @@ pub fn lm_scene_from_map(scene: &crate::geometry::Scene, layout: &crate::layout:
 /// `lm_scene_from_map` with the tiles' world y (the tile row · 8 + the collection's yoff; BlueBay's is 0).
 pub fn lm_scene_from_map_at(scene: &crate::geometry::Scene, layout: &crate::layout::GameLayout, base: u32, item_bytes: &dyn Fn(&str) -> Option<Vec<u8>>, tile_mesh: Option<LmMesh>, tile_plg: crate::layout::TilePlg, atlas: f32, tile_world_y: f32) -> Result<crate::lmaccum::LmScene, String> {
     use crate::lmaccum::LmScene;
-    let mut sc = LmScene { meshes: Vec::new(), inst_first: Vec::new(), inst_count: Vec::new(), instances: Vec::new(), table: Vec::new(), eids: Vec::new(), frag_lists: Default::default(), rec_of: Vec::new(), st_src: Vec::new() };
+    let mut sc = LmScene { meshes: Vec::new(), inst_first: Vec::new(), inst_count: Vec::new(), instances: Vec::new(), table: Vec::new(), eids: Vec::new(), frag_lists: Default::default(), fitted_world_box: None, rec_of: Vec::new(), st_src: Vec::new() };
     // the item's rect: by its map item index when the layout carries its records (chart k ↔ record k), else by obj = base + item
     let rect_of: std::collections::HashMap<u32, [i32; 4]> = if !layout.records.is_empty() {
         layout.records.iter().enumerate().filter_map(|(k, r)| { let (ii, _) = r.item.as_ref()?; let c = &layout.charts[k]; (c.charted == crate::layout::Charted::Bound).then_some((base + *ii as u32, [c.x, c.y, c.w, c.h])) }).collect()

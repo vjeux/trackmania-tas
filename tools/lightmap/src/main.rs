@@ -1590,7 +1590,7 @@ fn run(a: Vec<String>) {
             if let Some(lm_root) = f("--lm-from") {
                 let root = std::path::PathBuf::from(&lm_root);
                 let env_frame: u32 = f("--lm-env-frame").map(|v| v.parse().expect("--lm-env-frame")).unwrap_or(127448);
-                let sc = lightmap::lmaccum::load_lm_scene(&root, env_frame).unwrap_or_else(|e| panic!("--lm-from {lm_root}: {e}"));
+                let mut sc = lightmap::lmaccum::load_lm_scene(&root, env_frame).unwrap_or_else(|e| panic!("--lm-from {lm_root}: {e}"));
                 eprintln!("lm-from: {} LM meshes, {} instances from env/frame{env_frame}", sc.meshes.len(), sc.instances.len());
                 prm.fitted_world_box = match f("--fitted-world-box") {
                     Some(v) => { let c: Vec<f32> = v.split(',').map(|x| x.trim().parse().expect("--fitted-world-box x0,z0,x1,z1")).collect(); Some([[c[0], c[1]], [c[2], c[3]]]) }
@@ -1613,6 +1613,7 @@ fn run(a: Vec<String>) {
                 } else {
                     prm.hbasis_game = Some((root, std::sync::Arc::new(entries)));
                 }
+                sc.fitted_world_box = prm.fitted_world_box;
                 prm.lm_scene = Some(std::sync::Arc::new(sc));
                 // the sweep's H-basis MRTs are taken for the finalisation + the transcribed writer
                 if prm.hb_out.is_none() { prm.hb_out = Some(std::sync::Arc::new(lightmap::ilatlas::HbSlot(std::sync::Mutex::new(None)))); }
@@ -1882,6 +1883,7 @@ fn run(a: Vec<String>) {
                     eprintln!("lm-from-map: {} capture entries from {} for the comparison", entries.len(), mp.display());
                     prm.hbasis_game = Some((root, std::sync::Arc::new(entries)));
                 }
+                sc.fitted_world_box = prm.fitted_world_box;
                 prm.lm_scene = Some(std::sync::Arc::new(sc));
                 // the sweep's H-basis MRTs are taken for the finalisation + the transcribed writer
                 if prm.hb_out.is_none() { prm.hb_out = Some(std::sync::Arc::new(lightmap::ilatlas::HbSlot(std::sync::Mutex::new(None)))); }

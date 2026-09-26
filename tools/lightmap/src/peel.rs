@@ -5323,9 +5323,15 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                 // through the frame's dense offsets — no per-layer 4096² colour / depth images (stpad: 13 layers × 268 MB per
                 // direction, 0.4–0.7 s); the raster paths keep the images
                 let in_place = frag_list.is_some() || lm_draws.is_none();
+                // (perf 8.20: the replay over the in-place layers takes ALL the layers in one call — layer-major over the
+                // whole set, the last passing layer wins, exactly the chunked calls' result — so a fragment's clip test and
+                // projection run once per peel, not once per chunk of 8 layers; the chunking stays for the dense buffers)
+                let chunk = if in_place && std::env::var_os("LMTOOL_SET_LAYER_CHUNK").is_none() { nl.max(1) } else { chunk };
                 let t_bufs = std::time::Instant::now();
+                crate::pool::stats::checkpoint("(set preamble)");
                 let dstart: Option<std::borrow::Cow<[u32]>> = if in_place { Some(ly.dense_start()) } else { None };
                 prof::add(&prof::LM_BUFS, t_bufs);
+                crate::pool::stats::checkpoint("(dense_start tail)");
                 let mut k = 0usize;
                 while k < nl {
                     let k_end = if per_block { k + 1 } else { (k + chunk).min(nl) };
@@ -5446,6 +5452,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                     eprintln!("  dir {di} peel {pi}: instance {k} has {n} fragments in the A-buffer (res {}×{}); frame r ({:.2},{:.2},{:.2}) u ({:.2},{:.2},{:.2}) s0 {:.1} t0 {:.1} scale {:.3}", frame.res, frame.res_y, frame.r[0], frame.r[1], frame.r[2], frame.u[0], frame.u[1], frame.u[2], frame.s0, frame.t0, frame.scale);
                 }
             }
+            crate::pool::stats::checkpoint("(dump tail)");
             prof::add(&prof::DUMP, td);
             let tg = std::time::Instant::now(); crate::pool::stats::stage("gather");
             // THE GATHER of this peel: per sub-sample the layer it reads (game mode: the game's lookup;
