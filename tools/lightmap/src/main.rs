@@ -2056,10 +2056,12 @@ fn run(a: Vec<String>) {
                 // zone tiles, the block / clip entities — the per-cell spans from the records with quality > 0.51 (lmtiles::in_fitted_tiles;
                 // stpad: the 180 WaterBase records, the 1 028 drawn clips' records, the items and every tile down to the q 0.707 ring),
                 // the box from the record fold: the layout's records when the record pipeline ran, else the map's item records
-                let recs: Vec<lightmap::lmtiles::BlockRecord> = match game_layout.as_ref().filter(|gl| !gl.records.is_empty()) {
+                let recs: Vec<lightmap::lmtiles::BlockRecord> = match game_layout.as_ref().filter(|gl| !gl.records.is_empty() && std::env::var_os("LMTOOL_PLAN_ITEMS_ONLY").is_none()) {
                     Some(gl) => gl.records.iter().map(|r| lightmap::lmtiles::BlockRecord { world: lightmap::lmtiles::CBox::new(r.centre, r.half), quality: r.quality }).collect(),
                     None => lightmap::lmtiles::item_records(&scene, gq, has("--lod0")).iter().filter(|it| it.item < scene.item_count).filter_map(|it| it.record).collect(),
                 };
+                // LMTOOL_PLAN_TRACE=1: the plan's inputs in full precision (the study of the pad exact count with the transcribed box)
+                if std::env::var_os("LMTOOL_PLAN_TRACE").is_some() { let sb = lightmap::lmtiles::scene_box(&recs); eprintln!("plan trace: {} records, {} with q > 0.51; record fold min {:?} max {:?}", recs.len(), recs.iter().filter(|r| lightmap::lmtiles::in_fitted_tiles(r)).count(), sb.min(), sb.max()); }
                 let mf = tmmaps::map::MapFile::load(std::path::Path::new(&map_path));
                 let size = [mf.size[0].max(0) as u32, mf.size[1].max(0) as u32, mf.size[2].max(0) as u32];
                 // the zone tiles' box: the seabed quads over the map footprint (see the zone tiles above)

@@ -381,6 +381,68 @@ pub fn run_sun_pass(meshes: &[LmMesh], instances: &[LmInstance], table: &[[f32; 
     tgt
 }
 
+/// `run_sun_pass` in parallel with the same result bit for bit: the vertex shader per (draw, instance) in parallel, then
+/// the band plan (lmaccum::band_plan — per pixel row band the triangles in draw order) rasterised by row bands, so every
+/// pixel sees its fragments in the sequential order (draw, instance, triangle, raster) and the f16 add chain is identical.
+/// The draws are processed in chunks bounded by `vertex budget` outputs (stpad: 9 jitters × 12 141 instances, the Grass
+/// tile 9 889 vertices) — chunks in order, each chunk's bands in order.
+pub fn run_sun_pass_par(meshes: &[LmMesh], instances: &[LmInstance], table: &[[f32; 4]], draws: &[SunDraw], sm: &ShadowMap, w: u32, h: u32, blend: BlendModel) -> Target {
+    struct Prep { di: usize, vs: Vec<VsOut> }
+    let mut tgt = Target { w, h, px: vec![[0.0; 4]; (w * h) as usize] };
+    let threads = crate::pool::pool().threads.max(1);
+    let budget: usize = std::env::var("LMTOOL_SUN_VERTEX_BUDGET").ok().and_then(|v| v.parse().ok()).unwrap_or(48_000_000);
+    let all_pairs: Vec<(usize, usize)> = draws.iter().enumerate().flat_map(|(di, d)| (d.instance_first..d.instance_first + d.instance_count).map(move |ii| (di, ii))).collect();
+    let mut start = 0usize;
+    while start < all_pairs.len() {
+        // the chunk: pairs until the vertex budget (at least one)
+        let mut end = start;
+        let mut verts = 0usize;
+        while end < all_pairs.len() && (end == start || verts + meshes[draws[all_pairs[end].0].mesh].verts.len() <= budget) {
+            verts += meshes[draws[all_pairs[end].0].mesh].verts.len();
+            end += 1;
+        }
+        let pairs = &all_pairs[start..end];
+        let preps: Vec<Prep> = crate::pool::pool().map(pairs.len(), |k| {
+            let (di, ii) = pairs[k];
+            let d = &draws[di];
+            let mesh = &meshes[d.mesh];
+            let inst = &instances[ii];
+            Prep { di, vs: mesh.verts.iter().map(|v| vs_15183(v, inst, table, d)).collect() }
+        });
+        let plan = crate::lmaccum::band_plan(&preps, |p, t| { let idx = &meshes[draws[p.di].mesh].indices[t * 3..t * 3 + 3]; [p.vs[idx[0] as usize].clip, p.vs[idx[1] as usize].clip, p.vs[idx[2] as usize].clip] }, |p| meshes[draws[p.di].mesh].indices.len() / 3, h, threads);
+        let px_ptr = tgt.px.as_mut_ptr() as usize;
+        crate::pool::pool().run(plan.n_bands, |b| {
+            let (y_lo, y_hi) = ((b * plan.rows) as i64, (((b + 1) * plan.rows).min(h as usize)) as i64);
+            for &(k, t) in &plan.lists[b] {
+                let p = &preps[k as usize];
+                let d = &draws[p.di];
+                let mesh = &meshes[d.mesh];
+                let tri = &mesh.indices[t as usize * 3..t as usize * 3 + 3];
+                let (a, bb, c) = (&p.vs[tri[0] as usize], &p.vs[tri[1] as usize], &p.vs[tri[2] as usize]);
+                rasterise_triangle_rows([a.clip, bb.clip, c.clip], w, h, y_lo, y_hi, |x, y, b0, b1, b2| {
+                    let pos = [a.pos[0] * b0 + bb.pos[0] * b1 + c.pos[0] * b2, a.pos[1] * b0 + bb.pos[1] * b1 + c.pos[1] * b2, a.pos[2] * b0 + bb.pos[2] * b1 + c.pos[2] * b2];
+                    let n = [a.nrm[0] * b0 + bb.nrm[0] * b1 + c.nrm[0] * b2, a.nrm[1] * b0 + bb.nrm[1] * b1 + c.nrm[1] * b2, a.nrm[2] * b0 + bb.nrm[2] * b1 + c.nrm[2] * b2];
+                    let o = ps_15187(pos, n, d, sm);
+                    // SAFETY: the bands own disjoint pixel rows
+                    let px = unsafe { &mut *(px_ptr as *mut [f32; 4]).add((y * w + x) as usize) };
+                    for kk in 0..4 {
+                        let (src, r) = match blend {
+                            BlendModel::RoundSum => (o[kk], Rounding::NearestEven),
+                            BlendModel::RoundSrcAndSum => (quantise_f16(o[kk], Rounding::NearestEven), Rounding::NearestEven),
+                            BlendModel::TruncSum => (o[kk], Rounding::Truncate),
+                            BlendModel::TruncSrcAndSum => (quantise_f16(o[kk], Rounding::Truncate), Rounding::Truncate),
+                            BlendModel::TruncSrcRoundSum => (quantise_f16(o[kk], Rounding::Truncate), Rounding::NearestEven),
+                        };
+                        px[kk] = quantise_f16(px[kk] + src, r);
+                    }
+                });
+            }
+        });
+        start = end;
+    }
+    tgt
+}
+
 /// Compare with the captured target (RGBA16F decoded to f32): exact / within 1 f16 ulp / worse, per channel rgb.
 pub fn compare_f16(ours: &Target, theirs: &Buf) -> (usize, usize, usize, usize, f32) {
     let mut exact = 0;

@@ -262,14 +262,14 @@ pub fn run_set_block_probe(meshes: &[LmMesh], instances: &[LmInstance], table: &
 /// binned into the pixel-row bands it touches, in (draw, instance, triangle) order; each band rasterises its
 /// triangles with the rows clipped to the band. Per PIXEL the fragments arrive in the serial loops' order (a
 /// pixel lies in one band, whose list keeps the global order), so every per-pixel fold is unchanged.
-struct BandPlan {
+pub(crate) struct BandPlan {
     /// (pair index, triangle index) per band.
-    lists: Vec<Vec<(u32, u32)>>,
-    rows: usize,
-    n_bands: usize,
+    pub(crate) lists: Vec<Vec<(u32, u32)>>,
+    pub(crate) rows: usize,
+    pub(crate) n_bands: usize,
 }
 
-fn band_plan<P: Sync>(preps: &[P], clip_of: impl Fn(&P, usize) -> [[f32; 2]; 3] + Sync, tri_count: impl Fn(&P) -> usize + Sync, h: u32, threads: usize) -> BandPlan {
+pub(crate) fn band_plan<P: Sync>(preps: &[P], clip_of: impl Fn(&P, usize) -> [[f32; 2]; 3] + Sync, tri_count: impl Fn(&P) -> usize + Sync, h: u32, threads: usize) -> BandPlan {
     let n_bands = (threads * 4).clamp(1, h as usize);
     let rows = (h as usize + n_bands - 1) / n_bands;
     // per pair its per-band lists, then the bands' lists as the concatenation over the pairs in order

@@ -146,7 +146,8 @@ pub fn sun_from_map(lm: &LmScene, pw01: &[[f32; 4]; 4], dir_in_world: [f32; 3], 
         }
     }
     let sm = sunpass::ShadowMap { depth: shadow };
-    let t = sunpass::run_sun_pass(&lm.meshes, &lm.instances, &lm.table, &draws, &sm, W, H, sunpass::BlendModel::TruncSrcRoundSum);
+    // the parallel pass (bit-identical: the same per-pixel fragment order; LMTOOL_SUN_SERIAL=1 keeps the serial one)
+    let t = if std::env::var_os("LMTOOL_SUN_SERIAL").is_some() { sunpass::run_sun_pass(&lm.meshes, &lm.instances, &lm.table, &draws, &sm, W, H, sunpass::BlendModel::TruncSrcRoundSum) } else { sunpass::run_sun_pass_par(&lm.meshes, &lm.instances, &lm.table, &draws, &sm, W, H, sunpass::BlendModel::TruncSrcRoundSum) };
     let mut b = Buf::new(t.w, t.h, 4);
     for i in 0..t.px.len() {
         for c in 0..4 {
