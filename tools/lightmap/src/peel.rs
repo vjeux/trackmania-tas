@@ -886,6 +886,11 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
                 }
             };
             let c4 = certify(&l4); let c8 = certify(&l8);
+            // the census LOWER bounds on the rendered count (the rule walked with the lower-bound fractions
+            // stops no later than with the exact ones): for the wanted-pixel certification measured in
+            // extract_layers
+            CENSUS_LB[0].store(prm.peel_stop.layers_rendered(&l4), std::sync::atomic::Ordering::Relaxed);
+            CENSUS_LB[1].store(prm.peel_stop.layers_rendered(&l8), std::sync::atomic::Ordering::Relaxed);
             eprintln!("bound stats: frame {}×{}: exact rendered {rendered} (fractions {:?}); U {:?}; certified with census/4 {:?}, census/8 {:?}", res, res_y, fractions.iter().take(rendered + 1).map(|f| format!("{f:.4}")).collect::<Vec<_>>(), u.iter().take(rendered + 1).map(|f| format!("{f:.4}")).collect::<Vec<_>>(), c4, c8);
             BOUND_TOTALS[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if c4 == Some(rendered) { BOUND_TOTALS[1].fetch_add(1, std::sync::atomic::Ordering::Relaxed); } else if c4.is_some() { BOUND_TOTALS[3].fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
@@ -1732,6 +1737,19 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
         if kept < candidates {
             LAYER_STATS.1.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
+        if std::env::var_os("LMTOOL_BOUND_STATS").is_some() && fixed_layers.is_some() {
+            // THE WANTED-PIXEL CERTIFICATION (measurement): the exact stop matters to the output only where a
+            // wanted pixel has more item layers than the game rendered; M_w = the most item layers any wanted
+            // pixel has (before the cut); a census lower bound L_lb ≥ M_w certifies the frame without the
+            // full-frame count
+            let m_w = parts.iter().flat_map(|(counts, _)| counts.iter()).map(|c| (*c as usize).saturating_sub(skip_n)).max().unwrap_or(0);
+            let (lb4, lb8) = (CENSUS_LB[0].load(std::sync::atomic::Ordering::Relaxed), CENSUS_LB[1].load(std::sync::atomic::Ordering::Relaxed));
+            CERT_STATS[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if m_w <= lb4 { CERT_STATS[1].fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
+            if m_w <= lb8 { CERT_STATS[2].fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
+            if m_w <= kept { CERT_STATS[3].fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
+            eprintln!("cert stats: frame {w}×{h}: exact rendered {kept}, census lower bounds {lb4} (1/16) / {lb8} (1/64), most item layers at a wanted pixel {m_w} → certified {}/{}", m_w <= lb4, m_w <= lb8);
+        }
         if peel_layers_debug() && fixed_layers.is_none() {
             eprintln!("peel layers (sparse census, {n_census} census pixels): {} candidate item layers, fractions {:?} → {} rendered (the stop rule)", candidates, fractions.iter().take(candidates).map(|f| format!("{f:.6}")).collect::<Vec<_>>(), kept);
         }
@@ -2136,6 +2154,10 @@ impl Slot {
 
 /// LMTOOL_BOUND_STATS: item fragments (alpha-passing) [behind the environment, inside a bias window, past the layer cap, accepted].
 pub static DROP_STATS: [std::sync::atomic::AtomicU64; 4] = [std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0)];
+/// LMTOOL_BOUND_STATS: the last frame's census lower bounds on the rendered item layers (every 4th / 8th pixel in x and y).
+pub static CENSUS_LB: [std::sync::atomic::AtomicUsize; 2] = [std::sync::atomic::AtomicUsize::new(0), std::sync::atomic::AtomicUsize::new(0)];
+/// LMTOOL_BOUND_STATS: wanted-pixel certification [frames, certified by census/4 (1/16 of the pixels), by census/8 (1/64), M_w ≤ exact (sanity)].
+pub static CERT_STATS: [std::sync::atomic::AtomicU64; 4] = [std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0)];
 /// LMTOOL_BOUND_STATS: [frames, decided-and-right (census/4), decided-and-right (census/8), decided-WRONG].
 pub static BOUND_TOTALS: [std::sync::atomic::AtomicU64; 4] = [std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0)];
 
@@ -2187,6 +2209,7 @@ pub mod prof {
         let staged = g(&BUILD) + g(&LAYERS) + g(&DUMP) + g(&GATHER) + g(&ACCUM) + g(&SNAP) + g(&FRAMES) + g(&EXACT);
         crate::alphatex::alpha_stats_report();
         if crate::peel::DROP_STATS[3].load(Ordering::Relaxed) > 0 { let d = |i: usize| crate::peel::DROP_STATS[i].swap(0, Ordering::Relaxed); let (a, b, c, k) = (d(0), d(1), d(2), d(3)); let t = (a + b + c + k).max(1); eprintln!("drop stats [{label}]: of {t} alpha-passing item fragments: behind the environment {a} ({:.1} %), in a bias window {b} ({:.1} %), past the cap {c} ({:.1} %), accepted as layers {k} ({:.1} %)", a as f64 * 100.0 / t as f64, b as f64 * 100.0 / t as f64, c as f64 * 100.0 / t as f64, k as f64 * 100.0 / t as f64); }
+        if crate::peel::CERT_STATS[0].load(Ordering::Relaxed) > 0 { let c = |i: usize| crate::peel::CERT_STATS[i].swap(0, Ordering::Relaxed); eprintln!("cert stats [{label}]: {} frames; the wanted pixels' layers all within the census lower bound: {} frames (1/16 census), {} (1/64); within the exact count {} (sanity: must be all)", c(0), c(1), c(2), c(3)); }
         if crate::peel::BOUND_TOTALS[0].load(Ordering::Relaxed) > 0 { eprintln!("bound stats [{label}]: {} frames, stop certified right by the census/4 bounds {} and by census/8 {}, certified WRONG {}", crate::peel::BOUND_TOTALS[0].swap(0, Ordering::Relaxed), crate::peel::BOUND_TOTALS[1].swap(0, Ordering::Relaxed), crate::peel::BOUND_TOTALS[2].swap(0, Ordering::Relaxed), crate::peel::BOUND_TOTALS[3].swap(0, Ordering::Relaxed)); }
         eprintln!("profile [{label}] glue: dome raster {:.2}s, wanted bitmap {:.2}s, BVH cull {:.2}s, sel/occl clear {:.2}s, contribution {:.2}s", g(&DOME), g(&BITMAP), g(&CULL), g(&CLEAR), g(&CONTRIB));
         eprintln!("profile [{label}]: A-buffer build {:.2}s (wanted index {:.2}s, clip {:.2}s, raster {:.2}s, CSR {:.2}s), exact layer count {:.2}s, layer derivation {:.2}s (parallel part {:.2}s), per-direction dumps {:.2}s, gather {:.2}s, accumulate {:.2}s, accumulation snapshots {:.2}s, frames {:.2}s; directions total {:.2}s (unstaged {:.2}s); sweep total {total:.2}s", g(&BUILD), g(&B_INDEX), g(&B_CLIP), g(&B_RASTER), g(&B_SORT), g(&EXACT), g(&LAYERS), g(&L_PAR), g(&DUMP), g(&GATHER), g(&ACCUM), g(&SNAP), g(&FRAMES), g(&DIR), g(&DIR) - staged);

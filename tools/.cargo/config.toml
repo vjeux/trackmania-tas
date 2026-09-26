@@ -3,4 +3,7 @@
 # point results are unchanged: Rust never contracts a·b+c into an FMA or reassociates a sum without explicit
 # fast-math, so every bake stays bit-identical to the generic build (checked on the harness dump).
 [target.x86_64-unknown-linux-gnu]
-rustflags = ["-C", "target-cpu=x86-64-v3"]
+# znver4 (AVX-512, the EPYC Genoa boxes): the giant's 4-direction bench 2.82 → 2.68 s over x86-64-v3, bit-identical
+# (the harness dump, the tiny-16 and giant-8 files); a binary built with it does not run on older CPUs — build with
+# RUSTFLAGS="-C target-cpu=x86-64-v3" for those. Fat LTO + one codegen unit gave nothing (measured).
+rustflags = ["-C", "target-cpu=znver4"]
