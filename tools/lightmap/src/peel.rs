@@ -1432,6 +1432,11 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
                     continue;
                 }
                 let buf = &mut csr[a..c];
+                if *BIASED_ORDER {
+                    let cx = count.as_ref().unwrap();
+                    hist[layer_walk_biased_cfrags(buf, env_d, cx.prm.dome_layer, cx.prm.depth_bits, frame).min(MAX_LAYERS)] += 1;
+                    continue;
+                }
                 // the (z, triangle) order — the keys are distinct within a pixel (a triangle visits a pixel
                 // once), so any correct sort gives the one order: tiny networks for the common sizes
                 let key = |f: &CFrag, g: &CFrag| f.z.total_cmp(&g.z).then_with(|| f.tri.cmp(&g.tri)) == std::cmp::Ordering::Greater;
@@ -2617,16 +2622,49 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
         if traced {
             eprintln!("LAYERDBG frame={}x{} dir=({:.6},{:.6},{:.6}) px={x} py={y} nfrag={} env_layer_d={} sweep={} fixed_layers={:?}", frame.res, frame.res_y, frame.d[0], frame.d[1], frame.d[2], list.len(), if out.len() > before { format!("{:.6}", out[before].d) } else { "none".into() }, prm.sweep, fixed_layers);
         }
-        for f in list {
+        // THE BIASED ORDER (BIASED_ORDER): the item fragments walked in the order of their STORED depth — the
+        // layer is the smallest stored depth among the fragments whose unbiased depth passes the previous
+        // layer — via `layer_walk_biased`; the accepted ones then take the colour path below in that order.
+        // The unbiased rule (the former one) walks `list` in its (z, tri) order.
+        let mut order_buf: Vec<WalkFrag> = Vec::new();
+        let mut accepted_idx: Vec<u32> = Vec::new();
+        let walk_order: Vec<usize> = if *BIASED_ORDER {
+            for (i, f) in list.iter().enumerate() {
+                if (prm.dome_layer || !prm.env_in_peel) && is_env(f.tri) {
+                    if traced { eprintln!("LAYERDBG px={x} py={y} frag tri={} z={:.6} env=1 skipped=env", f.tri, f.z); }
+                    continue;
+                }
+                let z01 = frame.z01(f.z).max(0.0);
+                let wt = &bvh.tris[f.tri as usize];
+                order_buf.push(WalkFrag { dd: stored_depth(z01, bias_term(cache, f.tri, wt), prm.depth_bits), z01, tri: f.tri, idx: i as u32 });
+            }
+            let env_q = if prm.dome_layer { d_prev } else { f32::NEG_INFINITY };
+            // (the walk's own env start equals d_prev here: the env layer above set it to the stored env depth or 0)
+            let _ = env_q;
+            let mut acc: Vec<u32> = Vec::new();
+            layer_walk_biased_from(&mut order_buf, d_prev, &mut acc);
+            if traced {
+                for wf in order_buf.iter() {
+                    if !acc.contains(&wf.idx) { let f = &list[wf.idx as usize]; let wt = &bvh.tris[f.tri as usize]; eprintln!("LAYERDBG px={x} py={y} frag tri={} inst={} mtri={} z={:.6} z01={:.6} q16={} skipped=merged (biased order)", f.tri, wt.inst, wt.tri, f.z, wf.z01, (wf.dd * 65535.0).round() as u32); }
+                }
+            }
+            accepted_idx = acc;
+            accepted_idx.iter().map(|i| *i as usize).collect()
+        } else {
+            (0..list.len()).collect()
+        };
+        let biased = *BIASED_ORDER;
+        for &fi in &walk_order {
+            let f = &list[fi];
             // (the environment is not re-drawn in the geometry layers; in a sweep without an environment block
             // it is not drawn at all)
-            if (prm.dome_layer || !prm.env_in_peel) && is_env(f.tri) {
+            if !biased && (prm.dome_layer || !prm.env_in_peel) && is_env(f.tri) {
                 if traced { eprintln!("LAYERDBG px={x} py={y} frag tri={} z={:.6} env=1 skipped=env", f.tri, f.z); }
                 continue;
             }
             // pancaking: a fragment beyond the far plane lands on it (z01 = 0)
             let z01 = frame.z01(f.z).max(0.0);
-            if z01 < d_prev {
+            if !biased && z01 < d_prev {
                 if traced { let wt = &bvh.tris[f.tri as usize]; eprintln!("LAYERDBG px={x} py={y} frag tri={} inst={} mtri={} z={:.6} z01={:.6} q16={} skipped=merged d_prev={:.6}", f.tri, wt.inst, wt.tri, f.z, z01, (z01 * 65535.0).round() as u32, d_prev); }
                 continue;
             }
@@ -2928,6 +2966,18 @@ pub fn exact_item_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &B
             }
             d_prev = if env_d > 0.0 { if prm.depth_bits == 16 { (env_d * 65535.0).round() / 65535.0 } else { env_d } } else { 0.0 };
         }
+        if *BIASED_ORDER {
+            let mut v: Vec<WalkFrag> = Vec::with_capacity(list.len());
+            for (i, f) in list.iter().enumerate() {
+                if prm.dome_layer && is_env(f.tri) { continue; }
+                let z01 = frame.z01(f.z).max(0.0);
+                let wt = &bvh.tris[f.tri as usize];
+                let (slope, zmax_prim) = tri_slope(wt, frame);
+                v.push(WalkFrag { dd: stored_depth(z01, d3d_depth_bias_fmt(zmax_prim, slope.min(1e6), prm.depth_bias, prm.depth_bits), prm.depth_bits), z01, tri: f.tri, idx: i as u32 });
+            }
+            let mut acc = Vec::new();
+            return layer_walk_biased_from(&mut v, d_prev, &mut acc);
+        }
         let mut items = 0usize;
         for f in list {
             if prm.dome_layer && is_env(f.tri) {
@@ -3069,6 +3119,18 @@ pub fn exact_item_layers_direct(tris: &[WTri], frame: &PeelFrame, scene: &Scene,
                 }
             }
             d_prev = if env_d > 0.0 { if prm.depth_bits == 16 { (env_d * 65535.0).round() / 65535.0 } else { env_d } } else { 0.0 };
+        }
+        if *BIASED_ORDER {
+            let mut v: Vec<WalkFrag> = Vec::with_capacity(list.len());
+            for (i, (_, f)) in list.iter().enumerate() {
+                if prm.dome_layer && is_env(f.tri) { continue; }
+                let z01 = frame.z01(f.z).max(0.0);
+                let wt = &bvh.tris[f.tri as usize];
+                let (slope, zmax_prim) = tri_slope(wt, frame);
+                v.push(WalkFrag { dd: stored_depth(z01, d3d_depth_bias_fmt(zmax_prim, slope.min(1e6), prm.depth_bias, prm.depth_bits), prm.depth_bits), z01, tri: f.tri, idx: i as u32 });
+            }
+            let mut acc = Vec::new();
+            return layer_walk_biased_from(&mut v, d_prev, &mut acc);
         }
         let mut items = 0usize;
         for (_, f) in list {
@@ -3387,18 +3449,41 @@ pub fn scan_block16(offs: &[u32], csr: &[CFrag], env_d: &[f32; 16], frame: &Peel
         let mut tri = [zero_i; SCAN_K];
         let mut zf = [zero; SCAN_K];
         let mut bf = [zero; SCAN_K];
+        // the walk's per-lane quantities
+        let zc = _mm512_set1_ps(frame.zc);
+        let den = _mm512_set1_ps(2.0 * frame.half_d);
+        let half = _mm512_set1_ps(0.5);
+        let one = _mm512_set1_ps(1.0);
+        let z01 = |z: __m512| -> __m512 { _mm512_max_ps(_mm512_add_ps(half, _mm512_div_ps(_mm512_add_ps(zc, z), den)), zero) };
+        let biased = *BIASED_ORDER;
         let mut idx = _mm512_mullo_epi32(o0, three);
         for j in 0..SCAN_K {
             let valid = lanes & _mm512_cmpgt_epi32_mask(n, _mm512_set1_epi32(j as i32));
-            zf[j] = _mm512_mask_i32gather_ps::<4>(zero, valid, idx, base);
+            let z = _mm512_mask_i32gather_ps::<4>(zero, valid, idx, base);
             tri[j] = _mm512_mask_i32gather_epi32::<4>(maxk, valid, _mm512_add_epi32(idx, one_i), base as *const i32);
-            bf[j] = _mm512_mask_i32gather_ps::<4>(zero, valid, _mm512_add_epi32(idx, two_i), base);
-            key[j] = _mm512_mask_blend_epi32(valid, maxk, tkey(zf[j]));
+            let b = _mm512_mask_i32gather_ps::<4>(zero, valid, _mm512_add_epi32(idx, two_i), base);
+            if biased {
+                // THE BIASED ORDER: zf carries the unbiased depth z01 (the compare), bf the stored depth (the key
+                // and the next d_prev): q16((z01 + bias).clamp(0, 1)) — non-negative, so its bits order as ints
+                let zj = z01(z);
+                let dd = q16(_mm512_min_ps(_mm512_max_ps(_mm512_add_ps(zj, b), zero), one));
+                zf[j] = zj;
+                bf[j] = dd;
+                key[j] = _mm512_mask_blend_epi32(valid, maxk, _mm512_castps_si512(dd));
+            } else {
+                zf[j] = z;
+                bf[j] = b;
+                key[j] = _mm512_mask_blend_epi32(valid, maxk, tkey(z));
+            }
             idx = _mm512_add_epi32(idx, three);
         }
         // the sorting network (ascending (key, tri)): compare-exchange pairs
         let mut cex = |i: usize, j: usize, key: &mut [__m512i; SCAN_K], tri: &mut [__m512i; SCAN_K], zf: &mut [__m512; SCAN_K], bf: &mut [__m512; SCAN_K]| {
-            let gt = _mm512_cmpgt_epi32_mask(key[i], key[j]) | (_mm512_cmpeq_epi32_mask(key[i], key[j]) & _mm512_cmpgt_epi32_mask(tri[i], tri[j]));
+            // (dd, tri, z01) ascending — the third key only matters where two records share the stored depth
+            // and the triangle, which the raster never produces; it keeps the order total for the tests
+            let eq_key = _mm512_cmpeq_epi32_mask(key[i], key[j]);
+            let z_gt = if biased { eq_key & _mm512_cmpeq_epi32_mask(tri[i], tri[j]) & _mm512_cmpgt_epi32_mask(_mm512_castps_si512(zf[i]), _mm512_castps_si512(zf[j])) } else { 0 };
+            let gt = _mm512_cmpgt_epi32_mask(key[i], key[j]) | (eq_key & _mm512_cmpgt_epi32_mask(tri[i], tri[j])) | z_gt;
             let (ki, kj) = (_mm512_mask_blend_epi32(gt, key[i], key[j]), _mm512_mask_blend_epi32(gt, key[j], key[i]));
             let (ti, tj) = (_mm512_mask_blend_epi32(gt, tri[i], tri[j]), _mm512_mask_blend_epi32(gt, tri[j], tri[i]));
             let (zi, zj) = (_mm512_mask_blend_ps(gt, zf[i], zf[j]), _mm512_mask_blend_ps(gt, zf[j], zf[i]));
@@ -3411,19 +3496,13 @@ pub fn scan_block16(offs: &[u32], csr: &[CFrag], env_d: &[f32; 16], frame: &Peel
         cex(0, 2, &mut key, &mut tri, &mut zf, &mut bf);
         cex(1, 3, &mut key, &mut tri, &mut zf, &mut bf);
         cex(1, 2, &mut key, &mut tri, &mut zf, &mut bf);
-        // the walk
-        let zc = _mm512_set1_ps(frame.zc);
-        let den = _mm512_set1_ps(2.0 * frame.half_d);
-        let half = _mm512_set1_ps(0.5);
-        let one = _mm512_set1_ps(1.0);
-        let z01 = |z: __m512| -> __m512 { _mm512_max_ps(_mm512_add_ps(half, _mm512_div_ps(_mm512_add_ps(zc, z), den)), zero) };
+        // the walk (biased: zf = z01 and bf = the stored depth already; unbiased: computed here as before)
         let mut d_prev = env_q;
         let mut items = zero_i;
         for j in 0..SCAN_K {
             let valid = lanes & _mm512_cmpgt_epi32_mask(n, _mm512_set1_epi32(j as i32));
-            let zj = z01(zf[j]);
+            let (zj, dd) = if biased { (zf[j], bf[j]) } else { let zj = z01(zf[j]); (zj, q16(_mm512_min_ps(_mm512_max_ps(_mm512_add_ps(zj, bf[j]), zero), one))) };
             let acc = valid & _mm512_cmp_ps_mask::<_CMP_GE_OQ>(zj, d_prev);
-            let dd = q16(_mm512_min_ps(_mm512_max_ps(_mm512_add_ps(zj, bf[j]), zero), one));
             d_prev = _mm512_mask_blend_ps(acc, d_prev, dd);
             items = _mm512_mask_add_epi32(items, acc, items, one_i);
         }
@@ -3452,6 +3531,100 @@ pub fn total_order_key(z: f32) -> u32 {
 /// layer when its `z01 = frame.z01(z).max(0)` is not in front of `d_prev`, and the accepted depth
 /// `z01 + bias` — quantised to D16 when the depth store is 16-bit — becomes the next `d_prev`; at most
 /// MAX_LAYERS. The scalar reference every lane and keyed variant is held to.
+/// THE LAYER ORDER (engineer 5's split of the pwc-day residue, 2026-09-25): the GPU forms layer j+1 from the
+/// fragment with the smallest BIASED, stored depth among those whose UNBIASED depth passes the previous layer's
+/// stored depth — the peel compare in the shader reads the interpolated depth, the depth test that picks the
+/// nearest fragment of the pass runs on the rasteriser's biased depth. The port ordered by the unbiased (z, tri),
+/// which swaps a steep card (slope bias ~100 quanta) and a flatter trunk within a few quanta. OPT-IN for now:
+/// LMTOOL_LAYER_ORDER=biased — the default stays the former rule (the references were cut with it) until E's
+/// rule is stated as a function (its tie key at an equal stored depth is the DRAW order — alpha class, instance,
+/// model triangle — where this walk still breaks ties by the world triangle index, which carries no draw-order
+/// meaning) and engineer 4's differential test exists; then the default flips and the baker re-cuts the refs.
+/// Verified on engineer 5's worked example (fitted pixel (3263, 2742) of pwc-day direction 0): the biased walk
+/// forms layer 1 from the trunk (q 34891, the game's) and merges the cards (q 34937) away, as the game does.
+pub static BIASED_ORDER: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_LAYER_ORDER").map(|v| v == "biased").unwrap_or(false));
+
+/// One fragment of a pixel for the biased walk: the stored (biased, quantised) depth, the unbiased depth, the
+/// triangle, and the caller's index into its own list.
+#[derive(Clone, Copy, Debug)]
+pub struct WalkFrag {
+    pub dd: f32,
+    pub z01: f32,
+    pub tri: u32,
+    pub idx: u32,
+}
+
+/// The stored depth of a fragment: `(z01 + bias)`, clamped and quantised to D16 when the store is 16-bit.
+#[inline(always)]
+pub fn stored_depth(z01: f32, bias: f32, depth_bits: u32) -> f32 {
+    let dd = z01 + bias;
+    if depth_bits == 16 { (dd.clamp(0.0, 1.0) * 65535.0).round() / 65535.0 } else { dd }
+}
+
+/// The environment layer's stored depth (the walk's initial d_prev): 0 when no environment surface, else the
+/// maximum quantised as the store does; −∞ without the dome layer.
+#[inline(always)]
+pub fn env_start(env_d: f32, dome_layer: bool, depth_bits: u32) -> f32 {
+    if !dome_layer { return f32::NEG_INFINITY; }
+    if env_d > 0.0 { if depth_bits == 16 { (env_d * 65535.0).round() / 65535.0 } else { env_d } } else { 0.0 }
+}
+
+/// THE BIASED WALK, the reference form: `frags` sorted here by (stored depth, triangle), then walked — accept
+/// when the unbiased depth is not below the previous stored depth, the accepted fragment's stored depth becomes
+/// the previous. Returns the item count; `frags` is left in the walk order with `accept(i)` telling the caller
+/// which were accepted (the derive uses it for the layers).
+pub fn layer_walk_biased(frags: &mut [WalkFrag], env_d: f32, dome_layer: bool, depth_bits: u32, accepted: &mut Vec<u32>) -> usize {
+    layer_walk_biased_from(frags, env_start(env_d, dome_layer, depth_bits), accepted)
+}
+
+/// `layer_walk_biased` from a given starting stored depth (the derive's environment layer already resolved).
+pub fn layer_walk_biased_from(frags: &mut [WalkFrag], d_start: f32, accepted: &mut Vec<u32>) -> usize {
+    let n = frags.len();
+    if n <= 64 {
+        for i in 1..n {
+            let cur = frags[i];
+            let mut j = i;
+            while j > 0 && (frags[j - 1].dd.to_bits(), frags[j - 1].tri, frags[j - 1].z01.to_bits()) > (cur.dd.to_bits(), cur.tri, cur.z01.to_bits()) {
+                frags[j] = frags[j - 1];
+                j -= 1;
+            }
+            frags[j] = cur;
+        }
+    } else {
+        frags.sort_unstable_by(|p, q| p.dd.to_bits().cmp(&q.dd.to_bits()).then_with(|| p.tri.cmp(&q.tri)).then_with(|| p.z01.to_bits().cmp(&q.z01.to_bits())));
+    }
+    let mut d_prev = d_start;
+    let mut items = 0usize;
+    for f in frags.iter() {
+        if f.z01 < d_prev {
+            continue;
+        }
+        if items >= MAX_LAYERS {
+            break;
+        }
+        items += 1;
+        d_prev = f.dd;
+        accepted.push(f.idx);
+    }
+    items
+}
+
+/// `layer_walk_biased` over a pixel's count records (the scan's scalar walk).
+pub fn layer_walk_biased_cfrags(buf: &[CFrag], env_d: f32, dome_layer: bool, depth_bits: u32, frame: &PeelFrame) -> usize {
+    let mut tmp: [WalkFrag; 64] = [WalkFrag { dd: 0.0, z01: 0.0, tri: 0, idx: 0 }; 64];
+    let mut acc: Vec<u32> = Vec::new();
+    if buf.len() <= 64 {
+        for (i, f) in buf.iter().enumerate() {
+            let z01 = frame.z01(f.z).max(0.0);
+            tmp[i] = WalkFrag { dd: stored_depth(z01, f.bias, depth_bits), z01, tri: f.tri, idx: i as u32 };
+        }
+        layer_walk_biased(&mut tmp[..buf.len()], env_d, dome_layer, depth_bits, &mut acc)
+    } else {
+        let mut v: Vec<WalkFrag> = buf.iter().enumerate().map(|(i, f)| { let z01 = frame.z01(f.z).max(0.0); WalkFrag { dd: stored_depth(z01, f.bias, depth_bits), z01, tri: f.tri, idx: i as u32 } }).collect();
+        layer_walk_biased(&mut v, env_d, dome_layer, depth_bits, &mut acc)
+    }
+}
+
 pub fn layer_walk_sorted(list: &[CFrag], env_d: f32, dome_layer: bool, depth_bits: u32, frame: &PeelFrame) -> usize {
     let mut d_prev = f32::NEG_INFINITY;
     if dome_layer {
@@ -5476,6 +5649,11 @@ mod scan16_audit_tests {
 
     /// The scalar walk of `count_run` (dome layer on, a 16-bit depth store), as the spec of `scan_block16`.
     fn scalar_walk(list: &mut Vec<CFrag>, env_d: f32, frame: &PeelFrame) -> usize {
+        // under the biased order (the default) the reference is the biased scalar walk; the unbiased one below
+        // is the former rule, checked when LMTOOL_LAYER_ORDER=unbiased
+        if *BIASED_ORDER {
+            return layer_walk_biased_cfrags(list, env_d, true, 16, frame);
+        }
         list.sort_by(|p, q| p.z.total_cmp(&q.z).then_with(|| p.tri.cmp(&q.tri)));
         let mut d_prev = if env_d > 0.0 { (env_d * 65535.0).round() / 65535.0 } else { 0.0 };
         let mut items = 0usize;
@@ -5560,6 +5738,57 @@ mod scan16_audit_tests {
             assert_eq!(has, want_has);
             assert_eq!(big, want_big);
             assert_eq!(hist, want_hist, "lists {:?} env {:?}", lists, env);
+        }
+    }
+}
+
+#[cfg(test)]
+mod biased_order_tests {
+    use super::*;
+
+    /// The GPU's layer formation, brute force: layer j+1 = the fragment with the smallest stored (biased) depth
+    /// among those whose unbiased depth is not below layer j's stored depth (ties: the lower triangle index);
+    /// the walk must equal it on random pixels.
+    fn brute(frags: &[WalkFrag], d_start: f32) -> (usize, Vec<u32>) {
+        let mut used = vec![false; frags.len()];
+        let mut d_prev = d_start;
+        let mut acc = Vec::new();
+        loop {
+            if acc.len() >= MAX_LAYERS { break; }
+            let mut best: Option<usize> = None;
+            for (i, f) in frags.iter().enumerate() {
+                if used[i] || f.z01 < d_prev { continue; }
+                match best {
+                    None => best = Some(i),
+                    Some(b) => { if (f.dd.to_bits(), f.tri, f.z01.to_bits()) < (frags[b].dd.to_bits(), frags[b].tri, frags[b].z01.to_bits()) { best = Some(i); } }
+                }
+            }
+            let Some(b) = best else { break };
+            used[b] = true;
+            d_prev = frags[b].dd;
+            acc.push(frags[b].idx);
+        }
+        (acc.len(), acc)
+    }
+
+    #[test]
+    fn the_biased_walk_is_the_gpus_layer_formation() {
+        let mut seed = 0x1357_9bdf_2468_aceu64;
+        let mut rnd = move || { seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17; seed };
+        for round in 0..30_000 {
+            let n = 1 + (rnd() % 12) as usize;
+            let frags: Vec<WalkFrag> = (0..n).map(|i| {
+                let z01 = (rnd() % 65536) as f32 / 65535.0;
+                let bias = match rnd() % 4 { 0 => 0.0, 1 => 8.0 / 65535.0, 2 => 100.0 / 65535.0, _ => (rnd() % 300) as f32 / 65535.0 };
+                WalkFrag { dd: stored_depth(z01, bias, 16), z01, tri: (rnd() % 6) as u32, idx: i as u32 }
+            }).collect();
+            let d_start = if round % 3 == 0 { 0.0 } else { (rnd() % 65536) as f32 / 65535.0 };
+            let (want, want_acc) = brute(&frags, d_start);
+            let mut fr = frags.clone();
+            let mut acc = Vec::new();
+            let got = layer_walk_biased_from(&mut fr, d_start, &mut acc);
+            assert_eq!(got, want, "round {round}: {frags:?}");
+            assert_eq!(acc, want_acc, "round {round}: the accepted order");
         }
     }
 }
