@@ -441,6 +441,13 @@ pub fn geom_from_solid2(s2: &mapgeom::static_item::solid2::CPlugSolid2Model, ent
             Some(Elem::Word(w)) => Some(w.iter().map(|&x| dec3n(x)).collect()),
             _ => None,
         };
+        // A visual WITHOUT a normal stream is drawn in no lightmapper pass (RE 7, 03:20Z, the stpad capture: the Stadium Grass
+        // tile's 9 880-vertex GrassFence skirt — POSITION + BLENDINDICES + TEXCOORD0, Tech3 GrassFence_VDepLight — is neither
+        // lit, nor peeled, nor a sun-map caster; only the 24-index quad is). Skipped here too, so the record scene's peel
+        // geometry and the shadow casters carry what the game draws (LMTOOL_KEEP_NO_NORMAL=1 keeps them).
+        if normals.is_none() && std::env::var_os("LMTOOL_KEEP_NO_NORMAL").is_none() {
+            continue;
+        }
         let uv0s: Option<&Vec<[f32; 2]>> = match get(N_TEXCOORD0) { Some(Elem::Float2(u)) => Some(u), _ => None };
         for t in ib.indices.chunks_exact(3) {
             let (a, b, c) = (t[0] as usize, t[1] as usize, t[2] as usize);
