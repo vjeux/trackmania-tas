@@ -24,6 +24,7 @@ pub mod peel;
 pub mod peelcap;
 pub mod domemesh;
 pub mod alphatex;
+pub mod alphasimd;
 pub mod peelcolor;
 pub mod clouds;
 pub mod png;

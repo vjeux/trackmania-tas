@@ -178,6 +178,12 @@ pub const ALPHA_THRESHOLD: f32 = 0.501_960_813_999_176;
 pub static ALPHA_POINT: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_ALPHA_POINT").map(|v| v == "1").unwrap_or(false));
 /// LMTOOL_ALPHA_ANISO=N: the alpha sampler's anisotropy (16 = the capture's card sampler; 1 = trilinear).
 pub static ALPHA_ANISO: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_ALPHA_ANISO").ok().and_then(|v| v.parse().ok()).unwrap_or(16));
+/// LMTOOL_ALPHA_QUEUE=0: the alpha test inline per fragment instead of queued sixteen wide (alphasimd; the A/B
+/// switch — identical results either way).
+pub fn alpha_queue_on() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("LMTOOL_ALPHA_QUEUE").map(|v| v != "0").unwrap_or(true))
+}
 
 /// One fragment of the A-buffer: depth and the world triangle (index into the BVH's triangle list).
 #[derive(Clone, Copy, Debug)]
@@ -859,6 +865,51 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
             return (out, hist, covered);
         }
         let band_clip = (bx0, by0, bx1, by1);
+        // THE ALPHA QUEUE (perf engineer 4, alphasimd.rs): the card fragments of the job are not tested one by
+        // one in the visit loop — they are queued (uv + pixel, depth, triangle) and tested sixteen at a time,
+        // one fragment per SIMD lane, the same arithmetic per lane; the passing ones then take the tail below
+        // (`emit_frag`) in push order. The tail's inputs do not depend on when it runs — the count list is
+        // sorted (z, triangle) at the scan, the CSR's per-pixel sort is keyed (z, triangle) too — so the
+        // deferred order gives the same A-buffer and the same count. LMTOOL_ALPHA_QUEUE=0 keeps the scalar
+        // test inline (the A/B switch; the point-sampled probe and the pixel debug print use it too).
+        let alpha_queue = alpha_queue_on() && !*ALPHA_POINT && ABUF_DEBUG.is_none();
+        let mut aq = crate::alphasimd::AlphaQueues::take();
+        // the depth-bias term of a triangle from its index (a deferred fragment's; the same expression as
+        // `bias_term_of` below), cached for the run of one triangle's fragments
+        let tri_bias = |ti: u32| -> f32 {
+            let cx = count.as_ref().unwrap();
+            let t = &tris[ti as usize];
+            let p0 = t.p0;
+            let p1 = [p0[0] + t.e1[0], p0[1] + t.e1[1], p0[2] + t.e1[2]];
+            let p2 = [p0[0] + t.e2[0], p0[1] + t.e2[1], p0[2] + t.e2[2]];
+            let (slope, zmax_prim) = tri_slope_projected(frame, frame.project(p0), frame.project(p1), frame.project(p2));
+            d3d_depth_bias_fmt(zmax_prim, slope.min(1e6), cx.prm.depth_bias, cx.prm.depth_bits)
+        };
+        let mut bias_run: (u32, f32) = (u32::MAX, 0.0);
+        // THE TAIL of a visited fragment (an alpha-tested item fragment that passed, or any fragment the block
+        // path did not record): the count record, the wanted test, the fragment push. `bias` = Some(the
+        // triangle's bias term) from the inline path, None for a deferred fragment (computed here from its
+        // triangle). The job's tables come in as arguments (the opaque block path writes them directly).
+        let mut emit_frag = |cnt: &mut Vec<u16>, list: &mut Vec<(u32, CFrag)>, saturated: &mut bool, out: &mut Vec<(u32, Frag)>, x: u32, y: u32, z: f32, ti: u32, count_it: bool, bias: Option<f32>| {
+            let id = y * res + x;
+            if count_it {
+                let bias = bias.unwrap_or_else(|| {
+                    if bias_run.0 != ti { bias_run = (ti, tri_bias(ti)); }
+                    bias_run.1
+                });
+                let li = ((y as i32 - by0) as usize) * bw + (x as i32 - bx0) as usize;
+                let c = &mut cnt[li];
+                if *c == u16::MAX { *saturated = true; } else { *c += 1; }
+                list.push((li as u32, CFrag { z, tri: ti, bias }));
+            }
+            if counting && !bit(bitmap, id as usize) {
+                return;
+            }
+            let k = px.index_of_id(id);
+            out.push((k, Frag { z, tri: ti }));
+            // SAFETY: pixel k belongs to this job alone (the jobs partition the frame)
+            unsafe { *(csr_sp as *mut u32).add(k as usize + 1) += 1; }
+        };
         // the cell's entries gathered from the chunk slices in chunk order (ascending triangle index) into a
         // per-thread list — a strip job keeps only the entries whose strip bits touch its rows (one sequential
         // list to walk instead of hundreds of slices)
@@ -950,6 +1001,7 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
                         if live == 0 { return; }
                     }
                     let block_counted = counting && env_t.is_none() && mask.is_none();
+                    let count_it = counting && env_t.is_none() && !block_counted;
                     let mut m = live;
                     while m != 0 {
                         let l = m.trailing_zeros() as usize;
@@ -962,7 +1014,20 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
                         if let Some(mk) = mask {
                             let u = t.uv0[0][0] * bc[0] + t.uv0[1][0] * bc[1] + t.uv0[2][0] * bc[2];
                             let v = t.uv0[0][1] * bc[0] + t.uv0[1][1] * bc[1] + t.uv0[2][1] * bc[2];
-                            let fp = fp_tex.get_or_insert_with(|| mk.tex.as_ref().map(|tx| (tx.as_ref(), tx.plan(&crate::alphatex::Footprint::of_triangle([[x0, y0], [x1, y1], [x2, y2]], t.uv0, tx.w(), tx.h()), *ALPHA_ANISO))));
+                            let fp = fp_tex.get_or_insert_with(|| mk.tex.as_ref().map(|tx| (tx.as_ref(), tx.plan_for(&crate::alphatex::Footprint::of_triangle([[x0, y0], [x1, y1], [x2, y2]], t.uv0, tx.w(), tx.h()), *ALPHA_ANISO, !alpha_queue))));
+                            if alpha_queue {
+                                if let Some((tx, plan)) = fp {
+                                    // queued: tested sixteen at a time, the passing ones emitted at the flush
+                                    let q = aq.of(plan);
+                                    if q.push(tx, plan, ti as u64, u, v, crate::alphasimd::Pend { x, y, z, ti, count: count_it }) {
+                                        let (tested, passed) = q.flush(ALPHA_THRESHOLD, |p| emit_frag(&mut cnt, &mut list, &mut saturated, &mut out, p.x, p.y, p.z, p.ti, p.count, None));
+                                        aq.stats[0] += 1;
+                                        aq.stats[1] += tested as u64;
+                                        aq.stats[2] += passed as u64;
+                                    }
+                                    continue;
+                                }
+                            }
                             let op = match fp {
                                 Some((tx, fp)) if !*ALPHA_POINT => tx.passes_planned(u, v, fp, ALPHA_THRESHOLD, crate::alphatex::Address::ClampEdge),
                                 _ => mk.opaque(u, v),
@@ -972,25 +1037,17 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
                                 continue;
                             }
                         } else if let Some((dx, dy)) = *ABUF_DEBUG { if x == dx && y == dy { eprintln!("abuf debug ({x},{y}): tri {ti} inst {} model tri {} z {z:.3} z01 {:.5}", t.inst, t.tri, frame.z01(z)); } }
-                        let id = id0 + l as u32;
-                        if counting && env_t.is_none() && !block_counted {
-                            // an alpha-tested item fragment that passed: its count record
-                            let li = ((y as i32 - by0) as usize) * bw + (x as i32 - bx0) as usize;
-                            let c = &mut cnt[li];
-                            if *c == u16::MAX { saturated = true; } else { *c += 1; }
-                            list.push((li as u32, CFrag { z, tri: ti, bias: bias_term_of(&mut bias_term_cache) }));
-                        }
-                        if counting && (wanted16 >> l) & 1 == 0 {
-                            continue;
-                        }
-                        let k = px.index_of_id(id);
-                        out.push((k, Frag { z, tri: ti }));
-                        // SAFETY: pixel k belongs to this job alone (the jobs partition the frame)
-                        unsafe { *(csr_sp as *mut u32).add(k as usize + 1) += 1; }
+                        // the tail (the wanted bit of lane l is the bitmap's bit at id0 + l, as emit_frag reads it)
+                        let bias = if count_it { Some(bias_term_of(&mut bias_term_cache)) } else { None };
+                        emit_frag(&mut cnt, &mut list, &mut saturated, &mut out, x, y, z, ti, count_it, bias);
                     }
                 });
             }
         }
+        // the job's last card fragments
+        aq.flush_all(ALPHA_THRESHOLD, |p| emit_frag(&mut cnt, &mut list, &mut saturated, &mut out, p.x, p.y, p.z, p.ti, p.count, None));
+        drop(emit_frag);
+        aq.give();
         if counting {
             // THE SCAN: the list counting-sorted by pixel (the prefix over the counts gives every pixel's range,
             // the scatter fills it in visit order), then per pixel the fragments ordered by (z, triangle) and
@@ -2609,6 +2666,7 @@ pub mod prof {
         let g = |c: &AtomicU64| c.load(Ordering::Relaxed) as f64 / 1e9;
         let staged = g(&BUILD) + g(&LAYERS) + g(&DUMP) + g(&GATHER) + g(&ACCUM) + g(&SNAP) + g(&FRAMES) + g(&EXACT);
         crate::alphatex::alpha_stats_report();
+        crate::alphasimd::alpha_queue_report();
         if crate::peel::DROP_STATS[3].load(Ordering::Relaxed) > 0 { let d = |i: usize| crate::peel::DROP_STATS[i].swap(0, Ordering::Relaxed); let (a, b, c, k) = (d(0), d(1), d(2), d(3)); let t = (a + b + c + k).max(1); eprintln!("drop stats [{label}]: of {t} alpha-passing item fragments: behind the environment {a} ({:.1} %), in a bias window {b} ({:.1} %), past the cap {c} ({:.1} %), accepted as layers {k} ({:.1} %)", a as f64 * 100.0 / t as f64, b as f64 * 100.0 / t as f64, c as f64 * 100.0 / t as f64, k as f64 * 100.0 / t as f64); }
         if crate::peel::CERT_STATS[0].load(Ordering::Relaxed) > 0 { let c = |i: usize| crate::peel::CERT_STATS[i].swap(0, Ordering::Relaxed); eprintln!("cert stats [{label}]: {} frames; the wanted pixels' layers all within the census lower bound: {} frames (1/16 census), {} (1/64); within the exact count {} (sanity: must be all)", c(0), c(1), c(2), c(3)); }
         if crate::peel::BOUND_TOTALS[0].load(Ordering::Relaxed) > 0 { eprintln!("bound stats [{label}]: {} frames, stop certified right by the census/4 bounds {} and by census/8 {}, certified WRONG {}", crate::peel::BOUND_TOTALS[0].swap(0, Ordering::Relaxed), crate::peel::BOUND_TOTALS[1].swap(0, Ordering::Relaxed), crate::peel::BOUND_TOTALS[2].swap(0, Ordering::Relaxed), crate::peel::BOUND_TOTALS[3].swap(0, Ordering::Relaxed)); }

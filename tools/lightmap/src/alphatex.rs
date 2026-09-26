@@ -54,6 +54,12 @@ pub struct AlphaLevel {
     /// The level's size as f32 (the sampler's scale).
     pub wf: f32,
     pub hf: f32,
+    /// THE QUAD TABLE (alphasimd): for every bilinear anchor (xi, yi) ∈ [−1, w−1] × [−1, h−1] the four texels a
+    /// tap at it reads, ClampEdge applied — bytes (a[ya][xa], a[ya][xb], a[yb][xa], a[yb][xb]) with xa = max(xi, 0),
+    /// xb = clamp(xi + 1, 0, w − 1) (ya, yb alike) — at index (yi + 1)·quad_stride + (xi + 1): one 32-bit load
+    /// per tap instead of four, the clamps baked in.
+    pub quad: Vec<u32>,
+    pub quad_stride: u32,
 }
 
 impl AlphaLevel {
@@ -83,7 +89,18 @@ impl AlphaLevel {
         }
         let mixed_frac = cls.iter().filter(|c| **c == 2).count() as f32 / (w * h).max(1) as f32;
         let af: Vec<f32> = a.iter().map(|&v| v as f32 / 255.0).collect();
-        AlphaLevel { w, h, a, blocks, bw, cls, mixed_frac, af, wf: w as f32, hf: h as f32 }
+        let quad_stride = (w + 1) as u32;
+        let mut quad = vec![0u32; (w + 1) * (h + 1)];
+        for yi in -1..h as i64 {
+            let ya = yi.max(0) as usize;
+            let yb = (yi + 1).clamp(0, h as i64 - 1) as usize;
+            for xi in -1..w as i64 {
+                let xa = xi.max(0) as usize;
+                let xb = (xi + 1).clamp(0, w as i64 - 1) as usize;
+                quad[(yi + 1) as usize * (w + 1) + (xi + 1) as usize] = a[ya * w + xa] as u32 | (a[ya * w + xb] as u32) << 8 | (a[yb * w + xa] as u32) << 16 | (a[yb * w + xb] as u32) << 24;
+            }
+        }
+        AlphaLevel { w, h, a, blocks, bw, cls, mixed_frac, af, wf: w as f32, hf: h as f32, quad, quad_stride }
     }
     /// The (min, max) alpha over the texels [x0, x1] × [y0, y1] (inclusive, clamped to the level).
     #[inline]
@@ -281,7 +298,25 @@ impl AlphaTex {
     /// The part of the test that is constant across a triangle (the footprint is): the level of detail,
     /// the two levels it blends and the fraction, the taps' axis and count — `passes_planned` per fragment.
     pub fn plan(&self, fp: &Footprint, aniso: usize) -> TapPlan {
-        let (lod, axis, n) = if aniso > 1 { (fp.lod_aniso(aniso), fp.major_axis(), fp.taps(aniso).max(1)) } else { (fp.lod_iso(), [0.0, 0.0], 1) };
+        self.plan_for(fp, aniso, true)
+    }
+
+    /// `plan` with the early-out decision optional: `early = false` leaves `try_early` false without weighing it
+    /// (the queued sampler never consults it). The derivative lengths are taken once and fed to the same
+    /// expressions `lod_aniso` / `taps` / `major_axis` evaluate — the same values to the bit.
+    pub fn plan_for(&self, fp: &Footprint, aniso: usize, early: bool) -> TapPlan {
+        let (lod, axis, n) = if aniso > 1 {
+            let (lx, ly) = (fp.len_dx(), fp.len_dy());
+            let (major, minor) = (lx.max(ly).max(1e-30), lx.min(ly).max(1e-30));
+            let ratio = (major / minor).min(aniso as f32).max(1.0);
+            let lod = (major / ratio).log2();
+            let a = if lx >= ly { fp.dx } else { fp.dy };
+            let axis = [a[0] / fp.w, a[1] / fp.h];
+            let ratio_t = (lx.max(ly) / lx.min(ly).max(1e-30)).min(aniso as f32).max(1.0);
+            (lod, axis, (ratio_t.ceil() as usize).max(1))
+        } else {
+            (fp.lod_iso(), [0.0, 0.0], 1)
+        };
         let last = (self.levels.len() - 1) as f32;
         let lc = lod.clamp(0.0, last);
         let l0 = lc.floor();
@@ -291,15 +326,21 @@ impl AlphaTex {
         // (and all on one side) for them to decide — with the level's mixed fraction m the chance is about
         // (1 − m)^(taps × levels); below 0.3 the pre-checks cost more than they save (the giant's leaves at
         // levels 4–5: m ≈ 0.3, 2–3 taps, two levels → 8 % of the tests decided early, 92 % paid the checks)
-        let m = self.levels[l0 as usize].mixed_frac;
-        let checks = (n * if two { 2 } else { 1 }) as i32;
-        let try_early = (1.0 - m).powi(checks) >= 0.3;
+        let try_early = early
+            && match early_mode() {
+                1 => true,
+                2 => false,
+                _ => {
+                    let m = self.levels[l0 as usize].mixed_frac;
+                    let checks = (n * if two { 2 } else { 1 }) as i32;
+                    (1.0 - m).powi(checks) >= 0.3
+                }
+            };
         TapPlan { lod, l0: l0 as usize, l1: if two { l0 as usize + 1 } else { l0 as usize }, two, t, axis, n, aniso, try_early }
     }
 
     /// The bilinear sample of one level with ClampEdge addressing — `sample_level`'s arithmetic, the
     /// addressing branches resolved (the plan's levels are known).
-    #[inline]
     #[inline]
     fn sample_level_clamp(l: &AlphaLevel, u: f32, v: f32) -> f32 {
         // (the same arithmetic as before, cheaper forms: the level's size as f32 precomputed; the weight's
@@ -698,5 +739,55 @@ mod tests {
         let flipped = AlphaTex::from_dds(&dds, true).unwrap();
         assert_eq!(&flipped.levels[0].a[0..4], &[0, 0, 0, 0]);
         assert_eq!(&flipped.levels[0].a[12..16], &[255, 255, 255, 255]);
+    }
+}
+
+/// LMTOOL_ALPHA_EARLY=always|never: force the exact early-outs on or off for every plan (the measurement of
+/// the decided fraction; the default weighs them per plan). 1 = always, 2 = never, 0 = default.
+pub fn early_mode() -> u8 {
+    static V: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
+    *V.get_or_init(|| match std::env::var("LMTOOL_ALPHA_EARLY").as_deref() { Ok("always") => 1, Ok("never") => 2, _ => 0 })
+}
+
+#[cfg(test)]
+mod plan_tests {
+    use super::*;
+
+    /// `plan_for` takes the derivative lengths once; its lod, axis and tap count are the direct methods' bits.
+    #[test]
+    fn the_plan_is_the_direct_methods_to_the_bit() {
+        let mut seed = 0x1357_9bdf_2468_ace0u64;
+        let mut rnd = || { seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17; (seed % 1_000_003) as f32 / 1_000_003.0 };
+        let tex = AlphaTex { levels: (0..9).map(|k| AlphaLevel::with_blocks(256 >> k, 256 >> k, vec![128; (256 >> k) * (256 >> k)])).collect(), flipped: false };
+        for _ in 0..100_000 {
+            let scale = 2f32.powf(rnd() * 12.0 - 3.0);
+            let stretch = 2f32.powf(rnd() * 6.0);
+            let ang = rnd() * 6.2832;
+            let (c, s) = (ang.cos(), ang.sin());
+            let fp = Footprint { dx: [c * scale * stretch, s * scale * stretch], dy: [-s * scale, c * scale], w: 256.0, h: 256.0 };
+            for aniso in [1usize, 2, 16] {
+                for early in [false, true] {
+                    let p = tex.plan_for(&fp, aniso, early);
+                    if aniso > 1 {
+                        assert_eq!(p.lod.to_bits(), fp.lod_aniso(aniso).to_bits());
+                        assert_eq!([p.axis[0].to_bits(), p.axis[1].to_bits()], [fp.major_axis()[0].to_bits(), fp.major_axis()[1].to_bits()]);
+                        assert_eq!(p.n, fp.taps(aniso).max(1));
+                    } else {
+                        assert_eq!(p.lod.to_bits(), fp.lod_iso().to_bits());
+                        assert_eq!(p.n, 1);
+                    }
+                    let q = tex.plan(&fp, aniso);
+                    assert_eq!((q.l0, q.l1, q.two, q.t.to_bits()), (p.l0, p.l1, p.two, p.t.to_bits()));
+                    if !early { assert!(!p.try_early); } else { assert_eq!(p.try_early, q.try_early); }
+                }
+            }
+        }
+        // the degenerate footprints: zero derivatives, the edge-on 1e9 ones
+        for fp in [Footprint { dx: [0.0, 0.0], dy: [0.0, 0.0], w: 256.0, h: 256.0 }, Footprint { dx: [1e9, 1e9], dy: [1e9, 1e9], w: 256.0, h: 256.0 }, Footprint { dx: [0.0, 3.0], dy: [0.0, 0.0], w: 256.0, h: 256.0 }] {
+            let p = tex.plan_for(&fp, 16, false);
+            assert_eq!(p.lod.to_bits(), fp.lod_aniso(16).to_bits());
+            assert_eq!(p.n, fp.taps(16).max(1));
+            assert_eq!([p.axis[0].to_bits(), p.axis[1].to_bits()], [fp.major_axis()[0].to_bits(), fp.major_axis()[1].to_bits()]);
+        }
     }
 }
