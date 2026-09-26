@@ -3953,10 +3953,12 @@ thread_local! {
 /// Raster bands per pool thread (LMTOOL_BANDS_PER_THREAD, default 4).
 pub static BANDS_PER_THREAD: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_BANDS_PER_THREAD").ok().and_then(|v| v.parse().ok()).unwrap_or(4));
 
-/// The sparse raster's tile cells (LMTOOL_TILE_ROWS × LMTOOL_TILE_COLS pixels, default 64 × 64: 4 k pixels of count
+/// The sparse raster's tile cells (LMTOOL_TILE_ROWS × LMTOOL_TILE_COLS pixels, default 128 × 128: 16 k pixels of count
 /// tables — L1-resident — and 64-pixel row spans; see `build_abuffer_sparse_ranges`).
-pub static TILE_ROWS: std::sync::LazyLock<u32> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_TILE_ROWS").ok().and_then(|v| v.parse().ok()).filter(|&v: &u32| v > 0).unwrap_or(64));
-pub static TILE_COLS: std::sync::LazyLock<u32> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_TILE_COLS").ok().and_then(|v| v.parse().ok()).filter(|&v: &u32| v > 0).unwrap_or(64));
+// (128 × 128 cells: measured on the aligned tree — tiny 32 dirs 2.20 → 2.17 s (the CSR 0.27 → 0.24: fewer, longer per-pixel
+// runs to scatter), giant within noise; 64 × 64 was the first choice)
+pub static TILE_ROWS: std::sync::LazyLock<u32> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_TILE_ROWS").ok().and_then(|v| v.parse().ok()).filter(|&v: &u32| v > 0).unwrap_or(128));
+pub static TILE_COLS: std::sync::LazyLock<u32> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_TILE_COLS").ok().and_then(|v| v.parse().ok()).filter(|&v: &u32| v > 0).unwrap_or(128));
 /// The cost estimate of one band-triangle pair in pixel-test units (LMTOOL_PAIR_COST, default 48).
 pub static PAIR_COST_V: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_PAIR_COST").ok().and_then(|v| v.parse().ok()).unwrap_or(48));
 /// The cost weight of a card (alpha-tested) triangle relative to an opaque one (LMTOOL_CARD_WEIGHT, default 3).
