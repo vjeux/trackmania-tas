@@ -201,7 +201,8 @@ fn one(fp: &Fp, rounds: &[(String, String)], root: &Path, set: &str, base: &Path
         } else {
             root.join(round).join(set).join(&part).join(&bname)
         };
-        if !f.exists() {
+        // absent, or a 0-byte leftover of an interrupted shoot (thumbs2/ice/p13, 2026-09-19)
+        if std::fs::metadata(&f).map(|m| m.len() == 0).unwrap_or(true) {
             continue;
         }
         let is_wipe = round.starts_with("reset");
