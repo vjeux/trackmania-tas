@@ -847,6 +847,10 @@ pub struct Stats {
     pub ch_game: [f64; 4],
     pub ch_ours: [f64; 4],
     pub ch_n: [usize; 4],
+    /// Texels (channel 0) where ours is exactly 0 and the game's is > 0, and the reverse — the "content"
+    /// disagreements (a layer we have that the game lacks, or the reverse), as distinct from level differences.
+    pub ours_zero_game_lit: usize,
+    pub game_zero_ours_lit: usize,
 }
 
 impl Stats {
@@ -867,6 +871,13 @@ pub fn compare(game: &Buf, ours: &Buf, channels: u32, tol: f32, floor: f32, stri
         let mut x = 0;
         while x < game.w.min(ours.w) {
             if mask(x, y) {
+                {
+                    let (a, b) = (game.get(x, y, 0), ours.get(x, y, 0));
+                    if a.is_finite() && b.is_finite() {
+                        if b == 0.0 && a > 0.0 { s.ours_zero_game_lit += 1; }
+                        if a == 0.0 && b > 0.0 { s.game_zero_ours_lit += 1; }
+                    }
+                }
                 for c in 0..ch {
                     let (a, b) = (game.get(x, y, c), ours.get(x, y, c));
                     if !a.is_finite() || !b.is_finite() {

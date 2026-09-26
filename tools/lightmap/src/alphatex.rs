@@ -251,7 +251,13 @@ impl AlphaTex {
         let fx = wrap(u, w) - 0.5;
         let fy = wrap(v, h) - 0.5;
         let (x0, y0) = (fx.floor(), fy.floor());
-        let (tx, ty) = (((fx - x0) * 256.0).floor() / 256.0, ((fy - y0) * 256.0).floor() / 256.0);
+        let (tx, ty) = match *WEIGHT_MODE {
+            1 => (((fx - x0) * 256.0).round() / 256.0, ((fy - y0) * 256.0).round() / 256.0),
+            2 => (fx - x0, fy - y0),
+            3 => (((fx - x0) * 128.0).floor() / 128.0, ((fy - y0) * 128.0).floor() / 128.0),
+            4 => (((fx - x0) * 64.0).floor() / 64.0, ((fy - y0) * 64.0).floor() / 64.0),
+            _ => (((fx - x0) * 256.0).floor() / 256.0, ((fy - y0) * 256.0).floor() / 256.0),
+        };
         let idx = |x: i64, n: i64| -> usize {
             match addr {
                 Address::Wrap => x.rem_euclid(n) as usize,
@@ -351,7 +357,13 @@ impl AlphaTex {
         let fx = u.clamp(0.0, 1.0) * l.wf - 0.5;
         let fy = v.clamp(0.0, 1.0) * l.hf - 0.5;
         let (x0, y0) = (fx.floor(), fy.floor());
-        let (tx, ty) = (((fx - x0) * 256.0).floor() * (1.0 / 256.0), ((fy - y0) * 256.0).floor() * (1.0 / 256.0));
+        let (tx, ty) = match *WEIGHT_MODE {
+            1 => (((fx - x0) * 256.0).round() * (1.0 / 256.0), ((fy - y0) * 256.0).round() * (1.0 / 256.0)),
+            2 => (fx - x0, fy - y0),
+            3 => (((fx - x0) * 128.0).floor() * (1.0 / 128.0), ((fy - y0) * 128.0).floor() * (1.0 / 128.0)),
+            4 => (((fx - x0) * 64.0).floor() * (1.0 / 64.0), ((fy - y0) * 64.0).floor() * (1.0 / 64.0)),
+            _ => (((fx - x0) * 256.0).floor() * (1.0 / 256.0), ((fy - y0) * 256.0).floor() * (1.0 / 256.0)),
+        };
         let (xi, yi) = (x0 as i32, y0 as i32);
         let (xa, xb) = (xi.max(0) as usize, (xi + 1).min(l.w as i32 - 1).max(0) as usize);
         let (ya, yb) = (yi.max(0) as usize, (yi + 1).min(l.h as i32 - 1).max(0) as usize);
@@ -811,3 +823,9 @@ mod plan_tests {
         }
     }
 }
+
+
+/// DIAGNOSTIC (engineer 2, the card-texel residue): LMTOOL_ALPHA_WEIGHTS = 0 the port's 8-bit floor weights
+/// (default) | 1 8-bit round | 2 exact f32 | 3 7-bit floor | 4 6-bit floor — the bilinear weight quantisation
+/// under test against the capture's residue counts (passdiff's ours0/game>0 columns).
+pub static WEIGHT_MODE: std::sync::LazyLock<u32> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_ALPHA_WEIGHTS").ok().and_then(|v| v.parse().ok()).unwrap_or(0));

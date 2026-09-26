@@ -7997,7 +7997,7 @@ variants: ");
                 rs.sort_by(|x, y| y.stats.rmse.partial_cmp(&x.stats.rmse).unwrap_or(std::cmp::Ordering::Equal));
                 let take = if Some(&s.pass) == first.as_ref() || has("--all-rows") { rs.len() } else { 3.min(rs.len()) };
                 for r in rs.iter().take(take) {
-                    println!("  {:<40} n {:>9} max {:>9.4} mean {:>9.5} rmse {:>9.5} Δ {:>+9.5} within {:>6.2} %  {}{}", r.key(), r.stats.n, r.stats.max_abs, r.stats.mean_abs, r.stats.rmse, r.stats.mean_signed, r.stats.pct_within(), r.transforms.join(", "), if r.note.is_empty() { String::new() } else { format!("  [{}]", r.note) });
+                    println!("  {:<40} n {:>9} max {:>9.4} mean {:>9.5} rmse {:>9.5} Δ {:>+9.5} within {:>6.2} %  ours0/game>0 {:>7} game0/ours>0 {:>7}  {}{}", r.key(), r.stats.n, r.stats.max_abs, r.stats.mean_abs, r.stats.rmse, r.stats.mean_signed, r.stats.pct_within(), r.stats.ours_zero_game_lit, r.stats.game_zero_ours_lit, r.transforms.join(", "), if r.note.is_empty() { String::new() } else { format!("  [{}]", r.note) });
                 }
             }
             if let Some(dir) = heat {
