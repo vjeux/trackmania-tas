@@ -17,6 +17,7 @@
 #Const C_Event_Cmd "LowG.Cmd"			///< TriggerModeScriptEventArray("LowG.Cmd", [Login, Command, Args...])
 #Const C_Event_Status "LowG.Status"	///< sent back with one Text per line
 #Const C_BalloonName "$fa0Ballon"		///< nickname prefix of the fake-user balloons
+#Const C_ReactorRefreshMs 2000			///< the engine gives no readback of a reactor order: re-issue this often to keep it on
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
 // Globals
@@ -37,6 +38,10 @@ declare Ident[Text] G_BotModels;			///< "sport"|"snow"|"rally"|"desert"|"skin" =
 declare Text G_BotModel;					///< which of them new balloons get ("" = engine default via SetNbBotPlayers)
 declare Text G_BotSkin;					///< skin (zip URL or Skins/Models/... path) registered as "skin"
 declare Text G_SettingBotSkin;			///< last seen value of S_LowG_BotSkin (change detection)
+declare Text G_Reactor;					///< players' permanent reactor: "off" | "down" | "up"
+declare Integer G_ReactorLvl;				///< 1 = ReactorBoost, 2 = ReactorBoost2
+declare Text G_SettingReactor;
+declare Integer G_SettingReactorLvl;
 declare Boolean G_ItemListOk;				///< the one-line command reminder at the top of every screen
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
@@ -65,8 +70,15 @@ Text NameOf(CSmPlayer _Player, Text _Fallback) {
 	return _Fallback;
 }
 
+/// Only the fake users this library created (by name): an admin's ConnectFakePlayer is left alone.
+Boolean IsBalloonUser(CUser _User) {
+	return _User.IsFakeUser && TL::StartsWith(C_BalloonName, _User.Name, False, True);
+}
+
+/// Engine bots, and the fake users we named "Ballon N". An admin's ConnectFakePlayer is a player.
 Boolean IsBalloon(CSmPlayer _Player) {
-	return _Player.IsBot || _Player.IsFakePlayer;
+	if (_Player.IsBot) return True;
+	return _Player.IsFakePlayer && _Player.User != Null && IsBalloonUser(_Player.User);
 }
 
 /// The coefficient a player should be driving with right now.
@@ -133,6 +145,47 @@ Void Apply(CSmPlayer _Player) {
 	LowG_AppliedAt = Now;
 }
 
+/**
+ *	Players (never balloons) keep a permanent reactor boost: BoostDown/BoostUp (level 1) or
+ *	Boost2Down/Boost2Up (level 2), doc.h 2016-2028, "Activate or Deactivate ... with a 250ms
+ *	delay". CSmPlayer exposes no reactor readback, so the order is repeated every
+ *	C_ReactorRefreshMs and on every spawn; switching to off deactivates all four once.
+ */
+Void ApplyReactor(CSmPlayer _Player) {
+	if (IsBalloon(_Player)) return;
+	declare Text LowG_ReactorApplied for _Player = "";
+	declare Integer LowG_ReactorAppliedAt for _Player = -1;
+	declare Integer LowG_ReactorStartTime for _Player = -1;
+	if (_Player.SpawnStatus != CSmPlayer::ESpawnStatus::Spawned) {
+		LowG_ReactorStartTime = -1;
+		LowG_ReactorApplied = "";
+		return;
+	}
+	declare Text Wanted = G_Reactor ^ G_ReactorLvl;
+	if (G_Reactor == "off") Wanted = "off";
+	declare Boolean Fresh = (LowG_ReactorStartTime != _Player.StartTime);
+	declare Boolean Changed = (LowG_ReactorApplied != Wanted);
+	declare Boolean Refresh = (Wanted != "off" && Now - LowG_ReactorAppliedAt > C_ReactorRefreshMs);
+	if (!Fresh && !Changed && !Refresh) return;
+	if (Wanted == "off") {
+		if (LowG_ReactorApplied == "off" && !Fresh) return;
+		if (SetPlayer_DelayedIsFull(_Player)) return;
+		SetPlayer_Delayed_BoostDown(_Player, False);
+		if (!SetPlayer_DelayedIsFull(_Player)) SetPlayer_Delayed_BoostUp(_Player, False);
+		if (!SetPlayer_DelayedIsFull(_Player)) SetPlayer_Delayed_Boost2Down(_Player, False);
+		if (!SetPlayer_DelayedIsFull(_Player)) SetPlayer_Delayed_Boost2Up(_Player, False);
+	} else {
+		if (SetPlayer_DelayedIsFull(_Player)) return;
+		if (G_Reactor == "down" && G_ReactorLvl >= 2) SetPlayer_Delayed_Boost2Down(_Player, True);
+		else if (G_Reactor == "down") SetPlayer_Delayed_BoostDown(_Player, True);
+		else if (G_Reactor == "up" && G_ReactorLvl >= 2) SetPlayer_Delayed_Boost2Up(_Player, True);
+		else if (G_Reactor == "up") SetPlayer_Delayed_BoostUp(_Player, True);
+	}
+	LowG_ReactorApplied = Wanted;
+	LowG_ReactorAppliedAt = Now;
+	LowG_ReactorStartTime = _Player.StartTime;
+}
+
 Void ApplyCollisions() {
 	if (UsePvPCollisions != G_Collisions) UsePvPCollisions = G_Collisions;
 	if (!G_Collisions) return;
@@ -150,11 +203,6 @@ Integer BalloonCount() {
 		if (IsBalloon(Player)) N += 1;
 	}
 	return N;
-}
-
-/// Only the fake users this library created (by name): an admin's ConnectFakePlayer is left alone.
-Boolean IsBalloonUser(CUser _User) {
-	return _User.IsFakeUser && TL::StartsWith(C_BalloonName, _User.Name, False, True);
 }
 
 Integer FakeUserCount() {
@@ -267,7 +315,7 @@ Boolean RegisterBotSkin(Text _Skin) {
 /// Snapshot for tmserverctl / debugging: one callback with one Text per line.
 Void SendStatus() {
 	declare Text[] Lines;
-	Lines.add("default=" ^ Fmt(G_DefaultGravity) ^ " collisions=" ^ G_Collisions ^ " balloons=" ^ BalloonCount() ^ "/" ^ G_WantedBots ^ " botgravity=" ^ Fmt(G_BotGravity) ^ " botadherence=" ^ Fmt(G_BotAdherence) ^ " botmodel=" ^ G_BotModel ^ " botskin=" ^ G_BotSkin ^ " fakeusers=" ^ G_BotsAreFakeUsers ^ " players=" ^ Players.count ^ " bots=" ^ BotPlayers.count);
+	Lines.add("default=" ^ Fmt(G_DefaultGravity) ^ " collisions=" ^ G_Collisions ^ " balloons=" ^ BalloonCount() ^ "/" ^ G_WantedBots ^ " botgravity=" ^ Fmt(G_BotGravity) ^ " botadherence=" ^ Fmt(G_BotAdherence) ^ " botmodel=" ^ G_BotModel ^ " botskin=" ^ G_BotSkin ^ " reactor=" ^ G_Reactor ^ G_ReactorLvl ^ " fakeusers=" ^ G_BotsAreFakeUsers ^ " players=" ^ Players.count ^ " bots=" ^ BotPlayers.count);
 	declare CSmPlayer[] Everyone;
 	foreach (Player in Players) Everyone.add(Player);
 	foreach (Bot in BotPlayers) {
@@ -277,7 +325,7 @@ Void SendStatus() {
 		declare Text Login = "";
 		if (Player.User != Null) Login = Player.User.Login;
 		declare Integer LowG_ApplyCount for Player = 0;
-		Lines.add(Login ^ " spawn=" ^ Player.SpawnStatus ^ " gravity=" ^ Fmt(Player.GravityCoef) ^ " wanted=" ^ Fmt(WantedGravity(Player)) ^ " adherence=" ^ Fmt(Player.AdherenceCoef) ^ " balloon=" ^ IsBalloon(Player) ^ " model=" ^ Player.ForceModelId ^ " orders=" ^ LowG_ApplyCount ^ " kmh=" ^ ML::NearestInteger(Player.Speed * 3.6));
+		Lines.add(Login ^ " spawn=" ^ Player.SpawnStatus ^ " gravity=" ^ Fmt(Player.GravityCoef) ^ " wanted=" ^ Fmt(WantedGravity(Player)) ^ " adherence=" ^ Fmt(Player.AdherenceCoef) ^ " balloon=" ^ IsBalloon(Player) ^ " model=" ^ Player.ForceModelId ^ " orders=" ^ LowG_ApplyCount ^ " kmh=" ^ ML::NearestInteger(Player.Speed * 3.6) ^ " y=" ^ TL::FormatReal(Player.Position.Y, 1, False, False) ^ " air=" ^ Player.IsInAir);
 	}
 	XmlRpc.SendCallbackArray(C_Event_Status, Lines);
 }
@@ -377,6 +425,20 @@ Void HandleCommand(Text[] _Params) {
 				Tell(Caller, "balloon skin: " ^ Current ^ " (change: S_LowG_BotSkin + restart; /botmodel skin|sport|snow|rally|desert switches the model)");
 			}
 		}
+		case "reactor": {
+			if (_Params.count < 3) {
+				Tell(Caller, "players' reactor: " ^ G_Reactor ^ " level " ^ G_ReactorLvl ^ " -- /reactor down|up|off [1|2]");
+				return;
+			}
+			declare Text Mode = TL::ToLowerCase(_Params[2]);
+			if (Mode != "down" && Mode != "up" && Mode != "off") {
+				Tell(Caller, "usage: /reactor down|up|off [1|2]");
+				return;
+			}
+			G_Reactor = Mode;
+			if (_Params.count >= 4) G_ReactorLvl = ML::Clamp(TL::ToInteger(_Params[3]), 1, 2);
+			TellAll(NameOf(Caller, Login) ^ "$z set the players' reactor to " ^ G_Reactor ^ " (level " ^ G_ReactorLvl ^ ")");
+		}
 		case "collisions": {
 			if (_Params.count < 3) {
 				Tell(Caller, "collisions: " ^ G_Collisions ^ " -- /collisions on|off");
@@ -392,7 +454,7 @@ Void HandleCommand(Text[] _Params) {
 			SendStatus();
 		}
 		default: {
-			Tell(Caller, "commands: /gravity <0..1> | /gravity all <0..1> | /gravity reset | /bots <n> | /grip <0..1> | /botgravity <0..1> | /collisions on|off | /status");
+			Tell(Caller, "commands: /gravity <0..1> | /gravity all <0..1> | /gravity reset | /bots <n> | /grip <0..1> | /botgravity <0..1> | /botmodel sport|snow|rally|desert|skin | /reactor down|up|off [1|2] | /collisions on|off | /status");
 		}
 	}
 }
@@ -434,7 +496,12 @@ Void DestroyHint() {
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
 
 /// Match_StartServer: take the settings, reset the state.
-Void Load(Real _DefaultGravity, Boolean _Collisions, Integer _Bots, Real _BotGravity, Real _BotAdherence, Integer _MaxBots, Boolean _BotsAreFakeUsers, Text _BotSkin) {
+Void Load(Real _DefaultGravity, Boolean _Collisions, Integer _Bots, Real _BotGravity, Real _BotAdherence, Integer _MaxBots, Boolean _BotsAreFakeUsers, Text _BotSkin, Text _Reactor, Integer _ReactorLvl) {
+	G_Reactor = TL::ToLowerCase(_Reactor);
+	if (G_Reactor != "down" && G_Reactor != "up") G_Reactor = "off";
+	G_ReactorLvl = ML::Clamp(_ReactorLvl, 1, 2);
+	G_SettingReactor = _Reactor;
+	G_SettingReactorLvl = _ReactorLvl;
 	G_DefaultGravity = ML::Clamp(_DefaultGravity, 0., 1.);
 	G_BotAdherence = ML::Clamp(_BotAdherence, 0., 1.);
 	G_SettingBotGravity = _BotGravity;
@@ -461,7 +528,16 @@ Void Load(Real _DefaultGravity, Boolean _Collisions, Integer _Bots, Real _BotGra
 /// A setting is applied when ITS value changes, so a value set in chat (/grip, /botgravity)
 /// holds until the setting itself is edited. (The balloon kind is only taken at load time:
 /// /bots N fake|bot changes it live.)
-Void UpdateSettings(Real _BotGravity, Real _BotAdherence, Integer _MaxBots, Text _BotSkin) {
+Void UpdateSettings(Real _BotGravity, Real _BotAdherence, Integer _MaxBots, Text _BotSkin, Text _Reactor, Integer _ReactorLvl) {
+	if (_Reactor != G_SettingReactor) {
+		G_SettingReactor = _Reactor;
+		G_Reactor = TL::ToLowerCase(_Reactor);
+		if (G_Reactor != "down" && G_Reactor != "up") G_Reactor = "off";
+	}
+	if (_ReactorLvl != G_SettingReactorLvl) {
+		G_SettingReactorLvl = _ReactorLvl;
+		G_ReactorLvl = ML::Clamp(_ReactorLvl, 1, 2);
+	}
 	if (_BotSkin != G_SettingBotSkin) {
 		// Cannot rebuild the item list now (see RegisterBotSkin): say so once, apply at the next start.
 		G_SettingBotSkin = _BotSkin;
@@ -494,6 +570,7 @@ Void Yield() {
 	ApplyCollisions();
 	foreach (Player in Players) {
 		Apply(Player);
+		ApplyReactor(Player);
 	}
 	foreach (Bot in BotPlayers) {
 		Apply(Bot);
