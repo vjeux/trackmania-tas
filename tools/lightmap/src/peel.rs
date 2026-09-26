@@ -1427,7 +1427,7 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
             let mut pixels: Vec<(usize, f32)> = Vec::new();
             // (the fragment-count statistic per job, added to the shared counters once — an atomic per pixel
             // made the stats mode 20× slower)
-            let mut nfrag_local = [0u64; 5];
+            let mut nfrag_local = [0u64; 9];
             #[allow(unused_mut, unused_variables)]
             let mut vector_done = false;
             #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
@@ -1440,7 +1440,7 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
                     let env16 = &mut env16_a.0;
                     env16.copy_from_slice(&env_max[li0..li0 + 16]);
                     let (h, has, big) = scan_block16(&offs[li0..li0 + 17], &csr, env16, frame);
-                    if raster_stats { for l in 0..16 { let n = (offs[li0 + l + 1] - offs[li0 + l]) as usize; if n >= 1 { nfrag_local[match n { 1 | 2 => 0, 3 => 1, 4 => 2, 5 => 3, _ => 4 }] += 1; } } }
+                    if raster_stats { for l in 0..16 { let n = (offs[li0 + l + 1] - offs[li0 + l]) as usize; if n >= 1 { nfrag_local[match n { 1 | 2 => 0, 3 => 1, 4 => 2, 5 => 3, 6..=8 => 4, 9..=16 => 5, 17..=32 => 6, 33..=64 => 7, _ => 8 }] += 1; } } }
                     covered += has as usize;
                     for k in 0..=SCAN_K { hist[k] += h[k] as usize; }
                     let mut m = big;
@@ -1452,7 +1452,7 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
                 for li in li0..band_px { let e = std::mem::replace(&mut env_max[li], 0.0); cnt[li] = 0; if offs[li] != offs[li + 1] { covered += 1; pixels.push((li, e)); } }
                 vector_done = true;
             }
-            if raster_stats { for k in 0..5 { if nfrag_local[k] > 0 { RS_NFRAG[k].fetch_add(nfrag_local[k], std::sync::atomic::Ordering::Relaxed); } } }
+            if raster_stats { for k in 0..9 { if nfrag_local[k] > 0 { RS_NFRAG[k].fetch_add(nfrag_local[k], std::sync::atomic::Ordering::Relaxed); } } }
             // (the scalar walk over the pixels the lanes left — every pixel without the lane walk; no list then)
             let mut pi = 0usize;
             let mut li_scalar = 0usize;
@@ -1513,6 +1513,7 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
                 }
                 let buf = &mut csr[a..c];
                 if *BIASED_ORDER {
+                    if *MEASURE_NOWALK { hist[1] += 1; continue; }
                     let cx = count.as_ref().unwrap();
                     hist[layer_walk_biased_cfrags(buf, env_d, cx.prm.dome_layer, cx.prm.depth_bits, frame).min(MAX_LAYERS)] += 1;
                     continue;
@@ -1625,7 +1626,7 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
     // colder than a fresh thread-local malloc), so the frees stay, spread over the pool
     parallel_drop(binned);
     if raster_stats { eprintln!("raster stats (sparse, {n_jobs} jobs over {n_cells} cells): {} triangles rasterised, {} bbox pixels tested, {} pixel visits, clip {:?}, wanted {}, {:.3}s", RS_TRIS.swap(0, std::sync::atomic::Ordering::Relaxed), RS_TESTED.swap(0, std::sync::atomic::Ordering::Relaxed), RS_VISITS.swap(0, std::sync::atomic::Ordering::Relaxed), clip, px.len(), t_raster.elapsed().as_secs_f32()); }
-        if raster_stats { let f = |i: usize| RS_NFRAG[i].swap(0, std::sync::atomic::Ordering::Relaxed); eprintln!("scan pixels by fragment count: 1–2: {}, 3: {}, 4: {}, 5: {}, ≥ 6: {}", f(0), f(1), f(2), f(3), f(4)); }
+        if raster_stats { let f = |i: usize| RS_NFRAG[i].swap(0, std::sync::atomic::Ordering::Relaxed); eprintln!("scan pixels by fragment count: 1–2: {}, 3: {}, 4: {}, 5: {}, 6–8: {}, 9–16: {}, 17–32: {}, 33–64: {}, > 64: {}", f(0), f(1), f(2), f(3), f(4), f(5), f(6), f(7), f(8)); }
     if *raster::EDGE_AUDIT { let t: Vec<u64> = raster::EDGE_AUDIT_TALLY.iter().map(|a| a.load(std::sync::atomic::Ordering::Relaxed)).collect(); eprintln!("edge audit (cumulative): {} candidate pixels, f32 inside only {} ({:.4} %), integer inside only {} ({:.4} %), {} triangles degenerate after snapping", t[0], t[1], 100.0 * t[1] as f64 / t[0].max(1) as f64, t[2], 100.0 * t[2] as f64 / t[0].max(1) as f64, t[3]); }
     let t_sort = std::time::Instant::now(); crate::pool::stats::stage("csr");
     // THE SPARSE CSR: a counting sort of every job's fragments by wanted rank — the counts were taken by the
@@ -3634,7 +3635,7 @@ pub fn prefetch<T>(p: &T) {
 /// and quantisation otherwise differ.
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 #[inline(always)]
-pub fn scan_block16(offs: &[u32], csr: &[CFrag], env_d: &[f32; 16], frame: &PeelFrame) -> ([u32; 5], u32, u16) {
+pub fn scan_block16(offs: &[u32], csr: &[CFrag], env_d: &[f32; 16], frame: &PeelFrame) -> ([u32; SCAN_K + 1], u32, u16) {
     use std::arch::x86_64::*;
     unsafe {
         let o0 = _mm512_loadu_si512(offs.as_ptr() as *const _);
@@ -3642,9 +3643,11 @@ pub fn scan_block16(offs: &[u32], csr: &[CFrag], env_d: &[f32; 16], frame: &Peel
         let n = _mm512_sub_epi32(o1, o0);
         let zero_i = _mm512_setzero_si512();
         let has = _mm512_cmpgt_epi32_mask(n, zero_i);
-        if has == 0 { return ([0; 5], 0, 0); }
-        // the lanes the network handles: one to four fragments; the rest go to the scalar walk
-        let small = _mm512_cmple_epi32_mask(n, _mm512_set1_epi32(SCAN_K as i32));
+        if has == 0 { return ([0; SCAN_K + 1], 0, 0); }
+        // the lanes the network handles: one to four fragments; the rest go to the scalar walk (an nmax-adaptive
+        // 8-element network for the canopy blocks measured neutral twice: the extra gathers eat the sort's saving)
+        let k: usize = SCAN_K;
+        let small = _mm512_cmple_epi32_mask(n, _mm512_set1_epi32(k as i32));
         let lanes = has & small;
         let big = has & !small;
         let ed = _mm512_loadu_ps(env_d.as_ptr());
@@ -3685,7 +3688,7 @@ pub fn scan_block16(offs: &[u32], csr: &[CFrag], env_d: &[f32; 16], frame: &Peel
         let z01 = |z: __m512| -> __m512 { _mm512_max_ps(_mm512_add_ps(half, _mm512_div_ps(_mm512_add_ps(zc, z), den)), zero) };
         let biased = *BIASED_ORDER;
         let mut idx = _mm512_mullo_epi32(o0, three);
-        for j in 0..SCAN_K {
+        for j in 0..k {
             let valid = lanes & _mm512_cmpgt_epi32_mask(n, _mm512_set1_epi32(j as i32));
             let z = _mm512_mask_i32gather_ps::<4>(zero, valid, idx, base);
             tri[j] = _mm512_mask_i32gather_epi32::<4>(maxk, valid, _mm512_add_epi32(idx, one_i), base as *const i32);
@@ -3728,20 +3731,24 @@ pub fn scan_block16(offs: &[u32], csr: &[CFrag], env_d: &[f32; 16], frame: &Peel
         // the walk (biased: zf = z01 and bf = the stored depth already; unbiased: computed here as before)
         let mut d_prev = env_q;
         let mut items = zero_i;
-        for j in 0..SCAN_K {
+        for j in 0..k {
             let valid = lanes & _mm512_cmpgt_epi32_mask(n, _mm512_set1_epi32(j as i32));
             let (zj, dd) = if biased { (zf[j], bf[j]) } else { let zj = z01(zf[j]); (zj, q16(_mm512_min_ps(_mm512_max_ps(_mm512_add_ps(zj, bf[j]), zero), one))) };
             let acc = valid & _mm512_cmp_ps_mask::<_CMP_GE_OQ>(zj, d_prev);
             d_prev = _mm512_mask_blend_ps(acc, d_prev, dd);
             items = _mm512_mask_add_epi32(items, acc, items, one_i);
         }
-        let mut hist = [0u32; 5];
-        for k in 0..=SCAN_K {
-            hist[k] = (lanes & _mm512_cmpeq_epi32_mask(items, _mm512_set1_epi32(k as i32))).count_ones();
+        let mut hist = [0u32; SCAN_K + 1];
+        for c in 0..=k {
+            hist[c] = (lanes & _mm512_cmpeq_epi32_mask(items, _mm512_set1_epi32(c as i32))).count_ones();
         }
         (hist, has.count_ones(), big)
     }
 }
+/// MEASUREMENT ONLY (LMTOOL_MEASURE_NOWALK=1): the scalar count walk skipped (every such pixel counted as one layer —
+/// wrong output) to time it. (Read once: an env read per pixel serialises the threads on the environment lock.)
+pub static MEASURE_NOWALK: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("LMTOOL_MEASURE_NOWALK").is_some());
+
 /// The most fragments per pixel the lane walk takes (a 4-element sorting network).
 pub const SCAN_K: usize = 4;
 
@@ -4081,7 +4088,7 @@ mod key_probe {
 }
 
 /// LMTOOL_RASTER_STATS: pixels with 1–2 fragments, 3, 4, 5, ≥ 6.
-pub static RS_NFRAG: [std::sync::atomic::AtomicU64; 5] = [std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0)];
+pub static RS_NFRAG: [std::sync::atomic::AtomicU64; 9] = [const { std::sync::atomic::AtomicU64::new(0) }; 9];
 /// LMTOOL_NO_SCAN16=1 keeps the scan's per-pixel walk scalar (the A/B switch).
 pub static SCAN16_ON: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("LMTOOL_NO_SCAN16").is_none());
 
@@ -6114,7 +6121,7 @@ mod scan16_audit_tests {
                 lists.push(list);
             }
             let (hist, has, big) = scan_block16(&offs, &csr, &env, &frame);
-            let mut want_hist = [0u32; 5];
+            let mut want_hist = [0u32; SCAN_K + 1];
             let mut want_has = 0u32;
             let mut want_big = 0u16;
             for l in 0..16 {
