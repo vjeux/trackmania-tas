@@ -483,6 +483,33 @@ pub fn lm_scene_add_entities(store: &mut mapgeom::store::DataStore, layout: &cra
         let Some(mapgeom::static_item::Node::StaticObject(so)) = e.model.inline.as_deref() else { continue };
         let Some(s2) = so.solid2() else { continue };
         let Some(mesh) = lm_mesh_of_solid(s2) else { continue };
+        // LMTOOL_LM_ENTITY_TRACE=1: per entity the geoms' materials, the chosen uv set, the LM uv bounds and the record's PLG uv box
+        if std::env::var_os("LMTOOL_LM_ENTITY_TRACE").is_some() {
+            let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+            for v in &mesh.verts { for a in 0..2 { lo[a] = lo[a].min(v.uv[a]); hi[a] = hi[a].max(v.uv[a]); } }
+            let mats: Vec<String> = s2.shaded_geoms.iter().map(|sg| { let l = geom_material_link(s2, sg); format!("{}{}", l.rsplit('\\').next().unwrap_or(&l), if terrain_material_takes_tc0(&l) { "[tc0]" } else { "[tc1]" }) }).collect();
+            let r0 = &layout.records[recs[0]];
+            // the first triangle's winding normal vs its vertex normal (the peel's front-face test is the winding)
+            let wind = if mesh.indices.len() >= 3 {
+                let (a, b, c) = (mesh.verts[mesh.indices[0] as usize].pos, mesh.verts[mesh.indices[1] as usize].pos, mesh.verts[mesh.indices[2] as usize].pos);
+                let e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]]; let e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+                let n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+                format!("tri0 winding n ({:.2}, {:.2}, {:.2}) vertex n {:?} pos y {:.3}", n[0], n[1], n[2], mesh.verts[mesh.indices[0] as usize].normal, a[1])
+            } else { String::new() };
+            eprintln!("lm entity {prefab}#{entity} ({} records, class {}): {} v / {} t, LM uv [{:.3}, {:.3}]..[{:.3}, {:.3}], record uv box {:?}, geoms {:?}; {wind}; psize {:?}", recs.len(), r0.class, mesh.verts.len(), mesh.indices.len() / 3, lo[0], lo[1], hi[0], hi[1], r0.uv, mats, mesh.verts.iter().map(|v| v.psize).fold((f32::MAX, f32::MIN), |acc, p| (acc.0.min(p), acc.1.max(p))));
+            if std::env::var_os("LMTOOL_LM_ENTITY_TRACE_GEOMS").is_some() {
+                for line in geom_summary(s2) { eprintln!("    {line}"); }
+                for (gi, sg) in s2.shaded_geoms.iter().enumerate() {
+                    if let Some(vr) = s2.visuals.get(sg.visual_index as usize) { if let Some(mapgeom::static_item::Node::Visual(vis)) = vr.inline.as_deref() { if let Some(st) = vis.stream() {
+                        if let Some((_, mapgeom::static_item::vstream::Elem::Float3(pos))) = st.decls.iter().zip(st.elems.iter()).find(|(d, _)| d.name() == mapgeom::static_item::vstream::N_POSITION) {
+                            let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+                            for p in pos { for a in 0..3 { lo[a] = lo[a].min(p[a]); hi[a] = hi[a].max(p[a]); } }
+                            eprintln!("    geom {gi}: {} verts, pos [{:.2}, {:.2}, {:.2}]..[{:.2}, {:.2}, {:.2}]; custom material {:?}", pos.len(), lo[0], lo[1], lo[2], hi[0], hi[1], hi[2], s2.custom_materials.get(sg.material_index as usize).map(|cm| cm.name.clone()));
+                        }
+                    } } }
+                }
+            }
+        }
         let first = sc.instances.len();
         let mut n = 0usize;
         for &k in recs {

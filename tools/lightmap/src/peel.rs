@@ -4544,7 +4544,10 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                 // LMTOOL_SET_LAYER_CHUNK=N (default 8) bounds the layer buffers held at once; LMTOOL_SET_PER_BLOCK=1 keeps the
                 // block-by-block path
                 let chunk: usize = std::env::var("LMTOOL_SET_LAYER_CHUNK").ok().and_then(|v| v.parse().ok()).unwrap_or(8).max(1);
-                let per_block = std::env::var_os("LMTOOL_SET_PER_BLOCK").is_some() || lm_draws.is_none();
+                // LMTOOL_SET_PROBE=x,y: every LM fragment landing on that atlas texel prints its path through every block (the
+                // interpolated position / normal, the projected peel uv / z, the layer depth it met, the verdict) — the block-by-block loop
+                let set_probe: Option<(u32, u32)> = std::env::var("LMTOOL_SET_PROBE").ok().and_then(|v| { let p: Vec<u32> = v.split(',').filter_map(|t| t.trim().parse().ok()).collect(); if p.len() == 2 { Some((p[0], p[1])) } else { None } });
+                let per_block = std::env::var_os("LMTOOL_SET_PER_BLOCK").is_some() || lm_draws.is_none() || set_probe.is_some();
                 // THE LM RASTER ONCE (perf 8, lmaccum::replay_set_layers): the direction's blocks replay the fragment list of its
                 // raster offset — the same fragments in the same order, no raster per block; LMTOOL_LMACCUM_FRAGLIST=0 keeps the
                 // fused raster path (and the serial / per-block study switches take theirs)
@@ -4585,7 +4588,10 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                     let t_set = std::time::Instant::now();
                     if let (Some((lm, draws)), Some(dt)) = (&lm_draws, dir_lm.as_mut()) {
                         if per_block {
-                            crate::lmaccum::run_set_block(&lm.meshes, &lm.instances, &lm.table, draws, &crate::lmaccum::LayerTargets { color: &bufs[0].0, depth: &bufs[0].1 }, crate::lmaccum::DepthCompare::Float, dt);
+                            // the probe fires on the first two directions, or on the steep ones (D.y > 0.8) with LMTOOL_SET_PROBE_UP=1
+                            let fire = set_probe.is_some() && (if std::env::var_os("LMTOOL_SET_PROBE_UP").is_some() { d[1] > 0.8 } else { di < 2 });
+                            if fire { eprintln!("set probe: direction {di} peel {pi} block {k} (D {:.3},{:.3},{:.3})", d[0], d[1], d[2]); }
+                            crate::lmaccum::run_set_block_probe(&lm.meshes, &lm.instances, &lm.table, draws, &crate::lmaccum::LayerTargets { color: &bufs[0].0, depth: &bufs[0].1 }, crate::lmaccum::DepthCompare::Float, dt, if fire { set_probe } else { None });
                         } else {
                             let layers: Vec<crate::lmaccum::LayerTargets> = bufs.iter().map(|(c, dd)| crate::lmaccum::LayerTargets { color: c, depth: dd }).collect();
                             crate::lmaccum::run_set_layers_par(&lm.meshes, &lm.instances, &lm.table, draws, &layers, crate::lmaccum::DepthCompare::Float, dt, &mut dir_best_k, dir_block_base + k);

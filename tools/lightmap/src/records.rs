@@ -650,7 +650,11 @@ pub fn add_record_geometry(scene: &mut crate::geometry::Scene, store: &mut mapge
     // the zone tile: the ground zone prefab's first static object entity (records::zone_tiles' model)
     let mut tile_model: Option<usize> = None;
     let mut ti = 0usize;
+    // LMTOOL_RECORD_SCENE_SKIP_CLASS=a,b (study): record classes left out of the peel geometry (e.g. clipB — the down-facing
+    // Base_FCB plane at a WaterBase block's top, which occludes the water surface below in our peel)
+    let skip_classes: Vec<String> = std::env::var("LMTOOL_RECORD_SCENE_SKIP_CLASS").map(|v| v.split(',').map(|t| t.trim().to_string()).collect()).unwrap_or_default();
     for (k, r) in mr.recs.iter().enumerate() {
+        if skip_classes.iter().any(|c| c == r.class) { continue; }
         let (mi, xf) = if let Some(m) = &r.mesh {
             let key = (m.prefab.clone(), m.entity);
             let mi = match model_of.get(&key) {
@@ -661,7 +665,7 @@ pub fn add_record_geometry(scene: &mut crate::geometry::Scene, store: &mut mapge
                     let Some(e) = pf.ents.get(m.entity) else { continue };
                     let Some(mapgeom::static_item::Node::StaticObject(so)) = e.model.inline.as_deref() else { continue };
                     let Some(s2) = so.solid2() else { continue };
-                    let g = crate::geometry::geom_from_solid2(s2, None);
+                    let g = crate::geometry::geom_from_solid2_opts(s2, None, std::env::var_os("LMTOOL_RECORD_SCENE_KEEP_NO_LMUV").is_none());
                     scene.models.push(g);
                     scene.model_names.push(format!("{}#{}", m.prefab, m.entity));
                     model_of.insert(key, scene.models.len() - 1);
@@ -686,7 +690,7 @@ pub fn add_record_geometry(scene: &mut crate::geometry::Scene, store: &mut mapge
                         for e in &pf.ents {
                             let Some(mapgeom::static_item::Node::StaticObject(so)) = e.model.inline.as_deref() else { continue };
                             let Some(s2) = so.solid2() else { continue };
-                            let g = crate::geometry::geom_from_solid2(s2, None);
+                            let g = crate::geometry::geom_from_solid2_opts(s2, None, std::env::var_os("LMTOOL_RECORD_SCENE_KEEP_NO_LMUV").is_none());
                             scene.models.push(g);
                             scene.model_names.push(format!("{pp}#tile"));
                             found = Some(scene.models.len() - 1);

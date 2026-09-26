@@ -309,6 +309,16 @@ pub fn compose_pose(outer: Option<([f32; 4], [f32; 3])>, inner: ([f32; 4], [f32;
 /// A `ModelGeom` from a solid: the PreLightGen, lights, the LOD-0 shaded geoms' triangles (TexCoord1 = the lightmap uv),
 /// materials / cut-out textures, the uv range and the metres-per-uv; `ent_pose` = a prefab entity's (quaternion, position).
 pub fn geom_from_solid2(s2: &mapgeom::static_item::solid2::CPlugSolid2Model, ent_pose: Option<([f32; 4], [f32; 3])>) -> ModelGeom {
+    geom_from_solid2_opts(s2, ent_pose, false)
+}
+
+/// `geom_from_solid2` with `skip_no_lm_uv`: a visual WITHOUT lightmap uvs (no TexCoord1 / set 1, no tc0 under the terrain
+/// rule, no uv set at all) is left out — the record scene's blocks and clips (stpad's WaterBase `Base_Air`: geom 1 is the
+/// WATER SURFACE at local y 7 — POSITION + BLENDINDICES + NORMAL, no uv, no LM chart — 3 m above the pool FLOOR (geom 0,
+/// the record's LM mesh at y 4); drawn as peel geometry it blacks out every floor texel's sky, while the editor's floor
+/// charts are the brightest objects of the map: the game does not peel the water, as it leaves the Scene3d's Water mobil
+/// out of the environment block). The port's items keep the fallback (a single-set pad IS lightmap geometry).
+pub fn geom_from_solid2_opts(s2: &mapgeom::static_item::solid2::CPlugSolid2Model, ent_pose: Option<([f32; 4], [f32; 3])>, skip_no_lm_uv: bool) -> ModelGeom {
     let mut g = ModelGeom::default();
     if let Some(plg) = &s2.pre_light_gen {
         g.plg_u02 = plg.u02;
@@ -416,6 +426,8 @@ pub fn geom_from_solid2(s2: &mapgeom::static_item::solid2::CPlugSolid2Model, ent
         };
         if uv1.is_some() || uv1_alt.is_some() {
             g.lm_uv_geoms += 1;
+        } else if skip_no_lm_uv {
+            continue;
         }
         // no lightmap uvs at all (terrain tiles: positions + normals only; the editor still charts
         // them at the default density): TexCoord0 when there is one, else a planar map over the
