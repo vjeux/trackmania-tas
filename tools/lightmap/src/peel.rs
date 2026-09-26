@@ -1238,6 +1238,7 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
     let parts: Vec<Vec<(u32, Frag)>> = parts_all.into_iter().map(|(o, _, _)| o).collect();
     prof::add(&prof::B_RASTER, t_raster);
     if raster_stats { eprintln!("raster stats (sparse, {n_jobs} jobs over {n_cells} cells): {} triangles rasterised, {} bbox pixels tested, {} pixel visits, clip {:?}, wanted {}, {:.3}s", RS_TRIS.swap(0, std::sync::atomic::Ordering::Relaxed), RS_TESTED.swap(0, std::sync::atomic::Ordering::Relaxed), RS_VISITS.swap(0, std::sync::atomic::Ordering::Relaxed), clip, px.len(), t_raster.elapsed().as_secs_f32()); }
+    if *raster::EDGE_AUDIT { let t: Vec<u64> = raster::EDGE_AUDIT_TALLY.iter().map(|a| a.load(std::sync::atomic::Ordering::Relaxed)).collect(); eprintln!("edge audit (cumulative): {} candidate pixels, f32 inside only {} ({:.4} %), integer inside only {} ({:.4} %), {} triangles degenerate after snapping", t[0], t[1], 100.0 * t[1] as f64 / t[0].max(1) as f64, t[2], 100.0 * t[2] as f64 / t[0].max(1) as f64, t[3]); }
     let t_sort = std::time::Instant::now(); crate::pool::stats::stage("csr");
     // THE SPARSE CSR: a counting sort of every job's fragments by wanted rank — the counts were taken by the
     // jobs (`csr_start[k + 1]`); here the prefix in parallel blocks (block sums, then offsets and cursors),

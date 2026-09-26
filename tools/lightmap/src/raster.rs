@@ -378,6 +378,8 @@ pub unsafe fn triangle_rows_avx512<G: SpanFn>(w: u32, h: u32, p: [[f32; 2]; 3], 
     // the weights in the caller's vertex order: a ← e1/area, b ← e2/area, c ← e0/area, b and c swapped
     // back when the orientation swapped them
     let (wi_b, wi_c) = if s.swapped { (2usize, 1usize) } else { (1, 2) };
+    // (LMTOOL_EDGE_AUDIT) the specification's snapped integer triangle beside the f32 one
+    let audit: Option<IntTri> = if *EDGE_AUDIT { let it = IntTri::new(p); if it.degenerate { EDGE_AUDIT_TALLY[3].fetch_add(1, std::sync::atomic::Ordering::Relaxed); } Some(it) } else { None };
     let mut bary = [[0f32; 16]; 3];
     for y in s.y0..=s.y1 {
         let py = y as f32 + 0.5;
@@ -415,6 +417,23 @@ pub unsafe fn triangle_rows_avx512<G: SpanFn>(w: u32, h: u32, p: [[f32; 2]; 3], 
                 let on = if tl[k] { _mm512_cmp_ps_mask::<_CMP_EQ_OQ>(e[k], zero) } else { 0 };
                 inside &= gt | on;
             }
+            if let Some(it) = &audit {
+                // every candidate lane of the block against the integer rule
+                let (mut n, mut f_only, mut i_only) = (0u64, 0u64, 0u64);
+                let mut m = lanes;
+                while m != 0 {
+                    let l = m.trailing_zeros();
+                    m &= m - 1;
+                    let f = (inside >> l) & 1 == 1;
+                    let i = it.covers(x + l as i32, y);
+                    n += 1;
+                    if f && !i { f_only += 1; }
+                    if i && !f { i_only += 1; }
+                }
+                EDGE_AUDIT_TALLY[0].fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+                EDGE_AUDIT_TALLY[1].fetch_add(f_only, std::sync::atomic::Ordering::Relaxed);
+                EDGE_AUDIT_TALLY[2].fetch_add(i_only, std::sync::atomic::Ordering::Relaxed);
+            }
             if inside != 0 {
                 // the scalar `e * inv` per lane
                 _mm512_storeu_ps(bary[0].as_mut_ptr(), _mm512_mul_ps(e[1], invv));
@@ -424,6 +443,48 @@ pub unsafe fn triangle_rows_avx512<G: SpanFn>(w: u32, h: u32, p: [[f32; 2]; 3], 
             }
             x += 16;
         }
+    }
+}
+
+/// LMTOOL_EDGE_AUDIT=1: every candidate pixel the 16-wide walk tests is ALSO decided by Direct3D 11's own
+/// coverage rule — the vertices snapped to 1/256 pixel (round to nearest even) and the edge function as an
+/// exact 64-bit integer at the pixel centre, top-left on integer zero — and the disagreements with the port's
+/// f32 test are tallied (`EDGE_AUDIT_TALLY`: candidates, f32-inside-only, integer-inside-only, triangles the
+/// snapping degenerates). A measurement of how far the f32 test sits from the specification, not a change.
+pub static EDGE_AUDIT: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_EDGE_AUDIT").map(|v| v == "1").unwrap_or(false));
+pub static EDGE_AUDIT_TALLY: [std::sync::atomic::AtomicU64; 4] = [std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0)];
+
+/// The specification's triangle: vertices in 1/256-pixel integers, oriented so the inside is positive.
+struct IntTri {
+    v: [[i64; 2]; 3],
+    tl: [bool; 3],
+    degenerate: bool,
+}
+
+impl IntTri {
+    fn new(p: [[f32; 2]; 3]) -> IntTri {
+        // n.8 fixed point, round to nearest even (D3D11.3 §3.4.1 / §15.16)
+        let snap = |v: f32| -> i64 { (v as f64 * 256.0).round_ties_even() as i64 };
+        let q = [[snap(p[0][0]), snap(p[0][1])], [snap(p[1][0]), snap(p[1][1])], [snap(p[2][0]), snap(p[2][1])]];
+        let area = Self::edge(q[0], q[1], q[2]);
+        if area == 0 {
+            return IntTri { v: q, tl: [false; 3], degenerate: true };
+        }
+        let (a, b, c) = if area > 0 { (q[0], q[1], q[2]) } else { (q[0], q[2], q[1]) };
+        let tl = |a: [i64; 2], b: [i64; 2]| -> bool { let (dx, dy) = (b[0] - a[0], b[1] - a[1]); dy < 0 || (dy == 0 && dx > 0) };
+        IntTri { v: [a, b, c], tl: [tl(a, b), tl(b, c), tl(c, a)], degenerate: false }
+    }
+    #[inline]
+    fn edge(a: [i64; 2], b: [i64; 2], q: [i64; 2]) -> i64 {
+        (b[0] - a[0]) * (q[1] - a[1]) - (b[1] - a[1]) * (q[0] - a[0])
+    }
+    /// The specification's coverage of pixel (x, y): its centre is (256x + 128, 256y + 128).
+    fn covers(&self, x: i32, y: i32) -> bool {
+        if self.degenerate { return false; }
+        let q = [x as i64 * 256 + 128, y as i64 * 256 + 128];
+        let [a, b, c] = self.v;
+        let e = [Self::edge(a, b, q), Self::edge(b, c, q), Self::edge(c, a, q)];
+        (0..3).all(|k| e[k] > 0 || (e[k] == 0 && self.tl[k]))
     }
 }
 
