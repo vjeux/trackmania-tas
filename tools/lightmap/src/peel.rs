@@ -2394,10 +2394,43 @@ pub struct LayerFrag {
 
 /// The game's depth-peel layers of one direction: per pixel the layers far-to-near (CSR), stored
 /// depths biased like the D3D rasteriser stores them, colours as the peel colour target holds them.
+/// Where the layer derivation writes a pixel's layers: a run of `LayerFrag` slots (a chunk's slice of the final
+/// array, or a vector's spare capacity) — `push` never grows it; the caller sized it from the A-buffer.
+pub struct LayerSink {
+    ptr: *mut LayerFrag,
+    len: usize,
+    cap: usize,
+}
+impl LayerSink {
+    /// SAFETY (of the use): `ptr` must stay valid for `cap` slots while the sink lives, and no other sink may
+    /// cover the same slots.
+    pub unsafe fn new(ptr: *mut LayerFrag, cap: usize) -> LayerSink { LayerSink { ptr, len: 0, cap } }
+    #[inline(always)]
+    pub fn len(&self) -> usize { self.len }
+    /// Slot i (written: i < len).
+    #[inline(always)]
+    pub fn get(&self, i: usize) -> LayerFrag {
+        assert!(i < self.len, "layer sink read past the written slots");
+        // SAFETY: i < len, and slots below len were written by push
+        unsafe { std::ptr::read(self.ptr.add(i)) }
+    }
+    #[inline(always)]
+    pub fn push(&mut self, f: LayerFrag) {
+        debug_assert!(self.len < self.cap, "layer sink overflow");
+        // SAFETY: len < cap (the caller bounds every pixel's layers by its fragments + the dome layer)
+        unsafe { std::ptr::write(self.ptr.add(self.len), f); }
+        self.len += 1;
+    }
+}
+
 pub struct Layers {
     pub w: u32,
     pub h: u32,
     pub start: Vec<u32>,
+    /// The layers per pixel when the lists are not contiguous (the sparse derive writes every chunk's lists
+    /// straight into `frags` at a base sized from the A-buffer, leaving a gap after each chunk); None = pixel i's
+    /// list ends where pixel i + 1's starts.
+    pub cnt: Option<Vec<u8>>,
     pub frags: Vec<LayerFrag>,
     pub max_layers: usize,
     /// The sparse form: `start` indexed by the wanted pixels' dense index.
@@ -2409,14 +2442,25 @@ pub struct Layers {
 }
 
 impl Layers {
+    /// Pixel (or wanted rank) i's slots in `frags`.
+    #[inline(always)]
+    pub fn range(&self, i: usize) -> (usize, usize) {
+        let a = self.start[i] as usize;
+        match &self.cnt {
+            Some(c) => (a, a + c[i] as usize),
+            None => (a, self.start[i + 1] as usize),
+        }
+    }
     #[inline]
     pub fn at(&self, x: u32, y: u32) -> &[LayerFrag] {
         if let Some(px) = &self.sparse {
             let Some(k) = px.index(x, y) else { return &[] };
-            return &self.frags[self.start[k as usize] as usize..self.start[k as usize + 1] as usize];
+            let (a, c) = self.range(k as usize);
+            return &self.frags[a..c];
         }
         let i = (y * self.w + x) as usize;
-        &self.frags[self.start[i] as usize..self.start[i + 1] as usize]
+        let (a, c) = self.range(i);
+        &self.frags[a..c]
     }
     /// Layer `k`'s depth image as the game's target holds it after the layer render: the stored
     /// (biased, quantised) depth where the pixel has that layer, the CLEAR (1.0 = the near plane, so
@@ -2475,7 +2519,7 @@ impl Layers {
                 let chunk = (n / (threads * 4).max(1)).max(4096);
                 crate::pool::pool().run((n + chunk - 1) / chunk, |ci| {
                     for i in ci * chunk..((ci + 1) * chunk).min(n) {
-                        let (a, c) = (self.start[i] as usize, self.start[i + 1] as usize);
+                        let (a, c) = self.range(i);
                         unsafe { *(ip as *mut T).add(i) = if a + k < c { get(&self.frags[a + k]) } else { clear }; }
                     }
                 });
@@ -2489,7 +2533,7 @@ impl Layers {
                 let chunk = (m / (threads * 4).max(1)).max(1024);
                 crate::pool::pool().run((m + chunk - 1) / chunk, |ci| {
                     for r in ci * chunk..((ci + 1) * chunk).min(m) {
-                        let (a, c) = (self.start[r] as usize, self.start[r + 1] as usize);
+                        let (a, c) = self.range(r);
                         if a + k < c { unsafe { *(ip as *mut T).add(px.pixels[r] as usize) = get(&self.frags[a + k]); } }
                     }
                 });
@@ -2585,7 +2629,9 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
     };
     // one pixel's layers appended to `out`
     let shade_cached = tri_shade_applies(prm);
-    let derive_pixel = |x: usize, y: usize, list: &[Frag], out: &mut Vec<LayerFrag>, cache: &mut [(u32, f32); BIAS_CACHE], shade: &mut [(u32, TriShade); BIAS_CACHE]| {
+    // (`cap_total` = the most layers a pixel keeps, the dome layer included: skip_n + the rendered item layers when
+    // the count is known before the derive, else skip_n + derive_cap and the cut comes after)
+    let derive_pixel = |x: usize, y: usize, list: &[Frag], out: &mut LayerSink, cache: &mut [(u32, f32); BIAS_CACHE], shade: &mut [(u32, TriShade); BIAS_CACHE], cap_total: usize| {
         let before = out.len();
         let mut d_prev = f32::NEG_INFINITY;
         // THE ENVIRONMENT LAYER (the game's first render of every peel: the sea box and the
@@ -2620,7 +2666,7 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
         }
         let traced = LAYER_DEBUG_SET.as_ref().map(|set| set.contains(&(x as u32, y as u32))).unwrap_or(false);
         if traced {
-            eprintln!("LAYERDBG frame={}x{} dir=({:.6},{:.6},{:.6}) px={x} py={y} nfrag={} env_layer_d={} sweep={} fixed_layers={:?}", frame.res, frame.res_y, frame.d[0], frame.d[1], frame.d[2], list.len(), if out.len() > before { format!("{:.6}", out[before].d) } else { "none".into() }, prm.sweep, fixed_layers);
+            eprintln!("LAYERDBG frame={}x{} dir=({:.6},{:.6},{:.6}) px={x} py={y} nfrag={} env_layer_d={} sweep={} fixed_layers={:?}", frame.res, frame.res_y, frame.d[0], frame.d[1], frame.d[2], list.len(), if out.len() > before { format!("{:.6}", out.get(before).d) } else { "none".into() }, prm.sweep, fixed_layers);
         }
         // THE BIASED ORDER (BIASED_ORDER): the item fragments walked in the order of their STORED depth — the
         // layer is the smallest stored depth among the fragments whose unbiased depth passes the previous
@@ -2668,7 +2714,7 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
                 if traced { let wt = &bvh.tris[f.tri as usize]; eprintln!("LAYERDBG px={x} py={y} frag tri={} inst={} mtri={} z={:.6} z01={:.6} q16={} skipped=merged d_prev={:.6}", f.tri, wt.inst, wt.tri, f.z, z01, (z01 * 65535.0).round() as u32, d_prev); }
                 continue;
             }
-            if out.len() - before - skip_n >= derive_cap {
+            if out.len() - before >= cap_total {
                 if traced { eprintln!("LAYERDBG px={x} py={y} frag tri={} z={:.6} z01={:.6} skipped=cap", f.tri, f.z, z01); }
                 break;
             }
@@ -2712,13 +2758,65 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
         let n_chunks = (npx + chunk - 1) / chunk;
         crate::pool::stats::checkpoint("(layers preamble)");
         let t_par = std::time::Instant::now(); crate::pool::stats::stage("layers");
+        // a chunk's output never exceeds its A-buffer fragments plus one dome layer per pixel
+        let bound_of = |ci: usize| -> usize {
+            let (k0, k1) = (ci * chunk, ((ci + 1) * chunk).min(npx));
+            ab.bands[0].0[k1] as usize - ab.bands[0].0[k0] as usize + (k1 - k0)
+        };
+        let t_par = std::time::Instant::now();
+        if let Some(kept) = fixed_layers {
+            // THE DIRECT FORM (the count known before the derive — the exact count pass or the captured one):
+            // every chunk writes its pixels' lists straight into the final array at a base sized from its
+            // A-buffer bound, the pixels' starts and counts beside them — no per-chunk vectors, no totals pass,
+            // no copy (a 100 MB read and write per tiny world frame); the gap after each chunk is dead space
+            // the per-pixel counts hide (`Layers::range`)
+            let kept = kept.min(derive_cap);
+            let cap_total = skip_n + kept;
+            let mut base: Vec<usize> = Vec::with_capacity(n_chunks + 1);
+            base.push(0);
+            for ci in 0..n_chunks { let l = *base.last().unwrap(); base.push(l + bound_of(ci)); }
+            let total_bound = *base.last().unwrap();
+            let mut start: Vec<u32> = U32S.take_with_capacity(npx + 1);
+            let mut cnt: Vec<u8> = vec![0u8; npx];
+            let mut frags: Vec<LayerFrag> = LAYER_FRAGS.take_with_capacity(total_bound);
+            // SAFETY: every start/cnt slot is written by the chunk owning the pixel; the frag slots read later are
+            // exactly the written ones (start + cnt per pixel); the gaps are never read
+            unsafe { start.set_len(npx + 1); frags.set_len(total_bound); }
+            start[npx] = total_bound as u32;
+            let (sp, cp, fp) = (start.as_mut_ptr() as usize, cnt.as_mut_ptr() as usize, frags.as_mut_ptr() as usize);
+            let base = &base;
+            crate::pool::pool().run(n_chunks, |ci| {
+                let ids = &px.pixels[ci * chunk..((ci + 1) * chunk).min(npx)];
+                let k0 = ci * chunk;
+                let mut out = unsafe { LayerSink::new((fp as *mut LayerFrag).add(base[ci]), base[ci + 1] - base[ci]) };
+                let mut cache = [(u32::MAX, 0.0f32); BIAS_CACHE];
+                let mut shade = [(u32::MAX, TriShade::NONE); BIAS_CACHE];
+                for (i, &id) in ids.iter().enumerate() {
+                    let before = out.len();
+                    if i + 1 < ids.len() {
+                        for f in ab.at_rank(k0 + i + 1).iter().take(4) {
+                            crate::peel::prefetch(&bvh.tris[f.tri as usize]);
+                        }
+                    }
+                    derive_pixel((id % w) as usize, (id / w) as usize, ab.at_rank(k0 + i), &mut out, &mut cache, &mut shade, cap_total);
+                    unsafe {
+                        *(sp as *mut u32).add(k0 + i) = (base[ci] + before) as u32;
+                        *(cp as *mut u8).add(k0 + i) = (out.len() - before) as u8;
+                    }
+                }
+            });
+            prof::add(&prof::L_PAR, t_par);
+            LAYER_STATS.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return Layers { w, h, start, cnt: Some(cnt), frags, max_layers: MAX_LAYERS, sparse: Some(px.clone()), item_layers: kept, fractions: Vec::new() };
+        }
         let parts: Vec<(Vec<u32>, Vec<LayerFrag>)> = crate::pool::pool().map(n_chunks, |ci| {
             let ids = &px.pixels[ci * chunk..((ci + 1) * chunk).min(npx)];
             let mut counts = Vec::with_capacity(ids.len());
             let k0 = ci * chunk;
             // (sized from the A-buffer's fragment count for the chunk: no growth copies)
-            let n_frags = ab.bands[0].0[k0 + ids.len()] as usize - ab.bands[0].0[k0] as usize;
-            let mut out: Vec<LayerFrag> = Vec::with_capacity(n_frags + ids.len());
+            let bound = bound_of(ci);
+            let mut out_v: Vec<LayerFrag> = Vec::with_capacity(bound);
+            let mut out = unsafe { LayerSink::new(out_v.as_mut_ptr(), bound) };
             let mut cache = [(u32::MAX, 0.0f32); BIAS_CACHE];
             let mut shade = [(u32::MAX, TriShade::NONE); BIAS_CACHE];
             for (i, &id) in ids.iter().enumerate() {
@@ -2730,10 +2828,12 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
                         crate::peel::prefetch(&bvh.tris[f.tri as usize]);
                     }
                 }
-                derive_pixel((id % w) as usize, (id / w) as usize, ab.at_rank(k0 + i), &mut out, &mut cache, &mut shade);
+                derive_pixel((id % w) as usize, (id / w) as usize, ab.at_rank(k0 + i), &mut out, &mut cache, &mut shade, skip_n + derive_cap);
                 counts.push((out.len() - before) as u32);
             }
-            (counts, out)
+            // SAFETY: the sink wrote out.len() ≤ bound slots of the vector's capacity
+            unsafe { out_v.set_len(out.len()); }
+            (counts, out_v)
         });
         prof::add(&prof::L_PAR, t_par);
         // THE LAYER COUNT on the sparse form: with a known count (captured, fixed, or the exact pass) nothing
@@ -2836,7 +2936,7 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
             });
         }
         prof::add(&prof::L_CSR, t_csr);
-        return Layers { w, h, start, frags, max_layers: MAX_LAYERS, sparse: Some(px.clone()), item_layers: kept, fractions };
+        return Layers { w, h, start, cnt: None, frags, max_layers: MAX_LAYERS, sparse: Some(px.clone()), item_layers: kept, fractions };
     }
     let rows_per = ((h as usize) / threads.max(1)).max(1);
     let parts: Vec<(Vec<u32>, Vec<LayerFrag>)> = std::thread::scope(|sc| {
@@ -2847,18 +2947,22 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
                 let derive_pixel = &derive_pixel;
                 sc.spawn(move || {
                     let mut counts = Vec::with_capacity((y1 - y0) * w as usize);
-                    let mut out: Vec<LayerFrag> = Vec::new();
+                    // (the sink bounded by the rows' fragments plus a dome layer per pixel)
+                    let bound: usize = (y0..y1).map(|y| (0..w as usize).map(|x| ab.at_all(x as u32, y as u32).len() + 1).sum::<usize>()).sum();
+                    let mut out_v: Vec<LayerFrag> = Vec::with_capacity(bound);
+                    let mut out = unsafe { LayerSink::new(out_v.as_mut_ptr(), bound) };
                     let mut cache = [(u32::MAX, 0.0f32); BIAS_CACHE];
                     let mut shade = [(u32::MAX, TriShade::NONE); BIAS_CACHE];
-            let mut shade = [(u32::MAX, TriShade::NONE); BIAS_CACHE];
                     for y in y0..y1 {
                         for x in 0..w as usize {
                             let before = out.len();
-                            derive_pixel(x, y, ab.at_all(x as u32, y as u32), &mut out, &mut cache, &mut shade);
+                            derive_pixel(x, y, ab.at_all(x as u32, y as u32), &mut out, &mut cache, &mut shade, skip_n + derive_cap);
                             counts.push((out.len() - before) as u32);
                         }
                     }
-                    (counts, out)
+                    // SAFETY: the sink wrote out.len() ≤ bound slots of the vector's capacity
+                    unsafe { out_v.set_len(out.len()); }
+                    (counts, out_v)
                 })
             })
             .collect();
@@ -2933,7 +3037,7 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
             }
         });
     }
-    Layers { w, h, start, frags, max_layers: MAX_LAYERS, sparse: None, item_layers: kept, fractions }
+    Layers { w, h, start, cnt: None, frags, max_layers: MAX_LAYERS, sparse: None, item_layers: kept, fractions }
 }
 
 /// THE EXACT LAYER-COUNT STATISTIC (the coordinator's requirement): over EVERY pixel of the viewport the
@@ -4793,8 +4897,9 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             let want_probes = pi == 0 && prm.probe_bake.is_some();
             if let Some(ly) = layers.as_ref().filter(|_| prm.lm_scene.is_some() || want_probes) {
                 let tlm = std::time::Instant::now(); crate::pool::stats::stage("lmaccum");
-                // the layer count over the pixels present (`start` is per wanted pixel in the sparse form)
-                let nl = ly.start.windows(2).map(|w| (w[1] - w[0]) as usize).max().unwrap_or(0).max(ly.max_layers.min(ly.item_layers + 1));
+                // the layer count over the pixels present (`start` is per wanted pixel in the sparse form; the in-place
+                // derive's lists are not contiguous — `range`)
+                let nl = (0..ly.start.len() - 1).map(|i| { let (a, c) = ly.range(i); c - a }).max().unwrap_or(0).max(ly.max_layers.min(ly.item_layers + 1));
                 let lm_draws: Option<(&crate::lmaccum::LmScene, Vec<crate::lmaccum::SetDraw>)> = prm.lm_scene.as_ref().filter(|_| dir_lm.is_some()).map(|lm| {
                     let raster = crate::lmaccum::LmRasterCb::for_offset(di, 2048, 2048);
                     let cb = crate::lmaccum::SetCb { world_pw01_shadow: frame.world_pw01(), peel_dir: *d };
@@ -4888,7 +4993,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                     e.dir = Some(*d); e.frustum = Some(frame.frustum());
                     e.notes = Some("the environment render: the transcribed sky dome per pixel, black where the sea box / terrain is nearer (see peel_sky_depth)".into());
                     // the environment layer's depth (0 = the dome) — dumped as `peel_sky_depth`, and blackening the colour
-                    let env_depth: Vec<f32> = (0..(ly.w * ly.h) as usize).map(|i| { let (a, c) = (ly.start[i] as usize, ly.start[i + 1] as usize); if a < c { ly.frags[a].d } else { 0.0 } }).collect();
+                    let env_depth: Vec<f32> = (0..(ly.w * ly.h) as usize).map(|i| { let (a, c) = ly.range(i); if a < c { ly.frags[a].d } else { 0.0 } }).collect();
                     let mut ed = crate::passdump::entry("peel_sky_depth", format!("peel_sky/s{}/d{di:03}/p{pi}/depth.bin", prm.sweep), "peel");
                     ed.sweep = Some(prm.sweep); ed.direction = Some(di as u32); ed.peel = Some(pi as u32);
                     ed.dir = Some(*d); ed.frustum = Some(frame.frustum()); ed.format = "R32_FLOAT".into();
@@ -4920,7 +5025,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                     let sky_img: Vec<[f32; 3]> = sky_img.into_iter().zip(env_depth.iter()).map(|(c, d)| if *d > 0.0 { [0.0; 3] } else { c }).collect();
                     dmp.write_rgb(e, ly.w, ly.h, &sky_img, prm.quant_peel, prm.rounding).expect("dump peel_sky");
                 }
-                let nl = (0..(ly.w * ly.h) as usize).map(|i| (ly.start[i + 1] - ly.start[i]) as usize).max().unwrap_or(0).saturating_sub(skip);
+                let nl = (0..(ly.w * ly.h) as usize).map(|i| { let (a, c) = ly.range(i); c - a }).max().unwrap_or(0).saturating_sub(skip);
                 for k in 0..nl {
                     let mut e = crate::passdump::entry("peel_depth", format!("peel_depth/s{}/d{di:03}/p{pi}/l{k:02}.bin", prm.sweep), "peel");
                     e.sweep = Some(prm.sweep); e.direction = Some(di as u32); e.layer = Some(k as u32); e.peel = Some(pi as u32);
