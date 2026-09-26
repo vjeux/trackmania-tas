@@ -558,6 +558,32 @@ fn run(a: Vec<String>) {
                 println!("{i}\t{}\t{x}\t{y}\t{w}\t{h}\t{}\t{}\t{}\t{:.0} {:.0} {:.0}\t{:.0} {:.0} {:.0}\t{:.0} {:.0} {:.0}{cov}", m.binds[i].obj_group_idx / 4, fb(0), fb(1), fb(2), ma[0], ma[1], ma[2], mb[0], mb[1], mb[2], m1[0], m1[1], m1[2]);
             }
         }
+        "f1hist" => {
+            // lmtool f1hist MAP [--frame K]: the byte histogram of frame K's image 0 (default frame 1, the lamp frame) over the lit
+            // texels — the saturation test (a normalised frame peaks at 255 on ONE texel; a clamped compose piles up at 255)
+            let data = std::fs::read(&a[1]).expect("read");
+            let g = gbx::Gbx::parse(&data);
+            let (_, payload, size) = find_chunk(&g.body).expect("chunk");
+            let lm = lightmap::format::LightmapChunk::parse(&g.body[payload..payload + size]).expect("parse");
+            let d = lm.data.as_ref().expect("data");
+            let k: usize = a.iter().position(|x| x == "--frame").and_then(|i| a.get(i + 1)).and_then(|v| v.parse().ok()).unwrap_or(1);
+            let im = lightmap::img::decode_webp(&d.frames[k].images[0]).expect("frame image");
+            let mut hist = [0usize; 256];
+            let mut max_lum = 0u32;
+            let (mut lit, mut at255, mut ge250) = (0usize, 0usize, 0usize);
+            for px in im.px.chunks(3) {
+                let m = px[0].max(px[1]).max(px[2]);
+                if m == 0 { continue; }
+                lit += 1; hist[m as usize] += 1;
+                if m == 255 { at255 += 1; }
+                if m >= 250 { ge250 += 1; }
+                max_lum = max_lum.max(m as u32);
+            }
+            let rec = lm.data.as_ref().and_then(|dd| dd.cache.mapping()).map(|mp| mp.frame_bytes.get(k).cloned().unwrap_or_default().len()).unwrap_or(0);
+            println!("{}: frame {k} image 0 {}×{}: {lit} lit texels, max byte {max_lum}, at 255: {at255}, ≥ 250: {ge250}; top bins: {}; (frame bytes {rec})", a[1], im.w, im.h, (0..256).rev().filter(|b| hist[*b] > 0).take(8).map(|b| format!("{b}:{}", hist[b])).collect::<Vec<_>>().join(" "));
+            let deciles: Vec<u8> = { let mut acc = 0usize; let mut out = Vec::new(); let mut next = 1; for b in 0..256 { acc += hist[b]; while next <= 9 && acc * 10 >= lit * next { out.push(b as u8); next += 1; } } out };
+            println!("  lit-texel deciles of max(r,g,b): {deciles:?}");
+        }
         "crop" => {
             // lmtool crop MAP CHART OUTBASE : write A/B/F1 crops of one chart (x8 nearest) as PPM
             let data = std::fs::read(&a[1]).expect("read");

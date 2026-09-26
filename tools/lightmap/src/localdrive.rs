@@ -1791,6 +1791,11 @@ pub fn frame1_images(lists: &Lists, lamps: &[Lamp], charts: &[(u32, u32, u32, u3
     }
     let fb1 = crate::filecheck::chart_normalise(&mut rgb, ow, oh, charts);
     let webp = crate::webpenc::encode_rgb(&rgb, ow, oh, 91.0)?;
+    // THE FRAME-1 RECORD = the frame's PEAK m (the bytes are relative to it): every editor save with lamps carries its own peak —
+    // stpad (Sunrise and Night, the same lamp frame byte for byte) 1.0, tiny16 1.2851563 (overlapping RaceArchSpot lamps) — and
+    // 1e-5 without lamps; not divided by √(2π) (tiny16's 1.285 · √(2π) would exceed the mood's 3.0 and be clamped). Our stpad peak
+    // 1.116 vs the editor's exactly 1.0 = the compose (the per-lamp colour / the weight sum at the peak texel), the (c) read.
+    eprintln!("local-lights: frame-1 peak {m} = the record MaxHDR");
     Some(Frame1Image { webp, fb1, max_hdr: m, lit_texels: lit })
 }
 
