@@ -1157,6 +1157,24 @@ pub fn cmd(args: &[String]) {
             );
         }
     }
+    // HEIGHT GUARD (the Tiny two-heights incident, 2026-09-26: the Sept-14 rebuild of the
+    // whole club came out 1 m lower than the Sept-13 publish, uniformly, with no code
+    // change in the transform we could find — 653 maps lived at the wrong height for 12
+    // days). The written Spawn item must sit where the fixed-plane rule puts the source
+    // spawn: plane + (y − plane) · scale. Anything else is a refusal, never a shipped map.
+    // An explicit `--anchor` (Giant's `fit`, a caller's own target) is exempt from the y check
+    // only when it moved the anchor on purpose; the default rule is what the guard pins.
+    {
+        let expect_y = plane + (source_anchor[1] - plane) * scale;
+        if let Some(sp) = check.items.iter().find(|it| it.waypoint_tag.as_deref() == Some("Spawn")) {
+            let dy = sp.pos[1] - expect_y;
+            if anchor_flag.is_none() && dy.abs() > 0.01 {
+                let _ = std::fs::remove_file(&out);
+                panic!("HEIGHT GUARD: the Spawn item was written at y {:.3}, the fixed-plane rule says {:.3} (plane {plane}, source spawn y {:.3}, scale {scale}) — the build is {dy:+.3} m off and was NOT kept", sp.pos[1], expect_y, source_anchor[1]);
+            }
+            println!("  height guard: spawn item y {:.3} = plane {plane} + ({:.3} − {plane}) × {scale} ✓", sp.pos[1], source_anchor[1]);
+        }
+    }
     println!("wrote {}", out.display());
     println!("  uid: {}", new_uid);
     println!("  {} existing items re-pointed at scaled copies ({} vegetation stand-ins sunk to half-tree crown height); {} dropped (procedural vegetation); {} blocks intentionally without an item (empty variants); {} terrain tiles replaced by the block standing in for them ({} authored + {} generated); {} prefab trees placed as stock items; {} trees left out by the clearance (overlapping a deck)", repointed_items, sunk_items, dropped_items, empty_blocks, replaced_terrain + replaced_baked_terrain, replaced_terrain, replaced_baked_terrain, prefab_trees, cleared_trees);
