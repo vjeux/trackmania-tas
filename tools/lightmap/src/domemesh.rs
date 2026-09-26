@@ -357,6 +357,28 @@ impl DomeMesh {
     /// The mesh's RING TABLE: the distinct vertex heights (world y, rounded to 0.01 m) with the v range of the vertices on each
     /// (and the u range) — the dome's elevation → texture-v mapping as the asset defines it (port engineer G: the Stadium
     /// SkyDomeDouble vs the BlueBay SkyDomeMirror).
+    /// THE WINDING CENSUS (port engineer G): per hemisphere (the triangle centroid above / below the mesh's median y), how many
+    /// triangles' geometric normal cross(p1 − p0, p2 − p0) points INWARD (toward the mesh centre) vs outward — a closed dome
+    /// authored inward-facing renders both halves under one cull mode; a lower half wound the other way is culled from inside.
+    pub fn winding_census(&self) -> ((usize, usize), (usize, usize), [f32; 3]) {
+        let n = self.pos.len().max(1) as f32;
+        let mut c = [0f32; 3];
+        for p in &self.pos { for k in 0..3 { c[k] += p[k] / n; } }
+        let (mut up, mut lo) = ((0usize, 0usize), (0usize, 0usize));
+        for t in self.indices.chunks_exact(3) {
+            let (a, b, d) = (self.pos[t[0] as usize], self.pos[t[1] as usize], self.pos[t[2] as usize]);
+            let e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+            let e2 = [d[0] - a[0], d[1] - a[1], d[2] - a[2]];
+            let nrm = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+            let cen = [(a[0] + b[0] + d[0]) / 3.0, (a[1] + b[1] + d[1]) / 3.0, (a[2] + b[2] + d[2]) / 3.0];
+            let to_c = [c[0] - cen[0], c[1] - cen[1], c[2] - cen[2]];
+            let inward = nrm[0] * to_c[0] + nrm[1] * to_c[1] + nrm[2] * to_c[2] > 0.0;
+            let half = if cen[1] >= c[1] { &mut up } else { &mut lo };
+            if inward { half.0 += 1; } else { half.1 += 1; }
+        }
+        (up, lo, c)
+    }
+
     pub fn rings(&self) -> Vec<(f32, usize, f32, f32, f32, f32)> {
         let mut m: std::collections::BTreeMap<i64, (usize, f32, f32, f32, f32)> = std::collections::BTreeMap::new();
         for (p, uv) in self.pos.iter().zip(self.uv.iter()) {

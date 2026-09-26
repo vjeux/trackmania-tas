@@ -987,6 +987,10 @@ fn run(a: Vec<String>) {
             // LMTOOL_SCENE_NEAR=x,y,z,r (diagnostic, port engineer G): every scene triangle with a vertex within r of the point —
             // instance, model name, material link, the world vertices and the face normal (the occluders around a small chart)
             if let Some(v) = std::env::var("LMTOOL_SCENE_NEAR").ok().map(|s| s.split(',').filter_map(|x| x.trim().parse::<f32>().ok()).collect::<Vec<f32>>()).filter(|v| v.len() == 4) {
+                // the model census first: name, triangles (= index count / 3 of one draw), instances — against a capture's draw list
+                let mut per_model: Vec<usize> = vec![0; scene.models.len()];
+                for inst in &scene.instances { per_model[inst.model] += 1; }
+                for (mi, m) in scene.models.iter().enumerate() { eprintln!("scene-model {mi}: {} tris ({} idx) × {} instances — {}", m.tris.len(), m.tris.len() * 3, per_model[mi], scene.model_names.get(mi).map(|s| s.rsplit('\\').next().unwrap_or(s)).unwrap_or("?")); }
                 let (c, r) = ([v[0], v[1], v[2]], v[3]);
                 let mut n = 0usize;
                 for (ii, inst) in scene.instances.iter().enumerate() {
@@ -4931,6 +4935,8 @@ fn run(a: Vec<String>) {
             let m = lightmap::domemesh::DomeMesh::from_envblock(&mut store, &coll).unwrap_or_else(|e| panic!("{e}"));
             println!("{coll}: {} vertices, {} triangles; rings (world y, vertices, v min..max, u min..max):", m.pos.len(), m.indices.len() / 3);
             for (y, n, v0, v1, u0, u1) in m.rings() { println!("  y {y:>10.3}  n {n:>3}  v {v0:.5}..{v1:.5}  u {u0:.4}..{u1:.4}"); }
+            let (up, lo, c) = m.winding_census();
+            println!("winding (geometric normal vs the mesh centre ({:.1}, {:.1}, {:.1})): upper half {} inward / {} outward; lower half {} inward / {} outward", c[0], c[1], c[2], up.0, up.1, lo.0, lo.1);
         }
         "draw-classes" => { if let Err(e) = lightmap::drawclasses::run(&a) { eprintln!("draw-classes: {e}"); std::process::exit(1); } }
         "veg-diag" => { if let Err(e) = lightmap::vegdiag::run(&a) { eprintln!("veg-diag: {e}"); std::process::exit(1); } }
