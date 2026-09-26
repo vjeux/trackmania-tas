@@ -67,12 +67,20 @@ pub fn chart_st(v: &LmVertex, inst: &LmInstance, table: &[[f32; 4]]) -> [f32; 4]
 /// The LM raster position of a vertex (VS 17111 9–10, 34 / VS 17118 9–10, 29): `clip.xy = (ST.xy·Scale)·uv +
 /// (Scale·ST.zw + Trans)`, z = 0.5, w = 1.
 #[inline]
+/// LM_CLIP_UNFUSED=1, read ONCE: `std::env::var_os` takes the process-wide environment lock — per vertex, from 166 threads,
+/// it was the whole cost of the vertex stage (stpad's sun pass: 3.8 s per 48 M vertices, 71 s in all; the same call sat in
+/// sunpass::vs_15183).
+pub fn clip_unfused() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var_os("LM_CLIP_UNFUSED").is_some())
+}
+
 pub fn lm_clip(v: &LmVertex, st: [f32; 4], cb: &LmRasterCb) -> [f32; 2] {
     // the DXBC's two `mad`s are FUSED on this GPU (as the pixel shaders' are): r5.zw = mad(Scale, ST.zw, Trans),
     // o0.xy = mad(r5.xy, uv, r5.zw) — the unfused form (LM_CLIP_UNFUSED=1) leaves 1-ulp clip positions that snap one 1/256
     // step off at the half-way ties
     let sxy = [st[0] * cb.scale_ss[0], st[1] * cb.scale_ss[1]];
-    if std::env::var_os("LM_CLIP_UNFUSED").is_some() {
+    if clip_unfused() {
         let tzw = [cb.scale_ss[0] * st[2] + cb.trans_ss[0], cb.scale_ss[1] * st[3] + cb.trans_ss[1]];
         return [sxy[0] * v.uv[0] + tzw[0], sxy[1] * v.uv[1] + tzw[1]];
     }

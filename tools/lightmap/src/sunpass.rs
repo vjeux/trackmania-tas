@@ -136,7 +136,7 @@ fn vs_15183(v: &LmVertex, inst: &LmInstance, table: &[[f32; 4]], d: &SunDraw) ->
     // 18: r5.xy = ST.xy * Scale ; 19: r5.zw = Scale.xy * ST.zw + Trans.xy ; 29: o0.xy = r5.xy * uv + r5.zw
     // (the two `mad`s fused, as in lmaccum::lm_clip — the same instruction sequence)
     let sxy = [st[0] * d.scale_ss[0], st[1] * d.scale_ss[1]];
-    let clip = if std::env::var_os("LM_CLIP_UNFUSED").is_some() {
+    let clip = if crate::lmaccum::clip_unfused() {
         let tzw = [d.scale_ss[0] * st[2] + d.trans_ss[0], d.scale_ss[1] * st[3] + d.trans_ss[1]];
         [sxy[0] * v.uv[0] + tzw[0], sxy[1] * v.uv[1] + tzw[1]]
     } else {
