@@ -373,12 +373,12 @@ pub fn print(r: &Report, o: &Options, tsv: Option<&str>) -> Result<(), String> {
 pub fn write_records_tsv(path: &str, gl: &crate::layout::GameLayout) -> Result<(), String> {
     use std::io::Write;
     let mut fh = std::fs::File::create(path).map_err(|e| format!("{path}: {e}"))?;
-    writeln!(fh, "chart\tclass\tobj\tsub\tname\tquality\tcentre_y\tcentre_x\tcentre_z").map_err(|e| e.to_string())?;
+    writeln!(fh, "chart\tclass\tobj\tsub\tname\tquality\tcentre_y\tcentre_x\tcentre_z\thalf_x\thalf_y\thalf_z").map_err(|e| e.to_string())?;
     for (k, r) in gl.records.iter().enumerate() {
         let name = if let Some((_, s)) = &r.item { s.split(' ').next().unwrap_or(s).rsplit('\\').next().unwrap_or(s).to_string() }
             else if let Some(mr) = &r.mesh { format!("{}#{}", mr.prefab.rsplit('\\').next().unwrap_or(&mr.prefab), mr.entity) }
             else { r.class.to_string() };
-        writeln!(fh, "{k}\t{}\t{}\t{}\t{name}\t{}\t{:.3}\t{:.3}\t{:.3}", r.class, r.obj, r.sub, r.quality, r.centre[1], r.centre[0], r.centre[2]).map_err(|e| e.to_string())?;
+        writeln!(fh, "{k}\t{}\t{}\t{}\t{name}\t{}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}", r.class, r.obj, r.sub, r.quality, r.centre[1], r.centre[0], r.centre[2], r.half[0], r.half[1], r.half[2]).map_err(|e| e.to_string())?;
     }
     Ok(())
 }
