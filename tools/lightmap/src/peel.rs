@@ -1094,6 +1094,7 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
     };
     let cell_wanted = |cell: usize| -> bool { cell_wanted_v[cell] };
     let t_totals_done = std::time::Instant::now();
+    crate::pool::stats::checkpoint("(cell totals)");
     // THE JOBS: (cell, rows y0..=y1, columns x0..=x1, the strip bits its entries must carry) with an
     // estimated cost; a cell above the split limit (a thread's share of the frame over LMTOOL_TILE_SPLIT) is
     // split into 2, 4 or 8 row strips, each a job over the same list filtered by the strip bits
@@ -1122,8 +1123,10 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
             jobs.push(Job { cell, x0: bx0, y0: by0, x1: bx1, y1: by1, smask: u8::MAX, cost: cell_cost[cell] });
         }
     }
+    crate::pool::stats::checkpoint("(job list)");
     // longest first (the pool claims job indices in order): the tail of the pass is then a small job
     jobs.sort_by(|p, q| q.cost.cmp(&p.cost));
+    crate::pool::stats::checkpoint("(job sort)");
     let n_jobs = jobs.len();
     let t_jobs_ready = std::time::Instant::now();
     if std::env::var_os("LMTOOL_SETUP_TRACE").is_some() { eprintln!("setup trace: totals pass {:.3} ms, jobs build+sort {:.3} ms ({} jobs)", (t_totals_done - t_raster).as_secs_f64() * 1e3, (t_jobs_ready - t_totals_done).as_secs_f64() * 1e3, jobs.len()); }
