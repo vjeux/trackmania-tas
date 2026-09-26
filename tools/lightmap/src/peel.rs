@@ -1201,6 +1201,9 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
             let cx0 = count.as_ref().unwrap();
             let vector_scan = cx0.prm.dome_layer && cx0.prm.depth_bits == 16 && !bound_stats && *SCAN16_ON;
             let mut pixels: Vec<(usize, f32)> = Vec::new();
+            // (the fragment-count statistic per job, added to the shared counters once — an atomic per pixel
+            // made the stats mode 20× slower)
+            let mut nfrag_local = [0u64; 5];
             #[allow(unused_mut, unused_variables)]
             let mut vector_done = false;
             #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
@@ -1210,7 +1213,7 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
                     let mut env16 = [0f32; 16];
                     env16.copy_from_slice(&env_max[li0..li0 + 16]);
                     let (h, has, big) = scan_block16(&offs[li0..li0 + 17], &csr, &env16, frame);
-                    if raster_stats { for l in 0..16 { let n = (offs[li0 + l + 1] - offs[li0 + l]) as usize; if n >= 1 { RS_NFRAG[match n { 1 | 2 => 0, 3 => 1, 4 => 2, 5 => 3, _ => 4 }].fetch_add(1, std::sync::atomic::Ordering::Relaxed); } } }
+                    if raster_stats { for l in 0..16 { let n = (offs[li0 + l + 1] - offs[li0 + l]) as usize; if n >= 1 { nfrag_local[match n { 1 | 2 => 0, 3 => 1, 4 => 2, 5 => 3, _ => 4 }] += 1; } } }
                     covered += has as usize;
                     for k in 0..=SCAN_K { hist[k] += h[k] as usize; }
                     let mut m = big;
@@ -1222,6 +1225,7 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
                 for li in li0..band_px { let e = std::mem::replace(&mut env_max[li], 0.0); cnt[li] = 0; if offs[li] != offs[li + 1] { covered += 1; pixels.push((li, e)); } }
                 vector_done = true;
             }
+            if raster_stats { for k in 0..5 { if nfrag_local[k] > 0 { RS_NFRAG[k].fetch_add(nfrag_local[k], std::sync::atomic::Ordering::Relaxed); } } }
             // (the scalar walk over the pixels the lanes left — every pixel without the lane walk; no list then)
             let mut pi = 0usize;
             let mut li_scalar = 0usize;
