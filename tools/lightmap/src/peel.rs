@@ -172,6 +172,20 @@ pub static ABUF_DEBUG: std::sync::LazyLock<Option<(u32, u32)>> = std::sync::Lazy
     if v.len() == 2 { Some((v[0], v[1])) } else { None }
 });
 
+/// LMTOOL_ABUF_DEBUG_LIST=FILE (engineer 5's veg-diag pixel list: lines of `x y` or `x,y`, an optional leading
+/// frame token): the peel pixels whose layer derivation is printed as LAYERDBG lines (every fragment in
+/// (z, tri) order: accepted or skipped, the stored depth, the colour, its layer index; then the frame's cut).
+pub static LAYER_DEBUG_SET: std::sync::LazyLock<Option<std::collections::HashSet<(u32, u32)>>> = std::sync::LazyLock::new(|| {
+    let path = std::env::var("LMTOOL_ABUF_DEBUG_LIST").ok()?;
+    let txt = std::fs::read_to_string(&path).ok()?;
+    let mut set = std::collections::HashSet::new();
+    for line in txt.lines() {
+        let toks: Vec<u32> = line.split(|c: char| c == ',' || c.is_whitespace()).filter_map(|t| t.parse().ok()).collect();
+        if toks.len() >= 2 { let n = toks.len(); set.insert((toks[n - 2], toks[n - 1])); }
+    }
+    Some(set)
+});
+
 /// The cards' alpha test threshold: GbxShadowAlphaThreshold = 128/255 (the capture's ShaderP cbuffer).
 pub const ALPHA_THRESHOLD: f32 = 0.501_960_813_999_176;
 /// LMTOOL_ALPHA_POINT=1: the point-sampled cut-out mask instead of the filtered texture (a probe).
@@ -1140,7 +1154,7 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
                                 Some((tx, fp)) if !*ALPHA_POINT => if alpha_point_mip() { tx.passes_point(u, v, fp, ALPHA_THRESHOLD) } else { tx.passes_planned(u, v, fp, ALPHA_THRESHOLD, crate::alphatex::Address::ClampEdge) },
                                 _ => mk.opaque(u, v),
                             };
-                            if let Some((dx, dy)) = *ABUF_DEBUG { if x == dx && y == dy { eprintln!("abuf debug ({x},{y}): card tri {ti} inst {} model tri {} mask {} uv ({u:.4},{v:.4}) opaque {op} z {z:.3} z01 {:.5}", t.inst, t.tri, t.alpha, frame.z01(z)); } }
+                            if let Some((dx, dy)) = *ABUF_DEBUG { if x == dx && y == dy { let plan_s = match fp { Some((tx, p)) => format!(" lod {:.3} levels {}/{} two {} taps {} axis ({:.4},{:.4}) alpha {:.5}", p.lod, p.l0, p.l1, p.two, p.n, p.axis[0], p.axis[1], tx.sample_planned_clamp(u, v, p)), None => String::new() }; eprintln!("abuf debug ({x},{y}): card tri {ti} inst {} model tri {} mask {} uv ({u:.4},{v:.4}) opaque {op} z {z:.3} z01 {:.5}{plan_s}", t.inst, t.tri, t.alpha, frame.z01(z)); } }
                             if !op {
                                 continue;
                             }
@@ -1604,7 +1618,7 @@ pub fn build_abuffer_wanted(tris: &[WTri], frame: &PeelFrame, threads: usize, zm
                                         let zq = if CARD_DUMP_BIAS.1 == 16 { (dd.clamp(0.0, 1.0) * 65535.0).round() / 65535.0 } else { dd };
                                         CARD_FRAGS.lock().unwrap().push(CardFrag { x, y, z01, tri: ti, u, v, mask: t.alpha as u32, fp_dx: fdx, fp_dy: fdy, port_pass: op as u32, zq });
                                     }
-                                    if let Some((dx, dy)) = *ABUF_DEBUG { if x == dx && y == dy { eprintln!("abuf debug ({x},{y}): card tri {ti} inst {} model tri {} mask {} uv ({u:.4},{v:.4}) opaque {op} z {z:.3} z01 {:.5}", t.inst, t.tri, t.alpha, frame.z01(z)); } }
+                                    if let Some((dx, dy)) = *ABUF_DEBUG { if x == dx && y == dy { let plan_s = match fp { Some((tx, p)) => format!(" lod {:.3} levels {}/{} two {} taps {} axis ({:.4},{:.4}) alpha {:.5}", p.lod, p.l0, p.l1, p.two, p.n, p.axis[0], p.axis[1], tx.sample_planned_clamp(u, v, p)), None => String::new() }; eprintln!("abuf debug ({x},{y}): card tri {ti} inst {} model tri {} mask {} uv ({u:.4},{v:.4}) opaque {op} z {z:.3} z01 {:.5}{plan_s}", t.inst, t.tri, t.alpha, frame.z01(z)); } }
                                     if !op {
                                         return;
                                     }
@@ -2339,18 +2353,25 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
                 d_prev = 0.0;
             }
         }
+        let traced = LAYER_DEBUG_SET.as_ref().map(|set| set.contains(&(x as u32, y as u32))).unwrap_or(false);
+        if traced {
+            eprintln!("LAYERDBG frame={}x{} dir=({:.6},{:.6},{:.6}) px={x} py={y} nfrag={} env_layer_d={} sweep={} fixed_layers={:?}", frame.res, frame.res_y, frame.d[0], frame.d[1], frame.d[2], list.len(), if out.len() > before { format!("{:.6}", out[before].d) } else { "none".into() }, prm.sweep, fixed_layers);
+        }
         for f in list {
             // (the environment is not re-drawn in the geometry layers; in a sweep without an environment block
             // it is not drawn at all)
             if (prm.dome_layer || !prm.env_in_peel) && is_env(f.tri) {
+                if traced { eprintln!("LAYERDBG px={x} py={y} frag tri={} z={:.6} env=1 skipped=env", f.tri, f.z); }
                 continue;
             }
             // pancaking: a fragment beyond the far plane lands on it (z01 = 0)
             let z01 = frame.z01(f.z).max(0.0);
             if z01 < d_prev {
+                if traced { let wt = &bvh.tris[f.tri as usize]; eprintln!("LAYERDBG px={x} py={y} frag tri={} inst={} mtri={} z={:.6} z01={:.6} q16={} skipped=merged d_prev={:.6}", f.tri, wt.inst, wt.tri, f.z, z01, (z01 * 65535.0).round() as u32, d_prev); }
                 continue;
             }
             if out.len() - before - skip_n >= derive_cap {
+                if traced { eprintln!("LAYERDBG px={x} py={y} frag tri={} z={:.6} z01={:.6} skipped=cap", f.tri, f.z, z01); }
                 break;
             }
             let wt = &bvh.tris[f.tri as usize];
@@ -2366,9 +2387,15 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
                 let hit_p = frame.unproject(x as f32 + 0.5, y as f32 + 0.5, f.z);
                 prm.quant_peel.apply(fragment_radiance(scene, bvh, prm, shadow, frame, f.tri, frame.d, hit_p, sun_bias), prm.rounding)
             };
+            if traced {
+                let wt = &bvh.tris[f.tri as usize];
+                let front = dot(cross(wt.e1, wt.e2), frame.d) < 0.0;
+                eprintln!("LAYERDBG px={x} py={y} frag tri={} inst={} mtri={} card={} z={:.6} z01={:.6} bias={:.3e} q16={} accepted layer={} front={} rgb=({:.5},{:.5},{:.5})", f.tri, wt.inst, wt.tri, wt.alpha != u16::MAX, f.z, z01, bias_term(cache, f.tri, wt), (d * 65535.0).round() as u32, out.len() - before, front, rgb[0], rgb[1], rgb[2]);
+            }
             out.push(LayerFrag { d, rgb });
             d_prev = d;
         }
+        if traced { eprintln!("LAYERDBG px={x} py={y} derived layers={} (env {} + items {}); the frame's cut applies skip_n + rendered", out.len() - before, skip_n, out.len() - before - skip_n); }
     };
     if let Some(px) = wanted {
         // SPARSE: the wanted pixels only, in parallel chunks of the dense index
@@ -2463,6 +2490,7 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
         // fragments into its slice
         let t_csr = std::time::Instant::now();
         let cap = skip_n + kept;
+        if LAYER_DEBUG_SET.is_some() { eprintln!("LAYERDBG frame={}x{} dir=({:.6},{:.6},{:.6}) rendered_items={kept} cap={cap} candidates={candidates} fractions={:?}", frame.res, frame.res_y, frame.d[0], frame.d[1], frame.d[2], fractions.iter().take(candidates.max(kept) + 1).map(|f| format!("{f:.5}")).collect::<Vec<_>>()); }
         let part_totals: Vec<usize> = crate::pool::pool().map(parts.len(), |pi| parts[pi].0.iter().map(|c| (*c as usize).min(cap)).sum());
         let mut part_base = Vec::with_capacity(parts.len() + 1);
         part_base.push(0usize);

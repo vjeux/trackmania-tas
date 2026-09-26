@@ -364,7 +364,7 @@ impl AlphaTex {
     /// `sample_aniso` / `sample_lod` with the plan's levels and fraction (the same arithmetic per tap:
     /// `a + (b − a)·t`, the taps averaged), ClampEdge.
     #[inline]
-    fn sample_planned_clamp(&self, u: f32, v: f32, p: &TapPlan) -> f32 {
+    pub fn sample_planned_clamp(&self, u: f32, v: f32, p: &TapPlan) -> f32 {
         let l0 = &self.levels[p.l0];
         let l1 = &self.levels[p.l1];
         let one = |uu: f32, vv: f32| -> f32 {
