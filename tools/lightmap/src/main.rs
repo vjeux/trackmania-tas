@@ -1605,7 +1605,14 @@ fn run(a: Vec<String>) {
                 let mp = f("--lm-game-manifest").map(std::path::PathBuf::from).or_else(|| f("--frustum-from").map(std::path::PathBuf::from)).unwrap_or_else(|| root.join("MANIFEST.json"));
                 let entries = lightmap::lmaccum::load_capture_entries(&mp).unwrap_or_else(|e| panic!("{}: {e}", mp.display()));
                 eprintln!("lm-from: {} capture entries from {} ({} ilightdir_final, {} banked hbasis0)", entries.len(), mp.display(), entries.iter().filter(|e| e.pass == "ilightdir_final").count(), entries.iter().filter(|e| e.pass == "hbasis0" && e.banked).count());
-                prm.hbasis_game = Some((root, std::sync::Arc::new(entries)));
+                // THE H-BASIS CAPTURE COMPARISON is diagnostics (four 2048² serial scans + the capture buffer loads per
+                // direction: 7.3 s per pwc-day direction, engineer 8) — `--no-hbasis-compare` (or LMTOOL_NO_HBASIS_COMPARE=1)
+                // skips it; the bake's output does not depend on it
+                if has("--no-hbasis-compare") || std::env::var_os("LMTOOL_NO_HBASIS_COMPARE").is_some() {
+                    eprintln!("lm-from: the H-basis capture comparison is OFF (--no-hbasis-compare)");
+                } else {
+                    prm.hbasis_game = Some((root, std::sync::Arc::new(entries)));
+                }
                 prm.lm_scene = Some(std::sync::Arc::new(sc));
                 // the sweep's H-basis MRTs are taken for the finalisation + the transcribed writer
                 if prm.hb_out.is_none() { prm.hb_out = Some(std::sync::Arc::new(lightmap::ilatlas::HbSlot(std::sync::Mutex::new(None)))); }
