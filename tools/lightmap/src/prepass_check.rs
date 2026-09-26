@@ -631,6 +631,9 @@ pub struct FrozenTables {
     /// The zone tiles' BaseColor texture when the tile material is of the textured class (Stadium's Grass — Tech3 Block
     /// PDiff_Spec_Norm GrassX2: the pre-pass samples it at the quad's single uv set), else None (the PyPxz constant `tile_rgb`).
     pub tile_tex: Option<Texture>,
+    /// The tile material's GrassX2 slot (Stadium's Grass: Grass_X2.dds, STORED bytes / 255 — no sRGB decode; RE 13, 18:28Z, PS 9514):
+    /// sampled at uv2 = (−x/1024 + 0.25, z/1024 + 0.25) from the fragment's world position and multiplied into the Grass_D sample.
+    pub tile_x2: Option<Texture>,
     /// The water-id GRID of the scene box (RE 11, stpad f4468: 2048² tiles of the records' fold, `waterid::water_grid`); when non-empty
     /// the tint runs once per tile with the tile's `World_To_i2WaterId` / `WorldMinXZ` / `WorldMaxXZ` and id map, and `ids` / the
     /// template's constants (the captured single-tile case) are not used.
@@ -654,7 +657,7 @@ pub fn frozen_tables(root: &Path, frame: u32, env_frame: u32) -> Result<FrozenTa
     let (Some(fog), Some(tr)) = (s.tex.get("15075"), s.tex.get("15078")) else { return Err("the water LUTs 15075 / 15078 are not in the env".into()) };
     let mut ws = Sampler::bilinear_no_mip(Address::Clamp);
     ws.weight_bits = ctx.sampler.weight_bits;
-    Ok(FrozenTables { tile_rgb, wall_rgb, pad_rgb, ids, top_by_plane: ctx.top_by_plane.clone(), depth_by_id: ctx.depth_by_id.clone(), fog: fog.clone(), transmittance: tr.clone(), water_template: prepass::water_draws(run).into_iter().last(), sampler: ctx.sampler, water_sampler: ws, link_tex: Default::default(), link_rgb: Default::default(), tile_tex: None, tile_slices: (tile_draw.i_py, tile_draw.i_pxz), water_tiles: Vec::new() })
+    Ok(FrozenTables { tile_rgb, wall_rgb, pad_rgb, ids, top_by_plane: ctx.top_by_plane.clone(), depth_by_id: ctx.depth_by_id.clone(), tile_x2: None, fog: fog.clone(), transmittance: tr.clone(), water_template: prepass::water_draws(run).into_iter().last(), sampler: ctx.sampler, water_sampler: ws, link_tex: Default::default(), link_rgb: Default::default(), tile_tex: None, tile_slices: (tile_draw.i_py, tile_draw.i_pxz), water_tiles: Vec::new() })
 }
 
 /// The water tint of run `k` over EVERY LM mesh of the scene (PS 17018 with the frozen tables), applied to `tgt` — the
@@ -750,6 +753,6 @@ impl FrozenTables {
         let (w, h) = (map_size_m[0].round().max(1.0) as u32, map_size_m[1].round().max(1.0) as u32);
         let template = WaterDraw { eid: 0, mesh: 0, instance_first: 0, instance_count: 0, scale_ss: [2.0, -2.0], trans_ss: [-1.0, 1.0], world_to_id: [[1.0, 0.0, 0.0, 0.0], [-0.0, -0.0, -1.0, map_size_m[1]]], world_min_xz: [0.0, 0.0], world_max_xz: map_size_m, scale_out: 1.0 / 9.0 };
         let dummy = || Texture { fmt: texsample::TexFmt::Rgba8, w: 1, h: 1, mips: 1, slices: 1, levels: vec![vec![texsample::Level::from_f32(1, 1, vec![[0.0; 4]])]], complete: true };
-        FrozenTables { tile_rgb: [0.0; 3], wall_rgb: [0.0; 3], pad_rgb: [0.0; 3], ids: Buf::new(w, h, 2), top_by_plane: Vec::new(), depth_by_id: Vec::new(), fog: dummy(), transmittance: dummy(), water_template: Some(template), sampler, water_sampler: ws, link_tex: Default::default(), link_rgb: Default::default(), tile_tex: None, tile_slices: (0, 0), water_tiles: Vec::new() }
+        FrozenTables { tile_x2: None, tile_rgb: [0.0; 3], wall_rgb: [0.0; 3], pad_rgb: [0.0; 3], ids: Buf::new(w, h, 2), top_by_plane: Vec::new(), depth_by_id: Vec::new(), fog: dummy(), transmittance: dummy(), water_template: Some(template), sampler, water_sampler: ws, link_tex: Default::default(), link_rgb: Default::default(), tile_tex: None, tile_slices: (0, 0), water_tiles: Vec::new() }
     }
 }

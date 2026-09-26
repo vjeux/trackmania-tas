@@ -429,6 +429,8 @@ pub fn attr_from_map(scene: &crate::geometry::Scene, lm: &LmScene, frozen: &Froz
     let mesh_tris = &mesh_tris;
     // LMTOOL_TILE_ALBEDO_SCALE=K (study): the tiles' sampled albedo scaled — the ground-bounce lever test on stpad's posts
     static ASCALE: std::sync::LazyLock<f32> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_TILE_ALBEDO_SCALE").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0));
+    static TILE_TRACE: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("LMTOOL_PREPASS_TILE_TRACE").is_some());
+    static TILE_TRACE_N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let ascale: f32 = *ASCALE;
     // 2. the runs' targets, each written by the bands of its (run, band) tasks — disjoint rows, so through raw pointers
     let threads = crate::pool::pool().threads.max(1);
@@ -557,9 +559,33 @@ pub fn attr_from_map(scene: &crate::geometry::Scene, lm: &LmScene, frozen: &Froz
                                 let uv0 = [0, 1, 2].map(|i| mesh.verts[tri[i] as usize].uv);
                                 let (dudx, dudy) = prepass::attr_gradient(p, [uv0[0][0], uv0[1][0], uv0[2][0]]);
                                 let (dvdx, dvdy) = prepass::attr_gradient(p, [uv0[0][1], uv0[1][1], uv0[2][1]]);
+                                // THE GRASS X2 LAYER (RE 13, 18:28Z, PS 9514 DXBC / VS 9513's uv rows): o0 = 2·(Grass_D(x/32, −z/32)·Grass_X2(uv2), 1/9)
+                                // with uv2 = (−x/1024 + 0.25, z/1024 + 0.25) from the fragment's WORLD position — one local X2 value per tile (G's
+                                // lookup on stpad: 0.42–0.63 / 0.45–0.64 / 0.25–0.42, mean ≈ the global 0.49 / 0.52 / 0.32), X2 stored bytes / 255.
+                                // The ×2 is on o0.xyz only (RE 13, 18:45Z) and the X2 view is raw BC1_UNORM (18:50Z) — the default form; LMTOOL_GRASS_X2
+                                // = off | srgb keeps the study switches. Grass_D's mips are linear-correct (e_ddsmean: every mip's sRGB-decoded mean
+                                // 0.088 / 0.142 / 0.056 ± 0.5 %), so the footprint LOD (7.55 here) is not a factor either.
+                                let x2 = frozen.tile_x2.as_ref();
+                                let wp = [0, 1, 2].map(|i| { let v = mesh.verts[tri[i] as usize].pos; [v[0] + inst.t[0], v[2] + inst.t[2]] });
                                 prepass::raster_tri_rows(p, W, H, y_lo, y_hi, |x, y, b| {
                                     let uvs = [b[0] * uv0[0][0] + b[1] * uv0[1][0] + b[2] * uv0[2][0], 1.0 - (b[0] * uv0[0][1] + b[1] * uv0[1][1] + b[2] * uv0[2][1])];
-                                    if let Some(mut s) = prepass::ps_basecolor(tx, &sampler, uvs, [dudx, -dvdx], [dudy, -dvdy], None, lm_scale) { s[0] *= ascale; s[1] *= ascale; s[2] *= ascale; blend_at(tp, x, y, s, 6); }
+                                    if let Some(mut s) = prepass::ps_basecolor(tx, &sampler, uvs, [dudx, -dvdx], [dudy, -dvdy], None, lm_scale) {
+                                        // LMTOOL_PREPASS_TILE_TRACE=1: the first fragments' footprint LOD and sample (the grass mip question, 18:45Z)
+                                        if *TILE_TRACE && TILE_TRACE_N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 6 {
+                                            let (lod, ratio, _) = texsample::lod_and_ratio([dudx * tx.w as f32, -dvdx * tx.h as f32], [dudy * tx.w as f32, -dvdy * tx.h as f32], sampler.max_aniso);
+                                            eprintln!("tile trace: raster px ({x},{y}) uv ({:.4},{:.4}) ddx ({:.5},{:.5}) ddy ({:.5},{:.5}) → LOD {lod:.3} (aniso ratio {ratio:.2}, sampler mip {:?} bias {} clamp [{}, {}]) sample×9 ({:.4},{:.4},{:.4})", uvs[0], uvs[1], dudx, -dvdx, dudy, -dvdy, sampler.mip, sampler.lod_bias, sampler.min_lod, sampler.max_lod, s[0] * 9.0, s[1] * 9.0, s[2] * 9.0);
+                                        }
+                                        if let Some(t2) = x2 {
+                                            let wx = b[0] * wp[0][0] + b[1] * wp[1][0] + b[2] * wp[2][0];
+                                            let wz = b[0] * wp[0][1] + b[1] * wp[1][1] + b[2] * wp[2][1];
+                                            let uv2 = [-wx / 1024.0 + 0.25, 1.0 - (wz / 1024.0 + 0.25)];
+                                            let g = 1.0 / 1024.0 / 32.0; // the X2 gradient: 1/1024 per metre, a texel ≈ 1/32 m
+                                            let c2 = texsample::sample(t2, 0, &sampler, uv2, [g, 0.0], [0.0, g]);
+                                            // the ×2 is on o0.xyz ONLY (RE 13's DXBC re-read, 18:45Z: o0.a = 1/9 undoubled)
+                                            s[0] *= 2.0 * c2[0]; s[1] *= 2.0 * c2[1]; s[2] *= 2.0 * c2[2];
+                                        }
+                                        s[0] *= ascale; s[1] *= ascale; s[2] *= ascale; blend_at(tp, x, y, s, 6);
+                                    }
                                 });
                             }
                             None => prepass::raster_tri_rows(p, W, H, y_lo, y_hi, |x, y, _| blend_at(tp, x, y, src, 1)),
@@ -831,6 +857,30 @@ pub fn tables_from_paktables(f: &mut FrozenTables, store: &mut mapgeom::store::D
 /// bitmap slot is a CPlugBitmap file (`…\Texture\X.Texture.gbx`) whose image node is the external `.dds` reference
 /// (`…\Texture\Image\X.dds`; the rename is the fallback when the bitmap graph does not resolve), decoded and linearised.
 /// `Ok(None)` = no such slot; `Err` = the slot exists but its file does not load.
+/// One named bitmap slot of a material's chain as a texture: `srgb` decodes the stored bytes through the sRGB view (BaseColor-class
+/// textures), false keeps them as stored / 255 (the GrassX2 layer — RE 13's view-format check, 18:28Z). None when the slot is absent or empty.
+pub fn slot_texture(store: &mut mapgeom::store::DataStore, link: &str, slot_name: &str, srgb: bool) -> Result<Option<(String, Texture)>, String> {
+    let mat = if link.to_ascii_uppercase().ends_with(".MATERIAL.GBX") { link.to_string() } else { format!("{link}.Material.Gbx") };
+    let chain = mapgeom::envblock::material_chain(store, &mat);
+    let Some(slot) = chain.bitmaps.iter().find(|(n, p)| n.eq_ignore_ascii_case(slot_name) && !p.is_empty()).map(|(_, p)| p.clone()) else { return Ok(None) };
+    let dds = {
+        let mut out: Option<String> = None;
+        if let Ok(m) = store.load_model(&slot) { if let Ok(g) = m.graph() { if let Some(mapgeom::node::Node::Bitmap(b)) = &g.root {
+            if b.image >= 0 { if let Some(mapgeom::node::Slot::External(dp)) = g.slots.get(b.image as usize) { out = Some(dp.clone()); } }
+        } } }
+        out.unwrap_or_else(|| {
+            if slot.to_ascii_uppercase().ends_with(".TEXTURE.GBX") {
+                let stem = &slot[..slot.len() - ".Texture.gbx".len()];
+                match stem.rsplit_once('\\') { Some((dir, name)) => format!("{dir}\\Image\\{name}.dds"), None => format!("{stem}.dds") }
+            } else { slot.clone() }
+        })
+    };
+    let bytes = store.read(&dds).map_err(|e| format!("{dds}: {e}"))?;
+    let mut tx = texsample::parse_dds(&bytes, Bc1Decode::Expand8Round).map_err(|e| format!("{dds}: {e}"))?;
+    if srgb { tx.decode_srgb(); }
+    Ok(Some((dds, tx)))
+}
+
 pub fn basecolor_texture(store: &mut mapgeom::store::DataStore, link: &str) -> Result<Option<(String, Texture, bool)>, String> {
     let mat = if link.to_ascii_uppercase().ends_with(".MATERIAL.GBX") { link.to_string() } else { format!("{link}.Material.Gbx") };
     let chain = mapgeom::envblock::material_chain(store, &mat);
@@ -868,7 +918,21 @@ pub fn tables_from_paktables_with_records(f: &mut FrozenTables, store: &mut mapg
         }
         Err(e) => match basecolor_texture(store, tile_link) {
             // a textured tile material (Stadium's Grass, PDiff): the 17023 class over the tile quads at their single uv set
-            Ok(Some((path, tx, _))) => { got.push(format!("tiles {tile_link} → BaseColor {path} ({}×{}, {} mips; the textured class over the tile quads)", tx.w, tx.h, tx.mips)); f.tile_tex = Some(tx); }
+            Ok(Some((path, tx, _))) => {
+                got.push(format!("tiles {tile_link} → BaseColor {path} ({}×{}, {} mips; the textured class over the tile quads)", tx.w, tx.h, tx.mips));
+                f.tile_tex = Some(tx);
+                // THE GRASS X2 LAYER (RE 13, 18:28Z: PS 9514 = 2·Grass_D(x/32, −z/32)·Grass_X2(−x/1024 + 0.25, z/1024 + 0.25), X2 NOT sRGB-decoded)
+                // THE X2 VIEW IS RAW (RE 13, 18:50Z: the D3D11 view of 5426 is fully typed BC1_UNORM — no sRGB decode, and the binary has no ÷2):
+                // the albedo = 2·D_lin(uv1)·X2_raw(uv2) exactly as read — the DEFAULT. LMTOOL_GRASS_X2=off (D alone, the pre-patch behaviour)
+                // | srgb (the refuted sRGB-view form) stay as study switches; the measured ~½ against the game is OURS to find elsewhere
+                // (G: a tile double-count between the fitted-tile and world peels, or the tile chart resolution).
+                let x2_mode = std::env::var("LMTOOL_GRASS_X2").unwrap_or_else(|_| "stored".into());
+                match if x2_mode == "off" { Ok(None) } else { slot_texture(store, tile_link, "GrassX2", x2_mode == "srgb") } {
+                    Ok(Some((p2, t2))) => { got.push(format!("tiles {tile_link} → GrassX2 {p2} ({}×{}, {} mips; {} , positional over 1024 m; ×2 on rgb)", t2.w, t2.h, t2.mips, if x2_mode == "srgb" { "sRGB-decoded" } else { "stored bytes / 255" })); f.tile_x2 = Some(t2); }
+                    Ok(None) => {}
+                    Err(e2) => notes.push(format!("paktables: tiles {tile_link}: GrassX2: {e2}")),
+                }
+            }
             Ok(None) => notes.push(format!("paktables: tiles {tile_link}: {e}; no BaseColor slot either (the frozen tile constant {:?} stays)", f.tile_rgb)),
             Err(e2) => notes.push(format!("paktables: tiles {tile_link}: {e}; BaseColor: {e2} (the frozen tile constant {:?} stays)", f.tile_rgb)),
         },
