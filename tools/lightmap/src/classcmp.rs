@@ -183,9 +183,9 @@ pub fn compare(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLight
             let key_bind = (m1.binds[i].obj_group_idx / 4, m1.binds[i].obj_idx & 0x00ff_ffff);
             let Some(&j) = theirs_of.get(&key_bind) else { rect_mismatch += 1; continue };
             // the pairing guard: the same object at (almost) the same texel density has (almost) the same rect area — a pair whose
-            // areas differ by more than 30 % is a NUMBERING mismatch (tiny03: our kind-0 trees at obj 4096… vs the editor's road
+            // areas differ by more than a √2-ring step with slack (×2.9) is a NUMBERING mismatch (tiny03: our kind-0 trees at obj 4096… vs the editor's road
             // items), refused and counted rather than averaged
-            { let (a1, a2) = (m1.size[i].0 as f64 * m1.size[i].1 as f64, m2.size[j].0 as f64 * m2.size[j].1 as f64); if a1 > 0.0 && a2 > 0.0 && (a1 / a2 > 1.3 || a2 / a1 > 1.3) { pair_refused += 1; continue; } }
+            { let (a1, a2) = (m1.size[i].0 as f64 * m1.size[i].1 as f64, m2.size[j].0 as f64 * m2.size[j].1 as f64); if a1 > 0.0 && a2 > 0.0 && (a1 / a2 > 2.9 || a2 / a1 > 2.9) { pair_refused += 1; continue; } }
             let key = class_key(&m1, i, &rows, records, o.by);
             let mut acc = ClassAcc { charts: 1, ..Default::default() };
             let s1 = (fb1.get(i).copied().unwrap_or(0) as f64 / 255.0).powi(2) * k1 as f64;
@@ -283,7 +283,7 @@ fn f3(v: [f64; 3], p: usize) -> String { format!("{:.*} / {:.*} / {:.*}", p, v[0
 pub fn print(r: &Report, o: &Options, tsv: Option<&str>) -> Result<(), String> {
     println!("frame {}: record MaxHDR ours {} vs editor {} ({:+.2} %); image {}×{}; lit threshold {} (image-A max channel); means over the EDITOR's lit texels; HDR = (A/255)²·(fb/255)²·MaxHDR", o.frame, r.maxhdr_ours, r.maxhdr_theirs, 100.0 * (r.maxhdr_ours as f64 / r.maxhdr_theirs.max(1e-12) as f64 - 1.0), r.image_w, r.image_h, o.lit);
     if r.rect_mismatch > 0 { println!("  WARNING: {} charts {} — SKIPPED in the table below", r.rect_mismatch, if o.own_rects { "have no oracle chart of the same (obj, sub) bind word" } else { "have a different rect in the two files (the layout gate failed for them)" }); }
-    if r.pair_refused > 0 { println!("  WARNING: {} pairs REFUSED by the rect-area guard (> 30 % apart): the two files number their objects differently — the item rows below are NOT trustworthy until the numbering is settled", r.pair_refused); }
+    if r.pair_refused > 0 { println!("  WARNING: {} pairs REFUSED by the rect-area guard (> 2.9× apart, beyond a quality ring step): the two files number their objects differently — the item rows below are NOT trustworthy until the numbering is settled", r.pair_refused); }
     if o.own_rects { println!("  --own-rects: each side's means over its own rects and its own lit texels (layouts differ); byte identity / RMSE columns are void"); }
     if r.unmatched_rows > 0 { println!("  note: {} records rows match no chart's (obj, sub)", r.unmatched_rows); }
     println!("class\tcharts\ttexels\tlit% ours\tlit% editor\tmean HDR ours (r/g/b)\tmean HDR editor (r/g/b)\tratio ours/editor (r/g/b)\tRMSE/mean (r/g/b)	bytes identical %	within 1 %	within 2 %	max|Δ|	per-chart ratio: n, median, σ(ln)");
