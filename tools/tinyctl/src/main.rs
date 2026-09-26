@@ -47,6 +47,7 @@ mod remoteshots;
 mod portlayers;
 mod gistpub;
 mod terrainround;
+mod cupexport;
 mod batch;
 mod customsheet;
 mod thumbs;
@@ -220,6 +221,7 @@ fn main() {
         "port-layers" => portlayers::cmd(rest),
         "gist-publish" => gistpub::cmd(rest),
         "terrain-round" => terrainround::cmd(rest),
+        "cup-export" => cupexport::cmd(rest),
         // tinyctl mint-tokens --token-dir DIR: a fresh Nadeo token pair pulled from the box
         // (a 4-second game-lock step there); every devserver-side Nadeo read/write takes
         // TINYCTL_TOKEN_DIR=DIR afterwards

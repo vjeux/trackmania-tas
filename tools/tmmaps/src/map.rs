@@ -1073,6 +1073,158 @@ impl MapFile {
         (header_hits, body_hits)
     }
 
+    /// The author NICKNAME of the header author chunk 0x03043008 (u32 version, u32
+    /// authorVersion, login string, nickname string, …).
+    pub fn author_nickname(&self) -> Option<String> {
+        let ud = &self.gbx.user_data;
+        let n = u32::from_le_bytes(ud.get(0..4)?.try_into().ok()?) as usize;
+        let mut off = 4 + n * 8;
+        for i in 0..n {
+            let o = 4 + i * 8;
+            let id = u32::from_le_bytes(ud[o..o + 4].try_into().ok()?);
+            let size = (u32::from_le_bytes(ud[o + 4..o + 8].try_into().ok()?) & 0x7fff_ffff) as usize;
+            if id == 0x0304_3008 {
+                let d = &ud[off..off + size];
+                let l1 = u32::from_le_bytes(d.get(8..12)?.try_into().ok()?) as usize;
+                let p2 = 12 + l1;
+                let l2 = u32::from_le_bytes(d.get(p2..p2 + 4)?.try_into().ok()?) as usize;
+                return Some(String::from_utf8_lossy(d.get(p2 + 4..p2 + 4 + l2)?).to_string());
+            }
+            off += size;
+        }
+        None
+    }
+
+    /// The cup export (Everios96 2026-09-26): the map's TIMES (author, gold, silver,
+    /// bronze, ms) and its AUTHOR (login = the account id in its base64url form, same
+    /// length as any other; nickname = the display name, any length). Header: chunk
+    /// 0x03043002 (the four u32 times + authorScore), the XML (0x03043005: `<times …>` and
+    /// every `author="…"`), the Ident in 0x03043003 and the author chunk 0x03043008 (login,
+    /// nickname). Body: every GBX string of the old login / old nickname (the Ident and the
+    /// body author chunk 0x03043042) as splices. Returns (header hits, body hits).
+    pub fn set_author_and_times(&mut self, old_login: &str, new_login: &str, old_nick: &str, new_nick: &str, old_author_ms: u32, times: [u32; 4]) -> Result<(usize, usize), String> {
+        if old_login.len() != new_login.len() {
+            return Err(format!("author login `{new_login}` must be {} bytes like `{old_login}`", old_login.len()));
+        }
+        let [author, gold, silver, bronze] = times;
+        let ud = self.gbx.user_data.clone();
+        let n = u32::from_le_bytes(ud[0..4].try_into().unwrap()) as usize;
+        let mut heads: Vec<(u32, bool, Vec<u8>)> = Vec::new();
+        let mut off = 4 + n * 8;
+        for i in 0..n {
+            let o = 4 + i * 8;
+            let id = u32::from_le_bytes(ud[o..o + 4].try_into().unwrap());
+            let raw = u32::from_le_bytes(ud[o + 4..o + 8].try_into().unwrap());
+            let size = (raw & 0x7fff_ffff) as usize;
+            heads.push((id, raw & 0x8000_0000 != 0, ud[off..off + size].to_vec()));
+            off += size;
+        }
+        let mut header_hits = 0usize;
+        for (id, _, data) in heads.iter_mut() {
+            match *id {
+                0x0304_3002 => {
+                    // [bronze][silver][gold][author] u32 LE, the author one = the old author time
+                    let old = old_author_ms.to_le_bytes();
+                    let mut pos = None;
+                    for i in 12..data.len().saturating_sub(3) {
+                        if data[i..i + 4] == old {
+                            let b = u32::from_le_bytes(data[i - 12..i - 8].try_into().unwrap());
+                            let sv = u32::from_le_bytes(data[i - 8..i - 4].try_into().unwrap());
+                            let g = u32::from_le_bytes(data[i - 4..i].try_into().unwrap());
+                            if b >= sv && sv >= g && g >= old_author_ms {
+                                pos = Some(i);
+                                break;
+                            }
+                        }
+                    }
+                    let i = pos.ok_or_else(|| format!("header 0x03043002: the times (author {old_author_ms} ms) were not found"))?;
+                    data[i - 12..i - 8].copy_from_slice(&bronze.to_le_bytes());
+                    data[i - 8..i - 4].copy_from_slice(&silver.to_le_bytes());
+                    data[i - 4..i].copy_from_slice(&gold.to_le_bytes());
+                    data[i..i + 4].copy_from_slice(&author.to_le_bytes());
+                    header_hits += 4;
+                    // authorScore (the same value on a race map), after the times
+                    let mut j = i + 4;
+                    while j + 4 <= data.len() {
+                        if data[j..j + 4] == old {
+                            data[j..j + 4].copy_from_slice(&author.to_le_bytes());
+                            header_hits += 1;
+                            break;
+                        }
+                        j += 4;
+                    }
+                }
+                0x0304_3005 => {
+                    if data.len() >= 4 {
+                        let len = u32::from_le_bytes(data[0..4].try_into().unwrap()) as usize;
+                        if data.len() >= 4 + len {
+                            let xml = String::from_utf8_lossy(&data[4..4 + len]).to_string();
+                            let mut xml2 = xml.replace(&format!("author=\"{old_login}\""), &format!("author=\"{new_login}\""));
+                            let re_attr = |x: &str, key: &str, val: u32| -> String {
+                                // key="digits" → key="val"
+                                let pat = format!("{key}=\"");
+                                let mut out = String::new();
+                                let mut rest = x;
+                                while let Some(k) = rest.find(&pat) {
+                                    out.push_str(&rest[..k + pat.len()]);
+                                    let after = &rest[k + pat.len()..];
+                                    let end = after.find('"').unwrap_or(after.len());
+                                    out.push_str(&val.to_string());
+                                    rest = &after[end..];
+                                }
+                                out.push_str(rest);
+                                out
+                            };
+                            xml2 = re_attr(&xml2, "bronze", bronze);
+                            xml2 = re_attr(&xml2, "silver", silver);
+                            xml2 = re_attr(&xml2, "gold", gold);
+                            xml2 = re_attr(&xml2, "authortime", author);
+                            xml2 = re_attr(&xml2, "authorscore", author);
+                            if xml2 != xml {
+                                let mut d = (xml2.len() as u32).to_le_bytes().to_vec();
+                                d.extend_from_slice(xml2.as_bytes());
+                                d.extend_from_slice(&data[4 + len..]);
+                                *data = d;
+                                header_hits += 1;
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    header_hits += replace_all(data, &gbx_string(old_login), &gbx_string(new_login));
+                    if old_nick != new_nick {
+                        header_hits += replace_all(data, &gbx_string(old_nick), &gbx_string(new_nick));
+                    }
+                }
+            }
+        }
+        let mut out = Vec::new();
+        out.extend_from_slice(&(heads.len() as u32).to_le_bytes());
+        for (id, heavy, data) in &heads {
+            out.extend_from_slice(&id.to_le_bytes());
+            out.extend_from_slice(&((data.len() as u32) | if *heavy { 0x8000_0000 } else { 0 }).to_le_bytes());
+        }
+        for (_, _, data) in &heads {
+            out.extend_from_slice(data);
+        }
+        self.gbx.user_data = out;
+        // body: the login (same length) and the nickname (any length) as GBX strings
+        let mut body_hits = 0usize;
+        for (pat, rep) in [(gbx_string(old_login), gbx_string(new_login)), (gbx_string(old_nick), gbx_string(new_nick))] {
+            if pat == rep {
+                continue;
+            }
+            let mut at = 0;
+            while let Some(p) = find_sub(&self.gbx.body[at..], &pat) {
+                let s = at + p;
+                self.raw_splices.push(((s, s + pat.len()), rep.clone()));
+                body_hits += 1;
+                at = s + pat.len();
+            }
+        }
+        Ok((header_hits, body_hits))
+    }
+
     /// Replace the header THUMBNAIL (chunk 0x03043007: u32 version=1, u32 jpeg
     /// length, `<Thumbnail.jpg>` JPEG `</Thumbnail.jpg>`, `<Comments>` comments
     /// `</Comments>`). The JPEG is stored as-is (the game reads it upside down —
