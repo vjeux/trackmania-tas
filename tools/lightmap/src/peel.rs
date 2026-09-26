@@ -1268,7 +1268,47 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
                         if key(&buf[1], &buf[2]) { buf.swap(1, 2); }
                         if key(&buf[0], &buf[1]) { buf.swap(0, 1); }
                     }
-                    _ => buf.sort_unstable_by(|p, q| p.z.total_cmp(&q.z).then_with(|| p.tri.cmp(&q.tri))),
+                    _ => {
+                        // many fragments (the canopy): the (z, tri) order as ONE u64 key — z's bits in the
+                        // total order (negatives reversed) above the triangle index — sorted by insertion
+                        // (the pixels here hold 4–20 fragments), with z01 taken once per fragment; then the
+                        // walk over the sorted keys. The same order and the same operations as the sort +
+                        // count_run above.
+                        let cx = count.as_ref().unwrap();
+                        let prm = cx.prm;
+                        let mut keyed: [(u64, f32, f32); 64] = [(0, 0.0, 0.0); 64];
+                        let m = n.min(64);
+                        for (i, f) in buf[..m].iter().enumerate() {
+                            keyed[i] = ((total_order_key(f.z) as u64) << 32 | f.tri as u64, frame.z01(f.z).max(0.0), f.bias);
+                        }
+                        if n > 64 {
+                            // (beyond the fixed buffer: the general sort)
+                            buf.sort_unstable_by(|p, q| p.z.total_cmp(&q.z).then_with(|| p.tri.cmp(&q.tri)));
+                            hist[count_run(buf, env_d).min(MAX_LAYERS)] += 1;
+                            continue;
+                        }
+                        for i in 1..m {
+                            let cur = keyed[i];
+                            let mut j = i;
+                            while j > 0 && keyed[j - 1].0 > cur.0 { keyed[j] = keyed[j - 1]; j -= 1; }
+                            keyed[j] = cur;
+                        }
+                        let mut d_prev = f32::NEG_INFINITY;
+                        if prm.dome_layer {
+                            d_prev = if env_d > 0.0 { if prm.depth_bits == 16 { (env_d * 65535.0).round() / 65535.0 } else { env_d } } else { 0.0 };
+                        }
+                        let mut items = 0usize;
+                        for &(_, z01, bias) in &keyed[..m] {
+                            if z01 < d_prev { continue; }
+                            if items >= MAX_LAYERS { break; }
+                            let mut dd = z01 + bias;
+                            if prm.depth_bits == 16 { dd = (dd.clamp(0.0, 1.0) * 65535.0).round() / 65535.0; }
+                            items += 1;
+                            d_prev = dd;
+                        }
+                        hist[items.min(MAX_LAYERS)] += 1;
+                        continue;
+                    }
                 }
                 hist[count_run(buf, env_d).min(MAX_LAYERS)] += 1;
             }
@@ -3011,6 +3051,37 @@ pub fn scan_block16(offs: &[u32], csr: &[CFrag], env_d: &[f32; 16], frame: &Peel
 }
 /// The most fragments per pixel the lane walk takes (a 4-element sorting network).
 pub const SCAN_K: usize = 4;
+
+/// `f32::total_cmp`'s order as an UNSIGNED 32-bit key: the float's bits with the sign folded (a negative float's
+/// magnitude bits reversed) and the sign bit flipped, so that `a.total_cmp(&b) == key(a).cmp(&key(b))`.
+#[inline(always)]
+pub fn total_order_key(z: f32) -> u32 {
+    let bits = z.to_bits() as i32;
+    let folded = bits ^ (((bits >> 31) as u32) >> 1) as i32;
+    (folded as u32) ^ 0x8000_0000
+}
+
+#[cfg(test)]
+mod key_probe {
+    use super::*;
+    #[test]
+    fn the_key_is_total_cmp() {
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut vals: Vec<f32> = vec![0.0, -0.0, 1.0, -1.0, f32::MIN_POSITIVE, -f32::MIN_POSITIVE, f32::MAX, f32::MIN, 1e-40, -1e-40, 65535.0, 0.5, -0.5];
+        for _ in 0..200_000 {
+            seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17;
+            let v = f32::from_bits((seed >> 11) as u32);
+            if v.is_nan() { continue; }
+            vals.push(v);
+        }
+        for i in 0..vals.len().min(3000) {
+            for j in 0..vals.len().min(3000) {
+                let (a, b) = (vals[i], vals[j]);
+                assert_eq!(a.total_cmp(&b), total_order_key(a).cmp(&total_order_key(b)), "{a} vs {b}");
+            }
+        }
+    }
+}
 
 /// LMTOOL_RASTER_STATS: pixels with 1–2 fragments, 3, 4, 5, ≥ 6.
 pub static RS_NFRAG: [std::sync::atomic::AtomicU64; 5] = [std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0)];
