@@ -160,19 +160,21 @@ struct SlotRef {
 /// The slots hold raw pointers into the textures' level tables: a queue must be flushed (or dropped) before
 /// the textures it was fed are — the raster flushes at the end of every job, and the textures live for the
 /// whole bake.
+/// (`repr(C, align(64))`, the lane arrays first: their 512-bit loads never split a cache line — see raster::Bary16.)
+#[repr(C, align(64))]
 pub struct AlphaQueue {
-    len: usize,
-    slots: usize,
-    last_key: u64,
-    /// The largest tap count among the slots (the kernel's tap loop runs to it; lanes past their own count
-    /// are masked).
-    nmax: u32,
     slot_of: [i32; LANES],
     u: [f32; LANES],
     v: [f32; LANES],
     px: [u32; LANES],
     py: [u32; LANES],
     pz: [f32; LANES],
+    len: usize,
+    slots: usize,
+    last_key: u64,
+    /// The largest tap count among the slots (the kernel's tap loop runs to it; lanes past their own count
+    /// are masked).
+    nmax: u32,
     table: Box<SlotTable>,
     refs: [SlotRef; LANES],
     kernel: Kernel,

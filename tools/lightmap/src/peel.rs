@@ -3163,6 +3163,8 @@ pub static BOUND_TOTALS: [std::sync::atomic::AtomicU64; 4] = [std::sync::atomic:
 /// The sixteen lanes' z and the in-range mask of a block (see the visit body): `z[l] = (z0·b0 + z1·b1) + z2·b2`
 /// exactly as the scalar body computes it, `live` = cov ∧ (z < zmax) ∧ (z ≥ zmin) — the same f32 operations per
 /// lane, in the same order (no fused multiply-add: the scalar form has none).
+/// (64-byte aligned: the 512-bit store of z and the body's reloads never split a cache line — see raster::Bary16.)
+#[repr(C, align(64))]
 pub struct LaneZ {
     pub z: [f32; 16],
     pub live: u16,

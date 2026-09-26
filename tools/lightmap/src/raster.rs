@@ -262,6 +262,13 @@ impl Setup {
     }
 }
 
+
+/// A 64-byte-aligned home for the 16-lane arrays the walk hands to the visit body: a plain `[[f32; 16]; 3]` on
+/// the stack is 16-byte aligned, so whether its 512-bit stores and the body's 512-bit reloads split a cache line
+/// depended on the caller chain's frame sizes — an unrelated edit anywhere up the chain moved the raster ±7 %.
+#[repr(C, align(64))]
+pub struct Bary16(pub [[f32; 16]; 3]);
+
 /// THE 16-WIDE ROW TEST (AVX-512): a span's pixels tested sixteen at a time — every lane performs the
 /// scalar test's operations in the scalar test's order ((b−a).x·(q−a).y, (b−a).y·(q−a).x, their
 /// difference; e·inv for the weights), each an IEEE single operation rounded to nearest even exactly as
@@ -386,7 +393,8 @@ pub unsafe fn triangle_rows_avx512<G: SpanFn>(w: u32, h: u32, p: [[f32; 2]; 3], 
     // (LMTOOL_EDGE_AUDIT) the specification's snapped integer triangle beside the f32 one
     let audit: Option<IntTri> = if *EDGE_AUDIT || *EDGE_RULE_INT { let it = IntTri::new(p); if it.degenerate { EDGE_AUDIT_TALLY[3].fetch_add(1, std::sync::atomic::Ordering::Relaxed); } Some(it) } else { None };
     let rule_int = *EDGE_RULE_INT;
-    let mut bary = [[0f32; 16]; 3];
+    let mut bary_al = Bary16([[0f32; 16]; 3]);
+    let bary = &mut bary_al.0;
     for y in s.y0..=s.y1 {
         let py = y as f32 + 0.5;
         let Some((lo, hi)) = s.span(w, py) else { continue };
