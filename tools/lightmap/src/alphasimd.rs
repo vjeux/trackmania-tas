@@ -196,11 +196,6 @@ impl AlphaQueue {
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
-    /// The queue of a plan — this one (the interface the raster hook uses).
-    #[inline(always)]
-    pub fn of(&mut self, _plan: &TapPlan) -> &mut AlphaQueue {
-        self
-    }
 
     /// Queue one fragment: `key` identifies its triangle (consecutive pushes with one key share a slot),
     /// `plan` is that triangle's plan for `tex`. Returns true when the batch is full — the caller flushes.
@@ -331,19 +326,6 @@ impl AlphaQueue {
         m
     }
 
-    /// A recycled queue from this thread's pool (the raster runs one job at a time per thread).
-    pub fn take() -> Box<AlphaQueue> {
-        POOL.take().unwrap_or_else(|| Box::new(AlphaQueue::new()))
-    }
-    /// Back to the pool (empty — the caller flushed), its totals banked.
-    pub fn give(mut self: Box<AlphaQueue>) {
-        debug_assert!(self.is_empty());
-        ALPHA_TOTALS[0].fetch_add(self.stats[0], std::sync::atomic::Ordering::Relaxed);
-        ALPHA_TOTALS[1].fetch_add(self.stats[1], std::sync::atomic::Ordering::Relaxed);
-        ALPHA_TOTALS[2].fetch_add(self.stats[2], std::sync::atomic::Ordering::Relaxed);
-        self.stats = [0; 3];
-        POOL.set(Some(self));
-    }
 }
 
 impl Default for AlphaQueue {
@@ -352,11 +334,58 @@ impl Default for AlphaQueue {
     }
 }
 
-/// The raster hook's name for the thread's queue (one queue now; the per-tap-count set was slower in situ).
-pub type AlphaQueues = AlphaQueue;
+/// The raster hook's queues for one thread: THREE, BY TAP COUNT (n ≤ 4 / ≤ 8 / ≤ 16), so a batch's `nmax` — the kernel
+/// loops to the batch's largest tap count — stays close to every lane's own. PERF 4.3 measured a per-tap-count set as
+/// slower in situ, on the unaligned tree and under the screen-axis footprint where N was 2–6 almost everywhere; with the
+/// ellipse (0004) the grazing cards take up to 16 taps and used to share batches with 2-tap ones. Exactness untouched: a
+/// fragment's decision never depends on its batch; only the emission order changes, which every consumer sorts away.
+/// LMTOOL_ALPHA_QUEUES=1 keeps one queue (the A/B).
+#[repr(C, align(64))]
+pub struct AlphaQueues {
+    q: [AlphaQueue; 3],
+    single: bool,
+}
+
+impl AlphaQueues {
+    pub fn new() -> Self {
+        AlphaQueues { q: [AlphaQueue::new(), AlphaQueue::new(), AlphaQueue::new()], single: single_queue() }
+    }
+    /// The queue a plan's fragments go to.
+    #[inline(always)]
+    pub fn of(&mut self, plan: &TapPlan) -> &mut AlphaQueue {
+        let c = if self.single { 0 } else if plan.n <= 4 { 0 } else if plan.n <= 8 { 1 } else { 2 };
+        &mut self.q[c]
+    }
+    /// Every queue flushed (the job's end).
+    pub fn flush_all(&mut self, threshold: f32, mut emit: impl FnMut(&Pend)) {
+        for q in self.q.iter_mut() {
+            q.flush_all(threshold, &mut emit);
+        }
+    }
+    /// A recycled set from this thread's pool (the raster runs one job at a time per thread).
+    pub fn take() -> Box<AlphaQueues> {
+        POOL.take().unwrap_or_else(|| Box::new(AlphaQueues::new()))
+    }
+    /// Back to the pool (empty — the caller flushed), the totals banked.
+    pub fn give(mut self: Box<AlphaQueues>) {
+        for q in self.q.iter_mut() {
+            debug_assert!(q.is_empty());
+            ALPHA_TOTALS[0].fetch_add(q.stats[0], std::sync::atomic::Ordering::Relaxed);
+            ALPHA_TOTALS[1].fetch_add(q.stats[1], std::sync::atomic::Ordering::Relaxed);
+            ALPHA_TOTALS[2].fetch_add(q.stats[2], std::sync::atomic::Ordering::Relaxed);
+            q.stats = [0; 3];
+        }
+        POOL.set(Some(self));
+    }
+}
+
+fn single_queue() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("LMTOOL_ALPHA_QUEUES").map(|v| v == "1").unwrap_or(false))
+}
 
 thread_local! {
-    static POOL: std::cell::Cell<Option<Box<AlphaQueue>>> = const { std::cell::Cell::new(None) };
+    static POOL: std::cell::Cell<Option<Box<AlphaQueues>>> = const { std::cell::Cell::new(None) };
 }
 
 /// Bake-wide totals: batches, fragments tested through the queues, fragments passed (`alpha_queue_report`).
@@ -695,8 +724,10 @@ pub(crate) mod tests {
         ]
     }
 
-    fn set_kernel(qs: &mut AlphaQueue, k: Kernel) {
-        qs.kernel = k;
+    fn set_kernel(qs: &mut AlphaQueues, k: Kernel) {
+        for q in qs.q.iter_mut() {
+            q.kernel = k;
+        }
     }
 
     /// Random plans (footprints from lod −1 to the last level, isotropic and anisotropic) and coordinates
