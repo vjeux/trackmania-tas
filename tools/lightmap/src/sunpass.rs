@@ -402,6 +402,8 @@ pub fn run_sun_pass_par(meshes: &[LmMesh], instances: &[LmInstance], table: &[[f
             end += 1;
         }
         let pairs = &all_pairs[start..end];
+        let trace = std::env::var_os("LMTOOL_SUN_TRACE").is_some();
+        let tp = std::time::Instant::now();
         let preps: Vec<Prep> = crate::pool::pool().map(pairs.len(), |k| {
             let (di, ii) = pairs[k];
             let d = &draws[di];
@@ -409,7 +411,9 @@ pub fn run_sun_pass_par(meshes: &[LmMesh], instances: &[LmInstance], table: &[[f
             let inst = &instances[ii];
             Prep { di, vs: mesh.verts.iter().map(|v| vs_15183(v, inst, table, d)).collect() }
         });
+        let t_preps = tp.elapsed().as_secs_f32();
         let plan = crate::lmaccum::band_plan(&preps, |p, t| { let idx = &meshes[draws[p.di].mesh].indices[t * 3..t * 3 + 3]; [p.vs[idx[0] as usize].clip, p.vs[idx[1] as usize].clip, p.vs[idx[2] as usize].clip] }, |p| meshes[draws[p.di].mesh].indices.len() / 3, h, threads);
+        let t_plan = tp.elapsed().as_secs_f32() - t_preps;
         let px_ptr = tgt.px.as_mut_ptr() as usize;
         crate::pool::pool().run(plan.n_bands, |b| {
             let (y_lo, y_hi) = ((b * plan.rows) as i64, (((b + 1) * plan.rows).min(h as usize)) as i64);
@@ -438,6 +442,7 @@ pub fn run_sun_pass_par(meshes: &[LmMesh], instances: &[LmInstance], table: &[[f
                 });
             }
         });
+        if trace { eprintln!("sun pass chunk {}..{} ({} pairs, {} verts): vs {:.2}s, plan {:.2}s, raster {:.2}s", start, end, pairs.len(), verts, t_preps, t_plan, tp.elapsed().as_secs_f32() - t_preps - t_plan); }
         start = end;
     }
     tgt
