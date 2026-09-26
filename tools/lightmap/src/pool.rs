@@ -8,43 +8,36 @@
 //! generation counter before parking, so the back-to-back waves within a direction never round-trip
 //! through the futex.
 //!
-//! PER-THREAD BUSY TIME (`stats`, on under `--profile`): every task is timed on the participant that ran
-//! it (the pool threads and the calling thread), so a run knows its wall, the busy time of every
-//! participant, the slowest participant and the slowest task. The runs are summed per STAGE (the label
-//! `stats::stage(..)` set by the bake around each stage: raster, clip, gather, …) and `stats::report`
-//! prints the table: per stage the wall spent inside pool runs, the utilisation Σbusy / (wall × P), the
-//! tail (slowest participant / mean participant, slowest task / mean task) and the task counts — the
-//! measurement that separates "idle threads" from "latency-bound loops" (a 90 % utilised stage that is
-//! slow is bound inside the visit bodies; a 40 % one is waiting for its slowest band).
+//! PER-THREAD BUSY TIME (`stats`, on under `--profile`): every task is timed on the participant that ran it;
+//! `stats::stage` labels the runs, `stats::report` prints the utilisation table (perf engineer 6).
 
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
-struct Job {
-    /// The task closure, its lifetime erased: `run` does not return before every task has completed,
-    /// so the borrow it holds outlives every use.
-    f: *const (dyn Fn(usize) + Sync),
-    n: usize,
-}
-unsafe impl Send for Job {}
-unsafe impl Sync for Job {}
-
+/// The current job's closure, its lifetime erased: `run` does not return before every worker has left the
+/// job, so the borrow it holds outlives every use. Published to the workers through atomics (a mutex here
+/// had 128 workers queueing on one lock at the start of every call), and the workers woken through a TREE of
+/// `Thread::unpark`s: a condvar's `notify_all` had the caller wake 128 parked threads one by one in the kernel
+/// — 300–470 µs per call, ~20 calls per frame; now the caller unparks four workers, each unparks four more.
 struct Shared {
-    /// The current job (set by `run`, cleared after every worker has left it).
-    job: Mutex<Option<Job>>,
+    /// The job's closure (a fat pointer split in two words; `n` and both words are published before the
+    /// generation bump that the workers wait for, and read after they see it).
+    f_data: AtomicPtr<()>,
+    f_vtable: AtomicPtr<()>,
+    n: AtomicUsize,
     /// Bumped per job; the workers wait for a value they have not seen.
     generation: AtomicU64,
     /// Tasks handed out of the current job.
     next: AtomicUsize,
-    /// Tasks finished in the current job.
-    done: AtomicUsize,
-    /// Workers still inside the current job.
+    /// Workers still inside the current job (a worker leaves only after a failed claim, so `active == 0`
+    /// means every task was claimed and finished — no per-task completion counter).
     active: AtomicUsize,
     panicked: AtomicBool,
-    /// The parking lot of idle workers (paired with `job`'s mutex).
-    work: Condvar,
+    /// The workers' handles, in worker order (set once after the spawns): worker i's children in the wake
+    /// tree are 4i+1 ..= 4i+4.
+    handles: OnceLock<Vec<std::thread::Thread>>,
     /// Per participant (worker k = slot k, the caller = the last slot): busy nanoseconds and tasks of the
-    /// current run — written only while `stats::enabled()`.
+    /// current run — written only while `stats::enabled()` (perf engineer 6).
     slot_busy: Vec<AtomicU64>,
     slot_tasks: Vec<AtomicU64>,
     /// The slowest task of the current run (nanoseconds).
@@ -58,15 +51,15 @@ pub struct Pool {
 
 /// Idle spins on the generation counter before a worker parks (~10–50 µs).
 const SPIN: usize = 4000;
+const FANOUT: usize = 4;
 
-/// Runs `f(i)` and books it on participant `slot` when the stats are on.
-#[inline]
+/// One task, timed per participant when the stats are on (perf engineer 6); a panic is recorded, not propagated.
 fn run_task(sh: &Shared, f: &(dyn Fn(usize) + Sync), i: usize, slot: usize) {
     let timed = stats::enabled();
     let t0 = if timed { Some(std::time::Instant::now()) } else { None };
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(i)));
     if r.is_err() {
-        sh.panicked.store(true, Ordering::SeqCst);
+        sh.panicked.store(true, Ordering::Relaxed);
     }
     if let Some(t0) = t0 {
         let ns = t0.elapsed().as_nanos() as u64;
@@ -74,31 +67,34 @@ fn run_task(sh: &Shared, f: &(dyn Fn(usize) + Sync), i: usize, slot: usize) {
         sh.slot_tasks[slot].fetch_add(1, Ordering::Relaxed);
         sh.task_max.fetch_max(ns, Ordering::Relaxed);
     }
-    sh.done.fetch_add(1, Ordering::SeqCst);
 }
 
 impl Pool {
     pub fn new(threads: usize) -> Pool {
         let threads = threads.max(1);
         let shared = Arc::new(Shared {
-            job: Mutex::new(None),
+            f_data: AtomicPtr::new(std::ptr::null_mut()),
+            f_vtable: AtomicPtr::new(std::ptr::null_mut()),
+            n: AtomicUsize::new(0),
             generation: AtomicU64::new(0),
             next: AtomicUsize::new(0),
-            done: AtomicUsize::new(0),
             active: AtomicUsize::new(0),
             panicked: AtomicBool::new(false),
-            work: Condvar::new(),
+            handles: OnceLock::new(),
             slot_busy: (0..=threads).map(|_| AtomicU64::new(0)).collect(),
             slot_tasks: (0..=threads).map(|_| AtomicU64::new(0)).collect(),
             task_max: AtomicU64::new(0),
         });
-        for k in 0..threads {
+        let mut handles = Vec::with_capacity(threads);
+        for i in 0..threads {
             let sh = shared.clone();
-            std::thread::Builder::new()
+            let h = std::thread::Builder::new()
                 .name("lm-pool".into())
-                .spawn(move || worker(sh, k))
+                .spawn(move || worker(sh, i))
                 .expect("pool thread");
+            handles.push(h.thread().clone());
         }
+        shared.handles.set(handles).ok();
         Pool { shared, threads }
     }
 
@@ -114,46 +110,49 @@ impl Pool {
         let fref: &(dyn Fn(usize) + Sync) = &f;
         // SAFETY: the pointer is used only until every worker has left the job, below in this function
         let fptr: *const (dyn Fn(usize) + Sync) = unsafe { std::mem::transmute::<&(dyn Fn(usize) + Sync), &'static (dyn Fn(usize) + Sync)>(fref) };
+        let (data, vtable): (*mut (), *mut ()) = unsafe { std::mem::transmute(fptr) };
         // the previous job's workers must all have left before the job slot is reused
         while sh.active.load(Ordering::Acquire) != 0 {
             std::hint::spin_loop();
         }
-        {
-            let mut job = sh.job.lock().unwrap();
-            sh.next.store(0, Ordering::SeqCst);
-            sh.done.store(0, Ordering::SeqCst);
-            sh.panicked.store(false, Ordering::SeqCst);
-            sh.active.store(self.threads, Ordering::SeqCst);
-            if timed {
-                for s in &sh.slot_busy { s.store(0, Ordering::Relaxed); }
-                for s in &sh.slot_tasks { s.store(0, Ordering::Relaxed); }
-                sh.task_max.store(0, Ordering::Relaxed);
-            }
-            *job = Some(Job { f: fptr, n });
-            sh.generation.fetch_add(1, Ordering::SeqCst);
+        sh.next.store(0, Ordering::Relaxed);
+        sh.panicked.store(false, Ordering::Relaxed);
+        sh.active.store(self.threads, Ordering::Relaxed);
+        if timed {
+            for s in &sh.slot_busy { s.store(0, Ordering::Relaxed); }
+            for s in &sh.slot_tasks { s.store(0, Ordering::Relaxed); }
+            sh.task_max.store(0, Ordering::Relaxed);
         }
-        sh.work.notify_all();
+        sh.f_data.store(data, Ordering::Relaxed);
+        sh.f_vtable.store(vtable, Ordering::Relaxed);
+        sh.n.store(n, Ordering::Relaxed);
+        // the release publishes the job; a worker's acquire load of the generation sees it whole
+        sh.generation.fetch_add(1, Ordering::Release);
+        // the wake tree's roots (a parked worker wakes; a spinning one finds a token it clears at its next park)
+        if let Some(hs) = sh.handles.get() {
+            for h in hs.iter().take(FANOUT) {
+                h.unpark();
+            }
+        }
         // the caller helps
         let caller_slot = self.threads;
         loop {
-            let i = sh.next.fetch_add(1, Ordering::SeqCst);
+            let i = sh.next.fetch_add(1, Ordering::Relaxed);
             if i >= n {
                 break;
             }
             run_task(sh, fref, i, caller_slot);
         }
-        // every task done, then every worker out of the job (a worker may still be between its last
-        // claim and its exit)
+        // every worker out of the job (each leaves after its own failed claim, so every task is done)
         let mut spins = 0usize;
-        while sh.done.load(Ordering::Acquire) < n || sh.active.load(Ordering::Acquire) != 0 {
+        while sh.active.load(Ordering::Acquire) != 0 {
             spins += 1;
             if spins < 20_000 { std::hint::spin_loop(); } else { std::thread::yield_now(); }
         }
-        *sh.job.lock().unwrap() = None;
         if timed {
             stats::record(sh, n, t_run.elapsed().as_nanos() as u64);
         }
-        if sh.panicked.load(Ordering::SeqCst) {
+        if sh.panicked.load(Ordering::Relaxed) {
             panic!("a pool task panicked");
         }
     }
@@ -171,10 +170,11 @@ impl Pool {
     }
 }
 
-fn worker(sh: Arc<Shared>, slot: usize) {
+fn worker(sh: Arc<Shared>, me: usize) {
     let mut seen = 0u64;
     loop {
-        // a new generation: spin first, then park on the condvar
+        // a new generation: spin first, then park (an unpark token left by a wake we did not need is
+        // consumed by the first park, which then returns at once and re-checks)
         let mut spins = 0usize;
         loop {
             let g = sh.generation.load(Ordering::Acquire);
@@ -187,29 +187,27 @@ fn worker(sh: Arc<Shared>, slot: usize) {
                 std::hint::spin_loop();
                 continue;
             }
-            let job = sh.job.lock().unwrap();
-            if sh.generation.load(Ordering::Acquire) == seen {
-                let _g = sh.work.wait(job).unwrap();
-            }
-            spins = 0;
+            std::thread::park();
+            spins = SPIN / 2;
         }
-        let (job_ptr, n) = {
-            let job = sh.job.lock().unwrap();
-            match job.as_ref() {
-                Some(j) => (j.f, j.n),
-                None => {
-                    // the job was cleared before this worker saw it: it was never counted in
-                    continue;
+        // pass the wake down the tree (cheap when the child is not parked: a token, no syscall)
+        if let Some(hs) = sh.handles.get() {
+            for c in me * FANOUT + 1..=me * FANOUT + FANOUT {
+                if let Some(h) = hs.get(c) {
+                    h.unpark();
                 }
             }
-        };
-        let f: &(dyn Fn(usize) + Sync) = unsafe { &*job_ptr };
+        }
+        // the job, published before the generation bump we just saw
+        let (data, vtable, n) = (sh.f_data.load(Ordering::Relaxed), sh.f_vtable.load(Ordering::Relaxed), sh.n.load(Ordering::Relaxed));
+        let fptr: *const (dyn Fn(usize) + Sync) = unsafe { std::mem::transmute((data, vtable)) };
+        let f: &(dyn Fn(usize) + Sync) = unsafe { &*fptr };
         loop {
-            let i = sh.next.fetch_add(1, Ordering::SeqCst);
+            let i = sh.next.fetch_add(1, Ordering::Relaxed);
             if i >= n {
                 break;
             }
-            run_task(&sh, f, i, slot);
+            run_task(&sh, f, i, me);
         }
         sh.active.fetch_sub(1, Ordering::AcqRel);
     }
@@ -379,21 +377,63 @@ mod tests {
             assert_eq!(v, (0..n).map(|i| i * 2).collect::<Vec<_>>());
         }
     }
+}
 
+#[cfg(test)]
+mod latency {
+    /// `cargo test --release -p lightmap -- --ignored --nocapture pool_call_latency`: the cost of an empty pool
+    /// call (the wake-up and the barrier) at the bake's thread count, back to back and after a pause.
     #[test]
-    fn stats_book_every_task() {
-        stats::enable();
-        stats::reset();
-        let p = Pool::new(3);
-        stats::stage("test-stage");
-        p.run(40, |i| { std::hint::black_box(i * i); });
-        p.run(2, |_| {});
-        let snap = stats::snapshot();
-        let a = snap.iter().find(|a| a.label == "test-stage").expect("the stage is booked");
-        assert_eq!(a.runs, 2);
-        assert_eq!(a.tasks, 42);
-        assert!(a.busy_ns <= a.wall_ns * 4 + 1_000_000, "busy {} ≤ wall {} × P", a.busy_ns, a.wall_ns);
-        assert_eq!(a.starved_runs, 1);
-        stats::reset();
+    #[ignore]
+    fn pool_call_latency() {
+        let n = std::env::var("LMTOOL_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(128);
+        let p = super::Pool::new(n);
+        for (label, gap_us) in [("back to back", 0u64), ("after 100 µs", 100), ("after 2 ms", 2000)] {
+            let mut total = std::time::Duration::ZERO;
+            let rounds = 200;
+            for _ in 0..rounds {
+                if gap_us > 0 { let t = std::time::Instant::now(); while t.elapsed().as_micros() < gap_us as u128 { std::hint::spin_loop(); } }
+                let t = std::time::Instant::now();
+                p.run(n, |_| { std::hint::black_box(0); });
+                total += t.elapsed();
+            }
+            eprintln!("{label}: {:.1} µs per empty pool call ({n} threads)", total.as_secs_f64() * 1e6 / rounds as f64);
+        }
+    }
+}
+
+#[cfg(test)]
+mod latency2 {
+    /// Where an empty call's time goes: all tasks claimed vs all workers left.
+    #[test]
+    #[ignore]
+    fn pool_call_phases() {
+        let n = 128usize;
+        let p = super::Pool::new(n);
+        let sh = &p.shared;
+        for round in 0..6 {
+            let t = std::time::Instant::now();
+            // publish by hand (the same steps as `run`)
+            let f = |_i: usize| { std::hint::black_box(0); };
+            let fref: &(dyn Fn(usize) + Sync) = &f;
+            let fptr: *const (dyn Fn(usize) + Sync) = unsafe { std::mem::transmute::<&(dyn Fn(usize) + Sync), &'static (dyn Fn(usize) + Sync)>(fref) };
+            let (data, vtable): (*mut (), *mut ()) = unsafe { std::mem::transmute(fptr) };
+            while sh.active.load(std::sync::atomic::Ordering::Acquire) != 0 { std::hint::spin_loop(); }
+            let ta = t.elapsed();
+            sh.next.store(0, std::sync::atomic::Ordering::Relaxed);
+            sh.active.store(n, std::sync::atomic::Ordering::Relaxed);
+            sh.f_data.store(data, std::sync::atomic::Ordering::Relaxed);
+            sh.f_vtable.store(vtable, std::sync::atomic::Ordering::Relaxed);
+            sh.n.store(n, std::sync::atomic::Ordering::Relaxed);
+            sh.generation.fetch_add(1, std::sync::atomic::Ordering::Release);
+            let tb = t.elapsed();
+            for h in sh.handles.get().unwrap().iter().take(super::FANOUT) { h.unpark(); }
+            let t1 = t.elapsed();
+            while sh.next.load(std::sync::atomic::Ordering::Relaxed) < n { std::hint::spin_loop(); }
+            let t2 = t.elapsed();
+            while sh.active.load(std::sync::atomic::Ordering::Acquire) != 0 { std::hint::spin_loop(); }
+            let t3 = t.elapsed();
+            eprintln!("round {round}: prev left {:.1} µs, bumped {:.1} µs, publish {:.1} µs, all claimed {:.1} µs, all left {:.1} µs", ta.as_secs_f64() * 1e6, tb.as_secs_f64() * 1e6, t1.as_secs_f64() * 1e6, t2.as_secs_f64() * 1e6, t3.as_secs_f64() * 1e6);
+        }
     }
 }

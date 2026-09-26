@@ -1346,7 +1346,18 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
                 let (a, e) = (start[*k as usize] as usize, start[*k as usize + 1] as usize);
                 if e - a > 1 {
                     let buf = unsafe { std::slice::from_raw_parts_mut((fp as *mut Frag).add(a), e - a) };
-                    buf.sort_unstable_by(|p, q| p.z.total_cmp(&q.z).then_with(|| p.tri.cmp(&q.tri)));
+                    // the (z, triangle) order — the keys are distinct within a pixel (a triangle visits a pixel once),
+                    // so any correct sort gives the one order: networks for the common two and three
+                    let after = |p: &Frag, q: &Frag| p.z.total_cmp(&q.z).then_with(|| p.tri.cmp(&q.tri)) == std::cmp::Ordering::Greater;
+                    match e - a {
+                        2 => { if after(&buf[0], &buf[1]) { buf.swap(0, 1); } }
+                        3 => {
+                            if after(&buf[0], &buf[1]) { buf.swap(0, 1); }
+                            if after(&buf[1], &buf[2]) { buf.swap(1, 2); }
+                            if after(&buf[0], &buf[1]) { buf.swap(0, 1); }
+                        }
+                        _ => buf.sort_unstable_by(|p, q| p.z.total_cmp(&q.z).then_with(|| p.tri.cmp(&q.tri))),
+                    }
                 }
             }
         });
