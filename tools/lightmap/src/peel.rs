@@ -980,7 +980,9 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
     // (the same pass lists, per cell, the chunks with an entry for it — `cell_chunks` as a CSR over the cells —
     // so a job walks its ~30 chunks instead of testing all ~600: 2 M random reads per tiny frame, 4–8 % of it)
     let (cell_pairs, cell_cost, cell_wanted_v, cell_chunks): (Vec<usize>, Vec<u64>, Vec<bool>, (Vec<u32>, Vec<u32>)) = {
-        let n_blk = (n_cells / 64).clamp(1, 256);
+        // (four cells per block: with 128 × 128 cells the 64-cell blocks were 16 tasks on 128 threads — 0.7 ms of a
+        // tiny frame's setup for a pass that takes 0.1 ms spread out)
+        let n_blk = (n_cells / 4).clamp(1, 256);
         let blk = (n_cells + n_blk - 1) / n_blk;
         let zblk = (npx + 1 + n_blk - 1) / n_blk;
         let per_blk: Vec<(Vec<usize>, Vec<u64>, Vec<bool>, Vec<u32>, Vec<u32>)> = crate::pool::pool().map(n_blk, |b| {
@@ -1024,6 +1026,7 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
         (pairs, cost, wanted, (off, ids))
     };
     let cell_wanted = |cell: usize| -> bool { cell_wanted_v[cell] };
+    let t_totals_done = std::time::Instant::now();
     // THE JOBS: (cell, rows y0..=y1, columns x0..=x1, the strip bits its entries must carry) with an
     // estimated cost; a cell above the split limit (a thread's share of the frame over LMTOOL_TILE_SPLIT) is
     // split into 2, 4 or 8 row strips, each a job over the same list filtered by the strip bits
@@ -1056,6 +1059,7 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
     jobs.sort_by(|p, q| q.cost.cmp(&p.cost));
     let n_jobs = jobs.len();
     let t_jobs_ready = std::time::Instant::now();
+    if std::env::var_os("LMTOOL_SETUP_TRACE").is_some() { eprintln!("setup trace: totals pass {:.3} ms, jobs build+sort {:.3} ms ({} jobs)", (t_totals_done - t_raster).as_secs_f64() * 1e3, (t_jobs_ready - t_totals_done).as_secs_f64() * 1e3, jobs.len()); }
     let band_ns: Vec<std::sync::atomic::AtomicU64> = if raster_stats { (0..n_jobs).map(|_| std::sync::atomic::AtomicU64::new(0)).collect() } else { Vec::new() };
     // THE COUNT'S LAYER LOGIC per pixel (counting mode): `list` = the pixel's item fragments sorted by (z,
     // triangle) each carrying its triangle's depth-bias term, `env_d` = the environment layer's z01 maximum
