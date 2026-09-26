@@ -4325,6 +4325,7 @@ fn run(a: Vec<String>) {
         "lm-st" => lightmap::peelcap::lm_st(&a),
         "sweep1-annotate" => { if let Err(e) = lightmap::peelcap::sweep1_annotate(&a) { eprintln!("sweep1-annotate: {e}"); std::process::exit(1); } }
         "clouds-check" => { if let Err(e) = lightmap::clouds::check(&a) { eprintln!("clouds-check: {e}"); std::process::exit(1); } }
+        "draw-classes" => { if let Err(e) = lightmap::drawclasses::run(&a) { eprintln!("draw-classes: {e}"); std::process::exit(1); } }
         "passcap-info" => {
             // lmtool passcap-info DIR [--pass P] [--max N]: per entry of a MANIFEST.json the buffer's statistics
             // (min / max / mean per channel, the fraction of clear pixels) and the derived frustum — a look at a

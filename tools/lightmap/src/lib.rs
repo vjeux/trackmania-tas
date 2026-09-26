@@ -9,6 +9,7 @@ pub mod bc6h;
 pub mod bvh;
 pub mod chartraster;
 pub mod dome;
+pub mod drawclasses;
 #[cfg(test)]
 mod dome_oracle;
 pub mod pack;
