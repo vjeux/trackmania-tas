@@ -734,6 +734,8 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
     let (row_shift, col_shift) = (tile_rows.trailing_zeros(), tile_cols.trailing_zeros());
     let n_brows = ((rows + tile_rows - 1) / tile_rows).max(1);
     let n_bcols = ((cols + tile_cols - 1) / tile_cols).max(1);
+    // (the binning's hit records hold the cell coordinates in a byte and the rows in a u16)
+    assert!(n_brows <= 256 && n_bcols <= 256 && res_y <= 65535, "the tiled raster: at most 256 cell rows and columns (LMTOOL_TILE_ROWS/COLS too small for this frame)");
     let n_cells = n_brows * n_bcols;
     let brow_of = |y: i32| -> usize { (((y - clip.1).max(0) as usize) >> row_shift).min(n_brows - 1) };
     let bcol_of = |x: i32| -> usize { (((x - clip.0).max(0) as usize) >> col_shift).min(n_bcols - 1) };
@@ -877,8 +879,10 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
     // and the cells' estimated costs. `place` takes one item (index, rows, columns, weight in pairs) — a plain
     // closure the item loops call directly (an iterator through `dyn Iterator` cost a virtual call and three
     // uninlined closures per triangle); `finish` builds the CSR from the placed items.
+    #[derive(Clone, Copy)]
+    struct Hit { idx: u32, br0: u8, br1: u8, bc0: u8, bc1: u8, ry0: u16, ry1: u16 }
     struct BinState {
-        hits: Vec<(u32, u16, u16, u16, u16, i32, i32)>, // (idx, brow0, brow1, bcol0, bcol1, ry0, ry1)
+        hits: Vec<Hit>,
         counts: Vec<u32>,
         cost: Vec<u64>,
     }
@@ -889,19 +893,29 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
     let place = |st: &mut BinState, idx: u32, ry0: i32, ry1: i32, rx0: i32, rx1: i32, weight: u64| {
         let (br0, br1) = (brow_of(ry0), brow_of(ry1));
         let (bc0, bc1) = (bcol_of(rx0), bcol_of(rx1));
-        for br in br0..=br1 {
-            // the rows of the bounding box inside this cell row (no division: the cell's rows from br)
-            let cy0 = clip.1 + (br * tile_rows) as i32;
-            let h_in = (ry1.min(cy0 + tile_rows as i32 - 1) - ry0.max(cy0) + 1).max(0) as u64;
-            for bc in bc0..=bc1 {
-                let cell = cell_at(br, bc);
-                st.counts[cell + 1] += 1;
-                let cx0 = clip.0 + (bc * tile_cols) as i32;
-                let w_in = (rx1.min(cx0 + tile_cols as i32 - 1) - rx0.max(cx0) + 1).max(0) as u64;
-                st.cost[cell] += weight * pair_cost + w_in * h_in;
+        if br0 == br1 && bc0 == bc1 {
+            // THE SINGLE-CELL ITEM (the large majority of the survivors: a leaf's box inside one cell) — its whole
+            // box is inside the cell, so the box itself is the cost, no clipping, one count
+            let cell = cell_at(br0, bc0);
+            st.counts[cell + 1] += 1;
+            st.cost[cell] += weight * pair_cost + (rx1 - rx0 + 1) as u64 * (ry1 - ry0 + 1) as u64;
+        } else {
+            for br in br0..=br1 {
+                // the rows of the bounding box inside this cell row (no division: the cell's rows from br)
+                let cy0 = clip.1 + (br * tile_rows) as i32;
+                let h_in = (ry1.min(cy0 + tile_rows as i32 - 1) - ry0.max(cy0) + 1).max(0) as u64;
+                for bc in bc0..=bc1 {
+                    let cell = cell_at(br, bc);
+                    st.counts[cell + 1] += 1;
+                    let cx0 = clip.0 + (bc * tile_cols) as i32;
+                    let w_in = (rx1.min(cx0 + tile_cols as i32 - 1) - rx0.max(cx0) + 1).max(0) as u64;
+                    st.cost[cell] += weight * pair_cost + w_in * h_in;
+                }
             }
         }
-        st.hits.push((idx, br0 as u16, br1 as u16, bc0 as u16, bc1 as u16, ry0, ry1));
+        // (12 bytes a hit — the cell coordinates fit a byte with 128-pixel cells over a 4 096 frame, the rows a u16;
+        // the 24-byte form streamed 1.3 GB per giant direction through this list)
+        st.hits.push(Hit { idx, br0: br0 as u8, br1: br1 as u8, bc0: bc0 as u8, bc1: bc1 as u8, ry0: ry0 as u16, ry1: ry1 as u16 });
     };
     let finish = |st: BinState| -> (Vec<u32>, Vec<u32>, Vec<u8>, Vec<u64>) {
         let BinState { hits, mut counts, cost } = st;
@@ -909,10 +923,10 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
         let mut entries: Vec<u32> = vec![0; counts[n_cells] as usize];
         let mut ebits: Vec<u8> = vec![0; counts[n_cells] as usize];
         let mut fill = counts.clone();
-        for &(idx, br0, br1, bc0, bc1, ry0, ry1) in &hits {
+        for &Hit { idx, br0, br1, bc0, bc1, ry0, ry1 } in &hits {
             for br in br0 as usize..=br1 as usize {
                 let by0 = clip.1 + (br * tile_rows) as i32;
-                let (s0, s1) = (sub_of(ry0, by0), sub_of(ry1, by0));
+                let (s0, s1) = (sub_of(ry0 as i32, by0), sub_of(ry1 as i32, by0));
                 let bits = (((1u16 << (s1 + 1)) - 1) & !((1u16 << s0) - 1)) as u8;
                 for bc in bc0 as usize..=bc1 as usize {
                     let cell = cell_at(br, bc);
