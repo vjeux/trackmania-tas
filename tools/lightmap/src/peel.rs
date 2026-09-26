@@ -1188,7 +1188,8 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
         // no measurement mode wants the full list
         let slot_mode = counting && *SCAN_SLOTS && *BIASED_ORDER && *SCAN16_ON && !bound_stats && count.as_ref().map_or(false, |cx| cx.prm.dome_layer && cx.prm.depth_bits == 16);
         let mut slots_v = if slot_mode { SLOT_TABLE.take() } else { Vec::new() };
-        if slot_mode && slots_v.len() < band_px * SLOTS_PER_PX { slots_v.resize(band_px * SLOTS_PER_PX, CFrag { z: 0.0, tri: 0, bias: 0.0 }); }
+        let slot_rows = ((band_px + 15) / 16) * SLOT_ROWS_PER_BLOCK;
+        if slot_mode && slots_v.len() < slot_rows { slots_v.resize(slot_rows, SlotBlock([0u32; 16])); }
         let mut list = Recs { list: list_v, slots: slots_v, slot_mode };
         list.list.clear();
         let mut saturated = false;
@@ -1477,7 +1478,7 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
                     let mut env16_a = Align64([0f32; 16]);
                     let env16 = &mut env16_a.0;
                     env16.copy_from_slice(&env_max[li0..li0 + 16]);
-                    let (h, has, big) = if slot_mode { scan_block16_slots(&cnt[li0..li0 + 16], &list.slots[li0 * SLOTS_PER_PX..], env16, frame) } else { scan_block16(&offs[li0..li0 + 17], &csr, env16, frame) };
+                    let (h, has, big) = if slot_mode { scan_block16_slots(&cnt[li0..li0 + 16], &list.slots[(li0 / 16) * SLOT_ROWS_PER_BLOCK..(li0 / 16 + 1) * SLOT_ROWS_PER_BLOCK], env16, frame) } else { scan_block16(&offs[li0..li0 + 17], &csr, env16, frame) };
                     if raster_stats { for l in 0..16 { let n = if slot_mode { cnt[li0 + l] as usize } else { (offs[li0 + l + 1] - offs[li0 + l]) as usize }; if n >= 1 { nfrag_local[match n { 1 | 2 => 0, 3 => 1, 4 => 2, 5 => 3, 6..=8 => 4, 9..=16 => 5, 17..=32 => 6, 33..=64 => 7, _ => 8 }] += 1; } } }
                     covered += has as usize;
                     for k in 0..=SCAN_K { hist[k] += h[k] as usize; }
@@ -1514,7 +1515,7 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
                     // the pixel's records: its slots, then its overflow range
                     let ns = (n_slot as usize).min(SLOTS_PER_PX);
                     slot_buf.clear();
-                    slot_buf.extend_from_slice(&list.slots[li * SLOTS_PER_PX..li * SLOTS_PER_PX + ns]);
+                    for j in 0..ns { slot_buf.push(list.slot(li, j)); }
                     slot_buf.extend_from_slice(&csr[a..c]);
                     if *MEASURE_NOWALK { hist[1] += 1; continue; }
                     let cx = count.as_ref().unwrap();
@@ -3695,26 +3696,44 @@ pub fn scan_block16(offs: &[u32], csr: &[CFrag], env_d: &[f32; 16], frame: &Peel
         let o0 = _mm512_loadu_si512(offs.as_ptr() as *const _);
         let o1 = _mm512_loadu_si512(offs.as_ptr().add(1) as *const _);
         let n = _mm512_sub_epi32(o1, o0);
-        // the records of lane l start at csr[o0[l]] (12-byte records: ×3 in u32 units)
+        // the records of lane l start at csr[o0[l]] (12-byte records: ×3 in u32 units); slot j = three gathers
+        // (a missing record — j ≥ n — is masked by the caller's `valid`; here its address is still in bounds
+        // only if masked, so the loader takes the mask)
+        let base = csr.as_ptr() as *const f32;
         let idx0 = _mm512_mullo_epi32(o0, _mm512_set1_epi32(3));
-        scan_block16_core(n, idx0, csr.as_ptr() as *const f32, env_d, frame)
+        let zero = _mm512_setzero_ps();
+        let maxk = _mm512_set1_epi32(i32::MAX);
+        let three = _mm512_set1_epi32(3);
+        scan_block16_core_masked(n, |j, valid| {
+            let idx = _mm512_add_epi32(idx0, _mm512_mullo_epi32(three, _mm512_set1_epi32(j as i32)));
+            (_mm512_mask_i32gather_ps::<4>(zero, valid, idx, base), _mm512_mask_i32gather_epi32::<4>(maxk, valid, _mm512_add_epi32(idx, _mm512_set1_epi32(1)), base as *const i32), _mm512_mask_i32gather_ps::<4>(zero, valid, _mm512_add_epi32(idx, _mm512_set1_epi32(2)), base))
+        }, env_d, frame)
     }
+}
+
+/// `scan_block16_core` with an unmasked slot loader (the slot form: every slot row exists; the lanes past their
+/// count hold stale values that the `valid` mask blends away).
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+#[inline(always)]
+unsafe fn scan_block16_core<L: Fn(usize) -> (std::arch::x86_64::__m512, std::arch::x86_64::__m512i, std::arch::x86_64::__m512)>(n: std::arch::x86_64::__m512i, load: L, env_d: &[f32; 16], frame: &PeelFrame) -> ([u32; SCAN_K + 1], u32, u16) {
+    scan_block16_core_masked(n, |j, _valid| load(j), env_d, frame)
 }
 
 /// `scan_block16` over the SLOT form: the counts from the u16 table, lane l's records at slots[l·SLOTS_PER_PX..]
 /// (`slots` starts at the block's first pixel); lanes with more records than slots go to the scalar walk.
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 #[inline(always)]
-pub fn scan_block16_slots(cnt16: &[u16], slots: &[CFrag], env_d: &[f32; 16], frame: &PeelFrame) -> ([u32; SCAN_K + 1], u32, u16) {
+pub fn scan_block16_slots(cnt16: &[u16], rows: &[SlotBlock], env_d: &[f32; 16], frame: &PeelFrame) -> ([u32; SCAN_K + 1], u32, u16) {
     use std::arch::x86_64::*;
     unsafe {
-        debug_assert!(cnt16.len() >= 16 && slots.len() >= 16 * SLOTS_PER_PX);
+        debug_assert!(cnt16.len() >= 16 && rows.len() >= SLOT_ROWS_PER_BLOCK);
         let n = _mm512_cvtepu16_epi32(_mm256_loadu_si256(cnt16.as_ptr() as *const _));
-        let lane = _mm512_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
-        let idx0 = _mm512_mullo_epi32(lane, _mm512_set1_epi32((SLOTS_PER_PX * 3) as i32));
         // (a lane with more records than slots must not read past its slots: SCAN_K ≤ SLOTS_PER_PX)
         const _: () = assert!(SCAN_K <= SLOTS_PER_PX);
-        scan_block16_core(n, idx0, slots.as_ptr() as *const f32, env_d, frame)
+        scan_block16_core(n, |j| {
+            let r = &rows[j * 3..j * 3 + 3];
+            (_mm512_load_ps(r[0].0.as_ptr() as *const f32), _mm512_load_si512(r[1].0.as_ptr() as *const _), _mm512_load_ps(r[2].0.as_ptr() as *const f32))
+        }, env_d, frame)
     }
 }
 
@@ -3722,7 +3741,7 @@ pub fn scan_block16_slots(cnt16: &[u16], slots: &[CFrag], env_d: &[f32; 16], fra
 /// records: z at +0, the tie key at +1, the bias at +2).
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 #[inline(always)]
-unsafe fn scan_block16_core(n: std::arch::x86_64::__m512i, idx0: std::arch::x86_64::__m512i, base: *const f32, env_d: &[f32; 16], frame: &PeelFrame) -> ([u32; SCAN_K + 1], u32, u16) {
+unsafe fn scan_block16_core_masked<L: Fn(usize, u16) -> (std::arch::x86_64::__m512, std::arch::x86_64::__m512i, std::arch::x86_64::__m512)>(n: std::arch::x86_64::__m512i, load: L, env_d: &[f32; 16], frame: &PeelFrame) -> ([u32; SCAN_K + 1], u32, u16) {
     use std::arch::x86_64::*;
     unsafe {
         let zero_i = _mm512_setzero_si512();
@@ -3747,12 +3766,10 @@ unsafe fn scan_block16_core(n: std::arch::x86_64::__m512i, idx0: std::arch::x86_
         let q16 = |x: __m512| -> __m512 { _mm512_div_ps(round_away(_mm512_mul_ps(x, k65535)), k65535) };
         let env_pos = _mm512_cmp_ps_mask::<_CMP_GT_OQ>(ed, zero);
         let env_q = _mm512_mask_blend_ps(env_pos, zero, q16(ed));
-        // the fragments j = 0..K of every lane: base[idx0 + 3j] (12-byte records: z at +0, tri at +1, bias at +2,
-        // in u32 units); a missing fragment (j ≥ n) sorts last with the largest key
-        let three = _mm512_set1_epi32(3);
-        let one_i = _mm512_set1_epi32(1);
-        let two_i = _mm512_set1_epi32(2);
+        // the fragments j = 0..K of every lane through the loader (z, key, bias vectors of slot j); a missing
+        // fragment (j ≥ n) sorts last with the largest key
         let maxk = _mm512_set1_epi32(i32::MAX);
+        let one_i = _mm512_set1_epi32(1);
         // the (z, tri) order by `total_cmp`: the float's bits as a signed key (negative floats reversed)
         let tkey = |z: __m512| -> __m512i {
             let bits = _mm512_castps_si512(z);
@@ -3770,12 +3787,14 @@ unsafe fn scan_block16_core(n: std::arch::x86_64::__m512i, idx0: std::arch::x86_
         let one = _mm512_set1_ps(1.0);
         let z01 = |z: __m512| -> __m512 { _mm512_max_ps(_mm512_add_ps(half, _mm512_div_ps(_mm512_add_ps(zc, z), den)), zero) };
         let biased = *BIASED_ORDER;
-        let mut idx = idx0;
         for j in 0..k {
             let valid = lanes & _mm512_cmpgt_epi32_mask(n, _mm512_set1_epi32(j as i32));
-            let z = _mm512_mask_i32gather_ps::<4>(zero, valid, idx, base);
-            tri[j] = _mm512_mask_i32gather_epi32::<4>(maxk, valid, _mm512_add_epi32(idx, one_i), base as *const i32);
-            let b = _mm512_mask_i32gather_ps::<4>(zero, valid, _mm512_add_epi32(idx, two_i), base);
+            let (z, t, b) = load(j, valid);
+            // (the invalid lanes' key is forced to the maximum below; their z / bias values are never read after
+            // the blend, but keep them finite for the arithmetic)
+            let z = _mm512_mask_blend_ps(valid, zero, z);
+            tri[j] = _mm512_mask_blend_epi32(valid, maxk, t);
+            let b = _mm512_mask_blend_ps(valid, zero, b);
             if biased {
                 // THE BIASED ORDER: zf carries the unbiased depth z01 (the compare), bf the stored depth (the key
                 // and the next d_prev): q16((z01 + bias).clamp(0, 1)) — non-negative, so its bits order as ints;
@@ -3790,7 +3809,6 @@ unsafe fn scan_block16_core(n: std::arch::x86_64::__m512i, idx0: std::arch::x86_
                 bf[j] = b;
                 key[j] = _mm512_mask_blend_epi32(valid, maxk, tkey(z));
             }
-            idx = _mm512_add_epi32(idx, three);
         }
         // the sorting network (ascending (key, tri)): compare-exchange pairs
         let mut cex = |i: usize, j: usize, key: &mut [__m512i; SCAN_K], tri: &mut [__m512i; SCAN_K], zf: &mut [__m512; SCAN_K], bf: &mut [__m512; SCAN_K]| {
@@ -4187,19 +4205,39 @@ pub const SLOTS_PER_PX: usize = 4;
 /// The count records of a job: the sequential list (the scatter form), or the per-pixel slots + the overflow list.
 pub struct Recs {
     pub list: Vec<(u32, CFrag)>,
-    pub slots: Vec<CFrag>,
+    /// The slot table, STRUCTURE-OF-ARRAYS PER 16-PIXEL BLOCK: block b (pixels 16b..16b+16), slot j, field f
+    /// (0 = z bits, 1 = the tie key, 2 = bias bits) → the 16 lanes contiguous at `((b·SLOTS_PER_PX + j)·3 + f)·16`
+    /// — the lane walk loads a slot's z / key / bias as three 64-byte vectors instead of three gathers.
+    pub slots: Vec<SlotBlock>,
     pub slot_mode: bool,
 }
+/// One 16-lane row of the slot table (64-byte aligned: the lane walk's loads are whole lines).
+#[derive(Clone, Copy)]
+#[repr(C, align(64))]
+pub struct SlotBlock(pub [u32; 16]);
+pub const SLOT_ROWS_PER_BLOCK: usize = SLOTS_PER_PX * 3;
 impl Recs {
     /// Record `rec` of pixel `li` whose count (after the bump) is `c_after`.
     #[inline(always)]
     pub fn push(&mut self, li: u32, c_after: u16, rec: CFrag) {
         if self.slot_mode && (c_after as usize) <= SLOTS_PER_PX && c_after >= 1 {
-            // SAFETY-free: the table is sized band_px × SLOTS_PER_PX before the job's visits
-            self.slots[li as usize * SLOTS_PER_PX + c_after as usize - 1] = rec;
+            let (b, lane) = ((li as usize) >> 4, (li as usize) & 15);
+            let row = (b * SLOTS_PER_PX + c_after as usize - 1) * 3;
+            // (the table is sized for the job's blocks before its visits)
+            let rows = &mut self.slots[row..row + 3];
+            rows[0].0[lane] = rec.z.to_bits();
+            rows[1].0[lane] = rec.tri;
+            rows[2].0[lane] = rec.bias.to_bits();
         } else {
             self.list.push((li, rec));
         }
+    }
+    /// The slot record `j` of pixel `li` (j < its count).
+    #[inline(always)]
+    pub fn slot(&self, li: usize, j: usize) -> CFrag {
+        let (b, lane) = (li >> 4, li & 15);
+        let row = (b * SLOTS_PER_PX + j) * 3;
+        CFrag { z: f32::from_bits(self.slots[row].0[lane]), tri: self.slots[row + 1].0[lane], bias: f32::from_bits(self.slots[row + 2].0[lane]) }
     }
 }
 
@@ -4207,7 +4245,7 @@ thread_local! {
     /// The raster band's slot and environment tables, kept per pool thread across bands (see the fused count).
     static SLOT_BUFS: std::cell::Cell<(Vec<u16>, Vec<f32>, Vec<(u32, CFrag)>, Vec<CFrag>, Vec<u32>, Vec<u32>)> = const { std::cell::Cell::new((Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new())) };
     /// The per-pixel slot table of the slot form, per pool thread.
-    static SLOT_TABLE: std::cell::Cell<Vec<CFrag>> = const { std::cell::Cell::new(Vec::new()) };
+    static SLOT_TABLE: std::cell::Cell<Vec<SlotBlock>> = const { std::cell::Cell::new(Vec::new()) };
     /// A raster job's gathered triangle list, kept per pool thread across jobs.
     static JOB_LIST: std::cell::Cell<Vec<u32>> = const { std::cell::Cell::new(Vec::new()) };
 }
