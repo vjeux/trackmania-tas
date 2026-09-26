@@ -768,6 +768,69 @@ impl Merged {
         self.notes.push(format!("generated flat quad {x0}..{x1} × {z0}..{z1} at y {y}: {link} (physics {physics})"));
     }
 
+    /// A ribbon of terrain: `sections` are consecutive cross-sections of K points each (left to
+    /// right across the driving line, world coordinates, ANY y per point); quads between
+    /// neighbouring sections become visuals (both windings) and an up-facing hull with
+    /// `physics`. The route patch of `mapgeom route-audit --patch` (2026-09-25): the SOURCE
+    /// terrain's surface re-laid where the port's terrain is lower or absent.
+    pub fn add_strip(&mut self, sections: &[Vec<[f32; 3]>], link: &str, physics: u8) {
+        use super::bake::{make_visuals, visual_layout, Corner};
+        if sections.len() < 2 || sections[0].len() < 2 {
+            return;
+        }
+        let slot = self.material_slot(link, physics);
+        let k = sections[0].len();
+        let c = |p: [f32; 3], n: [f32; 3]| Corner { pos: p, normal: n, uv: [p[0] / 16.0, p[2] / 16.0], uv1: [p[0] / 16.0, p[2] / 16.0], tan_u: [1.0, 0.0, 0.0], tan_v: [0.0, 0.0, 1.0], face: 0, group: 0 };
+        let normal = |a: [f32; 3], b: [f32; 3], d: [f32; 3]| -> [f32; 3] {
+            let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+            let v = [d[0] - a[0], d[1] - a[1], d[2] - a[2]];
+            let mut n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+            if n[1] < 0.0 {
+                n = [-n[0], -n[1], -n[2]];
+            }
+            let l = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt().max(1e-6);
+            [n[0] / l, n[1] / l, n[2] / l]
+        };
+        let mut tris: Vec<[Corner; 3]> = Vec::new();
+        let mut verts: Vec<[f32; 3]> = Vec::new();
+        let mut hull: Vec<Triangle> = Vec::new();
+        for (si, sec) in sections.iter().enumerate() {
+            for p in sec.iter().take(k) {
+                verts.push(*p);
+            }
+            if si == 0 {
+                continue;
+            }
+            let prev = &sections[si - 1];
+            for j in 0..k - 1 {
+                let (a, b, cc, d) = (prev[j], prev[j + 1], sec[j + 1], sec[j]);
+                let n = normal(a, b, d);
+                let (ca, cb, ccc, cd) = (c(a, n), c(b, n), c(cc, n), c(d, n));
+                tris.push([ca, cb, ccc]);
+                tris.push([ca, ccc, cd]);
+                tris.push([ca, ccc, cb]);
+                tris.push([ca, cd, ccc]);
+                // hull: up-facing winding chosen from the face normal
+                let (i0, i1, i2, i3) = (((si - 1) * k + j) as u32, ((si - 1) * k + j + 1) as u32, (si * k + j + 1) as u32, (si * k + j) as u32);
+                let up = |x: u32, y: u32, z: u32| -> [u32; 3] {
+                    let (pa, pb, pc) = (verts[x as usize], verts[y as usize], verts[z as usize]);
+                    let nn = [(pb[1] - pa[1]) * (pc[2] - pa[2]) - (pb[2] - pa[2]) * (pc[1] - pa[1]), (pb[2] - pa[2]) * (pc[0] - pa[0]) - (pb[0] - pa[0]) * (pc[2] - pa[2]), (pb[0] - pa[0]) * (pc[1] - pa[1]) - (pb[1] - pa[1]) * (pc[0] - pa[0])];
+                    if nn[1] >= 0.0 { [x, y, z] } else { [x, z, y] }
+                };
+                let t1 = up(i0, i1, i2);
+                let t2 = up(i0, i2, i3);
+                hull.push(Triangle { indices: t1, material_id: physics, gameplay: 0, surface_index: 0 });
+                hull.push(Triangle { indices: t2, material_id: physics, gameplay: 0, surface_index: 0 });
+            }
+        }
+        let layout = visual_layout(link);
+        for v in make_visuals(&tris, layout, "off") {
+            self.visuals.push(MergedVisual::every_level(v, slot));
+        }
+        self.add_surface_mesh(&verts, &hull, &IDENTITY, 1.0);
+        self.notes.push(format!("generated terrain strip: {} sections × {k}: {link} (physics {physics})", sections.len()));
+    }
+
     /// Append collision triangles (already in source space).
     pub fn add_surface_mesh(&mut self, vertices: &[[f32; 3]], triangles: &[Triangle], iso: &Xform, scale: f32) {
         let base = self.surf_vertices.len() as u32;

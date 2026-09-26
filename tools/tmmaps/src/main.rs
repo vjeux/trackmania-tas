@@ -511,6 +511,73 @@ fn main() {
                 println!("{}: name `{old}` -> `{new}` ({h} header, {b} body)", out.display());
             }
         }
+        // tmmaps add-items MAP --out OUT --items FILE.Item.Gbx@x,y,z[@yaw][;FILE2@…]: item files
+        //   embedded (ident = file name, manifest row added) and placed at world positions —
+        //   the route patch strips of `mapgeom route-audit --patch-item` (2026-09-25)
+        "add-items" => {
+            let out = tmmaps::cli::flag(&args, "--out").expect("--out OUT");
+            let spec = tmmaps::cli::flag(&args, "--items").expect("--items FILE@x,y,z;…");
+            let mut placements: Vec<(std::path::PathBuf, [f32; 3], f32)> = Vec::new();
+            for part in spec.split(';').map(str::trim).filter(|p| !p.is_empty()) {
+                let mut it = part.split('@');
+                let file = std::path::PathBuf::from(it.next().unwrap_or(""));
+                let pos: Vec<f32> = it.next().unwrap_or("0,0,0").split(',').filter_map(|v| v.trim().parse().ok()).collect();
+                let yaw: f32 = it.next().and_then(|v| v.trim().parse().ok()).unwrap_or(0.0);
+                if pos.len() != 3 { eprintln!("add-items: bad position in `{part}`"); std::process::exit(2); }
+                placements.push((file, [pos[0], pos[1], pos[2]], yaw));
+            }
+            let src = std::path::PathBuf::from(&args[2]);
+            let tmp = std::path::PathBuf::from(out);
+            std::fs::copy(&src, &tmp).expect("copy");
+            let mut m = tmmaps::map::MapFile::load(&tmp);
+            if m.items.is_empty() {
+                let g = tmmaps::gbx::Gbx::parse(&std::fs::read(&tmp).expect("read"));
+                let body = tmmaps::map::seed_item_record(&g.body, 26).expect("seed item record");
+                std::fs::write(&tmp, g.write_body_recompressed(&body)).expect("write");
+                let mut m0 = tmmaps::map::MapFile::load(&tmp);
+                m0.move_item(0, [8.0, -900.0, 8.0], 0.0, tmmaps::tiny::cell_for([8.0, -900.0, 8.0]));
+                m0.write_to(&tmp).expect("write");
+                m = tmmaps::map::MapFile::load(&tmp);
+            }
+            tmmaps::tiny::set_ground(26);
+            let first = m.items.len();
+            m.append_item_clones(first + placements.len());
+            m.write_to(&tmp).expect("write (clones)");
+            let mut m = tmmaps::map::MapFile::load(&tmp);
+            for (k, (file, pos, yaw)) in placements.iter().enumerate() {
+                let i = first + k;
+                let ident = file.file_name().unwrap().to_string_lossy().into_owned();
+                m.set_item_model(i, &ident);
+                m.set_item_author(i, &tmmaps::surface::item_author(&ident));
+                m.set_item_collection(i, 26);
+                m.move_item(i, *pos, *yaw, tmmaps::tiny::cell_for(*pos));
+                m.set_item_frame(i, [*yaw, 0.0, 0.0], [0.0; 3]);
+                m.set_item_scale(i, 1.0);
+                m.clear_item_variant(i);
+                m.set_item_flags(i, 1);
+            }
+            m.write_to(&tmp).expect("write (placements)");
+            let mut m = tmmaps::map::MapFile::load(&tmp);
+            for k in 0..placements.len() { m.set_item_waypoint(first + k, None, 0); }
+            m.write_to(&tmp).expect("write (waypoints)");
+            // the archive
+            let mut m = tmmaps::map::MapFile::load(&tmp);
+            let (mut rows, zip) = m.embedded_objects().unwrap_or((Vec::new(), Vec::new()));
+            let mut files: std::collections::BTreeMap<String, Vec<u8>> = tmmaps::header::zip_entries(&zip).into_iter().collect();
+            for (file, _, _) in &placements {
+                let ident = file.file_name().unwrap().to_string_lossy().into_owned();
+                files.insert(format!("Items/{ident}"), std::fs::read(file).expect("read item file"));
+                if !rows.iter().any(|(p, _)| *p == ident) {
+                    let author = tmmaps::surface::item_author(&ident);
+                    rows.push((ident, author));
+                }
+            }
+            let rows_ref: Vec<(&str, &str)> = rows.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+            let zip2 = tmmaps::header::stored_zip(&files);
+            m.replace_embedded_objects(&rows_ref, &zip2);
+            m.write_to(&tmp).expect("write (archive)");
+            println!("{out}: {} item(s) placed, archive {} files", placements.len(), files.len());
+        }
         // tmmaps custom-block MAP --out OUT --block NAME --file X.Block.Gbx --as 'Dir\Name.Block.Gbx'
         //   [--author LOGIN]: every authored record of block NAME becomes the CUSTOM block
         //   `<as>_CustomBlock` (the mesh-modeler form: the file is embedded under

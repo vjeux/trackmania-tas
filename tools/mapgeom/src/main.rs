@@ -2934,6 +2934,24 @@ fn main() {
                 best
             };
             let (mut n, mut inter, mut missing, mut shifted, mut ok) = (0usize, 0usize, 0usize, 0usize, 0usize);
+            // --lateral M (default 3): json9841's ray-cast idea widened — at every sample the
+            // support height is also compared M m to each side of the driving line (the lines the
+            // hunters take are not the author ghost's); a side probe whose SOURCE support is
+            // terrain within 2.5 m under the car and whose port support is absent or > 0.5 m off
+            // counts as `lateral` (owner = the source terrain block)
+            let lateral: f32 = flag(&a.rest, "--lateral").and_then(|v| v.parse().ok()).unwrap_or(3.0);
+            let mut lateral_bad: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+            let mut lateral_n = 0usize;
+            let mut prev_xz: Option<(f32, f32)> = None;
+            // --patch-item X.Item.Gbx --patch-place P.tsv: the ROUTE PATCH — every sample whose
+            // support (centre or a side probe) is source TERRAIN the port lacks or has > 0.5 m off
+            // is a patch sample; runs of them (a 1-sample gap allowed, one sample of margin each
+            // side) become 12 m wide ribbons re-laying the SOURCE terrain surface (heights
+            // ray-cast on the source at 1 m across), one static item for the map, physics of the
+            // source material, look = the alteration's terrain top. json9841 2026-09-25 23:02Z.
+            let patch_item = flag(&a.rest, "--patch-item");
+            let mut patch_marks: Vec<(usize, [f32; 3], String)> = Vec::new(); // (sample index, car pos, source material)
+            let mut sample_list: Vec<[f32; 3]> = Vec::new();
             let mut next = i32::MIN;
             let mut out = String::from("t\tx\ty\tz\tsrc_under\tsrc_terrain\tport_under\tport_terrain\tverdict\towner\tsrc_surface\tport_surface\n");
             let mut owners: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
@@ -2952,6 +2970,43 @@ fn main() {
                 let s_u = under(&src_tris, &src_grid, smp.x, smp.y, smp.z);
                 let p_u = under(&port_tris, &port_grid, smp.x, smp.y, smp.z);
                 let p_a = above_terrain(&port_tris, &port_grid, smp.x, smp.y, smp.z);
+                sample_list.push([smp.x, smp.y, smp.z]);
+                let mut needs_patch: Option<String> = None;
+                if let Some((sh, true, who)) = &s_u {
+                    if smp.y - sh < 2.5 && p_u.as_ref().map(|(ph, _, _)| (ph - sh).abs() > 0.5).unwrap_or(true) {
+                        needs_patch = Some(split(who).0);
+                    }
+                }
+                if lateral > 0.0 {
+                    if let Some((px, pz)) = prev_xz {
+                        let (dx, dz) = (smp.x - px, smp.z - pz);
+                        let len = (dx * dx + dz * dz).sqrt();
+                        if len > 0.5 {
+                            let (nx, nz) = (-dz / len, dx / len);
+                            for side in [-1.0f32, 1.0] {
+                                let (lx, lz) = (smp.x + side * lateral * nx, smp.z + side * lateral * nz);
+                                let ls = under(&src_tris, &src_grid, lx, smp.y, lz);
+                                let lp = under(&port_tris, &port_grid, lx, smp.y, lz);
+                                if let Some((sh, true, who)) = &ls {
+                                    if smp.y - sh < 2.5 {
+                                        lateral_n += 1;
+                                        let bad = lp.as_ref().map(|(ph, _, _)| (ph - sh).abs() > 0.5).unwrap_or(true);
+                                        if bad {
+                                            *lateral_bad.entry(split(who).1).or_default() += 1;
+                                            if needs_patch.is_none() {
+                                                needs_patch = Some(split(who).0);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    prev_xz = Some((smp.x, smp.z));
+                }
+                if let Some(mat) = needs_patch {
+                    patch_marks.push((sample_list.len() - 1, [smp.x, smp.y, smp.z], mat));
+                }
                 let (ss, ps) = (surface_of(&s_u, smp.y), surface_of(&p_u, smp.y));
                 if ss == ps { surf_same += 1; } else { *surf_diff.entry(format!("{ss} -> {ps}")).or_default() += 1; }
                 let (verdict, owner) = match (&s_u, &p_u, &p_a) {
@@ -2974,6 +3029,104 @@ fn main() {
             sd.sort_by(|a, b| b.1.cmp(&a.1));
             for (kk, v) in sd.iter().take(8) {
                 println!("  surface {v:>5}  {kk}");
+            }
+            let lat_total: usize = lateral_bad.values().sum();
+            println!("  lateral ({lateral} m each side): {lateral_n} terrain-supported probes, {lat_total} with the port's support missing or shifted");
+            if let Some(item_out) = patch_item {
+                // runs over the sample indices
+                let marked: std::collections::BTreeSet<usize> = patch_marks.iter().map(|m| m.0).collect();
+                let mat_of: std::collections::HashMap<usize, String> = patch_marks.iter().map(|m| (m.0, m.2.clone())).collect();
+                let mut runs: Vec<(usize, usize)> = Vec::new();
+                let mut it = marked.iter().copied().peekable();
+                while let Some(start) = it.next() {
+                    let mut end = start;
+                    while let Some(&nx) = it.peek() {
+                        if nx <= end + 2 { end = nx; it.next(); } else { break; }
+                    }
+                    runs.push((start.saturating_sub(1), (end + 1).min(sample_list.len().saturating_sub(1))));
+                }
+                let mut merged = mapgeom::static_item::build::Merged::default();
+                let half = 6.0f32;
+                let step = 1.0f32;
+                let mut n_sections = 0usize;
+                // the item's origin: the cell corner under the first patch sample (port frame);
+                // every strip vertex is relative to it
+                let anchor: Option<[f32; 3]> = patch_marks.first().map(|m| [m.1[0] + world[0], m.1[1] + world[1], m.1[2] + world[2]]);
+                let origin = anchor.map(|anc| [(anc[0] / 32.0).floor() * 32.0, (anc[1] / 8.0).floor() * 8.0, (anc[2] / 32.0).floor() * 32.0]).unwrap_or([0.0; 3]);
+                for (s0, s1) in &runs {
+                    if s1 <= s0 { continue; }
+                    // the run's material: the most frequent source material of its marks
+                    let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+                    for i in *s0..=*s1 { if let Some(m) = mat_of.get(&i) { *counts.entry(m.clone()).or_default() += 1; } }
+                    let mat = counts.into_iter().max_by_key(|(_, n)| *n).map(|(m, _)| m).unwrap_or_else(|| "Grass".into());
+                    let (link, physics): (&str, u8) = match mat.as_str() {
+                        "Snow" => ("Stadium\\Media\\Modifier\\PlatformIce\\DecoHill", 21),
+                        "Dirt" | "DirtRoad" | "Rock" => ("Stadium\\Media\\Modifier\\PlatformDirt\\DecoHill", 6),
+                        "Sand" => ("Stadium\\Media\\Modifier\\PlatformDirt\\Deco", 5),
+                        _ => ("Stadium\\Media\\Material\\Deco", 2),
+                    };
+                    let mut sections: Vec<Vec<[f32; 3]>> = Vec::new();
+                    // sections at the samples AND at the midpoints between them: a sample then
+                    // sits inside a quad, never on a shared edge (a point on the edge between two
+                    // triangles slipped through both point-in-triangle tests: Winter 19 t=23.2)
+                    let mut path: Vec<[f32; 3]> = Vec::new();
+                    for i in *s0..=*s1 {
+                        if i > *s0 {
+                            let (a3, b3) = (sample_list[i - 1], sample_list[i]);
+                            path.push([(a3[0] + b3[0]) / 2.0, (a3[1] + b3[1]) / 2.0, (a3[2] + b3[2]) / 2.0]);
+                        }
+                        path.push(sample_list[i]);
+                    }
+                    for (pi, c) in path.iter().enumerate() {
+                        let c = *c;
+                        let (px, pz) = if pi > 0 { (path[pi - 1][0], path[pi - 1][2]) } else if path.len() > 1 { (path[1][0], path[1][2]) } else { (c[0] - 1.0, c[2]) };
+                        let (dx, dz) = if pi > 0 { (c[0] - px, c[2] - pz) } else { (px - c[0], pz - c[2]) };
+                        let len = (dx * dx + dz * dz).sqrt();
+                        if len < 0.2 { continue; }
+                        let (nx, nz) = (-dz / len, dx / len);
+                        let mut sec: Vec<[f32; 3]> = Vec::new();
+                        let mut off = -half;
+                        while off <= half + 1e-3 {
+                            let (x, z) = (c[0] + off * nx, c[2] + off * nz);
+                            // the SOURCE surface here: the support just under the car level first (a
+                            // crest or a bridge above the car must not win), then higher probes for the
+                            // uphill side, else the car's own height
+                            // (the car's own rule first: the support under y+0.3 — a probe from
+                            // higher up found a phantom 1.7 m above the real ground on Winter 19)
+                            let h = [0.0f32, 1.5, 4.0].iter().find_map(|d| under(&src_tris, &src_grid, x, c[1] + d, z).map(|(h, _, _)| h)).unwrap_or(c[1] - 0.3);
+                            // in the PORT frame, relative to the item origin
+                            sec.push([x + world[0] - origin[0], h + world[1] + 0.02 - origin[1], z + world[2] - origin[2]]);
+                            off += step;
+                        }
+                        if std::env::var("MAPGEOM_PATCH_DEBUG").is_ok() {
+                            let mid = sec[sec.len() / 2];
+                            eprintln!("  patch section: car src ({:.1},{:.2},{:.1}) -> strip centre port abs ({:.1},{:.2},{:.1})", c[0], c[1], c[2], mid[0] + origin[0], mid[1] + origin[1], mid[2] + origin[2]);
+                        }
+                        sections.push(sec);
+                    }
+                    if sections.len() >= 2 {
+                        n_sections += sections.len();
+                        merged.add_strip(&sections, link, physics);
+                    }
+                }
+                if anchor.is_some() && n_sections >= 2 {
+                    let ident = std::path::Path::new(&item_out).file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_else(|| "RoutePatch.Item.Gbx".into());
+                    let opts = mapgeom::static_item::build::BuildOpts { ident: ident.clone(), author: mapgeom::tiny_library::item_author(&ident), scale: 1.0, collection: 26, skin: None };
+                    let f = mapgeom::static_item::build::assemble(&merged, &opts).unwrap_or_else(|e| die(format!("route patch assemble: {e}")));
+                    std::fs::write(&item_out, mapgeom::static_item::file::write_file(&f)).unwrap_or_else(|e| die(format!("{item_out}: {e}")));
+                    if let Some(place) = flag(&a.rest, "--patch-place") {
+                        std::fs::write(&place, format!("{ident}\t{:.3},{:.3},{:.3}\n", origin[0], origin[1], origin[2])).unwrap_or_else(|e| die(format!("{place}: {e}")));
+                    }
+                    println!("  route patch: {} run(s), {n_sections} sections, {} hull triangles -> {item_out} at {:?}", runs.len(), merged.surf_triangles.len(), origin);
+                } else {
+                    println!("  route patch: nothing to patch");
+                    if let Some(place) = flag(&a.rest, "--patch-place") { let _ = std::fs::write(&place, ""); }
+                }
+            }
+            let mut lb: Vec<(String, usize)> = lateral_bad.into_iter().collect();
+            lb.sort_by(|a, b| b.1.cmp(&a.1));
+            for (kk, v) in lb.iter().take(6) {
+                println!("      {v:>4}  LATERAL {kk}");
             }
             let mut top: Vec<(String, usize)> = owners.into_iter().collect();
             top.sort_by(|a, b| b.1.cmp(&a.1));
@@ -3012,32 +3165,44 @@ fn main() {
             if do_prune {
                 let mut asm = mapgeom::assemble::Assembler::new(&mut store);
                 asm.with_embedded(&port).ok();
-                // the authored blocks' cells (x, row, z) — every row the block spans
+                // the authored blocks' GROUND cells (x, base row, z): a block hides the zone tile of
+                // the cell it stands IN — the same row — and only when it covers the cell (a road,
+                // a platform); a pillar, a screen or a support post on a hill leaves the hill.
+                // v1 (2026-09-25 morning) took every row a block spans and every block: a road far
+                // above a cliff pruned the cliff, a StructurePillar pruned the hill it stood on —
+                // json9841 23:02Z "some terrain blocks required for the route are missing".
                 let mut occupied: std::collections::HashSet<(i32, i32, i32)> = std::collections::HashSet::new();
                 for b in &port.blocks {
                     if b.free_pos.is_some() {
                         continue;
                     }
                     let (cx, cy, cz) = b.coords();
-                    let (sx, sz, h) = asm.block_model(&b.name).map(|lm| {
-                        // the model's height from its scene bounds
-                        let mut ymin = f32::MAX;
-                        let mut ymax = f32::MIN;
-                        for g in lm.scene.groups.values() {
-                            for v in &g.verts {
-                                ymin = ymin.min(v[1]);
-                                ymax = ymax.max(v[1]);
+                    let Some(lm) = asm.block_model(&b.name) else { continue };
+                    // horizontal extent of the model at its base (the lowest 1 m of collision)
+                    let (mut x0, mut x1, mut z0, mut z1, mut ymin) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN, f32::MAX);
+                    for g in lm.scene.groups.values() {
+                        for v in &g.verts {
+                            ymin = ymin.min(v[1]);
+                        }
+                    }
+                    for g in lm.scene.groups.values() {
+                        for v in &g.verts {
+                            if v[1] <= ymin + 1.0 {
+                                x0 = x0.min(v[0]);
+                                x1 = x1.max(v[0]);
+                                z0 = z0.min(v[2]);
+                                z1 = z1.max(v[2]);
                             }
                         }
-                        (((lm.size.0 / 32.0).round() as i32).max(1), ((lm.size.1 / 32.0).round() as i32).max(1), if ymax > ymin { ((ymax - ymin) / 8.0).ceil() as i32 } else { 1 })
-                    }).unwrap_or((1, 1, 1));
-                    // footprint turned by dir
+                    }
+                    if x0 > x1 || (x1 - x0) < 16.0 || (z1 - z0) < 16.0 {
+                        continue; // a thin block: no ground of its own
+                    }
+                    let (sx, sz) = (((lm.size.0 / 32.0).round() as i32).max(1), ((lm.size.1 / 32.0).round() as i32).max(1));
                     let (fx, fz) = if b.dir % 2 == 1 { (sz, sx) } else { (sx, sz) };
                     for dx in 0..fx {
                         for dz in 0..fz {
-                            for dy in 0..h.max(1) {
-                                occupied.insert((cx + dx, cy + dy, cz + dz));
-                            }
+                            occupied.insert((cx + dx, cy, cz + dz));
                         }
                     }
                 }
@@ -3062,18 +3227,16 @@ fn main() {
                     if lo[0] > hi[0] {
                         continue;
                     }
+                    // the tile's own cells at its PLACEMENT row only
                     let row = ((it.pos[1] - gport) / 8.0).round() as i32;
                     let (x0, x1) = (((lo[0] + 0.5) / 32.0).floor() as i32, ((hi[0] - 0.5) / 32.0).floor() as i32);
                     let (z0, z1) = (((lo[2] + 0.5) / 32.0).floor() as i32, ((hi[2] - 0.5) / 32.0).floor() as i32);
-                    let rows = (((hi[1] - lo[1]) / 8.0).ceil() as i32).max(1);
                     let mut hit = None;
                     'cells: for cx in x0..=x1 {
                         for cz in z0..=z1 {
-                            for r in row..row + rows {
-                                if occupied.contains(&(cx, r, cz)) {
-                                    hit = Some((cx, r, cz));
-                                    break 'cells;
-                                }
+                            if occupied.contains(&(cx, row, cz)) {
+                                hit = Some((cx, row, cz));
+                                break 'cells;
                             }
                         }
                     }
@@ -3244,7 +3407,7 @@ fn main() {
                             Ok(o) => {
                                 let text = String::from_utf8_lossy(&o.stdout).into_owned();
                                 let summ = text.lines().find(|l| l.contains("samples")).and_then(|l| l.split_once(": ").map(|(_, r)| r.to_string())).unwrap_or_else(|| format!("FAILED {}", String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or("").chars().take(120).collect::<String>()));
-                                let owners: Vec<String> = text.lines().filter(|l| l.starts_with("      ") || l.starts_with("  surface")).take(8).map(|l| l.trim().to_string()).collect();
+                                let owners: Vec<String> = text.lines().filter(|l| l.starts_with("      ") || l.starts_with("  surface") || l.starts_with("  lateral")).take(10).map(|l| l.trim().to_string()).collect();
                                 format!("{nn}\t{summ}\t{}", owners.join(" | "))
                             }
                             Err(e) => format!("{nn}\tFAILED spawn: {e}\t"),
