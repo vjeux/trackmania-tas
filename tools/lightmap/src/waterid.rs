@@ -323,3 +323,144 @@ mod tests {
         assert_eq!(m.plane_tops, vec![quads[0].top()]);
     }
 }
+
+/// The game's water-id map is always `ID_MAP_SIZE` × `ID_MAP_SIZE` texels (0x1402255a0: FUN_1403fc8f0(tex, {0x800, 0x800, 1}, R8G8_UINT)).
+pub const ID_MAP_SIZE: u32 = 2048;
+
+/// One tile of the water-id grid: the world XZ range it covers and its id map (the SetWaterId raster of the quads clipped to it).
+#[derive(Clone, Debug)]
+pub struct WaterTile {
+    pub ix: u32,
+    pub iz: u32,
+    pub world_min: [f32; 2],
+    pub world_max: [f32; 2],
+    pub ids: Buf,
+}
+
+impl WaterTile {
+    /// `World_To_i2WaterId` as the two DXBC registers VS 17017 reads: o1.x = dp4((x, y, z, 1), r0), o1.y = dp4(…, r1) — texel
+    /// (x − minX)·sx, (maxZ − z)·sz (captured stpad tile 0: sx 0.65699, sz −1.31799, translation (21.0236, 2018.26)).
+    pub fn world_to_id(&self) -> [[f32; 4]; 2] {
+        let sx = ID_MAP_SIZE as f32 / (self.world_max[0] - self.world_min[0]);
+        let sz = ID_MAP_SIZE as f32 / (self.world_max[1] - self.world_min[1]);
+        [[sx, 0.0, 0.0, -self.world_min[0] * sx], [0.0, 0.0, -sz, self.world_max[1] * sz]]
+    }
+}
+
+/// THE GRID (0x140225b85–0x140225c3c, transcribed): over the scene box {c, h} (computeParams+0xb0, the records' fold) with the full
+/// extents ex = 2·hx, ez = 2·hz: `r(e) = (ceil(e) + 255) & ~255` (the extent in metres rounded up to a multiple of 256 = the texel
+/// count a 1 m/texel map would need); nx = min(8, ceil(ex / min(r(ex), 4096))), nz = min(8, ceil(ez / min(r(ez), 2048))) — the two
+/// caps differ (X 4096, Z 2048); each tile spans (ex/nx) × (ez/nz) metres on the 2048² map. pwc-day (2048 × 2048): 1 × 1 at
+/// 1 texel/m; stpad (3117.25 × 3107.76): 1 × 2 at (0.657, 1.318) texel/m — the captured `World_To_i2WaterId` / `WorldMinXZ`.
+pub fn water_grid(hx: f32, hz: f32) -> (u32, u32) {
+    let r = |e: f32| ((e.ceil() as i64 + 255) & !255) as f32;
+    let (ex, ez) = (hx + hx, hz + hz);
+    let nx = (ex / r(ex).min(4096.0)).ceil() as u32;
+    let nz = (ez / r(ez).min(2048.0)).ceil() as u32;
+    (nx.clamp(1, 8), nz.clamp(1, 8))
+}
+
+/// The tiles of a scene box: tile (ix, iz) is centred on ((2·ix + 1)·hx/nx − hx + cx, (2·iz + 1)·hz/nz − hz + cz) with half extents
+/// (hx/nx, hz/nz) (0x140226260 l.157–160), in the game's draw order (x fastest).
+pub fn water_tiles_of_box(c: [f32; 3], h: [f32; 3]) -> Vec<WaterTile> {
+    let (nx, nz) = water_grid(h[0], h[2]);
+    let (tx, tz) = (h[0] / nx as f32, h[2] / nz as f32);
+    let mut out = Vec::new();
+    for iz in 0..nz {
+        for ix in 0..nx {
+            let cx = ((ix + ix + 1) as f32) * tx - h[0] + c[0];
+            let cz = ((iz + iz + 1) as f32) * tz - h[2] + c[2];
+            out.push(WaterTile { ix, iz, world_min: [cx - tx, cz - tz], world_max: [cx + tx, cz + tz], ids: Buf::new(ID_MAP_SIZE, ID_MAP_SIZE, 2) });
+        }
+    }
+    out
+}
+
+/// The water-id grid of a scene: the plane table + per tile the SetWaterId raster of every quad (`WorldToHPos` = the tile's box →
+/// NDC, texel (x − minX)·sx, (maxZ − z)·sz; the last quad wins; quads outside the tile fall off the viewport).
+pub struct WaterIdTiles {
+    pub tiles: Vec<WaterTile>,
+    pub plane_tops: Vec<f32>,
+    pub texels: usize,
+    pub quads: usize,
+    pub notes: Vec<String>,
+}
+
+pub fn water_id_tiles(quads: &[WaterQuad], c: [f32; 3], h: [f32; 3]) -> WaterIdTiles {
+    let mut tiles = water_tiles_of_box(c, h);
+    let mut plane_tops: Vec<f32> = Vec::new();
+    let key = |y: f32| (y * 1000.0).round() as i64;
+    for q in quads {
+        let t = q.top();
+        if !plane_tops.iter().any(|p| key(*p) == key(t)) {
+            plane_tops.push(t);
+        }
+    }
+    plane_tops.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let mut texels = 0usize;
+    let n = ID_MAP_SIZE as f32;
+    for tile in tiles.iter_mut() {
+        let sx = n / (tile.world_max[0] - tile.world_min[0]);
+        let sz = n / (tile.world_max[1] - tile.world_min[1]);
+        for q in quads {
+            let plane = plane_tops.iter().position(|p| key(*p) == key(q.top())).unwrap_or(0) as f32;
+            let id1 = (q.water_type + 1) as f32;
+            for t in &q.tris {
+                let p = [
+                    [(t[0][0] - tile.world_min[0]) * sx, (tile.world_max[1] - t[0][2]) * sz],
+                    [(t[1][0] - tile.world_min[0]) * sx, (tile.world_max[1] - t[1][2]) * sz],
+                    [(t[2][0] - tile.world_min[0]) * sx, (tile.world_max[1] - t[2][2]) * sz],
+                ];
+                crate::prepass::raster_tri(p, ID_MAP_SIZE, ID_MAP_SIZE, |x, y, _| {
+                    if tile.ids.get(x, y, 0) == 0.0 {
+                        texels += 1;
+                    }
+                    tile.ids.set(x, y, 0, id1);
+                    tile.ids.set(x, y, 1, plane);
+                });
+            }
+        }
+    }
+    let (nx, nz) = water_grid(h[0], h[2]);
+    let notes = vec![format!("water-id grid {nx} × {nz} tiles of {ID_MAP_SIZE}² over the scene box c {:?} h {:?} ({:.4} × {:.4} texel/m): {} quads, {texels} texels carry an id, plane tops {:?}", c, h, n / (2.0 * h[0] / nx as f32), n / (2.0 * h[2] / nz as f32), quads.len(), plane_tops)];
+    WaterIdTiles { tiles, plane_tops, texels, quads: quads.len(), notes }
+}
+
+/// The records' fold {c, h} (FUN_140184fa0 over every record's rec+0x38 box = computeParams+0xb0, the scene box S).
+pub fn records_box(recs: &[Rec]) -> Option<([f32; 3], [f32; 3])> {
+    let mut mn = [f32::MAX; 3];
+    let mut mx = [f32::MIN; 3];
+    for r in recs {
+        for k in 0..3 {
+            mn[k] = mn[k].min(r.centre[k] - r.half[k]);
+            mx[k] = mx[k].max(r.centre[k] + r.half[k]);
+        }
+    }
+    if mn[0] > mx[0] { return None; }
+    Some(([(mn[0] + mx[0]) * 0.5, (mn[1] + mx[1]) * 0.5, (mn[2] + mx[2]) * 0.5], [(mx[0] - mn[0]) * 0.5, (mx[1] - mn[1]) * 0.5, (mx[2] - mn[2]) * 0.5]))
+}
+
+#[cfg(test)]
+mod grid_tests {
+    use super::*;
+
+    #[test]
+    fn the_grid_matches_the_two_captures() {
+        // pwc-day: a 2048 × 2048 scene box → one tile at 1 texel/m
+        assert_eq!(water_grid(1024.0, 1024.0), (1, 1));
+        // stpad (f4468 cbuffers): box x [−32, 3085.2549], z [−22.5649, 1531.3137 ∪ 3085.1924] → 1 × 2, the Z extent split in two
+        let (hx, hz) = ((3085.2549f32 + 32.0) * 0.5, (3085.1924f32 + 22.5649) * 0.5);
+        assert_eq!(water_grid(hx, hz), (1, 2));
+        let tiles = water_tiles_of_box([hx - 32.0, 0.0, hz - 22.5649], [hx, 0.0, hz]);
+        assert_eq!(tiles.len(), 2);
+        assert!((tiles[0].world_min[0] + 32.0).abs() < 1e-3 && (tiles[0].world_max[1] - 1531.3137).abs() < 1e-2, "{:?}", tiles[0]);
+        assert!((tiles[1].world_min[1] - 1531.3137).abs() < 1e-2 && (tiles[1].world_max[1] - 3085.1924).abs() < 1e-2, "{:?}", tiles[1]);
+        let m = tiles[0].world_to_id();
+        assert!((m[0][0] - 0.6569883).abs() < 1e-5 && (m[0][3] - 21.0236).abs() < 2e-3 && (m[1][2] + 1.3179922).abs() < 1e-5 && (m[1][3] - 2018.2595).abs() < 5e-2, "{:?}", m);
+        // an extent of exactly 4096 in x stays one tile; 4097 → two; 2049 in z → two, 16385 → the cap 8
+        assert_eq!(water_grid(2048.0, 1024.0), (1, 1));
+        assert_eq!(water_grid(2048.5, 1024.5), (2, 2));
+        assert_eq!(water_grid(8192.5, 8192.5), (5, 8));
+        assert_eq!(water_grid(6144.0, 6144.0), (3, 6));
+    }
+}

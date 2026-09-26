@@ -7376,7 +7376,18 @@ fn run(a: Vec<String>) {
             }
             let m = lightmap::waterid::water_id_map(&quads, size_m);
             for n in &m.notes {
-                println!("  {n}");
+                println!("  {n} [the legacy 1 texel/m whole-map raster]");
+            }
+            // the game's grid (RE 11): the records' box → `water_grid` tiles of 2048², per-axis scales
+            if let Some((c, h)) = lightmap::waterid::records_box(&mr.recs) {
+                let wt = lightmap::waterid::water_id_tiles(&quads, c, h);
+                for n in &wt.notes {
+                    println!("  {n}");
+                }
+                for t in &wt.tiles {
+                    let m2 = t.world_to_id();
+                    println!("    tile ({}, {}): WorldMinXZ {:?} WorldMaxXZ {:?} World_To_i2WaterId [[{:.7}, 0, 0, {:.4}], [0, 0, {:.7}, {:.4}]] — {} texels carry an id", t.ix, t.iz, t.world_min, t.world_max, m2[0][0], m2[0][3], m2[1][2], m2[1][3], (0..t.ids.h).map(|y| (0..t.ids.w).filter(|&x| t.ids.get(x, y, 0) > 0.0).count()).sum::<usize>());
+                }
             }
             if a.iter().any(|x| x == "--quads") {
                 for q in &quads {

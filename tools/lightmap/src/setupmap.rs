@@ -897,16 +897,21 @@ pub fn water_tables_from_records(f: &mut FrozenTables, store: &mut mapgeom::stor
     let mut got = Vec::new();
     let w = crate::paktables::water_tables(store, collection)?;
     f.depth_by_id = vec![[w.depth_inv[0], w.depth_inv[1], 0.0, 1.0]];
-    // THE ID MAP AND THE PLANE TABLE (RE 11): the records' water quads — the SetWaterId draw — else the sea-zone map
-    let size_m = [f.ids.w as f32, f.ids.h as f32];
-    let wm = crate::waterid::water_id_map_of_records(store, records, size_m)?;
-    if wm.quads > 0 {
-        f.ids = wm.ids;
-        f.top_by_plane = wm.plane_tops.iter().map(|t| [*t, 0.0, 0.0, 1.0]).collect();
-        got.push(format!("water-id map from {} record water quads: {} of {} texels under water, g_WaterTop_ByPlanes {:?} (WORLD heights; the collection's local WaterTop {} is not a plane)", wm.quads, wm.texels, f.ids.w as usize * f.ids.h as usize, wm.plane_tops, w.top));
-        for n in &wm.notes {
-            notes.push(format!("water quads: {n}"));
+    // THE ID GRID AND THE PLANE TABLE: the records' water quads — the SetWaterId draws — over the scene box's tile grid (RE 11, stpad
+    // f4468: `waterid::water_grid`; pwc-day's 2048 × 2048 box is the one-tile case at 1 texel/m), else the sea-zone map
+    let (quads, qnotes) = crate::waterid::water_quads_of_records(store, records)?;
+    for n in &qnotes {
+        notes.push(format!("water quads: {n}"));
+    }
+    if !quads.is_empty() {
+        let (c, h) = crate::waterid::records_box(records).ok_or("water grid: no records")?;
+        let wt = crate::waterid::water_id_tiles(&quads, c, h);
+        f.top_by_plane = wt.plane_tops.iter().map(|t| [*t, 0.0, 0.0, 1.0]).collect();
+        got.push(format!("water-id grid from {} record water quads: {} tiles of {}², {} texels under water, g_WaterTop_ByPlanes {:?} (WORLD heights; the collection's local WaterTop {} is not a plane)", wt.quads, wt.tiles.len(), crate::waterid::ID_MAP_SIZE, wt.texels, wt.plane_tops, w.top));
+        for n in &wt.notes {
+            notes.push(format!("water grid: {n}"));
         }
+        f.water_tiles = wt.tiles;
     } else {
         f.top_by_plane = vec![[w.top, 0.0, 0.0, 1.0]];
         let ch = f.ids.channels as usize;
