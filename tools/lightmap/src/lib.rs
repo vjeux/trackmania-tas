@@ -71,6 +71,7 @@ pub mod cardfit;
 pub mod locallight;
 pub mod localdrive;
 pub mod setupmap;
+pub mod waterid;
 pub mod probes;
 pub mod raster;
 pub mod skycube;

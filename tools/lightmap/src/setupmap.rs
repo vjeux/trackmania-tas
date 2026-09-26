@@ -629,6 +629,15 @@ pub fn tables_from_pak(f: &mut FrozenTables, read: &mut dyn FnMut(&str) -> Optio
 /// game-material links of the map's LM instances: the zone tiles' (the terrain material of the zone) and the items' constant
 /// materials (Land, TrackWallInWorld).
 pub fn tables_from_paktables(f: &mut FrozenTables, store: &mut mapgeom::store::DataStore, collection: &str, tile_link: &str, scene: &crate::geometry::Scene, notes: &mut Vec<String>) -> Result<(), String> {
+    tables_from_paktables_with_records(f, store, collection, tile_link, scene, &[], notes)
+}
+
+/// `tables_from_paktables` with the map's RECORDS (the layout's `records`, chart k ↔ record k): the water-id map and the
+/// plane table come from the records' water quads (RE 11, `waterid`: the SetWaterId pass rebuilt — Stadium's WaterBase
+/// blocks' Water geom at world 23 over their 32 × 32 footprints) when any record carries one; a record list without a
+/// water quad (pwc-day: the sea is the ZONE TILES, whose records carry no prefab mesh) keeps the whole-map id map at the
+/// collection's WaterTop (the captured 17004: every texel id 1, plane 0 — a sea zone).
+pub fn tables_from_paktables_with_records(f: &mut FrozenTables, store: &mut mapgeom::store::DataStore, collection: &str, tile_link: &str, scene: &crate::geometry::Scene, records: &[crate::records::Rec], notes: &mut Vec<String>) -> Result<(), String> {
     let mut got = Vec::new();
     let tile = crate::paktables::material_constant(store, tile_link)?;
     got.push(format!("tiles {tile_link} → {:?} ({:?}, ids {:?}, {} at uv {:?}; frozen {:?})", tile.rgb, tile.family, tile.ids, tile.image, tile.uv, f.tile_rgb));
@@ -655,10 +664,23 @@ pub fn tables_from_paktables(f: &mut FrozenTables, store: &mut mapgeom::store::D
         }
     }
     let w = crate::paktables::water_tables(store, collection)?;
-    f.top_by_plane = vec![[w.top, 0.0, 0.0, 1.0]];
     f.depth_by_id = vec![[w.depth_inv[0], w.depth_inv[1], 0.0, 1.0]];
-    let ch = f.ids.channels as usize;
-    for (i, v) in f.ids.data.iter_mut().enumerate() { *v = if i % ch == 0 { 1.0 } else { 0.0 }; }
+    // THE ID MAP AND THE PLANE TABLE (RE 11): the records' water quads — the SetWaterId draw — else the sea-zone map
+    let size_m = [f.ids.w as f32, f.ids.h as f32];
+    let wm = crate::waterid::water_id_map_of_records(store, records, size_m)?;
+    if wm.quads > 0 {
+        f.ids = wm.ids;
+        f.top_by_plane = wm.plane_tops.iter().map(|t| [*t, 0.0, 0.0, 1.0]).collect();
+        got.push(format!("water-id map from {} record water quads: {} of {} texels under water, g_WaterTop_ByPlanes {:?} (WORLD heights; the collection's local WaterTop {} is not a plane)", wm.quads, wm.texels, f.ids.w as usize * f.ids.h as usize, wm.plane_tops, w.top));
+        for n in &wm.notes {
+            notes.push(format!("water quads: {n}"));
+        }
+    } else {
+        f.top_by_plane = vec![[w.top, 0.0, 0.0, 1.0]];
+        let ch = f.ids.channels as usize;
+        for (i, v) in f.ids.data.iter_mut().enumerate() { *v = if i % ch == 0 { 1.0 } else { 0.0 }; }
+        got.push(format!("no record carries a water quad: the whole map is under the collection's water plane (id 1, plane 0, top {}) — a sea zone", w.top));
+    }
     // the two LUTs against the frozen ones, texel for texel
     let cmp = |ours: &Texture, theirs: &Texture| -> (usize, usize) {
         let (Some(a), Some(c)) = (ours.levels.first().and_then(|s| s.first()), theirs.levels.first().and_then(|s| s.first())) else { return (0, 0) };

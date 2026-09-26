@@ -641,14 +641,19 @@ pub fn frozen_tables(root: &Path, frame: u32, env_frame: u32) -> Result<FrozenTa
     Ok(FrozenTables { tile_rgb, wall_rgb, pad_rgb, ids, top_by_plane: ctx.top_by_plane.clone(), depth_by_id: ctx.depth_by_id.clone(), fog: fog.clone(), transmittance: tr.clone(), water_template: prepass::water_draws(run).into_iter().last(), sampler: ctx.sampler, water_sampler: ws, tile_slices: (tile_draw.i_py, tile_draw.i_pxz) })
 }
 
-/// The water tint of run `k` over the LM scene's tile mesh (PS 17018 with the frozen tables), applied to `tgt`.
+/// The water tint of run `k` over EVERY LM mesh of the scene (PS 17018 with the frozen tables), applied to `tgt` — the
+/// captured BlendWaterFog draws every LM object (pwc-day eids 12448–12457: the pad, the wall, the card AND the tiles);
+/// on a pool map the submerged objects are the block / clip RECORDS, not the tiles (RE 11).
 pub fn tint_from_map(f: &FrozenTables, lm: &crate::lmaccum::LmScene, k: usize, tgt: &mut Target) {
     let Some(tpl) = &f.water_template else { return };
+    if f.top_by_plane.is_empty() {
+        return; // no water plane: every fragment would be discarded
+    }
     let (ox, oy) = prepass::OFFSETS[k];
     let q = 2.0f32 / W as f32;
     let mut draws = Vec::new();
     for (mk, _) in lm.meshes.iter().enumerate() {
-        if lm.inst_count[mk] < 1000 {
+        if lm.inst_count[mk] == 0 {
             continue;
         }
         draws.push(WaterDraw { eid: k as u64, mesh: mk, instance_first: lm.inst_first[mk], instance_count: lm.inst_count[mk], scale_ss: [2.0, -2.0], trans_ss: [-1.0 + (ox as f32 / 9.0) * q, 1.0 - (oy as f32 / 9.0) * q], world_to_id: tpl.world_to_id, world_min_xz: tpl.world_min_xz, world_max_xz: tpl.world_max_xz, scale_out: tpl.scale_out });

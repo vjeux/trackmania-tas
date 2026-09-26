@@ -1905,7 +1905,7 @@ fn run(a: Vec<String>) {
                             // RE 8's paktables (the material chain, the water descriptor, the LUT image + generator) — the zone tiles' material link
                             // from --tile-material (default <Coll>\Media\Material\SeaFloor: BlueBay's Sea zone); the interim corner-mean path is the fallback
                             let tile_link = f("--tile-material").unwrap_or_else(|| format!("{collection}\\Media\\Material\\SeaFloor"));
-                            if let Err(e) = lightmap::setupmap::tables_from_paktables(&mut frozen, &mut store, &collection, &tile_link, &scene, &mut pak_notes) {
+                            if let Err(e) = lightmap::setupmap::tables_from_paktables_with_records(&mut frozen, &mut store, &collection, &tile_link, &scene, game_layout.as_ref().map(|gl| gl.records.as_slice()).unwrap_or(&[]), &mut pak_notes) {
                                 pak_notes.push(format!("paktables: {e} — the interim pak path (corner means + WaterColor.tga + the descriptor table) is used"));
                                 let mut read = |path: &str| -> Option<Vec<u8>> { store.read(path).ok().map(|b| b.to_vec()) };
                                 lightmap::setupmap::tables_from_pak(&mut frozen, &mut read, &collection, &f("--mood-name").unwrap_or_else(|| "Day".into()), &f("--tile-pxz").unwrap_or_else(|| "SeaFloor".into()), &mut pak_notes);
@@ -7245,6 +7245,55 @@ fn run(a: Vec<String>) {
                     }
                     None => println!("    (no accumulate draw with this camera's WorldPw01Shadow in the frame)"),
                 }
+            }
+        }
+        "water-ids" => {
+            // lmtool water-ids MAP --pak FILE:KEY [--pak FILE:KEY …] [--collection Stadium] [--zone Grass] [--out ids.png] [--quads]
+            //   THE WATER-ID MAP OF A MAP (RE 11, waterid.rs): the SetWaterId pass rebuilt from the map's records — every prefab entity
+            //   record's water quads (the Water-shader geoms, Stadium's WaterBase Base_Air plane at local y 7) rasterised top-down at one
+            //   texel per metre with (type + 1, plane), and the plane table g_WaterTop_ByPlanes = the quads' world heights; the collection's
+            //   g_WaterDepth_FogMaxDepthInv_ByIds and LUT sizes beside it. --out writes the map as a PNG (R = 64·id, G = 64·(plane + 1),
+            //   B = 255 where set); --quads lists every quad (record, source, top, footprint).
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let mut store = mapgeom::store::DataStore::empty();
+            let mut it = a.iter();
+            while let Some(x) = it.next() {
+                if x == "--pak" {
+                    let spec = it.next().expect("--pak FILE:KEY");
+                    let (pp, key) = spec.rsplit_once(':').expect("--pak FILE:KEY");
+                    store.add_pak(pp, key).unwrap_or_else(|e| panic!("{pp}: {e}"));
+                }
+            }
+            let coll = f("--collection").unwrap_or_else(|| "Stadium".into());
+            let opts = lightmap::records::BuildOpts { collection: coll.clone(), zone: f("--zone"), kept: None, tile_level: None, yoff: None, grid: None, items_3d: false, ghost_marks: false, no_block_cells: false, clip_order_sim: false, face_order: None, one_class: Vec::new() };
+            let scene = lightmap::geometry::Scene::from_map(&a[1]).expect("scene");
+            let t0 = std::time::Instant::now();
+            let mr = lightmap::records::build_map_records(&a[1], &scene, &mut store, &opts).unwrap_or_else(|e| panic!("records: {e}"));
+            let mf = tmmaps::map::MapFile::load(std::path::Path::new(&a[1]));
+            let size_m = [mf.size[0] as f32 * 32.0, mf.size[2] as f32 * 32.0];
+            println!("{}: {} records ({} blocks, {} tiles, {} clips, {} items) in {:.1} s; map {} × {} × {} blocks → id map {} × {} texels", a[1], mr.recs.len(), mr.n_blocks, mr.n_tiles, mr.n_clips, mr.n_items, t0.elapsed().as_secs_f32(), mf.size[0], mf.size[1], mf.size[2], size_m[0], size_m[1]);
+            let (quads, notes) = lightmap::waterid::water_quads_of_records(&mut store, &mr.recs).unwrap_or_else(|e| panic!("water quads: {e}"));
+            for n in &notes {
+                println!("  {n}");
+            }
+            let m = lightmap::waterid::water_id_map(&quads, size_m);
+            for n in &m.notes {
+                println!("  {n}");
+            }
+            if a.iter().any(|x| x == "--quads") {
+                for q in &quads {
+                    let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+                    for t in &q.tris { for v in t { for k in 0..3 { lo[k] = lo[k].min(v[k]); hi[k] = hi[k].max(v[k]); } } }
+                    println!("  quad: record {} ({}) {} tris type {} top {:.4} footprint x {:.1}..{:.1} z {:.1}..{:.1}", q.record, mr.recs[q.record].class, q.tris.len(), q.water_type, q.top(), lo[0], hi[0], lo[2], hi[2]);
+                }
+            }
+            match lightmap::paktables::water_tables(&mut store, &coll) {
+                Ok(w) => println!("  collection {coll}: type {:?} WaterTop {} (local) WaterFloor {} FogMaxDepth {} → g_WaterDepth_FogMaxDepthInv_ByIds [({}, {})]; fog LUT {} texels, transmittance {} texels; g_WaterTop_ByPlanes = {:?} (the quads' WORLD heights)", w.desc.name, w.desc.top, w.desc.floor, w.desc.fog_max_depth, w.depth_inv[0], w.depth_inv[1], w.fog.len(), w.transmittance.len(), m.plane_tops),
+                Err(e) => println!("  collection {coll}: water tables: {e}"),
+            }
+            if let Some(o) = f("--out") {
+                lightmap::png::write_rgb(&o, m.ids.w, m.ids.h, &lightmap::waterid::id_map_rgb(&m)).unwrap_or_else(|e| panic!("--out {o}: {e}"));
+                println!("  wrote {o} ({} × {})", m.ids.w, m.ids.h);
             }
         }
         "prepass-check" => {
