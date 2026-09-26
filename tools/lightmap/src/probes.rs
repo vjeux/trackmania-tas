@@ -351,42 +351,40 @@ pub fn layout(bvh: &Bvh, grid: &SlotGrid) -> Result<ProbeLayout, String> {
         cells: Vec<bool>, // bx × by × bz (cx, L, cz)
     }
     let idx = |cx: u32, l: u32, cz: u32| (cz * bx * by + l * bx + cx) as usize;
-    let mut occs: Vec<Occ> = Vec::new();
-    for k in 0..grid.n[2] {
-        for j in 0..grid.n[1] {
-            for i in 0..grid.n[0] {
-                let s = [i, j, k];
-                // quick slot test
-                let h = grid.cell / 2.0;
-                let lo = grid.probe(s, [0, 0, 0]);
-                let hi = grid.probe(s, [bx - 1, by - 1, bz - 1]);
-                if !bvh.any_in_box([lo[0] - h, lo[1] - h, lo[2] - h], [hi[0] + h, hi[1] + h, hi[2] + h]) {
+    // (perf 8: the slots' occupancy in parallel — pure BVH box queries, up to a few million of them on a giant map,
+    // were a serial 0.5 s of the end of bake; one task per slot, the results in slot order as before)
+    let n_slots = (grid.n[0] * grid.n[1] * grid.n[2]) as usize;
+    let slot_of = |t: usize| -> [u32; 3] { let t = t as u32; [t % grid.n[0], (t / grid.n[0]) % grid.n[1], t / (grid.n[0] * grid.n[1])] };
+    let found: Vec<Option<Occ>> = crate::pool::pool().map(n_slots, |t| {
+        let s = slot_of(t);
+        // quick slot test
+        let h = grid.cell / 2.0;
+        let lo = grid.probe(s, [0, 0, 0]);
+        let hi = grid.probe(s, [bx - 1, by - 1, bz - 1]);
+        if !bvh.any_in_box([lo[0] - h, lo[1] - h, lo[2] - h], [hi[0] + h, hi[1] + h, hi[2] + h]) {
+            return None;
+        }
+        let mut cells = vec![false; (bx * by * bz) as usize];
+        let mut any = false;
+        for cz in 0..bz {
+            for cx in 0..bx {
+                let c0 = grid.probe(s, [cx, 0, cz]);
+                let c1 = grid.probe(s, [cx, by - 1, cz]);
+                if !bvh.any_in_box([c0[0] - h, c0[1] - h, c0[2] - h], [c1[0] + h, c1[1] + h, c1[2] + h]) {
                     continue;
                 }
-                let mut cells = vec![false; (bx * by * bz) as usize];
-                let mut any = false;
-                for cz in 0..bz {
-                    for cx in 0..bx {
-                        let c0 = grid.probe(s, [cx, 0, cz]);
-                        let c1 = grid.probe(s, [cx, by - 1, cz]);
-                        if !bvh.any_in_box([c0[0] - h, c0[1] - h, c0[2] - h], [c1[0] + h, c1[1] + h, c1[2] + h]) {
-                            continue;
-                        }
-                        for l in 0..by {
-                            let c = grid.probe(s, [cx, l, cz]);
-                            if bvh.any_in_box([c[0] - h, c[1] - h, c[2] - h], [c[0] + h, c[1] + h, c[2] + h]) {
-                                cells[idx(cx, l, cz)] = true;
-                                any = true;
-                            }
-                        }
+                for l in 0..by {
+                    let c = grid.probe(s, [cx, l, cz]);
+                    if bvh.any_in_box([c[0] - h, c[1] - h, c[2] - h], [c[0] + h, c[1] + h, c[2] + h]) {
+                        cells[idx(cx, l, cz)] = true;
+                        any = true;
                     }
-                }
-                if any {
-                    occs.push(Occ { s, cells });
                 }
             }
         }
-    }
+        if any { Some(Occ { s, cells }) } else { None }
+    });
+    let mut occs: Vec<Occ> = found.into_iter().flatten().collect();
     // Nadeo lists blocks by increasing z, then y, then x (slot index order): k-major above, i fastest — but
     // the label grid enumerates blocks in slot-index order too: keep them as found
     occs.sort_by_key(|o| grid.index(o.s[0], o.s[1], o.s[2]));
@@ -491,7 +489,9 @@ pub fn build(_scene: &Scene, bvh: &Bvh, prm: &BakeParams, lights: &[(usize, Ligh
     if bvh.tris.is_empty() {
         return Err("no geometry".into());
     }
+    let t_trace = std::time::Instant::now();
     let lay = layout(bvh, grid)?;
+    let t_layout = t_trace.elapsed().as_secs_f64();
     let [bx, by, bz] = BLOCK_CELLS;
     let (cols, rows) = (lay.cols, lay.rows);
     let n = lay.blocks.len();
@@ -534,6 +534,7 @@ pub fn build(_scene: &Scene, bvh: &Bvh, prm: &BakeParams, lights: &[(usize, Ligh
             s.px = r.into_inner().unwrap();
         }
     }
+    let t_shade = t_trace.elapsed().as_secs_f64() - t_layout;
     // images
     let mut imgs: Vec<crate::img::Rgb> = (0..4).map(|_| crate::img::Rgb::new(aw, ah)).collect();
     // fills like Nadeo's: the unused area carries the mean probe colour (harmless), mask bits set
@@ -597,11 +598,13 @@ pub fn build(_scene: &Scene, bvh: &Bvh, prm: &BakeParams, lights: &[(usize, Ligh
     }
     // the game writes the probe images with libwebp at quality 91 (RE child); our own encoder is the
     // fallback (`vp8_q` on its 0–10 scale)
+    let t_compose = t_trace.elapsed().as_secs_f64() - t_layout - t_shade;
     // (the four encodes are independent: one thread each)
     let images: Vec<Vec<u8>> = std::thread::scope(|sc| {
         let hs: Vec<_> = imgs.iter().map(|im| sc.spawn(move || crate::webpenc::encode_rgb(&im.px, im.w, im.h, 91.0).unwrap_or_else(|| crate::vp8enc::encode(&im.px, im.w, im.h, vp8_q)))).collect();
         hs.into_iter().map(|h| h.join().expect("probe image encode")).collect()
     });
+    if prm.profile { eprintln!("probes (port): layout {:.3}s, shading {:.3}s, images {:.3}s, encodes {:.3}s", t_layout, t_shade, t_compose, t_trace.elapsed().as_secs_f64() - t_layout - t_shade - t_compose); }
     let (blob, ends) = crate::volume::join_probe_blob(&images);
     let mut frame_info = template.frame_info.clone();
     while frame_info.len() < 3 {
