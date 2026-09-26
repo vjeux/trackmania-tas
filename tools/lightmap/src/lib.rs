@@ -62,6 +62,7 @@ pub mod probepass;
 pub mod probebake;
 pub mod probesafety;
 pub mod probetiles;
+pub mod lightcull;
 pub mod cardfit;
 pub mod locallight;
 pub mod setupmap;
