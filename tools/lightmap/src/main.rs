@@ -4525,6 +4525,53 @@ fn run(a: Vec<String>) {
         "quanta-diff" => lightmap::peelcap::quanta_diff(&a),
         "layer-gap" => lightmap::peelcap::layer_gap(&a),
         "lm-st" => lightmap::peelcap::lm_st(&a),
+        "layer-probe" => {
+            // lmtool layer-probe OURDUMP PASSCAP --frame N --dir D --px X,Y [--peel P]: every peel layer's depth + colour at one
+            // peel pixel, OUR dump (peel_depth / peel_color entries of direction D, peel P) beside the CAPTURE's (frame N,
+            // direction D layers) — the card-texel content chase (which of {no fragment, alpha-failed, back-face black, a deeper
+            // layer} the game and we hold at the texel's projected pixel)
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let ours_root = std::path::PathBuf::from(&a[1]);
+            let cap_root = std::path::PathBuf::from(&a[2]);
+            let frame: u32 = f("--frame").map(|v| v.parse().unwrap()).unwrap_or(127448);
+            let dir: u32 = f("--dir").map(|v| v.parse().unwrap()).unwrap_or(0);
+            let peel: u32 = f("--peel").map(|v| v.parse().unwrap()).unwrap_or(0);
+            let px: Vec<u32> = f("--px").expect("--px X,Y").split(',').map(|t| t.trim().parse().unwrap()).collect();
+            let (x, y) = (px[0], px[1]);
+            let om = lightmap::passdiff::read_manifest(&std::fs::read_to_string(ours_root.join("MANIFEST.json")).expect("our MANIFEST")).expect("our manifest");
+            let cm = lightmap::passdiff::read_manifest(&std::fs::read_to_string(cap_root.join("MANIFEST.json")).expect("capture MANIFEST")).expect("capture manifest");
+            let at = |b: &lightmap::passdiff::Buf, c: u32| -> f32 { if x < b.w && y < b.h { b.get(x, y, c) } else { f32::NAN } };
+            println!("pixel ({x}, {y}), direction {dir}, peel {peel} — OURS ({}) vs CAPTURE frame {frame} ({})", ours_root.display(), cap_root.display());
+            let mut ours: Vec<(u32, Option<f32>, Option<[f32; 3]>)> = Vec::new();
+            for k in 0..24u32 {
+                let d = om.passes.iter().find(|e| e.pass == "peel_depth" && e.direction == Some(dir) && e.peel == Some(peel) && e.layer == Some(k)).and_then(|e| lightmap::passdiff::load_entry(&ours_root, e).ok()).map(|b| at(&b, 0));
+                let c = om.passes.iter().find(|e| e.pass == "peel_color" && e.direction == Some(dir) && e.peel == Some(peel) && e.layer == Some(k)).and_then(|e| lightmap::passdiff::load_entry(&ours_root, e).ok()).map(|b| [at(&b, 0), at(&b, 1), at(&b, 2)]);
+                if d.is_none() && c.is_none() { break; }
+                ours.push((k, d, c));
+            }
+            let sky_d = om.passes.iter().find(|e| e.pass == "peel_sky_depth" && e.direction == Some(dir) && e.peel == Some(peel)).and_then(|e| lightmap::passdiff::load_entry(&ours_root, e).ok()).map(|b| at(&b, 0));
+            let sky_c = om.passes.iter().find(|e| e.pass == "peel_sky" && e.direction == Some(dir) && e.peel == Some(peel)).and_then(|e| lightmap::passdiff::load_entry(&ours_root, e).ok()).map(|b| [at(&b, 0), at(&b, 1), at(&b, 2)]);
+            println!("  ours sky layer: depth {:?} colour {:?}", sky_d, sky_c);
+            for (k, d, c) in &ours { println!("  ours layer {k}: depth {:?} colour {:?}", d, c); }
+            // the capture: the layers of this DIRECTION VECTOR in the frame (the manifest reader renumbers direction indices by
+            // first appearance, so the vector is the key), by layer index (world = the first run, fitted = later)
+            let dvec: Option<[f32; 3]> = om.passes.iter().find(|e| e.pass == "peel_depth" && e.direction == Some(dir) && e.peel == Some(peel)).and_then(|e| e.dir);
+            println!("  direction vector {:?}", dvec);
+            let same_dir = |e: &lightmap::passdump::Entry| -> bool { match (dvec, e.dir) { (Some(a), Some(b)) => (a[0] - b[0]).abs() < 1e-3 && (a[1] - b[1]).abs() < 1e-3 && (a[2] - b[2]).abs() < 1e-3, (None, _) => e.direction == Some(dir), _ => false } };
+            let mut caps: Vec<(u32, Option<f32>, Option<[f32; 3]>, String)> = Vec::new();
+            for k in 0..24u32 {
+                let de: Vec<&lightmap::passdump::Entry> = cm.passes.iter().filter(|e| e.pass == "peel_depth" && e.frame == Some(frame) && same_dir(e) && e.layer == Some(k)).collect();
+                let ce: Vec<&lightmap::passdump::Entry> = cm.passes.iter().filter(|e| e.pass == "peel_color" && e.frame == Some(frame) && same_dir(e) && e.layer == Some(k)).collect();
+                if de.is_empty() && ce.is_empty() { break; }
+                // several runs (world / fitted) share a layer index: the `peel` index picks the run in order
+                let dsel = de.get(peel as usize).or(de.first());
+                let csel = ce.get(peel as usize).or(ce.first());
+                let d = dsel.and_then(|e| lightmap::passdiff::load_entry(&cap_root, e).ok()).map(|b| at(&b, 0));
+                let c = csel.and_then(|e| lightmap::passdiff::load_entry(&cap_root, e).ok()).map(|b| [at(&b, 0), at(&b, 1), at(&b, 2)]);
+                caps.push((k, d, c, format!("{} runs; {}", de.len(), dsel.map(|e| e.file.clone()).unwrap_or_default())));
+            }
+            for (k, d, c, note) in &caps { println!("  game layer {k}: depth {:?} colour {:?}  [{note}]", d, c); }
+        }
         "sweep1-annotate" => { if let Err(e) = lightmap::peelcap::sweep1_annotate(&a) { eprintln!("sweep1-annotate: {e}"); std::process::exit(1); } }
         "clouds-check" => { if let Err(e) = lightmap::clouds::check(&a) { eprintln!("clouds-check: {e}"); std::process::exit(1); } }
         "draw-classes" => { if let Err(e) = lightmap::drawclasses::run(&a) { eprintln!("draw-classes: {e}"); std::process::exit(1); } }
