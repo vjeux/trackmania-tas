@@ -326,3 +326,111 @@ mod tests {
         let _ = std::fs::remove_file(&p);
     }
 }
+
+/// `lmtool layoutcheck MAP…`: the packing invariants of a written map's mapping without an oracle — every rect inside
+/// the atlas, no two rects overlapping (an occupancy grid in layout units), the fill, the frame bytes' range, the
+/// frame records finite, every stored image decodable.
+pub struct LayoutCheck {
+    pub charts: usize,
+    pub outside: usize,
+    pub overlapping_cells: usize,
+    pub overlapping_charts: usize,
+    pub zero_area: usize,
+    pub fill: f64,
+    pub frame_bytes_zero: Vec<usize>,
+    pub maxhdr: Vec<Option<f32>>,
+    pub images: Vec<Result<(u32, u32), String>>,
+}
+
+pub fn layout_check(d: &crate::format::LightmapData) -> Result<LayoutCheck, String> {
+    let m = d.cache.mapping().ok_or("a map without a mapping chunk")?;
+    let (aw, ah) = (m.atlas_w as usize, m.atlas_h as usize);
+    let mut grid = vec![0u8; aw * ah];
+    let (mut outside, mut overlapping_cells, mut overlapping_charts, mut zero_area) = (0usize, 0usize, 0usize, 0usize);
+    let mut area = 0u64;
+    for i in 0..m.count as usize {
+        let (x, y) = (m.pos[i].0 as usize, m.pos[i].1 as usize);
+        let (w, h) = (m.size[i].0 as usize, m.size[i].1 as usize);
+        if w == 0 || h == 0 { zero_area += 1; continue; }
+        if x + w > aw || y + h > ah { outside += 1; continue; }
+        area += (w * h) as u64;
+        let mut hit = false;
+        for yy in y..y + h { for xx in x..x + w { let c = &mut grid[yy * aw + xx]; if *c > 0 { overlapping_cells += 1; hit = true; } *c = c.saturating_add(1); } }
+        if hit { overlapping_charts += 1; }
+    }
+    let frame_bytes_zero = m.frame_bytes.iter().map(|fb| fb.iter().filter(|&&b| b == 0).count()).collect();
+    let maxhdr = (0..3).map(|f| record_maxhdr(&m, f)).collect();
+    let images = d.frames.iter().flat_map(|f| f.images.iter()).filter(|b| !b.is_empty()).map(|b| crate::img::decode_webp(b).map(|i| (i.w, i.h))).collect();
+    Ok(LayoutCheck { charts: m.count as usize, outside, overlapping_cells, overlapping_charts, zero_area, fill: area as f64 / (aw * ah) as f64, frame_bytes_zero, maxhdr, images })
+}
+
+/// The coverage (alpha) plane of a `--chain-final-dir` final (`chain-final-0.rgba16f`, 2048² RGBA f16) reduced to the
+/// stored image's grid: per stored texel the MIN of the 2×2 atlas alphas (a texel is "partial" when any of its four
+/// atlas texels was not fully covered — the resolve's own-normalisation path, PS 25113).
+pub fn coverage_plane(path: &str, w: u32, h: u32) -> Result<Vec<f32>, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+    let side = ((bytes.len() / 8) as f64).sqrt() as u32;
+    if (side as usize) * (side as usize) * 8 != bytes.len() { return Err(format!("{path}: not a square RGBA16F plane ({} bytes)", bytes.len())); }
+    if side % w != 0 || side % h != 0 { return Err(format!("{path}: {side}² does not reduce to {w}×{h}")); }
+    let (sx, sy) = (side / w, side / h);
+    let mut out = vec![1f32; (w * h) as usize];
+    for y in 0..h { for x in 0..w {
+        let mut m = f32::MAX;
+        for dy in 0..sy { for dx in 0..sx {
+            let i = (((y * sy + dy) * side + (x * sx + dx)) * 4 + 3) as usize * 2;
+            let a = crate::gpufmt::decode_f16(u16::from_le_bytes([bytes[i], bytes[i + 1]]));
+            m = m.min(a);
+        } }
+        out[(y * w + x) as usize] = m;
+    } }
+    Ok(out)
+}
+
+/// The partial / full split of one class (ours / editor means over the editor's lit texels, as `compare`), from the
+/// same rects; `partial` = coverage < `thr`.
+#[derive(Clone, Debug, Default)]
+pub struct CoverSplit { pub partial: ClassAcc, pub full: ClassAcc }
+
+pub fn compare_coverage(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLightmap, records: Option<&[RecRow]>, o: &Options, cov: &[f32], thr: f32) -> Result<Vec<(String, CoverSplit)>, String> {
+    let (Some(d1), Some(d2)) = (ours.chunk.data.as_ref(), theirs.chunk.data.as_ref()) else { return Err("a map without a lightmap".into()) };
+    let (Some(m1), Some(m2)) = (d1.cache.mapping(), d2.cache.mapping()) else { return Err("a map without a mapping chunk".into()) };
+    if m1.count != m2.count { return Err("chart counts differ".into()); }
+    let f = o.frame;
+    let i1 = crate::img::decode_webp(&d1.frames[f].images[0])?;
+    let i2 = crate::img::decode_webp(&d2.frames[f].images[0])?;
+    if cov.len() != (i1.w * i1.h) as usize { return Err(format!("coverage plane {} texels vs image {}×{}", cov.len(), i1.w, i1.h)); }
+    let (k1, k2) = (record_maxhdr(&m1, f).ok_or("ours: no frame record")?, record_maxhdr(&m2, f).ok_or("theirs: no frame record")?);
+    let (fb1, fb2) = (&m1.frame_bytes[f], &m2.frame_bytes[f]);
+    let mut rows: std::collections::HashMap<(u32, u32), RecRow> = Default::default();
+    if let Some(rs) = records { for r in rs { rows.insert((r.obj, r.sub), r.clone()); } }
+    let mut classes: Vec<(String, CoverSplit)> = Vec::new();
+    for i in 0..m1.count as usize {
+        if m1.pos[i] != m2.pos[i] || m1.size[i] != m2.size[i] { continue; }
+        let key = class_key(&m1, i, &rows, records, o.by);
+        let (px, py, pw, ph) = chart_own_px(m1.pos[i], m1.size[i]);
+        let s1 = (fb1[i] as f64 / 255.0).powi(2) * k1 as f64;
+        let s2 = (fb2[i] as f64 / 255.0).powi(2) * k2 as f64;
+        let mut sp = CoverSplit::default();
+        sp.partial.charts = 1; sp.full.charts = 1;
+        for y in py..(py + ph).min(i1.h) { for x in px..(px + pw).min(i1.w) {
+            let (a, b) = (i1.get(x, y), i2.get(x, y));
+            let acc = if cov[(y * i1.w + x) as usize] < thr { &mut sp.partial } else { &mut sp.full };
+            acc.texels += 1;
+            if a[0].max(a[1]).max(a[2]) >= o.lit { acc.lit_ours += 1; }
+            if b[0].max(b[1]).max(b[2]) >= o.lit {
+                acc.lit_theirs += 1; acc.used += 1; acc.used_t += 1;
+                for c in 0..3 { let ho = (a[c] as f64 / 255.0).powi(2) * s1; let ht = (b[c] as f64 / 255.0).powi(2) * s2; acc.sum_ours[c] += ho; acc.sum_theirs[c] += ht; acc.sum_sq[c] += (ho - ht) * (ho - ht); }
+            }
+        } }
+        match classes.iter_mut().find(|(k, _)| *k == key) { Some((_, c)) => { c.partial.merge(&sp.partial); c.full.merge(&sp.full); }, None => classes.push((key, sp)) }
+    }
+    Ok(classes)
+}
+
+pub fn print_coverage(classes: &[(String, CoverSplit)], thr: f32) {
+    println!("coverage split (our finals' alpha, min over the 2×2 atlas texels; partial = < {thr}): class, texels partial / full, editor-lit partial %, ratio ours/editor on PARTIAL (r/g/b), on FULL (r/g/b)");
+    for (k, c) in classes {
+        let tot = (c.partial.texels + c.full.texels).max(1) as f64;
+        println!("{k}\t{} / {}\t{:.1} %\tpartial {}\tfull {}", c.partial.texels, c.full.texels, 100.0 * c.partial.texels as f64 / tot, f3(c.partial.ratio(), 3), f3(c.full.ratio(), 3));
+    }
+}

@@ -6085,6 +6085,22 @@ fn run(a: Vec<String>) {
             for (name, s, e) in ranges { let mut h: std::collections::BTreeMap<u8, usize> = Default::default(); for &x in body.get(s..e.min(body.len())).unwrap_or(&[]) { *h.entry(x).or_default() += 1; } println!("  {name} [{s}..{e}): {:?}", h); }
             if a.iter().any(|x| x == "--list") { let s = mf.blocks.len() + mf.baked.len(); for (i, &x) in body.get(s..).unwrap_or(&[]).iter().enumerate() { if x != 0 { println!("  item {i} ({}) quality byte {x}", mf.items.get(i).map(|it| it.model.as_str()).unwrap_or("?")); } } }
         }
+        "layoutcheck" => {
+            // lmtool layoutcheck MAP…: the packing invariants without an oracle (classcmp::layout_check) — rects inside the
+            // atlas, no overlaps, fill, frame bytes, records finite, images decodable; exit 1 on any violation
+            let mut bad = 0usize;
+            for p in a[1..].iter().filter(|x| !x.starts_with("--")) {
+                let m = lightmap::mapio::load(p).unwrap_or_else(|e| panic!("{e}"));
+                let Some(d) = m.chunk.data.as_ref() else { println!("{p}: no lightmap data"); bad += 1; continue };
+                let r = lightmap::classcmp::layout_check(d).unwrap_or_else(|e| panic!("{p}: {e}"));
+                let nan = r.maxhdr.iter().any(|v| v.map(|x| !x.is_finite()).unwrap_or(false));
+                let img_bad = r.images.iter().filter(|i| i.is_err()).count();
+                let ok = r.outside == 0 && r.overlapping_charts == 0 && r.zero_area == 0 && !nan && img_bad == 0;
+                if !ok { bad += 1; }
+                println!("{p}: {} charts, {} outside the atlas, {} overlapping ({} cells), {} zero-area, fill {:.1} %, frame bytes = 0: {:?}, record MaxHDR {:?}, images {} ok / {} bad {} → {}", r.charts, r.outside, r.overlapping_charts, r.overlapping_cells, r.zero_area, 100.0 * r.fill, r.frame_bytes_zero, r.maxhdr, r.images.len() - img_bad, img_bad, r.images.iter().filter_map(|i| i.as_ref().ok()).map(|(w, h)| format!("{w}×{h}")).collect::<Vec<_>>().join(" "), if ok { "OK" } else { "VIOLATION" });
+            }
+            if bad > 0 { std::process::exit(1); }
+        }
         "classcmp" => {
             // lmtool classcmp OURS.Map.Gbx --against EDITOR.Map.Gbx [--records TSV] [--by class|name|obj] [--frame 0] [--lit 8]
             // [--tsv OUT] [--worst N]: the per-class HDR table of two written maps (classcmp.rs) — the verification rows' numbers
@@ -6097,6 +6113,15 @@ fn run(a: Vec<String>) {
             let o = lightmap::classcmp::Options { frame: f("--frame").map(|v| v.parse().expect("--frame N")).unwrap_or(0), lit: f("--lit").map(|v| v.parse().expect("--lit N")).unwrap_or(8), by, worst: f("--worst").map(|v| v.parse().expect("--worst N")).unwrap_or(0), own_rects: a.iter().any(|x| x == "--own-rects") };
             let r = lightmap::classcmp::compare(&ours, &theirs, records.as_deref(), &o).unwrap_or_else(|e| panic!("classcmp: {e}"));
             lightmap::classcmp::print(&r, &o, f("--tsv").as_deref()).unwrap_or_else(|e| panic!("classcmp: {e}"));
+            // --coverage FINAL.rgba16f [--coverage-thr 0.99]: the partial / full coverage split per class from our finals' alpha
+            if let Some(cp) = f("--coverage") {
+                let thr: f32 = f("--coverage-thr").map(|v| v.parse().expect("--coverage-thr")).unwrap_or(0.99);
+                let cov = lightmap::classcmp::coverage_plane(&cp, r.image_w, r.image_h).unwrap_or_else(|e| panic!("--coverage: {e}"));
+                let n_part = cov.iter().filter(|&&c| c < thr).count();
+                println!("coverage plane {cp}: {} of {} stored texels partial (< {thr}); alpha min {:.4} max {:.4}", n_part, cov.len(), cov.iter().cloned().fold(f32::MAX, f32::min), cov.iter().cloned().fold(f32::MIN, f32::max));
+                let cs = lightmap::classcmp::compare_coverage(&ours, &theirs, records.as_deref(), &o, &cov, thr).unwrap_or_else(|e| panic!("--coverage: {e}"));
+                lightmap::classcmp::print_coverage(&cs, thr);
+            }
         }
         "filecheck" => {
             // lmtool filecheck OURS.Map.Gbx --against EDITOR.Map.Gbx: two WRITTEN maps side by side — the mapping (count, order,
