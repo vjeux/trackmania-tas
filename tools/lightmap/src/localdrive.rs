@@ -114,9 +114,20 @@ pub fn light_rgb(l: &LightDef) -> [f32; 3] {
 /// lamp pass with the flat weight 1/(N·SS²). The RoadBorderSpot (0.2 / 0.2 m) at stpad's density gives 5 × 5 on the 30°-rotated grid.
 pub fn area_samples(l: &LightDef, r: f32, quality: u32, density: f32) -> Vec<[f32; 3]> {
     static FORCE: std::sync::LazyLock<Option<u32>> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_LL_AREA").ok().and_then(|v| v.parse().ok()));
+    // THE TWO SAMPLE-COUNT PAIRS (RE 13 21:50Z / 22:00Z): a light whose Ball08 word has bits 10–12 == 0 (stpad's 0x12 clips) carries desc
+    // bit 30 and takes pair1 = (min(S_full, 4), k 0.5) — at most 2 × 2 samples — WHILE zone+0x244 == 0; a non-zero word there (set from
+    // computeParams+0xdc / forced 1 in the no-record branch / the frame job's +0x18 — NOT pinned for an editor bake) collapses pair1 to
+    // pair0 = (S_full, 1.0) and every lamp samples 5 × 5. LMTOOL_LL_AREA_PAIR1=1 selects the pair1 branch for the bit-30 lamps; the
+    // default is pair0 for all (the 5 × 5 stpad set V measured: Day MaxHDR = the editor's exactly) until the sw0 export's OutScale
+    // (1/9 … 1/36 vs 1/225) decides.
+    static PAIR1: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("LMTOOL_LL_AREA_PAIR1").is_some());
     const TABLE: [u32; 6] = [1, 7, 25, 25, 25, 25];
-    let s_full = FORCE.unwrap_or(TABLE[(quality as usize).min(5)]);
-    let k = if quality < 2 { 0.5f32 } else { 1.0 };
+    let mut s_full = FORCE.unwrap_or(TABLE[(quality as usize).min(5)]);
+    let mut k = if quality < 2 { 0.5f32 } else { 1.0 };
+    if *PAIR1 && (l.ball_flags >> 10) & 7 == 0 {
+        s_full = s_full.min(4);
+        k = 0.5;
+    }
     let a = l.emitting[0];
     let b = if l.emitting[1] > 0.0 { l.emitting[1] } else { a };
     if s_full <= 3 || a < 0.01 || density <= 0.0 {
@@ -1347,11 +1358,25 @@ pub fn setup_from_map(map_path: &str, paks: &[(String, String)], collection: &st
     // light — gl.s scaled by the tile quality of the light's cell when the layout carries one (the game refines zone+0x488 at the light
     // position; stpad: uniform). LMTOOL_LL_AREA=0 = the single position.
     let q_idx = quality.min(5);
+    // the texel density at the light — LMTOOL_LL_AREA_DENSITY = s (the layout's texels/m as is; the default until the zone[0x62] refinement
+    // is read), record (× √quality of the layout record containing the light, else the nearest record's), tile (× √tile quality of the
+    // light's cell), or a number (texels/m). stpad: any density ≥ 0.96 gives 5 × 5; tiny16's 982 item lamps are where it matters.
+    let dens_mode = std::env::var("LMTOOL_LL_AREA_DENSITY").unwrap_or_else(|_| "s".into());
     let lamps: Vec<Lamp> = lamps.into_iter().map(|l| {
-        let dens = {
-            let (cx, cz) = ((l.light.pos[0] / 32.0).floor() as i32, (l.light.pos[2] / 32.0).floor() as i32);
-            let tq = gl.cell_of.iter().position(|&c| c == (cx, cz)).and_then(|k| gl.tile_quality.get(k).copied()).unwrap_or(1.0);
-            gl.s * tq.max(0.0).sqrt().max(0.05)
+        let p = l.light.pos;
+        let dens = match dens_mode.as_str() {
+            "tile" => {
+                let (cx, cz) = ((p[0] / 32.0).floor() as i32, (p[2] / 32.0).floor() as i32);
+                let tq = gl.cell_of.iter().position(|&c| c == (cx, cz)).and_then(|k| gl.tile_quality.get(k).copied()).unwrap_or(1.0);
+                gl.s * tq.max(0.0).sqrt().max(0.05)
+            }
+            "record" => {
+                let inside = gl.records.iter().filter(|r| (0..3).all(|a| (p[a] - r.centre[a]).abs() <= r.half[a] + 0.01)).map(|r| r.quality).fold(f32::NAN, f32::max);
+                let q = if inside.is_finite() { inside } else { gl.records.iter().map(|r| ((0..3).map(|a| (p[a] - r.centre[a]).powi(2)).sum::<f32>(), r.quality)).min_by(|a, b| a.0.total_cmp(&b.0)).map(|x| x.1).unwrap_or(1.0) };
+                gl.s * q.max(0.0).sqrt().max(0.05)
+            }
+            "s" => gl.s,
+            v => v.parse::<f32>().unwrap_or(gl.s),
         };
         l.with_area(q_idx, dens)
     }).collect();
