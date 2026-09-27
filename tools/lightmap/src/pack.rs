@@ -97,6 +97,17 @@ pub static A_ORDER: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::n
 /// The packer node array's 4·N capacity limit (the game's; `packtest --no-node-cap` lifts it).
 pub static PACK_NODE_CAP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
+/// Env overrides for the bake path (the packtest flags reach the statics only from `packtest`): LMTOOL_PACK_FIT_ROUND,
+/// LMTOOL_PACK_CARRY_MODE, LMTOOL_PACK_A_ORDER — read once.
+pub fn env_overrides() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        if let Some(v) = std::env::var("LMTOOL_PACK_FIT_ROUND").ok().and_then(|v| v.parse().ok()) { FIT_ROUND.store(v, std::sync::atomic::Ordering::Relaxed); }
+        if let Some(v) = std::env::var("LMTOOL_PACK_CARRY_MODE").ok().and_then(|v| v.parse().ok()) { CARRY_MODE.store(v, std::sync::atomic::Ordering::Relaxed); }
+        if let Some(v) = std::env::var("LMTOOL_PACK_A_ORDER").ok().and_then(|v| v.parse().ok()) { A_ORDER.store(v, std::sync::atomic::Ordering::Relaxed); }
+    });
+}
+
 fn fit_round(v: f32) -> i32 {
     match FIT_ROUND.load(std::sync::atomic::Ordering::Relaxed) {
         1 => v.round() as i32,
@@ -120,6 +131,7 @@ pub fn area_order(charts: &[ChartExt]) -> Vec<usize> {
 /// `g` (down, or up when the bump asked for more), floored at `m·mins`; `carry += a − w·h`.
 /// Zero-extent charts get `m·mins`. Fails outright when `m²·N ≥ W·H`.
 pub fn try_pack(charts: &[ChartExt], order: &[usize], s: f32, w_atlas: u16, h_atlas: u16, g: u16, m: u16) -> Option<Vec<Placed>> {
+    env_overrides();
     let n = charts.len();
     if (m as u64) * (m as u64) * n as u64 >= w_atlas as u64 * h_atlas as u64 {
         return None;
@@ -141,7 +153,11 @@ pub fn try_pack(charts: &[ChartExt], order: &[usize], s: f32, w_atlas: u16, h_at
                 (fit_round(c.ext[0] * t), fit_round(c.ext[1] * t))
             };
             let (w0, h0) = fit(a);
-            let (w1, h1) = fit(a + carry.max(0.0));
+            // LMTOOL_PACK_BUMP (study): 0 = no carry bump at all; 1 (default) = the transcribed second fit with the positive carry;
+            // 2 = the bump only when the carry exceeds one unit of area; 3 = the carry clamped to the current chart's area
+            static BUMP: std::sync::LazyLock<u8> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_PACK_BUMP").ok().and_then(|v| v.parse().ok()).unwrap_or(1));
+            let grid = c.mins[0] > 1 || c.mins[1] > 1;
+            let (w1, h1) = match *BUMP { 0 => (w0, h0), 2 => if carry > 1.0 { fit(a + carry) } else { (w0, h0) }, 3 => fit(a + carry.max(0.0).min(a)), 4 if grid => (w0, h0), _ => fit(a + carry.max(0.0)) };
             let round = |v0: i32, v1: i32, min: u16| -> i32 {
                 let vp = v0 + (v0 < v1) as i32;
                 let v = if vp % g32 != 0 {
@@ -221,6 +237,11 @@ pub fn allocate_ordered(charts: &[ChartExt], order: &[usize], w_atlas: u16, h_at
 /// `allocate_ordered` with bisection iterations that are FORCED to fail (`force_fail`, 1-based iteration numbers) —
 /// to replay the editor's search path when our TryPack succeeds at a probe where the editor's failed.
 pub fn allocate_ordered_forced(charts: &[ChartExt], order: &[usize], w_atlas: u16, h_atlas: u16, g: u16, m: u16, max_iter: u32, force_fail: &[u32]) -> Option<(f32, Vec<Placed>)> {
+    // LMTOOL_LAYOUT_S=X (study): one TryPack at the given s (the editor's, from its mapping) instead of the scale search — isolates the
+    // per-chart size rule from the scale
+    if let Some(sf) = std::env::var("LMTOOL_LAYOUT_S").ok().and_then(|v| v.parse::<f32>().ok()) {
+        return try_pack(charts, order, sf, w_atlas, h_atlas, g, m).map(|p| (sf, p));
+    }
     let n = charts.len();
     let sum_area: f64 = charts.iter().map(|c| (c.ext[0] as f64) * (c.ext[1] as f64)).sum();
     if sum_area <= 0.0 {

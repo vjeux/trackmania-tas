@@ -978,6 +978,13 @@ fn run(a: Vec<String>) {
                 }
                 if n > 0 { lightmap::lmmesh::set_lm_uv_store(st); }
             }
+            // THE STOCK ITEM STORE DEFAULTS TO THE --pak LIST (E, 2026-09-27 00:25Z): stock items (Flag16m, Flag8m, Screen1x1Small …) are
+            // resolved from the packs named in LMTOOL_STOCK_PAKS; a run that named only the collection's pak lost tiny03 WhiteShore's five
+            // stock-item records (6 705 vs 6 710 charts, a different s). Unset → every --pak FILE:KEY, in order.
+            if std::env::var_os("LMTOOL_STOCK_PAKS").is_none() {
+                let specs: Vec<String> = a.iter().enumerate().filter(|(_, x)| *x == "--pak").filter_map(|(i, _)| a.get(i + 1).cloned()).collect();
+                if !specs.is_empty() { std::env::set_var("LMTOOL_STOCK_PAKS", specs.join(",")); }
+            }
             let mut scene = lightmap::geometry::Scene::from_map(&map_path).expect("scene");
             // THE RECORD SCENE (--lm-from-map on a map with authored blocks — Stadium): every block / clip / wall prefab entity and
             // every zone tile of the record pipeline becomes a scene instance (records::add_record_geometry) — the peel's geometry,
@@ -1886,6 +1893,22 @@ fn run(a: Vec<String>) {
                 eprintln!("layout-game: {} charts ({bound} bound), s {} layout units/m, Σarea {} m², quality index {q} ({} iterations), keys from {} ({:.1}s)", gl.charts.len(), gl.s, gl.sum_area, gl.max_iter, if pak.is_some() { "the block records (pak)" } else { "the cell / triangle centres" }, t0.elapsed().as_secs_f32());
                 // --records-tsv FILE: the layout's records per chart (class, obj, sub, name, quality, centre y) — `lmtool classcmp --records`
                 if let Some(p) = f("--records-tsv") { lightmap::classcmp::write_records_tsv(&p, &gl).unwrap_or_else(|e| panic!("--records-tsv: {e}")); eprintln!("records table: {} rows → {p}", gl.records.len()); }
+                // --layout-tsv FILE: the layout's rects per chart (chart, class, obj, x, y, w, h, ext) and stop — the packer study
+                if let Some(p) = f("--layout-tsv") {
+                    use std::io::Write;
+                    let mut fh = std::fs::File::create(&p).expect("--layout-tsv");
+                    writeln!(fh, "chart\tclass\tobj\tx\ty\tw\th\text_x\text_y\tentry\tentry_rect\tnb\tna\tord").unwrap();
+                    let mut entry_of: Vec<(usize, u32)> = vec![(usize::MAX, 0); gl.charts.len()];
+                    for (ei, (_, _, members)) in gl.entries.iter().enumerate() { for (k, o) in members { entry_of[*k] = (ei, *o); } }
+                    for (k, c) in gl.charts.iter().enumerate() {
+                        let r = &gl.records[k];
+                        let (ei, o) = entry_of[k];
+                        let (er, dims) = if ei != usize::MAX { let e = &gl.entries[ei]; (format!("{:?}", e.0), e.1) } else { (String::from("-"), (0, 0)) };
+                        writeln!(fh, "{k}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{ei}\t{er}\t{}\t{}\t{o}", r.class, c.obj, c.x, c.y, c.w, c.h, c.ext[0], c.ext[1], dims.0, dims.1).unwrap();
+                    }
+                    eprintln!("layout table: {} rows → {p}; s {}", gl.charts.len(), gl.s);
+                    return;
+                }
                 game_layout = Some(gl);
             }
             if let (Some(gl), Some((inst_of, _))) = (game_layout.as_ref(), record_scene.as_ref()) {
