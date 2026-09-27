@@ -44,7 +44,44 @@ fn medal(at: u32, factor: f64) -> u32 {
 pub fn cmd(args: &[String]) -> Result<(), String> {
     let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
     let club = f("--club").ok_or("cup-export needs --club ID")?;
-    let camp = f("--campaign").ok_or("cup-export needs --campaign ID")?;
+    // --campaigns A,B,C: one export directory and one zip per campaign (Everios96
+    // 2026-09-27: parts 6, 7, 8 in one run), each with its own uid prefix suffix
+    if let Some(list) = f("--campaigns") {
+        let camps: Vec<String> = list.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+        let base_out = PathBuf::from(f("--out").ok_or("cup-export needs --out DIR")?);
+        let mut rest: Vec<String> = args.iter().filter(|a| !a.starts_with("--campaigns") && !a.starts_with("--out") && !a.starts_with("--zip")).cloned().collect();
+        // drop the VALUES of the flags removed above
+        let mut cleaned: Vec<String> = Vec::new();
+        let mut skip = false;
+        for (i, a) in args.iter().enumerate() {
+            if skip {
+                skip = false;
+                continue;
+            }
+            if a == "--campaigns" || a == "--out" || a == "--zip" {
+                skip = true;
+                continue;
+            }
+            if a.starts_with("--campaigns=") || a.starts_with("--out=") || a.starts_with("--zip=") {
+                continue;
+            }
+            let _ = i;
+            cleaned.push(a.clone());
+        }
+        rest = cleaned;
+        for (i, c) in camps.iter().enumerate() {
+            let out_i = base_out.join(format!("campaign-{c}"));
+            let mut a2 = rest.clone();
+            a2.push("--campaign".into());
+            a2.push(c.clone());
+            a2.push("--out".into());
+            a2.push(out_i.to_string_lossy().into_owned());
+            println!("=== campaign {c} ({}/{}) -> {}", i + 1, camps.len(), out_i.display());
+            cmd(&a2)?;
+        }
+        return Ok(());
+    }
+    let camp = f("--campaign").ok_or("cup-export needs --campaign ID or --campaigns A,B,C")?;
     let out = PathBuf::from(f("--out").ok_or("cup-export needs --out DIR")?);
     let prefix = f("--prefix").unwrap_or_else(|| "Cup5".into());
     if prefix.len() != 4 {

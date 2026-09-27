@@ -349,7 +349,11 @@ pub fn cmd(args: &[String]) {
     // stays where it is, so y' = 7 + (y - 7) * scale. Summer 01: spawn 1584,16,784 -> 1584,11.5,784.
     let collection = source.items.first().map(|it| it.collection_raw).unwrap_or(26);
     let plane = fixed_plane(collection);
-    let target_anchor = anchor_flag.unwrap_or([source_anchor[0], plane + (source_anchor[1] - plane) * scale, source_anchor[2]]);
+    // TINY_Y_OFFSET metres shifts the whole converted map off the fixed-plane rule. The U10S
+    // club has been built with -1 since 2026-09-14 and Everios96 wants that look kept
+    // (2026-09-27 12:03Z "we need to go back to how it was"); the Summer/vista campaigns use 0.
+    let y_offset: f32 = std::env::var("TINY_Y_OFFSET").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
+    let target_anchor = anchor_flag.unwrap_or([source_anchor[0], plane + (source_anchor[1] - plane) * scale + y_offset, source_anchor[2]]);
     println!("  anchor: spawn {:?} -> {:?} (scale {scale})", source_anchor, target_anchor);
 
     // ALL authored blocks are required. A missing model is a refusal, never a
@@ -1165,14 +1169,14 @@ pub fn cmd(args: &[String]) {
     // An explicit `--anchor` (Giant's `fit`, a caller's own target) is exempt from the y check
     // only when it moved the anchor on purpose; the default rule is what the guard pins.
     {
-        let expect_y = plane + (source_anchor[1] - plane) * scale;
+        let expect_y = plane + (source_anchor[1] - plane) * scale + y_offset;
         if let Some(sp) = check.items.iter().find(|it| it.waypoint_tag.as_deref() == Some("Spawn")) {
             let dy = sp.pos[1] - expect_y;
             if anchor_flag.is_none() && dy.abs() > 0.01 {
                 let _ = std::fs::remove_file(&out);
-                panic!("HEIGHT GUARD: the Spawn item was written at y {:.3}, the fixed-plane rule says {:.3} (plane {plane}, source spawn y {:.3}, scale {scale}) — the build is {dy:+.3} m off and was NOT kept", sp.pos[1], expect_y, source_anchor[1]);
+                panic!("HEIGHT GUARD: the Spawn item was written at y {:.3}, the rule says {:.3} (plane {plane}, source spawn y {:.3}, scale {scale}, TINY_Y_OFFSET {y_offset}) — the build is {dy:+.3} m off and was NOT kept", sp.pos[1], expect_y, source_anchor[1]);
             }
-            println!("  height guard: spawn item y {:.3} = plane {plane} + ({:.3} − {plane}) × {scale} ✓", sp.pos[1], source_anchor[1]);
+            println!("  height guard: spawn item y {:.3} = plane {plane} + ({:.3} − {plane}) × {scale} + {y_offset} ✓", sp.pos[1], source_anchor[1]);
         }
     }
     println!("wrote {}", out.display());
