@@ -46,6 +46,7 @@ pub mod prepass;
 pub mod prepass_check;
 pub mod paktables;
 pub mod e2e;
+pub mod encodestudy;
 pub mod texsample;
 pub mod sunpass;
 pub mod lmaccum;

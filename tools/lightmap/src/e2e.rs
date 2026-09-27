@@ -528,6 +528,11 @@ pub fn chain_final(a: Vec<String>) {
 /// (`gpuenc::maxhdr_hbasis` per image), CS 23025 (`gpuenc::encode_ycbcr4`). Returns the dilated images, the MaxHdr
 /// buffer and the encoded Y4/Cb4/Cr4.
 pub fn finalise_tail(finals: &[Buf], mood_max_hdr: f32) -> (Vec<Buf>, [f32; 4], crate::gpuenc::YCbCr4) {
+    finalise_tail_opts(finals, mood_max_hdr, crate::gpuenc::EncodeOpts::default())
+}
+
+/// `finalise_tail` with the encode's options chosen (`encodestudy`: every UNORM store rounding against the editor's file).
+pub fn finalise_tail_opts(finals: &[Buf], mood_max_hdr: f32, opts: crate::gpuenc::EncodeOpts) -> (Vec<Buf>, [f32; 4], crate::gpuenc::YCbCr4) {
     let store = Rounding::Truncate;
     // the four coefficient images are independent: one thread each (perf 8; the chain was 3–5 s serial on 2048²)
     let imgs: Vec<Buf> = std::thread::scope(|sc| {
@@ -546,7 +551,7 @@ pub fn finalise_tail(finals: &[Buf], mood_max_hdr: f32) -> (Vec<Buf>, [f32; 4], 
         hs.into_iter().map(|h| h.join().expect("finalise")).collect()
     });
     let maxhdr = [crate::gpuenc::maxhdr_hbasis(&imgs[0]), crate::gpuenc::maxhdr_hbasis(&imgs[1]), crate::gpuenc::maxhdr_hbasis(&imgs[2]), crate::gpuenc::maxhdr_hbasis(&imgs[3])];
-    let enc = crate::gpuenc::encode_ycbcr4([&imgs[0], &imgs[1], &imgs[2], &imgs[3]], maxhdr, mood_max_hdr, crate::gpuenc::EncodeOpts::default());
+    let enc = crate::gpuenc::encode_ycbcr4([&imgs[0], &imgs[1], &imgs[2], &imgs[3]], maxhdr, mood_max_hdr, opts);
     (imgs, maxhdr, enc)
 }
 

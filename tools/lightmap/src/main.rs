@@ -2380,6 +2380,12 @@ fn run(mut a: Vec<String>) {
             if let Some(gm) = f("--dir-order") {
                 let game = lightmap::passdiff::read_manifest(&std::fs::read_to_string(&gm).expect("--dir-order manifest")).expect("--dir-order manifest");
                 let ord = lightmap::passdiff::game_issue_order(&game, 0, &prm.sphere_dirs);
+                // LMTOOL_DIR_ORDER_TRACE=1 (F): every captured issue position k → our default index oi — is our default order the game's
+                // (oi == k) or a permutation of the same set (the raster offset k mod 9 pairs with the WRONG jitter when it is not)
+                if std::env::var_os("LMTOOL_DIR_ORDER_TRACE").is_some() {
+                    let ident = ord.iter().filter(|(k, oi)| k == oi).count();
+                    eprintln!("dir-order trace: {} captured positions, {} at the same index in our default order; pairs (k → ours): {}", ord.len(), ident, ord.iter().map(|(k, oi)| format!("{k}→{oi}")).collect::<Vec<_>>().join(" "));
+                }
                 let mut used = vec![false; prm.sphere_dirs.len()];
                 let mut new_dirs: Vec<[f32; 3]> = Vec::new();
                 // the source index of every new position (the per-direction tables below follow the permutation)
@@ -3351,6 +3357,14 @@ fn run(mut a: Vec<String>) {
             let s = match (writer_transcribed, &chain_finals) {
                 (true, Some(finals)) => {
                     let tw = std::time::Instant::now();
+                    // LMTOOL_FINALS_OUT=DIR (study, F 2026-09-27): the four accumulated H-basis images (2048² RGBA f32 raw, `final_k.f32`) and the
+                    // mood cb value (`mood.txt`) — `lmtool encode-study DIR --against EDITOR.Map.Gbx` re-runs the encode under every UNORM rounding
+                    if let Ok(dir) = std::env::var("LMTOOL_FINALS_OUT") {
+                        let d = std::path::Path::new(&dir); let _ = std::fs::create_dir_all(d);
+                        for (k, f) in finals.iter().enumerate() { let mut b = Vec::with_capacity(f.data.len() * 4); for v in &f.data { b.extend_from_slice(&v.to_le_bytes()); } std::fs::write(d.join(format!("final_{k}.f32")), b).expect("finals out"); }
+                        std::fs::write(d.join("mood.txt"), format!("{} {} {}\n", mood_max_hdr_for_encode, finals[0].w, finals[0].h)).expect("finals out");
+                        eprintln!("writer: the four finals written to {dir} (LMTOOL_FINALS_OUT)");
+                    }
                     let (_imgs, maxhdr, enc) = lightmap::e2e::finalise_tail(finals, mood_max_hdr_for_encode);
                     // LMTOOL_MAXHDR_TRACE=1 (E, 2026-09-27 20:00Z): WHERE the frame-0 record's image max sits — the argmax texel of each
                     // resolved plane (the writer's MaxHdr buffer is the max |rgb| over the WHOLE resolved image, pads and gutters included)
@@ -6708,6 +6722,7 @@ fn run(mut a: Vec<String>) {
             lightmap::lmmesh::set_lm_uv_store(st);
             for l in &links { println!("{l}: {:?}", lightmap::lmmesh::lm_uv_index_cached(l)); }
         }
+        "encode-study" => { if let Err(e) = lightmap::encodestudy::run(&a) { eprintln!("encode-study: {e}"); std::process::exit(1); } }
         "layoutcmp" => { if let Err(e) = lightmap::layoutcmp::run(&a) { eprintln!("layoutcmp: {e}"); std::process::exit(1); } }
         "texeldelta" => {
             // lmtool texeldelta OURS.Map.Gbx --against EDITOR.Map.Gbx [--records TSV] [--frame 0] [--png PREFIX] [--worst N] [--min-texels 64]:
