@@ -50,3 +50,5 @@ redisland-sunset-q3	pwc-red-source.Map.Gbx	-	RedIsland	3	0xceb8	full	-	-	99
 redisland-night-q3	pwc-red-source.Map.Gbx	-	RedIsland	3	0x199a	full	-	-	99
 np-tk3-bluebay-day-q1	np-tk3-source-day.Map.Gbx	-	BlueBay	1	-	full	-	-	99
 np-tk3-bluebay-day-q2	np-tk3-source-day.Map.Gbx	-	BlueBay	2	-	full	-	-	99
+giant20x2-stadium-sunrise-q4-exact	giant20x2red-editor-q4.Map.Gbx	giant20x2red-editor-q4.Map.Gbx	Stadium	4	-	full	-	env:LMTOOL_LAYOUT_ISOLATE=28640..28642,30557	99
+g23-whiteshore-day-q4-exact	g23-WhiteShore-Day-q4-editor-reduced-source-bake.Map.Gbx	g23-WhiteShore-Day-q4-editor-reduced-source-bake.Map.Gbx	WhiteShore	4	-	full	-	env:LMTOOL_LAYOUT_ISOLATE=70275..70282,70284..70291,70293..70316,73918..73920,74349..74351,75134..75136	99
