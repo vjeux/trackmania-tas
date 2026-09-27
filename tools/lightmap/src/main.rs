@@ -5170,7 +5170,11 @@ fn run(mut a: Vec<String>) {
             // lmtool dds-mean FILE.dds [--level L] : per-channel mean of one mip level, as stored (0..1) and sRGB-decoded to linear
             // (port engineer G: the pack textures' albedo means — Grass_D / Grass_X2 for the Stadium tiles' pre-pass class)
             let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
-            let tex = lightmap::texsample::load_dds(std::path::Path::new(&a[1]), lightmap::texsample::Bc1Decode::Ideal).unwrap_or_else(|e| panic!("{e}"));
+            let Some(path) = a.get(1).filter(|p| !p.starts_with("--")) else {
+                eprintln!("usage: lmtool dds-mean FILE.dds [--level L] [--bands N] [--grid x0,z0,x1,z1,step]");
+                std::process::exit(2);
+            };
+            let tex = lightmap::texsample::load_dds(std::path::Path::new(path), lightmap::texsample::Bc1Decode::Ideal).unwrap_or_else(|e| { eprintln!("{e}"); std::process::exit(1) });
             let level: usize = f("--level").map(|v| v.parse().unwrap()).unwrap_or(0);
             let lv = &tex.levels[0][level.min(tex.levels[0].len() - 1)];
             let n = lv.len().max(1) as f64;
