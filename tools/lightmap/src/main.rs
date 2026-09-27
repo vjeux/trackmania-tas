@@ -188,7 +188,7 @@ fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-fn run(a: Vec<String>) {
+fn run(mut a: Vec<String>) {
     match a[0].as_str() {
         "walk" => {
             for f in &a[1..] {
@@ -945,6 +945,27 @@ fn run(a: Vec<String>) {
             // lmtool bake MAP --template T --out OUT [--sun-az D --sun-el D] [--sky r,g,b] [--sun r,g,b] [--k K]
             //   [--tpm T] [--flip-v] [--bounce F] [--albedo A] [--sky-samples N] [--sun-samples N] [--ground-y Y] [--base 4096]
             // lmtool sunfit MAP [--items N] [--sky-samples N]: grid over sun directions vs the map's own bake
+            // THE PAK DEFAULTS (E, 2026-09-27 15:30Z — V2's np-tk3 "regression" was a command line without Stadium.pak: the StadiumOnTerrain
+            // pillar's BaseColor lives there, and its 1 016 triangles went black on the PAD constant): beside every --pak FILE:KEY, the
+            // companions Stadium.pak and Maniaplanet.pak IN THE SAME DIRECTORY (their keys are fixed) are added when present and not
+            // named; --no-pak-defaults opts out. A material still in no pack is a WARNING (setupmap::WARNINGS), fatal under --strict.
+            if a[0] == "bake" && !a.iter().any(|x| x == "--no-pak-defaults") {
+                let specs: Vec<String> = a.iter().enumerate().filter(|(_, x)| *x == "--pak").filter_map(|(i, _)| a.get(i + 1).cloned()).collect();
+                let named: Vec<String> = specs.iter().filter_map(|s| s.rsplit_once(':').map(|(p, _)| std::path::Path::new(p).file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default())).collect();
+                let mut added: Vec<String> = Vec::new();
+                for s in &specs {
+                    let Some((p, _)) = s.rsplit_once(':') else { continue };
+                    let dir = std::path::Path::new(p).parent().map(|d| d.to_path_buf()).unwrap_or_default();
+                    for (name, key) in lightmap::paktables::COMPANION_PAKS {
+                        let file = dir.join(name);
+                        let lname = name.to_ascii_lowercase();
+                        if named.iter().any(|n| *n == lname) || added.iter().any(|x| x.to_ascii_lowercase().ends_with(&format!("/{lname}:{}", key.to_ascii_lowercase()))) || !file.is_file() { continue; }
+                        added.push(format!("{}:{key}", file.display()));
+                    }
+                }
+                for spec in &added { a.push("--pak".to_string()); a.push(spec.clone()); }
+                if !added.is_empty() { eprintln!("pak defaults: added {} beside the named --pak (--no-pak-defaults opts out)", added.iter().map(|s| s.rsplit_once(':').map(|(p, _)| p.to_string()).unwrap_or_default()).collect::<Vec<_>>().join(", ")); }
+            }
             let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
             let has = |k: &str| a.iter().any(|x| x == k);
             let map_path = a[1].clone();
@@ -2114,6 +2135,12 @@ fn run(a: Vec<String>) {
                         }
                     }
                     for n in &pak_notes { eprintln!("setup-from-map: {n}"); }
+                    // a material in none of the packs (setupmap::WARNINGS): --strict stops here, before the bake spends its minutes
+                    if has("--strict") && !lightmap::setupmap::WARNINGS.lock().unwrap().is_empty() {
+                        for w in lightmap::setupmap::WARNINGS.lock().unwrap().iter() { eprintln!("STRICT: {w}"); }
+                        eprintln!("STRICT: the output would not be a lighting result — exiting (drop --strict to bake anyway)");
+                        std::process::exit(2);
+                    }
                     if pak_notes.is_empty() {
                         eprintln!("setup-from-map: FROZEN from the capture — the terrain constants (tile slices {:?} → {:?}, Land → {:?}), the TrackWall constant {:?}, the water id map / plane tables / LUTs 15075 + 15078 ({:.1}s)", frozen.tile_slices, frozen.tile_rgb, frozen.wall_rgb, frozen.pad_rgb, ti.elapsed().as_secs_f32());
                     } else {
@@ -3379,6 +3406,14 @@ fn run(a: Vec<String>) {
             lightmap::mapio::save_with_chunk(&m, &payload, &out).expect("save");
             eprintln!("end-of-bake: the chunk write + file save {:.2}s", t_save.elapsed().as_secs_f32());
             println!("{} charts, atlas fill {:.1}%, chunk {} B; wrote {out} ({:.1}s)", s.charts, s.fill * 100.0, payload.len(), t0.elapsed().as_secs_f32());
+            // the setup's WARNINGS once more, where the summary is read (a missing pak can never pass as a lighting result)
+            {
+                let ws = lightmap::setupmap::WARNINGS.lock().unwrap();
+                if !ws.is_empty() {
+                    for w in ws.iter() { eprintln!("WARNING: {w}"); println!("WARNING: {w}"); }
+                    eprintln!("WARNING: {} — this file is NOT a lighting result to compare against the editor (see the setup-from-map WARNING lines; --strict makes it fatal)", ws.len());
+                }
+            }
             // the process's peak resident set (Linux: VmHWM of /proc/self/status) — `lmtool bench` reads it
             if let Ok(st) = std::fs::read_to_string("/proc/self/status") {
                 if let Some(l) = st.lines().find(|l| l.starts_with("VmHWM:")) {
@@ -7106,6 +7141,43 @@ fn run(a: Vec<String>) {
             let row = |o: &str, l: &lightmap::geometry::LightDef, id: u32, c: (u32, u32)| format!("{o}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{id}\t{}\t{}\t{:#x}\t{:#x}\t{}\t{}\n", l.pos[0], l.pos[1], l.pos[2], l.dir[0], l.dir[1], l.dir[2], l.color[0], l.color[1], l.color[2], l.intensity, l.radius, l.cone.0, l.cone.1, l.animated, l.night_only, c.0, c.1, l.gx_flags, l.ball_flags, l.emitting[0], l.emitting[1]);
             for (k, (o, l)) in all.iter().enumerate() { t.push_str(&row(o, l, light_id[k], cell_of[k])); }
             if let Some(out) = f("--out") { std::fs::write(&out, t).expect("write"); println!("→ {out}"); } else { for line in t.lines().take(12) { println!("{line}"); } }
+            // --dump TSV [--dump-join OUT.tsv]: the baker's /lmlights INSTANCE dump (passcap/<map>-lights/*-lmlights-inst*.tsv — columns tx ty tz,
+            // flags48, gx_u20, gx_u24 (hex f32) …) joined to our lamps by NEAREST POSITION (E, 2026-09-27: what the game's GxLight word at
+            // +0x24 is against the file's colour / intensity — it is colour.R to the byte on 982 of tiny16's 986 lamps; the four STOCK
+            // screens read 104/255 = 2× the file colour our stock loader resolves). Prints the distance statistics, every
+            // (file r g b intensity → gx_u24) class with its count, and the per-lamp join when --dump-join names a file.
+            if let Some(dp) = f("--dump") {
+                let txt = std::fs::read_to_string(&dp).expect("--dump");
+                let mut lines = txt.lines();
+                let hdr: Vec<&str> = lines.next().unwrap_or("").split('\t').collect();
+                let col = |n: &str| hdr.iter().position(|h| *h == n).unwrap_or_else(|| panic!("--dump: no column {n} in {dp}"));
+                let (ctx, cty, ctz, c48, c20, c24) = (col("tx"), col("ty"), col("tz"), col("flags48"), col("gx_u20"), col("gx_u24"));
+                let hexf = |s: &str| f32::from_bits(u32::from_str_radix(s.trim(), 16).unwrap_or(0));
+                let rows: Vec<([f32; 3], String, String, f32)> = lines.filter(|l| !l.trim().is_empty()).map(|l| {
+                    let c: Vec<&str> = l.split('\t').collect();
+                    ([c[ctx].parse().unwrap(), c[cty].parse().unwrap(), c[ctz].parse().unwrap()], c[c48].to_string(), c[c20].to_string(), hexf(c[c24]))
+                }).collect();
+                let mut used = vec![false; rows.len()];
+                let mut dists: Vec<f32> = Vec::new();
+                let mut classes: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+                let mut join = String::from("owner\tdist_m\tr\tg\tb\tintensity\tgx_u24\tgx_u20\tflags48\tr_x_int\tlin_r_x_int\n");
+                let lin = |c: f32| if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) };
+                for (o, l) in &all {
+                    let (mut best, mut bd) = (usize::MAX, f32::MAX);
+                    for (j, r) in rows.iter().enumerate() { let d = (0..3).map(|a| (r.0[a] - l.pos[a]).powi(2)).sum::<f32>().sqrt(); if d < bd { bd = d; best = j; } }
+                    if best == usize::MAX { continue; }
+                    used[best] = true;
+                    dists.push(bd);
+                    let r = &rows[best];
+                    *classes.entry(format!("file rgb ({:.4}, {:.4}, {:.4}) × {:.3}  →  gx_u24 {:.4} ({:.2}/255)  gx_u20 {}  flags48 {}", l.color[0], l.color[1], l.color[2], l.intensity, r.3, r.3 * 255.0, r.2, r.1)).or_insert(0) += 1;
+                    join.push_str(&format!("{o}\t{bd:.4}\t{}\t{}\t{}\t{}\t{:.6}\t{}\t{}\t{:.6}\t{:.6}\n", l.color[0], l.color[1], l.color[2], l.intensity, r.3, r.2, r.1, l.color[0] * l.intensity, lin(l.color[0]) * l.intensity));
+                }
+                dists.sort_by(|a, b| a.total_cmp(b));
+                let n = dists.len();
+                println!("dump {dp}: {} instances; ours {} lamps joined by nearest position — dist median {:.4} m, p90 {:.4}, max {:.4}; {} dump rows unused (in the dump, not in our list)", rows.len(), n, dists.get(n / 2).copied().unwrap_or(0.0), dists.get(n * 9 / 10).copied().unwrap_or(0.0), dists.last().copied().unwrap_or(0.0), used.iter().filter(|u| !**u).count());
+                for (k, v) in &classes { println!("  {v:>5} × {k}"); }
+                if let Some(out) = f("--dump-join") { std::fs::write(&out, join).expect("write"); println!("→ {out}"); }
+            }
         }
         "records-check" => {
             // lmtool records-check MAP --pak FILE:KEY --dump TSV [--collection Stadium] [--zone Grass] [--grid 96] [--cell-y 1] [--yoff 0]

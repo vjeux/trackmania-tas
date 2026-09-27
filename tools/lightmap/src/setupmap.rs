@@ -22,6 +22,10 @@ use crate::shadowmap::{self, CasterDraw, CasterMesh, InstanceTables, LightCamera
 use crate::sunpass::{self, SunDraw};
 use crate::texsample::{self, Bc1Decode, Texture};
 
+/// THE BAKE'S WARNINGS (E, 2026-09-27): setup findings that make the output NOT a lighting result — a material in none of the
+/// --pak files (its triangles go black) — collected here, printed again at the end of the bake, fatal under `--strict`.
+pub static WARNINGS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
 pub struct FromMap {
     pub cam: OrthoCamera,
     pub pw01: [[f32; 4]; 4],
@@ -1010,6 +1014,7 @@ pub fn tables_from_paktables_with_records(f: &mut FrozenTables, store: &mut mapg
         },
     }
     // the items' constant materials: every game-material link of the scene's models that the pack resolves
+    let mut missing: Vec<String> = Vec::new();
     let mut links: Vec<String> = Vec::new();
     for m in &scene.models {
         for l in &m.mat_links {
@@ -1033,11 +1038,39 @@ pub fn tables_from_paktables_with_records(f: &mut FrozenTables, store: &mut mapg
                 // at the mesh TEXCOORD0 (VS 17021 o1 = v1, PS 17023: TMapBaseColor × 1/9, alpha forced 1) — never a constant, never black
                 match basecolor_texture(store, l) {
                     Ok(Some((path, tx, at))) => { got.push(format!("{l} → {} {path} ({}×{}, {} mips; the {} class)", if at { "BaseColorOp" } else { "BaseColor" }, tx.w, tx.h, tx.mips, if at { "17022 alpha-tested (LMTOOL_DISPIN_ALPHA_TEST: the refuted inference)" } else { "17023 / 9529 textured, opaque" })); f.link_tex.insert(l.to_ascii_lowercase(), (tx, at)); }
-                    Ok(None) => notes.push(format!("pak: {l}: {e}; no BaseColor slot in its chain — the constant path keeps it")),
-                    Err(e2) => notes.push(format!("pak: {l}: BaseColor: {e2}")),
+                    Ok(None) => {
+                        // A MATERIAL (OR ITS BASECOLOR TEXTURE) IN NONE OF THE PACKS is not a classification — it is a missing --pak (E, 2026-09-27
+                        // 15:30Z, after V2's np-tk3 "regression": a command line without Stadium.pak put the StadiumOnTerrain pillar's 1 016
+                        // triangles on the PAD constant, black, and the bake passed as a lighting result). Counted and named in the WARNING
+                        // below; `--strict` makes it fatal.
+                        if e.contains("not in any pack") { missing.push(l.clone()); }
+                        notes.push(format!("pak: {l}: {e}; no BaseColor slot in its chain — the constant path keeps it"));
+                    }
+                    Err(e2) => { if e2.contains("not in any pack") || e.contains("not in any pack") { missing.push(l.clone()); } notes.push(format!("pak: {l}: BaseColor: {e2}")); }
                 }
             }
         }
+    }
+    if !missing.is_empty() {
+        // the triangles and instances behind the missing links: `Tri.mat` indexes `mat_links`
+        let mut tris = 0usize;
+        let mut insts = 0usize;
+        let mut per: Vec<String> = Vec::new();
+        for l in &missing {
+            let (mut lt, mut li) = (0usize, 0usize);
+            for (mi, m) in scene.models.iter().enumerate() {
+                let Some(k) = m.mat_links.iter().position(|x| x == l) else { continue };
+                let n = m.tris.iter().filter(|t| t.mat as usize == k).count();
+                let ni = scene.instances.iter().filter(|i| i.model == mi).count();
+                lt += n * ni.max(1);
+                li += ni;
+            }
+            tris += lt;
+            insts += li;
+            per.push(format!("{l} ({lt} triangles on {li} instances)"));
+        }
+        notes.push(format!("WARNING: {} material(s) of the scene's models have their material or BaseColor texture in NONE of the --pak files — {tris} triangles on {insts} item instances take the PAD constant (black) instead of their BaseColor: {}. Add the pack that holds them (Modifier\\StadiumOnTerrain / Stadium materials → Stadium.pak, stock items → Maniaplanet.pak; the bake adds Stadium.pak + Maniaplanet.pak beside the collection's pak by default — --no-pak-defaults opts out); --strict makes this fatal.", missing.len(), per.join("; ")));
+        WARNINGS.lock().unwrap().push(format!("{} material(s) with their material or BaseColor texture in none of the --pak files ({tris} triangles on {insts} instances black): {}", missing.len(), missing.join(", ")));
     }
     got.push(water_tables_from_records(f, store, collection, records, notes)?);
     notes.push(format!("tables FROM THE PACK (RE 8's paktables): {}; nothing of the material inputs is frozen", got.join("; ")));

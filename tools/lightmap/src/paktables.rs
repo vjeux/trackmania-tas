@@ -31,6 +31,22 @@ use mapgeom::node::FileGenRaw;
 use mapgeom::store::DataStore;
 use mapgeom::terrain::{self, TerrainMaterial, WaterDesc};
 
+/// THE COMPANION PACKS every bake needs beside the collection's (E, 2026-09-27): Stadium.pak holds the Modifier\StadiumOnTerrain
+/// materials' textures (np-tk3's pillar / wall BaseColor) and the Stadium items' materials; Maniaplanet.pak the Techno3 parent
+/// materials / shaders (the PyPxz family names, the LM uv-set selector) and the stock items. Their keys are fixed per file.
+/// `lmtool bake` adds the ones found in the named --pak's directory (--no-pak-defaults opts out).
+pub const COMPANION_PAKS: [(&str, &str); 2] = [("Stadium.pak", "B773D73047A4104857722366D78D28A6"), ("Maniaplanet.pak", "9A93723447347A8CE336CCFC49E65449")];
+/// The key of a known pack by its file name (the collections' packs share one key), for tools that take a directory.
+pub fn pak_key_of(file_name: &str) -> Option<&'static str> {
+    let n = file_name.to_ascii_lowercase();
+    match n.as_str() {
+        "stadium.pak" => Some("B773D73047A4104857722366D78D28A6"),
+        "maniaplanet.pak" | "maniaplanet_core.pak" => Some("9A93723447347A8CE336CCFC49E65449"),
+        "bluebay.pak" | "greencoast.pak" | "whiteshore.pak" | "redisland.pak" => Some("660C4C156B80337E296A1034B0AA05B8"),
+        _ => None,
+    }
+}
+
 /// A world-projected material's pre-pass constant and how it was found.
 #[derive(Clone, Debug)]
 pub struct MaterialConstant {
