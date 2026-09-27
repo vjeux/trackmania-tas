@@ -459,6 +459,8 @@ pub fn build_full2_placed(mut charts: Vec<Chart>, bbox: ([f32; 3], [f32; 3]), te
     if let Some(fp) = &frame {
         patch_frame_records(&mut mapping.head, fp);
     }
+    // the head's records follow the image frames (two): a 3-record source template is cut like the transcribed writer's
+    let _ = cut_head_records(&mut mapping.head, frame_records_wanted());
     let chunks: Vec<CacheChunk> = td
         .cache
         .chunks
@@ -508,7 +510,9 @@ pub fn build_full2_placed(mut charts: Vec<Chart>, bbox: ([f32; 3], [f32; 3]), te
     let (black, im00, one) = (black?, im00?, one?);
     let im10 = match im10 { Some(r) => Some(r?), None => None };
     let mut frames = Vec::new();
-    for fi in 0..td.frames.len() {
+    // TWO IMAGE FRAMES ALWAYS (V2-15, 2026-09-27: a 3-frame SOURCE file made this writer emit 3 frames — the editor writes two, whatever
+    // the source carried; the transcribed writer below already caps at the record count)
+    for fi in 0..td.frames.len().min(frame_records_wanted()) {
         let mut images = Vec::new();
         for ii in 0..td.frames[fi].images.len() {
             let src = &td.frames[fi].images[ii];

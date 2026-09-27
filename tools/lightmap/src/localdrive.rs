@@ -192,10 +192,12 @@ pub fn area_samples(l: &LightDef, r: f32, quality: u32, density: f32) -> Vec<[f3
     out
 }
 
-/// The face size of the lamp's flat cube: FUN_14023cb30's ceilf(2 · R_eff · s) clamped to [8, 1024], s = the bake's texel
+/// The face size of the lamp's flat cube: FUN_14023cb30's ceilf(2 · R_eff · s) clamped to [8, atlas/3] (RE 14 16:15Z, asm 0x14023cb30–0x14023cc12:
+/// cvttss2si(ceilf(2 · s · R_eff · lm210+0x10c)) clamped [8, zone+0x414/3] — the 3 × 2 sheet must fit the 4096² shadow atlas, so the
+/// upper clamp is 1365, not the 1024 written before 2026-09-27), s = the bake's texel
 /// density — 173 for the stpad lamp (2 · 40.707722 · 2.1194804 = 172.56).
 pub fn face_size(r_eff: f32, texels_per_m: f32) -> u32 {
-    ((2.0 * r_eff * texels_per_m).ceil() as u32).clamp(8, 1024)
+    ((2.0 * r_eff * texels_per_m).ceil() as u32).clamp(8, SHADOW_TARGET / 3)
 }
 
 /// The six flat-cube faces' Scale_MaxAbs / Trans for `size`² faces in the `target`² D16 texture: face f's tile at

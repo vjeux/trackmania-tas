@@ -226,7 +226,7 @@ pub fn geom_summary(s2: &mapgeom::static_item::solid2::CPlugSolid2Model) -> Vec<
         let names: Vec<u32> = st.map(|s| s.decls.iter().map(|d| d.name()).collect()).unwrap_or_default();
         let nv = st.and_then(|s| s.decls.iter().zip(s.elems.iter()).find(|(d, _)| d.name() == mapgeom::static_item::vstream::N_POSITION).map(|(_, e)| match e { Elem::Float3(p) => p.len(), _ => 0 })).unwrap_or(0);
         let nt = vis.index_buffer.as_ref().map(|ib| ib.indices.len() / 3).unwrap_or(0);
-        out.push(format!("geom {gi}: visual {} lod_mask {} material {} — {nv} verts, {nt} tris, stream decls {:?}, tex_coord_sets {}, lm uvs {}, visual tangent arrays {:?} (inline_tangents {}), main flags {:#x}", sg.visual_index, sg.lod_mask, sg.material_index, names, vis.main.as_ref().map(|m| m.tex_coord_sets.len()).unwrap_or(0), lightmap_uvs(vis).is_some(), vis.tangents.as_ref().map(|(a, b)| (a.len(), b.len())), vis.inline_tangents, vis.main.as_ref().map(|m| m.flags()).unwrap_or(0)));
+        out.push(format!("geom {gi}: visual {} lod_mask {} material {} u01 {} u02 {} — {nv} verts, {nt} tris, stream decls {:?}, tex_coord_sets {}, lm uvs {}, visual tangent arrays {:?} (inline_tangents {}), main flags {:#x}", sg.visual_index, sg.lod_mask, sg.material_index, sg.u01, sg.u02, names, vis.main.as_ref().map(|m| m.tex_coord_sets.len()).unwrap_or(0), lightmap_uvs(vis).is_some(), vis.tangents.as_ref().map(|(a, b)| (a.len(), b.len())), vis.inline_tangents, vis.main.as_ref().map(|m| m.flags()).unwrap_or(0)));
     }
     out
 }

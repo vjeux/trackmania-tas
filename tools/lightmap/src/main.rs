@@ -7460,8 +7460,10 @@ fn run(mut a: Vec<String>) {
                 }
                 println!("light ids vs {pred}: {ok} of {n} agree{}", if bad.is_empty() { String::new() } else { format!("; first differences: {}", bad.join("; ")) });
             }
-            let mut t = String::from("owner\tx\ty\tz\tdx\tdy\tdz\tr\tg\tb\tintensity\tradius\tcone_inner\tcone_outer\tanimated\tnight_only\tlight_id\tcell_x\tcell_z\tgx_flags\tball_flags\temit_left\temit_up\n");
-            let row = |o: &str, l: &lightmap::geometry::LightDef, id: u32, c: (u32, u32)| format!("{o}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{id}\t{}\t{}\t{:#x}\t{:#x}\t{}\t{}\n", l.pos[0], l.pos[1], l.pos[2], l.dir[0], l.dir[1], l.dir[2], l.color[0], l.color[1], l.color[2], l.intensity, l.radius, l.cone.0, l.cone.1, l.animated, l.night_only, c.0, c.1, l.gx_flags, l.ball_flags, l.emitting[0], l.emitting[1]);
+            let mut t = String::from("owner\tx\ty\tz\tdx\tdy\tdz\tr\tg\tb\tintensity\tradius\tcone_inner\tcone_outer\tanimated\tnight_only\tlight_id\tcell_x\tcell_z\tgx_flags\tball_flags\temit_left\temit_up\tcolour\n");
+            let colours = mf.colors();
+            let colour_of = |o: &str| -> u8 { o.strip_prefix("item ").and_then(|i| i.parse::<usize>().ok()).and_then(|i| scene.instances.get(i)).and_then(|inst| colours.as_ref().map(|c| c.item(inst.item))).unwrap_or(0) };
+            let row = |o: &str, l: &lightmap::geometry::LightDef, id: u32, c: (u32, u32)| format!("{o}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{id}\t{}\t{}\t{:#x}\t{:#x}\t{}\t{}\t{}\n", l.pos[0], l.pos[1], l.pos[2], l.dir[0], l.dir[1], l.dir[2], l.color[0], l.color[1], l.color[2], l.intensity, l.radius, l.cone.0, l.cone.1, l.animated, l.night_only, c.0, c.1, l.gx_flags, l.ball_flags, l.emitting[0], l.emitting[1], colour_of(o));
             for (k, (o, l)) in all.iter().enumerate() { t.push_str(&row(o, l, light_id[k], cell_of[k])); }
             if let Some(out) = f("--out") { std::fs::write(&out, t).expect("write"); println!("→ {out}"); } else { for line in t.lines().take(12) { println!("{line}"); } }
             // --dump TSV [--dump-join OUT.tsv]: the baker's /lmlights INSTANCE dump (passcap/<map>-lights/*-lmlights-inst*.tsv — columns tx ty tz,
@@ -7492,7 +7494,7 @@ fn run(mut a: Vec<String>) {
                     used[best] = true;
                     dists.push(bd);
                     let r = &rows[best];
-                    *classes.entry(format!("file rgb ({:.4}, {:.4}, {:.4}) × {:.3}  →  gx_u24 {:.4} ({:.2}/255)  gx_u20 {}  flags48 {}", l.color[0], l.color[1], l.color[2], l.intensity, r.3, r.3 * 255.0, r.2, r.1)).or_insert(0) += 1;
+                    *classes.entry(format!("file rgb ({:.4}, {:.4}, {:.4}) × {:.3} colour byte {}  →  gx_u24 {:.4} ({:.2}/255)  gx_u20 {}  flags48 {}", l.color[0], l.color[1], l.color[2], l.intensity, colour_of(o), r.3, r.3 * 255.0, r.2, r.1)).or_insert(0) += 1;
                     join.push_str(&format!("{o}\t{bd:.4}\t{}\t{}\t{}\t{}\t{:.6}\t{}\t{}\t{:.6}\t{:.6}\n", l.color[0], l.color[1], l.color[2], l.intensity, r.3, r.2, r.1, l.color[0] * l.intensity, lin(l.color[0]) * l.intensity));
                 }
                 dists.sort_by(|a, b| a.total_cmp(b));

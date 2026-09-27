@@ -266,6 +266,13 @@ pub fn solid2_lights_ext(s2: &mapgeom::static_item::solid2::CPlugSolid2Model, po
         };
         let Some(gx) = pl.gx_light() else { continue };
         let (color, intensity, radius) = gx.summary();
+        // LMTOOL_LIGHT_TRACE=1: the light's source (inline / the external .Light.Gbx path) and EVERY GxLight chunk as parsed — the stock
+        // screens' game colour (GxLight+0x24 = 104/255) vs the file's 52/255 (E, 2026-09-27)
+        if std::env::var_os("LMTOOL_LIGHT_TRACE").is_some() {
+            let src = match (l.node.inline.as_deref(), &ext) { (Some(Node::Light(_)), _) => "inline".to_string(), (_, Some((_, externals))) => externals.iter().find(|(i, _)| *i == l.node.index as u32).map(|(_, p)| p.clone()).unwrap_or_else(|| format!("external index {}", l.node.index)), _ => format!("external index {} (no store)", l.node.index) };
+            eprintln!("light socket: {src}; summary colour {color:?} intensity {intensity} radius {radius}; CPlugLight flags {:#x} animated {} night_only {}", pl.flags(), pl.is_animated(), pl.night_only());
+            for ch in &gx.chunks { eprintln!("  gx chunk: {ch:?}"); }
+        }
         let mut cone = (180.0f32, 180.0f32);
         let (mut hyper2, mut att_htnlr, mut ball_flags, mut emitting, mut gx_flags, mut radii) = ([0.0f32; 2], [0.0f32; 2], 0u32, [0.0f32; 2], 0u32, [radius; 3]);
         for ch in &gx.chunks {
@@ -367,9 +374,14 @@ pub fn geom_from_solid2_ext(s2: &mapgeom::static_item::solid2::CPlugSolid2Model,
     let mut material_excluded = |mi: usize, ext: &mut Option<(&mut mapgeom::store::DataStore, &[(u32, String)])>| -> bool {
         if let Some(v) = excluded.get(&mi) { return *v; }
         let mut v = false;
+        // the material's game link: a custom material's link, the older material list's inline link, or (a pack prefab, `ext`) the
+        // external reference's path
+        let own_link: Option<String> = s2.custom_materials.get(mi).and_then(|cm| cm.inst().and_then(|m| m.link().map(|l| l.to_string())))
+            .or_else(|| s2.materials.get(mi).and_then(|mr| match mr.inline.as_deref() { Some(Node::Material(m)) => m.link().map(|l| l.to_string()), _ => None }))
+            .filter(|l| !l.is_empty());
         if let Some((store, externals)) = ext.as_mut() {
             let path: Option<String> = s2.materials.get(mi).and_then(|r| if r.index >= 0 { externals.iter().find(|(i, _)| *i == r.index as u32).map(|(_, p)| p.clone()) } else { None })
-                .or_else(|| s2.custom_materials.get(mi).and_then(|cm| cm.inst().and_then(|m| m.link().map(|l| l.to_string()))));
+                .or_else(|| own_link.clone());
             if let Some(p) = path {
                 let up = p.to_ascii_uppercase();
                 let mat = if up.ends_with(".MATERIAL.GBX") { p.clone() } else { format!("{p}.Material.Gbx") };
@@ -382,6 +394,18 @@ pub fn geom_from_solid2_ext(s2: &mapgeom::static_item::solid2::CPlugSolid2Model,
                 let link_for_lm = mapgeom::static_item::materials::material_link(&mat);
                 if let Some(None) = crate::lmmesh::lm_uv_index_cached(&link_for_lm) { v = true; }
                 if std::env::var_os("LMTOOL_MATERIAL_TRACE").is_some() { eprintln!("material {mat}: shader {} flags {:?} → {}", chain.shader, chain.flags, if v { "EXCLUDED from the lightmapper" } else { "drawn" }); }
+            }
+        } else if let Some(l) = &own_link {
+            // AN EMBEDDED ITEM'S PACK MATERIALS TAKE THE SAME TEST (E, 2026-09-27 17:30Z; RE 14 17:35Z: the peel is the generic viewport render
+            // in shadow mode — a leaf is drawn only if its shader has the PeelDiff variant; Block_TAddModCV, the DecalMod / DecalGeom /
+            // Decal2d families and CarGlass have none → not occluders, not bounce sources). Until now the exclusion ran only for pack
+            // prefabs (`ext`), so a custom item's decals, additive bulbs and glass occluded and bounced in our peel — the candidate for
+            // tiny16's dense-scene item deficit (0.84–0.86, B-heavy: sky blocked by casters the game does not draw). The link resolves
+            // through the bake's LM uv store (`set_lm_uv_store` from the --pak list); no store → no exclusion, as before.
+            // LMTOOL_EMBEDDED_KEEP_ALL=1 restores the old inclusion for a study.
+            if std::env::var_os("LMTOOL_EMBEDDED_KEEP_ALL").is_none() {
+                if let Some(None) = crate::lmmesh::lm_uv_index_cached(l) { v = true; }
+                if std::env::var_os("LMTOOL_MATERIAL_TRACE").is_some() { eprintln!("material {l} (embedded item): LM uv selector {:?} → {}", crate::lmmesh::lm_uv_index_cached(l), if v { "EXCLUDED from the lightmapper" } else { "drawn" }); }
             }
         }
         excluded.insert(mi, v);
@@ -416,9 +440,22 @@ pub fn geom_from_solid2_ext(s2: &mapgeom::static_item::solid2::CPlugSolid2Model,
             g.stored_boxes_all.push((sg.lod_mask, [b[0], b[1], b[2]], [b[3], b[4], b[5]]));
         }
     }
+    // THE LOD OF THE SCENE GEOMETRY (E, 2026-09-27 18:45Z–19:00Z). RE 14 17:55Z: the lightmapper sets no LOD for the peel or the flat
+    // cubes (FUN_140237fd0's camera LOD bias serves the multi-sample sun only) — the game view's own distance rule would put the
+    // PEEL's and the SUN MAP's ortho cameras far from every object → each model's LAST LOD; the FLAT CUBES (perspective at the lamp)
+    // at LOD by distance (the housing at 1–5 m = LOD 0). The study `LMTOOL_SCENE_LOD=lowest` (the scene at each solid's highest LOD
+    // bit; the LM receivers stay LOD 0; the layout does not move) took tiny16 kept q4's items 0.860/0.840/0.835 → 0.891/0.893/0.904
+    // with the B-heavy cast gone — BUT the pwc-day CAPTURE refutes the rule for the peel: the captured peel layers hold the vegetation
+    // item's LOD-0 cards (our LOD-0 peel compares 34 152 texels on layer 1 with none game-empty; the lowest-LOD peel only 15 438), so
+    // the game's peel drew LOD 0 there. LOD 0 stays the default; the knob is a study until the per-mobil LOD metric of the shadow-mode
+    // render is read (RE 14). `set_scene_lod` lets a caller choose per scene build.
+    let lod_bit: u32 = if scene_lod() == "lowest" {
+        let top = s2.shaded_geoms.iter().map(|sg| sg.lod_mask.max(0) as u32).fold(0u32, |a, m| a.max(m));
+        if top == 0 { 1 } else { 1u32 << (31 - top.leading_zeros()) }
+    } else { 1 };
     for sg in &s2.shaded_geoms {
-        // lod 0 only: the lightmap is computed on the highest detail
-        if sg.lod_mask > 0 && sg.lod_mask & 1 == 0 {
+        // lod 0 only: the lightmap is computed on the highest detail (or the study's LOD bit)
+        if sg.lod_mask > 0 && (sg.lod_mask as u32) & lod_bit == 0 {
             continue;
         }
         let Some(vr) = s2.visuals.get(sg.visual_index as usize) else { continue };
@@ -637,6 +674,18 @@ pub static MASK_NOFLIP: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| 
 /// The kept item set of a REDUCED oracle (map item indices), applied by `Scene::from_map` to every scene built in the process
 /// (the bake's, the lamp pass's `setup_from_map`, the record scene's) — `None` = the whole map. Set once by `set_kept_items`.
 pub static KEPT_ITEMS: std::sync::OnceLock<Option<std::collections::HashSet<usize>>> = std::sync::OnceLock::new();
+
+/// The LOD the scene geometry is built at: "lowest" (each model's last LOD — the peel / sun map / bounce scene, the bake's default) or
+/// "0" (LOD 0 — the lamp pass's flat-cube caster scene, and every tool that does not say otherwise). LMTOOL_SCENE_LOD overrides the
+/// default the bake sets. Read by `geom_from_solid2_ext` at build time; set per scene build by `set_scene_lod`.
+static SCENE_LOD: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+pub fn set_scene_lod(mode: &str) {
+    *SCENE_LOD.lock().unwrap() = Some(mode.to_string());
+}
+pub fn scene_lod() -> String {
+    if let Ok(v) = std::env::var("LMTOOL_SCENE_LOD") { return v; }
+    SCENE_LOD.lock().unwrap().clone().unwrap_or_else(|| "0".to_string())
+}
 pub fn set_kept_items(kept: Option<std::collections::HashSet<usize>>) {
     let _ = KEPT_ITEMS.set(kept);
 }
