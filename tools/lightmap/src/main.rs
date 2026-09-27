@@ -2152,7 +2152,10 @@ fn run(mut a: Vec<String>) {
                             // from --tile-material (default <Coll>\Media\Material\SeaFloor: BlueBay's Sea zone); the interim corner-mean path is the fallback
                             // the zone tiles' material: BlueBay's Sea zone = SeaFloor (PyPxz constant); Stadium's Grass zone = Grass (a PDiff textured
                             // material — the pre-pass samples its BaseColor over the quads)
-                            let tile_link = f("--tile-material").unwrap_or_else(|| format!("{collection}\\Media\\Material\\{}", if collection.eq_ignore_ascii_case("Stadium") { "Grass" } else { "SeaFloor" }));
+                            // (G2, 2026-09-27: that default only when its file is in the store; else the zone prefab's own floor material —
+                            // WhiteShore's Water / GreenCoast's Lake floors are inline per-vertex-id materials: `lmmesh::tile_material_link`)
+                            let tile_zone = f("--zone").unwrap_or_else(|| lightmap::layout::ground_zone(&tmmaps::map::MapFile::load(std::path::Path::new(&map_path)), &collection));
+                            let tile_link = lightmap::lmmesh::tile_material_link(&mut store, &collection, &tile_zone, f("--tile-material"), &mut pak_notes);
                             if let Err(e) = lightmap::setupmap::tables_from_paktables_with_records(&mut frozen, &mut store, &collection, &tile_link, &scene, game_layout.as_ref().map(|gl| gl.records.as_slice()).unwrap_or(&[]), &mut pak_notes) {
                                 pak_notes.push(format!("paktables: {e} — the interim pak path (corner means + WaterColor.tga + the descriptor table) is used"));
                                 let mut read = |path: &str| -> Option<Vec<u8>> { store.read(path).ok().map(|b| b.to_vec()) };

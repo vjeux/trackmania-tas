@@ -667,3 +667,170 @@ pub fn lm_scene_add_entities(store: &mut mapgeom::store::DataStore, layout: &cra
     }
     Ok(added)
 }
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+// THE ZONE FLOOR'S MATERIAL FROM THE ZONE PREFAB (port engineer G2, 2026-09-27 — the "SeaFloor: not in any pack" seabed on
+// every WhiteShore / GreenCoast bake): the bake named the zone tiles' material `<Coll>\Media\Material\SeaFloor` by analogy with
+// BlueBay's Sea zone (whose floor plane IS that named material). WhiteShore's Water zone and GreenCoast's Lake zone have no such
+// file: their floor geom carries an INLINE CPlugMaterial → CPlugMaterialCustom of layer_mode 1 (no layer names — the terrain slice
+// ids are painted per vertex by the zone system at load: `cIndexPerVertex` / `VertexAlpha` in its 0x0903A00F; the pak mesh's
+// BLENDINDICES word is 0 on every vertex and matches no layer of Terrain_D; RE 14 read C: word 0 of the zone material's
+// i4_PyPxzX2H2s table) with the parent `Tech3 Block PyPxz_Ids` and the collection's Terrain_D texture array. The material the zone
+// system remaps to is the ZONE's terrain material; until that lookup is read the stand-in is the material the SAME prefab NAMES for
+// this floor elsewhere — its collision surface's material slot (WhiteShore Water: `WhiteShore\Media\Material\WaterBottom` = Terrain_D
+// slices 4 / 6 → the PS 8401 constant (0.1327, 0.0953, 0.0640)) — and the bake says so in its notes. The resolver only speaks when
+// the hardcoded default does not resolve in the store, so BlueBay / Stadium bakes are untouched.
+
+/// What the zone floor's lightmapped geom is shaded with.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ZoneFloorMaterial {
+    /// A named pack material (BlueBay's Sea floor: `BlueBay\Media\Material\SeaFloor`).
+    Named(String),
+    /// An inline material with per-vertex terrain ids: the BaseColor array it samples, its parent, and the named materials the
+    /// prefab carries elsewhere for this floor (the collision surface's slots, other non-water geoms).
+    Inline { base_array: String, parent: String, named_siblings: Vec<String> },
+}
+
+fn material_of_geom(slots: &[mapgeom::node::Slot], s: &mapgeom::node::Solid2, mi: i32) -> Option<ZoneFloorMaterial> {
+    use mapgeom::node::{Node, Slot};
+    let strip = |p: &str| -> String { p.trim_end_matches(".Material.Gbx").trim_end_matches(".Material.gbx").to_string() };
+    if let Some(n) = s.material_names.get(mi.max(0) as usize) {
+        if mi >= 0 && !n.is_empty() {
+            return Some(ZoneFloorMaterial::Named(strip(n)));
+        }
+    }
+    let node = *s.material_nodes.get(mi.max(0) as usize)?;
+    match slots.get(node.max(0) as usize)? {
+        Slot::External(p) if p.to_ascii_lowercase().ends_with(".material.gbx") => Some(ZoneFloorMaterial::Named(strip(p))),
+        Slot::Node(Node::Material(name, _)) if name.starts_with("@refs:") => {
+            // an inline CPlugMaterial: its refs = the custom node (layer mode, bitmaps) and the external parent .Material.gbx
+            let refs: Vec<i32> = name["@refs:".len()..].split(',').filter_map(|t| t.parse().ok()).filter(|i: &i32| *i >= 0).collect();
+            let mut parent = String::new();
+            let mut custom: Option<&mapgeom::node::MaterialCustomRaw> = None;
+            for r in &refs {
+                match slots.get(*r as usize) {
+                    Some(Slot::External(p)) if p.to_ascii_lowercase().ends_with(".material.gbx") && parent.is_empty() => parent = p.clone(),
+                    Some(Slot::Node(Node::MaterialCustom(c))) => custom = Some(c),
+                    _ => {}
+                }
+            }
+            let c = custom?;
+            let base_array = c.bitmaps.iter().find(|(n, _)| n == "BaseColor").and_then(|(_, r)| match slots.get((*r).max(0) as usize) { Some(Slot::External(p)) => Some(p.clone()), _ => None }).unwrap_or_default();
+            Some(ZoneFloorMaterial::Inline { base_array, parent, named_siblings: Vec::new() })
+        }
+        Slot::Node(Node::Material(name, _)) if !name.is_empty() => Some(ZoneFloorMaterial::Named(strip(name))),
+        _ => None,
+    }
+}
+
+/// The zone floor's material: the zone block info's ground variant → its mobil's prefab → the Solid2's lightmapped geoms
+/// (those whose visual carries TEXCOORD0, the terrain materials' lightmap set — the Water plane has none) in geom order.
+pub fn zone_floor_material(store: &mut mapgeom::store::DataStore, collection: &str, zone: &str) -> Result<Option<ZoneFloorMaterial>, String> {
+    use mapgeom::node::{Node, Slot};
+    for (fam, ext) in [("GameCtnBlockInfoFlat", "EDFlat"), ("GameCtnBlockInfoFrontier", "EDFrontier"), ("GameCtnBlockInfoTransition", "EDTransition"), ("GameCtnBlockInfoClassic", "EDClassic")] {
+        let path = format!("{collection}\\GameCtnBlockInfo\\{fam}\\{zone}.{ext}.Gbx");
+        let Ok(bi) = mapgeom::blockinfo::load(store, &path) else { continue };
+        let Some(v) = bi.variant_base_ground.as_ref() else { continue };
+        let Some(pp) = v.mobils.iter().flatten().find_map(|m| m.prefab.clone()) else { continue };
+        let pm = store.load_model(&pp)?;
+        let g = pm.graph()?;
+        let solid = g.slots.iter().find_map(|s| match s { Slot::Node(Node::Solid2(s2)) => Some(s2.clone()), _ => None });
+        let Some(s) = solid else { return Err(format!("{pp}: no CPlugSolid2Model node")) };
+        let has_uv0 = |vi: i32| -> bool {
+            let Some(&vn) = s.visuals.get(vi.max(0) as usize) else { return false };
+            match g.slots.get(vn.max(0) as usize) {
+                Some(Slot::Node(Node::Visual(v))) => !v.uv0.is_empty() || v.vertex_streams.iter().any(|si| matches!(g.slots.get((*si).max(0) as usize), Some(Slot::Node(Node::VertexStream(vs))) if !vs.uv0.is_empty())),
+                _ => false,
+            }
+        };
+        let mut first: Option<ZoneFloorMaterial> = None;
+        let mut named: Vec<String> = Vec::new();
+        // the floor = the lightmapped geoms (TEXCOORD0); the named stand-ins = every other geom's named material that is not the
+        // water surface's (the far LOD's floor carries no lightmap uvs — it is not lit — but it names the look)
+        for geom in &s.geoms {
+            let Some(m) = material_of_geom(&g.slots, &s, geom.material) else { continue };
+            if has_uv0(geom.visual) && first.is_none() {
+                first = Some(m.clone());
+                continue;
+            }
+            if let ZoneFloorMaterial::Named(l) = &m {
+                let stem = l.rsplit(['\\', '/']).next().unwrap_or(l).to_ascii_lowercase();
+                if stem != "water" && !named.contains(l) { named.push(l.clone()); }
+            }
+        }
+        // the collision SURFACE's material slots name the floor's look material too (BlueBay terrain: Land.Material.Gbx; WhiteShore
+        // Water: WaterBottom.Material.Gbx — the only place the prefab NAMES what its inline floor is)
+        for surf in g.slots.iter().filter_map(|s| match s { Slot::Node(Node::Surface(sf)) => Some(sf), _ => None }) {
+            for mn in &surf.materials {
+                if let Some(Slot::External(p)) = g.slots.get((*mn).max(0) as usize) {
+                    if *mn >= 0 && p.to_ascii_lowercase().ends_with(".material.gbx") {
+                        let l = p.trim_end_matches(".Material.Gbx").trim_end_matches(".Material.gbx").to_string();
+                        let stem = l.rsplit(['\\', '/']).next().unwrap_or(&l).to_ascii_lowercase();
+                        if stem != "water" && !named.contains(&l) { named.push(l); }
+                    }
+                }
+            }
+        }
+        return Ok(first.map(|f| match f {
+            ZoneFloorMaterial::Inline { base_array, parent, .. } => ZoneFloorMaterial::Inline { base_array, parent, named_siblings: named },
+            n => n,
+        }));
+    }
+    Ok(None)
+}
+
+/// The zone tiles' material link for the bake: the explicit `--tile-material`, else the historical default (`<Coll>\Media\Material\
+/// SeaFloor`, Stadium `…\Grass`) when its file is in the store, else the zone prefab's own floor material (a named one as is; an
+/// inline per-vertex-id one through the material the prefab names for it, said so in the notes). The notes carry the decision.
+pub fn tile_material_link(store: &mut mapgeom::store::DataStore, collection: &str, zone: &str, explicit: Option<String>, notes: &mut Vec<String>) -> String {
+    if let Some(l) = explicit { return l; }
+    let default = format!("{collection}\\Media\\Material\\{}", if collection.eq_ignore_ascii_case("Stadium") { "Grass" } else { "SeaFloor" });
+    if store.resolve(&format!("{default}.Material.Gbx")).is_some() {
+        return default;
+    }
+    match zone_floor_material(store, collection, zone) {
+        Ok(Some(ZoneFloorMaterial::Named(l))) => { notes.push(format!("zone tiles: the material of the {zone} zone floor from its prefab = {l} ({default} is in no pack)")); l }
+        Ok(Some(ZoneFloorMaterial::Inline { base_array, parent, named_siblings })) => match named_siblings.first() {
+            Some(sib) => { notes.push(format!("zone tiles: the {zone} zone floor's material is INLINE with per-vertex terrain ids (parent {parent}, BaseColor {base_array}; the ids the zone system paints are READ-PENDING — RE 14) → the stand-in is the material the same prefab NAMES for this floor (its collision surface / another LOD) {sib}; {default} is in no pack")); sib.clone() }
+            None => { notes.push(format!("zone tiles: the {zone} zone floor's material is INLINE with per-vertex terrain ids (parent {parent}, BaseColor {base_array}) and the prefab names no other floor material — the default {default} stays (in no pack: the frozen tile constant)")); default }
+        },
+        Ok(None) => { notes.push(format!("zone tiles: no zone prefab floor material found for {collection}/{zone}; the default {default} stays")); default }
+        Err(e) => { notes.push(format!("zone tiles: zone floor material: {e}; the default {default} stays")); default }
+    }
+}
+
+#[cfg(test)]
+mod zone_floor_tests {
+    use super::*;
+
+    /// The WhiteShore Water zone floor (the "SeaFloor: not in any pack" seabed): an inline per-vertex-id material whose prefab names
+    /// WaterBottom for the floor (its collision surface); BlueBay's Sea floor is the named SeaFloor. Runs when the packs are at /tmp/paks.
+    #[test]
+    fn whiteshore_water_floor_is_inline_with_waterbottom_as_the_named_sibling() {
+        let k = "660C4C156B80337E296A1034B0AA05B8";
+        if !std::path::Path::new("/tmp/paks/WhiteShore.pak").exists() { eprintln!("no /tmp/paks — skipped"); return; }
+        let mut st = mapgeom::store::DataStore::empty();
+        st.add_pak("/tmp/paks/WhiteShore.pak", k).unwrap();
+        let m = zone_floor_material(&mut st, "WhiteShore", "Water").unwrap().expect("a floor material");
+        match &m {
+            ZoneFloorMaterial::Inline { base_array, parent, named_siblings } => {
+                assert!(base_array.ends_with("Terrain_D.TextureArray.Gbx"), "{base_array}");
+                assert!(parent.contains("PyPxz_Ids"), "{parent}");
+                assert_eq!(named_siblings.first().map(|s| s.as_str()), Some("WhiteShore\\Media\\Material\\WaterBottom"), "{named_siblings:?}");
+            }
+            other => panic!("{other:?}"),
+        }
+        let mut notes = Vec::new();
+        let link = tile_material_link(&mut st, "WhiteShore", "Water", None, &mut notes);
+        assert_eq!(link, "WhiteShore\\Media\\Material\\WaterBottom");
+        assert!(notes[0].contains("READ-PENDING"), "{notes:?}");
+        if std::path::Path::new("/tmp/paks/BlueBay.pak").exists() {
+            let mut bb = mapgeom::store::DataStore::empty();
+            bb.add_pak("/tmp/paks/BlueBay.pak", k).unwrap();
+            assert_eq!(zone_floor_material(&mut bb, "BlueBay", "Sea").unwrap(), Some(ZoneFloorMaterial::Named("BlueBay\\Media\\Material\\SeaFloor".into())));
+            let mut notes = Vec::new();
+            assert_eq!(tile_material_link(&mut bb, "BlueBay", "Sea", None, &mut notes), "BlueBay\\Media\\Material\\SeaFloor");
+            assert!(notes.is_empty(), "the default resolves: no note — {notes:?}");
+        }
+    }
+}
