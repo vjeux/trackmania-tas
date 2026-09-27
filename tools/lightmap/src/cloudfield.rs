@@ -318,6 +318,20 @@ pub fn tree_bbox_centre(s: &CloudSolid, tree: usize) -> [f32; 3] {
     [(lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5, (lo[2] + hi[2]) * 0.5]
 }
 
+/// A frame's draw log: a passcap root's `logs/draws-frame{F}.json(.gz)`, or an exported frame directory's `draws.json`
+/// (`ROOT/draws.json`, `ROOT/f{F}/draws.json`, `ROOT/exp/f{F}/draws.json`).
+pub fn load_draws_any(root: &std::path::Path, frame: u32) -> Result<Vec<serde_json::Value>, String> {
+    if let Ok(v) = crate::lmaccum::load_draws(root, frame) { return Ok(v); }
+    for p in [root.join("draws.json"), root.join(format!("f{frame}/draws.json")), root.join(format!("exp/f{frame}/draws.json"))] {
+        if p.exists() {
+            let bytes = std::fs::read(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+            let v: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", p.display()))?;
+            return v.as_array().cloned().ok_or_else(|| format!("{}: not an array", p.display()));
+        }
+    }
+    Err(format!("{}: no draws log for frame {frame} (logs/draws-frame{frame}.json[.gz], draws.json, f{frame}/draws.json)", root.display()))
+}
+
 pub fn cli(args: &[String]) -> Result<(), String> {
     let f = |k: &str| args.iter().position(|x| x == k).and_then(|i| args.get(i + 1)).cloned();
     let verbose = args.iter().any(|x| x == "--verbose");
@@ -356,9 +370,61 @@ pub fn cli(args: &[String]) -> Result<(), String> {
     if let Some(root) = f("--match") {
         let root = std::path::PathBuf::from(root);
         let frame: u32 = f("--frame").map(|v| v.parse().map_err(|e| format!("--frame: {e}"))).transpose()?.unwrap_or(127448);
-        let draws = crate::lmaccum::load_draws(&root, frame)?;
-        let env = root.join(format!("env/frame{frame}"));
-        let mesh: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(env.join("mesh.json")).map_err(|e| format!("mesh.json: {e}"))?).map_err(|e| format!("mesh.json: {e}"))?;
+        let draws = load_draws_any(&root, frame)?;
+        // the two export layouts: a passcap root (env/frame{F}/mesh.json + mesh/vb_*.bin, logs/draws-frame{F}.json.gz) or one
+        // exported frame directory (draws.json + mesh.json + bufs.json + bufs/ + mesh/ side by side — baker-4's stsun / stprep form)
+        let (env, mesh, bufs): (std::path::PathBuf, serde_json::Value, serde_json::Value) = {
+            let cands = [root.join(format!("env/frame{frame}")), root.join(format!("f{frame}")), root.clone()];
+            let env = cands.iter().find(|p| p.join("mesh.json").exists()).cloned().ok_or_else(|| format!("{}: no mesh.json under env/frame{frame}, f{frame} or the root", root.display()))?;
+            let mesh: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(env.join("mesh.json")).map_err(|e| format!("mesh.json: {e}"))?).map_err(|e| format!("mesh.json: {e}"))?;
+            let bufs: serde_json::Value = std::fs::read_to_string(env.join("bufs.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(serde_json::Value::Null);
+            (env, mesh, bufs)
+        };
+        // a cloud draw: its DrawV carries the cloud instance block (GbxClouds3dInst0 — BlueBay's VS 14514), or --vs ID names the
+        // vertex shader (RE 14's relabel of the stpad sweep frame: VS 5145 / PS 5146 = the sprites, GbxSpriteExpandA)
+        let vs_override = f("--vs");
+        let is_cloud = |d: &serde_json::Value| -> bool {
+            match &vs_override { Some(id) => d["Vertex"]["shader"].as_str() == Some(id.as_str()), None => d["Vertex"]["cbuffers"]["DrawV"].as_object().map(|o| o.keys().any(|k| k.starts_with("GbxClouds3dInst"))).unwrap_or(false) }
+        };
+        // the instance translation: the first DrawV block with a VisualToWorld (row 3 = T), else zero
+        let translation = |d: &serde_json::Value| -> [f32; 3] {
+            let dv = &d["Vertex"]["cbuffers"]["DrawV"];
+            let mut t = [0f32; 3];
+            if let Some(o) = dv.as_object() {
+                for (_, v) in o {
+                    let m = if v["VisualToWorld"].is_array() { &v["VisualToWorld"] } else if v.is_array() && v.as_array().map(|a| a.len() == 4 && a[0].is_array()).unwrap_or(false) { v } else { continue };
+                    let row = &m[3];
+                    t = [row[0].as_f64().unwrap_or(0.0) as f32, row[1].as_f64().unwrap_or(0.0) as f32, row[2].as_f64().unwrap_or(0.0) as f32];
+                    break;
+                }
+            }
+            t
+        };
+        // the sprites of a draw: the vertex buffer (pwc-day: mesh.json vertex_buffers[0].file under mesh/, the 28-byte expanded
+        // corners) or, for a sprite-expand VS with no vertex buffer, the Vertex-stage SRV 0 of bufs.json (24-byte sprite records
+        // as the pack stores them, or the same 28-byte corners)
+        let sprites_of = |eid: u64| -> Result<Vec<CapturedSprite>, String> {
+            let rec = mesh.as_array().and_then(|a| a.iter().find(|r| r["eid"].as_u64() == Some(eid)));
+            let mut bytes: Option<Vec<u8>> = None;
+            if let Some(r) = rec {
+                if let Some(fname) = r["vertex_buffers"].as_array().and_then(|a| a.first()).and_then(|v| v["file"].as_str()).or_else(|| r["vsin"]["file"].as_str()) {
+                    bytes = Some(crate::passdiff::read_entry_bytes(&env, &format!("mesh/{fname}")).or_else(|_| crate::passdiff::read_entry_bytes(&env, fname))?);
+                }
+            }
+            if bytes.is_none() {
+                if let Some(b) = bufs.as_array().and_then(|a| a.iter().find(|b| b["eid"].as_u64() == Some(eid) && b["stage"].as_str() == Some("Vertex") && b["kind"].as_str() == Some("srv") && b["slot"].as_u64() == Some(0))) {
+                    if let Some(fname) = b["file"].as_str() { bytes = Some(crate::passdiff::read_entry_bytes(&env, &format!("bufs/{fname}")).or_else(|_| crate::passdiff::read_entry_bytes(&env, fname))?); }
+                }
+            }
+            let Some(vb) = bytes else { return Ok(Vec::new()) };
+            let corners = captured_sprites(&vb);
+            if !corners.is_empty() && vb.len() % 28 == 0 && (vb.len() % 24 != 0 || corners.len() * 4 * 28 == vb.len()) { return Ok(corners); }
+            if vb.len() % 24 == 0 {
+                // the pack's own record: pos xyz, size, cell (u32), aspect
+                return Ok(vb.chunks_exact(24).map(|c| { let f = |o: usize| f32::from_le_bytes(c[o..o + 4].try_into().unwrap()); let cell = u32::from_le_bytes(c[16..20].try_into().unwrap()); CapturedSprite { pos: [f(0), f(4), f(8)], size: f(12), atlas_off: [(cell % 4) as f32 * 0.25, (cell / 4) as f32 * 0.25], opacity: 1.0, aspect_word: f(20) } }).collect());
+            }
+            Ok(corners)
+        };
         // the first peel camera's draws only (the frame holds every peel's; the same instances repeat per camera)
         let mut first_eye: Option<serde_json::Value> = None;
         let (mut n, mut n_matched, mut n_sprites, mut n_kept) = (0usize, 0usize, 0usize, 0usize);
@@ -367,16 +433,13 @@ pub fn cli(args: &[String]) -> Result<(), String> {
         let mut per_solid = vec![0usize; solids.len()];
         let mut rows: Vec<(i64, i64, f32, String)> = Vec::new();
         let mut matched_inst: Vec<([f32; 3], usize, usize)> = Vec::new();
-        for d in draws.iter().filter(|d| d["Vertex"]["shader"].as_str() == Some("14514")) {
+        for d in draws.iter().filter(|d| is_cloud(d)) {
             let eye = d["Vertex"]["cbuffers"]["SceneV"]["GbxV_EyeInWorld"].clone();
             match &first_eye { None => first_eye = Some(eye.clone()), Some(e) if *e != eye => continue, _ => {} }
             let eid = d["eid"].as_u64().unwrap_or(0);
-            let Some(rec) = mesh.as_array().and_then(|a| a.iter().find(|r| r["eid"].as_u64() == Some(eid))) else { continue };
-            let Some(vb_file) = rec["vertex_buffers"].as_array().and_then(|a| a.first()).and_then(|v| v["file"].as_str()) else { continue };
-            let vb = std::fs::read(env.join("mesh").join(vb_file)).map_err(|e| format!("{vb_file}: {e}"))?;
-            let sprites = captured_sprites(&vb);
-            let t = &d["Vertex"]["cbuffers"]["DrawV"]["GbxClouds3dInst0"]["VisualToWorld"][3];
-            let tr = [t[0].as_f64().unwrap_or(0.0) as f32, t[1].as_f64().unwrap_or(0.0) as f32, t[2].as_f64().unwrap_or(0.0) as f32];
+            let sprites = sprites_of(eid)?;
+            if sprites.is_empty() { if verbose { println!("  eid {eid}: no sprite buffer exported"); } continue; }
+            let tr = translation(d);
             n += 1;
             n_sprites += sprites.len();
             let mm = match_captured(&solids, &sprites);
