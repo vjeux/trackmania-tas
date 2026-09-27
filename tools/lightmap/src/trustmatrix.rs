@@ -52,6 +52,11 @@ pub struct Table {
     pub record: Option<(usize, f64, f64, f64, bool)>,
 }
 
+/// The manifest's `#!` lines: the version notes rendered under the matrix title (what CHANGED in the comparison from version to version).
+pub fn read_notes(path: &str) -> Vec<String> {
+    std::fs::read_to_string(path).map(|t| t.lines().filter(|l| l.starts_with("#!")).map(|l| l.trim_start_matches("#!").trim().to_string()).collect()).unwrap_or_default()
+}
+
 pub fn read_manifest(path: &str) -> Result<Vec<Cell>, String> {
     let txt = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
     let mut header: Option<Vec<String>> = None;
@@ -166,9 +171,14 @@ fn short_class(s: &str) -> String {
 }
 
 /// Build the Markdown table; returns (markdown, counts per state label).
-pub fn render(cells: &[Cell], base_dir: &std::path::Path, tol: f64, min_texels: usize, base_label: &str) -> (String, Vec<(String, usize)>) {
+pub fn render(cells: &[Cell], base_dir: &std::path::Path, tol: f64, min_texels: usize, base_label: &str, notes: &[String]) -> (String, Vec<(String, usize)>) {
     let mut md = String::new();
     md.push_str(&format!("# Trust matrix — {base_label}\n\n"));
+    if !notes.is_empty() {
+        md.push_str("What changed in the COMPARISON, version to version (the code improves while \"closed\" counts can fall — the yardstick moved):\n");
+        for n in notes { md.push_str(&format!("- {n}\n")); }
+        md.push('\n');
+    }
     md.push_str(&format!("Rule: worst class over the classes with ≥ {min_texels} texels; CLOSED (texel) = worst within {:.0} % and identity ≥ 90 % of the cell's CEILING (the editor's own re-bake identity on that map class: 95–99 % lamp-less (pwc-day ×4 saves), ~60 % with lamps (stpad Night + nocache) — VALIDATION.md V2-5) and within ±2 ≥ 90 %; CLOSED (class) = worst within {:.0} % only; RESIDUE = a class beyond it (named); OPEN = no table yet; no oracle = the game cannot produce one.\n\n", 100.0 * tol, 100.0 * tol));
     md.push_str("| cell | collection | mood (word) | q | map | features | identity % (±1 / ±2) vs the editor's own | max \\|Δ\\| | record ours/editor | worst class (r/g/b) | state | cause / note |\n|---|---|---|---|---|---|---|---|---|---|---|---|\n");
     let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
@@ -254,7 +264,7 @@ mod tests {
         assert_eq!(t.rows.len(), 1);
         let rec = t.record.unwrap();
         assert!((rec.3 - 1.001586).abs() < 1e-6 && !rec.4);
-        let (md, counts) = render(&cells, &dir, 0.03, 500, "test");
+        let (md, counts) = render(&cells, &dir, 0.03, 500, "test", &[]);
         assert!(md.contains("CLOSED (class)") && md.contains("vs 99") && md.contains("no oracle"));
         assert!((cells[0].ceiling - 99.0).abs() < 1e-9);
         assert_eq!(counts.iter().map(|(_, n)| n).sum::<usize>(), 2);

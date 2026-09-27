@@ -6730,7 +6730,8 @@ fn run(mut a: Vec<String>) {
             let tol: f64 = f("--tol").map(|v| v.parse().expect("--tol F")).unwrap_or(0.03);
             let min_texels: usize = f("--min-texels").map(|v| v.parse().expect("--min-texels N")).unwrap_or(500);
             let label = f("--base").unwrap_or_else(|| "(base unnamed)".to_string());
-            let (md, counts) = lightmap::trustmatrix::render(&cells, &base_dir, tol, min_texels, &label);
+            let notes = lightmap::trustmatrix::read_notes(&manifest);
+            let (md, counts) = lightmap::trustmatrix::render(&cells, &base_dir, tol, min_texels, &label, &notes);
             match f("--out") { Some(p) => { std::fs::write(&p, &md).unwrap_or_else(|e| panic!("{p}: {e}")); eprintln!("trustmatrix: {} cells → {p}: {}", cells.len(), counts.iter().map(|(k, n)| format!("{k} {n}")).collect::<Vec<_>>().join(", ")); } None => print!("{md}") }
         }
         "layoutcheck" => {
