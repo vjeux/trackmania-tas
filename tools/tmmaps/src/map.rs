@@ -1208,9 +1208,14 @@ impl MapFile {
             out.extend_from_slice(data);
         }
         self.gbx.user_data = out;
-        // body: the login (same length) and the nickname (any length) as GBX strings
+        // body: the LOGIN only. The login is the same byte length, so a splice is safe; the
+        // NICKNAME is not, and a body string that changes length breaks the map — the author
+        // chunk is skippable and carries its own size, so the game refuses the file
+        // ("Couldn't load map": 9 of the 25 part-5 exports, exactly the ones whose hunter's
+        // name is not 9 characters like `Everios96` — Everios96 2026-09-27 15:16Z). The
+        // header (Ident + author chunk + XML) already carries the display name.
         let mut body_hits = 0usize;
-        for (pat, rep) in [(gbx_string(old_login), gbx_string(new_login)), (gbx_string(old_nick), gbx_string(new_nick))] {
+        for (pat, rep) in [(gbx_string(old_login), gbx_string(new_login))] {
             if pat == rep {
                 continue;
             }

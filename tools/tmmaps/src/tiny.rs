@@ -353,6 +353,7 @@ pub fn cmd(args: &[String]) {
     // club has been built with -1 since 2026-09-14 and Everios96 wants that look kept
     // (2026-09-27 12:03Z "we need to go back to how it was"); the Summer/vista campaigns use 0.
     let y_offset: f32 = std::env::var("TINY_Y_OFFSET").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
+    debug_assert!(y_offset.is_finite());
     let target_anchor = anchor_flag.unwrap_or([source_anchor[0], plane + (source_anchor[1] - plane) * scale + y_offset, source_anchor[2]]);
     println!("  anchor: spawn {:?} -> {:?} (scale {scale})", source_anchor, target_anchor);
 
