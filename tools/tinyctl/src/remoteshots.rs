@@ -233,24 +233,40 @@ fn wait_recovery_clear(wsx: &Wsx) -> Result<(), String> {
 /// Did THIS run launch the game? Then it closes it again at the end: the shared box's other
 /// lanes need the game ABSENT, and a game left up after the lock is released reads as an
 /// orphan to them (the MK64 session killed one of mine at 13:45, 2026-09-27).
-pub(crate) static LAUNCHED_HERE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// The PID of the game THIS run launched, 0 when we launched none. Closing is BY PID only:
+/// `tmdrive kill` kills Trackmania by NAME, and a name-kill can take down a game someone
+/// else — a human — started (vjeux's game kept closing while he played, 2026-09-27 14:26).
+pub(crate) static LAUNCHED_PID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-/// Close the game if this run launched it (called at the end of a shots/drive run).
-pub(crate) fn close_if_ours(wsx: &Wsx, purpose: &str) {
-    if !LAUNCHED_HERE.swap(false, std::sync::atomic::Ordering::SeqCst) {
+/// Close the game if this run launched it, by its own pid; never a game we did not start.
+pub(crate) fn close_if_ours(wsx: &Wsx, _purpose: &str) {
+    let pid = LAUNCHED_PID.swap(0, std::sync::atomic::Ordering::SeqCst);
+    if pid == 0 {
         return;
     }
-    let _ = wsx.sh(&format!("{ENV}; tmdrive kill --purpose \"{purpose} (closing the game this run launched)\" --wait 60 > /dev/null 2>&1; true"));
-    println!("  the game launched for this run is closed again (the box's other lanes need it absent)");
+    // is that pid still the game we launched? (a stale pid must never be killed blind)
+    let alive = wsx.sh(&format!("tasklist.exe /FI \"PID eq {pid}\" 2>/dev/null | grep -ci trackmania")).unwrap_or_default().trim().to_string();
+    if alive.starts_with('0') {
+        println!("  the game this run launched (pid {pid}) is already gone — nothing to close");
+        return;
+    }
+    let _ = wsx.sh(&format!("taskkill.exe /PID {pid} /F > /dev/null 2>&1; true"));
+    println!("  closed the game this run launched (pid {pid}) — by pid, never by name");
 }
 
 fn game_up(wsx: &Wsx) -> Result<(), String> {
     wait_recovery_clear(wsx)?;
     let up = wsx.sh("tasklist.exe 2>/dev/null | grep -ci trackmania").unwrap_or_default().trim().to_string();
     if up == "0" {
-        LAUNCHED_HERE.store(true, std::sync::atomic::Ordering::SeqCst);
         println!("  the game is not running — launching");
         wsx.sh(&format!("{ENV}; sed -i \"s/^DeveloperMode=false/DeveloperMode=true/\" /mnt/c/Users/vjeux/OpenplanetNext/Settings.ini; tmdrive launch --timeout 120 --purpose \"remote-shots (launch)\" --wait 100"))?;
+        // remember the pid so the post-run close is by pid, never by name
+        if let Ok(out) = wsx.sh("tasklist.exe /FO CSV /NH 2>/dev/null | grep -i trackmania | head -1 | cut -d, -f2 | tr -d '\"'") {
+            if let Ok(pid) = out.trim().parse::<u32>() {
+                LAUNCHED_PID.store(pid, std::sync::atomic::Ordering::SeqCst);
+                println!("  the game this run launched is pid {pid}");
+            }
+        }
     }
     Ok(())
 }

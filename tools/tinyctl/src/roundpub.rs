@@ -278,8 +278,16 @@ pub fn mint_tokens(wsx: &Wsx, token_dir: &Path) -> Result<(), String> {
         }
     }
     if launched_here {
-        let _ = wsx.sh(&format!("{env}; tmdrive kill --purpose \"mint: closing the game it launched\" --wait 60 > /dev/null 2>&1; true"));
-        println!("  mint: the game launched for the mint is closed again");
+        // BY PID only: `tmdrive kill` kills by name and would take down a game a human
+        // started (2026-09-27: vjeux's game kept closing while he played).
+        let pid = wsx.sh("tasklist.exe /FO CSV /NH 2>/dev/null | grep -i trackmania | head -1 | cut -d, -f2 | tr -d '\"'").unwrap_or_default().trim().to_string();
+        match pid.parse::<u32>() {
+            Ok(p) => {
+                let _ = wsx.sh(&format!("taskkill.exe /PID {p} /F > /dev/null 2>&1; true"));
+                println!("  mint: closed the game it launched (pid {p}) — by pid, never by name");
+            }
+            Err(_) => println!("  mint: no game pid to close (left as is)"),
+        }
     }
     for aud in ["NadeoServices", "NadeoLiveServices"] {
         let local = token_dir.join(format!("token-{aud}.txt"));
