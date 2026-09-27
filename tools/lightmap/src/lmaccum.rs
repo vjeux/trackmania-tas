@@ -1544,6 +1544,28 @@ impl LmScene {
             eprintln!("lm-accumulate: the LM raster of offset {} built once: {} fragments over {} pixels ({} pairs, {:.2}s)", offset % 9, fl.frags.len(), fl.start.windows(2).filter(|s| s[1] > s[0]).count(), fl.pairs.len(), t.elapsed().as_secs_f32());
             // LMTOOL_LM_TEXEL_TRACE=x0,y0,x1,y1 (diagnostic, port engineer G): every fragment of the atlas rect [x0,x1)×[y0,y1) of this
             // offset — pixel, (mesh, instance), triangle, VS 17111's world position and normal — the anatomy of a small chart
+            // LMTOOL_LM_TRI_CENSUS=INST (diagnostic, port engineer G2): for LM instance INST, per raster offset, how many of its mesh's
+            // triangles produce at least one fragment, the fragment count and the pixels touched — the sub-texel card question
+            // (a 21×20-texel fir holds 18 362 lod1 cards + twins; which of them the raster ever sees)
+            if let Some(inst) = std::env::var("LMTOOL_LM_TRI_CENSUS").ok().and_then(|s| s.trim().parse::<u32>().ok()) {
+                let pair = fl.pairs.iter().position(|(_, ii)| *ii == inst);
+                if let Some(pi) = pair {
+                    let (m, _) = fl.pairs[pi];
+                    let n_tris = self.meshes[m as usize].indices.len() / 3;
+                    let mut seen = vec![false; n_tris];
+                    let (mut n_frag, mut n_px) = (0usize, 0usize);
+                    for p in 0..(w * h) as usize {
+                        let (a, b) = (fl.start[p] as usize, fl.start[p + 1] as usize);
+                        let mut any = false;
+                        for f in &fl.frags[a..b] { if f.pair as usize == pi { n_frag += 1; any = true; if (f.tri as usize) < n_tris { seen[f.tri as usize] = true; } } }
+                        if any { n_px += 1; }
+                    }
+                    let n_seen = seen.iter().filter(|s| **s).count();
+                    eprintln!("lm-tri-census: offset {} instance {inst} (mesh {m}, {n_tris} LM triangles): {n_seen} triangles with a fragment ({:.1} %), {n_frag} fragments over {n_px} raster pixels", offset % 9, 100.0 * n_seen as f64 / n_tris.max(1) as f64);
+                } else {
+                    eprintln!("lm-tri-census: offset {}: instance {inst} is not in the LM scene", offset % 9);
+                }
+            }
             if let Some(r) = std::env::var("LMTOOL_LM_TEXEL_TRACE").ok().and_then(|s| { let v: Vec<u32> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect(); if v.len() == 4 { Some(v) } else { None } }) {
                 for y in r[1]..r[3].min(h) {
                     for x in r[0]..r[2].min(w) {
