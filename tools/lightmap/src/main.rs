@@ -5178,6 +5178,17 @@ fn run(mut a: Vec<String>) {
             let lin = |c: f32| -> f64 { let c = c as f64; if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) } };
             for p in lv.texels() { for k in 0..4 { s[k] += p[k] as f64; if k < 3 { sl[k] += lin(p[k]); } } }
             println!("{}: {:?} {}×{} mips {} slices {}; level {} mean stored ({:.4}, {:.4}, {:.4}, a {:.4}); sRGB→linear mean ({:.4}, {:.4}, {:.4})", a[1], tex.fmt, tex.w, tex.h, tex.mips, tex.slices, level, s[0] / n, s[1] / n, s[2] / n, s[3] / n, sl[0] / n, sl[1] / n, sl[2] / n);
+            // --bands N : the per-band mean (N horizontal bands of rows, top to bottom) and the band's min/max luminance — the sky's
+            // vertical gradient in a peel colour dump (RE 14: the Stadium dome below the horizon)
+            if let Some(nb) = f("--bands").and_then(|v| v.parse::<u32>().ok()).filter(|&v| v > 0) {
+                let tx = lv.texels();
+                for b in 0..nb {
+                    let (y0, y1) = (lv.h * b / nb, lv.h * (b + 1) / nb);
+                    let (mut acc, mut cnt, mut lo, mut hi) = ([0f64; 3], 0f64, f64::MAX, f64::MIN);
+                    for y in y0..y1 { for x in 0..lv.w { let p = tx[(y * lv.w + x) as usize]; let l = 0.2126 * p[0] as f64 + 0.7152 * p[1] as f64 + 0.0722 * p[2] as f64; for k in 0..3 { acc[k] += p[k] as f64; } cnt += 1.0; lo = lo.min(l); hi = hi.max(l); } }
+                    println!("  rows {y0}..{y1}: mean ({:.4}, {:.4}, {:.4}) lum min {:.4} max {:.4}", acc[0] / cnt, acc[1] / cnt, acc[2] / cnt, lo, hi);
+                }
+            }
             // --grid x0,z0,x1,z1,step : the texture sampled (bilinear, wrap, the level above) at the GrassX2 pre-pass's POSITIONAL uv
             // (RE 13, f4468 VS 9513: uv2 = (−x/1024 + 0.25, z/1024 + 0.25)) over a world rectangle, both row conventions
             // (v as is / the file image at 1 − v), stored values — the one-lookup check of the Stadium tile albedo

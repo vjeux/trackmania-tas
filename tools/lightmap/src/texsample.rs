@@ -18,6 +18,12 @@ pub enum TexFmt {
     Rgba8,
     R8Unorm,
     Rg8Uint,
+    /// DXGI 26: three packed small floats (R, G 5e6m; B 5e5m) — the peel colour targets.
+    R11G11B10F,
+    /// DXGI 10: four half floats — the accumulation targets.
+    Rgba16F,
+    /// DXGI 2: four f32.
+    Rgba32F,
     Unknown(u32),
 }
 
@@ -101,6 +107,9 @@ fn dxgi_fmt(id: u32) -> TexFmt {
         27 | 28 | 29 => TexFmt::Rgba8,
         60 | 61 => TexFmt::R8Unorm,
         48 | 50 => TexFmt::Rg8Uint,
+        26 => TexFmt::R11G11B10F,
+        10 => TexFmt::Rgba16F,
+        2 => TexFmt::Rgba32F,
         other => TexFmt::Unknown(other),
     }
 }
@@ -119,6 +128,9 @@ fn pixel_bytes(f: TexFmt) -> usize {
         TexFmt::Bgra8 | TexFmt::Rgba8 => 4,
         TexFmt::R8Unorm => 1,
         TexFmt::Rg8Uint => 2,
+        TexFmt::R11G11B10F => 4,
+        TexFmt::Rgba16F => 8,
+        TexFmt::Rgba32F => 16,
         _ => 0,
     }
 }
@@ -242,6 +254,9 @@ fn decode_level(fmt: TexFmt, d: &[u8], w: u32, h: u32, bc1: Bc1Decode) -> Level 
         TexFmt::Rgba8 => Level { w, h, px: Px::U8((0..n).map(|i| [d[i * 4], d[i * 4 + 1], d[i * 4 + 2], d[i * 4 + 3]]).collect()), lut: identity_lut() },
         TexFmt::R8Unorm => Level { w, h, px: Px::U8((0..n).map(|i| [d[i], 0, 0, 255]).collect()), lut: identity_lut() },
         TexFmt::Rg8Uint => Level::from_f32(w, h, (0..n).map(|i| [d[i * 2] as f32, d[i * 2 + 1] as f32, 0.0, 1.0]).collect()),
+        TexFmt::R11G11B10F => Level::from_f32(w, h, (0..n).map(|i| { let v = u32::from_le_bytes([d[i * 4], d[i * 4 + 1], d[i * 4 + 2], d[i * 4 + 3]]); [small_float(v & 0x7ff, 6), small_float((v >> 11) & 0x7ff, 6), small_float(v >> 22, 5), 1.0] }).collect()),
+        TexFmt::Rgba16F => Level::from_f32(w, h, (0..n).map(|i| { let h16 = |k: usize| crate::bc6h::half_to_f32(u16::from_le_bytes([d[i * 8 + k * 2], d[i * 8 + k * 2 + 1]])); [h16(0), h16(1), h16(2), h16(3)] }).collect()),
+        TexFmt::Rgba32F => Level::from_f32(w, h, (0..n).map(|i| { let f = |k: usize| f32::from_le_bytes(d[i * 16 + k * 4..i * 16 + k * 4 + 4].try_into().unwrap()); [f(0), f(1), f(2), f(3)] }).collect()),
         TexFmt::Unknown(_) => Level::from_f32(w, h, vec![[0.0; 4]; n]),
     }
 }
@@ -582,5 +597,19 @@ impl Texture {
                 }
             }
         }
+    }
+}
+
+/// An unsigned small float with a 5-bit exponent (bias 15) and `mbits` mantissa bits — the R11G11B10_FLOAT
+/// components (6 and 5 mantissa bits), decoded the way D3D11 reads them (denormals as mant·2^−14/2^mbits, exponent 31 = inf/NaN).
+pub fn small_float(v: u32, mbits: u32) -> f32 {
+    let e = (v >> mbits) & 31;
+    let m = (v & ((1 << mbits) - 1)) as f32 / (1u32 << mbits) as f32;
+    if e == 0 {
+        m * 2f32.powi(-14)
+    } else if e == 31 {
+        if m == 0.0 { f32::INFINITY } else { f32::NAN }
+    } else {
+        (1.0 + m) * 2f32.powi(e as i32 - 15)
     }
 }
