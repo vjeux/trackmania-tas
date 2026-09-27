@@ -6717,7 +6717,7 @@ fn run(mut a: Vec<String>) {
             let ours = lightmap::mapio::load(&a[1]).unwrap_or_else(|e| panic!("{}: {e}", a[1]));
             let theirs = lightmap::mapio::load(&other).unwrap_or_else(|e| panic!("{other}: {e}"));
             let records = f("--records").map(|p| lightmap::texeldelta::read_records(&p).unwrap_or_else(|e| panic!("{e}")));
-            let o = lightmap::texeldelta::Options { frame: f("--frame").map(|v| v.parse().expect("--frame N")).unwrap_or(0), png: f("--png"), worst: f("--worst").map(|v| v.parse().expect("--worst N")).unwrap_or(12), min_texels: f("--min-texels").map(|v| v.parse().expect("--min-texels N")).unwrap_or(64) };
+            let o = lightmap::texeldelta::Options { frame: f("--frame").map(|v| v.parse().expect("--frame N")).unwrap_or(0), png: f("--png"), worst: f("--worst").map(|v| v.parse().expect("--worst N")).unwrap_or(12), min_texels: f("--min-texels").map(|v| v.parse().expect("--min-texels N")).unwrap_or(64), grid: f("--grid").map(|v| v.parse().expect("--grid N")).unwrap_or(0) };
             lightmap::texeldelta::run(&ours, &theirs, records.as_deref(), &o).unwrap_or_else(|e| panic!("texeldelta: {e}"));
         }
         "trustmatrix" => {

@@ -54,7 +54,8 @@ impl Acc {
     }
 }
 
-pub struct Options { pub frame: usize, pub png: Option<String>, pub worst: usize, pub min_texels: usize }
+pub struct Options { pub frame: usize, pub png: Option<String>, pub worst: usize, pub min_texels: usize, /// `--grid N`: the per-chart HDR ratio (plane A, ours / editor over the editor's lit texels) binned on an N×N grid of the map by the records' centre x / z — a spatial pattern (a fitted-cell clip, a peel-box edge) shows as a border or a gradient, a lighting term as a flat field
+    pub grid: usize }
 
 /// The ring of pixel (x, y) inside a w×h rect: 0 on the edge, 1 one in, …
 fn ring(x: u32, y: u32, w: u32, h: u32) -> usize {
@@ -116,6 +117,11 @@ pub fn run(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLightmap,
     let mut skipped = 0usize;
     // per chart: (chart, class, mean |Δ| plane A, texels)
     let mut per_chart: Vec<(usize, String, f64, usize)> = Vec::new();
+    // per chart (plane A): Σ decoded HDR ours, Σ editor over the editor's lit texels + the chart's world centre from the records table
+    let k1 = crate::classcmp::record_maxhdr(&m1, f).unwrap_or(1.0);
+    let k2 = crate::classcmp::record_maxhdr(&m2, f).unwrap_or(1.0);
+    let mut chart_hdr: Vec<(usize, String, f64, f64, Option<(f32, f32)>)> = Vec::new();
+    let centre_of = |i: usize| -> Option<(f32, f32)> { let key = (m1.binds[i].obj_group_idx / 4, m1.binds[i].obj_idx & 0x00ff_ffff); rows.get(&key).and_then(|r| Some((r.centre_x?, r.centre_z?))) };
     for i in 0..n {
         if m1.pos[i] != m2.pos[i] || m1.size[i] != m2.size[i] { skipped += 1; continue; }
         let (px, py, pw, ph) = chart_own_px(m1.pos[i], m1.size[i]);
@@ -125,11 +131,13 @@ pub fn run(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLightmap,
         let same_fb = fb1.get(i) == fb2.get(i);
         if same_fb { charts_same_fb += 1; }
         let mut chart_acc = Acc::default();
+        let (mut hdr_o, mut hdr_e) = (0f64, 0f64);
         for p in 0..planes {
             let (a, b) = &imgs[p];
             for y in 0..ph { for x in 0..pw {
                 let (ca, cb) = (a.get(px + x, py + y), b.get(px + x, py + y));
                 let r = ring(x, y, pw, ph);
+                if p == 0 && cb[0].max(cb[1]).max(cb[2]) >= 8 { let (fo, fe) = (fb1.get(i).copied().unwrap_or(0), fb2.get(i).copied().unwrap_or(0)); for c in 0..3 { hdr_o += crate::classcmp::texel_hdr(f, ca[c], fo, k1); hdr_e += crate::classcmp::texel_hdr(f, cb[c], fe, k2); } }
                 let nch = if p == 0 { 3 } else { 1 };
                 for c in 0..nch {
                     let d = ca[c] as i16 - cb[c] as i16;
@@ -149,6 +157,7 @@ pub fn run(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLightmap,
                 }
             } }
         }
+        if hdr_e > 0.0 { chart_hdr.push((i, cls.clone(), hdr_o, hdr_e, centre_of(i))); }
         if chart_acc.n > 0 { per_chart.push((i, cls, chart_acc.sum_abs as f64 / chart_acc.n as f64, (pw * ph) as usize)); }
     }
     println!("texeldelta frame {f}: {} charts compared at the same rect ({skipped} skipped: rect differs), {planes} plane(s) {}×{} (A = image 0 RGB; C1..C3 = image 1's grey parts, channel 0 only); Δ = ours − editor per stored byte; chart frame bytes identical on {charts_same_fb} of {n}", n - skipped, imgs[0].0.w, imgs[0].0.h);
@@ -177,6 +186,26 @@ pub fn run(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLightmap,
     for (k, accs) in classes.iter().take(40) {
         println!("  {k}");
         for (p, acc) in accs.iter().enumerate() { println!("    {}: {}", short_plane(p), acc.line()); }
+    }
+    if o.grid > 0 {
+        let n = o.grid;
+        let (mut lo, mut hi) = ((f32::MAX, f32::MAX), (f32::MIN, f32::MIN));
+        for (_, _, _, _, c) in &chart_hdr { if let Some((x, z)) = c { lo.0 = lo.0.min(*x); lo.1 = lo.1.min(*z); hi.0 = hi.0.max(*x); hi.1 = hi.1.max(*z); } }
+        if lo.0 < hi.0 && lo.1 < hi.1 {
+            let mut cells: Vec<Vec<(f64, f64, usize)>> = vec![vec![(0.0, 0.0, 0usize); n]; n];
+            let mut items: Vec<Vec<(f64, f64, usize)>> = vec![vec![(0.0, 0.0, 0usize); n]; n];
+            for (_, cls, so, se, c) in &chart_hdr { if let Some((x, z)) = c {
+                let gx = (((x - lo.0) / (hi.0 - lo.0) * n as f32) as usize).min(n - 1);
+                let gz = (((z - lo.1) / (hi.1 - lo.1) * n as f32) as usize).min(n - 1);
+                let e = &mut cells[gz][gx]; e.0 += so; e.1 += se; e.2 += 1;
+                if !cls.starts_with("tile") { let e = &mut items[gz][gx]; e.0 += so; e.1 += se; e.2 += 1; }
+            } }
+            println!("\n== SPATIAL: per-chart HDR ratio ours/editor (plane A, the editor's lit texels) on a {n}×{n} grid of chart centres x {:.0}..{:.0} × z {:.0}..{:.0} (rows = z from low to high; cell = ratio (charts)); ALL charts, then ITEMS only", lo.0, hi.0, lo.1, hi.1);
+            for (name, g) in [("all", &cells), ("items", &items)] {
+                println!("  {name}:");
+                for row in g.iter() { println!("    {}", row.iter().map(|(so, se, k)| if *k > 0 && *se > 0.0 { format!("{:5.3} ({:4})", so / se, k) } else { "   —   (   0)".to_string() }).collect::<Vec<_>>().join("  ")); }
+            }
+        } else { println!("\n== SPATIAL: no chart centres in the records table (needs the 9-column --records-tsv)"); }
     }
     // the worst charts
     per_chart.retain(|c| c.3 >= o.min_texels);
