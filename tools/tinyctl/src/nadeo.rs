@@ -78,11 +78,60 @@ pub fn fresh_tokens() -> Option<(String, String)> {
 pub fn fresh_tokens_in(dir: &str) -> Option<(String, String)> {
     let fresh = |aud: &str| -> Option<String> {
         let p = format!("{dir}/token-{aud}.txt");
-        let age = std::fs::metadata(&p).ok()?.modified().ok()?.elapsed().ok()?;
         let t = std::fs::read_to_string(&p).ok()?.trim().to_string();
-        (age.as_secs() < TOKEN_REUSE_SECS && t.len() > 20).then_some(t)
+        if t.len() <= 20 {
+            return None;
+        }
+        // a token is fresh while ITS OWN expiry (the JWT `exp` claim) is ≥ 90 s away; the
+        // file-age rule (TOKEN_REUSE_SECS) is only the fallback for a token that does not
+        // decode. The age rule refused a 46-min-old token that was still valid for 13 min
+        // while the box was in human use and no re-mint was possible (2026-09-27 15:02).
+        match jwt_exp(&t) {
+            Some(exp) => {
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+                (exp > now + 90).then_some(t)
+            }
+            None => {
+                let age = std::fs::metadata(&p).ok()?.modified().ok()?.elapsed().ok()?;
+                (age.as_secs() < TOKEN_REUSE_SECS).then_some(t)
+            }
+        }
     };
     Some((fresh("NadeoServices")?, fresh("NadeoLiveServices")?))
+}
+
+/// The `exp` claim of a JWT (`[nadeo_v1 t=]header.payload.sig`), seconds since the epoch.
+fn jwt_exp(token: &str) -> Option<u64> {
+    let raw = token.split_whitespace().last()?;
+    let raw = raw.strip_prefix("t=").unwrap_or(raw);
+    let payload = raw.split('.').nth(1)?;
+    let bytes = b64url_decode(payload)?;
+    let v: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    v.get("exp")?.as_u64()
+}
+
+fn b64url_decode(s: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(s.len() * 3 / 4);
+    let (mut buf, mut bits) = (0u32, 0u32);
+    for c in s.bytes() {
+        let v = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'-' | b'+' => 62,
+            b'_' | b'/' => 63,
+            b'=' => break,
+            _ => return None,
+        } as u32;
+        buf = (buf << 6) | v;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buf >> bits) as u8);
+            buf &= (1 << bits) - 1;
+        }
+    }
+    Some(out)
 }
 
 pub fn tokens(shootctl: &str, owner: &str) -> Result<(String, String), String> {
@@ -96,7 +145,7 @@ pub fn tokens_opt(shootctl: &str, owner: &str, lock: bool) -> Result<(String, St
     // TINYCTL_TOKEN_DIR=DIR: tokens minted elsewhere (round-publish / port-fix-publish pull
     // them from the box) — the devserver has no plugin to mint from (2026-09-25)
     if let Ok(dir) = std::env::var("TINYCTL_TOKEN_DIR") {
-        return fresh_tokens_in(&dir).ok_or_else(|| format!("no fresh tokens in {dir} (younger than {} min)", TOKEN_REUSE_SECS / 60));
+        return fresh_tokens_in(&dir).ok_or_else(|| format!("no fresh tokens in {dir} (expiry ≥ 90 s away, or younger than {} min)", TOKEN_REUSE_SECS / 60));
     }
     if let Some(pair) = fresh_tokens() {
         eprintln!("tokens: reusing the plugin's files (younger than {} min)", TOKEN_REUSE_SECS / 60);
