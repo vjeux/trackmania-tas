@@ -1452,6 +1452,11 @@ pub fn setup_from_map(map_path: &str, paks: &[(String, String)], collection: &st
         Some("embedded") => lamps.into_iter().filter(|l| !(l.owner.starts_with("item ") && l.owner.split(' ').nth(1).and_then(|i| i.parse::<usize>().ok()).map(|i| stock_items.contains(&i)).unwrap_or(false))).collect(),
         // "model:SUBSTR[,SUBSTR…]": the lamps of the item instances whose model name contains one of the substrings (E, 2026-09-27 16:00Z —
         // the per-housing-class emission study: which of tiny16's lamp models leak light in OUR flat cube)
+        // "ids:4,5": the lamps with these list ids (E, 2026-09-27 20:45Z — which arch lamp lights which columns of chart 8506)
+        Some(m) if m.starts_with("ids:") => {
+            let ids: Vec<u16> = m["ids:".len()..].split(',').filter_map(|s| s.trim().parse::<u16>().ok()).collect();
+            lamps.into_iter().filter(|l| ids.contains(&l.id)).collect()
+        }
         Some(m) if m.starts_with("model:") => {
             let subs: Vec<String> = m["model:".len()..].split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
             lamps.into_iter().filter(|l| l.owner.starts_with("item ") && l.owner.split(' ').nth(1).and_then(|i| i.parse::<usize>().ok()).and_then(|i| scene.instances.get(i)).map(|inst| subs.iter().any(|s| inst.model_name.contains(s.as_str()))).unwrap_or(false)).collect()

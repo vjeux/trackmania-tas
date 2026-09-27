@@ -296,6 +296,13 @@ pub fn solid2_lights_ext(s2: &mapgeom::static_item::solid2::CPlugSolid2Model, po
             left = quat_rot(q, left);
             up = quat_rot(q, up);
         }
+        // LMTOOL_LL_SPOT_AXIS=left|up|-left|-up|-dir (study, E 2026-09-27 20:40Z): take another socket row as the spot axis — the arch-lamp axis
+        // question (chart 8506: the editor's brightest frame-1 texels lie 84–108° off our Z-row axis; RE 14 predicts our X row). Default: the Z row.
+        if let Ok(ax) = std::env::var("LMTOOL_LL_SPOT_AXIS") {
+            let (d0, l0, u0) = (dir, left, up);
+            let neg = |v: [f32; 3]| [-v[0], -v[1], -v[2]];
+            match ax.as_str() { "left" => { dir = l0; left = d0; } "-left" => { dir = neg(l0); left = d0; } "up" => { dir = u0; up = d0; } "-up" => { dir = neg(u0); up = d0; } "-dir" => { dir = neg(d0); } _ => {} }
+        }
         if std::env::var_os("LMTOOL_LIGHT_TRACE").is_some() { eprintln!("  socket matrix rows X {:?} Y {:?} Z {:?} T {:?} → item-space pos {pos:?} dir (Z row) {dir:?} left (X row) {left:?} up (Y row) {up:?}", &t[0..3], &t[3..6], &t[6..9], &t[9..12]); }
         out.push(LightDef { pos, dir, color, intensity, radius, cone, animated: pl.is_animated(), night_only: pl.night_only(), hyper2, att_htnlr, ball_flags, emitting, gx_flags, radii, left, up });
     }
@@ -1003,9 +1010,45 @@ impl Scene {
             for l in &m.lights {
                 let mut w = *l;
                 w.pos = xf_point(&inst.xf, l.pos);
-                w.dir = xf_normal(&inst.xf, l.dir);
-                w.left = xf_normal(&inst.xf, l.left);
-                w.up = xf_normal(&inst.xf, l.up);
+                // THE GAME'S SOCKET COMPOSITION (RE 14 20:50Z, FUN_1401e9a50 → FUN_140183fd0 → the instance entry +0x10..+0x40 = the desc):
+                // out = MOBIL × SOCKET as row-major 3×3 (out_ij = Σ_k B_ik·A_kj), and the spot axis SpotDirNeg = −row 2 of out — i.e.
+                // dir_world = Σ_k R_2k · row_k(A), the SOCKET'S ROWS (X = left, Y = up, Z = dir in item space) mixed by the third row of
+                // the placement rotation R (column-action here: R_ij = xf[3j + i]); left/up = rows 0/1 the same way. Until 2026-09-27
+                // 21:00Z we rotated the Z row as a VECTOR (R · dir), which agrees only for axis-aligned placements (stpad's RoadBorderSpot,
+                // byte-exact either way) — tiny16's arch item 4838 (yawed ~150°, sockets with a general rotation) put the spot 84–108° off
+                // the editor's (chart 8506: the editor's brightest frame-1 texels dark in ours). LMTOOL_LL_SOCKET_COMPOSE=vector = the old
+                // rule (study).
+                // STATUS 21:10Z: none of the matrix variants lights BOTH ends of chart 8506 the way the editor does — "ba" / "bat" (and the old
+                // vector rule) reproduce the left end (columns 1–10 within 1–9 %), "btat" the right end (columns 64–74 within 1–3 %), each
+                // leaving the other end dark; the old rule lights both ends with the right falloff but the right one cut at columns 63–66
+                // (our fixture's shadow) and column 11 lit — and scores best on the frame-1 bytes (12 120 / 12 214 identical vs 12 048–12 083).
+                // So the DEFAULT STAYS THE VECTOR RULE; the variants are LMTOOL_LL_SOCKET_COMPOSE=ba|bat|bta|btat study knobs until JOB C's
+                // light Iso (+0x10..+0x40) for lamps 4/5 says which composition the game made of THESE sockets.
+                let compose = std::env::var("LMTOOL_LL_SOCKET_COMPOSE").unwrap_or_else(|_| "vector".into());
+                if compose == "vector" {
+                    w.dir = xf_normal(&inst.xf, l.dir);
+                    w.left = xf_normal(&inst.xf, l.left);
+                    w.up = xf_normal(&inst.xf, l.up);
+                } else {
+                    // variants (study): "ba" = rows of A mixed by the rows of R (the default reading of out = B×A); "bat" = A transposed
+                    // (the socket's COLUMNS mixed); "bta" = R transposed; "btat" = both
+                    let variant = compose.clone();
+                    let at = variant.contains("at");
+                    let bt = variant.starts_with("bt");
+                    let m9 = &inst.xf;
+                    // A rows as read: X = left, Y = up, Z = dir; A^T rows = the columns
+                    let arow = |k: usize| -> V3 { match k { 0 => l.left, 1 => l.up, _ => l.dir } };
+                    let acol = |k: usize| -> V3 { [l.left[k], l.up[k], l.dir[k]] };
+                    let row = |i: usize| -> V3 {
+                        // R_ik = m9[3k + i] (column action); R^T_ik = m9[3i + k]
+                        let b = |k: usize| if bt { m9[3 * i + k] } else { m9[3 * k + i] };
+                        let (a0, a1, a2) = if at { (acol(0), acol(1), acol(2)) } else { (arow(0), arow(1), arow(2)) };
+                        norm([b(0) * a0[0] + b(1) * a1[0] + b(2) * a2[0], b(0) * a0[1] + b(1) * a1[1] + b(2) * a2[1], b(0) * a0[2] + b(1) * a1[2] + b(2) * a2[2]])
+                    };
+                    w.left = row(0);
+                    w.up = row(1);
+                    w.dir = row(2);
+                }
                 w.radius = l.radius * scale;
                 out.push((ii, w));
             }
