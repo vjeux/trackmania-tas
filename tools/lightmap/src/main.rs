@@ -5048,6 +5048,55 @@ fn run(mut a: Vec<String>) {
             println!("our stored byte per editor byte (charts whose chart bytes agree within 1): editor byte → n, median ours, ours − editor");
             for (e, v) in bytes.iter_mut() { if v.len() >= 20 && *e % 8 == 0 { v.sort(); println!("  {e:3} → n {:6} ours {:3}  Δ {:+}", v.len(), v[v.len() / 2], v[v.len() / 2] as i32 - *e as i32); } }
         }
+        "cap-rect" => {
+            // lmtool cap-rect ROOT FILE [--rect x0,y0,x1,y1] [--hist] [--nonzero] : a captured pass buffer (any format passdiff reads:
+            // R11G11B10, RGBA16F, B8G8R8A8, R16…) over a rect — per-channel mean / min / max, the count of non-zero texels, and with
+            // --hist a per-channel histogram (16 bins over 0..max) — port engineer G2's instrument for "what did the game's pre-pass
+            // write for these texels" (the MDiffuse atlas 16969 at the palm fronds, the ILightInput at a card)
+            let root = std::path::Path::new(&a[1]);
+            let file = &a[2];
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            // a raw .bin of a pass dump: its format / size / pitch from the dump's MANIFEST entry
+            let (mut fmt, mut fw, mut fh, mut pitch) = (String::new(), 0u32, 0u32, 0u32);
+            if !file.ends_with(".dds") && !file.ends_with(".dds.gz") {
+                if let Ok(txt) = std::fs::read_to_string(root.join("MANIFEST.json")) {
+                    if let Ok(m) = lightmap::passdiff::read_manifest(&txt) {
+                        if let Some(e) = m.passes.iter().find(|e| &e.file == file) { fmt = e.format.clone(); fw = e.width; fh = e.height; pitch = e.row_pitch; }
+                    }
+                }
+            }
+            let b = lightmap::passdiff::load_file(root, file, &fmt, fw, fh, pitch).unwrap_or_else(|e| panic!("{e}"));
+            let r: Vec<u32> = f("--rect").map(|s| s.split(',').map(|t| t.trim().parse().expect("--rect x0,y0,x1,y1")).collect()).unwrap_or_else(|| vec![0, 0, b.w, b.h]);
+            let (x0, y0, x1, y1) = (r[0], r[1], r[2].min(b.w), r[3].min(b.h));
+            let nonzero_only = a.iter().any(|x| x == "--nonzero");
+            let nc = b.channels.min(4) as usize;
+            let (mut sum, mut mn, mut mx) = (vec![0f64; nc], vec![f32::MAX; nc], vec![f32::MIN; nc]);
+            let (mut n, mut n_nz) = (0usize, 0usize);
+            let mut vals: Vec<Vec<f32>> = vec![Vec::new(); nc];
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let px: Vec<f32> = (0..nc).map(|c| b.get(x, y, c as u32)).collect();
+                    let nz = px.iter().take(3.min(nc)).any(|v| *v != 0.0);
+                    n += 1;
+                    if nz { n_nz += 1; }
+                    if nonzero_only && !nz { continue; }
+                    for c in 0..nc { sum[c] += px[c] as f64; mn[c] = mn[c].min(px[c]); mx[c] = mx[c].max(px[c]); vals[c].push(px[c]); }
+                }
+            }
+            let used = if nonzero_only { n_nz } else { n };
+            println!("{file}: {}×{} {} channels; rect [{x0},{x1})×[{y0},{y1}) = {n} texels, {n_nz} with a non-zero rgb ({:.1} %){}", b.w, b.h, b.channels, 100.0 * n_nz as f64 / n.max(1) as f64, if nonzero_only { " — statistics over the non-zero ones" } else { "" });
+            for c in 0..nc {
+                println!("  channel {c}: mean {:.6} min {:.6} max {:.6}", sum[c] / used.max(1) as f64, mn[c], mx[c]);
+            }
+            if a.iter().any(|x| x == "--hist") {
+                for c in 0..nc {
+                    let top = mx[c].max(1e-9);
+                    let mut bins = [0usize; 16];
+                    for v in &vals[c] { let k = ((v / top) * 16.0).floor().clamp(0.0, 15.0) as usize; bins[k] += 1; }
+                    println!("  channel {c} histogram (16 bins over 0..{top:.4}): {bins:?}");
+                }
+            }
+        }
         "dds-mean" => {
             // lmtool dds-mean FILE.dds [--level L] : per-channel mean of one mip level, as stored (0..1) and sRGB-decoded to linear
             // (port engineer G: the pack textures' albedo means — Grass_D / Grass_X2 for the Stadium tiles' pre-pass class)
