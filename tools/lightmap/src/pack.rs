@@ -251,7 +251,11 @@ pub fn allocate_ordered_forced(charts: &[ChartExt], order: &[usize], w_atlas: u1
     // editor's own value when replaying its search)
     let sum_f32: f32 = { let o = f32::from_bits(SUM_AREA_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed)); if o > 0.0 { o } else { charts.iter().fold(0f32, |s, c| s + c.ext[0] * c.ext[1]) } };
     let d = (w_atlas as f32 * h_atlas as f32) / sum_f32;
-    if std::env::var_os("LMTOOL_PACK_TRACE").is_some() { eprintln!("pack: Σarea f32 {sum_f32} (f64 {sum_area}), D {d} ({:#010x})", d.to_bits()); }
+    // LMTOOL_PACK_INTO=W,H (study, F 2026-09-27): the TryPack target dims when they are not the D dims — the hypothesis that the
+    // game's FIRST allocation (3 072 × 2 048) computes D from the wide target but packs the same 2 048-wide grid (RE 7's stpad
+    // dump: the first pack's s 2.1158 = scale 0.600 of D₃₀₇₂ = 0.9 × D₂₀₄₈, the 2 048 pack's own ceiling)
+    let (w_atlas, h_atlas) = match std::env::var("LMTOOL_PACK_INTO").ok().and_then(|v| { let p: Vec<u16> = v.split(',').filter_map(|t| t.trim().parse().ok()).collect(); if p.len() == 2 { Some((p[0], p[1])) } else { None } }) { Some(p) => p, None => (w_atlas, h_atlas) };
+    if std::env::var_os("LMTOOL_PACK_TRACE").is_some() { eprintln!("pack: Σarea f32 {sum_f32} (f64 {sum_area}), D {d} ({:#010x}), packing into {w_atlas} × {h_atlas}", d.to_bits()); }
     let max_ext = charts.iter().fold([0f32; 2], |m, c| [m[0].max(c.ext[0]), m[1].max(c.ext[1])]);
     let mut scale_hi = 1.0f32;
     let (rx, ry) = (d.sqrt() * max_ext[0] / w_atlas as f32, d.sqrt() * max_ext[1] / h_atlas as f32);

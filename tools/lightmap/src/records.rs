@@ -194,10 +194,26 @@ pub fn layout_of(recs: &[Rec], quality_index: u32) -> Result<crate::layout::Game
     // scale?) and the formula stands until a dump of lm218+0x488 (stpad: 2.596 predicted; RE 7's c0 read 2.1158 would give the
     // giant tiles, which the classes refute). LMTOOL_NO_FIRST_PASS=1 → the port's density heuristic as before.
     if std::env::var_os("LMTOOL_NO_FIRST_PASS").is_none() {
-        let mode = std::env::var("LMTOOL_FIRST_PASS").unwrap_or_default();
+        // THE DEFAULT (F 2026-09-27 22:45Z, after the g23 regression of the √1.5 formula) — AN EMPIRICAL RULE, not a read: the re-pack
+        // into 3 072 × 2 048 at ONE shrink step (the first scale of the 0.9 ladder that packs, no bisection — `max_iter_for_quality(0)`).
+        // RE 14 (23:00Z) retracted the "wider pack" mechanism: the 3 072 width is the same 2 048² chart layout in a 1.5×-wide LightId
+        // target, the s search's inputs are identical for every UpdateMapping call (no per-call iteration count), and with a shipped
+        // LightMapCache call #1 does not write +0x488 at all — so by the code the s live at bounce time would be the file's (k 1),
+        // which the measured structures refute on the giants (k 1 tiles giant20x2 at 2 048² → FCB 1.57, untiles g23 → 9 720 unlit
+        // tiles, tiles tiny03 → record −6.8 %). The mechanism RE 14 can name is the CHART SET of the allocation live at bounce
+        // time (records created so far / the LightId charts — sparser on item-heavy maps → a larger s); RE 7's /lmrecords dump at
+        // c0 vs c1 on giant20x2 (record count + s) is the read that settles it when the box frees. Until then this rule is the one
+        // variant that meets every measured structure at once — stpad's captured two cells (ext 8 078 ≤ 8 192), giant20x2 and tiny03 without tiles (3 245 and
+        // 3 246 > 3 072, ≤ 4 096), tiny16's 2 048² world peel (1 227), and g23 TILED (4 718 → n 2; the world pass alone leaves
+        // 9 700 sea-floor tiles unlit at any resolution while the editor lights 95 % of them). The full-iteration re-pack lands
+        // stpad at 8 258 (n 3 ✗) and the √1.5 formula g23 at 4 057 (n 1 ✗). RE 7's stpad dump (first pack s 2.1158 ≈ s_file)
+        // fits none of these and is an open question to RE 14 (the search's iteration count at the LightId allocation).
+        // LMTOOL_FIRST_PASS=formula → s_file·√1.5; =pack → the re-pack at the map's quality; =pack-own-d1 → regrouped at the wide
+        // density; LMTOOL_FIRST_PASS_Q=n → the re-pack's search at quality n.
+        let mode = std::env::var("LMTOOL_FIRST_PASS").unwrap_or_else(|_| "pack-q0".to_string());
         if mode.starts_with("pack") {
             crate::layout::STRIP_RECS.with(|s| { let mut s = s.borrow_mut(); s.clear(); for (k, r) in recs.iter().enumerate() { if r.class == "item0" { s.insert(k); } } });
-            match crate::layout::allocate_grouped_walls(&crate::layout::LayoutInput { tiles: Vec::new(), items, w_atlas: 3072, quality_index, h_atlas: 2048, d1_side: if mode == "pack-own-d1" { 0 } else { 2048 } }, &groups, pos_opt, Some(&walls)) {
+            match crate::layout::allocate_grouped_walls(&crate::layout::LayoutInput { tiles: Vec::new(), items, w_atlas: 3072, quality_index: std::env::var("LMTOOL_FIRST_PASS_Q").ok().and_then(|v| v.parse().ok()).unwrap_or(if mode == "pack-q0" { 0 } else { quality_index }), h_atlas: 2048, d1_side: if mode == "pack-own-d1" { 0 } else { 2048 } }, &groups, pos_opt, Some(&walls)) {
                 Ok(first) => { gl.s_first = Some(first.s); if std::env::var_os("LMTOOL_LAYOUT_TRACE").is_some() { eprintln!("layout first pass (3072 × 2048 re-pack, {mode}): s {} Σ {} ({} entries) — the peel tiling scale; the file layout's s {}", first.s, first.sum_area, first.entries.len(), gl.s); } }
                 Err(e) => eprintln!("layout first pass (3072 × 2048) FAILED: {e} — the peel tiling falls back to the port's density heuristic"),
             }
