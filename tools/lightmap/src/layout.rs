@@ -47,6 +47,10 @@ pub struct GameLayout {
     pub charts: Vec<LayoutChart>,
     /// The allocated texel density (layout units per metre).
     pub s: f32,
+    /// The FIRST allocation's density — the same records packed into 3 072 × 2 048 (the LightId accumulation target's layout,
+    /// RenderLighting_Frames' outer state 0x3477); lm218+0x488 keeps THIS s through the sweeps (UpdateMapping #2 skips the
+    /// write), so FUN_140230080 sizes the peels with it (RE 14 20:55Z). `None` when the pass was not run.
+    pub s_first: Option<f32>,
     pub sum_area: f32,
     pub w_atlas: u16,
     /// (g, pad, m) of the layout side.
@@ -234,6 +238,18 @@ pub struct LayoutInput {
     pub items: Vec<(u32, [f32; 2], ChartKey, Charted)>,
     pub w_atlas: u16,
     pub quality_index: u32,
+    /// The atlas height; 0 = square (`w_atlas`). The game's FIRST allocation (RenderLighting_Frames' outer state 0x3477,
+    /// the LightId accumulation target) packs the same records into 3 072 × 2 048 — its s is what FUN_140230080 sizes the
+    /// peels with (RE 14 2026-09-27 20:55Z: UpdateMapping #2 skips the +0x488 write on the "mapping already valid" branch).
+    pub h_atlas: u16,
+    /// The atlas area the GROUPING density D₁ = W·H/Σ₁ uses when it is not the pack's own (0 = the pack's): the first pass
+    /// keeps the 2 048² model list (the solo test, the grid dims, the chunks) and packs it into 3 072 × 2 048.
+    pub d1_side: u16,
+}
+
+impl LayoutInput {
+    pub fn height(&self) -> u16 { if self.h_atlas == 0 { self.w_atlas } else { self.h_atlas } }
+    pub fn d1_area(&self) -> f32 { if self.d1_side == 0 { self.w_atlas as f32 * self.height() as f32 } else { self.d1_side as f32 * self.d1_side as f32 } }
 }
 
 /// Run the allocation: the chart list in record order (tiles, then items), the walk order, the scale search.
@@ -262,7 +278,7 @@ pub fn allocate(input: &LayoutInput) -> Result<GameLayout, String> {
         .map(|(k, p)| LayoutChart { obj: objs[k].0, ext: charts[k].ext, charted: objs[k].1, x: p.x as i32 + pad as i32, y: p.y as i32 + pad as i32, w: p.w as i32 - 2 * pad as i32, h: p.h as i32 - 2 * pad as i32 })
         .collect();
     let centres: Vec<[f32; 3]> = keys.iter().map(|k| k.centre).collect();
-    Ok(GameLayout { charts: out, s, sum_area, w_atlas: input.w_atlas, params: (g, pad, m), max_iter, cell_of: Vec::new(), tile_quality: Vec::new(), entries: Vec::new(), entry_keys: Vec::new(), centres, records: Vec::new() })
+    Ok(GameLayout { charts: out, s, s_first: None, sum_area, w_atlas: input.w_atlas, params: (g, pad, m), max_iter, cell_of: Vec::new(), tile_quality: Vec::new(), entries: Vec::new(), entry_keys: Vec::new(), centres, records: Vec::new() })
 }
 
 #[cfg(test)]
@@ -531,7 +547,7 @@ pub fn for_map(map_path: &str, scene: &crate::geometry::Scene, base: u32, qualit
         .collect();
     // the group keys: tiles = (the zone prefab, q); items = (the model, q) — LMTOOL_LAYOUT_PER_RECORD=1 keeps the per-record
     // allocation (the grouped one coincides with it where every record is solo)
-    let input = LayoutInput { tiles, items, w_atlas: 2048, quality_index };
+    let input = LayoutInput { tiles, items, w_atlas: 2048, quality_index, h_atlas: 0, d1_side: 0 };
     let mut out = if std::env::var_os("LMTOOL_LAYOUT_PER_RECORD").is_some() {
         allocate(&input)?
     } else {
@@ -583,7 +599,7 @@ pub fn allocate_grouped_walls(input: &LayoutInput, groups: &[u64], pos: Option<&
     use crate::itemrule as ir;
     let strip_recs: std::collections::HashSet<usize> = STRIP_RECS.with(|s| s.borrow().clone());
     let kind0_dims = std::env::var("LMTOOL_KIND0_DIMS").ok();
-    let (g, pad, m) = crate::pack::layout_params(input.w_atlas, input.w_atlas);
+    let (g, pad, m) = crate::pack::layout_params(input.w_atlas, input.height());
     let max_iter = max_iter_for_quality(input.quality_index);
     // the records
     let mut exts: Vec<[f32; 2]> = Vec::new();
@@ -605,7 +621,7 @@ pub fn allocate_grouped_walls(input: &LayoutInput, groups: &[u64], pos: Option<&
     }
     // Σ₁ (record order, f32) → D₁
     let sum1 = exts.iter().fold(0f32, |acc, e| acc + e[0] * e[1]);
-    let d1 = (input.w_atlas as f32 * input.w_atlas as f32) / sum1;
+    let d1 = input.d1_area() / sum1;
     // the model list: solo records each their own entry; the rest grouped by key in first-appearance order
     let mut members: Vec<Vec<usize>> = Vec::new();
     let mut key_of: std::collections::HashMap<u64, usize> = Default::default();
@@ -720,7 +736,7 @@ pub fn allocate_grouped_walls(input: &LayoutInput, groups: &[u64], pos: Option<&
         idx.iter().fold(0f32, |acc, &i| acc + areas[i])
     };
     crate::pack::SUM_AREA_OVERRIDE.store(sum_area.to_bits(), std::sync::atomic::Ordering::Relaxed);
-    let res = crate::pack::allocate_ordered(&charts, &order, input.w_atlas, input.w_atlas, g, m, max_iter);
+    let res = crate::pack::allocate_ordered(&charts, &order, input.w_atlas, input.height(), g, m, max_iter);
     crate::pack::SUM_AREA_OVERRIDE.store(0, std::sync::atomic::Ordering::Relaxed);
     let (s, placed) = res.ok_or("the allocation failed (no scale packs)")?;
     // the cells: each record's rect inside its entry's placed rect
@@ -754,7 +770,7 @@ pub fn allocate_grouped_walls(input: &LayoutInput, groups: &[u64], pos: Option<&
     let _ = &walk_pos;
     WALK_POS.with(|w| *w.borrow_mut() = walk_pos.clone());
     let centres: Vec<[f32; 3]> = keys.iter().map(|k| k.centre).collect();
-    Ok(GameLayout { charts: out, s, sum_area, w_atlas: input.w_atlas, params: (g, pad, m), max_iter, cell_of: Vec::new(), tile_quality: Vec::new(), entries: entry_out, entry_keys, centres, records: Vec::new() })
+    Ok(GameLayout { charts: out, s, s_first: None, sum_area, w_atlas: input.w_atlas, params: (g, pad, m), max_iter, cell_of: Vec::new(), tile_quality: Vec::new(), entries: entry_out, entry_keys, centres, records: Vec::new() })
 }
 
 /// LMTOOL_LAYOUT_ISOLATE=o[,o…] with tokens `o` or `a..b` — OBJECT IDS (the bind word's obj: item base + item index), a STUDY

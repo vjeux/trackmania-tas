@@ -537,6 +537,7 @@ pub fn run_set_layers_par(meshes: &[LmMesh], instances: &[LmInstance], table: &[
                 for (j, layer) in layers.iter().enumerate() {
                     let kk = (k0 + j) as u16;
                     if cur != u16::MAX && kk < cur { continue; }
+                    if kk == 0 && d.world_box.is_some() && !*crate::peel::TILE_SKY { continue; } // LMTOOL_TILE_SKY=0 (study): no dome layer in a tile pass
                     if let Some(rgb) = ps_17112(pos, n, &d.cb, layer, cmp) {
                         unsafe {
                             *(px_ptr as *mut u32).add(pi) = crate::gpufmt::pack_r11g11b10(rgb, Rounding::Truncate);
@@ -1777,6 +1778,7 @@ fn pixel_chunks(n_px: usize, threads: usize) -> (usize, usize) {
 /// caller takes the general path).
 pub fn replay_set_layers_sparse(fl: &LmFragList, sc: &LmScene, cb: &SetCb, world_box: Option<[[f32; 2]; 2]>, layers: &[LayerSparse<'_>], cmp: DepthCompare, tgt: &mut DirTarget) -> bool {
     assert_eq!((fl.w, fl.h), (tgt.w, tgt.h));
+    let tile_no_sky = world_box.is_some() && !*crate::peel::TILE_SKY;
     let Some(l0) = layers.first() else { return true };
     // one table: the same slices and index, the layers 0, 1, 2 … in order
     let one_table = layers.iter().enumerate().all(|(k, l)| {
@@ -1843,6 +1845,9 @@ pub fn replay_set_layers_sparse(fl: &LmFragList, sc: &LmScene, cb: &SetCb, world
             }
             let k_end = if all_below { kmax.min(nl) } else { nl };
             for k in 0..k_end {
+                // LMTOOL_TILE_SKY=0 (study, F 2026-09-27): a tile pass (world_box set) leaves the dome layer (layer 0) out — a texel whose
+                // every surface layer fails keeps the world pass's value instead of the tile's sky
+                if tile_no_sky && l0.k + k == 0 { continue; }
                 for pf in frs.iter().flatten() {
                     // the layer's stored depth at the depth texel: the fragment when the pixel has layer k, else the clear (1.0)
                     let stored = match pf.drange { Some((f0, n)) if k < n => l0.frags[f0 + k].d, _ => 1.0 };

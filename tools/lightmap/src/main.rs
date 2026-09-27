@@ -2575,7 +2575,13 @@ fn run(mut a: Vec<String>) {
                 let coll_id_pp: u32 = match f("--collection").unwrap_or_else(|| hdr.as_ref().map(|h| h.envir.clone()).unwrap_or_else(|| "BlueBay".into())).as_str() { "Stadium" | "Stadium256" => 26, "GreenCoast" => 15, "RedIsland" => 16, "WhiteShore" => 29, _ => 28 };
                 let pp_off = [0.0, lightmap::probechunk::deco_offsets(coll_id_pp).map(|(_, p)| p + 2.0).unwrap_or(-38.0), 0.0];
                 let (_, _, _, chunks_aabb) = lightmap::probechunk::for_records(size, [32.0, 8.0, 32.0], pp_off, lightmap::probechunk::level_h(coll_id_pp), &recs, &scene_ch, 2048);
-                let alloc_scale: f32 = f("--tile-scale").map(|v| v.parse().unwrap()).unwrap_or(prm.texels_per_m * 2.0);
+                // THE TILING SCALE = THE FIRST ALLOCATION'S s (lm218+0x488: written by UpdateMapping #1 — the 3 072 × 2 048 LightId-target layout of
+                // RenderLighting_Frames' outer state 0x3477 — and KEPT through the sweeps because UpdateMapping #2 (the 2 048² file layout) skips
+                // the write on its "mapping already valid" branch; RE 14 2026-09-27 20:55Z, retracting his 19:55Z read). records::layout_of runs
+                // that pass (`gl.s_first`). The port's `texels_per_m × 2` heuristic gave 1.555 on giant20x2 (4 096² tiles, n 2) where the game's
+                // 1.04 → 4 096², n 1 = the world pass alone — measured: FCB 1.57 → 1.14, record 1.63 → 1.42 (F). --tile-scale S overrides; without
+                // a game layout the heuristic stands.
+                let alloc_scale: f32 = f("--tile-scale").map(|v| v.parse().unwrap()).or_else(|| game_layout.as_ref().and_then(|gl| gl.s_first)).unwrap_or(prm.texels_per_m * 2.0);
                 let tq: u32 = f("--tile-quality").map(|v| v.parse().unwrap()).unwrap_or(3);
                 let vram: i64 = f("--tile-vram-mb").map(|v| v.parse::<i64>().unwrap() << 20).unwrap_or(8 << 30);
                 let max_tiles: u32 = f("--tile-max").map(|v| v.parse().unwrap()).unwrap_or(4);

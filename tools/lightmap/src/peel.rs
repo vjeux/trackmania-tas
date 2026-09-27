@@ -238,6 +238,10 @@ pub static ALPHA_POINT: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| 
 /// LMTOOL_TILE_CLIP_ITEMS=1: the fitted peels' accumulate clipped by the ITEMS' union box for every tile (the pre-2026-09-26 form)
 /// instead of each tile's own cell (port engineer G; read once).
 pub static TILE_CLIP_ITEMS: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_TILE_CLIP_ITEMS").map(|v| v == "1").unwrap_or(false));
+/// LMTOOL_TILE_SKY=0 (study, F 2026-09-27): in a FITTED tile pass a texel whose selected layer is the dome (the sky beyond every surface)
+/// is left as the world pass wrote it instead of taking the tile's sky — the hypothesis that the game's tile pass carries no sky
+/// layer for the LM texels (giant20x2's elevated platform undersides read 3.4/2.7/9.7× the editor's with the tiles, 1.2/0.9/1.0 without).
+pub static TILE_SKY: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_TILE_SKY").map(|v| v != "0").unwrap_or(true));
 /// LMTOOL_ALPHA_ANISO=N: the alpha sampler's anisotropy (16 = the capture's card sampler; 1 = trilinear).
 pub static ALPHA_ANISO: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_ALPHA_ANISO").ok().and_then(|v| v.parse().ok()).unwrap_or(16));
 /// LMTOOL_ALPHA_QUEUE=0: the alpha test inline per fragment instead of queued sixteen wide (alphasimd; the A/B
@@ -5635,6 +5639,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                             let list = &ly.frags[a as usize..b as usize];
                             let hit: Option<([f32; 3], bool)> = match select_layer(list, z01) {
                                 Some(f) if f.d > 0.0 || !prm.dome_layer => { n_surface += 1; Some((f.rgb, true)) }
+                                Some(_) if pi > 0 && !*TILE_SKY => None,
                                 Some(_) => { n_dome += 1; Some((dome_px(frame, dome_r, pix % lw, pix / lw), false)) }
                                 None => None,
                             };
@@ -5694,6 +5699,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                                     // (a texel outside this peel's frustum reads nothing from it)
                                     match select_layer(ly.at(px, py), z01) {
                                         Some(f) if f.d > 0.0 || !prm.dome_layer => { hit = Some((f.rgb, true)); n_surface += 1; }
+                                        Some(_) if pi > 0 && !*TILE_SKY => {}
                                         Some(_) => { hit = Some((dome_px(frame, dome_r, px, py), false)); n_dome += 1; } // the dome: the sky at this pixel
                                         None => {}
                                     }

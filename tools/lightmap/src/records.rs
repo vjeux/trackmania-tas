@@ -177,7 +177,36 @@ pub fn layout_of(recs: &[Rec], quality_index: u32) -> Result<crate::layout::Game
     let pos: Vec<u32> = recs.iter().enumerate().map(|(i, r)| r.pos_rank.unwrap_or(i as u32)).collect();
     let walls: Vec<Option<(u8, f32)>> = recs.iter().map(|r| if std::env::var("LMTOOL_NO_WALLS").is_ok() { None } else { r.wall }).collect();
     crate::layout::STRIP_RECS.with(|s| { let mut s = s.borrow_mut(); s.clear(); for (k, r) in recs.iter().enumerate() { if r.class == "item0" { s.insert(k); } } });
-    crate::layout::allocate_grouped_walls(&crate::layout::LayoutInput { tiles: Vec::new(), items, w_atlas: 2048, quality_index }, &groups, if any_pos { Some(&pos) } else { None }, Some(&walls))
+    let pos_opt = if any_pos { Some(&pos[..]) } else { None };
+    // THE FIRST ALLOCATION (RE 14 2026-09-27 20:55Z; F): the game packs the same records into 3 072 × 2 048 first — the LightId
+    // accumulation target's layout (RenderLighting_Frames' outer state 0x3477) — and lm218+0x488 keeps THAT s through the sweeps
+    // (UpdateMapping #2 on the 2 048² file layout skips the write on its "mapping already valid" branch), so FUN_140230080 sizes the
+    // world peel and the fitted tiles with it: giant20x2 3 117 m × 1.04 = 3 251 > 3 072 → 4 096², n 1 → NO fitted pass (measured:
+    // FCB 1.57 → 1.14, record 1.63 → 1.42); tiny03 1.62 → 4 096², n 1 (AV palms 0.44 → 0.71, record −26 % → −1.7 %); stpad 2.60 →
+    // 4 096², n 2 (the two captured cells either way). The file's layout stays the 2 048² one. LMTOOL_NO_FIRST_PASS=1 skips it.
+    let mut gl = crate::layout::allocate_grouped_walls(&crate::layout::LayoutInput { tiles: Vec::new(), items: items.clone(), w_atlas: 2048, quality_index, h_atlas: 0, d1_side: 0 }, &groups, pos_opt, Some(&walls))?;
+    // THE VALUE: s_first = s_file · √1.5 — the same Σ in 1.5× the area (RE 14's reading of the first target). The real pack's bisection
+    // can land a step away; what pins it: stpad's CAPTURED two cells need ext = 3 117 m · s_first ≤ 8 192 → s_first ≤ 2.628 (√1.5 gives
+    // 2.596 ✓), giant20x2 and tiny03 need no tiles → s_first ∈ (0.986, 1.314] and (1.5, 2.0] (√1.5 gives 1.043 and 1.624 ✓), so the
+    // ratio k = s_first / s_file lies in (1.157, 1.24]. Our own re-packs into 3 072 × 2 048 come out at k 1.25 (the 2 048² entries,
+    // LMTOOL_FIRST_PASS=pack: stpad 2.649 → n 3 ✗) or 1.28 (entries regrouped at the 3 072 × 2 048 density, =pack-own-d1: 2.717 ✗),
+    // both over the window — so the game's first pack differs from a plain re-pack in some input (its record set? its start
+    // scale?) and the formula stands until a dump of lm218+0x488 (stpad: 2.596 predicted; RE 7's c0 read 2.1158 would give the
+    // giant tiles, which the classes refute). LMTOOL_NO_FIRST_PASS=1 → the port's density heuristic as before.
+    if std::env::var_os("LMTOOL_NO_FIRST_PASS").is_none() {
+        let mode = std::env::var("LMTOOL_FIRST_PASS").unwrap_or_default();
+        if mode.starts_with("pack") {
+            crate::layout::STRIP_RECS.with(|s| { let mut s = s.borrow_mut(); s.clear(); for (k, r) in recs.iter().enumerate() { if r.class == "item0" { s.insert(k); } } });
+            match crate::layout::allocate_grouped_walls(&crate::layout::LayoutInput { tiles: Vec::new(), items, w_atlas: 3072, quality_index, h_atlas: 2048, d1_side: if mode == "pack-own-d1" { 0 } else { 2048 } }, &groups, pos_opt, Some(&walls)) {
+                Ok(first) => { gl.s_first = Some(first.s); if std::env::var_os("LMTOOL_LAYOUT_TRACE").is_some() { eprintln!("layout first pass (3072 × 2048 re-pack, {mode}): s {} Σ {} ({} entries) — the peel tiling scale; the file layout's s {}", first.s, first.sum_area, first.entries.len(), gl.s); } }
+                Err(e) => eprintln!("layout first pass (3072 × 2048) FAILED: {e} — the peel tiling falls back to the port's density heuristic"),
+            }
+        } else {
+            gl.s_first = Some(gl.s * 1.5f32.sqrt());
+            if std::env::var_os("LMTOOL_LAYOUT_TRACE").is_some() { eprintln!("layout first pass: s_first = s · √1.5 = {} — the peel tiling scale (the file layout's s {})", gl.s_first.unwrap(), gl.s); }
+        }
+    }
+    Ok(gl)
 }
 
 /// Match our records to the dump's by centre (within 1e-2 m) and MeterByUv (within 1e-4 relative); prints the per-class

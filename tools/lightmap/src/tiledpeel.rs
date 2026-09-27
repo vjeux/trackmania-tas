@@ -77,8 +77,21 @@ impl PeelPlan {
     /// (w − 2)/w inset scale is the frame's own: a tile at `tile_size` is fit for that size.)
     pub fn frusta(&self, d: [f32; 3]) -> Vec<Frustum> {
         let mut out = Vec::with_capacity(1 + self.tiles.len());
+        // LMTOOL_TILE_DEPTH_WORLD=1 (study, F 2026-09-27): a fitted tile's camera keeps its lateral fit but takes the WORLD box's depth
+        // range (near/far along the direction, about the tile's eye) — RE 5's "far to the casters' box when farther" read as the scene
+        // box; the hypothesis for giant20x2's elevated undersides reading the tile's sky where the world pass sees the far ground
+        static TILE_DEPTH_WORLD: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("LMTOOL_TILE_DEPTH_WORLD").is_some());
+        let world_cam = fit_camera(&self.world, d, &self.rules);
         for (pi, b) in std::iter::once(&self.world).chain(self.tiles.iter()).enumerate() {
-            let cam = fit_camera(b, d, &self.rules);
+            let mut cam = fit_camera(b, d, &self.rules);
+            if pi > 0 && *TILE_DEPTH_WORLD {
+                // the world box's near/far measured from THIS camera's eye along its forward axis
+                let off = (0..3).map(|k| (world_cam.eye[k] - cam.eye[k]) * cam.forward[k]).sum::<f32>();
+                let (near_w, far_w) = (off + world_cam.c[2] - world_cam.h[2], off + world_cam.c[2] + world_cam.h[2]);
+                let (near, far) = ((cam.c[2] - cam.h[2]).min(near_w), (cam.c[2] + cam.h[2]).max(far_w));
+                cam.c[2] = (near + far) * 0.5;
+                cam.h[2] = (far - near) * 0.5;
+            }
             let s = self.frame_size(pi);
             if let Some(fr) = Frustum::from_pw01(&cam.world_pw01_shadow(s, s)) {
                 out.push(fr);
