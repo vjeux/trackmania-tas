@@ -119,8 +119,7 @@ mod tests {
             decor: Vec::new(),
             alpha_masks: Default::default(),
             card_albedo: Default::default(),
-            tex_albedo: Default::default(),
-        }
+            tex_albedo: Default::default(), stock_models: Default::default() }
     }
 
     #[test]

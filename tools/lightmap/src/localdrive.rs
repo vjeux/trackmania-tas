@@ -1436,6 +1436,21 @@ pub fn setup_from_map(map_path: &str, paks: &[(String, String)], collection: &st
     let n_all = all.len();
     let n_night = all.iter().filter(|l| l.light.night_only).count();
     let lamps: Vec<Lamp> = if std::env::var_os("LMTOOL_LL_ALL_LAMPS").is_some() { all } else { all.into_iter().filter(|l| daytime.map(|w| crate::moods::lamp_is_baked(l.light.night_only, &gate, w)).unwrap_or(!l.light.night_only)).collect() };
+    // LMTOOL_LAMP_FILTER (study, E 2026-09-27 03:00Z — the coordinator's decisive tiny16 test): "ball400" keeps only the lamps whose Ball08
+    // word has bit 0x400 (the 0x410 / 0x412 class V's receiver table lights); "noball400" the complement; "gx41" / "gx6d" by the GxLight
+    // +0x20 word; unset = every lamp the mood gate passes. Which class the game bakes is RE 14's read; this measures both frames per class.
+    let stock_items: std::collections::HashSet<usize> = scene.instances.iter().enumerate().filter(|(_, inst)| scene.stock_models.contains(&inst.model)).map(|(k, _)| k).collect();
+    let lamps: Vec<Lamp> = match std::env::var("LMTOOL_LAMP_FILTER").ok().as_deref() {
+        Some("ball400") => lamps.into_iter().filter(|l| l.light.ball_flags & 0x400 != 0).collect(),
+        Some("noball400") => lamps.into_iter().filter(|l| l.light.ball_flags & 0x400 == 0).collect(),
+        Some("gx41") => lamps.into_iter().filter(|l| l.light.gx_flags == 0x41).collect(),
+        Some("gx6d") => lamps.into_iter().filter(|l| l.light.gx_flags == 0x6d).collect(),
+        // "stock": only the lamps of STOCK items (the models resolved from the packs — tiny16's four Screen lights); "embedded": the rest
+        Some("stock") => lamps.into_iter().filter(|l| l.owner.starts_with("item ") && l.owner.split(' ').nth(1).and_then(|i| i.parse::<usize>().ok()).map(|i| stock_items.contains(&i)).unwrap_or(false)).collect(),
+        Some("embedded") => lamps.into_iter().filter(|l| !(l.owner.starts_with("item ") && l.owner.split(' ').nth(1).and_then(|i| i.parse::<usize>().ok()).map(|i| stock_items.contains(&i)).unwrap_or(false))).collect(),
+        _ => lamps,
+    };
+    if std::env::var_os("LMTOOL_LAMP_FILTER").is_some() { log(&format!("LMTOOL_LAMP_FILTER {}: {} lamps kept", std::env::var("LMTOOL_LAMP_FILTER").unwrap_or_default(), lamps.len())); }
     // THE EMITTER-AREA SAMPLES per lamp (RE 13 21:20Z; `area_samples`): the bake quality's S_full and the chart-allocation texel density at the
     // light — gl.s scaled by the tile quality of the light's cell when the layout carries one (the game refines zone+0x488 at the light
     // position; stpad: uniform). LMTOOL_LL_AREA=0 = the single position.

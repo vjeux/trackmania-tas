@@ -183,13 +183,40 @@ pub fn load_model_from_store(store: &mut mapgeom::store::DataStore, logical: &st
     };
     let pm = store.load_model(&pp)?;
     let pf = mapgeom::static_item::prefab::CPlugPrefab::from_model(&pm)?;
+    // THE STOCK ITEM'S LIGHTS LIVE IN ITS OTHER ENTITIES (E, 2026-09-27 03:20Z): tiny16's four stock Screen items (Screen4x1Small ×3,
+    // Screen2x1Small) carry the four light instances of the baker's lmlights dump that our census lacked (986 vs 982) — and the
+    // editor's tiny16 frame 1 clusters around them. The geometry is the first static-object entity's (the record the game makes);
+    // the lights are every entity's (each static object's solid light sockets, in the entity's pose; nested prefabs through the
+    // externals) — records::prefab_entity_lights_in's rule, in the model frame.
+    let mut g: Option<ModelGeom> = None;
+    let mut lights: Vec<LightDef> = Vec::new();
     for e in &pf.ents {
-        let Some(Node::StaticObject(so)) = e.model.inline.as_deref() else { continue };
-        let Some(s2) = so.solid2() else { continue };
         let pose = if e.rot != [0.0, 0.0, 0.0, 1.0] || e.pos != [0.0, 0.0, 0.0] { Some((e.rot, e.pos)) } else { None };
-        return Ok(geom_from_solid2(s2, pose));
+        match e.model.inline.as_deref() {
+            Some(Node::StaticObject(so)) => {
+                let Some(s2) = so.solid2() else { continue };
+                let eg = geom_from_solid2(s2, pose);
+                // the sockets may be EXTERNAL `.Light.Gbx` references (the packs') — follow them through the externals
+                let el = solid2_lights_ext(s2, pose, Some((store, &pm.externals)));
+                if g.is_none() { g = Some(ModelGeom { lights: Vec::new(), ..eg.clone() }); }
+                if trace { eprintln!("{logical}: entity static object: {} tris, {} lights", eg.tris.len(), el.len()); }
+                lights.extend(el);
+            }
+            None if e.model.index >= 0 => {
+                if let Some((_, path)) = pm.externals.iter().find(|(i, _)| *i == e.model.index as u32) {
+                    if path.ends_with(".Prefab.Gbx") {
+                        let xf = mapgeom::geom::from_quat(e.rot, e.pos);
+                        let mut nested = Vec::new();
+                        if crate::records::prefab_entity_lights_in(store, path, &xf, 1, &mut nested).is_ok() { if trace { eprintln!("{logical}: nested prefab {path}: {} lights", nested.len()); } lights.extend(nested); }
+                    }
+                }
+            }
+            _ => {}
+        }
     }
-    Ok(ModelGeom::default())
+    let mut g = g.unwrap_or_default();
+    g.lights = lights;
+    Ok(g)
 }
 
 /// Rotate `v` by the quaternion `q` (x, y, z, w).
@@ -596,6 +623,8 @@ pub struct Scene {
     pub decor: Vec<DecorTri>,
     /// The cut-out masks by texture file name (the map zip's `Items/*.dds` decoded at ≤ 256 px, alpha ≥ 0.5).
     pub alpha_masks: BTreeMap<String, AlphaMask>,
+    /// The model indices resolved from the packs (stock items), for the lamp-class studies.
+    pub stock_models: std::collections::HashSet<usize>,
     /// The cut-out textures' mean opaque colour by file (the cards' albedo; sRGB-encoded 0..1).
     pub card_albedo: BTreeMap<String, [f32; 3]>,
     /// The link-less materials' diffuse textures' mean colour by file (their bounce albedo).
@@ -744,6 +773,7 @@ impl Scene {
         });
         let collection_name: String = { let c = m.items.first().map(|it| it.collection_raw).unwrap_or(0x1a); match c { 0x1a => "Stadium", 0x1c => "BlueBay", 0x10 => "RedIsland", 0x1d => "WhiteShore", 0xf => "GreenCoast", _ => "Stadium" }.to_string() };
         let mut stock_bytes: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+        let mut stock_model_idx: std::collections::HashSet<usize> = std::collections::HashSet::new();
         for (i, it) in m.items.iter().enumerate() {
             let mi = match index.get(&it.model) {
                 Some(&k) => k,
@@ -758,7 +788,7 @@ impl Scene {
                                 for coll in [collection_name.as_str(), "Stadium"] {
                                     let logical = format!("{coll}\\Items\\{name}.Item.Gbx");
                                     match load_model_from_store(st, &logical) {
-                                        Ok(g) => { stock_bytes.insert(it.model.clone(), Vec::new()); found = Some(g); break; }
+                                        Ok(g) => { stock_bytes.insert(it.model.clone(), Vec::new()); stock_model_idx.insert(models.len()); found = Some(g); break; }
                                         Err(_) => continue,
                                     }
                                 }
@@ -848,7 +878,7 @@ impl Scene {
         if !missing.is_empty() {
             eprintln!("  {} item models are not embedded (stock items?): {:?}", missing.len(), missing.iter().take(8).collect::<Vec<_>>());
         }
-        Ok(Scene { models, model_names, instances, item_count: m.items.len(), decor: Vec::new(), alpha_masks, card_albedo, tex_albedo })
+        Ok(Scene { models, model_names, instances, item_count: m.items.len(), decor: Vec::new(), alpha_masks, card_albedo, tex_albedo, stock_models: stock_model_idx })
     }
 
     pub fn tri_count(&self) -> usize {
