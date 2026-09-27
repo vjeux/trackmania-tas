@@ -89,6 +89,15 @@ pub fn run(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLightmap,
         }
     }
     let planes = imgs.len();
+    // the directional planes decoded to VALUES: the encode (CS 23025, gpuenc.rs) stores per coefficient k = 1..3 the luma of
+    // c = clamp(0.5 + 0.5·sign(v)·sqrt(|v| / m_k)), m_k = the GPU MaxHdr of that plane; the record word HBasis234[k] = m_k · 0.6909883
+    // (filecheck::record_scales) → v ≈ sign(b / 255 − 0.5) · ((b / 255 − 0.5) / 0.5)² · HBasis234[k] / 0.6909883 (the luma of three encoded
+    // channels stands in for one; a per-class MEAN and a SIGN agreement, not a texel truth)
+    let hb = |m: &crate::format::Mapping| -> [f32; 3] { let r = 60 + 66 * f; if r + 66 <= m.head.len() { [54usize, 58, 62].map(|o| f32::from_le_bytes(m.head[r + o..r + o + 4].try_into().unwrap())) } else { [1.0; 3] } };
+    let (hb1, hb2) = (hb(&m1), hb(&m2));
+    let cval = |b: u8, k: usize, hbw: [f32; 3]| -> f64 { let t = b as f64 / 255.0 - 0.5; t.signum() * (t / 0.5) * (t / 0.5) * (hbw[k] as f64 / 0.6909883) };
+    // per class per C plane: Σ ours, Σ editor, Σ|ours|, Σ|editor|, n, sign agreements among texels with |editor| ≥ 5 % of its plane word
+    let mut cvals: std::collections::BTreeMap<String, Vec<(f64, f64, f64, f64, usize, usize, usize)>> = Default::default();
     let fb1 = m1.frame_bytes.get(f).ok_or("ours: no frame bytes")?;
     let fb2 = m2.frame_bytes.get(f).ok_or("theirs: no frame bytes")?;
     let rows: std::collections::HashMap<(u32, u32), RecRow> = records.map(|rs| rs.iter().map(|r| ((r.obj, r.sub), r.clone())).collect()).unwrap_or_default();
@@ -128,6 +137,13 @@ pub fn run(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLightmap,
                     by_ring[p][r].add(d);
                     by_bin[p][(cb[c] / 32) as usize].add(d);
                     entry[p].add(d);
+                    if p > 0 {
+                        let cv = cvals.entry(cls.clone()).or_insert_with(|| vec![(0.0, 0.0, 0.0, 0.0, 0, 0, 0); 3]);
+                        let (vo, ve) = (cval(ca[0], p - 1, hb1), cval(cb[0], p - 1, hb2));
+                        let e = &mut cv[(p - 1).min(2)];
+                        e.0 += vo; e.1 += ve; e.2 += vo.abs(); e.3 += ve.abs(); e.4 += 1;
+                        if ve.abs() >= 0.05 * (hb2[(p - 1).min(2)] as f64 / 0.6909883) { e.5 += 1; if vo.signum() == ve.signum() { e.6 += 1; } }
+                    }
                     if !same_fb { fb_diff[p].add(d); }
                     if p == 0 { chart_acc.add(d); }
                 }
@@ -145,6 +161,15 @@ pub fn run(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLightmap,
         println!("-- by the EDITOR's byte (bins of 32)");
         for b in 0..8 { println!("  {:3}–{:3}: {}", b * 32, b * 32 + 31, by_bin[p][b].line()); }
         println!("-- charts whose frame byte DIFFERS between the files: {}", fb_diff[p].line());
+    }
+    println!("\n== the directional coefficients DECODED to values (v ≈ sign·((b/255 − 0.5)/0.5)²·HBasis234[k]/0.691; record words ours {:?} vs editor {:?}) — per class: mean signed ours / editor, mean |v| ours / editor, ratio of mean |v|, sign agreement where |editor| ≥ 5 % of the plane word", hb1, hb2);
+    {
+        let mut cs: Vec<(&String, &Vec<(f64, f64, f64, f64, usize, usize, usize)>)> = cvals.iter().collect();
+        cs.sort_by(|a, b| b.1[0].4.cmp(&a.1[0].4));
+        for (k, v) in cs.iter().take(24) {
+            let cells: Vec<String> = v.iter().enumerate().filter(|(_, e)| e.4 > 0).map(|(i, e)| { let n = e.4 as f64; format!("C{}: {:+.4}/{:+.4} |{:.4}/{:.4}| ×{:.2} sign {:.0} % of {}", i + 1, e.0 / n, e.1 / n, e.2 / n, e.3 / n, (e.2 / n) / (e.3 / n).max(1e-9), 100.0 * e.6 as f64 / e.5.max(1) as f64, e.5) }).collect();
+            println!("  {k:40} {}", cells.join("   "));
+        }
     }
     println!("\n== by CLASS (plane A, then C1..C3)");
     let mut classes: Vec<(&String, &Vec<Acc>)> = by_class.iter().collect();
