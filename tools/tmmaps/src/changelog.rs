@@ -179,6 +179,8 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         for (map, mut versions) in by_map {
             let rank = |r: &Row| rounds.get(&r.round).map(|(i, _)| *i).unwrap_or(usize::MAX);
             versions.sort_by(|a, b| b.date.cmp(&a.date).then(rank(b).cmp(&rank(a))));
+            // a map never wiped: its records span every change (Tiny's in-place rounds)
+            let ever_wiped = versions.iter().any(|v| v.wipe);
             md.push_str(&format!("### U10S_{map:02}\n"));
             for v in versions {
                 let label = rounds.get(&v.round).map(|(_, l)| format!(" · {l}")).unwrap_or_default();
@@ -187,7 +189,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                     md.push_str(&format!("- **{}**{} · **records reset — new leaderboard from here**{with}\n", v.date, label));
                     continue;
                 }
-                let flag = if v.after_wipe { "after last wipe" } else { "before the last wipe (records already reset since)" };
+                let flag = if v.after_wipe { "after last wipe" } else if ever_wiped { "before the last wipe (records already reset since)" } else { "records kept across this change (never reset)" };
                 md.push_str(&format!("- **{}**{} · {} · {} change{}: {}\n", v.date, label, flag, v.n, if v.n == 1 { "" } else { "s" }, describe(&v.kinds)));
             }
             md.push('\n');
