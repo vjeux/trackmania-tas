@@ -3346,6 +3346,35 @@ fn run(mut a: Vec<String>) {
                 (true, Some(finals)) => {
                     let tw = std::time::Instant::now();
                     let (_imgs, maxhdr, enc) = lightmap::e2e::finalise_tail(finals, mood_max_hdr_for_encode);
+                    // LMTOOL_MAXHDR_TRACE=1 (E, 2026-09-27 20:00Z): WHERE the frame-0 record's image max sits — the argmax texel of each
+                    // resolved plane (the writer's MaxHdr buffer is the max |rgb| over the WHOLE resolved image, pads and gutters included)
+                    // and the chart whose rect holds it or is nearest (tiny03: ours 11.84 / editor 7.50 / no-decals 5.56, none inside a chart
+                    // rect — the max chart byte is 137 on both files)
+                    if std::env::var_os("LMTOOL_MAXHDR_TRACE").is_some() {
+                        for (k, im) in _imgs.iter().enumerate() {
+                            let (mut best, mut bx, mut by, mut bc) = (0.0f32, 0u32, 0u32, 0u32);
+                            for y in 0..im.h { for x in 0..im.w { for c in 0..3.min(im.channels) { let v = im.get(x, y, c).abs(); if v > best { best = v; bx = x; by = y; bc = c; } } } }
+                            // the placed rects are in the 2048² atlas; the resolved image is im.w wide
+                            let sc = 2048.0 / im.w.max(1) as f32;
+                            let (ax, ay) = (bx as f32 * sc, by as f32 * sc);
+                            let mut inside: Vec<usize> = Vec::new();
+                            let mut nearest: Option<(usize, f32)> = None;
+                            for (i, &(_o, _s, px, py, w, h)) in s.placed.iter().enumerate() {
+                                let (x0, y0, x1, y1) = (2.0 * px as f32, 2.0 * py as f32, 2.0 * (px + w) as f32, 2.0 * (py + h) as f32);
+                                if ax >= x0 && ax < x1 && ay >= y0 && ay < y1 { inside.push(i); }
+                                let dx = if ax < x0 { x0 - ax } else if ax >= x1 { ax - x1 } else { 0.0 };
+                                let dy = if ay < y0 { y0 - ay } else if ay >= y1 { ay - y1 } else { 0.0 };
+                                let d = (dx * dx + dy * dy).sqrt();
+                                if nearest.map(|(_, nd)| d < nd).unwrap_or(true) { nearest = Some((i, d)); }
+                            }
+                            let name = |i: usize| -> String { let o = s.placed[i].0; format!("chart {i} (obj {o}, rect {:?})", (s.placed[i].2, s.placed[i].3, s.placed[i].4, s.placed[i].5)) };
+                            let mut vals = Vec::new();
+                            for c in 0..3.min(im.channels) { vals.push(im.get(bx, by, c)); }
+                            eprintln!("maxhdr trace: plane {k} max {best} at ({bx}, {by}) ch {bc} of {}² (atlas ({ax:.0}, {ay:.0})); rgb {vals:?}; inside {}; nearest {}", im.w,
+                                if inside.is_empty() { "NO chart rect (pad / gutter)".to_string() } else { inside.iter().map(|&i| name(i)).collect::<Vec<_>>().join(", ") },
+                                nearest.map(|(i, d)| format!("{} at {d:.1} atlas px", name(i))).unwrap_or_default());
+                        }
+                    }
                     let mut s = s;
                     let atlas8 = s.atlas8.take();
                     // the layout rects (2048 layout units) in the mapping's order = the placed charts (obj, sub) ascending
