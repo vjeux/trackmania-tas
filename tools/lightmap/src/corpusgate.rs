@@ -30,13 +30,21 @@ use std::path::{Path, PathBuf};
 pub struct Cell {
     pub name: String,
     pub source: PathBuf,
-    pub oracle: PathBuf,
+    /// None = a cell WITHOUT an oracle (RedIsland, q1/q2): listed in the matrix as "no oracle", never baked
+    pub oracle: Option<PathBuf>,
     pub collection: String,
     pub quality: String,
     pub word: Option<String>,
+    /// `--max-dirs N`; None = full; `compare` cells (no bake: `source` IS our side) carry `compare_only`
     pub dirs: Option<String>,
+    pub compare_only: bool,
     pub kept: Option<PathBuf>,
     pub extra: Vec<String>,
+    /// `env:KEY=VAL` tokens of the extra column → the bake's environment (LMTOOL_LAMP_FILTER=stock …)
+    pub env: Vec<(String, String)>,
+    /// V2's CEILING = the editor's own re-bake identity on that map class (99 lamp-less, 60 lamp maps); the verdict is
+    /// measured against 90 % of it
+    pub ceiling: f64,
 }
 
 fn pak_key(coll: &str) -> &'static str {
@@ -72,16 +80,25 @@ pub fn read_corpus(path: &Path, refs: &Path) -> Result<Vec<Cell>, String> {
         if cols.len() < 5 { return Err(format!("{}:{}: {} columns, need cell/source/oracle/collection/quality[/word/dirs/kept/extra]", path.display(), ln + 1, cols.len())); }
         if cols[0] == "cell" && cols[1] == "source" { continue; } // a header line
         let opt = |i: usize| cols.get(i).filter(|c| !c.is_empty() && **c != "-").map(|c| c.to_string());
+        let extra_all: Vec<String> = opt(8).map(|e| e.split_whitespace().map(|s| s.to_string()).collect()).unwrap_or_default();
+        let env: Vec<(String, String)> = extra_all.iter().filter_map(|t| t.strip_prefix("env:")).filter_map(|kv| kv.split_once('=').map(|(k, v)| (k.to_string(), v.to_string()))).collect();
+        let extra: Vec<String> = extra_all.into_iter().filter(|t| !t.starts_with("env:")).collect();
+        let dirs = opt(6);
+        let compare_only = dirs.as_deref() == Some("compare");
+        let ceiling: f64 = match opt(9) { Some(c) => c.parse().map_err(|e| format!("{}:{}: ceiling {c:?}: {e}", path.display(), ln + 1))?, None => 99.0 };
         cells.push(Cell {
             name: cols[0].to_string(),
             source: resolve(refs, cols[1]),
-            oracle: resolve(refs, cols[2]),
+            oracle: opt(2).map(|o| resolve(refs, &o)),
             collection: cols[3].to_string(),
             quality: cols[4].to_string(),
             word: opt(5),
-            dirs: opt(6).filter(|d| d != "full"),
+            dirs: dirs.filter(|d| d != "full" && d != "compare"),
+            compare_only,
             kept: opt(7).map(|k| resolve(refs, &k)),
-            extra: opt(8).map(|e| e.split_whitespace().map(|s| s.to_string()).collect()).unwrap_or_default(),
+            extra,
+            env,
+            ceiling,
         });
     }
     let mut seen = std::collections::HashSet::new();
@@ -160,6 +177,58 @@ fn frame_metrics(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLig
     }))
 }
 
+/// V2's PLANE ROW (2026-09-27): the stored-byte identity of frame 0's planes per chart at the same rect — A (image 0, the
+/// colour atlas, RGB) and C1..C3 (image 1's three grey WebPs = the H-basis directional coefficients; `texeldelta::riff_parts`)
+/// — split tiles / items, plus the charts whose frame byte differs between the files (ours fb 240 vs the editor's 241 on
+/// 634 of np-tk3's 4 126). The editor reproduces the C planes 100 % between its own bakes; the initial bar is tiles ≥ 90 %,
+/// items ≥ 85 %.
+fn plane_metrics(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLightmap) -> serde_json::Value {
+    let (Some(d1), Some(d2)) = (ours.chunk.data.as_ref(), theirs.chunk.data.as_ref()) else { return serde_json::Value::Null };
+    let (Some(m1), Some(m2)) = (d1.cache.mapping(), d2.cache.mapping()) else { return serde_json::Value::Null };
+    let (Some(f1), Some(f2)) = (d1.frames.first(), d2.frames.first()) else { return serde_json::Value::Null };
+    let mut planes: Vec<(String, crate::img::Rgb, crate::img::Rgb, usize)> = Vec::new();
+    if let (Some(b1), Some(b2)) = (f1.images.first(), f2.images.first()) {
+        if let (Ok(a), Ok(b)) = (crate::img::decode_webp(b1), crate::img::decode_webp(b2)) { if a.w == b.w && a.h == b.h { planes.push(("A".into(), a, b, 3)); } }
+    }
+    if let (Some(b1), Some(b2)) = (f1.images.get(1), f2.images.get(1)) {
+        let (p1, p2) = (crate::texeldelta::riff_parts(b1), crate::texeldelta::riff_parts(b2));
+        for k in 0..p1.len().min(p2.len()).min(3) {
+            if let (Ok(a), Ok(b)) = (crate::img::decode_webp(p1[k]), crate::img::decode_webp(p2[k])) {
+                if a.w == b.w && a.h == b.h && planes.first().map_or(true, |p| p.1.w == a.w && p.1.h == a.h) { planes.push((format!("C{}", k + 1), a, b, 1)); }
+            }
+        }
+    }
+    let n = m1.count.min(m2.count) as usize;
+    // per plane: [tiles exact, tiles bytes, items exact, items bytes]
+    let mut acc: Vec<[usize; 4]> = vec![[0; 4]; planes.len()];
+    let (mut fb_same, mut fb_diff, mut skipped) = (0usize, 0usize, 0usize);
+    let (fb1, fb2) = (m1.frame_bytes.first(), m2.frame_bytes.first());
+    for i in 0..n {
+        if m1.pos[i] != m2.pos[i] || m1.size[i] != m2.size[i] { skipped += 1; continue; }
+        let (px, py, pw, ph) = crate::classcmp::chart_own_px(m1.pos[i], m1.size[i]);
+        if pw == 0 || ph == 0 { continue; }
+        let is_tile = m1.binds[i].obj_group_idx / 4 < 4096;
+        let off = if is_tile { 0 } else { 2 };
+        if let (Some(a), Some(b)) = (fb1.and_then(|v| v.get(i)), fb2.and_then(|v| v.get(i))) { if a == b { fb_same += 1; } else { fb_diff += 1; } }
+        for (p, (_, a, b, nch)) in planes.iter().enumerate() {
+            for y in 0..ph { for x in 0..pw {
+                let (ca, cb) = (a.get(px + x, py + y), b.get(px + x, py + y));
+                for c in 0..*nch { acc[p][off + 1] += 1; if ca[c] == cb[c] { acc[p][off] += 1; } }
+            } }
+        }
+    }
+    let pct = |e: usize, t: usize| if t == 0 { serde_json::Value::Null } else { serde_json::json!((10000.0 * e as f64 / t as f64).round() / 100.0) };
+    let rows: Vec<serde_json::Value> = planes.iter().enumerate().map(|(p, (name, _, _, _))| serde_json::json!({ "plane": name, "tiles_identity_pct": pct(acc[p][0], acc[p][1]), "items_identity_pct": pct(acc[p][2], acc[p][3]), "tiles_bytes": acc[p][1], "items_bytes": acc[p][3] })).collect();
+    serde_json::json!({ "planes": rows, "charts_same_rect": n - skipped, "rect_differs": skipped, "fb_same": fb_same, "fb_differs": fb_diff, "fb_differs_pct": pct(fb_diff, fb_same + fb_diff) })
+}
+
+fn planes_str(pm: &serde_json::Value) -> String {
+    let Some(rows) = pm["planes"].as_array() else { return "—".into() };
+    let cell = |v: &serde_json::Value| v.as_f64().map(|x| format!("{x:.1}")).unwrap_or_else(|| "—".into());
+    let parts: Vec<String> = rows.iter().filter(|r| r["plane"] != "A").map(|r| format!("{} {}/{}", r["plane"].as_str().unwrap_or("?"), cell(&r["tiles_identity_pct"]), cell(&r["items_identity_pct"]))).collect();
+    format!("{} · fb≠ {}", parts.join(" "), cell(&pm["fb_differs_pct"]))
+}
+
 /// The lossless-part line of `lmtool filecheck`: chart counts, bind words, rects, entry by entry.
 fn layout_metrics(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLightmap) -> serde_json::Value {
     let (Some(d1), Some(d2)) = (ours.chunk.data.as_ref(), theirs.chunk.data.as_ref()) else { return serde_json::json!({ "error": "a map without a lightmap" }) };
@@ -181,7 +250,59 @@ pub fn measure(ours_path: &Path, oracle: &Path, records_tsv: Option<&Path>) -> R
     let records = match records_tsv { Some(p) if p.exists() => Some(crate::classcmp::read_records_tsv(&p.to_string_lossy())?), _ => None };
     let f0 = frame_metrics(&ours, &theirs, records.as_deref(), 0)?;
     let f1 = frame_metrics(&ours, &theirs, records.as_deref(), 1)?;
-    Ok(serde_json::json!({ "layout": layout_metrics(&ours, &theirs), "frames": [f0, f1] }))
+    Ok(serde_json::json!({ "layout": layout_metrics(&ours, &theirs), "planes": plane_metrics(&ours, &theirs), "frames": [f0, f1] }))
+}
+
+/// V2's JOIN FILES: `classcmp --by name --tsv` of frame 0 and frame 1 (+ `--own-rects` when the two layouts' rects differ),
+/// written by the classcmp subcommand itself so the trust matrix reads exactly the format it parses (the #record trailer).
+fn write_classcmp_tsvs(exe: &Path, ours: &Path, oracle: &Path, records: Option<&Path>, own_rects: bool, wdir: &Path) -> Vec<String> {
+    let mut notes = Vec::new();
+    for frame in 0..2 {
+        let out = wdir.join(format!("classcmp-f{frame}.tsv"));
+        let mut a: Vec<String> = vec!["classcmp".into(), ours.to_string_lossy().into(), "--against".into(), oracle.to_string_lossy().into(), "--by".into(), "name".into(), "--frame".into(), frame.to_string(), "--tsv".into(), out.to_string_lossy().into()];
+        if let Some(r) = records { if r.exists() { a.push("--records".into()); a.push(r.to_string_lossy().into()); } }
+        if own_rects { a.push("--own-rects".into()); }
+        match std::process::Command::new(exe).args(&a).output() {
+            Ok(o) if o.status.success() => {}
+            Ok(o) => notes.push(format!("classcmp f{frame}: {}", String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or("failed").to_string())),
+            Err(e) => notes.push(format!("classcmp f{frame}: spawn {e}")),
+        }
+    }
+    notes
+}
+
+/// The reduced-oracle census the matrix shows per row: kept / total items and kept / total EMBEDDED-item lamps (the
+/// `lights` subcommand's "MODEL (N placements): L lights" lines; stock items' lights are not in it). A cell without a kept
+/// list bakes every item — the census then reads N/N.
+pub fn census(exe: &Path, source: &Path, kept: Option<&Path>) -> serde_json::Value {
+    let m = tmmaps::map::MapFile::load(source);
+    let total_items = m.items.len();
+    let kept_set: Option<std::collections::HashSet<usize>> = kept.and_then(|k| std::fs::read_to_string(k).ok()).map(|t| t.split(|c: char| c == ',' || c.is_whitespace()).filter_map(|x| x.trim().parse().ok()).collect());
+    let kept_items = kept_set.as_ref().map(|s| s.iter().filter(|&&i| i < total_items).count()).unwrap_or(total_items);
+    let mut lights_per_model: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    if let Ok(o) = std::process::Command::new(exe).args(["lights", &source.to_string_lossy()]).output() {
+        for line in String::from_utf8_lossy(&o.stdout).lines() {
+            if line.starts_with(' ') { continue; }
+            // "AC16497078.Item.Gbx (1 placements): 4 lights, 0 user models, 0 insts"
+            if let Some((name, rest)) = line.split_once(" (") {
+                if let Some((_, after)) = rest.split_once("): ") {
+                    if let Some(n) = after.split(' ').next().and_then(|x| x.parse::<usize>().ok()) { lights_per_model.insert(name.to_string(), n); }
+                }
+            }
+        }
+    }
+    let (mut total_lamps, mut kept_lamps) = (0usize, 0usize);
+    for (i, it) in m.items.iter().enumerate() {
+        let l = *lights_per_model.get(&it.model).unwrap_or(&0);
+        total_lamps += l;
+        if kept_set.as_ref().map_or(true, |s| s.contains(&i)) { kept_lamps += l; }
+    }
+    serde_json::json!({ "kept_items": kept_items, "total_items": total_items, "kept_lamps": kept_lamps, "total_lamps": total_lamps, "reduced": kept_set.is_some() })
+}
+
+fn census_str(c: &serde_json::Value) -> String {
+    if c.is_null() { return "—".into(); }
+    format!("{}/{} items, {}/{} lamps{}", c["kept_items"], c["total_items"], c["kept_lamps"], c["total_lamps"], if c["reduced"].as_bool().unwrap_or(false) { " (reduced)" } else { "" })
 }
 
 // ---------------------------------------------------------------- run
@@ -198,8 +319,11 @@ pub fn run(args: &[String]) -> Result<(), String> {
             println!("{} cells in {}:", cells.len(), corpus_path.display());
             for c in &cells {
                 let ok = |p: &Path| if p.exists() { "" } else { "  ← MISSING" };
-                println!("  {:<28} {} q{} dirs {} word {}\n      source {}{}\n      oracle {}{}{}", c.name, c.collection, c.quality, c.dirs.as_deref().unwrap_or("full"), c.word.as_deref().unwrap_or("-"), c.source.display(), ok(&c.source), c.oracle.display(), ok(&c.oracle),
-                    c.kept.as_ref().map(|k| format!("\n      kept {}{}", k.display(), ok(k))).unwrap_or_default());
+                let kind = if c.oracle.is_none() { "NO ORACLE" } else if c.compare_only { "compare-only" } else { "bake" };
+                println!("  {:<34} {} q{} dirs {} word {} ceiling {} [{kind}]\n      source {}{}{}{}{}", c.name, c.collection, c.quality, c.dirs.as_deref().unwrap_or("full"), c.word.as_deref().unwrap_or("-"), c.ceiling, c.source.display(), ok(&c.source),
+                    c.oracle.as_ref().map(|o| format!("\n      oracle {}{}", o.display(), ok(o))).unwrap_or_default(),
+                    c.kept.as_ref().map(|k| format!("\n      kept {}{}", k.display(), ok(k))).unwrap_or_default(),
+                    if c.env.is_empty() { String::new() } else { format!("\n      env {}", c.env.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(" ")) });
             }
             Ok(())
         }
@@ -232,70 +356,95 @@ fn run_cells(args: &[String], cells: &[Cell]) -> Result<(), String> {
         let wdir = work.join(&c.name);
         let _ = std::fs::create_dir_all(&wdir);
         if wdir.join("metrics.json").exists() && !force { eprintln!("corpus-gate: {}: done already, skipped (--force redoes it)", c.name); continue; }
+        // a cell without an oracle is a LINE of the matrix, not a bake
+        let Some(oracle) = c.oracle.as_ref() else {
+            let rec = serde_json::json!({ "cell": c.name, "tip": tip, "host": host, "ok": false, "no_oracle": true, "collection": c.collection, "quality": c.quality, "word": c.word, "source": c.source.to_string_lossy(), "ceiling": c.ceiling, "error": "no oracle" });
+            if !dry { let _ = std::fs::write(wdir.join("metrics.json"), serde_json::to_string_pretty(&rec).unwrap()); }
+            eprintln!("corpus-gate: {}: no oracle (a fixed line of the matrix)", c.name);
+            continue;
+        };
         let cdir = tmp.join(&c.name);
         let _ = std::fs::create_dir_all(&cdir);
-        // the source copy (local; the word set when the cell names one)
         let src_local = cdir.join("source.Map.Gbx");
-        let out = cdir.join("ours.Map.Gbx");
+        let out = if c.compare_only { c.source.clone() } else { cdir.join("ours.Map.Gbx") };
         let records = cdir.join("records.tsv");
         let mut args_bake = bake_args(c, &src_local, &paks, &records, &out);
         if dry {
-            println!("{}: {} {}{}", c.name, exe.display(), args_bake.join(" "), c.word.as_ref().map(|w| format!("   [source = daytime-set {} --set {w}]", c.source.display())).unwrap_or_default());
+            if c.compare_only { println!("{}: compare-only — {} vs {}", c.name, c.source.display(), oracle.display()); }
+            else { println!("{}: {}{} {}{}", c.name, c.env.iter().map(|(k, v)| format!("{k}={v} ")).collect::<String>(), exe.display(), args_bake.join(" "), c.word.as_ref().map(|w| format!("   [source = daytime-set {} --set {w}]", c.source.display())).unwrap_or_default()); }
             continue;
         }
         if !c.source.exists() { eprintln!("corpus-gate: {}: source {} missing", c.name, c.source.display()); failed += 1; let _ = std::fs::write(wdir.join("failed"), "source missing"); continue; }
-        if !c.oracle.exists() { eprintln!("corpus-gate: {}: oracle {} missing", c.name, c.oracle.display()); failed += 1; let _ = std::fs::write(wdir.join("failed"), "oracle missing"); continue; }
+        if !oracle.exists() { eprintln!("corpus-gate: {}: oracle {} missing", c.name, oracle.display()); failed += 1; let _ = std::fs::write(wdir.join("failed"), "oracle missing"); continue; }
         let t = std::time::Instant::now();
-        let prep = match &c.word {
-            Some(w) => {
-                let o = std::process::Command::new(&exe).args(["daytime-set", &c.source.to_string_lossy(), "--out", &src_local.to_string_lossy(), "--set", w]).output().map_err(|e| e.to_string())?;
-                if o.status.success() { Ok(()) } else { Err(format!("daytime-set: {}", String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or("").to_string())) }
+        let mut bake_s = 0.0f64;
+        if !c.compare_only {
+            let prep = match &c.word {
+                Some(w) => {
+                    let o = std::process::Command::new(&exe).args(["daytime-set", &c.source.to_string_lossy(), "--out", &src_local.to_string_lossy(), "--set", w]).output().map_err(|e| e.to_string())?;
+                    if o.status.success() { Ok(()) } else { Err(format!("daytime-set: {}", String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or("").to_string())) }
+                }
+                None => std::fs::copy(&c.source, &src_local).map(|_| ()).map_err(|e| format!("copy source: {e}")),
+            };
+            if let Err(e) = prep { eprintln!("corpus-gate: {}: {e}", c.name); failed += 1; let _ = std::fs::write(wdir.join("failed"), e); continue; }
+            // the kept list local too (the bake reads it once; the store is slow)
+            if let Some(kp) = &c.kept {
+                let kl = cdir.join("kept.txt");
+                std::fs::copy(kp, &kl).map_err(|e| format!("kept: {e}"))?;
+                if let Some(i) = args_bake.iter().position(|x| x == "--kept") { args_bake[i + 1] = kl.to_string_lossy().into(); }
             }
-            None => std::fs::copy(&c.source, &src_local).map(|_| ()).map_err(|e| format!("copy source: {e}")),
-        };
-        if let Err(e) = prep { eprintln!("corpus-gate: {}: {e}", c.name); failed += 1; let _ = std::fs::write(wdir.join("failed"), e); continue; }
-        // the kept list local too (the bake reads it once; the store is slow)
-        if let Some(kp) = &c.kept {
-            let kl = cdir.join("kept.txt");
-            std::fs::copy(kp, &kl).map_err(|e| format!("kept: {e}"))?;
-            if let Some(i) = args_bake.iter().position(|x| x == "--kept") { args_bake[i + 1] = kl.to_string_lossy().into(); }
+            let _ = std::fs::remove_file(&out);
+            eprintln!("corpus-gate: {} ({} q{} dirs {}{}) …", c.name, c.collection, c.quality, c.dirs.as_deref().unwrap_or("full"), if c.env.is_empty() { String::new() } else { format!(", env {}", c.env.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(" ")) });
+            let mut cmd = std::process::Command::new(&exe);
+            cmd.args(&args_bake).env("LMTOOL_BAKE_TIME", "1790000000");
+            for (k, v) in &c.env { cmd.env(k, v); }
+            let r = cmd.output();
+            bake_s = t.elapsed().as_secs_f64();
+            let (bake_ok, log) = match &r {
+                Ok(o) => (o.status.success() && out.exists(), String::from_utf8_lossy(&o.stderr).to_string()),
+                Err(e) => (false, format!("spawn: {e}")),
+            };
+            let _ = std::fs::write(wdir.join("bake.log"), &log);
+            let _ = std::fs::write(wdir.join("bake.cmd"), format!("{}{} {}\n", c.env.iter().map(|(k, v)| format!("{k}={v} ")).collect::<String>(), exe.display(), args_bake.join(" ")));
+            if !bake_ok {
+                let tail = log.lines().rev().take(3).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join(" | ");
+                eprintln!("corpus-gate: {}: bake FAILED ({bake_s:.1} s) — {tail}", c.name);
+                failed += 1;
+                let _ = std::fs::write(wdir.join("failed"), format!("bake FAILED: {tail}\n"));
+                let _ = std::fs::write(wdir.join("metrics.json"), serde_json::to_string_pretty(&serde_json::json!({ "cell": c.name, "tip": tip, "host": host, "ok": false, "bake_s": bake_s, "error": tail, "ceiling": c.ceiling })).unwrap());
+                continue;
+            }
+        } else {
+            eprintln!("corpus-gate: {} (compare-only: {} vs the oracle) …", c.name, c.source.display());
         }
-        let _ = std::fs::remove_file(&out);
-        eprintln!("corpus-gate: {} ({} q{} dirs {}) …", c.name, c.collection, c.quality, c.dirs.as_deref().unwrap_or("full"));
-        let r = std::process::Command::new(&exe).args(&args_bake).env("LMTOOL_BAKE_TIME", "1790000000").output();
-        let bake_s = t.elapsed().as_secs_f64();
-        let (bake_ok, log) = match &r {
-            Ok(o) => (o.status.success() && out.exists(), String::from_utf8_lossy(&o.stderr).to_string()),
-            Err(e) => (false, format!("spawn: {e}")),
-        };
-        let _ = std::fs::write(wdir.join("bake.log"), &log);
-        let _ = std::fs::write(wdir.join("bake.cmd"), format!("{} {}\n", exe.display(), args_bake.join(" ")));
-        if !bake_ok {
-            let tail = log.lines().rev().take(3).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join(" | ");
-            eprintln!("corpus-gate: {}: bake FAILED ({bake_s:.1} s) — {tail}", c.name);
-            failed += 1;
-            let _ = std::fs::write(wdir.join("failed"), format!("bake FAILED: {tail}\n"));
-            let _ = std::fs::write(wdir.join("metrics.json"), serde_json::to_string_pretty(&serde_json::json!({ "cell": c.name, "tip": tip, "host": host, "ok": false, "bake_s": bake_s, "error": tail })).unwrap());
-            continue;
-        }
+        // E's WARNING lines (a material in no pack takes the PAD constant): counted, and the cell is flagged
+        let warn_lines: Vec<String> = std::fs::read_to_string(wdir.join("bake.log")).unwrap_or_default().lines().filter(|l| l.contains("not in any pack")).map(|l| l.trim().chars().take(300).collect()).collect();
         let bytes = std::fs::read(&out).map_err(|e| e.to_string())?;
         let md5 = md5_hex(&bytes);
-        let m = match measure(&out, &c.oracle, Some(&records)) {
+        let records_opt = if c.compare_only { None } else { Some(records.as_path()) };
+        let m = match measure(&out, oracle, records_opt) {
             Ok(m) => m,
             Err(e) => { eprintln!("corpus-gate: {}: measure failed: {e}", c.name); failed += 1; let _ = std::fs::write(wdir.join("failed"), format!("measure: {e}")); continue; }
         };
-        let rec = serde_json::json!({ "cell": c.name, "tip": tip, "host": host, "ok": true, "bake_s": bake_s, "md5": md5, "bytes": bytes.len(),
-            "collection": c.collection, "quality": c.quality, "dirs": c.dirs.clone().unwrap_or_else(|| "full".into()), "word": c.word, "oracle": c.oracle.to_string_lossy(), "source": c.source.to_string_lossy(),
-            "layout": m["layout"], "frames": m["frames"] });
-        // bank: the map, the records, the metrics (the log went already)
-        let _ = std::fs::copy(&out, wdir.join("ours.Map.Gbx"));
-        let _ = std::fs::copy(&records, wdir.join("records.tsv"));
+        let own_rects = m["layout"]["same_rects"] != m["layout"]["compared"] || m["layout"]["charts_ours"] != m["layout"]["charts_theirs"];
+        let notes = write_classcmp_tsvs(&exe, &out, oracle, records_opt, own_rects, &wdir);
+        let cen = if c.compare_only { serde_json::Value::Null } else { census(&exe, &c.source, c.kept.as_deref()) };
+        let rec = serde_json::json!({ "cell": c.name, "tip": tip, "host": host, "ok": true, "compare_only": c.compare_only, "bake_s": bake_s, "md5": md5, "bytes": bytes.len(),
+            "collection": c.collection, "quality": c.quality, "dirs": c.dirs.clone().unwrap_or_else(|| "full".into()), "word": c.word, "oracle": oracle.to_string_lossy(), "source": c.source.to_string_lossy(),
+            "env": c.env.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>(), "ceiling": c.ceiling, "census": cen, "own_rects_tsv": own_rects, "pak_warnings": warn_lines, "notes": notes,
+            "classcmp_tsv": [wdir.join("classcmp-f0.tsv").to_string_lossy(), wdir.join("classcmp-f1.tsv").to_string_lossy()],
+            "layout": m["layout"], "planes": m["planes"], "frames": m["frames"] });
+        if !c.compare_only {
+            let _ = std::fs::copy(&out, wdir.join("ours.Map.Gbx"));
+            let _ = std::fs::copy(&records, wdir.join("records.tsv"));
+        }
         std::fs::write(wdir.join("metrics.json"), serde_json::to_string_pretty(&rec).unwrap()).map_err(|e| format!("{}: {e}", wdir.display()))?;
         let _ = std::fs::remove_file(wdir.join("failed"));
         let f0 = &rec["frames"][0]; let f1 = &rec["frames"][1];
-        eprintln!("corpus-gate: {}: ok {bake_s:.1} s md5 {} — f0 {:.2} % id / {:.2} % ±2 / max {} record {} vs {}; f1 {:.2} % id record {} vs {}; binds {}/{}", c.name, &md5[..8],
+        eprintln!("corpus-gate: {}: ok {bake_s:.1} s md5 {} — f0 {:.2} % id / {:.2} % ±2 / max {} record {} vs {}; f1 {:.2} % id record {} vs {}; binds {}/{}; {}{}", c.name, &md5[..8],
             f0["identity_pct"].as_f64().unwrap_or(0.0), f0["within2_pct"].as_f64().unwrap_or(0.0), f0["max_delta"], f0["record_ours"], f0["record_theirs"],
-            f1["identity_pct"].as_f64().unwrap_or(0.0), f1["record_ours"], f1["record_theirs"], rec["layout"]["same_binds"], rec["layout"]["compared"]);
+            f1["identity_pct"].as_f64().unwrap_or(0.0), f1["record_ours"], f1["record_theirs"], rec["layout"]["same_binds"], rec["layout"]["compared"], census_str(&rec["census"]),
+            if rec["pak_warnings"].as_array().map_or(false, |w| !w.is_empty()) { format!("; {} 'not in any pack' WARNING line(s)", rec["pak_warnings"].as_array().unwrap().len()) } else { String::new() });
     }
     eprintln!("corpus-gate run: box {k}: done in {:.1} s, {failed} failed", t_all.elapsed().as_secs_f64());
     if failed > 0 { std::process::exit(1); }
@@ -309,6 +458,7 @@ fn load_metrics(work: &Path, tip: &str, cell: &str) -> Option<serde_json::Value>
 }
 
 fn f(v: &serde_json::Value) -> f64 { v.as_f64().unwrap_or(f64::NAN) }
+fn rec(v: &serde_json::Value) -> String { match v.as_f64() { Some(x) => { let s = format!("{:.7}", x); let t = s.trim_end_matches('0').trim_end_matches('.'); if t.is_empty() { "0".into() } else { t.to_string() } } None => "—".into() } }
 
 fn ratio_str(v: &serde_json::Value) -> String {
     match v.as_array() { Some(a) if a.len() == 3 => a.iter().map(|x| x.as_f64().map(|x| format!("{x:.3}")).unwrap_or_else(|| "—".into())).collect::<Vec<_>>().join("/"), _ => "—".into() }
@@ -328,28 +478,40 @@ fn report(args: &[String], cells: &[Cell]) -> Result<(), String> {
     let tip = flag(args, "--tip").ok_or("--tip TIP")?;
     let work = PathBuf::from(flag(args, "--work").ok_or("--work W")?);
     let against = flag(args, "--against");
+    // V2's verdict rule: CLOSED (texel) at ≥ 90 % of the cell's CEILING (the editor's own re-bake identity on that map
+    // class) with every lit class within --tol; CLOSED (class) when the classes hold but the identity does not; RESIDUE
+    // (the worst class named) otherwise. --target ID,WITHIN2,MAXD,RATIO keeps the older absolute rule beside it.
+    let tol: f64 = flag(args, "--tol").map(|v| v.parse().map_err(|e| format!("--tol: {e}"))).transpose()?.unwrap_or(0.03);
     let target = match flag(args, "--target") {
-        Some(t) => { let v: Vec<f64> = t.split(',').map(|x| x.trim().parse::<f64>().map_err(|e| format!("--target: {e}"))).collect::<Result<_, _>>()?; if v.len() != 4 { return Err("--target ID,WITHIN2,MAXD,RATIO".into()); } Target { id: v[0], within2: v[1], maxd: v[2], ratio: v[3] } }
-        None => Target { id: 60.0, within2: 92.0, maxd: 43.0, ratio: 0.004 },
+        Some(t) => { let v: Vec<f64> = t.split(',').map(|x| x.trim().parse::<f64>().map_err(|e| format!("--target: {e}"))).collect::<Result<_, _>>()?; if v.len() != 4 { return Err("--target ID,WITHIN2,MAXD,RATIO".into()); } Some(Target { id: v[0], within2: v[1], maxd: v[2], ratio: v[3] }) }
+        None => None,
     };
     let mut md = String::new();
     md += &format!("# corpus gate — tip {tip}{}\n\n", against.as_ref().map(|a| format!(" vs {a}")).unwrap_or_default());
-    md += &format!("target (CLOSED): frame-0 identity ≥ {:.1} %, within ±2 ≥ {:.1} %, max |Δ| ≤ {}, every class ratio within 1 ± {}\n\n", target.id, target.within2, target.maxd, target.ratio);
-    md += "| cell | coll q dirs | bake s | f0 identity % | f0 ±2 % | f0 max\\|Δ\\| | f0 record ours / editor | f0 TOTAL r/g/b | f1 identity % | f1 record ours / editor | binds | rects | head | verdict | vs previous |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n";
+    md += &format!("verdict: CLOSED (texel) = frame-0 identity ≥ 90 % of the cell's ceiling (the editor's own re-bake identity: 99 lamp-less / 60 lamp maps) AND every lit class (≥ 4 charts) within 1 ± {tol}; CLOSED (class) = the classes hold, the identity does not; RESIDUE = the worst class named.{}\n\n", target.as_ref().map(|t| format!(" absolute target beside it: identity ≥ {:.1} %, ±2 ≥ {:.1} %, max |Δ| ≤ {}, classes ± {}", t.id, t.within2, t.maxd, t.ratio)).unwrap_or_default());
+    md += "| cell | coll q dirs | census | bake s | f0 identity % (ceiling) | f0 ±2 % | f0 max\\|Δ\\| | f0 record ours / editor | f0 TOTAL r/g/b | C1–C3 identity % tiles/items · fb≠ charts % | f1 identity % | f1 record ours / editor | binds | rects | head | verdict | vs previous |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n";
     let (mut n_ok, mut n_closed, mut n_moved, mut n_missing, mut n_failed) = (0, 0, 0, 0, 0);
     let mut moved_detail = String::new();
     for c in cells {
-        let Some(m) = load_metrics(&work, &tip, &c.name) else { n_missing += 1; md += &format!("| {} | {} q{} {} | — | | | | | | | | | | | PENDING | |\n", c.name, c.collection, c.quality, c.dirs.as_deref().unwrap_or("full")); continue; };
-        if !m["ok"].as_bool().unwrap_or(false) { n_failed += 1; md += &format!("| {} | {} q{} {} | {:.1} | | | | | | | | | | | **FAILED** {} | |\n", c.name, c.collection, c.quality, c.dirs.as_deref().unwrap_or("full"), f(&m["bake_s"]), m["error"].as_str().unwrap_or("").replace('|', "/")); continue; }
+        let Some(m) = load_metrics(&work, &tip, &c.name) else { n_missing += 1; md += &format!("| {} | {} q{} {} | | — | | | | | | | | | | | | PENDING | |\n", c.name, c.collection, c.quality, c.dirs.as_deref().unwrap_or("full")); continue; };
+        if m["no_oracle"].as_bool().unwrap_or(false) { md += &format!("| {} | {} q{} {} | | — | | | | | | | | | | | | **no oracle** | |\n", c.name, c.collection, c.quality, c.dirs.as_deref().unwrap_or("full")); continue; }
+        if !m["ok"].as_bool().unwrap_or(false) { n_failed += 1; md += &format!("| {} | {} q{} {} | | {:.1} | | | | | | | | | | | | **FAILED** {} | |\n", c.name, c.collection, c.quality, c.dirs.as_deref().unwrap_or("full"), f(&m["bake_s"]), m["error"].as_str().unwrap_or("").replace('|', "/")); continue; }
         n_ok += 1;
         let f0 = &m["frames"][0]; let f1 = &m["frames"][1]; let lay = &m["layout"];
+        let ceiling = m["ceiling"].as_f64().unwrap_or(c.ceiling);
         let ratios0 = class_ratios(f0);
-        let worst_ratio = ratios0.iter().filter(|(_, r, ch)| *ch >= 4 && r.iter().all(|x| x.is_finite())).map(|(_, r, _)| r.iter().map(|x| (x - 1.0).abs()).fold(0.0, f64::max)).fold(0.0, f64::max);
-        let closed = f(&f0["identity_pct"]) >= target.id && f(&f0["within2_pct"]) >= target.within2 && f(&f0["max_delta"]) <= target.maxd && worst_ratio <= target.ratio;
-        if closed { n_closed += 1; }
+        // the lit classes (≥ 4 charts, a finite ratio): the worst deviation from 1 and its name
+        let (worst_ratio, worst_name) = ratios0.iter().filter(|(_, r, ch)| *ch >= 4 && r.iter().all(|x| x.is_finite())).map(|(n, r, _)| (r.iter().map(|x| (x - 1.0).abs()).fold(0.0, f64::max), n.clone())).fold((0.0, String::new()), |a, b| if b.0 > a.0 { b } else { a });
+        let id0 = f(&f0["identity_pct"]);
+        let classes_ok = worst_ratio <= tol;
+        let texel_ok = id0 >= 0.9 * ceiling;
+        let abs_ok = target.as_ref().map(|t| id0 >= t.id && f(&f0["within2_pct"]) >= t.within2 && f(&f0["max_delta"]) <= t.maxd && worst_ratio <= t.ratio);
+        let verdict = if classes_ok && texel_ok { n_closed += 1; "CLOSED (texel) ✓".to_string() } else if classes_ok { "CLOSED (class)".to_string() } else { format!("RESIDUE {} ±{:.3}", worst_name, worst_ratio) };
+        let verdict = match abs_ok { Some(true) => format!("{verdict} · target ✓"), Some(false) => format!("{verdict} · target ✗"), None => verdict };
+        let warn = m["pak_warnings"].as_array().map_or(0, |w| w.len());
+        let verdict = if warn > 0 { format!("{verdict} · ⚠ {warn} 'not in any pack'") } else { verdict };
         let head = format!("{} B / {} rec / {} fr", f0["head_ours"][0], f0["head_ours"][1], f0["head_ours"][2]);
         let head_ok = f0["head_ours"] == f0["head_theirs"];
-        let verdict = if closed { "CLOSED ✓".to_string() } else { format!("open (worst class ±{:.3})", worst_ratio) };
         // vs the previous tip
         let prev_col = match &against {
             None => String::new(),
@@ -379,6 +541,8 @@ fn report(args: &[String], cells: &[Cell]) -> Result<(), String> {
                         }
                         if lay["same_binds"] != p["layout"]["same_binds"] || lay["same_rects"] != p["layout"]["same_rects"] || lay["charts_ours"] != p["layout"]["charts_ours"] { moves.push(format!("layout binds {}→{} rects {}→{} charts {}→{}", p["layout"]["same_binds"], lay["same_binds"], p["layout"]["same_rects"], lay["same_rects"], p["layout"]["charts_ours"], lay["charts_ours"])); }
                         if f0["head_ours"] != p["frames"][0]["head_ours"] { moves.push("lossless head".into()); }
+                        if m["planes"]["fb_differs"] != p["planes"]["fb_differs"] { moves.push(format!("fb-differs charts {} → {}", p["planes"]["fb_differs"], m["planes"]["fb_differs"])); }
+                        if let (Some(a), Some(b)) = (m["planes"]["planes"].as_array(), p["planes"]["planes"].as_array()) { for (x, y) in a.iter().zip(b.iter()) { if x["tiles_identity_pct"] != y["tiles_identity_pct"] || x["items_identity_pct"] != y["items_identity_pct"] { moves.push(format!("plane {} tiles/items identity {}/{} → {}/{}", x["plane"].as_str().unwrap_or("?"), y["tiles_identity_pct"], y["items_identity_pct"], x["tiles_identity_pct"], x["items_identity_pct"])); } } }
                         if moves.is_empty() { moves.push("bytes differ, every metric equal (a probe / trailer / f16-tail change?)".into()); }
                         moved_detail += &format!("- **{}**: {}\n", c.name, moves.join("; "));
                         format!("**MOVED** ({} lines)", moves.len())
@@ -386,9 +550,9 @@ fn report(args: &[String], cells: &[Cell]) -> Result<(), String> {
                 }
             },
         };
-        md += &format!("| {} | {} q{} {} | {:.1} | {:.2} | {:.2} | {} | {} / {} | {} | {:.2} | {} / {} | {}/{} | {}/{} | {}{} | {} | {} |\n", c.name, c.collection, c.quality, m["dirs"].as_str().unwrap_or("full"), f(&m["bake_s"]),
-            f(&f0["identity_pct"]), f(&f0["within2_pct"]), f0["max_delta"], f0["record_ours"], f0["record_theirs"], ratio_str(&f0["ratio"]),
-            f(&f1["identity_pct"]), f1["record_ours"], f1["record_theirs"], lay["same_binds"], lay["compared"], lay["same_rects"], lay["compared"], head, if head_ok { "" } else { " ≠ editor" }, verdict, prev_col);
+        md += &format!("| {} | {} q{} {}{} | {} | {} | {:.2} ({:.0}) | {:.2} | {} | {} / {} | {} | {} | {:.2} | {} / {} | {}/{} | {}/{} | {}{} | {} | {} |\n", c.name, c.collection, c.quality, m["dirs"].as_str().unwrap_or("full"), if m["compare_only"].as_bool().unwrap_or(false) { " compare" } else { "" }, census_str(&m["census"]), if m["compare_only"].as_bool().unwrap_or(false) { "—".to_string() } else { format!("{:.1}", f(&m["bake_s"])) },
+            id0, ceiling, f(&f0["within2_pct"]), f0["max_delta"], rec(&f0["record_ours"]), rec(&f0["record_theirs"]), ratio_str(&f0["ratio"]), planes_str(&m["planes"]),
+            f(&f1["identity_pct"]), rec(&f1["record_ours"]), rec(&f1["record_theirs"]), lay["same_binds"], lay["compared"], lay["same_rects"], lay["compared"], head, if head_ok { "" } else { " ≠ editor" }, verdict, prev_col);
     }
     md += &format!("\n{n_ok} baked ({n_closed} CLOSED), {n_failed} failed, {n_missing} pending of {} cells{}\n", cells.len(), against.as_ref().map(|a| format!("; vs {a}: {n_moved} cell(s) MOVED")).unwrap_or_default());
     if !moved_detail.is_empty() { md += &format!("\n## What moved\n{moved_detail}"); }

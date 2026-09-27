@@ -1,34 +1,52 @@
 # THE CORPUS (baker-4, 2026-09-27) — one cell per (map, collection, mood, quality) with an EDITOR oracle in refs/.
 # Paths relative to --refs (…/tiny/lightmap-re/refs) unless absolute. word = the DayTime word the source copy gets before
-# the bake (the oracle's own); dirs = full | N (--max-dirs N: frame-1 / layout rows only); kept = the reduced oracle's list.
-# Order = the round-robin deal to the boxes (--box K --boxes N): heavy cells spread out.
-cell	source	oracle	collection	quality	word	dirs	kept	extra
-tiny16-bluebay-sunset-q4	tiny16-fixedlib-source.Map.Gbx	tiny16-fixedlib-q4-editor-reduced.Map.Gbx	BlueBay	4	-	full	tiny16-reduced-kept.txt	-
-stpad-stadium-night-nocache-q3	stpad-night-0x199a-source.Map.Gbx	stpad-Stadium-Night-0x199a-q3-editor-nocache.Map.Gbx	Stadium	3	-	full	-	-
-tiny03-whiteshore-day-q4	tiny03-WhiteShore-Day-q4-editor-reduced-resaved.Map.Gbx	tiny03-WhiteShore-Day-q4-editor-reduced.Map.Gbx	WhiteShore	4	-	full	-	-
-stpad-stadium-sunrise-0x5148-q3	stpad-source.Map.Gbx	stpad-Stadium-Sunrise-q3-editor.Map.Gbx	Stadium	3	-	full	-	-
-tiny04ac-greencoast-day-q4	tiny04ac-GreenCoast-Day-q4-editor.Map.Gbx	tiny04ac-GreenCoast-Day-q4-editor.Map.Gbx	GreenCoast	4	-	full	-	-
-stpad-stadium-day-0x8111-q3	stpad-source.Map.Gbx	stpad-Stadium-Day-0x8111-q3-editor.Map.Gbx	Stadium	3	0x8111	full	-	-
-tiny03-whiteshore-sunset-0xdac0-q4	tiny03-WhiteShore-Sunset-0xdac0-reduced-source.Map.Gbx	tiny03-WhiteShore-Sunset-0xdac0-q4-editor-reduced.Map.Gbx	WhiteShore	4	-	full	-	-
-stpad-stadium-sunset-0xceb8-q3	stpad-Stadium-Sunset-0xceb8-source.Map.Gbx	stpad-Stadium-Sunset-0xceb8-q3-editor.Map.Gbx	Stadium	3	-	full	-	-
-tiny04ac-greencoast-sunset-0xdac0-q4	tiny04ac-GreenCoast-Sunset-0xdac0-reduced-source.Map.Gbx	tiny04ac-GreenCoast-Sunset-0xdac0-q4-editor-reduced.Map.Gbx	GreenCoast	4	-	full	-	-
-stpad-stadium-sunrise-0x4e4b-q3	stpad-source.Map.Gbx	stpad-Stadium-Sunrise-0x4e4b-q3-editor.Map.Gbx	Stadium	3	0x4e4b	full	-	-
-np-tk3-bluebay-day-q3	np-tk3-source-day.Map.Gbx	np-tk3-BlueBay-Day-0x9b59-q3-editor.Map.Gbx	BlueBay	3	-	full	-	-
-np-tk3-bluebay-day-q4	np-tk3-source-day.Map.Gbx	np-tk3-BlueBay-Day-0x9b59-q4-editor.Map.Gbx	BlueBay	4	-	full	-	-
-np-tk3-bluebay-sunset-0xdaab-q3	np-tk3-source-day.Map.Gbx	np-tk3-BlueBay-0xdaab-q3-editor.Map.Gbx	BlueBay	3	0xdaab	full	-	-
-np-tk3-bluebay-night-0x199a-q3	np-tk3-BlueBay-Night-0x199a-source.Map.Gbx	np-tk3-BlueBay-Night-0x199a-q3-editor.Map.Gbx	BlueBay	3	-	full	-	-
-np-tk3-bluebay-0x5000-q3	np-tk3-source-day.Map.Gbx	np-tk3-BlueBay-0x5000-q3-editor.Map.Gbx	BlueBay	3	0x5000	full	-	-
-np-tk3-bluebay-0xc000-q3	np-tk3-source-day.Map.Gbx	np-tk3-BlueBay-0xC000-q3-editor.Map.Gbx	BlueBay	3	0xC000	full	-	-
-hill4-bluebay-day-q3	hill4-source.Map.Gbx	hill4-BlueBay-Day-0x9b59-q3-editor.Map.Gbx	BlueBay	3	0x9b59	full	-	-
-hill4-bluebay-sunset-q3	hill4-source.Map.Gbx	hill4-BlueBay-Sunset-0xdaab-q3-editor.Map.Gbx	BlueBay	3	-	full	-	-
-hill6-bluebay-day-q3	hill6-source.Map.Gbx	hill6-BlueBay-Day-0x9b59-q3-editor.Map.Gbx	BlueBay	3	0x9b59	full	-	-
-hill6-bluebay-sunset-q3	hill6-source.Map.Gbx	hill6-BlueBay-Sunset-0xdaab-q3-editor.Map.Gbx	BlueBay	3	-	full	-	-
-tk3nl2-bluebay-day-q3	tk3nl2-testmap-BlueBay-31items.Map.Gbx	tk3nl2-t0x9b59.Map.Gbx	BlueBay	3	0x9b59	full	-	-
-tk3nl2-bluebay-0x5000-q3	tk3nl2-testmap-BlueBay-31items.Map.Gbx	tk3nl2-t0x5000.Map.Gbx	BlueBay	3	0x5000	full	-	-
-tk3nl2-bluebay-0xc000-q3	tk3nl2-testmap-BlueBay-31items.Map.Gbx	tk3nl2-t0xC000.Map.Gbx	BlueBay	3	0xC000	full	-	-
-pwc-day-bluebay-day-q3	../passcap/pwc-day/pwc-day-source.Map.Gbx	../passcap/pwc-day/pwc-day-baked-q3-editor.Map.Gbx	BlueBay	3	-	full	-	-
-# lamp / layout rows at one direction (frame 1 and the layout do not depend on the direction count) — the old guard rows
-stpad-stadium-night-nocache-d1	stpad-night-0x199a-source.Map.Gbx	stpad-Stadium-Night-0x199a-q3-editor-nocache.Map.Gbx	Stadium	3	-	1	-	-
-tiny16-bluebay-sunset-d1	tiny16-fixedlib-source.Map.Gbx	tiny16-fixedlib-q4-editor-reduced.Map.Gbx	BlueBay	4	-	1	tiny16-reduced-kept.txt	-
-# the giant (WhiteShore, the clouds cell; ~25 min) — last, so it lands on one box while the other finishes the small rows
-g23-whiteshore-day-q4	../../../mh/g23.Map.Gbx	g23-WhiteShore-Day-q4-editor-reduced.Map.Gbx	WhiteShore	4	-	full	g23-WhiteShore-Day-q4-editor-reduced.kept	-
+# the bake (the oracle's own); dirs = full | N (--max-dirs N: frame-1 / layout rows only) | compare (no bake: the source IS
+# our side — the CEILING cells compare two editor saves); kept = the reduced oracle's list (the editor survives only a map
+# without the light-carrying items and the vegetation clusters — a reduced oracle is LAMP-LESS by construction, RE 14
+# 2026-09-27); extra = extra bake flags, env:KEY=VAL tokens go to the bake's environment; ceiling = V2's editor-vs-its-own-
+# re-bake identity on that map class (pwc-day's four saves 95.0–99.4 % lamp-less → 99; stpad Night vs nocache 60.1 % → 60).
+# An empty oracle (-) = a fixed "no oracle" line of the matrix (RedIsland: the TitlePack refuses the collection; q1/q2:
+# the editor refuses the quality). Order = the round-robin deal to the boxes (--box K --boxes N): heavy cells spread out.
+cell	source	oracle	collection	quality	word	dirs	kept	extra	ceiling
+tiny16-bluebay-sunset-q4	tiny16-fixedlib-source.Map.Gbx	tiny16-fixedlib-q4-editor-reduced.Map.Gbx	BlueBay	4	-	full	tiny16-reduced-kept.txt	-	60
+stpad-stadium-night-nocache-q3	stpad-night-0x199a-source.Map.Gbx	stpad-Stadium-Night-0x199a-q3-editor-nocache.Map.Gbx	Stadium	3	-	full	-	-	60
+tiny03-whiteshore-day-q4	tiny03-WhiteShore-Day-q4-editor-reduced-resaved.Map.Gbx	tiny03-WhiteShore-Day-q4-editor-reduced.Map.Gbx	WhiteShore	4	-	full	-	-	99
+stpad-stadium-sunrise-0x5148-q3	stpad-source.Map.Gbx	stpad-Stadium-Sunrise-q3-editor.Map.Gbx	Stadium	3	-	full	-	-	60
+tiny04ac-greencoast-day-q4	tiny04ac-GreenCoast-Day-q4-editor.Map.Gbx	tiny04ac-GreenCoast-Day-q4-editor.Map.Gbx	GreenCoast	4	-	full	-	-	99
+stpad-stadium-day-0x8111-q3	stpad-source.Map.Gbx	stpad-Stadium-Day-0x8111-q3-editor.Map.Gbx	Stadium	3	0x8111	full	-	-	60
+tiny03-whiteshore-sunset-0xdac0-q4	tiny03-WhiteShore-Sunset-0xdac0-reduced-source.Map.Gbx	tiny03-WhiteShore-Sunset-0xdac0-q4-editor-reduced.Map.Gbx	WhiteShore	4	-	full	-	-	99
+stpad-stadium-sunset-0xceb8-q3	stpad-Stadium-Sunset-0xceb8-source.Map.Gbx	stpad-Stadium-Sunset-0xceb8-q3-editor.Map.Gbx	Stadium	3	-	full	-	-	60
+tiny04ac-greencoast-sunset-0xdac0-q4	tiny04ac-GreenCoast-Sunset-0xdac0-reduced-source.Map.Gbx	tiny04ac-GreenCoast-Sunset-0xdac0-q4-editor-reduced.Map.Gbx	GreenCoast	4	-	full	-	-	99
+stpad-stadium-sunrise-0x4e4b-q3	stpad-source.Map.Gbx	stpad-Stadium-Sunrise-0x4e4b-q3-editor.Map.Gbx	Stadium	3	0x4e4b	full	-	-	60
+np-tk3-bluebay-day-q3	np-tk3-source-day.Map.Gbx	np-tk3-BlueBay-Day-0x9b59-q3-editor.Map.Gbx	BlueBay	3	-	full	-	-	99
+np-tk3-bluebay-day-q4	np-tk3-source-day.Map.Gbx	np-tk3-BlueBay-Day-0x9b59-q4-editor.Map.Gbx	BlueBay	4	-	full	-	-	99
+np-tk3-bluebay-sunset-0xdaab-q3	np-tk3-source-day.Map.Gbx	np-tk3-BlueBay-0xdaab-q3-editor.Map.Gbx	BlueBay	3	0xdaab	full	-	-	99
+np-tk3-bluebay-night-0x199a-q3	np-tk3-BlueBay-Night-0x199a-source.Map.Gbx	np-tk3-BlueBay-Night-0x199a-q3-editor.Map.Gbx	BlueBay	3	-	full	-	-	99
+np-tk3-bluebay-0x5000-q3	np-tk3-source-day.Map.Gbx	np-tk3-BlueBay-0x5000-q3-editor.Map.Gbx	BlueBay	3	0x5000	full	-	-	99
+np-tk3-bluebay-0xc000-q3	np-tk3-source-day.Map.Gbx	np-tk3-BlueBay-0xC000-q3-editor.Map.Gbx	BlueBay	3	0xC000	full	-	-	99
+hill4-bluebay-day-q3	hill4-source.Map.Gbx	hill4-BlueBay-Day-0x9b59-q3-editor.Map.Gbx	BlueBay	3	0x9b59	full	-	-	99
+hill4-bluebay-sunset-q3	hill4-source.Map.Gbx	hill4-BlueBay-Sunset-0xdaab-q3-editor.Map.Gbx	BlueBay	3	-	full	-	-	99
+hill6-bluebay-day-q3	hill6-source.Map.Gbx	hill6-BlueBay-Day-0x9b59-q3-editor.Map.Gbx	BlueBay	3	0x9b59	full	-	-	99
+hill6-bluebay-sunset-q3	hill6-source.Map.Gbx	hill6-BlueBay-Sunset-0xdaab-q3-editor.Map.Gbx	BlueBay	3	-	full	-	-	99
+tk3nl2-bluebay-day-q3	tk3nl2-testmap-BlueBay-31items.Map.Gbx	tk3nl2-t0x9b59.Map.Gbx	BlueBay	3	0x9b59	full	-	-	99
+tk3nl2-bluebay-0x5000-q3	tk3nl2-testmap-BlueBay-31items.Map.Gbx	tk3nl2-t0x5000.Map.Gbx	BlueBay	3	0x5000	full	-	-	99
+tk3nl2-bluebay-0xc000-q3	tk3nl2-testmap-BlueBay-31items.Map.Gbx	tk3nl2-t0xC000.Map.Gbx	BlueBay	3	0xC000	full	-	-	99
+pwc-day-bluebay-day-q3	../passcap/pwc-day/pwc-day-source.Map.Gbx	../passcap/pwc-day/pwc-day-baked-q3-editor.Map.Gbx	BlueBay	3	-	full	-	-	99
+# lamp / layout rows at one direction (frame 1 and the layout do not depend on the direction count) — the old guard rows;
+# ST-Night-f1 (V2) = the stpad d1 cell's frame 1 (classcmp-f1.tsv); tiny16 stock-only = E's stock rule baseline (12 049/12 214)
+stpad-stadium-night-nocache-d1	stpad-night-0x199a-source.Map.Gbx	stpad-Stadium-Night-0x199a-q3-editor-nocache.Map.Gbx	Stadium	3	-	1	-	-	60
+tiny16-bluebay-sunset-d1	tiny16-fixedlib-source.Map.Gbx	tiny16-fixedlib-q4-editor-reduced.Map.Gbx	BlueBay	4	-	1	tiny16-reduced-kept.txt	-	60
+tiny16-bluebay-sunset-d1-stock	tiny16-fixedlib-source.Map.Gbx	tiny16-fixedlib-q4-editor-reduced.Map.Gbx	BlueBay	4	-	1	tiny16-reduced-kept.txt	env:LMTOOL_LAMP_FILTER=stock	60
+# the CEILING cells (V2): two editor saves of one map against each other — no bake, the numbers the verdict is measured against
+ceiling-pwc-day-editor-vs-repeat	../passcap/pwc-day/pwc-day-baked-q3-editor.Map.Gbx	../passcap/pwc-day/pwc-day-baked-q3-editor-repeat.Map.Gbx	BlueBay	3	-	compare	-	-	99
+ceiling-stpad-night-editor-vs-nocache	stpad-Stadium-Night-0x199a-q3-editor.Map.Gbx	stpad-Stadium-Night-0x199a-q3-editor-nocache.Map.Gbx	Stadium	3	-	compare	-	-	60
+# the giants (~25 min each) — last, so they land on one box while the other finishes the small rows
+giant20x2-stadium-sunrise-q4	../../../giant-summer/x2/unlit/Summer-20-Giant.Map.Gbx	giant20x2-Stadium-Sunrise-q4-editor-reduced.Map.Gbx	Stadium	4	-	full	giant20x2red.kept	-	99
+g23-whiteshore-day-q4	../../../mh/g23.Map.Gbx	g23-WhiteShore-Day-q4-editor-reduced.Map.Gbx	WhiteShore	4	-	full	g23-WhiteShore-Day-q4-editor-reduced.kept	-	99
+# no oracle possible — fixed lines of the matrix (the TitlePack refuses a RedIsland map; the editor refuses q1/q2 computes)
+redisland-day-q3	pwc-red-source.Map.Gbx	-	RedIsland	3	-	full	-	-	99
+redisland-sunrise-q3	pwc-red-source.Map.Gbx	-	RedIsland	3	0x4e4b	full	-	-	99
+redisland-sunset-q3	pwc-red-source.Map.Gbx	-	RedIsland	3	0xceb8	full	-	-	99
+redisland-night-q3	pwc-red-source.Map.Gbx	-	RedIsland	3	0x199a	full	-	-	99
+np-tk3-bluebay-day-q1	np-tk3-source-day.Map.Gbx	-	BlueBay	1	-	full	-	-	99
+np-tk3-bluebay-day-q2	np-tk3-source-day.Map.Gbx	-	BlueBay	2	-	full	-	-	99
