@@ -669,6 +669,9 @@ pub fn inplace_cmd(args: &[String]) -> Result<(), String> {
         let manifest = out_root.join(format!("manifest-{set}.tsv"));
         let results = out_root.join(format!("results-{set}.tsv"));
         std::fs::write(&manifest, rows.iter().map(|st| format!("{}\t{}\n", st.path.display(), st.name)).collect::<String>()).map_err(|e| e.to_string())?;
+        // the IDENTICAL set is the UNION over the attempts (publish-batch rewrites the results
+        // file per run — attempt 3 of the first Tiny round re-uploaded the 521 good maps)
+        let mut ok_all: BTreeMap<String, String> = BTreeMap::new();
         for attempt in 0..3 {
             if crate::nadeo::fresh_tokens_in(token_dir.to_str().unwrap()).is_none() {
                 mint_tokens(&wsx, &token_dir)?;
@@ -678,18 +681,19 @@ pub fn inplace_cmd(args: &[String]) -> Result<(), String> {
                 "--outdir".into(), out_root.join("readback").to_string_lossy().into_owned(), "--jobs".into(), jobs.to_string(), "--files-only".into(), "--token-dir".into(), token_dir.to_string_lossy().into_owned(),
             ];
             let r = batch::publish_batch_cmd(&batch_args);
-            let ok = read_identical(&results);
-            if ok.len() >= rows.len() {
+            ok_all.extend(read_identical(&results));
+            let _ = std::fs::write(out_root.join(format!("results-{set}-attempt{}.tsv", attempt + 1)), std::fs::read(&results).unwrap_or_default());
+            if ok_all.len() >= rows.len() {
                 break;
             }
-            println!("[{:>5.0}s] {set}: {} of {} IDENTICAL after attempt {} ({})", t0.elapsed().as_secs_f64(), ok.len(), rows.len(), attempt + 1, r.err().unwrap_or_default().lines().next().unwrap_or(""));
-            let text: String = rows.iter().filter(|st| !ok.contains_key(&st.path.to_string_lossy().to_string())).map(|st| format!("{}\t{}\n", st.path.display(), st.name)).collect();
+            println!("[{:>5.0}s] {set}: {} of {} IDENTICAL after attempt {} ({})", t0.elapsed().as_secs_f64(), ok_all.len(), rows.len(), attempt + 1, r.err().unwrap_or_default().lines().next().unwrap_or(""));
+            let text: String = rows.iter().filter(|st| !ok_all.contains_key(&st.path.to_string_lossy().to_string())).map(|st| format!("{}\t{}\n", st.path.display(), st.name)).collect();
             if text.is_empty() {
                 break;
             }
             std::fs::write(&manifest, text).map_err(|e| e.to_string())?;
         }
-        let ok = read_identical(&results);
+        let ok = ok_all;
         let missing: Vec<&str> = rows.iter().filter(|st| !ok.contains_key(&st.path.to_string_lossy().to_string())).map(|st| st.name.as_str()).collect();
         println!("[{:>5.0}s] {set}: {} of {} updated in place IDENTICAL{}", t0.elapsed().as_secs_f64(), rows.len() - missing.len(), rows.len(), if missing.is_empty() { String::new() } else { format!("; MISSING: {}", missing.join(", ")) });
         total_ok += rows.len() - missing.len();

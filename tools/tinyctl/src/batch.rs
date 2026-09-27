@@ -153,15 +153,27 @@ fn upload_one(t: &mut Tokens, map: &Path, name: &str, outdir: &Path) -> Result<(
     }
     let how = if existing.is_some() { "update" } else { "create" }.to_string();
     let map_id = json_str(&up, "mapId").or(existing.clone()).unwrap_or_default();
-    // read back: the stored bytes must be ours
-    let (rec2, _) = curl(&["-H", &auth_core, &format!("{CORE}/maps/?mapUidList={uid}")])?;
-    let file_url = json_str(&rec2, "fileUrl").ok_or("record has no fileUrl after upload")?;
+    // read back: the stored bytes must be ours. An UPDATE is not instant at the file URL
+    // (the Tiny in-place round of 2026-09-26: 31 of 552 read the OLD bytes right after a
+    // 200, all of them ours a minute later) — the readback is retried with a pause.
     let back = outdir.join(format!("readback-{uid}.Map.Gbx"));
-    let (_, code) = curl(&["-L", "-H", &auth_core, "-o", back.to_str().unwrap(), &file_url])?;
-    let stored = std::fs::read(&back).map_err(|e| format!("{}: {e}", back.display()))?;
-    let _ = std::fs::remove_file(&back);
-    let md5_stored = md5_hex(&stored);
-    let verdict = if md5_stored == md5_local { "IDENTICAL".to_string() } else { format!("DIFFERS (stored HTTP {code}, {} bytes, md5 {md5_stored})", stored.len()) };
+    let mut verdict = String::new();
+    for attempt in 0..4 {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_secs(20 * attempt as u64));
+        }
+        let (rec2, _) = curl(&["-H", &auth_core, &format!("{CORE}/maps/?mapUidList={uid}")])?;
+        let file_url = json_str(&rec2, "fileUrl").ok_or("record has no fileUrl after upload")?;
+        let (_, code) = curl(&["-L", "-H", &auth_core, "-o", back.to_str().unwrap(), &file_url])?;
+        let stored = std::fs::read(&back).map_err(|e| format!("{}: {e}", back.display()))?;
+        let _ = std::fs::remove_file(&back);
+        let md5_stored = md5_hex(&stored);
+        if md5_stored == md5_local {
+            verdict = "IDENTICAL".to_string();
+            break;
+        }
+        verdict = format!("DIFFERS (stored HTTP {code}, {} bytes, md5 {md5_stored}, {} readbacks)", stored.len(), attempt + 1);
+    }
     Ok((uid, map_id, how, bytes.len() as u64, md5_local, verdict))
 }
 
