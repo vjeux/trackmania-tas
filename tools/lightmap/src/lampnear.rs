@@ -32,16 +32,22 @@ pub struct LampRow {
 }
 
 /// The bake's `--lights-tsv FILE` writer; `map_path` resolves "item N" owners to the map's item model.
-pub fn write_lights_tsv(path: &str, lamps: &[crate::localdrive::Lamp], map_path: &str) -> Result<(), String> {
+/// The lamp table; `instances` = the lamp pass scene's instances (a lamp's owner "item N" is the scene INSTANCE index — items without a
+/// model are not instances and a reduced oracle's kept set drops more, so N is NOT the map item index; E 2026-09-27 20:10Z: the model
+/// column named AC16497083 for the arch lamps of AC16497075). Without the scene the map's item list is used as before (wrong when
+/// indices shift).
+pub fn write_lights_tsv(path: &str, lamps: &[crate::localdrive::Lamp], map_path: &str, instances: Option<&[crate::geometry::Instance]>) -> Result<(), String> {
     use std::io::Write;
     let mf = tmmaps::map::MapFile::load(std::path::Path::new(map_path));
     let mut fh = std::fs::File::create(path).map_err(|e| format!("{path}: {e}"))?;
-    writeln!(fh, "id\towner\tmodel\tx\ty\tz\tradius\tr_eff\tintensity\tr\tg\tb\tnight_only\tball_flags\tgx_flags\tsamples\tdx\tdy\tdz\tcone_inner\tcone_outer").map_err(|e| e.to_string())?;
+    writeln!(fh, "id\towner\tmodel\tx\ty\tz\tradius\tr_eff\tintensity\tr\tg\tb\tnight_only\tball_flags\tgx_flags\tsamples\tdx\tdy\tdz\tcone_inner\tcone_outer\tleft_x\tleft_y\tleft_z\tup_x\tup_y\tup_z").map_err(|e| e.to_string())?;
     for l in lamps {
-        let model = match l.owner.strip_prefix("item ").and_then(|n| n.trim().parse::<usize>().ok()).and_then(|i| mf.items.get(i)) { Some(it) => it.model.rsplit('\\').next().unwrap_or(&it.model).to_string(), None => l.owner.clone() };
+        let idx = l.owner.strip_prefix("item ").and_then(|n| n.trim().parse::<usize>().ok());
+        let item_idx = match (idx, instances) { (Some(i), Some(inst)) => inst.get(i).map(|x| x.item), (Some(i), None) => Some(i), _ => None };
+        let model = match item_idx.and_then(|i| mf.items.get(i)) { Some(it) => it.model.rsplit('\\').next().unwrap_or(&it.model).to_string(), None => l.owner.clone() };
         let p = l.light.pos;
         let dd = l.light.dir;
-        writeln!(fh, "{}\t{}\t{model}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{}\t{:#x}\t{:#x}\t{}\t{:.4}\t{:.4}\t{:.4}\t{:.1}\t{:.1}", l.id, l.owner, p[0], p[1], p[2], l.light.radius, l.r_eff, l.light.intensity, l.light.color[0], l.light.color[1], l.light.color[2], l.light.night_only, l.light.ball_flags, l.light.gx_flags, 1usize /* the emitter-sample count: E's emitter-area commit is reverted in this base, so every lamp is one sample */, dd[0], dd[1], dd[2], l.light.cone.0, l.light.cone.1).map_err(|e| e.to_string())?;
+        writeln!(fh, "{}\t{}\t{model}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{}\t{:#x}\t{:#x}\t{}\t{:.4}\t{:.4}\t{:.4}\t{:.1}\t{:.1}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}", l.id, l.owner, p[0], p[1], p[2], l.light.radius, l.r_eff, l.light.intensity, l.light.color[0], l.light.color[1], l.light.color[2], l.light.night_only, l.light.ball_flags, l.light.gx_flags, 1usize /* the emitter-sample count: E's emitter-area commit is reverted in this base, so every lamp is one sample */, dd[0], dd[1], dd[2], l.light.cone.0, l.light.cone.1, l.light.left[0], l.light.left[1], l.light.left[2], l.light.up[0], l.light.up[1], l.light.up[2]).map_err(|e| e.to_string())?;
     }
     Ok(())
 }

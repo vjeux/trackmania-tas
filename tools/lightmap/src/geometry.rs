@@ -296,6 +296,7 @@ pub fn solid2_lights_ext(s2: &mapgeom::static_item::solid2::CPlugSolid2Model, po
             left = quat_rot(q, left);
             up = quat_rot(q, up);
         }
+        if std::env::var_os("LMTOOL_LIGHT_TRACE").is_some() { eprintln!("  socket matrix rows X {:?} Y {:?} Z {:?} T {:?} → item-space pos {pos:?} dir (Z row) {dir:?} left (X row) {left:?} up (Y row) {up:?}", &t[0..3], &t[3..6], &t[6..9], &t[9..12]); }
         out.push(LightDef { pos, dir, color, intensity, radius, cone, animated: pl.is_animated(), night_only: pl.night_only(), hyper2, att_htnlr, ball_flags, emitting, gx_flags, radii, left, up });
     }
     out

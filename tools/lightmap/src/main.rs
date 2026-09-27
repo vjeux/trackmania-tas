@@ -2228,7 +2228,7 @@ fn run(mut a: Vec<String>) {
                                 for y in 0..2048u32 { for x in 0..2048u32 { let a4 = img.get(x, y, 3); if a4 > 0.0 { lit += 1; } for c in 0..3 { atlas.set(x, y, c, img.get(x, y, c) * scale); } atlas.set(x, y, 3, a4); } }
                                 eprintln!("lamps in frame 0: {} lamps → A_0 on {lit} atlas texels (× {scale}) goes to sweep 0's light input", su.lamps.len());
                                 // --lights-tsv FILE: every lamp the bake drives (id, owner, model, position, radius, r_eff, colour, flags, samples) — `lmtool lampnear`
-                                if let Some(p) = f("--lights-tsv") { lightmap::lampnear::write_lights_tsv(&p, &su.lamps, &map_path).unwrap_or_else(|e| panic!("--lights-tsv: {e}")); eprintln!("lights table: {} lamps → {p}", su.lamps.len()); }
+                                if let Some(p) = f("--lights-tsv") { lightmap::lampnear::write_lights_tsv(&p, &su.lamps, &map_path, Some(&su.scene.instances)).unwrap_or_else(|e| panic!("--lights-tsv: {e}")); eprintln!("lights table: {} lamps → {p}", su.lamps.len()); }
                                 Some(atlas)
                             }
                             Err(e) => { eprintln!("lamps in frame 0: {e} — the sun alone"); None }
