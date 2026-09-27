@@ -39,6 +39,8 @@ fn label(set: &str) -> &'static str {
         "wood" => "Wood",
         "woodwet" => "Wet Wood",
         "magnet" => "Magnet",
+        "tiny" => "Tiny",
+        "giant" => "Giant",
         _ => "?",
     }
 }
@@ -197,7 +199,11 @@ fn one(fp: &Fp, rounds: &[(String, String)], root: &Path, set: &str, base: &Path
     let mut wiped = false;
     for (round, date) in rounds {
         let f = if round.starts_with("reset") {
-            root.join(round).join(set).join(&part).join(format!("U10S_{num} By Everios96 [{}].Map.Gbx", label(set)))
+            let club = root.join(round).join(set).join(&part).join(format!("U10S_{num} By Everios96 [{}].Map.Gbx", label(set)));
+            // the Tiny club names carry no leading zero (`U10S_7 By Everios96 [Tiny]`) while the
+            // live file names do (`07-U10S_07-By-…`): the trimmed number is the fallback
+            let trimmed = num.trim_start_matches('0');
+            if club.exists() || trimmed == num { club } else { root.join(round).join(set).join(&part).join(format!("U10S_{trimmed} By Everios96 [{}].Map.Gbx", label(set))) }
         } else {
             root.join(round).join(set).join(&part).join(&bname)
         };
