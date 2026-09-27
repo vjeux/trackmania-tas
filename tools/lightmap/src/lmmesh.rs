@@ -50,6 +50,28 @@ pub fn terrain_material_takes_tc0(link: &str) -> bool {
 /// lacks 0x1000 — the geom is in NO lightmap pass (RE 11: this ONE field + ONE bit is both of RE 7's observed tables).
 static LM_UV_UNKNOWN: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
 static LM_UV_INDEX: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, Option<u32>>>> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+/// The per-link cache of the material's SHADER file name (lower-case), filled beside `LM_UV_INDEX` by `prefetch_lm_uv_index` —
+/// the H-basis tangent-frame MODE rule reads the shader family from it (`link_uses_authored_tangents`).
+static LM_SHADER: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, String>>> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+/// THE TANGENT-FRAME MODE OF A LINKED PACK MATERIAL (E, 2026-09-27 16:50Z; V2's texeldelta C1/C3 planes + RE 14's 16:45Z read of the
+/// LM vertex: PSIZE = the mode, TANGENT = TangentU): the game writes the AUTHORED frame (PSIZE ±1 by the TangentV handedness) for a
+/// tangent-space bump shader — np-tk3's StadiumOnTerrain plate (Tech3_Block_TDSN_CubeOut: TangentU = +Z / −Z / +X / −X per quadrant → the
+/// editor's four C1 constants in an X), the RoadBorderSpot (stsun vb_9843: ±1 with authored tangents) — and PSIZE 3 + (1, 0, 0) for a
+/// WORLD-PROJECTED (PyPxz) shader whose bump frame comes from the world position, not the mesh: pwc-day's Land (PyPxz_Ids) and its
+/// wall TrackWallInWorld (PyPxzDiff_Spec_Norm_LM1, tangent words in its stream) were captured as 3 / (1, 0, 0). So: authored tangents
+/// unless the shader family is PyPxz; a link whose shader is unknown (no pack store) keeps the pre-16:50Z rule (linked → mode 3).
+/// The CPU builder's own test is RE 14's read-pending item; LMTOOL_LM_TANGENT_MODE=linked3 restores the old rule for a study.
+pub fn link_uses_authored_tangents(link: &str) -> bool {
+    static OLD: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_LM_TANGENT_MODE").as_deref() == Ok("linked3"));
+    if *OLD || link.is_empty() { return false; }
+    // resolve (and cache) the chain through the same path as the uv selector
+    let _ = lm_uv_index_cached(link);
+    match LM_SHADER.lock().unwrap().get(&link.to_ascii_lowercase()) {
+        Some(sh) => !sh.contains("pypxz"),
+        None => false,
+    }
+}
 
 /// The pack store the selector resolves unknown links against (set once by the bake before the scene is built:
 /// `set_lm_uv_store`); without it only prefetched links are known.
@@ -120,6 +142,7 @@ pub fn prefetch_lm_uv_index(store: &mut mapgeom::store::DataStore, links: &[Stri
         let chain = mapgeom::envblock::material_chain(store, &mat);
         let mut v: Option<Option<u32>> = None;
         if !chain.shader.is_empty() {
+            LM_SHADER.lock().unwrap().insert(key.clone(), chain.shader.to_ascii_lowercase());
             let pass_ok = chain.flags.map(|f| f.pass_bits & 0x1000 != 0).unwrap_or(true);
             match store.read(&chain.shader) {
                 Ok(bytes) => { let tc = shader_prelightgen_tc(&bytes); v = Some(if pass_ok { tc } else { None }); }
@@ -295,13 +318,19 @@ pub fn lm_mesh_of_solid_ext(s2: &mapgeom::static_item::solid2::CPlugSolid2Model,
         // (n × tU) · tV), 3 for a mesh without tangents
         let dec_t = |e: Option<&Elem>| -> Option<Vec<[f32; 3]>> { match e { Some(Elem::Float4(t)) => Some(t.iter().map(|v| [v[0], v[1], v[2]]).collect()), Some(Elem::Float3(t)) => Some(t.clone()), Some(Elem::Word(w)) => Some(w.iter().map(|&x| dec3n_raw(x, 511.0)).collect()), _ => None } };
         // the tangent frame is emitted for a geom whose material is a CUSTOM user material with its own shader model (the
-        // vegetation's TDOSN_/TDSN_ materials); a geom on a LINKED pack material (the tiny wall's TrackWallInWorld — its
-        // stream carries tangent words too — and the pad's Land) gets mode 3 and the (1, 0, 0) tangent
-        let linked = usize::try_from(sg.material_index).ok().map(|mi| {
+        // vegetation's TDOSN_/TDSN_ materials) and — since 16:50Z, `link_uses_authored_tangents` — for a LINKED pack material whose
+        // shader is a tangent-space bump shader (TDSN / CubeOut …: np-tk3's StadiumOnTerrain plate, the RoadBorderSpot); a geom on a
+        // WORLD-PROJECTED PyPxz material (the tiny wall's TrackWallInWorld — its stream carries tangent words too — and the pad's Land)
+        // gets mode 3 and the (1, 0, 0) tangent, as captured on pwc-day
+        let linked_link: Option<String> = usize::try_from(sg.material_index).ok().and_then(|mi| {
             let custom_link = s2.custom_materials.get(mi).and_then(|cm| cm.inst().and_then(|m| m.link().map(|l| l.to_string())));
             let plain_link = s2.materials.get(mi).and_then(|mr| match mr.inline.as_deref() { Some(mapgeom::static_item::Node::Material(m)) => m.link().map(|l| l.to_string()), _ => None });
-            custom_link.or(plain_link).map(|l| !l.is_empty()).unwrap_or(false)
-        }).unwrap_or(false);
+            // a pack prefab's material is an EXTERNAL reference (the link from the reference path); a custom user material WITHOUT a link
+            // (the vegetation's own TDOSN_ / TDSN_ shader models) is not linked at all — it keeps its authored frame
+            let ext_link = externals.and_then(|ex| s2.materials.get(mi).and_then(|r| if r.index >= 0 { ex.iter().find(|(i, _)| *i == r.index as u32).map(|(_, p)| mapgeom::static_item::materials::material_link(p)) } else { None }));
+            custom_link.or(plain_link).or(ext_link).filter(|l| !l.is_empty())
+        });
+        let linked = match &linked_link { Some(l) => !link_uses_authored_tangents(l), None => false };
         let tan_u = if linked { None } else { dec_t(get(mapgeom::static_item::vstream::N_TANGENT_U)) };
         let tan_v = if linked { None } else { dec_t(get(mapgeom::static_item::vstream::N_TANGENT_V)) };
         let base = verts.len() as u16;

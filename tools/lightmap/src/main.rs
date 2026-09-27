@@ -7181,6 +7181,24 @@ fn run(mut a: Vec<String>) {
                 println!("→ {p} (√(v/max) for viewing)");
             }
         }
+        "material-chain" => {
+            // lmtool material-chain --pak FILE:KEY[,…] LINK…: a game material's chain from the packs — parent material, shader, pass flags,
+            // the shader's PreLightGen TexCoordIndex (the LM uv set), the bitmap bindings and the texcoord transforms (E, 2026-09-27: the
+            // H-basis tangent-frame MODE rule — which materials get PSIZE 3 + (1,0,0) and which the authored ±1 frame)
+            let paks: Vec<String> = a.iter().enumerate().filter(|(_, x)| *x == "--pak").filter_map(|(i, _)| a.get(i + 1).cloned()).flat_map(|v| v.split(',').map(|s| s.trim().to_string()).collect::<Vec<_>>()).collect();
+            let mut store = mapgeom::store::DataStore::empty();
+            for spec in &paks { if let Some((pp, key)) = spec.rsplit_once(':') { store.add_pak(pp, key).unwrap_or_else(|e| panic!("--pak {pp}: {e}")); } }
+            let mut skip = false;
+            for (i, l) in a.iter().enumerate().skip(1) {
+                if skip { skip = false; continue; }
+                if l == "--pak" { skip = true; continue; }
+                let mat = if l.to_ascii_uppercase().ends_with(".MATERIAL.GBX") { l.clone() } else { format!("{l}.Material.Gbx") };
+                let ch = mapgeom::envblock::material_chain(&mut store, &mat);
+                let tc = if ch.shader.is_empty() { None } else { store.read(&ch.shader).ok().and_then(|b| lightmap::lmmesh::shader_prelightgen_tc(&b)) };
+                println!("{l}:\n  parent {:?}\n  shader {:?}  flags {:?}  custom {}\n  PreLightGen TexCoordIndex {:?}\n  bitmaps {:?}\n  params {:?}\n  texcoord {:?}", ch.parent_material, ch.shader, ch.flags, ch.has_custom, tc, ch.bitmaps.iter().map(|(n, p)| format!("{n}={p}")).collect::<Vec<_>>(), ch.params.iter().map(|(n, v)| format!("{n}={v:?}")).collect::<Vec<_>>(), ch.texcoord.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>());
+                let _ = i;
+            }
+        }
         "lmmesh-verts" => {
             // lmtool lmmesh-verts MAP --model SUBSTR [--max N]: the LM mesh our builder makes of an embedded item (lmmesh::lm_mesh_of_item) —
             // the solid's geom summary (streams, tangents, psize modes), then every vertex (position, normal, LM uv, PSIZE mode, tangent) and
@@ -7195,7 +7213,32 @@ fn run(mut a: Vec<String>) {
                 let base = name.rsplit(['/', '\\']).next().unwrap_or(name);
                 if !base.contains(want.as_str()) { continue; }
                 println!("== {name} ({} B)", bytes.len());
-                if let Ok(fl) = mapgeom::static_item::file::parse_file(bytes) { if let Some(s2) = fl.item.static_object().and_then(|so| so.solid2()) { for l in lightmap::lmmesh::geom_summary(s2) { println!("  {l}"); } } }
+                if let Ok(fl) = mapgeom::static_item::file::parse_file(bytes) { if let Some(s2) = fl.item.static_object().and_then(|so| so.solid2()) { for l in lightmap::lmmesh::geom_summary(s2) { println!("  {l}"); }
+                    // the RAW tangent streams of every LOD-0 geom (TangentU / TangentV as decoded, before the mode rule)
+                    use mapgeom::static_item::vstream::Elem;
+                    let dec3 = |x: u32| -> [f32; 3] { let f = |s: u32| { let v = ((x >> s) & 0x3ff) as i32; let v = if v >= 512 { v - 1024 } else { v }; v as f32 / 511.0 }; [f(0), f(10), f(20)] };
+                    let dec_t = |e: Option<&Elem>| -> Option<Vec<[f32; 3]>> { match e { Some(Elem::Float4(t)) => Some(t.iter().map(|v| [v[0], v[1], v[2]]).collect()), Some(Elem::Float3(t)) => Some(t.clone()), Some(Elem::Word(w)) => Some(w.iter().map(|&x| dec3(x)).collect()), _ => None } };
+                    for (gi, sg) in s2.shaded_geoms.iter().enumerate() {
+                        if sg.lod_mask != 0 && sg.lod_mask & 1 == 0 { continue; }
+                        let Some(vr) = s2.visuals.get(sg.visual_index as usize) else { continue };
+                        let Some(mapgeom::static_item::Node::Visual(vis)) = vr.inline.as_deref() else { continue };
+                        let Some(st) = vis.stream() else { continue };
+                        let get = |name: u32| st.decls.iter().zip(st.elems.iter()).find(|(d, _)| d.name() == name).map(|(_, e)| e);
+                        let (tu, tv) = (dec_t(get(mapgeom::static_item::vstream::N_TANGENT_U)), dec_t(get(mapgeom::static_item::vstream::N_TANGENT_V)));
+                        let n = dec_t(get(mapgeom::static_item::vstream::N_NORMAL));
+                        println!("  geom {gi} raw streams: TangentU {} / TangentV {} / normal {}", tu.as_ref().map(|v| v.len().to_string()).unwrap_or("none".into()), tv.as_ref().map(|v| v.len().to_string()).unwrap_or("none".into()), n.as_ref().map(|v| v.len().to_string()).unwrap_or("none".into()));
+                        if let (Some(tu), Some(tv)) = (&tu, &tv) {
+                            let mut classes: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+                            for i in 0..tu.len() {
+                                let nn = n.as_ref().and_then(|v| v.get(i)).copied().unwrap_or([0.0, 1.0, 0.0]);
+                                let c = lightmap::geometry::cross(nn, tu[i]);
+                                let h = lightmap::geometry::dot(c, tv[i]);
+                                *classes.entry(format!("tU ({:+.3}, {:+.3}, {:+.3}) tV ({:+.3}, {:+.3}, {:+.3}) n ({:+.3}, {:+.3}, {:+.3}) → PSIZE {}", tu[i][0], tu[i][1], tu[i][2], tv[i][0], tv[i][1], tv[i][2], nn[0], nn[1], nn[2], if h < 0.0 { "-1" } else { "+1" })).or_insert(0) += 1;
+                            }
+                            for (k, v) in &classes { println!("    {v:>4} × {k}"); }
+                        }
+                    }
+                } }
                 match lightmap::lmmesh::lm_mesh_of_item(bytes) {
                     Ok(Some(m)) => {
                         println!("  LM mesh: {} vertices, {} triangles", m.verts.len(), m.indices.len() / 3);
