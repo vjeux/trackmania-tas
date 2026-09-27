@@ -10,7 +10,7 @@
 cell	source	oracle	collection	quality	word	dirs	kept	extra	ceiling
 tiny16-bluebay-sunset-q4	tiny16-fixedlib-source.Map.Gbx	tiny16-fixedlib-q4-editor-reduced.Map.Gbx	BlueBay	4	-	full	tiny16-reduced-kept.txt	-	60
 stpad-stadium-night-nocache-q3	stpad-night-0x199a-source.Map.Gbx	stpad-Stadium-Night-0x199a-q3-editor-nocache.Map.Gbx	Stadium	3	-	full	-	-	60
-tiny03-whiteshore-day-q4	tiny03-WhiteShore-Day-q4-editor-reduced-resaved.Map.Gbx	tiny03-WhiteShore-Day-q4-editor-reduced.Map.Gbx	WhiteShore	4	-	full	-	-	99
+tiny03-whiteshore-day-q4	tiny03-WhiteShore-Day-q4-editor-reduced.Map.Gbx	tiny03-WhiteShore-Day-q4-editor-reduced.Map.Gbx	WhiteShore	4	-	full	tiny03red.kept	-	99
 stpad-stadium-sunrise-0x5148-q3	stpad-source.Map.Gbx	stpad-Stadium-Sunrise-q3-editor.Map.Gbx	Stadium	3	-	full	-	-	60
 tiny04ac-greencoast-day-q4	tiny04ac-GreenCoast-Day-q4-editor.Map.Gbx	tiny04ac-GreenCoast-Day-q4-editor.Map.Gbx	GreenCoast	4	-	full	-	-	99
 stpad-stadium-day-0x8111-q3	stpad-source.Map.Gbx	stpad-Stadium-Day-0x8111-q3-editor.Map.Gbx	Stadium	3	0x8111	full	-	-	60
