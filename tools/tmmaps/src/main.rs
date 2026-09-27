@@ -282,7 +282,11 @@ fn main() {
                     if !flat.to_ascii_lowercase().ends_with(".item.gbx") && !flat.to_ascii_lowercase().ends_with(".block.gbx") { continue; }
                     let f = dir.join(&flat);
                     std::fs::write(&f, &bytes).expect("write");
-                    let out = std::process::Command::new(mg).args(&paks).arg("dump").arg(&f).output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+                    // an embedded item's hull dump needs no pack (`mapgeom dump F --no-pak`: the
+                    // hull is in the item file; verified identical output, 2026-09-26): with the
+                    // pack every dump paid a 1.8 s pack load — a 1 000-item Tiny map
+                    // fingerprinted in 2 min 18 s, ~5 ms per item without it
+                    let out = std::process::Command::new(mg).arg("dump").arg(&f).arg("--no-pak").output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
                     let ids: Vec<String> = out.lines().filter(|l| l.contains("CPlugSurface")).map(|l| l.split("ids ").nth(1).unwrap_or("").trim().to_string()).collect();
                     hulls.insert(flat.to_ascii_lowercase(), if ids.is_empty() { "nohull".into() } else { ids.join(" | ") });
                 }

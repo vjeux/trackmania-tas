@@ -141,6 +141,13 @@ fn parse_args() -> Args {
 }
 
 fn open(a: &Args) -> DataStore {
+    // `--no-pak`: an EMPTY store for a command whose subject is a local file that carries
+    // everything it needs (`dump` of an embedded item's hull, `tmmaps physfp`): the pack
+    // load is 1.5–1.8 s of I/O per process — 75 item dumps per Tiny map made a fingerprint
+    // cost 2 min 18 s (2026-09-26). A model lookup through the empty store fails loudly.
+    if a.rest.iter().any(|x| x == "--no-pak") {
+        return DataStore::empty();
+    }
     if !a.paks.is_empty() {
         let mut store = DataStore::empty();
         for spec in &a.paks {
