@@ -573,14 +573,15 @@ fn report(args: &[String], cells: &[Cell]) -> Result<(), String> {
         let verdict = if warn > 0 { format!("{verdict} · ⚠ {warn} 'not in any pack'") } else { verdict };
         let head = format!("{} B / {} rec / {} fr", f0["head_ours"][0], f0["head_ours"][1], f0["head_ours"][2]);
         let head_ok = f0["head_ours"] == f0["head_theirs"];
-        // vs the previous tip
+        // vs the previous tip(s): --against A,B,C — the first listed tip that holds a run of THIS cell is its previous
+        let prev_hit: Option<(String, serde_json::Value)> = against.as_ref().and_then(|list| list.split(',').map(|t| t.trim()).filter(|t| !t.is_empty()).find_map(|t| load_metrics(&work, t, &c.name).map(|p| (t.to_string(), p))));
         let prev_col = match &against {
             None => String::new(),
-            Some(prev) => match load_metrics(&work, prev, &c.name) {
+            Some(_) => match prev_hit {
                 None => "no previous run".to_string(),
-                Some(p) if !p["ok"].as_bool().unwrap_or(false) => "previous FAILED".to_string(),
-                Some(p) => {
-                    if p["md5"] == m["md5"] { "same bytes".to_string() } else {
+                Some((_, p)) if !p["ok"].as_bool().unwrap_or(false) => "previous FAILED".to_string(),
+                Some((ptip, p)) => {
+                    if p["md5"] == m["md5"] { format!("same bytes (vs {ptip})") } else {
                         n_moved += 1;
                         let mut moves: Vec<String> = Vec::new();
                         for (fi, fr) in [(0usize, f0), (1usize, f1)] {
@@ -605,8 +606,8 @@ fn report(args: &[String], cells: &[Cell]) -> Result<(), String> {
                         if m["planes"]["fb_differs"] != p["planes"]["fb_differs"] { moves.push(format!("fb-differs charts {} → {}", p["planes"]["fb_differs"], m["planes"]["fb_differs"])); }
                         if let (Some(a), Some(b)) = (m["planes"]["planes"].as_array(), p["planes"]["planes"].as_array()) { for (x, y) in a.iter().zip(b.iter()) { if x["tiles_identity_pct"] != y["tiles_identity_pct"] || x["items_identity_pct"] != y["items_identity_pct"] { moves.push(format!("plane {} tiles/items identity {}/{} → {}/{}", x["plane"].as_str().unwrap_or("?"), y["tiles_identity_pct"], y["items_identity_pct"], x["tiles_identity_pct"], x["items_identity_pct"])); } } }
                         if moves.is_empty() { moves.push("bytes differ, every metric equal (a probe / trailer / f16-tail change?)".into()); }
-                        moved_detail += &format!("- **{}**: {}\n", c.name, moves.join("; "));
-                        format!("**MOVED** ({} lines)", moves.len())
+                        moved_detail += &format!("- **{}** (vs {ptip}): {}\n", c.name, moves.join("; "));
+                        format!("**MOVED** vs {ptip} ({} lines)", moves.len())
                     }
                 }
             },
