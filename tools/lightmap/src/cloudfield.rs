@@ -230,6 +230,94 @@ pub fn match_captured(solids: &[CloudSolid], sprites: &[CapturedSprite]) -> Opti
 /// system from the packs (the 16 solids' trees: sprite counts, bboxes, cells), the mood's params, and — with a capture — every
 /// cloud instance of the frame's first peel camera matched to its (solid, tree) with the kept / total sprite count, the atlas-cell
 /// check and the instance table (tile, y, tree, the tree's centroid / bbox centre and its distances from the origin).
+/// THE GENERATOR — RE 14's read A (NOTES 17:00Z; CSceneCloudSystem BUILD FUN_140838ea0 / UPDATE FUN_140839b00) with the data's
+/// parity: an 8 × 8 grid of `tile`-metre tiles centred on the world origin, tile (c, r) at origin ((c − 4)·tile, 0, (r − 4)·tile)
+/// plus the wind DRIFT (the tiles translate every frame, wrapped over the 8·tile period — pwc-day's grid sits 3 000 m off in z), the
+/// solid of tile (c, r) = solids[c + 8·((r + 1) & 1)] (VERIFIED on pwc-day: r = 4 (even) → Cloudy10 / 14 / 15 at c = 0 / 4 / 5 =
+/// indices 8 / 12 / 13; r = 3 (odd) → Cloudy06 / 07 at c = 4 / 5 = indices 4 / 5 — RE 14 wrote the parity the other way round),
+/// ONE instance per tree of the solid, visible iff the horizontal distance of the tree's point from the params' centre ≤
+/// `radius` (q·sys+0xbc·√2), altitude by the (d_key, y) table walk (y_lo = the params' y at d = 0, y past the last key = the params'
+/// far y, the last span ends at `radius`) — the table's live meaning is still open (the 177 samples read 3 000 → ≈ 2 100 at
+/// 36–40 km → ≈ 2 500 at 90 km: `altitude` is data, not a fit; a caller may override it).
+#[derive(Clone, Debug)]
+pub struct Instance {
+    pub tile: (i32, i32),
+    pub solid: usize,
+    pub tree: usize,
+    /// VisualToWorld's translation: (tile origin + drift).x, the altitude, (tile origin + drift).z.
+    pub t: [f32; 3],
+}
+
+#[derive(Clone, Debug)]
+pub struct Generator {
+    /// The tile period (x, z) from chunk 0x09183001.
+    pub tile: [f32; 2],
+    /// The accumulated wind translation of the grid (metres), wrapped to the 8·tile period.
+    pub drift: [f32; 2],
+    /// The distance reference (params +0x1c/+0x20 when +0x18 ≠ 0, else the origin).
+    pub centre: [f32; 2],
+    /// The visibility radius: q · sys+0xbc · √2.
+    pub radius: f32,
+    /// The altitude table (d_key, y) in key order, plus the params' y at d = 0 and past the last key.
+    pub table: Vec<(f32, f32)>,
+    pub y_near: f32,
+    pub y_far: f32,
+}
+
+impl Generator {
+    /// From a mood's params as stored: chunk 0x09182001 = the (key, y) pairs (a_word pairs), 0x09182002 = {…, centre x, centre z,
+    /// y_near, y_far, wind, …}; the visibility radius is the caller's (q · R · √2 — R = sys+0xbc, 64 000 on the capture's grid).
+    pub fn from_params(fc: &FuncClouds, p: &FuncCloudsParam, radius: f32, drift: [f32; 2]) -> Generator {
+        let mut table = Vec::new();
+        for k in 0..(p.a_word as usize).min(2) { table.push((p.a[2 * k], p.a[2 * k + 1])); }
+        let use_centre = p.b_words[1] != 0;
+        Generator { tile: fc.tile, drift, centre: if use_centre { [p.b[0], p.b[1]] } else { [0.0, 0.0] }, radius, table, y_near: p.b[2], y_far: p.b[3] }
+    }
+
+    /// RE 14's table walk: y_lo = y_near at d_lo = 0; every pair with key ≤ d moves (d_lo, y_lo); the first key > d is (d_hi, y_hi),
+    /// else (radius, y_far); linear between (t = 1 when the span is < 1e-9).
+    pub fn altitude(&self, d: f32) -> f32 {
+        let (mut d_lo, mut y_lo) = (0.0f32, self.y_near);
+        let (mut d_hi, mut y_hi) = (self.radius, self.y_far);
+        for &(k, y) in &self.table {
+            if k <= d { d_lo = k; y_lo = y; } else { d_hi = k; y_hi = y; break; }
+        }
+        let span = d_hi - d_lo;
+        let t = if span < 1e-9 { 1.0 } else { ((d - d_lo) / span).clamp(0.0, 1.0) };
+        y_lo + (y_hi - y_lo) * t
+    }
+
+    /// The instances of the field: `point(solid, tree)` gives the per-tree point the distance rule measures (RE 14: tree+0x88..;
+    /// the bbox centre is the proxy the data supports).
+    pub fn instances(&self, solids: &[CloudSolid], point: &dyn Fn(usize, usize) -> [f32; 3]) -> Vec<Instance> {
+        let period = [self.tile[0] * 8.0, self.tile[1] * 8.0];
+        let wrap = |v: f32, p: f32| -> f32 { let mut w = v; while w < -p * 0.5 { w += p; } while w >= p * 0.5 { w -= p; } w };
+        let mut out = Vec::new();
+        for r in 0..8i32 {
+            for c in 0..8i32 {
+                let si = (c + 8 * ((r + 1) & 1)) as usize;
+                let Some(s) = solids.get(si) else { continue };
+                let ox = wrap((c - 4) as f32 * self.tile[0] + self.drift[0], period[0]);
+                let oz = wrap((r - 4) as f32 * self.tile[1] + self.drift[1], period[1]);
+                for (ti, _) in s.trees.iter().enumerate() {
+                    let p = point(si, ti);
+                    let d = ((ox + p[0] - self.centre[0]).powi(2) + (oz + p[2] - self.centre[1]).powi(2)).sqrt();
+                    if d > self.radius { continue; }
+                    out.push(Instance { tile: (c, r), solid: si, tree: ti, t: [ox, self.altitude(d), oz] });
+                }
+            }
+        }
+        out
+    }
+}
+
+/// The sprite-list bbox centre of a tree (the per-tree point the data supports for the distance rule).
+pub fn tree_bbox_centre(s: &CloudSolid, tree: usize) -> [f32; 3] {
+    let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+    for d in &s.trees[tree].1 { for k in 0..3 { lo[k] = lo[k].min(d.pos[k]); hi[k] = hi[k].max(d.pos[k]); } }
+    [(lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5, (lo[2] + hi[2]) * 0.5]
+}
+
 pub fn cli(args: &[String]) -> Result<(), String> {
     let f = |k: &str| args.iter().position(|x| x == k).and_then(|i| args.get(i + 1)).cloned();
     let verbose = args.iter().any(|x| x == "--verbose");
@@ -278,6 +366,7 @@ pub fn cli(args: &[String]) -> Result<(), String> {
         let mut cell_bad = 0usize;
         let mut per_solid = vec![0usize; solids.len()];
         let mut rows: Vec<(i64, i64, f32, String)> = Vec::new();
+        let mut matched_inst: Vec<([f32; 3], usize, usize)> = Vec::new();
         for d in draws.iter().filter(|d| d["Vertex"]["shader"].as_str() == Some("14514")) {
             let eye = d["Vertex"]["cbuffers"]["SceneV"]["GbxV_EyeInWorld"].clone();
             match &first_eye { None => first_eye = Some(eye.clone()), Some(e) if *e != eye => continue, _ => {} }
@@ -317,6 +406,7 @@ pub fn cli(args: &[String]) -> Result<(), String> {
             };
             if verbose { println!("  eid {eid}: T ({:.0}, {:.1}, {:.0}) {} sprites → {label}", tr[0], tr[1], tr[2], sprites.len()); }
             rows.push((tr[0] as i64, tr[2] as i64, tr[1], label));
+            if let Some((si, ti, _, _)) = mm { matched_inst.push((tr, si, ti)); }
         }
         println!("capture {}: frame {frame}, first camera eye {:?}: {n} instances, {n_matched} matched to a (solid, tree) with every sprite ({n_kept} of their lists' sprites kept, {n_sprites} captured); atlas cells {cell_ok} agree / {cell_bad} disagree; instances per solid {:?}", root.display(), first_eye, per_solid);
         rows.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)).then(a.2.partial_cmp(&b.2).unwrap()));
@@ -324,6 +414,39 @@ pub fn cli(args: &[String]) -> Result<(), String> {
         for (x, z, y, l) in &rows {
             if (*x, *z) != last { println!("  tile ({x}, {z}):"); last = (*x, *z); }
             println!("    y {y:.1}  {l}");
+        }
+        // THE GENERATOR AGAINST THE CAPTURE: the drift = the captured tile origins' offset from the un-drifted grid (one value per
+        // axis, taken from the origin nearest the eye), the radius = the largest captured distance rounded up to the rule's
+        // q·R·√2 candidates; then every captured (tile, solid, tree) must be generated with the same tile origin, and the
+        // generated set must not hold instances the capture lacks (the visibility rule) — the altitudes are compared as a
+        // residual table (the live altitude reading is open).
+        if !matched_inst.is_empty() {
+            let (coll, mood) = (f("--collection").unwrap_or_else(|| "BlueBay".into()), f("--mood").unwrap_or_else(|| "Day".into()));
+            let p = load_param(&mut store, &coll, &mood)?;
+            let tile = fc.tile;
+            let near = |v: f32, t: f32| -> f32 { v - (v / t).round() * t };
+            let drift = [near(matched_inst[0].0[0], tile[0]), near(matched_inst[0].0[2], tile[1])];
+            let centre = if p.b_words[1] != 0 { [p.b[0], p.b[1]] } else { [0.0, 0.0] };
+            let d_of = |t: &[f32; 3], si: usize, ti: usize| -> f32 { let bc = tree_bbox_centre(&solids[si], ti); ((t[0] + bc[0] - centre[0]).powi(2) + (t[2] + bc[2] - centre[1]).powi(2)).sqrt() };
+            let d_cap_max = matched_inst.iter().map(|(t, si, ti)| d_of(t, *si, *ti)).fold(0.0f32, f32::max);
+            let r_grid = tile[0] * 4.0;
+            let radius = [1.0f32, 0.7, 0.5, 0.4].iter().map(|q| q * r_grid * 2f32.sqrt()).filter(|r| *r >= d_cap_max).fold(f32::MAX, f32::min);
+            let g = Generator::from_params(&fc, &p, radius, drift);
+            let gen = g.instances(&solids, &|si, ti| tree_bbox_centre(&solids[si], ti));
+            let mut hit = 0usize;
+            let mut miss: Vec<String> = Vec::new();
+            let mut dy: Vec<f32> = Vec::new();
+            for (t, si, ti) in &matched_inst {
+                match gen.iter().find(|g| g.solid == *si && g.tree == *ti && (g.t[0] - t[0]).abs() < 1.0 && (g.t[2] - t[2]).abs() < 1.0) {
+                    Some(gi) => { hit += 1; dy.push(gi.t[1] - t[1]); }
+                    None => miss.push(format!("({:.0}, {:.0}) {}/{}", t[0], t[2], solids[*si].path.rsplit('\\').next().unwrap_or(""), solids[*si].trees[*ti].0)),
+                }
+            }
+            let extra = gen.iter().filter(|g| !matched_inst.iter().any(|(t, si, ti)| g.solid == *si && g.tree == *ti && (g.t[0] - t[0]).abs() < 1.0 && (g.t[2] - t[2]).abs() < 1.0)).count();
+            dy.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            println!("generator vs capture ({coll} {mood}; drift ({:.0}, {:.0}) m, centre ({:.0}, {:.0}), radius {radius:.0} = q·{r_grid:.0}·√2, captured d max {d_cap_max:.0}): {} generated; {hit}/{} captured instances generated at the same tile with the same (solid, tree); {} captured NOT generated{}; {extra} generated the capture lacks (visibility rule); altitude residual (generated − captured) median {:.0} m, range {:.0}…{:.0} (the table's live reading is open)",
+                drift[0], drift[1], centre[0], centre[1], gen.len(), matched_inst.len(), miss.len(), if miss.is_empty() { String::new() } else { format!(": {}", miss.iter().take(8).cloned().collect::<Vec<_>>().join("; ")) },
+                dy.get(dy.len() / 2).copied().unwrap_or(0.0), dy.first().copied().unwrap_or(0.0), dy.last().copied().unwrap_or(0.0));
         }
     }
     Ok(())

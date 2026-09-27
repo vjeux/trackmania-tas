@@ -5096,6 +5096,14 @@ fn run(mut a: Vec<String>) {
                     println!("  channel {c} histogram (16 bins over 0..{top:.4}): {bins:?}");
                 }
             }
+            // --map: the rect as an ASCII map of the first channel's value in 10 steps of its max ('.' = zero, '0'..'9')
+            if a.iter().any(|x| x == "--map") {
+                let top = mx[0].max(1e-9);
+                for y in y0..y1 {
+                    let row: String = (x0..x1).map(|x| { let v = b.get(x, y, 0); if v == 0.0 { '.' } else { char::from_digit(((v / top) * 9.999).floor().clamp(0.0, 9.0) as u32, 10).unwrap() } }).collect();
+                    println!("  {y:4} {row}");
+                }
+            }
         }
         "dds-mean" => {
             // lmtool dds-mean FILE.dds [--level L] : per-channel mean of one mip level, as stored (0..1) and sRGB-decoded to linear
