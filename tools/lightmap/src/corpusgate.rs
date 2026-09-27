@@ -156,7 +156,7 @@ pub fn md5_hex(data: &[u8]) -> String {
 
 // ---------------------------------------------------------------- the metrics of one baked cell against its oracle
 fn frame_metrics(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLightmap, records: Option<&[crate::classcmp::RecRow]>, frame: usize) -> Result<serde_json::Value, String> {
-    let mut o = crate::classcmp::Options { frame, lit: 8, by: crate::classcmp::GroupBy::Class, worst: 0, own_rects: false };
+    let mut o = crate::classcmp::Options { frame, lit: 8, by: crate::classcmp::GroupBy::Class, worst: 0, own_rects: false, lit_hdr: None };
     // two layouts that differ (chart counts, a giant's numbering) are compared by (obj, sub) with each side's own rects —
     // the identity columns are then void and say so
     let r = match crate::classcmp::compare(ours, theirs, records, &o) {
