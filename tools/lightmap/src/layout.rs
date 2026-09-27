@@ -493,8 +493,19 @@ pub fn for_map(map_path: &str, scene: &crate::geometry::Scene, base: u32, qualit
         // Modifier\PlatformDirt\DecalPlatform — get no record either: a DECAL material takes no lightmap set. Both are stand-ins
         // for the compiled material's lightmap texcoord index; LMTOOL_NO_LM_MATERIALS=a,b,… overrides the substrings.)
         let no_lm: Vec<String> = std::env::var("LMTOOL_NO_LM_MATERIALS").map(|v| v.split(',').map(|t| t.to_string()).collect()).unwrap_or_else(|_| vec!["RaceTriggerFX".into(), "\\Decal".into()]);
-        let fx_only = !m.mat_links.is_empty() && m.mat_links.iter().all(|l| no_lm.iter().any(|n| l.contains(n.as_str())));
+        // the compiled material's answer first (lmmesh::lm_uv_index_cached — the shader's PreLightGen binding through the bake's
+        // pack store, RE 11): `Some(None)` = a link known NOT to be lightmapped; the name substrings stay the fallback for links
+        // the store cannot resolve (F 2026-09-27: g23's four AC06423108 = Stadium\Media\Modifier\Reset\TriggerFX, which the editor
+        // gives no chart and "RaceTriggerFX" does not match)
+        let link_no_lm = |l: &str| -> bool { matches!(crate::lmmesh::lm_uv_index_cached(l), Some(None)) || no_lm.iter().any(|n| l.contains(n.as_str())) };
+        let fx_only = !m.mat_links.is_empty() && m.mat_links.iter().all(|l| link_no_lm(l));
         if fx_only { return false; }
+        // the game's second condition (itemrule::lm_geometry_nonempty, FUN_14020e7b0): a LOD-0 geom whose material takes a
+        // lightmap set AND whose visual carries it — an item of TEXCOORD0-only visuals (g23's AC06423108 = Reset\TriggerFX,
+        // tiny 16's RaceTriggerFXFinish) has no record whatever its PreLightGen says. LMTOOL_RECORD_IGNORE_LM_UVS=1 = the old
+        // form (the PreLightGen bounds alone).
+        if m.lm_uv_geoms == 0 && std::env::var_os("LMTOOL_RECORD_IGNORE_LM_UVS").is_none() { return false; }
+        if let Ok(t) = std::env::var("LMTOOL_RECORD_TRACE") { if inst.model_name.contains(t.as_str()) { eprintln!("record trace: item {} {}: mat_links {:?}, lm_uv_geoms {}, plg_bounds {:?}, plg_u02 {}, tris {}, fx_only {fx_only}", inst.item, inst.model_name, m.mat_links, m.lm_uv_geoms, m.plg_bounds, m.plg_u02, m.tris.len()); } }
         match m.plg_bounds { Some(b) => b[2] > b[0] && b[3] > b[1], None => false }
     };
     let record_instances: Vec<&crate::geometry::Instance> = scene.instances.iter().filter(|i| is_record(i)).collect();
@@ -530,7 +541,7 @@ pub fn for_map(map_path: &str, scene: &crate::geometry::Scene, base: u32, qualit
         }
         for inst in &record_instances {
             let q = item_quality(inst.lm_quality);
-            groups.push(((inst.model as u64) << 32) | q.to_bits() as u64);
+            groups.push(isolate_group_key(((inst.model as u64) << 32) | q.to_bits() as u64, base + inst.item as u32));
         }
         allocate_grouped(&input, &groups)?
     };
@@ -686,7 +697,13 @@ pub fn allocate_grouped_walls(input: &LayoutInput, groups: &[u64], pos: Option<&
     // identity before its single stable pass by the f32 bits of area → (area bits ascending, then model-list index); the
     // (z, y, x, |h|²) passes exist only when every record is its own entry — there `walk_order` (the same result up to the
     // tie rule, which the per-record maps need: LMTOOL_LAYOUT_PER_RECORD keeps that path)
-    let areas: Vec<f32> = (0..charts.len()).map(|i| ((dims[i].0 * dims[i].1) as f32 * exts[first_member[i].unwrap()][1]) * exts[first_member[i].unwrap()][0]).collect();
+    // THE ENTRY AREA area' = (float)(int)(nb·na) × (ey·ex) — count × the entry's +8 area (FUN_140294220 asm 0x1402942a0–de: the
+    // ey·ex product first, the IMUL count converted, one multiply; RE 14 2026-09-27 18:20Z, retracting RE 7's left-associated
+    // print ((n·ey)·ex)). The order matters: giant20x2 has five 3 072-m² item entries an ulp apart (0x45400000..04) and the
+    // editor places them in THIS product's order (F: 16 348 → 16 381 same rects). LMTOOL_AREA_FORMULA (study): 0 = RE 7's
+    // ((n·ey)·ex), 1 = ((n·ex)·ey), 2 (default) = n·(ey·ex).
+    let area_formula: u8 = std::env::var("LMTOOL_AREA_FORMULA").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
+    let areas: Vec<f32> = (0..charts.len()).map(|i| { let n = ((dims[i].0 * dims[i].1) as i32) as f32; let e = exts[first_member[i].unwrap()]; match area_formula { 0 => (n * e[1]) * e[0], 1 => (n * e[0]) * e[1], _ => n * (e[1] * e[0]) } }).collect();
     let order = if entries.len() == n { walk_order(&charts, &ekeys) } else {
         match std::env::var("LMTOOL_GROUP_TIE").ok().as_deref() {
             // the study: ties by the first member's record index / by the smallest member record index / by the Morton-first member
@@ -699,8 +716,8 @@ pub fn allocate_grouped_walls(input: &LayoutInput, groups: &[u64], pos: Option<&
     // TotalLmSurfaceMeter: the f32 sum of the entry areas along the ascending-area radix order (ties by index)
     let sum_area = {
         let mut idx: Vec<usize> = (0..charts.len()).collect();
-        idx.sort_by(|&p, &q| fcmp(charts[p].ext[0] * charts[p].ext[1], charts[q].ext[0] * charts[q].ext[1]).then(p.cmp(&q)));
-        idx.iter().fold(0f32, |acc, &i| acc + ((dims[i].0 * dims[i].1) as f32 * exts[first_member[i].unwrap()][1]) * exts[first_member[i].unwrap()][0])
+        idx.sort_by_key(|&i| (areas[i].to_bits(), i));
+        idx.iter().fold(0f32, |acc, &i| acc + areas[i])
     };
     crate::pack::SUM_AREA_OVERRIDE.store(sum_area.to_bits(), std::sync::atomic::Ordering::Relaxed);
     let res = crate::pack::allocate_ordered(&charts, &order, input.w_atlas, input.w_atlas, g, m, max_iter);
@@ -738,4 +755,37 @@ pub fn allocate_grouped_walls(input: &LayoutInput, groups: &[u64], pos: Option<&
     WALK_POS.with(|w| *w.borrow_mut() = walk_pos.clone());
     let centres: Vec<[f32; 3]> = keys.iter().map(|k| k.centre).collect();
     Ok(GameLayout { charts: out, s, sum_area, w_atlas: input.w_atlas, params: (g, pad, m), max_iter, cell_of: Vec::new(), tile_quality: Vec::new(), entries: entry_out, entry_keys, centres, records: Vec::new() })
+}
+
+/// LMTOOL_LAYOUT_ISOLATE=o[,o…] with tokens `o` or `a..b` — OBJECT IDS (the bind word's obj: item base + item index), a STUDY
+/// knob (F 2026-09-27, default off): the records of a token take a SECOND GENERATION of their (model, q) group key — a range's
+/// records of one model form one new group created at the range's first record, a single record its own one-record entry.
+/// It reproduces what the editor did on the two giants: giant20x2 isolates objs 28640..28642 (items 1832–1834, the first
+/// placement of a trio) and 30557 (item 3749) → Σ 5 223 011.5 = the file's, 16 381/16 381 rects; g23 the run 70275..70316
+/// (items 5759–5800: 36 AI06423056 + 4 AI06423057 placements) and the trios 73918..73920, 74349..74351. RE 14 (18:20Z): the
+/// hash key is the CHmsItem's CPlugSolid POINTER — a contiguous run of placements bound to a second solid object of the same
+/// model is an instantiation / heap-order effect of the editor session, not derivable from the file. Off by default.
+/// Returns the group key with the generation folded into its top byte (a plain key = generation 0).
+pub fn isolate_group_key(group: u64, obj: u32) -> u64 {
+    static RANGES: std::sync::LazyLock<Vec<(u32, u32)>> = std::sync::LazyLock::new(|| {
+        std::env::var("LMTOOL_LAYOUT_ISOLATE")
+            .ok()
+            .map(|v| {
+                v.split(',')
+                    .filter_map(|t| {
+                        let t = t.trim();
+                        if let Some((a, b)) = t.split_once("..") {
+                            Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
+                        } else {
+                            let k: u32 = t.parse().ok()?;
+                            Some((k, k))
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    });
+    // every token is the same second generation: the records of one model inside any of the ranges share one new group (g23's
+    // AI06423056 run is cut in three by two other models' placements inside it)
+    if RANGES.iter().any(|&(a, b)| obj >= a && obj <= b) { group ^ (1u64 << 56) } else { group }
 }

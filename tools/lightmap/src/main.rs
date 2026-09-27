@@ -1950,14 +1950,15 @@ fn run(mut a: Vec<String>) {
                 if let Some(p) = f("--layout-tsv") {
                     use std::io::Write;
                     let mut fh = std::fs::File::create(&p).expect("--layout-tsv");
-                    writeln!(fh, "chart\tclass\tobj\tx\ty\tw\th\text_x\text_y\tentry\tentry_rect\tnb\tna\tord").unwrap();
+                    writeln!(fh, "chart\tclass\tobj\tx\ty\tw\th\text_x\text_y\tentry\tentry_rect\tnb\tna\tord\tsub\tname\twalk\tarea").unwrap();
+                    let walk_pos: Vec<usize> = lightmap::layout::WALK_POS.with(|w| w.borrow().clone());
                     let mut entry_of: Vec<(usize, u32)> = vec![(usize::MAX, 0); gl.charts.len()];
                     for (ei, (_, _, members)) in gl.entries.iter().enumerate() { for (k, o) in members { entry_of[*k] = (ei, *o); } }
                     for (k, c) in gl.charts.iter().enumerate() {
                         let r = &gl.records[k];
                         let (ei, o) = entry_of[k];
                         let (er, dims) = if ei != usize::MAX { let e = &gl.entries[ei]; (format!("{:?}", e.0), e.1) } else { (String::from("-"), (0, 0)) };
-                        writeln!(fh, "{k}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{ei}\t{er}\t{}\t{}\t{o}", r.class, c.obj, c.x, c.y, c.w, c.h, c.ext[0], c.ext[1], dims.0, dims.1).unwrap();
+                        writeln!(fh, "{k}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{ei}\t{er}\t{}\t{}\t{o}\t{}\t{}\t{}\t{}", r.class, c.obj, c.x, c.y, c.w, c.h, c.ext[0], c.ext[1], dims.0, dims.1, r.sub, if let Some((_, s)) = &r.item { s.split(' ').next().unwrap_or(s).rsplit('\\').next().unwrap_or(s).to_string() } else if let Some(mr) = &r.mesh { format!("{}#{}", mr.prefab.rsplit('\\').next().unwrap_or(&mr.prefab), mr.entity) } else { r.class.to_string() }, if ei != usize::MAX { walk_pos.get(ei).map(|w| w.to_string()).unwrap_or_default() } else { String::new() }, if ei != usize::MAX { gl.entry_keys.get(ei).map(|k| format!("{:#010x}", k.2.to_bits())).unwrap_or_default() } else { String::new() }).unwrap();
                     }
                     eprintln!("layout table: {} rows → {p}; s {}", gl.charts.len(), gl.s);
                     return;
@@ -6622,6 +6623,17 @@ fn run(mut a: Vec<String>) {
             }
             lightmap::sweep::print_rows(&rows);
         }
+        "lmuv" => {
+            // lmtool lmuv --pak FILE:KEY… LINK…: the LM uv-set selector's answer per material link (lmmesh::lm_uv_index_cached through
+            // the given packs) — Some(idx) lightmapped through TEXCOORD[idx], None not lightmapped, unknown = unresolvable
+            let mut st = mapgeom::store::DataStore::empty();
+            let mut links: Vec<String> = Vec::new();
+            let mut i = 1;
+            while i < a.len() { if a[i] == "--pak" { if let Some((pp, key)) = a.get(i + 1).and_then(|v| v.rsplit_once(':')) { st.add_pak(pp, key).unwrap_or_else(|e| panic!("--pak {pp}: {e}")); } i += 2; } else { links.push(a[i].clone()); i += 1; } }
+            lightmap::lmmesh::set_lm_uv_store(st);
+            for l in &links { println!("{l}: {:?}", lightmap::lmmesh::lm_uv_index_cached(l)); }
+        }
+        "layoutcmp" => { if let Err(e) = lightmap::layoutcmp::run(&a) { eprintln!("layoutcmp: {e}"); std::process::exit(1); } }
         "texeldelta" => {
             // lmtool texeldelta OURS.Map.Gbx --against EDITOR.Map.Gbx [--records TSV] [--frame 0] [--png PREFIX] [--worst N] [--min-texels 64]:
             // the per-texel stored-byte residue by ring / class / sign / editor byte / plane (texeldelta.rs) + the worst chart's contact sheet

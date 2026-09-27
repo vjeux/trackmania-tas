@@ -172,7 +172,7 @@ pub fn match_dump(ours: &[Rec], dump: &[DumpRec]) -> Vec<Option<usize>> {
 /// LayoutInput in record order, its key the record box (centre, |h|²), its group the record's.
 pub fn layout_of(recs: &[Rec], quality_index: u32) -> Result<crate::layout::GameLayout, String> {
     let items: Vec<(u32, [f32; 2], crate::layout::ChartKey, crate::layout::Charted)> = recs.iter().enumerate().map(|(i, r)| (i as u32, r.ext(), crate::layout::ChartKey { centre: r.key_centre.unwrap_or(r.centre), h2: (r.half[0] * r.half[0] + r.half[1] * r.half[1]) + r.half[2] * r.half[2] }, crate::layout::Charted::Bound)).collect();
-    let groups: Vec<u64> = recs.iter().map(|r| r.group).collect();
+    let groups: Vec<u64> = recs.iter().map(|r| crate::layout::isolate_group_key(r.group, r.obj)).collect();
     let any_pos = recs.iter().any(|r| r.pos_rank.is_some());
     let pos: Vec<u32> = recs.iter().enumerate().map(|(i, r)| r.pos_rank.unwrap_or(i as u32)).collect();
     let walls: Vec<Option<(u8, f32)>> = recs.iter().map(|r| if std::env::var("LMTOOL_NO_WALLS").is_ok() { None } else { r.wall }).collect();
@@ -624,7 +624,11 @@ pub fn build_map_records(map_path: &str, scene: &crate::geometry::Scene, store: 
             let m = &scene.models[inst.model];
             let Some(b) = m.plg_bounds else { if filter_trace { eprintln!("item-filter: item {ii} {} skipped: no PLG bounds; materials {:?}", it.model, m.mat_links); } continue };
             if !(b[2] > b[0] && b[3] > b[1]) { if filter_trace { eprintln!("item-filter: item {ii} {} skipped: empty PLG bounds {b:?}; materials {:?}", it.model, m.mat_links); } continue; }
-            if !m.mat_links.is_empty() && m.mat_links.iter().all(|l| no_lm.iter().any(|n| l.contains(n.as_str()))) { if filter_trace { eprintln!("item-filter: item {ii} {} skipped: every material is no-LM {:?}", it.model, m.mat_links); } continue; }
+            // the compiled material's own answer first (lmmesh::lm_uv_index_cached — the shader's PreLightGen binding through the bake's pack
+            // store, RE 11; `Some(None)` = known not lightmapped), the name substrings as the fallback for links the store cannot resolve
+            // (F 2026-09-27: g23's four AC06423108 placements = Stadium\Media\Modifier\Reset\TriggerFX, chartless in the editor's bake)
+            let link_no_lm = |l: &str| -> bool { matches!(crate::lmmesh::lm_uv_index_cached(l), Some(None)) || no_lm.iter().any(|n| l.contains(n.as_str())) };
+            if !m.mat_links.is_empty() && m.mat_links.iter().all(|l| link_no_lm(l)) { if filter_trace { eprintln!("item-filter: item {ii} {} skipped: every material is no-LM {:?}", it.model, m.mat_links); } continue; }
             if filter_trace && std::env::var_os("LMTOOL_ITEM_FILTER_TRACE_ALL").is_some() { eprintln!("item-filter: item {ii} {} kept; materials {:?}", it.model, m.mat_links); }
             let Some(ir) = irecs.iter().find(|r| r.item == inst.item) else { if filter_trace { eprintln!("item-filter: item {ii} {} skipped: no item record", it.model); } continue };
             let Some(rec) = &ir.record else { if filter_trace { eprintln!("item-filter: item {ii} {} skipped: item record without a box", it.model); } continue };

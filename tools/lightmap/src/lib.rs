@@ -53,6 +53,7 @@ pub mod shadowmap;
 pub mod domecheck;
 pub mod dxbc;
 pub mod layout;
+pub mod layoutcmp;
 pub mod records;
 pub mod lmmesh;
 pub mod lightcam;
