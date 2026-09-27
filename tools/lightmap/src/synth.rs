@@ -655,15 +655,16 @@ pub fn build_transcribed(placed: &[(u32, u32, u32, u32, u32, u32)], bbox: ([f32;
     if !patch_record_scales(&mut mapping.head, img.hbasis234, img.lambient_f16) {
         return Err("transcribed writer: the mapping head has no frame record (−FLT_MAX word)".into());
     }
-    // the local-light frame's record: MaxHDR = its image max (patch_frame_records wrote the black frame's 1e-5) when lamps rendered;
-    // WHEN NO LAMP RENDERED the record KEEPS FRAME 0's MaxHDR (RE 13, 2026-09-26 23:10Z: the per-frame records are built from one
-    // template and the MaxHDR write — FUN_14022b370, rec+0xc — never lands for the empty image, so the Storage-1 record inherits frame
-    // 0's value; a reduce over a black D_0 would give 0, never pwc-day's 2.1193807. The exact guard site is READ-PENDING; the oracle is
-    // every no-lamp editor ref: pwc-day, np-tk3, the hill family — rec 1 MaxHDR = rec 0's.)
+    // THE LOCAL-LIGHT FRAME'S RECORD (E, 2026-09-27 16:40Z, from the bytes of eleven oracles — my 09-26 read "no lamp → frame 0's MaxHDR,
+    // pwc-day 2.1193807" was WRONG: pwc-day's editor rec 1 reads 0.00001 like every other lamp-less ref): MaxHDR₁ = the f16 MAX of the
+    // resolved image (the RGBA16F resolve target's values — giant20x2 0.9995117 = 1 − 2⁻¹¹, the f16 just below 1; stpad exactly 1.0 = a
+    // max in [0.99976, 1.00049); tiny16 1.2851563, tiny03 Sunset 1.5234375, tiny03 Day 0.0064468384 all f16-representable) — NO floor
+    // at 1.0 (tiny03 Day's 0.0064 and giant20x2's 0.99951 refute it); WHEN NOTHING WAS LIT the record keeps the template's 0.00001
+    // (np-tk3 Day + Night, hill4, tiny04ac, g23, pwc-day: all 1e-5). `f1.max_hdr` carries the f16 max (localdrive::frame1_*).
     {
         let r = 60 + 66;
         if mapping.head.len() >= r + 24 {
-            let v = match &img.frame1 { Some(f1) if f1.lit_texels > 0 => f1.max_hdr, _ => f32::from_le_bytes([mapping.head[80], mapping.head[81], mapping.head[82], mapping.head[83]]) };
+            let v = match &img.frame1 { Some(f1) if f1.lit_texels > 0 && f1.max_hdr > 1e-5 => f1.max_hdr, _ => 1e-5f32 };
             mapping.head[r + 20..r + 24].copy_from_slice(&v.to_le_bytes());
         }
     }

@@ -2166,7 +2166,7 @@ pub fn frame1_images(lists: &Lists, lamps: &[Lamp], charts: &[(u32, u32, u32, u3
     // downsample; default) | encoded (the mean of the four encoded values).
     static ENC_SQRT: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_LL_F1_ENCODE").as_deref() == Ok("sqrt"));
     static RES_ENCODED: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_LL_F1_RESOLVE").as_deref() == Ok("encoded"));
-    static NO_FLOOR: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("LMTOOL_LL_F1_RECORD_IMAGE_MAX").is_some());
+    static OLD_FLOOR: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("LMTOOL_LL_F1_RECORD_FLOOR1").is_some());
     let enc = |v: f32| -> f32 { if *ENC_SQRT { v.max(0.0).sqrt().min(1.0) } else { crate::classcmp::srgb_encode(v.max(0.0).min(1.0) as f64) as f32 } };
     let (ow, oh) = (atlas / 2, atlas / 2);
     let mut ds = crate::passdiff::Buf::new(ow, oh, 3);
@@ -2186,7 +2186,11 @@ pub fn frame1_images(lists: &Lists, lamps: &[Lamp], charts: &[(u32, u32, u32, u3
     if m <= 0.0 {
         return None;
     }
-    if !*NO_FLOOR { m = m.max(1.0); }
+    // THE RECORD = THE f16 MAX OF THE RESOLVED IMAGE, NO FLOOR (E, 2026-09-27 16:40Z, eleven oracles: giant20x2 0.9995117 = 1 − 2⁻¹¹, stpad 1.0,
+    // tiny16 1.2851563, tiny03 0.0064468384 / 1.5234375 — every one f16-representable; the RGBA16F resolve target is what the reduce reads).
+    // The 1.0 floor of 02:00Z (two oracles) is refuted by tiny03 Day and giant20x2; LMTOOL_LL_F1_RECORD_FLOOR1=1 keeps it as a study.
+    m = crate::gpufmt::quantise_f16(m, crate::gpufmt::Rounding::NearestEven);
+    if *OLD_FLOOR { m = m.max(1.0); }
     let mut rgb = vec![0u8; (ow * oh * 3) as usize];
     let mut lit = 0usize;
     for y in 0..oh {
@@ -2260,7 +2264,7 @@ pub fn frame1_from_direct(direct: &crate::passdiff::Buf, coverage: Option<&crate
     // downsample; default) | encoded (the mean of the four encoded values).
     static ENC_SQRT: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_LL_F1_ENCODE").as_deref() == Ok("sqrt"));
     static RES_ENCODED: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_LL_F1_RESOLVE").as_deref() == Ok("encoded"));
-    static NO_FLOOR: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("LMTOOL_LL_F1_RECORD_IMAGE_MAX").is_some());
+    static OLD_FLOOR: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("LMTOOL_LL_F1_RECORD_FLOOR1").is_some());
     let enc = |v: f32| -> f32 { if *ENC_SQRT { v.max(0.0).sqrt().min(1.0) } else { crate::classcmp::srgb_encode(v.max(0.0).min(1.0) as f64) as f32 } };
     let (ow, oh) = (atlas / 2, atlas / 2);
     let mut ds = crate::passdiff::Buf::new(ow, oh, 3);
@@ -2280,7 +2284,11 @@ pub fn frame1_from_direct(direct: &crate::passdiff::Buf, coverage: Option<&crate
     if m <= 0.0 {
         return None;
     }
-    if !*NO_FLOOR { m = m.max(1.0); }
+    // THE RECORD = THE f16 MAX OF THE RESOLVED IMAGE, NO FLOOR (E, 2026-09-27 16:40Z, eleven oracles: giant20x2 0.9995117 = 1 − 2⁻¹¹, stpad 1.0,
+    // tiny16 1.2851563, tiny03 0.0064468384 / 1.5234375 — every one f16-representable; the RGBA16F resolve target is what the reduce reads).
+    // The 1.0 floor of 02:00Z (two oracles) is refuted by tiny03 Day and giant20x2; LMTOOL_LL_F1_RECORD_FLOOR1=1 keeps it as a study.
+    m = crate::gpufmt::quantise_f16(m, crate::gpufmt::Rounding::NearestEven);
+    if *OLD_FLOOR { m = m.max(1.0); }
     let mut rgb = vec![0u8; (ow * oh * 3) as usize];
     let mut lit = 0usize;
     for y in 0..oh {

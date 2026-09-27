@@ -7128,6 +7128,42 @@ fn run(mut a: Vec<String>) {
                 println!("→ {p} (√(v/max) for viewing)");
             }
         }
+        "lmmesh-verts" => {
+            // lmtool lmmesh-verts MAP --model SUBSTR [--max N]: the LM mesh our builder makes of an embedded item (lmmesh::lm_mesh_of_item) —
+            // the solid's geom summary (streams, tangents, psize modes), then every vertex (position, normal, LM uv, PSIZE mode, tangent) and
+            // the triangle list with each triangle's face normal and the frame the H-basis pass would build (E, 2026-09-27: V2's C1/C3 plane
+            // finding — the editor's directional coefficients on np-tk3's plates are one constant PER TRIANGLE, ours one per plate)
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let want = f("--model").expect("--model SUBSTR");
+            let max: usize = f("--max").map(|v| v.parse().expect("--max N")).unwrap_or(64);
+            let mf = tmmaps::map::MapFile::load(std::path::Path::new(&a[1]));
+            let files = mapgeom::embedded::files(&mf).expect("embedded files");
+            for (name, bytes) in &files {
+                let base = name.rsplit(['/', '\\']).next().unwrap_or(name);
+                if !base.contains(want.as_str()) { continue; }
+                println!("== {name} ({} B)", bytes.len());
+                if let Ok(fl) = mapgeom::static_item::file::parse_file(bytes) { if let Some(s2) = fl.item.static_object().and_then(|so| so.solid2()) { for l in lightmap::lmmesh::geom_summary(s2) { println!("  {l}"); } } }
+                match lightmap::lmmesh::lm_mesh_of_item(bytes) {
+                    Ok(Some(m)) => {
+                        println!("  LM mesh: {} vertices, {} triangles", m.verts.len(), m.indices.len() / 3);
+                        for (i, v) in m.verts.iter().enumerate().take(max) {
+                            println!("    v{i:<3} pos ({:8.4}, {:8.4}, {:8.4})  n ({:7.4}, {:7.4}, {:7.4})  uv ({:.5}, {:.5})  psize {:+.0}  tangent ({:7.4}, {:7.4}, {:7.4})", v.pos[0], v.pos[1], v.pos[2], v.normal[0], v.normal[1], v.normal[2], v.uv[0], v.uv[1], v.psize, v.tangent[0], v.tangent[1], v.tangent[2]);
+                        }
+                        for (t, tri) in m.indices.chunks(3).enumerate().take(max) {
+                            let (a0, b0, c0) = (&m.verts[tri[0] as usize], &m.verts[tri[1] as usize], &m.verts[tri[2] as usize]);
+                            let e1 = lightmap::geometry::sub(b0.pos, a0.pos);
+                            let e2 = lightmap::geometry::sub(c0.pos, a0.pos);
+                            let fnrm = lightmap::geometry::norm(lightmap::geometry::cross(e1, e2));
+                            let same_t = a0.tangent == b0.tangent && b0.tangent == c0.tangent;
+                            let same_n = a0.normal == b0.normal && b0.normal == c0.normal;
+                            println!("    t{t:<3} ({:>3}, {:>3}, {:>3})  face n ({:7.4}, {:7.4}, {:7.4})  vertex normals {}  tangents {}  psize {:+.0}/{:+.0}/{:+.0}", tri[0], tri[1], tri[2], fnrm[0], fnrm[1], fnrm[2], if same_n { "equal" } else { "DIFFER" }, if same_t { "equal" } else { "DIFFER" }, a0.psize, b0.psize, c0.psize);
+                        }
+                    }
+                    Ok(None) => println!("  LM mesh: none (no lightmap geometry)"),
+                    Err(e) => println!("  LM mesh: {e}"),
+                }
+            }
+        }
         "lamp-enclosure" => {
             // lmtool lamp-enclosure MAP --pak FILE:KEY[,FILE:KEY…] [--collection C] [--rays N] [--out TSV]: RE 14's H1 check (2026-09-27) — is each
             // lamp SEALED inside its own item's housing by the materials our caster set drops? For every world light: N ray directions inside
