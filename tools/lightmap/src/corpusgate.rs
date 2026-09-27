@@ -555,15 +555,19 @@ fn report(args: &[String], cells: &[Cell]) -> Result<(), String> {
         if !m["ok"].as_bool().unwrap_or(false) { n_failed += 1; md += &format!("| {} | {} q{} {} | | {:.1} | | | | | | | | | | | | **FAILED** {} | |\n", c.name, c.collection, c.quality, c.dirs.as_deref().unwrap_or("full"), f(&m["bake_s"]), m["error"].as_str().unwrap_or("").replace('|', "/")); continue; }
         n_ok += 1;
         let f0 = &m["frames"][0]; let f1 = &m["frames"][1]; let lay = &m["layout"];
+        // a one-direction cell is a FRAME-1 / layout row: its verdict is frame 1's (frame 0 with one direction means nothing)
+        let d1_cell = m["dirs"].as_str() == Some("1");
+        let vf = if d1_cell { f1 } else { f0 };
         let ceiling = m["ceiling"].as_f64().unwrap_or(c.ceiling);
-        let ratios0 = class_ratios(f0);
+        let ratios0 = class_ratios(vf);
         // the lit classes (≥ 4 charts, a finite ratio): the worst deviation from 1 and its name
         let (worst_ratio, worst_name) = ratios0.iter().filter(|(_, r, ch)| *ch >= 4 && r.iter().all(|x| x.is_finite())).map(|(n, r, _)| (r.iter().map(|x| (x - 1.0).abs()).fold(0.0, f64::max), n.clone())).fold((0.0, String::new()), |a, b| if b.0 > a.0 { b } else { a });
-        let id0 = f(&f0["identity_pct"]);
+        let id0 = f(&vf["identity_pct"]);
         let classes_ok = worst_ratio <= tol;
         let texel_ok = id0 >= 0.9 * ceiling;
         let abs_ok = target.as_ref().map(|t| id0 >= t.id && f(&f0["within2_pct"]) >= t.within2 && f(&f0["max_delta"]) <= t.maxd && worst_ratio <= t.ratio);
         let verdict = if classes_ok && texel_ok { n_closed += 1; "CLOSED (texel) ✓".to_string() } else if classes_ok { "CLOSED (class)".to_string() } else { format!("RESIDUE {} ±{:.3}", worst_name, worst_ratio) };
+        let verdict = if d1_cell { format!("{verdict} (f1)") } else { verdict };
         let verdict = match abs_ok { Some(true) => format!("{verdict} · target ✓"), Some(false) => format!("{verdict} · target ✗"), None => verdict };
         let warn = m["pak_warnings"].as_array().map_or(0, |w| w.len());
         let verdict = if warn > 0 { format!("{verdict} · ⚠ {warn} 'not in any pack'") } else { verdict };
