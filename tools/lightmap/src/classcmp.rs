@@ -51,6 +51,27 @@ pub fn read_records_tsv(path: &str) -> Result<Vec<RecRow>, String> {
 }
 
 /// The frame record's MaxHDR (head: 3 × 66 bytes from offset 60; +20 = MaxHDR).
+/// THE STORED TEXEL'S HDR VALUE (E, 2026-09-27 02:00Z): frame 0's colour image is the sqrt encode through the YCbCr writer — HDR =
+/// (t/255)²·(fb/255)²·MaxHDR; FRAME 1's image is sRGB-ENCODED (the frame-1 writer's target): the editor's stpad night bytes are
+/// 255·srgb_encode(v/M) to ±1 from byte 44 to 249 against our linear D_0 (a 20-bin curve over 220 000 texels, class-independent —
+/// `lmtool f1curve`), where the square-root form is 8 bytes low mid-range. The chart byte rescales the ENCODED value (t = 255·c/c_max),
+/// so the decode is srgb_decode((t/255)·(fb/255))·MaxHDR. LMTOOL_F1_DECODE=sqrt = the old square decode for frame 1 (study).
+pub fn texel_hdr(frame: usize, t: u8, fb: u8, max_hdr: f32) -> f64 {
+    static SQRT: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_F1_DECODE").as_deref() == Ok("sqrt"));
+    let c = (t as f64 / 255.0) * (fb as f64 / 255.0);
+    if frame == 1 && !*SQRT { srgb_decode(c) * max_hdr as f64 } else { c * c * max_hdr as f64 }
+}
+
+/// sRGB → linear (the IEC 61966-2-1 transfer, the toe included).
+pub fn srgb_decode(c: f64) -> f64 {
+    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+}
+
+/// linear → sRGB.
+pub fn srgb_encode(v: f64) -> f64 {
+    if v <= 0.0031308 { 12.92 * v } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 }
+}
+
 pub fn record_maxhdr(m: &Mapping, frame: usize) -> Option<f32> {
     let r = 60 + 66 * frame;
     if r + 24 > m.head.len() { return None; }
@@ -200,21 +221,20 @@ pub fn compare(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLight
             { let (a1, a2) = (m1.size[i].0 as f64 * m1.size[i].1 as f64, m2.size[j].0 as f64 * m2.size[j].1 as f64); if a1 > 0.0 && a2 > 0.0 && (a1 / a2 > 2.9 || a2 / a1 > 2.9) { pair_refused += 1; continue; } }
             let key = class_key(&m1, i, &rows, records, o.by);
             let mut acc = ClassAcc { charts: 1, ..Default::default() };
-            let s1 = (fb1.get(i).copied().unwrap_or(0) as f64 / 255.0).powi(2) * k1 as f64;
-            let s2 = (fb2.get(j).copied().unwrap_or(0) as f64 / 255.0).powi(2) * k2 as f64;
+            let (fbi, fbj) = (fb1.get(i).copied().unwrap_or(0), fb2.get(j).copied().unwrap_or(0));
             let (mut co, mut ct) = ([0f64; 3], [0f64; 3]);
             let (px, py, pw, ph) = chart_own_px(m1.pos[i], m1.size[i]);
             for y in py..(py + ph).min(i1.h) { for x in px..(px + pw).min(i1.w) {
                 let a = i1.get(x, y);
                 acc.texels += 1;
-                if a[0].max(a[1]).max(a[2]) >= o.lit { acc.lit_ours += 1; acc.used += 1; for c in 0..3 { let ho = (a[c] as f64 / 255.0).powi(2) * s1; acc.sum_ours[c] += ho; co[c] += ho; } }
+                if a[0].max(a[1]).max(a[2]) >= o.lit { acc.lit_ours += 1; acc.used += 1; for c in 0..3 { let ho = texel_hdr(o.frame, a[c], fbi, k1); acc.sum_ours[c] += ho; co[c] += ho; } }
             } }
             let (qx, qy, qw, qh) = chart_own_px(m2.pos[j], m2.size[j]);
             let mut tex_t = 0usize;
             for y in qy..(qy + qh).min(i2.h) { for x in qx..(qx + qw).min(i2.w) {
                 let b = i2.get(x, y);
                 tex_t += 1;
-                if b[0].max(b[1]).max(b[2]) >= o.lit { acc.lit_theirs += 1; acc.used_t += 1; for c in 0..3 { let ht = (b[c] as f64 / 255.0).powi(2) * s2; acc.sum_theirs[c] += ht; ct[c] += ht; } }
+                if b[0].max(b[1]).max(b[2]) >= o.lit { acc.lit_theirs += 1; acc.used_t += 1; for c in 0..3 { let ht = texel_hdr(o.frame, b[c], fbj, k2); acc.sum_theirs[c] += ht; ct[c] += ht; } }
             } }
             // lit % of the oracle side is over ITS texel count: scale lit_theirs onto our texel count for the shared column
             if tex_t > 0 && acc.texels > 0 { acc.lit_theirs = (acc.lit_theirs as f64 * acc.texels as f64 / tex_t as f64).round() as usize; }
@@ -232,7 +252,7 @@ pub fn compare(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLight
         let key = class_key(&m1, i, &rows, records, o.by);
         let (px, py, pw, ph) = chart_own_px(m1.pos[i], m1.size[i]);
         let mut acc = ClassAcc { charts: 1, ..Default::default() };
-        let (s1, s2) = ((fb1.get(i).copied().unwrap_or(0) as f64 / 255.0).powi(2) * k1 as f64, (fb2.get(i).copied().unwrap_or(0) as f64 / 255.0).powi(2) * k2 as f64);
+        let (fbi, fbj) = (fb1.get(i).copied().unwrap_or(0), fb2.get(i).copied().unwrap_or(0));
         let (mut co, mut ct) = ([0f64; 3], [0f64; 3]);
         for y in py..(py + ph).min(i1.h) {
             for x in px..(px + pw).min(i1.w) {
@@ -254,8 +274,8 @@ pub fn compare(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLight
                 if lt {
                     acc.used += 1; acc.used_t += 1;
                     for c in 0..3 {
-                        let ho = (a[c] as f64 / 255.0).powi(2) * s1;
-                        let ht = (b[c] as f64 / 255.0).powi(2) * s2;
+                        let ho = texel_hdr(o.frame, a[c], fbi, k1);
+                        let ht = texel_hdr(o.frame, b[c], fbj, k2);
                         acc.sum_ours[c] += ho; acc.sum_theirs[c] += ht; acc.sum_sq[c] += (ho - ht) * (ho - ht);
                         co[c] += ho; ct[c] += ht;
                     }
@@ -466,8 +486,7 @@ pub fn compare_coverage(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio:
         if m1.pos[i] != m2.pos[i] || m1.size[i] != m2.size[i] { continue; }
         let key = class_key(&m1, i, &rows, records, o.by);
         let (px, py, pw, ph) = chart_own_px(m1.pos[i], m1.size[i]);
-        let s1 = (fb1[i] as f64 / 255.0).powi(2) * k1 as f64;
-        let s2 = (fb2[i] as f64 / 255.0).powi(2) * k2 as f64;
+        let (fbi, fbj) = (fb1[i], fb2[i]);
         let mut sp = CoverSplit::default();
         sp.partial.charts = 1; sp.full.charts = 1;
         for y in py..(py + ph).min(i1.h) { for x in px..(px + pw).min(i1.w) {
@@ -477,7 +496,7 @@ pub fn compare_coverage(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio:
             if a[0].max(a[1]).max(a[2]) >= o.lit { acc.lit_ours += 1; }
             if b[0].max(b[1]).max(b[2]) >= o.lit {
                 acc.lit_theirs += 1; acc.used += 1; acc.used_t += 1;
-                for c in 0..3 { let ho = (a[c] as f64 / 255.0).powi(2) * s1; let ht = (b[c] as f64 / 255.0).powi(2) * s2; acc.sum_ours[c] += ho; acc.sum_theirs[c] += ht; acc.sum_sq[c] += (ho - ht) * (ho - ht); }
+                for c in 0..3 { let ho = texel_hdr(o.frame, a[c], fbi, k1); let ht = texel_hdr(o.frame, b[c], fbj, k2); acc.sum_ours[c] += ho; acc.sum_theirs[c] += ht; acc.sum_sq[c] += (ho - ht) * (ho - ht); }
             }
         } }
         match classes.iter_mut().find(|(k, _)| *k == key) { Some((_, c)) => { c.partial.merge(&sp.partial); c.full.merge(&sp.full); }, None => classes.push((key, sp)) }

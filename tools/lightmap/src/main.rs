@@ -4905,8 +4905,7 @@ fn run(a: Vec<String>) {
             let i1 = lightmap::img::decode_webp(b1).unwrap_or_else(|e| panic!("{e}"));
             let i2 = lightmap::img::decode_webp(b2).unwrap_or_else(|e| panic!("{e}"));
             let (k1, k2) = (lightmap::classcmp::record_maxhdr(&m1, frame).expect("ours: frame record"), lightmap::classcmp::record_maxhdr(&m2, frame).expect("theirs: frame record"));
-            let s1 = (m1.frame_bytes[frame].get(chart).copied().unwrap_or(0) as f64 / 255.0).powi(2) * k1 as f64;
-            let s2 = (m2.frame_bytes[frame].get(chart).copied().unwrap_or(0) as f64 / 255.0).powi(2) * k2 as f64;
+            let (fbo, fbe) = (m1.frame_bytes[frame].get(chart).copied().unwrap_or(0), m2.frame_bytes[frame].get(chart).copied().unwrap_or(0));
             let (px, py, pw, ph) = lightmap::classcmp::chart_own_px(m1.pos[chart], m1.size[chart]);
             let (qx, qy, _, _) = lightmap::classcmp::chart_own_px(m2.pos[chart], m2.size[chart]);
             println!("chart {chart}: ours at ({px},{py}) {pw}×{ph} fb {} MaxHDR {k1}; editor at ({qx},{qy}) fb {} MaxHDR {k2}; bind obj {} sub {}", m1.frame_bytes[frame].get(chart).copied().unwrap_or(0), m2.frame_bytes[frame].get(chart).copied().unwrap_or(0), m1.binds[chart].obj_group_idx / 4, m1.binds[chart].obj_idx & 0x00ff_ffff);
@@ -4918,8 +4917,8 @@ fn run(a: Vec<String>) {
             for y in 0..ph { for x in 0..pw {
                 let (a, e) = (i1.get(px + x, py + y), i2.get(qx + x, qy + y));
                 if e[0].max(e[1]).max(e[2]) < 8 { continue; }
-                let ho = [0, 1, 2].map(|c| (a[c] as f64 / 255.0).powi(2) * s1);
-                let he = [0, 1, 2].map(|c| (e[c] as f64 / 255.0).powi(2) * s2);
+                let ho = [0, 1, 2].map(|c| lightmap::classcmp::texel_hdr(frame, a[c], fbo, k1));
+                let he = [0, 1, 2].map(|c| lightmap::classcmp::texel_hdr(frame, e[c], fbe, k2));
                 for c in 0..3 { rows[y as usize].0[c] += ho[c]; rows[y as usize].1[c] += he[c]; cols[x as usize].0[c] += ho[c]; cols[x as usize].1[c] += he[c]; tot_o[c] += ho[c]; tot_e[c] += he[c]; }
                 rows[y as usize].2 += 1; cols[x as usize].2 += 1;
                 if let Some(t) = tsv.as_mut() { use std::io::Write; writeln!(t, "{x}\t{y}\t{:.5}\t{:.5}\t{:.5}\t{:.5}\t{:.5}\t{:.5}", ho[0], ho[1], ho[2], he[0], he[1], he[2]).unwrap(); }
@@ -4931,6 +4930,50 @@ fn run(a: Vec<String>) {
             };
             prof("row", &rows);
             prof("column", &cols);
+        }
+        "f1curve" => {
+            // lmtool f1curve OURS.Map.Gbx --against EDITOR.Map.Gbx [--frame 1] [--class-tsv ENTS.tsv]: the stored byte of OURS per stored byte
+            // of the EDITOR over every texel both light (a 256-bin median curve) — a per-texel mismatch that is a FUNCTION of the byte is an
+            // encode / falloff-shape difference; one that scatters by class is geometry. With --class-tsv (chart → class) the curve per class.
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let ours = lightmap::mapio::load(&a[1]).unwrap_or_else(|e| panic!("{e}"));
+            let theirs = lightmap::mapio::load(&f("--against").expect("--against EDITOR.Map.Gbx")).unwrap_or_else(|e| panic!("{e}"));
+            let frame: usize = f("--frame").map(|v| v.parse().unwrap()).unwrap_or(1);
+            let (d1, d2) = (ours.chunk.data.as_ref().expect("ours: no lightmap"), theirs.chunk.data.as_ref().expect("theirs: no lightmap"));
+            let (m1, m2) = (d1.cache.mapping().expect("ours: no mapping"), d2.cache.mapping().expect("theirs: no mapping"));
+            let i1 = lightmap::img::decode_webp(d1.frames[frame].images.first().expect("ours: image 0")).unwrap_or_else(|e| panic!("{e}"));
+            let i2 = lightmap::img::decode_webp(d2.frames[frame].images.first().expect("theirs: image 0")).unwrap_or_else(|e| panic!("{e}"));
+            let (k1, k2) = (lightmap::classcmp::record_maxhdr(&m1, frame).expect("ours: frame record"), lightmap::classcmp::record_maxhdr(&m2, frame).expect("theirs: frame record"));
+            let classes: std::collections::HashMap<usize, String> = f("--class-tsv").map(|p| std::fs::read_to_string(&p).expect("--class-tsv").lines().filter_map(|l| { let t: Vec<&str> = l.split('\t').collect(); Some((t.first()?.parse().ok()?, t.get(1)?.rsplit('\\').next()?.replace(".Prefab.Gbx#0", ""))) }).collect()).unwrap_or_default();
+            // per chart: the texels of the chart's own rect, ours vs editor (the chart bytes and records folded in → HDR), binned by the editor's HDR
+            let mut bins: std::collections::BTreeMap<(String, u32), Vec<f64>> = std::collections::BTreeMap::new();
+            let mut bytes: std::collections::BTreeMap<u8, Vec<u8>> = std::collections::BTreeMap::new();
+            for ch in 0..m1.pos.len().min(m2.pos.len()) {
+                let (fb1, fb2) = (m1.frame_bytes[frame].get(ch).copied().unwrap_or(0), m2.frame_bytes[frame].get(ch).copied().unwrap_or(0));
+                if fb2 == 0 { continue; }
+                let cls = classes.get(&ch).cloned().unwrap_or_else(|| "all".into());
+                let (px, py, pw, ph) = lightmap::classcmp::chart_own_px(m1.pos[ch], m1.size[ch]);
+                let (qx, qy, _, _) = lightmap::classcmp::chart_own_px(m2.pos[ch], m2.size[ch]);
+                for y in 0..ph { for x in 0..pw {
+                    let (o, e) = (i1.get(px + x, py + y), i2.get(qx + x, qy + y));
+                    if e[1] < 8 { continue; }
+                    let (ho, he) = (lightmap::classcmp::texel_hdr(frame, o[1], fb1, k1), lightmap::classcmp::texel_hdr(frame, e[1], fb2, k2));
+                    let b = ((he / k2 as f64) * 20.0).floor().clamp(0.0, 19.0) as u32;
+                    bins.entry((cls.clone(), b)).or_default().push(ho / he);
+                    bins.entry(("ALL".into(), b)).or_default().push(ho / he);
+                    // the same texel's raw bytes when the chart bytes agree within 1 (the pure image curve)
+                    if (fb1 as i32 - fb2 as i32).abs() <= 1 { bytes.entry(e[1]).or_default().push(o[1]); }
+                } }
+            }
+            println!("ours / editor (G) by the editor's HDR as a fraction of its MaxHDR {k2} (ours {k1}); bins of 0.05: n, median, p10, p90");
+            let mut last = String::new();
+            for ((cls, b), v) in bins.iter_mut() {
+                if *cls != last { println!("[{cls}]"); last = cls.clone(); }
+                v.sort_by(|a, b| a.total_cmp(b));
+                println!("  {:.2}–{:.2}: n {:6} median {:.3}  p10 {:.3}  p90 {:.3}", *b as f64 / 20.0, (*b + 1) as f64 / 20.0, v.len(), v[v.len() / 2], v[v.len() / 10], v[v.len() * 9 / 10]);
+            }
+            println!("our stored byte per editor byte (charts whose chart bytes agree within 1): editor byte → n, median ours, ours − editor");
+            for (e, v) in bytes.iter_mut() { if v.len() >= 20 && *e % 8 == 0 { v.sort(); println!("  {e:3} → n {:6} ours {:3}  Δ {:+}", v.len(), v[v.len() / 2], v[v.len() / 2] as i32 - *e as i32); } }
         }
         "dds-mean" => {
             // lmtool dds-mean FILE.dds [--level L] : per-channel mean of one mip level, as stored (0..1) and sRGB-decoded to linear

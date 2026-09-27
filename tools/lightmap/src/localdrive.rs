@@ -2120,8 +2120,16 @@ pub fn frame1_images(lists: &Lists, lamps: &[Lamp], charts: &[(u32, u32, u32, u3
     // stpad night: the 2048² peak (1.0565 at the pool-floor hot spots) vs the editor's record 0.9922 — the 2 × 2 mean of a point-like
     // hot spot. LMTOOL_LL_F1_PEAK2048=1 = the old form (the 2048² max, the byte = the mean of the four sqrt).
     static PEAK2048: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("LMTOOL_LL_F1_PEAK2048").is_some());
-    // LMTOOL_LL_F1_ENCODE = meansqrt (the byte = the mean of the four sqrt(v/m) — the 2 × 2 box AFTER the sqrt encode; default) | sqrtmean
-    static ENC_SQRTMEAN: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_LL_F1_ENCODE").as_deref() == Ok("sqrtmean"));
+    // THE FRAME-1 IMAGE IS sRGB-ENCODED (E, 2026-09-27 02:00Z; `classcmp::texel_hdr`): the editor's stpad night bytes = 255·srgb_encode(v/M)
+    // to ±1 from byte 44 to 249 against our linear D_0 — the square-root form (frame 0's YCbCr writer) is 8 bytes low mid-range and the
+    // per-class "frame-1 L 3–13 % low" was that decode error. M = max(the resolved image's max, 1.0) = the record MaxHDR (stpad: the editor's
+    // record is exactly 1.0 with our max 0.985; tiny16's 1.2851563 > 1) — READ-PENDING as a rule, two oracles. LMTOOL_LL_F1_ENCODE = srgb
+    // (default) | sqrt (the old form); LMTOOL_LL_F1_RESOLVE = linear (the 2 × 2 mean in linear, then the encode — an sRGB target written by a
+    // downsample; default) | encoded (the mean of the four encoded values).
+    static ENC_SQRT: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_LL_F1_ENCODE").as_deref() == Ok("sqrt"));
+    static RES_ENCODED: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_LL_F1_RESOLVE").as_deref() == Ok("encoded"));
+    static NO_FLOOR: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("LMTOOL_LL_F1_RECORD_IMAGE_MAX").is_some());
+    let enc = |v: f32| -> f32 { if *ENC_SQRT { v.max(0.0).sqrt().min(1.0) } else { crate::classcmp::srgb_encode(v.max(0.0).min(1.0) as f64) as f32 } };
     let (ow, oh) = (atlas / 2, atlas / 2);
     let mut ds = crate::passdiff::Buf::new(ow, oh, 3);
     let mut m = 0.0f32;
@@ -2140,18 +2148,19 @@ pub fn frame1_images(lists: &Lists, lamps: &[Lamp], charts: &[(u32, u32, u32, u3
     if m <= 0.0 {
         return None;
     }
+    if !*NO_FLOOR { m = m.max(1.0); }
     let mut rgb = vec![0u8; (ow * oh * 3) as usize];
     let mut lit = 0usize;
     for y in 0..oh {
         for x in 0..ow {
             let mut any = false;
             for c in 0..3u32 {
-                let b = if !*ENC_SQRTMEAN {
+                let b = if *RES_ENCODED {
                     let mut s = 0.0f32;
-                    for dy in 0..2 { for dx in 0..2 { let v = img.get(2 * x + dx, 2 * y + dy, c) / m; s += v.max(0.0).sqrt().min(1.0); } }
+                    for dy in 0..2 { for dx in 0..2 { s += enc(img.get(2 * x + dx, 2 * y + dy, c) / m); } }
                     (s * 0.25 * 255.0 + 0.5).floor().clamp(0.0, 255.0) as u8
                 } else {
-                    ((ds.get(x, y, c) / m).max(0.0).sqrt().min(1.0) * 255.0 + 0.5).floor().clamp(0.0, 255.0) as u8
+                    (enc(ds.get(x, y, c) / m) * 255.0 + 0.5).floor().clamp(0.0, 255.0) as u8
                 };
                 if b > 0 { any = true; }
                 rgb[((y * ow + x) * 3 + c) as usize] = b;
@@ -2205,8 +2214,16 @@ pub fn frame1_from_direct(direct: &crate::passdiff::Buf, coverage: Option<&crate
     // stpad night: the 2048² peak (1.0565 at the pool-floor hot spots) vs the editor's record 0.9922 — the 2 × 2 mean of a point-like
     // hot spot. LMTOOL_LL_F1_PEAK2048=1 = the old form (the 2048² max, the byte = the mean of the four sqrt).
     static PEAK2048: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("LMTOOL_LL_F1_PEAK2048").is_some());
-    // LMTOOL_LL_F1_ENCODE = meansqrt (the byte = the mean of the four sqrt(v/m) — the 2 × 2 box AFTER the sqrt encode; default) | sqrtmean
-    static ENC_SQRTMEAN: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_LL_F1_ENCODE").as_deref() == Ok("sqrtmean"));
+    // THE FRAME-1 IMAGE IS sRGB-ENCODED (E, 2026-09-27 02:00Z; `classcmp::texel_hdr`): the editor's stpad night bytes = 255·srgb_encode(v/M)
+    // to ±1 from byte 44 to 249 against our linear D_0 — the square-root form (frame 0's YCbCr writer) is 8 bytes low mid-range and the
+    // per-class "frame-1 L 3–13 % low" was that decode error. M = max(the resolved image's max, 1.0) = the record MaxHDR (stpad: the editor's
+    // record is exactly 1.0 with our max 0.985; tiny16's 1.2851563 > 1) — READ-PENDING as a rule, two oracles. LMTOOL_LL_F1_ENCODE = srgb
+    // (default) | sqrt (the old form); LMTOOL_LL_F1_RESOLVE = linear (the 2 × 2 mean in linear, then the encode — an sRGB target written by a
+    // downsample; default) | encoded (the mean of the four encoded values).
+    static ENC_SQRT: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_LL_F1_ENCODE").as_deref() == Ok("sqrt"));
+    static RES_ENCODED: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_LL_F1_RESOLVE").as_deref() == Ok("encoded"));
+    static NO_FLOOR: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("LMTOOL_LL_F1_RECORD_IMAGE_MAX").is_some());
+    let enc = |v: f32| -> f32 { if *ENC_SQRT { v.max(0.0).sqrt().min(1.0) } else { crate::classcmp::srgb_encode(v.max(0.0).min(1.0) as f64) as f32 } };
     let (ow, oh) = (atlas / 2, atlas / 2);
     let mut ds = crate::passdiff::Buf::new(ow, oh, 3);
     let mut m = 0.0f32;
@@ -2225,18 +2242,19 @@ pub fn frame1_from_direct(direct: &crate::passdiff::Buf, coverage: Option<&crate
     if m <= 0.0 {
         return None;
     }
+    if !*NO_FLOOR { m = m.max(1.0); }
     let mut rgb = vec![0u8; (ow * oh * 3) as usize];
     let mut lit = 0usize;
     for y in 0..oh {
         for x in 0..ow {
             let mut any = false;
             for c in 0..3u32 {
-                let b = if !*ENC_SQRTMEAN {
+                let b = if *RES_ENCODED {
                     let mut s = 0.0f32;
-                    for dy in 0..2 { for dx in 0..2 { let v = img.get(2 * x + dx, 2 * y + dy, c) / m; s += v.max(0.0).sqrt().min(1.0); } }
+                    for dy in 0..2 { for dx in 0..2 { s += enc(img.get(2 * x + dx, 2 * y + dy, c) / m); } }
                     (s * 0.25 * 255.0 + 0.5).floor().clamp(0.0, 255.0) as u8
                 } else {
-                    ((ds.get(x, y, c) / m).max(0.0).sqrt().min(1.0) * 255.0 + 0.5).floor().clamp(0.0, 255.0) as u8
+                    (enc(ds.get(x, y, c) / m) * 255.0 + 0.5).floor().clamp(0.0, 255.0) as u8
                 };
                 if b > 0 { any = true; }
                 rgb[((y * ow + x) * 3 + c) as usize] = b;
