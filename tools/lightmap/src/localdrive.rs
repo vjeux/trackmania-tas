@@ -1448,9 +1448,32 @@ pub fn setup_from_map(map_path: &str, paks: &[(String, String)], collection: &st
         // "stock": only the lamps of STOCK items (the models resolved from the packs — tiny16's four Screen lights); "embedded": the rest
         Some("stock") => lamps.into_iter().filter(|l| l.owner.starts_with("item ") && l.owner.split(' ').nth(1).and_then(|i| i.parse::<usize>().ok()).map(|i| stock_items.contains(&i)).unwrap_or(false)).collect(),
         Some("embedded") => lamps.into_iter().filter(|l| !(l.owner.starts_with("item ") && l.owner.split(' ').nth(1).and_then(|i| i.parse::<usize>().ok()).map(|i| stock_items.contains(&i)).unwrap_or(false))).collect(),
+        // "model:SUBSTR[,SUBSTR…]": the lamps of the item instances whose model name contains one of the substrings (E, 2026-09-27 16:00Z —
+        // the per-housing-class emission study: which of tiny16's lamp models leak light in OUR flat cube)
+        Some(m) if m.starts_with("model:") => {
+            let subs: Vec<String> = m["model:".len()..].split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+            lamps.into_iter().filter(|l| l.owner.starts_with("item ") && l.owner.split(' ').nth(1).and_then(|i| i.parse::<usize>().ok()).and_then(|i| scene.instances.get(i)).map(|inst| subs.iter().any(|s| inst.model_name.contains(s.as_str()))).unwrap_or(false)).collect()
+        }
         _ => lamps,
     };
     if std::env::var_os("LMTOOL_LAMP_FILTER").is_some() { log(&format!("LMTOOL_LAMP_FILTER {}: {} lamps kept", std::env::var("LMTOOL_LAMP_FILTER").unwrap_or_default(), lamps.len())); }
+    // LMTOOL_LL_STOCK_RGB_SCALE=K (study, E 2026-09-27 16:00Z): the STOCK items' lamps' LightRgb × K — RE 13's idle /lmlights dump reads
+    // GxLight+0x24 = colour.R = 104/255 on tiny16's four stock screens where the file colour we resolve has 52/255 (2×), and the 21
+    // embedded copies of the same colour read 52/255; the falsifiable prediction: K = 2 moves the screen-only frame-1 record toward the
+    // editor's 1.2851563. Default off until the light the game reads for a stock item is found.
+    let lamps: Vec<Lamp> = match std::env::var("LMTOOL_LL_STOCK_RGB_SCALE").ok().and_then(|v| v.parse::<f32>().ok()) {
+        Some(k) => {
+            let mut n = 0usize;
+            let out: Vec<Lamp> = lamps.into_iter().map(|mut l| {
+                let is_stock = l.owner.starts_with("item ") && l.owner.split(' ').nth(1).and_then(|i| i.parse::<usize>().ok()).map(|i| stock_items.contains(&i)).unwrap_or(false);
+                if is_stock { l.rgb = [l.rgb[0] * k, l.rgb[1] * k, l.rgb[2] * k]; n += 1; }
+                l
+            }).collect();
+            log(&format!("LMTOOL_LL_STOCK_RGB_SCALE {k}: {n} stock lamps' LightRgb scaled (study)"));
+            out
+        }
+        None => lamps,
+    };
     // THE EMITTER-AREA SAMPLES per lamp (RE 13 21:20Z; `area_samples`): the bake quality's S_full and the chart-allocation texel density at the
     // light — gl.s scaled by the tile quality of the light's cell when the layout carries one (the game refines zone+0x488 at the light
     // position; stpad: uniform). LMTOOL_LL_AREA=0 = the single position.

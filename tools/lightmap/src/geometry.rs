@@ -634,6 +634,45 @@ pub struct Scene {
 /// LMTOOL_MASK_NOFLIP=1: the cut-out masks in the DDS file's row order (the game flips them: see `opaque`).
 pub static MASK_NOFLIP: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_MASK_NOFLIP").map(|v| v == "1").unwrap_or(false));
 
+/// The kept item set of a REDUCED oracle (map item indices), applied by `Scene::from_map` to every scene built in the process
+/// (the bake's, the lamp pass's `setup_from_map`, the record scene's) — `None` = the whole map. Set once by `set_kept_items`.
+pub static KEPT_ITEMS: std::sync::OnceLock<Option<std::collections::HashSet<usize>>> = std::sync::OnceLock::new();
+pub fn set_kept_items(kept: Option<std::collections::HashSet<usize>>) {
+    let _ = KEPT_ITEMS.set(kept);
+}
+/// Parse a kept list file: item indices separated by commas / whitespace (RE 7's reduction lists, `tinyctl lightmap --reduced`'s OUT.kept).
+pub fn read_kept_list(path: &str) -> Result<std::collections::HashSet<usize>, String> {
+    let txt = std::fs::read_to_string(path).map_err(|e| format!("--kept {path}: {e}"))?;
+    Ok(txt.split(|c: char| c == ',' || c.is_whitespace()).filter_map(|t| t.trim().parse().ok()).collect())
+}
+/// The kept list a map carries beside it by convention: `<map>.kept` (tinyctl's OUT.kept next to OUT.Map.Gbx), `<stem>.kept`,
+/// `<stem>-kept.txt`, and the same with a trailing `-source` / `-editor…` suffix stripped — None when no such file exists.
+pub fn default_kept_list_for(map_path: &str) -> Option<String> {
+    let p = std::path::Path::new(map_path);
+    let dir = p.parent().map(|d| d.to_path_buf()).unwrap_or_default();
+    let file = p.file_name()?.to_string_lossy().to_string();
+    let stem = file.strip_suffix(".Map.Gbx").or_else(|| file.strip_suffix(".map.gbx")).unwrap_or(&file).to_string();
+    let mut stems = vec![stem.clone()];
+    // tiny16-fixedlib-q4-editor-reduced → tiny16-reduced (the kept list is named for the map, not for the bake)
+    if let Some(i) = stem.find('-') { stems.push(format!("{}-reduced", &stem[..i])); stems.push(stem[..i].to_string()); }
+    for s in &stems {
+        for cand in [format!("{s}.kept"), format!("{s}-kept.txt"), format!("{s}.kept.txt"), format!("{s}red.kept")] {
+            let c = dir.join(&cand);
+            if c.is_file() { return Some(c.to_string_lossy().to_string()); }
+        }
+    }
+    None
+}
+/// Does a kept list fit a map as a REDUCTION of it — every index inside the item list and fewer entries than items? A transplanted
+/// oracle carries the full map's items (the list applies); a resaved / reduced-source map carries the compact list itself (the
+/// indices are out of range, or the list names every item: nothing to drop).
+pub fn kept_list_fits(kept: &std::collections::HashSet<usize>, n_items: usize) -> Result<(), String> {
+    let max = kept.iter().copied().max().unwrap_or(0);
+    if max >= n_items { return Err(format!("its largest index {max} is outside the map's {n_items} items — the map is already the reduced (renumbered) scene")); }
+    if kept.len() >= n_items { return Err(format!("it lists {} of {n_items} items — nothing is dropped", kept.len())); }
+    Ok(())
+}
+
 /// A binary cut-out mask (alpha ≥ threshold) sampled with wrapping uv, nearest texel.
 #[derive(Clone, Debug)]
 pub struct AlphaMask {
@@ -877,6 +916,19 @@ impl Scene {
         }
         if !missing.is_empty() {
             eprintln!("  {} item models are not embedded (stock items?): {:?}", missing.len(), missing.iter().take(8).collect::<Vec<_>>());
+        }
+        // THE KEPT SET (E, 2026-09-27 16:30Z, RE 14's read of refs/tiny16-reduced-kept.txt): a REDUCED editor oracle was baked from a
+        // scene holding only the kept items — 978 of tiny16's 986 lamps sit on items the reduction dropped, and every tiny16 row had
+        // compared a full-map bake against it. The kept list (the map item indices the reduction kept) applies to the SCENE here —
+        // casters, receivers, bouncers, lamps — not only to the record numbering; `set_kept_items` is fed by `lmtool bake --kept`
+        // (or the `<map>.kept` / `<stem>-kept.txt` file beside the map by default).
+        let mut instances = instances;
+        if let Some(Some(kept)) = KEPT_ITEMS.get() {
+            let before = instances.len();
+            let n_lights_before: usize = instances.iter().map(|i| models[i.model].lights.len()).sum();
+            instances.retain(|i| kept.contains(&i.item));
+            let n_lights: usize = instances.iter().map(|i| models[i.model].lights.len()).sum();
+            eprintln!("reduced oracle: baking the KEPT SET — {} of {} item instances kept ({} of {} items in the list; {} dropped), {} of {} item lights", instances.len(), before, kept.len(), m.items.len(), before - instances.len(), n_lights, n_lights_before);
         }
         Ok(Scene { models, model_names, instances, item_count: m.items.len(), decor: Vec::new(), alpha_masks, card_albedo, tex_albedo, stock_models: stock_model_idx })
     }

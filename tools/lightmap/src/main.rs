@@ -966,6 +966,38 @@ fn run(mut a: Vec<String>) {
                 for spec in &added { a.push("--pak".to_string()); a.push(spec.clone()); }
                 if !added.is_empty() { eprintln!("pak defaults: added {} beside the named --pak (--no-pak-defaults opts out)", added.iter().map(|s| s.rsplit_once(':').map(|(p, _)| p.to_string()).unwrap_or_default()).collect::<Vec<_>>().join(", ")); }
             }
+            // THE KEPT SET OF A REDUCED ORACLE (E, 2026-09-27 16:30Z; RE 14: tiny16's editor bake held 8 119 of 8 618 items — 978 of the 986 lamps
+            // sat on dropped items, and every tiny16 row compared a FULL-map bake against it): --kept FILE applies to the whole scene
+            // (geometry::set_kept_items → Scene::from_map drops the other items: casters, receivers, bouncers, lamps), and when no --kept is
+            // given the list beside the map (`<map>.kept`, `<stem>-kept.txt`, `<map-name>-reduced-kept.txt`) is taken by default —
+            // --no-kept-default opts out.
+            if a[0] == "bake" {
+                let given = a.iter().position(|x| x == "--kept").and_then(|i| a.get(i + 1).cloned());
+                let n_items = tmmaps::map::MapFile::load(std::path::Path::new(&a[1])).items.len();
+                let kept_path = match (&given, a.iter().any(|x| x == "--no-kept-default")) {
+                    (Some(p), _) => Some(p.clone()),
+                    (None, true) => None,
+                    (None, false) => match lightmap::geometry::default_kept_list_for(&a[1]) {
+                        Some(p) => {
+                            let k = lightmap::geometry::read_kept_list(&p).unwrap_or_else(|e| panic!("{e}"));
+                            match lightmap::geometry::kept_list_fits(&k, n_items) {
+                                Ok(()) => { eprintln!("reduced oracle: --kept {p} taken from beside the map (--no-kept-default opts out)"); a.push("--kept".to_string()); a.push(p.clone()); Some(p) }
+                                Err(why) => { eprintln!("reduced oracle: the kept list beside the map ({p}) is NOT applied — {why}"); None }
+                            }
+                        }
+                        None => None,
+                    },
+                };
+                match kept_path {
+                    Some(p) => {
+                        let k = lightmap::geometry::read_kept_list(&p).unwrap_or_else(|e| panic!("{e}"));
+                        if let Err(why) = lightmap::geometry::kept_list_fits(&k, n_items) { eprintln!("WARNING: --kept {p} does not fit this map as a reduction: {why}"); }
+                        eprintln!("reduced oracle: the kept set lists {} of the map's {n_items} items ({p}) — the scene, the records and the lamps are the kept items'", k.len());
+                        lightmap::geometry::set_kept_items(Some(k));
+                    }
+                    None => lightmap::geometry::set_kept_items(None),
+                }
+            }
             let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
             let has = |k: &str| a.iter().any(|x| x == k);
             let map_path = a[1].clone();
@@ -7095,6 +7127,131 @@ fn run(mut a: Vec<String>) {
                 std::fs::write(&p, ppm).expect("write");
                 println!("→ {p} (√(v/max) for viewing)");
             }
+        }
+        "lamp-enclosure" => {
+            // lmtool lamp-enclosure MAP --pak FILE:KEY[,FILE:KEY…] [--collection C] [--rays N] [--out TSV]: RE 14's H1 check (2026-09-27) — is each
+            // lamp SEALED inside its own item's housing by the materials our caster set drops? For every world light: N ray directions inside
+            // its spot cone (the whole sphere for a ball light) from the light position, the blocked fraction within the radius against
+            // (1) the lamp's OWN item instance, (2) the whole scene — each with our DEFAULT caster materials (geom_from_solid2_ext drops the
+            // no-PreLightGen shaders: DecalGeom, TAddModCV, ShadowCaster, Glass, Water…) and with EVERY material kept
+            // (LMTOOL_KEEP_EXCLUDED_MATERIALS=1, the scene loaded twice). Per model: lamps, triangles in both variants, the four mean
+            // blocked fractions; --out writes the per-lamp rows.
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let n_rays: usize = f("--rays").map(|v| v.parse().expect("--rays N")).unwrap_or(512);
+            let paks: Vec<String> = a.iter().enumerate().filter(|(_, x)| *x == "--pak").filter_map(|(i, _)| a.get(i + 1).cloned()).flat_map(|v| v.split(',').map(|s| s.trim().to_string()).collect::<Vec<_>>()).collect();
+            if std::env::var_os("LMTOOL_STOCK_PAKS").is_none() && !paks.is_empty() { std::env::set_var("LMTOOL_STOCK_PAKS", paks.join(",")); }
+            {
+                let mut st = mapgeom::store::DataStore::empty();
+                let mut n = 0usize;
+                for spec in &paks { if let Some((pp, key)) = spec.rsplit_once(':') { if st.add_pak(pp, key).is_ok() { n += 1; } } }
+                if n > 0 { lightmap::lmmesh::set_lm_uv_store(st); }
+            }
+            let t0 = std::time::Instant::now();
+            std::env::remove_var("LMTOOL_KEEP_EXCLUDED_MATERIALS");
+            let scene_def = lightmap::geometry::Scene::from_map(&a[1]).expect("scene (default materials)");
+            std::env::set_var("LMTOOL_KEEP_EXCLUDED_MATERIALS", "1");
+            let scene_all = lightmap::geometry::Scene::from_map(&a[1]).expect("scene (every material)");
+            std::env::remove_var("LMTOOL_KEEP_EXCLUDED_MATERIALS");
+            eprintln!("scenes: default {} tris, every material {} tris ({:.1}s)", scene_def.tri_count(), scene_all.tri_count(), t0.elapsed().as_secs_f32());
+            let lights = scene_def.world_lights();
+            let lights_all = scene_all.world_lights();
+            assert_eq!(lights.len(), lights_all.len(), "the two scenes disagree on the light count");
+            // the whole-scene BVHs
+            let bvh_def = lightmap::bvh::Bvh::build(lightmap::bake::world_tris(&scene_def));
+            let bvh_all = lightmap::bvh::Bvh::build(lightmap::bake::world_tris(&scene_all));
+            eprintln!("bvh: default {} tris, every material {} tris ({:.1}s)", bvh_def.tris.len(), bvh_all.tris.len(), t0.elapsed().as_secs_f32());
+            // one instance's world triangles (both variants) as a small BVH
+            let own_bvh = |scene: &lightmap::geometry::Scene, ii: usize| -> lightmap::bvh::Bvh {
+                let inst = &scene.instances[ii];
+                let m = &scene.models[inst.model];
+                let tris: Vec<lightmap::bvh::WTri> = m.tris.iter().enumerate().map(|(ti, t)| {
+                    let p0 = lightmap::geometry::xf_point(&inst.xf, t.p[0]);
+                    let p1 = lightmap::geometry::xf_point(&inst.xf, t.p[1]);
+                    let p2 = lightmap::geometry::xf_point(&inst.xf, t.p[2]);
+                    lightmap::bvh::WTri { p0, e1: lightmap::geometry::sub(p1, p0), e2: lightmap::geometry::sub(p2, p0), inst: ii as u32, tri: ti as u32, alpha: u16::MAX, uv0: t.uv0 }
+                }).collect();
+                lightmap::bvh::Bvh::build(tris)
+            };
+            // the ray directions: a Fibonacci sphere in the light's frame (axis = dir, left / up = the socket frame), kept inside the cone
+            let dirs_of = |l: &lightmap::geometry::LightDef| -> Vec<[f32; 3]> {
+                let half = (l.cone.1.min(180.0) * 0.5).to_radians();
+                let cos_half = half.cos();
+                let axis = lightmap::geometry::norm(l.dir);
+                let mut u = lightmap::geometry::cross(axis, if axis[1].abs() < 0.9 { [0.0, 1.0, 0.0] } else { [1.0, 0.0, 0.0] });
+                u = lightmap::geometry::norm(u);
+                let v = lightmap::geometry::cross(axis, u);
+                let ga = std::f32::consts::PI * (3.0 - 5f32.sqrt());
+                let mut out = Vec::with_capacity(n_rays);
+                // sample the whole sphere, keep the cone: N kept rays wanted → oversample by the cone's solid-angle fraction
+                let frac = ((1.0 - cos_half) * 0.5).max(1e-3);
+                let n_sphere = ((n_rays as f32) / frac).ceil() as usize;
+                for i in 0..n_sphere {
+                    let z = 1.0 - 2.0 * (i as f32 + 0.5) / n_sphere as f32;
+                    if z < cos_half { continue; }
+                    let r = (1.0 - z * z).max(0.0).sqrt();
+                    let phi = ga * i as f32;
+                    let (x, y) = (r * phi.cos(), r * phi.sin());
+                    out.push(lightmap::geometry::norm([axis[0] * z + u[0] * x + v[0] * y, axis[1] * z + u[1] * x + v[1] * y, axis[2] * z + u[2] * x + v[2] * y]));
+                }
+                out
+            };
+            let blocked = |bvh: &lightmap::bvh::Bvh, o: [f32; 3], dirs: &[[f32; 3]], tmax: f32| -> f32 {
+                if dirs.is_empty() { return f32::NAN; }
+                let n = dirs.iter().filter(|d| bvh.occluded(o, **d, tmax, u32::MAX, 0.0)).count();
+                n as f32 / dirs.len() as f32
+            };
+            // the NEAREST hit's face side — a CullMode.Back flat cube (as captured: every caster draw) renders a caster only when the
+            // light sees its FRONT; a light inside a housing sees the housing's BACK faces, which the cube culls, so the light escapes.
+            // front_n: the ray hits the side the mesh's vertex normals point to; front_w: the CCW winding side (e1 × e2) — they differ
+            // where a model's normals and winding disagree. near: the hit is inside the flat cube's near plane (R/1000 — s = 1/999).
+            struct Sides { any: usize, front_n: usize, front_w: usize, near: usize }
+            let sides = |bvh: &lightmap::bvh::Bvh, scene: &lightmap::geometry::Scene, o: [f32; 3], dirs: &[[f32; 3]], tmax: f32| -> Sides {
+                let mut s = Sides { any: 0, front_n: 0, front_w: 0, near: 0 };
+                for d in dirs {
+                    let Some(h) = bvh.closest(o, *d, tmax) else { continue };
+                    s.any += 1;
+                    let wt = &bvh.tris[h.tri as usize];
+                    let nw = lightmap::geometry::norm(lightmap::geometry::cross(wt.e1, wt.e2));
+                    if lightmap::geometry::dot(*d, nw) < 0.0 { s.front_w += 1; }
+                    if let Some(inst) = scene.instances.get(wt.inst as usize) {
+                        if let Some(t) = scene.models[inst.model].tris.get(wt.tri as usize) {
+                            let n = lightmap::geometry::xf_normal(&inst.xf, lightmap::geometry::norm(lightmap::geometry::add(lightmap::geometry::add(t.n[0], t.n[1]), t.n[2])));
+                            if lightmap::geometry::dot(*d, n) < 0.0 { s.front_n += 1; }
+                        }
+                    }
+                    if h.t < tmax / 1000.0 { s.near += 1; }
+                }
+                s
+            };
+            let mut rows = String::from("lamp\towner\tmodel\tstock\tx\ty\tz\tradius\tcone_outer\trays\town_any\town_front_n\town_front_w\town_near\tscene_any\tscene_front_n\tscene_front_w\towner_tris_default\towner_tris_all\n");
+            #[derive(Default)]
+            struct Agg { n: usize, oa: f64, ofn: f64, ofw: f64, onear: f64, sa: f64, sfn: f64, sfw: f64, td: usize, ta: usize, stock: bool }
+            let mut per_model: std::collections::BTreeMap<String, Agg> = std::collections::BTreeMap::new();
+            for (k, (ii, l)) in lights.iter().enumerate() {
+                let dirs = dirs_of(l);
+                let own_a = own_bvh(&scene_all, *ii);
+                let r = l.radius.max(0.5);
+                let nr = dirs.len().max(1) as f32;
+                let so = sides(&own_a, &scene_all, l.pos, &dirs, r);
+                let ss = sides(&bvh_all, &scene_all, l.pos, &dirs, r);
+                let _ = blocked(&own_a, l.pos, &dirs, r);
+                let inst = &scene_def.instances[*ii];
+                let name = inst.model_name.clone();
+                let stock = scene_def.stock_models.contains(&inst.model);
+                let (td, ta) = (scene_def.models[inst.model].tris.len(), scene_all.models[scene_all.instances[*ii].model].tris.len());
+                let (oa, ofn, ofw, onear, sa, sfn, sfw) = (so.any as f32 / nr, so.front_n as f32 / nr, so.front_w as f32 / nr, so.near as f32 / nr, ss.any as f32 / nr, ss.front_n as f32 / nr, ss.front_w as f32 / nr);
+                rows.push_str(&format!("{k}\titem {ii}\t{name}\t{stock}\t{:.3}\t{:.3}\t{:.3}\t{:.2}\t{}\t{}\t{oa:.4}\t{ofn:.4}\t{ofw:.4}\t{onear:.4}\t{sa:.4}\t{sfn:.4}\t{sfw:.4}\t{td}\t{ta}\n", l.pos[0], l.pos[1], l.pos[2], l.radius, l.cone.1, dirs.len()));
+                let e = per_model.entry(name).or_default();
+                e.n += 1; e.oa += oa as f64; e.ofn += ofn as f64; e.ofw += ofw as f64; e.onear += onear as f64; e.sa += sa as f64; e.sfn += sfn as f64; e.sfw += sfw as f64; e.td = td; e.ta = ta; e.stock = stock;
+                let _ = lights_all.len();
+            }
+            println!("{} lamps, {} rays wanted per lamp inside the cone; blocked fraction within the radius (mean per model) — OWN item: any hit / front-facing by the vertex normals / front-facing by the winding / inside the near plane (R/1000); WHOLE scene: any / front_n / front_w; tris = the model's triangles with our default caster materials and with every material kept", lights.len(), n_rays);
+            println!("{:>5}  {:<24} {:>5}  {:>6} {:>6} {:>6} {:>6}   {:>6} {:>6} {:>6}   {:>7} {:>7}", "lamps", "model", "stock", "o_any", "o_frN", "o_frW", "o_near", "s_any", "s_frN", "s_frW", "tris_d", "tris_a");
+            for (name, e) in &per_model {
+                let n = e.n as f64;
+                println!("{:>5}  {:<24} {:>5}  {:>6.3} {:>6.3} {:>6.3} {:>6.3}   {:>6.3} {:>6.3} {:>6.3}   {:>7} {:>7}", e.n, name, e.stock, e.oa / n, e.ofn / n, e.ofw / n, e.onear / n, e.sa / n, e.sfn / n, e.sfw / n, e.td, e.ta);
+            }
+            if let Some(out) = f("--out") { std::fs::write(&out, rows).expect("write"); println!("→ {out}"); }
         }
         "map-lights" => {
             // lmtool map-lights MAP --pak FILE:KEY [--collection C] [--out TSV]: THE LOCAL LIGHTS of a map — the items' CPlugLights
