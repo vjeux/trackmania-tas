@@ -863,7 +863,9 @@ impl Acc {
 pub fn is_visual(class_id: u32) -> bool {
     matches!(
         class_id,
-        C_VISUAL_INDEXED_TRIANGLES | 0x0906A000 | 0x0902C000 | 0x09006000 | 0x0900F000
+        // (0x09010000 = CPlugVisualSprite: its inline 24-byte sprites are read by `visual_inline_vertices` as position + three
+        // floats — the cloud sprite solids, G2 2026-09-27)
+        C_VISUAL_INDEXED_TRIANGLES | 0x0906A000 | 0x0902C000 | 0x09006000 | 0x0900F000 | 0x09010000
     )
 }
 

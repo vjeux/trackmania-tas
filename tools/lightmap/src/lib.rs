@@ -34,6 +34,7 @@ pub mod corpusgate;
 pub mod trustmatrix;
 pub mod texeldelta;
 pub mod clouds;
+pub mod cloudfield;
 pub mod png;
 pub mod gpufmt;
 pub mod gpuenc;

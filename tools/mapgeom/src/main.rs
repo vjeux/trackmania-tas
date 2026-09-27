@@ -4173,7 +4173,7 @@ fn describe(n: &Node) -> String {
             b.array_slices
         ),
         Node::FileGen(g) => format!("CPlugFileGen v{} kind {} u32s {:?} float4s {:?} f32s {:?} name {:?}", g.version, g.kind, g.u32s, g.float4s, g.f32s, g.name),
-        Node::MaterialCustom(m) => format!("CPlugMaterialCustom layer names (Pxz, Py, X2, H2) {:?} (mode {}) bitmaps {:?}", m.layer_names, m.layer_mode, m.bitmaps),
+        Node::MaterialCustom(m) => format!("CPlugMaterialCustom layer names (Pxz, Py, X2, H2) {:?} (mode {}) bitmaps {:?} params {:?}", m.layer_names, m.layer_mode, m.bitmaps, m.params),
         Node::Other(c) => format!("class 0x{:08X}", c),
     }
 }

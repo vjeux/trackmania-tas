@@ -4959,6 +4959,7 @@ fn run(mut a: Vec<String>) {
         // lmtool corpus-gate run|report|list --corpus CORPUS.tsv … : the per-landing corpus matrix (corpusgate.rs)
         "corpus-gate" => { if let Err(e) = lightmap::corpusgate::run(&a) { eprintln!("corpus-gate: {e}"); std::process::exit(1); } }
         "clouds-reach" => { if let Err(e) = lightmap::clouds::reach(&a) { eprintln!("clouds-reach: {e}"); std::process::exit(1); } }
+        "clouds-field" => { if let Err(e) = lightmap::cloudfield::cli(&a) { eprintln!("clouds-field: {e}"); std::process::exit(1); } }
         // (G's classcmp dispatch dropped at integration: V's classcmp — landed first, with --own-rects,
         //  --coverage, the spread column and the pairing guard — owns the subcommand; G's --ents table is
         //  the duplicate. His dome-rings and the study knobs below are kept.)
