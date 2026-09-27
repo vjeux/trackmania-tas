@@ -230,7 +230,13 @@ fn main() {
             let dir = tmmaps::cli::flag(rest, "--token-dir").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from("/tmp/tinyctl-tokens"));
             std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
             let wsx = wsx::Wsx::new(rest);
-            roundpub::mint_tokens(&wsx, &dir)?;
+            // --standalone: the plugin-free path (own game, own tiny plugin, closed by pid);
+            // the default still uses GhostShooter's route when that plugin is installed
+            if rest.iter().any(|a| a == "--standalone") {
+                roundpub::mint_tokens_standalone(&wsx, &dir)?;
+            } else {
+                roundpub::mint_tokens(&wsx, &dir)?;
+            }
             println!("tokens in {}", dir.display());
             Ok(())
         })(),

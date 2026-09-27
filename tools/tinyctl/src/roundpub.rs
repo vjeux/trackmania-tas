@@ -709,3 +709,64 @@ pub fn inplace_cmd(args: &[String]) -> Result<(), String> {
     println!("[{:>5.0}s] round-inplace: {total_ok} of {} maps updated", t0.elapsed().as_secs_f64(), all.len());
     if total_ok == all.len() { Ok(()) } else { Err(format!("{} map(s) not updated", all.len() - total_ok)) }
 }
+
+/// The plugin-free mint (2026-09-27): every agent plugin is quarantined from the box on
+/// vjeux's order, so `/nadeotoken` (GhostShooter) is gone from any game he plays. This
+/// path stages the tiny `AgentTokenMint` plugin (two token files at load, nothing else)
+/// into `OpenplanetNext/Plugins/`, launches a game OF ITS OWN under tmdrive, waits for the
+/// two files, pulls them, closes THAT game by pid, and removes the plugin again — the
+/// box is left exactly as found. It never touches a game that is already running: with
+/// one up (a human's) it refuses, so the caller asks for a window instead.
+pub fn mint_tokens_standalone(wsx: &Wsx, token_dir: &Path) -> Result<(), String> {
+    const PLUGIN_DIR: &str = "/mnt/c/Users/vjeux/OpenplanetNext/Plugins/AgentTokenMint";
+    const STORE: &str = "/mnt/c/Users/vjeux/OpenplanetNext/PluginStorage/AgentTokenMint";
+    let env = "cd /home/vjeux/shoot/hunt; export TM_SESSION=080a15b8-2c6a-4fff-9d8a-db7d0072ee43; export TM_SESSION_TITLE=\"Tiny u10s publish\"; export PATH=/home/vjeux/bin:$PATH";
+    let t0 = Instant::now();
+    let up = wsx.sh("tasklist.exe 2>/dev/null | grep -ci trackmania").unwrap_or_default().trim().to_string();
+    if up != "0" {
+        return Err("mint-standalone: a game is already running on the box (not mine) — ask for a free window; this mint only ever uses a game it launched".into());
+    }
+    let marker = wsx.sh("test -e /mnt/c/Users/vjeux/OpenplanetNext/PluginStorage/TmDriveRecovery.v1 && echo DIRTY || echo clean").unwrap_or_default();
+    if marker.contains("DIRTY") {
+        return Err("mint-standalone: TmDriveRecovery.v1 marker present (another session restoring the box)".into());
+    }
+    // stage the plugin sources (Openplanet loads a folder plugin from Plugins/<Name>/)
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../token-plugin");
+    wsx.sh(&format!("mkdir -p {PLUGIN_DIR} && rm -f {STORE}/token-*.txt {STORE}/minted.txt")).map_err(|e| format!("stage: {e}"))?;
+    for f in ["info.toml", "Main.as"] {
+        wsx.push(&src.join(f), &format!("{PLUGIN_DIR}/{f}")).map_err(|e| format!("push {f}: {e}"))?;
+    }
+    // launch OUR game (own lock step) and remember its pid
+    let _ = wsx.sh(&format!("{env}; sed -i \"s/^DeveloperMode=false/DeveloperMode=true/\" /mnt/c/Users/vjeux/OpenplanetNext/Settings.ini; tmdrive launch --timeout 120 --purpose \"token mint (standalone plugin)\" > /dev/null 2>&1; true"));
+    let pid = wsx.sh("tasklist.exe /FO CSV /NH 2>/dev/null | grep -i trackmania | head -1 | cut -d, -f2 | tr -d '\"'").unwrap_or_default().trim().to_string();
+    let pid: u32 = pid.parse().map_err(|_| "mint-standalone: the game did not start (no pid)".to_string())?;
+    println!("  mint-standalone: launched the game (pid {pid}); waiting for the token files");
+    // wait for the two files (the plugin writes them once the menu has authenticated)
+    let mut ok = false;
+    for _ in 0..24 {
+        std::thread::sleep(std::time::Duration::from_secs(5));
+        let n = wsx.sh(&format!("ls {STORE}/token-NadeoServices.txt {STORE}/token-NadeoLiveServices.txt 2>/dev/null | wc -l")).unwrap_or_default().trim().to_string();
+        if n == "2" {
+            ok = true;
+            break;
+        }
+    }
+    // pull, then close OUR game by pid and remove the plugin — whatever happened
+    let mut pulled = Ok(());
+    if ok {
+        for aud in ["NadeoServices", "NadeoLiveServices"] {
+            let local = token_dir.join(format!("token-{aud}.txt"));
+            if let Err(e) = wsx.pull(&format!("{STORE}/token-{aud}.txt"), &local) {
+                pulled = Err(format!("pull token-{aud}: {e}"));
+            }
+        }
+    }
+    let _ = wsx.sh(&format!("taskkill.exe /PID {pid} /F > /dev/null 2>&1; sleep 2; rm -rf {PLUGIN_DIR}; true"));
+    println!("  mint-standalone: closed the game it launched (pid {pid}, by pid) and removed the plugin");
+    if !ok {
+        return Err("mint-standalone: no token files after 120 s (plugin not loaded? not authenticated?)".into());
+    }
+    pulled?;
+    println!("tokens minted (standalone plugin) and pulled to {} ({}s)", token_dir.display(), t0.elapsed().as_secs());
+    Ok(())
+}
