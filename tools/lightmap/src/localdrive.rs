@@ -54,6 +54,8 @@ pub struct Lamp {
     /// weight 1/(N·SS²); one entry (= pos) when the game takes the single-position path. Filled by `area_samples` from the bake quality
     /// and the texel density (`Lamp::with_area`); `Lamp::new` leaves the single position.
     pub samples: Vec<[f32; 3]>,
+    /// The layout's texel density (the flat-cube face sizes derive from it).
+    pub texels_per_m: f32,
     /// The instance radius the pass reads (the attenuation zero, the cull radius, the shadow far plane).
     pub r_eff: f32,
     pub back_offset: f32,
@@ -98,8 +100,24 @@ pub fn spot_falloff_back_offset(l: &LightDef) -> f32 {
 
 /// LightSH[0].xyz of the frame: the desc's premultiplied colour · intensity (RE 7's binder, 23:58Z) — the local-light frame's
 /// extra curve factor is 1 until the capture's cbuffer pins it.
+/// THE LAMP'S LightRgb = sRGB→LINEAR(the file colour) × intensity (E, 2026-09-27 00:55Z, from the baker's sw1 f3884 PS 7258 cbuffer):
+/// the RoadBorderSpot's file colour (241, 237, 226)/255 × 1.1 would give (1.0396, 1.0224, 0.9749); the captured LightRgb is (0.96758461,
+/// 0.93156064, 0.83657712) = ((c + 0.055)/1.055)^2.4 × 1.1 to four digits on every channel (0.87962 / 0.84687 / 0.76052 × 1.1) — the
+/// 8-bit colour is sRGB-encoded and the game decodes it. LMTOOL_LL_RGB_ENCODED=1 = the old product (study).
 pub fn light_rgb(l: &LightDef) -> [f32; 3] {
-    [l.color[0] * l.intensity, l.color[1] * l.intensity, l.color[2] * l.intensity]
+    static ENC: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("LMTOOL_LL_RGB_ENCODED").is_some());
+    let lin = |c: f32| -> f32 { if *ENC { c } else if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) } };
+    [lin(l.color[0]) * l.intensity, lin(l.color[1]) * l.intensity, lin(l.color[2]) * l.intensity]
+}
+
+#[cfg(test)]
+mod light_rgb_tests {
+    #[test]
+    fn the_roadborderspot_lightrgb_of_sw1_f3884() {
+        let l = crate::geometry::LightDef { color: [241.0 / 255.0, 237.0 / 255.0, 226.0 / 255.0], intensity: 1.1, ..Default::default() };
+        let rgb = super::light_rgb(&l);
+        for (o, c) in rgb.iter().zip([0.96758461f32, 0.93156064, 0.83657712]) { assert!((o - c).abs() < 2e-4, "{rgb:?}"); }
+    }
 }
 
 /// THE EMITTER-AREA SAMPLE POSITIONS of a light (RE 13, 2026-09-26 21:20Z — GetLocalLightDescs 0x140226f30 l.519–690, RenderLightSpotMulti
@@ -120,11 +138,16 @@ pub fn area_samples(l: &LightDef, r: f32, quality: u32, density: f32) -> Vec<[f3
     // pair0 = (S_full, 1.0) and every lamp samples 5 × 5. LMTOOL_LL_AREA_PAIR1=1 selects the pair1 branch for the bit-30 lamps; the
     // default is pair0 for all (the 5 × 5 stpad set V measured: Day MaxHDR = the editor's exactly) until the sw0 export's OutScale
     // (1/9 … 1/36 vs 1/225) decides.
-    static PAIR1: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("LMTOOL_LL_AREA_PAIR1").is_some());
+    // THE PAIR-1 BRANCH IS THE ONE IN EFFECT (E, 2026-09-27 00:40Z, from the baker's sw1 f3884): the two lamps in the frame sit
+    // 0.1417 m from their file positions = |0.683·a·LEFT + 0.183·b·UP| for a = b = 0.2 — sample (1, 1) of the 30°-rotated 2 × 2 grid —
+    // and OutScaleRGB = 1/36 = 1/(4 · 9): four emitter samples of nine jitters each (the four samples of one lamp span consecutive
+    // frames, one sample per frame group). So zone+0x244 == 0 in the editor bake and a Ball08 word with bits 10–12 == 0 takes
+    // (min(S_full, 4), k 0.5). LMTOOL_LL_AREA_PAIR0=1 = every lamp on pair0 (the 25-sample study).
+    static PAIR0: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("LMTOOL_LL_AREA_PAIR0").is_some());
     const TABLE: [u32; 6] = [1, 7, 25, 25, 25, 25];
     let mut s_full = FORCE.unwrap_or(TABLE[(quality as usize).min(5)]);
     let mut k = if quality < 2 { 0.5f32 } else { 1.0 };
-    if *PAIR1 && (l.ball_flags >> 10) & 7 == 0 {
+    if !*PAIR0 && (l.ball_flags >> 10) & 7 == 0 {
         s_full = s_full.min(4);
         k = 0.5;
     }
@@ -194,7 +217,7 @@ impl Lamp {
     /// `texels_per_m` = the bake's layout density (`GameLayout::s`): the instance radius and the flat-cube face follow it.
     pub fn new(id: u16, owner: &str, light: LightDef, texels_per_m: f32) -> Lamp {
         let r_eff = effective_radius(&light, texels_per_m);
-        Lamp { id, owner: owner.to_string(), light, r_eff, back_offset: spot_falloff_back_offset(&light), face_size: face_size(r_eff, texels_per_m), rgb: light_rgb(&light), samples: vec![light.pos] }
+        Lamp { id, owner: owner.to_string(), light, r_eff, back_offset: spot_falloff_back_offset(&light), face_size: face_size(r_eff, texels_per_m), rgb: light_rgb(&light), samples: vec![light.pos], texels_per_m }
     }
 
     /// The lamp with its emitter-area sample positions for a bake at `quality` (the game's index 0..5) and the chart-allocation texel
@@ -239,6 +262,36 @@ impl Lamp {
             is_light_spot: self.is_spot(),
             is_att_hn2: true,
         }
+    }
+
+    /// THE COLOUR PASS's cbuffer (PS 7258, the baker's sw1 f3884 = frame 0's direct lamp pass, 2026-09-27 00:30Z — read by E): the
+    /// light at the emitter SAMPLE `pos`; InvRadius = 1/R_FILE (0.025 → 40.000, the file radius — the R + 1.5/s enlargement belongs to
+    /// the LightId pass alone), InvRadius2 and AttHN2 of R_file (0.6794761, 0.0143123, 0.00054245, −0.4717220 = att_hn2(40, hyper2));
+    /// the flat cube of R_file (ZScale −1/999, ZTrans = R_file/999 = 0.040040, face ceil(2·R_file·s) = 170 on stpad — the LightId
+    /// pass's is 173); NO SpotFalloffBackOffset (PS 7258 l.12 takes the cone cosine from the plain light vector; the LightId
+    /// permutation PS 7343 offsets it); OutScaleRGB = 1/(N·SS²) = 1/36 for the pair-1 2 × 2 emitter samples at SS 3, OutAlpha 0.
+    pub fn colour_cb_at(&self, pos: [f32; 3], n_samples: usize) -> LightCb {
+        let mut cb = self.light_cb_at(pos, n_samples);
+        let l = &self.light;
+        let r = self.r_file();
+        let s = 1.0f32 / 999.0;
+        cb.faces = flat_cube_faces(self.face_file(), SHADOW_TARGET);
+        cb.z_trans = r * s;
+        cb.inv_radius2 = 1.0 / (r * r);
+        cb.att_hn2 = crate::moods::att_hn2(r, l.hyper2[0], l.hyper2[1]);
+        cb.spot_falloff_back_offset = 0.0;
+        cb
+    }
+
+    /// The file radius of the light (the colour pass's R); LMTOOL_LL_COLOUR_REFF=1 = the LightId pass's R_eff there too (study).
+    pub fn r_file(&self) -> f32 {
+        static REFF: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("LMTOOL_LL_COLOUR_REFF").is_some());
+        if *REFF { self.r_eff } else { self.light.radius }
+    }
+
+    /// The colour pass's flat-cube face size: ceil(2·R_file·s) (170 on stpad = the sw1 FlatCubeFaces' 85/4096 half-size).
+    pub fn face_file(&self) -> u32 {
+        face_size(self.r_file(), self.texels_per_m)
     }
 
     /// PS 7351's cbuffer for one probe chunk: ProbeStWorld = (cell, the world of atlas index 0) per axis.
@@ -587,6 +640,21 @@ impl PagedAccum {
             let e = if s[0] > 0.0 { s[0] * (s[1] / s[2]).clamp(0.0, 1.0) } else { 0.0 };
             // (texel, rgb, the texel's raster coverage Σ 1/9 — the same for every lamp that rasterises it)
             out.push((t, [e * rgb[0], e * rgb[1], e * rgb[2], s[2]]));
+        }
+        out
+    }
+
+    /// THE COLOUR PASS's contribution (E, 2026-09-27 00:45Z; PS 7258): per touched texel `Σ_samples Σ_jitters att·shadow·cosθ · OutScale`
+    /// — slot 0 of this accumulator, the shadow already inside the product (no lit-fraction re-application: `lamp_direct` applied it twice
+    /// on top of a term that carried it) — times LightRgb; the alpha = the texel's raster coverage from the LightId pass `cov` (k/9).
+    pub fn lamp_colour(&self, rgb: [f32; 3], cov: &PagedAccum) -> Vec<(u32, [f32; 4])> {
+        let mut out = Vec::with_capacity(self.touched_list.len());
+        for &t in &self.touched_list {
+            let (x, y) = ((t % self.w) as i32, (t / self.w) as i32);
+            let s = self.sum(x, y);
+            let c = cov.sum(x, y)[2].max(s[2]);
+            if s[0] <= 0.0 && c <= 0.0 { continue; }
+            out.push((t, [s[0] * rgb[0], s[0] * rgb[1], s[0] * rgb[2], c]));
         }
         out
     }
@@ -1114,6 +1182,7 @@ pub fn run_frame(gl: &crate::layout::GameLayout, sc: &LmScene, lamps: &[Lamp], c
                 sc_.spawn(|| {
                     let _guard = LiveGuard(&live);
                     let mut acc = PagedAccum::new(w, h);
+                    let mut cacc = PagedAccum::new(w, h);
                     let mut visited = vec![0u64; ((w * h) as usize + 63) / 64];
                     let mut probe_scratch = ProbeState::new(probe_n);
                     loop {
@@ -1126,24 +1195,32 @@ pub fn run_frame(gl: &crate::layout::GameLayout, sc: &LmScene, lamps: &[Lamp], c
                         let tris = casters_masked(sc, &drawn);
                         if std::env::var_os("LMTOOL_LL_CASTER_TRACE").is_some() { let na = tris.iter().filter(|t| t.alpha.is_some()).count(); if na > 0 { eprintln!("lamp {} ({}): {} casters, {na} alpha-tested", lamp.id, lamp.owner, tris.len()); } }
                         let t1 = t.elapsed().as_secs_f32();
-                        // THE EMITTER-AREA SAMPLES (RE 13 21:20Z): every sample = a full lamp pass — its own flat cube from the shifted position
-                        // (the soft shadow) and its own draw at the shifted LightPos, OutScale 1/(N·SS²); the probes take the centre sample's cube
+                        // THE TWO LAMP PASSES OF FRAME 0 (E, 2026-09-27 00:45Z, from the baker's sw0 + sw1 captures): (1) the LightId pass —
+                        // ONE position, the flat cube and the cbuffer at R_eff = R + 1.5/s, 9 jitters, OutScale 1/9 (PS 7343 / 10403; sw0 f4936)
+                        // → the per-texel light lists + weights and the probes; (2) the COLOUR pass — the pair-1 emitter samples (2 × 2 on the
+                        // 30°-rotated grid over the 0.2 m half-lengths), each with its OWN flat cube at R_FILE from the shifted position and a
+                        // draw with PS 7258's cbuffer (R_file, no back offset, OutScaleRGB 1/(N·9), OutAlpha 0; sw1 f3884) → A_0's colour.
+                        let shadow = crate::locallight::render_flat_cube_masked(lamp.light.pos, lamp.r_eff, lamp.face_size, &tris, *CULL_BACK);
+                        let t2 = t.elapsed().as_secs_f32();
+                        let probe_vals = probe_values(chunks, lamp, &shadow, &mut probe_scratch);
+                        let t3 = t.elapsed().as_secs_f32();
+                        let cb = lamp.light_cb();
+                        let mut frags = draw_lamp(sc, &drawn, &cb, &shadow, &mut acc);
                         let n_s = lamp.samples.len().max(1);
-                        let mut frags = 0u64;
-                        let (mut t2, mut t3) = (t1, t1);
-                        let mut probe_vals = Vec::new();
-                        let mut n_casters = 0usize;
-                        for (si, &sp) in lamp.samples.iter().enumerate() {
-                            let shadow = crate::locallight::render_flat_cube_masked(sp, lamp.r_eff, lamp.face_size, &tris, *CULL_BACK);
-                            if si == 0 { t2 = t.elapsed().as_secs_f32(); probe_vals = probe_values(chunks, lamp, &shadow, &mut probe_scratch); t3 = t.elapsed().as_secs_f32(); n_casters = tris.len(); }
-                            let cb = lamp.light_cb_at(sp, n_s);
-                            frags += draw_lamp(sc, &drawn, &cb, &shadow, &mut acc);
+                        let face_file = lamp.face_file();
+                        for &sp in lamp.samples.iter() {
+                            let cshadow = if face_file == lamp.face_size && lamp.r_file() == lamp.r_eff && sp == lamp.light.pos { None } else { Some(crate::locallight::render_flat_cube_masked(sp, lamp.r_file(), face_file, &tris, *CULL_BACK)) };
+                            let ccb = lamp.colour_cb_at(sp, n_s);
+                            frags += draw_lamp(sc, &drawn, &ccb, cshadow.as_ref().unwrap_or(&shadow), &mut cacc);
                         }
-                        let tris_len = n_casters;
+                        let tris_len = tris.len();
                         let t4 = t.elapsed().as_secs_f32();
                         let weights = acc.lamp_weights(&mut visited);
-                        let direct = acc.lamp_direct(lamp.rgb);
+                        // A_0's colour = the colour pass's Σ att·shadow·cosθ·OutScale (the shadow is INSIDE the product — PS 7258 l.74–77), × LightRgb;
+                        // the coverage alpha = the LightId raster's k/9 (the whole-atlas coverage pass overrides it in frame1_from_direct)
+                        let direct = cacc.lamp_colour(lamp.rgb, &acc);
                         acc.clear();
+                        cacc.clear();
                         let t5 = t.elapsed().as_secs_f32();
                         *slots[li].lock().unwrap() = Some(LampWork { drawn, n_casters: tris_len, frags, weights, probe_vals, direct, secs: [t1, t2 - t1, t3 - t2, t4 - t3, t5 - t4] });
                         done.fetch_add(1, std::sync::atomic::Ordering::Release);
@@ -1196,6 +1273,7 @@ pub fn run_frame(gl: &crate::layout::GameLayout, sc: &LmScene, lamps: &[Lamp], c
         return FrameOut { lists, probes, kept: None, results, direct };
     }
     let mut acc = Accum::new(w, h);
+    let mut cacc = Accum::new(w, h);
     let mut probes = ProbeState::new(probe_n);
     let mut kept = None;
     let mut results = Vec::with_capacity(lamps.len());
@@ -1204,27 +1282,31 @@ pub fn run_frame(gl: &crate::layout::GameLayout, sc: &LmScene, lamps: &[Lamp], c
     for (li, lamp) in lamps.iter().enumerate() {
         let drawn = cull(gl, sc, lamp);
         let tris = casters_masked(sc, &drawn);
+        // the LightId pass (lists / probes at R_eff, one position) then the colour pass (the emitter samples at R_file) — see the
+        // parallel worker above
+        let shadow = crate::locallight::render_flat_cube_masked(lamp.light.pos, lamp.r_eff, lamp.face_size, &tris, *CULL_BACK);
+        let probe_updates = probe_pass(chunks, lamp, &shadow, &mut probes);
+        let cb = lamp.light_cb();
+        let mut frags = draw_lamp(sc, &drawn, &cb, &shadow, &mut acc);
         let n_s = lamp.samples.len().max(1);
-        let mut frags = 0u64;
-        let mut probe_updates = 0u64;
-        let mut shadow_first: Option<FlatCubeMap> = None;
-        for (si, &sp) in lamp.samples.iter().enumerate() {
-            let shadow = crate::locallight::render_flat_cube_masked(sp, lamp.r_eff, lamp.face_size, &tris, *CULL_BACK);
-            if si == 0 { probe_updates = probe_pass(chunks, lamp, &shadow, &mut probes); }
-            let cb = lamp.light_cb_at(sp, n_s);
-            frags += draw_lamp(sc, &drawn, &cb, &shadow, &mut acc);
-            if si == 0 { shadow_first = Some(shadow); }
+        let face_file = lamp.face_file();
+        for &sp in lamp.samples.iter() {
+            let cshadow = if face_file == lamp.face_size && lamp.r_file() == lamp.r_eff && sp == lamp.light.pos { None } else { Some(crate::locallight::render_flat_cube_masked(sp, lamp.r_file(), face_file, &tris, *CULL_BACK)) };
+            let ccb = lamp.colour_cb_at(sp, n_s);
+            frags += draw_lamp(sc, &drawn, &ccb, cshadow.as_ref().unwrap_or(&shadow), &mut cacc);
         }
-        let shadow = shadow_first.expect("a lamp has at least one sample");
         let list_updates = resolve_lists(&acc, &mut lists, lamp.id);
         for i in 0..(w * h) as usize {
             let p = acc.px[i];
-            if p[3] > 0.0 {
-                let e = if p[0] > 0.0 { p[0] * (p[1] / p[3]).clamp(0.0, 1.0) } else { 0.0 };
-                for c in 0..3 { direct.data[i * 4 + c] += e * lamp.rgb[c]; }
-                if p[3] > direct.data[i * 4 + 3] { direct.data[i * 4 + 3] = p[3]; }
+            let q = cacc.px[i];
+            let cov = p[3].max(q[3]);
+            if cov > 0.0 {
+                // the colour pass's value (PS 7258: the shadow inside the product), × LightRgb; the coverage k/9
+                for c in 0..3 { direct.data[i * 4 + c] += q[0] * lamp.rgb[c]; }
+                if cov > direct.data[i * 4 + 3] { direct.data[i * 4 + 3] = cov; }
             }
         }
+        cacc.clear_touched();
         if li % 25 == 0 || li + 1 == lamps.len() {
             log(&format!("lamp {}/{} id {} ({}): {} records drawn, {} casters, {frags} fragments, {list_updates} list texels, {probe_updates} probes ({:.1} s)", li + 1, lamps.len(), lamp.id, lamp.owner, drawn.len(), tris.len(), t0.elapsed().as_secs_f32()));
         }
@@ -1385,6 +1467,13 @@ pub fn setup_from_map(map_path: &str, paks: &[(String, String)], collection: &st
         for l in &lamps { *hist.entry(l.samples.len()).or_default() += 1; }
         let ex = lamps.first().map(|l| format!("; lamp {}: a = {:.3} b = {:.3} → {} samples, e.g. {:?}", l.id, l.light.emitting[0], l.light.emitting[1], l.samples.len(), l.samples.get(1).map(|p| [p[0] - l.light.pos[0], p[1] - l.light.pos[1], p[2] - l.light.pos[2]]))).unwrap_or_default();
         log(&format!("emitter-area sampling: quality index {q_idx} → S_full {}, samples per lamp {:?}{ex}", [1, 7, 25, 25, 25, 25][q_idx as usize], hist));
+        // LMTOOL_LL_SAMPLE_TRACE=x,y,z: the samples of the lamp nearest that point (vs a capture's PosInWorld)
+        if let Some(v) = std::env::var("LMTOOL_LL_SAMPLE_TRACE").ok() {
+            let p: Vec<f32> = v.split(',').filter_map(|t| t.trim().parse().ok()).collect();
+            if p.len() == 3 { if let Some(l) = lamps.iter().min_by(|a, b| { let da: f32 = (0..3).map(|k| (a.light.pos[k] - p[k]).powi(2)).sum(); let db: f32 = (0..3).map(|k| (b.light.pos[k] - p[k]).powi(2)).sum(); da.total_cmp(&db) }) {
+                log(&format!("sample trace: lamp {} ({}) at {:?} dir {:?} left {:?} up {:?} R_file {} face {} → samples {:?}", l.id, l.owner, l.light.pos, l.light.dir, l.light.left, l.light.up, l.r_file(), l.face_file(), l.samples));
+            } }
+        }
     }
     log(&format!("{n_all} lamps ({} item, {} block/clip), {n_night} NightOnly; DayTime {:?} → the mood switch {} → {} lamps baked", scene.world_lights().len(), mr.block_lights.len(), daytime.map(|w| format!("{w:#x}")), match lights_on { Some(true) => "ON", Some(false) => "OFF", None => "n/a (no DayTime word)" }, lamps.len()));
     // the probe chunking (the bake's probe-boxes rule: quality² > 0.9 records; the collection's offset and level height)
@@ -2026,25 +2115,44 @@ pub struct Frame1Image {
 pub fn frame1_images(lists: &Lists, lamps: &[Lamp], charts: &[(u32, u32, u32, u32)], rule: ComposeRule, dilate: u32, atlas: u32) -> Option<Frame1Image> {
     let img0 = compose(lists, lamps, rule);
     let img = frame1_dilated_n(&img0, atlas, dilate);
-    let m = image_max(&img);
+    // THE STORED FRAME IS THE 1024² RESOLVE OF THE 2048² D_0 (E, 2026-09-27 00:50Z): the record's MaxHDR = the max over the 2 × 2 box
+    // means (the R11G11B10 resolve of RE 13's chain is the half-resolution image the reduce runs on), the byte = sqrt(mean / MaxHDR).
+    // stpad night: the 2048² peak (1.0565 at the pool-floor hot spots) vs the editor's record 0.9922 — the 2 × 2 mean of a point-like
+    // hot spot. LMTOOL_LL_F1_PEAK2048=1 = the old form (the 2048² max, the byte = the mean of the four sqrt).
+    static PEAK2048: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("LMTOOL_LL_F1_PEAK2048").is_some());
+    // LMTOOL_LL_F1_ENCODE = meansqrt (the byte = the mean of the four sqrt(v/m) — the 2 × 2 box AFTER the sqrt encode; default) | sqrtmean
+    static ENC_SQRTMEAN: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_LL_F1_ENCODE").as_deref() == Ok("sqrtmean"));
+    let (ow, oh) = (atlas / 2, atlas / 2);
+    let mut ds = crate::passdiff::Buf::new(ow, oh, 3);
+    let mut m = 0.0f32;
+    for y in 0..oh {
+        for x in 0..ow {
+            for c in 0..3u32 {
+                let mut s = 0.0f32;
+                for dy in 0..2 { for dx in 0..2 { s += img.get(2 * x + dx, 2 * y + dy, c).max(0.0); } }
+                let v = s * 0.25;
+                ds.set(x, y, c, v);
+                m = m.max(v);
+            }
+        }
+    }
+    if *PEAK2048 { m = image_max(&img); }
     if m <= 0.0 {
         return None;
     }
-    let (ow, oh) = (atlas / 2, atlas / 2);
     let mut rgb = vec![0u8; (ow * oh * 3) as usize];
     let mut lit = 0usize;
     for y in 0..oh {
         for x in 0..ow {
             let mut any = false;
             for c in 0..3u32 {
-                let mut s = 0.0f32;
-                for dy in 0..2 {
-                    for dx in 0..2 {
-                        let v = img.get(2 * x + dx, 2 * y + dy, c) / m;
-                        s += v.max(0.0).sqrt().min(1.0);
-                    }
-                }
-                let b = (s * 0.25 * 255.0 + 0.5).floor().clamp(0.0, 255.0) as u8;
+                let b = if !*ENC_SQRTMEAN {
+                    let mut s = 0.0f32;
+                    for dy in 0..2 { for dx in 0..2 { let v = img.get(2 * x + dx, 2 * y + dy, c) / m; s += v.max(0.0).sqrt().min(1.0); } }
+                    (s * 0.25 * 255.0 + 0.5).floor().clamp(0.0, 255.0) as u8
+                } else {
+                    ((ds.get(x, y, c) / m).max(0.0).sqrt().min(1.0) * 255.0 + 0.5).floor().clamp(0.0, 255.0) as u8
+                };
                 if b > 0 { any = true; }
                 rgb[((y * ow + x) * 3 + c) as usize] = b;
             }
@@ -2092,25 +2200,44 @@ pub fn frame1_from_direct(direct: &crate::passdiff::Buf, coverage: Option<&crate
         }
     }
     let img = frame1_dilated_n(&a0, atlas, 8);
-    let m = image_max(&img);
+    // THE STORED FRAME IS THE 1024² RESOLVE OF THE 2048² D_0 (E, 2026-09-27 00:50Z): the record's MaxHDR = the max over the 2 × 2 box
+    // means (the R11G11B10 resolve of RE 13's chain is the half-resolution image the reduce runs on), the byte = sqrt(mean / MaxHDR).
+    // stpad night: the 2048² peak (1.0565 at the pool-floor hot spots) vs the editor's record 0.9922 — the 2 × 2 mean of a point-like
+    // hot spot. LMTOOL_LL_F1_PEAK2048=1 = the old form (the 2048² max, the byte = the mean of the four sqrt).
+    static PEAK2048: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("LMTOOL_LL_F1_PEAK2048").is_some());
+    // LMTOOL_LL_F1_ENCODE = meansqrt (the byte = the mean of the four sqrt(v/m) — the 2 × 2 box AFTER the sqrt encode; default) | sqrtmean
+    static ENC_SQRTMEAN: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_LL_F1_ENCODE").as_deref() == Ok("sqrtmean"));
+    let (ow, oh) = (atlas / 2, atlas / 2);
+    let mut ds = crate::passdiff::Buf::new(ow, oh, 3);
+    let mut m = 0.0f32;
+    for y in 0..oh {
+        for x in 0..ow {
+            for c in 0..3u32 {
+                let mut s = 0.0f32;
+                for dy in 0..2 { for dx in 0..2 { s += img.get(2 * x + dx, 2 * y + dy, c).max(0.0); } }
+                let v = s * 0.25;
+                ds.set(x, y, c, v);
+                m = m.max(v);
+            }
+        }
+    }
+    if *PEAK2048 { m = image_max(&img); }
     if m <= 0.0 {
         return None;
     }
-    let (ow, oh) = (atlas / 2, atlas / 2);
     let mut rgb = vec![0u8; (ow * oh * 3) as usize];
     let mut lit = 0usize;
     for y in 0..oh {
         for x in 0..ow {
             let mut any = false;
             for c in 0..3u32 {
-                let mut s = 0.0f32;
-                for dy in 0..2 {
-                    for dx in 0..2 {
-                        let v = img.get(2 * x + dx, 2 * y + dy, c) / m;
-                        s += v.max(0.0).sqrt().min(1.0);
-                    }
-                }
-                let b = (s * 0.25 * 255.0 + 0.5).floor().clamp(0.0, 255.0) as u8;
+                let b = if !*ENC_SQRTMEAN {
+                    let mut s = 0.0f32;
+                    for dy in 0..2 { for dx in 0..2 { let v = img.get(2 * x + dx, 2 * y + dy, c) / m; s += v.max(0.0).sqrt().min(1.0); } }
+                    (s * 0.25 * 255.0 + 0.5).floor().clamp(0.0, 255.0) as u8
+                } else {
+                    ((ds.get(x, y, c) / m).max(0.0).sqrt().min(1.0) * 255.0 + 0.5).floor().clamp(0.0, 255.0) as u8
+                };
                 if b > 0 { any = true; }
                 rgb[((y * ow + x) * 3 + c) as usize] = b;
             }
