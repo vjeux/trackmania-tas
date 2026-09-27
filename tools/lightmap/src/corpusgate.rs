@@ -156,8 +156,14 @@ pub fn md5_hex(data: &[u8]) -> String {
 
 // ---------------------------------------------------------------- the metrics of one baked cell against its oracle
 fn frame_metrics(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLightmap, records: Option<&[crate::classcmp::RecRow]>, frame: usize) -> Result<serde_json::Value, String> {
-    let o = crate::classcmp::Options { frame, lit: 8, by: crate::classcmp::GroupBy::Class, worst: 0, own_rects: false };
-    let r = crate::classcmp::compare(ours, theirs, records, &o)?;
+    let mut o = crate::classcmp::Options { frame, lit: 8, by: crate::classcmp::GroupBy::Class, worst: 0, own_rects: false };
+    // two layouts that differ (chart counts, a giant's numbering) are compared by (obj, sub) with each side's own rects —
+    // the identity columns are then void and say so
+    let r = match crate::classcmp::compare(ours, theirs, records, &o) {
+        Ok(r) => r,
+        Err(e) if e.contains("chart counts differ") || e.contains("--own-rects") => { o.own_rects = true; crate::classcmp::compare(ours, theirs, records, &o)? }
+        Err(e) => return Err(e),
+    };
     let pct = |n: usize, d: usize| if d == 0 { 0.0 } else { 100.0 * n as f64 / d as f64 };
     let fin = |v: f64| if v.is_finite() { serde_json::json!((v * 1e6).round() / 1e6) } else { serde_json::Value::Null };
     let classes: Vec<serde_json::Value> = r.classes.iter().map(|(name, c)| {
@@ -173,7 +179,7 @@ fn frame_metrics(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLig
         "ratio": [fin(t.ratio()[0]), fin(t.ratio()[1]), fin(t.ratio()[2])],
         "peak_ours": r.peak_ours.0, "peak_theirs": r.peak_theirs.0,
         "head_ours": [r.head_ours.0, r.head_ours.1, r.head_ours.2], "head_theirs": [r.head_theirs.0, r.head_theirs.1, r.head_theirs.2],
-        "unmatched_rows": r.unmatched_rows, "rect_mismatch": r.rect_mismatch, "classes": classes,
+        "unmatched_rows": r.unmatched_rows, "rect_mismatch": r.rect_mismatch, "own_rects": o.own_rects, "pair_refused": r.pair_refused, "classes": classes,
     }))
 }
 
@@ -329,6 +335,41 @@ pub fn run(args: &[String]) -> Result<(), String> {
         }
         "run" => run_cells(args, &cells),
         "report" => report(args, &cells),
+        "measure" => {
+            // lmtool corpus-gate measure --corpus C --tip T --work W [--only cell,…]: (re)measure BANKED bakes (W/T/<cell>/ours.Map.Gbx)
+            // with THIS binary's compare — for a cell whose metrics.json is missing or failed (a compare rule that changed, a giant
+            // whose layout the old compare refused); the bake bytes are untouched
+            let tip = flag(args, "--tip").ok_or("--tip TIP")?;
+            let work = PathBuf::from(flag(args, "--work").ok_or("--work W")?).join(&tip);
+            let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+            let only: Option<Vec<String>> = flag(args, "--only").map(|s| s.split(',').map(|x| x.trim().to_string()).collect());
+            let host = std::env::var("HOSTNAME").unwrap_or_default();
+            for c in cells.iter().filter(|c| c.oracle.is_some() && !c.compare_only && only.as_ref().map_or(true, |o| o.contains(&c.name))) {
+                let wdir = work.join(&c.name);
+                let ours = wdir.join("ours.Map.Gbx");
+                let oracle = c.oracle.as_ref().unwrap();
+                if !ours.exists() { println!("{}: no banked bake", c.name); continue; }
+                let prev: serde_json::Value = std::fs::read_to_string(wdir.join("metrics.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(serde_json::Value::Null);
+                let bytes = std::fs::read(&ours).map_err(|e| e.to_string())?;
+                let md5 = md5_hex(&bytes);
+                let records = wdir.join("records.tsv");
+                let m = match measure(&ours, oracle, Some(&records)) { Ok(m) => m, Err(e) => { println!("{}: measure failed: {e}", c.name); continue; } };
+                let own_rects = m["layout"]["same_rects"] != m["layout"]["compared"] || m["layout"]["charts_ours"] != m["layout"]["charts_theirs"];
+                let notes = write_classcmp_tsvs(&exe, &ours, oracle, Some(&records), own_rects, &wdir);
+                let warn_lines: Vec<String> = std::fs::read_to_string(wdir.join("bake.log")).unwrap_or_default().lines().filter(|l| l.contains("not in any pack")).map(|l| l.trim().chars().take(300).collect()).collect();
+                let cen = census(&exe, &c.source, c.kept.as_deref());
+                let rec = serde_json::json!({ "cell": c.name, "tip": tip, "host": host, "ok": true, "compare_only": false, "bake_s": prev["bake_s"], "md5": md5, "bytes": bytes.len(),
+                    "collection": c.collection, "quality": c.quality, "dirs": c.dirs.clone().unwrap_or_else(|| "full".into()), "word": c.word, "oracle": oracle.to_string_lossy(), "source": c.source.to_string_lossy(),
+                    "env": c.env.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>(), "ceiling": c.ceiling, "census": cen, "own_rects_tsv": own_rects, "pak_warnings": warn_lines, "notes": notes, "remeasured": true,
+                    "classcmp_tsv": [wdir.join("classcmp-f0.tsv").to_string_lossy(), wdir.join("classcmp-f1.tsv").to_string_lossy()],
+                    "layout": m["layout"], "planes": m["planes"], "frames": m["frames"] });
+                std::fs::write(wdir.join("metrics.json"), serde_json::to_string_pretty(&rec).unwrap()).map_err(|e| format!("{}: {e}", wdir.display()))?;
+                let _ = std::fs::remove_file(wdir.join("failed"));
+                let f0 = &rec["frames"][0];
+                println!("{}: re-measured — f0 {:.2} % id / {:.2} % ±2 / max {} record {} vs {}; binds {}/{} rects {}/{}{}", c.name, f0["identity_pct"].as_f64().unwrap_or(0.0), f0["within2_pct"].as_f64().unwrap_or(0.0), f0["max_delta"], f0["record_ours"], f0["record_theirs"], rec["layout"]["same_binds"], rec["layout"]["compared"], rec["layout"]["same_rects"], rec["layout"]["compared"], if own_rects { " (own rects)" } else { "" });
+            }
+            Ok(())
+        }
         "census" => {
             // lmtool corpus-gate census --corpus C [--only cell,…]: the reduced-oracle census of every bake cell (kept / total
             // items, kept / total embedded-item lamps) without baking — RE 14's cross-check before a lamp row is read
@@ -358,6 +399,9 @@ fn run_cells(args: &[String], cells: &[Cell]) -> Result<(), String> {
     std::fs::create_dir_all(&work).map_err(|e| format!("{}: {e}", work.display()))?;
     std::fs::create_dir_all(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?;
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    // --bake-with BIN: the binary under test bakes; this driver (any newer build) measures — the bytes are the bake binary's
+    let bake_exe: PathBuf = flag(args, "--bake-with").map(PathBuf::from).unwrap_or_else(|| exe.clone());
+    if !bake_exe.exists() { return Err(format!("--bake-with {}: no such file", bake_exe.display())); }
     let host = std::env::var("HOSTNAME").unwrap_or_default();
     let mine: Vec<(usize, &Cell)> = cells.iter().enumerate().filter(|(i, c)| i % boxes == k && only.as_ref().map_or(true, |o| o.contains(&c.name))).collect();
     eprintln!("corpus-gate run: tip {tip}, box {k} of {boxes} ({host}): {} of {} cells; work {}, tmp {}, paks {}", mine.len(), cells.len(), work.display(), tmp.display(), paks.display());
@@ -406,7 +450,7 @@ fn run_cells(args: &[String], cells: &[Cell]) -> Result<(), String> {
             }
             let _ = std::fs::remove_file(&out);
             eprintln!("corpus-gate: {} ({} q{} dirs {}{}) …", c.name, c.collection, c.quality, c.dirs.as_deref().unwrap_or("full"), if c.env.is_empty() { String::new() } else { format!(", env {}", c.env.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(" ")) });
-            let mut cmd = std::process::Command::new(&exe);
+            let mut cmd = std::process::Command::new(&bake_exe);
             cmd.args(&args_bake).env("LMTOOL_BAKE_TIME", "1790000000");
             for (k, v) in &c.env { cmd.env(k, v); }
             let r = cmd.output();
@@ -416,7 +460,7 @@ fn run_cells(args: &[String], cells: &[Cell]) -> Result<(), String> {
                 Err(e) => (false, format!("spawn: {e}")),
             };
             let _ = std::fs::write(wdir.join("bake.log"), &log);
-            let _ = std::fs::write(wdir.join("bake.cmd"), format!("{}{} {}\n", c.env.iter().map(|(k, v)| format!("{k}={v} ")).collect::<String>(), exe.display(), args_bake.join(" ")));
+            let _ = std::fs::write(wdir.join("bake.cmd"), format!("{}{} {}\n", c.env.iter().map(|(k, v)| format!("{k}={v} ")).collect::<String>(), bake_exe.display(), args_bake.join(" ")));
             if !bake_ok {
                 let tail = log.lines().rev().take(3).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join(" | ");
                 eprintln!("corpus-gate: {}: bake FAILED ({bake_s:.1} s) — {tail}", c.name);
@@ -432,6 +476,12 @@ fn run_cells(args: &[String], cells: &[Cell]) -> Result<(), String> {
         let warn_lines: Vec<String> = std::fs::read_to_string(wdir.join("bake.log")).unwrap_or_default().lines().filter(|l| l.contains("not in any pack")).map(|l| l.trim().chars().take(300).collect()).collect();
         let bytes = std::fs::read(&out).map_err(|e| e.to_string())?;
         let md5 = md5_hex(&bytes);
+        // bank the bake BEFORE measuring: a measure that fails (a layout the compare refuses) must not lose 25 min of giant
+        if !c.compare_only {
+            let _ = std::fs::copy(&out, wdir.join("ours.Map.Gbx"));
+            let _ = std::fs::copy(&records, wdir.join("records.tsv"));
+            let _ = std::fs::write(wdir.join("md5.txt"), format!("{md5}  ours.Map.Gbx\n"));
+        }
         let records_opt = if c.compare_only { None } else { Some(records.as_path()) };
         let m = match measure(&out, oracle, records_opt) {
             Ok(m) => m,
@@ -445,10 +495,6 @@ fn run_cells(args: &[String], cells: &[Cell]) -> Result<(), String> {
             "env": c.env.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>(), "ceiling": c.ceiling, "census": cen, "own_rects_tsv": own_rects, "pak_warnings": warn_lines, "notes": notes,
             "classcmp_tsv": [wdir.join("classcmp-f0.tsv").to_string_lossy(), wdir.join("classcmp-f1.tsv").to_string_lossy()],
             "layout": m["layout"], "planes": m["planes"], "frames": m["frames"] });
-        if !c.compare_only {
-            let _ = std::fs::copy(&out, wdir.join("ours.Map.Gbx"));
-            let _ = std::fs::copy(&records, wdir.join("records.tsv"));
-        }
         std::fs::write(wdir.join("metrics.json"), serde_json::to_string_pretty(&rec).unwrap()).map_err(|e| format!("{}: {e}", wdir.display()))?;
         let _ = std::fs::remove_file(wdir.join("failed"));
         let f0 = &rec["frames"][0]; let f1 = &rec["frames"][1];
