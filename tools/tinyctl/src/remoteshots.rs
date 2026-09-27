@@ -96,6 +96,7 @@ pub fn drive_cmd(args: &[String]) -> Result<(), String> {
         }
         let _ = std::fs::remove_file(&local);
         println!("[{:>4.0}s] logs in {}", t0.elapsed().as_secs_f64(), dir.display());
+        close_if_ours(&wsx, &purpose);
     }
     if failed.is_empty() {
         Ok(())
@@ -202,6 +203,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         let _ = wsx.sh(&format!("rm -f {vf}"));
     }
     if failed.is_empty() {
+        close_if_ours(&wsx, &purpose);
         println!("remote-shots done in {:.0}s", t0.elapsed().as_secs_f64());
         Ok(())
     } else {
@@ -228,10 +230,25 @@ fn wait_recovery_clear(wsx: &Wsx) -> Result<(), String> {
     }
 }
 
+/// Did THIS run launch the game? Then it closes it again at the end: the shared box's other
+/// lanes need the game ABSENT, and a game left up after the lock is released reads as an
+/// orphan to them (the MK64 session killed one of mine at 13:45, 2026-09-27).
+pub(crate) static LAUNCHED_HERE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Close the game if this run launched it (called at the end of a shots/drive run).
+pub(crate) fn close_if_ours(wsx: &Wsx, purpose: &str) {
+    if !LAUNCHED_HERE.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    let _ = wsx.sh(&format!("{ENV}; tmdrive kill --purpose \"{purpose} (closing the game this run launched)\" --wait 60 > /dev/null 2>&1; true"));
+    println!("  the game launched for this run is closed again (the box's other lanes need it absent)");
+}
+
 fn game_up(wsx: &Wsx) -> Result<(), String> {
     wait_recovery_clear(wsx)?;
     let up = wsx.sh("tasklist.exe 2>/dev/null | grep -ci trackmania").unwrap_or_default().trim().to_string();
     if up == "0" {
+        LAUNCHED_HERE.store(true, std::sync::atomic::Ordering::SeqCst);
         println!("  the game is not running — launching");
         wsx.sh(&format!("{ENV}; sed -i \"s/^DeveloperMode=false/DeveloperMode=true/\" /mnt/c/Users/vjeux/OpenplanetNext/Settings.ini; tmdrive launch --timeout 120 --purpose \"remote-shots (launch)\" --wait 100"))?;
     }
