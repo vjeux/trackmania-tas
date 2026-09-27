@@ -396,14 +396,17 @@ pub fn geom_from_solid2_ext(s2: &mapgeom::static_item::solid2::CPlugSolid2Model,
                 if std::env::var_os("LMTOOL_MATERIAL_TRACE").is_some() { eprintln!("material {mat}: shader {} flags {:?} → {}", chain.shader, chain.flags, if v { "EXCLUDED from the lightmapper" } else { "drawn" }); }
             }
         } else if let Some(l) = &own_link {
-            // AN EMBEDDED ITEM'S PACK MATERIALS TAKE THE SAME TEST (E, 2026-09-27 17:30Z; RE 14 17:35Z: the peel is the generic viewport render
-            // in shadow mode — a leaf is drawn only if its shader has the PeelDiff variant; Block_TAddModCV, the DecalMod / DecalGeom /
-            // Decal2d families and CarGlass have none → not occluders, not bounce sources). Until now the exclusion ran only for pack
-            // prefabs (`ext`), so a custom item's decals, additive bulbs and glass occluded and bounced in our peel — the candidate for
-            // tiny16's dense-scene item deficit (0.84–0.86, B-heavy: sky blocked by casters the game does not draw). The link resolves
-            // through the bake's LM uv store (`set_lm_uv_store` from the --pak list); no store → no exclusion, as before.
-            // LMTOOL_EMBEDDED_KEEP_ALL=1 restores the old inclusion for a study.
-            if std::env::var_os("LMTOOL_EMBEDDED_KEEP_ALL").is_none() {
+            // AN EMBEDDED ITEM'S PACK MATERIALS — the same test, OPT-IN ONLY (E, 2026-09-27 17:30Z → 19:50Z). RE 14 17:35Z read the peel as
+            // the generic viewport render in shadow mode drawing only the shader families with a PeelDiff variant (Block_TAddModCV, the
+            // DecalMod / DecalGeom / Decal2d families, CarGlass have none); 0005 applied the pack-prefab exclusion (no PreLightGen / pass
+            // bit → not drawn) to embedded items too. MEASURED against the editor it does not hold: tiny16 kept q4 items 0.863/0.843/0.837
+            // → 0.860/0.840/0.835 (nothing), tiny03red-editor-q4 per-class ratios equal to ±0.5 % either way, BUT the frame-0 record's
+            // image max falls from 11.84 (→ the mood clamp, record 3.0) to 5.56 (record 2.2176) where the editor's is 7.50 (record
+            // 2.9921) — the editor's hot texel needs the decal geometry drawn; every chart's bytes re-quantise with the record (tiny03
+            // identity 14.8 → 10.4 % tiles, 11.2 → 8.7 % items = a regression, V2 19:30Z). So the embedded items keep every material by
+            // default (the pre-0005 form); LMTOOL_EMBEDDED_EXCLUDE=1 applies the test for a study. The 11.84 vs 7.50 image max is open
+            // (the hot texel sits outside every chart rect — the max chart byte is 137 on both files).
+            if std::env::var_os("LMTOOL_EMBEDDED_EXCLUDE").is_some() {
                 if let Some(None) = crate::lmmesh::lm_uv_index_cached(l) { v = true; }
                 if std::env::var_os("LMTOOL_MATERIAL_TRACE").is_some() { eprintln!("material {l} (embedded item): LM uv selector {:?} → {}", crate::lmmesh::lm_uv_index_cached(l), if v { "EXCLUDED from the lightmapper" } else { "drawn" }); }
             }
