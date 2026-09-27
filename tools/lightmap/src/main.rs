@@ -6529,6 +6529,17 @@ fn run(mut a: Vec<String>) {
             }
             lightmap::sweep::print_rows(&rows);
         }
+        "texeldelta" => {
+            // lmtool texeldelta OURS.Map.Gbx --against EDITOR.Map.Gbx [--records TSV] [--frame 0] [--png PREFIX] [--worst N] [--min-texels 64]:
+            // the per-texel stored-byte residue by ring / class / sign / editor byte / plane (texeldelta.rs) + the worst chart's contact sheet
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let other = f("--against").expect("--against EDITOR.Map.Gbx");
+            let ours = lightmap::mapio::load(&a[1]).unwrap_or_else(|e| panic!("{}: {e}", a[1]));
+            let theirs = lightmap::mapio::load(&other).unwrap_or_else(|e| panic!("{other}: {e}"));
+            let records = f("--records").map(|p| lightmap::texeldelta::read_records(&p).unwrap_or_else(|e| panic!("{e}")));
+            let o = lightmap::texeldelta::Options { frame: f("--frame").map(|v| v.parse().expect("--frame N")).unwrap_or(0), png: f("--png"), worst: f("--worst").map(|v| v.parse().expect("--worst N")).unwrap_or(12), min_texels: f("--min-texels").map(|v| v.parse().expect("--min-texels N")).unwrap_or(64) };
+            lightmap::texeldelta::run(&ours, &theirs, records.as_deref(), &o).unwrap_or_else(|e| panic!("texeldelta: {e}"));
+        }
         "trustmatrix" => {
             // lmtool trustmatrix MANIFEST.tsv [--out MATRIX.md] [--tol 0.03] [--min-texels 500] [--base LABEL]: the trust-matrix artifact
             // (trustmatrix.rs) — one line per corpus cell from the manifest, the numbers from each row's classcmp --tsv table, the state by rule
