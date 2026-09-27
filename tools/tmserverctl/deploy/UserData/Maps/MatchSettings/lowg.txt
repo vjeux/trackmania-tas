@@ -27,8 +27,13 @@
 		<setting name="S_LowG_Collisions" type="boolean" value="1"/>
 		<setting name="S_LowG_Bots" type="integer" value="0"/>			<!-- balloons parked at each map start; /bots N changes it live -->
 		<setting name="S_LowG_BotGravity" type="real" value="0.2"/>
+		<setting name="S_LowG_BotAdherence" type="real" value="0.0"/>	<!-- balloon grip: 0 = no friction -->
 		<setting name="S_LowG_MaxBots" type="integer" value="16"/>
 		<setting name="S_LowG_BotsAreFakeUsers" type="boolean" value="0"/>	<!-- 0: engine bots (not in the player list); 1: fake users named "Ballon N" -->
+		<setting name="S_LowG_BotSkin" type="text" value="https://github.com/vjeux/trackmania-tas/releases/download/yannex-balloon-v1/Balloon.zip"/>	<!-- the balloon hitbox skin; the item list is built at server start: a change needs a restart -->
+		<setting name="S_LowG_PlayerReactor" type="text" value="down"/>
+		<setting name="S_LowG_PlayerReactorLvl" type="integer" value="2"/>
+		<setting name="S_LowG_BotKeepModel" type="boolean" value="1"/>
 	</mode_script_settings>
 
 	<startindex>0</startindex>
