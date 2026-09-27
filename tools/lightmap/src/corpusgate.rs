@@ -329,6 +329,17 @@ pub fn run(args: &[String]) -> Result<(), String> {
         }
         "run" => run_cells(args, &cells),
         "report" => report(args, &cells),
+        "census" => {
+            // lmtool corpus-gate census --corpus C [--only cell,…]: the reduced-oracle census of every bake cell (kept / total
+            // items, kept / total embedded-item lamps) without baking — RE 14's cross-check before a lamp row is read
+            let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+            let only: Option<Vec<String>> = flag(args, "--only").map(|s| s.split(',').map(|x| x.trim().to_string()).collect());
+            for c in cells.iter().filter(|c| c.oracle.is_some() && !c.compare_only && only.as_ref().map_or(true, |o| o.contains(&c.name))) {
+                let cen = census(&exe, &c.source, c.kept.as_deref());
+                println!("{:<40} {}", c.name, census_str(&cen));
+            }
+            Ok(())
+        }
         _ => Err("usage: lmtool corpus-gate run|report|list --corpus CORPUS.tsv …".into()),
     }
 }
