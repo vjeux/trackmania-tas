@@ -5084,6 +5084,31 @@ fn run(mut a: Vec<String>) {
             println!("our stored byte per editor byte (charts whose chart bytes agree within 1): editor byte → n, median ours, ours − editor");
             for (e, v) in bytes.iter_mut() { if v.len() >= 20 && *e % 8 == 0 { v.sort(); println!("  {e:3} → n {:6} ours {:3}  Δ {:+}", v.len(), v[v.len() / 2], v[v.len() / 2] as i32 - *e as i32); } }
         }
+        "hb-stats" => {
+            // lmtool hb-stats FILE [--rect x0,y0,x1,y1] : an LMTOOL_HB_DUMP file (w, h, then 4 MRTs × w·h × RGBA f32) — the alpha (the
+            // accumulated Σ InvDirCount = fragments × directions / N) distribution over a rect and C0's rgb/alpha mean, the
+            // fragments-per-texel law study (port engineer G2, 2026-09-27)
+            let bytes = std::fs::read(&a[1]).unwrap_or_else(|e| panic!("{}: {e}", a[1]));
+            let w = u32::from_le_bytes(bytes[0..4].try_into().unwrap()) as usize;
+            let h = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let r: Vec<usize> = f("--rect").map(|s| s.split(',').map(|t| t.trim().parse().expect("--rect")).collect()).unwrap_or_else(|| vec![0, 0, w, h]);
+            let px = |m: usize, x: usize, y: usize, c: usize| -> f32 { let o = 8 + ((m * w * h + y * w + x) * 4 + c) * 4; f32::from_le_bytes(bytes[o..o + 4].try_into().unwrap()) };
+            let mut hist = std::collections::BTreeMap::<i64, (usize, f64, f64)>::new();
+            let (mut n, mut n_cov) = (0usize, 0usize);
+            for y in r[1]..r[3].min(h) { for x in r[0]..r[2].min(w) {
+                let wgt = px(0, x, y, 3);
+                n += 1;
+                if wgt <= 0.0 { continue; }
+                n_cov += 1;
+                let key = (wgt * 4.0).round() as i64; // quarter-steps of w
+                let e = hist.entry(key).or_insert((0, 0.0, 0.0));
+                e.0 += 1; e.1 += px(0, x, y, 0) as f64; e.2 += (px(0, x, y, 0) / wgt) as f64;
+            } }
+            println!("{}: {w}×{h}; rect {:?}: {n} texels, {n_cov} with alpha > 0 ({:.1} %)", a[1], r, 100.0 * n_cov as f64 / n.max(1) as f64);
+            println!("  alpha (Σ InvDirCount over the texel's fragments and directions; 1.0 = one fragment in every direction)  count  mean C0.r  mean C0.r/alpha");
+            for (k, (c, s, sn)) in &hist { println!("  {:6.2}  {c:8}  {:.5}  {:.5}", *k as f64 / 4.0, s / *c as f64, sn / *c as f64); }
+        }
         "cap-rect" => {
             // lmtool cap-rect ROOT FILE [--rect x0,y0,x1,y1] [--hist] [--nonzero] : a captured pass buffer (any format passdiff reads:
             // R11G11B10, RGBA16F, B8G8R8A8, R16…) over a rect — per-channel mean / min / max, the count of non-zero texels, and with
