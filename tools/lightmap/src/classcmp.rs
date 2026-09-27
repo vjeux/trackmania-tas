@@ -364,6 +364,10 @@ pub fn print(r: &Report, o: &Options, tsv: Option<&str>) -> Result<(), String> {
     if let Some(p) = tsv {
         let mut s = String::from("class\tcharts\ttexels\tlit_ours_pct\tlit_editor_pct\tmean_ours_rgb\tmean_editor_rgb\tratio_rgb\trmse_rel_rgb\tidentical_pct\twithin1_pct\twithin2_pct\tmax_delta\tchart_ratio_n_median_sigma\n");
         s.push_str(&out);
+        // the row's record line for `lmtool trustmatrix` (V2, 2026-09-27): frame, the two record MaxHDRs and their ratio, the two heads
+        // (bytes / records / frames), --own-rects (byte identity void when 1) — a `#` line after the rows so a reader that stops at TOTAL is unaffected
+        s.push_str(&format!("#record\t{}\t{}\t{}\t{:.6}\t{}/{}/{}\t{}/{}/{}\t{}\n", o.frame, r.maxhdr_ours, r.maxhdr_theirs, r.maxhdr_ours as f64 / r.maxhdr_theirs.max(1e-12) as f64,
+            r.head_ours.0, r.head_ours.1, r.head_ours.2, r.head_theirs.0, r.head_theirs.1, r.head_theirs.2, if o.own_rects { 1 } else { 0 }));
         std::fs::write(p, s).map_err(|e| format!("{p}: {e}"))?;
     }
     Ok(())

@@ -31,6 +31,7 @@ pub mod alphasimd;
 pub mod peelcolor;
 pub mod classcmp;
 pub mod corpusgate;
+pub mod trustmatrix;
 pub mod clouds;
 pub mod png;
 pub mod gpufmt;

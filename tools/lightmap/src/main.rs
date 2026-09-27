@@ -6529,6 +6529,19 @@ fn run(mut a: Vec<String>) {
             }
             lightmap::sweep::print_rows(&rows);
         }
+        "trustmatrix" => {
+            // lmtool trustmatrix MANIFEST.tsv [--out MATRIX.md] [--tol 0.03] [--min-texels 500] [--base LABEL]: the trust-matrix artifact
+            // (trustmatrix.rs) — one line per corpus cell from the manifest, the numbers from each row's classcmp --tsv table, the state by rule
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let manifest = a.get(1).filter(|s| !s.starts_with("--")).cloned().expect("MANIFEST.tsv");
+            let cells = lightmap::trustmatrix::read_manifest(&manifest).unwrap_or_else(|e| panic!("trustmatrix: {e}"));
+            let base_dir = std::path::Path::new(&manifest).parent().map(|p| p.to_path_buf()).unwrap_or_else(|| std::path::PathBuf::from("."));
+            let tol: f64 = f("--tol").map(|v| v.parse().expect("--tol F")).unwrap_or(0.03);
+            let min_texels: usize = f("--min-texels").map(|v| v.parse().expect("--min-texels N")).unwrap_or(500);
+            let label = f("--base").unwrap_or_else(|| "(base unnamed)".to_string());
+            let (md, counts) = lightmap::trustmatrix::render(&cells, &base_dir, tol, min_texels, &label);
+            match f("--out") { Some(p) => { std::fs::write(&p, &md).unwrap_or_else(|e| panic!("{p}: {e}")); eprintln!("trustmatrix: {} cells → {p}: {}", cells.len(), counts.iter().map(|(k, n)| format!("{k} {n}")).collect::<Vec<_>>().join(", ")); } None => print!("{md}") }
+        }
         "layoutcheck" => {
             // lmtool layoutcheck MAP…: the packing invariants without an oracle (classcmp::layout_check) — rects inside the
             // atlas, no overlaps, fill, frame bytes, records finite, images decodable; exit 1 on any violation
