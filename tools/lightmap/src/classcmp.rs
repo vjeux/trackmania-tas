@@ -139,6 +139,10 @@ pub enum GroupBy { Class, Name, Obj }
 pub struct Options {
     pub frame: usize,
     pub lit: u8,
+    /// `--lit-hdr F`: a texel is LIT when its decoded HDR max channel ≥ F (instead of the stored byte ≥ `lit`) — the byte test counts a
+    /// dark chart's near-black texels (1e-4 HDR under a platform) as lit and a black texel of ours as unlit, which moved tiny03's tile lit
+    /// fraction 76 % vs 91 % (G2, 2026-09-27); with an HDR floor both sides are judged on the same quantity
+    pub lit_hdr: Option<f64>,
     pub by: GroupBy,
     pub worst: usize,
     /// Each file's class means over ITS OWN rects, charts matched by the (obj, sub) bind word — for two layouts that
@@ -227,14 +231,14 @@ pub fn compare(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLight
             for y in py..(py + ph).min(i1.h) { for x in px..(px + pw).min(i1.w) {
                 let a = i1.get(x, y);
                 acc.texels += 1;
-                if a[0].max(a[1]).max(a[2]) >= o.lit { acc.lit_ours += 1; acc.used += 1; for c in 0..3 { let ho = texel_hdr(o.frame, a[c], fbi, k1); acc.sum_ours[c] += ho; co[c] += ho; } }
+                if is_lit(o, a, fbi, k1) { acc.lit_ours += 1; acc.used += 1; for c in 0..3 { let ho = texel_hdr(o.frame, a[c], fbi, k1); acc.sum_ours[c] += ho; co[c] += ho; } }
             } }
             let (qx, qy, qw, qh) = chart_own_px(m2.pos[j], m2.size[j]);
             let mut tex_t = 0usize;
             for y in qy..(qy + qh).min(i2.h) { for x in qx..(qx + qw).min(i2.w) {
                 let b = i2.get(x, y);
                 tex_t += 1;
-                if b[0].max(b[1]).max(b[2]) >= o.lit { acc.lit_theirs += 1; acc.used_t += 1; for c in 0..3 { let ht = texel_hdr(o.frame, b[c], fbj, k2); acc.sum_theirs[c] += ht; ct[c] += ht; } }
+                if is_lit(o, b, fbj, k2) { acc.lit_theirs += 1; acc.used_t += 1; for c in 0..3 { let ht = texel_hdr(o.frame, b[c], fbj, k2); acc.sum_theirs[c] += ht; ct[c] += ht; } }
             } }
             // lit % of the oracle side is over ITS texel count: scale lit_theirs onto our texel count for the shared column
             if tex_t > 0 && acc.texels > 0 { acc.lit_theirs = (acc.lit_theirs as f64 * acc.texels as f64 / tex_t as f64).round() as usize; }
@@ -259,8 +263,8 @@ pub fn compare(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLight
                 let a = i1.get(x, y);
                 let b = i2.get(x, y);
                 acc.texels += 1;
-                let lo = a[0].max(a[1]).max(a[2]) >= o.lit;
-                let lt = b[0].max(b[1]).max(b[2]) >= o.lit;
+                let lo = is_lit(o, a, fbi, k1);
+                let lt = is_lit(o, b, fbj, k2);
                 if lo { acc.lit_ours += 1; }
                 if lt { acc.lit_theirs += 1; }
                 for c in 0..3 {
@@ -333,7 +337,7 @@ fn f3(v: [f64; 3], p: usize) -> String { let one = |x: f64| if x.is_finite() { f
 
 /// The table on stdout (and, when asked, as TSV).
 pub fn print(r: &Report, o: &Options, tsv: Option<&str>) -> Result<(), String> {
-    println!("frame {}: record MaxHDR ours {} vs editor {} ({:+.2} %); image {}×{}; lit threshold {} (image-A max channel); means over the EDITOR's lit texels; HDR = (A/255)²·(fb/255)²·MaxHDR", o.frame, r.maxhdr_ours, r.maxhdr_theirs, 100.0 * (r.maxhdr_ours as f64 / r.maxhdr_theirs.max(1e-12) as f64 - 1.0), r.image_w, r.image_h, o.lit);
+    println!("frame {}: record MaxHDR ours {} vs editor {} ({:+.2} %); image {}×{}; lit threshold {}; means over the EDITOR's lit texels; HDR = (A/255)²·(fb/255)²·MaxHDR", o.frame, r.maxhdr_ours, r.maxhdr_theirs, 100.0 * (r.maxhdr_ours as f64 / r.maxhdr_theirs.max(1e-12) as f64 - 1.0), r.image_w, r.image_h, match o.lit_hdr { Some(f) => format!("HDR ≥ {f}"), None => format!("byte ≥ {} (image-A max channel)", o.lit) });
     println!("  lossless head: ours {} bytes / {} frame records / {} image frames vs editor {} / {} / {}{}", r.head_ours.0, r.head_ours.1, r.head_ours.2, r.head_theirs.0, r.head_theirs.1, r.head_theirs.2, if r.head_ours != r.head_theirs { "  ← MISMATCH (the editor writes two records and two frames)" } else { "" });
     println!("  encode check — decoded PEAK vs the record (a clipped encode shows a peak at the record with many saturated texels): ours peak {:.5} = {:.4}× record, {} texels at A 255, {} charts at fb 255, MaxHdrMood {:?}; editor peak {:.5} = {:.4}× record, {} texels at A 255, {} charts at fb 255, MaxHdrMood {:?}; record ratio ours/editor {:.4}", r.peak_ours.0, r.peak_ours.0 / r.maxhdr_ours.max(1e-12) as f64, r.peak_ours.1, r.peak_ours.2, r.peak_ours.3, r.peak_theirs.0, r.peak_theirs.0 / r.maxhdr_theirs.max(1e-12) as f64, r.peak_theirs.1, r.peak_theirs.2, r.peak_theirs.3, r.maxhdr_ours as f64 / r.maxhdr_theirs.max(1e-12) as f64);
     if r.rect_mismatch > 0 { println!("  WARNING: {} charts {} — SKIPPED in the table below", r.rect_mismatch, if o.own_rects { "have no oracle chart of the same (obj, sub) bind word" } else { "have a different rect in the two files (the layout gate failed for them)" }); }
@@ -497,8 +501,8 @@ pub fn compare_coverage(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio:
             let (a, b) = (i1.get(x, y), i2.get(x, y));
             let acc = if cov[(y * i1.w + x) as usize] < thr { &mut sp.partial } else { &mut sp.full };
             acc.texels += 1;
-            if a[0].max(a[1]).max(a[2]) >= o.lit { acc.lit_ours += 1; }
-            if b[0].max(b[1]).max(b[2]) >= o.lit {
+            if is_lit(o, a, fbi, k1) { acc.lit_ours += 1; }
+            if is_lit(o, b, fbj, k2) {
                 acc.lit_theirs += 1; acc.used += 1; acc.used_t += 1;
                 for c in 0..3 { let ho = texel_hdr(o.frame, a[c], fbi, k1); let ht = texel_hdr(o.frame, b[c], fbj, k2); acc.sum_ours[c] += ho; acc.sum_theirs[c] += ht; acc.sum_sq[c] += (ho - ht) * (ho - ht); }
             }
@@ -513,5 +517,13 @@ pub fn print_coverage(classes: &[(String, CoverSplit)], thr: f32) {
     for (k, c) in classes {
         let tot = (c.partial.texels + c.full.texels).max(1) as f64;
         println!("{k}\t{} / {}\t{:.1} %\tpartial {}\tfull {}", c.partial.texels, c.full.texels, 100.0 * c.partial.texels as f64 / tot, f3(c.partial.ratio(), 3), f3(c.full.ratio(), 3));
+    }
+}
+
+/// The lit test of a texel: the stored byte ≥ `lit` (image-A max channel), or — with `--lit-hdr F` — the decoded HDR max channel ≥ F.
+pub fn is_lit(o: &Options, px: [u8; 3], fb: u8, max_hdr: f32) -> bool {
+    match o.lit_hdr {
+        Some(f) => (0..3).map(|c| texel_hdr(o.frame, px[c], fb, max_hdr)).fold(0.0, f64::max) >= f,
+        None => px[0].max(px[1]).max(px[2]) >= o.lit,
     }
 }
