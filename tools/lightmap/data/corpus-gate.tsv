@@ -1,0 +1,34 @@
+# THE CORPUS (baker-4, 2026-09-27) — one cell per (map, collection, mood, quality) with an EDITOR oracle in refs/.
+# Paths relative to --refs (…/tiny/lightmap-re/refs) unless absolute. word = the DayTime word the source copy gets before
+# the bake (the oracle's own); dirs = full | N (--max-dirs N: frame-1 / layout rows only); kept = the reduced oracle's list.
+# Order = the round-robin deal to the boxes (--box K --boxes N): heavy cells spread out.
+cell	source	oracle	collection	quality	word	dirs	kept	extra
+tiny16-bluebay-sunset-q4	tiny16-fixedlib-source.Map.Gbx	tiny16-fixedlib-q4-editor-reduced.Map.Gbx	BlueBay	4	-	full	tiny16-reduced-kept.txt	-
+stpad-stadium-night-nocache-q3	stpad-night-0x199a-source.Map.Gbx	stpad-Stadium-Night-0x199a-q3-editor-nocache.Map.Gbx	Stadium	3	-	full	-	-
+tiny03-whiteshore-day-q4	tiny03-WhiteShore-Day-q4-editor-reduced-resaved.Map.Gbx	tiny03-WhiteShore-Day-q4-editor-reduced.Map.Gbx	WhiteShore	4	-	full	-	-
+stpad-stadium-sunrise-0x5148-q3	stpad-source.Map.Gbx	stpad-Stadium-Sunrise-q3-editor.Map.Gbx	Stadium	3	-	full	-	-
+tiny04ac-greencoast-day-q4	tiny04ac-GreenCoast-Day-q4-editor.Map.Gbx	tiny04ac-GreenCoast-Day-q4-editor.Map.Gbx	GreenCoast	4	-	full	-	-
+stpad-stadium-day-0x8111-q3	stpad-source.Map.Gbx	stpad-Stadium-Day-0x8111-q3-editor.Map.Gbx	Stadium	3	0x8111	full	-	-
+tiny03-whiteshore-sunset-0xdac0-q4	tiny03-WhiteShore-Sunset-0xdac0-reduced-source.Map.Gbx	tiny03-WhiteShore-Sunset-0xdac0-q4-editor-reduced.Map.Gbx	WhiteShore	4	-	full	-	-
+stpad-stadium-sunset-0xceb8-q3	stpad-Stadium-Sunset-0xceb8-source.Map.Gbx	stpad-Stadium-Sunset-0xceb8-q3-editor.Map.Gbx	Stadium	3	-	full	-	-
+tiny04ac-greencoast-sunset-0xdac0-q4	tiny04ac-GreenCoast-Sunset-0xdac0-reduced-source.Map.Gbx	tiny04ac-GreenCoast-Sunset-0xdac0-q4-editor-reduced.Map.Gbx	GreenCoast	4	-	full	-	-
+stpad-stadium-sunrise-0x4e4b-q3	stpad-source.Map.Gbx	stpad-Stadium-Sunrise-0x4e4b-q3-editor.Map.Gbx	Stadium	3	0x4e4b	full	-	-
+np-tk3-bluebay-day-q3	np-tk3-source-day.Map.Gbx	np-tk3-BlueBay-Day-0x9b59-q3-editor.Map.Gbx	BlueBay	3	-	full	-	-
+np-tk3-bluebay-day-q4	np-tk3-source-day.Map.Gbx	np-tk3-BlueBay-Day-0x9b59-q4-editor.Map.Gbx	BlueBay	4	-	full	-	-
+np-tk3-bluebay-sunset-0xdaab-q3	np-tk3-source-day.Map.Gbx	np-tk3-BlueBay-0xdaab-q3-editor.Map.Gbx	BlueBay	3	0xdaab	full	-	-
+np-tk3-bluebay-night-0x199a-q3	np-tk3-BlueBay-Night-0x199a-source.Map.Gbx	np-tk3-BlueBay-Night-0x199a-q3-editor.Map.Gbx	BlueBay	3	-	full	-	-
+np-tk3-bluebay-0x5000-q3	np-tk3-source-day.Map.Gbx	np-tk3-BlueBay-0x5000-q3-editor.Map.Gbx	BlueBay	3	0x5000	full	-	-
+np-tk3-bluebay-0xc000-q3	np-tk3-source-day.Map.Gbx	np-tk3-BlueBay-0xC000-q3-editor.Map.Gbx	BlueBay	3	0xC000	full	-	-
+hill4-bluebay-day-q3	hill4-source.Map.Gbx	hill4-BlueBay-Day-0x9b59-q3-editor.Map.Gbx	BlueBay	3	0x9b59	full	-	-
+hill4-bluebay-sunset-q3	hill4-source.Map.Gbx	hill4-BlueBay-Sunset-0xdaab-q3-editor.Map.Gbx	BlueBay	3	-	full	-	-
+hill6-bluebay-day-q3	hill6-source.Map.Gbx	hill6-BlueBay-Day-0x9b59-q3-editor.Map.Gbx	BlueBay	3	0x9b59	full	-	-
+hill6-bluebay-sunset-q3	hill6-source.Map.Gbx	hill6-BlueBay-Sunset-0xdaab-q3-editor.Map.Gbx	BlueBay	3	-	full	-	-
+tk3nl2-bluebay-day-q3	tk3nl2-testmap-BlueBay-31items.Map.Gbx	tk3nl2-t0x9b59.Map.Gbx	BlueBay	3	0x9b59	full	-	-
+tk3nl2-bluebay-0x5000-q3	tk3nl2-testmap-BlueBay-31items.Map.Gbx	tk3nl2-t0x5000.Map.Gbx	BlueBay	3	0x5000	full	-	-
+tk3nl2-bluebay-0xc000-q3	tk3nl2-testmap-BlueBay-31items.Map.Gbx	tk3nl2-t0xC000.Map.Gbx	BlueBay	3	0xC000	full	-	-
+pwc-day-bluebay-day-q3	../passcap/pwc-day/pwc-day-source.Map.Gbx	../passcap/pwc-day/pwc-day-baked-q3-editor.Map.Gbx	BlueBay	3	-	full	-	-
+# lamp / layout rows at one direction (frame 1 and the layout do not depend on the direction count) — the old guard rows
+stpad-stadium-night-nocache-d1	stpad-night-0x199a-source.Map.Gbx	stpad-Stadium-Night-0x199a-q3-editor-nocache.Map.Gbx	Stadium	3	-	1	-	-
+tiny16-bluebay-sunset-d1	tiny16-fixedlib-source.Map.Gbx	tiny16-fixedlib-q4-editor-reduced.Map.Gbx	BlueBay	4	-	1	tiny16-reduced-kept.txt	-
+# the giant (WhiteShore, the clouds cell; ~25 min) — last, so it lands on one box while the other finishes the small rows
+g23-whiteshore-day-q4	../../../mh/g23.Map.Gbx	g23-WhiteShore-Day-q4-editor-reduced.Map.Gbx	WhiteShore	4	-	full	g23-WhiteShore-Day-q4-editor-reduced.kept	-

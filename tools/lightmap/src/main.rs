@@ -4921,6 +4921,8 @@ fn run(mut a: Vec<String>) {
         }
         "sweep1-annotate" => { if let Err(e) = lightmap::peelcap::sweep1_annotate(&a) { eprintln!("sweep1-annotate: {e}"); std::process::exit(1); } }
         "clouds-check" => { if let Err(e) = lightmap::clouds::check(&a) { eprintln!("clouds-check: {e}"); std::process::exit(1); } }
+        // lmtool corpus-gate run|report|list --corpus CORPUS.tsv … : the per-landing corpus matrix (corpusgate.rs)
+        "corpus-gate" => { if let Err(e) = lightmap::corpusgate::run(&a) { eprintln!("corpus-gate: {e}"); std::process::exit(1); } }
         "clouds-reach" => { if let Err(e) = lightmap::clouds::reach(&a) { eprintln!("clouds-reach: {e}"); std::process::exit(1); } }
         // (G's classcmp dispatch dropped at integration: V's classcmp — landed first, with --own-rects,
         //  --coverage, the spread column and the pairing guard — owns the subcommand; G's --ents table is
