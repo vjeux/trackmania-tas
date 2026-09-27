@@ -194,16 +194,24 @@ pub fn run(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLightmap,
         if lo.0 < hi.0 && lo.1 < hi.1 {
             let mut cells: Vec<Vec<(f64, f64, usize)>> = vec![vec![(0.0, 0.0, 0usize); n]; n];
             let mut items: Vec<Vec<(f64, f64, usize)>> = vec![vec![(0.0, 0.0, 0usize); n]; n];
+            let mut tiles: Vec<Vec<(f64, f64, usize)>> = vec![vec![(0.0, 0.0, 0usize); n]; n];
             for (_, cls, so, se, c) in &chart_hdr { if let Some((x, z)) = c {
                 let gx = (((x - lo.0) / (hi.0 - lo.0) * n as f32) as usize).min(n - 1);
                 let gz = (((z - lo.1) / (hi.1 - lo.1) * n as f32) as usize).min(n - 1);
                 let e = &mut cells[gz][gx]; e.0 += so; e.1 += se; e.2 += 1;
-                if !cls.starts_with("tile") { let e = &mut items[gz][gx]; e.0 += so; e.1 += se; e.2 += 1; }
+                let g = if cls.starts_with("tile") { &mut tiles } else { &mut items };
+                let e = &mut g[gz][gx]; e.0 += so; e.1 += se; e.2 += 1;
             } }
-            println!("\n== SPATIAL: per-chart HDR ratio ours/editor (plane A, the editor's lit texels) on a {n}×{n} grid of chart centres x {:.0}..{:.0} × z {:.0}..{:.0} (rows = z from low to high; cell = ratio (charts)); ALL charts, then ITEMS only", lo.0, hi.0, lo.1, hi.1);
-            for (name, g) in [("all", &cells), ("items", &items)] {
+            println!("\n== SPATIAL: per-chart HDR ratio ours/editor (plane A, the editor's lit texels) on a {n}×{n} grid of chart centres x {:.0}..{:.0} × z {:.0}..{:.0} (rows = z from low to high; cell = ratio (charts)); ALL charts, then ITEMS only, then TILES only (the zone tiles: a peel-structure gap shows here as a dark band the items grid does not have)", lo.0, hi.0, lo.1, hi.1);
+            for (name, g) in [("all", &cells), ("items", &items), ("tiles", &tiles)] {
                 println!("  {name}:");
                 for row in g.iter() { println!("    {}", row.iter().map(|(so, se, k)| if *k > 0 && *se > 0.0 { format!("{:5.3} ({:4})", so / se, k) } else { "   —   (   0)".to_string() }).collect::<Vec<_>>().join("  ")); }
+            }
+            // the two absolute fields behind the tile ratio (mean HDR per chart × 1000): a ratio patchwork over a SMOOTH editor field is a
+            // pairing / numbering error on our side; a patchy editor field is a real spatial term (cloud shadows, depth)
+            for (name, pick) in [("tiles: EDITOR Σ HDR over the chart's lit texels × 3 channels, mean per chart ×1000", 1usize), ("tiles: OURS, the same sum ×1000", 0usize)] {
+                println!("  {name}:");
+                for row in tiles.iter() { println!("    {}", row.iter().map(|(so, se, k)| if *k > 0 { format!("{:6.1}", 1000.0 * (if pick == 1 { *se } else { *so }) / *k as f64) } else { "     —".to_string() }).collect::<Vec<_>>().join("  ")); }
             }
         } else { println!("\n== SPATIAL: no chart centres in the records table (needs the 9-column --records-tsv)"); }
     }
