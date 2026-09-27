@@ -124,6 +124,16 @@ fn reduced(args: &[String], map: &Path, out: &Path) -> Result<(), String> {
     let dropped = m.items.len() - kept.len();
     let kept_list = kept.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
     eprintln!("--reduced: {} of {} items kept ({dropped} dropped: {} light-carrying models + the vegetation clusters)", kept.len(), m.items.len(), light_models.len());
+    // The kept list is written beside the outputs BEFORE anything runs, so an interrupted run (the box held, the
+    // editor dying) can be finished by hand with `lmtool transplant --kept $(cat OUT.kept)` instead of being lost —
+    // the g23 WhiteShore oracle of 2026-09-27 02:15Z was baked by the editor and could not be transplanted because
+    // the list lived only in this process.
+    let kept_path = out.with_extension("kept");
+    std::fs::write(&kept_path, &kept_list).map_err(|e| format!("{}: {e}", kept_path.display()))?;
+    eprintln!("--reduced: kept list written to {}", kept_path.display());
+    if tmmaps::cli::has(args, "--kept-only") {
+        return Ok(());
+    }
     if dropped == 0 {
         return one(args, map, out);
     }
