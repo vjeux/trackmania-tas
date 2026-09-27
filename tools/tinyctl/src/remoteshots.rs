@@ -256,7 +256,7 @@ pub(crate) fn close_if_ours(wsx: &Wsx, _purpose: &str) {
 
 fn game_up(wsx: &Wsx) -> Result<(), String> {
     wait_recovery_clear(wsx)?;
-    let up = wsx.sh("tasklist.exe 2>/dev/null | grep -ci trackmania").unwrap_or_default().trim().to_string();
+    let up = wsx.sh("tasklist.exe 2>/dev/null | grep -ci trackmania; true").unwrap_or_default().trim().to_string();
     if up == "0" {
         println!("  the game is not running — launching");
         wsx.sh(&format!("{ENV}; sed -i \"s/^DeveloperMode=false/DeveloperMode=true/\" /mnt/c/Users/vjeux/OpenplanetNext/Settings.ini; tmdrive launch --timeout 120 --purpose \"remote-shots (launch)\" --wait 100"))?;

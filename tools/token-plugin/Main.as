@@ -27,8 +27,9 @@ void WriteToken(const string &in aud) {
 void Main() {
     // the storage folder is created on first write; a stale pair is removed first so a
     // reader never mistakes yesterday's tokens for today's
-    IO::Delete(IO::FromStorageFolder("token-NadeoServices.txt"));
-    IO::Delete(IO::FromStorageFolder("token-NadeoLiveServices.txt"));
+    // (IO::Delete throws on a missing file — first run, 2026-09-27 15:32)
+    if (IO::FileExists(IO::FromStorageFolder("token-NadeoServices.txt"))) IO::Delete(IO::FromStorageFolder("token-NadeoServices.txt"));
+    if (IO::FileExists(IO::FromStorageFolder("token-NadeoLiveServices.txt"))) IO::Delete(IO::FromStorageFolder("token-NadeoLiveServices.txt"));
     WriteToken("NadeoServices");
     WriteToken("NadeoLiveServices");
     IO::File done(IO::FromStorageFolder("minted.txt"), IO::FileMode::Write);

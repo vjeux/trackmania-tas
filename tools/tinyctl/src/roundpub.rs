@@ -243,7 +243,7 @@ pub fn mint_tokens(wsx: &Wsx, token_dir: &Path) -> Result<(), String> {
             continue;
         }
         // the game itself: launched as its own lock step when it is not running
-        let up = wsx.sh("tasklist.exe 2>/dev/null | grep -ci trackmania").unwrap_or_default().trim().to_string();
+        let up = wsx.sh("tasklist.exe 2>/dev/null | grep -ci trackmania; true").unwrap_or_default().trim().to_string();
         // a game left running WITHOUT Openplanet by a session that has released the lock
         // (the MK64 session's "without Openplanet" runs, 2026-09-26) never answers the token
         // route: after 3 answered-but-empty mints, relaunch it as own lock steps
@@ -722,9 +722,14 @@ pub fn mint_tokens_standalone(wsx: &Wsx, token_dir: &Path) -> Result<(), String>
     const STORE: &str = "/mnt/c/Users/vjeux/OpenplanetNext/PluginStorage/AgentTokenMint";
     let env = "cd /home/vjeux/shoot/hunt; export TM_SESSION=080a15b8-2c6a-4fff-9d8a-db7d0072ee43; export TM_SESSION_TITLE=\"Tiny u10s publish\"; export PATH=/home/vjeux/bin:$PATH";
     let t0 = Instant::now();
-    let up = wsx.sh("tasklist.exe 2>/dev/null | grep -ci trackmania").unwrap_or_default().trim().to_string();
+    // (`grep -c` exits 1 on zero matches, which the bridge reports as a failed command and
+    // an EMPTY answer — the `; true` keeps the count; an empty answer is treated as unknown)
+    let up = wsx.sh("tasklist.exe 2>/dev/null | grep -ci trackmania; true").unwrap_or_default().trim().to_string();
+    if up.is_empty() {
+        return Err("mint-standalone: could not read the box's process list".into());
+    }
     if up != "0" {
-        return Err("mint-standalone: a game is already running on the box (not mine) — ask for a free window; this mint only ever uses a game it launched".into());
+        return Err(format!("mint-standalone: {up} game process(es) already running on the box (not mine) — ask for a free window; this mint only ever uses a game it launched"));
     }
     let marker = wsx.sh("test -e /mnt/c/Users/vjeux/OpenplanetNext/PluginStorage/TmDriveRecovery.v1 && echo DIRTY || echo clean").unwrap_or_default();
     if marker.contains("DIRTY") {
