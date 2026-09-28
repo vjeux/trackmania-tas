@@ -114,7 +114,7 @@ mod tests {
         Scene {
             models: vec![m],
             model_names: vec!["quad".into()],
-            instances: vec![Instance { item: 0, model: 0, xf: crate::geometry::identity_xf(), model_name: "quad".into(), pose: crate::geometry::ItemPose { scale: 1.0, ..Default::default() }, lm_quality: 0 }],
+            instances: vec![Instance { item: 0, model: 0, xf: crate::geometry::identity_xf(), model_name: "quad".into(), pose: crate::geometry::ItemPose { scale: 1.0, ..Default::default() }, lm_quality: 0, colour: 0 }],
             item_count: 1,
             decor: Vec::new(),
             warp_vs: Vec::new(),

@@ -616,3 +616,79 @@ mod tests {
         }
     }
 }
+
+// ───────────────── THE HUE-MASK RECOLOUR (PS 9539 / 9544 — RE 13's transcription, RE 15's palette read, G2 2026-09-28) ─────────────────
+
+/// A HueMask material's recolour toward the placement colour, at the pre-pass tap: the game's `RgbBaseColorTarget` = the material's
+/// own colour table (`<Coll>\Media\ColorTargetTables\<Name>.ColorTable.gbx.json`, class CPlugMaterialColorTargetTable, list
+/// "Classic" for the editor bake) at MapElemColor − 1 (1 White, 2 Green, 3 Blue, 4 Red, 5 Black), sRGB bytes → linear; the mask
+/// `m` = the material's `PxzBaseColorHueMask` (else Py / plain) image sampled like the base (WRAP bilinear at (0, −trans.y), rgb
+/// through the sRGB view, alpha linear — RE 15 07:30Z: the captured red items sit on the sRGB-decoded prediction); then
+/// k = max(m.g − ½(m.r + m.b), 0), recol = sat((m.g − k)·mean(T) + k·T), c' = c + m.a·(recol − c). Colour 0 (Default) = no recolour
+/// (PS 9544's BaseColorTargetId gate). `base` = the material's un-recoloured constant.
+#[derive(Clone, Debug)]
+pub struct HueRecolour {
+    pub rgb: [f32; 3],
+    pub target: [f32; 3],
+    pub mask: [f32; 4],
+    pub table: String,
+    pub mask_image: String,
+}
+
+pub fn colour_table_target(store: &mut DataStore, table_path: &str, colour: u8, list: &str) -> Result<[f32; 3], String> {
+    let txt = store.read(table_path)?;
+    // Nadeo's JSON carries trailing commas before `}` / `]` — dropped before the strict parse
+    let s = String::from_utf8_lossy(&txt);
+    let mut cleaned = String::with_capacity(s.len());
+    let chars: Vec<char> = s.chars().collect();
+    for (i, c) in chars.iter().enumerate() {
+        if *c == ',' { let next = chars[i + 1..].iter().find(|x| !x.is_whitespace()); if matches!(next, Some('}') | Some(']')) { continue; } }
+        cleaned.push(*c);
+    }
+    let v: serde_json::Value = serde_json::from_str(&cleaned).map_err(|e| format!("{table_path}: {e}"))?;
+    let arr = v.get(list).and_then(|a| a.as_array()).ok_or_else(|| format!("{table_path}: no list {list:?}"))?;
+    if colour == 0 || colour as usize > arr.len() { return Err(format!("{table_path}: colour {colour} outside the {}-entry list", arr.len())); }
+    let hex = arr[colour as usize - 1].as_str().ok_or("colour entry is not a string")?;
+    let h = hex.trim_start_matches('#');
+    if h.len() < 6 { return Err(format!("{table_path}: colour {hex:?}")); }
+    let byte = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).map_err(|e| e.to_string());
+    let (r, g, b) = (byte(0)?, byte(2)?, byte(4)?);
+    Ok([crate::gpufmt::srgb_to_linear(r as f32 / 255.0), crate::gpufmt::srgb_to_linear(g as f32 / 255.0), crate::gpufmt::srgb_to_linear(b as f32 / 255.0)])
+}
+
+/// The WRAP bilinear mip-0 tap of any pack DDS (BC1 / BC3 / 8-bit) at GPU uv — rgb through the sRGB view, alpha linear.
+pub fn mip0_bilinear_wrap_rgba(dds: &[u8], uv: [f32; 2]) -> Result<[f32; 4], String> {
+    let mut tex = crate::texsample::parse_dds(dds, Bc1Decode::Expand8Round)?;
+    tex.decode_srgb();
+    let lv = tex.levels.first().and_then(|s| s.first()).ok_or("no mip 0")?;
+    let s = crate::texsample::Sampler::bilinear_no_mip(crate::texsample::Address::Wrap);
+    // the GPU texture is the file flipped: GPU v = 1 − file v
+    Ok(crate::texsample::fetch_level(lv, &s, uv[0], 1.0 - uv[1]))
+}
+
+pub fn hue_recolour(store: &mut DataStore, link: &str, colour: u8, base: [f32; 3]) -> Result<HueRecolour, String> {
+    if colour == 0 { return Err("colour 0 (Default): no recolour".into()); }
+    let file = if link.to_ascii_lowercase().ends_with(".gbx") { link.to_string() } else { format!("{link}.Material.Gbx") };
+    let m = store.load_model(&file)?;
+    let g = m.graph()?;
+    let mut custom = None;
+    for s in &g.slots { if let mapgeom::node::Slot::Node(mapgeom::node::Node::MaterialCustom(c)) = s { custom = Some(c); } }
+    let custom = custom.ok_or_else(|| format!("{file}: no CPlugMaterialCustom"))?;
+    let slot = |name: &str| custom.bitmaps.iter().find(|(n, _)| n == name).and_then(|(_, r)| g.external(*r)).map(|s| s.to_string());
+    let mask_tex = slot("PxzBaseColorHueMask").or_else(|| slot("PyBaseColorHueMask")).or_else(|| slot("BaseColorHueMask")).ok_or_else(|| format!("{file}: no HueMask slot"))?;
+    let table = m.externals.iter().map(|(_, p)| p.clone()).find(|p| p.to_ascii_lowercase().ends_with(".colortable.gbx.json")).ok_or_else(|| format!("{file}: no ColorTable external"))?;
+    let target = colour_table_target(store, &table, colour, "Classic")?;
+    let tm = store.load_model(&mask_tex)?;
+    let tg = tm.graph()?;
+    let (image, trans) = match &tg.root {
+        Some(mapgeom::node::Node::Bitmap(b)) => (tg.external(b.image).ok_or_else(|| format!("{mask_tex}: image not external"))?.to_string(), b.tc_scale_trans.map(|v| [f32::from_bits(v[2]), f32::from_bits(v[3])]).unwrap_or([0.0, 0.0])),
+        _ => return Err(format!("{mask_tex}: not a CPlugBitmap")),
+    };
+    let dds = store.read(&image)?;
+    let mask = mip0_bilinear_wrap_rgba(&dds, [0.0, -trans[1]])?;
+    let k = (mask[1] - 0.5 * (mask[0] + mask[2])).max(0.0);
+    let mean_t = (target[0] + target[1] + target[2]) / 3.0;
+    let recol = [((mask[1] - k) * mean_t + k * target[0]).clamp(0.0, 1.0), ((mask[1] - k) * mean_t + k * target[1]).clamp(0.0, 1.0), ((mask[1] - k) * mean_t + k * target[2]).clamp(0.0, 1.0)];
+    let rgb = [base[0] + mask[3] * (recol[0] - base[0]), base[1] + mask[3] * (recol[1] - base[1]), base[2] + mask[3] * (recol[2] - base[2])];
+    Ok(HueRecolour { rgb, target, mask, table, mask_image: image })
+}

@@ -362,7 +362,9 @@ pub fn attr_from_map(scene: &crate::geometry::Scene, lm: &LmScene, frozen: &Froz
     // rasterises the rows of its band — a texel's fragments arrive in the same order as in the serial run, so the f16 blend
     // chain is bit-identical; the accumulation into 16963 follows in run order per texel.
     // 1. per mesh: the port model it pairs with and its triangles' (LM uv, uv0, class, texture, constant, class id, alpha test)
-    struct TriDraw<'a> { uv: [[f32; 2]; 3], uv0: [[f32; 2]; 3], class: MatClass, tex: Option<&'a Texture>, konst: Option<[f32; 3]>, cls: u8, at: Option<f32> }
+    // `hue`: the triangle's material has recoloured constants in frozen.hue_rgb (a HueMask material) — the instance's MapElemColor
+    // picks one at raster time (colour 0 = the plain constant)
+    struct TriDraw<'a> { uv: [[f32; 2]; 3], uv0: [[f32; 2]; 3], class: MatClass, tex: Option<&'a Texture>, konst: Option<[f32; 3]>, cls: u8, at: Option<f32>, hue: Option<[[f32; 3]; 6]> }
     let mut class_count = [0usize; 4];
     let mut mesh_tris: Vec<Vec<TriDraw>> = Vec::with_capacity(item_meshes.len());
     {
@@ -420,17 +422,30 @@ pub fn attr_from_map(scene: &crate::geometry::Scene, lm: &LmScene, frozen: &Froz
                     MatClass::Wall => Some(link_const.unwrap_or(frozen.wall_rgb)),
                     _ => None,
                 };
+                let hue: Option<[[f32; 3]; 6]> = if *diff & 0xC000 == 0x4000 && konst.is_some() && std::env::var_os("LMTOOL_NO_HUE_RECOLOUR").is_none() {
+                    model.mat_links.get((*diff & 0x3fff) as usize).and_then(|l| {
+                        let lc = l.to_ascii_lowercase();
+                        if !frozen.hue_rgb.contains_key(&(lc.clone(), 4)) { return None; }
+                        let mut t = [konst.unwrap(); 6];
+                        for c in 1u8..=5 { if let Some(v) = frozen.hue_rgb.get(&(lc.clone(), c)) { t[c as usize] = *v; } }
+                        Some(t)
+                    })
+                } else { None };
                 let cls = match class { MatClass::Textured => 6u8, MatClass::CutOut => 7, MatClass::Pad => 3, MatClass::Wall => 4 };
                 // a card under the study switch: the 128/255 alpha test (GbxShadowAlphaThreshold) discards the cut-out
                 let at = if *diff & 0x8000 != 0 || (*diff & 0xC000 == 0x4000 && link_alpha_tested.contains(&diff_name(model, *diff))) { Some(SHADOW_ALPHA_THRESHOLD) } else { None };
                 // (the class census of run 0: once per instance and triangle, as the serial run counted)
                 class_count[match class { MatClass::Textured => 0, MatClass::CutOut => 1, MatClass::Pad => 2, MatClass::Wall => 3 }] += n_inst;
-                TriDraw { uv: *uv, uv0: *uv0, class: *class, tex, konst, cls, at }
+                TriDraw { uv: *uv, uv0: *uv0, class: *class, tex, konst, cls, at, hue }
             }).collect();
+            if std::env::var_os("LMTOOL_HUE_TRACE").is_some() { let nh = draws.iter().filter(|d| d.hue.is_some()).count(); if nh > 0 || name.contains("AC062201") { eprintln!("hue-trace: mesh {mk} ({name}): {nh} of {} triangles carry a HueMask recolour table; instances {} colours {:?}", draws.len(), lm.inst_count[*mk], (lm.inst_first[*mk]..lm.inst_first[*mk] + lm.inst_count[*mk]).map(|ii| lm.port_inst.get(ii).copied().filter(|p| *p != usize::MAX).and_then(|p| scene.instances.get(p)).map(|si| si.colour).unwrap_or(99)).collect::<Vec<_>>()); } }
             mesh_tris.push(draws);
         }
     }
     let mesh_tris = &mesh_tris;
+    // the LM instances' placement colours (through their port instance; entities and tiles 0) for the HueMask recolour
+    let inst_colour: Vec<u8> = (0..lm.instances.len()).map(|ii| lm.port_inst.get(ii).copied().filter(|p| *p != usize::MAX).and_then(|p| scene.instances.get(p)).map(|si| si.colour).unwrap_or(0)).collect();
+    let inst_colour = &inst_colour;
     // LMTOOL_TILE_ALBEDO_SCALE=K (study): the tiles' sampled albedo scaled — the ground-bounce lever test on stpad's posts
     static ASCALE: std::sync::LazyLock<f32> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_TILE_ALBEDO_SCALE").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0));
     static GRASS_NO2: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("LMTOOL_GRASS_NO2").is_some());
@@ -540,7 +555,7 @@ pub fn attr_from_map(scene: &crate::geometry::Scene, lm: &LmScene, frozen: &Froz
                                     }
                                     None => [0.0, 0.0, 0.0, lm_scale],
                                 },
-                                _ => { let c = d.konst.unwrap(); [c[0] * lm_scale, c[1] * lm_scale, c[2] * lm_scale, lm_scale] }
+                                _ => { let c = match &d.hue { Some(t) => t[inst_colour[ii as usize].min(5) as usize], None => d.konst.unwrap() }; [c[0] * lm_scale, c[1] * lm_scale, c[2] * lm_scale, lm_scale] }
                             };
                             blend_at(tp, x, y, src, d.cls);
                         });
@@ -1101,6 +1116,14 @@ pub fn tables_from_paktables_with_records(f: &mut FrozenTables, store: &mut mapg
         match crate::paktables::material_constant(store, l) {
             Ok(mc) => {
                 f.link_rgb.insert(l.to_ascii_lowercase(), mc.rgb);
+                // a HueMask material: its recoloured constants for the five placement colours (PS 9544 / 9539 — RE 13's arithmetic,
+                // RE 15's colour table; the tap and the sRGB view as paktables::hue_recolour reads them)
+                for colour in 1u8..=5 {
+                    match crate::paktables::hue_recolour(store, l, colour, mc.rgb) {
+                        Ok(h) => { if colour == 4 { got.push(format!("{l} colour 4 → {:?} (HueMask {} tap {:?}, table {}, target {:?})", h.rgb, h.mask_image, h.mask, h.table, h.target)); } f.hue_rgb.insert((l.to_ascii_lowercase(), colour), h.rgb); }
+                        Err(_) => break,
+                    }
+                }
                 match mc.family {
                     crate::paktables::Family::PyPxzIds => { got.push(format!("{l} → {:?} (terrain ids {:?}; frozen Land {:?})", mc.rgb, mc.ids, f.wall_rgb)); f.wall_rgb = mc.rgb; }
                     crate::paktables::Family::PyPxzProjected => { got.push(format!("{l} → {:?} (projected, {}; frozen TrackWall {:?})", mc.rgb, mc.image, f.pad_rgb)); f.pad_rgb = mc.rgb; }

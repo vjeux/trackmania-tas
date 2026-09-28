@@ -878,7 +878,7 @@ pub fn add_record_geometry(scene: &mut crate::geometry::Scene, store: &mut mapge
             continue;
         };
         let pose = crate::geometry::ItemPose { yaw: 0.0, pitch: 0.0, roll: 0.0, pos: [xf[9], xf[10], xf[11]], pivot: [0.0; 3], scale: 1.0 };
-        scene.instances.push(crate::geometry::Instance { item: next_item, model: mi, xf, model_name: scene.model_names[mi].clone(), pose, lm_quality: 0 });
+        scene.instances.push(crate::geometry::Instance { item: next_item, model: mi, xf, model_name: scene.model_names[mi].clone(), pose, lm_quality: 0, colour: 0 });
         out[k] = Some(scene.instances.len() - 1);
         next_item += 1;
     }

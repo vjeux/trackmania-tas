@@ -657,3 +657,21 @@ pub fn texsample_cli(a: &[String]) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// `lmtool hue-recolour --pak F:KEY… LINK COLOUR` — a HueMask material's pre-pass constant for a placement colour (PS 9544's recolour
+/// on the material's projected constant): the base tap, the mask tap, the table's target, c'.
+pub fn hue_recolour_cli(a: &[String]) -> Result<(), String> {
+    let mut store = mapgeom::store::DataStore::empty();
+    let mut pos: Vec<String> = Vec::new();
+    let mut i = 1;
+    while i < a.len() {
+        if a[i] == "--pak" { let (p, k) = a[i + 1].rsplit_once(':').ok_or("--pak FILE:KEYHEX")?; store.add_pak(p, k)?; i += 2; } else { pos.push(a[i].clone()); i += 1; }
+    }
+    let link = pos.first().ok_or("LINK")?;
+    let colour: u8 = pos.get(1).and_then(|s| s.parse().ok()).ok_or("COLOUR 1..5")?;
+    let base = crate::paktables::material_constant(&mut store, link)?;
+    println!("{link}: base constant {:?} ({}, {:?})", base.rgb, base.image, base.uv);
+    let h = crate::paktables::hue_recolour(&mut store, link, colour, base.rgb)?;
+    println!("  colour {colour}: table {} → target {:?}; mask {} tap {:?}; c' = ({:.4}, {:.4}, {:.4}); c'/c = ({:.3}, {:.3}, {:.3})", h.table, h.target, h.mask_image, h.mask, h.rgb[0], h.rgb[1], h.rgb[2], h.rgb[0] / base.rgb[0], h.rgb[1] / base.rgb[1], h.rgb[2] / base.rgb[2]);
+    Ok(())
+}

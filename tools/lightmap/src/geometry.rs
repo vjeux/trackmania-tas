@@ -677,6 +677,9 @@ pub struct Instance {
     /// The item's MapElemLightmapQuality byte (chunk 0x03043068: Normal 0, High 1, VeryHigh 2, Highest 3, Lowest 4,
     /// VeryLow 5, Low 6); 0 when the map has no such chunk.
     pub lm_quality: u8,
+    /// The placement's MapElemColor byte (chunk 0x03043062: 0 Default, 1 White, 2 Green, 3 Blue, 4 Red, 5 Black); 0 without the chunk. A
+    /// HueMask material's pre-pass constant is recoloured toward the material's colour-table entry when it is not 0 (G2, 2026-09-28).
+    pub colour: u8,
 }
 
 pub struct Scene {
@@ -905,6 +908,11 @@ impl Scene {
             let start = payload + 4 + m.blocks.len() + m.baked.len();
             m.gbx.body[start.min(payload + size)..(payload + size).min(start + m.items.len())].to_vec()
         }).unwrap_or_default();
+        // the placements' MapElemColor bytes (chunk 0x03043062, after the blocks' and the baked blocks')
+        let colours: Vec<u8> = tmmaps::gbx::all_skip_chunks(&m.gbx.body).iter().find(|(c, ..)| *c == 0x0304_3062).map(|&(_, _, payload, size)| {
+            let start = payload + 4 + m.blocks.len() + m.baked.len();
+            m.gbx.body[start.min(payload + size)..(payload + size).min(start + m.items.len())].to_vec()
+        }).unwrap_or_default();
         // the game's STOCK items (a placed item whose model the map does not embed: `Screen2x1Small`, …) live in the packs —
         // LMTOOL_STOCK_PAKS=FILE:KEY[,FILE:KEY…] names the packs searched under `<Collection>\Items\<name>.Item.Gbx` (the map's
         // collection first, then Stadium, the shared library)
@@ -956,7 +964,7 @@ impl Scene {
             };
             let xf = mapgeom::place::anchored(it.pos, [it.yaw, it.pitch, it.roll], it.pivot, it.scale);
             let pose = ItemPose { yaw: it.yaw, pitch: it.pitch, roll: it.roll, pos: it.pos, pivot: it.pivot, scale: it.scale };
-            instances.push(Instance { item: i, model: mi, xf, model_name: it.model.clone(), pose, lm_quality: lm_quality.get(i).copied().unwrap_or(0) });
+            instances.push(Instance { item: i, model: mi, xf, model_name: it.model.clone(), pose, lm_quality: lm_quality.get(i).copied().unwrap_or(0), colour: colours.get(i).copied().unwrap_or(0) });
         }
         // the cut-out masks of the alpha-tested materials (the zip's Items/*.dds by base name)
         let mut alpha_masks: BTreeMap<String, AlphaMask> = BTreeMap::new();
