@@ -1820,7 +1820,7 @@ pub fn replay_set_layers_sparse(fl: &LmFragList, sc: &LmScene, cb: &SetCb, world
         if fl.start[p0] == fl.start[p1] { return; }
         // per fragment of the chunk: the projection (None = facing away or clipped) with its depth texel's range and its
         // colour texel's range (the same one when the texels coincide)
-        struct Pf { z: f32, drange: Option<(usize, usize)>, crange: Option<(usize, usize)> }
+        struct Pf { z: f32, drange: Option<(usize, usize)>, crange: Option<(usize, usize)>, px: (u32, u32), cpx: (u32, u32) }
         let t_proj = std::time::Instant::now();
         let mut proj: Vec<Option<Pf>> = Vec::with_capacity((fl.start[p1] - fl.start[p0]) as usize);
         for (k, f) in fl.frags[fl.start[p0] as usize..fl.start[p1] as usize].iter().enumerate() {
@@ -1844,7 +1844,7 @@ pub fn replay_set_layers_sparse(fl: &LmFragList, sc: &LmScene, cb: &SetCb, world
                 let (cx, cy) = (point_texel(cu, dw), point_texel(cv, dh));
                 let drange = l0.range(tx, ty);
                 let crange = if (cx, cy) == (tx, ty) { drange } else { l0.range(cx, cy) };
-                Pf { z, drange, crange }
+                Pf { z, drange, crange, px: (tx, ty), cpx: (cx, cy) }
             }));
         }
         SET_PROJ_NS.fetch_add(t_proj.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
@@ -1879,7 +1879,7 @@ pub fn replay_set_layers_sparse(fl: &LmFragList, sc: &LmScene, cb: &SetCb, world
                         None => s += &format!("\n    frag {fi}: mesh {m} inst {ii} tri {} pos ({:.4},{:.4},{:.4}) n ({:.3},{:.3},{:.3}) → facing away / clipped", f.tri, f.pos[0], f.pos[1], f.pos[2], f.nrm[0], f.nrm[1], f.nrm[2]),
                         Some(pf) => {
                             let nd = pf.drange.map(|(_, n)| n).unwrap_or(0);
-                            s += &format!("\n    frag {fi}: mesh {m} inst {ii} tri {} pos ({:.4},{:.4},{:.4}) n ({:.3},{:.3},{:.3}) → z {:.7}, depth texel has {nd} layers:", f.tri, f.pos[0], f.pos[1], f.pos[2], f.nrm[0], f.nrm[1], f.nrm[2], pf.z);
+                            s += &format!("\n    frag {fi}: mesh {m} inst {ii} tri {} pos ({:.4},{:.4},{:.4}) n ({:.3},{:.3},{:.3}) → z {:.7}, depth texel ({},{}) colour texel ({},{}) has {nd} layers:", f.tri, f.pos[0], f.pos[1], f.pos[2], f.nrm[0], f.nrm[1], f.nrm[2], pf.z, pf.px.0, pf.px.1, pf.cpx.0, pf.cpx.1);
                             for k in 0..k_end {
                                 let stored = match pf.drange { Some((f0, n)) if k < n => l0.frags[f0 + k].d, _ => 1.0 };
                                 let pass = match cmp { DepthCompare::Unorm16Round => (pf.z.clamp(0.0, 1.0) * 65535.0).round() >= (stored * 65535.0).round(), DepthCompare::Float => pf.z >= stored };
@@ -2041,6 +2041,7 @@ pub fn replay_hbasis(fl: &LmFragList, sc: &LmScene, cb: &HbCb, ilightdir: &DirTa
                         let slot = &mut *(mrt_ptrs[k] as *mut [f32; 4]).add(p);
                         for ch in 0..4 { slot[ch] = blend_f16(slot[ch], o[k][ch], blend); }
                     }
+                    if set_texel_trace() == Some((x, y)) { let s0 = &*(mrt_ptrs[0] as *const [f32; 4]).add(p); eprintln!("hb-texel-trace: dir {} MRT0 after this fragment = ({:.7},{:.7},{:.7},{:.7}) [blend {:?}]", SET_TRACE_DIR.load(std::sync::atomic::Ordering::Relaxed), s0[0], s0[1], s0[2], s0[3], blend); }
                 }
             }
         }
