@@ -296,8 +296,15 @@ pub fn hue_class_constant(store: &mut DataStore, link: &str, target: Option<[f32
     let mask = base.rgb;
     let k = (mask[1] - 0.5 * (mask[0] + mask[2])).max(0.0);
     let mean_t = (t[0] + t[1] + t[2]) / 3.0;
-    let recol = [((mask[1] - k) * mean_t + k * t[0]).clamp(0.0, 1.0), ((mask[1] - k) * mean_t + k * t[1]).clamp(0.0, 1.0), ((mask[1] - k) * mean_t + k * t[2]).clamp(0.0, 1.0)];
-    base.notes.push(format!("PyPxz_Hue: mask tap {:?} → k {k:.4}, RgbTargetColor {:?} ({src}) → albedo {:?}", mask, t, recol));
+    let mut recol = [((mask[1] - k) * mean_t + k * t[0]).clamp(0.0, 1.0), ((mask[1] - k) * mean_t + k * t[1]).clamp(0.0, 1.0), ((mask[1] - k) * mean_t + k * t[2]).clamp(0.0, 1.0)];
+    // LMTOOL_HUE_STUDY=grey|mask (STUDY, E5 2026-09-28 21:30Z — E4's probe oracle on g23: the editor's 479 probes over the CustomPlastic
+    // hills read GREY (1.09, 1.13, 1.12) where ours read ORANGE (1.95, 1.50, 0.29) → the game's hills EMIT a neutral colour in its LM,
+    // not the TargetColor-recoloured mask): `grey` = the recolour's luminance as a neutral (k·mean(T)), `mask` = the mask itself (the
+    // pre-E3 form). A direction test of the items' G/B deficit, not a rule — RE 16 reads which program / constant the LM pre-pass runs.
+    let study = std::env::var("LMTOOL_HUE_STUDY").unwrap_or_default();
+    if study == "grey" { let g = ((mask[1] - k) * mean_t + k * mean_t).clamp(0.0, 1.0); recol = [g, g, g]; }
+    else if study == "mask" { recol = mask; }
+    base.notes.push(format!("PyPxz_Hue: mask tap {:?} → k {k:.4}, RgbTargetColor {:?} ({src}) → albedo {:?}{}", mask, t, recol, if study.is_empty() { String::new() } else { format!(" [STUDY LMTOOL_HUE_STUDY={study}]") }));
     base.rgb = recol;
     base.family = Family::PyPxzHue;
     Ok(base)
