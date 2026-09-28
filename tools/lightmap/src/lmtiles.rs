@@ -225,6 +225,19 @@ pub fn world_peel_box(scene: &CBox, probe_chunks_aabb: Option<&CBox>) -> CBox {
     if let Some(p) = probe_chunks_aabb {
         w.union_into(p);
     }
+    // LMTOOL_WORLD_BOX_YMIN=y (STUDY, E5 2026-09-28 22:58Z — default off): the world peel box's bottom forced. On g23 the probe-chunk fold
+    // puts W.ymin at −94 (two chunks of the expanded grid's lowest row) and every cell of the WhiteShore skirt (−6 → −14.7 → −18.4)
+    // stays inside the env raster: its black underside owns layer 0 above the horizon and a vertical face 341 m up loses 40–47 % of
+    // its hemisphere (the 22:27Z traces); V4-11's editor bright bands + RE 16's skirt-height CSV read the GAME's bottom at ≈ −14.2 —
+    // the skirt below it is clipped at the near plane and the dome shows. This knob tests that number; the RULE is E4's read of the
+    // chunk fold (FUN_140233150 / the grid expansion), never the fit.
+    if let Some(y) = std::env::var("LMTOOL_WORLD_BOX_YMIN").ok().and_then(|v| v.parse::<f32>().ok()) {
+        let (mn, mx) = (w.min(), w.max());
+        if y > mn[1] && y < mx[1] {
+            eprintln!("world peel box: STUDY LMTOOL_WORLD_BOX_YMIN={y}: the bottom {} → {y} (the scene box's bottom {}, the chunks' {})", mn[1], scene.min()[1], probe_chunks_aabb.map(|p| p.min()[1].to_string()).unwrap_or("-".into()));
+            w = CBox::from_min_max([mn[0], y, mn[2]], mx);
+        }
+    }
     w
 }
 
