@@ -294,6 +294,55 @@ pub fn filetime_now() -> u64 {
     unix + 116_444_736_000_000_000
 }
 
+/// THE GAME'S `TimeWriteMostRecentSolid` OF A MAP (the MK64 flat-lightmap lane, 2026-09-28; lmflat 0006, docs/formats/map-lightmap.md
+/// §4.1): the cache chunk 0x06022013's FILETIME word is compared at load against the newest `CPlugSolid2Model.FileWriteTime`
+/// (chunk 0x090BB000 v ≥ 4, the u64 after the PreLightGen) over the map's embedded item models — a chunk whose word differs is
+/// DROPPED ("TimeWriteMostRecentSolid has changed") and the game falls back to its coarse load-time bake. Every 09-23 MK64 editor
+/// bake's word EQUALS its 130 item solids' 0x01dd4b6a0b594800. Rule as read: the max FileWriteTime over the PLACED item models'
+/// solids (V4 2026-09-28 20:15Z on all 31 corpus oracles: 31/31 equal to the max over the models the map's item list places; in
+/// 16 the embedded zip carries MORE item files than the map places and the word follows the placed set) — a static object's own
+/// solid, or a prefab's static-object entities'. (None, …) = no placed model carries one (the template's word is kept then).
+/// Returns (time, solids counted, placed model files parsed).
+pub fn most_recent_solid(mf: &tmmaps::map::MapFile) -> Result<(Option<u64>, usize, usize), String> {
+    let files = mapgeom::embedded::files(mf)?;
+    let placed: std::collections::HashSet<String> = mf.items.iter().map(|it| it.model.rsplit(['/', '\\']).next().unwrap_or(&it.model).to_ascii_lowercase()).collect();
+    let (mut best, mut n_solids, mut n_files) = (None::<u64>, 0usize, 0usize);
+    for (name, bytes) in &files {
+        let base = name.rsplit(['/', '\\']).next().unwrap_or(name).to_ascii_lowercase();
+        if !base.ends_with(".item.gbx") || !placed.contains(&base) {
+            continue;
+        }
+        let Ok(f) = mapgeom::static_item::file::parse_file(bytes) else { continue };
+        n_files += 1;
+        let mut times: Vec<u64> = Vec::new();
+        if let Some(so) = f.item.static_object() {
+            if let Some(s2) = so.solid2() {
+                times.push(s2.file_write_time);
+            }
+        } else if let Some(pf) = f.item.prefab() {
+            for e in &pf.ents {
+                if let Some(mapgeom::static_item::Node::StaticObject(so)) = e.model.inline.as_deref() {
+                    if let Some(s2) = so.solid2() {
+                        times.push(s2.file_write_time);
+                    }
+                }
+            }
+        }
+        for t in times {
+            n_solids += 1;
+            if t != 0 && best.map(|b| t > b).unwrap_or(true) {
+                best = Some(t);
+            }
+        }
+    }
+    Ok((best, n_solids, n_files))
+}
+
+/// A FILETIME word as `0x… = unix N`.
+pub fn filetime_text(t: u64) -> String {
+    format!("{t:#x} = unix {}", (t / 10_000_000).saturating_sub(11_644_473_600))
+}
+
 pub fn patch_frame_records(head: &mut [u8], fp: &FrameParams) {
     for i in 0..3 {
         let r = 60 + 66 * i;

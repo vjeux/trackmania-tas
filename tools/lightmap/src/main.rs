@@ -3343,8 +3343,30 @@ fn run(mut a: Vec<String>) {
             // the frame records' time-of-day word: the MAP's (chunk 0x03043056), or the mood's default word
             // when the map has none (what Nadeo's editor baked the default-word sources with) — `--daytime N`
             // overrides, `--daytime template` keeps the template's (giant child 2026-09-23 + baker-3)
-            // --bake-time now|TICKS: the file's FILETIME word; default = the template's (a deterministic writer)
-            let bake_filetime: Option<u64> = match f("--bake-time").as_deref() { Some("now") => Some(lightmap::synth::filetime_now()), Some(t) => Some(t.parse().expect("--bake-time now|TICKS")), None => None };
+            // --bake-time solids|now|template|TICKS: the file's cache chunk 0x06022013 FILETIME word. DEFAULT = `solids` = THE GAME'S RULE
+            // (the MK64 flat-lightmap lane, 2026-09-28; synth::most_recent_solid): the word must equal the newest CPlugSolid2Model.FileWriteTime
+            // over the map's embedded item models or the game drops the chunk at load ("TimeWriteMostRecentSolid has changed") and plays its
+            // coarse load-time bake — so a pinned or wall-clock word is REJECTED in PLAY on any map whose items carry another time. An
+            // explicit LMTOOL_BAKE_TIME / SOURCE_DATE_EPOCH pin (the gates' byte compares) still wins over the default (synth's precedence:
+            // FrameParams::filetime, else the pin, else the template's word); `template` keeps the template's word; a map without an embedded
+            // solid time keeps the template's word too (reported).
+            let bake_filetime: Option<u64> = match f("--bake-time").as_deref() {
+                Some("now") => Some(lightmap::synth::filetime_now()),
+                Some("template") => None,
+                None | Some("solids") => {
+                    let pinned = std::env::var_os("LMTOOL_BAKE_TIME").is_some() || std::env::var_os("SOURCE_DATE_EPOCH").is_some();
+                    let mf0 = tmmaps::map::MapFile::load(std::path::Path::new(&map_path));
+                    match lightmap::synth::most_recent_solid(&mf0) {
+                        Ok((Some(t), n_solids, n_files)) => {
+                            if pinned { eprintln!("bake-time: the map's TimeWriteMostRecentSolid is {} ({n_solids} solids in {n_files} item files) — the LMTOOL_BAKE_TIME / SOURCE_DATE_EPOCH pin overrides it (a byte-compare run; the game REJECTS this file's lightmap at load)", lightmap::synth::filetime_text(t)); None }
+                            else { eprintln!("bake-time: cache chunk 0x06022013 = TimeWriteMostRecentSolid {} (the newest of {n_solids} embedded item solids in {n_files} files — the game's load-time validation)", lightmap::synth::filetime_text(t)); Some(t) }
+                        }
+                        Ok((None, n_solids, n_files)) => { eprintln!("bake-time: no embedded item solid carries a FileWriteTime ({n_solids} solids in {n_files} item files) — the template's word is kept"); None }
+                        Err(e) => { eprintln!("bake-time: embedded items unreadable ({e}) — the template's word is kept"); None }
+                    }
+                }
+                Some(t) => Some(t.parse().expect("--bake-time solids|now|template|TICKS")),
+            };
             let frame_params = xml_sel.map(|x| {
                 let mf0 = tmmaps::map::MapFile::load(std::path::Path::new(&map_path));
                 let own = lightmap::mapio::daytime(&mf0.gbx.body).unwrap_or(0xffff_ffff);
@@ -9006,7 +9028,9 @@ fn run(mut a: Vec<String>) {
                 eprintln!("relight-fleet: {name} ({}) …", if giant { format!("giant, box {k} of {boxes}") } else { "small, whole".to_string() });
                 let t = std::time::Instant::now();
                 let started = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-                let r = std::process::Command::new(&exe).args(&args).env("LMTOOL_BAKE_TIME", mtime.to_string()).output();
+                // (the cache chunk's FILETIME word = the map's TimeWriteMostRecentSolid by the bake's default — the game's load-time rule; a pinned
+                // word is rejected in PLAY, so the fleet no longer pins LMTOOL_BAKE_TIME; the run stays reproducible: the word is the map's own)
+                let r = std::process::Command::new(&exe).args(&args).output();
                 let bake_s = t.elapsed().as_secs_f32();
                 let (bake_ok, sweeps, note, log) = match &r {
                     Ok(o) => {
@@ -9781,6 +9805,18 @@ variants: ");
             println!("  [{}] file {} B vs the 25 MiB upload cap (an embedded-items map may legitimately exceed it locally)", if fsz < 25 * 1024 * 1024 { " ok " } else { "warn" }, fsz);
             // frames
             report((d.frames.len() == 3 || d.frames.len() == 2) && d.frames[0].images.len() == 3, &format!("3 frames (2 without local lights) × 3 image slots ({} frames)", d.frames.len()));
+            // THE GAME'S LOAD-TIME VALIDATION of the cache (E5, 2026-09-28; the MK64 flat-lightmap lane): chunk 0x06022013's FILETIME word
+            // (bytes 8..16) must equal TimeWriteMostRecentSolid = the newest CPlugSolid2Model.FileWriteTime over the map's embedded item
+            // models, or the game drops the lightmap and plays its coarse load-time bake ("TimeWriteMostRecentSolid has changed")
+            {
+                let word: Option<u64> = d.cache.chunk(0x0602_2013).and_then(|c| match &c.body { lightmap::format::ChunkBody::Raw(b) if b.len() >= 16 => Some(u64::from_le_bytes(b[8..16].try_into().unwrap())), _ => None });
+                match (word, lightmap::synth::most_recent_solid(&mf)) {
+                    (Some(w), Ok((Some(t), n_solids, _))) => report(w == t, &format!("cache chunk 0x06022013 FILETIME {} = the map's TimeWriteMostRecentSolid {} ({n_solids} embedded item solids) — the game keeps the lightmap at load", lightmap::synth::filetime_text(w), lightmap::synth::filetime_text(t))),
+                    (Some(w), Ok((None, ..))) => println!("  [ -- ] cache chunk 0x06022013 FILETIME {} (no embedded item solid carries a FileWriteTime: nothing to validate against)", lightmap::synth::filetime_text(w)),
+                    (None, _) => report(false, "cache chunk 0x06022013 (the FILETIME word) is missing"),
+                    (Some(w), Err(e)) => println!("  [ -- ] cache chunk 0x06022013 FILETIME {} (embedded items unreadable: {e})", lightmap::synth::filetime_text(w)),
+                }
+            }
             let riffs = |b: &[u8]| -> usize { let mut n = 0; let mut o = 0; while o + 12 <= b.len() && &b[o..o + 4] == b"RIFF" { let sz = u32::from_le_bytes([b[o + 4], b[o + 5], b[o + 6], b[o + 7]]) as usize + 8; n += 1; o += sz + (sz & 1); } if o == b.len() { n } else { 0 } };
             report(riffs(&d.frames[0].images[0]) == 1, "frame 0 image 0 is one WebP (H-basis colour)");
             report(riffs(&d.frames[0].images[1]) == 3, &format!("frame 0 image 1 is THREE concatenated WebPs (directional coefficients; found {})", riffs(&d.frames[0].images[1])));
