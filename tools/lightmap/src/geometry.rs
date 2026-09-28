@@ -287,8 +287,17 @@ pub fn solid2_lights_ext(s2: &mapgeom::static_item::solid2::CPlugSolid2Model, po
             }
         }
         let t = &l.u05;
-        let (mut pos, mut dir) = ([t[9], t[10], t[11]], norm([t[6], t[7], t[8]]));
-        let (mut left, mut up) = (norm([t[0], t[1], t[2]]), norm([t[3], t[4], t[5]]));
+        // THE SOCKET'S AXES ARE THE COLUMNS OF ITS 3×3 (RE 15, NOTES 01:40Z; FUN_140183fd0 on Iso4s stored as 12 floats {m[0..8] row-major,
+        // m[3i+j] = R_ij, t at +0x24}: the composed light's spot axis = the THIRD COLUMN (m[2], m[5], m[8]) = R·Ẑ (= −SpotDirNegInWorld),
+        // LEFT = column 0 (m[0], m[3], m[6]), UP = column 1 (m[1], m[4], m[7]) — RE 13's desc layout +0x8..+0x28). Until 2026-09-28 the
+        // port took the ROWS (dir = t[6..9]): the transpose, invisible on an axis-aligned socket (stpad's RoadBorderSpot, byte-exact
+        // either way) and 90–180° off on tiny16's RaceArchSpot4x4 fixture, whose four sockets share their Z ROW (+0.56, ±0.23, −0.80)
+        // at both ends of the arch while their third COLUMN points each socket pair toward the fixture's middle ((−0.60, ∓0.06, −0.80)
+        // at x 14.9, (+0.60, ±0.06, −0.80) at x 1.08) — exactly E's per-pair finding (§4-E.32 addendum 3). LMTOOL_LL_SOCKET_AXES=rows = the
+        // old reading (study).
+        let rows = socket_axes_rows();
+        let (mut pos, mut dir) = ([t[9], t[10], t[11]], if rows { norm([t[6], t[7], t[8]]) } else { norm([t[2], t[5], t[8]]) });
+        let (mut left, mut up) = if rows { (norm([t[0], t[1], t[2]]), norm([t[3], t[4], t[5]])) } else { (norm([t[0], t[3], t[6]]), norm([t[1], t[4], t[7]])) };
         if let Some((q, p)) = pose {
             let r = quat_rot(q, pos);
             pos = [r[0] + p[0], r[1] + p[1], r[2] + p[2]];
@@ -303,10 +312,16 @@ pub fn solid2_lights_ext(s2: &mapgeom::static_item::solid2::CPlugSolid2Model, po
             let neg = |v: [f32; 3]| [-v[0], -v[1], -v[2]];
             match ax.as_str() { "left" => { dir = l0; left = d0; } "-left" => { dir = neg(l0); left = d0; } "up" => { dir = u0; up = d0; } "-up" => { dir = neg(u0); up = d0; } "-dir" => { dir = neg(d0); } _ => {} }
         }
-        if std::env::var_os("LMTOOL_LIGHT_TRACE").is_some() { eprintln!("  socket matrix rows X {:?} Y {:?} Z {:?} T {:?} → item-space pos {pos:?} dir (Z row) {dir:?} left (X row) {left:?} up (Y row) {up:?}", &t[0..3], &t[3..6], &t[6..9], &t[9..12]); }
+        if std::env::var_os("LMTOOL_LIGHT_TRACE").is_some() { eprintln!("  socket matrix rows X {:?} Y {:?} Z {:?} T {:?} → item-space pos {pos:?} dir ({}) {dir:?} left {left:?} up {up:?}", &t[0..3], &t[3..6], &t[6..9], &t[9..12], if rows { "Z row" } else { "column 2" }); }
         out.push(LightDef { pos, dir, color, intensity, radius, cone, animated: pl.is_animated(), night_only: pl.night_only(), hyper2, att_htnlr, ball_flags, emitting, gx_flags, radii, left, up });
     }
     out
+}
+
+/// LMTOOL_LL_SOCKET_AXES=rows (study): the pre-2026-09-28 reading of a light socket's 12 floats — the matrix ROWS as the axes.
+pub fn socket_axes_rows() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("LMTOOL_LL_SOCKET_AXES").as_deref() == Ok("rows"))
 }
 
 /// THE LIGHTS OF A PREFAB, RECURSIVELY (RE 7, 2026-09-25 — stpad's frame 1): every entity's static object contributes its
