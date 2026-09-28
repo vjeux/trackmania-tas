@@ -74,8 +74,14 @@ pub struct ModelGeom {
     pub uv_min: [f32; 2],
     pub uv_max: [f32; 2],
     /// The game-material links of the model's shaded geoms (`CPlugMaterialUserInst.link`, e.g.
-    /// `Stadium\Media\Material\RoadTech`), indexed by `Tri.mat`.
+    /// `Stadium\Media\Material\RoadTech`), indexed by `Tri.mat`. Two slots may carry the SAME link with different
+    /// `mat_params` (one material, several instance constants) — `link_key` names a slot's constant.
     pub mat_links: Vec<String>,
+    /// Per `mat_links` slot: the material INSTANCE's `TargetColor` override — `CPlugMaterialUserInst` chunk 0x090FD000's
+    /// `Csts` [("TargetColor", "Real", 3)] with its three `Color` words as f32 bits (E3 2026-09-28: g23's CustomPlastic
+    /// hills carry (0.784, 0.784, 0.784), (0.604, 0.624, 0.665) … over the material's authored (1.0, 0.086, 0.086); the
+    /// `Tech3 Block PyPxz_Hue` pre-pass recolours its mask toward it — `paktables::hue_class_constant`). None = no override.
+    pub mat_params: Vec<Option<[f32; 3]>>,
     /// The cut-out textures (file names inside the map's item zip) of the alpha-tested materials: a
     /// material whose `CPlugMaterialUserInst` fills the DiffuseO slot (1) — the baked vegetation cards'
     /// TDOSN model reads its colour AND its alpha cut from it (mapgeom: `model_color_slot`).
@@ -100,6 +106,39 @@ pub struct ModelGeom {
 
 pub fn sub(a: V3, b: V3) -> V3 {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+impl ModelGeom {
+    /// The key a `mat_links` slot's pre-pass constant is stored under (`FrozenTables::link_rgb`): the link in lower case,
+    /// plus `|tc=<bits>,<bits>,<bits>` when the slot carries a `TargetColor` instance override (the same link with two
+    /// overrides = two constants).
+    pub fn link_key(&self, slot: usize) -> String {
+        link_key(self.mat_links.get(slot).map(|s| s.as_str()).unwrap_or(""), self.mat_params.get(slot).copied().flatten())
+    }
+}
+
+/// `ModelGeom::link_key` on a (link, override) pair.
+pub fn link_key(link: &str, params: Option<[f32; 3]>) -> String {
+    match params {
+        Some(t) => format!("{}|tc={:08x},{:08x},{:08x}", link.to_ascii_lowercase(), t[0].to_bits(), t[1].to_bits(), t[2].to_bits()),
+        None => link.to_ascii_lowercase(),
+    }
+}
+
+/// A material instance's `TargetColor` override from its `Csts` / `Color` words (chunk 0x090FD000 v2+): the `Csts` entries
+/// are (name, type, count) and consume `count` words of `Color` in order; a ("TargetColor", "Real", 3) entry's words are the
+/// three f32 bits. Any other constant is skipped (its words consumed).
+pub fn target_colour_override(mm: &mapgeom::crystal_model::MaterialMain) -> Option<[f32; 3]> {
+    let mut at = 0usize;
+    let mut out = None;
+    for c in &mm.csts {
+        let n = c.u03.max(0) as usize;
+        if c.u01.as_str().map(|s| s.eq_ignore_ascii_case("TargetColor")).unwrap_or(false) && c.u02.as_str().map(|s| s.eq_ignore_ascii_case("Real")).unwrap_or(false) && n == 3 && at + 3 <= mm.color.len() {
+            out = Some([f32::from_bits(mm.color[at] as u32), f32::from_bits(mm.color[at + 1] as u32), f32::from_bits(mm.color[at + 2] as u32)]);
+        }
+        at += n;
+    }
+    out
 }
 pub fn add(a: V3, b: V3) -> V3 {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
@@ -535,10 +574,14 @@ pub fn geom_from_solid2_ext(s2: &mapgeom::static_item::solid2::CPlugSolid2Model,
         let mat: u16 = if link.is_empty() {
             u16::MAX
         } else {
-            match g.mat_links.iter().position(|l| *l == link) {
+            // the material INSTANCE's TargetColor override (Csts) rides with the slot: the same link under two overrides is two
+            // slots (two pre-pass constants — the PyPxz_Hue class recolours toward it)
+            let params: Option<[f32; 3]> = usize::try_from(sg.material_index).ok().and_then(|mi| s2.custom_materials.get(mi)).and_then(|cm| cm.inst()).and_then(|m| m.main.as_ref()).and_then(target_colour_override);
+            match g.mat_links.iter().zip(g.mat_params.iter()).position(|(l, p)| *l == link && *p == params) {
                 Some(i) => i as u16,
                 None => {
                     g.mat_links.push(link.clone());
+                    g.mat_params.push(params);
                     g.mat_albedo.push(crate::albedo::for_link(&link).unwrap_or([f32::NAN; 3]));
                     (g.mat_links.len() - 1) as u16
                 }

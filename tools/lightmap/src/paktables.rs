@@ -68,6 +68,9 @@ pub struct MaterialConstant {
 pub enum Family {
     PyPxzIds,
     PyPxzProjected,
+    /// `Tech3 Block PyPxz_Hue` (CustomPlastic …): the Py/Pxz BaseColor IS a hue mask, recoloured toward `RgbTargetColor`
+    /// unconditionally (`hue_class_constant`).
+    PyPxzHue,
 }
 
 /// Parse a DDS header: (data offset, width, height, mips, array size, fourcc/dxgi is BC1).
@@ -224,8 +227,13 @@ pub fn projected_constant(store: &mut DataStore, link: &str) -> Result<MaterialC
 /// material whose pre-pass colour is not constant (a mesh-uv textured material: sample its own
 /// textures per texel as `setupmap::attr_from_map` does).
 pub fn material_constant(store: &mut DataStore, link: &str) -> Result<MaterialConstant, String> {
-    let file = if link.to_ascii_lowercase().ends_with(".gbx") { link.to_string() } else { format!("{link}.Material.Gbx") };
-    let m = store.load_model(&file)?;
+    material_constant_with(store, link, None)
+}
+
+/// The parent material's shader file name (lower case; the parent material's own name when the Techno3 pack is not in
+/// the store — the same words) and the parent material path.
+fn shader_of(store: &mut DataStore, file: &str) -> Result<(String, String), String> {
+    let m = store.load_model(file)?;
     let parent = m.externals.iter().map(|(_, p)| p.to_ascii_lowercase()).find(|p| p.ends_with(".material.gbx") && !p.eq_ignore_ascii_case(&file.to_ascii_lowercase())).unwrap_or_default();
     // The parent material (Maniaplanet.pak `Techno3\Media\Material\Tech3 Block PyPxz_Ids.Material.gbx`)
     // names its shader (`…\Shader\Tech3 Block PyPxz_Ids.Shader.Gbx`): when the pack is in the store the
@@ -238,13 +246,61 @@ pub fn material_constant(store: &mut DataStore, link: &str) -> Result<MaterialCo
             Err(_) => parent.clone(),
         }
     };
+    Ok((shader, parent))
+}
+
+/// `material_constant` with the material INSTANCE's `TargetColor` override (`geometry::target_colour_override`: an item's
+/// `CPlugMaterialUserInst` Csts) — it matters for the PyPxz_Hue family only.
+pub fn material_constant_with(store: &mut DataStore, link: &str, target: Option<[f32; 3]>) -> Result<MaterialConstant, String> {
+    let file = if link.to_ascii_lowercase().ends_with(".gbx") { link.to_string() } else { format!("{link}.Material.Gbx") };
+    let (shader, parent) = shader_of(store, &file)?;
     if shader.contains("pypxz_ids") {
         terrain_constant(store, link)
+    } else if shader.contains("pypxz_hue") && std::env::var_os("LMTOOL_NO_PYPXZ_HUE").is_none() {
+        // LMTOOL_NO_PYPXZ_HUE=1 (study / opt-out): the mask drawn as the albedo, the port's pre-read behaviour
+        hue_class_constant(store, link, target)
     } else if shader.contains("pypxz") {
         projected_constant(store, link)
     } else {
         Err(format!("{link}: parent {parent:?} (shader {shader:?}) is not a world-projected (PyPxz) material — its pre-pass colour is per texel"))
     }
+}
+
+/// THE PyPxz_Hue PRE-PASS CONSTANT (E3 2026-09-28; GpuCache `Tech3/Block_PyPxz_X2H2_PeelDiff_Hue_p` blob 0 =
+/// DTwk_SkipMap_ILightInput, `× GbxP_LmComputeScaleNoAcc`): the material's Py/Pxz BaseColor is a HUE MASK
+/// (`CustomPlastic_D` = (0, 0.815, 0) everywhere) recoloured UNCONDITIONALLY toward `ShaderP.RgbTargetColor` — no
+/// `BaseColorTargetId` gate, no `m.a` blend: with m = the mask tap, k = max(m.g − ½(m.r + m.b), 0),
+/// albedo = sat((m.g − k)·mean(T) + k·T); the Py path (`4·recol_py·X2·Hx2`, weight 1 − ACosSmoothPy(|n.y|)) vanishes at the
+/// zero world matrix (RE 15's rule: |n.y| = 0 → LUT[0] = 1), so the constant is the Pxz tap's recolour, the tap at
+/// (0, −trans.y) as `projected_constant` reads it. `T` = the ITEM's material-instance `TargetColor` Csts when the item
+/// carries one (a "Real" float3 — no colour-space conversion: the palette path linearises BYTES, this is a float
+/// parameter), else the material's authored `TargetColor` param (CustomPlastic (1.0, 0.0863, 0.0863)), else the
+/// program's RDEF default (0, 1, 0) — which is exactly the green the port drew before this read. The vertex COLOR0
+/// factor (`mul r0.xyz, r0.xyz, v4.xyz`) is taken as 1 (no colour stream on these items).
+pub fn hue_class_constant(store: &mut DataStore, link: &str, target: Option<[f32; 3]>) -> Result<MaterialConstant, String> {
+    let mut base = projected_constant(store, link)?;
+    let file = if link.to_ascii_lowercase().ends_with(".gbx") { link.to_string() } else { format!("{link}.Material.Gbx") };
+    let m = store.load_model(&file)?;
+    let g = m.graph()?;
+    let mut authored: Option<[f32; 3]> = None;
+    for s in &g.slots {
+        if let mapgeom::node::Slot::Node(mapgeom::node::Node::MaterialCustom(c)) = s {
+            if let Some((_, v)) = c.params.iter().find(|(n, v)| n.eq_ignore_ascii_case("TargetColor") && v.len() >= 3) { authored = Some([v[0], v[1], v[2]]); }
+        }
+    }
+    let (t, src) = match (target, authored) {
+        (Some(t), _) => (t, "instance Csts"),
+        (None, Some(a)) => (a, "material param"),
+        (None, None) => ([0.0, 1.0, 0.0], "shader default"),
+    };
+    let mask = base.rgb;
+    let k = (mask[1] - 0.5 * (mask[0] + mask[2])).max(0.0);
+    let mean_t = (t[0] + t[1] + t[2]) / 3.0;
+    let recol = [((mask[1] - k) * mean_t + k * t[0]).clamp(0.0, 1.0), ((mask[1] - k) * mean_t + k * t[1]).clamp(0.0, 1.0), ((mask[1] - k) * mean_t + k * t[2]).clamp(0.0, 1.0)];
+    base.notes.push(format!("PyPxz_Hue: mask tap {:?} → k {k:.4}, RgbTargetColor {:?} ({src}) → albedo {:?}", mask, t, recol));
+    base.rgb = recol;
+    base.family = Family::PyPxzHue;
+    Ok(base)
 }
 
 /// The engine's linear → sRGB 8-bit table (0x141a64760, 4096 entries; used by 0x14018cdf0:

@@ -419,8 +419,9 @@ pub fn attr_from_map(scene: &crate::geometry::Scene, lm: &LmScene, frozen: &Froz
                     }
                     _ => None,
                 };
-                // the constant per LINK when the pack gave one (diff carries the material index for a linked material), else the class global
-                let link_const = if *diff & 0xC000 == 0x4000 { model.mat_links.get((*diff & 0x3fff) as usize).and_then(|l| frozen.link_rgb.get(&l.to_ascii_lowercase())).copied() } else { None };
+                // the constant per LINK when the pack gave one (diff carries the material index for a linked material), else the class global;
+                // a slot with a TargetColor instance override has its own constant (`ModelGeom::link_key`)
+                let link_const = if *diff & 0xC000 == 0x4000 { let slot = (*diff & 0x3fff) as usize; if slot < model.mat_links.len() { frozen.link_rgb.get(&model.link_key(slot)).copied() } else { None } } else { None };
                 let konst = match class {
                     MatClass::Pad => Some(link_const.unwrap_or(frozen.pad_rgb)),
                     MatClass::Wall => Some(link_const.unwrap_or(frozen.wall_rgb)),
@@ -1145,14 +1146,26 @@ pub fn tables_from_paktables_with_records(f: &mut FrozenTables, store: &mut mapg
             Err(e2) => notes.push(format!("paktables: tiles {tile_link}: {e}; BaseColor: {e2} (the frozen tile constant {:?} stays)", f.tile_rgb)),
         },
     }
-    // the items' constant materials: every game-material link of the scene's models that the pack resolves
+    // the items' constant materials: every game-material link of the scene's models that the pack resolves — per (link, TargetColor
+    // instance override) pair (`geometry::link_key`): the PyPxz_Hue class recolours toward the item's own constant
     let mut missing: Vec<String> = Vec::new();
     let mut links: Vec<String> = Vec::new();
+    let mut pairs: Vec<(String, Option<[f32; 3]>)> = Vec::new();
     for m in &scene.models {
-        for l in &m.mat_links {
+        for (k, l) in m.mat_links.iter().enumerate() {
             if !links.contains(l) {
                 links.push(l.clone());
             }
+            let p = m.mat_params.get(k).copied().flatten();
+            if p.is_some() && !pairs.iter().any(|(pl, pp)| pl == l && *pp == p) {
+                pairs.push((l.clone(), p));
+            }
+        }
+    }
+    for (l, p) in &pairs {
+        match crate::paktables::material_constant_with(store, l, *p) {
+            Ok(mc) => { got.push(format!("{l} TargetColor {:?} → {:?} ({})", p.unwrap_or([0.0; 3]), mc.rgb, mc.notes.last().cloned().unwrap_or_default())); f.link_rgb.insert(crate::geometry::link_key(l, *p), mc.rgb); }
+            Err(e) => notes.push(format!("paktables: {l} with TargetColor {:?}: {e}", p)),
         }
     }
     for l in &links {
@@ -1170,6 +1183,7 @@ pub fn tables_from_paktables_with_records(f: &mut FrozenTables, store: &mut mapg
                 match mc.family {
                     crate::paktables::Family::PyPxzIds => { got.push(format!("{l} → {:?} (terrain ids {:?}; frozen Land {:?})", mc.rgb, mc.ids, f.wall_rgb)); f.wall_rgb = mc.rgb; }
                     crate::paktables::Family::PyPxzProjected => { got.push(format!("{l} → {:?} (projected, {}; frozen TrackWall {:?})", mc.rgb, mc.image, f.pad_rgb)); f.pad_rgb = mc.rgb; }
+                    crate::paktables::Family::PyPxzHue => { got.push(format!("{l} → {:?} (PyPxz_Hue: {}; {})", mc.rgb, mc.image, mc.notes.last().cloned().unwrap_or_default())); }
                 }
             }
             Err(e) => {
