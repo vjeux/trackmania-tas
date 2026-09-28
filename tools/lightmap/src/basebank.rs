@@ -3,7 +3,7 @@
 //! layout is written once and the announcement text comes out ready.
 //!
 //!     lmtool base-bank --repo DIR --prev TIP --bin LMTOOL --gate-md GATE.md --note TEXT
-//!                      [--store DIR] [--branch base-2026-09-25] [--guards DIR] [--giants-md FILE] [--dry-run]
+//!                      [--store DIR] [--branch base-2026-09-25] [--guards DIR] [--giants-md FILE] [--refs NAME] [--dry-run]
 //!
 //! `--repo` is the integration clone (HEAD = the new base, clean tree, on `--branch`); `--prev` the previous base's tip
 //! (must be an ancestor); `--bin` the GATED binary (its md5 must be the one GATE.md names — the base's binary is the
@@ -127,7 +127,8 @@ pub fn run(args: &[String]) -> Result<(), String> {
     bank(&log_path, &store.join(format!("mh/corpus-gate/gate-{tip}.md")), dry)?;
 
     // the announcement
-    let refs = std::fs::read_dir(store.join("mh")).map(|rd| rd.flatten().map(|e| e.file_name().to_string_lossy().to_string()).filter(|n| n.starts_with("harness-refs-")).max().unwrap_or_default()).unwrap_or_default();
+    // the refs in force: --refs NAME, else the newest mh/harness-refs-* by mtime (names do not sort by age: fc7a… > f07c…)
+    let refs = flag(args, "--refs").unwrap_or_else(|| std::fs::read_dir(store.join("mh")).map(|rd| rd.flatten().filter(|e| e.file_name().to_string_lossy().starts_with("harness-refs-")).max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok()).map(|e| e.file_name().to_string_lossy().to_string()).unwrap_or_default()).unwrap_or_default());
     println!("\n★ BASE {tip} (series 0001–{:04}) — {note}", first_no + n_commits - 1);
     println!("bundle bundles/trackmania-tas-base-{tip}.bundle (= CURRENT; md5 {bundle_md5} — fetch PER-HASH), branch {branch}; binary mh/lmtool-{tip} (md5 {bin_md5}, the gated build); refs mh/{refs}; TSV mh/corpus-gate/corpus-gate-{tip}.tsv ({n_cells} cells); guards guard-*-d1-{tip}; gate log mh/corpus-gate/gate-{tip}.md");
     println!("gate: {head_line}");
