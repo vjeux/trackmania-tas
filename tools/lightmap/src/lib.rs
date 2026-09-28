@@ -65,6 +65,7 @@ pub mod lmtiles;
 pub mod probechunk;
 pub mod probecmp;
 pub mod probealpha;
+pub mod filetimecheck;
 pub mod format;
 pub mod frustumstudy;
 pub mod geometry;

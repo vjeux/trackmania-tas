@@ -6918,6 +6918,16 @@ fn run(mut a: Vec<String>) {
             }
             if bad > 0 { std::process::exit(1); }
         }
+        "filetime-check" => {
+            // lmtool filetime-check MAP [MAP…] [--against EDITOR] [--tsv OUT]: THE CACHE FILETIME RULE (filetimecheck.rs, V4) — chunk
+            // 0x06022013's word vs the max CPlugSolid2Model.FileWriteTime over the map's embedded items (the game rejects the chunk in
+            // play when they differ); a byte-identical lightmap can still be refused in play by this word
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1).cloned());
+            let mut paths: Vec<String> = Vec::new();
+            let mut i = 1;
+            while i < a.len() { if a[i].starts_with("--") { i += 2; continue; } paths.push(a[i].clone()); i += 1; }
+            lightmap::filetimecheck::run(&paths, f("--against").as_deref(), f("--tsv").as_deref()).unwrap_or_else(|e| panic!("filetime-check: {e}"));
+        }
         "probecmp" => {
             // lmtool probecmp OURS.Map.Gbx --against EDITOR.Map.Gbx [--tsv OUT] [--levels] [--worst N]: THE PROBE-BLOB DIFF (probecmp.rs, V4) —
             // the two files' probe volumes (trailer + the four probe images) compared probe by probe at the same world position: layout,
