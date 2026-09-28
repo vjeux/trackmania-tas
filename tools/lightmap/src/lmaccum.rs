@@ -1860,6 +1860,9 @@ pub fn replay_set_layers_sparse(fl: &LmFragList, sc: &LmScene, cb: &SetCb, world
             if a == b { continue; }
             let tracing = trace_px == Some(p);
             let mut out: Option<[f32; 3]> = None;
+            // (trace) the winning layer's index and stored depth = the source class of the read (0 at d 0: the dome; 0 at
+            // d > 0: the environment surface; k ≥ 1: an item layer)
+            let mut out_k: Option<(usize, f32)> = None;
             // THE LAYERS WORTH WALKING (perf 8.24): past the deepest layer any of the pixel's fragments can read, every read is
             // the clear (depth 1.0) and the compare `z ≥ 1.0` fails for every fragment with z < 1 — so when all of them have
             // z < 1 the walk stops at that layer; a fragment at z ≥ 1 keeps the full walk (it would pass on the clear and write
@@ -1914,13 +1917,14 @@ pub fn replay_set_layers_sparse(fl: &LmFragList, sc: &LmScene, cb: &SetCb, world
                         c[ch] = if v < 49999998401428460000000000000000000000.0 { v } else { 0.0 };
                     }
                     out = Some(c);
+                    if tracing { out_k = Some((l0.k + k, stored)); }
                 }
             }
             if let Some(rgb) = out {
                 // SAFETY: the chunks own disjoint pixel ranges
                 unsafe { *(px_ptr as *mut u32).add(p) = crate::gpufmt::pack_r11g11b10(rgb, Rounding::Truncate); }
             }
-            if tracing { eprintln!("set-texel-trace: dir {} ({:.5},{:.5},{:.5}) {} peel → L {:?}", SET_TRACE_DIR.load(std::sync::atomic::Ordering::Relaxed), cb.peel_dir[0], cb.peel_dir[1], cb.peel_dir[2], if world_box.is_some() { "FITTED" } else { "world" }, out); }
+            if tracing { eprintln!("set-texel-trace: dir {} ({:.5},{:.5},{:.5}) {} peel → L {:?} via {}", SET_TRACE_DIR.load(std::sync::atomic::Ordering::Relaxed), cb.peel_dir[0], cb.peel_dir[1], cb.peel_dir[2], if world_box.is_some() { "FITTED" } else { "world" }, out, match out_k { None => "none".to_string(), Some((0, d)) if d <= 0.0 => "dome".to_string(), Some((0, d)) => format!("env-surface d {d:.5}"), Some((k, d)) => format!("item L{k} d {d:.5}") }); }
         }
         SET_WALK_NS.fetch_add(t_walk.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
     });
