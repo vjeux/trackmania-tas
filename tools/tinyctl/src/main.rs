@@ -48,6 +48,7 @@ mod portlayers;
 mod gistpub;
 mod terrainround;
 mod cupexport;
+mod gametoken;
 mod batch;
 mod customsheet;
 mod thumbs;
@@ -226,6 +227,25 @@ fn main() {
         // tinyctl mint-tokens --token-dir DIR: a fresh Nadeo token pair pulled from the box
         // (a 4-second game-lock step there); every devserver-side Nadeo read/write takes
         // TINYCTL_TOKEN_DIR=DIR afterwards
+        // `token --from-game`: the tokens out of the RUNNING game, read-only — no lock, no
+        // launch, no plugin (vjeux 2026-09-27). Falls back to nothing: if no game runs it
+        // says so, and the caller decides whether to mint the old way.
+        "token" => (|| -> Result<(), String> {
+            let dir = tmmaps::cli::flag(rest, "--token-dir").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from("/tmp/tinyctl-tokens"));
+            let wsx = wsx::Wsx::new(rest);
+            if !rest.iter().any(|a| a == "--from-game") {
+                return Err("token: only --from-game is implemented (use mint-tokens for the plugin path)".into());
+            }
+            let pid = match tmmaps::cli::flag(rest, "--pid").and_then(|p| p.parse::<u32>().ok()) {
+                Some(p) => p,
+                None => gametoken::game_pid(&wsx).ok_or("token --from-game: no game running on the box (nothing to read)")?,
+            };
+            let (core, live) = gametoken::tokens_from_game(&wsx, pid)?;
+            gametoken::verify(&core, &live)?;
+            gametoken::write_tokens(&dir, &core, &live)?;
+            println!("tokens in {}", dir.display());
+            Ok(())
+        })(),
         "mint-tokens" => (|| -> Result<(), String> {
             let dir = tmmaps::cli::flag(rest, "--token-dir").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from("/tmp/tinyctl-tokens"));
             std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
