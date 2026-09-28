@@ -258,6 +258,15 @@ pub fn layout_of(recs: &[Rec], quality_index: u32) -> Result<crate::layout::Game
         // LMTOOL_FIRST_PASS=formula → s_file·√1.5; =pack → the re-pack at the map's quality; =pack-own-d1 → regrouped at the wide
         // density; LMTOOL_FIRST_PASS_Q=n → the re-pack's search at quality n.
         let mode = std::env::var("LMTOOL_FIRST_PASS").unwrap_or_else(|_| "pack-q0".to_string());
+        if mode == "file" {
+            // RE 15 (read 2, NOTES 03:30Z): the compute's UpdateMapping runs with a NULL cache, so the allocation live at bounce time IS
+            // the file's 2 048² pack — s_live = s_file (k = 1): stpad n 2 (the captured two cells), giant20x2 n 2, tiny03 n 2, g23 n 1.
+            // The read, beside F's empirical default (pack-q0) until the structures under it are measured against the editor (E2,
+            // 2026-09-28 03:10Z, the coordinator's cell 3).
+            gl.s_first = Some(gl.s);
+            if std::env::var_os("LMTOOL_LAYOUT_TRACE").is_some() { eprintln!("layout first pass (=file, RE 15 read 2): s_first = s_file = {} — the peel tiling scale", gl.s); }
+            return Ok(gl);
+        }
         if mode == "ungrouped-q0" || mode == "ungrouped" {
             // RE 15 (00:45Z, read 2): the pack live at bounce time is ONE UNGROUPED whole-set pack on the SAME (S, S) target with maxIter 1
             // (desc[0] = L[0] = 0 → the quality-0 search: the first fitting 0.9-ladder step, no bisection; the > 8 192-block grouping off) —

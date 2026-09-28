@@ -731,6 +731,7 @@ pub fn build_with_lamps(scene: &crate::geometry::Scene, lm: &LmScene, sbox: &Aab
     let pw01 = cam.world_pw01_shadow(4096, 4096);
     notes.push(format!("sun camera: eye {:?} h {:?} near {} far {} (the scene box {:?}–{:?})", cam.eye, cam.h, cam.near(), cam.far(), sbox.min, sbox.max));
     let shadow = shadow_from_map(scene, lm, &cam, item_bytes, &mut notes).to_buf();
+    shadowmap::print_shadow_alpha_stats("sun shadow map 4096², the map's casters");
     if !quiet { eprintln!("setup-from-map: shadow map ({:.1}s)", t0.elapsed().as_secs_f32()); }
     // LMTOOL_SUN_DIRECT_SCALE=k (STUDY, RE 13's sweep-0 forms, 19:10Z): the sun / moon direct term in sweep 0's light input scaled — with
     // LMTOOL_LAMP_BOUNCE=1.5 and 0.5 = the "1.5·L + 0.5·S" candidate (the lamps' alpha stacking with the sun's in NormWithA), with 2 and 1 =

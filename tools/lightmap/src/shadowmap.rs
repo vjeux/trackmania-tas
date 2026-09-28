@@ -298,6 +298,10 @@ impl AlphaTexture {
     /// the two footprint axes; ratio = min(major/minor, 16); lod = log2(major / ratio); `ceil(ratio)` trilinear
     /// taps spread along the major axis, averaged.
     pub fn sample_aniso(&self, uv: [f32; 2], dudx: [f32; 2], dudy: [f32; 2], max_aniso: f32) -> f32 {
+        self.sample_aniso_plan(uv, dudx, dudy, max_aniso).0
+    }
+    /// `sample_aniso` with its plan: (alpha, lod (clamped), taps).
+    pub fn sample_aniso_plan(&self, uv: [f32; 2], dudx: [f32; 2], dudy: [f32; 2], max_aniso: f32) -> (f32, f32, usize) {
         let (w, h) = (self.w as f32, self.h as f32);
         let ax = [dudx[0] * w, dudx[1] * h];
         let ay = [dudy[0] * w, dudy[1] * h];
@@ -323,7 +327,7 @@ impl AlphaTexture {
             sum += val;
         }
         let _ = axis;
-        sum / n as f32
+        (sum / n as f32, lod, n)
     }
 }
 
@@ -688,7 +692,16 @@ pub fn draw_caster(d: &CasterDraw, cam: &LightCamera, st: &RasterState, tgt: &mu
                     return;
                 }
                 if let (Some(at), true) = (&d.alpha, o.alpha_test) {
-                    let a = at.texture.sample_aniso(fr.uv, fr.duv_dx, fr.duv_dy, at.max_anisotropy);
+                    let (a, lod, taps) = at.texture.sample_aniso_plan(fr.uv, fr.duv_dx, fr.duv_dy, at.max_anisotropy);
+                    if shadow_alpha_stats() {
+                        // LMTOOL_SHADOW_ALPHA_STATS=1 (E2, 2026-09-28): per LOD bucket the card fragments tested / passed, and what the
+                        // same fragments would do at mip 0 (the unboosted cut-out) — the coarse-mip coverage boost the game's sun
+                        // shadow map gets from the _in0 chains (mean alpha rising 0.27 → 0.42 fir, 0.32 → 0.60 palms across the mips)
+                        let a0 = at.texture.bilinear(0, fr.uv[0], fr.uv[1]);
+                        let b = (lod.floor().max(0.0) as usize).min(15);
+                        let mut st = SHADOW_ALPHA_STATS.lock().unwrap();
+                        st[b].0 += 1; if a - at.threshold >= 0.0 { st[b].1 += 1; } if a0 - at.threshold >= 0.0 { st[b].2 += 1; } st[b].3 += taps as u64;
+                    }
                     // 1: add r0.x, alpha, -threshold ; 2: lt r0.x, r0.x, 0 ; 3: discard_nz
                     if a - at.threshold < 0.0 {
                         stats.alpha_discarded += 1;
@@ -939,4 +952,24 @@ mod tests {
         assert_eq!(b.w, 4);
         assert!((b.get(1, 1, 0) - 12345.0 / 65535.0).abs() < 1e-7);
     }
+}
+
+/// LMTOOL_SHADOW_ALPHA_STATS=1: the sun shadow pass's card alpha census — per LOD bucket (floor of the anisotropic LOD)
+/// (tested, passed, passed-at-mip-0, Σ taps). Printed by `print_shadow_alpha_stats` at the end of the map's shadow pass.
+pub static SHADOW_ALPHA_STATS: std::sync::Mutex<[(u64, u64, u64, u64); 16]> = std::sync::Mutex::new([(0, 0, 0, 0); 16]);
+pub fn shadow_alpha_stats() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var_os("LMTOOL_SHADOW_ALPHA_STATS").is_some())
+}
+pub fn print_shadow_alpha_stats(label: &str) {
+    if !shadow_alpha_stats() { return; }
+    let st = SHADOW_ALPHA_STATS.lock().unwrap();
+    let (mut t, mut p, mut p0) = (0u64, 0u64, 0u64);
+    eprintln!("shadow alpha census ({label}): card fragments by anisotropic LOD bucket — tested, passed (aniso mips), would pass at mip 0, mean taps");
+    for (b, (n, pa, pz, taps)) in st.iter().enumerate() {
+        if *n == 0 { continue; }
+        t += n; p += pa; p0 += pz;
+        eprintln!("  lod [{b}, {}): {n:>9} tested, {pa:>9} passed ({:.1} %), mip-0 {pz:>9} ({:.1} %), taps {:.2}", b + 1, 100.0 * *pa as f64 / *n as f64, 100.0 * *pz as f64 / *n as f64, *taps as f64 / *n as f64);
+    }
+    if t > 0 { eprintln!("  TOTAL: {t} tested, {p} passed ({:.1} %), mip-0 {p0} ({:.1} %) → the coarse-mip boost ×{:.3}", 100.0 * p as f64 / t as f64, 100.0 * p0 as f64 / t as f64, p as f64 / p0.max(1) as f64); }
 }
