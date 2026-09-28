@@ -5042,6 +5042,10 @@ fn run(mut a: Vec<String>) {
         "swd6-set" => { if let Err(e) = lightmap::swd6::cli(&a) { eprintln!("swd6-set: {e}"); std::process::exit(1); } }
         "swd6-chain" => { if let Err(e) = lightmap::swd6::chain_cli(&a) { eprintln!("swd6-chain: {e}"); std::process::exit(1); } }
         "swd6-hbasis" => { if let Err(e) = lightmap::swd6::hbasis_cli(&a) { eprintln!("swd6-hbasis: {e}"); std::process::exit(1); } }
+        "swd6-manifest" => { if let Err(e) = lightmap::swd6::manifest_cli(&a) { eprintln!("swd6-manifest: {e}"); std::process::exit(1); } }
+        "swd6-layerdiff" => { if let Err(e) = lightmap::swd6::layerdiff_cli(&a) { eprintln!("swd6-layerdiff: {e}"); std::process::exit(1); } }
+        "swd6-chartstats" => { if let Err(e) = lightmap::swd6::chartstats_cli(&a) { eprintln!("swd6-chartstats: {e}"); std::process::exit(1); } }
+        "swd6-layerwhere" => { if let Err(e) = lightmap::swd6::layerwhere_cli(&a) { eprintln!("swd6-layerwhere: {e}"); std::process::exit(1); } }
         // (G's classcmp dispatch dropped at integration: V's classcmp — landed first, with --own-rects,
         //  --coverage, the spread column and the pairing guard — owns the subcommand; G's --ents table is
         //  the duplicate. His dome-rings and the study knobs below are kept.)

@@ -425,3 +425,215 @@ pub fn hbasis_cli(a: &[String]) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// A passcap-style MANIFEST.json for the swd6 f1617 export (baker-5's per-run tex.json layout), so the harness's `--game-manifest` /
+/// `--dir-order` / `passdiff` machinery reads it like pwc-day's: peel_color / peel_depth entries per layer run (the peel camera's
+/// matrix = the WorldPw01Shadow of the SET run that follows the layer — the SET projects the receivers with the peel's own camera),
+/// `ilightdir` per SET run, `hbasis0..3` at the frame's end. Direction 0 of sweep 0 = the frame's single direction.
+pub fn manifest_cli(a: &[String]) -> Result<(), String> {
+    // lmtool swd6-manifest FRAME_DIR [--out FRAME_DIR/MANIFEST.json] [--map stpad-source.Map.Gbx] [--baked-map …] [--quality 3]
+    let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+    let frame_dir = std::path::PathBuf::from(a.get(1).ok_or("FRAME_DIR")?);
+    let out = f("--out").map(std::path::PathBuf::from).unwrap_or_else(|| frame_dir.join("MANIFEST.json"));
+    let set_ps = f("--set-ps").unwrap_or_else(|| "12428".into());
+    let hb_vs = f("--hb-vs").unwrap_or_else(|| "12434".into());
+    let frame: u32 = f("--frame").and_then(|s| s.parse().ok()).unwrap_or(1617);
+    let runs = load_runs(&frame_dir, &["tex", "tail"])?;
+    let draws_json: Vec<Value> = serde_json::from_str(&std::fs::read_to_string(frame_dir.join("draws.json")).map_err(|e| format!("draws.json: {e}"))?).map_err(|e| format!("draws.json: {e}"))?;
+    let draw = |eid: u64| draws_json.iter().find(|d| d["eid"].as_u64() == Some(eid));
+    let set_runs: Vec<&Run> = runs.iter().filter(|r| r.ps == set_ps).collect();
+    let dir = set_runs.first().and_then(|r| (r.first..=r.last).filter_map(draw).find(|d| d.pointer("/Pixel/shader").and_then(|v| v.as_str()) == Some(set_ps.as_str()))).map(|d| jv3(&d["Pixel"]["cbuffers"]["ShaderP"]["g_CBufferP"]["PeelDirInW"])).ok_or("no SET draw")?;
+    // the peel camera of a layer run = the WorldPw01Shadow of the first SET run after it (the same peel)
+    let pw01_after = |eid: u64| -> Option<[[f32; 4]; 4]> {
+        set_runs.iter().filter(|r| r.first > eid).min_by_key(|r| r.first).and_then(|r| (r.first..=r.last).filter_map(draw).find(|d| d.pointer("/Pixel/shader").and_then(|v| v.as_str()) == Some(set_ps.as_str()))).map(|d| jm4(&d["Pixel"]["cbuffers"]["ShaderP"]["g_CBufferP"]["WorldPw01Shadow"]))
+    };
+    let dds_format = |file: &str| -> (String, u32, u32) {
+        let p = frame_dir.join(file);
+        match std::fs::read(&p) { Ok(b) if b.len() >= 148 && &b[..4] == b"DDS " => { let h = u32::from_le_bytes(b[12..16].try_into().unwrap()); let w = u32::from_le_bytes(b[16..20].try_into().unwrap()); let dxgi = u32::from_le_bytes(b[128..132].try_into().unwrap()); (match dxgi { 26 => "R11G11B10_FLOAT", 53 | 54 | 56 | 57 => "R16_TYPELESS", 10 => "R16G16B16A16_FLOAT", 2 => "R32G32B32A32_FLOAT", _ => "" }.to_string(), w, h) } _ => (String::new(), 0, 0) }
+    };
+    let mut passes: Vec<Value> = Vec::new();
+    // the layer runs, per peel: the env block (VS 5145 dome / 5363 sea box → the sky layer) then the scene layers, layer index by order
+    // within the peel (a peel starts at a run whose eid range follows a SET run of a DIFFERENT camera — simpler: the peel changes when
+    // the WorldPw01Shadow after the run changes)
+    let mut layer_idx = 0u32; let mut last_pw: Option<[[f32; 4]; 4]> = None;
+    for r in &runs {
+        let has_col = r.files.iter().any(|fl| fl.contains("_rt0_12417"));
+        let has_ds = r.files.iter().any(|fl| fl.contains("_ds_"));
+        if !(has_col && has_ds) { continue; }
+        let Some(pw) = pw01_after(r.last) else { continue };
+        if last_pw.map(|p| p != pw).unwrap_or(true) { layer_idx = 0; last_pw = Some(pw); }
+        for fl in &r.files {
+            let (pass, is_depth) = if fl.contains("_rt0_12417") { ("peel_color", false) } else if fl.contains("_ds_") { ("peel_depth", true) } else { continue };
+            let rel = format!("{}/{fl}", r.dir);
+            let (fmt, w, h) = dds_format(&rel);
+            passes.push(serde_json::json!({
+                "pass": pass, "sweep": 0, "direction": 0, "layer": layer_idx, "frame": frame, "eid_first": r.first, "eid_last": r.last,
+                "file": rel, "format": if is_depth { "R16_TYPELESS".to_string() } else { fmt }, "width": w, "height": h, "origin": "top-left", "container": "dds-dx10", "space": "peel",
+                "dir": dir, "view_proj_bias_GbxWorldPw01Shadow": pw, "run_shaders": {"vs": r.vs, "ps": r.ps},
+            }));
+        }
+        layer_idx += 1;
+    }
+    for r in &set_runs {
+        let Some(fl) = r.files.iter().find(|fl| fl.contains("_rt0_12414")) else { continue };
+        let Some(d) = (r.first..=r.last).filter_map(draw).find(|d| d.pointer("/Pixel/shader").and_then(|v| v.as_str()) == Some(set_ps.as_str())) else { continue };
+        let rel = format!("{}/{fl}", r.dir);
+        let (fmt, w, h) = dds_format(&rel);
+        passes.push(serde_json::json!({
+            "pass": "ilightdir", "sweep": 0, "direction": 0, "frame": frame, "eid_first": r.first, "eid_last": r.last, "file": rel, "format": fmt, "width": w, "height": h,
+            "origin": "top-left", "container": "dds-dx10", "space": "atlas_ss", "dir": dir,
+            "cbuffers": {"ShaderP": d["Pixel"]["cbuffers"]["ShaderP"].clone(), "ShaderV": d["Vertex"]["cbuffers"]["ShaderV"].clone()},
+        }));
+    }
+    if let Some(r) = runs.iter().find(|r| r.vs == hb_vs) {
+        for (k, tag) in ["_rt0_", "_rt1_", "_rt2_", "_rt3_"].iter().enumerate() {
+            if let Some(fl) = r.files.iter().find(|fl| fl.contains(tag)) {
+                let rel = format!("{}/{fl}", r.dir);
+                let (fmt, w, h) = dds_format(&rel);
+                let d = (r.first..=r.last).filter_map(draw).find(|d| d.pointer("/Vertex/shader").and_then(|v| v.as_str()) == Some(hb_vs.as_str()));
+                passes.push(serde_json::json!({ "pass": format!("hbasis{k}"), "sweep": 0, "direction": 0, "sweep_direction_index": 0, "frame": frame, "eid_first": r.first, "eid_last": r.last, "file": rel, "format": fmt, "width": w, "height": h, "origin": "top-left", "container": "dds-dx10", "space": "atlas_ss", "dir": dir, "banked": true,
+                    "cbuffers": d.map(|d| serde_json::json!({"ShaderP": d["Pixel"]["cbuffers"]["ShaderP"].clone()})).unwrap_or(Value::Null) }));
+            }
+        }
+    }
+    let m = serde_json::json!({
+        "producer": "lmtool swd6-manifest (G2, from baker-5's per-run tex.json exports)", "map": f("--map").unwrap_or_else(|| "stpad-source.Map.Gbx".into()),
+        "baked_map": f("--baked-map").unwrap_or_else(|| "stpad-Stadium-Day-0x8111-q3-editor.Map.Gbx".into()), "quality": f("--quality").and_then(|s| s.parse::<u32>().ok()).unwrap_or(3),
+        "mood": "Stadium/Day", "atlas": {"peel_target": [4096, 4096], "ilightdir_target": [2048, 2048]},
+        "frames": [frame], "notes": "swd6 f1617: ONE direction as three peels (world SET at 32–149 with its layers in the previous frame; fitted A 1970…6062; fitted B 7883…11975), then the H-basis 12009–12126. Layer index restarts per peel (0 = the env block: dome + sea box).",
+        "passes": passes,
+    });
+    std::fs::write(&out, serde_json::to_string_pretty(&m).map_err(|e| e.to_string())?).map_err(|e| format!("{}: {e}", out.display()))?;
+    println!("swd6-manifest: {} entries → {} (dir {:?}; {} layer runs, {} SET runs)", passes.len(), out.display(), dir, passes.iter().filter(|p| p["pass"] == "peel_color").count(), set_runs.len());
+    Ok(())
+}
+
+/// One captured peel layer against ours, jointly: where both hold a fragment, the (game, ours) luminance bands — is ours brighter on
+/// the DARK game texels (facing / black cards) or on the LIT ones (the ILightInput amplitude)? Per-channel ratios per band.
+pub fn layerdiff_cli(a: &[String]) -> Result<(), String> {
+    // lmtool swd6-layerdiff --game-color F --game-depth F --ours-color F --ours-depth F [--ours-root DIR] [--game-root DIR]
+    let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+    let groot = std::path::PathBuf::from(f("--game-root").unwrap_or_else(|| ".".into()));
+    let oroot = std::path::PathBuf::from(f("--ours-root").unwrap_or_else(|| ".".into()));
+    let ld = |root: &Path, k: &str, fmt: &str| -> Result<Buf, String> { let fl = f(k).ok_or_else(|| format!("{k} FILE"))?; crate::passdiff::load_file(root, &fl, fmt, 0, 0, 0).map_err(|e| format!("{fl}: {e}")) };
+    let gc = ld(&groot, "--game-color", "")?; let gd = ld(&groot, "--game-depth", "R16_UNORM")?;
+    // ours: the dump's MANIFEST names the format / size
+    let om: Value = serde_json::from_str(&std::fs::read_to_string(oroot.join("MANIFEST.json")).map_err(|e| format!("MANIFEST.json: {e}"))?).map_err(|e| e.to_string())?;
+    let entry = |fl: &str| om["passes"].as_array().and_then(|ps| ps.iter().find(|p| p["file"].as_str() == Some(fl))).cloned().ok_or_else(|| format!("{fl}: not in our MANIFEST"));
+    let oc_f = f("--ours-color").ok_or("--ours-color")?; let od_f = f("--ours-depth").ok_or("--ours-depth")?;
+    let (ec, ed) = (entry(&oc_f)?, entry(&od_f)?);
+    let oc = crate::passdiff::load_file(&oroot, &oc_f, ec["format"].as_str().unwrap_or(""), ec["width"].as_u64().unwrap_or(0) as u32, ec["height"].as_u64().unwrap_or(0) as u32, ec["row_pitch"].as_u64().unwrap_or(0) as u32).map_err(|e| format!("{oc_f}: {e}"))?;
+    let od = crate::passdiff::load_file(&oroot, &od_f, ed["format"].as_str().unwrap_or(""), ed["width"].as_u64().unwrap_or(0) as u32, ed["height"].as_u64().unwrap_or(0) as u32, ed["row_pitch"].as_u64().unwrap_or(0) as u32).map_err(|e| format!("{od_f}: {e}"))?;
+    if gc.w != oc.w || gc.h != oc.h { return Err(format!("sizes differ: game {}×{} ours {}×{}", gc.w, gc.h, oc.w, oc.h)); }
+    println!("swd6-layerdiff: game {} + {} vs ours {} + {} ({}×{})", f("--game-color").unwrap(), f("--game-depth").unwrap(), oc_f, od_f, gc.w, gc.h);
+    let lum = |b: &Buf, x: u32, y: u32| (b.get(x, y, 0) + b.get(x, y, 1) + b.get(x, y, 2)) / 3.0;
+    let bands: [(f32, f32, &str); 6] = [(0.0, 1e-4, "game ≈ 0"), (1e-4, 0.01, "0.0001–0.01"), (0.01, 0.05, "0.01–0.05"), (0.05, 0.2, "0.05–0.2"), (0.2, 0.6, "0.2–0.6"), (0.6, 1e9, "> 0.6")];
+    let mut acc = vec![(0usize, [0f64; 3], [0f64; 3], 0usize, 0usize); bands.len()];
+    let (mut both, mut gonly, mut oonly) = (0usize, 0usize, 0usize);
+    for y in 0..gc.h { for x in 0..gc.w {
+        let (hg, ho) = (gd.get(x, y, 0) > 0.0, od.get(x, y, 0) > 0.0);
+        if hg && !ho { gonly += 1; } if ho && !hg { oonly += 1; }
+        if !(hg && ho) { continue; }
+        both += 1;
+        let lg = lum(&gc, x, y); let lo = lum(&oc, x, y);
+        let bi = bands.iter().position(|(lo_b, hi_b, _)| lg >= *lo_b && lg < *hi_b).unwrap_or(bands.len() - 1);
+        let e = &mut acc[bi];
+        e.0 += 1; for c in 0..3usize { e.1[c] += gc.get(x, y, c as u32) as f64; e.2[c] += oc.get(x, y, c as u32) as f64; }
+        if lo > lg * 1.02 + 1e-4 { e.3 += 1; } else if lo < lg * 0.98 - 1e-4 { e.4 += 1; }
+    } }
+    println!("  fragments: both {both}, game-only {gonly}, ours-only {oonly}");
+    println!("  game band        texels   Σgame rgb (mean)                 Σours rgb (mean)                 ours/game r g b        ours brighter (>2 %)  darker");
+    for (i, (_, _, name)) in bands.iter().enumerate() {
+        let (n, g, o, br, dk) = &acc[i];
+        if *n == 0 { continue; }
+        let nn = *n as f64;
+        println!("  {:14} {:9}  ({:.5}, {:.5}, {:.5})   ({:.5}, {:.5}, {:.5})   {:.3} {:.3} {:.3}   {:8} ({:5.1} %)  {:8}", name, n, g[0] / nn, g[1] / nn, g[2] / nn, o[0] / nn, o[1] / nn, o[2] / nn, if g[0] > 0.0 { o[0] / g[0] } else { 0.0 }, if g[1] > 0.0 { o[1] / g[1] } else { 0.0 }, if g[2] > 0.0 { o[2] / g[2] } else { 0.0 }, br, 100.0 * *br as f64 / nn, dk);
+    }
+    Ok(())
+}
+
+/// Per-CLASS colour of a chart pass of our dump (mdiffuse / ilightinput / sun_direct): the mean rgb over the non-zero texels of every
+/// chart, grouped by the record's model name (the bake's --records-tsv) — which material carries which albedo / sweep-0 colour.
+pub fn chartstats_cli(a: &[String]) -> Result<(), String> {
+    // lmtool swd6-chartstats DUMP_DIR --records REC.tsv --pass mdiffuse|ilightinput|sun_direct [--sweep 0] [--top N]
+    let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+    let dump = std::path::PathBuf::from(a.get(1).ok_or("DUMP_DIR")?);
+    let pass = f("--pass").unwrap_or_else(|| "mdiffuse".into());
+    let sweep: Option<u64> = f("--sweep").and_then(|s| s.parse().ok());
+    let top: usize = f("--top").and_then(|s| s.parse().ok()).unwrap_or(40);
+    let rec_txt = std::fs::read_to_string(f("--records").ok_or("--records REC.tsv")?).map_err(|e| e.to_string())?;
+    // chart	class	obj	sub	name	…
+    let mut name_of: std::collections::HashMap<u32, String> = Default::default();
+    for l in rec_txt.lines().skip(1) { let c: Vec<&str> = l.split('\t').collect(); if c.len() > 4 { if let Ok(obj) = c[2].parse::<u32>() { name_of.insert(obj, format!("{}:{}", c[1], c[4])); } } }
+    let m: Value = serde_json::from_str(&std::fs::read_to_string(dump.join("MANIFEST.json")).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let mut acc: std::collections::BTreeMap<String, (usize, usize, [f64; 3])> = Default::default();
+    for e in m["passes"].as_array().ok_or("passes")? {
+        if e["pass"].as_str() != Some(pass.as_str()) { continue; }
+        if let Some(s) = sweep { if e["sweep"].as_u64() != Some(s) { continue; } }
+        if e["width"].as_u64().unwrap_or(0) == 0 { continue; }
+        let obj = e["chart"]["obj"].as_u64().unwrap_or(u64::MAX) as u32;
+        let name = name_of.get(&obj).cloned().unwrap_or_else(|| format!("obj {obj}"));
+        let b = crate::passdiff::load_file(&dump, e["file"].as_str().unwrap_or(""), e["format"].as_str().unwrap_or(""), e["width"].as_u64().unwrap_or(0) as u32, e["height"].as_u64().unwrap_or(0) as u32, e["row_pitch"].as_u64().unwrap_or(0) as u32)?;
+        let en = acc.entry(name).or_insert((0, 0, [0.0; 3]));
+        en.0 += 1;
+        for y in 0..b.h { for x in 0..b.w { let c = [b.get(x, y, 0), b.get(x, y, 1), b.get(x, y, 2)]; if c[0] + c[1] + c[2] <= 0.0 { continue; } en.1 += 1; for k in 0..3 { en.2[k] += c[k] as f64; } } }
+    }
+    let mut v: Vec<_> = acc.into_iter().collect();
+    v.sort_by(|a, b| b.1.1.cmp(&a.1.1));
+    println!("swd6-chartstats: {pass}{} — class: charts, non-zero texels, mean rgb", sweep.map(|s| format!(" sweep {s}")).unwrap_or_default());
+    for (name, (nc, nt, s)) in v.iter().take(top) { let n = (*nt).max(1) as f64; println!("  {:40} {:6} {:9}  ({:.4}, {:.4}, {:.4})", name, nc, nt, s[0] / n, s[1] / n, s[2] / n); }
+    Ok(())
+}
+
+/// Where are the texels of a game-colour band? `--pw01-eid E` takes the peel camera from that SET draw's WorldPw01Shadow (orthographic:
+/// the three rows are orthogonal, so p = Σ (c_k − t_k)·row_k / |row_k|²) and prints the world-y histogram and the x/z cells of the
+/// texels whose game luminance lies in [--band lo,hi) and ours is > 2× the game's.
+pub fn layerwhere_cli(a: &[String]) -> Result<(), String> {
+    // lmtool swd6-layerwhere FRAME_DIR --game-color F --game-depth F --ours-root DIR --ours-color F --ours-depth F --pw01-eid E [--band 0.01,0.2] [--cell 64]
+    let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+    let frame_dir = std::path::PathBuf::from(a.get(1).ok_or("FRAME_DIR")?);
+    let oroot = std::path::PathBuf::from(f("--ours-root").ok_or("--ours-root")?);
+    let draws_json: Vec<Value> = serde_json::from_str(&std::fs::read_to_string(frame_dir.join("draws.json")).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let eid: u64 = f("--pw01-eid").and_then(|s| s.parse().ok()).ok_or("--pw01-eid E")?;
+    let d = draws_json.iter().find(|d| d["eid"].as_u64() == Some(eid)).ok_or("eid not in draws.json")?;
+    let m = jm4(&d["Pixel"]["cbuffers"]["ShaderP"]["g_CBufferP"]["WorldPw01Shadow"]);
+    // u = Σ_i p_i m[i][0] + m[3][0]; v = … m[.][1]; z = … m[.][2]
+    let row = |k: usize| [m[0][k], m[1][k], m[2][k]];
+    let (ru, rv, rz) = (row(0), row(1), row(2));
+    let n2 = |r: [f32; 3]| r[0] * r[0] + r[1] * r[1] + r[2] * r[2];
+    let unproject = |u: f32, v: f32, z: f32| -> [f32; 3] {
+        let (cu, cv, cz) = ((u - m[3][0]) / n2(ru), (v - m[3][1]) / n2(rv), (z - m[3][2]) / n2(rz));
+        [cu * ru[0] + cv * rv[0] + cz * rz[0], cu * ru[1] + cv * rv[1] + cz * rz[1], cu * ru[2] + cv * rv[2] + cz * rz[2]]
+    };
+    let gc = crate::passdiff::load_file(&frame_dir, &f("--game-color").ok_or("--game-color")?, "", 0, 0, 0)?;
+    let gd = crate::passdiff::load_file(&frame_dir, &f("--game-depth").ok_or("--game-depth")?, "R16_UNORM", 0, 0, 0)?;
+    let om: Value = serde_json::from_str(&std::fs::read_to_string(oroot.join("MANIFEST.json")).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let entry = |fl: &str| om["passes"].as_array().and_then(|ps| ps.iter().find(|p| p["file"].as_str() == Some(fl))).cloned().ok_or_else(|| format!("{fl}: not in our MANIFEST"));
+    let oc_f = f("--ours-color").ok_or("--ours-color")?; let od_f = f("--ours-depth").ok_or("--ours-depth")?;
+    let (ec, ed) = (entry(&oc_f)?, entry(&od_f)?);
+    let oc = crate::passdiff::load_file(&oroot, &oc_f, ec["format"].as_str().unwrap_or(""), ec["width"].as_u64().unwrap_or(0) as u32, ec["height"].as_u64().unwrap_or(0) as u32, ec["row_pitch"].as_u64().unwrap_or(0) as u32)?;
+    let od = crate::passdiff::load_file(&oroot, &od_f, ed["format"].as_str().unwrap_or(""), ed["width"].as_u64().unwrap_or(0) as u32, ed["height"].as_u64().unwrap_or(0) as u32, ed["row_pitch"].as_u64().unwrap_or(0) as u32)?;
+    let band: Vec<f32> = f("--band").unwrap_or_else(|| "0.01,0.2".into()).split(',').filter_map(|s| s.trim().parse().ok()).collect();
+    let cell: f32 = f("--cell").and_then(|s| s.parse().ok()).unwrap_or(64.0);
+    let lum = |b: &Buf, x: u32, y: u32| (b.get(x, y, 0) + b.get(x, y, 1) + b.get(x, y, 2)) / 3.0;
+    let mut ybins = std::collections::BTreeMap::<i32, usize>::new();
+    let mut cells = std::collections::BTreeMap::<(i32, i32), usize>::new();
+    let mut n = 0usize; let mut samples: Vec<([f32; 3], [f32; 3], [f32; 3])> = Vec::new();
+    for y in 0..gc.h { for x in 0..gc.w {
+        let (zg, zo) = (gd.get(x, y, 0), od.get(x, y, 0));
+        if zg <= 0.0 || zo <= 0.0 { continue; }
+        let lg = lum(&gc, x, y); let lo = lum(&oc, x, y);
+        if !(lg >= band[0] && lg < band[1] && lo > 2.0 * lg) { continue; }
+        n += 1;
+        let p = unproject((x as f32 + 0.5) / gc.w as f32, (y as f32 + 0.5) / gc.h as f32, zg);
+        *ybins.entry(p[1].floor() as i32).or_default() += 1;
+        *cells.entry(((p[0] / cell).floor() as i32, (p[2] / cell).floor() as i32)).or_default() += 1;
+        if samples.len() < 6 && n % 997 == 1 { samples.push((p, [gc.get(x, y, 0), gc.get(x, y, 1), gc.get(x, y, 2)], [oc.get(x, y, 0), oc.get(x, y, 1), oc.get(x, y, 2)])); }
+    } }
+    println!("swd6-layerwhere: {n} texels with game luminance in [{}, {}) and ours > 2× (peel camera of eid {eid}, D {:?})", band[0], band[1], d["Pixel"]["cbuffers"]["ShaderP"]["g_CBufferP"]["PeelDirInW"]);
+    println!("  world y histogram (1 m bins): {}", ybins.iter().map(|(k, c)| format!("{k}:{c}")).collect::<Vec<_>>().join(" "));
+    let mut cv: Vec<_> = cells.into_iter().collect(); cv.sort_by_key(|(_, c)| std::cmp::Reverse(*c));
+    println!("  top x/z cells ({cell} m): {}", cv.iter().take(12).map(|((cx, cz), c)| format!("({}, {})×{c}", *cx as f32 * cell, *cz as f32 * cell)).collect::<Vec<_>>().join(" "));
+    for (p, g, o) in samples { println!("  sample p ({:.1}, {:.2}, {:.1}) game ({:.4}, {:.4}, {:.4}) ours ({:.4}, {:.4}, {:.4})", p[0], p[1], p[2], g[0], g[1], g[2], o[0], o[1], o[2]); }
+    Ok(())
+}

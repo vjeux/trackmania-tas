@@ -826,6 +826,41 @@ pub fn build_with_lamps(scene: &crate::geometry::Scene, lm: &LmScene, sbox: &Aab
     let mdiffuse8 = mdiffuse8_of(&attr);
     let (ilightinput, coverage) = ilightinput_chain_d0(&sun, &mdiffuse8, d0.as_ref());
     if !quiet { eprintln!("setup-from-map: ILightInput chain ({:.1}s)", t0.elapsed().as_secs_f32()); }
+    // LMTOOL_SETUP_CENSUS=1 (diagnostic, G2 2026-09-28 — swd6's peel colours: our sweep-0 layer colour is 2–5× the game's on stpad's
+    // deck): per PORT MODEL (the LM instances' port_inst → scene instance → model name; tiles = the instances without one), the mean
+    // MDiffuse8, sun/w and ILightInput over the instances' ST rects — which material carries which albedo and sweep-0 colour.
+    if std::env::var_os("LMTOOL_SETUP_CENSUS").is_some() {
+        let mut acc: std::collections::BTreeMap<String, (usize, usize, [f64; 3], [f64; 3], [f64; 3])> = Default::default();
+        for (k, mesh) in lm.meshes.iter().enumerate() {
+            let (mut u0, mut u1, mut v0, mut v1) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+            for v in &mesh.verts { u0 = u0.min(v.uv[0]); u1 = u1.max(v.uv[0]); v0 = v0.min(v.uv[1]); v1 = v1.max(v.uv[1]); }
+            for ii in lm.inst_first[k]..lm.inst_first[k] + lm.inst_count[k] {
+                let inst = &lm.instances[ii];
+                let name = lm.port_inst.get(ii).copied().filter(|p| *p != usize::MAX).and_then(|p| scene.instances.get(p)).map(|si| si.model_name.clone()).unwrap_or_else(|| format!("(no port instance: mesh {k}, {} verts)", mesh.verts.len()));
+                let st = crate::lmaccum::chart_st(&mesh.verts[0], inst, &lm.table);
+                let ax = |u: f32| (st[0] * u + st[2]) * W as f32;
+                let ay = |v: f32| (st[1] * v + st[3]) * H as f32;
+                let (xa, xb, ya, yb) = (ax(u0), ax(u1), ay(v0), ay(v1));
+                let (x0, x1) = (xa.min(xb).floor().max(0.0) as u32, xa.max(xb).ceil().min(W as f32) as u32);
+                let (y0, y1) = (ya.min(yb).floor().max(0.0) as u32, ya.max(yb).ceil().min(H as f32) as u32);
+                let e = acc.entry(name).or_insert((0, 0, [0.0; 3], [0.0; 3], [0.0; 3]));
+                e.0 += 1;
+                for y in y0..y1 { for x in x0..x1 {
+                    if coverage.get(x, y, 0) <= 0.0 { continue; }
+                    e.1 += 1;
+                    let w = sun.get(x, y, 3).max(1e-6);
+                    for c in 0..3usize { let cc = c as u32; e.2[c] += mdiffuse8.get(x, y, cc) as f64; e.3[c] += (sun.get(x, y, cc) / w) as f64; e.4[c] += ilightinput.get(x, y, cc) as f64; }
+                } }
+            }
+        }
+        let mut v: Vec<_> = acc.into_iter().collect();
+        v.sort_by(|a, b| b.1.1.cmp(&a.1.1));
+        eprintln!("setup-census: per port model — instances, covered texels, mean MDiffuse8 rgb, mean sun/w rgb, mean ILightInput (sweep 0) rgb");
+        for (name, (ni, nt, md, su, il)) in v.iter().take(40) {
+            let n = (*nt).max(1) as f64;
+            eprintln!("  {:44} {:6} {:9}  md ({:.3}, {:.3}, {:.3})  sun ({:.3}, {:.3}, {:.3})  il ({:.4}, {:.4}, {:.4})", name, ni, nt, md[0] / n, md[1] / n, md[2] / n, su[0] / n, su[1] / n, su[2] / n, il[0] / n, il[1] / n, il[2] / n);
+        }
+    }
     FromMap { cam, pw01, shadow, sun, attr, mdiffuse8, ilightinput, coverage, notes }
 }
 
