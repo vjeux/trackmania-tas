@@ -116,6 +116,12 @@ pub struct ClassAcc {
     /// σ of ln(ratio)) — a global factor (a wrong SkyFactor, a MaxHDR split) leaves σ untouched, a wrong sun direction or a
     /// per-object defect widens it.
     pub spread: Option<(usize, f64, f64)>,
+    /// The signed stored-byte Δ (ours − editor) summed per bin of the EDITOR's byte (bins of 32; every channel of every texel
+    /// of the class's rects) and the counts — the BRIGHTNESS PROFILE of the residue (V3, 2026-09-27): an excess that falls with
+    /// the editor's brightness is an ADDITIVE term (bounce / sky floor / a shadow too light), one that rises with it is a gain;
+    /// the class mean hides both (stpad Day: +1.7 bytes at 0–31 and −0.1 at 224–255 with tiles 1.023; tk3nl2: +6.4 at 0–31 = card shadows).
+    pub bin_sum: [f64; 8],
+    pub bin_n: [usize; 8],
 }
 
 impl ClassAcc {
@@ -129,6 +135,7 @@ impl ClassAcc {
         for c in 0..3 { self.sum_ours[c] += o.sum_ours[c]; self.sum_theirs[c] += o.sum_theirs[c]; self.sum_sq[c] += o.sum_sq[c]; }
         self.bytes += o.bytes; self.exact += o.exact; self.within1 += o.within1; self.within2 += o.within2; self.max_delta = self.max_delta.max(o.max_delta);
         self.worst.extend(o.worst.iter().cloned());
+        for k in 0..8 { self.bin_sum[k] += o.bin_sum[k]; self.bin_n[k] += o.bin_n[k]; }
     }
 }
 
@@ -274,6 +281,8 @@ pub fn compare(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLight
                     if d <= 1 { acc.within1 += 1; }
                     if d <= 2 { acc.within2 += 1; }
                     acc.max_delta = acc.max_delta.max(d);
+                    let k = (b[c] >> 5) as usize;
+                    acc.bin_sum[k] += a[c] as f64 - b[c] as f64; acc.bin_n[k] += 1;
                 }
                 if lt {
                     acc.used += 1; acc.used_t += 1;
@@ -344,13 +353,16 @@ pub fn print(r: &Report, o: &Options, tsv: Option<&str>) -> Result<(), String> {
     if r.pair_refused > 0 { println!("  WARNING: {} pairs REFUSED by the rect-area guard (> 2.9× apart, beyond a quality ring step): the two files number their objects differently — the item rows below are NOT trustworthy until the numbering is settled", r.pair_refused); }
     if o.own_rects { println!("  --own-rects: each side's means over its own rects and its own lit texels (layouts differ); byte identity / RMSE columns are void"); }
     if r.unmatched_rows > 0 { println!("  note: {} records rows match no chart's (obj, sub)", r.unmatched_rows); }
-    println!("class\tcharts\ttexels\tlit% ours\tlit% editor\tmean HDR ours (r/g/b)\tmean HDR editor (r/g/b)\tratio ours/editor (r/g/b)\tRMSE/mean (r/g/b)	bytes identical %	within 1 %	within 2 %	max|Δ|	per-chart ratio: n, median, σ(ln)");
+    println!("class\tcharts\ttexels\tlit% ours\tlit% editor\tmean HDR ours (r/g/b)\tmean HDR editor (r/g/b)\tratio ours/editor (r/g/b)\tRMSE/mean (r/g/b)	bytes identical %	within 1 %	within 2 %	max|Δ|	per-chart ratio: n, median, σ(ln)	mean byte Δ ours−editor by the EDITOR's byte (8 bins of 32)	texels per bin");
     let mut out = String::new();
     let mut row = |name: &str, c: &ClassAcc| {
-        let line = format!("{name}	{}	{}	{:.1}	{:.1}	{}	{}	{}	{}	{:.2}	{:.2}	{:.2}	{}	{}",
+        let bins: Vec<String> = (0..8).map(|k| if c.bin_n[k] > 0 { format!("{:+.2}", c.bin_sum[k] / c.bin_n[k] as f64) } else { "—".to_string() }).collect();
+        let bin_n: Vec<String> = (0..8).map(|k| c.bin_n[k].to_string()).collect();
+        let line = format!("{name}	{}	{}	{:.1}	{:.1}	{}	{}	{}	{}	{:.2}	{:.2}	{:.2}	{}	{}	{}	{}",
             c.charts, c.texels, 100.0 * c.lit_ours as f64 / c.texels.max(1) as f64, 100.0 * c.lit_theirs as f64 / c.texels.max(1) as f64,
             f3(c.mean_ours(), 4), f3(c.mean_theirs(), 4), f3(c.ratio(), 3), f3(c.rmse_rel(), 3),
-            100.0 * c.exact as f64 / c.bytes.max(1) as f64, 100.0 * c.within1 as f64 / c.bytes.max(1) as f64, 100.0 * c.within2 as f64 / c.bytes.max(1) as f64, c.max_delta, match c.spread { Some((n, med, sg)) => format!("{n}, {med:.3}, {sg:.3}"), None => "—".to_string() });
+            100.0 * c.exact as f64 / c.bytes.max(1) as f64, 100.0 * c.within1 as f64 / c.bytes.max(1) as f64, 100.0 * c.within2 as f64 / c.bytes.max(1) as f64, c.max_delta, match c.spread { Some((n, med, sg)) => format!("{n}, {med:.3}, {sg:.3}"), None => "—".to_string() },
+            bins.join(" "), bin_n.join(" "));
         println!("{line}");
         out.push_str(&line); out.push('\n');
     };
@@ -366,7 +378,7 @@ pub fn print(r: &Report, o: &Options, tsv: Option<&str>) -> Result<(), String> {
         }
     }
     if let Some(p) = tsv {
-        let mut s = String::from("class\tcharts\ttexels\tlit_ours_pct\tlit_editor_pct\tmean_ours_rgb\tmean_editor_rgb\tratio_rgb\trmse_rel_rgb\tidentical_pct\twithin1_pct\twithin2_pct\tmax_delta\tchart_ratio_n_median_sigma\n");
+        let mut s = String::from("class\tcharts\ttexels\tlit_ours_pct\tlit_editor_pct\tmean_ours_rgb\tmean_editor_rgb\tratio_rgb\trmse_rel_rgb\tidentical_pct\twithin1_pct\twithin2_pct\tmax_delta\tchart_ratio_n_median_sigma\tdbyte_by_editor_bin8\tbin8_n\n");
         s.push_str(&out);
         // the row's record line for `lmtool trustmatrix` (V2, 2026-09-27): frame, the two record MaxHDRs and their ratio, the two heads
         // (bytes / records / frames), --own-rects (byte identity void when 1) — a `#` line after the rows so a reader that stops at TOTAL is unaffected
