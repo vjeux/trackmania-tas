@@ -6887,6 +6887,17 @@ fn run(mut a: Vec<String>) {
             }
             if bad > 0 { std::process::exit(1); }
         }
+        "probecmp" => {
+            // lmtool probecmp OURS.Map.Gbx --against EDITOR.Map.Gbx [--tsv OUT] [--levels] [--worst N]: THE PROBE-BLOB DIFF (probecmp.rs, V4) —
+            // the two files' probe volumes (trailer + the four probe images) compared probe by probe at the same world position: layout,
+            // scale words, per-image identity / ±1 / ±2 / max |Δ| / means / ratio / bias, split valid vs inside-geometry, per height level
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let other = f("--against").expect("--against EDITOR.Map.Gbx");
+            let ours = lightmap::mapio::load(&a[1]).unwrap_or_else(|e| panic!("{}: {e}", a[1]));
+            let theirs = lightmap::mapio::load(&other).unwrap_or_else(|e| panic!("{other}: {e}"));
+            let o = lightmap::probecmp::Options { levels: a.iter().any(|x| x == "--levels"), worst: f("--worst").map(|v| v.parse().expect("--worst N")).unwrap_or(0), tsv: f("--tsv") };
+            lightmap::probecmp::run(&ours, &theirs, &o).unwrap_or_else(|e| { eprintln!("probecmp: {e}"); std::process::exit(1) });
+        }
         "classcmp" => {
             // lmtool classcmp OURS.Map.Gbx --against EDITOR.Map.Gbx [--records TSV] [--by class|name|obj] [--frame 0] [--lit 8]
             // [--tsv OUT] [--worst N]: the per-class HDR table of two written maps (classcmp.rs) — the verification rows' numbers
@@ -6896,7 +6907,7 @@ fn run(mut a: Vec<String>) {
             let theirs = lightmap::mapio::load(&other).unwrap_or_else(|e| panic!("{other}: {e}"));
             let records = f("--records").map(|p| lightmap::classcmp::read_records_tsv(&p).unwrap_or_else(|e| panic!("{e}")));
             let by = match f("--by").as_deref() { None | Some("class") => lightmap::classcmp::GroupBy::Class, Some("name") => lightmap::classcmp::GroupBy::Name, Some("obj") => lightmap::classcmp::GroupBy::Obj, Some(o) => panic!("--by {o}: class|name|obj") };
-            let o = lightmap::classcmp::Options { frame: f("--frame").map(|v| v.parse().expect("--frame N")).unwrap_or(0), lit: f("--lit").map(|v| v.parse().expect("--lit N")).unwrap_or(8), lit_hdr: f("--lit-hdr").map(|v| v.parse().expect("--lit-hdr F")), by, worst: f("--worst").map(|v| v.parse().expect("--worst N")).unwrap_or(0), own_rects: a.iter().any(|x| x == "--own-rects") };
+            let o = lightmap::classcmp::Options { frame: f("--frame").map(|v| v.parse().expect("--frame N")).unwrap_or(0), lit: f("--lit").map(|v| v.parse().expect("--lit N")).unwrap_or(8), lit_hdr: f("--lit-hdr").map(|v| v.parse().expect("--lit-hdr F")), by, worst: f("--worst").map(|v| v.parse().expect("--worst N")).unwrap_or(0), own_rects: a.iter().any(|x| x == "--own-rects"), peaks: f("--peaks").map(|v| v.parse().expect("--peaks N")).unwrap_or(0) };
             let r = lightmap::classcmp::compare(&ours, &theirs, records.as_deref(), &o).unwrap_or_else(|e| panic!("classcmp: {e}"));
             lightmap::classcmp::print(&r, &o, f("--tsv").as_deref()).unwrap_or_else(|e| panic!("classcmp: {e}"));
             // --coverage FINAL.rgba16f [--coverage-thr 0.99]: the partial / full coverage split per class from our finals' alpha

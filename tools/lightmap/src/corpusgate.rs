@@ -156,7 +156,7 @@ pub fn md5_hex(data: &[u8]) -> String {
 
 // ---------------------------------------------------------------- the metrics of one baked cell against its oracle
 fn frame_metrics(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLightmap, records: Option<&[crate::classcmp::RecRow]>, frame: usize, own_rects: bool) -> Result<serde_json::Value, String> {
-    let mut o = crate::classcmp::Options { frame, lit: 8, by: crate::classcmp::GroupBy::Class, worst: 0, own_rects, lit_hdr: None };
+    let mut o = crate::classcmp::Options { frame, lit: 8, by: crate::classcmp::GroupBy::Class, worst: 0, own_rects, lit_hdr: None, peaks: 0 };
     // two layouts that differ (chart counts, a giant's numbering, OR the same count with other rects) are compared by (obj, sub)
     // with each side's own rects — decided from the layout BEFORE the compare (V3 2026-09-28 03:56Z: with equal counts and 215 of
     // 5 871 same rects the plain compare silently skipped the rect-mismatched charts and the headline numbers described 4 % of the
@@ -379,6 +379,37 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 let f0 = &rec["frames"][0];
                 println!("{}: re-measured — f0 {:.2} % id / {:.2} % ±2 / max {} record {} vs {}; binds {}/{} rects {}/{}{}", c.name, f0["identity_pct"].as_f64().unwrap_or(0.0), f0["within2_pct"].as_f64().unwrap_or(0.0), f0["max_delta"], f0["record_ours"], f0["record_theirs"], rec["layout"]["same_binds"], rec["layout"]["compared"], rec["layout"]["same_rects"], rec["layout"]["compared"], if own_rects { " (own rects)" } else { "" });
             }
+            Ok(())
+        }
+        "probes" => {
+            // lmtool corpus-gate probes --corpus C --tip T --work W [--against OLD_TIP] [--only cell,…] [--md OUT.md]: THE PROBE-BLOB
+            // COLUMN (V4, 2026-09-28): every banked bake's probe volume vs its oracle's (probecmp::summary — layout, common probes, the
+            // four images' identity / ±2 / max |Δ| / ratio, the scale words), and vs the previous tip's bake of the same cell when
+            // --against names one (the probe regression detector: "bytes differ, every metric equal" cells now say WHAT moved)
+            let tip = flag(args, "--tip").ok_or("--tip TIP")?;
+            let work = PathBuf::from(flag(args, "--work").ok_or("--work W")?);
+            let against = flag(args, "--against");
+            let only: Option<Vec<String>> = flag(args, "--only").map(|s| s.split(',').map(|x| x.trim().to_string()).collect());
+            let mut md = format!("# corpus probe column — tip {tip}{}\n\n| cell | probe volume vs the EDITOR's | vs the previous tip's bake |\n|---|---|---|\n", against.as_ref().map(|a| format!(" (vs {a})")).unwrap_or_default());
+            for c in cells.iter().filter(|c| c.oracle.is_some() && !c.compare_only && only.as_ref().map_or(true, |o| o.contains(&c.name))) {
+                let ours_p = work.join(&tip).join(&c.name).join("ours.Map.Gbx");
+                if !ours_p.exists() { continue; }
+                let oracle = c.oracle.as_ref().unwrap();
+                let ours = match crate::mapio::load(&ours_p.to_string_lossy()) { Ok(m) => m, Err(e) => { md.push_str(&format!("| {} | load: {e} | |\n", c.name)); continue } };
+                let theirs = match crate::mapio::load(&oracle.to_string_lossy()) { Ok(m) => m, Err(e) => { md.push_str(&format!("| {} | oracle: {e} | |\n", c.name)); continue } };
+                let vs_editor = match crate::probecmp::summary(&ours, &theirs) { Ok(s) => crate::probecmp::summary_line(&s), Err(e) => format!("probecmp: {e}") };
+                let vs_prev = match &against {
+                    Some(a) => {
+                        let prev_p = work.join(a).join(&c.name).join("ours.Map.Gbx");
+                        if !prev_p.exists() { "no bake of this cell at the previous tip".to_string() }
+                        else { match crate::mapio::load(&prev_p.to_string_lossy()).and_then(|prev| crate::probecmp::summary(&ours, &prev)) { Ok(s) => { let c0 = &s.images[0]; if s.layout_diffs == 0 && (0..4).all(|k| s.images[k].exact == s.images[k].n) && (0..4).all(|k| s.scales[k].0.map(f32::to_bits) == s.scales[k].1.map(f32::to_bits)) { "IDENTICAL probes".to_string() } else { format!("MOVED: {}; colour bias {:+.2}/{:+.2}/{:+.2} bytes", crate::probecmp::summary_line(&s).replace("editor", "previous"), c0.bias()[0], c0.bias()[1], c0.bias()[2]) } } Err(e) => format!("probecmp vs previous: {e}") } }
+                    }
+                    None => "—".to_string(),
+                };
+                println!("{:<40} {vs_editor} | {vs_prev}", c.name);
+                md.push_str(&format!("| {} | {} | {} |\n", c.name, vs_editor, vs_prev));
+            }
+            if let Some(p) = flag(args, "--md") { std::fs::write(&p, &md).map_err(|e| format!("{p}: {e}"))?; println!("→ {p}"); }
             Ok(())
         }
         "census" => {

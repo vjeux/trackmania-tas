@@ -771,12 +771,18 @@ pub fn build_with_lamps(scene: &crate::geometry::Scene, lm: &LmScene, sbox: &Aab
     // dim neutral leak (Σ 0.03) though buried under the WarpGround; if ours is exactly 0 the residue is the shadow pass at the
     // 2-m caster gap (bias / PCF / D16), not the placement.
     if std::env::var_os("LMTOOL_TILE_SUN_CENSUS").is_some() {
-        let mut acc = [(0usize, 0usize, [0f64; 3]); 2];
+        // V4 (2026-09-28, RE 16's test 2): the outside split by DISTANCE BAND to the footprint in cells (1–2, 3–8, 9–32, > 32) =
+        // re15_tilefloor's bands, so the direct-sun fraction reads beside the editor's stored floor per band
+        const BANDS: [&str; 5] = ["inside the 64×64 footprint", "1–2 cells outside", "3–8 cells outside", "9–32 cells outside", "> 32 cells outside"];
+        let mut acc = [(0usize, 0usize, [0f64; 3]); 5];
         for (k, mesh) in lm.meshes.iter().enumerate() {
             if lm.inst_count[k] < 1000 { continue; }
             for ii in lm.inst_first[k]..lm.inst_first[k] + lm.inst_count[k] {
                 let inst = &lm.instances[ii];
-                let side = if inst.t[0] < 2048.0 && inst.t[2] < 2048.0 { 0 } else { 1 };
+                let (cx, cz) = ((inst.t[0] / 32.0).floor() as i64, (inst.t[2] / 32.0).floor() as i64);
+                let dist = |c: i64| -> i64 { if c < 0 { -c } else if c > 63 { c - 63 } else { 0 } };
+                let dcell = dist(cx).max(dist(cz));
+                let side = match dcell { 0 => 0, 1..=2 => 1, 3..=8 => 2, 9..=32 => 3, _ => 4 };
                 // the instance's chart rect in the atlas: the mesh's uv extent through its ST (01 space, y down = the raster's flip)
                 let v0 = &mesh.verts[0];
                 let st = crate::lmaccum::chart_st(v0, inst, &lm.table);
@@ -798,7 +804,7 @@ pub fn build_with_lamps(scene: &crate::geometry::Scene, lm: &LmScene, sbox: &Aab
                 } }
             }
         }
-        for (side, name) in ["inside the 64×64 footprint", "outside"].iter().enumerate() {
+        for (side, name) in BANDS.iter().enumerate() {
             let (n, lit, s) = acc[side];
             eprintln!("tile-sun-census: {name}: {n} covered texels, {lit} with a non-zero direct sun ({:.2} %), mean sun/w ({:.5}, {:.5}, {:.5})", 100.0 * lit as f64 / n.max(1) as f64, s[0] / n.max(1) as f64, s[1] / n.max(1) as f64, s[2] / n.max(1) as f64);
         }

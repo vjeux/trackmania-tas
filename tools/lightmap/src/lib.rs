@@ -63,6 +63,7 @@ pub mod lmmesh;
 pub mod lightcam;
 pub mod lmtiles;
 pub mod probechunk;
+pub mod probecmp;
 pub mod format;
 pub mod frustumstudy;
 pub mod geometry;

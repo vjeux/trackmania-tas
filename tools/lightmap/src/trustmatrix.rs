@@ -159,7 +159,7 @@ pub fn refresh(manifest: &str, work_tip: Option<&std::path::Path>, suffix: &str,
             let same_rect = (0..n).filter(|&i| m1.pos[i] == m2.pos[i] && m1.size[i] == m2.size[i]).count();
             m1.count != m2.count || same_rect != n
         };
-        let o = crate::classcmp::Options { frame, lit: 8, lit_hdr, by: crate::classcmp::GroupBy::Name, worst: 0, own_rects };
+        let o = crate::classcmp::Options { frame, lit: 8, lit_hdr, by: crate::classcmp::GroupBy::Name, worst: 0, own_rects, peaks: 0 };
         let r = crate::classcmp::compare(&ours, &theirs, records.as_deref(), &o).map_err(|e| format!("{cell}: classcmp: {e}"))?;
         let tsv_name = format!("{cell}{suffix}.tsv");
         let tsv_path = base_dir.join(&tsv_name);

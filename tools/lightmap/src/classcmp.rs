@@ -155,6 +155,22 @@ pub struct Options {
     /// Each file's class means over ITS OWN rects, charts matched by the (obj, sub) bind word — for two layouts that
     /// differ (a q2 / q5 bake against the q3 / q4 oracle); no byte identity, no RMSE.
     pub own_rects: bool,
+    /// `--peaks N` (V4): list each side's N brightest decoded texels — (x, y), chart, class key, fb, HDR max channel, and the OTHER
+    /// side's value at the same texel — the read of WHERE a record's max sits (a decal quad, a card, a pad texel) and what it became
+    pub peaks: usize,
+}
+
+/// One of the brightest texels of a side (`--peaks`): position, chart, class key, the chart's frame byte, the decoded RGB, and the
+/// other side's decoded RGB at the same (x, y) when the rects match (None under --own-rects).
+#[derive(Clone, Debug)]
+pub struct PeakTexel {
+    pub x: u32,
+    pub y: u32,
+    pub chart: usize,
+    pub key: String,
+    pub fb: u8,
+    pub hdr: [f64; 3],
+    pub other: Option<[f64; 3]>,
 }
 
 /// The class key of chart `i`.
@@ -188,6 +204,9 @@ pub struct Report {
     pub rect_mismatch: usize,
     /// --own-rects pairs refused by the rect-area guard (a numbering mismatch between the two files)
     pub pair_refused: usize,
+    /// `--peaks N`: the brightest decoded texels of each side (ours, theirs)
+    pub peaks_ours: Vec<PeakTexel>,
+    pub peaks_theirs: Vec<PeakTexel>,
 }
 
 /// The whole comparison: both maps' frame `frame` image 0 decoded, per class.
@@ -337,9 +356,34 @@ pub fn compare(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLight
     };
     let peak_ours = peak(&i1, &m1, fb1, k1);
     let peak_theirs = peak(&i2, &m2, fb2, k2);
+    // --peaks N: the N brightest decoded texels of each side over the charts' own texels, with the other side's value at the same
+    // (x, y) when that side's chart has the same rect (the same-layout compare; None under --own-rects)
+    let peaks_of = |img: &crate::img::Rgb, m: &Mapping, fb: &[u8], k: f32, other: &crate::img::Rgb, mo: &Mapping, fbo: &[u8], ko: f32| -> Vec<PeakTexel> {
+        if o.peaks == 0 { return Vec::new(); }
+        let mut top: Vec<PeakTexel> = Vec::new();
+        for i in 0..m.count as usize {
+            let f = fb.get(i).copied().unwrap_or(0);
+            let (px, py, pw, ph) = chart_own_px(m.pos[i], m.size[i]);
+            let same_rect = !o.own_rects && i < mo.count as usize && mo.pos[i] == m.pos[i] && mo.size[i] == m.size[i];
+            for y in py..(py + ph).min(img.h) { for x in px..(px + pw).min(img.w) {
+                let a = img.get(x, y);
+                let mx = a[0].max(a[1]).max(a[2]);
+                let v = texel_hdr(o.frame, mx, f, k);
+                if top.len() == o.peaks && v <= top.last().map(|t| t.hdr[0].max(t.hdr[1]).max(t.hdr[2])).unwrap_or(0.0) { continue; }
+                let hdr = [texel_hdr(o.frame, a[0], f, k), texel_hdr(o.frame, a[1], f, k), texel_hdr(o.frame, a[2], f, k)];
+                let oth = if same_rect { let b = other.get(x, y); let fo = fbo.get(i).copied().unwrap_or(0); Some([texel_hdr(o.frame, b[0], fo, ko), texel_hdr(o.frame, b[1], fo, ko), texel_hdr(o.frame, b[2], fo, ko)]) } else { None };
+                top.push(PeakTexel { x, y, chart: i, key: class_key(m, i, &rows, records, o.by), fb: f, hdr, other: oth });
+                top.sort_by(|p, q| { let (a, b) = (q.hdr[0].max(q.hdr[1]).max(q.hdr[2]), p.hdr[0].max(p.hdr[1]).max(p.hdr[2])); a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Equal) });
+                top.truncate(o.peaks);
+            } }
+        }
+        top
+    };
+    let peaks_ours = peaks_of(&i1, &m1, fb1, k1, &i2, &m2, fb2, k2);
+    let peaks_theirs = peaks_of(&i2, &m2, fb2, k2, &i1, &m1, fb1, k1);
     let head_of = |m: &Mapping, d: &crate::format::LightmapData| (m.head.len(), (0..3).filter(|&k| 60 + 66 * k + 66 <= m.head.len()).count(), d.frames.len());
     let (head_ours, head_theirs) = (head_of(&m1, d1), head_of(&m2, d2));
-    Ok(Report { classes, total, maxhdr_ours: k1, maxhdr_theirs: k2, image_w: i1.w, image_h: i1.h, unmatched_rows, rect_mismatch, pair_refused, peak_ours, peak_theirs, head_ours, head_theirs })
+    Ok(Report { classes, total, maxhdr_ours: k1, maxhdr_theirs: k2, image_w: i1.w, image_h: i1.h, unmatched_rows, rect_mismatch, pair_refused, peak_ours, peak_theirs, peaks_ours, peaks_theirs, head_ours, head_theirs })
 }
 
 fn f3(v: [f64; 3], p: usize) -> String { let one = |x: f64| if x.is_finite() { format!("{:.*}", p, x) } else { "—".to_string() }; format!("{} / {} / {}", one(v[0]), one(v[1]), one(v[2])) }
@@ -353,6 +397,18 @@ pub fn print(r: &Report, o: &Options, tsv: Option<&str>) -> Result<(), String> {
     if r.pair_refused > 0 { println!("  WARNING: {} pairs REFUSED by the rect-area guard (> 2.9× apart, beyond a quality ring step): the two files number their objects differently — the item rows below are NOT trustworthy until the numbering is settled", r.pair_refused); }
     if o.own_rects { println!("  --own-rects: each side's means over its own rects and its own lit texels (layouts differ); byte identity / RMSE columns are void"); }
     if r.unmatched_rows > 0 { println!("  note: {} records rows match no chart's (obj, sub)", r.unmatched_rows); }
+    if o.peaks > 0 {
+        let show = |side: &str, v: &[PeakTexel]| {
+            println!("  --peaks: the {} brightest decoded texels of {side} (HDR max channel; the other side's value at the same texel when the rects match)", v.len());
+            for p in v {
+                let mx = p.hdr[0].max(p.hdr[1]).max(p.hdr[2]);
+                let oth = match p.other { Some(b) => format!("other {} (×{:.3})", f3([b[0], b[1], b[2]], 4), b[0].max(b[1]).max(b[2]) / mx.max(1e-12)), None => "other —".to_string() };
+                println!("    ({:>4}, {:>4}) chart {:>6} fb {:>3} {:<44} max {:.5} rgb {} | {oth}", p.x, p.y, p.chart, p.fb, p.key, mx, f3(p.hdr, 4));
+            }
+        };
+        show("OURS", &r.peaks_ours);
+        show("THE EDITOR", &r.peaks_theirs);
+    }
     println!("class\tcharts\ttexels\tlit% ours\tlit% editor\tmean HDR ours (r/g/b)\tmean HDR editor (r/g/b)\tratio ours/editor (r/g/b)\tRMSE/mean (r/g/b)	bytes identical %	within 1 %	within 2 %	max|Δ|	per-chart ratio: n, median, σ(ln)	mean byte Δ ours−editor by the EDITOR's byte (8 bins of 32)	texels per bin");
     let mut out = String::new();
     let mut row = |name: &str, c: &ClassAcc| {
