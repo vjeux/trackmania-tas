@@ -2275,7 +2275,7 @@ fn run(mut a: Vec<String>) {
                                 let (w, h) = lightmap::localdrive::TARGET;
                                 let sc_t = lightmap::localdrive::scene_for_target(&su.sc, w, h);
                                 lightmap::localdrive::set_caster_source(Some(std::sync::Arc::new(lightmap::localdrive::caster_source_of(&su))));
-                                let out = lightmap::localdrive::run_frame(&su.gl, &sc_t, &su.lamps, &su.chunks, su.probe_n, (w, h), None, lightmap::localdrive::Lists::cleared(w, h), &mut log);
+                                let out = lightmap::localdrive::run_frame(&su.gl, &sc_t, &su.lamps, &su.chunks, su.probe_n, (w, h), None, lightmap::localdrive::Lists::cleared(w, h), None, &mut log);
                                 // the lamp irradiance = A_0 itself (FrameOut::direct, RE 13's structure); LMTOOL_LAMP_BOUNCE_FROM=lists keeps the
                                 // list compose of the first study
                                 let img = if std::env::var("LMTOOL_LAMP_BOUNCE_FROM").as_deref() == Ok("lists") { lightmap::localdrive::compose(&out.lists, &su.lamps, lightmap::localdrive::ComposeRule::SumDecoded) } else { out.direct.clone() };
@@ -3289,34 +3289,39 @@ fn run(mut a: Vec<String>) {
             // when the passes did not run. (The record's LAmbient = the AddAmbient accumulator is engineer A's BakeParams::ambient_out →
             // transcribed_images' ambient_xyz; None here until it lands.)
             let ambient_xyz: Option<[f32; 3]> = None;
-            let transcribed_probes: Option<lightmap::synth::ProbeBlob> = match (&prm.probe_bake, &probe_layout) {
-                (Some(pb), Some(src)) => {
-                    let tp = std::time::Instant::now();
-                    let pbl = pb.lock().unwrap();
-                    // the probe images tiled the game's way (RE 7's probetiles): the stored levels from the baked colour volume,
-                    // unless the layout came from an editor save's trailer (its slices ARE the game's)
-                    let mut src = src.clone();
-                    if f("--probe-layout-from").is_none() {
-                        let stored = src.stored_levels(&pbl.colour);
-                        let before = src.atlas;
-                        let (w, h) = src.retile(&stored);
-                        eprintln!("probes: the images tiled the game's way (probetiles): {} stored levels of {} → image {w}×{h} (the port's packing gave {}×{})", stored.iter().flatten().filter(|s| **s).count(), stored.iter().map(|v| v.len()).sum::<usize>(), before.0, before.1);
-                    }
-                    let src = &src;
-                    match pbl.finish(&src.tiles, src.atlas) {
-                        Some(r) => {
-                            let aw = src.atlas.0;
-                            let vol = src.volume(r.scales, r.ends, &|x, y| !r.valid[(y * aw + x) as usize]);
-                            if let Some(dir) = f("--chain-final-dir") { let _ = pbl.dump(std::path::Path::new(&dir)); }
-                            eprintln!("probes: TRANSCRIBED — {} directions, {} world layers, {} probe writes, {} sky-visibility adds; {} of {} probes valid; scales max0 {} max2 {}; blob {} B (parts {:?}) ({:.1}s)", pbl.n_dirs, pbl.n_layers, pbl.n_written, pbl.n_sky_adds, r.n_valid, r.n_probes, r.scales[0], r.scales[1], r.blob.len(), r.ends, tp.elapsed().as_secs_f32());
-                            if let Some(dir) = f("--chain-final-dir") { for (k, im) in r.images.iter().enumerate() { let _ = std::fs::write(format!("{dir}/probe-image{k}.rgb"), im); } }
-                            Some(lightmap::synth::ProbeBlob { blob: r.blob, trailer: vol.write() })
+            // THE PROBE BLOB from the bake's ProbeBake, built once here (the lamp pass has not run: image 3 zero, its word 1e-5) and again
+            // after frame 1's lamps (`make_probe_blob(Some(&out.lamp_probe))`: the colour probe pass's volume → image 3 + frame_info[2])
+            let make_probe_blob = |lamp: Option<&lightmap::probepass::Volume3>| -> Option<lightmap::synth::ProbeBlob> {
+                match (&prm.probe_bake, &probe_layout) {
+                    (Some(pb), Some(src)) => {
+                        let tp = std::time::Instant::now();
+                        let pbl = pb.lock().unwrap();
+                        // the probe images tiled the game's way (RE 7's probetiles): the stored levels from the baked colour volume,
+                        // unless the layout came from an editor save's trailer (its slices ARE the game's)
+                        let mut src = src.clone();
+                        if f("--probe-layout-from").is_none() {
+                            let stored = src.stored_levels(&pbl.colour);
+                            let before = src.atlas;
+                            let (w, h) = src.retile(&stored);
+                            eprintln!("probes: the images tiled the game's way (probetiles): {} stored levels of {} → image {w}×{h} (the port's packing gave {}×{})", stored.iter().flatten().filter(|s| **s).count(), stored.iter().map(|v| v.len()).sum::<usize>(), before.0, before.1);
                         }
-                        None => { eprintln!("probes: the transcribed probe WEBPs need libwebp; the port's probes are used"); None }
+                        let src = &src;
+                        match pbl.finish(&src.tiles, src.atlas, lamp) {
+                            Some(r) => {
+                                let aw = src.atlas.0;
+                                let vol = src.volume(r.scales, r.ends, &|x, y| !r.valid[(y * aw + x) as usize]);
+                                if let Some(dir) = f("--chain-final-dir") { let _ = pbl.dump(std::path::Path::new(&dir)); }
+                                eprintln!("probes: TRANSCRIBED — {} directions, {} world layers, {} probe writes, {} sky-visibility adds; {} of {} probes valid; scales max0 {} max2 {} lamp {}; blob {} B (parts {:?}) ({:.1}s)", pbl.n_dirs, pbl.n_layers, pbl.n_written, pbl.n_sky_adds, r.n_valid, r.n_probes, r.scales[0], r.scales[1], r.scales[2], r.blob.len(), r.ends, tp.elapsed().as_secs_f32());
+                                if let Some(dir) = f("--chain-final-dir") { for (k, im) in r.images.iter().enumerate() { let _ = std::fs::write(format!("{dir}/probe-image{k}.rgb"), im); } }
+                                Some(lightmap::synth::ProbeBlob { blob: r.blob, trailer: vol.write() })
+                            }
+                            None => { eprintln!("probes: the transcribed probe WEBPs need libwebp; the port's probes are used"); None }
+                        }
                     }
+                    _ => None,
                 }
-                _ => None,
             };
+            let transcribed_probes: Option<lightmap::synth::ProbeBlob> = make_probe_blob(None);
             let probes = if let Some(tp) = transcribed_probes { Some(tp) } else if has("--template-probes") { None } else {
                 let (tv, grid) = build_slot_grid(&prm);
                 let mut pp = prm.clone();
@@ -3396,7 +3401,7 @@ fn run(mut a: Vec<String>) {
                 pb.lock().unwrap().dump(&d).expect("probe dump");
                 eprintln!("probes: accumulators dumped to {dir}");
             }
-            let probes_for_transcribed = if writer_transcribed { probes.clone() } else { None };
+            let mut probes_for_transcribed = if writer_transcribed { probes.clone() } else { None };
             let frame_params_for_transcribed = if writer_transcribed { frame_params.clone() } else { None };
             if let Some(gl) = game_layout.as_ref() {
                 let mut objs: Vec<(u32, i32, i32, i32, i32)> = gl.charts.iter().filter(|c| c.charted == lightmap::layout::Charted::Bound).map(|c| (c.obj, c.x, c.y, c.w, c.h)).collect();
@@ -3511,7 +3516,31 @@ fn run(mut a: Vec<String>) {
                                         let (w, h) = lightmap::localdrive::TARGET;
                                         let sc_t = lightmap::localdrive::scene_for_target(&su.sc, w, h);
                                         lightmap::localdrive::set_caster_source(Some(std::sync::Arc::new(lightmap::localdrive::caster_source_of(&su))));
-                                        let out = lightmap::localdrive::run_frame(&su.gl, &sc_t, &su.lamps, &su.chunks, su.probe_n, (w, h), None, lightmap::localdrive::Lists::cleared(w, h), &mut log);
+                                        // the probes' safety offsets (the ProbeBake's, RE 7's transcription) for the lamp probe pass — the frame's grid is the ProbeBake's
+                                        let probe_offsets: Option<lightmap::probepass::Volume3> = prm.probe_bake.as_ref().and_then(|pb| pb.lock().unwrap().offsets.clone());
+                                        let out = lightmap::localdrive::run_frame(&su.gl, &sc_t, &su.lamps, &su.chunks, su.probe_n, (w, h), None, lightmap::localdrive::Lists::cleared(w, h), probe_offsets.as_ref(), &mut log);
+                                        // THE LAMP COLOUR PROBE IMAGE (PS 9605, E4): the frame's probe volume → the blob's image 3 + frame_info[2] — the blob is rebuilt
+                                        {
+                                            let nz = out.lamp_probe.count_nonzero();
+                                            let lp = &out.lamp_probe;
+                                            let (mut mx, mut at) = (0f32, (0u32, 0u32, 0u32));
+                                            for z in 0..lp.d { for y in 0..lp.h { for x in 0..lp.w { for c in 0..3 { let v = lp.get(x, y, z, c); if v > mx { mx = v; at = (x, y, z); } } } } }
+                                            let (alpha, world) = match prm.probe_bake.as_ref() { Some(pb) => { let pb = pb.lock().unwrap(); let a = if at.0 < pb.colour.w && at.1 < pb.colour.h && at.2 < pb.colour.d { pb.colour.get(at.0, at.1, at.2, 3) } else { -1.0 }; let w = pb.blocks.iter().find(|b| (b.min[0]..b.max[0]).contains(&at.0) && (b.min[1]..b.max[1]).contains(&at.1) && (b.min[2]..b.max[2]).contains(&at.2)).map(|b| [b.pos[0] + b.cell * at.0 as f32, b.pos[1] + b.cell * at.1 as f32, b.pos[2] + b.cell * at.2 as f32]); (a, w) } None => (-1.0, None) };
+                                            eprintln!("local-lights: the colour probe pass (PS 9605) — {nz} probes lit of {}, max channel {mx} at atlas {:?} (α {alpha}, world {:?})", lp.w * lp.h * lp.d, at, world);
+                                            // every atlas copy of that world position (the blocks' margin cells duplicate their neighbours' probes) — the copies must agree
+                                            if let (Some(pb), Some(w)) = (prm.probe_bake.as_ref(), world) {
+                                                let pb = pb.lock().unwrap();
+                                                for (bi, b) in pb.blocks.iter().enumerate() {
+                                                    let c = [((w[0] - b.pos[0]) / b.cell).round() as i64, ((w[1] - b.pos[1]) / b.cell).round() as i64, ((w[2] - b.pos[2]) / b.cell).round() as i64];
+                                                    if (0..3).all(|k| c[k] >= b.min[k] as i64 && c[k] < b.max[k] as i64) {
+                                                        let (x, y, z) = (c[0] as u32, c[1] as u32, c[2] as u32);
+                                                        let off = pb.offsets.as_ref().map(|o| [o.get(x, y, z, 0), o.get(x, y, z, 1), o.get(x, y, z, 2)]);
+                                                        eprintln!("local-lights:   block {bi} atlas ({x}, {y}, {z}): lamp ({}, {}, {}) α {} offset {:?}", lp.get(x, y, z, 0), lp.get(x, y, z, 1), lp.get(x, y, z, 2), pb.colour.get(x, y, z, 3), off);
+                                                    }
+                                                }
+                                            }
+                                            if let Some(blob) = make_probe_blob(Some(&out.lamp_probe)) { probes_for_transcribed = Some(blob); }
+                                        }
                                         let dil: u32 = f("--local-lights-dilate").map(|v| v.parse().unwrap()).unwrap_or(0);
                                         if su.gl.charts.len() != rects.len() { eprintln!("local-lights: WARNING the frame's layout has {} charts, the writer {} — the frame bytes follow the writer's order only when they agree", su.gl.charts.len(), rects.len()); }
                                         // --local-lights-tail simple|chain[:S] (localdrive::frame1_images_by)
@@ -6897,7 +6926,7 @@ fn run(mut a: Vec<String>) {
             let other = f("--against").expect("--against EDITOR.Map.Gbx");
             let ours = lightmap::mapio::load(&a[1]).unwrap_or_else(|e| panic!("{}: {e}", a[1]));
             let theirs = lightmap::mapio::load(&other).unwrap_or_else(|e| panic!("{other}: {e}"));
-            let o = lightmap::probecmp::Options { levels: a.iter().any(|x| x == "--levels"), worst: f("--worst").map(|v| v.parse().expect("--worst N")).unwrap_or(0), tsv: f("--tsv") };
+            let o = lightmap::probecmp::Options { levels: a.iter().any(|x| x == "--levels"), worst: f("--worst").map(|v| v.parse().expect("--worst N")).unwrap_or(0), tsv: f("--tsv"), dump: f("--dump") };
             lightmap::probecmp::run(&ours, &theirs, &o).unwrap_or_else(|e| { eprintln!("probecmp: {e}"); std::process::exit(1) });
         }
         "classcmp" => {
@@ -7292,9 +7321,9 @@ fn run(mut a: Vec<String>) {
                     let n = (w * h) as usize;
                     let l = lightmap::localdrive::Lists::from_bytes(w, h, &b[..n * 16], &b[n * 16..n * 24], &b[n * 24..n * 32]);
                     eprintln!("local-lights: lists loaded from {p}");
-                    lightmap::localdrive::FrameOut { lists: l, probes: lightmap::localdrive::ProbeState::new(su.probe_n), kept: None, results: Vec::new(), direct: lightmap::passdiff::Buf::new(w, h, 4) }
+                    lightmap::localdrive::FrameOut { lists: l, probes: lightmap::localdrive::ProbeState::new(su.probe_n), kept: None, results: Vec::new(), direct: lightmap::passdiff::Buf::new(w, h, 4), lamp_probe: lightmap::probepass::Volume3::new(su.probe_n[0], su.probe_n[1], su.probe_n[2], 4) }
                 }
-                None => { lightmap::localdrive::set_caster_source(Some(std::sync::Arc::new(lightmap::localdrive::caster_source_of(&su)))); lightmap::localdrive::run_frame(&su.gl, &sc_t, &lamps, &su.chunks, su.probe_n, (w, h), None, lists, &mut log) }
+                None => { lightmap::localdrive::set_caster_source(Some(std::sync::Arc::new(lightmap::localdrive::caster_source_of(&su)))); lightmap::localdrive::run_frame(&su.gl, &sc_t, &lamps, &su.chunks, su.probe_n, (w, h), None, lists, None, &mut log) }
             };
             if let Some(p) = f("--save-lists") {
                 let mut b = out.lists.id_bytes();
@@ -10185,6 +10214,14 @@ variants: ");
                 println!("  vertical: median {:.3} p95 {:.3}; brightest 5 % mean rgb ({:.3}, {:.3}, {:.3}) = hue ({:.2}, {:.2}, {:.2})", vert[vert.len() / 2].0, vert[vert.len() * 95 / 100].0, c[0] / n, c[1] / n, c[2] / n, 1.0, c[1] / c[0].max(1e-6), c[2] / c[0].max(1e-6));
             }
             for (b, (s, rgb, n)) in bins.iter().enumerate() { if *n > 0 { let nn = *n as f64; println!("  az {:>3}–{:<3} n {:>7}  lum {:.4}  rgb ({:.3}, {:.3}, {:.3})", b * 30, (b + 1) * 30, n, s / nn, rgb[0] / nn, rgb[1] / nn, rgb[2] / nn); } }
+        }
+        "probe-alpha" => {
+            // lmtool probe-alpha DUMPDIR OURS.Map.Gbx [--editor EDITOR.Map.Gbx] [--level L] [--tsv OUT]: the bake's dumped colour fold
+            //   (LMTOOL_PROBE_DUMP_DIR/probe-colour.f32) read per probe — world position, α (the validity accumulator), the colour —
+            //   with the editor's validity mask joined by world position (E4's read of the buried rows: how many lit directions a
+            //   probe has on each side of the 0.5 threshold, per height level)
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            if let Err(e) = lightmap::probealpha::run(std::path::Path::new(&a[1]), &a[2], f("--editor").as_deref(), f("--level").map(|v| v.parse::<i32>().expect("--level")), f("--tsv").as_deref()) { eprintln!("probe-alpha: {e}"); std::process::exit(1); }
         }
         "probe-chain-check" => {
             // lmtool probe-chain-check DIR PASSCAP_ROOT MAP [--frame 7537]: the bake's dumped probe accumulators (--chain-final-dir) vs the

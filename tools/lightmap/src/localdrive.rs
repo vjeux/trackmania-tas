@@ -298,7 +298,17 @@ impl Lamp {
 
     /// PS 7351's cbuffer for one probe chunk: ProbeStWorld = (cell, the world of atlas index 0) per axis.
     pub fn probe_cb(&self, st: [[f32; 2]; 3]) -> ProbeLightCb {
-        let cb = self.light_cb();
+        Self::probe_cb_from(&self.light_cb(), st)
+    }
+
+    /// PS 9605's cbuffer (the lamp COLOUR probe pass, sw1 f3884 eid 1109 — E4, 2026-09-28) for the emitter sample at `pos`: the
+    /// COLOUR pass's light — InvRadius = 1/R_FILE (0.025), AttHN2 of R_file, the R_file flat cube (Scale_MaxAbs 85/4096 = the 170
+    /// face), the cone; `LightRgb` = the colour pass's / (2π · N) (`probe_rgb`) is applied by the caller.
+    pub fn probe_colour_cb_at(&self, pos: [f32; 3], st: [[f32; 2]; 3]) -> ProbeLightCb {
+        Self::probe_cb_from(&self.colour_cb_at(pos, 1), st)
+    }
+
+    fn probe_cb_from(cb: &LightCb, st: [[f32; 2]; 3]) -> ProbeLightCb {
         ProbeLightCb {
             st,
             faces: cb.faces,
@@ -318,6 +328,13 @@ impl Lamp {
             is_att_hn2: true,
             is_att_1minus_d2: false,
         }
+    }
+
+    /// The lamp's colour per emitter-sample probe draw (PS 9605's LightRgb): the colour pass's LightRgb / (2π · N_samples) — the
+    /// N draws sum to LightRgb / 2π × the samples' mean.
+    pub fn probe_rgb(&self) -> [f32; 3] {
+        let k = crate::locallight::LAMP_PROBE_RGB_SCALE / self.samples.len().max(1) as f32;
+        [self.rgb[0] * k, self.rgb[1] * k, self.rgb[2] * k]
     }
 }
 
@@ -918,7 +935,11 @@ impl ProbeState {
 }
 
 /// The chunk range of a lamp: the atlas indices whose world cell can hold a lit sample — the lamp's box ± (R + a cell) in the
-/// chunk's ProbeStWorld; None when the lamp misses the chunk.
+/// chunk's ProbeStWorld, clamped to the record's cells [amin, amax) — None when the lamp misses the chunk. (`amax` is exclusive, the
+/// draw's scissor (min, max − min) and slices min.z..max.z: the inclusive loops below stop at amax − 1. Until 2026-09-28 the clamp
+/// was `amax` itself, so every lamp also wrote the FIRST cell of the neighbouring slot — harmless under PS 7351's max blend when
+/// that cell duplicated the same world probe, a doubling under PS 9605's One/One: stpad's brightest lamp probe read 0.54 in block
+/// 2's margin column against 0.26 in block 1 — E4.)
 pub fn probe_range(rec: &crate::probechunk::ChunkRecord, lamp: &Lamp) -> Option<([i32; 3], [i32; 3])> {
     let mut lo = [0i32; 3];
     let mut hi = [0i32; 3];
@@ -927,7 +948,7 @@ pub fn probe_range(rec: &crate::probechunk::ChunkRecord, lamp: &Lamp) -> Option<
         let a = ((lamp.light.pos[k] - r - rec.origin[k]) / rec.cell[k]).floor() as i32;
         let b = ((lamp.light.pos[k] + r - rec.origin[k]) / rec.cell[k]).ceil() as i32;
         lo[k] = a.max(rec.amin[k]);
-        hi[k] = b.min(rec.amax[k]);
+        hi[k] = b.min(rec.amax[k] - 1);
         if lo[k] > hi[k] {
             return None;
         }
@@ -977,6 +998,48 @@ pub fn probe_values(chunks: &[crate::probechunk::ChunkRecord], lamp: &Lamp, shad
     }
     st.touched.clear();
     out
+}
+
+/// THE LAMP COLOUR PROBE PASS of one emitter sample (PS 9605 `locallight::ps_9605`, the colour pass's probe draw — E4, 2026-09-28):
+/// at every probe of the lamp's range in every chunk, acc/27 × the lamp's per-sample probe LightRgb (the colour pass's / (2π · N))
+/// — the non-zero (probe, rgb) triples; the frame blends them One/One (f16) into its colour volume in lamp and sample order
+/// (`probe_colour_apply`). `pos` = the sample's position, `shadow` = its R_FILE flat cube (the colour pass's), `offsets` =
+/// TMapProbeSafetyOffset in cells (None = 0).
+pub fn probe_colour_values(chunks: &[crate::probechunk::ChunkRecord], lamp: &Lamp, pos: [f32; 3], shadow: &FlatCubeMap, n: [u32; 3], offsets: Option<&crate::probepass::Volume3>) -> Vec<(u32, [f32; 3])> {
+    let sample = |uv: [f32; 2], r: f32| shadow_sample(shadow, uv, r);
+    let rgb = lamp.probe_rgb();
+    let mut out = Vec::new();
+    for rec in chunks {
+        let Some((lo, hi)) = probe_range(rec, lamp) else { continue };
+        let cb = lamp.probe_colour_cb_at(pos, [[rec.cell[0], rec.origin[0]], [rec.cell[1], rec.origin[1]], [rec.cell[2], rec.origin[2]]]);
+        for z in lo[2]..=hi[2] {
+            for y in lo[1]..=hi[1] {
+                for x in lo[0]..=hi[0] {
+                    if x < 0 || y < 0 || z < 0 || x as u32 >= n[0] || y as u32 >= n[1] || z as u32 >= n[2] {
+                        continue;
+                    }
+                    let (x, y, z) = (x as u32, y as u32, z as u32);
+                    let off = match offsets { Some(o) if x < o.w && y < o.h && z < o.d => [o.get(x, y, z, 0), o.get(x, y, z, 1), o.get(x, y, z, 2)], _ => [0.0; 3] };
+                    let v = crate::locallight::ps_9605(&cb, x, y, z, off, &sample);
+                    if v > 0.0 {
+                        out.push((((z * n[1] + y) * n[0] + x), [v * rgb[0], v * rgb[1], v * rgb[2]]));
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The lamp's probe colours blended One/One (RGBA16F: the f16 source, the RTNE sum) into the frame's volume — `vol` is
+/// `n[0] × n[1] × n[2]` × 4 channels (the α channel stays 0: PS 9605 writes o0.w = 0).
+pub fn probe_colour_apply(vol: &mut crate::probepass::Volume3, vals: &[(u32, [f32; 3])]) {
+    for &(i, rgb) in vals {
+        let b = i as usize * 4;
+        for c in 0..3 {
+            vol.data[b + c] = crate::probepass::blend_add_f16(vol.data[b + c], rgb[c]);
+        }
+    }
 }
 
 /// `probe_pass`'s second half: the lamp's values into the frame's volume (cleared of the previous lamp's, as the pass leaves it)
@@ -1121,6 +1184,9 @@ pub struct FrameOut {
     /// SS-normalises it in place (A_0 = (L/f, 1) where f > 0.01), snapshots D_0 = gutter(A_0) (the frame-1 image) and adds the sun draws
     /// (S_raw, f) — setupmap::build_with_lamps. `w × h` of the target; the atlas is the first 2048 columns.
     pub direct: crate::passdiff::Buf,
+    /// THE LAMP COLOUR PROBE VOLUME (PS 9605, E4 2026-09-28): Σ over the lamps, One/One f16, of acc/27 × LightRgb/8π at every
+    /// probe of the frame's grid (`probe_n`, 4 channels, α 0) — the download's fourth probe image and its scale word.
+    pub lamp_probe: crate::probepass::Volume3,
 }
 
 /// One lamp's independent work (perf 8): the cull, the casters, the flat cube, the 9-jitter draw on a worker's own target,
@@ -1131,6 +1197,8 @@ struct LampWork {
     frags: u64,
     weights: Vec<(u32, u8, u8)>,
     probe_vals: Vec<(u32, u8)>,
+    /// PS 9605's (probe, rgb) at the lamp's probes (the colour probe pass).
+    probe_colour: Vec<(u32, [f32; 3])>,
     /// (texel, irradiance × rgb, coverage) at the touched texels — the lamp's share of A_0.
     direct: Vec<(u32, [f32; 4])>,
     /// The worker's seconds on this lamp: cull + casters, the flat cube, the probes, the draw, the weights.
@@ -1144,8 +1212,9 @@ fn lamp_workers(n_lamps: usize) -> usize {
     threads.min(cap).min(n_lamps).max(1)
 }
 
-pub fn run_frame(gl: &crate::layout::GameLayout, sc: &LmScene, lamps: &[Lamp], chunks: &[crate::probechunk::ChunkRecord], probe_n: [u32; 3], target: (u32, u32), keep_accum_for: Option<u16>, mut lists: Lists, log: &mut dyn FnMut(&str)) -> FrameOut {
+pub fn run_frame(gl: &crate::layout::GameLayout, sc: &LmScene, lamps: &[Lamp], chunks: &[crate::probechunk::ChunkRecord], probe_n: [u32; 3], target: (u32, u32), keep_accum_for: Option<u16>, mut lists: Lists, probe_offsets: Option<&crate::probepass::Volume3>, log: &mut dyn FnMut(&str)) -> FrameOut {
     let (w, h) = target;
+    let mut lamp_probe = crate::probepass::Volume3::new(probe_n[0], probe_n[1], probe_n[2], 4);
     // THE LAMPS IN PARALLEL (perf 8): a lamp's cull, casters, flat-cube shadow and 9-jitter draw depend on nothing but the
     // lamp, so K workers each draw lamps on their own accumulation target and hand the touched rectangle over; the frame's
     // per-texel lists (CS 7348) and the probe volume / lists (PS 7351 / CS 7357) take the lamps IN ORDER on this thread, as
@@ -1210,10 +1279,14 @@ pub fn run_frame(gl: &crate::layout::GameLayout, sc: &LmScene, lamps: &[Lamp], c
                         let mut frags = draw_lamp(sc, &drawn, &cb, &shadow, &mut acc);
                         let n_s = lamp.samples.len().max(1);
                         let face_file = lamp.face_file();
+                        // THE COLOUR PROBE PASS (PS 9605, sw1 f3884 eids 1109/1135): one draw per emitter sample and block with the sample's
+                        // COLOUR-pass flat cube (R_file, the 170 face) — the lamp's probe colours for the frame's volume, in sample order
+                        let mut probe_colour: Vec<(u32, [f32; 3])> = Vec::new();
                         for &sp in lamp.samples.iter() {
                             let cshadow = if face_file == lamp.face_size && lamp.r_file() == lamp.r_eff && sp == lamp.light.pos { None } else { Some(crate::locallight::render_flat_cube_masked(sp, lamp.r_file(), face_file, &tris, *CULL_BACK)) };
                             let ccb = lamp.colour_cb_at(sp, n_s);
                             frags += draw_lamp(sc, &drawn, &ccb, cshadow.as_ref().unwrap_or(&shadow), &mut cacc);
+                            probe_colour.extend(probe_colour_values(chunks, lamp, sp, cshadow.as_ref().unwrap_or(&shadow), probe_n, probe_offsets));
                         }
                         let tris_len = tris.len();
                         let t4 = t.elapsed().as_secs_f32();
@@ -1224,7 +1297,7 @@ pub fn run_frame(gl: &crate::layout::GameLayout, sc: &LmScene, lamps: &[Lamp], c
                         acc.clear();
                         cacc.clear();
                         let t5 = t.elapsed().as_secs_f32();
-                        *slots[li].lock().unwrap() = Some(LampWork { drawn, n_casters: tris_len, frags, weights, probe_vals, direct, secs: [t1, t2 - t1, t3 - t2, t4 - t3, t5 - t4] });
+                        *slots[li].lock().unwrap() = Some(LampWork { drawn, n_casters: tris_len, frags, weights, probe_vals, probe_colour, direct, secs: [t1, t2 - t1, t3 - t2, t4 - t3, t5 - t4] });
                         done.fetch_add(1, std::sync::atomic::Ordering::Release);
                     }
                 });
@@ -1247,6 +1320,7 @@ pub fn run_frame(gl: &crate::layout::GameLayout, sc: &LmScene, lamps: &[Lamp], c
                 let lamp = &lamps[li];
                 let tp = std::time::Instant::now();
                 let probe_updates = probe_apply(&mut probes, lamp.id, &work.probe_vals);
+                probe_colour_apply(&mut lamp_probe, &work.probe_colour);
                 t_probe += tp.elapsed().as_secs_f64();
                 let tl = std::time::Instant::now();
                 // the lists, in lamp order: the same insertion `resolve_lists` made, at the texels whose weight is not 0
@@ -1272,7 +1346,7 @@ pub fn run_frame(gl: &crate::layout::GameLayout, sc: &LmScene, lamps: &[Lamp], c
                 results.push(LampResult { drawn: work.drawn, frags: work.frags, list_updates, probe_updates });
             }
         });
-        return FrameOut { lists, probes, kept: None, results, direct };
+        return FrameOut { lists, probes, kept: None, results, direct, lamp_probe };
     }
     let mut acc = Accum::new(w, h);
     let mut cacc = Accum::new(w, h);
@@ -1296,6 +1370,9 @@ pub fn run_frame(gl: &crate::layout::GameLayout, sc: &LmScene, lamps: &[Lamp], c
             let cshadow = if face_file == lamp.face_size && lamp.r_file() == lamp.r_eff && sp == lamp.light.pos { None } else { Some(crate::locallight::render_flat_cube_masked(sp, lamp.r_file(), face_file, &tris, *CULL_BACK)) };
             let ccb = lamp.colour_cb_at(sp, n_s);
             frags += draw_lamp(sc, &drawn, &ccb, cshadow.as_ref().unwrap_or(&shadow), &mut cacc);
+            // the colour probe pass of this sample (PS 9605), see the parallel worker
+            let vals = probe_colour_values(chunks, lamp, sp, cshadow.as_ref().unwrap_or(&shadow), probe_n, probe_offsets);
+            probe_colour_apply(&mut lamp_probe, &vals);
         }
         let list_updates = resolve_lists(&acc, &mut lists, lamp.id);
         for i in 0..(w * h) as usize {
@@ -1322,7 +1399,7 @@ pub fn run_frame(gl: &crate::layout::GameLayout, sc: &LmScene, lamps: &[Lamp], c
         }
         acc.clear_touched();
     }
-    FrameOut { lists, probes, kept, results, direct }
+    FrameOut { lists, probes, kept, results, direct, lamp_probe }
 }
 
 #[cfg(test)]

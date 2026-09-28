@@ -23,7 +23,9 @@
 //!    chunks of 30 × 14 × 30 probes (atlas tiles of 32 × 16 × 32 = a one-probe border); per box the index-space
 //!    corners − (1.01, 0.01, 1.01) / + (1.01, 1.01, 1.01), ceil'd, clamped to [0, n − 1]; every chunk they touch
 //!    tightens its imin/imax to the box, clamped to the chunk's own range; non-empty chunks get atlas slots in
-//!    z-major, then y, then x order over columns = max(1, floor(√count)) and rows = ceil(count/columns) (a slot =
+//!    z-major, then y, then x order over columns = max(1, ceil(√count / √2)) (RE 16: sqrtss / sqrtss(2) → ceilf →
+//!    cvttss2si, 1 when ≤ 0 — RE 6's floor(√count) agreed on 1, 8 and 13 blocks and failed g23's 114) and rows =
+//!    ceil(count/columns) (a slot =
 //!    column·32, row·16); the record (0x54 bytes): +0 the slot, +0xc = slot + (imin − chunk origin), +0x18 = that +
 //!    (imax − imin) + 3, +0x24 the cell, +0x30 the world origin of atlas index 0 = (imin − 1 − (+0xc))·cell + origin,
 //!    +0x3c/+0x48 the inverse; no box at all → the centre chunk. The atlas (columns·32, rows·16, 32) must fit:
@@ -300,7 +302,16 @@ pub fn chunk_once(g: &GridDef, boxes: &[CBox]) -> Chunking {
             non_empty = 1;
         }
     }
-    let columns = ((non_empty as f32).sqrt() as i32).max(1) as u32;
+    // THE ATLAS COLUMN COUNT (RE 16, 2026-09-28 16:20Z; asm 0x14021d238–0x14021d2a6): columns = max(1, ceil(√n / √2)) —
+    // sqrtss(n) / sqrtss(2.0) → ceilf → cvttss2si → cmovle 1 (r13d preloaded with 1 at 0x14021d135); rows = ceil(n / columns).
+    // RE 6 had read floor(√n): right for 1, 8, 13 blocks (pwc-day, tiny16, stpad) and wrong for g23's 114 (10 columns → 320 >
+    // 256 → a second cell doubling: 64 m / 24 blocks where the editor's trailer reads 32 m / 114 blocks / grid [256, 240, 32]) and
+    // for np-tk3's 3 (1 × 3 vs the editor's 2 × 2) and giant20x2's 44 (6 vs 5). Falsifier on every editor trailer: grid.x =
+    // 32 · ceil(√(blocks / 2)).
+    let columns = {
+        let c = ((non_empty as f32).sqrt() / 2.0f32.sqrt()).ceil() as i32;
+        if c <= 0 { 1 } else { c as u32 }
+    };
     let rows = (non_empty + columns - 1) / columns;
     let mut records = Vec::with_capacity(non_empty as usize);
     let (mut col, mut row) = (0u32, 0u32);
@@ -529,24 +540,43 @@ mod tests {
     #[test]
     fn many_chunks_lay_out_in_a_near_square_atlas_and_a_huge_grid_doubles_its_cell() {
         let g = grid_def([64, 64, 64], [32.0, 8.0, 32.0], [0.0, -38.0, 0.0], 0.0, true);
-        // one box over the whole map at ground level: 5 × 1 × 5 = 25 chunks → 5 columns × 5 rows
+        // one box over the whole map at ground level: 5 × 1 × 5 = 25 chunks → ceil(√25/√2) = ceil(3.54) = 4 columns × 7 rows
         let big = CBox::from_min_max([0.0, 0.0, 0.0], [2048.0, 10.0, 2048.0]);
         let c = probe_chunks(&g, &[big], 2048);
         assert_eq!(c.records.len(), 25);
-        assert_eq!((c.columns, c.rows, c.atlas), (5, 5, [160, 80, 32]));
+        assert_eq!((c.columns, c.rows, c.atlas), (4, 7, [128, 112, 32]));
         // the chunks are numbered z-major, then y, then x; the slots row by row
         assert_eq!(c.records[0].chunk, [0, 0, 0]);
         assert_eq!(c.records[1].chunk, [1, 0, 0]);
-        assert_eq!(c.records[5].slot, [0, 16, 0]);
-        // a 192³ map (384 × 32 × 384 probes of 16 m): a full-height box touches 13 × 3 × 13 = 507 chunks → 22 columns → an
-        // atlas 704 wide > 256 → the cell doubles to 32 m (192 × 16 × 192 → 7 × 2 × 7 = 98 chunks, 9 columns, 288 > 256), then
-        // to 64 m (96 × 8 × 96 → 4 × 1 × 4 = 16 chunks, a 128 × 64 atlas)
+        assert_eq!(c.records[4].slot, [0, 16, 0]);
+        // a 192³ map (384 × 32 × 384 probes of 16 m): a full-height box touches 13 × 3 × 13 = 507 chunks → ceil(√507/√2) = 16
+        // columns → an atlas 512 wide > 256 → the cell doubles to 32 m (192 × 16 × 192 → 7 × 2 × 7 = 98 chunks); 98 = 2 · 49 sits on
+        // the rule's f32 edge: sqrtss(98)/sqrtss(2) = 7.0000005 → ceil 8 columns × 13 rows = 256 × 208 ≤ 256 — accepted at 32 m
+        // (floor(√98) = 9 columns → 288 > 256 would have doubled once more)
         let g192 = grid_def([192, 64, 192], [32.0, 8.0, 32.0], [0.0, -38.0, 0.0], 0.0, true);
         let tall = CBox::from_min_max([0.0, -30.0, 0.0], [6144.0, 480.0, 6144.0]);
         let c = probe_chunks(&g192, &[tall], 2048);
-        assert_eq!(c.grid.cell, [64.0, 64.0, 64.0]);
-        assert_eq!(c.grid.n, [96, 8, 96]);
-        assert_eq!((c.records.len(), c.atlas), (16, [128, 64, 32]));
+        assert_eq!(c.grid.cell, [32.0, 32.0, 32.0]);
+        assert_eq!(c.grid.n, [192, 16, 192]);
+        assert_eq!(((98f32).sqrt() / 2f32.sqrt()).ceil(), 8.0, "the f32 edge of a 2·k² count");
+        assert_eq!((c.records.len(), c.atlas), (98, [256, 208, 32]));
+    }
+
+    /// RE 16's column rule against the editor trailers' (blocks → grid) pairs: g23 114 → [256, 240], giant20x2 44 → [160, 144],
+    /// stpad 13 → [96, 80], tiny16 8 → [64, 64], np-tk3 3 → [64, 32], pwc-day 1 → [32, 16]. floor(√n) gives 320 / 192 / 96 / 64 /
+    /// 32 / 32 — right only where the two agree.
+    #[test]
+    fn the_atlas_columns_are_ceil_of_root_n_over_root_2_on_every_editor_trailer() {
+        let cols = |n: u32| -> u32 { let c = ((n as f32).sqrt() / 2.0f32.sqrt()).ceil() as i32; if c <= 0 { 1 } else { c as u32 } };
+        let grid = |n: u32| -> [u32; 2] { let c = cols(n); [32 * c, 16 * ((n + c - 1) / c)] };
+        assert_eq!(grid(114), [256, 240], "g23 (WhiteShore giant)");
+        assert_eq!(grid(44), [160, 144], "giant20x2");
+        assert_eq!(grid(13), [96, 80], "stpad");
+        assert_eq!(grid(8), [64, 64], "tiny16");
+        assert_eq!(grid(3), [64, 32], "np-tk3");
+        assert_eq!(grid(1), [32, 16], "pwc-day");
+        // and the chunking's own atlas for 114 non-empty chunks passes FUN_14021d730's z ≤ 32 test (x, y ≤ 256) at the first try
+        assert!(grid(114)[0] <= 256 && grid(114)[1] <= 256);
     }
 
     #[test]

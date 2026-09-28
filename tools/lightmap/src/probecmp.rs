@@ -103,6 +103,9 @@ pub struct Options {
     pub levels: bool,
     pub worst: usize,
     pub tsv: Option<String>,
+    /// `--dump FILE`: every common probe as one row — world x y z, the validity of both sides, the four images' bytes of
+    /// both sides (E4's per-probe read of the buried rows).
+    pub dump: Option<String>,
 }
 
 pub const IMAGE_NAMES: [&str; 4] = ["colour", "occlusion", "pale-colour", "point-lights"];
@@ -232,10 +235,15 @@ pub fn run(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLightmap,
     let (mut hist_ed, mut hist_ours) = ([0usize; 6], [0usize; 6]);
     let bin = |v: u8| -> usize { match v { 0 => 0, 1 => 1, 2 => 2, 3 => 3, 4..=15 => 4, _ => 5 } };
     let mut worst: Vec<(u32, (i32, i32, i32), [u8; 3], [u8; 3], bool)> = Vec::new();
+    let mut dump = o.dump.as_ref().map(|_| String::from("x\ty\tz\tvalid_ours\tvalid_editor\tours_c0\tours_c1\tours_c2\tours_c3\teditor_c0\teditor_c1\teditor_c2\teditor_c3\n"));
     for (key, (ra, valid_a, level)) in &a.probes {
         let Some((rb, valid_b, _)) = b.probes.get(key) else { only_ours += 1; continue };
         common += 1;
         let both_valid = *valid_a && *valid_b;
+        if let Some(d) = dump.as_mut() {
+            let px = |v: [u8; 3]| format!("{},{},{}", v[0], v[1], v[2]);
+            d.push_str(&format!("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", key.0, key.1, key.2, *valid_a as u8, *valid_b as u8, px(ra[0]), px(ra[1]), px(ra[2]), px(ra[3]), px(rb[0]), px(rb[1]), px(rb[2]), px(rb[3])));
+        }
         for k in 0..4 {
             acc[k][if both_valid { 0 } else { 1 }].add(ra[k], rb[k]);
             acc[k][2].add(ra[k], rb[k]);
@@ -282,5 +290,6 @@ pub fn run(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLightmap,
     }
     tsv.push_str(&format!("#probes\t{common}\t{only_ours}\t{only_theirs}\t{}\n", if layout.is_empty() { "layout-identical" } else { "layout-differs" }));
     if let Some(p) = &o.tsv { std::fs::write(p, tsv).map_err(|e| format!("{p}: {e}"))?; }
+    if let (Some(p), Some(d)) = (&o.dump, dump) { std::fs::write(p, d).map_err(|e| format!("{p}: {e}"))?; }
     Ok(())
 }

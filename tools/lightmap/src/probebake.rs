@@ -249,18 +249,21 @@ impl ProbeBake {
 
     /// The end of the bake: the CPU download over the blocks' ranges → the four atlases over `tiles` (the
     /// trailer's per-level tile positions, `tiles[b][level − min.y]`) → the WEBPs. Returns the blob, the
-    /// `frame_info` end offsets of the first three images, the scales (max0, max2, 1e-5) and the validity map,
-    /// or None without libwebp.
-    pub fn finish(&self, tiles: &[Vec<Option<(u32, u32)>>], atlas: (u32, u32)) -> Option<ProbeResult> {
+    /// `frame_info` end offsets of the first three images, the scales (max0, max2, the lamp image's max or 1e-5) and the
+    /// validity map, or None without libwebp. `lamp` = the colour probe pass's volume (`localdrive::FrameOut::lamp_probe`,
+    /// the frame's grid = this volume's) when frame 1 ran with lamps — the fourth image and its scale word.
+    pub fn finish(&self, tiles: &[Vec<Option<(u32, u32)>>], atlas: (u32, u32), lamp: Option<&Volume3>) -> Option<ProbeResult> {
         // one download per block range (the scales are over ALL probes of the volume: the download takes the
         // whole volume's maxima, the block ranges only select the probes to write)
         let mut imgs: [Vec<u8>; 4] = { let n = (atlas.0 * atlas.1 * 3) as usize; [vec![128u8; n], vec![128u8; n], vec![127u8; n], vec![128u8; n]] };
         let mut valid = vec![true; (atlas.0 * atlas.1) as usize];
         let mut scales = [0f32; 3];
         let (mut n_probes, mut n_valid) = (0usize, 0usize);
+        let lamp = lamp.filter(|l| (l.w, l.h, l.d) == (self.colour.w, self.colour.h, self.colour.d));
         for (bi, b) in self.blocks.iter().enumerate() {
             let dl = crate::probepass::download_probes(&self.colour, &self.updown, Some(&self.skyvis), (b.min, b.max));
-            scales = [dl.max0, dl.max2, 1e-5];
+            let lamp_bytes = lamp.map(|l| crate::probepass::download_lamp_probes(l, &self.colour, (b.min, b.max)));
+            scales = [dl.max0, dl.max2, lamp_bytes.as_ref().map(|l| l.0).unwrap_or(1e-5)];
             let tl = tiles.get(bi).map(|v| v.as_slice()).unwrap_or(&[]);
             for ((x, y, z), _rgb, ok, _sky, _sq) in &dl.probes {
                 n_probes += 1;
@@ -270,14 +273,12 @@ impl ProbeBake {
                     if px < atlas.0 && py < atlas.1 && !*ok { valid[(py * atlas.0 + px) as usize] = false; }
                 }
             }
-            let part = crate::probepass::probe_atlases(&dl, b.min, tl, atlas.0, atlas.1);
-            // merge: the block's tiles are disjoint from the others'
-            for k in 0..4 {
-                for (o, v) in imgs[k].iter_mut().zip(part[k].iter()) {
-                    let fill = if k == 2 { 127 } else { 128 };
-                    if *v != fill {
-                        *o = *v;
-                    }
+            let part = crate::probepass::probe_atlases_with_lamp(&dl, lamp_bytes.as_ref().map(|l| l.1.as_slice()), b.min, tl, atlas.0, atlas.1);
+            // merge: the block's tiles are disjoint from the others' — copy exactly the pixels its tiles cover (an invalid probe's
+            // written zeros included; the old value test `v != fill` could not carry a written 128 / 127 and skipped the zeros)
+            for pi in crate::probepass::probe_tile_pixels(b.min, b.max, tl, atlas.0, atlas.1) {
+                for k in 0..4 {
+                    imgs[k][pi * 3..pi * 3 + 3].copy_from_slice(&part[k][pi * 3..pi * 3 + 3]);
                 }
             }
         }
@@ -523,7 +524,7 @@ pub fn chain_check(dir: &std::path::Path, root: &std::path::Path, map: &str, fra
     let src = ProbeLayoutSrc::from_volume(v.clone());
     let mut pb = ProbeBake::new(src.dims, src.blocks.clone(), None);
     pb.colour = colour; pb.updown = updown; pb.skyvis = skyvis;
-    let r = pb.finish(&src.tiles, src.atlas).ok_or("no libwebp")?;
+    let r = pb.finish(&src.tiles, src.atlas, None).ok_or("no libwebp")?;
     println!("download: {} of {} probes valid; scales max0 {} (file {}) max2 {} (file {})", r.n_valid, r.n_probes, r.scales[0], v.frame_info[0].0, r.scales[1], v.frame_info[1].0);
     let parts = crate::volume::split_probe_blob(&dd.frames[0].images[2], &v.frame_info);
     let ours = crate::volume::split_probe_blob(&r.blob, &[(r.scales[0], r.ends[0]), (r.scales[1], r.ends[1]), (r.scales[2], r.ends[2])]);
@@ -609,11 +610,14 @@ pub fn layout_from_chunking(c: &crate::probechunk::Chunking, template: &crate::v
 
 impl ProbeLayoutSrc {
     /// The levels that carry content per block (`stored[b][y − min.y]`): the game stores a level iff any voxel of the
-    /// block's (x, z) range at that y is non-zero in the baked colour volume (RE 7's FUN_1402814f0 (a)).
+    /// block's (x, z) range at that y is non-zero in r/g/b (RE 7's FUN_1402814f0 (a)) — of the DOWNLOADED image, where an
+    /// invalid probe (α < 0.5) is written 0 and a valid one at least (1, 1, 1) (FUN_14022d8f0): so iff any probe of the level
+    /// is VALID. The port tested the raw colour fold (non-zero wherever any direction saw anything): stpad stored 77 levels
+    /// where the editor stores 71 — its six extra levels are the under-tile rows whose probes are all invalid (E4, 2026-09-28).
     pub fn stored_levels(&self, colour: &crate::probepass::Volume3) -> Vec<Vec<bool>> {
         self.blocks.iter().map(|b| (b.min[1]..b.max[1]).map(|y| {
             let mut any = false;
-            for z in b.min[2]..b.max[2].min(colour.d) { for x in b.min[0]..b.max[0].min(colour.w) { if y < colour.h && (0..3).any(|c| colour.get(x, y, z, c) != 0.0) { any = true; } } }
+            for z in b.min[2]..b.max[2].min(colour.d) { for x in b.min[0]..b.max[0].min(colour.w) { if y < colour.h && colour.get(x, y, z, 3) >= 0.5 { any = true; } } }
             any
         }).collect()).collect()
     }

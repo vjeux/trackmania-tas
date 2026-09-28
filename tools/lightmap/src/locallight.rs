@@ -542,6 +542,120 @@ mod probe_tests {
     }
 }
 
+/// **PS 9605** `ProbeGrid_LightAcc` — THE LAMP COLOUR AT A PROBE (the colour pass of frame 1, stpad capture sw1 f3884 eids 1109 /
+/// 1135: VS 1111 `ret` + GS 1113 slices, blend One/One into the 96 × 80 × 32 RGBA16F volume 9608, scissor = the block's cells,
+/// one draw per emitter sample and block; transcribed by E4, 2026-09-28 from `passcap/stpad-colourpass/sw1-exp-f3880-3884.tgz`).
+/// The cbuffer is `ProbeLightCb`'s (ProbeStWorld, the flat-cube faces, the light, the cone, AttHN2) with `LightRgb` besides — at
+/// eid 1109 LightRgb = (0.0384990, 0.0370656, 0.0332863) = the colour pass's (0.9675846, 0.9315606, 0.8365771) / 8π to seven digits
+/// = / (2π · N) with the pass's N = 4 emitter samples (`LAMP_PROBE_RGB_SCALE`); its output is the volume the download reads as
+/// the fourth probe image (`frame_info[2]` = its scale word; 1e-5 when no lamp pass ran).
+///
+/// ```text
+///   p0  = (floor(pixel.x), floor(pixel.y), slice) + TMapProbeSafetyOffset[pixel, slice]      (cells; l.0–6)
+///   acc = 0
+///   for δ in {−1/3, 0, +1/3}³ (x fastest, then y, then z):                                   (27 samples; l.7–2004)
+///       p     = p0 + δ;  world = p · ProbeStWorld.{X,Y,Z}.x + .y                              (l.8–9)
+///       L     = IsLightPos ? LightPos − world : −LightDir           (kept as (Lx, Lz, Ly) in .xyw)  (l.10–11)
+///       d²    = L·L;  d = sqrt(d²);  l̂ = L · rsq(d²)                                            (l.12–15)
+///       s     = IsShadowCube ? sample_c_lz(TMapShadow, flat-cube uv, depth·0.999 + ZTrans over |dominant|)   (l.16–56 = PS 7343's 27–66)
+///                            : sample_c_lz(TMapShadow, (world, 1)·WorldPw01Shadow projected)
+///       hn2   = max(0, 1 / (AttHN2.x + AttHN2.y·d + AttHN2.z·d²) + AttHN2.w)                  (l.67–71)
+///       att   = IsAtt_HN2 ? hn2 : IsAtt_1minusD2 ? max(0, 1 − d²·InvRadius2) : 1                (l.72–75)
+///       spot  = att · saturate((l̂ · SpotDirNeg − CosOuter) · InvCosRange)   — NO smoothstep, NO SpotFalloffBackOffset (l.76–79)
+///       att   = IsLightSpot ? spot : att                                                        (l.80)
+///       acc  += att · s                                                                          (l.155, 229, … 2004)
+///   o0.xyz = acc · (1/27) · LightRgb;  o0.w = 0                                                  (l.2005–2007)
+/// ```
+///
+/// Returns acc/27 — the caller multiplies by the lamp's `LightRgb · LAMP_PROBE_RGB_SCALE`. `offset` = the probe's safety offset
+/// in cells (0 where none); `shadow(uv, ref)` = the comparison sample of the lamp's flat-cube shadow map (1 = lit).
+pub fn ps_9605(cb: &ProbeLightCb, x: u32, y: u32, z: u32, offset: [f32; 3], shadow: &dyn Fn([f32; 2], f32) -> f32) -> f32 {
+    let p0 = [x as f32 + offset[0], y as f32 + offset[1], z as f32 + offset[2]];
+    let third = 0.333333f32;
+    let lcb = LightCb { faces: cb.faces, z_scale: cb.z_scale, z_trans: cb.z_trans, light_pos: cb.light_pos_or_dir, inv_radius2: cb.inv_radius2, inv_cos_range: cb.inv_cos_range, cos_outer: cb.cos_outer, spot_dir_neg: cb.spot_dir_neg, spot_falloff_back_offset: 0.0, att_hn2: cb.att_hn2, out_scale: [1.0; 4], is_light_spot: cb.is_light_spot, is_att_hn2: cb.is_att_hn2 };
+    let mut acc = 0.0f32;
+    for kz in 0..3 {
+        for ky in 0..3 {
+            for kx in 0..3 {
+                let d = [(kx as f32 - 1.0) * third, (ky as f32 - 1.0) * third, (kz as f32 - 1.0) * third];
+                let p = [p0[0] + d[0], p0[1] + d[1], p0[2] + d[2]];
+                // l.8–9: mad per axis (fused)
+                let w = [p[0].mul_add(cb.st[0][0], cb.st[0][1]), p[1].mul_add(cb.st[1][0], cb.st[1][1]), p[2].mul_add(cb.st[2][0], cb.st[2][1])];
+                let l = if cb.is_light_pos { [cb.light_pos_or_dir[0] - w[0], cb.light_pos_or_dir[1] - w[1], cb.light_pos_or_dir[2] - w[2]] } else { [-cb.light_pos_or_dir[0], -cb.light_pos_or_dir[1], -cb.light_pos_or_dir[2]] };
+                // l.12: dp3 over (Lx, Lz, Ly) in that order
+                let d2 = dp3f(l[0], l[2], l[1], l[0], l[2], l[1]);
+                let dist = d2.sqrt();
+                let rs = 1.0 / d2.sqrt();
+                let ln = [l[0] * rs, l[1] * rs, l[2] * rs];
+                let s = if cb.is_shadow_cube {
+                    let (_f, uv, depth) = flat_cube_lookup(&lcb, l[0], l[1], l[2]);
+                    shadow(uv, depth)
+                } else {
+                    let m = &cb.world_pw01_shadow;
+                    let q = [w[0], w[1], w[2], 1.0];
+                    let hx = q[0] * m[0][0] + q[1] * m[1][0] + q[2] * m[2][0] + q[3] * m[3][0];
+                    let hy = q[0] * m[0][1] + q[1] * m[1][1] + q[2] * m[2][1] + q[3] * m[3][1];
+                    let hz = q[0] * m[0][2] + q[1] * m[1][2] + q[2] * m[2][2] + q[3] * m[3][2];
+                    let hw = q[0] * m[0][3] + q[1] * m[1][3] + q[2] * m[2][3] + q[3] * m[3][3];
+                    shadow([hx / hw, hy / hw], hz / hw)
+                };
+                // l.67–71
+                let h = cb.att_hn2[2].mul_add(d2, cb.att_hn2[1].mul_add(dist, cb.att_hn2[0]));
+                let hn2 = (1.0 / h + cb.att_hn2[3]).max(0.0);
+                // l.72–75
+                let q = (-d2).mul_add(cb.inv_radius2, 1.0).max(0.0);
+                let att = if cb.is_att_hn2 { hn2 } else if cb.is_att_1minus_d2 { q } else { 1.0 };
+                // l.76–80
+                let c = dp3f(ln[0], ln[1], ln[2], cb.spot_dir_neg[0], cb.spot_dir_neg[1], cb.spot_dir_neg[2]);
+                let cone = ((c - cb.cos_outer) * cb.inv_cos_range).clamp(0.0, 1.0);
+                let att = if cb.is_light_spot { att * cone } else { att };
+                // the accumulation as the shader chains it: mad(attspot_k, shadow_k, acc)
+                acc = att.mul_add(s, acc);
+            }
+        }
+    }
+    // l.2005: `mul r0.x, r0.x, l(0.037037)` — the disassembly prints six digits of 1/27
+    acc * (1.0f32 / 27.0)
+}
+
+/// PS 9605's LightRgb per emitter sample: the colour pass's LightRgb / (2π · N) — f3884 (N = 4 samples per lamp: the frame's
+/// 165 colour draws = 424 lamps × 4 samples × 99 draws over ~900 frames; OutScaleRGB 1/36 = 1/(4 · 9)) shows LightRgb / 8π per
+/// draw = / (2π · 4). The lamp's probe total over its samples is therefore LightRgb / 2π × the mean acc/27 — the editor's stpad
+/// image 3 sits at 3.5–4× a single draw's (E4, 2026-09-28 17:15Z). Read off the capture, not derived.
+pub const LAMP_PROBE_RGB_SCALE: f32 = 1.0 / (2.0 * std::f32::consts::PI);
+
+#[cfg(test)]
+mod probe_colour_tests {
+    use super::*;
+
+    #[test]
+    fn the_f3884_probe_lightrgb_is_the_colour_pass_over_two_pi_n_with_four_samples() {
+        let colour = [0.96758461f32, 0.93156064, 0.83657712];
+        let probe = [0.03849896788597107f32, 0.037065617740154266, 0.03328634425997734];
+        for k in 0..3 {
+            let got = colour[k] * LAMP_PROBE_RGB_SCALE / 4.0;
+            assert!((got - probe[k]).abs() < 2e-7, "channel {k}: {got} vs {}", probe[k]);
+        }
+    }
+
+    #[test]
+    fn a_probe_beside_the_lamp_is_lit_and_one_far_behind_is_dark() {
+        let cb = ProbeLightCb::stpad_f4936_eid1081();
+        let lit = |_: [f32; 2], _: f32| 1.0f32;
+        let dir = [-cb.spot_dir_neg[0], -cb.spot_dir_neg[1], -cb.spot_dir_neg[2]];
+        let target = [cb.light_pos_or_dir[0] + 10.0 * dir[0], cb.light_pos_or_dir[1] + 10.0 * dir[1], cb.light_pos_or_dir[2] + 10.0 * dir[2]];
+        let probe = |k: usize| ((target[k] - cb.st[k][1]) / cb.st[k][0]).round() as u32;
+        let v = ps_9605(&cb, probe(0), probe(1), probe(2), [0.0; 3], &lit);
+        assert!(v > 0.1 && v <= 1.0, "{v}");
+        let behind = [cb.light_pos_or_dir[0] + 60.0 * cb.spot_dir_neg[0], cb.light_pos_or_dir[1] + 60.0 * cb.spot_dir_neg[1], cb.light_pos_or_dir[2] + 60.0 * cb.spot_dir_neg[2]];
+        let pb = |k: usize| ((behind[k] - cb.st[k][1]) / cb.st[k][0]).round() as u32;
+        assert_eq!(ps_9605(&cb, pb(0), pb(1), pb(2), [0.0; 3], &lit), 0.0);
+        // a lit sample in shadow contributes nothing
+        let dark = |_: [f32; 2], _: f32| 0.0f32;
+        assert_eq!(ps_9605(&cb, probe(0), probe(1), probe(2), [0.0; 3], &dark), 0.0);
+    }
+}
+
 /// One probe's light list as CS 7357 keeps it: 8 (light id, weight8) slots (TexLightIds: four R16G16 volumes, two ids each;
 /// TexLightWs: two RGBA8 volumes) — no lit byte.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

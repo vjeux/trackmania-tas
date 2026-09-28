@@ -824,25 +824,98 @@ mod download_tests {
 
 /// The four stored probe atlases (RGB triplets, `w × h`) from a download and the block's tile table
 /// (`tiles[level − min.y]` = the tile's (x, y) in the atlas, None for a missing level).
+///
+/// FUN_14022d8f0's per-probe branch (decomp2/14022d8f0.c, read 2026-09-28 by E4): a VALID probe (α ≥ 0.5) writes its
+/// colour bytes (an all-zero triple becomes (1, 1, 1)), its sky byte and its signed up/down bytes; an INVALID one is
+/// WRITTEN too — `pcVar12[-1..2] = 0` (colour 0, sky 0) and its up/down pixel `= 0` (→ 127 after the packer's +127) — never
+/// left at the buffer's initial value. The port skipped invalid probes and left the 128 / 127 atlas init there: V4's
+/// "grey 128 inside items / under the island tiles" (probe-column-48e1-vs-5ff2.md); pwc-day's byte-exact save had no
+/// invalid in-tile probe. Pixels no tile covers keep the init (128 / 127: the pwc6 save's own bytes there).
 pub fn probe_atlases(dl: &ProbeDownload, block_min: [u32; 3], tiles: &[Option<(u32, u32)>], w: u32, h: u32) -> [Vec<u8>; 4] {
+    probe_atlases_with_lamp(dl, None, block_min, tiles, w, h)
+}
+
+/// `probe_atlases` with the fourth image's bytes (`lamp[i]` for `dl.probes[i]`, `download_lamp_probes`): the lamp colour probe
+/// image (the download's third source texture, param_1[2]); None = the lamp pass did not run → zeros, as before.
+pub fn probe_atlases_with_lamp(dl: &ProbeDownload, lamp: Option<&[[u8; 3]]>, block_min: [u32; 3], tiles: &[Option<(u32, u32)>], w: u32, h: u32) -> [Vec<u8>; 4] {
     let n = (w * h * 3) as usize;
     let mut imgs = [vec![128u8; n], vec![128u8; n], vec![127u8; n], vec![128u8; n]];
-    for ((x, y, z), rgb, ok, sky, sq) in &dl.probes {
+    for (pi, ((x, y, z), rgb, ok, sky, sq)) in dl.probes.iter().enumerate() {
         let Some(Some((tx, ty))) = tiles.get((*y - block_min[1]) as usize) else { continue };
-        if !*ok {
+        let (px, py) = (tx + (x - block_min[0]), ty + (z - block_min[2]));
+        if px >= w || py >= h {
             continue;
         }
-        let (px, py) = (tx + (x - block_min[0]), ty + (z - block_min[2]));
         let o = ((py * w + px) * 3) as usize;
+        if !*ok {
+            imgs[0][o..o + 3].copy_from_slice(&[0, 0, 0]);
+            imgs[1][o..o + 3].copy_from_slice(&[0, 0, 0]);
+            imgs[2][o..o + 3].copy_from_slice(&[127, 127, 127]);
+            imgs[3][o..o + 3].copy_from_slice(&[0, 0, 0]);
+            continue;
+        }
         imgs[0][o..o + 3].copy_from_slice(rgb);
         let s = sky.unwrap_or(0);
         imgs[1][o..o + 3].copy_from_slice(&[s, s, s]);
         for c in 0..3 {
             imgs[2][o + c] = (sq[c] as i32 + 127) as u8;
         }
-        imgs[3][o..o + 3].copy_from_slice(&[0, 0, 0]);
+        imgs[3][o..o + 3].copy_from_slice(&lamp.and_then(|l| l.get(pi).copied()).unwrap_or([0, 0, 0]));
     }
     imgs
+}
+
+/// THE LAMP COLOUR PROBE IMAGE's download (E4, 2026-09-28): the fourth stored probe image = the colour probe pass's volume
+/// (PS 9605, `localdrive::FrameOut::lamp_probe`) through the same encode as image 0 — `maxl` = the largest rgb channel over the
+/// VALID probes (α ≥ 0.5; like max2, unlike max0: the editor's stpad word 0.279297 is its brightest valid probe's value, byte 255,
+/// while our brightest probe overall sits inside a lamp post at 0.54) → `frame_info[2]`'s scale word (1e-5 when nothing was lit,
+/// the lamp-less saves' word), byte = `t12[(int)(v / maxl · 4095 + 0.5)]` for a VALID probe (the invalid ones are written 0 like
+/// the other images; the editor's stpad image 3 reads 0 at every masked probe). Returns (maxl, the bytes in `download_probes`'
+/// probe order for `range`). The encode is the image-0 rule by analogy — FUN_14022d8f0 only READS this texture (param_1[2], 3
+/// bytes per probe, through the byte→linear LUT DAT_141a64360); the falsifier is the editor's image 3 (stpad Night: 424 lamps,
+/// 2 929 unsaturated lit probes at a value ratio of 0.995 with 67 % within ±10 %, scale 0.2793).
+pub fn download_lamp_probes(lamp: &Volume3, colour: &Volume3, range: ([u32; 3], [u32; 3])) -> (f32, Vec<[u8; 3]>) {
+    let (lo, hi) = range;
+    let mut maxl = 0f32;
+    for z in 0..lamp.d { for y in 0..lamp.h { for x in 0..lamp.w {
+        if x < colour.w && y < colour.h && z < colour.d && colour.get(x, y, z, 3) >= 0.5 { for c in 0..3 { maxl = maxl.max(lamp.get(x, y, z, c)); } }
+    } } }
+    let scale = if maxl > 0.0 { maxl } else { 1e-5 };
+    let t12 = crate::filecheck::srgb_encode_table();
+    let mut out = Vec::new();
+    for y in lo[1]..hi[1] {
+        for z in lo[2]..hi[2] {
+            for x in lo[0]..hi[0] {
+                let ok = colour.get(x, y, z, 3) >= 0.5;
+                let mut rgb = [0u8; 3];
+                if ok && x < lamp.w && y < lamp.h && z < lamp.d {
+                    for c in 0..3u32 {
+                        let v = lamp.get(x, y, z, c) / scale;
+                        rgb[c as usize] = t12[((v.clamp(0.0, 1.0) * 4095.0 + 0.5) as i32).clamp(0, 4095) as usize];
+                    }
+                }
+                out.push(rgb);
+            }
+        }
+    }
+    (scale, out)
+}
+
+/// The atlas pixels a block's tiles cover (the block's `min`/`max` cell range over its tile table): the merge of the
+/// per-block atlases in `ProbeBake::finish` copies exactly these (the blocks' tiles are disjoint in the atlas).
+pub fn probe_tile_pixels(block_min: [u32; 3], block_max: [u32; 3], tiles: &[Option<(u32, u32)>], w: u32, h: u32) -> Vec<usize> {
+    let mut out = Vec::new();
+    for t in tiles.iter().flatten() {
+        for z in block_min[2]..block_max[2] {
+            for x in block_min[0]..block_max[0] {
+                let (px, py) = (t.0 + (x - block_min[0]), t.1 + (z - block_min[2]));
+                if px < w && py < h {
+                    out.push((py * w + px) as usize);
+                }
+            }
+        }
+    }
+    out
 }
 
 /// The four probe WEBPs as the client writes them (needs libwebp): images 0, 2, 3 RGB import at quality 91,
