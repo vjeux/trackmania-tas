@@ -55,3 +55,6 @@ np-tk3-bluebay-day-q1	np-tk3-source-day.Map.Gbx	-	BlueBay	1	-	full	-	-	99
 np-tk3-bluebay-day-q2	np-tk3-source-day.Map.Gbx	-	BlueBay	2	-	full	-	-	99
 giant20x2-stadium-sunrise-q4-exact	giant20x2red-editor-q4.Map.Gbx	giant20x2red-editor-q4.Map.Gbx	Stadium	4	-	full	-	env:LMTOOL_LAYOUT_ISOLATE=28640..28642,30557	99
 g23-whiteshore-day-q4-exact	g23-WhiteShore-Day-q4-editor-reduced-source-bake-tex.Map.Gbx	g23-WhiteShore-Day-q4-editor-reduced-source-bake.Map.Gbx	WhiteShore	4	-	full	-	env:LMTOOL_LAYOUT_ISOLATE=70275..70282,70284..70291,70293..70316,73918..73920,74349..74351,75134..75136	99
+# B6 fir cells (V4, 2026-09-28; from validation/V4/fir-0e34/v4-fir.tsv): WhiteShore fir items alone (one fir / a cluster) — the AV-card residue in isolation; ~4 min each; unchanged across k = 1 / exclusion / HueMask
+ws-fir-one-whiteshore-day-q4	ws-fir-one-source.Map.Gbx	ws-fir-one-WhiteShore-Day-q4-editor.Map.Gbx	WhiteShore	4	-	full	-	-	99
+ws-fir-cluster-whiteshore-day-q4	ws-fir-cluster-source.Map.Gbx	ws-fir-cluster-WhiteShore-Day-q4-editor.Map.Gbx	WhiteShore	4	-	full	-	-	99
