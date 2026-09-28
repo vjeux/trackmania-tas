@@ -5008,6 +5008,8 @@ fn run(mut a: Vec<String>) {
         "clouds-check" => { if let Err(e) = lightmap::clouds::check(&a) { eprintln!("clouds-check: {e}"); std::process::exit(1); } }
         // lmtool corpus-gate run|report|list --corpus CORPUS.tsv … : the per-landing corpus matrix (corpusgate.rs)
         "corpus-gate" => { if let Err(e) = lightmap::corpusgate::run(&a) { eprintln!("corpus-gate: {e}"); std::process::exit(1); } }
+        // lmtool harness-gate --pd DIR --bin LMTOOL --tag NAME [--guards DIR] [--paks DIR] : the five checks + two-run + the three d1 guards as one command (harnessgate.rs)
+        "harness-gate" => { if let Err(e) = lightmap::harnessgate::run(&a) { eprintln!("harness-gate: {e}"); std::process::exit(1); } }
         "clouds-reach" => { if let Err(e) = lightmap::clouds::reach(&a) { eprintln!("clouds-reach: {e}"); std::process::exit(1); } }
         "clouds-field" => { if let Err(e) = lightmap::cloudfield::cli(&a) { eprintln!("clouds-field: {e}"); std::process::exit(1); } }
         // (G's classcmp dispatch dropped at integration: V's classcmp — landed first, with --own-rects,
