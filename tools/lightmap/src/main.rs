@@ -1558,7 +1558,13 @@ fn run(mut a: Vec<String>) {
                                 // the same triangles in the same order as the block pushed at `first`
                                 for (k, t) in shaded.into_iter().enumerate() { if let Some(d) = scene.decor.get_mut(first + k) { d.warp = t.warp; } }
                                 scene.warp_vs = warp_vs;
-                                scene.warp = Some(std::sync::Arc::new(lightmap::warpterrain::WarpShading { consts: consts.clone(), tex, clouds_from_texture: false }));
+                                // THE CLOUD FACTOR'S MEAN over the mood's Clouds.tga (RE 15 07:02Z: TBindedMapCloudsX2 = the mood's cloud field; BlueBay Day
+                                // c ∈ [0.2, 0.5] → mean k (0.388, 0.398, 0.403), not the 0.5 of a flat field); the field's position is the wind's
+                                let cloud_k = match std::fs::read(lightmap::skygrad::mood_file(&coll, mood_name, "Clouds.tga")) {
+                                    Ok(tga) => match lightmap::warpterrain::cloud_mean_factor(&tga, &consts) { Ok((k, cbar, n)) => { eprintln!("warp terrain: CloudsX2 field {coll}-{mood_name}-Clouds.tga: {n} texels, mean coverage {cbar:.4}, mean factor ({:.4}, {:.4}, {:.4}) → ×2 = ({:.3}, {:.3}, {:.3})", k[0], k[1], k[2], 2.0 * k[0], 2.0 * k[1], 2.0 * k[2]); Some(k) }, Err(e) => { eprintln!("warp terrain: Clouds.tga: {e} — the factor 0.5 stands in"); None } },
+                                    Err(_) => { eprintln!("warp terrain: no {coll}-{mood_name}-Clouds.tga in the moods store — the CloudsX2 factor 0.5 stands in"); None }
+                                };
+                                scene.warp = Some(std::sync::Arc::new(lightmap::warpterrain::WarpShading { consts: consts.clone(), tex, clouds_from_texture: false, cloud_k }));
                                 eprintln!("warp terrain: {n} triangles of {} ({link}) shaded per PS 16752 — PxzScaleTrans {:?}, Py uv scale {py_scale} at {py_rot}°, sun dir {:?} rgb {:?}, fog rgb {:?} depth ST {:?}, clouds min {:?} max {:?} (field at its mean → ×0.5), eye {:?}", wm.name, pxz, light_dir, prm.sun, consts.fog_rgb, consts.fog.depth_st_exp, consts.clouds_min_half, consts.clouds_max, eye);
                             }
                         }

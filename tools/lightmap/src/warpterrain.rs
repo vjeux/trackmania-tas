@@ -255,6 +255,12 @@ pub fn ps_16752(c: &WarpConsts, tex: &WarpTextures, v: &VsOut, front: bool) -> V
 
 /// `ps_16752` with the CloudsX2 coverage sample replaced by `cloud` when given (0.5 = the field's mean → the factor 0.5 exactly).
 pub fn ps_16752_cloud(c: &WarpConsts, tex: &WarpTextures, v: &VsOut, front: bool, cloud: Option<f32>) -> V3 {
+    ps_16752_k(c, tex, v, front, cloud, None)
+}
+
+/// `ps_16752_cloud` with the whole CloudsX2 FACTOR overridden by `k` when given (the field's mean factor through the shader's
+/// arithmetic — `cloud_mean_factor`; RE 15 07:02Z: BlueBay Day's Clouds.tga has c ∈ [0.2, 0.5], mean k = (0.388, 0.398, 0.403)).
+pub fn ps_16752_k(c: &WarpConsts, tex: &WarpTextures, v: &VsOut, front: bool, cloud: Option<f32>, k: Option<V3>) -> V3 {
     let (v1, v2, v3, v4, v6) = (v.o1, v.o2, v.o3, v.o4, v.o6);
     // 0–5: r0 = normalize(v1.z, v2.z, v3.z)
     let mut r0 = [v1[2], v2[2], v3[2]];
@@ -317,7 +323,7 @@ pub fn ps_16752_cloud(c: &WarpConsts, tex: &WarpTextures, v: &VsOut, front: bool
     let t_lo = (cl + cl).clamp(0.0, 1.0);
     let mn = c.clouds_min_half;
     let low = [t_lo * (mn[3] - mn[0]) + mn[0], t_lo * (mn[3] - mn[1]) + mn[1], t_lo * (mn[3] - mn[2]) + mn[2]];
-    let cloud = [t_hi * (c.clouds_max[0] - low[0]) + low[0], t_hi * (c.clouds_max[1] - low[1]) + low[1], t_hi * (c.clouds_max[2] - low[2]) + low[2]];
+    let cloud = match k { Some(k) => k, None => [t_hi * (c.clouds_max[0] - low[0]) + low[0], t_hi * (c.clouds_max[1] - low[1]) + low[1], t_hi * (c.clouds_max[2] - low[2]) + low[2]] };
     // 64–67: × cloud, ×2 − fog, lerp by sat(v4.z)
     col = [col[0] * cloud[0], col[1] * cloud[1], col[2] * cloud[2]];
     let f = v4[2].clamp(0.0, 1.0);
@@ -418,12 +424,51 @@ pub struct WarpShading {
     pub consts: WarpConsts,
     pub tex: WarpTextures,
     pub clouds_from_texture: bool,
+    /// The CloudsX2 factor's MEAN over the mood's cloud field (`cloud_mean_factor` on the mood's Clouds.tga) when the field is not
+    /// sampled; None = the coverage at 0.5 (k = 0.5 exactly — the pre-07:05Z stand-in).
+    pub cloud_k: Option<V3>,
 }
 
 /// PS 16752 through the shading state at a fragment: `vs` = the triangle's three VS outputs, `bw` its barycentrics, `front` the facing.
 pub fn shade(sh: &WarpShading, vs: &[VsOut; 3], bw: [f32; 3], front: bool) -> V3 {
     let v = interp(vs, bw);
-    ps_16752_cloud(&sh.consts, &sh.tex, &v, front, if sh.clouds_from_texture { None } else { Some(0.5) })
+    if sh.clouds_from_texture { return ps_16752(&sh.consts, &sh.tex, &v, front); }
+    match sh.cloud_k {
+        Some(k) => ps_16752_k(&sh.consts, &sh.tex, &v, front, Some(0.5), Some(k)),
+        None => ps_16752_cloud(&sh.consts, &sh.tex, &v, front, Some(0.5)),
+    }
+}
+
+/// The CloudsX2 factor averaged over a mood's cloud field (TBindedMapCloudsX2 = the mood's Clouds.tga: 512² 8-bit grey, TGA type 3;
+/// RE 15 07:02Z) through the shader's own arithmetic per texel: `t_lo = sat(2c); low = lerp(min, .w, t_lo); t_hi = sat(2c − 1);
+/// k = lerp(low, max, t_hi)`. The field's translation in the peel is the wind's — unreproducible per position — so its mean stands
+/// for it (BlueBay Day: c ∈ [0.2, 0.5], mean c 0.317 → mean k (0.388, 0.398, 0.403), 2k ≈ 0.79). Returns (mean k, mean c, texels).
+pub fn cloud_mean_factor(tga: &[u8], c: &WarpConsts) -> Result<(V3, f32, usize), String> {
+    if tga.len() < 18 { return Err("TGA too short".into()); }
+    let id_len = tga[0] as usize;
+    let cmap = tga[1];
+    let kind = tga[2];
+    let w = u16::from_le_bytes([tga[12], tga[13]]) as usize;
+    let h = u16::from_le_bytes([tga[14], tga[15]]) as usize;
+    let bpp = tga[16] as usize;
+    if cmap != 0 || (kind != 3 && kind != 2) { return Err(format!("TGA type {kind} (colour map {cmap}) is not an uncompressed grey/RGB image")); }
+    let bytes = bpp / 8;
+    let off = 18 + id_len;
+    if tga.len() < off + w * h * bytes { return Err("TGA truncated".into()); }
+    let mn = c.clouds_min_half;
+    let mut sum = [0f64; 3];
+    let mut sum_c = 0f64;
+    for i in 0..w * h {
+        // grey: the byte; RGB/BGR: the first channel (the shader reads .x of an R8 view)
+        let v = tga[off + i * bytes] as f32 / 255.0;
+        let t_lo = (v + v).clamp(0.0, 1.0);
+        let t_hi = (v * 2.0 - 1.0).clamp(0.0, 1.0);
+        let low = [t_lo * (mn[3] - mn[0]) + mn[0], t_lo * (mn[3] - mn[1]) + mn[1], t_lo * (mn[3] - mn[2]) + mn[2]];
+        for ch in 0..3 { sum[ch] += (t_hi * (c.clouds_max[ch] - low[ch]) + low[ch]) as f64; }
+        sum_c += v as f64;
+    }
+    let n = (w * h).max(1) as f64;
+    Ok(([(sum[0] / n) as f32, (sum[1] / n) as f32, (sum[2] / n) as f32], (sum_c / n) as f32, w * h))
 }
 
 /// The constants for a map WITHOUT a capture: the mood XML's <Fog> (+ <Height>) and <CloudsX2> blocks (the words the game
