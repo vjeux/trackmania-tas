@@ -155,10 +155,12 @@ pub fn md5_hex(data: &[u8]) -> String {
 }
 
 // ---------------------------------------------------------------- the metrics of one baked cell against its oracle
-fn frame_metrics(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLightmap, records: Option<&[crate::classcmp::RecRow]>, frame: usize) -> Result<serde_json::Value, String> {
-    let mut o = crate::classcmp::Options { frame, lit: 8, by: crate::classcmp::GroupBy::Class, worst: 0, own_rects: false, lit_hdr: None };
-    // two layouts that differ (chart counts, a giant's numbering) are compared by (obj, sub) with each side's own rects —
-    // the identity columns are then void and say so
+fn frame_metrics(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLightmap, records: Option<&[crate::classcmp::RecRow]>, frame: usize, own_rects: bool) -> Result<serde_json::Value, String> {
+    let mut o = crate::classcmp::Options { frame, lit: 8, by: crate::classcmp::GroupBy::Class, worst: 0, own_rects, lit_hdr: None };
+    // two layouts that differ (chart counts, a giant's numbering, OR the same count with other rects) are compared by (obj, sub)
+    // with each side's own rects — decided from the layout BEFORE the compare (V3 2026-09-28 03:56Z: with equal counts and 215 of
+    // 5 871 same rects the plain compare silently skipped the rect-mismatched charts and the headline numbers described 4 % of the
+    // cell); the identity columns are then void and say so
     let r = match crate::classcmp::compare(ours, theirs, records, &o) {
         Ok(r) => r,
         Err(e) if e.contains("chart counts differ") || e.contains("--own-rects") => { o.own_rects = true; crate::classcmp::compare(ours, theirs, records, &o)? }
@@ -254,9 +256,11 @@ pub fn measure(ours_path: &Path, oracle: &Path, records_tsv: Option<&Path>) -> R
     let ours = crate::mapio::load(&ours_path.to_string_lossy()).map_err(|e| format!("ours: {e}"))?;
     let theirs = crate::mapio::load(&oracle.to_string_lossy()).map_err(|e| format!("oracle: {e}"))?;
     let records = match records_tsv { Some(p) if p.exists() => Some(crate::classcmp::read_records_tsv(&p.to_string_lossy())?), _ => None };
-    let f0 = frame_metrics(&ours, &theirs, records.as_deref(), 0)?;
-    let f1 = frame_metrics(&ours, &theirs, records.as_deref(), 1)?;
-    Ok(serde_json::json!({ "layout": layout_metrics(&ours, &theirs), "planes": plane_metrics(&ours, &theirs), "frames": [f0, f1] }))
+    let layout = layout_metrics(&ours, &theirs);
+    let own_rects = layout["same_rects"] != layout["compared"] || layout["charts_ours"] != layout["charts_theirs"];
+    let f0 = frame_metrics(&ours, &theirs, records.as_deref(), 0, own_rects)?;
+    let f1 = frame_metrics(&ours, &theirs, records.as_deref(), 1, own_rects)?;
+    Ok(serde_json::json!({ "layout": layout, "planes": plane_metrics(&ours, &theirs), "frames": [f0, f1] }))
 }
 
 /// V2's JOIN FILES: `classcmp --by name --tsv` of frame 0 and frame 1 (+ `--own-rects` when the two layouts' rects differ),
