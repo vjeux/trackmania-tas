@@ -2877,7 +2877,9 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
                                 let den = d11 * d22 - d12 * d12;
                                 let (b1, b2) = if den.abs() > 1e-20 { ((d22 * d1p - d12 * d2p) / den, (d11 * d2p - d12 * d1p) / den) } else { (0.0, 0.0) };
                                 let bw = [(1.0 - b1 - b2).clamp(0.0, 1.0), b1.clamp(0.0, 1.0), b2.clamp(0.0, 1.0)];
-                                let front = dot(cross(e1, e2), frame.d) < 0.0;
+                                // LMTOOL_WARP_FACE=flip (study, E3 2026-09-28): the opposite face lit — which face of the sea-floor skirt the
+                                // game lights from above has no pixel oracle (every banked world plane looks up); g23's items read it
+                                let front = (dot(cross(e1, e2), frame.d) < 0.0) ^ warp_face_flipped();
                                 let c = crate::warpterrain::shade(sh, vs, bw, front);
                                 prm.quant_peel.apply(c, prm.rounding)
                             }
@@ -4086,6 +4088,12 @@ pub fn item_walk_start(env_d: f32, depth_bits: u32) -> f32 {
 pub fn item_walk_seeds_from_env() -> bool {
     static OLD: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *OLD.get_or_init(|| std::env::var_os("LMTOOL_ENV_SEEDS_PEEL").is_some())
+}
+
+/// LMTOOL_WARP_FACE=flip (study): the Warp terrain's lit face swapped (see the env-layer colour in `extract_layers`).
+pub fn warp_face_flipped() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("LMTOOL_WARP_FACE").map(|v| v == "flip").unwrap_or(false))
 }
 
 /// THE BIASED WALK, the reference form: `frags` sorted here by (stored depth, triangle), then walked — accept

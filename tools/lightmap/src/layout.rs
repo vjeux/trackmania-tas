@@ -368,7 +368,9 @@ impl CollectionProfile {
     pub fn of(collection: &str) -> CollectionProfile {
         match collection {
             // stpad's table: 96 × 96 Grass tiles at y 8 (row 9), the WaterBase blocks at cy 10 → 16
-            "Stadium" => CollectionProfile { grid: 96, ground_row: 9, yoff: -64.0, flat_zones: &["Grass"], water_row: 9 },
+            // Stadium has no water ZONE (its maps carry water quads — stpad's / giant20x2's planes come from the records); a quad-less
+            // Stadium map keeps the pre-read plane 7 (= row 8's origin 0 + 7: below every Stadium surface, so no tint engages)
+            "Stadium" => CollectionProfile { grid: 96, ground_row: 9, yoff: -64.0, flat_zones: &["Grass"], water_row: 8 },
             // the tiny maps' items sit in row 16 at y 8..16 → yoff −120 (the one Water block at row 14)
             "WhiteShore" => CollectionProfile { grid: 64, ground_row: 14, yoff: -120.0, flat_zones: &["Land", "Water"], water_row: 14 },
             // items in row 4 at y −8..0 → yoff −40 (the one Lake block at row 4)
