@@ -356,22 +356,28 @@ pub struct CollectionProfile {
     pub ground_row: i32,
     pub yoff: f32,
     pub flat_zones: &'static [&'static str],
+    /// The WATER zone's cell row (the row its zone blocks sit in on a campaign map — tmmaps::map::ground_y's measurements): the water
+    /// plane of a sea-zone map (no record carries a water quad) is that row's world origin + the collection descriptor's LOCAL top
+    /// (`setupmap::water_tables_from_records`, E3 2026-09-28): BlueBay 5·8 − 40 + 7 = 7, WhiteShore 14·8 − 120 + 7 = −1, GreenCoast
+    /// 4·8 − 40 + 7.2 = −0.8, RedIsland 14·8 − 120 + 7.7 = −0.3 — each the collection's sea level (main.rs's `sea_y` table, measured
+    /// from the decorations' water planes).
+    pub water_row: i32,
 }
 
 impl CollectionProfile {
     pub fn of(collection: &str) -> CollectionProfile {
         match collection {
             // stpad's table: 96 × 96 Grass tiles at y 8 (row 9), the WaterBase blocks at cy 10 → 16
-            "Stadium" => CollectionProfile { grid: 96, ground_row: 9, yoff: -64.0, flat_zones: &["Grass"] },
+            "Stadium" => CollectionProfile { grid: 96, ground_row: 9, yoff: -64.0, flat_zones: &["Grass"], water_row: 9 },
             // the tiny maps' items sit in row 16 at y 8..16 → yoff −120 (the one Water block at row 14)
-            "WhiteShore" => CollectionProfile { grid: 64, ground_row: 14, yoff: -120.0, flat_zones: &["Land", "Water"] },
+            "WhiteShore" => CollectionProfile { grid: 64, ground_row: 14, yoff: -120.0, flat_zones: &["Land", "Water"], water_row: 14 },
             // items in row 4 at y −8..0 → yoff −40 (the one Lake block at row 4)
-            "GreenCoast" => CollectionProfile { grid: 64, ground_row: 4, yoff: -40.0, flat_zones: &["Grass", "Lake"] },
+            "GreenCoast" => CollectionProfile { grid: 64, ground_row: 4, yoff: -40.0, flat_zones: &["Grass", "Lake"], water_row: 4 },
             // RedIsland (V4 / tmmaps::map::ground_y, Summer 2026-02): the regenerated Dirt at cell 15 (plane local +2 → y 2 =
             // 15·8 − 120 + 2), the lake's Water at cell 14 (surface −0.5); the pak's flat zones are GameCtnBlockInfoFlat\{Dirt,Water}
-            "RedIsland" => CollectionProfile { grid: 64, ground_row: 15, yoff: -120.0, flat_zones: &["Dirt", "Water"] },
+            "RedIsland" => CollectionProfile { grid: 64, ground_row: 15, yoff: -120.0, flat_zones: &["Dirt", "Water"], water_row: 14 },
             // BlueBay: the Sea tiles' row 5 at y 0
-            _ => CollectionProfile { grid: 64, ground_row: 5, yoff: -40.0, flat_zones: &["Sea", "Land"] },
+            _ => CollectionProfile { grid: 64, ground_row: 5, yoff: -40.0, flat_zones: &["Sea", "Land"], water_row: 5 },
         }
     }
 }

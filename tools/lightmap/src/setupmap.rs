@@ -1261,10 +1261,24 @@ pub fn water_tables_from_records(f: &mut FrozenTables, store: &mut mapgeom::stor
         }
         f.water_tiles = wt.tiles;
     } else {
-        f.top_by_plane = vec![[w.top, 0.0, 0.0, 1.0]];
+        // THE SEA-ZONE PLANE IS A WORLD HEIGHT (E3 2026-09-28): the descriptor's `top` is the surface in the water ZONE PREFAB'S frame
+        // (7 on every collection but GreenCoast's 7.2 / RedIsland's 7.7); the game's g_WaterTop_ByPlanes are world heights (stpad's
+        // captured 23 / 119 / 231 = block origin + 7). The port wrote the local value as the plane — right on BlueBay alone, whose Sea
+        // row 5 has origin 5·8 − 40 = 0. On WhiteShore (Water row 14, origin −8) the plane sat at 7 instead of −1: the seabed at −6 fell
+        // under the tint's floor (7 − 5 − 0.1) and was never fogged — the sea floor bounced DRY SAND (0.133, 0.095, 0.064) at every
+        // receiver and probe (g23/tiny03's uniform warm tilt R +9 % B −8 %, the probes' R +21 % at 10 m); on RedIsland (Water row 14,
+        // origin −8, top 7.7 → −0.3) the Dirt land at 2 was fogged as if 5.7 m deep — V4's blue tilt, the mirror. LMTOOL_WATER_TOP=local
+        // keeps the old plane (study); LMTOOL_WATER_TOP=<y> forces a world height.
+        let prof = crate::layout::CollectionProfile::of(collection);
+        let world_top = match std::env::var("LMTOOL_WATER_TOP").ok().as_deref() {
+            Some("local") => w.top,
+            Some(v) => v.parse::<f32>().unwrap_or(prof.water_row as f32 * 8.0 + prof.yoff + w.top),
+            None => prof.water_row as f32 * 8.0 + prof.yoff + w.top,
+        };
+        f.top_by_plane = vec![[world_top, 0.0, 0.0, 1.0]];
         let ch = f.ids.channels as usize;
         for (i, v) in f.ids.data.iter_mut().enumerate() { *v = if i % ch == 0 { 1.0 } else { 0.0 }; }
-        got.push(format!("no record carries a water quad: the whole map is under the collection's water plane (id 1, plane 0, top {}) — a sea zone", w.top));
+        got.push(format!("no record carries a water quad: the whole map is under the collection's water plane (id 1, plane 0, WORLD top {world_top} = the water zone's row {} origin {} + the descriptor's local top {}) — a sea zone", prof.water_row, prof.water_row as f32 * 8.0 + prof.yoff, w.top));
     }
     // the two LUTs against the frozen ones, texel for texel
     let cmp = |ours: &Texture, theirs: &Texture| -> (usize, usize) {
