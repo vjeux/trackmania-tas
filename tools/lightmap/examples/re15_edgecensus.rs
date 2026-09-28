@@ -16,7 +16,14 @@ fn main() {
     let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
     let root = Path::new(&a[1]);
     let top: usize = f("--top").map(|v| v.parse().unwrap()).unwrap_or(12);
-    let src: Buf = load_file(root, &a[2], "R16G16B16A16_FLOAT", 0, 0, 0).expect("plane");
+    // a captured DDS (RGBA16F) — or one of OUR raw planes: `*.f32` = LMTOOL_FINALS_OUT's square RGBA f32 dump (E2)
+    let src: Buf = if a[2].ends_with(".f32") {
+        let n = std::fs::metadata(root.join(&a[2])).expect("plane").len() / 16;
+        let side = (n as f64).sqrt() as u32;
+        load_file(root, &a[2], "R32G32B32A32_FLOAT", side, side, 0).expect("plane")
+    } else {
+        load_file(root, &a[2], "R16G16B16A16_FLOAT", 0, 0, 0).expect("plane")
+    };
     let (w, h) = (src.w, src.h);
     println!("{} : {w}×{h} ×{}", a[2], src.channels);
 
@@ -69,6 +76,47 @@ fn main() {
 
     if let Some(ri) = f("--rect") {
         for s in ri.split(',') { dump_rect(&src, &rects, s.parse().unwrap()); }
+        return;
+    }
+    // --gutter: every texel OUTSIDE every rect with alpha > 0 (the game has none: RE 15 00:20Z), attributed to the NEAREST rect
+    // (the geometry that spilled), with the side it spilled over — per object and per side (E2)
+    if a.iter().any(|x| x == "--gutter") {
+        let mut n_g = 0usize;
+        let mut per_obj: std::collections::HashMap<u32, (usize, f32, [usize; 4], f32)> = std::collections::HashMap::new(); // count, Σalpha, sides L/R/T/B, max own-mean
+        let mut per_dist: std::collections::HashMap<i32, usize> = std::collections::HashMap::new();
+        let mut samples: Vec<(u32, u32, f32, f32, u32, String)> = Vec::new();
+        for y in 0..h {
+            for x in 0..w {
+                let al = src.get(x, y, 3);
+                if al <= 0.0 || rect_id[(y * w + x) as usize] != u32::MAX { continue; }
+                n_g += 1;
+                // nearest rect by Chebyshev distance to the rect's texel box
+                let (mut best, mut bd) = (usize::MAX, i32::MAX);
+                for (i, r) in rects.iter().enumerate() {
+                    let dx = if (x as i32) < r.x { r.x - x as i32 } else if x as i32 >= r.x + r.w { x as i32 - (r.x + r.w - 1) } else { 0 };
+                    let dy = if (y as i32) < r.y { r.y - y as i32 } else if y as i32 >= r.y + r.h { y as i32 - (r.y + r.h - 1) } else { 0 };
+                    let d = dx.max(dy);
+                    if d < bd { bd = d; best = i; }
+                }
+                *per_dist.entry(bd).or_insert(0) += 1;
+                let r = &rects[best];
+                let side = if (x as i32) < r.x { 0 } else if x as i32 >= r.x + r.w { 1 } else if (y as i32) < r.y { 2 } else { 3 };
+                let mx = src.get(x, y, 0).max(src.get(x, y, 1)).max(src.get(x, y, 2)) / al;
+                let e = per_obj.entry(r.obj).or_insert((0, 0.0, [0; 4], 0.0));
+                e.0 += 1; e.1 += al; e.2[side] += 1; e.3 = e.3.max(mx);
+                if samples.len() < 400_000 { samples.push((x, y, al, mx, r.obj, format!("rect {} [{}..{})×[{}..{}) d{}", best, r.x, r.x + r.w, r.y, r.y + r.h, bd))); }
+            }
+        }
+        println!("GUTTER texels with alpha > 0: {n_g} (the game: 0)");
+        let mut dv: Vec<_> = per_dist.into_iter().collect(); dv.sort();
+        println!("  by distance to the nearest rect (texels): {:?}", dv);
+        let mut ov: Vec<_> = per_obj.into_iter().collect();
+        ov.sort_by(|p, q| q.1 .0.cmp(&p.1 .0));
+        println!("  by nearest object (count, Σalpha, sides L/R/T/B, max own-mean) — top 40 of {}:", ov.len());
+        for (o, (n, sa, sides, mx)) in ov.iter().take(40) { println!("    obj {o}: {n} texels, Σa {sa:.4}, L {} R {} T {} B {}, max own-mean {mx:.4}", sides[0], sides[1], sides[2], sides[3]); }
+        samples.sort_by(|p, q| q.3.partial_cmp(&p.3).unwrap());
+        println!("  brightest 24 gutter texels (x, y, alpha, own-mean max, nearest obj):");
+        for (x, y, al, mx, o, s) in samples.iter().take(24) { println!("    ({x:4},{y:4}) a {al:.5} own-mean {mx:.4} obj {o} {s}"); }
         return;
     }
     // exact alpha values: count + where (in a rect / gutter), top 24 by count

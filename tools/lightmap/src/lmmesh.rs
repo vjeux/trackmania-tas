@@ -367,6 +367,29 @@ pub fn lm_mesh_of_solid_ext(s2: &mapgeom::static_item::solid2::CPlugSolid2Model,
     Some(LmMesh { verts, indices })
 }
 
+/// Per LOD-0 geom the LM-uv SELECTION the builder makes and the range of the set it took (E2, the coverage-outside-the-rect
+/// cell): material link, the shader's PreLightGen tc (`lm_uv_index_cached`), which sets the visual carries, the set taken, its uv range.
+pub fn geom_uv_report(s2: &mapgeom::static_item::solid2::CPlugSolid2Model, externals: Option<&[(u32, String)]>) -> Vec<String> {
+    use mapgeom::static_item::vstream::Elem;
+    let mut out = Vec::new();
+    for (gi, sg) in s2.shaded_geoms.iter().enumerate() {
+        let Some(vr) = s2.visuals.get(sg.visual_index as usize) else { continue };
+        let Some(mapgeom::static_item::Node::Visual(vis)) = vr.inline.as_deref() else { continue };
+        let link = geom_material_link_ext(s2, sg, externals);
+        let sel = lm_uv_index_cached(&link);
+        let st = vis.stream();
+        let has = |name: u32| st.map(|s| s.decls.iter().any(|d| d.name() == name)).unwrap_or(false);
+        let n_sets = vis.main.as_ref().map(|m| m.tex_coord_sets.len()).unwrap_or(0);
+        let has_normal = has(mapgeom::static_item::vstream::N_NORMAL);
+        let taken = lightmap_uvs_of_geom_ext(s2, sg, vis, externals);
+        let range = taken.as_ref().map(|uv| { let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]); for v in uv { for k in 0..2 { lo[k] = lo[k].min(v[k]); hi[k] = hi[k].max(v[k]); } } format!("[{:.4} {:.4}]..[{:.4} {:.4}]", lo[0], lo[1], hi[0], hi[1]) }).unwrap_or("none".into());
+        let tc0_range = st.and_then(|s| s.decls.iter().zip(s.elems.iter()).find(|(d, _)| d.name() == mapgeom::static_item::vstream::N_TEXCOORD0).map(|(_, e)| e)).and_then(|e| if let Elem::Float2(u) = e { let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]); for v in u { for k in 0..2 { lo[k] = lo[k].min(v[k]); hi[k] = hi[k].max(v[k]); } } Some(format!("[{:.4} {:.4}]..[{:.4} {:.4}]", lo[0], lo[1], hi[0], hi[1])) } else { None }).unwrap_or("-".into());
+        let nv = st.and_then(|s| s.decls.iter().zip(s.elems.iter()).find(|(d, _)| d.name() == mapgeom::static_item::vstream::N_POSITION).map(|(_, e)| match e { Elem::Float3(p) => p.len(), _ => 0 })).unwrap_or(0);
+        out.push(format!("geom {gi}: visual {} lod_mask {:#x} {nv} verts, material {} link '{}' → PreLightGen tc {:?}; stream tc0 {} tc1 {} (visual sets {n_sets}), normal {has_normal}; LM uv taken: {} range {range}; tc0 range {tc0_range}", sg.visual_index, sg.lod_mask, sg.material_index, link, sel, has(mapgeom::static_item::vstream::N_TEXCOORD0), has(mapgeom::static_item::vstream::N_TEXCOORD0 + 1), taken.is_some()));
+    }
+    out
+}
+
 /// The LM mesh of an item file's model.
 pub fn lm_mesh_of_item(bytes: &[u8]) -> Result<Option<LmMesh>, String> {
     let f = mapgeom::static_item::file::parse_file(bytes)?;
@@ -530,6 +553,26 @@ pub fn lm_scene_from_map_at(scene: &crate::geometry::Scene, layout: &crate::layo
         let Some(bytes) = item_bytes(name) else { continue };
         let Some(mesh) = lm_mesh_of_item(&bytes)? else { continue };
         let bounds = scene.models[*mi].plg_bounds.unwrap_or([0.0, 0.0, 1.0, 1.0]);
+        // LMTOOL_LM_UV_TRACE=1 (E2, 2026-09-28): the LM mesh's uv extent against the PLG bounds the chart ST maps onto the rect —
+        // a mesh uv outside [b_lo, b_hi] is geometry OUTSIDE the chart rect (the game's coverage is exactly the rect: RE 15 00:20Z)
+        if std::env::var_os("LMTOOL_LM_UV_TRACE").is_some() {
+            let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+            for v in &mesh.verts { for k in 0..2 { lo[k] = lo[k].min(v.uv[k]); hi[k] = hi[k].max(v.uv[k]); } }
+            let r0 = insts.iter().find_map(|&ii| rect_of.get(&(base + scene.instances[ii].item as u32)));
+            let ex = |d: f32, b: f32, w: i32| if b > 0.0 { d / b * (w as f32 - 0.25) } else { 0.0 };
+            let (du, dv) = (bounds[2] - bounds[0], bounds[3] - bounds[1]);
+            let (w, h) = r0.map(|r| (r[2], r[3])).unwrap_or((0, 0));
+            let spill = [ex(bounds[0] - lo[0], du, w), ex(hi[0] - bounds[2], du, w), ex(bounds[1] - lo[1], dv, h), ex(hi[1] - bounds[3], dv, h)];
+            let flag = if spill.iter().any(|&s| s > 0.5) { "SPILL" } else { "ok" };
+            eprintln!("lm-uv-trace: model {name}: {} verts, mesh uv [{:.6} {:.6}]..[{:.6} {:.6}], PLG bounds {:?}, rect {:?} → outside the rect by (L {:.2} R {:.2} T {:.2} B {:.2}) texels {flag}", mesh.verts.len(), lo[0], lo[1], hi[0], hi[1], bounds, r0, spill[0], spill[1], spill[2], spill[3]);
+            if flag == "SPILL" {
+                if let Ok(f) = mapgeom::static_item::file::parse_file(&bytes) {
+                    if let Some(s2) = f.item.static_object().and_then(|so| so.solid2()) {
+                        for l in geom_uv_report(s2, None) { eprintln!("    {l}"); }
+                    }
+                }
+            }
+        }
         let first = sc.instances.len();
         let mut n = 0usize;
         for &ii in insts {

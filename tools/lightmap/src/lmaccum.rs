@@ -1850,9 +1850,14 @@ pub fn replay_set_layers_sparse(fl: &LmFragList, sc: &LmScene, cb: &SetCb, world
         SET_PROJ_NS.fetch_add(t_proj.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
         let t_walk = std::time::Instant::now();
         let base = fl.start[p0] as usize;
+        // LMTOOL_SET_TEXEL_TRACE=x,y (diagnostic, E2 2026-09-28): the SET's whole walk at ONE pixel, per direction and peel — every
+        // fragment's projection (z, depth texel, layers there), each layer's stored depth and the compare's verdict, the colour taken,
+        // the pixel's final L — the record cell's question (pwc-day (676, 84): which of the 58 covering directions read what)
+        let trace_px: Option<usize> = set_texel_trace().filter(|&(x, y)| x < fl.w && y < fl.h).map(|(x, y)| (y * fl.w + x) as usize);
         for p in p0..p1 {
             let (a, b) = (fl.start[p] as usize, fl.start[p + 1] as usize);
             if a == b { continue; }
+            let tracing = trace_px == Some(p);
             let mut out: Option<[f32; 3]> = None;
             // THE LAYERS WORTH WALKING (perf 8.24): past the deepest layer any of the pixel's fragments can read, every read is
             // the clear (depth 1.0) and the compare `z ≥ 1.0` fails for every fragment with z < 1 — so when all of them have
@@ -1866,6 +1871,26 @@ pub fn replay_set_layers_sparse(fl: &LmFragList, sc: &LmScene, cb: &SetCb, world
                 if !(pf.z < 1.0) { all_below = false; }
             }
             let k_end = if all_below { kmax.min(nl) } else { nl };
+            if tracing {
+                let mut s = format!("set-texel-trace: dir {} ({:.5},{:.5},{:.5}) {} peel, {} layers (walk {k_end}), {} fragments:", SET_TRACE_DIR.load(std::sync::atomic::Ordering::Relaxed), cb.peel_dir[0], cb.peel_dir[1], cb.peel_dir[2], if world_box.is_some() { "FITTED" } else { "world" }, nl, b - a);
+                for (fi, f) in fl.frags[a..b].iter().enumerate() {
+                    let (m, ii) = fl.pairs[f.pair as usize];
+                    match &proj[a - base + fi] {
+                        None => s += &format!("\n    frag {fi}: mesh {m} inst {ii} tri {} pos ({:.4},{:.4},{:.4}) n ({:.3},{:.3},{:.3}) → facing away / clipped", f.tri, f.pos[0], f.pos[1], f.pos[2], f.nrm[0], f.nrm[1], f.nrm[2]),
+                        Some(pf) => {
+                            let nd = pf.drange.map(|(_, n)| n).unwrap_or(0);
+                            s += &format!("\n    frag {fi}: mesh {m} inst {ii} tri {} pos ({:.4},{:.4},{:.4}) n ({:.3},{:.3},{:.3}) → z {:.7}, depth texel has {nd} layers:", f.tri, f.pos[0], f.pos[1], f.pos[2], f.nrm[0], f.nrm[1], f.nrm[2], pf.z);
+                            for k in 0..k_end {
+                                let stored = match pf.drange { Some((f0, n)) if k < n => l0.frags[f0 + k].d, _ => 1.0 };
+                                let pass = match cmp { DepthCompare::Unorm16Round => (pf.z.clamp(0.0, 1.0) * 65535.0).round() >= (stored * 65535.0).round(), DepthCompare::Float => pf.z >= stored };
+                                let c = match pf.crange { Some((f0, n)) if k < n => l0.frags[f0 + k].rgb, _ => [0.0; 3] };
+                                s += &format!(" [L{k} d {:.7} {} rgb ({:.4},{:.4},{:.4})]", stored, if pass { "PASS" } else { "fail" }, c[0], c[1], c[2]);
+                            }
+                        }
+                    }
+                }
+                eprintln!("{s}");
+            }
             for k in 0..k_end {
                 // LMTOOL_TILE_SKY=0 (study, F 2026-09-27): a tile pass (world_box set) leaves the dome layer (layer 0) out — a texel whose
                 // every surface layer fails keeps the world pass's value instead of the tile's sky
@@ -1894,6 +1919,7 @@ pub fn replay_set_layers_sparse(fl: &LmFragList, sc: &LmScene, cb: &SetCb, world
                 // SAFETY: the chunks own disjoint pixel ranges
                 unsafe { *(px_ptr as *mut u32).add(p) = crate::gpufmt::pack_r11g11b10(rgb, Rounding::Truncate); }
             }
+            if tracing { eprintln!("set-texel-trace: dir {} ({:.5},{:.5},{:.5}) {} peel → L {:?}", SET_TRACE_DIR.load(std::sync::atomic::Ordering::Relaxed), cb.peel_dir[0], cb.peel_dir[1], cb.peel_dir[2], if world_box.is_some() { "FITTED" } else { "world" }, out); }
         }
         SET_WALK_NS.fetch_add(t_walk.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
     });
@@ -1905,6 +1931,15 @@ pub fn replay_set_layers_sparse(fl: &LmFragList, sc: &LmScene, cb: &SetCb, world
 
 static SET_PROJ_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static SET_WALK_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The sweep direction index the SET trace labels its lines with (set by the caller per direction when the trace is on).
+pub static SET_TRACE_DIR: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(u32::MAX);
+
+/// LMTOOL_SET_TEXEL_TRACE=x,y, read once (the environment lock is not for the per-pixel path).
+pub fn set_texel_trace() -> Option<(u32, u32)> {
+    static V: std::sync::OnceLock<Option<(u32, u32)>> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("LMTOOL_SET_TEXEL_TRACE").ok().and_then(|s| { let v: Vec<u32> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect(); if v.len() == 2 { Some((v[0], v[1])) } else { None } }))
+}
 
 pub fn replay_set_layers<L: LayerRead>(fl: &LmFragList, sc: &LmScene, cb: &SetCb, world_box: Option<[[f32; 2]; 2]>, layers: &[L], cmp: DepthCompare, tgt: &mut DirTarget) {
     assert_eq!((fl.w, fl.h), (tgt.w, tgt.h));
@@ -1998,6 +2033,7 @@ pub fn replay_hbasis(fl: &LmFragList, sc: &LmScene, cb: &HbCb, ilightdir: &DirTa
                 let [b0, b1, b2] = f.b;
                 let v2 = [o2a[0] * b0 + o2b[0] * b1 + o2c[0] * b2, o2a[1] * b0 + o2b[1] * b1 + o2c[1] * b2, o2a[2] * b0 + o2b[2] * b1 + o2c[2] * b2];
                 let o = ps_17122(v2, o3a, l, cb);
+                if set_texel_trace() == Some((x, y)) { eprintln!("hb-texel-trace: dir {} D ({:.5},{:.5},{:.5}) frag mesh {m} inst {ii} tri {} L ({:.5},{:.5},{:.5}) o2 ({:.4},{:.4},{:.4}) o3 ({:.3},{:.3},{:.3},{:.3}) → C0 += ({:+.6},{:+.6},{:+.6}) a += {:.6}", SET_TRACE_DIR.load(std::sync::atomic::Ordering::Relaxed), cb.peel_dir[0], cb.peel_dir[1], cb.peel_dir[2], f.tri, l[0], l[1], l[2], v2[0], v2[1], v2[2], o3a[0], o3a[1], o3a[2], o3a[3], o[0][0], o[0][1], o[0][2], o[0][3]); }
                 // SAFETY: the chunks own disjoint pixel ranges
                 unsafe {
                     if let Some(op) = owner_p { *(op as *mut u8).add(p) = m as u8 + 1; }

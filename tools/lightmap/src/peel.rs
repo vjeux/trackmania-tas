@@ -5386,6 +5386,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                 let lm_draws: Option<(&crate::lmaccum::LmScene, Vec<crate::lmaccum::SetDraw>)> = prm.lm_scene.as_ref().filter(|_| dir_lm.is_some()).map(|lm| {
                     let raster = crate::lmaccum::LmRasterCb::for_offset(di, 2048, 2048);
                     let cb = crate::lmaccum::SetCb { world_pw01_shadow: frame.world_pw01(), peel_dir: *d };
+                    if crate::lmaccum::set_texel_trace().is_some() { crate::lmaccum::SET_TRACE_DIR.store(di as u32, std::sync::atomic::Ordering::Relaxed); }
                     // THE TILE'S CLIP IS ITS OWN CELL (port engineer G, 2026-09-26): VS 17115's four clip distances are the WorldBoxMin/MaxXZ of
                     // the peel being accumulated — for a tiled plan the TILE's cell (RE 7; `prm.peel_tile_clip`, filled by the plan), for the
                     // captured single-cell pwc-day the items' box (the two coincide there). The items' union box (`fitted_world_box`) stood in for
