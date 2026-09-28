@@ -12,8 +12,8 @@
 //! * (the AddAmbient dispatch of the same directions — CS 17125 right after the environment render — is engineer A's
 //!   `BakeParams::ambient_out`, wired beside this one; its xyz is the record's LAmbient);
 //! * at the direction's end the two folds PS 1112 (`probepass::probe_fold`): the colour volume (17056 / 8451)
-//!   `+= cur · (2/N, 2/N, 2/N, sweep 0 ? 1/N : 0)`, the signed volume (17059 / 8454) `+= cur · 4·D.y/N` on all
-//!   four channels (frame 127448 eids 7150 / 7175: (1/128, 1/128, 1/128, 1/256) and 4·0.11708/256; frame 7534
+//!   `+= cur · (B/N, B/N, B/N, sweep 0 ? 1/N : 0)`, the signed volume (17059 / 8454) `+= cur · 2·B·D.y/N` on all
+//!   four channels, B = the blended mood's BounceFactor (2 on BlueBay Day: frame 127448 eids 7150 / 7175: (1/128, 1/128, 1/128, 1/256) and 4·0.11708/256; frame 7534
 //!   eids 13390 / 13415: (1/64, 1/64, 1/64, 0) and 4·(−0.16104)/128) — all 32 slices, no scissor.
 //!
 //! `ProbeToShadow` = ProbeToWorld · WorldPw01Shadow with ProbeToWorld = diag(cell, cell, cell) + the block's
@@ -86,7 +86,7 @@ pub struct ProbeBake {
     pub offsets: Option<Volume3>,
     /// The colour fold (17056): Σ_sweeps Σ_dirs 2/N · the first surface's colour, α = Σ_{sweep 0} 1/N · [written].
     pub colour: Volume3,
-    /// The signed fold (17059): Σ 4·D.y/N · (colour, α).
+    /// The signed fold (17059): Σ 2·BounceFactor·D.y/N · (colour, α) (FUN_140233b50 l.475–480; 4·D.y/N at BounceFactor 2).
     pub updown: Volume3,
     /// The sky visibility (17160, R16F): Σ_{sky sweep, D.y > 0} 4·D.y/N · [nothing nearer along D].
     pub skyvis: Volume3,
@@ -186,7 +186,9 @@ impl ProbeBake {
         self.cur_writes.push(written);
         let upward = sky_sweep && dir[1] > 0.0;
         if upward && k == 1 {
-            // OutScale = 4·D.y/N (frame 127448 eid 3022: 0.0018293475 = 4·0.11707824/256)
+            // OutScale = 4·D.y/N (frame 127448 eid 3022: 0.0018293475 = 4·0.11707824/256) — a LITERAL 4, no BounceFactor: FUN_140233b50
+            // l.185 `state+0x54 = 1/N`, l.346 `cb = (D.x, D.y, D.z, 4 · state+0x54)` (E4's read, 2026-09-28: the up/down FOLD below is the
+            // one that carries BounceFactor)
             let s = 4.0f32 * dir[1] / n_dirs as f32;
             for b in &self.blocks {
                 let d = b.draw(pw01, s);
@@ -213,7 +215,13 @@ impl ProbeBake {
         // Day is BounceFactor 2), `bounce_factor` set by the bake (2.0 until set)
         let two = self.bounce_factor / n;
         let a = if sweep == 0 { 1.0f32 / n } else { 0.0 };
-        let s = 4.0f32 * dir[1] / n;
+        // THE UP/DOWN FOLD's SCALE = 2 · BounceFactor · D.y / N — RenderLightIndirectDome FUN_140233b50 (decomp2/140233b50.c l.475–480:
+        // `fVar23 = params->BounceFactor(+0x20) · state->dir.y(+0x4c); scale = (fVar23 + fVar23) / N`), read by E4 2026-09-28 17:55Z. The
+        // transcription carried the CAPTURED constant 4·D.y/N (BlueBay Day, BounceFactor 2) as a literal 4: right at every BounceFactor-2
+        // mood, +24 % at np-tk3/tk3nl2 0x5000 (the blended BounceFactor 1.6075615 → 4/(2·1.6076) = 1.2441 vs the measured 1.2438) and
+        // +11 % of the +17 % at Stadium Sunset (BounceFactor 1.8; the other +5 % is the colour's) — V4-3's defect (5), the frame_info[1]
+        // word (max |up/down| over the valid probes) and every image-2 byte on those moods.
+        let s = (self.bounce_factor * dir[1] + self.bounce_factor * dir[1]) / n;
         let depth = self.dims[2];
         crate::probepass::probe_fold(&mut self.colour, &self.cur, [two, two, two, a], 0, depth);
         crate::probepass::probe_fold(&mut self.updown, &self.cur, [s, s, s, s], 0, depth);
