@@ -102,6 +102,10 @@ pub struct ModelGeom {
     /// game's CPlugTree bounding box (the block record's box, `lmtiles::model_box`) is the union over the solid's
     /// visuals in this order; `stored_boxes` keeps only the LOD-0 ones.
     pub stored_boxes_all: Vec<(i32, [f32; 3], [f32; 3])>,
+    /// A STOCK VEGETATION species (NPlugVeget `.VegetTreeModel.Gbx`, E5 2026-09-28): the tree path's per-vertex data and material
+    /// rules (`stockveg`). Such a model is chartless (no LM uv, no record of its own — the kind-0 legacy record is the layout's),
+    /// drawn in the peel as BaseColor × its per-vertex sun light with the tree PS's alpha cut, cast in the sun map at 0.3 bilinear.
+    pub veget: Option<std::sync::Arc<crate::stockveg::VegetModel>>,
 }
 
 pub fn sub(a: V3, b: V3) -> V3 {
@@ -742,6 +746,10 @@ pub struct Scene {
     pub alpha_masks: BTreeMap<String, AlphaMask>,
     /// The model indices resolved from the packs (stock items), for the lamp-class studies.
     pub stock_models: std::collections::HashSet<usize>,
+    /// Per instance: the STOCK VEGETATION pose the tree programs read (g_Buf_AllTreeInstance_TQuats — the varied quaternion,
+    /// the translation, the scale draw); None for every other instance (`stockveg`). Same length as `instances` when any tree
+    /// is placed, else empty.
+    pub veget_poses: Vec<Option<crate::stockveg::VegetPose>>,
     /// The cut-out textures' mean opaque colour by file (the cards' albedo; sRGB-encoded 0..1).
     pub card_albedo: BTreeMap<String, [f32; 3]>,
     /// The link-less materials' diffuse textures' mean colour by file (their bounce albedo).
@@ -813,6 +821,10 @@ pub struct AlphaMask {
     /// The full alpha mip chain as the GPU samples it (`alphatex`): the peel's alpha test filters it at
     /// the fragment's level of detail; None = the point-sampled mask above.
     pub tex: Option<std::sync::Arc<crate::alphatex::AlphaTex>>,
+    /// A stock tree material's mask (`stockveg`): the peel tests BaseColor.a ≥ 0.5 through SGbxWrap_Aniso and the sun map
+    /// BaseColor.a ≥ 0.3 through SGbxWrap_Bilinear (leaf materials; bark casts opaque) — the tree programs' own rules, not the
+    /// item cards' 128/255 ClampEdge test (`tex` is None on such a mask).
+    pub veget: Option<std::sync::Arc<crate::stockveg::VegetRule>>,
 }
 
 impl AlphaMask {
@@ -827,7 +839,7 @@ impl AlphaMask {
             }
         }
         let albedo = if n > 0 { [(sum[0] / n as f64) as f32, (sum[1] / n as f64) as f32, (sum[2] / n as f64) as f32] } else { [0.3; 3] };
-        AlphaMask { w, h, bits, albedo, tex: None }
+        AlphaMask { w, h, bits, albedo, tex: None, veget: None }
     }
     /// Fraction of opaque texels.
     pub fn coverage(&self) -> f32 {
@@ -969,8 +981,62 @@ impl Scene {
         let collection_name: String = { let c = m.items.first().map(|it| it.collection_raw).unwrap_or(0x1a); match c { 0x1a => "Stadium", 0x1c => "BlueBay", 0x10 => "RedIsland", 0x1d => "WhiteShore", 0xf => "GreenCoast", _ => "Stadium" }.to_string() };
         let mut stock_bytes: BTreeMap<String, Vec<u8>> = BTreeMap::new();
         let mut stock_model_idx: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        // STOCK VEGETATION (E5, 2026-09-28; RE 16 15:45Z: the port placed none — the bushes live in `<Coll>\Items\Vegetation\`, Forest /
+        // Grove are variant lists): a stock item the `<Coll>\Items\<name>` lookup misses is looked up as a vegetation item (the layout's own
+        // rule, records.rs: find_item_file + veget::item_species); each SPECIES becomes one chartless ModelGeom (stockveg::build_model, the
+        // drawn LOD group), each placement an instance at its VARIED pose (the item spawner's rotation + scale draws) with the pose kept in
+        // `veget_poses` for the tree programs. LMTOOL_STOCK_VEGET=0 = the pre-E5 scene (the bushes absent).
+        let veget_on = crate::stockveg::enabled();
+        let mut veget_species: BTreeMap<String, Option<Vec<String>>> = BTreeMap::new();
+        let mut veget_params: BTreeMap<String, mapgeom::veget_instance::TreeParams> = BTreeMap::new();
+        let mut veget_textures: BTreeMap<String, std::sync::Arc<crate::stockveg::VegetTex>> = BTreeMap::new();
+        let mut veget_poses: Vec<Option<crate::stockveg::VegetPose>> = Vec::new();
+        let mut veget_failed: BTreeMap<String, String> = BTreeMap::new();
+        let (mut n_veget_inst, mut n_veget_models) = (0usize, 0usize);
         for (i, it) in m.items.iter().enumerate() {
-            let mi = match index.get(&it.model) {
+            // a vegetation item: its species (by the placement's variant byte) is the model
+            let mut veget_pose: Option<crate::stockveg::VegetPose> = None;
+            let model_key: String = if veget_on && by_name.get(&it.model).is_none() && stock_store.is_some() {
+                let st = stock_store.as_mut().unwrap();
+                let list = veget_species.entry(it.model.clone()).or_insert_with(|| crate::stockveg::species_of(st, it.model.trim_end_matches(".Item.Gbx")).or_else(|| crate::stockveg::species_of(st, &it.model))).clone();
+                match list.as_deref().and_then(|l| crate::stockveg::species_for(l, it.variant()).cloned()) {
+                    Some(species) => {
+                        let key = format!("veget:{species}");
+                        if !index.contains_key(&key) && !veget_failed.contains_key(&species) {
+                            match crate::stockveg::build_model(st, &species, &mut veget_textures) {
+                                Ok(g) => {
+                                    let vm = g.veget.clone().expect("veget model");
+                                    let _ = vm;
+                                    models.push(g);
+                                    model_names.push(key.clone());
+                                    index.insert(key.clone(), models.len() - 1);
+                                    stock_model_idx.insert(models.len() - 1);
+                                    n_veget_models += 1;
+                                }
+                                Err(e) => { eprintln!("stock vegetation: {species}: {e} — its placements are NOT drawn"); veget_failed.insert(species.clone(), e); }
+                            }
+                        }
+                        if let Some(&mi) = index.get(&key) {
+                            let params = *veget_params.entry(species.clone()).or_insert_with(|| {
+                                let tm = mapgeom::veget::parse_tree_model(st, &species).expect("veget model parsed once already");
+                                mapgeom::veget_instance::TreeParams { scale_var01: tm.scale_var01, angle_max_rot_xz_deg: tm.angle_max_rot_xz_deg, enable_random_rotation_y: tm.enable_random_rotation_y != 0 }
+                            });
+                            let (xf, q, t, s) = crate::stockveg::instance_xform(it, params);
+                            veget_pose = Some(crate::stockveg::VegetPose { q, t, scale: s });
+                            let pose = ItemPose { yaw: it.yaw, pitch: it.pitch, roll: it.roll, pos: it.pos, pivot: it.pivot, scale: it.scale };
+                            while veget_poses.len() < instances.len() { veget_poses.push(None); }
+                            veget_poses.push(veget_pose);
+                            instances.push(Instance { item: i, model: mi, xf, model_name: it.model.clone(), pose, lm_quality: lm_quality.get(i).copied().unwrap_or(0), colour: colours.get(i).copied().unwrap_or(0) });
+                            n_veget_inst += 1;
+                            continue;
+                        }
+                        it.model.clone()
+                    }
+                    None => it.model.clone(),
+                }
+            } else { it.model.clone() };
+            let _ = veget_pose;
+            let mi = match index.get(&model_key) {
                 Some(&k) => k,
                 None => {
                     // embedded: the zip's bytes; else a stock item through the packs (its model is an external prefab)
@@ -1033,6 +1099,17 @@ impl Scene {
         for g in &models {
             for file in &g.alpha_tex {
                 if alpha_masks.contains_key(file) { continue; }
+                // a stock tree material's mask: the rule (the pak's D image, the tree programs' own samplers and cuts) — no zip file
+                if let Some(vm) = g.veget.as_ref() {
+                    if let Some(slot) = g.alpha_tex.iter().position(|f| f == file) {
+                        let rule = vm.rules[slot].clone();
+                        let mut mk = AlphaMask { w: 1, h: 1, bits: vec![1u8], albedo: [0.3; 3], tex: None, veget: Some(rule) };
+                        // the point mask (the fallback nobody should reach for a tree): opaque everywhere
+                        mk.bits[0] = 1;
+                        alpha_masks.insert(file.clone(), mk);
+                        continue;
+                    }
+                }
                 let Some(bytes) = by_name.get(file) else { missing_alpha.insert(file.clone()); continue };
                 // LMTOOL_MASK_RES=N: the cut-out decided on the texture reduced to N×N (its alpha box-averaged
                 // — the game's peel samples the leaf texture at the peel's pixel footprint, i.e. a coarse mip,
@@ -1084,14 +1161,23 @@ impl Scene {
         // casters, receivers, bouncers, lamps — not only to the record numbering; `set_kept_items` is fed by `lmtool bake --kept`
         // (or the `<map>.kept` / `<stem>-kept.txt` file beside the map by default).
         let mut instances = instances;
+        if !veget_poses.is_empty() {
+            while veget_poses.len() < instances.len() { veget_poses.push(None); }
+            eprintln!("stock vegetation: {n_veget_inst} placements of {n_veget_models} species drawn through the tree path (LOD group {}; LMTOOL_STOCK_VEGET=0 leaves them out){}", crate::stockveg::lod_group(), if veget_failed.is_empty() { String::new() } else { format!("; {} species FAILED: {:?}", veget_failed.len(), veget_failed.keys().collect::<Vec<_>>()) });
+        }
         if let Some(Some(kept)) = KEPT_ITEMS.get() {
             let before = instances.len();
             let n_lights_before: usize = instances.iter().map(|i| models[i.model].lights.len()).sum();
+            if !veget_poses.is_empty() {
+                let mut kept_poses = Vec::with_capacity(instances.len());
+                for (inst, vp) in instances.iter().zip(veget_poses.iter()) { if kept.contains(&inst.item) { kept_poses.push(*vp); } }
+                veget_poses = kept_poses;
+            }
             instances.retain(|i| kept.contains(&i.item));
             let n_lights: usize = instances.iter().map(|i| models[i.model].lights.len()).sum();
             eprintln!("reduced oracle: baking the KEPT SET — {} of {} item instances kept ({} of {} items in the list; {} dropped), {} of {} item lights", instances.len(), before, kept.len(), m.items.len(), before - instances.len(), n_lights, n_lights_before);
         }
-        Ok(Scene { models, model_names, instances, item_count: m.items.len(), decor: Vec::new(), warp_vs: Vec::new(), warp: None, alpha_masks, card_albedo, tex_albedo, stock_models: stock_model_idx })
+        Ok(Scene { models, model_names, instances, item_count: m.items.len(), decor: Vec::new(), warp_vs: Vec::new(), warp: None, alpha_masks, card_albedo, tex_albedo, stock_models: stock_model_idx, veget_poses })
     }
 
     pub fn tri_count(&self) -> usize {

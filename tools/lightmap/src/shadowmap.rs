@@ -336,6 +336,20 @@ pub struct AlphaTest {
     pub threshold: f32,
     pub texture: AlphaTexture,
     pub max_anisotropy: f32,
+    /// A STOCK TREE material's caster test instead (Tree_SelfAO_Shadow_p: leaf materials BaseColor.a ≥ 0.3 through SGbxWrap_Bilinear;
+    /// `stockveg::VegetRule::sun_passes`) — `threshold` / `texture` / `max_anisotropy` are unused when set.
+    pub veget: Option<std::sync::Arc<crate::stockveg::VegetRule>>,
+}
+
+impl AlphaTest {
+    /// The item cards' test: PS 1147 with the cut-out texture, GbxShadowAlphaThreshold and the material sampler's anisotropy.
+    pub fn cards(threshold: f32, texture: AlphaTexture, max_anisotropy: f32) -> AlphaTest {
+        AlphaTest { threshold, texture, max_anisotropy, veget: None }
+    }
+    /// A stock tree material's test.
+    pub fn veget(rule: std::sync::Arc<crate::stockveg::VegetRule>) -> AlphaTest {
+        AlphaTest { threshold: crate::stockveg::SUN_ALPHA_CUT, texture: AlphaTexture { w: 1, h: 1, mips: vec![(1, 1, vec![1.0])] }, max_anisotropy: 1.0, veget: Some(rule) }
+    }
 }
 
 /// One caster draw of the pass.
@@ -692,6 +706,13 @@ pub fn draw_caster(d: &CasterDraw, cam: &LightCamera, st: &RasterState, tgt: &mu
                     return;
                 }
                 if let (Some(at), true) = (&d.alpha, o.alpha_test) {
+                    if let Some(vr) = at.veget.as_deref() {
+                        // Tree_SelfAO_Shadow_p: the leaf material's BaseColor.a − 0.3 < 0 → discard (bilinear, mip point, wrap); bark = no test
+                        if !vr.sun_passes(fr.uv, fr.duv_dx, fr.duv_dy) {
+                            stats.alpha_discarded += 1;
+                            return;
+                        }
+                    } else {
                     let (a, lod, taps) = at.texture.sample_aniso_plan(fr.uv, fr.duv_dx, fr.duv_dy, at.max_anisotropy);
                     if shadow_alpha_stats() {
                         // LMTOOL_SHADOW_ALPHA_STATS=1 (E2, 2026-09-28): per LOD bucket the card fragments tested / passed, and what the
@@ -706,6 +727,7 @@ pub fn draw_caster(d: &CasterDraw, cam: &LightCamera, st: &RasterState, tgt: &mu
                     if a - at.threshold < 0.0 {
                         stats.alpha_discarded += 1;
                         return;
+                    }
                     }
                 }
                 let bias = depth_bias_d16(st, fr.max_depth_slope);

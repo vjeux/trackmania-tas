@@ -1311,6 +1311,7 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
                 // (the footprint is computed on the first fragment that needs it: most leaf triangles cover
                 // no pixel centre at all)
                 let mut fp_tex: Option<Option<(&crate::alphatex::AlphaTex, crate::alphatex::TapPlan)>> = None;
+                let mut fp_veg: Option<crate::alphatex::Footprint> = None;
                 if raster_stats { rs_tris += 1; rs_tested += raster::bbox_pixels([[x0, y0], [x1, y1], [x2, y2]], res, res_y, band_clip); }
                 // (counting) an environment triangle: Some(drawn); an item triangle: its depth-bias term (once
                 // per triangle — `tri_slope` per fragment was 8 % of a bake)
@@ -1420,10 +1421,15 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
                                     continue;
                                 }
                             }
-                            let op = match fp {
+                            let op = if let Some(vr) = mk.veget.as_deref() {
+                                // A STOCK TREE'S CARD (stockveg): PeelDepthDiffuse_Tree_p's own test — BaseColor.a ≥ 0.5 through SGbxWrap_Aniso
+                                // (the queue and the 128/255 ClampEdge plan are the item cards')
+                                let fpv = fp_veg.get_or_insert_with(|| vr.footprint([[x0, y0], [x1, y1], [x2, y2]], t.uv0));
+                                vr.peel_passes(u, v, fpv)
+                            } else { match fp {
                                 Some((tx, fp)) if !*ALPHA_POINT => if alpha_point_mip() { tx.passes_point(u, v, fp, ALPHA_THRESHOLD) } else { tx.passes_planned(u, v, fp, ALPHA_THRESHOLD, crate::alphatex::Address::ClampEdge) },
                                 _ => mk.opaque(u, v),
-                            };
+                            } };
                             if abuf_debug_wants(x, y) { abuf_debug_line(x, y, "card", ti, t, frame, Some((u, v)), Some(op), z); }
                             if abuf_debug_at(x, y) { let plan_s = match fp { Some((tx, p)) => format!(" lod {:.3} levels {}/{} two {} taps {} axis ({:.4},{:.4}) alpha {:.5} one-tap-l0 {:.5} one-tap-l1 {:.5} by-taps {} taps-of-plan [{}]", p.lod, p.l0, p.l1, p.two, p.n, p.axis[0], p.axis[1], tx.sample_planned_clamp(u, v, p), tx.bilinear_tap(u, v, 0), tx.bilinear_tap(u, v, 1), (1..=8usize).map(|k| { let mut pk = p.clone(); pk.n = k; format!("{k}:{:.5}", tx.sample_planned_clamp(u, v, &pk)) }).collect::<Vec<_>>().join(" "), (0..p.n).map(|i| { let sft = if p.n > 1 { (i as f32 + 0.5) / p.n as f32 - 0.5 } else { 0.0 }; format!("{:.5}", tx.bilinear_tap(u + p.axis[0] * sft, v + p.axis[1] * sft, p.l0)) }).collect::<Vec<_>>().join(" ")), None => String::new() }; eprintln!("abuf debug ({x},{y}) hd={:.2}: card tri {ti} inst {} model tri {} mask {} uv ({u:.4},{v:.4}) opaque {op} z {z:.3} z01 {:.5}{plan_s}", frame.half_d, t.inst, t.tri, t.alpha, frame.z01(z));  }
                             if !op {
@@ -1887,6 +1893,7 @@ pub fn build_abuffer_wanted(tris: &[WTri], frame: &PeelFrame, threads: usize, zm
                         // (the footprint is computed on the first fragment that needs it: most leaf triangles cover
                 // no pixel centre at all)
                 let mut fp_tex: Option<Option<(&crate::alphatex::AlphaTex, crate::alphatex::TapPlan)>> = None;
+                let mut fp_veg: Option<crate::alphatex::Footprint> = None;
                         raster::triangle(res, res_y, [[x0, y0], [x1, y1], [x2, y2]], |x, y, b| {
                             // the game's viewport (1, 1, w−2, h−2): the outer ring is never drawn
                             if x < inset || y < inset || x + inset >= res || y + inset >= res_y {
@@ -1899,10 +1906,13 @@ pub fn build_abuffer_wanted(tris: &[WTri], frame: &PeelFrame, threads: usize, zm
                                     let u = t.uv0[0][0] * b[0] + t.uv0[1][0] * b[1] + t.uv0[2][0] * b[2];
                                     let v = t.uv0[0][1] * b[0] + t.uv0[1][1] * b[1] + t.uv0[2][1] * b[2];
                                     let fp = fp_tex.get_or_insert_with(|| m.tex.as_ref().map(|tx| (tx.as_ref(), tx.plan(&crate::alphatex::Footprint::of_triangle([[x0, y0], [x1, y1], [x2, y2]], t.uv0, tx.w(), tx.h()), *ALPHA_ANISO))));
-                                    let op = match fp {
+                                    let op = if let Some(vr) = m.veget.as_deref() {
+                                        let fpv = fp_veg.get_or_insert_with(|| vr.footprint([[x0, y0], [x1, y1], [x2, y2]], t.uv0));
+                                        vr.peel_passes(u, v, fpv)
+                                    } else { match fp {
                                         Some((tx, fp)) if !*ALPHA_POINT => if alpha_point_mip() { tx.passes_point(u, v, fp, ALPHA_THRESHOLD) } else { tx.passes_planned(u, v, fp, ALPHA_THRESHOLD, crate::alphatex::Address::ClampEdge) },
                                         _ => m.opaque(u, v),
-                                    };
+                                    } };
                                     if CARD_DUMP.is_some() {
                                         // the footprint's derivatives (the TapPlan no longer carries them): recomputed for the dump only
                                         let (fdx, fdy) = fp.as_ref().map(|(tx, _)| { let f = crate::alphatex::Footprint::of_triangle([[x0, y0], [x1, y1], [x2, y2]], t.uv0, tx.w(), tx.h()); (f.dx, f.dy) }).unwrap_or(([0.0; 2], [0.0; 2]));
@@ -2255,6 +2265,27 @@ fn fragment_radiance(scene: &Scene, bvh: &Bvh, prm: &BakeParams, shadow: Option<
     };
     if !is_front {
         return [0.0; 3];
+    }
+    // A STOCK TREE'S FRAGMENT (stockveg, PeelDepthDiffuse_Tree_p): BaseColor(TexCoord0) × the interpolated per-vertex sun light
+    // (Tree_VertexAddLight), G ≥ 1e-5 — never the ILightInput atlas (chartless), never the port's albedo model. Without the
+    // vertex lights (a bake stage before the setup chain) the tree is a black occluder.
+    if wt.inst != DECOR_INST {
+        let inst = &scene.instances[wt.inst as usize];
+        if let Some(vm) = scene.models[inst.model].veget.as_deref() {
+            let lights = prm.veget_light.as_ref().and_then(|vl| vl.per_inst.get(wt.inst as usize)).and_then(|l| l.as_ref());
+            let (Some(lights), Some(t)) = (lights, scene.models[inst.model].tris.get(wt.tri as usize)) else { return [0.0; 3] };
+            let v = sub(hit_p, wt.p0);
+            let (d00, d01, d11, d20, d21) = (dot(wt.e1, wt.e1), dot(wt.e1, wt.e2), dot(wt.e2, wt.e2), dot(v, wt.e1), dot(v, wt.e2));
+            let den = d00 * d11 - d01 * d01;
+            if den.abs() <= 1e-18 { return [0.0; 3]; }
+            let b1 = ((d11 * d20 - d01 * d21) / den).clamp(0.0, 1.0);
+            let b2 = ((d00 * d21 - d01 * d20) / den).clamp(0.0, 1.0);
+            let b0 = (1.0 - b1 - b2).max(0.0);
+            let (x0, y0, _) = frame.project(wt.p0);
+            let (x1, y1, _) = frame.project(add(wt.p0, wt.e1));
+            let (x2, y2, _) = frame.project(add(wt.p0, wt.e2));
+            return crate::stockveg::peel_colour(vm, lights, t, wt.tri as usize, [b0, b1, b2], [[x0, y0], [x1, y1], [x2, y2]]);
+        }
     }
     // THE GAME'S COLOUR PATH (PS 17131/17134, `peelcolor`): the ILightInput atlas sampled at the fragment's LM
     // uv — TexCoord1 interpolated at the hit, through the instance's chart ST — with SGbxClamp_Aniso (one
@@ -2967,7 +2998,8 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
                 [0.0f32; 3]
             } else {
                 let hit_p = frame.unproject(x as f32 + 0.5, y as f32 + 0.5, f.z);
-                if shade_cached {
+                // (a stock tree's fragment always takes the full function: its colour is not the per-triangle model's)
+                if shade_cached && !(wt.inst != DECOR_INST && scene.models[scene.instances[wt.inst as usize].model].veget.is_some()) {
                     // the per-triangle half from the chunk's cache (computed on a miss by the same statements), the
                     // per-fragment half in the full function's order
                     let slot = &mut shade[(f.tri as usize) & (BIAS_CACHE - 1)];
@@ -3538,6 +3570,7 @@ pub fn exact_item_layers_direct(tris: &[WTri], frame: &PeelFrame, scene: &Scene,
                 let (x2, y2, z2) = frame.project(p2);
                 let mask = if t.alpha != u16::MAX { masks.get(t.alpha as usize) } else { None };
                 let mut fp_tex: Option<Option<(&crate::alphatex::AlphaTex, crate::alphatex::TapPlan)>> = None;
+                let mut fp_veg: Option<crate::alphatex::Footprint> = None;
                 raster::triangle_clipped_masked(w, h, [[x0, y0], [x1, y1], [x2, y2]], band_clip, None, |x, y, bc| {
                     if x < inset || y < inset || x + inset >= w || y + inset >= h {
                         return;
@@ -3548,10 +3581,13 @@ pub fn exact_item_layers_direct(tris: &[WTri], frame: &PeelFrame, scene: &Scene,
                             let u = t.uv0[0][0] * bc[0] + t.uv0[1][0] * bc[1] + t.uv0[2][0] * bc[2];
                             let v = t.uv0[0][1] * bc[0] + t.uv0[1][1] * bc[1] + t.uv0[2][1] * bc[2];
                             let fp = fp_tex.get_or_insert_with(|| m.tex.as_ref().map(|tx| (tx.as_ref(), tx.plan(&crate::alphatex::Footprint::of_triangle([[x0, y0], [x1, y1], [x2, y2]], t.uv0, tx.w(), tx.h()), *ALPHA_ANISO))));
-                            let op = match fp {
+                            let op = if let Some(vr) = m.veget.as_deref() {
+                                let fpv = fp_veg.get_or_insert_with(|| vr.footprint([[x0, y0], [x1, y1], [x2, y2]], t.uv0));
+                                vr.peel_passes(u, v, fpv)
+                            } else { match fp {
                                 Some((tx, fp)) if !*ALPHA_POINT => if alpha_point_mip() { tx.passes_point(u, v, fp, ALPHA_THRESHOLD) } else { tx.passes_planned(u, v, fp, ALPHA_THRESHOLD, crate::alphatex::Address::ClampEdge) },
                                 _ => m.opaque(u, v),
-                            };
+                            } };
                             if !op {
                                 return;
                             }

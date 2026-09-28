@@ -121,7 +121,7 @@ mod tests {
             warp: None,
             alpha_masks: Default::default(),
             card_albedo: Default::default(),
-            tex_albedo: Default::default(), stock_models: Default::default() }
+            tex_albedo: Default::default(), stock_models: Default::default(), veget_poses: Vec::new() }
     }
 
     #[test]

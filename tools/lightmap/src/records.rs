@@ -736,7 +736,8 @@ pub fn build_map_records(map_path: &str, scene: &crate::geometry::Scene, store: 
     };
     for (ii, it) in mf.items.iter().enumerate() {
         if let Some(k) = &opts.kept { if !k.contains(&ii) { continue; } }
-        if let Some(&ki) = inst_of_item.get(&ii) {
+        // (a STOCK VEGETATION instance — stockveg, E5 — is a scene instance now, but its record is the kind-0 legacy path's below)
+        if let Some(&ki) = inst_of_item.get(&ii).filter(|&&ki| scene.models[scene.instances[ki].model].veget.is_none()) {
             let inst = &scene.instances[ki];
             let m = &scene.models[inst.model];
             let Some(b) = m.plg_bounds else { if filter_trace { eprintln!("item-filter: item {ii} {} skipped: no PLG bounds; materials {:?}", it.model, m.mat_links); } continue };

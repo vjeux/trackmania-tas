@@ -125,11 +125,17 @@ pub fn shadow_from_map(scene: &crate::geometry::Scene, lm: &LmScene, cam: &Ortho
             Job::Item(ii) => {
                 let inst = &scene.instances[*ii];
                 let model = &scene.models[inst.model];
+                // LMTOOL_STOCK_VEGET_NOCAST=1 (study): the stock trees left out of the sun shadow map
+                if model.veget.is_some() && std::env::var_os("LMTOOL_STOCK_VEGET_NOCAST").is_some() { return; }
                 let rows = rows_of_xform(&inst.xf);
                 let mut opaque = CasterMesh { pos: Vec::new(), uv0: Vec::new(), indices: Vec::new() };
                 let mut cut: std::collections::BTreeMap<u16, CasterMesh> = std::collections::BTreeMap::new();
+                // a stock tree's material (stockveg): the rule of its mask — a bark material casts OPAQUE (Tree_SelfAO_Shadow_p blob 0 = `ret`),
+                // a leaf material through its own 0.3 bilinear test
+                let veget_rule = |a: u16| -> Option<std::sync::Arc<crate::stockveg::VegetRule>> { model.alpha_tex.get(a as usize).and_then(|n| scene.alpha_masks.get(n)).and_then(|mk| mk.veget.clone()) };
                 for t in &model.tris {
-                    let m = if t.alpha == u16::MAX { &mut opaque } else { cut.entry(t.alpha).or_insert_with(|| CasterMesh { pos: Vec::new(), uv0: Vec::new(), indices: Vec::new() }) };
+                    let bark = t.alpha != u16::MAX && veget_rule(t.alpha).map(|r| !r.leaf).unwrap_or(false);
+                    let m = if t.alpha == u16::MAX || bark { &mut opaque } else { cut.entry(t.alpha).or_insert_with(|| CasterMesh { pos: Vec::new(), uv0: Vec::new(), indices: Vec::new() }) };
                     let base = m.pos.len() as u16;
                     for k in 0..3 {
                         m.pos.push(t.p[k]);
@@ -144,10 +150,16 @@ pub fn shadow_from_map(scene: &crate::geometry::Scene, lm: &LmScene, cam: &Ortho
                 }
                 for (a, mesh) in cut {
                     let name = model.alpha_tex.get(a as usize).cloned().unwrap_or_default();
+                    if let Some(rule) = veget_rule(a) {
+                        let d = CasterDraw { eid: *n_draws as u64, mesh, instance_start: 0xffff_ffff, instance_count: 1, visual_to_world: Some(rows), tables: InstanceTables { dyna_u32: Vec::new(), static_meshs: Vec::new() }, alpha: Some(shadowmap::AlphaTest::veget(rule)), vsout: None };
+                        shadowmap::draw_caster(&d, &lcam, &st, tgt, 2, &o);
+                        *n_draws += 1;
+                        continue;
+                    }
                     let tex = alpha_cache.get(&name).cloned().flatten();
                     let Some(texture) = tex else { notes.push(format!("shadow: cut-out texture {name} not loaded — the caster is skipped")); continue };
                     let texture = shadowmap::AlphaTexture { w: texture.w, h: texture.h, mips: texture.mips.clone() };
-                    let d = CasterDraw { eid: *n_draws as u64, mesh, instance_start: 0xffff_ffff, instance_count: 1, visual_to_world: Some(rows), tables: InstanceTables { dyna_u32: Vec::new(), static_meshs: Vec::new() }, alpha: Some(shadowmap::AlphaTest { threshold: SHADOW_ALPHA_THRESHOLD, texture, max_anisotropy: 16.0 }), vsout: None };
+                    let d = CasterDraw { eid: *n_draws as u64, mesh, instance_start: 0xffff_ffff, instance_count: 1, visual_to_world: Some(rows), tables: InstanceTables { dyna_u32: Vec::new(), static_meshs: Vec::new() }, alpha: Some(shadowmap::AlphaTest::cards(SHADOW_ALPHA_THRESHOLD, texture, 16.0)), vsout: None };
                     shadowmap::draw_caster(&d, &lcam, &st, tgt, 2, &o);
                     *n_draws += 1;
                 }

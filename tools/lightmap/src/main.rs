@@ -1664,7 +1664,7 @@ fn run(mut a: Vec<String>) {
                 prm.sky_samples = f("--sky-samples").map(|s| s.parse().unwrap()).unwrap_or(16);
                 prm.sun_samples = 1;
                 let step = (scene.instances.len() / nitems).max(1);
-                let sub = lightmap::geometry::Scene { models: scene.models.clone(), model_names: scene.model_names.clone(), instances: scene.instances.iter().step_by(step).cloned().collect(), item_count: scene.item_count, decor: scene.decor.clone(), warp_vs: scene.warp_vs.clone(), warp: scene.warp.clone(), alpha_masks: scene.alpha_masks.clone(), card_albedo: scene.card_albedo.clone(), tex_albedo: scene.tex_albedo.clone(), stock_models: Default::default() };
+                let sub = lightmap::geometry::Scene { models: scene.models.clone(), model_names: scene.model_names.clone(), instances: scene.instances.iter().step_by(step).cloned().collect(), item_count: scene.item_count, decor: scene.decor.clone(), warp_vs: scene.warp_vs.clone(), warp: scene.warp.clone(), alpha_masks: scene.alpha_masks.clone(), card_albedo: scene.card_albedo.clone(), tex_albedo: scene.tex_albedo.clone(), stock_models: Default::default(), veget_poses: scene.veget_poses.iter().step_by(step).copied().collect() };
                 // the subset's instances must keep their own inst id for self-hit filtering: rebuild the bvh over all, but
                 // the shade() skip uses the instance index in `sub` — so we bake the subset against a bvh of the FULL scene
                 // whose inst ids are full-scene indices; map them
@@ -2294,6 +2294,12 @@ fn run(mut a: Vec<String>) {
                     if let Some(ll) = &lamp_light { *LAMP_LIGHT_ATLAS.lock().unwrap() = Some(std::sync::Arc::new(ll.clone())); }
                     let fm = lightmap::setupmap::build_with_lamps(&scene, &lm, &sbox, dir_in_world, prm.sun, &frozen, &item_bytes, false, lamp_light.as_ref());
                     for n in &fm.notes { eprintln!("setup-from-map: {n}"); }
+                    // STOCK VEGETATION's per-vertex sun (stockveg::vertex_lights = Tree_VertexAddLight on the setup chain's shadow map, the
+                    // sun camera's WorldPw01Shadow and the LM's LightRgb): the trees' peel colour for every sweep of this frame
+                    if scene.veget_poses.iter().any(|p| p.is_some()) {
+                        let vl = lightmap::stockveg::vertex_lights(&scene, &fm.pw01, dir_in_world, prm.sun, &fm.shadow);
+                        prm.veget_light = Some(std::sync::Arc::new(vl));
+                    }
                     // against the capture: the stages the e2e chain compares (the same entries) — --lm-from ROOT, or --lm-cap-root ROOT
                     // when the LM scene is the map's (the capture-less run compared stage by stage without switching its inputs)
                     if let Some(root) = f("--lm-from").or_else(|| f("--lm-cap-root")).map(std::path::PathBuf::from) {
@@ -3803,7 +3809,7 @@ fn run(mut a: Vec<String>) {
             prm.uv_bounds = has("--uv-bounds");
             if let Some(s) = f("--bounce") { prm.bounce = s.parse().unwrap(); }
             prm.sky_samples = 64;
-            let sub = lightmap::geometry::Scene { models: scene.models.clone(), model_names: scene.model_names.clone(), instances: vec![scene.instances[ii].clone()], item_count: scene.item_count, decor: scene.decor.clone(), warp_vs: scene.warp_vs.clone(), warp: scene.warp.clone(), alpha_masks: scene.alpha_masks.clone(), card_albedo: scene.card_albedo.clone(), tex_albedo: scene.tex_albedo.clone(), stock_models: Default::default() };
+            let sub = lightmap::geometry::Scene { models: scene.models.clone(), model_names: scene.model_names.clone(), instances: vec![scene.instances[ii].clone()], item_count: scene.item_count, decor: scene.decor.clone(), warp_vs: scene.warp_vs.clone(), warp: scene.warp.clone(), alpha_masks: scene.alpha_masks.clone(), card_albedo: scene.card_albedo.clone(), tex_albedo: scene.tex_albedo.clone(), stock_models: Default::default(), veget_poses: scene.veget_poses.get(ii).map(|p| vec![*p]).unwrap_or_default() };
             // bake at Nadeo's resolution
             prm.min_px = pw.max(ph); prm.max_px = pw.max(ph);
             let mine = lightmap::bake::bake_subset_px(&sub, &[ii as u32], &bvh, &prm, pw, ph);
@@ -3877,7 +3883,7 @@ fn run(mut a: Vec<String>) {
                     let (x, y) = mp.pos[ci]; let (w, h) = mp.size[ci];
                     let (px, py, pw, ph) = ((x as u32 + 1) / 2, (y as u32 + 1) / 2, (w as u32) / 2, (h as u32) / 2);
                     if pw < 4 || ph < 4 { continue; }
-                    let sub = lightmap::geometry::Scene { models: scene.models.clone(), model_names: scene.model_names.clone(), instances: vec![inst.clone()], item_count: scene.item_count, decor: scene.decor.clone(), warp_vs: scene.warp_vs.clone(), warp: scene.warp.clone(), alpha_masks: scene.alpha_masks.clone(), card_albedo: scene.card_albedo.clone(), tex_albedo: scene.tex_albedo.clone(), stock_models: Default::default() };
+                    let sub = lightmap::geometry::Scene { models: scene.models.clone(), model_names: scene.model_names.clone(), instances: vec![inst.clone()], item_count: scene.item_count, decor: scene.decor.clone(), warp_vs: scene.warp_vs.clone(), warp: scene.warp.clone(), alpha_masks: scene.alpha_masks.clone(), card_albedo: scene.card_albedo.clone(), tex_albedo: scene.tex_albedo.clone(), stock_models: Default::default(), veget_poses: scene.veget_poses.get(ii).map(|p| vec![*p]).unwrap_or_default() };
                     let mine = lightmap::bake::bake_subset_px(&sub, &[ii as u32], &bvh, &prm, pw, ph);
                     let c = &mine[0];
                     let (mut xs, mut ys) = (vec![], vec![]);
@@ -6580,7 +6586,7 @@ fn run(mut a: Vec<String>) {
                     let texture = lightmap::shadowmap::AlphaTexture::from_dds(&tex_bytes).unwrap_or_else(|err| panic!("alpha texture of eid {eid}: {err}"));
                     let aniso = samplers.as_array().and_then(|arr| arr.iter().find(|s| s["eid"].as_u64() == Some(eid))).and_then(|s| s["stages"]["Pixel"][0]["maxAnisotropy"].as_f64()).unwrap_or(16.0) as f32;
                     println!("  eid {eid}: alpha test threshold {thr} on texture {tex_id} ({}×{}, {} mips), anisotropy {aniso}", texture.w, texture.h, texture.mips.len());
-                    alpha = Some(lightmap::shadowmap::AlphaTest { threshold: thr, texture, max_anisotropy: aniso });
+                    alpha = Some(lightmap::shadowmap::AlphaTest::cards(thr, texture, aniso));
                 }
                 let inst = e["inst"].as_u64().unwrap_or(0).max(1) as u32;
                 let idx0 = tables.index(instance_start, 0);

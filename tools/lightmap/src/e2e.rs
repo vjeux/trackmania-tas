@@ -126,7 +126,7 @@ pub fn shadow_map(root: &Path, frame: u32, m: &Manifest, draws: &serde_json::Val
             let tex_bytes = crate::passdiff::read_entry_bytes(root, &format!("env/frame{frame}/textures/{tex_file}"))?;
             let texture = AlphaTexture::from_dds(&tex_bytes)?;
             let aniso = samplers.as_array().and_then(|arr| arr.iter().find(|s| s["eid"].as_u64() == Some(eid))).and_then(|s| s["stages"]["Pixel"][0]["maxAnisotropy"].as_f64()).unwrap_or(16.0) as f32;
-            alpha = Some(AlphaTest { threshold: thr, texture, max_anisotropy: aniso });
+            alpha = Some(AlphaTest::cards(thr, texture, aniso));
         }
         let inst = e["inst"].as_u64().unwrap_or(0).max(1) as u32;
         casters.push(CasterDraw { eid, mesh, instance_start, instance_count: inst, visual_to_world, tables, alpha, vsout: None });

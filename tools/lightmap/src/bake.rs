@@ -249,6 +249,9 @@ pub struct BakeParams {
     /// The peel colours from the game's ILightInput atlas (`--ilightinput-from`, ilatlas.rs): a fragment's colour =
     /// the atlas sampled at its lightmap coordinate through the LM instance stream's ST, as PS 17131 / 17134 do.
     pub ilatlas: Option<std::sync::Arc<crate::ilatlas::IlSource>>,
+    /// The STOCK VEGETATION's per-vertex sun light (stockveg::vertex_lights, Tree_VertexAddLight evaluated once per bake on the
+    /// setup chain's sun shadow map): a tree fragment's peel colour = BaseColor × this, interpolated. None = the trees are black.
+    pub veget_light: Option<std::sync::Arc<crate::stockveg::VegetLights>>,
     /// The sweep's transcribed H-basis MRTs handed back to the caller at the end of the sweep (`--lm-from`): the
     /// sweep-transition chain (the next sweep's ILightInput) and the finalisation read them.
     pub hb_out: Option<std::sync::Arc<crate::ilatlas::HbSlot>>,
@@ -382,6 +385,7 @@ impl Default for BakeParams {
             lm_scene: None,
             shadow_cache: None,
             ilatlas: None,
+            veget_light: None,
             hb_out: None,
             probe_bake: None,
             ambient_out: None,
