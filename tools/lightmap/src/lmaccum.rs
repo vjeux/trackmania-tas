@@ -330,6 +330,7 @@ pub fn touch_pages<T: Copy + Default>(v: &mut [T]) {
 }
 
 /// The 2048² R11G11B10 `TMapILightDir` target as the GPU holds it (packed u32 per pixel).
+#[derive(Clone)]
 pub struct DirTarget {
     pub w: u32,
     pub h: u32,

@@ -5039,6 +5039,9 @@ fn run(mut a: Vec<String>) {
         "harness-gate" => { if let Err(e) = lightmap::harnessgate::run(&a) { eprintln!("harness-gate: {e}"); std::process::exit(1); } }
         "clouds-reach" => { if let Err(e) = lightmap::clouds::reach(&a) { eprintln!("clouds-reach: {e}"); std::process::exit(1); } }
         "clouds-field" => { if let Err(e) = lightmap::cloudfield::cli(&a) { eprintln!("clouds-field: {e}"); std::process::exit(1); } }
+        "swd6-set" => { if let Err(e) = lightmap::swd6::cli(&a) { eprintln!("swd6-set: {e}"); std::process::exit(1); } }
+        "swd6-chain" => { if let Err(e) = lightmap::swd6::chain_cli(&a) { eprintln!("swd6-chain: {e}"); std::process::exit(1); } }
+        "swd6-hbasis" => { if let Err(e) = lightmap::swd6::hbasis_cli(&a) { eprintln!("swd6-hbasis: {e}"); std::process::exit(1); } }
         // (G's classcmp dispatch dropped at integration: V's classcmp — landed first, with --own-rects,
         //  --coverage, the spread column and the pairing guard — owns the subcommand; G's --ents table is
         //  the duplicate. His dome-rings and the study knobs below are kept.)
