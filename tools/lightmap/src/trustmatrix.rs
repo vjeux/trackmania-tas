@@ -33,6 +33,8 @@ pub struct Cell {
     pub corpus_cell: String,
     /// the lightmap frame the cell reads (`frame` column; 0 = the colour frame, 1 = the lamp frame — ST-frame1)
     pub frame: usize,
+    /// the probe frame "P" text (`probes` column): "**P-STATE** reason · summary", written by --refresh
+    pub probes: String,
 }
 
 /// One class row of a classcmp table.
@@ -73,7 +75,7 @@ pub fn read_manifest(path: &str) -> Result<Vec<Cell>, String> {
         let get = |name: &str| h.iter().position(|c| c == name).and_then(|i| f.get(i)).map(|s| s.trim().to_string()).unwrap_or_default();
         if get("cell").is_empty() { return Err(format!("{path}:{}: a row without a cell id", ln + 1)); }
         out.push(Cell { cell: get("cell"), collection: get("collection"), mood: get("mood"), word: get("word"), quality: get("quality"), map: get("map"), features: get("features"), class_tsv: get("class_tsv"), state: get("state").to_ascii_lowercase(), cause: get("cause"), ceiling: get("ceiling").parse().unwrap_or(99.0),
-            corpus_cell: { let c = get("corpus_cell"); if c == "-" { String::new() } else { c } }, frame: get("frame").parse().unwrap_or(0) });
+            corpus_cell: { let c = get("corpus_cell"); if c == "-" { String::new() } else { c } }, frame: get("frame").parse().unwrap_or(0), probes: get("probes") });
     }
     if header.is_none() { return Err(format!("{path}: no header line")); }
     Ok(out)
@@ -111,6 +113,7 @@ pub fn refresh(manifest: &str, work_tip: Option<&std::path::Path>, suffix: &str,
     let mut out_lines: Vec<String> = Vec::new();
     let mut done: Vec<Refreshed> = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
+    let mut probes_pending: Vec<(String, String)> = Vec::new();
     for line in txt.lines() {
         if line.trim().is_empty() || line.starts_with('#') { out_lines.push(line.to_string()); continue; }
         let mut f: Vec<String> = line.split('\t').map(|s| s.to_string()).collect();
@@ -169,10 +172,34 @@ pub fn refresh(manifest: &str, work_tip: Option<&std::path::Path>, suffix: &str,
         let new = read_table(&tsv_name, &base_dir).map(|t| headline(&t))?;
         while f.len() <= tsv_col { f.push(String::new()); }
         f[tsv_col] = tsv_name.clone();
+        // THE PROBE FRAME "P" (the coordinator, 2026-09-28 08:48 PT): the cell's probe volume vs the oracle's, its state by the same
+        // vocabulary; written into the manifest's `probes` column (added when absent) as "**P-STATE** reason · summary"
+        let probes_txt = match crate::probecmp::summary(&ours, &theirs) {
+            Ok(s) => {
+                let lamps = s.images[3].mean_theirs().iter().sum::<f64>() > 1.5 || s.scales[2].1.map(|v| v > 1e-4).unwrap_or(false);
+                let ceiling: f64 = get(&f, "ceiling").parse().unwrap_or(99.0);
+                let p_ceiling = if ceiling >= 90.0 { 62.5 } else { 72.2 };
+                let (state, reason) = crate::probecmp::p_state(&s, lamps, p_ceiling);
+                format!("**{state}** {reason} · {}", crate::probecmp::summary_line(&s))
+            }
+            Err(e) => format!("**P-OPEN** {e}"),
+        };
+        match col("probes") { Some(i) => { while f.len() <= i { f.push(String::new()); } f[i] = probes_txt; } None => probes_pending.push((cell.clone(), probes_txt)) }
         out_lines.push(f.join("\t"));
         done.push(Refreshed { cell, tsv: tsv_name, own_rects, old, new });
     }
     if header.is_none() { return Err(format!("{manifest}: no header line")); }
+    // a manifest without the `probes` column gets it appended (header + every data row) and the pending texts filled in
+    if !probes_pending.is_empty() {
+        let mut seen_header = false;
+        for line in out_lines.iter_mut() {
+            if line.trim().is_empty() || line.starts_with('#') { continue; }
+            if !seen_header { seen_header = true; line.push_str("\tprobes"); continue; }
+            let cell = line.split('\t').next().unwrap_or("").trim().to_string();
+            let txt = probes_pending.iter().find(|(c, _)| c == &cell).map(|(_, t)| t.clone()).unwrap_or_default();
+            line.push('\t'); line.push_str(&txt);
+        }
+    }
     std::fs::write(manifest, out_lines.join("\n") + "\n").map_err(|e| format!("{manifest}: {e}"))?;
     Ok((done, skipped))
 }
@@ -284,8 +311,9 @@ pub fn render(cells: &[Cell], base_dir: &std::path::Path, tol: f64, min_texels: 
         md.push('\n');
     }
     md.push_str(&format!("Rule: worst class over the classes with ≥ {min_texels} texels; CLOSED (texel) = worst within {:.0} % and identity ≥ 90 % of the cell's CEILING (the editor's own re-bake identity on that map class: 95–99 % lamp-less (pwc-day ×4 saves), ~60 % with lamps (stpad Night + nocache) — VALIDATION.md V2-5) and within ±2 ≥ 90 %; CLOSED (class) = worst within {:.0} % only; RESIDUE = a class beyond it (named); OPEN = no table yet; no oracle = the game cannot produce one.\n\n", 100.0 * tol, 100.0 * tol));
-    md.push_str("| cell | collection | mood (word) | q | map | features | identity % (±1 / ±2) vs the editor's own | max \\|Δ\\| | record ours/editor | worst class (r/g/b) | state | cause / note |\n|---|---|---|---|---|---|---|---|---|---|---|---|\n");
+    md.push_str("| cell | collection | mood (word) | q | map | features | identity % (±1 / ±2) vs the editor's own | max \\|Δ\\| | record ours/editor | worst class (r/g/b) | state | probes (frame P) | cause / note |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|\n");
     let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
+    let mut pcounts: std::collections::BTreeMap<String, usize> = Default::default();
     for c in cells {
         let table = if c.class_tsv.is_empty() || c.class_tsv == "-" { None } else { match read_table(&c.class_tsv, base_dir) { Ok(t) => Some(t), Err(e) => { eprintln!("trustmatrix: {}: {e}", c.cell); None } } };
         let v = judge(c, table.as_ref(), tol, min_texels);
@@ -297,10 +325,15 @@ pub fn render(cells: &[Cell], base_dir: &std::path::Path, tol: f64, min_texels: 
         let mood = if c.word.is_empty() { c.mood.clone() } else { format!("{} ({})", c.mood, c.word) };
         let mut note = v.note.clone();
         if !c.cause.is_empty() { note.push_str(&c.cause); }
-        md.push_str(&format!("| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | **{}** | {} |\n", c.cell, c.collection, mood, c.quality, c.map, c.features, ident, maxd, rec, worst, v.state.label(), note.replace('|', "/")));
+        let probes = if c.probes.trim().is_empty() { "—".to_string() } else { c.probes.replace('|', "/") };
+        if let Some(p) = c.probes.split("**").nth(1) { *pcounts.entry(p.to_string()).or_default() += 1; }
+        md.push_str(&format!("| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | **{}** | {} | {} |\n", c.cell, c.collection, mood, c.quality, c.map, c.features, ident, maxd, rec, worst, v.state.label(), probes, note.replace('|', "/")));
     }
     md.push_str("\nStates: ");
     md.push_str(&counts.iter().map(|(k, n)| format!("{k} {n}")).collect::<Vec<_>>().join(" · "));
+    if !pcounts.is_empty() {
+        md.push_str(&format!("\n\nProbe frame P (the probe volume vs the editor's; the probe ceiling = the editor against itself: 62.5 % colour-identical lamp-less (pwc-day ×2 saves), 72.2 % with lamps (stpad Night + nocache); P-CLOSED (texel) = layout identical, scales within 3 %, colour value within 3 %, lamp images present, identity ≥ 90 % of the ceiling; P-CLOSED (class) = the same without the identity; P-RESIDUE = the worst term named): {}\n", pcounts.iter().map(|(k, n)| format!("{k} {n}")).collect::<Vec<_>>().join(" · ")));
+    }
     md.push('\n');
     (md, counts.into_iter().collect())
 }

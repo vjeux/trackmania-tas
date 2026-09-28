@@ -114,8 +114,42 @@ pub struct Summary {
     pub common: usize,
     pub only_ours: usize,
     pub only_theirs: usize,
+    /// per image over ALL common probes
     pub images: [ImgAcc; 4],
+    /// per image over the probes BOTH sides mark valid (outside geometry) — the value read
+    pub valid: [ImgAcc; 4],
+    /// the colour image over the probes EITHER side marks inside geometry (the editor blackens them)
+    pub buried: ImgAcc,
     pub scales: [(Option<f32>, Option<f32>); 4],
+}
+
+/// The P-frame state of a cell (the coordinator's matrix frame "P", 2026-09-28): the same vocabulary as the LM cells.
+/// P-CLOSED (texel) = the layout identical, every scale word within 3 %, the colour VALUE (bytes × scale, valid probes) within 3 %,
+/// the lamp images present when the editor's are, AND the colour identity ≥ 90 % of the probe CEILING (the editor against itself:
+/// pwc-day editor vs repeat 62.5 % colour-identical, stpad Night editor vs nocache 72.2 % — `probecmp` on the ceiling cells);
+/// P-CLOSED (class) = the same without the identity; P-RESIDUE = otherwise, the worst term named (a layout difference counts:
+/// a probe the game does not store, or a grid that is not the game's, is a lossless-part defect); P-OPEN = no probe volume.
+pub fn p_state(s: &Summary, lamps: bool, p_ceiling: f64) -> (String, String) {
+    let mut bad: Vec<String> = Vec::new();
+    if s.layout_diffs > 0 { bad.push(format!("layout {} diff(s){}", s.layout_diffs, if s.only_ours + s.only_theirs > 0 { format!(" (+{} probes only ours, +{} only editor)", s.only_ours, s.only_theirs) } else { String::new() })); }
+    let c = &s.valid[0];
+    let scale_ratio = |k: usize| -> Option<f64> { match s.scales[k] { (Some(a), Some(b)) if b > 1e-9 => Some(a as f64 / b as f64), _ => None } };
+    for k in 0..4 {
+        if k >= 2 && !lamps { continue; }
+        if let Some(r) = scale_ratio(k) { if (r - 1.0).abs() > 0.03 { bad.push(format!("{} scale {:+.1} %", IMAGE_NAMES[k], 100.0 * (r - 1.0))); } }
+    }
+    let f = scale_ratio(0).unwrap_or(1.0);
+    let v = c.ratio().map(|x| x * f);
+    let dev = v.iter().filter(|x| x.is_finite()).map(|x| (x - 1.0).abs()).fold(0.0, f64::max);
+    if c.n >= 8 && dev > 0.03 { bad.push(format!("colour value {:.3}/{:.3}/{:.3}", v[0], v[1], v[2])); }
+    if lamps {
+        let (mo, mt) = (s.images[3].mean_ours(), s.images[3].mean_theirs());
+        if mt.iter().sum::<f64>() > 1.5 && mo.iter().sum::<f64>() < 0.1 * mt.iter().sum::<f64>() { bad.push("lamp images EMPTY".into()); }
+    }
+    if s.buried.n >= 50 { let r = s.buried.ratio(); if r.iter().any(|x| x.is_finite() && *x > 1.5) { bad.push(format!("{} buried probes lit ({:.1}× the editor's)", s.buried.n, r[0].max(r[1]).max(r[2]))); } }
+    let ident_ok = c.n > 0 && c.pct(c.exact) >= 0.9 * p_ceiling;
+    let state = if s.common == 0 { "P-OPEN" } else if !bad.is_empty() { "P-RESIDUE" } else if ident_ok { "P-CLOSED (texel)" } else { "P-CLOSED (class)" };
+    (state.to_string(), if bad.is_empty() { format!("colour {:.1} % identical vs the probe ceiling {p_ceiling:.0}", c.pct(c.exact)) } else { bad.join("; ") })
 }
 
 pub fn summary(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLightmap) -> Result<Summary, String> {
@@ -134,28 +168,33 @@ pub fn summary(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLight
     }
     if va.cell4 != vb.cell4 { layout_diffs += 1; }
     let mut images: [ImgAcc; 4] = Default::default();
+    let mut valid: [ImgAcc; 4] = Default::default();
+    let mut buried = ImgAcc::default();
     let mut common = 0usize;
     let mut only_ours = 0usize;
-    for (key, (ra, _, _)) in &a.probes {
-        let Some((rb, _, _)) = b.probes.get(key) else { only_ours += 1; continue };
+    for (key, (ra, va_ok, _)) in &a.probes {
+        let Some((rb, vb_ok, _)) = b.probes.get(key) else { only_ours += 1; continue };
         common += 1;
         for k in 0..4 { images[k].add(ra[k], rb[k]); }
+        if *va_ok && *vb_ok { for k in 0..4 { valid[k].add(ra[k], rb[k]); } } else { buried.add(ra[0], rb[0]); }
     }
     let scales = [0, 1, 2, 3].map(|k| (va.frame_info.get(k).map(|f| f.0), vb.frame_info.get(k).map(|f| f.0)));
-    Ok(Summary { layout_diffs, common, only_ours, only_theirs: b.probes.len().saturating_sub(common), images, scales })
+    Ok(Summary { layout_diffs, common, only_ours, only_theirs: b.probes.len().saturating_sub(common), images, valid, buried, scales })
 }
 
 /// The corpus column's text for one cell: `layout ✓ · 392 probes · colour 48.5 % id / 83.9 % ±2 / max 7 / 0.999/1.000/0.999 (scale 1.0264 vs 1.0225) · occl 96.4 % · pale 53.3 % · lights 100 %`.
 pub fn summary_line(s: &Summary) -> String {
-    let c = &s.images[0];
+    // the colour statistics over the probes BOTH sides mark valid; the buried probes (either side inside geometry) reported apart
+    let c = &s.valid[0];
     let r3 = |v: [f64; 3]| -> String { let one = |x: f64| if x.is_finite() { format!("{x:.3}") } else { "—".to_string() }; format!("{}/{}/{}", one(v[0]), one(v[1]), one(v[2])) };
     let sc = |k: usize| -> String { match s.scales[k] { (Some(a), Some(b)) => if a.to_bits() == b.to_bits() { format!("scale {a} =") } else { format!("scale {a} vs {b} ({:+.2} %)", 100.0 * (a as f64 / b.max(1e-12) as f64 - 1.0)) }, _ => "scale —".to_string() } };
     // the value ratio ≈ the byte ratio × the scale ratio (the stored byte is the value over the image's scale word; the encode's curve
     // is the same on both sides, so the product reads the value to first order)
-    let val = |k: usize| -> String { match s.scales[k] { (Some(a), Some(b)) if b > 1e-9 && a.to_bits() != b.to_bits() => { let r = s.images[k].ratio(); let f = a as f64 / b as f64; format!(" ≈ value {}", r3([r[0] * f, r[1] * f, r[2] * f])) } _ => String::new() } };
-    format!("layout {} · {} probes{} · colour {:.1} % id / {:.1} % ±2 / max {} / bytes {} ({}){} · occlusion {:.1} % id ({}) · pale {:.1} % · lights {:.1} %",
+    let val = |k: usize| -> String { match s.scales[k] { (Some(a), Some(b)) if b > 1e-9 && a.to_bits() != b.to_bits() => { let r = s.valid[k].ratio(); let f = a as f64 / b as f64; format!(" ≈ value {}", r3([r[0] * f, r[1] * f, r[2] * f])) } _ => String::new() } };
+    let buried = if s.buried.n > 0 { let r = s.buried.ratio(); format!(" · {} buried probes (either side inside geometry) bytes {}", s.buried.n, r3(r)) } else { String::new() };
+    format!("layout {} · {} probes{} · colour (valid {}) {:.1} % id / {:.1} % ±2 / max {} / bytes {} ({}){} · occlusion {:.1} % id ({}) · pale {:.1} % · lights {:.1} %{}",
         if s.layout_diffs == 0 { "✓" } else { &"DIFFERS" }, s.common, if s.only_ours + s.only_theirs > 0 { format!(" (+{} only ours, +{} only editor)", s.only_ours, s.only_theirs) } else { String::new() },
-        c.pct(c.exact), c.pct(c.within2), c.max_delta, r3(c.ratio()), sc(0), val(0), s.images[1].pct(s.images[1].exact), sc(1), s.images[2].pct(s.images[2].exact), s.images[3].pct(s.images[3].exact))
+        c.n, c.pct(c.exact), c.pct(c.within2), c.max_delta, r3(c.ratio()), sc(0), val(0), s.images[1].pct(s.images[1].exact), sc(1), s.images[2].pct(s.images[2].exact), s.images[3].pct(s.images[3].exact), buried)
 }
 
 pub fn run(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLightmap, o: &Options) -> Result<(), String> {
@@ -187,6 +226,8 @@ pub fn run(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLightmap,
     let (mut only_ours, mut only_theirs) = (0usize, 0usize);
     let mut acc: [[ImgAcc; 3]; 4] = Default::default(); // [image][0 both valid, 1 either inside geometry, 2 all]
     let mut by_level: std::collections::BTreeMap<i32, [ImgAcc; 4]> = Default::default();
+    // per level: the probes EITHER side marks inside geometry (the buried set) — count and the colour bytes on both sides
+    let mut buried_level: std::collections::BTreeMap<i32, ImgAcc> = Default::default();
     let mut worst: Vec<(u32, (i32, i32, i32), [u8; 3], [u8; 3], bool)> = Vec::new();
     for (key, (ra, valid_a, level)) in &a.probes {
         let Some((rb, valid_b, _)) = b.probes.get(key) else { only_ours += 1; continue };
@@ -196,7 +237,7 @@ pub fn run(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLightmap,
             acc[k][if both_valid { 0 } else { 1 }].add(ra[k], rb[k]);
             acc[k][2].add(ra[k], rb[k]);
         }
-        if o.levels { let e = by_level.entry(*level).or_default(); for k in 0..4 { e[k].add(ra[k], rb[k]); } }
+        if o.levels { let e = by_level.entry(*level).or_default(); for k in 0..4 { e[k].add(ra[k], rb[k]); } if !both_valid { buried_level.entry(*level).or_default().add(ra[0], rb[0]); } }
         if o.worst > 0 {
             let md = (0..3).map(|c| (ra[0][c] as i32 - rb[0][c] as i32).unsigned_abs()).max().unwrap_or(0);
             if worst.len() < o.worst || md > worst.last().map(|w| w.0).unwrap_or(0) {
@@ -223,7 +264,8 @@ pub fn run(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLightmap,
     if o.levels {
         println!("\nper height level (world y of the probe row; all common probes): image 0 colour identical % / ratio / bias, image 1 occlusion identical % / ratio, image 2 pale identical %, image 3 lights identical %");
         for (y, e) in &by_level {
-            let line = format!("level y {:>6} m\t{} probes\tcolour {:.1} % {} bias {}\tocclusion {:.1} % {}\tpale {:.1} %\tlights {:.1} %", y, e[0].n, e[0].pct(e[0].exact), r3(e[0].ratio(), 3), r3(e[0].bias(), 2), e[1].pct(e[1].exact), r3(e[1].ratio(), 3), e[2].pct(e[2].exact), e[3].pct(e[3].exact));
+            let bur = buried_level.get(y).map(|b| format!("\tburied {} ({:.0}/{:.0}/{:.0} vs {:.0}/{:.0}/{:.0} bytes)", b.n, b.mean_ours()[0], b.mean_ours()[1], b.mean_ours()[2], b.mean_theirs()[0], b.mean_theirs()[1], b.mean_theirs()[2])).unwrap_or_default();
+            let line = format!("level y {:>6} m\t{} probes\tcolour {:.1} % {} bias {}\tocclusion {:.1} % {}\tpale {:.1} %\tlights {:.1} %{bur}", y, e[0].n, e[0].pct(e[0].exact), r3(e[0].ratio(), 3), r3(e[0].bias(), 2), e[1].pct(e[1].exact), r3(e[1].ratio(), 3), e[2].pct(e[2].exact), e[3].pct(e[3].exact));
             println!("{line}");
             tsv.push_str(&format!("level\ty={y}\t{}\t{:.2}\t{:.2}\t{:.2}\t{}\t{}\t{}\t{}\t{}\n", e[0].n, e[0].pct(e[0].exact), e[0].pct(e[0].within1), e[0].pct(e[0].within2), e[0].max_delta, r3(e[0].mean_ours(), 1), r3(e[0].mean_theirs(), 1), r3(e[0].ratio(), 3), r3(e[0].bias(), 2)));
         }
