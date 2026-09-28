@@ -38,7 +38,7 @@ const LIGHTMAP_CHUNK: u32 = 0x0304_305B;
 pub fn cmd(args: &[String]) -> Result<(), String> {
     let f = |k: &str| tmmaps::cli::flag(args, k).map(|s| s.to_string());
     // every positional that is not a flag value is a map
-    let flag_with_value = ["--out", "--out-dir", "--quality", "--name", "--uid", "--box-shootctl", "--wsx", "--into", "--owner"];
+    let flag_with_value = ["--out", "--out-dir", "--quality", "--name", "--uid", "--box-shootctl", "--wsx", "--into", "--owner", "--stage-plugin"];
     let mut maps: Vec<PathBuf> = Vec::new();
     let mut i = 0;
     while i < args.len() {
@@ -193,17 +193,10 @@ fn one(args: &[String], map: &Path, out: &Path) -> Result<(), String> {
     // few bakes and after every failure). Detached on the box under the render
     // lock, like `tinyctl shoot --fresh`.
     if tmmaps::cli::has(args, "--fresh") {
-        eprintln!("restarting the game first (--fresh) …");
-        let done = format!("{STAGE}/{tag}-fresh-done.txt");
-        let flog = format!("{STAGE}/{tag}-fresh.log");
-        let owner = format!("{tag}-fresh");
-        let job = format!("{shootctl} lock acquire --owner {owner} --wait 1800 || exit 3; {shootctl} quit; {shootctl} launch 300 --force; rc=$?; {shootctl} lock release --owner {owner}; if [ $rc = 0 ]; then echo OK fresh game > {done}; else echo FAILED launch rc=$rc > {done}; fi");
-        wsx.sh(&format!("rm -f {done}; nohup setsid sh -c '{job}' > {flog} 2>&1 < /dev/null &"))?;
-        let text = wsx.wait_done(&done, &flog, Duration::from_secs(2400), "fresh game")?;
-        eprintln!("  {}", text.trim());
-        if !text.trim().starts_with("OK") {
-            return Err(format!("fresh game: {}", text.trim()));
-        }
+        // `shootctl quit` / `launch --force` kill Trackmania BY IMAGE NAME — on the shared box that once closed vjeux's own game
+        // (2026-09-27 14:19 PT). A bake never restarts a game it did not launch; `shootctl lightmap --stage-plugin` launches its
+        // own game and kills it by PID at the end, which is the fresh game --fresh wanted.
+        return Err("--fresh is refused on the shared box (by-name kills); use --stage-plugin DIR: the run launches its own game and closes it by PID".into());
     }
     eprintln!("pushing {} to the box …", bake_copy.display());
     wsx.push(&bake_copy, &r_map)?;
@@ -215,8 +208,9 @@ fn one(args: &[String], map: &Path, out: &Path) -> Result<(), String> {
     eprintln!("game lightmap cache: {} entries dropped", dropped.trim());
     // --owner NAME (tinyctl) → the box lock owner; the default stays shootctl's `lightmap-<pid>`
     let owner_flag = match f("--owner") { Some(o) => format!(" --owner '{o}'"), None => String::new() };
-    // --fresh: restart the game inside the lock — the editor keeps its time of day across maps
-    let owner_flag = if tmmaps::cli::has(args, "--fresh") { format!("{owner_flag} --fresh") } else { owner_flag };
+    // --stage-plugin DIR (a box path): the quarantined GhostShooter copied into Plugins for this run only, removed on every exit
+    // (vjeux uninstalled every agent plugin 2026-09-27 14:34 PT); the run then also closes its own game by PID at the end
+    let owner_flag = match f("--stage-plugin") { Some(d) => format!("{owner_flag} --stage-plugin '{d}'"), None => owner_flag };
     let cmd = format!("{shootctl} lightmap --detach --map {r_map} --out '{rel}' --quality {quality} --outdir {r_dir}{owner_flag}");
     eprintln!("computing the lightmap (quality {quality}) …");
     let started = wsx.sh(&cmd)?;
