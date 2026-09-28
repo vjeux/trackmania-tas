@@ -82,7 +82,7 @@ fn main() {
     const WANTS_MAP: &[&str] = &[
         "waypoints", "census", "gridinfo", "skins", "fillers", "region", "colors", "phases", "genealogy", "tiny-catalog", "lineup", "shared-cells", "ponds", "tiny", "tiny-batch", "clear", "shift", "segments", "move", "rotate", "ladder",
         "roundtrip",
-        "renamecheck", "cporder", "origin", "chunks", "blockrefs", "setuid", "settimes", "lmquality", "ghostchunk", "genealogy-fill", "delblocks", "striplightmap", "itembytes", "mediatracker", "music", "strings",
+        "renamecheck", "cporder", "origin", "chunks", "blockrefs", "setuid", "settimes", "lmquality", "ghostchunk", "genealogy-fill", "delblocks", "striplightmap", "itembytes", "embedded", "embedded-restore", "mediatracker", "music", "strings",
     ];
     if WANTS_MAP.contains(&cmd) && args.len() < 3 {
         eprintln!("tmmaps {} needs a MAP path.\n\n{}", cmd, USAGE);
@@ -283,6 +283,10 @@ fn main() {
         // absent lightmap rather than the scaled lights
         "striplightmap" => surgery::striplightmap(&args),
         "itembytes" => surgery::itembytes(&args),
+        // tmmaps embedded MAP [--names]: the embedded zip census (items / .dds textures / other) — a reduced source with 0 .dds is a red flag
+        "embedded" => surgery::embedded(&args),
+        // tmmaps embedded-restore REDUCED --from FULL --out OUT [--all]: put the lost support files (textures) back into a reduced map
+        "embedded-restore" => surgery::embedded_restore(&args),
         "dropbaked" => surgery::dropbaked(&args),
         "movebaked" => surgery::movebaked(&args),
         "census" => census::cmd_census(&args),

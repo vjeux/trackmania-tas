@@ -931,3 +931,67 @@ pub fn genealogy_fill(args: &[String]) {
     let (zone, n) = tmmaps::map::MapFile::fill_genealogy_file_n(&out, count).expect("fill genealogies");
     println!("{}: genealogy chunk filled: {n} cells of {zone} -> {}", src.display(), out.display());
 }
+
+/// `tmmaps embedded MAP [--names]` — the embedded-objects zip (chunk 0x03043054) as a census: how many
+/// .Item.Gbx, .dds, .Texture.gbx / .Material.Gbx and other files it carries, its byte size, and (--names) every
+/// entry. THE CORPUS DEFECT this answers (G2, 2026-09-28 01:00Z): a "-reduced-source" map that keeps the
+/// .Item.Gbx files but none of their textures makes every alpha-tested card OPAQUE for us and the game alike —
+/// a source with items and 0 .dds is a red flag for any bake or oracle built from it.
+pub fn embedded(args: &[String]) {
+    let src = std::path::PathBuf::from(args.get(2).expect("embedded MAP [--names]"));
+    let names_too = args.iter().any(|a| a == "--names");
+    let m = tmmaps::map::MapFile::load(&src);
+    let Some((zip_len, names)) = tmmaps::header::embedded_zip(&m.gbx.body) else {
+        println!("{}: no embedded-objects zip (chunk 0x03043054 absent or empty); {} items", src.display(), m.items.len());
+        return;
+    };
+    let lower = |s: &String| s.to_ascii_lowercase();
+    let n_item = names.iter().filter(|n| lower(n).ends_with(".item.gbx")).count();
+    let n_dds = names.iter().filter(|n| lower(n).ends_with(".dds")).count();
+    let n_tex = names.iter().filter(|n| { let l = lower(n); l.ends_with(".texture.gbx") || l.ends_with(".material.gbx") }).count();
+    let n_other = names.len() - n_item - n_dds - n_tex;
+    let models: std::collections::BTreeSet<&str> = m.items.iter().map(|it| it.model.as_str()).collect();
+    println!(
+        "{}: embedded zip {} bytes, {} entries: {} .Item.Gbx, {} .dds, {} .Texture/.Material.Gbx, {} other; the map places {} items of {} models{}",
+        src.display(), zip_len, names.len(), n_item, n_dds, n_tex, n_other, m.items.len(), models.len(),
+        if n_item > 0 && n_dds == 0 { " — WARNING: items without any embedded texture (cut-out masks missing: alpha-tested cards read OPAQUE)" } else { "" }
+    );
+    if names_too {
+        for n in &names { println!("  {n}"); }
+    }
+}
+
+/// `tmmaps embedded-restore REDUCED --from FULL --out OUT [--all]` — put back into a reduced map's embedded zip every
+/// SUPPORT file (textures: the .dds cut-out masks; materials; anything that is not an .Item.Gbx) the FULL map carries and
+/// the reduced one lost (the editor's SaveMap rebuilds the archive with only the item files it uses, so a reduced scene
+/// saved by the editor bakes with OPAQUE alpha-tested cards on our side — G2, 2026-09-28). `--all` also restores missing
+/// .Item.Gbx entries. The manifest (item idents) is kept: support files need no manifest row.
+pub fn embedded_restore(args: &[String]) {
+    let reduced = std::path::PathBuf::from(args.get(2).expect("embedded-restore REDUCED --from FULL --out OUT [--all]"));
+    let full = std::path::PathBuf::from(tmmaps::cli::flag(args, "--from").expect("--from FULL.Map.Gbx"));
+    let out = std::path::PathBuf::from(tmmaps::cli::flag(args, "--out").expect("--out OUT.Map.Gbx"));
+    let all = args.iter().any(|a| a == "--all");
+    let mut m = tmmaps::map::MapFile::load(&reduced);
+    let (mut zip, have) = tmmaps::header::embedded_zip_bytes(&m.gbx.body).unwrap_or_else(|| tmmaps::cli::die("the reduced map has no embedded-objects zip"));
+    let src = tmmaps::map::MapFile::load(&full);
+    let (full_zip, _) = tmmaps::header::embedded_zip_bytes(&src.gbx.body).unwrap_or_else(|| tmmaps::cli::die("the full map has no embedded-objects zip"));
+    let have_lc: std::collections::BTreeSet<String> = have.iter().map(|n| n.replace('\\', "/").to_ascii_lowercase()).collect();
+    let mut added: Vec<String> = Vec::new();
+    for (name, bytes) in tmmaps::header::zip_entries(&full_zip) {
+        let lc = name.replace('\\', "/").to_ascii_lowercase();
+        if have_lc.contains(&lc) || bytes.is_empty() { continue; }
+        if lc.ends_with(".item.gbx") && !all { continue; }
+        zip = tmmaps::header::zip_add(&zip, &name, &bytes);
+        added.push(name);
+    }
+    if added.is_empty() {
+        println!("{}: nothing to restore (every support file of {} is already there)", reduced.display(), full.display());
+        return;
+    }
+    m.replace_embedded_zip_keep_manifest(&zip);
+    m.write_to(&out).unwrap_or_else(|e| tmmaps::cli::die(&format!("{}: {e}", out.display())));
+    let m2 = tmmaps::map::MapFile::load(&out);
+    let (n_zip, names2) = tmmaps::header::embedded_zip(&m2.gbx.body).unwrap_or((0, Vec::new()));
+    assert_eq!(m2.items.len(), m.items.len(), "reloaded item count");
+    println!("{}: restored {} entries from {} → {} ({} zip bytes, {} entries; {} items unchanged): {}", reduced.display(), added.len(), full.display(), out.display(), n_zip, names2.len(), m2.items.len(), added.join(", "));
+}
