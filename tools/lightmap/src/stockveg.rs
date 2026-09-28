@@ -116,6 +116,9 @@ impl VegetTex {
             let n = (lv.w * lv.h) as usize;
             for y in 0..lv.h { for x in 0..lv.w { let p = lv.get(x, y); if p[3] >= 0.5 { n05 += 1; } if p[3] >= 0.3 { n03 += 1; } sa += p[3] as f64; for c in 0..3 { sc[c] += p[c] as f64; } } }
             eprintln!("stock vegetation: texture {path}: {:?} {}×{} {} levels; level 0 mean alpha {:.3}, a ≥ 0.5 {:.1} %, a ≥ 0.3 {:.1} %, mean rgb ({:.3}, {:.3}, {:.3}){}", tex.fmt, tex.w, tex.h, tex.levels[0].len(), sa / n as f64, 100.0 * n05 as f64 / n as f64, 100.0 * n03 as f64 / n as f64, sc[0] / n as f64, sc[1] / n as f64, sc[2] / n as f64, if srgb_view() { " (sRGB-decoded)" } else { " (raw)" });
+            // the STORED chain's coverage per level: does the authoring tool keep the alpha coverage (a boosted chain) or average it away?
+            let per_level: Vec<String> = tex.levels[0].iter().enumerate().map(|(l, lv)| { let n = (lv.w * lv.h) as usize; let (mut c5, mut c3, mut s) = (0usize, 0usize, 0f64); for y in 0..lv.h { for x in 0..lv.w { let a = lv.get(x, y)[3]; if a >= 0.5 { c5 += 1; } if a >= 0.3 { c3 += 1; } s += a as f64; } } format!("L{l} {}² mean {:.3} ≥0.5 {:.1}% ≥0.3 {:.1}%", lv.w, s / n as f64, 100.0 * c5 as f64 / n as f64, 100.0 * c3 as f64 / n as f64) }).collect();
+            eprintln!("stock vegetation: texture {path}: stored chain: {}", per_level.join(" | "));
         }
         Ok(VegetTex { path: path.to_string(), tex })
     }
@@ -154,6 +157,19 @@ pub struct VegetRule {
     pub leaf: bool,
 }
 
+/// LMTOOL_STOCK_VEGET_TRACE=1: the peel's tree fragments [tested, passed the 0.5 cut] and their isotropic LOD histogram.
+pub static PEEL_STATS: [std::sync::atomic::AtomicU64; 2] = [std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0)];
+pub static PEEL_LOD: [std::sync::atomic::AtomicU64; 16] = [const { std::sync::atomic::AtomicU64::new(0) }; 16];
+
+/// The census line (printed by the bake when the trace is on and any tree fragment was tested).
+pub fn peel_stats_line() -> Option<String> {
+    let tested = PEEL_STATS[0].load(std::sync::atomic::Ordering::Relaxed);
+    if tested == 0 { return None; }
+    let passed = PEEL_STATS[1].load(std::sync::atomic::Ordering::Relaxed);
+    let hist: Vec<String> = PEEL_LOD.iter().enumerate().filter_map(|(l, c)| { let n = c.load(std::sync::atomic::Ordering::Relaxed); (n > 0).then(|| format!("lod {l}: {n}")) }).collect();
+    Some(format!("stock vegetation: peel alpha test (BaseColor.a ≥ 0.5, aniso-16 wrap): {tested} tree fragments tested, {passed} passed ({:.2} %); isotropic LOD of the footprint: {}", 100.0 * passed as f64 / tested as f64, hist.join(", ")))
+}
+
 impl VegetRule {
     /// The triangle's TexCoord0 footprint per peel pixel (the same derivative form the item cards use).
     pub fn footprint(&self, px: [[f32; 2]; 3], uv0: [[f32; 2]; 3]) -> crate::alphatex::Footprint {
@@ -167,7 +183,15 @@ impl VegetRule {
     #[inline]
     pub fn peel_passes(&self, u: f32, v: f32, fp: &crate::alphatex::Footprint) -> bool {
         let (ddx, ddy) = Self::derivs(fp);
-        self.tex.sample_peel([u, v], ddx, ddy)[3] - PEEL_ALPHA_CUT >= 0.0
+        let pass = self.tex.sample_peel([u, v], ddx, ddy)[3] - PEEL_ALPHA_CUT >= 0.0;
+        if trace() {
+            PEEL_STATS[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if pass { PEEL_STATS[1].fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
+            // the LOD the sample took (isotropic form of the footprint, for the census): log2 of the longer derivative in texels
+            let l = (fp.dx[0] * fp.dx[0] + fp.dx[1] * fp.dx[1]).max(fp.dy[0] * fp.dy[0] + fp.dy[1] * fp.dy[1]).sqrt().max(1e-30).log2().clamp(0.0, 15.0) as usize;
+            PEEL_LOD[l].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        pass
     }
     /// The peel's colour sample (rgb, a) at the fragment.
     #[inline]

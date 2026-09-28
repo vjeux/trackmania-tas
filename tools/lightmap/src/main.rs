@@ -3641,6 +3641,7 @@ fn run(mut a: Vec<String>) {
                 }
             }
             // the process's peak resident set (Linux: VmHWM of /proc/self/status) — `lmtool bench` reads it
+            if let Some(l) = lightmap::stockveg::peel_stats_line() { eprintln!("{l}"); }
             if let Ok(st) = std::fs::read_to_string("/proc/self/status") {
                 if let Some(l) = st.lines().find(|l| l.starts_with("VmHWM:")) {
                     let kb: u64 = l.split_whitespace().nth(1).and_then(|v| v.parse().ok()).unwrap_or(0);
