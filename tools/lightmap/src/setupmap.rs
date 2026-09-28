@@ -1187,15 +1187,36 @@ pub fn tables_from_paktables_with_records(f: &mut FrozenTables, store: &mut mapg
             }
         }
     }
+    // LMTOOL_WARP_ITEM_FOG=x,y,z (STUDY, E5 2026-09-28 23:25Z — default off; the coordinator's A/B while RE 16 reads the variant table): an
+    // ITEM material of the Warp class (its link contains "warp": g23's hills are 26 % `Material_BlockCustom\WarpTechnic`) gets its
+    // pre-pass constant FOGGED like the terrain's — c' = lerp(Fog_LinearRGB, c, f) with f = VS 16748's fog factor at the given world
+    // point (the hill's centre), from the scene's Warp shading state. An approximation of "the Warp program draws the item geoms",
+    // not its transcription; a positive reading means transcribing the program for item geoms as read.
+    let warp_item_fog: Option<(f32, [f32; 3])> = std::env::var("LMTOOL_WARP_ITEM_FOG").ok().and_then(|s| {
+        let v: Vec<f32> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+        if v.len() != 3 { return None; }
+        let sh = scene.warp.as_ref()?;
+        let vs = crate::warpterrain::vs_16748(&sh.consts, [v[0], v[1], v[2]], [0.0, 1.0, 0.0]);
+        let fac = vs.o4[2].clamp(0.0, 1.0);
+        notes.push(format!("STUDY LMTOOL_WARP_ITEM_FOG at ({}, {}, {}): the Warp VS fog factor f = {fac:.4} (eye {:?}), fog rgb {:?} — Warp-class item constants c' = lerp(fog, c, f)", v[0], v[1], v[2], sh.consts.eye, sh.consts.fog_rgb));
+        Some((fac, sh.consts.fog_rgb))
+    });
+    let fog_item = |l: &str, c: [f32; 3]| -> [f32; 3] {
+        match warp_item_fog {
+            Some((fac, fog)) if l.to_ascii_lowercase().contains("warp") => [fog[0] + fac * (c[0] - fog[0]), fog[1] + fac * (c[1] - fog[1]), fog[2] + fac * (c[2] - fog[2])],
+            _ => c,
+        }
+    };
     for (l, p) in &pairs {
         match crate::paktables::material_constant_with(store, l, *p) {
-            Ok(mc) => { got.push(format!("{l} TargetColor {:?} → {:?} ({})", p.unwrap_or([0.0; 3]), mc.rgb, mc.notes.last().cloned().unwrap_or_default())); f.link_rgb.insert(crate::geometry::link_key(l, *p), mc.rgb); }
+            Ok(mc) => { let rgb = fog_item(l, mc.rgb); got.push(format!("{l} TargetColor {:?} → {:?} ({})", p.unwrap_or([0.0; 3]), rgb, mc.notes.last().cloned().unwrap_or_default())); f.link_rgb.insert(crate::geometry::link_key(l, *p), rgb); }
             Err(e) => notes.push(format!("paktables: {l} with TargetColor {:?}: {e}", p)),
         }
     }
     for l in &links {
         match crate::paktables::material_constant(store, l) {
             Ok(mc) => {
+                let mc = crate::paktables::MaterialConstant { rgb: fog_item(l, mc.rgb), ..mc };
                 f.link_rgb.insert(l.to_ascii_lowercase(), mc.rgb);
                 // a HueMask material: its recoloured constants for the five placement colours (PS 9544 / 9539 — RE 13's arithmetic,
                 // RE 15's colour table; the tap and the sRGB view as paktables::hue_recolour reads them)

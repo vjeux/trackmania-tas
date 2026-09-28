@@ -232,7 +232,7 @@ pub fn material_constant(store: &mut DataStore, link: &str) -> Result<MaterialCo
 
 /// The parent material's shader file name (lower case; the parent material's own name when the Techno3 pack is not in
 /// the store — the same words) and the parent material path.
-fn shader_of(store: &mut DataStore, file: &str) -> Result<(String, String), String> {
+pub fn shader_of(store: &mut DataStore, file: &str) -> Result<(String, String), String> {
     let m = store.load_model(file)?;
     let parent = m.externals.iter().map(|(_, p)| p.to_ascii_lowercase()).find(|p| p.ends_with(".material.gbx") && !p.eq_ignore_ascii_case(&file.to_ascii_lowercase())).unwrap_or_default();
     // The parent material (Maniaplanet.pak `Techno3\Media\Material\Tech3 Block PyPxz_Ids.Material.gbx`)
