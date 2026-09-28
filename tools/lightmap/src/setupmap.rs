@@ -218,10 +218,17 @@ pub fn shadow_from_map(scene: &crate::geometry::Scene, lm: &LmScene, cam: &Ortho
 
 /// The direct sun: every LM mesh × the nine raster offsets (OutScale 1/9) on our shadow map.
 pub fn sun_from_map(lm: &LmScene, pw01: &[[f32; 4]; 4], dir_in_world: [f32; 3], light_rgb: [f32; 3], shadow: &Buf) -> Buf {
+    sun_from_map_skip(lm, pw01, dir_in_world, light_rgb, shadow, &[])
+}
+
+/// `sun_from_map` with LM meshes left out of the direct-sun draws (`skip` = mesh indices; LMTOOL_STOCK_VEGET_RECV_SUN=0's study:
+/// the charted legacy trees' receiver meshes get no D_0 sun — the test of whether the game's RenderLightDirect draws them).
+pub fn sun_from_map_skip(lm: &LmScene, pw01: &[[f32; 4]; 4], dir_in_world: [f32; 3], light_rgb: [f32; 3], shadow: &Buf, skip: &[usize]) -> Buf {
     let mut draws = Vec::new();
     for j in 0..9usize {
         let cb = LmRasterCb::for_offset(j, W, H);
         for (k, _) in lm.meshes.iter().enumerate() {
+            if skip.contains(&k) { continue; }
             draws.push(SunDraw { eid: (j * lm.meshes.len() + k) as u64, mesh: k, instance_first: lm.inst_first[k], instance_count: lm.inst_count[k], scale_ss: cb.scale_ss, trans_ss: cb.trans_ss, world_pw01_shadow: *pw01, dir_in_world, light_rgb, out_scale: 1.0 / 9.0 });
         }
     }
@@ -776,7 +783,13 @@ pub fn build_with_lamps(scene: &crate::geometry::Scene, lm: &LmScene, sbox: &Aab
     // "2·L + S" (D_0 + (L + S), no alpha stacking); 1 (the default) = our verified sun chain
     let sun_scale: f32 = std::env::var("LMTOOL_SUN_DIRECT_SCALE").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
     let light_rgb = if sun_scale != 1.0 { eprintln!("setup-from-map: STUDY sun direct term × {sun_scale} in sweep 0's light input"); [light_rgb[0] * sun_scale, light_rgb[1] * sun_scale, light_rgb[2] * sun_scale] } else { light_rgb };
-    let mut sun = sun_from_map(lm, &pw01, dir_in_world, light_rgb, &shadow);
+    // LMTOOL_STOCK_VEGET_RECV_SUN=0 (study, E5): the charted legacy trees' receiver meshes (stockveg: VegetModel::lm_mesh) drawn in the
+    // direct-sun pass or not — RedIsland's 38 BushSmallC charts read 1.68/1.55/1.34 the editor WITH the sun on them
+    let skip_sun: Vec<usize> = if std::env::var("LMTOOL_STOCK_VEGET_RECV_SUN").map(|v| v == "0").unwrap_or(false) {
+        (0..lm.meshes.len()).filter(|&k| lm.inst_count[k] > 0 && lm.port_inst.get(lm.inst_first[k]).map(|&pi| pi != usize::MAX && scene.models[scene.instances[pi].model].veget.is_some()).unwrap_or(false)).collect()
+    } else { Vec::new() };
+    if !skip_sun.is_empty() { eprintln!("setup-from-map: STUDY — {} legacy-tree receiver mesh(es) left out of the direct-sun pass (LMTOOL_STOCK_VEGET_RECV_SUN=0)", skip_sun.len()); }
+    let mut sun = sun_from_map_skip(lm, &pw01, dir_in_world, light_rgb, &shadow, &skip_sun);
     if !quiet { eprintln!("setup-from-map: direct sun ({:.1}s)", t0.elapsed().as_secs_f32()); }
     // LMTOOL_TILE_SUN_CENSUS=1 (diagnostic, G2 2026-09-28 — the giant's buried outer tiles): the direct-sun atlas over the ZONE-TILE
     // instances' texels (the meshes with ≥ 1000 instances), split by the tile's world cell: inside the 64×64 decoration footprint
