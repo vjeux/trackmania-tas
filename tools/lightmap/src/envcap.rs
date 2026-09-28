@@ -215,8 +215,16 @@ pub fn env_decor(meshes: &[EnvMesh]) -> Vec<DecorTri> {
             for t in &m.tris { for p in t { for k in 0..3 { lo[k] = lo[k].min(p[k]); hi[k] = hi[k].max(p[k]); } } }
             [(lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5, (lo[2] + hi[2]) * 0.5]
         } else { [0.0; 3] };
+        let is_water = m.name == "water_surface";
         for t in &m.tris {
             let mut tri = *t;
+            if is_water {
+                // the water plane's winding normal UP: its back face (seen from below) is the drawn one
+                let e1 = [tri[1][0] - tri[0][0], tri[1][1] - tri[0][1], tri[1][2] - tri[0][2]];
+                let e2 = [tri[2][0] - tri[0][0], tri[2][1] - tri[0][1], tri[2][2] - tri[0][2]];
+                let ny = e1[2] * e2[0] - e1[0] * e2[2];
+                if ny < 0.0 { tri.swap(1, 2); }
+            }
             if is_box {
                 let e1 = [tri[1][0] - tri[0][0], tri[1][1] - tri[0][1], tri[1][2] - tri[0][2]];
                 let e2 = [tri[2][0] - tri[0][0], tri[2][1] - tri[0][1], tri[2][2] - tri[0][2]];
@@ -224,7 +232,7 @@ pub fn env_decor(meshes: &[EnvMesh]) -> Vec<DecorTri> {
                 let c = [(tri[0][0] + tri[1][0] + tri[2][0]) / 3.0 - centre[0], (tri[0][1] + tri[1][1] + tri[2][1]) / 3.0 - centre[1], (tri[0][2] + tri[1][2] + tri[2][2]) / 3.0 - centre[2]];
                 if n[0] * c[0] + n[1] * c[1] + n[2] * c[2] < 0.0 { tri.swap(1, 2); }
             }
-            out.push(DecorTri { p: tri, albedo: [0.0; 3], water: false, env: true, env_far_only: is_box, sun_caster: is_box || !m.name.to_ascii_lowercase().contains("warp"), warp: 0 });
+            out.push(DecorTri { p: tri, albedo: [0.0; 3], water: false, env: true, env_far_only: is_box || is_water, sun_caster: is_box || !(m.name.to_ascii_lowercase().contains("warp") || m.name.to_ascii_lowercase().contains("water")), warp: 0 });
         }
     }
     out
@@ -303,15 +311,26 @@ pub fn env_meshes_from_pak(store: &mut mapgeom::store::DataStore, scene3d_path: 
     c.model(&model, &mapgeom::geom::IDENTITY, 0);
     let mut meshes: Vec<EnvMesh> = Vec::new();
     let mut dropped = 0usize;
+    // THE WATER SURFACE IN THE PEEL (RE 15, NOTES 07:57Z, from PS 6178 = the water material's lit shader with NoFrontBounce = 1: `discard if
+    // isfrontface`, back faces o0 = (0, 0, 0, 1)): seen from ABOVE the water plane is not in the peel (the floor behind it shows); seen from
+    // BELOW it is a BLACK back face — the sea-floor tiles' upward directions end at it (no sky), the platforms' downward ones pass through.
+    // = the sea box's far-face rule with the plane's normal UP (`env_far_only`). MEASURED ON THE CORPUS (08:20Z, 5ff2be202c + G2's
+    // 0001–0004): as a back-face occluder the decoration water moves np-tk3 BlueBay Day q3 tiles 1.000 → 0.996 (identity 63.3 → 56.1 % —
+    // RE 15: BlueBay's Square64Water leaves are never drawn), tiny03 WhiteShore tiles 0.988/0.973/0.979 → 0.985/0.971/0.977, tiny04ac
+    // GreenCoast 0.981 → 0.980, g23 tiles 1.015 → 1.011 with items 0.680 → 0.677; two-sided black is worse still. So the DEFAULT stays
+    // "dropped" (the pre-07:57Z block); LMTOOL_ENV_WATER=backface = RE 15's rule as a study, =black the two-sided study. Stadium's pool
+    // water (f1617: 4 906 black back-face texels) belongs to the WaterBase BLOCKS' prefabs, not to this decoration block — a record-scene
+    // material rule (Water → peel-only back-face black), open.
+    let env_water = std::env::var("LMTOOL_ENV_WATER").unwrap_or_default();
     for (name, g) in &c.scene.groups {
         let lower = name.to_ascii_lowercase();
-        if lower.contains("water") || lower.contains("sky") {
+        if lower.contains("sky") || (lower.contains("water") && env_water != "backface" && env_water != "black") {
             dropped += g.tris.len();
             continue;
         }
         let tris: Vec<[[f32; 3]; 3]> = g.tris.iter().map(|t| [g.verts[t[0] as usize], g.verts[t[1] as usize], g.verts[t[2] as usize]]).collect();
         let norms: Vec<[[f32; 3]; 3]> = if g.norms.len() == g.verts.len() { g.tris.iter().map(|t| [g.norms[t[0] as usize], g.norms[t[1] as usize], g.norms[t[2] as usize]]).collect() } else { Vec::new() };
-        meshes.push(EnvMesh { name: if lower.contains("invisible") { "sea_box".into() } else { name.clone() }, tris, norms });
+        meshes.push(EnvMesh { name: if lower.contains("invisible") { "sea_box".into() } else if lower.contains("water") && env_water != "black" { "water_surface".into() } else { name.clone() }, tris, norms });
     }
     Ok((meshes, dropped))
 }
