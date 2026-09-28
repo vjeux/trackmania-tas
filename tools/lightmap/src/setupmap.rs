@@ -79,8 +79,12 @@ pub fn shadow_from_map(scene: &crate::geometry::Scene, lm: &LmScene, cam: &Ortho
     let mut skipped_water = 0usize;
     if !scene.decor.is_empty() {
         let mut chunk: Vec<usize> = Vec::new();
+        // LMTOOL_SUN_SKIP_DECOR=env|seabed|all (study, G2 2026-09-28 — the g23 outer tiles' sun leak): leave the env block's casters
+        // (the sea box; `env`) or the zone floor quads (`!env`) out of the sun map
+        let skip_env = std::env::var("LMTOOL_SUN_SKIP_DECOR").map(|v| v == "env" || v == "all").unwrap_or(false);
+        let skip_floor = std::env::var("LMTOOL_SUN_SKIP_DECOR").map(|v| v == "seabed" || v == "all").unwrap_or(false);
         for (i, t) in scene.decor.iter().enumerate() {
-            if t.water || !t.sun_caster { skipped_water += 1; continue; }
+            if t.water || !t.sun_caster || (t.env && skip_env) || (!t.env && skip_floor) { skipped_water += 1; continue; }
             if chunk.len() * 3 + 3 > 65535 { jobs.push(Job::Decor(std::mem::take(&mut chunk))); weight.push(21845); }
             chunk.push(i);
         }

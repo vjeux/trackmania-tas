@@ -675,3 +675,45 @@ pub fn hue_recolour_cli(a: &[String]) -> Result<(), String> {
     println!("  colour {colour}: table {} → target {:?}; mask {} tap {:?}; c' = ({:.4}, {:.4}, {:.4}); c'/c = ({:.3}, {:.3}, {:.3})", h.table, h.target, h.mask_image, h.mask, h.rgb[0], h.rgb[1], h.rgb[2], h.rgb[0] / base.rgb[0], h.rgb[1] / base.rgb[1], h.rgb[2] / base.rgb[2]);
     Ok(())
 }
+
+/// `lmtool swd6-envlayer FRAME_DIR --color F --depth F --pw01-eid E [--cell 64]` — the captured ENV LAYER's real surfaces (depth > 0: the
+/// water planes, terrain — not the dome at the cleared depth): count, mean colour, world-y histogram, colour by world-y band. What the
+/// game's environment draws write into the peel colour (the water plane's colour, lit or dark).
+pub fn envlayer_cli(a: &[String]) -> Result<(), String> {
+    let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+    let frame_dir = std::path::PathBuf::from(a.get(1).ok_or("FRAME_DIR")?);
+    let draws_json: Vec<Value> = serde_json::from_str(&std::fs::read_to_string(frame_dir.join("draws.json")).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let eid: u64 = f("--pw01-eid").and_then(|s| s.parse().ok()).ok_or("--pw01-eid E")?;
+    let d = draws_json.iter().find(|d| d["eid"].as_u64() == Some(eid)).ok_or("eid not in draws.json")?;
+    let m = jm4(&d["Pixel"]["cbuffers"]["ShaderP"]["g_CBufferP"]["WorldPw01Shadow"]);
+    let row = |k: usize| [m[0][k], m[1][k], m[2][k]];
+    let (ru, rv, rz) = (row(0), row(1), row(2));
+    let n2 = |r: [f32; 3]| r[0] * r[0] + r[1] * r[1] + r[2] * r[2];
+    let unproject = |u: f32, v: f32, z: f32| -> [f32; 3] {
+        let (cu, cv, cz) = ((u - m[3][0]) / n2(ru), (v - m[3][1]) / n2(rv), (z - m[3][2]) / n2(rz));
+        [cu * ru[0] + cv * rv[0] + cz * rz[0], cu * ru[1] + cv * rv[1] + cz * rz[1], cu * ru[2] + cv * rv[2] + cz * rz[2]]
+    };
+    let gc = crate::passdiff::load_file(&frame_dir, &f("--color").ok_or("--color")?, "", 0, 0, 0)?;
+    let gd = crate::passdiff::load_file(&frame_dir, &f("--depth").ok_or("--depth")?, "R16_UNORM", 0, 0, 0)?;
+    let cell: f32 = f("--cell").and_then(|s| s.parse().ok()).unwrap_or(64.0);
+    let mut n = 0usize; let mut sum = [0f64; 3];
+    let mut ybands: std::collections::BTreeMap<i32, (usize, [f64; 3], [f64; 3])> = Default::default(); // 4 m bands: count, Σrgb, Σz01
+    let mut cells = std::collections::BTreeMap::<(i32, i32), usize>::new();
+    for y in 0..gc.h { for x in 0..gc.w {
+        let z = gd.get(x, y, 0);
+        if z <= 0.0 { continue; }
+        n += 1;
+        let c = [gc.get(x, y, 0), gc.get(x, y, 1), gc.get(x, y, 2)];
+        for k in 0..3 { sum[k] += c[k] as f64; }
+        let p = unproject((x as f32 + 0.5) / gc.w as f32, (y as f32 + 0.5) / gc.h as f32, z);
+        let e = ybands.entry((p[1] / 4.0).floor() as i32 * 4).or_insert((0, [0.0; 3], [0.0; 3]));
+        e.0 += 1; for k in 0..3 { e.1[k] += c[k] as f64; } e.2[0] += z as f64;
+        *cells.entry(((p[0] / cell).floor() as i32, (p[2] / cell).floor() as i32)).or_default() += 1;
+    } }
+    println!("swd6-envlayer: {n} texels with a real surface (depth > 0) of {}; mean colour ({:.4}, {:.4}, {:.4})", gc.w as usize * gc.h as usize, sum[0] / n.max(1) as f64, sum[1] / n.max(1) as f64, sum[2] / n.max(1) as f64);
+    println!("  world y (4 m bands): count, mean colour, mean z01");
+    for (yb, (c, s, zz)) in &ybands { if *c < 50 { continue; } println!("    y {:5}..{:5}: {:8}  ({:.4}, {:.4}, {:.4})  z01 {:.5}", yb, yb + 4, c, s[0] / *c as f64, s[1] / *c as f64, s[2] / *c as f64, zz[0] / *c as f64); }
+    let mut cv: Vec<_> = cells.into_iter().collect(); cv.sort_by_key(|(_, c)| std::cmp::Reverse(*c));
+    println!("  top x/z cells ({cell} m): {}", cv.iter().take(10).map(|((cx, cz), c)| format!("({}, {})×{c}", *cx as f32 * cell, *cz as f32 * cell)).collect::<Vec<_>>().join(" "));
+    Ok(())
+}

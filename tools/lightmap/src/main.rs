@@ -5105,6 +5105,7 @@ fn run(mut a: Vec<String>) {
         "swd6-layerwhere" => { if let Err(e) = lightmap::swd6::layerwhere_cli(&a) { eprintln!("swd6-layerwhere: {e}"); std::process::exit(1); } }
         "tex-sample" => { if let Err(e) = lightmap::swd6::texsample_cli(&a) { eprintln!("tex-sample: {e}"); std::process::exit(1); } }
         "hue-recolour" => { if let Err(e) = lightmap::swd6::hue_recolour_cli(&a) { eprintln!("hue-recolour: {e}"); std::process::exit(1); } }
+        "swd6-envlayer" => { if let Err(e) = lightmap::swd6::envlayer_cli(&a) { eprintln!("swd6-envlayer: {e}"); std::process::exit(1); } }
         // (G's classcmp dispatch dropped at integration: V's classcmp — landed first, with --own-rects,
         //  --coverage, the spread column and the pairing guard — owns the subcommand; G's --ents table is
         //  the duplicate. His dome-rings and the study knobs below are kept.)
