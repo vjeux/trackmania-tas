@@ -101,6 +101,9 @@ pub fn lm_uv_index_cached(link: &str) -> Option<Option<u32>> {
 
 /// Read a shader file's `PreLightGen*` binding: the Id string, then the following chunk 0x09047007 / 0x09047006 (u32 flags, i32
 /// TexCoordIndex, u8) or 0x09047004 (i32 TexCoordIndex) — RE 11's re11_plgtc scan.
+/// RE 16 2026-09-28 21:35Z: the game's own reader (FUN_14045aeb0) takes the uv set from a 5-BIT FIELD OF THE FLAGS WORD —
+/// ((flags << 12) >> 27) = bits 15..19 — not from the i32 after it: CubeOut / PyPxzT flags 0x8000 → set 1, Tech3 Block PyPxz_Hue
+/// flags 0 → set 0. The i32 read here agrees on every shader seen so far (1/1, 0/0); when one disagrees, the flags field wins.
 pub fn shader_prelightgen_tc(bytes: &[u8]) -> Option<u32> {
     for name in ["PreLightGenTx", "PreLightGen", "PreLightGenTy", "PreLightGenTz", "PreLightGenSH0", "PreLightGenSprite"] {
         let nb = name.as_bytes();

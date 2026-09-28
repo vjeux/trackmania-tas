@@ -95,6 +95,17 @@ fn srgb_view() -> bool {
     *V.get_or_init(|| std::env::var("LMTOOL_STOCK_VEGET_SRGB").map(|v| v != "0").unwrap_or(true))
 }
 
+/// LMTOOL_STOCK_VEGET_LOD_BIAS=b (STUDY, default 0): the MipLODBias of the tree samplers. The engine's GpuCache names
+/// `SGbxWrap_Aniso_NoLodBias` (1 532 declarations) BESIDE `SGbxWrap_Aniso` (3 578) — the tree programs' sampler is the variant
+/// WITH the engine's global LOD bias, whose value no capture holds (no tree draw was captured); RedIsland's 38 charted bark records
+/// read 1.68/1.55/1.34 the editor with our leaves invisible at the peel's footprint (L8–11, 0.53 % pass) — a negative bias
+/// (finer levels) is the mechanism that would let the game's leaves shade the game's bark. The sensitivity is measured with this
+/// knob; the VALUE is RE 16's read of the sampler desc, never a fit.
+pub fn lod_bias() -> f32 {
+    static V: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("LMTOOL_STOCK_VEGET_LOD_BIAS").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0))
+}
+
 /// One tree material's D image as the two tree programs sample it.
 #[derive(Debug)]
 pub struct VegetTex {
@@ -130,11 +141,11 @@ impl VegetTex {
     }
     /// SGbxWrap_Aniso: anisotropic ×16, Wrap, mip linear, no bias.
     fn peel_sampler() -> Sampler {
-        Sampler { min_mag: Filter::Linear, mip: Some(Filter::Linear), max_aniso: 16, address_u: Address::Wrap, address_v: Address::Wrap, lod_bias: 0.0, min_lod: 0.0, max_lod: f32::MAX, weight_bits: Some(8) }
+        Sampler { min_mag: Filter::Linear, mip: Some(Filter::Linear), max_aniso: 16, address_u: Address::Wrap, address_v: Address::Wrap, lod_bias: lod_bias(), min_lod: 0.0, max_lod: f32::MAX, weight_bits: Some(8) }
     }
     /// SGbxWrap_Bilinear: MIN_MAG_LINEAR_MIP_POINT, Wrap.
     fn sun_sampler() -> Sampler {
-        Sampler { min_mag: Filter::Linear, mip: Some(Filter::Point), max_aniso: 1, address_u: Address::Wrap, address_v: Address::Wrap, lod_bias: 0.0, min_lod: 0.0, max_lod: f32::MAX, weight_bits: Some(8) }
+        Sampler { min_mag: Filter::Linear, mip: Some(Filter::Point), max_aniso: 1, address_u: Address::Wrap, address_v: Address::Wrap, lod_bias: lod_bias(), min_lod: 0.0, max_lod: f32::MAX, weight_bits: Some(8) }
     }
     /// `sample(TMapBaseColor, uv)` of PeelDepthDiffuse_Tree_p: (rgb linear, alpha) at TexCoord0 `uv` with the per-pixel
     /// derivatives `ddx`, `ddy` (texture units per peel pixel).
