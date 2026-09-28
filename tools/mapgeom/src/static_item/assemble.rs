@@ -188,7 +188,7 @@ pub fn build_solid2(m: &Merged, opts: &BuildOpts, next: &mut i32) -> R<CPlugSoli
     }
     // The PreLightGen bounds (u04) must cover EVERY visual's uv1 — the game maps uv1 through the chart's
     // ST built from them, so anything outside lands in the neighbouring items' atlas rects (2026-09-23).
-    let uv1_union: Option<[f32; 4]> = if super::build::card_uv1_legacy() { None } else { uv1_bounds(&pre) };
+    let uv1_union: Option<[f32; 4]> = if super::build::card_uv1_legacy() { None } else { lm_uv_bounds(&pre, &m.materials) };
     harmonize_layouts_with(&mut pre, &want_tangents);
     let visuals = coalesce(&pre);
     // Only the materials some visual draws with, in first-use order (the
@@ -1174,14 +1174,28 @@ pub fn fill_lightmap_atlas(visuals: &mut [super::merged::MergedVisual]) -> Optio
 
 /// The union of every visual's TexCoord1 range: [min u, min v, max u, max v]; None without a uv1 stream.
 pub fn uv1_bounds(visuals: &[super::merged::MergedVisual]) -> Option<[f32; 4]> {
+    lm_uv_bounds(visuals, &[])
+}
+
+/// `uv1_bounds` under the game's LIGHTMAP UV SELECTOR (`materials::lm_uv_index_by_name`): a visual whose material takes
+/// TEXCOORD0 as its lightmap set (the terrain family: Land, Sand, SeaFloor, HillPxz, TransitionTo*) contributes THAT
+/// set's range — the bounds must cover what the game rasterises, not the TexCoord1 stream alone (E2, 2026-09-28: the
+/// tiny03 shore items' Land geoms spilled 0.24–0.29 texel past TexCoord1-only bounds, in the editor's bake as in ours).
+/// `materials` = the merged item's material list (`MergedVisual::material` indexes it); empty = every visual by TexCoord1.
+pub fn lm_uv_bounds(visuals: &[super::merged::MergedVisual], materials: &[crate::crystal_model::CPlugMaterialUserInst]) -> Option<[f32; 4]> {
     use super::vstream::{Elem, N_TEXCOORD0};
     let mut b = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
     let mut any = false;
     for mv in visuals {
-        let Some(s) = mv.visual.stream() else { continue };
-        let Some(i) = s.decls.iter().position(|d| d.name() == N_TEXCOORD0 + 1) else { continue };
-        if let Elem::Float2(uv) = &s.elems[i] {
-            for p in uv {
+        let tc = materials.get(mv.material).and_then(|m| m.link()).map(super::materials::lm_uv_index_by_name).unwrap_or(1);
+        // (TexCoord1 visuals keep the former rule: the TexCoord1 stream or nothing — a lone TexCoord0 is the diffuse set)
+        let uv: Option<Vec<[f32; 2]>> = if tc == 0 {
+            super::materials::lightmap_uvs_of_visual(&mv.visual, 0)
+        } else {
+            mv.visual.stream().and_then(|s| s.decls.iter().position(|d| d.name() == N_TEXCOORD0 + 1).and_then(|i| match &s.elems[i] { Elem::Float2(uv) => Some(uv.clone()), _ => None }))
+        };
+        if let Some(uv) = uv {
+            for p in &uv {
                 b[0] = b[0].min(p[0]);
                 b[1] = b[1].min(p[1]);
                 b[2] = b[2].max(p[0]);

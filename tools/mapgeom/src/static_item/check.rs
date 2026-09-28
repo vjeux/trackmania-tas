@@ -467,23 +467,33 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
         // maps uv1 through the chart's ST built from those bounds, so a vertex outside them is rasterised
         // into the NEIGHBOURING items' atlas rects — the leaf-card garbage found on the pads next to a
         // bush-bearing cliff item (2026-09-23: the cards' per-card atlas spanned the unit square while the
-        // bounds covered the block mesh's third of it). A visual without a uv1 stream is not checked.
+        // bounds covered the block mesh's third of it). The set is the game's selector's (materials::lm_uv_index_by_name:
+        // TEXCOORD0 for the terrain family, TexCoord1 otherwise — E2 2026-09-28: the tiny03 shore items' Land geoms spilled
+        // 0.24–0.29 texel past TexCoord1-only bounds); a geom without that set is not checked.
         if let Some(pl) = s2.pre_light_gen.as_ref() {
-            use crate::static_item::vstream::{Elem, N_TEXCOORD0};
             let b = pl.u04;
             let tol = 1e-3f32;
-            for (vi, vis) in s2.visuals.iter().enumerate() {
+            for (gi, sg) in s2.shaded_geoms.iter().enumerate() {
+                let Some(vis) = s2.visuals.get(sg.visual_index as usize) else { continue };
                 let Some(super::Node::Visual(v)) = vis.inline.as_deref() else { continue };
-                let Some(s) = v.stream() else { continue };
-                let Some(i) = s.decls.iter().position(|d| d.name() == N_TEXCOORD0 + 1) else { continue };
-                let Elem::Float2(uv) = &s.elems[i] else { continue };
+                let link = super::materials::geom_material_link(s2, sg);
+                let tc = super::materials::lm_uv_index_by_name(&link);
+                let uv: Vec<[f32; 2]> = if tc == 0 {
+                    match super::materials::lightmap_uvs_of_visual(v, 0) { Some(u) => u, None => continue }
+                } else {
+                    use crate::static_item::vstream::{Elem, N_TEXCOORD0};
+                    let Some(s) = v.stream() else { continue };
+                    let Some(i) = s.decls.iter().position(|d| d.name() == N_TEXCOORD0 + 1) else { continue };
+                    let Elem::Float2(uv) = &s.elems[i] else { continue };
+                    uv.clone()
+                };
                 let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
-                for p in uv { for k in 0..2 { lo[k] = lo[k].min(p[k]); hi[k] = hi[k].max(p[k]); } }
+                for p in &uv { for k in 0..2 { lo[k] = lo[k].min(p[k]); hi[k] = hi[k].max(p[k]); } }
                 if uv.is_empty() { continue; }
                 if lo[0] < b[0] - tol || lo[1] < b[1] - tol || hi[0] > b[2] + tol || hi[1] > b[3] + tol {
                     problems.push(format!(
-                        "LM-01 visual {vi}: TexCoord1 spans ({:.3},{:.3})..({:.3},{:.3}) but the PreLightGen bounds are ({:.3},{:.3})..({:.3},{:.3}) — the lightmapper rasterises the excess into other items' atlas rects (rebuild the item: TINY_CARD_UV1 fix of 2026-09-23)",
-                        lo[0], lo[1], hi[0], hi[1], b[0], b[1], b[2], b[3]
+                        "LM-01 geom {gi} (visual {}, {}): its lightmap set TexCoord{tc} spans ({:.3},{:.3})..({:.3},{:.3}) but the PreLightGen bounds are ({:.3},{:.3})..({:.3},{:.3}) — the lightmapper rasterises the excess into other items' atlas rects (rebuild the item: TINY_CARD_UV1 fix of 2026-09-23 / the LM-set bounds of 2026-09-28)",
+                        sg.visual_index, if link.is_empty() { "no link".to_string() } else { link.clone() }, lo[0], lo[1], hi[0], hi[1], b[0], b[1], b[2], b[3]
                     ));
                 }
             }

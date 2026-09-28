@@ -594,3 +594,79 @@ pub fn picture_suffix() -> String {
 pub fn screen_logo_file() -> String {
     format!("ScreenLogo{}.dds", picture_suffix())
 }
+
+// ---------------------------------------------------------------------------------------------------------------------
+// THE LIGHTMAP UV SET OF A MATERIAL (the game's selector, RE 11 2026-09-26: NHmsLightMap::NLocal::CreateVStreamTcLM →
+// FUN_140216b30 takes TEXCOORD[TexCoordIndex] of the material's SHADER's "PreLightGen" bitmap binding). The lightmapper
+// resolves it from the pack (`lightmap::lmmesh::prefetch_lm_uv_index`); the ITEM BUILDER and `item-check` have no
+// shader at hand and use the observed table below (RE 7, 03:10Z) — over-inclusion only ENLARGES an item's PreLightGen
+// bounds, under-inclusion spills the geom into the neighbours' atlas rects (the tiny03-clean shore items, E2 2026-09-28:
+// a 'Land' geom's LM set is TexCoord0, 0.24–0.29 texel past bounds computed from TexCoord1 alone).
+// ---------------------------------------------------------------------------------------------------------------------
+
+/// Read a shader file's `PreLightGen*` binding: the Id string, then the following chunk 0x09047007 / 0x09047006 (u32 flags,
+/// i32 TexCoordIndex, u8) or 0x09047004 (i32 TexCoordIndex) — RE 11's re11_plgtc scan. `None` = no PreLightGen binding.
+pub fn shader_prelightgen_tc(bytes: &[u8]) -> Option<u32> {
+    for name in ["PreLightGenTx", "PreLightGen", "PreLightGenTy", "PreLightGenTz", "PreLightGenSH0", "PreLightGenSprite"] {
+        let nb = name.as_bytes();
+        let mut i = 4usize;
+        while i + nb.len() <= bytes.len() {
+            if &bytes[i..i + nb.len()] == nb && u32::from_le_bytes(bytes[i - 4..i].try_into().unwrap()) as usize == nb.len() {
+                let p = i + nb.len();
+                let mut q = p;
+                while q + 12 <= bytes.len() && q < p + 64 {
+                    let w = u32::from_le_bytes(bytes[q..q + 4].try_into().unwrap());
+                    if w == 0x0904_7007 || w == 0x0904_7006 {
+                        let tc = i32::from_le_bytes(bytes[q + 8..q + 12].try_into().unwrap());
+                        return u32::try_from(tc).ok();
+                    }
+                    if w == 0x0904_7004 {
+                        let tc = i32::from_le_bytes(bytes[q + 4..q + 8].try_into().unwrap());
+                        return u32::try_from(tc).ok();
+                    }
+                    q += 1;
+                }
+                i = p;
+            } else {
+                i += 1;
+            }
+        }
+    }
+    None
+}
+
+/// The observed table of the terrain materials whose lightmap uv set is TEXCOORD0 (RE 7, 03:10Z; the lightmapper's
+/// fallback when the shader is not at hand): the `\Media\Material\<name>` tail of the link, case-insensitive.
+pub fn lm_uv_index_by_name(link: &str) -> u32 {
+    let l = link.to_ascii_lowercase();
+    let Some(pos) = l.rfind("\\media\\material\\") else { return 1 };
+    let name = &l[pos + "\\media\\material\\".len()..];
+    if matches!(name, "transitiontosand" | "transitiontoland" | "transitiontoseafloor" | "sand" | "land" | "seafloor" | "hillpxz") { 0 } else { 1 }
+}
+
+/// The game-material link of a shaded geom (the custom material's link, else its name, else the older material list).
+pub fn geom_material_link(s2: &super::solid2::CPlugSolid2Model, sg: &super::solid2::ShadedGeom) -> String {
+    usize::try_from(sg.material_index).ok().and_then(|mi| {
+        s2.custom_materials.get(mi).and_then(|cm| cm.inst().and_then(|m| m.link().map(|l| l.to_string())).or_else(|| if cm.name.is_empty() { None } else { Some(cm.name.clone()) }))
+            .or_else(|| s2.materials.get(mi).and_then(|mr| match mr.inline.as_deref() { Some(super::Node::Material(m)) => m.link().map(|l| l.to_string()), _ => None }))
+    }).unwrap_or_default()
+}
+
+/// The lightmap uv set of a visual under the game's selector: TEXCOORD[`tc`] when the stream carries it, else the
+/// visual's own coordinate set `tc`, else (one set only) the first set — `None` when the visual has no coordinates.
+pub fn lightmap_uvs_of_visual(vis: &super::visual::CPlugVisualIndexedTriangles, tc: u32) -> Option<Vec<[f32; 2]>> {
+    use super::vstream::{Elem, N_TEXCOORD0};
+    let get = |st: &super::vstream::CPlugVertexStream, name: u32| -> Option<Vec<[f32; 2]>> {
+        st.decls.iter().zip(st.elems.iter()).find(|(d, _)| d.name() == name).and_then(|(_, e)| match e { Elem::Float2(u) => Some(u.clone()), _ => None })
+    };
+    if let Some(st) = vis.stream() {
+        if let Some(u) = get(st, N_TEXCOORD0 + tc) { return Some(u); }
+        if tc != 0 {
+            if let Some(u) = get(st, N_TEXCOORD0) { return Some(u); }
+        }
+    }
+    if let Some(s) = vis.main.as_ref().and_then(|m| m.tex_coord_sets.get(tc as usize).or_else(|| m.tex_coord_sets.get(0))) {
+        return Some(s.coords.iter().map(|c| c.0).collect());
+    }
+    None
+}
