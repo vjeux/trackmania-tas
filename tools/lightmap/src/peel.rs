@@ -627,6 +627,12 @@ pub fn cards_cull_back() -> bool {
     *V.get_or_init(|| std::env::var("LMTOOL_CARDS_CULL_BACK").map(|v| v == "1").unwrap_or(false))
 }
 
+/// LMTOOL_ENV_CLIP_YMIN=y (STUDY, default off): the environment layer's world clip plane — see `extract_layers`.
+pub fn env_clip_ymin() -> Option<f32> {
+    static V: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("LMTOOL_ENV_CLIP_YMIN").ok().and_then(|v| v.parse::<f32>().ok()))
+}
+
 /// Whether the cards cast SUN shadows (the bake's sun shadow map). LMTOOL_CARDS_SHADOW=0 leaves them out.
 pub fn cards_shadow() -> bool {
     // default OFF (DIFFERENTIAL, the hill test map 2026-09-23 23:50Z: the slopes under a dense canopy read
@@ -2889,8 +2895,19 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
         if prm.dome_layer {
             let mut env_d = 0.0f32;
             let mut env_best: Option<&Frag> = None;
+            // LMTOOL_ENV_CLIP_YMIN=y (STUDY, E5 2026-09-28 23:20Z — default off): an environment fragment whose WORLD y lies below the plane
+            // is not in the env layer — a world clip plane at the peel box's bottom (GbxV_WorldClipPlaneEq — the form under which the
+            // game's W.ymin ≈ −14.2 on g23 would take the WhiteShore skirt (−14…−18.4) out of the raster and show the dome; V4-11 + RE 16).
+            // Moving W itself (LMTOOL_WORLD_BOX_YMIN) does not clip it: the ortho frustum is W's camera-space AABB, larger than W.
+            let clip_y = env_clip_ymin();
+            let clip_box = prm.env_clip_box;
             for f in list {
                 if is_env(f.tri) && env_drawn(f.tri) {
+                    if clip_y.is_some() || clip_box.is_some() {
+                        let wp = frame.unproject(x as f32 + 0.5, y as f32 + 0.5, f.z);
+                        if let Some(cy) = clip_y { if wp[1] < cy { continue; } }
+                        if let Some(b) = clip_box { if wp[0] < b[0][0] || wp[0] > b[1][0] || wp[2] < b[0][2] || wp[2] > b[1][2] { continue; } }
+                    }
                     let z01 = frame.z01(f.z);
                     if z01 >= 0.0 && z01 <= 1.0 && z01 >= env_d { if z01 > env_d || env_best.is_none() { env_best = Some(f); } env_d = env_d.max(z01); }
                 }

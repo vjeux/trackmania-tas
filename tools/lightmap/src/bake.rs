@@ -263,6 +263,11 @@ pub struct BakeParams {
     /// first sweep's upward directions, the world peel's layer 0 at (W/2, H/2); read after the sweep.
     pub ambient_out: Option<std::sync::Arc<std::sync::Mutex<Vec<[f32; 4]>>>>,
     pub fitted_world_box: Option<[[f32; 2]; 2]>,
+    /// LMTOOL_ENV_CLIP_BOX=1 (STUDY, E5 2026-09-28 23:20Z — default None): the WORLD peel box W as world clip planes on the environment
+    /// layer's fragments — an env fragment whose world x or z lies outside W's XZ faces is not in layer 0 (the coordinator's 23:16Z
+    /// lead: our env raster covers W's camera-space AABB, larger than W, so skirt cells beyond the map edge are drawn; a receiver
+    /// near an edge would see the dome for the shallow upward directions whose camera side lies beyond it — V4-11's bands).
+    pub env_clip_box: Option<[[f32; 3]; 2]>,
     pub hbasis_game: Option<(std::path::PathBuf, std::sync::Arc<Vec<crate::lmaccum::CapEntry>>)>,
     /// The ILightInput atlas the peel colour samples (PS 17131 SRV1; `peelcolor`): the capture's texture
     /// under --ilightinput-from, else None = the per-fragment albedo × light model.
@@ -390,6 +395,7 @@ impl Default for BakeParams {
             probe_bake: None,
             ambient_out: None,
             fitted_world_box: None,
+            env_clip_box: None,
             hbasis_game: None,
             ilight_atlas: None,
             chart_rects: None,

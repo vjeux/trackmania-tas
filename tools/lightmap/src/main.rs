@@ -2659,6 +2659,11 @@ fn run(mut a: Vec<String>) {
                 let plan = if preset.tiles_from_world { plan.world_only() } else if preset.tile_res != 0 { plan.with_tile_size(preset.tile_res) } else { plan };
                 let plan = if preset.world_res != 0 { plan.with_world_size(preset.world_res) } else if preset.world_res_scale > 1 { let s = (plan.size * preset.world_res_scale).min(16384); plan.with_world_size(s) } else { plan };
                 eprintln!("peel cameras: {} item records, scene box [{:.1}, {:.1}]×[{:.1}, {:.1}]×[{:.1}, {:.1}], world peel box [{:.1}, {:.1}]×[{:.1}, {:.1}]×[{:.1}, {:.1}]; tiling at scale {alloc_scale:.3} layout units/m: ext {:.1} → target {}², n = {}, {} fitted tile(s){}{}", recs.len(), plan.scene.min()[0], plan.scene.max()[0], plan.scene.min()[1], plan.scene.max()[1], plan.scene.min()[2], plan.scene.max()[2], plan.world.min[0], plan.world.max[0], plan.world.min[1], plan.world.max[1], plan.world.min[2], plan.world.max[2], plan.ext, plan.size, plan.n, plan.tiles.len(), if plan.tiles.is_empty() { " (the world pass only)" } else { "" }, if plan.tile_size != plan.size { format!(" at {}² (NON-EXACT --tile-res)", plan.tile_size) } else { String::new() });
+                // LMTOOL_ENV_CLIP_BOX=1 (STUDY, E5 2026-09-28): the world peel box's XZ faces as world clip planes on the environment layer
+                if std::env::var("LMTOOL_ENV_CLIP_BOX").map(|v| v == "1").unwrap_or(false) {
+                    prm.env_clip_box = Some([plan.world.min, plan.world.max]);
+                    eprintln!("environment layer: STUDY LMTOOL_ENV_CLIP_BOX=1 — env fragments outside the world peel box's XZ faces x [{:.1}, {:.1}] z [{:.1}, {:.1}] are clipped", plan.world.min[0], plan.world.max[0], plan.world.min[2], plan.world.max[2]);
+                }
                 for (i, t) in plan.tiles.iter().enumerate() { eprintln!("  tile {i}: [{:.1}, {:.1}]×[{:.1}, {:.1}]×[{:.1}, {:.1}]", t.min[0], t.max[0], t.min[1], t.max[1], t.min[2], t.max[2]); }
                 // LMTOOL_FRUSTUM_CMP=1 (F 2026-09-28): the plan's frusta against the CAPTURED ones (--frustum-from) direction by direction — the
                 // residual of the camera fit in ulps of the captured centre / half (the edge-texel differences of a full bake live here)
