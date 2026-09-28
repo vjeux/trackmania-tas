@@ -530,6 +530,10 @@ pub fn layerdiff_cli(a: &[String]) -> Result<(), String> {
     let bands: [(f32, f32, &str); 6] = [(0.0, 1e-4, "game ≈ 0"), (1e-4, 0.01, "0.0001–0.01"), (0.01, 0.05, "0.01–0.05"), (0.05, 0.2, "0.05–0.2"), (0.2, 0.6, "0.2–0.6"), (0.6, 1e9, "> 0.6")];
     let mut acc = vec![(0usize, [0f64; 3], [0f64; 3], 0usize, 0usize); bands.len()];
     let (mut both, mut gonly, mut oonly) = (0usize, 0usize, 0usize);
+    // --ratio-band lo,hi: the per-texel ours/game luminance ratio histogram over that game band (constant → a cosine / normal term;
+    // bimodal → a shadow-dependent share)
+    let rb: Vec<f32> = f("--ratio-band").map(|s| s.split(',').filter_map(|t| t.trim().parse().ok()).collect()).unwrap_or_default();
+    let mut rhist = [0usize; 24];
     for y in 0..gc.h { for x in 0..gc.w {
         let (hg, ho) = (gd.get(x, y, 0) > 0.0, od.get(x, y, 0) > 0.0);
         if hg && !ho { gonly += 1; } if ho && !hg { oonly += 1; }
@@ -540,8 +544,10 @@ pub fn layerdiff_cli(a: &[String]) -> Result<(), String> {
         let e = &mut acc[bi];
         e.0 += 1; for c in 0..3usize { e.1[c] += gc.get(x, y, c as u32) as f64; e.2[c] += oc.get(x, y, c as u32) as f64; }
         if lo > lg * 1.02 + 1e-4 { e.3 += 1; } else if lo < lg * 0.98 - 1e-4 { e.4 += 1; }
+        if rb.len() == 2 && lg >= rb[0] && lg < rb[1] && lg > 0.0 { let r = lo / lg; let k = (((r - 0.5) / 0.05).floor() as i64).clamp(0, 23) as usize; rhist[k] += 1; }
     } }
     println!("  fragments: both {both}, game-only {gonly}, ours-only {oonly}");
+    if rb.len() == 2 { let tot: usize = rhist.iter().sum(); println!("  ours/game luminance ratio over game band [{}, {}) ({tot} texels; 0.05 bins from 0.50, last = ≥ 1.65):", rb[0], rb[1]); println!("    {}", rhist.iter().enumerate().map(|(k, n)| format!("{:.2}:{:.1}%", 0.5 + 0.05 * k as f32, 100.0 * *n as f64 / tot.max(1) as f64)).collect::<Vec<_>>().join(" ")); }
     println!("  game band        texels   Σgame rgb (mean)                 Σours rgb (mean)                 ours/game r g b        ours brighter (>2 %)  darker");
     for (i, (_, _, name)) in bands.iter().enumerate() {
         let (n, g, o, br, dk) = &acc[i];
@@ -623,7 +629,7 @@ pub fn layerwhere_cli(a: &[String]) -> Result<(), String> {
         let (zg, zo) = (gd.get(x, y, 0), od.get(x, y, 0));
         if zg <= 0.0 || zo <= 0.0 { continue; }
         let lg = lum(&gc, x, y); let lo = lum(&oc, x, y);
-        if !(lg >= band[0] && lg < band[1] && lo > 2.0 * lg) { continue; }
+        if !(lg >= band[0] && lg < band[1] && lo > f("--min-ratio").and_then(|s| s.parse::<f32>().ok()).unwrap_or(2.0) * lg) { continue; }
         n += 1;
         let p = unproject((x as f32 + 0.5) / gc.w as f32, (y as f32 + 0.5) / gc.h as f32, zg);
         *ybins.entry(p[1].floor() as i32).or_default() += 1;
