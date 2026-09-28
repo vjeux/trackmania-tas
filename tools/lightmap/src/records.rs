@@ -211,7 +211,16 @@ pub fn layout_of(recs: &[Rec], quality_index: u32) -> Result<crate::layout::Game
         // LMTOOL_FIRST_PASS=formula → s_file·√1.5; =pack → the re-pack at the map's quality; =pack-own-d1 → regrouped at the wide
         // density; LMTOOL_FIRST_PASS_Q=n → the re-pack's search at quality n.
         let mode = std::env::var("LMTOOL_FIRST_PASS").unwrap_or_else(|_| "pack-q0".to_string());
-        if mode.starts_with("pack") {
+        if mode == "ungrouped-q0" || mode == "ungrouped" {
+            // RE 15 (00:45Z, read 2): the pack live at bounce time is ONE UNGROUPED whole-set pack on the SAME (S, S) target with maxIter 1
+            // (desc[0] = L[0] = 0 → the quality-0 search: the first fitting 0.9-ladder step, no bisection; the > 8 192-block grouping off) —
+            // stpad's dump c0 2.1158 = √(0.9 · 2048²/Σ) to the digit. `layout::allocate` (the ungrouped search) at quality 0 (=ungrouped-q0) or
+            // at the map's quality (=ungrouped).
+            match crate::layout::allocate(&crate::layout::LayoutInput { tiles: Vec::new(), items, w_atlas: 2048, quality_index: if mode == "ungrouped-q0" { 0 } else { quality_index }, h_atlas: 0, d1_side: 0 }) {
+                Ok(first) => { gl.s_first = Some(first.s); if std::env::var_os("LMTOOL_LAYOUT_TRACE").is_some() { eprintln!("layout first pass (ungrouped whole-set pack on 2048², {mode}): s {} Σ {} — the peel tiling scale; the file layout's s {}", first.s, first.sum_area, gl.s); } }
+                Err(e) => eprintln!("layout first pass (ungrouped) FAILED: {e} — the peel tiling falls back to the port's density heuristic"),
+            }
+        } else if mode.starts_with("pack") {
             crate::layout::STRIP_RECS.with(|s| { let mut s = s.borrow_mut(); s.clear(); for (k, r) in recs.iter().enumerate() { if r.class == "item0" { s.insert(k); } } });
             match crate::layout::allocate_grouped_walls(&crate::layout::LayoutInput { tiles: Vec::new(), items, w_atlas: 3072, quality_index: std::env::var("LMTOOL_FIRST_PASS_Q").ok().and_then(|v| v.parse().ok()).unwrap_or(if mode == "pack-q0" { 0 } else { quality_index }), h_atlas: 2048, d1_side: if mode == "pack-own-d1" { 0 } else { 2048 } }, &groups, pos_opt, Some(&walls)) {
                 Ok(first) => { gl.s_first = Some(first.s); if std::env::var_os("LMTOOL_LAYOUT_TRACE").is_some() { eprintln!("layout first pass (3072 × 2048 re-pack, {mode}): s {} Σ {} ({} entries) — the peel tiling scale; the file layout's s {}", first.s, first.sum_area, first.entries.len(), gl.s); } }
