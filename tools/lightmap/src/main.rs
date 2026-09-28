@@ -2555,7 +2555,7 @@ fn run(mut a: Vec<String>) {
             // --no-tiles asks for the port's single frame; --tile-scale S = the allocation scale in layout units
             // per metre (default: the port's atlas density × 2), --tile-quality Q (the EHmsLightMapQuality, 3),
             // --tile-vram-mb N (8192), --tile-max N (4)
-            let peel_plan: Option<lightmap::tiledpeel::PeelPlan> = if prm.game_peel && prm.raster_peel && prm.frustums.is_none() && !has("--no-tiles") {
+            let peel_plan: Option<lightmap::tiledpeel::PeelPlan> = if prm.game_peel && prm.raster_peel && (prm.frustums.is_none() || std::env::var_os("LMTOOL_FRUSTUM_CMP").is_some()) && !has("--no-tiles") {
                 let gq: f32 = f("--global-quality").map(|v| v.parse().unwrap()).unwrap_or(1.0);
                 // THE PLAN'S RECORD SET (RE 7, FUN_140230080 l.164–262): the lightmapper's FULL record array — items, kind-0 trees, the
                 // zone tiles, the block / clip entities — the per-cell spans from the records with quality > 0.51 (lmtiles::in_fitted_tiles;
@@ -2597,6 +2597,27 @@ fn run(mut a: Vec<String>) {
                 let plan = if preset.world_res != 0 { plan.with_world_size(preset.world_res) } else if preset.world_res_scale > 1 { let s = (plan.size * preset.world_res_scale).min(16384); plan.with_world_size(s) } else { plan };
                 eprintln!("peel cameras: {} item records, scene box [{:.1}, {:.1}]×[{:.1}, {:.1}]×[{:.1}, {:.1}], world peel box [{:.1}, {:.1}]×[{:.1}, {:.1}]×[{:.1}, {:.1}]; tiling at scale {alloc_scale:.3} layout units/m: ext {:.1} → target {}², n = {}, {} fitted tile(s){}{}", recs.len(), plan.scene.min()[0], plan.scene.max()[0], plan.scene.min()[1], plan.scene.max()[1], plan.scene.min()[2], plan.scene.max()[2], plan.world.min[0], plan.world.max[0], plan.world.min[1], plan.world.max[1], plan.world.min[2], plan.world.max[2], plan.ext, plan.size, plan.n, plan.tiles.len(), if plan.tiles.is_empty() { " (the world pass only)" } else { "" }, if plan.tile_size != plan.size { format!(" at {}² (NON-EXACT --tile-res)", plan.tile_size) } else { String::new() });
                 for (i, t) in plan.tiles.iter().enumerate() { eprintln!("  tile {i}: [{:.1}, {:.1}]×[{:.1}, {:.1}]×[{:.1}, {:.1}]", t.min[0], t.max[0], t.min[1], t.max[1], t.min[2], t.max[2]); }
+                // LMTOOL_FRUSTUM_CMP=1 (F 2026-09-28): the plan's frusta against the CAPTURED ones (--frustum-from) direction by direction — the
+                // residual of the camera fit in ulps of the captured centre / half (the edge-texel differences of a full bake live here)
+                if std::env::var_os("LMTOOL_FRUSTUM_CMP").is_some() {
+                    if let Some(caps) = prm.frustums.as_ref() {
+                        let (mut n, mut exact, mut worst) = (0usize, 0usize, (0.0f32, 0usize, 0usize, String::new()));
+                        let mut hist = [0usize; 6]; // ≤1, ≤4, ≤16, ≤64, ≤256, > 256 ulps (max over the 6 centre/half components)
+                        for (di, cf) in caps.iter().enumerate() {
+                            if cf.is_empty() || di >= prm.sphere_dirs.len() { continue; }
+                            let ours = plan.frusta(prm.sphere_dirs[di]);
+                            for (pi, c) in cf.iter().enumerate() {
+                                let Some(o) = ours.get(pi) else { continue };
+                                let mut m = 0i64; let mut which = String::new();
+                                for k in 0..3 { for (nm, a, b) in [("c", o.center[k], c.center[k]), ("h", o.half[k], c.half[k])] { let u = lightmap::lightcam::ulps(a, b).abs(); if u > m { m = u; which = format!("{nm}{k} ours {a} game {b}"); } } }
+                                n += 1; if m == 0 { exact += 1; }
+                                let b = if m <= 1 { 0 } else if m <= 4 { 1 } else if m <= 16 { 2 } else if m <= 64 { 3 } else if m <= 256 { 4 } else { 5 }; hist[b] += 1;
+                                if m as f32 > worst.0 { worst = (m as f32, di, pi, which); }
+                            }
+                        }
+                        eprintln!("frustum cmp: {n} (direction, peel) pairs with a captured frustum: {exact} bit-identical; max-ulp histogram ≤1 {} ≤4 {} ≤16 {} ≤64 {} ≤256 {} >256 {}; worst {} ulps at direction {} peel {}: {}", hist[0], hist[1], hist[2], hist[3], hist[4], hist[5], worst.0, worst.1, worst.2, worst.3);
+                    }
+                }
                 // LMTOOL_FRUSTUM_TSV=FILE (study, port engineer G, 2026-09-26): RE 13's captured peel frusta (stsun-peel-frusta.tsv: frame, eye,
                 // MinZ, MaxZ, px, py, R0, R1, R2, T) against (a) the plan box's fit and (b) the union of the scene casters' light-space
                 // AABBs about the eye — the per-caster refit RE 13 reads in render 0x140a4fab0 (near = min(c_z − h_z), far = max(c_z + h_z))
@@ -3117,6 +3138,12 @@ fn run(mut a: Vec<String>) {
                         std::fs::write(format!("{dir}/chain-final-{m}.rgba16f"), bytes).expect("write");
                     }
                     eprintln!("chain: wrote the finalised images under {dir}");
+                }
+                // LMTOOL_FINALS_OUT=DIR (F): the RAW sweep-end MRTs too (`sweep{s}_mrt{k}.f32`, alpha = Σ InvDirCount over the covering directions —
+                // RE 15's edge census: (676, 84) on pwc-day must read 58/256 in sweep 0)
+                if let Ok(dir) = std::env::var("LMTOOL_FINALS_OUT") {
+                    let d = std::path::Path::new(&dir); let _ = std::fs::create_dir_all(d);
+                    for (si, hb) in hb_sweeps.iter().enumerate() { for k in 0..4 { let mut bytes = Vec::with_capacity(hb.mrt[k].len() * 16); for px in &hb.mrt[k] { for c in 0..4 { bytes.extend_from_slice(&px[c].to_le_bytes()); } } std::fs::write(d.join(format!("sweep{si}_mrt{k}.f32")), bytes).expect("finals out"); } }
                 }
                 eprintln!("chain: finalisation of {n_sw} sweep(s) in {:.1}s", tf.elapsed().as_secs_f32());
                 chain_finals = Some(finals);
