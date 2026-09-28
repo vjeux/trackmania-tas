@@ -1017,3 +1017,31 @@ pub fn embedded_zip_bytes(body: &[u8]) -> Option<(Vec<u8>, Vec<String>)> {
 /// an exhaustive search, ~2 % smaller at several times the compression time —
 /// not what moves a map off the upload cap; the detail-level pick is).
 pub const DEFLATE_LEVEL: u8 = 6;
+
+/// Every SUPPORT entry (not an `.Item.Gbx`: the .dds cut-out masks and diffuse maps, materials, prefabs) of `full`'s
+/// embedded zip that `reduced` lacks, added to `reduced`'s zip; the manifest (item idents) is kept — support files need no
+/// row. The editor's SaveMap rebuilds the archive with only the item files it uses, so a reduced scene it saved bakes with
+/// OPAQUE alpha-tested cards on our side (g23: 566 items / 0 .dds vs 627 + 5; G2 + baker-5, 2026-09-28). `with_items` also
+/// restores missing item files. Returns the names added; writes `out` only when something was added (else Ok(empty)).
+pub fn restore_support_files(reduced: &std::path::Path, full: &std::path::Path, out: &std::path::Path, with_items: bool) -> Result<Vec<String>, String> {
+    let mut m = crate::map::MapFile::load(reduced);
+    let (mut zip, have) = embedded_zip_bytes(&m.gbx.body).ok_or_else(|| format!("{}: no embedded-objects zip", reduced.display()))?;
+    let src = crate::map::MapFile::load(full);
+    let (full_zip, _) = embedded_zip_bytes(&src.gbx.body).ok_or_else(|| format!("{}: no embedded-objects zip", full.display()))?;
+    let have_lc: std::collections::BTreeSet<String> = have.iter().map(|n| n.replace('\\', "/").to_ascii_lowercase()).collect();
+    let mut added: Vec<String> = Vec::new();
+    for (name, bytes) in zip_entries(&full_zip) {
+        let lc = name.replace('\\', "/").to_ascii_lowercase();
+        if have_lc.contains(&lc) || bytes.is_empty() { continue; }
+        if lc.ends_with(".item.gbx") && !with_items { continue; }
+        zip = zip_add(&zip, &name, &bytes);
+        added.push(name);
+    }
+    if added.is_empty() { return Ok(added); }
+    let n_items = m.items.len();
+    m.replace_embedded_zip_keep_manifest(&zip);
+    m.write_to(out).map_err(|e| format!("{}: {e}", out.display()))?;
+    let m2 = crate::map::MapFile::load(out);
+    if m2.items.len() != n_items { return Err(format!("{}: {} items after the restore, {} before", out.display(), m2.items.len(), n_items)); }
+    Ok(added)
+}

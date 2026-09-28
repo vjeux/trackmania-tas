@@ -239,6 +239,18 @@ fn one(args: &[String], map: &Path, out: &Path) -> Result<(), String> {
     let resaved_path: PathBuf = if resaved { out.to_path_buf() } else { out.with_extension("resaved.Map.Gbx") };
     let n = wsx.pull(&saved, &resaved_path)?;
     eprintln!("pulled {} ({n} bytes)", resaved_path.display());
+    // THE EDITOR'S SAVE DROPS EVERY SUPPORT FILE of the embedded archive (it re-emits only the item files it uses): a re-save
+    // kept as a bake SOURCE has no cut-out masks and bakes its vegetation cards opaque on our side (g23 -source-bake: 566 items /
+    // 0 .dds; G2 2026-09-28). Put the input's support files back before anything reads this file.
+    let restored_tmp = resaved_path.with_extension("restoring.Map.Gbx");
+    match tmmaps::header::restore_support_files(&resaved_path, map, &restored_tmp, false) {
+        Ok(added) if added.is_empty() => {}
+        Ok(added) => {
+            std::fs::rename(&restored_tmp, &resaved_path).map_err(|e| format!("{}: {e}", resaved_path.display()))?;
+            eprintln!("the editor's save lost {} support files (textures) of the archive — restored from the input: {}", added.len(), added.join(", "));
+        }
+        Err(e) => eprintln!("WARNING: support files not restored into the re-save ({e}) — the file may bake with opaque cut-out cards"),
+    }
 
     if resaved {
         // --keep-uid: the editor's re-save mints a new uid; the input's (or --uid U)

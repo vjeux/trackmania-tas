@@ -971,27 +971,12 @@ pub fn embedded_restore(args: &[String]) {
     let full = std::path::PathBuf::from(tmmaps::cli::flag(args, "--from").expect("--from FULL.Map.Gbx"));
     let out = std::path::PathBuf::from(tmmaps::cli::flag(args, "--out").expect("--out OUT.Map.Gbx"));
     let all = args.iter().any(|a| a == "--all");
-    let mut m = tmmaps::map::MapFile::load(&reduced);
-    let (mut zip, have) = tmmaps::header::embedded_zip_bytes(&m.gbx.body).unwrap_or_else(|| tmmaps::cli::die("the reduced map has no embedded-objects zip"));
-    let src = tmmaps::map::MapFile::load(&full);
-    let (full_zip, _) = tmmaps::header::embedded_zip_bytes(&src.gbx.body).unwrap_or_else(|| tmmaps::cli::die("the full map has no embedded-objects zip"));
-    let have_lc: std::collections::BTreeSet<String> = have.iter().map(|n| n.replace('\\', "/").to_ascii_lowercase()).collect();
-    let mut added: Vec<String> = Vec::new();
-    for (name, bytes) in tmmaps::header::zip_entries(&full_zip) {
-        let lc = name.replace('\\', "/").to_ascii_lowercase();
-        if have_lc.contains(&lc) || bytes.is_empty() { continue; }
-        if lc.ends_with(".item.gbx") && !all { continue; }
-        zip = tmmaps::header::zip_add(&zip, &name, &bytes);
-        added.push(name);
-    }
+    let added = tmmaps::header::restore_support_files(&reduced, &full, &out, all).unwrap_or_else(|e| tmmaps::cli::die(&e));
     if added.is_empty() {
         println!("{}: nothing to restore (every support file of {} is already there)", reduced.display(), full.display());
         return;
     }
-    m.replace_embedded_zip_keep_manifest(&zip);
-    m.write_to(&out).unwrap_or_else(|e| tmmaps::cli::die(&format!("{}: {e}", out.display())));
     let m2 = tmmaps::map::MapFile::load(&out);
     let (n_zip, names2) = tmmaps::header::embedded_zip(&m2.gbx.body).unwrap_or((0, Vec::new()));
-    assert_eq!(m2.items.len(), m.items.len(), "reloaded item count");
     println!("{}: restored {} entries from {} → {} ({} zip bytes, {} entries; {} items unchanged): {}", reduced.display(), added.len(), full.display(), out.display(), n_zip, names2.len(), m2.items.len(), added.join(", "));
 }
