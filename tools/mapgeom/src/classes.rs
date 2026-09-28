@@ -1253,12 +1253,20 @@ impl<'a> Graph<'a> {
                 if v < 2 {
                     return Ok(());
                 }
-                self.r.array(|r| {
-                    r.lookback()?;
-                    r.lookback()?;
-                    r.i32()
+                // MAPGEOM_MATUSER_TRACE=1: the Csts (name, name, value) and Color (u32) arrays of the user material — the
+                // words a converted item carries beside its game-material link (E3 2026-09-28: does an item tint its
+                // PyPxz_Hue TargetColor? g23's CustomPlastic hills)
+                let trace = std::env::var_os("MAPGEOM_MATUSER_TRACE").is_some();
+                let csts = self.r.array(|r| {
+                    let a = r.lookback()?;
+                    let b = r.lookback()?;
+                    let c = r.i32()?;
+                    Ok((a, b, c))
                 })?;
-                self.r.array(|r| r.i32())?;
+                let colours = self.r.array(|r| r.i32())?;
+                if trace {
+                    eprintln!("matuser v{v} link {:?} physics {} csts {:?} color {:?}", acc.material_name, acc.physics_id, csts, colours.iter().map(|c| format!("{c:#010x}")).collect::<Vec<_>>());
+                }
                 if v < 3 {
                     return Ok(());
                 }

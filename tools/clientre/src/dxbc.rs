@@ -254,14 +254,25 @@ pub fn rdef_dump(d: &[u8]) -> String {
                     }
                 }
             }
+            // the variable's compiled DEFAULT VALUE (the HLSL initialiser; D3D11_SHADER_VARIABLE_DESC::DefaultValue): the
+            // record's word +20 = its offset in the chunk, 0 = none — printed as f32s (the value a constant holds when the
+            // engine binds nothing over it; E3 2026-09-28, the PyPxz_Hue pre-pass's RgbTargetColor)
+            let defoff = if vo + 24 <= d.len() { u32at(d, vo + 20) as usize } else { 0 };
+            let default = if defoff != 0 && defoff + vsize as usize <= d.len() && vsize % 4 == 0 && vsize <= 64 {
+                let vals: Vec<String> = (0..vsize as usize / 4).map(|k| format!("{}", f32::from_bits(u32at(d, defoff + 4 * k)))).collect();
+                format!("  default ({})", vals.join(", "))
+            } else {
+                String::new()
+            };
             let _ = writeln!(
                 s,
-                "    c[{:>4}] +{:<4} {:<26} {}{}",
+                "    c[{:>4}] +{:<4} {:<26} {}{}{}",
                 start / 16,
                 start % 16,
                 vname,
                 tyname,
-                if vflags & 2 != 0 { format!("  ({} bytes, used)", vsize) } else { format!("  ({} bytes, unused)", vsize) }
+                if vflags & 2 != 0 { format!("  ({} bytes, used)", vsize) } else { format!("  ({} bytes, unused)", vsize) },
+                default
             );
             if tyoff + 12 <= d.len() && u16at(d, tyoff) == 5 {
                 struct_members(d, tyoff, start, 6, &mut s, rd11);
