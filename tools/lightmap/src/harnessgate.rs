@@ -2,7 +2,7 @@
 //! that baker-3/4 typed as a shell chain at every base, so it carries its pass criteria every time and prints one table.
 //!
 //!     lmtool harness-gate --pd DIR --bin LMTOOL --tag NAME [--paks DIR] [--guards DIR] [--skip-guards] [--skip-two-run]
-//!                         [--g8-threads 128] [--md OUT.md]
+//!                         [--g8-threads 128] [--md OUT.md] [--tests TOOLS_DIR]
 //!
 //! `--pd DIR` holds the harness inputs and the reference set (mh/harness-refs-<tip>/ unpacked: INPUTS.md5, COMMON.txt,
 //! detp1.Map.Gbx, g8-old.Map.Gbx, dump-ref/, dump-tref/, prb-c3/ + the five inputs INPUTS.md5 names). `--bin` = the
@@ -214,6 +214,19 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 Ok((false, secs, if filetime_only && images_ok { "MOVED in the FILETIME word only (an unpinned baseline? re-cut it with LMTOOL_BAKE_TIME)".into() } else { format!("MOVED — {}", d.replace('\n', " | ")) }))
             })());
         }
+    }
+
+    // --tests TOOLS_DIR: the lib suite (`cargo test --release -p lightmap --lib -- --test-threads=1`) as a gate row — the same cargo
+    // env as the caller's shell (PATH/RUSTC/CARGO_TARGET_DIR); PASS = "test result: ok" with 0 failed
+    if let Some(dir) = flag(args, "--tests") {
+        push("lib-tests", (|| {
+            let t = Instant::now();
+            let o = Command::new("cargo").args(["test", "--release", "-p", "lightmap", "--lib", "--", "--test-threads=1"]).current_dir(&dir).output().map_err(|e| format!("cargo: {e}"))?;
+            let text = format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+            let _ = std::fs::write(work.join("lib-tests.log"), &text);
+            let line = text.lines().rev().find(|l| l.starts_with("test result:")).unwrap_or("no `test result` line").trim().to_string();
+            Ok((o.status.success() && line.contains("test result: ok") && line.contains(" 0 failed"), t.elapsed().as_secs_f64(), line))
+        })());
     }
 
     // the table + the verdict
