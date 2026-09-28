@@ -619,6 +619,14 @@ pub fn cards_occlude() -> bool {
     *V.get_or_init(|| std::env::var("LMTOOL_CARDS_OCCLUDE").map(|v| v != "0").unwrap_or(true))
 }
 
+/// LMTOOL_CARDS_CULL_BACK=1 (STUDY, E5 2026-09-28 — the coordinator's test (b) of V4-10's dense-cluster darkness): the alpha-tested
+/// CARDS alone are back-face CULLED in the peel (never drawn black from behind) while every other triangle keeps the NoCull /
+/// black-back-face rule. Default off = the transcribed rule (PS 17134 `and isfrontface` on a NoCull draw).
+pub fn cards_cull_back() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("LMTOOL_CARDS_CULL_BACK").map(|v| v == "1").unwrap_or(false))
+}
+
 /// Whether the cards cast SUN shadows (the bake's sun shadow map). LMTOOL_CARDS_SHADOW=0 leaves them out.
 pub fn cards_shadow() -> bool {
     // default OFF (DIFFERENTIAL, the hill test map 2026-09-23 23:50Z: the slopes under a dense canopy read
@@ -790,7 +798,7 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
         if z0.min(z1).min(z2) >= zmax || z0.max(z1).max(z2) < zmin {
             return None;
         }
-        if cull_back && t.inst != DECOR_INST {
+        if (cull_back || (cards_cull_back() && t.alpha != u16::MAX)) && t.inst != DECOR_INST {
             let ng = cross(t.e1, t.e2);
             if dot(ng, d) > 0.0 {
                 return None;
@@ -832,7 +840,7 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
     // range, culls, the exact centre cull) inside its cell; without it an item is one culled triangle projected
     // here. `tri_src` / `tri_id` are the records and their BVH indices (the fragments' `tri` keys) either way.
     let (tri_src, tri_id): (&[WTri], Option<&[u32]>) = match hier { Some((h, _)) => (h.tris.as_slice(), Some(h.bvh_id.as_slice())), None => (tris, None) };
-    let simd_bin = hier.is_none() && crate::binsimd::available() && !cull_back && cards_occlude && soa.map_or(false, |s| s.blocks.len() * 16 >= tris.len());
+    let simd_bin = hier.is_none() && crate::binsimd::available() && !cull_back && !cards_cull_back() && cards_occlude && soa.map_or(false, |s| s.blocks.len() * 16 >= tris.len());
     let simd_check = simd_bin && crate::binsimd::check_on();
     let framek = crate::binsimd::FrameK::new(frame, zmin, zmax, clip);
     let n_items: usize = match hier { Some((_, jobs)) => jobs.len(), None => ranges.iter().map(|r| (r.1 - r.0) as usize).sum() };
@@ -1877,7 +1885,7 @@ pub fn build_abuffer_wanted(tris: &[WTri], frame: &PeelFrame, threads: usize, zm
                         if z0.min(z1).min(z2) >= zmax || z0.max(z1).max(z2) < zmin {
                             continue;
                         }
-                        if cull_back && t.inst != DECOR_INST {
+                        if (cull_back || (cards_cull_back() && t.alpha != u16::MAX)) && t.inst != DECOR_INST {
                             let ng = cross(t.e1, t.e2);
                             if dot(ng, d) > 0.0 {
                                 continue;
@@ -3449,7 +3457,7 @@ pub fn exact_item_layers_direct(tris: &[WTri], frame: &PeelFrame, scene: &Scene,
         if z0.min(z1).min(z2) >= zmax || z0.max(z1).max(z2) < zmin {
             return None;
         }
-        if cull_back && t.inst != DECOR_INST {
+        if (cull_back || (cards_cull_back() && t.alpha != u16::MAX)) && t.inst != DECOR_INST {
             let ng = cross(t.e1, t.e2);
             if dot(ng, d) > 0.0 {
                 return None;
