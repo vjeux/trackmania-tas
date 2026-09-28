@@ -257,7 +257,10 @@ pub fn layout_of(recs: &[Rec], quality_index: u32) -> Result<crate::layout::Game
         // fits none of these and is an open question to RE 14 (the search's iteration count at the LightId allocation).
         // LMTOOL_FIRST_PASS=formula → s_file·√1.5; =pack → the re-pack at the map's quality; =pack-own-d1 → regrouped at the wide
         // density; LMTOOL_FIRST_PASS_Q=n → the re-pack's search at quality n.
-        let mode = std::env::var("LMTOOL_FIRST_PASS").unwrap_or_else(|_| "pack-q0".to_string());
+        // THE DEFAULT IS THE READ (k = 1, RE 15 read 2; coordinator 2026-09-28 04:30Z after G2's modifier routing landed): the peel tiling
+        // scale = the FILE's s. F's pack-q0 (k ≈ 1.25) stays as a knob — it was an empirical compensation for the fitted pass's underside
+        // sky leak (G2's open cell): under it the giants' tiles were off and the card residue hidden. LMTOOL_FIRST_PASS=pack-q0 restores it.
+        let mode = std::env::var("LMTOOL_FIRST_PASS").unwrap_or_else(|_| "file".to_string());
         if mode == "file" {
             // RE 15 (read 2, NOTES 03:30Z): the compute's UpdateMapping runs with a NULL cache, so the allocation live at bounce time IS
             // the file's 2 048² pack — s_live = s_file (k = 1): stpad n 2 (the captured two cells), giant20x2 n 2, tiny03 n 2, g23 n 1.
