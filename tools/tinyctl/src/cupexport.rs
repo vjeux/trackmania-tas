@@ -180,7 +180,17 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             let mut m2 = tmmaps::map::MapFile::load(&dst);
             let old_nick = m2.author_nickname().unwrap_or_else(|| "Everios96".to_string());
             let (hh, bh) = m2.set_author_and_times(&hdr.author, &new_login, &old_nick, &nick, old_at, times)?;
+            // the times the GAME reads live in the body's challenge parameters; the header
+            // alone leaves every map playing with the original author time (2026-09-28)
+            m2.set_body_times(old_at, times)?;
             m2.write_to(&dst).map_err(|e| format!("{}: {e}", dst.display()))?;
+            // read back: the body must now carry exactly what we advertise in the header
+            let back = tmmaps::map::MapFile::load(&dst);
+            match back.body_times() {
+                Some(t) if t == times => {}
+                Some(t) => return Err(format!("{fname}: body times {t:?} != {times:?} after the write")),
+                None => return Err(format!("{fname}: no body challenge parameters to read back")),
+            }
             println!("  {fname}: uid {} -> {new_uid}; AT {old_at} -> {} ({}); author {} -> {nick} ({new_login}); header hits {hh}, body hits {bh}", hdr.uid, w.score, tmmaps::secs::secs_str(&w.score.to_string()), old_nick);
             hunter = nick;
             account = w.account.clone();

@@ -926,6 +926,56 @@ impl MapFile {
         })
     }
 
+    /// Write the medal times into the BODY's challenge parameters (chunk 0x0305B00A),
+    /// where the GAME reads them.
+    ///
+    /// `set_author_and_times` writes the header only (chunk 0x03043002 and the 0x03043005
+    /// XML), which is what the club list, the map browser and trackmania.io show — so a cup
+    /// export looked correct everywhere except the one place that matters: IN GAME every map
+    /// still played with the original map's author time (leod, tiny channel 2026-09-28
+    /// 15:03Z: "not a single map has the correct AT"; map 104 carried header 4.849 over body
+    /// 8.451). The chunk's payload is seven u32 LE — `unused, bronze, silver, gold, author,
+    /// timeLimit, authorScore` — so the four medal words are replaced IN PLACE: the length
+    /// never changes, unlike a body string (the "Couldn't load map" bug of 2026-09-27).
+    ///
+    /// `old_author_ms` is the author time the body is expected to hold; a mismatch is an
+    /// error rather than a blind write.
+    pub fn set_body_times(&mut self, old_author_ms: u32, times: [u32; 4]) -> Result<(), String> {
+        let [author, gold, silver, bronze] = times;
+        let (_, _off, payload, size) = *crate::gbx::all_skip_chunks(&self.gbx.body)
+            .iter()
+            .find(|(c, ..)| *c == 0x0305_B00A)
+            .ok_or("body chunk 0x0305B00A (challenge parameters) not found")?;
+        if size < 28 {
+            return Err(format!("body chunk 0x0305B00A is {size} bytes, expected at least 28"));
+        }
+        let w = |o: usize| -> u32 { u32::from_le_bytes(self.gbx.body[payload + o..payload + o + 4].try_into().unwrap()) };
+        let (b0, s0, g0, a0) = (w(4), w(8), w(12), w(16));
+        if a0 != old_author_ms {
+            return Err(format!("body author time is {a0} ms, expected the map's {old_author_ms} ms — refusing to write blind"));
+        }
+        if !(b0 >= s0 && s0 >= g0 && g0 >= a0) {
+            return Err(format!("body medal times are not ordered (bronze {b0}, silver {s0}, gold {g0}, author {a0})"));
+        }
+        let mut bytes = Vec::with_capacity(16);
+        for v in [bronze, silver, gold, author] {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        self.raw_splices.push(((payload + 4, payload + 20), bytes));
+        Ok(())
+    }
+
+    /// The BODY's medal times `[author, gold, silver, bronze]` (chunk 0x0305B00A), for a
+    /// read-back check that the game will see what the header advertises.
+    pub fn body_times(&self) -> Option<[u32; 4]> {
+        let (_, _off, payload, size) = *crate::gbx::all_skip_chunks(&self.gbx.body).iter().find(|(c, ..)| *c == 0x0305_B00A)?;
+        if size < 28 {
+            return None;
+        }
+        let w = |o: usize| -> u32 { u32::from_le_bytes(self.gbx.body[payload + o..payload + o + 4].try_into().unwrap()) };
+        Some([w(16), w(12), w(8), w(4)])
+    }
+
     /// Remove the author's validation ghost — chunk 0x0305B00F of the
     /// original map, replayed over the tiny map as a car driving the
     /// full-size line in the air — and mark the map unvalidated.
