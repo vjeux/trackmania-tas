@@ -303,7 +303,7 @@ mod tests {
         xf[9] = 64.0;
         xf[10] = 16.0;
         xf[11] = 96.0;
-        let rec = Rec { class: "block", obj: 0, sub: 0, meter_by_uv: 1.0, uv: [0.0, 0.0, 1.0, 1.0], quality: 1.0, centre: [0.0; 3], half: [0.0; 3], group: 0, key_centre: None, pos_rank: None, wall: None, item: None, scale: 1.0, mesh: Some(crate::records::MeshRef { prefab: prefab.into(), entity: 0, xf }) };
+        let rec = Rec { class: "block", obj: 0, sub: 0, meter_by_uv: 1.0, uv: [0.0, 0.0, 1.0, 1.0], quality: 1.0, centre: [0.0; 3], half: [0.0; 3], group: 0, key_centre: None, pos_rank: None, wall: None, item: None, scale: 1.0, mesh: Some(crate::records::MeshRef { prefab: prefab.into(), entity: 0, xf, modifier: None }) };
         let (quads, notes) = water_quads_of_records(&mut store, &[rec.clone(), rec]).unwrap();
         for n in &notes {
             eprintln!("{n}");
