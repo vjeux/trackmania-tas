@@ -3378,7 +3378,7 @@ fn run(mut a: Vec<String>) {
                 };
                 // Σ chart area (m²): the items' PreLightGen extents × scale + √2² per zone tile (BlueBay measured;
                 // the editor's chunk 0x0602200B) — the density the editor's own layout would use
-                let items_area: f32 = scene.instances.iter().map(|inst| { let mdl = &scene.models[inst.model]; let sc = (inst.xf[0] * inst.xf[0] + inst.xf[1] * inst.xf[1] + inst.xf[2] * inst.xf[2]).sqrt(); match mdl.plg_bounds { Some(b) => (b[2] - b[0]) * mdl.plg_u02 * sc * (b[3] - b[1]) * mdl.plg_u02 * sc, None => 0.0 } }).sum();
+                let items_area: f32 = scene.instances.iter().filter(|inst| scene.models[inst.model].veget.is_none()).map(|inst| { let mdl = &scene.models[inst.model]; let sc = (inst.xf[0] * inst.xf[0] + inst.xf[1] * inst.xf[1] + inst.xf[2] * inst.xf[2]).sqrt(); match mdl.plg_bounds { Some(b) => (b[2] - b[0]) * mdl.plg_u02 * sc * (b[3] - b[1]) * mdl.plg_u02 * sc, None => 0.0 } }).sum();
                 let n_tiles = base.saturating_sub(deco_const) as f32;
                 let quality: u32 = f("--quality").map(|s| s.parse::<u32>().unwrap()).unwrap_or(3).saturating_sub(1);
                 let xb = xml_blended_rec.as_ref().unwrap_or(x);

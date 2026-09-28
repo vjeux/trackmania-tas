@@ -550,8 +550,19 @@ pub fn lm_scene_from_map_at(scene: &crate::geometry::Scene, layout: &crate::layo
     }
     for (mi, insts) in &by_model {
         let name = &scene.model_names[*mi];
-        let Some(bytes) = item_bytes(name) else { continue };
-        let Some(mesh) = lm_mesh_of_item(&bytes)? else { continue };
+        // A CHARTED LEGACY TREE (stockveg, E5): its receiver mesh is the species' LOD-0 bark visuals (VegetModel::lm_mesh), its LM
+        // instance the kind-0 record's Iso4 — the VARIED quaternion with the item position, scale 1 (RE 7's record box, bit-exact
+        // 380/380 on tiny03), the chart ST from the record's rect and the legacy PreLightGen's bounds. A chartless species
+        // (no legacy PLG / no bark TexCoord1) has no LM mesh: it is peel geometry only.
+        let veget: Option<&crate::stockveg::VegetModel> = scene.models[*mi].veget.as_deref();
+        let mesh = match veget {
+            Some(vm) => match &vm.lm_mesh { Some(mm) => mm.clone(), None => continue },
+            None => {
+                let Some(bytes) = item_bytes(name) else { continue };
+                let Some(mesh) = lm_mesh_of_item(&bytes)? else { continue };
+                mesh
+            }
+        };
         let bounds = scene.models[*mi].plg_bounds.unwrap_or([0.0, 0.0, 1.0, 1.0]);
         // LMTOOL_LM_UV_TRACE=1 (E2, 2026-09-28): the LM mesh's uv extent against the PLG bounds the chart ST maps onto the rect —
         // a mesh uv outside [b_lo, b_hi] is geometry OUTSIDE the chart rect (the game's coverage is exactly the rect: RE 15 00:20Z)
@@ -566,11 +577,11 @@ pub fn lm_scene_from_map_at(scene: &crate::geometry::Scene, layout: &crate::layo
             let flag = if spill.iter().any(|&s| s > 0.5) { "SPILL" } else { "ok" };
             eprintln!("lm-uv-trace: model {name}: {} verts, mesh uv [{:.6} {:.6}]..[{:.6} {:.6}], PLG bounds {:?}, rect {:?} → outside the rect by (L {:.2} R {:.2} T {:.2} B {:.2}) texels {flag}", mesh.verts.len(), lo[0], lo[1], hi[0], hi[1], bounds, r0, spill[0], spill[1], spill[2], spill[3]);
             if flag == "SPILL" {
-                if let Ok(f) = mapgeom::static_item::file::parse_file(&bytes) {
+                if let Some(bytes) = item_bytes(name) { if let Ok(f) = mapgeom::static_item::file::parse_file(&bytes) {
                     if let Some(s2) = f.item.static_object().and_then(|so| so.solid2()) {
                         for l in geom_uv_report(s2, None) { eprintln!("    {l}"); }
                     }
-                }
+                } }
             }
         }
         let first = sc.instances.len();
@@ -580,7 +591,13 @@ pub fn lm_scene_from_map_at(scene: &crate::geometry::Scene, layout: &crate::layo
             let Some(r) = rect_of.get(&(base + inst.item as u32)) else { continue };
             let st = crate::peelcolor::chart_st(*r, bounds, atlas);
             if std::env::var_os("LM_ST_TRACE").is_some() { eprintln!("  item {} rect {:?} bounds bits [{:#x} {:#x} {:#x} {:#x}] st bits [{:#x} {:#x} {:#x} {:#x}]", inst.item, r, bounds[0].to_bits(), bounds[1].to_bits(), bounds[2].to_bits(), bounds[3].to_bits(), st[0].to_bits(), st[1].to_bits(), st[2].to_bits(), st[3].to_bits()); }
-            sc.instances.push(lm_instance(&inst.pose, st));
+            let li = match (veget, scene.veget_poses.get(ii).copied().flatten()) {
+                // the record's Iso4: the varied quaternion in the stream's (x, y, z, w) NEGATED form (lm_instance's convention), the item
+                // position, scale 1 (the variation's scale draw is the tree renderer's, not the record's)
+                (Some(_), Some(vp)) => LmInstance { q: [-vp.q[0], -vp.q[1], -vp.q[2], -vp.q[3]], t: inst.pose.pos, scale: 1.0, st, st_x_bits: st[0].to_bits() },
+                _ => lm_instance(&inst.pose, st),
+            };
+            sc.instances.push(li);
             sc.rec_of.push(rec_of_item.get(&inst.item).copied().unwrap_or(usize::MAX));
             sc.st_src.push((*r, bounds));
             sc.port_inst.push(ii);

@@ -222,6 +222,13 @@ pub struct VegetModel {
     pub rules: Vec<Arc<VegetRule>>,
     /// The model-space y above which the top-most 10 % of the vertices lie (a diagnostic split of the shadow test).
     pub top90: f32,
+    /// THE CHARTED LEGACY TREE's RECEIVER MESH (RE 7: the game's CPlugSolid for a legacy tree item = the LOD-0 visuals whose
+    /// material is NOT a leaf material, with their TexCoord1 = the record's LM uv; the kind-0 record's rect + the legacy PLG's
+    /// bounds give the chart ST): the bark visuals as an LM mesh — None when no LOD-0 bark visual carries a TexCoord1 (the
+    /// WhiteShore bushes: chartless).
+    pub lm_mesh: Option<crate::sunpass::LmMesh>,
+    /// The legacy PreLightGen's uv bounds (u04[0..4]) and metres-per-uv (u02) when the species carries one (u01 ≠ 0).
+    pub plg: Option<([f32; 4], f32)>,
 }
 
 /// The scene name of a tree material's mask (never collides with an embedded item texture's file name).
@@ -316,10 +323,53 @@ pub fn build_model(store: &mut mapgeom::store::DataStore, species: &str, texture
     if g.tris.is_empty() {
         return Err(format!("{species}: LOD group {lod} draws no triangle"));
     }
+    // THE RECEIVER MESH of a charted legacy tree (RE 7's CPlugSolid rule: the LOD-0 non-leaf visuals; their TexCoord1 = the LM uv):
+    // an LM mesh in lmmesh::lm_mesh_of_solid_ext's form — Dec3N normals / 511 unnormalised then snorm16, the uv snorm16, the
+    // authored tangent frame (TANGENT_U / TANGENT_V words → psize ±1; the tree materials are their own shader, never a linked
+    // pack material). Only when the species carries a legacy PreLightGen (u01 ≠ 0: a record exists).
+    let plg = store.read(species).ok().and_then(|bytes| mapgeom::static_item::legacy_plg::veget_tree_prelight(&bytes).ok().flatten()).filter(|p| p.u01 != 0).map(|p| ([p.u04[0], p.u04[1], p.u04[2], p.u04[3]], p.u02));
+    let mut lm_mesh: Option<crate::sunpass::LmMesh> = None;
+    if plg.is_some() {
+        use mapgeom::static_item::vstream::{N_TANGENT_U, N_TANGENT_V};
+        let mut lverts: Vec<crate::sunpass::LmVertex> = Vec::new();
+        let mut lidx: Vec<u16> = Vec::new();
+        for e in &m.lods[0] {
+            let Some(mat) = m.materials.get(e.material as usize) else { continue };
+            if mat.leaf { continue; }
+            let (Some(st), Some(ib)) = (e.visual.stream(), e.visual.index_buffer.as_ref()) else { continue };
+            let compress = st.compress_local3d.unwrap_or(false);
+            let get = |name: u32| st.decls.iter().zip(st.elems.iter()).find(|(d, _)| d.name() == name).map(|(d, el)| (d.stored_type(compress), el));
+            let Some((T_FLOAT3, Elem::Float3(pos))) = get(N_POSITION) else { continue };
+            let Some((_, Elem::Float2(uv1))) = get(N_TEXCOORD0 + 1) else { continue };
+            let normals: Vec<[f32; 3]> = match get(N_NORMAL) { Some((_, Elem::Float3(n))) => n.clone(), Some((_, Elem::Word(w))) => w.iter().map(|&x| crate::lmmesh::dec3n_raw(x, 511.0)).collect(), _ => continue };
+            let dec_t = |e: Option<(u32, &Elem)>| -> Option<Vec<[f32; 3]>> { match e { Some((_, Elem::Float4(t))) => Some(t.iter().map(|v| [v[0], v[1], v[2]]).collect()), Some((_, Elem::Float3(t))) => Some(t.clone()), Some((_, Elem::Word(w))) => Some(w.iter().map(|&x| crate::lmmesh::dec3n_raw(x, 511.0)).collect()), _ => None } };
+            let (tan_u, tan_v) = (dec_t(get(N_TANGENT_U)), dec_t(get(N_TANGENT_V)));
+            if lverts.len() + pos.len() > u16::MAX as usize { break; }
+            let base = lverts.len() as u16;
+            for (i, p) in pos.iter().enumerate() {
+                let n = normals.get(i).copied().unwrap_or([0.0, 1.0, 0.0]);
+                let uv = uv1.get(i).copied().unwrap_or([0.0, 0.0]);
+                let (t, psize) = match (tan_u.as_ref().and_then(|v| v.get(i)).copied(), tan_v.as_ref().and_then(|v| v.get(i)).copied()) {
+                    (Some(tu), Some(tv)) => { let c = [n[1] * tu[2] - n[2] * tu[1], n[2] * tu[0] - n[0] * tu[2], n[0] * tu[1] - n[1] * tu[0]]; let h = c[0] * tv[0] + c[1] * tv[1] + c[2] * tv[2]; (tu, if h < 0.0 { -1.0 } else { 1.0 }) }
+                    (Some(tu), None) => (tu, 1.0),
+                    _ => ([1.0, 0.0, 0.0], 3.0),
+                };
+                let r = crate::lmmesh::snorm16_roundtrip;
+                lverts.push(crate::sunpass::LmVertex { pos: *p, chart_idx: 0xffff, normal: [r(n[0]), r(n[1]), r(n[2])], uv: [r(uv[0]), r(uv[1])], psize, tangent: [r(t[0]), r(t[1]), r(t[2]), 0.0] });
+            }
+            for &i in &ib.indices { lidx.push(base + i as u16); }
+        }
+        if !lverts.is_empty() { lm_mesh = Some(crate::sunpass::LmMesh { verts: lverts, indices: lidx }); }
+        if trace() { eprintln!("stock vegetation: {species}: legacy PreLightGen {:?} — receiver mesh {} (the LOD-0 bark visuals' TexCoord1)", plg, lm_mesh.as_ref().map(|mm| format!("{} vertices / {} indices", mm.verts.len(), mm.indices.len())).unwrap_or_else(|| "NONE (no bark visual with a TexCoord1)".into())); }
+    }
+    if let Some((b, u02)) = plg {
+        if b[2] > b[0] && b[3] > b[1] && b[2].is_finite() { g.plg_bounds = Some(b); }
+        g.plg_u02 = u02;
+    }
     if trace() {
         eprintln!("stock vegetation: {species}: LOD group {lod} of {}: {n_vis} visuals, {} vertices, {} triangles, materials {}", m.lods.len(), verts.len(), g.tris.len(), rules.iter().map(|r| format!("{}{}", r.tex.path.rsplit('\\').next().unwrap_or(""), if r.leaf { " (leaf)" } else { " (bark)" })).collect::<Vec<_>>().join(", "));
     }
-    g.veget = Some(Arc::new(VegetModel { species: species.to_string(), lod, top90: { let mut ys: Vec<f32> = verts.iter().map(|v| v.0[1]).collect(); ys.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)); ys.get(ys.len() * 9 / 10).copied().unwrap_or(f32::MAX) }, verts, tri_verts, rules }));
+    g.veget = Some(Arc::new(VegetModel { species: species.to_string(), lod, top90: { let mut ys: Vec<f32> = verts.iter().map(|v| v.0[1]).collect(); ys.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)); ys.get(ys.len() * 9 / 10).copied().unwrap_or(f32::MAX) }, verts, tri_verts, rules, lm_mesh, plg }));
     Ok(g)
 }
 
