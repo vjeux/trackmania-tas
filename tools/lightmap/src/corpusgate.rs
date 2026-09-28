@@ -303,12 +303,18 @@ pub fn census(exe: &Path, source: &Path, kept: Option<&Path>) -> serde_json::Val
         total_lamps += l;
         if kept_set.as_ref().map_or(true, |s| s.contains(&i)) { kept_lamps += l; }
     }
-    serde_json::json!({ "kept_items": kept_items, "total_items": total_items, "kept_lamps": kept_lamps, "total_lamps": total_lamps, "reduced": kept_set.is_some() })
+    // the embedded zip: item files vs textures — a source with items and NO texture bakes its alpha-tested cards OPAQUE
+    // (the editor-saved reduced maps, G2 2026-09-28 01:00Z; corpus rule #3: a reduced source must carry its textures)
+    let (zip_items, zip_tex) = tmmaps::header::embedded_zip(&m.gbx.body).map(|(_, names)| {
+        let lc: Vec<String> = names.iter().map(|n| n.to_ascii_lowercase()).collect();
+        (lc.iter().filter(|n| n.ends_with(".item.gbx")).count(), lc.iter().filter(|n| n.ends_with(".dds") || n.ends_with(".texture.gbx") || n.ends_with(".material.gbx")).count())
+    }).unwrap_or((0, 0));
+    serde_json::json!({ "kept_items": kept_items, "total_items": total_items, "kept_lamps": kept_lamps, "total_lamps": total_lamps, "reduced": kept_set.is_some(), "zip_items": zip_items, "zip_textures": zip_tex, "textures_missing": zip_items > 0 && zip_tex == 0 })
 }
 
 fn census_str(c: &serde_json::Value) -> String {
     if c.is_null() { return "—".into(); }
-    format!("{}/{} items, {}/{} lamps{}", c["kept_items"], c["total_items"], c["kept_lamps"], c["total_lamps"], if c["reduced"].as_bool().unwrap_or(false) { " (reduced)" } else { "" })
+    format!("{}/{} items, {}/{} lamps{}{}", c["kept_items"], c["total_items"], c["kept_lamps"], c["total_lamps"], if c["reduced"].as_bool().unwrap_or(false) { " (reduced)" } else { "" }, if c["textures_missing"].as_bool().unwrap_or(false) { format!(" WARNING {} item files, 0 textures embedded", c["zip_items"]) } else { String::new() })
 }
 
 // ---------------------------------------------------------------- run
