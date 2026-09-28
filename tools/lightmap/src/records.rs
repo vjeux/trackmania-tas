@@ -40,6 +40,53 @@ pub struct MeshRef {
     pub prefab: String,
     pub entity: usize,
     pub xf: mapgeom::geom::Xform,
+    /// THE OWNER BLOCK'S MATERIAL MODIFIER (G2, 2026-09-28; read from the block info's chunk 0x0304E031): the modifier file's stem, e.g.
+    /// `TrackWallToDecoCliff` — the block's mobils AND its generated clips are drawn with the modifier's material substitution
+    /// (stpad, f4468: the 212 Base_VFCMiddle_Air walls bind DecoCliff's textures — PxzBaseColor trans 0.25, the 4×4 DisabledModX2,
+    /// PS 9517 — where their prefab names TrackWall; WaterBase.EDClassic carries `Stadium\Media\Modifier\TrackWallToDecoCliff.Gbx`).
+    pub modifier: Option<String>,
+}
+
+thread_local! {
+    /// The material modifier of the block whose records are being generated (`with_material_modifier`), read by
+    /// `prefab_entity_records_in` into every MeshRef it pushes.
+    static CURRENT_MODIFIER: std::cell::RefCell<Option<String>> = std::cell::RefCell::new(None);
+}
+
+/// The material modifier REF of a block info (the first of its three 0x0304E031 slots that names one; `Stadium\Media\Modifier\
+/// TrackWallToDecoCliff.Gbx`, `…\Reset.TerrainModifier.Gbx`) — the game's mechanism is a FOLDER of replacement materials by name:
+/// `modifier_folder` names it, `apply_material_modifier` substitutes every link whose material the folder holds.
+pub fn material_modifier_of(bi: &mapgeom::blockinfo::BlockInfo) -> Option<String> {
+    bi.material_modifier_slots.iter().flatten().map(|p| p.replace(' ', "")).find(|p| modifier_folder(p).is_some())
+}
+
+/// The folder a modifier ref stands for (mapgeom's reading of the modifier files: `TrackWallToDecoCliff.Gbx` → its chunk 0x0915D000's
+/// string `Stadium\Media\Modifier\PlatformGrass\`; `X.TerrainModifier.Gbx` → `X\`).
+pub fn modifier_folder(r: &str) -> Option<String> {
+    if mapgeom::tiny_library::is_track_wall_to_deco_cliff(r) { return Some(mapgeom::tiny_library::TRACK_WALL_TO_DECO_CLIFF_FOLDER.to_string()); }
+    mapgeom::tiny_library::terrain_modifier_base(r).map(|b| format!("{b}\\"))
+}
+
+pub fn with_material_modifier<T>(m: Option<String>, f: impl FnOnce() -> T) -> T {
+    let prev = CURRENT_MODIFIER.with(|c| c.replace(m));
+    let r = f();
+    CURRENT_MODIFIER.with(|c| *c.borrow_mut() = prev);
+    r
+}
+
+/// The material links a modifier substitutes: `<dir>\<Name>` → `<folder><Name>` for every Name whose `<folder><Name>.Material.Gbx` the
+/// pack holds (stpad: `Stadium\Media\Material\TrackWall` → `Stadium\Media\Modifier\PlatformGrass\TrackWall` = Pxz DecoCliffPxz_D, X2
+/// disabled, parent PyPxzDiff_Spec_Norm_LM1 — the textures the captured pre-pass draws bind). Returns the substituted count.
+pub fn apply_material_modifier(store: &mapgeom::store::DataStore, modifier: &str, links: &mut [String]) -> usize {
+    let Some(folder) = modifier_folder(modifier) else { return 0 };
+    let mut n = 0;
+    for l in links.iter_mut() {
+        let Some((_, name)) = l.rsplit_once('\\') else { continue };
+        let cand = format!("{folder}{name}");
+        let file = format!("{cand}.Material.Gbx");
+        if store.entries().any(|e| e.path().eq_ignore_ascii_case(&file)) { *l = cand; n += 1; }
+    }
+    n
 }
 
 impl Rec {
@@ -348,7 +395,7 @@ pub fn prefab_entity_records_in(store: &mut mapgeom::store::DataStore, free: boo
                 // THE WALL TEST (RE 7's FUN_14028ff90): this exact model file, and the entity's world Iso4 third row (m2, m5, m8) axis-aligned
                 let iso = crate::lmtiles::from_xform(&e_xf);
                 let wall = if prefab_path == crate::itemrule::WALL_MODEL_FILE { crate::itemrule::wall_facing(iso[2], iso[5], iso[8]).map(|code| (code, 2.0 * w.h[1])) } else { None };
-                out.push(Rec { class, obj, sub: *sub, meter_by_uv: plg.u02, uv: [plg.u04[0], plg.u04[1], plg.u04[2], plg.u04[3]], quality, centre: w.c, half: w.h, group, key_centre: None, pos_rank: None, wall, item: None, scale: 1.0, mesh: Some(MeshRef { prefab: prefab_path.to_string(), entity: ei, xf: e_xf }) });
+                out.push(Rec { class, obj, sub: *sub, meter_by_uv: plg.u02, uv: [plg.u04[0], plg.u04[1], plg.u04[2], plg.u04[3]], quality, centre: w.c, half: w.h, group, key_centre: None, pos_rank: None, wall, item: None, scale: 1.0, mesh: Some(MeshRef { prefab: prefab_path.to_string(), entity: ei, xf: e_xf, modifier: CURRENT_MODIFIER.with(|c| c.borrow().clone()) }) });
                 *sub += 1;
             }
             None if e.model.index >= 0 => {
@@ -538,7 +585,9 @@ pub fn build_map_records(map_path: &str, scene: &crate::geometry::Scene, store: 
         let variant = (b.flags & mapgeom::blockmap::FLAG_VARIANT_MASK) as usize;
         let subvariant = ((b.flags >> mapgeom::blockmap::FLAG_SUBVARIANT_SHIFT) & 63) as usize;
         let additional = ((b.flags >> mapgeom::blockmap::FLAG_ADDITIONAL_SHIFT) & 127) as usize;
-        n_block_recs += block_records_class(store, &bi, [x, y, z], b.dir, ground, variant, subvariant, additional, yoff, "block", obj, 1.0, b.flags & 0x1000_0000 != 0, &mut recs)?;
+        // the block's material modifier (WaterBase: TrackWallToDecoCliff) rides into its records' MeshRefs
+        let modifier = material_modifier_of(&bi);
+        n_block_recs += with_material_modifier(modifier, || block_records_class(store, &bi, [x, y, z], b.dir, ground, variant, subvariant, additional, yoff, "block", obj, 1.0, b.flags & 0x1000_0000 != 0, &mut recs))?;
         if let Ok(ls) = block_lights(store, &bi, [x, y, z], b.dir, ground, variant, subvariant, additional, yoff) { for l in ls { block_lights_out.push((format!("block {} {}", b.index, b.name), l)); } }
     }
     // 2. the tiles: the map's GENEALOGY (chunk 0x03043043) names every cell's zone and direction (BlueBay tiny16: Sea, Land,
@@ -612,7 +661,9 @@ pub fn build_map_records(map_path: &str, scene: &crate::geometry::Scene, store: 
             }
             let mut owner_free = owner_b.map(|b| b.flags & 0x1000_0000 != 0).unwrap_or(false);
             if opts.one_class.iter().any(|n| *n == c.name) { owner_free = false; }
-            n_clip_recs += block_records_class(store, &bi, cell, d, c.ground, variant, 0, 0, yoff, class, clip_obj0 + n_clip_objs, 1.0, owner_free, &mut recs)?;
+            // a clip is drawn with its OWNER block's material modifier (the clip block infos carry none; stpad's VFC walls = DecoCliff)
+            let owner_modifier = owner_b.and_then(|b| idx.path_for(&b.name)).and_then(|p| idx.load(store, &p).ok().map(|obi| material_modifier_of(obi)));
+            n_clip_recs += with_material_modifier(owner_modifier.flatten(), || block_records_class(store, &bi, cell, d, c.ground, variant, 0, 0, yoff, class, clip_obj0 + n_clip_objs, 1.0, owner_free, &mut recs))?;
             if let Ok(ls) = block_lights(store, &bi, cell, d, c.ground, variant, 0, 0, yoff) { for l in ls { block_lights_out.push((format!("{class} {} of block {}", c.name, c.owner_index), l)); } }
             n_clip_objs += 1;
         }
@@ -738,7 +789,8 @@ pub fn build_map_records(map_path: &str, scene: &crate::geometry::Scene, store: 
 // transform. Returns, per record, the scene instance index it became (None for item records, which the scene already holds).
 
 pub fn add_record_geometry(scene: &mut crate::geometry::Scene, store: &mut mapgeom::store::DataStore, mr: &MapRecords, collection: &str, zone: &str, tile_y: f32, yoff: f32) -> Result<Vec<Option<usize>>, String> {
-    let mut model_of: std::collections::HashMap<(String, usize), usize> = Default::default();
+    let mut model_of: std::collections::HashMap<(String, usize, Option<String>), usize> = Default::default();
+    let mut n_modified = 0usize;
     let mut out: Vec<Option<usize>> = vec![None; mr.recs.len()];
     let mut next_item = scene.item_count;
     let mut n_ent = 0usize;
@@ -752,7 +804,7 @@ pub fn add_record_geometry(scene: &mut crate::geometry::Scene, store: &mut mapge
     for (k, r) in mr.recs.iter().enumerate() {
         if skip_classes.iter().any(|c| c == r.class) { continue; }
         let (mi, xf) = if let Some(m) = &r.mesh {
-            let key = (m.prefab.clone(), m.entity);
+            let key = (m.prefab.clone(), m.entity, m.modifier.clone());
             let mi = match model_of.get(&key) {
                 Some(&mi) => mi,
                 None => {
@@ -761,9 +813,16 @@ pub fn add_record_geometry(scene: &mut crate::geometry::Scene, store: &mut mapge
                     let Some(e) = pf.ents.get(m.entity) else { continue };
                     let Some(mapgeom::static_item::Node::StaticObject(so)) = e.model.inline.as_deref() else { continue };
                     let Some(s2) = so.solid2() else { continue };
-                    let g = crate::geometry::geom_from_solid2_ext(s2, None, std::env::var_os("LMTOOL_RECORD_SCENE_SKIP_NO_LMUV").is_some(), Some((store, &pm.externals)));
+                    let mut g = crate::geometry::geom_from_solid2_ext(s2, None, std::env::var_os("LMTOOL_RECORD_SCENE_SKIP_NO_LMUV").is_some(), Some((store, &pm.externals)));
+                    // THE MATERIAL MODIFIER (G2, 2026-09-28): the owner block's `XToY` substitution on the prefab's material links — the
+                    // pre-pass constant, the bounce albedo and the material class then follow the substituted material (stpad: the
+                    // WaterBase clips' TrackWall → DecoCliff, the game's f4468 draws; LMTOOL_NO_MATERIAL_MODIFIER=1 = the study's off switch)
+                    if let Some(md) = m.modifier.as_deref().filter(|_| std::env::var_os("LMTOOL_NO_MATERIAL_MODIFIER").is_none()) {
+                        let n = apply_material_modifier(store, md, &mut g.mat_links);
+                        if n > 0 { for (k, l) in g.mat_links.iter().enumerate() { g.mat_albedo[k] = crate::albedo::for_link(l).unwrap_or([f32::NAN; 3]); } n_modified += n; }
+                    }
                     scene.models.push(g);
-                    scene.model_names.push(format!("{}#{}", m.prefab, m.entity));
+                    scene.model_names.push(match &m.modifier { Some(md) => format!("{}#{}@{}", m.prefab, m.entity, md.rsplit('\\').next().unwrap_or(md).trim_end_matches(".Gbx")), None => format!("{}#{}", m.prefab, m.entity) });
                     model_of.insert(key, scene.models.len() - 1);
                     scene.models.len() - 1
                 }
@@ -811,6 +870,6 @@ pub fn add_record_geometry(scene: &mut crate::geometry::Scene, store: &mut mapge
         out[k] = Some(scene.instances.len() - 1);
         next_item += 1;
     }
-    eprintln!("record scene: {n_ent} prefab entity instances + {n_tiles} zone tile instances added ({} models now, {} triangles)", scene.models.len(), scene.tri_count());
+    eprintln!("record scene: {n_ent} prefab entity instances + {n_tiles} zone tile instances added ({} models now, {} triangles){}", scene.models.len(), scene.tri_count(), if n_modified > 0 { format!("; material modifiers: {n_modified} link(s) substituted (the owner blocks' XToY, e.g. TrackWallToDecoCliff)") } else { String::new() });
     Ok(out)
 }

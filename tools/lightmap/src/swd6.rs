@@ -637,3 +637,17 @@ pub fn layerwhere_cli(a: &[String]) -> Result<(), String> {
     for (p, g, o) in samples { println!("  sample p ({:.1}, {:.2}, {:.1}) game ({:.4}, {:.4}, {:.4}) ours ({:.4}, {:.4}, {:.4})", p[0], p[1], p[2], g[0], g[1], g[2], o[0], o[1], o[2]); }
     Ok(())
 }
+
+/// A projected texture's mip-0 bilinear (wrap, sRGB → linear) sample at uv — the pre-pass constant probe (`paktables::mip0_bilinear_wrap_srgb`).
+pub fn texsample_cli(a: &[String]) -> Result<(), String> {
+    // lmtool tex-sample DDS u,v [u,v …]
+    let dds = std::fs::read(a.get(1).ok_or("DDS")?).map_err(|e| e.to_string())?;
+    for s in &a[2..] {
+        let v: Vec<f32> = s.split(',').filter_map(|t| t.trim().parse().ok()).collect();
+        if v.len() != 2 { continue; }
+        let rgb = crate::paktables::mip0_bilinear_wrap_srgb(&dds, [v[0], v[1]])?;
+        let srgb = |x: f32| if x <= 0.0031308 { x * 12.92 } else { 1.055 * x.powf(1.0 / 2.4) - 0.055 };
+        println!("  uv ({:.4}, {:.4}) → linear ({:.4}, {:.4}, {:.4})  sRGB ({:.3}, {:.3}, {:.3})", v[0], v[1], rgb[0], rgb[1], rgb[2], srgb(rgb[0]), srgb(rgb[1]), srgb(rgb[2]));
+    }
+    Ok(())
+}
