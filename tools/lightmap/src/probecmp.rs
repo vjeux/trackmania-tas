@@ -228,6 +228,9 @@ pub fn run(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLightmap,
     let mut by_level: std::collections::BTreeMap<i32, [ImgAcc; 4]> = Default::default();
     // per level: the probes EITHER side marks inside geometry (the buried set) — count and the colour bytes on both sides
     let mut buried_level: std::collections::BTreeMap<i32, ImgAcc> = Default::default();
+    // the histogram of the EDITOR's (and our) colour max-channel byte over the buried probes: 0 / 1 / 2 / 3 / 4–15 / 16+ (RE 16: fill-0 vs the (1,1,1) valid-black rule)
+    let (mut hist_ed, mut hist_ours) = ([0usize; 6], [0usize; 6]);
+    let bin = |v: u8| -> usize { match v { 0 => 0, 1 => 1, 2 => 2, 3 => 3, 4..=15 => 4, _ => 5 } };
     let mut worst: Vec<(u32, (i32, i32, i32), [u8; 3], [u8; 3], bool)> = Vec::new();
     for (key, (ra, valid_a, level)) in &a.probes {
         let Some((rb, valid_b, _)) = b.probes.get(key) else { only_ours += 1; continue };
@@ -237,7 +240,7 @@ pub fn run(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLightmap,
             acc[k][if both_valid { 0 } else { 1 }].add(ra[k], rb[k]);
             acc[k][2].add(ra[k], rb[k]);
         }
-        if o.levels { let e = by_level.entry(*level).or_default(); for k in 0..4 { e[k].add(ra[k], rb[k]); } if !both_valid { buried_level.entry(*level).or_default().add(ra[0], rb[0]); } }
+        if o.levels { let e = by_level.entry(*level).or_default(); for k in 0..4 { e[k].add(ra[k], rb[k]); } if !both_valid { buried_level.entry(*level).or_default().add(ra[0], rb[0]); hist_ed[bin(rb[0][0].max(rb[0][1]).max(rb[0][2]))] += 1; hist_ours[bin(ra[0][0].max(ra[0][1]).max(ra[0][2]))] += 1; } }
         if o.worst > 0 {
             let md = (0..3).map(|c| (ra[0][c] as i32 - rb[0][c] as i32).unsigned_abs()).max().unwrap_or(0);
             if worst.len() < o.worst || md > worst.last().map(|w| w.0).unwrap_or(0) {
@@ -269,6 +272,9 @@ pub fn run(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLightmap,
             println!("{line}");
             tsv.push_str(&format!("level\ty={y}\t{}\t{:.2}\t{:.2}\t{:.2}\t{}\t{}\t{}\t{}\t{}\n", e[0].n, e[0].pct(e[0].exact), e[0].pct(e[0].within1), e[0].pct(e[0].within2), e[0].max_delta, r3(e[0].mean_ours(), 1), r3(e[0].mean_theirs(), 1), r3(e[0].ratio(), 3), r3(e[0].bias(), 2)));
         }
+    }
+    if o.levels && hist_ed.iter().sum::<usize>() > 0 {
+        println!("\nburied probes (either side inside geometry), colour max-channel byte histogram [0 / 1 / 2 / 3 / 4–15 / 16+]: editor {:?}, ours {:?}", hist_ed, hist_ours);
     }
     if o.worst > 0 && !worst.is_empty() {
         println!("\nthe {} probes with the largest colour |Δ| (world x, y, z; ours rgb vs editor rgb; valid = both outside geometry):", worst.len());

@@ -158,6 +158,10 @@ pub struct Options {
     /// `--peaks N` (V4): list each side's N brightest decoded texels — (x, y), chart, class key, fb, HDR max channel, and the OTHER
     /// side's value at the same texel — the read of WHERE a record's max sits (a decal quad, a card, a pad texel) and what it became
     pub peaks: usize,
+    /// `--near FILE --radius R` (V4): a SPATIAL split of every class — a chart whose record centre (x, z) lies within R m of any listed
+    /// point gets the key suffix " (near)", the others " (far)" — the test of an occluder/bounce source the bake lacks (RE 16's 303
+    /// chartless stock bushes on tiny03: are the tiles under them darker in the game?)
+    pub near: Option<(Vec<(f32, f32)>, f32)>,
 }
 
 /// One of the brightest texels of a side (`--peaks`): position, chart, class key, the chart's frame byte, the decoded RGB, and the
@@ -184,6 +188,20 @@ pub fn class_key(m: &Mapping, i: usize, rows: &std::collections::HashMap<(u32, u
         (Some(_), GroupBy::Obj) | (None, GroupBy::Obj) => format!("obj {obj}"),
         (None, _) => if obj >= 16384 { "obj≥16384".to_string() } else { "obj<16384".to_string() },
     }
+}
+
+
+/// `--near`: the class key with the spatial suffix — " (near)" when the chart's record centre (x, z) is within R of a listed point,
+/// " (far)" otherwise; a chart without a centre keeps its key.
+pub fn near_key(key: String, m: &Mapping, i: usize, rows: &std::collections::HashMap<(u32, u32), RecRow>, near: &Option<(Vec<(f32, f32)>, f32)>) -> String {
+    let Some((pts, r)) = near else { return key };
+    let obj = m.binds[i].obj_group_idx / 4;
+    let sub = m.binds[i].obj_idx & 0x00ff_ffff;
+    let Some(row) = rows.get(&(obj, sub)) else { return key };
+    let (Some(cx), Some(cz)) = (row.centre_x, row.centre_z) else { return key };
+    let r2 = r * r;
+    let hit = pts.iter().any(|(px, pz)| { let (dx, dz) = (px - cx, pz - cz); dx * dx + dz * dz <= r2 });
+    format!("{key} ({})", if hit { "near" } else { "far" })
 }
 
 pub struct Report {
@@ -249,7 +267,7 @@ pub fn compare(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLight
             // areas differ by more than a √2-ring step with slack (×2.9) is a NUMBERING mismatch (tiny03: our kind-0 trees at obj 4096… vs the editor's road
             // items), refused and counted rather than averaged
             { let (a1, a2) = (m1.size[i].0 as f64 * m1.size[i].1 as f64, m2.size[j].0 as f64 * m2.size[j].1 as f64); if a1 > 0.0 && a2 > 0.0 && (a1 / a2 > 2.9 || a2 / a1 > 2.9) { pair_refused += 1; continue; } }
-            let key = class_key(&m1, i, &rows, records, o.by);
+            let key = near_key(class_key(&m1, i, &rows, records, o.by), &m1, i, &rows, &o.near);
             let mut acc = ClassAcc { charts: 1, ..Default::default() };
             let (fbi, fbj) = (fb1.get(i).copied().unwrap_or(0), fb2.get(j).copied().unwrap_or(0));
             let (mut co, mut ct) = ([0f64; 3], [0f64; 3]);
@@ -279,7 +297,7 @@ pub fn compare(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLight
             continue;
         }
         if m1.pos[i] != m2.pos[i] || m1.size[i] != m2.size[i] { rect_mismatch += 1; continue; }
-        let key = class_key(&m1, i, &rows, records, o.by);
+        let key = near_key(class_key(&m1, i, &rows, records, o.by), &m1, i, &rows, &o.near);
         let (px, py, pw, ph) = chart_own_px(m1.pos[i], m1.size[i]);
         let mut acc = ClassAcc { charts: 1, ..Default::default() };
         let (fbi, fbj) = (fb1.get(i).copied().unwrap_or(0), fb2.get(i).copied().unwrap_or(0));
@@ -560,7 +578,7 @@ pub fn compare_coverage(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio:
     let mut classes: Vec<(String, CoverSplit)> = Vec::new();
     for i in 0..m1.count as usize {
         if m1.pos[i] != m2.pos[i] || m1.size[i] != m2.size[i] { continue; }
-        let key = class_key(&m1, i, &rows, records, o.by);
+        let key = near_key(class_key(&m1, i, &rows, records, o.by), &m1, i, &rows, &o.near);
         let (px, py, pw, ph) = chart_own_px(m1.pos[i], m1.size[i]);
         let (fbi, fbj) = (fb1[i], fb2[i]);
         let mut sp = CoverSplit::default();
