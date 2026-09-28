@@ -367,6 +367,9 @@ impl CollectionProfile {
             "WhiteShore" => CollectionProfile { grid: 64, ground_row: 14, yoff: -120.0, flat_zones: &["Land", "Water"] },
             // items in row 4 at y −8..0 → yoff −40 (the one Lake block at row 4)
             "GreenCoast" => CollectionProfile { grid: 64, ground_row: 4, yoff: -40.0, flat_zones: &["Grass", "Lake"] },
+            // RedIsland (V4 / tmmaps::map::ground_y, Summer 2026-02): the regenerated Dirt at cell 15 (plane local +2 → y 2 =
+            // 15·8 − 120 + 2), the lake's Water at cell 14 (surface −0.5); the pak's flat zones are GameCtnBlockInfoFlat\{Dirt,Water}
+            "RedIsland" => CollectionProfile { grid: 64, ground_row: 15, yoff: -120.0, flat_zones: &["Dirt", "Water"] },
             // BlueBay: the Sea tiles' row 5 at y 0
             _ => CollectionProfile { grid: 64, ground_row: 5, yoff: -40.0, flat_zones: &["Sea", "Land"] },
         }
