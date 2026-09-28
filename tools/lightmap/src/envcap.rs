@@ -330,6 +330,23 @@ pub fn env_meshes_from_pak(store: &mut mapgeom::store::DataStore, scene3d_path: 
         }
         let tris: Vec<[[f32; 3]; 3]> = g.tris.iter().map(|t| [g.verts[t[0] as usize], g.verts[t[1] as usize], g.verts[t[2] as usize]]).collect();
         let norms: Vec<[[f32; 3]; 3]> = if g.norms.len() == g.verts.len() { g.tris.iter().map(|t| [g.norms[t[0] as usize], g.norms[t[1] as usize], g.norms[t[2] as usize]]).collect() } else { Vec::new() };
+        // LMTOOL_ENV_WARP_MAXDIST=metres (STUDY, E5 2026-09-28 22:40Z — default off): a Warp-terrain triangle whose three vertices all lie
+        // farther than this Chebyshev distance from the decoration footprint's centre (1024, ·, 1024) is left out of the env layer. The
+        // WarpGround mesh runs to ±97 km in rings (e5_envextent); under g23's hills (3–5 km out) its underside owns layer 0 for every light
+        // direction from above and blacks 40–47 % of a vertical face's hemisphere (the 22:27Z traces). The game's hills read a neutral term
+        // there, so its env raster lacks the skirt at those pixels by a selection we do not apply (RE 16 reads RenderLightIndirectDome's
+        // draw list). This knob bounds the term's magnitude; the rule is the read, never the fit.
+        let (tris, norms) = match std::env::var("LMTOOL_ENV_WARP_MAXDIST").ok().and_then(|v| v.parse::<f32>().ok()) {
+            Some(maxd) if lower.contains("warp") => {
+                let keep: Vec<bool> = tris.iter().map(|t| t.iter().any(|v| (v[0] - 1024.0).abs().max((v[2] - 1024.0).abs()) <= maxd)).collect();
+                let n_keep = keep.iter().filter(|&&k| k).count();
+                eprintln!("decoration: STUDY LMTOOL_ENV_WARP_MAXDIST={maxd}: {} of {} {name} triangles kept (a vertex within {maxd} m of the footprint centre)", n_keep, tris.len());
+                let t2: Vec<[[f32; 3]; 3]> = tris.iter().zip(keep.iter()).filter(|(_, &k)| k).map(|(t, _)| *t).collect();
+                let n2: Vec<[[f32; 3]; 3]> = if norms.is_empty() { Vec::new() } else { norms.iter().zip(keep.iter()).filter(|(_, &k)| k).map(|(t, _)| *t).collect() };
+                (t2, n2)
+            }
+            _ => (tris, norms),
+        };
         meshes.push(EnvMesh { name: if lower.contains("invisible") { "sea_box".into() } else if lower.contains("water") && env_water != "black" { "water_surface".into() } else { name.clone() }, tris, norms });
     }
     Ok((meshes, dropped))
