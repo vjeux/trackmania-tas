@@ -19,7 +19,8 @@
 //!   frame-0 row); `kept` = `-` or the reduced oracle's kept list; `extra` = `-` or extra bake flags (space-separated).
 //!
 //! The bake per cell is the PRODUCT recipe: `bake SRC --raster --lm-from-map --collection C --quality Q --pak <coll>
-//! --pak Stadium --pak Maniaplanet [--kept K] [--max-dirs N] [extra] --records-tsv … --out …` with LMTOOL_BAKE_TIME pinned
+//! --pak Stadium --pak Maniaplanet [--kept K] [--max-dirs N] [extra] --records-tsv … --out …` — no LMTOOL_BAKE_TIME pin since
+//! base 594ea30d: the FILETIME word is the map's TimeWriteMostRecentSolid (the writer's default, the game's load-time rule)
 //! (the writer is deterministic: two runs of one binary give one md5, so "the cell moved" = "the md5 moved", and the
 //! metrics say WHAT moved). Cells are dealt to boxes round-robin by their order in the file (`--box K --boxes N`);
 //! every box writes W/TIP/<cell>/{ours.Map.Gbx, records.tsv, bake.log, metrics.json}, the report reads W.
@@ -493,7 +494,7 @@ fn run_cells(args: &[String], cells: &[Cell]) -> Result<(), String> {
             let _ = std::fs::remove_file(&out);
             eprintln!("corpus-gate: {} ({} q{} dirs {}{}) …", c.name, c.collection, c.quality, c.dirs.as_deref().unwrap_or("full"), if c.env.is_empty() { String::new() } else { format!(", env {}", c.env.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(" ")) });
             let mut cmd = std::process::Command::new(&bake_exe);
-            cmd.args(&args_bake).env("LMTOOL_BAKE_TIME", "1790000000");
+            cmd.args(&args_bake).env_remove("LMTOOL_BAKE_TIME").env_remove("SOURCE_DATE_EPOCH");
             for (k, v) in &c.env { cmd.env(k, v); }
             let r = cmd.output();
             bake_s = t.elapsed().as_secs_f64();

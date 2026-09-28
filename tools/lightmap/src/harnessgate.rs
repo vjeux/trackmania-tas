@@ -8,7 +8,9 @@
 //! detp1.Map.Gbx, g8-old.Map.Gbx, dump-ref/, dump-tref/, prb-c3/ + the five inputs INPUTS.md5 names). `--bin` = the
 //! candidate binary that BAKES (this driver measures: passdiff / diff / filecheck are run through `--bin` too, so the
 //! comparison code is the candidate's own — the same convention as corpus-gate's --bake-with). Every bake is pinned with
-//! LMTOOL_BAKE_TIME=1790000000 so a file compare is a byte compare.
+//! deterministic in its FILETIME word too: since base 594ea30d (E5's 0002) the writer's default `--bake-time solids` puts the
+//! map's TimeWriteMostRecentSolid there (the game's load-time rule) — no LMTOOL_BAKE_TIME pin (a pinned word is REJECTED by
+//! the game in play), so a file compare is still a byte compare.
 //!
 //! Checks (each PASS/FAIL, all run even after a failure):
 //!   inputs     md5 of the five harness inputs vs INPUTS.md5
@@ -30,7 +32,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
 
-const PIN: &str = "1790000000";
+// (the LMTOOL_BAKE_TIME pin of 2026-09-27/28 is gone: the FILETIME word is the map's own since E5's 0002)
 
 struct Check {
     name: String,
@@ -46,13 +48,13 @@ fn pak_key(coll: &str) -> &'static str {
     match coll { "Stadium" => "B773D73047A4104857722366D78D28A6", "Maniaplanet" => "9A93723447347A8CE336CCFC49E65449", _ => "660C4C156B80337E296A1034B0AA05B8" }
 }
 
-/// Run `bin args…` with the bake-time pin (+ extra env), stderr+stdout to `log`; Ok(secs) on success.
+/// Run `bin args…` (+ extra env; the FILETIME word is the writer's own rule, no pin), stderr+stdout to `log`; Ok(secs) on success.
 fn run_bin(bin: &Path, cwd: &Path, args: &[String], env: &[(&str, String)], log: &Path) -> Result<f64, String> {
     let t = Instant::now();
     let f = std::fs::File::create(log).map_err(|e| format!("{}: {e}", log.display()))?;
     let f2 = f.try_clone().map_err(|e| e.to_string())?;
     let mut cmd = Command::new(bin);
-    cmd.args(args).current_dir(cwd).env("LMTOOL_BAKE_TIME", PIN).stdout(f).stderr(f2);
+    cmd.args(args).current_dir(cwd).env_remove("LMTOOL_BAKE_TIME").env_remove("SOURCE_DATE_EPOCH").stdout(f).stderr(f2);
     for (k, v) in env { cmd.env(k, v); }
     let st = cmd.status().map_err(|e| format!("{}: {e}", bin.display()))?;
     if !st.success() {
@@ -211,7 +213,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 let filetime_only = d.contains("0x6022013") && d.contains("lossless parts: 16 differing bytes");
                 let fc = tail_of(&bin, &["filecheck".into(), s(&out), "--against".into(), s(&base)], 14);
                 let images_ok = fc.lines().filter(|l| l.contains("image")).all(|l| l.contains("BYTE-IDENTICAL")) && fc.contains("same bind words") && !fc.lines().any(|l| l.contains("bytes:") && !l.contains("max |Δ| 0"));
-                Ok((false, secs, if filetime_only && images_ok { "MOVED in the FILETIME word only (an unpinned baseline? re-cut it with LMTOOL_BAKE_TIME)".into() } else { format!("MOVED — {}", d.replace('\n', " | ")) }))
+                Ok((false, secs, if filetime_only && images_ok { "MOVED in the FILETIME word only (chunk 0x6022013 = TimeWriteMostRecentSolid: a baseline baked under the old LMTOOL_BAKE_TIME pin, or the map's embedded solids changed — re-pin the baseline)".into() } else { format!("MOVED — {}", d.replace('\n', " | ")) }))
             })());
         }
     }
