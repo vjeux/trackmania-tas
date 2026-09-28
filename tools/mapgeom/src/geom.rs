@@ -34,6 +34,15 @@ pub fn apply(m: &Xform, v: [f32; 3]) -> [f32; 3] {
     ]
 }
 
+/// The rotation part of `m` applied to a direction (no translation; the decoration's transforms carry no scale).
+pub fn apply_normal(m: &Xform, v: [f32; 3]) -> [f32; 3] {
+    [
+        m[0] * v[0] + m[3] * v[1] + m[6] * v[2],
+        m[1] * v[0] + m[4] * v[1] + m[7] * v[2],
+        m[2] * v[0] + m[5] * v[1] + m[8] * v[2],
+    ]
+}
+
 pub fn compose(outer: &Xform, inner: &Xform) -> Xform {
     let mut out = [0f32; 12];
     for c in 0..3 {
@@ -414,10 +423,14 @@ impl<'a> Collector<'a> {
         if let Some(Node::Visual(v)) = slots.get(vi.max(0) as usize).and_then(as_node) {
             let mut positions = v.inline_positions.clone();
             let mut uvs: Vec<[f32; 2]> = v.uv0.clone();
+            let mut norms: Vec<[f32; 3]> = vec![[0.0; 3]; v.inline_positions.len()];
             for si in &v.vertex_streams {
                 if let Some(Node::VertexStream(vs)) = slots.get((*si).max(0) as usize).and_then(as_node) {
                     positions.extend_from_slice(&vs.positions);
                     uvs.extend_from_slice(&vs.uv0);
+                    // the stream's normals (float3 or Dec3N-unpacked), rotated like the positions (the rotation part of `at`;
+                    // the decoration's Warp terrain shading reads them — E2 2026-09-28)
+                    for i in 0..vs.positions.len() { norms.push(vs.normals.get(i).map(|n| apply_normal(at, *n)).unwrap_or([0.0; 3])); }
                 }
             }
             let verts: Vec<[f32; 3]> = positions.iter().map(|p| apply(at, *p)).collect();
@@ -425,7 +438,7 @@ impl<'a> Collector<'a> {
             if std::env::var_os("MAPGEOM_TRACE").is_some() {
                 eprintln!("visual {} material idx {} -> {:?}: {} inline pos, {} streams, {} verts, {} indices -> {} tris; verts {:?} idx {:?}", vi, material_idx, mat, v.inline_positions.len(), v.vertex_streams.len(), verts.len(), v.indices.len(), idx.len(), &verts[..verts.len().min(9)], &idx[..idx.len().min(8)]);
             }
-            self.scene.add_tris_uv(mat, &verts, &uvs, idx.into_iter());
+            self.scene.add_tris_uv_n(mat, &verts, &uvs, &norms, idx.into_iter());
         }
     }
 

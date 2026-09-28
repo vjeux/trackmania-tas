@@ -171,6 +171,9 @@ pub struct Group {
     /// The vertices' first texture coordinate set, parallel to `verts` ((0, 0) where a visual has none) — the sky
     /// dome's gradient (u, v) is read from it.
     pub uvs: Vec<[f32; 2]>,
+    /// The vertices' normals in WORLD space, parallel to `verts` ((0, 0, 0) where the stream has none) — the decoration's
+    /// Warp terrain shading reads them (E2 2026-09-28).
+    pub norms: Vec<[f32; 3]>,
 }
 
 /// A polyline in world coordinates — a driven trajectory, a centreline, a
@@ -213,11 +216,24 @@ impl Scene {
         uvs: &[[f32; 2]],
         tris: impl Iterator<Item = [i32; 3]>,
     ) {
+        self.add_tris_uv_n(material, verts, uvs, &[], tris);
+    }
+
+    /// `add_tris_uv` with the vertices' world normals (`norms` parallel to `verts`, or empty).
+    pub fn add_tris_uv_n(
+        &mut self,
+        material: &str,
+        verts: &[[f32; 3]],
+        uvs: &[[f32; 2]],
+        norms: &[[f32; 3]],
+        tris: impl Iterator<Item = [i32; 3]>,
+    ) {
         let g = self.groups.entry(material.to_string()).or_default();
         let base = g.verts.len() as u32;
         g.verts.extend_from_slice(verts);
         for i in 0..verts.len() {
             g.uvs.push(uvs.get(i).copied().unwrap_or([0.0; 2]));
+            g.norms.push(norms.get(i).copied().unwrap_or([0.0; 3]));
         }
         for t in tris {
             if t.iter().any(|&i| i < 0 || i as usize >= verts.len()) {

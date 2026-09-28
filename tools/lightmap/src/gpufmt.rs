@@ -499,3 +499,13 @@ mod fast_path_tests {
         }
     }
 }
+
+/// One quantisation step of the R11G11B10_FLOAT channel `c` (0, 1 = 6-bit mantissa; 2 = 5-bit) at the magnitude `v`.
+pub fn r11g11b10_step(v: f32, c: usize) -> f32 {
+    let bits = if c < 2 { 6 } else { 5 };
+    let a = v.abs().max(1e-6);
+    let e = a.log2().floor();
+    // normal range: the exponent ≥ −14; below it the step is the subnormal one
+    let e = e.max(-14.0);
+    2f32.powf(e - bits as f32)
+}

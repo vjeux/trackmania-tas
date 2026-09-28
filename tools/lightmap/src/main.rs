@@ -7792,6 +7792,118 @@ fn run(mut a: Vec<String>) {
                 }
             }
         }
+        "warp-check" => {
+            // lmtool warp-check PASSCAP [--frame 127448] [--slice K|auto] [--srgb 0|1|auto] [--top N]: VS 16748 / PS 16752 (warpterrain.rs) on the
+            // captured terrain patches against (1) the captured post-VS outputs (bit-level) and (2) the captured environment colour layer
+            // at the terrain pixels (R11G11B10 steps) — E2 2026-09-28
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let root = std::path::PathBuf::from(&a[1]);
+            let frame_no: u32 = f("--frame").map(|v| v.parse().unwrap()).unwrap_or(127448);
+            let draws = lightmap::lmaccum::load_draws(&root, frame_no).expect("draws log");
+            let d = draws.iter().find(|e| e.get("eid").and_then(|v| v.as_u64()) == Some(1028)).expect("eid 1028");
+            let c = lightmap::warpterrain::consts_from_draw(d).expect("warp consts");
+            println!("consts: {c:?}");
+            let patches = lightmap::warpterrain::capture_patches(&root, frame_no).expect("patches");
+            // (1) the VS against the captured post-VS outputs
+            let mut vs_stats = (0usize, 0usize, 0.0f32, String::new());
+            let mut comp_fail = [0usize; 17];
+            for p in &patches {
+                let Ok(cap) = lightmap::warpterrain::capture_vsout(&root, frame_no, p.eid) else { continue };
+                for (i, v) in cap.iter().enumerate().take(p.pos.len()) {
+                    let o = lightmap::warpterrain::vs_16748(&c, p.pos[i], p.nrm[i]);
+                    let ours: Vec<f32> = [o.o1.to_vec(), o.o2.to_vec(), o.o3.to_vec(), o.o4.to_vec(), o.o6.to_vec()].concat();
+                    // captured layout: o0 (4) | o1 (4) | o2 (4) | o3 (4) | o4 (3) | o5 (3) | o6 (2)
+                    let theirs: Vec<f32> = [v[4..8].to_vec(), v[8..12].to_vec(), v[12..16].to_vec(), v[16..19].to_vec(), v[22..24].to_vec()].concat();
+                    for (k, (x, y)) in ours.iter().zip(theirs.iter()).enumerate() {
+                        vs_stats.0 += 1;
+                        let d = (x - y).abs();
+                        if d <= 1e-5 * y.abs().max(1e-3) { vs_stats.1 += 1; } else { comp_fail[k] += 1; if comp_fail[k] <= 2 { println!("  VS mismatch patch {} vertex {i} component {k}: ours {x} theirs {y} (normal {:?})", p.eid, p.nrm[i]); } }
+                        if d > vs_stats.2 { vs_stats.2 = d; vs_stats.3 = format!("patch {} vertex {i} component {k}: ours {x} theirs {y}", p.eid); }
+                    }
+                }
+            }
+            println!("VS 16748: {} of {} interpolated components within 1e-5 relative of the captured post-VS outputs; worst {} ({})", vs_stats.1, vs_stats.0, vs_stats.2, vs_stats.3);
+            println!("  mismatches per component (o1 xyzw, o2 xyzw, o3 xyzw, o4 xyz, o6 xy): {:?}", comp_fail);
+            // (2) the PS against the captured environment colour layer
+            let txt = std::fs::read_to_string(root.join("MANIFEST.json")).expect("MANIFEST.json");
+            let m = lightmap::passdiff::read_manifest(&txt).expect("manifest");
+            let mut ents: Vec<&lightmap::passdump::Entry> = m.passes.iter().filter(|e| e.frame == Some(frame_no) && e.layer == Some(0) && (e.pass == "peel_color" || e.pass == "peel_depth")).collect();
+            ents.sort_by_key(|e| e.eid_last.unwrap_or(0));
+            let col = ents.iter().find(|e| e.pass == "peel_color").expect("the captured environment colour layer");
+            let dep = ents.iter().find(|e| e.pass == "peel_depth" && e.eid_last == col.eid_last).or_else(|| ents.iter().find(|e| e.pass == "peel_depth"));
+            let fr = col.frustum.clone().expect("the entry's frustum");
+            let frame = lightmap::peel::PeelFrame::from_frustum(&fr, if col.width > 0 { col.width } else { 4096 }, if col.height > 0 { col.height } else { 4096 });
+            let game = lightmap::passdiff::load_entry(&root, col).expect("captured colour");
+            let gdepth = dep.map(|e| lightmap::passdiff::load_entry(&root, e).expect("captured depth"));
+            println!("plane {} ({}×{}), depth {}; frustum centre {:?} half {:?} forward {:?}", col.file, game.w, game.h, dep.map(|e| e.file.as_str()).unwrap_or("-"), fr.center, fr.half, fr.forward);
+            // rasterise the patches into a fragment map: per pixel the nearest terrain fragment (z01 max), with its patch/tri/bary
+            let (w, h) = (game.w as usize, game.h as usize);
+            let mut best: Vec<(f32, u16, u32, [f32; 3])> = vec![(-1.0, u16::MAX, 0, [0.0; 3]); w * h];
+            for (pi, p) in patches.iter().enumerate() {
+                for (ti, t) in p.indices.chunks_exact(3).enumerate() {
+                    let (a0, a1, a2) = (t[0] as usize, t[1] as usize, t[2] as usize);
+                    let pr = [frame.project(p.pos[a0]), frame.project(p.pos[a1]), frame.project(p.pos[a2])];
+                    let (x0, y0, x1, y1) = (pr.iter().map(|q| q.0).fold(f32::MAX, f32::min), pr.iter().map(|q| q.1).fold(f32::MAX, f32::min), pr.iter().map(|q| q.0).fold(f32::MIN, f32::max), pr.iter().map(|q| q.1).fold(f32::MIN, f32::max));
+                    let (px0, py0) = ((x0.floor() as i64).max(1), (y0.floor() as i64).max(1));
+                    let (px1, py1) = ((x1.ceil() as i64).min(w as i64 - 2), (y1.ceil() as i64).min(h as i64 - 2));
+                    if px0 > px1 || py0 > py1 { continue; }
+                    let area = (pr[1].0 - pr[0].0) * (pr[2].1 - pr[0].1) - (pr[2].0 - pr[0].0) * (pr[1].1 - pr[0].1);
+                    if area.abs() < 1e-12 { continue; }
+                    for py in py0..=py1 {
+                        for px in px0..=px1 {
+                            let (sx, sy) = (px as f32 + 0.5, py as f32 + 0.5);
+                            let w0 = ((pr[1].0 - sx) * (pr[2].1 - sy) - (pr[2].0 - sx) * (pr[1].1 - sy)) / area;
+                            let w1 = ((pr[2].0 - sx) * (pr[0].1 - sy) - (pr[0].0 - sx) * (pr[2].1 - sy)) / area;
+                            let w2 = 1.0 - w0 - w1;
+                            if w0 < -1e-6 || w1 < -1e-6 || w2 < -1e-6 { continue; }
+                            let z = pr[0].2 * w0 + pr[1].2 * w1 + pr[2].2 * w2;
+                            let z01 = frame.z01(z);
+                            let slot = &mut best[py as usize * w + px as usize];
+                            if z01 > slot.0 { *slot = (z01, pi as u16, ti as u32, [w0, w1, w2]); }
+                        }
+                    }
+                }
+            }
+            let covered = best.iter().filter(|b| b.1 != u16::MAX).count();
+            println!("terrain coverage: {covered} pixels of ours; game env-depth > 0 & colour non-black: {}", (1..h - 1).flat_map(|y| (1..w - 1).map(move |x| (x, y))).filter(|&(x, y)| { let dz = gdepth.as_ref().map(|d| d.get(x as u32, y as u32, 0)).unwrap_or(1.0); let p = lightmap::domecheck::buf_rgb(&game, x as u32, y as u32); dz > 0.0 && (p[0] > 0.0 || p[1] > 0.0 || p[2] > 0.0) }).count());
+            let slices: Vec<u32> = match f("--slice").as_deref() { Some("auto") | None => (0..6).collect(), Some(s) => vec![s.parse().unwrap()] };
+            let srgbs: Vec<bool> = match f("--srgb").as_deref() { Some("0") => vec![false], Some("1") => vec![true], _ => vec![false, true] };
+            let top: usize = f("--top").map(|v| v.parse().unwrap()).unwrap_or(6);
+            for &sl in &slices { for &sr in &srgbs {
+                let tex = match lightmap::warpterrain::WarpTextures::from_capture(&root, frame_no, sl, sr) { Ok(t) => t, Err(e) => { println!("slice {sl} srgb {sr}: {e}"); continue } };
+                let mut n = 0usize; let mut within = [0usize; 3]; let mut exact = 0usize; let mut sum_ratio = [0f64; 3]; let mut worst: Vec<(f32, u32, u32, [f32; 3], [f32; 3])> = Vec::new();
+                let mut both_black = 0usize;
+                for y in 1..h - 1 { for x in 1..w - 1 {
+                    let b = best[y * w + x];
+                    if b.1 == u16::MAX { continue; }
+                    let g = lightmap::domecheck::buf_rgb(&game, x as u32, y as u32);
+                    let p = &patches[b.1 as usize];
+                    let t = &p.indices[b.2 as usize * 3..b.2 as usize * 3 + 3];
+                    let vs = [lightmap::warpterrain::vs_16748(&c, p.pos[t[0] as usize], p.nrm[t[0] as usize]), lightmap::warpterrain::vs_16748(&c, p.pos[t[1] as usize], p.nrm[t[1] as usize]), lightmap::warpterrain::vs_16748(&c, p.pos[t[2] as usize], p.nrm[t[2] as usize])];
+                    let v = lightmap::warpterrain::interp(&vs, b.3);
+                    // the facing from the screen winding (FrontCounterClockwise): the projected triangle's signed area
+                    let pr = [frame.project(p.pos[t[0] as usize]), frame.project(p.pos[t[1] as usize]), frame.project(p.pos[t[2] as usize])];
+                    let area = (pr[1].0 - pr[0].0) * (pr[2].1 - pr[0].1) - (pr[2].0 - pr[0].0) * (pr[1].1 - pr[0].1);
+                    let front = area < 0.0;
+                    let o = lightmap::warpterrain::ps_16752(&c, &tex, &v, front);
+                    if g == [0.0; 3] && o == [0.0; 3] { both_black += 1; continue; }
+                    n += 1;
+                    let mut maxrel = 0f32; let mut ok = true;
+                    for k in 0..3 {
+                        let step = lightmap::gpufmt::r11g11b10_step(g[k], k);
+                        let d = (o[k] - g[k]).abs();
+                        if d <= step { within[k] += 1; }
+                        if d <= 0.5 * step { } else { ok = false; }
+                        if g[k] > 0.0 { sum_ratio[k] += (o[k] / g[k]) as f64; }
+                        maxrel = maxrel.max(if g[k] > 1e-4 { d / g[k] } else { d });
+                    }
+                    if ok { exact += 1; }
+                    if worst.len() < top || maxrel > worst.last().map(|w| w.0).unwrap_or(0.0) { worst.push((maxrel, x as u32, y as u32, o, g)); worst.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap()); worst.truncate(top); }
+                } }
+                println!("slice {sl} srgb {sr}: {n} terrain pixels compared ({both_black} black on both); within one R11G11B10 step R {:.2} % G {:.2} % B {:.2} %; within half a step on all three {:.2} %; mean ratio ours/game ({:.4}, {:.4}, {:.4})", 100.0 * within[0] as f64 / n.max(1) as f64, 100.0 * within[1] as f64 / n.max(1) as f64, 100.0 * within[2] as f64 / n.max(1) as f64, 100.0 * exact as f64 / n.max(1) as f64, sum_ratio[0] / n.max(1) as f64, sum_ratio[1] / n.max(1) as f64, sum_ratio[2] / n.max(1) as f64);
+                for wv in &worst { println!("    ({}, {}) ours ({:.4}, {:.4}, {:.4}) game ({:.4}, {:.4}, {:.4}) max rel {:.3}", wv.1, wv.2, wv.3[0], wv.3[1], wv.3[2], wv.4[0], wv.4[1], wv.4[2], wv.0); }
+            } }
+        }
         "dome-check" => {
             // lmtool dome-check PASSCAP [--frame 127448] [--direction 0] [--filter f32|f16|f16sum] [--weights floor|round|f32] [--rsq-approx]
             //   [--half H] [--top N]: PS 16774 transcribed on the frame's own inputs against the captured environment layer (domecheck.rs)
