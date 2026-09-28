@@ -29,7 +29,7 @@ const HUNT: &str = "/home/vjeux/shoot/hunt";
 const MAPS_SHOOT: &str = "/mnt/c/Users/vjeux/OneDrive/Documents/Trackmania/Maps/_shoot";
 const MAPS_WIN: &str = "C:/Users/vjeux/OneDrive/Documents/Trackmania/Maps/_shoot";
 const SHOTS: &str = "/mnt/c/Users/vjeux/tinyshots";
-const ENV: &str = "cd /home/vjeux/shoot/hunt; export TM_SESSION=080a15b8-2c6a-4fff-9d8a-db7d0072ee43; export TM_SESSION_TITLE=\"Tiny u10s publish\"; export PATH=/home/vjeux/bin:$PATH";
+const ENV: &str = "cd /home/vjeux/shoot/hunt; export TM_SESSION=080a15b8-2c6a-4fff-9d8a-db7d0072ee43; export TM_SESSION_TITLE=\"Tiny u10s publish\"; export PATH=/home/vjeux/mk64-fidelity/l1-enum24-stage/frozen-bin:/home/vjeux/bin:$PATH";
 
 /// `tinyctl remote-drive --maps A,B --outdir NAME [--drive-ms 10000] [--drive-at-ms 14500]
 /// [--carlog-ms 26000] [--pull DIR] [--purpose "…"]` — PLAY-mode probe per map, on the box from

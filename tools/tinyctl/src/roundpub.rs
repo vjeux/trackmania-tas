@@ -223,7 +223,7 @@ pub fn mint_tokens(wsx: &Wsx, token_dir: &Path) -> Result<(), String> {
     // The box may be held by another job for a long time, and one bridge call is capped
     // at 150 s: wait for the box in ≤120-second slices, then mint in one short call
     // (the two `tmdrive run` steps take a few seconds each; a lost race just loops).
-    let env = "cd /home/vjeux/shoot/hunt; export TM_SESSION=080a15b8-2c6a-4fff-9d8a-db7d0072ee43; export TM_SESSION_TITLE=\"Tiny u10s publish\"; export PATH=/home/vjeux/bin:$PATH";
+    let env = "cd /home/vjeux/shoot/hunt; export TM_SESSION=080a15b8-2c6a-4fff-9d8a-db7d0072ee43; export TM_SESSION_TITLE=\"Tiny u10s publish\"; export PATH=/home/vjeux/mk64-fidelity/l1-enum24-stage/frozen-bin:/home/vjeux/bin:$PATH";
     let t0 = Instant::now();
     let mut dead_plugin = 0u32;
     // the game the MINT launched (or relaunched) is closed again once the tokens are
@@ -720,7 +720,7 @@ pub fn inplace_cmd(args: &[String]) -> Result<(), String> {
 pub fn mint_tokens_standalone(wsx: &Wsx, token_dir: &Path) -> Result<(), String> {
     const PLUGIN_DIR: &str = "/mnt/c/Users/vjeux/OpenplanetNext/Plugins/AgentTokenMint";
     const STORE: &str = "/mnt/c/Users/vjeux/OpenplanetNext/PluginStorage/AgentTokenMint";
-    let env = "cd /home/vjeux/shoot/hunt; export TM_SESSION=080a15b8-2c6a-4fff-9d8a-db7d0072ee43; export TM_SESSION_TITLE=\"Tiny u10s publish\"; export PATH=/home/vjeux/bin:$PATH";
+    let env = "cd /home/vjeux/shoot/hunt; export TM_SESSION=080a15b8-2c6a-4fff-9d8a-db7d0072ee43; export TM_SESSION_TITLE=\"Tiny u10s publish\"; export PATH=/home/vjeux/mk64-fidelity/l1-enum24-stage/frozen-bin:/home/vjeux/bin:$PATH";
     let t0 = Instant::now();
     // (`grep -c` exits 1 on zero matches, which the bridge reports as a failed command and
     // an EMPTY answer — the `; true` keeps the count; an empty answer is treated as unknown)
