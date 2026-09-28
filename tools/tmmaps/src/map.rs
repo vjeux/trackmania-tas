@@ -965,6 +965,93 @@ impl MapFile {
         Ok(())
     }
 
+    /// Write the author NICKNAME into the body's author chunk (0x03043042), where in-game
+    /// plugins read it.
+    ///
+    /// `set_author_and_times` rewrites the header's author strings and splices the LOGIN in
+    /// the body (same byte length, so safe), but the body's author chunk still carried the
+    /// ORIGINAL nickname: the map list, the thumbnail and the in-game author line read the
+    /// header and looked right, while Grinding Stats — reading the body — still credited
+    /// Everios96 (Danyy, tiny channel 2026-09-28 16:53Z). Same header/body split as the
+    /// medal times.
+    ///
+    /// A nickname of a different length is safe HERE and only here: 0x03043042 is a
+    /// *skippable* chunk, so it carries its own size field, and this rewrites the payload
+    /// and that size together. (A length change in a non-skippable body string is what broke
+    /// 9 maps on 2026-09-27.) Layout: `u32 version, u32 authorVersion, string login,
+    /// string nickname, string zone, string extraInfo`, each string `u32 len + bytes`.
+    pub fn set_body_author_nickname(&mut self, new_nick: &str) -> Result<String, String> {
+        let (_, _off, payload, size) = *crate::gbx::all_skip_chunks(&self.gbx.body)
+            .iter()
+            .find(|(c, ..)| *c == 0x0304_3042)
+            .ok_or("body chunk 0x03043042 (author info) not found")?;
+        let b = &self.gbx.body[payload..payload + size];
+        let mut o = 0usize;
+        let mut u32at = |o: &mut usize| -> Result<u32, String> {
+            if *o + 4 > b.len() {
+                return Err("author chunk: truncated".into());
+            }
+            let v = u32::from_le_bytes(b[*o..*o + 4].try_into().unwrap());
+            *o += 4;
+            Ok(v)
+        };
+        let version = u32at(&mut o)?;
+        let author_version = u32at(&mut o)?;
+        let mut string = |o: &mut usize| -> Result<String, String> {
+            let n = {
+                if *o + 4 > b.len() {
+                    return Err("author chunk: truncated string length".into());
+                }
+                let v = u32::from_le_bytes(b[*o..*o + 4].try_into().unwrap()) as usize;
+                *o += 4;
+                v
+            };
+            if n > 4096 || *o + n > b.len() {
+                return Err(format!("author chunk: implausible string length {n}"));
+            }
+            let v = String::from_utf8_lossy(&b[*o..*o + n]).into_owned();
+            *o += n;
+            Ok(v)
+        };
+        let login = string(&mut o)?;
+        let old_nick = string(&mut o)?;
+        let zone = string(&mut o)?;
+        let extra = string(&mut o)?;
+        let tail = b[o..].to_vec(); // whatever the chunk carries after the four strings
+        if old_nick == new_nick {
+            return Ok(old_nick);
+        }
+        let mut pay = Vec::with_capacity(size + new_nick.len());
+        pay.extend_from_slice(&version.to_le_bytes());
+        pay.extend_from_slice(&author_version.to_le_bytes());
+        for st in [login.as_str(), new_nick, zone.as_str(), extra.as_str()] {
+            pay.extend_from_slice(&(st.len() as u32).to_le_bytes());
+            pay.extend_from_slice(st.as_bytes());
+        }
+        pay.extend_from_slice(&tail);
+        // the skippable chunk's own size field sits immediately before its payload
+        let mut out = (pay.len() as u32).to_le_bytes().to_vec();
+        out.extend_from_slice(&pay);
+        self.raw_splices.push(((payload - 4, payload + size), out));
+        Ok(old_nick)
+    }
+
+    /// The author nickname the BODY carries (chunk 0x03043042) — the read-back check.
+    pub fn body_author_nickname(&self) -> Option<String> {
+        let (_, _off, payload, size) = *crate::gbx::all_skip_chunks(&self.gbx.body).iter().find(|(c, ..)| *c == 0x0304_3042)?;
+        let b = &self.gbx.body[payload..payload + size];
+        let mut o = 8usize; // version + authorVersion
+        let mut next = |o: &mut usize| -> Option<String> {
+            let n = u32::from_le_bytes(b.get(*o..*o + 4)?.try_into().ok()?) as usize;
+            *o += 4;
+            let v = String::from_utf8_lossy(b.get(*o..*o + n)?).into_owned();
+            *o += n;
+            Some(v)
+        };
+        let _login = next(&mut o)?;
+        next(&mut o)
+    }
+
     /// The BODY's medal times `[author, gold, silver, bronze]` (chunk 0x0305B00A), for a
     /// read-back check that the game will see what the header advertises.
     pub fn body_times(&self) -> Option<[u32; 4]> {

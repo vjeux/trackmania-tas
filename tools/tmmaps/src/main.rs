@@ -802,6 +802,26 @@ fn main() {
         "header" => header::cmd(&args),
         "dropscan" => dropscan::cmd(&args),
         "mediatracker" => tmmaps::mediatracker::cmd(&args),
+        // `tmmaps body-author FILE [--set NICK]` — the author nickname the map BODY carries
+        // (chunk 0x03043042), the one in-game plugins read; with --set, rewrite it.
+        // `tmmaps body-author FILE [--set NICK]` — the author nickname the map BODY carries
+        // (chunk 0x03043042), the one in-game plugins read; with --set, rewrite it.
+        "body-author" => {
+            let path = args.get(2).unwrap_or_else(|| panic!("body-author needs a .Map.Gbx"));
+            let mut m = tmmaps::map::MapFile::load(std::path::Path::new(path));
+            match tmmaps::cli::flag(&args, "--set") {
+                None => println!("{}", m.body_author_nickname().unwrap_or_else(|| "-".into())),
+                Some(nick) => {
+                    let old = m.set_body_author_nickname(nick).unwrap_or_else(|e| panic!("{e}"));
+                    m.write_to(std::path::Path::new(path)).unwrap_or_else(|e| panic!("{e}"));
+                    let back = tmmaps::map::MapFile::load(std::path::Path::new(path));
+                    match back.body_author_nickname() {
+                        Some(n) if n == nick => println!("body author nickname: {old} -> {n}"),
+                        other => panic!("read-back says {other:?}, wanted {nick}"),
+                    }
+                }
+            }
+        }
         "chunks" => inspect::chunks(&args),
         "blockrefs" => inspect::blockrefs(&args),
         "genealogy" => inspect::genealogy(&args),
