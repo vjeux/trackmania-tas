@@ -429,7 +429,11 @@ pub fn geom_from_solid2_ext(s2: &mapgeom::static_item::solid2::CPlugSolid2Model,
             // identity 14.8 → 10.4 % tiles, 11.2 → 8.7 % items = a regression, V2 19:30Z). So the embedded items keep every material by
             // default (the pre-0005 form); LMTOOL_EMBEDDED_EXCLUDE=1 applies the test for a study. The 11.84 vs 7.50 image max is open
             // (the hot texel sits outside every chart rect — the max chart byte is 137 on both files).
-            if std::env::var_os("LMTOOL_EMBEDDED_EXCLUDE").is_some() {
+            // THE DEFAULT FLIPPED ON (coordinator 2026-09-28 04:55Z; E2): the CAPTURE is the authority — f4468 has no draw for the hills'
+            // DecalPaintLogo8x1 (no PreLightGen binding → no LM pass, RE 11/14's rule) and with the exclusion the stpad hill band is exact
+            // (ours/game 0.997/1.008/1.007; hills 1.155 → 1.014, 1.355 → 1.025); tiny03's 11.84 vs 7.50 record is the fir chart's card/bounce
+            // term (E2 §4-E2.1), not the decal's. LMTOOL_EMBEDDED_EXCLUDE=0 or LMTOOL_EMBEDDED_KEEP_ALL=1 keeps every embedded material (the pre-flip form, study).
+            if std::env::var("LMTOOL_EMBEDDED_EXCLUDE").map(|v| v != "0").unwrap_or(true) && std::env::var_os("LMTOOL_EMBEDDED_KEEP_ALL").is_none() {
                 if let Some(None) = crate::lmmesh::lm_uv_index_cached(l) { v = true; }
                 if std::env::var_os("LMTOOL_MATERIAL_TRACE").is_some() { eprintln!("material {l} (embedded item): LM uv selector {:?} → {}", crate::lmmesh::lm_uv_index_cached(l), if v { "EXCLUDED from the lightmapper" } else { "drawn" }); }
             }
