@@ -5127,6 +5127,36 @@ fn run(mut a: Vec<String>) {
         "base-bank" => { if let Err(e) = lightmap::basebank::run(&a) { eprintln!("base-bank: {e}"); std::process::exit(1); } }
         // lmtool f32cmp REF.f32 NEW.f32 [--head 16] [--list N] : two raw f32 dumps word by word (an attributed probe move, read) (harnessgate.rs)
         "f32cmp" => { if let Err(e) = lightmap::harnessgate::f32cmp(&a) { eprintln!("f32cmp: {e}"); std::process::exit(1); } }
+        "rawstat" => {
+            // lmtool rawstat FILE --format R32_FLOAT|R11G11B10_FLOAT|… --width W --height H [--pitch P] [--at x,y ...] [--hist N]
+            //   a raw pass-dump entry (passdiff::load_file): per channel min / mean / max, the fraction of zero texels, a depth
+            //   histogram (--hist N bins over [0, 1]) and the values at the named texels — the read of one peel layer at a probe's
+            //   pixel without a second bake (E4, 2026-09-28: g23's environment layer at the sky probes)
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let path = std::path::Path::new(&a[1]);
+            let (root, file) = (path.parent().unwrap_or(std::path::Path::new(".")), path.file_name().unwrap().to_str().unwrap());
+            let w: u32 = f("--width").map(|v| v.parse().unwrap()).unwrap_or(4096);
+            let h: u32 = f("--height").map(|v| v.parse().unwrap()).unwrap_or(4096);
+            let fmt = f("--format").unwrap_or_else(|| "R32_FLOAT".into());
+            let pitch: u32 = f("--pitch").map(|v| v.parse().unwrap()).unwrap_or(0);
+            let buf = lightmap::passdiff::load_file(root, file, &fmt, w, h, pitch).unwrap_or_else(|e| panic!("{e}"));
+            let ch = buf.channels as usize;
+            let n = (buf.w * buf.h) as usize;
+            let mut lo = vec![f32::MAX; ch]; let mut hi = vec![f32::MIN; ch]; let mut sum = vec![0f64; ch]; let mut zero = vec![0usize; ch];
+            for i in 0..n { for c in 0..ch { let v = buf.data[i * ch + c]; lo[c] = lo[c].min(v); hi[c] = hi[c].max(v); sum[c] += v as f64; if v == 0.0 { zero[c] += 1; } } }
+            println!("{}: {}×{} × {ch} ({fmt})", a[1], buf.w, buf.h);
+            for c in 0..ch { println!("  channel {c}: min {} mean {:.6} max {} zero {:.2} %", lo[c], sum[c] / n as f64, hi[c], 100.0 * zero[c] as f64 / n as f64); }
+            if let Some(nb) = f("--hist").map(|v| v.parse::<usize>().unwrap()) {
+                let mut hist = vec![0usize; nb + 1];
+                for i in 0..n { let v = buf.data[i * ch]; let b = ((v.clamp(0.0, 1.0) * nb as f32) as usize).min(nb); hist[b] += 1; }
+                for (b, k) in hist.iter().enumerate() { if *k > 0 { println!("  [{:.3}, {:.3}): {k} ({:.2} %)", b as f32 / nb as f32, (b + 1) as f32 / nb as f32, 100.0 * *k as f64 / n as f64); } }
+            }
+            let mut i = 0;
+            while let Some(p) = a.iter().skip(i).position(|x| x == "--at") {
+                i += p + 1;
+                if let Some(v) = a.get(i) { let xy: Vec<u32> = v.split(',').filter_map(|t| t.trim().parse().ok()).collect(); if xy.len() == 2 && xy[0] < buf.w && xy[1] < buf.h { let vals: Vec<f32> = (0..ch as u32).map(|c| buf.get(xy[0], xy[1], c)).collect(); println!("  at ({}, {}): {vals:?}", xy[0], xy[1]); } }
+            }
+        }
         "clouds-reach" => { if let Err(e) = lightmap::clouds::reach(&a) { eprintln!("clouds-reach: {e}"); std::process::exit(1); } }
         "clouds-field" => { if let Err(e) = lightmap::cloudfield::cli(&a) { eprintln!("clouds-field: {e}"); std::process::exit(1); } }
         "swd6-set" => { if let Err(e) = lightmap::swd6::cli(&a) { eprintln!("swd6-set: {e}"); std::process::exit(1); } }

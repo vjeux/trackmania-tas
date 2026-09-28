@@ -238,8 +238,13 @@ fn sample2(t: &Texture, uv: [f32; 2], wrap: bool) -> [f32; 4] {
     texsample::sample(t, 0, &s, uv, [0.0; 2], [0.0; 2])
 }
 
-/// A 1-D LUT sample (1024×1, ClampEdge, linear): D3D texel centres at (i + 0.5)/1024.
+/// A 1-D LUT sample (1024×1, ClampEdge, linear): D3D texel centres at (i + 0.5)/1024. A NaN coordinate reads texel 0, as the
+/// D3D11 sampler does (a NaN address converts to 0): PS 16752 l.6–10 forms |r0.x · rsq(r0.x² + r0.z²)| — 0 · +INF = NaN on every
+/// exactly-horizontal decoration triangle (the WhiteShore WarpGround skirt, y −4 over ±97 km), and Rust's clamp/floor carried
+/// the NaN into the colour: the whole skirt came out NaN in every peel layer (black after the R11G11B10 store, NaN in the probe
+/// volumes — g23's sky probes at 1 000 m read 0.013 vs the editor's 0.29 through their downward directions; E4, 2026-09-28).
 fn lut(l: &[f32], u: f32) -> f32 {
+    let u = if u.is_nan() { 0.0 } else { u };
     let n = l.len() as f32;
     let x = (u.clamp(0.0, 1.0) * n - 0.5).clamp(0.0, n - 1.0);
     let i = x.floor() as usize;
@@ -563,4 +568,24 @@ fn slot_dds_path(store: &mut mapgeom::store::DataStore, slot: &str) -> String {
             match stem.rsplit_once('\\') { Some((dir, name)) => format!("{dir}\\Image\\{name}.dds"), None => format!("{stem}.dds") }
         } else { slot.to_string() }
     })
+}
+
+#[cfg(test)]
+mod lut_nan_tests {
+    use super::*;
+
+    /// PS 16752 l.6–10 on an exactly horizontal fragment: r0 = (0, 1, 0) → |r0.x · rsq(r0.x² + r0.z²)| = 0 · INF = NaN; the D3D11
+    /// sampler reads texel 0 for a NaN address — the WhiteShore WarpGround skirt's every triangle (g23: NaN in every peel layer
+    /// before the guard; E4, 2026-09-28).
+    #[test]
+    fn a_nan_lut_coordinate_reads_texel_zero_like_the_d3d_sampler() {
+        let r0 = [0.0f32, 1.0, 0.0];
+        let u = (r0[0] * (1.0 / (r0[0] * r0[0] + r0[2] * r0[2]).sqrt())).abs();
+        assert!(u.is_nan());
+        let l: Vec<f32> = crate::warp_luts::ACOS_SMOOTH.to_vec();
+        let at_nan = lut(&l, u);
+        assert!(at_nan.is_finite());
+        assert_eq!(at_nan, lut(&l, 0.0));
+        assert_eq!(lut(&l, 0.0), l[0]);
+    }
 }

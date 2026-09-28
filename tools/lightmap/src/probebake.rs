@@ -105,6 +105,9 @@ pub struct ProbeBake {
     pub dir_log: Vec<(u32, [f32; 3], Vec<usize>, usize, usize)>,
     /// `LMTOOL_PROBE_TRACE=x,y,z`: the direction (within 0.5°) whose per-probe samples are traced (`trace` lines).
     pub trace_dir: Option<[f32; 3]>,
+    /// `LMTOOL_PROBE_TRACE_CELLS=x,y,z;x,y,z;…` (atlas cells): only these probes are traced (every probe of every block without it —
+    /// 11 M lines per direction on g23).
+    pub trace_cells: Option<Vec<[u32; 3]>>,
     pub trace: Vec<String>,
     cur_dir: Option<(u32, [f32; 3])>,
     cur_writes: Vec<usize>,
@@ -130,13 +133,14 @@ impl ProbeBake {
             dir_log: Vec::new(),
             trace_dir: std::env::var("LMTOOL_PROBE_TRACE").ok().and_then(|s| { let v: Vec<f32> = s.split(',').filter_map(|t| t.trim().parse().ok()).collect(); if v.len() == 3 { Some([v[0], v[1], v[2]]) } else { None } }),
             trace: Vec::new(),
+            trace_cells: std::env::var("LMTOOL_PROBE_TRACE_CELLS").ok().map(|s| s.split(';').filter_map(|c| { let v: Vec<u32> = c.split(',').filter_map(|t| t.trim().parse().ok()).collect(); if v.len() == 3 { Some([v[0], v[1], v[2]]) } else { None } }).collect()),
             cur_dir: None,
             cur_writes: Vec::new(),
         }
     }
 
     fn tracing(&self, dir: [f32; 3]) -> bool {
-        match self.trace_dir { Some(t) => (t[0] * dir[0] + t[1] * dir[1] + t[2] * dir[2]) > 0.99996, None => false }
+        match self.trace_dir { Some(t) => (t[0] * dir[0] + t[1] * dir[1] + t[2] * dir[2]) > 0.99996, None => self.trace_cells.is_some() }
     }
 
     /// The direction's start: the volume is cleared to 0.
@@ -168,6 +172,7 @@ impl ProbeBake {
                 for z in d.slice_start..(d.slice_start + d.slice_count).min(self.cur.d) {
                     for y in b.min[1]..b.max[1] {
                         for x in b.min[0]..b.max[0] {
+                            if let Some(cells) = &self.trace_cells { if !cells.contains(&[x, y, z]) { continue; } }
                             let p = crate::probepass::probe_point(x, y, z, self.offsets.as_ref());
                             let sh = crate::probepass::to_shadow(p, &d.regs, self.opts.fma);
                             let reference = if self.opts.clamp_ref { sh[2].clamp(0.0, 1.0) } else { sh[2] };
@@ -175,7 +180,7 @@ impl ProbeBake {
                             let (tx, ty) = (crate::probepass::texel_point(sh[0], dw), crate::probepass::texel_point(sh[1], dh));
                             let stored = layer.depth(tx, ty);
                             let c = layer.rgb(tx, ty);
-                            self.trace.push(format!("layer {k}\tprobe {x} {y} {z}\tuv {:.5} {:.5}\tz {:.5}\ttexel {tx} {ty}\tstored {stored:.5}\tpass {}\tcolour {:.5} {:.5} {:.5}", sh[0], sh[1], sh[2], reference >= stored, c[0], c[1], c[2]));
+                            self.trace.push(format!("dir {:.4} {:.4} {:.4}\tlayer {k}\tprobe {x} {y} {z}\tuv {:.5} {:.5}\tz {:.5}\ttexel {tx} {ty}\tstored {stored:.5}\tpass {}\tcolour {:.5} {:.5} {:.5}", dir[0], dir[1], dir[2], sh[0], sh[1], sh[2], reference >= stored, c[0], c[1], c[2]));
                         }
                     }
                 }
@@ -199,6 +204,13 @@ impl ProbeBake {
 
     /// The direction's end: the two folds (all slices, the whole face, One/One f16).
     pub fn end_direction(&mut self, dir: [f32; 3], n_dirs: usize, sweep: u32) {
+        if let Some(cells) = &self.trace_cells {
+            for c in cells {
+                if c[0] < self.cur.w && c[1] < self.cur.h && c[2] < self.cur.d {
+                    self.trace.push(format!("dir {:.4} {:.4} {:.4}\tEND sweep {sweep}\tprobe {} {} {}\tcur {:.5} {:.5} {:.5} {:.5}\tcolour so far {:.5} {:.5} {:.5} {:.5}", dir[0], dir[1], dir[2], c[0], c[1], c[2], self.cur.get(c[0], c[1], c[2], 0), self.cur.get(c[0], c[1], c[2], 1), self.cur.get(c[0], c[1], c[2], 2), self.cur.get(c[0], c[1], c[2], 3), self.colour.get(c[0], c[1], c[2], 0), self.colour.get(c[0], c[1], c[2], 1), self.colour.get(c[0], c[1], c[2], 2), self.colour.get(c[0], c[1], c[2], 3)));
+                }
+            }
+        }
         // the per-direction log: the probes non-zero in the direction's volume and those with α > 0
         let (mut nz, mut na) = (0usize, 0usize);
         for b in &self.blocks {

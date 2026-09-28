@@ -2881,6 +2881,10 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
                                 // game lights from above has no pixel oracle (every banked world plane looks up); g23's items read it
                                 let front = (dot(cross(e1, e2), frame.d) < 0.0) ^ warp_face_flipped();
                                 let c = crate::warpterrain::shade(sh, vs, bw, front);
+                                // (LMTOOL_ABUF_DEBUG_LIST pixels: the environment fragment's warp shading — E4's read of g23's skirt, 2026-09-28)
+                                if LAYER_DEBUG_SET.as_ref().map(|set| set.contains(&(x as u32, y as u32))).unwrap_or(false) {
+                                    eprintln!("LAYERDBG px={x} py={y} env warp tri={} wi={wi} front={front} bw=({:.3},{:.3},{:.3}) hit=({:.1},{:.1},{:.1}) shade=({:.5},{:.5},{:.5}) env_d={env_d:.5}", f.tri, bw[0], bw[1], bw[2], hit_p[0], hit_p[1], hit_p[2], c[0], c[1], c[2]);
+                                }
                                 prm.quant_peel.apply(c, prm.rounding)
                             }
                         }
