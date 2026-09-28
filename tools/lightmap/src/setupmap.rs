@@ -739,6 +739,44 @@ pub fn build_with_lamps(scene: &crate::geometry::Scene, lm: &LmScene, sbox: &Aab
     let light_rgb = if sun_scale != 1.0 { eprintln!("setup-from-map: STUDY sun direct term × {sun_scale} in sweep 0's light input"); [light_rgb[0] * sun_scale, light_rgb[1] * sun_scale, light_rgb[2] * sun_scale] } else { light_rgb };
     let mut sun = sun_from_map(lm, &pw01, dir_in_world, light_rgb, &shadow);
     if !quiet { eprintln!("setup-from-map: direct sun ({:.1}s)", t0.elapsed().as_secs_f32()); }
+    // LMTOOL_TILE_SUN_CENSUS=1 (diagnostic, G2 2026-09-28 — the giant's buried outer tiles): the direct-sun atlas over the ZONE-TILE
+    // instances' texels (the meshes with ≥ 1000 instances), split by the tile's world cell: inside the 64×64 decoration footprint
+    // (x, z < 2048) vs outside — mean rgb / w and the lit fraction (w > 0 and rgb > 0). RE 15's test: a game outer tile keeps a
+    // dim neutral leak (Σ 0.03) though buried under the WarpGround; if ours is exactly 0 the residue is the shadow pass at the
+    // 2-m caster gap (bias / PCF / D16), not the placement.
+    if std::env::var_os("LMTOOL_TILE_SUN_CENSUS").is_some() {
+        let mut acc = [(0usize, 0usize, [0f64; 3]); 2];
+        for (k, mesh) in lm.meshes.iter().enumerate() {
+            if lm.inst_count[k] < 1000 { continue; }
+            for ii in lm.inst_first[k]..lm.inst_first[k] + lm.inst_count[k] {
+                let inst = &lm.instances[ii];
+                let side = if inst.t[0] < 2048.0 && inst.t[2] < 2048.0 { 0 } else { 1 };
+                // the instance's chart rect in the atlas: the mesh's uv extent through its ST (01 space, y down = the raster's flip)
+                let v0 = &mesh.verts[0];
+                let st = crate::lmaccum::chart_st(v0, inst, &lm.table);
+                let (mut u0, mut u1, mut v0m, mut v1m) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+                for v in &mesh.verts { u0 = u0.min(v.uv[0]); u1 = u1.max(v.uv[0]); v0m = v0m.min(v.uv[1]); v1m = v1m.max(v.uv[1]); }
+                let ax = |u: f32| ((st[0] * u + st[2]) * W as f32);
+                let ay = |v: f32| ((st[1] * v + st[3]) * H as f32);
+                let (xa, xb, ya, yb) = (ax(u0), ax(u1), ay(v0m), ay(v1m));
+                let (x0, x1) = (xa.min(xb).floor().max(0.0) as u32, xa.max(xb).ceil().min(W as f32) as u32);
+                let (y0, y1) = (ya.min(yb).floor().max(0.0) as u32, ya.max(yb).ceil().min(H as f32) as u32);
+                for y in y0..y1 { for x in x0..x1 {
+                    let w = sun.get(x, y, 3);
+                    if w <= 0.0 { continue; }
+                    let e = &mut acc[side];
+                    e.0 += 1;
+                    let rgb = [sun.get(x, y, 0), sun.get(x, y, 1), sun.get(x, y, 2)];
+                    if rgb[0] + rgb[1] + rgb[2] > 0.0 { e.1 += 1; }
+                    for c in 0..3 { e.2[c] += (rgb[c] / w) as f64; }
+                } }
+            }
+        }
+        for (side, name) in ["inside the 64×64 footprint", "outside"].iter().enumerate() {
+            let (n, lit, s) = acc[side];
+            eprintln!("tile-sun-census: {name}: {n} covered texels, {lit} with a non-zero direct sun ({:.2} %), mean sun/w ({:.5}, {:.5}, {:.5})", 100.0 * lit as f64 / n.max(1) as f64, s[0] / n.max(1) as f64, s[1] / n.max(1) as f64, s[2] / n.max(1) as f64);
+        }
+    }
     // THE LAMPS IN SWEEP 0's LIGHT INPUT — the game's alpha bookkeeping (RE 13, 2026-09-26 19:25Z / 19:30Z, RenderLightDirect →
     // RenderLightIndirectBounces state 0): after RenderLightDirect the accumulation is SS-normalised in place (LmSSNormWithA: A_0 = (L, α := 1)
     // on every texel with coverage > 0.01); D_0 := gutter(A_0) (the frame-1 image); the 36 sun draws add (S_raw, f) with f = the texel's

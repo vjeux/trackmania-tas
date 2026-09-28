@@ -858,7 +858,26 @@ pub fn load_obj_decor(path: &str, scale: f32, offset: V3) -> Result<Vec<DecorTri
 impl Scene {
     pub fn from_map(path: &str) -> Result<Scene, String> {
         let m = tmmaps::map::MapFile::load(std::path::Path::new(path));
-        let files = mapgeom::embedded::files(&m)?;
+        let mut files = mapgeom::embedded::files(&m)?;
+        // LMTOOL_ITEM_FILES=DIR (G2, 2026-09-28): extra item files (the `Items/` tree of a `mapgeom items` extraction) consulted when
+        // the map's own embedded zip lacks a file. The `-reduced-source` oracle maps (tinyctl --reduced) carry the .Item.Gbx files but
+        // NONE of the embedded textures (g23: 566 files, 0 .dds vs 632 / 66 in the full map): without them every cut-out card is
+        // OPAQUE in the peel and SKIPPED in the sun shadow map — the full map's extraction supplies them.
+        if let Ok(dir) = std::env::var("LMTOOL_ITEM_FILES") {
+            let mut added = 0usize;
+            let mut stack = vec![std::path::PathBuf::from(&dir)];
+            while let Some(d) = stack.pop() {
+                let Ok(rd) = std::fs::read_dir(&d) else { continue };
+                for e in rd.flatten() {
+                    let p = e.path();
+                    if p.is_dir() { stack.push(p); continue; }
+                    let base = p.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                    if base.is_empty() || files.keys().any(|k| k.rsplit(['/', '\\']).next().unwrap_or(k).eq_ignore_ascii_case(&base)) { continue; }
+                    if let Ok(bytes) = std::fs::read(&p) { files.insert(format!("Items/{base}"), bytes); added += 1; }
+                }
+            }
+            eprintln!("  LMTOOL_ITEM_FILES={dir}: {added} files added to the map's {} embedded ones", files.len() - added);
+        }
         // model name -> bytes (the zip keys carry a folder prefix)
         let mut by_name: BTreeMap<String, &Vec<u8>> = BTreeMap::new();
         for (k, v) in &files {
@@ -930,6 +949,7 @@ impl Scene {
         }
         // the cut-out masks of the alpha-tested materials (the zip's Items/*.dds by base name)
         let mut alpha_masks: BTreeMap<String, AlphaMask> = BTreeMap::new();
+        let mut missing_alpha: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         let mut card_albedo: BTreeMap<String, [f32; 3]> = BTreeMap::new();
         // the link-less materials' diffuse textures → their mean colour (sRGB-encoded 0..1)
         let mut tex_albedo: BTreeMap<String, [f32; 3]> = BTreeMap::new();
@@ -951,7 +971,7 @@ impl Scene {
         for g in &models {
             for file in &g.alpha_tex {
                 if alpha_masks.contains_key(file) { continue; }
-                let Some(bytes) = by_name.get(file) else { continue };
+                let Some(bytes) = by_name.get(file) else { missing_alpha.insert(file.clone()); continue };
                 // LMTOOL_MASK_RES=N: the cut-out decided on the texture reduced to N×N (its alpha box-averaged
                 // — the game's peel samples the leaf texture at the peel's pixel footprint, i.e. a coarse mip,
                 // and a sparse leaf texture passes the alpha test far less often there); default 256 = full
@@ -988,6 +1008,10 @@ impl Scene {
         if !alpha_masks.is_empty() {
             let cov: Vec<String> = alpha_masks.iter().take(4).map(|(k, m)| format!("{k} {:.0} %", m.coverage() * 100.0)).collect();
             eprintln!("  {} cut-out masks (alpha-tested materials): {}…", alpha_masks.len(), cov.join(", "));
+        }
+        if !missing_alpha.is_empty() {
+            let n_tris: usize = models.iter().flat_map(|g| g.tris.iter().filter(|t| t.alpha != u16::MAX && g.alpha_tex.get(t.alpha as usize).map(|f| missing_alpha.contains(f)).unwrap_or(false))).count();
+            eprintln!("WARNING: {} cut-out texture(s) NOT EMBEDDED in this map ({:?}): {} card triangles per model set are OPAQUE in the peel and SKIPPED as sun casters — a `-reduced-source` oracle map lost its textures; supply them with LMTOOL_ITEM_FILES=<the full map's `mapgeom items` directory>", missing_alpha.len(), missing_alpha.iter().take(6).collect::<Vec<_>>(), n_tris);
         }
         if !missing.is_empty() {
             eprintln!("  {} item models are not embedded (stock items?): {:?}", missing.len(), missing.iter().take(8).collect::<Vec<_>>());
