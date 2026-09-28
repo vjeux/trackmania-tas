@@ -5096,6 +5096,8 @@ fn run(mut a: Vec<String>) {
         "harness-gate" => { if let Err(e) = lightmap::harnessgate::run(&a) { eprintln!("harness-gate: {e}"); std::process::exit(1); } }
         // lmtool base-bank --repo DIR --prev TIP --bin LMTOOL --gate-md GATE.md --note TEXT [--giants-md F] : the landing banked to the store in one command (basebank.rs)
         "base-bank" => { if let Err(e) = lightmap::basebank::run(&a) { eprintln!("base-bank: {e}"); std::process::exit(1); } }
+        // lmtool f32cmp REF.f32 NEW.f32 [--head 16] [--list N] : two raw f32 dumps word by word (an attributed probe move, read) (harnessgate.rs)
+        "f32cmp" => { if let Err(e) = lightmap::harnessgate::f32cmp(&a) { eprintln!("f32cmp: {e}"); std::process::exit(1); } }
         "clouds-reach" => { if let Err(e) = lightmap::clouds::reach(&a) { eprintln!("clouds-reach: {e}"); std::process::exit(1); } }
         "clouds-field" => { if let Err(e) = lightmap::cloudfield::cli(&a) { eprintln!("clouds-field: {e}"); std::process::exit(1); } }
         "swd6-set" => { if let Err(e) = lightmap::swd6::cli(&a) { eprintln!("swd6-set: {e}"); std::process::exit(1); } }

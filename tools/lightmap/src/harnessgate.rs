@@ -239,3 +239,36 @@ pub fn run(args: &[String]) -> Result<(), String> {
     println!("harness-gate {tag}: {} in {:.0} s — {}", if all { "ALL PASS" } else { "FAILED" }, t_all.elapsed().as_secs_f64(), md_path.display());
     if all { Ok(()) } else { Err(format!("{} check(s) failed", checks.iter().filter(|c| !c.pass).count())) }
 }
+
+/// `lmtool f32cmp REF.f32 NEW.f32 [--head 16] [--list N]`: two raw f32 dumps (the probe volumes prb-c3/*.f32: a 16-byte
+/// header, then little-endian f32 words) word by word — the count of differing words, max |Δ|, the sum of the deltas' signs,
+/// and the first N differing words with index / old / new / Δ. What an attributed probe move is read with (baker-6, 2026-09-28).
+pub fn f32cmp(args: &[String]) -> Result<(), String> {
+    let a = args.get(1).ok_or("f32cmp REF.f32 NEW.f32 [--head BYTES] [--list N]")?;
+    let b = args.get(2).ok_or("f32cmp REF.f32 NEW.f32 [--head BYTES] [--list N]")?;
+    let head: usize = flag(args, "--head").map(|v| v.parse().map_err(|e| format!("--head: {e}"))).transpose()?.unwrap_or(16);
+    let list: usize = flag(args, "--list").map(|v| v.parse().map_err(|e| format!("--list: {e}"))).transpose()?.unwrap_or(20);
+    let (x, y) = (std::fs::read(a).map_err(|e| format!("{a}: {e}"))?, std::fs::read(b).map_err(|e| format!("{b}: {e}"))?);
+    if x.len() != y.len() { return Err(format!("sizes differ: {} vs {} bytes", x.len(), y.len())); }
+    if x.len() < head || (x.len() - head) % 4 != 0 { return Err(format!("{} bytes is not a {head}-byte header + f32 words", x.len())); }
+    let head_same = x[..head] == y[..head];
+    let words = |d: &[u8]| d[head..].chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect::<Vec<f32>>();
+    let (wx, wy) = (words(&x), words(&y));
+    let mut n_diff = 0usize;
+    let mut max_abs = 0f32;
+    let mut up = 0usize;
+    let mut down = 0usize;
+    let mut sum_delta = 0f64;
+    let mut shown = 0usize;
+    for (i, (&p, &q)) in wx.iter().zip(wy.iter()).enumerate() {
+        if p.to_bits() == q.to_bits() { continue; }
+        n_diff += 1;
+        let d = q - p;
+        if d > 0.0 { up += 1 } else if d < 0.0 { down += 1 }
+        sum_delta += d as f64;
+        if d.abs() > max_abs { max_abs = d.abs(); }
+        if shown < list { println!("  word {i:6}: {p:.7} → {q:.7}  Δ {d:+.7}"); shown += 1; }
+    }
+    println!("f32cmp: {} words, header {}: {n_diff} differ ({up} up, {down} down), max |Δ| {max_abs:.7}, Σ Δ {sum_delta:+.7}", wx.len(), if head_same { "identical" } else { "DIFFERS" });
+    Ok(())
+}
