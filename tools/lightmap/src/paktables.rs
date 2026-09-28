@@ -303,6 +303,9 @@ pub fn hue_class_constant(store: &mut DataStore, link: &str, target: Option<[f32
     // pre-E3 form). A direction test of the items' G/B deficit, not a rule — RE 16 reads which program / constant the LM pre-pass runs.
     let study = std::env::var("LMTOOL_HUE_STUDY").unwrap_or_default();
     if study == "grey" { let g = ((mask[1] - k) * mean_t + k * mean_t).clamp(0.0, 1.0); recol = [g, g, g]; }
+    // `default` = RE 16's H1 (21:35Z): the LM shader instance samples the sub-shader's DefaultRGB (1, 1, 1) instead of CustomPlastic_D →
+    // k = 0 → recol = mean(T)·(1, 1, 1) (0.391 for the red plastic's authored (1.0, 0.086, 0.086)); `grey` above is k·mean(T), 18 % lower
+    else if study == "default" { let g = mean_t.clamp(0.0, 1.0); recol = [g, g, g]; }
     else if study == "mask" { recol = mask; }
     base.notes.push(format!("PyPxz_Hue: mask tap {:?} → k {k:.4}, RgbTargetColor {:?} ({src}) → albedo {:?}{}", mask, t, recol, if study.is_empty() { String::new() } else { format!(" [STUDY LMTOOL_HUE_STUDY={study}]") }));
     base.rgb = recol;
