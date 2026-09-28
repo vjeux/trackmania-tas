@@ -97,6 +97,7 @@ pub mod vp8_tables;
 pub mod vp8enc;
 pub mod walk;
 pub mod warpterrain;
+pub mod warp_luts;
 pub mod webpenc;
 
 pub const LIGHTMAP_CHUNK: u32 = 0x0304_305B;

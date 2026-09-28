@@ -1090,6 +1090,9 @@ fn run(mut a: Vec<String>) {
                 }
                 eprintln!("scene-near: {n} triangles within {r} m of ({}, {}, {})", c[0], c[1], c[2]);
             }
+            // (the Warp terrain meshes awaiting the mood and the sun — E2 2026-09-28: the first decor index they occupy, the meshes
+            // with their normals, the --pak lines to reopen the store for the material's textures)
+            let mut warp_pending: Option<(usize, Vec<lightmap::envcap::EnvMesh>, Vec<String>)> = None;
             // the decoration's surroundings: --decoration FILE.obj[,FILE…] [--decoration-scale S --decoration-offset x,y,z],
             // or by default lightmap-re/scene3d/<Collection>.obj when it exists (RE child 3's Scene3d export),
             // --no-decoration to leave it out
@@ -1114,8 +1117,15 @@ fn run(mut a: Vec<String>) {
                     for p in &paks { if let Some((pp, key)) = p.rsplit_once(':') { if let Err(e) = store.add_pak(pp, key) { eprintln!("decoration: --pak {p}: {e}"); } } }
                     // the collection's decoration layout (RE 9's envblock::layout_path: Base64x64 for the islands, Stadium256's Base16x12 for Stadium)
                     let s3 = mapgeom::envblock::layout_path(&store, &coll);
-                    match lightmap::envcap::env_block_from_pak(&mut store, &s3) {
-                        Ok((t, dropped)) => { eprintln!("decoration: the game's environment block from the packs ({s3}): {} triangles ({dropped} water / sky triangles left out)", t.len()); scene.decor.extend(t); pak_block_done = true; }
+                    match lightmap::envcap::env_meshes_from_pak(&mut store, &s3) {
+                        Ok((meshes, dropped)) => {
+                            let t = lightmap::envcap::env_decor(&meshes);
+                            eprintln!("decoration: the game's environment block from the packs ({s3}): {} triangles ({dropped} water / sky triangles left out)", t.len());
+                            // THE WARP TERRAIN SHADING (E2 2026-09-28, warpterrain.rs): the Warp meshes are kept, with their normals, until the
+                            // mood and the sun are resolved below (`warp_pending`), then shaded per PS 16752; LMTOOL_WARP_TERRAIN=0 keeps them black
+                            if std::env::var("LMTOOL_WARP_TERRAIN").map(|v| v != "0").unwrap_or(true) { warp_pending = Some((scene.decor.len(), meshes, paks.clone())); }
+                            scene.decor.extend(t); pak_block_done = true;
+                        }
                         Err(e) => eprintln!("decoration: the environment block from the packs failed ({e}) — the Scene3d export is used"),
                     }
                 }
@@ -1190,8 +1200,8 @@ fn run(mut a: Vec<String>) {
                     let mut quad = |cx: u32, cz: u32, y: f32, alb: [f32; 3], water: bool| {
                         let (x0, z0) = (cx as f32 * 32.0, cz as f32 * 32.0);
                         let q = [[x0, y, z0], [x0 + 32.0, y, z0], [x0 + 32.0, y, z0 + 32.0], [x0, y, z0 + 32.0]];
-                        scene.decor.push(lightmap::geometry::DecorTri { p: [q[0], q[2], q[1]], albedo: alb, water, env: false, env_far_only: false, sun_caster: true });
-                        scene.decor.push(lightmap::geometry::DecorTri { p: [q[0], q[3], q[2]], albedo: alb, water, env: false, env_far_only: false, sun_caster: true });
+                        scene.decor.push(lightmap::geometry::DecorTri { p: [q[0], q[2], q[1]], albedo: alb, water, env: false, env_far_only: false, sun_caster: true, warp: 0 });
+                        scene.decor.push(lightmap::geometry::DecorTri { p: [q[0], q[3], q[2]], albedo: alb, water, env: false, env_far_only: false, sun_caster: true, warp: 0 });
                     };
                     // THE CAPTURE (2026-09-24, passcap-info on the world peel's layer 0): the game's zone tile is ONE flat
                     // surface at y = 3.76 + bias ≈ 4.0 = the SEABED, 3 m under the collection's sea level — the water
@@ -1240,8 +1250,8 @@ fn run(mut a: Vec<String>) {
                 let ga: f32 = f("--ground-bounce").map(|s| s.parse().unwrap()).unwrap_or(0.37);
                 let (lo, hi) = (-4096.0f32, 8192.0f32);
                 let q = [[lo, gy, lo], [hi, gy, lo], [hi, gy, hi], [lo, gy, hi]];
-                scene.decor.push(lightmap::geometry::DecorTri { p: [q[0], q[1], q[2]], albedo: [ga; 3], water: false, env: false, env_far_only: false, sun_caster: true });
-                scene.decor.push(lightmap::geometry::DecorTri { p: [q[0], q[2], q[3]], albedo: [ga; 3], water: false, env: false, env_far_only: false, sun_caster: true });
+                scene.decor.push(lightmap::geometry::DecorTri { p: [q[0], q[1], q[2]], albedo: [ga; 3], water: false, env: false, env_far_only: false, sun_caster: true, warp: 0 });
+                scene.decor.push(lightmap::geometry::DecorTri { p: [q[0], q[2], q[3]], albedo: [ga; 3], water: false, env: false, env_far_only: false, sun_caster: true, warp: 0 });
                 eprintln!("decoration: none — a ground quad at y = {gy} (albedo {ga}) stands in");
             }
             eprintln!("scene: {} models, {} instances, {} triangles (+ {} decoration) ({:.1}s)", scene.models.len(), scene.instances.len(), scene.tri_count(), scene.decor.len(), t0.elapsed().as_secs_f32());
@@ -1514,6 +1524,47 @@ fn run(mut a: Vec<String>) {
             if let Some(p) = f("--sky-cube") { prm.sky_cube = Some(std::sync::Arc::new(lightmap::skycube::CubeMap::load(&p).expect("sky cube"))); prm.sky = [0.0; 3]; }
             if let Some(s) = f("--sky-scale") { prm.sky_cube_scale = s.parse().unwrap(); }
             if let Some(s) = f("--sun") { prm.sun = parse_rgb(&s); }
+            // THE WARP TERRAIN SHADED (E2 2026-09-28, warpterrain.rs — RE 15 NOTES 08:40Z: the decoration's terrain is LIT in the game's
+            // peel by PS 16752, we drew it black): the constants from the mood XML (<Fog>, <Height>, <CloudsX2>), the sun (the direction the
+            // light travels = −sun_dir, LDirSun), the material's PxzScaleTrans + PyDiffuse texcoord transform and its Py/Pxz textures from the
+            // packs; the CloudsX2 field at its mean (k = 0.5 — the capture's field is the wind's); the eye = the map centre at the terrain's
+            // mid height (the fog distance's origin: 4e-5 per metre). LMTOOL_WARP_TERRAIN=0 → the black environment of before.
+            if let Some((first, meshes, paks)) = warp_pending.take() {
+                let mut store = mapgeom::store::DataStore::empty();
+                for p in &paks { if let Some((pp, key)) = p.rsplit_once(':') { let _ = store.add_pak(pp, key); } }
+                let coll = hdr.as_ref().map(|h| h.envir.clone()).unwrap_or_default();
+                let mood_name = xml_sel.map(|m| m.mood).unwrap_or("Day");
+                let xml = std::fs::read_to_string(lightmap::skygrad::mood_file(&coll, mood_name, "Mood.MoodSetting.xml")).unwrap_or_default();
+                let warp_mesh = meshes.iter().find(|m| m.name.to_ascii_lowercase().contains("warp") && !m.norms.is_empty());
+                match warp_mesh {
+                    None => eprintln!("warp terrain: no Warp mesh with normals in the environment block — the environment stays black"),
+                    Some(wm) => {
+                        let link = if wm.name.contains('\\') { wm.name.clone() } else { format!("{coll}\\Media\\Material\\{}", wm.name.split('|').next().unwrap_or(&wm.name)) };
+                        let mat = format!("{link}.Material.Gbx");
+                        let chain = mapgeom::envblock::material_chain(&mut store, &mat);
+                        let pxz: [f32; 3] = chain.params.iter().find(|(n, _)| n.eq_ignore_ascii_case("PxzScaleTrans")).and_then(|(_, v)| if v.len() >= 3 { Some([v[0], v[1], v[2]]) } else { None }).unwrap_or([0.0005, 0.0005, 0.5]);
+                        let (py_scale, py_rot) = chain.texcoord.iter().find(|(n, _)| n.eq_ignore_ascii_case("PyDiffuse")).map(|(_, t)| (t.scale[0], t.rotate_deg)).unwrap_or((pxz[0], 0.0));
+                        let size = { let mf = tmmaps::map::MapFile::load(std::path::Path::new(&map_path)); [mf.size[0].max(1) as u32, mf.size[1].max(1) as u32, mf.size[2].max(1) as u32] };
+                        let (mut ylo, mut yhi) = (f32::MAX, f32::MIN);
+                        for t in &wm.tris { for p in t { ylo = ylo.min(p[1]); yhi = yhi.max(p[1]); } }
+                        let eye = [size[0] as f32 * 16.0, 0.5 * (ylo + yhi), size[2] as f32 * 16.0];
+                        let light_dir = [-prm.sun_dir[0], -prm.sun_dir[1], -prm.sun_dir[2]];
+                        let consts = lightmap::warpterrain::consts_from_mood(&xml, light_dir, prm.sun, eye, pxz, py_scale, py_rot);
+                        match lightmap::warpterrain::textures_from_pak(&mut store, &link) {
+                            Err(e) => eprintln!("warp terrain: {link}: {e} — the environment stays black"),
+                            Ok(tex) => {
+                                let mut warp_vs = Vec::new();
+                                let (shaded, n) = lightmap::envcap::env_decor_warp(&meshes, &consts, &mut warp_vs);
+                                // the same triangles in the same order as the block pushed at `first`
+                                for (k, t) in shaded.into_iter().enumerate() { if let Some(d) = scene.decor.get_mut(first + k) { d.warp = t.warp; } }
+                                scene.warp_vs = warp_vs;
+                                scene.warp = Some(std::sync::Arc::new(lightmap::warpterrain::WarpShading { consts: consts.clone(), tex, clouds_from_texture: false }));
+                                eprintln!("warp terrain: {n} triangles of {} ({link}) shaded per PS 16752 — PxzScaleTrans {:?}, Py uv scale {py_scale} at {py_rot}°, sun dir {:?} rgb {:?}, fog rgb {:?} depth ST {:?}, clouds min {:?} max {:?} (field at its mean → ×0.5), eye {:?}", wm.name, pxz, light_dir, prm.sun, consts.fog_rgb, consts.fog.depth_st_exp, consts.clouds_min_half, consts.clouds_max, eye);
+                            }
+                        }
+                    }
+                }
+            }
             if let Some(s) = f("--ambient") { prm.ambient = parse_rgb(&s); }
             if let Some(s) = f("--up") { prm.up = parse_rgb(&s); }
             if let Some(s) = f("--tpm") { prm.texels_per_m = s.parse().unwrap(); }
@@ -1607,7 +1658,7 @@ fn run(mut a: Vec<String>) {
                 prm.sky_samples = f("--sky-samples").map(|s| s.parse().unwrap()).unwrap_or(16);
                 prm.sun_samples = 1;
                 let step = (scene.instances.len() / nitems).max(1);
-                let sub = lightmap::geometry::Scene { models: scene.models.clone(), model_names: scene.model_names.clone(), instances: scene.instances.iter().step_by(step).cloned().collect(), item_count: scene.item_count, decor: scene.decor.clone(), alpha_masks: scene.alpha_masks.clone(), card_albedo: scene.card_albedo.clone(), tex_albedo: scene.tex_albedo.clone(), stock_models: Default::default() };
+                let sub = lightmap::geometry::Scene { models: scene.models.clone(), model_names: scene.model_names.clone(), instances: scene.instances.iter().step_by(step).cloned().collect(), item_count: scene.item_count, decor: scene.decor.clone(), warp_vs: scene.warp_vs.clone(), warp: scene.warp.clone(), alpha_masks: scene.alpha_masks.clone(), card_albedo: scene.card_albedo.clone(), tex_albedo: scene.tex_albedo.clone(), stock_models: Default::default() };
                 // the subset's instances must keep their own inst id for self-hit filtering: rebuild the bvh over all, but
                 // the shade() skip uses the instance index in `sub` — so we bake the subset against a bvh of the FULL scene
                 // whose inst ids are full-scene indices; map them
@@ -3717,7 +3768,7 @@ fn run(mut a: Vec<String>) {
             prm.uv_bounds = has("--uv-bounds");
             if let Some(s) = f("--bounce") { prm.bounce = s.parse().unwrap(); }
             prm.sky_samples = 64;
-            let sub = lightmap::geometry::Scene { models: scene.models.clone(), model_names: scene.model_names.clone(), instances: vec![scene.instances[ii].clone()], item_count: scene.item_count, decor: scene.decor.clone(), alpha_masks: scene.alpha_masks.clone(), card_albedo: scene.card_albedo.clone(), tex_albedo: scene.tex_albedo.clone(), stock_models: Default::default() };
+            let sub = lightmap::geometry::Scene { models: scene.models.clone(), model_names: scene.model_names.clone(), instances: vec![scene.instances[ii].clone()], item_count: scene.item_count, decor: scene.decor.clone(), warp_vs: scene.warp_vs.clone(), warp: scene.warp.clone(), alpha_masks: scene.alpha_masks.clone(), card_albedo: scene.card_albedo.clone(), tex_albedo: scene.tex_albedo.clone(), stock_models: Default::default() };
             // bake at Nadeo's resolution
             prm.min_px = pw.max(ph); prm.max_px = pw.max(ph);
             let mine = lightmap::bake::bake_subset_px(&sub, &[ii as u32], &bvh, &prm, pw, ph);
@@ -3791,7 +3842,7 @@ fn run(mut a: Vec<String>) {
                     let (x, y) = mp.pos[ci]; let (w, h) = mp.size[ci];
                     let (px, py, pw, ph) = ((x as u32 + 1) / 2, (y as u32 + 1) / 2, (w as u32) / 2, (h as u32) / 2);
                     if pw < 4 || ph < 4 { continue; }
-                    let sub = lightmap::geometry::Scene { models: scene.models.clone(), model_names: scene.model_names.clone(), instances: vec![inst.clone()], item_count: scene.item_count, decor: scene.decor.clone(), alpha_masks: scene.alpha_masks.clone(), card_albedo: scene.card_albedo.clone(), tex_albedo: scene.tex_albedo.clone(), stock_models: Default::default() };
+                    let sub = lightmap::geometry::Scene { models: scene.models.clone(), model_names: scene.model_names.clone(), instances: vec![inst.clone()], item_count: scene.item_count, decor: scene.decor.clone(), warp_vs: scene.warp_vs.clone(), warp: scene.warp.clone(), alpha_masks: scene.alpha_masks.clone(), card_albedo: scene.card_albedo.clone(), tex_albedo: scene.tex_albedo.clone(), stock_models: Default::default() };
                     let mine = lightmap::bake::bake_subset_px(&sub, &[ii as u32], &bvh, &prm, pw, ph);
                     let c = &mine[0];
                     let (mut xs, mut ys) = (vec![], vec![]);

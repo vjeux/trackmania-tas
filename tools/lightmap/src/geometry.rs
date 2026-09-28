@@ -688,6 +688,10 @@ pub struct Scene {
     /// `--decoration FILE.obj`): world-space triangles that occlude and bounce but get no chart. The
     /// BVH carries them with `inst == DECOR_INST` and `tri` indexing this list.
     pub decor: Vec<DecorTri>,
+    /// The Warp terrain triangles' VS 16748 outputs (`DecorTri::warp` − 1 indexes it) and the shading state (the constants,
+    /// the textures) — None = the environment surfaces are black in the peel (the pre-2026-09-28 form).
+    pub warp_vs: Vec<[crate::warpterrain::VsOut; 3]>,
+    pub warp: Option<std::sync::Arc<crate::warpterrain::WarpShading>>,
     /// The cut-out masks by texture file name (the map zip's `Items/*.dds` decoded at ≤ 256 px, alpha ≥ 0.5).
     pub alpha_masks: BTreeMap<String, AlphaMask>,
     /// The model indices resolved from the packs (stock items), for the lamp-class studies.
@@ -818,6 +822,9 @@ pub struct DecorTri {
     /// In the SUN shadow map (RE 9's rule: a decoration leaf casts there only through a caster-flagged shader program or an
     /// alpha slot — ShadowCaster64 yes, the WarpSand terrain patches no; every leaf of the block is in the peels).
     pub sun_caster: bool,
+    /// The decoration's WARP TERRAIN shading (warpterrain.rs, PS 16752): 0 = none (the surface is black in the peel), else
+    /// 1 + the index into `Scene::warp_vs` of this triangle's three VS 16748 outputs (E2 2026-09-28).
+    pub warp: u32,
 }
 
 /// Load a Wavefront OBJ (v / f lines, polygons fanned; `usemtl NAME` selects the albedo by the
@@ -849,7 +856,7 @@ pub fn load_obj_decor(path: &str, scale: f32, offset: V3) -> Result<Vec<DecorTri
                 for k in 1..idx.len().saturating_sub(1) {
                     let (a, b, c) = (idx[0], idx[k], idx[k + 1]);
                     if a < verts.len() && b < verts.len() && c < verts.len() {
-                        out.push(DecorTri { p: [verts[a], verts[b], verts[c]], albedo, water, env: false, env_far_only: false, sun_caster: true });
+                        out.push(DecorTri { p: [verts[a], verts[b], verts[c]], albedo, water, env: false, env_far_only: false, sun_caster: true, warp: 0 });
                     }
                 }
             }
@@ -1033,7 +1040,7 @@ impl Scene {
             let n_lights: usize = instances.iter().map(|i| models[i.model].lights.len()).sum();
             eprintln!("reduced oracle: baking the KEPT SET — {} of {} item instances kept ({} of {} items in the list; {} dropped), {} of {} item lights", instances.len(), before, kept.len(), m.items.len(), before - instances.len(), n_lights, n_lights_before);
         }
-        Ok(Scene { models, model_names, instances, item_count: m.items.len(), decor: Vec::new(), alpha_masks, card_albedo, tex_albedo, stock_models: stock_model_idx })
+        Ok(Scene { models, model_names, instances, item_count: m.items.len(), decor: Vec::new(), warp_vs: Vec::new(), warp: None, alpha_masks, card_albedo, tex_albedo, stock_models: stock_model_idx })
     }
 
     pub fn tri_count(&self) -> usize {

@@ -17,6 +17,8 @@ use std::path::Path;
 pub struct EnvMesh {
     pub name: String,
     pub tris: Vec<[V3; 3]>,
+    /// The triangles' vertex normals (parallel to `tris`; empty when the source has none — the OBJ export, the captured VB path here).
+    pub norms: Vec<[V3; 3]>,
 }
 
 fn read_maybe_gz(p: &Path) -> Result<Vec<u8>, String> {
@@ -119,7 +121,7 @@ fn decode_cache(b: &[u8]) -> Option<Vec<EnvMesh>> {
             }
             tris.push(t);
         }
-        out.push(EnvMesh { name, tris });
+        out.push(EnvMesh { name, tris, norms: Vec::new() });
     }
     Some(out)
 }
@@ -197,7 +199,7 @@ pub fn load_env_uncached(passcap: &Path) -> Result<Vec<EnvMesh>, String> {
         let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
         for p in &positions { for k in 0..3 { lo[k] = lo[k].min(p[k]); hi[k] = hi[k].max(p[k]); } }
         eprintln!("env: {name} (eid {eid}): {} vertices ({}), {} triangles, bbox ({:.1}, {:.1}, {:.1})..({:.1}, {:.1}, {:.1})", positions.len(), if from_vb { "VB, world space" } else { "post-VS, un-projected" }, tris.len(), lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]);
-        out.push(EnvMesh { name: name.into(), tris });
+        out.push(EnvMesh { name: name.into(), tris, norms: Vec::new() });
     }
     Ok(out)
 }
@@ -222,7 +224,7 @@ pub fn env_decor(meshes: &[EnvMesh]) -> Vec<DecorTri> {
                 let c = [(tri[0][0] + tri[1][0] + tri[2][0]) / 3.0 - centre[0], (tri[0][1] + tri[1][1] + tri[2][1]) / 3.0 - centre[1], (tri[0][2] + tri[1][2] + tri[2][2]) / 3.0 - centre[2]];
                 if n[0] * c[0] + n[1] * c[1] + n[2] * c[2] < 0.0 { tri.swap(1, 2); }
             }
-            out.push(DecorTri { p: tri, albedo: [0.0; 3], water: false, env: true, env_far_only: is_box, sun_caster: is_box || !m.name.to_ascii_lowercase().contains("warp") });
+            out.push(DecorTri { p: tri, albedo: [0.0; 3], water: false, env: true, env_far_only: is_box, sun_caster: is_box || !m.name.to_ascii_lowercase().contains("warp"), warp: 0 });
         }
     }
     out
@@ -267,7 +269,7 @@ pub fn env_block_from_scene3d(path: &str, scale: f32, offset: [f32; 3]) -> Resul
                 let name = it.next().unwrap_or("").to_string();
                 if let Some(m) = cur.take() { if !m.tris.is_empty() { meshes.push(m); } }
                 skip = name.to_ascii_lowercase().contains("water");
-                cur = Some(EnvMesh { name: if name.to_ascii_lowercase().contains("invisible") { "sea_box".into() } else { name }, tris: Vec::new() });
+                cur = Some(EnvMesh { name: if name.to_ascii_lowercase().contains("invisible") { "sea_box".into() } else { name }, tris: Vec::new(), norms: Vec::new() });
             }
             Some("f") => {
                 let idx: Vec<usize> = it.map(|x| x.split('/').next().unwrap_or("0").parse::<i64>().unwrap_or(0)).map(|i| if i < 0 { (verts.len() as i64 + i) as usize } else { (i - 1).max(0) as usize }).collect();
@@ -290,6 +292,12 @@ pub fn env_block_from_scene3d(path: &str, scale: f32, offset: [f32; 3]) -> Resul
 /// its groups by material — `InvisibleShadowCaster` = the sea box, `WarpSand` = the terrain patches; `Water` and the sky
 /// dome (`Tech3 Sky`, rasterised by domemesh.rs) are not part of the block.
 pub fn env_block_from_pak(store: &mut mapgeom::store::DataStore, scene3d_path: &str) -> Result<(Vec<DecorTri>, usize), String> {
+    env_meshes_from_pak(store, scene3d_path).map(|(m, d)| (env_decor(&m), d))
+}
+
+/// The environment block's meshes (with the vertex normals) from the packs — `env_block_from_pak` before the DecorTri flattening,
+/// for the Warp terrain shading (warpterrain.rs) that needs the normals and the material names.
+pub fn env_meshes_from_pak(store: &mut mapgeom::store::DataStore, scene3d_path: &str) -> Result<(Vec<EnvMesh>, usize), String> {
     let model = store.load_model(scene3d_path)?;
     let mut c = mapgeom::geom::Collector::new(store);
     c.model(&model, &mapgeom::geom::IDENTITY, 0);
@@ -302,7 +310,30 @@ pub fn env_block_from_pak(store: &mut mapgeom::store::DataStore, scene3d_path: &
             continue;
         }
         let tris: Vec<[[f32; 3]; 3]> = g.tris.iter().map(|t| [g.verts[t[0] as usize], g.verts[t[1] as usize], g.verts[t[2] as usize]]).collect();
-        meshes.push(EnvMesh { name: if lower.contains("invisible") { "sea_box".into() } else { name.clone() }, tris });
+        let norms: Vec<[[f32; 3]; 3]> = if g.norms.len() == g.verts.len() { g.tris.iter().map(|t| [g.norms[t[0] as usize], g.norms[t[1] as usize], g.norms[t[2] as usize]]).collect() } else { Vec::new() };
+        meshes.push(EnvMesh { name: if lower.contains("invisible") { "sea_box".into() } else { name.clone() }, tris, norms });
     }
-    Ok((env_decor(&meshes), dropped))
+    Ok((meshes, dropped))
+}
+
+/// `env_decor` with the WARP TERRAIN SHADED (warpterrain.rs): every triangle of a mesh whose material name contains "warp" and whose
+/// normals are known gets its three VS 16748 outputs appended to `warp_vs` and `DecorTri::warp` = 1 + that index; the sea box and
+/// the other leaves stay black. Returns the tris and the number shaded.
+pub fn env_decor_warp(meshes: &[EnvMesh], consts: &crate::warpterrain::WarpConsts, warp_vs: &mut Vec<[crate::warpterrain::VsOut; 3]>) -> (Vec<DecorTri>, usize) {
+    let mut out = env_decor(meshes);
+    let mut shaded = 0usize;
+    let mut k = 0usize;
+    for m in meshes {
+        let is_warp = m.name.to_ascii_lowercase().contains("warp") && m.norms.len() == m.tris.len();
+        for (ti, t) in m.tris.iter().enumerate() {
+            if is_warp {
+                let n = m.norms[ti];
+                warp_vs.push([crate::warpterrain::vs_16748(consts, t[0], n[0]), crate::warpterrain::vs_16748(consts, t[1], n[1]), crate::warpterrain::vs_16748(consts, t[2], n[2])]);
+                out[k].warp = warp_vs.len() as u32;
+                shaded += 1;
+            }
+            k += 1;
+        }
+    }
+    (out, shaded)
 }

@@ -117,6 +117,8 @@ mod tests {
             instances: vec![Instance { item: 0, model: 0, xf: crate::geometry::identity_xf(), model_name: "quad".into(), pose: crate::geometry::ItemPose { scale: 1.0, ..Default::default() }, lm_quality: 0 }],
             item_count: 1,
             decor: Vec::new(),
+            warp_vs: Vec::new(),
+            warp: None,
             alpha_masks: Default::default(),
             card_albedo: Default::default(),
             tex_albedo: Default::default(), stock_models: Default::default() }

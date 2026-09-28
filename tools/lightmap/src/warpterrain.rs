@@ -250,6 +250,11 @@ fn lut(l: &[f32], u: f32) -> f32 {
 
 /// PS 16752 on one fragment: the interpolated VS outputs, the facing (`isfrontface`); returns o0.rgb.
 pub fn ps_16752(c: &WarpConsts, tex: &WarpTextures, v: &VsOut, front: bool) -> V3 {
+    ps_16752_cloud(c, tex, v, front, None)
+}
+
+/// `ps_16752` with the CloudsX2 coverage sample replaced by `cloud` when given (0.5 = the field's mean → the factor 0.5 exactly).
+pub fn ps_16752_cloud(c: &WarpConsts, tex: &WarpTextures, v: &VsOut, front: bool, cloud: Option<f32>) -> V3 {
     let (v1, v2, v3, v4, v6) = (v.o1, v.o2, v.o3, v.o4, v.o6);
     // 0–5: r0 = normalize(v1.z, v2.z, v3.z)
     let mut r0 = [v1[2], v2[2], v3[2]];
@@ -307,7 +312,7 @@ pub fn ps_16752(c: &WarpConsts, tex: &WarpTextures, v: &VsOut, front: bool) -> V
     // 54–55: colour = albedo·ambient + albedo·sun
     let mut col = [alb[0] * c.ambient[0] + alb[0] * sun[0], alb[1] * c.ambient[1] + alb[1] * sun[1], alb[2] * c.ambient[2] + alb[2] * sun[2]];
     // 56–63: the CloudsX2 term
-    let cl = sample2(&tex.clouds, [v4[0], v4[1]], true)[0];
+    let cl = match cloud { Some(k) => k, None => sample2(&tex.clouds, [v4[0], v4[1]], true)[0] };
     let t_hi = (cl * 2.0 - 1.0).clamp(0.0, 1.0);
     let t_lo = (cl + cl).clamp(0.0, 1.0);
     let mn = c.clouds_min_half;
@@ -404,4 +409,113 @@ pub fn capture_patches(root: &std::path::Path, frame: u32) -> Result<Vec<CapPatc
 pub fn capture_vsout(root: &std::path::Path, frame: u32, eid: u32) -> Result<Vec<[f32; 24]>, String> {
     let b = std::fs::read(root.join(format!("mesh/frame{frame}/e{eid:06}_vsout.bin"))).or_else(|_| std::fs::read(root.join(format!("env/frame{frame}/mesh/e{eid:06}_vsout.bin")))).map_err(|e| e.to_string())?;
     Ok(b.chunks_exact(96).map(|c| { let mut v = [0f32; 24]; for i in 0..24 { v[i] = f32::from_le_bytes(c[i * 4..i * 4 + 4].try_into().unwrap()); } v }).collect())
+}
+
+/// The shading state the peel carries: the constants and the textures. `clouds_from_texture` = sample the capture's cloud field
+/// (its translation is the wind's — only the capture's own frames have it); false = the coverage at its mean 0.5 → the factor
+/// 0.5 exactly (`sat(2·0.5) = 1 → lerp(min, .w = 0.5, 1) = 0.5; sat(2·0.5 − 1) = 0`), RE 15's recommendation for every other map.
+pub struct WarpShading {
+    pub consts: WarpConsts,
+    pub tex: WarpTextures,
+    pub clouds_from_texture: bool,
+}
+
+/// PS 16752 through the shading state at a fragment: `vs` = the triangle's three VS outputs, `bw` its barycentrics, `front` the facing.
+pub fn shade(sh: &WarpShading, vs: &[VsOut; 3], bw: [f32; 3], front: bool) -> V3 {
+    let v = interp(vs, bw);
+    ps_16752_cloud(&sh.consts, &sh.tex, &v, front, if sh.clouds_from_texture { None } else { Some(0.5) })
+}
+
+/// The constants for a map WITHOUT a capture: the mood XML's <Fog> (+ <Height>) and <CloudsX2> blocks (the words the game
+/// derives from them — checked against pwc-day 127448's SceneV/SceneP at eid 1028: Fog_DepthST_Exp = (1/(DepthMax − DepthMin),
+/// −DepthMin/(DepthMax − DepthMin), Exponant, 1); Fog_WorldToHeight = (0, (MulTop − MulBottom)/(YTop − YBottom), 0, MulBottom −
+/// YBottom·that); Fog_MulY_Out_MinMax = (min(MulTop, MulBottom), max(…), IntensMax, IntensMin); Fog_LinearRGB = sRGB→linear(Color);
+/// CloudsX2minRGB_Half = (linear(MinRgb)·MinRgbX, 0.5), maxRGB = linear(MaxRgb)·MaxRgbX — all to the printed digits), the mood's
+/// LDirSun and the sun direction (GbxP_LightDirDirInWorld0 = the direction the light travels), LightAmbientLinear = 0 (the LM peel's
+/// value), the material's PxzScaleTrans and its PyDiffuse texcoord transform (scale s, rotation θ: the Py uv registers
+/// (s·cos θ, 0, s·sin θ, 0) / (s·sin θ, 0, −s·cos θ, 0) — pwc-day's WarpSand: 0.0005 at 15°). The cloud projection is the capture's
+/// wind-dependent field and is not reproduced: `WarpShading::clouds_from_texture = false` (k = 0.5).
+pub fn consts_from_mood(xml: &str, light_dir_in_world: V3, l_dir_sun: V3, eye: V3, pxz_scale_trans: [f32; 3], py_scale: f32, py_rot_deg: f32) -> WarpConsts {
+    let attr = |tag: &str, name: &str| -> Option<f32> {
+        let p = xml.find(&format!("<{tag} "))?;
+        let seg = &xml[p..xml[p..].find('>').map(|e| p + e).unwrap_or(xml.len())];
+        let k = format!(" {name}=\"");
+        let s = seg.find(&k)? + k.len();
+        let e = seg[s..].find('"')? + s;
+        seg[s..e].parse().ok()
+    };
+    let attr_s = |tag: &str, name: &str| -> Option<String> {
+        let p = xml.find(&format!("<{tag} "))?;
+        let seg = &xml[p..xml[p..].find('>').map(|e| p + e).unwrap_or(xml.len())];
+        let k = format!(" {name}=\"");
+        let s = seg.find(&k)? + k.len();
+        let e = seg[s..].find('"')? + s;
+        Some(seg[s..e].to_string())
+    };
+    let srgb = |c: u32| -> f32 { let v = c as f32 / 255.0; if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) } };
+    let hex3 = |s: &str| -> V3 { let h = u32::from_str_radix(s.trim_start_matches('#'), 16).unwrap_or(0xffffff); [srgb((h >> 16) & 255), srgb((h >> 8) & 255), srgb(h & 255)] };
+    let dmin = attr("Fog", "DepthMin").unwrap_or(256.0);
+    let dmax = attr("Fog", "DepthMax").unwrap_or(25000.0);
+    let ex = attr("Fog", "Exponant").unwrap_or(0.7);
+    let imin = attr("Fog", "IntensMin").unwrap_or(0.0);
+    let imax = attr("Fog", "IntensMax").unwrap_or(0.976);
+    let enabled = attr("Fog", "Enabled").map(|v| v != 0.0).unwrap_or(true);
+    let (yb, yt, mb, mt) = (attr("Height", "YBottom"), attr("Height", "YTop"), attr("Height", "MulBottom"), attr("Height", "MulTop"));
+    let (use_range_y, w2h, mm) = match (yb, yt, mb, mt) {
+        (Some(yb), Some(yt), Some(mb), Some(mt)) if (yt - yb).abs() > 1e-6 => { let a = (mt - mb) / (yt - yb); (true, [0.0, a, 0.0, mb - yb * a], [mt.min(mb), mt.max(mb), imax, imin]) }
+        _ => (false, [0.0; 4], [0.0, 1.0, imax, imin]),
+    };
+    let fog_rgb = attr_s("Fog", "Color").map(|s| hex3(&s)).unwrap_or([0.479, 0.680, 0.913]);
+    let cmin = attr_s("CloudsX2", "MinRgb").map(|s| hex3(&s)).unwrap_or([1.0; 3]);
+    let cminx = attr("CloudsX2", "MinRgbX").unwrap_or(0.25);
+    let cmax = attr_s("CloudsX2", "MaxRgb").map(|s| hex3(&s)).unwrap_or([1.0; 3]);
+    let cmaxx = attr("CloudsX2", "MaxRgbX").unwrap_or(0.25);
+    let (sn, cs) = py_rot_deg.to_radians().sin_cos();
+    WarpConsts {
+        pxz_scale_trans,
+        eye,
+        light_dir: light_dir_in_world,
+        light_rgb: l_dir_sun,
+        ambient: [0.0; 3],
+        clouds_min_half: [cmin[0] * cminx, cmin[1] * cminx, cmin[2] * cminx, 0.5],
+        clouds_max: [cmax[0] * cmaxx, cmax[1] * cmaxx, cmax[2] * cmaxx],
+        fog_rgb,
+        world_to_clouds: [[0.0; 4], [0.0; 4]],
+        world_to_py: [[py_scale * cs, 0.0, py_scale * sn, 0.0], [py_scale * sn, 0.0, -py_scale * cs, 0.0]],
+        fog: FogConsts { enable: enabled, depth_st_exp: [1.0 / (dmax - dmin), -dmin / (dmax - dmin), ex, 1.0], use_exp: true, world_to_height: w2h, muly_out_minmax: mm, use_range_y, water_eq: [0.0; 4], use_water_plane: false, world_to_fog_tnl: [0.0, 0.0, -1.0, 1.0] },
+        visual_to_world: [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]],
+    }
+}
+
+/// The Warp material's textures from the packs: the PyDiffuse / PxzDiffuse (sRGB-decoded) and PxzNormal (BC5, raw) slots; the LUTs
+/// are the shader-global ones (warp_luts.rs); no cloud field (the mean is used).
+pub fn textures_from_pak(store: &mut mapgeom::store::DataStore, link: &str) -> Result<WarpTextures, String> {
+    let py = crate::setupmap::slot_texture(store, link, "PyDiffuse", true)?.ok_or(format!("{link}: no PyDiffuse slot"))?.1;
+    let pxz = crate::setupmap::slot_texture(store, link, "PxzDiffuse", true)?.ok_or(format!("{link}: no PxzDiffuse slot"))?.1;
+    // the normal map: BC5 — through the slot's DDS bytes
+    let mat = if link.to_ascii_uppercase().ends_with(".MATERIAL.GBX") { link.to_string() } else { format!("{link}.Material.Gbx") };
+    let chain = mapgeom::envblock::material_chain(store, &mat);
+    let slot = chain.bitmaps.iter().find(|(n, p)| n.eq_ignore_ascii_case("PxzNormal") && !p.is_empty()).map(|(_, p)| p.clone()).ok_or(format!("{link}: no PxzNormal slot"))?;
+    let dds = slot_dds_path(store, &slot);
+    let bytes = store.read(&dds).map_err(|e| format!("{dds}: {e}"))?;
+    let nrm = parse_bc5_dds(&bytes).or_else(|e| { eprintln!("warp terrain: {dds}: {e} — the normal map read as a colour texture"); texsample::parse_dds(&bytes, Bc1Decode::Expand8Round) })?;
+    Ok(WarpTextures { acos: crate::warp_luts::ACOS_SMOOTH.to_vec(), acos_py: crate::warp_luts::ACOS_SMOOTH_PY.to_vec(), py_diffuse: py, pxz_diffuse: pxz, pxz_normal: nrm, clouds: half_texture(), slice: 0 })
+}
+
+fn half_texture() -> Texture {
+    Texture { fmt: texsample::TexFmt::R8Unorm, w: 1, h: 1, mips: 1, slices: 1, levels: vec![vec![texsample::Level::from_f32(1, 1, vec![[0.5, 0.5, 0.5, 1.0]])]], complete: true }
+}
+
+/// A `.Texture.gbx` slot's DDS path (the bitmap node's external image, else the `…\Image\<name>.dds` convention — setupmap's rule).
+fn slot_dds_path(store: &mut mapgeom::store::DataStore, slot: &str) -> String {
+    let mut out: Option<String> = None;
+    if let Ok(m) = store.load_model(slot) { if let Ok(g) = m.graph() { if let Some(mapgeom::node::Node::Bitmap(b)) = &g.root {
+        if b.image >= 0 { if let Some(mapgeom::node::Slot::External(dp)) = g.slots.get(b.image as usize) { out = Some(dp.clone()); } }
+    } } }
+    out.unwrap_or_else(|| {
+        if slot.to_ascii_uppercase().ends_with(".TEXTURE.GBX") {
+            let stem = &slot[..slot.len() - ".Texture.gbx".len()];
+            match stem.rsplit_once('\\') { Some((dir, name)) => format!("{dir}\\Image\\{name}.dds"), None => format!("{stem}.dds") }
+        } else { slot.to_string() }
+    })
 }

@@ -2849,15 +2849,43 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
         };
         if prm.dome_layer {
             let mut env_d = 0.0f32;
+            let mut env_best: Option<&Frag> = None;
             for f in list {
                 if is_env(f.tri) && env_drawn(f.tri) {
                     let z01 = frame.z01(f.z);
-                    if z01 >= 0.0 && z01 <= 1.0 { env_d = env_d.max(z01); }
+                    if z01 >= 0.0 && z01 <= 1.0 && z01 >= env_d { if z01 > env_d || env_best.is_none() { env_best = Some(f); } env_d = env_d.max(z01); }
                 }
             }
             if env_d > 0.0 {
                 let d = if prm.depth_bits == 16 { (env_d * 65535.0).round() / 65535.0 } else { env_d };
-                out.push(LayerFrag { d, rgb: [0.0; 3] });
+                // THE WARP TERRAIN'S COLOUR (warpterrain.rs, PS 16752; E2 2026-09-28): the nearest environment fragment, when it is a
+                // decoration terrain triangle with a shading record, is LIT (albedo × sun × clouds, fog, back faces black) as the
+                // game draws it; the sea box and every other environment surface stay black.
+                let rgb = match env_best {
+                    Some(f) => {
+                        let wt = &bvh.tris[f.tri as usize];
+                        let wi = scene.decor.get(wt.tri as usize).map(|dt| dt.warp).unwrap_or(0);
+                        match (wi, scene.warp.as_ref()) {
+                            (0, _) | (_, None) => [0.0f32; 3],
+                            (wi, Some(sh)) => {
+                                let vs = &scene.warp_vs[wi as usize - 1];
+                                let hit_p = frame.unproject(x as f32 + 0.5, y as f32 + 0.5, f.z);
+                                // barycentrics of the hit on the triangle's plane (the peel is orthographic: linear in the plane)
+                                let (e1, e2) = (wt.e1, wt.e2);
+                                let dp = [hit_p[0] - wt.p0[0], hit_p[1] - wt.p0[1], hit_p[2] - wt.p0[2]];
+                                let (d11, d12, d22, d1p, d2p) = (dot(e1, e1), dot(e1, e2), dot(e2, e2), dot(e1, dp), dot(e2, dp));
+                                let den = d11 * d22 - d12 * d12;
+                                let (b1, b2) = if den.abs() > 1e-20 { ((d22 * d1p - d12 * d2p) / den, (d11 * d2p - d12 * d1p) / den) } else { (0.0, 0.0) };
+                                let bw = [(1.0 - b1 - b2).clamp(0.0, 1.0), b1.clamp(0.0, 1.0), b2.clamp(0.0, 1.0)];
+                                let front = dot(cross(e1, e2), frame.d) < 0.0;
+                                let c = crate::warpterrain::shade(sh, vs, bw, front);
+                                prm.quant_peel.apply(c, prm.rounding)
+                            }
+                        }
+                    }
+                    None => [0.0f32; 3],
+                };
+                out.push(LayerFrag { d, rgb });
                 d_prev = d;
             } else {
                 // the environment render's dome pixel: the transcribed dome per pixel when given, else the direction's uniform sky
