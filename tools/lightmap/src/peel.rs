@@ -1553,7 +1553,7 @@ pub fn build_abuffer_sparse_items(tris: &[WTri], ranges: &[(u32, u32)], hier: Op
                         let cx = count.as_ref().unwrap();
                         let prm = cx.prm;
                         let mut d_prev = f32::NEG_INFINITY;
-                        let env_q = if prm.dome_layer { if env_d > 0.0 { if prm.depth_bits == 16 { (env_d * 65535.0).round() / 65535.0 } else { env_d } } else { 0.0 } } else { f32::NEG_INFINITY };
+                        let env_q = env_start(env_d, prm.dome_layer, prm.depth_bits);
                         d_prev = d_prev.max(env_q);
                         let mut items = 0usize;
                         for f in &tmp {
@@ -2886,7 +2886,8 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
                     None => [0.0f32; 3],
                 };
                 out.push(LayerFrag { d, rgb });
-                d_prev = d;
+                // the item walk's seed: the far plane, not this surface's depth (`item_walk_start`)
+                d_prev = item_walk_start(d, prm.depth_bits);
             } else {
                 // the environment render's dome pixel: the transcribed dome per pixel when given, else the direction's uniform sky
                 // (perf 8: the dome colour evaluated HERE, at the pixels the environment mesh leaves uncovered — not an image
@@ -3321,7 +3322,7 @@ pub fn exact_item_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &B
                     if z01 >= 0.0 && z01 <= 1.0 { env_d = env_d.max(z01); }
                 }
             }
-            d_prev = if env_d > 0.0 { if prm.depth_bits == 16 { (env_d * 65535.0).round() / 65535.0 } else { env_d } } else { 0.0 };
+            d_prev = if env_d > 0.0 { item_walk_start(if prm.depth_bits == 16 { (env_d * 65535.0).round() / 65535.0 } else { env_d }, prm.depth_bits) } else { 0.0 };
         }
         if *BIASED_ORDER {
             let mut v: Vec<WalkFrag> = Vec::with_capacity(list.len());
@@ -3474,7 +3475,7 @@ pub fn exact_item_layers_direct(tris: &[WTri], frame: &PeelFrame, scene: &Scene,
                     if z01 >= 0.0 && z01 <= 1.0 { env_d = env_d.max(z01); }
                 }
             }
-            d_prev = if env_d > 0.0 { if prm.depth_bits == 16 { (env_d * 65535.0).round() / 65535.0 } else { env_d } } else { 0.0 };
+            d_prev = if env_d > 0.0 { item_walk_start(if prm.depth_bits == 16 { (env_d * 65535.0).round() / 65535.0 } else { env_d }, prm.depth_bits) } else { 0.0 };
         }
         if *BIASED_ORDER {
             let mut v: Vec<WalkFrag> = Vec::with_capacity(list.len());
@@ -3855,7 +3856,8 @@ unsafe fn scan_block16_core_masked<L: Fn(usize, u16) -> (std::arch::x86_64::__m5
         };
         let q16 = |x: __m512| -> __m512 { _mm512_div_ps(round_away(_mm512_mul_ps(x, k65535)), k65535) };
         let env_pos = _mm512_cmp_ps_mask::<_CMP_GT_OQ>(ed, zero);
-        let env_q = _mm512_mask_blend_ps(env_pos, zero, q16(ed));
+        // the item walk's seed per lane: the far plane (0) — the environment depth only under LMTOOL_ENV_SEEDS_PEEL (`item_walk_start`)
+        let env_q = if item_walk_seeds_from_env() { _mm512_mask_blend_ps(env_pos, zero, q16(ed)) } else { zero };
         // the fragments j = 0..K of every lane through the loader (z, key, bias vectors of slot j); a missing
         // fragment (j ≥ n) sorts last with the largest key
         let maxk = _mm512_set1_epi32(i32::MAX);
@@ -4057,7 +4059,33 @@ pub fn stored_depth(z01: f32, bias: f32, depth_bits: u32) -> f32 {
 #[inline(always)]
 pub fn env_start(env_d: f32, dome_layer: bool, depth_bits: u32) -> f32 {
     if !dome_layer { return f32::NEG_INFINITY; }
-    if env_d > 0.0 { if depth_bits == 16 { (env_d * 65535.0).round() / 65535.0 } else { env_d } } else { 0.0 }
+    item_walk_start(env_d, depth_bits)
+}
+
+/// THE ITEM PEEL'S SEED (E3 2026-09-28, pwc-day 127448's clears + SRVs): the game's first ITEM layer of every peel phase
+/// reads, as "the previous layer's depth" (SRV0 of the peel pixel shader), the OTHER ping-pong depth target — cleared to
+/// 0.0 (the far plane) at the phase's start and NOT written by the environment block (eids 939/4294: ClearDepthStencilView
+/// 17094/17091 → 0.0; the env block renders into the one cleared at 989/4251; layer 1 (eid 2864, PS 17131, LESS over a
+/// 1.0 clear) binds the untouched one) — so the item peel runs from the FAR PLANE down, whatever the environment layer
+/// holds; the environment surface constrains only the accumulate of layer 0. The port seeded the walk with the
+/// environment layer's depth, which dropped every item on the SKY side of an environment surface: on the WhiteShore
+/// giant the decoration's sea-floor skirt (±97 km at y −4…−4.7) lies under every receiver outside the 64×64 block, so
+/// for every steep direction the items above it vanished from the layers (no occluders, no bounce, and — the dome having
+/// lost the env slot — no sky either: an up-facing 128 m Land quad read 0.008 vs the editor's 0.10). Inside the block
+/// (pwc-day, stpad, tiny03) the env layer at a receiver's pixel is the dome (0) and both seeds coincide — byte-identical.
+/// LMTOOL_ENV_SEEDS_PEEL=1 = the old seed (study / opt-out).
+pub fn item_walk_start(env_d: f32, depth_bits: u32) -> f32 {
+    if item_walk_seeds_from_env() {
+        if env_d > 0.0 { if depth_bits == 16 { (env_d * 65535.0).round() / 65535.0 } else { env_d } } else { 0.0 }
+    } else {
+        0.0
+    }
+}
+
+/// LMTOOL_ENV_SEEDS_PEEL=1: the pre-read seed (the environment surface's depth starts the item walk) — the study / opt-out.
+pub fn item_walk_seeds_from_env() -> bool {
+    static OLD: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *OLD.get_or_init(|| std::env::var_os("LMTOOL_ENV_SEEDS_PEEL").is_some())
 }
 
 /// THE BIASED WALK, the reference form: `frags` sorted here by (stored depth, triangle), then walked — accept
@@ -4162,7 +4190,7 @@ pub fn layer_walk_biased_cfrags(buf: &[CFrag], env_d: f32, dome_layer: bool, dep
 pub fn layer_walk_sorted(list: &[CFrag], env_d: f32, dome_layer: bool, depth_bits: u32, frame: &PeelFrame) -> usize {
     let mut d_prev = f32::NEG_INFINITY;
     if dome_layer {
-        d_prev = if env_d > 0.0 { if depth_bits == 16 { (env_d * 65535.0).round() / 65535.0 } else { env_d } } else { 0.0 };
+        d_prev = env_start(env_d, true, depth_bits);
     }
     let mut items = 0usize;
     for f in list {
@@ -4208,7 +4236,7 @@ pub fn layer_walk_keyed(buf: &mut [CFrag], env_d: f32, dome_layer: bool, depth_b
     }
     let mut d_prev = f32::NEG_INFINITY;
     if dome_layer {
-        d_prev = if env_d > 0.0 { if depth_bits == 16 { (env_d * 65535.0).round() / 65535.0 } else { env_d } } else { 0.0 };
+        d_prev = env_start(env_d, true, depth_bits);
     }
     let mut items = 0usize;
     for &(_, z01, bias) in &keyed[..n] {
@@ -6337,7 +6365,7 @@ mod scan16_audit_tests {
             return layer_walk_biased_cfrags(list, env_d, true, 16, frame);
         }
         list.sort_by(|p, q| p.z.total_cmp(&q.z).then_with(|| p.tri.cmp(&q.tri)));
-        let mut d_prev = if env_d > 0.0 { (env_d * 65535.0).round() / 65535.0 } else { 0.0 };
+        let mut d_prev = env_start(env_d, true, 16);
         let mut items = 0usize;
         for f in list.iter() {
             let z01 = frame.z01(f.z).max(0.0);
