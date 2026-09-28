@@ -13,6 +13,13 @@
 //! Each candidate is decoded as a JWT and kept when its `aud` names an audience we want and
 //! its `exp` is still ahead; the pair is verified against the live APIs before it is used.
 //!
+//! Three checks keep a STALE hit (a valid token left in a freed buffer — the windowcap
+//! lane's warning) from being taken for the current one: the NEWEST `iat` of each audience
+//! wins, both must carry the same `sid` (one login session), and the pair is proved against
+//! the live APIs. Owner confirmation through the holding object (`tm-memscan refs`/`objhead`
+//! → CGameUserService / CTrackManiaNetwork field, then a stable chain instead of a scan) is
+//! the next step; it needs a running game to derive and is tracked in state-notes.
+//!
 //! Verified 2026-09-27 20:33 on vjeux's own running game: 5 candidates, both audiences,
 //! HTTP 200 from core and live.
 
@@ -67,6 +74,28 @@ fn claims(jwt: &str) -> Option<(String, u64)> {
     Some((field("aud")?, field("exp")?.parse().ok()?))
 }
 
+/// `iat` (issued at) and `sid` (login-session id) of a JWT: the staleness check. A freed
+/// buffer can still hold a VALID token from an earlier login — the windowcap lane's warning,
+/// 2026-09-27 — so the newest `iat` wins and the two audiences must share one `sid`: tokens
+/// of the current session are issued together under the same login.
+fn iat_sid(jwt: &str) -> Option<(u64, String)> {
+    let payload = jwt.split('.').nth(1)?;
+    let bytes = b64url(payload)?;
+    let s = String::from_utf8_lossy(&bytes);
+    let field = |k: &str| -> Option<String> {
+        let i = s.find(&format!("\"{k}\""))?;
+        let rest = &s[i + k.len() + 2..];
+        let rest = rest.trim_start_matches([':', ' ']);
+        if let Some(r) = rest.strip_prefix('"') {
+            Some(r[..r.find('"')?].to_string())
+        } else {
+            let end = rest.find([',', '}'])?;
+            Some(rest[..end].trim().to_string())
+        }
+    };
+    Some((field("iat")?.parse().ok()?, field("sid")?))
+}
+
 /// The game's pid on the box, or None when no game runs.
 pub fn game_pid(wsx: &Wsx) -> Option<u32> {
     let out = wsx
@@ -90,7 +119,8 @@ pub fn tokens_from_game(wsx: &Wsx, pid: u32) -> Result<(String, String), String>
     if addrs.is_empty() {
         return Err("token --from-game: no token strings in that process (is it the game, and logged in?)".into());
     }
-    let (mut core, mut live) = (None::<(u64, String)>, None::<(u64, String)>);
+    // (iat, sid, header) per audience: newest issue wins, and the pair must share one sid
+    let (mut core, mut live) = (None::<(u64, String, String)>, None::<(u64, String, String)>);
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     for a in &addrs {
         let hex = wsx
@@ -113,19 +143,28 @@ pub fn tokens_from_game(wsx: &Wsx, pid: u32) -> Result<(String, String), String>
             continue;
         }
         let header = format!("nadeo_v1 t={jwt}");
+        let Some((iat, sid)) = iat_sid(&jwt) else { continue };
         let slot = match aud.as_str() {
             "NadeoServices" => &mut core,
             "NadeoLiveServices" => &mut live,
             _ => continue,
         };
-        // keep the longest-lived candidate of each audience
-        if slot.as_ref().map(|(e, _)| exp > *e).unwrap_or(true) {
-            *slot = Some((exp, header));
+        // the NEWEST issued candidate of each audience (a stale copy in a freed buffer can
+        // still be unexpired, so `exp` alone does not decide)
+        if slot.as_ref().map(|(i, _, _)| iat > *i).unwrap_or(true) {
+            *slot = Some((iat, sid, header));
         }
     }
     match (core, live) {
-        (Some((ce, c)), Some((le, l))) => {
-            println!("  token --from-game: read from pid {pid} (core {} min, live {} min left)", (ce - now) / 60, (le - now) / 60);
+        (Some((ci, csid, c)), Some((li, lsid, l))) => {
+            if csid != lsid {
+                return Err(format!(
+                    "token --from-game: the two tokens come from different login sessions ({csid} vs {lsid}) — one is stale; retry, or mint with --standalone"
+                ));
+            }
+            let _ = (ci, li);
+            println!("  token --from-game: read from pid {pid}, one login session ({csid}), newest issue of each audience");
+            let _ = now;
             Ok((c, l))
         }
         (c, l) => Err(format!(
