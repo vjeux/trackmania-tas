@@ -28,6 +28,11 @@ pub struct Cell {
     pub cause: String,
     /// the editor's own run-to-run byte identity on this cell's map class (%; the `ceiling` column; 99 when absent — lamp-less maps re-bake to 95–99 %, lamp maps to ~60 %)
     pub ceiling: f64,
+    /// V4 (2026-09-28): the corpus-gate cell this matrix cell reads (`corpus_cell` column; empty = the table is hand-made or none) —
+    /// `--refresh W/TIP` re-reads W/TIP/<corpus_cell>/ours.Map.Gbx against its oracle and rewrites `class_tsv`
+    pub corpus_cell: String,
+    /// the lightmap frame the cell reads (`frame` column; 0 = the colour frame, 1 = the lamp frame — ST-frame1)
+    pub frame: usize,
 }
 
 /// One class row of a classcmp table.
@@ -67,10 +72,109 @@ pub fn read_manifest(path: &str) -> Result<Vec<Cell>, String> {
         let Some(h) = &header else { header = Some(f.iter().map(|s| s.trim().to_string()).collect()); continue };
         let get = |name: &str| h.iter().position(|c| c == name).and_then(|i| f.get(i)).map(|s| s.trim().to_string()).unwrap_or_default();
         if get("cell").is_empty() { return Err(format!("{path}:{}: a row without a cell id", ln + 1)); }
-        out.push(Cell { cell: get("cell"), collection: get("collection"), mood: get("mood"), word: get("word"), quality: get("quality"), map: get("map"), features: get("features"), class_tsv: get("class_tsv"), state: get("state").to_ascii_lowercase(), cause: get("cause"), ceiling: get("ceiling").parse().unwrap_or(99.0) });
+        out.push(Cell { cell: get("cell"), collection: get("collection"), mood: get("mood"), word: get("word"), quality: get("quality"), map: get("map"), features: get("features"), class_tsv: get("class_tsv"), state: get("state").to_ascii_lowercase(), cause: get("cause"), ceiling: get("ceiling").parse().unwrap_or(99.0),
+            corpus_cell: { let c = get("corpus_cell"); if c == "-" { String::new() } else { c } }, frame: get("frame").parse().unwrap_or(0) });
     }
     if header.is_none() { return Err(format!("{path}: no header line")); }
     Ok(out)
+}
+
+/// One cell's move under `--refresh`: the old table's headline vs the new one (None = no old table).
+pub struct Refreshed {
+    pub cell: String,
+    pub tsv: String,
+    pub own_rects: bool,
+    pub old: Option<(f64, f64, f64, [f64; 3])>,
+    pub new: (f64, f64, f64, [f64; 3]),
+}
+
+fn headline(t: &Table) -> (f64, f64, f64, [f64; 3]) {
+    let tot = t.total.as_ref();
+    (tot.map(|r| r.identical).unwrap_or(f64::NAN), tot.map(|r| r.within2).unwrap_or(f64::NAN), t.record.map(|r| r.3).unwrap_or(f64::NAN), tot.map(|r| r.ratio).unwrap_or([f64::NAN; 3]))
+}
+
+/// V4's REFRESH (2026-09-28): the matrix re-read from the corpus bank in one command. For every manifest row with a `corpus_cell`,
+/// `work_tip/<corpus_cell>/ours.Map.Gbx` (baker's banked bake of the base) is compared against the oracle its metrics.json names
+/// — `classcmp --by name --frame F --records records.tsv [--own-rects] [--lit-hdr F]` in-process — and the table is written beside the
+/// manifest as `<cell><suffix>.tsv`; the manifest's `class_tsv` column is rewritten in place (comment lines, `#!` notes and the other
+/// columns untouched). The gate's own tables are BYTE-lit (`lit 8`): on the giants and the islands the HDR floor changes the lit
+/// fraction and the class means (g23 tiles 28 vs 63 % at 1e-3 against 77 vs 96 % by byte, V3-5), so the matrix reads its own
+/// tables with `--lit-hdr 1e-3` rather than the gate's. `--own-rects` is decided from the two layouts BEFORE the compare (V3
+/// 03:56Z: equal chart counts with 215 of 5 871 same rects must not pass as a same-rect compare). Cells without a banked bake are
+/// reported and left as they were.
+/// `causes`: (cell, text) pairs that REPLACE the row's cause column (a text starting with `+` is PREPENDED to the old cause with " · " —
+/// the per-base note in front, the history behind it), read from `--causes FILE.tsv` (cell TAB text, `#` comments).
+pub fn refresh(manifest: &str, work_tip: Option<&std::path::Path>, suffix: &str, lit_hdr: Option<f64>, only: Option<&[String]>, bind: &[(String, String, usize)], causes: &[(String, String)]) -> Result<(Vec<Refreshed>, Vec<String>), String> {
+    let txt = std::fs::read_to_string(manifest).map_err(|e| format!("{manifest}: {e}"))?;
+    let base_dir = std::path::Path::new(manifest).parent().map(|p| p.to_path_buf()).unwrap_or_else(|| std::path::PathBuf::from("."));
+    let mut header: Option<Vec<String>> = None;
+    let mut out_lines: Vec<String> = Vec::new();
+    let mut done: Vec<Refreshed> = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
+    for line in txt.lines() {
+        if line.trim().is_empty() || line.starts_with('#') { out_lines.push(line.to_string()); continue; }
+        let mut f: Vec<String> = line.split('\t').map(|s| s.to_string()).collect();
+        let Some(h) = &header else {
+            // `--bind` adds the two V4 columns to a manifest that lacks them
+            let mut h: Vec<String> = f.iter().map(|s| s.trim().to_string()).collect();
+            if !bind.is_empty() { for c in ["corpus_cell", "frame"] { if !h.iter().any(|x| x == c) { h.push(c.to_string()); } } }
+            out_lines.push(h.join("\t"));
+            header = Some(h);
+            continue
+        };
+        let col = |name: &str| h.iter().position(|c| c == name);
+        while f.len() < h.len() { f.push(String::new()); }
+        let get = |f: &Vec<String>, name: &str| col(name).and_then(|i| f.get(i)).map(|s| s.trim().to_string()).unwrap_or_default();
+        let cell = get(&f, "cell");
+        if let Some((_, cc, fr)) = bind.iter().find(|(c, _, _)| c == &cell) {
+            if let Some(i) = col("corpus_cell") { f[i] = cc.clone(); }
+            if let Some(i) = col("frame") { f[i] = fr.to_string(); }
+        }
+        if let Some((_, text)) = causes.iter().find(|(c, _)| c == &cell) {
+            if let Some(i) = col("cause") {
+                let old = f[i].trim().to_string();
+                f[i] = match text.strip_prefix('+') { Some(t) if !old.is_empty() => format!("{} · {old}", t.trim()), Some(t) => t.trim().to_string(), None => text.trim().to_string() };
+            }
+        }
+        let cc = get(&f, "corpus_cell");
+        let wanted = only.map_or(true, |o| o.iter().any(|x| x == &cell));
+        let Some(work_tip) = work_tip else { out_lines.push(f.join("\t")); continue };
+        if cc.is_empty() || cc == "-" || !wanted { out_lines.push(f.join("\t")); continue; }
+        let Some(tsv_col) = col("class_tsv") else { return Err(format!("{manifest}: no class_tsv column")); };
+        let wdir = work_tip.join(&cc);
+        let ours_p = wdir.join("ours.Map.Gbx");
+        if !ours_p.exists() { skipped.push(format!("{cell}: no banked bake at {}", ours_p.display())); out_lines.push(f.join("\t")); continue; }
+        let metrics: serde_json::Value = std::fs::read_to_string(wdir.join("metrics.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(serde_json::Value::Null);
+        let Some(oracle) = metrics["oracle"].as_str().map(|s| s.to_string()) else { skipped.push(format!("{cell}: {}/metrics.json names no oracle", wdir.display())); out_lines.push(f.join("\t")); continue; };
+        let frame: usize = get(&f, "frame").parse().unwrap_or(0);
+        let ours = crate::mapio::load(&ours_p.to_string_lossy()).map_err(|e| format!("{cell}: ours: {e}"))?;
+        let theirs = crate::mapio::load(&oracle).map_err(|e| format!("{cell}: oracle {oracle}: {e}"))?;
+        let records_p = wdir.join("records.tsv");
+        let records = if records_p.exists() { Some(crate::classcmp::read_records_tsv(&records_p.to_string_lossy())?) } else { None };
+        // own rects when the two layouts differ (chart counts, or the same count with other rects) — decided from the layouts
+        let own_rects = {
+            let (Some(d1), Some(d2)) = (ours.chunk.data.as_ref(), theirs.chunk.data.as_ref()) else { return Err(format!("{cell}: a map without a lightmap")) };
+            let (Some(m1), Some(m2)) = (d1.cache.mapping(), d2.cache.mapping()) else { return Err(format!("{cell}: a map without a mapping chunk")) };
+            let n = m1.count.min(m2.count) as usize;
+            let same_rect = (0..n).filter(|&i| m1.pos[i] == m2.pos[i] && m1.size[i] == m2.size[i]).count();
+            m1.count != m2.count || same_rect != n
+        };
+        let o = crate::classcmp::Options { frame, lit: 8, lit_hdr, by: crate::classcmp::GroupBy::Name, worst: 0, own_rects };
+        let r = crate::classcmp::compare(&ours, &theirs, records.as_deref(), &o).map_err(|e| format!("{cell}: classcmp: {e}"))?;
+        let tsv_name = format!("{cell}{suffix}.tsv");
+        let tsv_path = base_dir.join(&tsv_name);
+        crate::classcmp::print(&r, &o, Some(&tsv_path.to_string_lossy())).map_err(|e| format!("{cell}: {e}"))?;
+        let old_tsv = f.get(tsv_col).map(|s| s.trim().to_string()).unwrap_or_default();
+        let old = if old_tsv.is_empty() || old_tsv == "-" { None } else { read_table(&old_tsv, &base_dir).ok().map(|t| headline(&t)) };
+        let new = read_table(&tsv_name, &base_dir).map(|t| headline(&t))?;
+        while f.len() <= tsv_col { f.push(String::new()); }
+        f[tsv_col] = tsv_name.clone();
+        out_lines.push(f.join("\t"));
+        done.push(Refreshed { cell, tsv: tsv_name, own_rects, old, new });
+    }
+    if header.is_none() { return Err(format!("{manifest}: no header line")); }
+    std::fs::write(manifest, out_lines.join("\n") + "\n").map_err(|e| format!("{manifest}: {e}"))?;
+    Ok((done, skipped))
 }
 
 fn parse_rgb(s: &str) -> Option<[f64; 3]> {

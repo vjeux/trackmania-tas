@@ -6832,10 +6832,34 @@ fn run(mut a: Vec<String>) {
             lightmap::texeldelta::run(&ours, &theirs, records.as_deref(), &o).unwrap_or_else(|e| panic!("texeldelta: {e}"));
         }
         "trustmatrix" => {
-            // lmtool trustmatrix MANIFEST.tsv [--out MATRIX.md] [--tol 0.03] [--min-texels 500] [--base LABEL]: the trust-matrix artifact
-            // (trustmatrix.rs) — one line per corpus cell from the manifest, the numbers from each row's classcmp --tsv table, the state by rule
+            // lmtool trustmatrix MANIFEST.tsv [--out MATRIX.md] [--tol 0.03] [--min-texels 500] [--base LABEL]
+            //   [--refresh W/TIP --suffix -TIP8 [--lit-hdr 1e-3] [--only cell,…]]: the trust-matrix artifact (trustmatrix.rs) — one line per
+            // corpus cell from the manifest, the numbers from each row's classcmp --tsv table, the state by rule. --refresh (V4): every
+            // row with a `corpus_cell` column re-reads baker's banked bake W/TIP/<corpus_cell>/ours.Map.Gbx against its oracle
+            // (`classcmp --by name --frame <frame> --records [--own-rects] [--lit-hdr]`), writes <cell><suffix>.tsv beside the manifest
+            // and rewrites the manifest's class_tsv column; prints what moved (identity / ±2 / record / TOTAL, old table → new)
             let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
             let manifest = a.get(1).filter(|s| !s.starts_with("--")).cloned().expect("MANIFEST.tsv");
+            if let Some(w) = f("--refresh") {
+                let suffix = f("--suffix").unwrap_or_default();
+                let lit_hdr: Option<f64> = f("--lit-hdr").map(|v| v.parse().expect("--lit-hdr F"));
+                let only: Option<Vec<String>> = f("--only").map(|s| s.split(',').map(|x| x.trim().to_string()).collect());
+                // --bind CELL=corpus_cell[:frame],… : persist the matrix-cell → corpus-cell binding into the manifest (adds the columns)
+                let bind: Vec<(String, String, usize)> = f("--bind").map(|s| s.split(',').filter(|x| !x.trim().is_empty()).map(|x| { let (c, rest) = x.trim().split_once('=').expect("--bind CELL=corpus_cell[:frame]"); let (cc, fr) = match rest.rsplit_once(':') { Some((a, b)) if b.chars().all(|ch| ch.is_ascii_digit()) && !b.is_empty() => (a, b.parse().unwrap()), _ => (rest, 0usize) }; (c.to_string(), cc.to_string(), fr) }).collect()).unwrap_or_default();
+                let work = if w == "-" { None } else { Some(std::path::PathBuf::from(&w)) };
+                // --causes FILE.tsv: cell TAB text — the row's cause column replaced (a leading `+` prepends to the old text)
+                let causes: Vec<(String, String)> = f("--causes").map(|p| std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("--causes {p}: {e}")).lines().filter(|l| !l.trim().is_empty() && !l.starts_with('#')).filter_map(|l| l.split_once('\t').map(|(c, t)| (c.trim().to_string(), t.to_string()))).collect()).unwrap_or_default();
+                let (done, skipped) = lightmap::trustmatrix::refresh(&manifest, work.as_deref(), &suffix, lit_hdr, only.as_deref(), &bind, &causes).unwrap_or_else(|e| panic!("trustmatrix --refresh: {e}"));
+                if !causes.is_empty() { println!("== trustmatrix --causes: {} cause text(s) written into {manifest}", causes.len()); }
+                if !bind.is_empty() { println!("== trustmatrix --bind: {} binding(s) written into {manifest}", bind.len()); }
+                println!("\n== trustmatrix --refresh {w}: {} cell(s) re-read{}", done.len(), lit_hdr.map(|v| format!(" at the HDR floor {v}")).unwrap_or_default());
+                for d in &done {
+                    let (ni, nw, nr, nt) = d.new;
+                    let moved = match d.old { Some((oi, ow, or, ot)) => format!("identity {oi:.2} → {ni:.2} %; ±2 {ow:.2} → {nw:.2} %; record {or:.4} → {nr:.4}; TOTAL {:.3}/{:.3}/{:.3} → {:.3}/{:.3}/{:.3}", ot[0], ot[1], ot[2], nt[0], nt[1], nt[2]), None => format!("identity {ni:.2} %; ±2 {nw:.2} %; record {nr:.4}; TOTAL {:.3}/{:.3}/{:.3} (no previous table)", nt[0], nt[1], nt[2]) };
+                    println!("  {:<22} → {}{}: {moved}", d.cell, d.tsv, if d.own_rects { " (own rects)" } else { "" });
+                }
+                for s in &skipped { println!("  SKIPPED {s}"); }
+            }
             let cells = lightmap::trustmatrix::read_manifest(&manifest).unwrap_or_else(|e| panic!("trustmatrix: {e}"));
             let base_dir = std::path::Path::new(&manifest).parent().map(|p| p.to_path_buf()).unwrap_or_else(|| std::path::PathBuf::from("."));
             let tol: f64 = f("--tol").map(|v| v.parse().expect("--tol F")).unwrap_or(0.03);
