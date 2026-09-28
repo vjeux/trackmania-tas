@@ -360,11 +360,12 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 let md5 = md5_hex(&bytes);
                 let records = wdir.join("records.tsv");
                 let m = match measure(&ours, oracle, Some(&records)) { Ok(m) => m, Err(e) => { println!("{}: measure failed: {e}", c.name); continue; } };
+                let lm_md5 = lightmap_chunk_md5(&ours);
                 let own_rects = m["layout"]["same_rects"] != m["layout"]["compared"] || m["layout"]["charts_ours"] != m["layout"]["charts_theirs"];
                 let notes = write_classcmp_tsvs(&exe, &ours, oracle, Some(&records), own_rects, &wdir);
                 let warn_lines: Vec<String> = std::fs::read_to_string(wdir.join("bake.log")).unwrap_or_default().lines().filter(|l| l.contains("not in any pack")).map(|l| l.trim().chars().take(300).collect()).collect();
                 let cen = census(&exe, &c.source, c.kept.as_deref());
-                let rec = serde_json::json!({ "cell": c.name, "tip": tip, "host": host, "ok": true, "compare_only": false, "bake_s": prev["bake_s"], "md5": md5, "bytes": bytes.len(),
+                let rec = serde_json::json!({ "cell": c.name, "tip": tip, "host": host, "ok": true, "compare_only": false, "bake_s": prev["bake_s"], "md5": md5, "lm_md5": lm_md5, "bytes": bytes.len(),
                     "collection": c.collection, "quality": c.quality, "dirs": c.dirs.clone().unwrap_or_else(|| "full".into()), "word": c.word, "oracle": oracle.to_string_lossy(), "source": c.source.to_string_lossy(),
                     "env": c.env.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>(), "ceiling": c.ceiling, "census": cen, "own_rects_tsv": own_rects, "pak_warnings": warn_lines, "notes": notes, "remeasured": true,
                     "classcmp_tsv": [wdir.join("classcmp-f0.tsv").to_string_lossy(), wdir.join("classcmp-f1.tsv").to_string_lossy()],
@@ -482,6 +483,7 @@ fn run_cells(args: &[String], cells: &[Cell]) -> Result<(), String> {
         let warn_lines: Vec<String> = std::fs::read_to_string(wdir.join("bake.log")).unwrap_or_default().lines().filter(|l| l.contains("not in any pack")).map(|l| l.trim().chars().take(300).collect()).collect();
         let bytes = std::fs::read(&out).map_err(|e| e.to_string())?;
         let md5 = md5_hex(&bytes);
+        let lm_md5 = lightmap_chunk_md5(&out);
         // bank the bake BEFORE measuring: a measure that fails (a layout the compare refuses) must not lose 25 min of giant
         if !c.compare_only {
             let _ = std::fs::copy(&out, wdir.join("ours.Map.Gbx"));
@@ -496,7 +498,7 @@ fn run_cells(args: &[String], cells: &[Cell]) -> Result<(), String> {
         let own_rects = m["layout"]["same_rects"] != m["layout"]["compared"] || m["layout"]["charts_ours"] != m["layout"]["charts_theirs"];
         let notes = write_classcmp_tsvs(&exe, &out, oracle, records_opt, own_rects, &wdir);
         let cen = if c.compare_only { serde_json::Value::Null } else { census(&exe, &c.source, c.kept.as_deref()) };
-        let rec = serde_json::json!({ "cell": c.name, "tip": tip, "host": host, "ok": true, "compare_only": c.compare_only, "bake_s": bake_s, "md5": md5, "bytes": bytes.len(),
+        let rec = serde_json::json!({ "cell": c.name, "tip": tip, "host": host, "ok": true, "compare_only": c.compare_only, "bake_s": bake_s, "md5": md5, "lm_md5": lm_md5, "bytes": bytes.len(),
             "collection": c.collection, "quality": c.quality, "dirs": c.dirs.clone().unwrap_or_else(|| "full".into()), "word": c.word, "oracle": oracle.to_string_lossy(), "source": c.source.to_string_lossy(),
             "env": c.env.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>(), "ceiling": c.ceiling, "census": cen, "own_rects_tsv": own_rects, "pak_warnings": warn_lines, "notes": notes,
             "classcmp_tsv": [wdir.join("classcmp-f0.tsv").to_string_lossy(), wdir.join("classcmp-f1.tsv").to_string_lossy()],
@@ -587,7 +589,10 @@ fn report(args: &[String], cells: &[Cell]) -> Result<(), String> {
                 None => "no previous run".to_string(),
                 Some((_, p)) if !p["ok"].as_bool().unwrap_or(false) => "previous FAILED".to_string(),
                 Some((ptip, p)) => {
-                    if p["md5"] == m["md5"] { format!("same bytes (vs {ptip})") } else {
+                    // the LIGHTMAP CHUNK's md5 decides "same": the whole-file md5 also moves when only the source's embedded zip
+                    // rides in the output (the -tex sources, 2026-09-28) — that is not a bake move
+                    let same_lm = p["lm_md5"].is_string() && p["lm_md5"] == m["lm_md5"];
+                    if p["md5"] == m["md5"] { format!("same bytes (vs {ptip})") } else if same_lm { format!("same LIGHTMAP bytes (vs {ptip}; the file differs outside the lightmap chunk)") } else {
                         n_moved += 1;
                         let mut moves: Vec<String> = Vec::new();
                         for (fi, fr) in [(0usize, f0), (1usize, f1)] {
@@ -681,5 +686,14 @@ mod tests {
         let s0 = a0.join(" ");
         assert!(s0.contains("--pak /paks/Stadium.pak:") && !s0.contains("BlueBay") && s0.contains("--max-dirs 1"), "{s0}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// The md5 of a written map's LIGHTMAP CHUNK payload alone (chunk 0x0304305B as stored) — the identity the corpus compares:
+/// the whole-file md5 also moves when the source's embedded zip (textures) rides unchanged into the output.
+pub fn lightmap_chunk_md5(path: &Path) -> serde_json::Value {
+    match crate::mapio::load(&path.to_string_lossy()) {
+        Ok(m) => { let (_, p, n) = m.at; serde_json::Value::String(md5_hex(&m.gbx.body[p..p + n])) }
+        Err(_) => serde_json::Value::Null,
     }
 }
