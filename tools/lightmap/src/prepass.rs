@@ -1274,3 +1274,23 @@ mod tests_capture_facts {
         assert_eq!(c, [0.25, 0.5, 0.75]);
     }
 }
+
+/// PS 9539 (the textured HueMask class — RE 13's DXBC read, RE 15's table): the BaseColor sample recoloured toward the placement
+/// colour's target through the HueMask sampled at the same footprint: m = HueMask(uv); k = max(m.g − ½(m.r + m.b), 0);
+/// recol = sat((m.g − k)·mean(T) + k·T); o.rgb = lerp(BaseColor.rgb, recol, m.a) — the MASK's alpha (PS 9544's form), not BaseColor.a:
+/// RE 13's reading of 9539's lerp factor as BaseColor.a takes every BC1 (alpha 1) Technics / RoadTech surface to the target colour and
+/// REGRESSES the corpus (tiny16 Sunset items 0.978/0.973/1.022 → 0.944/0.957/1.006 vs the editor) where the mask's alpha leaves them at
+/// 0.978/0.973/1.022 (= the base) and matches stpad's red poles either way (the mask is ~1 there). LMTOOL_HUE_TEXTURED_BLEND=base =
+/// the BaseColor.a form as a study. Alpha := 1, ×lm_scale, as the plain class.
+pub fn ps_basecolor_hue(tex: &Texture, mask: &Texture, target: [f32; 3], s: &Sampler, uv: [f32; 2], ddx: [f32; 2], ddy: [f32; 2], alpha_test: Option<f32>, lm_scale: f32) -> Option<[f32; 4]> {
+    let c = texsample::sample(tex, 0, s, uv, ddx, ddy);
+    if let Some(a_ref) = alpha_test { if c[3] - a_ref < 0.0 { return None; } }
+    let m = texsample::sample(mask, 0, s, uv, ddx, ddy);
+    let k = (m[1] - 0.5 * (m[0] + m[2])).max(0.0);
+    let mean_t = (target[0] + target[1] + target[2]) / 3.0;
+    let recol = [((m[1] - k) * mean_t + k * target[0]).clamp(0.0, 1.0), ((m[1] - k) * mean_t + k * target[1]).clamp(0.0, 1.0), ((m[1] - k) * mean_t + k * target[2]).clamp(0.0, 1.0)];
+    static BLEND_BASE: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_HUE_TEXTURED_BLEND").as_deref() == Ok("base"));
+    let a = if *BLEND_BASE { c[3] } else { m[3] };
+    let o = [c[0] + a * (recol[0] - c[0]), c[1] + a * (recol[1] - c[1]), c[2] + a * (recol[2] - c[2])];
+    Some([o[0] * lm_scale, o[1] * lm_scale, o[2] * lm_scale, 1.0 * lm_scale])
+}

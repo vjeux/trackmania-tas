@@ -364,7 +364,7 @@ pub fn attr_from_map(scene: &crate::geometry::Scene, lm: &LmScene, frozen: &Froz
     // 1. per mesh: the port model it pairs with and its triangles' (LM uv, uv0, class, texture, constant, class id, alpha test)
     // `hue`: the triangle's material has recoloured constants in frozen.hue_rgb (a HueMask material) — the instance's MapElemColor
     // picks one at raster time (colour 0 = the plain constant)
-    struct TriDraw<'a> { uv: [[f32; 2]; 3], uv0: [[f32; 2]; 3], class: MatClass, tex: Option<&'a Texture>, konst: Option<[f32; 3]>, cls: u8, at: Option<f32>, hue: Option<[[f32; 3]; 6]> }
+    struct TriDraw<'a> { uv: [[f32; 2]; 3], uv0: [[f32; 2]; 3], class: MatClass, tex: Option<&'a Texture>, konst: Option<[f32; 3]>, cls: u8, at: Option<f32>, hue: Option<[[f32; 3]; 6]>, hue_tex: Option<&'a (Texture, [[f32; 3]; 6])> }
     let mut class_count = [0usize; 4];
     let mut mesh_tris: Vec<Vec<TriDraw>> = Vec::with_capacity(item_meshes.len());
     {
@@ -436,7 +436,9 @@ pub fn attr_from_map(scene: &crate::geometry::Scene, lm: &LmScene, frozen: &Froz
                 let at = if *diff & 0x8000 != 0 || (*diff & 0xC000 == 0x4000 && link_alpha_tested.contains(&diff_name(model, *diff))) { Some(SHADOW_ALPHA_THRESHOLD) } else { None };
                 // (the class census of run 0: once per instance and triangle, as the serial run counted)
                 class_count[match class { MatClass::Textured => 0, MatClass::CutOut => 1, MatClass::Pad => 2, MatClass::Wall => 3 }] += n_inst;
-                TriDraw { uv: *uv, uv0: *uv0, class: *class, tex, konst, cls, at, hue }
+                // a textured HueMask material: the mask + targets ride with the triangle; the instance's colour picks the target at raster time
+                let hue_tex = if matches!(class, MatClass::Textured) && *diff & 0xC000 == 0x4000 && std::env::var_os("LMTOOL_NO_HUE_RECOLOUR").is_none() { model.mat_links.get((*diff & 0x3fff) as usize).and_then(|l| frozen.link_hue.get(&l.to_ascii_lowercase())) } else { None };
+                TriDraw { uv: *uv, uv0: *uv0, class: *class, tex, konst, cls, at, hue, hue_tex }
             }).collect();
             if std::env::var_os("LMTOOL_HUE_TRACE").is_some() { let nh = draws.iter().filter(|d| d.hue.is_some()).count(); if nh > 0 || name.contains("AC062201") { eprintln!("hue-trace: mesh {mk} ({name}): {nh} of {} triangles carry a HueMask recolour table; instances {} colours {:?}", draws.len(), lm.inst_count[*mk], (lm.inst_first[*mk]..lm.inst_first[*mk] + lm.inst_count[*mk]).map(|ii| lm.port_inst.get(ii).copied().filter(|p| *p != usize::MAX).and_then(|p| scene.instances.get(p)).map(|si| si.colour).unwrap_or(99)).collect::<Vec<_>>()); } }
             mesh_tris.push(draws);
@@ -551,7 +553,11 @@ pub fn attr_from_map(scene: &crate::geometry::Scene, lm: &LmScene, frozen: &Froz
                                         // the game uploads the zip's DDS bottom-up (D's rule): the GPU texture's row y is the file's row h − 1 − y, so
                                         // the file image is sampled at (u, 1 − v)
                                         let uvs = [b[0] * uv0[0][0] + b[1] * uv0[1][0] + b[2] * uv0[2][0], 1.0 - (b[0] * uv0[0][1] + b[1] * uv0[1][1] + b[2] * uv0[2][1])];
-                                        match prepass::ps_basecolor(tx, &sampler, uvs, [dudx, -dvdx], [dudy, -dvdy], d.at, lm_scale) { Some(s) => s, None => return }
+                                        let colour = inst_colour[ii as usize];
+                                        match (d.hue_tex, colour) {
+                                            (Some((mask, targets)), c) if c != 0 && (c as usize) < 6 => match prepass::ps_basecolor_hue(tx, mask, targets[c as usize], &sampler, uvs, [dudx, -dvdx], [dudy, -dvdy], d.at, lm_scale) { Some(s) => s, None => return },
+                                            _ => match prepass::ps_basecolor(tx, &sampler, uvs, [dudx, -dvdx], [dudy, -dvdy], d.at, lm_scale) { Some(s) => s, None => return },
+                                        }
                                     }
                                     None => [0.0, 0.0, 0.0, lm_scale],
                                 },
@@ -1070,6 +1076,33 @@ pub fn basecolor_texture(store: &mut mapgeom::store::DataStore, link: &str) -> R
     Ok(Some((dds, tx, alpha_tested)))
 }
 
+/// THE TEXTURED HUE-MASK CLASS (PS 9539 — RE 13 17:55Z: m = HueMask(uv); k = max(0, m.g − ½(m.r + m.b)); c = sat((m.g − k)·mean(T) + k·T);
+/// o.rgb = lerp(BaseColor.rgb, c, BaseColor.a); T = the material's ColorTable entry of the placement colour, RE 15 07:20Z): the material's
+/// HueMask texture (sRGB view on rgb, alpha linear) and its six targets (index = MapElemColor; 0 unused). None = not a HueMask material.
+pub fn hue_texture(store: &mut mapgeom::store::DataStore, link: &str) -> Result<Option<(String, Texture, [[f32; 3]; 6])>, String> {
+    let mat = if link.to_ascii_uppercase().ends_with(".MATERIAL.GBX") { link.to_string() } else { format!("{link}.Material.Gbx") };
+    let chain = mapgeom::envblock::material_chain(store, &mat);
+    let pick = |name: &str| chain.bitmaps.iter().find(|(n, p)| n.eq_ignore_ascii_case(name) && !p.is_empty()).map(|(_, p)| p.clone());
+    let Some(slot) = pick("BaseColorHueMask").or_else(|| pick("DiffuseHueMask")).or_else(|| pick("HueMask")) else { return Ok(None) };
+    let m = store.load_model(&mat)?;
+    let Some(table) = m.externals.iter().map(|(_, p)| p.clone()).find(|p| p.to_ascii_lowercase().ends_with(".colortable.gbx.json")) else { return Ok(None) };
+    let mut targets = [[0f32; 3]; 6];
+    for c in 1u8..=5 { targets[c as usize] = crate::paktables::colour_table_target(store, &table, c, "Classic")?; }
+    let dds = {
+        let mut out: Option<String> = None;
+        if let Ok(tm) = store.load_model(&slot) { if let Ok(g) = tm.graph() { if let Some(mapgeom::node::Node::Bitmap(b)) = &g.root {
+            if b.image >= 0 { if let Some(mapgeom::node::Slot::External(dp)) = g.slots.get(b.image as usize) { out = Some(dp.clone()); } }
+        } } }
+        out.unwrap_or_else(|| {
+            if slot.to_ascii_uppercase().ends_with(".TEXTURE.GBX") { let stem = &slot[..slot.len() - ".Texture.gbx".len()]; match stem.rsplit_once('\\') { Some((dir, name)) => format!("{dir}\\Image\\{name}.dds"), None => format!("{stem}.dds") } } else { slot.clone() }
+        })
+    };
+    let bytes = store.read(&dds).map_err(|e| format!("{dds}: {e}"))?;
+    let mut tx = texsample::parse_dds(&bytes, Bc1Decode::Expand8Round).map_err(|e| format!("{dds}: {e}"))?;
+    tx.decode_srgb();
+    Ok(Some((dds, tx, targets)))
+}
+
 pub fn tables_from_paktables_with_records(f: &mut FrozenTables, store: &mut mapgeom::store::DataStore, collection: &str, tile_link: &str, scene: &crate::geometry::Scene, records: &[crate::records::Rec], notes: &mut Vec<String>) -> Result<(), String> {
     let mut got = Vec::new();
     // the tiles' constant: a failure here (Stadium has no SeaFloor material; its Grass zone is a PDiff shader) must not take the
@@ -1134,7 +1167,10 @@ pub fn tables_from_paktables_with_records(f: &mut FrozenTables, store: &mut mapg
                 // TrackWallClipsInWorld / StructureInWorld, tiny-16's Technics, ScreenBack …) takes its BaseColor slot texture from the pack
                 // at the mesh TEXCOORD0 (VS 17021 o1 = v1, PS 17023: TMapBaseColor × 1/9, alpha forced 1) — never a constant, never black
                 match basecolor_texture(store, l) {
-                    Ok(Some((path, tx, at))) => { got.push(format!("{l} → {} {path} ({}×{}, {} mips; the {} class)", if at { "BaseColorOp" } else { "BaseColor" }, tx.w, tx.h, tx.mips, if at { "17022 alpha-tested (LMTOOL_DISPIN_ALPHA_TEST: the refuted inference)" } else { "17023 / 9529 textured, opaque" })); f.link_tex.insert(l.to_ascii_lowercase(), (tx, at)); }
+                    Ok(Some((path, tx, at))) => { got.push(format!("{l} → {} {path} ({}×{}, {} mips; the {} class)", if at { "BaseColorOp" } else { "BaseColor" }, tx.w, tx.h, tx.mips, if at { "17022 alpha-tested (LMTOOL_DISPIN_ALPHA_TEST: the refuted inference)" } else { "17023 / 9529 textured, opaque" })); f.link_tex.insert(l.to_ascii_lowercase(), (tx, at));
+                        // a textured HueMask material (RoadTech, Technics …): its mask + the six targets for the per-texel recolour (PS 9539)
+                        match hue_texture(store, l) { Ok(Some((mp, mtx, targets))) => { got.push(format!("{l} HueMask {mp} ({}×{}), targets {:?}", mtx.w, mtx.h, targets[4])); f.link_hue.insert(l.to_ascii_lowercase(), (mtx, targets)); } Ok(None) => {} Err(e) => notes.push(format!("{l}: HueMask: {e}")) }
+                    }
                     Ok(None) => {
                         // A MATERIAL (OR ITS BASECOLOR TEXTURE) IN NONE OF THE PACKS is not a classification — it is a missing --pak (E, 2026-09-27
                         // 15:30Z, after V2's np-tk3 "regression": a command line without Stadium.pak put the StadiumOnTerrain pillar's 1 016
