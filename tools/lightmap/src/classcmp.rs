@@ -167,6 +167,10 @@ pub struct Options {
     /// " (n 0)", " (n 1)", " (n 2–3)", " (n 4–6)", " (n 7–10)", " (n 11+)") — E6's yardstick for tiny03's dense fir clusters (the same
     /// model exact alone / in a 9-cluster on the bare floor, 0.62–0.68 inside the island: which density darkens it, and its neighbours).
     pub density_bins: Vec<usize>,
+    /// `--y-bins Y1,Y2,…` (V5, 2026-09-29): every class split by the chart's record centre HEIGHT (records.tsv centre_y), binned at the
+    /// given upper bounds (" (y ≤ −4)", " (y −4…−0.3)", " (y > 8)") — the DEPTH-BAND read of a lake bed under a water plane (RedIsland's
+    /// under-lake tiles 2–8× the editor's: by how deep they lie) or of a tall map's items by height. Combines with --near.
+    pub y_bins: Vec<f32>,
 }
 
 /// One of the brightest texels of a side (`--peaks`): position, chart, class key, the chart's frame byte, the decoded RGB, and the
@@ -199,10 +203,12 @@ pub fn class_key(m: &Mapping, i: usize, rows: &std::collections::HashMap<(u32, u
 /// `--near`: the class key with the spatial suffix — " (near)" when the chart's record centre (x, z) is within R of a listed point,
 /// " (far)" otherwise; a chart without a centre keeps its key. With `density_bins`, the suffix is the DENSITY bin instead: the count
 /// of listed points within R, binned at the given upper bounds (" (n 0)", " (n 1)", " (n 2–3)", …, " (n 11+)").
-pub fn near_key(key: String, m: &Mapping, i: usize, rows: &std::collections::HashMap<(u32, u32), RecRow>, near: &Option<(Vec<(f32, f32)>, f32)>, density_bins: &[usize]) -> String {
-    let Some((pts, r)) = near else { return key };
+pub fn near_key(key: String, m: &Mapping, i: usize, rows: &std::collections::HashMap<(u32, u32), RecRow>, near: &Option<(Vec<(f32, f32)>, f32)>, density_bins: &[usize], y_bins: &[f32]) -> String {
     let obj = m.binds[i].obj_group_idx / 4;
     let sub = m.binds[i].obj_idx & 0x00ff_ffff;
+    // the height band first (it needs only centre_y), then the spatial split
+    let key = if y_bins.is_empty() { key } else { match rows.get(&(obj, sub)) { Some(row) => format!("{key} (y {})", y_bin_label(row.centre_y, y_bins)), None => key } };
+    let Some((pts, r)) = near else { return key };
     let Some(row) = rows.get(&(obj, sub)) else { return key };
     let (Some(cx), Some(cz)) = (row.centre_x, row.centre_z) else { return key };
     let r2 = r * r;
@@ -287,7 +293,7 @@ pub fn compare(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLight
             // areas differ by more than a √2-ring step with slack (×2.9) is a NUMBERING mismatch (tiny03: our kind-0 trees at obj 4096… vs the editor's road
             // items), refused and counted rather than averaged
             { let (a1, a2) = (m1.size[i].0 as f64 * m1.size[i].1 as f64, m2.size[j].0 as f64 * m2.size[j].1 as f64); if a1 > 0.0 && a2 > 0.0 && (a1 / a2 > 2.9 || a2 / a1 > 2.9) { pair_refused += 1; continue; } }
-            let key = near_key(class_key(&m1, i, &rows, records, o.by), &m1, i, &rows, &o.near, &o.density_bins);
+            let key = near_key(class_key(&m1, i, &rows, records, o.by), &m1, i, &rows, &o.near, &o.density_bins, &o.y_bins);
             let mut acc = ClassAcc { charts: 1, ..Default::default() };
             let (fbi, fbj) = (fb1.get(i).copied().unwrap_or(0), fb2.get(j).copied().unwrap_or(0));
             let (mut co, mut ct) = ([0f64; 3], [0f64; 3]);
@@ -317,7 +323,7 @@ pub fn compare(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLight
             continue;
         }
         if m1.pos[i] != m2.pos[i] || m1.size[i] != m2.size[i] { rect_mismatch += 1; continue; }
-        let key = near_key(class_key(&m1, i, &rows, records, o.by), &m1, i, &rows, &o.near, &o.density_bins);
+        let key = near_key(class_key(&m1, i, &rows, records, o.by), &m1, i, &rows, &o.near, &o.density_bins, &o.y_bins);
         let (px, py, pw, ph) = chart_own_px(m1.pos[i], m1.size[i]);
         let mut acc = ClassAcc { charts: 1, ..Default::default() };
         let (fbi, fbj) = (fb1.get(i).copied().unwrap_or(0), fb2.get(i).copied().unwrap_or(0));
@@ -514,6 +520,17 @@ mod tests {
         assert_eq!(density_bin_label(5, &[]), "n 0+");
     }
     #[test]
+    fn y_bins_label_heights_at_their_upper_bounds() {
+        let bins = [-8.0f32, -4.0, -0.3, 0.0];
+        assert_eq!(y_bin_label(-9.0, &bins), "≤ -8");
+        assert_eq!(y_bin_label(-8.0, &bins), "≤ -8");
+        assert_eq!(y_bin_label(-5.0, &bins), "-8…-4");
+        assert_eq!(y_bin_label(-0.3, &bins), "-4…-0.3");
+        assert_eq!(y_bin_label(-0.1, &bins), "-0.3…0");
+        assert_eq!(y_bin_label(4.85, &bins), "> 0");
+        assert_eq!(y_bin_label(1.0, &[]), "all");
+    }
+    #[test]
     fn own_px_matches_the_charts_convention() {
         assert_eq!(chart_own_px((1803, 679), (66, 66)), (902, 340, 33, 33));
         assert_eq!(chart_own_px((0, 0), (12, 14)), (0, 0, 6, 7));
@@ -611,7 +628,7 @@ pub fn compare_coverage(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio:
     let mut classes: Vec<(String, CoverSplit)> = Vec::new();
     for i in 0..m1.count as usize {
         if m1.pos[i] != m2.pos[i] || m1.size[i] != m2.size[i] { continue; }
-        let key = near_key(class_key(&m1, i, &rows, records, o.by), &m1, i, &rows, &o.near, &o.density_bins);
+        let key = near_key(class_key(&m1, i, &rows, records, o.by), &m1, i, &rows, &o.near, &o.density_bins, &o.y_bins);
         let (px, py, pw, ph) = chart_own_px(m1.pos[i], m1.size[i]);
         let (fbi, fbj) = (fb1[i], fb2[i]);
         let mut sp = CoverSplit::default();
@@ -663,4 +680,14 @@ pub fn read_points(path: &str, name_filter: Option<&str>) -> Result<Vec<(f32, f3
         if let (Some(fl), Some(ci)) = (name_filter, cname) { if !v.get(ci).map_or(false, |n| n.contains(fl)) { return None; } }
         Some((v.get(cx)?.trim().parse::<f32>().ok()?, v.get(cz)?.trim().parse::<f32>().ok()?))
     }).collect())
+}
+
+/// The height bin of a chart centre: bins are upper bounds in ascending order (`-8,-4,-0.3,0` → "≤ -8", "-8…-4", "-4…-0.3", "-0.3…0", "> 0").
+pub fn y_bin_label(y: f32, bins: &[f32]) -> String {
+    let mut lo: Option<f32> = None;
+    for &hi in bins {
+        if y <= hi { return match lo { None => format!("≤ {hi}"), Some(l) => format!("{l}…{hi}") }; }
+        lo = Some(hi);
+    }
+    match lo { Some(l) => format!("> {l}"), None => "all".to_string() }
 }
