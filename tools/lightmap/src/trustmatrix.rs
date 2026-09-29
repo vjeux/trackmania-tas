@@ -2,9 +2,9 @@
 //! one line per corpus cell, its numbers read from the row's `classcmp --tsv` table, its state by rule. The manifest is a
 //! tab-separated table with a header (columns by name, `#` lines ignored):
 //!
-//!   cell  collection  mood  word  quality  map  features  class_tsv  state  cause
+//!   cell  collection  mood  word  quality  map  features  class_tsv  state  cause  [ceiling  corpus_cell  frame  probes  perf]
 //!
-//! `class_tsv` = the classcmp table of the row (`-` when none exists yet); `state` overrides the rule (`closed`, `residue`,
+//! `class_tsv` = the classcmp table of the row (`-` when none exists yet); `state` overrides the rule (`closed`, `closed-class`, `closed-texel`, `residue`,
 //! `open`, `no-oracle`; empty = by rule); `cause` is free text carried into the table. The rule (from the editor's own
 //! run-to-run ceiling, VALIDATION.md V2-5: two editor bakes agree to ~60 % of bytes, ~92 % within ±2, every class 1.000):
 //! worst class = the largest |ratio − 1| over the classes with ≥ `--min-texels` LIT oracle texels (tiny or unlit classes are noise);
@@ -35,6 +35,40 @@ pub struct Cell {
     pub frame: usize,
     /// the probe frame "P" text (`probes` column): "**P-STATE** reason · summary", written by --refresh
     pub probes: String,
+    /// V5 (2026-09-29): the cell's COST beside its trust (`perf` column): "bake 45 s · RSS 7.8 GB @3a6ea07eef" — the corpus bank's
+    /// metrics.json `bake_s` (the product recipe's wall time on the gate box, one bake at a time) and the bake.log's `peak RSS`
+    /// line, stamped with the bank's tip; written by --refresh. The per-family summary under the table reads it.
+    pub perf: String,
+}
+
+/// The `perf` column parsed back: (bake seconds, peak RSS GB, the bank tip) — None where the column is empty or hand-written.
+pub fn parse_perf(s: &str) -> Option<(f64, Option<f64>, String)> {
+    let s = s.trim();
+    let secs = s.strip_prefix("bake ")?.split_whitespace().next()?.parse::<f64>().ok()?;
+    let rss = s.split("RSS ").nth(1).and_then(|r| r.split_whitespace().next()).and_then(|v| v.parse::<f64>().ok());
+    let tip = s.rsplit('@').next().filter(|t| !t.contains(' ') && t.len() >= 4).unwrap_or("").to_string();
+    Some((secs, rss, tip))
+}
+
+/// The perf text of one banked cell: metrics.json's `bake_s` + the bake.log's "peak RSS N GB" line, stamped with the bank's tip
+/// (metrics.json's own `tip` when it carries one — a bank reached through a symlink dir keeps its name — else `tip_fallback`).
+pub fn perf_text(wdir: &std::path::Path, metrics: &serde_json::Value, tip_fallback: &str) -> Option<String> {
+    let secs = metrics["bake_s"].as_f64()?;
+    let tip = metrics["tip"].as_str().filter(|t| !t.is_empty()).unwrap_or(tip_fallback);
+    let rss = std::fs::read_to_string(wdir.join("bake.log")).ok().and_then(|t| t.lines().rev().find(|l| l.starts_with("peak RSS")).and_then(|l| l.split_whitespace().nth(2).and_then(|v| v.parse::<f64>().ok())));
+    Some(match rss { Some(r) => format!("bake {secs:.0} s · RSS {r:.1} GB @{tip}"), None => format!("bake {secs:.0} s @{tip}") })
+}
+
+/// The cell FAMILY for the perf summary: the MAP the corpus cell bakes — the corpus cell name up to its collection token
+/// (`tiny03-whiteshore-sunset-0xdac0-q4` → tiny03, `ws-fir-one-whiteshore-day-q4` → ws-fir-one, `g23-whiteshore-day-q4-exact` → g23);
+/// a cell without a corpus binding falls back to the map column's first token.
+pub fn family(c: &Cell) -> String {
+    let coll = c.collection.to_ascii_lowercase();
+    if !c.corpus_cell.is_empty() && !coll.is_empty() {
+        if let Some((m, _)) = c.corpus_cell.split_once(&format!("-{coll}")) { if !m.is_empty() { return m.to_string(); } }
+    }
+    let m = c.map.split(|ch: char| ch == ' ' || ch == ':' || ch == '(').next().unwrap_or("").trim().to_string();
+    if m.is_empty() { c.cell.clone() } else { m }
 }
 
 /// One class row of a classcmp table.
@@ -75,7 +109,7 @@ pub fn read_manifest(path: &str) -> Result<Vec<Cell>, String> {
         let get = |name: &str| h.iter().position(|c| c == name).and_then(|i| f.get(i)).map(|s| s.trim().to_string()).unwrap_or_default();
         if get("cell").is_empty() { return Err(format!("{path}:{}: a row without a cell id", ln + 1)); }
         out.push(Cell { cell: get("cell"), collection: get("collection"), mood: get("mood"), word: get("word"), quality: get("quality"), map: get("map"), features: get("features"), class_tsv: get("class_tsv"), state: get("state").to_ascii_lowercase(), cause: get("cause"), ceiling: get("ceiling").parse().unwrap_or(99.0),
-            corpus_cell: { let c = get("corpus_cell"); if c == "-" { String::new() } else { c } }, frame: get("frame").parse().unwrap_or(0), probes: get("probes") });
+            corpus_cell: { let c = get("corpus_cell"); if c == "-" { String::new() } else { c } }, frame: get("frame").parse().unwrap_or(0), probes: get("probes"), perf: get("perf") });
     }
     if header.is_none() { return Err(format!("{path}: no header line")); }
     Ok(out)
@@ -114,6 +148,7 @@ pub fn refresh(manifest: &str, work_tip: Option<&std::path::Path>, suffix: &str,
     let mut done: Vec<Refreshed> = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
     let mut probes_pending: Vec<(String, String)> = Vec::new();
+    let mut perf_pending: Vec<(String, String)> = Vec::new();
     for line in txt.lines() {
         if line.trim().is_empty() || line.starts_with('#') { out_lines.push(line.to_string()); continue; }
         let mut f: Vec<String> = line.split('\t').map(|s| s.to_string()).collect();
@@ -162,7 +197,7 @@ pub fn refresh(manifest: &str, work_tip: Option<&std::path::Path>, suffix: &str,
             let same_rect = (0..n).filter(|&i| m1.pos[i] == m2.pos[i] && m1.size[i] == m2.size[i]).count();
             m1.count != m2.count || same_rect != n
         };
-        let o = crate::classcmp::Options { frame, lit: 8, lit_hdr, by: crate::classcmp::GroupBy::Name, worst: 0, own_rects, peaks: 0, near: None };
+        let o = crate::classcmp::Options { frame, lit: 8, lit_hdr, by: crate::classcmp::GroupBy::Name, worst: 0, own_rects, peaks: 0, near: None, density_bins: Vec::new() };
         let r = crate::classcmp::compare(&ours, &theirs, records.as_deref(), &o).map_err(|e| format!("{cell}: classcmp: {e}"))?;
         let tsv_name = format!("{cell}{suffix}.tsv");
         let tsv_path = base_dir.join(&tsv_name);
@@ -185,18 +220,25 @@ pub fn refresh(manifest: &str, work_tip: Option<&std::path::Path>, suffix: &str,
             Err(e) => format!("**P-OPEN** {e}"),
         };
         match col("probes") { Some(i) => { while f.len() <= i { f.push(String::new()); } f[i] = probes_txt; } None => probes_pending.push((cell.clone(), probes_txt)) }
+        // THE PERF COLUMN (V5, 2026-09-29): the cell's cost from the same bank — bake seconds (metrics.json bake_s) + peak RSS (bake.log),
+        // stamped with the bank's tip; the per-family summary under the table reads it
+        let tip = work_tip.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        if let Some(perf_txt) = perf_text(&wdir, &metrics, &tip) {
+            match col("perf") { Some(i) => { while f.len() <= i { f.push(String::new()); } f[i] = perf_txt; } None => perf_pending.push((cell.clone(), perf_txt)) }
+        }
         out_lines.push(f.join("\t"));
         done.push(Refreshed { cell, tsv: tsv_name, own_rects, old, new });
     }
     if header.is_none() { return Err(format!("{manifest}: no header line")); }
-    // a manifest without the `probes` column gets it appended (header + every data row) and the pending texts filled in
-    if !probes_pending.is_empty() {
+    // a manifest without the `probes` / `perf` column gets it appended (header + every data row) and the pending texts filled in
+    for (name, pending) in [("probes", &probes_pending), ("perf", &perf_pending)] {
+        if pending.is_empty() { continue; }
         let mut seen_header = false;
         for line in out_lines.iter_mut() {
             if line.trim().is_empty() || line.starts_with('#') { continue; }
-            if !seen_header { seen_header = true; line.push_str("\tprobes"); continue; }
+            if !seen_header { seen_header = true; line.push('\t'); line.push_str(name); continue; }
             let cell = line.split('\t').next().unwrap_or("").trim().to_string();
-            let txt = probes_pending.iter().find(|(c, _)| c == &cell).map(|(_, t)| t.clone()).unwrap_or_default();
+            let txt = pending.iter().find(|(c, _)| c == &cell).map(|(_, t)| t.clone()).unwrap_or_default();
             line.push('\t'); line.push_str(&txt);
         }
     }
@@ -290,6 +332,8 @@ pub fn judge(c: &Cell, t: Option<&Table>, tol: f64, min_texels: usize) -> Verdic
         "open" => v.state = State::Open,
         "closed" => v.state = if v.identity.is_some() { State::ClosedTexel } else { State::ClosedClass },
         "closed-class" => v.state = State::ClosedClass,
+        // V5: an explicit texel-level override for a LOSSLESS row read outside a class table (the FILETIME word: 33/33 bytes equal)
+        "closed-texel" => v.state = State::ClosedTexel,
         "residue" => v.state = State::Residue,
         _ => {}
     }
@@ -311,9 +355,11 @@ pub fn render(cells: &[Cell], base_dir: &std::path::Path, tol: f64, min_texels: 
         md.push('\n');
     }
     md.push_str(&format!("Rule: worst class over the classes with ≥ {min_texels} texels; CLOSED (texel) = worst within {:.0} % and identity ≥ 90 % of the cell's CEILING (the editor's own re-bake identity on that map class: 95–99 % lamp-less (pwc-day ×4 saves), ~60 % with lamps (stpad Night + nocache) — VALIDATION.md V2-5) and within ±2 ≥ 90 %; CLOSED (class) = worst within {:.0} % only; RESIDUE = a class beyond it (named); OPEN = no table yet; no oracle = the game cannot produce one.\n\n", 100.0 * tol, 100.0 * tol));
-    md.push_str("| cell | collection | mood (word) | q | map | features | identity % (±1 / ±2) vs the editor's own | max \\|Δ\\| | record ours/editor | worst class (r/g/b) | state | probes (frame P) | cause / note |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|\n");
+    md.push_str("| cell | collection | mood (word) | q | map | features | identity % (±1 / ±2) vs the editor's own | max \\|Δ\\| | record ours/editor | worst class (r/g/b) | state | probes (frame P) | perf (bake s · peak RSS) | cause / note |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n");
     let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
     let mut pcounts: std::collections::BTreeMap<String, usize> = Default::default();
+    // the PERF summary per cell family: (bake s, RSS GB, tip, cell) per family, in manifest order
+    let mut perf_by_family: Vec<(String, Vec<(f64, Option<f64>, String, String)>)> = Vec::new();
     for c in cells {
         let table = if c.class_tsv.is_empty() || c.class_tsv == "-" { None } else { match read_table(&c.class_tsv, base_dir) { Ok(t) => Some(t), Err(e) => { eprintln!("trustmatrix: {}: {e}", c.cell); None } } };
         let v = judge(c, table.as_ref(), tol, min_texels);
@@ -327,12 +373,35 @@ pub fn render(cells: &[Cell], base_dir: &std::path::Path, tol: f64, min_texels: 
         if !c.cause.is_empty() { note.push_str(&c.cause); }
         let probes = if c.probes.trim().is_empty() { "—".to_string() } else { c.probes.replace('|', "/") };
         if let Some(p) = c.probes.split("**").nth(1) { *pcounts.entry(p.to_string()).or_default() += 1; }
-        md.push_str(&format!("| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | **{}** | {} | {} |\n", c.cell, c.collection, mood, c.quality, c.map, c.features, ident, maxd, rec, worst, v.state.label(), probes, note.replace('|', "/")));
+        let perf = if c.perf.trim().is_empty() { "—".to_string() } else { c.perf.replace('|', "/") };
+        if let Some((s, r, tip)) = parse_perf(&c.perf) {
+            let fam = family(c);
+            match perf_by_family.iter_mut().find(|(k, _)| k == &fam) { Some((_, v)) => v.push((s, r, tip, c.cell.clone())), None => perf_by_family.push((fam, vec![(s, r, tip, c.cell.clone())])) }
+        }
+        md.push_str(&format!("| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | **{}** | {} | {} | {} |\n", c.cell, c.collection, mood, c.quality, c.map, c.features, ident, maxd, rec, worst, v.state.label(), probes, perf, note.replace('|', "/")));
     }
     md.push_str("\nStates: ");
     md.push_str(&counts.iter().map(|(k, n)| format!("{k} {n}")).collect::<Vec<_>>().join(" · "));
     if !pcounts.is_empty() {
         md.push_str(&format!("\n\nProbe frame P (the probe volume vs the editor's; the probe ceiling = the editor against itself: 62.5 % colour-identical lamp-less (pwc-day ×2 saves), 72.2 % with lamps (stpad Night + nocache); P-CLOSED (texel) = layout identical, scales within 3 %, colour value within 3 %, lamp images present, identity ≥ 90 % of the ceiling; P-CLOSED (class) = the same without the identity; P-RESIDUE = the worst term named): {}\n", pcounts.iter().map(|(k, n)| format!("{k} {n}")).collect::<Vec<_>>().join(" · ")));
+    }
+    if !perf_by_family.is_empty() {
+        // COST BESIDE TRUST (V5): per cell family the bake wall time of the corpus recipe (one bake at a time on the gate box; the same
+        // `bake --raster --lm-from-map` recipe as the product) and the peak RSS, from the bank the cells were last refreshed from
+        md.push_str("\nPERF by cell family (the corpus bake's wall time = the product recipe on the gate box, one bake at a time; peak RSS; the bank tip the numbers come from):\n\n| family | cells | bake s min / median / max | peak RSS GB max | bank tip(s) | slowest cell |\n|---|---|---|---|---|---|\n");
+        let mut total_s = 0.0;
+        for (fam, v) in &perf_by_family {
+            let mut secs: Vec<f64> = v.iter().map(|x| x.0).collect();
+            secs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let med = secs[secs.len() / 2];
+            let rss = v.iter().filter_map(|x| x.1).fold(f64::NAN, f64::max);
+            let mut tips: Vec<String> = v.iter().map(|x| x.2.clone()).filter(|t| !t.is_empty()).collect();
+            tips.sort(); tips.dedup();
+            let slowest = v.iter().max_by(|a, b| a.0.partial_cmp(&b.0).unwrap()).map(|x| format!("{} ({:.0} s)", x.3, x.0)).unwrap_or_default();
+            total_s += secs.iter().sum::<f64>();
+            md.push_str(&format!("| {fam} | {} | {:.0} / {:.0} / {:.0} | {} | {} | {} |\n", v.len(), secs[0], med, secs[secs.len() - 1], if rss.is_finite() { format!("{rss:.1}") } else { "—".into() }, tips.join(", "), slowest));
+        }
+        md.push_str(&format!("\nThe whole matrix's banked cells bake in {:.0} s = {:.1} min of one box, one cell at a time.\n", total_s, total_s / 60.0));
     }
     md.push('\n');
     (md, counts.into_iter().collect())
@@ -387,6 +456,36 @@ mod tests {
         let c = Cell { state: "no-oracle".into(), ..Default::default() };
         assert_eq!(judge(&c, None, 0.03, 500).state, State::NoOracle);
         assert_eq!(judge(&Cell::default(), None, 0.03, 500).state, State::Open);
+    }
+
+    #[test]
+    fn perf_column_parses_and_families_group() {
+        let (s, r, tip) = parse_perf("bake 45 s · RSS 7.8 GB @3a6ea07eef").unwrap();
+        assert!((s - 45.0).abs() < 1e-9 && (r.unwrap() - 7.8).abs() < 1e-9 && tip == "3a6ea07eef");
+        let (s2, r2, tip2) = parse_perf("bake 673 s @d1593d7824").unwrap();
+        assert!((s2 - 673.0).abs() < 1e-9 && r2.is_none() && tip2 == "d1593d7824");
+        assert!(parse_perf("").is_none() && parse_perf("—").is_none());
+        assert_eq!(family(&Cell { map: "np-tk3".into(), ..Default::default() }), "np-tk3");
+        assert_eq!(family(&Cell { map: "tiny03 (reduced)".into(), ..Default::default() }), "tiny03");
+        assert_eq!(family(&Cell { map: "tiny03red-sunset-0xdac0-source (= …)".into(), collection: "WhiteShore".into(), corpus_cell: "tiny03-whiteshore-sunset-0xdac0-q4".into(), ..Default::default() }), "tiny03");
+        assert_eq!(family(&Cell { map: "ws-fir-one".into(), collection: "WhiteShore".into(), corpus_cell: "ws-fir-one-whiteshore-day-q4".into(), ..Default::default() }), "ws-fir-one");
+        assert_eq!(family(&Cell { map: "x2 Summer-07".into(), collection: "RedIsland".into(), corpus_cell: "ri-x2-summer07-redisland-day-q4".into(), ..Default::default() }), "ri-x2-summer07");
+        assert_eq!(family(&Cell { map: "g23 (giant, 11 294 items) — the EXACT cell".into(), ..Default::default() }), "g23");
+        assert_eq!(family(&Cell { map: "stpad frame 1".into(), ..Default::default() }), "stpad");
+        let dir = std::env::temp_dir().join(format!("trustmatrix-perf-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("w/abc12345")).unwrap();
+        std::fs::write(dir.join("w/abc12345/bake.log"), "setup 1s\nwriter: done\npeak RSS 7.77 GB\n").unwrap();
+        let m: serde_json::Value = serde_json::from_str("{\"bake_s\": 45.18}").unwrap();
+        assert_eq!(perf_text(&dir.join("w/abc12345"), &m, "abc12345").unwrap(), "bake 45 s · RSS 7.8 GB @abc12345");
+        // metrics.json's own tip wins over the directory name (a bank reached through a symlink dir)
+        let m2: serde_json::Value = serde_json::from_str("{\"bake_s\": 45.18, \"tip\": \"3a6ea07eef\"}").unwrap();
+        assert_eq!(perf_text(&dir.join("w/abc12345"), &m2, "bank").unwrap(), "bake 45 s · RSS 7.8 GB @3a6ea07eef");
+        // the rendered table carries the column and the family block
+        let cells = vec![Cell { cell: "BB-Day".into(), map: "np-tk3".into(), perf: "bake 45 s · RSS 7.8 GB @abc12345".into(), ceiling: 99.0, ..Default::default() }, Cell { cell: "BB-Day-q4".into(), map: "np-tk3".into(), perf: "bake 91 s · RSS 9.1 GB @abc12345".into(), ceiling: 99.0, ..Default::default() }];
+        let (md, _) = render(&cells, &dir, 0.03, 500, "t", &[]);
+        assert!(md.contains("| np-tk3 | 2 | 45 / 91 / 91 | 9.1 | abc12345 | BB-Day-q4 (91 s) |"), "{md}");
+        assert!(md.contains("bake in 136 s"));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

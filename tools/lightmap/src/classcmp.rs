@@ -162,6 +162,11 @@ pub struct Options {
     /// point gets the key suffix " (near)", the others " (far)" — the test of an occluder/bounce source the bake lacks (RE 16's 303
     /// chartless stock bushes on tiny03: are the tiles under them darker in the game?)
     pub near: Option<(Vec<(f32, f32)>, f32)>,
+    /// `--density-bins B1,B2,…` (V5, 2026-09-29): with `--near FILE --radius R`, the split is by CLUSTER DENSITY instead of near/far —
+    /// the key suffix names how many listed points lie within R of the chart's centre, binned at the upper bounds given (`0,1,3,6,10` →
+    /// " (n 0)", " (n 1)", " (n 2–3)", " (n 4–6)", " (n 7–10)", " (n 11+)") — E6's yardstick for tiny03's dense fir clusters (the same
+    /// model exact alone / in a 9-cluster on the bare floor, 0.62–0.68 inside the island: which density darkens it, and its neighbours).
+    pub density_bins: Vec<usize>,
 }
 
 /// One of the brightest texels of a side (`--peaks`): position, chart, class key, the chart's frame byte, the decoded RGB, and the
@@ -192,16 +197,31 @@ pub fn class_key(m: &Mapping, i: usize, rows: &std::collections::HashMap<(u32, u
 
 
 /// `--near`: the class key with the spatial suffix — " (near)" when the chart's record centre (x, z) is within R of a listed point,
-/// " (far)" otherwise; a chart without a centre keeps its key.
-pub fn near_key(key: String, m: &Mapping, i: usize, rows: &std::collections::HashMap<(u32, u32), RecRow>, near: &Option<(Vec<(f32, f32)>, f32)>) -> String {
+/// " (far)" otherwise; a chart without a centre keeps its key. With `density_bins`, the suffix is the DENSITY bin instead: the count
+/// of listed points within R, binned at the given upper bounds (" (n 0)", " (n 1)", " (n 2–3)", …, " (n 11+)").
+pub fn near_key(key: String, m: &Mapping, i: usize, rows: &std::collections::HashMap<(u32, u32), RecRow>, near: &Option<(Vec<(f32, f32)>, f32)>, density_bins: &[usize]) -> String {
     let Some((pts, r)) = near else { return key };
     let obj = m.binds[i].obj_group_idx / 4;
     let sub = m.binds[i].obj_idx & 0x00ff_ffff;
     let Some(row) = rows.get(&(obj, sub)) else { return key };
     let (Some(cx), Some(cz)) = (row.centre_x, row.centre_z) else { return key };
     let r2 = r * r;
-    let hit = pts.iter().any(|(px, pz)| { let (dx, dz) = (px - cx, pz - cz); dx * dx + dz * dz <= r2 });
-    format!("{key} ({})", if hit { "near" } else { "far" })
+    if density_bins.is_empty() {
+        let hit = pts.iter().any(|(px, pz)| { let (dx, dz) = (px - cx, pz - cz); dx * dx + dz * dz <= r2 });
+        return format!("{key} ({})", if hit { "near" } else { "far" });
+    }
+    let n = pts.iter().filter(|(px, pz)| { let (dx, dz) = (px - cx, pz - cz); dx * dx + dz * dz <= r2 }).count();
+    format!("{key} ({})", density_bin_label(n, density_bins))
+}
+
+/// The density bin of a count: bins are upper bounds in ascending order (`0,1,3,6,10` → "n 0", "n 1", "n 2–3", "n 4–6", "n 7–10", "n 11+").
+pub fn density_bin_label(n: usize, bins: &[usize]) -> String {
+    let mut lo = 0usize;
+    for &hi in bins {
+        if n <= hi { return if lo == hi { format!("n {hi}") } else { format!("n {lo}–{hi}") }; }
+        lo = hi + 1;
+    }
+    format!("n {lo}+")
 }
 
 pub struct Report {
@@ -267,7 +287,7 @@ pub fn compare(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLight
             // areas differ by more than a √2-ring step with slack (×2.9) is a NUMBERING mismatch (tiny03: our kind-0 trees at obj 4096… vs the editor's road
             // items), refused and counted rather than averaged
             { let (a1, a2) = (m1.size[i].0 as f64 * m1.size[i].1 as f64, m2.size[j].0 as f64 * m2.size[j].1 as f64); if a1 > 0.0 && a2 > 0.0 && (a1 / a2 > 2.9 || a2 / a1 > 2.9) { pair_refused += 1; continue; } }
-            let key = near_key(class_key(&m1, i, &rows, records, o.by), &m1, i, &rows, &o.near);
+            let key = near_key(class_key(&m1, i, &rows, records, o.by), &m1, i, &rows, &o.near, &o.density_bins);
             let mut acc = ClassAcc { charts: 1, ..Default::default() };
             let (fbi, fbj) = (fb1.get(i).copied().unwrap_or(0), fb2.get(j).copied().unwrap_or(0));
             let (mut co, mut ct) = ([0f64; 3], [0f64; 3]);
@@ -297,7 +317,7 @@ pub fn compare(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLight
             continue;
         }
         if m1.pos[i] != m2.pos[i] || m1.size[i] != m2.size[i] { rect_mismatch += 1; continue; }
-        let key = near_key(class_key(&m1, i, &rows, records, o.by), &m1, i, &rows, &o.near);
+        let key = near_key(class_key(&m1, i, &rows, records, o.by), &m1, i, &rows, &o.near, &o.density_bins);
         let (px, py, pw, ph) = chart_own_px(m1.pos[i], m1.size[i]);
         let mut acc = ClassAcc { charts: 1, ..Default::default() };
         let (fbi, fbj) = (fb1.get(i).copied().unwrap_or(0), fb2.get(i).copied().unwrap_or(0));
@@ -481,6 +501,19 @@ pub fn write_records_tsv(path: &str, gl: &crate::layout::GameLayout) -> Result<(
 mod tests {
     use super::*;
     #[test]
+    fn density_bins_label_counts_at_their_upper_bounds() {
+        let bins = [0usize, 1, 3, 6, 10];
+        assert_eq!(density_bin_label(0, &bins), "n 0");
+        assert_eq!(density_bin_label(1, &bins), "n 1");
+        assert_eq!(density_bin_label(2, &bins), "n 2–3");
+        assert_eq!(density_bin_label(3, &bins), "n 2–3");
+        assert_eq!(density_bin_label(6, &bins), "n 4–6");
+        assert_eq!(density_bin_label(10, &bins), "n 7–10");
+        assert_eq!(density_bin_label(11, &bins), "n 11+");
+        assert_eq!(density_bin_label(40, &bins), "n 11+");
+        assert_eq!(density_bin_label(5, &[]), "n 0+");
+    }
+    #[test]
     fn own_px_matches_the_charts_convention() {
         assert_eq!(chart_own_px((1803, 679), (66, 66)), (902, 340, 33, 33));
         assert_eq!(chart_own_px((0, 0), (12, 14)), (0, 0, 6, 7));
@@ -578,7 +611,7 @@ pub fn compare_coverage(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio:
     let mut classes: Vec<(String, CoverSplit)> = Vec::new();
     for i in 0..m1.count as usize {
         if m1.pos[i] != m2.pos[i] || m1.size[i] != m2.size[i] { continue; }
-        let key = near_key(class_key(&m1, i, &rows, records, o.by), &m1, i, &rows, &o.near);
+        let key = near_key(class_key(&m1, i, &rows, records, o.by), &m1, i, &rows, &o.near, &o.density_bins);
         let (px, py, pw, ph) = chart_own_px(m1.pos[i], m1.size[i]);
         let (fbi, fbj) = (fb1[i], fb2[i]);
         let mut sp = CoverSplit::default();
