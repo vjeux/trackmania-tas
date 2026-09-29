@@ -21,38 +21,68 @@ use std::process::Command;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.len() >= 3 && args[1] == "tick" {
+        tick(&args[2..]);
+        return;
+    }
     if args.len() < 4 || args[1] != "read" {
-        eprintln!("usage: dmwatch read CHAN SINCE-ISO-UTC [LIMIT]");
+        eprintln!("usage: dmwatch read CHAN SINCE-ISO-UTC [LIMIT]\n       dmwatch tick LABEL=CHAN:SINCE[:LIMIT] …   (all channels in one call; one failure never hides the others)");
         std::process::exit(2);
     }
     let chan = &args[2];
     let since = normalize(&args[3]);
     let limit: usize = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(8);
+    std::process::exit(read_one(chan, &since, limit, ""));
+}
+
+/// The cron tick as ONE call: every channel is read even when an earlier one fails
+/// (a transient Discord 503 on the first DM used to end the whole shell loop and leave
+/// eight channels unread, 2026-09-29 12:20). Each channel's lines carry its LABEL as a
+/// prefix (empty label = none); a failed channel prints one `LABEL !! reason` line and
+/// the tick goes on. Exit 0 if every channel read, 2 if any failed (the cron then knows
+/// to retry that tick rather than call it "nothing new").
+fn tick(specs: &[String]) {
+    let mut failed = 0;
+    for spec in specs {
+        let (label, rest) = spec.split_once('=').unwrap_or(("", spec.as_str()));
+        let mut parts = rest.splitn(3, ':');
+        let chan = parts.next().unwrap_or("");
+        let since = normalize(parts.next().unwrap_or("1970-01-01T00:00"));
+        let limit: usize = parts.next().and_then(|s| s.parse().ok()).unwrap_or(8);
+        let prefix = if label.is_empty() { String::new() } else { format!("{label} ") };
+        if read_one(chan, &since, limit, &prefix) != 0 {
+            failed += 1;
+        }
+    }
+    std::process::exit(if failed == 0 { 0 } else { 2 });
+}
+
+/// Read one channel; prints its new messages (prefixed) and returns 0, or prints one
+/// `PREFIX!! reason` line to stdout AND stderr and returns 2. Never panics on a bad
+/// channel — the tick must survive one dead channel.
+fn read_one(chan: &str, since: &str, limit: usize, prefix: &str) -> i32 {
     let discordctl = std::env::var("DISCORDCTL").unwrap_or_else(|_| "/home/vjeux/bin/discordctl".into());
+    let fail = |why: String| -> i32 {
+        println!("{prefix}!! {why}");
+        eprintln!("dmwatch: {chan}: {why}");
+        2
+    };
     let out = match Command::new(&discordctl).args(["read", chan, "--limit", &limit.to_string(), "--json"]).output() {
         Ok(o) => o,
-        Err(e) => {
-            eprintln!("dmwatch: cannot run {discordctl}: {e}");
-            std::process::exit(2);
-        }
+        Err(e) => return fail(format!("cannot run {discordctl}: {e}")),
     };
     if !out.status.success() {
-        eprintln!("dmwatch: discordctl read {chan} failed: {}", String::from_utf8_lossy(&out.stderr).trim());
-        std::process::exit(2);
+        return fail(format!("discordctl read failed: {}", String::from_utf8_lossy(&out.stderr).trim().chars().take(160).collect::<String>()));
     }
-    let msgs: Vec<serde_json::Value> = match serde_json::from_slice(&out.stdout) {
+    let mut msgs: Vec<serde_json::Value> = match serde_json::from_slice(&out.stdout) {
         Ok(v) => v,
-        Err(e) => {
-            eprintln!("dmwatch: discordctl output is not a JSON array: {e}");
-            std::process::exit(2);
-        }
+        Err(e) => return fail(format!("discordctl output is not a JSON array: {e}")),
     };
     // discordctl gives newest-first or oldest-first depending on version; sort by timestamp
-    let mut msgs = msgs;
     msgs.sort_by(|a, b| ts(a).cmp(&ts(b)));
     for m in &msgs {
         let t = ts(m);
-        if t.as_str() <= since.as_str() {
+        if t.as_str() <= since {
             continue;
         }
         let content = m.get("content").and_then(|c| c.as_str()).unwrap_or("");
@@ -66,18 +96,19 @@ fn main() {
         // 2026-09-29T14:30:14.841000+00:00 → 09-29 14:30
         let stamp = format!("{} {}", &t.get(5..10).unwrap_or("??-??"), &t.get(11..16).unwrap_or("??:??"));
         let mut lines = content.lines();
-        println!("{stamp} {author}: {}", lines.next().unwrap_or(""));
+        println!("{prefix}{stamp} {author}: {}", lines.next().unwrap_or(""));
         for l in lines {
-            println!("    {l}");
+            println!("{prefix}    {l}");
         }
         if let Some(atts) = m.get("attachments").and_then(|a| a.as_array()) {
             for a in atts {
                 if let Some(u) = a.get("url").and_then(|u| u.as_str()) {
-                    println!("    ATT {u}");
+                    println!("{prefix}    ATT {u}");
                 }
             }
         }
     }
+    0
 }
 
 fn ts(m: &serde_json::Value) -> String {
