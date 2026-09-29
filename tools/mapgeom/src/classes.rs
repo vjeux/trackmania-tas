@@ -1739,11 +1739,18 @@ impl<'a> Graph<'a> {
                 }
                 Ok(())
             }
+            // The material's BOOL SWITCHES (RE 17, 2026-09-29): (name, value) pairs named after the shader's
+            // `DTwk_*` tweak or the MAP it skips — `PreLightGen` = 1 selects the `DTwk_SkipMap_PreLightGen`
+            // permutation (no lightmap set: Stadium's ItemFlagNoAnim and Speedometer are the only two of its
+            // 206 materials with it set), `BaseColorHueMask` = 0 keeps the HueMask recolour, `OpacityIsDiffuseAlpha`,
+            // `IsPoleEmblem`, `UseTexBlend`, `PyAxeU` are plain tweaks.
             0x0903A00C => {
-                self.r.array(|r| {
-                    r.lookback()?;
-                    r.bool32()
+                let sw = self.r.array(|r| {
+                    let name = r.lookback()?;
+                    let v = r.bool32()?;
+                    Ok((name, v))
                 })?;
+                acc.mat_custom_mut().switches = sw;
                 Ok(())
             }
             // Skippable, but it DEFINES lookback ids (`cIndexPerVertex`,

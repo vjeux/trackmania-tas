@@ -362,6 +362,10 @@ pub struct MaterialCustomRaw {
     /// ⟺ list 2 has `DeactivableDisplayId`. (The Solid2Model's +0x1f0 bits 1/2 = any material with those bits; the
     /// item clone key then carries the placement colour.)
     pub gpufx_names: [Vec<String>; 2],
+    /// 0x0903A00C: the material's bool SWITCHES as (name, value) — `PreLightGen` (1 = the
+    /// `DTwk_SkipMap_PreLightGen` permutation: the material takes NO lightmap set; RE 17 2026-09-29),
+    /// `BaseColorHueMask`, `OpacityIsDiffuseAlpha`, `IsPoleEmblem`, `UseTexBlend`, `PyAxeU`, …
+    pub switches: Vec<(String, bool)>,
 }
 
 #[cfg(test)]
