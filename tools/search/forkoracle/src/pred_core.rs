@@ -422,6 +422,8 @@ pub const KOP_OMEGAMAG: u32 = 20;
 /// still loaded, and the only readout of that in the fork is this derivative
 /// going to zero.
 pub const KOP_DOMEGA: u32 = 21;
+/// Race time at the tick, seconds (`t` in the key language).
+pub const KOP_TIME: u32 = 22;
 
 /// One instruction. `a` carries a constant, an axis index, a world direction,
 /// or a point, depending on `op`; `axis` picks a body axis for `KOP_AXISDOT`.
@@ -481,6 +483,10 @@ fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
 /// is not a property of a single instant.
 #[derive(Clone, Copy)]
 pub struct St {
+    /// Race time at this tick, seconds (tick * 0.01). The key language's `t`:
+    /// a leg-chained gate search needs "reach the box EARLY" -- `along(d) - 5*t`
+    /// -- or it happily arrives at 33 s having dawdled in a cave (2026-09-29).
+    pub t: f32,
     pub pos: [f32; 3],
     pub vel: [f32; 3],
     /// `(qw, qx, qy, qz)`
@@ -500,7 +506,7 @@ impl St {
     /// which is why an event key belongs in `--fire`, measured by the child
     /// over a stream, and not fitted against a single sample.
     pub fn at(pos: [f32; 3], vel: [f32; 3], quat: [f32; 4]) -> St {
-        St { pos, vel, quat, dspeed: 0.0, omega: [0.0; 3], domega: 0.0 }
+        St { t: 0.0, pos, vel, quat, dspeed: 0.0, omega: [0.0; 3], domega: 0.0 }
     }
 }
 
@@ -548,6 +554,7 @@ pub fn key_eval(prog: &[KeyOp], s: St) -> f32 {
         // unary and binary operators pop before they push
         let v = match k.op {
             KOP_DSPEED => s.dspeed,
+            KOP_TIME => s.t,
             KOP_OMEGA => s.omega[(k.axis as usize) % 3],
             KOP_OMEGAMAG => {
                 let o = s.omega;
@@ -1003,7 +1010,7 @@ impl Eval {
         }
         self.prev_quat = quat;
         self.prev_quat_valid = true;
-        let st = St { pos, vel, quat, dspeed, omega, domega };
+        let st = St { t: tick as f32 * 0.01, pos, vel, quat, dspeed, omega, domega };
 
         // ---- THE EVENT: when it happened, how long it lasted, how often.
         //
