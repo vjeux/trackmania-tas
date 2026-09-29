@@ -360,7 +360,24 @@ pub fn attr_from_map(scene: &crate::geometry::Scene, lm: &LmScene, frozen: &Froz
     }
     let by_key = &by_key;
     let candidates: Vec<usize> = lm.meshes.iter().enumerate().filter(|(k, _)| lm.inst_count[*k] < 1000).map(|(k, _)| k).collect();
-    let best_of: Vec<usize> = crate::pool::pool().map(candidates.len(), |ci| {
+    // THE MESH ↔ MODEL PAIRING IS EXACT WHEN THE LM SCENE CAME FROM THE MAP (E6, 2026-09-29): `lm_scene_from_map_at` builds one LM
+    // mesh per port MODEL and records each instance's port instance (`LmScene::port_inst`), so the mesh's model is
+    // `scene.instances[port_inst].model` — no vote. The vertex-position vote below was the capture era's pairing (a captured LM
+    // mesh names no port instance) and it MIS-PAIRS every model whose vertex positions another model shares: on g23 the 309
+    // AC06423111 plates (8 triangles of `WhiteShore\Media\Material\Land`, 128 × 128 m each = 5 km² of ground) tied with the
+    // TrackWallInWorld plates AC06423064/055/045 (4 triangles at the same corners) and, by the tie rule, drew as their PAD class
+    // with no link constant of their own → `frozen.pad_rgb` = the LAST projected link's constant (RoadDirt's orange (0.366, 0.138,
+    // 0.078)) instead of Land's (0.338, 0.393, 0.447): 18 meshes paired to AC06423045, 9 to AC06423191, 8 to AC06423183 … — the
+    // whole map's ground bounce ORANGE, the vertical item faces (the hills' G/B deficit) and the tiles' R +7.5 % downstream. A
+    // mesh without a port instance (the Stadium prefab-entity records, a captured scene) keeps the vote.
+    let exact_of = |mk: usize| -> Option<usize> {
+        let pi = *lm.port_inst.get(lm.inst_first[mk])?;
+        if pi == usize::MAX { return None; }
+        let model = scene.instances.get(pi)?.model;
+        by_model.iter().position(|&m| m == model)
+    };
+    let best_of: Vec<(usize, bool)> = crate::pool::pool().map(candidates.len(), |ci| {
+        if let Some(li) = exact_of(candidates[ci]) { return (li, true); }
         let mesh = &lm.meshes[candidates[ci]];
         let mut votes = vec![0usize; lookups.len()];
         for v in &mesh.verts {
@@ -368,14 +385,16 @@ pub fn attr_from_map(scene: &crate::geometry::Scene, lm: &LmScene, frozen: &Froz
         }
         let mut best = 0usize;
         for li in 0..lookups.len() { if votes[li] >= votes[best] { best = li; } }
-        best
+        (best, false)
     });
-    let item_meshes: Vec<(usize, usize)> = candidates.iter().zip(best_of).map(|(&k, best)| (k, best)).collect();
-    for (mk, li) in &item_meshes {
+    let n_exact = best_of.iter().filter(|(_, e)| *e).count();
+    let item_meshes: Vec<(usize, usize)> = candidates.iter().zip(best_of.iter()).map(|(&k, (best, _))| (k, *best)).collect();
+    notes.push(format!("item meshes ↔ port models: {} of {} paired EXACTLY through the LM instances' port instance (LmScene::port_inst), {} by the vertex-position vote (no port instance)", n_exact, candidates.len(), candidates.len() - n_exact));
+    for ((mk, li), (_, exact)) in item_meshes.iter().zip(best_of.iter()) {
         let (model_idx, map) = &lookups[*li];
         let mesh = &lm.meshes[*mk];
         let hits = mesh.verts.iter().filter(|v| map.contains_key(&key(v.pos))).count();
-        notes.push(format!("item mesh {mk} ↔ model {} ({}): {} of {} LM verts matched by position ({} port triangles)", model_idx, scene.model_names[*model_idx], hits, mesh.verts.len(), scene.models[*model_idx].tris.len()));
+        notes.push(format!("item mesh {mk} ↔ model {} ({}) [{}]: {} of {} LM verts matched by position ({} port triangles)", model_idx, scene.model_names[*model_idx], if *exact { "port_inst" } else { "vertex vote" }, hits, mesh.verts.len(), scene.models[*model_idx].tris.len()));
         notes.push(format!("  model {} materials: links {:?}, diffuse textures {:?}, cut-out textures {:?}; LM uv range {:?}", model_idx, scene.models[*model_idx].mat_links, scene.models[*model_idx].diff_tex, scene.models[*model_idx].alpha_tex, mesh.verts.iter().fold(([f32::MAX; 2], [f32::MIN; 2]), |(lo, hi), v| ([lo[0].min(v.uv[0]), lo[1].min(v.uv[1])], [hi[0].max(v.uv[0]), hi[1].max(v.uv[1])]))));
     }
     // THE NINE RUNS × THE PIXEL-ROW BANDS IN PARALLEL (perf 8: nine tasks, one per run, kept nine threads busy for 16 s on the
