@@ -3,7 +3,7 @@
 //! layout is written once and the announcement text comes out ready.
 //!
 //!     lmtool base-bank --repo DIR --prev TIP --bin LMTOOL --gate-md GATE.md --note TEXT
-//!                      [--store DIR] [--branch base-2026-09-25] [--guards DIR] [--giants-md FILE] [--refs NAME] [--refs-dir DIR] [--dry-run]
+//!                      [--store DIR] [--branch base-2026-09-25] [--guards DIR] [--giants-md FILE] [--refs NAME] [--refs-dir DIR] [--by WHO] [--dry-run]
 //!
 //! `--repo` is the integration clone (HEAD = the new base, clean tree, on `--branch`); `--prev` the previous base's tip
 //! (must be an ancestor); `--bin` the GATED binary (its md5 must be the one GATE.md names — the base's binary is the
@@ -56,6 +56,8 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let branch = flag(args, "--branch").unwrap_or_else(|| "base-2026-09-25".into());
     let guards = PathBuf::from(flag(args, "--guards").unwrap_or_else(|| "/tmp/pd/guard".into()));
     let giants_md = flag(args, "--giants-md").map(PathBuf::from);
+    // `--by WHO`: the integrator's name in the gate log's header (it read "baker-6" for every base until baker-7's first landing)
+    let by = flag(args, "--by").unwrap_or_else(|| "integrator".into());
     let dry = has(args, "--dry-run");
 
     // the repo: on the branch, clean, prev an ancestor
@@ -117,7 +119,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
 
     // the gate log
     let now = Command::new("date").args(["-u", "+%Y-%m-%d %H:%MZ"]).output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
-    let mut log = format!("# gate — base {tip} (baker-6, {now})\nlanded on {prev}: {note}\n\n");
+    let mut log = format!("# gate — base {tip} ({by}, {now})\nlanded on {prev}: {note}\n\n");
     if let Some(g) = &giants_md {
         let t = std::fs::read_to_string(g).map_err(|e| format!("{}: {e}", g.display()))?;
         log += &format!("## GIANT RULE — the two exact giant cells baked with the candidate ({})\n\n{t}\n\n", g.display());
