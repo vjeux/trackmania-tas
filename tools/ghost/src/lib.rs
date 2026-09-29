@@ -23,6 +23,7 @@ pub mod census;
 pub mod wordcensus;
 pub mod cli;
 pub mod declare;
+pub mod validation;
 pub mod engine;
 pub mod finish;
 pub mod hdr;

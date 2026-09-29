@@ -478,6 +478,12 @@ mod tests {
 pub struct Constraint {
     pub alphabet: Option<Vec<i8>>,
     pub minhold: usize,
+    /// GAS HELD: every tick in the window keeps the throttle down. A keyboard
+    /// driver (and the rig's key injection) re-engages the throttle slowly --
+    /// measured in the client on 2026-09-29: a 50 ms lift cost ~300 ms of flat
+    /// speed and 6 km/h at the ramp -- so a tape meant to be DRIVEN controls
+    /// speed with the brake alone.
+    pub gas_held: bool,
 }
 
 impl Constraint {
@@ -568,6 +574,11 @@ impl Constraint {
             Self::hold(&mut s.gas, lo, hi, self.minhold);
             Self::hold(&mut s.brake, lo, hi, self.minhold);
         }
+        if self.gas_held {
+            for g in &mut s.gas[lo..hi] {
+                *g = true;
+            }
+        }
     }
 
     /// Does `s` already satisfy the constraint over `[lo, hi)`?
@@ -606,7 +617,7 @@ mod constraint_tests {
 
     #[test]
     fn the_keyboard_alphabet_snaps_to_the_nearest_key_and_ties_release() {
-        let c = Constraint { alphabet: Some(Constraint::parse_alphabet("kb").unwrap()), minhold: 1 };
+        let c = Constraint { alphabet: Some(Constraint::parse_alphabet("kb").unwrap()), minhold: 1, gas_held: false };
         let mut s = tape(&[-127, -90, -64, -63, -20, 0, 20, 63, 64, 90, 127]);
         let n = s.len();
         c.apply(&mut s, 0, n);
@@ -616,7 +627,7 @@ mod constraint_tests {
 
     #[test]
     fn a_change_sooner_than_the_hold_is_suppressed_and_the_run_continues() {
-        let c = Constraint { alphabet: None, minhold: 3 };
+        let c = Constraint { alphabet: None, minhold: 3, gas_held: false };
         let mut s = tape(&[0, 0, 0, 5, 0, 0, 0, 7, 7, 7, 9, 9]);
         let n = s.len();
         c.apply(&mut s, 0, n);
@@ -630,7 +641,7 @@ mod constraint_tests {
 
     #[test]
     fn the_window_edge_is_not_a_free_place_to_change() {
-        let c = Constraint { alphabet: None, minhold: 4 };
+        let c = Constraint { alphabet: None, minhold: 4, gas_held: false };
         // the run of 1s started at tick 1; editing [3, 8) must still see it as
         // 2 ticks old at tick 3
         let mut s = tape(&[0, 1, 1, 2, 2, 2, 2, 2, 3]);

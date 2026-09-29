@@ -11,7 +11,7 @@ use gbx::container::{secs, set_embedded_map, Container};
 use ghost::regen::raw_vehicle_samples;
 use gbx::tape::{Encoding, Tape};
 use gbx::{container, tape};
-use ghost::{census, declare, engine, hdr, ident, map_uid_of, phase, record, regen, roundtrip, selftest, splice, synth, trim, verify};
+use ghost::{census, declare, validation, engine, hdr, ident, map_uid_of, phase, record, regen, roundtrip, selftest, splice, synth, trim, verify};
 
 const HELP: &str = r#"ghost -- the TM2020 ghost / replay API
 
@@ -154,6 +154,13 @@ SPLICE  (operation 5b -- the MIDDLE of a run, where trim owns the two ends)
         and the oracle is not expected to return the declared time.
 
 DECLARE
+  ghost validation show FILE
+  ghost validation set IN OUT --start-index N
+        The validator's START INDEX (u03, chunk 0x0309202D): the entry of the
+        engine's waypoint array the car spawns from. A container rebound to a
+        map whose array differs (the MK64 cuts carry 28 typed Lakitu items
+        before the Start) spawns in the void and every run is a vacuous DNF.
+        `tmauto synth write` measures the index; this patches a carrier.
   ghost declare IN OUT (--time MS | --from-oracle --map M) [--splits MS,MS,...] [--cps N]
         Set the time the file DECLARES, in every copy of it, and in the
         ghost-result chunk. --cps N also sets the NUMBER of checkpoint entries,
@@ -558,6 +565,7 @@ fn main() {
             }
         }
         "declare" => declare::cmd(rest),
+        "validation" => validation::cmd(rest),
         "identity" => ident::cmd(rest),
         "header" => {
             let what = rest.first().map(|s| s.as_str()).unwrap_or("show");

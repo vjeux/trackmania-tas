@@ -88,6 +88,9 @@ SEARCH
                       survives; the tape has to be searched under the constraint.
   --minhold N         and hold every input at least N ticks before it may change
                       (steer, gas and brake); a sooner change is suppressed.
+  --gas-held          and keep the throttle down on every editable tick: speed is
+                      controlled by the brake alone (a driven keyboard tape -- the
+                      client re-engages a lifted throttle ~300 ms late).
 
 FORK MODE (a gradient, never a result)
   --fork              evaluate on mid-simulation fork servers
@@ -205,6 +208,7 @@ struct Args {
     max_drift: usize,
     alphabet: Option<Vec<i8>>,
     minhold: usize,
+    gas_held: bool,
     decoy_warn: bool,
     n: usize,
     target_ms: i64,
@@ -276,6 +280,7 @@ fn parse() -> Args {
         max_drift: 0,
         alphabet: None,
         minhold: 1,
+        gas_held: false,
         decoy_warn: false,
         n: 0,
         target_ms: 0,
@@ -340,6 +345,7 @@ fn parse() -> Args {
             }
             "--minhold" => a.minhold = num(&next(&mut i), k) as usize,
             "--decoy-warn" => a.decoy_warn = true,
+            "--gas-held" => a.gas_held = true,
             "--n" => a.n = num(&next(&mut i), k) as usize,
             "--target" => a.target_ms = (num(&next(&mut i), k) * 1000.0).round() as i64,
             "--out" => a.out = next(&mut i),
@@ -635,7 +641,7 @@ fn cmd_search(a: &Args) {
     // fork oracle lies: 7 phantoms in 22 000 evaluations on colon three from a
     // snapped-but-not-held seed. Legalise it first and say so.
     {
-        let c = Constraint { alphabet: a.alphabet.clone(), minhold: a.minhold.max(1) };
+        let c = Constraint { alphabet: a.alphabet.clone(), minhold: a.minhold.max(1), gas_held: a.gas_held };
         if !c.is_noop() && !c.holds(&start, a.lo, hi) {
             let before = Constraint::events(&start, a.lo, hi);
             c.apply(&mut start, a.lo, hi);
@@ -724,7 +730,7 @@ fn cmd_search(a: &Args) {
         max_drift: a.max_drift,
         decoy_warn: a.decoy_warn,
         constraint: {
-            let c = Constraint { alphabet: a.alphabet.clone(), minhold: a.minhold.max(1) };
+            let c = Constraint { alphabet: a.alphabet.clone(), minhold: a.minhold.max(1), gas_held: a.gas_held };
             if c.is_noop() { None } else { Some(c) }
         },
         check_seed_gate: seed_check,

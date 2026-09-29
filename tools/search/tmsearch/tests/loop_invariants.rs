@@ -85,6 +85,8 @@ fn no_worker_ever_edits_below_the_highest_resume_tick() {
         migrate: 0.2,
         max_drift: 0,
         check_seed_gate: None,
+        constraint: None,
+        decoy_warn: false,
     };
 
     let seen = Arc::clone(&lowest);
@@ -144,6 +146,8 @@ fn a_worker_that_fails_to_start_does_not_wedge_the_others() {
         migrate: 0.0,
         max_drift: 0,
         check_seed_gate: None,
+        constraint: None,
+        decoy_warn: false,
     };
     let seen = Arc::clone(&lowest);
     // worker 1 refuses to start
@@ -214,6 +218,8 @@ fn lazy_cfg(n: usize) -> tmsearch::search::Config {
         migrate: 0.0,
         max_drift: 0,
         check_seed_gate: None,
+        constraint: None,
+        decoy_warn: false,
     }
 }
 
