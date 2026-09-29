@@ -25,6 +25,8 @@ struct Row {
     occl_ours: f64,
     occl_editor: f64,
     occl_n: usize,
+    /// the model's stored bounding box extents (x, y, z) in model units — how tall/wide the terrain item is
+    extent: [f64; 3],
     albedo: [f64; 3],
     area: f64,
     dominant: String,
@@ -135,6 +137,7 @@ fn main() {
             if n > 0 { r.occl_ours = so / n as f64; r.occl_editor = se / n as f64; r.occl_n = n; }
         }
         let m = &scene.models[*mi];
+        if let Some((lo, hi)) = m.stored_bbox { for k in 0..3 { r.extent[k] = (hi[k] - lo[k]) as f64; } }
         let mut per: BTreeMap<usize, f64> = Default::default();
         for t in &m.tris {
             let a: Vec<f64> = (0..3).map(|k| (t.p[1][k] - t.p[0][k]) as f64).collect();
@@ -160,8 +163,8 @@ fn main() {
     let mut list: Vec<Row> = rows.into_values().filter(|r| r.texels > 0).collect();
     list.sort_by(|a, b| b.texels.cmp(&a.texels));
     let sat = |a: &[f64; 3]| { let (mx, mn) = (a[0].max(a[1]).max(a[2]), a[0].min(a[1]).min(a[2])); if mx > 1e-9 { 1.0 - mn / mx } else { 0.0 } };
-    let mut out = String::from("model\tplacements\ttexels\tlit_editor_pct\tratio_rgb\tg_over_r\tb_over_r\tmean_ours_rgb\tmean_editor_rgb\teditor_b_over_r\talbedo_rgb\talbedo_sat\talbedo_b_over_r\ttextured_area_pct\ttargetcolor_rgb\ttargetcolor_area_pct\ttargetcolor_sat\tdominant_material\tdominant_area_pct\tmean_y\tmean_dist_m\tnear_count\toccl_ours\toccl_editor\toccl_ratio\toccl_probes\n");
-    println!("{:<15} {:>4} {:>7} {:>5}  {:<21} {:>5} {:>5} {:>6}  {:<19} {:>4} {:>4} {:>5}  {:<19} {:>4} {:>4}  {:<26} {:>6} {:>6} {:>6} {:>18}", "model", "plc", "texels", "lit%", "ratio ours/editor r/g/b", "G/R", "B/R", "edB/R", "albedo r/g/b (const)", "sat", "tex%", "TC%", "TargetColor r/g/b", "sat", "B/R", "dominant material (area %)", "mean y", "dist m", "canopy", "skyvis o/e (n)");
+    let mut out = String::from("model\tplacements\ttexels\tlit_editor_pct\tratio_rgb\tg_over_r\tb_over_r\tmean_ours_rgb\tmean_editor_rgb\teditor_b_over_r\talbedo_rgb\talbedo_sat\talbedo_b_over_r\ttextured_area_pct\ttargetcolor_rgb\ttargetcolor_area_pct\ttargetcolor_sat\tdominant_material\tdominant_area_pct\tmean_y\tmean_dist_m\textent_x\textent_y\textent_z\tnear_count\toccl_ours\toccl_editor\toccl_ratio\toccl_probes\n");
+    println!("{:<15} {:>4} {:>7} {:>5}  {:<21} {:>5} {:>5} {:>6}  {:<19} {:>4} {:>4} {:>5}  {:<19} {:>4} {:>4}  {:<26} {:>6} {:>6} {:>17} {:>6} {:>18}", "model", "plc", "texels", "lit%", "ratio ours/editor r/g/b", "G/R", "B/R", "edB/R", "albedo r/g/b (const)", "sat", "tex%", "TC%", "TargetColor r/g/b", "sat", "B/R", "dominant material (area %)", "mean y", "dist m", "ext x/y/z", "canopy", "skyvis o/e (n)");
     for r in &list {
         let (gr, br) = (r.ratio[1] / r.ratio[0], r.ratio[2] / r.ratio[0]);
         let s = sat(&r.albedo);
@@ -171,8 +174,8 @@ fn main() {
         let (tcs, tcbr) = (sat(&r.tc), if r.tc[0] > 1e-9 { r.tc[2] / r.tc[0] } else { f64::NAN });
         let r3 = |v: &[f64; 3], p: usize| format!("{:.*} / {:.*} / {:.*}", p, v[0], p, v[1], p, v[2]);
         let opt3 = |v: &[f64; 3], area: f64, p: usize| if area > 0.0 { r3(v, p) } else { "—".to_string() };
-        println!("{:<15} {:>4} {:>7} {:>5.1}  {:<21} {:>5.3} {:>5.3} {:>6.3}  {:<19} {:>4.2} {:>4.0} {:>5.0}  {:<19} {:>4.2} {:>4.2}  {:<26} {:>6.1} {:>6.0} {:>6.1} {:>18}", r.model.trim_end_matches(".Item.Gbx"), r.placements, r.texels, r.lit_pct, r3(&r.ratio, 3), gr, br, edbr, opt3(&r.albedo, r.area - r.textured_area, 2), s, tex_pct, tc_pct, opt3(&r.tc, r.tc_area, 2), tcs, tcbr, format!("{} ({:.0} %)", r.dominant, r.dominant_share), r.mean_y, r.mean_dist, r.near_count, if r.occl_n > 0 { format!("{:.0}/{:.0} = {:.3} ({})", r.occl_ours, r.occl_editor, r.occl_ours / r.occl_editor.max(1e-9), r.occl_n) } else { "—".to_string() });
-        out.push_str(&format!("{}\t{}\t{}\t{:.1}\t{}\t{:.4}\t{:.4}\t{}\t{}\t{:.4}\t{}\t{:.3}\t{:.3}\t{:.1}\t{}\t{:.1}\t{:.3}\t{}\t{:.1}\t{:.1}\t{:.1}\t{:.1}\t{:.1}\t{:.1}\t{:.4}\t{}\n", r.model, r.placements, r.texels, r.lit_pct, r3(&r.ratio, 3), gr, br, r3(&r.mean_ours, 4), r3(&r.mean_editor, 4), edbr, r3(&r.albedo, 3), s, abr, tex_pct, r3(&r.tc, 3), tc_pct, tcs, r.dominant, r.dominant_share, r.mean_y, r.mean_dist, r.near_count, r.occl_ours, r.occl_editor, if r.occl_n > 0 { r.occl_ours / r.occl_editor.max(1e-9) } else { f64::NAN }, r.occl_n));
+        println!("{:<15} {:>4} {:>7} {:>5.1}  {:<21} {:>5.3} {:>5.3} {:>6.3}  {:<19} {:>4.2} {:>4.0} {:>5.0}  {:<19} {:>4.2} {:>4.2}  {:<26} {:>6.1} {:>6.0} {:>17} {:>6.1} {:>18}", r.model.trim_end_matches(".Item.Gbx"), r.placements, r.texels, r.lit_pct, r3(&r.ratio, 3), gr, br, edbr, opt3(&r.albedo, r.area - r.textured_area, 2), s, tex_pct, tc_pct, opt3(&r.tc, r.tc_area, 2), tcs, tcbr, format!("{} ({:.0} %)", r.dominant, r.dominant_share), r.mean_y, r.mean_dist, format!("{:.0}/{:.0}/{:.0}", r.extent[0], r.extent[1], r.extent[2]), r.near_count, if r.occl_n > 0 { format!("{:.0}/{:.0} = {:.3} ({})", r.occl_ours, r.occl_editor, r.occl_ours / r.occl_editor.max(1e-9), r.occl_n) } else { "—".to_string() });
+        out.push_str(&format!("{}\t{}\t{}\t{:.1}\t{}\t{:.4}\t{:.4}\t{}\t{}\t{:.4}\t{}\t{:.3}\t{:.3}\t{:.1}\t{}\t{:.1}\t{:.3}\t{}\t{:.1}\t{:.1}\t{:.1}\t{:.1}\t{:.1}\t{:.1}\t{:.1}\t{:.1}\t{:.1}\t{:.4}\t{}\n", r.model, r.placements, r.texels, r.lit_pct, r3(&r.ratio, 3), gr, br, r3(&r.mean_ours, 4), r3(&r.mean_editor, 4), edbr, r3(&r.albedo, 3), s, abr, tex_pct, r3(&r.tc, 3), tc_pct, tcs, r.dominant, r.dominant_share, r.mean_y, r.mean_dist, r.extent[0], r.extent[1], r.extent[2], r.near_count, r.occl_ours, r.occl_editor, if r.occl_n > 0 { r.occl_ours / r.occl_editor.max(1e-9) } else { f64::NAN }, r.occl_n));
     }
     // the reads: over the models with ≥ min_texels lit texels
     let big: Vec<&Row> = list.iter().filter(|r| (r.texels as f64 * r.lit_pct / 100.0) as usize >= min_texels && r.ratio.iter().all(|v| v.is_finite() && *v > 0.0)).collect();
