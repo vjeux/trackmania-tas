@@ -205,6 +205,7 @@ struct Args {
     max_drift: usize,
     alphabet: Option<Vec<i8>>,
     minhold: usize,
+    decoy_warn: bool,
     n: usize,
     target_ms: i64,
     out: String,
@@ -275,6 +276,7 @@ fn parse() -> Args {
         max_drift: 0,
         alphabet: None,
         minhold: 1,
+        decoy_warn: false,
         n: 0,
         target_ms: 0,
         out: "/tmp/tmsearch-dump.jsonl".into(),
@@ -337,6 +339,7 @@ fn parse() -> Args {
                 a.alphabet = Some(Constraint::parse_alphabet(&next(&mut i)).unwrap_or_else(|e| die(e)))
             }
             "--minhold" => a.minhold = num(&next(&mut i), k) as usize,
+            "--decoy-warn" => a.decoy_warn = true,
             "--n" => a.n = num(&next(&mut i), k) as usize,
             "--target" => a.target_ms = (num(&next(&mut i), k) * 1000.0).round() as i64,
             "--out" => a.out = next(&mut i),
@@ -420,7 +423,15 @@ fn parse() -> Args {
 }
 
 fn server_dir(a: &Args) -> PathBuf {
-    ghost::oracle::server_dir(a.server.as_deref())
+    let d = ghost::oracle::server_dir(a.server.as_deref());
+    // Every worker, fork or plain, launches this binary: refuse the wrong build
+    // once, here, instead of 150 servers quietly validating nothing.
+    if d.join("TrackmaniaServer").exists() {
+        if let Err(e) = ghost::oracle::check_server_build(&d) {
+            die(e);
+        }
+    }
+    d
 }
 
 fn need_map(a: &Args) -> PathBuf {
@@ -711,6 +722,7 @@ fn cmd_search(a: &Args) {
         temp_s: a.temp_s,
         migrate: a.migrate,
         max_drift: a.max_drift,
+        decoy_warn: a.decoy_warn,
         constraint: {
             let c = Constraint { alphabet: a.alphabet.clone(), minhold: a.minhold.max(1) };
             if c.is_noop() { None } else { Some(c) }

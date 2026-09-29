@@ -461,6 +461,11 @@ fn common(a: &[String]) -> Result<(Engine, Tape, Checkpoint), String> {
         work_is_temporary: work.is_none(),
         work: work.unwrap_or_else(Engine::default_work),
     };
+    // The wrong server BUILD answers every question below plausibly and wrong
+    // (a 2023 build validated 0 ghosts and could not load a constructed tape).
+    if engine.server.join("TrackmaniaServer").exists() {
+        ghost::oracle::check_server_build(&engine.server)?;
+    }
     let at = match flag(a, "--at") {
         None => Checkpoint::Fraction(0.5),
         Some(s) => match s.split_once(':') {

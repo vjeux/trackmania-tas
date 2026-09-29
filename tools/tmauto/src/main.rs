@@ -35,7 +35,7 @@ RUNG 0  (synthesizing a container with no human provenance)
         Synthesize a container from nothing and ask the dedicated server what
         it thinks of it. Prints the server's own transcript with --raw.
   tmauto synth write --map MAP.Map.Gbx --out FILE [--ticks N] [--tape T.tsv]
-                     [--declared MS] [--seed N] [--steer -127..127] [--wobble-prefix N]
+                     [--declared MS] [--seed N] [--steer -127..127] [--wobble-prefix N (default 25; 0 = flat)]
                      [--record MODE]
                      [--start-offset MS] [--format-version 11|12] [--field0 N]
                      [--state-flags START..END:HEX]
@@ -590,12 +590,41 @@ fn cmd_synth_write(args: &[String]) -> Result<(), String> {
     // An explicit --validation-u03 is the G1 measurement instrument: it must be
     // able to write a container for a map whose start rule is NOT yet known.
     let mut meta = match arg(args, "--validation-u03") {
-        Some(s) => {
+        Some(s) if s != "auto" => {
             let mut m = synth::meta_for_map(&map)?;
             m.validation_start_index = parse_u32(&s, "--validation-u03")?;
             m
         }
-        None => synth::complete_meta_for_map(&map)?,
+        _ => {
+            let mut m = synth::complete_meta_for_map(&map)?;
+            // THE START INDEX IS MEASURED, NOT ASSUMED. The rule above counts
+            // waypoints the MAP FILE declares; the engine's array also holds
+            // every item whose MODEL carries a waypoint type, placement property
+            // or not -- the MK64 Koopa cuts carry 28 Lakitu frame items typed as
+            // starts, so the rule said 0 and the car spawned in the void at
+            // (40, 0, 40). One fork trace per candidate index puts the car
+            // where the index says; the index whose car stands on the Start
+            // placement is the answer. Skipped with --no-startprobe or when
+            // no fork engine (fk + shim + TM_SERVER) is reachable.
+            if !flag(args, "--no-startprobe") {
+                match synth::probe_start_index(&map, m.validation_start_index) {
+                    Ok(Some((k, pos))) => {
+                        if k != m.validation_start_index {
+                            eprintln!(
+                                "start index: the map rule said {} but the engine spawns on the Start placement for u03 = {} (car at ({:.1}, {:.1}, {:.1})); using {}",
+                                m.validation_start_index, k, pos[0], pos[1], pos[2], k
+                            );
+                        } else {
+                            eprintln!("start index {} verified: the car spawns at ({:.1}, {:.1}, {:.1}) on the Start placement", k, pos[0], pos[1], pos[2]);
+                        }
+                        m.validation_start_index = k;
+                    }
+                    Ok(None) => eprintln!("start index: no fork engine reachable (FK_BIN/FK_SHIM/TM_SERVER); the map rule's {} is UNVERIFIED", m.validation_start_index),
+                    Err(e) => return Err(e),
+                }
+            }
+            m
+        }
     };
     if let Some(s) = arg(args, "--seed") {
         meta.validation_seed = s.parse().map_err(|_| "--seed")?;
@@ -669,9 +698,15 @@ fn cmd_synth_write(args: &[String]) -> Result<(), String> {
                 return Err("--steer wants -127..127".into());
             }
             let mut inputs = vec![Input::new(steer, true, false); ticks];
+            // DEFAULT 25: the fork oracle's input locator keys on the steer
+            // sequence and cannot find a constant tape (every record then reads
+            // back as zero -- a morning lost to "TAPE MISMATCH" on 2026-09-29).
+            // The key is zero-mean and +-12/127 over the first 0.25 s at
+            // standstill: a lateral displacement under a centimetre. Pass
+            // --wobble-prefix 0 for a truly flat tape (plain oracle only).
             let wobble: usize = arg(args, "--wobble-prefix")
                 .as_deref()
-                .unwrap_or("0")
+                .unwrap_or("25")
                 .parse()
                 .map_err(|_| "--wobble-prefix wants a tick count")?;
             for (tick, input) in inputs.iter_mut().take(wobble).enumerate() {

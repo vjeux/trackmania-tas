@@ -636,8 +636,13 @@ fn main() {
                 .collect();
             assert_eq!(park.len(), 3, "--park wants X,Y,Z");
             let mut m = map::MapFile::load(&src);
+            // An embedded model must be one the map carries; a STOCK item ident
+            // (no `.Item.Gbx`, e.g. `GateFinish32m`) comes from the game's own
+            // collection and needs no manifest row -- measured: a Koopa cut with
+            // its finish placement swapped onto GateFinish32m validates a tape
+            // at 5.882 (its own finish item: 5.834).
             assert!(
-                m.items.iter().any(|it| it.model == model),
+                !model.ends_with(".Item.Gbx") || m.items.iter().any(|it| it.model == model),
                 "--model {:?} is not a model this map places; the engine could not load it",
                 model
             );
@@ -750,6 +755,121 @@ fn main() {
             let back = map::MapFile::load(&out);
             let (zb, zn) = header::embedded_zip(&back.gbx.body).unwrap_or((0, Vec::new()));
             println!("  read-back: zip {} bytes, {} entries, manifest {} rows", zb, zn.len(), back.embedded_manifest().map_or(0, |r| r.len()));
+        }
+        "pathline" => {
+            // A REFERENCE LINE from the exporter's ROM-path CSV
+            // (`path,index,section,x,y,z,heading_deg`, world metres): rows of the
+            // named path between two indices, then optional appended points,
+            // resampled to one row per 10 ms at a constant speed, written as
+            // `time_ms,x,y,z` -- the shape `--refcsv` reads. Also prints the
+            // arclength of every appended point and of the named gate positions
+            // so the legs of a chained gate search can be placed on it.
+            let csv = PathBuf::from(&args[2]);
+            let out = PathBuf::from(flag(&args, "--out").expect("--out F.csv"));
+            let path_name: String = flag(&args, "--path").map(|s| s.to_string()).unwrap_or_else(|| "track_path".to_string());
+            let (i0, i1) = {
+                let r: String = flag(&args, "--idx").map(|s| s.to_string()).unwrap_or_else(|| "0..".to_string());
+                let (a, b) = r.split_once("..").expect("--idx A..B");
+                (a.parse::<usize>().unwrap_or(0), b.parse::<usize>().unwrap_or(usize::MAX))
+            };
+            let speed_ms: f64 = flag(&args, "--speed").map(|s| s.parse().expect("--speed m/s")).unwrap_or(30.0);
+            let text = std::fs::read_to_string(&csv).unwrap_or_else(|e| panic!("{}: {e}", csv.display()));
+            let mut pts: Vec<[f64; 3]> = Vec::new();
+            for line in text.lines().skip(1) {
+                let f: Vec<&str> = line.split(',').collect();
+                if f.len() < 6 || f[0] != path_name {
+                    continue;
+                }
+                let idx: usize = f[1].parse().unwrap_or(usize::MAX);
+                if idx < i0 || idx > i1 {
+                    continue;
+                }
+                pts.push([f[3].parse().unwrap(), f[4].parse().unwrap(), f[5].parse().unwrap()]);
+            }
+            assert!(pts.len() >= 2, "no points of path {:?} in {:?}", path_name, csv.display());
+            let mut appended: Vec<usize> = Vec::new();
+            if let Some(ap) = flag(&args, "--append") {
+                for p in ap.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                    let v: Vec<f64> = p.split(',').map(|x| x.trim().parse().expect("--append x,y,z;x,y,z")).collect();
+                    assert_eq!(v.len(), 3, "--append wants x,y,z triples");
+                    pts.push([v[0], v[1], v[2]]);
+                    appended.push(pts.len() - 1);
+                }
+            }
+            let mut s = vec![0.0f64; pts.len()];
+            for i in 1..pts.len() {
+                let (a, b) = (pts[i - 1], pts[i]);
+                s[i] = s[i - 1] + ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2) + (b[2] - a[2]).powi(2)).sqrt();
+            }
+            let total = *s.last().unwrap();
+            let mut rows = String::from("time_ms,x,y,z\n");
+            let mut t_ms: i64 = 0;
+            let mut seg = 0usize;
+            loop {
+                let d = t_ms as f64 / 1000.0 * speed_ms;
+                if d > total {
+                    break;
+                }
+                while seg + 1 < s.len() - 1 && s[seg + 1] < d {
+                    seg += 1;
+                }
+                let (a, b) = (pts[seg], pts[seg + 1]);
+                let len = (s[seg + 1] - s[seg]).max(1e-9);
+                let f = ((d - s[seg]) / len).clamp(0.0, 1.0);
+                rows.push_str(&format!(
+                    "{},{:.3},{:.3},{:.3}\n",
+                    t_ms,
+                    a[0] + (b[0] - a[0]) * f,
+                    a[1] + (b[1] - a[1]) * f,
+                    a[2] + (b[2] - a[2]) * f
+                ));
+                t_ms += 10;
+            }
+            std::fs::write(&out, rows).unwrap_or_else(|e| panic!("{}: {e}", out.display()));
+            println!(
+                "wrote {} : {} points of {} [{}..{}] + {} appended = {:.1} m, {} rows at {} m/s",
+                out.display(), pts.len() - appended.len(), path_name, i0, i1.min(pts.len()), appended.len(), total, t_ms / 10, speed_ms
+            );
+            for &k in &appended {
+                println!("  appended ({:.1}, {:.1}, {:.1}) at s {:.1} m  t {:.2} s", pts[k][0], pts[k][1], pts[k][2], s[k], s[k] / speed_ms);
+            }
+            if let Some(g) = flag(&args, "--gates") {
+                for p in g.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                    let v: Vec<f64> = p.split(',').map(|x| x.trim().parse().expect("--gates x,z;x,z")).collect();
+                    let mut best = (f64::INFINITY, 0usize);
+                    for (i, q) in pts.iter().enumerate() {
+                        let d = ((q[0] - v[0]).powi(2) + (q[2] - v[1]).powi(2)).sqrt();
+                        if d < best.0 {
+                            best = (d, i);
+                        }
+                    }
+                    let i = best.1;
+                    let dir = if i + 1 < pts.len() { [pts[i + 1][0] - pts[i][0], pts[i + 1][2] - pts[i][2]] } else { [pts[i][0] - pts[i - 1][0], pts[i][2] - pts[i - 1][2]] };
+                    let n = (dir[0] * dir[0] + dir[1] * dir[1]).sqrt().max(1e-9);
+                    println!(
+                        "  gate ({:.1}, {:.1}) -> path idx {} at s {:.1} m  t {:.2} s  ({:.1} m off)  dir ({:.4}, {:.4}) heading {:.1} deg  path point ({:.1}, {:.1}, {:.1})",
+                        v[0], v[1], i, s[i], s[i] / speed_ms, best.0, dir[0] / n, dir[1] / n, (dir[0]).atan2(dir[1]).to_degrees(), pts[i][0], pts[i][1], pts[i][2]
+                    );
+                }
+            }
+        }
+        "gbxcompress" => {
+            // Rewrite ANY Gbx file with its body LZO-compressed ('C'). The
+            // dedicated server accepts an uncompressed ('U') body, which is
+            // what the synthesiser writes -- the GAME CLIENT does not
+            // ("Unable to load ghost file"; the plugin's Replay_Load / Ghost_Add
+            // drop the handler). Same header, same body bytes, one fresh LZO
+            // stream; the round-trip is asserted by the writer.
+            let src = PathBuf::from(&args[2]);
+            let out = PathBuf::from(&args[3]);
+            let bytes = std::fs::read(&src).unwrap_or_else(|e| panic!("{}: {e}", src.display()));
+            let was = bytes.get(7).copied().unwrap_or(b'?') as char;
+            let g = gbx::Gbx::parse(&bytes);
+            let w = g.write_body_recompressed(&g.body);
+            std::fs::write(&out, &w).unwrap_or_else(|e| panic!("{}: {e}", out.display()));
+            let back = gbx::Gbx::parse(&w);
+            assert_eq!(back.body, g.body, "read-back body differs");
+            println!("wrote {} : body {} -> C, {} body bytes, file {} -> {} bytes", out.display(), was, g.body.len(), bytes.len(), w.len());
         }
         "oracle" => {
             // --map M --ghosts a b c  (repeatable)

@@ -192,6 +192,7 @@ pub fn validate_raw(
     if !bin.exists() {
         return Err(format!("no dedicated server at {}", server.display()));
     }
+    ghost::oracle::check_server_build(server)?;
     if files.is_empty() {
         return Ok(Batch { answers: Vec::new(), raw: String::new(), err: String::new() });
     }

@@ -515,7 +515,160 @@ pub fn item_start_index(
 pub fn complete_meta_for_map(map: &std::path::Path) -> Result<GhostMeta, String> {
     let mut meta = meta_for_map(map)?;
     meta.validation_start_index = validation_start_index_for_map(map)?;
+    check_start_model(map)?;
     Ok(meta)
+}
+
+/// TM2020 `CGameItemModel::EWaypointType`, the field the engine takes a
+/// landmark's KIND from: 0 Start, 1 Finish, 2 Checkpoint, 3 None,
+/// 4 StartFinish. The placement's tag (Spawn/Goal/Checkpoint/StartFinish/
+/// LinkedCheckpoint) only links and orders.
+pub fn item_model_waypoint_type(map: &std::path::Path, model: &str) -> Option<i32> {
+    let m = tmmaps::map::MapFile::load(map);
+    let zip = tmmaps::header::embedded_zip_bytes(&m.gbx.body)?;
+    let bytes = tmmaps::header::zip_entry(&zip, model)?;
+    let f = mapgeom::static_item::file::parse_file(&bytes).ok()?;
+    f.item.chunks.iter().find_map(|c| match c {
+        mapgeom::static_item::item::ItemChunk::Waypoint { waypoint_type, .. } => Some(*waypoint_type),
+        _ => None,
+    })
+}
+
+/// REFUSE a start that the engine will treat as a lap-race line. A Start
+/// placement whose ITEM MODEL is StartFinish (type 4) spawns the car fine and
+/// then the validator ignores every Finish gate on the map -- measured on the
+/// golden map2 (finish block moved 64 m ahead: full-gas tape 2.658; start
+/// renamed RoadTechMultilap: the same tape is a DNF) and on the MK64 Koopa cut
+/// whose every finish, own or stock, never fired. Nothing else says so: the
+/// run just never finishes. `TMAUTO_ALLOW_LAP_START=1` for a map that IS a lap
+/// race on purpose (the finish is then the start line itself).
+pub fn check_start_model(map: &std::path::Path) -> Result<(), String> {
+    let m = tmmaps::map::MapFile::load(map);
+    let waypoints = m.waypoints();
+    let start = spawn_waypoint(map, &waypoints)?;
+    if start.kind != tmmaps::map::Kind::Item {
+        return Ok(());
+    }
+    let Some(t) = item_model_waypoint_type(map, &start.name) else {
+        return Ok(()); // a stock or unreadable model: nothing to say
+    };
+    let has_finish_item = waypoints.iter().any(|w| {
+        w.kind == tmmaps::map::Kind::Item
+            && w.index != start.index
+            && item_model_waypoint_type(map, &w.name) == Some(1)
+    });
+    match t {
+        0 => Ok(()),
+        4 if std::env::var("TMAUTO_ALLOW_LAP_START").map(|v| v == "1").unwrap_or(false) => Ok(()),
+        4 if has_finish_item => Err(format!(
+            "{}: the Start placement item#{} sits on {} whose MODEL waypoint type is 4 (StartFinish): the engine \
+             runs a LAP RACE and ignores the map's Finish item(s) -- nothing will ever finish. Retype the model to \
+             0 (Start): `wptype IN OUT 0` (mapgeom example) + `tmmaps reembed MAP --out F --replace Items/{}=OUT`, \
+             or have the exporter place a Start-type model. TMAUTO_ALLOW_LAP_START=1 if the lap race is intended.",
+            map.display(),
+            start.index,
+            start.name,
+            start.name
+        )),
+        4 => {
+            eprintln!(
+                "{}: note: the start model is StartFinish (lap race); the finish is the start line itself",
+                map.display()
+            );
+            Ok(())
+        }
+        other => Err(format!(
+            "{}: the Start placement item#{} sits on {} whose MODEL waypoint type is {} (not 0 Start / 4 StartFinish); the engine cannot spawn there",
+            map.display(),
+            start.index,
+            start.name,
+            other
+        )),
+    }
+}
+
+/// MEASURE the validation start index with the fork engine: for candidate
+/// indices (the rule's guess first, then 0, 1, 2, ...) write a short
+/// full-gas container declaring that index, trace its first ticks with `fk`,
+/// and accept the first index whose car stands within `tol_m` of the Start
+/// placement. `Ok(None)` when no engine is reachable (no `fk`, no shim, or no
+/// `TM_SERVER`), so callers can say "unverified" instead of guessing.
+///
+/// Why this exists: the engine's checkpoint array holds every ITEM whose
+/// MODEL carries a waypoint type -- with or without a placement property --
+/// in item order. The MK64 Koopa cuts place 28 Lakitu animation frames typed
+/// as starts at (40, 1, 40): the file rule said 0 (the Start is the first item
+/// WAYPOINT), u03 0 never started the race, 1..4 spawned the car in the void,
+/// and 28 spawned it on the Start. Nothing in the map file says which items the
+/// engine counts (their model class 0x2E01D000 has no reader here), so the
+/// engine is asked.
+pub fn probe_start_index(map: &std::path::Path, guess: u32) -> Result<Option<(u32, [f32; 3])>, String> {
+    let fk = ghost::regen::fk_binary();
+    let shim = match ghost::regen::shim() {
+        Some(s) => s,
+        None => return Ok(None),
+    };
+    let server = match std::env::var("TM_SERVER") {
+        Ok(s) => s,
+        Err(_) => return Ok(None),
+    };
+    if !std::path::Path::new(&fk).exists() || !std::path::Path::new(&server).join("TrackmaniaServer").exists() {
+        return Ok(None);
+    }
+    let m = tmmaps::map::MapFile::load(map);
+    let waypoints = m.waypoints();
+    let start = spawn_waypoint(map, &waypoints)?;
+    let target = start.pos.ok_or("the Start placement has no free position")?;
+    let tol_m: f32 = std::env::var("TMAUTO_STARTPROBE_TOL").ok().and_then(|v| v.parse().ok()).unwrap_or(6.0);
+    let max: u32 = std::env::var("TMAUTO_STARTPROBE_MAX").ok().and_then(|v| v.parse().ok()).unwrap_or(64);
+    let dir = std::env::temp_dir().join(format!("tmauto-startprobe-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let mut candidates: Vec<u32> = vec![guess];
+    candidates.extend((0..=max).filter(|k| *k != guess));
+    let mut meta = meta_for_map(map)?;
+    let inputs = vec![Input::new(0, true, false); 60];
+    let initial = initial_state_for_map(map)?;
+    for k in candidates {
+        meta.validation_start_index = k;
+        // a locator key: the fork's input locator cannot find a constant tape
+        let mut wob = inputs.clone();
+        for (t, i) in wob.iter_mut().take(25).enumerate() {
+            i.steer = ((t as u64 * 7919 + 13) % 25) as i8 - 12;
+        }
+        meta.set_declared(600, vec![600]);
+        let bytes = synthesize_complete(&wob, &meta, &ChunkSet::ALL, initial, RecordMode::Sample, 0.0);
+        let tape = dir.join(format!("u03-{k}.Ghost.Gbx"));
+        let csv = dir.join(format!("u03-{k}.csv"));
+        std::fs::write(&tape, &bytes).map_err(|e| e.to_string())?;
+        let out = std::process::Command::new(&fk)
+            .args(["trace", "--tape"])
+            .arg(&tape)
+            .arg("--map")
+            .arg(map)
+            .args(["--at", "tick:5", "--out"])
+            .arg(&csv)
+            .args(["--server", &server, "--shim", &shim])
+            .output()
+            .map_err(|e| format!("cannot run {fk}: {e}"))?;
+        let _ = out;
+        let Ok(text) = std::fs::read_to_string(&csv) else { continue };
+        let Some(row) = text.lines().nth(1) else { continue };
+        let f: Vec<f32> = row.split(',').take(4).filter_map(|x| x.parse().ok()).collect();
+        if f.len() < 4 {
+            continue;
+        }
+        let pos = [f[1], f[2], f[3]];
+        let d = ((pos[0] - target[0]).powi(2) + (pos[2] - target[2]).powi(2)).sqrt();
+        if d <= tol_m {
+            let _ = std::fs::remove_dir_all(&dir);
+            return Ok(Some((k, pos)));
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    Err(format!(
+        "start index: no u03 in 0..={} put the car within {} m of the Start placement ({:.1}, {:.1}, {:.1}); pass --validation-u03 N explicitly",
+        max, tol_m, target[0], target[1], target[2]
+    ))
 }
 
 /// The authoritative initial transform encoded into a from-scratch record.

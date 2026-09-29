@@ -248,6 +248,23 @@ pub fn verify_tape(
         }
     }
     if bad > 0 {
+        // A CONSTANT STEER PREFIX IS THE OTHER CAUSE, and it looks exactly like
+        // this: the input locator keys on the tape's steer sequence, so a
+        // synthesised tape with steer 0 everywhere matches a zero page and
+        // every record reads (0, 0, 0) -- measured 2026-09-29 on a full-gas
+        // straight seed, 1000 of 1000 ticks "differ". Name it before the
+        // work-directory story, which is the rarer of the two.
+        let distinct: std::collections::BTreeSet<u8> = steer.iter().take(200.min(steer.len())).copied().collect();
+        let all_zero = buf.chunks(crate::forksrv::STRIDE).take(n).all(|c| c.iter().all(|b| *b == 0));
+        if distinct.len() < 2 && all_zero {
+            return Err(format!(
+                "TAPE MISMATCH: {} of {} ticks differ, and the server-side records read back as all zero while the tape's \
+                 first {} ticks hold a single steer value ({:?}): the input locator cannot key on a constant steer prefix. \
+                 Give the seed a distinct prefix -- `tmauto synth write` does so by default (--wobble-prefix 25, a \
+                 zero-mean +-12 steer key over the first 0.25 s) -- or `ghost tape poke` one in.",
+                bad, n, 200.min(steer.len()), distinct.iter().next().copied().unwrap_or(0)
+            ));
+        }
         return Err(format!(
             "TAPE MISMATCH: {} of {} ticks differ -- the simulator is not running the tape \
              that was asked for (first difference: {}). This is what a shared work directory \

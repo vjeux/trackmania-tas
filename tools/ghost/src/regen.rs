@@ -29,7 +29,7 @@ use crate::cli::{die, flag, has, num};
 use std::path::Path;
 use std::process::Command;
 
-fn fk_binary() -> String {
+pub fn fk_binary() -> String {
     if let Ok(v) = std::env::var("FK_BIN") {
         return v;
     }
@@ -93,7 +93,7 @@ fn fk_binary() -> String {
 ///
 /// Returns `None` rather than a guess: a made-up default is what turns a
 /// wiring error into a physics story. The caller refuses and names the knob.
-fn shim() -> Option<String> {
+pub fn shim() -> Option<String> {
     if let Ok(v) = std::env::var("FK_SHIM") {
         return Some(v);
     }

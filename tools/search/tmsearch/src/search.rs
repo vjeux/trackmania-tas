@@ -178,6 +178,14 @@ pub struct Config {
     /// candidate after mutation, inside the window being edited, so nothing the
     /// search scores or banks is outside it. `None` = the unconstrained search.
     pub constraint: Option<Constraint>,
+    /// Report the decoy verdict but do not stop on it. For a LEG-CHAINED
+    /// exploration (a gate box on the next stretch of a route, seeded by a
+    /// tape that has never been there) the seed loses to "idle, then the
+    /// seed's own tail" by construction -- both miss, and whichever bounce
+    /// lands closer wins a coin flip. The test's family of decoys (doing less
+    /// scores more) is still printed; a human reads it instead of the run
+    /// dying on it.
+    pub decoy_warn: bool,
     /// THE SEED IDENTITY CONTROL, in gate mode. Given the state the fork
     /// measured for the seed at the gate, say whether it is the state the
     /// seed's own recording shows there. `Err` stops the run before the first
@@ -279,6 +287,7 @@ where
         let (cfg_lo, cfg_hi) = (cfg.lo, cfg.hi);
         let start_for_decoy = start.clone();
         let check_seed = cfg.check_seed_gate.clone();
+        let decoy_warn = cfg.decoy_warn;
 
         handles.push(std::thread::spawn(move || {
             let mut ev = match make(wi) {
@@ -341,7 +350,7 @@ where
                     // other workers are waiting on: a master that decided
                     // afterwards would be racing a fleet that had already
                     // started spending.
-                    if !d.ok() {
+                    if !d.ok() && !(decoy_warn && d.is_decoy() && !matches!(d.identity, Some(Err(_)))) {
                         stop.store(true, Ordering::Relaxed);
                     }
                     let _ = dtx.send(d);
@@ -466,10 +475,14 @@ where
                 None => {}
             }
             if !d.ok() {
-                for h in handles {
-                    let _ = h.join();
+                if cfg.decoy_warn && d.is_decoy() && !matches!(d.identity, Some(Err(_))) {
+                    eprintln!("--decoy-warn: the do-nothing tape wins the decoy test; SEARCHING ANYWAY (a leg-chained exploration seeds each leg with a tape that has never been there)");
+                } else {
+                    for h in handles {
+                        let _ = h.join();
+                    }
+                    return start_outcome;
                 }
-                return start_outcome;
             }
             // The incumbent's real band, which worker 0 has already published.
             if d.incumbent > incumbent {

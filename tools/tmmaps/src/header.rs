@@ -672,6 +672,36 @@ pub fn item_ident_author(bytes: &[u8]) -> Option<(String, String)> {
     None
 }
 
+/// Every entry of a zip, inflated: `(name, bytes)` in file order. Local
+/// headers only (method 0 or 8), the way the game writes its embedded items.
+pub fn zip_entries(zip: &[u8]) -> Vec<(String, Vec<u8>)> {
+    let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut i = 0usize;
+    while i + 30 <= zip.len() && &zip[i..i + 4] == b"PK\x03\x04" {
+        let method = u16::from_le_bytes(zip[i + 8..i + 10].try_into().unwrap());
+        let csize = u32::from_le_bytes(zip[i + 18..i + 22].try_into().unwrap()) as usize;
+        let nlen = u16::from_le_bytes(zip[i + 26..i + 28].try_into().unwrap()) as usize;
+        let xlen = u16::from_le_bytes(zip[i + 28..i + 30].try_into().unwrap()) as usize;
+        let fname = String::from_utf8_lossy(&zip[i + 30..i + 30 + nlen]).to_string();
+        let start = i + 30 + nlen + xlen;
+        let data = match method {
+            0 => zip[start..start + csize].to_vec(),
+            8 => miniz_oxide::inflate::decompress_to_vec(&zip[start..start + csize]).unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        files.push((fname, data));
+        i = start + csize;
+    }
+    files
+}
+
+/// One embedded item's bytes by its zip entry name (`Items/Foo.Item.Gbx`), or
+/// by bare model name (the `Items/` prefix is tried).
+pub fn zip_entry(zip: &[u8], name: &str) -> Option<Vec<u8>> {
+    let with = format!("Items/{name}");
+    zip_entries(zip).into_iter().find(|(n, _)| n == name || *n == with).map(|(_, b)| b)
+}
+
 /// A stored (uncompressed) zip with one more file appended.
 pub fn zip_add(zip: &[u8], name: &str, bytes: &[u8]) -> Vec<u8> {
     let mut files: Vec<(String, Vec<u8>)> = Vec::new();

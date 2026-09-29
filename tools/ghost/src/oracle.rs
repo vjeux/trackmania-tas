@@ -28,6 +28,95 @@ use std::process::Command;
 
 static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// The dedicated-server build every number in this toolchain was measured on:
+/// `Trackmania date=2026-05-15_18_00 git=128182-0de74ece09e GameVersion=3.3.0`
+/// (`TrackmaniaServer_Latest.zip` from files.v04.maniaplanet.com, ELF md5
+/// `0f0f4b25f31f80c60c81404366c95e68`). The fork shim's tick hook is keyed to
+/// this build; the plain oracle is not, but an OLDER build reads modern maps
+/// and containers differently: a 2023-10-09 build (git 121588) answered
+/// "Starting validation of 0 ghosts (in 0 maps)" for this repo's own golden
+/// pair and "Can't load replay" for every constructed tape -- measured
+/// 2026-09-29, and it cost a morning because nothing said which build it was.
+pub const KNOWN_GOOD_BUILD: &str = "128182";
+
+/// The build string the server binary at `server/TrackmaniaServer` carries
+/// (`git=NNNNNN-...`), read out of the ELF itself -- the same string it prints
+/// on its first line. Cached per path: the search asks for it per batch.
+pub fn server_build(server: &Path) -> Result<String, String> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, String>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let key = std::fs::canonicalize(server).unwrap_or_else(|_| server.to_path_buf());
+    if let Some(b) = cache.lock().unwrap().get(&key) {
+        return Ok(b.clone());
+    }
+    let bin = server.join("TrackmaniaServer");
+    let bytes = std::fs::read(&bin).map_err(|e| format!("{}: {}", bin.display(), e))?;
+    let needle = b"GameVersion=";
+    let mut found: Option<String> = None;
+    for i in memchr_all(b" git=", &bytes) {
+        let end = (i + 200).min(bytes.len());
+        let window = &bytes[i..end];
+        if let Some(gv) = window.windows(needle.len()).position(|w| w == needle) {
+            // " git=128182-0de74ece09e GameVersion=" -> "128182"
+            let s = String::from_utf8_lossy(&window[5..gv]).to_string();
+            let build: String = s.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if !build.is_empty() {
+                found = Some(build);
+                break;
+            }
+        }
+    }
+    let build = found.ok_or_else(|| {
+        format!("{}: no ` git=NNNNNN ... GameVersion=` build string in the binary -- not a TrackmaniaServer?", bin.display())
+    })?;
+    cache.lock().unwrap().insert(key, build.clone());
+    Ok(build)
+}
+
+fn memchr_all(needle: &[u8], hay: &[u8]) -> Vec<usize> {
+    let mut out = Vec::new();
+    if needle.is_empty() || hay.len() < needle.len() {
+        return out;
+    }
+    let first = needle[0];
+    let mut i = 0usize;
+    while i + needle.len() <= hay.len() {
+        if hay[i] == first && &hay[i..i + needle.len()] == needle {
+            out.push(i);
+            i += needle.len();
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Refuse a dedicated server whose build is not the one this toolchain is
+/// measured on. `TM_SERVER_BUILD=any` runs whatever is there (say so in the
+/// write-up); `TM_SERVER_BUILD=NNNNNN` pins a different known-good build.
+pub fn check_server_build(server: &Path) -> Result<(), String> {
+    let want = std::env::var("TM_SERVER_BUILD").unwrap_or_else(|_| KNOWN_GOOD_BUILD.to_string());
+    if want == "any" {
+        return Ok(());
+    }
+    let have = server_build(server)?;
+    if have == want {
+        return Ok(());
+    }
+    Err(format!(
+        "the dedicated server at {} is build {} -- this toolchain runs on build {} \
+         (TrackmaniaServer_Latest.zip, http://files.v04.maniaplanet.com/server/TrackmaniaServer_Latest.zip, \
+         May 2026, ELF md5 0f0f4b25f31f80c60c81404366c95e68). An older build validates 0 ghosts / cannot load \
+         constructed tapes and says nothing about why. Fix: download the zip, unpack it into the server directory \
+         (chmod +x TrackmaniaServer), then re-run. Override with TM_SERVER_BUILD=any (or =NNNNNN).",
+        server.display(),
+        have,
+        want
+    ))
+}
+
 /// The server's "never crossed the line" sentinel, as it appears in a time
 /// field: a huge u32 read as an i64.
 ///
@@ -145,6 +234,7 @@ pub fn validate_many(
             server.display()
         ));
     }
+    check_server_build(server)?;
     if ghosts.is_empty() {
         return Ok(Vec::new());
     }
