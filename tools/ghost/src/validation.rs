@@ -52,6 +52,37 @@ fn find(g: &Gbx) -> Result<(usize, usize), String> {
         .ok_or_else(|| "no validation chunk 0x0309202D in this file".to_string())
 }
 
+/// Every field of the block, for a diff between two containers (the physics the
+/// server runs can follow these: two carriers with the same tape diverged).
+pub fn describe(g: &Gbx) -> Result<String, String> {
+    let (p, size) = find(g)?;
+    let b = &g.body[p..p + size];
+    let mut o = 0usize;
+    let u = |o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+    let mut out = String::new();
+    out += &format!("  flag            {}\n", u(o));
+    o += 4;
+    let n = u(o) as usize;
+    out += &format!("  exe_version     {:?}\n", String::from_utf8_lossy(&b[o + 4..o + 4 + n]));
+    o += 4 + n;
+    out += &format!("  exe_checksum    {:#010x}\n  os              {}\n  cpu             {}\n  walltime_start  {}\n  walltime_end    {}\n", u(o), u(o + 4), u(o + 8), u(o + 12), u(o + 16));
+    o += 20;
+    let n = u(o) as usize;
+    out += &format!("  title_id        {:?}\n", String::from_utf8_lossy(&b[o + 4..o + 4 + n]));
+    o += 4 + n;
+    out += &format!("  title_checksum  {}\n", b[o..o + 32].iter().map(|x| format!("{x:02x}")).collect::<String>());
+    o += 32;
+    out += &format!("  settings_flags  {:#010x}\n  start_index     {}\n  seed            {}\n  u04             {}\n", u(o), u(o + 4), u(o + 8), u(o + 12));
+    o += 16;
+    if o + 4 <= b.len() {
+        let n = u(o) as usize;
+        if o + 4 + n <= b.len() {
+            out += &format!("  race_settings   {:?}\n", String::from_utf8_lossy(&b[o + 4..o + 4 + n]));
+        }
+    }
+    Ok(out)
+}
+
 pub fn read(g: &Gbx) -> Result<u32, String> {
     let (p, size) = find(g)?;
     let payload = &g.body[p..p + size];
@@ -68,6 +99,9 @@ pub fn cmd(a: &[String]) {
             match read(&g) {
                 Ok(k) => println!("{f}: validation start index (u03) = {k}"),
                 Err(e) => die(format!("{f}: {e}")),
+            }
+            if let Ok(d) = describe(&g) {
+                print!("{d}");
             }
         }
         "set" => {
@@ -103,6 +137,40 @@ pub fn cmd(a: &[String]) {
                 if compressed { "'C' body kept" } else { "'U' body kept" }
             );
         }
-        _ => die("ghost validation show FILE | ghost validation set IN OUT --start-index N"),
+        "copy" => {
+            // DST's validation block := SRC's, whole payload (exe version, checksum,
+            // title, flags, seed, race settings, start index). The physics the server
+            // runs FOLLOWS this block: a 2024 game-written carrier and a 2026 synth
+            // container ran the same tape to trajectories 1 m apart at 10 s and a
+            // missed ramp at 17 s (2026-09-29). Set the start index again afterwards
+            // if SRC's is not the map's.
+            let src = a.get(1).unwrap_or_else(|| die("ghost validation copy SRC DST OUT"));
+            let dst = a.get(2).unwrap_or_else(|| die("ghost validation copy SRC DST OUT"));
+            let out = a.get(3).unwrap_or_else(|| die("ghost validation copy SRC DST OUT"));
+            let gs = Gbx::parse(&std::fs::read(src).unwrap_or_else(|e| die(format!("{src}: {e}"))));
+            let dbytes = std::fs::read(dst).unwrap_or_else(|e| die(format!("{dst}: {e}")));
+            let gd = Gbx::parse(&dbytes);
+            let (sp, ss) = find(&gs).unwrap_or_else(|e| die(format!("{src}: {e}")));
+            let (dp, ds) = find(&gd).unwrap_or_else(|e| die(format!("{dst}: {e}")));
+            let payload = gs.body[sp..sp + ss].to_vec();
+            let mut body = Vec::with_capacity(gd.body.len() + payload.len());
+            body.extend_from_slice(&gd.body[..dp - 12]);
+            body.extend_from_slice(&CHUNK_VALIDATION.to_le_bytes());
+            body.extend_from_slice(gbx::container::SKIP_MAGIC);
+            body.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            body.extend_from_slice(&payload);
+            body.extend_from_slice(&gd.body[dp + ds..]);
+            let compressed = dbytes.get(7) == Some(&b'C');
+            let r = if compressed {
+                gbx::container::write_gbx_compressed(&gd, body, out)
+            } else {
+                gbx::container::write_gbx(&gd, body, out)
+            };
+            r.unwrap_or_else(|e| die(e));
+            let back = Gbx::parse(&std::fs::read(out).unwrap());
+            let d = describe(&back).unwrap_or_else(|e| die(e));
+            println!("wrote {out}: validation block is now {src}'s ({} -> {} bytes):\n{d}", ds, payload.len());
+        }
+        _ => die("ghost validation show FILE | ghost validation set IN OUT --start-index N | ghost validation copy SRC DST OUT"),
     }
 }
