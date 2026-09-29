@@ -741,10 +741,36 @@ pub fn mint_tokens_standalone(wsx: &Wsx, token_dir: &Path) -> Result<(), String>
     for f in ["info.toml", "Main.as"] {
         wsx.push(&src.join(f), &format!("{PLUGIN_DIR}/{f}")).map_err(|e| format!("push {f}: {e}"))?;
     }
-    // launch OUR game (own lock step) and remember its pid
-    let _ = wsx.sh(&format!("{env}; sed -i \"s/^DeveloperMode=false/DeveloperMode=true/\" /mnt/c/Users/vjeux/OpenplanetNext/Settings.ini; tmdrive launch --timeout 120 --purpose \"token mint (standalone plugin)\" > /dev/null 2>&1; true"));
-    let pid = wsx.sh("tasklist.exe /FO CSV /NH 2>/dev/null | grep -i trackmania | head -1 | cut -d, -f2 | tr -d '\"'").unwrap_or_default().trim().to_string();
-    let pid: u32 = pid.parse().map_err(|_| "mint-standalone: the game did not start (no pid)".to_string())?;
+    // launch OUR game through tmdrive (the lock step). Its exit status is the whole story:
+    // 75 (EX_TEMPFAIL) means another session holds the box and NOTHING was launched — abort
+    // right here, before any pid is read. Swallowing that status and then taking "the"
+    // Trackmania pid from the process list would adopt ANOTHER lane's game as ours and,
+    // 120 s later, kill it by pid (the race existed until 2026-09-29; it never fired).
+    let launch = wsx
+        .sh(&format!(
+            "{env}; sed -i \"s/^DeveloperMode=false/DeveloperMode=true/\" /mnt/c/Users/vjeux/OpenplanetNext/Settings.ini; tmdrive launch --timeout 120 --purpose \"token mint (standalone plugin)\" > /dev/null 2>&1; echo LAUNCH-EXIT $?"
+        ))
+        .unwrap_or_default();
+    let code = launch.rsplit("LAUNCH-EXIT ").next().unwrap_or("").trim().parse::<i32>().unwrap_or(-1);
+    if code != 0 {
+        let _ = wsx.sh(&format!("rm -rf {PLUGIN_DIR}; true"));
+        let who = wsx.sh("export PATH=/home/vjeux/mk64-fidelity/l1-enum24-stage/frozen-bin:/home/vjeux/bin:$PATH; tmdrive status 2>/dev/null | head -1").unwrap_or_default();
+        return Err(format!(
+            "mint-standalone: tmdrive launch exit {code}{} — nothing launched, plugin removed, box untouched",
+            if code == 75 { format!(" (BUSY: {})", who.trim()) } else { String::new() }
+        ));
+    }
+    // the pid we own is the one tmdrive recorded in ITS lock under OUR session — never
+    // "whatever Trackmania is running"
+    let lock = wsx
+        .sh("L=/mnt/c/Users/vjeux/OpenplanetNext/PluginStorage/TmDriveLock; echo \"$(cat $L/session 2>/dev/null)|$(cat $L/game_pid 2>/dev/null)\"")
+        .unwrap_or_default();
+    let (lock_session, lock_pid) = lock.trim().split_once('|').unwrap_or(("", ""));
+    if lock_session != "080a15b8-2c6a-4fff-9d8a-db7d0072ee43" {
+        let _ = wsx.sh(&format!("rm -rf {PLUGIN_DIR}; true"));
+        return Err(format!("mint-standalone: the tmdrive lock is held by session `{lock_session}`, not ours — refusing to touch any game"));
+    }
+    let pid: u32 = lock_pid.trim().parse().map_err(|_| "mint-standalone: tmdrive recorded no game pid for our launch".to_string())?;
     println!("  mint-standalone: launched the game (pid {pid}); waiting for the token files");
     // wait for the two files (the plugin writes them once the menu has authenticated)
     let mut ok = false;
