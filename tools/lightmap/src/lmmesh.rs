@@ -53,6 +53,41 @@ static LM_UV_INDEX: std::sync::LazyLock<std::sync::Mutex<std::collections::HashM
 /// The per-link cache of the material's SHADER file name (lower-case), filled beside `LM_UV_INDEX` by `prefetch_lm_uv_index` —
 /// the H-basis tangent-frame MODE rule reads the shader family from it (`link_uses_authored_tangents`).
 static LM_SHADER: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, String>>> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+/// The per-link cache of the material's own `PreLightGen` BOOL SWITCH (CPlugMaterialCustom chunk 0x0903A00C, RE 17 2026-09-29
+/// 15:50Z: `(name, value)` pairs named after the parent shader's skippable maps; value 1 = the map is SKIPPED = the shader
+/// permutation `DTwk_SkipMap_PreLightGen`, whose resolved instance has NO PreLightGen texcoord binding → the LM gate
+/// (FUN_14040d4f0 → FUN_1403de300) gives −1 → the geom is NOT a receiver, NOT a pre-pass draw, NOT an accumulate draw, has no LM
+/// texels; it stays a sun caster and a peel occluder drawn black). Filled beside `LM_UV_INDEX` by `prefetch_lm_uv_index` from the
+/// material FILE (the switch is the material's, not the parent's — RE 16's parent-binding gate of 18:05Z admitted the flag).
+static LM_PLG_SKIP: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, bool>>> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+/// THE MATERIAL SWITCH `PreLightGen` = 1 → the geom takes NO lightmap set (E6 2026-09-29, RE 17's read): Stadium's ItemFlagNoAnim
+/// (AI06220000's flag geoms, whose TexCoord1 lies outside the item's PreLightGen box and spilled onto 15 far tile charts of the
+/// Stadium giant) and the Speedometer are the only two Stadium materials with it. Resolved through the bake's store like the uv
+/// selector; a link the store cannot resolve (an embedded user material, a missing pack) → false. LMTOOL_PLG_SWITCH=0 turns the
+/// rule off (study: the pre-read behaviour, the flag drawn as a receiver).
+pub fn material_skips_prelightgen(link: &str) -> bool {
+    static OFF: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_PLG_SWITCH").as_deref() == Ok("0"));
+    if *OFF || link.is_empty() { return false; }
+    let key = link.to_ascii_lowercase();
+    if let Some(v) = LM_PLG_SKIP.lock().unwrap().get(&key).copied() { return v; }
+    // resolve (and cache) through the same path as the uv selector
+    let _ = lm_uv_index_cached(link);
+    LM_PLG_SKIP.lock().unwrap().get(&key).copied().unwrap_or(false)
+}
+
+/// The `PreLightGen` switch of a material FILE in the store (None: the file or its CPlugMaterialCustom is not there).
+fn read_plg_switch(store: &mut mapgeom::store::DataStore, mat: &str) -> Option<bool> {
+    let m = store.load_model(mat).ok()?;
+    let g = m.graph().ok()?;
+    let mut found: Option<bool> = None;
+    for s in &g.slots {
+        if let mapgeom::node::Slot::Node(mapgeom::node::Node::MaterialCustom(c)) = s {
+            found = Some(c.switches.iter().any(|(n, v)| n.eq_ignore_ascii_case("PreLightGen") && *v));
+        }
+    }
+    found
+}
 
 /// THE TANGENT-FRAME MODE OF A LINKED PACK MATERIAL (E, 2026-09-27 16:50Z; V2's texeldelta C1/C3 planes + RE 14's 16:45Z read of the
 /// LM vertex: PSIZE = the mode, TANGENT = TangentU): the game writes the AUTHORED frame (PSIZE ±1 by the TangentV handedness) for a
@@ -143,6 +178,8 @@ pub fn prefetch_lm_uv_index(store: &mut mapgeom::store::DataStore, links: &[Stri
         if LM_UV_INDEX.lock().unwrap().contains_key(&key) { continue; }
         let mat = if key.ends_with(".material.gbx") { l.clone() } else { format!("{l}.Material.Gbx") };
         let chain = mapgeom::envblock::material_chain(store, &mat);
+        // the material's own PreLightGen switch (`material_skips_prelightgen`), read from the material file beside the chain
+        if let Some(sw) = read_plg_switch(store, &mat) { LM_PLG_SKIP.lock().unwrap().insert(key.clone(), sw); }
         let mut v: Option<Option<u32>> = None;
         if !chain.shader.is_empty() {
             LM_SHADER.lock().unwrap().insert(key.clone(), chain.shader.to_ascii_lowercase());
@@ -185,6 +222,9 @@ pub fn lightmap_uvs_of_geom_ext(s2: &mapgeom::static_item::solid2::CPlugSolid2Mo
     let link = geom_material_link_ext(s2, sg, externals);
     // a link whose shader is known NOT lightmapped (no PreLightGen binding / pass word without 0x1000): no LM geometry (RE 11)
     if let Some(None) = lm_uv_index_cached(&link) { return None; }
+    // a material whose own `PreLightGen` switch skips the map: no LM geometry either (RE 17 — the flag rule; the geom stays in the
+    // port model as an occluder / caster, `ModelGeom::mat_no_lm`)
+    if material_skips_prelightgen(&link) { return None; }
     if terrain_material_takes_tc0(&link) {
         use mapgeom::static_item::vstream::Elem;
         let st = vis.stream()?;

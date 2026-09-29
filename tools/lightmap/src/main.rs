@@ -6913,7 +6913,7 @@ fn run(mut a: Vec<String>) {
             let mut i = 1;
             while i < a.len() { if a[i] == "--pak" { if let Some((pp, key)) = a.get(i + 1).and_then(|v| v.rsplit_once(':')) { st.add_pak(pp, key).unwrap_or_else(|e| panic!("--pak {pp}: {e}")); } i += 2; } else { links.push(a[i].clone()); i += 1; } }
             lightmap::lmmesh::set_lm_uv_store(st);
-            for l in &links { println!("{l}: {:?}", lightmap::lmmesh::lm_uv_index_cached(l)); }
+            for l in &links { println!("{l}: {:?}; PreLightGen switch skipped: {}", lightmap::lmmesh::lm_uv_index_cached(l), lightmap::lmmesh::material_skips_prelightgen(l)); }
         }
         "encode-study" => { if let Err(e) = lightmap::encodestudy::run(&a) { eprintln!("encode-study: {e}"); std::process::exit(1); } }
         "layoutcmp" => { if let Err(e) = lightmap::layoutcmp::run(&a) { eprintln!("layoutcmp: {e}"); std::process::exit(1); } }

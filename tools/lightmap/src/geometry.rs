@@ -91,6 +91,11 @@ pub struct ModelGeom {
     pub diff_tex: Vec<String>,
     /// Per material link: the diffuse albedo the bounce uses (`crate::albedo`).
     pub mat_albedo: Vec<[f32; 3]>,
+    /// Per `mat_links` slot: the material's own `PreLightGen` BOOL SWITCH is set (CPlugMaterialCustom chunk 0x0903A00C = 1 → the
+    /// shader permutation DTwk_SkipMap_PreLightGen: NO lightmap set — no chart texel, no pre-pass / accumulate / H-basis draw; the
+    /// geom stays a sun caster and a peel occluder drawn BLACK (Block_PeelDepthDiffuse_Black's (0, 1e-5, 0)). RE 17 2026-09-29
+    /// 15:50Z: Stadium's ItemFlagNoAnim (AI06220000's flag) and the Speedometer are the only two. `lmmesh::material_skips_prelightgen`.
+    pub mat_no_lm: Vec<bool>,
     /// The union of the visuals' STORED bounding boxes (CPlugVisual `bounding_box` = centre xyz, half xyz — the tiny
     /// library writes each half at least 0.02), in model space, as (min, max): the box the game's block record
     /// carries (`|M|·h + T`), which the light-camera fit (lightcam) works from — the wall's ±0.02 thickness is here,
@@ -113,6 +118,12 @@ pub fn sub(a: V3, b: V3) -> V3 {
 }
 
 impl ModelGeom {
+    /// Whether a triangle's material takes NO lightmap set (`mat_no_lm`): not a receiver, not a pre-pass / accumulate draw; an
+    /// occluder drawn black and a sun caster.
+    #[inline]
+    pub fn tri_no_lm(&self, t: &Tri) -> bool {
+        t.mat != u16::MAX && self.mat_no_lm.get(t.mat as usize).copied().unwrap_or(false)
+    }
     /// The key a `mat_links` slot's pre-pass constant is stored under (`FrozenTables::link_rgb`): the link in lower case,
     /// plus `|tc=<bits>,<bits>,<bits>` when the slot carries a `TargetColor` instance override (the same link with two
     /// overrides = two constants).
@@ -587,6 +598,7 @@ pub fn geom_from_solid2_ext(s2: &mapgeom::static_item::solid2::CPlugSolid2Model,
                     g.mat_links.push(link.clone());
                     g.mat_params.push(params);
                     g.mat_albedo.push(crate::albedo::for_link(&link).unwrap_or([f32::NAN; 3]));
+                    g.mat_no_lm.push(crate::lmmesh::material_skips_prelightgen(&link));
                     (g.mat_links.len() - 1) as u16
                 }
             }

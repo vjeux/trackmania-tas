@@ -2280,6 +2280,16 @@ fn fragment_radiance(scene: &Scene, bvh: &Bvh, prm: &BakeParams, shadow: Option<
     if !is_front {
         return [0.0; 3];
     }
+    // A GEOM WHOSE MATERIAL SKIPS THE PreLightGen MAP (the flag rule, RE 17 15:50Z; `ModelGeom::mat_no_lm`): no lightmap set, so
+    // no ILightInput texel — the peel draws it BLACK (the Block_PeelDepthDiffuse_Black form (0, 1e-5, 0): the G floor the peel PS
+    // keeps); it occludes like any opaque surface. (The exact peel program of such a geom = box 1c's second number.)
+    if wt.inst != DECOR_INST {
+        let inst = &scene.instances[wt.inst as usize];
+        let m = &scene.models[inst.model];
+        if let Some(t) = m.tris.get(wt.tri as usize) {
+            if m.tri_no_lm(t) { return [0.0, 1e-5, 0.0]; }
+        }
+    }
     // A STOCK TREE'S FRAGMENT (stockveg, PeelDepthDiffuse_Tree_p): BaseColor(TexCoord0) × the interpolated per-vertex sun light
     // (Tree_VertexAddLight), G ≥ 1e-5 — never the ILightInput atlas (chartless), never the port's albedo model. Without the
     // vertex lights (a bake stage before the setup chain) the tree is a black occluder.

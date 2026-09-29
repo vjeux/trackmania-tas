@@ -370,7 +370,10 @@ pub fn attr_from_map(scene: &crate::geometry::Scene, lm: &LmScene, frozen: &Froz
     // 0.078)) instead of Land's (0.338, 0.393, 0.447): 18 meshes paired to AC06423045, 9 to AC06423191, 8 to AC06423183 … — the
     // whole map's ground bounce ORANGE, the vertical item faces (the hills' G/B deficit) and the tiles' R +7.5 % downstream. A
     // mesh without a port instance (the Stadium prefab-entity records, a captured scene) keeps the vote.
+    // LMTOOL_PREPASS_PAIRING=vote (STUDY, default off): the pre-fix vertex-position vote for every mesh — the A/B of this rule
+    let vote_only = std::env::var("LMTOOL_PREPASS_PAIRING").map(|v| v == "vote").unwrap_or(false);
     let exact_of = |mk: usize| -> Option<usize> {
+        if vote_only { return None; }
         let pi = *lm.port_inst.get(lm.inst_first[mk])?;
         if pi == usize::MAX { return None; }
         let model = scene.instances.get(pi)?.model;
@@ -437,7 +440,8 @@ pub fn attr_from_map(scene: &crate::geometry::Scene, lm: &LmScene, frozen: &Froz
             let _ = k;
             // the triangles to draw: (positions-in-LM-space uv, uv0, class, diff)
             let tris: Vec<([[f32; 2]; 3], [[f32; 2]; 3], MatClass, u16)> = if port_uv_matches {
-                model.tris.iter().map(|t| (t.uv, t.uv0, classify_with(model, name, t, link_tex), diff_index(t))).collect()
+                // (a geom whose material skips the PreLightGen map is no pre-pass draw — the flag rule, `ModelGeom::mat_no_lm`)
+                model.tris.iter().filter(|t| !model.tri_no_lm(t)).map(|t| (t.uv, t.uv0, classify_with(model, name, t, link_tex), diff_index(t))).collect()
             } else {
                 mesh.indices.chunks_exact(3).map(|tri| {
                     let vs = [&mesh.verts[tri[0] as usize], &mesh.verts[tri[1] as usize], &mesh.verts[tri[2] as usize]];
@@ -933,7 +937,9 @@ pub fn build_with_lamps(scene: &crate::geometry::Scene, lm: &LmScene, sbox: &Aab
         let mut v: Vec<_> = acc.into_iter().collect();
         v.sort_by(|a, b| b.1.1.cmp(&a.1.1));
         eprintln!("setup-census: per port model — instances, covered texels, mean MDiffuse8 rgb, mean sun/w rgb, mean ILightInput (sweep 0) rgb");
-        for (name, (ni, nt, md, su, il)) in v.iter().take(40) {
+        // (LMTOOL_SETUP_CENSUS=all prints every model, else the 40 largest)
+        let n_show = if std::env::var("LMTOOL_SETUP_CENSUS").map(|v| v == "all").unwrap_or(false) { usize::MAX } else { 40 };
+        for (name, (ni, nt, md, su, il)) in v.iter().take(n_show) {
             let n = (*nt).max(1) as f64;
             eprintln!("  {:44} {:6} {:9}  md ({:.3}, {:.3}, {:.3})  sun ({:.3}, {:.3}, {:.3})  il ({:.4}, {:.4}, {:.4})", name, ni, nt, md[0] / n, md[1] / n, md[2] / n, su[0] / n, su[1] / n, su[2] / n, il[0] / n, il[1] / n, il[2] / n);
         }

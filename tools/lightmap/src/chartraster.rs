@@ -65,6 +65,8 @@ pub fn raster_chart_shifted(scene: &Scene, ii: usize, w: u32, h: u32, ss: u32, f
     let mut subs: Vec<Sub> = Vec::new();
     let fss = ss as f32;
     for (ti, t) in m.tris.iter().enumerate() {
+        // a material whose PreLightGen switch skips the map has no lightmap texels (the flag rule; `ModelGeom::mat_no_lm`)
+        if m.tri_no_lm(t) { continue; }
         let pix: Vec<[f32; 2]> = t
             .uv
             .iter()
