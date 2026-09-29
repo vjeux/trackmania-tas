@@ -16,6 +16,15 @@ struct Row {
     placements: usize,
     mean_y: f64,
     mean_dist: f64,
+    /// `--near FILE [--near-name S] --radius R` (the coordinator's 16:47Z row): the mean count of listed points (the fir census)
+    /// within R m of the model's placements — the canopy density around the model
+    near_count: f64,
+    /// `--probes OURS --against EDITOR [--probe-radius R]`: the mean probe OCCLUSION byte (image 1 = the up/down sky visibility) over
+    /// the probes within R (x, z) of the model's placements and 0…64 m above their y — ours and the editor's: our sky visibility over
+    /// the model vs the game's
+    occl_ours: f64,
+    occl_editor: f64,
+    occl_n: usize,
     albedo: [f64; 3],
     area: f64,
     dominant: String,
@@ -54,6 +63,19 @@ fn main() {
     let table = args.get(2).expect("CLASSCMP_BYNAME.tsv");
     let min_texels: usize = f("--min-texels").map(|v| v.parse().expect("--min-texels N")).unwrap_or(500);
     let scene = lightmap::geometry::Scene::from_map(map).expect("scene");
+    // --near FILE [--near-name S] --radius R: the canopy census (tmmaps census filtered to the firs) and the radius of the density count
+    let near_pts: Option<(Vec<(f32, f32)>, f32)> = f("--near").map(|p| { let pts = lightmap::classcmp::read_points(&p, f("--near-name").as_deref()).unwrap_or_else(|e| panic!("--near: {e}")); let r: f32 = f("--radius").map(|v| v.parse().expect("--radius R")).unwrap_or(100.0); eprintln!("--near: {} points, radius {r} m", pts.len()); (pts, r) });
+    // --probes OURS.Map.Gbx --against EDITOR.Map.Gbx [--probe-radius R]: the two probe volumes for the sky-visibility column
+    let probe_radius: f32 = f("--probe-radius").map(|v| v.parse().expect("--probe-radius R")).unwrap_or(48.0);
+    let probe_sides: Option<(lightmap::probecmp::Side, lightmap::probecmp::Side)> = f("--probes").map(|p| {
+        let other = f("--against").expect("--probes needs --against EDITOR.Map.Gbx");
+        let ours = lightmap::mapio::load(&p).unwrap_or_else(|e| panic!("{p}: {e}"));
+        let theirs = lightmap::mapio::load(&other).unwrap_or_else(|e| panic!("{other}: {e}"));
+        let a = lightmap::probecmp::load_side(&ours, "ours").unwrap_or_else(|e| panic!("--probes: {e}"));
+        let b = lightmap::probecmp::load_side(&theirs, "editor").unwrap_or_else(|e| panic!("--against: {e}"));
+        eprintln!("--probes: {} / {} probes, radius {probe_radius} m, 0…64 m above each placement", a.probes.len(), b.probes.len());
+        (a, b)
+    });
     // the class table: item:<model> rows → texels, lit editor %, the means and the ratio
     let txt = std::fs::read_to_string(table).unwrap_or_else(|e| panic!("{table}: {e}"));
     let mut cls: BTreeMap<String, (usize, f64, [f64; 3], [f64; 3], [f64; 3])> = Default::default();
@@ -83,6 +105,35 @@ fn main() {
     for (mi, r) in rows.iter_mut() {
         r.mean_y /= r.placements.max(1) as f64;
         r.mean_dist /= r.placements.max(1) as f64;
+        // the canopy density: listed points within R of each placement, averaged over the placements
+        if let Some((pts, rad)) = &near_pts {
+            let r2 = rad * rad;
+            let mut sum = 0usize;
+            for inst in scene.instances.iter().filter(|i| i.model == *mi) {
+                let (px, pz) = (inst.pose.pos[0], inst.pose.pos[2]);
+                sum += pts.iter().filter(|(x, z)| { let (dx, dz) = (x - px, z - pz); dx * dx + dz * dz <= r2 }).count();
+            }
+            r.near_count = sum as f64 / r.placements.max(1) as f64;
+        }
+        // the sky visibility over the model: the probe occlusion image over the probes within probe_radius (x, z) of a placement and
+        // 0…64 m above it — ours and the editor's (the same world positions, both sides valid)
+        if let Some((pa, pb)) = &probe_sides {
+            let (mut so, mut se, mut n) = (0f64, 0f64, 0usize);
+            let r2 = probe_radius * probe_radius;
+            for inst in scene.instances.iter().filter(|i| i.model == *mi) {
+                let (px, py, pz) = (inst.pose.pos[0], inst.pose.pos[1], inst.pose.pos[2]);
+                for (key, (ra, va, _)) in &pa.probes {
+                    let (dx, dz) = (key.0 as f32 - px, key.2 as f32 - pz);
+                    if dx * dx + dz * dz > r2 { continue; }
+                    let dy = key.1 as f32 - py;
+                    if dy < 0.0 || dy > 64.0 { continue; }
+                    let Some((rb, vb, _)) = pb.probes.get(key) else { continue };
+                    if !(*va && *vb) { continue; }
+                    so += ra[1][0] as f64; se += rb[1][0] as f64; n += 1;
+                }
+            }
+            if n > 0 { r.occl_ours = so / n as f64; r.occl_editor = se / n as f64; r.occl_n = n; }
+        }
         let m = &scene.models[*mi];
         let mut per: BTreeMap<usize, f64> = Default::default();
         for t in &m.tris {
@@ -109,8 +160,8 @@ fn main() {
     let mut list: Vec<Row> = rows.into_values().filter(|r| r.texels > 0).collect();
     list.sort_by(|a, b| b.texels.cmp(&a.texels));
     let sat = |a: &[f64; 3]| { let (mx, mn) = (a[0].max(a[1]).max(a[2]), a[0].min(a[1]).min(a[2])); if mx > 1e-9 { 1.0 - mn / mx } else { 0.0 } };
-    let mut out = String::from("model\tplacements\ttexels\tlit_editor_pct\tratio_rgb\tg_over_r\tb_over_r\tmean_ours_rgb\tmean_editor_rgb\teditor_b_over_r\talbedo_rgb\talbedo_sat\talbedo_b_over_r\ttextured_area_pct\ttargetcolor_rgb\ttargetcolor_area_pct\ttargetcolor_sat\tdominant_material\tdominant_area_pct\tmean_y\tmean_dist_m\n");
-    println!("{:<15} {:>4} {:>7} {:>5}  {:<21} {:>5} {:>5} {:>6}  {:<19} {:>4} {:>4} {:>5}  {:<19} {:>4} {:>4}  {:<26} {:>6} {:>6}", "model", "plc", "texels", "lit%", "ratio ours/editor r/g/b", "G/R", "B/R", "edB/R", "albedo r/g/b (const)", "sat", "tex%", "TC%", "TargetColor r/g/b", "sat", "B/R", "dominant material (area %)", "mean y", "dist m");
+    let mut out = String::from("model\tplacements\ttexels\tlit_editor_pct\tratio_rgb\tg_over_r\tb_over_r\tmean_ours_rgb\tmean_editor_rgb\teditor_b_over_r\talbedo_rgb\talbedo_sat\talbedo_b_over_r\ttextured_area_pct\ttargetcolor_rgb\ttargetcolor_area_pct\ttargetcolor_sat\tdominant_material\tdominant_area_pct\tmean_y\tmean_dist_m\tnear_count\toccl_ours\toccl_editor\toccl_ratio\toccl_probes\n");
+    println!("{:<15} {:>4} {:>7} {:>5}  {:<21} {:>5} {:>5} {:>6}  {:<19} {:>4} {:>4} {:>5}  {:<19} {:>4} {:>4}  {:<26} {:>6} {:>6} {:>6} {:>18}", "model", "plc", "texels", "lit%", "ratio ours/editor r/g/b", "G/R", "B/R", "edB/R", "albedo r/g/b (const)", "sat", "tex%", "TC%", "TargetColor r/g/b", "sat", "B/R", "dominant material (area %)", "mean y", "dist m", "canopy", "skyvis o/e (n)");
     for r in &list {
         let (gr, br) = (r.ratio[1] / r.ratio[0], r.ratio[2] / r.ratio[0]);
         let s = sat(&r.albedo);
@@ -120,8 +171,8 @@ fn main() {
         let (tcs, tcbr) = (sat(&r.tc), if r.tc[0] > 1e-9 { r.tc[2] / r.tc[0] } else { f64::NAN });
         let r3 = |v: &[f64; 3], p: usize| format!("{:.*} / {:.*} / {:.*}", p, v[0], p, v[1], p, v[2]);
         let opt3 = |v: &[f64; 3], area: f64, p: usize| if area > 0.0 { r3(v, p) } else { "—".to_string() };
-        println!("{:<15} {:>4} {:>7} {:>5.1}  {:<21} {:>5.3} {:>5.3} {:>6.3}  {:<19} {:>4.2} {:>4.0} {:>5.0}  {:<19} {:>4.2} {:>4.2}  {:<26} {:>6.1} {:>6.0}", r.model.trim_end_matches(".Item.Gbx"), r.placements, r.texels, r.lit_pct, r3(&r.ratio, 3), gr, br, edbr, opt3(&r.albedo, r.area - r.textured_area, 2), s, tex_pct, tc_pct, opt3(&r.tc, r.tc_area, 2), tcs, tcbr, format!("{} ({:.0} %)", r.dominant, r.dominant_share), r.mean_y, r.mean_dist);
-        out.push_str(&format!("{}\t{}\t{}\t{:.1}\t{}\t{:.4}\t{:.4}\t{}\t{}\t{:.4}\t{}\t{:.3}\t{:.3}\t{:.1}\t{}\t{:.1}\t{:.3}\t{}\t{:.1}\t{:.1}\t{:.1}\n", r.model, r.placements, r.texels, r.lit_pct, r3(&r.ratio, 3), gr, br, r3(&r.mean_ours, 4), r3(&r.mean_editor, 4), edbr, r3(&r.albedo, 3), s, abr, tex_pct, r3(&r.tc, 3), tc_pct, tcs, r.dominant, r.dominant_share, r.mean_y, r.mean_dist));
+        println!("{:<15} {:>4} {:>7} {:>5.1}  {:<21} {:>5.3} {:>5.3} {:>6.3}  {:<19} {:>4.2} {:>4.0} {:>5.0}  {:<19} {:>4.2} {:>4.2}  {:<26} {:>6.1} {:>6.0} {:>6.1} {:>18}", r.model.trim_end_matches(".Item.Gbx"), r.placements, r.texels, r.lit_pct, r3(&r.ratio, 3), gr, br, edbr, opt3(&r.albedo, r.area - r.textured_area, 2), s, tex_pct, tc_pct, opt3(&r.tc, r.tc_area, 2), tcs, tcbr, format!("{} ({:.0} %)", r.dominant, r.dominant_share), r.mean_y, r.mean_dist, r.near_count, if r.occl_n > 0 { format!("{:.0}/{:.0} = {:.3} ({})", r.occl_ours, r.occl_editor, r.occl_ours / r.occl_editor.max(1e-9), r.occl_n) } else { "—".to_string() });
+        out.push_str(&format!("{}\t{}\t{}\t{:.1}\t{}\t{:.4}\t{:.4}\t{}\t{}\t{:.4}\t{}\t{:.3}\t{:.3}\t{:.1}\t{}\t{:.1}\t{:.3}\t{}\t{:.1}\t{:.1}\t{:.1}\t{:.1}\t{:.1}\t{:.1}\t{:.4}\t{}\n", r.model, r.placements, r.texels, r.lit_pct, r3(&r.ratio, 3), gr, br, r3(&r.mean_ours, 4), r3(&r.mean_editor, 4), edbr, r3(&r.albedo, 3), s, abr, tex_pct, r3(&r.tc, 3), tc_pct, tcs, r.dominant, r.dominant_share, r.mean_y, r.mean_dist, r.near_count, r.occl_ours, r.occl_editor, if r.occl_n > 0 { r.occl_ours / r.occl_editor.max(1e-9) } else { f64::NAN }, r.occl_n));
     }
     // the reads: over the models with ≥ min_texels lit texels
     let big: Vec<&Row> = list.iter().filter(|r| (r.texels as f64 * r.lit_pct / 100.0) as usize >= min_texels && r.ratio.iter().all(|v| v.is_finite() && *v > 0.0)).collect();
@@ -143,6 +194,19 @@ fn main() {
     println!("Pearson r of the deficit (G/R, B/R of the ratio) against: mean height {:+.3} / {:+.3}; centroid distance {:+.3} / {:+.3}; the EDITOR's own B/R of the class {:+.3} / {:+.3}",
         pearson(&ys, &gr), pearson(&ys, &br), pearson(&ds, &gr), pearson(&ds, &br), pearson(&edbr, &gr), pearson(&edbr, &br));
     println!("Pearson r against the TargetColor saturation over the {} models with ≥ 10 % overridden (CustomPlastic) area: {:+.3} / {:+.3}", tcm.len(), pearson(&tc_s, &tc_gr), pearson(&tc_s, &tc_br));
+    // the coordinator's 16:47Z row (RE 17's merged candidate: the canopy over-occludes the sky): the deficit vs (i) the canopy density
+    // around the model and (ii) our sky visibility over it relative to the game's — |r| > 0.7 → the canopy; ≈ 0 → the env constants
+    if near_pts.is_some() {
+        let nc: Vec<f64> = big.iter().map(|r| r.near_count).collect();
+        println!("Pearson r against the CANOPY density (listed points within the --near radius of the model's placements): {:+.3} / {:+.3}", pearson(&nc, &gr), pearson(&nc, &br));
+    }
+    if probe_sides.is_some() {
+        let with: Vec<&&Row> = big.iter().filter(|r| r.occl_n >= 4 && r.occl_editor > 1e-9).collect();
+        let ov: Vec<f64> = with.iter().map(|r| r.occl_ours / r.occl_editor).collect();
+        let (g2, b2): (Vec<f64>, Vec<f64>) = (with.iter().map(|r| r.ratio[1] / r.ratio[0]).collect(), with.iter().map(|r| r.ratio[2] / r.ratio[0]).collect());
+        let oe: Vec<f64> = with.iter().map(|r| r.occl_editor).collect();
+        println!("Pearson r against OUR SKY VISIBILITY over the model relative to the game's (probe occlusion image, ours/editor; {} models with ≥ 4 probes): {:+.3} / {:+.3}; against the game's own sky visibility there: {:+.3} / {:+.3}", with.len(), pearson(&ov, &g2), pearson(&ov, &b2), pearson(&oe, &g2), pearson(&oe, &b2));
+    }
     let band = |label: &str, key: &dyn Fn(&Row) -> f64, edges: &[f64]| {
         println!("\nby {label} (bins at {:?}): n models · texels · mean ratio r/g/b (texel-weighted) · G/R · B/R", edges);
         let mut lo = f64::NEG_INFINITY;
@@ -161,5 +225,7 @@ fn main() {
     band("the EDITOR's class B/R (how blue the game lights the model)", &|r: &Row| if r.mean_editor[0] > 1e-9 { r.mean_editor[2] / r.mean_editor[0] } else { 0.0 }, &[1.0, 1.2, 1.4, 1.6, 1.8]);
     band("mean placement height y (m)", &|r: &Row| r.mean_y, &[8.0, 16.0, 32.0, 64.0, 128.0, 256.0]);
     band("mean distance to the placements' centroid (m)", &|r: &Row| r.mean_dist, &[250.0, 500.0, 1000.0, 2000.0]);
+    if near_pts.is_some() { band("CANOPY density (listed points within the --near radius of the placements)", &|r: &Row| r.near_count, &[0.0, 5.0, 20.0, 50.0, 100.0, 200.0]); }
+    if probe_sides.is_some() { band("OUR sky visibility over the model relative to the game's (probe occlusion ours/editor; models without probes = −1)", &|r: &Row| if r.occl_n >= 4 && r.occl_editor > 1e-9 { r.occl_ours / r.occl_editor } else { -1.0 }, &[-0.5, 0.8, 0.9, 0.97, 1.03, 1.1]); }
     if let Some(p) = f("--out") { std::fs::write(&p, out).unwrap_or_else(|e| panic!("{p}: {e}")); eprintln!("table → {p}"); }
 }
