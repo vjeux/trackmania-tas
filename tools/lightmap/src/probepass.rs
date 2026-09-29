@@ -501,6 +501,31 @@ pub fn probe_add_sky_visibility_logged<L: crate::lmaccum::LayerRead>(target: &mu
 pub fn probe_fold(target: &mut Volume3, src: &Volume3, scale: [f32; 4], slice_start: u32, slice_count: u32) {
     assert_eq!(target.channels, 4);
     assert_eq!(src.channels, 4);
+    assert!(target.w == src.w && target.h == src.h && target.d == src.d, "probe_fold: the volumes differ in size");
+    let z_end = (slice_start + slice_count).min(target.d);
+    if z_end <= slice_start { return; }
+    // THE FOLD IN PARALLEL OVER THE SLICES (E6 2026-09-29, the PERF row — baker-7's giant profile: the two folds per direction were
+    // 37 s per sweep, serial, while every other stage runs on the pool): a slice's texels are its own contiguous run of the data
+    // (`idx` = ((z·h + y)·w + x)·4 + c), so each slice job blends its run alone — the same `blend_add_f16` on the same operands in
+    // the same order per texel, hence the same bytes; the result of one texel never depends on another.
+    let per_slice = (target.w * target.h * 4) as usize;
+    let tp = target.data.as_mut_ptr() as usize;
+    let sp = src.data.as_ptr() as usize;
+    let _: Vec<()> = crate::pool::pool().map((z_end - slice_start) as usize, |zi| {
+        let z = (slice_start as usize + zi) * per_slice;
+        // SAFETY: the slice runs [z, z + per_slice) are disjoint across jobs and inside both volumes (the sizes were asserted equal).
+        let t = unsafe { std::slice::from_raw_parts_mut((tp as *mut f32).add(z), per_slice) };
+        let s = unsafe { std::slice::from_raw_parts((sp as *const f32).add(z), per_slice) };
+        for (i, (dst, src_v)) in t.iter_mut().zip(s.iter()).enumerate() {
+            let v = *src_v * scale[i & 3];
+            *dst = blend_add_f16(*dst, v);
+        }
+    });
+}
+
+/// The serial form of `probe_fold` (the pre-2026-09-29 loop), kept for the equality test below.
+#[cfg(test)]
+fn probe_fold_serial(target: &mut Volume3, src: &Volume3, scale: [f32; 4], slice_start: u32, slice_count: u32) {
     for z in slice_start..(slice_start + slice_count).min(target.d) {
         for y in 0..target.h {
             for x in 0..target.w {
@@ -672,6 +697,33 @@ mod tests {
         // a second add rounds the f16 sum to nearest-even
         probe_add_sky_visibility(&mut t, &d, &crate::lmaccum::LayerTargets { color: &depth, depth: &depth }, None, ProbeOpts::default());
         assert_eq!(t.get(0, 0, 0, 0), decode_f16(encode_f16(2.0 * 0.0018291473388671875, Rounding::NearestEven)));
+    }
+
+    #[test]
+    fn fold_parallel_equals_serial_to_the_bit() {
+        // a volume of many f16-representable and non-representable values, folded twice with the two production scales
+        let (w, h, d) = (40u32, 16u32, 32u32);
+        let mut src = Volume3::new(w, h, d, 4);
+        let mut t_par = Volume3::new(w, h, d, 4);
+        let mut t_ser = Volume3::new(w, h, d, 4);
+        let mut seed = 0x9E37_79B9u32;
+        for i in 0..src.data.len() {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            let v = (seed >> 8) as f32 / (1u32 << 24) as f32 * 3.0 - 0.5;
+            src.data[i] = if seed & 7 == 0 { 0.0 } else { v };
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            let start = decode_f16(encode_f16((seed >> 8) as f32 / (1u32 << 24) as f32, Rounding::NearestEven));
+            t_par.data[i] = start;
+            t_ser.data[i] = start;
+        }
+        for scale in [[2.0 / 1032.0, 2.0 / 1032.0, 2.0 / 1032.0, 1.0 / 1032.0], [0.0018293f32, 0.0018293, 0.0018293, 0.0018293], [-0.0007f32, -0.0007, -0.0007, -0.0007]] {
+            probe_fold(&mut t_par, &src, scale, 0, d);
+            probe_fold_serial(&mut t_ser, &src, scale, 0, d);
+        }
+        // a partial slice range too
+        probe_fold(&mut t_par, &src, [0.01, 0.01, 0.01, 0.005], 5, 9);
+        probe_fold_serial(&mut t_ser, &src, [0.01, 0.01, 0.01, 0.005], 5, 9);
+        assert!(t_par.data.iter().zip(t_ser.data.iter()).all(|(a, b)| a.to_bits() == b.to_bits()), "the parallel fold differs from the serial one");
     }
 
     #[test]
