@@ -537,6 +537,220 @@ fn main() {
             let sp = m.write_to_reporting(&out).expect("write moved map");
             println!("wrote {}\n  {}", out.display(), sp.summary());
         }
+        "untag" => {
+            // STOP AN ITEM BEING A WAYPOINT, in place: the anchored object's
+            // waypoint property (tag + order) is replaced by the null node, so
+            // the engine no longer counts it as a checkpoint the run must
+            // collect. Everything else about the placement -- model, position,
+            // rotation, the embedded item bytes -- is untouched. Written for
+            // the MK64 Koopa cave search maps: a section cut that keeps the
+            // course's 39 zone gates has 39 checkpoints the car never passes,
+            // so its Finish can never fire (a finish counts only once every
+            // checkpoint has been collected). `segat --neutralise` is NOT this:
+            // it turns a checkpoint into another finish.
+            let src = PathBuf::from(&args[2]);
+            let out = PathBuf::from(flag(&args, "--out").expect("--out F"));
+            let spec = flag(&args, "--items").expect("--items iN,iN,... (item indices as `tmmaps waypoints` prints them)");
+            let mut m = map::MapFile::load(&src);
+            let mut n = 0usize;
+            for tok in spec.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                let ii: usize = tok
+                    .trim_start_matches('i')
+                    .parse()
+                    .unwrap_or_else(|_| panic!("--items: {:?} is not an item index (want iN)", tok));
+                assert!(ii < m.items.len(), "item#{} does not exist ({} items)", ii, m.items.len());
+                let tag = m.items[ii].waypoint_tag.clone();
+                assert!(
+                    tag.is_some(),
+                    "item#{} {} carries no waypoint property -- nothing to remove",
+                    ii,
+                    m.items[ii].model
+                );
+                m.set_item_waypoint_tag(ii, None);
+                println!("  item#{} {} {:?} -> no waypoint", ii, m.items[ii].model, tag.unwrap());
+                n += 1;
+            }
+            assert!(n > 0, "--items named nothing");
+            let sp = m.write_to_reporting(&out).expect("write untagged map");
+            println!("wrote {} ({} waypoint properties removed)\n  {}", out.display(), n, sp.summary());
+            // READ-BACK CONTROL: the written map must list exactly the
+            // waypoints that were not untagged.
+            let back = map::MapFile::load(&out);
+            let left: Vec<usize> = back
+                .items
+                .iter()
+                .enumerate()
+                .filter(|(_, it)| it.waypoint_tag.is_some())
+                .map(|(i, _)| i)
+                .collect();
+            println!("  read-back: {} item waypoint(s) remain: {:?}", left.len(), left);
+        }
+        "retag" => {
+            // Rewrite an item's waypoint TAG in place (order stays 0): the
+            // engine's vocabulary is Spawn / Goal / Checkpoint / StartFinish /
+            // LinkedCheckpoint, and a cut written with `Start` / `Finish`
+            // spawns the car but never fires its finish.
+            let src = PathBuf::from(&args[2]);
+            let out = PathBuf::from(flag(&args, "--out").expect("--out F"));
+            let spec = flag(&args, "--set").expect("--set iN=TAG,iN=TAG,...");
+            let mut m = map::MapFile::load(&src);
+            let mut n = 0usize;
+            for tok in spec.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                let (a, tag) = tok.split_once('=').unwrap_or_else(|| panic!("--set: {:?} is not iN=TAG", tok));
+                let ii: usize = a
+                    .trim_start_matches('i')
+                    .parse()
+                    .unwrap_or_else(|_| panic!("--set: {:?} is not an item index (want iN)", a));
+                assert!(ii < m.items.len(), "item#{} does not exist ({} items)", ii, m.items.len());
+                let old = m.items[ii].waypoint_tag.clone();
+                m.set_item_waypoint_tag(ii, Some(tag));
+                println!("  item#{} {} {:?} -> {:?}", ii, m.items[ii].model, old, tag);
+                n += 1;
+            }
+            assert!(n > 0, "--set named nothing");
+            let sp = m.write_to_reporting(&out).expect("write retagged map");
+            println!("wrote {} ({} tags rewritten)\n  {}", out.display(), n, sp.summary());
+            let back = map::MapFile::load(&out);
+            for it in back.items.iter().filter(|it| it.waypoint_tag.is_some()) {
+                println!("  read-back: item#{} {} tag {:?}", it.index, it.model, it.waypoint_tag.as_deref().unwrap());
+            }
+        }
+        "dropcp" => {
+            // TAKE CHECKPOINTS OUT OF A MAP'S REQUIRED SET. The engine decides a
+            // landmark's kind from the ITEM MODEL's waypoint type (a Checkpoint
+            // model stays a required checkpoint whatever the placement's tag
+            // says -- measured on the MK64 Koopa cut: tags rewritten to Goal
+            // still counted as checkpoints and the finish never fired), so the
+            // only in-place cure is to swap each checkpoint placement onto a
+            // model the engine does not require -- a FINISH model -- and park
+            // it where no car can cross it. A finish is never required, so the
+            // map's real finish then fires on its own.
+            let src = PathBuf::from(&args[2]);
+            let out = PathBuf::from(flag(&args, "--out").expect("--out F"));
+            let spec = flag(&args, "--items").expect("--items iN,iN,...");
+            let model = flag(&args, "--model").expect("--model NAME.Item.Gbx (a Finish-type model the map carries)");
+            let park: Vec<f32> = flag(&args, "--park")
+                .unwrap_or("8,-900,8")
+                .split(',')
+                .map(|s| s.trim().parse::<f32>().expect("--park X,Y,Z"))
+                .collect();
+            assert_eq!(park.len(), 3, "--park wants X,Y,Z");
+            let mut m = map::MapFile::load(&src);
+            assert!(
+                m.items.iter().any(|it| it.model == model),
+                "--model {:?} is not a model this map places; the engine could not load it",
+                model
+            );
+            let mut n = 0usize;
+            let mut dropped: Vec<usize> = Vec::new();
+            for tok in spec.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                let ii: usize = tok
+                    .trim_start_matches('i')
+                    .parse()
+                    .unwrap_or_else(|_| panic!("--items: {:?} is not an item index (want iN)", tok));
+                assert!(ii < m.items.len(), "item#{} does not exist ({} items)", ii, m.items.len());
+                let old = m.items[ii].model.clone();
+                let home = m.items[ii].pos;
+                m.set_item_model(ii, &model);
+                m.move_item_pos(ii, [park[0], park[1], park[2]]);
+                println!("  item#{} {} at {:?} -> {} parked at {:?}", ii, old, home, model, park);
+                dropped.push(ii);
+                n += 1;
+            }
+            assert!(n > 0, "--items named nothing");
+            // Two passes: a model rename re-encodes the Id stream and the
+            // variable-length tag splice cannot ride the same write, so the
+            // renamed+moved map is written, reloaded, and only then untagged.
+            let sp1 = m.write_to_reporting(&out).expect("write map (pass 1: models + positions)");
+            println!("  pass 1: {}", sp1.summary());
+            let mut m = map::MapFile::load(&out);
+            for &ii in &dropped {
+                m.set_item_waypoint_tag(ii, None);
+            }
+            let sp = m.write_to_reporting(&out).expect("write map (pass 2: waypoint properties)");
+            println!("wrote {} ({} checkpoints dropped)\n  {}", out.display(), n, sp.summary());
+            let back = map::MapFile::load(&out);
+            for it in back.items.iter().filter(|it| it.waypoint_tag.is_some()) {
+                println!("  read-back: item#{} {} tag {:?} at {:?}", it.index, it.model, it.waypoint_tag.as_deref().unwrap(), it.pos);
+            }
+        }
+        "setmodel" => {
+            // Point an item placement at another model (and optionally another
+            // author), in place. Diagnostic: swap a map's own finish item for
+            // the stock `GateFinish32m` to ask the oracle whether the ITEM or
+            // the PLACEMENT is why a finish never fires.
+            let src = PathBuf::from(&args[2]);
+            let out = PathBuf::from(flag(&args, "--out").expect("--out F"));
+            let spec = flag(&args, "--set").expect("--set iN=MODEL,...");
+            let author = flag(&args, "--author");
+            let mut m = map::MapFile::load(&src);
+            for tok in spec.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                let (a, model) = tok.split_once('=').unwrap_or_else(|| panic!("--set: {:?} is not iN=MODEL", tok));
+                let ii: usize = a.trim_start_matches('i').parse().unwrap_or_else(|_| panic!("--set: {:?} is not iN", a));
+                let old = m.items[ii].model.clone();
+                m.set_item_model(ii, model);
+                if let Some(au) = author.as_deref() {
+                    m.set_item_author(ii, au);
+                }
+                println!("  item#{} {} -> {} (author {:?})", ii, old, model, author);
+            }
+            let sp = m.write_to_reporting(&out).expect("write map");
+            println!("wrote {}\n  {}", out.display(), sp.summary());
+            let back = map::MapFile::load(&out);
+            for it in back.items.iter().filter(|it| it.waypoint_tag.is_some()) {
+                println!("  read-back: item#{} {} tag {:?} at {:?}", it.index, it.model, it.waypoint_tag.as_deref().unwrap(), it.pos);
+            }
+        }
+        "setblock" => {
+            // Rename a block model in place (diagnostic sibling of `setmodel`):
+            // e.g. RoadTechStart -> RoadTechMultilap to ask the oracle what a
+            // lap-race start does to a map's finish.
+            let src = PathBuf::from(&args[2]);
+            let out = PathBuf::from(flag(&args, "--out").expect("--out F"));
+            let spec = flag(&args, "--set").expect("--set N=NAME,...");
+            let mut m = map::MapFile::load(&src);
+            for tok in spec.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                let (a, name) = tok.split_once('=').unwrap_or_else(|| panic!("--set: {:?} is not N=NAME", tok));
+                let bi: usize = a.parse().unwrap_or_else(|_| panic!("--set: {:?} is not a block index", a));
+                let old = m.blocks[bi].name.clone();
+                m.set_block_name(bi, name);
+                println!("  block#{} {} -> {}", bi, old, name);
+            }
+            let sp = m.write_to_reporting(&out).expect("write map");
+            println!("wrote {}\n  {}", out.display(), sp.summary());
+        }
+        "reembed" => {
+            // Replace one embedded item model's BYTES inside the map's
+            // embedded-objects zip, keeping the manifest and every placement.
+            // `--replace NAME=FILE` names the zip entry (as `header` lists it,
+            // e.g. Items/Foo.Item.Gbx) and the file whose bytes go in its
+            // place. Used to swap the Koopa cut's StartFinish-type start item
+            // for the same item with waypoint type Start, so the map stops
+            // being a lap race and its Finish can fire.
+            let src = PathBuf::from(&args[2]);
+            let out = PathBuf::from(flag(&args, "--out").expect("--out F"));
+            let spec = flag(&args, "--replace").expect("--replace NAME=FILE[,NAME=FILE]");
+            let mut m = map::MapFile::load(&src);
+            let zip = header::embedded_zip_bytes(&m.gbx.body).expect("map has no embedded-objects zip");
+            let manifest = m.embedded_manifest().expect("map has no readable embedded-objects manifest");
+            let mut zip2 = zip.clone();
+            for tok in spec.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                let (name, file) = tok.split_once('=').unwrap_or_else(|| panic!("--replace: {:?} is not NAME=FILE", tok));
+                let bytes = std::fs::read(file).unwrap_or_else(|e| panic!("{file}: {e}"));
+                let (before, names) = header::embedded_zip(&m.gbx.body).unwrap();
+                assert!(names.iter().any(|n| n == name), "{:?} is not an entry of the embedded zip ({} entries, {} bytes)", name, names.len(), before);
+                zip2 = header::zip_add(&zip2, name, &bytes);
+                println!("  {} <- {} ({} bytes)", name, file, bytes.len());
+            }
+            let rows: Vec<(&str, &str)> = manifest.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+            println!("  manifest: {} item idents kept; zip {} -> {} bytes", rows.len(), zip.len(), zip2.len());
+            m.replace_embedded_objects(&rows, &zip2);
+            let sp = m.write_to_reporting(&out).expect("write map");
+            println!("wrote {}\n  {}", out.display(), sp.summary());
+            let back = map::MapFile::load(&out);
+            let (zb, zn) = header::embedded_zip(&back.gbx.body).unwrap_or((0, Vec::new()));
+            println!("  read-back: zip {} bytes, {} entries, manifest {} rows", zb, zn.len(), back.embedded_manifest().map_or(0, |r| r.len()));
+        }
         "oracle" => {
             // --map M --ghosts a b c  (repeatable)
             let mut pairs: Vec<(PathBuf, Vec<PathBuf>)> = Vec::new();

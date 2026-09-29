@@ -2025,6 +2025,59 @@ pub fn embedded_objects_payload(items: &[(&str, &str)], zip: &[u8], collection: 
 }
 
 impl MapFile {
+    /// The embedded-objects MANIFEST of chunk 0x03043054: one (item ident,
+    /// author) row per embedded item model, read back through the same
+    /// lookback-string convention `embedded_objects_payload` writes (id
+    /// version 3; `0x40000000` + text defines a string, `0x40000000 | n`
+    /// back-references the n-th one). Written so an existing map's zip can be
+    /// edited and re-embedded WITH its manifest -- `replace_embedded_zip`
+    /// assumes an empty manifest and would splice the zip over the rows.
+    pub fn embedded_manifest(&self) -> Option<Vec<(String, String)>> {
+        let (_, _, payload, size) = crate::gbx::all_skip_chunks(&self.gbx.body)
+            .into_iter()
+            .find(|(cid, ..)| *cid == 0x0304_3054)?;
+        let b = &self.gbx.body[payload..payload + size];
+        let u32_at = |o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+        if b.len() < 16 || u32_at(0) != 1 {
+            return None;
+        }
+        let n = u32_at(12) as usize;
+        let mut rows = Vec::with_capacity(n);
+        if n == 0 {
+            return Some(rows);
+        }
+        let mut o = 16usize;
+        if u32_at(o) != 3 {
+            return None;
+        }
+        o += 4;
+        let mut table: Vec<String> = Vec::new();
+        let mut read_str = |o: &mut usize| -> Option<String> {
+            let w = u32_at(*o);
+            *o += 4;
+            if w == 0x4000_0000 {
+                let len = u32_at(*o) as usize;
+                *o += 4;
+                let s = String::from_utf8_lossy(&b[*o..*o + len]).to_string();
+                *o += len;
+                table.push(s.clone());
+                Some(s)
+            } else if w & 0xC000_0000 == 0x4000_0000 {
+                let idx = (w & 0x3FFF_FFFF) as usize;
+                table.get(idx.checked_sub(1)?).cloned()
+            } else {
+                None
+            }
+        };
+        for _ in 0..n {
+            let name = read_str(&mut o)?;
+            o += 4; // collection
+            let author = read_str(&mut o)?;
+            rows.push((name, author));
+        }
+        Some(rows)
+    }
+
     /// Replace only the ZIP tail. Prefer `replace_embedded_objects` when adding
     /// new item models, because a ZIP without its Ident manifest is invisible.
     pub fn replace_embedded_zip(&mut self, zip: &[u8]) {

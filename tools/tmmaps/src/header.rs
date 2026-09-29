@@ -220,6 +220,18 @@ fn zip_names(z: &[u8]) -> Vec<String> {
 
 /// The embedded-objects chunk (`0x03043054`): the zip of custom items a map
 /// carries inside itself. Returns (zip bytes, entry names).
+/// The embedded-objects zip itself, as bytes -- for `header --zip-out F`, so the
+/// item models a map carries can be read with the item tools (waypoint type,
+/// trigger shape) instead of inferred from their names.
+pub fn embedded_zip_bytes(body: &[u8]) -> Option<Vec<u8>> {
+    let (_, _, payload, size) = crate::gbx::all_skip_chunks(body)
+        .into_iter()
+        .find(|(cid, _, _, _)| *cid == 0x0304_3054)?;
+    let seg = &body[payload..(payload + size).min(body.len())];
+    let z = seg.windows(4).position(|w| w == b"PK\x03\x04")?;
+    Some(seg[z..].to_vec())
+}
+
 pub fn embedded_zip(body: &[u8]) -> Option<(usize, Vec<String>)> {
     let (_, _, payload, size) = crate::gbx::all_skip_chunks(body)
         .into_iter()
@@ -383,8 +395,16 @@ pub fn cmd(args: &[String]) {
     let mut tsv = false;
     let mut want_xml = false;
     let mut names = false;
+    let mut zip_out: Option<String> = None;
+    let mut take_zip = false;
     for a in &args[2..] {
+        if take_zip {
+            zip_out = Some(a.clone());
+            take_zip = false;
+            continue;
+        }
         match a.as_str() {
+            "--zip-out" => take_zip = true,
             "--tsv" => tsv = true,
             "--xml" => want_xml = true,
             "--names" => names = true,
@@ -395,8 +415,21 @@ pub fn cmd(args: &[String]) {
             s => paths.push(s.to_string()),
         }
     }
+    if let (Some(out), Some(p)) = (zip_out.as_deref(), paths.first()) {
+        let g = Gbx::load(std::path::Path::new(p)).unwrap_or_else(|e| { eprintln!("{p}: {e}"); std::process::exit(2) });
+        match embedded_zip_bytes(&g.body) {
+            Some(z) => {
+                std::fs::write(out, &z).unwrap_or_else(|e| { eprintln!("{out}: {e}"); std::process::exit(2) });
+                println!("wrote {out} ({} bytes of embedded-objects zip from {p})", z.len());
+            }
+            None => {
+                eprintln!("{p}: no embedded-objects zip (chunk 0x03043054)");
+                std::process::exit(2);
+            }
+        }
+    }
     if paths.is_empty() {
-        eprintln!("usage: tmmaps header MAP [MAP ...] [--tsv] [--xml] [--names]");
+        eprintln!("usage: tmmaps header MAP [MAP ...] [--tsv] [--xml] [--names] [--zip-out F]");
         std::process::exit(2);
     }
 

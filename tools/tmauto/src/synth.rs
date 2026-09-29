@@ -402,7 +402,7 @@ pub fn validation_start_index_for_map(map: &std::path::Path) -> Result<u32, Stri
     match start.kind {
         tmmaps::map::Kind::Block => Ok(waypoints
             .iter()
-            .filter(|w| w.kind == tmmaps::map::Kind::Block && w.tag != "Spawn")
+            .filter(|w| w.kind == tmmaps::map::Kind::Block && !is_spawn_tag(&w.tag))
             .count() as u32),
         tmmaps::map::Kind::Item => item_start_index(map, &waypoints, &start),
     }
@@ -429,13 +429,23 @@ pub fn is_parked_waypoint(w: &tmmaps::map::Waypoint) -> bool {
 /// item starts are whatever the item is called (a tiny-campaign start item is
 /// `AC00000096.Item.Gbx`). Parked converter blocks are excluded; anything
 /// else ambiguous is refused rather than guessed.
+/// Is this waypoint tag a START? TM2020 writes `Spawn` on a start block or
+/// item and `StartFinish` on a multilap start; the MK64 exporter's `tas_section`
+/// cuts write `Start`. All three spawn the car, so all three are the semantic
+/// start here -- a synthesiser that only knew `Spawn` refused every multilap
+/// map and every section cut ("expected exactly one semantic Spawn waypoint,
+/// found 0") while the server drove them fine.
+pub fn is_spawn_tag(tag: &str) -> bool {
+    matches!(tag, "Spawn" | "StartFinish" | "Start")
+}
+
 pub fn spawn_waypoint(
     map: &std::path::Path,
     waypoints: &[tmmaps::map::Waypoint],
 ) -> Result<tmmaps::map::Waypoint, String> {
     let starts: Vec<_> = waypoints
         .iter()
-        .filter(|w| w.tag == "Spawn" && !is_parked_waypoint(w))
+        .filter(|w| is_spawn_tag(&w.tag) && !is_parked_waypoint(w))
         .collect();
     match starts.len() {
         1 => Ok(starts[0].clone()),
@@ -472,11 +482,11 @@ pub fn item_start_index(
 ) -> Result<u32, String> {
     let live_block_gates = waypoints
         .iter()
-        .filter(|w| w.kind == tmmaps::map::Kind::Block && w.tag != "Spawn" && !is_parked_waypoint(w))
+        .filter(|w| w.kind == tmmaps::map::Kind::Block && !is_spawn_tag(&w.tag) && !is_parked_waypoint(w))
         .count();
     let live_block_spawns = waypoints
         .iter()
-        .filter(|w| w.kind == tmmaps::map::Kind::Block && w.tag == "Spawn" && !is_parked_waypoint(w))
+        .filter(|w| w.kind == tmmaps::map::Kind::Block && is_spawn_tag(&w.tag) && !is_parked_waypoint(w))
         .count();
     let item_pos = waypoints
         .iter()
