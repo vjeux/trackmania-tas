@@ -49,6 +49,7 @@ mod gistpub;
 mod terrainround;
 mod cupexport;
 mod gametoken;
+mod ghrelease;
 mod batch;
 mod customsheet;
 mod thumbs;
@@ -246,6 +247,9 @@ fn main() {
             println!("tokens in {}", dir.display());
             Ok(())
         })(),
+        // `gh-release upload …` — a release asset from the DEVSERVER via the GitHub REST
+        // API and curl (gh cannot use fwdproxy's client certificate); no box, no relay.
+        "gh-release" => ghrelease::cmd(rest),
         "mint-tokens" => (|| -> Result<(), String> {
             let dir = tmmaps::cli::flag(rest, "--token-dir").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from("/tmp/tinyctl-tokens"));
             std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
