@@ -112,11 +112,36 @@ pub struct Options {
     pub far_from: Option<(Vec<(f32, f32)>, f32)>,
     /// `--y-range LO,HI` (V5): compare only the probe rows with LO ≤ world y ≤ HI (the first rows above the floor).
     pub y_range: Option<(i32, i32)>,
+    /// `--boxes RECORDS.tsv --box-names A,B,… [--box-above M]` (E6 2026-09-29, E4's hill-probe oracle as a flag): only the probes
+    /// inside the XZ × Y box (centre ± half, from the 12-column records table) of a chart whose name contains one of the
+    /// substrings; `--box-above M` extends each box upward by M metres (the air just over the surface).
+    pub boxes: Option<Vec<([f32; 3], [f32; 3])>>,
 }
 
-/// The `--far-from` / `--y-range` filter of one probe at world (x, y, z).
+/// The boxes of `--boxes`: (min, max) per selected record row (the 12-column records table: chart, class, obj, sub, name,
+/// quality, centre_y, centre_x, centre_z, half_x, half_y, half_z).
+pub fn read_boxes(path: &str, names: &[String], above: f32) -> Result<Vec<([f32; 3], [f32; 3])>, String> {
+    let txt = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
+    let mut out = Vec::new();
+    for line in txt.lines().skip(1) {
+        let c: Vec<&str> = line.split('\t').collect();
+        if c.len() < 12 { continue; }
+        if !names.iter().any(|n| c[4].contains(n.as_str())) { continue; }
+        let f = |i: usize| c[i].trim().parse::<f32>().unwrap_or(f32::NAN);
+        let (cy, cx, cz, hx, hy, hz) = (f(6), f(7), f(8), f(9), f(10), f(11));
+        if [cy, cx, cz, hx, hy, hz].iter().any(|v| !v.is_finite()) { continue; }
+        out.push(([cx - hx, cy - hy, cz - hz], [cx + hx, cy + hy + above, cz + hz]));
+    }
+    Ok(out)
+}
+
+/// The `--far-from` / `--y-range` / `--boxes` filter of one probe at world (x, y, z).
 pub fn probe_selected(key: &(i32, i32, i32), o: &Options) -> bool {
     if let Some((lo, hi)) = o.y_range { if key.1 < lo || key.1 > hi { return false; } }
+    if let Some(bx) = &o.boxes {
+        let (x, y, z) = (key.0 as f32, key.1 as f32, key.2 as f32);
+        if !bx.iter().any(|(lo, hi)| x >= lo[0] && x <= hi[0] && y >= lo[1] && y <= hi[1] && z >= lo[2] && z <= hi[2]) { return false; }
+    }
     if let Some((pts, r)) = &o.far_from {
         let (x, z) = (key.0 as f32, key.2 as f32);
         let r2 = r * r;
@@ -318,14 +343,14 @@ mod tests {
     use super::*;
     #[test]
     fn far_from_and_y_range_select_the_open_floor_probes() {
-        let o = Options { levels: false, worst: 0, tsv: None, dump: None, far_from: Some((vec![(100.0, 100.0), (500.0, 40.0)], 100.0)), y_range: Some((-6, 10)) };
+        let o = Options { levels: false, worst: 0, tsv: None, dump: None, far_from: Some((vec![(100.0, 100.0), (500.0, 40.0)], 100.0)), y_range: Some((-6, 10)), boxes: None };
         assert!(probe_selected(&(300, 2, 300), &o));          // far from both points, in the band
         assert!(!probe_selected(&(150, 2, 100), &o));         // 50 m from the first point
         assert!(!probe_selected(&(300, 34, 300), &o));        // above the band
         assert!(!probe_selected(&(300, -7, 300), &o));        // below the band
         assert!(!probe_selected(&(600, 10, 40), &o));         // exactly 100 m away counts as near (≤ r)
         assert!(probe_selected(&(601, 10, 40), &o));          // 101 m away is far
-        let none = Options { levels: false, worst: 0, tsv: None, dump: None, far_from: None, y_range: None };
+        let none = Options { levels: false, worst: 0, tsv: None, dump: None, far_from: None, y_range: None, boxes: None };
         assert!(probe_selected(&(0, 0, 0), &none));
     }
 }

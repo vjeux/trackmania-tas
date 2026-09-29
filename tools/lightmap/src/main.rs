@@ -7005,7 +7005,9 @@ fn run(mut a: Vec<String>) {
             // --y-range LO,HI (V5): only the probe rows with LO ≤ world y ≤ HI
             let far_from = f("--far-from").map(|p| { let pts = lightmap::classcmp::read_points(&p, f("--far-name").as_deref()).unwrap_or_else(|e| panic!("--far-from: {e}")); let r: f32 = f("--radius").map(|v| v.parse().expect("--radius R")).unwrap_or(100.0); eprintln!("--far-from: {} points, radius {r} m", pts.len()); (pts, r) });
             let y_range = f("--y-range").map(|s| { let (lo, hi) = s.split_once(',').expect("--y-range LO,HI"); (lo.trim().parse::<i32>().expect("--y-range LO"), hi.trim().parse::<i32>().expect("--y-range HI")) });
-            let o = lightmap::probecmp::Options { levels: a.iter().any(|x| x == "--levels"), worst: f("--worst").map(|v| v.parse().expect("--worst N")).unwrap_or(0), tsv: f("--tsv"), dump: f("--dump"), far_from, y_range };
+            // --boxes RECORDS.tsv --box-names A,B,… [--box-above M] (E6): only the probes inside the named charts' record boxes (E4's hill-probe oracle)
+            let boxes = f("--boxes").map(|p| { let names: Vec<String> = f("--box-names").unwrap_or_default().split(',').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect(); let above: f32 = f("--box-above").and_then(|v| v.parse().ok()).unwrap_or(0.0); let b = lightmap::probecmp::read_boxes(&p, &names, above).unwrap_or_else(|e| panic!("--boxes: {e}")); eprintln!("--boxes: {} record box(es) matching {:?} (+{above} m above)", b.len(), names); b });
+            let o = lightmap::probecmp::Options { levels: a.iter().any(|x| x == "--levels"), worst: f("--worst").map(|v| v.parse().expect("--worst N")).unwrap_or(0), tsv: f("--tsv"), dump: f("--dump"), far_from, y_range, boxes };
             lightmap::probecmp::run(&ours, &theirs, &o).unwrap_or_else(|e| { eprintln!("probecmp: {e}"); std::process::exit(1) });
         }
         "classcmp" => {
