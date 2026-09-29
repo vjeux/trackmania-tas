@@ -775,13 +775,73 @@ pub fn replace_strings(
 }
 
 pub fn write_gbx(g: &Gbx, body: Vec<u8>, out: &str) -> Result<(), String> {
-    // Always write an UNCOMPRESSED body. The dedicated server accepts it, the
-    // game accepts it, and it keeps every write path free of an LZO compressor
-    // whose output is not bit-reproducible -- which matters, because half the
-    // controls here are byte comparisons.
+    // Always write an UNCOMPRESSED body. The dedicated server accepts it and
+    // it keeps every write path free of an LZO compressor whose output is not
+    // bit-reproducible -- which matters, because half the controls here are
+    // byte comparisons. **The game CLIENT's in-race ghost loader does NOT
+    // accept it** ("Unable to load ghost file"; the plugin's Replay_Load /
+    // Ghost_Add drop the handler -- measured 2026-09-29 on the MK64 cave
+    // tapes; the MediaTracker import is the one path that takes both). A file
+    // meant for the client goes through `write_gbx_compressed` / `ghost
+    // compress`.
     let mut file = g.header_bytes_u();
     file.extend_from_slice(&body);
     std::fs::write(out, file).map_err(|e| format!("{}: {}", out, e))
+}
+
+pub type CompressFn =
+    unsafe extern "C" fn(*const u8, usize, *mut u8, *mut usize, *mut c_void) -> c_int;
+
+static COMPRESS: OnceLock<usize> = OnceLock::new();
+
+/// `lzo1x_1_compress`, resolved once beside the decompressor.
+pub fn lzo_compress_init() -> CompressFn {
+    let _ = lzo_init();
+    let addr = *COMPRESS.get_or_init(|| unsafe {
+        let mut h = std::ptr::null_mut();
+        for name in [b"liblzo2.so.2\0".as_ref(), b"liblzo2.so\0".as_ref()] {
+            h = dlopen(name.as_ptr() as *const c_char, RTLD_NOW);
+            if !h.is_null() {
+                break;
+            }
+        }
+        assert!(!h.is_null(), "cannot dlopen liblzo2");
+        let c = dlsym(h, b"lzo1x_1_compress\0".as_ptr() as *const c_char);
+        assert!(!c.is_null(), "no lzo1x_1_compress in liblzo2");
+        c as usize
+    });
+    unsafe { std::mem::transmute::<usize, CompressFn>(addr) }
+}
+
+/// The body as one LZO1X stream, round-trip asserted.
+pub fn lzo_compress(src: &[u8]) -> Vec<u8> {
+    let f = lzo_compress_init();
+    let mut dst = vec![0u8; src.len() + src.len() / 16 + 64 + 3];
+    let mut dl = dst.len();
+    // lzo1x_1 wants a 64 KB work memory
+    let mut wrk = vec![0u8; 1 << 16];
+    let r = unsafe { f(src.as_ptr(), src.len(), dst.as_mut_ptr(), &mut dl, wrk.as_mut_ptr() as *mut c_void) };
+    assert_eq!(r, 0, "lzo1x_1_compress -> {}", r);
+    dst.truncate(dl);
+    assert_eq!(lzo_decompress(&dst, src.len()), src, "lzo round-trip");
+    dst
+}
+
+/// The whole file with its body LZO-COMPRESSED ('C'): the form the game
+/// client's ghost loader requires. Same header fields, same body bytes.
+pub fn gbx_bytes_compressed(g: &Gbx, body: &[u8]) -> Vec<u8> {
+    let stream = lzo_compress(body);
+    let mut file = g.header_bytes_u();
+    // header_bytes_u writes 'U' at byte 7; the client needs 'C'
+    file[7] = b'C';
+    file.extend_from_slice(&(body.len() as u32).to_le_bytes());
+    file.extend_from_slice(&(stream.len() as u32).to_le_bytes());
+    file.extend_from_slice(&stream);
+    file
+}
+
+pub fn write_gbx_compressed(g: &Gbx, body: Vec<u8>, out: &str) -> Result<(), String> {
+    std::fs::write(out, gbx_bytes_compressed(g, &body)).map_err(|e| format!("{}: {}", out, e))
 }
 
 /// Seconds, with a decimal, from milliseconds. Times are reported this way

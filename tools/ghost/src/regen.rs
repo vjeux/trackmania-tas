@@ -935,7 +935,44 @@ fn finish(out: &str, carrier: &str, map: &str, a: &[String], force: bool) {
         }
         eprintln!("--force: keeping {out} despite {} failed check(s).", refused.len());
     }
+    // THE CLIENT NEEDS A COMPRESSED BODY. Every stage above writes and compares
+    // uncompressed ('U') files, which the dedicated server accepts; the game's
+    // in-race ghost loader refuses them ("Unable to load ghost file" -- the
+    // plugin's Replay_Load / Ghost_Add drop the handler; measured 2026-09-29).
+    // A regenerated ghost exists to be LOADED IN THE CLIENT, so it leaves here
+    // as 'C'. Same header, same body bytes; --uncompressed keeps 'U'.
+    if !has(a, "--uncompressed") {
+        match compress_file(out, out) {
+            Ok((u, c)) => println!("{out}: body LZO-compressed for the client ({u} -> {c} bytes; --uncompressed to keep 'U')"),
+            Err(e) => eprintln!("{out}: left UNCOMPRESSED -- the client will refuse it ({e})"),
+        }
+    }
     println!("\n{out} is finished.");
+}
+
+/// Rewrite a Gbx file with its body LZO-compressed ('C'): the form the game
+/// client's ghost loader requires. Returns (uncompressed, compressed) file sizes.
+pub fn compress_file(inp: &str, out: &str) -> Result<(usize, usize), String> {
+    let bytes = std::fs::read(inp).map_err(|e| format!("{inp}: {e}"))?;
+    let g = gbx::container::Gbx::parse(&bytes);
+    let file = gbx::container::gbx_bytes_compressed(&g, &g.body);
+    let back = gbx::container::Gbx::parse(&file);
+    if back.body != g.body {
+        return Err("read-back body differs after compression".into());
+    }
+    std::fs::write(out, &file).map_err(|e| format!("{out}: {e}"))?;
+    Ok((bytes.len(), file.len()))
+}
+
+/// `ghost compress IN OUT`
+pub fn compress_cmd(args: &[String]) {
+    if args.len() < 2 {
+        die("usage: ghost compress IN.Ghost.Gbx OUT.Ghost.Gbx");
+    }
+    match compress_file(&args[0], &args[1]) {
+        Ok((u, c)) => println!("wrote {} : body 'C' (LZO), {} -> {} bytes; the client's ghost loader takes this form", args[1], u, c),
+        Err(e) => die(e),
+    }
 }
 
 /// The acceptance gate for one regenerated candidate.

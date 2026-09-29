@@ -94,6 +94,12 @@ CAR STATE  (operation 3)
         from its own inputs, and require its own trajectory back. The answer key
         is in the file and nothing about it can be tuned. Floor 0.48-0.52 mm
         (client vs dedicated server); default bar 5 mm.
+        The output leaves with its body LZO-COMPRESSED ('C'): the game client's
+        ghost loader refuses an uncompressed ('U') body (the server takes both).
+        --uncompressed keeps 'U' for byte-comparison controls.
+  ghost compress IN OUT
+        Rewrite any ghost/replay with its body LZO-compressed ('C') -- the one
+        change that made the client load the MK64 cave tapes (2026-09-29).
   ghost regen-control FILE --map MAP
         The fixed-point control: regenerate a ghost that already carries its own
         true telemetry and require the result to reproduce it.
@@ -565,6 +571,7 @@ fn main() {
         "record" => record::cmd(rest),
         "film" => film::cmd(rest),
         "regen" => regen::cmd(rest),
+        "compress" => regen::compress_cmd(rest),
         "regen-control" => regen::control(rest),
         "roundtrip" => roundtrip::cmd(rest),
         "verify" => verify::cmd(rest),
