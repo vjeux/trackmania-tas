@@ -344,6 +344,21 @@ pub fn rewrite(
     name: Option<&str>,
     best_ms: Option<u32>,
 ) -> Option<HeaderEdit> {
+    rewrite_full(c, anonymise, name, best_ms, None)
+}
+
+/// `rewrite`, plus the header's MAP UID. The replay header (0x03093000 and the
+/// XML) carries its own copy of the map uid that no body census sees: a
+/// carrier rebound with `ghost map set` kept its donor's uid there (measured
+/// 2026-09-29 on a client replay that loaded but was filed under another
+/// map), so `map set` now routes through this.
+pub fn rewrite_full(
+    c: &Container,
+    anonymise: bool,
+    name: Option<&str>,
+    best_ms: Option<u32>,
+    map_uid: Option<&str>,
+) -> Option<HeaderEdit> {
     let chunks = parse_user_data(&c.gbx.user_data)?;
     let who = name.unwrap_or("TAS");
     let mut log = Vec::new();
@@ -376,6 +391,14 @@ pub fn rewrite(
                         "  header 0x03093000 map author {:?} LEFT ALONE (it is the map's, not the driver's)",
                         p.map_author.text
                     ));
+                    // the uid is the FIRST string of the chunk: edit it last so
+                    // every offset above stayed valid
+                    if let Some(u) = map_uid {
+                        if p.uid.text != u {
+                            log.push(format!("  header 0x03093000 map uid  {:?} -> {:?}", p.uid.text, u));
+                            put_string(&mut data, &p.uid, u);
+                        }
+                    }
                 }
             }
             0x0309_3001 => {
@@ -385,6 +408,14 @@ pub fn rewrite(
                     let mut new = f.text.clone();
                     if let Some(ms) = best_ms {
                         new = rewrite_xml_best(&new, ms);
+                    }
+                    if let Some(u) = map_uid {
+                        // <map uid="..." is the XML's own copy
+                        if let Some(old) = attr(&new, "uid") {
+                            if old != u {
+                                new = new.replace(&format!("uid=\"{old}\""), &format!("uid=\"{u}\""));
+                            }
+                        }
                     }
                     if new != f.text {
                         let old_best = attr(&f.text, "best").unwrap_or_default();

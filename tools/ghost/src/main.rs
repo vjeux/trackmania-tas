@@ -1716,7 +1716,20 @@ fn cmd_map(a: &[String]) {
             let c = Container::load(inp).unwrap_or_else(|e| die(e));
             let newuid = map_uid_of(&newmap).unwrap_or_else(|| die("no uid in the replacement map"));
             let body = set_embedded_map(&c, &newmap, &newuid).unwrap_or_else(|e| die(e));
-            container::write_gbx(&c.gbx, body, out).unwrap_or_else(|e| die(e));
+            // THE REPLAY HEADER HAS ITS OWN COPY OF THE UID (0x03093000 and the
+            // XML) that no body census sees. A carrier rebound here kept its
+            // donor's uid there; the client filed the replay under the donor's
+            // map (2026-09-29). A plain .Ghost.Gbx has no header: no-op.
+            let mut gbx = c.gbx.clone();
+            if let Some(e) = hdr::rewrite_full(&c, false, None, None, Some(&newuid)) {
+                gbx.user_data = e.user_data;
+                for l in &e.log {
+                    if l.contains("map uid") {
+                        println!("{l}");
+                    }
+                }
+            }
+            container::write_gbx(&gbx, body, out).unwrap_or_else(|e| die(e));
             // control: read it back
             let c2 = Container::load(out).unwrap_or_else(|e| die(e));
             match c2.embedded_map_bytes() {
