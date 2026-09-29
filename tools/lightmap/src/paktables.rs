@@ -153,7 +153,15 @@ pub fn terrain_constant_of(store: &mut DataStore, tm: &TerrainMaterial) -> Resul
     if tm.i_pxz < 0 {
         return Err(format!("{}: the Pxz layer {:?} is not in {}", tm.link, tm.layer_names[0], base.image_array_path));
     }
-    let i = tm.i_pxz as usize;
+    // LMTOOL_TERRAIN_SLICE=N | py (STUDY, E6 2026-09-29 — RE 17's 15:20Z / 18:32Z ask): the zero-matrix tap's slice for the zone floor's
+    // PyPxz_Ids constant, instead of the material's own iPxz (RedIsland's Dirt: ids [5, 6, 0, 0] → slice 6 DirtHill (0.565, 0.275, 0.147);
+    // `py` = its iPy 5 Dirt (0.349, 0.222, 0.159); 0 = DirtSoft (0.388, 0.229, 0.127)). The game paints the tile's ids per vertex in
+    // unlocated code; the slice that closes RI's dry-item +8/+13 % without moving the wet rows is the painted one. Default = iPxz.
+    let i = match std::env::var("LMTOOL_TERRAIN_SLICE").ok().as_deref() {
+        Some("py") if tm.i_py >= 0 => tm.i_py as usize,
+        Some(v) => v.parse::<usize>().unwrap_or(tm.i_pxz as usize),
+        None => tm.i_pxz as usize,
+    };
     let image = base.slices.get(i).ok_or_else(|| format!("{}: slice {i} has no image (the array has {})", tm.link, base.slices.len()))?.clone();
     let buf = terrain::world_pos_to_tc(&base.layers);
     // the shader: r6.yz = r1.y · r5.y − r5.z with r1 = 0 → v = −[2].z; u = r1.z · r5.x = 0 (r0 signs: NaN compares false → +)
