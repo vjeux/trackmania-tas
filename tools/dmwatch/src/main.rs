@@ -44,11 +44,24 @@ fn main() {
 fn tick(specs: &[String]) {
     let mut failed = 0;
     for spec in specs {
+        // LABEL=CHAN:SINCE[:LIMIT] — SINCE itself contains colons (`2026-09-24T10:10`), so
+        // the spec is split as: CHAN = up to the first ':'; LIMIT = a trailing ':<digits>'
+        // only if what follows the last ':' is all digits AND that segment is not part of
+        // the time (a time segment is exactly 2 digits and the LIMIT field is optional);
+        // everything between is SINCE. Bug found 2026-09-29 14:20: splitn(3, ':') cut
+        // `2026-09-24T10:10` to `2026-09-24T10`, which normalized to nothing useful and
+        // let a 10:06 message through a 10:10 anchor on every tick.
         let (label, rest) = spec.split_once('=').unwrap_or(("", spec.as_str()));
-        let mut parts = rest.splitn(3, ':');
-        let chan = parts.next().unwrap_or("");
-        let since = normalize(parts.next().unwrap_or("1970-01-01T00:00"));
-        let limit: usize = parts.next().and_then(|s| s.parse().ok()).unwrap_or(8);
+        let (chan, tail) = rest.split_once(':').unwrap_or((rest, ""));
+        let (since_raw, limit) = match tail.rsplit_once(':') {
+            // a trailing field that is 1–3 digits and NOT a 2-digit time segment → LIMIT
+            Some((head, last)) if !last.is_empty() && last.len() != 2 && last.chars().all(|c| c.is_ascii_digit()) => {
+                (head, last.parse().unwrap_or(8))
+            }
+            // `…T10:10:6` → head `…T10:10`, last `6`  (handled above); `…T10:10:00` → time
+            _ => (tail, 8usize),
+        };
+        let since = normalize(if since_raw.is_empty() { "1970-01-01T00:00" } else { since_raw });
         let prefix = if label.is_empty() { String::new() } else { format!("{label} ") };
         if read_one(chan, &since, limit, &prefix) != 0 {
             failed += 1;
