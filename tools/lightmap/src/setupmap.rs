@@ -42,11 +42,22 @@ pub struct FromMap {
 
 /// The shadow pass's pipeline state (frame 127448 eids 353…: viewport (1, 1, 4094, 4094), bias −1 / −1.0 / 0, cull
 /// back, front CCW, depth clip) — pipeline constants, not scene data.
+/// THE SUN SHADOW MAP'S SIZE: 4096² = the captured pass (stpad / pwc-day / tk3: one 4096² map over the whole scene box).
+/// LMTOOL_SUNMAP_RES=N (STUDY, E6 2026-09-29, V5's 17:10Z signature — g23's hills 14–34 bytes short on their SUN-LIT texels only,
+/// dark texels exact, probes exact: at 4096² over the 8-km giant a sun texel is 2.4 × 1.4 m and the R16 depth step 0.14 m, so a
+/// steep hill face self-shadows under the PCF where a finer map would not): the same single map at N² (memory N²·2 B).
+/// Default 4096 = the transcribed pass; any other value is a study of the game's chunking question, not the game's rule.
+pub fn sunmap_res() -> u32 {
+    static V: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("LMTOOL_SUNMAP_RES").ok().and_then(|v| v.parse().ok()).filter(|n: &u32| *n >= 64 && *n <= 32768).unwrap_or(4096))
+}
+
 pub fn shadow_state() -> RasterState {
     // LMTOOL_SUNMAP_SLOPE_BIAS=S (study): the caster pass's SlopeScaledDepthBias (the capture's −1.0) — the grazing-incidence test on
     // stpad's pool walls (a vertical caster under a 13.6° sun has a huge depth slope; the uncapped bias moves its stored depth metres)
     static SLOPE_BIAS: std::sync::LazyLock<f32> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_SUNMAP_SLOPE_BIAS").ok().and_then(|v| v.parse().ok()).unwrap_or(-1.0));
-    RasterState { viewport: [1.0, 1.0, 4094.0, 4094.0, 0.0, 1.0], depth_bias: -1, slope_scaled_depth_bias: *SLOPE_BIAS, depth_bias_clamp: 0.0, cull_back: true, front_ccw: true, depth_clip: true, plane: PlaneEval::F64Snapped, coef_bits: 36, vertex_z_bits: 0 }
+    let n = sunmap_res() as f32;
+    RasterState { viewport: [1.0, 1.0, n - 2.0, n - 2.0, 0.0, 1.0], depth_bias: -1, slope_scaled_depth_bias: *SLOPE_BIAS, depth_bias_clamp: 0.0, cull_back: true, front_ccw: true, depth_clip: true, plane: PlaneEval::F64Snapped, coef_bits: 36, vertex_z_bits: 0 }
 }
 
 /// `GbxShadowAlphaThreshold` of the alpha-tested caster draws (PS 1147): 128/255.
@@ -188,7 +199,7 @@ pub fn shadow_from_map(scene: &crate::geometry::Scene, lm: &LmScene, cam: &Ortho
     };
     let results: Vec<(ShadowTarget, usize, Vec<String>)> = crate::pool::pool().map(ranges.len(), |r| {
         let (a, b) = ranges[r];
-        let mut tgt = ShadowTarget::new(4096, 4096);
+        let mut tgt = ShadowTarget::new(sunmap_res(), sunmap_res());
         let mut n = 0usize;
         let mut nts = Vec::new();
         for job in &jobs[a..b] { draw_job(job, &mut tgt, &mut n, &mut nts); }
@@ -196,7 +207,7 @@ pub fn shadow_from_map(scene: &crate::geometry::Scene, lm: &LmScene, cam: &Ortho
     });
     let mut n_draws = 0usize;
     let mut it = results.into_iter();
-    let (mut tgt, n0, nts0) = it.next().unwrap_or_else(|| (ShadowTarget::new(4096, 4096), 0, Vec::new()));
+    let (mut tgt, n0, nts0) = it.next().unwrap_or_else(|| (ShadowTarget::new(sunmap_res(), sunmap_res()), 0, Vec::new()));
     n_draws += n0;
     notes.extend(nts0);
     for (t, n, nts) in it {
@@ -796,10 +807,10 @@ pub fn build_with_lamps(scene: &crate::geometry::Scene, lm: &LmScene, sbox: &Aab
     let mut notes = Vec::new();
     let t0 = std::time::Instant::now();
     let cam = sun_camera(sbox, dir_in_world);
-    let pw01 = cam.world_pw01_shadow(4096, 4096);
-    notes.push(format!("sun camera: eye {:?} h {:?} near {} far {} (the scene box {:?}–{:?})", cam.eye, cam.h, cam.near(), cam.far(), sbox.min, sbox.max));
+    let pw01 = cam.world_pw01_shadow(sunmap_res(), sunmap_res());
+    notes.push(format!("sun camera: eye {:?} h {:?} near {} far {} (the scene box {:?}–{:?}); sun map {}²{}", cam.eye, cam.h, cam.near(), cam.far(), sbox.min, sbox.max, sunmap_res(), if sunmap_res() != 4096 { " (STUDY LMTOOL_SUNMAP_RES)" } else { "" }));
     let shadow = shadow_from_map(scene, lm, &cam, item_bytes, &mut notes).to_buf();
-    shadowmap::print_shadow_alpha_stats("sun shadow map 4096², the map's casters");
+    shadowmap::print_shadow_alpha_stats(&format!("sun shadow map {}², the map's casters", sunmap_res()));
     if !quiet { eprintln!("setup-from-map: shadow map ({:.1}s)", t0.elapsed().as_secs_f32()); }
     // LMTOOL_SUN_DIRECT_SCALE=k (STUDY, RE 13's sweep-0 forms, 19:10Z): the sun / moon direct term in sweep 0's light input scaled — with
     // LMTOOL_LAMP_BOUNCE=1.5 and 0.5 = the "1.5·L + 0.5·S" candidate (the lamps' alpha stacking with the sun's in NormWithA), with 2 and 1 =
