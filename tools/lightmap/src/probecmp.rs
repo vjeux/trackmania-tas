@@ -106,6 +106,23 @@ pub struct Options {
     /// `--dump FILE`: every common probe as one row — world x y z, the validity of both sides, the four images' bytes of
     /// both sides (E4's per-probe read of the buried rows).
     pub dump: Option<String>,
+    /// `--far-from FILE --radius R` (V5, 2026-09-29): compare only the probes FARTHER than R m (in x, z) from every listed point
+    /// (`tmmaps census` of the map's items) — RE 17's open-sea-floor row: probes above the bare floor far from any item read the
+    /// floor's emitted colour (their downward hemisphere), so ours/editor there ≈ MDiffuse_ours/MDiffuse_game of the tiles.
+    pub far_from: Option<(Vec<(f32, f32)>, f32)>,
+    /// `--y-range LO,HI` (V5): compare only the probe rows with LO ≤ world y ≤ HI (the first rows above the floor).
+    pub y_range: Option<(i32, i32)>,
+}
+
+/// The `--far-from` / `--y-range` filter of one probe at world (x, y, z).
+pub fn probe_selected(key: &(i32, i32, i32), o: &Options) -> bool {
+    if let Some((lo, hi)) = o.y_range { if key.1 < lo || key.1 > hi { return false; } }
+    if let Some((pts, r)) = &o.far_from {
+        let (x, z) = (key.0 as f32, key.2 as f32);
+        let r2 = r * r;
+        if pts.iter().any(|(px, pz)| { let (dx, dz) = (px - x, pz - z); dx * dx + dz * dz <= r2 }) { return false; }
+    }
+    true
 }
 
 pub const IMAGE_NAMES: [&str; 4] = ["colour", "occlusion", "pale-colour", "point-lights"];
@@ -236,8 +253,10 @@ pub fn run(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLightmap,
     let bin = |v: u8| -> usize { match v { 0 => 0, 1 => 1, 2 => 2, 3 => 3, 4..=15 => 4, _ => 5 } };
     let mut worst: Vec<(u32, (i32, i32, i32), [u8; 3], [u8; 3], bool)> = Vec::new();
     let mut dump = o.dump.as_ref().map(|_| String::from("x\ty\tz\tvalid_ours\tvalid_editor\tours_c0\tours_c1\tours_c2\tours_c3\teditor_c0\teditor_c1\teditor_c2\teditor_c3\n"));
+    let mut filtered_out = 0usize;
     for (key, (ra, valid_a, level)) in &a.probes {
         let Some((rb, valid_b, _)) = b.probes.get(key) else { only_ours += 1; continue };
+        if !probe_selected(key, o) { filtered_out += 1; continue; }
         common += 1;
         let both_valid = *valid_a && *valid_b;
         if let Some(d) = dump.as_mut() {
@@ -258,8 +277,8 @@ pub fn run(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLightmap,
             }
         }
     }
-    only_theirs = b.probes.len().saturating_sub(common);
-    println!("  probes: {common} common (by world position, {} m cells); {only_ours} only in ours, {only_theirs} only in the editor's", va.cell_size());
+    only_theirs = b.probes.len().saturating_sub(common + filtered_out);
+    println!("  probes: {common} common (by world position, {} m cells); {only_ours} only in ours, {only_theirs} only in the editor's{}", va.cell_size(), if filtered_out > 0 { format!("; {filtered_out} common probes OUTSIDE the --far-from / --y-range selection (not compared)") } else { String::new() });
     let r3 = |v: [f64; 3], p: usize| -> String { let one = |x: f64| if x.is_finite() { format!("{:.*}", p, x) } else { "—".to_string() }; format!("{} / {} / {}", one(v[0]), one(v[1]), one(v[2])) };
     println!("image\tsplit\tprobes\tidentical %\twithin 1 %\twithin 2 %\tmax|Δ|\tmean bytes ours (r/g/b)\tmean bytes editor (r/g/b)\tratio ours/editor\tbias bytes ours−editor (r/g/b)");
     let mut tsv = String::from("image\tsplit\tprobes\tidentical_pct\twithin1_pct\twithin2_pct\tmax_delta\tmean_ours_rgb\tmean_editor_rgb\tratio_rgb\tbias_rgb\n");
@@ -292,4 +311,21 @@ pub fn run(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLightmap,
     if let Some(p) = &o.tsv { std::fs::write(p, tsv).map_err(|e| format!("{p}: {e}"))?; }
     if let (Some(p), Some(d)) = (&o.dump, dump) { std::fs::write(p, d).map_err(|e| format!("{p}: {e}"))?; }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn far_from_and_y_range_select_the_open_floor_probes() {
+        let o = Options { levels: false, worst: 0, tsv: None, dump: None, far_from: Some((vec![(100.0, 100.0), (500.0, 40.0)], 100.0)), y_range: Some((-6, 10)) };
+        assert!(probe_selected(&(300, 2, 300), &o));          // far from both points, in the band
+        assert!(!probe_selected(&(150, 2, 100), &o));         // 50 m from the first point
+        assert!(!probe_selected(&(300, 34, 300), &o));        // above the band
+        assert!(!probe_selected(&(300, -7, 300), &o));        // below the band
+        assert!(!probe_selected(&(600, 10, 40), &o));         // exactly 100 m away counts as near (≤ r)
+        assert!(probe_selected(&(601, 10, 40), &o));          // 101 m away is far
+        let none = Options { levels: false, worst: 0, tsv: None, dump: None, far_from: None, y_range: None };
+        assert!(probe_selected(&(0, 0, 0), &none));
+    }
 }

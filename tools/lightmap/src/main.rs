@@ -7000,7 +7000,12 @@ fn run(mut a: Vec<String>) {
             let other = f("--against").expect("--against EDITOR.Map.Gbx");
             let ours = lightmap::mapio::load(&a[1]).unwrap_or_else(|e| panic!("{}: {e}", a[1]));
             let theirs = lightmap::mapio::load(&other).unwrap_or_else(|e| panic!("{other}: {e}"));
-            let o = lightmap::probecmp::Options { levels: a.iter().any(|x| x == "--levels"), worst: f("--worst").map(|v| v.parse().expect("--worst N")).unwrap_or(0), tsv: f("--tsv"), dump: f("--dump") };
+            // --far-from FILE.tsv --radius R [--far-name SUBSTR] (V5): only the probes farther than R m (x, z) from every listed point
+            // (`tmmaps census`) — the open-floor probes (RE 17's row: their downward hemisphere = the floor's emitted colour);
+            // --y-range LO,HI (V5): only the probe rows with LO ≤ world y ≤ HI
+            let far_from = f("--far-from").map(|p| { let pts = lightmap::classcmp::read_points(&p, f("--far-name").as_deref()).unwrap_or_else(|e| panic!("--far-from: {e}")); let r: f32 = f("--radius").map(|v| v.parse().expect("--radius R")).unwrap_or(100.0); eprintln!("--far-from: {} points, radius {r} m", pts.len()); (pts, r) });
+            let y_range = f("--y-range").map(|s| { let (lo, hi) = s.split_once(',').expect("--y-range LO,HI"); (lo.trim().parse::<i32>().expect("--y-range LO"), hi.trim().parse::<i32>().expect("--y-range HI")) });
+            let o = lightmap::probecmp::Options { levels: a.iter().any(|x| x == "--levels"), worst: f("--worst").map(|v| v.parse().expect("--worst N")).unwrap_or(0), tsv: f("--tsv"), dump: f("--dump"), far_from, y_range };
             lightmap::probecmp::run(&ours, &theirs, &o).unwrap_or_else(|e| { eprintln!("probecmp: {e}"); std::process::exit(1) });
         }
         "classcmp" => {

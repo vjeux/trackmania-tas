@@ -646,3 +646,21 @@ pub fn is_lit(o: &Options, px: [u8; 3], fb: u8, max_hdr: f32) -> bool {
         None => px[0].max(px[1]).max(px[2]) >= o.lit,
     }
 }
+
+/// A point list for `--near` / `--far-from`: a TSV with x/z (or cx/cz, centre_x/centre_z, centerX/centerZ) columns — `tmmaps census MAP`
+/// — optionally filtered by a substring of its `name` column (the AV firs, the stock bushes, one model).
+pub fn read_points(path: &str, name_filter: Option<&str>) -> Result<Vec<(f32, f32)>, String> {
+    let txt = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
+    let mut lines = txt.lines();
+    let head: Vec<String> = lines.next().unwrap_or("").split('\t').map(|s| s.trim().to_string()).collect();
+    let col = |names: &[&str]| names.iter().find_map(|n| head.iter().position(|h| h == n));
+    let cx = col(&["x", "cx", "centre_x", "centerX"]).ok_or_else(|| format!("{path}: no x column"))?;
+    let cz = col(&["z", "cz", "centre_z", "centerZ"]).ok_or_else(|| format!("{path}: no z column"))?;
+    let cname = col(&["name"]);
+    if name_filter.is_some() && cname.is_none() { return Err(format!("{path}: a name filter needs a `name` column")); }
+    Ok(lines.filter_map(|l| {
+        let v: Vec<&str> = l.split('\t').collect();
+        if let (Some(fl), Some(ci)) = (name_filter, cname) { if !v.get(ci).map_or(false, |n| n.contains(fl)) { return None; } }
+        Some((v.get(cx)?.trim().parse::<f32>().ok()?, v.get(cz)?.trim().parse::<f32>().ok()?))
+    }).collect())
+}
