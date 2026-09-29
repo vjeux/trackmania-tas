@@ -44,7 +44,7 @@ pub fn run_word(exe: &std::path::Path, src: &str, word: u32, out_dir: &str, bake
     let add_ambient = grep1(&log, "AddAmbient accumulator after sweep 0").and_then(|l| l.split(": ").last()).map(|s| s.to_string()).unwrap_or_default();
     let (record_maxhdr, classes) = if bake_ok {
         let m = crate::mapio::load(&out)?;
-        let opts = Options { frame: 0, lit: 8, lit_hdr: None, by: GroupBy::Class, worst: 0, own_rects: false, peaks: 0, near: None, density_bins: Vec::new(), y_bins: Vec::new() };
+        let opts = Options { frame: 0, lit: 8, lit_hdr: None, by: GroupBy::Class, worst: 0, own_rects: false, peaks: 0, near: None, density_bins: Vec::new(), y_bins: Vec::new(), editor_bands: Vec::new() };
         let r = crate::classcmp::compare(&m, &m, records, &opts)?;
         (Some(r.maxhdr_ours), r.classes)
     } else { (None, Vec::new()) };

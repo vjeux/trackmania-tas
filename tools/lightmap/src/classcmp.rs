@@ -171,6 +171,21 @@ pub struct Options {
     /// given upper bounds (" (y ≤ −4)", " (y −4…−0.3)", " (y > 8)") — the DEPTH-BAND read of a lake bed under a water plane (RedIsland's
     /// under-lake tiles 2–8× the editor's: by how deep they lie) or of a tall map's items by height. Combines with --near.
     pub y_bins: Vec<f32>,
+    /// `--editor-bands B1,B2,…` (V5, 2026-09-29): every class split by the EDITOR's own per-chart mean HDR Σrgb over its lit texels,
+    /// binned at the given upper bounds (" (ed ≤ 0.02)", " (ed 0.02…0.1)", " (ed > 0.5)") — "how bright the game made this chart":
+    /// on RedIsland the depth proxy of the lake bed (the game's under-lake tiles are near-black, the dry Dirt bright) when no
+    /// terrain height exists on our side (the genealogy terrain reads as 9 216 flat tiles). Works under --own-rects (per-chart means).
+    pub editor_bands: Vec<f64>,
+}
+
+/// The editor-brightness band of a chart: bins are upper bounds (Σrgb of the chart's mean HDR) in ascending order.
+pub fn editor_band_label(v: f64, bins: &[f64]) -> String {
+    let mut lo: Option<f64> = None;
+    for &hi in bins {
+        if v <= hi { return match lo { None => format!("ed ≤ {hi}"), Some(l) => format!("ed {l}…{hi}") }; }
+        lo = Some(hi);
+    }
+    match lo { Some(l) => format!("ed > {l}"), None => "ed all".to_string() }
 }
 
 /// One of the brightest texels of a side (`--peaks`): position, chart, class key, the chart's frame byte, the decoded RGB, and the
@@ -318,6 +333,8 @@ pub fn compare(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLight
                 let dev = (0..3).map(|c| if mt[c] > 1e-9 { (mo[c] / mt[c] - 1.0).abs() } else { 0.0 }).fold(0.0, f64::max);
                 acc.worst.push((i, dev, mo, mt, acc.used));
             }
+            // the editor-brightness band (the chart's own mean over ITS lit texels; an unlit oracle chart lands in the lowest band)
+            let key = if o.editor_bands.is_empty() { key } else { let ut = acc.used_t as f64; format!("{key} ({})", editor_band_label(if ut > 0.0 { (ct[0] + ct[1] + ct[2]) / ut } else { 0.0 }, &o.editor_bands)) };
             total.merge(&acc);
             match classes.iter_mut().find(|(k, _)| *k == key) { Some((_, c)) => c.merge(&acc), None => classes.push((key, acc)) }
             continue;
@@ -364,6 +381,7 @@ pub fn compare(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLight
             let dev = (0..3).map(|c| if mt[c] > 1e-9 { (mo[c] / mt[c] - 1.0).abs() } else { 0.0 }).fold(0.0, f64::max);
             acc.worst.push((i, dev, mo, mt, acc.used));
         }
+        let key = if o.editor_bands.is_empty() { key } else { let ut = acc.used as f64; format!("{key} ({})", editor_band_label(if ut > 0.0 { (ct[0] + ct[1] + ct[2]) / ut } else { 0.0 }, &o.editor_bands)) };
         total.merge(&acc);
         match classes.iter_mut().find(|(k, _)| *k == key) { Some((_, c)) => c.merge(&acc), None => classes.push((key, acc)) }
     }
@@ -529,6 +547,14 @@ mod tests {
         assert_eq!(y_bin_label(-0.1, &bins), "-0.3…0");
         assert_eq!(y_bin_label(4.85, &bins), "> 0");
         assert_eq!(y_bin_label(1.0, &[]), "all");
+    }
+    #[test]
+    fn editor_bands_label_at_their_upper_bounds() {
+        let bins = [0.02f64, 0.1, 0.5];
+        assert_eq!(editor_band_label(0.0, &bins), "ed ≤ 0.02");
+        assert_eq!(editor_band_label(0.05, &bins), "ed 0.02…0.1");
+        assert_eq!(editor_band_label(0.5, &bins), "ed 0.1…0.5");
+        assert_eq!(editor_band_label(2.0, &bins), "ed > 0.5");
     }
     #[test]
     fn own_px_matches_the_charts_convention() {

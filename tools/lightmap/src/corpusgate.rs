@@ -157,7 +157,7 @@ pub fn md5_hex(data: &[u8]) -> String {
 
 // ---------------------------------------------------------------- the metrics of one baked cell against its oracle
 fn frame_metrics(ours: &crate::mapio::MapLightmap, theirs: &crate::mapio::MapLightmap, records: Option<&[crate::classcmp::RecRow]>, frame: usize, own_rects: bool) -> Result<serde_json::Value, String> {
-    let mut o = crate::classcmp::Options { frame, lit: 8, by: crate::classcmp::GroupBy::Class, worst: 0, own_rects, lit_hdr: None, peaks: 0, near: None, density_bins: Vec::new(), y_bins: Vec::new() };
+    let mut o = crate::classcmp::Options { frame, lit: 8, by: crate::classcmp::GroupBy::Class, worst: 0, own_rects, lit_hdr: None, peaks: 0, near: None, density_bins: Vec::new(), y_bins: Vec::new(), editor_bands: Vec::new() };
     // two layouts that differ (chart counts, a giant's numbering, OR the same count with other rects) are compared by (obj, sub)
     // with each side's own rects — decided from the layout BEFORE the compare (V3 2026-09-28 03:56Z: with equal counts and 215 of
     // 5 871 same rects the plain compare silently skipped the rect-mismatched charts and the headline numbers described 4 % of the
