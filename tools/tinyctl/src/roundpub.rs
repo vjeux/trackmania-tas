@@ -746,6 +746,21 @@ pub fn mint_tokens_standalone(wsx: &Wsx, token_dir: &Path) -> Result<(), String>
     // right here, before any pid is read. Swallowing that status and then taking "the"
     // Trackmania pid from the process list would adopt ANOTHER lane's game as ours and,
     // 120 s later, kill it by pid (the race existed until 2026-09-29; it never fired).
+    //
+    // Which pid is ours: `tmdrive launch` RELEASES its lock when it returns (verified
+    // 2026-09-29 00:25 — a lock-dir read after the launch found no lock at all, and the
+    // first version of this guard therefore refused AFTER launching and orphaned our own
+    // game for a minute). So ownership is decided the way tmdrive's own owned_process does
+    // it: the set of Trackmania pids BEFORE the launch versus AFTER — exactly one new pid is
+    // ours; zero or several means we do not know, and a pid we do not know is never killed.
+    let before = wsx
+        .sh("tasklist.exe /FO CSV /NH 2>/dev/null | grep -i trackmania | cut -d, -f2 | tr -d '\"' | tr '\n' ' '; true")
+        .unwrap_or_default();
+    let before: std::collections::HashSet<u32> = before.split_whitespace().filter_map(|p| p.parse().ok()).collect();
+    if !before.is_empty() {
+        let _ = wsx.sh(&format!("rm -rf {PLUGIN_DIR}; true"));
+        return Err(format!("mint-standalone: {} game(s) appeared before the launch (pids {:?}) — not mine, aborting", before.len(), before));
+    }
     let launch = wsx
         .sh(&format!(
             "{env}; sed -i \"s/^DeveloperMode=false/DeveloperMode=true/\" /mnt/c/Users/vjeux/OpenplanetNext/Settings.ini; tmdrive launch --timeout 120 --purpose \"token mint (standalone plugin)\" > /dev/null 2>&1; echo LAUNCH-EXIT $?"
@@ -760,17 +775,23 @@ pub fn mint_tokens_standalone(wsx: &Wsx, token_dir: &Path) -> Result<(), String>
             if code == 75 { format!(" (BUSY: {})", who.trim()) } else { String::new() }
         ));
     }
-    // the pid we own is the one tmdrive recorded in ITS lock under OUR session — never
-    // "whatever Trackmania is running"
-    let lock = wsx
-        .sh("L=/mnt/c/Users/vjeux/OpenplanetNext/PluginStorage/TmDriveLock; echo \"$(cat $L/session 2>/dev/null)|$(cat $L/game_pid 2>/dev/null)\"")
+    let after = wsx
+        .sh("tasklist.exe /FO CSV /NH 2>/dev/null | grep -i trackmania | cut -d, -f2 | tr -d '\"' | tr '\n' ' '; true")
         .unwrap_or_default();
-    let (lock_session, lock_pid) = lock.trim().split_once('|').unwrap_or(("", ""));
-    if lock_session != "080a15b8-2c6a-4fff-9d8a-db7d0072ee43" {
-        let _ = wsx.sh(&format!("rm -rf {PLUGIN_DIR}; true"));
-        return Err(format!("mint-standalone: the tmdrive lock is held by session `{lock_session}`, not ours — refusing to touch any game"));
-    }
-    let pid: u32 = lock_pid.trim().parse().map_err(|_| "mint-standalone: tmdrive recorded no game pid for our launch".to_string())?;
+    let new_pids: Vec<u32> = after.split_whitespace().filter_map(|p| p.parse().ok()).filter(|p| !before.contains(p)).collect();
+    let pid: u32 = match new_pids.as_slice() {
+        [one] => *one,
+        [] => {
+            let _ = wsx.sh(&format!("rm -rf {PLUGIN_DIR}; true"));
+            return Err("mint-standalone: tmdrive launch returned 0 but no new Trackmania process appeared — nothing to close, plugin removed".into());
+        }
+        many => {
+            // two games appeared at once: ours is in there, but which one is unknowable
+            // from here — leave BOTH alone and let the operator sort it out by start time
+            let _ = wsx.sh(&format!("rm -rf {PLUGIN_DIR}; true"));
+            return Err(format!("mint-standalone: {} new Trackmania processes appeared together ({many:?}) — cannot tell ours apart, killing none; check start times", many.len()));
+        }
+    };
     println!("  mint-standalone: launched the game (pid {pid}); waiting for the token files");
     // wait for the two files (the plugin writes them once the menu has authenticated)
     let mut ok = false;
