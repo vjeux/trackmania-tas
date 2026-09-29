@@ -882,7 +882,7 @@ fn cmd_tape(a: &[String]) {
                 let shifts: Vec<String> = segs.iter().zip(nb.iter()).map(|(a, b)| format!("{:+}", *b as i64 - *a as i64)).collect();
                 manifest.push_str(&format!("{f}\t{}\n", shifts.join(",")));
             }
-            std::fs::write(format!("{outdir}/manifest.tsv"), &manifest).unwrap_or_else(|e| die(e));
+            std::fs::write(format!("{outdir}/manifest.tsv"), &manifest).unwrap_or_else(|e| die(e.to_string()));
             println!(
                 "wrote {n} variants of {inp} to {outdir}: {} input edges (segment boundaries at ticks {:?}) each moved by up to +-{k} tick(s); manifest.tsv lists the shifts. Score with `tmsearch validate --map M {outdir}/*.Ghost.Gbx`.",
                 segs.len(), segs
