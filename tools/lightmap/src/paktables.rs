@@ -306,6 +306,11 @@ pub fn hue_class_constant(store: &mut DataStore, link: &str, target: Option<[f32
     // `default` = RE 16's H1 (21:35Z): the LM shader instance samples the sub-shader's DefaultRGB (1, 1, 1) instead of CustomPlastic_D →
     // k = 0 → recol = mean(T)·(1, 1, 1) (0.391 for the red plastic's authored (1.0, 0.086, 0.086)); `grey` above is k·mean(T), 18 % lower
     else if study == "default" { let g = mean_t.clamp(0.0, 1.0); recol = [g, g, g]; }
+    // `g:<value>` (E6 2026-09-29, RE 17's 16:05Z read): the sub-shader's DefaultRGB is CPlugFileGen kind 48 "InvalidData" = a 4×4
+    // MEMSET 0x80 (FUN_140419d90) — MID-GREY, not white: with the default bound in place of CustomPlastic_D the mask tap is m = (g, g, g),
+    // k = 0, emission = g·mean(T) with g = 0x80/255 = 0.502 through a UNORM view or 0.2158 through an sRGB view. LMTOOL_HUE_STUDY=g:0.2158
+    // | g:0.502 (RE 16's 1.0·mean(T) `default` and the 0.815·mean(T) `grey` are not candidates under that read).
+    else if let Some(gs) = study.strip_prefix("g:") { let g0: f32 = gs.parse().unwrap_or(0.2158); let g = (g0 * mean_t).clamp(0.0, 1.0); recol = [g, g, g]; }
     else if study == "mask" { recol = mask; }
     base.notes.push(format!("PyPxz_Hue: mask tap {:?} → k {k:.4}, RgbTargetColor {:?} ({src}) → albedo {:?}{}", mask, t, recol, if study.is_empty() { String::new() } else { format!(" [STUDY LMTOOL_HUE_STUDY={study}]") }));
     base.rgb = recol;
