@@ -212,7 +212,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 let d = tail_of(&bin, &["diff".into(), s(&base), s(&out)], 4);
                 let filetime_only = d.contains("0x6022013") && d.contains("lossless parts: 16 differing bytes");
                 let fc = tail_of(&bin, &["filecheck".into(), s(&out), "--against".into(), s(&base)], 14);
-                let images_ok = fc.lines().filter(|l| l.contains("image")).all(|l| l.contains("BYTE-IDENTICAL")) && fc.contains("same bind words") && !fc.lines().any(|l| l.contains("bytes:") && !l.contains("max |Δ| 0"));
+                let images_ok = fc.lines().filter(|l| l.trim_start().starts_with("frame ") && l.contains("image")).all(|l| l.contains("BYTE-IDENTICAL")) && fc.contains("same bind words") && !fc.lines().any(|l| l.contains("bytes:") && !l.contains("max |Δ| 0"));
                 Ok((false, secs, if filetime_only && images_ok { "MOVED in the FILETIME word only (chunk 0x6022013 = TimeWriteMostRecentSolid: a baseline baked under the old LMTOOL_BAKE_TIME pin, or the map's embedded solids changed — re-pin the baseline)".into() } else { format!("MOVED — {}", d.replace('\n', " | ")) }))
             })());
         }

@@ -3,14 +3,15 @@
 //! layout is written once and the announcement text comes out ready.
 //!
 //!     lmtool base-bank --repo DIR --prev TIP --bin LMTOOL --gate-md GATE.md --note TEXT
-//!                      [--store DIR] [--branch base-2026-09-25] [--guards DIR] [--giants-md FILE] [--refs NAME] [--dry-run]
+//!                      [--store DIR] [--branch base-2026-09-25] [--guards DIR] [--giants-md FILE] [--refs NAME] [--refs-dir DIR] [--dry-run]
 //!
 //! `--repo` is the integration clone (HEAD = the new base, clean tree, on `--branch`); `--prev` the previous base's tip
 //! (must be an ancestor); `--bin` the GATED binary (its md5 must be the one GATE.md names — the base's binary is the
 //! gate's own build, never a re-build: tools/mapgeom/build.rs embeds the commit hash into every lmtool); `--gate-md` the
 //! harness-gate table (must read ALL PASS); `--note` the "landed on PREV: …" line; `--giants-md` the giant-rule read
 //! (corpus-gate report of the two exact giants) appended to the gate log; `--guards` the pinned d1 baselines
-//! ({stpad,tiny16,tiny04ac}-d1-base.Map.Gbx; default STORE-independent /tmp/pd/guard).
+//! ({stpad,tiny16,tiny04ac}-d1-base.Map.Gbx; default STORE-independent /tmp/pd/guard); `--refs-dir` a RE-CUT reference set
+//! (INPUTS.md5, COMMON.txt, REFS.md, detp1, g8-old, dumps.tgz) banked as mh/harness-refs-<tip>/ and named in the announcement.
 //!
 //! Writes, under `--store` (default ~/persistent/private-30d/tm-player):
 //!   tiny/patches/lightmap-integration/NNNN-*.patch   the series prev..HEAD, numbered after the last one present
@@ -127,8 +128,22 @@ pub fn run(args: &[String]) -> Result<(), String> {
     bank(&log_path, &store.join(format!("mh/corpus-gate/gate-{tip}.md")), dry)?;
 
     // the announcement
+    // a RE-CUT refs dir (--refs-dir DIR: INPUTS.md5, COMMON.txt, REFS.md, detp1.Map.Gbx, g8-old.Map.Gbx, dumps.tgz) is banked as
+    // mh/harness-refs-<tip>/ file by file (.tmp + mv) and becomes the refs named in the announcement
+    let mut refs_dir_banked: Option<String> = None;
+    if let Some(d) = flag(args, "--refs-dir").map(PathBuf::from) {
+        let name = format!("harness-refs-{tip}");
+        let dest = store.join("mh").join(&name);
+        if !dry { std::fs::create_dir_all(&dest).map_err(|e| format!("{}: {e}", dest.display()))?; }
+        for f in ["INPUTS.md5", "COMMON.txt", "REFS.md", "detp1.Map.Gbx", "g8-old.Map.Gbx", "dumps.tgz"] {
+            let src = d.join(f);
+            if !src.is_file() { return Err(format!("--refs-dir {}: missing {f}", d.display())); }
+            bank(&src, &dest.join(f), dry)?;
+        }
+        refs_dir_banked = Some(name);
+    }
     // the refs in force: --refs NAME, else the newest mh/harness-refs-* by mtime (names do not sort by age: fc7a… > f07c…)
-    let refs = flag(args, "--refs").unwrap_or_else(|| std::fs::read_dir(store.join("mh")).map(|rd| rd.flatten().filter(|e| e.file_name().to_string_lossy().starts_with("harness-refs-")).max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok()).map(|e| e.file_name().to_string_lossy().to_string()).unwrap_or_default()).unwrap_or_default());
+    let refs = refs_dir_banked.clone().or_else(|| flag(args, "--refs")).unwrap_or_else(|| std::fs::read_dir(store.join("mh")).map(|rd| rd.flatten().filter(|e| e.file_name().to_string_lossy().starts_with("harness-refs-")).max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok()).map(|e| e.file_name().to_string_lossy().to_string()).unwrap_or_default()).unwrap_or_default());
     println!("\n★ BASE {tip} (series 0001–{:04}) — {note}", first_no + n_commits - 1);
     println!("bundle bundles/trackmania-tas-base-{tip}.bundle (= CURRENT; md5 {bundle_md5} — fetch PER-HASH), branch {branch}; binary mh/lmtool-{tip} (md5 {bin_md5}, the gated build); refs mh/{refs}; TSV mh/corpus-gate/corpus-gate-{tip}.tsv ({n_cells} cells); guards guard-*-d1-{tip}; gate log mh/corpus-gate/gate-{tip}.md");
     println!("gate: {head_line}");
