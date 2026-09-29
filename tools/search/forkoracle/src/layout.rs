@@ -226,6 +226,7 @@ pub fn verify_tape(
         .ok_or_else(|| format!("tape check: cannot read {} bytes at {:#x} of pid {}", n * 32, base, pid))?;
     let mut bad = 0usize;
     let mut first = String::new();
+    let mut server_all_zero = true;
     for t in 0..n {
         let o = t * crate::forksrv::STRIDE;
         let g = |k: usize| f32::from_le_bytes(buf[o + k..o + k + 4].try_into().unwrap());
@@ -234,6 +235,9 @@ pub fn verify_tape(
             g(crate::forksrv::REC_GAS),
             g(crate::forksrv::REC_BRAKE),
         );
+        if st != 0.0 || ga != 0.0 || br != 0.0 {
+            server_all_zero = false;
+        }
         let want = crate::forksrv::rec_of(steer[t], accel[t], brake[t]);
         // the record holds the REAL brake; a respawn rides the wire as brake + 2.0 and lands in word 0, so compare
         // against the brake value the wire encoding stands for (2026-09-09)
@@ -255,11 +259,12 @@ pub fn verify_tape(
         // straight seed, 1000 of 1000 ticks "differ". Name it before the
         // work-directory story, which is the rarer of the two.
         let distinct: std::collections::BTreeSet<u8> = steer.iter().take(200.min(steer.len())).copied().collect();
-        let all_zero = buf.chunks(crate::forksrv::STRIDE).take(n).all(|c| c.iter().all(|b| *b == 0));
-        if distinct.len() < 2 && all_zero {
+        let _ = server_all_zero;
+        if distinct.len() < 2 {
             return Err(format!(
-                "TAPE MISMATCH: {} of {} ticks differ, and the server-side records read back as all zero while the tape's \
-                 first {} ticks hold a single steer value ({:?}): the input locator cannot key on a constant steer prefix. \
+                "TAPE MISMATCH: {} of {} ticks differ, and the tape's first {} ticks hold a single steer value ({:?}): \
+                 the input locator keys on the steer sequence and cannot key on a constant prefix (it then reads a zero \
+                 region and every record comes back (0, 0, 0)). \
                  Give the seed a distinct prefix -- `tmauto synth write` does so by default (--wobble-prefix 25, a \
                  zero-mean +-12 steer key over the first 0.25 s) -- or `ghost tape poke` one in.",
                 bad, n, 200.min(steer.len()), distinct.iter().next().copied().unwrap_or(0)
