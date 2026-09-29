@@ -344,6 +344,8 @@ fn agreement_is_robust_to_a_respawn_sized_outlier() {
         // from COMPILING, which is worse than any failing test: a suite that
         // does not build reports nothing at all.
         wetness: 0.0,
+        cps: u32::MAX,
+        vis: forkoracle::layout::Vis::UNKNOWN,
     };
     let samples: Vec<fk::traj::Sample> = (0..100)
         .map(|i| fk::traj::Sample {
@@ -378,14 +380,16 @@ fn trajectory_csv_has_the_columns_the_rest_of_the_project_reads() {
     }
 }
 
-/// The fitted line is `clock = 36141 + 25.483 * race_ms`, and it is only ever
-/// used to CHOOSE a checkpoint — never to label a sample, because the count is
-/// not a fixed simulation point.
+/// The checkpoint clock is EXACT: the engine's own race tick,
+/// `race_ms / 10 + 1000` (the bias keeps countdown ticks positive; the race
+/// START is read out of the engine per process and is not always 2200 -- see
+/// `forkoracle::clock`).
 #[test]
-fn the_checkpoint_line_is_the_fitted_one() {
-    assert_eq!(fk::session::clock_for_race_ms(22730), 615_369);
-    assert_eq!(fk::session::clock_for_race_ms(0), 36_141);
-    assert!(fk::session::clock_for_race_ms(-100_000) >= 1000, "clamped, never negative");
+fn the_checkpoint_clock_is_the_documented_one() {
+    assert_eq!(fk::session::clock_for_race_ms(22730), 3273);
+    assert_eq!(fk::session::clock_for_race_ms(0), 1000);
+    assert_eq!(fk::session::clock_for_race_ms(-1580), 842);
+    assert_eq!(fk::session::clock_for_race_ms(-100_000), 0, "clamped, never negative");
 }
 
 // =========================================================================
@@ -1032,31 +1036,49 @@ fn the_scanner_finds_a_pointer_this_test_planted() {
     let taddr = &*target as *const _ as u64;
     let holder: Box<u64> = Box::new(taddr);
     let haddr = &*holder as *const u64 as u64;
-    // RETRIED, and the reason is the point of the tool. `Snapshot::take` reads
-    // /proc/<pid>/maps and then /proc/<pid>/mem, which is only atomic if the
-    // process is STOPPED -- which is how `fk ptr` uses it, at the shim's
-    // handover. A test that snapshots ITSELF is racing its own allocator and
-    // the test harness's other threads: a mapping that shrinks between the two
-    // reads is skipped, and once in a while that is the mapping the needle is
-    // in. Observed once, under 24 parallel engine runs. Three attempts, and a
-    // failure means the scan is broken rather than unlucky.
-    let mut found = None;
-    for _ in 0..3 {
-        let snap = fk::ptr::Snapshot::take(std::process::id() as i32)
-            .expect("a process can snapshot itself");
-        assert!(snap.bytes > 0, "the snapshot is empty");
-        if snap
-            .find_pointers(&[(taddr, taddr + 1)])
-            .iter()
-            .any(|(slot, v)| *slot == haddr && *v == taddr)
-        {
-            found = Some(snap);
-            break;
+    // SNAPSHOT A STOPPED CHILD, which is how `fk ptr` uses this and the only
+    // way the read is atomic.
+    //
+    // This test used to snapshot ITSELF and retry three times, and it failed
+    // perhaps one run in ten under `cargo test`: `Snapshot::take` reads
+    // /proc/<pid>/maps and then /proc/<pid>/mem, and a self-snapshot races its
+    // own allocator and every other test thread -- a mapping that shrinks
+    // between the two reads is skipped, and sometimes that is the mapping the
+    // needle is in. Retrying a race is not a fix; removing it is. A forked
+    // child inherits this address space, so the planted pointer is at the same
+    // address in it, and a child sitting in SIGSTOP cannot move anything.
+    extern "C" {
+        fn fork() -> i32;
+        fn raise(sig: i32) -> i32;
+        fn kill(pid: i32, sig: i32) -> i32;
+        fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
+        fn _exit(code: i32) -> !;
+    }
+    let pid = unsafe { fork() };
+    assert!(pid >= 0, "fork failed");
+    if pid == 0 {
+        // async-signal-safe only: stop, and if we are ever continued, leave
+        unsafe {
+            raise(19 /* SIGSTOP */);
+            _exit(0)
         }
     }
-    let snap = found.unwrap_or_else(|| {
-        panic!("three scans all missed the slot at {:#x} holding {:#x}", haddr, taddr)
-    });
+    let mut st = 0i32;
+    unsafe { waitpid(pid, &mut st, 2 /* WUNTRACED */) };
+    let snap = fk::ptr::Snapshot::take(pid).expect("a stopped child can be snapshotted");
+    unsafe {
+        kill(pid, 9);
+        waitpid(pid, &mut st, 0);
+    }
+    assert!(snap.bytes > 0, "the snapshot is empty");
+    assert!(
+        snap.find_pointers(&[(taddr, taddr + 1)])
+            .iter()
+            .any(|(slot, v)| *slot == haddr && *v == taddr),
+        "the scan missed the slot at {:#x} holding {:#x}",
+        haddr,
+        taddr
+    );
     // And the range form, which is how a caller asks "what points INTO this
     // struct": a pointer to the first byte is inside the range.
     let range = snap.find_pointers(&[(taddr, taddr + 864)]);
@@ -1075,10 +1097,16 @@ fn the_scanner_finds_a_pointer_this_test_planted() {
 /// round trip through the parser — a mis-parsed stride reads a neighbouring
 /// object and a mis-parsed member offset reads the wrong 864 bytes of the
 /// right one.
+///
+/// The POOL is `LEGACY_CHAIN`; `DEFAULT_CHAIN` is a plain walk and must not
+/// parse as one. This test named `DEFAULT_CHAIN` and went on naming it after
+/// the default moved, so it failed for months saying "the default chain is a
+/// pool spec" -- which had stopped being true and was the only thing it was
+/// really asserting.
 #[test]
 fn a_pool_spec_parses_into_its_four_parts() {
     let (chain, n, stride, members) =
-        fk::ptr::parse_pool(fk::ptr::DEFAULT_CHAIN).expect("the default chain is a pool spec");
+        fk::ptr::parse_pool(fk::ptr::LEGACY_CHAIN).expect("the legacy chain is a pool spec");
     assert_eq!(chain, "mod+0x1e45148:0:+0x148");
     assert_eq!(n, 4);
     assert_eq!(stride, 8);
@@ -1093,6 +1121,10 @@ fn a_pool_spec_parses_into_its_four_parts() {
     assert_eq!(both, vec![0x46c, 0x848]);
     // A plain chain is not a pool, and must not silently read as one.
     assert!(fk::ptr::parse_pool("mod+0x1e45148:0:+0x148:+0x8:+0x848").is_none());
+    assert!(
+        fk::ptr::parse_pool(fk::ptr::DEFAULT_CHAIN).is_none(),
+        "DEFAULT_CHAIN is a plain walk, not a pool"
+    );
 }
 
 /// The document and the constant must name the same chain. A write-up that

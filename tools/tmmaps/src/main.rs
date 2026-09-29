@@ -19,7 +19,9 @@
 //! Times are printed as **seconds with a decimal** (`16.316`), never as raw
 //! milliseconds.
 
-use tmmaps::{census, controls, dropscan, header, rotate, segments, splice, selftest};
+use tmmaps::{census, controls, dropscan, gbx, header, map, rotate, segments, splice, selftest};
+use std::path::PathBuf;
+use tmmaps::cli::flag;
 
 mod cmd;
 use cmd::{inspect, ladder, surgery};
@@ -185,6 +187,292 @@ fn main() {
             let body = tmmaps::map::seed_item_record(&g.body, 26).unwrap_or_else(|e| { eprintln!("tmmaps seed-item: {e}"); std::process::exit(1) });
             std::fs::write(&out, g.write_body_recompressed(&body)).expect("write");
             println!("{out}: body {} -> {} bytes", g.body.len(), body.len());
+        }
+        "retag" => {
+            // Rewrite an item's waypoint TAG in place (order stays 0): the
+            // engine's vocabulary is Spawn / Goal / Checkpoint / StartFinish /
+            // LinkedCheckpoint, and a cut written with `Start` / `Finish`
+            // spawns the car but never fires its finish.
+            let src = PathBuf::from(&args[2]);
+            let out = PathBuf::from(flag(&args, "--out").expect("--out F"));
+            let spec = flag(&args, "--set").expect("--set iN=TAG,iN=TAG,...");
+            let mut m = map::MapFile::load(&src);
+            let mut n = 0usize;
+            for tok in spec.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                let (a, tag) = tok.split_once('=').unwrap_or_else(|| panic!("--set: {:?} is not iN=TAG", tok));
+                let ii: usize = a
+                    .trim_start_matches('i')
+                    .parse()
+                    .unwrap_or_else(|_| panic!("--set: {:?} is not an item index (want iN)", a));
+                assert!(ii < m.items.len(), "item#{} does not exist ({} items)", ii, m.items.len());
+                let old = m.items[ii].waypoint_tag.clone();
+                m.set_item_waypoint_tag(ii, Some(tag));
+                println!("  item#{} {} {:?} -> {:?}", ii, m.items[ii].model, old, tag);
+                n += 1;
+            }
+            assert!(n > 0, "--set named nothing");
+            let sp = m.write_to_reporting(&out).expect("write retagged map");
+            println!("wrote {} ({} tags rewritten)\n  {}", out.display(), n, sp.summary());
+            let back = map::MapFile::load(&out);
+            for it in back.items.iter().filter(|it| it.waypoint_tag.is_some()) {
+                println!("  read-back: item#{} {} tag {:?}", it.index, it.model, it.waypoint_tag.as_deref().unwrap());
+            }
+        }
+        "dropcp" => {
+            // TAKE CHECKPOINTS OUT OF A MAP'S REQUIRED SET. The engine decides a
+            // landmark's kind from the ITEM MODEL's waypoint type (a Checkpoint
+            // model stays a required checkpoint whatever the placement's tag
+            // says -- measured on the MK64 Koopa cut: tags rewritten to Goal
+            // still counted as checkpoints and the finish never fired), so the
+            // only in-place cure is to swap each checkpoint placement onto a
+            // model the engine does not require -- a FINISH model -- and park
+            // it where no car can cross it. A finish is never required, so the
+            // map's real finish then fires on its own.
+            let src = PathBuf::from(&args[2]);
+            let out = PathBuf::from(flag(&args, "--out").expect("--out F"));
+            let spec = flag(&args, "--items").expect("--items iN,iN,...");
+            let model = flag(&args, "--model").expect("--model NAME.Item.Gbx (a Finish-type model the map carries)");
+            let park: Vec<f32> = flag(&args, "--park")
+                .unwrap_or("8,-900,8")
+                .split(',')
+                .map(|s| s.trim().parse::<f32>().expect("--park X,Y,Z"))
+                .collect();
+            assert_eq!(park.len(), 3, "--park wants X,Y,Z");
+            let mut m = map::MapFile::load(&src);
+            // An embedded model must be one the map carries; a STOCK item ident
+            // (no `.Item.Gbx`, e.g. `GateFinish32m`) comes from the game's own
+            // collection and needs no manifest row -- measured: a Koopa cut with
+            // its finish placement swapped onto GateFinish32m validates a tape
+            // at 5.882 (its own finish item: 5.834).
+            assert!(
+                !model.ends_with(".Item.Gbx") || m.items.iter().any(|it| it.model == model),
+                "--model {:?} is not a model this map places; the engine could not load it",
+                model
+            );
+            let mut n = 0usize;
+            let mut dropped: Vec<usize> = Vec::new();
+            for tok in spec.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                let ii: usize = tok
+                    .trim_start_matches('i')
+                    .parse()
+                    .unwrap_or_else(|_| panic!("--items: {:?} is not an item index (want iN)", tok));
+                assert!(ii < m.items.len(), "item#{} does not exist ({} items)", ii, m.items.len());
+                let old = m.items[ii].model.clone();
+                let home = m.items[ii].pos;
+                m.set_item_model(ii, &model);
+                m.move_item_pos(ii, [park[0], park[1], park[2]]);
+                println!("  item#{} {} at {:?} -> {} parked at {:?}", ii, old, home, model, park);
+                dropped.push(ii);
+                n += 1;
+            }
+            assert!(n > 0, "--items named nothing");
+            // Two passes: a model rename re-encodes the Id stream and the
+            // variable-length tag splice cannot ride the same write, so the
+            // renamed+moved map is written, reloaded, and only then untagged.
+            let sp1 = m.write_to_reporting(&out).expect("write map (pass 1: models + positions)");
+            println!("  pass 1: {}", sp1.summary());
+            let mut m = map::MapFile::load(&out);
+            for &ii in &dropped {
+                m.set_item_waypoint_tag(ii, None);
+            }
+            let sp = m.write_to_reporting(&out).expect("write map (pass 2: waypoint properties)");
+            println!("wrote {} ({} checkpoints dropped)\n  {}", out.display(), n, sp.summary());
+            let back = map::MapFile::load(&out);
+            for it in back.items.iter().filter(|it| it.waypoint_tag.is_some()) {
+                println!("  read-back: item#{} {} tag {:?} at {:?}", it.index, it.model, it.waypoint_tag.as_deref().unwrap(), it.pos);
+            }
+        }
+        "setmodel" => {
+            // Point an item placement at another model (and optionally another
+            // author), in place. Diagnostic: swap a map's own finish item for
+            // the stock `GateFinish32m` to ask the oracle whether the ITEM or
+            // the PLACEMENT is why a finish never fires.
+            let src = PathBuf::from(&args[2]);
+            let out = PathBuf::from(flag(&args, "--out").expect("--out F"));
+            let spec = flag(&args, "--set").expect("--set iN=MODEL,...");
+            let author = flag(&args, "--author");
+            let mut m = map::MapFile::load(&src);
+            for tok in spec.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                let (a, model) = tok.split_once('=').unwrap_or_else(|| panic!("--set: {:?} is not iN=MODEL", tok));
+                let ii: usize = a.trim_start_matches('i').parse().unwrap_or_else(|_| panic!("--set: {:?} is not iN", a));
+                let old = m.items[ii].model.clone();
+                m.set_item_model(ii, model);
+                if let Some(au) = author.as_deref() {
+                    m.set_item_author(ii, au);
+                }
+                println!("  item#{} {} -> {} (author {:?})", ii, old, model, author);
+            }
+            let sp = m.write_to_reporting(&out).expect("write map");
+            println!("wrote {}\n  {}", out.display(), sp.summary());
+            let back = map::MapFile::load(&out);
+            for it in back.items.iter().filter(|it| it.waypoint_tag.is_some()) {
+                println!("  read-back: item#{} {} tag {:?} at {:?}", it.index, it.model, it.waypoint_tag.as_deref().unwrap(), it.pos);
+            }
+        }
+        "setblock" => {
+            // Rename a block model in place (diagnostic sibling of `setmodel`):
+            // e.g. RoadTechStart -> RoadTechMultilap to ask the oracle what a
+            // lap-race start does to a map's finish.
+            let src = PathBuf::from(&args[2]);
+            let out = PathBuf::from(flag(&args, "--out").expect("--out F"));
+            let spec = flag(&args, "--set").expect("--set N=NAME,...");
+            let mut m = map::MapFile::load(&src);
+            for tok in spec.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                let (a, name) = tok.split_once('=').unwrap_or_else(|| panic!("--set: {:?} is not N=NAME", tok));
+                let bi: usize = a.parse().unwrap_or_else(|_| panic!("--set: {:?} is not a block index", a));
+                let old = m.blocks[bi].name.clone();
+                m.set_block_name(bi, name);
+                println!("  block#{} {} -> {}", bi, old, name);
+            }
+            let sp = m.write_to_reporting(&out).expect("write map");
+            println!("wrote {}\n  {}", out.display(), sp.summary());
+        }
+        "reembed" => {
+            // Replace one embedded item model's BYTES inside the map's
+            // embedded-objects zip, keeping the manifest and every placement.
+            // `--replace NAME=FILE` names the zip entry (as `header` lists it,
+            // e.g. Items/Foo.Item.Gbx) and the file whose bytes go in its
+            // place. Used to swap the Koopa cut's StartFinish-type start item
+            // for the same item with waypoint type Start, so the map stops
+            // being a lap race and its Finish can fire.
+            let src = PathBuf::from(&args[2]);
+            let out = PathBuf::from(flag(&args, "--out").expect("--out F"));
+            let spec = flag(&args, "--replace").expect("--replace NAME=FILE[,NAME=FILE]");
+            let mut m = map::MapFile::load(&src);
+            let (zip, _names) = header::embedded_zip_bytes(&m.gbx.body).expect("map has no embedded-objects zip");
+            let manifest = m.embedded_manifest().expect("map has no readable embedded-objects manifest");
+            let mut zip2 = zip.clone();
+            for tok in spec.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                let (name, file) = tok.split_once('=').unwrap_or_else(|| panic!("--replace: {:?} is not NAME=FILE", tok));
+                let bytes = std::fs::read(file).unwrap_or_else(|e| panic!("{file}: {e}"));
+                let (before, names) = header::embedded_zip(&m.gbx.body).unwrap();
+                assert!(names.iter().any(|n| n == name), "{:?} is not an entry of the embedded zip ({} entries, {} bytes)", name, names.len(), before);
+                zip2 = header::zip_add(&zip2, name, &bytes);
+                println!("  {} <- {} ({} bytes)", name, file, bytes.len());
+            }
+            let rows: Vec<(&str, &str)> = manifest.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+            println!("  manifest: {} item idents kept; zip {} -> {} bytes", rows.len(), zip.len(), zip2.len());
+            m.replace_embedded_objects(&rows, &zip2);
+            let sp = m.write_to_reporting(&out).expect("write map");
+            println!("wrote {}\n  {}", out.display(), sp.summary());
+            let back = map::MapFile::load(&out);
+            let (zb, zn) = header::embedded_zip(&back.gbx.body).unwrap_or((0, Vec::new()));
+            println!("  read-back: zip {} bytes, {} entries, manifest {} rows", zb, zn.len(), back.embedded_manifest().map_or(0, |r| r.len()));
+        }
+        "pathline" => {
+            // A REFERENCE LINE from the exporter's ROM-path CSV
+            // (`path,index,section,x,y,z,heading_deg`, world metres): rows of the
+            // named path between two indices, then optional appended points,
+            // resampled to one row per 10 ms at a constant speed, written as
+            // `time_ms,x,y,z` -- the shape `--refcsv` reads. Also prints the
+            // arclength of every appended point and of the named gate positions
+            // so the legs of a chained gate search can be placed on it.
+            let csv = PathBuf::from(&args[2]);
+            let out = PathBuf::from(flag(&args, "--out").expect("--out F.csv"));
+            let path_name: String = flag(&args, "--path").map(|s| s.to_string()).unwrap_or_else(|| "track_path".to_string());
+            let (i0, i1) = {
+                let r: String = flag(&args, "--idx").map(|s| s.to_string()).unwrap_or_else(|| "0..".to_string());
+                let (a, b) = r.split_once("..").expect("--idx A..B");
+                (a.parse::<usize>().unwrap_or(0), b.parse::<usize>().unwrap_or(usize::MAX))
+            };
+            let speed_ms: f64 = flag(&args, "--speed").map(|s| s.parse().expect("--speed m/s")).unwrap_or(30.0);
+            let text = std::fs::read_to_string(&csv).unwrap_or_else(|e| panic!("{}: {e}", csv.display()));
+            let mut pts: Vec<[f64; 3]> = Vec::new();
+            for line in text.lines().skip(1) {
+                let f: Vec<&str> = line.split(',').collect();
+                if f.len() < 6 || f[0] != path_name {
+                    continue;
+                }
+                let idx: usize = f[1].parse().unwrap_or(usize::MAX);
+                if idx < i0 || idx > i1 {
+                    continue;
+                }
+                pts.push([f[3].parse().unwrap(), f[4].parse().unwrap(), f[5].parse().unwrap()]);
+            }
+            assert!(pts.len() >= 2, "no points of path {:?} in {:?}", path_name, csv.display());
+            let mut appended: Vec<usize> = Vec::new();
+            if let Some(ap) = flag(&args, "--append") {
+                for p in ap.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                    let v: Vec<f64> = p.split(',').map(|x| x.trim().parse().expect("--append x,y,z;x,y,z")).collect();
+                    assert_eq!(v.len(), 3, "--append wants x,y,z triples");
+                    pts.push([v[0], v[1], v[2]]);
+                    appended.push(pts.len() - 1);
+                }
+            }
+            let mut s = vec![0.0f64; pts.len()];
+            for i in 1..pts.len() {
+                let (a, b) = (pts[i - 1], pts[i]);
+                s[i] = s[i - 1] + ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2) + (b[2] - a[2]).powi(2)).sqrt();
+            }
+            let total = *s.last().unwrap();
+            let mut rows = String::from("time_ms,x,y,z\n");
+            let mut t_ms: i64 = 0;
+            let mut seg = 0usize;
+            loop {
+                let d = t_ms as f64 / 1000.0 * speed_ms;
+                if d > total {
+                    break;
+                }
+                while seg + 1 < s.len() - 1 && s[seg + 1] < d {
+                    seg += 1;
+                }
+                let (a, b) = (pts[seg], pts[seg + 1]);
+                let len = (s[seg + 1] - s[seg]).max(1e-9);
+                let f = ((d - s[seg]) / len).clamp(0.0, 1.0);
+                rows.push_str(&format!(
+                    "{},{:.3},{:.3},{:.3}\n",
+                    t_ms,
+                    a[0] + (b[0] - a[0]) * f,
+                    a[1] + (b[1] - a[1]) * f,
+                    a[2] + (b[2] - a[2]) * f
+                ));
+                t_ms += 10;
+            }
+            std::fs::write(&out, rows).unwrap_or_else(|e| panic!("{}: {e}", out.display()));
+            println!(
+                "wrote {} : {} points of {} [{}..{}] + {} appended = {:.1} m, {} rows at {} m/s",
+                out.display(), pts.len() - appended.len(), path_name, i0, i1.min(pts.len()), appended.len(), total, t_ms / 10, speed_ms
+            );
+            for &k in &appended {
+                println!("  appended ({:.1}, {:.1}, {:.1}) at s {:.1} m  t {:.2} s", pts[k][0], pts[k][1], pts[k][2], s[k], s[k] / speed_ms);
+            }
+            if let Some(g) = flag(&args, "--gates") {
+                for p in g.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                    let v: Vec<f64> = p.split(',').map(|x| x.trim().parse().expect("--gates x,z;x,z")).collect();
+                    let mut best = (f64::INFINITY, 0usize);
+                    for (i, q) in pts.iter().enumerate() {
+                        let d = ((q[0] - v[0]).powi(2) + (q[2] - v[1]).powi(2)).sqrt();
+                        if d < best.0 {
+                            best = (d, i);
+                        }
+                    }
+                    let i = best.1;
+                    let dir = if i + 1 < pts.len() { [pts[i + 1][0] - pts[i][0], pts[i + 1][2] - pts[i][2]] } else { [pts[i][0] - pts[i - 1][0], pts[i][2] - pts[i - 1][2]] };
+                    let n = (dir[0] * dir[0] + dir[1] * dir[1]).sqrt().max(1e-9);
+                    println!(
+                        "  gate ({:.1}, {:.1}) -> path idx {} at s {:.1} m  t {:.2} s  ({:.1} m off)  dir ({:.4}, {:.4}) heading {:.1} deg  path point ({:.1}, {:.1}, {:.1})",
+                        v[0], v[1], i, s[i], s[i] / speed_ms, best.0, dir[0] / n, dir[1] / n, (dir[0]).atan2(dir[1]).to_degrees(), pts[i][0], pts[i][1], pts[i][2]
+                    );
+                }
+            }
+        }
+        "gbxcompress" => {
+            // Rewrite ANY Gbx file with its body LZO-compressed ('C'). The
+            // dedicated server accepts an uncompressed ('U') body, which is
+            // what the synthesiser writes -- the GAME CLIENT does not
+            // ("Unable to load ghost file"; the plugin's Replay_Load / Ghost_Add
+            // drop the handler). Same header, same body bytes, one fresh LZO
+            // stream; the round-trip is asserted by the writer.
+            let src = PathBuf::from(&args[2]);
+            let out = PathBuf::from(&args[3]);
+            let bytes = std::fs::read(&src).unwrap_or_else(|e| panic!("{}: {e}", src.display()));
+            let was = bytes.get(7).copied().unwrap_or(b'?') as char;
+            let g = gbx::Gbx::parse(&bytes);
+            let w = g.write_body_recompressed(&g.body);
+            std::fs::write(&out, &w).unwrap_or_else(|e| panic!("{}: {e}", out.display()));
+            let back = gbx::Gbx::parse(&w);
+            assert_eq!(back.body, g.body, "read-back body differs");
+            println!("wrote {} : body {} -> C, {} body bytes, file {} -> {} bytes", out.display(), was, g.body.len(), bytes.len(), w.len());
         }
         "segat" => segments::cmd_segat(&args),
         "segments" => inspect::segment_table(&args),

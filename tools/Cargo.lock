@@ -897,11 +897,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "tinytas"
+version = "1.0.0"
+dependencies = [
+ "gbx",
+ "ghost",
+ "tmauto",
+ "tmmaps",
+ "tmtraj",
+]
+
+[[package]]
 name = "tmauto"
 version = "1.0.0"
 dependencies = [
  "gbx",
  "ghost",
+ "mapgeom",
  "tmmaps",
 ]
 

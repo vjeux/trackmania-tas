@@ -1,9 +1,12 @@
-//! The fork evaluator: a paused simulator per worker, forked once per
-//! candidate, with a per-tick watchdog that stops paying for a candidate the
-//! moment it is clearly dead.
+//! The fork evaluator: a paused simulator per worker plus a ladder of savestate
+//! nodes along the tape it is editing; each candidate is forked from the
+//! deepest node that agrees with it (`forkoracle::ladder`, PERF.md §1), with a
+//! per-tick watchdog that stops paying for a candidate the moment it is clearly
+//! dead.
 //!
-//! Six to nine times faster than a full re-simulation, and **a gradient, not a
-//! result**. Two facts govern every use of it:
+//! Six to nine times faster than a full re-simulation from the root alone, and
+//! about twice that again with the ladder; **a gradient, not a result**. Two
+//! facts govern every use of it:
 //!
 //! * **It is only trustworthy near the reference it checkpointed on.** The
 //!   4700/4700 exactness evidence covers tapes that perturb a reference by a
@@ -14,15 +17,17 @@
 //!   DNF. So every candidate this evaluator scores carries
 //!   [`Provenance::distance`], and the guard re-validates anything that is
 //!   going to be banked.
-//! * **The resume boundary is per worker.** The `lroundf` checkpoint is not a
-//!   fixed simulation point: under load the count moves in whole chunks of ~62
-//!   calls (~0.24 tick), so servers started together stop at different ticks --
-//!   104 of 150 workers stopped one tick later than the master's single
-//!   calibration when 150 started at once. Each worker therefore probes its own
-//!   server and publishes `max(calibration, probe + 1)`; `probe + 1` because
-//!   tick `probe` is already partly consumed. The search takes the MAXIMUM over
+//! * **The resume boundary is still measured per worker.** It no longer VARIES
+//!   per worker -- the tick hook stops every server at the same tick, and 300
+//!   servers started together prove it -- but it is still MEASURED on each one,
+//!   because a boundary that is assumed is how the phantom got in. Each worker
+//!   probes its own server and publishes `max(calibration, probe)`, where the
+//!   probe is the first UNCONSUMED record. The search takes the MAXIMUM over
 //!   workers as its mutation floor -- it must be the maximum, because migration
 //!   moves a state made by one worker into another.
+//!   (When the clock was a count of `lroundf` calls this was a real spread: 104
+//!   of 150 workers stopped one tick later than the master's single
+//!   calibration.)
 //!
 //! # Scoring an aborted candidate
 //!
@@ -40,8 +45,9 @@ use crate::score::{Outcome, Progress};
 use crate::search::Evaluator;
 use std::path::{Path, PathBuf};
 use forkoracle::forksrv::{ForkServer, Rec};
-use forkoracle::layout::{segments, tail_recs, Row, REC_LEN, R_CLOCK, R_POS, R_QUAT, R_VEL};
-use forkoracle::blind::{bounds_from, locate_blind as locate};
+use forkoracle::ladder::Ladder;
+use forkoracle::layout::{segments, tail_recs, REC_LEN, R_CLOCK, R_POS, R_QUAT, R_VEL};
+
 use forkoracle::pred::{outcome, GateRecord, Watch};
 
 /// The clock value the checkpoint should stop at, from the fitted relation
@@ -54,8 +60,9 @@ use forkoracle::pred::{outcome, GateRecord, Watch};
 /// estimate costs a checkpoint in the wrong place, never a wrong answer -- but
 /// if you are on a new map, measure the fit rather than trusting this.
 pub fn clock_for_tick(tick: i64, start_offset_ms: i32) -> u64 {
-    let ms = tick * 10 + start_offset_ms as i64;
-    (36141.0 + 25.483 * ms as f64).max(1000.0) as u64
+    // Under the tick hook this is EXACT (the start of the tick that consumes
+    // record `tick`); the fit above only describes the legacy lroundf clock.
+    forkoracle::clock::ckpt_for_tick(tick, start_offset_ms)
 }
 
 /// The exact first tick a resume may rewrite, calibrated against ground truth.
@@ -97,7 +104,7 @@ pub fn calibrate_boundary(
             std::fs::write(&path, p.file(&c)).map_err(|e| e.to_string())?;
             let steer: Vec<u8> = c.steer.iter().map(|&v| v as u8).collect();
             let gas: Vec<u8> = c.gas.iter().map(|&v| v as u8).collect();
-            let brake: Vec<u8> = c.brake.iter().map(|&v| v as u8).collect();
+            let brake: Vec<u8> = c.brake_u8();
             let out = srv.run(t, &tail_recs(&steer, &gas, &brake, t));
             rows.push((t, path, forkoracle::forksrv::parse_result(&out).0));
         }
@@ -178,6 +185,34 @@ pub struct ForkEval {
     /// calibrated value is not within [`PLANE_TOL_MS`] of it removes itself.
     plane_off_ms: Option<f64>,
     start_offset_ms: i32,
+    /// DEEP FORK POINTS. Savestate nodes along the lineage this worker is
+    /// editing; a candidate forks from the deepest one that agrees with it
+    /// instead of from the server's checkpoint. See `forkoracle::ladder`.
+    ladder: Ladder,
+    /// The tick each candidate of the LAST batch was actually forked at,
+    /// indexed as the batch was, for the provenance record.
+    last_from: Vec<usize>,
+}
+
+/// Grid spacing of the deep fork points, in ticks, and how many a worker keeps.
+///
+/// Measured on map 2 (`fk ladder check`, 1000 candidates edited anywhere in a
+/// 2432-tick tape): at 100 ticks the ladder forks 96 % of candidates from a
+/// node and the average candidate re-simulates 1089 fewer ticks; the cost of
+/// making a node is ~12 ms once. A node is a paused engine process whose
+/// private pages are the ones its own ticks dirtied (a few MB); 32 of them per
+/// worker covers a 3200-tick tape at this spacing.
+pub const LADDER_SPACING: usize = 100;
+pub const LADDER_CAP: usize = 32;
+
+/// Every worker's ladder statistics, folded together at `finish` so the run
+/// can print one line about what the deep fork points did.
+static LADDER_TOTALS: std::sync::Mutex<forkoracle::ladder::Stats> =
+    std::sync::Mutex::new(forkoracle::ladder::Stats::ZERO);
+
+/// One line about the whole run's deep fork points.
+pub fn ladder_report() -> String {
+    format!("deep fork points: {}", LADDER_TOTALS.lock().map(|g| *g).unwrap_or(forkoracle::ladder::Stats::ZERO))
 }
 
 /// How far a worker's own calibrated crossing of the plane may sit from the
@@ -190,6 +225,18 @@ pub struct ForkEval {
 /// trigger, which is the documented way this surrogate lies (map 227969: a
 /// confident 7 990.7 that validated at 8 004).
 const PLANE_TOL_MS: f64 = 2.0;
+
+/// How far UPSTREAM of the finish trigger the plane may sit, in milliseconds of
+/// the incumbent.s own travel. Under exit-at-finish the child leaves one tick
+/// after the detecting tick, so a plane AT the trigger is never seen crossed:
+/// the last sample fed to the watch is the tick before the car reaches it. The
+/// plane therefore has to stand a little before the line (one to three ticks of
+/// travel), and the time from plane to trigger is then a FRACTION of a tick that
+/// whole-tick snapping cannot express -- 12.2 ms on colon three, refused with a
+/// 2.2 ms "residual" that was nothing but the fraction. So the offset is taken
+/// exactly as measured, and this bound is what says the plane is still the
+/// finish and not some other place on the route.
+const PLANE_MAX_OFF_MS: f64 = 40.0;
 
 pub struct ForkSetup {
     pub server: PathBuf,
@@ -231,31 +278,16 @@ impl ForkEval {
         // WHERE DID THIS SERVER ACTUALLY STOP? Ask it, do not assume the
         // master's answer. A failed probe is a hard abort: a resume cannot be
         // trusted without it, and a fallback here is how the phantom got in.
-        let probe = srv.probe_tick()?;
-        let from = s.calibrated.max(probe + 1);
+        // `boundary_tick` is the first unconsumed record, measured by the
+        // page-fault probe and required to agree with the tick the engine says
+        // it stopped at -- on every worker, every time.
+        let probe = srv.boundary_tick(s.start_offset_ms)?;
+        let from = s.calibrated.max(probe);
 
         let steer: Vec<u8> = reference.steer.iter().map(|&v| v as u8).collect();
         let gas: Vec<u8> = reference.gas.iter().map(|&v| v as u8).collect();
-        let brake: Vec<u8> = reference.brake.iter().map(|&v| v as u8).collect();
+        let brake: Vec<u8> = reference.brake_u8();
         let lrecs = tail_recs(&steer, &gas, &brake, from);
-
-        let rows: Vec<Row> = (0..watch.refline.n)
-            .map(|i| Row {
-                time_ms: 0,
-                x: watch.refline.xyz[3 * i] as f64,
-                y: watch.refline.xyz[3 * i + 1] as f64,
-                z: watch.refline.xyz[3 * i + 2] as f64,
-                vx: 0.0,
-                vy: 0.0,
-                vz: 0.0,
-                qx: 0.0,
-                qy: 0.0,
-                qz: 0.0,
-                qw: 0.0,
-                wetness: 0.0,
-            })
-            .collect();
-        let bounds = bounds_from(&rows, 200.0);
 
         // THE IDENTITY CONTROL, and the search never ran it before: is this
         // server simulating the tape we think it is? The decoded input array in
@@ -273,14 +305,35 @@ impl ForkEval {
         forkoracle::layout::verify_tape(srv.pid(), srv.base, &refsteer, &gas, &brake)
             .map_err(|e| format!("this server is not simulating the tape we asked for: {}", e))?;
 
-        // Addresses are re-derived in THIS process, every time: the server is
-        // PIE and its heap is bimodal, so five consecutive runs give five
-        // different addresses. A failure is an abort, never a guess.
-        let layout = locate(&mut srv, from, &lrecs, s.start_offset_ms, 1, bounds, false)
+        // THE CAR, DERIVED. The dyna body record the physics step integrates,
+        // reached by the pointers the engine itself follows (`forkoracle::car`,
+        // `LOCATE.md`): thirty reads of the stopped parent, no fork, no scan,
+        // nothing to choose between. Addresses are re-derived in THIS process
+        // every time -- the server is PIE and its heap is bimodal -- and a
+        // failure is an abort with the broken hop's name, never a guess.
+        let car = forkoracle::car::locate(&srv)
             .map_err(|e| format!("the car's state was not located: {}", e))?;
+        let layout = car.layout();
 
-        let ack = srv.arm(&watch.arm_payload(
-            layout.clock_bias + s.start_offset_ms as i64,
+        // EXIT AT THE FINISH. A candidate that finishes spends 5.8 ms after its
+        // last simulated tick on the validator's finish-and-print path, for a
+        // number the engine wrote milliseconds earlier. One calibration fork
+        // (of a tape that is about to be simulated thousands of times anyway)
+        // finds the word that holds it, and every candidate after that leaves
+        // as soon as it is written. See `forkoracle::finish` for why the word
+        // is measured per server rather than hardcoded.
+        //
+        // It needs the incumbent's own millisecond, which the master measured
+        // with the PLAIN oracle. Without it, or if the word cannot be found,
+        // the server keeps the JSON path -- the same answer, more slowly.
+        if let Some(ms) = s.incumbent_ms {
+            match forkoracle::finish::calibrate(&mut srv, from, &lrecs, ms) {
+                Ok((addr, _)) => eprintln!("fork: exit-at-finish armed on {:#x}", addr),
+                Err(e) => eprintln!("fork: exit-at-finish not armed ({})", e),
+            }
+        }
+
+        let ack = srv.arm(&watch.arm_payload(            layout.clock_bias + s.start_offset_ms as i64,
             R_CLOCK as u32,
             R_QUAT as u32,
             R_POS as u32,
@@ -330,20 +383,29 @@ impl ForkEval {
                 )
             })?;
             let raw = raw_ticks * 10.0 + s.start_offset_ms as f64;
-            let off = 10.0 * ((want - raw) / 10.0).round();
-            let residual = raw + off - want;
-            if residual.abs() > PLANE_TOL_MS {
+            // The exact plane-to-trigger interval of the incumbent, carried onto
+            // every candidate. It is constant to first order (straight, near-
+            // uniform motion over a fraction of a metre), and the plain oracle
+            // still decides every banked number.
+            let off = want - raw;
+            if off < -PLANE_TOL_MS || off > PLANE_MAX_OFF_MS {
                 return Err(format!(
                     "the timing plane does not agree with the validator on this worker: the \
-                     incumbent crosses x = {} at {:.3} ms (offset {:+.0}) and the plain oracle \
-                     says {}. Residual {:.3} ms, tolerance {:.1}.",
-                    watch.plane_x, raw, off, want, residual, PLANE_TOL_MS
+                     incumbent crosses plane {} at {:.3} ms and the plain oracle says {} \
+                     (offset {:+.3} ms; the plane must sit within [{:.1}, {:.1}] ms upstream \
+                     of the finish).",
+                    watch.plane_x, raw, want, off, -PLANE_TOL_MS, PLANE_MAX_OFF_MS
                 ));
             }
             Some(off)
         } else {
             None
         };
+        // The deep fork points live in the worker's own directory, beside the
+        // server they fork from. Warm: every node carries the watchdog's state
+        // up to its own tick, which is what makes a deep fork's summary the
+        // root's summary.
+        let ladder = Ladder::new(&work.join("ladder"), probe, from, LADDER_SPACING, LADDER_CAP, true)?;
         Ok(ForkEval {
             srv,
             from,
@@ -358,6 +420,8 @@ impl ForkEval {
             last_gate: Vec::new(),
             plane_off_ms,
             start_offset_ms: s.start_offset_ms,
+            ladder,
+            last_from: Vec::new(),
         })
     }
 
@@ -383,15 +447,19 @@ impl Evaluator for ForkEval {
     fn evaluate(&mut self, cands: &[Inputs]) -> Vec<Outcome> {
         let mut out = Vec::with_capacity(cands.len());
         self.last_gate.clear();
+        self.last_from.clear();
+        // ONE node per batch at most, at the deepest grid tick below the prefix
+        // the whole batch shares -- every candidate is the worker's incumbent
+        // with edits inside one window, so that prefix is the incumbent up to
+        // the earliest edit. Making it costs the prefix the first candidate
+        // would have simulated anyway plus a fork and a probe; every candidate
+        // after that starts where the edits start.
+        if let Some(first) = cands.first() {
+            self.ladder.prepare(&mut self.srv, first, Ladder::common_prefix(cands));
+        }
         for c in cands {
-            let recs: Vec<Rec> = (self.from..c.len())
-                .map(|t| Rec {
-                    steer: c.steer[t] as f32 / 127.0,
-                    gas: if c.gas[t] { 1.0 } else { 0.0 },
-                    brake: if c.brake[t] { 1.0 } else { 0.0 },
-                })
-                .collect();
-            let (j, b) = self.srv.run_watched(self.from, &recs);
+            let (j, b, at) = self.ladder.run_watched(&mut self.srv, c);
+            self.last_from.push(at);
             let o = outcome(&j, &b);
             self.last_gate.push(o.gate());
             out.push(match (o.time, self.gate) {
@@ -425,7 +493,7 @@ impl Evaluator for ForkEval {
         let g = self.last_gate.get(idx).copied().flatten();
         Provenance {
             from_fork: true,
-            resume_tick: Some(self.from),
+            resume_tick: Some(self.last_from.get(idx).copied().unwrap_or(self.from)),
             distance: inputs.distance_from(&self.reference),
             gate: g,
             gate_edge: match (g, self.gate_seed_pos) {
@@ -436,6 +504,13 @@ impl Evaluator for ForkEval {
     }
 
     fn finish(self: Box<Self>) {
-        self.srv.quit();
+        let this = *self;
+        if let Ok(mut g) = LADDER_TOTALS.lock() {
+            g.add(&this.ladder.stats());
+        }
+        // The nodes die with the ladder, before the server they were forked
+        // from is told to quit.
+        drop(this.ladder);
+        this.srv.quit();
     }
 }

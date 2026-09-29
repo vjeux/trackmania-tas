@@ -26,11 +26,11 @@
 //! tape is run through both paths and must return the reference's own
 //! millisecond, and must not trip anything.
 
-use forkoracle::blind::{bounds_from, locate_blind};
+
 use forkoracle::forksrv::{parse_result, rec_of, write_key, ForkServer, Rec};
 use forkoracle::pred_core::Summary;
 use forkoracle::pred::{outcome, parse_spec, Outcome, RefLineData, Watch};
-use forkoracle::layout::{segments, Layout, Row, R_CLOCK, R_POS, R_QUAT, R_VEL, REC_LEN};
+use forkoracle::layout::{segments, Layout, R_CLOCK, R_POS, R_QUAT, R_VEL, REC_LEN};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use crate::tape::Tape as Factory;
@@ -157,6 +157,9 @@ fn parse(args: &[String]) -> Cfg {
             "--every" => c.every = next(&mut i).parse().unwrap(),
             "--finishmargin" => c.finishmargin = next(&mut i).parse().unwrap(),
             "--fast" => c.fast = next(&mut i).parse().unwrap(),
+            // read through `has_flag` where the boundary is decided; named here
+            // so the unknown-flag guard does not refuse it
+            "--calibrate" => {}
             "--reference-ms" => c.reftime = next(&mut i).parse().unwrap(),
             "--gate" => c.gate = next(&mut i),
             "--gate-key" => c.gate_key = next(&mut i),
@@ -329,7 +332,7 @@ fn setup(c: &Cfg) -> Setup {
     )
     .unwrap_or_else(|e| panic!("fork server failed: {}", e));
     println!(
-        "fork server up: input array {:#x}, checkpoint at lroundf #{}",
+        "fork server up: input array {:#x}, checkpoint at clock #{}",
         srv.base, srv.clock
     );
     let probe = srv
@@ -342,8 +345,37 @@ fn setup(c: &Cfg) -> Setup {
         work: work.clone(),
         work_is_temporary: false,
     };
-    let boundary = crate::cmd::server::calibrate_boundary(&mut srv, &f, &engine, probe)
-        .unwrap_or_else(|e| crate::abort(e));
+    // THE CALIBRATION SWEEP IS NOT ON THIS PATH BY DEFAULT ANY MORE.
+    //
+    // It perturbs three axes at each of 17 ticks around the probe and takes the
+    // last disagreement with the plain oracle, +1: 51 forks and a 51-file batch
+    // validation, **8.2 s**, once per run. It exists because the probe used to
+    // be the only word on where the engine had got to.
+    //
+    // It is not any more: `boundary_tick` requires the probe to equal the record
+    // the engine's OWN tick says it reads next, and those are two independent
+    // measurements from opposite sides. Across 20 runs on 3 maps since the tick
+    // hook landed, the sweep has never moved the boundary off the probe.
+    //
+    // So it is a control, not a step: `fk server check` still runs it
+    // unconditionally (that is the acceptance test), and `--calibrate` brings
+    // it back here.
+    // exit-at-finish: one calibration fork, then every candidate that finishes
+    // leaves as soon as the engine records its time
+    if let Ok(d) = std::env::var("FK_NO_FAST_FINISH") {
+        let _ = d;
+    } else if let Some(ms) = f.declared_ms {
+        match forkoracle::finish::calibrate(&mut srv, probe, &tail_recs(&f.steer, &f.accel, &f.brake, probe), ms as i64) {
+            Ok((addr, _)) => println!("exit-at-finish armed on {:#x}", addr),
+            Err(e) => println!("exit-at-finish not armed ({})", e),
+        }
+    }
+    let boundary = if crate::has_flag("--calibrate") {
+        crate::cmd::server::calibrate_boundary(&mut srv, &f, &engine, probe)
+            .unwrap_or_else(|e| crate::abort(e))
+    } else {
+        probe
+    };
     println!(
         "boundary tick {} (probe {}) = race {} ms",
         boundary,
@@ -351,39 +383,21 @@ fn setup(c: &Cfg) -> Setup {
         boundary as i64 * 10 + f.start_offset_ms as i64
     );
 
-    // the reference line, and the bounds the blind locate needs
+    // the reference line
     let refline = if c.refcsv.is_empty() {
         RefLineData::default()
     } else {
         ref_from_csv(&c.refcsv, f.start_offset_ms, n).unwrap_or_else(|e| panic!("{}", e))
     };
-    let bounds = if refline.n > 0 {
-        let rows: Vec<Row> = (0..refline.n)
-            .map(|i| Row {
-                time_ms: 0,
-                x: refline.xyz[3 * i] as f64,
-                y: refline.xyz[3 * i + 1] as f64,
-                z: refline.xyz[3 * i + 2] as f64,
-                vx: 0.0,
-                vy: 0.0,
-                vz: 0.0,
-                qx: 0.0,
-                qy: 0.0,
-                qz: 0.0,
-                qw: 0.0,
-                wetness: 0.0,
-            })
-            .collect();
-        bounds_from(&rows, 200.0)
-    } else {
-        (-64000.0, 64000.0, -1000.0, 4000.0, -64000.0, 64000.0)
-    };
-    let lrecs = tail_recs(&f.steer, &f.accel, &f.brake, probe);
-    let layout = locate_blind(&mut srv, probe, &lrecs, f.start_offset_ms, c.every.max(1), bounds, true)
-        .unwrap_or_else(|e| panic!("ABORT: {}", e));
+    // THE CAR, DERIVED: the dyna body the physics step integrates, read through
+    // its copy-out in the driven CGameVehiclePhy, stamped with the tick loop's
+    // clock (`forkoracle::car`, LOCATE.md). No sweep, no fork, nothing chosen.
+    let car = forkoracle::car::locate(&srv).unwrap_or_else(|e| panic!("ABORT: {}", e));
+    let layout = car.layout();
+    println!("car: {}", car);
     println!(
-        "state located: position {:#x}, clock {:#x} (bias {:+} ms), self-consistency {:.3} m/s",
-        layout.pos, layout.clock, layout.clock_bias, layout.rms
+        "state located: position {:#x}, clock {:#x} (bias {:+} ms)",
+        layout.pos, layout.clock, layout.clock_bias
     );
 
     let cp_s: Vec<f32> = cp_times
@@ -1072,6 +1086,97 @@ fn audit(c: &Cfg) {
         c.n - fin_unarmed,
         c.n
     );
+
+    // ---- 5. THE INCUMBENT LAG, measured on every candidate (PERF.md §2)
+    //
+    // `lag_max_ms` is in every summary whether or not a `lag` predicate is
+    // armed: how far behind the incumbent the run got, at the same point of
+    // the line. The observing pass is the unarmed truth, so this table is the
+    // one that sets the predicate's threshold: the largest lag any candidate
+    // FASTER than the incumbent ever showed is the floor under X, and a
+    // predicate armed at X aborts nothing that would have beaten it exactly
+    // when every faster candidate sits below that line.
+    if let Some(best) = s.ref_time {
+        let lag_of = |o: &Outcome| o.sum.map(|x| x.lag_max_ms).unwrap_or(f32::NEG_INFINITY);
+        let mut bands: Vec<(&str, Vec<f32>)> = vec![
+            ("faster than the incumbent", Vec::new()),
+            ("same ms or up to +50", Vec::new()),
+            ("+50 .. +200 ms", Vec::new()),
+            ("+200 ms or worse", Vec::new()),
+            ("did not finish", Vec::new()),
+        ];
+        for r in &rows {
+            let l = lag_of(&r.obs);
+            if !l.is_finite() {
+                continue;
+            }
+            let b = match r.obs.time {
+                Some(t) if t < best => 0,
+                Some(t) if t - best <= 50 => 1,
+                Some(t) if t - best <= 200 => 2,
+                Some(_) => 3,
+                None => 4,
+            };
+            bands[b].1.push(l);
+        }
+        println!("\nINCUMBENT LAG  largest lag behind the incumbent over the run, by outcome (unarmed):");
+        println!("  {:<28} {:>5}  {:>9}  {:>9}  {:>9}", "outcome", "n", "median", "p90", "max");
+        for (name, v) in bands.iter_mut() {
+            if v.is_empty() {
+                continue;
+            }
+            v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            println!(
+                "  {:<28} {:>5}  {:>7.0} ms  {:>7.0} ms  {:>7.0} ms",
+                name,
+                v.len(),
+                v[v.len() / 2],
+                v[(v.len() * 9 / 10).min(v.len() - 1)],
+                v[v.len() - 1]
+            );
+        }
+        let floor = bands[0].1.last().copied();
+        match floor {
+            Some(f) => println!(
+                "  the largest lag of any candidate that BEAT the incumbent: {:.0} ms -- a `lag` \
+                 threshold must sit above this; every faster candidate stayed under it",
+                f
+            ),
+            None => println!("  no candidate beat the incumbent in this set, so this set cannot bound the threshold"),
+        }
+        // If a lag predicate is armed: what did it kill, and was any of it fast?
+        for (pi, np) in s.watch.preds.iter().enumerate() {
+            if np.pred.kind != forkoracle::pred_core::K_LAG {
+                continue;
+            }
+            let killed: Vec<&Row1> = rows
+                .iter()
+                .filter(|r| matches!(r.w.tripped(), Some((p, _, _)) if p as usize == pi))
+                .collect();
+            let fast = killed.iter().filter(|r| r.obs.time.map(|t| t < best).unwrap_or(false)).count();
+            let fin = killed.iter().filter(|r| r.obs.time.is_some()).count();
+            let mut saved = 0.0f64;
+            for r in &killed {
+                if let Some((_, tick, _)) = r.w.tripped() {
+                    let end = r.obs.sum.map(|x| x.last_tick).unwrap_or(n as i32) as f64;
+                    saved += (end - tick as f64).max(0.0);
+                }
+            }
+            println!(
+                "  `{}` (ms={:.0}, need={}) aborted {} of {} ({:.1}%): {} would have finished, {} of them FASTER than the incumbent{}; {:.0} ticks saved per abort on average",
+                np.name,
+                np.pred.p[0],
+                np.pred.need,
+                killed.len(),
+                c.n,
+                100.0 * killed.len() as f64 / c.n as f64,
+                fin,
+                fast,
+                if fast == 0 { " -- NO FALSE POSITIVE" } else { " -- FALSE POSITIVES" },
+                if killed.is_empty() { 0.0 } else { saved / killed.len() as f64 }
+            );
+        }
+    }
 
     // ---- optional per-candidate dump
     if !c.out.is_empty() {

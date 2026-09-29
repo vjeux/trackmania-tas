@@ -35,6 +35,12 @@ Three crates, one workspace, one `cargo test`:
 | `forkoracle` | the fork oracle: protocol, watchdog, record layout, the car locator, and the mutation operators — shared with `fk`, which measures the watchdog's false-positive rate against this exact mix |
 | `forkshim` | the LD_PRELOAD half of the fork oracle, loaded into the game server |
 
+The fork oracle's CLOCK is the engine's own tick: the shim hooks the function
+the validator calls once per simulated 10 ms, so a checkpoint is a tick and is
+the same simulation point in every process under any load. `TICKHOOK.md` has
+the hook, the controls and the measurements. There is one clock and no flag to
+ask for another: the shim installs the hook or exits 92.
+
 `forkoracle` and `forkshim` are in the same workspace because the shim
 `#[path]`-includes `forkoracle/src/pred_core.rs`: a predicate has exactly one
 definition in the parent that arms it and in the fork child that evaluates it.
@@ -67,7 +73,7 @@ flag that takes a time takes seconds too (`--temp 0.030`, `--base 23.000`).
 | `--lo --hi --window --stride` | which ticks may be edited, and the sliding window over them |
 | `--temp SECONDS --migrate P` | Metropolis temperature and island migration |
 | `--root --bestdir --log` | where candidates, confirmed results and the audit trail go |
-| `--fork --forktick T --refcsv\|--refghost --shim --pred --finishmargin --corridor` | the fast evaluator and its watchdog |
+| `--fork --forktick T --refcsv\|--refghost --shim --pred --finishmargin --corridor` | the fast evaluator and its watchdog. Every candidate is forked from the deepest savestate node that agrees with it, not from the checkpoint (PERF.md §1) |
 | `--gate --gate-key --gate-min-key --gate-seed-state` | the state objective: score the car's STATE at a place when finish time cannot cross the valley. See §5 |
 | `--fire --fire-at --fire-need --fire-where --after-key --after-ticks --after-from` | the event: a thing that HAPPENS, and what to score after it. A place and an event are not the same shape. See §5.9 |
 
@@ -94,7 +100,7 @@ flag that takes a time takes seconds too (`--temp 0.030`, `--base 23.000`).
 | `tmtas trace` | per-tick input dump → `ghost tape extract`. |
 | `tmtas splice` | cross-spliced two runs at a checkpoint to measure how not-modular they are. The measurement is real and its answer is recorded (§5); splicing tapes is `ghost tape` territory now. |
 | `tmtas selftest` | `cargo test`. |
-| `fkcount` (a whole crate) | an LD_PRELOAD census of every libc entry point the server called, looking for one whose per-ghost count was a clean multiple of the tick count. **It found `lroundf`** — ~25.5 calls per simulated millisecond, bit-identical across runs on an idle box — and that answer is the foundation of the whole fork oracle. It also proved `rand()` is called only during init, so there is no RNG in the simulation. The scaffolding is deleted; both facts are in `forkoracle`'s module docs. |
+| `fkcount` (a whole crate) | an LD_PRELOAD census of every libc entry point the server called, looking for one whose per-ghost count was a clean multiple of the tick count. **It found `lroundf`** — ~25.5 calls per simulated millisecond, bit-identical across runs on an idle box — and that was the fork oracle's clock for a year. It is gone: the clock is now the engine's own tick function (`TICKHOOK.md`), because the lroundf count is NOT stable under load. The census also proved `rand()` is called only during init, so there is no RNG in the simulation, and that fact still stands. |
 
 **Two flags I was told to delete and could not find.** `FK_BUDGET_MUL` (in
 `budget_for`) and `FK_SAMPLE_CENSUS` (in `gather_ticks`) do not exist in any
@@ -191,21 +197,65 @@ answer means anything: 0 of 312 fork-reported finishes survived a plain
 re-validation when the tape was not a small, late perturbation of its
 reference.
 
+### The DNF checkpoint count changed meaning on 2026-09-06
+
+A DNF's checkpoint count now comes from the ENGINE'S OWN COUNTER
+(`participant+0xc70`), not from the validator's `Desc` line. The `Desc` line is
+a lossy print -- for a mutated candidate it is almost always `"wrong simu"`,
+which the driver mapped to 0, and the plain oracle cannot see a lone checkpoint
+at all (k>=2 only). **A DNF cps recorded before that commit is a LOWER BOUND and
+must not be compared naively with one recorded after it**: the same run can read
+0 then and 1 now with nothing about the driving having changed. Measured on 1100
+candidates, the engine count was never below the old one and was ABOVE it on 144
+of 306 DNFs on map 2. Ordering is unchanged (finishers above DNFs, more
+checkpoints better among DNFs), so only the 1-CP-vs-0-CP comparison moves.
+See `TICKHOOK.md` 12.
+
+Related, same commit: a candidate that crosses the finish line AFTER its tape's
+last record is no longer a finish. Past the end the engine simulates on heap
+contents and the plain oracle's verdict is batch-dependent (DNF alone, 26.839 in
+a batch of 520); the shim detects it and reports a DNF instead. 43 of 1100
+candidates were in that class.
+
 ### The resume floor
 
-The `lroundf` checkpoint is not a fixed simulation point, so each worker's
-server stops where it stops. An edit below a worker's own resume tick is a
-silent no-op — invisible to the evaluator, present in the written file, scoring
-exactly the incumbent's score, accepted at `delta == 0`, contaminating that
-worker's lineage for free.
+Since the tick hook the checkpoint IS the same simulation point in every
+process -- 300 servers started together stop at one tick -- but a boundary that
+is ASSUMED is how the phantom got in, so it is still MEASURED on every worker.
+An edit below a worker's own resume tick is a silent no-op — invisible to the
+evaluator, present in the written file, scoring exactly the incumbent's score,
+accepted at `delta == 0`, contaminating that worker's lineage for free.
 
-Every worker now probes its own server, publishes `max(calibration, probe + 1)`,
-and a startup barrier holds the fleet until all of them have. The mutation
+Every worker probes its own server, publishes `max(calibration, probe)` (the
+probe names the first UNCONSUMED record), and a startup barrier holds the fleet
+until all of them have. The mutation
 floor is the **maximum** over workers — it must be the maximum, because
 migration moves a state made by one worker into another.
 `tests/loop_invariants.rs` runs the loop against a fake oracle with per-worker
 floors of 100/140/170/181 and fails if any candidate differs from the reference
 below 181. Reverting the floor to each worker's own makes it fail at tick 100.
+
+### A finish AFTER the tape's last record is not a finish
+
+The engine does not stop when the input tape runs out: it keeps simulating past
+the last record, and what it drives on is whatever the process's heap holds
+there. So a tape that has not finished when its records end can still cross the
+line seconds later -- and WHETHER it does depends on what else the same server
+launch validated. Measured (PERF.md §1, Kacky Reloaded #290, a 2598-tick tape
+ending at race 24.43): one candidate is DNF when validated alone or in a batch
+of 8, and 26.839 in a batch of 520 or 1000 (deterministic for a given batch);
+six more candidates in that batch got times past the tape's end. The fork
+server, which simulates the same tape in the process it was loaded into, says
+DNF for all of them, as does the single-file validation.
+
+The rule: **a finish whose millisecond is past the tape's own end is not a
+result and is never banked or certified.** Certification validates a file
+ALONE, or pads the tape to its declared time plus a margin, and any verdict
+with `finish_ms > start_offset_ms + 10 * ticks` is refused as
+"finished after its own tape", not reported as a time. The guard is already
+inside this rule -- a claim is a finish inside the tape and the written file is
+validated by itself -- and item 7's batched certification proves that it
+never moves a verdict for a claim inside its tape.
 
 ---
 
@@ -1265,3 +1315,35 @@ because the validator is the one that decides.
 * **`analyze`'s statistics.** Ported as-is: operator and tick-bucket tallies
   plus the best-of-k curve. The tallies are what retuned a stalled search from
   its own log once; I did not add anything nobody has used.
+
+---
+
+## 8. MK64 maps (custom items): what broke on 2026-09-29 and the checks that now catch it
+
+The Koopa Troopa Beach cave shortcut: a turbo ramp, a 4.5 m mouth in a rock 27 m
+past the lip, a wood passage. vjeux: "It's drivable as is, you're just not good
+enough to do it." The oracle found tapes that finish inside the cave — 5.859 s
+analog, **5.594 s keyboard-legal with ≥100 ms holds** — but only after a
+morning in which every instrument answered plausibly and wrong. Each item
+below is a measurement and the check that now makes it impossible to repeat.
+
+| what happened | why | the check now |
+|---|---|---|
+| `Starting validation of 0 ghosts (in 0 maps)` for the repo's own golden pair; `Can't load replay` for every constructed tape | the box's `~/tmsrv/TrackmaniaServer` was the 2023-10-09 build (git 121588); the toolchain is measured on **128182** (`TrackmaniaServer_Latest.zip`, May 2026, ELF md5 `0f0f4b25f31f80c60c81404366c95e68`) | `ghost::oracle::check_server_build` reads the build string out of the ELF; every launcher (plain oracle in ghost/tmauto/tmmaps, `tmsearch`, `fk`) refuses another build with the download recipe. `TM_SERVER_BUILD=any` / `=NNNNNN` overrides. |
+| every "DNF" of the morning was a car falling in the void at (40, 0, 40) | the validator's start index (`u03`) selects an entry of the engine's waypoint array, which lists **every item whose MODEL carries a waypoint type, placement property or not**, in item order. The Koopa cuts carry 28 Lakitu animation frames typed as starts before the Start; a rebound human ghost carried map 2's `2` | `tmauto synth write` **measures** `u03` with the fork engine (rule guess first, then 0..64; the index whose car stands on the Start placement wins). `--validation-u03 N` pins it, `--no-startprobe` keeps the file rule and says so. |
+| a finish 15 m in front of the spawn never fired — not ours, not stock `GateFinish32m` | the engine takes a landmark's KIND from the **item model's waypoint type** (0 Start, 1 Finish, 2 Checkpoint, 3 None, 4 StartFinish); the placement tag (`Spawn`/`Goal`/`Checkpoint`/`StartFinish`/`LinkedCheckpoint` — Nadeo's vocabulary, read off map 2) only links and orders. The cut's Start sat on the course's **StartFinish** model → a lap race → the validator ignores Finish gates. Control on map 2: finish block moved 64 m ahead validates a full-gas tape at 2.658; start renamed `RoadTechMultilap` and the same tape is a DNF | `tmauto` refuses a Start placement on a type-4 model when the map has Finish items, with the retype recipe (`wptype IN OUT 0` + `tmmaps reembed`); `TMAUTO_ALLOW_LAP_START=1` for a real lap race. `tmauto` accepts `Spawn`/`StartFinish`/`Start` as the semantic start. |
+| checkpoints stayed REQUIRED after untagging or retagging them to `Goal` | same rule: kind from the model | `tmmaps dropcp` swaps the placements onto a Finish model (own or stock) and parks them at y = −900; `tmmaps untag`/`retag`/`setmodel`/`setblock` for placement surgery, `reembed` + `header --zip-out` for the embedded item bytes, `mapgeom` examples `wpread`/`wptype` to read/rewrite a model's type. |
+| `TAPE MISMATCH: 1000 of 1000 ticks differ ... server has (0, 0, 0)` on every synthesised seed | the fork's input locator keys on the steer sequence; a flat tape matches a zero region | `tmauto synth write` defaults `--wobble-prefix 25` (a zero-mean ±12 key over the first 0.25 s; `0` for a flat tape); the mismatch message names the constant-prefix cause first. |
+| the client's `Replay_Load`/`Ghost_Add` dropped the handler on our regenerated ghosts | the body was uncompressed (`'U'`); the server takes both, the client's in-race loader does not | `ghost regen` leaves a `'C'` file (`--uncompressed` for byte controls); `ghost compress IN OUT` / `tmmaps gbxcompress` for any file. |
+| the decoy test stopped a leg-chained exploration | the do-nothing tape is "idle over `[lo, hi)`, then the seed's own tail" — with `--hi` past the ramp it idled, drove flat out later and **coasted into the mouth** (a real finding: pad entry ≈100 km/h coasting enters); for a leg seeded by a tape that has never been there both sides miss and the closer bounce wins a coin flip | `--decoy-warn` reports the verdict and searches on. Keep `--hi` inside the stretch the seed already drives; seed a keyboard (`--alphabet`) search from the flat-out tape, not from an analog finisher (its legalised form loses the test). |
+
+Facts worth keeping beside the checks:
+
+* The gate box for a cave mouth belongs **inside the passage** (`x 2052..2056.5, y 19.3..25, z 2232..2236.5`), not around the opening: a box around the opening was corner-grazed by flights over the rock (key 66 with the car at the box's top corner). Key that worked: `along(0.4243,0,0.9056) - abs(vy) + 30*roof(0,1,0)`.
+* Per-eval cost on a 16384-block MK64 map ≈ 0.77 ms/tick (28× map 2): 120 fork workers ≈ 300–500 evals/s. The `box` predicate is a CORRIDOR (abort when the car leaves it) — use it to bound a leg; there is no "abort when inside".
+* `PROBE-TIMEOUT` for some tape lengths (700 and 1200 ticks failed, 600/800/900/1000/3500 worked) is unexplained; pick another length.
+* The physics the oracle showed (engine ground truth, same tape on the exporter's original map, the certification map and the film map — identical to the mm): flat out the car hits the ramp base at 149 km/h, the turbo lifts it to 178 at the lip and it flies **over** the mouth onto the rock; lifting the gas early coasts into the pad at 38 km/h and lands nose-down 4 m short; the window is lip 130–140 km/h, gas **held** in the air (gas keeps the nose up), centred on the lip, heading ~30°.
+* A LinkedCheckpoint group that includes a gate before the ramp ticks once at that gate; a cave gate in the same group can never tick in the HUD. Map design, not a volume bug.
+* Nothing lives only on a node: a devserver lease died mid-run and the whole day survived only because every result had been pushed to the box repo / GitHub or staged for the parent within minutes.
+
+Where this lineage lives: branch `agentcloud/colon-three` (the tickhook lineage + these fixes). GitHub `main`'s `tools/search`, `tmauto` and `fk` are the pre-tickhook lineage and lack all of it (its `tmauto` synthesises for block starts only).

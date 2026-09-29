@@ -35,7 +35,7 @@ RUNG 0  (synthesizing a container with no human provenance)
         Synthesize a container from nothing and ask the dedicated server what
         it thinks of it. Prints the server's own transcript with --raw.
   tmauto synth write --map MAP.Map.Gbx --out FILE [--ticks N] [--tape T.tsv]
-                     [--declared MS] [--seed N] [--steer -127..127] [--wobble-prefix N]
+                     [--declared MS] [--seed N] [--steer -127..127] [--wobble-prefix N (default 25; 0 = flat)]
                      [--record MODE]
                      [--start-offset MS] [--format-version 11|12] [--field0 N]
                      [--state-flags START..END:HEX]
@@ -126,6 +126,7 @@ fn main() {
         ("synth", Some("starts")) => startset::run(&args[2..]),
         ("synth", Some("start-check")) => startset::check(&args[2..]),
         ("synth", Some("write")) => cmd_synth_write(&args[2..]),
+        ("verdict", _) => cmd_verdict(&args[1..]),
         ("startprobe", _) => startprobe::run(&args[1..]),
         ("cpladder", _) => cpladder::run(&args[1..]),
         ("tailsearch", _) => tailsearch::run(&args[1..]),
@@ -586,7 +587,45 @@ fn cmd_synth_write(args: &[String]) -> Result<(), String> {
     let map = PathBuf::from(arg(args, "--map").ok_or("--map is required")?);
     let out = PathBuf::from(arg(args, "--out").ok_or("--out is required")?);
     let ticks: usize = arg(args, "--ticks").unwrap_or_else(|| "600".into()).parse().map_err(|_| "--ticks")?;
-    let mut meta = synth::complete_meta_for_map(&map)?;
+    // An explicit --validation-u03 is the G1 measurement instrument: it must be
+    // able to write a container for a map whose start rule is NOT yet known.
+    let mut meta = match arg(args, "--validation-u03") {
+        Some(s) if s != "auto" => {
+            let mut m = synth::meta_for_map(&map)?;
+            m.validation_start_index = parse_u32(&s, "--validation-u03")?;
+            m
+        }
+        _ => {
+            let mut m = synth::complete_meta_for_map(&map)?;
+            // THE START INDEX IS MEASURED, NOT ASSUMED. The rule above counts
+            // waypoints the MAP FILE declares; the engine's array also holds
+            // every item whose MODEL carries a waypoint type, placement property
+            // or not -- the MK64 Koopa cuts carry 28 Lakitu frame items typed as
+            // starts, so the rule said 0 and the car spawned in the void at
+            // (40, 0, 40). One fork trace per candidate index puts the car
+            // where the index says; the index whose car stands on the Start
+            // placement is the answer. Skipped with --no-startprobe or when
+            // no fork engine (fk + shim + TM_SERVER) is reachable.
+            if !flag(args, "--no-startprobe") {
+                match synth::probe_start_index(&map, m.validation_start_index) {
+                    Ok(Some((k, pos))) => {
+                        if k != m.validation_start_index {
+                            eprintln!(
+                                "start index: the map rule said {} but the engine spawns on the Start placement for u03 = {} (car at ({:.1}, {:.1}, {:.1})); using {}",
+                                m.validation_start_index, k, pos[0], pos[1], pos[2], k
+                            );
+                        } else {
+                            eprintln!("start index {} verified: the car spawns at ({:.1}, {:.1}, {:.1}) on the Start placement", k, pos[0], pos[1], pos[2]);
+                        }
+                        m.validation_start_index = k;
+                    }
+                    Ok(None) => eprintln!("start index: no fork engine reachable (FK_BIN/FK_SHIM/TM_SERVER); the map rule's {} is UNVERIFIED", m.validation_start_index),
+                    Err(e) => return Err(e),
+                }
+            }
+            m
+        }
+    };
     if let Some(s) = arg(args, "--seed") {
         meta.validation_seed = s.parse().map_err(|_| "--seed")?;
     }
@@ -659,9 +698,15 @@ fn cmd_synth_write(args: &[String]) -> Result<(), String> {
                 return Err("--steer wants -127..127".into());
             }
             let mut inputs = vec![Input::new(steer, true, false); ticks];
+            // DEFAULT 25: the fork oracle's input locator keys on the steer
+            // sequence and cannot find a constant tape (every record then reads
+            // back as zero -- a morning lost to "TAPE MISMATCH" on 2026-09-29).
+            // The key is zero-mean and +-12/127 over the first 0.25 s at
+            // standstill: a lateral displacement under a centimetre. Pass
+            // --wobble-prefix 0 for a truly flat tape (plain oracle only).
             let wobble: usize = arg(args, "--wobble-prefix")
                 .as_deref()
-                .unwrap_or("0")
+                .unwrap_or("25")
                 .parse()
                 .map_err(|_| "--wobble-prefix wants a tick count")?;
             for (tick, input) in inputs.iter_mut().take(wobble).enumerate() {
@@ -717,5 +762,87 @@ fn cmd_synth_write(args: &[String]) -> Result<(), String> {
         initial.pos[0], initial.pos[1], initial.pos[2], initial.quat[0], initial.quat[1],
         initial.quat[2], initial.quat[3], initial.roadtech_dir, meta.validation_start_index, corrupt_x_m
     );
+    Ok(())
+}
+
+/// `tmauto verdict FILE... --map MAP [--raw] [--tag T]` -- the plain oracle,
+/// one server launch for the whole batch, every file's verdict beside the
+/// server's own words. Exit code 0 even for DNFs: a DNF is an answer. Non-zero
+/// only when the server declined to read a file (a container fault).
+fn cmd_verdict(args: &[String]) -> Result<(), String> {
+    let map = PathBuf::from(arg(args, "--map").ok_or("--map is required")?);
+    let tag = arg(args, "--tag").unwrap_or_else(|| format!("verdict-{}", std::process::id()));
+    let mut files: Vec<PathBuf> = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        if args[i].starts_with("--") {
+            if args[i] != "--raw" {
+                i += 1;
+            }
+        } else {
+            files.push(PathBuf::from(&args[i]));
+        }
+        i += 1;
+    }
+    if files.is_empty() {
+        return Err("no files given".into());
+    }
+    let batch = oracle::validate_raw(&oracle::server_dir(), &files, Maps::One(&map), &tag)?;
+    if flag(args, "--raw") {
+        println!("--- server transcript ---\n{}", batch.raw);
+    }
+    println!("{:<40} {:<18} {:>4} {:>4} {}", "file", "verdict", "cps", "ncp", "server said");
+    let mut missing = 0;
+    let mut past_end = 0;
+    for f in &files {
+        let name = f.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        // The tape's own end, so a finish AFTER it can be marked: the engine
+        // drives on past the last record on whatever memory holds, and the
+        // time it then reports depends on the rest of the batch (SEARCH.md §3).
+        let end_ms: Option<i64> = gbx::tape::Tape::from_file(&f.to_string_lossy())
+            .ok()
+            .and_then(|t| t.archives.first().map(|a| a.start_offset_ms as i64 + 10 * a.packets.len() as i64));
+        match batch.answers.iter().find(|a| a.file == name) {
+            Some(a) => {
+                let verdict = match a.verdict() {
+                    Some(tmauto::Verdict::Finish { ms }) if end_ms.map(|e| ms as i64 > e).unwrap_or(false) => {
+                        past_end += 1;
+                        format!("{} AFTER-TAPE", tmauto::Verdict::Finish { ms }.secs())
+                    }
+                    Some(v) => v.secs(),
+                    None => "REFUSED".to_string(),
+                };
+                let ncp = a
+                    .desc
+                    .split("out of ")
+                    .nth(1)
+                    .and_then(|s| s.trim_end_matches(|c: char| !c.is_ascii_digit()).parse::<u32>().ok())
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "-".into());
+                println!(
+                    "{:<40} {:<18} {:>4} {:>4} {}",
+                    name,
+                    verdict,
+                    a.cps.map(|c| c.to_string()).unwrap_or_else(|| "-".into()),
+                    ncp,
+                    a.desc.trim()
+                );
+            }
+            None => {
+                missing += 1;
+                println!("{:<40} {:<18} {:>4} {:>4} {}", name, "NOT READ", "-", "-", "the server reported nothing for this file");
+            }
+        }
+    }
+    if past_end > 0 {
+        eprintln!(
+            "\n{} file(s) finished AFTER their own tape ended (marked AFTER-TAPE). The engine drove on \
+             past the last record; that time depends on the rest of the batch and is not a result.",
+            past_end
+        );
+    }
+    if missing > 0 {
+        return Err(format!("{} file(s) were not read by the server", missing));
+    }
     Ok(())
 }

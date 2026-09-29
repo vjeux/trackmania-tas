@@ -1,0 +1,8 @@
+[package]
+name = "tmstate"
+version = "0.1.0"
+edition = "2021"
+description = "The plain data types every tm-player arm shares (coord/INTERFACES.md). std + serde only, NO engine deps."
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }

@@ -1,0 +1,26 @@
+[package]
+name = "tmr"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "tmr"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tmr"
+path = "src/main.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+# the TMR0 reader + CarState (INTERFACES §2) — one reader, never a second
+tmreach = { path = "../tmreach" }
+# gates.json types (INTERFACES §3)
+tmroute = { path = "../tmroute" }
+# the surface model (height probes) and the planner's EdgeEstimator seam
+tmplan = { path = "../tmplan" }
+mapgeom = { path = "../../mapgeom" }
+tmmaps = { path = "../../tmmaps" }
+candle-core = "0.9"
+candle-nn = "0.9"

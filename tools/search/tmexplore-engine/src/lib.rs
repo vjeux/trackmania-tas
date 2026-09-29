@@ -41,7 +41,7 @@ pub mod fork;
 pub mod oracle;
 pub mod route;
 
-/// Tick -> `lroundf` clock, re-exported so the adapters do not each carry a copy
+/// Tick -> checkpoint clock, re-exported so the adapters do not each carry a copy
 /// of the fitted line. The fit is PER MAP and this one is map 2's; it only has
 /// to place a checkpoint near the right instant, because where the server
 /// actually stops is probed and is what every tick is labelled from.

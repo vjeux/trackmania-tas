@@ -183,7 +183,7 @@ pub fn probe(engine: &Engine, tape: Tape, at: Checkpoint) -> Result<(), String> 
     let p = s.probe_tick();
     let race = p.as_ref().ok().map(|p| s.tape.race_ms(*p));
     println!(
-        "checkpoint lroundf #{}  input array {:#x}  probe tick {}  race {}  up {:.2}s",
+        "checkpoint clock #{}  input array {:#x}  probe tick {}  race {}  up {:.2}s",
         s.checkpoint_clock,
         s.srv.base,
         match &p {
@@ -252,9 +252,11 @@ pub fn check(engine: &Engine, tape: Tape, at: Checkpoint, o: CheckOpts) -> Resul
         crate::secs_opt(tape.declared_ms.map(|v| v as i64))
     );
 
-    let mut s = Session::start(engine, tape, at)?;
+    // SCORING: this is `fk server check`, whose whole job is each candidate's
+    // answer. The fast finish is right here and wrong in a sampler.
+    let mut s = Session::start_scoring(engine, tape, at)?;
     println!(
-        "fork server up: input array {:#x}, checkpoint at lroundf #{}",
+        "fork server up: input array {:#x}, checkpoint at clock #{}",
         s.srv.base, s.checkpoint_clock
     );
 
@@ -402,7 +404,9 @@ pub fn check(engine: &Engine, tape: Tape, at: Checkpoint, o: CheckOpts) -> Resul
 /// measured on a run that did not also prove exactness is a number about
 /// nothing.
 pub fn bench(engine: &Engine, tape: Tape, at: Checkpoint, n: usize, seed: u64) -> Result<(), String> {
-    let mut s = Session::start(engine, tape, at)?;
+    // SCORING: a per-candidate cost measured without the lever is a number
+    // about a configuration nobody runs.
+    let mut s = Session::start_scoring(engine, tape, at)?;
     let probe = s.probe_tick()?;
     let mut rng = Rng::new(seed);
     let mut cands = Vec::new();

@@ -136,7 +136,7 @@ pub struct Watch {
     pub finish_s: f32,
     /// 1 = the cheap clock-gated sampling path in the child.
     pub fast: u32,
-    /// World coordinate of the sub-tick timing plane; 0 disables it.
+    /// World-x of the sub-tick timing plane; 0 disables it.
     pub plane_x: f32,
     /// The axis that plane cuts: 0 = x, 1 = y, 2 = z. Trailing on the wire.
     pub plane_axis: u32,
@@ -188,6 +188,7 @@ pub fn parse_spec(spec: &str) -> Result<NamedPred, String> {
         "box" => &["xmin", "xmax", "ymin", "ymax", "zmin", "zmax", "need", "after", "until"],
         "offref" => &["dist", "need", "after", "until"],
         "noprog" => &["dist", "win", "need", "after", "until"],
+        "lag" => &["ms", "need", "after", "until"],
         k => return Err(format!("unknown predicate kind {:?}", k)),
     };
     for (k, _) in &kv {
@@ -235,6 +236,13 @@ pub fn parse_spec(spec: &str) -> Result<NamedPred, String> {
             p.win = geti(&kv, "win", 100).max(1) as u32;
             p.need = geti(&kv, "need", 1).max(1) as u32;
             p.p[0] = getf(&kv, "dist", 5.0);
+        }
+        "lag" => {
+            // `need` defaults to 10 ticks: the nearest-point tracking has a
+            // window and ties, so one tick of apparent lag is not a fact
+            // about the car; ten in a row are.
+            p.need = geti(&kv, "need", 10).max(1) as u32;
+            p.p[0] = getf(&kv, "ms", 200.0);
         }
         _ => unreachable!(),
     }

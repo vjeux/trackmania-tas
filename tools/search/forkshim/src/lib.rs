@@ -10,10 +10,12 @@
 //!
 //! # The three mechanisms
 //!
-//! 1. **A deterministic clock.** The engine calls `lroundf` ~25.5 times per
-//!    simulated millisecond, and the total for a given (map, ghost) is bit-exact
-//!    across runs. Interposing it gives a reproducible cursor into the middle of
-//!    a simulation with no debugger, no disassembly and no ptrace.
+//! 1. **A deterministic clock: the engine's own tick.** The shim patches the
+//!    entry of the function the validator calls once per simulated 10 ms
+//!    (`0x119e060` on build 128182, first in the tick loop, before that tick's
+//!    input record is read) and counts RACE ticks. A checkpoint is therefore
+//!    the same simulation point in every process under any load. The hook, its
+//!    controls and how to re-find it on a new build: `tools/search/TICKHOOK.md`.
 //!
 //! 2. **The decoded input array.** The ghost's bitstream is decoded up front (it
 //!    is *not* read during the simulation) into one 32-byte record per 10 ms
@@ -32,6 +34,9 @@
 //! commands until `Q`:
 //!   `R <n> [tick steer gas brake]*n`  -- fork, patch, run, return the child's
 //!                                        stdout (the validator's JSON block)
+//!
+//! The handshake is `READY <base> <clock> <pid> <controller> <sim> tick
+//! <sim_ms> <race_start>`.
 
 use std::os::raw::{c_char, c_int, c_void};
 use std::sync::atomic::{AtomicI32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
@@ -60,6 +65,7 @@ extern "C" {
     fn fflush(f: *mut c_void) -> c_int;
     fn setvbuf(f: *mut c_void, buf: *mut c_char, mode: c_int, size: usize) -> c_int;
     fn poll(fds: *mut PollFd, n: u64, timeout: c_int) -> c_int;
+    fn __errno_location() -> *mut c_int;
     fn open(path: *const c_char, flags: c_int, mode: c_int) -> c_int;
     static mut stdout: *mut c_void;
 }
@@ -111,13 +117,11 @@ unsafe fn connect_unix(path: &[u8]) -> c_int {
     fd
 }
 
-static N_LROUNDF: AtomicU64 = AtomicU64::new(0);
 static STOP_AT: AtomicU64 = AtomicU64::new(u64::MAX);
 static CKPT_AT: AtomicU64 = AtomicU64::new(u64::MAX);
 static ARMED: AtomicUsize = AtomicUsize::new(0);
 static IS_CHILD: AtomicUsize = AtomicUsize::new(0);
 static INIT: AtomicUsize = AtomicUsize::new(0);
-static REAL_LROUNDF: AtomicUsize = AtomicUsize::new(0);
 static REAL_WRITE: AtomicUsize = AtomicUsize::new(0);
 static CMD_FD: AtomicI32 = AtomicI32::new(-1);
 static RES_FD: AtomicI32 = AtomicI32::new(-1);
@@ -186,6 +190,16 @@ static VALIDATOR_PARTICIPANT_COUNT_ARG: AtomicUsize = AtomicUsize::new(0);
 static BRANCH_ARMED: AtomicUsize = AtomicUsize::new(0);
 static BRANCH_SOCK_LEN: AtomicUsize = AtomicUsize::new(0);
 static mut BRANCH_SOCK: [u8; 108] = [0; 108];
+/// WARM NODES (`BranchReq::watched`). A branch child asked to run its ticks
+/// with the armed watchdog sets `BRANCH_WARMING` while it consumes them; when it
+/// re-enters the fork server it clears that and sets `NODE_WARM`: this
+/// process's `EVAL` now holds the watched run's state -- speed history,
+/// progress, gate and event records -- up to its own tick, and a `'W'` child
+/// forked from it CONTINUES that run instead of resetting. That is what makes a
+/// candidate forked 1800 ticks in return the summary the root would have
+/// returned. Both are inherited by descendants, which is the point.
+static BRANCH_WARMING: AtomicUsize = AtomicUsize::new(0);
+static NODE_WARM: AtomicUsize = AtomicUsize::new(0);
 /// The input array's base, found once by `locate` and inherited by every
 /// descendant. Re-verified, never merely trusted.
 static CACHED_BASE: AtomicUsize = AtomicUsize::new(0);
@@ -201,15 +215,14 @@ static TRACE_FD: AtomicI32 = AtomicI32::new(-1);
 // ------------------------------------------------------------------ sampling
 //
 // The point of the whole exercise: a forked child does not just produce a
-// finish time, it can report the car's state as it simulates. `lroundf` is
-// already on the simulation's hot path (~255 calls per 10 ms tick), so the hook
-// doubles as a sampling clock: every `SAMPLE_STRIDE` calls, copy a window of
-// the vehicle struct out to a dedicated pipe.
+// finish time, it can report the car's state as it simulates. The tick hook is
+// the sampling clock too: every `SAMPLE_STRIDE` ticks, copy a window of the
+// vehicle struct out to a dedicated pipe.
 //
-// Dedup is what makes this tick-accurate without knowing where the engine keeps
-// its tick counter: the physics integrator writes the state once per tick, so
-// sampling several times per tick and emitting only on change yields exactly
-// the distinct states, in order.
+// Dedup on the gathered record survives from when the clock was a float
+// rounding sampled ~255 times a tick, and it still earns its place: the engine
+// can write the state twice inside one tick, and only the race clock in the
+// record marks a tick boundary unconditionally.
 
 static SAMPLE_ADDR: AtomicUsize = AtomicUsize::new(0);
 static SAMPLE_LEN: AtomicUsize = AtomicUsize::new(0);
@@ -290,9 +303,9 @@ static SAMPLE_NEXT: AtomicU64 = AtomicU64::new(u64::MAX);
 static SAMPLE_LEFT: AtomicU64 = AtomicU64::new(0);
 static SAMPLE_DEDUP: AtomicUsize = AtomicUsize::new(0); // key length, 0 = off
 static SAMPLE_KEYOFF: AtomicUsize = AtomicUsize::new(0);
-/// Absolute `lroundf` count past which the child stops simulating (0 = never).
+/// Absolute tick past which the child stops simulating (0 = never).
 ///
-/// WHY: a locate probe wants 6 or 150 TICKS, and without this the child
+/// WHY: a locate probe wants 6 or 150 ticks, and without this the child
 /// simulates the whole remaining tape -- on a 440 s record that is 43 000 ticks
 /// for six ticks of data, which is what made the blind locate cost 5.5 minutes
 /// per attempt and put a general fix out of reach on long tapes.
@@ -313,9 +326,52 @@ static GATE_MOD: AtomicU64 = AtomicU64::new(0);
 static GATE_PHASE: AtomicU64 = AtomicU64::new(0);
 static SAMPLE_PREV: AtomicUsize = AtomicUsize::new(0); // *mut u8, len SAMPLE_LEN
 static SAMPLE_BUF: AtomicUsize = AtomicUsize::new(0); // *mut u8, len 8 + SAMPLE_LEN
+/// THE SAMPLE RING (PERF.md §5). An 'S' child used to `write` every sample down
+/// a pipe: one syscall and one wake-up of the polling parent per tick, ~15 us
+/// on top of a 24 us tick. Now the parent maps a MAP_SHARED buffer before the
+/// fork -- `[u64 used][samples...]` -- and the child copies each sample into
+/// it; the parent reads it once, after the child is done. Bytes are identical
+/// to what the pipe carried, in the same order. When the ring is full the
+/// child goes on down the pipe, so the blob is `ring ++ pipe` and no sample is
+/// lost. 0 = no ring (the trace and 'G' paths write to a file and keep it).
+static SAMPLE_RING: AtomicUsize = AtomicUsize::new(0);
+static SAMPLE_RING_CAP: AtomicUsize = AtomicUsize::new(0);
+/// Largest ring the parent will map: samples past it take the pipe.
+const SAMPLE_RING_MAX: usize = 64 << 20;
+
+/// Make sure the process holds a ring of at least `want` bytes (plus the
+/// header), mapping a bigger one if needed, and reset its `used` word. Called
+/// in the PARENT before the fork, so the child inherits the mapping.
+unsafe fn sample_ring_prepare(want: usize) {
+    // A FRESH MAPPING FOR EVERY RUN, never a reused one. A child that has
+    // been told to die may still be on another core for a few microseconds,
+    // and a reused ring whose header the parent has just reset is exactly
+    // where its last sample would land: on top of the next run's first. Each
+    // child gets its own pages and keeps them until it is gone; the parent
+    // unmaps its reference after reading. ~20 us per run.
+    sample_ring_release();
+    let need = (want.min(SAMPLE_RING_MAX) + 8 + 4095) & !4095;
+    let p = mmap(std::ptr::null_mut(), need, PROT_RW, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    if p as isize == -1 || p.is_null() {
+        return; // no ring: the pipe carries everything, as before
+    }
+    *(p as *mut u64) = 0;
+    SAMPLE_RING.store(p as usize, Ordering::SeqCst);
+    SAMPLE_RING_CAP.store(need, Ordering::SeqCst);
+}
+
+/// Drop the parent's reference to the current ring (the child that used it
+/// keeps its own until it exits).
+unsafe fn sample_ring_release() {
+    let cur = SAMPLE_RING.swap(0, Ordering::SeqCst);
+    let cap = SAMPLE_RING_CAP.swap(0, Ordering::SeqCst);
+    if cur != 0 {
+        munmap(cur as *mut c_void, cap);
+    }
+}
 
 /// Gather the watched segments out, if the key slice changed. Called from the
-/// `lroundf` hook in the child only.
+/// tick hook in the child only.
 ///
 /// Dedup is on a *key* slice of the gathered record rather than the whole
 /// thing: the record has to be wide enough to catch the neighbouring fields,
@@ -328,14 +384,14 @@ unsafe fn do_sample(clock: u64) {
     // stop this from ever being reached again.
     let dl = SAMPLE_DEADLINE.load(Ordering::Relaxed);
     if dl != 0 && clock > dl {
-        _exit(0)
+        leave(1)
     }
     let stride = SAMPLE_STRIDE.load(Ordering::Relaxed);
     let gm = GATE_MOD.load(Ordering::Relaxed);
     if gm != 0 {
         // A REJECTED gate check must re-arm for the NEXT call, not for the next
         // stride: advancing by a whole stride here means each sample needs the
-        // one lroundf call `stride` ahead to land on the grid by luck, which
+        // one tick `stride` ahead to land on the grid by luck, which
         // turned a request for 64 snapshots into 17.
         let ga = GATE_ADDR.load(Ordering::Relaxed) as *const u32;
         if ga.is_null() {
@@ -360,7 +416,7 @@ unsafe fn do_sample(clock: u64) {
     let n = SAMPLE_LEFT.load(Ordering::Relaxed);
     if n == 0 {
         if SAMPLE_EXIT.load(Ordering::Relaxed) != 0 {
-            _exit(0)
+            leave(1)
         }
         SAMPLE_STRIDE.store(0, Ordering::Relaxed);
         SAMPLE_NEXT.store(u64::MAX, Ordering::Relaxed);
@@ -444,6 +500,20 @@ unsafe fn do_sample(clock: u64) {
     }
     std::ptr::copy_nonoverlapping(clock.to_le_bytes().as_ptr(), buf, 8);
     SAMPLE_LEFT.store(n - 1, Ordering::Relaxed);
+    // Into the ring while it fits -- no syscall, no wake-up -- then down the
+    // pipe. The parent reads `ring ++ pipe`, so the order is the pipe's.
+    let ring = SAMPLE_RING.load(Ordering::Relaxed);
+    if ring != 0 {
+        let used = *(ring as *const u64) as usize;
+        if 8 + used + 8 + len <= SAMPLE_RING_CAP.load(Ordering::Relaxed) {
+            std::ptr::copy_nonoverlapping(buf, (ring + 8 + used) as *mut u8, 8 + len);
+            *(ring as *mut u64) = (used + 8 + len) as u64;
+            return;
+        }
+        // Full: everything from here on takes the pipe, and never the ring
+        // again, so the two halves stay in order.
+        SAMPLE_RING.store(0, Ordering::Relaxed);
+    }
     write_all(
         SAMPLE_FD.load(Ordering::Relaxed),
         std::slice::from_raw_parts(buf, 8 + len),
@@ -487,10 +557,12 @@ extern "C" {
         fd: c_int,
         off: i64,
     ) -> *mut c_void;
+    fn munmap(addr: *mut c_void, len: usize) -> c_int;
 }
 const PROT_RW: c_int = 3;
 const MAP_SHARED: c_int = 1;
 const MAP_ANONYMOUS: c_int = 0x20;
+const MAP_PRIVATE: c_int = 2;
 
 const MAXREC: usize = 256;
 
@@ -597,7 +669,26 @@ unsafe fn watch_eval(rec: *const u8, clock: i64) {
     if trip >= 0 {
         // dead candidate: stop paying for it. The parent sees EOF on the JSON
         // pipe and reads the verdict out of the shared page.
-        _exit(0)
+        if BRANCH_WARMING.load(Ordering::Relaxed) != 0 {
+            // A branch child warming up on the lineage's own ticks tripped: it
+            // cannot become a node, and a driver waiting on the socket must
+            // not sit out its timeout to learn that. Connect and say so; the
+            // hello fails to parse as READY and the driver falls back.
+            let path = &*core::ptr::addr_of!(BRANCH_SOCK);
+            let n = BRANCH_SOCK_LEN.load(Ordering::SeqCst);
+            let fd = connect_unix(&path[..n]);
+            if fd >= 0 {
+                let mut m = Vec::with_capacity(64);
+                m.extend_from_slice(b"ERR tripped pred ");
+                utoa(trip as u64, &mut m);
+                m.extend_from_slice(b" tick ");
+                utoa(tick.max(0) as u64, &mut m);
+                send_frame(fd, &m);
+            }
+            _exit(0)
+        }
+        // A candidate: its verdict is in the shared page; say so and go.
+        leave(1)
     }
 }
 
@@ -612,12 +703,12 @@ unsafe fn watch_gather(rec: *mut u8) {
     }
 }
 
-/// The child's per-`lroundf` hook when the watchdog is armed.
+/// The child's per-tick hook when the watchdog is armed.
 ///
 /// Two modes, and they were measured against each other over hundreds of
 /// candidates before the cheap one became the default:
 ///
-/// * **full** -- gather the whole record on every call (255 per tick), dedup on
+/// * **full** -- gather the whole record on every call, dedup on
 ///   its content, and judge the last record carrying a given clock value. This
 ///   is exactly the rule `decode_rows` uses on the driver side, which is the
 ///   rule that was validated to 3.4 mm against ghost telemetry.
@@ -628,8 +719,9 @@ unsafe fn watch_gather(rec: *mut u8) {
 ///   bytes the full path judges at the END of clock T's span. (Judging one
 ///   sample earlier is exactly what makes it worth doing: an abort lands a
 ///   tick sooner.) It costs a load and a compare instead of a 44-byte gather
-///   250 times a tick, which is 10 ms a candidate. `fk pred --mode equiv`
-///   checks the two paths field by field.
+///   on every call, which cost 10 ms a candidate when the clock was `lroundf`
+///   and ~255 calls landed inside every tick. `fk pred --mode equiv` checks the
+///   two paths field by field.
 #[inline(never)]
 unsafe fn do_watch(clock: u64) {
     SAMPLE_NEXT.store(
@@ -760,16 +852,69 @@ fn main_module_base() -> usize {
         .unwrap_or(0)
 }
 
-/// Install the one-shot validator callback trap before `main` starts. Gating it
-/// keeps `forkshim` usable with `shimhost`, whose text obviously has no server
-/// instruction at this offset.
-unsafe extern "C" fn install_validator_trace() {
-    if std::env::var_os("FKSHIM_VALIDATOR_CAR").is_none() {
-        return;
+/// Install the one-shot validator callback trap before `main` starts.
+///
+/// Unconditional since the clock needs it: the race start is read through the
+/// captured validation simulation. A host with no server text falls out at the
+/// `in_main_text` check, so `shimhost` and every other non-server host are
+/// handled by fact rather than by an env var.
+/// Is this code a preloaded shared object, or was it linked into the host?
+/// The shim only ever hooks in the first case.
+fn loaded_as_shared_object() -> bool {
+    let exe = match std::fs::read_link("/proc/self/exe") {
+        Ok(p) => p.to_string_lossy().into_owned(),
+        Err(_) => return false,
+    };
+    let me = loaded_as_shared_object as usize;
+    let maps = match std::fs::read_to_string("/proc/self/maps") {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    for l in maps.lines() {
+        let mut it = l.split_whitespace();
+        let range = it.next().unwrap_or("");
+        let path = it.nth(4).unwrap_or("");
+        let Some((s, e)) = range.split_once('-') else { continue };
+        let (s, e) = (usize::from_str_radix(s, 16).unwrap_or(0), usize::from_str_radix(e, 16).unwrap_or(0));
+        if s <= me && me < e {
+            return path != exe;
+        }
     }
+    false
+}
+
+/// Is `[base+off, base+off+n)` inside an executable mapping of the main
+/// module? Reading a signature without asking this is a segfault on any host
+/// that is not the server -- and the shim is LD_PRELOADed into whatever the
+/// driver launches, `/usr/bin/time` and `/bin/true` included.
+fn in_main_text(base: usize, off: usize, n: usize) -> bool {
+    let exe = match std::fs::read_link("/proc/self/exe") {
+        Ok(p) => p.to_string_lossy().into_owned(),
+        Err(_) => return false,
+    };
+    let maps = match std::fs::read_to_string("/proc/self/maps") {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let (a, b) = (base + off, base + off + n);
+    maps.lines().any(|l| {
+        let mut it = l.split_whitespace();
+        let range = it.next().unwrap_or("");
+        let perms = it.next().unwrap_or("");
+        let path = it.nth(3).unwrap_or("");
+        let Some((s, e)) = range.split_once('-') else { return false };
+        let (s, e) = (usize::from_str_radix(s, 16).unwrap_or(0), usize::from_str_radix(e, 16).unwrap_or(0));
+        path == exe && perms.starts_with("r-x") && s <= a && b <= e
+    })
+}
+
+unsafe extern "C" fn install_validator_trace() {
     let base = main_module_base();
     MODULE_BASE.store(base, Ordering::SeqCst);
     if base == 0 {
+        return;
+    }
+    if !in_main_text(base, VALIDATOR_SIM_BIND_OFF, VALIDATOR_SIM_BIND_SIGNATURE.len()) {
         return;
     }
     let at = base + VALIDATOR_SIM_BIND_OFF;
@@ -797,9 +942,630 @@ unsafe extern "C" fn install_validator_trace() {
     std::ptr::write_volatile(at as *mut u8, 0xcc);
 }
 
+// One constructor, fixed order: the validator trap first (the tick clock needs
+// its capture), then the clock mode.
+unsafe extern "C" fn shim_ctor() {
+    install_validator_trace();
+    init_clock_mode();
+}
 #[used]
 #[cfg_attr(target_os = "linux", link_section = ".init_array")]
-static VALIDATOR_TRACE_INIT: unsafe extern "C" fn() = install_validator_trace;
+static SHIM_CTOR: unsafe extern "C" fn() = shim_ctor;
+
+// ------------------------------------------------------------- the TICK HOOK
+//
+// THE CLOCK IS THE ENGINE'S OWN TICK, NOT A FLOAT ROUNDING.
+//
+// `lroundf` was a proxy: ~255 calls per simulated tick, bit-identical on an
+// idle box and NOT under load. The validator's frame loop (`0x1218db0`, the
+// function the /validatepath job calls with `dt = 10`) steps the simulation in
+// 10 ms ticks until it reaches the frame's target time OR a wall-clock budget
+// runs out (`0x121979b: cmp eax,[rbp-0xc0]; ja 121a150`). Under contention the
+// budget branch fires, the same run is cut into more frames, and every frame
+// costs ~62 extra `lroundf` calls of per-frame overhead -- which is exactly the
+// whole-chunk drift measured across 120 and 352 concurrent servers. Anything
+// derived from an lroundf count is therefore per-process.
+//
+// The tick loop body, build 128182 (see TICKHOOK.md for the evidence):
+//
+//     0x1219786  [rbp-0x30] = new_time  (= sim.time + 10)
+//     0x12197eb  call 0x119e060 (players, n_players, new_time, dt)   <-- HOOK
+//     0x1219f89  call 0x119f0f0  per player: copy input record (new_time-start)/10
+//     0x121a071  call 0x119f1b0  physics step
+//     0x1219750  sim.time (= [sim+0x48]) = new_time; loop
+//
+// `0x119e060` is entered exactly once per tick (2401 entries on a 2401-tick
+// run, under gdb), first thing in the body, BEFORE the tick's input record is
+// read. Hooking its entry gives:
+//   * an exact tick index -- the engine's own `new_time`, read from `edx`;
+//   * a stop point at which every record with index >= (new_time - start)/10
+//     is provably unconsumed, so the resume boundary is a function of the
+//     tick and the page-fault probe becomes a control on it;
+//   * a per-tick sampling instant at which the previous tick's state is final
+//     and the race clock in memory already carries its label.
+//
+// MECHANISM. The first 17 bytes of `0x119e060` are a plain prologue (push rbp;
+// mov rbp,rsp; push r15..rbx; sub rsp,0x18) -- position-independent, so they
+// can be re-executed anywhere. They are replaced by a 14-byte absolute
+// `jmp [rip+0]` into a trampoline that saves the argument registers, calls
+// `tick_entry(new_time, dt)`, restores them, runs the 17 displaced bytes
+// and jumps back to `0x119e060 + 17`. No ±2 GB constraint, no relocation of
+// RIP-relative code. Three byte signatures (the prologue, the call site in the
+// loop, the loop's clock write) must ALL match before a single byte is
+// written; a mismatch is a hard exit (92), never a fall back to some other
+// clock: the driver asked for a tick and must never silently get anything else.
+
+static N_TICK: AtomicU64 = AtomicU64::new(0);
+/// The engine's simulation time (ms) of the tick being entered.
+static SIM_MS: AtomicU64 = AtomicU64::new(0);
+/// `new_time - dt` at the first entry: the simulation's start time.
+static SIM_MS0: AtomicU64 = AtomicU64::new(u64::MAX);
+/// THE RACE START, in simulation ms, read out of the engine once it is set
+/// (u64::MAX = not yet). It is NOT a constant: 2200 on an idle box, and 2300
+/// in 1 of 150 servers started at once -- the spawn is scheduled off the
+/// engine's frame clock, which is the same load-dependent frame partition
+/// that made lroundf drift. So the tick clock is keyed on RACE time, not
+/// simulation time: `clock = (new_time - race_start) / 10 + RACE_CLOCK_BIAS`.
+static RACE_START: AtomicU64 = AtomicU64::new(u64::MAX);
+/// The clock reading at the last hook entry (u64::MAX until the race start is
+/// known); what `clock_now` returns.
+static TICK_CLOCK: AtomicU64 = AtomicU64::new(u64::MAX);
+/// Ticks added to the race tick so countdown ticks (negative race time) are
+/// still positive clock values. Shared with the driver: `clock::RACE_CLOCK_BIAS`.
+pub const RACE_CLOCK_BIAS_TICKS: u64 = 1000;
+// Where the engine keeps the two times whose max is the race start, exactly
+// as the tick loop computes it before applying inputs (0x1219f3b..0x1219f66
+// -> 0x121cf50): `max([[playground+0x968]+0x3c], [participant+0x218])`,
+// unknown while either is -1. playground = [sim+0x18]; participant =
+// [[playground+0x660]] with [playground+0x668] == 1 (VALIDATOR_CAR.md).
+const PG_OFF: usize = 0x18;
+const PG_PLAYERS_OFF: usize = 0x660;
+const PG_NPLAYERS_OFF: usize = 0x668;
+const PG_ROUND_OFF: usize = 0x968;
+const ROUND_START_OFF: usize = 0x3c;
+const PARTICIPANT_SPAWN_OFF: usize = 0x218;
+
+/// The race start as the engine will use it this tick, or None while unset.
+/// Every hop is null-checked; a null anywhere is "not yet", never a fault.
+unsafe fn race_start_now() -> Option<u32> {
+    let sim = VALIDATOR_SIM.load(Ordering::Relaxed);
+    if sim == 0 {
+        return None;
+    }
+    let pg = *((sim + PG_OFF) as *const usize);
+    if pg == 0 {
+        return None;
+    }
+    if *((pg + PG_NPLAYERS_OFF) as *const u32) != 1 {
+        return None;
+    }
+    let players = *((pg + PG_PLAYERS_OFF) as *const usize);
+    let round = *((pg + PG_ROUND_OFF) as *const usize);
+    if players == 0 || round == 0 {
+        return None;
+    }
+    let participant = *(players as *const usize);
+    if participant == 0 {
+        return None;
+    }
+    let a = *((round + ROUND_START_OFF) as *const u32);
+    let b = *((participant + PARTICIPANT_SPAWN_OFF) as *const u32);
+    if a == u32::MAX || b == u32::MAX {
+        return None;
+    }
+    Some(a.max(b))
+}
+/// Entries whose `new_time - old_time != 10`. Must be 0; reported at exit.
+static TICK_ANOMALIES: AtomicU64 = AtomicU64::new(0);
+/// Entries at which the validation simulation's own clock (`[sim+0x48]`,
+/// readable once the validator callback has been captured) was not
+/// `new_time - dt`. Must be 0; reported at exit. This is the in-process
+/// control that the hook sits at a tick boundary of THIS simulation.
+static TICK_CLOCK_MISMATCH: AtomicU64 = AtomicU64::new(0);
+static TICK_HOOK_INSTALLED: AtomicUsize = AtomicUsize::new(0);
+
+// ------------------------------------------------------------- the TIMING PAGE
+//
+// WHERE A CANDIDATE'S MILLISECONDS GO, measured inside the child.
+//
+// A candidate costs `fixed + per_tick * tail`, and at a late checkpoint the
+// fixed part is most of it -- but from outside the fork you cannot see what it
+// is made of, and every attempt to infer it by differencing two protocol paths
+// measures the paths instead (the sampled path's own transport costs more than
+// the finish path it was meant to price).
+//
+// So the child reports its own timeline through a MAP_SHARED page it inherits:
+// three stores per tick, no syscalls, nothing on the wire. The parent reads it
+// after the child is done and appends it to FKTIME.
+#[repr(C)]
+struct Timing {
+    child_us: u64,
+    first_tick_us: u64,
+    last_tick_us: u64,
+    ticks: u64,
+    /// The finish time in SIMULATION ms, straight out of the engine's result
+    /// block, or 0 if this child never finished. See `tickhook_sig`.
+    finish_sim_ms: u64,
+    /// The race tick at which the child first saw it.
+    finish_clock: u64,
+    /// The checkpoint count of a child that ran out of tape without finishing,
+    /// PLUS ONE (so 0 still means "nothing reported").
+    dnf_cps: u64,
+    /// The race tick at which it gave up.
+    dnf_clock: u64,
+    /// The engine's own checkpoint count, PLUS ONE, refreshed every tick.
+    cps: u64,
+    /// The tick at which the tape ran out, 0 if it never did.
+    exhausted_clock: u64,
+    /// 1 if the finish was recorded AFTER the tape had run out.
+    finish_past_end: u64,
+    /// INTER-TICK GAPS (perf arm, PERF.md §4): ticks whose entry came more
+    /// than 80 us after the previous one, the sum of what those gaps exceeded
+    /// 80 us by, and the largest gap. A frame boundary inside the tick loop
+    /// shows up here; so does a preemption on a loaded box.
+    gap_big: u64,
+    gap_excess_us: u64,
+    gap_max_us: u64,
+    /// THE CENSUS, written by a child that leaves early (`leave`), since the
+    /// parent cannot read /proc of a child that has already gone: minor
+    /// faults, resident KB, private-dirty KB. 0 when not measured.
+    census_minflt: u64,
+    census_rss_kb: u64,
+    census_pdirty_kb: u64,
+    /// Pages of the heap this child alone maps (written or allocated since the
+    /// fork), and how many distinct 2 MB regions they fall in -- what
+    /// transparent huge pages would copy.
+    census_heap_dirty_pages: u64,
+    census_heap_regions_2m: u64,
+}
+static TIMING: AtomicUsize = AtomicUsize::new(0);
+
+/// The address of the engine's finish word, resolved once in the fork-server
+/// parent so every child inherits it (0 = not resolved, and then the fast path
+/// is simply not taken).
+static RESULT_WORD: AtomicUsize = AtomicUsize::new(0);
+/// 1 = a child exits the moment the engine records a finish, instead of running
+/// the validator's finish-and-print path. 2 = record it but DO NOT exit, so the
+/// same child produces both numbers and they can be compared (`fk tickhook
+/// finishcheck`).
+static EXIT_AT_FINISH: AtomicUsize = AtomicUsize::new(0);
+/// The clock of the tape's LAST record: past it the engine is simulating on
+/// whatever the input array holds, so nothing after it is this tape's result.
+/// Sent by the driver, which knows exactly how many records it wrote.
+static LAST_TAPE_CLOCK: AtomicUsize = AtomicUsize::new(0);
+/// Has this child passed the end of its tape?
+static EXHAUSTED_SEEN: AtomicUsize = AtomicUsize::new(0);
+/// May a child that has passed the end LEAVE, instead of letting the validator
+/// finish? Opt-in: it changes the verdict for a candidate that crosses the line
+/// just past the last record.
+static DNF_FAST: AtomicUsize = AtomicUsize::new(0);
+/// The participant's checkpoint counter.
+static CP_WORD: AtomicUsize = AtomicUsize::new(0);
+/// The "no time yet" value THIS race uses (0xffffffff on some maps, 0 on
+/// others): the fast path fires when the word stops being this.
+static RESULT_SENTINEL: AtomicUsize = AtomicUsize::new(0);
+
+/// Is this range mapped? One `msync` on the page, no signal handler games.
+unsafe fn readable(addr: usize, len: usize) -> bool {
+    extern "C" {
+        fn msync(addr: *mut c_void, len: usize, flags: c_int) -> c_int;
+    }
+    let page = 4096usize;
+    let start = addr & !(page - 1);
+    let end = (addr + len + page - 1) & !(page - 1);
+    msync(start as *mut c_void, end - start, 4 /* MS_ASYNC */) == 0
+}
+
+unsafe fn timing() -> *mut Timing {
+    TIMING.load(Ordering::Relaxed) as *mut Timing
+}
+
+/// Allocate the page once, in the fork-server parent, so every child inherits
+/// the same mapping and writes into memory the parent can read.
+unsafe fn timing_init() {
+    if TIMING.load(Ordering::Relaxed) != 0 {
+        return;
+    }
+    let p = mmap(std::ptr::null_mut(), 4096, PROT_RW, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    if p as isize != -1 && !p.is_null() {
+        TIMING.store(p as usize, Ordering::SeqCst);
+    }
+}
+/// The offset actually hooked (the constant, or a finder-mode override).
+static TICK_FN_USED: AtomicUsize = AtomicUsize::new(0);
+
+// The build constants and the two pure checks live in ONE file shared with the
+// driver (`fk tickhook check` reads the same bytes out of the ELF on disk):
+// `forkoracle/src/tickhook_sig.rs`, `#[path]`-included exactly like
+// `pred_core`, because the shim has no dependencies by design.
+#[path = "../../forkoracle/src/tickhook_sig.rs"]
+pub mod tickhook_sig;
+pub use tickhook_sig::{
+    prologue_displaced_len, tick_hook_signatures_match, TICK_CALL_SITE_OFF, TICK_CALL_SITE_SIGNATURE,
+    TICK_CLOCK_WRITE_OFF, TICK_CLOCK_WRITE_SIGNATURE, TICK_FN_DISPLACED, TICK_FN_OFF, TICK_FN_SIGNATURE,
+};
+
+/// Called from the trampoline at every entry of the tick function, with the
+/// engine's own `(new_time, dt)` (`edx`, `ecx`; `esi` is the player count).
+unsafe extern "C" fn tick_entry(new: u32, dt: u32) {
+    tick(new, dt, race_start_now())
+}
+
+/// THE TEST SEAM. `shimhost` -- the stand-in engine the savestate-tree tests
+/// run against -- has no server text to hook, so it calls this once per tick
+/// instead, supplying the race start the engine would have set. Everything
+/// downstream is the same code path; the only thing the seam replaces is the
+/// two things the trampoline provides.
+#[no_mangle]
+pub unsafe extern "C" fn fkshim_tick(new_ms: u32, dt: u32, race_start_ms: u32) {
+    if TICK_HOOK_INSTALLED.load(Ordering::Relaxed) != 0 {
+        // A real hook is installed: a second clock source would double-count.
+        log(b"FKSHIM: fkshim_tick called in a process whose tick function is hooked\n");
+        _exit(92)
+    }
+    // `u32::MAX` is "no race yet", the same thing the engine's own fields say
+    // during the countdown.
+    tick(new_ms, dt, (race_start_ms != u32::MAX).then_some(race_start_ms))
+}
+
+/// One tick of the clock: the checks, the race-time reading, and the dispatch.
+unsafe fn tick(new: u32, dt: u32, race_start: Option<u32>) {
+    if INIT.load(Ordering::Relaxed) == 0 {
+        init();
+    }
+    // A PROBE CHILD THAT KEEPS TICKING never faulted on the input array: the
+    // engine is reading its inputs from somewhere else. Say so on the probe
+    // pipe at the second tick, so the driver learns THAT instead of an empty
+    // reply (the ~1-in-40 start-up flake, 2026-09-07).
+    if IS_CHILD.load(Ordering::Relaxed) != 0 {
+        let fd = PROBE_FD.load(Ordering::Relaxed);
+        if fd >= 0 {
+            let n = PROBE_TICKS.fetch_add(1, Ordering::Relaxed);
+            if n < 4 {
+                logn(b"FKSHIM probe child ticked, clock ", new as u64);
+            }
+            if n == 1 {
+                let mut m = Vec::new();
+                m.extend_from_slice(b"PROBE-RAN-ON clock ");
+                utoa(new as u64, &mut m);
+                m.extend_from_slice(b" base ");
+                utoa(PROBE_BASE.load(Ordering::Relaxed) as u64, &mut m);
+                m.push(b'\n');
+                write_all(fd, &m);
+            }
+        }
+    }
+    if dt != 10 {
+        TICK_ANOMALIES.fetch_add(1, Ordering::Relaxed);
+    }
+    if SIM_MS0.load(Ordering::Relaxed) == u64::MAX {
+        SIM_MS0.store(new as u64 - dt as u64, Ordering::Relaxed);
+    }
+    let sim = VALIDATOR_SIM.load(Ordering::Relaxed);
+    if sim != 0 && std::ptr::read_volatile((sim + 0x48) as *const u32) != new.wrapping_sub(dt) {
+        TICK_CLOCK_MISMATCH.fetch_add(1, Ordering::Relaxed);
+    }
+    N_TICK.fetch_add(1, Ordering::Relaxed);
+    SIM_MS.store(new as u64, Ordering::Relaxed);
+    // Three stores, only in a child that has a timing page.
+    if IS_CHILD.load(Ordering::Relaxed) != 0 {
+        let t = timing();
+        if !t.is_null() {
+            let now = now_us();
+            if (*t).first_tick_us == 0 {
+                (*t).first_tick_us = now;
+            } else {
+                let gap = now.saturating_sub((*t).last_tick_us);
+                if gap > 80 {
+                    (*t).gap_big += 1;
+                    (*t).gap_excess_us += gap - 80;
+                }
+                if gap > (*t).gap_max_us {
+                    (*t).gap_max_us = gap;
+                }
+            }
+            (*t).last_tick_us = now;
+            (*t).ticks += 1;
+        }
+    }
+    // The race start is read until it is known and then FROZEN: the tape is
+    // indexed from it, so a clock keyed on it is the tape's own time base.
+    let mut rs = RACE_START.load(Ordering::Relaxed);
+    if rs == u64::MAX {
+        match race_start {
+            Some(v) => {
+                rs = v as u64;
+                RACE_START.store(rs, Ordering::Relaxed);
+            }
+            None => return, // no race yet: nothing is keyed on this tick
+        }
+    }
+    let n = ((new as i64 - rs as i64).div_euclid(10) + RACE_CLOCK_BIAS_TICKS as i64) as u64;
+    TICK_CLOCK.store(n, Ordering::Relaxed);
+    // THE WATCHDOG AND THE SAMPLER FIRST, then the finish.
+    //
+    // `on_clock` is what feeds the predicates and writes the candidate's
+    // summary into the shared page. Leaving before it would silently drop the
+    // last tick from every finisher's progress -- a behaviour change disguised
+    // as a speedup -- so the tick is evaluated in full and only then does the
+    // child go. (`on_clock` may itself end the child, which is a trip and is
+    // exactly as it was.)
+    on_clock(n);
+
+    // THE FINISH, read from the engine rather than waited for.
+    //
+    // One load and one compare per tick, in a child whose driver calibrated the
+    // word (see `forkoracle::finish`). When the engine records a finish, the
+    // answer this candidate exists to produce is already known -- so take it
+    // and go, instead of paying 5.8 ms for the validator to format it as JSON.
+    // Mode 2 records it and stays, so the same child also prints the JSON and
+    // the two numbers can be compared.
+    // THE CHECKPOINT COUNT, published every tick so the parent has it however
+    // the child ends -- fast exit, validator print path, or SIGKILL.
+    if IS_CHILD.load(Ordering::Relaxed) != 0 {
+        let cw = CP_WORD.load(Ordering::Relaxed);
+        if cw != 0 {
+            let t = timing();
+            if !t.is_null() {
+                (*t).cps = std::ptr::read_volatile(cw as *const u32) as u64 + 1;
+            }
+        }
+    }
+    // HAS THE TAPE RUN OUT? A COMPARISON, not a memory read.
+    //
+    // Past its last record the engine keeps simulating on whatever the input
+    // array holds, so a candidate can cross the line on heap contents -- and
+    // the plain oracle's verdict for that is BATCH-DEPENDENT (the perf arm
+    // measured one tape DNF alone and 26.839 in a batch of 520). The JSON
+    // reports it as an ordinary finish; this does not.
+    //
+    // THE FIRST VERSION OF THIS READ A WORD IN THE PARTICIPANT that goes 2 -> 0
+    // one tick after the last record (`fk tickhook dnf` found it). That was a
+    // measurement standing in for a fact the driver already knows, and it cost
+    // a real regression: on Kacky Reloaded #290 that word also moves AT THE
+    // FINISH, so a genuine finish 4-7 ticks inside the tape fired the guard
+    // first and was reported as a DNF -- intermittently, because whether the
+    // word had settled by the finish tick depends on the engine's wall-clock
+    // frame partition. Two of three runs of the same seed disagreed.
+    //
+    // The tape's last tick is not a thing to discover: the driver knows how
+    // many records it sent and the clock is the record index. So it sends the
+    // number, and this is one compare against the clock we already have --
+    // exact on every map, identical on every run, and no per-map word to be
+    // wrong about.
+    // WHERE THE TAPE ENDS -- reported, never used to overrule a verdict.
+    //
+    // A candidate that crosses the line after its tape's last record finished
+    // on inputs that are not in the tape, and the perf arm measured the plain
+    // oracle giving such a tape a BATCH-DEPENDENT time (DNF alone, 26.839 in a
+    // batch of 520). So the class is real and worth flagging.
+    //
+    // It is NOT worth overruling the verdict with, and the measurement says so:
+    // suppressing the time turned 19 of 50 candidates at map 2 `tick:2380` and
+    // 14 of 50 at 145875 into DNFs that the full validation -- and the fork
+    // itself, before this -- both scored as finishes, with the SAME
+    // millisecond. Past the array both processes read zero-filled pages, so
+    // they agree; the batch case differs because a reused allocation is dirty.
+    // And the class is not rare: the tape ends AT the reference's finish, so
+    // every candidate slower than the incumbent is in it.
+    //
+    // Refusing to bank one is a decision for whoever banks. Reporting it is
+    // this layer's job: `FKPASTEND` rides beside the time.
+    //
+    // +1, and it is not slack: the engine WRITES the result one tick after the
+    // tick that detects the crossing (measured on three tapes, TICKHOOK.md
+    // 10.2). A finish detected on the tape's last tick therefore lands at
+    // `last + 1`, and refusing it would turn a genuine finish into a DNF --
+    // which is exactly the regression this replaced, arrived at from the other
+    // side. Anything past THAT is the engine driving on heap contents; the
+    // coast is hundreds of ticks long, so nothing real sits in the gap.
+    let last = LAST_TAPE_CLOCK.load(Ordering::Relaxed) as u64;
+    if IS_CHILD.load(Ordering::Relaxed) != 0
+        && last != 0
+        && n > last + 1
+        && EXHAUSTED_SEEN.load(Ordering::Relaxed) == 0
+    {
+        EXHAUSTED_SEEN.store(1, Ordering::Relaxed);
+        let t = timing();
+        if !t.is_null() {
+            (*t).exhausted_clock = n;
+        }
+    }
+    let mode = EXIT_AT_FINISH.load(Ordering::Relaxed);
+    if mode != 0 && IS_CHILD.load(Ordering::Relaxed) != 0 {
+        let w = RESULT_WORD.load(Ordering::Relaxed);
+        if w != 0 {
+            let v = std::ptr::read_volatile(w as *const u32);
+            if v as usize != RESULT_SENTINEL.load(Ordering::Relaxed) {
+                let t = timing();
+                if !t.is_null() && (*t).finish_sim_ms == 0 {
+                    // REPORTED, NOT SUPPRESSED, when it lands past the tape's
+                    // end. The time is still the engine's own answer for this
+                    // simulation and it still equals the JSON's -- see the
+                    // comment on the guard above for why refusing it was wrong.
+                    (*t).finish_sim_ms = v as u64;
+                    (*t).finish_clock = n;
+                    // THE FLAG IS TAKEN HERE, at the finish, not at exit: by
+                    // the time a child ends, EVERY run has passed the tape's
+                    // end (the engine coasts hundreds of ticks), so an
+                    // exit-time test marks every finisher and says nothing.
+                    // What matters is whether the tape had already run out
+                    // WHEN THE LINE WAS CROSSED.
+                    if EXHAUSTED_SEEN.load(Ordering::Relaxed) != 0 {
+                        (*t).finish_past_end = 1;
+                    }
+                }
+                if mode == 1 {
+                    leave(1);
+                }
+            } else {
+                // no finish yet -- has the tape run out? then this candidate's
+                // answer is already final: it did not finish, and the only
+                // other thing the driver wants is how far it got.
+                // THE EXIT IS GATED; THE FLAG IS NOT.
+                //
+                // Leaving at the tape's end saves the 6.02 ms epilogue on a
+                // candidate that did not finish -- but "has not finished YET"
+                // is not "did not finish": a candidate can cross the line one
+                // to four ticks past the last record, and a child that left
+                // at the record would report a DNF where the full validation
+                // reports a time. Measured, when this gate was briefly lost:
+                // 10 of 50 at map 2 `tick:2380` and 8 of 50 at 145875.
+                // So the exit stays opt-in (`FKSHIM_DNF_FAST=1`) and the
+                // default child runs on and lets the engine answer.
+                if EXHAUSTED_SEEN.load(Ordering::Relaxed) != 0
+                    && DNF_FAST.load(Ordering::Relaxed) != 0
+                {
+                    let t = timing();
+                    if !t.is_null() && (*t).dnf_clock == 0 {
+                        (*t).dnf_cps = (*t).cps.max(1); // the tick-by-tick count
+                        (*t).dnf_clock = n;
+                    }
+                    if mode == 1 {
+                        leave(1);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Build the trampoline and patch the entry. Any failure is fatal (exit 92):
+/// there is no other clock to fall back to, and a silent fallback is exactly
+/// how a wrong number gets believed.
+unsafe fn install_tick_hook() {
+    let base = MODULE_BASE.load(Ordering::SeqCst);
+    if base == 0 {
+        log(b"FKSHIM tickhook: no module base\n");
+        _exit(92)
+    }
+    // Every signature range must sit inside an executable mapping of the main
+    // module BEFORE it is read: a host without server text (shimhost, a
+    // different build) must be refused, not segfaulted.
+    let inside = |off: usize, n: usize| in_main_text(base, off, n);
+    // FINDER MODE. `FKSHIM_TICK_FN_OFF=0x...` with `FKSHIM_TICK_UNSAFE=1` hooks
+    // an arbitrary offset with only a prologue-shape check, so `fk tickhook
+    // find` can test candidates on a new build by their dynamic behaviour
+    // (entered once per tick, edx == sim clock + 10, ecx == 10). Never for
+    // production: without UNSAFE the override is refused.
+    let (fn_off, displaced): (usize, usize) = match std::env::var("FKSHIM_TICK_FN_OFF") {
+        Ok(v) => {
+            if std::env::var_os("FKSHIM_TICK_UNSAFE").as_deref() != Some(std::ffi::OsStr::new("1")) {
+                log(b"FKSHIM tickhook: REFUSED, FKSHIM_TICK_FN_OFF needs FKSHIM_TICK_UNSAFE=1\n");
+                _exit(92)
+            }
+            let off = usize::from_str_radix(v.trim().trim_start_matches("0x"), 16).unwrap_or(0);
+            if off == 0 || !inside(off, 64) {
+                log(b"FKSHIM tickhook: REFUSED, override offset is not inside the main module's text\n");
+                _exit(92)
+            }
+            let head = std::slice::from_raw_parts((base + off) as *const u8, 64);
+            match prologue_displaced_len(head) {
+                Some(n) => (off, n),
+                None => {
+                    log(b"FKSHIM tickhook: REFUSED, override target has no relocatable frame-pointer prologue\n");
+                    _exit(92)
+                }
+            }
+        }
+        Err(_) => {
+            if !inside(TICK_FN_OFF, TICK_FN_SIGNATURE.len())
+                || !inside(TICK_CALL_SITE_OFF, TICK_CALL_SITE_SIGNATURE.len())
+                || !inside(TICK_CLOCK_WRITE_OFF, TICK_CLOCK_WRITE_SIGNATURE.len())
+            {
+                log(b"FKSHIM tickhook: REFUSED, signature offsets are not inside the main module's text\n");
+                _exit(92)
+            }
+            let read = |off: usize, n: usize| std::slice::from_raw_parts((base + off) as *const u8, n).to_vec();
+            if let Err(what) = tick_hook_signatures_match(&read) {
+                log(b"FKSHIM tickhook: REFUSED, signature mismatch: ");
+                log(what.as_bytes());
+                log(b"\n");
+                _exit(92)
+            }
+            (TICK_FN_OFF, TICK_FN_DISPLACED)
+        }
+    };
+    TICK_FN_USED.store(fn_off, Ordering::SeqCst);
+    let target = base + fn_off;
+    let resume = target + displaced;
+    let displaced_bytes = std::slice::from_raw_parts(target as *const u8, displaced).to_vec();
+
+    // Trampoline. 9 GPR pushes + 0x80 for xmm0-7 keep the call 16-aligned
+    // (entry rsp = 8 mod 16, +72 +128 = 0 mod 16).
+    let mut t: Vec<u8> = Vec::with_capacity(256);
+    t.extend_from_slice(&[0x50, 0x51, 0x52, 0x56, 0x57, 0x41, 0x50, 0x41, 0x51, 0x41, 0x52, 0x41, 0x53]);
+    t.extend_from_slice(&[0x48, 0x81, 0xec, 0x80, 0x00, 0x00, 0x00]); // sub rsp,0x80
+    t.extend_from_slice(&[0x0f, 0x11, 0x04, 0x24]); // movups [rsp],xmm0
+    for (i, r) in [0x4cu8, 0x54, 0x5c, 0x64, 0x6c, 0x74, 0x7c].iter().enumerate() {
+        t.extend_from_slice(&[0x0f, 0x11, *r, 0x24, (0x10 * (i + 1)) as u8]);
+    }
+    t.extend_from_slice(&[0x89, 0xd7, 0x89, 0xce]); // mov edi,edx ; mov esi,ecx
+    t.extend_from_slice(&[0x48, 0xb8]); // movabs rax, imm64
+    t.extend_from_slice(&(tick_entry as usize as u64).to_le_bytes());
+    t.extend_from_slice(&[0xff, 0xd0]); // call rax
+    t.extend_from_slice(&[0x0f, 0x10, 0x04, 0x24]); // movups xmm0,[rsp]
+    for (i, r) in [0x4cu8, 0x54, 0x5c, 0x64, 0x6c, 0x74, 0x7c].iter().enumerate() {
+        t.extend_from_slice(&[0x0f, 0x10, *r, 0x24, (0x10 * (i + 1)) as u8]);
+    }
+    t.extend_from_slice(&[0x48, 0x81, 0xc4, 0x80, 0x00, 0x00, 0x00]); // add rsp,0x80
+    t.extend_from_slice(&[0x41, 0x5b, 0x41, 0x5a, 0x41, 0x59, 0x41, 0x58, 0x5f, 0x5e, 0x5a, 0x59, 0x58]);
+    t.extend_from_slice(&displaced_bytes);
+    t.extend_from_slice(&[0xff, 0x25, 0x00, 0x00, 0x00, 0x00]); // jmp [rip+0]
+    t.extend_from_slice(&(resume as u64).to_le_bytes());
+
+    let ps = getpagesize() as usize;
+    let page = mmap(std::ptr::null_mut(), ps, 7, 0x22 /* PRIVATE|ANON */, -1, 0);
+    if page as isize == -1 || page.is_null() {
+        log(b"FKSHIM tickhook: trampoline mmap failed\n");
+        _exit(92)
+    }
+    std::ptr::copy_nonoverlapping(t.as_ptr(), page as *mut u8, t.len());
+    // Text becomes RX again afterwards; the trampoline page stays RWX only
+    // because it is never written again and W is harmless there.
+
+    let mut patch = vec![0xccu8; displaced];
+    patch[..6].copy_from_slice(&[0xff, 0x25, 0x00, 0x00, 0x00, 0x00]);
+    patch[6..14].copy_from_slice(&(page as usize as u64).to_le_bytes());
+    let lo = target / ps * ps;
+    let hi = (target + displaced + ps - 1) / ps * ps;
+    if mprotect(lo as *mut c_void, hi - lo, 7) != 0 {
+        log(b"FKSHIM tickhook: mprotect(text, rwx) failed\n");
+        _exit(92)
+    }
+    std::ptr::copy_nonoverlapping(patch.as_ptr(), target as *mut u8, patch.len());
+    if mprotect(lo as *mut c_void, hi - lo, PROT_READ_EXEC) != 0 {
+        log(b"FKSHIM tickhook: mprotect(text, rx) failed\n");
+        _exit(92)
+    }
+    TICK_HOOK_INSTALLED.store(1, Ordering::SeqCst);
+}
+
+/// Before `main`: install the tick hook, or die.
+///
+/// The ONE exception is `FKSHIM_TEST_HOST=1`, which the savestate-tree tests
+/// set when they launch `shimhost`: that host is not the game and has no tick
+/// function to hook, so it drives the clock through `fkshim_tick` instead.
+/// Without that opt-in a host whose text does not carry the signatures is a
+/// hard exit -- an unrecognised server build must never run on a clock nobody
+/// checked.
+unsafe extern "C" fn init_clock_mode() {
+    // Linked INTO a host rather than preloaded ALONGSIDE one: that is a test
+    // binary using this crate as a library, not a game server to hook. (The
+    // constructor runs either way, so the two cases have to be told apart, and
+    // they are told apart by fact rather than by an env var: is this code
+    // inside the main executable?)
+    if !loaded_as_shared_object() {
+        return;
+    }
+    if std::env::var_os("FKSHIM_TEST_HOST").as_deref() == Some(std::ffi::OsStr::new("1")) {
+        return;
+    }
+    let base = main_module_base();
+    MODULE_BASE.store(base, Ordering::SeqCst);
+    install_tick_hook();
+}
+
 
 unsafe extern "C" fn validator_trap_handler(_sig: c_int, _info: *const u8, ctx: *mut c_void) {
     let at = VALIDATOR_TRAP_ADDR.load(Ordering::Relaxed);
@@ -843,7 +1609,7 @@ unsafe fn init() {
     // has opened anything -- taking it lazily mid-run shifts descriptor
     // numbering under code that tracks its own.
     DEVNULL_FD.store(open(b"/dev/null\0".as_ptr() as *const c_char, 1, 0), Ordering::SeqCst);
-    if let Some(v) = env_i64(b"FKSHIM_STOP_LROUNDF\0") {
+    if let Some(v) = env_i64(b"FKSHIM_STOP_TICK\0") {
         if v > 0 {
             STOP_AT.store(v as u64, Ordering::SeqCst);
         }
@@ -893,7 +1659,11 @@ impl Horspool {
     }
 }
 
+/// The engine's decoded input record: 32 bytes per tick, `steer` at +4. The
+/// layout, the evidence for it, and the off-by-four it used to hide are
+/// documented once, on `forkoracle::forksrv::STRIDE`.
 const STRIDE: usize = 32;
+const REC_STEER: usize = 4;
 
 /// The reference ghost's steer axis, one f32 per tick, plus the offset of the
 /// most distinctive window. Written by the driver, read here.
@@ -921,14 +1691,28 @@ unsafe fn read_key(path: &str) -> Option<Key> {
 }
 
 /// Scan our own address space for the decoded input array.
+/// The first copy of the input array (`locate_all`'s head).
 unsafe fn locate(key: &Key) -> Option<usize> {
-    let maps = std::fs::read_to_string("/proc/self/maps").ok()?;
+    locate_all(key).into_iter().next()
+}
+
+/// EVERY copy of the record array that matches the key, in /proc/self/maps
+/// order. The engine can hold more than one (the ghost object's decoded list and
+/// the validator's working copy, at least); only one of them is READ during the
+/// race, and which comes first in the maps varies per process. A probe that
+/// faults on nothing (empty reply, exit 0: the child ran the whole race off the
+/// other copy) is how a wrong pick shows -- measured on ~1 in 10 servers when
+/// several references start at once -- and the 'P' handler then moves to the
+/// next candidate.
+unsafe fn locate_all(key: &Key) -> Vec<usize> {
+    let mut found: Vec<usize> = Vec::new();
+    let Some(maps) = std::fs::read_to_string("/proc/self/maps").ok() else { return found };
     let want: Vec<[u8; 4]> = key.steer.iter().map(|v| v.to_le_bytes()).collect();
     let hs = Horspool::new(want[key.t0]);
     let n = key.steer.len();
     for line in maps.lines() {
         let mut it = line.split_whitespace();
-        let range = it.next()?;
+        let Some(range) = it.next() else { continue };
         let perms = it.next().unwrap_or("");
         if !perms.starts_with("rw") {
             continue;
@@ -938,9 +1722,8 @@ unsafe fn locate(key: &Key) -> Option<usize> {
         {
             continue;
         }
-        let (a, b) = range.split_once('-')?;
-        let start = usize::from_str_radix(a, 16).ok()?;
-        let end = usize::from_str_radix(b, 16).ok()?;
+        let Some((a, b)) = range.split_once('-') else { continue };
+        let (Ok(start), Ok(end)) = (usize::from_str_radix(a, 16), usize::from_str_radix(b, 16)) else { continue };
         let hay = std::slice::from_raw_parts(start as *const u8, end - start);
         let mut i = 0usize;
         while let Some(p) = hs.find_from(hay, i) {
@@ -967,11 +1750,17 @@ unsafe fn locate(key: &Key) -> Option<usize> {
                 }
             }
             if ok {
-                return Some(start + base);
+                // The RECORD base: the match is on tick 0's steer, which sits
+                // `REC_STEER` into the record. Everything downstream -- the
+                // patch, the shadow, the probe's protection range and its
+                // arithmetic, and the `base` on the wire -- is record-aligned
+                // because of this line.
+                found.push(start + base - REC_STEER);
+                i = p + (n - 1) * STRIDE;
             }
         }
     }
-    None
+    found
 }
 
 /// The steer value we believe each record holds, tick for tick.
@@ -999,7 +1788,31 @@ static EXPECT_N: AtomicUsize = AtomicUsize::new(0);
 /// blind — so they are the same statement.
 #[inline]
 unsafe fn apply_patch(base: usize, tick: usize, src: *const u8) {
-    std::ptr::copy_nonoverlapping(src, (base + tick * STRIDE) as *mut u8, 12);
+    // steer, gas, brake -- the three f32 the tape owns, at +4, +8, +12 of the
+    // record. The tail from +0x10 is the engine's and is never touched.
+    //
+    // RESPAWN (2026-09-08, GEN's respawn channel): the tape's respawn event
+    // (state-literal bit 31 in the file) expands into the record's word 0:
+    // 0x22 on the respawn tick, 0x2 on every other (tmenv rec-dump on a poked
+    // Poland 2026 tape; the engine then respawns the car to its last credited
+    // checkpoint ~1.0 s later with that checkpoint's speed). The wire keeps its
+    // 16-byte patch: a BRAKE value >= 2.0 carries the respawn (brake = real
+    // brake + 2.0), decoded here -- word 0 becomes 0x22 for a respawn tick and
+    // is put back to 0x2 otherwise, so a re-patched tick never keeps a stale
+    // respawn.
+    let mut rec = [0u8; 12];
+    std::ptr::copy_nonoverlapping(src, rec.as_mut_ptr(), 12);
+    let brake = f32::from_le_bytes([rec[8], rec[9], rec[10], rec[11]]);
+    let respawn = brake >= 2.0;
+    if respawn {
+        rec[8..12].copy_from_slice(&(brake - 2.0).to_le_bytes());
+    }
+    std::ptr::copy_nonoverlapping(rec.as_ptr(), (base + tick * STRIDE + REC_STEER) as *mut u8, 12);
+    let w0 = (base + tick * STRIDE) as *mut u32;
+    let cur = *w0;
+    if cur & !0x20 == 0x2 {
+        *w0 = if respawn { cur | 0x20 } else { cur & !0x20 };
+    }
     let p = EXPECT.load(Ordering::Relaxed) as *mut f32;
     if !p.is_null() && tick < EXPECT_N.load(Ordering::Relaxed) {
         let mut v = [0u8; 4];
@@ -1028,7 +1841,7 @@ unsafe fn base_still_holds(base: usize) -> Option<(usize, f32, f32)> {
     }
     for t in 0..n {
         let mut v = [0u8; 4];
-        std::ptr::copy_nonoverlapping((base + t * STRIDE) as *const u8, v.as_mut_ptr(), 4);
+        std::ptr::copy_nonoverlapping((base + t * STRIDE + REC_STEER) as *const u8, v.as_mut_ptr(), 4);
         let got = f32::from_le_bytes(v);
         if got.to_bits() != (*p.add(t)).to_bits() {
             return Some((t, got, *p.add(t)));
@@ -1044,8 +1857,10 @@ unsafe fn base_still_holds(base: usize) -> Option<(usize, f32, f32)> {
 // good enough -- at a 98.9% checkpoint a four-tick probe mis-read it and two of
 // thirty candidates came back 2-3 ms off. So ask the engine instead: fork a
 // throwaway child, take away read access to the input array, and see which
-// record it faults on next. That address IS the tick the simulation is about to
-// consume, so every tick from there on is safe to rewrite.
+// record it faults on next. That address IS the record the simulation is about
+// to consume: it is the FIRST UNCONSUMED tick, and every tick from there on is
+// safe to rewrite. (It reported one less than that until the base was made
+// record-aligned -- see `forkoracle::forksrv::STRIDE`.)
 
 extern "C" {
     fn mprotect(addr: *mut c_void, len: usize, prot: c_int) -> c_int;
@@ -1070,12 +1885,14 @@ static mut VALIDATOR_OLD_SIGTRAP: SigactionT = SigactionT {
 };
 
 const SA_SIGINFO: c_int = 4;
+const EINTR: c_int = 4;
 const SIGSEGV: c_int = 11;
 const PROT_NONE: c_int = 0;
 const PROT_READ_WRITE: c_int = 3;
 const PROT_READ_EXEC: c_int = 5;
 
 static PROBE_FD: AtomicI32 = AtomicI32::new(-1);
+static PROBE_TICKS: AtomicUsize = AtomicUsize::new(0);
 static PROBE_BASE: AtomicUsize = AtomicUsize::new(0);
 static PROBE_END: AtomicUsize = AtomicUsize::new(0);
 
@@ -1085,6 +1902,7 @@ unsafe extern "C" fn segv_handler(_sig: c_int, info: *const u8, ctx: *mut c_void
     let end = PROBE_END.load(Ordering::Relaxed);
     let fd = PROBE_FD.load(Ordering::Relaxed);
     if addr < base || addr >= end {
+        logn(b"FKSHIM probe: neighbour fault at ", addr as u64);
         // a neighbour sharing one of the two edge pages: give that page back
         // and let the instruction retry, so the probe keeps waiting for a real
         // input-array read.
@@ -1177,8 +1995,40 @@ unsafe fn arm_probe(base: usize, n: usize, fd: c_int) {
         restorer: 0,
     };
     sigaction(SIGSEGV, &act, std::ptr::null_mut());
-    if hi > lo {
-        mprotect(lo as *mut c_void, hi - lo, PROT_NONE);
+    // PAGE BY PAGE, NOT ONE CALL. One mprotect over [lo, hi) fails as a WHOLE
+    // (ENOMEM) when the range crosses into a hole or a differently-mapped
+    // region -- a 7,196-record array (230 KB) did so on every probe (LEARN:
+    // every step of a 103 s template failed PROBE-EMPTY), and shorter arrays
+    // did so on ~1 in 10 servers -- and then NOTHING was protected: the child
+    // ran the whole race without faulting and exited 0 with an empty reply.
+    // Protecting each page on its own protects every page that can be.
+    let mut failed = 0usize;
+    let mut pages = 0usize;
+    let mut p = lo;
+    while p < hi {
+        pages += 1;
+        if mprotect(p as *mut c_void, ps, PROT_NONE) != 0 {
+            failed += 1;
+        }
+        p += ps;
+    }
+    if failed > 0 {
+        let mut o = Vec::new();
+        o.extend_from_slice(b"FKSHIM probe: mprotect failed on ");
+        utoa(failed as u64, &mut o);
+        o.extend_from_slice(b" of ");
+        utoa(pages as u64, &mut o);
+        o.extend_from_slice(b" pages\n");
+        log(&o);
+        if failed == pages {
+            // nothing protected: say so instead of running the race in silence
+            let mut m = Vec::new();
+            m.extend_from_slice(b"PROBE-MPROTECT-FAILED pages ");
+            utoa(pages as u64, &mut m);
+            m.push(b'\n');
+            write_all(fd, &m);
+            _exit(93);
+        }
     }
 }
 
@@ -1198,6 +2048,359 @@ unsafe fn read_exact(fd: c_int, buf: &mut [u8]) -> bool {
         got += r as usize;
     }
     true
+}
+
+/// THE EXIT MARKER. A candidate child that has its answer leaves with
+/// `_exit`, and the parent used to learn that from EOF on the pipe. But EOF
+/// arrives only when the kernel closes the child's files, and `do_exit` tears
+/// the address space down FIRST -- every COW'd page and every page table of a
+/// 150 MB process, 2-3 ms -- so the parent sat through the teardown of a child
+/// whose answer was already in the shared page. Measured on map 2 at tick
+/// 2313: 2.34 ms between a finisher's last tick and the parent's answer, of
+/// which the pipe and the parse are 0.06.
+///
+/// So the child writes these bytes down its result pipe right before it goes.
+/// The parent treats them exactly like `"IsValid"` -- the run is over, read
+/// the pages, answer the driver -- and the teardown happens on whatever core
+/// the kernel puts it on while the next candidate is already running. Every
+/// store into the shared pages precedes the `write` syscall, so a parent that
+/// has seen the marker sees them.
+pub const EXIT_MARK: &[u8] = b"\nFKEXIT\n";
+
+
+/// Soft-dirty pages of this process's `[heap]` mapping and the number of
+/// distinct 2 MB-aligned regions they fall in. Measurement mode only.
+unsafe fn heap_soft_dirty() -> Option<(u64, u64)> {
+    heap_soft_dirty_of(getpid())
+}
+
+/// The same, for another process this user owns (a live child).
+unsafe fn heap_soft_dirty_of(pid: c_int) -> Option<(u64, u64)> {
+    use std::io::{Read, Seek, SeekFrom};
+    let maps = std::fs::read_to_string(format!("/proc/{}/maps", pid)).ok()?;
+    let line = maps.lines().find(|l| l.ends_with("[heap]"))?;
+    let range = line.split_whitespace().next()?;
+    let (lo, hi) = range.split_once('-')?;
+    let lo = usize::from_str_radix(lo, 16).ok()?;
+    let hi = usize::from_str_radix(hi, 16).ok()?;
+    let mut f = std::fs::File::open(format!("/proc/{}/pagemap", pid)).ok()?;
+    let npages = (hi - lo) / 4096;
+    f.seek(SeekFrom::Start((lo / 4096 * 8) as u64)).ok()?;
+    let mut buf = vec![0u8; npages * 8];
+    f.read_exact(&mut buf).ok()?;
+    let mut pages = 0u64;
+    let mut regions = std::collections::BTreeSet::new();
+    for i in 0..npages {
+        let e = u64::from_le_bytes(buf[i * 8..i * 8 + 8].try_into().unwrap());
+        // Bit 56, "exclusively mapped": a page only this process maps -- for
+        // a fork child, one it has written (COW) or allocated since the fork.
+        // (Bit 55, soft-dirty, needs CONFIG_MEM_SOFT_DIRTY, which this kernel
+        // does not have.)
+        if e & (1 << 63) != 0 && e & (1 << 56) != 0 {
+            pages += 1;
+            regions.insert((lo + i * 4096) >> 21);
+        }
+    }
+    Some((pages, regions.len() as u64))
+}
+
+/// `_exit(0)` for a child whose answer is in the shared pages: mark, then go.
+unsafe fn leave(fd: c_int) -> ! {
+    if CENSUS.load(Ordering::Relaxed) != 0 {
+        // THE HEAP'S DIRTY PAGES, by 2 MB region: the number THP would have to
+        // copy on write for this candidate. Soft-dirty bits (pagemap bit 55),
+        // cleared at the candidate's start.
+        if let Some((pages, regions)) = heap_soft_dirty() {
+            let t = timing();
+            if !t.is_null() {
+                (*t).census_heap_dirty_pages = pages;
+                (*t).census_heap_regions_2m = regions;
+            }
+        }
+        // Measurement mode only: the parent cannot read /proc of a child that
+        // is already gone, so the child counts itself before it goes.
+        if let Some((m, r, d)) = child_census(getpid()) {
+            let t = timing();
+            if !t.is_null() {
+                (*t).census_minflt = m;
+                (*t).census_rss_kb = r;
+                (*t).census_pdirty_kb = d;
+            }
+        }
+    }
+    write_all(fd, EXIT_MARK);
+    _exit(0)
+}
+
+/// Has the child said it is done, one way or the other?
+fn child_done(out: &[u8]) -> bool {
+    out.windows(9).any(|w| w == b"\"IsValid\"") || out.windows(EXIT_MARK.len()).any(|w| w == EXIT_MARK)
+}
+
+// ------------------------------------------------------------- the standby
+//
+// THE FORK ITSELF, OFF THE CRITICAL PATH. `fork()` of the paused engine costs
+// 1.0-1.9 ms -- the kernel copying ~150 MB worth of page tables -- and the
+// parent used to pay it between receiving a candidate and starting it. Now every
+// fork point keeps ONE child forked ahead of time, blocked on a pipe, waiting
+// for a candidate. Handing it the payload costs ~40 KB down a pipe and a
+// wake-up; the fork of the NEXT standby happens right after the hand-off, while
+// this candidate simulates, so it is paid on a core the parent was not using.
+//
+// A standby is a copy of the parent's state at the moment it was forked, and
+// the parent is a paused simulation whose state does not change between
+// candidates -- EXCEPT through commands that change what a child inherits ('A'
+// arms the watchdog, 'C' the chain, 'Y' the finish word ...). So every command
+// other than 'R'/'W' kills the standby first, and the next candidate forks
+// synchronously as before and pre-forks a fresh one behind it.
+//
+// If the parent dies, the standby's command pipe reads EOF and it exits: no
+// orphan. If the standby died, the hand-off fails and the parent falls back to
+// a synchronous fork for that candidate.
+
+struct Standby {
+    pid: c_int,
+    cmd_w: c_int,
+    res_r: c_int,
+}
+static mut STANDBY: Standby = Standby { pid: 0, cmd_w: -1, res_r: -1 };
+
+enum Launched {
+    /// In the parent: the child's pid and the read end of its result pipe.
+    Parent(c_int, c_int),
+    /// In the child, with the candidate applied: return to the simulation.
+    Child,
+    Failed(&'static [u8]),
+}
+
+/// The child side of a candidate: the payload's patches, the watchdog if it
+/// is a `'W'`, and the timing page's first stamp.
+unsafe fn apply_candidate(payload: &[u8], base: usize) {
+    let tp = timing();
+    if !tp.is_null() {
+        (*tp).child_us = now_us();
+    }
+    if CENSUS.load(Ordering::Relaxed) != 0 {
+        // Measurement mode: forget every accessed bit and every soft-dirty
+        // bit, so what is read at `leave` says which pages THIS candidate
+        // touched and wrote.
+        let _ = std::fs::write("/proc/self/clear_refs", b"1");
+        let _ = std::fs::write("/proc/self/clear_refs", b"4");
+    }
+    let n = u32::from_le_bytes(payload[1..5].try_into().unwrap()) as usize;
+    for i in 0..n {
+        let o = 5 + i * 16;
+        let tick = u32::from_le_bytes(payload[o..o + 4].try_into().unwrap()) as usize;
+        apply_patch(base, tick, payload.as_ptr().add(o + 4));
+    }
+    if payload[0] == b'W' {
+        let cfg = &*core::ptr::addr_of!(WCFG);
+        // A WARM NODE's child continues the run the node has been watching
+        // since the root; a cold one starts from nothing.
+        if NODE_WARM.load(Ordering::SeqCst) == 0 {
+            let ev = &mut *core::ptr::addr_of_mut!(EVAL);
+            ev.reset();
+            ev.np = cfg.np;
+            ev.preds = cfg.preds;
+            ev.rl = cfg.rl;
+            ev.finish_s = cfg.finish_s;
+            ev.plane_x = cfg.plane_x;
+            ev.plane_axis = cfg.plane_axis;
+            ev.gate = cfg.gate;
+            ev.fire = cfg.fire;
+            WPREV_VALID.store(0, Ordering::SeqCst);
+            WLAST_CLOCK.store(u64::MAX, Ordering::SeqCst);
+        }
+        WATCH_ON.store(1, Ordering::SeqCst);
+        SAMPLE_STRIDE.store(1, Ordering::SeqCst);
+        SAMPLE_NEXT.store(0, Ordering::SeqCst);
+    }
+}
+
+/// Fork the next standby. In the parent, records it and returns `Parent`
+/// (with dummy fds: the caller is not launching anything). In the child,
+/// BLOCKS until a candidate arrives, applies it and returns `Child` -- the
+/// caller then returns to the simulation exactly as a freshly forked child
+/// would.
+unsafe fn standby_fork(base: usize) -> Launched {
+    let mut c = [0i32; 2];
+    let mut r = [0i32; 2];
+    if pipe(c.as_mut_ptr()) != 0 {
+        return Launched::Failed(b"ERR pipe");
+    }
+    if pipe(r.as_mut_ptr()) != 0 {
+        close(c[0]);
+        close(c[1]);
+        return Launched::Failed(b"ERR pipe");
+    }
+    fflush(std::ptr::null_mut());
+    let pid = fork();
+    if pid < 0 {
+        for fd in [c[0], c[1], r[0], r[1]] {
+            close(fd);
+        }
+        return Launched::Failed(b"ERR fork");
+    }
+    if pid == 0 {
+        IS_CHILD.store(1, Ordering::SeqCst);
+        close(c[1]);
+        close(r[0]);
+        dup2(r[1], 1);
+        close(r[1]);
+        setvbuf(stdout, std::ptr::null_mut(), IONBF, 0);
+        // Wait for the candidate. EOF means the parent is gone or has no use
+        // for us: leave, rather than hold a 150 MB address space for ever.
+        let mut lenb = [0u8; 4];
+        if !read_exact(c[0], &mut lenb) {
+            _exit(0)
+        }
+        let len = u32::from_le_bytes(lenb) as usize;
+        if len < 5 {
+            _exit(0)
+        }
+        let mut payload = vec![0u8; len];
+        if !read_exact(c[0], &mut payload) {
+            _exit(0)
+        }
+        close(c[0]);
+        apply_candidate(&payload, base);
+        return Launched::Child;
+    }
+    close(c[0]);
+    close(r[1]);
+    let sb = &mut *core::ptr::addr_of_mut!(STANDBY);
+    sb.pid = pid;
+    sb.cmd_w = c[1];
+    sb.res_r = r[0];
+    Launched::Parent(pid, -1)
+}
+
+/// `FKSHIM_CENSUS=1`: append the child's page-fault count and its resident and
+/// dirtied memory to every FKTIME line. Read at the first entry of the fork
+/// server so the hot path pays one relaxed load.
+static CENSUS: AtomicUsize = AtomicUsize::new(0);
+
+/// `(minflt, rss_kb, private_dirty_kb)` of a live child, from `/proc`.
+/// `None` if the child is already gone.
+unsafe fn child_census(pid: c_int) -> Option<(u64, u64, u64)> {
+    let stat = std::fs::read_to_string(format!("/proc/{}/stat", pid)).ok()?;
+    if let Some((pages, regions)) = heap_soft_dirty_of(pid) {
+        let t = timing();
+        if !t.is_null() {
+            (*t).census_heap_dirty_pages = pages;
+            (*t).census_heap_regions_2m = regions;
+        }
+    }
+    // Per mapping, for `fk`: `start-end perms offset dev inode path|size_kb|referenced_kb|private_dirty_kb`.
+    if let Ok(s) = std::fs::read_to_string(format!("/proc/{}/smaps", pid)) {
+        let mut out = String::new();
+        let (mut cur, mut size, mut refd, mut dirty) = (String::new(), 0u64, 0u64, 0u64);
+        let flush = |out: &mut String, cur: &str, size: u64, refd: u64, dirty: u64| {
+            if !cur.is_empty() {
+                out.push_str(&format!("{}|{}|{}|{}\n", cur, size, refd, dirty));
+            }
+        };
+        for line in s.lines() {
+            let b = line.as_bytes();
+            let head = line.split_whitespace().next().unwrap_or("");
+            let is_header = !b.is_empty()
+                && head.contains('-')
+                && head.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
+            if is_header {
+                flush(&mut out, &cur, size, refd, dirty);
+                cur = line.split_whitespace().take(6).collect::<Vec<_>>().join(" ");
+                size = 0;
+                refd = 0;
+                dirty = 0;
+            } else {
+                let v = || line.split_whitespace().nth(1).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+                if line.starts_with("Size:") {
+                    size = v();
+                } else if line.starts_with("Referenced:") {
+                    refd = v();
+                } else if line.starts_with("Private_Dirty:") {
+                    dirty = v();
+                }
+            }
+        }
+        flush(&mut out, &cur, size, refd, dirty);
+        let _ = std::fs::write(format!("/tmp/fkcensus_{}.txt", pid), out);
+    }
+    // field 10 (1-based) is minflt; the comm field may contain spaces, so count
+    // from the closing parenthesis.
+    let after = &stat[stat.rfind(')')? + 2..];
+    let minflt: u64 = after.split_whitespace().nth(7)?.parse().ok()?;
+    let roll = std::fs::read_to_string(format!("/proc/{}/smaps_rollup", pid)).ok()?;
+    let mut rss = 0u64;
+    let mut pdirty = 0u64;
+    for line in roll.lines() {
+        let mut it = line.split_whitespace();
+        match it.next() {
+            Some("Rss:") => rss = it.next().and_then(|v| v.parse().ok()).unwrap_or(0),
+            Some("Private_Dirty:") => pdirty = it.next().and_then(|v| v.parse().ok()).unwrap_or(0),
+            _ => {}
+        }
+    }
+    Some((minflt, rss, pdirty))
+}
+
+/// End the standby, if there is one. Called before any command whose effect a
+/// child must inherit, and at 'Q'.
+unsafe fn standby_kill() {
+    let sb = &mut *core::ptr::addr_of_mut!(STANDBY);
+    if sb.pid > 0 {
+        kill(sb.pid, SIGKILL);
+        close(sb.cmd_w);
+        close(sb.res_r);
+    }
+    sb.pid = 0;
+    sb.cmd_w = -1;
+    sb.res_r = -1;
+}
+
+/// A child for this candidate: the standby, handed the payload, if one is
+/// alive; else a synchronous fork that applies the payload itself.
+unsafe fn launch(payload: &[u8], base: usize) -> Launched {
+    let sb = &mut *core::ptr::addr_of_mut!(STANDBY);
+    if sb.pid > 0 {
+        let (pid, cmd_w, res_r) = (sb.pid, sb.cmd_w, sb.res_r);
+        sb.pid = 0;
+        sb.cmd_w = -1;
+        sb.res_r = -1;
+        let mut frame = Vec::with_capacity(4 + payload.len());
+        frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        frame.extend_from_slice(payload);
+        let ok = write_all(cmd_w, &frame);
+        close(cmd_w);
+        if ok {
+            return Launched::Parent(pid, res_r);
+        }
+        // The standby is gone (or its pipe is): reap what is left and fork
+        // this one the old way.
+        kill(pid, SIGKILL);
+        close(res_r);
+    }
+    let mut fds = [0i32; 2];
+    if pipe(fds.as_mut_ptr()) != 0 {
+        return Launched::Failed(b"ERR pipe");
+    }
+    let pid = fork();
+    if pid < 0 {
+        close(fds[0]);
+        close(fds[1]);
+        return Launched::Failed(b"ERR fork");
+    }
+    if pid == 0 {
+        IS_CHILD.store(1, Ordering::SeqCst);
+        close(fds[0]);
+        dup2(fds[1], 1);
+        close(fds[1]);
+        setvbuf(stdout, std::ptr::null_mut(), IONBF, 0);
+        apply_candidate(payload, base);
+        return Launched::Child;
+    }
+    close(fds[1]);
+    Launched::Parent(pid, fds[0])
 }
 
 unsafe fn write_all(fd: c_int, buf: &[u8]) -> bool {
@@ -1372,7 +2575,6 @@ unsafe fn parse_arm(payload: &[u8]) -> (usize, usize, usize) {
             cfg.fire = fire;
             // THE PLANE AXIS, trailing behind the event; absent means x.
             cfg.plane_axis = if payload.len() >= o + 4 { (g4(o) as usize).min(2) } else { 0 };
-            o += 4;
         } else {
             cfg.fire = Fire::NONE;
             cfg.plane_axis = 0;
@@ -1382,14 +2584,30 @@ unsafe fn parse_arm(payload: &[u8]) -> (usize, usize, usize) {
         cfg.fire = Fire::NONE;
         cfg.plane_axis = 0;
     }
-    let _ = o;
     (np, nref, nk)
 }
 
 unsafe fn forkserver() {
+    timing_init();
+    // Resolve the engine's finish word once, here in the parent, while the race
+    // is still running -- which is exactly when the check it performs (the word
+    // must read NO_TIME) has meaning. Every child inherits the address.
+
     // A BRANCH RE-ENTRY consumes its licence on the way in, so a child that
     // re-enters once cannot do it twice by accident.
     let branch = BRANCH_ARMED.swap(0, Ordering::SeqCst) != 0;
+    if !branch && env_str(b"FKSHIM_CENSUS\0").is_some() {
+        CENSUS.store(1, Ordering::SeqCst);
+    }
+    // A warm branch stops watching here -- a paused node runs no ticks -- and
+    // keeps what the watchdog saw: every `'W'` child of this node continues
+    // from it.
+    if branch && BRANCH_WARMING.swap(0, Ordering::SeqCst) != 0 {
+        WATCH_ON.store(0, Ordering::SeqCst);
+        SAMPLE_STRIDE.store(0, Ordering::SeqCst);
+        SAMPLE_NEXT.store(u64::MAX, Ordering::SeqCst);
+        NODE_WARM.store(1, Ordering::SeqCst);
+    }
 
     // The trace file this child wrote while it consumed its k ticks. Closed
     // BEFORE the handshake, so the driver that reads it after READY reads a
@@ -1465,7 +2683,8 @@ unsafe fn forkserver() {
         }
     };
 
-    let base = if branch {
+    let mut candidates: Vec<usize> = Vec::new();
+    let mut base = if branch {
         let b = CACHED_BASE.load(Ordering::SeqCst);
         // HARD ABORT, never a rescan. See `base_still_holds`.
         if b == 0 {
@@ -1492,7 +2711,11 @@ unsafe fn forkserver() {
         }
         b
     } else {
-        match locate(key) {
+        candidates = locate_all(key);
+        if candidates.len() > 1 {
+            logn(b"FKSHIM input array copies ", candidates.len() as u64);
+        }
+        match candidates.first().copied() {
             Some(b) => {
                 CACHED_BASE.store(b, Ordering::SeqCst);
                 // The shadow starts as the key: at first entry nothing has been
@@ -1515,7 +2738,7 @@ unsafe fn forkserver() {
     hello.extend_from_slice(b"READY ");
     utoa(base as u64, &mut hello);
     hello.push(b' ');
-    utoa(N_LROUNDF.load(Ordering::Relaxed), &mut hello);
+    utoa(clock_now(), &mut hello);
     // The branch's own pid, so the driver that now owns this node can end it.
     // A node the driver cannot kill is an orphan holding a 150 MB address
     // space, and a beam of them is how a box dies.
@@ -1531,20 +2754,129 @@ unsafe fn forkserver() {
     );
     hello.push(b' ');
     utoa(VALIDATOR_SIM.load(Ordering::SeqCst) as u64, &mut hello);
+    // Where the engine actually is: `tick <sim_ms> <race_start>`. The stop is
+    // at the START of the tick whose new_time is sim_ms, so nothing of that
+    // tick has been consumed, and race time is `sim_ms - race_start`.
+    hello.push(b' ');
+    hello.extend_from_slice(b"tick ");
+    utoa(SIM_MS.load(Ordering::Relaxed), &mut hello);
+    hello.push(b' ');
+    utoa(RACE_START.load(Ordering::Relaxed), &mut hello);
     send_frame(res, &hello);
 
+    // set by the 'P' handler when the probe must be re-run on another copy of
+    // the input array; the next iteration then re-executes a 'P' without reading
+    // a frame
+    let mut pending_probe = false;
     loop {
-        let mut lenb = [0u8; 4];
-        if !read_exact(cmd, &mut lenb) {
-            _exit(0);
-        }
-        let len = u32::from_le_bytes(lenb) as usize;
-        let mut payload = vec![0u8; len];
-        if len > 0 && !read_exact(cmd, &mut payload) {
-            _exit(0);
+        let payload: Vec<u8>;
+        let len: usize;
+        if pending_probe {
+            pending_probe = false;
+            payload = vec![b'P'];
+            len = 1;
+        } else {
+            let mut lenb = [0u8; 4];
+            if !read_exact(cmd, &mut lenb) {
+                standby_kill();
+                _exit(0);
+            }
+            len = u32::from_le_bytes(lenb) as usize;
+            let mut pl = vec![0u8; len];
+            if len > 0 && !read_exact(cmd, &mut pl) {
+                standby_kill();
+                _exit(0);
+            }
+            payload = pl;
         }
         if len == 0 || payload[0] == b'Q' {
+            standby_kill();
             _exit(0);
+        }
+        // Anything that is not a candidate may change what a child inherits
+        // (the watchdog, the chain, the finish word, a branch's patches ...):
+        // the standby forked before it is stale. End it; the next candidate
+        // forks synchronously and pre-forks a fresh one behind itself.
+        // 'P' is the exception: the probe forks a child that walks into ITS OWN
+        // protected copy of the array and dies; the parent's state is untouched
+        // (the ENV arm confirmed it, PERF.md §11), so a standby forked before a
+        // probe is still an exact copy.
+        if payload[0] != b'R' && payload[0] != b'W' && payload[0] != b'P' {
+            standby_kill();
+        }
+        if payload[0] == b'Y' {
+            // 'Y' u64 addr -- THE FINISH WORD, calibrated by the driver.
+            //
+            // Where the engine records this race's result is not a constant:
+            // the record sits at +0xa4 of the controller's block on two maps
+            // and somewhere else on a third, and the "nothing yet" marker is
+            // 0xffffffff on one map and 0 on another. Hardcoding either turned
+            // the lever silently off (126859) or made it never fire (145875).
+            //
+            // So the driver CALIBRATES it -- one fork of the incumbent tape,
+            // whose finish time it already knows, and it reports the address
+            // whose value becomes that time. Children are forked from this
+            // process, so an address here is the same address there.
+            // 'Y' u64 finish_word, u64 exhausted_word, u64 cp_word
+            let addr = u64::from_le_bytes(payload[1..9].try_into().unwrap());
+            if addr < 0x1000 || !readable(addr as usize, 4) {
+                send_frame(res, b"ERR finish word unreadable");
+                continue;
+            }
+            let sentinel = *(addr as *const u32);
+            RESULT_WORD.store(addr as usize, Ordering::SeqCst);
+            RESULT_SENTINEL.store(sentinel as usize, Ordering::SeqCst);
+            // THE DNF HALF. A candidate that does not finish pays the same
+            // 6.02 ms epilogue, and in a search DNFs are the majority (307 of
+            // 400 at an early checkpoint). The engine says "the tape's inputs
+            // are exhausted" by zeroing a word in the participant one tick
+            // after the last record -- on a finisher AND on a DNF -- so a child
+            // that reaches that point with no finish recorded knows its answer
+            // is "did not finish, N checkpoints" and can report it and go.
+            // THE CHECKPOINT COUNT COMES FROM THE ENGINE, on every path.
+            //
+            // The `Desc` line a DNF prints is a LOSSY PRINT: for a mutated
+            // candidate it is almost always "wrong simu" (the ghost file's
+            // declared result no longer matches what was simulated), which the
+            // driver maps to 0 checkpoints -- while the car really passed 1 on
+            // 34 of 79 DNFs measured. The counter at `participant+0xc70` is the
+            // quantity itself, verified 200/200 against the plain oracle by the
+            // tm-player project's ENV arm.
+            //
+            // So the child publishes it EVERY TICK (one load, one store) rather
+            // than only when it takes the fast exit: a run must never mix two
+            // definitions of the same number, and the slow path -- a map where
+            // the tape-exhausted exit is refused -- has to report the same
+            // quantity as the fast one.
+            if payload.len() >= 25 {
+                let exh = u64::from_le_bytes(payload[9..17].try_into().unwrap());
+                let cp = u64::from_le_bytes(payload[17..25].try_into().unwrap());
+                if readable(cp as usize, 4) {
+                    CP_WORD.store(cp as usize, Ordering::SeqCst);
+                }
+                // THE TAPE'S LAST CLOCK -- a number the driver already knows,
+                // not an address to read. Always armed: it is what makes a
+                // finish past the tape's end detectable. The EXIT on it stays
+                // opt-in (`FKSHIM_DNF_FAST`), because saving the 6.02 ms
+                // epilogue ends the child early, which is a behaviour change,
+                // where reading the counter is only a measurement change.
+                LAST_TAPE_CLOCK.store(exh as usize, Ordering::SeqCst);
+                DNF_FAST.store(
+                    if std::env::var("FKSHIM_DNF_FAST").is_ok() { 1 } else { 0 },
+                    Ordering::SeqCst,
+                );
+            }
+            EXIT_AT_FINISH.store(
+                if std::env::var("FKSHIM_FINISH_CHECK").is_ok() { 2 } else { 1 },
+                Ordering::SeqCst,
+            );
+            let mut ack = Vec::new();
+            ack.extend_from_slice(b"FINISH ");
+            utoa(addr, &mut ack);
+            ack.extend_from_slice(b" sentinel ");
+            utoa(sentinel as u64, &mut ack);
+            send_frame(res, &ack);
+            continue;
         }
         if payload[0] == b'N' {
             // null fork: how much of the per-candidate cost is fork + child
@@ -1604,9 +2936,22 @@ unsafe fn forkserver() {
             }
             if pid == 0 {
                 IS_CHILD.store(1, Ordering::SeqCst);
+                // A PROBE CHILD SAMPLES NOTHING. The parent's sampler statics may be
+                // armed from an earlier 'S' (deadline, exit-when-done): inherited
+                // by this child they fire in `do_sample` at the first hook entry and
+                // `_exit(0)` it before it ever touches the input array -- an EMPTY
+                // probe reply with wstatus 0 (seen on ~1 in 10 servers when several
+                // references start at once, since the probe after the clock scan is
+                // the one that inherits an armed sampler). Disarm first.
+                SAMPLE_NEXT.store(u64::MAX, Ordering::SeqCst);
+                SAMPLE_DEADLINE.store(0, Ordering::SeqCst);
+                SAMPLE_EXIT.store(0, Ordering::SeqCst);
+                WATCH_ON.store(0, Ordering::SeqCst);
                 close(fds[0]);
                 dup2(fds[1], 1);
                 arm_probe(base, key.steer.len(), fds[1]);
+                arm_probe_postmortem();
+                logn(b"FKSHIM probe child armed, fd ", fds[1] as u64);
                 return;
             }
             close(fds[1]);
@@ -1618,12 +2963,28 @@ unsafe fn forkserver() {
                     events: POLLIN,
                     revents: 0,
                 };
-                if poll(&mut pfd, 1, 20000) <= 0 {
+                let pr = poll(&mut pfd, 1, 20000);
+                if pr < 0 && *__errno_location() == EINTR {
+                    // A SIGNAL LANDED ON THE PARENT mid-wait. Not an answer: ask
+                    // again. (This was the ~1-in-40 empty probe: the read broke
+                    // out on EINTR, the child was SIGKILLed before it could fault,
+                    // and the reply was empty -- 2026-09-07.)
+                    continue;
+                }
+                if pr <= 0 {
                     out.extend_from_slice(b"PROBE-TIMEOUT");
                     break;
                 }
                 let r = real_read()(fds[0], buf.as_mut_ptr() as *mut c_void, buf.len());
-                if r <= 0 {
+                if r < 0 && *__errno_location() == EINTR {
+                    continue;
+                }
+                if r < 0 {
+                    out.extend_from_slice(b"PROBE-READ-ERR errno ");
+                    utoa(*__errno_location() as u64, &mut out);
+                    break;
+                }
+                if r == 0 {
                     break;
                 }
                 out.extend_from_slice(&buf[..r as usize]);
@@ -1631,20 +2992,50 @@ unsafe fn forkserver() {
                     break;
                 }
             }
+            // The probe child has said its tick (or timed out): SIGKILL it and walk
+            // away. There used to be a `waitpid` here, and it made the probe cost
+            // 3.5 ms instead of 1.6: waitpid returns only after the kernel has
+            // torn the child's 150 MB address space down, the same wait the
+            // exit marker took off the candidate path (PERF.md §3.1, §11).
+            // SIGCHLD is ignored, so there is no zombie to reap.
             kill(pid, SIGKILL);
-            let mut st = 0i32;
-            waitpid(pid, &mut st, 0);
             close(fds[0]);
+            if out.is_empty() && !branch {
+                // THE CHILD RAN THE RACE WITHOUT TOUCHING THIS ARRAY and exited
+                // normally: `base` is a copy the engine never reads. Move to the
+                // next candidate copy and probe again -- the driver sees only the
+                // probe that faulted. (Only at the root: a branch inherits a base
+                // that has already proven itself.)
+                if let Some(i) = candidates.iter().position(|c| *c == base) {
+                    if i + 1 < candidates.len() {
+                        base = candidates[i + 1];
+                        CACHED_BASE.store(base, Ordering::SeqCst);
+                        logn(b"FKSHIM input array: probe faulted on nothing, moving to copy ", (i + 1) as u64);
+                        // re-issue this same 'P' to ourselves
+                        pending_probe = true;
+                        continue;
+                    }
+                }
+            }
+            if out.is_empty() {
+                // The probe child wrote NOTHING: it died before it faulted on the
+                // array. Say how, so the driver can tell a dead child from a
+                // silent one (seen under concurrent start-up of several servers).
+                out.extend_from_slice(b"PROBE-EMPTY base ");
+                utoa(base as u64, &mut out);
+                out.extend_from_slice(b" n ");
+                utoa(key.steer.len() as u64, &mut out);
+            }
             send_frame(res, &out);
             continue;
         }
         if payload[0] == b'B' {
             // THE BRANCH. Fork a child that patches its tail, consumes a fixed
-            // number of `lroundf` calls, and then re-enters this same loop on a
+            // number of ticks, and then re-enters this same loop on a
             // socket of its own -- a new fork point, a node of a savestate
             // tree, rather than a candidate that runs to the end and dies.
             //
-            //   'B' | u32 n_patch | u64 stop_after_lroundf
+            //   'B' | u32 n_patch | u64 stop_after_ticks
             //       | u32 sock_len | sock_path
             //       | u32 trace_len | trace_path        (0 = no state trace)
             //       | u32 nseg | nseg * (u64 addr, u32 len)
@@ -1685,9 +3076,33 @@ unsafe fn forkserver() {
             let skeyoff = u32::from_le_bytes(payload[o + 16..o + 20].try_into().unwrap()) as usize;
             o += 20;
             let poff = o;
+            // OPTIONAL trailing flags after the patches (an older driver sends
+            // none): bit 0 = warm node, see `BRANCH_WARMING`.
+            let bflags = {
+                let f = poff + np * 16;
+                if payload.len() >= f + 4 {
+                    u32::from_le_bytes(payload[f..f + 4].try_into().unwrap())
+                } else {
+                    0
+                }
+            };
+            let warm = bflags & 1 != 0;
             if slen == 0 || slen > 107 {
                 send_frame(res, b"ERR socklen");
                 continue;
+            }
+            // Refused BEFORE the fork, with a reason, rather than in a child
+            // that dies where nobody can read why.
+            if warm {
+                let cfg = &*core::ptr::addr_of!(WCFG);
+                if cfg.out.is_null() || cfg.nseg == 0 {
+                    send_frame(res, b"ERR not armed: a warm node needs the watchdog armed first");
+                    continue;
+                }
+                if nseg > 0 && tlen > 0 {
+                    send_frame(res, b"ERR a warm node cannot also write a state trace");
+                    continue;
+                }
             }
             fflush(std::ptr::null_mut());
             let pid = fork();
@@ -1704,6 +3119,14 @@ unsafe fn forkserver() {
             }
             // ---- child: becomes a node of the tree
             IS_CHILD.store(1, Ordering::SeqCst);
+            // A REPORT PAGE OF ITS OWN. The timing page is MAP_SHARED and a
+            // fork inherits the mapping, so without this a node's children
+            // would report into the ROOT's page -- and since that page now
+            // carries a finish time and a checkpoint count, a candidate could
+            // read the previous candidate's. Ownership, not zeroing, is the
+            // guard: every node gets a fresh page and its children write there.
+            TIMING.store(0, Ordering::SeqCst);
+            timing_init();
             for i in 0..np {
                 let q = poff + i * 16;
                 let tick = u32::from_le_bytes(payload[q..q + 4].try_into().unwrap()) as usize;
@@ -1714,11 +3137,43 @@ unsafe fn forkserver() {
                 b[..slen].copy_from_slice(&sock);
                 BRANCH_SOCK_LEN.store(slen, Ordering::SeqCst);
             }
-            // The state trace, if the driver asked for one. Same sampler the
-            // 'S' path uses, aimed at a file instead of a pipe: nobody is
-            // reading the other end yet, and a pipe that fills would stall the
-            // simulation we are trying to time.
-            if nseg > 0 && tlen > 0 {
+            if warm {
+                // THE WARM NODE. Run the ticks to the stop point exactly as a
+                // `'W'` child would, on a report page of this lineage's own,
+                // and keep the evaluator afterwards (see `NODE_WARM`). A node
+                // made from a node that is already warm continues ITS state
+                // rather than resetting: the run this lineage represents began
+                // at the root and has been watched ever since.
+                let cfg = &mut *core::ptr::addr_of_mut!(WCFG);
+                let p = mmap(std::ptr::null_mut(), 4096, PROT_RW, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+                if p as isize == -1 || p.is_null() {
+                    log(b"FKSHIM: warm branch could not map its report page\n");
+                    _exit(94)
+                }
+                cfg.out = p as *mut u8;
+                if NODE_WARM.load(Ordering::SeqCst) == 0 {
+                    let ev = &mut *core::ptr::addr_of_mut!(EVAL);
+                    ev.reset();
+                    ev.np = cfg.np;
+                    ev.preds = cfg.preds;
+                    ev.rl = cfg.rl;
+                    ev.finish_s = cfg.finish_s;
+                    ev.plane_x = cfg.plane_x;
+                    ev.plane_axis = cfg.plane_axis;
+                    ev.gate = cfg.gate;
+                    ev.fire = cfg.fire;
+                    WPREV_VALID.store(0, Ordering::SeqCst);
+                    WLAST_CLOCK.store(u64::MAX, Ordering::SeqCst);
+                }
+                BRANCH_WARMING.store(1, Ordering::SeqCst);
+                WATCH_ON.store(1, Ordering::SeqCst);
+                SAMPLE_STRIDE.store(1, Ordering::SeqCst);
+                SAMPLE_NEXT.store(0, Ordering::SeqCst);
+            } else if nseg > 0 && tlen > 0 {
+                // The state trace, if the driver asked for one. Same sampler the
+                // 'S' path uses, aimed at a file instead of a pipe: nobody is
+                // reading the other end yet, and a pipe that fills would stall the
+                // simulation we are trying to time.
                 let fd = open(tracep.as_ptr() as *const c_char, 577, 0o644);
                 if fd < 0 {
                     log(b"FKSHIM: branch could not open its trace file\n");
@@ -1739,6 +3194,7 @@ unsafe fn forkserver() {
                 }
                 SAMPLE_FD.store(fd, Ordering::SeqCst);
                 TRACE_FD.store(fd, Ordering::SeqCst);
+                SAMPLE_RING.store(0, Ordering::SeqCst); // a trace goes to its file, never to an inherited ring
                 SAMPLE_LEFT.store(smax, Ordering::SeqCst);
                 SAMPLE_EXIT.store(0, Ordering::SeqCst);
                 SAMPLE_DEADLINE.store(0, Ordering::SeqCst);
@@ -1756,9 +3212,7 @@ unsafe fn forkserver() {
             // process entering the fork server twice, and `BRANCH_ARMED` is the
             // one-use licence that lets THIS child past the `IS_CHILD` guard.
             CKPT_AT.store(
-                N_LROUNDF
-                    .load(Ordering::Relaxed)
-                    .saturating_add(stop_after.max(1)),
+                clock_now().saturating_add(stop_after.max(1)),
                 Ordering::SeqCst,
             );
             ARMED.store(0, Ordering::SeqCst);
@@ -1801,8 +3255,7 @@ unsafe fn forkserver() {
             }
             let poff = 29 + nseg * 12;
             // OPTIONAL trailing u32 (older drivers do not send it): how many
-            // more `lroundf` calls this child may simulate before it exits.
-            // ~255 calls to the tick, so 6 ticks is ~1530.
+            // more TICKS this child may simulate before it exits.
             let sbudget = {
                 let o = poff + np * 16;
                 if payload.len() >= o + 4 {
@@ -1826,6 +3279,9 @@ unsafe fn forkserver() {
                 }
             };
             fflush(std::ptr::null_mut());
+            // The ring the child will fill: room for every sample it may take,
+            // capped; the pipe takes the overflow.
+            sample_ring_prepare((smax as usize).saturating_mul(8 + slen));
             let t_start = now_us();
             let mut fds = [0i32; 2];
             let mut sfds = [0i32; 2];
@@ -1862,13 +3318,23 @@ unsafe fn forkserver() {
                     apply_patch(base, tick, payload.as_ptr().add(o + 4));
                 }
                 // buffers are allocated BEFORE the hook can fire, so the hot
-                // path never allocates
-                let mut b = vec![0u8; 8 + slen];
-                let mut p = vec![0xFFu8; slen.max(1)];
-                SAMPLE_BUF.store(b.as_mut_ptr() as usize, Ordering::SeqCst);
-                SAMPLE_PREV.store(p.as_mut_ptr() as usize, Ordering::SeqCst);
-                std::mem::forget(b);
-                std::mem::forget(p);
+                // path never allocates -- and they come from mmap, NOT the
+                // heap. A heap buffer can lie INSIDE the window being gathered
+                // (a 1 MB scan window over the brk heap contains the sampler's
+                // own 1 MB record buffer once glibc's dynamic mmap threshold
+                // has risen), and copying a window over its own destination
+                // corrupts the allocator: every scan child died with "double
+                // free or corruption (out)" and returned 0 samples, which
+                // read three layers up as "no candidates".
+                let bsz = 8 + slen;
+                let bp = mmap(std::ptr::null_mut(), bsz, PROT_RW, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+                let pp = mmap(std::ptr::null_mut(), slen.max(1), PROT_RW, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+                if bp as isize == -1 || pp as isize == -1 {
+                    _exit(0);
+                }
+                std::ptr::write_bytes(pp as *mut u8, 0xFF, slen.max(1));
+                SAMPLE_BUF.store(bp as usize, Ordering::SeqCst);
+                SAMPLE_PREV.store(pp as usize, Ordering::SeqCst);
                 SAMPLE_ADDR.store(segs[0].0, Ordering::SeqCst);
                 SAMPLE_LEN.store(slen, Ordering::SeqCst);
                 SEG_N.store(nseg.min(MAX_SEG), Ordering::SeqCst);
@@ -1883,7 +3349,7 @@ unsafe fn forkserver() {
                     if sbudget == 0 {
                         0
                     } else {
-                        N_LROUNDF.load(Ordering::Relaxed) + sbudget
+                        clock_now() + sbudget
                     },
                     Ordering::SeqCst,
                 );
@@ -1918,7 +3384,10 @@ unsafe fn forkserver() {
                         revents: 0,
                     },
                 ];
-                if json_done && samples_eof {
+                // Once the child has said it is done, every sample it will ever
+                // produce is in the ring or already in the pipe: do not wait for
+                // EOF, which comes after its teardown.
+                if json_done {
                     break;
                 }
                 let pr = poll(pfds.as_mut_ptr(), 2, 60000);
@@ -1943,7 +3412,7 @@ unsafe fn forkserver() {
                             t_first = now_us();
                         }
                         out.extend_from_slice(&buf[..r as usize]);
-                        if out.windows(9).any(|w| w == b"\"IsValid\"") {
+                        if child_done(&out) {
                             json_done = true;
                             // the child is finished simulating, so every sample
                             // it will ever write is already in the pipe; kill it
@@ -1954,14 +3423,15 @@ unsafe fn forkserver() {
                 }
             }
             if !samples_eof {
-                // drain whatever the pipe still holds
+                // drain whatever the pipe already holds -- without waiting: the
+                // child wrote its last sample before it said it was done
                 loop {
                     let mut pfd = PollFd {
                         fd: sfds[0],
                         events: POLLIN,
                         revents: 0,
                     };
-                    if poll(&mut pfd, 1, 200) <= 0 {
+                    if poll(&mut pfd, 1, 0) <= 0 {
                         break;
                     }
                     let r = real_read()(sfds[0], buf.as_mut_ptr() as *mut c_void, buf.len());
@@ -1974,6 +3444,29 @@ unsafe fn forkserver() {
             kill(pid, SIGKILL);
             close(fds[0]);
             close(sfds[0]);
+            // The ring first, then whatever overflowed down the pipe: the order
+            // the child produced them in.
+            let ring = SAMPLE_RING.load(Ordering::Relaxed);
+            if ring != 0 {
+                let used = (*(ring as *const u64) as usize).min(SAMPLE_RING_CAP.load(Ordering::Relaxed) - 8);
+                if CENSUS.load(Ordering::Relaxed) != 0 {
+                    logn(b"FKSHIM ring_used ", used as u64);
+                    logn(b"FKSHIM ring_pipe ", samples.len() as u64);
+                    logn(b"FKSHIM ring_slen ", slen as u64);
+                }
+                let mut all = Vec::with_capacity(used + samples.len());
+                all.extend_from_slice(std::slice::from_raw_parts((ring + 8) as *const u8, used));
+                all.extend_from_slice(&samples);
+                samples = all;
+            }
+            sample_ring_release();
+            if CENSUS.load(Ordering::Relaxed) != 0 {
+                // Measurement mode: what a sampled run cost, and how many ticks it
+                // ran, on the server log.
+                logn(b"FKSHIM S_done_us ", now_us() - t_start);
+                let tp = timing();
+                logn(b"FKSHIM S_ticks ", if tp.is_null() { 0 } else { (*tp).ticks });
+            }
             out.extend_from_slice(b"\nFKTIME fork_us ");
             utoa(t_forked - t_start, &mut out);
             out.extend_from_slice(b" first_us ");
@@ -2154,6 +3647,7 @@ unsafe fn forkserver() {
             SAMPLE_STRIDE.store(sstride.max(1), Ordering::SeqCst);
             SAMPLE_NEXT.store(0, Ordering::SeqCst);
             CHAIN_ARMED.store(true, Ordering::SeqCst);
+            SAMPLE_RING.store(0, Ordering::SeqCst); // the clean run writes its file
             send_frame(res, b"GO");
             return;
         }
@@ -2186,73 +3680,67 @@ unsafe fn forkserver() {
             send_frame(res, &ack);
             continue;
         }
-        if payload[0] == b'W' {
-            // Run one candidate with the watchdog armed. Same wire shape as
-            // 'R'; two frames come back: the validator's JSON (empty if the
-            // child was aborted) and the fixed-size summary.
-            let n = u32::from_le_bytes(payload[1..5].try_into().unwrap()) as usize;
+        if payload[0] == b'W' || payload[0] == b'R' {
+            // ONE CANDIDATE. 'R' runs it plain and answers with the validator's
+            // JSON (or the FKFINISH line); 'W' runs it with the armed watchdog
+            // and answers with two frames, the JSON and the fixed-size summary.
+            // Same wire shape, same child, same parent loop.
+            let watched = payload[0] == b'W';
+            if payload.len() < 5 {
+                send_frame(res, b"ERR short");
+                if watched {
+                    send_frame(res, b"");
+                }
+                continue;
+            }
             let cfg = &mut *core::ptr::addr_of_mut!(WCFG);
-            if cfg.out.is_null() || cfg.nseg == 0 {
+            if watched && (cfg.out.is_null() || cfg.nseg == 0) {
                 send_frame(res, b"ERR not armed");
                 send_frame(res, b"");
                 continue;
             }
-            // clear the shared report before the fork, so a child that dies
-            // without writing cannot be mistaken for one that reported
-            std::ptr::write_bytes(cfg.out, 0, SUMMARY_BYTES);
-            fflush(std::ptr::null_mut());
-            let t_start = now_us();
-            let mut fds = [0i32; 2];
-            if pipe(fds.as_mut_ptr()) != 0 {
-                send_frame(res, b"ERR pipe");
-                send_frame(res, b"");
-                continue;
+            // Clear the shared pages before the child runs, so a child that
+            // dies without writing cannot be mistaken for one that reported --
+            // and the timing page with them, or this candidate inherits the
+            // previous one's finish time.
+            if watched {
+                std::ptr::write_bytes(cfg.out, 0, SUMMARY_BYTES);
             }
-            let pid = fork();
-            if pid < 0 {
-                close(fds[0]);
-                close(fds[1]);
-                send_frame(res, b"ERR fork");
-                send_frame(res, b"");
-                continue;
-            }
-            if pid == 0 {
-                IS_CHILD.store(1, Ordering::SeqCst);
-                close(fds[0]);
-                dup2(fds[1], 1);
-                close(fds[1]);
-                setvbuf(stdout, std::ptr::null_mut(), IONBF, 0);
-                for i in 0..n {
-                    let o = 5 + i * 16;
-                    let tick = u32::from_le_bytes(payload[o..o + 4].try_into().unwrap()) as usize;
-                    apply_patch(base, tick, payload.as_ptr().add(o + 4));
+            {
+                let tp = timing();
+                if !tp.is_null() {
+                    std::ptr::write_bytes(tp as *mut u8, 0, std::mem::size_of::<Timing>());
                 }
-                let ev = &mut *core::ptr::addr_of_mut!(EVAL);
-                ev.reset();
-                ev.np = cfg.np;
-                ev.preds = cfg.preds;
-                ev.rl = cfg.rl;
-                ev.finish_s = cfg.finish_s;
-                ev.plane_x = cfg.plane_x;
-                ev.plane_axis = cfg.plane_axis;
-                ev.gate = cfg.gate;
-                ev.fire = cfg.fire;
-                WPREV_VALID.store(0, Ordering::SeqCst);
-                WLAST_CLOCK.store(u64::MAX, Ordering::SeqCst);
-                WATCH_ON.store(1, Ordering::SeqCst);
-                SAMPLE_STRIDE.store(1, Ordering::SeqCst);
-                SAMPLE_NEXT.store(0, Ordering::SeqCst);
-                return; // resume the simulation, watched
             }
+            fflush(std::ptr::null_mut()); // no half-written stdio in the child
+            let t_start = now_us();
+            let (pid, rfd) = match launch(&payload, base) {
+                Launched::Parent(p, r) => (p, r),
+                Launched::Child => return, // the candidate's simulator: resume
+                Launched::Failed(m) => {
+                    send_frame(res, m);
+                    if watched {
+                        send_frame(res, b"");
+                    }
+                    continue;
+                }
+            };
             let t_forked = now_us();
+            // THE NEXT CANDIDATE'S CHILD, forked now, while this one simulates:
+            // the fork's millisecond lands on a core the parent was not using.
+            // In the child this call blocks until a candidate arrives, applies
+            // it and returns `Child` -- then it is that candidate's simulator.
+            if let Launched::Child = standby_fork(base) {
+                return;
+            }
+            // ---- parent: collect the child's answer, then stop it dead
             let mut t_first = 0u64;
-            close(fds[1]);
             let mut out: Vec<u8> = Vec::with_capacity(4096);
             let mut buf = [0u8; 4096];
             let mut done = false;
             while !done {
                 let mut pfd = PollFd {
-                    fd: fds[0],
+                    fd: rfd,
                     events: POLLIN,
                     revents: 0,
                 };
@@ -2261,7 +3749,7 @@ unsafe fn forkserver() {
                     out.extend_from_slice(b"\nFKSHIM-TIMEOUT\n");
                     break;
                 }
-                let r = real_read()(fds[0], buf.as_mut_ptr() as *mut c_void, buf.len());
+                let r = real_read()(rfd, buf.as_mut_ptr() as *mut c_void, buf.len());
                 if r <= 0 {
                     break; // the child aborted itself, or finished and closed
                 }
@@ -2269,102 +3757,118 @@ unsafe fn forkserver() {
                     t_first = now_us();
                 }
                 out.extend_from_slice(&buf[..r as usize]);
-                if out.windows(9).any(|w| w == b"\"IsValid\"") {
+                // everything we need is in ValidatedResult/Desc, which precede
+                // IsValid, or in the shared pages once the child has marked its
+                // exit; stopping here skips the DeclaredResult block and the
+                // Inputs RLE
+                if child_done(&out) {
                     done = true;
                 }
             }
+            // SIGKILL and walk away: tearing down a 150 MB address space costs
+            // milliseconds, and SIGCHLD=SIG_IGN makes the kernel reap for us, so
+            // the next candidate does not have to wait for it.
+            //
+            // THE CENSUS, first, while the child is still there: how many pages
+            // did this candidate fault in, and how many did it dirty? Behind an
+            // env var because it is two /proc reads per candidate, and it is
+            // what says whether huge pages or MADV_DONTFORK could pay.
+            let census = if CENSUS.load(Ordering::Relaxed) != 0 {
+                child_census(pid).or_else(|| {
+                    let t = timing();
+                    if !t.is_null() && (*t).census_minflt != 0 {
+                        Some(((*t).census_minflt, (*t).census_rss_kb, (*t).census_pdirty_kb))
+                    } else {
+                        None
+                    }
+                })
+            } else {
+                None
+            };
             kill(pid, SIGKILL);
-            close(fds[0]);
+            close(rfd);
+            let tp = timing();
+            if !tp.is_null() && (*tp).finish_past_end != 0 {
+                out.extend_from_slice(b"\nFKPASTEND clock ");
+                utoa((*tp).finish_clock, &mut out);
+                out.push(b'\n');
+            }
+            if !tp.is_null() && (*tp).cps != 0 {
+                out.extend_from_slice(b"\nFKCPS ");
+                utoa((*tp).cps - 1, &mut out);
+                out.push(b'\n');
+            }
+            if !tp.is_null() && (*tp).dnf_cps != 0 {
+                out.extend_from_slice(b"\nFKDNF cps ");
+                utoa((*tp).dnf_cps - 1, &mut out);
+                out.extend_from_slice(b" clock ");
+                utoa((*tp).dnf_clock, &mut out);
+                out.push(b'\n');
+            }
+            if !tp.is_null() && (*tp).finish_sim_ms != 0 {
+                // The child read the race result out of the engine and left.
+                // Report it in the RACE ms the driver speaks, on its own line,
+                // so `parse_result` never has to guess whether a truncated JSON
+                // was a DNF or a child that knew the answer.
+                let rs = RACE_START.load(Ordering::Relaxed);
+                out.extend_from_slice(b"\nFKFINISH race_ms ");
+                utoa((*tp).finish_sim_ms - rs, &mut out);
+                out.extend_from_slice(b" clock ");
+                utoa((*tp).finish_clock, &mut out);
+                out.push(b'\n');
+            }
             out.extend_from_slice(b"\nFKTIME fork_us ");
             utoa(t_forked - t_start, &mut out);
             out.extend_from_slice(b" first_us ");
             utoa(t_first.saturating_sub(t_forked), &mut out);
             out.extend_from_slice(b" done_us ");
             utoa(now_us() - t_start, &mut out);
+            // The child's own timeline, out of the shared page: when it
+            // started, when it ran its first and last tick, and how many.
+            // Everything between `last_tick_us` and `done_us` is what the
+            // candidate pays AFTER the simulation.
+            if !tp.is_null() {
+                out.extend_from_slice(b" child_us ");
+                utoa((*tp).child_us.saturating_sub(t_start), &mut out);
+                out.extend_from_slice(b" tick1_us ");
+                utoa((*tp).first_tick_us.saturating_sub(t_start), &mut out);
+                out.extend_from_slice(b" tickN_us ");
+                utoa((*tp).last_tick_us.saturating_sub(t_start), &mut out);
+                out.extend_from_slice(b" ticks ");
+                utoa((*tp).ticks, &mut out);
+            }
+            if let Some((minflt, rss_kb, pdirty_kb)) = census {
+                out.extend_from_slice(b" minflt ");
+                utoa(minflt, &mut out);
+                out.extend_from_slice(b" rss_kb ");
+                utoa(rss_kb, &mut out);
+                out.extend_from_slice(b" pdirty_kb ");
+                utoa(pdirty_kb, &mut out);
+                if !tp.is_null() {
+                    out.extend_from_slice(b" heap_dirty_pages ");
+                    utoa((*tp).census_heap_dirty_pages, &mut out);
+                    out.extend_from_slice(b" heap_regions_2m ");
+                    utoa((*tp).census_heap_regions_2m, &mut out);
+                    out.extend_from_slice(b" gap_big ");
+                    utoa((*tp).gap_big, &mut out);
+                    out.extend_from_slice(b" gap_excess_us ");
+                    utoa((*tp).gap_excess_us, &mut out);
+                    out.extend_from_slice(b" gap_max_us ");
+                    utoa((*tp).gap_max_us, &mut out);
+                }
+            }
             out.push(b'\n');
-            let mut sum = [0u8; SUMMARY_BYTES];
-            std::ptr::copy_nonoverlapping(cfg.out, sum.as_mut_ptr(), SUMMARY_BYTES);
             send_frame(res, &out);
-            send_frame(res, &sum);
+            if watched {
+                let mut sum = [0u8; SUMMARY_BYTES];
+                std::ptr::copy_nonoverlapping(cfg.out, sum.as_mut_ptr(), SUMMARY_BYTES);
+                send_frame(res, &sum);
+            }
             continue;
         }
-        // 'R' u32 n, then n * (u32 tick, f32 steer, f32 gas, f32 brake)
-        let n = u32::from_le_bytes(payload[1..5].try_into().unwrap()) as usize;
-        fflush(std::ptr::null_mut()); // no half-written stdio in the child
-        let t_start = now_us();
-        let mut fds = [0i32; 2];
-        if pipe(fds.as_mut_ptr()) != 0 {
-            send_frame(res, b"ERR pipe");
-            continue;
-        }
-        let pid = fork();
-        if pid < 0 {
-            close(fds[0]);
-            close(fds[1]);
-            send_frame(res, b"ERR fork");
-            continue;
-        }
-        if pid == 0 {
-            // ---- child: becomes the candidate's simulator
-            IS_CHILD.store(1, Ordering::SeqCst);
-            close(fds[0]);
-            dup2(fds[1], 1);
-            close(fds[1]);
-            setvbuf(stdout, std::ptr::null_mut(), IONBF, 0);
-            for i in 0..n {
-                let o = 5 + i * 16;
-                let tick = u32::from_le_bytes(payload[o..o + 4].try_into().unwrap()) as usize;
-                apply_patch(base, tick, payload.as_ptr().add(o + 4));
-            }
-            return; // resume the simulation, with the tail rewritten
-        }
-        // ---- parent: collect the child's JSON, then stop it dead
-        let t_forked = now_us();
-        let mut t_first = 0u64;
-        close(fds[1]);
-        let mut out: Vec<u8> = Vec::with_capacity(4096);
-        let mut buf = [0u8; 4096];
-        let mut done = false;
-        while !done {
-            let mut pfd = PollFd {
-                fd: fds[0],
-                events: POLLIN,
-                revents: 0,
-            };
-            let pr = poll(&mut pfd, 1, 20000);
-            if pr <= 0 {
-                out.extend_from_slice(b"\nFKSHIM-TIMEOUT\n");
-                break;
-            }
-            let r = real_read()(fds[0], buf.as_mut_ptr() as *mut c_void, buf.len());
-            if r <= 0 {
-                break;
-            }
-            if t_first == 0 {
-                t_first = now_us();
-            }
-            out.extend_from_slice(&buf[..r as usize]);
-            // everything we need is in ValidatedResult/Desc, which precede IsValid;
-            // stopping here skips the DeclaredResult block and the Inputs RLE
-            if out.windows(9).any(|w| w == b"\"IsValid\"") {
-                done = true;
-            }
-        }
-        if pid > 0 {
-            // SIGKILL and walk away: tearing down a 150 MB address space costs
-            // milliseconds, and SIGCHLD=SIG_IGN makes the kernel reap for us, so
-            // the next candidate does not have to wait for it.
-            kill(pid, SIGKILL);
-        }
-        close(fds[0]);
-        out.extend_from_slice(b"\nFKTIME fork_us ");
-        utoa(t_forked - t_start, &mut out);
-        out.extend_from_slice(b" first_us ");
-        utoa(t_first.saturating_sub(t_forked), &mut out);
-        out.extend_from_slice(b" done_us ");
-        utoa(now_us() - t_start, &mut out);
-        out.push(b'\n');
-        send_frame(res, &out);
+        // An unknown command byte. Answer, so the driver's frame count stays in
+        // step, rather than treating the payload as a run.
+        send_frame(res, b"ERR unknown command");
     }
 }
 
@@ -2386,15 +3890,17 @@ fn now_us() -> u64 {
 
 // ---------------------------------------------------------------------- hooks
 
-#[no_mangle]
-pub unsafe extern "C" fn lroundf(x: f32) -> i64 {
-    let mut p = REAL_LROUNDF.load(Ordering::Relaxed);
-    if p == 0 {
-        init();
-        p = dlsym(RTLD_NEXT, b"lroundf\0".as_ptr() as *const c_char) as usize;
-        REAL_LROUNDF.store(p, Ordering::Relaxed);
-    }
-    let n = N_LROUNDF.fetch_add(1, Ordering::Relaxed) + 1;
+/// The current clock reading: the engine's race tick. Every stride, deadline,
+/// budget and checkpoint in this file is in these units.
+#[inline(always)]
+fn clock_now() -> u64 {
+    TICK_CLOCK.load(Ordering::Relaxed)
+}
+
+/// The clock dispatch: sampling / watchdog, the SIGSTOP checkpoint, and the
+/// fork-server checkpoint. Called once per tick from `tick_entry`.
+#[inline(always)]
+unsafe fn on_clock(n: u64) {
     if n >= SAMPLE_NEXT.load(Ordering::Relaxed) {
         if WATCH_ON.load(Ordering::Relaxed) != 0 {
             do_watch(n);
@@ -2412,13 +3918,18 @@ pub unsafe extern "C" fn lroundf(x: f32) -> i64 {
     {
         forkserver();
     }
-    let f: unsafe extern "C" fn(f32) -> i64 = std::mem::transmute(p);
-    f(x)
 }
 
 fn emit() {
     if IS_CHILD.load(Ordering::Relaxed) == 0 {
-        logn(b"FKSHIM lroundf_total ", N_LROUNDF.load(Ordering::Relaxed));
+        logn(b"FKSHIM tick_total ", N_TICK.load(Ordering::Relaxed));
+        logn(b"FKSHIM sim_ms0 ", SIM_MS0.load(Ordering::Relaxed));
+        logn(b"FKSHIM sim_ms_end ", SIM_MS.load(Ordering::Relaxed));
+        logn(b"FKSHIM tick_anomalies ", TICK_ANOMALIES.load(Ordering::Relaxed));
+        logn(b"FKSHIM tick_clock_mismatch ", TICK_CLOCK_MISMATCH.load(Ordering::Relaxed));
+        logn(b"FKSHIM tick_fn_off ", TICK_FN_USED.load(Ordering::Relaxed) as u64);
+        logn(b"FKSHIM race_start ", RACE_START.load(Ordering::Relaxed));
+        logn(b"FKSHIM clock_total ", clock_now());
     }
 }
 
@@ -2672,3 +4183,62 @@ mod tests {
 // cost is elsewhere -- most likely the 27,174 FAILING stat calls and the
 // engine's own start-up work. Interception was the right instinct and the
 // wrong target.
+
+// ---------------------------------------------------- probe-child post-mortem
+
+/// Signals that kill a process silently; a probe child that dies of one says
+/// so on the probe pipe first (the ~1-in-40 empty-probe flake, 2026-09-07).
+const SIGILL: c_int = 4;
+const SIGABRT: c_int = 6;
+const SIGBUS: c_int = 7;
+const SIGFPE: c_int = 8;
+
+unsafe extern "C" fn probe_death_handler(sig: c_int, info: *const u8, _ctx: *mut c_void) {
+    let fd = PROBE_FD.load(Ordering::Relaxed);
+    if fd >= 0 {
+        let addr = if info.is_null() { 0 } else { *(info.add(16) as *const usize) };
+        let mut m = Vec::new();
+        m.extend_from_slice(b"PROBE-DIED signal ");
+        utoa(sig as u64, &mut m);
+        m.extend_from_slice(b" addr ");
+        utoa(addr as u64, &mut m);
+        m.push(b'\n');
+        write_all(fd, &m);
+        log(&m);
+    }
+    _exit(94)
+}
+
+unsafe fn arm_probe_postmortem() {
+    let act = SigactionT {
+        handler: probe_death_handler as *const () as usize,
+        mask: [0; 16],
+        flags: SA_SIGINFO,
+        restorer: 0,
+    };
+    for s in [SIGILL, SIGABRT, SIGBUS, SIGFPE] {
+        sigaction(s, &act, std::ptr::null_mut());
+    }
+}
+
+/// `exit` interposed: a probe child that leaves through libc's `exit` says so.
+#[no_mangle]
+pub unsafe extern "C" fn exit(code: c_int) -> ! {
+    if IS_CHILD.load(Ordering::Relaxed) != 0 {
+        let fd = PROBE_FD.load(Ordering::Relaxed);
+        if fd >= 0 {
+            let mut m = Vec::new();
+            m.extend_from_slice(b"PROBE-EXITED code ");
+            utoa(code as u64, &mut m);
+            m.push(b'\n');
+            write_all(fd, &m);
+            log(&m);
+        }
+    }
+    let p = dlsym(RTLD_NEXT, b"exit\0".as_ptr() as *const c_char);
+    if !p.is_null() {
+        let f: unsafe extern "C" fn(c_int) -> ! = std::mem::transmute(p);
+        f(code)
+    }
+    _exit(code)
+}

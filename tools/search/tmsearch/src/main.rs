@@ -16,7 +16,7 @@ use tmsearch::analyze;
 use tmsearch::batch::BatchEval;
 use tmsearch::forkeval::{calibrate_boundary, clock_for_tick, ForkEval, ForkSetup};
 use tmsearch::guard::{Bank, Provenance};
-use forkoracle::inputs::{mutate, Inputs, OpSet, Rng};
+use forkoracle::inputs::{mutate, Constraint, Inputs, OpSet, Rng};
 use tmsearch::report::secs;
 use tmsearch::root::Root;
 use tmsearch::score::{Outcome, Progress};
@@ -35,6 +35,13 @@ const USAGE: &str = r#"tmsearch -- the TAS search for Trackmania 2020
             Evaluate N candidates from a FIXED incumbent and record what
             each operator earned. Nothing is accepted; the sample is
             unbiased, which a live search's log is not.
+
+  thin      --template G --start-from T --map M --target SECONDS [--lo T --hi T] [--out F.Ghost.Gbx]
+            LOW-INPUT: drop one input change at a time (the run it opens is
+            merged into the one before it), keeping every candidate that the
+            PLAIN oracle still scores at or under --target; the cheapest
+            deletion is taken each round until none qualifies. Prints the
+            (events, time) ladder; the survivor is written oracle-confirmed.
 
   analyze   --log F.jsonl --base SECONDS
             What one search step buys: by operator, by tick, and the
@@ -64,7 +71,7 @@ SEARCH
                       that fails one is demoted to a rung of its own, so the
                       ladder is (number of variants passed) and only a run that
                       passes them all is a Finish. Plain oracle only.
-  --workers N         default: all cores
+  --workers N         default: 3/4 of the cores (the measured knee, PERF.md §6)
   --batch N           candidates per oracle call (default 30)
   --nops N            operators per candidate, or --nops-upto N
   --ops SET           local | wide | doublet | retime | scale
@@ -75,6 +82,15 @@ SEARCH
   --migrate P         chance a worker reseeds from the global best
   --max-drift N       stop once a banked result is N ticks from the fork's
                       reference, so it can be re-anchored (0 = never)
+  --alphabet kb|LIST  HUMAN-SHAPED SEARCH: snap every candidate's steer to these
+                      levels before scoring (`kb` = -127,0,127; or e.g. -127,-64,0,64,127
+                      for action keys). Quantising an optimised tape afterwards never
+                      survives; the tape has to be searched under the constraint.
+  --minhold N         and hold every input at least N ticks before it may change
+                      (steer, gas and brake); a sooner change is suppressed.
+  --gas-held          and keep the throttle down on every editable tick: speed is
+                      controlled by the brake alone (a driven keyboard tape -- the
+                      client re-engages a lifted throttle ~300 ms late).
 
 FORK MODE (a gradient, never a result)
   --fork              evaluate on mid-simulation fork servers
@@ -190,7 +206,12 @@ struct Args {
     temp_s: f64,
     migrate: f64,
     max_drift: usize,
+    alphabet: Option<Vec<i8>>,
+    minhold: usize,
+    gas_held: bool,
+    decoy_warn: bool,
     n: usize,
+    target_ms: i64,
     out: String,
     base_ms: i64,
     fork: bool,
@@ -236,7 +257,14 @@ fn parse() -> Args {
         root: None,
         bestdir: "best".into(),
         log: None,
-        workers: std::thread::available_parallelism().map(|v| v.get()).unwrap_or(8),
+        // THREE QUARTERS OF THE CORES (PERF.md §6). Evals/s is linear in
+        // workers to two thirds of the box and flat past five sixths: a
+        // worker is one core simulating plus the standby fork, the teardown
+        // and the driver thread beside it. Measured on 96 cores: 16/32/48/64
+        // workers all 53 evals/s each; 80 gave 48, 88 gave 44. Pinning
+        // (sched_setaffinity, one core per worker) cost 4.5% at 80 -- the
+        // kernel places the fork and the teardown better than a mask does.
+        workers: (std::thread::available_parallelism().map(|v| v.get()).unwrap_or(8) * 3 / 4).max(1),
         batch: 30,
         nops: OpsPerCandidate::Exactly(1),
         ops: OpSet::Local,
@@ -250,7 +278,12 @@ fn parse() -> Args {
         temp_s: 0.0,
         migrate: 0.0,
         max_drift: 0,
+        alphabet: None,
+        minhold: 1,
+        gas_held: false,
+        decoy_warn: false,
         n: 0,
+        target_ms: 0,
         out: "/tmp/tmsearch-dump.jsonl".into(),
         base_ms: 0,
         fork: false,
@@ -307,7 +340,14 @@ fn parse() -> Args {
             "--temp" => a.temp_s = num(&next(&mut i), k),
             "--migrate" => a.migrate = num(&next(&mut i), k),
             "--max-drift" => a.max_drift = num(&next(&mut i), k) as usize,
+            "--alphabet" => {
+                a.alphabet = Some(Constraint::parse_alphabet(&next(&mut i)).unwrap_or_else(|e| die(e)))
+            }
+            "--minhold" => a.minhold = num(&next(&mut i), k) as usize,
+            "--decoy-warn" => a.decoy_warn = true,
+            "--gas-held" => a.gas_held = true,
             "--n" => a.n = num(&next(&mut i), k) as usize,
+            "--target" => a.target_ms = (num(&next(&mut i), k) * 1000.0).round() as i64,
             "--out" => a.out = next(&mut i),
             "--base" => a.base_ms = (num(&next(&mut i), k) * 1000.0).round() as i64,
             "--fork" => a.fork = true,
@@ -389,7 +429,15 @@ fn parse() -> Args {
 }
 
 fn server_dir(a: &Args) -> PathBuf {
-    ghost::oracle::server_dir(a.server.as_deref())
+    let d = ghost::oracle::server_dir(a.server.as_deref());
+    // Every worker, fork or plain, launches this binary: refuse the wrong build
+    // once, here, instead of 150 servers quietly validating nothing.
+    if d.join("TrackmaniaServer").exists() {
+        if let Err(e) = ghost::oracle::check_server_build(&d) {
+            die(e);
+        }
+    }
+    d
 }
 
 fn need_map(a: &Args) -> PathBuf {
@@ -568,6 +616,7 @@ fn main() {
     match a.cmd.as_str() {
         "search" => cmd_search(&a),
         "dump" => cmd_dump(&a),
+        "thin" => cmd_thin(&a),
         "analyze" => cmd_analyze(&a),
         "validate" => cmd_validate(&a),
         other => die(format!("unknown command {:?}\n\n{}", other, USAGE)),
@@ -575,7 +624,7 @@ fn main() {
 }
 
 fn cmd_search(a: &Args) {
-    let (p, start) = build(a);
+    let (p, mut start) = build(a);
     let map = need_map(a);
     let server = server_dir(a);
     let root = Root::claim(
@@ -586,6 +635,22 @@ fn cmd_search(a: &Args) {
 
     let hi = a.hi.min(p.n());
     p.check_window(a.lo, hi).unwrap_or_else(|e| die(e));
+    // THE SEED OBEYS THE CONSTRAINT TOO. A seed outside it would make every
+    // candidate differ from the fork's reference in hundreds of ticks (the
+    // legalisation of the whole window), which is exactly the regime where the
+    // fork oracle lies: 7 phantoms in 22 000 evaluations on colon three from a
+    // snapped-but-not-held seed. Legalise it first and say so.
+    {
+        let c = Constraint { alphabet: a.alphabet.clone(), minhold: a.minhold.max(1), gas_held: a.gas_held };
+        if !c.is_noop() && !c.holds(&start, a.lo, hi) {
+            let before = Constraint::events(&start, a.lo, hi);
+            c.apply(&mut start, a.lo, hi);
+            eprintln!(
+                "constraint: the seed was outside --alphabet/--minhold inside [{}, {}) and has been legalised ({} -> {} input changes); its time below is the LEGALISED seed's",
+                a.lo, hi, before, Constraint::events(&start, a.lo, hi)
+            );
+        }
+    }
 
     // THE STATE OBJECTIVE NEEDS THE FORK. The plain oracle reports a time and
     // a checkpoint count; it never sees where the car was or which way it was
@@ -663,6 +728,11 @@ fn cmd_search(a: &Args) {
         temp_s: a.temp_s,
         migrate: a.migrate,
         max_drift: a.max_drift,
+        decoy_warn: a.decoy_warn,
+        constraint: {
+            let c = Constraint { alphabet: a.alphabet.clone(), minhold: a.minhold.max(1), gas_held: a.gas_held };
+            if c.is_noop() { None } else { Some(c) }
+        },
         check_seed_gate: seed_check,
     };
 
@@ -733,7 +803,7 @@ fn run_fork(
         ckpt,
     )
     .unwrap_or_else(|e| die(format!("the calibration fork server did not start: {}", e)));
-    let probe = cal.probe_tick().unwrap_or_else(|e| {
+    let probe = cal.boundary_tick(p.start_offset_ms).unwrap_or_else(|e| {
         die(format!("the boundary probe failed ({}) -- a resume cannot be trusted without it", e))
     });
     let boundary = calibrate_boundary(&mut cal, server, map, &p, &root.path, probe, p.n())
@@ -828,6 +898,7 @@ fn run_fork(
     tmsearch::search::run(cfg, Arc::clone(&p), start, start_outcome, bank, move |wi| {
         ForkEval::start(&rootp.join(format!("w{:03}", wi)), &setup, &watch, refr.clone())
     });
+    eprintln!("{}", tmsearch::forkeval::ladder_report());
 }
 
 /// Report the seed against every `--must MAP`, and put the seed on the rung it
@@ -1129,3 +1200,112 @@ fn cmd_validate(a: &Args) {
 /// surface this binary documents, and the compiler should say so if they move.
 #[allow(dead_code)]
 fn _surface(_: &Provenance, _: &dyn Fn() -> Box<dyn Evaluator>) {}
+
+/// LOW-INPUT THINNING. Every input change in `[lo, hi)` is a candidate for
+/// deletion: the run it opens is overwritten with the values of the run before
+/// it (on all three channels), so one event disappears and nothing else moves.
+/// All deletions are scored in one plain-oracle batch; the one whose result is
+/// best -- and at or under the target -- is taken, and the round repeats until
+/// no deletion qualifies. Greedy, and deliberately so: a human is going to
+/// drive this, and the ladder it prints (events, time) is the whole answer.
+fn cmd_thin(a: &Args) {
+    let (p, start) = build(a);
+    let map = need_map(a);
+    let server = server_dir(a);
+    if a.target_ms <= 0 {
+        die("thin needs --target SECONDS (the time every survivor must stay at or under)");
+    }
+    let root = Root::claim(&a.root.clone().map(PathBuf::from).unwrap_or_else(Root::default_path))
+        .unwrap_or_else(|e| die(e));
+    root.reset();
+    let hi = a.hi.min(p.n());
+    let lo = a.lo.max(1);
+    p.check_window(lo, hi).unwrap_or_else(|e| die(e));
+    let mut ev = BatchEval::new(
+        Arc::clone(&p),
+        &root.path,
+        &server,
+        &map,
+        &a.segs,
+        &a.musts,
+        a.must_window_ms,
+        0,
+        start.clone(),
+    )
+    .unwrap_or_else(|e| die(e));
+
+    let events = |s: &Inputs| -> Vec<usize> {
+        (lo..hi)
+            .filter(|&i| s.steer[i] != s.steer[i - 1] || s.gas[i] != s.gas[i - 1] || s.brake[i] != s.brake[i - 1])
+            .collect()
+    };
+    let delete = |s: &Inputs, e: usize, next: usize| -> Inputs {
+        let mut t = s.clone();
+        for i in e..next {
+            t.steer[i] = s.steer[e - 1];
+            t.gas[i] = s.gas[e - 1];
+            t.brake[i] = s.brake[e - 1];
+        }
+        t
+    };
+
+    let mut cur = start.clone();
+    let base = ev.evaluate(std::slice::from_ref(&cur));
+    let mut cur_ms = base[0].finish_ms().unwrap_or_else(|| die("the starting tape does not finish"));
+    if cur_ms > a.target_ms {
+        die(format!("the starting tape does {} and the target is {}", secs(cur_ms), secs(a.target_ms)));
+    }
+    let ev0 = events(&cur);
+    eprintln!("start: {} input changes in [{}, {}), {}; target {}", ev0.len(), lo, hi, secs(cur_ms), secs(a.target_ms));
+    println!("events\ttime\tdropped_tick\tdropped_race_ms");
+    println!("{}\t{}\t-\t-", ev0.len(), secs(cur_ms));
+    loop {
+        let evs = events(&cur);
+        if evs.is_empty() {
+            break;
+        }
+        let mut cands = Vec::with_capacity(evs.len());
+        for (k, &e) in evs.iter().enumerate() {
+            let next = evs.get(k + 1).copied().unwrap_or(hi);
+            cands.push(delete(&cur, e, next));
+        }
+        let mut best: Option<(usize, i64)> = None;
+        for chunk in 0..cands.len().div_ceil(a.batch.max(1)) {
+            let from = chunk * a.batch.max(1);
+            let to = (from + a.batch.max(1)).min(cands.len());
+            for (j, o) in ev.evaluate(&cands[from..to]).into_iter().enumerate() {
+                if let Some(ms) = o.finish_ms() {
+                    if ms <= a.target_ms && best.map(|(_, b)| ms < b).unwrap_or(true) {
+                        best = Some((from + j, ms));
+                    }
+                }
+            }
+        }
+        match best {
+            Some((k, ms)) => {
+                let e = evs[k];
+                cur = cands.swap_remove(k);
+                cur_ms = ms;
+                let left = events(&cur).len();
+                println!("{}\t{}\t{}\t{}", left, secs(ms), e, e as i64 * 10 + p.start_offset_ms as i64);
+                eprintln!("dropped the change at tick {} (race {}): {} events left, {}", e, secs(e as i64 * 10 + p.start_offset_ms as i64), left, secs(ms));
+            }
+            None => break,
+        }
+    }
+    // The survivor, written and re-simulated from the bytes on disk.
+    let out = if a.out.is_empty() { format!("thin_{}.Ghost.Gbx", secs(cur_ms).replace('.', "_")) } else { a.out.clone() };
+    let bytes = p.file(&cur);
+    std::fs::write(&out, &bytes).unwrap_or_else(|e| die(format!("{}: {}", out, e)));
+    let outp = PathBuf::from(&out).canonicalize().unwrap_or_else(|e| die(format!("{}: {}", out, e)));
+    let check = ghost::oracle::validate_many(&server, &[outp.as_path()], ghost::oracle::MapsMode::One(&map), "thin")
+        .unwrap_or_else(|e| die(format!("the plain oracle did not run on {}: {}", out, e)));
+    let got = check.first().and_then(|r| r.time_ms);
+    if got != Some(cur_ms) {
+        die(format!(
+            "the written file {} re-simulates to {:?}, not the {} the thinning measured -- not written as a result",
+            out, got, secs(cur_ms)
+        ));
+    }
+    eprintln!("wrote {}: {} input changes, {} (plain oracle on the written file agrees)", out, events(&cur).len(), secs(cur_ms));
+}

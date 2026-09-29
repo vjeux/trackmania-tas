@@ -27,7 +27,7 @@
 //! value. Five consecutive runs gave five different addresses and
 //! byte-identical CSVs.
 
-use crate::locate::{locate_v2, trajectory};
+use crate::locate::trajectory;
 use crate::session::{Checkpoint, Engine, Session};
 use crate::tape::Tape;
 use crate::traj;
@@ -50,111 +50,60 @@ pub fn run(engine: &Engine, tape: Tape, at: Checkpoint, o: TraceOpts) -> Result<
         Some(p) => Some(traj::Reference::load(p)?),
         None => None,
     };
-    // Bounds are a REJECTION filter for the locator. Without a reference the
-    // box is the world, which is correct: the alternative is to invent a
-    // plausible region and quietly exclude the truth.
-    let bounds = match &reference {
-        Some(r) => r.bounds(400.0),
-        None => (-64000.0, 64000.0, -1000.0, 4000.0, -64000.0, 64000.0),
+    // THE CAR, DERIVED (`forkoracle::car`, LOCATE.md): the copy-out of the
+    // dyna body the physics step integrates, stamped with the tick loop's own
+    // clock. There is no candidate to judge, so the old probe ladder -- which
+    // existed because a self-consistency test could refuse a real car at a slow
+    // checkpoint -- is gone, with ONE honest exception: before the car is
+    // spawned (a checkpoint in the countdown) the participant's vehicle slots
+    // are not filled yet and there is nothing to derive. Then, and only then,
+    // the checkpoint moves to shortly after the race start, and the trace says
+    // so. Any other derivation failure is an error.
+    let ladder: Vec<(String, Checkpoint)> = vec![
+        ("the given checkpoint".to_string(), at),
+        (
+            "race +0.2 s (the first checkpoint after the spawn)".to_string(),
+            Checkpoint::Tick((200 - tape.start_offset_ms as i64) / 10),
+        ),
+        ("frac:0.5".to_string(), Checkpoint::Fraction(0.5)),
+    ];
+    let mut s: Option<Session> = None;
+    let mut car = None;
+    let t0 = std::time::Instant::now();
+    for (i, (label, cp)) in ladder.into_iter().enumerate() {
+        let sess = Session::start(engine, tape.clone(), cp)?;
+        match forkoracle::car::locate(&sess.srv) {
+            Ok(c) => {
+                if i > 0 {
+                    println!("locate: the given checkpoint is before the car exists; {} has it", label);
+                }
+                car = Some(c);
+                s = Some(sess);
+                break;
+            }
+            Err(e) if e.contains("not CGameVehiclePhy") || e.contains("processes none") || e.contains("participant.vehicle[k]") => {
+                println!("locate at {}: the car does not exist yet ({})", label, e);
+                sess.srv.quit();
+            }
+            Err(e) => return Err(format!("the car did not derive: {}", e)),
+        }
+    }
+    let (mut s, car) = match (s, car) {
+        (Some(s), Some(c)) => (s, c),
+        _ => return Err("the car does not exist at any checkpoint tried".into()),
     };
-
-    let mut s = Session::start(engine, tape, at)?;
     let probe = s.probe_tick()?;
     println!(
-        "checkpoint lroundf #{} -> probe tick {} (race {}), tape {} ticks",
+        "checkpoint clock #{} -> probe tick {} (race {}), tape {} ticks",
         s.checkpoint_clock,
         probe,
         crate::secs(s.tape.race_ms(probe)),
         s.tape.n()
     );
-
     let recs = s.tape.tail_records(probe);
-    let t0 = std::time::Instant::now();
-    // THE LOCATE IS JUDGED WHERE THE CAR IS, SO WHERE IT IS JUDGED MATTERS.
-    //
-    // `locate_v2`'s discriminator is d(pos)/dt against the stored velocity,
-    // qualified over the ticks after the probe against a threshold of 2 % of
-    // the mean speed in that window. A probe where the car is slow gets the
-    // TIGHTEST threshold and the LARGEST real residual -- so the same tape, the
-    // same map and the same engine locate or refuse purely on where the
-    // checkpoint fell. Measured on 276874 (a 12.759 lap), one command each:
-    //
-    //     frac 0.30   REFUSED   1.00 m/s residual at mean speed 17.2
-    //     frac 0.50   ok        0.247 m/s          at mean speed 60.3
-    //     frac 0.70   ok        0.191 m/s          at mean speed 66.7
-    //     frac 0.85   REFUSED   1.12 m/s           at mean speed  1.7
-    //
-    // The car is real at all four; only the middle two are anywhere the test
-    // can see it. `fk regen` has walked a ladder of checkpoints for exactly
-    // this reason since the day it was written ("a trial map is barely moving
-    // at tick 200, a short map has no tick 200 at all"), and `fk trace` took
-    // the first checkpoint and reported its refusal as if it were a property of
-    // the file. That is how a working tape reads as an unlocatable one.
-    //
-    // So trace walks the same ladder. The default probe is tried first, then
-    // fractions through the middle of the run where the car is fastest. Every
-    // attempt still faces the unchanged acceptance test, so this widens where
-    // we look and not what we will believe.
-    let layout = {
-        let mut found = None;
-        let mut first_err = None;
-        let mut tried: Vec<String> = Vec::new();
-        for (label, cp) in std::iter::once(("the given checkpoint".to_string(), at))
-            .chain(
-                [0.5f64, 0.6, 0.4, 0.7, 0.3]
-                    .iter()
-                    .map(|f| (format!("frac:{f}"), Checkpoint::Fraction(*f))),
-            )
-        {
-            if !tried.is_empty() {
-                // A fresh session: the fork server is at a checkpoint and
-                // moving the probe means re-forking, not rewinding.
-                s = Session::start(engine, s.tape.clone(), cp)?;
-            }
-            let probe = s.probe_tick()?;
-            let recs = s.tape.tail_records(probe);
-            match locate_v2(
-                &mut s.srv,
-                probe,
-                &recs,
-                s.tape.start_offset_ms,
-                bounds,
-                2000,
-                4000,
-                true,
-            ) {
-                Ok(l) => {
-                    if !tried.is_empty() {
-                        println!(
-                            "locate: the given checkpoint refused; {} located it",
-                            label
-                        );
-                    }
-                    found = Some((l, probe, recs));
-                    break;
-                }
-                Err(e) => {
-                    if first_err.is_none() {
-                        first_err = Some(e.clone());
-                    }
-                    tried.push(format!("{label}: {e}"));
-                }
-            }
-        }
-        match found {
-            Some(f) => f,
-            None => {
-                return Err(format!(
-                    "the car could not be located at any of {} probe positions -- \
-                     this is a property of the file, not of where we looked:\n  {}",
-                    tried.len(),
-                    tried.join("\n  ")
-                ))
-            }
-        }
-    };
-    let (layout, probe, recs) = layout;
-    println!("locate: {:.1}s", t0.elapsed().as_secs_f64());
+    println!("car: {}", car);
+    let layout = car.layout();
+    println!("locate: {:.4}s", t0.elapsed().as_secs_f64());
 
     let t1 = std::time::Instant::now();
     let rows = trajectory(

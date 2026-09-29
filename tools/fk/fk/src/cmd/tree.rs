@@ -179,22 +179,17 @@ fn fit(p: &[(f64, f64)]) -> (f64, f64) {
 ///
 /// A missing layout is **UNMEASURED**, not "no trace needed": the cost arms
 /// still run and their trace column reads UNMEASURED rather than 0.
-fn locate_layout(srv: &mut ForkServer, probe: usize, recs: &[Rec], off: i32) -> Option<Layout> {
-    let wide = (-1.0e6, 1.0e6, -1.0e6, 1.0e6, -1.0e6, 1.0e6);
-    match crate::locate::locate_v2(srv, probe, recs, off, wide, 40_000, 24, false) {
-        Ok(l) => {
-            println!(
-                "state readout located: pos {:#x}, clock {:#x} (bias {}), self-consistency \
-                 {:.3} m/s",
-                l.pos, l.clock, l.clock_bias, l.rms
-            );
+fn locate_layout(srv: &ForkServer) -> Option<Layout> {
+    match forkoracle::car::locate(srv) {
+        Ok(car) => {
+            let l = car.layout();
+            println!("state readout derived: {}", car);
             Some(l)
         }
         Err(e) => {
             eprintln!(
-                "fk tree: the car could not be located ({}). The timing arms still run; every \
-                 state-trace column reads UNMEASURED. This is a harness limit, not an absence: \
-                 the engine computes the state and it is in memory.",
+                "fk tree: the car did not derive ({}). The timing arms still run; every \
+                 state-trace column reads UNMEASURED.",
                 e
             );
             None
@@ -220,7 +215,7 @@ pub fn cost(engine: &Engine, tape: Tape, at: Checkpoint, o: CostOpts) -> Result<
     let n_ticks = tape.n();
     let mut s = Session::start(engine, tape, at)?;
     println!(
-        "# fk tree cost -- load1 {:.2}, {} cores, tape {} ticks, checkpoint lroundf #{}",
+        "# fk tree cost -- load1 {:.2}, {} cores, tape {} ticks, checkpoint clock #{}",
         load,
         std::thread::available_parallelism().map(|v| v.get()).unwrap_or(0),
         n_ticks,
@@ -250,7 +245,7 @@ pub fn cost(engine: &Engine, tape: Tape, at: Checkpoint, o: CostOpts) -> Result<
     let reference = recs_from(&tape.steer, &tape.accel, &tape.brake, 0);
 
     let layout = if o.trace {
-        locate_layout(&mut srv, probe, &reference, tape.start_offset_ms)
+        locate_layout(&srv)
     } else {
         None
     };
@@ -306,7 +301,7 @@ pub fn cost(engine: &Engine, tape: Tape, at: Checkpoint, o: CostOpts) -> Result<
     if let Some(c) = &cfg {
         std::fs::create_dir_all(&c.dir).map_err(|e| e.to_string())?;
     }
-    let mut f = Forest::new(srv, &engine.work, reference, cfg)?;
+    let mut f = Forest::new(srv, &engine.work, reference, cfg, tape.start_offset_ms)?;
     f.probe_root()?;
     let root_b = f.probed_boundary(ROOT).unwrap_or(probe);
 
@@ -314,8 +309,10 @@ pub fn cost(engine: &Engine, tape: Tape, at: Checkpoint, o: CostOpts) -> Result<
         "\n      k    branch(ms)   probe(ms)    total(ms)   ticks consumed   trace rows"
     );
     let mut rows: Vec<(f64, f64)> = Vec::new();
+    let mut phases: Vec<(u64, branch::Timeline)> = Vec::new();
     for &k in &o.ks {
         let reps = if k > 500 { o.reps.min(3).max(1) } else { o.reps };
+        let tl0 = f.timeline();
         let (mut bt, mut pt) = (Vec::new(), Vec::new());
         let (mut trace_rows, mut consumed) = (0usize, 0usize);
         let mut trace_err: Option<String> = None;
@@ -362,6 +359,25 @@ pub fn cost(engine: &Engine, tape: Tape, at: Checkpoint, o: CostOpts) -> Result<
             if layout.is_some() { trace_rows.to_string() } else { "UNMEASURED".into() }
         );
         rows.push((k as f64, b));
+        let tl1 = f.timeline();
+        phases.push((
+            k,
+            branch::Timeline {
+                branches: tl1.branches - tl0.branches,
+                branch_us: tl1.branch_us - tl0.branch_us,
+                accept_us: tl1.accept_us - tl0.accept_us,
+                probe_us: tl1.probe_us - tl0.probe_us,
+                trace_us: tl1.trace_us - tl0.trace_us,
+            },
+        ));
+    }
+    // WHERE THE TIME GOES, phase by phase (PERF.md §11): the request and the
+    // parent's fork; from the reply to the new node's hello (the child's
+    // setup, its k ticks, its socket, the driver's polling); the node's own
+    // boundary probe; reading the trace file back.
+    println!("\nwhere a branch's time goes, by phase (means):");
+    for (k, tl) in &phases {
+        println!("  k={:<5} {}", k, tl);
     }
 
     if rows.len() >= 2 {
@@ -514,7 +530,7 @@ pub fn exact(engine: &Engine, tape: Tape, at: Checkpoint, o: ExactOpts) -> Resul
 
     let (steer0, accel0, brake0) = (tape.steer.clone(), tape.accel.clone(), tape.brake.clone());
     let reference = recs_from(&steer0, &accel0, &brake0, 0);
-    let mut f = Forest::new(srv, &engine.work, reference, None)?;
+    let mut f = Forest::new(srv, &engine.work, reference, None, tape.start_offset_ms)?;
     f.probe_root()?;
 
     let mut rng = Rng::new(o.seed);
@@ -671,101 +687,178 @@ fn negative_control(
             "UNMEASURED: this checkpoint leaves no room for a sub-boundary write".into(),
         ));
     }
-    // C differs from the reference BOTH below and above the boundary, so it is
-    // the shape of candidate a search could really produce.
+    // A CONTROL THAT CANNOT FAIL IS DECORATION, so this LOOKS for a candidate
+    // that can fail it rather than trying one and reporting a shrug.
+    //
+    // The control needs a candidate whose sub-boundary ticks MATTER: C (edited
+    // below and above the boundary) must reach a different answer from H (the
+    // hybrid the engine would really run). Most random macro-actions do not --
+    // both DNF in the same place, and then the control proves nothing. That is
+    // exactly what "UNMEASURED, retry with a tick that matters" used to mean,
+    // and leaving the retry to a human made the rig fail on three checkpoints
+    // in a row for a reason that has nothing to do with what it measures.
+    //
+    // Up to `TRIES` draws, each judged by the PLAIN oracle (two files, one
+    // batch). The first pair that discriminates is the control; if none does,
+    // that is still UNMEASURED, but now it is a statement about the checkpoint
+    // rather than about one unlucky draw.
+    // AND WIDEN THE WINDOW when the draws come back inert. Three ticks of
+    // sub-boundary edit is the smallest thing worth testing and on some
+    // checkpoints it is too small to change any outcome -- 145875 at tick:400
+    // produced six identical DNFs. The window is what makes the difference
+    // visible, not the draw, so widen it rather than re-roll the same size.
+    const TRIES: usize = 6;
+    let mut attempts: Vec<String> = Vec::new();
+    for attempt in 0..TRIES {
+        // GRADED, not random. A full-lock macro action below the boundary
+        // crashes a car at speed, so C and H both DNF with 0 checkpoints and
+        // the control learns nothing -- which is what six draws did at 145875
+        // tick:400 and Kacky tick:1500, where the reference is doing 100+ m/s.
+        // A NUDGE keeps the car on the road, so both sides finish and the
+        // answers are milliseconds apart, which is the finest outcome the
+        // oracle has. Widen the window and the nudge together until something
+        // shows.
+        let span = 3usize << (attempt / 2); // 3, 3, 6, 6, 12, 12
+        let nudge = [0.15f32, 0.35, 0.15, 0.35, 0.5, 0.8][attempt];
+        let below = probe.saturating_sub(span).max(1);
+        let (st, ac, br, hs, ha, hb) = draw_pair(tape, below, probe, n, rng, nudge);
+
+        let cfile = engine.work.join("neg_C.Ghost.Gbx");
+        let hfile = engine.work.join("neg_H.Ghost.Gbx");
+        tape.write_candidate(&st, &ac, &br, &cfile)?;
+        tape.write_candidate(&hs, &ha, &hb, &hfile)?;
+
+        let res = validate_batch(
+            &engine.server,
+            &engine.map,
+            &[cfile.as_path(), hfile.as_path()],
+            "neg",
+        )?;
+        let get = |name: &str| -> Option<(Option<i64>, Option<u32>)> {
+            res.iter().find(|r| r.file == name).map(|r| (r.time_ms, r.cps))
+        };
+        let (ct, cc) = get("neg_C.Ghost.Gbx").ok_or("the oracle returned no row for neg_C")?;
+        let (ht, hc) = get("neg_H.Ghost.Gbx").ok_or("the oracle returned no row for neg_H")?;
+
+        let eq = |a: (Option<i64>, Option<u32>), b: (Option<i64>, Option<u32>)| {
+            a.0 == b.0 && (a.0.is_some() || a.1 == b.1)
+        };
+        if eq((ct, cc), (ht, hc)) {
+            attempts.push(format!(
+                "draw {} ({} ticks below): C {} cps {:?} == H {} cps {:?}",
+                attempt + 1,
+                span,
+                crate::secs_opt(ct),
+                cc,
+                crate::secs_opt(ht),
+                hc
+            ));
+            continue;
+        }
+
+        // This pair discriminates. Now ask the FORK: writing C's records from
+        // `below` must reproduce H -- the hybrid -- because the ticks below the
+        // boundary were already consumed.
+        let recs = recs_from(&st, &ac, &br, below);
+        let raw = f.root_mut().run(below, &recs);
+        let (ft, fc) = parse_result(&raw);
+        let fork_is_hybrid = eq((ft, fc), (ht, hc));
+        let said = if fork_is_hybrid {
+            format!(
+                "REPRODUCED on draw {} of {}: the fork wrote {} records from tick {} (3 below \
+                 the boundary {}) and produced the HYBRID -- fork {} cps {:?} == plain H {} cps \
+                 {:?}, while the file it was asked for validates to {} cps {:?}. The \
+                 sub-boundary writes were dropped, which is the defect the forward-only rule \
+                 exists for.",
+                attempt + 1,
+                TRIES,
+                recs.len(),
+                below,
+                probe,
+                crate::secs_opt(ft),
+                fc,
+                crate::secs_opt(ht),
+                hc,
+                crate::secs_opt(ct),
+                cc
+            )
+        } else {
+            format!(
+                "NOT REPRODUCED on draw {}: the fork produced {} cps {:?}, which is neither the \
+                 hybrid ({} cps {:?}) nor -- if it equals C ({} cps {:?}) -- a dropped write at \
+                 all. A sub-boundary write that IS honoured would mean the forward-only rule \
+                 rests on a mechanism nobody has reproduced.",
+                attempt + 1,
+                crate::secs_opt(ft),
+                fc,
+                crate::secs_opt(ht),
+                hc,
+                crate::secs_opt(ct),
+                cc
+            )
+        };
+        return Ok((fork_is_hybrid, said));
+    }
+    Ok((
+        false,
+        format!(
+            "UNMEASURED -- {} draws at this checkpoint all produced a sub-boundary write that \
+             changes nothing (so no candidate here can tell a honoured write from a dropped \
+             one): {}. This is a property of the checkpoint, not of one unlucky draw: try a \
+             tick where the reference is doing something.",
+            TRIES,
+            attempts.join("; ")
+        ),
+    ))
+}
+
+/// One (C, H) pair for the negative control: C edited both below and above the
+/// boundary, H the hybrid the engine would really run (reference below, C
+/// above).
+#[allow(clippy::type_complexity)]
+fn draw_pair(
+    tape: &Tape,
+    below: usize,
+    probe: usize,
+    n: usize,
+    rng: &mut Rng,
+    nudge: f32,
+) -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) {
+    // THE TAIL STAYS DRIVABLE, and that is what makes this control able to fail.
+    //
+    // The first version put a random macro-action above the boundary too, on the
+    // grounds that a real search candidate differs on both sides. True, and
+    // useless here: a random macro-action crashes the car, so C and H both DNF
+    // with 0 checkpoints and the sub-boundary difference cannot show. Six draws
+    // at three checkpoints, every one inert.
+    //
+    // What the control actually needs is an OUTCOME FINE ENOUGH TO DIFFER. A
+    // run that finishes has a millisecond; a run that crashes has "DNF, 0". So
+    // the tail keeps the reference's own inputs -- the candidate still differs
+    // from the reference exactly where it must, in the ticks below the
+    // boundary, which is the write whose fate is in question.
     let (mut st, mut ac, mut br) = (tape.steer.clone(), tape.accel.clone(), tape.brake.clone());
-    let (ss, gg, bb) = macro_action(rng);
+    let sign: f32 = if rng.next() % 2 == 0 { 1.0 } else { -1.0 };
+    let d = (nudge * sign * 127.0) as i32;
     for t in below..=probe {
-        st[t] = ss;
-        ac[t] = gg;
-        br[t] = bb;
+        st[t] = (st[t] as i32 + d).clamp(0, 255) as u8;
     }
-    let (s2, g2, b2) = macro_action(rng);
-    for t in probe + 1..(probe + 40).min(n) {
-        st[t] = s2;
-        ac[t] = g2;
-        br[t] = b2;
-    }
-    // H is the hybrid the engine would really have run: the reference below the
-    // boundary, C above it. This is the "known wrong answer".
+    let _ = n;
+    // H reverts the CONSUMED ticks only -- `below..probe`, EXCLUSIVE.
+    //
+    // `probe` is the first record the engine has NOT read, so a write there is
+    // honoured and belongs in the hybrid. Reverting it too made H the pure
+    // reference (22.730) while the fork correctly produced 22.734, and the
+    // control reported "the fork's answer is neither" -- an instrument
+    // disagreeing with itself about where the boundary is. It only surfaced
+    // once the tail was drivable enough for the two to differ at all.
     let (mut hs, mut ha, mut hb) = (st.clone(), ac.clone(), br.clone());
-    for t in below..=probe {
+    for t in below..probe {
         hs[t] = tape.steer[t];
         ha[t] = tape.accel[t];
         hb[t] = tape.brake[t];
     }
-
-    let cfile = engine.work.join("neg_C.Ghost.Gbx");
-    let hfile = engine.work.join("neg_H.Ghost.Gbx");
-    tape.write_candidate(&st, &ac, &br, &cfile)?;
-    tape.write_candidate(&hs, &ha, &hb, &hfile)?;
-
-    let recs = recs_from(&st, &ac, &br, below);
-    let raw = f.root_mut().run(below, &recs);
-    let (ft, fc) = parse_result(&raw);
-
-    let res = validate_batch(
-        &engine.server,
-        &engine.map,
-        &[cfile.as_path(), hfile.as_path()],
-        "neg",
-    )?;
-    let get = |name: &str| -> Option<(Option<i64>, Option<u32>)> {
-        res.iter().find(|r| r.file == name).map(|r| (r.time_ms, r.cps))
-    };
-    let (ct, cc) = get("neg_C.Ghost.Gbx").ok_or("the oracle returned no row for neg_C")?;
-    let (ht, hc) = get("neg_H.Ghost.Gbx").ok_or("the oracle returned no row for neg_H")?;
-
-    let eq = |a: (Option<i64>, Option<u32>), b: (Option<i64>, Option<u32>)| {
-        a.0 == b.0 && (a.0.is_some() || a.1 == b.1)
-    };
-    let fork_is_hybrid = eq((ft, fc), (ht, hc));
-    let c_differs = !eq((ct, cc), (ht, hc));
-
-    let said = if !c_differs {
-        format!(
-            "UNMEASURED -- the sub-boundary write does not change the run at all \
-             (plain C {} cps {:?} == plain H {} cps {:?}), so this candidate cannot tell a \
-             honoured write from a dropped one. It is a control that cannot fail, which is \
-             decoration. Retry with a tick that matters.",
-            crate::secs_opt(ct),
-            cc,
-            crate::secs_opt(ht),
-            hc
-        )
-    } else if fork_is_hybrid {
-        format!(
-            "PASS -- the fork reproduced the KNOWN WRONG ANSWER.\n  \
-             fork(C), written from tick {} : {} cps {:?}\n  \
-             plain(H), the hybrid          : {} cps {:?}   <- EQUAL, so ticks {}..{} were \
-             silently dropped\n  \
-             plain(C), the file we wrote   : {} cps {:?}   <- DIFFERENT, so those ticks mattered",
-            below,
-            crate::secs_opt(ft),
-            fc,
-            crate::secs_opt(ht),
-            hc,
-            below,
-            probe,
-            crate::secs_opt(ct),
-            cc
-        )
-    } else {
-        format!(
-            "DID NOT REPRODUCE -- and this is MORE interesting than a pass.\n  \
-             fork(C)  = {} cps {:?}\n  plain(H) = {} cps {:?}\n  plain(C) = {} cps {:?}\n  \
-             The fork's answer is neither the hybrid nor the file. The recorded defect is not \
-             what the note says it is, and the forward-only rule rests on a mechanism that has \
-             not been reproduced here. CHASE THIS before anything is built on the positive half.",
-            crate::secs_opt(ft),
-            fc,
-            crate::secs_opt(ht),
-            hc,
-            crate::secs_opt(ct),
-            cc
-        )
-    };
-    Ok((c_differs && fork_is_hybrid, said))
+    (st, ac, br, hs, ha, hb)
 }
 
 // ---------------------------------------------------------------- fk tree scale
@@ -793,7 +886,7 @@ pub fn scale(engine: &Engine, tape: Tape, at: Checkpoint, o: ScaleOpts) -> Resul
     // hundred server launches inside a throughput measurement.
     let clock = at.to_clock(engine, &tape)?;
     println!(
-        "# fk tree scale -- {} servers, {} s, k={}, checkpoint lroundf #{}, load1 {:.2}, {} cores",
+        "# fk tree scale -- {} servers, {} s, k={}, checkpoint clock #{}, load1 {:.2}, {} cores",
         o.servers,
         o.secs,
         o.k,
@@ -851,7 +944,7 @@ fn scale_worker(
     s.probe_tick()?;
     let (srv, tape, _) = split(s);
     let reference = recs_from(&tape.steer, &tape.accel, &tape.brake, 0);
-    let mut f = Forest::new(srv, &e.work, reference, None)?;
+    let mut f = Forest::new(srv, &e.work, reference, None, tape.start_offset_ms)?;
     f.probe_root()?;
     up.fetch_add(1, Ordering::Relaxed);
     let t0 = Instant::now();
@@ -859,6 +952,215 @@ fn scale_worker(
         let (_, h) = f.advance(ROOT, &[], 0, k)?;
         f.release(h);
         done.fetch_add(1, Ordering::Relaxed);
+    }
+    Ok(())
+}
+
+/// `fk tree clockprobe`: does the node's own clock say where its boundary is?
+///
+/// Every node probes its boundary by forking a child that walks into the
+/// protected input array (1.5 ms, PERF.md §11). The tick hook's clock is
+/// published in the node's hello for free. If `boundary - f(clock)` is one
+/// constant on every node of a map, the clock IS the probe, and the fork is
+/// spent on a number already known. This measures the residual over many
+/// branches at several `k`, and prints its distribution; it decides nothing
+/// by itself.
+pub fn clockprobe(engine: &Engine, tape: Tape, at: Checkpoint, ks: &[u64], reps: usize, respawns: Option<&str>) -> Result<(), String> {
+    // RESPAWN WINDOWS. The tape's own respawn inputs (bit 31 of a packet's
+    // state literal) name the ticks where the vehicle is removed and put back;
+    // that is where a clock-vs-record assumption would break if anywhere. With
+    // `--respawns FILE` every respawn tick after the checkpoint gets nodes
+    // planted 1, 5, 20 and 60 ticks after it (chained), so the boundary is
+    // checked inside the window and on the way out of it.
+    let respawn_ticks: Vec<usize> = match respawns {
+        Some(path) => {
+            let t = gbx::tape::Tape::from_file(path)?;
+            let a = t.archives.first().ok_or("no input archive")?;
+            a.packets.iter().enumerate().filter(|(_, p)| p.respawn()).map(|(i, _)| i).collect()
+        }
+        None => Vec::new(),
+    };
+    let mut s = Session::start(engine, tape, at)?;
+    let probe = s.probe_tick()?;
+    s.assert_running_our_tape()?;
+    let (srv, tape, _) = split(s);
+    let reference = recs_from(&tape.steer, &tape.accel, &tape.brake, 0);
+    let mut f = Forest::new(srv, &engine.work, reference, None, tape.start_offset_ms)?;
+    f.probe_root()?;
+    let root_b = f.probed_boundary(ROOT).unwrap_or(probe);
+    println!("root: probed boundary {} (start offset {} ms)", root_b, tape.start_offset_ms);
+    println!("{:>6} {:>10} {:>10} {:>12} {:>10}  {}", "k", "boundary", "clock", "sim_ms", "race_start", "boundary - (sim_ms - race_start - start_offset)/10");
+    let mut residuals: std::collections::BTreeMap<i64, usize> = std::collections::BTreeMap::new();
+    let mut chain: Vec<Handle> = Vec::new();
+    for &k in ks {
+        for r in 0..reps {
+            // alternate: from the root, and from the previous node (a chain),
+            // so both fresh and deep nodes are in the sample
+            let parent = if r % 2 == 0 || chain.is_empty() { ROOT } else { *chain.last().unwrap() };
+            let from = f.probed_boundary(parent).unwrap_or(0);
+            let (_, h) = f.advance(parent, &[], from, k)?;
+            let (clock, sim_ms, race_start, b) = f.node_clock(h).ok_or("no node")?;
+            let b = b.ok_or("node without a boundary")? as i64;
+            // Before the race starts the engine has read no record: the boundary
+            // is 0 whatever the countdown clock says (measured: fork-probe 0 at
+            // sim_ms 2030..2120 with race_start 2200 on map 2).
+            let derived = if sim_ms < race_start {
+                0
+            } else {
+                (sim_ms as i64 - race_start as i64 - tape.start_offset_ms as i64) / 10
+            };
+            let res = b - derived;
+            *residuals.entry(res).or_insert(0) += 1;
+            if r < 2 {
+                println!("{:>6} {:>10} {:>10} {:>12} {:>10}  {}", k, b, clock, sim_ms, race_start, res);
+            }
+            if parent != ROOT && chain.len() > 4 {
+                f.release(chain.remove(0));
+            }
+            chain.push(h);
+        }
+    }
+    // Inside every respawn window after the checkpoint.
+    let mut in_windows = 0usize;
+    for &rt in respawn_ticks.iter().filter(|&&t| t > root_b + 1) {
+        // a node just before the respawn, then chained nodes 1, 5, 20, 60 ticks past it
+        let mut from = root_b;
+        let mut parent = ROOT;
+        let mut steps: Vec<u64> = vec![(rt - 1 - root_b) as u64, 2, 4, 15, 40];
+        if steps[0] == 0 {
+            steps.remove(0);
+        }
+        for k in steps {
+            let (_, h) = match f.advance(parent, &[], from, k) {
+                Ok(v) => v,
+                Err(e) => {
+                    println!("respawn at tick {}: advance by {} from {} failed: {}", rt, k, from, e);
+                    break;
+                }
+            };
+            let (_, sim_ms, race_start, b) = f.node_clock(h).ok_or("no node")?;
+            let b = b.ok_or("node without a boundary")? as i64;
+            let derived = if sim_ms < race_start { 0 } else { (sim_ms as i64 - race_start as i64 - tape.start_offset_ms as i64) / 10 };
+            *residuals.entry(b - derived).or_insert(0) += 1;
+            in_windows += 1;
+            if b - derived != 0 {
+                println!("respawn at tick {}: node at boundary {} derived {} -> residual {}", rt, b, derived, b - derived);
+            }
+            if parent != ROOT {
+                f.release(parent);
+            }
+            parent = h;
+            from = b as usize;
+        }
+        if parent != ROOT {
+            f.release(parent);
+        }
+    }
+    if !respawn_ticks.is_empty() {
+        println!("\nrespawns in the tape: {} ({} after the checkpoint); {} nodes planted inside and just past their windows", respawn_ticks.len(), respawn_ticks.iter().filter(|&&t| t > root_b + 1).count(), in_windows);
+    }
+    println!("\nresidual boundary - (sim_ms - race_start - start_offset)/10 over {} nodes:", residuals.values().sum::<usize>());
+    for (r, n) in &residuals {
+        println!("  {:>6}: {}", r, n);
+    }
+    if residuals.len() == 1 {
+        println!("ONE constant on every node: the clock says where the boundary is.");
+    } else {
+        println!("{} distinct residuals: the clock alone does not give the boundary here.", residuals.len());
+    }
+    Ok(())
+}
+/// Rewrite a container's input tape with a VARIED steer channel, in place of
+/// its own.
+///
+/// # Why this is a command and not a shell loop
+///
+/// The synthesized rung-0 container carries a constant tape — full gas, steer 0
+/// for every tick — which is the right thing for a container whose job is to
+/// prove the format. It is the wrong thing to fork on: **the shim finds the
+/// engine's decoded input array by searching its own address space for the
+/// reference's steer sequence as f32 at stride 32.** A constant channel gives
+/// that search nothing to lock onto — `write_key` looks for the most
+/// distinctive 24-tick window and there is none — so the locate either fails
+/// outright or matches the first stretch of zeroes it meets, which is worse: a
+/// base that is not the input array, in a mechanism whose whole job is to
+/// rewrite records at that base.
+///
+/// So the tape gets varied before anything forks on it. Doing it with a
+/// sequence of `ghost tape set` calls would be a shell pipeline standing in for
+/// a tool; this is the tool.
+///
+/// The steer values walk a coarse ladder — the same alphabet the explorer will
+/// use — rather than being uniform noise, so the tape is also a plausible
+/// shape of thing to branch from.
+pub fn tape_vary(tape: &Tape, out: &Path, seed: u64, amp: i32) -> Result<(), String> {
+    // The codec's own control, first: if the decode lost something, every
+    // candidate written from this tape carries the loss and every comparison
+    // between them still agrees.
+    tape.codec_is_lossless()?;
+    let n = tape.n();
+    let mut rng = Rng::new(seed);
+    let (mut st, mut ac, mut br) = (tape.steer.clone(), tape.accel.clone(), tape.brake.clone());
+    if amp > 0 {
+        // GENTLE. Steer jitters within +-amp, one value per tick, full gas, no
+        // brake. Two requirements pull in opposite directions and this is where
+        // they meet:
+        //
+        //  * the shim needs a DISTINCTIVE steer channel to find the input array
+        //    at all (see below), which wants variety;
+        //  * the run has to LAST, because the engine stops simulating when the
+        //    car's run ends -- and a coarse ladder drives it off the track in
+        //    about two and a half seconds, which leaves a branch sweep no room.
+        //
+        // A small jitter satisfies both: 2*amp+1 distinct byte values, and a
+        // car going essentially straight.
+        for t in 0..n {
+            let d = rng.below((2 * amp + 1) as usize) as i32 - amp;
+            st[t] = (d as i8) as u8;
+            ac[t] = 1;
+            br[t] = 0;
+        }
+    } else {
+        // COARSE: the macro alphabet the explorer will use, held for a few
+        // ticks at a time. A plausible shape of thing to branch from, and it
+        // does not last.
+        let mut t = 0usize;
+        while t < n {
+            let (s, g, b) = macro_action(&mut rng);
+            let k = 4 + rng.below(12);
+            for u in t..(t + k).min(n) {
+                st[u] = s;
+                ac[u] = g;
+                br[u] = b;
+            }
+            t += k;
+        }
+    }
+    tape.write_candidate(&st, &ac, &br, out)?;
+    let distinct = {
+        let mut seen = [false; 256];
+        let mut d = 0;
+        for v in &st {
+            if !seen[*v as usize] {
+                seen[*v as usize] = true;
+                d += 1;
+            }
+        }
+        d
+    };
+    println!(
+        "wrote {} -- {} ticks, {} distinct steer values, amp {}",
+        out.display(),
+        n,
+        distinct,
+        amp
+    );
+    if distinct < 4 {
+        return Err(format!(
+            "only {} distinct steer values: the shim's input-array search would have nothing to \
+             lock onto, and a locate that matches the wrong thing is worse than one that fails",
+            distinct
+        ));
     }
     Ok(())
 }

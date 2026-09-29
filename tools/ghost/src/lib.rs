@@ -20,13 +20,14 @@
 //! ```
 
 pub mod census;
+pub mod wordcensus;
 pub mod cli;
 pub mod declare;
+pub mod validation;
 pub mod engine;
 pub mod finish;
 pub mod hdr;
 pub mod ident;
-pub mod lcp;
 pub mod oracle;
 pub mod phase;
 pub mod record;
@@ -35,10 +36,8 @@ pub mod roundtrip;
 pub mod script;
 pub mod selftest;
 pub mod splice;
-pub mod statik;
 pub mod synth;
 pub mod trim;
-pub mod unwrap;
 pub mod verify;
 
 pub use gbx::container::{secs, Container};

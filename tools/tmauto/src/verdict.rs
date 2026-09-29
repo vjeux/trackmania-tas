@@ -63,7 +63,13 @@ pub enum Score {
 pub enum Verdict {
     /// The car crossed the finish line, at `ms` milliseconds.
     Finish { ms: u32 },
-    /// The car did not finish, having collected `cps` checkpoints.
+    /// The car did not finish. `cps` is what the server PRINTED, and the
+    /// server prints a count only when it is at least 2 ("wrong simu, but
+    /// reached some checkpoints (n out of m)"); a bare "wrong simu" is 0 OR 1
+    /// checkpoint, and arrives here as `cps: 0`. Measured 2026-09-06 on the
+    /// WR tape of Summer 2026 - 01 cut and braked at 11 points: every cut past
+    /// CP1 and before CP2 reads bare "wrong simu"; from CP2 on the count is
+    /// printed. Use `Answer::cps_reported` before reading a 0 as a zero.
     Dnf { cps: u32 },
 }
 

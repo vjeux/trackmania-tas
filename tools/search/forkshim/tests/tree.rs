@@ -33,7 +33,13 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 const TICKS: usize = 3000;
-const PER_TICK: usize = 255;
+
+/// The clock value at which a `shimhost` run reaches tape tick `t`. `shimhost`
+/// starts its race at the same place the engine does, so this is the driver's
+/// own conversion and not a second copy of it.
+fn ckpt(t: usize) -> u64 {
+    forkoracle::clock::ckpt_for_tick(t as i64, 0)
+}
 
 fn shim_path() -> PathBuf {
     // The test binary lives in target/<profile>/deps/; the cdylib is one up.
@@ -96,7 +102,7 @@ struct Host {
     steer: Vec<u8>,
 }
 
-/// Start `shimhost` under the shim, stopped at `ckpt` lroundf calls.
+/// Start `shimhost` under the shim, stopped at clock value `ckpt`.
 fn start(tag: &str, ckpt: u64) -> Host {
     let dir = std::env::temp_dir().join(format!("fkshim-tree-{}-{}", tag, std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -106,7 +112,11 @@ fn start(tag: &str, ckpt: u64) -> Host {
     write_key(&key, &steer);
 
     let mut c = Command::new(env!("CARGO_BIN_EXE_shimhost"));
-    c.args([TICKS.to_string(), PER_TICK.to_string()])
+    c.args([TICKS.to_string()])
+        // shimhost has no engine tick function to hook, so it drives the
+        // shim's clock through `fkshim_tick`. This is the only licence the
+        // shim accepts for running without a hook.
+        .env("FKSHIM_TEST_HOST", "1")
         .current_dir(&dir)
         .stdin(Stdio::null())
         .stdout(Stdio::from(std::fs::File::create(dir.join("stdout.log")).unwrap()));
@@ -135,13 +145,14 @@ fn branch_req<'a>(sock: &'a str, from: usize, recs: &'a [Rec], k: u64) -> Branch
     BranchReq {
         from,
         recs,
-        stop_after_lroundf: (k * PER_TICK as u64).max(1),
+        stop_after: k.max(1),
         sock,
         trace_path: "",
         segs: &[],
         sample_stride: 1,
         sample_max: 0,
         key: (0, 1),
+        watched: false,
     }
 }
 
@@ -150,14 +161,13 @@ fn branch_req<'a>(sock: &'a str, from: usize, recs: &'a [Rec], k: u64) -> Branch
 /// anything.
 #[test]
 fn the_host_reaches_a_checkpoint_and_can_be_probed() {
-    let mut h = start("probe", (500 * PER_TICK) as u64);
+    let mut h = start("probe", ckpt(500));
     assert_ne!(h.srv.base, 0, "the shim did not find the input array");
     let p = h.srv.probe_tick().expect("the page-fault probe must answer");
-    assert!(
-        (495..=505).contains(&p),
-        "probe reported tick {}, which is nowhere near the tick the clock stopped in",
-        p
-    );
+    // EXACT, not "nowhere near": the host stops at the START of tick 500 and
+    // has finished record 499. A range here would hide the off-by-one the
+    // boundary rule depends on.
+    assert_eq!(p, 500, "the probe must name the first record the host has NOT consumed");
 }
 
 /// **THE TWO-SIDED CONTROL ON THE FORWARD-ONLY RULE, with a known answer.**
@@ -169,15 +179,23 @@ fn the_host_reaches_a_checkpoint_and_can_be_probed() {
 /// the first.
 #[test]
 fn a_write_above_the_boundary_takes_and_a_write_below_it_is_silently_dropped() {
-    let mut h = start("bothsides", (500 * PER_TICK) as u64);
+    let mut h = start("bothsides", ckpt(500));
     let p = h.srv.probe_tick().unwrap();
-    let base = verdict(&h.srv.run(p + 1, &recs(&h.steer, p + 1)))
+    let base = verdict(&h.srv.run(p, &recs(&h.steer, p)))
         .expect("the identity resume must produce a verdict");
+
+    // AT the boundary: the record the host is ABOUT to read. This is the tick
+    // the old, record-misaligned probe reported as already consumed, so it is
+    // the one worth testing by itself.
+    let mut at = h.steer.clone();
+    at[p] ^= 0x55;
+    let vat = verdict(&h.srv.run(p, &recs(&at, p))).unwrap();
+    assert_ne!(vat, base, "a patch AT the boundary did not change the verdict");
 
     // ABOVE: change one tick the host has not read yet.
     let mut above = h.steer.clone();
     above[p + 5] ^= 0x55;
-    let va = verdict(&h.srv.run(p + 1, &recs(&above, p + 1))).unwrap();
+    let va = verdict(&h.srv.run(p, &recs(&above, p))).unwrap();
     assert_ne!(va, base, "a patch ABOVE the boundary did not change the verdict");
 
     // BELOW: the same change, at a tick already consumed.
@@ -195,7 +213,7 @@ fn a_write_above_the_boundary_takes_and_a_write_below_it_is_silently_dropped() {
 /// point on fresh fds.
 #[test]
 fn a_branch_child_re_enters_the_fork_server_as_a_new_node() {
-    let mut h = start("branch", (500 * PER_TICK) as u64);
+    let mut h = start("branch", ckpt(500));
     let p0 = h.srv.probe_tick().unwrap();
     let mut tree = Tree::new(&h.dir).unwrap();
     let sock = tree.sock_path();
@@ -220,10 +238,12 @@ fn a_branch_child_re_enters_the_fork_server_as_a_new_node() {
 }
 
 /// The refusal fires on a real node, not just in a unit test with a fake
-/// socket.
+/// socket -- and it fires BELOW the boundary, while a write AT it is accepted
+/// and takes effect. Both halves, because a node that refused everything would
+/// pass the first on its own.
 #[test]
-fn a_live_node_refuses_a_write_at_or_below_its_own_boundary() {
-    let mut h = start("refuse", (500 * PER_TICK) as u64);
+fn a_live_node_refuses_a_write_below_its_own_boundary_and_accepts_one_at_it() {
+    let mut h = start("refuse", ckpt(500));
     h.srv.probe_tick().unwrap();
     let mut tree = Tree::new(&h.dir).unwrap();
     let sock = tree.sock_path();
@@ -231,11 +251,18 @@ fn a_live_node_refuses_a_write_at_or_below_its_own_boundary() {
     let mut node = tree.accept(20_000).unwrap();
     let p = node.probe().unwrap();
 
-    let r = node.run(p, &recs(&h.steer, p));
+    let r = node.run(p - 1, &recs(&h.steer, p - 1));
     assert!(
         r.unwrap_err().contains("FORWARD-ONLY VIOLATION"),
-        "a node accepted a write at its own boundary"
+        "a node accepted a write below its own boundary"
     );
+    // AT the boundary: allowed, and it must actually change the answer.
+    let idn = verdict(&node.run(p, &recs(&h.steer, p)).expect("a write AT the boundary was refused"))
+        .expect("verdict");
+    let mut at = h.steer.clone();
+    at[p] ^= 0x55;
+    let vat = verdict(&node.run(p, &recs(&at, p)).expect("a write AT the boundary was refused")).unwrap();
+    assert_ne!(vat, idn, "a write AT the boundary did not change the verdict");
     let r = node.branch(&branch_req(&sock, p - 10, &recs(&h.steer, p - 10), 5));
     assert!(r.unwrap_err().contains("FORWARD-ONLY VIOLATION"));
     // ...and the escape hatch the negative control needs still works, so the
@@ -257,7 +284,7 @@ fn a_live_node_refuses_a_write_at_or_below_its_own_boundary() {
 /// the array holds the moment a generation patches anything.
 fn descend_and_compare(d: usize) {
     let tag = format!("depth{}", d);
-    let mut h = start(&tag, (400 * PER_TICK) as u64);
+    let mut h = start(&tag, ckpt(400));
     let p0 = h.srv.probe_tick().unwrap();
     let mut tree = Tree::new(&h.dir).unwrap();
     let sock = tree.sock_path();
@@ -329,7 +356,7 @@ fn fifty_generations_produce_the_same_tape_as_a_flat_run() {
 /// between a search and that.
 #[test]
 fn releasing_a_node_ends_its_process() {
-    let mut h = start("reap", (500 * PER_TICK) as u64);
+    let mut h = start("reap", ckpt(500));
     h.srv.probe_tick().unwrap();
     let mut tree = Tree::new(&h.dir).unwrap();
     let sock = tree.sock_path();
