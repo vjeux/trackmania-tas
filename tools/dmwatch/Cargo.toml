@@ -1,0 +1,8 @@
+[package]
+name = "dmwatch"
+version = "0.1.0"
+edition = "2021"
+description = "Discord DM/channel watch for the Altered U10S cron: `dmwatch read CHAN SINCE [LIMIT]` prints whole messages newer than SINCE, skipping our own '-- ai' posts. Replaces the deleted shoot/hunt/dmread.py (2026-09-29)."
+
+[dependencies]
+serde_json = "1"
