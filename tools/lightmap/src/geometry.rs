@@ -506,7 +506,7 @@ pub fn geom_from_solid2_ext(s2: &mapgeom::static_item::solid2::CPlugSolid2Model,
     g.lights = solid2_lights(s2, ent_pose);
     if std::env::var_os("LMTOOL_MAT_DEBUG").is_some() {
         eprintln!("solid2: {} materials (deprec {}), {} custom materials, folder {:?}, {} shaded geoms, {} custom material ids", s2.materials.len(), s2.materials_deprec, s2.custom_materials.len(), s2.materials_folder, s2.shaded_geoms.len(), s2.material_ids.len());
-        for (i, cm) in s2.custom_materials.iter().enumerate() { eprintln!("  custom[{i}] {:?} → link {:?}", cm.name, cm.inst().and_then(|m| m.link())); }
+        for (i, cm) in s2.custom_materials.iter().enumerate() { eprintln!("  custom[{i}] {:?} → link {:?}{}", cm.name, cm.inst().and_then(|m| m.link()), cm.inst().and_then(|m| m.main.as_ref()).map(|mm| format!("; main: name {:?} model {:?} game-material {} base_texture {:?} user_textures {:?}", mm.material_name, mm.model, mm.is_using_game_material, mm.base_texture, mm.user_textures.iter().map(|t| (t.u01, t.texture.clone())).collect::<Vec<_>>())).unwrap_or_default()); }
         for (i, mr) in s2.materials.iter().enumerate() {
             let kind = match mr.inline.as_deref() { Some(Node::Material(m)) => format!("Material link {:?} name {:?}", m.link(), m.main.as_ref().map(|x| format!("{:?}", x.material_name))), Some(Node::OldMaterial(_)) => "OldMaterial".into(), Some(_) => "other node".into(), None => "by index".into() };
             eprintln!("  material[{i}] index {} → {kind}", mr.index);
