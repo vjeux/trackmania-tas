@@ -266,6 +266,17 @@ pub fn cmd(a: &[String]) {
             if let Some(v) = flag(a, "--os") { let x: u32 = v.parse().unwrap_or_else(|_| die("--os N")); mid[4..8].copy_from_slice(&x.to_le_bytes()); }
             if let Some(v) = flag(a, "--cpu") { let x: u32 = v.parse().unwrap_or_else(|_| die("--cpu N")); mid[8..12].copy_from_slice(&x.to_le_bytes()); }
             if let Some(v) = flag(a, "--walltime") { let x: u32 = v.parse().unwrap_or_else(|_| die("--walltime N")); mid[12..16].copy_from_slice(&x.to_le_bytes()); mid[16..20].copy_from_slice(&(x + 35).to_le_bytes()); }
+            // --walltime-span S: keep the START and move the END, so the pair spans
+            // the run. THE SERVER CHECKS IT: a 44-second race whose block says the
+            // wall clock advanced 5 seconds is refused with "wrong simu ...
+            // unexcepted walltime (5s)" -- which reads exactly like a physics
+            // mismatch and is not one (2026-09-29, a carrier's block copied from a
+            // 5-second client run).
+            if let Some(v) = flag(a, "--walltime-span") {
+                let sp: u32 = v.parse().unwrap_or_else(|_| die("--walltime-span SECONDS"));
+                let st = u32::from_le_bytes(mid[12..16].try_into().unwrap());
+                mid[16..20].copy_from_slice(&(st + sp).to_le_bytes());
+            }
             if let Some(v) = flag(a, "--seed") { let x: u32 = v.parse().unwrap_or_else(|_| die("--seed N")); rest3[4..8].copy_from_slice(&x.to_le_bytes()); }
             if let Some(v) = flag(a, "--u04") { let x: u32 = v.parse().unwrap_or_else(|_| die("--u04 N")); rest3[8..12].copy_from_slice(&x.to_le_bytes()); }
             if let Some(v) = flag(a, "--exe-version") { exe = v.to_string(); }
