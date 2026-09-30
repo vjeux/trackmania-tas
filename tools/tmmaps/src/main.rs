@@ -796,6 +796,25 @@ fn main() {
                     appended.push(pts.len() - 1);
                 }
             }
+            // --idx2 A..B: a SECOND stretch of the same path, appended after the
+            // --append points (a shortcut leaves the path and rejoins it later:
+            // the lap line is [main path to the branch] + [the shortcut] + [main
+            // path from the rejoin to the finish]).
+            if let Some(r) = flag(&args, "--idx2") {
+                let (a, b) = r.split_once("..").expect("--idx2 A..B");
+                let (j0, j1) = (a.parse::<usize>().unwrap_or(0), b.parse::<usize>().unwrap_or(usize::MAX));
+                for line in text.lines().skip(1) {
+                    let f: Vec<&str> = line.split(',').collect();
+                    if f.len() < 6 || f[0] != path_name {
+                        continue;
+                    }
+                    let idx: usize = f[1].parse().unwrap_or(usize::MAX);
+                    if idx < j0 || idx > j1 {
+                        continue;
+                    }
+                    pts.push([f[3].parse().unwrap(), f[4].parse().unwrap(), f[5].parse().unwrap()]);
+                }
+            }
             let mut s = vec![0.0f64; pts.len()];
             for i in 1..pts.len() {
                 let (a, b) = (pts[i - 1], pts[i]);
@@ -852,6 +871,101 @@ fn main() {
                     );
                 }
             }
+        }
+        "centreline" => {
+            // A `tmreach lap` CENTRELINE from a reference line CSV (`tmmaps pathline`)
+            // plus the map's own gate positions: {pts, s, half_width, speed_hint,
+            // order_groups, segments[{i0,i1,to_pos}]}. The route-guided driver follows
+            // this instead of a chain of hand-placed gate boxes -- which is what a
+            // WHOLE LAP needs (the chain was built for 5-second stretches).
+            let csv = PathBuf::from(&args[2]);
+            let out = PathBuf::from(flag(&args, "--out").expect("--out F.json"));
+            let map = PathBuf::from(flag(&args, "--map").expect("--map MAP.Map.Gbx"));
+            let hw: f64 = flag(&args, "--half-width").map(|s| s.parse().unwrap()).unwrap_or(9.0);
+            let speed: f64 = flag(&args, "--speed-hint").map(|s| s.parse().unwrap()).unwrap_or(40.0);
+            let text = std::fs::read_to_string(&csv).unwrap_or_else(|e| panic!("{}: {e}", csv.display()));
+            let mut pts: Vec<[f64; 3]> = Vec::new();
+            for line in text.lines().skip(1) {
+                let f: Vec<&str> = line.split(',').collect();
+                if f.len() < 4 {
+                    continue;
+                }
+                let p: [f64; 3] = [f[1].parse().unwrap(), f[2].parse().unwrap(), f[3].parse().unwrap()];
+                if pts.last().map(|q: &[f64; 3]| (q[0] - p[0]).hypot(q[2] - p[2]) < 1.0).unwrap_or(false) {
+                    continue;
+                }
+                pts.push(p);
+            }
+            assert!(pts.len() >= 2, "{}: fewer than two points", csv.display());
+            let mut s_arr = vec![0.0f64; pts.len()];
+            for i in 1..pts.len() {
+                let (a, b) = (pts[i - 1], pts[i]);
+                s_arr[i] = s_arr[i - 1] + ((b[0] - a[0]).powi(2) + (b[2] - a[2]).powi(2)).sqrt();
+            }
+            // the map's waypoints, in CREDIT order: group ids (a LinkedCheckpoint group is
+            // one credit), each mapped to the nearest centreline point
+            let m = map::MapFile::load(&map);
+            let wps = m.waypoints();
+            let mut groups: Vec<(u32, [f64; 3])> = Vec::new();
+            for w in &wps {
+                if w.tag == "Checkpoint" || w.tag == "LinkedCheckpoint" {
+                    let Some(p) = w.pos else { continue };
+                    let g = w.order as u32;
+                    if let Some(e) = groups.iter_mut().find(|(id, _)| *id == g) {
+                        // a linked group: keep the member nearest the line
+                        let d_new = pts.iter().map(|q| (q[0] - p[0] as f64).hypot(q[2] - p[2] as f64)).fold(f64::INFINITY, f64::min);
+                        let d_old = pts.iter().map(|q| (q[0] - e.1[0]).hypot(q[2] - e.1[2])).fold(f64::INFINITY, f64::min);
+                        if d_new < d_old {
+                            e.1 = [p[0] as f64, p[1] as f64, p[2] as f64];
+                        }
+                    } else {
+                        groups.push((g, [p[0] as f64, p[1] as f64, p[2] as f64]));
+                    }
+                }
+            }
+            // order the groups ALONG THE LINE, then the finish (the start line) last
+            let along = |p: [f64; 3]| -> (f64, usize) {
+                let mut best = (f64::INFINITY, 0usize);
+                for (i, q) in pts.iter().enumerate() {
+                    let d = (q[0] - p[0]).hypot(q[2] - p[2]);
+                    if d < best.0 {
+                        best = (d, i);
+                    }
+                }
+                (s_arr[best.1], best.1)
+            };
+            let mut ordered: Vec<(f64, u32, [f64; 3])> = groups.iter().map(|(g, p)| { let (sv, _) = along(*p); (sv, *g, *p) }).collect();
+            ordered.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+            // the finish gate: the StartFinish / Goal placement
+            let fin = wps.iter().find(|w| w.tag == "Goal" || w.tag == "Finish" || w.tag == "StartFinish").and_then(|w| w.pos);
+            let mut segs: Vec<String> = Vec::new();
+            let mut ids: Vec<String> = Vec::new();
+            let mut i0 = 0usize;
+            for (sv, g, p) in &ordered {
+                let (_, idx) = along(*p);
+                if idx <= i0 {
+                    continue;
+                }
+                segs.push(format!("{{\"i0\":{},\"i1\":{},\"to_pos\":[{:.2},{:.2},{:.2}]}}", i0, idx, p[0], p[1], p[2]));
+                ids.push(g.to_string());
+                i0 = idx;
+                let _ = sv;
+            }
+            if let Some(f) = fin {
+                segs.push(format!("{{\"i0\":{},\"i1\":{},\"to_pos\":[{:.2},{:.2},{:.2}]}}", i0, pts.len() - 1, f[0], f[1], f[2]));
+                ids.push("0".to_string());
+            }
+            let j = format!(
+                "{{\"pts\":[{}],\"s\":[{}],\"half_width\":[{}],\"speed_hint\":[{}],\"order_groups\":[{}],\"segments\":[{}]}}",
+                pts.iter().map(|p| format!("[{:.2},{:.2},{:.2}]", p[0], p[1], p[2])).collect::<Vec<_>>().join(","),
+                s_arr.iter().map(|x| format!("{:.2}", x)).collect::<Vec<_>>().join(","),
+                vec![format!("{:.1}", hw); pts.len()].join(","),
+                vec![format!("{:.1}", speed); pts.len()].join(","),
+                ids.join(","),
+                segs.join(",")
+            );
+            std::fs::write(&out, &j).unwrap_or_else(|e| panic!("{}: {e}", out.display()));
+            println!("wrote {} : {} points, {:.0} m, {} ordered legs (groups {}), half-width {} m, speed hint {} m/s", out.display(), pts.len(), s_arr.last().unwrap(), segs.len(), ids.join(" "), hw, speed);
         }
         "setlaps" => {
             // The LAP COUNT of a multilap map (chunk 0x03043018: u32 isLapRace,
