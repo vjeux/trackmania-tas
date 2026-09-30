@@ -25,6 +25,35 @@ use crate::gpufmt::{Quant, Rounding};
 use crate::passdump::{ChartRect, Entry, Frustum, Manifest};
 use std::collections::HashMap;
 
+/// Python's `json.dump` writes the bare tokens `NaN`, `Infinity`, `-Infinity` for non-finite floats (a cbuffer word the
+/// game left unwritten: the g23 pre-pass frame's GbxVTexCoordToLightGenP carries 1 351 of them, 2026-09-29), which
+/// serde_json refuses. Rewrite them to `null` OUTSIDE strings; everything else is left byte for byte.
+pub fn nan_free_json(txt: &str) -> String {
+    let b = txt.as_bytes();
+    let mut out = String::with_capacity(txt.len());
+    let (mut i, mut in_str, mut esc) = (0usize, false, false);
+    while i < b.len() {
+        let c = b[i];
+        if in_str {
+            out.push(c as char);
+            if esc { esc = false; } else if c == b'\\' { esc = true; } else if c == b'"' { in_str = false; }
+            i += 1;
+            continue;
+        }
+        if c == b'"' { in_str = true; out.push('"'); i += 1; continue; }
+        let rest = &txt[i..];
+        let tok = if rest.starts_with("NaN") { Some(3) } else if rest.starts_with("Infinity") { Some(8) } else if rest.starts_with("-Infinity") { Some(9) } else { None };
+        if let Some(n) = tok {
+            out.push_str("null");
+            i += n;
+            continue;
+        }
+        out.push(c as char);
+        i += 1;
+    }
+    out
+}
+
 /// Close the brackets of a JSON text cut off mid-write (the capture writer streams its manifest): the
 /// depth is scanned outside strings, a dangling comma dropped, the missing closers appended.
 pub fn repair_truncated_json(txt: &str) -> String {

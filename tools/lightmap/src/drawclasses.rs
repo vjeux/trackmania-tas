@@ -22,7 +22,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let show_eids = args.iter().any(|x| x == "--eids");
     let t0 = std::time::Instant::now();
     let bytes = crate::passdiff::read_entry_bytes(&root, &format!("logs/draws-frame{frame}.json"))?;
-    let draws: serde_json::Value = serde_json::from_slice(&bytes).or_else(|_| serde_json::from_str(&crate::passdiff::repair_truncated_json(&String::from_utf8_lossy(&bytes)))).map_err(|e| format!("draws json: {e}"))?;
+    let draws: serde_json::Value = serde_json::from_slice(&bytes)
+        .or_else(|_| serde_json::from_str(&crate::passdiff::nan_free_json(&String::from_utf8_lossy(&bytes))))
+        .or_else(|_| serde_json::from_str(&crate::passdiff::repair_truncated_json(&crate::passdiff::nan_free_json(&String::from_utf8_lossy(&bytes)))))
+        .map_err(|e| format!("draws json: {e}"))?;
     let all = draws.as_array().ok_or("draws: not an array")?;
     eprintln!("{} entries parsed in {:.1} s", all.len(), t0.elapsed().as_secs_f32());
     let mut classes: BTreeMap<String, Class> = BTreeMap::new();
