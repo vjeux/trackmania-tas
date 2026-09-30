@@ -18,6 +18,7 @@
 mod agent;
 mod client;
 mod config;
+mod interop;
 mod proto;
 mod relay;
 mod transport;
@@ -283,6 +284,6 @@ fn run_agent(argv: Vec<String>) -> Result<i32> {
         }
     }
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
-    rt.block_on(agent::run(cfg, agent::AgentOpts { name, cwd, shell }))?;
+    rt.block_on(agent::run(cfg, agent::AgentOpts { name, cwd, shell, child_path: None }))?;
     Ok(0)
 }

@@ -51,6 +51,29 @@ Config is `~/.whitestick/config.toml` (`relay`, `token`, `instance`, optional
 `fwdproxy:8080` wherever that name resolves, so the same binary and config
 work on any devserver or OD — no per-box setup like `.navi/credentials.json`.
 
+## The WSL interop guard (box side)
+
+On the box, every new `wsl.exe` session races systemd-binfmt over its drop-in
+and the binfmt_misc entry `WSLInterop` ends up unregistered (measured
+2026-09-29): from then on nothing can launch a Windows `.exe` from WSL —
+`cmd.exe`, `wslpath`, the game — until the entry is written back, which needs
+root. The interop socket itself survives, so `/init` (the interpreter binfmt
+would have used) still launches Windows programs when called directly:
+`/init /mnt/c/Windows/System32/wsl.exe wsl.exe -d Ubuntu -u root -- sh -c '…'`
+opens a root shell in the same distro without binfmt (the `wsl.exe` after the
+path is argv[0]; `/init` does not add it).
+
+`whitestick agent` does that itself, as a background task (`interop.rs`):
+every 20 s it checks `/proc/sys/fs/binfmt_misc/WSLInterop` and, when missing,
+re-registers `:WSLInterop:M::MZ::/init:PF` through that root shell, under a
+30 s timeout so a hung interop call can never hang the agent. Log lines are
+`interop guard: …` in `~/.whitestick/agent.log`, with a running count of fixes
+and failures. It only runs under WSL (`/proc/version` says microsoft, or
+`WSL_INTEROP` is set); `interop_guard = false` under `[agent]` turns it off.
+The agent also appends `/mnt/c/Windows/System32`, `/mnt/c/Windows` and the
+PowerShell directory to its commands' PATH when they are missing, so
+`cmd.exe` is found however the agent was started.
+
 Latency is one WebSocket handshake through fwdproxy plus the relay hop
 (~0.65 s to start a command against the box today), then the network's speed.
 The old bridge's random 15 s stalls and its 900 KB command / 5 MB reply
@@ -112,6 +135,7 @@ command costs one extra file write.
 | `CaUsedAsEndEntity` | a certificate made with openssl's `-x509` default (CA:TRUE). Regenerate with the extensions `install-relay-vps.sh` passes. |
 | `went offline mid-command` | the agent's socket dropped while a command ran; the command was killed with its group. Rerun. |
 | command exits but `whitestick` returns 10 s later | something the command started kept stdout open (a background job without redirection). Redirect or `setsid` it. |
+| `cmd.exe: Exec format error` (or any `.exe`) from a command on the box | binfmt_misc lost its `WSLInterop` entry (a new `wsl.exe` session races systemd-binfmt). The agent's interop guard re-registers it within 20 s — `grep 'interop guard' ~/.whitestick/agent.log` on the box says when and how often; `fix #N could not run /init` or `timed out` means the interop socket itself is gone and only a fresh `wsl.exe` session (the Startup `.vbs` loop restarts the agent in one) brings it back. |
 
 The relay's own view: `whitestick status` (agent connected since when, live
 sessions). Cloudflare dashboard → the Worker → Logs shows edge errors.
@@ -134,7 +158,8 @@ tooling, nothing else.
 
 - `tools/whitestick` — the one binary: client (default), `agent`, `status`.
   `proto.rs` is the wire format, `transport.rs` the proxy/TLS/WebSocket path,
-  `agent.rs` and `client.rs` the two ends.
+  `agent.rs` and `client.rs` the two ends, `interop.rs` the agent's WSL
+  interop guard (unit-tested decision logic; `cargo test -p whitestick`).
 - `tools/whitestick/src/relay.rs` — `whitestick relay`, the self-hosted
   rendezvous point (TLS, one process, no dependencies on the box it runs on).
 - `tools/whitestick-relay` — the same thing as a Cloudflare Worker
