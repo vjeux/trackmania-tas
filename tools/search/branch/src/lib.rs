@@ -32,7 +32,7 @@
 //!
 //! Three consequences are baked in here and none of them are negotiable:
 //!
-//! * **Every node probes its own boundary.** The `lroundf` checkpoint is not a
+//! * **Every node probes its own boundary.** The checkpoint is not a
 //!   fixed simulation point — under load it moves in whole ~62-call chunks, and
 //!   a real run had 135 of 150 workers stop past the master's single
 //!   calibration. A boundary inherited from a parent, a sibling or a master is
@@ -40,9 +40,9 @@
 //! * **A failed probe is a hard abort.** [`Forest::advance`] destroys a node
 //!   whose probe fails rather than continuing with an estimate. A fallback here
 //!   is how a plausible number 2–3 ms off gets banked.
-//! * **Calibration may only move the floor LATER.** `max(calibrated, probe + 1)`
-//!   and never `min`; `probe + 1` because tick `p` is the record the engine is
-//!   about to read and is already partly consumed. Getting this backwards made
+//! * **Calibration may only move the floor LATER.** `max(calibrated, probe)`
+//!   and never `min`; the probe names the record the engine is about to read,
+//!   which is the first one it is safe to write. Getting this backwards made
 //!   23 of 100 candidates silently wrong on a re-verification that had passed
 //!   4700/4700 the first time.
 //!
@@ -62,15 +62,6 @@ use forkoracle::tree::{Node, Tree};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// ~`lroundf` calls per simulated 10 ms tick.
-///
-/// Measured at ~255 on this engine and used ONLY to choose how far a branch
-/// child runs before it stops. Nothing is ever labelled from it: where a child
-/// actually stopped is what its own probe says, and the two differ by up to a
-/// tick. This is the same discipline `session::clock_for_race_ms` states for
-/// the fitted clock line — an estimate is allowed to place a checkpoint and is
-/// never allowed to name one.
-pub const LROUNDF_PER_TICK: u64 = 255;
 
 /// A live paused simulation.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
@@ -110,6 +101,17 @@ pub struct ForkAnswer {
     pub raw: String,
 }
 
+/// What an `advance_or_end` produced.
+pub enum Advanced {
+    /// A new paused node, and the rows on the way to it.
+    Node(StateTrace, Handle),
+    /// The engine ENDED THE RUN inside the macro (the car left the world, the
+    /// validator declared the replay invalid, the declared time was reached):
+    /// the child exited instead of pausing. The rows it traced before that
+    /// are returned; there is no node.
+    RunEnded(StateTrace),
+}
+
 /// How a node writes its state trace, and where the car lives in its memory.
 #[derive(Clone, Debug)]
 pub struct TraceCfg {
@@ -120,7 +122,7 @@ pub struct TraceCfg {
     /// Where trace files go. One file per branch, named by pid, deleted when
     /// the node is dropped.
     pub dir: PathBuf,
-    /// `lroundf` calls between sample attempts. 1 catches every tick.
+    /// Ticks between sample attempts. 1 catches every tick.
     pub stride: u64,
     /// Cap on samples per branch, so a runaway child cannot fill a disk.
     pub max: u32,
@@ -135,12 +137,55 @@ struct Held {
 }
 
 /// The tree, and everything alive in it.
+/// WHERE A BRANCH'S TIME GOES (PERF.md §11): the four phases of `advance`,
+/// summed over every branch this forest made, in microseconds. `branch` is the
+/// request to the parent and its reply (the fork); `accept` is from that reply
+/// to the new node's hello (the child's setup, its ticks to the stop point,
+/// its socket, and the driver's own polling); `probe` is the new node's
+/// boundary probe; `trace` is reading the per-tick trace file back.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Timeline {
+    pub branches: u64,
+    pub branch_us: u64,
+    pub accept_us: u64,
+    pub probe_us: u64,
+    pub trace_us: u64,
+}
+
+impl std::fmt::Display for Timeline {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let n = self.branches.max(1) as f64 * 1000.0; // us -> ms per branch
+        write!(
+            f,
+            "{} branches: request+fork {:.2} ms | to the hello {:.2} ms | probe {:.2} ms | trace read {:.2} ms | total {:.2} ms each",
+            self.branches,
+            self.branch_us as f64 / n,
+            self.accept_us as f64 / n,
+            self.probe_us as f64 / n,
+            self.trace_us as f64 / n,
+            (self.branch_us + self.accept_us + self.probe_us + self.trace_us) as f64 / n
+        )
+    }
+}
+
+/// One node in this many gets the page-fault probe beside its clock boundary,
+/// and the two must agree (PERF.md §11).
+pub const PROBE_SAMPLE: u64 = 50;
+
 pub struct Forest {
     root: ForkServer,
     tree: Tree,
     cfg: Option<TraceCfg>,
     nodes: HashMap<Handle, Held>,
     next: u64,
+    timeline: Timeline,
+    /// The tape's start offset: the boundary of every node is
+    /// `record_read_at(sim_ms, race_start, start_offset_ms)` from its hello.
+    start_offset_ms: i32,
+    /// How many nodes the sampled probe has checked, and agreed on.
+    pub probes_checked: u64,
+    /// Sampled probes whose child died before answering (PROBE-EMPTY), skipped.
+    pub probes_empty: u64,
     /// The root's own probed boundary. Probed once, for the root, like any
     /// other node.
     root_boundary: Option<usize>,
@@ -154,11 +199,17 @@ impl Forest {
     ///
     /// `reference` is the tape the server is simulating, tick for tick. It is
     /// held so every answer can report how far the evaluated tape was from it.
+    ///
+    /// `start_offset_ms` is the tape's: every node's boundary is computed from
+    /// its own clock with it (`Node::clock_boundary`), and one node in
+    /// [`PROBE_SAMPLE`] is also page-fault probed; a disagreement is a hard
+    /// error from `advance`, never a number to pick between.
     pub fn new(
         root: ForkServer,
         work: &Path,
         reference: Vec<Rec>,
         cfg: Option<TraceCfg>,
+        start_offset_ms: i32,
     ) -> Result<Forest, String> {
         let tree = Tree::new(work)?;
         Ok(Forest {
@@ -167,30 +218,41 @@ impl Forest {
             cfg,
             nodes: HashMap::new(),
             next: 1,
+            timeline: Timeline::default(),
+            start_offset_ms,
+            probes_checked: 0,
+            probes_empty: 0,
             root_boundary: None,
             reference,
         })
     }
 
+    /// Where the time of every branch so far went.
+    pub fn timeline(&self) -> Timeline {
+        self.timeline
+    }
+
     /// Probe the root's own consumed boundary. Must be called before the first
     /// `advance` from `ROOT`.
     pub fn probe_root(&mut self) -> Result<usize, String> {
-        let t = self.root.probe_tick()?;
+        // The page-fault probe AND the clock, required to agree: the root is
+        // the first control point of the forest's boundaries.
+        let t = self.root.boundary_tick(self.start_offset_ms)?;
         self.root_boundary = Some(t);
         Ok(t)
     }
 
     /// The first tick it is safe to write at `h`.
     ///
-    /// `max(calibrated, probe + 1)` — calibration may only push it LATER.
+    /// `max(calibrated, probe)` — calibration may only push it LATER.
     pub fn floor(&self, h: Handle, calibrated: Option<usize>) -> Result<usize, String> {
         if h == ROOT {
             let p = self.root_boundary.ok_or(
                 "the root has not probed its own boundary -- call probe_root before writing",
             )?;
             return Ok(match calibrated {
-                Some(c) => c.max(p + 1),
-                None => p + 1,
+                Some(c) => c.max(p),
+                None => p,
             });
         }
         self.held(h)?.node.floor(calibrated)
@@ -207,7 +269,7 @@ impl Forest {
     /// point, with no inputs appended.
     ///
     /// It is `advance` with an empty macro, and it is honest about what that
-    /// means: the new node stops one `lroundf` call later than its parent, not
+    /// means: the new node stops one tick later than its parent, not
     /// at the identical instant, and it probes its own boundary like any other
     /// node. There is no cheaper way to duplicate a paused process, and
     /// pretending the copy is at the same tick is exactly the assumption that
@@ -233,6 +295,26 @@ impl Forest {
         from: usize,
         k_ticks: u64,
     ) -> Result<(StateTrace, Handle), String> {
+        match self.advance_or_end(h, inputs, from, k_ticks)? {
+            Advanced::Node(t, id) => Ok((t, id)),
+            Advanced::RunEnded(_) => Err(format!(
+                "the branch child exited before reaching its stop point: the engine ended the run \
+                 inside this macro (handle {:?}, from tick {})",
+                h, from
+            )),
+        }
+    }
+
+    /// [`Forest::advance`], reporting a run the ENGINE ended inside the macro as
+    /// [`Advanced::RunEnded`] (with the rows traced up to it) instead of an
+    /// error. `k_ticks` is exact under the tick clock.
+    pub fn advance_or_end(
+        &mut self,
+        h: Handle,
+        inputs: &[Rec],
+        from: usize,
+        k_ticks: u64,
+    ) -> Result<Advanced, String> {
         // THE FORWARD-ONLY REFUSAL. Checked here against the parent's own
         // probe, and again inside `tree::Node::branch` for a node, so a caller
         // reaching past this API still cannot get underneath it.
@@ -267,9 +349,9 @@ impl Forest {
         let req = BranchReq {
             from,
             recs: inputs,
-            // ~255 calls to the tick. Where the child ACTUALLY stops is what
-            // its probe says; this only decides roughly how far it goes.
-            stop_after_lroundf: (k_ticks * LROUNDF_PER_TICK).max(1),
+            // Ticks. Where the child ACTUALLY stops is still what its own probe
+            // says -- that is the control, and it is not optional.
+            stop_after: k_ticks.max(1),
             sock: &sock,
             trace_path: &tp,
             segs: &segs,
@@ -280,33 +362,119 @@ impl Forest {
             // whenever the car does not move -- a countdown, a crash, a respawn
             // -- and shifts everything after it.
             key: (0, (segs.iter().map(|s| s.1).sum::<u32>()).max(1)),
+            watched: false,
         };
 
-        let pid = match h {
-            ROOT => self.root.branch(&req)?,
-            _ => self.held_mut(h)?.node.branch(&req)?,
-        };
+        // Fork, accept, clock the boundary, sample-probe -- and fork AGAIN, up to
+        // three times, when a sampled probe child exits without faulting
+        // (`PROBE-EMPTY`, exit 0: the ~1-in-40 start-up flake, also seen on a
+        // node mid-episode). A node whose probe answered nothing is destroyed
+        // and the same fork is made from the same parent; its stop tick is the
+        // same by construction (the tick hook), so nothing about the episode
+        // changes but the process id.
+        let t0 = std::time::Instant::now();
+        let mut attempt = 0usize;
+        let (node, t1, t2, t3) = loop {
+            let pid = match h {
+                ROOT => self.root.branch(&req)?,
+                _ => self.held_mut(h)?.node.branch(&req)?,
+            };
+            let t1 = std::time::Instant::now();
 
-        let mut node = self.tree.accept(forkoracle::forksrv::frame_timeout_ms())?;
-        if node.pid != pid {
-            // A node is only the node you asked for if it says so itself. Two
-            // branches in flight on one server would otherwise be told apart by
-            // arrival order, which is the shape of every swapped-replay defect
-            // in this project.
-            node.destroy();
-            return Err(format!(
-                "branch mismatch: asked for pid {} and pid {} arrived on the socket",
-                pid, node.pid
-            ));
-        }
-        // EVERY NODE PROBES ITS OWN BOUNDARY, and a failed probe is a hard
-        // abort. Not "fall back to the parent's" -- that is the defect.
-        if let Err(e) = node.probe() {
-            let pid = node.pid;
-            node.destroy();
-            self.tree.reaped(pid);
-            return Err(format!("node {} could not probe its own boundary: {}", pid, e));
-        }
+            let mut node = match self.tree.accept_expecting(pid, forkoracle::forksrv::frame_timeout_ms())? {
+                Some(n) => n,
+                None => {
+                    // The engine ended the run inside this macro. Whatever the
+                    // child traced before it stopped simulating is real state;
+                    // the caller decides what an ended run means.
+                    let trace = if trace_path.as_os_str().is_empty() {
+                        Vec::new()
+                    } else {
+                        let t = self.read_trace(&trace_path).unwrap_or_default();
+                        let _ = std::fs::remove_file(&trace_path);
+                        t
+                    };
+                    return Ok(Advanced::RunEnded(trace));
+                }
+            };
+            let t2 = std::time::Instant::now();
+            let (node_sim_ms, node_race_start) = (node.sim_ms, node.race_start);
+            if node.pid != pid {
+                // A node is only the node you asked for if it says so itself. Two
+                // branches in flight on one server would otherwise be told apart by
+                // arrival order, which is the shape of every swapped-replay defect
+                // in this project.
+                node.destroy();
+                return Err(format!(
+                    "branch mismatch: asked for pid {} and pid {} arrived on the socket",
+                    pid, node.pid
+                ));
+            }
+            // EVERY NODE'S BOUNDARY IS ITS OWN: from the clock it reported in its
+            // hello (the engine's own rule, `record_read_at`), never inherited from
+            // a parent -- inheriting is the defect that produced 312 false
+            // finishes. One node in PROBE_SAMPLE is also page-fault probed, and a
+            // disagreement is a hard abort: not "fall back to the probe", not
+            // "prefer the clock" -- the two are measured from opposite sides and
+            // their disagreement means the hook or the record layout is not what
+            // TICKHOOK.md says.
+            let derived = node.adopt_clock_boundary(self.start_offset_ms);
+            // PAST THE TAPE the probe has nothing to measure: the engine reads its
+            // default record and the page-fault probe answers a record index that
+            // is not this node's boundary (measured: 1, 13, 65 on nodes coasted
+            // beyond the last record). The clock's answer stands alone there.
+            let past_tape = derived >= self.reference.len();
+            if self.timeline.branches % PROBE_SAMPLE == 0 && !past_tape {
+                match node.probe() {
+                    Ok(p) if p == derived => self.probes_checked += 1,
+                    Ok(p) => {
+                        let pid = node.pid;
+                        node.destroy();
+                        self.tree.reaped(pid);
+                        return Err(format!(
+                            "CLOCK / PROBE DISAGREEMENT on node {}: its hello says sim_ms {} race_start {} (record {} with start offset {}), the page-fault probe says it reads record {} next. Nothing this forest measures can be trusted until that is explained.",
+                            pid, node_sim_ms, node_race_start, derived, self.start_offset_ms, p
+                        ));
+                    }
+                    Err(e) if e.contains("ValidatedResult") => {
+                        // The probe child ran to the END without another input
+                        // read: every remaining record is already in the
+                        // engine's buffer (measured by the route GEN arm: paused
+                        // at 19.670 of a 19.798 run, 13 records left). The
+                        // clock's boundary stands; the node owns no writable
+                        // tick either way.
+                        node.assume_exhausted(self.reference.len());
+                    }
+                    Err(e) if e.contains("PROBE-EMPTY") && attempt < 1 => {
+                        let pid = node.pid;
+                        node.destroy();
+                        self.tree.reaped(pid);
+                        let _ = std::fs::remove_file(&trace_path);
+                        attempt += 1;
+                        continue;
+                    }
+                    Err(e) if e.contains("PROBE-EMPTY") => {
+                        // The probe child died before it could answer, twice, in
+                        // this process (the open ~1-in-40 flake: the child is gone
+                        // before its next tick, no fault, no signal, no exit()).
+                        // That is not a disagreement -- nothing was measured -- and
+                        // the boundary is the clock's: count it and go on. The
+                        // ROOT still needs a real answer (`probe_root`).
+                        self.probes_empty += 1;
+                        let _ = e;
+                    }
+                    Err(e) => {
+                        let pid = node.pid;
+                        node.destroy();
+                        self.tree.reaped(pid);
+                        return Err(format!("node {} could not probe its own boundary: {}", pid, e));
+                    }
+                }
+            }
+            let t3 = std::time::Instant::now();
+            break (node, t1, t2, t3);
+        };
+        let mut node = node;
 
         let mut written = match h {
             ROOT => Vec::new(),
@@ -325,9 +493,15 @@ impl Forest {
         } else {
             self.read_trace(&trace_path)?
         };
+        let t4 = std::time::Instant::now();
+        self.timeline.branches += 1;
+        self.timeline.branch_us += (t1 - t0).as_micros() as u64;
+        self.timeline.accept_us += (t2 - t1).as_micros() as u64;
+        self.timeline.probe_us += (t3 - t2).as_micros() as u64;
+        self.timeline.trace_us += (t4 - t3).as_micros() as u64;
 
         self.nodes.insert(id, Held { node, trace: trace_path, written });
-        Ok((trace, id))
+        Ok(Advanced::Node(trace, id))
     }
 
     /// **`finish(handle) -> the facts a Verdict is made of`** — fork a child
@@ -381,6 +555,25 @@ impl Forest {
         })
     }
 
+    /// Re-run a node's own boundary probe, and time it.
+    ///
+    /// [`Forest::advance`] already probes every node it creates, so this is not
+    /// needed for correctness — it exists so the rig can MEASURE what the probe
+    /// costs. The first version of that measurement timed [`Forest::floor`]
+    /// instead, which only reads the cached boundary: the column read 0.000 ms
+    /// for every row, which is a number reported for something the instrument
+    /// was not measuring.
+    pub fn reprobe(&mut self, h: Handle) -> Result<usize, String> {
+        match h {
+            ROOT => {
+                let t = self.root.probe_tick()?;
+                self.root_boundary = Some(t);
+                Ok(t)
+            }
+            _ => self.held_mut(h)?.node.probe(),
+        }
+    }
+
     /// Destroy a node and forget it.
     pub fn release(&mut self, h: Handle) {
         if let Some(mut x) = self.nodes.remove(&h) {
@@ -426,6 +619,52 @@ impl Forest {
         Ok(rows)
     }
 
+    /// The process a node is paused in -- the root's fork server for `ROOT`,
+    /// else the branch child -- for a caller that reads engine memory beside
+    /// the sampler (e.g. the participant's LIVE vehicle slot across a switch).
+    /// The engine clock the node stopped at: (`sim_ms`, `race_start`) from its
+    /// hello -- what `forkoracle::car::resolve_with` needs to re-derive the car
+    /// in that process.
+    pub fn clock_of(&self, h: Handle) -> Result<(u64, u64), String> {
+        match h {
+            ROOT => Ok((self.root.sim_ms, self.root.race_start)),
+            _ => self.held(h).map(|n| (n.node.sim_ms, n.node.race_start)),
+        }
+    }
+
+    pub fn pid_of(&self, h: Handle) -> Result<i32, String> {
+        if h == ROOT {
+            return Ok(self.root.pid());
+        }
+        Ok(self.held(h)?.node.pid)
+    }
+
+    /// The layout the trace is gathered and decoded with.
+    pub fn layout(&self) -> Option<&Layout> {
+        self.cfg.as_ref().map(|c| &c.layout)
+    }
+
+    /// Replace the layout for every LATER fork: the segments the child gathers
+    /// and the decode of its rows. The clock address and bias must not change
+    /// (labels would move); the car block and the vis state may -- that is how
+    /// a car switch is followed.
+    pub fn set_layout(&mut self, l: Layout) -> Result<(), String> {
+        let cfg = self.cfg.as_mut().ok_or("no trace configuration")?;
+        if cfg.layout.clock != l.clock || cfg.layout.clock_bias != l.clock_bias {
+            return Err("set_layout: the clock address/bias must not change".into());
+        }
+        cfg.layout = l;
+        Ok(())
+    }
+
+    /// What a node said about itself in its hello -- `(clock, sim_ms, race_start)`
+    /// -- beside what its probe measured. For checking the one against the
+    /// other (PERF.md §11).
+    pub fn node_clock(&self, h: Handle) -> Option<(u64, u64, u64, Option<usize>)> {
+        let x = self.nodes.get(&h)?;
+        Some((x.node.clock, x.node.sim_ms, x.node.race_start, x.node.probed_boundary()))
+    }
+
     fn held(&self, h: Handle) -> Result<&Held, String> {
         self.nodes.get(&h).ok_or_else(|| format!("no such handle: {:?}", h))
     }
@@ -439,14 +678,4 @@ impl Forest {
 mod tests {
     use super::*;
 
-    /// `LROUNDF_PER_TICK` is a PLACEMENT aid. This test exists to pin the
-    /// comment: if someone ever uses it to label a tick, the arithmetic below
-    /// is what they will be relying on, and it is only good to about a tick.
-    #[test]
-    fn the_tick_estimate_is_only_ever_used_to_place_a_stop() {
-        assert_eq!(LROUNDF_PER_TICK * 10, 2550);
-        // one tick of slop at ten ticks is 10%: too coarse to label with,
-        // fine to stop with.
-        assert!(LROUNDF_PER_TICK >= 200 && LROUNDF_PER_TICK <= 300);
-    }
 }

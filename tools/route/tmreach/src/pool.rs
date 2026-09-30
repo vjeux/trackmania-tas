@@ -1,0 +1,129 @@
+//! Run one closure per ghost on a pool of workers, each worker owning one
+//! fork server in its own scratch directory. Keeps ≥ 8 cores free by
+//! construction: the caller passes `workers`, `pool::cap` clamps it.
+
+use crate::rig::Worker;
+use crate::tele::Telemetry;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+
+pub struct PoolCfg {
+    pub server: PathBuf,
+    pub map: PathBuf,
+    pub shim: PathBuf,
+    pub work_root: PathBuf,
+    pub workers: usize,
+    pub verbose: bool,
+}
+
+/// Never more workers than cores − 8, never fewer than 1.
+pub fn cap(workers: usize) -> usize {
+    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(16);
+    workers.clamp(1, cores.saturating_sub(8).max(1))
+}
+
+/// For every ghost, on some worker: start a server on it, load its telemetry,
+/// call `f`. Results come back in ghost order; a failed ghost is `Err` with the
+/// reason and the run continues (a failed control on one ghost is a fact to
+/// report, not a reason to lose the other 43).
+pub fn run_per_ghost<R, F>(cfg: &PoolCfg, ghosts: &[PathBuf], f: F) -> Vec<Result<R, String>>
+where
+    R: Send + 'static,
+    F: Fn(usize, &mut Worker, &Telemetry) -> Result<R, String> + Send + Sync + 'static,
+{
+    let n = ghosts.len();
+    let f = Arc::new(f);
+    let queue: Arc<Mutex<std::collections::VecDeque<usize>>> = Arc::new(Mutex::new((0..n).collect()));
+    let results: Arc<Mutex<Vec<Option<Result<R, String>>>>> = Arc::new(Mutex::new((0..n).map(|_| None).collect()));
+    let ghosts: Arc<Vec<PathBuf>> = Arc::new(ghosts.to_vec());
+    let workers = cap(cfg.workers).min(n.max(1));
+    let (server, map, shim, root, verbose) = (cfg.server.clone(), cfg.map.clone(), cfg.shim.clone(), cfg.work_root.clone(), cfg.verbose);
+    let mut hs = Vec::new();
+    for wi in 0..workers {
+        let (queue, results, ghosts, f) = (queue.clone(), results.clone(), ghosts.clone(), f.clone());
+        let (server, map, shim, root) = (server.clone(), map.clone(), shim.clone(), root.clone());
+        // STAGGERED starts: 40 servers booting in the same second is a boot storm (PROBE-EMPTY
+        // on 7 of 19 ghosts in one fan-out, Spring 2025 - 04, two campaigns on one box)
+        std::thread::sleep(std::time::Duration::from_millis(120));
+        hs.push(std::thread::spawn(move || loop {
+            let gi = match queue.lock().unwrap().pop_front() {
+                Some(g) => g,
+                None => break,
+            };
+            let work = root.join(format!("w{}", wi));
+            let r = one(&server, &map, &shim, &work, &ghosts[gi], verbose, gi, &*f);
+            results.lock().unwrap()[gi] = Some(r);
+        }));
+    }
+    for h in hs {
+        let _ = h.join();
+    }
+    // a SECOND ROUND for the items that failed at worker start (probe/boot failures), run
+    // with at most 4 workers once the storm is over; a control failure is not retried
+    let retry: Vec<usize> = {
+        let res = results.lock().unwrap();
+        (0..n).filter(|i| matches!(&res[*i], Some(Err(e)) if e.contains("PROBE-EMPTY") || e.contains("probe failed") || e.contains("worker up") && e.contains("timed out"))).collect()
+    };
+    if !retry.is_empty() {
+        eprintln!("  second round for {} work item(s) whose worker failed to start", retry.len());
+        std::thread::sleep(std::time::Duration::from_secs(5));
+        let queue2: Arc<Mutex<std::collections::VecDeque<usize>>> = Arc::new(Mutex::new(retry.iter().copied().collect()));
+        let mut hs2 = Vec::new();
+        for wi in 0..retry.len().min(4) {
+            let (queue, results, ghosts, f) = (queue2.clone(), results.clone(), ghosts.clone(), f.clone());
+            let (server, map, shim, root) = (server.clone(), map.clone(), shim.clone(), root.clone());
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            hs2.push(std::thread::spawn(move || loop {
+                let gi = match queue.lock().unwrap().pop_front() {
+                    Some(g) => g,
+                    None => break,
+                };
+                let work = root.join(format!("r{}", wi));
+                let r = one(&server, &map, &shim, &work, &ghosts[gi], verbose, gi, &*f);
+                results.lock().unwrap()[gi] = Some(r);
+            }));
+        }
+        for h in hs2 {
+            let _ = h.join();
+        }
+    }
+    let mut out = results.lock().unwrap();
+    out.drain(..).map(|r| r.unwrap_or_else(|| Err("worker panicked".into()))).collect()
+}
+
+fn one<R, F>(server: &Path, map: &Path, shim: &Path, work: &Path, ghost: &Path, verbose: bool, gi: usize, f: &F) -> Result<R, String>
+where
+    F: Fn(usize, &mut Worker, &Telemetry) -> Result<R, String>,
+{
+    let tel = Telemetry::load(&ghost.to_string_lossy())?;
+    // a worker start (server boot + car derivation) can fail transiently under load (Summer
+    // 2026 - 01 p00041 under 30 workers + two campaigns: failed once, passed twice alone):
+    // one retry after 2 s before the ghost is failed closed
+    // (PROBE-EMPTY under many concurrent starts: the ENV arm sees ~1 in 40; two retries, 5 s apart)
+    let mut attempt = 0;
+    let mut w = loop {
+        match Worker::start(server, map, shim, work, ghost, verbose) {
+            Ok(w) => break w,
+            Err(e) if attempt < 2 && !e.contains("no dedicated server") => {
+                attempt += 1;
+                eprintln!("  worker start failed ({e}); retry {attempt} in 5 s");
+                std::thread::sleep(std::time::Duration::from_secs(5));
+            }
+            Err(e) => return Err(if attempt > 0 { format!("{e} (after {attempt} retries)") } else { e }),
+        }
+    };
+    let r = f(gi, &mut w, &tel);
+    drop(w);
+    r
+}
+
+/// `*.Ghost.Gbx` in a directory, sorted by name.
+pub fn ghosts_in(dir: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut v: Vec<PathBuf> = std::fs::read_dir(dir)
+        .map_err(|e| format!("{}: {}", dir.display(), e))?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.to_string_lossy().ends_with(".Ghost.Gbx"))
+        .collect();
+    v.sort();
+    Ok(v)
+}

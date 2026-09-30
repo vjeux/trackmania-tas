@@ -1,0 +1,21 @@
+# The reinforcement-learning layer: the environment over our own instrument,
+# and the policy trained on it.
+#
+#   tmenv   a Gym-shaped environment over the savestate tree (`branch`) and the
+#           map's own geometry (`mapgeom`). Backend-independent core, so the
+#           same reward/observation/termination code can be driven from a live
+#           fork tree, from a flat replayed trajectory (the control), and later
+#           from inside the engine.
+#   tmrl    PPO over `candle`, and the trainer.
+#
+# Its own workspace because it pins -O3 + LTO (the env is on the hot path and
+# the network forward pass runs inside the rollout loop) and because the ML
+# dependency tree has no business in `tools/`.
+[workspace]
+members = ["tmstate", "tmobs", "tmenv", "tmrl", "tminput", "tmroll", "tmproto"]
+resolver = "2"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

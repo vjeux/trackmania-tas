@@ -162,7 +162,7 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
 // The record-data grammar
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Desc {
     pub class_id: u32,
     pub u01: i32,
@@ -172,7 +172,7 @@ pub struct Desc {
     pub u05: i32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Ent {
     pub type_: i32,
     pub u01: i32,
@@ -185,13 +185,13 @@ pub struct Ent {
     pub deltas2: Vec<(i32, i32, Vec<u8>)>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CustomModuleList {
     pub deltas: Vec<(i32, Vec<u8>, Vec<u8>)>,
     pub period: Option<i32>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RecordData {
     pub version: u32,
     pub start_ms: i32,
@@ -727,7 +727,7 @@ pub fn print_field_confidence() {
 // Public API
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct EntInfo {
     pub type_: i32,
     pub class_id: Option<u32>,
@@ -835,6 +835,79 @@ pub fn decode_body(body: &[u8], path: &str) -> Res<Decoded> {
         sample_period_ms: per,
         sample_size: ss,
         raw: veh.raw.clone(),
+        samples,
+        checkpoints_ms: res.as_ref().map(|r| r.checkpoints()).unwrap_or_default(),
+        race_time_ms: res.as_ref().map(|r| r.race_ms),
+        ents: others,
+        bytes_consumed: rec.bytes_consumed,
+        bytes_total: rec.bytes_total,
+    })
+}
+
+/// Like `decode_ghost`, but the samples of EVERY CSceneVehicleVis entity merged
+/// by time (a car-switch map records one vehicle entity per car stretch: Spring
+/// 2026 - 12 has 8 entities and its largest covers 12 s of a 34 s run; the
+/// decimated duplicate some ghosts carry is dropped when a denser entity has a
+/// sample within 30 ms). `raw` is the merged samples' bytes in the same order.
+pub fn decode_ghost_all_vehicles(path: &str) -> Res<Decoded> {
+    let body = load_body(path)?;
+    let (version, blob) = find_entrecord_blob(&body)?;
+    let rec = parse_record_data(&blob, version)?;
+    let mut vehs: Vec<&Ent> = Vec::new();
+    let mut others = Vec::new();
+    for ent in &rec.ents {
+        let cid = rec.descs.get(ent.type_.max(0) as usize).filter(|_| ent.type_ >= 0).map(|d| d.class_id);
+        others.push(EntInfo { type_: ent.type_, class_id: cid, n_samples: ent.times.len(), sample_size: ent.sample_size, t_first: ent.times.first().copied(), t_last: ent.times.last().copied() });
+        if cid == Some(CLASS_CSCENEVEHICLEVIS) && ent.sample_size >= 103 {
+            vehs.push(ent);
+        }
+    }
+    if vehs.is_empty() {
+        return Err("no CSceneVehicleVis (0x0A018000) entity in record".into());
+    }
+    // densest first, so a decimated duplicate only fills gaps
+    vehs.sort_by_key(|e| std::cmp::Reverse(e.times.len()));
+    let ss = vehs[0].sample_size;
+    let mut merged: Vec<(i32, &[u8])> = Vec::new();
+    for e in &vehs {
+        if e.sample_size != ss {
+            continue;
+        }
+        for (i, &t) in e.times.iter().enumerate() {
+            if merged.iter().any(|(mt, _)| (*mt - t).abs() < 30) {
+                continue;
+            }
+            merged.push((t, &e.raw[i * ss..(i + 1) * ss]));
+        }
+    }
+    merged.sort_by_key(|(t, _)| *t);
+    let res = crate::container::read_result(&body);
+    let mut samples = Vec::with_capacity(merged.len());
+    let mut raw = Vec::with_capacity(merged.len() * ss);
+    for (t, d) in &merged {
+        let mut s = decode_vehicle_sample(d);
+        s.time_ms = *t;
+        samples.push(s);
+        raw.extend_from_slice(d);
+    }
+    let per = if merged.len() > 2 {
+        let diffs: Vec<i32> = merged.windows(2).map(|w| w[1].0 - w[0].0).collect();
+        let mut uniq: Vec<i32> = diffs.clone();
+        uniq.sort_unstable();
+        uniq.dedup();
+        uniq.into_iter().max_by_key(|d| (diffs.iter().filter(|x| *x == d).count(), -(*d as i64)))
+    } else {
+        None
+    };
+    Ok(Decoded {
+        path: path.to_string(),
+        name: name_for(path),
+        version,
+        start_ms: rec.start_ms,
+        end_ms: rec.end_ms,
+        sample_period_ms: per,
+        sample_size: ss,
+        raw,
         samples,
         checkpoints_ms: res.as_ref().map(|r| r.checkpoints()).unwrap_or_default(),
         race_time_ms: res.as_ref().map(|r| r.race_ms),

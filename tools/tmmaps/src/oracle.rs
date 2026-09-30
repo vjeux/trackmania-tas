@@ -100,6 +100,9 @@ pub fn run_maps(pairs: &[(PathBuf, Vec<PathBuf>)], jobs: usize, server_dir: &str
     let mut out: Vec<Vec<Row>> = vec![Vec::new(); pairs.len()];
     let mut running: Vec<(usize, std::process::Child)> = Vec::new();
     let jobs = jobs.max(1);
+    if let Err(e) = ghost::oracle::check_server_build(&server) {
+        panic!("{e}");
+    }
     for (k, (map, ghosts)) in pairs.iter().enumerate() {
         while running.len() >= jobs {
             let (i, ch) = running.remove(0);

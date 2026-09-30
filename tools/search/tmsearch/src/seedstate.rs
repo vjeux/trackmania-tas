@@ -208,7 +208,7 @@ pub fn check(
         [a.x as f32, a.y as f32, a.z as f32],
         [b.x as f32, b.y as f32, b.z as f32],
     );
-    let sample_dspeed = (a.speed_ms - b.speed_ms).abs() as f64;
+    let sample_dspeed = (a.speed_ms as f64 - b.speed_ms as f64).abs();
     let sample_vturn = angle_between(
         [a.vx as f32, a.vy as f32, a.vz as f32],
         [b.vx as f32, b.vy as f32, b.vz as f32],

@@ -21,7 +21,40 @@ const F_SETFD: c_int = 2;
 const O_CLOEXEC: c_int = 0o2000000;
 const SIGKILL: c_int = 9;
 
+/// THE ENGINE'S DECODED INPUT RECORD, read out of the engine rather than
+/// guessed. One per 10 ms tick, in tick order, exactly `STRIDE` bytes:
+///
+/// ```text
+/// +0x00 u32  flags      2 normally; the "no input for this tick" path writes
+///                       2 to the BYTE at +0x1c and ORs 0x40 into the byte at
+///                       +0x00 (0x119f14c / 0x119f1a2)
+/// +0x04 f32  steer      (i8)steer / 127
+/// +0x08 f32  gas        0.0 or 1.0
+/// +0x0c f32  brake      0.0 or 1.0
+/// +0x10 f32  0
+/// +0x14 u32  0x3576f40e constant across every record of every tape seen
+/// +0x18 u32  0
+/// +0x1c u32  2
+/// ```
+///
+/// The engine fetches a record with `shl rcx,5; movups xmm0,[rdx+rcx];
+/// movups xmm1,[rdx+rcx+0x10]` at `0x119f165..0x119f16d`, so the element is 32
+/// bytes starting at `array + tick*32` — and `array` is what `base` means
+/// everywhere in this crate and on the wire.
+///
+/// **This was off by four until 2026-09-06.** The shim finds the array by
+/// searching for the tape's STEER values, and it used the address of tick 0's
+/// steer as the base — four bytes into the record. Nothing read a wrong field
+/// (the patch wrote steer/gas/brake at the right addresses either way), but the
+/// page-fault probe divided a record-aligned fault address by 32 against a base
+/// that was not record-aligned, so it reported `i-1` for a fault on record `i`
+/// — which is where the `probe + 1` that every resume carried came from. The
+/// base is now the record base and the probe reports the record the engine is
+/// about to read.
 pub const STRIDE: usize = 32;
+pub const REC_STEER: usize = 4;
+pub const REC_GAS: usize = 8;
+pub const REC_BRAKE: usize = 12;
 
 // ---------------------------------------------------------------------------
 // THE WIRE, BUILT IN ONE PLACE
@@ -35,8 +68,19 @@ pub const STRIDE: usize = 32;
 
 /// `'R'`: fork, rewrite ticks `from..` with `recs`, run to the finish.
 pub fn payload_run(from: usize, recs: &[Rec]) -> Vec<u8> {
+    payload_tail(b'R', from, recs)
+}
+
+/// `'W'`: as `'R'`, with the armed watchdog evaluated in the child every tick.
+/// Two frames come back: the validator's JSON (empty when the child aborted
+/// itself) and the fixed-size summary out of the shared page.
+pub fn payload_watched(from: usize, recs: &[Rec]) -> Vec<u8> {
+    payload_tail(b'W', from, recs)
+}
+
+fn payload_tail(cmd: u8, from: usize, recs: &[Rec]) -> Vec<u8> {
     let mut p = Vec::with_capacity(5 + recs.len() * 16);
-    p.push(b'R');
+    p.push(cmd);
     p.extend_from_slice(&(recs.len() as u32).to_le_bytes());
     for (i, r) in recs.iter().enumerate() {
         p.extend_from_slice(&((from + i) as u32).to_le_bytes());
@@ -65,9 +109,9 @@ pub struct BranchReq<'a> {
     /// boundary, and `tree::Node::branch` refuses otherwise.
     pub from: usize,
     pub recs: &'a [Rec],
-    /// How many more `lroundf` calls the child simulates before it re-enters
-    /// the fork server. ~255 to the tick.
-    pub stop_after_lroundf: u64,
+    /// How many more TICKS the child simulates before it re-enters the fork
+    /// server.
+    pub stop_after: u64,
     /// The driver's listening unix socket. The node connects to it and serves
     /// the same protocol down it.
     pub sock: &'a str,
@@ -79,14 +123,25 @@ pub struct BranchReq<'a> {
     pub sample_max: u32,
     /// Dedup key `(offset, length)` inside the gathered record.
     pub key: (u32, u32),
+    /// **A WARM NODE.** The child runs its ticks with the armed watchdog
+    /// evaluating them, and the node keeps that evaluator state: a candidate
+    /// forked from it later continues the SAME watched run the root would have
+    /// made, with the same speed history, the same progress, the same gate
+    /// record, instead of a cold evaluator that has seen nothing. It is what
+    /// lets a deep fork point return the identical verdict to a shallow one.
+    /// Refused with a state trace (`segs`), which uses the same per-tick hook.
+    pub watched: bool,
 }
+
+/// The flag word a `'B'` payload ends with. Bit 0: `watched`.
+pub const BRANCH_FLAG_WATCHED: u32 = 1;
 
 /// `'B'`: the branch. See the shim's handler for the field order.
 pub fn payload_branch(b: &BranchReq) -> Vec<u8> {
     let mut p = Vec::with_capacity(64 + b.sock.len() + b.recs.len() * 16);
     p.push(b'B');
     p.extend_from_slice(&(b.recs.len() as u32).to_le_bytes());
-    p.extend_from_slice(&b.stop_after_lroundf.to_le_bytes());
+    p.extend_from_slice(&b.stop_after.to_le_bytes());
     p.extend_from_slice(&(b.sock.len() as u32).to_le_bytes());
     p.extend_from_slice(b.sock.as_bytes());
     p.extend_from_slice(&(b.trace_path.len() as u32).to_le_bytes());
@@ -106,6 +161,10 @@ pub fn payload_branch(b: &BranchReq) -> Vec<u8> {
         p.extend_from_slice(&r.gas.to_le_bytes());
         p.extend_from_slice(&r.brake.to_le_bytes());
     }
+    // Trailing flags, after the patches, so a shim that predates them reads a
+    // plain branch: the same optional-tail convention `'S'` uses for its
+    // budget and gate.
+    p.extend_from_slice(&(if b.watched { BRANCH_FLAG_WATCHED } else { 0 }).to_le_bytes());
     p
 }
 
@@ -133,15 +192,39 @@ pub fn parse_probe(s: &str) -> Result<usize, String> {
 pub struct Rec {
     pub steer: f32,
     pub gas: f32,
+    /// 0.0 or 1.0 -- PLUS 2.0 when the tick carries a RESPAWN (the tape's respawn
+    /// event; the shim decodes brake >= 2.0 into the record's word 0 = 0x22 and
+    /// writes the real brake). Use [`Rec::respawn`] / [`Rec::with_respawn`].
     pub brake: f32,
 }
 
+impl Rec {
+    /// This tick also presses RESPAWN (the engine respawns the car to its last
+    /// credited checkpoint about 1.0 s later, with that checkpoint's speed).
+    pub fn with_respawn(mut self) -> Rec {
+        if self.brake < 2.0 {
+            self.brake += 2.0;
+        }
+        self
+    }
+    pub fn respawn(&self) -> bool {
+        self.brake >= 2.0
+    }
+    /// The brake as the engine sees it (respawn flag stripped).
+    pub fn brake_value(&self) -> f32 {
+        if self.brake >= 2.0 { self.brake - 2.0 } else { self.brake }
+    }
+}
+
+/// `brake` bit 1 (value 2) is the RESPAWN channel (2026-09-09): a tape's respawn literal rides the brake byte as
+/// brake + 2 wherever inputs travel as (steer, accel, brake) bytes, and lands in the record as `with_respawn`.
 pub fn rec_of(steer: u8, accel: u8, brake: u8) -> Rec {
-    Rec {
+    let r = Rec {
         steer: ((steer as i8) as f32) / 127.0,
         gas: if accel != 0 { 1.0 } else { 0.0 },
-        brake: if brake != 0 { 1.0 } else { 0.0 },
-    }
+        brake: if brake & 1 != 0 { 1.0 } else { 0.0 },
+    };
+    if brake & 2 != 0 { r.with_respawn() } else { r }
 }
 
 /// The reference ghost's steer axis, which is all `write_key` needs of a tape.
@@ -186,12 +269,22 @@ pub struct ForkServer {
     child: Child,
     cmd_w: std::fs::File,
     res_r: std::fs::File,
+    /// The root's boundary once probed and checked against the clock: a stopped
+    /// server never moves, so a second `boundary_tick` is the same answer and
+    /// not another fork (each fork is one more chance for the open probe flake).
+    boundary_cache: Option<usize>,
     pub base: u64,
     pub clock: u64,
     /// `this` captured at the validator's simulation-binding callback.
     pub validator_controller: u64,
     /// The simulation object passed in rcx at that same callback.
     pub validation_sim: u64,
+    /// The engine's simulation time of the tick the stopped server is about to
+    /// run -- nothing of that tick consumed. `clock` is its race tick.
+    pub sim_ms: u64,
+    /// The race start in simulation ms, as the engine set it in THIS process
+    /// (usually 2200; not a constant -- see `clock`).
+    pub race_start: u64,
     pub dir: PathBuf,
 }
 
@@ -322,11 +415,7 @@ impl ForkServer {
         c.args(["/nodaemon", "/validatepath=."])
             .current_dir(dir)
             .stdin(Stdio::null())
-            .stdout(Stdio::from(outf))
-            // Enables the one-shot, build-checked hook at the validator's
-            // simulation-binding callback. `start_raw` deliberately does not
-            // set this: its shimhost tests do not contain that server code.
-            .env("FKSHIM_VALIDATOR_CAR", "1");
+            .stdout(Stdio::from(outf));
         let srv = ForkServer::start_raw(dir, c, key, shim, ckpt)?;
         if srv.validator_controller == 0 || srv.validation_sim == 0 {
             return Err(
@@ -403,7 +492,10 @@ impl ForkServer {
             clock: 0,
             validator_controller: 0,
             validation_sim: 0,
+            sim_ms: 0,
+            race_start: 0,
             dir: dir.to_path_buf(),
+            boundary_cache: None,
         };
 
         let hello = match read_frame(&mut srv.res_r) {
@@ -421,6 +513,9 @@ impl ForkServer {
         srv.clock = ready.clock;
         srv.validator_controller = ready.validator_controller.unwrap_or(0);
         srv.validation_sim = ready.validation_sim.unwrap_or(0);
+        srv.sim_ms = ready.sim_ms;
+        srv.race_start = ready.race_start;
+        shim_identity_check(&srv, shim, dir)?;
         Ok(srv)
     }
 
@@ -436,7 +531,7 @@ impl ForkServer {
     }
 
     /// THE BRANCH: fork a child that appends `req.recs`, consumes
-    /// `req.stop_after_lroundf` more calls, and then re-enters the fork server
+    /// `req.stop_after` more ticks, and then re-enters the fork server
     /// on `req.sock` as a node of its own. Returns the node's pid.
     ///
     /// This call does NOT wait for the node. The server answers `BRANCHED
@@ -469,10 +564,10 @@ impl ForkServer {
 
     /// As `run_sampled_segs`, plus a simulated-time budget for the child.
     ///
-    /// `budget_lroundf` (0 = unlimited) caps how far the child simulates:
-    /// ~255 `lroundf` calls to the tick. A locate probe needs a handful of
-    /// ticks, and without a cap the child runs the WHOLE remaining tape --
-    /// 43 000 ticks on this project's 440 s record, for six ticks of data.
+    /// `budget_ticks` (0 = unlimited) caps how far the child simulates. A
+    /// locate probe needs a handful of ticks, and without a cap the child runs
+    /// the WHOLE remaining tape -- 43 000 ticks on this project's 440 s record,
+    /// for six ticks of data.
     /// Set bit 31 of `max` to make the child exit as soon as the sample budget
     /// is spent instead of simulating on in silence.
     pub fn run_sampled_segs_ex(
@@ -483,7 +578,7 @@ impl ForkServer {
         stride: u64,
         max: u32,
         key: (u32, u32),
-        budget_lroundf: u32,
+        budget_ticks: u32,
     ) -> (String, Vec<u8>) {
         let mut p = Vec::with_capacity(33 + segs.len() * 12 + recs.len() * 16);
         p.push(b'S');
@@ -503,7 +598,7 @@ impl ForkServer {
             p.extend_from_slice(&r.gas.to_le_bytes());
             p.extend_from_slice(&r.brake.to_le_bytes());
         }
-        p.extend_from_slice(&budget_lroundf.to_le_bytes());
+        p.extend_from_slice(&budget_ticks.to_le_bytes());
         self.cmd_w
             .write_all(&(p.len() as u32).to_le_bytes())
             .unwrap();
@@ -528,7 +623,7 @@ impl ForkServer {
         stride: u64,
         max: u32,
         key: (u32, u32),
-        budget_lroundf: u32,
+        budget_ticks: u32,
         gate: (u64, u32, u32),
     ) -> (String, Vec<u8>) {
         let mut p = Vec::with_capacity(49 + segs.len() * 12 + recs.len() * 16);
@@ -549,7 +644,7 @@ impl ForkServer {
             p.extend_from_slice(&r.gas.to_le_bytes());
             p.extend_from_slice(&r.brake.to_le_bytes());
         }
-        p.extend_from_slice(&budget_lroundf.to_le_bytes());
+        p.extend_from_slice(&budget_ticks.to_le_bytes());
         p.extend_from_slice(&gate.0.to_le_bytes());
         p.extend_from_slice(&gate.1.to_le_bytes());
         p.extend_from_slice(&gate.2.to_le_bytes());
@@ -629,6 +724,21 @@ impl ForkServer {
         self.run_sampled_segs(from, recs, &[(addr, len)], stride, max, key)
     }
 
+    /// Tell the shim which address holds this race's finish time, so children
+    /// can stop the moment the engine records one. See `crate::finish`.
+    /// `last_tape_clock` is the clock of the tape's final record -- past it the
+    /// engine simulates on whatever the input array holds, so nothing after it
+    /// is this tape's result. It is arithmetic, not a measurement: see
+    /// `crate::finish`.
+    pub fn set_finish_word(&mut self, addr: u64, last_tape_clock: u64, cp: u64) -> String {
+        let mut p = Vec::with_capacity(25);
+        p.push(b'Y');
+        p.extend_from_slice(&addr.to_le_bytes());
+        p.extend_from_slice(&last_tape_clock.to_le_bytes());
+        p.extend_from_slice(&cp.to_le_bytes());
+        self.arm(&p)
+    }
+
     /// Arm the watchdog: predicates, the reference line and the memory
     /// segments to watch, sent ONCE. Every later fork inherits them.
     pub fn arm(&mut self, payload: &[u8]) -> String {
@@ -647,15 +757,7 @@ impl ForkServer {
     /// tick. Returns the validator's JSON (empty when the child was aborted)
     /// and the raw summary block.
     pub fn run_watched(&mut self, from: usize, recs: &[Rec]) -> (String, Vec<u8>) {
-        let mut p = Vec::with_capacity(5 + recs.len() * 16);
-        p.push(b'W');
-        p.extend_from_slice(&(recs.len() as u32).to_le_bytes());
-        for (i, r) in recs.iter().enumerate() {
-            p.extend_from_slice(&((from + i) as u32).to_le_bytes());
-            p.extend_from_slice(&r.steer.to_le_bytes());
-            p.extend_from_slice(&r.gas.to_le_bytes());
-            p.extend_from_slice(&r.brake.to_le_bytes());
-        }
+        let p = payload_watched(from, recs);
         self.cmd_w
             .write_all(&(p.len() as u32).to_le_bytes())
             .unwrap();
@@ -723,9 +825,58 @@ impl ForkServer {
     }
 
     pub fn probe_tick(&mut self) -> Result<usize, String> {
-        write_frame(&mut self.cmd_w, &payload_probe()).map_err(|e| e.to_string())?;
-        let v = read_frame(&mut self.res_r).ok_or("probe: no reply")?;
-        parse_probe(&String::from_utf8_lossy(&v))
+        // The probe forks a throwaway child; under heavy concurrent start-up
+        // (20-40 servers coming up at once) that child occasionally dies before
+        // it faults on the array and the reply is EMPTY. An empty reply is not
+        // a boundary and not a disagreement -- it is no measurement -- so it is
+        // asked again, twice; a reply with content is judged as before.
+        let mut last = String::new();
+        for _ in 0..3 {
+            write_frame(&mut self.cmd_w, &payload_probe()).map_err(|e| e.to_string())?;
+            let v = read_frame(&mut self.res_r).ok_or("probe: no reply")?;
+            let s = String::from_utf8_lossy(&v).into_owned();
+            if s.trim().is_empty() {
+                last = s;
+                continue;
+            }
+            return parse_probe(&s);
+        }
+        parse_probe(&last)
+    }
+
+    /// THE FIRST UNCONSUMED TAPE TICK, measured two independent ways and
+    /// required to agree.
+    ///
+    /// 1. The page-fault probe: a throwaway child loses read access to the
+    ///    input array and the engine faults on the record it reads next.
+    ///    `(fault_addr - base) / 32` with a record-aligned base IS that record.
+    /// 2. The tick hook: the server is stopped at the START of the tick whose
+    ///    simulation time is `sim_ms`, and that tick copies record
+    ///    `(sim_ms - race_start - start_offset_ms) / 10`.
+    ///
+    /// They are measured from opposite sides -- one is where the engine says it
+    /// is, the other is which record it actually faults on -- so agreement is a
+    /// real check and a disagreement is a hard error, never a number to pick
+    /// between. It means the hook is not where TICKHOOK.md says it is, or the
+    /// record layout of this build is not what `STRIDE` documents.
+    pub fn boundary_tick(&mut self, start_offset_ms: i32) -> Result<usize, String> {
+        if let Some(p) = self.boundary_cache {
+            return Ok(p);
+        }
+        let probe = self.probe_tick()?;
+        // A checkpoint inside the countdown stops in front of RECORD 0: before
+        // race time -10 ms the engine copies record 0 verbatim as that tick's
+        // input, whatever the tape says. `record_read_at` is the engine's own
+        // rule, transcribed.
+        let want = crate::clock::record_read_at(self.sim_ms, self.race_start, start_offset_ms);
+        if probe as i64 != want {
+            return Err(format!(
+                "tick hook / probe disagreement: server stopped at sim_ms {} with race start {} (about to read tape tick {} with start_offset {}), but the page-fault probe says it reads record {} next",
+                self.sim_ms, self.race_start, want, start_offset_ms, probe
+            ));
+        }
+        self.boundary_cache = Some(probe);
+        Ok(probe)
     }
 
     pub fn pid(&self) -> i32 {
@@ -757,7 +908,7 @@ impl ForkServer {
 /// `anon_pipe_read` forever, and a search whose workers are all parked makes no
 /// further progress while still looking alive.
 ///
-/// OBSERVED, twice: a fork server that sails past its `lroundf` checkpoint and
+/// OBSERVED, twice: a fork server that sails past its checkpoint and
 /// settles into the dedicated server's ordinary 1x-realtime loop
 /// (`do_sys_poll` + `hrtimer_nanosleep`, ~4% of a core, no children). It never
 /// sends READY, and every worker on it blocks. One stalled run out of five cost
@@ -851,6 +1002,10 @@ pub struct Ready {
     pub pid: Option<i32>,
     pub validator_controller: Option<u64>,
     pub validation_sim: Option<u64>,
+    /// The engine's simulation time of the tick the stopped server is about to
+    /// run, and the race start it is measured from.
+    pub sim_ms: u64,
+    pub race_start: u64,
 }
 
 pub fn parse_ready_full(s: &str) -> Result<Ready, String> {
@@ -869,12 +1024,30 @@ pub fn parse_ready_full(s: &str) -> Result<Ready, String> {
             s.trim()
         ));
     }
+    // Trailing `tick <sim_ms> <race_start>`. Required: a shim that does not send
+    // it is not this shim, and its `clock` means something else.
+    let (sim_ms, race_start) = match (it.next(), it.next(), it.next()) {
+        (Some("tick"), Some(v), Some(r)) => {
+            let sim_ms: u64 = v.parse().map_err(|_| format!("bad sim_ms in handshake: {}", s.trim()))?;
+            let race_start: u64 = r.parse().map_err(|_| format!("bad race_start in handshake: {}", s.trim()))?;
+            // `sim_ms < race_start` is legitimate: a checkpoint inside the countdown
+            // stops before race time 0. What is NOT legitimate is a race start
+            // the engine never set -- the clock would then be meaningless.
+            if race_start == u64::MAX || race_start == 0 {
+                return Err(format!("the shim stopped before the engine set a race start: {}", s.trim()));
+            }
+            (sim_ms, race_start)
+        }
+        _ => return Err(format!("this shim did not report a tick clock: {}", s.trim())),
+    };
     Ok(Ready {
         base,
         clock,
         pid,
         validator_controller,
         validation_sim,
+        sim_ms,
+        race_start,
     })
 }
 
@@ -916,6 +1089,72 @@ pub fn parse_result(text: &str) -> (Option<i64>, Option<u32>) {
     let mut time = None;
     let mut cps = None;
     let mut in_validated = false;
+    // THE CHECKPOINT COUNT COMES FROM THE ENGINE, NOT FROM THE `Desc` LINE.
+    //
+    // `Desc` is a lossy print. For a mutated candidate it is almost always
+    // "wrong simu" -- the ghost file's declared result no longer matches what
+    // was simulated -- which this used to map to 0 checkpoints, and the plain
+    // oracle cannot see a lone checkpoint at all (it reports k>=2 only; the
+    // route project measured 1163 of 2453 tapes in that class). So a `Desc`
+    // count is a LOWER BOUND on what the car did.
+    //
+    // The engine counts them itself at `participant+0xc70`, the shim publishes
+    // that every tick, and the child's last value arrives as `FKCPS`. It is the
+    // quantity rather than a rendering of it, it is present however the child
+    // ended, and it is what every path here reports -- a run must never mix two
+    // definitions of the same number.
+    //
+    // A DNF cps recorded before this change is a lower bound: do not compare
+    // one naively with a new one (see SEARCH.md).
+    // A FINISH AFTER THE TAPE'S LAST RECORD IS FLAGGED, NOT SUPPRESSED.
+    //
+    // Past the end the engine simulates on whatever follows the input array, so
+    // such a time was not produced by this tape alone -- and the perf arm
+    // measured the plain oracle giving one such tape a BATCH-DEPENDENT verdict
+    // (DNF alone, 26.839 in a batch of 520).
+    //
+    // But it is the same time the JSON reports and the same time a full
+    // validation reports: past the array both read zero-filled pages, and only
+    // a reused dirty allocation differs. Returning a DNF instead cost 19 of 50
+    // candidates at map 2 `tick:2380`, all of which the full validation scored
+    // as finishes with the same millisecond -- and the class is not rare, since
+    // the tape ends at the reference's finish and every slower candidate is in
+    // it. So `FKPASTEND` rides in the output for whoever is deciding what to
+    // BANK, and the verdict here stays the engine's.
+    //
+    // `text.contains("FKPASTEND")` is the test for that consumer.
+
+    let engine_cps = text.lines().find_map(|l| {
+        l.trim()
+            .strip_prefix("FKCPS ")
+            .and_then(|r| r.split_whitespace().next())
+            .and_then(|v| v.parse::<u32>().ok())
+    });
+    // A child that ran out of tape without finishing already knows its whole
+    // answer: it did not finish, and it passed this many checkpoints.
+    for line in text.lines() {
+        if let Some(rest) = line.trim().strip_prefix("FKDNF cps ") {
+            if let Some(v) = rest.split_whitespace().next().and_then(|s| s.parse::<u32>().ok()) {
+                return (None, Some(engine_cps.unwrap_or(v)));
+            }
+        }
+    }
+    // THE CHILD MAY HAVE ANSWERED ALREADY. When the shim exits a child at the
+    // finish (`FKSHIM_EXIT_AT_FINISH`), the validator never runs its print path,
+    // so there is no `ValidatedResult` to read -- the answer arrives on its own
+    // line instead, in the same race ms the JSON would have carried. It is not
+    // an estimate: it is the engine's own result word, sub-tick interpolation
+    // included (`tickhook_sig`).
+    for line in text.lines() {
+        if let Some(rest) = line.trim().strip_prefix("FKFINISH race_ms ") {
+            if let Some(ms) = rest.split_whitespace().next().and_then(|s| s.parse::<i64>().ok())
+            {
+                if (0..=BAD_TIME_MS).contains(&ms) {
+                    return (Some(ms), None);
+                }
+            }
+        }
+    }
     for line in text.lines() {
         let t = line.trim();
         if t.starts_with("\"ValidatedResult\"") {
@@ -927,14 +1166,74 @@ pub fn parse_result(text: &str) -> (Option<i64>, Option<u32>) {
                 .and_then(|s| s.trim().trim_end_matches(',').parse::<i64>().ok())
                 .filter(|&ms| (0..=BAD_TIME_MS).contains(&ms));
             in_validated = false;
-        } else if t.starts_with("\"Desc\"") {
+        }
+    }
+    // The engine's count wins wherever it is present; the `Desc` fallback below
+    // exists only for a server with no shim (the plain oracle's own path).
+    if engine_cps.is_some() {
+        return (time, engine_cps);
+    }
+    for line in text.lines() {
+        let t = line.trim();
+        if t.starts_with("\"Desc\"") {
             if let Some(p) = t.find("reached some checkpoints (") {
-                let rest = &t[p + "reached some checkpoints (".len()..];
-                cps = rest.split(' ').next().and_then(|s| s.trim().parse().ok());
+                cps = t[p + "reached some checkpoints (".len()..]
+                    .split(' ')
+                    .next()
+                    .and_then(|s| s.trim().parse().ok());
             } else if t.contains("wrong simu") {
                 cps = Some(0);
             }
         }
     }
     (time, cps)
+}
+
+/// SHIM IDENTITY (fleet rule after the 24 phantom-finish incident, 2026-09-09): the library the server actually MAPPED
+/// must be the one on disk at the shim path (a `mv` swaps the inode -- running servers keep the old code), and, when the
+/// branch build's md5 is known (`FK_SHIM_MD5` env var, else a `<shim>.md5` sidecar), the on-disk md5 must match it.
+/// Both facts are written to `<dir>/shim-identity.txt` and printed once per process; a mismatch refuses the server.
+fn shim_identity_check(srv: &ForkServer, shim: &Path, dir: &Path) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    let canon = shim.canonicalize().map_err(|e| e.to_string())?;
+    let meta = std::fs::metadata(&canon).map_err(|e| e.to_string())?;
+    let (ino, dev) = (meta.ino(), meta.dev());
+    // the mapping the server holds
+    let pid = srv.child.id();
+    let maps = std::fs::read_to_string(format!("/proc/{pid}/maps")).unwrap_or_default();
+    let name = canon.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let mut mapped_ino: Option<u64> = None;
+    for l in maps.lines() {
+        let f: Vec<&str> = l.split_whitespace().collect();
+        if f.len() >= 6 && f[5].ends_with(&name) {
+            mapped_ino = f[4].parse::<u64>().ok();
+            break;
+        }
+    }
+    let md5 = std::process::Command::new("md5sum").arg(&canon).output().ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|s| s.split_whitespace().next().map(|x| x.to_string()))
+        .unwrap_or_else(|| "?".into());
+    let expected = std::env::var("FK_SHIM_MD5").ok().filter(|s| !s.is_empty())
+        .or_else(|| std::fs::read_to_string(format!("{}.md5", canon.display())).ok().and_then(|s| s.split_whitespace().next().map(|x| x.to_string())));
+    let line = format!(
+        "shim {} md5 {} inode {}:{} mapped-inode {} expected-md5 {}",
+        canon.display(), md5, dev, ino,
+        mapped_ino.map(|i| i.to_string()).unwrap_or_else(|| "?".into()),
+        expected.clone().unwrap_or_else(|| "(none)".into())
+    );
+    let _ = std::fs::write(dir.join("shim-identity.txt"), format!("{line}\n"));
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| eprintln!("forksrv: {line}"));
+    if let Some(mi) = mapped_ino {
+        if mi != ino {
+            return Err(format!("SHIM MISMATCH: the server mapped inode {mi} of {name} but the file on disk is inode {ino} -- the library was swapped under a running build (mv); rebuild/restart from one tree. {line}"));
+        }
+    }
+    if let Some(e) = expected {
+        if e != md5 {
+            return Err(format!("SHIM MISMATCH: on-disk md5 {md5} != expected {e} (FK_SHIM_MD5 / .md5 sidecar). {line}"));
+        }
+    }
+    Ok(())
 }

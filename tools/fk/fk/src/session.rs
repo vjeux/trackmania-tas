@@ -31,8 +31,7 @@ pub struct Engine {
     /// validating with an empty Maps directory and getting the identical time.
     /// `ghost map show FILE` says which case a file is.
     pub map: PathBuf,
-    /// The `LD_PRELOAD` shim that counts `lroundf` and services the fork
-    /// protocol.
+    /// The `LD_PRELOAD` shim: the tick hook and the fork protocol.
     pub shim: PathBuf,
     /// Scratch root. **Per process by default.** A shared one is the single
     /// root cause behind four separate silent-corruption defects in this
@@ -78,13 +77,12 @@ impl Drop for Engine {
 
 /// Where to stop the simulation.
 ///
-/// The engine has no notion of "tick 2323"; it has an `lroundf` call count. The
-/// two are related by a line fitted on three segment maps, and the fit is only
-/// ever used to CHOOSE a checkpoint — never to label anything, because the
-/// count is not a fixed simulation point (see [`Session::probe_tick`]).
+/// Under the tick hook (the default) a checkpoint IS a tick: the shim stops at
+/// the start of the tick at that race time, before its input record is read,
+/// in every process and under any load. See `tools/search/TICKHOOK.md`.
 #[derive(Clone, Copy, Debug)]
 pub enum Checkpoint {
-    /// A raw `lroundf` call count.
+    /// A raw clock value (a race tick plus the bias).
     Clock(u64),
     /// A tape tick, converted through the fitted line.
     Tick(i64),
@@ -92,18 +90,19 @@ pub enum Checkpoint {
     Fraction(f64),
 }
 
-/// `clock = 36141 + 25.483 * race_ms`, fitted on three segment maps.
+/// The clock value for a race time: EXACT, `race_ms / 10 + 1000`. The stop is
+/// the start of that tick, before its input record is read.
 ///
-/// Linear in SIMULATED time, so it transfers between maps. **It is an
-/// estimate**: asking for tick 600 on map 2 lands on tick 689. That is fine for
-/// choosing a checkpoint and useless for anything else — use
-/// [`Session::probe_tick`] to learn where the server actually stopped, and
-/// never label a sample from this.
+/// [`Session::probe_tick`] still asks the engine which record it has finished
+/// with, and the two must agree -- that is the control on the hook.
 pub fn clock_for_race_ms(ms: i64) -> u64 {
-    (36141.0 + 25.483 * ms as f64).max(1000.0) as u64
+    // Under the tick hook (the default) this is exact and the fit above is
+    // One definition, in `forkoracle::clock`.
+    forkoracle::clock::ckpt_for_race_ms(ms)
 }
 
-/// The TOTAL `lroundf` count for one full validation of `ghost` on `map`.
+/// The TOTAL clock (the last race tick) for one full validation of `ghost` on
+/// `map`.
 ///
 /// Measured, not fitted, because `--at frac:F` should mean F of the run on any
 /// map rather than F of a line fitted on three segment maps of one ghost. Costs
@@ -146,17 +145,20 @@ pub fn total_clock(
         .output()
         .map_err(|e| format!("launching the server: {}", e))?;
     let _ = std::fs::remove_dir_all(&dir);
+    // `clock_total` is the shim's last clock reading: the final race tick
+    // (plus the bias that keeps countdown ticks positive).
     String::from_utf8_lossy(&out.stderr)
         .lines()
-        .find_map(|l| l.strip_prefix("FKSHIM lroundf_total ")?.trim().parse().ok())
+        .find_map(|l| l.strip_prefix("FKSHIM clock_total ")?.trim().parse::<u64>().ok())
+        .filter(|v| *v != u64::MAX)
         .ok_or_else(|| {
-            "the shim did not report an lroundf total -- is LD_PRELOAD reaching the server?"
+            "the shim did not report a clock total -- is LD_PRELOAD reaching the server?"
                 .to_string()
         })
 }
 
 impl Checkpoint {
-    /// Turn a checkpoint into the `lroundf` count the shim stops on.
+    /// Turn a checkpoint into the clock value the shim stops on.
     ///
     /// `Fraction` MEASURES: it runs one full validation with the shim preloaded
     /// and takes `f` of the real total, so `--at frac:0.95` means 95 % of the
@@ -218,9 +220,80 @@ impl Session {
             &engine.shim,
             clock,
         )?;
-        let s = Session { srv, tape, checkpoint_clock: clock };
+        let mut s = Session { srv, tape, checkpoint_clock: clock };
         s.assert_running_our_tape()?;
+        // THE FAST FINISH IS FOR SESSIONS THAT WANT AN ANSWER, NOT A RECORDING.
+        //
+        // It ends the child the moment the engine records a finish, which is
+        // exactly right for a candidate being scored and exactly wrong for
+        // anything that SAMPLES: `fk trace` asks the child to keep running and
+        // gather state every tick, and an armed session cut its trajectory off
+        // at the finish -- 1694 of 1741 rows on one map, and only on the runs
+        // where calibration happened to succeed, so it looked intermittent.
+        // (Found by the perf arm on Kacky Reloaded #290.)
+        //
+        // So it is opt-in per session rather than on by default: `Session::run`
+        // and the scoring paths arm it, and a sampler never does. That is the
+        // same rule as `on_clock` running before the exit -- a speedup must not
+        // change what the caller observes.
+        if std::env::var("FK_FAST_FINISH_ALL").is_ok() {
+            s.arm_fast_finish(false)?;
+        }
         Ok(s)
+    }
+
+    /// Start a session for SCORING -- one that wants each candidate's answer
+    /// and nothing else -- with the exit-at-finish lever armed.
+    pub fn start_scoring(engine: &Engine, tape: Tape, at: Checkpoint) -> Result<Session, String> {
+        let mut s = Session::start(engine, tape, at)?;
+        if std::env::var("FK_NO_FAST_FINISH").is_err() {
+            s.arm_fast_finish(false)?;
+        }
+        Ok(s)
+    }
+
+    /// ARM THE EXIT-AT-FINISH LEVER on this server, if this tape can pay for
+    /// the calibration.
+    ///
+    /// A candidate spends 5.8 ms after its last simulated tick on the
+    /// validator's finish-and-print path, for an answer the engine wrote
+    /// several milliseconds earlier (`forkoracle::finish`). One calibration
+    /// fork finds the word that holds it; every child after that leaves the
+    /// moment it is written.
+    ///
+    /// It needs a tape whose finish time is already known -- which the
+    /// incumbent's is -- so a tape that does not finish simply keeps the old
+    /// path. That is not a silent fallback to a different ANSWER: both paths
+    /// report the validator's own number and they were checked against each
+    /// other on 1100 candidates across three maps. It is a fallback to the
+    /// slower way of getting the same one, and it says so.
+    pub fn arm_fast_finish(&mut self, verbose: bool) -> Result<bool, String> {
+        let Some(d) = self.tape.declared_ms else {
+            if verbose {
+                println!("exit-at-finish: this tape declares no finish time; not armed");
+            }
+            return Ok(false);
+        };
+        let probe = self.probe_tick()?;
+        let recs = self.tape.tail_records(probe);
+        match forkoracle::finish::calibrate(&mut self.srv, probe, &recs, d as i64) {
+            Ok((addr, sentinel)) => {
+                if verbose {
+                    println!(
+                        "exit-at-finish armed: the engine writes this race's result at {:#x} \
+                         (holds {} until then)",
+                        addr, sentinel as i32
+                    );
+                }
+                Ok(true)
+            }
+            Err(e) => {
+                if verbose {
+                    println!("exit-at-finish: not armed ({})", e);
+                }
+                Ok(false)
+            }
+        }
     }
 
     /// THE IDENTITY CONTROL. See [`forkoracle::layout::verify_tape`].
@@ -248,7 +321,9 @@ impl Session {
     /// the incumbent's score, so `delta == 0` is accepted and that lineage is
     /// contaminated for free.
     pub fn probe_tick(&mut self) -> Result<usize, String> {
-        self.srv.probe_tick()
+        // With the control: under the tick hook the probe must equal the tick
+        // the engine says it stopped in front of.
+        self.srv.boundary_tick(self.tape.start_offset_ms)
     }
 }
 

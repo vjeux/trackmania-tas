@@ -44,7 +44,7 @@
 
 use crate::pred_core::{
     key_eval, Fire, Gate, KeyOp, Pred, Summary, KEYOP_BYTES, KOP_ABS, KOP_ADD, KOP_ALONG, KOP_AXISDOT,
-    KOP_BODYVEL, KOP_CONST, KOP_DIST, KOP_DIV, KOP_DSPEED, KOP_MAX, KOP_MIN, KOP_MUL, KOP_NEG,
+    KOP_BODYVEL, KOP_CONST, KOP_DIST, KOP_DIV, KOP_DSPEED, KOP_TIME, KOP_MAX, KOP_MIN, KOP_MUL, KOP_NEG,
     KOP_DOMEGA, KOP_OMEGA, KOP_OMEGAMAG, KOP_POS, KOP_SPEED, KOP_SUB, KOP_VDIST, KOP_VEL,
     MAXKOPS, PRED_BYTES,
 };
@@ -136,7 +136,7 @@ pub struct Watch {
     pub finish_s: f32,
     /// 1 = the cheap clock-gated sampling path in the child.
     pub fast: u32,
-    /// World coordinate of the sub-tick timing plane; 0 disables it.
+    /// World-x of the sub-tick timing plane; 0 disables it.
     pub plane_x: f32,
     /// The axis that plane cuts: 0 = x, 1 = y, 2 = z. Trailing on the wire.
     pub plane_axis: u32,
@@ -185,9 +185,11 @@ pub fn parse_spec(spec: &str) -> Result<NamedPred, String> {
     let allowed: &[&str] = match kind_s {
         "speeddrop" => &["frac", "win", "minpeak", "need", "after", "until"],
         "floor" => &["speed", "need", "after", "until"],
+        "ceiling" => &["speed", "need", "after", "until"],
         "box" => &["xmin", "xmax", "ymin", "ymax", "zmin", "zmax", "need", "after", "until"],
         "offref" => &["dist", "need", "after", "until"],
         "noprog" => &["dist", "win", "need", "after", "until"],
+        "lag" => &["ms", "need", "after", "until"],
         k => return Err(format!("unknown predicate kind {:?}", k)),
     };
     for (k, _) in &kv {
@@ -218,6 +220,10 @@ pub fn parse_spec(spec: &str) -> Result<NamedPred, String> {
             p.need = geti(&kv, "need", 30).max(1) as u32;
             p.p[0] = getf(&kv, "speed", 3.0);
         }
+        "ceiling" => {
+            p.need = geti(&kv, "need", 5).max(1) as u32;
+            p.p[0] = getf(&kv, "speed", 42.0);
+        }
         "box" => {
             p.need = geti(&kv, "need", 1).max(1) as u32;
             p.p[0] = getf(&kv, "xmin", f32::NEG_INFINITY);
@@ -235,6 +241,13 @@ pub fn parse_spec(spec: &str) -> Result<NamedPred, String> {
             p.win = geti(&kv, "win", 100).max(1) as u32;
             p.need = geti(&kv, "need", 1).max(1) as u32;
             p.p[0] = getf(&kv, "dist", 5.0);
+        }
+        "lag" => {
+            // `need` defaults to 10 ticks: the nearest-point tracking has a
+            // window and ties, so one tick of apparent lag is not a fact
+            // about the car; ten in a row are.
+            p.need = geti(&kv, "need", 10).max(1) as u32;
+            p.p[0] = getf(&kv, "ms", 200.0);
         }
         _ => unreachable!(),
     }
@@ -540,6 +553,7 @@ impl<'a> KeyParser<'a> {
                 match n.as_str() {
                     "speed" => self.emit(KOP_SPEED, 0, [0.0; 3]),
                     "dspeed" => self.emit(KOP_DSPEED, 0, [0.0; 3]),
+                    "t" => self.emit(KOP_TIME, 0, [0.0; 3]),
                     "omegax" => self.emit(KOP_OMEGA, 0, [0.0; 3]),
                     "omegay" => self.emit(KOP_OMEGA, 1, [0.0; 3]),
                     "omegaz" => self.emit(KOP_OMEGA, 2, [0.0; 3]),

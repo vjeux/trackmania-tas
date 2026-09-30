@@ -1,0 +1,27 @@
+# tools/route — the route-finder project's crates, one workspace (merged by the coordinator).
+#
+#   tmreach  (GEN arm)   savestates along human runs, the oracle-agreeing gate detector,
+#                        the macro fan-out, the TMR0 reachability dataset writer
+#   tmroute  (GEOM arm)  route/gate types (re-exported from tools/rl/tmstate) + I/O + metrics +
+#                        gates/human-orders/consensus
+#   tmplan   (GEOM arm)  beam-search planner over a pluggable EdgeEstimator
+#   tmr      (MODEL arm) the reachability model R: features, candle trainer, .tmw loader, two-gate eval, R as EdgeEstimator (`tmr plan`)
+#
+# Release profile pins -O3 + LTO like fk/search: tmreach's rollout loop is on the hot path
+# (the planner and the route tools do not mind).
+[workspace]
+resolver = "2"
+members = ["tmreach", "tmroute", "tmplan", "tmr"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

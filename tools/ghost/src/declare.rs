@@ -223,7 +223,20 @@ pub fn cmd(a: &[String]) {
     })
     .unwrap_or_else(|e| die(e));
     let stage = format!("{}.declare-stage", out);
-    container::write_gbx(&c.gbx, body, &stage).unwrap_or_else(|e| die(e));
+    // The REPLAY HEADER keeps its own copies of the race time (0x03093000 and
+    // the XML's best="") that the body census cannot see; a declared carrier
+    // said 34.708 there and 5.834 in the body (2026-09-29). A plain
+    // .Ghost.Gbx has no header: no-op.
+    let mut gbx = c.gbx.clone();
+    if let Some(e) = crate::hdr::rewrite_full(&c, false, None, Some(ms as u32), None) {
+        gbx.user_data = e.user_data;
+        for l in &e.log {
+            if l.contains("time") || l.contains("best") {
+                println!("{l}");
+            }
+        }
+    }
+    container::write_gbx(&gbx, body, &stage).unwrap_or_else(|e| die(e));
     // The telemetry record declares its own span, separately from the samples.
     // Leaving it at the old run's is the same defect one level down, and
     // `ghost verify` reports it, so fix it here rather than print it later.

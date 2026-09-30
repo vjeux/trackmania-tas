@@ -129,6 +129,8 @@ impl Patcher {
             steer: a0.packets.iter().map(|p| p.steer_i8()).collect(),
             gas: a0.packets.iter().map(|p| p.accel != 0).collect(),
             brake: a0.packets.iter().map(|p| p.brake != 0).collect(),
+            // the file keeps its respawn literals (this patcher only writes steer/gas/brake bits); the fork must see them too
+            respawn: a0.packets.iter().map(|p| p.respawn()).collect(),
         };
 
         let p = Patcher {

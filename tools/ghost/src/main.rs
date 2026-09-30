@@ -11,7 +11,7 @@ use gbx::container::{secs, set_embedded_map, Container};
 use ghost::regen::raw_vehicle_samples;
 use gbx::tape::{Encoding, Tape};
 use gbx::{container, tape};
-use ghost::{census, declare, engine, hdr, ident, map_uid_of, phase, record, regen, roundtrip, selftest, splice, synth, trim, verify};
+use ghost::{census, declare, validation, engine, hdr, ident, map_uid_of, phase, record, regen, roundtrip, selftest, splice, synth, trim, verify};
 
 const HELP: &str = r#"ghost -- the TM2020 ghost / replay API
 
@@ -60,6 +60,11 @@ INPUTS  (operation 1 and 2)
   ghost tape bits FILE... [--events]
         Which bits of the state literal actually vary across a corpus; --events
         also prints each explicit literal's tick and decoded state, never inputs.
+  ghost tape census FILE|DIR... [--digital-bar 0.98] [--runs R.tsv] [--ghosts G.tsv] [--md OUT.md]
+        The packet STATE WORD over a corpus: every distinct non-plain word, how
+        many ghosts/runs/ticks carry it, countdown vs race vs post-finish, run
+        lengths, the steer beside it (0 / ±127 / partial, edges at onset), by
+        rank bucket. Read-only; the input to the state-word experiments.
 
 CAR STATE  (operation 3)
   ghost regen IN OUT --map MAP [--anchorticks a,b,c] [--noanchor]
@@ -89,6 +94,12 @@ CAR STATE  (operation 3)
         from its own inputs, and require its own trajectory back. The answer key
         is in the file and nothing about it can be tuned. Floor 0.48-0.52 mm
         (client vs dedicated server); default bar 5 mm.
+        The output leaves with its body LZO-COMPRESSED ('C'): the game client's
+        ghost loader refuses an uncompressed ('U') body (the server takes both).
+        --uncompressed keeps 'U' for byte-comparison controls.
+  ghost compress IN OUT
+        Rewrite any ghost/replay with its body LZO-compressed ('C') -- the one
+        change that made the client load the MK64 cave tapes (2026-09-29).
   ghost regen-control FILE --map MAP
         The fixed-point control: regenerate a ghost that already carries its own
         true telemetry and require the result to reproduce it.
@@ -101,20 +112,6 @@ MAP  (operation 4)
   ghost map set IN OUT --map MAP.Map.Gbx
         Replace the CARRIED map. This is the only thing that moves a recording
         onto another map: rewriting the uid does not.
-  ghost unwrap IN.Replay.Gbx OUT.Ghost.Gbx
-        The CGameCtnGhost a replay carries, as a standalone ghost: the node is
-        sliced out byte-for-byte and its telemetry node re-indexed (2 -> 1);
-        the control requires that four-byte difference and nothing else, and
-        the same tape, result and declared times back. Built for the client's
-        MediaTrackerCache/MTAuthorGhost<map name>.Ghost.gbx files, which are
-        replays (map + the run the player finished in the editor) despite
-        the extension.
-  ghost lcp FILE.LaunchedCP.gbx [--json OUT] [--csv OUT] [--samples]
-        The editor's launched-checkpoints cache (ProgramData\Trackmania\
-        LaunchedCheckpointsCache\<map name>.LaunchedCP.gbx), written at every
-        checkpoint crossing in test mode: per checkpoint reached, the car's
-        full state at the crossing and the last ~1.5 s of approach samples
-        (inputs included) -- the route skeleton of a run that never finished.
 
 TRIM  (operation 5)
   ghost trim IN OUT [--from MS] [--to MS] [--declare MS]
@@ -157,6 +154,13 @@ SPLICE  (operation 5b -- the MIDDLE of a run, where trim owns the two ends)
         and the oracle is not expected to return the declared time.
 
 DECLARE
+  ghost validation show FILE
+  ghost validation set IN OUT --start-index N
+        The validator's START INDEX (u03, chunk 0x0309202D): the entry of the
+        engine's waypoint array the car spawns from. A container rebound to a
+        map whose array differs (the MK64 cuts carry 28 typed Lakitu items
+        before the Start) spawns in the void and every run is a vacuous DNF.
+        `tmauto synth write` measures the index; this patches a carrier.
   ghost declare IN OUT (--time MS | --from-oracle --map M) [--splits MS,MS,...] [--cps N]
         Set the time the file DECLARES, in every copy of it, and in the
         ghost-result chunk. --cps N also sets the NUMBER of checkpoint entries,
@@ -246,16 +250,6 @@ const DEBUG_HELP: &str = r#"ghost debug -- forensic probes
         Move the car entity to index 0. Tests whether entity ORDER matters
         (it does not -- measured, and the theory died).
 
-  ghost debug set-uid IN OUT --uid U
-        Rewrite the map uid the ghost declares (27 chars, same length): pairs with
-        `tmmaps setuid` for an A/B on a re-uided copy of a map.
-
-  ghost debug keep-ents IN OUT --keep I,J,K
-        Keep only the named entity indices (as `ghost manifest` lists them) and
-        drop the rest: the repair for a regenerated ghost whose multi-client
-        carrier left other players' 0x2D001000 / 0x032CB000 streams in the
-        record (tiny 11: 7 entities; the client imports 0 -> 0, FrameMessage).
-
   ghost debug set-u01 IN OUT --value N
         Rewrite the car entity's u01 word.
 
@@ -306,8 +300,6 @@ fn main() {
         "codeccheck",
         "swap-samples",
         "car-first",
-        "keep-ents",
-        "set-uid",
         "split-car",
         "set-u01",
         "strip-events",
@@ -384,7 +376,6 @@ fn main() {
         "engine" => engine::cmd(rest),
         "manifest" => cmd_manifest(rest),
         "chunks" => cmd_chunks(rest),
-        "samples" => cmd_samples(rest),
         "dump" => {
             let c = Container::load(&rest[0]).unwrap_or_else(|e| die(e));
             let at = num(rest, "--at").unwrap_or(0) as usize;
@@ -402,11 +393,8 @@ fn main() {
         "tape" => cmd_tape(rest),
         "map" => cmd_map(rest),
         "trim" => trim::cmd(rest),
-        "static" => ghost::statik::cmd(rest),
         "splice" => splice::cmd(rest),
         "synth" => synth::cmd(rest),
-        "unwrap" => ghost::unwrap::cmd(rest),
-        "lcp" => ghost::lcp::cmd(rest),
         // `ghost strip-events IN OUT --type N` -- drop every deltas2 record of
         // one type from the middle entity. Built to answer ONE question: why
         // does 287431's ghost kill the client on any map (17a29c8)? It carries
@@ -434,47 +422,6 @@ fn main() {
         // crash lives in the SAMPLE BYTES or in the container: 294446's samples
         // are known to load, so if 287431 wearing them still crashes, the
         // sample data is innocent.
-        "set-uid" => {
-            // The map uid a ghost declares, rewritten in place: every 27-character
-            // length-prefixed uid literal in the body becomes --uid (same length,
-            // so nothing else moves). For A/Bs against a re-uided map copy
-            // (`tmmaps setuid`): the client refuses a ghost whose uid is not the
-            // loaded map's.
-            let inp = rest.first().unwrap_or_else(|| die("ghost debug set-uid IN OUT --uid U (27 chars)"));
-            let outp = rest.get(1).unwrap_or_else(|| die("ghost debug set-uid IN OUT --uid U (27 chars)"));
-            let uid = flag(rest, "--uid").unwrap_or_else(|| die("--uid U (27 chars)"));
-            if uid.len() != 27 || !uid.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
-                die(format!("--uid `{}`: a map uid is 27 ASCII chars of [A-Za-z0-9_-]", uid));
-            }
-            let data = std::fs::read(inp).unwrap_or_else(|e| die(format!("{}: {}", inp, e)));
-            let g = gbx::Gbx::parse(&data);
-            let mut body = g.body.clone();
-            let mut n = 0usize;
-            let mut was = Vec::new();
-            let mut i = 0usize;
-            while i + 31 <= body.len() {
-                let len = u32::from_le_bytes(body[i..i + 4].try_into().unwrap());
-                if len == 27 {
-                    if let Ok(s) = std::str::from_utf8(&body[i + 4..i + 31]) {
-                        if s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
-                            was.push(s.to_string());
-                            body[i + 4..i + 31].copy_from_slice(uid.as_bytes());
-                            n += 1;
-                            i += 31;
-                            continue;
-                        }
-                    }
-                }
-                i += 1;
-            }
-            if n == 0 {
-                die("no uid literal in the body");
-            }
-            let mut file = g.header_bytes_u();
-            file.extend_from_slice(&body);
-            std::fs::write(outp, &file).unwrap_or_else(|e| die(format!("{}: {}", outp, e)));
-            println!("{} uid literal(s) {:?} -> {} in {}", n, was, uid, outp);
-        }
         "swap-samples" => {
             // IN OUT, with every other input a named flag -- the convention
             // `trim`, `splice`, `declare`, `regen`, `split-car` and the rest
@@ -541,50 +488,6 @@ fn main() {
             }) {
                 Ok(_) => println!("moved the car entity to index 0 -> {}", outp),
                 Err(e) => die(format!("car-first: {}", e)),
-            }
-        }
-        "keep-ents" => {
-            // A regenerated ghost whose CARRIER was a multi-client server
-            // recording keeps every other player's 0x2D001000 / 0x032CB000
-            // streams (tiny 11, 2026-09-09: 7 entities, three players' ids), and
-            // the client answers the import with 0 -> 0 ghost blocks and a
-            // FrameMessage -- the film.rs soft refusal. Keep the named entity
-            // indices (the car and ITS two streams), drop the rest; the car's
-            // samples are untouched.
-            let inp = rest.first().unwrap_or_else(|| die("ghost debug keep-ents IN OUT --keep I,J,K"));
-            let outp = rest.get(1).unwrap_or_else(|| die("ghost debug keep-ents IN OUT --keep I,J,K"));
-            let keep: Vec<usize> = flag(rest, "--keep")
-                .unwrap_or_else(|| die("--keep I,J,K (entity indices as `ghost manifest` lists them)"))
-                .split(',')
-                .map(|s| s.trim().parse::<usize>().unwrap_or_else(|_| die(format!("--keep: `{}` is not an index", s))))
-                .collect();
-            let mut note = String::new();
-            match gbx::recwrite::rewrite_ghost(inp, outp, |rd| {
-                let n = rd.ents.len();
-                for k in &keep {
-                    if *k >= n {
-                        return Err(format!("--keep {}: the record has {} entities", k, n));
-                    }
-                }
-                let kept: Vec<_> = rd
-                    .ents
-                    .iter()
-                    .enumerate()
-                    .filter(|(i, _)| keep.contains(i))
-                    .map(|(_, e)| e.clone())
-                    .collect();
-                note = format!(
-                    "{} of {} entities kept ({}); dropped {}",
-                    kept.len(),
-                    n,
-                    kept.iter().map(|e| format!("type {} u01 {} samples {}", e.type_, e.u01, e.times.len())).collect::<Vec<_>>().join("; "),
-                    rd.ents.iter().enumerate().filter(|(i, _)| !keep.contains(i)).map(|(_, e)| format!("type {} u01 {}", e.type_, e.u01)).collect::<Vec<_>>().join("; ")
-                );
-                rd.ents = kept;
-                Ok(())
-            }) {
-                Ok(_) => println!("{} -> {}", note, outp),
-                Err(e) => die(format!("keep-ents: {}", e)),
             }
         }
         "split-car" => {
@@ -662,6 +565,7 @@ fn main() {
             }
         }
         "declare" => declare::cmd(rest),
+        "validation" => validation::cmd(rest),
         "identity" => ident::cmd(rest),
         "header" => {
             let what = rest.first().map(|s| s.as_str()).unwrap_or("show");
@@ -675,6 +579,7 @@ fn main() {
         "record" => record::cmd(rest),
         "film" => film::cmd(rest),
         "regen" => regen::cmd(rest),
+        "compress" => regen::compress_cmd(rest),
         "regen-control" => regen::control(rest),
         "roundtrip" => roundtrip::cmd(rest),
         "verify" => verify::cmd(rest),
@@ -868,6 +773,121 @@ fn cmd_tape(a: &[String]) {
     let what = a.first().map(|s| s.as_str()).unwrap_or_else(|| die("ghost tape <extract|inject|script|expand|graft|poke|set|diff|stats|csv|bits>"));
     let rest = &a[1..];
     match what {
+        "jitter" => {
+            // ROBUSTNESS PROBE FOR A DRIVEN TAPE: N variants of IN in which every
+            // input EDGE (a tick where steer, gas or brake changes) is moved
+            // independently by a uniform random offset in [-K, +K] ticks (the
+            // edge keeps its order with its neighbours). Each variant is injected
+            // into IN's own container; `tmsearch validate` the directory and count
+            // the finishers. Written for the rig's SendInput driver, whose edges
+            // land +-20 ms off (2026-09-29): a tape that only finishes at +-0 ms
+            // is not a recipe.
+            let inp = &rest[0];
+            let outdir = need(rest, "--out");
+            let n: usize = num(rest, "--n").unwrap_or(16) as usize;
+            let k: i64 = num(rest, "--ticks").unwrap_or(2);
+            let mut seed: u64 = num(rest, "--seed").unwrap_or(1) as u64;
+            let lo: usize = num(rest, "--from-tick").unwrap_or(30) as usize; // the locator wobble stays
+            let c = Container::load(inp).unwrap_or_else(|e| die(e));
+            let t = Tape::from_file(inp).unwrap_or_else(|e| die(e));
+            let txt = t.to_text(inp);
+            // per-tick (steer, accel, brake) from the text form
+            let mut rows: Vec<(usize, i64, i64, i64, String)> = Vec::new();
+            let mut header: Vec<String> = Vec::new();
+            for l in txt.lines() {
+                if let Some(after) = l.strip_prefix("t=") {
+                    let idx: usize = after.split_whitespace().next().and_then(|v| v.parse().ok()).unwrap_or_else(|| die("tick index"));
+                    let f = |k: &str| -> i64 {
+                        l.split_whitespace().find_map(|w| w.strip_prefix(&format!("{k}=")).and_then(|v| v.parse::<i64>().ok())).unwrap_or(0)
+                    };
+                    rows.push((idx, f("steer"), f("accel"), f("brake"), l.to_string()));
+                } else {
+                    header.push(l.to_string());
+                }
+            }
+            // edges: ticks >= lo where any input differs from the previous tick
+            let mut edges: Vec<usize> = Vec::new();
+            for i in 1..rows.len() {
+                if rows[i].0 >= lo && (rows[i].1, rows[i].2, rows[i].3) != (rows[i - 1].1, rows[i - 1].2, rows[i - 1].3) {
+                    edges.push(i);
+                }
+            }
+            // a stretch of analog steer (a value per tick) is not an edge list:
+            // collapse consecutive edge ticks into one segment boundary
+            let mut segs: Vec<usize> = Vec::new();
+            for e in &edges {
+                if segs.last().map(|l| e - l > 1).unwrap_or(true) {
+                    segs.push(*e);
+                }
+            }
+            std::fs::create_dir_all(outdir).unwrap_or_else(|e| die(format!("{outdir}: {e}")));
+            let mut rng = move || -> u64 {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                seed
+            };
+            let stem = std::path::Path::new(inp).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or("tape".into());
+            let stem = stem.trim_end_matches(".Ghost").to_string();
+            let mut manifest = String::from("file\tshifts_ticks\n");
+            for v in 0..n {
+                // new segment boundaries, order-preserving
+                let mut nb: Vec<usize> = Vec::with_capacity(segs.len());
+                for (j, s0) in segs.iter().enumerate() {
+                    let d = (rng() % (2 * k as u64 + 1)) as i64 - k;
+                    let mut b = (*s0 as i64 + d).max(lo as i64) as usize;
+                    if let Some(prev) = nb.last() {
+                        if b <= *prev {
+                            b = prev + 1;
+                        }
+                    }
+                    if j + 1 < segs.len() {
+                        b = b.min(segs[j + 1] - 1);
+                    }
+                    b = b.min(rows.len() - 1);
+                    nb.push(b);
+                }
+                // rebuild: between boundary j and j+1 hold the ORIGINAL value of segment j
+                let mut out_rows: Vec<(i64, i64, i64)> = Vec::with_capacity(rows.len());
+                let mut j = 0usize;
+                for i in 0..rows.len() {
+                    while j < nb.len() && i >= nb[j] {
+                        j += 1;
+                    }
+                    // segment j-1 (or the prefix before the first edge)
+                    let src = if j == 0 { i.min(segs.first().copied().unwrap_or(rows.len()).saturating_sub(1)).min(i) } else { segs[j - 1] };
+                    let r = if j == 0 { &rows[i.min(src)] } else { &rows[src] };
+                    out_rows.push((r.1, r.2, r.3));
+                }
+                let mut lines: Vec<String> = header.clone();
+                for (i, row) in rows.iter().enumerate() {
+                    let mut fields: Vec<String> = row.4.split_whitespace().map(|s| s.to_string()).collect();
+                    for f in fields.iter_mut() {
+                        if f.starts_with("steer=") {
+                            *f = format!("steer={}", out_rows[i].0);
+                        } else if f.starts_with("accel=") {
+                            *f = format!("accel={}", out_rows[i].1);
+                        } else if f.starts_with("brake=") {
+                            *f = format!("brake={}", out_rows[i].2);
+                        } else if f.starts_with("vsame=") {
+                            *f = "vsame=0".to_string();
+                        }
+                    }
+                    lines.push(fields.join(" "));
+                }
+                let t2 = Tape::from_text(&lines.join("\n")).unwrap_or_else(|e| die(format!("variant {v}: {e}")));
+                let bytes = t2.inject_into(&c, Encoding::Explicit).unwrap_or_else(|e| die(e));
+                let f = format!("{outdir}/{stem}_j{v:03}.Ghost.Gbx");
+                std::fs::write(&f, &bytes).unwrap_or_else(|e| die(format!("{f}: {e}")));
+                let shifts: Vec<String> = segs.iter().zip(nb.iter()).map(|(a, b)| format!("{:+}", *b as i64 - *a as i64)).collect();
+                manifest.push_str(&format!("{f}\t{}\n", shifts.join(",")));
+            }
+            std::fs::write(format!("{outdir}/manifest.tsv"), &manifest).unwrap_or_else(|e| die(e.to_string()));
+            println!(
+                "wrote {n} variants of {inp} to {outdir}: {} input edges (segment boundaries at ticks {:?}) each moved by up to +-{k} tick(s); manifest.tsv lists the shifts. Score with `tmsearch validate --map M {outdir}/*.Ghost.Gbx`.",
+                segs.len(), segs
+            );
+        }
         "poke" => {
             // Override the vehicle inputs over a tick range, leaving every
             // other tick byte-identical. A brake pulse, a lifted throttle, a
@@ -1611,6 +1631,7 @@ fn cmd_tape(a: &[String]) {
             }
         }
         "bits" => cmd_bits(rest),
+        "census" => ghost::wordcensus::cmd(rest),
         o => die(format!("unknown `ghost tape` operation {:?}", o)),
     }
 }
@@ -1810,7 +1831,20 @@ fn cmd_map(a: &[String]) {
             let c = Container::load(inp).unwrap_or_else(|e| die(e));
             let newuid = map_uid_of(&newmap).unwrap_or_else(|| die("no uid in the replacement map"));
             let body = set_embedded_map(&c, &newmap, &newuid).unwrap_or_else(|e| die(e));
-            container::write_gbx(&c.gbx, body, out).unwrap_or_else(|e| die(e));
+            // THE REPLAY HEADER HAS ITS OWN COPY OF THE UID (0x03093000 and the
+            // XML) that no body census sees. A carrier rebound here kept its
+            // donor's uid there; the client filed the replay under the donor's
+            // map (2026-09-29). A plain .Ghost.Gbx has no header: no-op.
+            let mut gbx = c.gbx.clone();
+            if let Some(e) = hdr::rewrite_full(&c, false, None, None, Some(&newuid)) {
+                gbx.user_data = e.user_data;
+                for l in &e.log {
+                    if l.contains("map uid") {
+                        println!("{l}");
+                    }
+                }
+            }
+            container::write_gbx(&gbx, body, out).unwrap_or_else(|e| die(e));
             // control: read it back
             let c2 = Container::load(out).unwrap_or_else(|e| die(e));
             match c2.embedded_map_bytes() {
@@ -1836,36 +1870,3 @@ fn cmd_map(a: &[String]) {
     }
 }
 
-
-/// `ghost samples FILE [--every MS]`: the telemetry record as CSV — one row a
-/// sample: `t_s,x,y,z,speed_kmh,yaw,pitch,roll,ground,gas,brake,steer,wetness`.
-/// The trajectory the CLIENT replays for a ghost (it plays these positions
-/// back; only record validation re-simulates the tape), so the file's own
-/// answer to "where does this ghost's car go" needs no engine.
-fn cmd_samples(args: &[String]) {
-    let Some(path) = args.first() else {
-        eprintln!("ghost samples FILE [--every MS]");
-        std::process::exit(2);
-    };
-    let every: i32 = args.iter().position(|a| a == "--every").and_then(|i| args.get(i + 1)).and_then(|v| v.parse().ok()).unwrap_or(0);
-    let d = match gbx::record::decode_ghost(path) {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("{path}: no telemetry record ({e})");
-            std::process::exit(1);
-        }
-    };
-    println!("t_s,x,y,z,speed_kmh,yaw,pitch,roll,ground,gas,brake,steer,wetness");
-    let mut next = i32::MIN;
-    for s in &d.samples {
-        if every > 0 && s.time_ms < next {
-            continue;
-        }
-        next = s.time_ms + every;
-        println!(
-            "{:.3},{:.3},{:.3},{:.3},{:.1},{:.3},{:.3},{:.3},{},{:.2},{:.2},{:.3},{:.2}",
-            s.time_ms as f64 / 1000.0, s.x, s.y, s.z, s.speed_kmh, s.yaw, s.pitch, s.roll,
-            if s.is_ground_contact { 1 } else { 0 }, s.gas, s.brake, s.steer, s.wetness
-        );
-    }
-}

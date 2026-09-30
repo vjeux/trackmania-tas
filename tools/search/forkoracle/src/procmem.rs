@@ -161,3 +161,34 @@ pub fn memmem(hay: &[u8], needle: &[u8]) -> Option<usize> {
    in-memory copy of a bitstream to test whether the engine re-reads it. It
    does not -- the raw stream is decoded once at load and never read again --
    so the question is answered and the capability is not needed. */
+
+/// `/proc/<pid>/mem` opened ONCE for a burst of reads. `read_at` opens the
+/// file per call, which is fine for a handful of reads and a procfs storm for
+/// thirty per env step across 128 workers (measured 2026-09-07: env-steps/s
+/// flat at ~7.8k while ms/step grew linearly with the worker count).
+pub struct Mem {
+    f: File,
+}
+
+impl Mem {
+    pub fn open(pid: i32) -> Option<Mem> {
+        File::open(format!("/proc/{}/mem", pid)).ok().map(|f| Mem { f })
+    }
+
+    pub fn read(&mut self, addr: u64, len: usize) -> Option<Vec<u8>> {
+        let mut buf = vec![0u8; len];
+        self.f.seek(SeekFrom::Start(addr)).ok()?;
+        self.f.read_exact(&mut buf).ok()?;
+        Some(buf)
+    }
+}
+
+/// Write `bytes` into the process at `addr` (via `/proc/<pid>/mem`; the process must be stopped or paused at a
+/// point where nothing else touches that memory -- a fork server at its checkpoint is). Returns the byte count.
+pub fn write_at(pid: i32, addr: u64, bytes: &[u8]) -> Result<usize, String> {
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new().write(true).open(format!("/proc/{}/mem", pid)).map_err(|e| format!("open /proc/{pid}/mem for write: {e}"))?;
+    f.seek(SeekFrom::Start(addr)).map_err(|e| e.to_string())?;
+    f.write_all(bytes).map_err(|e| format!("write {} bytes at {addr:#x} of pid {pid}: {e}", bytes.len()))?;
+    Ok(bytes.len())
+}

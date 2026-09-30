@@ -3,16 +3,15 @@
 //!
 //! # Why this exists
 //!
-//! The fork shim is an `LD_PRELOAD` interposer on `lroundf`. Everything it does
-//! — count calls, stop at a checkpoint, fork, patch the decoded input array,
-//! probe the consumed boundary, re-enter as a branch node on a fresh socket —
-//! is about **process mechanics and one array in memory**. None of it is about
-//! Trackmania.
+//! Everything the shim does — advance a clock, stop at a checkpoint, fork,
+//! patch the decoded input array, probe the consumed boundary, re-enter as a
+//! branch node on a fresh socket — is about **process mechanics and one array
+//! in memory**. None of it is about Trackmania.
 //!
 //! So the mechanism can be exercised against a program that merely *behaves
 //! like* the engine in the three ways the shim depends on:
 //!
-//! 1. it calls `lroundf` a fixed number of times per simulated tick;
+//! 1. it announces one tick of simulated time at a time;
 //! 2. it holds one decoded input array, 32 bytes per tick, in an `rw` heap
 //!    mapping, and reads it strictly **in tick order, one record per tick** —
 //!    which is what makes the page-fault probe meaningful;
@@ -24,6 +23,15 @@
 //! that lands above the boundary changes the answer and a write that lands
 //! below it does not — the exact signature of the defect the forward-only rule
 //! exists for, reproducible in milliseconds with no engine.
+//!
+//! # How it announces a tick
+//!
+//! In the real server the shim patches the entry of the engine's own per-tick
+//! function and reads `new_time`, `dt` and the race start out of it. This host
+//! has no such function and no engine to read a race start from, so it calls
+//! the shim's `fkshim_tick(new_ms, dt, race_start_ms)` seam directly — the same
+//! code path from there on. Its launcher must set `FKSHIM_TEST_HOST=1`, which
+//! is the shim's only licence to run without hooking a real tick function.
 //!
 //! # What it does NOT establish
 //!
@@ -37,12 +45,24 @@
 use std::io::Write;
 
 const STRIDE: usize = 32;
+/// The engine's own numbers: the simulation starts at 1000 ms, the race a
+/// little later, and a tick is 10 ms. Only the SHAPE matters here — the tests
+/// convert ticks to clock values through `forkoracle::clock`, exactly as the
+/// real driver does.
+const SIM_START_MS: u32 = 1000;
+const RACE_START_MS: u32 = 2200;
+const DT: u32 = 10;
 
 fn main() {
     let a: Vec<String> = std::env::args().skip(1).collect();
     let n: usize = a.first().and_then(|v| v.parse().ok()).unwrap_or(2000);
-    let per_tick: usize = a.get(1).and_then(|v| v.parse().ok()).unwrap_or(255);
     let key_path = std::env::var("FKSHIM_KEY").expect("shimhost needs FKSHIM_KEY");
+    assert_eq!(
+        std::env::var("FKSHIM_TEST_HOST").ok().as_deref(),
+        Some("1"),
+        "shimhost must be launched with FKSHIM_TEST_HOST=1; without it the shim \
+         refuses to run on a host it cannot hook, which is the point of that check"
+    );
 
     // The decoded input array, exactly the shape the engine holds: one 32-byte
     // record per tick, `f32 steer, f32 gas, f32 brake`, in tick order, one
@@ -50,28 +70,44 @@ fn main() {
     let steer = key_steer(&key_path, n);
     let mut arr = vec![0u8; n * STRIDE];
     for t in 0..n {
-        arr[t * STRIDE..t * STRIDE + 4].copy_from_slice(&steer[t].to_le_bytes());
-        arr[t * STRIDE + 4..t * STRIDE + 8].copy_from_slice(&1.0f32.to_le_bytes());
-        arr[t * STRIDE + 8..t * STRIDE + 12].copy_from_slice(&0.0f32.to_le_bytes());
-        // A distinguishable tail so a stray 12-byte patch is visible.
-        arr[t * STRIDE + 16..t * STRIDE + 20].copy_from_slice(&(t as u32).to_le_bytes());
+        // THE ENGINE'S LAYOUT, field for field: flags, steer, gas, brake, then
+        // the tail the engine fills and the tape never touches. A host with a
+        // different layout would test the shim against a record shape that does
+        // not exist, which is exactly how the base ended up four bytes off.
+        arr[t * STRIDE..t * STRIDE + 4].copy_from_slice(&2u32.to_le_bytes());
+        arr[t * STRIDE + 4..t * STRIDE + 8].copy_from_slice(&steer[t].to_le_bytes());
+        arr[t * STRIDE + 8..t * STRIDE + 12].copy_from_slice(&1.0f32.to_le_bytes());
+        arr[t * STRIDE + 12..t * STRIDE + 16].copy_from_slice(&0.0f32.to_le_bytes());
+        // A distinguishable tail so a stray patch outside the three input
+        // fields is visible.
+        arr[t * STRIDE + 24..t * STRIDE + 28].copy_from_slice(&(t as u32).to_le_bytes());
+        arr[t * STRIDE + 28..t * STRIDE + 32].copy_from_slice(&2u32.to_le_bytes());
     }
 
-    // The "simulation". The order inside a tick is the load-bearing part: the
-    // clock advances FIRST and the record is read AFTER, so a checkpoint that
-    // fires inside tick `t` leaves record `t` unconsumed -- which is exactly
-    // what the probe should report.
+    // The "simulation". The order inside a tick is the load-bearing part, and
+    // it is the engine's: the tick is ANNOUNCED first and the record is read
+    // AFTER, so a checkpoint that fires on tick `t` leaves record `t`
+    // unconsumed -- which is exactly what the probe should report. The read is
+    // of the WHOLE 32-byte record, from its first byte, because that is what
+    // the engine's `movups [rdx+rcx]` pair does and it is what the page-fault
+    // probe sees.
+    let tick = tick_fn();
     let mut hash: u64 = 1469598103934665603;
+    // The countdown: ticks the engine runs before the race exists. They must
+    // not move the clock, and the shim must survive them.
+    let countdown = ((RACE_START_MS - SIM_START_MS) / DT) as usize;
+    for i in 0..countdown {
+        unsafe { tick(SIM_START_MS + (i as u32 + 1) * DT, DT, u32::MAX) };
+    }
     for t in 0..n {
-        for i in 0..per_tick {
-            // A value whose rounding depends on the tick, so nothing can be
-            // constant-folded away.
-            unsafe { lroundf((t as f32) * 0.001 + i as f32 * 1e-6) };
-        }
+        unsafe { tick(RACE_START_MS + t as u32 * DT, DT, RACE_START_MS) };
         let rec = unsafe {
-            std::ptr::read_volatile(arr.as_ptr().add(t * STRIDE) as *const [u8; 12])
+            std::ptr::read_volatile(arr.as_ptr().add(t * STRIDE) as *const [u8; STRIDE])
         };
-        for b in rec {
+        // Hash the three input fields only: the rest is engine-owned and a
+        // patch must never move it.
+        for b in &rec[4..16] {
+            let b = *b;
             hash ^= b as u64;
             hash = hash.wrapping_mul(1099511628211);
         }
@@ -92,8 +128,23 @@ fn main() {
     std::hint::black_box(&arr);
 }
 
+type TickFn = unsafe extern "C" fn(u32, u32, u32);
+
 extern "C" {
-    fn lroundf(x: f32) -> i64;
+    fn dlsym(handle: *mut std::ffi::c_void, name: *const u8) -> *mut std::ffi::c_void;
+}
+
+/// Resolve the shim's tick seam AT RUNTIME, out of whatever `LD_PRELOAD`
+/// loaded. Linking it statically would give this process its own copy of the
+/// shim's statics -- a second clock nobody drives -- so the lookup is
+/// deliberate, and its absence is a hard failure rather than a quiet no-op.
+fn tick_fn() -> TickFn {
+    let p = unsafe { dlsym(std::ptr::null_mut(), b"fkshim_tick\0".as_ptr()) };
+    assert!(
+        !p.is_null(),
+        "shimhost found no `fkshim_tick`: it must run under LD_PRELOAD of libforkshim.so"
+    );
+    unsafe { std::mem::transmute::<*mut std::ffi::c_void, TickFn>(p) }
 }
 
 /// Read the steer sequence the shim will search for out of the key file the

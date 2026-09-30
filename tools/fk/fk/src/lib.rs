@@ -58,10 +58,9 @@
 
 pub mod carrier;
 pub mod cmd;
-/// The CLOCK-FIRST locator: find the engine's race clock, then key every
-/// sample on it. The reference-free locator the SEARCH uses is
-/// `forkoracle::blind`; the difference is that this one is correct when the car
-/// does not move (a respawn) or the engine writes the state twice in a tick.
+/// The per-tick GATHER of the car's state out of a fork child. The car itself
+/// is derived by `forkoracle::car::locate` (LOCATE.md); nothing in `fk`
+/// searches memory for it any more.
 pub mod locate;
 pub mod oracle;
 pub mod ptr;
@@ -69,7 +68,7 @@ pub mod record;
 pub mod session;
 pub mod tape;
 pub mod traj;
-pub mod validator;
+
 pub mod vislayout;
 
 /// Print a fatal error and exit 2. Reserved for a caller's mistake (a missing
@@ -106,4 +105,11 @@ pub fn secs_opt(ms: Option<i64>) -> String {
         Some(v) => secs(v),
         None => "DNF".into(),
     }
+}
+
+/// Was this flag on the command line? For the handful of switches that reach
+/// code far from the parser — a control that is off by default, never a
+/// behaviour that changes silently.
+pub fn has_flag(name: &str) -> bool {
+    std::env::args().any(|a| a == name)
 }

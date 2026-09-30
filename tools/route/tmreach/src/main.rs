@@ -1,0 +1,2336 @@
+use std::path::{Path, PathBuf};
+use tmreach::gates::{GateKind, MapGates};
+use tmreach::rig::Worker;
+use tmreach::starts::{run_on_worker, starts_tsv_header, starts_tsv_row, StartsOpts};
+use tmreach::tele::Telemetry;
+
+fn usage() -> ! {
+    eprintln!(
+        "tmreach -- the reachability generator (route project, GEN arm)
+
+  tmreach starts --map M --ghost G [--every MS] [--out starts.tsv] [--trace F.tsv] [--work DIR] [-v]
+        savestates along a human run + the START-POSITION and IDENTITY controls (fail closed)
+  tmreach gatecal --map M --ghosts DIR [--workers W] [--out DIR]
+        every ghost: controls, flat engine trajectory, where the car is at each credited
+        checkpoint; grades candidate trigger volumes against the credited ticks
+
+Engine: --server DIR [$TM_SERVER]  --shim FILE [$FK_SHIM]
+Times print as seconds with a decimal."
+    );
+    std::process::exit(2)
+}
+
+struct Args {
+    flags: std::collections::HashMap<String, String>,
+    bools: std::collections::HashSet<String>,
+}
+
+impl Args {
+    fn parse(a: &[String]) -> Args {
+        let mut flags = std::collections::HashMap::new();
+        let mut bools = std::collections::HashSet::new();
+        let mut i = 0;
+        while i < a.len() {
+            if let Some(k) = a[i].strip_prefix("--") {
+                // --key=value
+                if let Some((kk, v)) = k.split_once('=') {
+                    flags.insert(kk.to_string(), v.to_string());
+                    i += 1;
+                    continue;
+                }
+                if i + 1 < a.len() && !a[i + 1].starts_with("--") {
+                    flags.insert(k.to_string(), a[i + 1].clone());
+                    i += 2;
+                    continue;
+                }
+                bools.insert(k.to_string());
+            } else if a[i] == "-v" {
+                bools.insert("verbose".into());
+            }
+            i += 1;
+        }
+        Args { flags, bools }
+    }
+    fn get(&self, k: &str) -> Option<&str> {
+        self.flags.get(k).map(|s| s.as_str())
+    }
+    fn req(&self, k: &str) -> String {
+        match self.get(k) {
+            Some(v) => v.to_string(),
+            None => {
+                eprintln!("tmreach: --{k} is required");
+                std::process::exit(2)
+            }
+        }
+    }
+    fn has(&self, k: &str) -> bool {
+        self.bools.contains(k)
+    }
+}
+
+fn engine_paths(a: &Args) -> (PathBuf, PathBuf) {
+    let server = a
+        .get("server")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var("TM_SERVER").ok().map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("/tmp/tmp/server"));
+    let shim = a
+        .get("shim")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var("FK_SHIM").ok().map(PathBuf::from))
+        .or_else(fk::session::default_shim)
+        .unwrap_or_else(|| PathBuf::from("libforkshim.so"));
+    (server, shim)
+}
+
+fn main() {
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    if argv.is_empty() {
+        usage();
+    }
+    let a = Args::parse(&argv[1..]);
+    let r = match argv[0].as_str() {
+        "starts" => cmd_starts(&a),
+        "gatecal" => cmd_gatecal(&a),
+        "fanout" => cmd_fanout(&a),
+        "verify" => cmd_verify(&a),
+        "oraclectl" => cmd_oraclectl(&a),
+        "gateprobe" => cmd_gateprobe(&a),
+        "fitbox" => cmd_fitbox(&a),
+        "rejudge" => cmd_rejudge(&a),
+        "campaign" => cmd_campaign(&a),
+        "explore" => cmd_explore(&a),
+        "replay" => cmd_replay(&a),
+        "effects" => cmd_effects(&a),
+        "bank-table" => cmd_bank_table(&a),
+        "load-control" => cmd_load_control(&a),
+        "lap" => cmd_lap(&a),
+        "lcp-to-state" => cmd_lcp_to_state(&a),
+        "chain-to-state" => cmd_chain_to_state(&a),
+        "preflight" => cmd_preflight(&a),
+        "contact-trace" => cmd_contact_trace(&a),
+        "chain-replay" => cmd_chain_replay(&a),
+        "input-life" => cmd_input_life(&a),
+        "sweep" => cmd_sweep(&a),
+        "track-project" => cmd_track_project(&a),
+        "identity" => cmd_identity(&a),
+        _ => usage(),
+    };
+    if let Err(e) = r {
+        eprintln!("tmreach: ABORT: {e}");
+        std::process::exit(1);
+    }
+}
+
+fn cmd_starts(a: &Args) -> Result<(), String> {
+    let map = PathBuf::from(a.req("map"));
+    let ghost = PathBuf::from(a.req("ghost"));
+    let (server, shim) = engine_paths(a);
+    let work = a
+        .get("work")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(format!("/tmp/tmreach/starts-{}", std::process::id())));
+    let o = StartsOpts {
+        every_ms: a.get("every").map(|s| s.parse().unwrap()).unwrap_or(500),
+        out: a.get("out").map(PathBuf::from),
+        trace_out: a.get("trace").map(PathBuf::from),
+        verbose: a.has("verbose"),
+    };
+    let geom = a.get("geom").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("{}/persistent/private-30d/tm-route/geom", std::env::var("HOME").unwrap_or_default())));
+    let gates = MapGates::load(&map, Some(&geom))?;
+    println!("gates from {}", gates.source);
+    println!("map {}: {} gates + spawn {:?}", gates.map_uid, gates.gates.len(), gates.spawn.as_ref().map(|s| s.centre));
+    for g in &gates.gates {
+        println!("  wp{} {:?} {} item={} centre ({:.1}, {:.1}, {:.1}) normal ({:.2}, {:.2}, {:.2}) hw {:.1} hh {:.1} group {}", g.waypoint, g.kind, g.model, g.from_item, g.centre[0], g.centre[1], g.centre[2], g.normal[0], g.normal[1], g.normal[2], g.half_width, g.half_height, g.group);
+    }
+    let tel = Telemetry::load(&ghost.to_string_lossy())?;
+    println!(
+        "ghost {} md5 {} : {} samples, checkpoints {}",
+        ghost.display(),
+        tel.md5,
+        tel.dec.samples.len(),
+        tel.checkpoints_ms.iter().map(|c| tmreach::secs(*c as i64)).collect::<Vec<_>>().join(" ")
+    );
+    let mut w = match a.get("clock") {
+        Some(c) => Worker::start_at(&server, &map, &shim, &work, &ghost, o.verbose, c.parse().unwrap())?,
+        None => Worker::start(&server, &map, &shim, &work, &ghost, o.verbose)?,
+    };
+    println!(
+        "worker up in {:.1} s: tape {} ticks, start_offset {} ms, root probe tick {}, root row label {} (tick hook: race {}) at ({:.3}, {:.3}, {:.3}) {:.2} m/s",
+        w.startup_s, w.n_ticks(), w.tape.start_offset_ms, w.root_probe, tmreach::secs(w.root_row.time_ms),
+        w.root_race_ms_hook.map(tmreach::secs).unwrap_or("n/a (lroundf clock)".into()),
+        w.root_row.x, w.root_row.y, w.root_row.z, tmreach::rig::speed(&w.root_row)
+    );
+    let rep = run_on_worker(&mut w, &tel, &gates, &o)?;
+    if !(rep.start_ctrl_pass && rep.identity.passes()) {
+        return Err("a startup control FAILED; no starts written".into());
+    }
+    if let Some(p) = &o.out {
+        let mut s = String::from(starts_tsv_header());
+        for (i, st) in rep.starts.iter().enumerate() {
+            s.push_str(&starts_tsv_row(i as u32, &rep.ghost_md5, st, "human"));
+        }
+        std::fs::write(p, s).map_err(|e| e.to_string())?;
+        println!("wrote {} ({} starts)", p.display(), rep.starts.len());
+    }
+    for st in rep.starts.iter().take(5) {
+        println!("  start tick {} race {} ({:.2}, {:.2}, {:.2}) {:.1} m/s cps {}", st.tick, tmreach::secs(st.row.time_ms), st.row.x, st.row.y, st.row.z, tmreach::rig::speed(&st.row), st.cps_before);
+    }
+    Ok(())
+}
+
+fn pool_cfg(a: &Args, map: &PathBuf, tag: &str) -> tmreach::pool::PoolCfg {
+    let (server, shim) = engine_paths(a);
+    tmreach::pool::PoolCfg {
+        server,
+        map: map.clone(),
+        shim,
+        work_root: a
+            .get("work")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(format!("/tmp/tmreach/{}-{}", tag, std::process::id()))),
+        workers: a.get("workers").map(|s| s.parse().unwrap()).unwrap_or(16),
+        verbose: a.has("verbose"),
+    }
+}
+
+fn cmd_gatecal(a: &Args) -> Result<(), String> {
+    use tmreach::gatecal::*;
+    let map = PathBuf::from(a.req("map"));
+    let ghosts = tmreach::pool::ghosts_in(&PathBuf::from(a.req("ghosts")))?;
+    let out = PathBuf::from(a.get("out").unwrap_or("/tmp/tmreach/gatecal"));
+    std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+    let geom = a.get("geom").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("{}/persistent/private-30d/tm-route/geom", std::env::var("HOME").unwrap_or_default())));
+    let gates = std::sync::Arc::new(MapGates::load(&map, Some(&geom))?);
+    println!("gates from {}", gates.source);
+    let cfg = pool_cfg(a, &map, "gatecal");
+    println!("gatecal: {} ghosts, {} workers, map {}", ghosts.len(), tmreach::pool::cap(cfg.workers), gates.map_uid);
+    let g2 = gates.clone();
+    let t0 = std::time::Instant::now();
+    let results = tmreach::pool::run_per_ghost(&cfg, &ghosts, move |_, w, tel| ghost_run(w, tel, &g2));
+    let mut runs = Vec::new();
+    let mut failed = 0;
+    for (g, r) in ghosts.iter().zip(results) {
+        match r {
+            Ok(run) => {
+                println!(
+                    "  {}: start d {:.2} m, identity RMS {:.4} max {:.3} m, {} crossings, startup {:.1} s, flat {:.2} s",
+                    run.ghost, run.start_d, run.identity_rms, run.identity_max, run.crossings.len(), run.startup_s, run.flat_s
+                );
+                runs.push(run);
+            }
+            Err(e) => {
+                failed += 1;
+                println!("  {}: FAILED: {}", g.display(), e);
+            }
+        }
+    }
+    println!("{} ghosts ok, {} failed, {:.1} s wall", runs.len(), failed, t0.elapsed().as_secs_f64());
+    // the crossings table
+    let mut s = String::from(crossings_tsv_header());
+    for run in &runs {
+        for c in &run.crossings {
+            s.push_str(&crossing_tsv_row(c, &gates));
+        }
+    }
+    std::fs::write(out.join("crossings.tsv"), &s).map_err(|e| e.to_string())?;
+    // per-ghost flat traces (for the record and for the model arm)
+    for run in &runs {
+        tmreach::starts::write_trace(&out.join(format!("flat-{}.tsv", run.ghost.trim_end_matches(".Ghost.Gbx"))), &run.flat)?;
+    }
+    println!("\nWHERE IS THE CAR AT THE NOTICE (engine label notice-10 = race time of the notice; s along the GEOM normal from the gate centre, m):");
+    for (k, n, mean, sd, mn, mx) in model_stats(&runs, &gates) {
+        println!("  {k}: n {n}  s mean {mean:+.3} sd {sd:.3} min {mn:+.3} max {mx:+.3}");
+    }
+    let prov = format!("tmreach gatecal {} {} ghosts on {} ({}), gates {}", tmreach::GIT_HASH, runs.len(), gates.map_uid, hostname(), gates.source);
+    // GEOM normals pointing AGAINST the humans' travel at their crossings are flipped
+    // for the detector (Summer 2026 - 12: a RoadDirtFinish and RoadDirtCheckpoints credited
+    // at s = +14.6 and +2.5 "past" the centre -- the normal, not the trigger, was backwards)
+    let vels: Vec<(u32, [f64; 3])> = runs.iter().flat_map(|r| r.crossings.iter().filter_map(|c| c.row_step.as_ref().map(|s| (c.gate_wp, [s.vx, s.vy, s.vz])))).collect();
+    let flips = gates.against_travel(&vels);
+    let mut gates = (*gates).clone();
+    gates.apply_flip_list(&flips);
+    if !flips.is_empty() {
+        println!("GEOM normals flipped for the detector (humans cross them against the normal): {:?}", flips);
+    }
+    let (mut det, notes) = fit(&runs, &gates, &prov);
+    det.flipped = flips;
+    // the refitted normals (Detector.normals) take effect in this process too: the grades and the
+    // gate clouds below use the frame the detector will use
+    let mut gates = gates;
+    for (wp, n) in &det.normals {
+        for g in &mut gates.gates {
+            if g.waypoint == *wp {
+                g.normal = *n;
+            }
+        }
+    }
+    println!("\nFITTED DETECTOR (plane at per-model s_off from the crediting geometry, credited tick = T-1; lat 10 m road / GEOM item, up -6..+8: see gatecal::fit):");
+    for n in &notes {
+        println!("  {n}");
+    }
+    for (m, t) in &det.per_model {
+        println!("  {m}: s_off {:+.3} m, depth {:.1}, lat_half {:.1}, up {:+.1}..{:+.1}", t.s_off, t.depth, t.lat_half, t.up_lo, t.up_hi);
+    }
+    let gr = grade(&runs, &gates, &det);
+    println!("GRADE vs the ghosts' own notices (first row inside vs the row before the notice, T-1): {} => {}", gr, if gr.passes() { "PASS (bar: ±2 ticks on ≥95 %, no missed, no extra)" } else { "FAIL" });
+    if a.has("point-probe") {
+        println!("\nWHICH POINT OF THE CAR: plane slack per model for the centre shifted l m along a body axis / the velocity");
+        for l in probe_point_hypotheses(&runs, &gates) {
+            println!("  {l}");
+        }
+        for l in probe_box_hypotheses(&runs, &gates) {
+            println!("  {l}");
+        }
+        for l in probe_rotation_hypotheses(&runs, &gates) {
+            println!("  {l}");
+        }
+    }
+    let cg = counter_grade(&runs, &gates, &det);
+    println!("ENGINE COUNTER control (Row::cps steps vs detector rows, finish included): {} => {}", cg, if cg.passes() { "PASS" } else { "FAIL" });
+    for l in cg.extra_list.iter().take(12) {
+        println!("  extra detection: {l}");
+    }
+    for l in cg.unmatched_list.iter().take(12) {
+        println!("  unmatched step: {l}");
+    }
+    // the engine counter is the authority when the runs carry it; the notice grade is
+    // informational then (a ghost's checkpoints_ms may omit the finish, which the
+    // counter steps for -- Summer 2026 - 04)
+    let gatecal_pass = if cg.runs_without_counter < runs.len() { cg.passes() } else { gr.passes() };
+    println!("GATECAL VERDICT: {} ({})", if gatecal_pass { "PASS" } else { "FAIL" }, if cg.runs_without_counter < runs.len() { "engine counter authoritative; notices informational" } else { "no engine counter: notices" });
+    std::fs::write(out.join("detector.json"), det.to_json()).map_err(|e| e.to_string())?;
+    std::fs::write(out.join("gate-clouds.tsv"), gate_clouds_tsv(&runs, &gates)).map_err(|e| e.to_string())?;
+    std::fs::write(out.join("grade.txt"), format!("notices: {}\n{}\nengine counter: {}\n{}\n", gr, if gr.passes() { "PASS" } else { "FAIL" }, cg, if cg.passes() { "PASS" } else { "FAIL" })).map_err(|e| e.to_string())?;
+    // the human crossing ORDER per ghost, for the coordinator's 44/44 check
+    let mut orders: std::collections::BTreeMap<String, usize> = Default::default();
+    for run in &runs {
+        let mut cs: Vec<&tmreach::gatecal::Crossing> = run.crossings.iter().collect();
+        cs.sort_by_key(|c| c.cp_ms);
+        let o = cs.iter().map(|c| c.gate_wp.to_string()).collect::<Vec<_>>().join(",");
+        *orders.entry(o).or_default() += 1;
+    }
+    println!("human gate ORDER by notice time (detector's nearest-gate assignment): {:?}", orders);
+    println!("wrote {}/crossings.tsv, detector.json, grade.txt, flat-*.tsv", out.display());
+    Ok(())
+}
+
+fn hostname() -> String {
+    std::fs::read_to_string("/proc/sys/kernel/hostname").map(|s| s.trim().to_string()).unwrap_or_default()
+}
+
+fn cmd_fanout(a: &Args) -> Result<(), String> {
+    use tmreach::fanout::*;
+    let map = PathBuf::from(a.req("map"));
+    let ghosts = tmreach::pool::ghosts_in(&PathBuf::from(a.req("ghosts")))?;
+    let out = PathBuf::from(a.req("out"));
+    std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+    let geom = a.get("geom").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("{}/persistent/private-30d/tm-route/geom", std::env::var("HOME").unwrap_or_default())));
+    let det_path = PathBuf::from(a.req("detector"));
+    let det = std::sync::Arc::new(tmreach::gates::Detector::from_json(&std::fs::read_to_string(&det_path).map_err(|e| e.to_string())?)?);
+    let mut gates_m = MapGates::load(&map, Some(&geom))?;
+    gates_m.apply_flips(&det);
+    let gates = std::sync::Arc::new(gates_m);
+    let lib = std::sync::Arc::new(tmreach::macros::library_v0());
+    let horizons: Vec<u16> = a.get("horizons").unwrap_or("200,400").split(',').map(|s| s.parse().unwrap()).collect();
+    let limit = a.get("limit").map(|s| s.parse::<usize>().unwrap()).unwrap_or(usize::MAX);
+    let ghosts: Vec<PathBuf> = ghosts.into_iter().take(limit).collect();
+    let floor_y = gates.gates.iter().map(|g| g.centre[1]).fold(f64::INFINITY, f64::min) - 40.0;
+    let cfg = std::sync::Arc::new(FanoutCfg {
+        every_ms: a.get("every").map(|s| s.parse().unwrap()).unwrap_or(500),
+        horizons: horizons.clone(),
+        lib: lib.clone(),
+        det: det.clone(),
+        gates: gates.clone(),
+        floor_y,
+        keep_rows: false,
+        // --long-horizon TICKS,K : horizon TICKS on every K-th start (default 600 on every 3rd)
+        long_horizon: match a.get("long-horizon") {
+            Some("none") => None,
+            Some(s) => {
+                let mut p = s.split(',');
+                Some((p.next().unwrap().parse().unwrap(), p.next().unwrap_or("3").parse().unwrap()))
+            }
+            None => Some((600, 3)),
+        },
+        human: !a.has("no-human"),
+    });
+    let pcfg = pool_cfg(a, &map, "fanout");
+    println!(
+        "fanout: {} ghosts x {} shards, {} workers, {} macros x horizons {:?}, every {}, gates {} ({}), detector {}",
+        ghosts.len(),
+        a.get("shards").unwrap_or("1"),
+        tmreach::pool::cap(pcfg.workers),
+        lib.len(),
+        horizons,
+        tmreach::secs(cfg.every_ms),
+        gates.map_uid,
+        gates.source,
+        det_path.display()
+    );
+    std::fs::write(out.join("macros.tsv"), tmreach::macros::macros_tsv(&lib)).map_err(|e| e.to_string())?;
+    std::fs::copy(&det_path, out.join("detector.json")).map_err(|e| e.to_string())?;
+    let t0 = std::time::Instant::now();
+    // start ids: 1000 per ghost slot
+    let c2 = cfg.clone();
+    // work items: every ghost `shards` times, item i = (ghost i / shards, shard i % shards)
+    let shards = a.get("shards").map(|s| s.parse::<usize>().unwrap()).unwrap_or(1).max(1);
+    let items: Vec<PathBuf> = ghosts.iter().flat_map(|g| std::iter::repeat(g.clone()).take(shards)).collect();
+    let results = tmreach::pool::run_per_ghost(&pcfg, &items, move |i, w, tel| fanout_ghost(w, tel, &c2, (i / shards) as u32 * 1000, (i % shards, shards)));
+    let wall = t0.elapsed().as_secs_f64();
+    let mut writer = tmreach::tmr::Writer::create(&out.join("samples.tmr"), gates.gates.len() as u8)?;
+    let mut p4 = tmreach::tmr::Path4Writer::create(&out.join("path4.tmp4"))?;
+    let mut starts = String::from(tmreach::starts::starts_tsv_header());
+    let mut endpoints = String::from("start_id\tmacro_id\thorizon\tx\ty\tz\n");
+    let mut others = String::from("ghost\tstart_id\tmacro_id\thorizon\tgate\tmacro\tnote\n");
+    let mut log = String::new();
+    let mut tot = Stats::default();
+    let mut ok = 0;
+    let (mut human_legs, mut human_resp) = (0usize, 0usize);
+    let mut fam_cells: std::collections::BTreeMap<String, Vec<usize>> = Default::default();
+    // per-ghost identity statistics (trimmed RMS): ghosts passing only under the 10 cm bar are named
+    let mut id_stats: Vec<(String, f64, f64, f64, f64)> = Vec::new();
+    for (g, r) in items.iter().zip(results) {
+        match r {
+            Ok(fo) => {
+                ok += 1;
+                let gname = g.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                if !id_stats.iter().any(|(n, ..)| *n == gname) {
+                    id_stats.push((gname, fo.identity.rms_trim, fo.identity.p995, fo.identity.rms, fo.identity.max));
+                }
+                for s in &fo.starts {
+                    let st = &s.state;
+                    starts.push_str(&format!(
+                        "{}\t{}\t{}\t{}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{}\t{}\t{:.4}\t{:.3}\t{}\t{:#04x}\n",
+                        s.start_id, s.ghost_md5, s.tick, st.race_ms, st.pos[0], st.pos[1], st.pos[2], st.vel[0], st.vel[1], st.vel[2], st.quat[0], st.quat[1], st.quat[2], st.quat[3], s.cps_before,
+                        if fo.records.iter().any(|r| r.start_id == s.start_id && r.macro_id >= tmreach::human::RESPAWN_MACRO) { "human-leg" } else { "human" },
+                        fo.identity.rms_trim, fo.identity.p995, if fo.identity.rms_trim < 0.05 { "5cm" } else { "10cm" }, s.effects
+                    ));
+                }
+                for (i, r) in fo.records.iter().enumerate() {
+                    writer.push(r)?;
+                    p4.push(fo.paths.get(i).ok_or("a record without its path points")?)?;
+                }
+                for (sid, m, h, p) in &fo.endpoints {
+                    endpoints.push_str(&format!("{sid}\t{m}\t{h}\t{:.2}\t{:.2}\t{:.2}\n", p[0], p[1], p[2]));
+                }
+                for o in &fo.other_connections {
+                    others.push_str(o);
+                    others.push('\n');
+                }
+                for l in &fo.log {
+                    log.push_str(l);
+                    log.push('\n');
+                    println!("{l}");
+                }
+                tot.rollouts += fo.stats.rollouts;
+                tot.noop += fo.stats.noop;
+                tot.out_of_tape += fo.stats.out_of_tape;
+                tot.errors += fo.stats.errors;
+                tot.identity_fail += fo.stats.identity_fail;
+                tot.identity_max_m = tot.identity_max_m.max(fo.stats.identity_max_m);
+                tot.start_blend_max_m = tot.start_blend_max_m.max(fo.stats.start_blend_max_m);
+                for i in 0..5 {
+                    tot.outcomes[i] += fo.stats.outcomes[i];
+                }
+                tot.reached_next += fo.stats.reached_next;
+                tot.reached_other += fo.stats.reached_other;
+                tot.run_ended_unfinished += fo.stats.run_ended_unfinished;
+                tot.end_extrapolated += fo.stats.end_extrapolated;
+                tot.finish_from_exit += fo.stats.finish_from_exit;
+                tot.distinct_cells.extend(fo.stats.distinct_cells.iter());
+                tot.switches += fo.stats.switches;
+                for (fam, v) in &fo.stats.family_cells {
+                    fam_cells.entry(fam.clone()).or_default().extend(v.iter().copied());
+                }
+                human_legs += fo.human_legs;
+                human_resp += fo.human_respawns;
+                tot.rollout_secs += fo.stats.rollout_secs;
+            }
+            Err(e) => {
+                let l = format!("{}: FAILED: {}", g.display(), e);
+                println!("{l}");
+                log.push_str(&l);
+                log.push('\n');
+            }
+        }
+    }
+    let count = writer.close()?;
+    let p4_count = p4.close()?;
+    if p4_count != count {
+        return Err(format!("path4.tmp4 has {p4_count} records, samples.tmr {count}"));
+    }
+    std::fs::write(out.join("starts.tsv"), starts).map_err(|e| e.to_string())?;
+    std::fs::write(out.join("endpoints.tsv"), endpoints).map_err(|e| e.to_string())?;
+    std::fs::write(out.join("other-connections.tsv"), others).map_err(|e| e.to_string())?;
+    let mut cells = tot.distinct_cells.clone();
+    cells.sort();
+    let med = cells.get(cells.len() / 2).copied().unwrap_or(0);
+    let summary = format!(
+        "fanout {} on {} ({}): {}/{} work items (ghost x shard) ok, {} rollouts ({} records) in {:.1} s wall = {:.1} rollouts/s/box with {} workers; per-rollout engine time {:.1} ms mean\n\
+         outcomes ok {} crash-stop {} offworld {} finished {} aborted {}; reached the human's next gate {} ({:.1} %), some OTHER gate first {} ({:.2} %); no-op macros {}, out-of-tape {}, errors {}; children that ENDED before their stop point without finishing {} (records ABORTED), end labels inside the extrapolated span {} (records ABORTED), finishes credited at the exit {}\n\
+         identity (macro 0 end state vs the human's trajectory): max {:.4} m, {} fails over {} starts; start-row blend by a macro's first record: max {:.4} m\n\
+         distinct end cells (2 m x 2 m x 5 m/s) per start over {} macros x {} horizons: median {}, min {}, max {}; {} starts were switches (<= 2 cells)\n\
+         human legs (positives) {}, respawn negatives {}\n\
+         distinct end cells per start by macro family (median over starts): {}\n\
+         identity per ghost (trimmed RMS m): {} under the 5 cm bar, {} only under the 10 cm bar{}\n",
+        tmreach::GIT_HASH, gates.map_uid, hostname(), ok, items.len(), tot.rollouts, count, wall, tot.rollouts as f64 / wall, tmreach::pool::cap(pcfg.workers),
+        1000.0 * tot.rollout_secs / tot.rollouts.max(1) as f64,
+        tot.outcomes[0], tot.outcomes[1], tot.outcomes[2], tot.outcomes[3], tot.outcomes[4],
+        tot.reached_next, 100.0 * tot.reached_next as f64 / tot.rollouts.max(1) as f64,
+        tot.reached_other, 100.0 * tot.reached_other as f64 / tot.rollouts.max(1) as f64,
+        tot.noop, tot.out_of_tape, tot.errors, tot.run_ended_unfinished, tot.end_extrapolated, tot.finish_from_exit, tot.identity_max_m, tot.identity_fail, cells.len(), tot.start_blend_max_m,
+        lib.len(), horizons.len(), med, cells.first().copied().unwrap_or(0), cells.last().copied().unwrap_or(0), tot.switches, human_legs, human_resp,
+        fam_cells.iter().map(|(f, v)| { let mut v = v.clone(); v.sort(); format!("{f} {}", v.get(v.len() / 2).copied().unwrap_or(0)) }).collect::<Vec<_>>().join(", "),
+        id_stats.iter().filter(|s| s.1 < 0.05).count(),
+        id_stats.iter().filter(|s| s.1 >= 0.05).count(),
+        {
+            let v: Vec<String> = id_stats.iter().filter(|s| s.1 >= 0.05).map(|s| format!("{} (trimmed {:.3}, p99.5 {:.2}, RMS {:.3}, max {:.2})", s.0, s.1, s.2, s.3, s.4)).collect();
+            if v.is_empty() { String::new() } else { format!(": {}", v.join("; ")) }
+        }
+    );
+    print!("{summary}");
+    log.push_str(&summary);
+    std::fs::write(out.join("FANOUT.log"), log).map_err(|e| e.to_string())?;
+    println!("wrote {}/{{samples.tmr, starts.tsv, macros.tsv, endpoints.tsv, other-connections.tsv, detector.json, FANOUT.log}}", out.display());
+    Ok(())
+}
+
+fn cmd_verify(a: &Args) -> Result<(), String> {
+    let dir = PathBuf::from(a.req("dir"));
+    let p = dir.join("samples.tmr");
+    let bytes = std::fs::read(&p).map_err(|e| format!("{}: {}", p.display(), e))?;
+    let md5 = tmreach::tele::md5_hex(&bytes);
+    let shard = tmreach::tmr::read_shard(&p)?;
+    let mut hist = [0usize; 5];
+    let mut bad_ticks = 0;
+    let mut gates_hit = 0;
+    let mut by_start: std::collections::BTreeMap<u32, usize> = Default::default();
+    // FINISHED records without the engine's own finish flag: the pre-11:24Z builds labelled a
+    // child that ENDED without finishing as FINISHED (the F10 varying records); such records
+    // are ABORTED under the current rule -- counted here so a bank can be judged
+    let mut finished_no_flag = 0;
+    // with --map (and --geom) the finish waypoints are known: a FINISHED record with no finish
+    // gate credited is the old exit-as-finish class
+    let finish_wps: Option<Vec<usize>> = a.get("map").map(|m| {
+        let g = MapGates::load(Path::new(m), a.get("geom").map(Path::new)).unwrap_or_else(|e| { eprintln!("{e}"); std::process::exit(2) });
+        g.gates.iter().filter(|g| g.kind == GateKind::Finish).map(|g| g.waypoint as usize).collect()
+    });
+    for r in &shard.records {
+        hist[(r.outcome as usize).min(4)] += 1;
+        if r.outcome == tmreach::tmr::OUTCOME_FINISHED {
+            let has_finish = match &finish_wps {
+                Some(f) => f.iter().any(|w| *w < 32 && r.gate_tick[*w] >= 0),
+                None => r.end.finished,
+            };
+            if !has_finish {
+                finished_no_flag += 1;
+            }
+        }
+        *by_start.entry(r.start_id).or_default() += 1;
+        for g in &r.gate_tick {
+            if *g >= 0 {
+                gates_hit += 1;
+                if *g as u16 >= r.horizon_ticks {
+                    bad_ticks += 1;
+                }
+            }
+        }
+    }
+    let starts = std::fs::read_to_string(dir.join("starts.tsv")).map(|s| s.lines().count().saturating_sub(1)).unwrap_or(0);
+    println!(
+        "{}: TMR0 v{} md5 {} : {} records, {} gates, {} starts in starts.tsv, {} distinct start_ids in the shard; outcomes ok {} crash-stop {} offworld {} finished {} aborted {}; {} gate crossings, {} with a tick outside the horizon; FINISHED without a finish gate credited {} (the pre-11:24Z exit-as-finish class; ABORTED under the end-state rule)",
+        p.display(), shard.version, md5, shard.records.len(), shard.n_gates, starts, by_start.len(), hist[0], hist[1], hist[2], hist[3], hist[4], gates_hit, bad_ticks, finished_no_flag
+    );
+    // the TMP4 sidecar, when present: same count, last point == the record's end
+    let p4_path = dir.join("path4.tmp4");
+    if p4_path.exists() {
+        let p4 = tmreach::tmr::read_path4(&p4_path)?;
+        let mut bad = 0;
+        if p4.len() != shard.records.len() {
+            println!("path4.tmp4: {} records vs {} in samples.tmr", p4.len(), shard.records.len());
+            bad += 1;
+        }
+        for (r, p) in shard.records.iter().zip(p4.iter()) {
+            let e = p[tmreach::tmr::TMP4_POINTS - 1];
+            let d = ((e.pos[0] - r.end.pos[0]).powi(2) + (e.pos[1] - r.end.pos[1]).powi(2) + (e.pos[2] - r.end.pos[2]).powi(2)).sqrt();
+            if d > 0.001 && r.outcome != tmreach::tmr::OUTCOME_FINISHED {
+                bad += 1;
+            }
+        }
+        println!("path4.tmp4: {} records x {} points; last point == end on all but {} (finished rollouts end at the crossing row, their path at the last row)", p4.len(), tmreach::tmr::TMP4_POINTS, bad);
+        if p4.len() != shard.records.len() {
+            return Err("verify FAILED (path4)".into());
+        }
+    }
+    if let Some(p) = a.get("dump") {
+        // keyed by (start_id, macro, horizon) -- a diff of two dumps is keyed, a lost work item shows
+        // as missing lines; `idx` is the record's position in the file (for cmp -l offsets)
+        let mut s = String::from("start_id\tmacro\th\toutcome\trace_ms\tx\ty\tz\tspeed\tcps\tfin\tgates\tpath\tvmin\tvmax\tidx\tquat\trpm\tcar\teffects\treactor_lvl\treactor_type\n");
+        let mut recs: Vec<(usize, &tmreach::tmr::Record)> = shard.records.iter().enumerate().collect();
+        recs.sort_by_key(|(_, r)| (r.start_id, r.macro_id, r.horizon_ticks));
+        for (i, r) in &recs {
+            let g: Vec<String> = r.gate_tick.iter().enumerate().filter(|(_, t)| **t >= 0).map(|(w, _)| format!("wp{w}")).collect();
+            s.push_str(&format!("{}\t{}\t{}\t{}\t{}\t{:.3}\t{:.3}\t{:.3}\t{:.2}\t{}\t{}\t{}\t{:.2}\t{:.2}\t{:.2}\t{}\t{:.5},{:.5},{:.5},{:.5}\t{:.1}\t{}\t{:#04x}\t{}\t{}\n", r.start_id, r.macro_id, r.horizon_ticks, r.outcome, r.end.race_ms, r.end.pos[0], r.end.pos[1], r.end.pos[2], r.end.speed, r.end.cps, r.end.finished as u8, g.join(","), r.path_len_m, r.min_speed, r.max_speed, i, r.end.quat[0], r.end.quat[1], r.end.quat[2], r.end.quat[3], r.end.rpm, r.end.car, r.end.effects, r.end.reactor_lvl, r.end.reactor_type));
+        }
+        std::fs::write(p, s).map_err(|e| e.to_string())?;
+    }
+    if bad_ticks > 0 || by_start.len() != starts {
+        return Err("verify FAILED".into());
+    }
+    println!("verify OK");
+    Ok(())
+}
+
+fn cmd_oraclectl(a: &Args) -> Result<(), String> {
+    use tmreach::oraclectl::*;
+    let map = PathBuf::from(a.req("map"));
+    let ghosts_all = tmreach::pool::ghosts_in(&PathBuf::from(a.req("ghosts")))?;
+    let out = PathBuf::from(a.req("out"));
+    std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+    let geom = a.get("geom").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("{}/persistent/private-30d/tm-route/geom", std::env::var("HOME").unwrap_or_default())));
+    let det_path = PathBuf::from(a.req("detector"));
+    let det = std::sync::Arc::new(tmreach::gates::Detector::from_json(&std::fs::read_to_string(&det_path).map_err(|e| e.to_string())?)?);
+    let mut gates_m = MapGates::load(&map, Some(&geom))?;
+    gates_m.apply_flips(&det);
+    let gates = std::sync::Arc::new(gates_m);
+    let lib = std::sync::Arc::new(tmreach::macros::library_v0());
+    // every k-th ghost, a stratified macro subset: hold gas straight / hard left / hard right / brake, base-steer, ramp, doublet, reference
+    // the stride never leaves fewer than 5 ghosts in the control (a map with 6 exact ghosts at
+    // stride 4 had 2 ghosts and 144 cases -- Summer 2024 - 02)
+    let stride = a.get("ghost-stride").map(|s| s.parse::<usize>().unwrap()).unwrap_or(4).min((ghosts_all.len() / 5).max(1));
+    let goff = a.get("ghost-offset").map(|s| s.parse::<usize>().unwrap()).unwrap_or(0);
+    let ghosts: Vec<PathBuf> = ghosts_all.iter().enumerate().filter(|(i, _)| i % stride == goff).map(|(_, p)| p.clone()).collect();
+    let macro_ids: Vec<u16> = a
+        .get("macros")
+        .map(|s| s.split(',').map(|x| x.parse().unwrap()).collect())
+        .unwrap_or_else(|| vec![0, 1, 3, 13, 15, 25, 27, 29, 32, 36, 38, 42]);
+    let cfg = std::sync::Arc::new(CtlCfg {
+        lib: lib.clone(),
+        det: det.clone(),
+        gates: gates.clone(),
+        out: out.clone(),
+        every_ms: a.get("every").map(|s| s.parse().unwrap()).unwrap_or(2000),
+        horizon: a.get("horizon").map(|s| s.parse().unwrap()).unwrap_or(300),
+        macro_ids: macro_ids.clone(),
+        save_rows: a.has("save-rows"),
+    });
+    let pcfg = pool_cfg(a, &map, "oraclectl");
+    println!("oraclectl: {} ghosts (stride {}), macros {:?}, every {}, horizon {} ticks, detector {}", ghosts.len(), stride, macro_ids, tmreach::secs(cfg.every_ms), cfg.horizon, det_path.display());
+    let c2 = cfg.clone();
+    let t0 = std::time::Instant::now();
+    let results = tmreach::pool::run_per_ghost(&pcfg, &ghosts, move |gi, w, tel| cases_for_ghost(w, tel, &c2, gi));
+    let mut cases: Vec<Case> = Vec::new();
+    for (g, r) in ghosts.iter().zip(results) {
+        match r {
+            Ok(v) => cases.extend(v),
+            Err(e) => println!("  {}: FAILED: {}", g.display(), e),
+        }
+    }
+    println!("{} cases built in {:.1} s; adjudicating with the plain oracle ...", cases.len(), t0.elapsed().as_secs_f64());
+    let (server, _) = engine_paths(a);
+    let t1 = std::time::Instant::now();
+    adjudicate(&server, &map, &mut cases)?;
+    println!("oracle done in {:.1} s", t1.elapsed().as_secs_f64());
+    let mut s = String::from(case_tsv_header());
+    // THE PLAIN ORACLE CANNOT SEE ONE CHECKPOINT: a DNF with exactly one
+    // credited checkpoint reports "wrong simu" like a DNF with none ("reached
+    // SOME checkpoints (k out of N)" appears only for k >= 2; measured on
+    // p00001 with brake-from-tick tapes: 700..1400 -> plain, 1450 -> 2 of 4).
+    // So (det 1, oracle 0) is the oracle's blind class, counted apart.
+    // THE BLIND CLASS IS k < floor(N/2): on Summer 2026 - 01 (N = 4) k = 1 read as none and
+    // k = 2 was reported; on Summer 2026 - 16 (N = 9) k = 2 and 3 read as none and k = 4 was
+    // reported. N from the oracle's own "(k out of N)" text when any case shows it, else
+    // the number of gate groups (checkpoint groups + 1).
+    let n_total: u32 = cases
+        .iter()
+        .filter_map(|c| c.oracle_desc.split("out of ").nth(1).and_then(|s| s.split(|ch: char| !ch.is_ascii_digit()).next()).and_then(|d| d.parse::<u32>().ok()))
+        .max()
+        .unwrap_or_else(|| gates.gates.iter().filter(|g| g.kind != tmreach::gates::GateKind::Finish && g.kind != tmreach::gates::GateKind::Start).map(|g| g.group).collect::<std::collections::BTreeSet<_>>().len() as u32 + 1);
+    let blind_below = (n_total / 2).max(2);
+    let (mut agree, mut disagree, mut unanswered, mut blind, mut near, mut fin, mut fin_dt) = (0, 0, 0, 0, 0, 0, Vec::new());
+    let mut tail = 0;
+    let mut after_tape = 0;
+    let finished_case = |c: &tmreach::oraclectl::Case| c.oracle_ms.is_some() || c.det_finished;
+    for c in &cases {
+        s.push_str(&case_tsv_row(c));
+        match c.oracle_cps {
+            None => unanswered += 1,
+            Some(x) if x == c.det_cps => agree += 1,
+            Some(0) if c.det_cps >= 1 && c.det_cps < blind_below && !c.det_finished => blind += 1,
+            // the oracle credited MORE than the engine did inside the assumed window and the
+            // child traced rows past that window: the extra credit fell in the tail whose
+            // adjudication end is not pinned (declared + 2.5 s holds on Summer 2026 - 01;
+            // Summer 2026 - 11 credited a checkpoint later than that) -- counted apart
+            _ if c.finish_after_tape || c.oracle_ms.map(|t| t > c.tape_end_ms).unwrap_or(false) => after_tape += 1,
+            // the tape ran to its end in the fork child (exited) and the plain oracle credits MORE:
+            // the oracle kept simulating on heap contents past the tape and the coasting car
+            // crossed a gate the tape never drove it to (Fall 2025 - 03/07) -- the same class
+            Some(x) if x > c.det_cps && c.exited => after_tape += 1,
+            Some(x) if x > c.det_cps && c.rows_past_cut > 0 && !finished_case(c) => tail += 1,
+            Some(_) => disagree += 1,
+        }
+        if c.near_miss_m < 40.0 {
+            near += 1;
+        }
+        if c.det_finished {
+            fin += 1;
+            if let (Some(d), Some(o)) = (c.det_finish_ms, c.oracle_ms) {
+                fin_dt.push(o - d);
+            }
+        }
+    }
+    std::fs::write(out.join("cases.tsv"), &s).map_err(|e| e.to_string())?;
+    let mut hist: std::collections::BTreeMap<(u32, Option<u32>), usize> = Default::default();
+    for c in &cases {
+        *hist.entry((c.det_cps, c.oracle_cps)).or_default() += 1;
+    }
+    let verdict = format!(
+        "ORACLE CONTROL: {} cases; detector == oracle on {} ({:.1} %), disagree {}, unanswered {}, in the oracle's blind class (1 <= credited < {} of {}, oracle reports none) {}, tail-window ambiguities (oracle credited more, after declared + grace) {}, FINISHES AFTER THE TAPE'S OWN END (batch-dependent oracle, its own class) {}; {} near-misses (< 40 m of an uncredited gate), {} finishes (oracle time − detector finish-row time, ms: {:?})\n(det_cps, oracle_cps) histogram: {:?}\n=> {}",
+        cases.len(),
+        agree,
+        100.0 * agree as f64 / cases.len().max(1) as f64,
+        disagree,
+        unanswered,
+        blind_below,
+        n_total,
+        blind,
+        tail,
+        after_tape,
+        near,
+        fin,
+        fin_dt,
+        hist,
+        // the case bar scales with the ghosts available: 200 with >= 7 ghosts, 30 per ghost below
+        if disagree == 0 && unanswered == 0 && cases.len() >= 200.min(30 * ghosts_all.len()) { "PASS (bar N/N, N >= min(200, 30 x ghosts))" } else { "FAIL" }
+    );
+    println!("{verdict}");
+    std::fs::write(out.join("VERDICT.txt"), format!("{verdict}\n")).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn cmd_gateprobe(a: &Args) -> Result<(), String> {
+    let map = PathBuf::from(a.req("map"));
+    let ghost = PathBuf::from(a.req("ghost"));
+    let out = PathBuf::from(a.req("out"));
+    let gate_wp: u32 = a.req("gate").parse().map_err(|_| "--gate N")?;
+    let targets: Vec<f64> = a.get("stops").unwrap_or("-9,-7,-5,-3,-1,1").split(',').map(|s| s.parse().unwrap()).collect();
+    let geom = a.get("geom").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("{}/persistent/private-30d/tm-route/geom", std::env::var("HOME").unwrap_or_default())));
+    let det = tmreach::gates::Detector::from_json(&std::fs::read_to_string(a.req("detector")).map_err(|e| e.to_string())?)?;
+    let mut gates = MapGates::load(&map, Some(&geom))?;
+    gates.apply_flips(&det);
+    let (server, shim) = engine_paths(a);
+    let work = a.get("work").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("/tmp/tmreach/probe-{}", std::process::id())));
+    let tel = Telemetry::load(&ghost.to_string_lossy())?;
+    let mut w = Worker::start(&server, &map, &shim, &work, &ghost, a.has("verbose"))?;
+    let mut probes = tmreach::gateprobe::probe_gate(&mut w, &tel, &gates, &det, gate_wp, &targets, &out)?;
+    drop(w);
+    tmreach::gateprobe::adjudicate(&server, &map, &mut probes)?;
+    let g = gates.gate(gate_wp).unwrap();
+    println!("GATE PROBE wp{gate_wp} {} ({}): car braked to rest at s along the normal from the GEOM centre; oracle count vs cps_before", g.model, ghost.file_name().unwrap().to_string_lossy());
+    let mut s = String::from("target_s\tbrake_tick\trest_s\trest_lat\trest_up\trest_speed\tcps_before\toracle_cps\tcredited\tdesc\ttape\n");
+    for p in &probes {
+        let credited = match p.oracle_cps {
+            Some(c) if c > p.cps_before => "YES",
+            Some(_) => "no",
+            None => "?",
+        };
+        println!("  target {:+.1}: brake tick {} -> rest s {:+.2} lat {:+.2} up {:+.2} v {:.1} m/s; oracle {} vs before {} => credited {} ({})", p.target_s, p.brake_tick, p.rest_s, p.rest_lat, p.rest_up, p.rest_speed, p.oracle_cps.map(|x| x.to_string()).unwrap_or("-".into()), p.cps_before, credited, p.oracle_desc);
+        s.push_str(&format!("{:+.1}\t{}\t{:+.3}\t{:+.3}\t{:+.3}\t{:.2}\t{}\t{}\t{}\t{}\t{}\n", p.target_s, p.brake_tick, p.rest_s, p.rest_lat, p.rest_up, p.rest_speed, p.cps_before, p.oracle_cps.map(|x| x.to_string()).unwrap_or("-".into()), credited, p.oracle_desc, p.tape.display()));
+    }
+    std::fs::write(out.join(format!("probe-wp{gate_wp}.tsv")), s).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn cmd_fitbox(a: &Args) -> Result<(), String> {
+    let map = PathBuf::from(a.req("map"));
+    let geom = a.get("geom").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("{}/persistent/private-30d/tm-route/geom", std::env::var("HOME").unwrap_or_default())));
+    let gates = MapGates::load(&map, Some(&geom))?;
+    let dirs: Vec<PathBuf> = a.req("cases").split(',').map(PathBuf::from).collect();
+    let crossings = tmreach::fitbox::load_crossings(&PathBuf::from(a.req("crossings")))?;
+    // per-ghost start offsets, from the tapes themselves
+    let mut offsets: std::collections::HashMap<String, (i64, usize)> = Default::default();
+    for g in tmreach::pool::ghosts_in(&PathBuf::from(a.req("ghosts")))? {
+        let stem = g.file_name().unwrap().to_string_lossy().trim_end_matches(".Ghost.Gbx").to_string();
+        if let Ok(t) = fk::tape::Tape::load(&g.to_string_lossy()) {
+            offsets.insert(stem, (t.start_offset_ms as i64, t.declared_ms.unwrap_or(0) as usize));
+        }
+    }
+    for (gi, g) in gates.gates.iter().enumerate() {
+        let mut samples = Vec::new();
+        for d in &dirs {
+            samples.extend(tmreach::fitbox::load_cases(d, &gates, gi, &crossings, &offsets)?);
+        }
+        let nc = samples.iter().filter(|s| s.credited).count();
+        println!("\nwp{} {}: {} usable samples ({} credited, {} refused)", g.waypoint, g.model, samples.len(), nc, samples.len() - nc);
+        if samples.is_empty() {
+            continue;
+        }
+        let res = tmreach::fitbox::grid_fit(&samples);
+        let best = res[0].1 + res[0].2;
+        let consistent: Vec<&(tmreach::fitbox::Box3, usize, usize)> = res.iter().filter(|(_, m, e)| m + e == best).collect();
+        let rng = |f: &dyn Fn(&tmreach::fitbox::Box3) -> f64| {
+            let v: Vec<f64> = consistent.iter().map(|(b, _, _)| f(b)).collect();
+            (v.iter().cloned().fold(f64::INFINITY, f64::min), v.iter().cloned().fold(f64::NEG_INFINITY, f64::max))
+        };
+        println!("  best inconsistency {} (miss+extra) on {} boxes; over those: s_lo {:?} s_hi {:?} lat_lo {:?} lat_hi {:?}", best, consistent.len(), rng(&|b| b.s_lo), rng(&|b| b.s_hi), rng(&|b| b.lat_lo), rng(&|b| b.lat_hi));
+        for (b, m, e) in res.iter().take(3) {
+            println!("  {:?} miss {} extra {}", b, m, e);
+        }
+        if best > 0 {
+            for s in &samples {
+                let any = s.pts.iter().any(|p| tmreach::fitbox::inside(&res[0].0, *p));
+                if s.credited != any {
+                    let near = s.pts.iter().map(|p| (p.0 * p.0 + p.1 * p.1).sqrt()).fold(f64::INFINITY, f64::min);
+                    println!("    inconsistent: {} credited={} closest {:.1} m", s.name, s.credited, near);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Re-grade saved oracle-control cases with another detector (no engine).
+fn cmd_rejudge(a: &Args) -> Result<(), String> {
+    let map = PathBuf::from(a.req("map"));
+    let geom = a.get("geom").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("{}/persistent/private-30d/tm-route/geom", std::env::var("HOME").unwrap_or_default())));
+    let det = tmreach::gates::Detector::from_json(&std::fs::read_to_string(a.req("detector")).map_err(|e| e.to_string())?)?;
+    let mut gates = MapGates::load(&map, Some(&geom))?;
+    gates.apply_flips(&det);
+    let crossings = tmreach::fitbox::load_crossings(&PathBuf::from(a.req("crossings")))?;
+    let mut offsets: std::collections::HashMap<String, i64> = Default::default();
+    let mut declared: std::collections::HashMap<String, i64> = Default::default();
+    for g in tmreach::pool::ghosts_in(&PathBuf::from(a.req("ghosts")))? {
+        let stem = g.file_name().unwrap().to_string_lossy().trim_end_matches(".Ghost.Gbx").to_string();
+        if let Ok(t) = fk::tape::Tape::load(&g.to_string_lossy()) {
+            offsets.insert(stem.clone(), t.start_offset_ms as i64);
+            declared.insert(stem.clone(), t.declared_ms.unwrap_or(0) as i64);
+        }
+    }
+    let ng = gates.gates.len();
+    let (mut agree, mut disagree, mut blind, mut total, mut fin_agree, mut fin_dis) = (0, 0, 0, 0, 0, 0);
+    let mut hist: std::collections::BTreeMap<(u32, Option<u32>), usize> = Default::default();
+    let mut bad = Vec::new();
+    for d in a.req("cases").split(',') {
+        let txt = std::fs::read_to_string(PathBuf::from(d).join("cases.tsv")).map_err(|e| e.to_string())?;
+        for line in txt.lines().skip(1) {
+            let f: Vec<&str> = line.split('\t').collect();
+            if f.len() < 16 {
+                continue;
+            }
+            let ghost = f[0];
+            let start_tick: usize = f[1].parse().unwrap_or(0);
+            let oracle: Option<u32> = f[4].parse().ok();
+            let finished = f[8] != "-";
+            let exited = f[12] == "true";
+            let tape = PathBuf::from(f[15]);
+            let Ok(rows_txt) = std::fs::read_to_string(tape.with_extension("rows.tsv")) else { continue };
+            let off = offsets.get(ghost).copied().unwrap_or(-1550);
+            let start_label = start_tick as i64 * 10 + off;
+            let prefix: Vec<u32> = crossings.get(ghost).map(|v| v.iter().filter(|(_, ms)| *ms < start_label).map(|(w, _)| *w).collect()).unwrap_or_default();
+            let already: Vec<bool> = gates.gates.iter().map(|g| prefix.contains(&g.waypoint)).collect();
+            let mut rows: Vec<forkoracle::layout::Row> = rows_txt
+                .lines()
+                .skip(1)
+                .filter_map(|l| {
+                    let c: Vec<f64> = l.split('\t').filter_map(|x| x.parse().ok()).collect();
+                    if c.len() < 12 {
+                        return None;
+                    }
+                    Some(forkoracle::layout::Row { time_ms: c[0] as i64, x: c[1], y: c[2], z: c[3], vx: c[4], vy: c[5], vz: c[6], qw: c[7], qx: c[8], qy: c[9], qz: c[10], wetness: c[11], cps: u32::MAX, vis: forkoracle::layout::Vis::UNKNOWN })
+                })
+                .collect();
+            if exited {
+                tmreach::rig::extrapolate_exit(&mut rows);
+            }
+            // the oracle adjudicates nothing later than ~2.5 s after the DECLARED time
+            let cut = declared.get(ghost).copied().unwrap_or(i64::MAX / 2) - 20 + tmreach::oraclectl::ADJUDICATION_GRACE_MS;
+            rows.retain(|r| r.time_ms <= cut);
+            let first = det.first_crossings(&gates, &rows, &already);
+            let new = first.iter().filter(|t| **t >= 0).count() as u32;
+            let det_cps = prefix.len() as u32 + new;
+            let det_fin = first.iter().enumerate().any(|(gi, t)| *t >= 0 && gates.gates[gi].kind == tmreach::gates::GateKind::Finish);
+            total += 1;
+            *hist.entry((det_cps, oracle)).or_default() += 1;
+            let ok = match oracle {
+                Some(x) if x == det_cps && det_fin == finished => true,
+                Some(0) if det_cps == 1 && !det_fin => {
+                    blind += 1;
+                    continue;
+                }
+                _ => false,
+            };
+            if ok {
+                agree += 1;
+                if finished {
+                    fin_agree += 1;
+                }
+            } else {
+                disagree += 1;
+                if finished || det_fin {
+                    fin_dis += 1;
+                }
+                bad.push(format!("{} t{} m{}: det {} (fin {}) vs oracle {:?} (fin {}) prefix {:?} new {:?}", ghost, start_tick, f[2], det_cps, det_fin, oracle, finished, prefix, first));
+            }
+        }
+    }
+    println!("REJUDGE with {}: {} cases; agree {} (finishes {}), disagree {} (finish-related {}), blind {}", a.req("detector"), total, agree, fin_agree, disagree, fin_dis, blind);
+    println!("(det_cps, oracle_cps) histogram: {:?}", hist);
+    for b in bad.iter().take(40) {
+        println!("  {b}");
+    }
+    println!("=> {}", if disagree == 0 { "PASS" } else { "FAIL" });
+    Ok(())
+}
+
+/// G5: every map that has `resim_verdict == exact` ghosts in the player's
+/// manifest — select the ghosts, fit + control the detector (gatecal), a
+/// small plain-oracle control (oraclectl), the fan-out, verify, bank to
+/// `reach/v0/<mapUid>/` with a CONTROL.md made of the sub-commands' own
+/// summaries. Each stage is this binary run as a child (its stdout is the
+/// record); a failing stage stops that map, never the campaign.
+fn cmd_campaign(a: &Args) -> Result<(), String> {
+    let manifest = PathBuf::from(a.req("manifest"));
+    let ghosts_root = PathBuf::from(a.req("ghosts-root")); // .../data/v0/maps
+    let maps_dir = PathBuf::from(a.req("maps-dir")); // <uid>.Map.Gbx
+    let bank = PathBuf::from(a.req("bank")); // .../reach/v0
+    let scratch = PathBuf::from(a.get("scratch").unwrap_or("/tmp/tmreach/campaign"));
+    let workers = a.get("workers").unwrap_or("64").to_string();
+    let shards = a.get("shards").unwrap_or("3").to_string();
+    let filter = a.get("maps").map(|s| s.split(',').map(|x| x.to_string()).collect::<Vec<_>>());
+    let name_filter = a.get("name-filter").map(|s| s.to_string());
+    let redo = a.has("redo");
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    // manifest → per map: name, [(rank, declared_ms)] of exact ghosts
+    let txt = std::fs::read_to_string(&manifest).map_err(|e| format!("{}: {e}", manifest.display()))?;
+    let mut lines = txt.lines();
+    let header: Vec<&str> = lines.next().ok_or("empty manifest")?.split('\t').collect();
+    let col = |n: &str| header.iter().position(|h| *h == n).ok_or(format!("manifest lacks column {n}"));
+    let (c_uid, c_name, c_rank, c_decl, c_verdict, c_kb) = (col("map_uid")?, col("map_name")?, col("rank")?, col("declared_ms")?, col("resim_verdict")?, col("keyboard")?);
+    let mut maps: std::collections::BTreeMap<String, (String, Vec<(String, String, bool)>, usize)> = Default::default();
+    for l in lines {
+        let f: Vec<&str> = l.split('\t').collect();
+        if f.len() <= c_kb {
+            continue;
+        }
+        let e = maps.entry(f[c_uid].to_string()).or_insert((f[c_name].to_string(), Vec::new(), 0));
+        e.2 += 1;
+        if f[c_verdict] == "exact" {
+            e.1.push((f[c_rank].to_string(), f[c_decl].to_string(), f[c_kb] == "true"));
+        }
+    }
+    let mut report = String::new();
+    // --newest-first: campaigns by (year desc, season Fall > Summer > Spring > Winter), country maps last
+    let rank = |name: &str| -> (i64, i64, String) {
+        let year: i64 = name.split_whitespace().find_map(|t| t.parse::<i64>().ok()).filter(|y| *y > 2000).unwrap_or(0);
+        let season = if name.starts_with("Fall") { 4 } else if name.starts_with("Summer") { 3 } else if name.starts_with("Spring") { 2 } else if name.starts_with("Winter") { 1 } else { 0 };
+        let country = if season == 0 { 1 } else { 0 };
+        (country, -(year * 10 + season), name.to_string())
+    };
+    let mut order: Vec<&String> = maps.keys().collect();
+    if a.has("newest-first") {
+        order.sort_by_key(|u| rank(&maps[*u].0));
+    }
+    // --partition k/n: this process takes the maps at index k mod n of the ordered list (two
+    // campaign processes overlap one's oracle phase with the other's fan-out)
+    let (pk, pn): (usize, usize) = a.get("partition").map(|s| { let mut p = s.split('/'); (p.next().unwrap().parse().unwrap(), p.next().unwrap().parse().unwrap()) }).unwrap_or((0, 1));
+    let (server_dir, _) = engine_paths(a);
+    for (mi, uid) in order.into_iter().enumerate() {
+        if mi % pn != pk {
+            continue;
+        }
+        // FAIL CLOSED AT THE CAMPAIGN LEVEL: the dedicated server vanished once mid-campaign
+        // (10:39Z: /tmp/tmp/server empty; every map then "failed" in 4 s) -- stop the pass
+        if !server_dir.join("TrackmaniaServer").exists() {
+            return Err(format!("the dedicated server is gone from {} -- the pass stops here (nothing was banked wrongly: a map without a server fails closed)", server_dir.display()));
+        }
+        let (name, exact, total) = &maps[uid];
+        if let Some(fl) = &filter {
+            if !fl.contains(uid) {
+                continue;
+            }
+        }
+        if let Some(nf) = &name_filter {
+            if !name.contains(nf.as_str()) {
+                continue;
+            }
+        }
+        let out_dir = bank.join(uid);
+        if out_dir.join("samples.tmr").exists() && !redo {
+            println!("== {name} ({uid}): already banked, skipping (--redo to rebuild)");
+            continue;
+        }
+        println!("== {name} ({uid}): {} exact of {total} ghosts", exact.len());
+        if exact.is_empty() {
+            report.push_str(&format!("{name}\t{uid}\tSKIPPED: no resim-exact ghost ({total} in the manifest)\n"));
+            continue;
+        }
+        // fewer than 3 exact ghosts: planes cannot be fitted per model, the oracle control has no
+        // power and one excluded ghost fails the quarter rule (Fall 2020 - 15 with 1, Spring 2021 - 01 with 5/2 excluded)
+        if exact.len() < 3 {
+            report.push_str(&format!("{name}\t{uid}\tSKIPPED: only {} resim-exact ghost(s) of {total} (need >= 3)\n", exact.len()));
+            println!("   only {} exact ghost(s): skipped", exact.len());
+            continue;
+        }
+        // the map file: <maps-dir>/<uid>.Map.Gbx (cartographer bank) or the player's maps/<uid>/map.Map.Gbx,
+        // copied into scratch (a mount read can be partial; tmroute gates then refuses it)
+        let map_src = [maps_dir.join(format!("{uid}.Map.Gbx")), ghosts_root.join(uid).join("map.Map.Gbx")].into_iter().find(|p| p.exists());
+        let Some(map_src) = map_src else {
+            report.push_str(&format!("{name}\t{uid}\tSKIPPED: no map file under {} or {}\n", maps_dir.display(), ghosts_root.join(uid).display()));
+            continue;
+        };
+        let map = scratch.join(uid).join(format!("{uid}.Map.Gbx"));
+        std::fs::create_dir_all(map.parent().unwrap()).map_err(|e| e.to_string())?;
+        if let Err(e) = std::fs::copy(&map_src, &map) {
+            report.push_str(&format!("{name}\t{uid}\tSKIPPED: map copy failed: {e}\n"));
+            continue;
+        }
+        // ghost directory of symlinks: <rank>-<declared>.Ghost.Gbx under the player's maps/<uid>/ghosts
+        let gdir = scratch.join(uid).join("ghosts");
+        let _ = std::fs::remove_dir_all(&gdir);
+        std::fs::create_dir_all(&gdir).map_err(|e| e.to_string())?;
+        // the player's durable copy is ghosts.tar (its ghosts/ directory on the mount is
+        // sometimes empty or partial): extract it into scratch and link from there
+        let tar = ghosts_root.join(uid).join("ghosts.tar");
+        let src_dir = if tar.exists() {
+            let tdir = scratch.join(uid).join("tar");
+            let _ = std::fs::remove_dir_all(&tdir);
+            std::fs::create_dir_all(&tdir).map_err(|e| e.to_string())?;
+            let extract = |tdir: &Path| -> bool {
+                let _ = std::fs::remove_dir_all(tdir);
+                let _ = std::fs::create_dir_all(tdir);
+                std::process::Command::new("tar").args(["xf", &tar.to_string_lossy(), "-C", &tdir.to_string_lossy()]).stderr(std::process::Stdio::null()).status().map(|s| s.success()).unwrap_or(false)
+            };
+            let mut ok = extract(&tdir);
+            if !ok {
+                // the persistent-storage FUSE mount serves STALE objects for hours after another
+                // box's write (MODEL arm); a remount refreshes it instantly
+                println!("   ghosts.tar read partial: remounting private-30d and retrying");
+                // in its own systemd scope: a FUSE daemon started inside this process's unit dies with the unit
+                let _ = std::process::Command::new("systemd-run").args(["--user", "--scope", "--unit", &format!("gen-mount-{}", std::process::id()), "--", "persistent-storage", "remount", "private-30d"]).status();
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                ok = extract(&tdir);
+            }
+            if !ok {
+                report.push_str(&format!("{name}\t{uid}\tSKIPPED: ghosts.tar did not extract (after a remount)\n"));
+                continue;
+            }
+            tdir.join("ghosts")
+        } else {
+            ghosts_root.join(uid).join("ghosts")
+        };
+        let mut n_linked = 0;
+        let mut n_keyboard = 0;
+        for (rank, decl, kb) in exact {
+            // the player names files <ghost_id?>-<declared>.Ghost.Gbx; match on the declared time
+            let mut found = None;
+            if let Ok(rd) = std::fs::read_dir(&src_dir) {
+                for ent in rd.flatten() {
+                    let fname = ent.file_name().to_string_lossy().into_owned();
+                    if fname.ends_with(".Ghost.Gbx") && fname.trim_end_matches(".Ghost.Gbx").split('-').nth(1) == Some(decl.as_str()) {
+                        found = Some(ent.path());
+                        break;
+                    }
+                }
+            }
+            let Some(src) = found else {
+                report.push_str(&format!("{name}\t{uid}\tghost rank {rank} declared {decl}: file not found under {}\n", src_dir.display()));
+                continue;
+            };
+            let dst = gdir.join(format!("r{:0>3}_{}.Ghost.Gbx", rank, decl));
+            std::os::unix::fs::symlink(&src, &dst).map_err(|e| e.to_string())?;
+            n_linked += 1;
+            if *kb {
+                n_keyboard += 1;
+            }
+        }
+        if n_linked == 0 {
+            report.push_str(&format!("{name}\t{uid}\tSKIPPED: no ghost file linked\n"));
+            continue;
+        }
+        // GATES: generated LOCALLY from the map with tmroute (the same code the GEOM arm runs;
+        // deterministic), because the bank copy on the mount can read as a partial file for
+        // minutes after GEOM's rename (manifoldfs cross-box lag). When the bank copy parses, the
+        // two gate lists are compared and any difference is a control line, never a block.
+        let geom_local = scratch.join("geom");
+        let gates_local = geom_local.join(uid).join("gates.json");
+        std::fs::create_dir_all(gates_local.parent().unwrap()).map_err(|e| e.to_string())?;
+        let tmroute = exe.with_file_name("tmroute");
+        let st = std::process::Command::new(&tmroute).args(["gates", &map.to_string_lossy(), "--out", &gates_local.to_string_lossy()]).output().map_err(|e| format!("tmroute: {e}"))?;
+        if !st.status.success() {
+            report.push_str(&format!("{name}\t{uid}\tFAILED: tmroute gates: {}\n", String::from_utf8_lossy(&st.stderr).lines().last().unwrap_or("")));
+            continue;
+        }
+        let gates_cmp = {
+            let local = MapGates::load(&map, Some(&geom_local));
+            let bank_geom = a.get("geom").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("{}/persistent/private-30d/tm-route/geom", std::env::var("HOME").unwrap_or_default())));
+            let bank = MapGates::load_geom(&bank_geom.join(uid).join("gates.json"));
+            match (local, bank) {
+                (Ok(l), Ok(b)) => {
+                    let key = |g: &MapGates| g.gates.iter().map(|x| format!("wp{} {:?} grp {} c ({:.2},{:.2},{:.2}) |n| ({:.2},{:.2},{:.2}) hw {:.1} {}", x.waypoint, x.kind, x.group, x.centre[0], x.centre[1], x.centre[2], x.normal[0].abs(), x.normal[1].abs(), x.normal[2].abs(), x.half_width, x.model)).collect::<Vec<_>>();
+                    let (kl, kb) = (key(&l), key(&b));
+                    if kl == kb { format!("local tmroute gates == bank gates.json ({} gates; normal signs ignored, the detector measures them)", kl.len()) } else { format!("GATES DIFFER local vs bank: local {:?} bank {:?}", kl, kb) }
+                }
+                (Ok(_), Err(e)) => format!("bank gates.json unreadable ({e}); local tmroute gates used"),
+                (Err(e), _) => format!("LOCAL gates unreadable: {e}"),
+            }
+        };
+        // MULTILAP maps (a RoadTechMultilap / StartFinish gate): the humans cross every gate once per
+        // lap and my detector credits each gate once -- not supported yet, skipped by name (Winter
+        // 2026 - 10: 114 of 228 counter steps were second-lap credits)
+        if let Ok(g) = MapGates::load(&map, Some(&geom_local)) {
+            if g.gates.iter().any(|x| x.kind == GateKind::Multilap) {
+                report.push_str(&format!("{name}\t{uid}\tSKIPPED: multilap map (not supported: gates are credited once per lap)\n"));
+                println!("   multilap map: skipped");
+                continue;
+            }
+        }
+        let geom_arg = geom_local.to_string_lossy().into_owned();
+        let work = scratch.join(uid).join("work");
+        let stage_dir = scratch.join(uid);
+        let run = |args: &[&str]| -> Result<String, String> {
+            let t = std::time::Instant::now();
+            let o = std::process::Command::new(&exe).args(args).output().map_err(|e| e.to_string())?;
+            let so = String::from_utf8_lossy(&o.stdout).into_owned();
+            let se = String::from_utf8_lossy(&o.stderr).into_owned();
+            let _ = std::fs::write(stage_dir.join(format!("{}.log", args[0])), format!("{so}\n[stderr]\n{se}"));
+            if !o.status.success() {
+                return Err(format!("stage {} failed ({:?}, {:.0} s): {}", args[0], o.status.code(), t.elapsed().as_secs_f64(), se.lines().last().unwrap_or("")));
+            }
+            Ok(so)
+        };
+        let g = gdir.to_string_lossy().into_owned();
+        let m = map.to_string_lossy().into_owned();
+        let w = work.to_string_lossy().into_owned();
+        let gc_out = stage_dir.join("gatecal").to_string_lossy().into_owned();
+        let oc_out = stage_dir.join("oraclectl").to_string_lossy().into_owned();
+        let fo_out = stage_dir.join("fanout").to_string_lossy().into_owned();
+        let det = format!("{gc_out}/detector.json");
+        let stages: Result<(String, String, String, String), String> = (|| {
+            let gc_workers = workers.parse::<usize>().unwrap_or(32).min(n_linked).max(1).to_string();
+            let gc = run(&["gatecal", "--map", &m, "--ghosts", &g, "--workers", &gc_workers, "--out", &gc_out, "--work", &w, "--geom", &geom_arg])?;
+            // the oracle control's start spacing scales with the run length so a long map does not
+            // take an hour of plain-oracle time (Summer 2025 - 25, 3.4 min runs: 4648 tapes, 53 min):
+            // ~600 cases = starts x ~5 ghosts x 8 macros -> every = declared x 40 / 600, at least 2.5 s
+            let decl_med: i64 = {
+                let mut d: Vec<i64> = exact.iter().filter_map(|e| e.1.parse::<i64>().ok()).collect();
+                d.sort();
+                d.get(d.len() / 2).copied().unwrap_or(30000)
+            };
+            let every = ((decl_med * 40 / 600) / 100 * 100).max(2500).to_string();
+            let oc = run(&["oraclectl", "--map", &m, "--ghosts", &g, "--detector", &det, "--out", &oc_out, "--work", &w, "--workers", "12", "--ghost-stride", "4", "--every", &every, "--macros", "0,2,9,21,26,29,33,38", "--geom", &geom_arg])?;
+            let fo = run(&["fanout", "--map", &m, "--ghosts", &g, "--detector", &det, "--out", &fo_out, "--work", &w, "--workers", &workers, "--shards", &shards, "--horizons", "200,400", "--geom", &geom_arg])?;
+            let ve = run(&["verify", "--dir", &fo_out])?;
+            Ok((gc, oc, fo, ve))
+        })();
+        match stages {
+            Err(e) => {
+                println!("   FAILED: {e}");
+                report.push_str(&format!("{name}\t{uid}\tFAILED: {e}\n"));
+                continue;
+            }
+            Ok((gc, oc, fo, ve)) => {
+                let pick = |s: &str, keys: &[&str]| -> String { s.lines().filter(|l| keys.iter().any(|k| l.contains(k))).map(|l| format!("{l}\n")).collect() };
+                let gc_pass = gc.contains("GATECAL VERDICT: PASS");
+                let oc_pass = oc.lines().any(|l| l.starts_with("=> PASS"));
+                // the summary line: "identity (macro 0 ...): max X m, N fails over M starts"
+                let id_fails: usize = fo.lines().find(|l| l.starts_with("identity (")).and_then(|l| l.split(", ").nth(1)).and_then(|s| s.split_whitespace().next()).and_then(|n| n.parse().ok()).unwrap_or(usize::MAX);
+                let items_ok = fo.lines().find(|l| l.starts_with("fanout ")).and_then(|l| l.split(": ").nth(1)).and_then(|s| s.split_whitespace().next()).map(|ab| { let mut p = ab.split('/'); p.next().unwrap_or("0") == p.next().unwrap_or("1") }).unwrap_or(false);
+                // a ghost whose startup controls failed (identity / start position) is EXCLUDED, fail
+                // closed, and the map still passes when at most a quarter of its ghosts are excluded
+                let excluded: Vec<String> = fo.lines().filter(|l| l.contains(": FAILED: ")).map(|l| l.split(": FAILED: ").next().unwrap_or("").rsplit('/').next().unwrap_or("").to_string()).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+                let other_failures = fo.lines().filter(|l| l.contains(": FAILED: ") && !(l.contains("label shift") || l.contains("IDENTITY") || l.contains("matches the telemetry") || l.contains("PROBE-EMPTY") || l.contains("startup controls") || l.contains("START-POSITION"))).count();
+                let fo_fail = id_fails != 0 || other_failures > 0 || excluded.len() * 4 > n_linked || (items_ok == false && excluded.is_empty());
+                let ve_ok = ve.contains("verify OK");
+                let verdict = if gc_pass && oc_pass && !fo_fail && ve_ok { "PASS" } else { "FAIL" };
+                let ctrl = format!(
+                    "# CONTROL.md — {name} ({uid}) — tmreach campaign {} on {}, {}\n\nGhosts: {n_linked} resim-exact of {total} in the player manifest ({n_keyboard} keyboard){}. Verdict: **{verdict}** (bank only on PASS).\n\nGates: {}\n\n## gatecal (planes fitted on the engine counter's rows; controls vs the ghosts' notices and vs the counter)\n{}\n## oraclectl (plain oracle vs the engine-credited, geometry-attributed count; stride 4 ghosts, 8 macros, starts every 2.500 s)\n{}\n## fanout ({workers} workers; production fan-outs stay at <= 40 workers per process — the byte-identical regime: at 96/128 workers 2–4 of 176 k end states differed in quaternion/rpm bytes only, a body-vs-copy-out sampling instant, with the perf arm)\n{}\n## verify\n{}",
+                    tmreach::GIT_HASH,
+                    hostname(),
+                    chrono_now(),
+                    if excluded.is_empty() { String::new() } else { format!("; EXCLUDED (startup controls failed, fail closed): {}", excluded.join(", ")) },
+                    gates_cmp,
+                    pick(&gc, &["ghosts ok", "slack", "GRADE", "ENGINE COUNTER", "extra detection", "unmatched step", "ORDER", "GATECAL VERDICT"]),
+                    oc.lines().filter(|l| l.starts_with("ORACLE CONTROL") || l.starts_with("(det_cps") || l.starts_with("=> ")).map(|l| format!("{l}\n")).collect::<String>(),
+                    fo.lines().filter(|l| l.starts_with("fanout ") || l.starts_with("outcomes ") || l.starts_with("identity (") || l.starts_with("distinct end") || l.starts_with("human legs") || l.contains("FAILED") || (l.contains("unattributed steps") && !l.contains(" 0 unattributed steps"))).map(|l| format!("{l}\n")).collect::<String>(),
+                    pick(&ve, &["TMR0", "verify"])
+                );
+                std::fs::write(stage_dir.join("CONTROL.md"), &ctrl).map_err(|e| e.to_string())?;
+                if verdict == "PASS" {
+                    std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
+                    for f in ["samples.tmr", "path4.tmp4", "starts.tsv", "macros.tsv", "endpoints.tsv", "other-connections.tsv", "detector.json", "FANOUT.log"] {
+                        std::fs::copy(PathBuf::from(&fo_out).join(f), out_dir.join(f)).map_err(|e| format!("bank {f}: {e}"))?;
+                    }
+                    std::fs::write(out_dir.join("CONTROL.md"), &ctrl).map_err(|e| e.to_string())?;
+                    for f in ["crossings.tsv", "grade.txt"] {
+                        let _ = std::fs::copy(PathBuf::from(&gc_out).join(f), out_dir.join(format!("gatecal-{f}")));
+                    }
+                    let _ = std::fs::copy(PathBuf::from(&oc_out).join("cases.tsv"), out_dir.join("oraclectl-cases.tsv"));
+                    println!("   banked -> {}", out_dir.display());
+                } else {
+                    println!("   NOT banked (verdict FAIL); see {}", stage_dir.join("CONTROL.md").display());
+                }
+                let fo_line = fo.lines().find(|l| l.starts_with("fanout ")).unwrap_or("").to_string();
+                report.push_str(&format!("{name}\t{uid}\t{verdict}\t{n_linked} ghosts\t{}\n", fo_line));
+            }
+        }
+        let _ = std::fs::remove_dir_all(&work);
+    }
+    println!("\nCAMPAIGN REPORT\n{report}");
+    std::fs::create_dir_all(&scratch).map_err(|e| e.to_string())?;
+    std::fs::write(scratch.join("campaign-report.tsv"), &report).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn chrono_now() -> String {
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    // UTC, civil from days (Howard Hinnant's algorithm), no chrono dependency
+    let days = (secs / 86400) as i64;
+    let rem = secs % 86400;
+    let z = days + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z.rem_euclid(146097);
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02} {:02}:{:02}Z", rem / 3600, (rem % 3600) / 60)
+}
+
+fn cmd_explore(a: &Args) -> Result<(), String> {
+    let map = PathBuf::from(a.req("map"));
+    let ghosts_dir = PathBuf::from(a.req("ghosts"));
+    let out = PathBuf::from(a.req("out"));
+    let geom = a.get("geom").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("{}/persistent/private-30d/tm-route/geom", std::env::var("HOME").unwrap_or_default())));
+    let det = tmreach::gates::Detector::from_json(&std::fs::read_to_string(a.req("detector")).map_err(|e| e.to_string())?)?;
+    let mut gates = MapGates::load(&map, Some(&geom))?;
+    gates.apply_flips(&det);
+    let budget: usize = a.get("budget").unwrap_or("20000").parse().map_err(|_| "--budget N")?;
+    let h: usize = a.get("h").unwrap_or("200").parse().map_err(|_| "--h ticks")?;
+    let every: i64 = a.get("every").unwrap_or("1000").parse().map_err(|_| "--every ms")?;
+    let seed: u64 = a.get("seed").unwrap_or("1").parse().map_err(|_| "--seed")?;
+    let limit = a.get("limit").map(|s| s.parse::<usize>().unwrap());
+    let mut ghosts = tmreach::pool::ghosts_in(&ghosts_dir)?;
+    if let Some(l) = limit {
+        ghosts.truncate(l);
+    }
+    std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+    let cfg = std::sync::Arc::new(tmreach::explore::ExploreCfg { gates, det, macros: tmreach::explore::default_macros(), h, every_ms: every, budget, seed, out: out.clone() });
+    let pcfg = pool_cfg(a, &map, "explore");
+    println!("explore: {} ghosts, {} workers, budget {} rollouts per ghost, h {} ticks, seeds every {} ms, cells 2 m x 2 m x 5 m/s x 30 deg x cps", ghosts.len(), pcfg.workers, budget, h, every);
+    let t0 = std::time::Instant::now();
+    let c2 = cfg.clone();
+    let results = tmreach::pool::run_per_ghost(&pcfg, &ghosts, move |_i, w, tel| tmreach::explore::explore_ghost(w, tel, &c2));
+    let mut conn = String::from(tmreach::explore::connections_header());
+    let (mut cells, mut rollouts, mut steps, mut nconn, mut ok) = (0, 0, 0, 0, 0);
+    for (g, r) in ghosts.iter().zip(results) {
+        match r {
+            Ok(o) => {
+                ok += 1;
+                cells += o.cells;
+                rollouts += o.rollouts;
+                steps += o.steps;
+                nconn += o.connections.len();
+                for c in &o.connections {
+                    conn.push_str(c);
+                    conn.push('\n');
+                }
+                for l in &o.log {
+                    println!("{l}");
+                }
+            }
+            Err(e) => println!("{}: FAILED: {e}", g.display()),
+        }
+    }
+    // the plain oracle on every connection tape (visible only when the credited count
+    // reaches floor(N/2); the engine counter is what found them)
+    let mut conn = conn;
+    if nconn > 0 && !a.has("no-oracle") {
+        let (server, _) = engine_paths(a);
+        let tapes: Vec<PathBuf> = conn.lines().skip(1).filter_map(|l| l.split('\t').last()).map(PathBuf::from).collect();
+        // at most --oracle-max tapes (default 200): a multi-finish map yields thousands of connections
+        let omax: usize = a.get("oracle-max").unwrap_or("200").parse().unwrap_or(200);
+        let refs: Vec<&std::path::Path> = tapes.iter().take(omax).map(|p| p.as_path()).collect();
+        match ghost::oracle::validate_many(&server, &refs, ghost::oracle::MapsMode::One(&map), "tmreach-explore") {
+            Ok(res) => {
+                let mut s = String::new();
+                for (i, l) in conn.lines().enumerate() {
+                    if i == 0 {
+                        s.push_str(l.trim_end());
+                        s.push_str("\toracle\n");
+                        continue;
+                    }
+                    let fname = tapes[i - 1].file_name().unwrap().to_string_lossy().into_owned();
+                    let r = res.iter().find(|r| r.file == fname || r.file.ends_with(&fname));
+                    let o = r.map(|r| format!("cps {:?} time {:?} {}", r.cps, r.time_ms, r.desc.trim().replace('\n', " "))).unwrap_or("-".into());
+                    s.push_str(&format!("{l}\t{o}\n"));
+                }
+                conn = s;
+            }
+            Err(e) => println!("oracle on the connection tapes failed: {e}"),
+        }
+    }
+    std::fs::write(out.join("connections.tsv"), &conn).map_err(|e| e.to_string())?;
+    // SUMMARY: distinct (credited-before set -> gate) pairs, with counts and the earliest crossing
+    {
+        let mut pairs: std::collections::BTreeMap<(String, String), (usize, String, String)> = Default::default();
+        for l in conn.lines().skip(1) {
+            let f: Vec<&str> = l.split('\t').collect();
+            if f.len() < 8 {
+                continue;
+            }
+            let e = pairs.entry((f[3].to_string(), f[4].to_string())).or_insert((0, f[7].to_string(), f[5].to_string()));
+            e.0 += 1;
+            if f[7] < e.1.as_str() {
+                e.1 = f[7].to_string();
+            }
+        }
+        let mut s = String::from("credited_before\tgate\thuman_next\tcount\tearliest_cross_race\n");
+        for ((before, gate), (n, t, next)) in &pairs {
+            s.push_str(&format!("{before}\t{gate}\t{next}\t{n}\t{t}\n"));
+        }
+        std::fs::write(out.join("connections-summary.tsv"), &s).map_err(|e| e.to_string())?;
+        println!("connection pairs (credited-before set -> gate): {}", pairs.len());
+        for ((before, gate), (n, t, next)) in pairs.iter().take(30) {
+            println!("  [{before}] -> {gate} (human next {next}): {n} rollouts, earliest at race {t}");
+        }
+    }
+    let wall = t0.elapsed().as_secs_f64();
+    println!(
+        "explore {} on {} ({}): {}/{} ghosts ok, {} rollouts in {:.1} s wall ({:.1}/s), {} explore steps, {} archive cells, {} other-gate connections -> {}",
+        tmreach::GIT_HASH, cfg.gates.map_uid, hostname(), ok, ghosts.len(), rollouts, wall, rollouts as f64 / wall.max(1e-9), steps, cells, nconn, out.join("connections.tsv").display()
+    );
+    Ok(())
+}
+
+/// Diagnostic: replay a macro chain from a human savestate and print the rows (with the engine counter).
+fn cmd_replay(a: &Args) -> Result<(), String> {
+    let map = PathBuf::from(a.req("map"));
+    let ghost = PathBuf::from(a.req("ghost"));
+    let f: usize = a.req("f").parse().map_err(|_| "--f tick")?;
+    let h: usize = a.get("h").unwrap_or("200").parse().map_err(|_| "--h")?;
+    let chain: Vec<u16> = a.req("chain").split(',').map(|s| s.parse().unwrap()).collect();
+    let (server, shim) = engine_paths(a);
+    let work = a.get("work").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("/tmp/tmreach/replay-{}", std::process::id())));
+    let mut w = Worker::start(&server, &map, &shim, &work, &ghost, a.has("verbose"))?;
+    let n = w.n_ticks();
+    let macros = tmreach::explore::default_macros();
+    let recs = w.reference_recs(w.root_probe, f - w.root_probe);
+    let (rows0, nf) = w.rollout_keep(branch::ROOT, &recs, w.root_probe, (f - w.root_probe) as u64)?;
+    let last0 = rows0.last().unwrap();
+    println!("prefix to f {f}: floor {} last row label {} race {} cps {} at ({:.2}, {:.2}, {:.2})", w.floor(nf)?, last0.time_ms, tmreach::secs(w.race_of(last0)), last0.cps, last0.x, last0.y, last0.z);
+    let mut t = f;
+    let mut all: Vec<forkoracle::forksrv::Rec> = Vec::new();
+    for mid in &chain {
+        let mm = macros.iter().find(|x| x.id == *mid).ok_or("no such macro")?;
+        let b: Vec<(u8, u8, u8)> = (t..t + h).map(|k| (w.tape.steer[k.min(n - 1)], w.tape.accel[k.min(n - 1)], w.tape.brake[k.min(n - 1)])).collect();
+        match tmreach::macros::build(mm, &b, false) {
+            tmreach::macros::Built::Recs(r) => all.extend(r),
+            tmreach::macros::Built::NoOp => all.extend(b.iter().map(|&(s, g, br)| forkoracle::forksrv::rec_of(s, g, br))),
+        }
+        t += h;
+    }
+    let rolled = w.rollout(nf, &all, f, all.len() as u64)?;
+    println!("chain {:?} from f {f}: {} rows, exited {}", chain, rolled.rows.len(), rolled.exited);
+    let every: usize = a.get("every").unwrap_or("10").parse().unwrap_or(10);
+    let mut prev = u32::MAX;
+    for (i, r) in rolled.rows.iter().enumerate() {
+        let step = r.cps != u32::MAX && prev != u32::MAX && r.cps != prev;
+        if i % every == 0 || step {
+            println!("  {} race {} cps {} pos ({:.2}, {:.2}, {:.2}) v {:.1}{}", r.time_ms, tmreach::secs(w.race_of(r)), r.cps, r.x, r.y, r.z, tmreach::rig::speed(r), if step { "   <-- COUNTER STEP" } else { "" });
+        }
+        prev = r.cps;
+    }
+    if let Some(out) = a.get("out") {
+        tmreach::starts::write_trace(&PathBuf::from(out), &rolled.rows)?;
+    }
+    Ok(())
+}
+
+fn cmd_effects(a: &Args) -> Result<(), String> {
+    let map = PathBuf::from(a.req("map"));
+    let ghost = PathBuf::from(a.req("ghost"));
+    let out = PathBuf::from(a.req("out"));
+    let t0: usize = a.req("t0").parse().map_err(|_| "--t0 tick")?;
+    let n: usize = a.get("n").unwrap_or("300").parse().map_err(|_| "--n ticks")?;
+    let at: usize = a.get("at").unwrap_or("100").parse().map_err(|_| "--at idx of the crossing within the window")?;
+    let (server, shim) = engine_paths(a);
+    let work = a.get("work").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("/tmp/tmreach/effects-{}", std::process::id())));
+    let mut w = Worker::start(&server, &map, &shim, &work, &ghost, a.has("verbose"))?;
+    let prov = w.car.clone();
+    let layout = w.forest.layout().cloned().ok_or("no layout")?;
+    println!("car {prov}; layout pos {:#x} vis {:#x} clock {:#x} cps {:#x}", layout.pos, layout.vis, layout.clock, layout.cps);
+    let windows = vec![
+        tmreach::effects::Window { name: "vehicle", base: prov.phy.saturating_sub(0x8000), len: 0x18000 },
+        tmreach::effects::Window { name: "participant", base: prov.participant.saturating_sub(0x8000), len: 0x18000 },
+        tmreach::effects::Window { name: "controller", base: prov.controller.saturating_sub(0x4000), len: 0x8000 },
+        tmreach::effects::Window { name: "sim", base: prov.sim.saturating_sub(0x4000), len: 0x8000 },
+        tmreach::effects::Window { name: "scene", base: prov.scene.saturating_sub(0x2000), len: 0x4000 },
+        tmreach::effects::Window { name: "playground", base: prov.playground.saturating_sub(0x4000), len: 0x8000 },
+    ];
+    let t = std::time::Instant::now();
+    let o = tmreach::effects::scan(&mut w, t0, n, windows)?;
+    println!("scanned {} ticks ({} .. {}) race {} .. {} in {:.1} s", o.ticks.len(), o.ticks.first().unwrap_or(&0), o.ticks.last().unwrap_or(&0), tmreach::secs(*o.race_ms.first().unwrap_or(&0)), tmreach::secs(*o.race_ms.last().unwrap_or(&0)), t.elapsed().as_secs_f64());
+    tmreach::effects::write_dumps(&o, &out)?;
+    let timers = tmreach::effects::find_timers(&o, a.get("min-run").unwrap_or("20").parse().unwrap_or(20));
+    println!("\nTIMER candidates (jump then a constant step per tick):");
+    for c in &timers {
+        println!("  {} +{:#x} ({}): idx {} race {}: {}   series {:?}", c.window, c.offset, c.kind, c.first_tick_idx, tmreach::secs(o.race_ms[c.first_tick_idx]), c.note, c.series.iter().take(8).map(|v| format!("{v}")).collect::<Vec<_>>());
+    }
+    let flags = tmreach::effects::find_flags(&o, at, a.get("radius").unwrap_or("15").parse().unwrap_or(15));
+    println!("\nFLAG candidates (a byte that changes once or twice, within ±radius ticks of idx {at}):");
+    for c in flags.iter().take(60) {
+        println!("  {} +{:#x}: {}", c.window, c.offset, c.note);
+    }
+    let (alo, ahi): (f64, f64) = (a.get("appear-lo").unwrap_or("7000").parse().unwrap_or(7000.0), a.get("appear-hi").unwrap_or("9000").parse().unwrap_or(9000.0));
+    let app = tmreach::effects::find_appearing(&o, alo, ahi, at.saturating_sub(20), at + 40);
+    println!("\nAPPEARING candidates (a value in [{alo}, {ahi}] appearing within idx {}..{}):", at.saturating_sub(20), at + 40);
+    for c in app.iter().take(60) {
+        println!("  {} +{:#x} ({}): {}  series {:?}", c.window, c.offset, c.kind, c.note, c.series.iter().map(|v| format!("{v:.3}")).collect::<Vec<_>>());
+    }
+    println!("{} timer candidates, {} flag candidates, {} appearing; dumps in {}", timers.len(), flags.len(), app.len(), out.display());
+    Ok(())
+}
+
+/// `tmreach bank-table --bank DIR [--out FILE]`: one row per banked map from its
+/// CONTROL.md (name, uid, ghosts, records, counter attribution, oracle control,
+/// human legs, workers) — the campaign table the coordinator reads.
+fn cmd_bank_table(a: &Args) -> Result<(), String> {
+    let bank = PathBuf::from(a.req("bank"));
+    // within ONE line of the file (a hand-written CONTROL.md has the same phrases across lines)
+    let pick = |s: &str, re_start: &str, re_end: &str| -> String {
+        s.lines().find_map(|l| l.find(re_start).map(|i| {
+            let rest = &l[i + re_start.len()..];
+            let j = rest.find(re_end).unwrap_or(rest.len());
+            rest[..j].trim().to_string()
+        })).unwrap_or_default()
+    };
+    let mut rows: Vec<(String, String)> = Vec::new();
+    for e in std::fs::read_dir(&bank).map_err(|e| e.to_string())? {
+        let e = e.map_err(|e| e.to_string())?;
+        let uid = e.file_name().to_string_lossy().into_owned();
+        let Ok(c) = std::fs::read_to_string(e.path().join("CONTROL.md")) else { continue };
+        if !e.path().join("samples.tmr").exists() {
+            continue;
+        }
+        let name = pick(&c, "# CONTROL.md — ", " (");
+        let ghosts = pick(&c, "Ghosts: ", " in the player manifest");
+        let excluded = c.lines().find(|l| l.contains("EXCLUDED (startup controls failed")).map(|l| l.matches(".Ghost.Gbx").count()).unwrap_or(0);
+        let records = pick(&c, "work items (ghost x shard) ok, ", " rollouts (").to_string() + " rollouts, " + &pick(&c, " rollouts (", " records)") + " records";
+        let counter = pick(&c, "finish included): ", " matched by a detector crossing on the same row").replace(" counter steps: ", " steps, ");
+        let oracle = pick(&c, "ORACLE CONTROL: ", ", unanswered");
+        let legs = pick(&c, "human legs (positives) ", ",");
+        let workers = pick(&c, "## fanout (", " workers");
+        let git = pick(&c, "tmreach campaign ", " on ");
+        // CarState.car semantics by the shard's write time: KIND from route-gen acdde6db (2026-09-08 04:20Z), the SLOT before
+        let when = c.lines().next().map(|l| l.rsplit(", ").next().unwrap_or("").trim().to_string()).unwrap_or_default();
+        let car_sem = if when.as_str() >= "2026-09-08 04:20Z" { "kind" } else { "slot (mask on non-Stadium-default maps)" };
+        // the effects dialect from the shard header (state version byte 17) and record 0's byte 99
+        let dialect = std::fs::File::open(e.path().join("samples.tmr")).ok().and_then(|mut f| { use std::io::Read; let mut b = vec![0u8; 24 + 12 + 100]; f.read_exact(&mut b).ok().map(|_| b) }).map(|b| {
+            if b.len() < 24 + 12 + 100 { "?".to_string() }
+            else if b[17] >= 3 { "tmstate-v3".to_string() }
+            else if c.contains("effects_dialect=gen-01:16") || b[24 + 12 + 99] != 0 { "gen-01:16 (re-run)".to_string() }
+            else { "none (v2 records)".to_string() }
+        }).unwrap_or_default();
+        rows.push((name.clone(), format!("{name}\t{uid}\t{ghosts}\texcluded {excluded}\t{records}\tcounter steps {counter} same-row\t{oracle}\tlegs {legs}\tworkers {workers}\ttmreach {git} {when}\teffects_dialect={dialect}\tcar={car_sem}\n")));
+    }
+    rows.sort();
+    let mut s = String::from("map\tuid\tghosts\texcluded\trecords\tcounter attribution\toracle control\thuman legs\tworkers\tbuild\teffects_dialect\tcar_semantics\n");
+    for (_, r) in &rows {
+        s.push_str(r);
+    }
+    print!("{s}");
+    println!("{} maps banked", rows.len());
+    if let Some(out) = a.get("out") {
+        std::fs::write(out, &s).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// `tmreach load-control --map M --tape T [--geom DIR]`: does the dedicated
+/// server LOAD the map and SPAWN a car? Boots the server on the map with the
+/// given (synthetic) tape, derives the car (forkoracle::car::locate), reads the
+/// root row and compares it with the map's Spawn from the local tmroute gates.
+/// One TSV line on stdout: loads, car, spawn_dxyz, cps (checkpoint groups).
+fn cmd_load_control(a: &Args) -> Result<(), String> {
+    let map = PathBuf::from(a.req("map"));
+    let tape = PathBuf::from(a.req("tape"));
+    let (server, shim) = engine_paths(a);
+    let work = a.get("work").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("/tmp/tmreach/loadctl-{}", std::process::id())));
+    let geom = a.get("geom").map(PathBuf::from);
+    let gates = MapGates::load(&map, geom.as_deref());
+    let (spawn, n_cp) = match &gates {
+        Ok(g) => (g.gates.iter().find(|x| x.kind == GateKind::Start).map(|x| x.centre), g.gates.iter().filter(|x| x.kind == GateKind::Checkpoint).map(|x| x.group).collect::<std::collections::BTreeSet<_>>().len()),
+        Err(_) => (None, 0),
+    };
+    let t0 = std::time::Instant::now();
+    match Worker::start(&server, &map, &shim, &work, &tape, a.has("verbose")) {
+        Ok(w) => {
+            let r = &w.root_row;
+            let d = spawn.map(|s| format!("{:.2},{:.2},{:.2}", r.x - s[0], r.y - s[1], r.z - s[2])).unwrap_or("-".into());
+            let dh = spawn.map(|s| ((r.x - s[0]).powi(2) + (r.z - s[2]).powi(2)).sqrt()).unwrap_or(f64::NAN);
+            println!("loads=yes\tcar=yes\troot=({:.3},{:.3},{:.3})\tspeed={:.2}\tspawn_dxyz={d}\tspawn_dxz={dh:.2}\tcps={n_cp}\tgates={}\tstartup_s={:.1}", r.x, r.y, r.z, (r.vx * r.vx + r.vy * r.vy + r.vz * r.vz).sqrt(), gates.as_ref().map(|g| g.gates.len()).unwrap_or(0), t0.elapsed().as_secs_f64());
+        }
+        Err(e) => {
+            let loads = if e.contains("car") || e.contains("locate") || e.contains("probe") { "yes" } else { "no" };
+            println!("loads={loads}\tcar=no\troot=-\tspeed=-\tspawn_dxyz=-\tspawn_dxz=-\tcps={n_cp}\tgates={}\tstartup_s={:.1}\terror={}", gates.as_ref().map(|g| g.gates.len()).unwrap_or(0), t0.elapsed().as_secs_f64(), e.replace('\n', " ").chars().take(600).collect::<String>());
+        }
+    }
+    Ok(())
+}
+
+/// `tmreach lap --map M --tape BASE.Ghost.Gbx --centreline C.json --work DIR --out DIR
+///   [--budget N] [--seed S] [--h TICKS] [--steer-sign +1|-1] [--max-chain-ticks N] [--verbose]`
+/// Route-guided savestate search for a FINISHING tape (see lap.rs). On a finish the chain is
+/// replayed from the spawn in ONE fresh run (no forks) and the counter's credits are read back.
+fn cmd_lap(a: &Args) -> Result<(), String> {
+    let map = PathBuf::from(a.req("map"));
+    let tape = PathBuf::from(a.req("tape"));
+    let (server, shim) = engine_paths(a);
+    let work = PathBuf::from(a.req("work"));
+    let out = PathBuf::from(a.req("out"));
+    std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+    // --gates FILE: GEOM's gates.json for this map (its groups are the centreline's order ids)
+    let gates = match (a.get("gates"), a.get("geom")) {
+        (Some(f), _) => Some(MapGates::load_geom(Path::new(f))?),
+        (None, Some(g)) => Some(MapGates::load(&map, Some(Path::new(g)))?),
+        _ => None,
+    };
+    // --author-line FILE (needs --gates): GEOM's author line as THE centreline, gates in the author's order
+    let mut track = match a.get("author-line") {
+        Some(al) => {
+            // the gate order comes from the centreline file (GEOM's human order when "via": "author")
+            let ord: Option<Vec<u32>> = a.get("centreline").and_then(|c| std::fs::read_to_string(c).ok()).and_then(|txt| tmreach::json::parse(&txt).ok()).and_then(|j| j.get("order_groups").and_then(|v| v.arr()).map(|arr| arr.iter().filter_map(|x| x.f64()).map(|x| x as u32).collect()));
+            if let Some(o) = &ord {
+                println!("gate order from the centreline file: {o:?}");
+            }
+            tmreach::lap::Track::from_author_line_ordered(Path::new(al), gates.as_ref().ok_or("--author-line needs --gates")?, ord.as_deref())?
+        }
+        None => tmreach::lap::Track::load(&PathBuf::from(a.req("centreline")))?,
+    };
+    // --leg-waypoints k:FILE (repeatable via commas k:FILE,k:FILE): replace ordered leg k by a waypoint polyline
+    if let Some(spec) = a.get("leg-waypoints") {
+        for item in spec.split(',') {
+            if let Some((k, rest)) = item.split_once(':') {
+                // k:FILE or k:FILE:HALFWIDTH
+                let (f, hw) = match rest.rsplit_once(':') { Some((f, h)) if h.parse::<f64>().is_ok() => (f, h.parse::<f64>().unwrap()), _ => (rest, 8.0) };
+                let txt = std::fs::read_to_string(f).map_err(|e| format!("{f}: {e}"))?;
+                let wps: Vec<[f64; 3]> = txt.lines().filter_map(|l| { let v: Vec<f64> = l.split_whitespace().filter_map(|x| x.parse().ok()).collect(); if v.len() == 3 { Some([v[0], v[1], v[2]]) } else { None } }).collect();
+                let k: usize = k.parse().map_err(|_| "--leg-waypoints k:FILE")?;
+                track.replace_leg_hw(k, &wps, hw);
+                println!("leg {k} replaced by {} waypoints ({f}, half-width {hw}); gates now at s {:?}", wps.len(), track.gate_s.iter().map(|x| format!("{x:.0}")).collect::<Vec<_>>());
+            }
+        }
+    }
+    if let Some(wp) = a.get("waypoints") {
+        let txt = std::fs::read_to_string(wp).map_err(|e| format!("{wp}: {e}"))?;
+        let wps: Vec<[f64; 3]> = txt.lines().filter_map(|l| { let f: Vec<f64> = l.split_whitespace().filter_map(|x| x.parse().ok()).collect(); if f.len() == 3 { Some([f[0], f[1], f[2]]) } else { None } }).collect();
+        track.replace_first_leg(&wps);
+        println!("first leg replaced by {} waypoints ({wp}); gate 0 now at s {:.1} m, track {:.0} m", wps.len(), track.gate_s[0], track.len_m());
+    }
+    // --gap-legs k,l: force ordered legs to GAP mode (unknown connections: 21's 5->1 runs over a grandstand)
+    if let Some(gl) = a.get("gap-legs") {
+        for k in gl.split(',').filter_map(|x| x.parse::<usize>().ok()) {
+            if let Some(f) = track.leg_gap.get_mut(k) {
+                *f = true;
+                println!("leg {k} forced to GAP mode");
+            }
+        }
+    }
+    if let Some(g) = &gates {
+        println!("gates for credit attribution: {} ({} groups in the order)", g.gates.len(), track.order_groups.len());
+    }
+    let cfg = tmreach::lap::LapCfg {
+        track,
+        gates,
+        h: a.get("h").map(|s| s.parse().unwrap()).unwrap_or(100),
+        budget: a.get("budget").map(|s| s.parse().unwrap()).unwrap_or(20_000),
+        seed: a.get("seed").map(|s| s.parse().unwrap()).unwrap_or(1),
+        steer_sign: a.get("steer-sign").map(|s| s.parse().unwrap()).unwrap_or(1.0),
+        out: out.clone(),
+        max_chain_ticks: a.get("max-chain-ticks").map(|s| s.parse().unwrap()).unwrap_or(usize::MAX),
+        verbose: a.has("verbose"),
+        prefix_ticks: a.get("prefix-ticks").map(|s| s.parse().unwrap()).unwrap_or(0),
+        lat_tol: a.get("lat-tol").map(|s| s.parse().unwrap()).unwrap_or(6.0),
+        below_tol: a.get("below-tol").map(|s| s.parse().unwrap()).unwrap_or(25.0),
+        clinic: a.has("clinic"),
+        inject: match a.get("inject-state") {
+            Some(f) => Some(tmreach::inject::load(std::path::Path::new(&f))?),
+            None => None,
+        },
+        policy: match a.get("policy") {
+            Some(p) => {
+                let geom = a.get("policy-geom").ok_or("--policy needs --policy-geom geom.json (the geometry the policy observes)")?;
+                Some(tmreach::policy_src::PolicySrc::load(&p, std::path::Path::new(&geom), a.get("obs-version").map(|s| s.parse().unwrap()), a.get("policy-temp").map(|s| s.parse().unwrap()).unwrap_or(0.6), a.get("policy-n").map(|s| s.parse().unwrap()).unwrap_or(3))?)
+            }
+            None => None,
+        },
+        seed_to_gate: a.get("seed-to-gate").map(|s| s.parse().unwrap()).unwrap_or(0),
+        respawn: a.has("respawn"),
+        compound: a.has("compound"),
+        rendezvous: a.get("rendezvous").map(|s| { let v: Vec<f64> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect(); [v[0], v[1], v[2], v[3], v[4], v[5]] }),
+        rdv_tol: a.get("rdv-tol").map(|s| s.parse().unwrap()).unwrap_or(3.0),
+        vjeux_csv: a.get("vjeux-approach").and_then(|f| std::fs::read_to_string(f).ok()),
+        arrival_any: a.has("arrival-any"),
+        pursue_gain: a.get("pursue-gain").map(|s| s.parse().unwrap()).unwrap_or(10.0),
+        pursue_look: a.get("pursue-look").map(|s| s.parse().unwrap()).unwrap_or(8.0),
+        pursue: match a.get("pursue") { Some(f) => std::fs::read_to_string(f).map_err(|e| format!("{f}: {e}"))?.lines().filter_map(|l| { let v: Vec<f64> = l.split_whitespace().filter_map(|x| x.parse().ok()).collect(); if v.len() >= 3 { Some([v[0], v[1], v[2], *v.get(3).unwrap_or(&0.0), *v.get(4).unwrap_or(&0.0)]) } else { None } }).collect(), None => Vec::new() },
+        arrival_strict: a.has("arrival-strict"),
+        beat_times: match a.get("beat-times") { Some(f) => std::fs::read_to_string(f).map_err(|e| format!("{f}: {e}"))?.split_whitespace().filter_map(|x| x.parse().ok()).collect(), None => Vec::new() },
+        speed_caps: a.get("speed-cap-box").map(|s| s.split(';').filter_map(|b| { let v: Vec<f64> = b.split(',').filter_map(|x| x.trim().parse().ok()).collect(); if v.len() == 5 { Some([v[0], v[1], v[2], v[3], v[4]]) } else { None } }).collect()).unwrap_or_default(),
+        accel_boxes: a.get("accel-box").map(|s| s.split(';').filter_map(|b| { let v: Vec<f64> = b.split(',').filter_map(|x| x.trim().parse().ok()).collect(); if v.len() == 4 { Some([v[0], v[1], v[2], v[3]]) } else { None } }).collect()).unwrap_or_default(),
+        stall_kill: a.get("stall-kill").and_then(|s| { let v: Vec<f64> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect(); if v.len() == 3 { Some([v[0], v[1], v[2]]) } else { None } }),
+        upright: a.get("upright-window").map(|s| s.split(';').filter_map(|b| { let v: Vec<f64> = b.split(',').filter_map(|x| x.trim().parse().ok()).collect(); match v.len() { 2 => Some([v[0], v[1], 0.7]), 3 => Some([v[0], v[1], v[2]]), _ => None } }).collect()).unwrap_or_default(),
+        allow_water: a.has("allow-water"),
+        base_tilt: a.get("base-tilt").map(|f| tmreach::lap::load_base_tilt(f)).unwrap_or_default(),
+        tilt_slack: a.get("tilt-slack").map(|s| s.parse().unwrap()).unwrap_or(0),
+        tilt70_guard: a.has("tilt70"),
+        slide_interim: a.has("slide-interim"),
+        live_windows: a.get("live-window").map(|s| s.split(';').filter_map(|b| { let v: Vec<f64> = b.split(',').filter_map(|x| x.trim().parse().ok()).collect(); if v.len() == 3 || v.len() == 4 { Some(v) } else { None } }).collect()).unwrap_or_default(),
+        water_boxes: a.get("water-boxes").map(|s| s.split(';').filter_map(|b| { let v: Vec<f64> = b.split(',').filter_map(|x| x.trim().parse().ok()).collect(); if v.len() == 5 { Some([v[0], v[1], v[2], v[3], v[4]]) } else { None } }).collect()).unwrap_or_default(),
+        min_leg_gate: a.get("min-leg-gate").map(|s| s.parse().unwrap()).unwrap_or(0),
+        beat_margin: a.get("beat-margin").map(|s| s.parse().unwrap()).unwrap_or(0.2),
+        arrival_ang: a.get("arrival-ang").map(|s| s.parse().unwrap()).unwrap_or(60.0),
+        arrival_dy: a.get("arrival-dy").map(|s| s.parse().unwrap()).unwrap_or(5.0),
+        assume_mask: a.get("assume-mask").map(|s| u32::from_str_radix(s.trim_start_matches("0x"), 16).unwrap()).unwrap_or(0),
+        offworld_y: a.get("offworld-y").map(|s| s.parse().unwrap()).unwrap_or(-20.0),
+        no_brake: a.get("no-brake").map(|s| { let v: Vec<f64> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect(); (v[0], v[1]) }),
+        seed_chain: match a.get("seed-chain") {
+            Some(f) => {
+                let txt = std::fs::read_to_string(f).map_err(|e| format!("{f}: {e}"))?;
+                let mut c = Vec::new();
+                for l in txt.lines().skip(1) {
+                    let v: Vec<&str> = l.split('\t').collect();
+                    if v.len() >= 4 {
+                        c.push(forkoracle::forksrv::Rec { steer: v[1].parse::<f32>().unwrap_or(0.0) / 127.0, gas: v[2].parse::<f32>().unwrap_or(0.0), brake: v[3].parse::<f32>().unwrap_or(0.0) });
+                    }
+                }
+                // without --respawn a seed is cut BEFORE its first respawn tick: the state after a respawn is not
+                // reproduced across processes (24, 07:14Z: ten finishes refused by the self-validation)
+                if !a.has("respawn") && !a.has("keep-seed-respawns") {
+                    if let Some(i) = c.iter().position(|r| r.respawn()) {
+                        println!("seed chain {f}: respawn at tick {i} — chain cut there (no --respawn)");
+                        c.truncate(i.saturating_sub(10));
+                    }
+                }
+                println!("seed chain {f}: {} ticks", c.len());
+                Some(c)
+            }
+            None => None,
+        },
+    };
+    let t0 = std::time::Instant::now();
+    let mut w = Worker::start(&server, &map, &shim, &work.join("search"), &tape, a.has("verbose"))?;
+    println!("lap search: worker up in {:.1} s, root tick {} race {}, tape {} ticks", t0.elapsed().as_secs_f64(), w.root_probe, tmreach::secs(w.race_of(&w.root_row)), w.n_ticks());
+    let res = tmreach::lap::run(&mut w, &cfg)?;
+    for l in &res.log {
+        println!("{l}");
+    }
+    println!("lap search: {} rollouts, {} steps, {} cells in {:.0} s", res.rollouts, res.steps, res.cells, t0.elapsed().as_secs_f64());
+    if let Some(b) = &res.best {
+        println!("best: cps {} s {:.1} m ({:.0} % of {:.0} m) speed {:.1} m/s after {:.2} s of inputs; macros {:?}", b.cps, b.s, 100.0 * b.s / cfg.track.len_m(), cfg.track.len_m(), tmreach::rig::speed(&b.end), b.chain.len() as f64 / 100.0, b.macro_desc);
+        std::fs::write(out.join("best.tsv"), tmreach::lap::tsv_text(&b.chain)).map_err(|e| e.to_string())?;
+    }
+    let Some(f) = &res.finished else {
+        println!("NO FINISH within the budget");
+        return Ok(());
+    };
+    // CLINIC: a completed leg is handed on as a chain, not a candidate tape
+    if let (Some(k), true) = (res.leg_done, (f.cps as usize) < cfg.track.n_groups) {
+        let p = out.join(format!("leg-{k:02}.tape.tsv"));
+        // + 0.3 s of straight gas: a credit on the chain's last tick must be INSIDE the seed replay (24z re-credited gate 5 eight times)
+        let mut chain = f.chain.clone();
+        chain.extend((0..30).map(|_| forkoracle::forksrv::Rec { steer: 0.0, gas: 1.0, brake: 0.0 }));
+        std::fs::write(&p, tmreach::lap::tsv_text(&chain)).map_err(|e| e.to_string())?;
+        println!("LEG {k} DONE — chain {} ({} ticks, cps {}, mask {:#x})", p.display(), f.chain.len(), f.cps, f.mask);
+        return Ok(());
+    }
+    // the candidate tape: the chain from the root, then brake to the end of the tape
+    let n = w.n_ticks();
+    let root = w.root_probe;
+    let (mut st, mut gs, mut br) = (w.tape.steer.clone(), w.tape.accel.clone(), w.tape.brake.clone());
+    for (i, r) in f.chain.iter().enumerate() {
+        if root + i < n {
+            st[root + i] = (r.steer * 127.0).round() as i8 as u8;
+            gs[root + i] = (r.gas > 0.5) as u8;
+            br[root + i] = (r.brake > 0.5) as u8;
+        }
+    }
+    for k in (root + f.chain.len()).min(n)..n {
+        st[k] = 0;
+        gs[k] = 0;
+        br[k] = 1;
+    }
+    let race_ms = w.race_of(&f.end);
+    let stem = format!("lap-{}", tmreach::secs(race_ms).replace('.', "_"));
+    let cand = out.join(format!("{stem}.Ghost.Gbx"));
+    w.tape.write_candidate(&st, &gs, &br, &cand)?;
+    std::fs::write(out.join(format!("{stem}.gtape.txt")), tmreach::lap::gtape_text(&f.chain)).map_err(|e| e.to_string())?;
+    std::fs::write(out.join(format!("{stem}.tape.tsv")), tmreach::lap::tsv_text(&f.chain)).map_err(|e| e.to_string())?;
+    println!("FINISH found: race {} cps {} — candidate {} ({} input ticks from race 0)", tmreach::secs(race_ms), f.cps, cand.display(), f.chain.len());
+    // VALIDATION REPLAY: a fresh worker on the candidate tape, the whole run walked flat (no forks)
+    drop(w);
+    let mut v = Worker::start(&server, &map, &shim, &work.join("validate"), &cand, false)?;
+    let flat = v.flat((f.chain.len() + 300) as u64)?;
+    let last = flat.last().ok_or("empty replay")?;
+    let cps_end = if last.cps == u32::MAX { 0 } else { last.cps };
+    let steps: Vec<(i64, u32)> = flat.windows(2).filter(|p| p[1].cps != p[0].cps && p[1].cps != u32::MAX).map(|p| (v.race_of(&p[1]), p[1].cps)).collect();
+    let finish_row = steps.iter().find(|(_, c)| *c as usize >= cfg.track.n_groups).map(|(t, _)| *t);
+    let verdict = if finish_row.is_some() { "PASS" } else { "FAIL" };
+    println!("VALIDATION REPLAY (fresh run, no forks): counter steps {:?}; cps at the end {cps_end} of {} groups => {verdict}{}", steps.iter().map(|(t, c)| format!("{}:{c}", tmreach::secs(*t))).collect::<Vec<_>>(), cfg.track.n_groups, finish_row.map(|t| format!(", finish credited at {}", tmreach::secs(t))).unwrap_or_default());
+    let md = format!(
+        "# LAP — {}\n\nmap: {} (md5 {})\ncentreline: {}\nsearch: {} rollouts, {} steps, {} cells, seed {}, h {}, {:.0} s wall; tmreach {} on {}\nchain: {} input ticks from race 0 ({} macros): {:?}\nsearch finish: race {} cps {}\nvalidation replay (fresh run from the spawn, no forks): {verdict}; counter steps {:?}\nfiles: {stem}.gtape.txt (player gtape lines, t = tick from race 0), {stem}.tape.tsv (tick steer gas brake), {stem}.Ghost.Gbx (fk candidate on the base container)\n",
+        map.file_name().unwrap().to_string_lossy(), map.display(), md5_of(&map), a.req("centreline"), res.rollouts, res.steps, res.cells, cfg.seed, cfg.h, t0.elapsed().as_secs_f64(), tmreach::GIT_HASH, hostname(), f.chain.len(), f.macro_desc.len(), f.macro_desc, tmreach::secs(race_ms), f.cps, steps.iter().map(|(t, c)| format!("{}:{c}", tmreach::secs(*t))).collect::<Vec<_>>()
+    );
+    std::fs::write(out.join("LAP.md"), md).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn md5_of(p: &Path) -> String {
+    std::process::Command::new("md5sum").arg(p).output().ok().and_then(|o| String::from_utf8(o.stdout).ok()).and_then(|s| s.split_whitespace().next().map(|x| x.to_string())).unwrap_or_default()
+}
+
+/// `tmreach replay --map M --tape BASE --chain CHAIN.tsv --out ROWS.tsv [--extra TICKS]`: replay an input chain
+/// (tick steer gas brake from race 0) from the root in one fork and write every row (x y z speed cps).
+fn cmd_chain_replay(a: &Args) -> Result<(), String> {
+    let map = PathBuf::from(a.req("map"));
+    let tape = PathBuf::from(a.req("tape"));
+    let (server, shim) = engine_paths(a);
+    let work = a.get("work").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("/tmp/tmreach/replay-{}", std::process::id())));
+    let txt = std::fs::read_to_string(a.req("chain")).map_err(|e| e.to_string())?;
+    let mut chain: Vec<forkoracle::forksrv::Rec> = Vec::new();
+    for l in txt.lines().skip(1) {
+        let f: Vec<&str> = l.split('\t').collect();
+        if f.len() >= 4 {
+            chain.push(forkoracle::forksrv::Rec { steer: f[1].parse::<f32>().unwrap_or(0.0) / 127.0, gas: f[2].parse::<f32>().unwrap_or(0.0), brake: f[3].parse::<f32>().unwrap_or(0.0) });
+        }
+    }
+    // --from-tape OTHER.Ghost.Gbx: the chain = OTHER's own inputs from ITS race 0 (tick -start_offset/10)
+    if let Some(other) = a.get("from-tape") {
+        let t = fk::tape::Tape::load(other)?;
+        // the root probe tick = race -0.010 = one tick before race 0 (chain[0] is applied there)
+        let r0 = (((-(t.start_offset_ms as i64)) / 10) - 1).max(0) as usize;
+        chain = (r0..t.n()).map(|k| forkoracle::forksrv::rec_of(t.steer[k], t.accel[k], t.brake[k])).collect();
+        println!("chain from {other}: {} ticks from its tick {r0} (start offset {} ms)", chain.len(), t.start_offset_ms);
+    }
+    let extra: usize = a.get("extra").map(|s| s.parse().unwrap()).unwrap_or(0);
+    for _ in 0..extra {
+        chain.push(forkoracle::forksrv::Rec { steer: 0.0, gas: 1.0, brake: 0.0 });
+    }
+    let mut w = Worker::start(&server, &map, &shim, &work, &tape, false)?;
+    let root = w.root_probe;
+    // --reference: replay the base tape's own inputs (a human ghost as the base) instead of a chain
+    if a.has("reference") {
+        chain = w.reference_recs(root, w.n_ticks() - root);
+        if let Some(n) = a.get("ticks") {
+            chain.truncate(n.parse().unwrap());
+        }
+    }
+    if let Some(p) = a.get("dump-chain") {
+        std::fs::write(p, tmreach::lap::tsv_text(&chain)).map_err(|e| e.to_string())?;
+    }
+    // --write-candidate PATH: the chain written into the base tape the way a lap candidate is (fk write_candidate)
+    if let Some(p) = a.get("write-candidate") {
+        let n = w.n_ticks();
+        let root = w.root_probe;
+        let (mut st, mut gs, mut br) = (w.tape.steer.clone(), w.tape.accel.clone(), w.tape.brake.clone());
+        for (i, r) in chain.iter().enumerate() {
+            if root + i < n {
+                st[root + i] = (r.steer * 127.0).round() as i8 as u8;
+                gs[root + i] = (r.gas > 0.5) as u8;
+                br[root + i] = (r.brake > 0.5) as u8;
+            }
+        }
+        for k in (root + chain.len()).min(n)..n {
+            st[k] = 0;
+            gs[k] = 0;
+            br[k] = 1;
+        }
+        w.tape.write_candidate(&st, &gs, &br, Path::new(p))?;
+        println!("wrote candidate {p} ({} chain ticks from root {root})", chain.len());
+    }
+    let rows = if a.has("reference") && !a.has("fork") {
+        // the run ends at the ghost's finish: use the flat walk (handles the end of the run)
+        w.flat(chain.len() as u64)?
+    } else {
+        let (rows, h) = w.rollout_keep(branch::ROOT, &chain, root, chain.len() as u64)?;
+        w.release(h);
+        rows
+    };
+    // export conventions (reviewer 4b2e4b99, 19:10Z): race_ms = engine state label + 10 (the rig's label_shift: row i is the state AFTER chain rec i
+    // was applied; INPUT's frozen trace labels the same state race_ms - 10). bearing_deg = atan2(vx, vz) (the MOTION bearing, formerly mislabelled
+    // yaw_deg); body_yaw_deg = the car's heading from its quaternion (yaw about +y); qx..qw = the body quaternion.
+    // the convention note goes to a sidecar (<out>.conventions.txt) so the TSV stays header-first for every parser
+    let note = format!("race_ms = engine state label + {} (GEN rig label_shift); INPUT frozen-trace label of the same row = race_ms - {}. bearing_deg = motion bearing atan2(vx, vz) (0 = +z, 90 = +x); body_yaw_deg = the body +z axis from the quaternion, same convention; qx qy qz qw = body quaternion.\n", w.label_shift, w.label_shift);
+    let mut s = String::from("tick\trace_ms\tx\ty\tz\tspeed\tvy\tcps\tvx\tvz\tbearing_deg\tbody_yaw_deg\tqx\tqy\tqz\tqw\n");
+    for (i, r) in rows.iter().enumerate() {
+        let yaw = r.vx.atan2(r.vz).to_degrees();
+        // body heading: the body +z axis rotated by q, projected on the ground plane (yaw about +y), same 0 deg = +z, 90 deg = +x as the bearing
+        let (qx, qy, qz, qw) = (r.qx, r.qy, r.qz, r.qw);
+        let fx = 2.0 * (qx * qz + qw * qy);
+        let fz = 1.0 - 2.0 * (qx * qx + qy * qy);
+        let body_yaw = fx.atan2(fz).to_degrees();
+        s.push_str(&format!("{i}\t{}\t{:.2}\t{:.2}\t{:.2}\t{:.1}\t{:+.1}\t{}\t{:+.2}\t{:+.2}\t{:+.1}\t{:+.1}\t{:.5}\t{:.5}\t{:.5}\t{:.5}\n", w.race_of(r), r.x, r.y, r.z, tmreach::rig::speed(r), r.vy, if r.cps == u32::MAX { -1 } else { r.cps as i64 }, r.vx, r.vz, yaw, body_yaw, qx, qy, qz, qw));
+    }
+    std::fs::write(a.req("out"), s).map_err(|e| e.to_string())?;
+    let _ = std::fs::write(format!("{}.conventions.txt", a.req("out")), &note);
+    let last = rows.last().ok_or("no rows")?;
+    println!("replayed {} ticks: end ({:.1}, {:.1}, {:.1}) speed {:.1} cps {}", rows.len(), last.x, last.y, last.z, tmreach::rig::speed(last), last.cps as i64);
+    // --deficit (needs --author-line --gates [--centreline]): our speed vs the human's along the line, per 50 m, and the
+    // first arc length where we are > 15 % slow for 2 s
+    if a.has("deficit") {
+        let gates = MapGates::load_geom(Path::new(&a.req("gates")))?;
+        let ord: Option<Vec<u32>> = a.get("centreline").and_then(|c| std::fs::read_to_string(c).ok()).and_then(|txt| tmreach::json::parse(&txt).ok()).and_then(|j| j.get("order_groups").and_then(|v| v.arr()).map(|arr| arr.iter().filter_map(|x| x.f64()).map(|x| x as u32).collect()));
+        let track = tmreach::lap::Track::from_author_line_ordered(Path::new(&a.req("author-line")), &gates, ord.as_deref())?;
+        let mut hint = track.pts.len() / 2;
+        let mut win = track.pts.len();
+        let mut bins: std::collections::BTreeMap<i64, (f64, f64, usize)> = Default::default();
+        let mut first_deficit: Option<(f64, f64, f64, i64)> = None;
+        let mut slow_since: Option<i64> = None;
+        for (i, r) in rows.iter().enumerate() {
+            if i % 5 != 0 {
+                continue;
+            }
+            let (s, _l, sg, _d) = track.project(tmreach::rig::pos(r), hint, win);
+            hint = sg;
+            win = 80;
+            let v = tmreach::rig::speed(r);
+            let vh = track.human_speed_at(s);
+            let b = bins.entry((s / 50.0) as i64).or_insert((0.0, 0.0, 0));
+            b.0 += v;
+            b.1 += vh;
+            b.2 += 1;
+            if vh > 5.0 && v < 0.85 * vh {
+                if slow_since.is_none() {
+                    slow_since = Some(r.time_ms);
+                }
+                if first_deficit.is_none() && r.time_ms - slow_since.unwrap() >= 2000 {
+                    first_deficit = Some((s, v, vh, r.time_ms));
+                }
+            } else {
+                slow_since = None;
+            }
+        }
+        println!("DEFICIT MAP (our speed / human speed, mean per 50 m of the human line):");
+        for (k, (v, vh, n)) in &bins {
+            let (v, vh) = (v / *n as f64, vh / *n as f64);
+            println!("  s {:4}-{:4}: ours {:5.1}  human {:5.1}  {:+5.1} ({:+.0} %)", k * 50, k * 50 + 50, v, vh, v - vh, if vh > 0.0 { 100.0 * (v - vh) / vh } else { 0.0 });
+        }
+        match first_deficit {
+            Some((s, v, vh, t)) => println!("FIRST sustained deficit (> 15 % slow for 2 s): s {s:.0} m at race {} — ours {v:.1} vs human {vh:.1}", tmreach::secs(t)),
+            None => println!("no sustained deficit > 15 %"),
+        }
+    }
+    Ok(())
+}
+
+/// `tmreach sweep --map M --tape T --centreline C --author-line A --gates G --chain SEED.tsv --out DIR
+///  [--cut N] [--pre 300] [--fly 500] [--brakes 0,10,20,30,40] [--lat-pulses -127,-64,-32,0,32,64,127]
+///  [--head-pulses -64,-32,0,32,64] [--lat-len 15] [--head-len 8] [--work W]`
+/// An entry ladder from a savestate; writes DIR/sweep.tsv and prints the entries that gained a credit.
+fn cmd_sweep(a: &Args) -> Result<(), String> {
+    let map = PathBuf::from(a.req("map"));
+    let tape = PathBuf::from(a.req("tape"));
+    let (server, shim) = engine_paths(a);
+    let out = PathBuf::from(a.req("out"));
+    std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+    let work = a.get("work").map(PathBuf::from).unwrap_or_else(|| out.join("work"));
+    let gates = match (a.get("gates"), a.get("geom")) {
+        (Some(f), _) => Some(MapGates::load_geom(Path::new(f))?),
+        (None, Some(g)) => Some(MapGates::load(&map, Some(Path::new(g)))?),
+        _ => None,
+    };
+    let track = match a.get("author-line") {
+        Some(al) => {
+            let ord: Option<Vec<u32>> = a.get("centreline").and_then(|c| std::fs::read_to_string(c).ok()).and_then(|txt| tmreach::json::parse(&txt).ok()).and_then(|j| j.get("order_groups").and_then(|v| v.arr()).map(|arr| arr.iter().filter_map(|x| x.f64()).map(|x| x as u32).collect()));
+            tmreach::lap::Track::from_author_line_ordered(Path::new(al), gates.as_ref().ok_or("--author-line needs --gates")?, ord.as_deref())?
+        }
+        None => tmreach::lap::Track::load(&PathBuf::from(a.req("centreline")))?,
+    };
+    let txt = std::fs::read_to_string(a.req("chain")).map_err(|e| e.to_string())?;
+    let mut chain: Vec<forkoracle::forksrv::Rec> = Vec::new();
+    for l in txt.lines().skip(1) {
+        let f: Vec<&str> = l.split('\t').collect();
+        if f.len() >= 4 {
+            chain.push(forkoracle::forksrv::Rec { steer: f[1].parse::<f32>().unwrap_or(0.0) / 127.0, gas: f[2].parse::<f32>().unwrap_or(0.0), brake: f[3].parse::<f32>().unwrap_or(0.0) });
+        }
+    }
+    let list_i = |k: &str, d: &str| -> Vec<i32> { a.get(k).unwrap_or(d).split(',').filter_map(|x| x.trim().parse().ok()).collect() };
+    let cfg = tmreach::sweep::SweepCfg {
+        follow: a.has("follow") || a.has("fly-follow"),
+        fly_follow: a.has("fly-follow"),
+        steer_sign: a.get("steer-sign").map(|s| s.parse().unwrap()).unwrap_or(-1.0),
+        chain,
+        cut: a.get("cut").map(|s| s.parse().unwrap()).unwrap_or(0),
+        pre: a.get("pre").map(|s| s.parse().unwrap()).unwrap_or(300),
+        fly: a.get("fly").map(|s| s.parse().unwrap()).unwrap_or(500),
+        brakes: list_i("brakes", "0,10,20,30,40").into_iter().map(|x| x.max(0) as usize).collect(),
+        lat_pulses: list_i("lat-pulses", "-127,-64,-32,0,32,64,127"),
+        head_pulses: list_i("head-pulses", "-64,-32,0,32,64"),
+        lat_len: a.get("lat-len").map(|s| s.parse().unwrap()).unwrap_or(15),
+        head_len: a.get("head-len").map(|s| s.parse().unwrap()).unwrap_or(8),
+        mark_s: a.get("mark-s").map(|s| s.parse().unwrap()).unwrap_or(0.0),
+    };
+    let t0 = std::time::Instant::now();
+    let mut w = Worker::start(&server, &map, &shim, &work.join("search"), &tape, a.has("verbose"))?;
+    let entries = tmreach::sweep::run(&mut w, &track, &cfg)?;
+    std::fs::write(out.join("sweep.tsv"), tmreach::sweep::table(&entries)).map_err(|e| e.to_string())?;
+    let hits: Vec<&tmreach::sweep::Entry> = entries.iter().filter(|e| e.credits > 0).collect();
+    println!("sweep: {} entries in {:.0} s; {} gained a credit -> {}", entries.len(), t0.elapsed().as_secs_f64(), hits.len(), out.join("sweep.tsv").display());
+    for e in hits.iter().take(30) {
+        println!("  HIT brake {} lat {} head {}: launch {:.1} m/s (mark {:.1}), +{} credit(s), end s {:.1} lat {:.1} dy {:.1} apex {:.1} at ({:.1}, {:.1}, {:.1}) v {:.1}", e.brake, e.lat, e.head, e.speed_at_pre, e.speed_at_mark, e.credits, e.s, e.lat_m, e.dy, e.apex_y, e.end.x, e.end.y, e.end.z, tmreach::rig::speed(&e.end));
+    }
+    // distinct outcomes: end states clustered on a 5 m x 3 m x 5 m grid (+ credit count), largest first
+    {
+        let mut cl: std::collections::HashMap<(i64, i64, i64, u8), (usize, f64, f64, f64, f64)> = Default::default();
+        for e in &entries {
+            let k = ((e.end.x / 5.0).round() as i64, (e.end.y / 3.0).round() as i64, (e.end.z / 5.0).round() as i64, e.credits);
+            let c = cl.entry(k).or_insert((0, 0.0, 0.0, 0.0, 0.0));
+            c.0 += 1;
+            c.1 += e.s;
+            c.2 += tmreach::rig::speed(&e.end);
+            c.3 += e.dy;
+            c.4 += e.speed_at_mark;
+        }
+        let mut v: Vec<_> = cl.into_iter().collect();
+        v.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
+        println!("DISTINCT OUTCOMES: {} clusters over {} entries", v.len(), entries.len());
+        for (k, c) in v.iter().take(12) {
+            let n = c.0 as f64;
+            println!("  {:3} x  +{} credit(s)  end ≈ ({:.0}, {:.0}, {:.0})  s {:.0}  v {:.1}  dy {:+.1}  mark {:.1}", c.0, k.3, k.0 as f64 * 5.0, k.1 as f64 * 3.0, k.2 as f64 * 5.0, c.1 / n, c.2 / n, c.3 / n, c.4 / n);
+        }
+    }
+    if cfg.mark_s > 0.0 {
+        let mut v: Vec<&tmreach::sweep::Entry> = entries.iter().collect();
+        v.sort_by(|a, b| b.speed_at_mark.partial_cmp(&a.speed_at_mark).unwrap());
+        println!("fastest at the mark s {:.0}:", cfg.mark_s);
+        for e in v.iter().take(8) {
+            println!("  brake {} lat {} head {}: mark {:.1} m/s, +{} credit(s), end s {:.1} dy {:.1} apex {:.1} at ({:.1}, {:.1}, {:.1}){}", e.brake, e.lat, e.head, e.speed_at_mark, e.credits, e.s, e.dy, e.apex_y, e.end.x, e.end.y, e.end.z, if e.stopped { " STOPPED" } else { "" });
+        }
+    }
+    if hits.is_empty() {
+        // the best non-hits by arc length, to see how far the ladder gets
+        let mut v: Vec<&tmreach::sweep::Entry> = entries.iter().collect();
+        v.sort_by(|a, b| b.s.partial_cmp(&a.s).unwrap());
+        for e in v.iter().take(8) {
+            println!("  best brake {} lat {} head {}: launch {:.1} m/s, end s {:.1} lat {:.1} dy {:.1} apex {:.1} at ({:.1}, {:.1}, {:.1}) v {:.1}{}", e.brake, e.lat, e.head, e.speed_at_pre, e.s, e.lat_m, e.dy, e.apex_y, e.end.x, e.end.y, e.end.z, tmreach::rig::speed(&e.end), if e.stopped { " STOPPED" } else { "" });
+        }
+    }
+    Ok(())
+}
+
+/// `tmreach track-project --centreline C --author-line A --gates G --xyz x,y,z` — where a point falls on the track (debug).
+fn cmd_track_project(a: &Args) -> Result<(), String> {
+    let gates = MapGates::load_geom(Path::new(&a.req("gates")))?;
+    let ord: Option<Vec<u32>> = a.get("centreline").and_then(|c| std::fs::read_to_string(c).ok()).and_then(|txt| tmreach::json::parse(&txt).ok()).and_then(|j| j.get("order_groups").and_then(|v| v.arr()).map(|arr| arr.iter().filter_map(|x| x.f64()).map(|x| x as u32).collect()));
+    let track = tmreach::lap::Track::from_author_line_ordered(Path::new(&a.req("author-line")), &gates, ord.as_deref())?;
+    let v: Vec<f64> = a.req("xyz").split(',').filter_map(|x| x.trim().parse().ok()).collect();
+    let p = [v[0], v[1], v[2]];
+    let (s, lat, seg, d3) = track.project(p, track.pts.len() / 2, track.pts.len());
+    let q = track.at(s);
+    println!("first pts {:?} .. last {:?}", &track.pts[..3], &track.pts[track.pts.len()-2..]);
+    println!("track: {} pts, {:.1} m; point ({:.1}, {:.1}, {:.1}) -> s {s:.1} (segment {seg}) lat {lat:.1} d3 {d3:.1}; line point there ({:.1}, {:.1}, {:.1}); min y within 15 m {:.1}; human speed {:.1}", track.pts.len(), track.len_m(), p[0], p[1], p[2], q[0], q[1], q[2], track.min_y_near(s, 15.0), track.human_speed_at(s));
+    Ok(())
+}
+
+
+/// `tmreach identity --centreline C --author-line A --gates G` — IDENTITY CONTROL of the scorer (parent, 2026-09-09
+/// 11:34Z), engine-free: the human line itself walked through the scorer must project to monotone arc length and pass
+/// every placed gate within reach of its centre in the human order (the templates are BORROWED containers, so no
+/// tiny-map human tape exists to replay).
+fn cmd_identity(a: &Args) -> Result<(), String> {
+    let gates = MapGates::load_geom(Path::new(&a.req("gates")))?;
+    let ord: Option<Vec<u32>> = a.get("centreline").and_then(|c| std::fs::read_to_string(c).ok()).and_then(|txt| tmreach::json::parse(&txt).ok()).and_then(|j| j.get("order_groups").and_then(|v| v.arr()).map(|arr| arr.iter().filter_map(|x| x.f64()).map(|x| x as u32).collect()));
+    let track = tmreach::lap::Track::from_author_line_ordered(Path::new(&a.req("author-line")), &gates, ord.as_deref())?;
+    // walk the line's own points through the projector: monotone?
+    let mut hint = 0usize;
+    let mut max_s = 0.0f64;
+    let mut worst_drop = 0.0f64;
+    let mut worst_at = 0.0f64;
+    for (i, p) in track.pts.iter().enumerate() {
+        let (s, _l, sg, _d) = track.project(*p, hint, if i == 0 { track.pts.len() } else { 80 });
+        hint = sg;
+        if std::env::var("TMREACH_IDENTITY_DEBUG").is_ok() && (s - track.s[i]).abs() > 5.0 {
+            eprintln!("  identity: point #{i} at s {:.1} ({:.1}, {:.1}, {:.1}) projects to s {s:.1} (seg {sg}, d3 {:.2})", track.s[i], p[0], p[1], p[2], _d);
+        }
+        if max_s - s > worst_drop {
+            worst_drop = max_s - s;
+            worst_at = track.s[i];
+        }
+        max_s = max_s.max(s);
+    }
+    // every placed gate: the line's point at the placed s within 12 m of a gate of that group
+    let mut far = Vec::new();
+    for (k, grp) in track.order_groups.iter().enumerate() {
+        let p = track.at(track.gate_s[k]);
+        let d = gates.gates.iter().filter(|g| g.group == *grp && g.kind != GateKind::Start).map(|g| ((p[0] - g.centre[0]).powi(2) + (p[1] - g.centre[1]).powi(2) + (p[2] - g.centre[2]).powi(2)).sqrt()).fold(f64::INFINITY, f64::min);
+        if d > 15.0 {
+            far.push(format!("#{k} gate {grp} {d:.1} m"));
+        }
+    }
+    let ok = worst_drop < 30.0 && far.is_empty();
+    println!(
+        "IDENTITY {}: line projects monotone (worst drop {:.1} m at s {:.0}), {}/{} placed gates within 15 m of the line{}",
+        if ok { "OK" } else { "FAIL" },
+        worst_drop,
+        worst_at,
+        track.n_groups - far.len(),
+        track.n_groups,
+        if far.is_empty() { String::new() } else { format!(" — far: {}", far.join(", ")) }
+    );
+    Ok(())
+}
+
+/// `tmreach lcp-to-state --lcp NN.json --entry K [--kind approach-start|crossing] [--map-uid UID] [--map-name NAME] --out state.json`
+/// A LaunchedCP entry (`ghost lcp --json`) → the tm-inject-state/1 file the fork writer consumes (tm-route/model/INJECT-STATE.md).
+fn cmd_lcp_to_state(a: &Args) -> Result<(), String> {
+    let lcp_path = a.req("lcp");
+    let txt = std::fs::read_to_string(&lcp_path).map_err(|e| format!("{lcp_path}: {e}"))?;
+    let lcp: serde_json::Value = serde_json::from_str(&txt).map_err(|e| format!("{lcp_path}: {e}"))?;
+    let entry: usize = a.get("entry").map(|s| s.parse().unwrap()).unwrap_or(0);
+    let kind = a.get("kind").unwrap_or_else(|| "approach-start".into());
+    let st = tmreach::inject::from_lcp(&lcp, entry, &kind, &a.get("map-uid").unwrap_or_default(), &a.get("map-name").unwrap_or_default())?;
+    let out = a.req("out");
+    std::fs::write(&out, serde_json::to_string_pretty(&st).map_err(|e| e.to_string())?).map_err(|e| format!("{out}: {e}"))?;
+    let v = (st.state.vel[0].powi(2) + st.state.vel[1].powi(2) + st.state.vel[2].powi(2)).sqrt();
+    println!(
+        "{out}: {} entry {entry} landmark {} ({}) — state at ({:.1}, {:.1}, {:.1}) v {:.1} m/s ang_vel {:?}; {} input ticks; expect: {}",
+        st.source.file, st.source.landmark, st.source.kind, st.state.pos[0], st.state.pos[1], st.state.pos[2], v, st.state.ang_vel.map(|w| format!("({:.2}, {:.2}, {:.2})", w[0], w[1], w[2])), st.inputs.len(),
+        st.expect.as_ref().map(|e| format!("landmark {} credited within {} ticks at ({:.1}, {:.1}, {:.1})", e.landmark, e.credit_within_ticks, e.pos[0], e.pos[1], e.pos[2])).unwrap_or_else(|| "-".into())
+    );
+    Ok(())
+}
+
+/// `tmreach input-life --map M --tape T --pulse-at S [--work DIR]`: does the engine still ACT on inputs at race S seconds?
+/// Two rollouts from the root, identical (the template's own inputs) until race S, then one holds full LEFT lock and the other full RIGHT for
+/// 1.5 s; if their end states coincide the template is CAPPED (the donor's declared lap length ends input processing — ENV,
+/// 2026-09-10: every template built from donor 20 ignores inputs after race 44.740 s). Exit code 3 on a capped template.
+fn cmd_input_life(a: &Args) -> Result<(), String> {
+    let map = PathBuf::from(a.req("map"));
+    let tape = PathBuf::from(a.req("tape"));
+    let (server, shim) = engine_paths(a);
+    let work = a.get("work").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("/tmp/tmreach/inputlife-{}", std::process::id())));
+    let pulse_at: f64 = a.req("pulse-at").parse().map_err(|e| format!("--pulse-at: {e}"))?;
+    let mut w = Worker::start(&server, &map, &shim, &work, &tape, false)?;
+    let root = w.root_probe;
+    let n0 = (pulse_at * 100.0).round() as usize;
+    // the prefix = the template's OWN inputs (the base tape) so the car is in a live driving state at the pulse
+    // --chain FILE: a known-good chain as the prefix instead (a template whose own inputs end early would otherwise leave the car dead)
+    let mut left: Vec<forkoracle::forksrv::Rec> = match a.get("chain") {
+        Some(p) => {
+            let txt = std::fs::read_to_string(p).map_err(|e| format!("{p}: {e}"))?;
+            txt.lines().skip(1).filter_map(|l| { let v: Vec<&str> = l.split('\t').collect(); if v.len() >= 4 { Some(forkoracle::forksrv::Rec { steer: v[1].parse::<f32>().unwrap_or(0.0) / 127.0, gas: v[2].parse::<f32>().unwrap_or(0.0), brake: v[3].parse::<f32>().unwrap_or(0.0) }) } else { None } }).collect()
+        }
+        None => w.reference_recs(root, n0.min(w.n_ticks().saturating_sub(root))),
+    };
+    left.truncate(n0);
+    while left.len() < n0 { left.push(forkoracle::forksrv::Rec { steer: 0.0, gas: 1.0, brake: 0.0 }); }
+    let mut right = left.clone();
+    for _ in 0..150 {
+        left.push(forkoracle::forksrv::Rec { steer: -1.0, gas: 1.0, brake: 0.0 });
+        right.push(forkoracle::forksrv::Rec { steer: 1.0, gas: 1.0, brake: 0.0 });
+    }
+    let (rl, hl) = w.rollout_keep(branch::ROOT, &left, root, left.len() as u64)?;
+    w.release(hl);
+    let (rr, hr) = w.rollout_keep(branch::ROOT, &right, root, right.len() as u64)?;
+    w.release(hr);
+    let (el, er) = (rl.last().ok_or("no rows")?, rr.last().ok_or("no rows")?);
+    let d = ((el.x - er.x).powi(2) + (el.y - er.y).powi(2) + (el.z - er.z).powi(2)).sqrt();
+    let live = d > 0.5;
+    println!(
+        "INPUT-LIFE {}: full-left vs full-right pulse at race {:.2} s for 1.5 s -> end states {:.1} m apart (left ({:.1}, {:.1}, {:.1}) right ({:.1}, {:.1}, {:.1}))",
+        if live { "LIVE" } else { "CAPPED — the engine ignores inputs at this race time (donor lap length reached)" },
+        pulse_at, d, el.x, el.y, el.z, er.x, er.y, er.z
+    );
+    if !live {
+        std::process::exit(3);
+    }
+    Ok(())
+}
+
+/// `tmreach chain-to-state --map M --tape BASE.Ghost.Gbx --chain best.tsv --at <row|Ts> --out s.json [--work DIR] [--map-name N] [--map-uid U]`
+/// Replay a chain (best.tsv: tick, steer −127..127, gas, brake) in the fork from the root to row `--at` (a row index, or a race
+/// time like `12.5s`), read the live dyna body back and write it as a tm-inject-state/1 file (kind "chain") for the player's
+/// injector. `--at end` = the whole chain. Coordinator 2026-09-10 05:11Z: GEN hands the player inject-able states of 20's best chain.
+fn cmd_chain_to_state(a: &Args) -> Result<(), String> {
+    let map = PathBuf::from(a.req("map"));
+    let tape = PathBuf::from(a.req("tape"));
+    let chain_f = a.req("chain");
+    let out = a.req("out");
+    let (server, shim) = engine_paths(a);
+    let work = a.get("work").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("/tmp/tmreach/c2s-{}", std::process::id())));
+    let txt = std::fs::read_to_string(&chain_f).map_err(|e| format!("{chain_f}: {e}"))?;
+    let mut recs: Vec<forkoracle::forksrv::Rec> = Vec::new();
+    for l in txt.lines().skip(1) {
+        let v: Vec<&str> = l.split('\t').collect();
+        if v.len() >= 4 {
+            recs.push(forkoracle::forksrv::Rec { steer: v[1].parse::<f32>().unwrap_or(0.0) / 127.0, gas: v[2].parse::<f32>().unwrap_or(0.0), brake: v[3].parse::<f32>().unwrap_or(0.0) });
+        }
+    }
+    if recs.is_empty() {
+        return Err(format!("{chain_f}: no rows (expected best.tsv: tick\tsteer\tgas\tbrake)"));
+    }
+    let mut w = Worker::start(&server, &map, &shim, &work, &tape, a.has("verbose"))?;
+    let root = w.root_probe;
+    let at = a.get("at").unwrap_or_else(|| "end".into());
+    // resolve --at to a row count
+    let n_rows = if at == "end" {
+        recs.len()
+    } else if let Some(s) = at.strip_suffix('s') {
+        // race time: replay everything first to map race times to rows
+        let t_ms = (s.parse::<f64>().map_err(|_| format!("--at {at}: seconds like 12.5s"))? * 1000.0).round() as i64;
+        let (rows, nh) = w.rollout_keep(branch::ROOT, &recs, root, recs.len() as u64)?;
+        w.release(nh);
+        rows.iter().position(|r| w.race_of(r) >= t_ms).map(|i| i + 1).unwrap_or(rows.len()).min(recs.len())
+    } else {
+        at.parse::<usize>().map_err(|_| format!("--at {at}: a row index, a race time like 12.5s, or end"))?.min(recs.len())
+    };
+    let (rows, nh) = w.rollout_keep(branch::ROOT, &recs[..n_rows], root, n_rows as u64)?;
+    let last = rows.last().ok_or("no rows replayed")?.clone();
+    let cps = if last.cps == u32::MAX { 0 } else { last.cps };
+    let race_ms = w.race_of(&last);
+    let st = tmreach::inject::read_state(&mut w, nh, &a.get("map-uid").unwrap_or_default(), &a.get("map-name").unwrap_or_default(), &chain_f, n_rows, cps, race_ms)?;
+    w.release(nh);
+    std::fs::write(&out, serde_json::to_string_pretty(&st).map_err(|e| e.to_string())?).map_err(|e| format!("{out}: {e}"))?;
+    let d = ((st.state.pos[0] as f64 - last.x).powi(2) + (st.state.pos[1] as f64 - last.y).powi(2) + (st.state.pos[2] as f64 - last.z).powi(2)).sqrt();
+    println!(
+        "{out}: chain {chain_f} replayed {n_rows} of {} rows to race {} (cps {cps}); body ({:.2}, {:.2}, {:.2}) v ({:.2}, {:.2}, {:.2}) |v| {:.1} fwd {:.1} ang_vel ({:.2}, {:.2}, {:.2}); row/body position gap {d:.3} m",
+        recs.len(), tmreach::secs(race_ms), st.state.pos[0], st.state.pos[1], st.state.pos[2], st.state.vel[0], st.state.vel[1], st.state.vel[2],
+        (st.state.vel[0].powi(2) + st.state.vel[1].powi(2) + st.state.vel[2].powi(2)).sqrt(), st.state.speed_fwd.unwrap_or(0.0),
+        st.state.ang_vel.map(|v| v[0]).unwrap_or(0.0), st.state.ang_vel.map(|v| v[1]).unwrap_or(0.0), st.state.ang_vel.map(|v| v[2]).unwrap_or(0.0)
+    );
+    Ok(())
+}
+
+/// `tmreach preflight --map M --tape BASE.Ghost.Gbx --centreline C.json [--author-line A.json] --gates G.json --leg-time S
+///   [--pulse-chain best.tsv] [--human-tape H.Ghost.Gbx] [--gate-tol 20] [--work DIR]`
+/// The launch controls (preflight.rs): packet modes [2], gate placement (≤ 20 m, s monotone), input life at the leg time, the
+/// human tape's identity through the scorer. Prints the report; on a refusal prints the one-line reason and exits 3.
+fn cmd_preflight(a: &Args) -> Result<(), String> {
+    let map = PathBuf::from(a.req("map"));
+    let tape = PathBuf::from(a.req("tape"));
+    let (server, shim) = engine_paths(a);
+    let work = a.get("work").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("/tmp/tmreach/preflight-{}", std::process::id())));
+    let gates = match (a.get("gates"), a.get("geom")) {
+        (Some(f), _) => Some(MapGates::load_geom(Path::new(&f))?),
+        (None, Some(g)) => Some(MapGates::load(&map, Some(Path::new(&g)))?),
+        _ => None,
+    };
+    let track = match a.get("author-line") {
+        Some(al) => {
+            let ord: Option<Vec<u32>> = a.get("centreline").and_then(|c| std::fs::read_to_string(c).ok()).and_then(|txt| tmreach::json::parse(&txt).ok()).and_then(|j| j.get("order_groups").and_then(|v| v.arr()).map(|arr| arr.iter().filter_map(|x| x.f64()).map(|x| x as u32).collect()));
+            tmreach::lap::Track::from_author_line_ordered(Path::new(&al), gates.as_ref().ok_or("--author-line needs --gates")?, ord.as_deref())?
+        }
+        None => tmreach::lap::Track::load(&PathBuf::from(a.req("centreline")))?,
+    };
+    let cfg = tmreach::preflight::PreflightCfg {
+        map,
+        tape,
+        work,
+        server,
+        shim,
+        track,
+        gates,
+        leg_time_s: a.get("leg-time").map(|s| s.parse().unwrap()).unwrap_or(30.0),
+        pulse_chain: match a.get("pulse-chain") {
+            Some(p) => Some(tmreach::preflight::chain_file(Path::new(&p))?),
+            None => None,
+        },
+        human_tape: a.get("human-tape").map(PathBuf::from),
+        gate_tol_m: a.get("gate-tol").map(|s| s.parse().unwrap()).unwrap_or(20.0),
+        verbose: a.has("verbose"),
+    };
+    match tmreach::preflight::run(&cfg) {
+        Ok(p) => {
+            for l in &p.lines {
+                println!("{l}");
+            }
+            println!("PREFLIGHT OK: launch");
+            Ok(())
+        }
+        Err(e) => {
+            println!("{e}");
+            std::process::exit(3);
+        }
+    }
+}
+
+/// `tmreach contact-trace --map M --tape BASE.Ghost.Gbx [--chain best.tsv] [--from S] [--to S] --out trace.tsv [--work DIR]`
+/// Per-tick CONTACT export (coordinator 2026-09-10 16:52Z, the reviewers' "actual contact export"): replay the chain (or the
+/// tape's own inputs) in the fork and write one row per tick from race `--from` to `--to` seconds with the vis state's wheel
+/// fields — ground_contact, per wheel contact / material id / slip / damper / steer (WHEELS.md §2: material 13 = no contact,
+/// decoded 100 % against ghost samples), plus gear, rpm, applied steer. A summary of wheel-ticks per material and contact
+/// fractions per wheel follows on stdout. Contact NORMALS are not in the vis state (they live in the phy wheel blocks, ENV);
+/// not exported here.
+fn cmd_contact_trace(a: &Args) -> Result<(), String> {
+    let map = PathBuf::from(a.req("map"));
+    let tape = PathBuf::from(a.req("tape"));
+    let out = a.req("out");
+    let (server, shim) = engine_paths(a);
+    let work = a.get("work").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("/tmp/tmreach/contact-{}", std::process::id())));
+    let mut w = Worker::start(&server, &map, &shim, &work, &tape, a.has("verbose"))?;
+    let root = w.root_probe;
+    let to_s: f64 = a.get("to").map(|s| s.parse().unwrap()).unwrap_or(f64::INFINITY);
+    let from_s: f64 = a.get("from").map(|s| s.parse().unwrap()).unwrap_or(0.0);
+    let recs: Vec<forkoracle::forksrv::Rec> = match a.get("chain") {
+        Some(p) => tmreach::preflight::chain_file(Path::new(&p))?,
+        None => w.reference_recs(root, w.n_ticks().saturating_sub(root)),
+    };
+    let n = if to_s.is_finite() { ((to_s * 100.0).ceil() as usize + 5).min(recs.len()) } else { recs.len() };
+    // --normals [OFF]: per-wheel contact normals from the phy wheel blocks (phy+0x1780+0xb8·k, ENV) — needs the car's memory at
+    // every tick, so the window is stepped in 1-tick chunks (slow: ~1 ms/tick of fork stepping + 4 reads). OFF = the f32 offset of
+    // the normal inside the block (hex ok); absent = auto-detect the unit-vector triple with the largest upward component.
+    let normals_mode = a.has("normals");
+    // FAST PATH (route-model 21:40Z): the layout gathers the four wheel blocks every tick (Layout::wheels → Vis::wheel_live /
+    // wheel_normal / wheel_damper_phy), so the normals come with every rollout at no cost; the 1-tick stepping stays as
+    // `--normals slow` (or `--normals auto` / `--normals 0xNN` to re-derive the offset from the raw blocks).
+    let slow_mode = normals_mode && a.get("normals").map_or(false, |v| v == "slow" || v == "auto" || v.starts_with("0x") || v.parse::<usize>().is_ok());
+    // ENV 21:18Z (identity car, one wheel lifted): +0x00 damper (0.200 = airborne), +0x10..0x18 contact point (body frame, zero in
+    // the air), +0x30 u32 live CONTACT flag, +0x40 material (last touched), +0x44..0x4c contact NORMAL (world, unit). --normals auto
+    // re-detects the triple only when asked (--normals auto).
+    let mut normal_off: Option<usize> = match a.get("normals") { Some(v) if v == "auto" => None, Some(v) => usize::from_str_radix(v.trim_start_matches("0x"), if v.starts_with("0x") { 16 } else { 10 }).ok().or(Some(0x44)), None => Some(0x44) };
+    let mut live_flags: Vec<[u32; 4]> = Vec::new();
+    let mut phy_dampers: Vec<[f32; 4]> = Vec::new();
+    let mut normals: Vec<[[f32; 3]; 4]> = Vec::new();
+    let rows: Vec<forkoracle::layout::Row> = if !slow_mode {
+        let (rows, nh) = w.rollout_keep(branch::ROOT, &recs[..n], root, n as u64)?;
+        w.release(nh);
+        if normals_mode {
+            // the fast path: wheel data straight from the rows
+            for r in &rows {
+                normals.push(r.vis.wheel_normal);
+                live_flags.push([0, 1, 2, 3].map(|k| if r.vis.wheel_live[k] == u8::MAX { u32::MAX } else { r.vis.wheel_live[k] as u32 }));
+                phy_dampers.push(r.vis.wheel_damper_phy);
+            }
+        }
+        rows
+    } else {
+        let n_from = ((from_s * 100.0).floor() as usize).min(n);
+        let (mut rows, mut cur) = if n_from > 0 { w.rollout_keep(branch::ROOT, &recs[..n_from], root, n_from as u64)? } else { (Vec::new(), branch::ROOT) };
+        normals.resize(rows.len(), [[f32::NAN; 3]; 4]);
+        live_flags.resize(rows.len(), [u32::MAX; 4]);
+        phy_dampers.resize(rows.len(), [f32::NAN; 4]);
+        let mut candidates: std::collections::BTreeMap<usize, (usize, f32)> = Default::default();
+        for t in n_from..n {
+            let (rr, nh) = w.rollout_keep(cur, &recs[t..t + 1], root + t, 1)?;
+            if cur != branch::ROOT {
+                w.release(cur);
+            }
+            cur = nh;
+            let blocks = tmreach::inject::read_wheel_blocks(&mut w, cur)?;
+            if normal_off.is_none() {
+                for (o, y) in tmreach::inject::unit_vector_offsets(&blocks) {
+                    let e = candidates.entry(o).or_insert((0, 0.0));
+                    e.0 += 1;
+                    e.1 += y;
+                }
+                if t + 1 - n_from >= 20 {
+                    // the offset that is a unit vector on every tick so far, pointing up the most
+                    let best = candidates.iter().filter(|(_, (c, _))| *c == 20).max_by(|a, b| (a.1 .1).partial_cmp(&b.1 .1).unwrap());
+                    match best {
+                        Some((o, (c, y))) => {
+                            println!("contact normal offset auto-detected: +{o:#x} (unit vector on all 4 wheels for {c} ticks, mean y {:.2}); candidates: {}", y / *c as f32, candidates.iter().filter(|(_, (c, _))| *c == 20).map(|(o, (c, y))| format!("+{o:#x} y {:.2}", y / *c as f32)).collect::<Vec<_>>().join(", "));
+                            normal_off = Some(*o);
+                        }
+                        None => return Err("no unit-vector triple is stable across the first 20 ticks of the window — pass --normals OFF from ENV".into()),
+                    }
+                }
+            }
+            live_flags.extend(std::iter::repeat([0, 1, 2, 3].map(|k| u32::from_le_bytes([blocks[k][0x30], blocks[k][0x31], blocks[k][0x32], blocks[k][0x33]]))).take(rr.len()));
+            phy_dampers.extend(std::iter::repeat([0, 1, 2, 3].map(|k| tmreach::inject::f32_at(&blocks[k], 0))).take(rr.len()));
+            let nk: [[f32; 3]; 4] = match normal_off {
+                Some(o) => [0, 1, 2, 3].map(|k| [tmreach::inject::f32_at(&blocks[k], o), tmreach::inject::f32_at(&blocks[k], o + 4), tmreach::inject::f32_at(&blocks[k], o + 8)]),
+                None => [[f32::NAN; 3]; 4],
+            };
+            for _ in 0..rr.len() {
+                normals.push(nk);
+            }
+            rows.extend(rr);
+        }
+        if cur != branch::ROOT {
+            w.release(cur);
+        }
+        rows
+    };
+    let mut s = String::from("tick\trace_s\tx\ty\tz\tspeed\tcps\tgear\trpm\tsteer_applied\tground\tw0_contact\tw0_mat\tw0_slip\tw0_damper\tw0_steer\tw1_contact\tw1_mat\tw1_slip\tw1_damper\tw1_steer\tw2_contact\tw2_mat\tw2_slip\tw2_damper\tw2_steer\tw3_contact\tw3_mat\tw3_slip\tw3_damper\tw3_steer");
+    if normals_mode {
+        for k in 0..4 {
+            s.push_str(&format!("\tw{k}_live\tw{k}_phy_damper\tw{k}_nx\tw{k}_ny\tw{k}_nz\tw{k}_tilt_deg"));
+        }
+    }
+    s.push('\n');
+    let mut mats: std::collections::BTreeMap<u8, usize> = Default::default();
+    let mut contact_ticks = [0usize; 4];
+    let mut ticks_in = 0usize;
+    let mut vis_missing = 0usize;
+    for (i, r) in rows.iter().enumerate() {
+        let race = w.race_of(r) as f64 / 1000.0;
+        if race < from_s || race > to_s {
+            continue;
+        }
+        ticks_in += 1;
+        let v = &r.vis;
+        if v.wheel_material == [u8::MAX; 4] {
+            vis_missing += 1;
+        }
+        let cps = if r.cps == u32::MAX { 0 } else { r.cps };
+        s.push_str(&format!("{i}\t{race:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.1}\t{cps}\t{}\t{:.0}\t{:.2}\t{}", r.x, r.y, r.z, tmreach::rig::speed(r), v.gear, v.rpm, v.steer_applied, v.ground_contact as u8));
+        for k in 0..4 {
+            *mats.entry(v.wheel_material[k]).or_default() += 1;
+            if v.wheel_contact[k] {
+                contact_ticks[k] += 1;
+            }
+            s.push_str(&format!("\t{}\t{}\t{:.3}\t{:.3}\t{:.3}", v.wheel_contact[k] as u8, v.wheel_material[k], v.wheel_slip[k], v.wheel_damper[k], v.wheel_steer[k]));
+        }
+        if normals_mode {
+            // the normal is in the car's LOCAL frame (22:30Z): tilt = acos(n.y); body up in that frame is (0, 1, 0)
+            let up = [0.0f64, 1.0, 0.0];
+            let nk = normals.get(i).copied().unwrap_or([[f32::NAN; 3]; 4]);
+            for k in 0..4 {
+                let nn = nk[k];
+                let dot = (up[0] * nn[0] as f64 + up[1] * nn[1] as f64 + up[2] * nn[2] as f64).clamp(-1.0, 1.0);
+                let live = live_flags.get(i).map(|f| f[k]).unwrap_or(u32::MAX);
+                let pd = phy_dampers.get(i).map(|d| d[k]).unwrap_or(f32::NAN);
+                // tilt only while the wheel touches (the normal is zero in the air)
+                // a zero normal with the flag up = the flag leads the contact by a tick: no tilt yet
+                let nlen = (nn[0] * nn[0] + nn[1] * nn[1] + nn[2] * nn[2]).sqrt();
+                let tilt = if live == 1 && nlen > 0.5 { dot.acos().to_degrees() } else { f64::NAN };
+                s.push_str(&format!("\t{}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.1}", if live == u32::MAX { "?".into() } else { live.to_string() }, pd, nn[0], nn[1], nn[2], tilt));
+            }
+        }
+        s.push('\n');
+    }
+    std::fs::write(&out, s).map_err(|e| format!("{out}: {e}"))?;
+    println!("{out}: {ticks_in} ticks (race {from_s:.2}–{:.2} s) of {} replayed{}", if to_s.is_finite() { to_s } else { rows.last().map(|r| w.race_of(r) as f64 / 1000.0).unwrap_or(0.0) }, rows.len(), if vis_missing > 0 { format!("; {vis_missing} ticks WITHOUT a vis state (layout without the vis block)") } else { String::new() });
+    println!("wheel-ticks per material id: {}", mats.iter().map(|(m, n)| format!("{}:{n}", if *m == u8::MAX { "?".into() } else { m.to_string() })).collect::<Vec<_>>().join("  "));
+    if normals_mode {
+        let mut down = [0usize; 4];
+        let mut n_live = 0usize;
+        let mut max_tilt = 0.0f64;
+        let mut tilt_over45 = 0usize;
+        for (i, r) in rows.iter().enumerate() {
+            let race = w.race_of(r) as f64 / 1000.0;
+            if race < from_s || race > to_s { continue; }
+            let up = [0.0f64, 1.0, 0.0];
+            let mut any = false;
+            for k in 0..4 {
+                if live_flags.get(i).map(|f| f[k]) == Some(1) {
+                    down[k] += 1;
+                    any = true;
+                    let nn = normals[i][k];
+                    if (nn[0] * nn[0] + nn[1] * nn[1] + nn[2] * nn[2]).sqrt() < 0.5 { continue; }
+                    let t = (up[0] * nn[0] as f64 + up[1] * nn[1] as f64 + up[2] * nn[2] as f64).clamp(-1.0, 1.0).acos().to_degrees();
+                    if t > max_tilt { max_tilt = t; }
+                    if t >= 45.0 { tilt_over45 += 1; }
+                }
+            }
+            if any { n_live += 1; }
+        }
+        println!("LIVE contact (phy +0x30) per wheel: {}; ticks with any wheel down {:.1} %; surface-relative tilt while in contact: max {max_tilt:.1}°, wheel-ticks ≥ 45°: {tilt_over45}", down.iter().map(|c| format!("{:.1} %", 100.0 * *c as f64 / ticks_in.max(1) as f64)).collect::<Vec<_>>().join("  "), 100.0 * n_live as f64 / ticks_in.max(1) as f64);
+    }
+    println!("vis contact bit per wheel (WHEELS.md decode — ENV 21:18Z: this tests the wrong bit, use the LIVE flags above): {}", contact_ticks.iter().map(|c| format!("{:.1} %", 100.0 * *c as f64 / ticks_in.max(1) as f64)).collect::<Vec<_>>().join("  "));
+    Ok(())
+}

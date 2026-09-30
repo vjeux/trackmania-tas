@@ -1,0 +1,8 @@
+[package]
+name = "tmobs"
+version = "0.1.0"
+edition = "2021"
+description = "The ONE observation function of tm-player: observe(&TrackGeom, &CarState, prev actions) -> Obs. Pure, versioned, engine-free."
+
+[dependencies]
+tmstate = { path = "../tmstate" }

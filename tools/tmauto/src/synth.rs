@@ -321,6 +321,7 @@ pub fn inputs_payload(inputs: &[Input], meta: &GhostMeta) -> Vec<u8> {
         orig_bits_used: 0,
         tail: Vec::new(),
         orig_bitstream: Vec::new(),
+        short_by: 0,
     };
     GbxTape {
         chunk_version: meta.input_chunk_version,
@@ -397,27 +398,116 @@ pub fn meta_for_map(map: &std::path::Path) -> Result<GhostMeta, String> {
 pub fn validation_start_index_for_map(map: &std::path::Path) -> Result<u32, String> {
     let m = tmmaps::map::MapFile::load(map);
     let waypoints = m.waypoints();
+    let start = spawn_waypoint(map, &waypoints)?;
+    match start.kind {
+        tmmaps::map::Kind::Block => Ok(waypoints
+            .iter()
+            .filter(|w| w.kind == tmmaps::map::Kind::Block && !is_spawn_tag(&w.tag))
+            .count() as u32),
+        tmmaps::map::Kind::Item => item_start_index(map, &waypoints, &start),
+    }
+}
+
+/// A converter-parked waypoint block: `tmmaps tiny` renames every authored
+/// waypoint block to a plain road model and moves it to cell (0,0,0), but the
+/// block record keeps its waypoint node and tag. Such a block is not a start
+/// and not a gate the car can reach; it is a converter artifact and every
+/// reader here must see through it.
+pub fn is_parked_waypoint(w: &tmmaps::map::Waypoint) -> bool {
+    w.kind == tmmaps::map::Kind::Block
+        && w.coords == (0, 0, 0)
+        && w.pos.is_none()
+        && !w.name.ends_with("Start")
+        && !w.name.ends_with("Checkpoint")
+        && !w.name.ends_with("Finish")
+        && !w.name.ends_with("Multilap")
+}
+
+/// The semantic start: the one waypoint tagged `Spawn` that is a real start.
+///
+/// Block starts are `*Start` models (`RoadTechStart`, `RoadDirtStart`, ...);
+/// item starts are whatever the item is called (a tiny-campaign start item is
+/// `AC00000096.Item.Gbx`). Parked converter blocks are excluded; anything
+/// else ambiguous is refused rather than guessed.
+/// Is this waypoint tag a START? TM2020 writes `Spawn` on a start block or
+/// item and `StartFinish` on a multilap start; the MK64 exporter's `tas_section`
+/// cuts write `Start`. All three spawn the car, so all three are the semantic
+/// start here -- a synthesiser that only knew `Spawn` refused every multilap
+/// map and every section cut ("expected exactly one semantic Spawn waypoint,
+/// found 0") while the server drove them fine.
+pub fn is_spawn_tag(tag: &str) -> bool {
+    matches!(tag, "Spawn" | "StartFinish" | "Start")
+}
+
+pub fn spawn_waypoint(
+    map: &std::path::Path,
+    waypoints: &[tmmaps::map::Waypoint],
+) -> Result<tmmaps::map::Waypoint, String> {
     let starts: Vec<_> = waypoints
         .iter()
-        .filter(|w| w.tag == "Spawn" && w.name == "RoadTechStart")
+        .filter(|w| is_spawn_tag(&w.tag) && !is_parked_waypoint(w))
         .collect();
-    if starts.len() != 1 {
-        return Err(format!(
-            "{}: expected exactly one semantic RoadTechStart, found {}",
+    match starts.len() {
+        1 => Ok(starts[0].clone()),
+        n => Err(format!(
+            "{}: expected exactly one semantic Spawn waypoint, found {} ({})",
             map.display(),
-            starts.len()
-        ));
+            n,
+            starts
+                .iter()
+                .map(|w| format!("{:?}#{} {}", w.kind, w.index, w.name))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
     }
-    if starts[0].kind != tmmaps::map::Kind::Block {
-        return Err(format!(
-            "{}: RoadTechStart is an item; validator checkpoint ordering for item starts is not established",
-            map.display()
-        ));
-    }
-    Ok(waypoints
+}
+
+/// Index of an ITEM start in the validator's checkpoint array.
+///
+/// **Measured 2026-09-06 on *Summer 2026 - 01 tiny*** (all five waypoints are
+/// items; the four authored waypoint blocks are converter-parked): a sweep of
+/// `--validation-u03` 0..8 with the live engine read at the fork boundary put
+/// the car, per index, at item waypoints 0, 1, 2, 3, 4 **in item order** --
+/// index 3 at (1584.0, 12.5, 788) heading +z = the start item at
+/// (1576, 11.5, 776) -- and indices 5..8 produced NO car at all (the array has
+/// exactly five entries, so the parked blocks are not in it). Rule: an item
+/// start's index is `(live non-Spawn block gates) + (live block spawns) +
+/// (position of the start among the item waypoints)`, the same "blocks first,
+/// then items in item order" the block rule already encodes.
+/// `TMAUTO_ITEM_START_RULE=0` disables the rule (refuses) for a control run.
+pub fn item_start_index(
+    map: &std::path::Path,
+    waypoints: &[tmmaps::map::Waypoint],
+    start: &tmmaps::map::Waypoint,
+) -> Result<u32, String> {
+    let live_block_gates = waypoints
         .iter()
-        .filter(|w| w.kind == tmmaps::map::Kind::Block && w.tag != "Spawn")
-        .count() as u32)
+        .filter(|w| w.kind == tmmaps::map::Kind::Block && !is_spawn_tag(&w.tag) && !is_parked_waypoint(w))
+        .count();
+    let live_block_spawns = waypoints
+        .iter()
+        .filter(|w| w.kind == tmmaps::map::Kind::Block && is_spawn_tag(&w.tag) && !is_parked_waypoint(w))
+        .count();
+    let item_pos = waypoints
+        .iter()
+        .filter(|w| w.kind == tmmaps::map::Kind::Item)
+        .position(|w| w.index == start.index)
+        .ok_or_else(|| format!("{}: start item not among item waypoints", map.display()))?;
+    let hypothesis = (live_block_gates + live_block_spawns + item_pos) as u32;
+    if std::env::var("TMAUTO_ITEM_START_RULE").map(|v| v != "0").unwrap_or(true) {
+        return Ok(hypothesis);
+    }
+    Err(format!(
+        "{}: the start is an item (item#{} {}); the item-start rule is disabled by \
+         TMAUTO_ITEM_START_RULE=0. Rule value (block gates {} + block spawns {} + item position {}) = {}",
+        map.display(),
+        start.index,
+        start.name,
+        live_block_gates,
+        live_block_spawns,
+        item_pos,
+        hypothesis
+    ))
 }
 
 /// Metadata for the complete writer. Kept separate from [`meta_for_map`] so
@@ -425,7 +515,160 @@ pub fn validation_start_index_for_map(map: &std::path::Path) -> Result<u32, Stri
 pub fn complete_meta_for_map(map: &std::path::Path) -> Result<GhostMeta, String> {
     let mut meta = meta_for_map(map)?;
     meta.validation_start_index = validation_start_index_for_map(map)?;
+    check_start_model(map)?;
     Ok(meta)
+}
+
+/// TM2020 `CGameItemModel::EWaypointType`, the field the engine takes a
+/// landmark's KIND from: 0 Start, 1 Finish, 2 Checkpoint, 3 None,
+/// 4 StartFinish. The placement's tag (Spawn/Goal/Checkpoint/StartFinish/
+/// LinkedCheckpoint) only links and orders.
+pub fn item_model_waypoint_type(map: &std::path::Path, model: &str) -> Option<i32> {
+    let m = tmmaps::map::MapFile::load(map);
+    let (zip, _names) = tmmaps::header::embedded_zip_bytes(&m.gbx.body)?;
+    let bytes = tmmaps::header::zip_entry(&zip, model)?;
+    let f = mapgeom::static_item::file::parse_file(&bytes).ok()?;
+    f.item.chunks.iter().find_map(|c| match c {
+        mapgeom::static_item::item::ItemChunk::Waypoint { waypoint_type, .. } => Some(*waypoint_type),
+        _ => None,
+    })
+}
+
+/// REFUSE a start that the engine will treat as a lap-race line. A Start
+/// placement whose ITEM MODEL is StartFinish (type 4) spawns the car fine and
+/// then the validator ignores every Finish gate on the map -- measured on the
+/// golden map2 (finish block moved 64 m ahead: full-gas tape 2.658; start
+/// renamed RoadTechMultilap: the same tape is a DNF) and on the MK64 Koopa cut
+/// whose every finish, own or stock, never fired. Nothing else says so: the
+/// run just never finishes. `TMAUTO_ALLOW_LAP_START=1` for a map that IS a lap
+/// race on purpose (the finish is then the start line itself).
+pub fn check_start_model(map: &std::path::Path) -> Result<(), String> {
+    let m = tmmaps::map::MapFile::load(map);
+    let waypoints = m.waypoints();
+    let start = spawn_waypoint(map, &waypoints)?;
+    if start.kind != tmmaps::map::Kind::Item {
+        return Ok(());
+    }
+    let Some(t) = item_model_waypoint_type(map, &start.name) else {
+        return Ok(()); // a stock or unreadable model: nothing to say
+    };
+    let has_finish_item = waypoints.iter().any(|w| {
+        w.kind == tmmaps::map::Kind::Item
+            && w.index != start.index
+            && item_model_waypoint_type(map, &w.name) == Some(1)
+    });
+    match t {
+        0 => Ok(()),
+        4 if std::env::var("TMAUTO_ALLOW_LAP_START").map(|v| v == "1").unwrap_or(false) => Ok(()),
+        4 if has_finish_item => Err(format!(
+            "{}: the Start placement item#{} sits on {} whose MODEL waypoint type is 4 (StartFinish): the engine \
+             runs a LAP RACE and ignores the map's Finish item(s) -- nothing will ever finish. Retype the model to \
+             0 (Start): `wptype IN OUT 0` (mapgeom example) + `tmmaps reembed MAP --out F --replace Items/{}=OUT`, \
+             or have the exporter place a Start-type model. TMAUTO_ALLOW_LAP_START=1 if the lap race is intended.",
+            map.display(),
+            start.index,
+            start.name,
+            start.name
+        )),
+        4 => {
+            eprintln!(
+                "{}: note: the start model is StartFinish (lap race); the finish is the start line itself",
+                map.display()
+            );
+            Ok(())
+        }
+        other => Err(format!(
+            "{}: the Start placement item#{} sits on {} whose MODEL waypoint type is {} (not 0 Start / 4 StartFinish); the engine cannot spawn there",
+            map.display(),
+            start.index,
+            start.name,
+            other
+        )),
+    }
+}
+
+/// MEASURE the validation start index with the fork engine: for candidate
+/// indices (the rule's guess first, then 0, 1, 2, ...) write a short
+/// full-gas container declaring that index, trace its first ticks with `fk`,
+/// and accept the first index whose car stands within `tol_m` of the Start
+/// placement. `Ok(None)` when no engine is reachable (no `fk`, no shim, or no
+/// `TM_SERVER`), so callers can say "unverified" instead of guessing.
+///
+/// Why this exists: the engine's checkpoint array holds every ITEM whose
+/// MODEL carries a waypoint type -- with or without a placement property --
+/// in item order. The MK64 Koopa cuts place 28 Lakitu animation frames typed
+/// as starts at (40, 1, 40): the file rule said 0 (the Start is the first item
+/// WAYPOINT), u03 0 never started the race, 1..4 spawned the car in the void,
+/// and 28 spawned it on the Start. Nothing in the map file says which items the
+/// engine counts (their model class 0x2E01D000 has no reader here), so the
+/// engine is asked.
+pub fn probe_start_index(map: &std::path::Path, guess: u32) -> Result<Option<(u32, [f32; 3])>, String> {
+    let fk = ghost::regen::fk_binary();
+    let shim = match ghost::regen::shim() {
+        Some(s) => s,
+        None => return Ok(None),
+    };
+    let server = match std::env::var("TM_SERVER") {
+        Ok(s) => s,
+        Err(_) => return Ok(None),
+    };
+    if !std::path::Path::new(&fk).exists() || !std::path::Path::new(&server).join("TrackmaniaServer").exists() {
+        return Ok(None);
+    }
+    let m = tmmaps::map::MapFile::load(map);
+    let waypoints = m.waypoints();
+    let start = spawn_waypoint(map, &waypoints)?;
+    let target = start.pos.ok_or("the Start placement has no free position")?;
+    let tol_m: f32 = std::env::var("TMAUTO_STARTPROBE_TOL").ok().and_then(|v| v.parse().ok()).unwrap_or(6.0);
+    let max: u32 = std::env::var("TMAUTO_STARTPROBE_MAX").ok().and_then(|v| v.parse().ok()).unwrap_or(64);
+    let dir = std::env::temp_dir().join(format!("tmauto-startprobe-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let mut candidates: Vec<u32> = vec![guess];
+    candidates.extend((0..=max).filter(|k| *k != guess));
+    let mut meta = meta_for_map(map)?;
+    let inputs = vec![Input::new(0, true, false); 60];
+    let initial = initial_state_for_map(map)?;
+    for k in candidates {
+        meta.validation_start_index = k;
+        // a locator key: the fork's input locator cannot find a constant tape
+        let mut wob = inputs.clone();
+        for (t, i) in wob.iter_mut().take(25).enumerate() {
+            i.steer = ((t as u64 * 7919 + 13) % 25) as i8 - 12;
+        }
+        meta.set_declared(600, vec![600]);
+        let bytes = synthesize_complete(&wob, &meta, &ChunkSet::ALL, initial, RecordMode::Sample, 0.0);
+        let tape = dir.join(format!("u03-{k}.Ghost.Gbx"));
+        let csv = dir.join(format!("u03-{k}.csv"));
+        std::fs::write(&tape, &bytes).map_err(|e| e.to_string())?;
+        let out = std::process::Command::new(&fk)
+            .args(["trace", "--tape"])
+            .arg(&tape)
+            .arg("--map")
+            .arg(map)
+            .args(["--at", "tick:5", "--out"])
+            .arg(&csv)
+            .args(["--server", &server, "--shim", &shim])
+            .output()
+            .map_err(|e| format!("cannot run {fk}: {e}"))?;
+        let _ = out;
+        let Ok(text) = std::fs::read_to_string(&csv) else { continue };
+        let Some(row) = text.lines().nth(1) else { continue };
+        let f: Vec<f32> = row.split(',').take(4).filter_map(|x| x.parse().ok()).collect();
+        if f.len() < 4 {
+            continue;
+        }
+        let pos = [f[1], f[2], f[3]];
+        let d = ((pos[0] - target[0]).powi(2) + (pos[2] - target[2]).powi(2)).sqrt();
+        if d <= tol_m {
+            let _ = std::fs::remove_dir_all(&dir);
+            return Ok(Some((k, pos)));
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    Err(format!(
+        "start index: no u03 in 0..={} put the car within {} m of the Start placement ({:.1}, {:.1}, {:.1}); pass --validation-u03 N explicitly",
+        max, tol_m, target[0], target[1], target[2]
+    ))
 }
 
 /// The authoritative initial transform encoded into a from-scratch record.
@@ -495,16 +738,31 @@ pub const ROADTECH_START_LOCAL_Y: f32 = 2.002;
 /// RoadTechStart model contributes its fixed 2.002 m local spawn height.
 pub fn initial_state_for_map(map: &std::path::Path) -> Result<InitialState, String> {
     let m = tmmaps::map::MapFile::load(map);
-    let w = m
-        .waypoints()
-        .into_iter()
-        .find(|w| w.tag == "Spawn" && w.name == "RoadTechStart")
-        .ok_or_else(|| {
-            format!(
-                "{}: no semantic RoadTechStart waypoint tagged Spawn",
-                map.display()
-            )
-        })?;
+    let waypoints = m.waypoints();
+    let w = spawn_waypoint(map, &waypoints)?;
+    if w.kind == tmmaps::map::Kind::Item {
+        // An ITEM start: the item's placement position and yaw. The car's
+        // spawn transform inside the item (Granady's tiny items: local
+        // (8, 1, 8) at half scale) is NOT read here -- this value seeds the
+        // record's first sample only; the live tick-0 readout (`fk state`)
+        // is the authority and `start_position_control` compares against it.
+        let p = w.pos.ok_or_else(|| format!("{}: start item has no position", map.display()))?;
+        let yaw = w.yaw.unwrap_or(0.0) as f64;
+        let h = yaw * 0.5;
+        return Ok(InitialState {
+            pos: [p[0] + 8.0, p[1] + 1.0, p[2] + 8.0],
+            quat: [0.0, h.sin(), 0.0, h.cos()],
+            vel: [0.0; 3],
+            roadtech_dir: None,
+        });
+    }
+    if w.name != "RoadTechStart" {
+        return Err(format!(
+            "{}: block start {} is not RoadTechStart; its local spawn offset is not in the constant table",
+            map.display(),
+            w.name
+        ));
+    }
     let (cx, cy, cz) = w.coords;
     let yoff = match m.decoration_id.as_str() {
         // Measured against game-recorded tick-0 samples on two independent
@@ -1052,6 +1310,76 @@ mod tests {
         assert!(v.contains("\"title_id\":\"Trackmania\""));
         assert!(v.contains(&format!("\"title_checksum_hex\":\"{}\"", "ab".repeat(32))));
         assert!(v.contains("\"race_settings\":\"from-scratch-control\""));
+    }
+
+    #[test]
+    fn item_start_index_is_position_among_items_after_live_blocks() {
+        // The shape of Summer 2026 - 01 tiny as `tmmaps waypoints` reports it:
+        // four converter-parked blocks (renamed RoadTechStraight, cell 0,0,0,
+        // no position, tags kept), then five item waypoints with the start at
+        // item position 3. Measured on the live engine 2026-09-06: u03=3 is the
+        // start, u03 in 0..=4 map to the items in order, u03>=5 is no car.
+        use tmmaps::map::{Kind, Waypoint};
+        let parked = |index: usize, tag: &str| Waypoint {
+            kind: Kind::Block,
+            index,
+            name: "RoadTechStraight".into(),
+            tag: tag.into(),
+            order: 0,
+            coords: (0, 0, 0),
+            pos: None,
+            yaw: Some(0.0),
+            dir: Some(0),
+            free_rot: None,
+            item_rot: None,
+        };
+        let item = |index: usize, tag: &str, pos: [f32; 3]| Waypoint {
+            kind: Kind::Item,
+            index,
+            name: format!("AC{index:08}.Item.Gbx"),
+            tag: tag.into(),
+            order: 0,
+            coords: (0, 0, 0),
+            pos: Some(pos),
+            yaw: Some(0.0),
+            dir: None,
+            free_rot: None,
+            item_rot: None,
+        };
+        let wps = vec![
+            parked(617, "Checkpoint"),
+            parked(670, "Goal"),
+            parked(681, "Spawn"),
+            parked(683, "Checkpoint"),
+            item(1056, "Checkpoint", [1369.0, 8.5, 1056.0]),
+            item(2321, "Checkpoint", [1480.0, 7.5, 952.0]),
+            item(2374, "Goal", [1480.0, 7.5, 744.0]),
+            item(2385, "Spawn", [1576.0, 11.5, 776.0]),
+            item(2387, "Checkpoint", [1416.0, 7.5, 872.0]),
+        ];
+        let map = std::path::Path::new("tiny.Map.Gbx");
+        assert!(wps.iter().take(4).all(is_parked_waypoint));
+        assert!(!wps.iter().skip(4).any(is_parked_waypoint));
+        let start = spawn_waypoint(map, &wps).expect("one live spawn");
+        assert_eq!((start.kind.clone(), start.index), (Kind::Item, 2385));
+        assert_eq!(item_start_index(map, &wps, &start).unwrap(), 3);
+
+        // A real block start beside items: the block rule must still win, and
+        // a live block gate must shift an item start by one.
+        let mut with_block_gate = wps.clone();
+        with_block_gate[0] = Waypoint {
+            name: "RoadTechCheckpoint".into(),
+            coords: (42, 6, 34),
+            ..parked(617, "Checkpoint")
+        };
+        assert!(!is_parked_waypoint(&with_block_gate[0]));
+        assert_eq!(item_start_index(map, &with_block_gate, &start).unwrap(), 4);
+
+        // Two live spawns is a refusal, never a guess.
+        let mut two = wps.clone();
+        two[2].name = "RoadTechStart".into();
+        two[2].coords = (49, 7, 24);
+        assert!(spawn_waypoint(map, &two).is_err());
     }
 
     #[test]

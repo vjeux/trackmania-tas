@@ -57,6 +57,11 @@ pub struct Inputs {
     pub steer: Vec<i8>,
     pub gas: Vec<bool>,
     pub brake: Vec<bool>,
+    /// The RESPAWN channel per tick (the tape's state-literal bit 31). Empty = no respawns (every older constructor).
+    /// Carried by every candidate so a fork evaluation respawns where the tape does (2026-09-09: without it every
+    /// candidate whose suffix held a respawn DNF'd in the fork -- Norway: 750k candidates, 0 finishers).
+
+    pub respawn: Vec<bool>,
 }
 
 impl Inputs {
@@ -76,7 +81,7 @@ impl Inputs {
         self.gas.iter().map(|&v| v as u8).collect()
     }
     pub fn brake_u8(&self) -> Vec<u8> {
-        self.brake.iter().map(|&v| v as u8).collect()
+        (0..self.brake.len()).map(|t| self.brake_byte(t)).collect()
     }
 
     /// From the three arrays a decoded tape hands over.
@@ -84,8 +89,14 @@ impl Inputs {
         Inputs {
             steer: steer.iter().map(|&v| v as i8).collect(),
             gas: gas.iter().map(|&v| v != 0).collect(),
-            brake: brake.iter().map(|&v| v != 0).collect(),
+            brake: brake.iter().map(|&v| v & 1 != 0).collect(),
+            respawn: brake.iter().map(|&v| v & 2 != 0).collect(),
         }
+    }
+
+    /// The brake byte the engine-side record builders take: bit 0 brake, bit 1 respawn (`rec_of` decodes it).
+    pub fn brake_byte(&self, t: usize) -> u8 {
+        (self.brake[t] as u8) | ((self.respawn.get(t).copied().unwrap_or(false) as u8) << 1)
     }
 
     /// How far this tape is from the tape a fork server checkpointed on.
@@ -371,7 +382,7 @@ mod tests {
     use super::*;
 
     fn flat(n: usize) -> Inputs {
-        Inputs { steer: vec![0; n], gas: vec![true; n], brake: vec![false; n] }
+        Inputs { steer: vec![0; n], gas: vec![true; n], brake: vec![false; n], respawn: Vec::new() }
     }
 
     /// Every operator must stay inside its window. A mutation below the resume
@@ -447,5 +458,203 @@ mod tests {
         assert_eq!(d.diff_ticks, 2);
         assert_eq!(d.max_steer_delta, 60);
         assert_eq!(r.distance_from(&r).first_diff_tick, None);
+    }
+}
+
+/// A HUMAN-SHAPED CONSTRAINT on a candidate: an input alphabet for steer and a
+/// minimum hold per input change, applied to every candidate AFTER mutation and
+/// before evaluation. Quantising an optimised analog tape afterwards never
+/// survives (a tape is a closed loop around its own trajectory: 64 levels
+/// still DNF'd), so the tape has to be SEARCHED under the constraint -- every
+/// candidate the search ever scores is already legal, and so is everything it
+/// banks.
+///
+/// `alphabet`: the steer values a candidate may hold (`kb` = -127, 0, +127);
+/// every steer byte snaps to the nearest one. `minhold`: the fewest ticks any
+/// input may hold before it changes again; a change that comes sooner is
+/// suppressed (the previous value is held through it), on steer, gas and brake
+/// alike. Ticks outside `[lo, hi)` are left exactly as they are.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Constraint {
+    pub alphabet: Option<Vec<i8>>,
+    pub minhold: usize,
+    /// GAS HELD: every tick in the window keeps the throttle down. A keyboard
+    /// driver (and the rig's key injection) re-engages the throttle slowly --
+    /// measured in the client on 2026-09-29: a 50 ms lift cost ~300 ms of flat
+    /// speed and 6 km/h at the ramp -- so a tape meant to be DRIVEN controls
+    /// speed with the brake alone.
+    pub gas_held: bool,
+}
+
+impl Constraint {
+    pub fn parse_alphabet(s: &str) -> Result<Vec<i8>, String> {
+        if s == "kb" || s == "keyboard" {
+            return Ok(vec![-127, 0, 127]);
+        }
+        let mut out = Vec::new();
+        for part in s.split(',') {
+            let v: i32 = part.trim().parse().map_err(|_| format!("--alphabet: {:?} is not an i8 level", part))?;
+            if !(-127..=127).contains(&v) {
+                return Err(format!("--alphabet: level {} is outside -127..=127", v));
+            }
+            out.push(v as i8);
+        }
+        if out.len() < 2 {
+            return Err("--alphabet needs at least two levels (or `kb`)".into());
+        }
+        out.sort_unstable();
+        out.dedup();
+        Ok(out)
+    }
+
+    pub fn is_noop(&self) -> bool {
+        self.alphabet.is_none() && self.minhold <= 1
+    }
+
+    fn snap(levels: &[i8], v: i8) -> i8 {
+        let mut best = levels[0];
+        let mut bd = (v as i32 - best as i32).abs();
+        for &l in &levels[1..] {
+            let d = (v as i32 - l as i32).abs();
+            // ties go to the level nearer zero: a released key, not a pressed one
+            if d < bd || (d == bd && (l as i32).abs() < (best as i32).abs()) {
+                best = l;
+                bd = d;
+            }
+        }
+        best
+    }
+
+    fn hold<T: Copy + PartialEq>(v: &mut [T], lo: usize, hi: usize, n: usize) {
+        if n <= 1 || hi <= lo + 1 {
+            return;
+        }
+        // The run in force when the window opens is the one holding at `lo - 1`,
+        // counted from where it really started: a change AT the window edge is
+        // judged like any other, so the edge is not a free place to change.
+        let (mut run_val, mut run_len, first) = if lo > 0 {
+            let mut j = lo - 1;
+            let mut n = 1usize;
+            while j > 0 && v[j - 1] == v[lo - 1] {
+                j -= 1;
+                n += 1;
+            }
+            (v[lo - 1], n, lo)
+        } else {
+            (v[0], 1usize, 1)
+        };
+        for i in first..hi {
+            if v[i] != run_val {
+                if run_len < n {
+                    v[i] = run_val;
+                    run_len += 1;
+                } else {
+                    run_val = v[i];
+                    run_len = 1;
+                }
+            } else {
+                run_len += 1;
+            }
+        }
+    }
+
+    /// Make `s` legal inside `[lo, hi)`.
+    pub fn apply(&self, s: &mut Inputs, lo: usize, hi: usize) {
+        let hi = hi.min(s.len());
+        if lo >= hi {
+            return;
+        }
+        if let Some(levels) = &self.alphabet {
+            for v in &mut s.steer[lo..hi] {
+                *v = Self::snap(levels, *v);
+            }
+        }
+        if self.minhold > 1 {
+            Self::hold(&mut s.steer, lo, hi, self.minhold);
+            Self::hold(&mut s.gas, lo, hi, self.minhold);
+            Self::hold(&mut s.brake, lo, hi, self.minhold);
+        }
+        if self.gas_held {
+            for g in &mut s.gas[lo..hi] {
+                *g = true;
+            }
+        }
+    }
+
+    /// Does `s` already satisfy the constraint over `[lo, hi)`?
+    pub fn holds(&self, s: &Inputs, lo: usize, hi: usize) -> bool {
+        let mut t = s.clone();
+        self.apply(&mut t, lo, hi);
+        t.steer == s.steer && t.gas == s.gas && t.brake == s.brake
+    }
+
+    /// The number of input CHANGES (steer, gas or brake) in `[lo, hi)` -- the
+    /// thing a low-input tape is measured by.
+    pub fn events(s: &Inputs, lo: usize, hi: usize) -> usize {
+        let hi = hi.min(s.len());
+        let mut n = 0;
+        for i in lo.max(1)..hi {
+            if s.steer[i] != s.steer[i - 1] || s.gas[i] != s.gas[i - 1] || s.brake[i] != s.brake[i - 1] {
+                n += 1;
+            }
+        }
+        n
+    }
+}
+
+#[cfg(test)]
+mod constraint_tests {
+    use super::*;
+
+    fn tape(steer: &[i8]) -> Inputs {
+        Inputs {
+            steer: steer.to_vec(),
+            gas: vec![true; steer.len()],
+            brake: vec![false; steer.len()],
+            respawn: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_keyboard_alphabet_snaps_to_the_nearest_key_and_ties_release() {
+        let c = Constraint { alphabet: Some(Constraint::parse_alphabet("kb").unwrap()), minhold: 1, gas_held: false };
+        let mut s = tape(&[-127, -90, -64, -63, -20, 0, 20, 63, 64, 90, 127]);
+        let n = s.len();
+        c.apply(&mut s, 0, n);
+        // 64 is nearer 127 (63) than 0 (64); 63 is nearer 0
+        assert_eq!(s.steer, vec![-127, -127, -127, 0, 0, 0, 0, 0, 127, 127, 127]);
+    }
+
+    #[test]
+    fn a_change_sooner_than_the_hold_is_suppressed_and_the_run_continues() {
+        let c = Constraint { alphabet: None, minhold: 3, gas_held: false };
+        let mut s = tape(&[0, 0, 0, 5, 0, 0, 0, 7, 7, 7, 9, 9]);
+        let n = s.len();
+        c.apply(&mut s, 0, n);
+        // HOLD-FORWARD semantics: a value, once it changes, is held for at least
+        // the minimum; a change inside that hold is dropped and the held value
+        // continues. The lone 5 becomes a 3-tick press (a real move for the
+        // search, not a no-op), which delays the 0 and then swallows the 9s.
+        assert_eq!(s.steer, vec![0, 0, 0, 5, 5, 5, 0, 0, 0, 7, 7, 7]);
+        assert!(c.holds(&s, 0, n));
+    }
+
+    #[test]
+    fn the_window_edge_is_not_a_free_place_to_change() {
+        let c = Constraint { alphabet: None, minhold: 4, gas_held: false };
+        // the run of 1s started at tick 1; editing [3, 8) must still see it as
+        // 2 ticks old at tick 3
+        let mut s = tape(&[0, 1, 1, 2, 2, 2, 2, 2, 3]);
+        c.apply(&mut s, 3, 8);
+        assert_eq!(s.steer, vec![0, 1, 1, 1, 1, 2, 2, 2, 3]);
+    }
+
+    #[test]
+    fn events_count_every_channel_change_once_per_tick() {
+        let mut s = tape(&[0, 0, 127, 127, 0]);
+        s.brake[2] = true;
+        s.brake[3] = true;
+        let n = s.len();
+        assert_eq!(Constraint::events(&s, 0, n), 2);
     }
 }

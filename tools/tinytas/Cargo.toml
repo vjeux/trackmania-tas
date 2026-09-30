@@ -1,0 +1,19 @@
+[package]
+name = "tinytas"
+version.workspace = true
+edition = "2021"
+
+[lib]
+name = "tinytas"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tinytas"
+path = "src/main.rs"
+
+[dependencies]
+gbx = { path = "../gbx" }
+ghost = { path = "../ghost" }
+tmmaps = { path = "../tmmaps" }
+tmtraj = { path = "../tmtraj" }
+tmauto = { path = "../tmauto" }

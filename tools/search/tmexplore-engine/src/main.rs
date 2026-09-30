@@ -327,17 +327,18 @@ fn main() {
     let started = std::time::Instant::now();
     let workdir = work.clone();
 
-    // `--forktick` is a TICK; the shim wants an `lroundf` COUNT. The fitted line
+    // `--forktick` is a TAPE TICK; the shim wants a race-tick clock value. The
+    // conversion is exact
     // is `clock = 36141 + 25.483 * race_ms` and it is per map (this one is map
     // 2's). It only has to place the checkpoint near the right instant — where
     // the server ACTUALLY stopped is probed and is what everything is labelled
     // from. Passing the tick straight through as a clock puts the fork at
-    // lroundf call 60, which is during load, and the shim then reports
+    // tick 60 of the tape, and the shim then reports
     // `bad handshake: ERR notfound` because the input array is not there yet.
     let forktick_t: i64 = a.num("forktick", 60i64);
     let forktick: u64 = tmsearch::forkeval::clock_for_tick(forktick_t, 0);
     println!(
-        "\nFORK    checkpoint at tick {} -> lroundf clock {} (fitted line, per map; the boundary\n        the server actually stops at is PROBED and is what ticks are labelled from)",
+        "\nFORK    checkpoint at tape tick {} -> race clock {} (exact; the boundary the server\n        actually stops at is still PROBED, as the control)",
         forktick_t, forktick
     );
     let route_pts = route_polyline(&route);
@@ -406,6 +407,12 @@ fn main() {
         match ForkBranch::start(&o, reference.clone()) {
             Ok(b) => {
                 boundary = boundary.max(b.from);
+                // A MARGIN above the probed maximum. Servers stop within +-1 tick of
+                // each other, and a worker whose own probe lands ABOVE the fleet's
+                // maximum refuses to start (5 of 80 did on the tiny map, where four
+                // probes said 77 and five workers said 77+1). One tick of fixed
+                // reference input costs nothing a search can notice.
+                boundary += a.num("boundary-margin", 1usize);
                 oracle.set_prefix_ticks(boundary as u64);
                 println!(
                     "\nTICK FRAME  boundary probed 4x, MAX = tick {} (this probe said {}). The search's tick 0\n            is file tick {}. The maximum is used because where a server stops is a property\n            of that server: probes here differ by a tick between runs, and a one-tick shift\n            of a whole tape turned a confirmed cps 3 into cps 0.",
@@ -660,10 +667,10 @@ fn state_probe(a: &Args) {
     };
     let mut branch = ForkBranch::start(&opts, reference).unwrap_or_else(die);
     println!("boundary_tick\t{}", branch.from);
-    let p = branch.car().provenance();
+    let p = branch.car();
     println!(
         "ownership\tcontroller=0x{:x}\tsim=0x{:x}\tplayground=0x{:x}\tparticipant=0x{:x}\tvehicle=0x{:x}\tstate=0x{:x}",
-        p.controller, p.sim, p.playground, p.participant, p.vehicle, p.state_pos
+        p.controller, p.sim, p.playground, p.participant, p.phy, p.pos()
     );
     let initial = branch
         .initial_state()
@@ -698,6 +705,73 @@ fn state_probe(a: &Args) {
     }
     println!("self_check\t{}", branch.self_check().unwrap_or_else(die));
     let n: usize = a.num("ticks", 200usize);
+    // --csv DIR: bank every tick of the probe runs (and of --tape-tsv, if
+    // given) as CSV, so a run can be READ rather than summarised by its end.
+    let csv_dir = a.get("csv").map(PathBuf::from);
+    if let Some(d) = &csv_dir {
+        std::fs::create_dir_all(d).unwrap_or_else(|e| die(format!("{}: {}", d.display(), e)));
+    }
+    let from_tick = branch.from;
+    let dump = |name: &str, trace: &[tmexplore::branch::CarState]| {
+        if let Some(d) = &csv_dir {
+            let mut s = String::from("tick,race_s,x,y,z,vx,vy,vz,speed,qw,qx,qy,qz\n");
+            for c in trace {
+                let sp = (c.vel[0] * c.vel[0] + c.vel[1] * c.vel[1] + c.vel[2] * c.vel[2]).sqrt();
+                let t = from_tick as u32 + c.tick;
+                s.push_str(&format!(
+                    "{},{:.2},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.6},{:.6},{:.6},{:.6}\n",
+                    t,
+                    t as f32 / 100.0,
+                    c.pos[0],
+                    c.pos[1],
+                    c.pos[2],
+                    c.vel[0],
+                    c.vel[1],
+                    c.vel[2],
+                    sp,
+                    c.quat[0],
+                    c.quat[1],
+                    c.quat[2],
+                    c.quat[3]
+                ));
+            }
+            let p = d.join(format!("{}.csv", name));
+            std::fs::write(&p, s).unwrap_or_else(|e| die(format!("{}: {}", p.display(), e)));
+        }
+    };
+    if let Some(t) = a.get("tape-tsv") {
+        // An arbitrary tape (tick<TAB>steer<TAB>gas<TAB>brake, header line
+        // first), run from the boundary; ticks below the boundary are the
+        // container's own and are skipped.
+        let txt = std::fs::read_to_string(t).unwrap_or_else(|e| die(format!("{}: {}", t, e)));
+        let mut inputs: Vec<Input> = Vec::new();
+        for line in txt.lines().skip(1) {
+            let f: Vec<&str> = line.split('\t').collect();
+            if f.len() < 4 {
+                continue;
+            }
+            inputs.push(Input {
+                steer: f[1].parse().unwrap_or(0),
+                gas: f[2] != "0",
+                brake: f[3] != "0",
+            });
+        }
+        let inputs: Vec<Input> = inputs.into_iter().skip(from_tick).collect();
+        let h = branch.open(&[], None).unwrap_or_else(|e| die(format!("{e:?}")));
+        let adv = branch
+            .advance(h, 0, &inputs)
+            .unwrap_or_else(|e| die(format!("{e:?}")));
+        dump("tape", &adv.trace);
+        let last = adv.trace.last().copied().unwrap_or_else(|| die("no response state"));
+        println!(
+            "tape\tticks={}\tend={:.6},{:.6},{:.6}\tended={:?}",
+            adv.trace.len(),
+            last.pos[0],
+            last.pos[1],
+            last.pos[2],
+            adv.ended
+        );
+    }
     let run = |branch: &mut ForkBranch, steer: i8| {
         let h = branch
             .open(&[], None)
@@ -713,6 +787,12 @@ fn state_probe(a: &Args) {
         let a = branch
             .advance(h, 0, &input)
             .unwrap_or_else(|e| die(format!("{e:?}")));
+        let name = match steer {
+            0 => "straight",
+            i8::MIN..=-1 => "hard_left",
+            _ => "hard_right",
+        };
+        dump(name, &a.trace);
         a.trace
             .last()
             .copied()
@@ -834,7 +914,9 @@ fn make_template(a: &Args) {
         s.len()
     };
 
-    let mut meta = tmauto::synth::meta_for_map(&map).unwrap_or_else(die);
+    // complete_meta_for_map: the validator start index must be the map's
+    // semantic spawn, not array entry 0 (the wrong-start defect).
+    let mut meta = tmauto::synth::complete_meta_for_map(&map).unwrap_or_else(die);
     let cps: Vec<i32> = (1..=ncp)
         .map(|i| (declare_ms as i32 / (ncp as i32 + 1)) * i as i32)
         .chain(std::iter::once(declare_ms as i32))
