@@ -175,6 +175,34 @@ pub fn terrain_constant_of(store: &mut DataStore, tm: &TerrainMaterial) -> Resul
 /// `PxzBaseColor` slot's image at (0, 0) — `GbxWorldPosToTexCoord_MapPyBaseColor` has no
 /// translation (chunk 0x09011025's trans = 0) so the Py term is also at (0, 0), and the
 /// `ACosSmoothPy` default LUT's texel 0 = 1 removes it.
+/// The `.dds` a `.Texture.gbx` (CPlugBitmap) resolves to, and its chunk-0x09011025 translation: the external image
+/// reference when the file has one; else, for a texture-ARRAY SLICE file (`Land_D.Texture.gbx`: chunk 0x09011034 names its
+/// `.TextureArray.Gbx` and its layer NAME, the image node being an inline 4×4 CPlugFileGen placeholder — E7 2026-09-30, the
+/// WhiteShore Deco / DecoHill materials' PyBaseColor), the array's slice whose ImageArray layer carries that name (the GPU slice
+/// order = the layer order, as the terrain shader's ids index it); else the `Image\<stem>.dds` beside the file.
+pub fn bitmap_dds(store: &mut DataStore, tex: &str) -> Result<(String, [f32; 2]), String> {
+    let tm = store.load_model(tex)?;
+    let tg = tm.graph()?;
+    let Some(mapgeom::node::Node::Bitmap(b)) = &tg.root else { return Err(format!("{tex}: not a CPlugBitmap")) };
+    let trans = b.tc_scale_trans.map(|v| [f32::from_bits(v[2]), f32::from_bits(v[3])]).unwrap_or([0.0, 0.0]);
+    if let Some(img) = tg.external(b.image) {
+        return Ok((img.to_string(), trans));
+    }
+    if b.array_ref >= 0 && !b.slice_name.is_empty() {
+        let array_path = tg.external(b.array_ref).ok_or_else(|| format!("{tex}: the array node {} is not external", b.array_ref))?.to_string();
+        let arr = mapgeom::terrain::load_texture_array(store, &array_path)?;
+        let idx = mapgeom::terrain::layer_index(&arr.layers, &b.slice_name);
+        if idx < 0 { return Err(format!("{tex}: slice {:?} is not a layer of {array_path} ({:?})", b.slice_name, arr.layers.iter().map(|l| l.name.clone()).collect::<Vec<_>>())); }
+        let dds = arr.slices.get(idx as usize).cloned().ok_or_else(|| format!("{tex}: {array_path} has {} slices, layer {:?} is {idx}", arr.slices.len(), b.slice_name))?;
+        return Ok((dds, trans));
+    }
+    if tex.to_ascii_uppercase().ends_with(".TEXTURE.GBX") {
+        let stem = &tex[..tex.len() - ".Texture.gbx".len()];
+        if let Some((dir, name)) = stem.rsplit_once('\\') { return Ok((format!("{dir}\\Image\\{name}.dds"), trans)); }
+    }
+    Err(format!("{tex}: the image node {} is not external and the file names no array slice", b.image))
+}
+
 pub fn projected_constant(store: &mut DataStore, link: &str) -> Result<MaterialConstant, String> {
     let file = if link.to_ascii_lowercase().ends_with(".gbx") { link.to_string() } else { format!("{link}.Material.Gbx") };
     let m = store.load_model(&file)?;
@@ -188,17 +216,8 @@ pub fn projected_constant(store: &mut DataStore, link: &str) -> Result<MaterialC
     let custom = custom.ok_or_else(|| format!("{file}: no CPlugMaterialCustom"))?;
     let slot = |name: &str| custom.bitmaps.iter().find(|(n, _)| n == name).and_then(|(_, r)| g.external(*r)).map(|s| s.to_string());
     let tex = slot("PxzBaseColor").or_else(|| slot("PyBaseColor")).or_else(|| slot("BaseColor")).ok_or_else(|| format!("{file}: no PxzBaseColor / PyBaseColor / BaseColor slot"))?;
-    // the .Texture.gbx → its image (chunk 0x09011030), and the translation of chunk 0x09011025
-    let tm = store.load_model(&tex)?;
-    let tg = tm.graph()?;
-    let (image, trans) = match &tg.root {
-        Some(mapgeom::node::Node::Bitmap(b)) => {
-            let img = tg.external(b.image).ok_or_else(|| format!("{tex}: the image node {} is not external", b.image))?.to_string();
-            let t = b.tc_scale_trans.map(|v| [f32::from_bits(v[2]), f32::from_bits(v[3])]).unwrap_or([0.0, 0.0]);
-            (img, t)
-        }
-        _ => return Err(format!("{tex}: not a CPlugBitmap")),
-    };
+    // the .Texture.gbx → its image (chunk 0x09011030, or the array slice it names), and the translation of chunk 0x09011025
+    let (image, trans) = bitmap_dds(store, &tex)?;
     let dds = store.read(&image)?;
     // v1 = 0: r1.x = ±(v1.z · s.x) = 0, r1.w = v1.y · s.y − s.w = −trans.y
     let uv = [0.0f32, -trans[1]];
@@ -714,7 +733,32 @@ pub struct HueRecolour {
     pub mask_image: String,
 }
 
+/// THE MAP'S COLOUR PALETTE (RE 17, 2026-09-30 17:50Z; the map's chunk 0x0304306C = the exe's `EMapElemColorPalette`, loaded into
+/// the GLOBAL OVERRIDE palette of FUN_140410930 from CHALLENGE+0x408 by FUN_140b99ea0): 0 Classic and 1 Stunt take the material's
+/// own colour table's row of that name (RE 15's per-material tables, as before); 2 Red … 12 Black take the ramp of that name in
+/// `Default.ColorTable.gbx.json` (the only table carrying the eleven 5-shade ramps), indexed by MapElemColor − 1 and clamped to the
+/// last shade (g23 = Norway = 8 Blue → byte 1 → #00327c = the captured RgbBaseColorTarget (0, 0.03190, 0.20156) on all 89 hue classes
+/// of frame 537). Set from the map by the bake (`set_map_palette(tmmaps::map::MapFile::color_palette_name(byte))`);
+/// LMTOOL_COLOR_PALETTE=<Name> overrides it (a study knob).
+static MAP_PALETTE: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
+pub const DEFAULT_COLOR_TABLE: &str = "Stadium\\Media\\ColorTargetTables\\Default.ColorTable.gbx.json";
+pub fn set_map_palette(p: Option<String>) {
+    *MAP_PALETTE.write().unwrap() = p.filter(|s| !s.is_empty());
+}
+pub fn map_palette() -> Option<String> {
+    if let Ok(v) = std::env::var("LMTOOL_COLOR_PALETTE") { return if v.is_empty() { None } else { Some(v) }; }
+    MAP_PALETTE.read().unwrap().clone()
+}
+
 pub fn colour_table_target(store: &mut DataStore, table_path: &str, colour: u8, list: &str) -> Result<[f32; 3], String> {
+    // the map's palette: Classic / Stunt = that row of the material's own table; a named ramp = the Default table's row
+    let (table_path, list, colour): (String, String, u8) = match map_palette() {
+        Some(p) if p.eq_ignore_ascii_case("Classic") => (table_path.to_string(), "Classic".to_string(), colour),
+        Some(p) if p.eq_ignore_ascii_case("Stunt") => (table_path.to_string(), "Stunt".to_string(), colour),
+        Some(p) => (DEFAULT_COLOR_TABLE.to_string(), p, colour.min(5)),
+        None => (table_path.to_string(), list.to_string(), colour),
+    };
+    let (table_path, list) = (table_path.as_str(), list.as_str());
     let txt = store.read(table_path)?;
     // Nadeo's JSON carries trailing commas before `}` / `]` — dropped before the strict parse
     let s = String::from_utf8_lossy(&txt);
@@ -770,4 +814,39 @@ pub fn hue_recolour(store: &mut DataStore, link: &str, colour: u8, base: [f32; 3
     let recol = [((mask[1] - k) * mean_t + k * target[0]).clamp(0.0, 1.0), ((mask[1] - k) * mean_t + k * target[1]).clamp(0.0, 1.0), ((mask[1] - k) * mean_t + k * target[2]).clamp(0.0, 1.0)];
     let rgb = [base[0] + mask[3] * (recol[0] - base[0]), base[1] + mask[3] * (recol[1] - base[1]), base[2] + mask[3] * (recol[2] - base[2])];
     Ok(HueRecolour { rgb, target, mask, table, mask_image: image })
+}
+
+#[cfg(test)]
+mod palette_tests {
+    use super::*;
+
+    const TABLE: &str = r##"{ "ClassId" : "CPlugMaterialColorTargetTable", "Colors" : ["#f7f7f700", "#34985700", "#3a85cf00", "#c5181800", "#22222200" ],
+        "Classic" : ["#f7f7f700", "#34985700", "#3a85cf00", "#c5181800", "#22222200" ], "Stunt" : ["#6df1dd00", "#cef16d00", "#f1a66d00", "#f48dea00", "#6da2f100" ],
+        "Blue" : ["#00327c", "#0058c9", "#006ef5", "#008cff", "#2facff" ], }"##;
+
+    /// The map palette rule (RE 17, 2026-09-30 17:50Z): palette "Blue" → Default.ColorTable's ramp at MapElemColor − 1 (g23's captured
+    /// RgbBaseColorTarget (0, 0.03190, 0.20156) = #00327c for byte 1), clamped to the last shade; Classic / Stunt → the material's own row;
+    /// no palette → the material's table as before.
+    #[test]
+    fn the_map_palette_picks_the_default_tables_ramp() {
+        let mut store = DataStore::empty();
+        store.add_overlay(DEFAULT_COLOR_TABLE, TABLE.as_bytes().to_vec());
+        store.add_overlay("Stadium\\Media\\ColorTargetTables\\SportObstacles.ColorTable.gbx.json", TABLE.as_bytes().to_vec());
+        let mat_table = "Stadium\\Media\\ColorTargetTables\\SportObstacles.ColorTable.gbx.json";
+        // (the env override would defeat the test)
+        assert!(std::env::var_os("LMTOOL_COLOR_PALETTE").is_none(), "LMTOOL_COLOR_PALETTE is set");
+        set_map_palette(Some("Blue".into()));
+        let c1 = colour_table_target(&mut store, mat_table, 1, "Classic").unwrap();
+        assert!((c1[0] - 0.0).abs() < 1e-6 && (c1[1] - 0.031896).abs() < 2e-4 && (c1[2] - 0.201556).abs() < 5e-4, "{c1:?}");
+        let c5 = colour_table_target(&mut store, mat_table, 5, "Classic").unwrap();
+        let c7 = colour_table_target(&mut store, mat_table, 7, "Classic").unwrap();
+        assert_eq!(c5, c7, "clamped to the last shade");
+        assert!((c5[0] - crate::gpufmt::srgb_to_linear(0x2f as f32 / 255.0)).abs() < 1e-6);
+        set_map_palette(Some("Stunt".into()));
+        let s1 = colour_table_target(&mut store, mat_table, 1, "Classic").unwrap();
+        assert!((s1[0] - crate::gpufmt::srgb_to_linear(0x6d as f32 / 255.0)).abs() < 1e-6, "Stunt row of the material's table: {s1:?}");
+        set_map_palette(None);
+        let k1 = colour_table_target(&mut store, mat_table, 1, "Classic").unwrap();
+        assert!((k1[0] - crate::gpufmt::srgb_to_linear(0xf7 as f32 / 255.0)).abs() < 1e-6, "Classic as before: {k1:?}");
+    }
 }

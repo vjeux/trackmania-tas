@@ -319,12 +319,18 @@ pub struct BitmapRaw {
     /// 0x09011030: the image node (a `CPlugFileGen` for a generated texture array, else the
     /// external `.dds` reference).
     pub image: i32,
-    /// 0x09011034: {v4, ref ImageArray, string suffix, refs[] slices, ref, 8 bytes} — for a texture
+    /// 0x09011034: {v4, ref ImageArray, string suffix, refs[] slices, ref ARRAY, string SLICE NAME, u32} — for a texture
     /// ARRAY the ImageArray node and the slice images IN GPU SLICE ORDER (each uploaded vertically
-    /// flipped, see `terrain`).
+    /// flipped, see `terrain`); for a SLICE texture (`Land_D.Texture.gbx`, `WaterBottomPxz_D.Texture.gbx`: the files
+    /// a PyPxz material's BaseColor slots name) the reference to its `.TextureArray.Gbx` and its layer NAME in that
+    /// array's ImageArray ("Land", "WaterBottomPxz") — E7 2026-09-30: the earlier reader took the name for 8 raw bytes and
+    /// desynced on every slice file whose name is not 4 characters (Land_D's "Land" happened to pass, the next chunk id
+    /// then read as 0x00000000).
     pub array_image_array: i32,
     pub array_suffix: String,
     pub array_slices: Vec<i32>,
+    pub array_ref: i32,
+    pub slice_name: String,
 }
 
 /// `CPlugFileGen` (0x0902F000; archive 0x1404179a0 read / 0x140417c20 write, no chunk framing):
@@ -805,7 +811,7 @@ impl Acc {
     /// The bitmap accumulator, created on the first CPlugBitmap chunk this reader keeps.
     pub fn bitmap_mut(&mut self) -> &mut BitmapRaw {
         self.touched = true;
-        self.bitmap.get_or_insert_with(|| Box::new(BitmapRaw { image: -1, array_image_array: -1, ..BitmapRaw::default() }))
+        self.bitmap.get_or_insert_with(|| Box::new(BitmapRaw { image: -1, array_image_array: -1, array_ref: -1, ..BitmapRaw::default() }))
     }
     /// The custom-material accumulator.
     pub fn mat_custom_mut(&mut self) -> &mut MaterialCustomRaw {

@@ -633,6 +633,10 @@ pub struct FrozenTables {
     pub hue_rgb: std::collections::HashMap<(String, u8), [f32; 3]>,
     /// A TEXTURED HueMask material's mask texture and six colour-table targets (index = MapElemColor) for PS 9539's per-texel recolour.
     pub link_hue: std::collections::HashMap<String, (Texture, [[f32; 3]; 6])>,
+    /// THE ICE CLASS (E7 2026-09-30; g23 frame 537 PS 15585, `Tech3 Block PyPxzTLayered_NoDecal`: Stadium\Media\Modifier\PlatformIce\*):
+    /// per lowercase link the material's textures and constants for `setupmap::ps_15585_zero_matrix` — the link is ALSO in `link_tex`
+    /// with its SubsurfaceBaseColor texture, so the class is Textured and this adds the SurfaceColor lerp.
+    pub link_ice: std::collections::HashMap<String, std::sync::Arc<IceMaterial>>,
     /// The zone tiles' BaseColor texture when the tile material is of the textured class (Stadium's Grass — Tech3 Block
     /// PDiff_Spec_Norm GrassX2: the pre-pass samples it at the quad's single uv set), else None (the PyPxz constant `tile_rgb`).
     pub tile_tex: Option<Texture>,
@@ -662,7 +666,7 @@ pub fn frozen_tables(root: &Path, frame: u32, env_frame: u32) -> Result<FrozenTa
     let (Some(fog), Some(tr)) = (s.tex.get("15075"), s.tex.get("15078")) else { return Err("the water LUTs 15075 / 15078 are not in the env".into()) };
     let mut ws = Sampler::bilinear_no_mip(Address::Clamp);
     ws.weight_bits = ctx.sampler.weight_bits;
-    Ok(FrozenTables { hue_rgb: Default::default(), link_hue: Default::default(), tile_rgb, wall_rgb, pad_rgb, ids, top_by_plane: ctx.top_by_plane.clone(), depth_by_id: ctx.depth_by_id.clone(), tile_x2: None, fog: fog.clone(), transmittance: tr.clone(), water_template: prepass::water_draws(run).into_iter().last(), sampler: ctx.sampler, water_sampler: ws, link_tex: Default::default(), link_rgb: Default::default(), tile_tex: None, tile_slices: (tile_draw.i_py, tile_draw.i_pxz), water_tiles: Vec::new() })
+    Ok(FrozenTables { hue_rgb: Default::default(), link_hue: Default::default(), link_ice: Default::default(), tile_rgb, wall_rgb, pad_rgb, ids, top_by_plane: ctx.top_by_plane.clone(), depth_by_id: ctx.depth_by_id.clone(), tile_x2: None, fog: fog.clone(), transmittance: tr.clone(), water_template: prepass::water_draws(run).into_iter().last(), sampler: ctx.sampler, water_sampler: ws, link_tex: Default::default(), link_rgb: Default::default(), tile_tex: None, tile_slices: (tile_draw.i_py, tile_draw.i_pxz), water_tiles: Vec::new() })
 }
 
 /// The water tint of run `k` over EVERY LM mesh of the scene (PS 17018 with the frozen tables), applied to `tgt` — the
@@ -758,6 +762,27 @@ impl FrozenTables {
         let (w, h) = (map_size_m[0].round().max(1.0) as u32, map_size_m[1].round().max(1.0) as u32);
         let template = WaterDraw { eid: 0, mesh: 0, instance_first: 0, instance_count: 0, scale_ss: [2.0, -2.0], trans_ss: [-1.0, 1.0], world_to_id: [[1.0, 0.0, 0.0, 0.0], [-0.0, -0.0, -1.0, map_size_m[1]]], world_min_xz: [0.0, 0.0], world_max_xz: map_size_m, scale_out: 1.0 / 9.0 };
         let dummy = || Texture { fmt: texsample::TexFmt::Rgba8, w: 1, h: 1, mips: 1, slices: 1, levels: vec![vec![texsample::Level::from_f32(1, 1, vec![[0.0; 4]])]], complete: true };
-        FrozenTables { hue_rgb: Default::default(), link_hue: Default::default(), tile_x2: None, tile_rgb: [0.0; 3], wall_rgb: [0.0; 3], pad_rgb: [0.0; 3], ids: Buf::new(w, h, 2), top_by_plane: Vec::new(), depth_by_id: Vec::new(), fog: dummy(), transmittance: dummy(), water_template: Some(template), sampler, water_sampler: ws, link_tex: Default::default(), link_rgb: Default::default(), tile_tex: None, tile_slices: (0, 0), water_tiles: Vec::new() }
+        FrozenTables { hue_rgb: Default::default(), link_hue: Default::default(), link_ice: Default::default(), tile_x2: None, tile_rgb: [0.0; 3], wall_rgb: [0.0; 3], pad_rgb: [0.0; 3], ids: Buf::new(w, h, 2), top_by_plane: Vec::new(), depth_by_id: Vec::new(), fog: dummy(), transmittance: dummy(), water_template: Some(template), sampler, water_sampler: ws, link_tex: Default::default(), link_rgb: Default::default(), tile_tex: None, tile_slices: (0, 0), water_tiles: Vec::new() }
     }
+}
+
+/// THE ICE CLASS (E7 2026-09-30) — PS 15585 (`Tech3 Block PyPxzTLayered_NoDecal`, g23 frame 537: the 37 PlatformIce draws,
+/// ShaderP SurfaceColor (0.9, 0.92, 0.99) / SurfaceMaxOpacity 0.1, SRVs t0 ACosSmooth, t1 ACosSmoothPy, t2/t3 IcePy_R (Py / Pxz
+/// RoughMetal, BC4), t4 IceMarks_M (TAlpha, BC4), t5 IceMarks_R (TRoughMetal, BC4), t6 PlatformIce_D (SubsurfaceBaseColor, BC1)) at
+/// the pre-pass's ZERO world matrix (DrawV.GbxVisualToWorld = 0 on every one of them): the world position and normal interpolants
+/// are 0, only TEXCOORD0 (VS 15584 `o3 = v4`) is real. The listing:
+///   r = lerp(Rpxz_a, Rpxz_b, ACosSmooth(|n.x/|n.xz||)) with both Pxz taps at (±0·s, 0·s − t.w) = (0, −t.w) → r = Rpxz(0, −t.w)
+///   r = lerp(r, Rpy(t.zw), 1 − ACosSmoothPy(|n.y| = 0))  — the Techno3 LUT's texel 0 = 1 (RE 15), the Py term vanishes
+///   r = lerp(r, TRoughMetal(uv0), TAlpha(uv0)) · SurfaceMaxOpacity
+///   o = lerp(SubsurfaceBaseColor(uv0), SurfaceColor, r) · LmComputeScaleNoAcc, alpha 1
+/// so per texel: the base texture at uv0 lerped ≤ SurfaceMaxOpacity toward SurfaceColor by the marks' rough-metal blend; `r_const`
+/// = the Pxz tap (paktables::mip0_bilinear_wrap_rgba's convention for the zero-matrix tap: mip 0, bilinear, wrap).
+pub struct IceMaterial {
+    pub base: Texture,
+    pub marks_alpha: Texture,
+    pub marks_r: Texture,
+    pub r_const: f32,
+    pub surface_color: [f32; 3],
+    pub max_opacity: f32,
+    pub note: String,
 }

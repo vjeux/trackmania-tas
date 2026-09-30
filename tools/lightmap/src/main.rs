@@ -1026,6 +1026,20 @@ fn run(mut a: Vec<String>) {
                 // frame 537: the editor's bake binds NationsNORWAY's TrackBordersInWorld_D). Before the first store: a store caches
                 // what it reads. LMTOOL_MOD=0 off; a named mod with no file = a setup WARNING (fatal under --strict).
                 let mount = if a[0] == "bake" { Some(lightmap::modpack::mount_for_map(&map_path)) } else { None };
+                // THE MAP'S ITEM-COLOUR PALETTE (chunk 0x0304306C; RE 17 2026-09-30): the HueMask targets of every colourable material
+                // follow it (paktables::colour_table_target) — g23 = Blue → byte 1 = #00327c on the Colorize trims / PlatformPlastic
+                {
+                    let mf_pal = tmmaps::map::MapFile::load(std::path::Path::new(&map_path));
+                    let byte = mf_pal.color_palette();
+                    let name = byte.and_then(tmmaps::map::MapFile::color_palette_name);
+                    lightmap::paktables::set_map_palette(name.map(String::from));
+                    match (byte, name) {
+                        (Some(b), Some(n)) => eprintln!("palette: the map's item-colour palette is {b} ({n}){}", if b >= 2 { " — the HueMask targets come from Default.ColorTable's ramp of that name (MapElemColor − 1)" } else { " — the materials' own tables" }),
+                        (Some(b), None) => eprintln!("WARNING: palette: the map's item-colour palette byte {b} is outside the known enum (0 Classic … 12 Black): the materials' own tables are used"),
+                        (None, _) => eprintln!("palette: no item-colour palette chunk (0x0304306C): the materials' own tables (Classic)"),
+                    }
+                    if let Ok(v) = std::env::var("LMTOOL_COLOR_PALETTE") { eprintln!("palette: LMTOOL_COLOR_PALETTE={v} overrides the map's (a study)"); }
+                }
                 let mut st = mapgeom::store::DataStore::empty();
                 let mut n = 0usize;
                 for (i, arg) in a.iter().enumerate() {

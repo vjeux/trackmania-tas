@@ -2310,6 +2310,23 @@ impl MapFile {
         Some(Colors { bytes: self.gbx.body[payload + 4..payload + size].to_vec(), n_blocks: self.blocks.len(), n_baked: self.baked.len() })
     }
 
+    /// Chunk 0x0304306C — THE MAP'S ITEM-COLOUR PALETTE (RE 17, 2026-09-30 17:50Z): payload `u32 0` + one byte, the exe's
+    /// `EMapElemColorPalette` (0 Classic, 1 Stunt, 2 Red, 3 Orange, 4 Yellow, 5 Lime, 6 Green, 7 Cyan, 8 Blue, 9 Purple, 10 Pink,
+    /// 11 White, 12 Black). With a palette ≥ 2 every HueMask material's target for MapElemColor byte b is the ramp of that name
+    /// in `Stadium\Media\ColorTargetTables\Default.ColorTable.gbx.json` at index min(b − 1, 4) (g23 = 8 Blue → byte 1 → #00327c);
+    /// 0 / 1 keep the material's own table ("Classic" / "Stunt" row). `None` when the map has no such chunk.
+    pub fn color_palette(&self) -> Option<u8> {
+        let chunks = crate::gbx::all_skip_chunks(&self.gbx.body);
+        let &(_, _, payload, size) = chunks.iter().find(|(c, ..)| *c == 0x0304_306C)?;
+        if size < 5 { return None; }
+        Some(self.gbx.body[payload + 4])
+    }
+
+    /// The palette's name in the colour-table JSON (see [`Self::color_palette`]).
+    pub fn color_palette_name(byte: u8) -> Option<&'static str> {
+        ["Classic", "Stunt", "Red", "Orange", "Yellow", "Lime", "Green", "Cyan", "Blue", "Purple", "Pink", "White", "Black"].get(byte as usize).copied()
+    }
+
     /// Set an item's colour byte in chunk 0x03043062 (see [`Self::colors`]).
     /// Must run on a file whose item array is already its final size.
     pub fn set_item_color(&mut self, item_index: usize, color: u8) {

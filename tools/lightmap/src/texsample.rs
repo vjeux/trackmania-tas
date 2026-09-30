@@ -13,6 +13,8 @@ use crate::passdiff::gunzip;
 pub enum TexFmt {
     Bc1,
     Bc3,
+    /// DXGI 80 (the pak's legacy FourCC `ATI1`, RenderDoc's `BC4U`): one BC4 channel — the Ice class's rough-metal / marks maps (E7 2026-09-30).
+    Bc4,
     R16Unorm,
     Bgra8,
     Rgba8,
@@ -102,6 +104,7 @@ fn dxgi_fmt(id: u32) -> TexFmt {
     match id {
         70 | 71 | 72 => TexFmt::Bc1,
         76 | 77 | 78 => TexFmt::Bc3,
+        79 | 80 | 81 => TexFmt::Bc4,
         56 | 54 => TexFmt::R16Unorm,
         87 | 90 | 91 => TexFmt::Bgra8,
         27 | 28 | 29 => TexFmt::Rgba8,
@@ -118,6 +121,7 @@ fn block_bytes(f: TexFmt) -> Option<usize> {
     match f {
         TexFmt::Bc1 => Some(8),
         TexFmt::Bc3 => Some(16),
+        TexFmt::Bc4 => Some(8),
         _ => None,
     }
 }
@@ -170,6 +174,7 @@ pub fn parse_dds(b: &[u8], bc1: Bc1Decode) -> Result<Texture, String> {
         let f = match fourcc {
             b"DXT1" => TexFmt::Bc1,
             b"DXT5" => TexFmt::Bc3,
+            b"ATI1" | b"BC4U" => TexFmt::Bc4,
             _ => TexFmt::Unknown(u(84)),
         };
         (f, 128usize, 1)
@@ -250,6 +255,18 @@ fn decode_level(fmt: TexFmt, d: &[u8], w: u32, h: u32, bc1: Bc1Decode) -> Level 
             if u8_exact { Level { w, h, px: Px::U8(pu), lut: identity_lut() } } else { Level::from_f32(w, h, pf) }
         }
         TexFmt::R16Unorm => Level::from_f32(w, h, (0..n).map(|i| [u16::from_le_bytes([d[i * 2], d[i * 2 + 1]]) as f32 / 65535.0, 0.0, 0.0, 1.0]).collect()),
+        TexFmt::Bc4 => {
+            // one BC4 block per 4×4 (the BC3 alpha block's arithmetic): the channel lands in R (the shaders read `.x`), G = B = 0, A = 1
+            let mut pf = vec![[0.0f32; 4]; n];
+            let bw = w.div_ceil(4);
+            for by in 0..h.div_ceil(4) {
+                for bx in 0..bw {
+                    let a = decode_bc4_block(&d[((by * bw + bx) as usize) * 8..]);
+                    for j in 0..4 { for i in 0..4 { let (x, y) = (bx * 4 + i, by * 4 + j); if x < w && y < h { pf[(y * w + x) as usize] = [a[(j * 4 + i) as usize], 0.0, 0.0, 1.0]; } } }
+                }
+            }
+            Level::from_f32(w, h, pf)
+        }
         TexFmt::Bgra8 => Level { w, h, px: Px::U8((0..n).map(|i| [d[i * 4 + 2], d[i * 4 + 1], d[i * 4], d[i * 4 + 3]]).collect()), lut: identity_lut() },
         TexFmt::Rgba8 => Level { w, h, px: Px::U8((0..n).map(|i| [d[i * 4], d[i * 4 + 1], d[i * 4 + 2], d[i * 4 + 3]]).collect()), lut: identity_lut() },
         TexFmt::R8Unorm => Level { w, h, px: Px::U8((0..n).map(|i| [d[i], 0, 0, 255]).collect()), lut: identity_lut() },

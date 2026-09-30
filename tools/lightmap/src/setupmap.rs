@@ -420,7 +420,7 @@ pub fn attr_from_map(scene: &crate::geometry::Scene, lm: &LmScene, frozen: &Froz
     // 1. per mesh: the port model it pairs with and its triangles' (LM uv, uv0, class, texture, constant, class id, alpha test)
     // `hue`: the triangle's material has recoloured constants in frozen.hue_rgb (a HueMask material) — the instance's MapElemColor
     // picks one at raster time (colour 0 = the plain constant)
-    struct TriDraw<'a> { uv: [[f32; 2]; 3], uv0: [[f32; 2]; 3], class: MatClass, tex: Option<&'a Texture>, konst: Option<[f32; 3]>, cls: u8, at: Option<f32>, hue: Option<[[f32; 3]; 6]>, hue_tex: Option<&'a (Texture, [[f32; 3]; 6])> }
+    struct TriDraw<'a> { uv: [[f32; 2]; 3], uv0: [[f32; 2]; 3], class: MatClass, tex: Option<&'a Texture>, konst: Option<[f32; 3]>, cls: u8, at: Option<f32>, hue: Option<[[f32; 3]; 6]>, hue_tex: Option<&'a (Texture, [[f32; 3]; 6])>, ice: Option<&'a crate::prepass_check::IceMaterial> }
     let mut class_count = [0usize; 4];
     let mut mesh_tris: Vec<Vec<TriDraw>> = Vec::with_capacity(item_meshes.len());
     {
@@ -496,7 +496,9 @@ pub fn attr_from_map(scene: &crate::geometry::Scene, lm: &LmScene, frozen: &Froz
                 class_count[match class { MatClass::Textured => 0, MatClass::CutOut => 1, MatClass::Pad => 2, MatClass::Wall => 3 }] += n_inst;
                 // a textured HueMask material: the mask + targets ride with the triangle; the instance's colour picks the target at raster time
                 let hue_tex = if matches!(class, MatClass::Textured) && *diff & 0xC000 == 0x4000 && std::env::var_os("LMTOOL_NO_HUE_RECOLOUR").is_none() { model.mat_links.get((*diff & 0x3fff) as usize).and_then(|l| frozen.link_hue.get(&l.to_ascii_lowercase())) } else { None };
-                TriDraw { uv: *uv, uv0: *uv0, class: *class, tex, konst, cls, at, hue, hue_tex }
+                // the Ice class rides the Textured class (its base texture is the link's `link_tex` entry) and adds PS 15585's lerp
+                let ice = if matches!(class, MatClass::Textured) && *diff & 0xC000 == 0x4000 { model.mat_links.get((*diff & 0x3fff) as usize).and_then(|l| frozen.link_ice.get(&l.to_ascii_lowercase())).map(|a| a.as_ref()) } else { None };
+                TriDraw { uv: *uv, uv0: *uv0, class: *class, tex, konst, cls, at, hue, hue_tex, ice }
             }).collect();
             if std::env::var_os("LMTOOL_HUE_TRACE").is_some() { let nh = draws.iter().filter(|d| d.hue.is_some()).count(); if nh > 0 || name.contains("AC062201") { eprintln!("hue-trace: mesh {mk} ({name}): {nh} of {} triangles carry a HueMask recolour table; instances {} colours {:?}", draws.len(), lm.inst_count[*mk], (lm.inst_first[*mk]..lm.inst_first[*mk] + lm.inst_count[*mk]).map(|ii| lm.port_inst.get(ii).copied().filter(|p| *p != usize::MAX).and_then(|p| scene.instances.get(p)).map(|si| si.colour).unwrap_or(99)).collect::<Vec<_>>()); } }
             mesh_tris.push(draws);
@@ -612,8 +614,9 @@ pub fn attr_from_map(scene: &crate::geometry::Scene, lm: &LmScene, frozen: &Froz
                                         // the file image is sampled at (u, 1 − v)
                                         let uvs = [b[0] * uv0[0][0] + b[1] * uv0[1][0] + b[2] * uv0[2][0], 1.0 - (b[0] * uv0[0][1] + b[1] * uv0[1][1] + b[2] * uv0[2][1])];
                                         let colour = inst_colour[ii as usize];
-                                        match (d.hue_tex, colour) {
-                                            (Some((mask, targets)), c) if c != 0 && (c as usize) < 6 => match prepass::ps_basecolor_hue(tx, mask, targets[c as usize], &sampler, uvs, [dudx, -dvdx], [dudy, -dvdy], d.at, lm_scale) { Some(s) => s, None => return },
+                                        match (d.ice, d.hue_tex, colour) {
+                                            (Some(ice), _, _) => ps_15585_zero_matrix(ice, &sampler, uvs, [dudx, -dvdx], [dudy, -dvdy], lm_scale),
+                                            (None, Some((mask, targets)), c) if c != 0 && (c as usize) < 6 => match prepass::ps_basecolor_hue(tx, mask, targets[c as usize], &sampler, uvs, [dudx, -dvdx], [dudy, -dvdy], d.at, lm_scale) { Some(s) => s, None => return },
                                             _ => match prepass::ps_basecolor(tx, &sampler, uvs, [dudx, -dvdx], [dudy, -dvdy], d.at, lm_scale) { Some(s) => s, None => return },
                                         }
                                     }
@@ -1120,6 +1123,51 @@ pub fn slot_texture(store: &mut mapgeom::store::DataStore, link: &str, slot_name
     Ok(Some((dds, tx)))
 }
 
+/// THE ICE CLASS's material (prepass_check::IceMaterial): a link whose chain names SubsurfaceBaseColor + TAlpha + TRoughMetal +
+/// PxzRoughMetal slots (`Tech3 Block PyPxzTLayered*`); None for any other material. The textures come from the pack through the
+/// same `.Texture.gbx` → `.dds` resolution as the BaseColor slot (paktables::bitmap_dds); the base is sRGB-decoded (the shader's
+/// sRGB view), the BC4 maps are UNORM (linear); SurfaceColor / SurfaceMaxOpacity are the material's own params (the captured ShaderP
+/// carries them verbatim: (0.9, 0.92, 0.99) / 0.1); `r_const` = IcePy_R at (0, −trans.w) of ITS chunk 0x09011025 (the Pxz tap at the
+/// zero matrix, as `projected_constant`'s).
+pub fn ice_material(store: &mut mapgeom::store::DataStore, link: &str) -> Result<Option<crate::prepass_check::IceMaterial>, String> {
+    let mat = if link.to_ascii_uppercase().ends_with(".MATERIAL.GBX") { link.to_string() } else { format!("{link}.Material.Gbx") };
+    let chain = mapgeom::envblock::material_chain(store, &mat);
+    let pick = |name: &str| chain.bitmaps.iter().find(|(n, p)| n.eq_ignore_ascii_case(name) && !p.is_empty()).map(|(_, p)| p.clone());
+    let (Some(base_slot), Some(ta_slot), Some(tr_slot), Some(r_slot)) = (pick("SubsurfaceBaseColor"), pick("TAlpha"), pick("TRoughMetal"), pick("PxzRoughMetal")) else { return Ok(None) };
+    let param = |name: &str| chain.params.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)).map(|(_, v)| v.clone());
+    let surface_color = param("SurfaceColor").filter(|v| v.len() >= 3).map(|v| [v[0], v[1], v[2]]).ok_or_else(|| format!("{mat}: no SurfaceColor param"))?;
+    let max_opacity = param("SurfaceMaxOpacity").and_then(|v| v.first().copied()).ok_or_else(|| format!("{mat}: no SurfaceMaxOpacity param"))?;
+    let load = |store: &mut mapgeom::store::DataStore, slot: &str, srgb: bool| -> Result<(String, Texture), String> {
+        let (dds, _) = crate::paktables::bitmap_dds(store, slot)?;
+        let bytes = store.read(&dds).map_err(|e| format!("{dds}: {e}"))?;
+        let mut tx = texsample::parse_dds(&bytes, Bc1Decode::Expand8Round).map_err(|e| format!("{dds}: {e}"))?;
+        if srgb { tx.decode_srgb(); }
+        Ok((dds, tx))
+    };
+    let (base_dds, base) = load(store, &base_slot, true)?;
+    let (_, marks_alpha) = load(store, &ta_slot, false)?;
+    let (_, marks_r) = load(store, &tr_slot, false)?;
+    let (r_dds, r_trans) = crate::paktables::bitmap_dds(store, &r_slot)?;
+    let r_bytes = store.read(&r_dds).map_err(|e| format!("{r_dds}: {e}"))?;
+    let r_const = crate::paktables::mip0_bilinear_wrap_rgba(&r_bytes, [0.0, -r_trans[1]])?[0];
+    let note = format!("ICE (PS 15585 at the zero matrix): base {base_dds} ({}×{}), marks {ta_slot} / {tr_slot}, Pxz rough-metal tap {r_dds} at (0, {:.4}) = {r_const:.4}, SurfaceColor {:?} × opacity ≤ {max_opacity}", base.w, base.h, -r_trans[1], surface_color);
+    Ok(Some(crate::prepass_check::IceMaterial { base, marks_alpha, marks_r, r_const, surface_color, max_opacity, note }))
+}
+
+/// PS 15585 at the zero world matrix for one LM texel (see `prepass_check::IceMaterial`): the marks' rough-metal blend selects how
+/// much of SurfaceColor covers the SubsurfaceBaseColor sample — all three textures at TEXCOORD0 through the pre-pass sampler with
+/// the texel's footprint; alpha 1, × LmComputeScaleNoAcc.
+pub fn ps_15585_zero_matrix(ice: &crate::prepass_check::IceMaterial, s: &texsample::Sampler, uv: [f32; 2], ddx: [f32; 2], ddy: [f32; 2], lm_scale: f32) -> [f32; 4] {
+    let base = texsample::sample(&ice.base, 0, s, uv, ddx, ddy);
+    let t_r = texsample::sample(&ice.marks_r, 0, s, uv, ddx, ddy)[0];
+    let t_a = texsample::sample(&ice.marks_alpha, 0, s, uv, ddx, ddy)[0];
+    // 22–26: r = TAlpha·(TRoughMetal − r_pxz) + r_pxz, × SurfaceMaxOpacity
+    let r = (t_a * (t_r - ice.r_const) + ice.r_const) * ice.max_opacity;
+    // 27–29: o = base + r·(SurfaceColor − base)
+    let o = [base[0] + r * (ice.surface_color[0] - base[0]), base[1] + r * (ice.surface_color[1] - base[1]), base[2] + r * (ice.surface_color[2] - base[2])];
+    [o[0] * lm_scale, o[1] * lm_scale, o[2] * lm_scale, lm_scale]
+}
+
 pub fn basecolor_texture(store: &mut mapgeom::store::DataStore, link: &str) -> Result<Option<(String, Texture, bool)>, String> {
     let mat = if link.to_ascii_uppercase().ends_with(".MATERIAL.GBX") { link.to_string() } else { format!("{link}.Material.Gbx") };
     let chain = mapgeom::envblock::material_chain(store, &mat);
@@ -1278,6 +1326,18 @@ pub fn tables_from_paktables_with_records(f: &mut FrozenTables, store: &mut mapg
                         match hue_texture(store, l) { Ok(Some((mp, mtx, targets))) => { got.push(format!("{l} HueMask {mp} ({}×{}), targets {:?}", mtx.w, mtx.h, targets[4])); f.link_hue.insert(l.to_ascii_lowercase(), (mtx, targets)); } Ok(None) => {} Err(e) => notes.push(format!("{l}: HueMask: {e}")) }
                     }
                     Ok(None) => {
+                        // THE ICE CLASS (E7 2026-09-30): a PyPxzTLayered material (PlatformIce) has no BaseColor slot — its SubsurfaceBaseColor is
+                        // the texture the pre-pass draws (PS 15585), lerped ≤ SurfaceMaxOpacity toward SurfaceColor by the marks' rough-metal
+                        match ice_material(store, l) {
+                            Ok(Some(ice)) => {
+                                got.push(format!("{l} → {}", ice.note));
+                                f.link_tex.insert(l.to_ascii_lowercase(), (ice.base.clone(), false));
+                                f.link_ice.insert(l.to_ascii_lowercase(), std::sync::Arc::new(ice));
+                                continue;
+                            }
+                            Ok(None) => {}
+                            Err(e3) => notes.push(format!("pak: {l}: ICE: {e3}")),
+                        }
                         // A MATERIAL (OR ITS BASECOLOR TEXTURE) IN NONE OF THE PACKS is not a classification — it is a missing --pak (E, 2026-09-27
                         // 15:30Z, after V2's np-tk3 "regression": a command line without Stadium.pak put the StadiumOnTerrain pillar's 1 016
                         // triangles on the PAD constant, black, and the bake passed as a lighting result). Counted and named in the WARNING
@@ -1376,4 +1436,26 @@ pub fn water_tables_from_records(f: &mut FrozenTables, store: &mut mapgeom::stor
     f.fog = fog;
     f.transmittance = tr;
     Ok(got.join("; "))
+}
+
+#[cfg(test)]
+mod ice_tests {
+    use super::*;
+
+    fn one(c: [f32; 4]) -> Texture {
+        Texture { fmt: texsample::TexFmt::Rgba32F, w: 1, h: 1, mips: 1, slices: 1, levels: vec![vec![texsample::Level::from_f32(1, 1, vec![c])]], complete: true }
+    }
+
+    /// PS 15585 at the zero matrix, instructions 22–29 on constant textures: r = (TAlpha·(TRough − r_pxz) + r_pxz)·SurfaceMaxOpacity,
+    /// o = base + r·(SurfaceColor − base), × the LM scale.
+    #[test]
+    fn the_ice_lerp_follows_the_listing() {
+        let ice = crate::prepass_check::IceMaterial { base: one([0.4, 0.5, 0.6, 1.0]), marks_alpha: one([0.5, 0.0, 0.0, 1.0]), marks_r: one([1.0, 0.0, 0.0, 1.0]), r_const: 0.2, surface_color: [0.9, 0.92, 0.99], max_opacity: 0.1, note: String::new() };
+        let s = texsample::Sampler::bilinear_no_mip(texsample::Address::Wrap);
+        let o = ps_15585_zero_matrix(&ice, &s, [0.5, 0.5], [0.0, 0.0], [0.0, 0.0], 1.0 / 9.0);
+        // r = (0.5·(1.0 − 0.2) + 0.2)·0.1 = 0.06 → o = base + 0.06·(surface − base)
+        let want = [0.4 + 0.06 * 0.5, 0.5 + 0.06 * 0.42, 0.6 + 0.06 * 0.39];
+        for k in 0..3 { assert!((o[k] * 9.0 - want[k]).abs() < 1e-5, "{o:?} vs {want:?}"); }
+        assert!((o[3] * 9.0 - 1.0).abs() < 1e-6);
+    }
 }

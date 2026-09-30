@@ -17,7 +17,9 @@ fn main() {
             else if (t.alpha as usize) < m.alpha_tex.len() { *n_alpha.entry(m.alpha_tex[t.alpha as usize].clone()).or_default() += 1; }
             else { n_none += 1; }
         }
-        println!("{} ({} tris, {} instances of this model):", inst.model_name, m.tris.len(), scene.instances.iter().filter(|i| i.model == inst.model).count());
+        let mut colours: std::collections::BTreeMap<u8, usize> = Default::default();
+        for i in scene.instances.iter().filter(|i| i.model == inst.model) { *colours.entry(i.colour).or_default() += 1; }
+        println!("{} ({} tris, {} instances of this model; placement colours (MapElemColor byte → count) {:?}):", inst.model_name, m.tris.len(), scene.instances.iter().filter(|i| i.model == inst.model).count(), colours);
         for (l, n) in &per_link { println!("   link  {n:>7} tris  {l}  albedo {:?}", m.mat_links.iter().position(|x| l.starts_with(x.as_str())).and_then(|i| m.mat_albedo.get(i)).map(|c| format!("({:.3}, {:.3}, {:.3})", c[0], c[1], c[2]))); }
         for (f, n) in &n_diff { println!("   diffuse texture (link-less) {n:>7} tris  {f}"); }
         for (f, n) in &n_alpha { println!("   cut-out (link-less)         {n:>7} tris  {f}"); }

@@ -321,6 +321,14 @@ impl DataStore {
         read_file(&p.data, p.header_max_size, &p.pak.entries[ei], &p.key, p.pak.version)
     }
 
+    /// The PACK's bytes for an entry named as the pack index holds it (`folder` + `name`, e.g. a hashed-name entry from
+    /// `entries()`) — for a census over entries whose logical names are unknown (E7, 2026-09-30).
+    pub fn read_entry(&self, folder_and_name: &str) -> Result<Vec<u8>, String> {
+        let (pi, ei) = *self.index.get(&folder_and_name.to_uppercase()).ok_or_else(|| format!("{folder_and_name}: no such pack entry"))?;
+        let p = &self.paks[pi];
+        read_file(&p.data, p.header_max_size, &p.pak.entries[ei], &p.key, p.pak.version)
+    }
+
     /// How many decoded files the (shared) cache holds, and their bytes.
     pub fn cache_stats(&self) -> (usize, usize) {
         let mut n = 0;

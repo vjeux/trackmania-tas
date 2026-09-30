@@ -2742,12 +2742,17 @@ impl<'a> Graph<'a> {
                 for _ in 0..n {
                     slices.push(self.noderef()?);
                 }
-                self.noderef()?;
-                self.r.take(8)?;
+                // the ARRAY reference and this file's layer NAME in it (a slice texture), then a word — the array file
+                // itself carries (−1, "", 0) here
+                let array_ref = self.noderef()?;
+                let slice_name = self.r.string()?;
+                self.r.take(4)?;
                 let b = acc.bitmap_mut();
                 b.array_image_array = image_array;
                 b.array_suffix = suffix;
                 b.array_slices = slices;
+                b.array_ref = array_ref;
+                b.slice_name = slice_name;
                 Ok(())
             })(),
             // `CPlugImageArray` (0x0914C000) chunk 0x0914C000 (reader 0x1404d4b00): version,
