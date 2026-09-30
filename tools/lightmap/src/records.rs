@@ -622,11 +622,32 @@ pub fn build_map_records(map_path: &str, scene: &crate::geometry::Scene, store: 
             plg_of_zone.insert(zone.clone(), r0);
         }
         let r0 = plg_of_zone[&zone].clone();
+        // A CELL WITHOUT A TILE RECORD (E7 2026-09-30; the Nations campaign maps 21–25: `tile cell (28, 40) missing` — a genealogy
+        // zone whose prefab yields no box in lmtiles::tile_records) is a WARNING + skip, counted and named with its zone, so the map
+        // bakes (those cells get no tile chart: black); the read of what the game does with such a cell is the next step, not a panic.
+        let zone_of_cell: std::collections::HashMap<(i32, i32), (String, u32)> = if gen.len() == (grid * grid) as usize { gen.iter().enumerate().map(|(i, (z, d))| ((i as i32 / grid as i32, i as i32 % grid as i32), (z.clone(), *d))).collect() } else { Default::default() };
+        let mut missing_cells: Vec<((i32, i32), String)> = Vec::new();
+        let mut seen_cells: std::collections::HashSet<(i32, i32)> = Default::default();
         for (k, c) in cells_of.iter().enumerate() {
-            let Some((_z, rec)) = by_cell.remove(c) else { return Err(format!("tile cell {c:?} missing")) };
+            let Some((_z, rec)) = by_cell.remove(c) else {
+                // a cell listed twice = STACKED baked blocks at one (x, z) (the Nations campaign maps: 1 542 of Argentina's 10 758 entries) —
+                // whether the game emits one tile record per baked block or per cell is unread; the first occurrence keeps the record
+                let why = if seen_cells.contains(c) { "duplicate (stacked baked blocks)".to_string() } else { zone_of_cell.get(c).map(|(z, d)| format!("zone {z} dir {d}: no box")).unwrap_or_else(|| "outside the genealogy / grid".into()) };
+                missing_cells.push((*c, why));
+                continue;
+            };
+            seen_cells.insert(*c);
             // tq is indexed like `cells` (the baked cells first, then x-major) — not by coordinates
             let q = tq[k];
             recs.push(Rec { class: "tile", obj: tile_obj0 + k as u32, sub: 0, meter_by_uv: r0.meter_by_uv, uv: r0.uv, quality: q, centre: rec.world.c, half: rec.world.h, group: 0xF000_0000_0000_0000 | q.to_bits() as u64, key_centre: None, pos_rank: None, wall: None, item: None, scale: 1.0, mesh: None });
+        }
+        if !missing_cells.is_empty() {
+            let mut by_zone: std::collections::BTreeMap<String, usize> = Default::default();
+            for (_, z) in &missing_cells { *by_zone.entry(z.clone()).or_default() += 1; }
+            let w = format!("record scene: {} of {} tile cells have NO TILE RECORD and are SKIPPED (no tile chart: those cells bake black) — zones {:?}; first cells {:?}. The genealogy names a zone whose prefab yields no box (lmtiles::tile_records); what the game's lightmapper does with such a cell is unread.", missing_cells.len(), cells_of.len(), by_zone, missing_cells.iter().take(6).map(|(c, _)| *c).collect::<Vec<_>>());
+            eprintln!("WARNING: {w}");
+            notes.push(w.clone());
+            crate::setupmap::WARNINGS.lock().unwrap().push(w);
         }
     }
     let n_tiles = recs.len() - n_tiles_before;
