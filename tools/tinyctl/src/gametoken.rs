@@ -99,7 +99,7 @@ fn iat_sid(jwt: &str) -> Option<(u64, String)> {
 /// The game's pid on the box, or None when no game runs.
 pub fn game_pid(wsx: &Wsx) -> Option<u32> {
     let out = wsx
-        .sh("tasklist.exe /FO CSV /NH 2>/dev/null | grep -i trackmania | head -1 | cut -d, -f2 | tr -d '\"'")
+        .sh("/mnt/c/Windows/System32/tasklist.exe /FO CSV /NH 2>/dev/null | grep -i trackmania | head -1 | cut -d, -f2 | tr -d '\"'")
         .ok()?;
     out.trim().parse().ok()
 }

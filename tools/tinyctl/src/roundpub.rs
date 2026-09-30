@@ -243,7 +243,7 @@ pub fn mint_tokens(wsx: &Wsx, token_dir: &Path) -> Result<(), String> {
             continue;
         }
         // the game itself: launched as its own lock step when it is not running
-        let up = wsx.sh("tasklist.exe 2>/dev/null | grep -ci trackmania; true").unwrap_or_default().trim().to_string();
+        let up = wsx.sh("/mnt/c/Windows/System32/tasklist.exe 2>/dev/null | grep -ci trackmania; true").unwrap_or_default().trim().to_string();
         // a game left running WITHOUT Openplanet by a session that has released the lock
         // (the MK64 session's "without Openplanet" runs, 2026-09-26) never answers the token
         // route: after 3 answered-but-empty mints, relaunch it as own lock steps
@@ -280,10 +280,10 @@ pub fn mint_tokens(wsx: &Wsx, token_dir: &Path) -> Result<(), String> {
     if launched_here {
         // BY PID only: `tmdrive kill` kills by name and would take down a game a human
         // started (2026-09-27: vjeux's game kept closing while he played).
-        let pid = wsx.sh("tasklist.exe /FO CSV /NH 2>/dev/null | grep -i trackmania | head -1 | cut -d, -f2 | tr -d '\"'").unwrap_or_default().trim().to_string();
+        let pid = wsx.sh("/mnt/c/Windows/System32/tasklist.exe /FO CSV /NH 2>/dev/null | grep -i trackmania | head -1 | cut -d, -f2 | tr -d '\"'").unwrap_or_default().trim().to_string();
         match pid.parse::<u32>() {
             Ok(p) => {
-                let _ = wsx.sh(&format!("taskkill.exe /PID {p} /F > /dev/null 2>&1; true"));
+                let _ = wsx.sh(&format!("/mnt/c/Windows/System32/taskkill.exe /PID {p} /F > /dev/null 2>&1; true"));
                 println!("  mint: closed the game it launched (pid {p}) — by pid, never by name");
             }
             Err(_) => println!("  mint: no game pid to close (left as is)"),
@@ -724,7 +724,11 @@ pub fn mint_tokens_standalone(wsx: &Wsx, token_dir: &Path) -> Result<(), String>
     let t0 = Instant::now();
     // (`grep -c` exits 1 on zero matches, which the bridge reports as a failed command and
     // an EMPTY answer — the `; true` keeps the count; an empty answer is treated as unknown)
-    let up = wsx.sh("tasklist.exe 2>/dev/null | grep -ci trackmania; true").unwrap_or_default().trim().to_string();
+    // ABSOLUTE PATH, always: after a WSL restart the relay shell can come up without
+    // Windows System32 on PATH (2026-09-29 17:51) — bare `tasklist.exe` is then "not found",
+    // `2>/dev/null` eats the error and `grep -c` says 0: a phantom "0 games" that would let
+    // a mint launch on top of a person's game. The absolute path does not depend on PATH.
+    let up = wsx.sh("/mnt/c/Windows/System32/tasklist.exe 2>/dev/null | grep -ci trackmania; true").unwrap_or_default().trim().to_string();
     if up.is_empty() {
         return Err("mint-standalone: could not read the box's process list".into());
     }
@@ -754,7 +758,7 @@ pub fn mint_tokens_standalone(wsx: &Wsx, token_dir: &Path) -> Result<(), String>
     // it: the set of Trackmania pids BEFORE the launch versus AFTER — exactly one new pid is
     // ours; zero or several means we do not know, and a pid we do not know is never killed.
     let before = wsx
-        .sh("tasklist.exe /FO CSV /NH 2>/dev/null | grep -i trackmania | cut -d, -f2 | tr -d '\"' | tr '\n' ' '; true")
+        .sh("/mnt/c/Windows/System32/tasklist.exe /FO CSV /NH 2>/dev/null | grep -i trackmania | cut -d, -f2 | tr -d '\"' | tr '\n' ' '; true")
         .unwrap_or_default();
     let before: std::collections::HashSet<u32> = before.split_whitespace().filter_map(|p| p.parse().ok()).collect();
     if !before.is_empty() {
@@ -776,7 +780,7 @@ pub fn mint_tokens_standalone(wsx: &Wsx, token_dir: &Path) -> Result<(), String>
         ));
     }
     let after = wsx
-        .sh("tasklist.exe /FO CSV /NH 2>/dev/null | grep -i trackmania | cut -d, -f2 | tr -d '\"' | tr '\n' ' '; true")
+        .sh("/mnt/c/Windows/System32/tasklist.exe /FO CSV /NH 2>/dev/null | grep -i trackmania | cut -d, -f2 | tr -d '\"' | tr '\n' ' '; true")
         .unwrap_or_default();
     let new_pids: Vec<u32> = after.split_whitespace().filter_map(|p| p.parse().ok()).filter(|p| !before.contains(p)).collect();
     let pid: u32 = match new_pids.as_slice() {
@@ -813,7 +817,7 @@ pub fn mint_tokens_standalone(wsx: &Wsx, token_dir: &Path) -> Result<(), String>
             }
         }
     }
-    let _ = wsx.sh(&format!("taskkill.exe /PID {pid} /F > /dev/null 2>&1; sleep 2; rm -rf {PLUGIN_DIR}; true"));
+    let _ = wsx.sh(&format!("/mnt/c/Windows/System32/taskkill.exe /PID {pid} /F > /dev/null 2>&1; sleep 2; rm -rf {PLUGIN_DIR}; true"));
     println!("  mint-standalone: closed the game it launched (pid {pid}, by pid) and removed the plugin");
     if !ok {
         return Err("mint-standalone: no token files after 120 s (plugin not loaded? not authenticated?)".into());

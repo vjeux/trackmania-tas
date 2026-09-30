@@ -245,23 +245,23 @@ pub(crate) fn close_if_ours(wsx: &Wsx, _purpose: &str) {
         return;
     }
     // is that pid still the game we launched? (a stale pid must never be killed blind)
-    let alive = wsx.sh(&format!("tasklist.exe /FI \"PID eq {pid}\" 2>/dev/null | grep -ci trackmania")).unwrap_or_default().trim().to_string();
+    let alive = wsx.sh(&format!("/mnt/c/Windows/System32/tasklist.exe /FI \"PID eq {pid}\" 2>/dev/null | grep -ci trackmania")).unwrap_or_default().trim().to_string();
     if alive.starts_with('0') {
         println!("  the game this run launched (pid {pid}) is already gone — nothing to close");
         return;
     }
-    let _ = wsx.sh(&format!("taskkill.exe /PID {pid} /F > /dev/null 2>&1; true"));
+    let _ = wsx.sh(&format!("/mnt/c/Windows/System32/taskkill.exe /PID {pid} /F > /dev/null 2>&1; true"));
     println!("  closed the game this run launched (pid {pid}) — by pid, never by name");
 }
 
 fn game_up(wsx: &Wsx) -> Result<(), String> {
     wait_recovery_clear(wsx)?;
-    let up = wsx.sh("tasklist.exe 2>/dev/null | grep -ci trackmania; true").unwrap_or_default().trim().to_string();
+    let up = wsx.sh("/mnt/c/Windows/System32/tasklist.exe 2>/dev/null | grep -ci trackmania; true").unwrap_or_default().trim().to_string();
     if up == "0" {
         println!("  the game is not running — launching");
         wsx.sh(&format!("{ENV}; sed -i \"s/^DeveloperMode=false/DeveloperMode=true/\" /mnt/c/Users/vjeux/OpenplanetNext/Settings.ini; tmdrive launch --timeout 120 --purpose \"remote-shots (launch)\" --wait 100"))?;
         // remember the pid so the post-run close is by pid, never by name
-        if let Ok(out) = wsx.sh("tasklist.exe /FO CSV /NH 2>/dev/null | grep -i trackmania | head -1 | cut -d, -f2 | tr -d '\"'") {
+        if let Ok(out) = wsx.sh("/mnt/c/Windows/System32/tasklist.exe /FO CSV /NH 2>/dev/null | grep -i trackmania | head -1 | cut -d, -f2 | tr -d '\"'") {
             if let Ok(pid) = out.trim().parse::<u32>() {
                 LAUNCHED_PID.store(pid, std::sync::atomic::Ordering::SeqCst);
                 println!("  the game this run launched is pid {pid}");
