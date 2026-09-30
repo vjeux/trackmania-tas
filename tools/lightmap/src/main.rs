@@ -1021,6 +1021,11 @@ fn run(mut a: Vec<String>) {
             // THE LM UV-SET SELECTOR'S STORE (RE 11, 09:20Z): every --pak plus LMTOOL_STOCK_PAKS, handed to lmmesh before the scene is
             // built so each pack material's shader decides its lightmap uv set (PreLightGen TexCoordIndex) and whether it is lit at all
             {
+                // THE MAP'S MOD FIRST (E7, 2026-09-30; modpack.rs): the header's `<desc mod>` zip mounted over the collection's
+                // Media\Texture\Image tree for every store this process opens (the game's ModFid overlay — capture-proven on g23's
+                // frame 537: the editor's bake binds NationsNORWAY's TrackBordersInWorld_D). Before the first store: a store caches
+                // what it reads. LMTOOL_MOD=0 off; a named mod with no file = a setup WARNING (fatal under --strict).
+                let mount = if a[0] == "bake" { Some(lightmap::modpack::mount_for_map(&map_path)) } else { None };
                 let mut st = mapgeom::store::DataStore::empty();
                 let mut n = 0usize;
                 for (i, arg) in a.iter().enumerate() {
@@ -1028,6 +1033,20 @@ fn run(mut a: Vec<String>) {
                 }
                 if let Ok(v) = std::env::var("LMTOOL_STOCK_PAKS") {
                     for spec in v.split(',') { if let Some((pp, key)) = spec.trim().rsplit_once(':') { if st.add_pak(pp, key).is_ok() { n += 1; } } }
+                }
+                if let Some(m) = mount {
+                    if !m.note.is_empty() { eprintln!("{}", m.note); }
+                    if let Some(w) = &m.warning { eprintln!("WARNING: mod: {w}"); lightmap::setupmap::WARNINGS.lock().unwrap().push(format!("mod: {w}")); }
+                    if !m.mounted.is_empty() {
+                        // the census: which mounted images shadow a pack texture (the live overlays), with the pack's dims beside the mod's
+                        let live = lightmap::modpack::shadowed(&st, &m.mounted);
+                        let names: Vec<String> = live.iter().map(|(s, pak)| {
+                            let md = m.mounted.iter().find(|x| x.stem == *s).and_then(|x| x.dims.clone());
+                            match (md, pak) { (Some((mw, mh, mt)), Some((pw, ph, pt))) if (mw, mh, &mt) != (*pw, *ph, pt) => format!("{s} (mod {mw}×{mh} {mt} over pak {pw}×{ph} {pt})"), _ => s.clone() }
+                        }).collect();
+                        eprintln!("mod: {} of {} images shadow a texture the --pak files hold: {}", live.len(), m.mounted.len(), names.join(", "));
+                        if live.is_empty() { eprintln!("mod: WARNING — none of the mod's images matches a pack texture under {}\\Media\\Texture\\Image\\ (a mod of another collection, or the collection's pak is not among the --pak files)", m.mod_ref.as_ref().map(|r| r.collection.as_str()).unwrap_or("?")); }
+                    }
                 }
                 if n > 0 { lightmap::lmmesh::set_lm_uv_store(st); }
             }
@@ -5371,6 +5390,48 @@ fn run(mut a: Vec<String>) {
                     let row: String = (x0..x1).map(|x| { let v = b.get(x, y, 0); if v == 0.0 { '.' } else { char::from_digit(((v / top) * 9.999).floor().clamp(0.0, 9.0) as u32, 10).unwrap() } }).collect();
                     println!("  {y:4} {row}");
                 }
+            }
+        }
+        "mod-check" => {
+            // lmtool mod-check MAP [--pak FILE:KEY …] [--means] : the map header's mod (modpack.rs), where its zip is found, which images
+            // it mounts and which of them shadow a texture the --pak files hold (the live overlays of a bake of this map); --means adds
+            // the mip-0 linear means of pak vs mod for the shadowed images (what each emitter class's colour moves to). E7 2026-09-30.
+            let Some(map) = a.get(1).filter(|p| !p.starts_with("--")) else { eprintln!("usage: lmtool mod-check MAP [--pak FILE:KEY …] [--means]"); std::process::exit(2) };
+            let rep = lightmap::modpack::mount_for_map(map);
+            match &rep.mod_ref {
+                None => println!("{map}: the header names no mod"),
+                Some(r) => println!("{map}: header mod {} → short {} · collection {} · dep {} · url {}", r.mangled, r.short, r.collection, r.dep_file.clone().unwrap_or_else(|| "-".into()), r.url.clone().unwrap_or_else(|| "-".into())),
+            }
+            if let Some(w) = &rep.warning { println!("WARNING: {w}"); }
+            if !rep.note.is_empty() { println!("{}", rep.note); }
+            if let Some(r) = &rep.mod_ref { if rep.source.is_none() { println!("candidates tried:"); for c in lightmap::modpack::candidate_paths(r, map) { println!("  {}{}", c.display(), if c.exists() { "  (exists)" } else { "" }); } } }
+            let mut store = mapgeom::store::DataStore::empty();
+            let mut n = 0;
+            for (i, arg) in a.iter().enumerate() { if arg == "--pak" { if let Some(v) = a.get(i + 1) { let (pp, key) = v.rsplit_once(':').expect("--pak FILE:KEY"); store.add_pak(pp, key).unwrap_or_else(|e| panic!("--pak {v}: {e}")); n += 1; } } }
+            if n > 0 && !rep.mounted.is_empty() {
+                let live = lightmap::modpack::shadowed(&store, &rep.mounted);
+                println!("{} of {} images shadow a texture the --pak files hold:", live.len(), rep.mounted.len());
+                let means = a.iter().any(|x| x == "--means");
+                for (stem, pak) in &live {
+                    let m = rep.mounted.iter().find(|x| x.stem == *stem).unwrap();
+                    let mut line = format!("  {stem}: mod {} over pak {}", m.dims.as_ref().map(|(w, h, t)| format!("{w}×{h} {t}")).unwrap_or_else(|| "?".into()), pak.as_ref().map(|(w, h, t)| format!("{w}×{h} {t}")).unwrap_or_else(|| "?".into()));
+                    if means {
+                        let mean = |bytes: &[u8]| -> Option<[f32; 3]> {
+                            let mut tx = lightmap::texsample::parse_dds(bytes, lightmap::texsample::Bc1Decode::Expand8Round).ok()?;
+                            tx.decode_srgb();
+                            let l0 = tx.levels.first()?.first()?;
+                            let (mut s, mut cnt) = ([0f64; 3], 0f64);
+                            for y in 0..l0.h { for x in 0..l0.w { let p = l0.get(x, y); for c in 0..3 { s[c] += p[c] as f64; } cnt += 1.0; } }
+                            Some([(s[0] / cnt) as f32, (s[1] / cnt) as f32, (s[2] / cnt) as f32])
+                        };
+                        let pm = store.read_pack(&m.logical).ok().and_then(|b| mean(&b));
+                        let mm = mapgeom::store::mounted_mod().and_then(|mm| mm.files.get(&m.logical.to_uppercase()).cloned()).and_then(|b| mean(&b));
+                        line.push_str(&format!(" · linear mean pak {} → mod {}", pm.map(|v| format!("({:.3}, {:.3}, {:.3})", v[0], v[1], v[2])).unwrap_or_else(|| "?".into()), mm.map(|v| format!("({:.3}, {:.3}, {:.3})", v[0], v[1], v[2])).unwrap_or_else(|| "?".into())));
+                    }
+                    println!("{line}");
+                }
+                let unmatched: Vec<&str> = rep.mounted.iter().filter(|m| !live.iter().any(|(s, _)| *s == m.stem)).map(|m| m.stem.as_str()).collect();
+                if !unmatched.is_empty() { println!("  not in the --pak files under the collection's Media\\Texture\\Image\\ ({}): {}", unmatched.len(), unmatched.join(", ")); }
             }
         }
         "dds-mean" => {

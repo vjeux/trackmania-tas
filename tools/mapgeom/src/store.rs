@@ -26,6 +26,37 @@ use std::sync::{Arc, RwLock};
 /// server's memory (see `MAPGEOM.md`); it is NOT in the shipped binary.
 pub const STADIUM_KEY: &str = "870FBE770EE4909C714B18B04D914C17";
 
+/// THE MAP'S MOD, MOUNTED OVER THE PACKS (E7, 2026-09-30; RE 17's read 00:12Z 09-30 + the g23 frame-537 capture 09:25Z: the
+/// editor's bake binds the mod's `Image/TrackBordersInWorld_D.dds` bit for bit where the pak's texture would be). The game mounts
+/// the map's `ModPackDesc` zip as a FID folder over the collection (`ModFid`); every bitmap of that collection then resolves its
+/// image file through the mount — there is no lightmapper-specific texture path, the modded image simply IS the file. This is
+/// that mount: ONE per process (a bake is one map), consulted by every store's `read` for the UPPERCASE logical paths it holds
+/// (`<Collection>\Media\Texture\Image\<stem>.dds`, keyed by the mod's owner). It shadows the packs, never the per-store `overlay`
+/// (a rescale's own copies win, as before). Mount it BEFORE the first read of a shadowed path: a store caches what it read.
+pub struct ModMount {
+    /// The mod's name as the map header spells it (`<desc mod="…">`).
+    pub name: String,
+    /// UPPERCASE logical path → the mod's file bytes.
+    pub files: HashMap<String, Arc<Vec<u8>>>,
+}
+
+static MOD_MOUNT: RwLock<Option<Arc<ModMount>>> = RwLock::new(None);
+
+/// Mount a mod over every store of this process (replacing any earlier mount; returns it).
+pub fn mount_mod(m: ModMount) -> Option<Arc<ModMount>> {
+    MOD_MOUNT.write().unwrap_or_else(|e| e.into_inner()).replace(Arc::new(m))
+}
+
+/// Remove the process-wide mod mount (returns it).
+pub fn unmount_mod() -> Option<Arc<ModMount>> {
+    MOD_MOUNT.write().unwrap_or_else(|e| e.into_inner()).take()
+}
+
+/// The mounted mod, if any.
+pub fn mounted_mod() -> Option<Arc<ModMount>> {
+    MOD_MOUNT.read().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
 pub struct OpenPak {
     data: PakBytes,
     pak: Pak,
@@ -253,9 +284,12 @@ impl DataStore {
             return hit.ok_or_else(|| format!("{}: not in any pack", logical));
         }
         let resolved = self.resolve(logical);
-        let out = match resolved {
-            None => None,
-            Some(path) => {
+        // the map's mod (see `ModMount`): its file for this path is the file — the packs are never consulted for a mounted path
+        let modded = mounted_mod().and_then(|m| m.files.get(&key).cloned());
+        let out = match (modded, resolved) {
+            (Some(b), _) => Some(b),
+            (None, None) => None,
+            (None, Some(path)) => {
                 let (pi, ei) = self.index[&path.to_uppercase()];
                 let p = &self.paks[pi];
                 Some(Arc::new(read_file(
@@ -276,6 +310,15 @@ impl DataStore {
                 names::candidates(logical).join(", ")
             )
         })
+    }
+
+    /// The PACK's bytes for a logical path — no per-store overlay, no mod mount, no cache (a census that wants to see what the
+    /// mount shadows; every product read goes through `read`).
+    pub fn read_pack(&self, logical: &str) -> Result<Vec<u8>, String> {
+        let path = self.resolve(logical).ok_or_else(|| format!("{logical}: not in any pack"))?;
+        let (pi, ei) = self.index[&path.to_uppercase()];
+        let p = &self.paks[pi];
+        read_file(&p.data, p.header_max_size, &p.pak.entries[ei], &p.key, p.pak.version)
     }
 
     /// How many decoded files the (shared) cache holds, and their bytes.

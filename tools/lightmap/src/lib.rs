@@ -74,6 +74,7 @@ pub mod hugealloc;
 pub mod img;
 pub mod mapio;
 pub mod moods;
+pub mod modpack;
 pub mod probe;
 pub mod probecheck;
 pub mod probepass;
