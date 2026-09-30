@@ -10,6 +10,9 @@
 //! name = "WhiteStick"              # the box's name at the relay
 //! cwd = "/mnt/c/Users/vjeux"       # where commands start
 //! shell = "/bin/sh"
+//! # interop_guard = true           # WSL only: keep binfmt_misc's WSLInterop
+//!                                  # registered (see interop.rs); default on
+//!                                  # under WSL, never on anywhere else
 //! ```
 //!
 //! Environment: `WHITESTICK_CONFIG` (path), `WHITESTICK_RELAY`,
@@ -46,6 +49,10 @@ pub struct AgentConfig {
     pub cwd: Option<String>,
     #[serde(default)]
     pub shell: Option<String>,
+    /// `interop_guard = false` turns the WSL interop guard off. Unset means
+    /// on under WSL; `true` outside WSL is still off (nothing to guard).
+    #[serde(default)]
+    pub interop_guard: Option<bool>,
 }
 
 pub fn config_path() -> Result<std::path::PathBuf> {
