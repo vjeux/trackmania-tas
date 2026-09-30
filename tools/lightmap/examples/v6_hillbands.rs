@@ -1,5 +1,11 @@
 //! `v6_hillbands OURS.Map.Gbx --against EDITOR.Map.Gbx --source SRC.Map.Gbx --records R.tsv --collection C --quality Q
-//!   --pak FILE:KEY… [--models SUBSTR,…] [--sun DX,DY,DZ] [--lit-hdr 1e-3] [--min-texels 500] [--own-rects] [--editor-min S] [--near PTS.tsv --radius R] [--out TSV]`
+//!   --pak FILE:KEY… [--models SUBSTR,…] [--sun DX,DY,DZ] [--lit-hdr 1e-3] [--min-texels 500] [--own-rects] [--editor-min S] [--near PTS.tsv --radius R] [--y-bins Y1,Y2,…] [--editor-bands B1,B2,…] [--dump-texels CLASS_SUBSTR:BAND_PREFIX:N] [--out TSV]`
+//! `--editor-bands B1,B2,…`: extra bands by the EDITOR's per-texel Σrgb (upper bounds ascending) — is a residue on the game's dark
+//! texels (additive: a leak, a floor) or on its bright ones (a gain); crossed with the near/far split when --near is given.
+//! `--dump-texels SUBSTR:BANDPREFIX:N`: print up to N texels of the classes matching SUBSTR whose elevation band starts with
+//! BANDPREFIX (e.g. `AI06423074:E0:40`): atlas x y, world position, normal, ours rgb, editor rgb — the texels for a per-direction trace.
+//! `--y-bins Y1,Y2,…`: extra bands by the TEXEL's world height (the fragment's y; upper bounds ascending) — the per-texel height
+//! profile of a deficit inside one item (g23's hills span 150–400 m each).
 //! `--near PTS.tsv --radius R`: a TEXEL-level spatial split — the texel's world position (the fragment's) within R m (x, z) of a
 //! listed point (classcmp::read_points: a census TSV) → the extra bands `N0 near ≤R` / `N1 far` (V6 row 4: the modded
 //! TrackBorders placements; classcmp --near is chart-centre based and lumps a whole hill into one side).
@@ -37,6 +43,10 @@ fn main() {
     let out = f("--out");
     let own_rects = a.iter().any(|x| x == "--own-rects");
     let editor_min: f64 = f("--editor-min").map(|v| v.parse().expect("--editor-min S")).unwrap_or(0.0);
+    let dump: Option<(String, String, usize)> = f("--dump-texels").map(|v| { let p: Vec<&str> = v.split(':').collect(); (p[0].to_string(), p.get(1).unwrap_or(&"").to_string(), p.get(2).and_then(|n| n.parse().ok()).unwrap_or(40)) });
+    let mut dumped = 0usize;
+    let ed_bins: Vec<f64> = f("--editor-bands").map(|v| v.split(',').map(|s| s.trim().parse().expect("--editor-bands B1,B2")).collect()).unwrap_or_default();
+    let y_bins: Vec<f32> = f("--y-bins").map(|v| v.split(',').map(|s| s.trim().parse().expect("--y-bins Y1,Y2")).collect()).unwrap_or_default();
     let near: Option<(Vec<(f32, f32)>, f32)> = f("--near").map(|p| { let pts = lightmap::classcmp::read_points(&p, f("--near-name").as_deref()).unwrap_or_else(|e| panic!("--near: {e}")); let r: f32 = f("--radius").map(|v| v.parse().expect("--radius R")).unwrap_or(30.0); eprintln!("--near: {} points, radius {r} m", pts.len()); (pts, r) });
     // the direction TO the sun (the bake's word is the light's travel)
     let to_sun = { let l = (sun[0] * sun[0] + sun[1] * sun[1] + sun[2] * sun[2]).sqrt(); [-sun[0] / l, -sun[1] / l, -sun[2] / l] };
@@ -66,16 +76,50 @@ fn main() {
     let rows: std::collections::HashMap<(u32, u32), lightmap::classcmp::RecRow> = rows_v.iter().map(|r| ((r.obj, r.sub), r.clone())).collect();
     eprintln!("lightmaps: {} charts, image {}×{}, planes {np}, MaxHDR ours {k1} / editor {k2}, HBasis words ours {hb1:?} / editor {hb2:?}", m1.count, i1.w, i1.h);
 
-    // 2. the bake's LM scene of the source map + the fragment list at the atlas size
-    let mut log = |s: &str| eprintln!("setup: {s}");
-    let setup = lightmap::localdrive::setup_from_map(&source, &paks, &collection, quality, &mut log).unwrap_or_else(|e| panic!("setup_from_map: {e}"));
-    let sc = &setup.sc;
+    // 2. the bake's LM scene of the source map + the fragment list at the atlas size — the layout ALIGNED TO THE STORED MAPPING:
+    // localdrive::setup_from_map's layout can carry records the bake's layout dropped (g23: 4 TriggerFX-only AC06423108 charts —
+    // the flag rule drops them in the bake's record scene), and every chart after the first extra one lands elsewhere; so each
+    // layout record takes the rect of OUR mapping's chart with the same (obj, sub) bind word, an unmatched record an empty rect.
+    let scene = lightmap::geometry::Scene::from_map(&source).unwrap_or_else(|e| panic!("scene: {e}"));
+    let mf = tmmaps::map::MapFile::load(std::path::Path::new(&source));
+    let (pp, key) = paks.first().expect("--pak FILE:KEY");
+    let base: u32 = 4096;
+    let zone = lightmap::layout::ground_zone(&mf, &collection);
+    let mut gl = lightmap::layout::for_map(&source, &scene, base, quality.saturating_sub(1), lightmap::layout::TilePlg::BLUEBAY_SEA, Some((pp.as_str(), key.as_str())), &collection, &zone, None).unwrap_or_else(|e| panic!("layout: {e}"));
+    let mine: std::collections::HashMap<(u32, u32), usize> = (0..m1.count as usize).map(|i| ((m1.binds[i].obj_group_idx / 4, m1.binds[i].obj_idx & 0x00ff_ffff), i)).collect();
+    let (mut aligned, mut unmatched, mut moved) = (0usize, 0usize, 0usize);
+    for k in 0..gl.records.len().min(gl.charts.len()) {
+        let (obj, sub) = (gl.records[k].obj, gl.records[k].sub);
+        match mine.get(&(obj, sub)) {
+            Some(&i) => {
+                let (x, y, w, h) = (m1.pos[i].0 as i32, m1.pos[i].1 as i32, m1.size[i].0 as i32, m1.size[i].1 as i32);
+                if gl.charts[k].x != x || gl.charts[k].y != y || gl.charts[k].w != w || gl.charts[k].h != h { moved += 1; }
+                gl.charts[k].x = x; gl.charts[k].y = y; gl.charts[k].w = w; gl.charts[k].h = h; aligned += 1;
+            }
+            None => { gl.charts[k].w = 0; gl.charts[k].h = 0; unmatched += 1; }
+        }
+    }
+    eprintln!("layout: {} charts / {} records; aligned to the mapping: {aligned} (rects moved {moved}), unmatched (emptied) {unmatched}; mapping charts {}", gl.charts.len(), gl.records.len(), m1.count);
+    let mut store = mapgeom::store::DataStore::empty();
+    for (p, k) in &paks { store.add_pak(p, k).unwrap_or_else(|e| panic!("pak {p}: {e}")); }
+    let tile_world_y = lightmap::layout::tile_level(&mf, &collection) as f32 * 8.0 + lightmap::layout::CollectionProfile::of(&collection).yoff;
+    let tile_mesh = lightmap::lmmesh::lm_mesh_of_zone(&mut store, &collection, &zone).unwrap_or_else(|e| panic!("zone mesh: {e}"));
+    let files = mapgeom::embedded::files(&mf).unwrap_or_else(|e| panic!("embedded: {e}"));
+    let by_name: std::collections::BTreeMap<String, Vec<u8>> = files.iter().map(|(k, v)| (k.rsplit(['/', '\\']).next().unwrap_or(k).to_string(), v.clone())).collect();
+    let tile_plg = gl.records.iter().find(|r| r.class == "tile").map(|r| lightmap::layout::TilePlg { meter_by_uv: r.meter_by_uv, bounds: r.uv }).unwrap_or(lightmap::layout::TilePlg::BLUEBAY_SEA);
+    let mut sc_owned = lightmap::lmmesh::lm_scene_from_map_at(&scene, &gl, base, &|name| by_name.get(name).cloned(), tile_mesh, tile_plg, 2048.0, tile_world_y).unwrap_or_else(|e| panic!("lm scene: {e}"));
+    let n_ent = lightmap::lmmesh::lm_scene_add_entities(&mut store, &gl, &mut sc_owned, 2048.0).unwrap_or_else(|e| panic!("entities: {e}"));
+    eprintln!("LM scene: {} meshes, {} instances ({n_ent} prefab entities), rec_of {}", sc_owned.meshes.len(), sc_owned.instances.len(), sc_owned.rec_of.len());
+    let sc = &sc_owned;
+    struct SetupLite<'a> { gl: &'a lightmap::layout::GameLayout }
+    let setup = SetupLite { gl: &gl };
+    if let Some(wr) = f("--write-records") { lightmap::classcmp::write_records_tsv(&wr, setup.gl).unwrap_or_else(|e| panic!("--write-records: {e}")); eprintln!("wrote the layout's records to {wr}"); }
     let t0 = std::time::Instant::now();
     // the accumulate rasterises at TWICE the stored image (the layout units; the stored atlas is the half-resolution image,
     // classcmp::chart_own_px) — one stored texel = the 2×2 accumulate pixels under it
     let (fw, fh) = (i1.w * 2, i1.h * 2);
     let flist = lightmap::lmaccum::build_frag_list(sc, 0, fw, fh);
-    eprintln!("frag list: {:?} ({:.1} s); layout {} charts / {} records; rec_of {}", flist, t0.elapsed().as_secs_f32(), setup.gl.charts.len(), setup.gl.records.len(), sc.rec_of.len());
+    eprintln!("frag list: {:?} ({:.1} s)", flist, t0.elapsed().as_secs_f32());
     // per stored texel: the mean normal (normalised) over the 2×2 pixels' fragments and the record of the first fragment
     let n_px = (i1.w * i1.h) as usize;
     let mut nrm: Vec<[f32; 3]> = vec![[0.0; 3]; n_px];
@@ -167,8 +211,26 @@ fn main() {
             let lo = (0..3).map(|c| lightmap::classcmp::texel_hdr(0, a[c], fbi, k1)).fold(0.0, f64::max) >= lit_hdr;
             let le = (0..3).map(|c| lightmap::classcmp::texel_hdr(0, b[c], fbj, k2)).fold(0.0, f64::max) >= lit_hdr
                 && (editor_min <= 0.0 || (0..3).map(|c| lightmap::classcmp::texel_hdr(0, b[c], fbj, k2)).sum::<f64>() >= editor_min);
+            if let Some((sub, bp, n)) = &dump {
+                if dumped < *n && has[p] && key.contains(sub.as_str()) && eb.starts_with(bp.as_str()) && le {
+                    let ho: Vec<f64> = (0..3).map(|c| lightmap::classcmp::texel_hdr(0, a[c], fbi, k1)).collect();
+                    let he: Vec<f64> = (0..3).map(|c| lightmap::classcmp::texel_hdr(0, b[c], fbj, k2)).collect();
+                    println!("TEXEL\t{key}\tchart {i}\tatlas ({x}, {y})\tworld ({:.1}, {:.1}, {:.1})\tnormal ({:.3}, {:.3}, {:.3})\tours {:.4}/{:.4}/{:.4}\teditor {:.4}/{:.4}/{:.4}\tratio {:.3}/{:.3}/{:.3}", posv[p][0], posv[p][1], posv[p][2], nrm[p][0], nrm[p][1], nrm[p][2], ho[0], ho[1], ho[2], he[0], he[1], he[2], ho[0] / he[0].max(1e-9), ho[1] / he[1].max(1e-9), ho[2] / he[2].max(1e-9));
+                    dumped += 1;
+                }
+            }
             let mut bands = vec![format!("all"), eb.to_string(), sb.to_string(), format!("{eb} × {sb}")];
             if let Some(nb) = nb { bands.push(nb.to_string()); bands.push(format!("{nb} × {eb}")); }
+            if !ed_bins.is_empty() && le {
+                let se: f64 = (0..3).map(|c| lightmap::classcmp::texel_hdr(0, b[c], fbj, k2)).sum();
+                let ebnd = format!("B {}", lightmap::classcmp::editor_band_label(se, &ed_bins));
+                bands.push(ebnd.clone());
+                if let Some(nb) = nb { bands.push(format!("{nb} × {ebnd}")); }
+            }
+            if !y_bins.is_empty() && has[p] {
+                let yb = format!("Y {}", lightmap::classcmp::y_bin_label(posv[p][1], &y_bins));
+                bands.push(yb.clone()); bands.push(format!("{yb} × {eb}"));
+            }
             for band in bands {
                 let e = acc.entry((key.clone(), band)).or_default();
                 e.texels += 1;
