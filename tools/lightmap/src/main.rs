@@ -4297,8 +4297,9 @@ fn run(mut a: Vec<String>) {
                                 if let mapgeom::static_item::light::GxChunk::Spot01 { angle_inner, angle_outer, falloff_exponent, .. } = ch { desc.push_str(&format!(" spot01 inner {angle_inner:.2} outer {angle_outer:.2} falloff {falloff_exponent:.2}")); }
                                 if let mapgeom::static_item::light::GxChunk::Ball08 { radius, emitting_radius, .. } = ch { desc.push_str(&format!(" ball08 r {radius:.1} emit {emitting_radius:.1}")); }
                                 if let mapgeom::static_item::light::GxChunk::Ball06 { radius, emitting_radius, attenuation, .. } = ch { desc.push_str(&format!(" ball06 r {radius:.1} emit {emitting_radius:.1} att {attenuation:?}")); }
-                                if let mapgeom::static_item::light::GxChunk::Light0A { diffuse_intensity, .. } = ch { desc.push_str(&format!(" diffuse {diffuse_intensity:.2}")); }
-                                if let mapgeom::static_item::light::GxChunk::Light09 { diffuse_intensity, .. } = ch { desc.push_str(&format!(" diffuse {diffuse_intensity:.2}")); }
+                                if let mapgeom::static_item::light::GxChunk::Light0A { diffuse_intensity, flags, .. } = ch { desc.push_str(&format!(" diffuse {diffuse_intensity:.2} gxflags {flags:#x}{}", if flags & 8 != 0 { " STORAGE2" } else { "" })); }
+                                if let mapgeom::static_item::light::GxChunk::Light08 { flags, .. } = ch { desc.push_str(&format!(" gxflags {flags:#x}{}", if flags & 8 != 0 { " STORAGE2" } else { "" })); }
+                                if let mapgeom::static_item::light::GxChunk::Light09 { diffuse_intensity, flags, .. } = ch { desc.push_str(&format!(" diffuse {diffuse_intensity:.2} gxflags {flags:#x}{}", if flags & 8 != 0 { " STORAGE2" } else { "" })); }
                             }
                             if pl.is_animated() { desc.push_str(" ANIMATED"); }
                         }
