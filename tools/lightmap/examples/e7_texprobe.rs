@@ -17,7 +17,7 @@ fn main() {
     };
     eprintln!("{p}: {}×{} × {} channels", buf.w, buf.h, buf.channels);
     let px = |x: u32, y: u32| -> Vec<f32> { (0..buf.channels).map(|c| buf.get(x, y, c)).collect() };
-    for arg in a.iter().skip(2).filter(|s| s.contains(',') && !s.starts_with("--")) {
+    for (i, arg) in a.iter().enumerate().skip(2).filter(|(i, s)| s.contains(',') && !s.starts_with("--") && !a[*i - 1].starts_with("--")).map(|(i, s)| (i, s)) { let _ = i;
         let v: Vec<u32> = arg.split(',').filter_map(|t| t.trim().parse().ok()).collect();
         if v.len() == 2 { println!("({}, {}) = {:?}", v[0], v[1], px(v[0], v[1])); }
     }
