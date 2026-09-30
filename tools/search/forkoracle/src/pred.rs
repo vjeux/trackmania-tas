@@ -44,7 +44,7 @@
 
 use crate::pred_core::{
     key_eval, Fire, Gate, KeyOp, Pred, Summary, KEYOP_BYTES, KOP_ABS, KOP_ADD, KOP_ALONG, KOP_AXISDOT,
-    KOP_BODYVEL, KOP_CONST, KOP_DIST, KOP_DIV, KOP_DSPEED, KOP_MAX, KOP_MIN, KOP_MUL, KOP_NEG,
+    KOP_BODYVEL, KOP_CONST, KOP_DIST, KOP_DIV, KOP_DSPEED, KOP_TIME, KOP_MAX, KOP_MIN, KOP_MUL, KOP_NEG,
     KOP_DOMEGA, KOP_OMEGA, KOP_OMEGAMAG, KOP_POS, KOP_SPEED, KOP_SUB, KOP_VDIST, KOP_VEL,
     MAXKOPS, PRED_BYTES,
 };
@@ -185,6 +185,7 @@ pub fn parse_spec(spec: &str) -> Result<NamedPred, String> {
     let allowed: &[&str] = match kind_s {
         "speeddrop" => &["frac", "win", "minpeak", "need", "after", "until"],
         "floor" => &["speed", "need", "after", "until"],
+        "ceiling" => &["speed", "need", "after", "until"],
         "box" => &["xmin", "xmax", "ymin", "ymax", "zmin", "zmax", "need", "after", "until"],
         "offref" => &["dist", "need", "after", "until"],
         "noprog" => &["dist", "win", "need", "after", "until"],
@@ -218,6 +219,10 @@ pub fn parse_spec(spec: &str) -> Result<NamedPred, String> {
         "floor" => {
             p.need = geti(&kv, "need", 30).max(1) as u32;
             p.p[0] = getf(&kv, "speed", 3.0);
+        }
+        "ceiling" => {
+            p.need = geti(&kv, "need", 5).max(1) as u32;
+            p.p[0] = getf(&kv, "speed", 42.0);
         }
         "box" => {
             p.need = geti(&kv, "need", 1).max(1) as u32;
@@ -548,6 +553,7 @@ impl<'a> KeyParser<'a> {
                 match n.as_str() {
                     "speed" => self.emit(KOP_SPEED, 0, [0.0; 3]),
                     "dspeed" => self.emit(KOP_DSPEED, 0, [0.0; 3]),
+                    "t" => self.emit(KOP_TIME, 0, [0.0; 3]),
                     "omegax" => self.emit(KOP_OMEGA, 0, [0.0; 3]),
                     "omegay" => self.emit(KOP_OMEGA, 1, [0.0; 3]),
                     "omegaz" => self.emit(KOP_OMEGA, 2, [0.0; 3]),

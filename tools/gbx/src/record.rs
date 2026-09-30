@@ -162,7 +162,7 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
 // The record-data grammar
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Desc {
     pub class_id: u32,
     pub u01: i32,
@@ -172,7 +172,7 @@ pub struct Desc {
     pub u05: i32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Ent {
     pub type_: i32,
     pub u01: i32,
@@ -185,13 +185,13 @@ pub struct Ent {
     pub deltas2: Vec<(i32, i32, Vec<u8>)>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CustomModuleList {
     pub deltas: Vec<(i32, Vec<u8>, Vec<u8>)>,
     pub period: Option<i32>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RecordData {
     pub version: u32,
     pub start_ms: i32,
@@ -727,7 +727,7 @@ pub fn print_field_confidence() {
 // Public API
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct EntInfo {
     pub type_: i32,
     pub class_id: Option<u32>,

@@ -1347,3 +1347,39 @@ Facts worth keeping beside the checks:
 * Nothing lives only on a node: a devserver lease died mid-run and the whole day survived only because every result had been pushed to the box repo / GitHub or staged for the parent within minutes.
 
 Where this lineage lives: branch `agentcloud/colon-three` (the tickhook lineage + these fixes). GitHub `main`'s `tools/search`, `tmauto` and `fk` are the pre-tickhook lineage and lack all of it (its `tmauto` synthesises for block starts only).
+
+### 8b. The rest of the MK64 lessons (2026-09-29, afternoon and evening)
+
+The table in §8 is about MAPS. These are about the CONTAINER and the ENGINE,
+and each one cost an hour before it was named.
+
+| what happened | why | the check now |
+|---|---|---|
+| the client refused every ghost we made ("Unable to load file"; the plugin's `Replay_Load` / `Ghost_Add` dropped the handler) | the body was uncompressed (`'U'`): the dedicated server takes both, the client's in-race loader does not | `ghost regen` leaves a `'C'` file; `ghost compress IN OUT`, `tmmaps gbxcompress` |
+| a client-loadable carrier still showed the donor's map and time | the REPLAY HEADER (chunk 0x03093000 + the community XML) keeps its own copies of the map uid and the race time, which no body census sees | `ghost map set` / `ghost declare` rewrite them (`hdr::rewrite_full`); `ghost header show` prints them |
+| the same tape ran to two different trajectories | the server simulates with the PHYSICS THE VALIDATION BLOCK DECLARES (chunk 0x0309202D: exe version, checksum, flags): a 2024 game-written carrier against a 2026 synth block = 1 m apart by 10 s and a missed ramp at 17 s | `ghost validation copy SRC DST OUT` (then `set --start-index`); `tmauto synth write --validation-block <a real client replay>` / `TM_VALIDATION_BLOCK`, so a search runs the physics the client runs |
+| a 30-second lap tape finished, and the next run of the same tape finished nowhere near | the block's **seed** word feeds randomness and the game writes a fresh seed per run. Measured: identical to 6 s, 0.4 m apart at 12 s, 4.7 m at 14 s (308 km/h), 26–48 m at 15 s. A CAPPED lap (never above 212 km/h) still diverged 10 m by 14 s — the driver is CONTACT events (skips on bumps), not raw speed. The 5.8 s cave tape is bit-identical under every seed | `tmsearch validate --seeds N` scores a file under several seeds; `ghost validation edit --seed N`; `--pred ceiling:speed=S` caps a searched tape. **A tape longer than ~12 s over bumpy ground is not reproducible in the client, however carefully it is driven.** |
+| a finished lap was refused: "wrong simu … unexcepted walltime (5s)" | the block's wall-clock pair must span the race; a carrier's block copied from a 5-second client run says 5 s | `ghost validation edit --walltime-span SECONDS` |
+| the StartFinish crossing counted as a lap instead of ending the race ("reached some checkpoints (20 out of 19)") | the block's `settings_flags`: with a client's own `0xffff0229` the crossing is a lap, with `0x124` it finishes. Same tape, same map, same physics | `ghost validation edit --flags HEX`; `ghost validation show` prints every field of the block |
+| a 3-lap course could not be certified one lap at a time | the validator says FINISHED only after nbLaps crossings of the StartFinish line | `tmmaps setlaps MAP --out F --laps 1` (skippable chunk 0x03043018 + the header XML; geometry untouched, uid unchanged) |
+| leg-chained searches scraped the shore and "reached" gates they only got to after a RESPAWN | a respawn keeps the car inside the corridor, so no abort predicate fires | add `--pred offline:offref:dist=14,need=30` beside the corridor box — and put the FORK POINT inside the corridor: a corridor that excludes it aborts every candidate at tick 0, and the tell is thousands of evals/s with a constant "N m away" |
+| a leg dawdled to 33 s to reach its box | the gate key rewarded arrival, not promptness | `t` (race seconds) in the key language: `along(d) - 5*t` |
+| the plain-oracle confirmation crawled at 13 evals/s | the confirmation simulates the whole DECLARED time for every accepted improvement | declare each leg's template short (`ghost declare --time gate_ms+5000`), and `ghost trim --to` first for a tape over ~35 s |
+
+Instruments added for a WHOLE LAP rather than a five-second stretch:
+`tmmaps pathline` (a `--refcsv` reference line from a ROM-path CSV, `--append`
+for a shortcut, `--idx2` for the rejoin), `tmmaps centreline` (a `tmreach lap`
+route JSON from that line plus the map's own gate groups) and `ghost tape
+jitter` (N variants with every input edge moved by up to ±K ticks: the
+robustness score for a tape a human or a key-injecting rig will drive).
+
+Two engine facts worth keeping. The ground bit, the per-wheel contact
+material and the four wheel dampers are readable per tick
+(`tmreach contact-trace`) — that is how "where do the wheels leave the road"
+is answered on a descent without guessing (Rainbow Road's start descent:
+four micro-skips on the facet kinks at 190–226 km/h, then contact lost for
+1.09 s from 238 km/h at (2145.7, 137.3, 1985.5), up to 3.8 m above the chord,
+landing at 285 km/h). And a keyboard tape that must survive a jittery driver
+wants `--alphabet kb --minhold 10 --gas-held`: the throttle stays down on
+every tick, because the client re-engages a lifted keyboard throttle over
+~300 ms (a 50 ms lift cost 6 km/h at the ramp).

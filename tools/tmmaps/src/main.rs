@@ -399,6 +399,25 @@ fn main() {
                     appended.push(pts.len() - 1);
                 }
             }
+            // --idx2 A..B: a SECOND stretch of the same path, appended after the
+            // --append points (a shortcut leaves the path and rejoins it later:
+            // the lap line is [main path to the branch] + [the shortcut] + [main
+            // path from the rejoin to the finish]).
+            if let Some(r) = flag(&args, "--idx2") {
+                let (a, b) = r.split_once("..").expect("--idx2 A..B");
+                let (j0, j1) = (a.parse::<usize>().unwrap_or(0), b.parse::<usize>().unwrap_or(usize::MAX));
+                for line in text.lines().skip(1) {
+                    let f: Vec<&str> = line.split(',').collect();
+                    if f.len() < 6 || f[0] != path_name {
+                        continue;
+                    }
+                    let idx: usize = f[1].parse().unwrap_or(usize::MAX);
+                    if idx < j0 || idx > j1 {
+                        continue;
+                    }
+                    pts.push([f[3].parse().unwrap(), f[4].parse().unwrap(), f[5].parse().unwrap()]);
+                }
+            }
             let mut s = vec![0.0f64; pts.len()];
             for i in 1..pts.len() {
                 let (a, b) = (pts[i - 1], pts[i]);
@@ -455,6 +474,58 @@ fn main() {
                     );
                 }
             }
+        }
+        "setlaps" => {
+            // The LAP COUNT of a multilap map (chunk 0x03043018: u32 isLapRace,
+            // u32 nbLaps), for a certification copy: the validator only says
+            // FINISHED after nbLaps crossings of a StartFinish line, and a 3-lap
+            // MK64 course cannot be certified one lap at a time otherwise. The
+            // header XML's nblaps="" is rewritten too. Geometry untouched.
+            let src = PathBuf::from(&args[2]);
+            let out = PathBuf::from(flag(&args, "--out").expect("--out F"));
+            let laps: u32 = flag(&args, "--laps").expect("--laps N").parse().expect("--laps N");
+            let bytes = std::fs::read(&src).unwrap_or_else(|e| panic!("{}: {e}", src.display()));
+            let g = gbx::Gbx::parse(&bytes);
+            let mut body = g.body.clone();
+            // a SKIPPABLE chunk: id, "PIKS", size, payload
+            let hits: Vec<usize> = gbx::all_skip_chunks(&body).into_iter().filter(|(cid, _, _, _)| *cid == 0x0304_3018).map(|(_, _, p, _)| p).collect();
+            assert!(!hits.is_empty(), "no chunk 0x03043018 in the body");
+            let mut patched = 0;
+            for h in &hits {
+                let o = *h;
+                if o + 8 > body.len() {
+                    continue;
+                }
+                let is_lap = u32::from_le_bytes(body[o..o + 4].try_into().unwrap());
+                let n = u32::from_le_bytes(body[o + 4..o + 8].try_into().unwrap());
+                if is_lap <= 1 && (1..=99).contains(&n) {
+                    println!("chunk 0x03043018 at body {:#x}: isLapRace={} nbLaps={} -> {}", h, is_lap, n, laps);
+                    body[o + 4..o + 8].copy_from_slice(&laps.to_le_bytes());
+                    patched += 1;
+                }
+            }
+            assert_eq!(patched, 1, "expected exactly one plausible 0x03043018 payload, found {patched} of {} id hits", hits.len());
+            let mut file = g.write_body_recompressed(&body);
+            // header XML: nblaps="N"
+            let ud = &g.user_data;
+            if let Some(i) = ud.windows(8).position(|w| w == b"nblaps=\"") {
+                let start = i + 8;
+                let end = start + ud[start..].iter().position(|b| *b == b'"').unwrap();
+                let old = String::from_utf8_lossy(&ud[start..end]).to_string();
+                let new = laps.to_string();
+                if old.len() == new.len() {
+                    // same length: patch in place in the written file's user data region
+                    let fpos = file.windows(end - i).position(|w| w == &ud[i..end]).expect("xml in file");
+                    file[fpos + 8..fpos + 8 + new.len()].copy_from_slice(new.as_bytes());
+                    println!("header XML nblaps=\"{old}\" -> \"{new}\"");
+                } else {
+                    println!("header XML nblaps=\"{old}\" left (length differs; the body chunk is what the validator reads)");
+                }
+            }
+            std::fs::write(&out, &file).unwrap_or_else(|e| panic!("{}: {e}", out.display()));
+            let back = gbx::Gbx::parse(&std::fs::read(&out).unwrap());
+            assert_eq!(back.body, body, "read-back body differs");
+            println!("wrote {}", out.display());
         }
         "gbxcompress" => {
             // Rewrite ANY Gbx file with its body LZO-compressed ('C'). The

@@ -773,6 +773,121 @@ fn cmd_tape(a: &[String]) {
     let what = a.first().map(|s| s.as_str()).unwrap_or_else(|| die("ghost tape <extract|inject|script|expand|graft|poke|set|diff|stats|csv|bits>"));
     let rest = &a[1..];
     match what {
+        "jitter" => {
+            // ROBUSTNESS PROBE FOR A DRIVEN TAPE: N variants of IN in which every
+            // input EDGE (a tick where steer, gas or brake changes) is moved
+            // independently by a uniform random offset in [-K, +K] ticks (the
+            // edge keeps its order with its neighbours). Each variant is injected
+            // into IN's own container; `tmsearch validate` the directory and count
+            // the finishers. Written for the rig's SendInput driver, whose edges
+            // land +-20 ms off (2026-09-29): a tape that only finishes at +-0 ms
+            // is not a recipe.
+            let inp = &rest[0];
+            let outdir = need(rest, "--out");
+            let n: usize = num(rest, "--n").unwrap_or(16) as usize;
+            let k: i64 = num(rest, "--ticks").unwrap_or(2);
+            let mut seed: u64 = num(rest, "--seed").unwrap_or(1) as u64;
+            let lo: usize = num(rest, "--from-tick").unwrap_or(30) as usize; // the locator wobble stays
+            let c = Container::load(inp).unwrap_or_else(|e| die(e));
+            let t = Tape::from_file(inp).unwrap_or_else(|e| die(e));
+            let txt = t.to_text(inp);
+            // per-tick (steer, accel, brake) from the text form
+            let mut rows: Vec<(usize, i64, i64, i64, String)> = Vec::new();
+            let mut header: Vec<String> = Vec::new();
+            for l in txt.lines() {
+                if let Some(after) = l.strip_prefix("t=") {
+                    let idx: usize = after.split_whitespace().next().and_then(|v| v.parse().ok()).unwrap_or_else(|| die("tick index"));
+                    let f = |k: &str| -> i64 {
+                        l.split_whitespace().find_map(|w| w.strip_prefix(&format!("{k}=")).and_then(|v| v.parse::<i64>().ok())).unwrap_or(0)
+                    };
+                    rows.push((idx, f("steer"), f("accel"), f("brake"), l.to_string()));
+                } else {
+                    header.push(l.to_string());
+                }
+            }
+            // edges: ticks >= lo where any input differs from the previous tick
+            let mut edges: Vec<usize> = Vec::new();
+            for i in 1..rows.len() {
+                if rows[i].0 >= lo && (rows[i].1, rows[i].2, rows[i].3) != (rows[i - 1].1, rows[i - 1].2, rows[i - 1].3) {
+                    edges.push(i);
+                }
+            }
+            // a stretch of analog steer (a value per tick) is not an edge list:
+            // collapse consecutive edge ticks into one segment boundary
+            let mut segs: Vec<usize> = Vec::new();
+            for e in &edges {
+                if segs.last().map(|l| e - l > 1).unwrap_or(true) {
+                    segs.push(*e);
+                }
+            }
+            std::fs::create_dir_all(outdir).unwrap_or_else(|e| die(format!("{outdir}: {e}")));
+            let mut rng = move || -> u64 {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                seed
+            };
+            let stem = std::path::Path::new(inp).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or("tape".into());
+            let stem = stem.trim_end_matches(".Ghost").to_string();
+            let mut manifest = String::from("file\tshifts_ticks\n");
+            for v in 0..n {
+                // new segment boundaries, order-preserving
+                let mut nb: Vec<usize> = Vec::with_capacity(segs.len());
+                for (j, s0) in segs.iter().enumerate() {
+                    let d = (rng() % (2 * k as u64 + 1)) as i64 - k;
+                    let mut b = (*s0 as i64 + d).max(lo as i64) as usize;
+                    if let Some(prev) = nb.last() {
+                        if b <= *prev {
+                            b = prev + 1;
+                        }
+                    }
+                    if j + 1 < segs.len() {
+                        b = b.min(segs[j + 1] - 1);
+                    }
+                    b = b.min(rows.len() - 1);
+                    nb.push(b);
+                }
+                // rebuild: between boundary j and j+1 hold the ORIGINAL value of segment j
+                let mut out_rows: Vec<(i64, i64, i64)> = Vec::with_capacity(rows.len());
+                let mut j = 0usize;
+                for i in 0..rows.len() {
+                    while j < nb.len() && i >= nb[j] {
+                        j += 1;
+                    }
+                    // segment j-1 (or the prefix before the first edge)
+                    let src = if j == 0 { i.min(segs.first().copied().unwrap_or(rows.len()).saturating_sub(1)).min(i) } else { segs[j - 1] };
+                    let r = if j == 0 { &rows[i.min(src)] } else { &rows[src] };
+                    out_rows.push((r.1, r.2, r.3));
+                }
+                let mut lines: Vec<String> = header.clone();
+                for (i, row) in rows.iter().enumerate() {
+                    let mut fields: Vec<String> = row.4.split_whitespace().map(|s| s.to_string()).collect();
+                    for f in fields.iter_mut() {
+                        if f.starts_with("steer=") {
+                            *f = format!("steer={}", out_rows[i].0);
+                        } else if f.starts_with("accel=") {
+                            *f = format!("accel={}", out_rows[i].1);
+                        } else if f.starts_with("brake=") {
+                            *f = format!("brake={}", out_rows[i].2);
+                        } else if f.starts_with("vsame=") {
+                            *f = "vsame=0".to_string();
+                        }
+                    }
+                    lines.push(fields.join(" "));
+                }
+                let t2 = Tape::from_text(&lines.join("\n")).unwrap_or_else(|e| die(format!("variant {v}: {e}")));
+                let bytes = t2.inject_into(&c, Encoding::Explicit).unwrap_or_else(|e| die(e));
+                let f = format!("{outdir}/{stem}_j{v:03}.Ghost.Gbx");
+                std::fs::write(&f, &bytes).unwrap_or_else(|e| die(format!("{f}: {e}")));
+                let shifts: Vec<String> = segs.iter().zip(nb.iter()).map(|(a, b)| format!("{:+}", *b as i64 - *a as i64)).collect();
+                manifest.push_str(&format!("{f}\t{}\n", shifts.join(",")));
+            }
+            std::fs::write(format!("{outdir}/manifest.tsv"), &manifest).unwrap_or_else(|e| die(e.to_string()));
+            println!(
+                "wrote {n} variants of {inp} to {outdir}: {} input edges (segment boundaries at ticks {:?}) each moved by up to +-{k} tick(s); manifest.tsv lists the shifts. Score with `tmsearch validate --map M {outdir}/*.Ghost.Gbx`.",
+                segs.len(), segs
+            );
+        }
         "poke" => {
             // Override the vehicle inputs over a tick range, leaving every
             // other tick byte-identical. A brake pulse, a lifted throttle, a

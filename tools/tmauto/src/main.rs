@@ -36,6 +36,7 @@ RUNG 0  (synthesizing a container with no human provenance)
         it thinks of it. Prints the server's own transcript with --raw.
   tmauto synth write --map MAP.Map.Gbx --out FILE [--ticks N] [--tape T.tsv]
                      [--declared MS] [--seed N] [--steer -127..127] [--wobble-prefix N (default 25; 0 = flat)]
+                     [--validation-block REPLAY | TM_VALIDATION_BLOCK=REPLAY  a real client replay's block]
                      [--record MODE]
                      [--start-offset MS] [--format-version 11|12] [--field0 N]
                      [--state-flags START..END:HEX]
@@ -752,6 +753,20 @@ fn cmd_synth_write(args: &[String]) -> Result<(), String> {
         record_mode,
         corrupt_x_m,
     );
+    // THE VALIDATION BLOCK OF A REAL CLIENT REPLAY (--validation-block FILE or
+    // TM_VALIDATION_BLOCK=FILE): exe version, flags, title, seed -- the engine's
+    // physics follows it (a 2024 block and a 2026 block ran one tape to
+    // different places; the seed word feeds randomness). A search run under
+    // the synthesiser's placeholder block answers for a game nobody plays.
+    // The start index measured above is kept.
+    let mut bytes = bytes;
+    let block_src = arg(args, "--validation-block").or_else(|| std::env::var("TM_VALIDATION_BLOCK").ok());
+    if let Some(src) = block_src {
+        let sb = std::fs::read(&src).map_err(|e| format!("{src}: {e}"))?;
+        bytes = ghost::validation::copy_block(&sb, &bytes)?;
+        bytes = ghost::validation::with_start_index(&bytes, meta.validation_start_index)?;
+        eprintln!("validation block taken from {src} (start index kept at {})", meta.validation_start_index);
+    }
     std::fs::write(&out, &bytes).map_err(|e| e.to_string())?;
     println!(
         "wrote {} ({} bytes, {} ticks, declared {} ms, record {})",
