@@ -1697,7 +1697,7 @@ fn run(mut a: Vec<String>) {
                 prm.sky_samples = f("--sky-samples").map(|s| s.parse().unwrap()).unwrap_or(16);
                 prm.sun_samples = 1;
                 let step = (scene.instances.len() / nitems).max(1);
-                let sub = lightmap::geometry::Scene { models: scene.models.clone(), model_names: scene.model_names.clone(), instances: scene.instances.iter().step_by(step).cloned().collect(), item_count: scene.item_count, decor: scene.decor.clone(), warp_vs: scene.warp_vs.clone(), warp: scene.warp.clone(), alpha_masks: scene.alpha_masks.clone(), card_albedo: scene.card_albedo.clone(), tex_albedo: scene.tex_albedo.clone(), stock_models: Default::default(), veget_poses: scene.veget_poses.iter().step_by(step).copied().collect() };
+                let sub = lightmap::geometry::Scene { models: scene.models.clone(), model_names: scene.model_names.clone(), instances: scene.instances.iter().step_by(step).cloned().collect(), item_count: scene.item_count, decor: scene.decor.clone(), warp_vs: scene.warp_vs.clone(), warp: scene.warp.clone(), alpha_masks: scene.alpha_masks.clone(), card_albedo: scene.card_albedo.clone(), tex_albedo: scene.tex_albedo.clone(), stock_models: Default::default(), veget_poses: scene.veget_poses.iter().step_by(step).copied().collect() , default_textures: scene.default_textures.clone()};
                 // the subset's instances must keep their own inst id for self-hit filtering: rebuild the bvh over all, but
                 // the shade() skip uses the instance index in `sub` — so we bake the subset against a bvh of the FULL scene
                 // whose inst ids are full-scene indices; map them
@@ -2288,7 +2288,8 @@ fn run(mut a: Vec<String>) {
                     let mf = tmmaps::map::MapFile::load(std::path::Path::new(&map_path));
                     let files = mapgeom::embedded::files(&mf).expect("embedded items");
                     let by_name: std::collections::BTreeMap<String, Vec<u8>> = files.iter().map(|(k, v)| (k.rsplit(['/', '\\']).next().unwrap_or(k).to_string(), v.clone())).collect();
-                    let item_bytes = |name: &str| -> Option<Vec<u8>> { by_name.get(name).cloned().or_else(|| by_name.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.clone())) };
+                    // (the class defaults of the textures the map does not embed: Scene::default_textures, RE 17 2026-09-30)
+                    let item_bytes = |name: &str| -> Option<Vec<u8>> { by_name.get(name).cloned().or_else(|| by_name.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.clone())).or_else(|| scene.default_textures.get(name).cloned()).or_else(|| scene.default_textures.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.clone())) };
                     let dir_in_world = [-prm.sun_dir[0], -prm.sun_dir[1], -prm.sun_dir[2]];
                     // THE LAMPS IN FRAME 0 (RE 13, 2026-09-26 17:30Z / 19:25Z / 19:30Z — RenderLightDirect renders every lit lamp (mode 0, the
                     // switch not consulted) into A_0 before the sweeps; A_0 is SS-normalised, snapshotted as D_0 (= frame 1) and joins the sun
@@ -3870,7 +3871,7 @@ fn run(mut a: Vec<String>) {
             prm.uv_bounds = has("--uv-bounds");
             if let Some(s) = f("--bounce") { prm.bounce = s.parse().unwrap(); }
             prm.sky_samples = 64;
-            let sub = lightmap::geometry::Scene { models: scene.models.clone(), model_names: scene.model_names.clone(), instances: vec![scene.instances[ii].clone()], item_count: scene.item_count, decor: scene.decor.clone(), warp_vs: scene.warp_vs.clone(), warp: scene.warp.clone(), alpha_masks: scene.alpha_masks.clone(), card_albedo: scene.card_albedo.clone(), tex_albedo: scene.tex_albedo.clone(), stock_models: Default::default(), veget_poses: scene.veget_poses.get(ii).map(|p| vec![*p]).unwrap_or_default() };
+            let sub = lightmap::geometry::Scene { models: scene.models.clone(), model_names: scene.model_names.clone(), instances: vec![scene.instances[ii].clone()], item_count: scene.item_count, decor: scene.decor.clone(), warp_vs: scene.warp_vs.clone(), warp: scene.warp.clone(), alpha_masks: scene.alpha_masks.clone(), card_albedo: scene.card_albedo.clone(), tex_albedo: scene.tex_albedo.clone(), stock_models: Default::default(), veget_poses: scene.veget_poses.get(ii).map(|p| vec![*p]).unwrap_or_default() , default_textures: scene.default_textures.clone()};
             // bake at Nadeo's resolution
             prm.min_px = pw.max(ph); prm.max_px = pw.max(ph);
             let mine = lightmap::bake::bake_subset_px(&sub, &[ii as u32], &bvh, &prm, pw, ph);
@@ -3944,7 +3945,7 @@ fn run(mut a: Vec<String>) {
                     let (x, y) = mp.pos[ci]; let (w, h) = mp.size[ci];
                     let (px, py, pw, ph) = ((x as u32 + 1) / 2, (y as u32 + 1) / 2, (w as u32) / 2, (h as u32) / 2);
                     if pw < 4 || ph < 4 { continue; }
-                    let sub = lightmap::geometry::Scene { models: scene.models.clone(), model_names: scene.model_names.clone(), instances: vec![inst.clone()], item_count: scene.item_count, decor: scene.decor.clone(), warp_vs: scene.warp_vs.clone(), warp: scene.warp.clone(), alpha_masks: scene.alpha_masks.clone(), card_albedo: scene.card_albedo.clone(), tex_albedo: scene.tex_albedo.clone(), stock_models: Default::default(), veget_poses: scene.veget_poses.get(ii).map(|p| vec![*p]).unwrap_or_default() };
+                    let sub = lightmap::geometry::Scene { models: scene.models.clone(), model_names: scene.model_names.clone(), instances: vec![inst.clone()], item_count: scene.item_count, decor: scene.decor.clone(), warp_vs: scene.warp_vs.clone(), warp: scene.warp.clone(), alpha_masks: scene.alpha_masks.clone(), card_albedo: scene.card_albedo.clone(), tex_albedo: scene.tex_albedo.clone(), stock_models: Default::default(), veget_poses: scene.veget_poses.get(ii).map(|p| vec![*p]).unwrap_or_default() , default_textures: scene.default_textures.clone()};
                     let mine = lightmap::bake::bake_subset_px(&sub, &[ii as u32], &bvh, &prm, pw, ph);
                     let c = &mine[0];
                     let (mut xs, mut ys) = (vec![], vec![]);

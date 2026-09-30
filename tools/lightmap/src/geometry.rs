@@ -89,6 +89,9 @@ pub struct ModelGeom {
     /// The diffuse textures (slot 0) of the link-less user materials: the bounce albedo of a custom-texture
     /// item (the tiny Stadium blocks) is that texture's mean colour.
     pub diff_tex: Vec<String>,
+    /// Per texture file (of `alpha_tex` / `diff_tex`, by base name): the material MODEL that names it (TDSN, TDOSN, …) — a file the
+    /// map does not embed takes the model's class default (`Scene::default_textures`; RE 17 2026-09-30 18:46Z).
+    pub tex_model: BTreeMap<String, String>,
     /// Per material link: the diffuse albedo the bounce uses (`crate::albedo`).
     pub mat_albedo: Vec<[f32; 3]>,
     /// Per `mat_links` slot: the material's own `PreLightGen` BOOL SWITCH is set (CPlugMaterialCustom chunk 0x0903A00C = 1 → the
@@ -564,10 +567,14 @@ pub fn geom_from_solid2_ext(s2: &mapgeom::static_item::solid2::CPlugSolid2Model,
                 .or_else(|| ext.as_ref().and_then(|(_, externals)| s2.materials.get(mi).and_then(|r| if r.index >= 0 { externals.iter().find(|(i, _)| *i == r.index as u32).map(|(_, p)| mapgeom::static_item::materials::material_link(p)) } else { None })))
         }).unwrap_or_default();
         // the material's cut-out texture: the DiffuseO (slot 1) user texture
+        // (E7 2026-09-30, RE 17's 18:46Z read: a user texture the map does not embed falls back to the material MODEL's class default —
+        // `Techno3\Media\MaterialInstance\Static_<model>` — so the model name is kept per texture file: `tex_model`)
+        let mat_model: Option<String> = usize::try_from(sg.material_index).ok().and_then(|mi| s2.custom_materials.get(mi)).and_then(|cm| cm.inst()).and_then(|m| m.main.as_ref()).and_then(|mm| match &mm.model { mapgeom::crystal_model::Id::Str(s) if !s.is_empty() => Some(s.clone()), _ => None });
         let alpha: u16 = usize::try_from(sg.material_index).ok().and_then(|mi| s2.custom_materials.get(mi)).and_then(|cm| cm.inst()).and_then(|m| m.main.as_ref())
             .and_then(|mm| mm.user_textures.iter().find(|t| t.u01 == 1).map(|t| t.texture.clone()))
             .map(|file| {
                 let base = file.rsplit(['/', '\\']).next().unwrap_or(&file).to_string();
+                if let Some(mn) = &mat_model { g.tex_model.entry(base.clone()).or_insert_with(|| mn.clone()); }
                 match g.alpha_tex.iter().position(|f| *f == base) {
                     Some(i) => i as u16,
                     None => { g.alpha_tex.push(base); (g.alpha_tex.len() - 1) as u16 }
@@ -579,6 +586,7 @@ pub fn geom_from_solid2_ext(s2: &mapgeom::static_item::solid2::CPlugSolid2Model,
                 .and_then(|mm| mm.user_textures.iter().find(|t| t.u01 == 0).map(|t| t.texture.clone()))
                 .map(|file| {
                     let base = file.rsplit(['/', '\\']).next().unwrap_or(&file).to_string();
+                    if let Some(mn) = &mat_model { g.tex_model.entry(base.clone()).or_insert_with(|| mn.clone()); }
                     match g.diff_tex.iter().position(|f| *f == base) {
                         Some(i) => i as u16,
                         None => { g.diff_tex.push(base); (g.diff_tex.len() - 1) as u16 }
@@ -756,6 +764,13 @@ pub struct Scene {
     pub warp: Option<std::sync::Arc<crate::warpterrain::WarpShading>>,
     /// The cut-out masks by texture file name (the map zip's `Items/*.dds` decoded at ≤ 256 px, alpha ≥ 0.5).
     pub alpha_masks: BTreeMap<String, AlphaMask>,
+    /// THE CLASS DEFAULTS (RE 17 2026-09-30 18:46Z, g23 frame 537's SRVs 5522 / 5592 = the pak files): a user texture an item names but
+    /// the map does not embed (the `-reduced-source` oracles carry no .dds) is, in the game, the material MODEL's default —
+    /// `Techno3\Media\MaterialInstance\Static_<model>`'s BaseColor slot: TDSN → DefaultBaseColor.dds (4×4 BC1 mid-grey 0x80 → 0.2158
+    /// linear), TDOSN → DefaultBaseColorOpacity.dds (16×16 BC3, colour 0, ALPHA 0: every card fragment fails the 0.502 alpha test — the
+    /// cards vanish from the pre-pass, the peel and the sun map). By base file name → the default's DDS bytes; consulted after the
+    /// embedded files everywhere a texture is looked up (the masks and albedos here, the pre-pass through `item_bytes`).
+    pub default_textures: BTreeMap<String, Vec<u8>>,
     /// The model indices resolved from the packs (stock items), for the lamp-class studies.
     pub stock_models: std::collections::HashSet<usize>,
     /// Per instance: the STOCK VEGETATION pose the tree programs read (g_Buf_AllTreeInstance_TQuats — the varied quaternion,
@@ -1087,6 +1102,40 @@ impl Scene {
             let pose = ItemPose { yaw: it.yaw, pitch: it.pitch, roll: it.roll, pos: it.pos, pivot: it.pivot, scale: it.scale };
             instances.push(Instance { item: i, model: mi, xf, model_name: it.model.clone(), pose, lm_quality: lm_quality.get(i).copied().unwrap_or(0), colour: colours.get(i).copied().unwrap_or(0) });
         }
+        // THE CLASS DEFAULTS for the textures the map does not embed (see `Scene::default_textures`): resolved through the stock store's
+        // packs (Maniaplanet.pak holds Techno3\Media\MaterialInstance\*); LMTOOL_NO_TEXTURE_DEFAULTS=1 keeps the pre-2026-09-30 form (a
+        // missing cut-out = OPAQUE cards, a missing diffuse = no albedo) as a study.
+        let mut default_textures: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+        if std::env::var_os("LMTOOL_NO_TEXTURE_DEFAULTS").is_none() {
+            let mut wanted: BTreeMap<String, String> = BTreeMap::new();
+            for g in &models {
+                for file in g.alpha_tex.iter().chain(g.diff_tex.iter()) {
+                    if by_name.contains_key(file) { continue; }
+                    if let Some(model) = g.tex_model.get(file) { wanted.entry(file.clone()).or_insert_with(|| model.clone()); }
+                }
+            }
+            if !wanted.is_empty() {
+                match stock_store.as_mut() {
+                    Some(st) => {
+                        let mut got: Vec<String> = Vec::new();
+                        for (file, model) in &wanted {
+                            let link = format!("Techno3\\Media\\MaterialInstance\\Static_{model}");
+                            let mat = format!("{link}.Material.Gbx");
+                            let chain = mapgeom::envblock::material_chain(st, &mat);
+                            let slot = chain.bitmaps.iter().find(|(n, p)| n.eq_ignore_ascii_case("BaseColor") && !p.is_empty()).map(|(_, p)| p.clone());
+                            let bytes = slot.as_ref().and_then(|s| crate::paktables::bitmap_dds(st, s).ok()).and_then(|(dds, _)| st.read(&dds).ok().map(|b| (dds, b)));
+                            match bytes {
+                                Some((dds, b)) => { got.push(format!("{file} ({model}) → {}", dds.rsplit('\\').next().unwrap_or(&dds))); default_textures.insert(file.clone(), b.to_vec()); }
+                                None => eprintln!("  texture default: {file} ({model}): {link} has no readable BaseColor default"),
+                            }
+                        }
+                        if !got.is_empty() { eprintln!("  {} texture(s) the map does not embed take their material model's CLASS DEFAULT (the game's rule on a reduced oracle: RE 17 2026-09-30): {}", got.len(), got.join(", ")); }
+                    }
+                    None => eprintln!("  {} texture(s) the map does not embed ({:?}) — no --pak / LMTOOL_STOCK_PAKS to read the class defaults from", wanted.len(), wanted.keys().take(4).collect::<Vec<_>>()),
+                }
+            }
+        }
+        let by_name: BTreeMap<String, &Vec<u8>> = { let mut m = by_name; for (k, v) in &default_textures { m.entry(k.clone()).or_insert(v); } m };
         // the cut-out masks of the alpha-tested materials (the zip's Items/*.dds by base name)
         let mut alpha_masks: BTreeMap<String, AlphaMask> = BTreeMap::new();
         let mut missing_alpha: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
@@ -1189,7 +1238,7 @@ impl Scene {
             let n_lights: usize = instances.iter().map(|i| models[i.model].lights.len()).sum();
             eprintln!("reduced oracle: baking the KEPT SET — {} of {} item instances kept ({} of {} items in the list; {} dropped), {} of {} item lights", instances.len(), before, kept.len(), m.items.len(), before - instances.len(), n_lights, n_lights_before);
         }
-        Ok(Scene { models, model_names, instances, item_count: m.items.len(), decor: Vec::new(), warp_vs: Vec::new(), warp: None, alpha_masks, card_albedo, tex_albedo, stock_models: stock_model_idx, veget_poses })
+        Ok(Scene { models, model_names, instances, item_count: m.items.len(), decor: Vec::new(), warp_vs: Vec::new(), warp: None, alpha_masks, card_albedo, tex_albedo, stock_models: stock_model_idx, veget_poses, default_textures })
     }
 
     pub fn tri_count(&self) -> usize {
