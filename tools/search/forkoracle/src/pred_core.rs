@@ -35,6 +35,10 @@ pub const K_NOPROG: u32 = 5;
 /// THE INCUMBENT-LAG PREDICATE: the candidate is behind the incumbent by more than
 /// `p[0]` ms at the point of the line it has reached. See `Eval::feed`.
 pub const K_LAG: u32 = 6;
+/// Abort when the speed EXCEEDS p[0] m/s for `need` ticks: a ceiling, for a
+/// tape that must stay reproducible (the 300-km/h beach approach diverged with
+/// the physics seed; a 150-km/h one does not, 2026-09-29).
+pub const K_CEILING: u32 = 7;
 
 pub fn kind_name(k: u32) -> &'static str {
     match k {
@@ -45,6 +49,7 @@ pub fn kind_name(k: u32) -> &'static str {
         K_OFFREF => "offref",
         K_NOPROG => "noprog",
         K_LAG => "lag",
+        K_CEILING => "ceiling",
         _ => "unknown",
     }
 }
@@ -57,6 +62,7 @@ pub fn kind_of(s: &str) -> Option<u32> {
         "offref" => Some(K_OFFREF),
         "noprog" => Some(K_NOPROG),
         "lag" => Some(K_LAG),
+        "ceiling" => Some(K_CEILING),
         _ => None,
     }
 }
@@ -1198,6 +1204,7 @@ impl Eval {
                     (peak >= p.p[1] && speed < p.p[0] * peak, speed)
                 }
                 K_FLOOR => (speed < p.p[0], speed),
+                K_CEILING => (speed > p.p[0], speed),
                 K_BOX => {
                     let over = (p.p[0] - pos[0])
                         .max(pos[0] - p.p[1])

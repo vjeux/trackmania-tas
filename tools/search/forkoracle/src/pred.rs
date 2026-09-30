@@ -185,6 +185,7 @@ pub fn parse_spec(spec: &str) -> Result<NamedPred, String> {
     let allowed: &[&str] = match kind_s {
         "speeddrop" => &["frac", "win", "minpeak", "need", "after", "until"],
         "floor" => &["speed", "need", "after", "until"],
+        "ceiling" => &["speed", "need", "after", "until"],
         "box" => &["xmin", "xmax", "ymin", "ymax", "zmin", "zmax", "need", "after", "until"],
         "offref" => &["dist", "need", "after", "until"],
         "noprog" => &["dist", "win", "need", "after", "until"],
@@ -218,6 +219,10 @@ pub fn parse_spec(spec: &str) -> Result<NamedPred, String> {
         "floor" => {
             p.need = geti(&kv, "need", 30).max(1) as u32;
             p.p[0] = getf(&kv, "speed", 3.0);
+        }
+        "ceiling" => {
+            p.need = geti(&kv, "need", 5).max(1) as u32;
+            p.p[0] = getf(&kv, "speed", 42.0);
         }
         "box" => {
             p.need = geti(&kv, "need", 1).max(1) as u32;

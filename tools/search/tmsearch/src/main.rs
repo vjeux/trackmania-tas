@@ -47,9 +47,13 @@ const USAGE: &str = r#"tmsearch -- the TAS search for Trackmania 2020
             What one search step buys: by operator, by tick, and the
             best-of-k curve that sizes --batch.
 
-  validate  --map M GHOST...
+  validate  --map M GHOST... [--seeds N]
             Ask the plain oracle. Prints the time it SIMULATED and, when
-            they differ, the time the file DECLARES.
+            they differ, the time the file DECLARES. --seeds N also runs each
+            file under N physics seeds (0, 1, 12346, ...): the engine draws
+            randomness from the validation block's seed word and the game
+            picks a fresh one per run, so only a time that holds under all
+            of them is reproducible in the client.
 
 WHERE
   --server DIR        the dedicated server (default $TM_SERVER)
@@ -210,6 +214,7 @@ struct Args {
     minhold: usize,
     gas_held: bool,
     decoy_warn: bool,
+    seeds: usize,
     n: usize,
     target_ms: i64,
     out: String,
@@ -282,6 +287,7 @@ fn parse() -> Args {
         minhold: 1,
         gas_held: false,
         decoy_warn: false,
+        seeds: 0,
         n: 0,
         target_ms: 0,
         out: "/tmp/tmsearch-dump.jsonl".into(),
@@ -346,6 +352,7 @@ fn parse() -> Args {
             "--minhold" => a.minhold = num(&next(&mut i), k) as usize,
             "--decoy-warn" => a.decoy_warn = true,
             "--gas-held" => a.gas_held = true,
+            "--seeds" => a.seeds = num(&next(&mut i), k) as usize,
             "--n" => a.n = num(&next(&mut i), k) as usize,
             "--target" => a.target_ms = (num(&next(&mut i), k) * 1000.0).round() as i64,
             "--out" => a.out = next(&mut i),
@@ -1166,7 +1173,26 @@ fn cmd_validate(a: &Args) {
     if a.free.is_empty() {
         die("validate needs one or more ghosts");
     }
-    let paths: Vec<PathBuf> = a.free.iter().map(PathBuf::from).collect();
+    let mut paths: Vec<PathBuf> = a.free.iter().map(PathBuf::from).collect();
+    // --seeds N: every file also under physics seeds 0..N-1 (plus the file's own),
+    // written beside it as NAME.seedK.Ghost.Gbx. A time that holds under all of
+    // them is reproducible; one that holds under the file's own seed alone is
+    // an artefact of that seed (the game draws a fresh one per run).
+    if a.seeds > 0 {
+        let mut extra = Vec::new();
+        for p in &paths {
+            let bytes = std::fs::read(p).unwrap_or_else(|e| die(format!("{}: {}", p.display(), e)));
+            for k in 0..a.seeds {
+                let seed = if k == 0 { 0 } else { 1 + (k as u32 - 1) * 12345 };
+                let v = ghost::validation::with_seed(&bytes, seed).unwrap_or_else(|e| die(e));
+                let name = p.file_name().unwrap().to_string_lossy().replace(".Ghost.Gbx", "").replace(".Replay.Gbx", "");
+                let out = p.with_file_name(format!("{name}.seed{seed}.Ghost.Gbx"));
+                std::fs::write(&out, v).unwrap_or_else(|e| die(e.to_string()));
+                extra.push(out);
+            }
+        }
+        paths.extend(extra);
+    }
     let refs: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
     let rows = ghost::oracle::validate_many(&server, &refs, ghost::oracle::MapsMode::One(&map), "validate")
         .unwrap_or_else(|e| die(e));
