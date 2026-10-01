@@ -42,6 +42,24 @@ fn main() {
     let min_texels: usize = f("--min-texels").map(|v| v.parse().expect("--min-texels N")).unwrap_or(500);
     let out = f("--out");
     let own_rects = a.iter().any(|x| x == "--own-rects");
+    // `--frame N` (V7, 2026-10-01): read frame N's image 0 (frame 1 = the local-light frame, sRGB-encoded — classcmp::texel_hdr's decode); planes frame 0 only
+    let frame: usize = f("--frame").map(|v| v.parse().expect("--frame N")).unwrap_or(0);
+    // `--lamps TSV --lamp-bins D1,D2,…` (V7): the texel's 3-D distance to the NEAREST lamp of a `lmtool map-lights --out` table (x y z radius
+    // columns) → the bands `L d≤D1`, `L D1<d≤D2`, …, `L d>Dn`, crossed with the elevation band; plus `R inside`/`R outside` by the nearest
+    // lamp's own radius — the lamp-bounce (frame 0) and the lamp set (frame 1) by distance to the light
+    let lamps: Vec<[f32; 4]> = f("--lamps").map(|p| {
+        let txt = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("--lamps {p}: {e}"));
+        let mut ls = txt.lines();
+        let head: Vec<String> = ls.next().unwrap_or("").split('\t').map(|s| s.trim().to_string()).collect();
+        let col = |n: &str| head.iter().position(|h| h == n).unwrap_or_else(|| panic!("--lamps: no {n} column"));
+        let (cx, cy, cz, cr) = (col("x"), col("y"), col("z"), col("radius"));
+        let out: Vec<[f32; 4]> = ls.filter_map(|l| { let t: Vec<&str> = l.split('\t').collect(); if t.len() <= cr.max(cx).max(cy).max(cz) { return None } Some([t[cx].parse().ok()?, t[cy].parse().ok()?, t[cz].parse().ok()?, t[cr].parse().ok()?]) }).collect();
+        eprintln!("--lamps: {} lamps from {p}", out.len());
+        out
+    }).unwrap_or_default();
+    let lamp_bins: Vec<f32> = f("--lamp-bins").map(|v| v.split(',').map(|s| s.trim().parse().expect("--lamp-bins D1,D2")).collect()).unwrap_or_default();
+    // `--at X,Y;X2,Y2;…` (V7): print the named atlas texels (chart, class, world position, normal, nearest lamp, both values) — the hot texel's trace
+    let at: Vec<(u32, u32)> = f("--at").map(|v| v.split(';').filter(|s| !s.trim().is_empty()).map(|s| { let p: Vec<u32> = s.split(',').map(|t| t.trim().parse().expect("--at X,Y")).collect(); (p[0], p[1]) }).collect()).unwrap_or_default();
     let editor_min: f64 = f("--editor-min").map(|v| v.parse().expect("--editor-min S")).unwrap_or(0.0);
     let dump: Option<(String, String, usize)> = f("--dump-texels").map(|v| { let p: Vec<&str> = v.split(':').collect(); (p[0].to_string(), p.get(1).unwrap_or(&"").to_string(), p.get(2).and_then(|n| n.parse().ok()).unwrap_or(40)) });
     let mut dumped = 0usize;
@@ -58,20 +76,20 @@ fn main() {
     let (m1, m2) = (d1.cache.mapping().expect("ours: mapping"), d2.cache.mapping().expect("theirs: mapping"));
     if !own_rects { assert_eq!(m1.count, m2.count, "chart counts differ — the exact layout is required (or --own-rects)"); }
     let theirs_of: std::collections::HashMap<(u32, u32), usize> = (0..m2.count as usize).map(|j| ((m2.binds[j].obj_group_idx / 4, m2.binds[j].obj_idx & 0x00ff_ffff), j)).collect();
-    let (f1, f2) = (&d1.frames[0], &d2.frames[0]);
+    let (f1, f2) = (d1.frames.get(frame).expect("ours: frame"), d2.frames.get(frame).expect("theirs: frame"));
     let i1 = lightmap::img::decode_webp(&f1.images[0]).expect("ours image 0");
     let i2 = lightmap::img::decode_webp(&f2.images[0]).expect("theirs image 0");
     if !own_rects { assert!(i1.w == i2.w && i1.h == i2.h, "image sizes differ"); }
-    let planes1: Vec<lightmap::img::Rgb> = f1.images.get(1).map(|b| lightmap::texeldelta::riff_parts(b).iter().map(|p| lightmap::img::decode_webp(p).expect("ours plane")).collect()).unwrap_or_default();
-    let planes2: Vec<lightmap::img::Rgb> = f2.images.get(1).map(|b| lightmap::texeldelta::riff_parts(b).iter().map(|p| lightmap::img::decode_webp(p).expect("theirs plane")).collect()).unwrap_or_default();
+    let planes1: Vec<lightmap::img::Rgb> = if frame != 0 { Vec::new() } else { f1.images.get(1).map(|b| lightmap::texeldelta::riff_parts(b).iter().map(|p| lightmap::img::decode_webp(p).expect("ours plane")).collect()).unwrap_or_default() };
+    let planes2: Vec<lightmap::img::Rgb> = if frame != 0 { Vec::new() } else { f2.images.get(1).map(|b| lightmap::texeldelta::riff_parts(b).iter().map(|p| lightmap::img::decode_webp(p).expect("theirs plane")).collect()).unwrap_or_default() };
     let np = planes1.len().min(planes2.len()).min(3);
-    let k1 = lightmap::classcmp::record_maxhdr(&m1, 0).expect("ours record");
-    let k2 = lightmap::classcmp::record_maxhdr(&m2, 0).expect("theirs record");
+    let k1 = lightmap::classcmp::record_maxhdr(&m1, frame).expect("ours record");
+    let k2 = lightmap::classcmp::record_maxhdr(&m2, frame).expect("theirs record");
     let hb = |m: &lightmap::format::Mapping| -> [f32; 3] { let r = 60; if r + 66 <= m.head.len() { [54usize, 58, 62].map(|o| f32::from_le_bytes(m.head[r + o..r + o + 4].try_into().unwrap())) } else { [1.0; 3] } };
     let (hb1, hb2) = (hb(&m1), hb(&m2));
     let cval = |b: u8, k: usize, hbw: [f32; 3]| -> f64 { let t = b as f64 / 255.0 - 0.5; t.signum() * (t / 0.5) * (t / 0.5) * (hbw[k] as f64 / 0.6909883) };
-    let fb1 = &m1.frame_bytes[0];
-    let fb2 = &m2.frame_bytes[0];
+    let fb1 = &m1.frame_bytes[frame];
+    let fb2 = &m2.frame_bytes[frame];
     let rows_v = lightmap::classcmp::read_records_tsv(&records).unwrap_or_else(|e| panic!("{e}"));
     let rows: std::collections::HashMap<(u32, u32), lightmap::classcmp::RecRow> = rows_v.iter().map(|r| ((r.obj, r.sub), r.clone())).collect();
     eprintln!("lightmaps: {} charts, image {}×{}, planes {np}, MaxHDR ours {k1} / editor {k2}, HBasis words ours {hb1:?} / editor {hb2:?}", m1.count, i1.w, i1.h);
@@ -100,6 +118,9 @@ fn main() {
         }
     }
     eprintln!("layout: {} charts / {} records; aligned to the mapping: {aligned} (rects moved {moved}), unmatched (emptied) {unmatched}; mapping charts {}", gl.charts.len(), gl.records.len(), m1.count);
+    // the record's bind word per layout record index (rec_ok compares BIND WORDS, not indices: a mapping with charts the layout lacks —
+    // tiny16's 4 stock-screen charts — shifts every later index while the aligned rects are right; V7, 2026-10-01)
+    let rec_bind: Vec<(u32, u32)> = gl.records.iter().map(|r| (r.obj, r.sub)).collect();
     let mut store = mapgeom::store::DataStore::empty();
     for (p, k) in &paks { store.add_pak(p, k).unwrap_or_else(|e| panic!("pak {p}: {e}")); }
     let tile_world_y = lightmap::layout::tile_level(&mf, &collection) as f32 * 8.0 + lightmap::layout::CollectionProfile::of(&collection).yoff;
@@ -201,6 +222,19 @@ fn main() {
                 let r2 = r * r;
                 if pts.iter().any(|(px, pz)| { let (dx, dz) = (px - x0, pz - z0); dx * dx + dz * dz <= r2 }) { "N0 near" } else { "N1 far" }
             });
+            // the nearest lamp (3-D) of the texel's fragment position
+            let lamp_d: Option<(f32, f32)> = if lamps.is_empty() || !has[p] { None } else {
+                let q = posv[p];
+                let mut best = (f32::MAX, 0f32);
+                for l in &lamps { let (dx, dy, dz) = (l[0] - q[0], l[1] - q[1], l[2] - q[2]); let d2 = dx * dx + dy * dy + dz * dz; if d2 < best.0 { best = (d2, l[3]); } }
+                Some((best.0.sqrt(), best.1))
+            };
+            let lb: Option<(String, &'static str)> = lamp_d.map(|(d, r)| {
+                let mut label = format!("L d>{}", lamp_bins.last().copied().unwrap_or(0.0));
+                let mut lo = 0f32;
+                for &b in &lamp_bins { if d <= b { label = if lo == 0.0 { format!("L d≤{b}") } else { format!("L {lo}<d≤{b}") }; break; } lo = b; }
+                (label, if d <= r { "R inside reach" } else { "R outside reach" })
+            });
             let a = i1.get(x, y);
             // the editor's texel: the same position, or the proportional one in its own rect
             let (ex, ey) = if own_rects {
@@ -208,21 +242,29 @@ fn main() {
                 ((qx + ((u / pw.max(1) as f64) * qw as f64).floor() as u32).min(i2.w - 1), (qy + ((v / ph.max(1) as f64) * qh as f64).floor() as u32).min(i2.h - 1))
             } else { (x, y) };
             let b = i2.get(ex, ey);
-            let lo = (0..3).map(|c| lightmap::classcmp::texel_hdr(0, a[c], fbi, k1)).fold(0.0, f64::max) >= lit_hdr;
-            let le = (0..3).map(|c| lightmap::classcmp::texel_hdr(0, b[c], fbj, k2)).fold(0.0, f64::max) >= lit_hdr
-                && (editor_min <= 0.0 || (0..3).map(|c| lightmap::classcmp::texel_hdr(0, b[c], fbj, k2)).sum::<f64>() >= editor_min);
+            let lo = (0..3).map(|c| lightmap::classcmp::texel_hdr(frame, a[c], fbi, k1)).fold(0.0, f64::max) >= lit_hdr;
+            let le = (0..3).map(|c| lightmap::classcmp::texel_hdr(frame, b[c], fbj, k2)).fold(0.0, f64::max) >= lit_hdr
+                && (editor_min <= 0.0 || (0..3).map(|c| lightmap::classcmp::texel_hdr(frame, b[c], fbj, k2)).sum::<f64>() >= editor_min);
             if let Some((sub, bp, n)) = &dump {
                 if dumped < *n && has[p] && key.contains(sub.as_str()) && eb.starts_with(bp.as_str()) && le {
-                    let ho: Vec<f64> = (0..3).map(|c| lightmap::classcmp::texel_hdr(0, a[c], fbi, k1)).collect();
-                    let he: Vec<f64> = (0..3).map(|c| lightmap::classcmp::texel_hdr(0, b[c], fbj, k2)).collect();
+                    let ho: Vec<f64> = (0..3).map(|c| lightmap::classcmp::texel_hdr(frame, a[c], fbi, k1)).collect();
+                    let he: Vec<f64> = (0..3).map(|c| lightmap::classcmp::texel_hdr(frame, b[c], fbj, k2)).collect();
                     println!("TEXEL\t{key}\tchart {i}\tatlas ({x}, {y})\tworld ({:.1}, {:.1}, {:.1})\tnormal ({:.3}, {:.3}, {:.3})\tours {:.4}/{:.4}/{:.4}\teditor {:.4}/{:.4}/{:.4}\tratio {:.3}/{:.3}/{:.3}", posv[p][0], posv[p][1], posv[p][2], nrm[p][0], nrm[p][1], nrm[p][2], ho[0], ho[1], ho[2], he[0], he[1], he[2], ho[0] / he[0].max(1e-9), ho[1] / he[1].max(1e-9), ho[2] / he[2].max(1e-9));
                     dumped += 1;
                 }
             }
+            if at.iter().any(|&(ax, ay)| ax == x && ay == y) {
+                let ho: Vec<f64> = (0..3).map(|c| lightmap::classcmp::texel_hdr(frame, a[c], fbi, k1)).collect();
+                let he: Vec<f64> = (0..3).map(|c| lightmap::classcmp::texel_hdr(frame, b[c], fbj, k2)).collect();
+                println!("AT\tatlas ({x}, {y})\t{key}\tchart {i} rect ({}, {}) {}×{} fb {fbi}/{fbj}\tfrag {}\tworld ({:.2}, {:.2}, {:.2})\tnormal ({:.3}, {:.3}, {:.3})\tnearest lamp {}\tours {:.4}/{:.4}/{:.4}\teditor {:.4}/{:.4}/{:.4}",
+                    m1.pos[i].0, m1.pos[i].1, m1.size[i].0, m1.size[i].1, if has[p] { "yes" } else { "NO" }, posv[p][0], posv[p][1], posv[p][2], nrm[p][0], nrm[p][1], nrm[p][2],
+                    lamp_d.map(|(d, r)| format!("{d:.2} m (radius {r:.1})")).unwrap_or("—".into()), ho[0], ho[1], ho[2], he[0], he[1], he[2]);
+            }
             let mut bands = vec![format!("all"), eb.to_string(), sb.to_string(), format!("{eb} × {sb}")];
+            if let Some((ref ld, rr)) = lb { bands.push(ld.clone()); bands.push(rr.to_string()); bands.push(format!("{ld} × {eb}")); }
             if let Some(nb) = nb { bands.push(nb.to_string()); bands.push(format!("{nb} × {eb}")); }
             if !ed_bins.is_empty() && le {
-                let se: f64 = (0..3).map(|c| lightmap::classcmp::texel_hdr(0, b[c], fbj, k2)).sum();
+                let se: f64 = (0..3).map(|c| lightmap::classcmp::texel_hdr(frame, b[c], fbj, k2)).sum();
                 let ebnd = format!("B {}", lightmap::classcmp::editor_band_label(se, &ed_bins));
                 bands.push(ebnd.clone());
                 if let Some(nb) = nb { bands.push(format!("{nb} × {ebnd}")); }
@@ -234,13 +276,13 @@ fn main() {
             for band in bands {
                 let e = acc.entry((key.clone(), band)).or_default();
                 e.texels += 1;
-                if !has[p] { e.no_frag += 1; } else if rec_px[p] as usize == i { e.rec_ok += 1; }
+                if !has[p] { e.no_frag += 1; } else if rec_bind.get(rec_px[p] as usize).map(|&b| b == (obj, sub)).unwrap_or(false) { e.rec_ok += 1; }
                 if has[p] { e.cos_sum += (nrm[p][0] * to_sun[0] + nrm[p][1] * to_sun[1] + nrm[p][2] * to_sun[2]) as f64; }
                 if has[p] && (geo[p][0] != 0.0 || geo[p][1] != 0.0 || geo[p][2] != 0.0) { e.geo_n += 1; e.geo_ny += geo[p][1] as f64; if nrm[p][0] * geo[p][0] + nrm[p][1] * geo[p][1] + nrm[p][2] * geo[p][2] > 0.0 { e.geo_agree += 1; } }
                 if lo { e.lit_o += 1; }
                 if le {
                     e.lit_e += 1; e.used += 1;
-                    for c in 0..3 { e.so[c] += lightmap::classcmp::texel_hdr(0, a[c], fbi, k1); e.se[c] += lightmap::classcmp::texel_hdr(0, b[c], fbj, k2); }
+                    for c in 0..3 { e.so[c] += lightmap::classcmp::texel_hdr(frame, a[c], fbi, k1); e.se[c] += lightmap::classcmp::texel_hdr(frame, b[c], fbj, k2); }
                     for k in 0..np {
                         let (vo, ve) = (cval(planes1[k].get(x, y)[0], k, hb1), cval(planes2[k].get(ex, ey)[0], k, hb2));
                         e.pabs_o[k] += vo.abs(); e.pabs_e[k] += ve.abs(); e.pn[k] += 1;
