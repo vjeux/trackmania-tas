@@ -158,6 +158,15 @@ fn bake_one(g: &MyGame, map_wsl: &str, quality: u32, load_timeout: Duration, com
     let game_map = format!("C:/Users/vjeux/OneDrive/Documents/Trackmania/Maps/_shoot/{name}");
     std::fs::write(format!("{GS_STORE}/editmap.txt"), &game_map).map_err(|e| format!("editmap.txt: {e}"))?;
     let t0 = Instant::now();
+    if check_only {
+        // the direct playground (`/playmap`, PlayMap on the file) — no editor session at all; the
+        // editor's Test button did not open a test playground after a save (16, 2026-10-01)
+        println!("  {name}: /playmap: {}", get(shootctl, "/playmap?mode=", 30));
+        let car = wait_for_car(g, &name, Duration::from_secs(240))?;
+        let _ = std::fs::remove_file(&game_copy);
+        g.to_menu()?;
+        return Ok(("-".into(), 0.0, car));
+    }
     println!("  {name}: cache {dropped} dropped; /editmap: {}", get(shootctl, "/editmap", 30));
     loop {
         if t0.elapsed() > load_timeout {
@@ -271,10 +280,20 @@ fn start_check(g: &MyGame, name: &str) -> Result<String, String> {
         std::thread::sleep(Duration::from_millis(1500));
     }
     println!("  {name}: /edtest: {} (ctx before {:?})", get(shootctl, "/edtest", 30), ctx(shootctl));
+    car = wait_for_car(g, name, Duration::from_secs(240))?;
+    Ok(car)
+}
+
+/// The playground's car: ctx 3 held for a second and a /wheels row; the position read
+/// again 2.5 s later (the car has settled on the start). Logs /appstate every 20 s and
+/// re-clicks the editor's Test button while no playground appears (an editor session).
+fn wait_for_car(g: &MyGame, name: &str, timeout: Duration) -> Result<String, String> {
+    let shootctl = &g.shootctl;
+    let mut car = String::from("-");
     let p0 = Instant::now();
     let mut last_note = 0u64;
     loop {
-        if p0.elapsed() > Duration::from_secs(240) {
+        if p0.elapsed() > timeout {
             car = format!("NO VEHICLE (the playground never came up; last ctx {})", get(shootctl, "/ctx", 10).chars().take(100).collect::<String>());
             break;
         }
@@ -285,7 +304,7 @@ fn start_check(g: &MyGame, name: &str) -> Result<String, String> {
             println!("  {name}: test drive {secs} s: ctx {} app {} dlg {}", get(shootctl, "/ctx", 10).chars().take(100).collect::<String>(), app.chars().take(160).collect::<String>(), get(shootctl, "/dlgtext", 10).trim().chars().take(80).collect::<String>());
             // the Test button right after a SaveMap did nothing once (16, 2026-10-01: editor 1,
             // playground null for 150 s) — the editor was still busy with the save: click again
-            if app.contains("\"playground\":null") && last_note <= 4 {
+            if app.contains("\"playground\":null") && app.contains("\"editor\":1") && last_note <= 4 {
                 let _ = get(shootctl, "/dismiss", 10);
                 println!("  {name}: /edtest again: {}", get(shootctl, "/edtest", 30));
             }

@@ -4,4 +4,4 @@ cargo:rerun-if-changed=/home/vjeux/fall/tt/tools/mapgeom/../gbx/src
 cargo:rerun-if-changed=/home/vjeux/fall/tt/tools/mapgeom/../Cargo.lock
 cargo:rerun-if-changed=/home/vjeux/fall/tt/tools/mapgeom/../../.git/HEAD
 cargo:rerun-if-changed=/home/vjeux/fall/tt/tools/mapgeom/../../.git/refs/heads
-cargo:rustc-env=MAPGEOM_BUILD_ID=62b06caef7e1-4588bf94c18e1cf5
+cargo:rustc-env=MAPGEOM_BUILD_ID=fc306982175a-4588bf94c18e1cf5
