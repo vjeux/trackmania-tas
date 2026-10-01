@@ -16,7 +16,9 @@
 //!
 //! The copy's item count must equal the shipped file's (the lightmap is
 //! applied by item index): a mismatch is reported and the copy deleted.
-//! One row per map goes to `--report R.tsv` (map, copy, items, verdict).
+//! One row per map goes to `--report R.tsv` (map, copy, items, verdict);
+//! `--manifest-out M.tsv --lit-dir DIR` adds a `lightmap-batch` manifest row
+//! (copy, shipped, DIR/<file>, name) per good copy.
 //! The bake itself is `tinyctl lightmap COPY --into SHIPPED=OUT` (2026-09-22,
 //! the giant campaigns: 75 shipped files).
 
@@ -140,6 +142,17 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         let line = format!("{nn}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", shipped.display(), copy.display(), n_ship, n_copy, sm.blocks.len(), rung_s, verdict);
         let mut fh = std::fs::OpenOptions::new().append(true).open(&report).map_err(|e| format!("{}: {e}", report.display()))?;
         std::io::Write::write_all(&mut fh, line.as_bytes()).map_err(|e| e.to_string())?;
+        // --manifest-out M.tsv --lit-dir DIR: a `tinyctl lightmap-batch --manifest` row per
+        // good copy — copy, shipped, DIR/<shipped file name>, the shipped map's name
+        if verdict.starts_with("ok") {
+            if let (Some(mpath), Some(lit)) = (f("--manifest-out"), f("--lit-dir")) {
+                let name = tmmaps::header::read(&shipped.display().to_string()).map(|h| h.name).unwrap_or_default();
+                let out = PathBuf::from(&lit).join(shipped.file_name().unwrap_or_default());
+                let row = format!("{}\t{}\t{}\t{name}\n", copy.display(), shipped.display(), out.display());
+                let mut mf = std::fs::OpenOptions::new().create(true).append(true).open(&mpath).map_err(|e| format!("{mpath}: {e}"))?;
+                std::io::Write::write_all(&mut mf, row.as_bytes()).map_err(|e| e.to_string())?;
+            }
+        }
     }
     if failed > 0 {
         return Err(format!("{failed} of {} bake copies failed", maps.len()));
