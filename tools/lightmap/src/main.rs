@@ -1222,9 +1222,22 @@ fn run(mut a: Vec<String>) {
                         // THE CAPTURE (2026-09-24, pwc-day: 2412 Sea blocks): the game's peel renders the zone tile as
                         // 4096 instances — every cell of the 64×64 grid carries a tile whether or not a Sea block is
                         // authored there (the empty genealogy's default zone); --zone-fill blocks keeps the authored cells only
-                        if f("--zone-fill").as_deref() != Some("blocks") && mf.size[0] == 64 && mf.size[2] == 64 {
+                        // THE GRID IS THE MAP'S, NOT 64 × 64 (E8 2026-10-01, from RE 18's frame-1122 read + the AC06207064 probe on the RI x2
+                        // bake copy): the game instances the zone tile over EVERY cell of the map's own grid (the 96 × 96 x2 giant: the SET
+                        // tile draw = 24 indices × 9 216 instances, eid 13202; our tile RECORDS already number the same 9 216) and peels
+                        // them into every item layer, so a below-horizon direction from a down-facing texel meets the ground 10–22 m
+                        // beyond (its pre-pass colour: the sun-shadowed ground ≈ 0 → black). Ours filled the 64 × 64 grid only, so a
+                        // giant with an empty genealogy kept ONE quad (the kept zone block's cell) and every steep/down-facing receiver
+                        // over the island gathered the DOME through the missing ground — AC06207064's blue floor (+0.15/+0.25/+0.43 HDR,
+                        // black in the game: the probe at (1187, 746): block 0 stored z 0 = the dome, PASS, (0.203, 0.340, 0.578); no
+                        // ground in any layer). Attribution: every terrain-collection map with an empty genealogy and a grid other than
+                        // 64 × 64 — the x2/x3/x4 giants (RI, GreenCoast, WhiteShore: g23's 254² grid gets its 64 516 tiles); the 64 × 64
+                        // maps and Stadium (no sea level here) are untouched. LMTOOL_ZONE_FILL_64=1 = the old 64 × 64-only fill.
+                        let fill_grid_ok = if std::env::var_os("LMTOOL_ZONE_FILL_64").is_some() { mf.size[0] == 64 && mf.size[2] == 64 } else { mf.size[0] > 0 && mf.size[2] > 0 };
+                        if f("--zone-fill").as_deref() != Some("blocks") && fill_grid_ok {
+                            let (gx, gz) = (mf.size[0] as u32, mf.size[2] as u32);
                             let have: std::collections::HashSet<(u32, u32)> = water_cells.iter().copied().collect();
-                            for cz in 0..64u32 { for cx in 0..64u32 { if !have.contains(&(cx, cz)) { water_cells.push((cx, cz)); } } }
+                            for cz in 0..gz { for cx in 0..gx { if !have.contains(&(cx, cz)) { water_cells.push((cx, cz)); } } }
                         }
                     }
                     let water_alb = lightmap::albedo::for_link("Water").unwrap_or([0.3; 3]);
