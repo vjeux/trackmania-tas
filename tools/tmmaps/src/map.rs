@@ -2837,9 +2837,12 @@ impl MapFile {
                 }
             }
             (zone, rec0, short)
-        } else if WATER_ZONES.contains(&top.as_str()) {
-            let tpl = full.iter().find(|r| r.current == top).ok_or_else(|| format!("no record of the most common zone {top}"))?;
-            eprintln!("  genealogy fill: first record {zone} is not water; filling with the most common zone {top} from record at {:#x} (ids {:?}, current_index {}, dir {})", tpl.start, tpl.ids, tpl.current_index, tpl.dir);
+        } else if let Some(water) = hist.iter().filter(|(z, _)| WATER_ZONES.contains(z)).max_by_key(|(_, c)| **c).map(|(z, _)| z.to_string()) {
+            // the water zone the map DOES have (the most common of them: BlueBay `Sea`
+            // on Fall 2026 - 09, whose first record is `Beach` under a `Land` majority)
+            let top = water;
+            let tpl = full.iter().find(|r| r.current == top).ok_or_else(|| format!("no record of the water zone {top}"))?;
+            eprintln!("  genealogy fill: first record {zone} is not water; filling with the map's water zone {top} ({} cells) from record at {:#x} (ids {:?}, current_index {}, dir {})", hist.get(top.as_str()).copied().unwrap_or(0), tpl.start, tpl.ids, tpl.current_index, tpl.dir);
             // record 0': the template's ids as NEW strings (lookback version 3
             // first), repeats as refs; the current zone as a ref when it is one
             // of the ids, else a new string after them

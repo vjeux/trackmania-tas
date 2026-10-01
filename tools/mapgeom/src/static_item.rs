@@ -204,6 +204,13 @@ pub struct WaypointTrigger {
 
 pub const C_WAYPOINT_TRIGGER: u32 = 0x09178000;
 
+/// `CPlugVisualSprite` — a billboard visual (the TreeGen bushes of GreenCoast's
+/// `StructurePillarOnLakeShoreStraight` prefab, Fall 2026 - 22). Not geometry a
+/// static item carries (the sprite parameters drive a per-vertex billboard
+/// shader), so it is read to its terminator and kept raw; the shaded geoms that
+/// point at it are skipped by the merge ("not an inline visual").
+pub const C_VISUAL_SPRITE: u32 = 0x09010000;
+
 impl Node {
     pub fn class_id(&self) -> u32 {
         match self {
@@ -306,6 +313,7 @@ pub fn read_node(r: &mut Rd, class_id: u32) -> R<Node> {
             Node::BlockItem(BlockItem { version, archetype, archetype_collection, variants, table, raw_tail: tail.raw })
         }
         0x0917A000 | 0x0917B000 | 0x09119000 | 0x09118000 => Node::Opaque(read_fixed_opaque(r, class_id)?),
+        C_VISUAL_SPRITE => Node::Opaque(read_sprite_visual(r)?),
         C_VARIANT_LIST => {
             let version = r.u32()?;
             let n = r.count()?;
@@ -422,6 +430,105 @@ pub fn write_skippable(w: &mut Wr, id: u32, payload: &[u8]) {
 
 pub fn is_skippable_here(r: &Rd) -> bool {
     r.b.get(r.o..r.o + 4) == Some(&SKIP[..])
+}
+
+/// A `CPlugVisualSprite` body: the `CPlugVisual` / `CPlugVisual3D` chunks the
+/// indexed-triangles reader knows, with the sprite's own four (`classes.rs`:
+/// 0x09010005 = 4 + 5 f32, 0x09010006 = 2 u16, 0x09010008 = the embedded
+/// CPlugSpriteParam up to its terminator, 0x09010009 = count × 16 bytes). The
+/// inline vertex form (0x0902C004 without a stream) stores a sprite's normal as
+/// three floats whatever the compress bit says (CPlugVisual3D::ArchiveChunk,
+/// `IsKindOf(0x09010000)`).
+fn read_sprite_visual(r: &mut Rd) -> R<OpaqueNode> {
+    let start = r.o;
+    let mut main: Option<visual::VisualMain> = None;
+    loop {
+        let at = r.o;
+        let cid = r.u32()?;
+        if cid == FACADE {
+            break;
+        }
+        match cid {
+            0x09006001 => {
+                r.id()?;
+            }
+            0x09006004 | 0x0902C002 => {
+                read_ref(r)?;
+            }
+            0x09006005 => {
+                r.array(|r| Ok([r.i32()?, r.i32()?, r.i32()?]))?;
+            }
+            0x09006009 => {
+                r.f32()?;
+            }
+            0x0900600B => {
+                r.array(|r| Ok((r.i32()?, r.i32()?, r.floats::<6>()?)))?;
+            }
+            0x0900600F => main = Some(visual::CPlugVisualIndexedTriangles::parse_main(r)?),
+            0x09006010 => {
+                r.u32()?;
+                let morph = r.i32()?;
+                if morph > 0 {
+                    return Err("CPlugVisualSprite: morphs are not supported".into());
+                }
+            }
+            0x0902C004 => {
+                let m = main.as_ref().ok_or("CPlugVisualSprite: chunk 0x0902C004 before 0x0900600F")?;
+                let w = m.chunk_flags;
+                let (use_normal, use_color, compress4, bit22) = (w & (1 << 5) != 0, w & (1 << 6) != 0, w & (1 << 8) != 0, w & (1 << 9) != 0);
+                let n = m.count.max(0) as usize;
+                if m.vertex_streams.is_empty() {
+                    for _ in 0..n {
+                        r.vec3()?; // position
+                        if !bit22 && !compress4 && use_color {
+                            r.vec3()?; // normal, three floats
+                            r.take(16)?; // colour
+                        } else {
+                            if !bit22 || use_normal {
+                                r.vec3()?; // never packed on a sprite
+                            }
+                            if !bit22 || use_color {
+                                r.take(if compress4 { 4 } else { 16 })?;
+                            }
+                        }
+                    }
+                    for _ in 0..2 {
+                        let k = r.count()?;
+                        r.take(k * 12)?; // tangents, three floats each
+                    }
+                } else {
+                    let per = ((!(m.flags() >> 17)) & 8) | 4;
+                    for _ in 0..2 {
+                        let k = r.count()?;
+                        r.take(k * per as usize)?;
+                    }
+                }
+            }
+            0x09010005 => {
+                r.take(4 + 5 * 4)?;
+            }
+            0x09010006 => {
+                r.take(4)?;
+            }
+            0x09010008 => {
+                // the embedded CPlugSpriteParam: chunk list (no strings) up to its own terminator
+                let mut i = r.o;
+                while i + 4 <= r.b.len() && u32::from_le_bytes(r.b[i..i + 4].try_into().unwrap()) != FACADE {
+                    i += 4;
+                }
+                if i + 4 > r.b.len() {
+                    return Err("CPlugVisualSprite: no terminator after the embedded sprite params".into());
+                }
+                r.o = i + 4;
+            }
+            0x09010009 => {
+                let n = r.u32()? as usize;
+                r.take(16 * n)?;
+            }
+            c => return Err(format!("CPlugVisualSprite chunk 0x{c:08X} at 0x{at:x} has no reader")),
+        }
+    }
+    Ok(OpaqueNode { class_id: C_VISUAL_SPRITE, raw: r.b[start..r.o].to_vec() })
 }
 
 fn read_opaque(r: &mut Rd, class_id: u32) -> R<OpaqueNode> {
