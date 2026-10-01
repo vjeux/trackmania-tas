@@ -262,12 +262,33 @@ fn bake_one(g: &MyGame, map_wsl: &str, quality: u32, load_timeout: Duration, com
 fn start_check(g: &MyGame, name: &str) -> Result<String, String> {
     let shootctl = &g.shootctl;
     let mut car = String::from("-");
-    println!("  {name}: /edtest: {}", get(shootctl, "/edtest", 30));
+    // whatever modal the save left (a lingering prompt swallows the test request): dismiss, then test
+    let dlg = get(shootctl, "/dlgtext", 10);
+    if !dlg.trim().is_empty() && !dlg.contains("no dialog") {
+        println!("  {name}: dialog before the test drive: {} — dismissing", dlg.trim().chars().take(120).collect::<String>());
+        let _ = get(shootctl, "/dismiss", 10);
+        let _ = get(shootctl, "/yes", 10);
+        std::thread::sleep(Duration::from_millis(1500));
+    }
+    println!("  {name}: /edtest: {} (ctx before {:?})", get(shootctl, "/edtest", 30), ctx(shootctl));
     let p0 = Instant::now();
+    let mut last_note = 0u64;
     loop {
-        if p0.elapsed() > Duration::from_secs(150) {
-            car = "NO VEHICLE (the playground never came up)".into();
+        if p0.elapsed() > Duration::from_secs(240) {
+            car = format!("NO VEHICLE (the playground never came up; last ctx {})", get(shootctl, "/ctx", 10).chars().take(100).collect::<String>());
             break;
+        }
+        let secs = p0.elapsed().as_secs();
+        if secs >= 20 && secs / 20 != last_note {
+            last_note = secs / 20;
+            let app = get(shootctl, "/appstate", 10);
+            println!("  {name}: test drive {secs} s: ctx {} app {} dlg {}", get(shootctl, "/ctx", 10).chars().take(100).collect::<String>(), app.chars().take(160).collect::<String>(), get(shootctl, "/dlgtext", 10).trim().chars().take(80).collect::<String>());
+            // the Test button right after a SaveMap did nothing once (16, 2026-10-01: editor 1,
+            // playground null for 150 s) — the editor was still busy with the save: click again
+            if app.contains("\"playground\":null") && last_note <= 4 {
+                let _ = get(shootctl, "/dismiss", 10);
+                println!("  {name}: /edtest again: {}", get(shootctl, "/edtest", 30));
+            }
         }
         if !g.alive() {
             return Err("the game process is gone — the test drive crashed the client".into());
