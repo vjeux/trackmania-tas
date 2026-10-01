@@ -26,6 +26,10 @@ fn main() {
         if let (Ok(c), Ok(o)) = (v[ci].parse::<usize>(), v[oi].parse::<u64>()) { chart_of_obj.entry(o).or_insert(c); }
     }
     let manifest: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dump.join("MANIFEST.json")).expect("manifest")).expect("json");
+    // --increment N: the plane becomes the accumulate's INCREMENT for this direction, 4/N · max(0, n·D) × radiance, with n from the
+    // lm_nrm chart raster and D the entry's `dir` (the manifest's own rule; N = the sweep's direction count)
+    let inc_n: Option<f32> = f("--increment").and_then(|v| v.parse().ok());
+    let nrm_file_of: std::collections::HashMap<u64, (String, u32, u32)> = manifest["passes"].as_array().into_iter().flatten().filter(|e| e["pass"].as_str() == Some("lm_nrm")).filter_map(|e| Some((e["chart"]["obj"].as_u64()?, (e["file"].as_str()?.to_string(), e["width"].as_u64()? as u32, e["height"].as_u64()? as u32)))).collect();
     let (w, h) = (2048u32, 2048u32);
     let scale = w / mp.atlas_w.max(1) as u32;
     let mut plane = vec![0f32; (w * h * 3) as usize];
@@ -40,10 +44,13 @@ fn main() {
         let (ew, eh) = (e["width"].as_u64().unwrap() as u32, e["height"].as_u64().unwrap() as u32);
         let bytes = std::fs::read(dump.join(e["file"].as_str().unwrap())).expect("chart file");
         let buf = lightmap::passdiff::decode_raw(&bytes, lightmap::passdiff::parse_format(e["format"].as_str().unwrap()), ew, eh, 0).expect("decode");
+        let dvec: Option<[f32; 3]> = e["dir"].as_array().map(|v| [v[0].as_f64().unwrap() as f32, v[1].as_f64().unwrap() as f32, v[2].as_f64().unwrap() as f32]);
+        let nrm: Option<lightmap::passdiff::Buf> = match (inc_n, nrm_file_of.get(&obj)) { (Some(_), Some((nf, nw, nh))) => { let b = std::fs::read(dump.join(nf)).expect("nrm file"); Some(lightmap::passdiff::decode_raw(&b, lightmap::passdiff::parse_format("R32G32B32_FLOAT"), *nw, *nh, 0).expect("nrm")) } _ => None };
         // the chart raster is the chart's rect at the plane's resolution (chart_ss at ss 1 = stored size × scale)
         for y in 0..eh.min(ch as u32 * scale) { for x in 0..ew.min(cw as u32 * scale) {
             let (ax, ay) = (x0 as u32 * scale + x, y0 as u32 * scale + y);
-            if ax < w && ay < h { for k in 0..3 { plane[((ay * w + ax) * 3 + k) as usize] = buf.get(x, y, k); } }
+            let wgt = match (inc_n, &nrm, dvec) { (Some(n), Some(nb), Some(dv)) => { let nn = [nb.get(x, y, 0), nb.get(x, y, 1), nb.get(x, y, 2)]; 4.0 / n * (nn[0] * dv[0] + nn[1] * dv[1] + nn[2] * dv[2]).max(0.0) } _ => 1.0 };
+            if ax < w && ay < h { for k in 0..3 { plane[((ay * w + ax) * 3 + k) as usize] = buf.get(x, y, k) * wgt; } }
         } }
         placed += 1;
     }
