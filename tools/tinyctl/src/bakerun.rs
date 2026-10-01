@@ -445,6 +445,14 @@ pub fn lightmap_run(args: &[String]) -> Result<(), String> {
             if startcheck { " --startcheck" } else { "" },
             if check_only { " --check-only" } else { "" }
         );
+        // --load-timeout S / --compute-timeout S ride through to the box side (tiny 22's 21k items
+        // did not open in the default 420 s, 2026-10-01)
+        let mut cmd = cmd;
+        for k in ["--load-timeout", "--compute-timeout"] {
+            if let Some(v) = f(k) {
+                cmd = cmd.replace(" > '", &format!(" {k} {v} > '"));
+            }
+        }
         println!("[group {gi}] one hold for {} maps …", remote_maps.len());
         // the pushed binary's exec bit does not survive `wsx push` (2026-10-01: "Permission denied" from tmdrive run)
         wsx.sh(&format!("chmod +x '{box_tinyctl}'"))?;
