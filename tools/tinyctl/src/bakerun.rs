@@ -452,6 +452,7 @@ pub fn lightmap_run(args: &[String]) -> Result<(), String> {
     // lightmap is transplanted by the kept list (`lmtool transplant --kept`)
     let reduced = tmmaps::cli::has(args, "--reduced");
     let reduced_veget = tmmaps::cli::has(args, "--reduced-veget");
+    let reduced_max_items: usize = f("--reduced-max-items").and_then(|v| v.parse().ok()).unwrap_or(0);
     let tolerance: f32 = f("--tolerance").and_then(|v| v.parse().ok()).unwrap_or(12.0);
     let text = std::fs::read_to_string(&manifest).map_err(|e| format!("{}: {e}", manifest.display()))?;
     let rows: Vec<Vec<String>> = text.lines().filter(|l| !l.trim().is_empty() && !l.starts_with('#') && !l.starts_with("copy\t")).map(|l| l.split('\t').map(String::from).collect()).collect();
@@ -479,7 +480,7 @@ pub fn lightmap_run(args: &[String]) -> Result<(), String> {
             let mut source_for_copy = PathBuf::from(if check_only { out } else { copy });
             if reduced && !check_only {
                 let red0 = Path::new(out).with_extension("reduced0.Map.Gbx");
-                let (kept_path, kept_n, dropped) = crate::lightmap::reduced_copy(Path::new(copy), Path::new(out), &red0, reduced_veget)?;
+                let (kept_path, kept_n, dropped) = crate::lightmap::reduced_copy_n(Path::new(copy), Path::new(out), &red0, reduced_veget, reduced_max_items)?;
                 println!("[group {gi}] {copy}: reduced copy = {kept_n} items kept, {dropped} dropped (kept list {})", kept_path.display());
                 source_for_copy = red0;
             }

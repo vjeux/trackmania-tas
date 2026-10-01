@@ -1,0 +1,7 @@
+cargo:rerun-if-changed=/home/vjeux/fall/tt/tools/mapgeom/src
+cargo:rerun-if-changed=/home/vjeux/fall/tt/tools/mapgeom/../tmmaps/src
+cargo:rerun-if-changed=/home/vjeux/fall/tt/tools/mapgeom/../gbx/src
+cargo:rerun-if-changed=/home/vjeux/fall/tt/tools/mapgeom/../Cargo.lock
+cargo:rerun-if-changed=/home/vjeux/fall/tt/tools/mapgeom/../../.git/HEAD
+cargo:rerun-if-changed=/home/vjeux/fall/tt/tools/mapgeom/../../.git/refs/heads
+cargo:rustc-env=MAPGEOM_BUILD_ID=931941b5e503-4588bf94c18e1cf5

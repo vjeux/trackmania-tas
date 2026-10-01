@@ -105,6 +105,14 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
 /// to `<out>.kept`. The copy keeps its (stale) lightmap chunk — the editor wants one
 /// to work from and does not care which. Returns (kept list path, kept, dropped).
 pub fn reduced_copy(map: &Path, out: &Path, reduced_out: &Path, drop_av: bool) -> Result<(PathBuf, usize, usize), String> {
+    reduced_copy_n(map, out, reduced_out, drop_av, 0)
+}
+
+/// `reduced_copy` with a ceiling on the kept items: beyond `max_items` (> 0) the kept
+/// list is thinned evenly (every k-th placement kept) — tiny 22's 15.5k-item reduced copy
+/// never opened in the editor (2026-10-01); a thinner copy bakes a lightmap for the kept
+/// placements and the rest stay chartless (probe-lit), which beats the source's stale chunk.
+pub fn reduced_copy_n(map: &Path, out: &Path, reduced_out: &Path, drop_av: bool, max_items: usize) -> Result<(PathBuf, usize, usize), String> {
     let dir = std::env::current_exe().map_err(|e| e.to_string())?.parent().ok_or("exe dir")?.to_path_buf();
     let lmtool = dir.join("lmtool");
     let tmmaps_bin = dir.join("tmmaps");
@@ -144,6 +152,21 @@ pub fn reduced_copy(map: &Path, out: &Path, reduced_out: &Path, drop_av: bool) -
         })
         .map(|(i, _)| i)
         .collect();
+    let kept: Vec<usize> = if max_items > 0 && kept.len() > max_items {
+        // thin evenly, the Spawn kept whatever happens (the editor wants a start)
+        let step = kept.len() as f64 / max_items as f64;
+        let mut thin: Vec<usize> = (0..max_items).map(|j| kept[(j as f64 * step) as usize]).collect();
+        if let Some(sp) = m.items.iter().position(|it| it.waypoint_tag.as_deref() == Some("Spawn")) {
+            if !thin.contains(&sp) {
+                thin.push(sp);
+                thin.sort_unstable();
+            }
+        }
+        eprintln!("reduced copy thinned to {} of {} kept items (--reduced-max-items {max_items})", thin.len(), kept.len());
+        thin
+    } else {
+        kept
+    };
     let dropped = m.items.len() - kept.len();
     let kept_list = kept.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
     let kept_path = out.with_extension("kept");
