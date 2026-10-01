@@ -141,8 +141,10 @@ fn reduced(args: &[String], map: &Path, out: &Path) -> Result<(), String> {
     let red = out.with_extension("reduced.Map.Gbx");
     let red_ed = out.with_extension("reduced-editor.Map.Gbx");
     run(&tmmaps_bin, &["keepitems", map.to_str().unwrap(), "--out", red0.to_str().unwrap(), "--items", &kept_list])?;
-    // a valid (lmtool) chunk in the copy: the editor's lightmapper wants one to work from
-    let q = tmmaps::cli::flag(args, "--quality").unwrap_or("3").to_string();
+    // a valid (lmtool) chunk in the copy: the editor's lightmapper wants one to work from —
+    // `--seed-quality Q` (default: the bake's --quality) keeps that seed cheap on a small
+    // devserver: the editor recomputes everything at its own quality anyway (2026-10-01)
+    let q = tmmaps::cli::flag(args, "--seed-quality").or(tmmaps::cli::flag(args, "--quality")).unwrap_or("3").to_string();
     run(&lmtool, &["bake", red0.to_str().unwrap(), "--out", red.to_str().unwrap(), "--quality", &q])?;
     one(args, &red, &red_ed)?;
     run(&lmtool, &["transplant", "--from", red_ed.to_str().unwrap(), "--into", map.to_str().unwrap(), "--kept", &kept_list, "--out", out.to_str().unwrap()])?;
@@ -431,6 +433,13 @@ pub fn batch(args: &[String]) -> Result<(), String> {
                     eprintln!("{copy}: attempt {attempts}: {verdict}");
                     let _ = std::fs::remove_file(out);
                     let _ = std::fs::remove_file(&lit_copy);
+                    // the lightmapper killing the client is a MAP property (stock vegetation clusters,
+                    // light-carrying items — bisected 2026-09-23), not a flake: a retry only costs
+                    // another launch; the map goes to the `--reduced` pass instead
+                    if e.contains("lightmapper crashed") {
+                        verdict = format!("CRASH: {}", e.lines().next().unwrap_or("").chars().take(160).collect::<String>());
+                        break;
+                    }
                 }
             }
         }
