@@ -800,11 +800,18 @@ pub fn build_map_records(map_path: &str, scene: &crate::geometry::Scene, store: 
         let (centre, half) = crate::itemrule::legacy_tree_record_box(inst.quat, it.pos, c, h);
         let mut hh = std::collections::hash_map::DefaultHasher::new();
         use std::hash::{Hash, Hasher};
-        // LMTOOL_KIND0_GROUP=item: every kind-0 record its own group (the study); default one group per species
-        if std::env::var("LMTOOL_KIND0_GROUP").map(|v| v == "item").unwrap_or(false) { ("legacy", ii).hash(&mut hh); } else { ("legacy", species.as_str()).hash(&mut hh); }
+        // LMTOOL_KIND0_GROUP=item: every kind-0 record its own group (the study); default one group per species AND per scale pick
+        // THE KIND-0 RECORD'S EXTENT CARRIES THE INSTANCE'S SCALE PICK and its group key carries it too (E8 2026-10-01, from RE 18's
+        // 16:10Z read of the RI x2 oracle's BushSmallC entries: the game partitions the 38 records by k = lcg_int(seed, 0, 7), the
+        // scale = 1 − k/7 · ScaleVar01): with it the RI x2 bake copy's layout is the game's to the chart — 10 948/10 948 rects (items
+        // 1 694, tiles 9 216, kind-0 38), Σ_f32 3 067 612 (the game's window [3 067 611.5, 3 067 612.0]), s 0x3f8c3476 = its probe —
+        // where the scale-less record (scale 1.0, one group per species) gave Σ 3 067 615, one probe lower and 185/1 694 items.
+        // LMTOOL_KIND0_SCALE=0 = the scale-less record (the old rule).
+        let kind0_scale = std::env::var("LMTOOL_KIND0_SCALE").ok().as_deref() != Some("0");
+        if std::env::var("LMTOOL_KIND0_GROUP").map(|v| v == "item").unwrap_or(false) { ("legacy", ii).hash(&mut hh); } else if kind0_scale { ("legacy", species.as_str(), inst.scale.to_bits()).hash(&mut hh); } else { ("legacy", species.as_str()).hash(&mut hh); }
         // LMTOOL_KIND0_KEY=pos|posc: the Morton key from the item position (+ the model box centre) instead of the record centre
         let key_centre = match std::env::var("LMTOOL_KIND0_KEY").ok().as_deref() { Some("pos") => Some(it.pos), Some("posc") => Some([it.pos[0] + c[0], it.pos[1] + c[1], it.pos[2] + c[2]]), Some("zero") => Some([0.0, 0.0, 0.0]), Some("cell") => Some([it.file_cell[0] as f32 * 32.0, it.file_cell[1] as f32 * 8.0, it.file_cell[2] as f32 * 32.0]), _ => None };
-        recs.push(Rec { class: "item0", obj: item_obj0 + game_index[ii], sub: 0, meter_by_uv: plg.u02, uv: [plg.u04[0], plg.u04[1], plg.u04[2], plg.u04[3]], quality: q, centre, half, group: (hh.finish() & 0x0000_FFFF_FFFF_0000) | q.to_bits() as u64, key_centre, pos_rank: None, wall: None, item: Some((ii, species.clone())), scale: 1.0, mesh: None });
+        recs.push(Rec { class: "item0", obj: item_obj0 + game_index[ii], sub: 0, meter_by_uv: plg.u02, uv: [plg.u04[0], plg.u04[1], plg.u04[2], plg.u04[3]], quality: q, centre, half, group: (hh.finish() & 0x0000_FFFF_FFFF_0000) | q.to_bits() as u64, key_centre, pos_rank: None, wall: None, item: Some((ii, species.clone())), scale: if kind0_scale { inst.scale } else { 1.0 }, mesh: None });
         n_items += 1;
         n_kind0 += 1;
     }
