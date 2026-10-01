@@ -98,6 +98,52 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
 /// full map with `lmtool transplant` (item charts renumbered by the kept list; the dropped items get no
 /// chart — the game lights them from the probes; the local-light frames come from lmtool). The sibling
 /// binaries (`lmtool`, `tmmaps`) are taken from this executable's directory.
+/// The REDUCED copy of a bake copy for the editor's lightmapper (the 2026-09-23
+/// bisection: the stock vegetation clusters kill ComputeShadows, the light-carrying
+/// items kill SaveMap; `drop_av` also drops our own vegetation statics — GreenCoast):
+/// `tmmaps keepitems` of everything else into `reduced_out`, the kept list written
+/// to `<out>.kept`. The copy keeps its (stale) lightmap chunk — the editor wants one
+/// to work from and does not care which. Returns (kept list path, kept, dropped).
+pub fn reduced_copy(map: &Path, out: &Path, reduced_out: &Path, drop_av: bool) -> Result<(PathBuf, usize, usize), String> {
+    let dir = std::env::current_exe().map_err(|e| e.to_string())?.parent().ok_or("exe dir")?.to_path_buf();
+    let lmtool = dir.join("lmtool");
+    let tmmaps_bin = dir.join("tmmaps");
+    let run = |bin: &Path, a: &[&str]| -> Result<String, String> {
+        let o = std::process::Command::new(bin).args(a).output().map_err(|e| format!("{}: {e}", bin.display()))?;
+        if !o.status.success() {
+            return Err(format!("{} {}: {}", bin.display(), a.join(" "), String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or("").to_string()));
+        }
+        Ok(String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr))
+    };
+    let lights_out = run(&lmtool, &["lights", map.to_str().unwrap()])?;
+    let light_models: std::collections::HashSet<String> = lights_out
+        .lines()
+        .filter_map(|l| { let (name, rest) = l.split_once(" (")?; let n: usize = rest.split(' ').next()?.parse().ok()?; if n > 0 && !l.starts_with(' ') { Some(name.to_string()) } else { None } })
+        .collect();
+    const CLUSTERS: [&str; 5] = ["Grove", "Forest", "SpringPalmTree", "Sparkler16m", "ShowFogger8m"];
+    let m = tmmaps::map::MapFile::load(map);
+    let kept: Vec<usize> = m.items.iter().enumerate().filter(|(_, it)| !CLUSTERS.contains(&it.model.as_str()) && !light_models.contains(&it.model) && !(drop_av && it.model.starts_with("AV") && it.model.ends_with(".Item.Gbx"))).map(|(i, _)| i).collect();
+    let dropped = m.items.len() - kept.len();
+    let kept_list = kept.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+    let kept_path = out.with_extension("kept");
+    std::fs::write(&kept_path, &kept_list).map_err(|e| format!("{}: {e}", kept_path.display()))?;
+    run(&tmmaps_bin, &["keepitems", map.to_str().unwrap(), "--out", reduced_out.to_str().unwrap(), "--items", &kept_list])?;
+    Ok((kept_path, kept.len(), dropped))
+}
+
+/// The kept-list transplant: the REDUCED copy's editor lightmap into the full
+/// `shipped` file (charts renumbered by the kept list; dropped items chartless).
+pub fn transplant_kept(resaved: &Path, shipped: &Path, kept_path: &Path, out: &Path) -> Result<(), String> {
+    let dir = std::env::current_exe().map_err(|e| e.to_string())?.parent().ok_or("exe dir")?.to_path_buf();
+    let lmtool = dir.join("lmtool");
+    let kept_list = std::fs::read_to_string(kept_path).map_err(|e| format!("{}: {e}", kept_path.display()))?;
+    let o = std::process::Command::new(&lmtool).args(["transplant", "--from", resaved.to_str().unwrap(), "--into", shipped.to_str().unwrap(), "--kept", kept_list.trim(), "--out", out.to_str().unwrap()]).output().map_err(|e| format!("lmtool: {e}"))?;
+    if !o.status.success() {
+        return Err(format!("lmtool transplant --kept: {}", String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or("").to_string()));
+    }
+    report(out, "the kept-list transplant")
+}
+
 fn reduced(args: &[String], map: &Path, out: &Path) -> Result<(), String> {
     let dir = std::env::current_exe().map_err(|e| e.to_string())?.parent().ok_or("exe dir")?.to_path_buf();
     let lmtool = dir.join("lmtool");

@@ -385,6 +385,12 @@ pub fn lightmap_run(args: &[String]) -> Result<(), String> {
     // rule (12 m default; a scale-k start block spawns at (16, 2, 16)·k from its item: 52/76/100 for ×2/×3/×4)
     let startcheck = tmmaps::cli::has(args, "--startcheck") || tmmaps::cli::has(args, "--check-only");
     let check_only = tmmaps::cli::has(args, "--check-only");
+    // --reduced [--reduced-veget]: the bake copy goes to the editor REDUCED (the stock
+    // vegetation clusters, the light-carrying items (+ our AV statics) dropped — the maps
+    // whose full copy kills the client's lightmapper, GreenCoast here), and the saved
+    // lightmap is transplanted by the kept list (`lmtool transplant --kept`)
+    let reduced = tmmaps::cli::has(args, "--reduced");
+    let reduced_veget = tmmaps::cli::has(args, "--reduced-veget");
     let tolerance: f32 = f("--tolerance").and_then(|v| v.parse().ok()).unwrap_or(12.0);
     let text = std::fs::read_to_string(&manifest).map_err(|e| format!("{}: {e}", manifest.display()))?;
     let rows: Vec<Vec<String>> = text.lines().filter(|l| !l.trim().is_empty() && !l.starts_with('#') && !l.starts_with("copy\t")).map(|l| l.split('\t').map(String::from).collect()).collect();
@@ -409,7 +415,14 @@ pub fn lightmap_run(args: &[String]) -> Result<(), String> {
                 std::fs::create_dir_all(p).map_err(|e| format!("{}: {e}", p.display()))?;
             }
             let bake_copy = Path::new(out).with_extension(if check_only { "checkcopy.Map.Gbx" } else { "bakecopy.Map.Gbx" });
-            let mut m = tmmaps::map::MapFile::load(Path::new(if check_only { out } else { copy }));
+            let mut source_for_copy = PathBuf::from(if check_only { out } else { copy });
+            if reduced && !check_only {
+                let red0 = Path::new(out).with_extension("reduced0.Map.Gbx");
+                let (kept_path, kept_n, dropped) = crate::lightmap::reduced_copy(Path::new(copy), Path::new(out), &red0, reduced_veget)?;
+                println!("[group {gi}] {copy}: reduced copy = {kept_n} items kept, {dropped} dropped (kept list {})", kept_path.display());
+                source_for_copy = red0;
+            }
+            let mut m = tmmaps::map::MapFile::load(&source_for_copy);
             let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0);
             let old_uid = tmmaps::header::read(copy).map(|h| h.uid).unwrap_or_default();
             let fresh = crate::lightmap::fresh_uid_like(&old_uid, (nanos + k as u32 * 7919) % 100_000_000, (nanos / 7 + gi as u32) % 100_000_000);
@@ -471,7 +484,14 @@ pub fn lightmap_run(args: &[String]) -> Result<(), String> {
                 if verdict == "ok" { out_bytes = std::fs::metadata(out).map(|m| m.len()).unwrap_or(0); "checked".to_string() } else { failed += 1; verdict }
             } else if verdict == "ok" && saved != "-" {
                 let resaved = Path::new(out).with_extension("resaved.Map.Gbx");
-                match wsx.pull(&saved, &resaved).and_then(|_| crate::lightmap::finish_from_resaved(bake_copy, &resaved, Path::new(copy), Path::new(shipped), Path::new(out))) {
+                let finish = |resaved: &Path| -> Result<(), String> {
+                    if reduced {
+                        crate::lightmap::transplant_kept(resaved, Path::new(shipped), &Path::new(out).with_extension("kept"), Path::new(out))
+                    } else {
+                        crate::lightmap::finish_from_resaved(bake_copy, resaved, Path::new(copy), Path::new(shipped), Path::new(out))
+                    }
+                };
+                match wsx.pull(&saved, &resaved).and_then(|_| finish(&resaved)) {
                     Ok(()) => {
                         out_bytes = std::fs::metadata(out).map(|m| m.len()).unwrap_or(0);
                         let _ = wsx.sh(&format!("rm -f '{saved}'"));
