@@ -12,7 +12,7 @@ fn main() {
         let bytes = std::fs::read(p).unwrap_or_else(|e| panic!("{p}: {e}"));
         let bytes = if p.ends_with(".gz") { lightmap::passdiff::gunzip(&bytes).expect("gunzip") } else { bytes };
         if bytes.len() >= 4 && &bytes[..4] == b"DDS " { lightmap::passdiff::load_dds_bytes(&bytes, fmt, 0, 0).unwrap_or_else(|e| panic!("{p}: {e}")) }
-        else { lightmap::passdiff::decode_raw(&bytes, lightmap::passdiff::parse_format(fmt), 4096, 4096, 0).unwrap_or_else(|e| panic!("{p}: {e}")) }
+        else { let (rw, rh) = f("--ours-size").map(|s| { let v: Vec<u32> = s.split(',').filter_map(|t| t.trim().parse().ok()).collect(); (v[0], v[1]) }).unwrap_or((4096, 4096)); lightmap::passdiff::decode_raw(&bytes, lightmap::passdiff::parse_format(fmt), rw, rh, 0).unwrap_or_else(|e| panic!("{p}: {e}")) }
     };
     let oc = load(&f("--ours-color").expect("--ours-color"), "R11G11B10_FLOAT");
     let od = load(&f("--ours-depth").expect("--ours-depth"), "R32_FLOAT");
@@ -24,9 +24,12 @@ fn main() {
     let absent: f32 = f("--absent").and_then(|v| v.parse().ok()).unwrap_or(0.0);
     let top: usize = f("--top").and_then(|v| v.parse().ok()).unwrap_or(10);
     let (w, h) = (gc.w, gc.h);
-    assert!(oc.w == w && oc.h == h && od.w == w && gd.w == w, "sizes: ours {}×{} / {}×{}, game {}×{} / {}×{}", oc.w, oc.h, od.w, od.h, gc.w, gc.h, gd.w, gd.h);
+    // ours may be a coarser raster (RI: the port peels at 2048², the game at 4096²): an integer factor maps game → ours
+    assert!(oc.w == od.w && gd.w == w && w % oc.w == 0 && h % oc.h == 0, "sizes: ours {}×{} / {}×{}, game {}×{} / {}×{}", oc.w, oc.h, od.w, od.h, gc.w, gc.h, gd.w, gd.h);
+    let (fx, fy) = (w / oc.w, h / oc.h);
+    if fx != 1 || fy != 1 { eprintln!("ours is {}×{}: game pixel (x, y) → ours (x/{fx}, y/{fy})", oc.w, oc.h); }
     eprintln!("{}×{}; map {map}", w, h);
-    let ours_at = |gx: u32, gy: u32| -> (u32, u32) { match map.as_str() { "rot180" => (w - 1 - gx, h - 1 - gy), "flipx" => (w - 1 - gx, gy), "flipy" => (gx, h - 1 - gy), _ => (gx, gy) } };
+    let ours_at = |gx: u32, gy: u32| -> (u32, u32) { let (x, y) = match map.as_str() { "rot180" => (w - 1 - gx, h - 1 - gy), "flipx" => (w - 1 - gx, gy), "flipy" => (gx, h - 1 - gy), _ => (gx, gy) }; (x / fx, y / fy) };
     // the census
     let mut cls = [[0usize; 2]; 2]; // [game dome? 0/1][ours dome? 0/1] → 0 = surface, 1 = dome
     let mut dome_stats = lightmap::domecheck::QuantaStats::default();
