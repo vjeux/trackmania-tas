@@ -99,7 +99,9 @@ fn read_one(chan: &str, since: &str, limit: usize, prefix: &str) -> i32 {
             continue;
         }
         let content = m.get("content").and_then(|c| c.as_str()).unwrap_or("");
-        if content.trim_end().lines().last().map(|l| l.trim() == "-- ai").unwrap_or(false) {
+        // Our sign-off may sit on its own line or at the end of a one-line post;
+        // both are ours (2026-09-30: a one-line status post echoed back as "new").
+        if content.trim_end().lines().last().map(|l| l.trim_end().ends_with("-- ai")).unwrap_or(false) {
             continue; // our own post
         }
         let author = m
