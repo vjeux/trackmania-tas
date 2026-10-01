@@ -2949,7 +2949,7 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
                                 let c = crate::warpterrain::shade(sh, vs, bw, front);
                                 // (LMTOOL_ABUF_DEBUG_LIST pixels: the environment fragment's warp shading — E4's read of g23's skirt, 2026-09-28)
                                 if LAYER_DEBUG_SET.as_ref().map(|set| set.contains(&(x as u32, y as u32))).unwrap_or(false) {
-                                    eprintln!("LAYERDBG px={x} py={y} env warp tri={} wi={wi} front={front} bw=({:.3},{:.3},{:.3}) hit=({:.1},{:.1},{:.1}) shade=({:.5},{:.5},{:.5}) env_d={env_d:.5}", f.tri, bw[0], bw[1], bw[2], hit_p[0], hit_p[1], hit_p[2], c[0], c[1], c[2]);
+                                    eprintln!("LAYERDBG px={x} py={y} env warp tri={} wi={wi} front={front} bw=({:.3},{:.3},{:.3}) hit=({:.1},{:.1},{:.1}) shade=({:.5},{:.5},{:.5}) env_d={env_d:.5} d=({:.4},{:.4},{:.4}) ng=({:.3},{:.3},{:.3})", f.tri, bw[0], bw[1], bw[2], hit_p[0], hit_p[1], hit_p[2], c[0], c[1], c[2], frame.d[0], frame.d[1], frame.d[2], norm(cross(e1, e2))[0], norm(cross(e1, e2))[1], norm(cross(e1, e2))[2]);
                                 }
                                 prm.quant_peel.apply(c, prm.rounding)
                             }
@@ -5666,7 +5666,10 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                         });
                         img
                     } else { vec![prm.quant_peel.apply(sky, prm.rounding); (ly.w * ly.h) as usize] };
-                    let sky_img: Vec<[f32; 3]> = sky_img.into_iter().zip(env_depth.iter()).map(|(c, d)| if *d > 0.0 { [0.0; 3] } else { c }).collect();
+                    // LMTOOL_DUMP_WARP_COLOR=1 (E7 2026-09-30): the surface pixels carry the gather's own env-layer colour (the warp shade, PS
+                    // 16752; black for the sea box) instead of the harness black — the colour compare against a captured env layer 0
+                    let warp_color = std::env::var("LMTOOL_DUMP_WARP_COLOR").map(|v| v == "1").unwrap_or(false);
+                    let sky_img: Vec<[f32; 3]> = sky_img.into_iter().enumerate().zip(env_depth.iter()).map(|((i, c), d)| if *d > 0.0 { if warp_color { let (a, _) = ly.range(i); ly.frags[a].rgb } else { [0.0; 3] } } else { c }).collect();
                     dmp.write_rgb(e, ly.w, ly.h, &sky_img, prm.quant_peel, prm.rounding).expect("dump peel_sky");
                 }
                 let nl = (0..(ly.w * ly.h) as usize).map(|i| { let (a, c) = ly.range(i); c - a }).max().unwrap_or(0).saturating_sub(skip);

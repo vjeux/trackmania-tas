@@ -25,6 +25,21 @@ fn main() {
         let hist: Vec<String> = far.iter().map(|(k, n)| format!("{}–{} km: {n}", k, k + 1)).collect();
         println!("  {:<28} {:>6} tris  x [{:>10.1}, {:>10.1}]  y [{:>8.2}, {:>8.2}]  z [{:>10.1}, {:>10.1}]  normals {}", m.name, m.tris.len(), lo[0], hi[0], lo[1], hi[1], lo[2], hi[2], if m.norms.is_empty() { "no" } else { "yes" });
         if m.name.to_ascii_lowercase().contains("warp") { println!("      vertices by Chebyshev distance from (1024, ·, 1024): {}", hist.join(", ")); }
+        // THE WINDING CENSUS (E7 2026-09-30, RI's k736 vs g23's k38 env layers): the geometric normal cross(e1, e2) of every triangle —
+        // how many point up (y > 0) / down — and, when the file carries vertex normals, how many geometric normals AGREE with them
+        // (the hardware's front face = the screen-space winding; PS 16752 blackens back faces, so a winding the port reads inverted
+        // paints the skirt black from the side the game lights)
+        {
+            let (mut up, mut down, mut agree, mut disagree) = (0usize, 0usize, 0usize, 0usize);
+            for (ti, t) in m.tris.iter().enumerate() {
+                let e1 = [t[1][0] - t[0][0], t[1][1] - t[0][1], t[1][2] - t[0][2]];
+                let e2 = [t[2][0] - t[0][0], t[2][1] - t[0][1], t[2][2] - t[0][2]];
+                let n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+                if n[1] > 0.0 { up += 1; } else if n[1] < 0.0 { down += 1; }
+                if let Some(vn) = m.norms.get(ti) { let s: f32 = (0..3).map(|k| n[0] * vn[k][0] + n[1] * vn[k][1] + n[2] * vn[k][2]).sum(); if s > 0.0 { agree += 1; } else if s < 0.0 { disagree += 1; } }
+            }
+            println!("      winding: geometric normal up {up} / down {down}{}", if m.norms.is_empty() { String::new() } else { format!("; agrees with the file's vertex normals {agree} / disagrees {disagree}") });
+        }
     }
     println!("ALL kept leaves: x [{:.1}, {:.1}] y [{:.2}, {:.2}] z [{:.1}, {:.1}]", all.0[0], all.1[0], all.0[1], all.1[1], all.0[2], all.1[2]);
 }
