@@ -200,6 +200,14 @@ pub fn try_pack(charts: &[ChartExt], order: &[usize], s: f32, w_atlas: u16, h_at
         }
         let r = packer.insert(0, w, h);
         if r < 0 {
+            // LMTOOL_PACK_TOLERATE=1 (study, E8 2026-10-01): an insert that finds no room does not fail the pack — the chart is
+            // left at (0xFFFF, 0xFFFF) and the walk continues, so a pack at a probe s the game accepted and ours refuses can
+            // still be written out (`--layout-tsv`) and compared chart by chart against the game's table
+            if std::env::var_os("LMTOOL_PACK_TOLERATE").is_some() {
+                if std::env::var_os("LMTOOL_PACK_TRACE").is_some() { eprintln!("pack: s {s}: no room for chart {} of {n} ({w}×{h}) — tolerated", n - k); }
+                out[i] = Placed { x: 0xFFFF, y: 0xFFFF, w, h };
+                continue;
+            }
             return None;
         }
         let node = packer.nodes[r as usize];
@@ -238,8 +246,10 @@ pub fn allocate_ordered(charts: &[ChartExt], order: &[usize], w_atlas: u16, h_at
 /// to replay the editor's search path when our TryPack succeeds at a probe where the editor's failed.
 pub fn allocate_ordered_forced(charts: &[ChartExt], order: &[usize], w_atlas: u16, h_atlas: u16, g: u16, m: u16, max_iter: u32, force_fail: &[u32]) -> Option<(f32, Vec<Placed>)> {
     // LMTOOL_LAYOUT_S=X (study): one TryPack at the given s (the editor's, from its mapping) instead of the scale search — isolates the
-    // per-chart size rule from the scale
-    if let Some(sf) = std::env::var("LMTOOL_LAYOUT_S").ok().and_then(|v| v.parse::<f32>().ok()) {
+    // per-chart size rule from the scale. `0x…` = the f32's bits (the exact probe value of a traced search; the carry walk is
+    // sensitive to the last bit of s over a thousand entries — E8 2026-10-01)
+    if let Some(sf) = std::env::var("LMTOOL_LAYOUT_S").ok().and_then(|v| if let Some(h) = v.strip_prefix("0x") { u32::from_str_radix(h, 16).ok().map(f32::from_bits) } else { v.parse::<f32>().ok() }) {
+        if std::env::var_os("LMTOOL_PACK_TRACE").is_some() { eprintln!("pack: LMTOOL_LAYOUT_S: s {sf} ({:#010x})", sf.to_bits()); }
         return try_pack(charts, order, sf, w_atlas, h_atlas, g, m).map(|p| (sf, p));
     }
     let n = charts.len();
@@ -297,11 +307,11 @@ pub fn allocate_ordered_forced(charts: &[ChartExt], order: &[usize], w_atlas: u1
         let attempt = if force_fail.contains(&iter) { None } else { try_pack(charts, order, s, w_atlas, h_atlas, g, m) };
         match attempt {
             Some(p) => {
-                if trace { eprintln!("pack: bisect iter {iter}: scale {mid:.9} s {s:.6} succeeds"); }
+                if trace { eprintln!("pack: bisect iter {iter}: scale {mid:.9} s {s:.6} ({:#010x}) succeeds", s.to_bits()); }
                 scale_lo = mid;
                 best = p;
             }
-            None => { if trace { eprintln!("pack: bisect iter {iter}: scale {mid:.9} s {s:.6} FAILS"); } scale_hi = mid }
+            None => { if trace { eprintln!("pack: bisect iter {iter}: scale {mid:.9} s {s:.6} ({:#010x}) FAILS", s.to_bits()); } scale_hi = mid }
         }
     }
     Some(((scale_lo * d).sqrt(), best))
