@@ -181,9 +181,16 @@ fn bake_one(g: &MyGame, map_wsl: &str, quality: u32, load_timeout: Duration, com
         }
         let secs = t0.elapsed().as_secs();
         if secs >= 20 && secs % 20 == 0 {
-            let dlg = get(shootctl, "/dlgtext", 10).to_ascii_lowercase();
-            if dlg.contains("load map") || dlg.contains("couldn") {
+            let dlg = get(shootctl, "/dlgtext", 10);
+            let low = dlg.to_ascii_lowercase();
+            if low.contains("load map") || low.contains("couldn") {
                 return Err(format!("the editor refused the map: {}", dlg.trim()));
+            }
+            // the menu with a FrameMessage modal and no editor 30 s in = refused with some other
+            // text (tiny 22, 2026-10-01: 900 s of waiting on a message box) — fail with the text
+            if secs >= 40 && c.contains("\"ctx\":0") && c.contains("FrameMessage") {
+                let _ = get(shootctl, "/dismiss", 10);
+                return Err(format!("the editor refused the map (FrameMessage after {secs} s): {}", dlg.trim().chars().take(200).collect::<String>()));
             }
         }
         if c.contains("FrameAskYesNo") {
