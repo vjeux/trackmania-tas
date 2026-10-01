@@ -299,6 +299,26 @@ fn one(args: &[String], map: &Path, out: &Path) -> Result<(), String> {
 /// `target` with its lightmap chunk replaced by the editor re-save's, written to `out`
 /// LZO-compressed (the shipped form; an uncompressed body is ~1 MB bigger — the Nadeo cap).
 /// The lightmap is applied by object index, so the two files must list the same items.
+/// The devserver tail of a bake whose editor save was pulled to `resaved`
+/// (`lightmap-run`): the support files the editor's save dropped restored from
+/// the bake copy, then the lightmap chunk transplanted from the re-save into
+/// the SHIPPED file → `out` (the shipped file and the copy carry the same item
+/// list, checked by the transplant).
+pub fn finish_from_resaved(bake_copy: &Path, resaved: &Path, _copy: &Path, shipped: &Path, out: &Path) -> Result<(), String> {
+    let restored_tmp = resaved.with_extension("restoring.Map.Gbx");
+    match tmmaps::header::restore_support_files(resaved, bake_copy, &restored_tmp, false) {
+        Ok(added) if added.is_empty() => {}
+        Ok(added) => {
+            std::fs::rename(&restored_tmp, resaved).map_err(|e| format!("{}: {e}", resaved.display()))?;
+            eprintln!("the editor's save lost {} support files (textures) of the archive — restored from the bake copy", added.len());
+        }
+        Err(e) => eprintln!("WARNING: support files not restored into the re-save ({e})"),
+    }
+    let re = tmmaps::map::MapFile::load(resaved);
+    transplant(shipped, &re, resaved, out)?;
+    report(out, "the transplant")
+}
+
 fn transplant(target: &Path, re: &tmmaps::map::MapFile, resaved_path: &Path, out: &Path) -> Result<(), String> {
     let orig = tmmaps::map::MapFile::load(target);
     let (n_orig, n_re) = (orig.items.len(), re.items.len());

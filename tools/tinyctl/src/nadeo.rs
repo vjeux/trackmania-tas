@@ -27,7 +27,7 @@ use serde_json::Value;
 
 use crate::publish::{render_lock, token, CORE, LIVE, STORE};
 
-const BOX_TOOLS: &str = "/home/vjeux/trackmania-tas/tools/target/release";
+pub const BOX_TOOLS: &str = "/home/vjeux/trackmania-tas/tools/target/release";
 
 fn curl(args: &[&str]) -> Result<(String, String), String> {
     let out = Command::new("curl").arg("-s").arg("--max-time").arg("600").arg("--retry").arg("1").arg("-w").arg("\n%{http_code}").args(args).output().map_err(|e| format!("curl: {e}"))?;
@@ -785,28 +785,28 @@ pub fn club_rooms(args: &[String]) -> Result<(), String> {
 // `tinyctl token-mint` — fresh Nadeo tokens as ONE tmdrive hold on the box.
 // ---------------------------------------------------------------------------
 
-const PLUGINS_DIR: &str = "/mnt/c/Users/vjeux/OpenplanetNext/Plugins";
+pub const PLUGINS_DIR: &str = "/mnt/c/Users/vjeux/OpenplanetNext/Plugins";
 /// The plugin folder a driver stages: the QUARANTINED copy (what every driver
 /// on the box stages), not the repo's tools/openplanet-plugin — that directory
 /// carries sibling plugins in subfolders (ReactorContact/, ReactorProbe/) whose
 /// duplicate function names break the compile (Openplanet.log 11:28 PT,
 /// 2026-10-01: "A function with the same name and parameters already exists"
 /// → no HTTP server, no /ping).
-const QUARANTINE_PLUGIN: &str = "/mnt/c/Users/vjeux/plugins-quarantine/2026-09-27/GhostShooter";
-const GAME_EXE: &str = "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Trackmania\\Trackmania.exe";
+pub const QUARANTINE_PLUGIN: &str = "/mnt/c/Users/vjeux/plugins-quarantine/2026-09-27/GhostShooter";
+pub const GAME_EXE: &str = "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Trackmania\\Trackmania.exe";
 
 /// The GhostShooter folder placed in Openplanet's Plugins dir for THIS run
 /// only, removed on every exit path (vjeux, 2026-09-27 14:34 PT: no agent
 /// plugin lives there permanently; a driver stages its plugin for its own
 /// launch and takes it out before the box is released). A folder already
 /// there is somebody else's — left alone, and not removed either.
-struct StagedPlugin {
+pub struct StagedPlugin {
     dst: PathBuf,
     mine: bool,
 }
 
 impl StagedPlugin {
-    fn place(src: &Path) -> Result<StagedPlugin, String> {
+    pub fn place(src: &Path) -> Result<StagedPlugin, String> {
         let dst = PathBuf::from(PLUGINS_DIR).join("GhostShooter");
         if dst.join("info.toml").is_file() {
             eprintln!("  plugin: {} already present (not mine — left as is)", dst.display());
@@ -858,7 +858,7 @@ fn copy_plugin_dir(src: &Path, dst: &Path) -> Result<usize, String> {
 /// The Trackmania.exe pids on the box, FAIL-CLOSED: `tasklist` must print its
 /// table header (a process list) or the "No tasks" INFO line, or the probe is
 /// INVALID (WSL interop dead) and that is an error, never "no game".
-fn game_pids() -> Result<Vec<u32>, String> {
+pub fn game_pids() -> Result<Vec<u32>, String> {
     let o = Command::new("/mnt/c/Windows/System32/tasklist.exe").args(["/FI", "IMAGENAME eq Trackmania.exe"]).output().map_err(|e| format!("tasklist.exe: {e}"))?;
     let text = String::from_utf8_lossy(&o.stdout).to_string();
     if text.contains("No tasks are running") {
@@ -874,7 +874,7 @@ fn game_pids() -> Result<Vec<u32>, String> {
         .collect())
 }
 
-fn plugin_pong(shootctl: &str) -> bool {
+pub fn plugin_pong(shootctl: &str) -> bool {
     Command::new(shootctl).args(["get", "/ping"]).output().map(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).contains("pong")).unwrap_or(false)
 }
 
