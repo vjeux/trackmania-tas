@@ -63,6 +63,11 @@ fn main() {
     let editor_min: f64 = f("--editor-min").map(|v| v.parse().expect("--editor-min S")).unwrap_or(0.0);
     let dump: Option<(String, String, usize)> = f("--dump-texels").map(|v| { let p: Vec<&str> = v.split(':').collect(); (p[0].to_string(), p.get(1).unwrap_or(&"").to_string(), p.get(2).and_then(|n| n.parse().ok()).unwrap_or(40)) });
     let mut dumped = 0usize;
+    // `--dump-leaks SUBSTR:LAMPBANDPREFIX:N` (E8, 2026-10-01): up to N texels of the classes matching SUBSTR, in the LAMP-distance band
+    // starting with the prefix (e.g. `AC16497094:L 32<d≤48:12`), that OURS lights and the editor does not — the leak texels, with the
+    // nearest lamp's position, for an occluder trace (e7_ray lamp → texel).
+    let dump_leaks: Option<(String, String, usize)> = f("--dump-leaks").map(|v| { let p: Vec<&str> = v.split(':').collect(); (p[0].to_string(), p.get(1).unwrap_or(&"").to_string(), p.get(2).and_then(|n| n.parse().ok()).unwrap_or(20)) });
+    let mut leaked = 0usize;
     let ed_bins: Vec<f64> = f("--editor-bands").map(|v| v.split(',').map(|s| s.trim().parse().expect("--editor-bands B1,B2")).collect()).unwrap_or_default();
     let y_bins: Vec<f32> = f("--y-bins").map(|v| v.split(',').map(|s| s.trim().parse().expect("--y-bins Y1,Y2")).collect()).unwrap_or_default();
     let near: Option<(Vec<(f32, f32)>, f32)> = f("--near").map(|p| { let pts = lightmap::classcmp::read_points(&p, f("--near-name").as_deref()).unwrap_or_else(|e| panic!("--near: {e}")); let r: f32 = f("--radius").map(|v| v.parse().expect("--radius R")).unwrap_or(30.0); eprintln!("--near: {} points, radius {r} m", pts.len()); (pts, r) });
@@ -245,6 +250,16 @@ fn main() {
             let lo = (0..3).map(|c| lightmap::classcmp::texel_hdr(frame, a[c], fbi, k1)).fold(0.0, f64::max) >= lit_hdr;
             let le = (0..3).map(|c| lightmap::classcmp::texel_hdr(frame, b[c], fbj, k2)).fold(0.0, f64::max) >= lit_hdr
                 && (editor_min <= 0.0 || (0..3).map(|c| lightmap::classcmp::texel_hdr(frame, b[c], fbj, k2)).sum::<f64>() >= editor_min);
+            if let Some((sub, bp, n)) = &dump_leaks {
+                if leaked < *n && has[p] && key.contains(sub.as_str()) && lb.as_ref().map(|(l, _)| l.starts_with(bp.as_str())).unwrap_or(false) && lo && !le {
+                    let ho: Vec<f64> = (0..3).map(|c| lightmap::classcmp::texel_hdr(frame, a[c], fbi, k1)).collect();
+                    let q = posv[p];
+                    let mut best = (f32::MAX, [0f32; 4]);
+                    for l in &lamps { let (dx, dy, dz) = (l[0] - q[0], l[1] - q[1], l[2] - q[2]); let d2 = dx * dx + dy * dy + dz * dz; if d2 < best.0 { best = (d2, *l); } }
+                    println!("LEAK\t{key}\tchart {i}\tatlas ({x}, {y})\tworld ({:.2}, {:.2}, {:.2})\tnormal ({:.3}, {:.3}, {:.3})\tours {:.4}/{:.4}/{:.4}\teditor 0\tnearest lamp ({:.2}, {:.2}, {:.2}) R {} d {:.1}", q[0], q[1], q[2], nrm[p][0], nrm[p][1], nrm[p][2], ho[0], ho[1], ho[2], best.1[0], best.1[1], best.1[2], best.1[3], best.0.sqrt());
+                    leaked += 1;
+                }
+            }
             if let Some((sub, bp, n)) = &dump {
                 if dumped < *n && has[p] && key.contains(sub.as_str()) && eb.starts_with(bp.as_str()) && le {
                     let ho: Vec<f64> = (0..3).map(|c| lightmap::classcmp::texel_hdr(frame, a[c], fbi, k1)).collect();

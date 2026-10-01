@@ -894,8 +894,23 @@ pub fn render_flat_cube_masked(l: [f32; 3], r_eff: f32, size: u32, tris: &[Caste
                     if !(fr.z >= 0.0 && fr.z <= 1.0) { return; }
                     if let Some(at) = &ct.alpha {
                         // PS 937's alpha test: discard where alpha − GbxShadowAlphaThreshold (128/255) < 0
-                        let a = at.sample_aniso(fr.uv, fr.duv_dx, fr.duv_dy, 16.0);
-                        if a - 0.501960813999176 < 0.0 { return; }
+                        // LMTOOL_LL_CASTER_ALPHA=mip0 (STUDY, E8 2026-10-01 — the tiny16 lamp-tail bracket): the cut-out sampled bilinearly
+                        // at mip 0 at the fragment's uv instead of the anisotropic footprint sample. At a 36-px face a shadow texel spans
+                        // ~1 m: the footprint sample averages a leaf texture's alpha to its coverage (6–23 %), below the threshold
+                        // everywhere, so the vegetation (86 % of tiny16's caster triangles) casts nothing from coarse faces. Which sampler
+                        // the lamp pass's alpha caster PS 1147 binds is RE 18's read; this knob is the bracket, never a rule.
+                        static CASTER_ALPHA_MIP0: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_LL_CASTER_ALPHA").as_deref() == Ok("mip0"));
+                        // RE 18's frame-804 read (20:00Z): the flat-cube alpha caster PS discards where alpha − 224/255 < 0 on a plain mip-mapped
+                        // sample (the sun map's PS 937 keeps 128/255).
+                        // THE THRESHOLD STAYS 128/255 (E8 2026-10-01 20:50Z): RE 18's frame-804 read of the flat-cube alpha caster PS gives 224/255
+                        // (0.8784314) on a plain mip-mapped sample, but on OUR anisotropic-footprint raster that word moves the tiny16 Sunset d1
+                        // guard AWAY from the editor (frame-1 TOTAL 1.005/1.018/1.033 → 1.090/1.102/1.117; 3 138 → 3 195 lit texels: fewer
+                        // card fragments pass → the vegetation casts less). The word belongs with the sampler it was read beside; until that
+                        // pair is transcribed together, 224/255 is the study knob LMTOOL_LL_CASTER_ALPHA=t224.
+                        static CASTER_ALPHA_T224: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_LL_CASTER_ALPHA").as_deref() == Ok("t224"));
+                        let threshold = if *CASTER_ALPHA_T224 { 0.878431379795074 } else { 0.501960813999176 };
+                        let a = if *CASTER_ALPHA_MIP0 { at.bilinear(0, fr.uv[0], fr.uv[1]) } else { at.sample_aniso(fr.uv, fr.duv_dx, fr.duv_dy, 16.0) };
+                        if a - threshold < 0.0 { return; }
                     }
                     let bias = crate::shadowmap::depth_bias_d16(&st, fr.max_depth_slope);
                     let zb = fr.z + bias;

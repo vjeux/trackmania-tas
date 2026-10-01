@@ -233,7 +233,17 @@ impl Lamp {
     }
 
     pub fn is_spot(&self) -> bool {
-        self.light.cone.1 < 180.0
+        // THE CONE APPLIES WHENEVER inner < outer (E8 2026-10-01 after RE 18's 19:05Z read of RI's R-256 lamp, cone 120°/180°: IsSpot 1,
+        // CosOuter = cos(90°) ≈ 0, InvCosRange = 1/(cos 60° − cos 90°) = 2.0, SpotDirNeg = the axis — a HEMISPHERE with the smoothstep over
+        // the 60°→90° band). The old rule `outer < 180` made every (120, 180) light an omni: tiny16 Night's 20 R-64 lamps lit their back
+        // hemisphere — the far-band lit set ×1.1–1.2 and the "+0.004–0.008" floor at 24–64 m (the dumped AC16497094 leak texels sit
+        // 135° off a 120/180 lamp's axis, ours 0.002 HDR, the editor 0). A true ball (180, 180) has no cone (the range degenerate).
+        // LMTOOL_LL_SPOT_RULE=outer180 = the old rule (study).
+        static OLD: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_LL_SPOT_RULE").as_deref() == Ok("outer180"));
+        // THE CLASS RULE (RE 18 20:20Z): a GxLightSpot is a spot at any outer angle — 180° included — and a degenerate spot (inner == outer)
+        // is a hard cut at outer/2 (InvCosRange → ∞ saturates the smoothstep); a GxLightBall carries no cone and the loader gives it
+        // (180, 180). So: spot ⇔ outer < 180 ∨ inner < outer.
+        if *OLD { self.light.cone.1 < 180.0 } else { self.light.cone.1 < 180.0 || self.light.cone.0 < self.light.cone.1 }
     }
 
     /// PS 7343's cbuffer for this lamp: the flat-cube faces, ZScale = −1/999, ZTrans = R/999, InvRadius2, the cone terms from
@@ -811,6 +821,14 @@ pub fn draw_lamp_partial<T: LampTarget>(sc: &LmScene, insts: &[usize], cb: &Ligh
                         let p = [a.world[0] * b0 + b.world[0] * b1 + c.world[0] * b2, a.world[1] * b0 + b.world[1] * b1 + c.world[1] * b2, a.world[2] * b0 + b.world[2] * b1 + c.world[2] * b2];
                         let nrm = [a.normal[0] * b0 + b.normal[0] * b1 + c.normal[0] * b2, a.normal[1] * b0 + b.normal[1] * b1 + c.normal[1] * b2, a.normal[2] * b0 + b.normal[2] * b1 + c.normal[2] * b2];
                         let o = ps_7343(cb, p, nrm, &sample);
+                        // LMTOOL_LL_TEXEL_TRACE=x,y (E8, 2026-10-01): every lamp fragment landing on that atlas texel with a non-zero
+                        // output — the lamp position, jitter, instance, the fragment's world position / normal, the distance, PS 7343's
+                        // output (the per-sample trace of a leak texel: which lamp lights it, from where, at what attenuation)
+                        static TEXEL_TRACE: std::sync::LazyLock<Option<(u32, u32)>> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_LL_TEXEL_TRACE").ok().and_then(|v| { let p: Vec<u32> = v.split(',').filter_map(|t| t.trim().parse().ok()).collect(); if p.len() == 2 { Some((p[0], p[1])) } else { None } }));
+                        if *TEXEL_TRACE == Some((x, y)) && (o[0] != 0.0 || o[1] != 0.0) {
+                            let d = ((cb.light_pos[0] - p[0]).powi(2) + (cb.light_pos[1] - p[1]).powi(2) + (cb.light_pos[2] - p[2]).powi(2)).sqrt();
+                            eprintln!("texel trace ({x},{y}): lamp at ({:.2},{:.2},{:.2}) spot {} out_scale {:?} jitter {n} inst {ii}: p ({:.2},{:.2},{:.2}) n ({:.3},{:.3},{:.3}) d {d:.2} → o ({:.6},{:.4},{},{:.4})", cb.light_pos[0], cb.light_pos[1], cb.light_pos[2], cb.is_light_spot, cb.out_scale, p[0], p[1], p[2], nrm[0], nrm[1], nrm[2], o[0], o[1], o[2], o[3]);
+                        }
                         let slot = acc.slot(x, y);
                         for ch in 0..4 {
                             slot[ch] = blend_f16(slot[ch], o[ch], BLEND);

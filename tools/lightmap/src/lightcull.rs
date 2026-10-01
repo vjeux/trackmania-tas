@@ -79,7 +79,12 @@ pub fn local_light_sees(rec_centre: [f32; 3], rec_half: [f32; 3], light: &LightD
     if !box_in_sphere(rec_centre, rec_half, light.pos, r_eff) {
         return false;
     }
-    if light.cone.1 >= 180.0 {
+    // THE CONE CULL FOLLOWS THE SHADER'S IsSpot (E8 2026-10-01): inner < outer — a (120, 180) light is a hemisphere (RE 18's RI read:
+    // IsSpot 1, CosOuter cos 90° ≈ 0, InvCosRange 2.0) and the transcribed `sphere_in_cone` has its `c <= 0` branch for exactly that
+    // half-angle; only a true ball (inner == outer) is sphere-only. LMTOOL_LL_SPOT_RULE=outer180 = the old `outer ≥ 180 → sphere` form.
+    static OLD: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_LL_SPOT_RULE").as_deref() == Ok("outer180"));
+    let ball = if *OLD { light.cone.1 >= 180.0 } else { !(light.cone.1 < 180.0 || light.cone.0 < light.cone.1) };
+    if ball {
         return true;
     }
     let cone = Cone::new(light.pos, light.dir, (light.cone.1.to_radians() * 0.5).cos(), r_eff);
