@@ -162,7 +162,9 @@ fn bake_one(g: &MyGame, map_wsl: &str, quality: u32, load_timeout: Duration, com
         // the direct playground (`/playmap`, PlayMap on the file) — no editor session at all; the
         // editor's Test button did not open a test playground after a save (16, 2026-10-01)
         println!("  {name}: /playmap: {}", get(shootctl, "/playmap?mode=", 30));
-        let car = wait_for_car(g, &name, Duration::from_secs(240))?;
+        // a PlayMap that has not produced a playground in 100 s is the black-screen load stall
+        // (loadloop's class): the caller relaunches and retries once
+        let car = wait_for_car(g, &name, Duration::from_secs(100))?;
         let _ = std::fs::remove_file(&game_copy);
         g.to_menu()?;
         return Ok(("-".into(), 0.0, car));
@@ -366,7 +368,9 @@ pub fn bake_run(args: &[String]) -> Result<(), String> {
         let mut game: Option<MyGame> = None;
         let mut in_game = 0usize;
         let mut ok = 0usize;
-        for m in &maps {
+        let mut queue: std::collections::VecDeque<(String, u32)> = maps.iter().map(|m| (m.clone(), 1u32)).collect();
+        while let Some((m, attempt)) = queue.pop_front() {
+            let m = &m;
             if game.as_ref().map(|g| !g.alive()).unwrap_or(false) {
                 eprintln!("  the game died — relaunching");
                 game = None;
@@ -386,7 +390,17 @@ pub fn bake_run(args: &[String]) -> Result<(), String> {
             }
             let g = game.as_ref().unwrap();
             let row = match bake_one(g, m, quality, load_timeout, compute_timeout, startcheck || check_only, check_only) {
+                Ok((_, _, car)) if car.starts_with("NO VEHICLE") && attempt == 1 => {
+                    // the load stalled: a fresh game and one more try before the verdict
+                    eprintln!("  {m}: no playground on attempt 1 — a fresh game, retrying once");
+                    game = None;
+                    queue.push_front((m.clone(), 2));
+                    continue;
+                }
                 Ok((saved, secs, car)) => {
+                    if car.starts_with("NO VEHICLE") {
+                        game = None;
+                    }
                     ok += 1;
                     format!("{m}\t{saved}\tok\t{secs:.0}\t{car}\n")
                 }
