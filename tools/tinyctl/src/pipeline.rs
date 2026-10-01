@@ -244,8 +244,8 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         row.push(format!("{:.0}", build_t.elapsed().as_secs_f64()));
         // the source's times must survive the conversion untouched — or come out
         // exactly K x the source's under --times-scale K (the giant campaigns)
-        let tk: u32 = f("--times-scale").and_then(|k| k.parse().ok()).unwrap_or(1);
-        let want = |s: &str| s.parse::<u32>().map(|v| (v * tk).to_string()).unwrap_or_else(|_| s.to_string());
+        let tk: f64 = f("--times-scale").and_then(|k| k.parse().ok()).unwrap_or(1.0);
+        let want = |s: &str| s.parse::<u32>().map(|v| tmmaps::secs::scale_time_ms(v, tk).to_string()).unwrap_or_else(|_| s.to_string());
         if thdr.authortime != want(&hdr.authortime) || thdr.gold != want(&hdr.gold) || thdr.silver != want(&hdr.silver) || thdr.bronze != want(&hdr.bronze) {
             note.push_str(&format!("TIMES CHANGED ({} {} {} {} -> {} {} {} {}); ", hdr.authortime, hdr.gold, hdr.silver, hdr.bronze, thdr.authortime, thdr.gold, thdr.silver, thdr.bronze));
         }

@@ -825,9 +825,13 @@ pub fn settimes(args: &[String]) {
     let (old_b, old_s, old_g, old_a) = (old(&hdr.bronze), old(&hdr.silver), old(&hdr.gold), old(&hdr.authortime));
     let ceil_s = |ms: f64| ((ms / 1000.0).ceil() * 1000.0) as u32;
     let (bronze, silver, gold, author) = if let Some(k) = f("--scale") {
-        let k: u32 = k.parse().expect("--scale wants a whole number");
-        assert!(k >= 1, "--scale wants 1 or more");
-        (old_b * k, old_s * k, old_g * k, old_a * k)
+        // whole (2, 3, 4: the giant campaigns) or fractional (0.5: the tiny
+        // campaign, 2026-10-01) — `secs::scale_time_ms` keeps whole-second
+        // medals whole seconds
+        let k: f64 = k.parse().expect("--scale wants a number (2, 3, 0.5 …)");
+        assert!(k > 0.0 && k.is_finite(), "--scale wants a positive number");
+        let sc = |v: u32| tmmaps::secs::scale_time_ms(v, k);
+        (sc(old_b), sc(old_s), sc(old_g), sc(old_a))
     } else {
         let author: u32 = f("--author").expect("settimes needs --author MS or --scale K").parse().expect("--author wants milliseconds");
         let gold: u32 = f("--gold").map(|s| s.parse().unwrap()).unwrap_or_else(|| ceil_s(author as f64 * 1.06));

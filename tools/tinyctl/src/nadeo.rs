@@ -10,6 +10,8 @@
 //!                    [--fetch DIR [--first N]]                … and the first N map files as NN-<name>.Map.Gbx
 //! tinyctl nadeo-here campaign-create --club ID --name NAME   a new (empty) campaign; prints its id
 //! tinyctl nadeo-here maps --uids UID,UID…                    core records for a list of uids
+//! tinyctl nadeo-here official [--name "Fall 2026" [--fetch DIR]]  the seasonal (official) campaign list / one campaign's maps
+//!                    [--tokens DIR]                           … any command: read the token files from DIR (no mint, runs anywhere Nadeo is routable)
 //! ```
 //!
 //! Every command mints fresh tokens through the GhostShooter `/nadeotoken`
@@ -165,7 +167,15 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     std::fs::create_dir_all(&outdir).map_err(|e| format!("{}: {e}", outdir.display()))?;
     let shootctl = f("--shootctl").unwrap_or_else(|| format!("{BOX_TOOLS}/shootctl"));
     let owner = format!("nadeo-{}", std::process::id());
-    let (core, live) = tokens_opt(&shootctl, &owner, !tmmaps::cli::has(args, "--no-lock"))?;
+    // --tokens DIR: the two token files (token-NadeoServices.txt / token-
+    // NadeoLiveServices.txt, the plugin's format) read from DIR as they are —
+    // no mint, no game, no lock. The box mints them under a tmdrive hold and
+    // `wsx pull` brings them to a devserver whose proxy reaches Nadeo (the
+    // Fall 2026 fetch, 2026-10-01: devvm42752's cert proxy routes *.nadeo.live).
+    let (core, live) = match f("--tokens") {
+        Some(dir) => tokens_from_dir(Path::new(&dir))?,
+        None => tokens_opt(&shootctl, &owner, !tmmaps::cli::has(args, "--no-lock"))?,
+    };
     let auth_core = format!("Authorization: {core}");
     let auth_live = format!("Authorization: {live}");
     let save = |name: &str, v: &Value| -> Result<(), String> {
@@ -175,6 +185,52 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         Ok(())
     };
     match sub.as_str() {
+        "official" => {
+            // tinyctl nadeo-here official [--length N] [--offset N] [--name "Fall 2026"] [--fetch DIR [--first N]]
+            // The game's OFFICIAL (seasonal) campaign list — what the fetch script
+            // read: `/api/token/campaign/official`. Without --name: one row per
+            // campaign (id, name, start/end/publication as UTC, map count).
+            // With --name: that campaign's playlist with each map's core record,
+            // and --fetch DIR downloads the files as DIR/NN-<name>.Map.Gbx
+            // (NN = 1-based playlist position). Exit 3 when the named campaign
+            // is not in the list (the drop has not happened yet).
+            let length = f("--length").unwrap_or_else(|| "10".into());
+            let offset = f("--offset").unwrap_or_else(|| "0".into());
+            let url = format!("{LIVE}/api/token/campaign/official?length={length}&offset={offset}");
+            let v = get_json(&auth_live, &url)?;
+            save("campaign-official.json", &v)?;
+            let list: Vec<Value> = v.get("campaignList").and_then(|l| l.as_array()).cloned().unwrap_or_default();
+            let want = f("--name");
+            if want.is_none() {
+                println!("total {}", s(&v, "itemCount"));
+                println!("id\tname\tseasonUid\tstart\tend\tpublication\tmaps");
+                for c in &list {
+                    let n = c.get("playlist").and_then(|p| p.as_array()).map(|a| a.len()).unwrap_or(0);
+                    println!("{}\t{}\t{}\t{}\t{}\t{}\t{n}", s(c, "id"), s(c, "name"), s(c, "seasonUid"), utc(c, "startTimestamp"), utc(c, "endTimestamp"), utc(c, "publicationTimestamp"), );
+                }
+                return Ok(());
+            }
+            let want = want.unwrap();
+            let Some(c) = list.iter().find(|c| s(c, "name").eq_ignore_ascii_case(&want)) else {
+                let have: Vec<String> = list.iter().map(|c| s(c, "name")).collect();
+                eprintln!("no official campaign named `{want}`; the list has: {}", have.join(" | "));
+                std::process::exit(3);
+            };
+            save(&format!("campaign-official-{}.json", file_safe_name(&want)), c)?;
+            let mut uids: Vec<(u64, String)> = c
+                .get("playlist")
+                .and_then(|l| l.as_array())
+                .map(|a| a.iter().map(|e| (e.get("position").and_then(|p| p.as_u64()).unwrap_or(0), s(e, "mapUid"))).collect())
+                .unwrap_or_default();
+            uids.sort();
+            println!("campaign {}\t{}\tseason {}\tstart {}\tend {}\t{} maps", s(c, "id"), s(c, "name"), s(c, "seasonUid"), utc(c, "startTimestamp"), utc(c, "endTimestamp"), uids.len());
+            let first: usize = f("--first").map(|n| n.parse::<usize>().map_err(|_| "--first N")).transpose()?.unwrap_or(uids.len());
+            let wanted: Vec<&(u64, String)> = uids.iter().take(first).collect();
+            let recs = core_records(&auth_core, &wanted.iter().map(|(_, u)| u.clone()).collect::<Vec<_>>())?;
+            save(&format!("campaign-official-{}-maps.json", file_safe_name(&want)), &Value::Array(recs.clone()))?;
+            let fetch = f("--fetch").map(PathBuf::from);
+            fetch_playlist(&auth_core, &wanted, &recs, fetch.as_deref())
+        }
         "club-mine" => {
             let v = get_json(&auth_live, &format!("{LIVE}/api/token/club/mine?length=50&offset=0"))?;
             save("club-mine.json", &v)?;
@@ -302,34 +358,8 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             let wanted: Vec<&(u64, String)> = uids.iter().take(first).collect();
             let recs = core_records(&auth_core, &wanted.iter().map(|(_, u)| u.clone()).collect::<Vec<_>>())?;
             save(&format!("club-{club}-campaign-{camp}-maps.json"), &Value::Array(recs.clone()))?;
-            println!("pos\tmapUid\tname\tauthorTime\tgold\tsilver\tbronze\tcollection\tauthor\tmapId\tfile");
             let fetch = f("--fetch").map(PathBuf::from);
-            if let Some(d) = &fetch {
-                std::fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
-            }
-            for (i, (pos, uid)) in wanted.iter().enumerate() {
-                let rec = recs.iter().find(|r| s(r, "mapUid") == *uid).cloned().unwrap_or(Value::Null);
-                let nn = i + 1;
-                let fname = format!("{nn:02}-{}.Map.Gbx", file_safe_name(&s(&rec, "name")));
-                let mut file_note = String::from("-");
-                if let Some(d) = &fetch {
-                    let p = d.join(&fname);
-                    if p.exists() && std::fs::metadata(&p).map(|m| m.len() > 0).unwrap_or(false) {
-                        file_note = format!("have {} B", std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0));
-                    } else {
-                        let url = s(&rec, "fileUrl");
-                        if url == "-" {
-                            file_note = "NO fileUrl".into();
-                        } else {
-                            let (_, code) = curl(&["-L", "-H", &auth_core, "-o", p.to_str().unwrap(), &url])?;
-                            let n = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
-                            file_note = format!("HTTP {code} {n} B");
-                        }
-                    }
-                }
-                println!("{pos}\t{uid}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{file_note}", s(&rec, "name"), s(&rec, "authorScore"), s(&rec, "goldScore"), s(&rec, "silverScore"), s(&rec, "bronzeScore"), s(&rec, "collectionName"), s(&rec, "author"), s(&rec, "mapId"), fname);
-            }
-            Ok(())
+            fetch_playlist(&auth_core, &wanted, &recs, fetch.as_deref())
         }
         "maps" => {
             let uids: Vec<String> = f("--uids").ok_or("maps needs --uids A,B,…")?.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect();
@@ -375,8 +405,76 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             println!("activity\t{act}\tactive {}\tpublic {}\tname {}", s(&a, "active"), s(&a, "public"), s(&a, "name"));
             Ok(())
         }
-        other => Err(format!("nadeo-here: unknown subcommand `{other}` (club | campaigns | campaign | campaign-create | maps)")),
+        other => Err(format!("nadeo-here: unknown subcommand `{other}` (club | campaigns | campaign | campaign-create | maps | official)")),
     }
+}
+
+/// The playlist table (one row per wanted uid, with its core record) and, with
+/// `fetch` = Some(DIR), the files as DIR/NN-<name>.Map.Gbx (NN = 1-based
+/// position in `wanted`; a non-empty file already there is kept). Shared by
+/// `campaign` (a club campaign) and `official` (the seasonal list).
+fn fetch_playlist(auth_core: &str, wanted: &[&(u64, String)], recs: &[Value], fetch: Option<&Path>) -> Result<(), String> {
+    println!("pos\tmapUid\tname\tauthorTime\tgold\tsilver\tbronze\tcollection\tauthor\tmapId\tfile");
+    if let Some(d) = fetch {
+        std::fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
+    }
+    for (i, (pos, uid)) in wanted.iter().enumerate() {
+        let rec = recs.iter().find(|r| s(r, "mapUid") == *uid).cloned().unwrap_or(Value::Null);
+        let nn = i + 1;
+        let fname = format!("{nn:02}-{}.Map.Gbx", file_safe_name(&s(&rec, "name")));
+        let mut file_note = String::from("-");
+        if let Some(d) = fetch {
+            let p = d.join(&fname);
+            if p.exists() && std::fs::metadata(&p).map(|m| m.len() > 0).unwrap_or(false) {
+                file_note = format!("have {} B", std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0));
+            } else {
+                let url = s(&rec, "fileUrl");
+                if url == "-" {
+                    file_note = "NO fileUrl".into();
+                } else {
+                    let (_, code) = curl(&["-L", "-H", auth_core, "-o", p.to_str().unwrap(), &url])?;
+                    let n = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+                    file_note = format!("HTTP {code} {n} B");
+                }
+            }
+        }
+        println!("{pos}\t{uid}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{file_note}", s(&rec, "name"), s(&rec, "authorScore"), s(&rec, "goldScore"), s(&rec, "silverScore"), s(&rec, "bronzeScore"), s(&rec, "collectionName"), s(&rec, "author"), s(&rec, "mapId"), fname);
+    }
+    Ok(())
+}
+
+/// The two token files of `dir` (the plugin's `token-<aud>.txt` names) as
+/// (core, live) Authorization header values — whatever their age; the caller
+/// chose the directory. A missing or short file is an error naming it.
+fn tokens_from_dir(dir: &Path) -> Result<(String, String), String> {
+    let read = |aud: &str| -> Result<String, String> {
+        let p = dir.join(format!("token-{aud}.txt"));
+        let t = std::fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display()))?.trim().to_string();
+        if t.len() < 20 {
+            return Err(format!("{}: not a token ({} chars)", p.display(), t.len()));
+        }
+        Ok(t)
+    };
+    Ok((read("NadeoServices")?, read("NadeoLiveServices")?))
+}
+
+/// A unix-seconds field as `YYYY-MM-DDTHH:MM:SSZ` (`-` when absent).
+fn utc(v: &Value, k: &str) -> String {
+    let Some(t) = v.get(k).and_then(|x| x.as_i64()) else { return "-".into() };
+    // civil-from-days (Howard Hinnant), no chrono dependency
+    let days = t.div_euclid(86400);
+    let secs = t.rem_euclid(86400);
+    let z = days + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z.rem_euclid(146097);
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z", secs / 3600, (secs % 3600) / 60, secs % 60)
 }
 
 /// The core records of a list of uids, in chunks of 50 (the route's cap).
@@ -680,5 +778,196 @@ pub fn club_rooms(args: &[String]) -> Result<(), String> {
     if failed > 0 {
         return Err(format!("{failed} of {} parts failed", parts.len()));
     }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// `tinyctl token-mint` — fresh Nadeo tokens as ONE tmdrive hold on the box.
+// ---------------------------------------------------------------------------
+
+const PLUGINS_DIR: &str = "/mnt/c/Users/vjeux/OpenplanetNext/Plugins";
+const REPO_PLUGIN: &str = "/home/vjeux/trackmania-tas/tools/openplanet-plugin";
+const GAME_EXE: &str = "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Trackmania\\Trackmania.exe";
+
+/// The GhostShooter folder placed in Openplanet's Plugins dir for THIS run
+/// only, removed on every exit path (vjeux, 2026-09-27 14:34 PT: no agent
+/// plugin lives there permanently; a driver stages its plugin for its own
+/// launch and takes it out before the box is released). A folder already
+/// there is somebody else's — left alone, and not removed either.
+struct StagedPlugin {
+    dst: PathBuf,
+    mine: bool,
+}
+
+impl StagedPlugin {
+    fn place(src: &Path) -> Result<StagedPlugin, String> {
+        let dst = PathBuf::from(PLUGINS_DIR).join("GhostShooter");
+        if dst.join("info.toml").is_file() {
+            eprintln!("  plugin: {} already present (not mine — left as is)", dst.display());
+            return Ok(StagedPlugin { dst, mine: false });
+        }
+        if !src.join("info.toml").is_file() {
+            return Err(format!("{}: not a plugin folder (no info.toml)", src.display()));
+        }
+        let n = copy_plugin_dir(src, &dst)?;
+        eprintln!("  plugin staged: {} → {} ({n} files)", src.display(), dst.display());
+        Ok(StagedPlugin { dst, mine: true })
+    }
+}
+
+impl Drop for StagedPlugin {
+    fn drop(&mut self) {
+        if !self.mine {
+            return;
+        }
+        match std::fs::remove_dir_all(&self.dst) {
+            Ok(()) => eprintln!("  plugin out: {}", self.dst.display()),
+            Err(e) => eprintln!("  staged plugin {} NOT removed: {e} — remove it by hand before any human launch", self.dst.display()),
+        }
+    }
+}
+
+/// Copy a plugin folder (files + subfolders; editor leftovers `.bak` /
+/// `.prev` / `.pre-*` / `.repo-overwrite*` skipped); returns the file count.
+fn copy_plugin_dir(src: &Path, dst: &Path) -> Result<usize, String> {
+    std::fs::create_dir_all(dst).map_err(|e| format!("{}: {e}", dst.display()))?;
+    let mut n = 0;
+    for e in std::fs::read_dir(src).map_err(|e| format!("{}: {e}", src.display()))?.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        let p = e.path();
+        if p.is_dir() {
+            n += copy_plugin_dir(&p, &dst.join(&name))?;
+            continue;
+        }
+        if name.ends_with(".bak") || name.ends_with(".prev") || name.contains(".pre-") || name.contains(".repo-overwrite") {
+            continue;
+        }
+        std::fs::copy(&p, dst.join(&name)).map_err(|e| format!("{}: {e}", p.display()))?;
+        n += 1;
+    }
+    Ok(n)
+}
+
+/// The Trackmania.exe pids on the box, FAIL-CLOSED: `tasklist` must print its
+/// table header (a process list) or the "No tasks" INFO line, or the probe is
+/// INVALID (WSL interop dead) and that is an error, never "no game".
+fn game_pids() -> Result<Vec<u32>, String> {
+    let o = Command::new("/mnt/c/Windows/System32/tasklist.exe").args(["/FI", "IMAGENAME eq Trackmania.exe"]).output().map_err(|e| format!("tasklist.exe: {e}"))?;
+    let text = String::from_utf8_lossy(&o.stdout).to_string();
+    if text.contains("No tasks are running") {
+        return Ok(Vec::new());
+    }
+    if !text.contains("Image Name") {
+        return Err(format!("tasklist probe INVALID (no header): {:?}", text.chars().take(200).collect::<String>()));
+    }
+    Ok(text
+        .lines()
+        .filter(|l| l.to_lowercase().starts_with("trackmania.exe"))
+        .filter_map(|l| l.split_whitespace().nth(1).and_then(|p| p.parse().ok()))
+        .collect())
+}
+
+fn plugin_pong(shootctl: &str) -> bool {
+    Command::new(shootctl).args(["get", "/ping"]).output().map(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).contains("pong")).unwrap_or(false)
+}
+
+/// `tinyctl token-mint [--outdir DIR] [--stage-plugin DIR] [--shootctl PATH] [--keep-game] [--timeout S]`
+///
+/// Runs ON THE BOX under `tmdrive run` (the lock token reaches the box's
+/// `shootctl get` through TM_LOCK_TOKEN; `/nadeotoken` is a guarded route).
+/// One hold, every step inside it:
+///   1. the fail-closed process probe: a Trackmania whose plugin does not
+///      answer is SOMEBODY ELSE'S game (vjeux's) → refuse, touch nothing;
+///   2. the plugin staged (unless a GhostShooter is already there);
+///   3. the game launched only when none runs (explorer → Trackmania.exe,
+///      the plain Steam launch), the plugin's /ping awaited;
+///   4. core + live tokens minted (the stale files removed first), copied
+///      to `--outdir` as token-<aud>.txt for `wsx pull`;
+///   5. the game WE launched closed again (unless --keep-game), the staged
+///      folder removed — so nothing of this run outlives the hold.
+pub fn token_mint(args: &[String]) -> Result<(), String> {
+    let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
+    let outdir = PathBuf::from(f("--outdir").unwrap_or_else(|| "/home/vjeux/shoot/fall2026".into()));
+    std::fs::create_dir_all(&outdir).map_err(|e| format!("{}: {e}", outdir.display()))?;
+    let shootctl = f("--shootctl").unwrap_or_else(|| format!("{BOX_TOOLS}/shootctl"));
+    let plugin_src = PathBuf::from(f("--stage-plugin").unwrap_or_else(|| REPO_PLUGIN.into()));
+    let timeout = Duration::from_secs(f("--timeout").and_then(|s| s.parse().ok()).unwrap_or(120));
+    let keep_game = tmmaps::cli::has(args, "--keep-game");
+    if std::env::var("TM_LOCK_TOKEN").map(|t| t.is_empty()).unwrap_or(true) {
+        return Err("no TM_LOCK_TOKEN in the environment — run this under `tmdrive run --purpose … -- tinyctl token-mint …`".into());
+    }
+    let t0 = std::time::Instant::now();
+    let el = |t0: &std::time::Instant| format!("[{:5.1}s]", t0.elapsed().as_secs_f64());
+    // 1. whose game?
+    let pids = game_pids()?;
+    let answering = plugin_pong(&shootctl);
+    if !pids.is_empty() && !answering {
+        return Err(format!("a Trackmania is running (pid {pids:?}) whose plugin does not answer — not ours (vjeux's own game wins); nothing touched"));
+    }
+    // 2. the plugin (a no-op when a game with the plugin is already up)
+    let staged = if answering { None } else { Some(StagedPlugin::place(&plugin_src)?) };
+    // 3. the game
+    let mut launched = false;
+    if !answering {
+        if pids.is_empty() {
+            Command::new("/mnt/c/Windows/explorer.exe").arg(GAME_EXE).output().map_err(|e| format!("explorer.exe: {e}"))?;
+            eprintln!("{} launched via explorer", el(&t0));
+            launched = true;
+        }
+        let a0 = std::time::Instant::now();
+        loop {
+            if plugin_pong(&shootctl) {
+                break;
+            }
+            if a0.elapsed() > timeout {
+                return Err(format!("{} the plugin never answered /ping within {} s (game pids now {:?})", el(&t0), timeout.as_secs(), game_pids().unwrap_or_default()));
+            }
+            std::thread::sleep(Duration::from_millis(1500));
+        }
+        eprintln!("{} plugin up (pids {:?})", el(&t0), game_pids().unwrap_or_default());
+    }
+    // 4. the tokens — the plugin waits for the Nadeo login itself (200 yields);
+    //    a fresh game may need a few tries while Ubisoft Connect logs in
+    for aud in ["NadeoServices", "NadeoLiveServices"] {
+        let _ = std::fs::remove_file(format!("{STORE}/token-{aud}.txt"));
+    }
+    let mut got: Option<(String, String)> = None;
+    let m0 = std::time::Instant::now();
+    let mut last_err = String::new();
+    while m0.elapsed() < timeout {
+        match token(&shootctl, "NadeoServices").and_then(|core| {
+            std::thread::sleep(Duration::from_millis(500));
+            token(&shootctl, "NadeoLiveServices").map(|live| (core, live))
+        }) {
+            Ok(pair) => {
+                got = Some(pair);
+                break;
+            }
+            Err(e) => {
+                last_err = e;
+                std::thread::sleep(Duration::from_secs(3));
+            }
+        }
+    }
+    let (core, live) = got.ok_or_else(|| format!("{} no tokens within {} s: {last_err}", el(&t0), timeout.as_secs()))?;
+    for (aud, t) in [("NadeoServices", &core), ("NadeoLiveServices", &live)] {
+        let p = outdir.join(format!("token-{aud}.txt"));
+        std::fs::write(&p, format!("{t}\n")).map_err(|e| format!("{}: {e}", p.display()))?;
+    }
+    println!("{} tokens minted: core {} chars, live {} chars → {}/token-*.txt", el(&t0), core.len(), live.len(), outdir.display());
+    // 5. leave the box as we found it
+    if launched && !keep_game {
+        let before = game_pids().unwrap_or_default();
+        let _ = Command::new(&shootctl).arg("quit").output();
+        let q0 = std::time::Instant::now();
+        while q0.elapsed() < Duration::from_secs(40) {
+            if game_pids().map(|p| p.is_empty()).unwrap_or(false) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1000));
+        }
+        eprintln!("{} game closed (was {before:?}; now {:?})", el(&t0), game_pids().unwrap_or_default());
+    }
+    drop(staged);
     Ok(())
 }
