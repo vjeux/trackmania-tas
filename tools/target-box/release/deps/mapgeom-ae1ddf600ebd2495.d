@@ -104,4 +104,4 @@ mapgeom/src/../assets/lightcolors/WhiteWarm.dds:
 mapgeom/src/../assets/lightcolors/Yellow.dds:
 
 # env-dep:CARGO_PKG_VERSION=1.0.0
-# env-dep:MAPGEOM_BUILD_ID=3476a4e32a52-4588bf94c18e1cf5
+# env-dep:MAPGEOM_BUILD_ID=08314babb185-4588bf94c18e1cf5

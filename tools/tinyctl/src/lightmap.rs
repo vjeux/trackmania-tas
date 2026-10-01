@@ -120,9 +120,30 @@ pub fn reduced_copy(map: &Path, out: &Path, reduced_out: &Path, drop_av: bool) -
         .lines()
         .filter_map(|l| { let (name, rest) = l.split_once(" (")?; let n: usize = rest.split(' ').next()?.parse().ok()?; if n > 0 && !l.starts_with(' ') { Some(name.to_string()) } else { None } })
         .collect();
-    const CLUSTERS: [&str; 5] = ["Grove", "Forest", "SpringPalmTree", "Sparkler16m", "ShowFogger8m"];
+    const CLUSTERS: [&str; 6] = ["Grove", "Forest", "Ecotone", "SpringPalmTree", "Sparkler16m", "ShowFogger8m"];
+    // every STOCK vegetation item (a Nadeo placement-group or species item: Bush, Flower, Cactus,
+    // Tree…, Palm…, Plant, Sugar, Fir, Pine) — the client's lightmapper dies 5 s into
+    // ComputeShadows on Fall 2026's GreenCoast maps with the clusters already gone, and the only
+    // stock models they carry beyond the clusters are Bush*/Flower*/Ecotone (RedIsland 16: Bush,
+    // CactusSmallC; 2026-10-01). A stock vegetation item gets no chart from the editor anyway
+    // (lit at runtime through the vegetation path), so dropping it from the BAKE COPY changes
+    // nothing in the result: the kept-list transplant leaves it chartless, as the editor would.
+    const STOCK_VEGET_PREFIXES: [&str; 12] = ["Bush", "Flower", "Cactus", "Tree", "Palm", "Plant", "Sugar", "Fir", "Pine", "Grass", "Fern", "Spring"];
+    let is_stock = |model: &str| !model.ends_with(".Item.Gbx");
     let m = tmmaps::map::MapFile::load(map);
-    let kept: Vec<usize> = m.items.iter().enumerate().filter(|(_, it)| !CLUSTERS.contains(&it.model.as_str()) && !light_models.contains(&it.model) && !(drop_av && it.model.starts_with("AV") && it.model.ends_with(".Item.Gbx"))).map(|(i, _)| i).collect();
+    let kept: Vec<usize> = m
+        .items
+        .iter()
+        .enumerate()
+        .filter(|(_, it)| {
+            let model = it.model.as_str();
+            !CLUSTERS.contains(&model)
+                && !light_models.contains(&it.model)
+                && !(drop_av && model.starts_with("AV") && model.ends_with(".Item.Gbx"))
+                && !(is_stock(model) && STOCK_VEGET_PREFIXES.iter().any(|p| model.starts_with(p)))
+        })
+        .map(|(i, _)| i)
+        .collect();
     let dropped = m.items.len() - kept.len();
     let kept_list = kept.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
     let kept_path = out.with_extension("kept");
