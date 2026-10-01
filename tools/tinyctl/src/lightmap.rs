@@ -182,7 +182,8 @@ fn one(args: &[String], map: &Path, out: &Path) -> Result<(), String> {
     {
         let mut m = tmmaps::map::MapFile::load(map);
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0);
-        let fresh = format!("Tlm1{:08X}{:07}{:08X}", nanos % 100_000_000, std::process::id() % 10_000_000, (nanos / 7) % 100_000_000);
+        let old_uid = tmmaps::header::read(map.to_str().unwrap_or_default()).map(|h| h.uid).unwrap_or_default();
+        let fresh = fresh_uid_like(&old_uid, nanos % 100_000_000, (nanos / 7) % 100_000_000);
         m.set_map_uid(&fresh);
         // A Nadeo campaign map is editor-LOCKED (header NeedUnlock + chunk 0x03043029) and the
         // converter keeps the chunk: the editor parks the title on a password popup the plugin
@@ -319,6 +320,19 @@ pub fn finish_from_resaved(bake_copy: &Path, resaved: &Path, _copy: &Path, shipp
     let re = tmmaps::map::MapFile::load(resaved);
     transplant(shipped, &re, resaved, out)?;
     report(out, "the transplant")
+}
+
+/// A fresh bake-copy uid of the SAME LENGTH as `old` (the in-place uid patch keeps
+/// the byte length: a source uid is 26 or 27 characters — "02b27YA4k3MWlS50A9TFGZy7Eu"
+/// gave Fall 2026 - 12 a 26-byte `Tin2…` uid, 2026-10-01): `Tlm1` + hex digits.
+pub fn fresh_uid_like(old: &str, a: u32, b: u32) -> String {
+    let want = if old.len() >= 20 { old.len() } else { 27 };
+    let mut s = format!("Tlm1{:08X}{:07}{:08X}", a, std::process::id() % 10_000_000, b);
+    while s.len() < want {
+        s.push('0');
+    }
+    s.truncate(want);
+    s
 }
 
 fn transplant(target: &Path, re: &tmmaps::map::MapFile, resaved_path: &Path, out: &Path) -> Result<(), String> {

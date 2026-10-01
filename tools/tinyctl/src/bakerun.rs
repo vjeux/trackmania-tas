@@ -348,7 +348,8 @@ pub fn lightmap_run(args: &[String]) -> Result<(), String> {
             let bake_copy = Path::new(out).with_extension("bakecopy.Map.Gbx");
             let mut m = tmmaps::map::MapFile::load(Path::new(copy));
             let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0);
-            let fresh = format!("Tlm1{:08X}{:07}{:08X}", (nanos + k as u32 * 7919) % 100_000_000, std::process::id() % 10_000_000, (nanos / 7 + gi as u32) % 100_000_000);
+            let old_uid = tmmaps::header::read(copy).map(|h| h.uid).unwrap_or_default();
+            let fresh = crate::lightmap::fresh_uid_like(&old_uid, (nanos + k as u32 * 7919) % 100_000_000, (nanos / 7 + gi as u32) % 100_000_000);
             m.set_map_uid(&fresh);
             m.remove_password();
             m.write_to(&bake_copy).map_err(|e| format!("{}: {e}", bake_copy.display()))?;
@@ -367,6 +368,8 @@ pub fn lightmap_run(args: &[String]) -> Result<(), String> {
             remote_maps.join(",")
         );
         println!("[group {gi}] one hold for {} maps …", remote_maps.len());
+        // the pushed binary's exec bit does not survive `wsx push` (2026-10-01: "Permission denied" from tmdrive run)
+        wsx.sh(&format!("chmod +x '{box_tinyctl}'"))?;
         wsx.sh(&cmd)?;
         let done = wsx.wait_done(&r_done, &r_log, Duration::from_secs(3600 * 2), &format!("bake-run group {gi}"))?;
         println!("[group {gi}] {}", done.trim());
