@@ -2784,40 +2784,116 @@ impl MapFile {
             *hist.entry(z.as_str()).or_default() += 1;
         }
         let top = hist.iter().max_by_key(|(_, c)| **c).map(|(z, _)| z.to_string()).unwrap_or_default();
-        if top != zone {
+        // Which zone fills the grid, and from which record the writer takes its
+        // template:
+        //  * first == most common (Summer 02/03/04): record 0 verbatim + the short
+        //    copies — the source's own form, byte for byte (checked below);
+        //  * first is the collection's WATER zone but not the most common one
+        //    (Fall 2026 - 08, WhiteShore: `Water` under 1542 `LandHill2` cells):
+        //    the same writer — the hills are the authored island (items in the
+        //    tiny build), the ambient terrain to regenerate is still the water;
+        //  * first is NOT water but the most common zone is (Fall 2026 - 11,
+        //    RedIsland: record 0 `WaterHill`, 1247 `Water` cells): the fill is
+        //    the water, written from a RE-ENCODED template = the first record of
+        //    that zone with its strings inline (record 0 defines the lookback
+        //    strings, so the template must introduce them itself);
+        //  * anything else refuses (a land first record would put a full-size
+        //    plain under a half-size island).
+        const WATER_ZONES: [&str; 3] = ["Sea", "Water", "Lake"];
+        let full = genealogy_full(chunk)?;
+        let (zone, rec0, short): (String, Vec<u8>, Vec<u8>) = if top == zone || WATER_ZONES.contains(&zone.as_str()) {
+            if top != zone {
+                eprintln!("  genealogy fill: first record {zone} (the collection's water) kept over the most common zone {top}");
+            }
+            // record 0 verbatim (defines the lookback strings), then short copies:
+            // count, refs 1..=count, CurrentIndex, Dir, ref count+1, FACADE — the
+            // form the source's own later records of the same zone take.
+            let rec0 = chunk[r0s..r0e].to_vec();
+            let count = u32::from_le_bytes(chunk[r0s + 8..r0s + 12].try_into().unwrap());
+            let mut short = Vec::new();
+            short.extend_from_slice(&0x0311_D000u32.to_le_bytes());
+            short.extend_from_slice(&0x0311_D002u32.to_le_bytes());
+            short.extend_from_slice(&count.to_le_bytes());
+            for i in 1..=count {
+                short.extend_from_slice(&(0x4000_0000 | i).to_le_bytes());
+            }
+            // CurrentIndex and Dir of record 0: walk past its ids (lookback version, then `count` new strings)
+            let mut o = r0s + 12 + 4;
+            for _ in 0..count {
+                let marker = u32::from_le_bytes(chunk[o..o + 4].try_into().unwrap());
+                o += 4;
+                if marker == 0x4000_0000 {
+                    let len = u32::from_le_bytes(chunk[o..o + 4].try_into().unwrap()) as usize;
+                    o += 4 + len;
+                }
+            }
+            short.extend_from_slice(&chunk[o..o + 8]);
+            short.extend_from_slice(&(0x4000_0000 | (count + 1)).to_le_bytes());
+            short.extend_from_slice(&0xFACA_DE01u32.to_le_bytes());
+            // check the source's own second record has this exact shape when it is the same zone
+            if let Some((s, e, z)) = recs.get(1) {
+                if *z == zone && &chunk[*s..*e] != &short[..] {
+                    return Err(format!("genealogy record 1 ({z}) is not the short form this fill writes: {:02x?} vs {:02x?}", &chunk[*s..*e], short));
+                }
+            }
+            (zone, rec0, short)
+        } else if WATER_ZONES.contains(&top.as_str()) {
+            let tpl = full.iter().find(|r| r.current == top).ok_or_else(|| format!("no record of the most common zone {top}"))?;
+            eprintln!("  genealogy fill: first record {zone} is not water; filling with the most common zone {top} from record at {:#x} (ids {:?}, current_index {}, dir {})", tpl.start, tpl.ids, tpl.current_index, tpl.dir);
+            // record 0': the template's ids as NEW strings (lookback version 3
+            // first), repeats as refs; the current zone as a ref when it is one
+            // of the ids, else a new string after them
+            let mut strings: Vec<String> = Vec::new();
+            let mut enc = |v: &mut Vec<u8>, s: &str, strings: &mut Vec<String>| {
+                if let Some(i) = strings.iter().position(|x| x == s) {
+                    v.extend_from_slice(&(0x4000_0000 | (i as u32 + 1)).to_le_bytes());
+                } else {
+                    strings.push(s.to_string());
+                    v.extend_from_slice(&0x4000_0000u32.to_le_bytes());
+                    v.extend_from_slice(&(s.len() as u32).to_le_bytes());
+                    v.extend_from_slice(s.as_bytes());
+                }
+            };
+            let mut rec0 = Vec::new();
+            rec0.extend_from_slice(&0x0311_D000u32.to_le_bytes());
+            rec0.extend_from_slice(&0x0311_D002u32.to_le_bytes());
+            rec0.extend_from_slice(&(tpl.ids.len() as u32).to_le_bytes());
+            rec0.extend_from_slice(&3u32.to_le_bytes()); // lookback version
+            for id in &tpl.ids {
+                enc(&mut rec0, id, &mut strings);
+            }
+            rec0.extend_from_slice(&tpl.current_index.to_le_bytes());
+            rec0.extend_from_slice(&tpl.dir.to_le_bytes());
+            enc(&mut rec0, &tpl.current, &mut strings);
+            rec0.extend_from_slice(&0xFACA_DE01u32.to_le_bytes());
+            // the short copies: every string by its index in record 0'
+            let idx_of = |s: &str| -> u32 { 0x4000_0000 | (strings.iter().position(|x| x == s).map(|i| i as u32 + 1).unwrap_or(0)) };
+            let mut short = Vec::new();
+            short.extend_from_slice(&0x0311_D000u32.to_le_bytes());
+            short.extend_from_slice(&0x0311_D002u32.to_le_bytes());
+            short.extend_from_slice(&(tpl.ids.len() as u32).to_le_bytes());
+            for id in &tpl.ids {
+                short.extend_from_slice(&idx_of(id).to_le_bytes());
+            }
+            short.extend_from_slice(&tpl.current_index.to_le_bytes());
+            short.extend_from_slice(&tpl.dir.to_le_bytes());
+            short.extend_from_slice(&idx_of(&tpl.current).to_le_bytes());
+            short.extend_from_slice(&0xFACA_DE01u32.to_le_bytes());
+            // the re-encoded pair must read back as the template's zone
+            let mut probe = Vec::new();
+            probe.extend_from_slice(&chunk[0..8]);
+            probe.extend_from_slice(&2u32.to_le_bytes());
+            probe.extend_from_slice(&rec0);
+            probe.extend_from_slice(&short);
+            let back = genealogy_full(&probe)?;
+            if back.len() != 2 || back[0].current != top || back[1].current != top || back[0].ids != tpl.ids || back[1].ids != tpl.ids {
+                return Err(format!("re-encoded genealogy template does not read back as {top}: {:?}", back.iter().map(|r| (&r.ids, &r.current)).collect::<Vec<_>>()));
+            }
+            (top.clone(), rec0, short)
+        } else {
             return Err(format!("first genealogy record is {zone}, the most common zone is {top}: no fill"));
-        }
-        // record 0 verbatim (defines the lookback strings), then short copies:
-        // count, refs 1..=count, CurrentIndex, Dir, ref count+1, FACADE — the
-        // form the source's own later records of the same zone take.
-        let rec0 = &chunk[r0s..r0e];
-        let count = u32::from_le_bytes(chunk[r0s + 8..r0s + 12].try_into().unwrap());
-        let mut short = Vec::new();
-        short.extend_from_slice(&0x0311_D000u32.to_le_bytes());
-        short.extend_from_slice(&0x0311_D002u32.to_le_bytes());
-        short.extend_from_slice(&count.to_le_bytes());
-        for i in 1..=count {
-            short.extend_from_slice(&(0x4000_0000 | i).to_le_bytes());
-        }
-        // CurrentIndex and Dir of record 0: walk past its ids (lookback version, then `count` new strings)
-        let mut o = r0s + 12 + 4;
-        for _ in 0..count {
-            let marker = u32::from_le_bytes(chunk[o..o + 4].try_into().unwrap());
-            o += 4;
-            if marker == 0x4000_0000 {
-                let len = u32::from_le_bytes(chunk[o..o + 4].try_into().unwrap()) as usize;
-                o += 4 + len;
-            }
-        }
-        short.extend_from_slice(&chunk[o..o + 8]);
-        short.extend_from_slice(&(0x4000_0000 | (count + 1)).to_le_bytes());
-        short.extend_from_slice(&0xFACA_DE01u32.to_le_bytes());
-        // check the source's own second record has this exact shape when it is the same zone
-        if let Some((s, e, z)) = recs.get(1) {
-            if *z == zone && &chunk[*s..*e] != &short[..] {
-                return Err(format!("genealogy record 1 ({z}) is not the short form this fill writes: {:02x?} vs {:02x?}", &chunk[*s..*e], short));
-            }
-        }
+        };
+        let rec0 = &rec0[..];
         let mut inner = Vec::with_capacity(4 + rec0.len() + short.len() * (n - 1));
         inner.extend_from_slice(&(n as u32).to_le_bytes());
         inner.extend_from_slice(rec0);

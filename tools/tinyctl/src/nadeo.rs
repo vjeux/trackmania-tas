@@ -786,7 +786,13 @@ pub fn club_rooms(args: &[String]) -> Result<(), String> {
 // ---------------------------------------------------------------------------
 
 const PLUGINS_DIR: &str = "/mnt/c/Users/vjeux/OpenplanetNext/Plugins";
-const REPO_PLUGIN: &str = "/home/vjeux/trackmania-tas/tools/openplanet-plugin";
+/// The plugin folder a driver stages: the QUARANTINED copy (what every driver
+/// on the box stages), not the repo's tools/openplanet-plugin — that directory
+/// carries sibling plugins in subfolders (ReactorContact/, ReactorProbe/) whose
+/// duplicate function names break the compile (Openplanet.log 11:28 PT,
+/// 2026-10-01: "A function with the same name and parameters already exists"
+/// → no HTTP server, no /ping).
+const QUARANTINE_PLUGIN: &str = "/mnt/c/Users/vjeux/plugins-quarantine/2026-09-27/GhostShooter";
 const GAME_EXE: &str = "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Trackmania\\Trackmania.exe";
 
 /// The GhostShooter folder placed in Openplanet's Plugins dir for THIS run
@@ -827,8 +833,10 @@ impl Drop for StagedPlugin {
     }
 }
 
-/// Copy a plugin folder (files + subfolders; editor leftovers `.bak` /
-/// `.prev` / `.pre-*` / `.repo-overwrite*` skipped); returns the file count.
+/// Copy a plugin folder's FILES (editor leftovers `.bak` / `.prev` / `.pre-*` /
+/// `.repo-overwrite*` skipped; subfolders skipped too — in the repo copy they
+/// are sibling plugins whose duplicate names break the compile); returns the
+/// file count.
 fn copy_plugin_dir(src: &Path, dst: &Path) -> Result<usize, String> {
     std::fs::create_dir_all(dst).map_err(|e| format!("{}: {e}", dst.display()))?;
     let mut n = 0;
@@ -836,7 +844,6 @@ fn copy_plugin_dir(src: &Path, dst: &Path) -> Result<usize, String> {
         let name = e.file_name().to_string_lossy().to_string();
         let p = e.path();
         if p.is_dir() {
-            n += copy_plugin_dir(&p, &dst.join(&name))?;
             continue;
         }
         if name.ends_with(".bak") || name.ends_with(".prev") || name.contains(".pre-") || name.contains(".repo-overwrite") {
@@ -890,7 +897,7 @@ pub fn token_mint(args: &[String]) -> Result<(), String> {
     let outdir = PathBuf::from(f("--outdir").unwrap_or_else(|| "/home/vjeux/shoot/fall2026".into()));
     std::fs::create_dir_all(&outdir).map_err(|e| format!("{}: {e}", outdir.display()))?;
     let shootctl = f("--shootctl").unwrap_or_else(|| format!("{BOX_TOOLS}/shootctl"));
-    let plugin_src = PathBuf::from(f("--stage-plugin").unwrap_or_else(|| REPO_PLUGIN.into()));
+    let plugin_src = PathBuf::from(f("--stage-plugin").unwrap_or_else(|| QUARANTINE_PLUGIN.into()));
     let timeout = Duration::from_secs(f("--timeout").and_then(|s| s.parse().ok()).unwrap_or(120));
     let keep_game = tmmaps::cli::has(args, "--keep-game");
     if std::env::var("TM_LOCK_TOKEN").map(|t| t.is_empty()).unwrap_or(true) {
@@ -920,7 +927,16 @@ pub fn token_mint(args: &[String]) -> Result<(), String> {
                 break;
             }
             if a0.elapsed() > timeout {
-                return Err(format!("{} the plugin never answered /ping within {} s (game pids now {:?})", el(&t0), timeout.as_secs(), game_pids().unwrap_or_default()));
+                let pids_now = game_pids().unwrap_or_default();
+                if launched {
+                    // our own launch, no plugin: close it (a plugin-less game left up reads as somebody's)
+                    let _ = Command::new(&shootctl).arg("quit").output();
+                    let q0 = std::time::Instant::now();
+                    while q0.elapsed() < Duration::from_secs(40) && !game_pids().map(|p| p.is_empty()).unwrap_or(false) {
+                        std::thread::sleep(Duration::from_millis(1000));
+                    }
+                }
+                return Err(format!("{} the plugin never answered /ping within {} s (game pids were {pids_now:?}; see Openplanet.log for a compile error){}", el(&t0), timeout.as_secs(), if launched { " — our game closed again" } else { "" }));
             }
             std::thread::sleep(Duration::from_millis(1500));
         }
@@ -949,14 +965,8 @@ pub fn token_mint(args: &[String]) -> Result<(), String> {
             }
         }
     }
-    let (core, live) = got.ok_or_else(|| format!("{} no tokens within {} s: {last_err}", el(&t0), timeout.as_secs()))?;
-    for (aud, t) in [("NadeoServices", &core), ("NadeoLiveServices", &live)] {
-        let p = outdir.join(format!("token-{aud}.txt"));
-        std::fs::write(&p, format!("{t}\n")).map_err(|e| format!("{}: {e}", p.display()))?;
-    }
-    println!("{} tokens minted: core {} chars, live {} chars → {}/token-*.txt", el(&t0), core.len(), live.len(), outdir.display());
-    // 5. leave the box as we found it
-    if launched && !keep_game {
+    let quit_ours = |why: &str| {
+        // the game WE launched never outlives the hold, success or not
         let before = game_pids().unwrap_or_default();
         let _ = Command::new(&shootctl).arg("quit").output();
         let q0 = std::time::Instant::now();
@@ -966,7 +976,25 @@ pub fn token_mint(args: &[String]) -> Result<(), String> {
             }
             std::thread::sleep(Duration::from_millis(1000));
         }
-        eprintln!("{} game closed (was {before:?}; now {:?})", el(&t0), game_pids().unwrap_or_default());
+        eprintln!("{} game closed ({why}; was {before:?}; now {:?})", el(&t0), game_pids().unwrap_or_default());
+    };
+    let (core, live) = match got {
+        Some(pair) => pair,
+        None => {
+            if launched {
+                quit_ours("mint failed");
+            }
+            return Err(format!("{} no tokens within {} s: {last_err}", el(&t0), timeout.as_secs()));
+        }
+    };
+    for (aud, t) in [("NadeoServices", &core), ("NadeoLiveServices", &live)] {
+        let p = outdir.join(format!("token-{aud}.txt"));
+        std::fs::write(&p, format!("{t}\n")).map_err(|e| format!("{}: {e}", p.display()))?;
+    }
+    println!("{} tokens minted: core {} chars, live {} chars → {}/token-*.txt", el(&t0), core.len(), live.len(), outdir.display());
+    // 5. leave the box as we found it
+    if launched && !keep_game {
+        quit_ours("done");
     }
     drop(staged);
     Ok(())

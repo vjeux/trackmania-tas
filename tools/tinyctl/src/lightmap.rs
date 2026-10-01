@@ -182,6 +182,11 @@ fn one(args: &[String], map: &Path, out: &Path) -> Result<(), String> {
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0);
         let fresh = format!("Tlm1{:08X}{:07}{:08X}", nanos % 100_000_000, std::process::id() % 10_000_000, (nanos / 7) % 100_000_000);
         m.set_map_uid(&fresh);
+        // A Nadeo campaign map is editor-LOCKED (header NeedUnlock + chunk 0x03043029) and the
+        // converter keeps the chunk: the editor parks the title on a password popup the plugin
+        // cannot see (2026-09-29 21:50 PT) — the bake copy goes out unlocked, the shipped file
+        // keeps its lock untouched.
+        m.remove_password();
         m.write_to(&bake_copy).map_err(|e| format!("{}: {e}", bake_copy.display()))?;
         // The stale lightmap STAYS in the copy: without any lightmap the editor leaves to
         // the menu right after the compute (ctx 0, nothing saved — twice on 11, 2026-09-12);
@@ -380,11 +385,14 @@ pub fn batch(args: &[String]) -> Result<(), String> {
             attempts += 1;
             let fresh = since_fresh >= fresh_every || attempts > 1 || i == 0;
             let mut a: Vec<String> = vec![copy.clone(), "--out".into(), lit_copy.display().to_string(), "--quality".into(), quality.clone(), "--name".into(), name.clone(), "--into".into(), format!("{shipped}={out}")];
-            if fresh {
+            // With --stage-plugin every bake launches its own game and closes it by PID
+            // (the quarantine policy of 2026-09-27) — a fresh process per map, so the
+            // leak-driven --fresh (refused on the shared box) has nothing left to do.
+            if fresh && f("--stage-plugin").is_none() {
                 a.push("--fresh".into());
                 since_fresh = 0;
             }
-            for k in ["--wsx", "--box-shootctl"] {
+            for k in ["--wsx", "--box-shootctl", "--stage-plugin", "--owner"] {
                 if let Some(v) = f(k) {
                     a.push(k.into());
                     a.push(v);
