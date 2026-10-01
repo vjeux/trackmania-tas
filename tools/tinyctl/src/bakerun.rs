@@ -135,9 +135,10 @@ impl Drop for MyGame {
     }
 }
 
-/// One map in the open game: load in the editor, compute, save, back to the menu.
-/// Returns (saved WSL path, compute seconds).
-fn bake_one(g: &MyGame, map_wsl: &str, quality: u32, load_timeout: Duration, compute_timeout: Duration) -> Result<(String, f64), String> {
+/// One map in the open game: load in the editor, compute, save, (the start check:
+/// the test drive and the car's position), back to the menu.
+/// Returns (saved WSL path, compute seconds, "x y z" of the car or "-").
+fn bake_one(g: &MyGame, map_wsl: &str, quality: u32, load_timeout: Duration, compute_timeout: Duration, startcheck: bool, check_only: bool) -> Result<(String, f64, String), String> {
     let shootctl = &g.shootctl;
     let name = Path::new(map_wsl).file_name().and_then(|n| n.to_str()).ok_or("map path has no file name")?.to_string();
     let stem = name.strip_suffix(".Map.Gbx").unwrap_or(&name).to_string();
@@ -183,6 +184,13 @@ fn bake_one(g: &MyGame, map_wsl: &str, quality: u32, load_timeout: Duration, com
     }
     println!("  {name}: editor open after {:.1} s", t0.elapsed().as_secs_f64());
     std::thread::sleep(Duration::from_millis(4000));
+    if check_only {
+        // `--check-only`: no compute, no save — the start check alone on the pushed file
+        let car = start_check(g, &name)?;
+        let _ = std::fs::remove_file(&game_copy);
+        g.to_menu()?;
+        return Ok(("-".into(), 0.0, car));
+    }
     let ts = Instant::now();
     println!("  {name}: /shadows q={quality}: {}", get(shootctl, &format!("/shadows?q={quality}"), 10));
     let mut saw_busy = false;
@@ -240,8 +248,53 @@ fn bake_one(g: &MyGame, map_wsl: &str, quality: u32, load_timeout: Duration, com
     }
     let _ = std::fs::remove_file(&game_copy);
     println!("  {name}: saved {} ({} bytes)", target, std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0));
+    // the START CHECK in the same session (`--startcheck`): the editor's test drive
+    // (/edtest → the playground, ctx 3) and the car's resting position from /wheels —
+    // the client-side half of `tinyctl startcheck`, without another push or load
+    let car = if startcheck { start_check(g, &name)? } else { "-".to_string() };
     g.to_menu()?;
-    Ok((target, compute_s))
+    Ok((target, compute_s, car))
+}
+
+
+/// The editor's test drive (/edtest → the playground, ctx 3) and the car's resting
+/// position from /wheels, ~3.5 s in — the client-side half of `tinyctl startcheck`.
+fn start_check(g: &MyGame, name: &str) -> Result<String, String> {
+    let shootctl = &g.shootctl;
+    let mut car = String::from("-");
+    println!("  {name}: /edtest: {}", get(shootctl, "/edtest", 30));
+    let p0 = Instant::now();
+    loop {
+        if p0.elapsed() > Duration::from_secs(150) {
+            car = "NO VEHICLE (the playground never came up)".into();
+            break;
+        }
+        if !g.alive() {
+            return Err("the game process is gone — the test drive crashed the client".into());
+        }
+        let c = get(shootctl, "/ctx", 10);
+        if c.contains("FrameAskYesNo") {
+            let _ = get(shootctl, "/yes", 10);
+        }
+        if ctx(shootctl) == Some(3) {
+            std::thread::sleep(Duration::from_millis(1000));
+            if ctx(shootctl) == Some(3) {
+                let probe = get(shootctl, "/wheels?ms=100", 15);
+                if let Some(l) = probe.lines().find(|l| !l.starts_with('#') && !l.starts_with("wall_ms") && l.split('\t').count() > 4) {
+                    let c: Vec<String> = l.split('\t').map(String::from).collect();
+                    // the first car row ~1 s into the playground; read again once it has settled
+                    std::thread::sleep(Duration::from_millis(2500));
+                    let again = get(shootctl, "/wheels?ms=100", 15);
+                    let c2: Vec<String> = again.lines().find(|l| !l.starts_with('#') && !l.starts_with("wall_ms") && l.split('\t').count() > 4).map(|l| l.split('\t').map(String::from).collect()).unwrap_or(c);
+                    car = format!("{} {} {}", c2[2], c2[3], c2[4]);
+                    break;
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    println!("  {name}: car at [{car}] (playground after {:.1} s)", p0.elapsed().as_secs_f64());
+    Ok(car)
 }
 
 pub fn bake_run(args: &[String]) -> Result<(), String> {
@@ -255,12 +308,14 @@ pub fn bake_run(args: &[String]) -> Result<(), String> {
     let plugin_src = PathBuf::from(f("--stage-plugin").unwrap_or_else(|| QUARANTINE_PLUGIN.into()));
     let load_timeout = Duration::from_secs(f("--load-timeout").and_then(|s| s.parse().ok()).unwrap_or(420));
     let compute_timeout = Duration::from_secs(f("--compute-timeout").and_then(|s| s.parse().ok()).unwrap_or(1800));
+    let startcheck = tmmaps::cli::has(args, "--startcheck");
+    let check_only = tmmaps::cli::has(args, "--check-only");
     if std::env::var("TM_LOCK_TOKEN").map(|t| t.is_empty()).unwrap_or(true) {
         return Err("no TM_LOCK_TOKEN in the environment — run this under `tmdrive run --purpose … -- tinyctl bake-run …`".into());
     }
     let result = (|| -> Result<String, String> {
         let _plugin = StagedPlugin::place(&plugin_src)?;
-        let mut rows = String::from("map\tsaved\tverdict\tcompute_s\n");
+        let mut rows = String::from("map\tsaved\tverdict\tcompute_s\tcar\n");
         let mut game: Option<MyGame> = None;
         let mut in_game = 0usize;
         let mut ok = 0usize;
@@ -283,16 +338,16 @@ pub fn bake_run(args: &[String]) -> Result<(), String> {
                 in_game = 0;
             }
             let g = game.as_ref().unwrap();
-            let row = match bake_one(g, m, quality, load_timeout, compute_timeout) {
-                Ok((saved, secs)) => {
+            let row = match bake_one(g, m, quality, load_timeout, compute_timeout, startcheck || check_only, check_only) {
+                Ok((saved, secs, car)) => {
                     ok += 1;
-                    format!("{m}\t{saved}\tok\t{secs:.0}\n")
+                    format!("{m}\t{saved}\tok\t{secs:.0}\t{car}\n")
                 }
                 Err(e) => {
                     eprintln!("  {m}: FAILED: {e}");
                     // a failed map leaves the game in an unknown state: the next map gets a fresh one
                     game = None;
-                    format!("{m}\t-\tFAILED {}\t-\n", e.replace('\t', " ").lines().next().unwrap_or(""))
+                    format!("{m}\t-\tFAILED {}\t-\t-\n", e.replace('\t', " ").lines().next().unwrap_or(""))
                 }
             };
             in_game += 1;
@@ -325,13 +380,21 @@ pub fn lightmap_run(args: &[String]) -> Result<(), String> {
     let box_tmdrive = f("--box-tmdrive").unwrap_or_else(|| format!("{BOX_TOOLS}/tmdrive"));
     let stage_plugin = f("--stage-plugin").unwrap_or_else(|| QUARANTINE_PLUGIN.into());
     let purpose = f("--purpose").unwrap_or_else(|| "editor lightmap bakes (tinyctl lightmap-run)".into());
+    // --startcheck [--tolerance M]: the client's car position read in the same editor session
+    // (the test drive) and compared with the shipped map's Spawn placement — `tinyctl startcheck`'s
+    // rule (12 m default; a scale-k start block spawns at (16, 2, 16)·k from its item: 52/76/100 for ×2/×3/×4)
+    let startcheck = tmmaps::cli::has(args, "--startcheck") || tmmaps::cli::has(args, "--check-only");
+    let check_only = tmmaps::cli::has(args, "--check-only");
+    let tolerance: f32 = f("--tolerance").and_then(|v| v.parse().ok()).unwrap_or(12.0);
     let text = std::fs::read_to_string(&manifest).map_err(|e| format!("{}: {e}", manifest.display()))?;
     let rows: Vec<Vec<String>> = text.lines().filter(|l| !l.trim().is_empty() && !l.starts_with('#') && !l.starts_with("copy\t")).map(|l| l.split('\t').map(String::from).collect()).collect();
     if !report.exists() {
-        std::fs::write(&report, "copy\tout\tverdict\tcompute_s\twall_s\tout_bytes\n").map_err(|e| format!("{}: {e}", report.display()))?;
+        std::fs::write(&report, "copy\tout\tverdict\tcompute_s\twall_s\tout_bytes\tstart\n").map_err(|e| format!("{}: {e}", report.display()))?;
     }
     let wsx = Wsx::new(args);
-    let todo: Vec<&Vec<String>> = rows.iter().filter(|r| r.len() >= 4 && !Path::new(&r[2]).exists()).collect();
+    // --check-only: every row whose OUT (the lit file) exists is checked (the file pushed is the lit
+    // file itself, nothing is baked or transplanted); otherwise the rows still without an OUT are baked
+    let todo: Vec<&Vec<String>> = rows.iter().filter(|r| r.len() >= 4 && (Path::new(&r[2]).exists() == check_only)).collect();
     println!("{} of {} maps to bake, groups of {group}", todo.len(), rows.len());
     let mut failed = 0usize;
     for (gi, chunk) in todo.chunks(group).enumerate() {
@@ -345,8 +408,8 @@ pub fn lightmap_run(args: &[String]) -> Result<(), String> {
             if let Some(p) = Path::new(out).parent() {
                 std::fs::create_dir_all(p).map_err(|e| format!("{}: {e}", p.display()))?;
             }
-            let bake_copy = Path::new(out).with_extension("bakecopy.Map.Gbx");
-            let mut m = tmmaps::map::MapFile::load(Path::new(copy));
+            let bake_copy = Path::new(out).with_extension(if check_only { "checkcopy.Map.Gbx" } else { "bakecopy.Map.Gbx" });
+            let mut m = tmmaps::map::MapFile::load(Path::new(if check_only { out } else { copy }));
             let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0);
             let old_uid = tmmaps::header::read(copy).map(|h| h.uid).unwrap_or_default();
             let fresh = crate::lightmap::fresh_uid_like(&old_uid, (nanos + k as u32 * 7919) % 100_000_000, (nanos / 7 + gi as u32) % 100_000_000);
@@ -364,8 +427,10 @@ pub fn lightmap_run(args: &[String]) -> Result<(), String> {
         let r_done = format!("{STAGE}/{tag}.done");
         let r_log = format!("{STAGE}/{tag}.log");
         let cmd = format!(
-            "rm -f '{r_done}'; nohup setsid {box_tmdrive} run --purpose '{purpose}' -- {box_tinyctl} bake-run --maps '{}' --quality {quality} --max-maps {group} --stage-plugin '{stage_plugin}' --report '{r_report}' --done '{r_done}' > '{r_log}' 2>&1 < /dev/null &",
-            remote_maps.join(",")
+            "rm -f '{r_done}'; nohup setsid {box_tmdrive} run --purpose '{purpose}' -- {box_tinyctl} bake-run --maps '{}' --quality {quality} --max-maps {group} --stage-plugin '{stage_plugin}' --report '{r_report}' --done '{r_done}'{}{} > '{r_log}' 2>&1 < /dev/null &",
+            remote_maps.join(","),
+            if startcheck { " --startcheck" } else { "" },
+            if check_only { " --check-only" } else { "" }
         );
         println!("[group {gi}] one hold for {} maps …", remote_maps.len());
         // the pushed binary's exec bit does not survive `wsx push` (2026-10-01: "Permission denied" from tmdrive run)
@@ -379,15 +444,32 @@ pub fn lightmap_run(args: &[String]) -> Result<(), String> {
             let stem: String = Path::new(out).file_name().unwrap_or_default().to_string_lossy().trim_end_matches(".Map.Gbx").chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
             let remote = format!("{STAGE}/{tag}-{stem}.Map.Gbx");
             let row = rep.lines().find(|l| l.starts_with(&format!("{remote}\t")));
-            let (saved, verdict, secs) = match row {
+            let (saved, verdict, secs, car) = match row {
                 Some(l) => {
                     let c: Vec<&str> = l.split('\t').collect();
-                    (c.get(1).unwrap_or(&"-").to_string(), c.get(2).unwrap_or(&"-").to_string(), c.get(3).unwrap_or(&"-").to_string())
+                    (c.get(1).unwrap_or(&"-").to_string(), c.get(2).unwrap_or(&"-").to_string(), c.get(3).unwrap_or(&"-").to_string(), c.get(4).unwrap_or(&"-").to_string())
                 }
-                None => ("-".into(), "FAILED no report row".into(), "-".into()),
+                None => ("-".into(), "FAILED no report row".into(), "-".into(), "-".into()),
+            };
+            // the start check against the SHIPPED map's Spawn placement
+            let start = if !startcheck {
+                "-".to_string()
+            } else {
+                let nums: Vec<f32> = car.split_whitespace().filter_map(|x| x.parse().ok()).collect();
+                let sm = tmmaps::map::MapFile::load(Path::new(shipped));
+                match (nums.len() == 3, sm.items.iter().find(|it| it.waypoint_tag.as_deref() == Some("Spawn"))) {
+                    (true, Some(sp)) => {
+                        let d = ((nums[0] - sp.pos[0]).powi(2) + (nums[1] - sp.pos[1]).powi(2) + (nums[2] - sp.pos[2]).powi(2)).sqrt();
+                        if d <= tolerance { format!("PASS {d:.1} m") } else { failed += 1; format!("FAIL {d:.1} m from the Spawn (tolerance {tolerance})") }
+                    }
+                    (true, None) => { failed += 1; "FAIL no Spawn placement".to_string() }
+                    (false, _) => { failed += 1; format!("FAIL no car ({car})") }
+                }
             };
             let mut out_bytes = 0u64;
-            let verdict = if verdict == "ok" && saved != "-" {
+            let verdict = if check_only {
+                if verdict == "ok" { out_bytes = std::fs::metadata(out).map(|m| m.len()).unwrap_or(0); "checked".to_string() } else { failed += 1; verdict }
+            } else if verdict == "ok" && saved != "-" {
                 let resaved = Path::new(out).with_extension("resaved.Map.Gbx");
                 match wsx.pull(&saved, &resaved).and_then(|_| crate::lightmap::finish_from_resaved(bake_copy, &resaved, Path::new(copy), Path::new(shipped), Path::new(out))) {
                     Ok(()) => {
@@ -405,8 +487,8 @@ pub fn lightmap_run(args: &[String]) -> Result<(), String> {
                 verdict
             };
             let _ = wsx.sh(&format!("rm -f '{remote}'"));
-            println!("[group {gi}] {copy}: {verdict} ({secs} s compute)");
-            let line = format!("{copy}\t{out}\t{verdict}\t{secs}\t{:.0}\t{out_bytes}\n", t0.elapsed().as_secs_f64());
+            println!("[group {gi}] {copy}: {verdict} ({secs} s compute; start {start})");
+            let line = format!("{copy}\t{out}\t{verdict}\t{secs}\t{:.0}\t{out_bytes}\t{start}\n", t0.elapsed().as_secs_f64());
             let mut fh = std::fs::OpenOptions::new().append(true).open(&report).map_err(|e| format!("{}: {e}", report.display()))?;
             std::io::Write::write_all(&mut fh, line.as_bytes()).map_err(|e| e.to_string())?;
         }
