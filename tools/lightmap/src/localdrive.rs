@@ -197,7 +197,10 @@ pub fn area_samples(l: &LightDef, r: f32, quality: u32, density: f32) -> Vec<[f3
 /// upper clamp is 1365, not the 1024 written before 2026-09-27), s = the bake's texel
 /// density — 173 for the stpad lamp (2 · 40.707722 · 2.1194804 = 172.56).
 pub fn face_size(r_eff: f32, texels_per_m: f32) -> u32 {
-    ((2.0 * r_eff * texels_per_m).ceil() as u32).clamp(8, SHADOW_TARGET / 3)
+    // LMTOOL_LL_FACE_SCALE=F (STUDY, E8 2026-10-01, default 1): the face size × F before the clamp — the coarse-face bracket for tiny16's
+    // frame-1 tail (its lamps get 35-px faces at s 0.4978 where stpad's verification ran at 173 px). A read, never a rule.
+    static SCALE: std::sync::LazyLock<f32> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_LL_FACE_SCALE").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0));
+    ((2.0 * r_eff * texels_per_m * *SCALE).ceil() as u32).clamp(8, SHADOW_TARGET / 3)
 }
 
 /// The six flat-cube faces' Scale_MaxAbs / Trans for `size`² faces in the `target`² D16 texture: face f's tile at

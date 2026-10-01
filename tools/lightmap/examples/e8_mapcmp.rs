@@ -56,6 +56,16 @@ fn main() {
     }
     let only_b = (0..mb.count as usize).filter(|&c| !ia.contains_key(&key(mb, c))).count();
     println!("binds in both: {both} (same chart index {same_order}); only in A {only_a}; only in B {only_b}");
+    // by INDEX: the charts whose bind word differs from B's at the same index (an object-numbering offset), the first few
+    {
+        let n = (ma.count as usize).min(mb.count as usize);
+        let mut nb = 0usize; let mut nr = 0usize; let mut first: Vec<String> = Vec::new();
+        for c in 0..n {
+            if key(ma, c) != key(mb, c) { nb += 1; if first.len() < 5 { first.push(format!("chart {c}: A obj {} sub {:#x} / B obj {} sub {:#x} (rects A ({}, {}) {}×{} B ({}, {}) {}×{})", ma.binds[c].obj_group_idx / 4, ma.binds[c].obj_idx, mb.binds[c].obj_group_idx / 4, mb.binds[c].obj_idx, ma.pos[c].0, ma.pos[c].1, ma.size[c].0, ma.size[c].1, mb.pos[c].0, mb.pos[c].1, mb.size[c].0, mb.size[c].1)); } }
+            if ma.pos[c] != mb.pos[c] || ma.size[c] != mb.size[c] { nr += 1; }
+        }
+        println!("by index: {nb} of {n} charts differ in bind word, {nr} in rect; first differing binds: {}", first.join(" | "));
+    }
     println!("of the pairs: identical rect {same}, same size other position {same_size}, size swapped {swapped}, different size {diff}");
     println!("Σ layout area A {area_a} vs B {area_b} (ratio {:.4}); tiles ({n_tiles}): A {area_a_tiles} vs B {area_b_tiles}", area_a as f64 / area_b.max(1) as f64);
     println!("linear size ratio A/B (×10) all: {ratios:?}");
