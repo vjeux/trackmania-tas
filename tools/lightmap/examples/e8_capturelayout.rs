@@ -76,4 +76,34 @@ fn main() {
         println!("by origin ±1: {found} of {n} capture records find a mapping chart ({ambiguous} ambiguous; {} distinct charts matched); implied box_x percentiles 5/50/95: {:.4} {:.4} {:.4}", matched_charts.len(), boxes.get(boxes.len() / 20).unwrap_or(&0.0), boxes.get(boxes.len() / 2).unwrap_or(&0.0), boxes.get(boxes.len() * 19 / 20).unwrap_or(&0.0));
         for e in &examples { println!("  {e}"); }
     }
+    // --layout LAYOUT.tsv: OUR layout table (`--layout-tsv`) against the capture's rects by ORIGIN (ST.zw × 2048, ±1 unit): the matched
+    // count per class, and the implied uv box = w_ours/(ST.x·2048) histogram (a size mismatch shows as an outlier box)
+    if let Some(lp) = flag("--layout") {
+        let txt = std::fs::read_to_string(&lp).expect("layout tsv");
+        let mut lines = txt.lines();
+        let hdr: Vec<&str> = lines.next().unwrap().split('\t').collect();
+        let col = |nm: &str| hdr.iter().position(|h| *h == nm).unwrap_or_else(|| panic!("no column {nm}"));
+        let (cx, cy, cw, ch, cname, cclass) = (col("x"), col("y"), col("w"), col("h"), col("name"), col("class"));
+        let mut by_pos: std::collections::HashMap<(i32, i32), Vec<(i32, i32, String, String)>> = Default::default();
+        let mut n_rows = 0usize;
+        for l in lines { let fl: Vec<&str> = l.split('\t').collect(); n_rows += 1; by_pos.entry((fl[cx].parse().unwrap(), fl[cy].parse().unwrap())).or_default().push((fl[cw].parse().unwrap(), fl[ch].parse().unwrap(), fl[cname].to_string(), fl[cclass].to_string())); }
+        let (mut found, mut tiles_found, mut items_found) = (0usize, 0usize, 0usize);
+        let mut ratio_hist: std::collections::BTreeMap<i32, usize> = Default::default();
+        let mut unmatched_examples: Vec<String> = Vec::new();
+        let mut n_tiles_cap = 0usize;
+        for i in 0..n {
+            let (sx, _sy, tx, ty) = (f(i, 8), f(i, 9), f(i, 10), f(i, 11));
+            let (x, y) = ((tx * 2048.0).round() as i32, (ty * 2048.0).round() as i32);
+            let is_tile = (f(i, 5) + 8.0).abs() < 0.01 && sx < 0.003;
+            if is_tile { n_tiles_cap += 1; }
+            let mut hit: Option<&(i32, i32, String, String)> = None;
+            'o: for dx in -1..=1 { for dy in -1..=1 { if let Some(v) = by_pos.get(&(x + dx, y + dy)) { hit = Some(&v[0]); break 'o; } } }
+            match hit {
+                Some(r) => { found += 1; if r.3 == "tile" { tiles_found += 1; } else { items_found += 1; } let bx = r.0 as f32 / (sx * 2048.0); *ratio_hist.entry((bx * 20.0).round() as i32).or_default() += 1; }
+                None => { if unmatched_examples.len() < 6 { unmatched_examples.push(format!("#{i} origin ({x}, {y}) size·2048 ({:.2}, {:.2}) trans ({:.1}, {:.1}, {:.1})", sx * 2048.0, f(i, 9) * 2048.0, f(i, 4), f(i, 5), f(i, 6))); } }
+            }
+        }
+        println!("vs OUR layout {lp} ({n_rows} charts): {found} of {n} capture records have one of our charts at their origin (±1): tiles {tiles_found} of {n_tiles_cap}, items {items_found} of {}; implied box = w_ours/(ST.x·2048) histogram (×20): {:?}", n - n_tiles_cap, ratio_hist);
+        for e in &unmatched_examples { println!("  unmatched: {e}"); }
+    }
 }

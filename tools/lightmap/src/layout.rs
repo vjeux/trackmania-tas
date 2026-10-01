@@ -376,8 +376,15 @@ impl CollectionProfile {
             // items in row 4 at y −8..0 → yoff −40 (the one Lake block at row 4)
             "GreenCoast" => CollectionProfile { grid: 64, ground_row: 4, yoff: -40.0, flat_zones: &["Grass", "Lake"], water_row: 4 },
             // RedIsland (V4 / tmmaps::map::ground_y, Summer 2026-02): the regenerated Dirt at cell 15 (plane local +2 → y 2 =
-            // 15·8 − 120 + 2), the lake's Water at cell 14 (surface −0.5); the pak's flat zones are GameCtnBlockInfoFlat\{Dirt,Water}
-            "RedIsland" => CollectionProfile { grid: 64, ground_row: 15, yoff: -120.0, flat_zones: &["Dirt", "Water"], water_row: 14 },
+            // 15·8 − 120 + 2), the lake's Water at cell 14 (surface −0.5); the pak's flat zones are GameCtnBlockInfoFlat\{Dirt,Water}.
+            // THE BLOCKLESS DEFAULT IS THE WATER ROW AND THE WATER ZONE (E8 2026-10-01, read from the game's own SET draws of the x2
+            // UNLIT Summer-07 file — 0 blocks, 0 baked — frame 1122's per-instance stream vb_15044: the 9 216 tile records sit at
+            // y −8 = row 14 and only the one row-14 item marks a cell (the ladder of 81 ring tiles around (56, 52)); with the Water
+            // zone's PLG (32.0816 m) at that level our layout puts 10 874 of the 10 948 records at the capture's origins (tile 0 at
+            // (1925, 1931) = ST.zw·2048), with Dirt's (32.0 m) 10 535, with row 15 + Dirt (the old default) 277. A map WITH a zone
+            // block or baked records keeps taking its level and zone from them (unchanged). LMTOOL_RI_GROUND=dirt15 = the old default.
+            "RedIsland" if std::env::var("LMTOOL_RI_GROUND").ok().as_deref() == Some("dirt15") => CollectionProfile { grid: 64, ground_row: 15, yoff: -120.0, flat_zones: &["Dirt", "Water"], water_row: 14 },
+            "RedIsland" => CollectionProfile { grid: 64, ground_row: 14, yoff: -120.0, flat_zones: &["Water", "Dirt"], water_row: 14 },
             // BlueBay: the Sea tiles' row 5 at y 0
             _ => CollectionProfile { grid: 64, ground_row: 5, yoff: -40.0, flat_zones: &["Sea", "Land"], water_row: 5 },
         }
