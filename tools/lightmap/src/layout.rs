@@ -740,11 +740,21 @@ pub fn allocate_grouped_walls(input: &LayoutInput, groups: &[u64], pos: Option<&
             _ => ir::grouped_pack_order(&areas),
         }
     };
-    // TotalLmSurfaceMeter: the f32 sum of the entry areas along the ascending-area radix order (ties by index)
+    // TotalLmSurfaceMeter: the f32 sum of the entry areas along the ascending-area radix order (ties by index) — RE 7's read, bit-exact
+    // on np-tk3 / pwc-day / tk3nl2 / tiny16 / stpad / tiny03 / giant20x2 / g23 (every rect the editor's).
+    // E8 2026-10-01 (RETRACTED CUT): on the RI x2 bake copy (giant-summer/x2/bake/Summer-07-Giant, 1 524 entries) the game's mapping
+    // pins its probe s to 0x3f8c3476 ⇔ Σ_f32 ∈ [3 067 611.5, 3 067 612.0] under s = √(mid·W·H/Σ), while this ascending sum gives
+    // 3 067 615.0 (6 ulps of s higher → our pack fails the probe the game kept and settles one probe lower: 185/1 694 item rects where
+    // the game's s gives 1 694/1 694 + 9 216/9 216). The DESCENDING sum (3 067 612.000) lands in the window there but BREAKS the eight
+    // verified maps above (np-tk3 s 10.370661 vs 10.370663, stpad 2.119488 vs 2.1194804, tiny03 1.3275847 vs 1.3264884, giant20x2
+    // 0.8503 vs 0.8496 …) — so the order is not the lever; the 3.0–3.5 m² gap is in the ENTRY LIST: the 38 kind-0 BushSmallC records the
+    // game places as five entries of 10/9/6/11/2 members (3×4 / 3×3 / 3×2 / 2×6 / 2×1 grids) where ours chunks them 10/10/10/8 as
+    // 4×3 / 3×3 — the game's five grids alone move the ascending Σ to 3 067 613.5 (RE 18 reads the legacy path's grouping).
+    // LMTOOL_SUM_ORDER=desc is the study knob; LMTOOL_LAYOUT_S=0x3f8c3476 reproduces the game's RI x2 layout for the compares.
     let sum_area = {
         let mut idx: Vec<usize> = (0..charts.len()).collect();
         idx.sort_by_key(|&i| (areas[i].to_bits(), i));
-        idx.iter().fold(0f32, |acc, &i| acc + areas[i])
+        if std::env::var("LMTOOL_SUM_ORDER").ok().as_deref() == Some("desc") { idx.iter().rev().fold(0f32, |acc, &i| acc + areas[i]) } else { idx.iter().fold(0f32, |acc, &i| acc + areas[i]) }
     };
     crate::pack::SUM_AREA_OVERRIDE.store(sum_area.to_bits(), std::sync::atomic::Ordering::Relaxed);
     let res = crate::pack::allocate_ordered(&charts, &order, input.w_atlas, input.height(), g, m, max_iter);
