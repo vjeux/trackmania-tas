@@ -1503,6 +1503,16 @@ pub struct Setup {
 /// `--lm-from-map --layout-game --pak` path (main.rs) in one call. `paks` = (file, key) pairs (the collection's first),
 /// `quality` = the editor quality (3 = q3 → layout quality index 2).
 pub fn setup_from_map(map_path: &str, paks: &[(String, String)], collection: &str, quality: u32, log: &mut dyn FnMut(&str)) -> Result<Setup, String> {
+    setup_from_map_for(map_path, paks, collection, quality, LampPass::Frame0, log)
+}
+
+/// Which lamp pass a `Setup` serves (E8, 2026-10-01). `ball_flags` bits 10–12 are a 3-bit LAMP CLASS (RE 18 20:25Z); the frame-1 and
+/// frame-0 lamp lists keep every class by default — the class-1 brackets (LMTOOL_LL_FRAME1_CLASS1=drop / LMTOOL_LL_FRAME0_CLASS1=drop) are
+/// studies: on tiny16 Night the frame-1 one collapses the lit set far below the editor's, so the game bakes class 1 there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LampPass { Frame0, Frame1 }
+
+pub fn setup_from_map_for(map_path: &str, paks: &[(String, String)], collection: &str, quality: u32, pass: LampPass, log: &mut dyn FnMut(&str)) -> Result<Setup, String> {
     let t0 = std::time::Instant::now();
     let scene = crate::geometry::Scene::from_map(map_path)?;
     let mf = tmmaps::map::MapFile::load(std::path::Path::new(map_path));
@@ -1540,6 +1550,22 @@ pub fn setup_from_map(map_path: &str, paks: &[(String, String)], collection: &st
     // word has bit 0x400 (the 0x410 / 0x412 class V's receiver table lights); "noball400" the complement; "gx41" / "gx6d" by the GxLight
     // +0x20 word; unset = every lamp the mood gate passes. Which class the game bakes is RE 14's read; this measures both frames per class.
     let stock_items: std::collections::HashSet<usize> = scene.instances.iter().enumerate().filter(|(_, inst)| scene.stock_models.contains(&inst.model)).map(|(k, _)| k).collect();
+    // THE FRAME-1 LIST KEEPS EVERY CLASS (measured 20:24Z): dropping lamp class 1 (ball word bits 10–12 == 1 — 450 of tiny16's 986 lamps:
+    // the 20 R-64 StageSpots 0x412 AND the 326 narrow 20°/90° R-28 spots …) collapses the frame-1 lit set to ×0.43 of the editor's at 32–48 m
+    // and ×0.1 at 48–64 m — the game bakes them. RE 18's class-1 skip (20:25Z) belongs to the LightId table, not the frame (his 20:35Z
+    // correction). LMTOOL_LL_FRAME1_CLASS1=drop = that bracket (study); the frame-0 twin below.
+    let lamps: Vec<Lamp> = if pass == LampPass::Frame1 && std::env::var("LMTOOL_LL_FRAME1_CLASS1").as_deref() == Ok("drop") {
+        let n0 = lamps.len();
+        let kept: Vec<Lamp> = lamps.into_iter().filter(|l| (l.light.ball_flags >> 10) & 7 != 1).collect();
+        log(&format!("STUDY LMTOOL_LL_FRAME1_CLASS1=drop: {} of {n0} class-1 lamps left out of frame 1", n0 - kept.len()));
+        kept
+    } else if pass == LampPass::Frame0 && std::env::var("LMTOOL_LL_FRAME0_CLASS1").as_deref() == Ok("drop") {
+        // STUDY (E8 2026-10-01): the frame-0 lamp phase without the class-1 lamps — the bracket for whether the game's frame 0 bounces them
+        let n0 = lamps.len();
+        let kept: Vec<Lamp> = lamps.into_iter().filter(|l| (l.light.ball_flags >> 10) & 7 != 1).collect();
+        log(&format!("STUDY LMTOOL_LL_FRAME0_CLASS1=drop: {} of {n0} class-1 lamps left out of the frame-0 lamp phase", n0 - kept.len()));
+        kept
+    } else { lamps };
     let lamps: Vec<Lamp> = match std::env::var("LMTOOL_LAMP_FILTER").ok().as_deref() {
         Some("ball400") => lamps.into_iter().filter(|l| l.light.ball_flags & 0x400 != 0).collect(),
         Some("noball400") => lamps.into_iter().filter(|l| l.light.ball_flags & 0x400 == 0).collect(),

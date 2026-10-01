@@ -3590,7 +3590,7 @@ fn run(mut a: Vec<String>) {
                                 let coll_ll = f("--collection").unwrap_or_else(|| hdr.as_ref().map(|h| h.envir.clone()).unwrap_or_else(|| "BlueBay".into()));
                                 let q_ll: u32 = f("--quality").map(|v| v.parse().unwrap()).unwrap_or(3);
                                 let mut log = |s: &str| eprintln!("local-lights: {s}");
-                                match lightmap::localdrive::setup_from_map(&map_path, &paks, &coll_ll, q_ll, &mut log) {
+                                match lightmap::localdrive::setup_from_map_for(&map_path, &paks, &coll_ll, q_ll, lightmap::localdrive::LampPass::Frame1, &mut log) {
                                     Ok(su) if su.lamps.is_empty() => eprintln!("local-lights: no lamp is baked at DayTime {:?} (the mood switch {}; NightOnly lamps only follow it) — frame 1 stays black", su.daytime, match su.lights_on { Some(true) => "ON", Some(false) => "OFF", None => "n/a" }),
                                     Ok(su) => {
                                         let (w, h) = lightmap::localdrive::TARGET;
