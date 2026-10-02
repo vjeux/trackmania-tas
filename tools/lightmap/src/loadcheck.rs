@@ -68,6 +68,8 @@ pub struct LoadCheck {
     pub binds: usize,
     pub binds_beyond: usize,
     pub binds_items: usize,
+    /// where the game puts the car: "item Spawn ×n" | "block NAME" | "NONE" — a PlayMap of a map without a start shows no playground
+    pub start: String,
 }
 
 /// The kinds the frame records must carry for their count (the editor's rule).
@@ -85,7 +87,7 @@ pub fn check(path: &str, word17_max: u32) -> LoadCheck {
         path: path.to_string(), file, md5, lm_md5: None, status: String::new(), verdict: String::new(), ok: false, failed: Vec::new(), warned: Vec::new(), notes: Vec::new(), collection: String::new(),
         frames: 0, frame0_images: 0, records: 0, kinds: Vec::new(), kinds_wanted: Vec::new(), w17: None, w18: None,
         ft_word: None, ft_placed_max: None, ft_item: None, ft_verdict: "n/a".into(),
-        n_unbaked: 0, n_baked: 0, n_items: 0, grid: 0, item_base: None, objects: None, max_obj: None, binds: 0, binds_beyond: 0, binds_items: 0,
+        n_unbaked: 0, n_baked: 0, n_items: 0, grid: 0, item_base: None, objects: None, max_obj: None, binds: 0, binds_beyond: 0, binds_items: 0, start: String::new(),
     };
     if bytes.is_empty() { lc.status = "UNREADABLE".into(); lc.verdict = "fail".into(); lc.failed.push("read".into()); return lc; }
     let m = match crate::mapio::load(path) { Ok(m) => m, Err(e) => { lc.status = "NO-LIGHTMAP".into(); lc.verdict = "fail".into(); lc.failed.push("FR".into()); lc.notes.push(e); return lc; } };
@@ -156,6 +158,9 @@ pub fn check(path: &str, word17_max: u32) -> LoadCheck {
     lc.n_items = mf.items.len();
     lc.grid = mf.size[0] as i64 * mf.size[2] as i64;
     lc.binds = mp.binds.len();
+    let n_spawn = mf.items.iter().filter(|it| it.waypoint_tag.as_deref() == Some("Spawn")).count();
+    let start_block = mf.blocks.iter().find(|b| b.waypoint_tag.as_deref() == Some("Spawn") || b.name.contains("Start")).map(|b| b.name.clone());
+    lc.start = if n_spawn > 0 { format!("item Spawn ×{n_spawn}") } else if let Some(b) = start_block { format!("block {b}") } else { "NONE".to_string() };
     let max_obj = mp.binds.iter().map(|b| (b.obj_group_idx / 4) as u64).max();
     lc.max_obj = max_obj;
     // the game's object list at load (docs/formats/map-lightmap.md §2 + the 42-oracle census): a Stadium map numbers its objects from
@@ -218,25 +223,25 @@ fn ft_utc(ft: u64) -> String {
 }
 
 pub fn line(lc: &LoadCheck) -> String {
-    format!("{}: {} — {} fr, {} rec {:?}, 0x17 {}, 0x18 {}, FT {}, objects {} (base {}, {} binds: {} items, {} beyond, max {}){}",
+    format!("{}: {} — {} fr, {} rec {:?}, 0x17 {}, 0x18 {}, FT {}, objects {} (base {}, {} binds: {} items, {} beyond, max {}), start {}{}",
         lc.file, lc.status, lc.frames, lc.records, lc.kinds,
         lc.w17.map_or("—".to_string(), |(a, b)| format!("({a}, {b})")), lc.w18.map_or("—".to_string(), |v| v.to_string()),
         lc.ft_verdict, lc.objects.map_or("?".to_string(), |v| v.to_string()), lc.item_base.map_or("?".to_string(), |v| v.to_string()),
-        lc.binds, lc.binds_items, lc.binds_beyond, lc.max_obj.map_or("—".to_string(), |v| v.to_string()),
+        lc.binds, lc.binds_items, lc.binds_beyond, lc.max_obj.map_or("—".to_string(), |v| v.to_string()), lc.start,
         if lc.failed.is_empty() && lc.warned.is_empty() { String::new() } else { format!(" ← {}{}{} [{}]", lc.failed.join(","), if !lc.failed.is_empty() && !lc.warned.is_empty() { " · warn " } else if !lc.warned.is_empty() { "warn " } else { "" }, lc.warned.join(","), lc.notes.join("; ")) })
 }
 
 pub fn tsv_header() -> &'static str {
-    "file\tstatus\tfailed\twarned\tcollection\tmd5\tlm_md5\tframes\trecords\tkinds\tw17\tw18\tft\tobjects\titem_base\tbinds\tbinds_items\tbinds_beyond\tmax_obj\tnotes\n"
+    "file\tstatus\tfailed\twarned\tcollection\tmd5\tlm_md5\tframes\trecords\tkinds\tw17\tw18\tft\tobjects\titem_base\tbinds\tbinds_items\tbinds_beyond\tmax_obj\tstart\tnotes\n"
 }
 
 pub fn tsv_row(lc: &LoadCheck) -> String {
-    format!("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+    format!("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
         lc.file, lc.status, lc.failed.join(","), lc.warned.join(","), lc.collection, lc.md5, lc.lm_md5.as_deref().unwrap_or("-"), lc.frames, lc.records,
         lc.kinds.iter().map(|k| k.to_string()).collect::<Vec<_>>().join(","),
         lc.w17.map_or("-".to_string(), |(a, b)| format!("{a},{b}")), lc.w18.map_or("-".to_string(), |v| v.to_string()),
         lc.ft_verdict, lc.objects.map_or("-".to_string(), |v| v.to_string()), lc.item_base.map_or("-".to_string(), |v| v.to_string()),
-        lc.binds, lc.binds_items, lc.binds_beyond, lc.max_obj.map_or("-".to_string(), |v| v.to_string()), lc.notes.join("; ").replace('\t', " "))
+        lc.binds, lc.binds_items, lc.binds_beyond, lc.max_obj.map_or("-".to_string(), |v| v.to_string()), lc.start, lc.notes.join("; ").replace('\t', " "))
 }
 
 pub fn run(args: &[String]) -> Result<(), String> {
