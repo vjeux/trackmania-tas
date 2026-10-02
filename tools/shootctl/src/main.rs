@@ -29,6 +29,7 @@ mod loadprof;
 mod lock;
 mod perfsum;
 mod playshots;
+mod rdcensus;
 mod render;
 mod shootset;
 
@@ -1243,6 +1244,8 @@ usage:
         "perfsum" => perfsum::run(&args[1..]),
         // the EDITOR's lightmap for a tiny build, re-saved into a new file. lightmap.rs.
         "lightmap" => lightmap::run(&args[1..]),
+        // the per-frame RenderDoc census of every .rdc of a capture set + the frame table (no lock, no game). rdcensus.rs.
+        "rdcensus" => rdcensus::run(&args[1..]),
         "carlog" => playshots::summarize(&args[1..]),
         // a wheel log (playshots --wheels-ms): per-wheel surface census + acceleration trace
         "wheels" => playshots::summarize_wheels(&args[1..]),

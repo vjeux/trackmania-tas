@@ -2234,7 +2234,7 @@ pub struct Frame1Image {
 /// image max (f16), the encode byte = 255·√(v / MaxHDR) (the frame-0 encoder's colour curve; the exact frame-1 tail is RE 7's
 /// pin), the 2 × 2 average to 1024², the per-chart normalisation (filecheck::chart_normalise → fb1), libwebp at q 91. None
 /// when nothing was lit (the writer then keeps the black frame with MaxHDR 1e-5). `charts` = the mapping's rects in order.
-pub fn frame1_images(lists: &Lists, lamps: &[Lamp], charts: &[(u32, u32, u32, u32)], rule: ComposeRule, dilate: u32, atlas: u32) -> Option<Frame1Image> {
+pub fn frame1_images(lists: &Lists, lamps: &[Lamp], charts: &[(u32, u32, u32, u32)], rule: ComposeRule, dilate: u32, atlas: u32, mood_max_hdr: f32) -> Option<Frame1Image> {
     let img0 = compose(lists, lamps, rule);
     let img = frame1_dilated_n(&img0, atlas, dilate);
     // THE STORED FRAME IS THE 1024² RESOLVE OF THE 2048² D_0 (E, 2026-09-27 00:50Z): the record's MaxHDR = the max over the 2 × 2 box
@@ -2275,6 +2275,14 @@ pub fn frame1_images(lists: &Lists, lamps: &[Lamp], charts: &[(u32, u32, u32, u3
     // The 1.0 floor of 02:00Z (two oracles) is refuted by tiny03 Day and giant20x2; LMTOOL_LL_F1_RECORD_FLOOR1=1 keeps it as a study.
     m = crate::gpufmt::quantise_f16(m, crate::gpufmt::Rounding::NearestEven);
     if *OLD_FLOOR { m = m.max(1.0); }
+    // THE RECORD IS CLAMPED AT THE MOOD'S MaxHDR (E8 2026-10-01, V7-2's read of the tiny16 BlueBay Night 0x199a oracle: record 1 MaxHDR =
+    // 1.7 = MaxHDR_Mood to the f32 (frame 0's own clamp prints 1.6999999 — a different arithmetic), 1 531 texels on 10 charts saturated at
+    // byte 255, the hot model AC16497180's unsaturated texels exact against our image; ours wrote its own max 3.627 and spent the 255
+    // levels over it). min in f32 on the f16-quantised max, so the stored word is the mood's own when it binds; the encode saturates the
+    // texels above it (v/M ≥ 1 → 1.0). Consistent with every unclamped oracle (stpad night 1.0 under 3.5, tiny16 Sunset 1.2851563 under
+    // 3.0, tiny03 Night 1.5234375 under 1.7, giant20x2 0.9995117). LMTOOL_LL_F1_NO_MOOD_CLAMP=1 = the unclamped record (the old form).
+    static NO_MOOD_CLAMP: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("LMTOOL_LL_F1_NO_MOOD_CLAMP").is_some());
+    if !*NO_MOOD_CLAMP && mood_max_hdr > 0.0 && m > mood_max_hdr { eprintln!("local-lights: frame-1 peak {m} CLAMPED to the mood's MaxHDR {mood_max_hdr} (the record word; the texels above it saturate)"); m = mood_max_hdr; }
     let mut rgb = vec![0u8; (ow * oh * 3) as usize];
     let mut lit = 0usize;
     for y in 0..oh {
@@ -2308,7 +2316,7 @@ pub fn frame1_images(lists: &Lists, lamps: &[Lamp], charts: &[(u32, u32, u32, u3
 /// l.346–373): D_0 = a plain copy (PS 1034) of frame 0's direct-lamp accumulation A_0 after its 8 alpha-weighted gutter fills
 /// (PS 1332) and BEFORE the sun is added — no alpha normalisation, no cap, no peak normalisation; the record = the max channel.
 /// `direct` = `FrameOut::direct` (the atlas = its first `atlas` columns); the encode = the frame's own peak, √, the 2×2 fold.
-pub fn frame1_from_direct(direct: &crate::passdiff::Buf, coverage: Option<&crate::passdiff::Buf>, charts: &[(u32, u32, u32, u32)], atlas: u32) -> Option<Frame1Image> {
+pub fn frame1_from_direct(direct: &crate::passdiff::Buf, coverage: Option<&crate::passdiff::Buf>, charts: &[(u32, u32, u32, u32)], atlas: u32, mood_max_hdr: f32) -> Option<Frame1Image> {
     // A_0 SS-normalised in place before the snapshot (RE 13, 19:25Z: LmSSNormWithA — rgb / coverage, alpha := 1 where the coverage > 0.01).
     // THE ALPHA IS THE WHOLE ATLAS'S RASTER COVERAGE (RE 13, 20:15Z: RenderAddAlphaSSAA writes alpha = 1 on every rasterised texel of every
     // chart before the lamps, the lamp draws add rgb with alpha suppressed) — so PS 1332's gutter fill (alpha < 1e-4 only) lands in the pad
@@ -2373,6 +2381,14 @@ pub fn frame1_from_direct(direct: &crate::passdiff::Buf, coverage: Option<&crate
     // The 1.0 floor of 02:00Z (two oracles) is refuted by tiny03 Day and giant20x2; LMTOOL_LL_F1_RECORD_FLOOR1=1 keeps it as a study.
     m = crate::gpufmt::quantise_f16(m, crate::gpufmt::Rounding::NearestEven);
     if *OLD_FLOOR { m = m.max(1.0); }
+    // THE RECORD IS CLAMPED AT THE MOOD'S MaxHDR (E8 2026-10-01, V7-2's read of the tiny16 BlueBay Night 0x199a oracle: record 1 MaxHDR =
+    // 1.7 = MaxHDR_Mood to the f32 (frame 0's own clamp prints 1.6999999 — a different arithmetic), 1 531 texels on 10 charts saturated at
+    // byte 255, the hot model AC16497180's unsaturated texels exact against our image; ours wrote its own max 3.627 and spent the 255
+    // levels over it). min in f32 on the f16-quantised max, so the stored word is the mood's own when it binds; the encode saturates the
+    // texels above it (v/M ≥ 1 → 1.0). Consistent with every unclamped oracle (stpad night 1.0 under 3.5, tiny16 Sunset 1.2851563 under
+    // 3.0, tiny03 Night 1.5234375 under 1.7, giant20x2 0.9995117). LMTOOL_LL_F1_NO_MOOD_CLAMP=1 = the unclamped record (the old form).
+    static NO_MOOD_CLAMP: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("LMTOOL_LL_F1_NO_MOOD_CLAMP").is_some());
+    if !*NO_MOOD_CLAMP && mood_max_hdr > 0.0 && m > mood_max_hdr { eprintln!("local-lights: frame-1 peak {m} CLAMPED to the mood's MaxHDR {mood_max_hdr} (the record word; the texels above it saturate)"); m = mood_max_hdr; }
     let mut rgb = vec![0u8; (ow * oh * 3) as usize];
     let mut lit = 0usize;
     for y in 0..oh {
@@ -2608,5 +2624,5 @@ pub fn frame1_images_by(tail: &str, lists: &Lists, lamps: &[Lamp], charts: &[(u3
         std::env::set_var("LMTOOL_LL_CHAIN_ALPHA1", "1");
         return frame1_images_chain(lists, lamps, charts, ComposeRule::SumDecoded, mood_max_hdr_word, scale, atlas);
     }
-    frame1_images(lists, lamps, charts, ComposeRule::SumDecoded, dilate, atlas)
+    frame1_images(lists, lamps, charts, ComposeRule::SumDecoded, dilate, atlas, mood_max_hdr_word)
 }
