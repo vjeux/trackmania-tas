@@ -396,6 +396,8 @@ pub struct CasterSource {
     pub items: Vec<Vec<crate::locallight::CasterTri>>,
     /// Per layout record: the scene instance it is (None for tiles / blocks / clips).
     pub rec_item: Vec<Option<usize>>,
+    /// The caster tags' names (`CasterTri::tag` − 1 indexes it): "inst K model M mat LINK" (the shadow trace, E9).
+    pub tag_names: Vec<String>,
 }
 
 static CASTER_SRC: std::sync::Mutex<Option<std::sync::Arc<CasterSource>>> = std::sync::Mutex::new(None);
@@ -404,15 +406,28 @@ pub fn set_caster_source(src: Option<std::sync::Arc<CasterSource>>) {
     *CASTER_SRC.lock().unwrap() = src;
 }
 
+/// The name of a caster tag (the shadow trace): "inst K model M mat LINK", or the LM-mesh fallback.
+pub fn caster_tag_name(tag: u32) -> String {
+    if tag == 0 { return "untagged (an LM mesh / a prefab visual)".into(); }
+    CASTER_SRC.lock().unwrap().as_ref().and_then(|s| s.tag_names.get(tag as usize - 1).cloned()).unwrap_or_else(|| format!("tag {tag}"))
+}
+
 /// Build the caster source from a `Setup` (the scene, its cut-out textures, the layout records).
 pub fn caster_source_of(su: &Setup) -> CasterSource {
     let mut items: Vec<Vec<crate::locallight::CasterTri>> = Vec::with_capacity(su.scene.instances.len());
-    for inst in &su.scene.instances {
+    let mut tag_names: Vec<String> = Vec::new();
+    let trace = crate::locallight::shadow_trace_on();
+    for (k, inst) in su.scene.instances.iter().enumerate() {
         let m = &su.scene.models[inst.model];
         let mut v = Vec::with_capacity(m.tris.len());
+        // one tag per (instance, material) when tracing
+        let mut tag_of: std::collections::HashMap<u16, u32> = std::collections::HashMap::new();
         for t in &m.tris {
             let alpha = if t.alpha == u16::MAX { None } else { m.alpha_tex.get(t.alpha as usize).and_then(|n| su.alpha_tex.get(n)).cloned() };
-            v.push(crate::locallight::CasterTri { p: [crate::geometry::xf_point(&inst.xf, t.p[0]), crate::geometry::xf_point(&inst.xf, t.p[1]), crate::geometry::xf_point(&inst.xf, t.p[2])], uv0: t.uv0, alpha });
+            let tag = if trace {
+                *tag_of.entry(t.mat).or_insert_with(|| { tag_names.push(format!("inst {k} {} mat {}{}", inst.model_name, m.mat_links.get(t.mat as usize).cloned().unwrap_or_else(|| format!("#{}", t.mat)), if t.alpha == u16::MAX { "" } else { " (alpha-tested)" })); tag_names.len() as u32 })
+            } else { 0 };
+            v.push(crate::locallight::CasterTri { p: [crate::geometry::xf_point(&inst.xf, t.p[0]), crate::geometry::xf_point(&inst.xf, t.p[1]), crate::geometry::xf_point(&inst.xf, t.p[2])], uv0: t.uv0, alpha, tag });
         }
         items.push(v);
     }
@@ -427,7 +442,7 @@ pub fn caster_source_of(su: &Setup) -> CasterSource {
         eprintln!("caster source: item records {}; LM instances of mesh 0: rec_of {:?}", ks.join(", "), (su.sc.inst_first[0]..su.sc.inst_first[0] + su.sc.inst_count[0].min(6)).map(|ii| su.sc.rec_of.get(ii).copied()).collect::<Vec<_>>());
     }
     eprintln!("local-lights: flat-cube caster source: {} item instances ({} triangles, {n_alpha} alpha-tested), {} of {} records are items, {} cut-out textures", items.len(), items.iter().map(|v| v.len()).sum::<usize>(), rec_item.iter().filter(|r| r.is_some()).count(), rec_item.len(), su.alpha_tex.len());
-    CasterSource { items, rec_item }
+    CasterSource { items, rec_item, tag_names }
 }
 
 /// The casters of the flat cube for the drawn LM instances: an item's record → its visual (alpha-tested cards included), everything
@@ -435,7 +450,25 @@ pub fn caster_source_of(su: &Setup) -> CasterSource {
 /// LMTOOL_LL_CULL=0: the flat-cube casters two-sided for every triangle (study: the lamp's own housing seen from inside).
 static CULL_BACK: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_LL_CULL").map(|v| v != "0").unwrap_or(true));
 
+/// LMTOOL_LL_OWN_ITEM=exclude (STUDY, E9 2026-10-02): the lamp's OWN item (the scene instance carrying the light socket) casts no flat-cube
+/// shadow — the near-field bracket (the fixture's housing darkening the ground beside it). A read of the game's caster list decides.
+static OWN_ITEM_EXCLUDE: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_LL_OWN_ITEM").as_deref() == Ok("exclude"));
+
+/// The scene instance a lamp belongs to (its owner tag "item K"), or None for a block / clip light.
+pub fn lamp_owner_instance(lamp: &Lamp) -> Option<usize> {
+    lamp.owner.strip_prefix("item ").and_then(|s| s.trim().parse::<usize>().ok())
+}
+
+/// `casters_masked` for one lamp: the own-item exclusion applies when the knob is on.
+pub fn casters_masked_for(sc: &LmScene, insts: &[usize], lamp: &Lamp) -> Vec<crate::locallight::CasterTri> {
+    casters_masked_skip(sc, insts, if *OWN_ITEM_EXCLUDE { lamp_owner_instance(lamp) } else { None })
+}
+
 pub fn casters_masked(sc: &LmScene, insts: &[usize]) -> Vec<crate::locallight::CasterTri> {
+    casters_masked_skip(sc, insts, None)
+}
+
+pub fn casters_masked_skip(sc: &LmScene, insts: &[usize], skip_item: Option<usize>) -> Vec<crate::locallight::CasterTri> {
     static LM_ONLY: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("LMTOOL_LL_LM_CASTERS").is_some());
     let src = CASTER_SRC.lock().unwrap().clone();
     let mut out = Vec::new();
@@ -443,6 +476,7 @@ pub fn casters_masked(sc: &LmScene, insts: &[usize]) -> Vec<crate::locallight::C
     for &ii in insts {
         if let (Some(src), false) = (&src, *LM_ONLY) {
             if let Some(Some(item)) = sc.rec_of.get(ii).and_then(|&k| src.rec_item.get(k)) {
+                if skip_item == Some(*item) { continue; }
                 if done_items.insert(*item) { out.extend(src.items[*item].iter().cloned()); }
                 continue;
             }
@@ -454,12 +488,12 @@ pub fn casters_masked(sc: &LmScene, insts: &[usize]) -> Vec<crate::locallight::C
         // a prefab entity: its WHOLE visual (LmScene::caster_tris, local frame → the instance's rotation + translation)
         if let Some(full) = sc.caster_tris.get(m).filter(|v| !v.is_empty() && !*LM_ONLY) {
             let xf = |p: [f32; 3]| -> [f32; 3] { let s = inst.scale; let r = [rows[0][0] * p[0] + rows[0][1] * p[1] + rows[0][2] * p[2], rows[1][0] * p[0] + rows[1][1] * p[1] + rows[1][2] * p[2], rows[2][0] * p[0] + rows[2][1] * p[1] + rows[2][2] * p[2]]; [r[0] * s + inst.t[0], r[1] * s + inst.t[1], r[2] * s + inst.t[2]] };
-            for t in full { out.push(crate::locallight::CasterTri { p: [xf(t[0]), xf(t[1]), xf(t[2])], uv0: [[0.0; 2]; 3], alpha: None }); }
+            for t in full { out.push(crate::locallight::CasterTri { p: [xf(t[0]), xf(t[1]), xf(t[2])], uv0: [[0.0; 2]; 3], alpha: None, tag: 0 }); }
             continue;
         }
         let wp: Vec<[f32; 3]> = mesh.verts.iter().map(|v| world_pos(v, inst, &rows)).collect();
         for t in mesh.indices.chunks_exact(3) {
-            out.push(crate::locallight::CasterTri { p: [wp[t[0] as usize], wp[t[1] as usize], wp[t[2] as usize]], uv0: [[0.0; 2]; 3], alpha: None });
+            out.push(crate::locallight::CasterTri { p: [wp[t[0] as usize], wp[t[1] as usize], wp[t[2] as usize]], uv0: [[0.0; 2]; 3], alpha: None, tag: 0 });
         }
     }
     out
@@ -824,10 +858,33 @@ pub fn draw_lamp_partial<T: LampTarget>(sc: &LmScene, insts: &[usize], cb: &Ligh
                         // LMTOOL_LL_TEXEL_TRACE=x,y (E8, 2026-10-01): every lamp fragment landing on that atlas texel with a non-zero
                         // output — the lamp position, jitter, instance, the fragment's world position / normal, the distance, PS 7343's
                         // output (the per-sample trace of a leak texel: which lamp lights it, from where, at what attenuation)
-                        static TEXEL_TRACE: std::sync::LazyLock<Option<(u32, u32)>> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_LL_TEXEL_TRACE").ok().and_then(|v| { let p: Vec<u32> = v.split(',').filter_map(|t| t.trim().parse().ok()).collect(); if p.len() == 2 { Some((p[0], p[1])) } else { None } }));
-                        if *TEXEL_TRACE == Some((x, y)) && (o[0] != 0.0 || o[1] != 0.0) {
+                        static TEXEL_TRACE: std::sync::LazyLock<Option<(u32, u32, u32, u32)>> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_LL_TEXEL_TRACE").ok().and_then(|v| { let p: Vec<u32> = v.split(',').filter_map(|t| t.trim().parse().ok()).collect(); match p.len() { 2 => Some((p[0], p[1], 1, 1)), 4 => Some((p[0], p[1], p[2], p[3])), _ => None } }));
+                        if TEXEL_TRACE.map(|(tx, ty, tw, th)| x >= tx && x < tx + tw && y >= ty && y < ty + th).unwrap_or(false) && (o[0] != 0.0 || o[1] != 0.0 || crate::locallight::shadow_trace_on()) {
                             let d = ((cb.light_pos[0] - p[0]).powi(2) + (cb.light_pos[1] - p[1]).powi(2) + (cb.light_pos[2] - p[2]).powi(2)).sqrt();
                             eprintln!("texel trace ({x},{y}): lamp at ({:.2},{:.2},{:.2}) spot {} out_scale {:?} jitter {n} inst {ii}: p ({:.2},{:.2},{:.2}) n ({:.3},{:.3},{:.3}) d {d:.2} → o ({:.6},{:.4},{},{:.4})", cb.light_pos[0], cb.light_pos[1], cb.light_pos[2], cb.is_light_spot, cb.out_scale, p[0], p[1], p[2], nrm[0], nrm[1], nrm[2], o[0], o[1], o[2], o[3]);
+                            // LMTOOL_LL_SHADOW_TRACE (E9): the flat-cube taps this fragment compares against — face, texel, the stored depth vs the
+                            // reference, and the caster that holds the depth (CasterTri::tag → caster_tag_name)
+                            if crate::locallight::shadow_trace_on() && d < cb.light_pos[0].abs().max(1.0) * 1e9 {
+                                let (lx, ly, lz) = (cb.light_pos[0] - p[0], cb.light_pos[1] - p[1], cb.light_pos[2] - p[2]);
+                                let (face, uv, reference) = crate::locallight::flat_cube_lookup(cb, lx, ly, lz);
+                                let wsh = shadow.width() as i64;
+                                let fx = uv[0] * SHADOW_TARGET as f32 - 0.5;
+                                let fy = uv[1] * SHADOW_TARGET as f32 - 0.5;
+                                let (x0, y0) = (fx.floor() as i64, fy.floor() as i64);
+                                let mut taps = String::new();
+                                for (dx, dy) in [(0i64, 0i64), (1, 0), (0, 1), (1, 1)] {
+                                    let (tx, ty) = ((x0 + dx).clamp(0, wsh - 1), (y0 + dy).clamp(0, (shadow.size * 2) as i64 - 1));
+                                    let i = (ty * wsh + tx) as usize;
+                                    let st = shadow.depth[i];
+                                    let own = shadow.owner.get(i).copied().unwrap_or(0);
+                                    // the stored depth → the caster's distance along the face axis: z = R·s/dom − s ⇒ dom = R·s/(z + s)
+                                    let s = 1.0f32 / 999.0;
+                                    let dom = if st > 0.0 { cb.z_trans / (st + s) } else { f32::INFINITY };
+                                    taps.push_str(&format!("\n    tap ({tx},{ty}) stored {st:.6} (caster at {dom:.2} m along the axis) {} — {}", if reference >= st { "LIT" } else { "SHADOWED" }, caster_tag_name(own)));
+                                }
+                                let ref_dom = cb.z_trans / (reference + 1.0 / 999.0);
+                                eprintln!("  shadow trace: face {face} uv ({:.5},{:.5}) ref {reference:.6} (receiver at {ref_dom:.2} m along the axis), weights ({:.2},{:.2}){taps}", uv[0], uv[1], fx - x0 as f32, fy - y0 as f32);
+                            }
                         }
                         let slot = acc.slot(x, y);
                         for ch in 0..4 {
@@ -1284,7 +1341,7 @@ pub fn run_frame(gl: &crate::layout::GameLayout, sc: &LmScene, lamps: &[Lamp], c
                         let lamp = &lamps[li];
                         let t = std::time::Instant::now();
                         let drawn = cull(gl, sc, lamp);
-                        let tris = casters_masked(sc, &drawn);
+                        let tris = casters_masked_for(sc, &drawn, lamp);
                         if std::env::var_os("LMTOOL_LL_CASTER_TRACE").is_some() { let na = tris.iter().filter(|t| t.alpha.is_some()).count(); if na > 0 { eprintln!("lamp {} ({}): {} casters, {na} alpha-tested", lamp.id, lamp.owner, tris.len()); } }
                         let t1 = t.elapsed().as_secs_f32();
                         // THE TWO LAMP PASSES OF FRAME 0 (E, 2026-09-27 00:45Z, from the baker's sw0 + sw1 captures): (1) the LightId pass —
@@ -1378,7 +1435,7 @@ pub fn run_frame(gl: &crate::layout::GameLayout, sc: &LmScene, lamps: &[Lamp], c
     let t0 = std::time::Instant::now();
     for (li, lamp) in lamps.iter().enumerate() {
         let drawn = cull(gl, sc, lamp);
-        let tris = casters_masked(sc, &drawn);
+        let tris = casters_masked_for(sc, &drawn, lamp);
         // the LightId pass (lists / probes at R_eff, one position) then the colour pass (the emitter samples at R_file) — see the
         // parallel worker above
         let shadow = crate::locallight::render_flat_cube_masked(lamp.light.pos, lamp.r_eff, lamp.face_size, &tris, *CULL_BACK);
@@ -1558,6 +1615,14 @@ pub fn setup_from_map_for(map_path: &str, paks: &[(String, String)], collection:
         let n0 = lamps.len();
         let kept: Vec<Lamp> = lamps.into_iter().filter(|l| (l.light.ball_flags >> 10) & 7 != 1).collect();
         log(&format!("STUDY LMTOOL_LL_FRAME1_CLASS1=drop: {} of {n0} class-1 lamps left out of frame 1", n0 - kept.len()));
+        kept
+    } else if pass == LampPass::Frame1 && std::env::var("LMTOOL_LL_FRAME1_CLASS").is_ok() {
+        // STUDY (E9 2026-10-02, the Storage-2 frame): frame 1 from the lamps of ONE class only (ball word bits 10–12 == K) — the editor's
+        // third frame ("LocalBig_Avg") is compared against this image to name the class it carries
+        let k: u32 = std::env::var("LMTOOL_LL_FRAME1_CLASS").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
+        let n0 = lamps.len();
+        let kept: Vec<Lamp> = lamps.into_iter().filter(|l| (l.light.ball_flags >> 10) & 7 == k).collect();
+        log(&format!("STUDY LMTOOL_LL_FRAME1_CLASS={k}: {} of {n0} lamps kept in frame 1", kept.len()));
         kept
     } else if pass == LampPass::Frame0 && std::env::var("LMTOOL_LL_FRAME0_CLASS1").as_deref() == Ok("drop") {
         // STUDY (E8 2026-10-01): the frame-0 lamp phase without the class-1 lamps — the bracket for whether the game's frame 0 bounces them

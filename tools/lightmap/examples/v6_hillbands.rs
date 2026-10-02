@@ -1,5 +1,5 @@
 //! `v6_hillbands OURS.Map.Gbx --against EDITOR.Map.Gbx --source SRC.Map.Gbx --records R.tsv --collection C --quality Q
-//!   --pak FILE:KEY… [--models SUBSTR,…] [--sun DX,DY,DZ] [--lit-hdr 1e-3] [--min-texels 500] [--own-rects] [--editor-min S] [--near PTS.tsv --radius R] [--y-bins Y1,Y2,…] [--editor-bands B1,B2,…] [--dump-texels CLASS_SUBSTR:BAND_PREFIX:N] [--out TSV]`
+//!   --pak FILE:KEY… [--models SUBSTR,…] [--sun DX,DY,DZ] [--lit-hdr 1e-3] [--min-texels 500] [--own-rects] [--editor-min S] [--near PTS.tsv --radius R] [--y-bins Y1,Y2,…] [--editor-bands B1,B2,…] [--dump-texels CLASS_SUBSTR:BAND_PREFIX:N] [--dump-leaks SUBSTR:LAMPBAND:N] [--dump-under SUBSTR:LAMPBAND:N] [--class-sum] [--frame N --lamps TSV --lamp-bins D1,…] [--at X,Y;…] [--out TSV]`
 //! `--editor-bands B1,B2,…`: extra bands by the EDITOR's per-texel Σrgb (upper bounds ascending) — is a residue on the game's dark
 //! texels (additive: a leak, a floor) or on its bright ones (a gain); crossed with the near/far split when --near is given.
 //! `--dump-texels SUBSTR:BANDPREFIX:N`: print up to N texels of the classes matching SUBSTR whose elevation band starts with
@@ -68,6 +68,14 @@ fn main() {
     // nearest lamp's position, for an occluder trace (e7_ray lamp → texel).
     let dump_leaks: Option<(String, String, usize)> = f("--dump-leaks").map(|v| { let p: Vec<&str> = v.split(':').collect(); (p[0].to_string(), p.get(1).unwrap_or(&"").to_string(), p.get(2).and_then(|n| n.parse().ok()).unwrap_or(20)) });
     let mut leaked = 0usize;
+    // `--dump-under SUBSTR:LAMPBANDPREFIX:N` (E9, 2026-10-02): up to N texels of the classes matching SUBSTR, in the LAMP-distance band
+    // starting with the prefix, that the EDITOR lights and ours reads UNDER 0.85 of it (or not at all) — the near-field counterpart of
+    // --dump-leaks (the fixtures' own shadow / the cone's inner falloff beside the housings): the texels for LMTOOL_LL_TEXEL_TRACE.
+    let dump_under: Option<(String, String, usize)> = f("--dump-under").map(|v| { let p: Vec<&str> = v.split(':').collect(); (p[0].to_string(), p.get(1).unwrap_or(&"").to_string(), p.get(2).and_then(|n| n.parse().ok()).unwrap_or(20)) });
+    let mut undered = 0usize;
+    // `--class-sum` (E9, 2026-10-02): extra rows "Σitem" / "Σtile" / "Σall" — every band summed over the classes of that kind (V7's
+    // by-distance tables: the lamp bands over ALL items at once); the per-class rows are unchanged.
+    let class_sum = a.iter().any(|x| x == "--class-sum");
     let ed_bins: Vec<f64> = f("--editor-bands").map(|v| v.split(',').map(|s| s.trim().parse().expect("--editor-bands B1,B2")).collect()).unwrap_or_default();
     let y_bins: Vec<f32> = f("--y-bins").map(|v| v.split(',').map(|s| s.trim().parse().expect("--y-bins Y1,Y2")).collect()).unwrap_or_default();
     let near: Option<(Vec<(f32, f32)>, f32)> = f("--near").map(|p| { let pts = lightmap::classcmp::read_points(&p, f("--near-name").as_deref()).unwrap_or_else(|e| panic!("--near: {e}")); let r: f32 = f("--radius").map(|v| v.parse().expect("--radius R")).unwrap_or(30.0); eprintln!("--near: {} points, radius {r} m", pts.len()); (pts, r) });
@@ -260,6 +268,19 @@ fn main() {
                     leaked += 1;
                 }
             }
+            if let Some((sub, bp, n)) = &dump_under {
+                if undered < *n && has[p] && key.contains(sub.as_str()) && lb.as_ref().map(|(l, _)| l.starts_with(bp.as_str())).unwrap_or(false) && le {
+                    let ho: Vec<f64> = (0..3).map(|c| lightmap::classcmp::texel_hdr(frame, a[c], fbi, k1)).collect();
+                    let he: Vec<f64> = (0..3).map(|c| lightmap::classcmp::texel_hdr(frame, b[c], fbj, k2)).collect();
+                    if ho[1] < 0.85 * he[1] {
+                        let q = posv[p];
+                        let mut best = (f32::MAX, [0f32; 4]);
+                        for l in &lamps { let (dx, dy, dz) = (l[0] - q[0], l[1] - q[1], l[2] - q[2]); let d2 = dx * dx + dy * dy + dz * dz; if d2 < best.0 { best = (d2, *l); } }
+                        println!("UNDER\t{key}\tchart {i}\tatlas ({x}, {y})\tworld ({:.2}, {:.2}, {:.2})\tnormal ({:.3}, {:.3}, {:.3})\tours {:.4}/{:.4}/{:.4}\teditor {:.4}/{:.4}/{:.4}\tratio {:.3}\tnearest lamp ({:.2}, {:.2}, {:.2}) R {} d {:.2}", q[0], q[1], q[2], nrm[p][0], nrm[p][1], nrm[p][2], ho[0], ho[1], ho[2], he[0], he[1], he[2], ho[1] / he[1].max(1e-9), best.1[0], best.1[1], best.1[2], best.1[3], best.0.sqrt());
+                        undered += 1;
+                    }
+                }
+            }
             if let Some((sub, bp, n)) = &dump {
                 if dumped < *n && has[p] && key.contains(sub.as_str()) && eb.starts_with(bp.as_str()) && le {
                     let ho: Vec<f64> = (0..3).map(|c| lightmap::classcmp::texel_hdr(frame, a[c], fbi, k1)).collect();
@@ -288,8 +309,9 @@ fn main() {
                 let yb = format!("Y {}", lightmap::classcmp::y_bin_label(posv[p][1], &y_bins));
                 bands.push(yb.clone()); bands.push(format!("{yb} × {eb}"));
             }
-            for band in bands {
-                let e = acc.entry((key.clone(), band)).or_default();
+            let keys: Vec<String> = if class_sum { vec![key.clone(), format!("Σ{}", r.class), "Σall".to_string()] } else { vec![key.clone()] };
+            for band in bands { for key in &keys {
+                let e = acc.entry((key.clone(), band.clone())).or_default();
                 e.texels += 1;
                 if !has[p] { e.no_frag += 1; } else if rec_bind.get(rec_px[p] as usize).map(|&b| b == (obj, sub)).unwrap_or(false) { e.rec_ok += 1; }
                 if has[p] { e.cos_sum += (nrm[p][0] * to_sun[0] + nrm[p][1] * to_sun[1] + nrm[p][2] * to_sun[2]) as f64; }
@@ -304,7 +326,7 @@ fn main() {
                         if ve.abs() >= 0.05 * hb2[k] as f64 / 0.6909883 { e.sign_n[k] += 1; if (vo >= 0.0) == (ve >= 0.0) { e.sign_ok[k] += 1; } }
                     }
                 }
-            }
+            } }
         } }
     }
     eprintln!("{charts_seen} charts matched the model filter {models:?}; {refused} pairs refused (own rects: no bind match or area guard)");

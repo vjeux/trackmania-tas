@@ -766,6 +766,8 @@ pub struct FlatCubeMap {
     pub size: u32,
     /// row-major, 3·size wide, 2·size high
     pub depth: Vec<f32>,
+    /// Per texel the `CasterTri::tag` of the triangle holding the depth (empty unless `shadow_trace_on`).
+    pub owner: Vec<u32>,
 }
 
 impl FlatCubeMap {
@@ -821,10 +823,20 @@ pub struct CasterTri {
     pub p: [[f32; 3]; 3],
     pub uv0: [[f32; 2]; 3],
     pub alpha: Option<std::sync::Arc<crate::shadowmap::AlphaTexture>>,
+    /// A diagnostic tag of the triangle's source (E9, 2026-10-02: `localdrive::caster_tag_name` resolves it — the scene instance and the
+    /// material link); 0 = untagged. Read only by the shadow trace (`FlatCubeMap::owner`).
+    pub tag: u32,
+}
+
+/// LMTOOL_LL_SHADOW_TRACE (E9, 2026-10-02): the flat cube keeps, per texel, the tag of the caster triangle holding its depth, so a traced
+/// receiver texel (LMTOOL_LL_TEXEL_TRACE) can name what shadows it.
+pub fn shadow_trace_on() -> bool {
+    static ON: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("LMTOOL_LL_SHADOW_TRACE").is_some());
+    *ON
 }
 
 pub fn render_flat_cube(l: [f32; 3], r_eff: f32, size: u32, tris: &[[[f32; 3]; 3]], cull_back: bool) -> FlatCubeMap {
-    let ct: Vec<CasterTri> = tris.iter().map(|t| CasterTri { p: *t, uv0: [[0.0; 2]; 3], alpha: None }).collect();
+    let ct: Vec<CasterTri> = tris.iter().map(|t| CasterTri { p: *t, uv0: [[0.0; 2]; 3], alpha: None, tag: 0 }).collect();
     render_flat_cube_masked(l, r_eff, size, &ct, cull_back)
 }
 
@@ -838,6 +850,8 @@ pub fn render_flat_cube(l: [f32; 3], r_eff: f32, size: u32, tris: &[[[f32; 3]; 3
 pub fn render_flat_cube_masked(l: [f32; 3], r_eff: f32, size: u32, tris: &[CasterTri], cull_back: bool) -> FlatCubeMap {
     let (w, h) = ((size * 3) as usize, (size * 2) as usize);
     let mut depth = vec![0.0f32; w * h];
+    let trace = shadow_trace_on();
+    let mut owner: Vec<u32> = if trace { vec![0u32; w * h] } else { Vec::new() };
     for face in 0..6 {
         let m = flat_cube_face_matrix(face, l, r_eff);
         let (ox, oy) = flat_cube_face_viewport(face, size);
@@ -918,12 +932,12 @@ pub fn render_flat_cube_masked(l: [f32; 3], r_eff: f32, size: u32, tris: &[Caste
                     let q = crate::shadowmap::to_unorm16(zt, crate::shadowmap::UnormRounding::Nearest);
                     let i = fr.y as usize * w + fr.x as usize;
                     let zq = q as f32 / 65535.0;
-                    if zq > depth[i] { depth[i] = zq; }
+                    if zq > depth[i] { depth[i] = zq; if trace { owner[i] = ct.tag; } }
                 });
             }
         }
     }
-    FlatCubeMap { size, depth }
+    FlatCubeMap { size, depth, owner }
 }
 
 #[cfg(test)]
