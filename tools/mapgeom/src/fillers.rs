@@ -269,6 +269,16 @@ pub struct Row {
     pub line: String,
 }
 
+/// The block unit that OWNS a recorded clip filler: the occupant across the
+/// piece's side whose face list names the piece (`fillers.rs` conventions
+/// above). None for a piece nobody's clip list names (a terrain tile's own
+/// filler, an unknown clip).
+pub fn owner_of<'f>(f: &'f Faces, b: &BlockRec) -> Option<&'f Occupant> {
+    let me = b.name.to_ascii_lowercase();
+    let mine = f.clips.get(&me).cloned().unwrap_or_default();
+    owner_cell_face(b.file_cell, mine.ty, b.dir).and_then(|(c, of)| f.occupants.get(&c).and_then(|v| v.iter().find(|o| o.faces[of].iter().any(|s| *s == me))))
+}
+
 pub fn classify(f: &Faces, b: &BlockRec) -> Row {
     let me = b.name.to_ascii_lowercase();
     let mine = f.clips.get(&me).cloned().unwrap_or_default();
@@ -277,9 +287,7 @@ pub fn classify(f: &Faces, b: &BlockRec) -> Row {
     let real: Vec<&Occupant> = occ.iter().copied().filter(|o| !o.pillar && !o.tile).collect();
     let pillars: Vec<&Occupant> = occ.iter().copied().filter(|o| o.pillar).collect();
     // the owner check
-    let owner = owner_cell_face(b.file_cell, mine.ty, b.dir).and_then(|(c, of)| {
-        f.occupants.get(&c).and_then(|v| v.iter().find(|o| o.faces[of].iter().any(|s| *s == me)).map(|o| format!("{}#{}u{}", o.name, o.index, o.unit)))
-    });
+    let owner = owner_of(f, b).map(|o| format!("{}#{}u{}", o.name, o.index, o.unit));
     let facing: Vec<String> = real.iter().map(|o| format!("{}u{}[{}]", o.name, o.unit, o.faces[face].join("|"))).collect();
     let facing_lists: Vec<&Vec<String>> = real.iter().map(|o| &o.faces[face]).collect();
     let any_clips = facing_lists.iter().any(|l| !l.is_empty());
