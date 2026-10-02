@@ -22,7 +22,7 @@
 use tmmaps::{census, controls, dropscan, header, rotate, segments, splice, selftest};
 
 mod cmd;
-use cmd::{inspect, ladder, surgery};
+use cmd::{inspect, ladder, skins, surgery};
 
 /// A tool whose census is 90 000 lines long will be piped into `head`, and a
 /// Rust binary ignores SIGPIPE by default — so the write fails, and the
@@ -82,7 +82,7 @@ fn main() {
     const WANTS_MAP: &[&str] = &[
         "waypoints", "census", "gridinfo", "skins", "fillers", "region", "colors", "phases", "genealogy", "tiny-catalog", "lineup", "shared-cells", "ponds", "tiny", "tiny-batch", "clear", "shift", "segments", "move", "rotate", "ladder",
         "roundtrip",
-        "renamecheck", "cporder", "origin", "chunks", "blockrefs", "setuid", "settimes", "lmquality", "ghostchunk", "genealogy-fill", "delblocks", "striplightmap", "itembytes", "embedded", "embedded-restore", "mediatracker", "music", "strings",
+        "renamecheck", "cporder", "origin", "chunks", "chunkdiff", "blockrefs", "setuid", "settimes", "lmquality", "ghostchunk", "genealogy-fill", "delblocks", "striplightmap", "itembytes", "embedded", "embedded-restore", "mediatracker", "music", "strings", "packdescs", "deps",
     ];
     if WANTS_MAP.contains(&cmd) && args.len() < 3 {
         eprintln!("tmmaps {} needs a MAP path.\n\n{}", cmd, USAGE);
@@ -291,6 +291,8 @@ fn main() {
         "movebaked" => surgery::movebaked(&args),
         "census" => census::cmd_census(&args),
         "skins" => census::cmd_skins(&args),
+        "packdescs" => skins::packdescs(&args),
+        "deps" => skins::deps(&args),
         "fillers" => tmmaps::fillers::cmd(&args),
         // archive-only variants of a tiny map for the load-failure bisect (zippad.rs)
         "zippad" => tmmaps::zippad::cmd(&args),
@@ -343,6 +345,7 @@ fn main() {
             }
         }
         "chunks" => inspect::chunks(&args),
+        "chunkdiff" => inspect::chunkdiff(&args),
         "blockrefs" => inspect::blockrefs(&args),
         "genealogy" => inspect::genealogy(&args),
         "gridinfo" => inspect::gridinfo(&args),
@@ -367,6 +370,16 @@ READING A MAP
         tags, cells, free positions. These indices are what every mover takes.
   tmmaps census MAP [--filter PAT] [--free]
   tmmaps skins MAP [--name SUBSTR]      item placements carrying a skin FileRef (path, url) + per-model counts
+  tmmaps packdescs MAP [--filter S] [--out F --neutralise S [--to stock|empty]]
+        every FileRef v3 in the BODY (item skins, MediaTracker entity ghosts' car skins)
+        with its checksum (ZERO | stock | sha), path, locator; --neutralise rewrites the
+        matching ones to the game's own stock-skin FileRef (Fall 2026 map 22: the cameo
+        ghost's zero-checksum locator skin = the "Updating data…" loop)
+  tmmaps deps MAP [--out F --drop S [--drop S …]]
+        the header XML's <dep file= url=> list; --drop removes the matching entries
+        (header-only edit, body byte-identical)
+  tmmaps mediatracker MAP [--out F --drop-clip in-game:N|end-race:N …]
+        the MediaTracker report; --drop-clip removes one clip + its trigger from a group
         EVERY block, unbaked (0x0304301F) and BAKED (0x03043048), tagged U/B,
         with its free-block position when it has one, as TSV. `waypoints` and
         any single-chunk listing show only one of the two: across the store
@@ -393,6 +406,9 @@ READING A MAP
         the per-item ANIMATION PHASE OFFSET (chunk 0x03043063, one byte per item
         in eighths of the period: 4 = half) — what the editor stores when the
         author phases a pusher/rotor/tube; non-zero items, or --filter/--all
+  tmmaps chunkdiff A B [--allow 0xCHUNK,…]
+        the two bodies chunk by chunk (header, every skippable chunk, the inline stretches between);
+        non-zero exit when anything outside --allow differs — the gate behind a chunk transplant
   tmmaps chunks MAP [--only 0xCHUNK --hex N]
         every skippable body chunk with its size (--only/--hex: one chunk, head dump)
   tmmaps blockrefs MAP [--groups]

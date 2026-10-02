@@ -112,6 +112,12 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                 bargs.push(v);
             }
         }
+        // --keep-zone-block goes through to the build (the Stadium tinies 05/10/15/25 + x2 25:
+        // the editor bake copy's kept zone block ADDS objects to the lightmap table, so the
+        // shipped file must carry the same block — NOTE-stadium-kept-block.txt, 2026-10-01)
+        if tmmaps::cli::has(args, "--keep-zone-block") {
+            bargs.push("--keep-zone-block".into());
+        }
         // --alias-part P: item file names unique per (part, map) — the game caches an
         // embedded model by FILE NAME for the whole session, and a player of the
         // whole-club campaign plays many maps in one session (2026-09-13). Base
@@ -206,9 +212,22 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                     }
                     chosen = Some((format!("lod-pick {level}, parts under {} vertices sharp", best.0), best.1));
                 }
-                match chosen {
+                match &chosen {
                     Some((how, s)) => fit_note = format!("fit under {cap} B: {start} -> {s} B ({how}); "),
                     None => fit_note = format!("DOES NOT FIT under {cap} B even at level 3; "),
+                }
+                // the ladder's row in the build's discard report (tmmaps::discard):
+                // what the size cap cost this map
+                {
+                    let (code, reason) = match &chosen {
+                        Some((how, s)) => ("MAP_LOD_LADDER", format!("over the {cap} B cap ({start} B): rebuilt down the detail ladder to {s} B with {how} — the VISUAL_LOD_PICK_SKIPPED rows are the geometry it dropped")),
+                        None => ("MAP_OVER_CAP", format!("{start} B over the {cap} B cap and DOES NOT FIT even at level 3")),
+                    };
+                    let p = build_dir.join("discard.tsv");
+                    let mut text = std::fs::read_to_string(&p).unwrap_or_else(|_| format!("{}\n", tmmaps::discard::HEADER));
+                    let map_name = tiny.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    text.push_str(&format!("{map_name}\t{scale}\tpipeline\t{code}\t{}\twhole map\t\t1\t{reason}\n", tmmaps::discard::loss_of(code)));
+                    let _ = std::fs::write(&p, text);
                 }
             }
             note.push_str(&fit_note);

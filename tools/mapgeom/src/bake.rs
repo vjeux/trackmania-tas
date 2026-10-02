@@ -366,7 +366,7 @@ pub fn diff(clips: &[Clip], f: &Faces, m: &MapFile) -> Diff {
                     Some(&i) => {
                         matched[i] = true;
                         confirmed += 1;
-                        if face >= 4 {
+                        if face >= 4 && crate::debug::on("topbottom") {
                             let rel = ((b.dir & 3) as i32 - (clips[i].dir & 3) as i32).rem_euclid(4);
                             eprintln!("# topbottom-dir\t{}\t{}\tu{}\tface {}\trecord dir {} owner dir {} rel {}", b.name, clips[i].owner, clips[i].unit, face, b.dir & 3, clips[i].dir & 3, rel);
                         }
@@ -381,10 +381,10 @@ pub fn diff(clips: &[Clip], f: &Faces, m: &MapFile) -> Diff {
         }
     }
     let missing: Vec<usize> = clips.iter().enumerate().filter(|(i, c)| c.drawn() && !matched[*i]).map(|(i, _)| i).collect();
-    if free_records > 0 {
+    if free_records > 0 && crate::debug::on("bakediff") {
         eprintln!("# {free_records} records of free-placed blocks not judged");
     }
-    if !unknown.is_empty() {
+    if !unknown.is_empty() && crate::debug::on("bakediff") {
         let mut u: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
         for n in unknown {
             *u.entry(n).or_insert(0) += 1;

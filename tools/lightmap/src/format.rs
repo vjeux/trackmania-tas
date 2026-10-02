@@ -462,4 +462,76 @@ impl Mapping {
     pub fn mark_edited(&mut self) {
         self.raw_z.clear();
     }
+
+    /// Keep only the charts whose flag is set (`tinyctl retile`: a baked item with no
+    /// counterpart in the rebuilt map loses its charts). Every per-chart table is
+    /// filtered together and `count` follows; the stored compressed tables are dropped.
+    pub fn retain_charts(&mut self, keep: &[bool]) {
+        let n = self.binds.len();
+        assert_eq!(keep.len(), n, "retain_charts: {} flags for {n} charts", keep.len());
+        fn filt<T>(v: &mut Vec<T>, keep: &[bool]) {
+            let mut i = 0;
+            v.retain(|_| {
+                let k = keep[i];
+                i += 1;
+                k
+            });
+        }
+        filt(&mut self.chart_f32, keep);
+        filt(&mut self.binds, keep);
+        filt(&mut self.pos, keep);
+        filt(&mut self.size, keep);
+        for f in self.frame_bytes.iter_mut() {
+            if f.len() == n {
+                filt(f, keep);
+            }
+        }
+        self.count = self.binds.len() as u32;
+        self.mark_edited();
+    }
+
+    /// Append copies of chart `from`'s rows bound to object `obj` (its atlas rect is
+    /// shared: two objects reading the same texels — `tinyctl retile` gives a restored
+    /// tile the lighting of a same-model tile the bake did light). Returns the new index.
+    pub fn clone_chart(&mut self, from: usize, obj: u32) -> usize {
+        let b = self.binds[from];
+        self.chart_f32.push(self.chart_f32[from]);
+        self.binds.push(ObjBind { obj_idx: b.obj_idx, obj_group_idx: obj * 4 + (b.obj_group_idx % 4) });
+        self.pos.push(self.pos[from]);
+        self.size.push(self.size[from]);
+        for f in self.frame_bytes.iter_mut() {
+            if from < f.len() {
+                let v = f[from];
+                f.push(v);
+            }
+        }
+        self.count = self.binds.len() as u32;
+        self.mark_edited();
+        self.binds.len() - 1
+    }
+
+    /// Re-sort every per-chart table by object id (the editor's tables come sorted by
+    /// object; a clone appended at the end is put back in order), stable within an object.
+    pub fn sort_by_object(&mut self) {
+        let n = self.binds.len();
+        let mut order: Vec<usize> = (0..n).collect();
+        order.sort_by_key(|&i| (self.binds[i].obj_group_idx / 4, i));
+        if order.iter().enumerate().all(|(k, &i)| k == i) {
+            return;
+        }
+        fn perm<T: Clone>(v: &mut Vec<T>, order: &[usize]) {
+            if v.len() == order.len() {
+                let old = std::mem::take(v);
+                *v = order.iter().map(|&i| old[i].clone()).collect();
+            }
+        }
+        perm(&mut self.chart_f32, &order);
+        perm(&mut self.binds, &order);
+        perm(&mut self.pos, &order);
+        perm(&mut self.size, &order);
+        for f in self.frame_bytes.iter_mut() {
+            perm(f, &order);
+        }
+        self.mark_edited();
+    }
 }

@@ -1187,6 +1187,80 @@ impl MediaTracker {
         Ok(())
     }
 
+    /// Remove clip `n` (1-based) and its trigger from the `in-game` or
+    /// `end-race` group. The clip's node subtree (tracks, blocks) leaves the
+    /// body with it; later nodes keep their index words (a gap in the node
+    /// numbering, which a reader never dereferences). A group left with no
+    /// clip becomes a null slot — the form the editor writes for a map
+    /// without in-game clips.
+    pub fn drop_group_clip(&mut self, slot: &str, n: usize) -> Result<String, String> {
+        let s = match slot {
+            "in-game" => &mut self.in_game,
+            "end-race" => &mut self.end_race,
+            _ => return Err(format!("--drop-clip: slot {slot:?} is not a clip group (in-game, end-race)")),
+        };
+        Self::drop_clip_in(s, slot, n)
+    }
+
+    fn drop_clip_in(s: &mut Slot, slot: &str, n: usize) -> Result<String, String> {
+        let Slot::Group(g) = s else { return Err(format!("--drop-clip: the {slot} slot holds no clip group")) };
+        if n == 0 || n > g.clips.len() {
+            return Err(format!("--drop-clip: the {slot} group has {} clip(s); {n} is out of range", g.clips.len()));
+        }
+        if g.triggers.len() != g.clips.len() {
+            return Err(format!("--drop-clip: the {slot} group has {} clips but {} triggers — not the 1:1 layout this edit assumes", g.clips.len(), g.triggers.len()));
+        }
+        let c = g.clips.remove(n - 1);
+        g.triggers.remove(n - 1);
+        let tracks: Vec<String> = c.tracks.iter().map(|t| format!("{:?} ({} blocks)", t.name, t.blocks.len())).collect();
+        let msg = format!("{slot} clip {n} {:?} (node {}, {} bytes) dropped with its trigger; tracks gone: {}", c.name, c.index, c.span.1 - c.span.0, tracks.join(", "));
+        if g.clips.is_empty() {
+            *s = Slot::Null;
+            return Ok(format!("{msg}; the group is empty -> {slot} slot null"));
+        }
+        Ok(msg)
+    }
+
+    /// Every clip that carries an ENTITY block (CGameCtnMediaBlockEntity: a
+    /// recorded run of the SOURCE map, the author's cameo ghost) leaves the
+    /// chunk — with its trigger when it hangs off a group, the whole slot when
+    /// it is a single clip (intro / podium / ambiance). A recording of the
+    /// full-size geometry cannot play on a scaled map, and Fall 2026 map 22's
+    /// in-game entity clip hung the client's PlayMap on every conversion
+    /// (decided on the box 2026-10-01: the clip removed → loads and passes;
+    /// the skin neutralised alone still hung). Camera / text / FX clips stay.
+    /// Returns one line per clip dropped.
+    pub fn drop_entity_clips(&mut self) -> Vec<String> {
+        const CLASS_ENTITY: u32 = 0x0329_F000;
+        let has_entity = |c: &Clip| c.tracks.iter().any(|t| t.blocks.iter().any(|b| b.class == CLASS_ENTITY));
+        let mut out = Vec::new();
+        for (slot, s) in self.slots_mut() {
+            match s {
+                Slot::Null | Slot::Authored(_) => {}
+                Slot::Clip(c) => {
+                    if has_entity(c) {
+                        out.push(format!("{slot} clip {:?} (node {}, {} bytes, {} tracks) carries an entity (ghost) record: dropped, the slot goes null", c.name, c.index, c.span.1 - c.span.0, c.tracks.len()));
+                        *s = Slot::Null;
+                    }
+                }
+                Slot::Group(g) => {
+                    // highest first so the 1-based numbers stay valid while removing
+                    let hits: Vec<usize> = g.clips.iter().enumerate().filter(|(_, c)| has_entity(c)).map(|(i, _)| i + 1).rev().collect();
+                    for n in hits {
+                        match Self::drop_clip_in(s, slot, n) {
+                            Ok(msg) => out.push(format!("entity (ghost) record: {msg}")),
+                            Err(e) => out.push(format!("entity (ghost) clip {n} of {slot} NOT dropped: {e}")),
+                        }
+                        if matches!(s, Slot::Null) {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// The chunk's bytes (id word included) with the edits applied and the
     /// trigger lists re-emitted. With no edit and no transform this reproduces
     /// the source bytes exactly (`tests::mediatracker_roundtrips`).
@@ -1443,6 +1517,18 @@ pub fn cmd(args: &[String]) {
                 }
                 if crate::cli::has(args, "--strip") {
                     mt.strip = true;
+                }
+                // --drop-clip in-game:N | end-race:N — one clip (1-based) and its
+                // trigger out of a group; an emptied group leaves its slot null.
+                // Fall 2026 map 22: the in-game clip "Trigger 1" carries the
+                // author's cameo ghost (CGameCtnMediaBlockEntity, a custom car
+                // skin with a zero-checksum locator PackDesc) — the fallback
+                // candidate drops the whole clip rather than editing the skin.
+                for spec in crate::cli::flag_multi(args, "--drop-clip") {
+                    let (slot, n) = spec.split_once(':').unwrap_or_else(|| crate::cli::die("--drop-clip wants SLOT:N (in-game:1, end-race:3)"));
+                    let n: usize = n.parse().unwrap_or_else(|_| crate::cli::die("--drop-clip wants a 1-based clip number after the colon"));
+                    let msg = mt.drop_group_clip(slot, n).unwrap_or_else(|e| crate::cli::die(&e));
+                    println!("{msg}");
                 }
                 let mut w = crate::map::MapFile::load(path);
                 w.set_mediatracker(&mt);

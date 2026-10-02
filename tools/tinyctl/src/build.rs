@@ -225,6 +225,17 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             let base = env["TINY_ALIAS_BASE"].clone();
             env.insert("TINY_PICTURE_SUFFIX".to_string(), format!("_{}", &base[base.len().saturating_sub(6)..base.len().saturating_sub(3)]));
         }
+        // THE DISCARD REPORT (tmmaps::discard, 2026-10-01): the library and the
+        // placer each write `<out>/discard-<stage>.tsv`; the build concatenates
+        // them into `<out>/discard.tsv` (and copies it to `--discard-report FILE`).
+        // Every rebuild of the size ladder rewrites it: the file describes the
+        // build that stands.
+        let discard_prefix = out.join("discard");
+        env.insert("TINY_DISCARD_REPORT".to_string(), discard_prefix.display().to_string());
+        for stage in ["library", "place"] {
+            let _ = std::fs::remove_file(out.join(format!("discard-{stage}.tsv")));
+        }
+        let _ = std::fs::remove_file(out.join("discard.tsv"));
         println!("{nn}: {} ({}) -> {} (alias base {})", src.file_name().unwrap_or_default().to_string_lossy(), collection_name(coll), out.display(), env["TINY_ALIAS_BASE"]);
         let t0 = std::time::Instant::now();
         let mut lib = Command::new(&mapgeom);
@@ -243,6 +254,36 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             }
         }
         let tiny_out = out.join(format!("{out_prefix}-{nn}-{label}.Map.Gbx"));
+        // THE TILES ORACLE (2026-10-02): the game's own verdict per terrain tile, read
+        // off the source's editor lightmap (`lmtool tile-oracle`: a tile the game draws
+        // has a chart, one it hides has none) → `tmmaps tiny --tiles-oracle`. Exact
+        // where the unit rule is a model (Fall 06's hole beside the reactor gate: a
+        // DirtCliff4 under a ghost DecoWallDiag1 the rule hid and the game draws).
+        // Skipped — the rule alone — when the source carries no bake, when the
+        // oracle's alignment check fails (exit 4), when lmtool is not beside the
+        // other binaries, or under TINY_TILES_ORACLE=0.
+        let lmtool = bin_dir.join("lmtool");
+        let oracle_path = out.join("tile-oracle.tsv");
+        let mut tiles_oracle: Option<PathBuf> = None;
+        if env.get("TINY_TILES_ORACLE").map(|v| v != "0").unwrap_or(true) && lmtool.exists() {
+            let mut o = Command::new(&lmtool);
+            o.arg("tile-oracle").arg(&src).arg("--mapping").arg(out.join("placements.tsv")).arg("--out").arg(&oracle_path);
+            match run(&mut o, &out.join("tile-oracle.log")) {
+                Ok(text) => {
+                    for l in text.lines().filter(|l| l.starts_with("tiles:") || l.contains("alignment")) {
+                        println!("  {}", l.trim().replace(&src.display().to_string(), "tile oracle"));
+                    }
+                    tiles_oracle = Some(oracle_path.clone());
+                }
+                Err(_) => {
+                    let log = std::fs::read_to_string(out.join("tile-oracle.log")).unwrap_or_default();
+                    let why = log.lines().find(|l| l.contains("no baked lightmap") || l.contains("INEXACT")).map(|l| l.trim().replace(&src.display().to_string(), "source")).unwrap_or_else(|| log.lines().last().unwrap_or("lmtool tile-oracle failed").trim().to_string());
+                    println!("  tiles oracle: not used — {why}; the unit rule decides every tile");
+                }
+            }
+        } else {
+            println!("  tiles oracle: {} — the unit rule decides every tile", if lmtool.exists() { "off (TINY_TILES_ORACLE=0)" } else { "no lmtool beside tinyctl" });
+        }
         // --name-format F: the map's in-file name outright, `{source}` = the source
         // name (`"{source} By Everios96 [Giant]"` — the club's alteration convention,
         // 2026-09-13); without it the name is "<Label> <source>"
@@ -274,6 +315,9 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             // 2026-09-12; BlueBay builds keep their baked Sea records and bake fine)
             if tmmaps::cli::has(args, "--keep-zone-block") {
                 tiny.arg("--keep-zone-block");
+            }
+            if let Some(p) = &tiles_oracle {
+                tiny.arg("--tiles-oracle").arg(p);
             }
             tiny.envs(env.iter());
             run(&mut tiny, &out.join(log))
@@ -365,6 +409,19 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                     if env.get("TINY_GIANT_ROAD_TILES").map(|v| v != "1").unwrap_or(true) {
                         gw.arg("--no-roads");
                     }
+                    // TINY_GIANT_WATER=legacy: the 2026-09-13/22 POOL_BLOCKS form (the source's
+                    // pool blocks alone become native tiles) instead of the volume rule — the
+                    // 2026-10-01 rule tiles every block with a water volume, which on the TERRAIN
+                    // collections puts Stadium DecoWallWaterBase stacks under the DecoLake* shores
+                    // of the regenerated lakes (x2-01 +224, 11 +784 blocks): the terrain lakes are
+                    // the zone's regenerated water (no volume — the Summer measurement) and a
+                    // concrete Stadium basin inside a RedIsland lake is a new visible defect, so
+                    // the DEFAULT is legacy for every collection but Stadium (coordinator
+                    // 2026-10-01 22:33 PT); TINY_GIANT_WATER=volume applies the rule everywhere
+                    let water_mode = env.get("TINY_GIANT_WATER").cloned().unwrap_or_else(|| if coll == 0x1a { "volume".to_string() } else { "legacy".to_string() });
+                    if water_mode == "legacy" {
+                        gw.arg("--legacy-pools");
+                    }
                     gw.envs(env.iter());
                     match run(&mut gw, &out.join("giantwater.log")) {
                         Ok(text) => {
@@ -450,6 +507,35 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         }
         let n_items = std::fs::read_dir(libx.join("Items")).map(|rd| rd.count()).unwrap_or(0);
         let size = std::fs::metadata(&tiny_out).map(|m| m.len()).unwrap_or(0);
+        // the discard report of this build: library rows + placer rows, one file
+        {
+            let mut all = String::from(tmmaps::discard::HEADER);
+            all.push('\n');
+            let mut n = 0usize;
+            for stage in ["library", "place"] {
+                if let Ok(t) = std::fs::read_to_string(out.join(format!("discard-{stage}.tsv"))) {
+                    for l in t.lines().skip(1).filter(|l| !l.trim().is_empty()) {
+                        all.push_str(l);
+                        all.push('\n');
+                        n += 1;
+                    }
+                }
+            }
+            std::fs::write(out.join("discard.tsv"), &all).map_err(|e| format!("discard.tsv: {e}"))?;
+            // a build at a ladder rung (--lod-pick, the pipeline's size ladder or the
+            // shipped recipe replayed): the rung is a map-wide loss of its own
+            if let Some(level) = f("--lod-pick") {
+                let mv = f("--lod-pick-min-verts").unwrap_or_else(|| "0".into());
+                let map_name = tiny_out.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                all.push_str(&format!("{map_name}\t{scale}\tbuild\tMAP_LOD_LADDER\t{}\twhole map\t\t1\tbuilt at ladder rung lod-pick {level} (parts under {mv} vertices keep their nearest level): the size cap's cost — the VISUAL_LOD_PICK_SKIPPED rows are the geometry it dropped\n", tmmaps::discard::loss_of("MAP_LOD_LADDER")));
+                std::fs::write(out.join("discard.tsv"), &all).map_err(|e| format!("discard.tsv: {e}"))?;
+                n += 1;
+            }
+            if let Some(p) = f("--discard-report") {
+                std::fs::write(&p, &all).map_err(|e| format!("{p}: {e}"))?;
+            }
+            println!("  discard report: {n} rows -> {}", out.join("discard.tsv").display());
+        }
         println!("  {} ({:.1} MB), {n_items} library files, {:.0} s", tiny_out.display(), size as f64 / 1e6, t0.elapsed().as_secs_f64());
     }
     if failed > 0 {

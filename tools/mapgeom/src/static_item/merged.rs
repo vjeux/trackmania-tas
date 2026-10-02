@@ -988,7 +988,18 @@ impl Merged {
                 let level0_verts: i32 = s2.shaded_geoms.iter().filter(|h| h.lod_mask == 0 || h.lod_mask & 1 != 0).filter_map(|h| s2.visuals.get(h.visual_index as usize).and_then(|r| r.inline.as_deref())).filter_map(|n| if let Node::Visual(v) = n { v.main.as_ref().map(|m| m.count) } else { None }).sum();
                 let pick = match self.one_level {
                     Some(n) => n,
-                    None => lod_pick().filter(|p| level0_verts >= p.min_verts).map(|p| p.level).filter(|p| s2.shaded_geoms.iter().any(|h| h.lod_mask & (1 << p) != 0)).unwrap_or(0),
+                    // the pick's level — or, for a part with FEWER levels than the pick,
+                    // its own coarsest level at or below it (not its nearest: the size
+                    // ladder's "every part at level 3" came out BIGGER than level 2 on
+                    // Fall 2026 Egypt 21 — 38.1 MB vs 25.1 MB — because most parts have
+                    // three levels and fell back to level 0, 2026-10-01)
+                    None => lod_pick().filter(|p| level0_verts >= p.min_verts).map(|p| {
+                        let mut lvl = p.level;
+                        while lvl > 0 && !s2.shaded_geoms.iter().any(|h| h.lod_mask & (1 << lvl) != 0) {
+                            lvl -= 1;
+                        }
+                        lvl
+                    }).unwrap_or(0),
                 };
                 let keep = g.lod_mask == 0 || g.lod_mask & (1 << pick) != 0;
                 if !keep {

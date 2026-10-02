@@ -1238,6 +1238,14 @@ pub struct BlockInfo {
     pub kind: Kind,
     /// The collector's name (chunk 0x2E00100C), falling back to the file stem.
     pub name: String,
+    /// The collector's IDENT id (chunk 0x2E00100B): the name a map's block and
+    /// baked records carry and the game resolves by. Usually the file stem;
+    /// Nadeo's `LandHill2CornerToStadiumRoadSlopeBase2Curve2InFCLeft.EDClip.Gbx`
+    /// (file AND display name typo'd) carries the id
+    /// `LandHill2CornerToStadiumRoadSlope2BaseCurve2InFCLeft` — the clip Fall
+    /// 2026 08/13 record; a stem lookup misses it (2026-10-01). Empty when the
+    /// file has no ident chunk.
+    pub ident: String,
     pub waypoint_type: Option<i32>,
     pub no_respawn: bool,
     pub is_pillar: Option<bool>,
@@ -1534,6 +1542,7 @@ impl BlockInfo {
             class_id,
             kind: Kind::of(class_id, path),
             name: if g.collector_name.is_empty() { stem } else { g.collector_name.clone() },
+            ident: g.collector_id.clone(),
             waypoint_type: root.waypoint_type,
             no_respawn: root.no_respawn,
             is_pillar: root.is_pillar,
@@ -1570,7 +1579,7 @@ impl BlockInfo {
             s.push('\n');
         };
         p(&mut s, format!("{}", self.path));
-        p(&mut s, format!("  class 0x{:08X}  kind {:?}  name {}", self.class_id, self.kind, self.name));
+        p(&mut s, format!("  class 0x{:08X}  kind {:?}  name {}{}", self.class_id, self.kind, self.name, if !self.ident.is_empty() && self.ident != self.name { format!("  IDENT {} (the id map records carry; file + display name differ)", self.ident) } else { String::new() }));
         p(&mut s, format!(
             "  waypoint {}  no_respawn {}  is_pillar {:?}  pillar_multidir {:?}  sym_id {:?} dir {}  base_type {:?}  prod_state {:?}",
             self.waypoint_type.map(waypoint_name).unwrap_or("-"),
@@ -1719,6 +1728,7 @@ mod pick_tests {
             class_id: 0,
             kind,
             name: String::new(),
+            ident: String::new(),
             waypoint_type: None,
             no_respawn: false,
             is_pillar: None,

@@ -585,6 +585,12 @@ pub struct Graph<'a> {
     pub skipped: Vec<(u32, u32)>,
     /// The collector name (chunk 0x2E00100C) of the root node, when it has one.
     pub collector_name: String,
+    /// The collector IDENT id (chunk 0x2E00100B, the first word of the meta) of
+    /// the root node: what a map record and the game resolve a block info BY.
+    /// It can differ from the file stem and the display name — Nadeo's
+    /// `LandHill2CornerToStadiumRoadSlopeBase2Curve2InFCLeft.EDClip.Gbx` carries
+    /// the id `…RoadSlope2BaseCurve2InFCLeft` (Fall 2026 08/13, 2026-10-01).
+    pub collector_id: String,
     /// One block-info accumulator per node body being read, innermost last.
     pub bi_stack: Vec<crate::blockinfo::BiAcc>,
     /// Where every chunked node body began, as (body offset, class id), in
@@ -613,7 +619,7 @@ impl<'a> Graph<'a> {
                 slots[i] = Slot::External(name.clone());
             }
         }
-        Graph { r: Reader::new(body), slots, root: None, seen: HashMap::new(), recovered: Vec::new(), noderef_sites: Vec::new(), skipped: Vec::new(), collector_name: String::new(), bi_stack: Vec::new(), node_starts: Vec::new(), node_starts_skipped: Vec::new(), skip_depth: 0 }
+        Graph { r: Reader::new(body), slots, root: None, seen: HashMap::new(), recovered: Vec::new(), noderef_sites: Vec::new(), skipped: Vec::new(), collector_name: String::new(), collector_id: String::new(), bi_stack: Vec::new(), node_starts: Vec::new(), node_starts_skipped: Vec::new(), skip_depth: 0 }
     }
 
     /// Parse a whole file body, rooted at `class_id`.

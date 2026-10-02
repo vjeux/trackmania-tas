@@ -734,9 +734,12 @@ pub fn block_rename(name: &str) -> Option<String> {
 }
 
 fn load_block_info(idx: &mut crate::blockmap::BlockInfoIndex, store: &mut DataStore, name: &str) -> Result<(String, crate::blockinfo::BlockInfo), String> {
-    let path = match idx.path_for(name) {
+    // stems first, then the IDENT ids inside the files (the game's lookup —
+    // Nadeo's typo'd `…RoadSlopeBase2Curve2InFCLeft.EDClip.Gbx` is the id
+    // `…RoadSlope2BaseCurve2InFCLeft` the Fall 2026 08/13 records carry)
+    let path = match idx.resolve_one(store, name) {
         Some(p) => p,
-        None => match block_rename(name).and_then(|n| idx.path_for(&n).map(|p| (n, p))) {
+        None => match block_rename(name).and_then(|n| idx.resolve_one(store, &n).map(|p| (n, p))) {
             Some((n, p)) => {
                 eprintln!("  block {name}: not in the pack; the current name {n} stands in");
                 p
@@ -753,8 +756,9 @@ fn load_block_info(idx: &mut crate::blockmap::BlockInfoIndex, store: &mut DataSt
     Ok((path, bi))
 }
 
-/// The decision ladder for one block key.
-fn plan_block<'b>(bi: &'b crate::blockinfo::BlockInfo, key: &BlockKey, collection: u32, ambient: &str, tile_zones: &std::collections::BTreeSet<String>, alias_of_recipe: &BTreeMap<String, String>) -> BlockPlan<'b> {
+/// The decision ladder for one block key. `regen`: the keys of the zone tiles the
+/// game regenerates full size under the tiny build (`regenerated_keys`).
+fn plan_block<'b>(bi: &'b crate::blockinfo::BlockInfo, key: &BlockKey, collection: u32, regen: &std::collections::BTreeSet<(String, u32)>, tile_zones: &std::collections::BTreeSet<String>, alias_of_recipe: &BTreeMap<String, String>) -> BlockPlan<'b> {
     let name = key.name;
     let flags = key.flags;
     // Stadium's Grass floor is the one terrain the tiny map keeps FULL
@@ -767,10 +771,16 @@ fn plan_block<'b>(bi: &'b crate::blockinfo::BlockInfo, key: &BlockKey, collectio
     // fixed plane, so a half-scale copy would only z-fight it.
     // WhiteShore's Water is the sea around its island, the same way
     // (Summer 03: 3148 of 4096 cells; surface -1 = the fixed plane), and
-    // GreenCoast's Lake (Summer 04: 2418 cells). The block is the map's
-    // most common genealogy zone — what `tmmaps tiny` fills with.
-    if matches!(collection, 0x10 | 0x1d | 0xf) && !ambient.is_empty() && name == ambient {
-        return BlockPlan::Nothing { why: format!("{} ambient {name}: regenerated full size by the genealogy, no item", crate::static_item::build::env_name(collection)), label: None, footprint: None };
+    // GreenCoast's Lake (Summer 04: 2418 cells). The zone is the one
+    // `tmmaps tiny` FILLS the genealogy with (`MapFile::genealogy_fill_zone`),
+    // and only its tiles AT THE REGENERATED ROW go without an item: Fall
+    // 2026 - 12 fills `Lake` while its most common zone is `Grass` — the old
+    // "most common zone" rule dropped all 718 authored Grass tiles (rows 6–29,
+    // the plateau interiors: 644 under no block, every one charted in the
+    // source's lightmap) as "regenerated" while the genealogy regenerated a
+    // lake (vjeux's "missing scenery", 2026-10-01).
+    if matches!(collection, 0x10 | 0x1d | 0xf) && regen.contains(&(name.to_string(), flags)) {
+        return BlockPlan::Nothing { why: format!("{} genealogy fill {name}: regenerated full size by the genealogy at its row, no item", crate::static_item::build::env_name(collection)), label: None, footprint: None };
     }
     if collection == 0x1a && name == "Grass" {
         return BlockPlan::Nothing { why: "Stadium grass floor: regenerated full size by the genealogy, no item".into(), label: None, footprint: None };
@@ -832,7 +842,11 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
         };
     }
     let mut m = crate::static_item::build::Merged::default();
-    m.keep_water = crate::static_item::build::keep_water_for(collection);
+    // A giant build drops the items' Water quads (TINY_WATER_VISUAL=0: the native
+    // tiles draw every pool) — except the WATER ROADS, which get no volume tile
+    // (giantwater's volume rule, 2026-10-01) and keep their own quad; with the
+    // road volume tiles opted in (TINY_GIANT_ROAD_TILES=1) the tiles draw it.
+    m.keep_water = crate::static_item::build::keep_water_for(collection) || (collection == 0x1a && crate::giantwater::road_family(name) && std::env::var("TINY_GIANT_ROAD_TILES").as_deref() != Ok("1"));
     m.modifier = modifier_links(store, &plan.effective_mods);
     m.collision_redress = modifier_redress(store, &plan.effective_mods, &m.modifier);
     // The collection SKIN (`<Env>\Media\Modifier\StadiumOnTerrain\<slot>`, the
@@ -1447,6 +1461,24 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     marks.mark("map loaded");
     let collection = source.items.first().map(|it| it.collection_raw).unwrap_or(26);
     println!("  map collection {collection:#x}; {} blocks, {} items", source.blocks.len(), source.items.len());
+    // THE DISCARD REPORT (tmmaps::discard, 2026-10-01): every decision below that
+    // leaves a source element out, hides it, substitutes it or fails to convert
+    // it pushes a row; the file goes out at the end (TINY_DISCARD_REPORT).
+    let mut dis = tmmaps::discard::Discards::new(map, scale, "library");
+    // the file cells of every placement of a block key (authored + generated)
+    let key_cells = |name: &str, flags: u32| -> String {
+        let cells: Vec<[u8; 3]> = source.blocks.iter().chain(source.baked.iter()).filter(|b| b.name == name && b.flags == flags).map(|b| b.file_cell).collect();
+        tmmaps::discard::cells_str(&cells, 8)
+    };
+    let item_cell = |it: &tmmaps::map::ItemRec| -> [u8; 3] {
+        let g = tmmaps::map::ground_y(collection);
+        let c = |v: f32| ((v / 32.0).floor() as i64 + 1).clamp(0, 255) as u8;
+        [c(it.pos[0]), (((it.pos[1] - g) / 8.0).floor() as i64).clamp(0, 255) as u8, c(it.pos[2])]
+    };
+    let item_cells = |model: &str, variant: u8| -> String {
+        let cells: Vec<[u8; 3]> = source.items.iter().filter(|it| it.model == model && it.variant() == variant).map(item_cell).collect();
+        tmmaps::discard::cells_str(&cells, 8)
+    };
     // block infos are looked up under the map's own collection first
     // (BlueBay\GameCtnBlockInfo\…\Stadium\X carries the terrain modifiers a
     // Stadium block gets on BlueBay; a Stadium map wants the plain files)
@@ -1522,7 +1554,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     // kinds the block places (lowercase stems), unit is the origin cell)
     let mut unit_columns: std::collections::HashMap<(u8, u8), Vec<(u8, bool, Vec<String>, String, Vec<String>, bool)>> = std::collections::HashMap::new();
     for b in source.blocks.iter().filter(|b| b.flags & crate::blockmap::FLAG_FREE == 0) {
-        let Some(path) = idx.path_for(&b.name) else { continue };
+        let Some(path) = idx.resolve_one(store, &b.name) else { continue };
         let (mods, units, places): (Vec<String>, Vec<[i32; 3]>, Vec<String>) = match idx.load(store, &path) {
             Ok(bi) => {
                 let ground = b.flags & crate::blockmap::FLAG_GROUND != 0;
@@ -1634,7 +1666,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         .filter(|b| b.flags & crate::blockmap::FLAG_FREE != 0 && b.name.contains("Special"))
         .filter_map(|b| {
             let pos = b.free_pos?;
-            let path = idx.path_for(&b.name)?;
+            let path = idx.resolve_one(store, &b.name)?;
             let mods = idx.load(store, &path).map(|bi| terrain_mods(bi)).unwrap_or_default();
             let gameplay = mods.iter().any(|r| r.strip_suffix(".TerrainModifier.Gbx").map(|f| gameplay_folders.contains(&f.to_uppercase())).unwrap_or(false));
             gameplay.then(|| (b.name.clone(), pos, mods))
@@ -1864,7 +1896,37 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     let mut baked_tree_rows = 0usize;
     let mut cache_hits = 0usize;
     let mut fresh_bakes = 0usize;
-    let ambient = source.ambient_zone().unwrap_or_default();
+    // THE REGENERATED TILES: `tmmaps tiny` fills the genealogy with ONE zone
+    // (`genealogy_fill_zone`, the writer's own rule), and the game draws that
+    // zone's tile full size in every cell AT ITS ROW — the row the source's own
+    // tiles of the zone stand on (the water row for a water zone). Only a key
+    // (name, flags) whose every placement sits at that row goes without an
+    // item; a raised tile of the same zone (a Grass plateau over the lake) is
+    // baked like any other block. `tmmaps tiny` is told the fill zone's row
+    // through the mapping rows: a tile row at the regenerated row maps to `-`.
+    let fill_zone = source.genealogy_fill_zone();
+    let fill_row: Option<u8> = fill_zone.as_ref().and_then(|z| {
+        let mut hist: BTreeMap<u8, usize> = BTreeMap::new();
+        for b in source.blocks.iter().filter(|b| &b.name == z) {
+            *hist.entry(b.file_cell[1]).or_default() += 1;
+        }
+        hist.into_iter().max_by_key(|(_, c)| *c).map(|(r, _)| r)
+    });
+    let regen_keys: std::collections::BTreeSet<(String, u32)> = match (&fill_zone, fill_row) {
+        (Some(z), Some(row)) => rows_by_key.iter().filter(|((n, _), rows)| n == z && rows.len() == 1 && rows.contains(&row)).map(|(k, _)| k.clone()).collect(),
+        _ => Default::default(),
+    };
+    {
+        let most_common = source.ambient_zone().unwrap_or_default();
+        match (&fill_zone, fill_row) {
+            (Some(z), Some(row)) => {
+                let raised = source.blocks.iter().filter(|b| &b.name == z && b.file_cell[1] != row).count();
+                println!("  genealogy fill zone {z} (most common zone {most_common}): its tiles at row {row} regenerate full size and get no item ({} keys); {raised} raised {z} tiles are baked like any block", regen_keys.len());
+            }
+            (Some(z), None) => println!("  genealogy fill zone {z} (most common zone {most_common}): the map authors no tile of it; every tile is baked"),
+            (None, _) => println!("  no genealogy fill zone (the fill refuses: first record not water, no water zone); every tile is baked"),
+        }
+    }
     let t_bakes = std::time::Instant::now();
     // ---------------------------------------------------------------------
     // THE PARALLEL PRE-BAKE (`par.rs`, 2026-09-22: "Why does it take 10 min?
@@ -1904,7 +1966,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         let mut seen: BTreeMap<String, String> = BTreeMap::new();
         for (i, (key, info)) in infos.iter().enumerate() {
             let Ok((_, bi)) = info else { continue };
-            if let BlockPlan::Bake(plan) = plan_block(bi, key, collection, &ambient, &tile_zones, &seen) {
+            if let BlockPlan::Bake(plan) = plan_block(bi, key, collection, &regen_keys, &tile_zones, &seen) {
                 seen.insert(plan.recipe.clone(), String::new());
                 let at_water_row = at_water_row_of(key.name, key.flags);
                 let cache_key = crate::bake_cache::key(&plan.recipe, scale, collection, at_water_row, water);
@@ -1960,6 +2022,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             });
             let Some((_, bytes)) = found else {
                 outcomes.push(key.outcome("", key.source(), Err(format!("custom block: the map embeds no file ending in `{rel}`"))));
+                dis.push("CUSTOM_BLOCK_FAILED", key.name, &key_cells(key.name, key.flags), key.placements, &format!("custom block: the map embeds no file ending in `{rel}`"));
                 continue;
             };
             // the archetype's gameplay trigger, baked the way its pack block bakes
@@ -1973,7 +2036,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 match load_block_info(&mut idx, store, a) {
                     Ok((apath, abi)) => {
                         let akey = BlockKey { name: a, flags: key.flags & !crate::blockmap::FLAG_GHOST, inherited_mods: "", placements: 0 };
-                        match plan_block(&abi, &akey, collection, &ambient, &tile_zones, &BTreeMap::new()) {
+                        match plan_block(&abi, &akey, collection, &regen_keys, &tile_zones, &BTreeMap::new()) {
                             BlockPlan::Bake(aplan) => match bake_block(store, &aplan, a, &apath, &abi, "Archetype.Item.Gbx", scale, collection, &legacy, None, false) {
                                 Ok((_, am, _)) => {
                                     special = am.special.clone().map(|s| (s, am.gate_kind.clone()));
@@ -2031,26 +2094,34 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                     block_map.insert(key.map_key(), ("-".into(), 1, 1, vec![[0, 0, 0]]));
                     custom_blocks.insert(rel.to_string(), ("-".into(), 1, 1, vec![[0, 0, 0]]));
                     outcomes.push(key.outcome("-", key.source(), Ok(format!("custom block without visuals: intentionally no item ({})", m.notes.iter().take(2).cloned().collect::<Vec<_>>().join("; ")))));
+                    dis.push("CUSTOM_BLOCK_EMPTY", key.name, &key_cells(key.name, key.flags), key.placements, &format!("custom block without visuals ({})", m.notes.iter().take(2).cloned().collect::<Vec<_>>().join("; ")));
                 }
                 Err(e) if e.contains("has no inline mesh") && bytes.len() < 4096 => {
                     next_alias -= 1;
                     block_map.insert(key.map_key(), ("-".into(), 1, 1, vec![[0, 0, 0]]));
                     custom_blocks.insert(rel.to_string(), ("-".into(), 1, 1, vec![[0, 0, 0]]));
                     outcomes.push(key.outcome("-", key.source(), Ok(format!("empty custom block ({} bytes, no mesh): intentionally no item", bytes.len()))));
+                    dis.push("CUSTOM_BLOCK_EMPTY", key.name, &key_cells(key.name, key.flags), key.placements, &format!("empty custom block ({} bytes, no mesh)", bytes.len()));
                 }
-                Err(e) => outcomes.push(key.outcome(&alias, key.source(), Err(format!("custom block: {e}")))),
+                Err(e) => {
+                    dis.push("CUSTOM_BLOCK_FAILED", key.name, &key_cells(key.name, key.flags), key.placements, &format!("custom block: {e}"));
+                    outcomes.push(key.outcome(&alias, key.source(), Err(format!("custom block: {e}"))));
+                }
             }
             continue;
         }
         let (path, bi) = match info {
             Ok(x) => x,
             Err(e) => {
+                // no block info in the packs: the FCLeft class (Fall 2026 08/13 — a
+                // generated hill filler the pack spells only as …FCRight)
+                dis.push("BLOCK_NO_INFO", key.name, &key_cells(key.name, key.flags), key.placements, e);
                 outcomes.push(key.outcome("", key.source(), Err(e.clone())));
                 continue;
             }
         };
         let (name, flags) = (key.name, key.flags);
-        let plan = match plan_block(bi, key, collection, &ambient, &tile_zones, &alias_of_recipe) {
+        let plan = match plan_block(bi, key, collection, &regen_keys, &tile_zones, &alias_of_recipe) {
             BlockPlan::Nothing { why, label, footprint } => {
                 let (sx, sz, units) = match &footprint {
                     Some(f) => (f.sx, f.sz, f.units.clone()),
@@ -2064,16 +2135,22 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                     Some(l) => format!("{} [{l}]", key.source()),
                     None => key.source(),
                 };
+                let code = if why.contains("grass floor") { "BLOCK_GRASS_FLOOR" } else if why.contains("regenerated") || why.contains("ambient") { "BLOCK_AMBIENT_ZONE" } else { "BLOCK_EMPTY_VARIANT" };
+                dis.push(code, key.name, &key_cells(key.name, key.flags), key.placements, &format!("{source}: {why}"));
                 outcomes.push(key.outcome("-", source, Ok(why)));
                 continue;
             }
             BlockPlan::Refused { source, error } => {
+                dis.push("BLOCK_REFUSED", key.name, &key_cells(key.name, key.flags), key.placements, &format!("{source}: {error}"));
                 outcomes.push(key.outcome("", source, Err(error)));
                 continue;
             }
             BlockPlan::Reuse { alias, footprint } => {
                 if let Some(auto) = footprint.auto_terrain {
                     auto_terrain.insert(key.map_key(), auto);
+                }
+                if alias == "-" {
+                    dis.push("BLOCK_EMPTY_PREFAB", key.name, &key_cells(key.name, key.flags), key.placements, "same recipe as an empty prefab (no entities): no item");
                 }
                 block_map.insert(key.map_key(), (alias, footprint.sx, footprint.sz, footprint.units));
                 continue;
@@ -2114,6 +2191,8 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 if deepened_here {
                     deepened.push(key.source());
                 }
+                // the discard report: every loss note of the bake, per placement of this key
+                tmmaps::discard::push_notes(&mut dis, &m.notes, name, &key_cells(name, flags), key.placements);
                 // the block's sign-logo pictures ride next to the items like the
                 // pack gate items' (the library zip's Items/SignLogo<Kind>.dds)
                 for (file, dds) in &m.pictures {
@@ -2128,6 +2207,8 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 // scaled frame, yaw), the species one step smaller like the
                 // map's own vegetation. Only in `substitute` mode.
                 let mut re_emitted = 0usize;
+                let mut lost_species: BTreeMap<String, usize> = BTreeMap::new();
+                let mut stock_species: BTreeMap<String, (usize, String)> = BTreeMap::new();
                 if substitute {
                     for (p, iso) in &m.veget {
                         let yaw = (-iso[2]).atan2(iso[0]);
@@ -2139,18 +2220,35 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                             baked_tree_rows += 1;
                             continue;
                         }
-                        let Some((orig, item)) = veget_item_pair(store, collection, p, scale, &mut veget_cache) else { continue };
+                        let Some((orig, item)) = veget_item_pair(store, collection, p, scale, &mut veget_cache) else {
+                            // NO stock item and no bake for this species: the tree is LOST
+                            *lost_species.entry(p.rsplit('\\').next().unwrap_or(p).to_string()).or_default() += 1;
+                            continue;
+                        };
                         let sink = veget_sink(store, &orig, &item, scale, &mut height_cache);
                         if sink > 0.0 {
                             sunk_rows += 1;
                         }
+                        let e = stock_species.entry(item.clone()).or_insert((0, orig.clone()));
+                        e.0 += 1;
                         veget_rows.push_str(&format!("v@{ident}\t{item}\t{:.3}\t{:.3}\t{:.3}\t{:.4}\n", iso[9] * scale, iso[10] * scale - sink, iso[11] * scale, yaw));
                         veget_list.entry(ident.clone()).or_default().push((item.clone(), [iso[9] * scale, iso[10] * scale - sink, iso[11] * scale]));
                         re_emitted += 1;
                     }
+                } else if !m.veget.is_empty() {
+                    for (p, _) in &m.veget {
+                        *lost_species.entry(p.rsplit('\\').next().unwrap_or(p).to_string()).or_default() += 1;
+                    }
+                }
+                for (sp, n) in &lost_species {
+                    dis.push("PREFAB_VEGET_LOST", name, &key_cells(name, flags), n * key.placements, &format!("{sp}: {n} tree entities per placement of {name}, no VegetTreeModel bake and no stock item: not placed"));
+                }
+                for (item, (n, orig)) in &stock_species {
+                    dis.push("TREE_STOCK_SMALL", name, &key_cells(name, flags), n * key.placements, &format!("{orig}: {n} entities per placement of {name} placed as the STOCK item {item} (full size, placement scale ignored by the game; sunk when taller)"));
                 }
                 let summary = format!("{} bytes, {} visuals, {} collision tris, {} vegetation entities ({} re-emitted as items), {} other skips{wp}{}{}", bytes.len(), nv, m.surf_triangles.len(), veget, re_emitted, other_skips, lod_summary(&m), m.notes.iter().filter(|n| n.contains("Water-physics collision triangles") || n.contains("TINY_FLOOR_PHYSICS") || n.contains("ad screen face") || n.contains("screen logo picture")).map(|n| format!("; {}", n.trim())).collect::<String>());
                 if nv == 0 {
+                    dis.push("BLOCK_NO_VISUALS", name, &key_cells(name, flags), key.placements, &format!("[{label}] no visuals ({summary}); notes: {}", m.notes.iter().take(3).cloned().collect::<Vec<_>>().join(" | ")));
                     outcomes.push(key.outcome(&alias, format!("{} [{label}] {recipe}", key.source()), Err(format!("no visuals ({summary}); notes: {}", m.notes.iter().take(3).cloned().collect::<Vec<_>>().join(" | ")))));
                     continue;
                 }
@@ -2170,9 +2268,13 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 next_alias -= 1;
                 block_map.insert(key.map_key(), ("-".into(), sx, sz, units.clone()));
                 alias_of_recipe.insert(recipe.clone(), "-".into());
+                dis.push("BLOCK_EMPTY_PREFAB", name, &key_cells(name, flags), key.placements, &format!("[{label}] empty prefab (no entities): no item ({recipe})"));
                 outcomes.push(key.outcome("-", format!("{} [{label}] {recipe}", key.source()), Ok("empty prefab (no entities): intentionally no item".into())));
             }
-            Err(e) => outcomes.push(key.outcome(&alias, format!("{} [{label}] {recipe}", key.source()), Err(e))),
+            Err(e) => {
+                dis.push("BLOCK_BAKE_FAILED", name, &key_cells(name, flags), key.placements, &format!("[{label}] {e}"));
+                outcomes.push(key.outcome(&alias, format!("{} [{label}] {recipe}", key.source()), Err(e)));
+            }
         }
     }
     // item models — one library entry per (model, VARIANT): the placement's
@@ -2367,6 +2469,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             Some(name) => match crate::light_skin::lookup(name) {
                 Some(s) => Some(s),
                 None => {
+                    dis.push("ITEM_LIGHT_SKIN_UNKNOWN", model, &item_cells(model, *variant), *n, &format!("light skin {name}: not one of the game's LightColors swatches; the placement keeps its stock model UNSCALED"));
                     outcomes.push(Outcome { alias: String::new(), kind: "item", source: format!("{model} skin {name}"), placements: *n, result: Err(format!("light skin {name}: not one of the game's LightColors swatches")) });
                     continue;
                 }
@@ -2421,6 +2524,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 let kind_word = if scale > 1.0 { "double-size" } else { "half-size" };
                 // the report names the variant when only that one stands in
                 let source = if stock_scaled_variant(model, 0, scale) == Some(small) { model.clone() } else { format!("{model} v{variant}") };
+                dis.push("ITEM_STOCK_TWIN", model, &item_cells(model, *variant), *n, &format!("{source} -> stock {kind_word} twin {small}: {why}"));
                 outcomes.push(Outcome { alias: small.to_string(), kind: "item", source, placements: *n, result: Ok(format!("stock {kind_word} variant {small}: the game's own item, {why}")) });
                 continue;
             }
@@ -2518,6 +2622,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             Ok((out, m)) if { let (nv, nd, _) = n_of(&m); nv > 0 || nd > 0 } => {
                 let (nv, nd, nl) = n_of(&m);
                 item_alias_n += 1;
+                tmmaps::discard::push_notes(&mut dis, &m.notes, model, &item_cells(model, *variant), *n);
                 let lights = if nl == 0 { String::new() } else { format!(", {nl} light(s) embedded") };
                 let moving = if nd == 0 { String::new() } else { format!(", {nd} moving part(s)") };
                 let summary = format!("{} bytes, {} visuals, {} collision tris{lights}{moving}{}{}", out.len(), nv, m.surf_triangles.len(), lod_summary(&m), match m.waypoint_type { Some(t) => format!(", waypoint {t} trigger {} spawn {:?}", m.trigger.is_some(), m.spawn), None => String::new() });
@@ -2536,6 +2641,8 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             // (384 in Summer 05) is 3-6 spring trees and a cypress.
             Ok((_, m)) if !m.veget.is_empty() && substitute => {
                 let mut placed = 0usize;
+                let mut lost_species: BTreeMap<String, usize> = BTreeMap::new();
+                let mut stock_species: BTreeMap<String, (usize, String)> = BTreeMap::new();
                 for (p, iso) in &m.veget {
                     let yaw = (-iso[2]).atan2(iso[0]);
                     if let Some(tree) = baker.ident_for(store, p, scale, collection, &mut files, &mut pictures, &mut outcomes) {
@@ -2545,20 +2652,35 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                         baked_tree_rows += 1;
                         continue;
                     }
-                    let Some((orig, item)) = veget_item_pair(store, collection, p, scale, &mut veget_cache) else { continue };
+                    let Some((orig, item)) = veget_item_pair(store, collection, p, scale, &mut veget_cache) else {
+                        *lost_species.entry(p.rsplit('\\').next().unwrap_or(p).to_string()).or_default() += 1;
+                        continue;
+                    };
                     let sink = veget_sink(store, &orig, &item, scale, &mut height_cache);
                     if sink > 0.0 {
                         sunk_rows += 1;
                     }
+                    let e = stock_species.entry(item.clone()).or_insert((0, orig.clone()));
+                    e.0 += 1;
                     veget_rows.push_str(&format!("v@{model}\t{item}\t{:.3}\t{:.3}\t{:.3}\t{:.4}\n", iso[9] * scale, iso[10] * scale - sink, iso[11] * scale, yaw));
                     veget_list.entry(model.clone()).or_default().push((item.clone(), [iso[9] * scale, iso[10] * scale - sink, iso[11] * scale]));
                     placed += 1;
                 }
+                for (sp, k) in &lost_species {
+                    dis.push("PREFAB_VEGET_LOST", model, &item_cells(model, *variant), k * n, &format!("{sp}: {k} tree entities per placement of cluster item {model}, no VegetTreeModel bake and no stock item: not placed"));
+                }
+                for (item, (k, orig)) in &stock_species {
+                    dis.push("TREE_STOCK_SMALL", model, &item_cells(model, *variant), k * n, &format!("{orig}: {k} entities per placement of cluster item {model} placed as the STOCK item {item} (full size, placement scale ignored by the game)"));
+                }
+                dis.push("ITEM_CLUSTER_SPLIT", model, &item_cells(model, *variant), *n, &format!("vegetation cluster {source_name}: the placement is parked, {placed} of {} trees re-emitted per placement", m.veget.len()));
                 remember("-");
                 item_map.insert(key, "-".into());
                 outcomes.push(Outcome { alias: "-".into(), kind: "item", source: source_name, placements: *n, result: Ok(format!("vegetation cluster: {} of {} trees re-emitted as stock items per placement", placed, m.veget.len())) });
             }
-            Ok((_, m)) => outcomes.push(Outcome { alias: String::new(), kind: "item", source: source_name, placements: *n, result: Err(format!("no visuals; notes: {}", m.notes.iter().take(3).cloned().collect::<Vec<_>>().join(" | "))) }),
+            Ok((_, m)) => {
+                dis.push("ITEM_NO_VISUALS", model, &item_cells(model, *variant), *n, &format!("{source_name}: no visuals came out of the bake; the placement keeps its model UNSCALED; notes: {}", m.notes.iter().take(3).cloned().collect::<Vec<_>>().join(" | ")));
+                outcomes.push(Outcome { alias: String::new(), kind: "item", source: source_name, placements: *n, result: Err(format!("no visuals; notes: {}", m.notes.iter().take(3).cloned().collect::<Vec<_>>().join(" | "))) })
+            }
             Err(e) if e.contains("procedural vegetation") => match if substitute { "substitute" } else { veget_mode } {
                 "substitute" => {
                     // the variant names the SPECIES (`…\PalmTreeBigB1.VegetTreeModel.Gbx`):
@@ -2586,6 +2708,8 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                             if sink > 0.0 {
                                 sink_map.insert(key.clone(), sink);
                             }
+                            let code = if sub == orig { "ITEM_VEGET_KEPT_UNSCALED" } else { "ITEM_VEGET_SUBST" };
+                            dis.push(code, model, &item_cells(model, *variant), *n, &format!("{source_name}: re-pointed at stock {sub} by {how} (full size, placement scale ignored by the game), sunk {sink:.1} m"));
                             remember(&sub);
                             item_map.insert(key, sub.clone());
                             outcomes.push(Outcome { alias: sub.to_string(), kind: "item", source: source_name, placements: *n, result: Ok(format!("vegetation: re-pointed at stock {sub} by {how} (placement scale is ignored by the game), sunk {sink:.1} m")) });
@@ -2596,6 +2720,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                             if sink > 0.0 {
                                 sink_map.insert(key.clone(), sink);
                             }
+                            dis.push("ITEM_VEGET_KEPT_UNSCALED", model, &item_cells(model, *variant), *n, &format!("{source_name}: already the smallest species, kept as the stock item (full size), sunk {sink:.1} m"));
                             remember(model);
                             item_map.insert(key, model.clone());
                             outcomes.push(Outcome { alias: model.clone(), kind: "item", source: source_name, placements: *n, result: Ok(format!("vegetation: already a small species, kept, sunk {sink:.1} m")) });
@@ -2603,16 +2728,21 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                     }
                 }
                 "drop" => {
+                    dis.push("ITEM_VEGET_DROPPED", model, &item_cells(model, *variant), *n, &format!("{source_name}: vegetation dropped (--veget drop)"));
                     remember("-");
                     item_map.insert(key, "-".into());
                     outcomes.push(Outcome { alias: "-".into(), kind: "item", source: source_name, placements: *n, result: Ok("vegetation: dropped".into()) });
                 }
                 _ => {
+                    dis.push("ITEM_VEGET_FULLSIZE", model, &item_cells(model, *variant), *n, &format!("{source_name}: vegetation kept full size (--veget keep)"));
                     remember(model);
                     outcomes.push(Outcome { alias: model.clone(), kind: "item", source: source_name, placements: *n, result: Ok("vegetation: kept full size".into()) });
                 }
             },
-            Err(e) => outcomes.push(Outcome { alias: String::new(), kind: "item", source: source_name, placements: *n, result: Err(e) }),
+            Err(e) => {
+                dis.push("ITEM_FAILED", model, &item_cells(model, *variant), *n, &format!("{source_name}: {e}; the placement keeps its model UNSCALED (a custom item: its original file is carried over)"));
+                outcomes.push(Outcome { alias: String::new(), kind: "item", source: source_name, placements: *n, result: Err(e) })
+            }
         }
     }
     marks.mark("items: bookkeeping");
@@ -2689,12 +2819,26 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     //    with car-free frames (`shootctl shootset` now hides the cursor).
     let occupied_rule = std::env::var("TINY_OCCUPIED_RULE").map(|v| v == "1" || v == "2" || v == "3").unwrap_or(false);
     let mut occupied_hidden: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    // A GHOST-MODE block's generated clips (record flag bit 28) whose own cell
+    // holds a REAL unit (non-ghost, non-pillar, non-tile) of another block: the
+    // piece stands inside that block's mesh (Summer 15's ghost WaterBase under
+    // a TrackWall road: its Water*FC rims in the road's cell = "the pool border
+    // in the middle of the road", 2026-09-21). Left out by default; see the loop.
+    let mut ghost_covered: std::collections::HashMap<usize, String> = std::collections::HashMap::new();
     if std::env::var("TINY_FILLER_RULE").is_ok() || std::env::var("TINY_VFC_RULE").is_ok() {
         println!("  ⚠ TINY_FILLER_RULE/TINY_VFC_RULE are gone: every generated filler the game draws is emitted (a1b91d23); the variable is ignored");
     }
     {
         let faces = crate::fillers::faces(store, &mut idx, &source);
         marks.mark("filler faces");
+        for b in source.baked.iter().filter(|b| b.flags & crate::blockmap::FLAG_GHOST != 0) {
+            let mut real: Vec<String> = faces.occupants.get(&b.file_cell).map(|v| v.iter().filter(|o| !o.pillar && !o.tile && !o.ghost).map(|o| o.name.clone()).collect()).unwrap_or_default();
+            real.sort();
+            real.dedup();
+            if !real.is_empty() {
+                ghost_covered.insert(b.index, real.join("+"));
+            }
+        }
         if occupied_rule {
             // TINY_OCCUPIED_RULE=1: every covered record (the crude probe);
             // TINY_OCCUPIED_RULE=2: covered AND the clip's CanBeDeletedByFullFreeClip
@@ -2771,10 +2915,45 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     // curved inner border and slope end cap)
     let side_clips: std::collections::HashSet<String> = {
         let names: std::collections::BTreeSet<String> = source.baked.iter().filter(|b| emitted_baked(b)).map(|b| b.name.clone()).collect();
-        names.into_iter().filter(|n| idx.path_for(n).and_then(|p| idx.load(store, &p).ok().map(|bi| bi.clip.as_ref().and_then(|c| c.clip_type) == Some(1))).unwrap_or(false)).collect()
+        names.into_iter().filter(|n| idx.resolve_one(store, n).and_then(|p| idx.load(store, &p).ok().map(|bi| bi.clip.as_ref().and_then(|c| c.clip_type) == Some(1))).unwrap_or(false)).collect()
     };
     let mut dropped_baked: BTreeMap<String, usize> = BTreeMap::new();
     let mut ghost_left_out = 0usize;
+    let mut ghost_emitted = 0usize;
+    // THE LIGHTMAP ORACLE (`lm_oracle.rs`): the source's own editor lightmap
+    // charts every object the game draws. Every placement this loop maps to
+    // `-` is checked against it: a `-` on a CHARTED record is a block the
+    // original shows and the tiny does not — reported per (model, reason),
+    // written to the report as `oracle` rows, never silent (vjeux 2026-10-01:
+    // "why do you allow the map to not generate some items and consider it
+    // okay?"). Tiles the genealogy regenerates are charted too (the original
+    // draws them) and are listed apart: the full-size regenerated tile stands
+    // in for them by design.
+    let oracle = match crate::lm_oracle::read(map, &source, collection) {
+        Ok(o) => o,
+        Err(e) => {
+            println!("  ⚠ lightmap oracle: {e}");
+            None
+        }
+    };
+    if let Some(o) = &oracle {
+        println!("  lightmap oracle: the source's editor lightmap charts {} of {} objects ({} charts; objects = {} + {} authored + {} baked + {} items)", o.charted.len(), o.base + o.n_authored + o.n_baked + o.n_items, o.charts, o.base, o.n_authored, o.n_baked, o.n_items);
+    }
+    // (kind, model + flags, reason) -> (placements, charted, sample cells)
+    let mut dash_audit: BTreeMap<(String, String, String), (usize, usize, Vec<String>)> = BTreeMap::new();
+    let mut audit_dash = |prefix: &str, b: &tmmaps::map::BlockRec, reason: &str| {
+        let Some(o) = &oracle else { return };
+        let charted = if prefix == "b@" { o.baked_charted(b.index) } else { o.authored_charted(b.index) };
+        let e = dash_audit.entry((if prefix == "b@" { "baked".to_string() } else { "block".to_string() }, format!("{} {:08X}", b.name, b.flags), reason.to_string())).or_insert((0, 0, Vec::new()));
+        e.0 += 1;
+        if charted {
+            e.1 += 1;
+            if e.2.len() < 6 {
+                let (x, y, z) = b.coords();
+                e.2.push(format!("{prefix}{}@{x},{y},{z}", b.index));
+            }
+        }
+    };
     // The tree clearance (tree_clear.rs): every deck placement's driving
     // surface and every tree, in the scaled source frame, placed the way
     // `tmmaps tiny` places them.
@@ -2783,39 +2962,80 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     let mut trees: Vec<crate::tree_clear::Tree> = Vec::new();
     let mut dims_cache: BTreeMap<String, Option<(f32, f32)>> = BTreeMap::new();
     let mut deck_placements = 0usize;
+    let ghost_mode = std::env::var("TINY_GHOST_CLIPS").unwrap_or_default();
     for (prefix, b) in source.blocks.iter().map(|b| ("@", b)).chain(source.baked.iter().filter(|b| emitted_baked(b)).map(|b| ("b@", b))) {
         if prefix == "b@" && drop_baked.iter().any(|g| glob_match(g, &b.name)) {
             mapping.push_str(&format!("b@{}\t-\n", b.index));
             *dropped_baked.entry(b.name.clone()).or_insert(0) += 1;
+            dis.push("KNOB_DROP_BAKED", &b.name, &tmmaps::discard::cell_str(b.file_cell), 1, "generated filler left out by name (TINY_DROP_BAKED, a hand-written deletion list)");
             rows += 1;
+            audit_dash(prefix, b, "TINY_DROP_BAKED");
             continue;
         }
-        // A GHOST-MODE block's generated clips (record flag bit 28) are LEFT OUT — the
-        // default since 2026-09-21. The runtime does not draw them (ghost blocks take no
-        // part in the clip grid): measured 2026-09-09 on 29 drive-through cameras of
-        // Summer 20 vs the original (d196 94→38, d136 27→13, d361 78→62, d301 61→49 of
-        // 144 cells, no camera worse), and Summer 15's "pool border in the middle of
-        // the road" (vjeux, 2026-09-21) IS such a clip: the source has a ghost WaterBase
-        // under the TrackWall road at cell (32,13,17) with three ghost-flagged
-        // WaterFC/WaterHFC rim fillers, which the tiny emitted as solid half-size items —
-        // a 0.5 m curb across the road that the original never shows.
-        // TINY_GHOST_CLIPS=1 keeps the old form.
-        if prefix == "b@" && b.flags & (1u32 << 28) != 0 && std::env::var("TINY_GHOST_CLIPS").map(|v| v != "1").unwrap_or(true) {
-            mapping.push_str(&format!("b@{}\t-\n", b.index));
-            rows += 1;
-            ghost_left_out += 1;
-            continue;
+        // A GHOST-MODE block's generated clips (record flag bit 28) ARE DRAWN. The
+        // 2026-09-21 rule left every one of them out ("the runtime draws none"),
+        // fitted on 29 Summer 20 cameras and Summer 15's "pool border in the
+        // middle of the road" — and hid the dark TRACKMANIA pillar walls under
+        // every ghost DecoWall of Fall 2026 - 12 (vjeux's photo, 2026-10-01: the
+        // top wall floating on bare blue poles). The source's own editor lightmap
+        // settles it: on 12 all 261 ghost DecoWallBaseVFC, 38/38 PlatformBaseFCB,
+        // 22/22 DecoWallDiag1FCB, 21/21 DecoWallSlope2StraightFCT… carry charts —
+        // the lightmapper rendered them, the client draws them (`lm_oracle.rs`);
+        // on Summer 15 the 12 ghost Water*FC rims are charted too (drawn, and
+        // occluded by the road's mesh in the original). The ONE case kept out is
+        // the one the old rule was written for: a ghost WATER block's rim pieces
+        // (`Water*FC*`) standing inside a real block's cell — our half-size rim
+        // item poked through the road as a 0.5 m curb the original never shows.
+        // Every other ghost clip is emitted like a plain one; a piece inside a
+        // solid block's cell is occluded in the tiny as in the original.
+        // TINY_GHOST_CLIPS=covered leaves out every ghost clip inside a real
+        // block's cell (the probe form); =0 is the 09-21 form (none); =all keeps
+        // even the water rims.
+        if prefix == "b@" && b.flags & crate::blockmap::FLAG_GHOST != 0 {
+            let covered = ghost_covered.get(&b.index);
+            let water_rim = b.name.starts_with("Water") && b.name.contains("FC");
+            let out = match ghost_mode.as_str() {
+                "0" => true,
+                "all" | "1" => false,
+                "covered" => covered.is_some(),
+                _ => covered.is_some() && water_rim,
+            };
+            if out {
+                mapping.push_str(&format!("b@{}\t-\n", b.index));
+                rows += 1;
+                ghost_left_out += 1;
+                audit_dash(prefix, b, &if ghost_mode == "0" { "ghost clip (TINY_GHOST_CLIPS=0)".to_string() } else if water_rim && ghost_mode != "covered" { format!("ghost water rim inside a real block's cell ({}) — Summer 15's pool border", covered.map(String::as_str).unwrap_or("?")) } else { format!("ghost clip inside a real block's cell ({}) (TINY_GHOST_CLIPS=covered)", covered.map(String::as_str).unwrap_or("?")) });
+                dis.push("BAKED_GHOST_CLIP", &b.name, &tmmaps::discard::cell_str(b.file_cell), 1, &if ghost_mode == "0" { "ghost clip left out (TINY_GHOST_CLIPS=0, the 09-21 form)".to_string() } else if water_rim && ghost_mode != "covered" { format!("ghost WATER rim inside a real block's cell ({}) left out — Summer 15's pool border (the one ghost class the game occludes)", covered.map(String::as_str).unwrap_or("?")) } else { format!("ghost clip inside a real block's cell ({}) left out (TINY_GHOST_CLIPS=covered probe)", covered.map(String::as_str).unwrap_or("?")) });
+                continue;
+            }
+            ghost_emitted += 1;
         }
         // the runtime does not draw a record in a cell another block's unit occupies (fact 2 above)
         if prefix == "b@" && occupied_hidden.contains(&b.index) {
             mapping.push_str(&format!("b@{}\t-\n", b.index));
             rows += 1;
+            dis.push("BAKED_OCCUPIED_PROBE", &b.name, &tmmaps::discard::cell_str(b.file_cell), 1, "generated record in a cell another block's unit occupies left out (TINY_OCCUPIED_RULE probe, not an established rule)");
+            audit_dash(prefix, b, "TINY_OCCUPIED_RULE probe");
+            continue;
+        }
+        // a tile of the genealogy fill zone at its regenerated row, under a key
+        // that also has raised placements (so the key was baked): this placement
+        // is the full-size regenerated tile's, no item
+        if prefix == "@" && fill_zone.as_deref() == Some(b.name.as_str()) && fill_row == Some(b.file_cell[1]) && !regen_keys.contains(&(b.name.clone(), b.flags)) {
+            mapping.push_str(&format!("@{}\t-\t{}\t1\t1\t0,0,0\t\t\n", b.index, scale));
+            rows += 1;
+            audit_dash(prefix, b, "genealogy fill zone at its row: regenerated full size by the genealogy (the key also has raised tiles, baked)");
+            dis.push("BLOCK_AMBIENT_ZONE", &b.name, &tmmaps::discard::cell_str(b.file_cell), 1, "tile of the genealogy fill zone at its regenerated row: regenerated full size by the genealogy, no item (the key's raised tiles are baked)");
             continue;
         }
         let inherited_mods = if prefix == "b@" { baked_key.get(&b.index).cloned().unwrap_or_default() } else { String::new() };
         match block_map.get(&(b.name.clone(), b.flags, inherited_mods.clone())) {
             Some((alias, sx, sz, units)) => {
                 let model = if alias == "-" { "-".to_string() } else { format!("{alias}.Item.Gbx") };
+                if alias == "-" {
+                    let why = outcomes.iter().find(|o| o.alias == "-" && o.source.starts_with(&format!("{} {:08X}", b.name, b.flags))).and_then(|o| o.result.as_ref().ok().cloned()).unwrap_or_else(|| "no item".into());
+                    audit_dash(prefix, b, &why);
+                }
                 // the unit cells, so `tmmaps tiny` can hide the terrain tile under EVERY
                 // cell a ground deck covers (a Curve5 kept the Grass tiles of its 12
                 // other cells at deck height: the physics read Grass on the road, 2026-09-07)
@@ -2851,7 +3071,13 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                     }
                 }
             }
-            None => *missing_blocks.entry(format!("{} {:08X}", b.name, b.flags)).or_insert(0) += 1,
+            None => {
+                *missing_blocks.entry(format!("{} {:08X}", b.name, b.flags)).or_insert(0) += 1;
+                // an AUTHORED block without a model refuses the map in `tmmaps tiny`; a
+                // GENERATED one has no mapping row and `tmmaps tiny` SKIPS it silently —
+                // the Fall 2026 08/13 FCLeft hill fillers (BLOCK_NO_INFO above says why)
+                dis.push(if prefix == "b@" { "BAKED_NO_MODEL" } else { "BLOCK_NO_MODEL" }, &b.name, &tmmaps::discard::cell_str(b.file_cell), 1, &format!("{} {:08X}: no model came out of the library (see its BLOCK_* row); {}", b.name, b.flags, if prefix == "b@" { "the generated record gets no mapping row and tmmaps tiny skips it SILENTLY" } else { "tmmaps tiny refuses the map" }));
+            }
         }
     }
     let mut missing_items: BTreeMap<String, usize> = BTreeMap::new();
@@ -2867,6 +3093,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         if drop_items.iter().any(|g| glob_match(g, &it.model)) {
             mapping.push_str(&format!("i@{}\t-\n", it.index));
             *dropped_items.entry(it.model.clone()).or_insert(0) += 1;
+            dis.push("KNOB_DROP_ITEMS", &it.model, &tmmaps::discard::cell_str(item_cell(it)), 1, "source item left out by name (TINY_DROP_ITEMS, a diagnostic knob)");
             rows += 1;
             continue;
         }
@@ -2886,9 +3113,11 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 if is_flag(it) && target.ends_with(".Item.Gbx") && crate::static_item::build::tween_parts_enabled() {
                     if driver_hidden(it) {
                         drivers += 1;
+                        dis.push("FLAG_DRIVER_HACK", &it.model, &tmmaps::discard::cell_str(item_cell(it)), 1, "converted flag: a stock flag is hung upside down under the placement to drive the tween cloth (TINY_FLAG_DRIVER hack)");
                     } else {
                         mapping.push_str(&format!("xf@{}\n", it.index));
                         driver_skipped.push(it.index);
+                        dis.push("FLAG_STILL", &it.model, &tmmaps::discard::cell_str(item_cell(it)), 1, "converted flag over open air: no place to hide a stock driver, its cloth stays STILL (frame 0)");
                     }
                 }
                 // `iv@INDEX<TAB>0`: a stock stand-in has its own variant list —
@@ -2923,7 +3152,10 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                     }
                 }
             }
-            None => *missing_items.entry(it.model.clone()).or_insert(0) += 1,
+            None => {
+                *missing_items.entry(it.model.clone()).or_insert(0) += 1;
+                dis.push("ITEM_NO_MAPPING", &it.model, &tmmaps::discard::cell_str(item_cell(it)), 1, &format!("item {} {}: no library target (see its ITEM_* row); the placement keeps its model at placement scale {scale} — a custom item keeps its ORIGINAL file, UNSCALED", it.index, it.model));
+            }
         }
     }
     mapping.push_str(&veget_rows);
@@ -2937,12 +3169,31 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     let is_baked = |t: &crate::tree_clear::Tree| baker.dims.contains_key(&t.species);
     let baked_dropped = verdict.dropped.iter().filter(|(t, _, _)| is_baked(t)).count();
     let baked_tested = trees.iter().filter(|t| is_baked(t)).count();
-    for (t, _, _) in &verdict.dropped {
+    for (t, owner, y) in &verdict.dropped {
         if is_baked(t) {
             continue;
         }
         mapping.push_str(&t.row);
         mapping.push('\n');
+        dis.push("TREE_CLEARED", &t.species, &format!("{:.0},{:.0},{:.0}", t.pos[0] / scale, t.pos[1] / scale, t.pos[2] / scale), 1, &format!("stock stand-in tree {} ({}, r {:.1} h {:.1}) overlaps the deck {owner} at y {y:.1}: left out (tree_clear)", t.species, t.owner, t.radius, t.height));
+    }
+    // the Sea foundation: BlueBay's Sea records stay in the file FULL SIZE (the
+    // open sea; a pond gets its half-size floor item)
+    {
+        let sea = source.baked.iter().chain(source.blocks.iter()).filter(|b| b.name == "Sea" && !ponds.contains(&b.file_cell)).count();
+        if sea > 0 {
+            dis.push("SEA_FOUNDATION_KEPT", "Sea", "", sea, &format!("{sea} Sea records kept in the file at FULL size as the foundation (open sea; {} pond cells get a half-size floor item); the regenerated sea depends on the genealogy policy (GENEALOGY_* row of the place stage)", ponds.len()));
+        }
+    }
+    // the tree bakes' verdicts (TreeBaker::ident_for): species kept on the stock path
+    for o in outcomes.iter().filter(|o| o.kind == "tree") {
+        match &o.result {
+            Ok(s) if o.alias == "-" && s.contains("bake threshold") => dis.push("TREE_STOCK_SMALL", &o.source, "", 0, &format!("species {}: {s} (every placement of it is a FULL-size stock item)", o.source)),
+            Ok(s) if o.alias == "-" && s.contains("no collision hull") => dis.push("TREE_HULLLESS_STOCK", &o.source, "", 0, &format!("species {}: {s}", o.source)),
+            Err(e) if e.contains("no VegetTreeModel") => dis.push("TREE_NO_MODEL", &o.source, "", 0, &format!("species {}: {e}", o.source)),
+            Err(e) => dis.push("TREE_BAKE_FAILED", &o.source, "", 0, &format!("species {}: {e} (every placement of it is a FULL-size stock item)", o.source)),
+            _ => {}
+        }
     }
     if baked_tested > 0 {
         println!("  baked trees: {baked_tested} judged against the decks, {baked_dropped} would be dropped (census only, none dropped)");
@@ -3008,6 +3259,17 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         }
     }
     if let Some(r) = report {
+        // the lightmap oracle's rows: one per (kind, model, reason) of the
+        // placements mapped to `-`; status WARN = the original draws some of them
+        // OK = uncharted (the original draws nothing there); ALLOW = charted but
+        // left out on purpose (a regenerated tile, Summer 15's water rims); WARN =
+        // charted, left out by no explicit rule — the original draws it, we do not
+        for ((kind, model, reason), (n, charted, cells)) in &dash_audit {
+            let regenerated = reason.contains("regenerated full size");
+            let allowed = regenerated || reason.contains("Summer 15's pool border");
+            let status = if *charted == 0 { "OK" } else if allowed { "ALLOW" } else { "WARN" };
+            rep.push_str(&format!("oracle-{kind}\t-\t{n}\t{status}\t{model}\t{reason}; {charted} of {n} placements charted in the source lightmap (drawn in play){}{}\n", if regenerated { "; the regenerated full-size tile stands in" } else { "" }, if cells.is_empty() { String::new() } else { format!("; e.g. {}", cells.join(" ")) }));
+        }
         std::fs::write(r, &rep).unwrap();
     }
     println!("  library: {} embedded items; {} models ok, {} failed -> {}", files.len(), ok, bad, out_zip.display());
@@ -3038,8 +3300,37 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     if !dropped_items.is_empty() {
         println!("  ⚠ HACK TINY_DROP_ITEMS: {} source items left out: {}", dropped_items.values().sum::<usize>(), dropped_items.iter().map(|(k, v)| format!("{k} x{v}")).collect::<Vec<_>>().join(", "));
     }
-    if ghost_left_out > 0 {
-        println!("  {ghost_left_out} generated clips of ghost-mode blocks left out (the runtime draws none; TINY_GHOST_CLIPS=1 keeps them)");
+    if ghost_left_out + ghost_emitted > 0 {
+        println!("  generated clips of ghost-mode blocks: {ghost_emitted} emitted (the game draws them: charted in the source lightmap), {ghost_left_out} left out{}", match ghost_mode.as_str() { "0" => " (TINY_GHOST_CLIPS=0: every ghost clip)".to_string(), "all" | "1" => String::new(), "covered" => " (TINY_GHOST_CLIPS=covered: every ghost clip inside a real block's cell)".to_string(), _ => " (water rims inside a real block's cell — Summer 15's pool border; TINY_GHOST_CLIPS=all keeps them)".to_string() });
+    }
+    if oracle.is_some() {
+        let mut warn = 0usize;
+        let mut regen = 0usize;
+        let mut lines: Vec<String> = Vec::new();
+        let mut allowed_out = 0usize;
+        for ((kind, model, reason), (n, charted, cells)) in &dash_audit {
+            if *charted == 0 {
+                continue;
+            }
+            if reason.contains("regenerated full size") {
+                regen += charted;
+                continue;
+            }
+            if reason.contains("Summer 15's pool border") {
+                allowed_out += charted;
+                continue;
+            }
+            warn += charted;
+            lines.push(format!("    {charted:>5} of {n:>5} {kind} {model}: {reason} — e.g. {}", cells.join(" ")));
+        }
+        if warn > 0 {
+            println!("  ⚠ LIGHTMAP ORACLE: {warn} placements mapped to `-` are CHARTED in the source's lightmap — the original draws them, the tiny does not:");
+            for l in lines {
+                println!("{l}");
+            }
+        } else {
+            println!("  lightmap oracle: every placement mapped to `-` is uncharted in the source's lightmap (nothing the original draws is left out){}{}", if regen > 0 { format!("; {regen} regenerated tiles charted (the full-size tile stands in)") } else { String::new() }, if allowed_out > 0 { format!("; {allowed_out} ghost water rims inside a real block's cell left out ON PURPOSE (Summer 15's pool border; TINY_GHOST_CLIPS=all keeps them)") } else { String::new() });
+        }
     }
     if occupied_rule {
         println!("  ⚠ PROBE TINY_OCCUPIED_RULE=1: {} generated records standing in a cell another block's unit occupies left out — not an established rule", occupied_hidden.len());
@@ -3064,6 +3355,62 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             println!("  FAIL {} {} ({} placements): {}", o.kind, o.source, o.placements, e);
         }
     }
+    // ─── THE GATE: a placement the tiny map does not draw is a BUILD FAILURE ───
+    // vjeux, 2026-10-01 ("why do you allow the map to not generate some items
+    // and consider it okay?"), after Fall 2026 08/13 shipped with a hole where
+    // one filler had no model (a stem-vs-ident lookup miss). Every FAIL
+    // outcome and every `-` outcome that is not one of the structural "the
+    // game draws nothing here either" classes ends the build (exit 3) with
+    // the models and their cells listed; TINY_ALLOW_MISSING=1 lets a STUDY
+    // build through with the same list printed as a warning. The classes:
+    //   pass   terrain regenerated by the genealogy (the ambient zone / the
+    //          Stadium Grass floor), an empty prefab, an empty custom block,
+    //          a tree species on the stock path (it IS placed, as the stock
+    //          item), a vegetation cluster re-emitted as stock trees, a CLIP
+    //          whose picked variant has no mobil in the pack (the game picks
+    //          the same variant: nothing to draw — WaterShore1_Rocky_FCLeft's
+    //          air records),
+    //   cond.  a block with no geometry in its picked variant whose faces ARE
+    //          the generated fillers (DecoWall*, PlatformBase, StructurePillar…):
+    //          passes only when at least one of its placements owns a baked
+    //          filler record the build converted — none converted = a hole,
+    //   fail   everything else: a FAIL outcome, `-` for any other reason.
+    // (The ghost-clip rule and the source-lightmap chart oracle for baked
+    // records are the 12-fixer's additions in the baked-record loop above.)
+    // NO-FILLERS is PROVISIONAL (2026-10-01 20:55 PT): the owner check reads the
+    // clip lists, but a pillar's panels are generated from the PARENT block's
+    // pillar shape (TrackWallFromParent) and the census over Fall 2026 flags
+    // 25 k Stadium DecoWallBasePillar placements the Summer campaign shipped
+    // without a report — the source lightmap's chart table (the 12-fixer's
+    // oracle) is the instrument that settles the class. Until it is wired in,
+    // NO-FILLERS warns; TINY_GATE_FILLERS=1 makes it a hard stop too.
+    let mut gate = gate_outcomes(store, &mut idx, &source, &outcomes, &mapping);
+    // THE ORACLE SETTLES THE `-` CLASSES (2026-10-01 21:35 PT): with the source's
+    // lightmap read (`lm_oracle.rs`), every `-` placement has a verdict of its own —
+    // a CHARTED one the original draws (class ORACLE, a hard stop), an uncharted one
+    // the original does not draw either. NO-FILLERS and NOT-DRAWN, the structural
+    // guesses, give way to it; FAIL (no model could be built) stays.
+    if oracle.is_some() {
+        gate.retain(|g| g.class == "FAIL");
+        for ((kind, model, reason), (n, charted, cells)) in &dash_audit {
+            let allowed = reason.contains("regenerated full size") || reason.contains("Summer 15's pool border");
+            if *charted > 0 && !allowed {
+                gate.push(GateRow { model: format!("{kind} {model}"), placements: *charted, class: "ORACLE", reason: format!("{reason}; {charted} of {n} placements charted in the source lightmap: the original draws them"), cells: cells.clone() });
+            }
+        }
+    }
+    if !gate.is_empty() {
+        let fillers_hard = std::env::var("TINY_GATE_FILLERS").map(|v| v == "1").unwrap_or(false);
+        let hard = gate.iter().any(|g| g.class != "NO-FILLERS" || fillers_hard);
+        let allow = !hard || std::env::var("TINY_ALLOW_MISSING").map(|v| v == "1").unwrap_or(false);
+        println!("  {} PLACEMENTS THE TINY MAP WOULD NOT DRAW{}:", gate.iter().map(|g| g.placements).sum::<usize>(), if !hard { " (NO-FILLERS only — a provisional class, a warning; TINY_GATE_FILLERS=1 makes it a stop)" } else if allow { " (TINY_ALLOW_MISSING=1: study build, going on)" } else { " — THE BUILD STOPS HERE (TINY_ALLOW_MISSING=1 for a study build)" });
+        for g in &gate {
+            println!("    {:>5} x {}  [{}]  {}{}", g.placements, g.model, g.class, g.reason, if g.cells.is_empty() { String::new() } else { format!("  cells {}", g.cells.join(" ")) });
+        }
+        if !allow {
+            std::process::exit(3);
+        }
+    }
     // Every STOCK model name the mapping points at (light substitutes, tree
     // species, `v@` rows) must be an item of the packs this map is built
     // with: the editor loads a foreign name from any installed pack, play mode
@@ -3080,6 +3427,10 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         *stock.entry(model.to_string()).or_insert(0) += 1;
     }
     let missing: Vec<(String, usize)> = stock.into_iter().filter(|(name, _)| find_item_file(store, name).is_none()).collect();
+    // the discard report of this stage (TINY_DISCARD_REPORT=<prefix> -> <prefix>-library.tsv)
+    if let Some(p) = dis.write_env() {
+        println!("  discard report: {} rows -> {}", dis.rows.len(), p.display());
+    }
     if !missing.is_empty() {
         println!("  STOCK ITEMS NOT IN THESE PACKS (play mode will refuse the map):");
         for (k, n) in &missing {
@@ -3087,6 +3438,107 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         }
         std::process::exit(2);
     }
+}
+
+/// One row of the gate's verdict: a model (name + flags, or an item model) the
+/// tiny map would not draw, how many placements, its class and why.
+pub struct GateRow {
+    pub model: String,
+    pub placements: usize,
+    /// `FAIL` (no model could be built), `NOT-DRAWN` (`-` for a reason that is
+    /// not structural), `NO-FILLERS` (a prefab-less block none of whose
+    /// generated fillers was converted).
+    pub class: &'static str,
+    pub reason: String,
+    /// The source cells `x,y,z` of the placements (blocks only; up to 8).
+    pub cells: Vec<String>,
+}
+
+/// The gate's reading of the outcomes (see the call site). Pure over the
+/// outcomes, the source map and the mapping text; the block infos it needs
+/// are already cached by the build.
+pub fn gate_outcomes(store: &mut DataStore, idx: &mut crate::blockmap::BlockInfoIndex, source: &MapFile, outcomes: &[Outcome], mapping: &str) -> Vec<GateRow> {
+    // `Name FLAGS` of an outcome's source column -> (name, flags)
+    fn key_of(source: &str) -> Option<(&str, u32)> {
+        let mut it = source.split_whitespace();
+        let name = it.next()?;
+        let flags = u32::from_str_radix(it.next()?, 16).ok()?;
+        Some((name, flags))
+    }
+    // the cells of a block key (authored + baked records), as text
+    let cells = |name: &str, flags: u32| -> Vec<String> {
+        source.blocks.iter().chain(source.baked.iter()).filter(|b| b.name == name && b.flags == flags).take(8).map(|b| format!("{},{},{}", b.file_cell[0], b.file_cell[1], b.file_cell[2])).collect()
+    };
+    // the baked records the build converted: `b@<index>` mapping rows with a model
+    let converted_baked: std::collections::HashSet<usize> = mapping
+        .lines()
+        .filter_map(|l| {
+            let mut f = l.split('\t');
+            let head = f.next()?;
+            let model = f.next()?;
+            let i: usize = head.strip_prefix("b@")?.parse().ok()?;
+            (model != "-").then_some(i)
+        })
+        .collect();
+    // the owner block index of every converted filler (computed once, lazily),
+    // and the CELLS converted fillers stand in: a pillar's panels are generated
+    // from the PARENT block's pillar shape (no clip list of the pillar names
+    // them), so a pillar passes when a converted filler stands in its own cell
+    let mut owners_of_converted: Option<std::collections::HashSet<usize>> = None;
+    let converted_cells: std::collections::HashSet<[u8; 3]> = source.baked.iter().filter(|b| converted_baked.contains(&(b.index as usize))).map(|b| b.file_cell).collect();
+    let mut rows: Vec<GateRow> = Vec::new();
+    for o in outcomes {
+        if o.placements == 0 {
+            continue;
+        }
+        match &o.result {
+            Err(e) => {
+                let c = key_of(&o.source).map(|(n, f)| cells(n, f)).unwrap_or_default();
+                rows.push(GateRow { model: o.source.clone(), placements: o.placements, class: "FAIL", reason: e.lines().next().unwrap_or("").to_string(), cells: c });
+            }
+            Ok(why) if o.alias == "-" => {
+                let w = why.as_str();
+                // structural: the game draws nothing there either / it is drawn another way
+                if o.kind == "tree"
+                    || w.contains("regenerated full size by the genealogy")
+                    || w.contains("Stadium grass floor")
+                    || w.contains("empty prefab (no entities)")
+                    || w.contains("custom block without visuals")
+                    || w.contains("empty custom block")
+                    || w.contains("vegetation cluster:")
+                {
+                    continue;
+                }
+                let Some((name, flags)) = key_of(&o.source) else {
+                    rows.push(GateRow { model: o.source.clone(), placements: o.placements, class: "NOT-DRAWN", reason: why.clone(), cells: Vec::new() });
+                    continue;
+                };
+                if w.contains("no geometry in this variant") {
+                    // a CLIP whose picked variant is empty in the pack: nothing for the game to draw either
+                    let is_clip = idx.resolve_one(store, name).and_then(|p| idx.load(store, &p).ok().map(|bi| matches!(bi.kind, crate::blockinfo::Kind::Clip | crate::blockinfo::Kind::ClipHorizontal | crate::blockinfo::Kind::ClipVertical))).unwrap_or(false);
+                    if is_clip {
+                        continue;
+                    }
+                    // a prefab-less block: its faces are the generated fillers — were any converted?
+                    let owners = owners_of_converted.get_or_insert_with(|| {
+                        let faces = crate::fillers::faces(store, idx, source);
+                        source.baked.iter().filter(|b| converted_baked.contains(&(b.index as usize))).filter_map(|b| crate::fillers::owner_of(&faces, b).map(|o| o.index)).collect()
+                    });
+                    let mine: Vec<(usize, [u8; 3])> = source.blocks.iter().filter(|b| b.name == name && b.flags == flags).map(|b| (b.index as usize, b.file_cell)).collect();
+                    let with_fillers = mine.iter().filter(|(i, cell)| owners.contains(i) || converted_cells.contains(cell)).count();
+                    if with_fillers == 0 {
+                        rows.push(GateRow { model: o.source.clone(), placements: o.placements, class: "NO-FILLERS", reason: format!("no geometry in the picked variant and none of its {} placements owns a converted generated filler", mine.len()), cells: cells(name, flags) });
+                    } else if with_fillers < mine.len() {
+                        rows.push(GateRow { model: o.source.clone(), placements: mine.len() - with_fillers, class: "NO-FILLERS", reason: format!("no geometry in the picked variant; {} of {} placements own a converted generated filler, the others none", with_fillers, mine.len()), cells: cells(name, flags) });
+                    }
+                    continue;
+                }
+                rows.push(GateRow { model: o.source.clone(), placements: o.placements, class: "NOT-DRAWN", reason: why.clone(), cells: cells(name, flags) });
+            }
+            Ok(_) => {}
+        }
+    }
+    rows
 }
 
 /// The folder `Stadium\Media\Modifier\TrackWallToDecoCliff.Gbx` names in its

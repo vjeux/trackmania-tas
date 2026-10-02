@@ -16,6 +16,7 @@
 //! `selfbuild`; the shooting half is `shootctl shootset`.
 
 mod boxbuild;
+mod discard;
 mod lightmap;
 mod loadloop;
 mod camcheck;
@@ -23,6 +24,7 @@ mod build;
 mod bakecopy;
 mod bakerun;
 mod tracker;
+mod gencensus;
 mod lmbake;
 mod gianttracker;
 mod compare;
@@ -45,11 +47,13 @@ mod motion;
 mod nadeo;
 mod batch;
 mod pipeline;
+mod retile;
 mod mtrender;
 mod mapzips;
 mod dist;
 mod release;
 mod views;
+mod watercensus;
 mod wsx;
 
 use std::path::Path;
@@ -173,6 +177,11 @@ const USAGE: &str = r#"tinyctl — tiny-campaign operations (Rust, no shell)
 
   box-side halves: tinyctl publish-here …   tinyctl selfbuild …
   every bridge command takes --wsx PATH (default ~/bin/wsx)
+  tinyctl genealogy-census --sources DIR [--tiny DIR] [--x2 DIR] [--out census.tsv]
+        every built map's zone table (chunk 0x03043043) against its source: records,
+        zones, `tmmaps ponds` uncovered cells, verdict ok | CLEARED | UNCOVERED | MIXED;
+        non-zero exit unless every file is ok (the floor gate before a publish batch:
+        the Fall 2026 BlueBay tinies shipped CLEARED = the bottomless-lagoon class)
 "#;
 
 pub fn compare_view_names(views: &Path) -> Result<Vec<String>, String> {
@@ -214,15 +223,19 @@ fn main() {
         "bake-run" => bakerun::bake_run(rest),
         "lightmap-run" => bakerun::lightmap_run(rest),
         "campaign-tracker" => tracker::cmd(rest),
+        "genealogy-census" => gencensus::cmd(rest),
         "publish-batch" => batch::publish_batch_cmd(rest),
         "publish-set" => batch::publish_set_cmd(rest),
         "publish-dir" => batch::publish_dir_cmd(rest),
         "tracker-club" => batch::tracker_club_cmd(rest),
         "pipeline" => pipeline::cmd(rest),
+        "discard-table" => discard::cmd(rest),
+        "retile" => retile::cmd(rest),
         "bake-copies" => bakecopy::cmd(rest),
         "lmbake" => lmbake::cmd(rest),
         "lit-verify" => lmbake::verify(rest),
         "giant-tracker" => gianttracker::cmd(rest),
+        "water-census" => watercensus::cmd(rest),
         "lightmap-batch" => lightmap::batch(rest),
         "lightmap-graft" => lightmap::graft(rest),
         "convert-all" => pipeline::convert_all_cmd(rest),

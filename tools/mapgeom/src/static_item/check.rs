@@ -647,6 +647,30 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
                     // Any other normal-mapped material over such a visual is a
                     // --facts note (lit without a frame; `Canopy` opens).
                     if let Ok(mm) = st.load_model(&file) {
+                        // DC-01: A DECAL MATERIAL'S VISUAL CARRIES A LIGHTMAP SET. The
+                        // pack authors its decals (class byte 0x0E / 0x00 of the 0x09079017
+                        // word: DecalPaint*, DecalPlatform, the gate Sign panels) as
+                        // (position, normal, colour, uv0) quads 5–12 mm on their backing
+                        // surface, never charted; a TexCoord1 we synthesise makes the quad a
+                        // lightmapped static sheet and it z-fights the surface it lies on
+                        // (Fall 21's sponsor band, 2026-10-01). `--facts` prints the class.
+                        let word = super::materials::material_word_of(&mm.body);
+                        let decal = word.map(|w| super::materials::decal_material(link.rsplit('\\').next().unwrap_or(link.as_str()), w)).unwrap_or(false);
+                        if facts {
+                            match word {
+                                Some(w) => println!("{path}: material {mi} {link} class {:#04x}{}", w[2], if decal { " DECAL" } else { "" }),
+                                None => println!("{path}: material {mi} {link} class ? (no 0x09079017 v1 word)"),
+                            }
+                        }
+                        if decal {
+                            for g in s2.shaded_geoms.iter().filter(|g| g.material_index as usize == mi) {
+                                let vi = g.visual_index as usize;
+                                let charted = s2.visuals.get(vi).and_then(|vr| vr.inline.as_deref()).and_then(|n| match n { super::Node::Visual(v) => v.stream().map(|s| s.decls.iter().any(|d| d.name() == super::vstream::N_TEXCOORD0 + 1)), _ => None }).unwrap_or(false);
+                                if charted {
+                                    problems.push(format!("DC-01 material {mi} {link}: decal material (class byte {:#04x}) on visual {vi} that carries a lightmap set (TexCoord1) — the pack never charts a decal; as a lightmapped static sheet it z-fights the surface it lies on (Fall 21's sponsor band, 2026-10-01)", word.map(|w| w[2]).unwrap_or(0)));
+                                }
+                            }
+                        }
                         let normal_mapped = mm.externals.iter().any(|(_, e)| e.to_ascii_lowercase().ends_with("_n.texture.gbx"));
                         let known_crasher = link.ends_with("\\PlatformTech");
                         if normal_mapped || known_crasher {

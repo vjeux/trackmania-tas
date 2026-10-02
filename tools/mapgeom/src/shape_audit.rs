@@ -96,7 +96,7 @@ pub fn decode(flags: u32) -> (bool, usize, usize, usize) {
 /// Resolve one key exactly as the library build does (`load_block_info` +
 /// `pick_placement_add`), keeping the notes the report drops.
 pub fn resolve(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, flags: u32) -> Resolution {
-    let mut r = Resolution { candidates: idx.paths_for(name), ..Default::default() };
+    let mut r = Resolution { candidates: idx.resolve(store, name), ..Default::default() };
     let Some(path) = r.candidates.first().cloned() else {
         r.error = Some("no block info file with this name".into());
         return r;

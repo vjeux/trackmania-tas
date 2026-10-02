@@ -417,6 +417,12 @@ pub fn cmd(args: &[String]) {
     assert!(uid_prefix.len() == 4 && uid_prefix.is_ascii(), "--uid-prefix must be 4 ASCII characters (Tin2, Gia2), got `{uid_prefix}`");
     let name_prefix = cli::flag(args, "--name-prefix").unwrap_or("Tiny ").to_string();
     let mapping = read_mapping(&mapping_path);
+    // the DISCARD REPORT of the placement stage (crate::discard): hidden tiles,
+    // parked items, records skipped, the MediaTracker, the ghost, the genealogy
+    if let Some(p) = cli::flag(args, "--discard-report") {
+        std::env::set_var("TINY_DISCARD_REPORT", p);
+    }
+    let mut dis = crate::discard::Discards::new(&src, scale, "place");
     // --host HOST.Map.Gbx: build the copy INTO another map (e.g. an empty
     // Stadium map, where real Stadium materials are accepted) instead of into
     // the parked source. Placements still come from the source.
@@ -424,6 +430,13 @@ pub fn cmd(args: &[String]) {
     // --keep-zone-block: one authored block survives the deletion (the editor's
     // lightmap pass crashes on a map with none; `tinyctl lightmap`)
     let keep_zone_flag = args.iter().any(|a| a == "--keep-zone-block");
+    // --tiles-oracle FILE: the game's own verdict per terrain tile (drawn / hidden),
+    // read off the SOURCE's editor lightmap by `lmtool tile-oracle` — a tile the
+    // game draws has a chart, one it hides has none. Takes precedence over the
+    // unit rule (`tiles::HiddenTiles::hides`) for every record it names
+    // (2026-10-02, Fall 06's hole beside the reactor gate: a DirtCliff4 under a
+    // ghost-mode DecoWallDiag1 the rule hid and the game draws).
+    let tiles_oracle: Option<tiles::TileOracle> = cli::flag(args, "--tiles-oracle").map(|p| tiles::TileOracle::read(std::path::Path::new(p)).unwrap_or_else(|e| panic!("--tiles-oracle: {e}")));
     // --name NAME sets the map's name outright; --keep-name leaves the source's
     // (default: "Tiny " + the source name)
     let name_flag: Option<String> = cli::flag(args, "--name").map(String::from);
@@ -432,6 +445,11 @@ pub fn cmd(args: &[String]) {
     let source = MapFile::load(&src);
     let colors = source.colors().unwrap_or(crate::map::Colors { bytes: Vec::new(), n_blocks: 0, n_baked: 0 });
     set_ground(source.items.first().map(|it| it.collection_raw).unwrap_or(26));
+    // the file cell of an item (game cell + (1, 0, 1) in x/z, see BlockRec::file_cell), for the discard rows
+    let it_cell = |it: &crate::map::ItemRec| -> [u8; 3] {
+        let c = |v: f32| ((v / 32.0).floor() as i64 + 1).clamp(0, 255) as u8;
+        [c(it.pos[0]), (((it.pos[1] - ground()) / 8.0).floor() as i64).clamp(0, 255) as u8, c(it.pos[2])]
+    };
     // The source anchor is the Spawn: a start block's cell corner, or (the
     // Stadium maps 15/20/25: GateStart items) the start item's position.
     let spawns = source.waypoints();
@@ -662,6 +680,7 @@ pub fn cmd(args: &[String]) {
             // (`v@<model>` rows) at the placement's position and yaw.
             Some(map) if map.model == "-" => {
                 dropped_items += 1;
+                dis.push("ITEM_PARKED", &it.model, &crate::discard::cell_str(it_cell(it)), 1, &format!("item {} {} mapped to `-`: the slot is parked at (8,-900,8) (its trees, if a cluster, are re-emitted)", it.index, it.model));
                 specs.push(Spec { model: it.model.clone(), pos: [8.0, -900.0, 8.0], yaw: 0.0, frame: None, scale: 1.0, tag: None, order: 0, color: 0 });
                 let (placed, skipped) = push_veget(&mut cluster_trees, &mapping, &it.model, transform(it.pos, source_anchor, target_anchor, scale), it.yaw, colors.item(it.index), mapping.skip_item_trees.get(&it.index));
                 prefab_trees += placed;
@@ -829,6 +848,21 @@ pub fn cmd(args: &[String]) {
         mapping.by_index.get(&b.index).or_else(|| mapping.by_name.get(&b.name)).map(|m| (m.model.clone(), m.units.clone(), m.auto_terrain.clone()))
     };
     let hidden = hidden_tiles(&source, &zones, &info_of);
+    // the oracle first, the rule for the records it does not name; the
+    // disagreements are counted for the log (the rule's remaining error)
+    let (mut oracle_hidden, mut oracle_drawn, mut oracle_vs_rule) = (0usize, 0usize, 0usize);
+    let mut tile_hidden = |b: &BlockRec, baked: bool| -> bool {
+        let rule = hidden.hides(b);
+        let game = tiles_oracle.as_ref().and_then(|o| if baked { o.baked(b.index) } else { o.authored(b.index) });
+        match game {
+            Some(h) => {
+                if h { oracle_hidden += 1 } else { oracle_drawn += 1 }
+                if h != rule { oracle_vs_rule += 1 }
+                h
+            }
+            None => rule,
+        }
+    };
     let undeclared: Vec<String> = source
         .blocks
         .iter()
@@ -836,7 +870,7 @@ pub fn cmd(args: &[String]) {
         .filter(|t| zones.contains(&t.name) && hidden.kept_at_file_cell(t))
         .map(|t| format!("{} at {:?} under {}", t.name, t.coords(), hidden.occupant(t).and_then(|i| source.blocks.get(i)).map(|b| b.name.as_str()).unwrap_or("?")))
         .collect();
-    println!("  terrain tiles under blocks: {} blocks with geometry occupy tile cells, {} declare their auto terrain; {} tiles KEPT at a block's file cell that is not one of its units (drawn, as the game does){}", hidden.blocks, hidden.declaring, undeclared.len(), if undeclared.is_empty() { String::new() } else { format!(" ({})", undeclared.iter().take(12).cloned().collect::<Vec<_>>().join("; ")) });
+    println!("  terrain tiles under blocks: {} GROUND-variant blocks (ghost or not, geometry or not) occupy tile cells, {} declare their auto terrain; {} tiles KEPT at a block's file cell that is not one of its units (drawn, as the game does){}", hidden.blocks, hidden.declaring, undeclared.len(), if undeclared.is_empty() { String::new() } else { format!(" ({})", undeclared.iter().take(12).cloned().collect::<Vec<_>>().join("; ")) });
     let mut replaced_terrain = 0usize;
     let mut replaced_baked_terrain = 0usize;
     // Authored blocks occupy appended clones.
@@ -852,8 +886,9 @@ pub fn cmd(args: &[String]) {
             empty_blocks += 1;
             continue;
         }
-        if zones.contains(&b.name) && hidden.hides(b) {
+        if zones.contains(&b.name) && tile_hidden(b, false) {
             replaced_terrain += 1;
+            dis.push("TILE_HIDDEN_UNDER_BLOCK", &b.name, &crate::discard::cell_str(b.file_cell), 1, &format!("authored terrain tile {} under {}: the game draws the block there, never the tile (hidden_tiles)", b.name, hidden.occupant(b).and_then(|i| source.blocks.get(i)).map(|o| o.name.as_str()).unwrap_or("a ghost-mode unit")));
             continue;
         }
         let rot = b.free_rot.unwrap_or([block_yaw(b), 0.0, 0.0]);
@@ -899,7 +934,14 @@ pub fn cmd(args: &[String]) {
         .map(|b| ((b.file_cell[0] as i32, b.file_cell[1] as i32, b.file_cell[2] as i32), colors.block(b.index)))
         .collect();
     for b in &source.baked {
-        let Some(map) = mapping.baked_by_index.get(&b.index) else { continue };
+        let Some(map) = mapping.baked_by_index.get(&b.index) else {
+            // a GENERATED record with no mapping row at all: nothing is placed and
+            // nothing was refused — the silent class behind Fall 2026 08/13's FCLeft
+            if b.name != "Sea" {
+                dis.push("BAKED_NO_MAPPING_SKIPPED", &b.name, &crate::discard::cell_str(b.file_cell), 1, &format!("generated record {} {} {:08X} has no mapping row: skipped SILENTLY by the placer", b.index, b.name, b.flags));
+            }
+            continue;
+        };
         if map.model == "-" {
             continue;
         }
@@ -907,8 +949,9 @@ pub fn cmd(args: &[String]) {
         // ground is not drawn by the game either (Summer 04's flat Grass is
         // baked: the start road, the finish platforms and gates stood on 38 of
         // them — see `hidden_tiles`).
-        if zones.contains(&b.name) && hidden.hides(b) {
+        if zones.contains(&b.name) && tile_hidden(b, true) {
             replaced_baked_terrain += 1;
+            dis.push("TILE_HIDDEN_UNDER_BAKED", &b.name, &crate::discard::cell_str(b.file_cell), 1, &format!("generated terrain tile {} under {}: the game draws the block there, never the tile (hidden_tiles)", b.name, hidden.occupant(b).and_then(|i| source.blocks.get(i)).map(|o| o.name.as_str()).unwrap_or("a ghost-mode unit")));
             continue;
         }
         // A generated filler of a FREE block is free too, with the parent's
@@ -1214,6 +1257,8 @@ pub fn cmd(args: &[String]) {
                     Some((n, bytes)) if !bytes.is_empty() => carried.push((n.replace('\\', "/"), bytes.clone())),
                     _ => panic!("source map embeds custom object {model} still placed after the mapping, and its file cannot be read from the source archive"),
                 }
+                let n = specs.iter().filter(|s| &s.model == model).count();
+                dis.push("ITEM_CARRIED_ORIGINAL", model, "", n, &format!("custom item {model}: its ORIGINAL embedded file is carried over (no scaled copy came out of the library); placed at placement scale {scale}, which the game ignores for most item kinds — UNSCALED"));
             }
             println!("  source archive ({} files) replaced; {} custom items still placed keep their original files ({})", names.len(), carried.len(), still.join(", "));
         } else {
@@ -1253,6 +1298,7 @@ pub fn cmd(args: &[String]) {
     // The game recomputes a default-settings lightmap at every load anyway
     // (0.4 s on a 0-block map, measured 2026-09-07).
     println!("  stored lightmap kept (0 blocks: the game rejects it; without one the editor crashes)");
+    dis.push("LIGHTMAP_STALE_KEPT", "lightmap 0x0304305B", "", 1, "the source's lightmap chunk stays in the file (rejected by the game at 0 blocks; the editor crashes without one); the shipped file gets an editor bake transplanted later");
     // The MediaTracker (chunk 0x03043049, `mediatracker.rs`): the intro, the
     // in-game and the end-race clips fly cameras over FULL-SIZE coordinates
     // and fire from full-size trigger cells; both go through the items'
@@ -1260,8 +1306,13 @@ pub fn cmd(args: &[String]) {
     // same seconds over a half-size map). Blocks whose layout the reader does
     // not know are copied verbatim and listed.
     match m.mediatracker() {
-        None => println!("  MediaTracker: no chunk 0x03043049 in this map"),
-        Some(Err(e)) => eprintln!("  WARNING: MediaTracker left untouched, its cameras fly over the full-size layout: {e}"),
+        None => {
+            println!("  MediaTracker: no chunk 0x03043049 in this map");
+        }
+        Some(Err(e)) => {
+            eprintln!("  WARNING: MediaTracker left untouched, its cameras fly over the full-size layout: {e}");
+            dis.push("MT_UNTOUCHED", "MediaTracker 0x03043049", "", 1, &format!("MediaTracker left untouched, its cameras fly over the full-size layout: {e}"));
+        }
         Some(Ok(mut mt)) => {
             {
                     // The trigger grid is doubled first (3x1x3 -> 6x2x6 cells per
@@ -1278,6 +1329,7 @@ pub fn cmd(args: &[String]) {
                     if let Some(t0) = mt.trigger_size.filter(|_| scale < 1.0) {
                         if let Err(e) = mt.set_trigger_size([t0[0] * 2, t0[1] * 2, t0[2] * 2]) {
                             eprintln!("  WARNING: trigger grid kept at {t0:?}: {e}");
+                            dis.push("MT_TRIGGER_GRID", "MediaTracker triggers", "", 1, &format!("trigger grid kept at {t0:?}: {e} (half-size volumes land on coarse cells)"));
                         }
                     }
                     let ts = mt.trigger_size.unwrap_or([3, 1, 3]);
@@ -1288,6 +1340,20 @@ pub fn cmd(args: &[String]) {
                     let mut kinds: BTreeMap<&str, usize> = BTreeMap::new();
                     for (class, _) in &opaque {
                         *kinds.entry(crate::mediatracker::class_name(*class)).or_default() += 1;
+                    }
+                    for (k, v) in &kinds {
+                        dis.push("MT_BLOCK_VERBATIM", k, "", *v, &format!("MediaTracker block class {k}: layout unknown to the reader, copied verbatim (its coordinates, if any, stay full-size)"));
+                    }
+                    // ENTITY clips (the author's cameo ghost, a recording of the SOURCE
+                    // geometry) are DROPPED by default (2026-10-01, decided on the box: Fall
+                    // 2026 map 22's in-game entity clip hung the client's PlayMap on every
+                    // conversion; the clip removed → loads and passes). TINY_MT_ENTITY=keep
+                    // keeps them (vjeux's call if he wants the cameos back).
+                    if std::env::var("TINY_MT_ENTITY").map(|v| v != "keep").unwrap_or(true) {
+                        for line in mt.drop_entity_clips() {
+                            println!("  MediaTracker: {line}");
+                            dis.push("MT_ENTITY_CLIP_DROPPED", "Entity", "", 1, &format!("MediaTracker {line} (a recording of the source map cannot play on a scaled map; map 22's hang; TINY_MT_ENTITY=keep keeps it)"));
+                        }
                     }
                     println!(
                         "  MediaTracker: {} clips; {keys} camera keys and {verts} triangle vertices moved through the transform, trigger cells {c0} -> {c1} (grid {}x{}x{} per block), {left} blocks left alone ({} kept verbatim: {})",
@@ -1343,6 +1409,7 @@ pub fn cmd(args: &[String]) {
                 .collect();
             if kept.len() != before {
                 println!("  archive: {} of {} entries kept ({} unplaced item models pruned)", kept.len(), before, before - kept.len());
+                dis.push("ARCHIVE_PRUNED", "library entries", "", before - kept.len(), &format!("{} library item models with no placement left pruned from the archive (every entry counts against the loader's flakiness band)", before - kept.len()));
                 zip = crate::header::deflated_zip(&kept);
             }
         }
@@ -1372,6 +1439,7 @@ pub fn cmd(args: &[String]) {
         let removed = m.strip_validation_ghost_to(form);
         if removed > 0 {
             println!("  validation ghost: the source's ({removed} bytes) {}, header validated=\"0\"", if matches!(form, crate::map::GhostForm::Dummy) { "replaced by the dummy ghost" } else { "removed" });
+            dis.push("GHOST_REMOVED", "validation ghost 0x0305B00F", "", 1, &format!("the source's validation ghost ({removed} bytes, the full-size author run) {}; the header goes unvalidated (a scaled ghost is re-embedded by the player project's authorghost)", if matches!(form, crate::map::GhostForm::Dummy) { "replaced by the dummy ghost" } else { "removed" }));
         } else {
             println!("  validation ghost: none in the source (the header goes unvalidated)");
         }
@@ -1393,13 +1461,21 @@ pub fn cmd(args: &[String]) {
     // that writer is gone.)
     // Stadium keeps it: its zones are the grass floor, full size under the
     // tiny map like the reference maps (and there is no sea to fall into).
+    // BlueBay FILLS too (default since 2026-10-01; the Summer 2026 lagoon fix
+    // of 2026-09-22 was `TINY_GENEALOGY=fill` by hand on every BlueBay map and
+    // the Fall 2026 tinies 04 09 14 19 24 shipped `clear` again): the tiny
+    // keeps the source's Sea records full size in place and scales the island
+    // about the spawn, so a tiny water cell over a cleared cell beneath — a
+    // land cell of the source — has no floor and renders as a flat
+    // sky-coloured polygon. A zone table of `Sea` x grid regenerates water +
+    // sand floor under the whole island, the form the other three terrain
+    // collections already shipped with.
     // TINY_GENEALOGY=clear|fill|keep overrides the per-collection policy (a
     // diagnostic: what the game regenerates under the island is only visible
     // in the game). TINY_KEEP_GENEALOGY is the old spelling of `keep`.
     let policy: Option<String> = std::env::var("TINY_GENEALOGY").ok().or_else(|| std::env::var_os("TINY_KEEP_GENEALOGY").map(|_| "keep".to_string()));
     let policy = policy.as_deref().unwrap_or(match collection {
-        0x1c => "clear",
-        0x10 | 0x1d | 0xf => "fill",
+        0x1c | 0x10 | 0x1d | 0xf => "fill",
         _ => "keep",
     });
     // A grown grid (fit-grid) wants its size words and a zone table of ITS size
@@ -1431,11 +1507,13 @@ pub fn cmd(args: &[String]) {
     };
     let fill_count: Option<usize> = grid_size.map(|s| (s as usize) * (s as usize));
     match policy {
-        // BlueBay: the sea around the island is decoration, so no zone
-        // at all leaves plain sea under the tiny map.
+        // `TINY_GENEALOGY=clear` only (the BlueBay default until 2026-10-01):
+        // no zone at all — plain sea under the tiny map, bottomless where the
+        // tiny water lies over a land cell of the source.
         "clear" => {
             let zones = MapFile::clear_genealogy_file(&out).expect("clear genealogies");
             println!("  genealogy chunk cleared: {zones} terrain zone records dropped");
+            dis.push("GENEALOGY_CLEAR", "genealogy 0x03043043", "", zones, &format!("{zones} terrain zone records CLEARED: the game regenerates no terrain under the map — plain sea; a kept full-size Sea record over a cleared land cell is a bottomless lagoon (BlueBay, Fall 2026 - 09)"));
         }
         // RedIsland: the ambient terrain is a zone BLOCK (Water, 2568 of
         // the 4096 cells of Summer 02); every cell gets it, so the game
@@ -1444,11 +1522,19 @@ pub fn cmd(args: &[String]) {
         // WhiteShore likewise: Water is a zone block (3148 of the 4096
         // cells of Summer 03), the sea the island sits in, surface -1.
         // GreenCoast: Lake (2418 of 4096 cells of Summer 04), the same way.
+        // BlueBay: Sea (water + sand floor regenerated under the whole island;
+        // the fill picks the collection's water zone whatever the source's
+        // first or most common zone is — Fall 2026 - 09 is Beach-first under
+        // a Land majority with 546 Sea cells).
         "fill" => {
             let (zone, n) = MapFile::fill_genealogy_file_n(&out, fill_count).expect("fill genealogies");
             println!("  genealogy chunk filled: {n} cells of {zone}");
+            dis.push("GENEALOGY_FILL", "genealogy 0x03043043", "", n, &format!("genealogy FILLED with {n} cells of {zone}: the game regenerates that zone full size under and around the map (the source's per-cell zones are replaced)"));
         }
-        "keep" => println!("  genealogy chunk kept as the source's"),
+        "keep" => {
+            println!("  genealogy chunk kept as the source's");
+            dis.push("GENEALOGY_KEEP", "genealogy 0x03043043", "", 1, "genealogy kept as the source's: the full-size terrain zones regenerate under the map (Stadium grass floor)");
+        }
         other => panic!("TINY_GENEALOGY={other}: clear, fill or keep"),
     }
     // --decoration NAME: the decoration ident (body + header), the mood kept by
@@ -1494,7 +1580,14 @@ pub fn cmd(args: &[String]) {
     }
     println!("wrote {}", out.display());
     println!("  uid: {}", new_uid);
+    if let Some(p) = dis.write_env() {
+        println!("  discard report: {} rows -> {}", dis.rows.len(), p.display());
+    }
     println!("  {} existing items re-pointed at scaled copies ({} vegetation stand-ins sunk to half-tree crown height); {} dropped (procedural vegetation); {} blocks intentionally without an item (empty variants); {} terrain tiles replaced by the block standing in for them ({} authored + {} generated); {} prefab trees placed as stock items; {} trees left out by the clearance (overlapping a deck)", repointed_items, sunk_items, dropped_items, empty_blocks, replaced_terrain + replaced_baked_terrain, replaced_terrain, replaced_baked_terrain, prefab_trees, cleared_trees);
+    match &tiles_oracle {
+        Some(o) => println!("  tiles oracle {}: {} tile records decided by the game's lightmap ({} hidden, {} drawn); the unit rule disagreed on {}", o.path, oracle_hidden + oracle_drawn, oracle_hidden, oracle_drawn, oracle_vs_rule),
+        None => println!("  tiles oracle: none (--tiles-oracle FILE from `lmtool tile-oracle SRC`); the unit rule decided every tile"),
+    }
     println!(
         "  scaled every authored object: {} blocks + {} items = {} item placements",
         source.blocks.len(),

@@ -71,6 +71,101 @@ pub fn material_surface_ids(store: &mut crate::store::DataStore, path: &str) -> 
     None
 }
 
+/// The whole 0x09079017 v1 word of a loaded `.Material.Gbx` body: `[physics, gameplay, class, flags]`
+/// (the runtime's CPlugMaterial+0x28). Read 2026-10-01 across the Stadium and RedIsland packs: byte 3 is
+/// 0x80 everywhere; byte 2 is 0x0F on every opaque surface material (PlatformTech 0x800F0010, TrackWall
+/// 0x800F000E, TrackBorders 0x800F0009, Technics 0x800F0004, DecoHill 0x800F0002, ItemFlag 0x800F001C),
+/// 0x0E on every DECAL and gate SIGN material (DecalPaintSponsor4x1A..D, DecalPaint2Logo4x1, DecalPlatform,
+/// DecalMarks, Modifier\Boost\Decal, CustomModDecal: 0x800E001C; Modifier\Boost\Sign 0x800E0020) and 0x00
+/// on Modifier\Boost\DecalPlatform (0x8000001C). `None` when the body has no v1 word.
+pub fn material_word_of(body: &[u8]) -> Option<[u8; 4]> {
+    let pat = [0x17u8, 0x90, 0x07, 0x09, 0x01, 0x00, 0x00, 0x00];
+    let i = body.windows(pat.len()).position(|w| w == pat)?;
+    let w = body.get(i + 8..i + 12)?;
+    Some([w[0], w[1], w[2], w[3]])
+}
+
+/// `material_word_of` through the store.
+pub fn material_word(store: &mut crate::store::DataStore, path: &str) -> Option<[u8; 4]> {
+    let file = if path.to_ascii_lowercase().ends_with(".gbx") { path.to_string() } else { format!("{path}.Material.Gbx") };
+    let model = store.load_model(&file).ok()?;
+    material_word_of(&model.body)
+}
+
+/// A DECAL material: its link stem starts with `Decal` (DecalPaint*, DecalPlatform, DecalMarks*,
+/// DecalCurbs, DecalSponsor*, Modifier\<Gate>\Decal, DecalOnRoadIce …) AND bit 0 of its class byte is
+/// clear (0x0E; Boost\DecalPlatform 0x00) — the materials the pack authors as geometry lying ON another
+/// surface (the sponsor quads 12 mm in front of the plastic wall, DecalPlatform 6 mm over the border,
+/// the logo 5 mm off the trim) with the `Tech3_Block_DecalGeom_*` shaders, whose visuals the pack never
+/// gives a lightmap set (TexCoord1) — see `assemble::synthesize_solid_uv1`.
+///
+/// The class byte alone does not say "decal": bit 0 is clear on the terrain materials too (RedIsland
+/// Dirt, Cliff*, LakeBottom, RiverSide*), on StadiumOnTerrain\Deco and TrackWallInWorld, on the glass,
+/// the screens (Show4x1, RaceScreenStart), the gate Sign panels, the LightSpot lamps and the Chrono
+/// digits (0x0E), and on every *FX material (0x0B); every Stadium block surface (PlatformTech, RoadTech,
+/// Technics*, TrackBorders*, StructureInWorld, DecoHill) has it set (0x0F). Read 2026-10-01 over the 99
+/// materials of Fall 21's library.
+pub fn decal_material(stem: &str, word: [u8; 4]) -> bool {
+    stem.to_ascii_lowercase().starts_with("decal") && word[2] & 1 == 0
+}
+
+/// Bit 0 of the class byte clear (see `decal_material` for what that does and does not mean).
+pub fn decal_class(word: [u8; 4]) -> bool {
+    word[2] & 1 == 0
+}
+
+thread_local! {
+    /// The link STEMS (`DecalPaintSponsor4x1A`, `Sign`, `DecalPlatform`, lowercased) the resolvers found to be
+    /// decal class in the packs this process read — the StadiumOnTerrain skin moves a sponsor decal to
+    /// `RedIsland\Media\Modifier\StadiumOnTerrain\DecalPaintSponsor4x1D`, same stem, same class.
+    static DECAL_STEMS: std::cell::RefCell<std::collections::HashSet<String>> = Default::default();
+    /// Stems read and found NOT decal class (so a miss is a miss, not an unread file).
+    static SURFACE_STEMS: std::cell::RefCell<std::collections::HashSet<String>> = Default::default();
+}
+
+fn link_stem(link: &str) -> String {
+    link.trim_end_matches(".Material.Gbx").trim_end_matches(".material.gbx").rsplit('\\').next().unwrap_or(link).to_ascii_lowercase()
+}
+
+/// Record a resolved material's class (the resolvers of `build.rs` call this with the pack path they
+/// found for a material node); cheap on a repeat (the stem is already classified).
+pub fn note_material_class(store: &mut crate::store::DataStore, path: &str) {
+    let stem = link_stem(path);
+    let known = DECAL_STEMS.with(|d| d.borrow().contains(&stem)) || SURFACE_STEMS.with(|s| s.borrow().contains(&stem));
+    if known {
+        return;
+    }
+    match material_word(store, path) {
+        Some(w) if decal_material(&stem, w) => {
+            DECAL_STEMS.with(|d| d.borrow_mut().insert(stem));
+        }
+        Some(_) => {
+            SURFACE_STEMS.with(|s| s.borrow_mut().insert(stem));
+        }
+        None => {}
+    }
+}
+
+/// Is this material link (a slot's `link()`) a decal material? Yes when the resolvers read its stem as
+/// one from the pack; a `Decal*` stem the resolvers never read (the gameplay modifiers' re-dress names a
+/// `Modifier\Turbo\Decal` / `…\DecalPlatform` no prefab references directly — the pack's own
+/// `DecalSpecialTurbo` is what was read) is a decal unless a read said otherwise: every `Decal*` material
+/// of the Stadium and RedIsland packs is class 0x0E / 0x00. `TINY_DECAL_CLASS=class` keeps to the read
+/// stems only.
+pub fn is_decal_link(link: &str) -> bool {
+    let stem = link_stem(link);
+    if DECAL_STEMS.with(|d| d.borrow().contains(&stem)) {
+        return true;
+    }
+    if SURFACE_STEMS.with(|s| s.borrow().contains(&stem)) {
+        return false;
+    }
+    if std::env::var("TINY_DECAL_CLASS").map(|v| v == "class").unwrap_or(false) {
+        return false;
+    }
+    stem.starts_with("decal")
+}
+
 
 /// The special gate's effect: the item's modifier folder names a
 /// `Collision` material (`Stadium\Media\Modifier\Boost\Collision`), whose

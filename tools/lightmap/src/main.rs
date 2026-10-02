@@ -190,6 +190,7 @@ fn shell_quote(s: &str) -> String {
 
 fn run(mut a: Vec<String>) {
     match a[0].as_str() {
+        "tile-oracle" => lightmap::tileoracle::cmd(&a),
         "walk" => {
             for f in &a[1..] {
                 let data = std::fs::read(f).expect("read");
@@ -8727,6 +8728,19 @@ fn run(mut a: Vec<String>) {
             for r in &recs { *hist.entry((r.current.clone(), r.dir)).or_insert(0) += 1; }
             for ((z, d), n) in &hist { println!("  zone {z:?} dir {d}: {n}"); }
             for (i, r) in recs.iter().enumerate().take(4) { println!("  rec {i}: chain {:?} current_index {} dir {} current {:?}", r.ids, r.current_index, r.dir, r.current); }
+            // --rec x,z[;x,z…]: the records of named GAME cells (file cell − 1 on x and z), index = x + z · size_x
+            if let Some(list) = a.iter().position(|x| x == "--rec").and_then(|i| a.get(i + 1)) {
+                let sx = m.size[0].max(1) as usize;
+                for xz in list.split(';') {
+                    let Some((x, z)) = xz.split_once(',') else { continue };
+                    let (x, z): (usize, usize) = (x.trim().parse().unwrap_or(0), z.trim().parse().unwrap_or(0));
+                    let i = x + z * sx;
+                    match recs.get(i) {
+                        Some(r) => println!("  cell ({x}, {z}) rec {i}: chain {:?} current_index {} dir {} current {:?}", r.ids, r.current_index, r.dir, r.current),
+                        None => println!("  cell ({x}, {z}) rec {i}: out of range"),
+                    }
+                }
+            }
             println!("blocks {} baked {}", m.blocks.len(), m.baked.len());
             for b in m.baked.iter().take(4) { println!("  baked {:?} coords {:?} dir {} flags {:#x}", b.name, b.coords(), b.dir, b.flags); }
         }
@@ -10146,23 +10160,52 @@ variants: ");
             // the editor's lightmap of a REDUCED item set (the groves / light-carrying items dropped so the editor
             // survives) put into the FULL map — every item chart's object id is renumbered from the reduced index
             // to the full index (kept[r]); the dropped items get no chart (the game lights them from the probes).
-            // Tiles (object < base) keep their ids.
+            // Tiles (object < base) keep their ids. A `-` token at position r (2026-10-02, `tinyctl retile`) means
+            // the baked map's item r has NO counterpart in the full map: its charts are dropped.
             let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
             let base: u32 = f("--base").map(|s| s.parse().unwrap()).unwrap_or(4096);
-            let kept: Vec<u32> = f("--kept").expect("--kept").split(',').filter(|s| !s.is_empty()).map(|s| s.trim().parse().unwrap()).collect();
+            let kept_arg = f("--kept").expect("--kept");
+            // `--kept @FILE`: the list read from a file (a 15 000-item list overflows a command line)
+            let kept_text = match kept_arg.strip_prefix('@') { Some(p) => std::fs::read_to_string(p).unwrap_or_else(|e| panic!("--kept {p}: {e}")), None => kept_arg.clone() };
+            let kept: Vec<u32> = kept_text.split(|c: char| c == ',' || c.is_whitespace()).filter(|s| !s.is_empty()).map(|s| if s.trim() == "-" { u32::MAX } else { s.trim().parse().unwrap_or_else(|_| panic!("--kept: `{s}` is not an index")) }).collect();
             let from = lightmap::mapio::load(&f("--from").expect("--from")).expect("load --from");
             let into = lightmap::mapio::load(&f("--into").expect("--into")).expect("load --into");
             let mut chunk = from.chunk.clone();
             let d = chunk.data.as_mut().expect("the reduced bake has no lightmap");
             let mp = d.cache.mapping_mut().expect("mapping");
-            let (mut items, mut tiles, mut oob) = (0usize, 0usize, 0usize);
-            for b in mp.binds.iter_mut() {
+            let (mut items, mut tiles, mut oob, mut dropped) = (0usize, 0usize, 0usize, 0usize);
+            let mut keep_chart = vec![true; mp.binds.len()];
+            for (ci, b) in mp.binds.iter_mut().enumerate() {
                 let obj = b.obj_group_idx / 4;
                 let sub = b.obj_group_idx % 4;
                 if obj >= base {
                     let r = (obj - base) as usize;
-                    match kept.get(r) { Some(&full) => { b.obj_group_idx = (base + full) * 4 + sub; items += 1; } None => { oob += 1; } }
+                    match kept.get(r) {
+                        Some(&u32::MAX) => { keep_chart[ci] = false; dropped += 1; }
+                        Some(&full) => { b.obj_group_idx = (base + full) * 4 + sub; items += 1; }
+                        None => { oob += 1; }
+                    }
                 } else { tiles += 1; }
+            }
+            if dropped > 0 {
+                mp.retain_charts(&keep_chart);
+            }
+            // --clone NEW=FROM[,NEW=FROM…]: a FULL item NEW with no counterpart in the bake takes copies
+            // of the charts the bake gave the REDUCED item FROM (the same model: a restored terrain tile
+            // reads the atlas rect of a tile the editor did light) — `tinyctl retile`, 2026-10-02
+            let mut cloned = 0usize;
+            if let Some(spec) = f("--clone") {
+                for pair in spec.split(',').filter(|s| !s.is_empty()) {
+                    let (new, from) = pair.split_once('=').unwrap_or_else(|| panic!("--clone wants NEW=FROM, got `{pair}`"));
+                    let (new, from): (u32, u32) = (new.trim().parse().expect("--clone NEW"), from.trim().parse().expect("--clone FROM"));
+                    // FROM's charts are found by their ORIGINAL (reduced) object id — before the renumbering they were
+                    // base + from; after it they carry base + kept[from]
+                    let target_obj = match kept.get(from as usize) { Some(&k) if k != u32::MAX => base + k, _ => panic!("--clone {new}={from}: the baked item {from} is not kept (no charts to copy)") };
+                    let src_charts: Vec<usize> = mp.binds.iter().enumerate().filter(|(_, b)| b.obj_group_idx / 4 == target_obj).map(|(i, _)| i).collect();
+                    if src_charts.is_empty() { eprintln!("--clone {new}={from}: the baked item {from} has no chart; {new} stays chartless"); continue; }
+                    for c in src_charts { mp.clone_chart(c, base + new); cloned += 1; }
+                }
+                mp.sort_by_object();
             }
             // the mapping's own count of items may live in the head/tail — the bind ids are what the loader uses
             // the writer keeps a table's STORED compressed bytes when it has them — drop them so the
@@ -10172,7 +10215,7 @@ variants: ");
             let payload = chunk.write(true);
             let out = f("--out").expect("--out");
             lightmap::mapio::save_with_chunk(&into, &payload, &out).expect("save");
-            println!("wrote {out}: {items} item charts renumbered (reduced → full), {tiles} tile charts kept, {oob} charts beyond the kept list; the full map has {} items, the reduced bake {}", tmmaps::map::MapFile::load(std::path::Path::new(&f("--into").unwrap())).items.len(), kept.len());
+            println!("wrote {out}: {items} item charts renumbered (reduced → full), {tiles} tile charts kept, {oob} charts beyond the kept list, {dropped} charts of dropped items removed, {cloned} charts cloned for new items; the full map has {} items, the reduced bake {}", tmmaps::map::MapFile::load(std::path::Path::new(&f("--into").unwrap())).items.len(), kept.len());
         }
         "materials" => {
             // lmtool materials MAP: the game-material links of the map's item models, triangles per link (over all
@@ -10264,6 +10307,14 @@ variants: ");
             let out = f("--out").expect("--out");
             lightmap::mapio::save_with_chunk(&m, &payload, &out).expect("save");
             println!("wrote {out} with the lightmap chunk of {} ({} B)", f("--from").unwrap(), payload.len());
+        }
+        "sttc-relight" => {
+            // lmtool sttc-relight --pak F:KEY… --source SRC --map OUT --objmap M.tsv --out LIT | --check MAP…:
+            // the source's editor lightmap renumbered for a `mapgeom sttc` output (lightmap::sttcrelight)
+            if let Err(e) = lightmap::sttcrelight::cli(&a) {
+                eprintln!("sttc-relight: {e}");
+                std::process::exit(1);
+            }
         }
         "strip" => {
             // lmtool strip MAP --out OUT: the map with an EMPTY lightmap chunk (has_lightmaps = 0) — the editor then
