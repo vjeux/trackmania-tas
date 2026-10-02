@@ -1450,6 +1450,24 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     marks.mark("map loaded");
     let collection = source.items.first().map(|it| it.collection_raw).unwrap_or(26);
     println!("  map collection {collection:#x}; {} blocks, {} items", source.blocks.len(), source.items.len());
+    // THE DISCARD REPORT (tmmaps::discard, 2026-10-01): every decision below that
+    // leaves a source element out, hides it, substitutes it or fails to convert
+    // it pushes a row; the file goes out at the end (TINY_DISCARD_REPORT).
+    let mut dis = tmmaps::discard::Discards::new(map, scale, "library");
+    // the file cells of every placement of a block key (authored + generated)
+    let key_cells = |name: &str, flags: u32| -> String {
+        let cells: Vec<[u8; 3]> = source.blocks.iter().chain(source.baked.iter()).filter(|b| b.name == name && b.flags == flags).map(|b| b.file_cell).collect();
+        tmmaps::discard::cells_str(&cells, 8)
+    };
+    let item_cell = |it: &tmmaps::map::ItemRec| -> [u8; 3] {
+        let g = tmmaps::map::ground_y(collection);
+        let c = |v: f32| ((v / 32.0).floor() as i64 + 1).clamp(0, 255) as u8;
+        [c(it.pos[0]), (((it.pos[1] - g) / 8.0).floor() as i64).clamp(0, 255) as u8, c(it.pos[2])]
+    };
+    let item_cells = |model: &str, variant: u8| -> String {
+        let cells: Vec<[u8; 3]> = source.items.iter().filter(|it| it.model == model && it.variant() == variant).map(item_cell).collect();
+        tmmaps::discard::cells_str(&cells, 8)
+    };
     // block infos are looked up under the map's own collection first
     // (BlueBay\GameCtnBlockInfo\…\Stadium\X carries the terrain modifiers a
     // Stadium block gets on BlueBay; a Stadium map wants the plain files)
@@ -1963,6 +1981,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             });
             let Some((_, bytes)) = found else {
                 outcomes.push(key.outcome("", key.source(), Err(format!("custom block: the map embeds no file ending in `{rel}`"))));
+                dis.push("CUSTOM_BLOCK_FAILED", key.name, &key_cells(key.name, key.flags), key.placements, &format!("custom block: the map embeds no file ending in `{rel}`"));
                 continue;
             };
             // the archetype's gameplay trigger, baked the way its pack block bakes
@@ -2034,20 +2053,28 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                     block_map.insert(key.map_key(), ("-".into(), 1, 1, vec![[0, 0, 0]]));
                     custom_blocks.insert(rel.to_string(), ("-".into(), 1, 1, vec![[0, 0, 0]]));
                     outcomes.push(key.outcome("-", key.source(), Ok(format!("custom block without visuals: intentionally no item ({})", m.notes.iter().take(2).cloned().collect::<Vec<_>>().join("; ")))));
+                    dis.push("CUSTOM_BLOCK_EMPTY", key.name, &key_cells(key.name, key.flags), key.placements, &format!("custom block without visuals ({})", m.notes.iter().take(2).cloned().collect::<Vec<_>>().join("; ")));
                 }
                 Err(e) if e.contains("has no inline mesh") && bytes.len() < 4096 => {
                     next_alias -= 1;
                     block_map.insert(key.map_key(), ("-".into(), 1, 1, vec![[0, 0, 0]]));
                     custom_blocks.insert(rel.to_string(), ("-".into(), 1, 1, vec![[0, 0, 0]]));
                     outcomes.push(key.outcome("-", key.source(), Ok(format!("empty custom block ({} bytes, no mesh): intentionally no item", bytes.len()))));
+                    dis.push("CUSTOM_BLOCK_EMPTY", key.name, &key_cells(key.name, key.flags), key.placements, &format!("empty custom block ({} bytes, no mesh)", bytes.len()));
                 }
-                Err(e) => outcomes.push(key.outcome(&alias, key.source(), Err(format!("custom block: {e}")))),
+                Err(e) => {
+                    dis.push("CUSTOM_BLOCK_FAILED", key.name, &key_cells(key.name, key.flags), key.placements, &format!("custom block: {e}"));
+                    outcomes.push(key.outcome(&alias, key.source(), Err(format!("custom block: {e}"))));
+                }
             }
             continue;
         }
         let (path, bi) = match info {
             Ok(x) => x,
             Err(e) => {
+                // no block info in the packs: the FCLeft class (Fall 2026 08/13 — a
+                // generated hill filler the pack spells only as …FCRight)
+                dis.push("BLOCK_NO_INFO", key.name, &key_cells(key.name, key.flags), key.placements, e);
                 outcomes.push(key.outcome("", key.source(), Err(e.clone())));
                 continue;
             }
@@ -2067,16 +2094,22 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                     Some(l) => format!("{} [{l}]", key.source()),
                     None => key.source(),
                 };
+                let code = if why.contains("ambient") { "BLOCK_AMBIENT_ZONE" } else if why.contains("grass floor") { "BLOCK_GRASS_FLOOR" } else { "BLOCK_EMPTY_VARIANT" };
+                dis.push(code, key.name, &key_cells(key.name, key.flags), key.placements, &format!("{source}: {why}"));
                 outcomes.push(key.outcome("-", source, Ok(why)));
                 continue;
             }
             BlockPlan::Refused { source, error } => {
+                dis.push("BLOCK_REFUSED", key.name, &key_cells(key.name, key.flags), key.placements, &format!("{source}: {error}"));
                 outcomes.push(key.outcome("", source, Err(error)));
                 continue;
             }
             BlockPlan::Reuse { alias, footprint } => {
                 if let Some(auto) = footprint.auto_terrain {
                     auto_terrain.insert(key.map_key(), auto);
+                }
+                if alias == "-" {
+                    dis.push("BLOCK_EMPTY_PREFAB", key.name, &key_cells(key.name, key.flags), key.placements, "same recipe as an empty prefab (no entities): no item");
                 }
                 block_map.insert(key.map_key(), (alias, footprint.sx, footprint.sz, footprint.units));
                 continue;
@@ -2117,6 +2150,8 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 if deepened_here {
                     deepened.push(key.source());
                 }
+                // the discard report: every loss note of the bake, per placement of this key
+                tmmaps::discard::push_notes(&mut dis, &m.notes, name, &key_cells(name, flags), key.placements);
                 // the block's sign-logo pictures ride next to the items like the
                 // pack gate items' (the library zip's Items/SignLogo<Kind>.dds)
                 for (file, dds) in &m.pictures {
@@ -2131,6 +2166,8 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 // scaled frame, yaw), the species one step smaller like the
                 // map's own vegetation. Only in `substitute` mode.
                 let mut re_emitted = 0usize;
+                let mut lost_species: BTreeMap<String, usize> = BTreeMap::new();
+                let mut stock_species: BTreeMap<String, (usize, String)> = BTreeMap::new();
                 if substitute {
                     for (p, iso) in &m.veget {
                         let yaw = (-iso[2]).atan2(iso[0]);
@@ -2142,18 +2179,35 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                             baked_tree_rows += 1;
                             continue;
                         }
-                        let Some((orig, item)) = veget_item_pair(store, collection, p, scale, &mut veget_cache) else { continue };
+                        let Some((orig, item)) = veget_item_pair(store, collection, p, scale, &mut veget_cache) else {
+                            // NO stock item and no bake for this species: the tree is LOST
+                            *lost_species.entry(p.rsplit('\\').next().unwrap_or(p).to_string()).or_default() += 1;
+                            continue;
+                        };
                         let sink = veget_sink(store, &orig, &item, scale, &mut height_cache);
                         if sink > 0.0 {
                             sunk_rows += 1;
                         }
+                        let e = stock_species.entry(item.clone()).or_insert((0, orig.clone()));
+                        e.0 += 1;
                         veget_rows.push_str(&format!("v@{ident}\t{item}\t{:.3}\t{:.3}\t{:.3}\t{:.4}\n", iso[9] * scale, iso[10] * scale - sink, iso[11] * scale, yaw));
                         veget_list.entry(ident.clone()).or_default().push((item.clone(), [iso[9] * scale, iso[10] * scale - sink, iso[11] * scale]));
                         re_emitted += 1;
                     }
+                } else if !m.veget.is_empty() {
+                    for (p, _) in &m.veget {
+                        *lost_species.entry(p.rsplit('\\').next().unwrap_or(p).to_string()).or_default() += 1;
+                    }
+                }
+                for (sp, n) in &lost_species {
+                    dis.push("PREFAB_VEGET_LOST", name, &key_cells(name, flags), n * key.placements, &format!("{sp}: {n} tree entities per placement of {name}, no VegetTreeModel bake and no stock item: not placed"));
+                }
+                for (item, (n, orig)) in &stock_species {
+                    dis.push("TREE_STOCK_SMALL", name, &key_cells(name, flags), n * key.placements, &format!("{orig}: {n} entities per placement of {name} placed as the STOCK item {item} (full size, placement scale ignored by the game; sunk when taller)"));
                 }
                 let summary = format!("{} bytes, {} visuals, {} collision tris, {} vegetation entities ({} re-emitted as items), {} other skips{wp}{}{}", bytes.len(), nv, m.surf_triangles.len(), veget, re_emitted, other_skips, lod_summary(&m), m.notes.iter().filter(|n| n.contains("Water-physics collision triangles") || n.contains("TINY_FLOOR_PHYSICS") || n.contains("ad screen face") || n.contains("screen logo picture")).map(|n| format!("; {}", n.trim())).collect::<String>());
                 if nv == 0 {
+                    dis.push("BLOCK_NO_VISUALS", name, &key_cells(name, flags), key.placements, &format!("[{label}] no visuals ({summary}); notes: {}", m.notes.iter().take(3).cloned().collect::<Vec<_>>().join(" | ")));
                     outcomes.push(key.outcome(&alias, format!("{} [{label}] {recipe}", key.source()), Err(format!("no visuals ({summary}); notes: {}", m.notes.iter().take(3).cloned().collect::<Vec<_>>().join(" | ")))));
                     continue;
                 }
@@ -2173,9 +2227,13 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 next_alias -= 1;
                 block_map.insert(key.map_key(), ("-".into(), sx, sz, units.clone()));
                 alias_of_recipe.insert(recipe.clone(), "-".into());
+                dis.push("BLOCK_EMPTY_PREFAB", name, &key_cells(name, flags), key.placements, &format!("[{label}] empty prefab (no entities): no item ({recipe})"));
                 outcomes.push(key.outcome("-", format!("{} [{label}] {recipe}", key.source()), Ok("empty prefab (no entities): intentionally no item".into())));
             }
-            Err(e) => outcomes.push(key.outcome(&alias, format!("{} [{label}] {recipe}", key.source()), Err(e))),
+            Err(e) => {
+                dis.push("BLOCK_BAKE_FAILED", name, &key_cells(name, flags), key.placements, &format!("[{label}] {e}"));
+                outcomes.push(key.outcome(&alias, format!("{} [{label}] {recipe}", key.source()), Err(e)));
+            }
         }
     }
     // item models — one library entry per (model, VARIANT): the placement's
@@ -2370,6 +2428,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             Some(name) => match crate::light_skin::lookup(name) {
                 Some(s) => Some(s),
                 None => {
+                    dis.push("ITEM_LIGHT_SKIN_UNKNOWN", model, &item_cells(model, *variant), *n, &format!("light skin {name}: not one of the game's LightColors swatches; the placement keeps its stock model UNSCALED"));
                     outcomes.push(Outcome { alias: String::new(), kind: "item", source: format!("{model} skin {name}"), placements: *n, result: Err(format!("light skin {name}: not one of the game's LightColors swatches")) });
                     continue;
                 }
@@ -2424,6 +2483,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 let kind_word = if scale > 1.0 { "double-size" } else { "half-size" };
                 // the report names the variant when only that one stands in
                 let source = if stock_scaled_variant(model, 0, scale) == Some(small) { model.clone() } else { format!("{model} v{variant}") };
+                dis.push("ITEM_STOCK_TWIN", model, &item_cells(model, *variant), *n, &format!("{source} -> stock {kind_word} twin {small}: {why}"));
                 outcomes.push(Outcome { alias: small.to_string(), kind: "item", source, placements: *n, result: Ok(format!("stock {kind_word} variant {small}: the game's own item, {why}")) });
                 continue;
             }
@@ -2521,6 +2581,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             Ok((out, m)) if { let (nv, nd, _) = n_of(&m); nv > 0 || nd > 0 } => {
                 let (nv, nd, nl) = n_of(&m);
                 item_alias_n += 1;
+                tmmaps::discard::push_notes(&mut dis, &m.notes, model, &item_cells(model, *variant), *n);
                 let lights = if nl == 0 { String::new() } else { format!(", {nl} light(s) embedded") };
                 let moving = if nd == 0 { String::new() } else { format!(", {nd} moving part(s)") };
                 let summary = format!("{} bytes, {} visuals, {} collision tris{lights}{moving}{}{}", out.len(), nv, m.surf_triangles.len(), lod_summary(&m), match m.waypoint_type { Some(t) => format!(", waypoint {t} trigger {} spawn {:?}", m.trigger.is_some(), m.spawn), None => String::new() });
@@ -2539,6 +2600,8 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             // (384 in Summer 05) is 3-6 spring trees and a cypress.
             Ok((_, m)) if !m.veget.is_empty() && substitute => {
                 let mut placed = 0usize;
+                let mut lost_species: BTreeMap<String, usize> = BTreeMap::new();
+                let mut stock_species: BTreeMap<String, (usize, String)> = BTreeMap::new();
                 for (p, iso) in &m.veget {
                     let yaw = (-iso[2]).atan2(iso[0]);
                     if let Some(tree) = baker.ident_for(store, p, scale, collection, &mut files, &mut pictures, &mut outcomes) {
@@ -2548,20 +2611,35 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                         baked_tree_rows += 1;
                         continue;
                     }
-                    let Some((orig, item)) = veget_item_pair(store, collection, p, scale, &mut veget_cache) else { continue };
+                    let Some((orig, item)) = veget_item_pair(store, collection, p, scale, &mut veget_cache) else {
+                        *lost_species.entry(p.rsplit('\\').next().unwrap_or(p).to_string()).or_default() += 1;
+                        continue;
+                    };
                     let sink = veget_sink(store, &orig, &item, scale, &mut height_cache);
                     if sink > 0.0 {
                         sunk_rows += 1;
                     }
+                    let e = stock_species.entry(item.clone()).or_insert((0, orig.clone()));
+                    e.0 += 1;
                     veget_rows.push_str(&format!("v@{model}\t{item}\t{:.3}\t{:.3}\t{:.3}\t{:.4}\n", iso[9] * scale, iso[10] * scale - sink, iso[11] * scale, yaw));
                     veget_list.entry(model.clone()).or_default().push((item.clone(), [iso[9] * scale, iso[10] * scale - sink, iso[11] * scale]));
                     placed += 1;
                 }
+                for (sp, k) in &lost_species {
+                    dis.push("PREFAB_VEGET_LOST", model, &item_cells(model, *variant), k * n, &format!("{sp}: {k} tree entities per placement of cluster item {model}, no VegetTreeModel bake and no stock item: not placed"));
+                }
+                for (item, (k, orig)) in &stock_species {
+                    dis.push("TREE_STOCK_SMALL", model, &item_cells(model, *variant), k * n, &format!("{orig}: {k} entities per placement of cluster item {model} placed as the STOCK item {item} (full size, placement scale ignored by the game)"));
+                }
+                dis.push("ITEM_CLUSTER_SPLIT", model, &item_cells(model, *variant), *n, &format!("vegetation cluster {source_name}: the placement is parked, {placed} of {} trees re-emitted per placement", m.veget.len()));
                 remember("-");
                 item_map.insert(key, "-".into());
                 outcomes.push(Outcome { alias: "-".into(), kind: "item", source: source_name, placements: *n, result: Ok(format!("vegetation cluster: {} of {} trees re-emitted as stock items per placement", placed, m.veget.len())) });
             }
-            Ok((_, m)) => outcomes.push(Outcome { alias: String::new(), kind: "item", source: source_name, placements: *n, result: Err(format!("no visuals; notes: {}", m.notes.iter().take(3).cloned().collect::<Vec<_>>().join(" | "))) }),
+            Ok((_, m)) => {
+                dis.push("ITEM_NO_VISUALS", model, &item_cells(model, *variant), *n, &format!("{source_name}: no visuals came out of the bake; the placement keeps its model UNSCALED; notes: {}", m.notes.iter().take(3).cloned().collect::<Vec<_>>().join(" | ")));
+                outcomes.push(Outcome { alias: String::new(), kind: "item", source: source_name, placements: *n, result: Err(format!("no visuals; notes: {}", m.notes.iter().take(3).cloned().collect::<Vec<_>>().join(" | "))) })
+            }
             Err(e) if e.contains("procedural vegetation") => match if substitute { "substitute" } else { veget_mode } {
                 "substitute" => {
                     // the variant names the SPECIES (`…\PalmTreeBigB1.VegetTreeModel.Gbx`):
@@ -2589,6 +2667,8 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                             if sink > 0.0 {
                                 sink_map.insert(key.clone(), sink);
                             }
+                            let code = if sub == orig { "ITEM_VEGET_KEPT_UNSCALED" } else { "ITEM_VEGET_SUBST" };
+                            dis.push(code, model, &item_cells(model, *variant), *n, &format!("{source_name}: re-pointed at stock {sub} by {how} (full size, placement scale ignored by the game), sunk {sink:.1} m"));
                             remember(&sub);
                             item_map.insert(key, sub.clone());
                             outcomes.push(Outcome { alias: sub.to_string(), kind: "item", source: source_name, placements: *n, result: Ok(format!("vegetation: re-pointed at stock {sub} by {how} (placement scale is ignored by the game), sunk {sink:.1} m")) });
@@ -2599,6 +2679,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                             if sink > 0.0 {
                                 sink_map.insert(key.clone(), sink);
                             }
+                            dis.push("ITEM_VEGET_KEPT_UNSCALED", model, &item_cells(model, *variant), *n, &format!("{source_name}: already the smallest species, kept as the stock item (full size), sunk {sink:.1} m"));
                             remember(model);
                             item_map.insert(key, model.clone());
                             outcomes.push(Outcome { alias: model.clone(), kind: "item", source: source_name, placements: *n, result: Ok(format!("vegetation: already a small species, kept, sunk {sink:.1} m")) });
@@ -2606,16 +2687,21 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                     }
                 }
                 "drop" => {
+                    dis.push("ITEM_VEGET_DROPPED", model, &item_cells(model, *variant), *n, &format!("{source_name}: vegetation dropped (--veget drop)"));
                     remember("-");
                     item_map.insert(key, "-".into());
                     outcomes.push(Outcome { alias: "-".into(), kind: "item", source: source_name, placements: *n, result: Ok("vegetation: dropped".into()) });
                 }
                 _ => {
+                    dis.push("ITEM_VEGET_FULLSIZE", model, &item_cells(model, *variant), *n, &format!("{source_name}: vegetation kept full size (--veget keep)"));
                     remember(model);
                     outcomes.push(Outcome { alias: model.clone(), kind: "item", source: source_name, placements: *n, result: Ok("vegetation: kept full size".into()) });
                 }
             },
-            Err(e) => outcomes.push(Outcome { alias: String::new(), kind: "item", source: source_name, placements: *n, result: Err(e) }),
+            Err(e) => {
+                dis.push("ITEM_FAILED", model, &item_cells(model, *variant), *n, &format!("{source_name}: {e}; the placement keeps its model UNSCALED (a custom item: its original file is carried over)"));
+                outcomes.push(Outcome { alias: String::new(), kind: "item", source: source_name, placements: *n, result: Err(e) })
+            }
         }
     }
     marks.mark("items: bookkeeping");
@@ -2790,6 +2876,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         if prefix == "b@" && drop_baked.iter().any(|g| glob_match(g, &b.name)) {
             mapping.push_str(&format!("b@{}\t-\n", b.index));
             *dropped_baked.entry(b.name.clone()).or_insert(0) += 1;
+            dis.push("KNOB_DROP_BAKED", &b.name, &tmmaps::discard::cell_str(b.file_cell), 1, "generated filler left out by name (TINY_DROP_BAKED, a hand-written deletion list)");
             rows += 1;
             continue;
         }
@@ -2807,12 +2894,14 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             mapping.push_str(&format!("b@{}\t-\n", b.index));
             rows += 1;
             ghost_left_out += 1;
+            dis.push("BAKED_GHOST_CLIP", &b.name, &tmmaps::discard::cell_str(b.file_cell), 1, "generated clip of a GHOST-mode block (record flag bit 28): the runtime draws none (measured 2026-09-09 on 29 cameras of Summer 20; Summer 15's pool border); TINY_GHOST_CLIPS=1 keeps it");
             continue;
         }
         // the runtime does not draw a record in a cell another block's unit occupies (fact 2 above)
         if prefix == "b@" && occupied_hidden.contains(&b.index) {
             mapping.push_str(&format!("b@{}\t-\n", b.index));
             rows += 1;
+            dis.push("BAKED_OCCUPIED_PROBE", &b.name, &tmmaps::discard::cell_str(b.file_cell), 1, "generated record in a cell another block's unit occupies left out (TINY_OCCUPIED_RULE probe, not an established rule)");
             continue;
         }
         let inherited_mods = if prefix == "b@" { baked_key.get(&b.index).cloned().unwrap_or_default() } else { String::new() };
@@ -2854,7 +2943,13 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                     }
                 }
             }
-            None => *missing_blocks.entry(format!("{} {:08X}", b.name, b.flags)).or_insert(0) += 1,
+            None => {
+                *missing_blocks.entry(format!("{} {:08X}", b.name, b.flags)).or_insert(0) += 1;
+                // an AUTHORED block without a model refuses the map in `tmmaps tiny`; a
+                // GENERATED one has no mapping row and `tmmaps tiny` SKIPS it silently —
+                // the Fall 2026 08/13 FCLeft hill fillers (BLOCK_NO_INFO above says why)
+                dis.push(if prefix == "b@" { "BAKED_NO_MODEL" } else { "BLOCK_NO_MODEL" }, &b.name, &tmmaps::discard::cell_str(b.file_cell), 1, &format!("{} {:08X}: no model came out of the library (see its BLOCK_* row); {}", b.name, b.flags, if prefix == "b@" { "the generated record gets no mapping row and tmmaps tiny skips it SILENTLY" } else { "tmmaps tiny refuses the map" }));
+            }
         }
     }
     let mut missing_items: BTreeMap<String, usize> = BTreeMap::new();
@@ -2870,6 +2965,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         if drop_items.iter().any(|g| glob_match(g, &it.model)) {
             mapping.push_str(&format!("i@{}\t-\n", it.index));
             *dropped_items.entry(it.model.clone()).or_insert(0) += 1;
+            dis.push("KNOB_DROP_ITEMS", &it.model, &tmmaps::discard::cell_str(item_cell(it)), 1, "source item left out by name (TINY_DROP_ITEMS, a diagnostic knob)");
             rows += 1;
             continue;
         }
@@ -2889,9 +2985,11 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 if is_flag(it) && target.ends_with(".Item.Gbx") && crate::static_item::build::tween_parts_enabled() {
                     if driver_hidden(it) {
                         drivers += 1;
+                        dis.push("FLAG_DRIVER_HACK", &it.model, &tmmaps::discard::cell_str(item_cell(it)), 1, "converted flag: a stock flag is hung upside down under the placement to drive the tween cloth (TINY_FLAG_DRIVER hack)");
                     } else {
                         mapping.push_str(&format!("xf@{}\n", it.index));
                         driver_skipped.push(it.index);
+                        dis.push("FLAG_STILL", &it.model, &tmmaps::discard::cell_str(item_cell(it)), 1, "converted flag over open air: no place to hide a stock driver, its cloth stays STILL (frame 0)");
                     }
                 }
                 // `iv@INDEX<TAB>0`: a stock stand-in has its own variant list —
@@ -2926,7 +3024,10 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                     }
                 }
             }
-            None => *missing_items.entry(it.model.clone()).or_insert(0) += 1,
+            None => {
+                *missing_items.entry(it.model.clone()).or_insert(0) += 1;
+                dis.push("ITEM_NO_MAPPING", &it.model, &tmmaps::discard::cell_str(item_cell(it)), 1, &format!("item {} {}: no library target (see its ITEM_* row); the placement keeps its model at placement scale {scale} — a custom item keeps its ORIGINAL file, UNSCALED", it.index, it.model));
+            }
         }
     }
     mapping.push_str(&veget_rows);
@@ -2940,12 +3041,31 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     let is_baked = |t: &crate::tree_clear::Tree| baker.dims.contains_key(&t.species);
     let baked_dropped = verdict.dropped.iter().filter(|(t, _, _)| is_baked(t)).count();
     let baked_tested = trees.iter().filter(|t| is_baked(t)).count();
-    for (t, _, _) in &verdict.dropped {
+    for (t, owner, y) in &verdict.dropped {
         if is_baked(t) {
             continue;
         }
         mapping.push_str(&t.row);
         mapping.push('\n');
+        dis.push("TREE_CLEARED", &t.species, &format!("{:.0},{:.0},{:.0}", t.pos[0] / scale, t.pos[1] / scale, t.pos[2] / scale), 1, &format!("stock stand-in tree {} ({}, r {:.1} h {:.1}) overlaps the deck {owner} at y {y:.1}: left out (tree_clear)", t.species, t.owner, t.radius, t.height));
+    }
+    // the Sea foundation: BlueBay's Sea records stay in the file FULL SIZE (the
+    // open sea; a pond gets its half-size floor item)
+    {
+        let sea = source.baked.iter().chain(source.blocks.iter()).filter(|b| b.name == "Sea" && !ponds.contains(&b.file_cell)).count();
+        if sea > 0 {
+            dis.push("SEA_FOUNDATION_KEPT", "Sea", "", sea, &format!("{sea} Sea records kept in the file at FULL size as the foundation (open sea; {} pond cells get a half-size floor item); the regenerated sea depends on the genealogy policy (GENEALOGY_* row of the place stage)", ponds.len()));
+        }
+    }
+    // the tree bakes' verdicts (TreeBaker::ident_for): species kept on the stock path
+    for o in outcomes.iter().filter(|o| o.kind == "tree") {
+        match &o.result {
+            Ok(s) if o.alias == "-" && s.contains("bake threshold") => dis.push("TREE_STOCK_SMALL", &o.source, "", 0, &format!("species {}: {s} (every placement of it is a FULL-size stock item)", o.source)),
+            Ok(s) if o.alias == "-" && s.contains("no collision hull") => dis.push("TREE_HULLLESS_STOCK", &o.source, "", 0, &format!("species {}: {s}", o.source)),
+            Err(e) if e.contains("no VegetTreeModel") => dis.push("TREE_NO_MODEL", &o.source, "", 0, &format!("species {}: {e}", o.source)),
+            Err(e) => dis.push("TREE_BAKE_FAILED", &o.source, "", 0, &format!("species {}: {e} (every placement of it is a FULL-size stock item)", o.source)),
+            _ => {}
+        }
     }
     if baked_tested > 0 {
         println!("  baked trees: {baked_tested} judged against the decks, {baked_dropped} would be dropped (census only, none dropped)");
@@ -3125,6 +3245,10 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         *stock.entry(model.to_string()).or_insert(0) += 1;
     }
     let missing: Vec<(String, usize)> = stock.into_iter().filter(|(name, _)| find_item_file(store, name).is_none()).collect();
+    // the discard report of this stage (TINY_DISCARD_REPORT=<prefix> -> <prefix>-library.tsv)
+    if let Some(p) = dis.write_env() {
+        println!("  discard report: {} rows -> {}", dis.rows.len(), p.display());
+    }
     if !missing.is_empty() {
         println!("  STOCK ITEMS NOT IN THESE PACKS (play mode will refuse the map):");
         for (k, n) in &missing {

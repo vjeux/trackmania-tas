@@ -27,6 +27,7 @@
 pub mod census;
 pub mod cli;
 pub mod controls;
+pub mod discard;
 pub mod dropscan;
 pub mod fillers;
 pub mod gbx;

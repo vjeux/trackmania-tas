@@ -225,6 +225,17 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             let base = env["TINY_ALIAS_BASE"].clone();
             env.insert("TINY_PICTURE_SUFFIX".to_string(), format!("_{}", &base[base.len().saturating_sub(6)..base.len().saturating_sub(3)]));
         }
+        // THE DISCARD REPORT (tmmaps::discard, 2026-10-01): the library and the
+        // placer each write `<out>/discard-<stage>.tsv`; the build concatenates
+        // them into `<out>/discard.tsv` (and copies it to `--discard-report FILE`).
+        // Every rebuild of the size ladder rewrites it: the file describes the
+        // build that stands.
+        let discard_prefix = out.join("discard");
+        env.insert("TINY_DISCARD_REPORT".to_string(), discard_prefix.display().to_string());
+        for stage in ["library", "place"] {
+            let _ = std::fs::remove_file(out.join(format!("discard-{stage}.tsv")));
+        }
+        let _ = std::fs::remove_file(out.join("discard.tsv"));
         println!("{nn}: {} ({}) -> {} (alias base {})", src.file_name().unwrap_or_default().to_string_lossy(), collection_name(coll), out.display(), env["TINY_ALIAS_BASE"]);
         let t0 = std::time::Instant::now();
         let mut lib = Command::new(&mapgeom);
@@ -450,6 +461,35 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         }
         let n_items = std::fs::read_dir(libx.join("Items")).map(|rd| rd.count()).unwrap_or(0);
         let size = std::fs::metadata(&tiny_out).map(|m| m.len()).unwrap_or(0);
+        // the discard report of this build: library rows + placer rows, one file
+        {
+            let mut all = String::from(tmmaps::discard::HEADER);
+            all.push('\n');
+            let mut n = 0usize;
+            for stage in ["library", "place"] {
+                if let Ok(t) = std::fs::read_to_string(out.join(format!("discard-{stage}.tsv"))) {
+                    for l in t.lines().skip(1).filter(|l| !l.trim().is_empty()) {
+                        all.push_str(l);
+                        all.push('\n');
+                        n += 1;
+                    }
+                }
+            }
+            std::fs::write(out.join("discard.tsv"), &all).map_err(|e| format!("discard.tsv: {e}"))?;
+            // a build at a ladder rung (--lod-pick, the pipeline's size ladder or the
+            // shipped recipe replayed): the rung is a map-wide loss of its own
+            if let Some(level) = f("--lod-pick") {
+                let mv = f("--lod-pick-min-verts").unwrap_or_else(|| "0".into());
+                let map_name = tiny_out.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                all.push_str(&format!("{map_name}\t{scale}\tbuild\tMAP_LOD_LADDER\t{}\twhole map\t\t1\tbuilt at ladder rung lod-pick {level} (parts under {mv} vertices keep their nearest level): the size cap's cost — the VISUAL_LOD_PICK_SKIPPED rows are the geometry it dropped\n", tmmaps::discard::loss_of("MAP_LOD_LADDER")));
+                std::fs::write(out.join("discard.tsv"), &all).map_err(|e| format!("discard.tsv: {e}"))?;
+                n += 1;
+            }
+            if let Some(p) = f("--discard-report") {
+                std::fs::write(&p, &all).map_err(|e| format!("{p}: {e}"))?;
+            }
+            println!("  discard report: {n} rows -> {}", out.join("discard.tsv").display());
+        }
         println!("  {} ({:.1} MB), {n_items} library files, {:.0} s", tiny_out.display(), size as f64 / 1e6, t0.elapsed().as_secs_f64());
     }
     if failed > 0 {

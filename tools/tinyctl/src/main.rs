@@ -16,6 +16,7 @@
 //! `selfbuild`; the shooting half is `shootctl shootset`.
 
 mod boxbuild;
+mod discard;
 mod lightmap;
 mod loadloop;
 mod camcheck;
@@ -226,6 +227,7 @@ fn main() {
         "publish-dir" => batch::publish_dir_cmd(rest),
         "tracker-club" => batch::tracker_club_cmd(rest),
         "pipeline" => pipeline::cmd(rest),
+        "discard-table" => discard::cmd(rest),
         "bake-copies" => bakecopy::cmd(rest),
         "lmbake" => lmbake::cmd(rest),
         "lit-verify" => lmbake::verify(rest),

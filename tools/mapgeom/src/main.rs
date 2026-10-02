@@ -2392,6 +2392,11 @@ fn main() {
             // under TDOSN with the atlas in the DiffuseO slot once the visuals carry a TexCoord1)
             let veget = flag(&a.rest, "--veget").unwrap_or_else(|| "bake".into());
             let coll = flag(&a.rest, "--collection").unwrap_or_default();
+            // --discard-report PREFIX: the discard rows of this stage go to
+            // `PREFIX-library.tsv` (tmmaps::discard; the same as TINY_DISCARD_REPORT)
+            if let Some(p) = flag(&a.rest, "--discard-report") {
+                std::env::set_var("TINY_DISCARD_REPORT", p);
+            }
             mapgeom::tiny_library::build(
                 &mut store,
                 map,
