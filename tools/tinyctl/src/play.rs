@@ -58,7 +58,17 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     let wheels = f("--wheels-ms").map(|ms| format!(" --wheels-ms {ms}")).unwrap_or_default();
     // --via-editor: EditMap + the editor's TEST button instead of the title's PlayMap
     let via = if args.iter().any(|a| a == "--via-editor") { " --via-editor" } else { "" };
-    let cmd = format!("{shootctl} playshots --detach --map {remote_map} --outdir {remote_dir} --tag {tag} --shots {shots} --every-ms {every_ms} --first-ms {first_ms} --timeout {timeout}{drive}{camlog}{wheels}{via}");
+    // --hold PURPOSE: the whole play runs inside ONE `tmdrive run` hold (the box-wide lock the
+    // 2026-10 lanes share: a holder sees who has the box and why) — playshots in the foreground
+    // under nohup instead of --detach, so the hold lasts exactly as long as the play
+    let cmd = match f("--hold") {
+        Some(purpose) => {
+            let tmdrive = f("--box-tmdrive").unwrap_or_else(|| format!("{BOX_TOOLS}/tmdrive"));
+            let purpose = purpose.replace('\'', "");
+            format!("mkdir -p {remote_dir}; rm -f {remote_dir}/done-play.txt; nohup setsid {tmdrive} run --purpose '{purpose}' --wait 900 -- {shootctl} playshots --map {remote_map} --outdir {remote_dir} --tag {tag} --shots {shots} --every-ms {every_ms} --first-ms {first_ms} --timeout {timeout}{drive}{camlog}{wheels}{via} > {remote_dir}/playshots.log 2>&1 < /dev/null &")
+        }
+        None => format!("{shootctl} playshots --detach --map {remote_map} --outdir {remote_dir} --tag {tag} --shots {shots} --every-ms {every_ms} --first-ms {first_ms} --timeout {timeout}{drive}{camlog}{wheels}{via}"),
+    };
     eprintln!("playing {tag} on the box ({shots} frames) — waits for the render lock if another thread holds the game …");
     let started = wsx.sh(&cmd)?;
     if wsx.verbose {
