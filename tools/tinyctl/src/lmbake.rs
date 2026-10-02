@@ -1,5 +1,5 @@
 //! `tinyctl lmbake --maps A.Map.Gbx,B.Map.Gbx,… --lit-dir DIR [--base auto|N] [--template-probes] [--report R.tsv] [--jobs J]
-//!   [--quality Q] [--raster] [--lm-from-map] [--pak-dir DIR] [--bake-arg X]… [--copies BAKEA=SHIPA,…]`
+//!   [--quality Q] [--raster] [--lm-from-map] [--pak-dir DIR] [--bake-arg X]… [--copies BAKEA=SHIPA,…] [--no-env-fit]`
 //! THE FALL 2026 GIANT RECIPE (2026-10-01): `--quality 4 --raster --lm-from-map --pak-dir /tmp/paks` — the transcribed
 //! chain with the map's collection pak (`<pak-dir>/<Envir>.pak:<key>`, the terrain collections' key or Stadium's;
 //! Stadium.pak + Maniaplanet.pak beside it are lmtool's own defaults); `--copies BAKE=SHIPPED,…` bakes the BAKE copy
@@ -49,6 +49,10 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     for flag in ["--raster", "--lm-from-map", "--env-fit-grid", "--no-decoration"] {
         if tmmaps::cli::has(args, flag) { bake_extra.push(flag.into()); }
     }
+    // THE GIANT RULE (coordinator 2026-10-01 22:41 PT): a map whose grid is bigger than the 64-cell decoration gets the
+    // environment and the sky dome scaled with it (`lmtool bake --env-fit-grid`) — default on for size > 64 under --lm-from-map;
+    // --no-env-fit opts out (the editor's darkening beyond the playfield, reproduced)
+    let env_fit_auto = tmmaps::cli::has(args, "--lm-from-map") && !tmmaps::cli::has(args, "--env-fit-grid") && !tmmaps::cli::has(args, "--no-env-fit");
     for (i, a) in args.iter().enumerate() {
         if a == "--bake-arg" { if let Some(v) = args.get(i + 1) { bake_extra.extend(v.split_whitespace().map(String::from)); } }
     }
@@ -101,6 +105,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                 let mut c = Command::new(&lmtool);
                 c.arg("bake").arg(map).arg("--out").arg(&tmp).arg("--base").arg(&base_flag);
                 c.args(&bake_extra);
+                if env_fit_auto && m.size[0].max(m.size[2]) > 64 { c.arg("--env-fit-grid"); }
                 if let Some(p) = &pak_arg { c.arg("--pak").arg(p); }
                 if template_probes {
                     c.arg("--template-probes");
