@@ -430,6 +430,13 @@ pub fn cmd(args: &[String]) {
     // --keep-zone-block: one authored block survives the deletion (the editor's
     // lightmap pass crashes on a map with none; `tinyctl lightmap`)
     let keep_zone_flag = args.iter().any(|a| a == "--keep-zone-block");
+    // --tiles-oracle FILE: the game's own verdict per terrain tile (drawn / hidden),
+    // read off the SOURCE's editor lightmap by `lmtool tile-oracle` — a tile the
+    // game draws has a chart, one it hides has none. Takes precedence over the
+    // unit rule (`tiles::HiddenTiles::hides`) for every record it names
+    // (2026-10-02, Fall 06's hole beside the reactor gate: a DirtCliff4 under a
+    // ghost-mode DecoWallDiag1 the rule hid and the game draws).
+    let tiles_oracle: Option<tiles::TileOracle> = cli::flag(args, "--tiles-oracle").map(|p| tiles::TileOracle::read(std::path::Path::new(p)).unwrap_or_else(|e| panic!("--tiles-oracle: {e}")));
     // --name NAME sets the map's name outright; --keep-name leaves the source's
     // (default: "Tiny " + the source name)
     let name_flag: Option<String> = cli::flag(args, "--name").map(String::from);
@@ -841,6 +848,21 @@ pub fn cmd(args: &[String]) {
         mapping.by_index.get(&b.index).or_else(|| mapping.by_name.get(&b.name)).map(|m| (m.model.clone(), m.units.clone(), m.auto_terrain.clone()))
     };
     let hidden = hidden_tiles(&source, &zones, &info_of);
+    // the oracle first, the rule for the records it does not name; the
+    // disagreements are counted for the log (the rule's remaining error)
+    let (mut oracle_hidden, mut oracle_drawn, mut oracle_vs_rule) = (0usize, 0usize, 0usize);
+    let mut tile_hidden = |b: &BlockRec, baked: bool| -> bool {
+        let rule = hidden.hides(b);
+        let game = tiles_oracle.as_ref().and_then(|o| if baked { o.baked(b.index) } else { o.authored(b.index) });
+        match game {
+            Some(h) => {
+                if h { oracle_hidden += 1 } else { oracle_drawn += 1 }
+                if h != rule { oracle_vs_rule += 1 }
+                h
+            }
+            None => rule,
+        }
+    };
     let undeclared: Vec<String> = source
         .blocks
         .iter()
@@ -848,7 +870,7 @@ pub fn cmd(args: &[String]) {
         .filter(|t| zones.contains(&t.name) && hidden.kept_at_file_cell(t))
         .map(|t| format!("{} at {:?} under {}", t.name, t.coords(), hidden.occupant(t).and_then(|i| source.blocks.get(i)).map(|b| b.name.as_str()).unwrap_or("?")))
         .collect();
-    println!("  terrain tiles under blocks: {} blocks with geometry occupy tile cells, {} declare their auto terrain; {} tiles KEPT at a block's file cell that is not one of its units (drawn, as the game does){}", hidden.blocks, hidden.declaring, undeclared.len(), if undeclared.is_empty() { String::new() } else { format!(" ({})", undeclared.iter().take(12).cloned().collect::<Vec<_>>().join("; ")) });
+    println!("  terrain tiles under blocks: {} GROUND-variant blocks (ghost or not, geometry or not) occupy tile cells, {} declare their auto terrain; {} tiles KEPT at a block's file cell that is not one of its units (drawn, as the game does){}", hidden.blocks, hidden.declaring, undeclared.len(), if undeclared.is_empty() { String::new() } else { format!(" ({})", undeclared.iter().take(12).cloned().collect::<Vec<_>>().join("; ")) });
     let mut replaced_terrain = 0usize;
     let mut replaced_baked_terrain = 0usize;
     // Authored blocks occupy appended clones.
@@ -864,7 +886,7 @@ pub fn cmd(args: &[String]) {
             empty_blocks += 1;
             continue;
         }
-        if zones.contains(&b.name) && hidden.hides(b) {
+        if zones.contains(&b.name) && tile_hidden(b, false) {
             replaced_terrain += 1;
             dis.push("TILE_HIDDEN_UNDER_BLOCK", &b.name, &crate::discard::cell_str(b.file_cell), 1, &format!("authored terrain tile {} under {}: the game draws the block there, never the tile (hidden_tiles)", b.name, hidden.occupant(b).and_then(|i| source.blocks.get(i)).map(|o| o.name.as_str()).unwrap_or("a ghost-mode unit")));
             continue;
@@ -927,7 +949,7 @@ pub fn cmd(args: &[String]) {
         // ground is not drawn by the game either (Summer 04's flat Grass is
         // baked: the start road, the finish platforms and gates stood on 38 of
         // them — see `hidden_tiles`).
-        if zones.contains(&b.name) && hidden.hides(b) {
+        if zones.contains(&b.name) && tile_hidden(b, true) {
             replaced_baked_terrain += 1;
             dis.push("TILE_HIDDEN_UNDER_BAKED", &b.name, &crate::discard::cell_str(b.file_cell), 1, &format!("generated terrain tile {} under {}: the game draws the block there, never the tile (hidden_tiles)", b.name, hidden.occupant(b).and_then(|i| source.blocks.get(i)).map(|o| o.name.as_str()).unwrap_or("a ghost-mode unit")));
             continue;
@@ -1562,6 +1584,10 @@ pub fn cmd(args: &[String]) {
         println!("  discard report: {} rows -> {}", dis.rows.len(), p.display());
     }
     println!("  {} existing items re-pointed at scaled copies ({} vegetation stand-ins sunk to half-tree crown height); {} dropped (procedural vegetation); {} blocks intentionally without an item (empty variants); {} terrain tiles replaced by the block standing in for them ({} authored + {} generated); {} prefab trees placed as stock items; {} trees left out by the clearance (overlapping a deck)", repointed_items, sunk_items, dropped_items, empty_blocks, replaced_terrain + replaced_baked_terrain, replaced_terrain, replaced_baked_terrain, prefab_trees, cleared_trees);
+    match &tiles_oracle {
+        Some(o) => println!("  tiles oracle {}: {} tile records decided by the game's lightmap ({} hidden, {} drawn); the unit rule disagreed on {}", o.path, oracle_hidden + oracle_drawn, oracle_hidden, oracle_drawn, oracle_vs_rule),
+        None => println!("  tiles oracle: none (--tiles-oracle FILE from `lmtool tile-oracle SRC`); the unit rule decided every tile"),
+    }
     println!(
         "  scaled every authored object: {} blocks + {} items = {} item placements",
         source.blocks.len(),

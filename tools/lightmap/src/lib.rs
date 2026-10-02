@@ -85,6 +85,7 @@ pub mod lightcull;
 pub mod cardfit;
 pub mod locallight;
 pub mod localdrive;
+pub mod tileoracle;
 pub mod setupmap;
 pub mod stockveg;
 pub mod waterid;

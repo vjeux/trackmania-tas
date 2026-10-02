@@ -254,6 +254,36 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             }
         }
         let tiny_out = out.join(format!("{out_prefix}-{nn}-{label}.Map.Gbx"));
+        // THE TILES ORACLE (2026-10-02): the game's own verdict per terrain tile, read
+        // off the source's editor lightmap (`lmtool tile-oracle`: a tile the game draws
+        // has a chart, one it hides has none) → `tmmaps tiny --tiles-oracle`. Exact
+        // where the unit rule is a model (Fall 06's hole beside the reactor gate: a
+        // DirtCliff4 under a ghost DecoWallDiag1 the rule hid and the game draws).
+        // Skipped — the rule alone — when the source carries no bake, when the
+        // oracle's alignment check fails (exit 4), when lmtool is not beside the
+        // other binaries, or under TINY_TILES_ORACLE=0.
+        let lmtool = bin_dir.join("lmtool");
+        let oracle_path = out.join("tile-oracle.tsv");
+        let mut tiles_oracle: Option<PathBuf> = None;
+        if env.get("TINY_TILES_ORACLE").map(|v| v != "0").unwrap_or(true) && lmtool.exists() {
+            let mut o = Command::new(&lmtool);
+            o.arg("tile-oracle").arg(&src).arg("--mapping").arg(out.join("placements.tsv")).arg("--out").arg(&oracle_path);
+            match run(&mut o, &out.join("tile-oracle.log")) {
+                Ok(text) => {
+                    for l in text.lines().filter(|l| l.starts_with("tiles:") || l.contains("alignment")) {
+                        println!("  {}", l.trim().replace(&src.display().to_string(), "tile oracle"));
+                    }
+                    tiles_oracle = Some(oracle_path.clone());
+                }
+                Err(_) => {
+                    let log = std::fs::read_to_string(out.join("tile-oracle.log")).unwrap_or_default();
+                    let why = log.lines().find(|l| l.contains("no baked lightmap") || l.contains("INEXACT")).map(|l| l.trim().replace(&src.display().to_string(), "source")).unwrap_or_else(|| log.lines().last().unwrap_or("lmtool tile-oracle failed").trim().to_string());
+                    println!("  tiles oracle: not used — {why}; the unit rule decides every tile");
+                }
+            }
+        } else {
+            println!("  tiles oracle: {} — the unit rule decides every tile", if lmtool.exists() { "off (TINY_TILES_ORACLE=0)" } else { "no lmtool beside tinyctl" });
+        }
         // --name-format F: the map's in-file name outright, `{source}` = the source
         // name (`"{source} By Everios96 [Giant]"` — the club's alteration convention,
         // 2026-09-13); without it the name is "<Label> <source>"
@@ -285,6 +315,9 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             // 2026-09-12; BlueBay builds keep their baked Sea records and bake fine)
             if tmmaps::cli::has(args, "--keep-zone-block") {
                 tiny.arg("--keep-zone-block");
+            }
+            if let Some(p) = &tiles_oracle {
+                tiny.arg("--tiles-oracle").arg(p);
             }
             tiny.envs(env.iter());
             run(&mut tiny, &out.join(log))

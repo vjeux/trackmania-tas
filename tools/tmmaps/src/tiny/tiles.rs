@@ -150,24 +150,29 @@ pub struct HiddenTiles {
 }
 
 impl HiddenTiles {
-    /// The game's rule, CORRECTED 2026-09-11 (Summer 01, vjeux's "hole in the mountain"):
-    /// a tile is hidden only where the occupying block DECLARES its auto terrain for
-    /// that cell. A unit cell a block occupies without declaring (the empty corner of
-    /// a RoadTechCurve4's 4×4, the Land under a DecoTreeBeach) keeps its tile — the
-    /// original draws the LandHill3 at (30, 6, 32) under the curve's corner (palms
-    /// on it); hiding it left a cell-sized cutout with the sea showing through.
+    /// THE RULE (2026-10-02, read off the game's own lightmaps — `lmtool tile-oracle`
+    /// over the 25 Fall 2026 sources, 93 440 tile records): a tile is hidden iff a
+    /// turned UNIT of a GROUND-variant block (record flag bit 12) covers its cell.
+    /// Geometry does not matter (the Grass under a DecoWallBasePillar whose faces
+    /// are generated fillers: 3 946 hidden, 0 drawn); GHOST mode matters only for
+    /// AIR variants: an air block placed in ghost mode hides nothing (426 drawn, 0
+    /// hidden — Fall 06's DirtCliff4 at (45,19,29) under a ghost DecoWallDiag1 was
+    /// vjeux's "missing block on the floor next to the reactor"), a ground block in
+    /// ghost mode hides like any other (177 hidden, 17 drawn — the game's lightmap
+    /// is the exact answer where the rule is not: `--tiles-oracle`).
+    ///
+    /// History: 2026-09-08 "any unit with geometry" (the Summer 04 z-fights),
+    /// 2026-09-11 minus the raw file cell (Summer 01's hole in the mountain: a
+    /// rotated curve's empty corner), 2026-09-12 ghost units hide unless Sea (the
+    /// pond under Summer 11's ghost pillar foot). Summer 12's Dirt at the TOP cell
+    /// of a RoadDirtSlope2BaseCurve2 (unit (0,2,1)) and Summer 21's Land under the
+    /// RoadIce start stay hidden: both blocks are ground variants.
     pub fn hides(&self, tile: &BlockRec) -> bool {
-        // RULE (corrected twice on 2026-09-11): hidden iff a block UNIT covers the cell.
-        // Not "declared auto terrain only" — Summer 12's Dirt tile at the TOP cell of a
-        // RoadDirtSlope2BaseCurve2 (unit (0,2,1), undeclared) must stay hidden: drawn, its
-        // 8.75 top buried the slope's road at 7.98 and stopped the 18e lap at 4.74 s.
         if self.occupied.contains_key(&tile.file_cell) {
             return true;
         }
-        // A cell covered only by ghost-mode units: the original draws the SEA there
-        // (2026-09-12, the pond); whether it draws an authored tile too is unverified,
-        // and restoring those tiles DNF'd the certified laps of 18 and 21 (the tile met
-        // the deck the car drives on), so they stay hidden unless asked.
+        // `TINY_GHOST_TILES=hide`: the pre-2026-10-02 behaviour (an air block in ghost
+        // mode hides the tile too, Sea excepted) — the A/B knob, not the default
         self.ghost_only.contains(&tile.file_cell) && tile.name != "Sea" && self.ghost_hides_tiles
     }
     /// A tile kept in a cell that is some block's FILE cell without being one of its
@@ -186,12 +191,15 @@ impl HiddenTiles {
 /// variant's unit cells and, when the mapping carries the column, its auto
 /// terrain (offsets, zone) + place type.
 pub fn hidden_tiles(source: &MapFile, zones: &BTreeSet<String>, info_of: &dyn Fn(&BlockRec) -> Option<(String, Vec<[i32; 3]>, Option<(Vec<([i32; 3], String)>, i32)>)>) -> HiddenTiles {
-    // `TINY_GHOST_TILES=keep`: a ghost-mode block's units hide no tile at all (the
-    // editor's ghost mode leaves the terrain alone). Not the default: it restores
-    // ~100 tiles campaign-wide and two of them meet the deck the certified laps of
-    // 18 and 21 drive on (the laps DNF in the oracle) — to be verified against the
-    // original frame by frame before it can be the rule. See `HiddenTiles::hides`.
-    let ghost_hides_tiles = std::env::var("TINY_GHOST_TILES").map(|v| v != "keep").unwrap_or(true);
+    // `TINY_GHOST_TILES=hide`: the pre-2026-10-02 behaviour — an AIR block placed in
+    // ghost mode hides the tiles under its units too (Sea excepted). Off by default:
+    // the game's lightmaps chart (draw) every such tile (426 of 426 in Fall 2026).
+    let ghost_hides_tiles = std::env::var("TINY_GHOST_TILES").map(|v| v == "hide").unwrap_or(false);
+    // `TINY_TILES_GEOMLESS=keep`: the pre-2026-10-02 exemption — a ground block whose
+    // picked variant maps to no geometry (`-`) hides nothing. Off by default: the game
+    // hides the tile under a geometry-less ground block too (3 946 of 3 946 — the
+    // Grass under a DecoWallBasePillar whose faces are generated fillers).
+    let geomless_keeps = std::env::var("TINY_TILES_GEOMLESS").map(|v| v == "keep").unwrap_or(false);
     let mut out = HiddenTiles { occupied: BTreeMap::new(), ghost_only: BTreeSet::new(), ghost_hides_tiles, declared: BTreeSet::new(), file_cells: BTreeSet::new(), blocks: 0, declaring: 0 };
     for b in source.blocks.iter().filter(|b| !zones.contains(&b.name) && b.free_pos.is_none()) {
         let Some((model, units, auto)) = info_of(b) else { continue };
@@ -204,7 +212,15 @@ pub fn hidden_tiles(source: &MapFile, zones: &BTreeSet<String>, info_of: &dyn Fn
                 }
             }
         }
-        if model == "-" {
+        let ground = b.flags & (1 << 12) != 0;
+        let ghost = b.flags & crate::fillers::FLAG_GHOST != 0;
+        if model == "-" && geomless_keeps {
+            continue;
+        }
+        // The game replaces the terrain under the units of a GROUND variant — ghost or
+        // not, geometry or not. An AIR variant leaves it (only ghost mode puts an air
+        // block in a tile's cell; `ghost_only` keeps those cells for the A/B knob).
+        if !ground && !ghost {
             continue;
         }
         out.blocks += 1;
@@ -214,17 +230,90 @@ pub fn hidden_tiles(source: &MapFile, zones: &BTreeSet<String>, info_of: &dyn Fn
         // turned 90° is one of the curve's EMPTY corners (local (0,3)/(3,0), not a unit):
         // inserting it hid the LandHill3 tile of Summer 01 at (30, 6, 32) — vjeux's "hole
         // in the mountain" (2026-09-11). The game draws the tile in a cell no unit covers.
-        // A GHOST-mode block's units (record flag bit 28) are kept apart: the game draws
-        // the sea pond under Summer 11's ghost StructureBase foot at (38, 5, 26).
-        let ghost = b.flags & crate::fillers::FLAG_GHOST != 0;
         let fp = footprint_of(&units);
         for u in &units {
             if let Some(c) = turned_cell(b, fp, *u) {
-                if ghost {
-                    out.ghost_only.insert(c);
-                } else {
+                if ground {
                     out.occupied.entry(c).or_insert(b.index);
+                } else {
+                    out.ghost_only.insert(c);
                 }
+            }
+        }
+    }
+    out
+}
+
+/// The game's own verdict per tile record, read off the source's editor lightmap by
+/// `lmtool tile-oracle SRC --out FILE` (a tile the game draws has a chart; one it hides
+/// has none): `U<idx>` / `B<idx>` → hidden. Exact where the rule is a model
+/// (`HiddenTiles::hides`); `tmmaps tiny --tiles-oracle FILE` takes it first and falls
+/// back to the rule for records the file does not name.
+pub struct TileOracle {
+    authored: BTreeMap<usize, bool>,
+    baked: BTreeMap<usize, bool>,
+    pub path: String,
+}
+
+impl TileOracle {
+    pub fn read(path: &Path) -> Result<TileOracle, String> {
+        let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let mut o = TileOracle { authored: BTreeMap::new(), baked: BTreeMap::new(), path: path.display().to_string() };
+        for line in text.lines() {
+            let f: Vec<&str> = line.split('\t').collect();
+            if f.len() < 5 || (f[0] != "U" && f[0] != "B") {
+                continue;
+            }
+            let Ok(idx) = f[1].trim().parse::<usize>() else { continue };
+            let hidden = match f[4].trim() {
+                "hidden" => true,
+                "drawn" => false,
+                other => return Err(format!("{}: verdict {other:?} on {line:?} (hidden|drawn)", path.display())),
+            };
+            if f[0] == "U" {
+                o.authored.insert(idx, hidden);
+            } else {
+                o.baked.insert(idx, hidden);
+            }
+        }
+        if o.authored.is_empty() && o.baked.is_empty() {
+            return Err(format!("{}: no U/B tile rows", path.display()));
+        }
+        Ok(o)
+    }
+    /// The game's verdict for an authored tile record, when the file names it.
+    pub fn authored(&self, idx: usize) -> Option<bool> {
+        self.authored.get(&idx).copied()
+    }
+    /// The game's verdict for a baked (generated) tile record, when the file names it.
+    pub fn baked(&self, idx: usize) -> Option<bool> {
+        self.baked.get(&idx).copied()
+    }
+    pub fn len(&self) -> usize {
+        self.authored.len() + self.baked.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// Every cell → the authored non-tile, non-free blocks whose turned UNITS cover
+/// it (ghost-mode and geometry-less blocks included — the census behind the
+/// 2026-10-02 rule: `lmtool tile-oracle` classes the game's verdict per tile by
+/// the covering blocks' record flags). A block the mapping does not know counts
+/// as its file cell alone.
+pub fn covering_blocks(source: &MapFile, zones: &BTreeSet<String>, units_of: &dyn Fn(&BlockRec) -> Vec<[i32; 3]>) -> BTreeMap<[u8; 3], Vec<usize>> {
+    let mut out: BTreeMap<[u8; 3], Vec<usize>> = BTreeMap::new();
+    for b in source.blocks.iter().filter(|b| !zones.contains(&b.name) && b.free_pos.is_none()) {
+        let units = units_of(b);
+        if units.is_empty() {
+            out.entry(b.file_cell).or_default().push(b.index);
+            continue;
+        }
+        let fp = footprint_of(&units);
+        for u in &units {
+            if let Some(c) = turned_cell(b, fp, *u) {
+                out.entry(c).or_default().push(b.index);
             }
         }
     }

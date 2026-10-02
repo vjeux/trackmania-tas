@@ -47,6 +47,7 @@ mod motion;
 mod nadeo;
 mod batch;
 mod pipeline;
+mod retile;
 mod mtrender;
 mod mapzips;
 mod dist;
@@ -228,6 +229,7 @@ fn main() {
         "tracker-club" => batch::tracker_club_cmd(rest),
         "pipeline" => pipeline::cmd(rest),
         "discard-table" => discard::cmd(rest),
+        "retile" => retile::cmd(rest),
         "bake-copies" => bakecopy::cmd(rest),
         "lmbake" => lmbake::cmd(rest),
         "lit-verify" => lmbake::verify(rest),
