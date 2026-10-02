@@ -7293,6 +7293,34 @@ fn run(mut a: Vec<String>) {
                         bc.body = dc.body.clone();
                         notes.push(format!("cache chunk {id:#010x}"));
                     }
+                    p if p.starts_with("headword:") => {
+                        // one 4-byte word of the mapping head at a hex offset (e.g. headword:40 = record 0's kind word)
+                        let off = usize::from_str_radix(&p[9..], 16).expect("headword:HEX");
+                        let dm = dd.cache.mapping().expect("donor mapping");
+                        let bm = d.cache.chunks.iter_mut().find_map(|c| match &mut c.body { lightmap::format::ChunkBody::Mapping(m) => Some(m), _ => None }).expect("base mapping");
+                        assert!(off + 4 <= bm.head.len() && off + 4 <= dm.head.len(), "head word {off:#x} out of range");
+                        let (was, now) = (u32::from_le_bytes(bm.head[off..off + 4].try_into().unwrap()), u32::from_le_bytes(dm.head[off..off + 4].try_into().unwrap()));
+                        bm.head[off..off + 4].copy_from_slice(&dm.head[off..off + 4]);
+                        notes.push(format!("head word {off:#x}: {was:#x} → {now:#x}"));
+                    }
+                    "charts-like-donor" => {
+                        // the base's charts restricted to the OBJECTS the donor charts (tiles below --base always kept): the
+                        // port charts items the editor leaves chartless (vegetation statics, light carriers) — this drops them
+                        let base_obj: u32 = f("--obj-base").map(|s| s.parse().unwrap()).unwrap_or(4096);
+                        let dm = dd.cache.mapping().expect("donor mapping");
+                        let charted: std::collections::HashSet<u32> = dm.binds.iter().map(|b| b.obj_group_idx / 4).collect();
+                        let bm = d.cache.chunks.iter_mut().find_map(|c| match &mut c.body { lightmap::format::ChunkBody::Mapping(m) => Some(m), _ => None }).expect("base mapping");
+                        let keep: Vec<usize> = (0..bm.binds.len()).filter(|&i| { let o = bm.binds[i].obj_group_idx / 4; o < base_obj || charted.contains(&o) }).collect();
+                        let dropped = bm.binds.len() - keep.len();
+                        bm.binds = keep.iter().map(|&i| bm.binds[i]).collect();
+                        bm.pos = keep.iter().map(|&i| bm.pos[i]).collect();
+                        bm.size = keep.iter().map(|&i| bm.size[i]).collect();
+                        bm.chart_f32 = keep.iter().map(|&i| bm.chart_f32[i]).collect();
+                        for fb in bm.frame_bytes.iter_mut() { *fb = keep.iter().map(|&i| fb[i]).collect(); }
+                        bm.count = bm.binds.len() as u32;
+                        for z in bm.raw_z.iter_mut() { *z = None; }
+                        notes.push(format!("charts restricted to the donor's charted objects: {dropped} dropped, {} kept", bm.count));
+                    }
                     "version" => { d.lightmap_version = dd.lightmap_version; m.chunk.version = dn.chunk.version; m.chunk.u01 = dn.chunk.u01; m.chunk.u02 = dn.chunk.u02; notes.push(format!("version {} u01 {} u02 {} lightmapVersion {}", m.chunk.version, m.chunk.u01, m.chunk.u02, dd.lightmap_version)); }
                     other => panic!("unknown part {other}"),
                 }
