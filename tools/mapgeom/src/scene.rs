@@ -259,6 +259,48 @@ impl Scene {
         }
     }
 
+    /// The scene cut down to the triangles with a vertex inside a world box
+    /// (`lo..=hi` on every axis) — `mapgeom map --box`, so one corner of a
+    /// 14-GB whole-map OBJ can be looked at in `rend` (Fall 21's finish lake,
+    /// 2026-10-01). Lines are cropped the same way, point by point.
+    pub fn cropped(&self, lo: [f32; 3], hi: [f32; 3]) -> Scene {
+        let inside = |v: &[f32; 3]| (0..3).all(|k| v[k] >= lo[k] && v[k] <= hi[k]);
+        let mut out = Scene::default();
+        for (name, g) in &self.groups {
+            let mut remap: Vec<u32> = vec![u32::MAX; g.verts.len()];
+            let mut verts = Vec::new();
+            let mut uvs = Vec::new();
+            let mut norms = Vec::new();
+            let mut tris = Vec::new();
+            for t in &g.tris {
+                if !t.iter().any(|&i| inside(&g.verts[i as usize])) {
+                    continue;
+                }
+                let mut nt = [0u32; 3];
+                for (k, &i) in t.iter().enumerate() {
+                    if remap[i as usize] == u32::MAX {
+                        remap[i as usize] = verts.len() as u32;
+                        verts.push(g.verts[i as usize]);
+                        uvs.push(g.uvs.get(i as usize).copied().unwrap_or([0.0; 2]));
+                        norms.push(g.norms.get(i as usize).copied().unwrap_or([0.0; 3]));
+                    }
+                    nt[k] = remap[i as usize];
+                }
+                tris.push(nt);
+            }
+            if !tris.is_empty() {
+                out.groups.insert(name.clone(), Group { verts, tris, uvs, norms });
+            }
+        }
+        for l in &self.lines {
+            let points: Vec<[f32; 3]> = l.points.iter().copied().filter(|p| inside(p)).collect();
+            if !points.is_empty() {
+                out.lines.push(Line { name: l.name.clone(), points, colour: l.colour });
+            }
+        }
+        out
+    }
+
     /// The largest coordinate on each axis, or zero for an empty scene. Used
     /// to size a block model's footprint in whole cells.
     pub fn max_corner(&self) -> [f32; 3] {

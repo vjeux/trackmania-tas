@@ -165,7 +165,7 @@ pub fn add_prefab(store: &mut crate::store::DataStore, path: &str, at: &Xform, s
                 let common = most_common_physics(so);
                 let mut resolve = |idx: i32| -> Option<(String, String, u8)> {
                     let p = ext_name(idx)?;
-                    let link = material_link(&p);
+                    let link = classed_link(store, &p);
                     let phys = physics_for_link(&link).or_else(|| material_physics(store, &p).filter(|x| *x != 0)).or(common).unwrap_or(0);
                     Some((p, link, phys))
                 };
@@ -893,7 +893,7 @@ pub fn add_static_object_file(store: &mut crate::store::DataStore, path: &str, a
         } else {
             name_in(&so_ext, idx)?
         };
-        let link = material_link(&p);
+        let link = classed_link(store, &p);
         let phys = physics_for_link(&link).or_else(|| material_physics(store, &p).filter(|x| *x != 0)).or(common).unwrap_or(0);
         Some((p, link, phys))
     };
@@ -1012,6 +1012,14 @@ thread_local! {
 
 fn name_in(tbl: &[(u32, String)], i: i32) -> Option<String> {
     tbl.iter().find(|(k, _)| *k as i32 == i).map(|(_, p)| p.clone())
+}
+
+/// `material_link` for a pack material the resolvers found, recording its CLASS on the way (the
+/// decal-class stems `assemble::synthesize_solid_uv1` leaves without a lightmap set — `materials::
+/// note_material_class`). The one place every resolver turns a pack path into a link.
+fn classed_link(store: &mut crate::store::DataStore, p: &str) -> String {
+    note_material_class(store, p);
+    material_link(p)
 }
 
 /// `keep_frames`: leave a tweened visual whole (every frame, the frame table,
@@ -1189,7 +1197,7 @@ pub fn add_dyna_object_file(store: &mut crate::store::DataStore, path: &str, at:
     let mut resolve = |idx: i32| -> Option<(String, String, u8)> {
         if idx >= SHAPE_OFF {
             let p = name_in(&shape_ext, idx - SHAPE_OFF)?;
-            let link = material_link(&p);
+            let link = classed_link(store, &p);
             let phys = physics_for_link(&link).or_else(|| material_physics(store, &p).filter(|x| *x != 0)).unwrap_or(28);
             return Some((p, link, phys));
         }
@@ -1199,7 +1207,7 @@ pub fn add_dyna_object_file(store: &mut crate::store::DataStore, path: &str, at:
             tween_notes.push(note);
             return Some((p, link, 28));
         }
-        let link = material_link(&p);
+        let link = classed_link(store, &p);
         let phys = physics_for_link(&link).or_else(|| material_physics(store, &p).filter(|x| *x != 0)).unwrap_or(28);
         Some((p, link, phys))
     };
@@ -1281,7 +1289,7 @@ pub fn add_dyna_part(store: &mut crate::store::DataStore, path: &str, at: &Xform
             tween_notes.push(note);
             return Some((p, link, 28));
         }
-        let link = material_link(&p);
+        let link = classed_link(store, &p);
         let phys = physics_for_link(&link).or_else(|| material_physics(store, &p).filter(|x| *x != 0)).unwrap_or(28);
         Some((p, link, phys))
     };
@@ -1447,7 +1455,7 @@ pub fn add_dyna_strip_part(store: &mut crate::store::DataStore, path: &str, at: 
             tween_notes.push(note);
             return Some((p, link, 28));
         }
-        let link = material_link(&p);
+        let link = classed_link(store, &p);
         let phys = physics_for_link(&link).or_else(|| material_physics(store, &p).filter(|x| *x != 0)).unwrap_or(28);
         Some((p, link, phys))
     };
@@ -1658,7 +1666,7 @@ pub fn add_dyna_tween_part(store: &mut crate::store::DataStore, path: &str, at: 
     let so = super::item::CPlugStaticObjectModel { version: 3, mesh: inline(1, Node::Solid2(src.s2.clone())), is_mesh_collidable: false, shape: super::null_ref() };
     let mut resolve = |idx: i32| -> Option<(String, String, u8)> {
         let p = name_in(&mesh_ext, idx)?;
-        let link = material_link(&p);
+        let link = classed_link(store, &p);
         let phys = physics_for_link(&link).or_else(|| material_physics(store, &p).filter(|x| *x != 0)).unwrap_or(28);
         Some((p, link, phys))
     };

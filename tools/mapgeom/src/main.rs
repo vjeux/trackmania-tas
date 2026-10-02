@@ -2627,6 +2627,21 @@ fn main() {
                 scene.add_line(&g.name, g.points, g.colour);
             }
             report(&stats, &scene);
+            // --box X0,Y0,Z0:X1,Y1,Z1: only the triangles with a vertex inside the
+            // world box are written (a corner of the map for `rend`)
+            if let Some(b) = flag(&a.rest, "--box") {
+                let (lo, hi) = b.split_once(':').ok_or_else(|| "--box X0,Y0,Z0:X1,Y1,Z1".to_string()).unwrap_or_else(|e| die(e));
+                let p = |s: &str| -> [f32; 3] {
+                    let v: Vec<f32> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                    if v.len() != 3 {
+                        die::<()>(format!("--box: `{s}` is not X,Y,Z"));
+                    }
+                    [v[0], v[1], v[2]]
+                };
+                let (lo, hi) = (p(lo), p(hi));
+                scene = scene.cropped([lo[0].min(hi[0]), lo[1].min(hi[1]), lo[2].min(hi[2])], [lo[0].max(hi[0]), lo[1].max(hi[1]), lo[2].max(hi[2])]);
+                println!("--box {b}: {} triangles kept", scene.tri_count());
+            }
             write_scene(&scene, &out);
             if let Some(png) = flag(&a.rest, "--png") {
                 // Clip just above the highest point the run reached, so the

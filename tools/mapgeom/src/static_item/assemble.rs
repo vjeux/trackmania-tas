@@ -735,10 +735,19 @@ pub fn synthesize_solid_uv1(visuals: &mut [super::merged::MergedVisual], m: &sup
         return 0;
     }
     let is_card = |v: &super::merged::MergedVisual| m.materials.get(v.material).map(|mat| mat.link().map(|l| l.is_empty()).unwrap_or(true) && mat.main.as_ref().map(|mm| mm.user_textures.iter().any(|t| t.u01 == 1)).unwrap_or(false)).unwrap_or(false);
+    // A DECAL-CLASS visual (the material's class byte, `materials::decal_class`: DecalPaint*, DecalPlatform,
+    // the gate Sign panels …) keeps the pack's declaration — (position, normal, colour, uv0), no TexCoord1.
+    // The pack never charts a decal: it lies 5–12 mm ON its backing surface and its `DecalGeom` shader
+    // draws it over that surface. Charted here since 2026-09-23 it became a lightmapped static sheet 6 mm
+    // in front of the wall it decorates and Z-FOUGHT it (Fall 21 Egypt's TRACKMANIA / UBISOFT NADEO
+    // sponsor band on the PlatformPlasticWallStraightSponsorsTop row, vjeux 2026-10-01 20:32 PT
+    // "flickering like crazy"). `TINY_DECAL_UV1=legacy` charts them again for an A/B.
+    let legacy_decals = std::env::var("TINY_DECAL_UV1").map(|v| v == "legacy").unwrap_or(false);
+    let is_decal = |v: &super::merged::MergedVisual| !legacy_decals && m.materials.get(v.material).and_then(|mat| mat.link()).map(super::materials::is_decal_link).unwrap_or(false);
     let mut next_part = visuals.iter().map(|v| v.part).max().unwrap_or(0).max(super::merged::SOLID_PART_BASE) + 1;
     let mut n_done = 0usize;
     for mv in visuals.iter_mut() {
-        if has_uv1(mv) || is_card(mv) {
+        if has_uv1(mv) || is_card(mv) || is_decal(mv) {
             continue;
         }
         // the index list first (the unweld below rewrites it)
