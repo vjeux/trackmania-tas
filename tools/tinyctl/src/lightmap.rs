@@ -181,11 +181,19 @@ pub fn transplant_kept(resaved: &Path, shipped: &Path, kept_path: &Path, out: &P
     let dir = std::env::current_exe().map_err(|e| e.to_string())?.parent().ok_or("exe dir")?.to_path_buf();
     let lmtool = dir.join("lmtool");
     let kept_list = std::fs::read_to_string(kept_path).map_err(|e| format!("{}: {e}", kept_path.display()))?;
+    // the item-list rule for the reduced copy: kept item k of the re-save = shipped item kept[k]
+    let kept: Vec<usize> = kept_list.trim().split(',').filter_map(|x| x.trim().parse().ok()).collect();
+    let re = tmmaps::map::MapFile::load(resaved);
+    let sh = tmmaps::map::MapFile::load(shipped);
+    if re.items.len() != kept.len() {
+        return Err(format!("{}: the editor's save has {} items, the kept list {} — not transplanted", resaved.display(), re.items.len(), kept.len()));
+    }
+    item_lists_match(&re.items, &sh.items, &|k| kept.get(k).copied()).map_err(|e| format!("{}: the reduced copy's items do not match the shipped file's at the kept indices ({e}) — not transplanted", resaved.display()))?;
     let o = std::process::Command::new(&lmtool).args(["transplant", "--from", resaved.to_str().unwrap(), "--into", shipped.to_str().unwrap(), "--kept", kept_list.trim(), "--out", out.to_str().unwrap()]).output().map_err(|e| format!("lmtool: {e}"))?;
     if !o.status.success() {
         return Err(format!("lmtool transplant --kept: {}", String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or("").to_string()));
     }
-    verify_filetime(out)?;
+    ensure_filetime(out)?;
     report(out, "the kept-list transplant")
 }
 
@@ -393,6 +401,38 @@ fn one(args: &[String], map: &Path, out: &Path) -> Result<(), String> {
 /// `target` with its lightmap chunk replaced by the editor re-save's, written to `out`
 /// LZO-compressed (the shipped form; an uncompressed body is ~1 MB bigger — the Nadeo cap).
 /// The lightmap is applied by object index, so the two files must list the same items.
+/// THE FILETIME RULE after every graft (the 19 fixer's, 2026-10-02): the lit file's cache chunk
+/// 0x06022013 word must equal its own placed solids' max — the editor writes the BAKE COPY's word,
+/// which differs whenever the copy carries a model the shipped file does not (4 of 25 Fall tinies
+/// every wave: 04 05 10 20) and the game then drops the whole lightmap at load. `lmtool
+/// filetime-check`, and on OFF `lmtool filetime-fix` in place + a re-check. TINY_LIGHTMAP_VERIFY=0 opts out.
+pub fn ensure_filetime(out: &Path) -> Result<(), String> {
+    if std::env::var("TINY_LIGHTMAP_VERIFY").map(|v| v == "0").unwrap_or(false) {
+        return Ok(());
+    }
+    let dir = std::env::current_exe().map_err(|e| e.to_string())?.parent().ok_or("exe dir")?.to_path_buf();
+    let lmtool = dir.join("lmtool");
+    let check = |p: &Path| -> Result<bool, String> {
+        let o = std::process::Command::new(&lmtool).arg("filetime-check").arg(p).output().map_err(|e| format!("{}: {e}", lmtool.display()))?;
+        let text = String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr);
+        Ok(text.contains("EQUAL") || text.contains("nothing to validate"))
+    };
+    if check(out)? {
+        return Ok(());
+    }
+    let tmp = out.with_extension("ftfix.Map.Gbx");
+    let o = std::process::Command::new(&lmtool).arg("filetime-fix").arg(out).arg("--out").arg(&tmp).output().map_err(|e| format!("{}: {e}", lmtool.display()))?;
+    if !o.status.success() {
+        return Err(format!("{}: the cache FILETIME word is off and filetime-fix failed: {}", out.display(), String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or("")));
+    }
+    std::fs::rename(&tmp, out).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    if !check(out)? {
+        return Err(format!("{}: the cache FILETIME word is still off after filetime-fix", out.display()));
+    }
+    eprintln!("{}: cache FILETIME word was the bake copy's — rewritten to the file's own solids (filetime-fix)", out.display());
+    Ok(())
+}
+
 /// The devserver tail of a bake whose editor save was pulled to `resaved`
 /// (`lightmap-run`): the support files the editor's save dropped restored from
 /// the bake copy, then the lightmap chunk transplanted from the re-save into
@@ -410,6 +450,7 @@ pub fn finish_from_resaved(bake_copy: &Path, resaved: &Path, _copy: &Path, shipp
     }
     let re = tmmaps::map::MapFile::load(resaved);
     transplant(shipped, &re, resaved, out)?;
+    ensure_filetime(out)?;
     report(out, "the transplant")
 }
 
@@ -498,11 +539,31 @@ fn verify_filetime(out: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// THE ITEM-LIST RULE (the 19 fixer's, 2026-10-02): a lightmap chunk only fits the file whose
+/// item list it was baked for — same count, same models in the same order, same positions.
+/// `b_index_of(i)` maps a's index to b's (identity for a full transplant, the kept list for a
+/// reduced one). The first mismatch names the two items.
+pub fn item_lists_match(a: &[tmmaps::map::ItemRec], b: &[tmmaps::map::ItemRec], b_index_of: &dyn Fn(usize) -> Option<usize>) -> Result<(), String> {
+    for (i, ia) in a.iter().enumerate() {
+        let Some(j) = b_index_of(i) else { return Err(format!("item {i} ({}) has no counterpart", ia.model)) };
+        let Some(ib) = b.get(j) else { return Err(format!("item {i} ({}) maps to index {j}, beyond the {} items", ia.model, b.len())) };
+        if ia.model != ib.model {
+            return Err(format!("item {i}: model {} vs {} at {j}", ia.model, ib.model));
+        }
+        let d = (0..3).map(|k| (ia.pos[k] - ib.pos[k]).abs()).fold(0.0f32, f32::max);
+        if d > 0.01 {
+            return Err(format!("item {i} ({}): position differs by {d:.3} m", ia.model));
+        }
+    }
+    Ok(())
+}
+
 fn transplant(target: &Path, re: &tmmaps::map::MapFile, resaved_path: &Path, out: &Path) -> Result<(), String> {
     let orig = tmmaps::map::MapFile::load(target);
     if let Some(why) = item_list_mismatch(&orig, re) {
         return Err(format!("{}: the editor's save does not carry this file's item list — {why}; the lightmap would bind its charts to the wrong items — not transplanted (the re-save is at {})", target.display(), resaved_path.display()));
     }
+    item_lists_match(&orig.items, &re.items, &|i| Some(i)).map_err(|e| format!("{}: the editor's save was baked for a different item list ({e}); the lightmap would be misaligned — not transplanted", target.display()))?;
     let find = |body: &[u8]| tmmaps::gbx::all_skip_chunks(body).into_iter().find(|c| c.0 == LIGHTMAP_CHUNK);
     let ca = find(&orig.gbx.body).ok_or_else(|| format!("{}: no lightmap chunk 0x{LIGHTMAP_CHUNK:08X} to replace", target.display()))?;
     let cb = find(&re.gbx.body).ok_or_else(|| format!("{}: the editor's save has no lightmap chunk", resaved_path.display()))?;

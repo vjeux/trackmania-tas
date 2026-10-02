@@ -174,6 +174,58 @@ fn upload_one(t: &mut Tokens, map: &Path, name: &str, outdir: &Path) -> Result<(
     Ok((uid, map_id, how, bytes.len() as u64, md5_local, verdict))
 }
 
+/// The publish gate: filetime word, start check, genealogy census for every path (see publish_batch_cmd).
+fn publish_gate(paths: &[PathBuf], startcheck: Option<String>, census: Option<String>) -> Result<(), String> {
+    let base = |p: &Path| p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    // (2) the start checks: lightmap-run --check-only reports (copy out verdict compute_s wall_s out_bytes start)
+    let sc = startcheck.ok_or("publish gate: --gate-startcheck R.tsv[,…] is required (the /playmap start-check reports covering every row; --no-gate opts out)")?;
+    let mut pass: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for r in sc.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        for l in std::fs::read_to_string(r).map_err(|e| format!("{r}: {e}"))?.lines().skip(1) {
+            let c: Vec<&str> = l.split('\t').collect();
+            if c.len() >= 7 {
+                pass.insert(base(Path::new(c[1])), c[6].to_string());
+            }
+        }
+    }
+    // (3) the census
+    let cz = census.ok_or("publish gate: --gate-census C.tsv is required (tinyctl genealogy-census over the files; --no-gate opts out)")?;
+    let mut census_ok: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for l in std::fs::read_to_string(&cz).map_err(|e| format!("{cz}: {e}"))?.lines().skip(1) {
+        let c: Vec<&str> = l.split('\t').collect();
+        if c.len() >= 14 {
+            census_ok.insert(base(Path::new(c[13])), c[12].to_string());
+        }
+    }
+    let lmtool = std::env::current_exe().map_err(|e| e.to_string())?.with_file_name("lmtool");
+    let mut bad: Vec<String> = Vec::new();
+    for p in paths {
+        let b = base(p);
+        match pass.get(&b) {
+            Some(v) if v.starts_with("PASS") => {}
+            Some(v) => bad.push(format!("{b}: start check {v}")),
+            None => bad.push(format!("{b}: no start-check row")),
+        }
+        match census_ok.get(&b) {
+            Some(v) if v == "ok" => {}
+            Some(v) => bad.push(format!("{b}: genealogy census {v}")),
+            None => bad.push(format!("{b}: no census row")),
+        }
+        // (1) the filetime word
+        let o = Command::new(&lmtool).arg("filetime-check").arg(p).output().map_err(|e| format!("{}: {e}", lmtool.display()))?;
+        let text = String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr);
+        if !text.contains("EQUAL") {
+            bad.push(format!("{b}: filetime word {}", text.lines().find(|l| l.contains("OFF") || l.contains("missing")).unwrap_or("not EQUAL").trim()));
+        }
+    }
+    if bad.is_empty() {
+        println!("publish gate: {} file(s) — filetime EQUAL, start check PASS, census ok", paths.len());
+        Ok(())
+    } else {
+        Err(format!("publish gate REFUSED {} of {} files:\n  {}", bad.len(), paths.len(), bad.join("\n  ")))
+    }
+}
+
 pub fn publish_batch_cmd(args: &[String]) -> Result<(), String> {
     let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
     let manifest = PathBuf::from(f("--manifest").ok_or("publish-batch needs --manifest M.tsv")?);
@@ -206,6 +258,15 @@ pub fn publish_batch_cmd(args: &[String]) -> Result<(), String> {
             (c.len() >= 2).then(|| (PathBuf::from(c[0].trim()), c[1].trim().to_string(), (c.len() >= 4 && c[3].trim() == "skip").then(|| format!("{}\t{}", c[2].trim(), c.get(4).map(|s| s.trim()).unwrap_or("-")))))
         })
         .collect();
+    // THE PUBLISH GATE (vjeux's rule, 2026-10-02 via the coordinator: nothing published untested): every
+    // uploaded row must (1) carry a cache-chunk FILETIME word equal to its own solids' max (`lmtool
+    // filetime-check` — 11 of 48 Fall 2026 bakes shipped a word the game rejects = no lightmap in play),
+    // (2) have a start-check PASS row in `--gate-startcheck R.tsv[,…]` (the /playmap car on the start),
+    // (3) have an `ok` row in `--gate-census C.tsv` (`tinyctl genealogy-census`: no cleared/uncovered zone
+    // table). `--no-gate` opts out, and says so in the results.
+    if !tmmaps::cli::has(args, "--no-gate") {
+        publish_gate(&rows.iter().filter(|r| r.2.is_none()).map(|r| r.0.clone()).collect::<Vec<_>>(), f("--gate-startcheck"), f("--gate-census"))?;
+    }
     let summary = (|| -> Result<String, String> {
         let mut t = Tokens::mint(&shootctl)?;
         let mut out = String::from("path\tname\tuid\tmapId\thow\tbytes\tmd5\tverdict\n");
@@ -241,6 +302,28 @@ pub fn publish_batch_cmd(args: &[String]) -> Result<(), String> {
         let mut camp_line = String::from("campaign\tnot set");
         if let (Some(club), Some(camp), Some(cname)) = (f("--club"), f("--campaign"), f("--campaign-name")) {
             let auth_live = format!("Authorization: {}", t.live);
+            // THE PLAYLIST IS MERGED, NEVER SHRUNK (2026-10-02 04:43Z: an in-place re-upload of 9 of 24 maps
+            // rewrote "Tiny Fall 2026" as a 9-map playlist for 15 s): the live playlist is read first and
+            // every uid of it that this batch did not touch keeps its place; the batch's uids take theirs
+            // (an existing uid stays where it was, a new one is appended in manifest order). `--playlist
+            // replace` writes the manifest's list alone (a campaign built from scratch).
+            let uids: Vec<String> = if f("--playlist").as_deref() == Some("replace") {
+                uids.clone()
+            } else {
+                match crate::nadeo::campaign_uids(&auth_live, &club, &camp) {
+                    Ok(live) => {
+                        let mut merged = live.clone();
+                        for u in &uids {
+                            if !merged.contains(u) {
+                                merged.push(u.clone());
+                            }
+                        }
+                        println!("playlist: {} live + {} new of this batch's {} = {} (merged, nothing dropped)", live.len(), merged.len() - live.len(), uids.len(), merged.len());
+                        merged
+                    }
+                    Err(e) => return Err(format!("the live playlist could not be read before the write ({e}) — not writing a partial playlist")),
+                }
+            };
             match crate::nadeo::campaign_set(&auth_live, &club, &camp, &cname, &uids) {
                 Ok(v) => {
                     let n = serde_json::to_string(&v).unwrap_or_default().matches("\"mapUid\"").count();

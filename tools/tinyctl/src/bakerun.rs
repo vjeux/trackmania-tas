@@ -39,6 +39,7 @@ const MAPS_SHOOT: &str = "/mnt/c/Users/vjeux/OneDrive/Documents/Trackmania/Maps/
 const GS_STORE: &str = "/mnt/c/Users/vjeux/OpenplanetNext/PluginStorage/GhostShooter";
 const LM_CACHE: &str = "/mnt/c/ProgramData/Trackmania/Cache";
 const STAGE: &str = "/home/vjeux/shoot/_stage";
+const SHOTS: &str = "/mnt/c/Users/vjeux/tinyshots/_check";
 
 fn get(shootctl: &str, route: &str, timeout_s: u64) -> String {
     let o = Command::new("timeout").arg(format!("{}", timeout_s + 5)).arg(shootctl).arg("get").arg(route).output();
@@ -138,7 +139,7 @@ impl Drop for MyGame {
 /// One map in the open game: load in the editor, compute, save, (the start check:
 /// the test drive and the car's position), back to the menu.
 /// Returns (saved WSL path, compute seconds, "x y z" of the car or "-").
-fn bake_one(g: &MyGame, map_wsl: &str, quality: u32, load_timeout: Duration, compute_timeout: Duration, startcheck: bool, check_only: bool) -> Result<(String, f64, String), String> {
+fn bake_one(g: &MyGame, map_wsl: &str, quality: u32, load_timeout: Duration, compute_timeout: Duration, startcheck: bool, check_only: bool, load_wait: Duration, shots: usize, shot_every_ms: u64) -> Result<(String, f64, String), String> {
     let shootctl = &g.shootctl;
     let name = Path::new(map_wsl).file_name().and_then(|n| n.to_str()).ok_or("map path has no file name")?.to_string();
     let stem = name.strip_suffix(".Map.Gbx").unwrap_or(&name).to_string();
@@ -164,7 +165,22 @@ fn bake_one(g: &MyGame, map_wsl: &str, quality: u32, load_timeout: Duration, com
         println!("  {name}: /playmap: {}", get(shootctl, "/playmap?mode=", 30));
         // a PlayMap that has not produced a playground in 100 s is the black-screen load stall
         // (loadloop's class): the caller relaunches and retries once
-        let car = wait_for_car(g, &name, Duration::from_secs(100))?;
+        let car = wait_for_car(g, &name, load_wait)?;
+        // --shots N [--shot-every-ms MS]: screenshots of the playground (the intro camera flight, then
+        // the car) through the box's own shotdpi.ps1 — a LOOK at a lit map without `tinyctl play`
+        // (whose shootctl path cannot stage the quarantined plugin)
+        if shots > 0 && !car.starts_with("NO VEHICLE") {
+            let dir = format!("{SHOTS}/{stem}");
+            let _ = std::fs::create_dir_all(&dir);
+            for k in 0..shots {
+                let file = format!("{dir}/shot-{k}.png");
+                let win = format!("C:/Users/vjeux/tinyshots/_check/{stem}/shot-{k}.png").replace('/', "\\");
+                let o = Command::new("/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe").args(["-ExecutionPolicy", "Bypass", "-File", "C:\\Users\\vjeux\\shotdpi.ps1", &win]).output();
+                let ok = o.map(|o| o.status.success()).unwrap_or(false) && std::fs::metadata(&file).map(|m| m.len() > 0).unwrap_or(false);
+                println!("  {name}: shot {k} {} ({})", if ok { "taken" } else { "FAILED" }, file);
+                std::thread::sleep(Duration::from_millis(shot_every_ms));
+            }
+        }
         let _ = std::fs::remove_file(&game_copy);
         g.to_menu()?;
         return Ok(("-".into(), 0.0, car));
@@ -360,6 +376,10 @@ pub fn bake_run(args: &[String]) -> Result<(), String> {
     let compute_timeout = Duration::from_secs(f("--compute-timeout").and_then(|s| s.parse().ok()).unwrap_or(1800));
     let startcheck = tmmaps::cli::has(args, "--startcheck");
     let check_only = tmmaps::cli::has(args, "--check-only");
+    // --load-wait S: how long a /playmap may take to show a playground before it counts as the hang (100)
+    let load_wait = Duration::from_secs(f("--load-wait").and_then(|s| s.parse().ok()).unwrap_or(100));
+    let shots: usize = f("--shots").and_then(|s| s.parse().ok()).unwrap_or(0);
+    let shot_every_ms: u64 = f("--shot-every-ms").and_then(|s| s.parse().ok()).unwrap_or(4000);
     if std::env::var("TM_LOCK_TOKEN").map(|t| t.is_empty()).unwrap_or(true) {
         return Err("no TM_LOCK_TOKEN in the environment — run this under `tmdrive run --purpose … -- tinyctl bake-run …`".into());
     }
@@ -381,16 +401,46 @@ pub fn bake_run(args: &[String]) -> Result<(), String> {
                 game = None;
             }
             if game.is_none() {
-                let t0 = Instant::now();
-                let g = MyGame::launch(&shootctl, Duration::from_secs(240))?;
-                g.to_menu()?;
-                g.ready()?;
-                eprintln!("  game pid {} up and at the menu in {:.0} s", g.pid, t0.elapsed().as_secs_f64());
-                game = Some(g);
-                in_game = 0;
+                // three launch attempts (a cold Ubisoft launcher chain after a by-PID kill can run past
+                // 240 s; 2026-10-02 the third launch of a run answered no /ping in 240 s and the run died
+                // with its report unread); a run that cannot get a game marks the rest FAILED and returns
+                let mut launched = None;
+                let mut last_err = String::new();
+                for attempt in 1..=3 {
+                    let t0 = Instant::now();
+                    match MyGame::launch(&shootctl, Duration::from_secs(400)).and_then(|g| { g.to_menu()?; g.ready()?; Ok(g) }) {
+                        Ok(g) => {
+                            eprintln!("  game pid {} up and at the menu in {:.0} s (attempt {attempt})", g.pid, t0.elapsed().as_secs_f64());
+                            launched = Some(g);
+                            break;
+                        }
+                        Err(e) => {
+                            eprintln!("  launch attempt {attempt} failed: {e}");
+                            last_err = e;
+                            for pid in game_pids().unwrap_or_default() {
+                                kill_pid(pid);
+                            }
+                            std::thread::sleep(Duration::from_secs(30));
+                        }
+                    }
+                }
+                match launched {
+                    Some(g) => {
+                        game = Some(g);
+                        in_game = 0;
+                    }
+                    None => {
+                        rows.push_str(&format!("{m}\t-\tFAILED no game after 3 launches: {}\t-\t-\n", last_err.replace('\t', " ").lines().next().unwrap_or("")));
+                        for (rest, _) in queue.drain(..) {
+                            rows.push_str(&format!("{rest}\t-\tFAILED no game (run aborted)\t-\t-\n"));
+                        }
+                        std::fs::write(&report, &rows).map_err(|e| format!("{}: {e}", report.display()))?;
+                        return Err(format!("no game after 3 launches: {last_err}"));
+                    }
+                }
             }
             let g = game.as_ref().unwrap();
-            let row = match bake_one(g, m, quality, load_timeout, compute_timeout, startcheck || check_only, check_only) {
+            let row = match bake_one(g, m, quality, load_timeout, compute_timeout, startcheck || check_only, check_only, load_wait, shots, shot_every_ms) {
                 Ok((_, _, car)) if car.starts_with("NO VEHICLE") && attempt == 1 => {
                     // the load stalled: a fresh game and one more try before the verdict
                     eprintln!("  {m}: no playground on attempt 1 — a fresh game, retrying once");
@@ -478,7 +528,19 @@ pub fn lightmap_run(args: &[String]) -> Result<(), String> {
                 std::fs::create_dir_all(p).map_err(|e| format!("{}: {e}", p.display()))?;
             }
             let bake_copy = Path::new(out).with_extension(if check_only { "checkcopy.Map.Gbx" } else { "bakecopy.Map.Gbx" });
-            let mut source_for_copy = PathBuf::from(if check_only { out } else { copy });
+            if check_only {
+                // a play-load check wants the file AS IT SHIPS: no uid patch, no password change
+                // (a source map's body refused the uid splice, 2026-10-02)
+                std::fs::copy(out, &bake_copy).map_err(|e| format!("{out} -> {}: {e}", bake_copy.display()))?;
+                let stem: String = Path::new(out).file_name().unwrap_or_default().to_string_lossy().trim_end_matches(".Map.Gbx").chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
+                let remote = format!("{STAGE}/{tag}-{stem}.Map.Gbx");
+                println!("[group {gi}] pushing {} → {remote}", bake_copy.display());
+                wsx.push(&bake_copy, &remote)?;
+                remote_maps.push(remote);
+                copies.push((bake_copy, r));
+                continue;
+            }
+            let mut source_for_copy = PathBuf::from(copy);
             if reduced && !check_only {
                 let red0 = Path::new(out).with_extension("reduced0.Map.Gbx");
                 let (kept_path, kept_n, dropped) = crate::lightmap::reduced_copy_n(Path::new(copy), Path::new(out), &red0, reduced_veget, reduced_max_items)?;
@@ -511,7 +573,7 @@ pub fn lightmap_run(args: &[String]) -> Result<(), String> {
         // --load-timeout S / --compute-timeout S ride through to the box side (tiny 22's 21k items
         // did not open in the default 420 s, 2026-10-01)
         let mut cmd = cmd;
-        for k in ["--load-timeout", "--compute-timeout"] {
+        for k in ["--load-timeout", "--compute-timeout", "--load-wait", "--shots", "--shot-every-ms"] {
             if let Some(v) = f(k) {
                 cmd = cmd.replace(" > '", &format!(" {k} {v} > '"));
             }
@@ -520,7 +582,14 @@ pub fn lightmap_run(args: &[String]) -> Result<(), String> {
         // the pushed binary's exec bit does not survive `wsx push` (2026-10-01: "Permission denied" from tmdrive run)
         wsx.sh(&format!("chmod +x '{box_tinyctl}'"))?;
         wsx.sh(&cmd)?;
-        let done = wsx.wait_done(&r_done, &r_log, Duration::from_secs(3600 * 2), &format!("bake-run group {gi}"))?;
+        let done = match wsx.wait_done(&r_done, &r_log, Duration::from_secs(3600 * 2), &format!("bake-run group {gi}")) {
+            Ok(d) => d,
+            Err(e) => {
+                // the box side failed as a whole (no game, a panic): the rows it did write still count
+                println!("[group {gi}] box run FAILED: {} — reading what it reported", e.lines().next().unwrap_or(""));
+                format!("FAIL\t{e}")
+            }
+        };
         println!("[group {gi}] {}", done.trim());
         let rep = wsx.cat(&r_report).unwrap_or_default();
         for (bake_copy, r) in &copies {
@@ -552,6 +621,21 @@ pub fn lightmap_run(args: &[String]) -> Result<(), String> {
             };
             let mut out_bytes = 0u64;
             let verdict = if check_only {
+                // the shots, scaled on the box (ffmpeg) and pulled next to the report
+                if f("--shots").is_some() && verdict == "ok" {
+                    // the box side names the folder after the PUSHED file (tag-stem)
+                    let dir = format!("{SHOTS}/{tag}-{stem}");
+                    let local = report.with_file_name(format!("shots-{stem}"));
+                    let _ = std::fs::create_dir_all(&local);
+                    let n: usize = f("--shots").and_then(|s| s.parse().ok()).unwrap_or(0);
+                    for k in 0..n {
+                        let _ = wsx.sh(&format!("\"{}\" -nostdin -y -loglevel error -i {} -vf scale=1280:-1 -q:v 4 {}; true", crate::play::BOX_FFMPEG, crate::wsx::to_win(&format!("{dir}/shot-{k}.png")), crate::wsx::to_win(&format!("{dir}/shot-{k}.jpg"))));
+                        match wsx.pull(&format!("{dir}/shot-{k}.jpg"), &local.join(format!("shot-{k}.jpg"))) {
+                            Ok(b) => println!("[group {gi}] {copy}: shot {k} → {} ({b} B)", local.join(format!("shot-{k}.jpg")).display()),
+                            Err(e) => println!("[group {gi}] {copy}: shot {k} not pulled: {e}"),
+                        }
+                    }
+                }
                 if verdict == "ok" { out_bytes = std::fs::metadata(out).map(|m| m.len()).unwrap_or(0); "checked".to_string() } else { failed += 1; verdict }
             } else if verdict == "ok" && saved != "-" {
                 let resaved = Path::new(out).with_extension("resaved.Map.Gbx");
@@ -588,4 +672,58 @@ pub fn lightmap_run(args: &[String]) -> Result<(), String> {
         return Err(format!("{failed} map(s) failed — see {}", report.display()));
     }
     Ok(())
+}
+
+/// `tinyctl box-wait [--poll 300] [--timeout 36000] [--quiet-s 20]` — block until the
+/// render box is free for us: `tmdrive status` FREE or DEAD(lease expired) AND no
+/// Trackmania.exe in `tasklist` (fail-closed: a tasklist answer without its header, or
+/// an unreadable status, counts as BUSY). A game that is running but held by nobody is
+/// vjeux's own: wait, never touch it. Two consecutive free probes `--quiet-s` apart are
+/// required (a lane releasing between two loads is not "free"). Prints one line per
+/// state change; exit 0 when free, 1 on the timeout.
+pub fn box_wait(args: &[String]) -> Result<(), String> {
+    let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
+    let poll = Duration::from_secs(f("--poll").and_then(|v| v.parse().ok()).unwrap_or(300));
+    let timeout = Duration::from_secs(f("--timeout").and_then(|v| v.parse().ok()).unwrap_or(36_000));
+    let quiet = Duration::from_secs(f("--quiet-s").and_then(|v| v.parse().ok()).unwrap_or(20));
+    let wsx = Wsx::new(args);
+    let probe = || -> (bool, String) {
+        let out = match wsx.sh(&format!("{BOX_TOOLS}/tmdrive status 2>&1 | head -1; echo ---; /mnt/c/Windows/System32/tasklist.exe /FI \"IMAGENAME eq Trackmania.exe\" 2>&1 | tr -d '\\r'; true")) {
+            Ok(o) => o,
+            Err(e) => return (false, format!("probe failed: {e}")),
+        };
+        let (status, tasks) = out.split_once("---").unwrap_or(("", ""));
+        let status = status.trim();
+        let lock_free = status.starts_with("FREE") || status.starts_with("DEAD");
+        // fail-closed: tasklist must answer with its header or the "No tasks" line
+        let no_game = tasks.contains("No tasks are running");
+        let game_listed = tasks.contains("Trackmania.exe");
+        let valid = no_game || (game_listed && tasks.contains("Image Name"));
+        if !valid {
+            return (false, format!("tasklist answer invalid ({}); lock: {}", tasks.trim().chars().take(60).collect::<String>(), status.chars().take(80).collect::<String>()));
+        }
+        (lock_free && no_game, format!("lock: {} | game: {}", status.chars().take(90).collect::<String>(), if no_game { "none" } else { "RUNNING" }))
+    };
+    let t0 = Instant::now();
+    let mut last = String::new();
+    loop {
+        let (free, desc) = probe();
+        if desc != last {
+            println!("[{:>5.0}s] {}", t0.elapsed().as_secs_f64(), desc);
+            last = desc;
+        }
+        if free {
+            std::thread::sleep(quiet);
+            let (again, desc2) = probe();
+            if again {
+                println!("[{:>5.0}s] FREE twice {quiet:?} apart — go", t0.elapsed().as_secs_f64());
+                return Ok(());
+            }
+            println!("[{:>5.0}s] not free on the second look: {desc2}", t0.elapsed().as_secs_f64());
+        }
+        if t0.elapsed() > timeout {
+            return Err(format!("the box did not become free in {} s (last: {last})", timeout.as_secs()));
+        }
+        std::thread::sleep(poll);
+    }
 }
