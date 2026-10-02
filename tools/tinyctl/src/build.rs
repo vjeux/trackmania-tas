@@ -409,6 +409,19 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                     if env.get("TINY_GIANT_ROAD_TILES").map(|v| v != "1").unwrap_or(true) {
                         gw.arg("--no-roads");
                     }
+                    // TINY_GIANT_WATER=legacy: the 2026-09-13/22 POOL_BLOCKS form (the source's
+                    // pool blocks alone become native tiles) instead of the volume rule — the
+                    // 2026-10-01 rule tiles every block with a water volume, which on the TERRAIN
+                    // collections puts Stadium DecoWallWaterBase stacks under the DecoLake* shores
+                    // of the regenerated lakes (x2-01 +224, 11 +784 blocks): the terrain lakes are
+                    // the zone's regenerated water (no volume — the Summer measurement) and a
+                    // concrete Stadium basin inside a RedIsland lake is a new visible defect, so
+                    // the DEFAULT is legacy for every collection but Stadium (coordinator
+                    // 2026-10-01 22:33 PT); TINY_GIANT_WATER=volume applies the rule everywhere
+                    let water_mode = env.get("TINY_GIANT_WATER").cloned().unwrap_or_else(|| if coll == 0x1a { "volume".to_string() } else { "legacy".to_string() });
+                    if water_mode == "legacy" {
+                        gw.arg("--legacy-pools");
+                    }
                     gw.envs(env.iter());
                     match run(&mut gw, &out.join("giantwater.log")) {
                         Ok(text) => {
