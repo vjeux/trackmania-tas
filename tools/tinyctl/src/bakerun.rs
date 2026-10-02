@@ -589,3 +589,57 @@ pub fn lightmap_run(args: &[String]) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// `tinyctl box-wait [--poll 300] [--timeout 36000] [--quiet-s 20]` — block until the
+/// render box is free for us: `tmdrive status` FREE or DEAD(lease expired) AND no
+/// Trackmania.exe in `tasklist` (fail-closed: a tasklist answer without its header, or
+/// an unreadable status, counts as BUSY). A game that is running but held by nobody is
+/// vjeux's own: wait, never touch it. Two consecutive free probes `--quiet-s` apart are
+/// required (a lane releasing between two loads is not "free"). Prints one line per
+/// state change; exit 0 when free, 1 on the timeout.
+pub fn box_wait(args: &[String]) -> Result<(), String> {
+    let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
+    let poll = Duration::from_secs(f("--poll").and_then(|v| v.parse().ok()).unwrap_or(300));
+    let timeout = Duration::from_secs(f("--timeout").and_then(|v| v.parse().ok()).unwrap_or(36_000));
+    let quiet = Duration::from_secs(f("--quiet-s").and_then(|v| v.parse().ok()).unwrap_or(20));
+    let wsx = Wsx::new(args);
+    let probe = || -> (bool, String) {
+        let out = match wsx.sh(&format!("{BOX_TOOLS}/tmdrive status 2>&1 | head -1; echo ---; /mnt/c/Windows/System32/tasklist.exe /FI \"IMAGENAME eq Trackmania.exe\" 2>&1 | tr -d '\\r'; true")) {
+            Ok(o) => o,
+            Err(e) => return (false, format!("probe failed: {e}")),
+        };
+        let (status, tasks) = out.split_once("---").unwrap_or(("", ""));
+        let status = status.trim();
+        let lock_free = status.starts_with("FREE") || status.starts_with("DEAD");
+        // fail-closed: tasklist must answer with its header or the "No tasks" line
+        let no_game = tasks.contains("No tasks are running");
+        let game_listed = tasks.contains("Trackmania.exe");
+        let valid = no_game || (game_listed && tasks.contains("Image Name"));
+        if !valid {
+            return (false, format!("tasklist answer invalid ({}); lock: {}", tasks.trim().chars().take(60).collect::<String>(), status.chars().take(80).collect::<String>()));
+        }
+        (lock_free && no_game, format!("lock: {} | game: {}", status.chars().take(90).collect::<String>(), if no_game { "none" } else { "RUNNING" }))
+    };
+    let t0 = Instant::now();
+    let mut last = String::new();
+    loop {
+        let (free, desc) = probe();
+        if desc != last {
+            println!("[{:>5.0}s] {}", t0.elapsed().as_secs_f64(), desc);
+            last = desc;
+        }
+        if free {
+            std::thread::sleep(quiet);
+            let (again, desc2) = probe();
+            if again {
+                println!("[{:>5.0}s] FREE twice {quiet:?} apart — go", t0.elapsed().as_secs_f64());
+                return Ok(());
+            }
+            println!("[{:>5.0}s] not free on the second look: {desc2}", t0.elapsed().as_secs_f64());
+        }
+        if t0.elapsed() > timeout {
+            return Err(format!("the box did not become free in {} s (last: {last})", timeout.as_secs()));
+        }
+        std::thread::sleep(poll);
+    }
+}

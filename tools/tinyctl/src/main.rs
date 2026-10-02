@@ -213,6 +213,7 @@ fn main() {
         "token-mint" => nadeo::token_mint(rest),
         "bake-run" => bakerun::bake_run(rest),
         "lightmap-run" => bakerun::lightmap_run(rest),
+        "box-wait" => bakerun::box_wait(rest),
         "campaign-tracker" => tracker::cmd(rest),
         "publish-batch" => batch::publish_batch_cmd(rest),
         "publish-set" => batch::publish_set_cmd(rest),
