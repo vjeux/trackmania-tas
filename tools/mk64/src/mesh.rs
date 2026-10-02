@@ -51,6 +51,16 @@ pub struct Material {
     /// The vertex-colour tint baked into this variant of the texture
     /// (255,255,255 = the texture as is). `Flat` materials are a tint alone.
     pub tint: [u8; 3],
+    /// The palette a colour-indexed texture needs, when the CODE picks it
+    /// rather than the asset index (Rainbow Road's neon signs: the sign is a
+    /// CI texture whose TLUT the object sets — `init_texture_object`, an
+    /// animated list for Mushroom/Mario/Boo, one palette for the characters —
+    /// and decoding it without that palette is what made them colourless,
+    /// 2026-09-25).
+    pub tlut: Option<String>,
+    /// Drawn ADDITIVELY (shading model `TIAdd`): the N64's neon signs and other
+    /// glow sprites, whose black background adds nothing.
+    pub additive: bool,
 }
 
 /// The synthetic "texture" of untextured (vertex-coloured) faces.
@@ -139,8 +149,7 @@ pub fn visual_mesh(course: &Course, pieces: &[Piece], assets: Option<&AssetIndex
                     w,
                     h,
                     fmt: st.fmt,
-                    tint: [255, 255, 255],
-                };
+                    tint: [255, 255, 255], tlut: None, additive: false };
                 *mat_index.entry(m.clone()).or_insert_with(|| {
                     mesh.materials.push(m);
                     mesh.materials.len() - 1
@@ -358,6 +367,99 @@ pub fn colour_census(mesh: &Mesh, levels: u32) -> (usize, usize, usize, usize) {
     (flat, grad, colours.len(), pairs.len())
 }
 
+/// Smooth the vertex colours of the GROUND (face normal mostly up): MK64
+/// tints its road and grass quads individually — Luigi Raceway's asphalt
+/// triangles agree within 8/255 inside a triangle but differ by ±51 across
+/// them (`mk64 colours`), a flat-shaded patchwork that the N64's blur and
+/// dithering hid and that TM draws as a crisp, flickering mosaic (vjeux,
+/// 2026-09-24 "the map is super flickery"). Each ground triangle's colour
+/// becomes the Gaussian-weighted mean of the colours of the ground triangles
+/// of the same material within `radius` metres (σ = radius/2), so large-scale
+/// shading survives and per-quad noise goes. Vertical faces (walls, signs,
+/// tunnel sides) keep their own colours: there the steps are real shading.
+/// Returns the number of triangles smoothed.
+pub fn smooth_ground_colours(mesh: &mut Mesh, radius: f32) -> usize {
+    let is_ground = |t: &Tri| {
+        let n = face_normal(&[t.c[0].pos, t.c[1].pos, t.c[2].pos]);
+        n[1].abs() > 0.7 && !t.lit
+    };
+    let centroid = |t: &Tri| {
+        let mut c = [0.0f32; 3];
+        for k in &t.c {
+            for i in 0..3 {
+                c[i] += k.pos[i] / 3.0;
+            }
+        }
+        c
+    };
+    let mean_col = |t: &Tri| {
+        let mut m = [0.0f32; 3];
+        for k in &t.c {
+            for i in 0..3 {
+                m[i] += k.rgba[i] as f32 / 3.0;
+            }
+        }
+        m
+    };
+    // per material: the ground triangles, bucketed on a grid of `radius` cells
+    let mut by_mat: HashMap<Option<usize>, Vec<usize>> = HashMap::new();
+    for (i, t) in mesh.tris.iter().enumerate() {
+        if is_ground(t) {
+            by_mat.entry(t.mat).or_default().push(i);
+        }
+    }
+    let sigma2 = (radius * 0.5).powi(2);
+    let mut new_cols: Vec<Option<[u8; 3]>> = vec![None; mesh.tris.len()];
+    let mut n = 0usize;
+    for (_, idx) in &by_mat {
+        let cents: Vec<[f32; 3]> = idx.iter().map(|&i| centroid(&mesh.tris[i])).collect();
+        let cols: Vec<[f32; 3]> = idx.iter().map(|&i| mean_col(&mesh.tris[i])).collect();
+        let cell = |p: [f32; 3]| ((p[0] / radius).floor() as i32, (p[2] / radius).floor() as i32);
+        let mut grid: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
+        for (k, c) in cents.iter().enumerate() {
+            grid.entry(cell(*c)).or_default().push(k);
+        }
+        for (k, &ti) in idx.iter().enumerate() {
+            let c0 = cents[k];
+            let (cx, cz) = cell(c0);
+            let mut acc = [0.0f32; 3];
+            let mut wsum = 0.0f32;
+            for dx in -1..=1 {
+                for dz in -1..=1 {
+                    if let Some(list) = grid.get(&(cx + dx, cz + dz)) {
+                        for &j in list {
+                            let d2 = (cents[j][0] - c0[0]).powi(2) + (cents[j][2] - c0[2]).powi(2);
+                            if d2 > radius * radius {
+                                continue;
+                            }
+                            let w = (-d2 / (2.0 * sigma2)).exp();
+                            for i in 0..3 {
+                                acc[i] += w * cols[j][i];
+                            }
+                            wsum += w;
+                        }
+                    }
+                }
+            }
+            if wsum > 0.0 {
+                new_cols[ti] = Some([(acc[0] / wsum).round() as u8, (acc[1] / wsum).round() as u8, (acc[2] / wsum).round() as u8]);
+                n += 1;
+            }
+        }
+    }
+    for (i, t) in mesh.tris.iter_mut().enumerate() {
+        if let Some(c) = new_cols[i] {
+            for k in t.c.iter_mut() {
+                k.rgba[0] = c[0];
+                k.rgba[1] = c[1];
+                k.rgba[2] = c[2];
+            }
+        }
+    }
+    n
+}
+
+
 /// TM's item shaders ignore vertex colours (`TDSN`/`TDOSN` never read
 /// colour0 — verified 2026-09), and MK64 shades everything with them: the
 /// tunnel's darkness, the hill's greens, Bowser's Castle's gloom, the sand's
@@ -421,7 +523,7 @@ pub fn bake_vertex_colours(mesh: &mut Mesh, levels: u32, max_spread: u8, max_dep
             let mi = *variants.entry(key).or_insert_with(|| {
                 let mut m = match t.mat {
                     Some(i) => base_materials[i].clone(),
-                    None => Material { sym: FLAT_SYM.to_string(), mirror_s: false, mirror_t: false, clamp_s: false, clamp_t: false, w: 4, h: 4, fmt: 0, tint: [255, 255, 255] },
+                    None => Material { sym: FLAT_SYM.to_string(), mirror_s: false, mirror_t: false, clamp_s: false, clamp_t: false, w: 4, h: 4, fmt: 0, tint: [255, 255, 255], tlut: None, additive: false },
                 };
                 m.tint = tint;
                 mesh.materials.push(m);
@@ -448,4 +550,111 @@ pub fn bake_vertex_colours(mesh: &mut Mesh, levels: u32, max_spread: u8, max_dep
     mesh.materials = kept;
     mesh.tris = out;
     (splits, n_variants)
+}
+
+/// Coplanar overlaps lifted apart (vjeux, 2026-09-24: "a lot of places are
+/// flickering when two textures overlap"). MK64 stacks surfaces on one plane
+/// — a road-detail strip over the road, a shadow patch over the grass, one
+/// grass sheet over another — and drew them in display-list order; TM's depth
+/// test sees two coplanar triangles and picks a different one every frame.
+///
+/// Every pair of triangles on the same plane whose projections overlap gets
+/// the LATER one (higher piece index = drawn later by the N64, i.e. on top)
+/// lifted by `step` metres along the plane normal — a stack of three lifts the
+/// third by two steps. Only the lifted triangle's own vertices move, so its
+/// edges shared with unlifted neighbours open a hairline; at 3 mm that is
+/// below what the eye picks up at kart range. Returns the triangles lifted.
+pub fn lift_coplanar_overlaps(mesh: &mut Mesh, step: f32) -> usize {
+    use std::collections::HashMap;
+    let plane = |t: &Tri| -> Option<([f32; 3], f32)> {
+        let (a, b, c) = (t.c[0].pos, t.c[1].pos, t.c[2].pos);
+        let n = face_normal(&[a, b, c]);
+        if n[0] == 0.0 && n[1] == 0.0 && n[2] == 0.0 {
+            return None;
+        }
+        // one orientation per plane
+        let mut n = n;
+        if n[1] < 0.0 || (n[1] == 0.0 && (n[0] < 0.0 || (n[0] == 0.0 && n[2] < 0.0))) {
+            n = [-n[0], -n[1], -n[2]];
+        }
+        Some((n, n[0] * a[0] + n[1] * a[1] + n[2] * a[2]))
+    };
+    // bucket by (rounded normal, rounded d); a 5 cm plane tolerance
+    let mut buckets: HashMap<(i32, i32, i32, i32), Vec<usize>> = HashMap::new();
+    let mut planes: Vec<Option<([f32; 3], f32)>> = Vec::with_capacity(mesh.tris.len());
+    for (i, t) in mesh.tris.iter().enumerate() {
+        let p = plane(t);
+        planes.push(p);
+        if let Some((n, d)) = p {
+            buckets.entry(((n[0] * 50.0).round() as i32, (n[1] * 50.0).round() as i32, (n[2] * 50.0).round() as i32, (d / 0.05).round() as i32)).or_default().push(i);
+        }
+    }
+    let inside = |p: [f32; 2], t: [[f32; 2]; 3]| -> bool {
+        let s = |a: [f32; 2], b: [f32; 2], c: [f32; 2]| (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+        let (d1, d2, d3) = (s(t[0], t[1], p), s(t[1], t[2], p), s(t[2], t[0], p));
+        let eps = 1e-3;
+        (d1 > eps && d2 > eps && d3 > eps) || (d1 < -eps && d2 < -eps && d3 < -eps)
+    };
+    // how many triangles each triangle sits over (its lift count)
+    let mut lifts: Vec<u32> = vec![0; mesh.tris.len()];
+    for (key, idx) in &buckets {
+        if idx.len() < 2 {
+            continue;
+        }
+        let n = [key.0 as f32 / 50.0, key.1 as f32 / 50.0, key.2 as f32 / 50.0];
+        let (ax, ay) = if n[1].abs() >= n[0].abs() && n[1].abs() >= n[2].abs() { (0usize, 2usize) } else if n[0].abs() >= n[2].abs() { (1, 2) } else { (0, 1) };
+        let proj = |t: &Tri| [[t.c[0].pos[ax], t.c[0].pos[ay]], [t.c[1].pos[ax], t.c[1].pos[ay]], [t.c[2].pos[ax], t.c[2].pos[ay]]];
+        let probes = |t: [[f32; 2]; 3]| {
+            let c = [(t[0][0] + t[1][0] + t[2][0]) / 3.0, (t[0][1] + t[1][1] + t[2][1]) / 3.0];
+            [c, [(t[0][0] + t[1][0]) / 2.0, (t[0][1] + t[1][1]) / 2.0], [(t[1][0] + t[2][0]) / 2.0, (t[1][1] + t[2][1]) / 2.0], [(t[2][0] + t[0][0]) / 2.0, (t[2][1] + t[0][1]) / 2.0]]
+        };
+        // bounding boxes first: the buckets of a big grass sheet hold hundreds
+        let bb: Vec<([f32; 2], [f32; 2])> = idx
+            .iter()
+            .map(|&i| {
+                let p = proj(&mesh.tris[i]);
+                let lo = [p.iter().map(|q| q[0]).fold(f32::MAX, f32::min), p.iter().map(|q| q[1]).fold(f32::MAX, f32::min)];
+                let hi = [p.iter().map(|q| q[0]).fold(f32::MIN, f32::max), p.iter().map(|q| q[1]).fold(f32::MIN, f32::max)];
+                (lo, hi)
+            })
+            .collect();
+        for a in 0..idx.len() {
+            for b in a + 1..idx.len() {
+                let (ia, ib) = (idx[a], idx[b]);
+                if mesh.tris[ia].piece == mesh.tris[ib].piece && mesh.tris[ia].mat == mesh.tris[ib].mat {
+                    // one sheet's own tessellation (fans and strips share edges,
+                    // never areas) — not an overlap
+                    continue;
+                }
+                if bb[a].0[0] > bb[b].1[0] || bb[b].0[0] > bb[a].1[0] || bb[a].0[1] > bb[b].1[1] || bb[b].0[1] > bb[a].1[1] {
+                    continue;
+                }
+                let (pa, pb) = (proj(&mesh.tris[ia]), proj(&mesh.tris[ib]));
+                let hit = probes(pa).iter().any(|p| inside(*p, pb)) || probes(pb).iter().any(|p| inside(*p, pa));
+                if !hit {
+                    continue;
+                }
+                // the later-drawn one goes up
+                let (lo, hi) = if (mesh.tris[ia].piece, ia) < (mesh.tris[ib].piece, ib) { (ia, ib) } else { (ib, ia) };
+                lifts[hi] = lifts[hi].max(lifts[lo] + 1);
+            }
+        }
+    }
+    let mut n = 0;
+    for (i, t) in mesh.tris.iter_mut().enumerate() {
+        if lifts[i] == 0 {
+            continue;
+        }
+        let Some((nrm, _)) = planes[i] else { continue };
+        // lift along the triangle's OWN facing (the plane normal was oriented
+        // to +y for bucketing; a downward-facing tri lifts the other way)
+        let own = face_normal(&[t.c[0].pos, t.c[1].pos, t.c[2].pos]);
+        let sign = if own[0] * nrm[0] + own[1] * nrm[1] + own[2] * nrm[2] >= 0.0 { 1.0 } else { -1.0 };
+        let d = step * lifts[i] as f32 * sign;
+        for c in t.c.iter_mut() {
+            c.pos = [c.pos[0] + nrm[0] * d, c.pos[1] + nrm[1] * d, c.pos[2] + nrm[2] * d];
+        }
+        n += 1;
+    }
+    n
 }

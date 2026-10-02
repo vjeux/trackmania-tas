@@ -208,6 +208,11 @@ fn trigger_cells(c: [i32; 3], ts: [i32; 3], point: &dyn Fn([f32; 3]) -> [f32; 3]
     out
 }
 
+/// `cell_for` for other commands (the straight showcase map).
+pub fn cell_for_pub(p: [f32; 3]) -> (i32, i32, i32) {
+    cell_for(p)
+}
+
 fn cell_for(p: [f32; 3]) -> (i32, i32, i32) {
     let c = |v: f32, divisor: f32| (v / divisor).floor().clamp(0.0, 255.0) as i32;
     (

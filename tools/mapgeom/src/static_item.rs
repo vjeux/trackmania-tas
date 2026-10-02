@@ -28,6 +28,9 @@
 pub mod oldmat;
 pub mod vstream;
 pub mod visual;
+pub mod skin;
+pub mod skel;
+pub mod fbx;
 pub mod solid2;
 pub mod legacy_plg;
 pub mod surface;
@@ -92,6 +95,8 @@ pub enum Node {
     /// `CPlugDynaObjectModel`s and their kinematic constraints).
     Prefab(prefab::CPlugPrefab),
     Dyna(dyna::CPlugDynaObjectModel),
+    /// `CPlugSkel` (0x090BA000): a skeleton — inline in a ZIP car skin (skel.rs).
+    Skel(skel::CPlugSkel),
     Kinematic(dyna::KinematicConstraint),
     /// `NPlugTrigger_SGateSpecial` (0x09179000): a gameplay gate's effect
     /// volume as a prefab entity — { version 2, trigger shape ref, u32 }, the
@@ -229,10 +234,12 @@ impl Node {
             Node::LightUserModel(_) => light::C_LIGHT_USER_MODEL,
             Node::Prefab(_) => C_PREFAB,
             Node::Dyna(_) => dyna::C_DYNA_OBJECT_MODEL,
+            Node::Skel(_) => skel::CLASS,
             Node::Kinematic(_) => dyna::C_KINEMATIC_CONSTRAINT,
             Node::GateSpecial(_) => C_GATE_SPECIAL_TRIGGER,
             Node::WaypointTrigger(_) => C_WAYPOINT_TRIGGER,
             Node::FxSystem(_) => particle::C_FX_SYSTEM,
+            Node::Skel(_) => skel::CLASS,
             Node::Particle(p) => p.class_id,
             Node::Opaque(o) => o.class_id,
             Node::VariantList(_) => C_VARIANT_LIST,
@@ -259,6 +266,7 @@ pub fn read_node(r: &mut Rd, class_id: u32) -> R<Node> {
         light::C_LIGHT_USER_MODEL => Node::LightUserModel(light::CPlugLightUserModel::parse(r)?),
         C_PREFAB => Node::Prefab(prefab::CPlugPrefab::parse_in(r)?),
         dyna::C_DYNA_OBJECT_MODEL => Node::Dyna(dyna::CPlugDynaObjectModel::parse(r)?),
+        skel::CLASS => Node::Skel(skel::CPlugSkel::parse(r)?),
         dyna::C_KINEMATIC_CONSTRAINT => Node::Kinematic(dyna::KinematicConstraint::parse(r)?),
         // Trigger-side and path classes of the gate / special prefabs: no
         // geometry, unskippable bodies. Read as the generic walker
@@ -332,6 +340,7 @@ pub fn read_node(r: &mut Rd, class_id: u32) -> R<Node> {
             }
             Node::VariantList(VariantList { version, variants })
         }| 0x0917A000 | 0x0917B000 | 0x09119000 | 0x09118000 => Node::Opaque(read_fixed_opaque(r, class_id)?),
+        skel::CLASS => Node::Skel(skel::CPlugSkel::parse(r)?),
         particle::C_FX_SYSTEM => Node::FxSystem(particle::CPlugFxSystem::parse(r)?),
         c if particle::is_particle_class(c) => Node::Particle(particle::ParticleNode::parse(r, c)?),
         other => Node::Opaque(read_opaque(r, other)?),
@@ -356,6 +365,7 @@ pub fn write_node(w: &mut Wr, n: &Node) {
         Node::LightUserModel(x) => x.write(w),
         Node::Prefab(x) => x.write_in(w),
         Node::Dyna(x) => x.write(w),
+        Node::Skel(x) => x.write(w),
         Node::Kinematic(x) => x.write(w),
         Node::GateSpecial(x) => {
             w.u32(x.version);
@@ -369,6 +379,7 @@ pub fn write_node(w: &mut Wr, n: &Node) {
             w.u32(x.no_respawn);
         }
         Node::FxSystem(x) => x.write(w),
+        Node::Skel(x) => x.write(w),
         Node::Particle(x) => x.write(w),
         Node::Opaque(o) => w.bytes(&o.raw),
         Node::BlockItem(_) => panic!("CGameBlockItem is a read-only source node (the tiny bake rewrites it as a static item)"),

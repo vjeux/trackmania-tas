@@ -1,0 +1,18 @@
+[package]
+name = "tmdrive"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "tmdrive"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tmdrive"
+path = "src/main.rs"
+
+[dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+libc = "0.2"

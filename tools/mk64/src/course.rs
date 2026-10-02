@@ -170,6 +170,9 @@ pub struct Course {
     pub render_lists: Vec<String>,
     pub sections: Vec<Section>,
     pub path: Vec<PathPoint>,
+    /// The course's OTHER `TrackPathPoint` arrays by name (`…_train_path`,
+    /// `…_ferry_path`): what the train and the paddle boat follow.
+    pub other_paths: HashMap<String, Vec<[i16; 3]>>,
     pub item_boxes: Vec<Spawn>,
     pub spawns: Vec<(String, Vec<Spawn>)>,
     /// Object models: the full-format `Vtx` arrays of course_data.c (trees,
@@ -273,6 +276,21 @@ impl Course {
                                     c.path.push(PathPoint { pos: [n[0] as i16, n[1] as i16, n[2] as i16], section_id: n[3] as u16 });
                                 }
                             }
+                        }
+                    }
+                    // the other paths (Kalimari's train, DK's ferry): kept by name
+                    "TrackPathPoint" => {
+                        let mut pts = Vec::new();
+                        for it in &arr.items {
+                            if let Some(row) = it.list() {
+                                let n: Vec<i64> = row.iter().filter_map(|x| x.int(&consts)).collect();
+                                if n.len() == 4 && n[0] != -32768 {
+                                    pts.push([n[0] as i16, n[1] as i16, n[2] as i16]);
+                                }
+                            }
+                        }
+                        if !pts.is_empty() {
+                            c.other_paths.insert(arr.name.clone(), pts);
                         }
                     }
                     "struct ActorSpawnData" | "struct UnkActorSpawnData" => {

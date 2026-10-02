@@ -21,9 +21,7 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::time::{Duration, Instant};
 
-mod host;
 mod lightmap;
-use host::plugin_addrs;
 mod loadloop;
 mod loadprof;
 mod lock;
@@ -51,34 +49,18 @@ static LOAD_TIMEOUT_S: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU
 /// plugin sat there answering on the real address. Exactly the trap host.rs
 /// documents, wearing a different hat: never remember a guess.
 fn plugin_addr() -> String {
-    if let Some(a) = ADDR.get() { return a.clone(); }
-    for a in plugin_addrs() {
-        let Ok(sa) = a.parse::<SocketAddr>() else { continue };
-        if TcpStream::connect_timeout(&sa, Duration::from_millis(400)).is_ok() {
-            let _ = ADDR.set(a.clone());
-            return a;
-        }
-    }
-    "127.0.0.1:29800".to_string()
+    // tmdrive owns plugin addressing now, including the WSL-loopback trap the
+    // old host.rs documented: the game is a Windows process, so 127.0.0.1
+    // from a Linux binary in WSL is a DIFFERENT machine. Only a working
+    // address is ever cached -- never a guess.
+    tmdrive::plugin::addr_or_default()
 }
 
 /// Is the plugin answering anywhere? Tries every candidate, caches on success.
 /// This is the launch's gate -- it must not depend on an address chosen before
 /// the server existed.
 fn plugin_up() -> bool {
-    if let Some(a) = ADDR.get() {
-        if let Ok(sa) = a.parse::<SocketAddr>() {
-            return TcpStream::connect_timeout(&sa, Duration::from_millis(500)).is_ok();
-        }
-    }
-    for a in plugin_addrs() {
-        let Ok(sa) = a.parse::<SocketAddr>() else { continue };
-        if TcpStream::connect_timeout(&sa, Duration::from_millis(500)).is_ok() {
-            let _ = ADDR.set(a);
-            return true;
-        }
-    }
-    false
+    tmdrive::plugin::alive()
 }
 
 // ---------------------------------------------------------------------------
@@ -86,6 +68,22 @@ fn plugin_up() -> bool {
 // ---------------------------------------------------------------------------
 
 fn http_get(route: &str, timeout_s: u64) -> Result<String, String> {
+    // ONE GAME, ONE DRIVER: a command that changes the game must carry this
+    // driver's lock token, or the plugin refuses it. Reads are unaffected —
+    // the gate only guards mutating routes — so this stamps every request and
+    // lets the game decide which ones need it.
+    //
+    // The token comes from the lock this process holds, or from TM_LOCK_TOKEN
+    // when a parent (`tmdrive run ... -- script`) holds it for us.
+    let route: String = match tmdrive::plugin::current_token() {
+        Some(t) => {
+            let sep = if route.contains('?') { '&' } else { '?' };
+            format!("{route}{sep}token={t}")
+        }
+        None => route.to_string(),
+    };
+    let route = route.as_str();
+
     // connect WITH a timeout: a WSL connect to a Windows port nobody listens
     // on is dropped, not refused, and a plain `connect` then sits in the
     // kernel's SYN retries for ~2 minutes — which is how a dead game kept a
@@ -100,10 +98,17 @@ fn http_get(route: &str, timeout_s: u64) -> Result<String, String> {
     let mut buf = Vec::new();
     s.read_to_end(&mut buf).map_err(|e| format!("read: {e}"))?;
     let text = String::from_utf8_lossy(&buf).to_string();
-    match text.find("\r\n\r\n") {
-        Some(i) => Ok(text[i + 4..].to_string()),
-        None => Ok(text),
+    let body = match text.find("\r\n\r\n") {
+        Some(i) => text[i + 4..].to_string(),
+        None => text,
+    };
+    if body.contains("token-refused") {
+        return Err(format!(
+            "{body}\n  (take the box first: `tmdrive run --purpose '...' -- <your command>`, \
+             or `shootctl lock acquire`)"
+        ));
     }
+    Ok(body)
 }
 
 /// A map path the GAME can resolve, or a refusal.
@@ -1114,6 +1119,28 @@ usage:
         );
         std::process::exit(2);
     }
+    // ONE GAME, ONE DRIVER, TAKEN UP FRONT.
+    //
+    // These subcommands change the running game. Acquiring here rather than
+    // at the first mutating call means a busy box fails immediately, before
+    // any work is done, and one hold covers the whole command. Subcommands
+    // that take the lock themselves (shootset, playshots, run) are absent —
+    // `acquire` is re-entrant, but there is no reason to double it.
+    //
+    // Read-only subcommands are deliberately absent too: gating them would
+    // mean every observer holds the box, which is the same as no lock.
+    const NEEDS_GAME: &[&str] =
+        &["launch", "shoot", "setup", "quit", "key", "import", "mapsave", "render", "loadloop", "lightmap"];
+    if NEEDS_GAME.contains(&args[0].as_str()) {
+        let purpose: String = format!("shootctl {}", args.join(" ")).chars().take(120).collect();
+        if let Err(e) = lock::acquire(&lock::lock_dir(), &purpose, 0, 0) {
+            eprintln!("{e}");
+            // 75 = EX_TEMPFAIL: the caller should wait and retry, not treat
+            // this as a broken command.
+            std::process::exit(75);
+        }
+    }
+
     let code = match args[0].as_str() {
         // ONE GAME, ONE DRIVER. See `lock.rs`: two concurrent renders do not
         // fail, they produce two plausible clips of which one is of the wrong
@@ -1128,7 +1155,7 @@ usage:
             let num = |k: &str, d: u64| val(k).and_then(|v| v.parse().ok()).unwrap_or(d);
             let d = lock::lock_dir();
             match args.get(1).map(|s| s.as_str()) {
-                Some("acquire") => match lock::acquire(&d, &owner, num("--wait", 0), num("--max-age", 0)) {
+                Some("acquire") => match lock::acquire_cli(&d, &owner, num("--wait", 0)) {
                     Ok(()) => {
                         // The CLI acquire exits as soon as it holds the lock, so
                         // ITS pid is dead a millisecond later and the next
@@ -1169,7 +1196,7 @@ usage:
                         1
                     }
                 },
-                Some("release") => match lock::release(&d, &owner) {
+                Some("release") => match lock::release_cli(&d, &owner) {
                     Ok(()) => 0,
                     Err(e) => {
                         eprintln!("{e}");
@@ -1235,9 +1262,13 @@ usage:
         // PLAY-mode timed screenshots under the lock: does a moving item's
         // collision move (pushers around the spawn shove the car)? playshots.rs.
         "playshots" => playshots::run(&args[1..]),
+        // `shootctl race "Luigi Raceway"`: the MK64 map in solo play with its seven
+        // CPU ghosts (Replays/MK64/cpu/MK64 <Course> - *.Ghost.Gbx), left open to drive.
+        "race" => playshots::race(&args[1..]),
         // ONE ghost video on the SHARED game: lock held for the game part only,
         // game left up, done file + contact sheets for a remote caller. render.rs.
         "render" => render::run(&args[1..]),
+        "render-batch" => render::run_batch(&args[1..]),
         "loadprof" => loadprof::run(&args[1..]),
         // N loads of one map (or an A,B,A,B sequence), each classified from the object graph. loadloop.rs.
         "loadloop" => loadloop::run(&args[1..]),
@@ -1351,6 +1382,60 @@ usage:
                     .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs());
             }
             shoot(to, &name)
+        }
+        // fpsprobe --map M --ghosts N --template G.Ghost.Gbx [--seconds 5] [--cam 2]:
+        // the skin-scenery cost question (2026-09-12) — N copies of one parked
+        // ghost imported into the map's MediaTracker (setup, as a render does),
+        // the clip played, and the plugin's frame counter read over --seconds:
+        // frames / seconds = the FPS the scene sustains with N ghost cars.
+        "fpsprobe" => {
+            let val = |k: &str| -> Option<String> { args.iter().position(|a| a == k).and_then(|i| args.get(i + 1)).cloned() };
+            let map = val("--map").unwrap_or_default();
+            let n: usize = val("--ghosts").and_then(|s| s.parse().ok()).unwrap_or(1);
+            let template = val("--template").unwrap_or_default();
+            let secs: u64 = val("--seconds").and_then(|s| s.parse().ok()).unwrap_or(5);
+            let cam: u8 = val("--cam").and_then(|s| s.parse().ok()).unwrap_or(2);
+            if map.is_empty() || template.is_empty() {
+                eprintln!("usage: shootctl fpsprobe --map M --ghosts N --template G.Ghost.Gbx [--seconds 5] [--cam 2]");
+                std::process::exit(2);
+            }
+            // N copies of the template in _stage (the import dialog picks by file name)
+            let stage = "/home/vjeux/shoot/_stage";
+            let mut ghosts: Vec<String> = Vec::new();
+            for i in 0..n {
+                let p = format!("{stage}/fps-{i:02}.Ghost.Gbx");
+                if let Err(e) = std::fs::copy(&template, &p) {
+                    eprintln!("copy {template} -> {p}: {e}");
+                    std::process::exit(2);
+                }
+                ghosts.push(p);
+            }
+            let _ = http_get("/dismiss", 10);
+            let t0 = Instant::now();
+            let rc = setup(&map, &ghosts, cam);
+            let setup_s = t0.elapsed().as_secs_f64();
+            if rc != 0 {
+                eprintln!("setup rc {rc} after {setup_s:.1}s");
+                std::process::exit(rc);
+            }
+            let _ = http_get("/rewind", 10);
+            let _ = http_get("/play", 10);
+            std::thread::sleep(Duration::from_millis(1500));
+            let body = http_get(&format!("/await?c=ctx:7&ms={}", secs * 1000), secs + 15).unwrap_or_default();
+            let frames: f64 = body.find("\"frames\":").and_then(|i| {
+                let r = &body[i + 9..];
+                let e = r.find(|c: char| !c.is_ascii_digit()).unwrap_or(r.len());
+                r[..e].parse().ok()
+            }).unwrap_or(0.0);
+            let ms: f64 = body.find("\"ms\":").and_then(|i| {
+                let r = &body[i + 5..];
+                let e = r.find(|c: char| !c.is_ascii_digit()).unwrap_or(r.len());
+                r[..e].parse().ok()
+            }).unwrap_or(secs as f64 * 1000.0);
+            let _ = http_get("/stop", 10);
+            println!("fpsprobe: {n} ghost(s) of {template}, setup {setup_s:.1}s, {frames:.0} frames in {:.2}s while the clip played = {:.1} fps", ms / 1000.0, frames * 1000.0 / ms.max(1.0));
+            println!("  raw {}", body.trim());
+            0
         }
         "setup" => {
             let mut map = String::new();
@@ -1846,6 +1931,23 @@ fn to_menu() -> Result<(), String> {
         // menu one level at a time, raising the save prompt on the way out.
         // So /back is the only mover, and it is called repeatedly.
         if ctx() == Some(0) { return Ok(()); }
+        // A DEAD GAME IS NOT A GAME AT SOME LEVEL. BackToMainMenu out of a
+        // playground crashes the client about four times in five on this box
+        // (2026-09-24, Openplanet.dll+0xc0480, every plugin set tried); the
+        // loop below then spent 24 minutes of 20 s timeouts holding the lock
+        // over nothing (20:20–20:44). No process = relaunch, which comes up
+        // at the menu — the state this function exists to reach.
+        // BOTH signs, not one: tasklist.exe answered empty for a game that was
+        // up (20:33 — the check killed a good game and relaunched into a
+        // connect timeout); the plugin's port is the liveness `launch` trusts.
+        if !plugin_up() && !tm_running() {
+            println!("the game is gone (crashed on the way to the menu?) — relaunching");
+            if launch(180, true) != 0 {
+                return Err("the game died on the way to the menu and did not come back".into());
+            }
+            if ctx() == Some(0) { return Ok(()); }
+            continue;
+        }
         let _ = http_get("/back", 20);
         // Answer whatever modal the exit raised; /dismiss picks the right answer
         // per dialog and defaults to declining. Each answer is followed by a
@@ -1901,14 +2003,12 @@ fn to_menu() -> Result<(), String> {
 /// has stopped answering. Best effort by design: no game running is the
 /// desired end state, so "not found" is success.
 fn quit_game() {
-    for image in ["Trackmania.exe", "TmForever.exe"] {
-        let _ = std::process::Command::new("taskkill.exe")
-            .args(["/IM", image, "/F"])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
+    // Through the guard: killing the game is exactly the operation that ruins
+    // another session's render if we do not hold the box.
+    match lock::with(|l| tmdrive::ops::kill(l).map_err(|e| e.to_string())) {
+        Ok(()) => println!("  game closed"),
+        Err(e) => eprintln!("  game NOT closed: {e}"),
     }
-    println!("  game closed");
 }
 
 fn launch(timeout_s: u64, force: bool) -> i32 {
@@ -1928,9 +2028,9 @@ fn launch(timeout_s: u64, force: bool) -> i32 {
         return 0;
     }
 
-    for exe in ["Trackmania.exe", "UbisoftGameLauncher.exe"] {
-        let _ = std::process::Command::new("/mnt/c/Windows/System32/taskkill.exe")
-            .args(["/F", "/IM", exe]).output();
+    if let Err(e) = lock::with(|l| tmdrive::ops::kill_with_launcher(l).map_err(|e| e.to_string())) {
+        eprintln!("{e}");
+        return 1;
     }
     // Wait for them to be GONE. tasklist is a process spawn, ~100 ms; that is
     // the pacing, not a sleep.
@@ -1951,9 +2051,13 @@ fn launch(timeout_s: u64, force: bool) -> i32 {
     // Now the log IS the diagnosis, and a hung login is retried rather than
     // reported as a broken install.
     for attempt in 1..=3 {
-        let game = "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Trackmania\\Trackmania.exe";
-        let _ = std::process::Command::new("/mnt/c/Windows/explorer.exe").arg(game).output();
-        println!("[{:.1}s] launched via explorer (attempt {attempt})", el(&t0));
+        if let Err(e) = lock::with(|l| {
+            tmdrive::ops::launch_via_steam(l).map_err(|e| e.to_string())
+        }) {
+            eprintln!("{e}");
+            return 1;
+        }
+        println!("[{:.1}s] launched via steam (attempt {attempt})", el(&t0));
 
         // Wait for the plugin socket, trying EVERY candidate address each time
         // -- the right one cannot be known before the server exists.
@@ -1984,9 +2088,9 @@ fn launch(timeout_s: u64, force: bool) -> i32 {
             OpStage::StalledAtLogin => {
                 eprintln!("[{:.1}s] Openplanet hung on the Nadeo login (attempt {attempt}) -- restarting",
                           el(&t0));
-                for exe in ["Trackmania.exe", "UbisoftGameLauncher.exe"] {
-                    let _ = std::process::Command::new("/mnt/c/Windows/System32/taskkill.exe")
-                        .args(["/F", "/IM", exe]).output();
+                if let Err(e) = lock::with(|l| tmdrive::ops::kill_with_launcher(l).map_err(|e| e.to_string())) {
+                    eprintln!("{e}");
+                    return 1;
                 }
                 while tm_running() {}
             }

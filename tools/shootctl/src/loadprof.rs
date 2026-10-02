@@ -136,16 +136,10 @@ fn unix_ms() -> u128 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
 }
 
-/// The game's pid from tasklist (CSV, no header).
+/// The game's pid. Read-only, and tmdrive owns how it is asked — one place
+/// knows how to read the process list, and the contract test keeps it that way.
 fn game_pid() -> Option<u32> {
-    let out = std::process::Command::new("/mnt/c/Windows/System32/tasklist.exe")
-        .args(["/FI", "IMAGENAME eq Trackmania.exe", "/FO", "CSV", "/NH"])
-        .output()
-        .ok()?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    let line = text.lines().find(|l| l.to_lowercase().contains("trackmania.exe"))?;
-    let pid = line.split(',').nth(1)?.trim().trim_matches('"');
-    pid.parse().ok()
+    tmdrive::game_pid(&tmdrive::Host::detect())
 }
 
 /// The bundled light WPR profile: sampled profile + stacks, process/thread/
@@ -310,6 +304,7 @@ impl Typeperf {
 impl Drop for Typeperf {
     fn drop(&mut self) {
         // the WSL-side handle is a stub around the Windows process; kill both
+        // tmdrive-allow: typeperf is this profiler's own child, not the game
         let _ = std::process::Command::new("/mnt/c/Windows/System32/taskkill.exe")
             .args(["/IM", "typeperf.exe", "/F"])
             .stdout(std::process::Stdio::null())
@@ -364,7 +359,7 @@ fn run_prof(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
     }
     super::to_menu()?;
     super::await_cond("ready", 60)?;
-    let pid = game_pid().ok_or("no Trackmania.exe pid in tasklist")?;
+    let pid = game_pid().ok_or("no game process in the process list")?;
     tl(&mut timeline, format!("{} game pid {pid}; restart={} (cold={})", el(), opts.restart, opts.restart));
     let store = "/mnt/c/Users/vjeux/OpenplanetNext/PluginStorage/GhostShooter";
     let _ = std::fs::create_dir_all(store);

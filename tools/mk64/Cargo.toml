@@ -16,3 +16,7 @@ path = "src/lib.rs"
 [dependencies]
 mapgeom = { path = "../mapgeom" }
 tmmaps = { path = "../tmmaps" }
+# the ghost container (`ghost::record::rebuild_to`, `gbx::recwrite`) for the
+# centreline ghosts (`mk64 ghost`)
+ghost = { path = "../ghost" }
+gbx = { path = "../gbx" }

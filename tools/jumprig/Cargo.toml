@@ -1,0 +1,11 @@
+[package]
+name = "jumprig"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tmdrive = { path = "../tmdrive" }
+
+[[bin]]
+name = "jumprig"
+path = "src/main.rs"

@@ -9,10 +9,11 @@
 //!   `fwdproxy-config` recommends), then the relay's own TLS inside THAT.
 //!
 //! Proxy choice, first match wins: `WHITESTICK_PROXY` (`none` forces a direct
-//! connection), the config's `proxy`, `https_proxy` / `HTTPS_PROXY`, and
-//! finally — when the name `fwdproxy` resolves, i.e. on any devserver or OD —
-//! `https://fwdproxy:8082` if a usable certificate is on disk, else
-//! `http://fwdproxy:8080`. At home nothing resolves and the box dials direct.
+//! connection), the config's `proxy`, then — when the name `fwdproxy`
+//! resolves, i.e. on any devserver or OD — `https://fwdproxy:8082` with the
+//! host's certificate, then `https_proxy` / `HTTPS_PROXY`, then
+//! `http://fwdproxy:8080`. The cert path outranks the env var on purpose: see
+//! `resolve_proxy`. At home nothing resolves and the box dials direct.
 
 use anyhow::{anyhow, bail, Context, Result};
 use std::sync::Arc;
@@ -139,15 +140,26 @@ pub async fn resolve_proxy(configured: Option<&str>) -> Option<Proxy> {
     if let Some(v) = configured {
         return parse_proxy(v);
     }
-    for key in ["https_proxy", "HTTPS_PROXY"] {
-        if let Ok(v) = std::env::var(key) {
-            if !v.trim().is_empty() {
-                return parse_proxy(&v);
-            }
-        }
-    }
-    // The corp default: present on every devserver/OD, absent everywhere else.
-    if tokio::net::lookup_host(("fwdproxy", 8082)).await.is_ok() {
+    // THE CORP DEFAULT COMES BEFORE `https_proxy`, deliberately.
+    //
+    // fwdproxy has two front doors and they are not interchangeable for us:
+    //   :8082 (TLS, the host's x509 cert)  -- machine identity; the relay is
+    //          reachable, and this is what worked for hundreds of calls a night.
+    //   :8080 (plain CONNECT)              -- carries the AGENT identity, whose
+    //          destination filter denies the relay IP outright (403).
+    //
+    // `https_proxy=http://fwdproxy:8080` is the standard thing to export on an
+    // OD so that curl/pip/cargo have internet at all, and on 2026-09-24 that
+    // export synced to the devserver through dotfiles and took precedence
+    // here. The bridge silently switched doors and every call failed with a
+    // 403 that read like a fresh security block. Honouring the env var first
+    // made a generic setting override a specific, known-good choice.
+    //
+    // So on a corp host with a usable cert, :8082 wins regardless of the
+    // environment. `WHITESTICK_PROXY` and the config's `proxy` still override
+    // everything, for the cases where someone really means it.
+    let on_corp = tokio::net::lookup_host(("fwdproxy", 8082)).await.is_ok();
+    if on_corp {
         if let Some(cert) = find_proxy_cert() {
             return Some(Proxy::Https {
                 host: "fwdproxy".to_string(),
@@ -155,6 +167,15 @@ pub async fn resolve_proxy(configured: Option<&str>) -> Option<Proxy> {
                 cert,
             });
         }
+    }
+    for key in ["https_proxy", "HTTPS_PROXY"] {
+        if let Ok(v) = std::env::var(key) {
+            if !v.trim().is_empty() {
+                return parse_proxy(&v);
+            }
+        }
+    }
+    if on_corp {
         return Some(Proxy::Http {
             host: "fwdproxy".to_string(),
             port: 8080,

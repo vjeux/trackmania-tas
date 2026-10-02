@@ -38,8 +38,13 @@ pub const PHYS_ASPHALT: u8 = 16;
 pub const PHYS_SNOW: u8 = 21;
 pub const PHYS_ICE: u8 = 74;
 pub const PHYS_GRASS: u8 = 76;
-/// Gameplay ids: Turbo 1.
+/// Wood: the game's `EPlugSurfaceMaterialId::Wood` (14 — the vegetation trunk
+/// hulls' material in the pack; vjeux 2026-09-25: "make banshee boardwalk
+/// bridge wood physics").
+pub const PHYS_WOOD: u8 = 14;
+/// Gameplay ids: Turbo 1, Bumper 10 (the collision-cplugsurface notes).
 pub const GAMEPLAY_TURBO: u8 = 1;
+pub const GAMEPLAY_BUMPER: u8 = 10;
 
 /// MK64 surface type → (TM physics, gameplay). None = no collision.
 pub fn physics_for_surface(s: u8) -> Option<(u8, u8)> {
@@ -49,20 +54,30 @@ pub fn physics_for_surface(s: u8) -> Option<(u8, u8)> {
         2 | 13 => (PHYS_DIRT, 0),               // DIRT, DIRT_OFFROAD
         3 | 7 | 10 => (PHYS_SAND, 0),           // SAND, SAND_OFFROAD, WET_SAND
         4 | 12 | 15 => (PHYS_CONCRETE, 0),      // STONE, CLIFF, CAVE
-        5 | 11 => (PHYS_SNOW, 0),               // SNOW, SNOW_OFFROAD
-        6 | 16 | 17 => (PHYS_CONCRETE, 0),      // BRIDGE, ROPE_BRIDGE, WOOD_BRIDGE
+        // SNOW is the snow courses' ROAD (Frappe, Sherbet): TM's Snow is a
+        // slow penalty surface, so the road drives as Ice (vjeux 2026-09-25);
+        // SNOW_OFFROAD (the deep snow beside it) keeps the penalty
+        5 => (PHYS_ICE, 0),                     // SNOW (road)
+        11 => (PHYS_SNOW, 0),                   // SNOW_OFFROAD
+        6 | 16 | 17 => (PHYS_WOOD, 0),          // BRIDGE, ROPE_BRIDGE, WOOD_BRIDGE
         8 => (PHYS_GRASS, 0),                   // GRASS
         9 => (PHYS_ICE, 0),                     // ICE
         14 => (PHYS_METAL, 0),                  // TRAIN_TRACK
-        0xFC | 0xFE => (PHYS_ASPHALT, GAMEPLAY_TURBO), // BOOST_RAMP_WOOD / _ASPHALT
+        // BOOST_RAMP_WOOD: the game's `trigger_wood_ramp_boost` — a launch off a
+        // wooden ramp (D.K.'s lily pad in the river, Yoshi's bridges): TM's
+        // Bumper, which throws the car (vjeux 2026-09-25). BOOST_RAMP_ASPHALT
+        // (the painted boost pads) stays Turbo.
+        0xFC => (PHYS_WOOD, GAMEPLAY_BUMPER),   // BOOST_RAMP_WOOD
+        0xFE => (PHYS_ASPHALT, GAMEPLAY_TURBO), // BOOST_RAMP_ASPHALT
         0xFD => (PHYS_GRASS, 0),                // OUT_OF_BOUNDS: slow ground for now
         0xFF => (PHYS_CONCRETE, 0),             // RAMP (the walls in Luigi Raceway)
         _ => (PHYS_CONCRETE, 0),
     })
 }
 
-/// Texture upscale before DXT (nearest): at ×4 every 4×4 DXT block is ONE
-/// texel, so the compression is exact and the N64 pixels stay crisp.
+/// Texture upscale before DXT: ×4, BILINEAR like the N64's texture filter
+/// (`--crisp` keeps the nearest upscale, where every 4×4 DXT block is one
+/// sharp texel — the look that shimmered on the asphalt).
 pub const TEXTURE_UPSCALE: u32 = 4;
 
 fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
@@ -77,17 +92,47 @@ pub struct ItemSpec {
     pub yaw: f32,
     pub tag: Option<String>,
     pub order: u32,
+    /// The placement's colour byte (chunk 0x03043062: 0 Default, 1 White,
+    /// 2 Green, 3 Blue, 4 Red, 5 Black) — colorable game materials follow it.
+    pub color: u8,
 }
 
 /// A waypoint to attach to the piece under a path point.
 struct WaypointReq {
-    /// TM world position on the path.
     pos: [f32; 3],
-    /// Travel direction (unit, xz).
     dir: [f32; 3],
     /// 4 = start+finish, 2 = checkpoint.
     kind: i32,
     tag: &'static str,
+    /// Linked-checkpoint group (`CGameWaypointSpecialProperty::Order`): gates
+    /// sharing a number count as one checkpoint — a branch of Yoshi Valley's
+    /// split gets its own gate in the same group (vjeux 2026-09-25: "you can
+    /// link checkpoints"). 0 = unlinked.
+    order: u32,
+    /// Trigger width across the road, metres (the road's drivable extent at
+    /// the gate plus a margin; the fixed 40 m missed Koopa Beach's wide sand).
+    width_m: f32,
+}
+
+/// The course's frame in the map: scale from `--scale` or the calibrated
+/// constant, offset so the course is centred in the host (a 48-cell Stadium
+/// map centres at 768, the 128³ void base at 2048) with its lowest DRIVABLE
+/// collision point (upward-facing; the invisible walls reach further down)
+/// just over the grass. Shared by the map build and the centreline ghost so
+/// the two agree to the millimetre.
+pub fn course_frame(c: &Course, pieces: &[crate::course::Piece], coll: &[(crate::course::Section, crate::course::Piece)], assets: &AssetIndex, kind: &HostKind, args: &[String]) -> Frame {
+    let scale: f32 = flag(args, "--scale").map(|s| s.parse().expect("--scale")).unwrap_or(crate::mesh::UNITS_TO_M);
+    let mirror = args.iter().any(|a| a == "--mirror");
+    let f0 = Frame { scale, mirror, offset: [0.0; 3] };
+    let soup0 = mesh::collision_mesh(c, coll, &f0);
+    let mesh0 = mesh::visual_mesh(c, pieces, Some(assets), &f0);
+    let all_pts = mesh0.tris.iter().flat_map(|t| t.c.iter().map(|k| k.pos));
+    let (lo_v, hi_v) = mesh::bbox(all_pts).expect("course has geometry");
+    let min_coll_y = soup0.iter().filter(|t| mesh::face_normal(&t.p)[1] > 0.5).flat_map(|t| t.p.iter().map(|p| p[1])).fold(f32::INFINITY, f32::min);
+    let min_y = if min_coll_y.is_finite() { min_coll_y } else { lo_v[1] };
+    let centre = [kind.size[0] as f32 * 16.0, kind.size[2] as f32 * 16.0];
+    let offset = [centre[0] - (lo_v[0] + hi_v[0]) / 2.0, STADIUM_GROUND_Y + 0.3 - min_y, centre[1] - (lo_v[2] + hi_v[2]) / 2.0];
+    Frame { scale, mirror, offset }
 }
 
 pub fn cmd_build(args: &[String]) {
@@ -141,26 +186,25 @@ pub fn cmd_build(args: &[String]) {
     let pieces = c.visual_pieces();
     let coll = c.collision_pieces();
 
-    // frame: scale from the flag or the calibrated constant, offset so the
-    // course is centred in the map with its lowest collision point on the grass
-    let scale: f32 = flag(args, "--scale").map(|s| s.parse().expect("--scale")).unwrap_or(crate::mesh::UNITS_TO_M);
-    let mirror = args.iter().any(|a| a == "--mirror");
-    let f0 = Frame { scale, mirror, offset: [0.0; 3] };
-    let soup0 = mesh::collision_mesh(&c, &coll, &f0);
-    let mesh0 = mesh::visual_mesh(&c, &pieces, Some(&assets), &f0);
-    let all_pts = mesh0.tris.iter().flat_map(|t| t.c.iter().map(|k| k.pos));
-    let (lo_v, hi_v) = mesh::bbox(all_pts).expect("course has geometry");
-    // the lowest DRIVABLE point (upward-facing collision; the invisible walls
-    // reach further down) clears the grass
-    let min_coll_y = soup0.iter().filter(|t| mesh::face_normal(&t.p)[1] > 0.5).flat_map(|t| t.p.iter().map(|p| p[1])).fold(f32::INFINITY, f32::min);
-    let min_y = if min_coll_y.is_finite() { min_coll_y } else { lo_v[1] };
-    // the host decides the map centre (a 48-cell Stadium map centres at 768,
-    // the 128³ void base at 2048) and whether the course needs a skirt
     let kind = host_kind(&MapFile::load(&host));
-    let centre = [kind.size[0] as f32 * 16.0, kind.size[2] as f32 * 16.0];
-    let offset = [centre[0] - (lo_v[0] + hi_v[0]) / 2.0, STADIUM_GROUND_Y + 0.3 - min_y, centre[1] - (lo_v[2] + hi_v[2]) / 2.0];
-    let frame = Frame { scale, mirror, offset };
+    let frame = course_frame(&c, &pieces, &coll, &assets, &kind, args);
+    let (scale, offset) = (frame.scale, frame.offset);
+    let (lo_v, hi_v) = {
+        let f0 = Frame { scale, mirror: frame.mirror, offset: [0.0; 3] };
+        let mesh0 = mesh::visual_mesh(&c, &pieces, Some(&assets), &f0);
+        mesh::bbox(mesh0.tris.iter().flat_map(|t| t.c.iter().map(|k| k.pos))).expect("course has geometry")
+    };
     let mut m = mesh::visual_mesh(&c, &pieces, Some(&assets), &frame);
+    // the code-placed objects (signs, snowmen, crabs, neon signs, penguins, the
+    // parked train …): statics into the mesh here, moving ones as an item below
+    let path_tm_all: Vec<[f32; 3]> = c.path.iter().map(|p| frame.to_tm(p.pos)).collect();
+    let objects = if args.iter().any(|a| a == "--no-objects") { Vec::new() } else { crate::objects::course_objects(&c, &frame, &path_tm_all, &decomp) };
+    for obj in &objects {
+        let (np, nt) = crate::objects::add_static(&c, &mut m, &frame, obj, &mut rom, &assets);
+        if np > 0 {
+            println!("  objects: {} × {} static ({nt} triangles)", np, obj.name);
+        }
+    }
     if !args.iter().any(|a| a == "--no-actors") {
         for kind in ["tree", "cow", "piranha_plant", "cactus"] {
             let (n, t) = crate::actors::add_billboards(&c, &mut m, &frame, kind);
@@ -179,19 +223,43 @@ pub fn cmd_build(args: &[String]) {
             let t = crate::actors::add_lakitu(&mut m, &frame, at, d);
             println!("  actors: Lakitu over the start ({t} triangles)");
         }
-        // Bowser's Thwomps, static, 2 m over the road
-        if dir == "bowsers_castle" {
+        // Bowser's Thwomps, static, 2 m over the road (the moving ones live in
+        // the objects item; --no-objects keeps these)
+        if dir == "bowsers_castle" && objects.is_empty() {
             let soup = mesh::collision_mesh(&c, &coll, &frame);
             let floor = |x: f32, z: f32| -> Option<f32> { soup.iter().filter_map(|t| height_under(t, x, z)).fold(None, |m: Option<f32>, h| Some(m.map_or(h, |v| v.max(h)))) };
             let t = crate::actors::add_thwomps(&c, &mut m, &frame, &floor, 2.0);
             println!("  actors: Thwomps ({t} triangles)");
         }
     }
+    // coplanar overlaps lifted apart (--decal-lift MM; 0 = off): the z-fight
+    // flicker where MK64 stacks two surfaces on one plane
+    let lift_mm: f32 = flag(args, "--decal-lift").and_then(|s| s.parse().ok()).unwrap_or(4.0);
+    if lift_mm > 0.0 {
+        let n = mesh::lift_coplanar_overlaps(&mut m, lift_mm / 1000.0);
+        println!("  decal lift: {n} overlapping triangles raised by {lift_mm} mm steps");
+    }
+    // ground tints smoothed over 12 m before the bake (--ground-smooth M; 0 = off)
+    let smooth_r: f32 = flag(args, "--ground-smooth").and_then(|s| s.parse().ok()).unwrap_or(12.0);
+    if smooth_r > 0.0 && !args.iter().any(|a| a == "--no-vertex-colours") {
+        let n = mesh::smooth_ground_colours(&mut m, smooth_r);
+        println!("  ground colours smoothed over {smooth_r} m: {n} triangles");
+    }
     let (splits, variants) = if args.iter().any(|a| a == "--no-vertex-colours") { (0, m.materials.len()) } else { mesh::bake_vertex_colours(&mut m, 16, 24, 4) };
     println!("  vertex colours baked: {splits} triangle splits, {variants} texture variants");
     let want_skirt = if args.iter().any(|a| a == "--no-skirt") { false } else if args.iter().any(|a| a == "--skirt") { true } else { !kind.void };
     let skirts = if want_skirt { mesh::add_skirt(&mut m, STADIUM_GROUND_Y - 0.2) } else { 0 };
-    let soup = mesh::collision_mesh(&c, &coll, &frame);
+    let mut soup = mesh::collision_mesh(&c, &coll, &frame);
+    // --coll-dy M: the collision mesh shifted vertically (probe: does the coplanar
+    // MK64 collision mesh make the lightmapper paint the road in a texel mosaic?)
+    if let Some(dy) = flag(args, "--coll-dy").and_then(|s| s.parse::<f32>().ok()) {
+        for t in soup.iter_mut() {
+            for p in t.p.iter_mut() {
+                p[1] += dy;
+            }
+        }
+        println!("  collision shifted by {dy} m");
+    }
     println!(
         "{}: {} visual tris in {} pieces ({skirts} skirt quads), {} collision tris; scale {scale:.5} m/unit, offset ({:.1}, {:.1}, {:.1}); extent x {:.0}..{:.0} z {:.0}..{:.0}",
         dir,
@@ -214,10 +282,23 @@ pub fn cmd_build(args: &[String]) {
         println!("  texture missing: {x}");
     }
     let mut pictures: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    let crisp = args.iter().any(|a| a == "--crisp");
+    let mut soft_n = 0usize;
     for (i, mat) in m.materials.iter().enumerate() {
-        let img = images[&i].upscale(TEXTURE_UPSCALE);
+        // noise-like textures (asphalt, grass, sand: few hard texel edges) get the
+        // N64's soft filter; pixel art (signs, checkerboards, lines) stays crisp
+        let soft = !crisp && images[&i].wants_soft_upscale();
+        // soft textures ship at their native size: the GPU's bilinear filter IS
+        // the N64 look, and a 64×32 DXT block set is a fraction of a ×4 one
+        // (the ×4 bilinear build pushed D.K.'s Jungle to 8.1 MB, over the 7 MB
+        // server cap); crisp pixel art keeps the ×4 nearest upscale (exact DXT)
+        let img = if soft { images[&i].clone() } else { images[&i].upscale(TEXTURE_UPSCALE) };
+        if soft {
+            soft_n += 1;
+        }
         pictures.insert(format!("{tag}_{}.dds", mat.stem()), write_dds_picture(img.w, img.h, &img.rgba));
     }
+    println!("  textures: {soft_n} of {} upscaled soft (bilinear), the rest crisp", m.materials.len());
 
     // waypoints along the centre path
     let path: Vec<[f32; 3]> = c.path.iter().map(|p| frame.to_tm(p.pos)).collect();
@@ -228,10 +309,32 @@ pub fn cmd_build(args: &[String]) {
         let b = path[(i + 1) % n];
         mesh::normalize([b[0] - a[0], 0.0, b[2] - a[2]])
     };
-    reqs.push(WaypointReq { pos: path[0], dir: dir_at(0), kind: 4, tag: "StartFinish" });
-    for k in 1..=n_cps {
-        let i = (k * n) / (n_cps + 1);
-        reqs.push(WaypointReq { pos: path[i], dir: dir_at(i), kind: 2, tag: "Checkpoint" });
+    reqs.push(WaypointReq { pos: path[0], dir: dir_at(0), kind: 4, tag: "StartFinish", order: 0, width_m: 40.0 });
+    // Checkpoints: one GROUP per lap fraction (see `checkpoint_fractions`)
+    let (fractions, routes, at_fraction, near_m, dist_xz) = checkpoint_plan(&c, &frame, &path, n_cps);
+    for (k, &(f, linked)) in fractions.iter().enumerate() {
+        let (p0, d0) = at_fraction(&routes[0], f);
+        let mut gates: Vec<([f32; 3], [f32; 3])> = vec![(p0, d0)];
+        if linked {
+            for route in routes.iter().skip(1) {
+                if route.iter().any(|q| dist_xz(*q, p0) < near_m) {
+                    continue;
+                }
+                let (p, d) = at_fraction(route, f);
+                if !gates.iter().any(|(q, _)| dist_xz(*q, p) < near_m) {
+                    gates.push((p, d));
+                }
+            }
+            println!("  checkpoint {}: {} linked gates at {:.0} % of the lap", k + 1, gates.len(), f * 100.0);
+        }
+        // a group of several gates is tagged `LinkedCheckpoint` (map-blocks.md
+        // §5: "Spawn" | "Checkpoint" | "LinkedCheckpoint" | "Goal"), sharing
+        // one order; a lone gate stays a plain Checkpoint (the HUD counted
+        // 0/7 on Yoshi with seven "Checkpoint"s of shared orders, 07:23)
+        let tag: &'static str = if gates.len() > 1 { "LinkedCheckpoint" } else { "Checkpoint" };
+        for (p, d) in gates {
+            reqs.push(WaypointReq { pos: p, dir: d, kind: 2, tag, order: k as u32 + 1, width_m: 0.0 });
+        }
     }
 
     // items: one per visual piece; collision by matching piece name
@@ -255,7 +358,7 @@ pub fn cmd_build(args: &[String]) {
     // triangles pass under the path point, else the nearest visual piece
     let mut attach: HashMap<usize, Vec<&WaypointReq>> = HashMap::new();
     let mut unattached = Vec::new();
-    for r in &reqs {
+    for r in reqs.iter().filter(|r| r.kind == 4) {
         let mut best: Option<(f32, usize)> = None;
         for (dl, tris) in &coll_tris_by_dl {
             let Some(&pi) = piece_index.get(dl.as_str()) else { continue };
@@ -298,10 +401,41 @@ pub fn cmd_build(args: &[String]) {
         let name = format!("MK64_{}_{}_{:03}.Item.Gbx", dir, tag, stats_items);
         match build_item(&name, tris, &ctris, &m, &alpha, wp, &tag) {
             Ok((bytes, pos, yaw)) => {
-                specs.push(ItemSpec { name, bytes, pos, yaw, tag: wp.map(|w| w.tag.to_string()), order: 0 });
+                specs.push(ItemSpec { name, bytes, pos, yaw, tag: wp.map(|w| w.tag.to_string()), order: 0, color: 0 });
                 stats_items += 1;
             }
             Err(e) => println!("  piece {pname}: item build failed: {e}"),
+        }
+    }
+    // the checkpoints: standalone trigger items, one per gate, as wide as the
+    // road under them (drivable collision across the heading, +6 m, 20..160 m)
+    for r in reqs.iter().filter(|r| r.kind == 2) {
+        let across = [r.dir[2], 0.0, -r.dir[0]];
+        let on_road = |t: f32| -> bool {
+            let x = r.pos[0] + across[0] * t;
+            let z = r.pos[2] + across[2] * t;
+            soup.iter().any(|tri| mesh::face_normal(&tri.p)[1] > 0.3 && height_under(tri, x, z).map(|y| (y - r.pos[1]).abs() < 6.0).unwrap_or(false))
+        };
+        let mut left = 0.0f32;
+        while left < 80.0 && on_road(-(left + 1.0)) {
+            left += 1.0;
+        }
+        let mut right = 0.0f32;
+        while right < 80.0 && on_road(right + 1.0) {
+            right += 1.0;
+        }
+        let width = (left + right + 6.0).clamp(20.0, 160.0);
+        // centre the gate on the road, not on the path point
+        let shift = (right - left) / 2.0;
+        let centre = [r.pos[0] + across[0] * shift, r.pos[1], r.pos[2] + across[2] * shift];
+        let name = format!("MK64_{}_{}_cp{:03}.Item.Gbx", dir, tag, stats_items);
+        match build_checkpoint_item(&name, centre, r.dir, width) {
+            Ok((bytes, pos, yaw)) => {
+                println!("  checkpoint (group {}): {:.0} m wide at ({:.0}, {:.0}, {:.0})", r.order, width, centre[0], centre[1], centre[2]);
+                specs.push(ItemSpec { name, bytes, pos, yaw, tag: Some(r.tag.to_string()), order: r.order, color: 0 });
+                stats_items += 1;
+            }
+            Err(e) => println!("  checkpoint item failed: {e}"),
         }
     }
     // collision pieces never drawn: collision-only items
@@ -312,7 +446,7 @@ pub fn cmd_build(args: &[String]) {
         let name = format!("MK64_{}_{}_{:03}.Item.Gbx", dir, tag, stats_items);
         match build_item(&name, &[], ctris, &m, &alpha, None, &tag) {
             Ok((bytes, pos, yaw)) => {
-                specs.push(ItemSpec { name, bytes, pos, yaw, tag: None, order: 0 });
+                specs.push(ItemSpec { name, bytes, pos, yaw, tag: None, order: 0, color: 0 });
                 stats_items += 1;
             }
             Err(e) => println!("  collision piece {dl}: item build failed: {e}"),
@@ -329,19 +463,87 @@ pub fn cmd_build(args: &[String]) {
             }
         }
         let spawns: Vec<[i16; 3]> = c.item_boxes.iter().map(|s| s.pos).collect();
-        let name = format!("MK64_{}_{}_itemboxes.Item.Gbx", dir, tag);
-        match crate::itembox::build(&mut store, &name, &spawns, &frame, &assets, &mut rom, &tag) {
-            Ok(Some(ib)) => {
-                println!("  item boxes: {} spinning cubes in one item ({} bytes)", ib.count, ib.bytes.len());
-                pictures.extend(ib.pictures);
-                let marks_name = name.replace("_itemboxes.Item.Gbx", "_itemmarks.Item.Gbx");
-                specs.push(ItemSpec { name, bytes: ib.bytes, pos: ib.pos, yaw: 0.0, tag: None, order: 0 });
-                if !ib.marks.is_empty() {
-                    specs.push(ItemSpec { name: marks_name, bytes: ib.marks, pos: ib.pos, yaw: 0.0, tag: None, order: 0 });
+        // six items per course — face k of every cube in placement colour k
+        // (Default yellow, White, Green, Blue, Red, Black through
+        // `ItemInflatableMat`): the N64's rainbow box; MK64_IB_MONO=1 keeps the
+        // one-material gold cube
+        // THE REAL BOX (2026-09-25): the ROM's octahedron with its per-vertex
+        // rainbow and the real "?" texture (`itembox::build_real`).
+        // MK64_IB_LEGACY=1 brings back the gold cube + six colour bands.
+        if std::env::var("MK64_IB_LEGACY").as_deref() != Ok("1") {
+            let name = format!("MK64_{}_{}_itemboxes.Item.Gbx", dir, tag);
+            match crate::itembox::build_real(&mut store, &name, &spawns, &frame, &mut rom, &tag) {
+                Ok(Some(ib)) => {
+                    println!("  item boxes: {} octahedra{} ({} bytes/item)", ib.count, if std::env::var("MK64_IB_SPIN").as_deref() == Ok("1") { " (spinning probe)" } else { "" }, ib.bytes.len());
+                    pictures.extend(ib.pictures);
+                    specs.push(ItemSpec { name, bytes: ib.bytes, pos: ib.pos, yaw: 0.0, tag: None, order: 0, color: 0 });
                 }
+                Ok(None) => {}
+                Err(e) => println!("  item boxes: {e}"),
             }
-            Ok(None) => {}
-            Err(e) => println!("  item boxes: {e}"),
+        } else {
+        // the translucent gold cube with the "?" inside (None) plus six coloured
+        // border-band items, one per face; MK64_IB_MONO=1 keeps the cube alone
+        let faces: Vec<Option<usize>> = if std::env::var("MK64_IB_MONO").is_ok() { vec![None] } else { std::iter::once(None).chain((0..6).map(Some)).collect() };
+        // face → colour byte: the N64 box shows red, yellow, green, cyan, blue,
+        // magenta; the nearest of the six item colours per face
+        let colour_of = |k: usize| -> u8 {
+            match std::env::var("MK64_IB_COLOUR_PROBE").ok().as_deref() {
+                Some("all2") => 2,
+                Some("ident") => k as u8,
+                // +z red, −z yellow, +x green, −x blue, top white, bottom red
+                _ => [4u8, 0, 2, 3, 1, 4][k % 6],
+            }
+        };
+        for face in faces {
+            let name = match face {
+                None => format!("MK64_{}_{}_itemboxes.Item.Gbx", dir, tag),
+                Some(k) => format!("MK64_{}_{}_itemboxes{}.Item.Gbx", dir, tag, k),
+            };
+            match crate::itembox::build_faces(&mut store, &name, &spawns, &frame, &assets, &mut rom, &tag, face) {
+                Ok(Some(ib)) => {
+                    if face.is_none() {
+                        println!("  item boxes: {} spinning cubes{} ({} bytes/item)", ib.count, if face.is_some() { ", six colour faces" } else { "" }, ib.bytes.len());
+                    }
+                    pictures.extend(ib.pictures);
+                    let marks_name = name.replace("_itemboxes", "_itemmarks");
+                    specs.push(ItemSpec { name, bytes: ib.bytes, pos: ib.pos, yaw: 0.0, tag: None, order: 0, color: face.map_or(0, colour_of) });
+                    if !ib.marks.is_empty() {
+                        specs.push(ItemSpec { name: marks_name, bytes: ib.marks, pos: ib.pos, yaw: 0.0, tag: None, order: 0, color: 0 });
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => println!("  item boxes: {e}"),
+            }
+        }
+        }
+
+        // Moo Moo Farm's moles: mounds + popping moles (kinematic, like the boxes)
+        if dir == "moo_moo_farm" && !args.iter().any(|a| a == "--no-moles") {
+            let name = format!("MK64_{}_{}_moles.Item.Gbx", dir, tag);
+            let path_tm: Vec<[f32; 3]> = c.path.iter().map(|p| frame.to_tm(p.pos)).collect();
+            match crate::moles::build(&mut store, &name, &decomp, &path_tm, &frame, &assets, &mut rom, &tag) {
+                Ok(Some(mo)) => {
+                    pictures.extend(mo.pictures);
+                    let mounds_name = name.replace("_moles.Item.Gbx", "_molemounds.Item.Gbx");
+                    specs.push(ItemSpec { name, bytes: mo.bytes, pos: mo.pos, yaw: 0.0, tag: None, order: 0, color: 0 });
+                    specs.push(ItemSpec { name: mounds_name, bytes: mo.mounds, pos: mo.pos, yaw: 0.0, tag: None, order: 0, color: 0 });
+                }
+                Ok(None) => {}
+                Err(e) => println!("  moles: {e}"),
+            }
+        }
+        // the moving objects (Thwomps, chomps, rocks, the balloon, hedgehogs …)
+        if !objects.is_empty() {
+            let name = format!("MK64_{}_{}_objects.Item.Gbx", dir, tag);
+            match crate::objects::build_moving(&mut store, &name, &c, &objects, &frame, &mut rom, &assets) {
+                Ok(Some(mv)) => {
+                    println!("  objects: {} moving parts in one item ({} bytes)", mv.parts, mv.bytes.len());
+                    specs.push(ItemSpec { name, bytes: mv.bytes, pos: mv.pos, yaw: 0.0, tag: None, order: 0, color: 0 });
+                }
+                Ok(None) => {}
+                Err(e) => println!("  objects: {e}"),
+            }
         }
     } else if paks.is_empty() {
         println!("  item boxes: skipped (no --pak F:KEY for the dyna template)");
@@ -381,7 +583,7 @@ pub fn cmd_build(args: &[String]) {
 }
 
 /// y of the triangle's plane at (x, z) when the point is inside it (top view).
-fn height_under(t: &mesh::CollTri, x: f32, z: f32) -> Option<f32> {
+pub fn height_under(t: &mesh::CollTri, x: f32, z: f32) -> Option<f32> {
     let p = &t.p;
     let e = |a: [f32; 3], b: [f32; 3]| (b[0] - a[0]) * (z - a[2]) - (b[2] - a[2]) * (x - a[0]);
     let area = e(p[0], p[1]) + e(p[1], p[2]) + e(p[2], p[0]);
@@ -401,6 +603,141 @@ fn height_under(t: &mesh::CollTri, x: f32, z: f32) -> Option<f32> {
     Some(u * p[0][1] + v * p[1][1] + w * p[2][1])
 }
 
+
+/// The checkpoint plan of a course: the lap fractions where the gates go
+/// (`linked` = a group with one gate per alternate route), the routes in TM
+/// space (main first), the arc-length locator and the merge distance. Shared
+/// by the map build (the gates) and the ghost (its waypoint crossing times).
+#[allow(clippy::type_complexity)]
+pub fn checkpoint_plan<'a>(c: &'a Course, frame: &'a Frame, path: &'a [[f32; 3]], n_cps: usize) -> (Vec<(f32, bool)>, Vec<Vec<[f32; 3]>>, impl Fn(&[[f32; 3]], f32) -> ([f32; 3], [f32; 3]) + 'a, f32, impl Fn([f32; 3], [f32; 3]) -> f32) {
+    let n = path.len();
+    // Checkpoints: one GROUP per lap fraction. A course with alternate routes
+    // (Yoshi Valley's four `_track_path_N`, split over 18–41 % of the lap;
+    // Koopa Beach's shortcut) gets a gate on EVERY route at that fraction,
+    // all in one linked group (same order) — crossing any one counts, and a
+    // respawn never has to backtrack a whole branch (vjeux, 2026-09-25).
+    // Gates within 25 units of each other merge (the routes run together).
+    let routes: Vec<Vec<[f32; 3]>> = {
+        let mut r: Vec<Vec<[f32; 3]>> = vec![path.to_vec()];
+        let mut alts: Vec<(&String, &Vec<[i16; 3]>)> = c.other_paths.iter().filter(|(nm, _)| nm.contains("_track_path_")).collect();
+        alts.sort();
+        for (_, alt) in alts {
+            r.push(alt.iter().map(|p| frame.to_tm(*p)).collect());
+        }
+        r
+    };
+    // arc-length position along a closed route at fraction f
+    let at_fraction = |route: &[[f32; 3]], f: f32| -> ([f32; 3], [f32; 3]) {
+        let m = route.len();
+        let mut cum = vec![0.0f32; m + 1];
+        for i in 0..m {
+            let (a, b) = (route[i], route[(i + 1) % m]);
+            cum[i + 1] = cum[i] + ((b[0] - a[0]).powi(2) + (b[2] - a[2]).powi(2)).sqrt();
+        }
+        let s = f * cum[m];
+        let mut i = 0;
+        while i + 1 < m && cum[i + 1] < s {
+            i += 1;
+        }
+        let (a, b) = (route[i], route[(i + 1) % m]);
+        let l = (cum[i + 1] - cum[i]).max(1e-6);
+        let t = ((s - cum[i]) / l).clamp(0.0, 1.0);
+        ([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t], mesh::normalize([b[0] - a[0], 0.0, b[2] - a[2]]))
+    };
+    // an alternate route needs its own gate only when it never comes within
+    // `near_m` of the main gate (it runs a different road there); the routes'
+    // arc fractions drift apart by tens of metres on one road otherwise
+    let near_m = 20.0f32;
+    let dist_xz = |a: [f32; 3], b: [f32; 3]| ((a[0] - b[0]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
+    // where the routes split: the runs of main-path points that some alternate
+    // route never comes within `near_m` of, as lap fractions [a, b]
+    let split_zones: Vec<(f32, f32)> = {
+        let together: Vec<bool> = (0..n).map(|i| routes.iter().skip(1).all(|alt| alt.iter().any(|q| dist_xz(*q, path[i]) < near_m))).collect();
+        let mut zones = Vec::new();
+        let mut i = 0;
+        while i < n {
+            if together[i] {
+                i += 1;
+                continue;
+            }
+            let j0 = i;
+            while i < n && !together[i] {
+                i += 1;
+            }
+            zones.push((j0 as f32 / n as f32, i as f32 / n as f32));
+        }
+        zones
+    };
+    // The checkpoint fractions: evenly spaced, then per split zone — a SHORT
+    // zone (< 8 % of the lap, Koopa Beach's waterfall shortcut) just pushes any
+    // checkpoint inside it to its nearer edge; a LONG one (Yoshi Valley's
+    // maze, 18–41 %) gets a gate just before the fork, a LINKED group in the
+    // middle (one gate per branch) and a gate just after the join, so a
+    // respawn never costs half a lap and every branch is covered.
+    let mut fractions: Vec<(f32, bool)> = (1..=n_cps).map(|k| (k as f32 / (n_cps + 1) as f32, false)).collect();
+    for &(a, b) in &split_zones {
+        let inside = |f: f32| f > a - 0.005 && f < b + 0.005;
+        if b - a < 0.08 {
+            for fr in fractions.iter_mut() {
+                if inside(fr.0) {
+                    fr.0 = if fr.0 - a < b - fr.0 { a - 0.01 } else { b + 0.01 };
+                }
+            }
+        } else {
+            fractions.retain(|fr| !inside(fr.0));
+            fractions.push((a - 0.01, false));
+            fractions.push(((a + b) / 2.0, true));
+            fractions.push((b + 0.01, false));
+        }
+    }
+    fractions.retain(|fr| fr.0 > 0.02 && fr.0 < 0.98);
+    fractions.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap());
+    fractions.dedup_by(|x, y| (x.0 - y.0).abs() < 0.02);
+    if !split_zones.is_empty() {
+        println!("  routes split over {:?} of the lap; checkpoints at {:?} %", split_zones.iter().map(|(a, b)| format!("{:.0}–{:.0} %", a * 100.0, b * 100.0)).collect::<Vec<_>>(), fractions.iter().map(|f| (f.0 * 100.0).round()).collect::<Vec<_>>());
+    }
+    (fractions, routes, at_fraction, near_m, dist_xz)
+}
+
+/// The checkpoint lap fractions alone (driving order), for the ghost.
+pub fn checkpoint_fractions(c: &Course, frame: &Frame, n_cps: usize) -> Vec<f32> {
+    let path: Vec<[f32; 3]> = c.path.iter().map(|p| frame.to_tm(p.pos)).collect();
+    let (fr, ..) = checkpoint_plan(c, frame, &path, n_cps);
+    fr.iter().map(|f| f.0).collect()
+}
+
+/// A checkpoint on its own: an invisible item (one millimetre of nothing) whose
+/// trigger spans the road — `width` across the heading, 12 m tall, 4 m deep.
+fn build_checkpoint_item(name: &str, centre: [f32; 3], dir: [f32; 3], width: f32) -> Result<(Vec<u8>, [f32; 3], f32), String> {
+    let snap = |v: f32| (v * 100.0).round() / 100.0;
+    let origin = [snap(centre[0]), snap(centre[1]), snap(centre[2])];
+    let yaw = {
+        let y = dir[0].atan2(dir[2]) + std::f32::consts::PI;
+        if y > std::f32::consts::PI { y - 2.0 * std::f32::consts::PI } else { y }
+    };
+    let mut merged = Merged::default();
+    let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    merged.file_write_time = unix * 10_000_000 + 116444736000000000;
+    merged.materials.push(flat_material());
+    let n = [0.0, 1.0, 0.0];
+    let c = |p: [f32; 3], uv: [f32; 2]| Corner { pos: p, normal: n, uv, uv1: uv, tan_u: [1.0, 0.0, 0.0], tan_v: [0.0, 0.0, 1.0], face: 1, group: 0 };
+    let mut per_material = vec![vec![[c([0.0, -4.0, 0.0], [0.0, 0.0]), c([0.0, -4.0, 0.001], [0.0, 1.0]), c([0.001, -4.0, 0.0], [1.0, 0.0])]]];
+    bake::assign_lightmap_atlas(&mut per_material, &[true]);
+    bake::tangents_vprim(&mut per_material[0], 0);
+    for v in bake::make_visuals(&mut per_material[0], VisualLayout::Full, "range") {
+        merged.visuals.push(MergedVisual::every_level(v, 0));
+    }
+    merged.waypoint_type = Some(2);
+    let ldir = {
+        let d = to_local([origin[0] + dir[0], origin[1], origin[2] + dir[2]], origin, yaw);
+        mesh::normalize([d[0], 0.0, d[2]])
+    };
+    merged.trigger = Some(trigger_box([0.0, 0.0, 0.0], ldir, width, 12.0, 4.0));
+    let opts = BuildOpts { ident: name.to_string(), author: name.to_string(), scale: 1.0, collection: STADIUM, skin: None };
+    let f = assemble(&merged, &opts)?;
+    Ok((write_file(&f), origin, yaw))
+}
+
 /// The item's local frame: origin at the piece's footprint centre and lowest
 /// point, yaw = the waypoint's travel direction (a start item's spawn faces
 /// the item's own +z), local = R(−yaw)·(world − origin).
@@ -411,13 +748,13 @@ fn local_frame(pts: impl Iterator<Item = [f32; 3]>, wp: Option<&WaypointReq>) ->
         Some(w) if w.kind == 4 => [snap(w.pos[0]), snap(lo[1]), snap(w.pos[2])],
         _ => [snap((lo[0] + hi[0]) / 2.0), snap(lo[1]), snap((lo[2] + hi[2]) / 2.0)],
     };
-    // the game spawns the car facing the item's local −z (Luigi Raceway,
-    // 2026-09-22: yaw = atan2(dx, dz) put the car backwards on the straight)
+    // The game spawns the car facing the item's local +z: yaw = atan2(dx, dz)
+    // points it down the path. (2026-09-22 added a +π after eyeballing a
+    // screenshot as "backwards"; 2026-09-25 the /vis probe settled it — the
+    // spawned car drove +z while the path, the checkpoints and the MK64 CPU
+    // ghosts run −z from the line, i.e. every map was driven in reverse.)
     let yaw = match wp {
-        Some(w) if w.kind == 4 => {
-            let y = w.dir[0].atan2(w.dir[2]) + std::f32::consts::PI;
-            if y > std::f32::consts::PI { y - 2.0 * std::f32::consts::PI } else { y }
-        }
+        Some(w) if w.kind == 4 => w.dir[0].atan2(w.dir[2]),
         _ => 0.0,
     };
     (origin, yaw)
@@ -562,13 +899,39 @@ pub fn custom_material(mat: &mesh::Material, alpha: bool, physics: u8, tag: &str
     let mut inst = CPlugMaterialUserInst::game_material("Stadium\\Media\\Material\\PlatformTech", physics);
     let stem = mat.stem();
     let file = format!("{tag}_{stem}.dds");
-    let illum = ILLUM.load(std::sync::atomic::Ordering::Relaxed) && !alpha;
+    // ADDITIVE (`TIAdd`): what the N64 does with Rainbow Road's neon signs —
+    // the tubes are added to whatever is behind them and the black background
+    // adds nothing, so they glow at night and need no alpha at all (they were
+    // black-keyed before, which made them alpha-cut, which barred the self-lit
+    // model, which is why they came out as dark outlines — vjeux 2026-09-25:
+    // "the color isn't working").
+    if mat.additive {
+        if let Some(main) = inst.main.as_mut() {
+            main.is_using_game_material = false;
+            main.model = Id::Str("TIAdd".into());
+            main.material_name = Id::Str(stem.clone());
+            main.link = Id::Null;
+            let slot: i32 = std::env::var("MK64_ADD_SLOT").ok().and_then(|s| s.parse().ok()).unwrap_or(0);
+            main.user_textures = vec![UserTexture { u01: slot, texture: file }];
+        }
+        return inst;
+    }
+    let illum = ILLUM.load(std::sync::atomic::Ordering::Relaxed);
     if let Some(main) = inst.main.as_mut() {
         main.is_using_game_material = false;
         main.model = Id::Str(if alpha { "TDOSN".into() } else if illum { "TDSNI".into() } else { "TDSN".into() });
         main.material_name = Id::Str(stem.clone());
         main.link = Id::Null;
-        main.user_textures = if illum { vec![UserTexture { u01: 0, texture: file.clone() }, UserTexture { u01: 8, texture: file }] } else { vec![UserTexture { u01: if alpha { 1 } else { 0 }, texture: file }] };
+        // the N64 lights nothing, so on a night course every material is
+        // self-lit: the DDS goes in the model's colour slot AND in SelfIllum
+        // (8). An alpha-cut material keeps TDOSN — its colour slot is DiffuseO
+        // (1) — and takes the SelfIllum slot too, which is what stopped the
+        // item boxes rendering as black diamonds on Rainbow Road (2026-09-25).
+        main.user_textures = match (illum, alpha) {
+            (true, false) => vec![UserTexture { u01: 0, texture: file.clone() }, UserTexture { u01: 8, texture: file }],
+            (true, true) => vec![UserTexture { u01: 1, texture: file.clone() }, UserTexture { u01: 8, texture: file }],
+            (false, a) => vec![UserTexture { u01: if a { 1 } else { 0 }, texture: file }],
+        };
     }
     inst
 }
@@ -740,7 +1103,7 @@ fn write_map(host: &Path, out: &Path, specs: &[ItemSpec], pictures: &BTreeMap<St
         m.move_item(i, pos, yaw, cell_for(pos));
         m.set_item_scale(i, 1.0);
         m.clear_item_variant(i);
-        m.set_item_color(i, 0);
+        m.set_item_color(i, if i < specs.len() { s.color } else { 0 });
     }
     m.write_to(&t2).expect("write model stage");
 
@@ -920,12 +1283,19 @@ pub fn material_images(mesh: &Mesh, assets: &AssetIndex, rom: &mut Rom) -> (Hash
             Ok(Image::solid(4, 4, [255, 255, 255, 255]))
         } else {
             assets.locate(&m.sym).ok_or_else(|| "not in the asset index".to_string()).and_then(|loc| {
-                let tlut = loc.tlut.as_deref().and_then(|t| assets.locate(t));
+                // the material's own palette wins: a CI texture whose TLUT the
+                // game's CODE sets is not the one the asset index names
+                let tlut = m.tlut.as_deref().or(loc.tlut.as_deref()).and_then(|t| assets.locate(t));
                 rom.texture(&loc, tlut.as_ref())
             })
         };
         match base {
             Ok(img) => {
+                // the Rainbow Road neon signs are drawn ADDITIVELY by the N64 over an
+                // opaque black background (black adds nothing); here black becomes
+                // transparent so the tubes float
+                // an additive material needs its black: black adds nothing
+                let img = if m.sym.contains("RainbowRoadNeon") && !m.additive { img.black_keyed(24) } else { img };
                 out.insert(i, img.mirrored(m.mirror_s, m.mirror_t).tinted(m.tint));
             }
             Err(e) => {

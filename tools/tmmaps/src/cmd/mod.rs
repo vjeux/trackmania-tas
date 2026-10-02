@@ -3,3 +3,4 @@ pub mod inspect;
 pub mod ladder;
 pub mod skins;
 pub mod surgery;
+pub mod straight;

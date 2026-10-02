@@ -124,7 +124,8 @@ fn item_entry(it: &ItemRec) -> Entry {
         placement: Placement::Free,
         baked: false,
         item: true,
-        waypoint: it.waypoint_tag.clone(),
+        // the tag, and the ORDER when set (linked checkpoints share one)
+        waypoint: it.waypoint_tag.clone().map(|t| if it.waypoint_order != 0 { format!("{t}#{}", it.waypoint_order) } else { t }),
     }
 }
 

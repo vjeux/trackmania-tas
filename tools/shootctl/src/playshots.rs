@@ -45,6 +45,45 @@ pub struct Opts {
     /// on its own thread like the camera log — what the PHYSICS resolved
     /// under the car on the original vs the tiny build (2026-09-07).
     pub wheels_ms: u64,
+    /// `--ghost FILE`: once the playground is open, load this ghost (or replay)
+    /// file and add every ghost in it to the race (`/pgghost`: Replay_Load +
+    /// GhostMgr.Ghost_Add — the way a leaderboard ghost is shown), so the shots
+    /// show it driving. The plugin's JSON answer goes into the report.
+    pub ghost: Option<String>,
+    /// `--ghost FILE` repeated: every file is loaded and added (seven MK64
+    /// CPU racers, one skin each).
+    pub ghosts: Vec<String>,
+    /// `--probe ROUTE` (repeatable): a plugin route queried right after each
+    /// shot, its answer in the report (`/mobils?name=Car` — are the ghosts'
+    /// cars in the scene, and visible?).
+    pub probes: Vec<String>,
+    /// `--ghost-at-ms MS`: add the ghosts this long after the playground
+    /// opens (0 = right away; the race itself starts ~14.7 s in — a mode
+    /// script may clear the ghost list when its round starts).
+    pub ghost_at_ms: u64,
+    /// `--restart-at-ms MS`: tap DELETE (restart the race) this long after the
+    /// playground opens — ghosts added after the first start re-sync to the
+    /// clock, so a restart lines everyone up on the grid again.
+    pub restart_at_ms: u64,
+    /// `--ghost-offset now|MS` (default `now`): the race time the ghosts'
+    /// t=0 maps to.
+    pub ghost_offset: String,
+    /// `--ghost-query "&layer=0&phys=1"`: extra /pgghost parameters.
+    pub ghost_query: String,
+    /// `--stay`: leave the playground open when done (no trip back to the
+    /// menu) — the way to hand vjeux a race with the CPU ghosts loaded:
+    /// `playshots --map M --mode TrackMania/TM_PlayMap_Local --shots 0 --stay
+    /// --ghost … ×7`.
+    pub stay: bool,
+    /// `--mode SCRIPT`: the game mode PlayMap runs the map in (empty = the
+    /// map's own declared mode). `TrackMania/TM_TimeAttack_Local.Script.txt`
+    /// is the solo mode with a ghost manager.
+    pub mode: String,
+    /// `--skin ZIP`: the car wears this skin for the run — copied over
+    /// `Skins/Models/CarSport/PSG V2.zip` (the profile's skin, taken from a
+    /// LOCAL file of that name when the game's cached download of it is not
+    /// there) with the cached copy set aside first; both restored afterwards.
+    pub skin: Option<String>,
     pub detach: bool,
     /// `--via-editor`: open the map in the editor and press TEST instead of
     /// the title's PlayMap (which stopped opening maps on 2026-09-23).
@@ -71,6 +110,17 @@ pub fn parse_opts(args: &[String]) -> Result<Opts, String> {
         drive_at_ms: num("--drive-at-ms", 13500)?,
         camlog_ms: num("--camlog-ms", 0)?,
         wheels_ms: num("--wheels-ms", 0)?,
+        ghost: None,
+        // every --ghost FILE, in order
+        ghosts: args.iter().enumerate().filter(|(_, a)| *a == "--ghost").filter_map(|(i, _)| args.get(i + 1).cloned()).collect(),
+        probes: args.iter().enumerate().filter(|(_, a)| *a == "--probe").filter_map(|(i, _)| args.get(i + 1).cloned()).collect(),
+        ghost_at_ms: num("--ghost-at-ms", 0)?,
+        restart_at_ms: num("--restart-at-ms", 0)?,
+        ghost_offset: val("--ghost-offset").unwrap_or_else(|| "start".into()),
+        ghost_query: val("--ghost-query").unwrap_or_default(),
+        stay: args.iter().any(|a| a == "--stay"),
+        mode: val("--mode").unwrap_or_default(),
+        skin: val("--skin"),
         detach: args.iter().any(|a| a == "--detach"),
         via_editor: args.iter().any(|a| a == "--via-editor"),
     })
@@ -81,7 +131,7 @@ pub fn run(args: &[String]) -> i32 {
         Ok(o) => o,
         Err(e) => {
             eprintln!("{e}");
-            eprintln!("usage: shootctl playshots --map MAP --outdir /mnt/c/... [--tag T] [--shots N] [--every-ms MS] [--first-ms MS] [--carlog-ms MS] [--drive-ms MS [--drive-at-ms MS]] [--camlog-ms MS] [--wheels-ms MS] [--timeout S] [--detach] [--via-editor]");
+            eprintln!("usage: shootctl playshots --map MAP --outdir /mnt/c/... [--tag T] [--shots N] [--every-ms MS] [--first-ms MS] [--carlog-ms MS] [--drive-ms MS [--drive-at-ms MS]] [--camlog-ms MS] [--wheels-ms MS] [--ghost FILE] [--mode SCRIPT] [--skin ZIP] [--timeout S] [--detach] [--via-editor]");
             return 2;
         }
     };
@@ -118,7 +168,13 @@ fn run_shots(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
     let staged = super::shootset::stage_map(&opts.map)?;
     let game_map = super::game_path(&staged)?;
     println!("{} map {}", el(), game_map);
-    if super::launch(180, false) != 0 {
+    // a skin for the run: the game reads the profile skin at start, so it
+    // must be in place BEFORE a fresh launch — and this forces one
+    let _skin_guard = match &opts.skin {
+        Some(z) => Some(SkinSwap::install(z)?),
+        None => None,
+    };
+    if super::launch(180, opts.skin.is_some()) != 0 {
         return Err("the game did not come up".into());
     }
     super::to_menu()?;
@@ -153,7 +209,7 @@ fn run_shots(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
         }
         println!("{} editor after {:.1}s; /edtest: {}", el(), ed0.elapsed().as_secs_f64(), super::http_get("/edtest", 30).unwrap_or_default().trim());
     } else {
-        println!("{} /playmap: {}", el(), super::http_get("/playmap?mode=", 30).unwrap_or_default().trim());
+        println!("{} /playmap: {}", el(), super::http_get(&format!("/playmap?mode={}", opts.mode), 30).unwrap_or_default().trim());
     }
     let load0 = Instant::now();
     loop {
@@ -197,6 +253,36 @@ fn run_shots(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
     let opened = load0.elapsed();
     println!("{} playground after {:.1}s (ctx {})", el(), opened.as_secs_f64(), super::http_get("/ctx", 10).unwrap_or_default().trim());
     let mut lines = Vec::new();
+    let all_ghosts: Vec<String> = opts.ghost.iter().cloned().chain(opts.ghosts.iter().cloned()).collect();
+    if !all_ghosts.is_empty() && opts.ghost_at_ms > 0 {
+        let so_far = load0.elapsed().as_millis() as u64;
+        if opts.ghost_at_ms > so_far {
+            std::thread::sleep(Duration::from_millis(opts.ghost_at_ms - so_far));
+        }
+    }
+    for g in &all_ghosts {
+        // the plugin reads the file from arg.txt (a C:/ path)
+        let game_ghost = super::game_path(g)?;
+        std::fs::write(format!("{store}/arg.txt"), &game_ghost).map_err(|e| format!("arg.txt: {e}"))?;
+        // /pgghost waits for the GhostMgr itself (up to 40 s after the playground)
+        // offset=now: the ghost's clock starts this instant (added mid-race it
+        // pulls away from the grid now instead of being minutes ahead)
+        let r = super::http_get(&format!("/pgghost?offset={}{}", opts.ghost_offset, opts.ghost_query), 90).unwrap_or_default();
+        println!("{} /pgghost: {}", el(), r.trim());
+        if !r.contains("\"ok\":1") {
+            return Err(format!("the ghost did not load: {}", r.trim()));
+        }
+        lines.push(format!("ghost\t{game_ghost}\t{}", r.trim()));
+    }
+    if opts.restart_at_ms > 0 {
+        let so_far = load0.elapsed().as_millis() as u64;
+        if opts.restart_at_ms > so_far {
+            std::thread::sleep(Duration::from_millis(opts.restart_at_ms - so_far));
+        }
+        let r = tap_key("DELETE", 80);
+        println!("{} restart (DELETE): {:?}", el(), r);
+        lines.push(format!("restart\t{:?}", r));
+    }
     let mut driver: Option<std::thread::JoinHandle<Result<String, String>>> = None;
     let mut camlog: Option<std::thread::JoinHandle<Result<String, String>>> = None;
     let mut wheels: Option<std::thread::JoinHandle<Result<String, String>>> = None;
@@ -301,6 +387,12 @@ fn run_shots(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
         let line = format!("shot {k}\t{at:.1}s after the playground opened\t{}\t{size}", file.display());
         println!("{} {line}", el());
         lines.push(line);
+        for route in &opts.probes {
+            let r = super::http_get(route, 15).unwrap_or_else(|e| format!("ERROR {e}"));
+            let one: String = r.lines().take(40).collect::<Vec<_>>().join(" | ");
+            println!("{} probe {route}: {}", el(), one);
+            lines.push(format!("probe {k}\t{route}\t{one}"));
+        }
     }
     if let Some(c) = camlog {
         match c.join() {
@@ -323,7 +415,11 @@ fn run_shots(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
             Err(_) => lines.push("drive\tFAILED: the key thread panicked".to_string()),
         }
     }
-    let _ = super::to_menu();
+    if opts.stay {
+        lines.push("stay\tthe playground is left open".to_string());
+    } else {
+        let _ = super::to_menu();
+    }
     Ok(lines)
 }
 
@@ -605,4 +701,116 @@ pub fn tap_key(name: &str, hold_ms: u64) -> Result<String, String> {
         return Err(format!("keybd_event script: {text} {}", String::from_utf8_lossy(&out.stderr).trim()));
     }
     Ok(text)
+}
+
+/// The profile skin swapped for a test zip, and put back on drop. The game
+/// resolves the profile's `Skins\Models\CarSport\PSG V2_<uuid>.zip` from
+/// its ProgramData cache (`75ECAA…zip`) and, when that is absent, from a LOCAL
+/// `Skins/Models/CarSport/PSG V2.zip` (measured 2026-09-24: with the cache
+/// present its textures won the mesh from the local file — a grey kart).
+struct SkinSwap {
+    local: PathBuf,
+    cache: PathBuf,
+    cache_aside: Option<PathBuf>,
+    loc_aside: Option<PathBuf>,
+}
+
+impl SkinSwap {
+    const CARSPORT: &'static str = "/mnt/c/Users/vjeux/OneDrive/Documents/Trackmania/Skins/Models/CarSport";
+    const CACHE: &'static str = "/mnt/c/ProgramData/Trackmania/Cache/75ECAA8448301EC0D930375BE94DC616C40FEE9A85872ACCA5B1ADB3A8A7D0C373E23B62A0818D3A7D4684E05F88C3F5.zip";
+    fn install(zip: &str) -> Result<SkinSwap, String> {
+        let local = PathBuf::from(format!("{}/PSG V2.zip", Self::CARSPORT));
+        std::fs::copy(zip, &local).map_err(|e| format!("{zip} -> {}: {e}", local.display()))?;
+        let cache = PathBuf::from(Self::CACHE);
+        let aside_dir = PathBuf::from("/home/vjeux/skins-aside");
+        let _ = std::fs::create_dir_all(&aside_dir);
+        let mut sw = SkinSwap { local, cache: cache.clone(), cache_aside: None, loc_aside: None };
+        if cache.is_file() {
+            let a = aside_dir.join("psg-v2-cache.zip");
+            std::fs::rename(&cache, &a).map_err(|e| format!("{}: {e}", cache.display()))?;
+            sw.cache_aside = Some(a);
+        }
+        let loc = PathBuf::from(format!("{}.loc", Self::CACHE));
+        if loc.is_file() {
+            let a = aside_dir.join("psg-v2-cache.zip.loc");
+            let _ = std::fs::rename(&loc, &a);
+            sw.loc_aside = Some(a);
+        }
+        println!("skin: {zip} installed as PSG V2.zip (cache set aside: {})", sw.cache_aside.is_some());
+        Ok(sw)
+    }
+}
+
+impl Drop for SkinSwap {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.local);
+        if let Some(a) = &self.cache_aside {
+            let _ = std::fs::rename(a, &self.cache);
+        }
+        if let Some(a) = &self.loc_aside {
+            let _ = std::fs::rename(a, format!("{}.loc", Self::CACHE));
+        }
+    }
+}
+
+/// `shootctl race "<Course>" [--player NAME] [playshots flags…]`: open
+/// `Maps/MK64/MK64 <Course>.Map.Gbx` in `TrackMania/TM_PlayMap_Local` with
+/// every `Replays/MK64/cpu/MK64 <Course> - *.Ghost.Gbx` added as a ghost
+/// (the seven MK64 CPUs, one skin each), no shots, playground left open.
+/// The CPUs appear when the countdown ends and restart with the player.
+pub fn race(args: &[String]) -> i32 {
+    let Some(course) = args.first().filter(|a| !a.starts_with("--")) else {
+        eprintln!("usage: shootctl race \"Luigi Raceway\" [--player Mario] [more playshots flags]");
+        return 2;
+    };
+    let docs = "/mnt/c/Users/vjeux/OneDrive/Documents/Trackmania";
+    let map = format!("{docs}/Maps/MK64/MK64 {course}.Map.Gbx");
+    let player = args.iter().position(|a| a == "--player").and_then(|i| args.get(i + 1)).cloned();
+    let dir = format!("{docs}/Replays/MK64/cpu");
+    let prefix = format!("MK64 {course} - ");
+    let mut ghosts: Vec<String> = std::fs::read_dir(&dir)
+        .map(|rd| rd.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).filter(|n| n.starts_with(&prefix) && n.ends_with(".Ghost.Gbx")).collect())
+        .unwrap_or_default();
+    ghosts.sort();
+    if let Some(p) = &player {
+        // the human drives this character: drop its CPU
+        ghosts.retain(|g| !g.to_lowercase().contains(&format!("- {}.", p.to_lowercase())));
+    }
+    if ghosts.is_empty() {
+        eprintln!("no CPU ghosts for {course:?} in {dir}");
+        return 2;
+    }
+    // the caller's flags first (the first occurrence of a flag wins), then the
+    // defaults they did not override
+    let mut a: Vec<String> = Vec::new();
+    let mut skip = 0;
+    for x in &args[1..] {
+        if skip > 0 {
+            skip -= 1;
+            continue;
+        }
+        if x == "--player" {
+            skip = 1;
+            continue;
+        }
+        a.push(x.clone());
+    }
+    let given: Vec<String> = a.clone();
+    let has = |k: &str| given.iter().any(|x| x == k);
+    let defaults: [(&str, &str); 7] = [("--map", &map), ("--mode", "TrackMania/TM_PlayMap_Local"), ("--outdir", "/mnt/c/Users/vjeux/mk64qa/race"), ("--tag", "race"), ("--shots", "0"), ("--ghost-query", "&layer=0"), ("--timeout", "150")];
+    for (k, v) in defaults {
+        if !has(k) {
+            a.push(k.into());
+            a.push(v.into());
+        }
+    }
+    if !has("--stay") {
+        a.push("--stay".into());
+    }
+    for g in &ghosts {
+        a.push("--ghost".into());
+        a.push(format!("{dir}/{g}"));
+    }
+    println!("race: {} CPU ghosts", ghosts.len());
+    run(&a)
 }
