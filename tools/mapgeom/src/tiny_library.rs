@@ -2131,7 +2131,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                     Some(l) => format!("{} [{l}]", key.source()),
                     None => key.source(),
                 };
-                let code = if why.contains("ambient") { "BLOCK_AMBIENT_ZONE" } else if why.contains("grass floor") { "BLOCK_GRASS_FLOOR" } else { "BLOCK_EMPTY_VARIANT" };
+                let code = if why.contains("grass floor") { "BLOCK_GRASS_FLOOR" } else if why.contains("regenerated") || why.contains("ambient") { "BLOCK_AMBIENT_ZONE" } else { "BLOCK_EMPTY_VARIANT" };
                 dis.push(code, key.name, &key_cells(key.name, key.flags), key.placements, &format!("{source}: {why}"));
                 outcomes.push(key.outcome("-", source, Ok(why)));
                 continue;

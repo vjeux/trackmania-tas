@@ -112,6 +112,12 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                 bargs.push(v);
             }
         }
+        // --keep-zone-block goes through to the build (the Stadium tinies 05/10/15/25 + x2 25:
+        // the editor bake copy's kept zone block ADDS objects to the lightmap table, so the
+        // shipped file must carry the same block — NOTE-stadium-kept-block.txt, 2026-10-01)
+        if tmmaps::cli::has(args, "--keep-zone-block") {
+            bargs.push("--keep-zone-block".into());
+        }
         // --alias-part P: item file names unique per (part, map) — the game caches an
         // embedded model by FILE NAME for the whole session, and a player of the
         // whole-club campaign plays many maps in one session (2026-09-13). Base
