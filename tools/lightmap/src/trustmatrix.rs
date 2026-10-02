@@ -39,6 +39,10 @@ pub struct Cell {
     /// metrics.json `bake_s` (the product recipe's wall time on the gate box, one bake at a time) and the bake.log's `peak RSS`
     /// line, stamped with the bank's tip; written by --refresh. The per-family summary under the table reads it.
     pub perf: String,
+    /// V8 (2026-10-02): LOADS IN PLAY (`loads` column): "**TAG** detail" from `loadsinplay::column_text` — the banked file's static
+    /// load words (record kinds, FILETIME; or baker-9's loadcheck.json) and its real play-load verdict by md5; written by --refresh /
+    /// --loads-from. THE GATE: a CLOSED light verdict renders CLOSED only with a PLAYS verdict (else "· UNPLAYED" / "· HANGS IN PLAY").
+    pub loads: String,
 }
 
 /// The `perf` column parsed back: (bake seconds, peak RSS GB, the bank tip) — None where the column is empty or hand-written.
@@ -109,7 +113,7 @@ pub fn read_manifest(path: &str) -> Result<Vec<Cell>, String> {
         let get = |name: &str| h.iter().position(|c| c == name).and_then(|i| f.get(i)).map(|s| s.trim().to_string()).unwrap_or_default();
         if get("cell").is_empty() { return Err(format!("{path}:{}: a row without a cell id", ln + 1)); }
         out.push(Cell { cell: get("cell"), collection: get("collection"), mood: get("mood"), word: get("word"), quality: get("quality"), map: get("map"), features: get("features"), class_tsv: get("class_tsv"), state: get("state").to_ascii_lowercase(), cause: get("cause"), ceiling: get("ceiling").parse().unwrap_or(99.0),
-            corpus_cell: { let c = get("corpus_cell"); if c == "-" { String::new() } else { c } }, frame: get("frame").parse().unwrap_or(0), probes: get("probes"), perf: get("perf") });
+            corpus_cell: { let c = get("corpus_cell"); if c == "-" { String::new() } else { c } }, frame: get("frame").parse().unwrap_or(0), probes: get("probes"), perf: get("perf"), loads: get("loads") });
     }
     if header.is_none() { return Err(format!("{path}: no header line")); }
     Ok(out)
@@ -140,7 +144,24 @@ fn headline(t: &Table) -> (f64, f64, f64, [f64; 3]) {
 /// reported and left as they were.
 /// `causes`: (cell, text) pairs that REPLACE the row's cause column (a text starting with `+` is PREPENDED to the old cause with " · " —
 /// the per-base note in front, the history behind it), read from `--causes FILE.tsv` (cell TAB text, `#` comments).
-pub fn refresh(manifest: &str, work_tip: Option<&std::path::Path>, suffix: &str, lit_hdr: Option<f64>, only: Option<&[String]>, bind: &[(String, String, usize)], causes: &[(String, String)]) -> Result<(Vec<Refreshed>, Vec<String>), String> {
+/// V8 (2026-10-02): `loads_from` = the bank dir the LOADS-IN-PLAY column reads (defaults to `work_tip`; `--loads-from DIR` alone, with
+/// `--refresh -`, rewrites only that column — no class tables re-read): per cell `<dir>/<corpus_cell>/loadcheck.json` (baker-9's static
+/// check) or the in-process static read of `ours.Map.Gbx` (record kinds + FILETIME), and the play-load rows (`playload`, from
+/// `--playload FILE|DIR`) looked up by the file's md5 → `loadsinplay::column_text` into the `loads` column (added when absent).
+pub struct RefreshOpts<'a> {
+    pub work_tip: Option<&'a std::path::Path>,
+    pub suffix: &'a str,
+    pub lit_hdr: Option<f64>,
+    pub only: Option<&'a [String]>,
+    pub bind: &'a [(String, String, usize)],
+    pub causes: &'a [(String, String)],
+    pub loads_from: Option<&'a std::path::Path>,
+    pub playload: &'a [crate::loadsinplay::PlayRow],
+}
+
+pub fn refresh(manifest: &str, o: &RefreshOpts) -> Result<(Vec<Refreshed>, Vec<String>), String> {
+    let (work_tip, suffix, lit_hdr, only, bind, causes) = (o.work_tip, o.suffix, o.lit_hdr, o.only, o.bind, o.causes);
+    let loads_from = o.loads_from.or(work_tip);
     let txt = std::fs::read_to_string(manifest).map_err(|e| format!("{manifest}: {e}"))?;
     let base_dir = std::path::Path::new(manifest).parent().map(|p| p.to_path_buf()).unwrap_or_else(|| std::path::PathBuf::from("."));
     let mut header: Option<Vec<String>> = None;
@@ -149,6 +170,7 @@ pub fn refresh(manifest: &str, work_tip: Option<&std::path::Path>, suffix: &str,
     let mut skipped: Vec<String> = Vec::new();
     let mut probes_pending: Vec<(String, String)> = Vec::new();
     let mut perf_pending: Vec<(String, String)> = Vec::new();
+    let mut loads_pending: Vec<(String, String)> = Vec::new();
     for line in txt.lines() {
         if line.trim().is_empty() || line.starts_with('#') { out_lines.push(line.to_string()); continue; }
         let mut f: Vec<String> = line.split('\t').map(|s| s.to_string()).collect();
@@ -176,6 +198,21 @@ pub fn refresh(manifest: &str, work_tip: Option<&std::path::Path>, suffix: &str,
         }
         let cc = get(&f, "corpus_cell");
         let wanted = only.map_or(true, |o| o.iter().any(|x| x == &cell));
+        // THE LOADS-IN-PLAY COLUMN (V8): read for every bound cell whose banked file exists, class re-read or not
+        if let Some(ldir) = loads_from {
+            if !cc.is_empty() && cc != "-" && wanted {
+                let wdir = ldir.join(&cc);
+                let ours_p = wdir.join("ours.Map.Gbx");
+                if ours_p.exists() {
+                    let lc = crate::loadsinplay::read_loadcheck_json(&wdir.join("loadcheck.json"));
+                    let st = match crate::loadsinplay::static_read(&ours_p.to_string_lossy()) { Ok(s) => Some(s), Err(e) => { skipped.push(format!("{cell}: loads static read: {e}")); None } };
+                    let md5 = st.as_ref().map(|s| s.md5.clone()).or_else(|| lc.as_ref().map(|l| l.2.clone())).unwrap_or_default();
+                    let play = if md5.is_empty() { None } else { crate::loadsinplay::lookup(o.playload, &md5) };
+                    let loads_txt = crate::loadsinplay::column_text(st.as_ref(), lc.as_ref(), play);
+                    match col("loads") { Some(i) => { while f.len() <= i { f.push(String::new()); } f[i] = loads_txt; } None => loads_pending.push((cell.clone(), loads_txt)) }
+                }
+            }
+        }
         let Some(work_tip) = work_tip else { out_lines.push(f.join("\t")); continue };
         if cc.is_empty() || cc == "-" || !wanted { out_lines.push(f.join("\t")); continue; }
         let Some(tsv_col) = col("class_tsv") else { return Err(format!("{manifest}: no class_tsv column")); };
@@ -230,8 +267,8 @@ pub fn refresh(manifest: &str, work_tip: Option<&std::path::Path>, suffix: &str,
         done.push(Refreshed { cell, tsv: tsv_name, own_rects, old, new });
     }
     if header.is_none() { return Err(format!("{manifest}: no header line")); }
-    // a manifest without the `probes` / `perf` column gets it appended (header + every data row) and the pending texts filled in
-    for (name, pending) in [("probes", &probes_pending), ("perf", &perf_pending)] {
+    // a manifest without the `probes` / `perf` / `loads` column gets it appended (header + every data row) and the pending texts filled in
+    for (name, pending) in [("probes", &probes_pending), ("perf", &perf_pending), ("loads", &loads_pending)] {
         if pending.is_empty() { continue; }
         let mut seen_header = false;
         for line in out_lines.iter_mut() {
@@ -354,9 +391,12 @@ pub fn render(cells: &[Cell], base_dir: &std::path::Path, tol: f64, min_texels: 
         for n in notes { md.push_str(&format!("- {n}\n")); }
         md.push('\n');
     }
-    md.push_str(&format!("Rule: worst class over the classes with ≥ {min_texels} texels; CLOSED (texel) = worst within {:.0} % and identity ≥ 90 % of the cell's CEILING (the editor's own re-bake identity on that map class: 95–99 % lamp-less (pwc-day ×4 saves), ~60 % with lamps (stpad Night + nocache) — VALIDATION.md V2-5) and within ±2 ≥ 90 %; CLOSED (class) = worst within {:.0} % only; RESIDUE = a class beyond it (named); OPEN = no table yet; no oracle = the game cannot produce one.\n\n", 100.0 * tol, 100.0 * tol));
-    md.push_str("| cell | collection | mood (word) | q | map | features | identity % (±1 / ±2) vs the editor's own | max \\|Δ\\| | record ours/editor | worst class (r/g/b) | state | probes (frame P) | perf (bake s · peak RSS) | cause / note |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n");
+    md.push_str(&format!("Rule: worst class over the classes with ≥ {min_texels} texels; CLOSED (texel) = worst within {:.0} % and identity ≥ 90 % of the cell's CEILING (the editor's own re-bake identity on that map class: 95–99 % lamp-less (pwc-day ×4 saves), ~60 % with lamps (stpad Night + nocache) — VALIDATION.md V2-5) and within ±2 ≥ 90 %; CLOSED (class) = worst within {:.0} % only; RESIDUE = a class beyond it (named); OPEN = no table yet; no oracle = the game cannot produce one. LOADS IN PLAY (V8, 2026-10-02): the banked product file's verdict in the GAME — **PLAYS** (a real play-load of these bytes, by md5) · **HANGS** / **LM-REJECTED** (the client hung on PlayMap / dropped the lightmap) · **STATIC ok** (the load words the client validates — record kinds, FILETIME — read right; play untested) · **STATIC FAIL** · — (untested); a CLOSED light verdict is CLOSED only with PLAYS, otherwise it carries · UNPLAYED / · HANGS IN PLAY / · STATIC FAIL (the Fall night: every port-lit file hung in play while the editor accepted it and its images matched to the digit).\n\n", 100.0 * tol, 100.0 * tol));
+    md.push_str("| cell | collection | mood (word) | q | map | features | identity % (±1 / ±2) vs the editor's own | max \\|Δ\\| | record ours/editor | worst class (r/g/b) | state | loads in play | probes (frame P) | perf (bake s · peak RSS) | cause / note |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n");
     let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
+    let mut gated_counts: std::collections::BTreeMap<String, usize> = Default::default();
+    let mut load_counts: std::collections::BTreeMap<String, usize> = Default::default();
+    let mut closed_unplayed = 0usize;
     let mut pcounts: std::collections::BTreeMap<String, usize> = Default::default();
     // the PERF summary per cell family: (bake s, RSS GB, tip, cell) per family, in manifest order
     let mut perf_by_family: Vec<(String, Vec<(f64, Option<f64>, String, String)>)> = Vec::new();
@@ -364,6 +404,11 @@ pub fn render(cells: &[Cell], base_dir: &std::path::Path, tol: f64, min_texels: 
         let table = if c.class_tsv.is_empty() || c.class_tsv == "-" { None } else { match read_table(&c.class_tsv, base_dir) { Ok(t) => Some(t), Err(e) => { eprintln!("trustmatrix: {}: {e}", c.cell); None } } };
         let v = judge(c, table.as_ref(), tol, min_texels);
         *counts.entry(v.state.label().to_string()).or_default() += 1;
+        let loads_state = crate::loadsinplay::state_of(&c.loads);
+        let gated = crate::loadsinplay::gated_label(v.state.label(), &loads_state);
+        *gated_counts.entry(gated.clone()).or_default() += 1;
+        if !c.loads.trim().is_empty() && c.loads.trim() != "—" { *load_counts.entry(loads_state.tag().to_string()).or_default() += 1; } else { *load_counts.entry("untested".to_string()).or_default() += 1; }
+        if matches!(v.state, State::ClosedTexel | State::ClosedClass) && loads_state != crate::loadsinplay::LoadState::Plays { closed_unplayed += 1; }
         let ident = match v.identity { Some((i, w1, w2, _)) => format!("{i:.1} ({w1:.1} / {w2:.1}) vs {:.0}", c.ceiling), None => "—".to_string() };
         let maxd = match v.identity { Some((_, _, _, m)) => m.to_string(), None => "—".to_string() };
         let rec = match v.record_ratio { Some(r) => format!("{r:.4}"), None => "—".to_string() };
@@ -378,10 +423,15 @@ pub fn render(cells: &[Cell], base_dir: &std::path::Path, tol: f64, min_texels: 
             let fam = family(c);
             match perf_by_family.iter_mut().find(|(k, _)| k == &fam) { Some((_, v)) => v.push((s, r, tip, c.cell.clone())), None => perf_by_family.push((fam, vec![(s, r, tip, c.cell.clone())])) }
         }
-        md.push_str(&format!("| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | **{}** | {} | {} | {} |\n", c.cell, c.collection, mood, c.quality, c.map, c.features, ident, maxd, rec, worst, v.state.label(), probes, perf, note.replace('|', "/")));
+        let loads = if c.loads.trim().is_empty() { "—".to_string() } else { c.loads.replace('|', "/") };
+        md.push_str(&format!("| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | **{}** | {} | {} | {} | {} |\n", c.cell, c.collection, mood, c.quality, c.map, c.features, ident, maxd, rec, worst, gated, loads, probes, perf, note.replace('|', "/")));
     }
-    md.push_str("\nStates: ");
+    md.push_str("\nStates (the light verdict): ");
     md.push_str(&counts.iter().map(|(k, n)| format!("{k} {n}")).collect::<Vec<_>>().join(" · "));
+    md.push_str(&format!("\n\nLoads in play (the banked product file of each cell, by md5): {} — {} of the {} light-CLOSED cells wait for a play-load of their bytes (the gate: CLOSED for vjeux = light CLOSED + PLAYS). States with the gate: {}\n",
+        load_counts.iter().map(|(k, n)| format!("{k} {n}")).collect::<Vec<_>>().join(" · "),
+        closed_unplayed, counts.get("CLOSED (texel)").copied().unwrap_or(0) + counts.get("CLOSED (class)").copied().unwrap_or(0),
+        gated_counts.iter().map(|(k, n)| format!("{k} {n}")).collect::<Vec<_>>().join(" · ")));
     if !pcounts.is_empty() {
         md.push_str(&format!("\n\nProbe frame P (the probe volume vs the editor's; the probe ceiling = the editor against itself: 62.5 % colour-identical lamp-less (pwc-day ×2 saves), 72.2 % with lamps (stpad Night + nocache); P-CLOSED (texel) = layout identical, scales within 3 %, colour value within 3 %, lamp images present, identity ≥ 90 % of the ceiling; P-CLOSED (class) = the same without the identity; P-RESIDUE = the worst term named): {}\n", pcounts.iter().map(|(k, n)| format!("{k} {n}")).collect::<Vec<_>>().join(" · ")));
     }
@@ -485,6 +535,32 @@ mod tests {
         let (md, _) = render(&cells, &dir, 0.03, 500, "t", &[]);
         assert!(md.contains("| np-tk3 | 2 | 45 / 91 / 91 | 9.1 | abc12345 | BB-Day-q4 (91 s) |"), "{md}");
         assert!(md.contains("bake in 136 s"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_play_load_gate_demotes_a_closed_cell_without_plays() {
+        let dir = std::env::temp_dir().join(format!("trustmatrix-loads-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("c.tsv"), "class\tcharts\ttexels\tlit_ours_pct\tlit_editor_pct\tmean_ours_rgb\tmean_editor_rgb\tratio_rgb\trmse_rel_rgb\tidentical_pct\twithin1_pct\twithin2_pct\tmax_delta\tchart_ratio_n_median_sigma\ntile:tile\t4096\t164581\t100.0\t100.0\t0.68 / 1.03 / 1.73\t0.68 / 1.03 / 1.73\t1.000 / 1.000 / 1.000\t0.011 / 0.008 / 0.010\t63.38\t83.33\t96.22\t9\t4096, 1.001, 0.005\nTOTAL\t4126\t963184\t100.0\t100.0\t0.65 / 0.98 / 1.64\t0.65 / 0.98 / 1.64\t1.000 / 0.999 / 0.999\t0.010 / 0.009 / 0.010\t61.32\t86.54\t95.59\t9\t4126, 1.001, 0.005\n#record\t0\t1.968219\t1.9651023\t1.001586\t204/2/2\t204/2/2\t0\n").unwrap();
+        let mk = |cell: &str, loads: &str| Cell { cell: cell.into(), class_tsv: "c.tsv".into(), ceiling: 60.0, loads: loads.into(), ..Default::default() };
+        let cells = vec![
+            mk("A-plays", "**PLAYS** play-loaded 2026-10-02T15:00Z on whitestick (md5 abcdef01) · kinds [2, 3]/2 frames"),
+            mk("B-static", "**STATIC ok** kinds [2, 3]/2 frames · FILETIME EQUAL (md5 abcdef02) — play untested"),
+            mk("C-hang", "**HANGS** HUNG the client's PlayMap 2026-10-02 on whitestick (md5 abcdef03)"),
+            mk("D-untested", ""),
+            Cell { cell: "E-residue".into(), class_tsv: "-".into(), state: "residue".into(), ..Default::default() },
+        ];
+        let (md, counts) = render(&cells, &dir, 0.03, 500, "t", &[]);
+        assert!(md.contains("| **CLOSED (texel)** | **PLAYS**"), "{md}");
+        assert!(md.contains("| **CLOSED (texel) · UNPLAYED** | **STATIC ok**"), "{md}");
+        assert!(md.contains("| **CLOSED (texel) · HANGS IN PLAY** | **HANGS**"), "{md}");
+        assert!(md.contains("| D-untested |") && md.contains("| **CLOSED (texel) · UNPLAYED** | — |"), "{md}");
+        assert!(md.contains("| **RESIDUE** | — |"), "{md}");
+        // the light counts are untouched by the gate; the loads line carries the gate
+        assert_eq!(counts.iter().find(|(k, _)| k == "CLOSED (texel)").map(|(_, n)| *n), Some(4));
+        assert!(md.contains("3 of the 4 light-CLOSED cells wait for a play-load"), "{md}");
+        assert!(md.contains("PLAYS 1") && md.contains("HANGS 1") && md.contains("STATIC ok 1") && md.contains("untested 2"), "{md}");
         std::fs::remove_dir_all(&dir).ok();
     }
 

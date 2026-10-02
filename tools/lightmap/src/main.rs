@@ -7194,7 +7194,14 @@ fn run(mut a: Vec<String>) {
                 let work = if w == "-" { None } else { Some(std::path::PathBuf::from(&w)) };
                 // --causes FILE.tsv: cell TAB text — the row's cause column replaced (a leading `+` prepends to the old text)
                 let causes: Vec<(String, String)> = f("--causes").map(|p| std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("--causes {p}: {e}")).lines().filter(|l| !l.trim().is_empty() && !l.starts_with('#')).filter_map(|l| l.split_once('\t').map(|(c, t)| (c.trim().to_string(), t.to_string()))).collect()).unwrap_or_default();
-                let (done, skipped) = lightmap::trustmatrix::refresh(&manifest, work.as_deref(), &suffix, lit_hdr, only.as_deref(), &bind, &causes).unwrap_or_else(|e| panic!("trustmatrix --refresh: {e}"));
+                // V8: --loads-from DIR (the bank the LOADS-IN-PLAY column reads; defaults to the --refresh bank) + --playload FILE|DIR (repeatable:
+                // the play-load TSVs, `md5 TAB file TAB verdict TAB when TAB box TAB note`); with `--refresh -` only the loads column moves
+                let loads_from = f("--loads-from").map(std::path::PathBuf::from);
+                let mut playload: Vec<lightmap::loadsinplay::PlayRow> = Vec::new();
+                for (i, x) in a.iter().enumerate() { if x == "--playload" { let p = a.get(i + 1).expect("--playload FILE|DIR"); playload.extend(lightmap::loadsinplay::read_playload(std::path::Path::new(p)).unwrap_or_else(|e| panic!("--playload: {e}"))); } }
+                let opts = lightmap::trustmatrix::RefreshOpts { work_tip: work.as_deref(), suffix: &suffix, lit_hdr, only: only.as_deref(), bind: &bind, causes: &causes, loads_from: loads_from.as_deref(), playload: &playload };
+                let (done, skipped) = lightmap::trustmatrix::refresh(&manifest, &opts).unwrap_or_else(|e| panic!("trustmatrix --refresh: {e}"));
+                if !playload.is_empty() || loads_from.is_some() { println!("== trustmatrix --loads-from {}: {} play-load row(s) read", loads_from.as_ref().or(work.as_ref()).map(|p| p.display().to_string()).unwrap_or_else(|| "-".into()), playload.len()); }
                 if !causes.is_empty() { println!("== trustmatrix --causes: {} cause text(s) written into {manifest}", causes.len()); }
                 if !bind.is_empty() { println!("== trustmatrix --bind: {} binding(s) written into {manifest}", bind.len()); }
                 println!("\n== trustmatrix --refresh {w}: {} cell(s) re-read{}", done.len(), lit_hdr.map(|v| format!(" at the HDR floor {v}")).unwrap_or_default());
@@ -7213,6 +7220,49 @@ fn run(mut a: Vec<String>) {
             let notes = lightmap::trustmatrix::read_notes(&manifest);
             let (md, counts) = lightmap::trustmatrix::render(&cells, &base_dir, tol, min_texels, &label, &notes);
             match f("--out") { Some(p) => { std::fs::write(&p, &md).unwrap_or_else(|e| panic!("{p}: {e}")); eprintln!("trustmatrix: {} cells → {p}: {}", cells.len(), counts.iter().map(|(k, n)| format!("{k} {n}")).collect::<Vec<_>>().join(", ")); } None => print!("{md}") }
+        }
+        "playload" => {
+            // lmtool playload add OUT.tsv --verdict PLAYS|HANG|LM-REJECTED [--when ISO] [--box HOST] [--note TEXT] (FILE… | --md5-tsv MD5.tsv):
+            //   append play-load rows (md5 TAB file TAB verdict TAB when TAB box TAB note) for the given lit files (md5 computed) or for every
+            //   line of an md5sum list (when the files are not local); `lmtool playload show FILE|DIR [--md5 M]` lists the rows / the verdict of one md5.
+            //   The rows feed the matrix's LOADS-IN-PLAY column (`trustmatrix --refresh … --playload FILE|DIR`): the file's md5 is the identity.
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            match a.get(1).map(|s| s.as_str()) {
+                Some("add") => {
+                    let out = std::path::PathBuf::from(a.get(2).expect("OUT.tsv"));
+                    let verdict = lightmap::loadsinplay::normalise_verdict(&f("--verdict").expect("--verdict PLAYS|HANG|LM-REJECTED"));
+                    assert!(["PLAYS", "HANG", "LM-REJECTED"].contains(&verdict.as_str()), "--verdict must be PLAYS, HANG or LM-REJECTED (got {verdict})");
+                    let (when, host, note) = (f("--when").unwrap_or_default(), f("--box").unwrap_or_default(), f("--note").unwrap_or_default());
+                    let mut rows = Vec::new();
+                    if let Some(list) = f("--md5-tsv") {
+                        for l in std::fs::read_to_string(&list).unwrap_or_else(|e| panic!("{list}: {e}")).lines() {
+                            let mut it = l.split_whitespace();
+                            let (Some(m), Some(name)) = (it.next(), it.next()) else { continue };
+                            if m.len() < 8 || !m.chars().all(|c| c.is_ascii_hexdigit()) { continue; }
+                            rows.push(lightmap::loadsinplay::PlayRow { md5: m.to_ascii_lowercase(), file: name.trim_start_matches('*').to_string(), verdict: verdict.clone(), when: when.clone(), host: host.clone(), note: note.clone() });
+                        }
+                    }
+                    let mut skip = false;
+                    for x in a.iter().skip(3) {
+                        if skip { skip = false; continue; }
+                        if x.starts_with("--") { skip = true; continue; }
+                        let bytes = std::fs::read(x).unwrap_or_else(|e| panic!("{x}: {e}"));
+                        rows.push(lightmap::loadsinplay::PlayRow { md5: lightmap::corpusgate::md5_hex(&bytes), file: std::path::Path::new(x).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| x.clone()), verdict: verdict.clone(), when: when.clone(), host: host.clone(), note: note.clone() });
+                    }
+                    assert!(!rows.is_empty(), "nothing to add: give FILE… or --md5-tsv MD5.tsv");
+                    lightmap::loadsinplay::append(&out, &rows).unwrap_or_else(|e| panic!("{e}"));
+                    for r in &rows { println!("{}\t{}\t{}\t{}\t{}\t{}", r.md5, r.file, r.verdict, r.when, r.host, r.note); }
+                    println!("== playload add: {} row(s) appended to {}", rows.len(), out.display());
+                }
+                Some("show") => {
+                    let rows = lightmap::loadsinplay::read_playload(std::path::Path::new(a.get(2).expect("FILE|DIR"))).unwrap_or_else(|e| panic!("{e}"));
+                    match f("--md5") {
+                        Some(m) => match lightmap::loadsinplay::lookup(&rows, &m) { Some(r) => println!("{}\t{}\t{}\t{}\t{}\t{}", r.md5, r.file, r.verdict, r.when, r.host, r.note), None => { println!("{m}: no play-load row"); std::process::exit(1); } },
+                        None => { for r in &rows { println!("{}\t{}\t{}\t{}\t{}\t{}", r.md5, r.file, r.verdict, r.when, r.host, r.note); } println!("== {} row(s)", rows.len()); }
+                    }
+                }
+                _ => panic!("lmtool playload add|show …"),
+            }
         }
         "layoutcheck" => {
             // lmtool layoutcheck MAP…: the packing invariants without an oracle (classcmp::layout_check) — rects inside the
