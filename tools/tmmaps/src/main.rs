@@ -268,6 +268,7 @@ fn main() {
         "stripghost" => surgery::stripghost(&args),
         "validate" => surgery::validate(&args),
         "setuid" => surgery::setuid(&args),
+        "unlock" => surgery::unlock(&args),
         "settimes" => surgery::settimes(&args),
         "lmquality" => surgery::lmquality(&args),
         "ghostchunk" => surgery::ghostchunk(&args),

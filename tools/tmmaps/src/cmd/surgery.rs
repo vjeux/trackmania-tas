@@ -519,6 +519,20 @@ pub fn setuid(args: &[String]) {
         println!("wrote {} with uid {uid}", out.display());
 }
 
+/// `tmmaps unlock SRC --out OUT`: remove the editor password (the header
+/// NeedUnlock flag + the body's 0x03043029 hash chunk), nothing else — the
+/// uid, name, items, lightmap and times stay. Written 2026-10-02 for Hugo's
+/// "Fall 2026 STT Center" set (Nadeo's official sources carry the lock and
+/// every derivative inherited it).
+pub fn unlock(args: &[String]) {
+        let src = std::path::PathBuf::from(&args[2]);
+        let out = std::path::PathBuf::from(tmmaps::cli::flag(&args, "--out").expect("unlock needs --out MAP"));
+        let mut m = tmmaps::map::MapFile::load(&src);
+        m.remove_password();
+        m.write_to(&out).expect("write output");
+        println!("unlocked {} -> {}", src.display(), out.display());
+}
+
 /// `tmmaps movebaked SRC --out OUT --baked bN --to X,Y,Z [--baked bM --to …]`: generated
 /// records moved to other cells, everything else untouched (see
 /// `MapFile::move_baked_cell`).
