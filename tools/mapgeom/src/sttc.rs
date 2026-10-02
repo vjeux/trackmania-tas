@@ -751,8 +751,14 @@ pub enum ItemOffset {
 pub enum Rule {
     /// centroid, ties up, everything by the rounded cell offset (the 06:15 set)
     V1,
-    /// bbox centre, ties down, items/free exact (the final set)
+    /// bbox centre, ties down, items/free exact (the round-2 set)
     V2,
+    /// Hugo 11:36 (round 3): the finish's centre EXACTLY at the map centre in world
+    /// units — every piece shifted by the exact offset; a grid block whose exact
+    /// destination is off the grid becomes a FREE-placed block (same model, y kept,
+    /// yaw from its dir), its generated clip records dropped (the engine derives a
+    /// free block's clips itself; the file's grid records would be stale)
+    V3,
 }
 
 fn round_half_down(v: f64) -> i32 {
@@ -784,6 +790,10 @@ pub struct CenterOutcome {
     pub times: Option<(u32, u32, u32, u32)>,
     pub unlocked: bool,
     pub has_free_finish: bool,
+    /// V3: the grid finish blocks converted to free (block indices) and their dropped clip records (baked indices, input space)
+    pub converted: Vec<usize>,
+    pub converted_pos: HashMap<usize, [f32; 3]>,
+    pub dropped_clips: Vec<usize>,
 }
 
 fn round_half_up(v: f64) -> i32 {
@@ -928,7 +938,7 @@ pub fn center_finish(ctx: &mut Ctx, src: &Path, out: &Path, o: &CenterOpts, dry:
     };
     let reference = match o.rule {
         Rule::V1 => centroid,
-        Rule::V2 => {
+        Rule::V2 | Rule::V3 => {
             let (lo, hi) = fin_bbox.ok_or("no finish bbox")?;
             ((lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0)
         }
@@ -936,9 +946,12 @@ pub fn center_finish(ctx: &mut Ctx, src: &Path, out: &Path, o: &CenterOpts, dry:
     let offset_exact_m = (center.0 - reference.0, center.1 - reference.1);
     let (dx, dz) = match o.rule {
         Rule::V1 => (round_half_up(offset_exact_m.0 / 32.0), round_half_up(offset_exact_m.1 / 32.0)),
-        Rule::V2 => (round_half_down(offset_exact_m.0 / 32.0), round_half_down(offset_exact_m.1 / 32.0)),
+        Rule::V2 | Rule::V3 => (round_half_down(offset_exact_m.0 / 32.0), round_half_down(offset_exact_m.1 / 32.0)),
     };
     let residual_m = (offset_exact_m.0 - dx as f64 * 32.0, offset_exact_m.1 - dz as f64 * 32.0);
+    // V3: a grid block stays a grid block only when the exact offset is whole cells in both axes
+    let on_grid = residual_m.0.abs() < 1e-6 && residual_m.1.abs() < 1e-6;
+    let convert_grid = o.rule == Rule::V3 && !on_grid;
     // --- destination check
     let (sx_cells, sy_cells, sz_cells) = (m.size[0], m.size[1], m.size[2]);
     let mut dy = 0i32;
@@ -993,6 +1006,7 @@ pub fn center_finish(ctx: &mut Ctx, src: &Path, out: &Path, o: &CenterOpts, dry:
     let has_grid_finish = fin_blocks.iter().any(|f| f.rec.flags & FREE_BLOCK_FLAG == 0);
     let exact_items = match (o.rule, o.item_offset) {
         (Rule::V1, _) => false,
+        (Rule::V3, _) => true,
         (Rule::V2, ItemOffset::Exact) => true,
         (Rule::V2, ItemOffset::Rounded) => false,
         (Rule::V2, ItemOffset::Auto) => !has_grid_finish,
@@ -1014,6 +1028,29 @@ pub fn center_finish(ctx: &mut Ctx, src: &Path, out: &Path, o: &CenterOpts, dry:
             owned_free.push(r.index);
         }
     }
+    // --- V3: the free pose of a converted grid block — the tiny converter's origin-corner rule
+    // (verified on 50 shipped maps): dir 0 (x₀, z₀) yaw 0; dir 1 (x₀ + SZ, z₀) yaw −π/2; dir 2
+    // (x₀ + SX, z₀ + SZ) yaw π; dir 3 (x₀, z₀ + SX) yaw +π/2; y = 8·cy + the collection's ground
+    let coll_raw = m.body_collections().map(|c| c[0].1).unwrap_or(26);
+    let ground = tmmaps::map::ground_y(coll_raw);
+    let mut free_pose: HashMap<usize, ([f32; 3], [f32; 3])> = HashMap::new();
+    if convert_grid {
+        for f in fin_blocks.iter().filter(|f| f.rec.flags & FREE_BLOCK_FLAG == 0) {
+            let (w, d) = ctx.block_footprint(&f.rec, 0).map(|(wd, _)| wd).unwrap_or((1, 1));
+            let (sx, sz) = (w as f32 * 32.0, d as f32 * 32.0);
+            let c = f.rec.coords();
+            let (x0, z0) = (c.0 as f32 * 32.0, c.2 as f32 * 32.0);
+            let (shift, yaw) = match f.rec.dir & 3 {
+                0 => ([0.0, 0.0], 0.0f32),
+                1 => ([sz, 0.0], -std::f32::consts::FRAC_PI_2),
+                2 => ([sx, sz], std::f32::consts::PI),
+                _ => ([0.0, sx], std::f32::consts::FRAC_PI_2),
+            };
+            let pos = [x0 + shift[0] + offset_exact_m.0 as f32, c.1 as f32 * 8.0 + ground + dy as f32 * 8.0, z0 + shift[1] + offset_exact_m.1 as f32];
+            free_pose.insert(f.index, (pos, [yaw, 0.0, 0.0]));
+        }
+    }
+    let dropped_clips: Vec<usize> = if convert_grid { owned.iter().copied().filter(|idx| m.baked.iter().any(|r| r.index == *idx && r.flags & FREE_BLOCK_FLAG == 0)).collect() } else { Vec::new() };
     // --- rows
     for f in &fin_blocks {
         let mut r = Row::new(&map_label, "center", "block", f.index, &f.rec.name);
@@ -1027,6 +1064,26 @@ pub fn center_finish(ctx: &mut Ctx, src: &Path, out: &Path, o: &CenterOpts, dry:
                 r.from = format!("free {}", pos_str(p));
                 r.to = format!("free {}", pos_str(shifted(p, dwe)));
                 r.y = format!("{:.3}", p[1] + dwe[1]);
+            }
+            None if free_pose.contains_key(&f.index) => {
+                let (pos, rot) = free_pose[&f.index];
+                let c = f.rec.coords();
+                r.action = "converted-to-free".into();
+                r.from = cell_str(c);
+                r.to = format!("free {} yaw {:.4}", pos_str(pos), rot[0]);
+                r.y = format!("{:.3}", pos[1]);
+                r.note = format!("grid → free: the exact centre is off the grid (residual {:.1},{:.1} m); flags {:08X} → {:08X}", residual_m.0, residual_m.1, f.rec.flags, (f.rec.flags & !0x1000) | FREE_BLOCK_FLAG);
+                r.overlap = {
+                    let cx = ((pos[0] + 16.0) / 32.0).floor() as i32;
+                    let cz = ((pos[2] + 16.0) / 32.0).floor() as i32;
+                    let mut names: Vec<String> = Vec::new();
+                    for (ox, oz) in [(0, 0), (-1, 0), (0, -1), (-1, -1)] {
+                        if let Some(n) = occupancy.get(&[cx + ox, c.1 + dy, cz + oz]) {
+                            names.extend(n.iter().cloned());
+                        }
+                    }
+                    if names.is_empty() { "N".into() } else { format!("Y:{}", names.join("|")) }
+                };
             }
             None => {
                 let c = f.rec.coords();
@@ -1060,6 +1117,16 @@ pub fn center_finish(ctx: &mut Ctx, src: &Path, out: &Path, o: &CenterOpts, dry:
         let rec = m.baked.iter().find(|r| r.index == *idx).cloned();
         if let Some(rec) = rec {
             let mut r = Row::new(&map_label, "center", "baked", rec.index, &rec.name);
+            if convert_grid && rec.flags & FREE_BLOCK_FLAG == 0 {
+                // a converted finish's GRID clip records are dropped: the engine derives a free
+                // block's clips itself and a grid record names a cell the block no longer stands in
+                r.action = "dropped-with-finish".into();
+                r.dir_from = rec.dir.to_string();
+                r.from = cell_str(rec.coords());
+                r.note = "the owner became a free block".into();
+                rows.push(r);
+                continue;
+            }
             r.action = "moved-with-finish".into();
             r.dir_from = rec.dir.to_string();
             r.dir_to = rec.dir.to_string();
@@ -1115,6 +1182,9 @@ pub fn center_finish(ctx: &mut Ctx, src: &Path, out: &Path, o: &CenterOpts, dry:
         times: times_from.as_ref().map(|(_, t)| *t),
         unlocked: o.unlock,
         has_free_finish: fin_blocks.iter().any(|f| f.rec.flags & FREE_BLOCK_FLAG != 0),
+        converted: free_pose.keys().copied().collect(),
+        converted_pos: free_pose.iter().map(|(k, (p, _))| (*k, *p)).collect(),
+        dropped_clips: dropped_clips.clone(),
     };
     if dry {
         return Ok(outcome(rows));
@@ -1125,15 +1195,26 @@ pub fn center_finish(ctx: &mut Ctx, src: &Path, out: &Path, o: &CenterOpts, dry:
     // pass 1: every move is an in-place fixed-size patch; the ghost strip and
     // the rename are splices (they may share a write with patches, not with
     // Id-table renames)
-    for f in &fin_blocks {
+    // conversions in DESCENDING block order: several new free entries that land at the same
+    // byte offset of chunk 0x0304305F are spliced in push order, each in front of the earlier
+    // ones (map.rs::patched_body: same-start splices keep their push order), so the last pushed
+    // comes first — descending pushes give ascending entries (11's 55-piece wall, 2026-10-02)
+    let mut order: Vec<&FinBlock> = fin_blocks.iter().collect();
+    order.sort_by_key(|f| std::cmp::Reverse(f.index));
+    for f in order {
         match f.rec.free_pos {
             Some(p) => m.move_block_free(f.index, shifted(p, dwe)),
+            None if free_pose.contains_key(&f.index) => {
+                let (pos, rot) = free_pose[&f.index];
+                m.convert_block_to_free(f.index, pos, rot);
+            }
             None => {
                 let c = f.rec.coords();
                 m.move_block_cell(f.index, (c.0 + dx, c.1 + dy, c.2 + dz));
             }
         }
     }
+
     for (i, it) in &fin_items {
         let np = shifted(it.pos, dwe);
         m.move_item_pos(*i, np);
@@ -1142,6 +1223,9 @@ pub fn center_finish(ctx: &mut Ctx, src: &Path, out: &Path, o: &CenterOpts, dry:
         m.raw_patches.push((it.coord_off, cell.to_vec()));
     }
     for idx in &owned {
+        if dropped_clips.contains(idx) {
+            continue;
+        }
         let rec = m.baked.iter().find(|r| r.index == *idx).cloned().expect("owned baked record");
         let c = rec.coords();
         m.move_baked_cell(*idx, (c.0 + dx, c.1 + dy, c.2 + dz));
@@ -1169,6 +1253,13 @@ pub fn center_finish(ctx: &mut Ctx, src: &Path, out: &Path, o: &CenterOpts, dry:
         }
     }
     m.write_to(out).map_err(|e| e.to_string())?;
+    // pass 1b: the converted finish's grid clip records go (a block-list rewrite: its own load)
+    if !dropped_clips.is_empty() {
+        let mut m1 = MapFile::try_load(out)?;
+        let set: HashSet<usize> = dropped_clips.iter().copied().collect();
+        m1.remove_blocks(|_| false, |r| set.contains(&r.index));
+        m1.write_to(out).map_err(|e| e.to_string())?;
+    }
     // pass 2: the uid (an Id-table rename: its own write)
     if o.reuid && new_uid != old_uid {
         let mut m2 = MapFile::try_load(out)?;
@@ -1204,8 +1295,8 @@ pub fn verify_center(src: &Path, out: &Path, outcome: &CenterOutcome) -> Result<
     if a.items.len() != b.items.len() {
         bad.push(format!("item count {} -> {}", a.items.len(), b.items.len()));
     }
-    if a.baked.len() != b.baked.len() {
-        bad.push(format!("baked count {} -> {}", a.baked.len(), b.baked.len()));
+    if a.baked.len() != b.baked.len() + outcome.dropped_clips.len() {
+        bad.push(format!("baked count {} -> {} ({} dropped)", a.baked.len(), b.baked.len(), outcome.dropped_clips.len()));
     }
     let moved_blocks: HashSet<usize> = outcome.rows.iter().filter(|r| r.step == "center" && r.kind == "block" && r.action == "moved").filter_map(|r| r.index.parse().ok()).collect();
     let moved_items: HashSet<usize> = outcome.rows.iter().filter(|r| r.step == "center" && r.kind == "item" && r.action == "moved").filter_map(|r| r.index.parse().ok()).collect();
@@ -1215,8 +1306,22 @@ pub fn verify_center(src: &Path, out: &Path, outcome: &CenterOutcome) -> Result<
     let dwe = [outcome.offset_exact_m.0 as f32, dy as f32 * 8.0, outcome.offset_exact_m.1 as f32];
     // V1 moved everything by the rounded offset; V2 moves items / free records by the exact one unless the mix said rounded
     let dwe = if outcome.exact_items { dwe } else { dw };
+    let converted: HashSet<usize> = outcome.converted.iter().copied().collect();
     for (i, (x, y)) in a.blocks.iter().zip(b.blocks.iter()).enumerate() {
         let same_pose = x.coords() == y.coords() && x.free_pos == y.free_pos;
+        if converted.contains(&i) {
+            // grid → free: FREE set, GROUND cleared, cell bytes dead, a free entry present, name/dir kept
+            let ok = x.name == y.name
+                && x.dir == y.dir
+                && y.flags == ((x.flags & !0x1000) | FREE_BLOCK_FLAG)
+                && y.free_pos.is_some()
+                && y.coords() == (-1, 0, -1)
+                && y.free_pos.map(|p| (p[0] - outcome.converted_pos.get(&i).map(|q| q[0]).unwrap_or(p[0])).abs() < 1e-3 && (p[2] - outcome.converted_pos.get(&i).map(|q| q[2]).unwrap_or(p[2])).abs() < 1e-3).unwrap_or(false);
+            if !ok {
+                bad.push(format!("block#{i} {} conversion to free is wrong ({:08X} {:?} -> {:08X} {:?} {:?})", x.name, x.flags, x.coords(), y.flags, y.coords(), y.free_pos));
+            }
+            continue;
+        }
         let exp = if moved_blocks.contains(&i) {
             match x.free_pos {
                 Some(p) => y.free_pos == Some(shifted(p, dwe)),
@@ -1238,7 +1343,12 @@ pub fn verify_center(src: &Path, out: &Path, outcome: &CenterOutcome) -> Result<
             bad.push(format!("item#{i} {} differs ({:?} -> {:?})", x.model, x.pos, y.pos));
         }
     }
-    for (i, (x, y)) in a.baked.iter().zip(b.baked.iter()).enumerate() {
+    let dropped: HashSet<usize> = outcome.dropped_clips.iter().copied().collect();
+    let kept_baked: Vec<&BlockRec> = a.baked.iter().filter(|x| !dropped.contains(&x.index)).collect();
+    if a.baked.len() - dropped.len() != b.baked.len() {
+        bad.push(format!("baked count {} - {} dropped != {}", a.baked.len(), dropped.len(), b.baked.len()));
+    }
+    for (i, (x, y)) in kept_baked.iter().zip(b.baked.iter()).enumerate() {
         let exp = if moved_baked.contains(&x.index) {
             match x.free_pos {
                 Some(p) => y.free_pos == Some(shifted(p, dwe)),
@@ -1457,7 +1567,7 @@ pub fn pipeline(store: &mut DataStore, src: &Path, out_dir: &Path, o: &PipelineO
             if o.no_sttf { "input already STTF (0 checkpoints), skipped".to_string() } else { format!("{} replaced, {} blocks removed, {} items removed, {} baked removed", s.replaced, s.removed_blocks, s.removed_items, s.removed_baked) },
             c.finish_blocks, c.finish_items, c.moved_baked, c.offset_cells.0, c.offset_cells.1, c.offset_cells.2, c.offset_exact_m.0, c.offset_exact_m.1, c.residual_m.0, c.residual_m.1, c.reference.0, c.reference.1, c.center.0, c.center.1, c.overlaps, c.startfinish, s.mismatches + c.mismatches
         );
-        r.action = format!("{}; items/free: {}", r.action, if c.exact_items { "exact offset (land on the centre)" } else if c.finish_items > 0 || c.has_free_finish { "ROUNDED with the grid blocks (composite finish keeps its shape)" } else { "n/a (grid blocks only; residual = the half-cell tie)" });
+        r.action = format!("{}; items/free: {}{}", r.action, if c.exact_items { "exact offset (land on the centre)" } else if c.finish_items > 0 || c.has_free_finish { "ROUNDED with the grid blocks (composite finish keeps its shape)" } else { "n/a (grid blocks only; residual = the half-cell tie)" }, if c.converted.is_empty() { String::new() } else { format!("; {} grid finish block(s) CONVERTED TO FREE at the exact centre, {} clip records dropped", c.converted.len(), c.dropped_clips.len()) });
         r.to_name = c.new_name.clone();
         r.note = if bad_s.is_empty() && bad_c.is_empty() { if o.dry { "dry-run".into() } else { "verified".into() } } else { format!("VERIFY FAILED: {} {}", bad_s.join("; "), bad_c.join("; ")) };
         r.to = if o.dry { String::new() } else { final_out.display().to_string() };
@@ -1485,7 +1595,7 @@ pub fn pipeline(store: &mut DataStore, src: &Path, out_dir: &Path, o: &PipelineO
             //    source record's final index and whether it changed (renamed / moved) — the lightmap's
             //    charts are bound to objects by index ([blocks][generated][items]), so a kept object's
             //    chart follows its index, a changed object's chart is dropped, a removed object's chart goes
-            let objmap = objmap_rows(&m, &s.rows, &c.rows, &rc.removed);
+            let objmap = objmap_rows(&m, &s.rows, &c.rows, &c.dropped_clips, &rc.removed);
             let p = out_dir.join(format!("{stem}.objmap.tsv"));
             std::fs::write(&p, objmap).map_err(|e| e.to_string())?;
             // 3. the chart table: lmtool beside this binary or on PATH
@@ -1621,7 +1731,7 @@ pub fn reconcile_clips(ctx: &mut Ctx, src: &Path, out: &Path) -> Result<Reconcil
 
 /// The object map (TSV `class src dst state`): source index → final index per class, composed
 /// from the sttf rows (source indices: removed / replaced) and the center rows (sttf indices: moved).
-pub fn objmap_rows(src: &MapFile, sttf_rows: &[Row], center_rows: &[Row], reconcile_removed_baked: &[usize]) -> String {
+pub fn objmap_rows(src: &MapFile, sttf_rows: &[Row], center_rows: &[Row], center_removed_baked: &[usize], reconcile_removed_baked: &[usize]) -> String {
     let idx_set = |rows: &[Row], step: &str, kind: &str, action: &str| -> HashSet<usize> {
         rows.iter().filter(|r| r.step == step && r.kind == kind && r.action == action).filter_map(|r| r.index.parse().ok()).collect()
     };
@@ -1636,10 +1746,15 @@ pub fn objmap_rows(src: &MapFile, sttf_rows: &[Row], center_rows: &[Row], reconc
         };
         let mut removed_sorted: Vec<usize> = removed.iter().copied().collect();
         removed_sorted.sort_unstable();
+        // the center step dropped a converted finish's clip records by their index in the sttf output
+        let mut cen_removed: Vec<usize> = if class == "baked" { center_removed_baked.to_vec() } else { Vec::new() };
+        cen_removed.sort_unstable();
+        let cen_set: HashSet<usize> = cen_removed.iter().copied().collect();
         // the reconcile pass removed baked records by their index in the CENTER output's list
         let mut rec_removed: Vec<usize> = if class == "baked" { reconcile_removed_baked.to_vec() } else { Vec::new() };
         rec_removed.sort_unstable();
         let rec_set: HashSet<usize> = rec_removed.iter().copied().collect();
+        let converted: HashSet<usize> = center_rows.iter().filter(|r| r.step == "center" && r.kind == class && r.action == "converted-to-free").filter_map(|r| r.index.parse().ok()).collect();
         for i in 0..n {
             if removed.contains(&i) {
                 out.push_str(&format!("{class}\t{i}\t-\tremoved\n"));
@@ -1647,13 +1762,19 @@ pub fn objmap_rows(src: &MapFile, sttf_rows: &[Row], center_rows: &[Row], reconc
             }
             let shift = removed_sorted.iter().take_while(|r| **r < i).count();
             let mid = i - shift;
-            if rec_set.contains(&mid) {
+            if cen_set.contains(&mid) {
                 out.push_str(&format!("{class}\t{i}\t-\tremoved\n"));
                 continue;
             }
-            let shift2 = rec_removed.iter().take_while(|r| **r < mid).count();
-            let dst = mid - shift2;
-            let state = if replaced.contains(&i) || moved.contains(&mid) { "changed" } else { "kept" };
+            let shift_c = cen_removed.iter().take_while(|r| **r < mid).count();
+            let mid2 = mid - shift_c;
+            if rec_set.contains(&mid2) {
+                out.push_str(&format!("{class}\t{i}\t-\tremoved\n"));
+                continue;
+            }
+            let shift2 = rec_removed.iter().take_while(|r| **r < mid2).count();
+            let dst = mid2 - shift2;
+            let state = if replaced.contains(&i) || moved.contains(&mid) || converted.contains(&mid) { "changed" } else { "kept" };
             out.push_str(&format!("{class}\t{i}\t{dst}\t{state}\n"));
         }
     }

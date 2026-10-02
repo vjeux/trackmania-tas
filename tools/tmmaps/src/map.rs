@@ -1390,6 +1390,42 @@ impl MapFile {
         self.raw_patches.push((b.coord_off, vec![(cell.0 + 1) as u8, cell.1 as u8, (cell.2 + 1) as u8]));
     }
 
+    /// Convert a GRID block into a FREE-placed one at `pos` with the rotation
+    /// triple `rot` (yaw, pitch, roll as the free-pos chunk stores them): the
+    /// record's flags gain FREE (and lose GROUND: the editor places free blocks
+    /// as air variants — every free finish of the Fall 2026 sources is
+    /// `0x20100000`), its cell bytes become the dead (0,0,0) the editor writes,
+    /// and a 24-byte entry is spliced into chunk `0x0304305F` at the block's
+    /// rank among the FREE authored blocks (the chunk lists the free blocks of
+    /// 0x0304301F in record order, then the baked ones). The record itself —
+    /// its index, name, waypoint node, author/skin — is untouched, so every
+    /// index-bound side table (colour, lightmap quality, macroblock refs, the
+    /// lightmap's object slot) still points at it. Hugo's "Straight to the
+    /// Center" round 3 (2026-10-02): a finish whose centre must sit at an
+    /// off-grid point. Fixed-size patches + one splice: may share a write with
+    /// other patches/splices, never with a rename. SEVERAL conversions in one
+    /// write must be called in DESCENDING block order: entries that land at the
+    /// same byte offset are spliced each in front of the earlier ones.
+    pub fn convert_block_to_free(&mut self, block_index: usize, pos: [f32; 3], rot: [f32; 3]) {
+        let b = self.blocks[block_index].clone();
+        assert!(b.flags & FREE_BLOCK_FLAG == 0, "block#{block_index} {} is already free", b.name);
+        assert!(b.flags != 0xFFFF_FFFF, "block#{block_index} is an unassigned placeholder");
+        let chunks = crate::gbx::all_skip_chunks(&self.gbx.body);
+        let &(_, _, payload, size) = chunks.iter().find(|(c, ..)| *c == FREE_POS_CHUNK).expect("the map has no free-position chunk 0x0304305F");
+        assert_eq!((size - 4) % 24, 0, "chunk 0x0304305F payload {size} is not 4 + 24k");
+        // the entry's place: after the entries of the free authored blocks before this one
+        let rank = self.blocks.iter().take(block_index).filter(|x| x.flags & FREE_BLOCK_FLAG != 0 && x.flags != 0xFFFF_FFFF).count();
+        let at = payload + 4 + 24 * rank;
+        let mut entry = Vec::with_capacity(24);
+        for v in pos.iter().chain(rot.iter()) {
+            entry.extend_from_slice(&v.to_le_bytes());
+        }
+        self.raw_splices.push(((at, at), entry));
+        let flags = (b.flags & !0x1000) | FREE_BLOCK_FLAG;
+        self.raw_patches.push((b.coord_off, vec![0, 0, 0]));
+        self.raw_patches.push((b.coord_off + 3, flags.to_le_bytes().to_vec()));
+    }
+
     /// `prs`: move a FREE block, position-only, by overwriting the three f32
     /// of its entry in chunk `0x0304305F`. Same model, same rotation, same
     /// record length, same trigger volume -- the
