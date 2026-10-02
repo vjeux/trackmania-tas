@@ -347,6 +347,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         "run" => run_cells(args, &cells),
         "report" => report(args, &cells),
         "loadcheck" => loadcheck_cells(args, &cells),
+        "playload-manifest" => playload_manifest(args, &cells),
         "measure" => {
             // lmtool corpus-gate measure --corpus C --tip T --work W [--only cell,…]: (re)measure BANKED bakes (W/T/<cell>/ours.Map.Gbx)
             // with THIS binary's compare — for a cell whose metrics.json is missing or failed (a compare rule that changed, a giant
@@ -844,4 +845,45 @@ pub fn words_only_move(prev: &Path, new: &Path) -> Option<String> {
         }
     }
     Some(if moved.is_empty() { "no word moved (the file differs outside the lightmap chunk)".to_string() } else { moved.join(", ") })
+}
+
+/// `lmtool corpus-gate playload-manifest --corpus C --tip T --work W --out M.tsv --local DIR [--only cell,…]`: the `tinyctl lightmap-run
+/// --check-only` manifest (copy, shipped, out, name) over a banked tip's product files — every baked cell whose source carries a
+/// Spawn ITEM (a PlayMap of a start-less scene shows no playground, so those cells cannot be play-loaded: listed, not rowed);
+/// `out` = DIR/<cell>.Map.Gbx, a local copy of the banked ours.Map.Gbx (made here, md5-verified against md5.txt); `copy` = `shipped` =
+/// the cell's source (the start check reads its Spawn). The box gap then runs the manifest in groups and `lmtool playload add`
+/// records the rows by md5.
+fn playload_manifest(args: &[String], cells: &[Cell]) -> Result<(), String> {
+    let tip = flag(args, "--tip").ok_or("--tip TIP")?;
+    let work = PathBuf::from(flag(args, "--work").ok_or("--work W")?);
+    let out_tsv = PathBuf::from(flag(args, "--out").ok_or("--out M.tsv")?);
+    let local = PathBuf::from(flag(args, "--local").ok_or("--local DIR")?);
+    let only: Option<Vec<String>> = flag(args, "--only").map(|s| s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect());
+    std::fs::create_dir_all(&local).map_err(|e| format!("{}: {e}", local.display()))?;
+    let mut tsv = String::from("copy\tshipped\tout\tname\n");
+    let mut md5s = String::new();
+    let (mut rowed, mut skipped) = (Vec::new(), Vec::new());
+    for c in cells {
+        if let Some(o) = &only { if !o.iter().any(|x| x == &c.name) { continue; } }
+        if c.compare_only || c.oracle.is_none() { continue; }
+        let wdir = work.join(&tip).join(&c.name);
+        let ours = wdir.join("ours.Map.Gbx");
+        if !ours.exists() { skipped.push(format!("{} (not banked)", c.name)); continue; }
+        let src = tmmaps::map::MapFile::load(&c.source);
+        let n_spawn = src.items.iter().filter(|it| it.waypoint_tag.as_deref() == Some("Spawn")).count();
+        if n_spawn == 0 { skipped.push(format!("{} (no Spawn item: {} blocks, {} items)", c.name, src.blocks.len(), src.items.len())); continue; }
+        let bytes = std::fs::read(&ours).map_err(|e| format!("{}: {e}", ours.display()))?;
+        let md5 = md5_hex(&bytes);
+        let banked = std::fs::read_to_string(wdir.join("md5.txt")).unwrap_or_default();
+        if !banked.starts_with(&md5) { return Err(format!("{}: the bank reads {} but md5.txt says {} (a torn store view — retry)", c.name, &md5[..8], banked.trim())); }
+        let dst = local.join(format!("{}.Map.Gbx", c.name));
+        std::fs::write(&dst, &bytes).map_err(|e| format!("{}: {e}", dst.display()))?;
+        tsv += &format!("{}\t{}\t{}\t{}\n", c.source.display(), c.source.display(), dst.display(), c.name);
+        md5s += &format!("{md5}  {}\n", dst.display());
+        rowed.push(c.name.clone());
+    }
+    std::fs::write(&out_tsv, &tsv).map_err(|e| format!("{}: {e}", out_tsv.display()))?;
+    std::fs::write(local.join("MD5.tsv"), &md5s).map_err(|e| e.to_string())?;
+    println!("playload-manifest {tip}: {} rows → {} (files under {}, MD5.tsv beside them); {} cells without a play-load:\n  {}", rowed.len(), out_tsv.display(), local.display(), skipped.len(), skipped.join("\n  "));
+    Ok(())
 }
