@@ -376,8 +376,15 @@ impl CollectionProfile {
             // items in row 4 at y −8..0 → yoff −40 (the one Lake block at row 4)
             "GreenCoast" => CollectionProfile { grid: 64, ground_row: 4, yoff: -40.0, flat_zones: &["Grass", "Lake"], water_row: 4 },
             // RedIsland (V4 / tmmaps::map::ground_y, Summer 2026-02): the regenerated Dirt at cell 15 (plane local +2 → y 2 =
-            // 15·8 − 120 + 2), the lake's Water at cell 14 (surface −0.5); the pak's flat zones are GameCtnBlockInfoFlat\{Dirt,Water}
-            "RedIsland" => CollectionProfile { grid: 64, ground_row: 15, yoff: -120.0, flat_zones: &["Dirt", "Water"], water_row: 14 },
+            // 15·8 − 120 + 2), the lake's Water at cell 14 (surface −0.5); the pak's flat zones are GameCtnBlockInfoFlat\{Dirt,Water}.
+            // THE BLOCKLESS DEFAULT IS THE WATER ROW AND THE WATER ZONE (E8 2026-10-01, read from the game's own SET draws of the x2
+            // UNLIT Summer-07 file — 0 blocks, 0 baked — frame 1122's per-instance stream vb_15044: the 9 216 tile records sit at
+            // y −8 = row 14 and only the one row-14 item marks a cell (the ladder of 81 ring tiles around (56, 52)); with the Water
+            // zone's PLG (32.0816 m) at that level our layout puts 10 874 of the 10 948 records at the capture's origins (tile 0 at
+            // (1925, 1931) = ST.zw·2048), with Dirt's (32.0 m) 10 535, with row 15 + Dirt (the old default) 277. A map WITH a zone
+            // block or baked records keeps taking its level and zone from them (unchanged). LMTOOL_RI_GROUND=dirt15 = the old default.
+            "RedIsland" if std::env::var("LMTOOL_RI_GROUND").ok().as_deref() == Some("dirt15") => CollectionProfile { grid: 64, ground_row: 15, yoff: -120.0, flat_zones: &["Dirt", "Water"], water_row: 14 },
+            "RedIsland" => CollectionProfile { grid: 64, ground_row: 14, yoff: -120.0, flat_zones: &["Water", "Dirt"], water_row: 14 },
             // BlueBay: the Sea tiles' row 5 at y 0
             _ => CollectionProfile { grid: 64, ground_row: 5, yoff: -40.0, flat_zones: &["Sea", "Land"], water_row: 5 },
         }
@@ -740,11 +747,21 @@ pub fn allocate_grouped_walls(input: &LayoutInput, groups: &[u64], pos: Option<&
             _ => ir::grouped_pack_order(&areas),
         }
     };
-    // TotalLmSurfaceMeter: the f32 sum of the entry areas along the ascending-area radix order (ties by index)
+    // TotalLmSurfaceMeter: the f32 sum of the entry areas along the ascending-area radix order (ties by index) — RE 7's read, bit-exact
+    // on np-tk3 / pwc-day / tk3nl2 / tiny16 / stpad / tiny03 / giant20x2 / g23 (every rect the editor's).
+    // E8 2026-10-01 (RETRACTED CUT): on the RI x2 bake copy (giant-summer/x2/bake/Summer-07-Giant, 1 524 entries) the game's mapping
+    // pins its probe s to 0x3f8c3476 ⇔ Σ_f32 ∈ [3 067 611.5, 3 067 612.0] under s = √(mid·W·H/Σ), while this ascending sum gives
+    // 3 067 615.0 (6 ulps of s higher → our pack fails the probe the game kept and settles one probe lower: 185/1 694 item rects where
+    // the game's s gives 1 694/1 694 + 9 216/9 216). The DESCENDING sum (3 067 612.000) lands in the window there but BREAKS the eight
+    // verified maps above (np-tk3 s 10.370661 vs 10.370663, stpad 2.119488 vs 2.1194804, tiny03 1.3275847 vs 1.3264884, giant20x2
+    // 0.8503 vs 0.8496 …) — so the order is not the lever; the 3.0–3.5 m² gap is in the ENTRY LIST: the 38 kind-0 BushSmallC records the
+    // game places as five entries of 10/9/6/11/2 members (3×4 / 3×3 / 3×2 / 2×6 / 2×1 grids) where ours chunks them 10/10/10/8 as
+    // 4×3 / 3×3 — the game's five grids alone move the ascending Σ to 3 067 613.5 (RE 18 reads the legacy path's grouping).
+    // LMTOOL_SUM_ORDER=desc is the study knob; LMTOOL_LAYOUT_S=0x3f8c3476 reproduces the game's RI x2 layout for the compares.
     let sum_area = {
         let mut idx: Vec<usize> = (0..charts.len()).collect();
         idx.sort_by_key(|&i| (areas[i].to_bits(), i));
-        idx.iter().fold(0f32, |acc, &i| acc + areas[i])
+        if std::env::var("LMTOOL_SUM_ORDER").ok().as_deref() == Some("desc") { idx.iter().rev().fold(0f32, |acc, &i| acc + areas[i]) } else { idx.iter().fold(0f32, |acc, &i| acc + areas[i]) }
     };
     crate::pack::SUM_AREA_OVERRIDE.store(sum_area.to_bits(), std::sync::atomic::Ordering::Relaxed);
     let res = crate::pack::allocate_ordered(&charts, &order, input.w_atlas, input.height(), g, m, max_iter);

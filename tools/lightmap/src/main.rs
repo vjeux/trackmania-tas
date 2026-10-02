@@ -1262,6 +1262,8 @@ fn run(mut a: Vec<String>) {
             // (the Warp terrain meshes awaiting the mood and the sun — E2 2026-09-28: the first decor index they occupy, the meshes
             // with their normals, the --pak lines to reopen the store for the material's textures)
             let mut warp_pending: Option<(usize, Vec<lightmap::envcap::EnvMesh>, Vec<String>)> = None;
+            // --env-fit-grid: the environment and the dome scaled onto the map's grid (see the environment block below); EnvFit::for_map
+            let env_fit: Option<lightmap::envcap::EnvFit> = if has("--env-fit-grid") { lightmap::envcap::EnvFit::for_map(&tmmaps::map::MapFile::load(std::path::Path::new(&map_path))) } else { None };
             // the decoration's surroundings: --decoration FILE.obj[,FILE…] [--decoration-scale S --decoration-offset x,y,z],
             // or by default lightmap-re/scene3d/<Collection>.obj when it exists (RE child 3's Scene3d export),
             // --no-decoration to leave it out
@@ -1287,7 +1289,18 @@ fn run(mut a: Vec<String>) {
                     // the collection's decoration layout (RE 9's envblock::layout_path: Base64x64 for the islands, Stadium256's Base16x12 for Stadium)
                     let s3 = mapgeom::envblock::layout_path(&store, &coll);
                     match lightmap::envcap::env_meshes_from_pak(&mut store, &s3) {
-                        Ok((meshes, dropped)) => {
+                        Ok((mut meshes, dropped)) => {
+                            // --env-fit-grid (the Fall 2026 giants, 2026-10-01): the environment block is authored for the 64-cell
+                            // decoration (the 2048-m island, its sea box, the skirt) — a 96/128/160-cell giant lies mostly OUTSIDE it and
+                            // the editor's own bake (and ours, transcribed) goes dark beyond ~1024 m of the decoration centre (x2 16:
+                            // chart E 0.78 → 0.09 → 0.000; stored LAmbient 3 % of the source's). The fit scales the block about the
+                            // decoration centre (1024, 0, 1024) by size/64 onto the grid's centre (16·size, 0, 16·size), so the giant
+                            // sits inside its surroundings as the source sat inside the original; the dome mesh below takes the same map
+                            if let Some(ef) = env_fit {
+                                let mut n = 0usize;
+                                for m in meshes.iter_mut() { for t in m.tris.iter_mut() { for p in t.iter_mut() { *p = ef.map(*p); n += 1; } } }
+                                eprintln!("env-fit-grid: {n} environment vertices mapped ×{:.3} about ({}, 0, {}) → ({}, 0, {})", ef.k, ef.c[0], ef.c[2], ef.c2[0], ef.c2[2]);
+                            }
                             let t = lightmap::envcap::env_decor(&meshes);
                             eprintln!("decoration: the game's environment block from the packs ({s3}): {} triangles ({dropped} water / sky triangles left out)", t.len());
                             // THE WARP TERRAIN SHADING (E2 2026-09-28, warpterrain.rs): the Warp meshes are kept, with their normals, until the
@@ -1964,7 +1977,8 @@ fn run(mut a: Vec<String>) {
                     let from_env = lightmap::domemesh::DomeMesh::from_envblock(&mut store, &coll);
                     if let Err(e) = &from_env { eprintln!("dome mesh from the environment block: {e} — trying the Scene3d walk"); }
                     match from_env.or_else(|_| lightmap::domemesh::DomeMesh::from_scene3d(&mut store, &s3)) {
-                        Ok(m) => {
+                        Ok(mut m) => {
+                            if let Some(ef) = env_fit { for p in m.pos.iter_mut() { *p = ef.map(*p); } eprintln!("env-fit-grid: the dome mesh mapped ×{:.3} onto the grid centre", ef.k); }
                             let cmp = f("--lm-from").and_then(|d| lightmap::domemesh::DomeMesh::load(std::path::Path::new(&d)).ok()).map(|c| { let (same, ours, theirs) = m.compare(&c); format!("; vs the captured e001051: {same} of {ours} triangles identical (position + uv; captured {theirs})") }).unwrap_or_default();
                             eprintln!("dome mesh from the packs ({s3}): {} vertices, {} triangles rasterised per peel{cmp}", m.pos.len(), m.indices.len() / 3);
                             prm.dome_mesh = Some(std::sync::Arc::new(m));
@@ -2167,7 +2181,13 @@ fn run(mut a: Vec<String>) {
                 let t0 = std::time::Instant::now();
                 // --kept FILE: the items that are records (RE 7's reduction list of the reference bakes) — the rest get no chart
                 let layout_kept: Option<std::collections::HashSet<usize>> = f("--kept").map(|p| std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("--kept {p}: {e}")).split(|c: char| c == ',' || c.is_whitespace()).filter_map(|t| t.trim().parse::<usize>().ok()).collect());
-                let gl = lightmap::layout::for_map(&map_path, &scene, base, q, lightmap::layout::TilePlg::BLUEBAY_SEA, pak, &f("--collection").unwrap_or_else(|| "BlueBay".into()), &f("--zone").unwrap_or_else(|| "Sea".into()), layout_kept.as_ref()).unwrap_or_else(|e| panic!("--layout-game: {e}"));
+// the collection and the ground zone from the MAP (header envir + layout::ground_zone), as the --lm-from-map chain reads them —
+                // the BlueBay/Sea literals here panicked every RedIsland / GreenCoast / WhiteShore bake run without --collection/--zone
+                // ("BlueBay/Sea: no zone prefab PLG found", the Fall giants 2026-10-01)
+                let lg_coll = f("--collection").unwrap_or_else(|| tmmaps::header::read(&map_path).ok().map(|h| h.envir).unwrap_or_else(|| "BlueBay".into()));
+                let lg_zone = f("--zone").unwrap_or_else(|| lightmap::layout::ground_zone(&tmmaps::map::MapFile::load(std::path::Path::new(&map_path)), &lg_coll));
+                eprintln!("--layout-game: collection {lg_coll}, ground zone {lg_zone}");
+                let gl = lightmap::layout::for_map(&map_path, &scene, base, q, lightmap::layout::TilePlg::BLUEBAY_SEA, pak, &lg_coll, &lg_zone, layout_kept.as_ref()).unwrap_or_else(|e| panic!("--layout-game: {e}"));
                 let bound = gl.charts.iter().filter(|c| c.charted == lightmap::layout::Charted::Bound).count();
                 eprintln!("layout-game: {} charts ({bound} bound), s {} layout units/m, Σarea {} m², quality index {q} ({} iterations), keys from {} ({:.1}s)", gl.charts.len(), gl.s, gl.sum_area, gl.max_iter, if pak.is_some() { "the block records (pak)" } else { "the cell / triangle centres" }, t0.elapsed().as_secs_f32());
                 // --records-tsv FILE: the layout's records per chart (class, obj, sub, name, quality, centre y) — `lmtool classcmp --records`
@@ -3518,6 +3538,9 @@ fn run(mut a: Vec<String>) {
             // the frame records' time-of-day word: the MAP's (chunk 0x03043056), or the mood's default word
             // when the map has none (what Nadeo's editor baked the default-word sources with) — `--daytime N`
             // overrides, `--daytime template` keeps the template's (giant child 2026-09-23 + baker-3)
+            // --cache-words editor|template (default editor, 2026-10-01): cache chunks 0x06022017/0x06022018 written as every editor bake
+            // of a block-less map writes them — (0, 0) and 0 — instead of the template's (a Nadeo source's FILETIME): the port's files
+            // all carried the template's; see the Fall 2026 hang bisect (fix-19/README.md §4).
             // --bake-time solids|now|template|TICKS: the file's cache chunk 0x06022013 FILETIME word. DEFAULT = `solids` = THE GAME'S RULE
             // (the MK64 flat-lightmap lane, 2026-09-28; synth::most_recent_solid): the word must equal the newest CPlugSolid2Model.FileWriteTime
             // over the map's embedded item models or the game drops the chunk at load ("TimeWriteMostRecentSolid has changed") and plays its
@@ -3557,7 +3580,7 @@ fn run(mut a: Vec<String>) {
                 let n_tiles = base.saturating_sub(deco_const) as f32;
                 let quality: u32 = f("--quality").map(|s| s.parse::<u32>().unwrap()).unwrap_or(3).saturating_sub(1);
                 let xb = xml_blended_rec.as_ref().unwrap_or(x);
-                lightmap::synth::FrameParams { daytime, max_hdr_mood: xb.max_hdr, max_hdr: k, bounce: xb.bounce_factor, sky: xb.sky_factor, sum_area: Some(items_area + 2.0 * n_tiles), quality: Some(quality), filetime: bake_filetime, decoration: Some(mf0.decoration_id.clone()) }
+                lightmap::synth::FrameParams { daytime, max_hdr_mood: xb.max_hdr, max_hdr: k, bounce: xb.bounce_factor, sky: xb.sky_factor, sum_area: Some(items_area + 2.0 * n_tiles), quality: Some(quality), filetime: bake_filetime, decoration: Some(mf0.decoration_id.clone()), editor_cache_words: f("--cache-words").as_deref() != Some("template") }
             });
             // the game's positions when --layout-game: stored texel (px, py) = ((X + 1)/2, (Y + 1)/2) of the layout rect, for every chart
             // (the tiles included — their objects are the 4096 first)
@@ -3751,7 +3774,7 @@ fn run(mut a: Vec<String>) {
                                         // --local-lights-tail lists|simple|chain[:S] keeps the light-ID-list compose (F's model of the file)
                                         let tail = f("--local-lights-tail").unwrap_or_else(|| "d0".into());
                                         let mood_word = frame_params_for_transcribed.as_ref().map(|fp| fp.max_hdr_mood).unwrap_or(mood_max_hdr_for_encode / SQRT_2PI);
-                                        let f1 = if tail == "d0" { lightmap::localdrive::frame1_from_direct(&out.direct, from_map_setup.as_ref().map(|fm| &fm.sun), &rects, 2048) } else { lightmap::localdrive::frame1_images_by(if tail == "lists" { "simple" } else { &tail }, &out.lists, &su.lamps, &rects, mood_word, dil, 2048) };
+                                        let f1 = if tail == "d0" { lightmap::localdrive::frame1_from_direct(&out.direct, from_map_setup.as_ref().map(|fm| &fm.sun), &rects, 2048, mood_word) } else { lightmap::localdrive::frame1_images_by(if tail == "lists" { "simple" } else { &tail }, &out.lists, &su.lamps, &rects, mood_word, dil, 2048) };
                                         match f1 {
                                             Some(f1) => { eprintln!("local-lights: FRAME 1 = {} lamps, {} lit texels, MaxHDR {}, WebP {} B ({:.1}s)", su.lamps.len(), f1.lit_texels, f1.max_hdr, f1.webp.len(), tl.elapsed().as_secs_f32()); img.frame1 = Some(f1); }
                                             None => eprintln!("local-lights: nothing lit — frame 1 stays black"),
@@ -7227,6 +7250,25 @@ fn run(mut a: Vec<String>) {
             lightmap::mapio::save_with_chunk(&m, &payload, &out).unwrap_or_else(|e| panic!("{e}"));
             println!("wrote {out}");
         }
+        "kind-fix" => {
+            // lmtool kind-fix MAP --out OUT: record 0's kind word of the mapping head set by the frame count (2 with two image frames, 3 with
+            // three — synth::fix_record0_kind): the repair of a port-lit file written before 2026-10-01 (the Fall hang bisect: every such file
+            // carried [3, 3] with two frames and hung the client's PlayMap; the word alone flips it). Content untouched otherwise.
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let p = &a[1];
+            let out = f("--out").expect("--out OUT");
+            let mut m = lightmap::mapio::load(p).unwrap_or_else(|e| panic!("{e}"));
+            let d = m.chunk.data.as_mut().expect("has lightmaps");
+            let n_frames = d.frames.len();
+            let bm = d.cache.chunks.iter_mut().find_map(|c| match &mut c.body { lightmap::format::ChunkBody::Mapping(m) => Some(m), _ => None }).expect("mapping");
+            match lightmap::synth::fix_record0_kind(&mut bm.head) {
+                Some((had, want)) => eprintln!("{p}: {n_frames} image frames, {} records; record 0 kind {had} → {want}", bm.head.len().saturating_sub(72) / 66),
+                None => { eprintln!("{p}: no frame record in the mapping head"); std::process::exit(1) }
+            }
+            let payload = m.chunk.write(true);
+            lightmap::mapio::save_with_chunk(&m, &payload, &out).unwrap_or_else(|e| panic!("{e}"));
+            println!("wrote {out}");
+        }
         "hybrid" => {
             // lmtool hybrid --base A.Map.Gbx --donor B.Map.Gbx --take PART[,PART…] --out OUT.Map.Gbx: A's map and lightmap chunk with the
             // named PART(s) of the chunk replaced by B's — the PLAY-LOAD HANG BISECT of the port's chunk (tiny 03: lmtool-lit hangs the
@@ -7293,6 +7335,34 @@ fn run(mut a: Vec<String>) {
                         let bc = d.cache.chunks.iter_mut().find(|c| c.id == id).unwrap_or_else(|| panic!("the base has no cache chunk {id:#010x}"));
                         bc.body = dc.body.clone();
                         notes.push(format!("cache chunk {id:#010x}"));
+                    }
+                    p if p.starts_with("headword:") => {
+                        // one 4-byte word of the mapping head at a hex offset (e.g. headword:40 = record 0's kind word)
+                        let off = usize::from_str_radix(&p[9..], 16).expect("headword:HEX");
+                        let dm = dd.cache.mapping().expect("donor mapping");
+                        let bm = d.cache.chunks.iter_mut().find_map(|c| match &mut c.body { lightmap::format::ChunkBody::Mapping(m) => Some(m), _ => None }).expect("base mapping");
+                        assert!(off + 4 <= bm.head.len() && off + 4 <= dm.head.len(), "head word {off:#x} out of range");
+                        let (was, now) = (u32::from_le_bytes(bm.head[off..off + 4].try_into().unwrap()), u32::from_le_bytes(dm.head[off..off + 4].try_into().unwrap()));
+                        bm.head[off..off + 4].copy_from_slice(&dm.head[off..off + 4]);
+                        notes.push(format!("head word {off:#x}: {was:#x} → {now:#x}"));
+                    }
+                    "charts-like-donor" => {
+                        // the base's charts restricted to the OBJECTS the donor charts (tiles below --base always kept): the
+                        // port charts items the editor leaves chartless (vegetation statics, light carriers) — this drops them
+                        let base_obj: u32 = f("--obj-base").map(|s| s.parse().unwrap()).unwrap_or(4096);
+                        let dm = dd.cache.mapping().expect("donor mapping");
+                        let charted: std::collections::HashSet<u32> = dm.binds.iter().map(|b| b.obj_group_idx / 4).collect();
+                        let bm = d.cache.chunks.iter_mut().find_map(|c| match &mut c.body { lightmap::format::ChunkBody::Mapping(m) => Some(m), _ => None }).expect("base mapping");
+                        let keep: Vec<usize> = (0..bm.binds.len()).filter(|&i| { let o = bm.binds[i].obj_group_idx / 4; o < base_obj || charted.contains(&o) }).collect();
+                        let dropped = bm.binds.len() - keep.len();
+                        bm.binds = keep.iter().map(|&i| bm.binds[i]).collect();
+                        bm.pos = keep.iter().map(|&i| bm.pos[i]).collect();
+                        bm.size = keep.iter().map(|&i| bm.size[i]).collect();
+                        bm.chart_f32 = keep.iter().map(|&i| bm.chart_f32[i]).collect();
+                        for fb in bm.frame_bytes.iter_mut() { *fb = keep.iter().map(|&i| fb[i]).collect(); }
+                        bm.count = bm.binds.len() as u32;
+                        for z in bm.raw_z.iter_mut() { *z = None; }
+                        notes.push(format!("charts restricted to the donor's charted objects: {dropped} dropped, {} kept", bm.count));
                     }
                     "version" => { d.lightmap_version = dd.lightmap_version; m.chunk.version = dn.chunk.version; m.chunk.u01 = dn.chunk.u01; m.chunk.u02 = dn.chunk.u02; notes.push(format!("version {} u01 {} u02 {} lightmapVersion {}", m.chunk.version, m.chunk.u01, m.chunk.u02, dd.lightmap_version)); }
                     other => panic!("unknown part {other}"),
