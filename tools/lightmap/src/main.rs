@@ -398,6 +398,115 @@ fn run(mut a: Vec<String>) {
             let best = scored[0].2;
             println!("itembase {best}  (object space {} = base + {n_items} items{})", maxo + 1, if best + n_items == maxo + 1 { "" } else { ", objects after the items too" });
         }
+        "itemcharts" => {
+            // lmtool itemcharts MAP [--base N] [--top N] [--model SUBSTR]: the chart table read PER ITEM — for every
+            // item (object base+i) its charts (count, sizes) and each frame's per-chart scale byte; a per-frame
+            // histogram of those bytes over ITEM charts and over TILE charts (object < base), the per-model chart
+            // signature spread (how many distinct (w,h) sets the placements of one model got — a transplant onto
+            // the wrong item list scatters them), and the --top N items by frame-1 byte (the lamp frame) with
+            // their model names. Written for tiny Fall 19 (2026-10-01: "the lighting looks horrible"): the colour
+            // frame checked out, the lamp frame carried 3.4× the lit texels of its sibling maps.
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let p = &a[1];
+            let m = lightmap::mapio::load(p).expect("load");
+            let d = m.chunk.data.as_ref().expect("has lightmaps");
+            let mp = d.cache.mapping().expect("mapping");
+            let mf = tmmaps::map::MapFile::load(std::path::Path::new(p));
+            let base: u32 = f("--base").map(|s| s.parse().unwrap()).unwrap_or(4096);
+            let top: usize = f("--top").map(|s| s.parse().unwrap()).unwrap_or(20);
+            let only = f("--model");
+            let n_items = mf.items.len();
+            let n_frames = mp.frame_bytes.len();
+            // per item: chart indices
+            let mut per_item: Vec<Vec<usize>> = vec![Vec::new(); n_items];
+            let mut tile_charts: Vec<usize> = Vec::new();
+            let mut beyond = 0usize;
+            for (ci, b) in mp.binds.iter().enumerate() {
+                let o = b.obj_group_idx / 4;
+                if o < base { tile_charts.push(ci); } else if ((o - base) as usize) < n_items { per_item[(o - base) as usize].push(ci); } else { beyond += 1; }
+            }
+            println!("{p}: {} charts, {} items at base {base}, {} tile charts, {} charts beyond the items, {} frames", mp.binds.len(), n_items, tile_charts.len(), beyond, n_frames);
+            // per-frame byte histograms (16 bins) over item charts and tile charts
+            for fr in 0..n_frames {
+                let fb = &mp.frame_bytes[fr];
+                let mut bins_i = [0usize; 16];
+                let mut bins_t = [0usize; 16];
+                let (mut nz_i, mut sum_i, mut n_i) = (0usize, 0u64, 0usize);
+                let (mut nz_t, mut sum_t, mut n_t) = (0usize, 0u64, 0usize);
+                for ch in per_item.iter().flatten() { let v = fb.get(*ch).copied().unwrap_or(0); bins_i[(v / 16) as usize] += 1; if v > 0 { nz_i += 1; } sum_i += v as u64; n_i += 1; }
+                for ch in &tile_charts { let v = fb.get(*ch).copied().unwrap_or(0); bins_t[(v / 16) as usize] += 1; if v > 0 { nz_t += 1; } sum_t += v as u64; n_t += 1; }
+                println!("frame {fr}: item charts {n_i}: {nz_i} non-zero ({:.1} %), mean byte {:.1}, bins/16 {:?}", 100.0 * nz_i as f64 / n_i.max(1) as f64, sum_i as f64 / n_i.max(1) as f64, bins_i);
+                println!("frame {fr}: tile charts {n_t}: {nz_t} non-zero ({:.1} %), mean byte {:.1}, bins/16 {:?}", 100.0 * nz_t as f64 / n_t.max(1) as f64, sum_t as f64 / n_t.max(1) as f64, bins_t);
+            }
+            // per-model chart signature spread
+            let mut per_model: std::collections::BTreeMap<&str, std::collections::BTreeMap<Vec<(u16, u16)>, usize>> = Default::default();
+            let mut chartless = Vec::new();
+            for (i, it) in mf.items.iter().enumerate() {
+                let mut sig: Vec<(u16, u16)> = per_item[i].iter().map(|&c| mp.size[c]).collect();
+                sig.sort();
+                if sig.is_empty() { chartless.push(i); }
+                *per_model.entry(it.model.as_str()).or_default().entry(sig).or_insert(0) += 1;
+            }
+            let multi = per_model.values().filter(|h| h.len() > 1).count();
+            println!("{} models; {} with more than one chart signature over their placements; {} chartless items{}", per_model.len(), multi, chartless.len(), if chartless.is_empty() { String::new() } else { format!(": {:?}", &chartless[..chartless.len().min(40)]) });
+            if !chartless.is_empty() {
+                // the chartless items per model (count / placements), the biggest first — stock vegetation and
+                // light carriers get none from the editor; a scaled block item without one is the finding
+                let mut cm: std::collections::BTreeMap<&str, usize> = Default::default();
+                for &i in &chartless { *cm.entry(mf.items[i].model.as_str()).or_insert(0) += 1; }
+                let mut rows: Vec<(usize, &str, usize)> = cm.iter().map(|(k, v)| (*v, *k, per_model[k].values().sum::<usize>())).collect();
+                rows.sort_by(|x, y| y.0.cmp(&x.0));
+                println!("chartless items per model (chartless/placed), top 30: {}", rows.iter().take(30).map(|(n, k, t)| format!("{k} {n}/{t}")).collect::<Vec<_>>().join(", "));
+                let yl: Vec<f32> = chartless.iter().map(|&i| mf.items[i].pos[1]).collect();
+                let (ymin, ymax) = yl.iter().fold((f32::MAX, f32::MIN), |(a, b), &y| (a.min(y), b.max(y)));
+                println!("chartless items y range [{ymin:.1}, {ymax:.1}]; all items y range [{:.1}, {:.1}]", mf.items.iter().map(|i| i.pos[1]).fold(f32::MAX, f32::min), mf.items.iter().map(|i| i.pos[1]).fold(f32::MIN, f32::max));
+            }
+            if let Some(sub) = &only {
+                for (name, h) in &per_model {
+                    if !name.contains(sub.as_str()) { continue; }
+                    println!("  {name}: {:?}", h);
+                    for (i, it) in mf.items.iter().enumerate() {
+                        if it.model.as_str() != *name { continue; }
+                        let charts: Vec<String> = per_item[i].iter().map(|&c| format!("#{c} {}x{} @({},{}) fb[{}]", mp.size[c].0, mp.size[c].1, mp.pos[c].0, mp.pos[c].1, (0..n_frames).map(|fr| mp.frame_bytes[fr].get(c).copied().unwrap_or(0).to_string()).collect::<Vec<_>>().join(","))).collect();
+                        println!("    item {i} at ({:.1},{:.1},{:.1}): {}", it.pos[0], it.pos[1], it.pos[2], charts.join("  "));
+                    }
+                }
+            }
+            // --rings X,Z: the mean frame-0 byte of the item charts per 512-m ring around (X, Z) — the test of the
+            // "fixed sky dome around the decoration centre" reading of the dark giant bakes (2026-10-01)
+            if let Some(c) = f("--rings") {
+                let (cx, cz) = c.split_once(',').map(|(a, b)| (a.trim().parse::<f32>().unwrap(), b.trim().parse::<f32>().unwrap())).expect("--rings X,Z");
+                let mut rings: std::collections::BTreeMap<u32, (u64, usize, u64)> = Default::default();
+                for (i, chs) in per_item.iter().enumerate() {
+                    let it = &mf.items[i];
+                    let d = ((it.pos[0] - cx).powi(2) + (it.pos[2] - cz).powi(2)).sqrt();
+                    let r = (d / 512.0) as u32;
+                    for &ch in chs { let e = rings.entry(r).or_insert((0, 0, 0)); e.0 += mp.frame_bytes[0].get(ch).copied().unwrap_or(0) as u64; e.1 += 1; e.2 += (mp.size[ch].0 as u64 / 2) * (mp.size[ch].1 as u64 / 2); }
+                }
+                println!("item charts by distance from ({cx}, {cz}): ring (512 m) → charts, mean frame-0 byte, mean E_max=(fb/255)²·MaxHDR");
+                let maxhdr = { let h = &mp.head; if h.len() >= 60 + 66 { f32::from_le_bytes(h[60 + 20..60 + 24].try_into().unwrap()) } else { 1.0 } };
+                for (r, (s, n, _)) in &rings { let mb = *s as f64 / *n as f64; println!("  {:>5}–{:<5} m: {n:6} charts, fb0 {mb:6.1}, E_max {:.3}", r * 512, (r + 1) * 512, (mb / 255.0).powi(2) * maxhdr as f64); }
+            }
+            // top items by frame-1 byte
+            if n_frames > 1 {
+                let mut rows: Vec<(u8, usize, usize)> = Vec::new();
+                for (i, chs) in per_item.iter().enumerate() {
+                    for &c in chs { rows.push((mp.frame_bytes[1].get(c).copied().unwrap_or(0), i, c)); }
+                }
+                rows.sort_by(|x, y| y.0.cmp(&x.0));
+                println!("top {top} item charts by the frame-1 (lamp) byte:");
+                for (v, i, c) in rows.iter().take(top) {
+                    let it = &mf.items[*i];
+                    println!("  fb1 {v:3}  item {i:5} {:<24} at ({:7.1},{:6.1},{:7.1})  chart #{c} {}x{}  fb0 {}", it.model, it.pos[0], it.pos[1], it.pos[2], mp.size[*c].0, mp.size[*c].1, mp.frame_bytes[0].get(*c).copied().unwrap_or(0));
+                }
+                // per-model mean of the frame-1 byte, the 12 highest
+                let mut pm: std::collections::BTreeMap<&str, (u64, usize)> = Default::default();
+                for (v, i, _) in &rows { let e = pm.entry(mf.items[*i].model.as_str()).or_insert((0, 0)); e.0 += *v as u64; e.1 += 1; }
+                let mut pmv: Vec<(f64, &str, usize)> = pm.iter().map(|(k, (s, n))| (*s as f64 / *n as f64, *k, *n)).collect();
+                pmv.sort_by(|x, y| y.0.partial_cmp(&x.0).unwrap());
+                println!("models by mean frame-1 byte (top 12): {}", pmv.iter().take(12).map(|(m, k, n)| format!("{k} {m:.0} ({n} charts)")).collect::<Vec<_>>().join(", "));
+            }
+        }
         "objstats" => {
             let data = std::fs::read(&a[1]).expect("read");
             let g = gbx::Gbx::parse(&data);
@@ -740,6 +849,32 @@ fn run(mut a: Vec<String>) {
             let payload = m.chunk.write(true);
             lightmap::mapio::save_with_chunk(&m, &payload, &a[3]).expect("save");
             println!("chunk {} B; wrote {}", payload.len(), a[3]);
+        }
+        "ambient" => {
+            // lmtool ambient MAP… [--tsv]: one row per map — collection, decoration, size, the DayTime word and record time, frame-0
+            // MaxHDR and the STORED LAmbient (record 0 f16×3) with its luminance, plus HBasis234 — the table that showed the Fall
+            // 2026 giants' stored ambient at 1/20–1/30 of their sources' (x2 16: [0.011, 0.014, 0.021] vs the source's
+            // [0.341, 0.446, 0.907]; "shadow on 16 giant is completely wrong", 2026-10-01). A row's `ratio` is the luminance
+            // against the FIRST map on the line (pass the source first, then its builds).
+            println!("map\tenvir\tdecoration\tsize\tword\trecord_time\tMaxHDR\tLAmbient_r\tLAmbient_g\tLAmbient_b\tlum\tratio_to_first\tHBasis2\tHBasis3\tHBasis4");
+            let mut first_lum: Option<f32> = None;
+            for f in a[1..].iter().filter(|x| !x.starts_with("--")) {
+                let m = match lightmap::mapio::load(f) { Ok(m) => m, Err(e) => { println!("{f}\tERROR {e}"); continue; } };
+                let Some(d) = m.chunk.data.as_ref() else { println!("{f}\tno lightmap"); continue; };
+                let h = &d.cache.mapping().expect("mapping").head;
+                let mf = tmmaps::map::MapFile::load(std::path::Path::new(f));
+                let hdr = tmmaps::header::read(f).ok();
+                let word: Option<u32> = { let data = std::fs::read(f).expect("read"); let g = gbx::Gbx::parse(&data); tmmaps::gbx::all_skip_chunks(&g.body).into_iter().find(|c| c.0 == 0x0304_3056 && c.3 >= 12).map(|(_, _, p, _)| u32::from_le_bytes(g.body[p + 8..p + 12].try_into().unwrap())) };
+                let r = 60;
+                if r + 66 > h.len() { println!("{f}\tshort head"); continue; }
+                let u = |o: usize| u32::from_le_bytes(h[r + o..r + o + 4].try_into().unwrap());
+                let fl = |o: usize| f32::from_le_bytes(h[r + o..r + o + 4].try_into().unwrap());
+                let f16 = |o: usize| lightmap::gpufmt::decode_f16(u16::from_le_bytes([h[r + o], h[r + o + 1]]));
+                let la = [f16(36), f16(38), f16(40)];
+                let lum = 0.2126 * la[0] + 0.7152 * la[1] + 0.0722 * la[2];
+                let ratio = match first_lum { Some(f0) if f0 > 0.0 => format!("{:.3}", lum / f0), _ => { first_lum = Some(lum); "1.000".into() } };
+                println!("{}\t{}\t{}\t{}\t{}\t{:#x} ({:.3})\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{}\t{:.3}\t{:.3}\t{:.3}", f.rsplit('/').next().unwrap_or(f), hdr.as_ref().map(|h| h.envir.clone()).unwrap_or_default(), mf.decoration_id, mf.size[0], word.map(|w| format!("{w:#x}")).unwrap_or_else(|| "default".into()), u(8), u(8) as f32 / 65536.0, fl(20), la[0], la[1], la[2], lum, ratio, fl(54), fl(58), fl(62));
+            }
         }
         "framerecords" => {
             // lmtool framerecords MAP…: the three 66-byte frame records of the mapping head decoded (RE 5's layout: u32 0, DayTime,
@@ -7058,6 +7193,113 @@ fn run(mut a: Vec<String>) {
                 println!("{p}: {} charts, {} outside the atlas, {} overlapping ({} cells), {} zero-area, fill {:.1} %, frame bytes = 0: {:?}, record MaxHDR {:?}, images {} ok / {} bad {} → {}", r.charts, r.outside, r.overlapping_charts, r.overlapping_cells, r.zero_area, 100.0 * r.fill, r.frame_bytes_zero, r.maxhdr, r.images.len() - img_bad, img_bad, r.images.iter().filter_map(|i| i.as_ref().ok()).map(|(w, h)| format!("{w}×{h}")).collect::<Vec<_>>().join(" "), if ok { "OK" } else { "VIOLATION" });
             }
             if bad > 0 { std::process::exit(1); }
+        }
+        "filetime-set" => {
+            // lmtool filetime-set MAP --out OUT [--to solids|TICKS]: write cache chunk 0x06022013's FILETIME word = the map's OWN
+            // TimeWriteMostRecentSolid (the game's load-time rule; `solids` = default) or a tick count. THE TINY 04 CASE (2026-10-01):
+            // a card-less BlueBay bake copy carries a terrain model NEWER than anything in the shipped file → the editor's word is
+            // that newer time → the shipped 04 fails the rule and plays the coarse load-time bake; the chunk's CONTENT is right, only
+            // the word is the copy's. Exit 1 when the map has no embedded solid time and no TICKS were given.
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1).cloned());
+            let p = &a[1];
+            let out = f("--out").expect("--out OUT");
+            let mut m = lightmap::mapio::load(p).unwrap_or_else(|e| panic!("{e}"));
+            let mf = tmmaps::map::MapFile::load(std::path::Path::new(p));
+            let want: u64 = match f("--to").as_deref() {
+                None | Some("solids") => match lightmap::synth::most_recent_solid(&mf) {
+                    Ok((Some(t), n, files)) => { eprintln!("TimeWriteMostRecentSolid = {} over {n} embedded item solids in {files} files", lightmap::synth::filetime_text(t)); t }
+                    Ok((None, ..)) => { eprintln!("{p}: no embedded item solid carries a FileWriteTime — nothing to set (give --to TICKS)"); std::process::exit(1) }
+                    Err(e) => { eprintln!("{p}: embedded items unreadable: {e}"); std::process::exit(1) }
+                },
+                Some(t) => t.parse().expect("--to solids|TICKS"),
+            };
+            let d = m.chunk.data.as_mut().expect("has lightmaps");
+            let ch = d.cache.chunks.iter_mut().find(|c| c.id == 0x0602_2013).expect("cache chunk 0x06022013");
+            let had = match &mut ch.body {
+                lightmap::format::ChunkBody::Raw(b) if b.len() >= 16 => { let had = u64::from_le_bytes(b[8..16].try_into().unwrap()); b[8..16].copy_from_slice(&want.to_le_bytes()); had }
+                _ => panic!("cache chunk 0x06022013 is not a 16-byte raw chunk"),
+            };
+            if had == want { eprintln!("{p}: the word already is {} — written unchanged", lightmap::synth::filetime_text(want)); }
+            else { eprintln!("{p}: 0x06022013 {} → {}", lightmap::synth::filetime_text(had), lightmap::synth::filetime_text(want)); }
+            // the mapping tables are untouched: keep their stored z-streams; the cache stream itself is rebuilt
+            let payload = m.chunk.write(true);
+            lightmap::mapio::save_with_chunk(&m, &payload, &out).unwrap_or_else(|e| panic!("{e}"));
+            println!("wrote {out}");
+        }
+        "hybrid" => {
+            // lmtool hybrid --base A.Map.Gbx --donor B.Map.Gbx --take PART[,PART…] --out OUT.Map.Gbx: A's map and lightmap chunk with the
+            // named PART(s) of the chunk replaced by B's — the PLAY-LOAD HANG BISECT of the port's chunk (tiny 03: lmtool-lit hangs the
+            // client's PlayMap on its loading frame, the editor-lit twin loads; 2026-10-01). Parts:
+            //   colour      frame 0 image 0 (the H-basis colour atlas)
+            //   dir         frame 0 image 1 (the three directional WebPs)
+            //   probes      frame 0 image 2 (the four probe WebPs) TOGETHER WITH the cache trailer (its frame_info offsets index that blob)
+            //   trailer     the cache trailer alone (probe records / slot table / masks) — only meaningful with probes of the same layout
+            //   frames12    frames 1 and 2 (the lamp frames), all images
+            //   records     the three 66-byte frame records of the mapping head (DayTime, MaxHDR, LAmbient, Storage/Switch …)
+            //   head        the whole mapping head (records + the fixed words before them)
+            //   charts      the mapping tables: count, chart f32s, binds, atlas pos/size, per-frame bytes (+ atlas dims, bbox)
+            //   mapping     the whole mapping chunk 0x0602201A
+            //   small       every cache chunk that is not the mapping (0x0602200B/0F/13/15/16/17/18/19)
+            //   small:HEX   one cache chunk by id (e.g. small:06022015)
+            //   version     the chunk's version / u01 / u02 and lightmapVersion words
+            // Both chunks must have lightmaps; the output's word 0x06022013 is left to the parts (check it with filetime-check).
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1).cloned());
+            let (bp, dp, out) = (f("--base").expect("--base A"), f("--donor").expect("--donor B"), f("--out").expect("--out OUT"));
+            let parts: Vec<String> = f("--take").expect("--take PART[,PART…]").split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+            let mut m = lightmap::mapio::load(&bp).unwrap_or_else(|e| panic!("{e}"));
+            let dn = lightmap::mapio::load(&dp).unwrap_or_else(|e| panic!("{e}"));
+            let dd = dn.chunk.data.as_ref().expect("the donor has lightmaps");
+            let mut notes = Vec::new();
+            for part in &parts {
+                let d = m.chunk.data.as_mut().expect("the base has lightmaps");
+                match part.as_str() {
+                    "colour" => { d.frames[0].images[0] = dd.frames[0].images[0].clone(); notes.push(format!("colour {} B", d.frames[0].images[0].len())); }
+                    "dir" => { d.frames[0].images[1] = dd.frames[0].images[1].clone(); notes.push(format!("dir {} B", d.frames[0].images[1].len())); }
+                    "probes" => { d.frames[0].images[2] = dd.frames[0].images[2].clone(); d.cache.trailer = dd.cache.trailer.clone(); notes.push(format!("probes {} B + trailer {} B", d.frames[0].images[2].len(), d.cache.trailer.len())); }
+                    "trailer" => { d.cache.trailer = dd.cache.trailer.clone(); notes.push(format!("trailer {} B", d.cache.trailer.len())); }
+                    "frames12" => {
+                        while d.frames.len() < dd.frames.len() { d.frames.push(lightmap::format::Frame { images: vec![Vec::new(); 3] }); }
+                        for k in 1..dd.frames.len() { d.frames[k] = dd.frames[k].clone(); }
+                        d.frames.truncate(dd.frames.len().max(1));
+                        notes.push(format!("frames 1..{} ({} B)", dd.frames.len() - 1, dd.frames.iter().skip(1).map(|fr| fr.images.iter().map(|i| i.len()).sum::<usize>()).sum::<usize>()));
+                    }
+                    "records" | "head" | "charts" | "mapping" => {
+                        let dm = dd.cache.mapping().expect("donor mapping").clone();
+                        let bm = d.cache.chunks.iter_mut().find_map(|c| match &mut c.body { lightmap::format::ChunkBody::Mapping(m) => Some(m), _ => None }).expect("base mapping");
+                        match part.as_str() {
+                            "records" => { let n = ((bm.head.len().min(dm.head.len())).saturating_sub(60)) / 66; assert!(n >= 1, "a mapping head carries no 66-byte frame record"); bm.head[60..60 + 66 * n].copy_from_slice(&dm.head[60..60 + 66 * n]); notes.push(format!("records ({n} × 66 B)")); }
+                            "head" => { bm.head = dm.head.clone(); notes.push(format!("head {} B", bm.head.len())); }
+                            "charts" => {
+                                bm.count = dm.count; bm.chart_f32 = dm.chart_f32.clone(); bm.binds = dm.binds.clone(); bm.pos = dm.pos.clone(); bm.size = dm.size.clone(); bm.frame_bytes = dm.frame_bytes.clone();
+                                bm.atlas_w = dm.atlas_w; bm.atlas_h = dm.atlas_h; bm.bbox_min = dm.bbox_min; bm.bbox_max = dm.bbox_max; bm.m_u01 = dm.m_u01; bm.m_u02 = dm.m_u02; bm.m_u03 = dm.m_u03; bm.tail = dm.tail.clone();
+                                for z in bm.raw_z.iter_mut() { *z = None; }
+                                notes.push(format!("charts ({} charts, atlas {}×{})", bm.count, bm.atlas_w, bm.atlas_h));
+                            }
+                            _ => { *bm = dm; notes.push("mapping (whole chunk)".into()); }
+                        }
+                    }
+                    "small" => {
+                        let mut n = 0;
+                        for dc in &dd.cache.chunks {
+                            if matches!(dc.body, lightmap::format::ChunkBody::Mapping(_)) { continue; }
+                            if let Some(bc) = d.cache.chunks.iter_mut().find(|c| c.id == dc.id) { bc.body = dc.body.clone(); n += 1; }
+                        }
+                        notes.push(format!("small cache chunks ({n})"));
+                    }
+                    p if p.starts_with("small:") => {
+                        let id = u32::from_str_radix(&p[6..], 16).expect("small:HEX");
+                        let dc = dd.cache.chunk(id).unwrap_or_else(|| panic!("the donor has no cache chunk {id:#010x}"));
+                        let bc = d.cache.chunks.iter_mut().find(|c| c.id == id).unwrap_or_else(|| panic!("the base has no cache chunk {id:#010x}"));
+                        bc.body = dc.body.clone();
+                        notes.push(format!("cache chunk {id:#010x}"));
+                    }
+                    "version" => { d.lightmap_version = dd.lightmap_version; m.chunk.version = dn.chunk.version; m.chunk.u01 = dn.chunk.u01; m.chunk.u02 = dn.chunk.u02; notes.push(format!("version {} u01 {} u02 {} lightmapVersion {}", m.chunk.version, m.chunk.u01, m.chunk.u02, dd.lightmap_version)); }
+                    other => panic!("unknown part {other}"),
+                }
+            }
+            let payload = m.chunk.write(true);
+            lightmap::mapio::save_with_chunk(&m, &payload, &out).unwrap_or_else(|e| panic!("{e}"));
+            println!("wrote {out}: base {} + donor {} parts [{}] — chunk {} B", bp.rsplit('/').next().unwrap_or(&bp), dp.rsplit('/').next().unwrap_or(&dp), notes.join("; "), payload.len());
         }
         "filetime-check" => {
             // lmtool filetime-check MAP [MAP…] [--against EDITOR] [--tsv OUT]: THE CACHE FILETIME RULE (filetimecheck.rs, V4) — chunk
