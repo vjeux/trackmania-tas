@@ -7434,6 +7434,13 @@ fn run(mut a: Vec<String>) {
             lightmap::mapio::save_with_chunk(&m, &payload, &out).unwrap_or_else(|e| panic!("{e}"));
             println!("wrote {out}: base {} + donor {} parts [{}] — chunk {} B", bp.rsplit('/').next().unwrap_or(&bp), dp.rsplit('/').next().unwrap_or(&dp), notes.join("; "), payload.len());
         }
+        "loadcheck" => {
+            // lmtool loadcheck MAP [MAP…] [--json OUT] [--tsv OUT] [--word17-max N] [--quiet]: THE LOADS-IN-PLAY STATIC PRE-CHECK (loadcheck.rs,
+            // baker-9 2026-10-02) — the record kinds [2, 3] / [3, 3, 2] (the Fall play-load hang), the 0x06022017 / 0x06022018 cache words (the
+            // editor's 0), the 0x06022013 FILETIME word (the game rejects the chunk when it differs), the chart binds inside the object
+            // count ([unbaked][baked][items] / [grid slots][items]); PASS or FAIL naming the rows. The box play-load is the real check.
+            lightmap::loadcheck::run(&a).unwrap_or_else(|e| { eprintln!("loadcheck: {e}"); std::process::exit(2) });
+        }
         "filetime-check" => {
             // lmtool filetime-check MAP [MAP…] [--against EDITOR] [--tsv OUT]: THE CACHE FILETIME RULE (filetimecheck.rs, V4) — chunk
             // 0x06022013's word vs the max CPlugSolid2Model.FileWriteTime over the map's embedded items (the game rejects the chunk in
