@@ -478,7 +478,19 @@ pub fn lightmap_run(args: &[String]) -> Result<(), String> {
                 std::fs::create_dir_all(p).map_err(|e| format!("{}: {e}", p.display()))?;
             }
             let bake_copy = Path::new(out).with_extension(if check_only { "checkcopy.Map.Gbx" } else { "bakecopy.Map.Gbx" });
-            let mut source_for_copy = PathBuf::from(if check_only { out } else { copy });
+            if check_only {
+                // a play-load check wants the file AS IT SHIPS: no uid patch, no password change
+                // (a source map's body refused the uid splice, 2026-10-02)
+                std::fs::copy(out, &bake_copy).map_err(|e| format!("{out} -> {}: {e}", bake_copy.display()))?;
+                let stem: String = Path::new(out).file_name().unwrap_or_default().to_string_lossy().trim_end_matches(".Map.Gbx").chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
+                let remote = format!("{STAGE}/{tag}-{stem}.Map.Gbx");
+                println!("[group {gi}] pushing {} → {remote}", bake_copy.display());
+                wsx.push(&bake_copy, &remote)?;
+                remote_maps.push(remote);
+                copies.push((bake_copy, r));
+                continue;
+            }
+            let mut source_for_copy = PathBuf::from(copy);
             if reduced && !check_only {
                 let red0 = Path::new(out).with_extension("reduced0.Map.Gbx");
                 let (kept_path, kept_n, dropped) = crate::lightmap::reduced_copy_n(Path::new(copy), Path::new(out), &red0, reduced_veget, reduced_max_items)?;
