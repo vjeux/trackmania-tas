@@ -336,11 +336,14 @@ pub fn worst_class(t: &Table, min_texels: usize) -> Option<(String, [f64; 3], f6
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum State { ClosedTexel, ClosedClass, Residue, Open, NoOracle }
+/// `OracleInvalid` (V8, 2026-10-02): the cell has an editor bake but it is NOT a valid oracle — the editor darkens everything beyond its
+/// 2048-m decoration playfield on a giant terrain map (the Fall giants, fix-19/tables/); the row carries the evidence it has instead
+/// (the stored LAmbient vs the source, the rings, the play-load) under the override `oracle-invalid`.
+pub enum State { ClosedTexel, ClosedClass, Residue, Open, NoOracle, OracleInvalid }
 
 impl State {
     pub fn label(&self) -> &'static str {
-        match self { State::ClosedTexel => "CLOSED (texel)", State::ClosedClass => "CLOSED (class)", State::Residue => "RESIDUE", State::Open => "OPEN", State::NoOracle => "no oracle" }
+        match self { State::ClosedTexel => "CLOSED (texel)", State::ClosedClass => "CLOSED (class)", State::Residue => "RESIDUE", State::Open => "OPEN", State::NoOracle => "no oracle", State::OracleInvalid => "editor oracle invalid (playfield)" }
     }
 }
 
@@ -366,6 +369,7 @@ pub fn judge(c: &Cell, t: Option<&Table>, tol: f64, min_texels: usize) -> Verdic
     }
     match c.state.as_str() {
         "no-oracle" | "no oracle" | "nooracle" => v.state = State::NoOracle,
+        "oracle-invalid" | "editor-invalid" | "playfield" => v.state = State::OracleInvalid,
         "open" => v.state = State::Open,
         "closed" => v.state = if v.identity.is_some() { State::ClosedTexel } else { State::ClosedClass },
         "closed-class" => v.state = State::ClosedClass,
@@ -391,7 +395,7 @@ pub fn render(cells: &[Cell], base_dir: &std::path::Path, tol: f64, min_texels: 
         for n in notes { md.push_str(&format!("- {n}\n")); }
         md.push('\n');
     }
-    md.push_str(&format!("Rule: worst class over the classes with ≥ {min_texels} texels; CLOSED (texel) = worst within {:.0} % and identity ≥ 90 % of the cell's CEILING (the editor's own re-bake identity on that map class: 95–99 % lamp-less (pwc-day ×4 saves), ~60 % with lamps (stpad Night + nocache) — VALIDATION.md V2-5) and within ±2 ≥ 90 %; CLOSED (class) = worst within {:.0} % only; RESIDUE = a class beyond it (named); OPEN = no table yet; no oracle = the game cannot produce one. LOADS IN PLAY (V8, 2026-10-02): the banked product file's verdict in the GAME — **PLAYS** (a real play-load of these bytes, by md5) · **HANGS** / **LM-REJECTED** (the client hung on PlayMap / dropped the lightmap) · **STATIC ok** (the load words the client validates — record kinds, FILETIME — read right; play untested) · **STATIC FAIL** · — (untested); a CLOSED light verdict is CLOSED only with PLAYS, otherwise it carries · UNPLAYED / · HANGS IN PLAY / · STATIC FAIL (the Fall night: every port-lit file hung in play while the editor accepted it and its images matched to the digit).\n\n", 100.0 * tol, 100.0 * tol));
+    md.push_str(&format!("Rule: worst class over the classes with ≥ {min_texels} texels; CLOSED (texel) = worst within {:.0} % and identity ≥ 90 % of the cell's CEILING (the editor's own re-bake identity on that map class: 95–99 % lamp-less (pwc-day ×4 saves), ~60 % with lamps (stpad Night + nocache) — VALIDATION.md V2-5) and within ±2 ≥ 90 %; CLOSED (class) = worst within {:.0} % only; RESIDUE = a class beyond it (named); OPEN = no table yet; no oracle = the game cannot produce one; editor oracle invalid (playfield) = the editor's bake exists but is no oracle — it darkens everything beyond its 2048-m decoration playfield on a giant terrain map (the row's evidence: the stored LAmbient vs the SOURCE's own bake, the rings, the play-load). LOADS IN PLAY (V8, 2026-10-02): the banked product file's verdict in the GAME — **PLAYS** (a real play-load of these bytes, by md5) · **HANGS** / **LM-REJECTED** (the client hung on PlayMap / dropped the lightmap) · **STATIC ok** (the load words the client validates — record kinds, FILETIME — read right; play untested) · **STATIC FAIL** · — (untested); a CLOSED light verdict is CLOSED only with PLAYS, otherwise it carries · UNPLAYED / · HANGS IN PLAY / · STATIC FAIL (the Fall night: every port-lit file hung in play while the editor accepted it and its images matched to the digit).\n\n", 100.0 * tol, 100.0 * tol));
     md.push_str("| cell | collection | mood (word) | q | map | features | identity % (±1 / ±2) vs the editor's own | max \\|Δ\\| | record ours/editor | worst class (r/g/b) | state | loads in play | probes (frame P) | perf (bake s · peak RSS) | cause / note |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n");
     let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
     let mut gated_counts: std::collections::BTreeMap<String, usize> = Default::default();
@@ -506,6 +510,10 @@ mod tests {
         let c = Cell { state: "no-oracle".into(), ..Default::default() };
         assert_eq!(judge(&c, None, 0.03, 500).state, State::NoOracle);
         assert_eq!(judge(&Cell::default(), None, 0.03, 500).state, State::Open);
+        let c = Cell { state: "oracle-invalid".into(), ..Default::default() };
+        assert_eq!(judge(&c, None, 0.03, 500).state, State::OracleInvalid);
+        assert_eq!(State::OracleInvalid.label(), "editor oracle invalid (playfield)");
+        assert_eq!(crate::loadsinplay::gated_label(State::OracleInvalid.label(), &crate::loadsinplay::LoadState::Plays), "editor oracle invalid (playfield)");
     }
 
     #[test]

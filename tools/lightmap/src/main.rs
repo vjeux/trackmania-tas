@@ -7221,6 +7221,22 @@ fn run(mut a: Vec<String>) {
             let (md, counts) = lightmap::trustmatrix::render(&cells, &base_dir, tol, min_texels, &label, &notes);
             match f("--out") { Some(p) => { std::fs::write(&p, &md).unwrap_or_else(|e| panic!("{p}: {e}")); eprintln!("trustmatrix: {} cells → {p}: {}", cells.len(), counts.iter().map(|(k, n)| format!("{k} {n}")).collect::<Vec<_>>().join(", ")); } None => print!("{md}") }
         }
+        "partcmp" => {
+            // lmtool partcmp A.Map.Gbx B.Map.Gbx | --banks W/OLD W/NEW [--tsv OUT]: the lightmap chunk compared PART BY PART (partcmp.rs) —
+            // every frame image, the mapping table, the head constants / each frame record (kind word) / tail, the probe trailer, every cache
+            // chunk by id; the v12 sweep: "images + table identical, words moved" is what a record/cache-word fix must read on every cell
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            if let Some(i) = a.iter().position(|x| x == "--banks") {
+                let (old, new) = (a.get(i + 1).expect("--banks OLD NEW"), a.get(i + 2).expect("--banks OLD NEW"));
+                lightmap::partcmp::banks(std::path::Path::new(old), std::path::Path::new(new), f("--tsv").map(std::path::PathBuf::from).as_deref()).unwrap_or_else(|e| panic!("partcmp --banks: {e}"));
+            } else {
+                let x = lightmap::mapio::load(&a[1]).unwrap_or_else(|e| panic!("{}: {e}", a[1]));
+                let y = lightmap::mapio::load(&a[2]).unwrap_or_else(|e| panic!("{}: {e}", a[2]));
+                let r = lightmap::partcmp::compare(&x, &y).unwrap_or_else(|e| panic!("partcmp: {e}"));
+                println!("{} vs {}:", a[1], a[2]);
+                lightmap::partcmp::print(&r);
+            }
+        }
         "playload" => {
             // lmtool playload add OUT.tsv --verdict PLAYS|HANG|LM-REJECTED [--when ISO] [--box HOST] [--note TEXT] (FILE… | --md5-tsv MD5.tsv):
             //   append play-load rows (md5 TAB file TAB verdict TAB when TAB box TAB note) for the given lit files (md5 computed) or for every

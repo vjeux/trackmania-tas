@@ -35,6 +35,7 @@ pub mod harnessgate;
 pub mod basebank;
 pub mod trustmatrix;
 pub mod loadsinplay;
+pub mod partcmp;
 pub mod texeldelta;
 pub mod clouds;
 pub mod cloudfield;
