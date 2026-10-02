@@ -88,6 +88,7 @@ pub mod localdrive;
 pub mod tileoracle;
 pub mod setupmap;
 pub mod stockveg;
+pub mod sttcrelight;
 pub mod waterid;
 pub mod probes;
 pub mod raster;

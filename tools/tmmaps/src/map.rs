@@ -3198,6 +3198,22 @@ impl MapFile {
         F: Fn(&BlockRec) -> bool,
         G: Fn(&BlockRec) -> bool,
     {
+        self.remove_and_add_blocks_ext(drop_block, drop_baked, add, &[])
+    }
+
+    /// `remove_and_add_blocks` plus GRID records appended to the BAKED list (chunk
+    /// 0x03043048): `add_baked` specs with `grid = Some(cell)` — the generated clip
+    /// records a swapped block's plain twin derives (`mapgeom sttc`'s lightmap
+    /// keep-renumber, 2026-10-02: a map whose file holds a record for every clip
+    /// the engine derives keeps the lightmap's object numbering positional). Their
+    /// colour / lightmap-quality bytes are the map's common ones; no free-pos entry.
+    pub fn remove_and_add_blocks_ext<F, G>(&mut self, drop_block: F, drop_baked: G, add: &[FreeBlockSpec], add_baked: &[FreeBlockSpec]) -> Removed
+    where
+        F: Fn(&BlockRec) -> bool,
+        G: Fn(&BlockRec) -> bool,
+    {
+        assert!(add_baked.iter().all(|s| s.grid.is_some()), "add_baked wants GRID records (grid = Some(cell))");
+        assert!(add_baked.is_empty() || self.baked_records.is_some(), "the map has no baked chunk 0x03043048 to append records to");
         assert!(self.renames.is_empty(), "remove_blocks cannot share a write with renames (write and reload first)");
         assert!(self.raw_splices.is_empty(), "remove_blocks wants a fresh load (other variable-length edits are pending)");
         let body = &self.gbx.body;
@@ -3364,6 +3380,25 @@ impl MapFile {
                     removed.baked += 1;
                 }
             }
+            // --- the ADDED baked grid records, after the kept ones
+            for spec in add_baked {
+                let name = spec.name.as_str();
+                match table.iter().position(|t| t == name) {
+                    Some(i) => new_baked.extend_from_slice(&(0x4000_0000u32 | (i as u32 + 1)).to_le_bytes()),
+                    None => {
+                        table.push(name.to_string());
+                        new_baked.extend_from_slice(&0x4000_0000u32.to_le_bytes());
+                        new_baked.extend_from_slice(&(name.len() as u32).to_le_bytes());
+                        new_baked.extend_from_slice(name.as_bytes());
+                    }
+                }
+                let c = spec.grid.expect("grid");
+                new_baked.push(spec.dir & 3);
+                new_baked.extend_from_slice(&[(c[0] + 1) as u8, c[1] as u8, (c[2] + 1) as u8]);
+                let flags = spec.flags & !FREE_BLOCK_FLAG & !0x8000 & !0x100000; // no skin / author / waypoint tail
+                new_baked.extend_from_slice(&flags.to_le_bytes());
+                kept_baked += 1;
+            }
         }
         removed.table_after = table.len();
         removed.reinlined_nodes = reinlined;
@@ -3426,6 +3461,11 @@ impl MapFile {
                 if *keep {
                     kept.push(body[payload + 4 + nb + j]);
                 }
+            }
+            // the added baked records: the byte the map's other baked records carry most (0 when none)
+            let common_baked = if nk > 0 { body[payload + 4 + nb] } else { common };
+            for _ in add_baked {
+                kept.push(common_baked);
             }
             splices.push(((payload + 4, payload + 4 + nb + nk), kept));
         }

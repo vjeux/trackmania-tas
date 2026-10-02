@@ -10152,6 +10152,14 @@ variants: ");
             lightmap::mapio::save_with_chunk(&m, &payload, &out).expect("save");
             println!("wrote {out} with the lightmap chunk of {} ({} B)", f("--from").unwrap(), payload.len());
         }
+        "sttc-relight" => {
+            // lmtool sttc-relight --pak F:KEY… --source SRC --map OUT --objmap M.tsv --out LIT | --check MAP…:
+            // the source's editor lightmap renumbered for a `mapgeom sttc` output (lightmap::sttcrelight)
+            if let Err(e) = lightmap::sttcrelight::cli(&a) {
+                eprintln!("sttc-relight: {e}");
+                std::process::exit(1);
+            }
+        }
         "strip" => {
             // lmtool strip MAP --out OUT: the map with an EMPTY lightmap chunk (has_lightmaps = 0) — the editor then
             // bakes fresh instead of recomputing a coarse lightmap at load for a stored one that no longer fits

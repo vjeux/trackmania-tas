@@ -78,7 +78,7 @@ COMMANDS
                                 ITEMS are deleted; the validation ghost dropped
   center-finish <file.Map.Gbx> --out OUT [--center auto|bbox|X,Z]
       [--occupied overlap|raise|fail] [--include-startfinish] [--no-rename]
-      [--no-reuid] [--lightmap strip|keep] [--dry-run] [--report TSV]
+      [--no-reuid] [--lightmap strip|keep|keep-renumber] [--dry-run] [--report TSV]
                                 every Finish (block info / item model type 1)
                                 and the baked clips it owns moved by one whole-
                                 cell offset onto the map centre ((size−1)/2:
@@ -2632,7 +2632,8 @@ fn main() {
             let p = a.rest.get(1).cloned().unwrap_or_else(|| die("sttc needs a MAP or a directory".into()));
             let dry = a.rest.iter().any(|x| x == "--dry-run");
             let out_dir = flag(&a.rest, "--out-dir").unwrap_or_else(|| die("sttc needs --out-dir DIR".into()));
-            let opts = mapgeom::sttc::PipelineOpts { cp: sttc_cp_mode(&a.rest), center: sttc_center_opts(&a.rest), dry, keep_sttf: true };
+            let keep_renumber = matches!(flag(&a.rest, "--lightmap").as_deref(), None | Some("keep-renumber"));
+            let opts = mapgeom::sttc::PipelineOpts { cp: sttc_cp_mode(&a.rest), center: sttc_center_opts(&a.rest), dry, keep_sttf: true, keep_renumber, pak_specs: a.paks.clone() };
             let path = std::path::Path::new(&p);
             let mut maps: Vec<std::path::PathBuf> = if path.is_dir() {
                 let mut v: Vec<std::path::PathBuf> = std::fs::read_dir(path).unwrap_or_else(|e| die(e.to_string())).filter_map(|e| e.ok()).map(|e| e.path()).filter(|q| q.to_string_lossy().ends_with(".Map.Gbx")).collect();
@@ -4142,9 +4143,9 @@ fn sttc_center_opts(rest: &[String]) -> mapgeom::sttc::CenterOpts {
         rename: !rest.iter().any(|x| x == "--no-rename"),
         reuid: !rest.iter().any(|x| x == "--no-reuid"),
         strip_lightmap: match flag(rest, "--lightmap").as_deref() {
-            None | Some("strip") => true,
-            Some("keep") => false,
-            Some(o) => die(format!("--lightmap strip | keep, not `{o}`")),
+            Some("strip") => true,
+            None | Some("keep") | Some("keep-renumber") => false,
+            Some(o) => die(format!("--lightmap strip | keep | keep-renumber, not `{o}`")),
         },
     }
 }

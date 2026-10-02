@@ -544,6 +544,16 @@ pub fn sttf(ctx: &mut Ctx, src: &Path, out: &Path, cp: CpMode, dry: bool) -> Res
     }
     let owned = if drop_cells.is_empty() { Vec::new() } else { owned_baked(ctx, &m, &drop_cells) };
     let removed_baked = owned.len();
+    for idx in &owned {
+        if let Some(rec) = m.baked.iter().find(|r| r.index == *idx) {
+            let mut r = Row::new(&map_label, "sttf", "baked", rec.index, &rec.name);
+            r.action = "removed".into();
+            r.dir_from = rec.dir.to_string();
+            r.from = cell_str(rec.coords());
+            r.note = "a clip owned by a removed checkpoint block".into();
+            rows.push(r);
+        }
+    }
     if dry {
         return Ok(SttfOutcome { rows, replaced, removed_blocks, removed_items, removed_baked, mismatches, unresolved });
     }
@@ -1225,6 +1235,13 @@ pub struct PipelineOpts {
     pub center: CenterOpts,
     pub dry: bool,
     pub keep_sttf: bool,
+    /// `--lightmap keep-renumber`: the source's editor lightmap kept and its
+    /// chart table renumbered for the output (the generated records reconciled
+    /// with the engine's derived clips first; `lmtool sttc-relight` beside this
+    /// binary or on PATH does the chart table) — the default
+    pub keep_renumber: bool,
+    /// the `--pak FILE:KEY` specs this run opened (handed to lmtool)
+    pub pak_specs: Vec<String>,
 }
 
 /// One map through both steps: `out_dir/sttf/<stem>.sttf.Map.Gbx`, then
@@ -1237,8 +1254,7 @@ pub fn pipeline(store: &mut DataStore, src: &Path, out_dir: &Path, o: &PipelineO
     let final_out: PathBuf = out_dir.join(format!("{stem}-Straight-to-the-Center.Map.Gbx"));
     let m = MapFile::try_load(src)?;
     let mut rows = Vec::new();
-    let summary;
-    {
+    let summary: String = {
         let mut ctx = Ctx::new(store, &m);
         let s = sttf(&mut ctx, src, &sttf_out, o.cp, o.dry)?;
         let mut bad_s = Vec::new();
@@ -1265,13 +1281,202 @@ pub fn pipeline(store: &mut DataStore, src: &Path, out_dir: &Path, o: &PipelineO
         r.note = if bad_s.is_empty() && bad_c.is_empty() { if o.dry { "dry-run".into() } else { "verified".into() } } else { format!("VERIFY FAILED: {} {}", bad_s.join("; "), bad_c.join("; ")) };
         r.to = if o.dry { String::new() } else { final_out.display().to_string() };
         r.y = c.new_uid.clone();
-        summary = r.tsv();
+        let mut summary = r.tsv();
         rows.push(r);
-        if !o.dry && !o.keep_sttf {
-            // the intermediate stays by default (the coordinator asked for it)
+        if !o.dry && o.keep_renumber {
+            // 1. the generated records reconciled with the engine's derived clips (the twins derive
+            //    other clips than the checkpoints did): the file then holds a record for every clip
+            //    the engine draws, as the source does, and the object numbering stays positional
+            let m_final_before = MapFile::try_load(&final_out)?;
+            let mut ctx3 = Ctx::new(ctx.store, &m_final_before);
+            let rc = reconcile_clips(&mut ctx3, src, &final_out)?;
+            let mut rr = Row::new(&format!("{stem}.Map.Gbx"), "reconcile", "baked", 0, "generated records vs the engine's derived clips");
+            rr.action = format!("{} records removed (the checkpoints' clips the engine no longer draws), {} added (the twins' clips, chartless); source sim {} stale / {} missing, output before {} / {}, residue after {} / {}", rc.removed.len(), rc.added.len(), rc.src_stale, rc.src_missing, rc.out_stale, rc.out_missing, rc.residue_stale, rc.residue_missing);
+            rr.note = if rc.residue_stale == 0 && rc.residue_missing == 0 { "reconciled".into() } else { "RESIDUE: the engine's set still differs from the file's".into() };
+            for a in &rc.added {
+                let mut ar = Row::new(&format!("{stem}.Map.Gbx"), "reconcile", "baked", 0, &a.name);
+                ar.action = "added".into();
+                ar.dir_to = a.dir.to_string();
+                ar.to = cell_str((a.cell[0], a.cell[1], a.cell[2]));
+                rows.push(ar);
+            }
+            // 2. the OBJECT MAP for the lightmap renumbering (`lmtool sttc-relight`): per class, every
+            //    source record's final index and whether it changed (renamed / moved) — the lightmap's
+            //    charts are bound to objects by index ([blocks][generated][items]), so a kept object's
+            //    chart follows its index, a changed object's chart is dropped, a removed object's chart goes
+            let objmap = objmap_rows(&m, &s.rows, &c.rows, &rc.removed);
+            let p = out_dir.join(format!("{stem}.objmap.tsv"));
+            std::fs::write(&p, objmap).map_err(|e| e.to_string())?;
+            // 3. the chart table: lmtool beside this binary or on PATH
+            let lmtool = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("lmtool"))).filter(|p| p.exists()).map(|p| p.display().to_string()).unwrap_or_else(|| "lmtool".to_string());
+            let lit = out_dir.join(format!("{stem}.lit.tmp.Map.Gbx"));
+            let mut cmd = std::process::Command::new(&lmtool);
+            cmd.arg("sttc-relight");
+            for spec in &o.pak_specs {
+                cmd.arg("--pak").arg(spec);
+            }
+            cmd.arg("--source").arg(src).arg("--map").arg(&final_out).arg("--objmap").arg(&p).arg("--out").arg(&lit);
+            let outp = cmd.output().map_err(|e| format!("{lmtool}: {e} (build tools/lightmap: cargo build --release -p lightmap --bin lmtool)"))?;
+            let text = format!("{}{}", String::from_utf8_lossy(&outp.stdout), String::from_utf8_lossy(&outp.stderr));
+            if !outp.status.success() {
+                return Err(format!("{stem}: lmtool sttc-relight failed: {}", text.trim()));
+            }
+            std::fs::rename(&lit, &final_out).map_err(|e| e.to_string())?;
+            rr.to_name = text.lines().next().unwrap_or("").trim().to_string();
+            rows.push(rr);
+            // the summary row gains the lightmap line
+            if let Some(sum) = rows.iter_mut().find(|r| r.step == "summary") {
+                sum.action = format!("{}; lightmap kept: {}", sum.action, text.lines().next().unwrap_or("").trim().trim_start_matches("wrote ").splitn(2, ": ").nth(1).unwrap_or(""));
+            }
+            summary = rows.iter().find(|r| r.step == "summary").map(|r| r.tsv()).unwrap_or(summary);
+        }
+        summary
+    };
+    Ok((rows, summary))
+}
+
+// ------------------------------------------------------------ reconcile
+
+/// The engine's derived clip set of a map against its file records: the keys
+/// (owner unit cell, face, clip stem) of the records the engine does NOT draw
+/// (stale, with their baked indices) and of the clips it draws that the file
+/// does NOT hold (missing, with what a record for them would be).
+pub struct ClipDiff {
+    pub stale: Vec<(usize, ([u8; 3], usize, String))>,
+    pub missing: Vec<(([u8; 3], usize, String), FreeBlockSpecLite)>,
+    pub drawn: usize,
+    pub records: usize,
+}
+
+/// A baked grid record to add: the file spelling of the clip name, dir, game cell, flags.
+#[derive(Clone, Debug)]
+pub struct FreeBlockSpecLite {
+    pub name: String,
+    pub dir: u8,
+    pub cell: [i32; 3],
+    pub flags: u32,
+}
+
+pub fn clip_diff(ctx: &mut Ctx, m: &MapFile) -> ClipDiff {
+    let faces = crate::fillers::faces(ctx.store, &mut ctx.idx, m);
+    let dirs: HashMap<usize, u8> = m.blocks.iter().map(|b| (b.index, b.dir)).collect();
+    let grounds = crate::bake::record_grounds(&faces, m);
+    let clips = crate::bake::simulate(&faces, &dirs, &grounds);
+    let d = crate::bake::diff(&clips, &faces, m);
+    let mut stale = Vec::new();
+    for (idx, name, _why) in &d.stale {
+        let Some(b) = m.baked.iter().find(|b| b.index == *idx) else { continue };
+        let me = faces.stem_of(name);
+        let ty = faces.clips.get(&me).and_then(|c| c.ty);
+        if let Some((cell, face)) = crate::bake::record_slot(b, ty) {
+            stale.push((*idx, (cell, face, me)));
         }
     }
-    Ok((rows, summary))
+    let mut missing = Vec::new();
+    for &ci in &d.missing {
+        let c = &clips[ci];
+        let key = (c.cell, c.face, c.name.clone());
+        // the record: in the cell across the face from the owner unit, dir = the side it stands on
+        let st = crate::bake::step(c.face);
+        let fc = [c.cell[0] as i32 + st.0, c.cell[1] as i32 + st.1, c.cell[2] as i32 + st.2];
+        let dir = if c.face < 4 { crate::bake::opposite(c.face) as u8 } else { c.dir & 3 };
+        // the file spelling of the name: the block info's ident (the map records carry it)
+        let name = match ctx.idx.resolve_one(ctx.store, &c.name) {
+            Some(p) => match ctx.idx.load(ctx.store, &p) {
+                Ok(bi) if !bi.ident.is_empty() => bi.ident.clone(),
+                Ok(bi) => bi.name.clone(),
+                Err(_) => c.name.clone(),
+            },
+            None => c.name.clone(),
+        };
+        let flags = if c.ground { 0x1000 } else { 0 };
+        missing.push((key, FreeBlockSpecLite { name, dir, cell: [fc[0] - 1, fc[1], fc[2] - 1], flags }));
+    }
+    ClipDiff { stale, missing, drawn: clips.iter().filter(|c| c.drawn()).count(), records: m.baked.len() }
+}
+
+pub struct Reconciled {
+    pub removed: Vec<usize>,
+    pub added: Vec<FreeBlockSpecLite>,
+    pub src_stale: usize,
+    pub src_missing: usize,
+    pub out_stale: usize,
+    pub out_missing: usize,
+    /// after the edit: stale / missing keys not already in the source's sets
+    pub residue_stale: usize,
+    pub residue_missing: usize,
+}
+
+/// Make the output file's generated records match the engine's derived clips
+/// the way the source's do: the records the engine no longer draws after the
+/// swaps go, the clips it newly draws get records (chartless). Differences the
+/// SOURCE already had (the simulation's own imperfections) are left alone on
+/// both sides. Writes `out` in place (a fresh load/write).
+pub fn reconcile_clips(ctx: &mut Ctx, src: &Path, out: &Path) -> Result<Reconciled, String> {
+    let ms = MapFile::try_load(src)?;
+    let ds = clip_diff(ctx, &ms);
+    let mut mo = MapFile::try_load(out)?;
+    let do_ = clip_diff(ctx, &mo);
+    let src_stale_keys: HashSet<([u8; 3], usize, String)> = ds.stale.iter().map(|(_, k)| k.clone()).collect();
+    let src_missing_keys: HashSet<([u8; 3], usize, String)> = ds.missing.iter().map(|(k, _)| k.clone()).collect();
+    let removed: Vec<usize> = do_.stale.iter().filter(|(_, k)| !src_stale_keys.contains(k)).map(|(i, _)| *i).collect();
+    let added: Vec<FreeBlockSpecLite> = do_.missing.iter().filter(|(k, _)| !src_missing_keys.contains(k)).map(|(_, s)| s.clone()).collect();
+    if !removed.is_empty() || !added.is_empty() {
+        let rm: HashSet<usize> = removed.iter().copied().collect();
+        let specs: Vec<tmmaps::map::FreeBlockSpec> = added
+            .iter()
+            .map(|a| tmmaps::map::FreeBlockSpec { name: a.name.clone(), author: None, flags: a.flags, pos: [0.0; 3], rot: [0.0; 3], grid: Some(a.cell), dir: a.dir })
+            .collect();
+        mo.remove_and_add_blocks_ext(|_| false, |r| rm.contains(&r.index), &[], &specs);
+        mo.write_to(out).map_err(|e| e.to_string())?;
+    }
+    // after: what is left that the source did not have
+    let mf = MapFile::try_load(out)?;
+    let df = clip_diff(ctx, &mf);
+    let residue_stale = df.stale.iter().filter(|(_, k)| !src_stale_keys.contains(k)).count();
+    let residue_missing = df.missing.iter().filter(|(k, _)| !src_missing_keys.contains(k)).count();
+    Ok(Reconciled { removed, added, src_stale: ds.stale.len(), src_missing: ds.missing.len(), out_stale: do_.stale.len(), out_missing: do_.missing.len(), residue_stale, residue_missing })
+}
+
+/// The object map (TSV `class src dst state`): source index → final index per class, composed
+/// from the sttf rows (source indices: removed / replaced) and the center rows (sttf indices: moved).
+pub fn objmap_rows(src: &MapFile, sttf_rows: &[Row], center_rows: &[Row], reconcile_removed_baked: &[usize]) -> String {
+    let idx_set = |rows: &[Row], step: &str, kind: &str, action: &str| -> HashSet<usize> {
+        rows.iter().filter(|r| r.step == step && r.kind == kind && r.action == action).filter_map(|r| r.index.parse().ok()).collect()
+    };
+    let mut out = String::from("class\tsrc\tdst\tstate\n");
+    for (class, n) in [("block", src.blocks.len()), ("baked", src.baked.len()), ("item", src.items.len())] {
+        let removed = idx_set(sttf_rows, "sttf", class, "removed");
+        let replaced = idx_set(sttf_rows, "sttf", class, "replaced");
+        let moved: HashSet<usize> = {
+            let mut m = idx_set(center_rows, "center", class, "moved");
+            m.extend(idx_set(center_rows, "center", class, "moved-with-finish"));
+            m
+        };
+        let mut removed_sorted: Vec<usize> = removed.iter().copied().collect();
+        removed_sorted.sort_unstable();
+        // the reconcile pass removed baked records by their index in the CENTER output's list
+        let mut rec_removed: Vec<usize> = if class == "baked" { reconcile_removed_baked.to_vec() } else { Vec::new() };
+        rec_removed.sort_unstable();
+        let rec_set: HashSet<usize> = rec_removed.iter().copied().collect();
+        for i in 0..n {
+            if removed.contains(&i) {
+                out.push_str(&format!("{class}\t{i}\t-\tremoved\n"));
+                continue;
+            }
+            let shift = removed_sorted.iter().take_while(|r| **r < i).count();
+            let mid = i - shift;
+            if rec_set.contains(&mid) {
+                out.push_str(&format!("{class}\t{i}\t-\tremoved\n"));
+                continue;
+            }
+            let shift2 = rec_removed.iter().take_while(|r| **r < mid).count();
+            let dst = mid - shift2;
+            let state = if replaced.contains(&i) || moved.contains(&mid) { "changed" } else { "kept" };
+            out.push_str(&format!("{class}\t{i}\t{dst}\t{state}\n"));
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -1365,7 +1570,7 @@ mod tests {
             return;
         };
         let out = std::env::temp_dir().join(format!("sttc-test-{}", std::process::id()));
-        let opts = PipelineOpts { cp: CpMode::Plain, center: CenterOpts { center: Center::Auto, occupied: Occupied::Overlap, include_startfinish: false, rename: true, reuid: true, strip_lightmap: true }, dry: false, keep_sttf: true };
+        let opts = PipelineOpts { cp: CpMode::Plain, center: CenterOpts { center: Center::Auto, occupied: Occupied::Overlap, include_startfinish: false, rename: true, reuid: true, strip_lightmap: true }, dry: false, keep_sttf: true, keep_renumber: false, pak_specs: Vec::new() };
         for (file, want) in [
             ("01-Fall-2026---01.Map.Gbx", "3 items + 0 baked moved by (7,0,-10)"),
             ("05-Fall-2026---05.Map.Gbx", "1 finish blocks + 0 items + 9 baked moved by (7,0,0)"),
