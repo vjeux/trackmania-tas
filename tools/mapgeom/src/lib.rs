@@ -34,6 +34,7 @@ pub mod corpus;
 pub mod collhash;
 pub mod waterblocks;
 pub mod giantwater;
+pub mod watercells;
 pub mod coverage;
 pub mod embedded;
 pub mod envblock;

@@ -2513,6 +2513,10 @@ fn main() {
             let mut store = open(&a);
             mapgeom::fillers::cmd(&mut store, &a.rest[1..]);
         }
+        "watercells" => {
+            let mut store = open(&a);
+            mapgeom::watercells::cmd(&mut store, &a.rest[1..]);
+        }
         "shape-audit" => {
             let mut store = open(&a);
             mapgeom::shape_audit::cmd(&mut store, &a.rest[1..]);
