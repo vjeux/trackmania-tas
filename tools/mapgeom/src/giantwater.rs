@@ -423,7 +423,8 @@ pub fn apply_opt(giant: &Path, out: &Path, plan: &Plan, template: Option<&Path>,
     let mut m3 = MapFile::load(&stage);
     let mut specs: Vec<FreeBlockSpec> = plan.grid.clone();
     specs.extend(plan.roads.iter().cloned());
-    let r = m3.remove_and_add_blocks(|b| rewater && b.free_pos.is_none() && POOL_BLOCKS.contains(&b.name.as_str()), |_| false, &specs);
+    let is_water_tile = |b: &BlockRec| (b.free_pos.is_none() && WATER_TILE_NAMES.contains(&b.name.as_str())) || (b.free_pos.is_some() && b.name.starts_with("Water\\") && b.name.ends_with("_CustomBlock"));
+    let r = m3.remove_and_add_blocks(|b| rewater && is_water_tile(b), |_| false, &specs);
     if rewater {
         println!("  giantwater: {} existing pool tiles dropped", r.blocks);
     }
@@ -432,7 +433,7 @@ pub fn apply_opt(giant: &Path, out: &Path, plan: &Plan, template: Option<&Path>,
         let _ = std::fs::remove_file(&tmp_map);
     }
     let check = MapFile::load(out);
-    let grid_n = check.blocks.iter().filter(|b| b.free_pos.is_none() && POOL_BLOCKS.contains(&b.name.as_str())).count();
+    let grid_n = check.blocks.iter().filter(|b| b.free_pos.is_none() && WATER_TILE_NAMES.contains(&b.name.as_str())).count();
     let free_n = check.blocks.iter().filter(|b| b.free_pos.is_some()).count();
     println!("  giantwater: {} pool tiles + {} road tiles written (Id table {} -> {}); the map now holds {} blocks", plan.grid.len(), plan.roads.len(), r.table_before, r.table_after, check.blocks.len());
     if grid_n != plan.grid.len() || free_n < plan.roads.len() {
@@ -444,4 +445,315 @@ pub fn apply_opt(giant: &Path, out: &Path, plan: &Plan, template: Option<&Path>,
 /// One BlockRec's game cell for callers that only have the record.
 pub fn cell_of(b: &BlockRec) -> (i32, i32, i32) {
     b.coords()
+}
+
+// ---------------------------------------------------------------------------
+// THE VOLUME RULE (2026-10-01; vjeux 20:51 PT on giant Fall 15: "Shallow pools
+// are not water, we should use the shallow pool without border to simulate.
+// The full pools have a border and are not always there … for giant we have no
+// excuse, we need to get water working perfectly").
+//
+// Every source block whose block info declares a WATER VOLUME (chunk
+// 0x0315B00B — `crate::watercells::water_blocks`) is tiled with the engine's
+// own water, by the height of its surface inside its cell row:
+//
+// * SURFACE AT A ROW TOP (top 8 or 16 of the row: DecoWallWater* incl. the
+//   Diag and the Slope2 dead ends, DecoWallWaterBaseToTrackWallWater,
+//   PlatformWaterToDecoWallWaterSlope2End*, TrackWallWater* — the canals
+//   between track walls): GRID `DecoWallWaterBase` stacks (the mesh-less full
+//   row, its walls, floor and sheet all clip fillers) in every giant cell the
+//   scaled volume meets, bottom row to top row, the rows under another water
+//   tile in the editor's stacked variant (`STACKED_BELOW`, no sheet), the top
+//   row plain (the `DecoWallWaterFCT` sheet). A diagonal block puts
+//   `DecoWallWaterDiag` tiles (its own direction) on the cells the scaled
+//   hypotenuse crosses — at ×N it crosses N cells exactly along their own
+//   diagonals — and Base tiles under it. Exact surface, exact floor.
+//
+// * SHALLOW SURFACE (top 7 of the row, 3 m deep: WaterBase, WaterGrass /
+//   WaterDirt / WaterIce streams and ponds, the mesh-less ramp-road and
+//   ramp-zone volumes, WaterWall*, WaterTo*): FREE `DecoWallWaterBase` custom
+//   tiles (the tiny water template re-pointed at the archetype: no mesh, the
+//   archetype's 0..8 volume and clips, drawn and matched anywhere inside the
+//   grid — the Summer 2026-09-22 probe) with their TOP at the SCALED surface:
+//   one 32 m tile per giant cell of the scaled footprint at y = surface − 8
+//   (a second one under it, stacked variant, when 3N > 8). The surface is
+//   exact (the lattice cannot place a grid tile 2 m under a row top); the
+//   floor lies up to 2 m under the scaled basin floor, inside the tank's
+//   hollow base. The shipped form (WaterBase grid tiles in the top row only)
+//   put the surface 1 m high, left the lower 4 m of every pool and every ramp
+//   road dry, and nothing at all for the WaterGrass streams.
+//
+// * PLATFORM WATER (top 2 of the row, water the car drives through:
+//   PlatformWater*): GRID tiles of the SAME block (the Diag on the hypotenuse
+//   cells, the body's base block elsewhere) in the row of the scaled deck —
+//   2 m of water over the deck, the 1× physics the source has (a ×N-deep
+//   platform pool would float the car off the deck).
+//
+// * WATER ROADS (RoadWater*, 2 m over the deck inside the road's own mesh):
+//   unchanged — the ITEM keeps its Water quad (visual only; the 2026-09-13 road
+//   volume tiles grew their end caps in the open and were rejected;
+//   TINY_GIANT_ROAD_TILES=1 still opts into them).
+//
+// The rim rule falls out: every tile of a water body is butted against the
+// next, so the engine's clip fillers (walls, lips, rims) appear only on the
+// body's outer faces — the faces where the SOURCE draws the same fillers,
+// scaled, as items — and never across a junction (the shipped 15 drew 64
+// DecoWallWater walls and lips through its pools at the untiled Diag / Slope /
+// ToTrackWallWater junctions). `mapgeom watercells` is the check.
+// ---------------------------------------------------------------------------
+
+/// The water tile names the volume rule emits as GRID blocks (for `--rewater`).
+pub const WATER_TILE_NAMES: &[&str] = &["WaterBase", "DecoWallWaterBase", "DecoWallWaterDiag", "PlatformWaterBase", "PlatformWaterRampBase", "PlatformWaterDiag"];
+
+/// The free-tile flag word of the tiny builds' water blocks (ghost + skinnable).
+pub const FREE_WATER_FLAGS: u32 = 0x1000_8000;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Class {
+    RowTop,
+    Shallow,
+    Platform,
+    Road,
+    Other,
+}
+
+/// The surface class of a water block from its local volume boxes.
+pub fn class_of(name: &str, local: &[[f32; 6]]) -> Class {
+    if road_family(name) {
+        return Class::Road;
+    }
+    let top = local.iter().map(|b| b[4]).fold(f32::MIN, f32::max);
+    if name.starts_with("PlatformWater") && (top - 2.0).abs() < 1e-3 {
+        return Class::Platform;
+    }
+    let r = top.rem_euclid(CELL_Y);
+    if r.abs() < 1e-3 || (r - CELL_Y).abs() < 1e-3 {
+        Class::RowTop
+    } else if (r - 7.0).abs() < 1e-3 {
+        Class::Shallow
+    } else {
+        Class::Other
+    }
+}
+
+fn overlap_1d(a0: f32, a1: f32, b0: f32, b1: f32) -> f32 {
+    (a1.min(b1) - a0.max(b0)).max(0.0)
+}
+
+/// The xz area (m²) of `b` inside the cell (cx, cz).
+fn cell_area(b: &[f32; 6], cx: i32, cz: i32) -> f32 {
+    let x0 = cx as f32 * CELL_XZ;
+    let z0 = cz as f32 * CELL_XZ;
+    overlap_1d(b[0], b[3], x0, x0 + CELL_XZ) * overlap_1d(b[2], b[5], z0, z0 + CELL_XZ)
+}
+
+/// The volume (m³) of `b` inside the cell (cx, cy, cz).
+fn cell_volume(b: &[f32; 6], cx: i32, cy: i32, cz: i32, ground: f32) -> f32 {
+    let y0 = cy as f32 * CELL_Y + ground;
+    cell_area(b, cx, cz) * overlap_1d(b[1], b[4], y0, y0 + CELL_Y)
+}
+
+/// The volume rule's plan: see the module notes above. `roads` as before.
+#[allow(clippy::too_many_arguments)]
+pub fn plan_volumes(store: &mut crate::store::DataStore, idx: &mut crate::blockmap::BlockInfoIndex, source: &MapFile, ground: f32, s: [f32; 3], t: [f32; 3], scale: f32, roads: bool, author: &str, below_flags: u32, bounds: Option<[i32; 3]>) -> Result<Plan, String> {
+    let n = scale.round() as i32;
+    if n < 2 || (scale - n as f32).abs() > 1e-6 {
+        return Err(format!("giantwater wants a whole scale of 2 or more, got {scale}"));
+    }
+    let size = bounds.unwrap_or(source.size);
+    let (blocks, notes0) = crate::watercells::water_blocks(store, idx, source, ground);
+    let mut p = Plan { grid: Vec::new(), roads: Vec::new(), archetypes: BTreeMap::new(), notes: notes0, skipped: Vec::new(), clipped: 0 };
+    let mut by_name: BTreeMap<String, (usize, usize, &'static str)> = BTreeMap::new();
+    let scaled = |b: &[f32; 6]| crate::watercells::scale_box(b, s, t, scale);
+    // the body base name for platform diagonals: the most common PlatformWater base in the map
+    let platform_base: String = {
+        let mut c: BTreeMap<&str, usize> = BTreeMap::new();
+        for b in &blocks {
+            if b.name.starts_with("PlatformWater") && !b.name.contains("Diag") && b.local.iter().all(|x| (x[4] - 2.0).abs() < 1e-3) {
+                *c.entry(b.name.as_str()).or_insert(0) += 1;
+            }
+        }
+        c.into_iter().max_by_key(|(_, k)| *k).map(|(n, _)| n.to_string()).unwrap_or_else(|| "PlatformWaterBase".to_string())
+    };
+    // pass 1: every ROW-TOP cell (for the stacked-variant test), with its tile name/dir
+    let mut rowtop: BTreeMap<[i32; 3], (String, u8, bool)> = BTreeMap::new(); // cell -> (tile, dir, ground)
+    let mut shallow: BTreeMap<(i32, i32, i32), ()> = BTreeMap::new(); // (x, z, surface_y) -> ()
+    let mut platform: BTreeMap<[i32; 3], (String, u8, u32)> = BTreeMap::new();
+    let eps = 0.01;
+    for wb in &blocks {
+        if wb.free {
+            p.skipped.push(format!("{} #{} is a FREE source block (no lattice tiling)", wb.name, wb.index));
+            continue;
+        }
+        let class = class_of(&wb.name, &wb.local);
+        let e = by_name.entry(wb.name.clone()).or_insert((0, 0, ""));
+        e.0 += 1;
+        e.2 = match class {
+            Class::RowTop => "grid DecoWallWaterBase stack",
+            Class::Shallow => "free DecoWallWaterBase at the scaled surface",
+            Class::Platform => "grid PlatformWater tiles",
+            Class::Road => "road (item visual)",
+            Class::Other => "grid DecoWallWaterBase stack (unclassified top)",
+        };
+        let sb: Vec<[f32; 6]> = wb.world.iter().map(scaled).collect();
+        match class {
+            Class::Road => {
+                // handled below by the legacy road path (free archetype tiles) when asked
+                continue;
+            }
+            Class::RowTop | Class::Other => {
+                let diag = wb.name.contains("Diag") && wb.name.starts_with("DecoWallWater");
+                let ground_bit = wb.flags & FLAG_GROUND != 0;
+                // the cells the scaled volume meets
+                let (mut x0, mut y0, mut z0, mut x1, mut y1, mut z1) = (i32::MAX, i32::MAX, i32::MAX, i32::MIN, i32::MIN, i32::MIN);
+                for b in &sb {
+                    x0 = x0.min((b[0] / CELL_XZ).floor() as i32);
+                    x1 = x1.max(((b[3] - eps) / CELL_XZ).floor() as i32);
+                    z0 = z0.min((b[2] / CELL_XZ).floor() as i32);
+                    z1 = z1.max(((b[5] - eps) / CELL_XZ).floor() as i32);
+                    y0 = y0.min(((b[1] - ground) / CELL_Y).floor() as i32);
+                    y1 = y1.max(((b[4] - ground - eps) / CELL_Y).floor() as i32);
+                }
+                let top_row = y1;
+                for cx in x0..=x1 {
+                    for cz in z0..=z1 {
+                        // coverage at the surface row (xz area under the surface)
+                        let area_top: f32 = sb.iter().filter(|b| (b[4] - ground - eps) / CELL_Y >= top_row as f32).map(|b| cell_area(b, cx, cz)).sum::<f32>().min(CELL_XZ * CELL_XZ);
+                        for cy in y0..=y1 {
+                            let v: f32 = sb.iter().map(|b| cell_volume(b, cx, cy, cz, ground)).sum();
+                            if v < 1.0 {
+                                continue;
+                            }
+                            let tile = if diag && area_top < CELL_XZ * CELL_XZ - 1.0 { (wb.name.clone(), wb.dir) } else { ("DecoWallWaterBase".to_string(), wb.dir) };
+                            rowtop.entry([cx, cy, cz]).or_insert((tile.0, tile.1, ground_bit && cy == y0));
+                        }
+                    }
+                }
+            }
+            Class::Shallow => {
+                let top_local = wb.local.iter().map(|b| b[4]).fold(f32::MIN, f32::max);
+                let surface = t[1] + (wb.cell.1 as f32 * CELL_Y + ground + top_local - s[1]) * scale;
+                for b in &sb {
+                    let (cx0, cx1) = ((b[0] / CELL_XZ).floor() as i32, ((b[3] - eps) / CELL_XZ).floor() as i32);
+                    let (cz0, cz1) = ((b[2] / CELL_XZ).floor() as i32, ((b[5] - eps) / CELL_XZ).floor() as i32);
+                    for cx in cx0..=cx1 {
+                        for cz in cz0..=cz1 {
+                            if cell_area(b, cx, cz) > 0.5 {
+                                shallow.insert((cx, cz, surface.round() as i32), ());
+                            }
+                        }
+                    }
+                }
+            }
+            Class::Platform => {
+                let diag = wb.name.contains("Diag");
+                let deck = t[1] + (wb.cell.1 as f32 * CELL_Y + ground - s[1]) * scale;
+                let cy = ((deck - ground) / CELL_Y).round() as i32;
+                let (mut x0, mut z0, mut x1, mut z1) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
+                for b in &sb {
+                    x0 = x0.min((b[0] / CELL_XZ).floor() as i32);
+                    x1 = x1.max(((b[3] - eps) / CELL_XZ).floor() as i32);
+                    z0 = z0.min((b[2] / CELL_XZ).floor() as i32);
+                    z1 = z1.max(((b[5] - eps) / CELL_XZ).floor() as i32);
+                }
+                for cx in x0..=x1 {
+                    for cz in z0..=z1 {
+                        let area: f32 = sb.iter().map(|b| cell_area(b, cx, cz)).sum::<f32>().min(CELL_XZ * CELL_XZ);
+                        if area < 1.0 {
+                            continue;
+                        }
+                        let (tile, dir) = if diag && area < CELL_XZ * CELL_XZ - 1.0 { (wb.name.clone(), wb.dir) } else if diag { (platform_base.clone(), 0) } else { (wb.name.clone(), wb.dir) };
+                        // the source's variant word minus the replacement bit; the ground bit stays
+                        // (the deck row of a ground source block is the terrain row)
+                        let flags = wb.flags & !FLAG_REPLACEMENT;
+                        platform.entry([cx, cy, cz]).or_insert((tile, dir, flags));
+                    }
+                }
+            }
+        }
+    }
+    // emit the ROW-TOP stacks
+    for (cell, (tile, dir, ground_bit)) in &rowtop {
+        if cell[0] < 0 || cell[1] < 0 || cell[2] < 0 || cell[0] >= size[0] || cell[1] >= size[1] || cell[2] >= size[2] {
+            p.clipped += 1;
+            continue;
+        }
+        let above = rowtop.contains_key(&[cell[0], cell[1] + 1, cell[2]]);
+        let flags = if above { below_flags | if *ground_bit { FLAG_GROUND } else { 0 } } else { 0 };
+        p.grid.push(FreeBlockSpec { name: tile.clone(), author: None, flags, pos: [0.0; 3], rot: [0.0; 3], grid: Some(*cell), dir: *dir });
+        by_name.entry(tile.clone()).or_insert((0, 0, "")).1 += 1;
+    }
+    // emit the PLATFORM tiles
+    for (cell, (tile, dir, flags)) in &platform {
+        if cell[0] < 0 || cell[1] < 0 || cell[2] < 0 || cell[0] >= size[0] || cell[1] >= size[1] || cell[2] >= size[2] {
+            p.clipped += 1;
+            continue;
+        }
+        p.grid.push(FreeBlockSpec { name: tile.clone(), author: None, flags: *flags, pos: [0.0; 3], rot: [0.0; 3], grid: Some(*cell), dir: *dir });
+        by_name.entry(tile.clone()).or_insert((0, 0, "")).1 += 1;
+    }
+    // emit the SHALLOW free tiles: one per cell at surface - 8 (+ one under it for 3N > 8)
+    if !shallow.is_empty() {
+        let ident = "Water\\DecoWallWaterBase.Block.Gbx".to_string();
+        p.archetypes.entry("DecoWallWaterBase".to_string()).or_insert(ident.clone());
+        let layers = ((3.0 * scale) / CELL_Y).ceil().max(1.0) as i32;
+        let mut free_n = 0usize;
+        for ((cx, cz, sy), _) in &shallow {
+            for k in 0..layers {
+                let y = *sy as f32 - CELL_Y * (k + 1) as f32;
+                let flags = if k == 0 { FREE_WATER_FLAGS } else { FREE_WATER_FLAGS | below_flags };
+                p.roads.push(FreeBlockSpec { name: format!("{ident}_CustomBlock"), author: Some(author.to_string()), flags, pos: [*cx as f32 * CELL_XZ, y, *cz as f32 * CELL_XZ], rot: [0.0, 0.0, 0.0], grid: None, dir: 0 });
+                free_n += 1;
+            }
+        }
+        p.notes.push(format!("{} shallow cells -> {free_n} free DecoWallWaterBase tiles ({layers} layer(s)) with their top at the scaled surface", shallow.len()));
+    }
+    // the water ROADS: the legacy free archetype tiles when asked
+    for b in &source.blocks {
+        if b.free_pos.is_some() || !road_family(&b.name) {
+            continue;
+        }
+        if !roads {
+            p.skipped.push(format!("{} #{} (roads off: the item keeps its water quad)", b.name, b.index));
+            continue;
+        }
+        let (kind, dead_end_k): (&str, Option<i32>) = match b.name.as_str() {
+            "RoadWaterStraight" => ("RoadWaterStraight", None),
+            "RoadWaterStart" => ("RoadWaterStart", Some(0)),
+            "RoadWaterFinish" => ("RoadWaterFinish", Some(n - 1)),
+            other if other.starts_with("RoadWaterSpecial") => ("RoadWaterStraight", None),
+            other => {
+                p.skipped.push(format!("{other} #{}: not a straight channel (curve/branch/slope: no volume emitter)", b.index));
+                continue;
+            }
+        };
+        let c = giant_cell(b.coords(), ground, s, t, scale)?;
+        let fsize = CELL_XZ * n as f32;
+        let (origin, yaw) = frame(b.dir, c[0] as f32 * CELL_XZ, c[2] as f32 * CELL_XZ, fsize);
+        let y = c[1] as f32 * CELL_Y + ground + 2.0 * n as f32 - 2.0;
+        let e = by_name.entry(b.name.clone()).or_insert((0, 0, "road volume tiles"));
+        e.0 += 1;
+        for i in 0..n {
+            let lx = 3.0 * n as f32 + 26.0 * i as f32 - 3.0;
+            for k in 0..n {
+                let lz = CELL_XZ * k as f32;
+                let arch = match dead_end_k {
+                    Some(d) if d == k => kind,
+                    _ => "RoadWaterStraight",
+                };
+                let ident = format!("Water\\{arch}.Block.Gbx");
+                p.archetypes.entry(arch.to_string()).or_insert(ident.clone());
+                let w = local_to_world(origin, yaw, lx, lz);
+                p.roads.push(FreeBlockSpec { name: format!("{ident}_CustomBlock"), author: Some(author.to_string()), flags: FREE_WATER_FLAGS, pos: [w[0], y, w[1]], rot: [yaw, 0.0, 0.0], grid: None, dir: 0 });
+                e.1 += 1;
+            }
+        }
+    }
+    for (name, (blocks_n, tiles, how)) in &by_name {
+        p.notes.push(format!("{name}: {blocks_n} source blocks -> {tiles} tiles ({how})"));
+    }
+    if p.clipped > 0 {
+        p.notes.push(format!("{} water tiles outside the {}x{}x{} grid CLIPPED (no water volume there; the items stay)", p.clipped, size[0], size[1], size[2]));
+    }
+    Ok(p)
 }

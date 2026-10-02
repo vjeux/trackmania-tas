@@ -842,7 +842,11 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
         };
     }
     let mut m = crate::static_item::build::Merged::default();
-    m.keep_water = crate::static_item::build::keep_water_for(collection);
+    // A giant build drops the items' Water quads (TINY_WATER_VISUAL=0: the native
+    // tiles draw every pool) — except the WATER ROADS, which get no volume tile
+    // (giantwater's volume rule, 2026-10-01) and keep their own quad; with the
+    // road volume tiles opted in (TINY_GIANT_ROAD_TILES=1) the tiles draw it.
+    m.keep_water = crate::static_item::build::keep_water_for(collection) || (collection == 0x1a && crate::giantwater::road_family(name) && std::env::var("TINY_GIANT_ROAD_TILES").as_deref() != Ok("1"));
     m.modifier = modifier_links(store, &plan.effective_mods);
     m.collision_redress = modifier_redress(store, &plan.effective_mods, &m.modifier);
     // The collection SKIN (`<Env>\Media\Modifier\StadiumOnTerrain\<slot>`, the

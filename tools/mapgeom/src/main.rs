@@ -792,7 +792,16 @@ fn main() {
                 Some("outside") => mapgeom::giantwater::FreePools::Outside,
                 Some(o) => die(format!("--free {o}: all, outside or none")),
             };
-            let plan = mapgeom::giantwater::plan_free(&source, ground, s, t, scale, roads, &author, legacy, below, bounds, free).unwrap_or_else(die);
+            // the VOLUME rule (2026-10-01) is the default: every block with a water volume
+            // tiled by its surface class; --legacy-pools = the 2026-09-13/22 POOL_BLOCKS form
+            let plan = if a.rest.iter().any(|x| x == "--legacy-pools") {
+                mapgeom::giantwater::plan_free(&source, ground, s, t, scale, roads, &author, legacy, below, bounds, free).unwrap_or_else(die)
+            } else {
+                let mut store = open(&a);
+                let coll = flag(&a.rest, "--collection").unwrap_or_else(|| "Stadium".to_string());
+                let mut idx = mapgeom::blockmap::BlockInfoIndex::build(&store, &coll);
+                mapgeom::giantwater::plan_volumes(&mut store, &mut idx, &source, ground, s, t, scale, roads, &author, below, bounds).unwrap_or_else(die)
+            };
             for n in &plan.notes {
                 println!("  giantwater: {n}");
             }

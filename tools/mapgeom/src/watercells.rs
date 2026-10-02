@@ -231,6 +231,9 @@ fn reason_for(src: &WaterBlock, frac: f32, giant_names: &BTreeMap<String, usize>
     if frac >= 0.95 {
         return format!("tiled natively ({})", giant_names.iter().map(|(n, k)| format!("{n}×{k}")).collect::<Vec<_>>().join(", "));
     }
+    if src.kind == "road" && !crate::giantwater::road_family(&src.name) && !giant_names.is_empty() {
+        return format!("platform water tiled at its 1x depth (2 m over the deck, the source's physics) by {}", giant_names.iter().map(|(n, k)| format!("{n}×{k}")).collect::<Vec<_>>().join(", "));
+    }
     let n = scale.round() as i32;
     if crate::giantwater::POOL_BLOCKS.contains(&src.name.as_str()) {
         // in the mapping: the grid or the top-row-only WaterBase form
@@ -290,10 +293,28 @@ pub fn census(store: &mut DataStore, idx: &mut BlockInfoIndex, src: &MapFile, gi
             }
         }
         let frac = if total > 0 { covered as f32 / total as f32 } else { 0.0 };
+        // platform water (2 m over a deck the car drives on) is tiled at its 1x depth
+        // on purpose: judge the bottom 2 m of the scaled volume
+        let onex = sb.kind == "road" && !crate::giantwater::road_family(&sb.name) && {
+            let (mut tot2, mut cov2) = (0usize, 0usize);
+            for b in &sb.world {
+                let sbx = scale_box(b, s, t, scale);
+                let slab = [sbx[0], sbx[1], sbx[2], sbx[3], sbx[1] + 2.0, sbx[5]];
+                for v in voxels(&slab) {
+                    tot2 += 1;
+                    if gv.contains_key(&v) {
+                        cov2 += 1;
+                    }
+                }
+            }
+            tot2 > 0 && cov2 as f32 / tot2 as f32 >= 0.95
+        };
         let verdict = if total == 0 {
             "no-volume"
         } else if frac >= 0.95 {
             "native"
+        } else if onex {
+            "native-1x-depth"
         } else if frac > 0.0 {
             "partial"
         } else {
@@ -301,6 +322,53 @@ pub fn census(store: &mut DataStore, idx: &mut BlockInfoIndex, src: &MapFile, gi
         };
         let reason = reason_for(sb, frac, &names, giant.size, s, t, scale);
         rows.push(Row { src: sb.clone(), total, covered, giant_names: names, verdict, reason, inner_rims: Vec::new() });
+    }
+    // BODIES: source water blocks joined where their scaled water touches across a face
+    {
+        let n = src_blocks.len();
+        let mut parent: Vec<usize> = (0..n).collect();
+        fn find(p: &mut [usize], i: usize) -> usize {
+            let mut r = i;
+            while p[r] != r {
+                r = p[r];
+            }
+            let mut j = i;
+            while p[j] != r {
+                let nx = p[j];
+                p[j] = r;
+                j = nx;
+            }
+            r
+        }
+        for (v, &i) in &sv {
+            for d in [(1, 0, 0), (0, 1, 0), (0, 0, 1)] {
+                if let Some(&j) = sv.get(&(v.0 + d.0, v.1 + d.1, v.2 + d.2)) {
+                    if i != j {
+                        let (ri, rj) = (find(&mut parent, i), find(&mut parent, j));
+                        if ri != rj {
+                            parent[ri] = rj;
+                        }
+                    }
+                }
+            }
+        }
+        let mut bodies: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+        for i in 0..n {
+            let r = find(&mut parent, i);
+            bodies.entry(r).or_default().push(i);
+        }
+        let mut lines: Vec<String> = Vec::new();
+        for (_, members) in bodies {
+            let mut names: BTreeMap<String, usize> = BTreeMap::new();
+            let mut kinds: BTreeMap<&str, usize> = BTreeMap::new();
+            for &i in &members {
+                *names.entry(src_blocks[i].name.clone()).or_insert(0) += 1;
+                *kinds.entry(src_blocks[i].kind).or_insert(0) += 1;
+            }
+            let cell = src_blocks[members[0]].cell;
+            lines.push(format!("body of {} block(s) at ({},{},{}): kinds {} — {}", members.len(), cell.0, cell.1, cell.2, kinds.iter().map(|(k, n)| format!("{k}×{n}")).collect::<Vec<_>>().join(" "), names.iter().map(|(k, n)| format!("{k}×{n}")).collect::<Vec<_>>().join(", ")));
+        }
+        notes.extend(lines);
     }
     // extra giant water: voxels in no source water
     let mut extra: BTreeMap<String, usize> = BTreeMap::new();
@@ -327,6 +395,10 @@ pub fn census(store: &mut DataStore, idx: &mut BlockInfoIndex, src: &MapFile, gi
         src_drawn.insert(([c.cell[0] as i32 - 1, c.cell[1] as i32, c.cell[2] as i32 - 1], c.face));
     }
     let water_owner: HashSet<usize> = giant_blocks.iter().map(|g| g.index).collect();
+    let free_tiles = giant_blocks.iter().filter(|g| g.free).count();
+    if free_tiles > 0 {
+        notes.push(format!("{free_tiles} FREE water tiles: their clips are NOT in the bake simulation (it walks grid blocks only) — the rim counts below cover the grid tiles alone"));
+    }
     let n = scale.round() as i32;
     let mut boundary_extra = Vec::new();
     let mut boundary_ok = 0usize;

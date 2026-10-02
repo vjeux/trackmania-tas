@@ -53,6 +53,7 @@ mod mapzips;
 mod dist;
 mod release;
 mod views;
+mod watercensus;
 mod wsx;
 
 use std::path::Path;
@@ -234,6 +235,7 @@ fn main() {
         "lmbake" => lmbake::cmd(rest),
         "lit-verify" => lmbake::verify(rest),
         "giant-tracker" => gianttracker::cmd(rest),
+        "water-census" => watercensus::cmd(rest),
         "lightmap-batch" => lightmap::batch(rest),
         "lightmap-graft" => lightmap::graft(rest),
         "convert-all" => pipeline::convert_all_cmd(rest),
