@@ -1261,6 +1261,8 @@ fn run(mut a: Vec<String>) {
             // (the Warp terrain meshes awaiting the mood and the sun — E2 2026-09-28: the first decor index they occupy, the meshes
             // with their normals, the --pak lines to reopen the store for the material's textures)
             let mut warp_pending: Option<(usize, Vec<lightmap::envcap::EnvMesh>, Vec<String>)> = None;
+            // --env-fit-grid: the environment and the dome scaled onto the map's grid (see the environment block below); EnvFit::for_map
+            let env_fit: Option<lightmap::envcap::EnvFit> = if has("--env-fit-grid") { lightmap::envcap::EnvFit::for_map(&tmmaps::map::MapFile::load(std::path::Path::new(&map_path))) } else { None };
             // the decoration's surroundings: --decoration FILE.obj[,FILE…] [--decoration-scale S --decoration-offset x,y,z],
             // or by default lightmap-re/scene3d/<Collection>.obj when it exists (RE child 3's Scene3d export),
             // --no-decoration to leave it out
@@ -1286,7 +1288,18 @@ fn run(mut a: Vec<String>) {
                     // the collection's decoration layout (RE 9's envblock::layout_path: Base64x64 for the islands, Stadium256's Base16x12 for Stadium)
                     let s3 = mapgeom::envblock::layout_path(&store, &coll);
                     match lightmap::envcap::env_meshes_from_pak(&mut store, &s3) {
-                        Ok((meshes, dropped)) => {
+                        Ok((mut meshes, dropped)) => {
+                            // --env-fit-grid (the Fall 2026 giants, 2026-10-01): the environment block is authored for the 64-cell
+                            // decoration (the 2048-m island, its sea box, the skirt) — a 96/128/160-cell giant lies mostly OUTSIDE it and
+                            // the editor's own bake (and ours, transcribed) goes dark beyond ~1024 m of the decoration centre (x2 16:
+                            // chart E 0.78 → 0.09 → 0.000; stored LAmbient 3 % of the source's). The fit scales the block about the
+                            // decoration centre (1024, 0, 1024) by size/64 onto the grid's centre (16·size, 0, 16·size), so the giant
+                            // sits inside its surroundings as the source sat inside the original; the dome mesh below takes the same map
+                            if let Some(ef) = env_fit {
+                                let mut n = 0usize;
+                                for m in meshes.iter_mut() { for t in m.tris.iter_mut() { for p in t.iter_mut() { *p = ef.map(*p); n += 1; } } }
+                                eprintln!("env-fit-grid: {n} environment vertices mapped ×{:.3} about ({}, 0, {}) → ({}, 0, {})", ef.k, ef.c[0], ef.c[2], ef.c2[0], ef.c2[2]);
+                            }
                             let t = lightmap::envcap::env_decor(&meshes);
                             eprintln!("decoration: the game's environment block from the packs ({s3}): {} triangles ({dropped} water / sky triangles left out)", t.len());
                             // THE WARP TERRAIN SHADING (E2 2026-09-28, warpterrain.rs): the Warp meshes are kept, with their normals, until the
@@ -1963,7 +1976,8 @@ fn run(mut a: Vec<String>) {
                     let from_env = lightmap::domemesh::DomeMesh::from_envblock(&mut store, &coll);
                     if let Err(e) = &from_env { eprintln!("dome mesh from the environment block: {e} — trying the Scene3d walk"); }
                     match from_env.or_else(|_| lightmap::domemesh::DomeMesh::from_scene3d(&mut store, &s3)) {
-                        Ok(m) => {
+                        Ok(mut m) => {
+                            if let Some(ef) = env_fit { for p in m.pos.iter_mut() { *p = ef.map(*p); } eprintln!("env-fit-grid: the dome mesh mapped ×{:.3} onto the grid centre", ef.k); }
                             let cmp = f("--lm-from").and_then(|d| lightmap::domemesh::DomeMesh::load(std::path::Path::new(&d)).ok()).map(|c| { let (same, ours, theirs) = m.compare(&c); format!("; vs the captured e001051: {same} of {ours} triangles identical (position + uv; captured {theirs})") }).unwrap_or_default();
                             eprintln!("dome mesh from the packs ({s3}): {} vertices, {} triangles rasterised per peel{cmp}", m.pos.len(), m.indices.len() / 3);
                             prm.dome_mesh = Some(std::sync::Arc::new(m));

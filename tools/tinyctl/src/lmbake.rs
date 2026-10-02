@@ -1,4 +1,11 @@
-//! `tinyctl lmbake --maps A.Map.Gbx,B.Map.Gbx,… --lit-dir DIR [--base auto|N] [--template-probes] [--report R.tsv] [--jobs J]`
+//! `tinyctl lmbake --maps A.Map.Gbx,B.Map.Gbx,… --lit-dir DIR [--base auto|N] [--template-probes] [--report R.tsv] [--jobs J]
+//!   [--quality Q] [--raster] [--lm-from-map] [--pak-dir DIR] [--bake-arg X]… [--copies BAKEA=SHIPA,…]`
+//! THE FALL 2026 GIANT RECIPE (2026-10-01): `--quality 4 --raster --lm-from-map --pak-dir /tmp/paks` — the transcribed
+//! chain with the map's collection pak (`<pak-dir>/<Envir>.pak:<key>`, the terrain collections' key or Stadium's;
+//! Stadium.pak + Maniaplanet.pak beside it are lmtool's own defaults); `--copies BAKE=SHIPPED,…` bakes the BAKE copy
+//! (card-less, FILL) and grafts onto SHIPPED (the graft refuses an item-list mismatch and repairs the FILETIME word);
+//! every lit file then passes `lmtool check`'s FILETIME rule and the record-0 kind rule (2 with two frames) or the
+//! row FAILS and the file is removed.
 //! — our own lightmap (`lmtool bake`) for shipped giant files, grafted back
 //! compressed: for every map, `lmtool bake SHIPPED --out TMP --base B [--template-probes]`
 //! then the transplant of chunk 0x0304305B into the shipped file

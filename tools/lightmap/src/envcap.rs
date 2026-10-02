@@ -373,3 +373,27 @@ pub fn env_decor_warp(meshes: &[EnvMesh], consts: &crate::warpterrain::WarpConst
     }
     (out, shaded)
 }
+
+/// THE GRID FIT OF THE ENVIRONMENT (the Fall 2026 giants, 2026-10-01): the collection's environment block and sky dome are
+/// authored for the 64-cell decoration; a bigger grid's map lies outside them and the lightmapper — the game's and ours —
+/// darkens everything beyond ~1024 m of the decoration centre. `p' = c2 + k·(p − c)` with `c` = the decoration centre
+/// (1024, 0, 1024), `c2` = the grid's centre (16·size, 0, 16·size) and `k` = size / 64: a 64-cell map is the identity.
+#[derive(Clone, Copy, Debug)]
+pub struct EnvFit {
+    pub k: f32,
+    pub c: V3,
+    pub c2: V3,
+}
+
+impl EnvFit {
+    /// None for a 64-cell grid (the identity) or an unreadable size.
+    pub fn for_map(mf: &tmmaps::map::MapFile) -> Option<EnvFit> {
+        let s = mf.size[0].max(mf.size[2]);
+        if s <= 0 || s == 64 { return None; }
+        let k = s as f32 / 64.0;
+        Some(EnvFit { k, c: [1024.0, 0.0, 1024.0], c2: [16.0 * s as f32, 0.0, 16.0 * s as f32] })
+    }
+    pub fn map(&self, p: V3) -> V3 {
+        [self.c2[0] + self.k * (p[0] - self.c[0]), self.c2[1] + self.k * (p[1] - self.c[1]), self.c2[2] + self.k * (p[2] - self.c[2])]
+    }
+}
