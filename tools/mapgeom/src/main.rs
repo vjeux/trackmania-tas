@@ -85,9 +85,17 @@ COMMANDS
                                 23.5 on 48, 31.5 on 64), y kept; new uid SttC…,
                                 name '<name> Straight to the Center'
   sttc <file.Map.Gbx>|DIR --out-dir DIR [--only 01-,05-] [sttf + center-finish flags]
+      [--no-sttf] [--out-name mapname] [--rule v1|v2] [--strip-name-suffix S]
+      [--uid-table results.tsv] [--originals DIR] [--unlock] [--item-offset exact|rounded|auto]
                                 both steps per map: DIR/sttf/<stem>.sttf.Map.Gbx
                                 then DIR/<stem>-Straight-to-the-Center.Map.Gbx,
-                                one TSV row per record touched, round-trip verified
+                                one TSV row per record touched, round-trip verified;
+                                --no-sttf = the input is already STTF'd (center only);
+                                --rule v2 (default) = bbox centre, ties DOWN, items /
+                                free blocks by the exact offset; identity overrides:
+                                the name's base = input name minus the suffix, uid
+                                from the table by the new name, times from the
+                                original of that base name, --unlock drops the password
   blockinfo-all [<substring>] [--out TSV] [--clips]
                                 parse every block info in the packs and report
   map <file.Map.Gbx> --out F [--yoff N] [--no-items] [--no-deco]
@@ -3819,7 +3827,7 @@ fn main() {
             let dry = a.rest.iter().any(|x| x == "--dry-run");
             let out_dir = flag(&a.rest, "--out-dir").unwrap_or_else(|| die("sttc needs --out-dir DIR".into()));
             let keep_renumber = matches!(flag(&a.rest, "--lightmap").as_deref(), None | Some("keep-renumber"));
-            let opts = mapgeom::sttc::PipelineOpts { cp: sttc_cp_mode(&a.rest), center: sttc_center_opts(&a.rest), dry, keep_sttf: true, keep_renumber, pak_specs: a.paks.clone() };
+            let opts = mapgeom::sttc::PipelineOpts { cp: sttc_cp_mode(&a.rest), center: sttc_center_opts(&a.rest), dry, keep_sttf: true, keep_renumber, pak_specs: a.paks.clone(), no_sttf: a.rest.iter().any(|x| x == "--no-sttf"), out_by_map_name: flag(&a.rest, "--out-name").as_deref() == Some("mapname") };
             let path = std::path::Path::new(&p);
             let mut maps: Vec<std::path::PathBuf> = if path.is_dir() {
                 let mut v: Vec<std::path::PathBuf> = std::fs::read_dir(path).unwrap_or_else(|e| die(e.to_string())).filter_map(|e| e.ok()).map(|e| e.path()).filter(|q| q.to_string_lossy().ends_with(".Map.Gbx")).collect();
@@ -5332,6 +5340,55 @@ fn sttc_center_opts(rest: &[String]) -> mapgeom::sttc::CenterOpts {
             Some("strip") => true,
             None | Some("keep") | Some("keep-renumber") => false,
             Some(o) => die(format!("--lightmap strip | keep | keep-renumber, not `{o}`")),
+        },
+        // --rule v1|v2 (default v2: bbox centre, ties down, items/free exact — Hugo's final rule 2026-10-02)
+        rule: match flag(rest, "--rule").as_deref() {
+            None | Some("v2") => mapgeom::sttc::Rule::V2,
+            Some("v1") => mapgeom::sttc::Rule::V1,
+            Some(o) => die(format!("--rule v1 | v2, not `{o}`")),
+        },
+        strip_name_suffix: flag(rest, "--strip-name-suffix"),
+        // --uid-table FILE: TSV with a name column and a uid column (publish results: path name uid …; or name uid)
+        uid_table: flag(rest, "--uid-table").map(|p| {
+            let text = std::fs::read_to_string(&p).unwrap_or_else(|e| die(format!("--uid-table {p}: {e}")));
+            let mut t = std::collections::HashMap::new();
+            for l in text.lines() {
+                let c: Vec<&str> = l.split('\t').collect();
+                if c.len() >= 3 && c[2].len() >= 20 && !c[2].contains(' ') {
+                    t.insert(c[1].to_string(), c[2].to_string());
+                } else if c.len() >= 2 && c[1].len() >= 20 && !c[1].contains(' ') && !c[0].contains('/') {
+                    t.insert(c[0].to_string(), c[1].to_string());
+                }
+            }
+            if t.is_empty() {
+                die::<()>(format!("--uid-table {p}: no name/uid rows found"));
+            }
+            t
+        }),
+        // --originals DIR: the original maps (times + the base name's existence) by header name
+        originals: flag(rest, "--originals").map(|d| {
+            let mut t = std::collections::HashMap::new();
+            for e in std::fs::read_dir(&d).unwrap_or_else(|e| die(format!("--originals {d}: {e}"))).flatten() {
+                let p = e.path();
+                if !p.to_string_lossy().ends_with(".Map.Gbx") {
+                    continue;
+                }
+                if let Ok(h) = tmmaps::header::read(p.to_str().unwrap_or_default()) {
+                    let n = |s: &str| s.parse::<u32>().unwrap_or_else(|_| die(format!("{}: time `{s}`", p.display())));
+                    t.insert(h.name.clone(), (p.clone(), (n(&h.bronze), n(&h.silver), n(&h.gold), n(&h.authortime))));
+                }
+            }
+            if t.is_empty() {
+                die::<()>(format!("--originals {d}: no maps"));
+            }
+            t
+        }),
+        unlock: rest.iter().any(|x| x == "--unlock"),
+        item_offset: match flag(rest, "--item-offset").as_deref() {
+            None | Some("auto") => mapgeom::sttc::ItemOffset::Auto,
+            Some("exact") => mapgeom::sttc::ItemOffset::Exact,
+            Some("rounded") => mapgeom::sttc::ItemOffset::Rounded,
+            Some(o) => die(format!("--item-offset exact | rounded | auto, not `{o}`")),
         },
     }
 }

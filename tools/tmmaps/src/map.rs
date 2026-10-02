@@ -1210,6 +1210,67 @@ impl MapFile {
         (header_hits, body_hits)
     }
 
+    /// `set_map_uid` for a uid of ANY length: the body copy is a lookback rename
+    /// (re-encoded, variable-length safe); the header copies — the Common chunk
+    /// 0x03043003's length-prefixed string and the XML `uid="…"` — are rewritten
+    /// the way `set_map_name` rewrites the name, the header table rebuilt. A
+    /// rename pass: no splices may share the write. (Hugo's STT Center round 2:
+    /// Uelen's 27-char uids replaced by the campaign's, one of which is 26 chars.)
+    pub fn set_map_uid_any_len(&mut self, uid: &str) {
+        let old = self.body_ids.first().and_then(|f| f.name.clone()).expect("map uid Id");
+        if old.len() == uid.len() {
+            return self.set_map_uid(uid);
+        }
+        self.renames.push((false, 0, uid.to_string()));
+        let pat = gbx_string(&old);
+        let rep = gbx_string(uid);
+        let ud = self.gbx.user_data.clone();
+        let n = u32::from_le_bytes(ud[0..4].try_into().unwrap()) as usize;
+        let mut heads: Vec<(u32, bool, Vec<u8>)> = Vec::new();
+        let mut off = 4 + n * 8;
+        for i in 0..n {
+            let o = 4 + i * 8;
+            let id = u32::from_le_bytes(ud[o..o + 4].try_into().unwrap());
+            let raw = u32::from_le_bytes(ud[o + 4..o + 8].try_into().unwrap());
+            let size = (raw & 0x7fff_ffff) as usize;
+            heads.push((id, raw & 0x8000_0000 != 0, ud[off..off + size].to_vec()));
+            off += size;
+        }
+        let mut hits = 0;
+        for (id, _, data) in heads.iter_mut() {
+            if *id == 0x0304_3005 {
+                if data.len() >= 4 {
+                    let len = u32::from_le_bytes(data[0..4].try_into().unwrap()) as usize;
+                    if data.len() >= 4 + len {
+                        let xml = String::from_utf8_lossy(&data[4..4 + len]).to_string();
+                        let want = format!("uid=\"{}\"", esc_xml(&old));
+                        if xml.contains(&want) {
+                            let xml2 = xml.replace(&want, &format!("uid=\"{}\"", esc_xml(uid)));
+                            let mut d = (xml2.len() as u32).to_le_bytes().to_vec();
+                            d.extend_from_slice(xml2.as_bytes());
+                            d.extend_from_slice(&data[4 + len..]);
+                            *data = d;
+                            hits += 1;
+                        }
+                    }
+                }
+                continue;
+            }
+            hits += replace_all(data, &pat, &rep);
+        }
+        assert!(hits >= 2, "map uid: {hits} header occurrence(s) rewritten, want the Common chunk + the XML");
+        let mut out = Vec::new();
+        out.extend_from_slice(&(heads.len() as u32).to_le_bytes());
+        for (id, heavy, data) in &heads {
+            out.extend_from_slice(&id.to_le_bytes());
+            out.extend_from_slice(&((data.len() as u32) | if *heavy { 0x8000_0000 } else { 0 }).to_le_bytes());
+        }
+        for (_, _, data) in &heads {
+            out.extend_from_slice(data);
+        }
+        self.gbx.user_data = out;
+    }
+
     pub fn set_map_uid(&mut self, uid: &str) {
         let old = self
             .body_ids
@@ -4058,4 +4119,92 @@ impl MapFile {
         self.raw_splices.push((span, fr.encode()));
         Ok(())
     }
+}
+
+impl MapFile {
+    /// The four times (ms) everywhere they live: body 0x0305B00A / 0x0305B004 / 0x0305B008, the header
+    /// chunk 0x03043002 and the header XML `<times …/>` (`tmmaps settimes`; moved here from the binary
+    /// 2026-10-02 for `mapgeom sttc --originals`). The header must still read the OLD times (layout check).
+    pub fn set_times(&mut self, hdr: &crate::header::MapHeader, bronze: u32, silver: u32, gold: u32, author: u32, set_validated: bool) {
+        let m = self;
+    let skips = crate::gbx::all_skip_chunks(&m.gbx.body);
+    let old_b: u32 = hdr.bronze.parse().ok().expect("header times");
+    let old_s: u32 = hdr.silver.parse().ok().expect("header times");
+    let old_g: u32 = hdr.gold.parse().ok().expect("header times");
+    let old_a: u32 = hdr.authortime.parse().ok().expect("header times");
+    let expect = |buf: &[u8], at: usize, want: u32, what: &str| {
+        let got = u32::from_le_bytes(buf[at..at + 4].try_into().unwrap());
+        assert!(got == want, "{what}: read {got} where the header says {want} — layout mismatch, nothing written");
+    };
+    let &(_, _, pa, sa) = skips.iter().find(|(c, ..)| *c == 0x0305_B00A).expect("no 0x0305B00A");
+    let b00a = &m.gbx.body[pa..pa + sa];
+    let tip_len = u32::from_le_bytes(b00a[0..4].try_into().unwrap()) as usize;
+    let t0 = 4 + tip_len;
+    expect(b00a, t0, old_b, "0x0305B00A bronze");
+    expect(b00a, t0 + 4, old_s, "0x0305B00A silver");
+    expect(b00a, t0 + 8, old_g, "0x0305B00A gold");
+    expect(b00a, t0 + 12, old_a, "0x0305B00A author");
+    for (k, v) in [(0usize, bronze), (4, silver), (8, gold), (12, author), (20, author)] {
+        m.raw_patches.push((pa + t0 + k, v.to_le_bytes().to_vec()));
+    }
+    // 0x0305B004 (bronze, silver, gold, author, u32) and 0x0305B008 (timelimit, authorscore): non-skippable,
+    // inside the inline ChallengeParameters node before 0x0305B00A — found by their id bytes in that prefix
+    let prefix = &m.gbx.body[..pa];
+    let find_id = |id: u32| -> usize {
+        let pat = id.to_le_bytes();
+        let hits: Vec<usize> = prefix.windows(4).enumerate().filter(|(_, w)| *w == pat).map(|(i, _)| i).collect();
+        assert!(hits.len() == 1, "chunk {id:#010x}: {} occurrences before 0x0305B00A, want 1", hits.len());
+        hits[0] + 4
+    };
+    let p4 = find_id(0x0305_B004);
+    expect(&m.gbx.body, p4, old_b, "0x0305B004 bronze");
+    expect(&m.gbx.body, p4 + 4, old_s, "0x0305B004 silver");
+    expect(&m.gbx.body, p4 + 8, old_g, "0x0305B004 gold");
+    expect(&m.gbx.body, p4 + 12, old_a, "0x0305B004 author");
+    for (k, v) in [(0usize, bronze), (4, silver), (8, gold), (12, author)] {
+        m.raw_patches.push((p4 + k, v.to_le_bytes().to_vec()));
+    }
+    let p8 = find_id(0x0305_B008);
+    m.raw_patches.push((p8 + 4, author.to_le_bytes().to_vec())); // authorscore
+    // ---- header chunk 0x03043002 (v13): version u8, needUnlock u32, bronze, silver, gold, author, cost, isLapRace,
+    // playMode, u32, authorScore, editorMode, u32, nbCheckpoints, nbLaps
+    {
+        let ud = &mut m.gbx.user_data;
+        let n = u32::from_le_bytes(ud[0..4].try_into().unwrap()) as usize;
+        let mut data_off = 4 + n * 8;
+        let mut done = false;
+        for i in 0..n {
+            let o = 4 + i * 8;
+            let id = u32::from_le_bytes(ud[o..o + 4].try_into().unwrap());
+            let size = (u32::from_le_bytes(ud[o + 4..o + 8].try_into().unwrap()) & 0x7fff_ffff) as usize;
+            if id == 0x0304_3002 {
+                assert!(ud[data_off] >= 13, "header chunk 0x03043002 version {} — layout unknown", ud[data_off]);
+                let t = data_off + 5;
+                expect(ud, t, old_b, "header bronze");
+                expect(ud, t + 4, old_s, "header silver");
+                expect(ud, t + 8, old_g, "header gold");
+                expect(ud, t + 12, old_a, "header author");
+                ud[t..t + 4].copy_from_slice(&bronze.to_le_bytes());
+                ud[t + 4..t + 8].copy_from_slice(&silver.to_le_bytes());
+                ud[t + 8..t + 12].copy_from_slice(&gold.to_le_bytes());
+                ud[t + 12..t + 16].copy_from_slice(&author.to_le_bytes());
+                ud[t + 32..t + 36].copy_from_slice(&author.to_le_bytes()); // authorScore
+                done = true;
+            }
+            data_off += size;
+        }
+        assert!(done, "map has no header chunk 0x03043002");
+    }
+    // ---- header XML
+    let times = format!("<times bronze=\"{bronze}\" silver=\"{silver}\" gold=\"{gold}\" authortime=\"{author}\" authorscore=\"{author}\" hasclones=\"0\"/>");
+    m.edit_header_xml(&|xml| {
+        let start = xml.find("<times ")?;
+        let end = xml[start..].find("/>")? + start + 2;
+        let mut s = String::with_capacity(xml.len() + 16);
+        s.push_str(&xml[..start]);
+        s.push_str(&times);
+        s.push_str(&xml[end..]);
+        Some(if set_validated { s.replace("validated=\"0\"", "validated=\"1\"") } else { s })
+    });
+}
 }

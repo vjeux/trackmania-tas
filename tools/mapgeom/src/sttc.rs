@@ -720,6 +720,43 @@ pub struct CenterOpts {
     /// shadows; stripped, the client bakes a coarse one at load (or the editor
     /// re-bakes it properly on the box)
     pub strip_lightmap: bool,
+    /// Round 2 (Hugo, 2026-10-02): the reference point of several finishes is
+    /// the centre of their x/z BOUNDING BOX (footprints incl. rotation; items
+    /// by position), not the centroid; a half-cell tie rounds DOWN (a 1×1
+    /// finish lands at cell 31 on a 64 grid, 23 on 48); items and free blocks
+    /// take the EXACT world offset, grid blocks the rounded one.
+    pub rule: Rule,
+    /// the name's base: the input's header name with this suffix removed (Uelen's "… STTF")
+    pub strip_name_suffix: Option<String>,
+    /// a `name<TAB>uid` table (or publish results.tsv: path, name, uid, …): the output's uid by its NEW name
+    pub uid_table: Option<HashMap<String, String>>,
+    /// a directory of the ORIGINAL maps: the output's times come from the original whose header name is the base name
+    pub originals: Option<HashMap<String, (PathBuf, (u32, u32, u32, u32))>>,
+    /// remove the editor password (header NeedUnlock + the 0x03043029 chunk)
+    pub unlock: bool,
+    /// V2 only — how items and free blocks move: `Exact` (the unrounded world offset), `Rounded`
+    /// (the grid blocks' whole-cell offset), `Auto` (exact unless the finish also has GRID blocks:
+    /// a composite finish — 19's GateFinish block + its two ring items — keeps its shape)
+    pub item_offset: ItemOffset,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ItemOffset {
+    Exact,
+    Rounded,
+    Auto,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Rule {
+    /// centroid, ties up, everything by the rounded cell offset (the 06:15 set)
+    V1,
+    /// bbox centre, ties down, items/free exact (the final set)
+    V2,
+}
+
+fn round_half_down(v: f64) -> i32 {
+    (v - 0.5).ceil() as i32
 }
 
 pub struct CenterOutcome {
@@ -736,6 +773,17 @@ pub struct CenterOutcome {
     pub new_name: String,
     pub new_uid: String,
     pub lightmap_stripped: bool,
+    /// the exact world offset (m) and what the grid blocks' rounding left: exact − rounded·32
+    pub offset_exact_m: (f64, f64),
+    pub residual_m: (f64, f64),
+    /// the reference point used (bbox centre on V2, centroid on V1)
+    pub reference: (f64, f64),
+    /// items / free records moved by the exact offset (V2)
+    pub exact_items: bool,
+    /// the times written (bronze, silver, gold, author) when taken from an original
+    pub times: Option<(u32, u32, u32, u32)>,
+    pub unlocked: bool,
+    pub has_free_finish: bool,
 }
 
 fn round_half_up(v: f64) -> i32 {
@@ -758,6 +806,8 @@ pub fn center_finish(ctx: &mut Ctx, src: &Path, out: &Path, o: &CenterOpts, dry:
     }
     let mut fin_blocks: Vec<FinBlock> = Vec::new();
     let mut fin_items: Vec<(usize, ItemRec)> = Vec::new();
+    // the x/z bounding box of the finishes (world m): grid cells by footprint, free blocks by their turned footprint, items by position
+    let mut fin_bbox: Option<([f64; 2], [f64; 2])> = None;
     let blocks: Vec<(usize, BlockRec)> = m.blocks.iter().enumerate().filter(|(_, b)| b.flags != 0xFFFF_FFFF).map(|(i, b)| (i, b.clone())).collect();
     let mut occupancy: HashMap<[i32; 3], Vec<String>> = HashMap::new();
     let mut bbox: Option<([f64; 2], [f64; 2])> = None;
@@ -797,11 +847,19 @@ pub fn center_finish(ctx: &mut Ctx, src: &Path, out: &Path, o: &CenterOpts, dry:
             grow(p[0] as f64, p[2] as f64, &mut bbox);
             if is_fin {
                 // the block's centre: its origin corner + half the footprint,
-                // turned by the yaw (the first angle of the free triple)
+                // turned by the yaw (the first angle of the free triple); the
+                // footprint's four corners feed the bounding box
                 let (w, d) = ctx.block_footprint(b, 0).map(|(wd, _)| wd).unwrap_or((1, 1));
                 let yaw = b.free_rot.map(|r| r[0]).unwrap_or(0.0) as f64;
-                let (hx, hz) = (w as f64 * 16.0, d as f64 * 16.0);
-                let (cx, cz) = (p[0] as f64 + hx * yaw.cos() + hz * yaw.sin(), p[2] as f64 - hx * yaw.sin() + hz * yaw.cos());
+                let turn = |lx: f64, lz: f64| (p[0] as f64 + lx * yaw.cos() + lz * yaw.sin(), p[2] as f64 - lx * yaw.sin() + lz * yaw.cos());
+                let (cx, cz) = turn(w as f64 * 16.0, d as f64 * 16.0);
+                for (lx, lz) in [(0.0, 0.0), (w as f64 * 32.0, 0.0), (0.0, d as f64 * 32.0), (w as f64 * 32.0, d as f64 * 32.0)] {
+                    let (x, z) = turn(lx, lz);
+                    fin_bbox = Some(match fin_bbox {
+                        None => ([x, z], [x, z]),
+                        Some((lo, hi)) => ([lo[0].min(x), lo[1].min(z)], [hi[0].max(x), hi[1].max(z)]),
+                    });
+                }
                 fin_blocks.push(FinBlock { index: *i, rec: b.clone(), cells: Vec::new(), centre: (cx, cz) });
             }
             continue;
@@ -815,6 +873,13 @@ pub fn center_finish(ctx: &mut Ctx, src: &Path, out: &Path, o: &CenterOpts, dry:
             let n = cells.len().max(1) as f64;
             let cx = cells.iter().map(|c| c[0] as f64 * 32.0 + 16.0).sum::<f64>() / n;
             let cz = cells.iter().map(|c| c[2] as f64 * 32.0 + 16.0).sum::<f64>() / n;
+            for c in &cells {
+                let (x0, z0, x1, z1) = (c[0] as f64 * 32.0, c[2] as f64 * 32.0, c[0] as f64 * 32.0 + 32.0, c[2] as f64 * 32.0 + 32.0);
+                fin_bbox = Some(match fin_bbox {
+                    None => ([x0, z0], [x1, z1]),
+                    Some((lo, hi)) => ([lo[0].min(x0), lo[1].min(z0)], [hi[0].max(x1), hi[1].max(z1)]),
+                });
+            }
             fin_blocks.push(FinBlock { index: *i, rec: b.clone(), cells, centre: (cx, cz) });
         } else if b.flags & FLAG_PILLAR == 0 {
             for c in cells {
@@ -837,6 +902,11 @@ pub fn center_finish(ctx: &mut Ctx, src: &Path, out: &Path, o: &CenterOpts, dry:
         }
         let eff = c.effective();
         if eff == Some(WP_FINISH) || (eff == Some(WP_STARTFINISH) && o.include_startfinish) {
+            let (x, z) = (it.pos[0] as f64, it.pos[2] as f64);
+            fin_bbox = Some(match fin_bbox {
+                None => ([x, z], [x, z]),
+                Some((lo, hi)) => ([lo[0].min(x), lo[1].min(z)], [hi[0].max(x), hi[1].max(z)]),
+            });
             fin_items.push((i, it.clone()));
         }
     }
@@ -856,8 +926,19 @@ pub fn center_finish(ctx: &mut Ctx, src: &Path, out: &Path, o: &CenterOpts, dry:
         }
         Center::At(x, z) => ((x + 0.5) * 32.0, (z + 0.5) * 32.0),
     };
-    let dx = round_half_up((center.0 - centroid.0) / 32.0);
-    let dz = round_half_up((center.1 - centroid.1) / 32.0);
+    let reference = match o.rule {
+        Rule::V1 => centroid,
+        Rule::V2 => {
+            let (lo, hi) = fin_bbox.ok_or("no finish bbox")?;
+            ((lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0)
+        }
+    };
+    let offset_exact_m = (center.0 - reference.0, center.1 - reference.1);
+    let (dx, dz) = match o.rule {
+        Rule::V1 => (round_half_up(offset_exact_m.0 / 32.0), round_half_up(offset_exact_m.1 / 32.0)),
+        Rule::V2 => (round_half_down(offset_exact_m.0 / 32.0), round_half_down(offset_exact_m.1 / 32.0)),
+    };
+    let residual_m = (offset_exact_m.0 - dx as f64 * 32.0, offset_exact_m.1 - dz as f64 * 32.0);
     // --- destination check
     let (sx_cells, sy_cells, sz_cells) = (m.size[0], m.size[1], m.size[2]);
     let mut dy = 0i32;
@@ -908,6 +989,15 @@ pub fn center_finish(ctx: &mut Ctx, src: &Path, out: &Path, o: &CenterOpts, dry:
     }
     let overlap_cells: HashSet<[i32; 3]> = overlaps.iter().map(|(c, _)| *c).collect();
     let dw = [dx as f32 * 32.0, dy as f32 * 8.0, dz as f32 * 32.0];
+    // items and free blocks (and the free baked pieces): the exact offset on V2, the rounded one on V1
+    let has_grid_finish = fin_blocks.iter().any(|f| f.rec.flags & FREE_BLOCK_FLAG == 0);
+    let exact_items = match (o.rule, o.item_offset) {
+        (Rule::V1, _) => false,
+        (Rule::V2, ItemOffset::Exact) => true,
+        (Rule::V2, ItemOffset::Rounded) => false,
+        (Rule::V2, ItemOffset::Auto) => !has_grid_finish,
+    };
+    let dwe = if exact_items { [offset_exact_m.0 as f32, dy as f32 * 8.0, offset_exact_m.1 as f32] } else { dw };
     // --- the baked records that move along
     let fin_cells: HashSet<[i32; 3]> = fin_blocks.iter().flat_map(|f| f.cells.iter().copied()).collect();
     let owned = if fin_cells.is_empty() { Vec::new() } else { owned_baked(ctx, &m, &fin_cells) };
@@ -935,8 +1025,8 @@ pub fn center_finish(ctx: &mut Ctx, src: &Path, out: &Path, o: &CenterOpts, dry:
         match f.rec.free_pos {
             Some(p) => {
                 r.from = format!("free {}", pos_str(p));
-                r.to = format!("free {}", pos_str(shifted(p, dw)));
-                r.y = format!("{:.3}", p[1] + dw[1]);
+                r.to = format!("free {}", pos_str(shifted(p, dwe)));
+                r.y = format!("{:.3}", p[1] + dwe[1]);
             }
             None => {
                 let c = f.rec.coords();
@@ -959,10 +1049,10 @@ pub fn center_finish(ctx: &mut Ctx, src: &Path, out: &Path, o: &CenterOpts, dry:
         r.model_wp = "Finish".into();
         r.action = "moved".into();
         r.from = pos_str(it.pos);
-        r.to = pos_str(shifted(it.pos, dw));
-        r.y = format!("{:.3}", it.pos[1] + dw[1]);
-        let c = it.coords();
-        let dest = [c.0 + dx, c.1 + dy, c.2 + dz];
+        r.to = pos_str(shifted(it.pos, dwe));
+        r.y = format!("{:.3}", it.pos[1] + dwe[1]);
+        let np = shifted(it.pos, dwe);
+        let dest = [(np[0] / 32.0).floor() as i32, it.coords().1 + dy, (np[2] / 32.0).floor() as i32];
         r.overlap = if occupancy.contains_key(&dest) { format!("Y:{}", occupancy[&dest].join("|")) } else { "N".into() };
         rows.push(r);
     }
@@ -976,7 +1066,7 @@ pub fn center_finish(ctx: &mut Ctx, src: &Path, out: &Path, o: &CenterOpts, dry:
             match rec.free_pos {
                 Some(p) => {
                     r.from = format!("free {}", pos_str(p));
-                    r.to = format!("free {}", pos_str(shifted(p, dw)));
+                    r.to = format!("free {}", pos_str(shifted(p, dwe)));
                 }
                 None => {
                     let c = rec.coords();
@@ -987,9 +1077,23 @@ pub fn center_finish(ctx: &mut Ctx, src: &Path, out: &Path, o: &CenterOpts, dry:
             rows.push(r);
         }
     }
-    let new_name = format!("{}{}", hdr.name, NAME_SUFFIX);
+    let base_name = match &o.strip_name_suffix {
+        Some(suf) if hdr.name.ends_with(suf.as_str()) => hdr.name[..hdr.name.len() - suf.len()].to_string(),
+        Some(suf) => return Err(format!("{map_label}: the name {:?} does not end with the suffix {suf:?}", hdr.name)),
+        None => hdr.name.clone(),
+    };
+    let new_name = if hdr.name.ends_with(NAME_SUFFIX) { hdr.name.clone() } else { format!("{base_name}{NAME_SUFFIX}") };
     let old_uid = hdr.uid.clone();
-    let new_uid = if old_uid.len() > UID_PREFIX.len() { format!("{UID_PREFIX}{}", &old_uid[..old_uid.len() - UID_PREFIX.len()]) } else { old_uid.clone() };
+    let new_uid = match &o.uid_table {
+        Some(t) => t.get(&new_name).cloned().ok_or_else(|| format!("{map_label}: no uid for {new_name:?} in the uid table"))?,
+        None => {
+            if old_uid.len() > UID_PREFIX.len() { format!("{UID_PREFIX}{}", &old_uid[..old_uid.len() - UID_PREFIX.len()]) } else { old_uid.clone() }
+        }
+    };
+    let times_from: Option<(PathBuf, (u32, u32, u32, u32))> = match &o.originals {
+        Some(t) => Some(t.get(&base_name).cloned().ok_or_else(|| format!("{map_label}: no original named {base_name:?} among the originals"))?),
+        None => None,
+    };
     let outcome = |rows: Vec<Row>| CenterOutcome {
         rows,
         finish_blocks: fin_blocks.len(),
@@ -1004,6 +1108,13 @@ pub fn center_finish(ctx: &mut Ctx, src: &Path, out: &Path, o: &CenterOpts, dry:
         new_name: new_name.clone(),
         new_uid: new_uid.clone(),
         lightmap_stripped: o.strip_lightmap,
+        offset_exact_m,
+        residual_m,
+        reference,
+        exact_items,
+        times: times_from.as_ref().map(|(_, t)| *t),
+        unlocked: o.unlock,
+        has_free_finish: fin_blocks.iter().any(|f| f.rec.flags & FREE_BLOCK_FLAG != 0),
     };
     if dry {
         return Ok(outcome(rows));
@@ -1016,7 +1127,7 @@ pub fn center_finish(ctx: &mut Ctx, src: &Path, out: &Path, o: &CenterOpts, dry:
     // Id-table renames)
     for f in &fin_blocks {
         match f.rec.free_pos {
-            Some(p) => m.move_block_free(f.index, shifted(p, dw)),
+            Some(p) => m.move_block_free(f.index, shifted(p, dwe)),
             None => {
                 let c = f.rec.coords();
                 m.move_block_cell(f.index, (c.0 + dx, c.1 + dy, c.2 + dz));
@@ -1024,9 +1135,10 @@ pub fn center_finish(ctx: &mut Ctx, src: &Path, out: &Path, o: &CenterOpts, dry:
         }
     }
     for (i, it) in &fin_items {
-        m.move_item_pos(*i, shifted(it.pos, dw));
+        let np = shifted(it.pos, dwe);
+        m.move_item_pos(*i, np);
         let c = it.coords();
-        let cell = [(c.0 + dx).clamp(0, 255) as u8, (c.1 + dy).clamp(0, 255) as u8, (c.2 + dz).clamp(0, 255) as u8];
+        let cell = [((np[0] / 32.0).floor() as i32).clamp(0, 255) as u8, (c.1 + dy).clamp(0, 255) as u8, ((np[2] / 32.0).floor() as i32).clamp(0, 255) as u8];
         m.raw_patches.push((it.coord_off, cell.to_vec()));
     }
     for idx in &owned {
@@ -1037,13 +1149,20 @@ pub fn center_finish(ctx: &mut Ctx, src: &Path, out: &Path, o: &CenterOpts, dry:
     for idx in &owned_free {
         let rec = m.baked.iter().find(|r| r.index == *idx).cloned().expect("owned baked free record");
         let p = rec.free_pos.expect("free pos");
-        m.move_baked_free(*idx, shifted(p, dw));
+        m.move_baked_free(*idx, shifted(p, dwe));
     }
     m.strip_validation_ghost_to(GhostForm::Remove);
     if o.strip_lightmap {
         m.strip_lightmap();
     }
-    if o.rename {
+    if let Some((_, (b_, s_, g_, a_))) = &times_from {
+        // in-place patches + an XML header edit: the header must still read the input's own times
+        m.set_times(&hdr, *b_, *s_, *g_, *a_, false);
+    }
+    if o.unlock {
+        m.remove_password();
+    }
+    if o.rename && new_name != hdr.name {
         let (h, b) = m.set_map_name(&hdr.name, &new_name);
         if h + b == 0 {
             return Err(format!("{map_label}: the map does not declare the name {:?}", hdr.name));
@@ -1053,8 +1172,15 @@ pub fn center_finish(ctx: &mut Ctx, src: &Path, out: &Path, o: &CenterOpts, dry:
     // pass 2: the uid (an Id-table rename: its own write)
     if o.reuid && new_uid != old_uid {
         let mut m2 = MapFile::try_load(out)?;
-        m2.set_map_uid(&new_uid);
+        m2.set_map_uid_any_len(&new_uid);
         m2.write_to(out).map_err(|e| e.to_string())?;
+    }
+    if let Some((orig, t)) = &times_from {
+        let mut r = Row::new(&map_label, "center", "map", 0, &new_name);
+        r.action = "identity".into();
+        r.to_name = new_uid.clone();
+        r.note = format!("times from {} (bronze {} silver {} gold {} author {} ms){}; uid {old_uid} -> {new_uid}{}", orig.display(), t.0, t.1, t.2, t.3, if o.unlock { "; unlocked" } else { "" }, if new_uid.len() != old_uid.len() { " (length changed: header rebuilt)" } else { "" });
+        rows.push(r);
     }
     Ok(outcome(rows))
 }
@@ -1086,11 +1212,14 @@ pub fn verify_center(src: &Path, out: &Path, outcome: &CenterOutcome) -> Result<
     let moved_baked: HashSet<usize> = outcome.rows.iter().filter(|r| r.step == "center" && r.kind == "baked").filter_map(|r| r.index.parse().ok()).collect();
     let (dx, dy, dz) = outcome.offset_cells;
     let dw = [dx as f32 * 32.0, dy as f32 * 8.0, dz as f32 * 32.0];
+    let dwe = [outcome.offset_exact_m.0 as f32, dy as f32 * 8.0, outcome.offset_exact_m.1 as f32];
+    // V1 moved everything by the rounded offset; V2 moves items / free records by the exact one unless the mix said rounded
+    let dwe = if outcome.exact_items { dwe } else { dw };
     for (i, (x, y)) in a.blocks.iter().zip(b.blocks.iter()).enumerate() {
         let same_pose = x.coords() == y.coords() && x.free_pos == y.free_pos;
         let exp = if moved_blocks.contains(&i) {
             match x.free_pos {
-                Some(p) => y.free_pos == Some(shifted(p, dw)),
+                Some(p) => y.free_pos == Some(shifted(p, dwe)),
                 None => {
                     let c = x.coords();
                     y.coords() == (c.0 + dx, c.1 + dy, c.2 + dz)
@@ -1104,7 +1233,7 @@ pub fn verify_center(src: &Path, out: &Path, outcome: &CenterOutcome) -> Result<
         }
     }
     for (i, (x, y)) in a.items.iter().zip(b.items.iter()).enumerate() {
-        let exp = if moved_items.contains(&i) { y.pos == shifted(x.pos, dw) } else { y.pos == x.pos && y.coords() == x.coords() };
+        let exp = if moved_items.contains(&i) { y.pos == shifted(x.pos, dwe) } else { y.pos == x.pos && y.coords() == x.coords() };
         if x.model != y.model || x.yaw != y.yaw || x.pitch != y.pitch || x.roll != y.roll || x.pivot != y.pivot || x.scale != y.scale || x.waypoint_tag != y.waypoint_tag || !exp {
             bad.push(format!("item#{i} {} differs ({:?} -> {:?})", x.model, x.pos, y.pos));
         }
@@ -1112,7 +1241,7 @@ pub fn verify_center(src: &Path, out: &Path, outcome: &CenterOutcome) -> Result<
     for (i, (x, y)) in a.baked.iter().zip(b.baked.iter()).enumerate() {
         let exp = if moved_baked.contains(&x.index) {
             match x.free_pos {
-                Some(p) => y.free_pos == Some(shifted(p, dw)),
+                Some(p) => y.free_pos == Some(shifted(p, dwe)),
                 None => {
                     let c = x.coords();
                     y.coords() == (c.0 + dx, c.1 + dy, c.2 + dz)
@@ -1132,6 +1261,27 @@ pub fn verify_center(src: &Path, out: &Path, outcome: &CenterOutcome) -> Result<
     let hb = tmmaps::header::read(out.to_str().unwrap_or_default())?;
     if hb.validated != "0" {
         bad.push(format!("header validated={}", hb.validated));
+    }
+    if hb.name != outcome.new_name {
+        bad.push(format!("header name {:?} != {:?}", hb.name, outcome.new_name));
+    }
+    if hb.uid != outcome.new_uid {
+        bad.push(format!("header uid {} != {}", hb.uid, outcome.new_uid));
+    }
+    if let Some(t) = outcome.times {
+        if hb.bronze != t.0.to_string() || hb.silver != t.1.to_string() || hb.gold != t.2.to_string() || hb.authortime != t.3.to_string() {
+            bad.push(format!("header times {}/{}/{}/{} != {:?}", hb.bronze, hb.silver, hb.gold, hb.authortime, t));
+        }
+    }
+    if outcome.unlocked && has_chunk(&b.gbx.body, 0x0304_3029) {
+        bad.push("password chunk 0x03043029 still present".into());
+    }
+    // the body's own name copy: the blocks chunk's mapName must match too
+    if b.blocks_count_off > 0 {
+        let needle = outcome.new_name.as_bytes();
+        if !b.gbx.body.windows(needle.len()).any(|w| w == needle) {
+            bad.push("the body does not carry the new name".into());
+        }
     }
     if let Some(&(_, _, payload, size)) = tmmaps::gbx::all_skip_chunks(&b.gbx.body).iter().find(|(c, ..)| *c == 0x0304_305B) {
         let has = size >= 8 && u32::from_le_bytes(b.gbx.body[payload + 4..payload + 8].try_into().unwrap()) != 0;
@@ -1242,6 +1392,10 @@ pub struct PipelineOpts {
     pub keep_renumber: bool,
     /// the `--pak FILE:KEY` specs this run opened (handed to lmtool)
     pub pak_specs: Vec<String>,
+    /// `--no-sttf`: the input is already STTF'd (Uelen's files): center-finish only
+    pub no_sttf: bool,
+    /// `--out-name mapname`: the output is `<new map name>.Map.Gbx` instead of `<stem>-Straight-to-the-Center.Map.Gbx`
+    pub out_by_map_name: bool,
 }
 
 /// One map through both steps: `out_dir/sttf/<stem>.sttf.Map.Gbx`, then
@@ -1251,17 +1405,42 @@ pub fn pipeline(store: &mut DataStore, src: &Path, out_dir: &Path, o: &PipelineO
     let stem = src.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
     let stem = stem.trim_end_matches(".Map.Gbx").to_string();
     let sttf_out: PathBuf = out_dir.join("sttf").join(format!("{stem}.sttf.Map.Gbx"));
-    let final_out: PathBuf = out_dir.join(format!("{stem}-Straight-to-the-Center.Map.Gbx"));
     let m = MapFile::try_load(src)?;
+    let final_out: PathBuf = if o.out_by_map_name {
+        let hdr = tmmaps::header::read(src.to_str().unwrap_or_default())?;
+        let base = match &o.center.strip_name_suffix {
+            Some(suf) if hdr.name.ends_with(suf.as_str()) => hdr.name[..hdr.name.len() - suf.len()].to_string(),
+            _ => hdr.name.clone(),
+        };
+        let name = if hdr.name.ends_with(NAME_SUFFIX) { hdr.name.clone() } else { format!("{base}{NAME_SUFFIX}") };
+        out_dir.join(format!("{}.Map.Gbx", name.replace(['/', '\\', ':'], "-")))
+    } else {
+        out_dir.join(format!("{stem}-Straight-to-the-Center.Map.Gbx"))
+    };
     let mut rows = Vec::new();
     let summary: String = {
         let mut ctx = Ctx::new(store, &m);
-        let s = sttf(&mut ctx, src, &sttf_out, o.cp, o.dry)?;
+        let s = if o.no_sttf {
+            // the input is already STTF'd: report its checkpoint state, touch nothing
+            let mut cps = 0usize;
+            for b in m.blocks.iter().filter(|b| b.flags != 0xFFFF_FFFF) {
+                if ctx.block_class(b).effective() == Some(WP_CHECKPOINT) { cps += 1; }
+            }
+            for it in &m.items {
+                if ctx.item_class(it).effective() == Some(WP_CHECKPOINT) { cps += 1; }
+            }
+            if cps > 0 {
+                return Err(format!("{stem}: --no-sttf but the input still carries {cps} checkpoint(s)"));
+            }
+            SttfOutcome { rows: Vec::new(), replaced: 0, removed_blocks: 0, removed_items: 0, removed_baked: 0, mismatches: 0, unresolved: 0 }
+        } else {
+            sttf(&mut ctx, src, &sttf_out, o.cp, o.dry)?
+        };
         let mut bad_s = Vec::new();
-        if !o.dry {
+        if !o.dry && !o.no_sttf {
             bad_s = verify_sttf(src, &sttf_out, &s)?;
         }
-        let center_src: &Path = if o.dry { src } else { &sttf_out };
+        let center_src: &Path = if o.dry || o.no_sttf { src } else { &sttf_out };
         // a fresh context: the STTF output is a new file (indices shifted)
         let m2 = MapFile::try_load(center_src)?;
         let mut ctx2 = Ctx::new(ctx.store, &m2);
@@ -1274,9 +1453,11 @@ pub fn pipeline(store: &mut DataStore, src: &Path, out_dir: &Path, o: &PipelineO
         rows.extend(c.rows.iter().cloned());
         let mut r = Row::new(&format!("{stem}.Map.Gbx"), "summary", "map", 0, &format!("{}{}", m.size[0], if m.size[0] == 48 { " (Stadium)" } else { "" }));
         r.action = format!(
-            "sttf: {} replaced, {} blocks removed, {} items removed, {} baked removed; center: {} finish blocks + {} items + {} baked moved by ({},{},{}) cells, centroid ({:.1},{:.1}) -> centre ({:.1},{:.1}), {} overlaps, {} startfinish, {} mismatches",
-            s.replaced, s.removed_blocks, s.removed_items, s.removed_baked, c.finish_blocks, c.finish_items, c.moved_baked, c.offset_cells.0, c.offset_cells.1, c.offset_cells.2, c.centroid.0, c.centroid.1, c.center.0, c.center.1, c.overlaps, c.startfinish, s.mismatches + c.mismatches
+            "sttf: {}; center: {} finish blocks + {} items + {} baked moved by ({},{},{}) cells (exact ({:.1},{:.1}) m, residual ({:.1},{:.1}) m), reference ({:.1},{:.1}) -> centre ({:.1},{:.1}), {} overlaps, {} startfinish, {} mismatches",
+            if o.no_sttf { "input already STTF (0 checkpoints), skipped".to_string() } else { format!("{} replaced, {} blocks removed, {} items removed, {} baked removed", s.replaced, s.removed_blocks, s.removed_items, s.removed_baked) },
+            c.finish_blocks, c.finish_items, c.moved_baked, c.offset_cells.0, c.offset_cells.1, c.offset_cells.2, c.offset_exact_m.0, c.offset_exact_m.1, c.residual_m.0, c.residual_m.1, c.reference.0, c.reference.1, c.center.0, c.center.1, c.overlaps, c.startfinish, s.mismatches + c.mismatches
         );
+        r.action = format!("{}; items/free: {}", r.action, if c.exact_items { "exact offset (land on the centre)" } else if c.finish_items > 0 || c.has_free_finish { "ROUNDED with the grid blocks (composite finish keeps its shape)" } else { "n/a (grid blocks only; residual = the half-cell tie)" });
         r.to_name = c.new_name.clone();
         r.note = if bad_s.is_empty() && bad_c.is_empty() { if o.dry { "dry-run".into() } else { "verified".into() } } else { format!("VERIFY FAILED: {} {}", bad_s.join("; "), bad_c.join("; ")) };
         r.to = if o.dry { String::new() } else { final_out.display().to_string() };
@@ -1570,7 +1751,7 @@ mod tests {
             return;
         };
         let out = std::env::temp_dir().join(format!("sttc-test-{}", std::process::id()));
-        let opts = PipelineOpts { cp: CpMode::Plain, center: CenterOpts { center: Center::Auto, occupied: Occupied::Overlap, include_startfinish: false, rename: true, reuid: true, strip_lightmap: true }, dry: false, keep_sttf: true, keep_renumber: false, pak_specs: Vec::new() };
+        let opts = PipelineOpts { cp: CpMode::Plain, center: CenterOpts { center: Center::Auto, occupied: Occupied::Overlap, include_startfinish: false, rename: true, reuid: true, strip_lightmap: true, rule: Rule::V1, strip_name_suffix: None, uid_table: None, originals: None, unlock: false, item_offset: ItemOffset::Auto }, dry: false, keep_sttf: true, keep_renumber: false, pak_specs: Vec::new(), no_sttf: false, out_by_map_name: false };
         for (file, want) in [
             ("01-Fall-2026---01.Map.Gbx", "3 items + 0 baked moved by (7,0,-10)"),
             ("05-Fall-2026---05.Map.Gbx", "1 finish blocks + 0 items + 9 baked moved by (7,0,0)"),

@@ -523,3 +523,146 @@ pub fn cmd_skins(args: &[String]) {
         }
     }
 }
+
+/// `tmmaps censusdiff A.Map.Gbx B.Map.Gbx [--items-eps M]`: the two maps' placements compared —
+/// authored blocks by (name, cell | free position), items by (model, position within eps),
+/// generated records by (name, cell, dir). Per class: only-in-A, only-in-B, and for blocks
+/// found on both sides the dir / flag differences (a symmetric piece turned the other way, a
+/// variant bit). Written 2026-10-02 to compare Uelen's hand-made STTF files with `mapgeom sttf`'s.
+pub fn cmd_censusdiff(args: &[String]) {
+    let a = MapFile::load(Path::new(&args[2]));
+    let b = MapFile::load(Path::new(args.get(3).unwrap_or_else(|| crate::cli::die("censusdiff needs two maps"))));
+    let eps: f32 = crate::cli::flag(args, "--items-eps").and_then(|s| s.parse().ok()).unwrap_or(0.05);
+    let quiet = crate::cli::has(args, "--summary");
+    use std::collections::BTreeMap;
+    // --- authored blocks: key = name + cell (grid) or name + rounded free position
+    let bkey = |x: &crate::map::BlockRec| -> String {
+        match x.free_pos {
+            Some(p) if x.flags & FREE_BLOCK_FLAG != 0 => format!("{}|free {:.1},{:.1},{:.1}", x.name, p[0], p[1], p[2]),
+            _ => {
+                let c = x.coords();
+                format!("{}|{},{},{}", x.name, c.0, c.1, c.2)
+            }
+        }
+    };
+    let mut ka: BTreeMap<String, Vec<&crate::map::BlockRec>> = BTreeMap::new();
+    let mut kb: BTreeMap<String, Vec<&crate::map::BlockRec>> = BTreeMap::new();
+    for x in a.blocks.iter().filter(|x| x.flags != 0xFFFF_FFFF) {
+        ka.entry(bkey(x)).or_default().push(x);
+    }
+    for x in b.blocks.iter().filter(|x| x.flags != 0xFFFF_FFFF) {
+        kb.entry(bkey(x)).or_default().push(x);
+    }
+    let (mut only_a, mut only_b, mut dir_diff, mut flag_diff, mut same) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), 0usize);
+    for (k, va) in &ka {
+        match kb.get(k) {
+            None => only_a.extend(va.iter().map(|_| k.clone())),
+            Some(vb) => {
+                for (i, x) in va.iter().enumerate() {
+                    match vb.get(i) {
+                        None => only_a.push(k.clone()),
+                        Some(y) => {
+                            let d = x.dir != y.dir || (x.free_rot != y.free_rot && x.flags & FREE_BLOCK_FLAG != 0);
+                            let f = x.flags != y.flags;
+                            if d {
+                                dir_diff.push(format!("{k}: dir {} -> {}", x.dir, y.dir));
+                            }
+                            if f {
+                                flag_diff.push(format!("{k}: flags {:08X} -> {:08X}", x.flags, y.flags));
+                            }
+                            if !d && !f {
+                                same += 1;
+                            }
+                        }
+                    }
+                }
+                if vb.len() > va.len() {
+                    only_b.extend(std::iter::repeat(k.clone()).take(vb.len() - va.len()));
+                }
+            }
+        }
+    }
+    for (k, vb) in &kb {
+        if !ka.contains_key(k) {
+            only_b.extend(vb.iter().map(|_| k.clone()));
+        }
+    }
+    // --- items: model + position within eps (greedy)
+    let mut used = vec![false; b.items.len()];
+    let (mut i_only_a, mut i_only_b, mut i_same, mut i_rot) = (Vec::new(), Vec::new(), 0usize, Vec::new());
+    for x in &a.items {
+        let hit = b.items.iter().enumerate().find(|(j, y)| !used[*j] && y.model == x.model && (y.pos[0] - x.pos[0]).abs() <= eps && (y.pos[1] - x.pos[1]).abs() <= eps && (y.pos[2] - x.pos[2]).abs() <= eps);
+        match hit {
+            Some((j, y)) => {
+                used[j] = true;
+                if (y.yaw - x.yaw).abs() > 1e-4 || (y.pitch - x.pitch).abs() > 1e-4 || (y.roll - x.roll).abs() > 1e-4 || y.waypoint_tag != x.waypoint_tag {
+                    i_rot.push(format!("{} @{:.1},{:.1},{:.1}: yaw {:.4} -> {:.4} tag {:?} -> {:?}", x.model, x.pos[0], x.pos[1], x.pos[2], x.yaw, y.yaw, x.waypoint_tag, y.waypoint_tag));
+                } else {
+                    i_same += 1;
+                }
+            }
+            None => i_only_a.push(format!("{} @{:.1},{:.1},{:.1} yaw {:.4}{}", x.model, x.pos[0], x.pos[1], x.pos[2], x.yaw, x.waypoint_tag.as_ref().map(|t| format!(" [{t}]")).unwrap_or_default())),
+        }
+    }
+    for (j, y) in b.items.iter().enumerate() {
+        if !used[j] {
+            i_only_b.push(format!("{} @{:.1},{:.1},{:.1} yaw {:.4}{}", y.model, y.pos[0], y.pos[1], y.pos[2], y.yaw, y.waypoint_tag.as_ref().map(|t| format!(" [{t}]")).unwrap_or_default()));
+        }
+    }
+    // --- generated records: name + cell + dir (free ones by position)
+    let gkey = |x: &crate::map::BlockRec| -> String {
+        match x.free_pos {
+            Some(p) if x.flags & FREE_BLOCK_FLAG != 0 => format!("{}|free {:.1},{:.1},{:.1}", x.name, p[0], p[1], p[2]),
+            _ => {
+                let c = x.coords();
+                format!("{}|{},{},{}|d{}", x.name, c.0, c.1, c.2, x.dir)
+            }
+        }
+    };
+    let mut ga: BTreeMap<String, usize> = BTreeMap::new();
+    let mut gb: BTreeMap<String, usize> = BTreeMap::new();
+    for x in &a.baked {
+        *ga.entry(gkey(x)).or_default() += 1;
+    }
+    for x in &b.baked {
+        *gb.entry(gkey(x)).or_default() += 1;
+    }
+    let mut g_only_a: Vec<String> = Vec::new();
+    let mut g_only_b: Vec<String> = Vec::new();
+    for (k, n) in &ga {
+        let m = gb.get(k).copied().unwrap_or(0);
+        for _ in m..*n {
+            g_only_a.push(k.clone());
+        }
+    }
+    for (k, n) in &gb {
+        let m = ga.get(k).copied().unwrap_or(0);
+        for _ in m..*n {
+            g_only_b.push(k.clone());
+        }
+    }
+    println!(
+        "blocks: A {} B {}; same {same}, dir-only {}, flags-only {}, only-A {}, only-B {} | items: A {} B {}; same {i_same}, pose/tag diff {}, only-A {}, only-B {} | generated: A {} B {}; only-A {}, only-B {}",
+        a.blocks.len(), b.blocks.len(), dir_diff.len(), flag_diff.len(), only_a.len(), only_b.len(), a.items.len(), b.items.len(), i_rot.len(), i_only_a.len(), i_only_b.len(), a.baked.len(), b.baked.len(), g_only_a.len(), g_only_b.len()
+    );
+    if quiet {
+        return;
+    }
+    let dump = |title: &str, v: &[String]| {
+        if !v.is_empty() {
+            println!("{title} ({}):", v.len());
+            for l in v {
+                println!("  {l}");
+            }
+        }
+    };
+    dump("blocks only in A", &only_a);
+    dump("blocks only in B", &only_b);
+    dump("blocks turned (dir differs)", &dir_diff);
+    dump("blocks with other flags", &flag_diff);
+    dump("items only in A", &i_only_a);
+    dump("items only in B", &i_only_b);
+    dump("items with another pose / tag", &i_rot);
+    dump("generated only in A", &g_only_a);
+    dump("generated only in B", &g_only_b);
+}
