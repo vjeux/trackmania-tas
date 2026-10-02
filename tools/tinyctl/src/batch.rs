@@ -302,6 +302,28 @@ pub fn publish_batch_cmd(args: &[String]) -> Result<(), String> {
         let mut camp_line = String::from("campaign\tnot set");
         if let (Some(club), Some(camp), Some(cname)) = (f("--club"), f("--campaign"), f("--campaign-name")) {
             let auth_live = format!("Authorization: {}", t.live);
+            // THE PLAYLIST IS MERGED, NEVER SHRUNK (2026-10-02 04:43Z: an in-place re-upload of 9 of 24 maps
+            // rewrote "Tiny Fall 2026" as a 9-map playlist for 15 s): the live playlist is read first and
+            // every uid of it that this batch did not touch keeps its place; the batch's uids take theirs
+            // (an existing uid stays where it was, a new one is appended in manifest order). `--playlist
+            // replace` writes the manifest's list alone (a campaign built from scratch).
+            let uids: Vec<String> = if f("--playlist").as_deref() == Some("replace") {
+                uids.clone()
+            } else {
+                match crate::nadeo::campaign_uids(&auth_live, &club, &camp) {
+                    Ok(live) => {
+                        let mut merged = live.clone();
+                        for u in &uids {
+                            if !merged.contains(u) {
+                                merged.push(u.clone());
+                            }
+                        }
+                        println!("playlist: {} live + {} new of this batch's {} = {} (merged, nothing dropped)", live.len(), merged.len() - live.len(), uids.len(), merged.len());
+                        merged
+                    }
+                    Err(e) => return Err(format!("the live playlist could not be read before the write ({e}) — not writing a partial playlist")),
+                }
+            };
             match crate::nadeo::campaign_set(&auth_live, &club, &camp, &cname, &uids) {
                 Ok(v) => {
                     let n = serde_json::to_string(&v).unwrap_or_default().matches("\"mapUid\"").count();
