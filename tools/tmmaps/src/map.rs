@@ -2768,6 +2768,19 @@ impl MapFile {
     /// crashes the client at load (measured 2026-09-22; TMX 117600 is a 128^3 map
     /// with 16384 records under the 48x48 NoStadium decoration).
     pub fn fill_genealogy_file_n(path: &std::path::Path, count: Option<usize>) -> Result<(String, usize), String> {
+        Self::fill_genealogy_file_from(path, count, None)
+    }
+
+    /// `fill_genealogy_file_n` with the zone records read from `template` (a map
+    /// of the same collection, normally the SOURCE the file was built from)
+    /// instead of from `path` itself. A built tiny whose genealogy was CLEARED
+    /// carries a chunk of 0 records — nothing to pick the zone or the record
+    /// template from (the Fall 2026 BlueBay tinies 04 09 14 19 24, built while
+    /// `tmmaps tiny`'s BlueBay policy was still `clear`: the open water hung
+    /// over the island's land cells with no floor, 2026-10-01). The record
+    /// count stays the file's own when it has one (a grown giant grid), else
+    /// the template's (the source's grid = the tiny's), unless `count` says.
+    pub fn fill_genealogy_file_from(path: &std::path::Path, count: Option<usize>, template: Option<&std::path::Path>) -> Result<(String, usize), String> {
         let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
         let g = Gbx::parse(&bytes);
         let body = g.body.clone();
@@ -2775,10 +2788,33 @@ impl MapFile {
             .iter()
             .find(|(cid, ..)| *cid == 0x03043043)
             .ok_or("no genealogy chunk")?;
-        let chunk = &body[payload..payload + size];
+        // `own` = the file's chunk (its version word and record count); `chunk` =
+        // the chunk the zone and the record template are read from
+        let own = &body[payload..payload + size];
+        let own_count = genealogy_records(own).map(|r| r.len()).unwrap_or(0);
+        let tpl_body: Vec<u8>;
+        let chunk: &[u8] = match template {
+            Some(t) => {
+                let tb = std::fs::read(t).map_err(|e| format!("{}: {e}", t.display()))?;
+                let tg = Gbx::parse(&tb);
+                tpl_body = tg.body.clone();
+                let (_, _, tp, ts) = *crate::gbx::all_skip_chunks(&tpl_body)
+                    .iter()
+                    .find(|(cid, ..)| *cid == 0x03043043)
+                    .ok_or_else(|| format!("{}: no genealogy chunk", t.display()))?;
+                &tpl_body[tp..tp + ts]
+            }
+            None => own,
+        };
         let recs = genealogy_records(chunk)?;
-        let n = count.unwrap_or(recs.len());
-        let (r0s, r0e, zone) = recs.first().cloned().ok_or("no genealogy records")?;
+        let n = count.unwrap_or(if own_count > 0 { own_count } else { recs.len() });
+        let (r0s, r0e, zone) = recs.first().cloned().ok_or_else(|| {
+            if template.is_none() && own_count == 0 {
+                "no genealogy records (a cleared chunk: give the SOURCE map as the template, `genealogy-fill --from`)".to_string()
+            } else {
+                "no genealogy records".to_string()
+            }
+        })?;
         let mut hist: std::collections::BTreeMap<&str, usize> = Default::default();
         for (_, _, z) in &recs {
             *hist.entry(z.as_str()).or_default() += 1;
@@ -2908,7 +2944,7 @@ impl MapFile {
         out.extend_from_slice(&0x03043043u32.to_le_bytes());
         out.extend_from_slice(&body[off + 4..off + 8]); // PIKS
         out.extend_from_slice(&((8 + inner.len()) as u32).to_le_bytes());
-        out.extend_from_slice(&chunk[0..4]); // version
+        out.extend_from_slice(&own[0..4]); // version (the file's own)
         out.extend_from_slice(&(inner.len() as u32).to_le_bytes()); // inner buffer length
         out.extend_from_slice(&inner);
         out.extend_from_slice(&body[payload + size..]);

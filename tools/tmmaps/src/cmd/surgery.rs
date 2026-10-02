@@ -910,17 +910,25 @@ pub fn ghostchunk(args: &[String]) {
     println!("{}: validation ghost chunk from {donor} ({} B) {placed} -> {out}", path.display(), chunk.len());
 }
 
-/// `tmmaps genealogy-fill MAP --out F` — chunk 0x03043043 rewritten so EVERY cell
-/// carries the map's ambient zone (`MapFile::fill_genealogy_file`), items and
-/// everything else untouched. The BlueBay lagoon fix (Summer 01, 2026-09-22): the
-/// tiny keeps the source's Sea records full size in place and scales the island about
-/// the spawn, so tiny water hangs over cleared genealogy wherever the full-size cell
-/// beneath was land — a bottomless flat polygon. With the zone table filled with
-/// `Sea` the game regenerates water + sand floor under the whole island, the form the
-/// other four collections already ship with (`TINY_GENEALOGY=fill`).
+/// `tmmaps genealogy-fill MAP --out F [--from SOURCE] [--grid | --count N]` — chunk
+/// 0x03043043 rewritten so EVERY cell carries the map's ambient water zone
+/// (`MapFile::fill_genealogy_file_from`), items and everything else untouched. The
+/// BlueBay lagoon fix (Summer 01, 2026-09-22): the tiny keeps the source's Sea
+/// records full size in place and scales the island about the spawn, so tiny water
+/// hangs over cleared genealogy wherever the full-size cell beneath was land — a
+/// bottomless flat polygon. With the zone table filled with `Sea` the game
+/// regenerates water + sand floor under the whole island, the form the other
+/// terrain collections ship with (`tmmaps tiny`'s default for all four since
+/// 2026-10-01; `TINY_GENEALOGY=clear` opts out).
+/// `--from SOURCE`: the zone records are read from SOURCE (the map the file was
+/// built from) — for a built file whose chunk was CLEARED (0 records: the Fall 2026
+/// BlueBay tinies 04 09 14 19 24) there is nothing in the file itself to pick the
+/// zone or the record template from. The count stays the file's own when it has
+/// records (a grown giant grid), else the source's.
 pub fn genealogy_fill(args: &[String]) {
     let src = std::path::PathBuf::from(&args[2]);
     let out = std::path::PathBuf::from(tmmaps::cli::flag(args, "--out").expect("genealogy-fill needs --out MAP"));
+    let from = tmmaps::cli::flag(args, "--from").map(std::path::PathBuf::from);
     // --count N | --grid: the record count — N, or the map's size_x x size_z
     // (a grid raised by `tmmaps set-size` wants a table of its own size)
     let count: Option<usize> = match tmmaps::cli::flag(args, "--count") {
@@ -932,8 +940,13 @@ pub fn genealogy_fill(args: &[String]) {
         None => None,
     };
     std::fs::copy(&src, &out).expect("copy");
-    let (zone, n) = tmmaps::map::MapFile::fill_genealogy_file_n(&out, count).expect("fill genealogies");
-    println!("{}: genealogy chunk filled: {n} cells of {zone} -> {}", src.display(), out.display());
+    let (zone, n) = tmmaps::map::MapFile::fill_genealogy_file_from(&out, count, from.as_deref()).expect("fill genealogies");
+    println!(
+        "{}: genealogy chunk filled: {n} cells of {zone}{} -> {}",
+        src.display(),
+        from.as_ref().map(|f| format!(" (zone records from {})", f.display())).unwrap_or_default(),
+        out.display()
+    );
 }
 
 /// `tmmaps embedded MAP [--names]` — the embedded-objects zip (chunk 0x03043054) as a census: how many

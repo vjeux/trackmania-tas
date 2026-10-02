@@ -82,7 +82,7 @@ fn main() {
     const WANTS_MAP: &[&str] = &[
         "waypoints", "census", "gridinfo", "skins", "fillers", "region", "colors", "phases", "genealogy", "tiny-catalog", "lineup", "shared-cells", "ponds", "tiny", "tiny-batch", "clear", "shift", "segments", "move", "rotate", "ladder",
         "roundtrip",
-        "renamecheck", "cporder", "origin", "chunks", "blockrefs", "setuid", "settimes", "lmquality", "ghostchunk", "genealogy-fill", "delblocks", "striplightmap", "itembytes", "embedded", "embedded-restore", "mediatracker", "music", "strings",
+        "renamecheck", "cporder", "origin", "chunks", "chunkdiff", "blockrefs", "setuid", "settimes", "lmquality", "ghostchunk", "genealogy-fill", "delblocks", "striplightmap", "itembytes", "embedded", "embedded-restore", "mediatracker", "music", "strings",
     ];
     if WANTS_MAP.contains(&cmd) && args.len() < 3 {
         eprintln!("tmmaps {} needs a MAP path.\n\n{}", cmd, USAGE);
@@ -343,6 +343,7 @@ fn main() {
             }
         }
         "chunks" => inspect::chunks(&args),
+        "chunkdiff" => inspect::chunkdiff(&args),
         "blockrefs" => inspect::blockrefs(&args),
         "genealogy" => inspect::genealogy(&args),
         "gridinfo" => inspect::gridinfo(&args),
@@ -393,6 +394,9 @@ READING A MAP
         the per-item ANIMATION PHASE OFFSET (chunk 0x03043063, one byte per item
         in eighths of the period: 4 = half) — what the editor stores when the
         author phases a pusher/rotor/tube; non-zero items, or --filter/--all
+  tmmaps chunkdiff A B [--allow 0xCHUNK,…]
+        the two bodies chunk by chunk (header, every skippable chunk, the inline stretches between);
+        non-zero exit when anything outside --allow differs — the gate behind a chunk transplant
   tmmaps chunks MAP [--only 0xCHUNK --hex N]
         every skippable body chunk with its size (--only/--hex: one chunk, head dump)
   tmmaps blockrefs MAP [--groups]

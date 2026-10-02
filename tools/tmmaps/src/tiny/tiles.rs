@@ -296,7 +296,15 @@ pub fn ponds_cmd(args: &[String]) {
     }
     eprintln!("{} pond cells of {} Sea cells", ponds.len(), sea_total);
     let unc = uncovered_sea_cells(&source, crate::cli::flag(args, "--scale").and_then(|s| s.parse().ok()).unwrap_or(0.5));
-    eprintln!("{} uncovered cells of {} Sea cells (tiny water over a full-size cell that is not Sea — bottomless without a floor item)", unc.len(), sea_total);
+    let zones = source.genealogy_zones();
+    let floor = genealogy_water_cells(&source);
+    eprintln!(
+        "genealogy: {} records, {} water-zone cells (floor regenerated there){}",
+        zones.len(),
+        floor.len(),
+        if zones.is_empty() { " — CLEARED: nothing regenerated under the island" } else { "" }
+    );
+    eprintln!("{} uncovered cells of {} Sea cells (tiny water over a full-size cell that is neither Sea nor a water-zone genealogy cell — bottomless without a floor item)", unc.len(), sea_total);
     if args.iter().any(|a| a == "--list-uncovered") {
         for c in &unc {
             println!("uncovered\t{},{},{}", c[0], c[1], c[2]);
@@ -465,14 +473,29 @@ pub fn spawn_anchor(source: &MapFile) -> Option<[f32; 3]> {
 /// the source's `Sea` records full size, in place (the open sea as decoration),
 /// and scales the island about the spawn — so a tiny sea cell shows water over a
 /// floor only where the FULL-SIZE cell beneath it is one of those kept Sea
-/// records. Where the cell beneath was land (an authored block, deleted), the tiny
-/// water hangs over the cleared genealogy: a bottomless plane that renders as the
-/// flat sky-coloured polygons of Summer 01's lagoon ("holes where there should be
-/// water", 2026-09-21). These cells get the half-size Sea floor item like the
-/// ponds. `scale` is the tiny scale (0.5).
+/// records, or a cell whose GENEALOGY zone is the collection's water (the game
+/// regenerates water + floor there at load: a zone table filled with `Sea`
+/// floors the whole island — `tmmaps tiny`'s BlueBay default since 2026-10-01,
+/// `tmmaps genealogy-fill` on an older file). Where the cell beneath was land
+/// (an authored block, deleted) over a cleared or land genealogy, the tiny water
+/// hangs with no floor: a bottomless plane that renders as the flat sky-coloured
+/// polygons of Summer 01's lagoon ("holes where there should be water",
+/// 2026-09-21) and of Fall 09's lagoon beside the track (2026-10-01). On a SOURCE
+/// map this is the census of what its conversion needs; on a BUILT tiny it is the
+/// verdict on the file as it stands (0 with a filled zone table). `scale` is the
+/// tiny scale (0.5).
 pub fn uncovered_sea_cells(source: &MapFile, scale: f32) -> BTreeSet<[u8; 3]> {
     let sea: BTreeSet<[u8; 3]> = source.blocks.iter().chain(source.baked.iter()).filter(|b| b.name == "Sea" && b.free_pos.is_none()).map(|b| b.file_cell).collect();
     let Some(anchor) = spawn_anchor(source) else { return BTreeSet::new() };
+    // a zone table that is water everywhere floors the whole grid — nothing
+    // the island (which the grid was grown to fit) can hang over (the giants:
+    // scaled about the grid's centre, not the spawn, so the per-cell mapping
+    // below would not even apply to them)
+    let zones = source.genealogy_zones();
+    if !zones.is_empty() && zones.iter().all(|z| WATER_ZONES.contains(&z.as_str())) {
+        return BTreeSet::new();
+    }
+    let water_floor = genealogy_water_cells(source);
     let cell = crate::map::CELL_XZ;
     let mut out = BTreeSet::new();
     for c in &sea {
@@ -487,8 +510,35 @@ pub fn uncovered_sea_cells(source: &MapFile, scale: f32) -> BTreeSet<[u8; 3]> {
         if !(0..=255).contains(&ux) || !(0..=255).contains(&uz) {
             continue;
         }
-        if !sea.contains(&[ux as u8, c[1], uz as u8]) {
+        if !sea.contains(&[ux as u8, c[1], uz as u8]) && !water_floor.contains(&(ux as u8, uz as u8)) {
             out.insert(*c);
+        }
+    }
+    out
+}
+
+/// The zone names the game regenerates a water floor from (the terrain
+/// collections' ambient water: BlueBay `Sea`, RedIsland/WhiteShore `Water`,
+/// GreenCoast `Lake`) — what `MapFile::fill_genealogy_file_from` spreads.
+pub const WATER_ZONES: [&str; 3] = ["Sea", "Water", "Lake"];
+
+/// The FILE cells (x, z) whose genealogy record is a water zone: the cells the
+/// game floors at load whatever blocks the file carries there. Record order is
+/// x * side + z over game cells (`tmmaps genealogy-cells`), side = sqrt(count);
+/// file cell = game cell + 1. Empty for a cleared chunk.
+pub fn genealogy_water_cells(map: &MapFile) -> BTreeSet<(u8, u8)> {
+    let zones = map.genealogy_zones();
+    let side = (zones.len() as f64).sqrt().round() as usize;
+    if side == 0 || side * side != zones.len() {
+        return BTreeSet::new();
+    }
+    let mut out = BTreeSet::new();
+    for (i, z) in zones.iter().enumerate() {
+        if WATER_ZONES.contains(&z.as_str()) {
+            let (x, zc) = (i / side + 1, i % side + 1);
+            if x <= 255 && zc <= 255 {
+                out.insert((x as u8, zc as u8));
+            }
         }
     }
     out

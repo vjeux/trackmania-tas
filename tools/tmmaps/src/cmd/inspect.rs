@@ -342,3 +342,83 @@ pub fn gridinfo(args: &[String]) {
     }
     println!("size words {:?}  decoration {:?}  blocks {} + baked {}  max cell x {mx} y {my} z {mz}", m.size, m.decoration_id, m.blocks.len(), m.baked.len());
 }
+
+/// `tmmaps chunkdiff A B [--allow 0xCHUNK,…]` — two maps' bodies compared
+/// chunk by chunk: the header (user data + reference table), every skippable
+/// chunk's payload by id (identical / differs / only in one), and the inline
+/// stretches between skippable chunks (the non-skippable chunks, the block
+/// list, the item records…). The gate behind a chunk transplant: a lightmap or
+/// a genealogy table swapped onto a shipped file must leave the items, the
+/// embedded zip and everything else byte-identical. Non-zero exit when a chunk
+/// outside `--allow` differs (default allow: none).
+pub fn chunkdiff(args: &[String]) {
+    let a = gbx::Gbx::load(Path::new(&args[2])).unwrap();
+    let b = gbx::Gbx::load(Path::new(args.get(3).expect("chunkdiff A B"))).unwrap();
+    let allow: Vec<u32> = flag(&args, "--allow").map(|s| s.split(',').filter(|x| !x.is_empty()).map(|x| u32::from_str_radix(x.trim().trim_start_matches("0x").trim_start_matches("0X"), 16).expect("--allow 0xCHUNK,…")).collect()).unwrap_or_default();
+    let mut bad: Vec<String> = Vec::new();
+    let hdr = |g: &gbx::Gbx| (g.class_id, g.user_data.clone(), g.num_nodes, g.ref_table.clone());
+    println!("part\tA bytes\tB bytes\tverdict");
+    let (ha, hb) = (hdr(&a), hdr(&b));
+    println!("header\t{}\t{}\t{}", a.user_data.len(), b.user_data.len(), if ha == hb { "identical" } else { bad.push("header".into()); "DIFFERS" });
+    let ca = tmmaps::gbx::all_skip_chunks(&a.body);
+    let cb = tmmaps::gbx::all_skip_chunks(&b.body);
+    // the inline stretches: body bytes outside the skippable chunks, in order
+    let inline = |body: &[u8], chunks: &[(u32, usize, usize, usize)]| -> Vec<Vec<u8>> {
+        let mut out = Vec::new();
+        let mut o = 0usize;
+        for &(_, off, payload, size) in chunks {
+            out.push(body[o..off].to_vec());
+            o = payload + size;
+        }
+        out.push(body[o..].to_vec());
+        out
+    };
+    let (ia, ib) = (inline(&a.body, &ca), inline(&b.body, &cb));
+    let same_ids = ca.iter().map(|c| c.0).collect::<Vec<_>>() == cb.iter().map(|c| c.0).collect::<Vec<_>>();
+    if same_ids {
+        for (k, (x, y)) in ia.iter().zip(ib.iter()).enumerate() {
+            let v = if x == y { "identical" } else { bad.push(format!("inline stretch {k}")); "DIFFERS" };
+            if x != y || k == 0 { println!("inline#{k}\t{}\t{}\t{v}", x.len(), y.len()); }
+        }
+    } else {
+        bad.push("chunk id sequence".into());
+        println!("chunk sequence\t{}\t{}\tDIFFERS", ca.len(), cb.len());
+    }
+    // chunks by id (a map carries one of each id except the per-block
+    // 0x03029002/0x0307900E inline-node chunks; those are compared in order)
+    let mut i = 0usize;
+    let mut j = 0usize;
+    while i < ca.len() || j < cb.len() {
+        match (ca.get(i), cb.get(j)) {
+            (Some(&(ida, _, pa, sa)), Some(&(idb, _, pb, sb))) if ida == idb => {
+                let (x, y) = (&a.body[pa..pa + sa], &b.body[pb..pb + sb]);
+                let v = if x == y { "identical" } else if allow.contains(&ida) { "differs (allowed)" } else { bad.push(format!("{ida:#010x}")); "DIFFERS" };
+                if x != y || !matches!(ida, 0x0302_9002 | 0x0307_900E) { println!("{ida:#010x}\t{sa}\t{sb}\t{v}"); }
+                i += 1;
+                j += 1;
+            }
+            (Some(&(ida, _, _, sa)), other) => {
+                // A has a chunk B lacks at this point (or B is exhausted)
+                if other.map(|c| cb[j..].iter().any(|c2| c2.0 == ida)).unwrap_or(false) {
+                    let (idb, _, _, sb) = cb[j];
+                    println!("{idb:#010x}\t-\t{sb}\t{}", if allow.contains(&idb) { "only in B (allowed)" } else { bad.push(format!("{idb:#010x} only in B")); "ONLY IN B" });
+                    j += 1;
+                } else {
+                    println!("{ida:#010x}\t{sa}\t-\t{}", if allow.contains(&ida) { "only in A (allowed)" } else { bad.push(format!("{ida:#010x} only in A")); "ONLY IN A" });
+                    i += 1;
+                }
+            }
+            (None, Some(&(idb, _, _, sb))) => {
+                println!("{idb:#010x}\t-\t{sb}\t{}", if allow.contains(&idb) { "only in B (allowed)" } else { bad.push(format!("{idb:#010x} only in B")); "ONLY IN B" });
+                j += 1;
+            }
+            (None, None) => break,
+        }
+    }
+    if bad.is_empty() {
+        println!("verdict: identical outside the allowed chunks");
+    } else {
+        println!("verdict: DIFFERS in {}", bad.join(", "));
+        std::process::exit(1);
+    }
+}

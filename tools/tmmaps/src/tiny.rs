@@ -1393,13 +1393,21 @@ pub fn cmd(args: &[String]) {
     // that writer is gone.)
     // Stadium keeps it: its zones are the grass floor, full size under the
     // tiny map like the reference maps (and there is no sea to fall into).
+    // BlueBay FILLS too (default since 2026-10-01; the Summer 2026 lagoon fix
+    // of 2026-09-22 was `TINY_GENEALOGY=fill` by hand on every BlueBay map and
+    // the Fall 2026 tinies 04 09 14 19 24 shipped `clear` again): the tiny
+    // keeps the source's Sea records full size in place and scales the island
+    // about the spawn, so a tiny water cell over a cleared cell beneath — a
+    // land cell of the source — has no floor and renders as a flat
+    // sky-coloured polygon. A zone table of `Sea` x grid regenerates water +
+    // sand floor under the whole island, the form the other three terrain
+    // collections already shipped with.
     // TINY_GENEALOGY=clear|fill|keep overrides the per-collection policy (a
     // diagnostic: what the game regenerates under the island is only visible
     // in the game). TINY_KEEP_GENEALOGY is the old spelling of `keep`.
     let policy: Option<String> = std::env::var("TINY_GENEALOGY").ok().or_else(|| std::env::var_os("TINY_KEEP_GENEALOGY").map(|_| "keep".to_string()));
     let policy = policy.as_deref().unwrap_or(match collection {
-        0x1c => "clear",
-        0x10 | 0x1d | 0xf => "fill",
+        0x1c | 0x10 | 0x1d | 0xf => "fill",
         _ => "keep",
     });
     // A grown grid (fit-grid) wants its size words and a zone table of ITS size
@@ -1431,8 +1439,9 @@ pub fn cmd(args: &[String]) {
     };
     let fill_count: Option<usize> = grid_size.map(|s| (s as usize) * (s as usize));
     match policy {
-        // BlueBay: the sea around the island is decoration, so no zone
-        // at all leaves plain sea under the tiny map.
+        // `TINY_GENEALOGY=clear` only (the BlueBay default until 2026-10-01):
+        // no zone at all — plain sea under the tiny map, bottomless where the
+        // tiny water lies over a land cell of the source.
         "clear" => {
             let zones = MapFile::clear_genealogy_file(&out).expect("clear genealogies");
             println!("  genealogy chunk cleared: {zones} terrain zone records dropped");
@@ -1444,6 +1453,10 @@ pub fn cmd(args: &[String]) {
         // WhiteShore likewise: Water is a zone block (3148 of the 4096
         // cells of Summer 03), the sea the island sits in, surface -1.
         // GreenCoast: Lake (2418 of 4096 cells of Summer 04), the same way.
+        // BlueBay: Sea (water + sand floor regenerated under the whole island;
+        // the fill picks the collection's water zone whatever the source's
+        // first or most common zone is — Fall 2026 - 09 is Beach-first under
+        // a Land majority with 546 Sea cells).
         "fill" => {
             let (zone, n) = MapFile::fill_genealogy_file_n(&out, fill_count).expect("fill genealogies");
             println!("  genealogy chunk filled: {n} cells of {zone}");
