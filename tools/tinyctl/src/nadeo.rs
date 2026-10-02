@@ -515,6 +515,19 @@ fn activity_edit(auth_live: &str, club: &str, activity: &str, active: bool, publ
 
 /// `POST /club/{club}/campaign/{id}/edit {"name":…,"playlist":[{mapUid,position}…]}` —
 /// the campaign's whole playlist in the given order (an entry per uid).
+/// The campaign's CURRENT playlist, in position order (the live state before a playlist write).
+pub fn campaign_uids(auth_live: &str, club: &str, campaign: &str) -> Result<Vec<String>, String> {
+    let v = get_json(auth_live, &format!("{LIVE}/api/token/club/{club}/campaign/{campaign}"))?;
+    let inner = v.get("campaign").cloned().unwrap_or(Value::Null);
+    let mut uids: Vec<(u64, String)> = inner
+        .get("playlist")
+        .and_then(|l| l.as_array())
+        .map(|a| a.iter().map(|e| (e.get("position").and_then(|p| p.as_u64()).unwrap_or(0), e.get("mapUid").and_then(|u| u.as_str()).unwrap_or("").to_string())).collect())
+        .unwrap_or_default();
+    uids.sort();
+    Ok(uids.into_iter().map(|(_, u)| u).filter(|u| !u.is_empty()).collect())
+}
+
 pub fn campaign_set(auth_live: &str, club: &str, campaign: &str, name: &str, uids: &[String]) -> Result<Value, String> {
     let playlist: Vec<String> = uids.iter().enumerate().map(|(i, u)| format!("{{\"mapUid\":\"{u}\",\"position\":{i}}}")).collect();
     let body = format!("{{\"name\":\"{}\",\"playlist\":[{}]}}", name.replace('"', "\\\""), playlist.join(","));

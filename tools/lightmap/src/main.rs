@@ -7458,6 +7458,40 @@ fn run(mut a: Vec<String>) {
             // count ([unbaked][baked][items] / [grid slots][items]); PASS or FAIL naming the rows. The box play-load is the real check.
             lightmap::loadcheck::run(&a).unwrap_or_else(|e| { eprintln!("loadcheck: {e}"); std::process::exit(2) });
         }
+        "filetime-fix" => {
+            // lmtool filetime-fix MAP --out OUT [--to solids|TICKS]: the cache chunk 0x06022013's FILETIME word set to the map's
+            // TimeWriteMostRecentSolid (the game's load-time rule — a word that differs drops the whole lightmap in play). The
+            // ONLY bytes that change are the word (the zlib cache stream is rebuilt around it); frames, mapping, probes, the map's
+            // other chunks stay. Fall 2026 (2026-10-02): 11 of 48 shipped editor bakes carried the BAKE COPY's word (reduced /
+            // card-less copies whose newest solid is not the shipped file's) → no lightmap in play.
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1).cloned());
+            let map = a.get(1).filter(|x| !x.starts_with("--")).cloned().expect("filetime-fix MAP --out OUT");
+            let out = f("--out").expect("--out OUT");
+            let m = lightmap::mapio::load(&map).unwrap_or_else(|e| panic!("{e}"));
+            let mf = tmmaps::map::MapFile::load(std::path::Path::new(&map));
+            let target: u64 = match f("--to").as_deref() {
+                None | Some("solids") => lightmap::synth::most_recent_solid(&mf).unwrap_or_else(|e| panic!("{e}")).0.expect("no placed item model carries a FileWriteTime — nothing to set"),
+                Some(t) => t.parse().expect("--to TICKS"),
+            };
+            let old = lightmap::filetimecheck::cache_word(&m);
+            let mut chunk = m.chunk.clone();
+            let dd = chunk.data.as_mut().expect("the map has no lightmap data");
+            let mut set = 0;
+            for c in dd.cache.chunks.iter_mut() {
+                if c.id == 0x0602_2013 {
+                    if let lightmap::format::ChunkBody::Raw(b) = &mut c.body {
+                        if b.len() >= 16 { b[8..16].copy_from_slice(&target.to_le_bytes()); set += 1; }
+                    }
+                }
+            }
+            assert!(set == 1, "expected one cache chunk 0x06022013, found {set}");
+            let payload = chunk.write(true);
+            lightmap::mapio::save_with_chunk(&m, &payload, &out).unwrap_or_else(|e| panic!("{e}"));
+            let back = lightmap::mapio::load(&out).unwrap_or_else(|e| panic!("{e}"));
+            let now = lightmap::filetimecheck::cache_word(&back);
+            assert!(now == Some(target), "readback: word {now:?} ≠ {target}");
+            println!("{out}: cache chunk 0x06022013 FILETIME {} -> {} (the map's TimeWriteMostRecentSolid); frames/mapping/probes untouched", old.map(|w| w.to_string()).unwrap_or("-".into()), target);
+        }
         "filetime-check" => {
             // lmtool filetime-check MAP [MAP…] [--against EDITOR] [--tsv OUT]: THE CACHE FILETIME RULE (filetimecheck.rs, V4) — chunk
             // 0x06022013's word vs the max CPlugSolid2Model.FileWriteTime over the map's embedded items (the game rejects the chunk in

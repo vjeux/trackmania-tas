@@ -48,6 +48,31 @@ use tmmaps::map::{BlockRec, FreeBlockSpec, MapFile, CELL_XZ, CELL_Y};
 /// Block flag bits (see `blockmap`).
 const FLAG_GROUND: u32 = 1 << 12;
 const FLAG_REPLACEMENT: u32 = 1 << 16;
+/// the record has a waypoint node behind it (Start/Checkpoint/Finish/Multilap blocks)
+const FLAG_WAYPOINT: u32 = 1 << 20;
+/// the record carries an author id + a skin node
+const FLAG_SKIN: u32 = 1 << 15;
+
+const WAYPOINT_WORDS: [&str; 4] = ["Start", "Checkpoint", "Finish", "Multilap"];
+
+fn is_waypoint_name(name: &str) -> bool {
+    WAYPOINT_WORDS.iter().any(|w| name.contains(w))
+}
+
+/// The plain body tile a waypoint water block stands on: `PlatformWaterStart` →
+/// `PlatformWaterBase`, `PlatformWaterRampCheckpoint` → `PlatformWaterRampBase` (the waypoint word
+/// replaced by `Base` when that names a known tile), else the map's most common platform base.
+fn waypoint_body_base(name: &str, platform_base: &str) -> String {
+    for w in WAYPOINT_WORDS {
+        if name.contains(w) {
+            let cand = name.replacen(w, "Base", 1);
+            if WATER_TILE_NAMES.contains(&cand.as_str()) {
+                return cand;
+            }
+        }
+    }
+    if is_waypoint_name(platform_base) { "PlatformWaterBase".to_string() } else { platform_base.to_string() }
+}
 
 /// The pool blocks tiled natively.
 pub const POOL_BLOCKS: &[&str] = &["WaterBase", "DecoWallWaterBase"];
@@ -569,7 +594,7 @@ pub fn plan_volumes(store: &mut crate::store::DataStore, idx: &mut crate::blockm
     let platform_base: String = {
         let mut c: BTreeMap<&str, usize> = BTreeMap::new();
         for b in &blocks {
-            if b.name.starts_with("PlatformWater") && !b.name.contains("Diag") && b.local.iter().all(|x| (x[4] - 2.0).abs() < 1e-3) {
+            if b.name.starts_with("PlatformWater") && !b.name.contains("Diag") && !is_waypoint_name(&b.name) && b.local.iter().all(|x| (x[4] - 2.0).abs() < 1e-3) {
                 *c.entry(b.name.as_str()).or_insert(0) += 1;
             }
         }
@@ -662,20 +687,33 @@ pub fn plan_volumes(store: &mut crate::store::DataStore, idx: &mut crate::blockm
                         if area < 1.0 {
                             continue;
                         }
-                        let (tile, dir) = if diag && area < CELL_XZ * CELL_XZ - 1.0 { (wb.name.clone(), wb.dir) } else if diag { (platform_base.clone(), 0) } else { (wb.name.clone(), wb.dir) };
+                        // A WAYPOINT source block (PlatformWaterStart / Checkpoint / Finish / Multilap: flag
+                        // 0x100000, a waypoint node behind the record) tiles as the plain BODY base: the
+                        // waypoint itself is the library's item, a second Start block would be a second
+                        // spawn, and a record carrying the waypoint bit without its node is unreadable
+                        // (Ludde A08 #05, 2026-10-02: "unhandled inline node class" at the first record).
+                        let waypoint = wb.flags & FLAG_WAYPOINT != 0 || is_waypoint_name(&wb.name);
+                        let (tile, dir) = if waypoint { (waypoint_body_base(&wb.name, &platform_base), wb.dir) } else if diag && area < CELL_XZ * CELL_XZ - 1.0 { (wb.name.clone(), wb.dir) } else if diag { (platform_base.clone(), 0) } else { (wb.name.clone(), wb.dir) };
                         // the source's variant word minus the replacement bit; the ground bit stays
-                        // (the deck row of a ground source block is the terrain row)
-                        let flags = wb.flags & !FLAG_REPLACEMENT;
+                        // (the deck row of a ground source block is the terrain row); never the
+                        // waypoint or skin bits (their nodes are not written with a tile)
+                        let flags = wb.flags & !(FLAG_REPLACEMENT | FLAG_WAYPOINT | FLAG_SKIN);
                         platform.entry([cx, cy, cz]).or_insert((tile, dir, flags));
                     }
                 }
             }
         }
     }
+    // A grid tile BEYOND the u8 grid (a giant that overhangs the 254-cell grid — the long A08
+    // maps at x2, 2026-10-02) cannot be a block: it becomes a FREE DecoWallWaterBase custom tile
+    // at the same place — the water sheet is drawn there, the volume is not (no physics beyond
+    // the grid; said in the README). One free tile per clipped cell, the row-top form.
+    let mut clipped_free: Vec<([i32; 3], f32)> = Vec::new(); // (cell, y offset of the tile's bottom from the row's bottom)
     // emit the ROW-TOP stacks
     for (cell, (tile, dir, ground_bit)) in &rowtop {
         if cell[0] < 0 || cell[1] < 0 || cell[2] < 0 || cell[0] >= size[0] || cell[1] >= size[1] || cell[2] >= size[2] {
             p.clipped += 1;
+            clipped_free.push((*cell, 0.0));
             continue;
         }
         let above = rowtop.contains_key(&[cell[0], cell[1] + 1, cell[2]]);
@@ -687,10 +725,22 @@ pub fn plan_volumes(store: &mut crate::store::DataStore, idx: &mut crate::blockm
     for (cell, (tile, dir, flags)) in &platform {
         if cell[0] < 0 || cell[1] < 0 || cell[2] < 0 || cell[0] >= size[0] || cell[1] >= size[1] || cell[2] >= size[2] {
             p.clipped += 1;
+            // the deck row's water sheet sits 2 m over the row (PlatformWater's volume 0..2): a free
+            // 8-m tile with its top there
+            clipped_free.push((*cell, 2.0 - CELL_Y));
             continue;
         }
         p.grid.push(FreeBlockSpec { name: tile.clone(), author: None, flags: *flags, pos: [0.0; 3], rot: [0.0; 3], grid: Some(*cell), dir: *dir });
         by_name.entry(tile.clone()).or_insert((0, 0, "")).1 += 1;
+    }
+    if !clipped_free.is_empty() {
+        let ident = "Water\\DecoWallWaterBase.Block.Gbx".to_string();
+        p.archetypes.entry("DecoWallWaterBase".to_string()).or_insert(ident.clone());
+        for (cell, dy) in &clipped_free {
+            let y = ground + cell[1] as f32 * CELL_Y + dy;
+            p.roads.push(FreeBlockSpec { name: format!("{ident}_CustomBlock"), author: Some(author.to_string()), flags: FREE_WATER_FLAGS, pos: [cell[0] as f32 * CELL_XZ, y, cell[2] as f32 * CELL_XZ], rot: [0.0, 0.0, 0.0], grid: None, dir: 0 });
+        }
+        p.notes.push(format!("{} grid water tiles beyond the {}x{}x{} grid -> free DecoWallWaterBase tiles at their place (the sheet is drawn there, NO volume: a block cannot stand beyond the u8 grid)", clipped_free.len(), size[0], size[1], size[2]));
     }
     // emit the SHALLOW free tiles: one per cell at surface - 8 (+ one under it for 3N > 8)
     if !shallow.is_empty() {

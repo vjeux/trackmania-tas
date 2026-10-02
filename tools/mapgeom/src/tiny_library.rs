@@ -782,7 +782,11 @@ fn plan_block<'b>(bi: &'b crate::blockinfo::BlockInfo, key: &BlockKey, collectio
     if matches!(collection, 0x10 | 0x1d | 0xf) && regen.contains(&(name.to_string(), flags)) {
         return BlockPlan::Nothing { why: format!("{} genealogy fill {name}: regenerated full size by the genealogy at its row, no item", crate::static_item::build::env_name(collection)), label: None, footprint: None };
     }
-    if collection == 0x1a && name == "Grass" {
+    // TINY_FLOOR_ITEMS=overhang (2026-10-02, the long A08 maps at x2): the Grass tile bakes as a
+    // scaled item too — `tmmaps tiny` places it ONLY where the tile's scaled cell lies beyond the
+    // 254-cell grid (the genealogy regenerates the floor inside it; an item there would z-fight).
+    let floor_items = std::env::var("TINY_FLOOR_ITEMS").map(|v| v == "overhang").unwrap_or(false);
+    if collection == 0x1a && name == "Grass" && !floor_items {
         return BlockPlan::Nothing { why: "Stadium grass floor: regenerated full size by the genealogy, no item".into(), label: None, footprint: None };
     }
     let ground = flags & crate::blockmap::FLAG_GROUND != 0;
@@ -1318,7 +1322,14 @@ fn item_src<'a>(store: &DataStore, model: &str, items_dir: Option<&Path>, embedd
     if let Some(p) = items_dir.map(|d| d.join(format!("{model}.Item.Gbx"))).filter(|p| p.is_file()) {
         return Some(ItemSrc::Local(p));
     }
-    if let Some(bytes) = embedded.iter().find(|(k, _)| k.replace('/', "\\").eq_ignore_ascii_case(&format!("Items\\{model}"))).map(|(_, v)| v) {
+    // the map's own archive: a custom item under `Items\<model>`; a CLUB item (the placement
+    // names it `club:<clubId>\<pack>.zip\<path>.Item.Gbx`) under `ClubItems\<clubId>\<pack>.zip\
+    // <path>.Item.Gbx` — Ludde A08 #05's three Plastic_duck10x10 (2026-10-02)
+    let want: String = match model.strip_prefix("club:") {
+        Some(rest) => format!("ClubItems\\{}", rest.replace('/', "\\")),
+        None => format!("Items\\{model}"),
+    };
+    if let Some(bytes) = embedded.iter().find(|(k, _)| k.replace('/', "\\").eq_ignore_ascii_case(&want)).map(|(_, v)| v) {
         return Some(ItemSrc::Embedded(bytes));
     }
     find_item_file(store, model).map(ItemSrc::Pack)
@@ -2255,6 +2266,32 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 outcomes.push(key.outcome(&alias, format!("{} [{label}] {}", key.source(), plan.prefabs.iter().map(|p| p.0.rsplit('\\').next().unwrap_or(&p.0).to_string()).collect::<Vec<_>>().join("+")), Ok(summary)));
                 files.insert(format!("Items/{ident}"), bytes);
                 alias_of_recipe.insert(recipe.clone(), alias.clone());
+                // THE OVERHANG FLOOR'S BIG TILE (TINY_FLOOR_ITEMS=overhang, 2026-10-02): the Stadium
+                // Grass tile baked once more at K times the scale (K = TINY_FLOOR_GROUP, default 4:
+                // a 256-m tile at x2) — `tmmaps tiny` places it where a whole K×K group of open
+                // tiles lies beyond the grid, the small tile elsewhere (a 23k-tile floor would
+                // otherwise ride A08 #15). The terrain material maps by world position, so the
+                // scaled mesh reads exactly like K×K tiles. `floor@SMALL<TAB>BIG<TAB>K` row.
+                if collection == 0x1a && name == "Grass" && std::env::var("TINY_FLOOR_ITEMS").map(|v| v == "overhang").unwrap_or(false) {
+                    let k: usize = std::env::var("TINY_FLOOR_GROUP").ok().and_then(|v| v.parse().ok()).filter(|k| *k >= 2).unwrap_or(4);
+                    let big_alias = format!("AC{next_alias:08}");
+                    next_alias += 1;
+                    let big_ident = format!("{big_alias}.Item.Gbx");
+                    let big_scale = scale * k as f32;
+                    let big_key = crate::bake_cache::key(&format!("{}|floor-group{k}", plan.recipe), big_scale, collection, at_water_row, water);
+                    match bake_block_cached(store, &plan, name, path, bi, &big_key, &big_ident, big_scale, collection, &legacy, water, at_water_row).res {
+                        Ok((bbytes, bm, _)) => {
+                            println!("  overhang floor: {name} [{label}] baked once more at scale {big_scale} as {big_ident} ({} bytes, {} visuals) — one item per {k}x{k} open tiles beyond the grid", bbytes.len(), bm.visuals.len());
+                            files.insert(format!("Items/{big_ident}"), bbytes);
+                            veget_rows.push_str(&format!("floor@{ident}\t{big_ident}\t{k}\n"));
+                            outcomes.push(Outcome { alias: big_alias.clone(), kind: "block", source: format!("{} [{label}] floor group {k}x{k}", key.source()), placements: 0, result: Ok(format!("the overhang floor's {k}x{k} tile at scale {big_scale}")) });
+                        }
+                        Err(e) => {
+                            println!("  overhang floor: the {k}x{k} tile bake FAILED ({e}) — small tiles only");
+                            next_alias -= 1;
+                        }
+                    }
+                }
                 // a deck block's driving surface, for the tree clearance below
                 if crate::tree_clear::is_deck_block(name) {
                     deck_tris.insert(ident.clone(), crate::tree_clear::up_facing(&m.surf_vertices, &m.surf_triangles));

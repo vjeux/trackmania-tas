@@ -55,6 +55,34 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             }
         }
     }
+    // --filetime F.tsv[,…] (lmtool filetime-check --tsv): the cache word verdict per file
+    let mut ft: BTreeMap<String, String> = BTreeMap::new();
+    if let Some(list) = f("--filetime") {
+        for p in list.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            for l in std::fs::read_to_string(p).map_err(|e| format!("{p}: {e}"))?.lines().skip(1) {
+                let c: Vec<&str> = l.split('\t').collect();
+                if c.len() >= 9 {
+                    if let Some(nn) = Path::new(c[0]).file_name().and_then(|n| n.to_str()).and_then(nn_of) {
+                        ft.insert(nn, if c[8].starts_with("EQUAL") { "EQUAL".into() } else { c[8].chars().take(40).collect() });
+                    }
+                }
+            }
+        }
+    }
+    // --census C.tsv[,…] (tinyctl genealogy-census): the zone-table verdict per file
+    let mut cz: BTreeMap<String, String> = BTreeMap::new();
+    if let Some(list) = f("--census") {
+        for p in list.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            for l in std::fs::read_to_string(p).map_err(|e| format!("{p}: {e}"))?.lines().skip(1) {
+                let c: Vec<&str> = l.split('\t').collect();
+                if c.len() >= 14 {
+                    if let Some(nn) = Path::new(c[13]).file_name().and_then(|n| n.to_str()).and_then(nn_of) {
+                        cz.insert(nn, c[12].to_string());
+                    }
+                }
+            }
+        }
+    }
     let secs = |ms: &str| tmmaps::secs::secs_str(ms);
     let mut files: Vec<PathBuf> = std::fs::read_dir(&lit_dir)
         .map_err(|e| format!("{}: {e}", lit_dir.display()))?
@@ -67,7 +95,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         .collect();
     files.sort();
     let mut md = format!("# {title}\n\n");
-    md.push_str("| map | name | uid | author | gold | silver | bronze | source AT | items | blocks | collection | lightmap | lm bytes | bytes | cap | start | Nadeo mapId | stored md5 |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n");
+    md.push_str("| map | name | uid | author | gold | silver | bronze | source AT | items | blocks | collection | lightmap | lm bytes | bytes | cap | filetime | census | start | Nadeo mapId | stored md5 |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n");
     let mut n_over = 0usize;
     for p in &files {
         let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
@@ -86,7 +114,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             .unwrap_or_else(|| "-".into());
         let (map_id, md5, verdict) = publish.get(&nn).cloned().unwrap_or_else(|| ("-".into(), "-".into(), "-".into()));
         md.push_str(&format!(
-            "| {nn} | {} | `{}` | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} {} |\n",
+            "| {nn} | {} | `{}` | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} {} |\n",
             h.name,
             h.uid,
             secs(&h.authortime),
@@ -101,6 +129,8 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             lm,
             bytes,
             cap,
+            ft.get(&nn).cloned().unwrap_or_else(|| "-".into()),
+            cz.get(&nn).cloned().unwrap_or_else(|| "-".into()),
             starts.get(&nn).cloned().unwrap_or_else(|| "-".into()),
             map_id,
             md5,

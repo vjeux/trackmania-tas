@@ -279,6 +279,15 @@ pub struct MapFile {
     /// back in the blocks chunk. So both regions must be re-encoded together;
     /// renumbering one alone is what made the server say "Can't load map".
     pub body_regions: Vec<(usize, usize)>,
+    /// THE PRESEED (Ludde A08 #11, 2026-10-02): strings DEFINED by body chunks BEFORE the blocks
+    /// chunk, in order — slots 0..k-1 of the body-level lookback table. A map whose player model
+    /// is not the default car carries chunk 0x0304300D with an Ident {"CarSnow", "Nadeo", -} at
+    /// the very start of the body; its two definitions take the first two slots, so every index
+    /// the blocks/baked chunks reference is 2 higher than a table started at the blocks chunk
+    /// would say (48 172 blocks read as `DecoWallDiag1Pillar` for `DecoWallBasePillar`, the top
+    /// two slots as `<bad id>`). The reader seeds its table with these, the re-encoder emits its
+    /// indices after them and never redefines them.
+    pub body_preseed: Vec<String>,
     pub body_ids: Vec<IdField>,
     pub blocks: Vec<BlockRec>,
     /// Chunk 0x03043048 records, parsed exactly like `blocks`. Most of a map's
@@ -396,7 +405,7 @@ fn read_id(r: &mut Reader, table: &mut Vec<String>) -> IdField {
 /// longer matches its old slot re-points at an equal slot defined earlier, or
 /// failing that defines the string afresh at that spot.
 fn reemit(body: &[u8], region: (usize, usize), fields: &[IdField]) -> Vec<u8> {
-    reemit_regions(body, &[region], fields).pop().unwrap()
+    reemit_regions(body, &[region], fields, &[]).pop().unwrap()
 }
 
 /// How the lookback table is rebuilt. MEASURED, the hard way: the dedicated
@@ -423,16 +432,19 @@ enum Mode {
 }
 
 /// Re-encode several regions that SHARE one lookback stream, in offset order.
-fn reemit_regions(body: &[u8], regions: &[(usize, usize)], fields: &[IdField]) -> Vec<Vec<u8>> {
+/// `preseed` = the strings already defined before the regions (`MapFile::body_preseed`): they
+/// keep slots 0..k-1 / indices 1..=k, every emitted definition follows them.
+fn reemit_regions(body: &[u8], regions: &[(usize, usize)], fields: &[IdField], preseed: &[String]) -> Vec<Vec<u8>> {
     let orig_len = fields
         .iter()
         .filter(|f| f.is_def)
         .filter_map(|f| f.slot)
         .max()
         .map(|m| m + 1)
-        .unwrap_or(0);
-    let (a, alen) = encode(body, regions, fields, Mode::SlotPreserving);
-    let (b, blen) = encode(body, regions, fields, Mode::Fresh);
+        .unwrap_or(0)
+        .max(preseed.len());
+    let (a, alen) = encode(body, regions, fields, Mode::SlotPreserving, preseed);
+    let (b, blen) = encode(body, regions, fields, Mode::Fresh, preseed);
     if std::env::var("TMMAPS_DEBUG").is_ok() {
         eprintln!(
             "    [table] orig={} slot-preserving={} fresh={} regions={:?}",
@@ -462,9 +474,11 @@ fn encode(
     regions: &[(usize, usize)],
     fields: &[IdField],
     mode: Mode,
+    preseed: &[String],
 ) -> (Vec<Vec<u8>>, usize) {
-    // slot -> its (possibly renamed) content, taken from its defining field
-    let mut slot_content: Vec<String> = Vec::new();
+    // slot -> its (possibly renamed) content, taken from its defining field; the preseed
+    // (strings defined before the regions) owns the first slots and is never redefined
+    let mut slot_content: Vec<String> = preseed.to_vec();
     for f in fields {
         if f.is_def {
             let s = f.slot.unwrap();
@@ -474,8 +488,11 @@ fn encode(
             slot_content[s] = f.name.clone().unwrap_or_default();
         }
     }
-    let mut emitted: Vec<String> = Vec::new(); // the new table, in order
+    let mut emitted: Vec<String> = preseed.to_vec(); // the new table, in order (the preseed first)
     let mut new_index: Vec<Option<u32>> = vec![None; slot_content.len()]; // 1-based
+    for (s, ix) in new_index.iter_mut().enumerate().take(preseed.len()) {
+        *ix = Some(s as u32 + 1);
+    }
     let mut outs = Vec::new();
     let mut fi = 0usize;
     for &(start, end) in regions {
@@ -685,7 +702,7 @@ impl MapFile {
     pub fn from_gbx(gbx: Gbx) -> MapFile {
         let body = gbx.body.clone();
         let mut seen_nodes: std::collections::HashSet<u32> = std::collections::HashSet::new();
-        let (blocks_region, mut body_ids, blocks, table, size, decoration_id, blocks_count_off, records_start) =
+        let (blocks_region, mut body_ids, blocks, table, size, decoration_id, blocks_count_off, records_start, body_preseed) =
             parse_blocks(&body, &mut seen_nodes);
         let blocks_records = (records_start, blocks_region.1);
         let mut body_regions = vec![blocks_region];
@@ -713,6 +730,7 @@ impl MapFile {
             size,
             decoration_id,
             body_regions,
+            body_preseed,
             body_ids,
             blocks,
             baked,
@@ -1608,7 +1626,7 @@ impl MapFile {
         // Collect every region's replacement, then splice from the back so
         // earlier regions' offsets stay valid.
         let mut splices: Vec<((usize, usize), Vec<u8>)> = Vec::new();
-        let body_new = reemit_regions(&body, &self.body_regions, &bf);
+        let body_new = reemit_regions(&body, &self.body_regions, &bf, &self.body_preseed);
         let mut baked_fix: Option<(usize, usize)> = None;
         for (i, (r, b)) in self.body_regions.iter().zip(body_new).enumerate() {
             // region 0 is the blocks chunk (not skippable, no size field);
@@ -1698,6 +1716,71 @@ impl MapFile {
 
 // ------------------------------------------------------------------ parsing
 
+/// THE BODY-LEVEL LOOKBACK TABLE before the blocks chunk, in slot order — what the game's writer
+/// had defined by the time it wrote chunk 0x0304301F, so the chunk's references index the right
+/// strings. Measured on the files (2026-10-02):
+///
+/// * A lookback CONTEXT opens with its version word (`03 00 00 00`) right before its first Id;
+///   one context serves the whole body stream: chunk 0x0304300D's player-model Ident (CarSnow /
+///   Nadeo on Ludde A08 #11, null on a default-car map), the nodes INLINED through node refs (the
+///   2022 game's validation ghost under 0x0305B00D defines CarSport, Nadeo, its own uid — and
+///   Spring 2022 - 01's blocks chunk then REFERENCES "Nadeo" from it), and the blocks + baked
+///   chunks after them. A define is `0x40000000`, u32 length, the bytes.
+/// * A node serialised into an OPAQUE BUFFER — `u32 length, u32 class id, the node's bytes` (the
+///   2026 game's validation ghost under skippable chunk 0x0305B00F: `00000000 54330000 00200903 …`
+///   on Summer 2026 - 01) — opens its OWN context: its first Id is preceded by a fresh version
+///   word and its defines are invisible to the body (the blocks chunk of that map DEFINES "Nadeo"
+///   again, and its second block record's `0x40000004` is the chunk's own 4th string "Land", not
+///   the ghost's). Such a buffer is skipped whole.
+///
+/// Scanned byte by byte over `body[..end]` (the strings leave the stream unaligned); the body
+/// chunks before the blocks chunk hold, besides Ids, plain strings, numbers, a checksum and node
+/// refs — a float 2.0 (the define word) followed by a small length and printable text occurs in
+/// none of them. An opaque buffer is recognised by its shape: a plausible length, a class id
+/// (`0x..000`, high byte 0x03/0x09/0x2E) and a version word + Id inside its first 256 bytes (the 2026 ghost's sits 76 bytes in, after a zlib'd 0x0303F006 blob and the PIKS headers).
+pub fn scan_lookback_defs(body: &[u8], end: usize) -> Vec<String> {
+    let end = end.min(body.len());
+    let word = |i: usize| -> Option<u32> { (i + 4 <= end).then(|| u32::from_le_bytes(body[i..i + 4].try_into().unwrap())) };
+    let is_lookback_word = |w: u32| (w >> 30) != 0 && w != 0xFFFF_FFFF;
+    let is_class_id = |c: u32| (c & 0xFFF) == 0 && matches!(c >> 24, 0x03 | 0x09 | 0x2E) && c != 0;
+    // an opaque node buffer starting at `i`: length, class id, and a fresh lookback context within it
+    let opaque_buffer_len = |i: usize| -> Option<usize> {
+        let len = word(i)? as usize;
+        let cid = word(i + 4)?;
+        if !(16..=end.saturating_sub(i + 8)).contains(&len) || !is_class_id(cid) {
+            return None;
+        }
+        let probe_end = (i + 8 + 256).min(i + 8 + len);
+        let mut j = i + 8;
+        while j + 8 <= probe_end {
+            if word(j)? == 3 && is_lookback_word(word(j + 4)?) {
+                return Some(8 + len);
+            }
+            j += 1;
+        }
+        None
+    };
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i + 8 <= end {
+        if let Some(skip) = opaque_buffer_len(i) {
+            i += skip;
+            continue;
+        }
+        let w = word(i).unwrap();
+        if (w >> 30) != 0 && (w & 0x3FFF_FFFF) == 0 {
+            let n = word(i + 4).unwrap() as usize;
+            if (1..=255).contains(&n) && i + 8 + n <= end && body[i + 8..i + 8 + n].iter().all(|b| (0x20..0x7F).contains(b)) {
+                out.push(String::from_utf8_lossy(&body[i + 8..i + 8 + n]).into_owned());
+                i += 8 + n;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
 fn parse_blocks(
     body: &[u8],
     seen_nodes: &mut std::collections::HashSet<u32>,
@@ -1710,6 +1793,7 @@ fn parse_blocks(
     String,
     usize,
     usize,
+    Vec<String>,
 ) {
     let hits = find_all(body, &BLOCKS_CHUNK.to_le_bytes());
     let start = *hits
@@ -1723,7 +1807,12 @@ fn parse_blocks(
     if r.peek_u32() == 3 {
         r.u32();
     }
-    let mut table: Vec<String> = Vec::new();
+    // the body-level table may already hold strings defined by the chunks before this one
+    let preseed = scan_lookback_defs(body, start);
+    if std::env::var("TMMAPS_DEBUG").is_ok() && !preseed.is_empty() {
+        eprintln!("    [table] {} string(s) defined before the blocks chunk: {:?}", preseed.len(), preseed);
+    }
+    let mut table: Vec<String> = preseed.clone();
     let mut ids: Vec<IdField> = Vec::new();
     let push = |r: &mut Reader, table: &mut Vec<String>, ids: &mut Vec<IdField>| -> usize {
         let f = read_id(r, table);
@@ -1802,7 +1891,7 @@ fn parse_blocks(
         });
         count += 1;
     }
-    ((start, r.o), ids, blocks, table, size, decoration_id, count_off, records_start)
+    ((start, r.o), ids, blocks, table, size, decoration_id, count_off, records_start, preseed)
 }
 
 /// Chunk 0x03043048 -- the BAKED blocks (the terrain the editor bakes into the
@@ -3292,8 +3381,9 @@ impl MapFile {
         let keep_baked: Vec<bool> = self.baked.iter().map(|b| !drop_baked(b)).collect();
         let mut removed = Removed::default();
 
-        // --- the lookback stream: header fields define the first slots
-        let mut table: Vec<String> = Vec::new();
+        // --- the lookback stream: the body-level preseed (the strings defined before the blocks
+        // chunk — a player-model Ident, an inlined validation ghost), then the header fields
+        let mut table: Vec<String> = self.body_preseed.clone();
         for f in self.body_ids.iter().filter(|f| f.off < self.blocks_records.0) {
             if f.is_def {
                 table.push(f.name.clone().unwrap_or_default());
@@ -3690,7 +3780,7 @@ impl MapFile {
             .filter(|f| regions.iter().any(|(s, e)| f.off >= *s && f.off < *e))
             .cloned()
             .collect();
-        let (outs, _table_len) = encode(body, &regions, &fields, Mode::Fresh);
+        let (outs, _table_len) = encode(body, &regions, &fields, Mode::Fresh, &[]);
         let mut records: Vec<u8> = Vec::new();
         for (i, o) in outs.iter().enumerate() {
             records.extend_from_slice(o);

@@ -23,7 +23,7 @@ use crate::wsx::{to_win, Wsx};
 const STAGE: &str = "/home/vjeux/shoot/_stage";
 const SHOTS: &str = "/mnt/c/Users/vjeux/tinyshots";
 const BOX_TOOLS: &str = "/home/vjeux/trackmania-tas/tools/target/release";
-const BOX_FFMPEG: &str = "/mnt/c/Users/vjeux/ffmpeg_extracted/ffmpeg-9.0.1-essentials_build/bin/ffmpeg.exe";
+pub const BOX_FFMPEG: &str = "/mnt/c/Users/vjeux/ffmpeg_extracted/ffmpeg-9.0.1-essentials_build/bin/ffmpeg.exe";
 
 pub fn cmd(args: &[String]) -> Result<(), String> {
     let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);

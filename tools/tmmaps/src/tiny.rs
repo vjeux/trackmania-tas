@@ -601,10 +601,14 @@ pub fn cmd(args: &[String]) {
             let rows_need = ((thi[1] - ground()) / crate::map::CELL_Y).ceil() as i32 + 2;
             let sy = s.max(rows_need.min(254));
             grid = [s as f32 * crate::map::CELL_XZ, sy as f32 * crate::map::CELL_Y, s as f32 * crate::map::CELL_XZ];
-            // centre by whole cells; the lattice snap above is kept (whole cells only)
+            // centre by whole cells; the lattice snap above is kept (whole cells only). On an
+            // OVERHANG the shift is a multiple of `scale` cells: a source tile's scaled footprint
+            // (scale × scale cells) then never straddles the grid edge, so the floor items beyond
+            // the grid (TINY_FLOOR_ITEMS) butt against the regenerated floor inside it.
+            let unit = if need > s && scale >= 2.0 && (scale - scale.round()).abs() < 1e-6 { scale.round() } else { 1.0 };
             for k in [0usize, 2] {
                 let span = thi[k] - tlo[k];
-                let want = (((grid[k] - span) / 2.0 - tlo[k]) / crate::map::CELL_XZ).round() * crate::map::CELL_XZ;
+                let want = ((((grid[k] - span) / 2.0 - tlo[k]) / crate::map::CELL_XZ) / unit).round() * unit * crate::map::CELL_XZ;
                 shift[k] += want;
                 target_anchor[k] += want;
             }
@@ -878,6 +882,34 @@ pub fn cmd(args: &[String]) {
     println!("  terrain tiles under blocks: {} GROUND-variant blocks (ghost or not, geometry or not) occupy tile cells, {} declare their auto terrain; {} tiles KEPT at a block's file cell that is not one of its units (drawn, as the game does){}", hidden.blocks, hidden.declaring, undeclared.len(), if undeclared.is_empty() { String::new() } else { format!(" ({})", undeclared.iter().take(12).cloned().collect::<Vec<_>>().join("; ")) });
     let mut replaced_terrain = 0usize;
     let mut replaced_baked_terrain = 0usize;
+    let mut floor_regenerated = 0usize; // zone tiles inside the fit grid: the genealogy's floor
+    let mut floor_items = 0usize; // zone tiles beyond the grid placed as items (TINY_FLOOR_ITEMS)
+    let mut floor_big_items = 0usize; // … of which K×K groups as one big tile
+    let mut floor_covered = 0usize; // … members covered by a big tile
+    #[derive(Clone, Copy, PartialEq)]
+    enum FloorGroup { Big, Small }
+    let mut floor_groups: BTreeMap<(i32, i32, i32), FloorGroup> = BTreeMap::new();
+    // a zone tile whose scaled footprint lies inside the fit grid (the genealogy's floor)
+    let floor_inside = |b: &BlockRec, sg: i32| -> bool {
+        let o = transform(block_pos(b), source_anchor, target_anchor, scale);
+        let ext = crate::map::CELL_XZ * scale;
+        let lim = sg as f32 * crate::map::CELL_XZ;
+        o[0] >= -0.5 && o[2] >= -0.5 && o[0] + ext <= lim + 0.5 && o[2] + ext <= lim + 0.5
+    };
+    // the OPEN floor tiles beyond the grid (mapped to an item, drawn by the game, outside the fit
+    // grid), by file cell — the K×K group test reads it
+    let floor_open: BTreeSet<(i32, i32, i32)> = match grid_size {
+        Some(sg) if !mapping.floor_big.is_empty() => source
+            .baked
+            .iter()
+            .filter(|b| zones.contains(&b.name) && b.free_pos.is_none())
+            .filter(|b| mapping.baked_by_index.get(&b.index).map(|m| m.model != "-").unwrap_or(false))
+            .filter(|b| !tiles_oracle.as_ref().and_then(|o| o.baked(b.index)).unwrap_or_else(|| hidden.hides(b)))
+            .filter(|b| !floor_inside(b, sg))
+            .map(|b| (b.file_cell[0] as i32, b.file_cell[1] as i32, b.file_cell[2] as i32))
+            .collect(),
+        _ => BTreeSet::new(),
+    };
     // Authored blocks occupy appended clones.
     for b in &source.blocks {
         let map = mapping
@@ -958,6 +990,45 @@ pub fn cmd(args: &[String]) {
             replaced_baked_terrain += 1;
             dis.push("TILE_HIDDEN_UNDER_BAKED", &b.name, &crate::discard::cell_str(b.file_cell), 1, &format!("generated terrain tile {} under {}: the game draws the block there, never the tile (hidden_tiles)", b.name, hidden.occupant(b).and_then(|i| source.blocks.get(i)).map(|o| o.name.as_str()).unwrap_or("a ghost-mode unit")));
             continue;
+        }
+        // THE OVERHANG FLOOR (TINY_FLOOR_ITEMS=overhang, 2026-10-02): a zone tile mapped to an item
+        // is placed only where its scaled footprint lies BEYOND the fit grid — inside it the
+        // genealogy regenerates the floor full size (an item there would z-fight the floor).
+        // A whole K×K group of open tiles beyond the grid is ONE big tile (`floor@` row: the
+        // K-times-scaled twin); a group with a hidden, missing or in-grid member falls back to
+        // the small tiles of its open members.
+        let mut floor_model: Option<&str> = None;
+        if zones.contains(&b.name) && b.free_pos.is_none() {
+            if let Some(sg) = grid_size {
+                if floor_inside(b, sg) {
+                    floor_regenerated += 1;
+                    continue;
+                }
+                if let Some((big, k)) = mapping.floor_big.get(&map.model) {
+                    let k = *k as i32;
+                    let (cx, cy, cz) = (b.file_cell[0] as i32, b.file_cell[1] as i32, b.file_cell[2] as i32);
+                    let gkey = (cx.div_euclid(k), cy, cz.div_euclid(k));
+                    let verdict = *floor_groups.entry(gkey).or_insert_with(|| {
+                        let (gx, gz) = (gkey.0 * k, gkey.2 * k);
+                        let whole = (0..k).all(|dx| (0..k).all(|dz| floor_open.contains(&(gx + dx, cy, gz + dz))));
+                        if whole { FloorGroup::Big } else { FloorGroup::Small }
+                    });
+                    match verdict {
+                        FloorGroup::Big => {
+                            // the group's min-corner member carries the big tile; the others are covered
+                            if cx == gkey.0 * k && cz == gkey.2 * k {
+                                floor_model = Some(big.as_str());
+                                floor_big_items += 1;
+                            } else {
+                                floor_covered += 1;
+                                continue;
+                            }
+                        }
+                        FloorGroup::Small => {}
+                    }
+                }
+                floor_items += 1;
+            }
         }
         // A generated filler of a FREE block is free too, with the parent's
         // full rotation (Summer 11's inverted ramp: 57 TrackWallSlopeStraightFCB
@@ -1067,7 +1138,9 @@ pub fn cmd(args: &[String]) {
             }
         };
         specs.push(Spec {
-            model: map.model.clone(),
+            // the overhang floor's big K×K tile stands in for the small one at the group's corner
+            // (baked at K times the scale: the placement scale stays the small tile's)
+            model: floor_model.map(String::from).unwrap_or_else(|| map.model.clone()),
             pos,
             yaw: rot[0],
             frame: Some((rot, [0.0, 0.0, 0.0])),
@@ -1147,10 +1220,17 @@ pub fn cmd(args: &[String]) {
         // the published form has zero authored blocks like the reference maps.
         let keep_zone_block: Option<usize> = if keep_zone_flag {
             let zone = source.ambient_zone();
-            let pick = m.blocks.iter().find(|b| zone.as_deref() == Some(b.name.as_str())).or_else(|| m.blocks.first()).map(|b| b.index);
-            if let Some(i) = pick {
-                let b = &m.blocks[i];
-                println!("  kept authored block {} `{}` at cell {:?} (--keep-zone-block; zone {:?})", b.index, b.name, b.coords(), zone);
+            // ONLY a block named after the zone: the old fallback to the FIRST authored block kept
+            // Ludde A08 #11's RoadTechStart full size at its unscaled cell — a second start in the
+            // giant (2026-10-02). A map without an authored zone block keeps nothing (its big grid
+            // bakes in the editor without one; the 48x48 case has its tiles).
+            let pick = m.blocks.iter().find(|b| zone.as_deref() == Some(b.name.as_str())).map(|b| b.index);
+            match pick {
+                Some(i) => {
+                    let b = &m.blocks[i];
+                    println!("  kept authored block {} `{}` at cell {:?} (--keep-zone-block; zone {:?})", b.index, b.name, b.coords(), zone);
+                }
+                None => println!("  --keep-zone-block: no authored block named after the zone {:?} — none kept (a start/road block is never a stand-in)", zone),
             }
             pick
         } else {
@@ -1587,6 +1667,9 @@ pub fn cmd(args: &[String]) {
     println!("  uid: {}", new_uid);
     if let Some(p) = dis.write_env() {
         println!("  discard report: {} rows -> {}", dis.rows.len(), p.display());
+    }
+    if floor_items + floor_regenerated + floor_covered > 0 {
+        println!("  overhang floor (TINY_FLOOR_ITEMS): {} items beyond the fit grid ({} big K×K tiles covering {} open tiles + {} small tiles); {} tiles inside the grid left to the genealogy", floor_items, floor_big_items, floor_covered + floor_big_items, floor_items - floor_big_items, floor_regenerated);
     }
     println!("  {} existing items re-pointed at scaled copies ({} vegetation stand-ins sunk to half-tree crown height); {} dropped (procedural vegetation); {} blocks intentionally without an item (empty variants); {} terrain tiles replaced by the block standing in for them ({} authored + {} generated); {} prefab trees placed as stock items; {} trees left out by the clearance (overlapping a deck)", repointed_items, sunk_items, dropped_items, empty_blocks, replaced_terrain + replaced_baked_terrain, replaced_terrain, replaced_baked_terrain, prefab_trees, cleared_trees);
     match &tiles_oracle {
