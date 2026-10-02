@@ -1,0 +1,9 @@
+cargo:rerun-if-env-changed=CARGO_ENCODED_RUSTFLAGS
+cargo:rustc-env=LMTOOL_TARGET_CPU=x86-64-v2
+cargo:rerun-if-changed=/home/vjeux/fall/tt/tools/lightmap/vendor/libwebp140.a
+cargo:rustc-check-cfg=cfg(have_libwebp)
+cargo:rustc-link-search=native=/home/vjeux/fall/tt/tools/lightmap/vendor
+cargo:rustc-link-lib=static=webp140
+cargo:rustc-link-lib=dylib=m
+cargo:rustc-link-lib=dylib=pthread
+cargo:rustc-cfg=have_libwebp
