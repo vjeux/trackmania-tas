@@ -78,5 +78,6 @@ pub mod veget;
 pub mod veget_instance;
 pub mod zipcheck;
 pub mod static_item;
+pub mod sttc;
 
 pub use store::{DataStore, Model};

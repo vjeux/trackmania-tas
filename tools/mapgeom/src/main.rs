@@ -2530,6 +2530,148 @@ fn main() {
             let mut store = open(&a);
             mapgeom::shape_audit::cmd(&mut store, &a.rest[1..]);
         }
+        // sttf MAP --out OUT [--dry-run] [--report R.tsv]: every checkpoint gone
+        // (blocks → their plain twin by geometry, else removed; items removed;
+        // the validation ghost dropped). See mapgeom::sttc.
+        "sttf" => {
+            let mut store = open(&a);
+            let p = a.rest.get(1).cloned().unwrap_or_else(|| die("sttf needs a MAP path".into()));
+            let dry = a.rest.iter().any(|x| x == "--dry-run");
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| if dry { "/dev/null".into() } else { die("sttf needs --out OUT.Map.Gbx".into()) });
+            let m = tmmaps::map::MapFile::load(std::path::Path::new(&p));
+            let mut ctx = mapgeom::sttc::Ctx::new(&mut store, &m);
+            let o = mapgeom::sttc::sttf(&mut ctx, std::path::Path::new(&p), std::path::Path::new(&out), sttc_cp_mode(&a.rest), dry).unwrap_or_else(die);
+            let mut tsv = String::from(mapgeom::sttc::REPORT_HEADER);
+            tsv.push('\n');
+            for r in &o.rows {
+                tsv.push_str(&r.tsv());
+                tsv.push('\n');
+            }
+            match flag(&a.rest, "--report") {
+                Some(r) => {
+                    std::fs::write(&r, &tsv).unwrap_or_else(|e| die(e.to_string()));
+                    println!("wrote {r}");
+                }
+                None => print!("{tsv}"),
+            }
+            println!(
+                "{p}: {} checkpoint blocks replaced, {} removed (+{} baked), {} checkpoint items removed; {} tag/model mismatches, {} unresolved models{}",
+                o.replaced, o.removed_blocks, o.removed_baked, o.removed_items, o.mismatches, o.unresolved,
+                if dry { " (dry run)" } else { "" }
+            );
+            if !dry {
+                let bad = mapgeom::sttc::verify_sttf(std::path::Path::new(&p), std::path::Path::new(&out), &o).unwrap_or_else(die);
+                if bad.is_empty() {
+                    println!("verified {out}");
+                } else {
+                    die::<()>(format!("VERIFY FAILED on {out}:\n  {}", bad.join("\n  ")));
+                }
+            }
+        }
+        // center-finish MAP --out OUT [--center auto|bbox|X,Z] [--occupied overlap|raise|fail]
+        //   [--include-startfinish] [--no-rename] [--no-reuid] [--dry-run] [--report R.tsv]
+        "center-finish" => {
+            let mut store = open(&a);
+            let p = a.rest.get(1).cloned().unwrap_or_else(|| die("center-finish needs a MAP path".into()));
+            let dry = a.rest.iter().any(|x| x == "--dry-run");
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| if dry { "/dev/null".into() } else { die("center-finish needs --out OUT.Map.Gbx".into()) });
+            let opts = sttc_center_opts(&a.rest);
+            let m = tmmaps::map::MapFile::load(std::path::Path::new(&p));
+            let mut ctx = mapgeom::sttc::Ctx::new(&mut store, &m);
+            let o = mapgeom::sttc::center_finish(&mut ctx, std::path::Path::new(&p), std::path::Path::new(&out), &opts, dry).unwrap_or_else(die);
+            let mut tsv = String::from(mapgeom::sttc::REPORT_HEADER);
+            tsv.push('\n');
+            for r in &o.rows {
+                tsv.push_str(&r.tsv());
+                tsv.push('\n');
+            }
+            match flag(&a.rest, "--report") {
+                Some(r) => {
+                    std::fs::write(&r, &tsv).unwrap_or_else(|e| die(e.to_string()));
+                    println!("wrote {r}");
+                }
+                None => print!("{tsv}"),
+            }
+            println!(
+                "{p}: {} finish blocks + {} finish items (+{} baked) moved by ({}, {}, {}) cells; centroid ({:.1}, {:.1}) -> centre ({:.1}, {:.1}); {} destination overlaps, {} StartFinish left, {} mismatches; name {:?} uid {}{}",
+                o.finish_blocks, o.finish_items, o.moved_baked, o.offset_cells.0, o.offset_cells.1, o.offset_cells.2, o.centroid.0, o.centroid.1, o.center.0, o.center.1, o.overlaps, o.startfinish, o.mismatches, o.new_name, o.new_uid,
+                if dry { " (dry run)" } else { "" }
+            );
+            if !dry {
+                let bad = mapgeom::sttc::verify_center(std::path::Path::new(&p), std::path::Path::new(&out), &o).unwrap_or_else(die);
+                if bad.is_empty() {
+                    println!("verified {out}");
+                } else {
+                    die::<()>(format!("VERIFY FAILED on {out}:\n  {}", bad.join("\n  ")));
+                }
+            }
+        }
+        // sttc MAP|DIR --out-dir DIR [center-finish flags] [--dry-run] [--report R.tsv]:
+        // both steps per map (a directory = every *.Map.Gbx in it, sorted);
+        // outputs DIR/sttf/<stem>.sttf.Map.Gbx and DIR/<stem>-Straight-to-the-Center.Map.Gbx
+        "sttc" => {
+            let mut store = open(&a);
+            let p = a.rest.get(1).cloned().unwrap_or_else(|| die("sttc needs a MAP or a directory".into()));
+            let dry = a.rest.iter().any(|x| x == "--dry-run");
+            let out_dir = flag(&a.rest, "--out-dir").unwrap_or_else(|| die("sttc needs --out-dir DIR".into()));
+            let opts = mapgeom::sttc::PipelineOpts { cp: sttc_cp_mode(&a.rest), center: sttc_center_opts(&a.rest), dry, keep_sttf: true };
+            let path = std::path::Path::new(&p);
+            let mut maps: Vec<std::path::PathBuf> = if path.is_dir() {
+                let mut v: Vec<std::path::PathBuf> = std::fs::read_dir(path).unwrap_or_else(|e| die(e.to_string())).filter_map(|e| e.ok()).map(|e| e.path()).filter(|q| q.to_string_lossy().ends_with(".Map.Gbx")).collect();
+                v.sort();
+                v
+            } else {
+                vec![path.to_path_buf()]
+            };
+            if let Some(only) = flag(&a.rest, "--only") {
+                let keep: Vec<String> = only.split(',').map(|s| s.trim().to_string()).collect();
+                maps.retain(|q| keep.iter().any(|k| q.file_name().map(|f| f.to_string_lossy().starts_with(k.as_str())).unwrap_or(false)));
+            }
+            let mut tsv = String::from(mapgeom::sttc::REPORT_HEADER);
+            tsv.push('\n');
+            let mut failed = 0;
+            let t0 = std::time::Instant::now();
+            for mp in &maps {
+                let t = std::time::Instant::now();
+                match mapgeom::sttc::pipeline(&mut store, mp, std::path::Path::new(&out_dir), &opts) {
+                    Ok((rows, summary)) => {
+                        for r in &rows {
+                            tsv.push_str(&r.tsv());
+                            tsv.push('\n');
+                        }
+                        println!("{summary}\t{:.1}s", t.elapsed().as_secs_f32());
+                        if summary.contains("VERIFY FAILED") {
+                            failed += 1;
+                        }
+                    }
+                    Err(e) => {
+                        failed += 1;
+                        let mut r = mapgeom::sttc::Row::default();
+                        r.map = mp.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                        r.step = "summary".into();
+                        r.kind = "map".into();
+                        r.action = "FAILED".into();
+                        r.note = e.clone();
+                        tsv.push_str(&r.tsv());
+                        tsv.push('\n');
+                        eprintln!("{}: FAILED: {e}", mp.display());
+                    }
+                }
+            }
+            if let Some(r) = flag(&a.rest, "--report") {
+                if let Some(d) = std::path::Path::new(&r).parent() {
+                    let _ = std::fs::create_dir_all(d);
+                }
+                std::fs::write(&r, &tsv).unwrap_or_else(|e| die(e.to_string()));
+                println!("wrote {r}");
+            } else if maps.len() == 1 {
+                print!("{tsv}");
+            }
+            println!("{} maps, {} failed, {:.1}s{}", maps.len(), failed, t0.elapsed().as_secs_f32(), if dry { " (dry run)" } else { "" });
+            if failed > 0 {
+                std::process::exit(1);
+            }
+        }
         "blockinfo-map" => {
             let mut store = open(&a);
             let p = a.rest.get(1).cloned().unwrap_or_default();
@@ -3947,6 +4089,41 @@ fn flag(args: &[String], name: &str) -> Option<String> {
         .position(|a| a == name)
         .and_then(|i| args.get(i + 1))
         .cloned()
+}
+
+/// `--cp plain|remove`: what a checkpoint block becomes (sttf, sttc).
+fn sttc_cp_mode(rest: &[String]) -> mapgeom::sttc::CpMode {
+    match flag(rest, "--cp").as_deref() {
+        None | Some("plain") => mapgeom::sttc::CpMode::Plain,
+        Some("remove") => mapgeom::sttc::CpMode::Remove,
+        Some(o) => die(format!("--cp plain | remove, not `{o}`")),
+    }
+}
+
+/// The center-finish options shared by `center-finish` and `sttc`.
+fn sttc_center_opts(rest: &[String]) -> mapgeom::sttc::CenterOpts {
+    use mapgeom::sttc::{Center, CenterOpts, Occupied};
+    let center = match flag(rest, "--center").as_deref() {
+        None | Some("auto") => Center::Auto,
+        Some("bbox") => Center::Bbox,
+        Some(s) => {
+            let (x, z) = s.split_once(',').unwrap_or_else(|| die("--center auto | bbox | X,Z (cells: 23.5,23.5)".into()));
+            Center::At(x.trim().parse().unwrap_or_else(|_| die(format!("--center: `{x}` is not a number"))), z.trim().parse().unwrap_or_else(|_| die(format!("--center: `{z}` is not a number"))))
+        }
+    };
+    let occupied = match flag(rest, "--occupied").as_deref() {
+        None | Some("overlap") => Occupied::Overlap,
+        Some("raise") => Occupied::Raise,
+        Some("fail") => Occupied::Fail,
+        Some(o) => die(format!("--occupied overlap | raise | fail, not `{o}`")),
+    };
+    CenterOpts {
+        center,
+        occupied,
+        include_startfinish: rest.iter().any(|x| x == "--include-startfinish"),
+        rename: !rest.iter().any(|x| x == "--no-rename"),
+        reuid: !rest.iter().any(|x| x == "--no-reuid"),
+    }
 }
 
 /// What the walk found, and -- just as loudly -- what it could not open.
