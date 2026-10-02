@@ -1187,6 +1187,36 @@ impl MediaTracker {
         Ok(())
     }
 
+    /// Remove clip `n` (1-based) and its trigger from the `in-game` or
+    /// `end-race` group. The clip's node subtree (tracks, blocks) leaves the
+    /// body with it; later nodes keep their index words (a gap in the node
+    /// numbering, which a reader never dereferences). A group left with no
+    /// clip becomes a null slot — the form the editor writes for a map
+    /// without in-game clips.
+    pub fn drop_group_clip(&mut self, slot: &str, n: usize) -> Result<String, String> {
+        let s = match slot {
+            "in-game" => &mut self.in_game,
+            "end-race" => &mut self.end_race,
+            _ => return Err(format!("--drop-clip: slot {slot:?} is not a clip group (in-game, end-race)")),
+        };
+        let Slot::Group(g) = s else { return Err(format!("--drop-clip: the {slot} slot holds no clip group")) };
+        if n == 0 || n > g.clips.len() {
+            return Err(format!("--drop-clip: the {slot} group has {} clip(s); {n} is out of range", g.clips.len()));
+        }
+        if g.triggers.len() != g.clips.len() {
+            return Err(format!("--drop-clip: the {slot} group has {} clips but {} triggers — not the 1:1 layout this edit assumes", g.clips.len(), g.triggers.len()));
+        }
+        let c = g.clips.remove(n - 1);
+        g.triggers.remove(n - 1);
+        let tracks: Vec<String> = c.tracks.iter().map(|t| format!("{:?} ({} blocks)", t.name, t.blocks.len())).collect();
+        let msg = format!("{slot} clip {n} {:?} (node {}, {} bytes) dropped with its trigger; tracks gone: {}", c.name, c.index, c.span.1 - c.span.0, tracks.join(", "));
+        if g.clips.is_empty() {
+            *s = Slot::Null;
+            return Ok(format!("{msg}; the group is empty -> {slot} slot null"));
+        }
+        Ok(msg)
+    }
+
     /// The chunk's bytes (id word included) with the edits applied and the
     /// trigger lists re-emitted. With no edit and no transform this reproduces
     /// the source bytes exactly (`tests::mediatracker_roundtrips`).
@@ -1443,6 +1473,18 @@ pub fn cmd(args: &[String]) {
                 }
                 if crate::cli::has(args, "--strip") {
                     mt.strip = true;
+                }
+                // --drop-clip in-game:N | end-race:N — one clip (1-based) and its
+                // trigger out of a group; an emptied group leaves its slot null.
+                // Fall 2026 map 22: the in-game clip "Trigger 1" carries the
+                // author's cameo ghost (CGameCtnMediaBlockEntity, a custom car
+                // skin with a zero-checksum locator PackDesc) — the fallback
+                // candidate drops the whole clip rather than editing the skin.
+                for spec in crate::cli::flag_multi(args, "--drop-clip") {
+                    let (slot, n) = spec.split_once(':').unwrap_or_else(|| crate::cli::die("--drop-clip wants SLOT:N (in-game:1, end-race:3)"));
+                    let n: usize = n.parse().unwrap_or_else(|_| crate::cli::die("--drop-clip wants a 1-based clip number after the colon"));
+                    let msg = mt.drop_group_clip(slot, n).unwrap_or_else(|e| crate::cli::die(&e));
+                    println!("{msg}");
                 }
                 let mut w = crate::map::MapFile::load(path);
                 w.set_mediatracker(&mt);
