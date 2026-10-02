@@ -165,6 +165,29 @@ fn bake_one(g: &MyGame, map_wsl: &str, quality: u32, load_timeout: Duration, com
         // a PlayMap that has not produced a playground in 100 s is the black-screen load stall
         // (loadloop's class): the caller relaunches and retries once
         let car = wait_for_car(g, &name, Duration::from_secs(100))?;
+        // BAKE_RUN_FRAMES=DIR (box-side, under /mnt/c): one 4K screenshot of the playground per
+        // map, DIR/<stem>-<k>.png at FRAME_AT_MS (default 6000) — the lightmap A/B of Hugo's STT
+        // Center maps (2026-10-02): the same spot of the source and the edited map, the edited
+        // map's stored lightmap either kept by the game (identical shading) or recomputed coarse
+        if let Ok(dir) = std::env::var("BAKE_RUN_FRAMES") {
+            let at_ms: u64 = std::env::var("BAKE_RUN_FRAME_AT_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(6000);
+            let n: usize = std::env::var("BAKE_RUN_FRAME_SHOTS").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
+            let _ = std::fs::create_dir_all(&dir);
+            std::thread::sleep(Duration::from_millis(at_ms));
+            for k in 0..n {
+                let file = format!("{dir}/{stem}-{k}.png");
+                let win = file.strip_prefix("/mnt/c/").map(|r| format!("C:\\{}", r.replace('/', "\\"))).unwrap_or(file.clone());
+                let st = std::process::Command::new("/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe")
+                    .args(["-ExecutionPolicy", "Bypass", "-File", "C:\\Users\\vjeux\\shotdpi.ps1", &win])
+                    .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped()).output();
+                match st {
+                    Ok(o) if o.status.success() => println!("  {name}: frame {file}"),
+                    Ok(o) => println!("  {name}: frame {file} FAILED: {}", String::from_utf8_lossy(&o.stderr).trim()),
+                    Err(e) => println!("  {name}: frame {file} FAILED: {e}"),
+                }
+                std::thread::sleep(Duration::from_millis(3000));
+            }
+        }
         let _ = std::fs::remove_file(&game_copy);
         g.to_menu()?;
         return Ok(("-".into(), 0.0, car));
@@ -489,7 +512,11 @@ pub fn lightmap_run(args: &[String]) -> Result<(), String> {
             let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0);
             let old_uid = tmmaps::header::read(copy).map(|h| h.uid).unwrap_or_default();
             let fresh = crate::lightmap::fresh_uid_like(&old_uid, (nanos + k as u32 * 7919) % 100_000_000, (nanos / 7 + gi as u32) % 100_000_000);
+            // the uid is an Id-table rename, the password removal a splice: two writes (a Nadeo
+            // source with a password chunk — Hugo's STT Center check copies, 2026-10-02)
             m.set_map_uid(&fresh);
+            m.write_to(&bake_copy).map_err(|e| format!("{}: {e}", bake_copy.display()))?;
+            let mut m = tmmaps::map::MapFile::load(&bake_copy);
             m.remove_password();
             m.write_to(&bake_copy).map_err(|e| format!("{}: {e}", bake_copy.display()))?;
             let stem: String = Path::new(out).file_name().unwrap_or_default().to_string_lossy().trim_end_matches(".Map.Gbx").chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
@@ -508,9 +535,13 @@ pub fn lightmap_run(args: &[String]) -> Result<(), String> {
             if startcheck { " --startcheck" } else { "" },
             if check_only { " --check-only" } else { "" }
         );
+        // --frames DIR (box-side /mnt/c path): check-only takes a playground screenshot per map there
+        let mut cmd = match f("--frames") {
+            Some(dir) => cmd.replacen("nohup setsid ", &format!("nohup setsid env BAKE_RUN_FRAMES='{dir}'{}{} ", f("--frame-at-ms").map(|v| format!(" BAKE_RUN_FRAME_AT_MS={v}")).unwrap_or_default(), f("--frame-shots").map(|v| format!(" BAKE_RUN_FRAME_SHOTS={v}")).unwrap_or_default()), 1),
+            None => cmd,
+        };
         // --load-timeout S / --compute-timeout S ride through to the box side (tiny 22's 21k items
         // did not open in the default 420 s, 2026-10-01)
-        let mut cmd = cmd;
         for k in ["--load-timeout", "--compute-timeout"] {
             if let Some(v) = f(k) {
                 cmd = cmd.replace(" > '", &format!(" {k} {v} > '"));
@@ -541,10 +572,23 @@ pub fn lightmap_run(args: &[String]) -> Result<(), String> {
             } else {
                 let nums: Vec<f32> = car.split_whitespace().filter_map(|x| x.parse().ok()).collect();
                 let sm = tmmaps::map::MapFile::load(Path::new(shipped));
-                match (nums.len() == 3, sm.items.iter().find(|it| it.waypoint_tag.as_deref() == Some("Spawn"))) {
-                    (true, Some(sp)) => {
-                        let d = ((nums[0] - sp.pos[0]).powi(2) + (nums[1] - sp.pos[1]).powi(2) + (nums[2] - sp.pos[2]).powi(2)).sqrt();
-                        if d <= tolerance { format!("PASS {d:.1} m") } else { failed += 1; format!("FAIL {d:.1} m from the Spawn (tolerance {tolerance})") }
+                // the Spawn: an ITEM's position (the tiny/giant builds), else a START BLOCK's cell
+                // centre (a block-built map — Hugo's STT Center maps, 2026-10-02: RoadTechStart /
+                // PlatformTechStart in a 32 m cell, the car on the block's top: y = 8·cy + ground + 2)
+                let spawn: Option<([f32; 3], f32)> = sm.items.iter().find(|it| it.waypoint_tag.as_deref() == Some("Spawn")).map(|sp| (sp.pos, tolerance)).or_else(|| {
+                    let coll = sm.body_collections().map(|c| c[0].1).unwrap_or(26);
+                    sm.blocks.iter().find(|b| b.waypoint_tag.as_deref() == Some("Spawn")).map(|b| match b.free_pos {
+                        Some(p) => ([p[0] + 16.0, p[1] + 2.0, p[2] + 16.0], tolerance.max(24.0)),
+                        None => {
+                            let (cx, cy, cz) = b.coords();
+                            ([cx as f32 * 32.0 + 16.0, cy as f32 * 8.0 + tmmaps::map::ground_y(coll) + 2.0, cz as f32 * 32.0 + 16.0], tolerance.max(24.0))
+                        }
+                    })
+                });
+                match (nums.len() == 3, spawn) {
+                    (true, Some((sp, tol))) => {
+                        let d = ((nums[0] - sp[0]).powi(2) + (nums[1] - sp[1]).powi(2) + (nums[2] - sp[2]).powi(2)).sqrt();
+                        if d <= tol { format!("PASS {d:.1} m") } else { failed += 1; format!("FAIL {d:.1} m from the Spawn (tolerance {tol})") }
                     }
                     (true, None) => { failed += 1; "FAIL no Spawn placement".to_string() }
                     (false, _) => { failed += 1; format!("FAIL no car ({car})") }
