@@ -1235,3 +1235,123 @@ pub fn pipeline(store: &mut DataStore, src: &Path, out_dir: &Path, o: &PipelineO
     }
     Ok((rows, summary))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn twin_candidates_are_most_specific_first_and_never_the_name_itself() {
+        let c = twin_candidates("RoadTechCheckpointTiltLeft");
+        assert_eq!(c[0], "RoadTechTiltStraight");
+        assert!(c.contains(&"RoadTechStraightTiltLeft".to_string()));
+        assert!(!c.contains(&"RoadTechCheckpointTiltLeft".to_string()));
+        let c = twin_candidates("RoadTechDiagRightCheckPoint");
+        assert!(c.contains(&"RoadTechDiagRightStraightX2".to_string()), "{c:?}");
+        let c = twin_candidates("PlatformTechCheckpointSlope2Right");
+        assert_eq!(c[0], "PlatformTechSlope2Base");
+        assert_eq!(c[1], "PlatformTechSlope2Straight");
+        assert!(twin_candidates("GateCheckpoint").contains(&"Gate".to_string()));
+    }
+
+    #[test]
+    fn half_cell_ties_round_up() {
+        assert_eq!(round_half_up(0.5), 1);
+        assert_eq!(round_half_up(-0.5), 0);
+        assert_eq!(round_half_up(6.5), 7);
+        assert_eq!(round_half_up(-6.5), -6);
+        assert_eq!(round_half_up(6.4), 6);
+        assert_eq!(round_half_up(-6.6), -7);
+    }
+
+    #[test]
+    fn the_model_decides_the_tag_only_fills_in() {
+        let c = Class { model: Some(WP_NONE), resolved: true, tag: Some(WP_CHECKPOINT) };
+        assert_eq!(c.effective(), None);
+        assert!(c.mismatch());
+        let c = Class { model: Some(WP_FINISH), resolved: true, tag: Some(WP_FINISH) };
+        assert_eq!(c.effective(), Some(WP_FINISH));
+        assert!(!c.mismatch());
+        let c = Class { model: None, resolved: false, tag: Some(WP_CHECKPOINT) };
+        assert_eq!(c.effective(), Some(WP_CHECKPOINT));
+        assert!(!c.mismatch());
+    }
+
+    /// A synthetic 32 m deck at y 0 with an arch (two legs + a crossbar) is
+    /// matched by the bare deck at turn 0 and 2, and a tilted deck is not.
+    #[test]
+    fn geometry_match_accepts_the_bare_deck_and_rejects_a_tilted_one() {
+        let deck = |tilt: f32| -> Profile {
+            let mut cols = Vec::new();
+            for i in 0..16 {
+                for j in 0..16 {
+                    let (x, z) = ((i as f32 + 0.5) * 2.0, (j as f32 + 0.5) * 2.0);
+                    cols.push(((x, z), vec![((x - 16.0) * tilt, "Asphalt".to_string())]));
+                }
+            }
+            Profile { w: 32.0, d: 32.0, cols }
+        };
+        let mut cp = deck(0.0);
+        for ((x, z), h) in cp.cols.iter_mut() {
+            if (*z - 16.0).abs() < 2.0 {
+                h.push((8.0, "Concrete".to_string())); // the crossbar / legs
+            }
+        }
+        let plain = deck(0.0);
+        let (c, cov) = match_score(&cp, &plain, 0).unwrap();
+        assert!(c > 0.99 && cov > 0.99, "{c} {cov}");
+        let (c2, _) = match_score(&cp, &plain, 2).unwrap();
+        assert!(c2 > 0.99);
+        let tilted = deck(0.1);
+        let (ct, _) = match_score(&cp, &tilted, 0).unwrap();
+        assert!(ct < 0.5, "a tilted deck must not pass as the plain twin ({ct})");
+    }
+
+    fn env_paks() -> Option<(DataStore, PathBuf)> {
+        let paks = std::env::var("STTC_TEST_PAKS").ok()?;
+        let src = std::env::var("STTC_TEST_SOURCES").ok()?;
+        let mut store = DataStore::empty();
+        for spec in paks.split(',') {
+            let (p, k) = spec.rsplit_once(':')?;
+            store.add_pak(p, k).ok()?;
+        }
+        Some((store, PathBuf::from(src)))
+    }
+
+    /// The round trip on three Fall 2026 sources, when the paks and the
+    /// sources are at hand: STTC_TEST_PAKS=path:key,… STTC_TEST_SOURCES=dir.
+    #[test]
+    fn fall_sources_round_trip() {
+        let Some((mut store, src)) = env_paks() else {
+            eprintln!("skipped: set STTC_TEST_PAKS and STTC_TEST_SOURCES");
+            return;
+        };
+        let out = std::env::temp_dir().join(format!("sttc-test-{}", std::process::id()));
+        let opts = PipelineOpts { cp: CpMode::Plain, center: CenterOpts { center: Center::Auto, occupied: Occupied::Overlap, include_startfinish: false, rename: true, reuid: true }, dry: false, keep_sttf: true };
+        for (file, want) in [
+            ("01-Fall-2026---01.Map.Gbx", "3 items + 0 baked moved by (7,0,-10)"),
+            ("05-Fall-2026---05.Map.Gbx", "1 finish blocks + 0 items + 9 baked moved by (7,0,0)"),
+            ("19-Fall-2026---19.Map.Gbx", "3 blocks removed, 3 items removed, 6 baked removed"),
+        ] {
+            let p = src.join(file);
+            if !p.exists() {
+                eprintln!("skipped {file}: not in {}", src.display());
+                continue;
+            }
+            let (rows, summary) = pipeline(&mut store, &p, &out, &opts).unwrap();
+            assert!(summary.contains("verified"), "{summary}");
+            assert!(summary.contains(want), "{summary}");
+            assert!(!rows.iter().any(|r| r.action == "MISMATCH"), "{file}: mismatches");
+            // the written map parses and carries Spawn + Goal only
+            let stem = file.trim_end_matches(".Map.Gbx");
+            let m = MapFile::try_load(&out.join(format!("{stem}-Straight-to-the-Center.Map.Gbx"))).unwrap();
+            let tags: HashSet<String> = m.waypoints().iter().map(|w| w.tag.clone()).collect();
+            assert_eq!(tags, ["Spawn".to_string(), "Goal".to_string()].into_iter().collect::<HashSet<_>>(), "{file}: {tags:?}");
+            let hdr = tmmaps::header::read(out.join(format!("{stem}-Straight-to-the-Center.Map.Gbx")).to_str().unwrap()).unwrap();
+            assert!(hdr.name.ends_with(NAME_SUFFIX), "{}", hdr.name);
+            assert!(hdr.uid.starts_with(UID_PREFIX), "{}", hdr.uid);
+            assert_eq!(hdr.validated, "0");
+        }
+        let _ = std::fs::remove_dir_all(&out);
+    }
+}

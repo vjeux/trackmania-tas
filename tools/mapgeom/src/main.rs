@@ -67,9 +67,27 @@ COMMANDS
                                 mobil / mobilVar picks against the flag bits
   blockinfo-map <file.Map.Gbx> --out TSV [--no-baked] [--report TSV]
       [--collection BlueBay]
-      [--collection BlueBay]
                                 every authored block with its picked variant,
                                 cells, prefabs and what each side faces
+  sttf <file.Map.Gbx> --out OUT [--cp plain|remove] [--dry-run] [--report TSV]
+                                Start-To-The-Finish: every checkpoint gone — a
+                                checkpoint BLOCK becomes its plain twin (chosen
+                                by geometry: RoadTechCheckpoint → RoadTechStraight,
+                                …CheckpointTiltLeft → …TiltStraight turned) or,
+                                with --cp remove / no twin, is deleted; checkpoint
+                                ITEMS are deleted; the validation ghost dropped
+  center-finish <file.Map.Gbx> --out OUT [--center auto|bbox|X,Z]
+      [--occupied overlap|raise|fail] [--include-startfinish] [--no-rename]
+      [--no-reuid] [--dry-run] [--report TSV]
+                                every Finish (block info / item model type 1)
+                                and the baked clips it owns moved by one whole-
+                                cell offset onto the map centre ((size−1)/2:
+                                23.5 on 48, 31.5 on 64), y kept; new uid SttC…,
+                                name '<name> Straight to the Center'
+  sttc <file.Map.Gbx>|DIR --out-dir DIR [--only 01-,05-] [sttf + center-finish flags]
+                                both steps per map: DIR/sttf/<stem>.sttf.Map.Gbx
+                                then DIR/<stem>-Straight-to-the-Center.Map.Gbx,
+                                one TSV row per record touched, round-trip verified
   blockinfo-all [<substring>] [--out TSV] [--clips]
                                 parse every block info in the packs and report
   map <file.Map.Gbx> --out F [--yoff N] [--no-items] [--no-deco]
