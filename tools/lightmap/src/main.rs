@@ -7371,6 +7371,7 @@ fn run(mut a: Vec<String>) {
             let payload = m.chunk.write(true);
             lightmap::mapio::save_with_chunk(&m, &payload, &out).unwrap_or_else(|e| panic!("{e}"));
             println!("wrote {out}: base {} + donor {} parts [{}] — chunk {} B", bp.rsplit('/').next().unwrap_or(&bp), dp.rsplit('/').next().unwrap_or(&dp), notes.join("; "), payload.len());
+        }
         "filetime-fix" => {
             // lmtool filetime-fix MAP --out OUT [--to solids|TICKS]: the cache chunk 0x06022013's FILETIME word set to the map's
             // TimeWriteMostRecentSolid (the game's load-time rule — a word that differs drops the whole lightmap in play). The
