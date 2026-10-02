@@ -10370,8 +10370,8 @@ variants: ");
             println!("{}", if fails == 0 { "CHECK PASSED" } else { "CHECK FAILED" });
             if fails > 0 { std::process::exit(1); }
         }
-        "itemcharts" => {
-            // lmtool itemcharts MAP [--base N] [--model NAME]: per model, the chart sizes the map's own bake gives its
+        "itemcharts-models" => {
+            // lmtool itemcharts-models MAP [--base N] [--model NAME]: per model, the chart sizes the map's own bake gives its
             // placements (min/median/max px), the frame bytes, and whether our loader has geometry for it — finds the
             // items the editor charts that we skip (no TexCoord1) or size differently
             let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();

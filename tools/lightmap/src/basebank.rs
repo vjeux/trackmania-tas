@@ -68,8 +68,12 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let tip = git(&repo, &["rev-parse", "--short=10", "HEAD"])?;
     git(&repo, &["merge-base", "--is-ancestor", &prev, "HEAD"]).map_err(|_| format!("{prev} is not an ancestor of HEAD {tip}"))?;
     let prev_full = git(&repo, &["rev-parse", &prev])?;
-    let n_commits: usize = git(&repo, &["rev-list", "--count", &format!("{prev_full}..HEAD")])?.parse().map_err(|e| format!("rev-list: {e}"))?;
-    if n_commits == 0 { return Err(format!("nothing to land: HEAD {tip} == {prev}")); }
+    // the series = the NON-MERGE commits (format-patch writes no patch for a merge; a merged lane's history — the Fall 2026 base,
+    // 2026-10-02 — lands as its commits + the merge commit the bundle carries)
+    let n_all: usize = git(&repo, &["rev-list", "--count", &format!("{prev_full}..HEAD")])?.parse().map_err(|e| format!("rev-list: {e}"))?;
+    let n_commits: usize = git(&repo, &["rev-list", "--count", "--no-merges", &format!("{prev_full}..HEAD")])?.parse().map_err(|e| format!("rev-list: {e}"))?;
+    let n_merges = n_all - n_commits;
+    if n_all == 0 { return Err(format!("nothing to land: HEAD {tip} == {prev}")); }
 
     // the gate table: ALL PASS, and its binary md5 = --bin's
     let gate = std::fs::read_to_string(&gate_md).map_err(|e| format!("{}: {e}", gate_md.display()))?;
@@ -78,7 +82,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let bin_md5 = md5_of(&bin)?;
     let gate_md5 = gate.lines().find_map(|l| l.strip_prefix("binary ")).and_then(|l| l.split(" md5 ").nth(1)).map(|s| s.split(';').next().unwrap_or("").trim().to_string()).unwrap_or_default();
     if gate_md5 != bin_md5 { return Err(format!("--bin md5 {bin_md5} is not the gate's binary ({gate_md5}): bank the gate's own build")); }
-    println!("base {tip} ({n_commits} commit(s) on {prev}); gate: {head_line}; binary md5 {bin_md5}");
+    println!("base {tip} ({n_commits} commit(s){} on {prev}); gate: {head_line}; binary md5 {bin_md5}", if n_merges > 0 { format!(" + {n_merges} merge(s)") } else { String::new() });
 
     // the series: numbered after the last patch present
     let intdir = store.join("tiny/patches/lightmap-integration");

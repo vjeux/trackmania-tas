@@ -346,6 +346,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         }
         "run" => run_cells(args, &cells),
         "report" => report(args, &cells),
+        "loadcheck" => loadcheck_cells(args, &cells),
         "measure" => {
             // lmtool corpus-gate measure --corpus C --tip T --work W [--only cell,…]: (re)measure BANKED bakes (W/T/<cell>/ours.Map.Gbx)
             // with THIS binary's compare — for a cell whose metrics.json is missing or failed (a compare rule that changed, a giant
@@ -526,6 +527,9 @@ fn run_cells(args: &[String], cells: &[Cell]) -> Result<(), String> {
             let _ = std::fs::copy(&records, wdir.join("records.tsv"));
             let _ = std::fs::write(wdir.join("md5.txt"), format!("{md5}  ours.Map.Gbx\n"));
         }
+        // THE LOADS-IN-PLAY STATIC PRE-CHECK beside the bake (baker-9, 2026-10-02): W/TIP/<cell>/loadcheck.json — the sidecar the trust
+        // matrix and the report read (record kinds, FILETIME word, binds, cache words); a FAIL does not stop the measure, it is a column
+        let lc = if c.compare_only { None } else { let l = crate::loadcheck::check(&out.to_string_lossy(), 0); let _ = std::fs::write(wdir.join("loadcheck.json"), serde_json::to_string_pretty(&l).unwrap()); eprintln!("corpus-gate: {}: loadcheck {}{}", c.name, l.status, if l.failed.is_empty() && l.warned.is_empty() { String::new() } else { format!(" [{}]", l.notes.join("; ")) }); Some(l) };
         let records_opt = if c.compare_only { None } else { Some(records.as_path()) };
         let m = match measure(&out, oracle, records_opt) {
             Ok(m) => m,
@@ -538,7 +542,8 @@ fn run_cells(args: &[String], cells: &[Cell]) -> Result<(), String> {
             "collection": c.collection, "quality": c.quality, "dirs": c.dirs.clone().unwrap_or_else(|| "full".into()), "word": c.word, "oracle": oracle.to_string_lossy(), "source": c.source.to_string_lossy(),
             "env": c.env.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>(), "ceiling": c.ceiling, "census": cen, "own_rects_tsv": own_rects, "pak_warnings": warn_lines, "notes": notes,
             "classcmp_tsv": [wdir.join("classcmp-f0.tsv").to_string_lossy(), wdir.join("classcmp-f1.tsv").to_string_lossy()],
-            "layout": m["layout"], "planes": m["planes"], "frames": m["frames"] });
+            "layout": m["layout"], "planes": m["planes"], "frames": m["frames"],
+            "loadcheck": lc.as_ref().map(|l| serde_json::json!({ "status": l.status, "ok": l.ok, "failed": l.failed, "warned": l.warned })).unwrap_or(serde_json::Value::Null) });
         std::fs::write(wdir.join("metrics.json"), serde_json::to_string_pretty(&rec).unwrap()).map_err(|e| format!("{}: {e}", wdir.display()))?;
         let _ = std::fs::remove_file(wdir.join("failed"));
         let f0 = &rec["frames"][0]; let f1 = &rec["frames"][1];
@@ -590,13 +595,21 @@ fn report(args: &[String], cells: &[Cell]) -> Result<(), String> {
     let mut md = String::new();
     md += &format!("# corpus gate — tip {tip}{}\n\n", against.as_ref().map(|a| format!(" vs {a}")).unwrap_or_default());
     md += &format!("verdict: CLOSED (texel) = frame-0 identity ≥ 90 % of the cell's ceiling (the editor's own re-bake identity: 99 lamp-less / 60 lamp maps) AND every lit class (≥ 4 charts) within 1 ± {tol}; CLOSED (class) = the classes hold, the identity does not; RESIDUE = the worst class named.{}\n\n", target.as_ref().map(|t| format!(" absolute target beside it: identity ≥ {:.1} %, ±2 ≥ {:.1} %, max |Δ| ≤ {}, classes ± {}", t.id, t.within2, t.maxd, t.ratio)).unwrap_or_default());
-    md += "| cell | coll q dirs | census | bake s | f0 identity % (ceiling) | f0 ±2 % | f0 max\\|Δ\\| | f0 record ours / editor | f0 TOTAL r/g/b | C1–C3 identity % tiles/items · fb≠ charts % | f1 identity % | f1 record ours / editor | binds | rects | head | verdict | vs previous |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n";
+    // THE LOADS-IN-PLAY COLUMNS (baker-9 + V8, 2026-10-02): `load` = the static pre-check sidecar (W/T/<cell>/loadcheck.json), `play` = the
+    // box's verdict for the cell's BYTES (the playload-*.tsv rows under --playload FILE|DIR, default W/..; the last row for an md5 wins);
+    // a CLOSED verdict renders CLOSED only with PLAYS (loadsinplay::gated_label), else · UNPLAYED / · HANGS IN PLAY / · STATIC FAIL
+    let play_rows: Vec<crate::loadsinplay::PlayRow> = {
+        let p = flag(args, "--playload").map(PathBuf::from).unwrap_or_else(|| work.parent().map(|d| d.to_path_buf()).unwrap_or_else(|| PathBuf::from(".")));
+        match crate::loadsinplay::read_playload(&p) { Ok(r) => r, Err(e) => { eprintln!("corpus-gate report: play-load rows: {e} (the play column reads untested)"); Vec::new() } }
+    };
+    md += "| cell | coll q dirs | census | bake s | f0 identity % (ceiling) | f0 ±2 % | f0 max\\|Δ\\| | f0 record ours / editor | f0 TOTAL r/g/b | C1–C3 identity % tiles/items · fb≠ charts % | f1 identity % | f1 record ours / editor | binds | rects | head | load | play | verdict | vs previous |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n";
     let (mut n_ok, mut n_closed, mut n_moved, mut n_missing, mut n_failed) = (0, 0, 0, 0, 0);
+    let (mut n_words, mut n_plays, mut n_hang, mut n_rej, mut n_static_fail, mut n_static_ok) = (0, 0, 0, 0, 0, 0);
     let mut moved_detail = String::new();
     for c in cells {
-        let Some(m) = load_metrics(&work, &tip, &c.name) else { n_missing += 1; md += &format!("| {} | {} q{} {} | | — | | | | | | | | | | | | PENDING | |\n", c.name, c.collection, c.quality, c.dirs.as_deref().unwrap_or("full")); continue; };
-        if m["no_oracle"].as_bool().unwrap_or(false) { md += &format!("| {} | {} q{} {} | | — | | | | | | | | | | | | **no oracle** | |\n", c.name, c.collection, c.quality, c.dirs.as_deref().unwrap_or("full")); continue; }
-        if !m["ok"].as_bool().unwrap_or(false) { n_failed += 1; md += &format!("| {} | {} q{} {} | | {:.1} | | | | | | | | | | | | **FAILED** {} | |\n", c.name, c.collection, c.quality, c.dirs.as_deref().unwrap_or("full"), f(&m["bake_s"]), m["error"].as_str().unwrap_or("").replace('|', "/")); continue; }
+        let Some(m) = load_metrics(&work, &tip, &c.name) else { n_missing += 1; md += &format!("| {} | {} q{} {} | | — | | | | | | | | | | | | | | PENDING | |\n", c.name, c.collection, c.quality, c.dirs.as_deref().unwrap_or("full")); continue; };
+        if m["no_oracle"].as_bool().unwrap_or(false) { md += &format!("| {} | {} q{} {} | | — | | | | | | | | | | | | | | **no oracle** | |\n", c.name, c.collection, c.quality, c.dirs.as_deref().unwrap_or("full")); continue; }
+        if !m["ok"].as_bool().unwrap_or(false) { n_failed += 1; md += &format!("| {} | {} q{} {} | | {:.1} | | | | | | | | | | | | | | **FAILED** {} | |\n", c.name, c.collection, c.quality, c.dirs.as_deref().unwrap_or("full"), f(&m["bake_s"]), m["error"].as_str().unwrap_or("").replace('|', "/")); continue; }
         n_ok += 1;
         let f0 = &m["frames"][0]; let f1 = &m["frames"][1]; let lay = &m["layout"];
         // a one-direction cell is a FRAME-1 / layout row: its verdict is frame 1's (frame 0 with one direction means nothing)
@@ -617,6 +630,25 @@ fn report(args: &[String], cells: &[Cell]) -> Result<(), String> {
         let verdict = if warn > 0 { format!("{verdict} · ⚠ {warn} 'not in any pack'") } else { verdict };
         let head = format!("{} B / {} rec / {} fr", f0["head_ours"][0], f0["head_ours"][1], f0["head_ours"][2]);
         let head_ok = f0["head_ours"] == f0["head_theirs"];
+        let sidecar = load_sidecar(&work, &tip, &c.name);
+        let load_col = match &sidecar {
+            Some((true, status, _, warned)) if status == "WARN" => { n_static_ok += 1; format!("ok · warn {}", warned.join(",")) }
+            Some((true, _, _, _)) => { n_static_ok += 1; "ok".to_string() }
+            Some((false, status, failed, _)) => { n_static_fail += 1; format!("**{status} {}**", failed.join(",")) }
+            None => "—".to_string(),
+        };
+        let play_row = m["md5"].as_str().and_then(|h| crate::loadsinplay::lookup(&play_rows, h));
+        let play_col = match play_row {
+            Some(r) => { match r.verdict.as_str() { "PLAYS" => n_plays += 1, "HANG" => n_hang += 1, "LM-REJECTED" => n_rej += 1, _ => {} } format!("**{}** {}{}", r.verdict, r.when, if r.host.is_empty() { String::new() } else { format!(" {}", r.host) }) }
+            None => "untested".to_string(),
+        };
+        let load_state = match play_row.map(|r| r.verdict.as_str()) {
+            Some("PLAYS") => crate::loadsinplay::LoadState::Plays,
+            Some("HANG") => crate::loadsinplay::LoadState::Hangs,
+            Some("LM-REJECTED") => crate::loadsinplay::LoadState::LmRejected,
+            _ => match &sidecar { Some((true, _, _, _)) => crate::loadsinplay::LoadState::StaticOk, Some((false, _, _, _)) => crate::loadsinplay::LoadState::StaticFail, None => crate::loadsinplay::LoadState::Untested },
+        };
+        let verdict = crate::loadsinplay::gated_label(&verdict, &load_state);
         // vs the previous tip(s): --against A,B,C — the first listed tip that holds a run of THIS cell is its previous
         let prev_hit: Option<(String, serde_json::Value)> = against.as_ref().and_then(|list| list.split(',').map(|t| t.trim()).filter(|t| !t.is_empty()).find_map(|t| load_metrics(&work, t, &c.name).map(|p| (t.to_string(), p))));
         let prev_col = match &against {
@@ -628,7 +660,10 @@ fn report(args: &[String], cells: &[Cell]) -> Result<(), String> {
                     // the LIGHTMAP CHUNK's md5 decides "same": the whole-file md5 also moves when only the source's embedded zip
                     // rides in the output (the -tex sources, 2026-09-28) — that is not a bake move
                     let same_lm = p["lm_md5"].is_string() && p["lm_md5"] == m["lm_md5"];
-                    if p["md5"] == m["md5"] { format!("same bytes (vs {ptip})") } else if same_lm { format!("same LIGHTMAP bytes (vs {ptip}; the file differs outside the lightmap chunk)") } else {
+                    // WORDS-ONLY (baker-9, 2026-10-02): the images, tables and trailer identical, only head words / small cache chunks moved (the
+                    // record-0 kind + 0x06022017/18 words of the Fall merge) — attributed in the column, not a MOVED cell
+                    let words = if p["md5"] == m["md5"] || same_lm { None } else { words_only_move(&work.join(&ptip).join(&c.name).join("ours.Map.Gbx"), &work.join(&tip).join(&c.name).join("ours.Map.Gbx")) };
+                    if p["md5"] == m["md5"] { format!("same bytes (vs {ptip})") } else if same_lm { format!("same LIGHTMAP bytes (vs {ptip}; the file differs outside the lightmap chunk)") } else if let Some(w) = words { n_words += 1; format!("same IMAGES + tables (vs {ptip}; words: {w})") } else {
                         n_moved += 1;
                         let mut moves: Vec<String> = Vec::new();
                         for (fi, fr) in [(0usize, f0), (1usize, f1)] {
@@ -659,11 +694,11 @@ fn report(args: &[String], cells: &[Cell]) -> Result<(), String> {
                 }
             },
         };
-        md += &format!("| {} | {} q{} {}{} | {} | {} | {:.2} ({:.0}) | {:.2} | {} | {} / {} | {} | {} | {:.2} | {} / {} | {}/{} | {}/{} | {}{} | {} | {} |\n", c.name, c.collection, c.quality, m["dirs"].as_str().unwrap_or("full"), if m["compare_only"].as_bool().unwrap_or(false) { " compare" } else { "" }, census_str(&m["census"]), if m["compare_only"].as_bool().unwrap_or(false) { "—".to_string() } else { format!("{:.1}", f(&m["bake_s"])) },
+        md += &format!("| {} | {} q{} {}{} | {} | {} | {:.2} ({:.0}) | {:.2} | {} | {} / {} | {} | {} | {:.2} | {} / {} | {}/{} | {}/{} | {}{} | {} | {} | {} | {} |\n", c.name, c.collection, c.quality, m["dirs"].as_str().unwrap_or("full"), if m["compare_only"].as_bool().unwrap_or(false) { " compare" } else { "" }, census_str(&m["census"]), if m["compare_only"].as_bool().unwrap_or(false) { "—".to_string() } else { format!("{:.1}", f(&m["bake_s"])) },
             id0, ceiling, f(&f0["within2_pct"]), f0["max_delta"], rec(&f0["record_ours"]), rec(&f0["record_theirs"]), ratio_str(&f0["ratio"]), planes_str(&m["planes"]),
-            f(&f1["identity_pct"]), rec(&f1["record_ours"]), rec(&f1["record_theirs"]), lay["same_binds"], lay["compared"], lay["same_rects"], lay["compared"], head, if head_ok { "" } else { " ≠ editor" }, verdict, prev_col);
+            f(&f1["identity_pct"]), rec(&f1["record_ours"]), rec(&f1["record_theirs"]), lay["same_binds"], lay["compared"], lay["same_rects"], lay["compared"], head, if head_ok { "" } else { " ≠ editor" }, load_col, play_col, verdict, prev_col);
     }
-    md += &format!("\n{n_ok} baked ({n_closed} CLOSED), {n_failed} failed, {n_missing} pending of {} cells{}\n", cells.len(), against.as_ref().map(|a| format!("; vs {a}: {n_moved} cell(s) MOVED")).unwrap_or_default());
+    md += &format!("\n{n_ok} baked ({n_closed} CLOSED), {n_failed} failed, {n_missing} pending of {} cells{}; loads in play: {n_plays} PLAYS / {n_hang} HANG / {n_rej} LM-REJECTED / {} untested; static pre-check: {n_static_ok} ok / {n_static_fail} FAIL / {} without a sidecar\n", cells.len(), against.as_ref().map(|a| format!("; vs {a}: {n_moved} cell(s) MOVED, {n_words} in words only (images + tables identical)")).unwrap_or_default(), n_ok - n_plays - n_hang - n_rej, n_ok - n_static_ok - n_static_fail);
     if !moved_detail.is_empty() { md += &format!("\n## What moved\n{moved_detail}"); }
     // the per-class tables of every baked cell (frame 0, then frame 1 where anything is lit)
     md += "\n## Per-class ratios (frame 0; r/g/b ours / editor over the editor's lit texels; identity % of the class's bytes)\n";
@@ -732,4 +767,81 @@ pub fn lightmap_chunk_md5(path: &Path) -> serde_json::Value {
         Ok(m) => { let (_, p, n) = m.at; serde_json::Value::String(md5_hex(&m.gbx.body[p..p + n])) }
         Err(_) => serde_json::Value::Null,
     }
+}
+
+// ---------------------------------------------------------------- loads in play (baker-9, 2026-10-02)
+/// `lmtool corpus-gate loadcheck --corpus C --tip T --work W [--only cell,…]`: the static pre-check over a BANKED tip's cells —
+/// W/T/<cell>/loadcheck.json rewritten beside every ours.Map.Gbx (the run writes it too; this re-reads a bank made by an older
+/// binary) + W/T/loadcheck.tsv, one row per cell. Exit 1 when any cell FAILs.
+fn loadcheck_cells(args: &[String], cells: &[Cell]) -> Result<(), String> {
+    let tip = flag(args, "--tip").ok_or("--tip TIP")?;
+    let work = PathBuf::from(flag(args, "--work").ok_or("--work W")?);
+    let only: Option<Vec<String>> = flag(args, "--only").map(|s| s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect());
+    let mut tsv = crate::loadcheck::tsv_header().to_string();
+    let (mut n, mut n_fail, mut n_warn) = (0, 0, 0);
+    for c in cells {
+        if let Some(o) = &only { if !o.iter().any(|x| x == &c.name) { continue; } }
+        let wdir = work.join(&tip).join(&c.name);
+        let ours = wdir.join("ours.Map.Gbx");
+        if c.compare_only || c.oracle.is_none() || !ours.exists() { continue; }
+        let l = crate::loadcheck::check(&ours.to_string_lossy(), 0);
+        std::fs::write(wdir.join("loadcheck.json"), serde_json::to_string_pretty(&l).unwrap()).map_err(|e| format!("{}: {e}", wdir.display()))?;
+        tsv += &crate::loadcheck::tsv_row(&l).replacen("ours.Map.Gbx", &c.name, 1);
+        n += 1;
+        if !l.ok { n_fail += 1; } else if l.status == "WARN" { n_warn += 1; }
+        println!("{:<44} {}", c.name, crate::loadcheck::line(&l).splitn(2, ": ").nth(1).unwrap_or(""));
+    }
+    let p = work.join(&tip).join("loadcheck.tsv");
+    std::fs::write(&p, tsv).map_err(|e| format!("{}: {e}", p.display()))?;
+    println!("corpus-gate loadcheck {tip}: {n} cells, {} PASS, {n_warn} WARN, {n_fail} FAIL → {}", n - n_fail - n_warn, p.display());
+    if n_fail > 0 { std::process::exit(1); }
+    Ok(())
+}
+
+/// The static verdict of a banked cell from its sidecar: (ok, status, failed, warned) — None without a loadcheck.json.
+fn load_sidecar(work: &Path, tip: &str, cell: &str) -> Option<(bool, String, Vec<String>, Vec<String>)> {
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(work.join(tip).join(cell).join("loadcheck.json")).ok()?).ok()?;
+    let strs = |k: &str| v[k].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect::<Vec<_>>()).unwrap_or_default();
+    let ok = v["ok"].as_bool().unwrap_or_else(|| v["verdict"].as_str().map_or(false, |s| s.eq_ignore_ascii_case("pass") || s.eq_ignore_ascii_case("ok")));
+    Some((ok, v["status"].as_str().unwrap_or(if ok { "PASS" } else { "FAIL" }).to_string(), strs("failed"), strs("warned")))
+}
+
+/// WORDS-ONLY MOVE: two banked bakes whose lightmap chunks differ ONLY in head words / small cache chunks — every image, every
+/// mapping table (binds, rects, sizes, per-frame bytes, f32s), the trailer and the chunk id list identical. Returns the moved words
+/// (head u32 offsets with old → new; small chunk ids with their bodies) or None when anything else moved. The attribution the
+/// 2026-10-02 merge needed: record 0's kind word + the 0x06022017 / 0x06022018 cache words move on EVERY cell, the images on none.
+pub fn words_only_move(prev: &Path, new: &Path) -> Option<String> {
+    let a = crate::mapio::load(&prev.to_string_lossy()).ok()?;
+    let b = crate::mapio::load(&new.to_string_lossy()).ok()?;
+    let (da, db) = (a.chunk.data.as_ref()?, b.chunk.data.as_ref()?);
+    if da.frames.len() != db.frames.len() { return None; }
+    for (fa, fb) in da.frames.iter().zip(db.frames.iter()) { if fa.images != fb.images { return None; } }
+    if da.cache.trailer != db.cache.trailer { return None; }
+    if da.cache.chunks.len() != db.cache.chunks.len() { return None; }
+    let mut moved: Vec<String> = Vec::new();
+    for (ca, cb) in da.cache.chunks.iter().zip(db.cache.chunks.iter()) {
+        if ca.id != cb.id { return None; }
+        match (&ca.body, &cb.body) {
+            (crate::format::ChunkBody::Mapping(ma), crate::format::ChunkBody::Mapping(mb)) => {
+                if ma.count != mb.count || ma.binds != mb.binds || ma.pos != mb.pos || ma.size != mb.size || ma.frame_bytes != mb.frame_bytes || ma.chart_f32 != mb.chart_f32 || ma.tail != mb.tail || ma.atlas_w != mb.atlas_w || ma.atlas_h != mb.atlas_h || ma.bbox_min != mb.bbox_min || ma.bbox_max != mb.bbox_max { return None; }
+                if ma.head.len() != mb.head.len() { return None; }
+                for (i, (wa, wb)) in ma.head.chunks(4).zip(mb.head.chunks(4)).enumerate() {
+                    if wa != wb {
+                        let u = |w: &[u8]| if w.len() == 4 { u32::from_le_bytes([w[0], w[1], w[2], w[3]]) } else { 0 };
+                        let off = 4 * i;
+                        let what = if off >= 60 && (off - 60) % 66 == 0 { format!("record {} kind", (off - 60) / 66) } else { format!("head@{off}") };
+                        moved.push(format!("{what} {} → {}", u(wa), u(wb)));
+                    }
+                }
+            }
+            (crate::format::ChunkBody::Raw(ra), crate::format::ChunkBody::Raw(rb)) => {
+                if ra != rb {
+                    let w = |r: &[u8]| -> String { if r.len() == 8 { let (x, y) = (u32::from_le_bytes(r[0..4].try_into().unwrap()), u32::from_le_bytes(r[4..8].try_into().unwrap())); if ca.id == 0x0602_2018 { u64::from_le_bytes(r[0..8].try_into().unwrap()).to_string() } else { format!("({x}, {y})") } } else { format!("{} B", r.len()) } };
+                    moved.push(format!("{:#x} {} → {}", ca.id, w(ra), w(rb)));
+                }
+            }
+            _ => return None,
+        }
+    }
+    Some(if moved.is_empty() { "no word moved (the file differs outside the lightmap chunk)".to_string() } else { moved.join(", ") })
 }
