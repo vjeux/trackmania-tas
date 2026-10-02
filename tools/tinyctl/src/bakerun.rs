@@ -623,12 +623,13 @@ pub fn lightmap_run(args: &[String]) -> Result<(), String> {
             let verdict = if check_only {
                 // the shots, scaled on the box (ffmpeg) and pulled next to the report
                 if f("--shots").is_some() && verdict == "ok" {
-                    let dir = format!("{SHOTS}/{stem}");
+                    // the box side names the folder after the PUSHED file (tag-stem)
+                    let dir = format!("{SHOTS}/{tag}-{stem}");
                     let local = report.with_file_name(format!("shots-{stem}"));
                     let _ = std::fs::create_dir_all(&local);
                     let n: usize = f("--shots").and_then(|s| s.parse().ok()).unwrap_or(0);
                     for k in 0..n {
-                        let _ = wsx.sh(&format!("ffmpeg -y -loglevel error -i '{dir}/shot-{k}.png' -vf scale=1280:-1 '{dir}/shot-{k}.jpg'; true"));
+                        let _ = wsx.sh(&format!("\"{}\" -nostdin -y -loglevel error -i {} -vf scale=1280:-1 -q:v 4 {}; true", crate::play::BOX_FFMPEG, crate::wsx::to_win(&format!("{dir}/shot-{k}.png")), crate::wsx::to_win(&format!("{dir}/shot-{k}.jpg"))));
                         match wsx.pull(&format!("{dir}/shot-{k}.jpg"), &local.join(format!("shot-{k}.jpg"))) {
                             Ok(b) => println!("[group {gi}] {copy}: shot {k} → {} ({b} B)", local.join(format!("shot-{k}.jpg")).display()),
                             Err(e) => println!("[group {gi}] {copy}: shot {k} not pulled: {e}"),
