@@ -234,13 +234,31 @@ pub fn frame_records_wanted() -> usize {
 }
 
 /// Cut a mapping head (60 constants + 66·k records + the 12-byte tail) down to `want` records; a head with fewer stays.
+/// THE RECORD-0 KIND WORD FOLLOWS THE FRAME COUNT (the Fall 2026 play-load-hang bisect, 2026-10-01; 77 files): every editor and
+/// Nadeo file with THREE image frames carries record kinds [3, 3, 2], every one with TWO carries [2, 3] — and the five port-lit
+/// files carried [3, 3] with two frames (the 3-record template cut to two, record 0 untouched): the client's PlayMap hung on its
+/// loading frame on every one of them; the same chunk with the editor's two records (A4) or record 0's kind word alone (A4a)
+/// loads. So a cut to two records writes record 0's kind = 2.
 pub fn cut_head_records(head: &mut Vec<u8>, want: usize) -> usize {
     let have = head.len().saturating_sub(72) / 66;
     if have <= want || head.len() != 60 + 66 * have + 12 { return have; }
     let tail = head[60 + 66 * have..].to_vec();
     head.truncate(60 + 66 * want);
     head.extend_from_slice(&tail);
+    if want == 2 && head.len() >= 64 {
+        head[60..64].copy_from_slice(&2u32.to_le_bytes());
+    }
     want
+}
+
+/// Record 0's kind word for a head that already has `n` records (the rule above): 2 with two frames, 3 with three.
+pub fn fix_record0_kind(head: &mut [u8]) -> Option<(u32, u32)> {
+    let have = head.len().saturating_sub(72) / 66;
+    if have == 0 || head.len() < 64 { return None; }
+    let want: u32 = if have >= 3 { 3 } else { 2 };
+    let had = u32::from_le_bytes(head[60..64].try_into().unwrap());
+    head[60..64].copy_from_slice(&want.to_le_bytes());
+    Some((had, want))
 }
 
 /// Patch the three 66-byte frame records inside a mapping head (see `CacheBlob::frame_max_hdr`).
@@ -524,6 +542,7 @@ pub fn build_full2_placed(mut charts: Vec<Chart>, bbox: ([f32; 3], [f32; 3]), te
     }
     // the head's records follow the image frames (two): a 3-record source template is cut like the transcribed writer's
     let _ = cut_head_records(&mut mapping.head, frame_records_wanted());
+    let _ = fix_record0_kind(&mut mapping.head);
     let chunks: Vec<CacheChunk> = td
         .cache
         .chunks
@@ -737,6 +756,7 @@ pub fn build_transcribed(placed: &[(u32, u32, u32, u32, u32, u32)], bbox: ([f32;
     }
     // the records the frame list calls for (two on every editor bake — V's scan; `frame_records_wanted`)
     let n_records = cut_head_records(&mut mapping.head, frame_records_wanted());
+    let _ = fix_record0_kind(&mut mapping.head);
     let chunks: Vec<CacheChunk> = td
         .cache
         .chunks

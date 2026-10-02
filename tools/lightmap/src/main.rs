@@ -2166,7 +2166,13 @@ fn run(mut a: Vec<String>) {
                 let t0 = std::time::Instant::now();
                 // --kept FILE: the items that are records (RE 7's reduction list of the reference bakes) — the rest get no chart
                 let layout_kept: Option<std::collections::HashSet<usize>> = f("--kept").map(|p| std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("--kept {p}: {e}")).split(|c: char| c == ',' || c.is_whitespace()).filter_map(|t| t.trim().parse::<usize>().ok()).collect());
-                let gl = lightmap::layout::for_map(&map_path, &scene, base, q, lightmap::layout::TilePlg::BLUEBAY_SEA, pak, &f("--collection").unwrap_or_else(|| "BlueBay".into()), &f("--zone").unwrap_or_else(|| "Sea".into()), layout_kept.as_ref()).unwrap_or_else(|e| panic!("--layout-game: {e}"));
+// the collection and the ground zone from the MAP (header envir + layout::ground_zone), as the --lm-from-map chain reads them —
+                // the BlueBay/Sea literals here panicked every RedIsland / GreenCoast / WhiteShore bake run without --collection/--zone
+                // ("BlueBay/Sea: no zone prefab PLG found", the Fall giants 2026-10-01)
+                let lg_coll = f("--collection").unwrap_or_else(|| tmmaps::header::read(&map_path).ok().map(|h| h.envir).unwrap_or_else(|| "BlueBay".into()));
+                let lg_zone = f("--zone").unwrap_or_else(|| lightmap::layout::ground_zone(&tmmaps::map::MapFile::load(std::path::Path::new(&map_path)), &lg_coll));
+                eprintln!("--layout-game: collection {lg_coll}, ground zone {lg_zone}");
+                let gl = lightmap::layout::for_map(&map_path, &scene, base, q, lightmap::layout::TilePlg::BLUEBAY_SEA, pak, &lg_coll, &lg_zone, layout_kept.as_ref()).unwrap_or_else(|e| panic!("--layout-game: {e}"));
                 let bound = gl.charts.iter().filter(|c| c.charted == lightmap::layout::Charted::Bound).count();
                 eprintln!("layout-game: {} charts ({bound} bound), s {} layout units/m, Σarea {} m², quality index {q} ({} iterations), keys from {} ({:.1}s)", gl.charts.len(), gl.s, gl.sum_area, gl.max_iter, if pak.is_some() { "the block records (pak)" } else { "the cell / triangle centres" }, t0.elapsed().as_secs_f32());
                 // --records-tsv FILE: the layout's records per chart (class, obj, sub, name, quality, centre y) — `lmtool classcmp --records`
@@ -7225,6 +7231,25 @@ fn run(mut a: Vec<String>) {
             if had == want { eprintln!("{p}: the word already is {} — written unchanged", lightmap::synth::filetime_text(want)); }
             else { eprintln!("{p}: 0x06022013 {} → {}", lightmap::synth::filetime_text(had), lightmap::synth::filetime_text(want)); }
             // the mapping tables are untouched: keep their stored z-streams; the cache stream itself is rebuilt
+            let payload = m.chunk.write(true);
+            lightmap::mapio::save_with_chunk(&m, &payload, &out).unwrap_or_else(|e| panic!("{e}"));
+            println!("wrote {out}");
+        }
+        "kind-fix" => {
+            // lmtool kind-fix MAP --out OUT: record 0's kind word of the mapping head set by the frame count (2 with two image frames, 3 with
+            // three — synth::fix_record0_kind): the repair of a port-lit file written before 2026-10-01 (the Fall hang bisect: every such file
+            // carried [3, 3] with two frames and hung the client's PlayMap; the word alone flips it). Content untouched otherwise.
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let p = &a[1];
+            let out = f("--out").expect("--out OUT");
+            let mut m = lightmap::mapio::load(p).unwrap_or_else(|e| panic!("{e}"));
+            let d = m.chunk.data.as_mut().expect("has lightmaps");
+            let n_frames = d.frames.len();
+            let bm = d.cache.chunks.iter_mut().find_map(|c| match &mut c.body { lightmap::format::ChunkBody::Mapping(m) => Some(m), _ => None }).expect("mapping");
+            match lightmap::synth::fix_record0_kind(&mut bm.head) {
+                Some((had, want)) => eprintln!("{p}: {n_frames} image frames, {} records; record 0 kind {had} → {want}", bm.head.len().saturating_sub(72) / 66),
+                None => { eprintln!("{p}: no frame record in the mapping head"); std::process::exit(1) }
+            }
             let payload = m.chunk.write(true);
             lightmap::mapio::save_with_chunk(&m, &payload, &out).unwrap_or_else(|e| panic!("{e}"));
             println!("wrote {out}");
