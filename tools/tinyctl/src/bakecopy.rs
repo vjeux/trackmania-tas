@@ -14,8 +14,9 @@
 //!   baked record — a 0-block map crashes the editor's lightmapper; the kept
 //!   tile is a block, the item list is unchanged.
 //!
-//! The copy's item count must equal the shipped file's (the lightmap is
-//! applied by item index): a mismatch is reported and the copy deleted.
+//! The copy's item list must EQUAL the shipped file's — count, model names in order,
+//! placements (the lightmap is applied by item index; `lightmap::item_list_mismatch`):
+//! a mismatch is reported and the copy deleted.
 //! One row per map goes to `--report R.tsv` (map, copy, items, verdict);
 //! `--manifest-out M.tsv --lit-dir DIR` adds a `lightmap-batch` manifest row
 //! (copy, shipped, DIR/<file>, name) per good copy.
@@ -125,11 +126,15 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         let verdict = match crate::build::cmd(&bargs) {
             Ok(()) => {
                 let cm = tmmaps::map::MapFile::load(&copy);
-                if cm.items.len() == n_ship {
-                    format!("ok ({} items)", n_ship)
-                } else {
-                    failed += 1;
-                    format!("ITEM COUNT MISMATCH: shipped {} vs copy {}", n_ship, cm.items.len())
+                // THE RULE (2026-10-01): names + order + count + placements, not the count alone — a chunk binds its
+                // charts by item index, so a copy that merely has as many items would light the wrong ones
+                match crate::lightmap::item_list_mismatch(&sm, &cm) {
+                    None => format!("ok ({} items, names+order+placements equal)", n_ship),
+                    Some(why) => {
+                        failed += 1;
+                        let _ = std::fs::remove_file(&copy);
+                        format!("ITEM LIST MISMATCH (copy deleted): {why}")
+                    }
                 }
             }
             Err(e) => {

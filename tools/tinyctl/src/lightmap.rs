@@ -185,6 +185,7 @@ pub fn transplant_kept(resaved: &Path, shipped: &Path, kept_path: &Path, out: &P
     if !o.status.success() {
         return Err(format!("lmtool transplant --kept: {}", String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or("").to_string()));
     }
+    verify_filetime(out)?;
     report(out, "the kept-list transplant")
 }
 
@@ -425,11 +426,82 @@ pub fn fresh_uid_like(old: &str, a: u32, b: u32) -> String {
     s
 }
 
+/// THE BAKE-COPY RULE (2026-09-12 "shadow seam", restated 2026-10-01 after the Fall 19 audit): a lightmap chunk binds
+/// its charts to objects BY INDEX, so the file a chunk is grafted onto must carry the SAME item list as the file it was
+/// baked on — same count, same model names in the same order (and the same placements: a moved item reads its chart on
+/// the wrong texels). Returns `None` when `a` and `b` agree, else one line naming the first differences.
+pub fn item_list_mismatch(a: &tmmaps::map::MapFile, b: &tmmaps::map::MapFile) -> Option<String> {
+    if a.items.len() != b.items.len() {
+        return Some(format!("item count {} vs {}", a.items.len(), b.items.len()));
+    }
+    let mut names = Vec::new();
+    let mut moved = Vec::new();
+    for (i, (x, y)) in a.items.iter().zip(b.items.iter()).enumerate() {
+        if x.model != y.model {
+            if names.len() < 5 { names.push(format!("item {i}: {} vs {}", x.model, y.model)); }
+            continue;
+        }
+        let d = (0..3).map(|k| (x.pos[k] - y.pos[k]).abs()).fold(0.0f32, f32::max);
+        if d > 0.01 || (x.yaw - y.yaw).abs() > 1e-4 {
+            if moved.len() < 5 { moved.push(format!("item {i} ({}): pos/yaw differ by {d:.3} m / {:.4} rad", x.model, (x.yaw - y.yaw).abs())); }
+        }
+    }
+    let n_names = a.items.iter().zip(b.items.iter()).filter(|(x, y)| x.model != y.model).count();
+    let n_moved = a.items.iter().zip(b.items.iter()).filter(|(x, y)| x.model == y.model && ((0..3).any(|k| (x.pos[k] - y.pos[k]).abs() > 0.01) || (x.yaw - y.yaw).abs() > 1e-4)).count();
+    if n_names == 0 && n_moved == 0 {
+        return None;
+    }
+    let mut s = String::new();
+    if n_names > 0 { s.push_str(&format!("{n_names} of {} items name a different model ({})", a.items.len(), names.join("; "))); }
+    if n_moved > 0 { if !s.is_empty() { s.push_str("; "); } s.push_str(&format!("{n_moved} items moved ({})", moved.join("; "))); }
+    Some(s)
+}
+
+/// THE CACHE FILETIME RULE after a graft (the tiny 04 case, 2026-10-01): the game keeps a lightmap at load only when
+/// cache chunk 0x06022013's word equals the newest CPlugSolid2Model.FileWriteTime over the map's OWN embedded items;
+/// a card-less bake copy can carry a newer model than the shipped file, so the editor's word is the copy's and the
+/// shipped file plays the coarse load-time bake. `lmtool filetime-check OUT` reads the verdict; on OFF the word is
+/// rewritten to the file's own solids (`lmtool filetime-set`, content untouched) and checked again. Default on;
+/// `TINY_LIGHTMAP_VERIFY=0` opts out (the check is reported but never acted on or failed).
+fn verify_filetime(out: &Path) -> Result<(), String> {
+    let dir = std::env::current_exe().map_err(|e| e.to_string())?.parent().ok_or("exe dir")?.to_path_buf();
+    let lmtool = dir.join("lmtool");
+    let enforce = std::env::var("TINY_LIGHTMAP_VERIFY").map(|v| v != "0").unwrap_or(true);
+    let check = |p: &Path| -> Result<(bool, String), String> {
+        let o = std::process::Command::new(&lmtool).args(["filetime-check", p.to_str().unwrap()]).output().map_err(|e| format!("lmtool: {e}"))?;
+        let text = String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr);
+        let verdict = text.lines().find(|l| l.trim_start().starts_with('→')).unwrap_or("").trim().to_string();
+        Ok((verdict.starts_with("→ EQUAL"), verdict))
+    };
+    let (ok, verdict) = check(out)?;
+    if ok {
+        eprintln!("{}: cache FILETIME {verdict}", out.display());
+        return Ok(());
+    }
+    if !enforce {
+        eprintln!("WARNING {}: cache FILETIME {verdict} — TINY_LIGHTMAP_VERIFY=0, left as is (the game will play its load-time bake)", out.display());
+        return Ok(());
+    }
+    eprintln!("{}: cache FILETIME {verdict} — rewriting the word to the file's own TimeWriteMostRecentSolid", out.display());
+    let fixed = out.with_extension("filetime.Map.Gbx");
+    let o = std::process::Command::new(&lmtool).args(["filetime-set", out.to_str().unwrap(), "--out", fixed.to_str().unwrap()]).output().map_err(|e| format!("lmtool: {e}"))?;
+    if !o.status.success() {
+        let _ = std::fs::remove_file(&fixed);
+        return Err(format!("{}: the cache FILETIME word is off ({verdict}) and lmtool filetime-set failed: {}", out.display(), String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or("")));
+    }
+    std::fs::rename(&fixed, out).map_err(|e| format!("{}: {e}", fixed.display()))?;
+    let (ok2, verdict2) = check(out)?;
+    if !ok2 {
+        return Err(format!("{}: the cache FILETIME word is still off after the rewrite ({verdict2}) — not shipped", out.display()));
+    }
+    eprintln!("{}: cache FILETIME {verdict2} after the rewrite", out.display());
+    Ok(())
+}
+
 fn transplant(target: &Path, re: &tmmaps::map::MapFile, resaved_path: &Path, out: &Path) -> Result<(), String> {
     let orig = tmmaps::map::MapFile::load(target);
-    let (n_orig, n_re) = (orig.items.len(), re.items.len());
-    if n_orig != n_re {
-        return Err(format!("{}: item count differs from the editor's save ({n_orig} vs {n_re}); the lightmap would be misaligned — not transplanted (the re-save is at {})", target.display(), resaved_path.display()));
+    if let Some(why) = item_list_mismatch(&orig, re) {
+        return Err(format!("{}: the editor's save does not carry this file's item list — {why}; the lightmap would bind its charts to the wrong items — not transplanted (the re-save is at {})", target.display(), resaved_path.display()));
     }
     let find = |body: &[u8]| tmmaps::gbx::all_skip_chunks(body).into_iter().find(|c| c.0 == LIGHTMAP_CHUNK);
     let ca = find(&orig.gbx.body).ok_or_else(|| format!("{}: no lightmap chunk 0x{LIGHTMAP_CHUNK:08X} to replace", target.display()))?;
@@ -445,6 +517,7 @@ fn transplant(target: &Path, re: &tmmaps::map::MapFile, resaved_path: &Path, out
     body.extend_from_slice(&orig.gbx.body[ca.2 + ca.3..]);
     std::fs::write(out, orig.gbx.write_body_recompressed(&body)).map_err(|e| format!("{}: {e}", out.display()))?;
     eprintln!("{}: lightmap chunk {} -> {} bytes, transplanted (textures, ghost, header, uid untouched) -> {}", target.display(), ca.3, cb.3, out.display());
+    verify_filetime(out)?;
     Ok(())
 }
 
