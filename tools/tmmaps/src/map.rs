@@ -1645,22 +1645,60 @@ impl MapFile {
 
 // ------------------------------------------------------------------ parsing
 
-/// The lookback DEFINITIONS a body region carries, in order: a word with its top two bits set
-/// and a zero index (`0x40000000`), a u32 length 1..=255 and that many printable bytes. Scanned
-/// byte by byte over `body[..end]` (the vehicle chunk's strings leave the stream unaligned), so
-/// the body chunks before the blocks chunk need no per-chunk reader: only chunk 0x0304300D
-/// (the player model Ident) defines strings there on a TM2020 map; the challenge parameters,
-/// the laps and the mod chunks hold plain strings, numbers and a checksum. A float 2.0 (the
-/// same word) followed by a small length and printable text is the only false positive and
-/// occurs in none of those chunks.
+/// THE BODY-LEVEL LOOKBACK TABLE before the blocks chunk, in slot order — what the game's writer
+/// had defined by the time it wrote chunk 0x0304301F, so the chunk's references index the right
+/// strings. Measured on the files (2026-10-02):
+///
+/// * A lookback CONTEXT opens with its version word (`03 00 00 00`) right before its first Id;
+///   one context serves the whole body stream: chunk 0x0304300D's player-model Ident (CarSnow /
+///   Nadeo on Ludde A08 #11, null on a default-car map), the nodes INLINED through node refs (the
+///   2022 game's validation ghost under 0x0305B00D defines CarSport, Nadeo, its own uid — and
+///   Spring 2022 - 01's blocks chunk then REFERENCES "Nadeo" from it), and the blocks + baked
+///   chunks after them. A define is `0x40000000`, u32 length, the bytes.
+/// * A node serialised into an OPAQUE BUFFER — `u32 length, u32 class id, the node's bytes` (the
+///   2026 game's validation ghost under skippable chunk 0x0305B00F: `00000000 54330000 00200903 …`
+///   on Summer 2026 - 01) — opens its OWN context: its first Id is preceded by a fresh version
+///   word and its defines are invisible to the body (the blocks chunk of that map DEFINES "Nadeo"
+///   again, and its second block record's `0x40000004` is the chunk's own 4th string "Land", not
+///   the ghost's). Such a buffer is skipped whole.
+///
+/// Scanned byte by byte over `body[..end]` (the strings leave the stream unaligned); the body
+/// chunks before the blocks chunk hold, besides Ids, plain strings, numbers, a checksum and node
+/// refs — a float 2.0 (the define word) followed by a small length and printable text occurs in
+/// none of them. An opaque buffer is recognised by its shape: a plausible length, a class id
+/// (`0x..000`, high byte 0x03/0x09/0x2E) and a version word + Id inside its first 256 bytes (the 2026 ghost's sits 76 bytes in, after a zlib'd 0x0303F006 blob and the PIKS headers).
 pub fn scan_lookback_defs(body: &[u8], end: usize) -> Vec<String> {
+    let end = end.min(body.len());
+    let word = |i: usize| -> Option<u32> { (i + 4 <= end).then(|| u32::from_le_bytes(body[i..i + 4].try_into().unwrap())) };
+    let is_lookback_word = |w: u32| (w >> 30) != 0 && w != 0xFFFF_FFFF;
+    let is_class_id = |c: u32| (c & 0xFFF) == 0 && matches!(c >> 24, 0x03 | 0x09 | 0x2E) && c != 0;
+    // an opaque node buffer starting at `i`: length, class id, and a fresh lookback context within it
+    let opaque_buffer_len = |i: usize| -> Option<usize> {
+        let len = word(i)? as usize;
+        let cid = word(i + 4)?;
+        if !(16..=end.saturating_sub(i + 8)).contains(&len) || !is_class_id(cid) {
+            return None;
+        }
+        let probe_end = (i + 8 + 256).min(i + 8 + len);
+        let mut j = i + 8;
+        while j + 8 <= probe_end {
+            if word(j)? == 3 && is_lookback_word(word(j + 4)?) {
+                return Some(8 + len);
+            }
+            j += 1;
+        }
+        None
+    };
     let mut out = Vec::new();
     let mut i = 0usize;
-    let end = end.min(body.len());
     while i + 8 <= end {
-        let w = u32::from_le_bytes(body[i..i + 4].try_into().unwrap());
+        if let Some(skip) = opaque_buffer_len(i) {
+            i += skip;
+            continue;
+        }
+        let w = word(i).unwrap();
         if (w >> 30) != 0 && (w & 0x3FFF_FFFF) == 0 {
-            let n = u32::from_le_bytes(body[i + 4..i + 8].try_into().unwrap()) as usize;
+            let n = word(i + 4).unwrap() as usize;
             if (1..=255).contains(&n) && i + 8 + n <= end && body[i + 8..i + 8 + n].iter().all(|b| (0x20..0x7F).contains(b)) {
                 out.push(String::from_utf8_lossy(&body[i + 8..i + 8 + n]).into_owned());
                 i += 8 + n;
@@ -3256,8 +3294,9 @@ impl MapFile {
         let keep_baked: Vec<bool> = self.baked.iter().map(|b| !drop_baked(b)).collect();
         let mut removed = Removed::default();
 
-        // --- the lookback stream: header fields define the first slots
-        let mut table: Vec<String> = Vec::new();
+        // --- the lookback stream: the body-level preseed (the strings defined before the blocks
+        // chunk — a player-model Ident, an inlined validation ghost), then the header fields
+        let mut table: Vec<String> = self.body_preseed.clone();
         for f in self.body_ids.iter().filter(|f| f.off < self.blocks_records.0) {
             if f.is_def {
                 table.push(f.name.clone().unwrap_or_default());
