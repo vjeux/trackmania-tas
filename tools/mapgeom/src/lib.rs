@@ -44,6 +44,7 @@ pub mod par;
 pub mod shape_audit;
 pub mod geom;
 pub mod light_skin;
+pub mod lm_oracle;
 pub mod lz4dict;
 pub mod md5;
 pub mod etlsum;

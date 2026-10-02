@@ -756,8 +756,9 @@ fn load_block_info(idx: &mut crate::blockmap::BlockInfoIndex, store: &mut DataSt
     Ok((path, bi))
 }
 
-/// The decision ladder for one block key.
-fn plan_block<'b>(bi: &'b crate::blockinfo::BlockInfo, key: &BlockKey, collection: u32, ambient: &str, tile_zones: &std::collections::BTreeSet<String>, alias_of_recipe: &BTreeMap<String, String>) -> BlockPlan<'b> {
+/// The decision ladder for one block key. `regen`: the keys of the zone tiles the
+/// game regenerates full size under the tiny build (`regenerated_keys`).
+fn plan_block<'b>(bi: &'b crate::blockinfo::BlockInfo, key: &BlockKey, collection: u32, regen: &std::collections::BTreeSet<(String, u32)>, tile_zones: &std::collections::BTreeSet<String>, alias_of_recipe: &BTreeMap<String, String>) -> BlockPlan<'b> {
     let name = key.name;
     let flags = key.flags;
     // Stadium's Grass floor is the one terrain the tiny map keeps FULL
@@ -770,10 +771,16 @@ fn plan_block<'b>(bi: &'b crate::blockinfo::BlockInfo, key: &BlockKey, collectio
     // fixed plane, so a half-scale copy would only z-fight it.
     // WhiteShore's Water is the sea around its island, the same way
     // (Summer 03: 3148 of 4096 cells; surface -1 = the fixed plane), and
-    // GreenCoast's Lake (Summer 04: 2418 cells). The block is the map's
-    // most common genealogy zone — what `tmmaps tiny` fills with.
-    if matches!(collection, 0x10 | 0x1d | 0xf) && !ambient.is_empty() && name == ambient {
-        return BlockPlan::Nothing { why: format!("{} ambient {name}: regenerated full size by the genealogy, no item", crate::static_item::build::env_name(collection)), label: None, footprint: None };
+    // GreenCoast's Lake (Summer 04: 2418 cells). The zone is the one
+    // `tmmaps tiny` FILLS the genealogy with (`MapFile::genealogy_fill_zone`),
+    // and only its tiles AT THE REGENERATED ROW go without an item: Fall
+    // 2026 - 12 fills `Lake` while its most common zone is `Grass` — the old
+    // "most common zone" rule dropped all 718 authored Grass tiles (rows 6–29,
+    // the plateau interiors: 644 under no block, every one charted in the
+    // source's lightmap) as "regenerated" while the genealogy regenerated a
+    // lake (vjeux's "missing scenery", 2026-10-01).
+    if matches!(collection, 0x10 | 0x1d | 0xf) && regen.contains(&(name.to_string(), flags)) {
+        return BlockPlan::Nothing { why: format!("{} genealogy fill {name}: regenerated full size by the genealogy at its row, no item", crate::static_item::build::env_name(collection)), label: None, footprint: None };
     }
     if collection == 0x1a && name == "Grass" {
         return BlockPlan::Nothing { why: "Stadium grass floor: regenerated full size by the genealogy, no item".into(), label: None, footprint: None };
@@ -1885,7 +1892,37 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     let mut baked_tree_rows = 0usize;
     let mut cache_hits = 0usize;
     let mut fresh_bakes = 0usize;
-    let ambient = source.ambient_zone().unwrap_or_default();
+    // THE REGENERATED TILES: `tmmaps tiny` fills the genealogy with ONE zone
+    // (`genealogy_fill_zone`, the writer's own rule), and the game draws that
+    // zone's tile full size in every cell AT ITS ROW — the row the source's own
+    // tiles of the zone stand on (the water row for a water zone). Only a key
+    // (name, flags) whose every placement sits at that row goes without an
+    // item; a raised tile of the same zone (a Grass plateau over the lake) is
+    // baked like any other block. `tmmaps tiny` is told the fill zone's row
+    // through the mapping rows: a tile row at the regenerated row maps to `-`.
+    let fill_zone = source.genealogy_fill_zone();
+    let fill_row: Option<u8> = fill_zone.as_ref().and_then(|z| {
+        let mut hist: BTreeMap<u8, usize> = BTreeMap::new();
+        for b in source.blocks.iter().filter(|b| &b.name == z) {
+            *hist.entry(b.file_cell[1]).or_default() += 1;
+        }
+        hist.into_iter().max_by_key(|(_, c)| *c).map(|(r, _)| r)
+    });
+    let regen_keys: std::collections::BTreeSet<(String, u32)> = match (&fill_zone, fill_row) {
+        (Some(z), Some(row)) => rows_by_key.iter().filter(|((n, _), rows)| n == z && rows.len() == 1 && rows.contains(&row)).map(|(k, _)| k.clone()).collect(),
+        _ => Default::default(),
+    };
+    {
+        let most_common = source.ambient_zone().unwrap_or_default();
+        match (&fill_zone, fill_row) {
+            (Some(z), Some(row)) => {
+                let raised = source.blocks.iter().filter(|b| &b.name == z && b.file_cell[1] != row).count();
+                println!("  genealogy fill zone {z} (most common zone {most_common}): its tiles at row {row} regenerate full size and get no item ({} keys); {raised} raised {z} tiles are baked like any block", regen_keys.len());
+            }
+            (Some(z), None) => println!("  genealogy fill zone {z} (most common zone {most_common}): the map authors no tile of it; every tile is baked"),
+            (None, _) => println!("  no genealogy fill zone (the fill refuses: first record not water, no water zone); every tile is baked"),
+        }
+    }
     let t_bakes = std::time::Instant::now();
     // ---------------------------------------------------------------------
     // THE PARALLEL PRE-BAKE (`par.rs`, 2026-09-22: "Why does it take 10 min?
@@ -1925,7 +1962,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         let mut seen: BTreeMap<String, String> = BTreeMap::new();
         for (i, (key, info)) in infos.iter().enumerate() {
             let Ok((_, bi)) = info else { continue };
-            if let BlockPlan::Bake(plan) = plan_block(bi, key, collection, &ambient, &tile_zones, &seen) {
+            if let BlockPlan::Bake(plan) = plan_block(bi, key, collection, &regen_keys, &tile_zones, &seen) {
                 seen.insert(plan.recipe.clone(), String::new());
                 let at_water_row = at_water_row_of(key.name, key.flags);
                 let cache_key = crate::bake_cache::key(&plan.recipe, scale, collection, at_water_row, water);
@@ -1995,7 +2032,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 match load_block_info(&mut idx, store, a) {
                     Ok((apath, abi)) => {
                         let akey = BlockKey { name: a, flags: key.flags & !crate::blockmap::FLAG_GHOST, inherited_mods: "", placements: 0 };
-                        match plan_block(&abi, &akey, collection, &ambient, &tile_zones, &BTreeMap::new()) {
+                        match plan_block(&abi, &akey, collection, &regen_keys, &tile_zones, &BTreeMap::new()) {
                             BlockPlan::Bake(aplan) => match bake_block(store, &aplan, a, &apath, &abi, "Archetype.Item.Gbx", scale, collection, &legacy, None, false) {
                                 Ok((_, am, _)) => {
                                     special = am.special.clone().map(|s| (s, am.gate_kind.clone()));
@@ -2080,7 +2117,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             }
         };
         let (name, flags) = (key.name, key.flags);
-        let plan = match plan_block(bi, key, collection, &ambient, &tile_zones, &alias_of_recipe) {
+        let plan = match plan_block(bi, key, collection, &regen_keys, &tile_zones, &alias_of_recipe) {
             BlockPlan::Nothing { why, label, footprint } => {
                 let (sx, sz, units) = match &footprint {
                     Some(f) => (f.sx, f.sz, f.units.clone()),
@@ -2778,12 +2815,26 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     //    with car-free frames (`shootctl shootset` now hides the cursor).
     let occupied_rule = std::env::var("TINY_OCCUPIED_RULE").map(|v| v == "1" || v == "2" || v == "3").unwrap_or(false);
     let mut occupied_hidden: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    // A GHOST-MODE block's generated clips (record flag bit 28) whose own cell
+    // holds a REAL unit (non-ghost, non-pillar, non-tile) of another block: the
+    // piece stands inside that block's mesh (Summer 15's ghost WaterBase under
+    // a TrackWall road: its Water*FC rims in the road's cell = "the pool border
+    // in the middle of the road", 2026-09-21). Left out by default; see the loop.
+    let mut ghost_covered: std::collections::HashMap<usize, String> = std::collections::HashMap::new();
     if std::env::var("TINY_FILLER_RULE").is_ok() || std::env::var("TINY_VFC_RULE").is_ok() {
         println!("  ⚠ TINY_FILLER_RULE/TINY_VFC_RULE are gone: every generated filler the game draws is emitted (a1b91d23); the variable is ignored");
     }
     {
         let faces = crate::fillers::faces(store, &mut idx, &source);
         marks.mark("filler faces");
+        for b in source.baked.iter().filter(|b| b.flags & crate::blockmap::FLAG_GHOST != 0) {
+            let mut real: Vec<String> = faces.occupants.get(&b.file_cell).map(|v| v.iter().filter(|o| !o.pillar && !o.tile && !o.ghost).map(|o| o.name.clone()).collect()).unwrap_or_default();
+            real.sort();
+            real.dedup();
+            if !real.is_empty() {
+                ghost_covered.insert(b.index, real.join("+"));
+            }
+        }
         if occupied_rule {
             // TINY_OCCUPIED_RULE=1: every covered record (the crude probe);
             // TINY_OCCUPIED_RULE=2: covered AND the clip's CanBeDeletedByFullFreeClip
@@ -2864,6 +2915,41 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     };
     let mut dropped_baked: BTreeMap<String, usize> = BTreeMap::new();
     let mut ghost_left_out = 0usize;
+    let mut ghost_emitted = 0usize;
+    // THE LIGHTMAP ORACLE (`lm_oracle.rs`): the source's own editor lightmap
+    // charts every object the game draws. Every placement this loop maps to
+    // `-` is checked against it: a `-` on a CHARTED record is a block the
+    // original shows and the tiny does not — reported per (model, reason),
+    // written to the report as `oracle` rows, never silent (vjeux 2026-10-01:
+    // "why do you allow the map to not generate some items and consider it
+    // okay?"). Tiles the genealogy regenerates are charted too (the original
+    // draws them) and are listed apart: the full-size regenerated tile stands
+    // in for them by design.
+    let oracle = match crate::lm_oracle::read(map, &source, collection) {
+        Ok(o) => o,
+        Err(e) => {
+            println!("  ⚠ lightmap oracle: {e}");
+            None
+        }
+    };
+    if let Some(o) = &oracle {
+        println!("  lightmap oracle: the source's editor lightmap charts {} of {} objects ({} charts; objects = {} + {} authored + {} baked + {} items)", o.charted.len(), o.base + o.n_authored + o.n_baked + o.n_items, o.charts, o.base, o.n_authored, o.n_baked, o.n_items);
+    }
+    // (kind, model + flags, reason) -> (placements, charted, sample cells)
+    let mut dash_audit: BTreeMap<(String, String, String), (usize, usize, Vec<String>)> = BTreeMap::new();
+    let mut audit_dash = |prefix: &str, b: &tmmaps::map::BlockRec, reason: &str| {
+        let Some(o) = &oracle else { return };
+        let charted = if prefix == "b@" { o.baked_charted(b.index) } else { o.authored_charted(b.index) };
+        let e = dash_audit.entry((if prefix == "b@" { "baked".to_string() } else { "block".to_string() }, format!("{} {:08X}", b.name, b.flags), reason.to_string())).or_insert((0, 0, Vec::new()));
+        e.0 += 1;
+        if charted {
+            e.1 += 1;
+            if e.2.len() < 6 {
+                let (x, y, z) = b.coords();
+                e.2.push(format!("{prefix}{}@{x},{y},{z}", b.index));
+            }
+        }
+    };
     // The tree clearance (tree_clear.rs): every deck placement's driving
     // surface and every tree, in the scaled source frame, placed the way
     // `tmmaps tiny` places them.
@@ -2872,42 +2958,80 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     let mut trees: Vec<crate::tree_clear::Tree> = Vec::new();
     let mut dims_cache: BTreeMap<String, Option<(f32, f32)>> = BTreeMap::new();
     let mut deck_placements = 0usize;
+    let ghost_mode = std::env::var("TINY_GHOST_CLIPS").unwrap_or_default();
     for (prefix, b) in source.blocks.iter().map(|b| ("@", b)).chain(source.baked.iter().filter(|b| emitted_baked(b)).map(|b| ("b@", b))) {
         if prefix == "b@" && drop_baked.iter().any(|g| glob_match(g, &b.name)) {
             mapping.push_str(&format!("b@{}\t-\n", b.index));
             *dropped_baked.entry(b.name.clone()).or_insert(0) += 1;
             dis.push("KNOB_DROP_BAKED", &b.name, &tmmaps::discard::cell_str(b.file_cell), 1, "generated filler left out by name (TINY_DROP_BAKED, a hand-written deletion list)");
             rows += 1;
+            audit_dash(prefix, b, "TINY_DROP_BAKED");
             continue;
         }
-        // A GHOST-MODE block's generated clips (record flag bit 28) are LEFT OUT — the
-        // default since 2026-09-21. The runtime does not draw them (ghost blocks take no
-        // part in the clip grid): measured 2026-09-09 on 29 drive-through cameras of
-        // Summer 20 vs the original (d196 94→38, d136 27→13, d361 78→62, d301 61→49 of
-        // 144 cells, no camera worse), and Summer 15's "pool border in the middle of
-        // the road" (vjeux, 2026-09-21) IS such a clip: the source has a ghost WaterBase
-        // under the TrackWall road at cell (32,13,17) with three ghost-flagged
-        // WaterFC/WaterHFC rim fillers, which the tiny emitted as solid half-size items —
-        // a 0.5 m curb across the road that the original never shows.
-        // TINY_GHOST_CLIPS=1 keeps the old form.
-        if prefix == "b@" && b.flags & (1u32 << 28) != 0 && std::env::var("TINY_GHOST_CLIPS").map(|v| v != "1").unwrap_or(true) {
-            mapping.push_str(&format!("b@{}\t-\n", b.index));
-            rows += 1;
-            ghost_left_out += 1;
-            dis.push("BAKED_GHOST_CLIP", &b.name, &tmmaps::discard::cell_str(b.file_cell), 1, "generated clip of a GHOST-mode block (record flag bit 28): the runtime draws none (measured 2026-09-09 on 29 cameras of Summer 20; Summer 15's pool border); TINY_GHOST_CLIPS=1 keeps it");
-            continue;
+        // A GHOST-MODE block's generated clips (record flag bit 28) ARE DRAWN. The
+        // 2026-09-21 rule left every one of them out ("the runtime draws none"),
+        // fitted on 29 Summer 20 cameras and Summer 15's "pool border in the
+        // middle of the road" — and hid the dark TRACKMANIA pillar walls under
+        // every ghost DecoWall of Fall 2026 - 12 (vjeux's photo, 2026-10-01: the
+        // top wall floating on bare blue poles). The source's own editor lightmap
+        // settles it: on 12 all 261 ghost DecoWallBaseVFC, 38/38 PlatformBaseFCB,
+        // 22/22 DecoWallDiag1FCB, 21/21 DecoWallSlope2StraightFCT… carry charts —
+        // the lightmapper rendered them, the client draws them (`lm_oracle.rs`);
+        // on Summer 15 the 12 ghost Water*FC rims are charted too (drawn, and
+        // occluded by the road's mesh in the original). The ONE case kept out is
+        // the one the old rule was written for: a ghost WATER block's rim pieces
+        // (`Water*FC*`) standing inside a real block's cell — our half-size rim
+        // item poked through the road as a 0.5 m curb the original never shows.
+        // Every other ghost clip is emitted like a plain one; a piece inside a
+        // solid block's cell is occluded in the tiny as in the original.
+        // TINY_GHOST_CLIPS=covered leaves out every ghost clip inside a real
+        // block's cell (the probe form); =0 is the 09-21 form (none); =all keeps
+        // even the water rims.
+        if prefix == "b@" && b.flags & crate::blockmap::FLAG_GHOST != 0 {
+            let covered = ghost_covered.get(&b.index);
+            let water_rim = b.name.starts_with("Water") && b.name.contains("FC");
+            let out = match ghost_mode.as_str() {
+                "0" => true,
+                "all" | "1" => false,
+                "covered" => covered.is_some(),
+                _ => covered.is_some() && water_rim,
+            };
+            if out {
+                mapping.push_str(&format!("b@{}\t-\n", b.index));
+                rows += 1;
+                ghost_left_out += 1;
+                audit_dash(prefix, b, &if ghost_mode == "0" { "ghost clip (TINY_GHOST_CLIPS=0)".to_string() } else if water_rim && ghost_mode != "covered" { format!("ghost water rim inside a real block's cell ({}) — Summer 15's pool border", covered.map(String::as_str).unwrap_or("?")) } else { format!("ghost clip inside a real block's cell ({}) (TINY_GHOST_CLIPS=covered)", covered.map(String::as_str).unwrap_or("?")) });
+                dis.push("BAKED_GHOST_CLIP", &b.name, &tmmaps::discard::cell_str(b.file_cell), 1, &if ghost_mode == "0" { "ghost clip left out (TINY_GHOST_CLIPS=0, the 09-21 form)".to_string() } else if water_rim && ghost_mode != "covered" { format!("ghost WATER rim inside a real block's cell ({}) left out — Summer 15's pool border (the one ghost class the game occludes)", covered.map(String::as_str).unwrap_or("?")) } else { format!("ghost clip inside a real block's cell ({}) left out (TINY_GHOST_CLIPS=covered probe)", covered.map(String::as_str).unwrap_or("?")) });
+                continue;
+            }
+            ghost_emitted += 1;
         }
         // the runtime does not draw a record in a cell another block's unit occupies (fact 2 above)
         if prefix == "b@" && occupied_hidden.contains(&b.index) {
             mapping.push_str(&format!("b@{}\t-\n", b.index));
             rows += 1;
             dis.push("BAKED_OCCUPIED_PROBE", &b.name, &tmmaps::discard::cell_str(b.file_cell), 1, "generated record in a cell another block's unit occupies left out (TINY_OCCUPIED_RULE probe, not an established rule)");
+            audit_dash(prefix, b, "TINY_OCCUPIED_RULE probe");
+            continue;
+        }
+        // a tile of the genealogy fill zone at its regenerated row, under a key
+        // that also has raised placements (so the key was baked): this placement
+        // is the full-size regenerated tile's, no item
+        if prefix == "@" && fill_zone.as_deref() == Some(b.name.as_str()) && fill_row == Some(b.file_cell[1]) && !regen_keys.contains(&(b.name.clone(), b.flags)) {
+            mapping.push_str(&format!("@{}\t-\t{}\t1\t1\t0,0,0\t\t\n", b.index, scale));
+            rows += 1;
+            audit_dash(prefix, b, "genealogy fill zone at its row: regenerated full size by the genealogy (the key also has raised tiles, baked)");
+            dis.push("BLOCK_AMBIENT_ZONE", &b.name, &tmmaps::discard::cell_str(b.file_cell), 1, "tile of the genealogy fill zone at its regenerated row: regenerated full size by the genealogy, no item (the key's raised tiles are baked)");
             continue;
         }
         let inherited_mods = if prefix == "b@" { baked_key.get(&b.index).cloned().unwrap_or_default() } else { String::new() };
         match block_map.get(&(b.name.clone(), b.flags, inherited_mods.clone())) {
             Some((alias, sx, sz, units)) => {
                 let model = if alias == "-" { "-".to_string() } else { format!("{alias}.Item.Gbx") };
+                if alias == "-" {
+                    let why = outcomes.iter().find(|o| o.alias == "-" && o.source.starts_with(&format!("{} {:08X}", b.name, b.flags))).and_then(|o| o.result.as_ref().ok().cloned()).unwrap_or_else(|| "no item".into());
+                    audit_dash(prefix, b, &why);
+                }
                 // the unit cells, so `tmmaps tiny` can hide the terrain tile under EVERY
                 // cell a ground deck covers (a Curve5 kept the Grass tiles of its 12
                 // other cells at deck height: the physics read Grass on the road, 2026-09-07)
@@ -3131,6 +3255,17 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         }
     }
     if let Some(r) = report {
+        // the lightmap oracle's rows: one per (kind, model, reason) of the
+        // placements mapped to `-`; status WARN = the original draws some of them
+        // OK = uncharted (the original draws nothing there); ALLOW = charted but
+        // left out on purpose (a regenerated tile, Summer 15's water rims); WARN =
+        // charted, left out by no explicit rule — the original draws it, we do not
+        for ((kind, model, reason), (n, charted, cells)) in &dash_audit {
+            let regenerated = reason.contains("regenerated full size");
+            let allowed = regenerated || reason.contains("Summer 15's pool border");
+            let status = if *charted == 0 { "OK" } else if allowed { "ALLOW" } else { "WARN" };
+            rep.push_str(&format!("oracle-{kind}\t-\t{n}\t{status}\t{model}\t{reason}; {charted} of {n} placements charted in the source lightmap (drawn in play){}{}\n", if regenerated { "; the regenerated full-size tile stands in" } else { "" }, if cells.is_empty() { String::new() } else { format!("; e.g. {}", cells.join(" ")) }));
+        }
         std::fs::write(r, &rep).unwrap();
     }
     println!("  library: {} embedded items; {} models ok, {} failed -> {}", files.len(), ok, bad, out_zip.display());
@@ -3161,8 +3296,37 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     if !dropped_items.is_empty() {
         println!("  ⚠ HACK TINY_DROP_ITEMS: {} source items left out: {}", dropped_items.values().sum::<usize>(), dropped_items.iter().map(|(k, v)| format!("{k} x{v}")).collect::<Vec<_>>().join(", "));
     }
-    if ghost_left_out > 0 {
-        println!("  {ghost_left_out} generated clips of ghost-mode blocks left out (the runtime draws none; TINY_GHOST_CLIPS=1 keeps them)");
+    if ghost_left_out + ghost_emitted > 0 {
+        println!("  generated clips of ghost-mode blocks: {ghost_emitted} emitted (the game draws them: charted in the source lightmap), {ghost_left_out} left out{}", match ghost_mode.as_str() { "0" => " (TINY_GHOST_CLIPS=0: every ghost clip)".to_string(), "all" | "1" => String::new(), "covered" => " (TINY_GHOST_CLIPS=covered: every ghost clip inside a real block's cell)".to_string(), _ => " (water rims inside a real block's cell — Summer 15's pool border; TINY_GHOST_CLIPS=all keeps them)".to_string() });
+    }
+    if oracle.is_some() {
+        let mut warn = 0usize;
+        let mut regen = 0usize;
+        let mut lines: Vec<String> = Vec::new();
+        let mut allowed_out = 0usize;
+        for ((kind, model, reason), (n, charted, cells)) in &dash_audit {
+            if *charted == 0 {
+                continue;
+            }
+            if reason.contains("regenerated full size") {
+                regen += charted;
+                continue;
+            }
+            if reason.contains("Summer 15's pool border") {
+                allowed_out += charted;
+                continue;
+            }
+            warn += charted;
+            lines.push(format!("    {charted:>5} of {n:>5} {kind} {model}: {reason} — e.g. {}", cells.join(" ")));
+        }
+        if warn > 0 {
+            println!("  ⚠ LIGHTMAP ORACLE: {warn} placements mapped to `-` are CHARTED in the source's lightmap — the original draws them, the tiny does not:");
+            for l in lines {
+                println!("{l}");
+            }
+        } else {
+            println!("  lightmap oracle: every placement mapped to `-` is uncharted in the source's lightmap (nothing the original draws is left out){}{}", if regen > 0 { format!("; {regen} regenerated tiles charted (the full-size tile stands in)") } else { String::new() }, if allowed_out > 0 { format!("; {allowed_out} ghost water rims inside a real block's cell left out ON PURPOSE (Summer 15's pool border; TINY_GHOST_CLIPS=all keeps them)") } else { String::new() });
+        }
     }
     if occupied_rule {
         println!("  ⚠ PROBE TINY_OCCUPIED_RULE=1: {} generated records standing in a cell another block's unit occupies left out — not an established rule", occupied_hidden.len());
@@ -3216,7 +3380,21 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     // without a report — the source lightmap's chart table (the 12-fixer's
     // oracle) is the instrument that settles the class. Until it is wired in,
     // NO-FILLERS warns; TINY_GATE_FILLERS=1 makes it a hard stop too.
-    let gate = gate_outcomes(store, &mut idx, &source, &outcomes, &mapping);
+    let mut gate = gate_outcomes(store, &mut idx, &source, &outcomes, &mapping);
+    // THE ORACLE SETTLES THE `-` CLASSES (2026-10-01 21:35 PT): with the source's
+    // lightmap read (`lm_oracle.rs`), every `-` placement has a verdict of its own —
+    // a CHARTED one the original draws (class ORACLE, a hard stop), an uncharted one
+    // the original does not draw either. NO-FILLERS and NOT-DRAWN, the structural
+    // guesses, give way to it; FAIL (no model could be built) stays.
+    if oracle.is_some() {
+        gate.retain(|g| g.class == "FAIL");
+        for ((kind, model, reason), (n, charted, cells)) in &dash_audit {
+            let allowed = reason.contains("regenerated full size") || reason.contains("Summer 15's pool border");
+            if *charted > 0 && !allowed {
+                gate.push(GateRow { model: format!("{kind} {model}"), placements: *charted, class: "ORACLE", reason: format!("{reason}; {charted} of {n} placements charted in the source lightmap: the original draws them"), cells: cells.clone() });
+            }
+        }
+    }
     if !gate.is_empty() {
         let fillers_hard = std::env::var("TINY_GATE_FILLERS").map(|v| v == "1").unwrap_or(false);
         let hard = gate.iter().any(|g| g.class != "NO-FILLERS" || fillers_hard);
