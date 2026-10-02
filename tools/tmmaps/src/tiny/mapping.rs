@@ -91,6 +91,10 @@ pub struct Mappings {
     /// Placements without a row keep their byte (embedded copies are cleared
     /// regardless: built for one variant).
     pub variant_by_index: BTreeMap<usize, u8>,
+    /// `floor@SMALL<TAB>BIG<TAB>K` rows (TINY_FLOOR_ITEMS=overhang, 2026-10-02): the zone tile item
+    /// SMALL has a K-times-scaled twin BIG — one BIG stands for a whole K×K group of open tiles
+    /// beyond the fit grid (the overhang floor of the long A08 maps at x2).
+    pub floor_big: BTreeMap<String, (String, usize)>,
 }
 
 /// `BLOCK<TAB>ITEM[<TAB>MODEL_SCALE]`, or `@INDEX<TAB>...` for an exact block
@@ -153,6 +157,12 @@ pub fn read_mapping(path: &Path) -> Mappings {
             assert!(fields.len() == 1, "{}:{}: expected xf@INDEX", path.display(), line_no + 1);
             let idx: usize = index.parse().unwrap_or_else(|_| panic!("{}:{}: item index expected", path.display(), line_no + 1));
             out.no_driver.insert(idx);
+            continue;
+        }
+        if let Some(small) = fields[0].strip_prefix("floor@") {
+            assert!(fields.len() == 3, "{}:{}: expected floor@SMALL<TAB>BIG<TAB>K", path.display(), line_no + 1);
+            let k: usize = fields[2].parse().unwrap_or_else(|_| panic!("{}:{}: group size expected", path.display(), line_no + 1));
+            out.floor_big.insert(small.to_string(), (fields[1].to_string(), k));
             continue;
         }
         if let Some(alias) = fields[0].strip_prefix("v@") {

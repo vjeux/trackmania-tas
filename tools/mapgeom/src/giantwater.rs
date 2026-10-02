@@ -704,10 +704,16 @@ pub fn plan_volumes(store: &mut crate::store::DataStore, idx: &mut crate::blockm
             }
         }
     }
+    // A grid tile BEYOND the u8 grid (a giant that overhangs the 254-cell grid — the long A08
+    // maps at x2, 2026-10-02) cannot be a block: it becomes a FREE DecoWallWaterBase custom tile
+    // at the same place — the water sheet is drawn there, the volume is not (no physics beyond
+    // the grid; said in the README). One free tile per clipped cell, the row-top form.
+    let mut clipped_free: Vec<([i32; 3], f32)> = Vec::new(); // (cell, y offset of the tile's bottom from the row's bottom)
     // emit the ROW-TOP stacks
     for (cell, (tile, dir, ground_bit)) in &rowtop {
         if cell[0] < 0 || cell[1] < 0 || cell[2] < 0 || cell[0] >= size[0] || cell[1] >= size[1] || cell[2] >= size[2] {
             p.clipped += 1;
+            clipped_free.push((*cell, 0.0));
             continue;
         }
         let above = rowtop.contains_key(&[cell[0], cell[1] + 1, cell[2]]);
@@ -719,10 +725,22 @@ pub fn plan_volumes(store: &mut crate::store::DataStore, idx: &mut crate::blockm
     for (cell, (tile, dir, flags)) in &platform {
         if cell[0] < 0 || cell[1] < 0 || cell[2] < 0 || cell[0] >= size[0] || cell[1] >= size[1] || cell[2] >= size[2] {
             p.clipped += 1;
+            // the deck row's water sheet sits 2 m over the row (PlatformWater's volume 0..2): a free
+            // 8-m tile with its top there
+            clipped_free.push((*cell, 2.0 - CELL_Y));
             continue;
         }
         p.grid.push(FreeBlockSpec { name: tile.clone(), author: None, flags: *flags, pos: [0.0; 3], rot: [0.0; 3], grid: Some(*cell), dir: *dir });
         by_name.entry(tile.clone()).or_insert((0, 0, "")).1 += 1;
+    }
+    if !clipped_free.is_empty() {
+        let ident = "Water\\DecoWallWaterBase.Block.Gbx".to_string();
+        p.archetypes.entry("DecoWallWaterBase".to_string()).or_insert(ident.clone());
+        for (cell, dy) in &clipped_free {
+            let y = ground + cell[1] as f32 * CELL_Y + dy;
+            p.roads.push(FreeBlockSpec { name: format!("{ident}_CustomBlock"), author: Some(author.to_string()), flags: FREE_WATER_FLAGS, pos: [cell[0] as f32 * CELL_XZ, y, cell[2] as f32 * CELL_XZ], rot: [0.0, 0.0, 0.0], grid: None, dir: 0 });
+        }
+        p.notes.push(format!("{} grid water tiles beyond the {}x{}x{} grid -> free DecoWallWaterBase tiles at their place (the sheet is drawn there, NO volume: a block cannot stand beyond the u8 grid)", clipped_free.len(), size[0], size[1], size[2]));
     }
     // emit the SHALLOW free tiles: one per cell at surface - 8 (+ one under it for 3N > 8)
     if !shallow.is_empty() {
