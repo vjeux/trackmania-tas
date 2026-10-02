@@ -42,6 +42,19 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     let base_flag = f("--base").unwrap_or_else(|| "auto".into());
     let template_probes = tmmaps::cli::has(args, "--template-probes");
     let jobs: usize = f("--jobs").and_then(|j| j.parse().ok()).unwrap_or(4).max(1);
+    // THE RECIPE FLAGS forwarded to `lmtool bake` (the Fall 2026 giants: --quality 4 --raster --lm-from-map --pak-dir /tmp/paks
+    // [--env-fit-grid]); --bake-arg X may repeat (any further lmtool flag, verbatim)
+    let mut bake_extra: Vec<String> = Vec::new();
+    if let Some(q) = f("--quality") { bake_extra.push("--quality".into()); bake_extra.push(q); }
+    for flag in ["--raster", "--lm-from-map", "--env-fit-grid", "--no-decoration"] {
+        if tmmaps::cli::has(args, flag) { bake_extra.push(flag.into()); }
+    }
+    for (i, a) in args.iter().enumerate() {
+        if a == "--bake-arg" { if let Some(v) = args.get(i + 1) { bake_extra.extend(v.split_whitespace().map(String::from)); } }
+    }
+    let pak_dir = f("--pak-dir").map(PathBuf::from);
+    // --copies BAKE=SHIPPED,…: the map baked is the BAKE copy, the graft target its SHIPPED twin (the item lists must agree)
+    let copies: std::collections::HashMap<PathBuf, PathBuf> = f("--copies").map(|s| s.split(',').filter(|p| p.contains('=')).map(|p| { let (b, sh) = p.split_once('=').unwrap(); (PathBuf::from(b.trim()), PathBuf::from(sh.trim())) }).collect()).unwrap_or_default();
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let lmtool = exe.with_file_name("lmtool");
     if !lmtool.exists() {
@@ -58,10 +71,26 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         let file = map.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let lit = lit_dir.join(&file);
         let tmp = lit_dir.join(format!("{}.lmtool.Map.Gbx", file.trim_end_matches(".Map.Gbx")));
+        // the graft target: the shipped twin of a --copies entry, else the map itself
+        let target: PathBuf = copies.get(map).cloned().unwrap_or_else(|| map.to_path_buf());
         let step = || -> Result<(u32, u64, u64), String> {
             let m = tmmaps::map::MapFile::load(map);
+            // the collection pak: <pak-dir>/<Envir>.pak with the terrain collections' key or Stadium's (Stadium.pak + Maniaplanet.pak
+            // beside it are lmtool's own defaults)
+            let pak_arg: Option<String> = match &pak_dir {
+                Some(d) => {
+                    let envir = tmmaps::header::read(map.to_str().unwrap_or_default())?.envir;
+                    let key = if envir == "Stadium" { "B773D73047A4104857722366D78D28A6" } else { "660C4C156B80337E296A1034B0AA05B8" };
+                    let p = d.join(format!("{envir}.pak"));
+                    if !p.exists() { return Err(format!("{}: no such pak for {envir}", p.display())); }
+                    Some(format!("{}:{key}", p.display()))
+                }
+                None => None,
+            };
             // --base auto: lmtool's own rule (moods::base_rule), checked against ours (item_base)
-            let mine: Option<u32> = if base_flag == "auto" { Some(item_base(&m)?) } else { None };
+            // (on the SHIPPED target under --copies: a bake copy may keep one zone block, which replaces its slot on a terrain collection)
+            let target_map = if target != *map { Some(tmmaps::map::MapFile::load(&target)) } else { None };
+            let mine: Option<u32> = if base_flag == "auto" { Some(item_base(target_map.as_ref().unwrap_or(&m))?) } else { None };
             // the atlas is 1024² whatever the map: a 254² grid (64516 ground charts) plus 20k items
             // can overflow it ("atlas full even at 20 % chart size", 24 x4) — the item texel
             // density steps down until the pack fits (1.1 default, then 0.8, 0.6, 0.45, 0.3)
@@ -71,6 +100,8 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             for tpm in [None, Some("0.8"), Some("0.6"), Some("0.45"), Some("0.3")] {
                 let mut c = Command::new(&lmtool);
                 c.arg("bake").arg(map).arg("--out").arg(&tmp).arg("--base").arg(&base_flag);
+                c.args(&bake_extra);
+                if let Some(p) = &pak_arg { c.arg("--pak").arg(p); }
                 if template_probes {
                     c.arg("--template-probes");
                 }
@@ -102,17 +133,31 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                 }
             }
             let base = used;
-            let g = Command::new(&exe).args(["lightmap-graft", "--from"]).arg(&tmp).arg("--into").arg(format!("{}={}", map.display(), lit.display())).output().map_err(|e| format!("graft: {e}"))?;
+            let g = Command::new(&exe).args(["lightmap-graft", "--from"]).arg(&tmp).arg("--into").arg(format!("{}={}", target.display(), lit.display())).output().map_err(|e| format!("graft: {e}"))?;
             let text = String::from_utf8_lossy(&g.stdout).to_string() + &String::from_utf8_lossy(&g.stderr);
             if !g.status.success() {
                 return Err(format!("graft: {}", text.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("").chars().take(200).collect::<String>()));
             }
             let _ = std::fs::remove_file(&tmp);
+            // THE GATES on the lit file (2026-10-01): `lmtool check`'s FILETIME rule (the game keeps the chunk at load) and the record-0
+            // kind rule (2 with two image frames, 3 with three — the play-load hang); either failing = the row FAILS
+            {
+                let ck = Command::new(&lmtool).arg("check").arg(&lit).output().map_err(|e| format!("lmtool check: {e}"))?;
+                let text = String::from_utf8_lossy(&ck.stdout).to_string();
+                if let Some(l) = text.lines().find(|l| l.contains("FILETIME")) { if l.contains("[FAIL]") { return Err(format!("lmtool check: {}", l.trim())); } }
+                let fr = Command::new(&lmtool).arg("framerecords").arg(&lit).output().map_err(|e| format!("lmtool framerecords: {e}"))?;
+                let ft = String::from_utf8_lossy(&fr.stdout).to_string();
+                let frames: usize = ft.lines().next().and_then(|l| l.split(',').nth(1)).and_then(|s| s.trim().split(' ').next()).and_then(|n| n.parse().ok()).unwrap_or(0);
+                let kind0: usize = ft.lines().nth(1).and_then(|l| l.split("w0 ").nth(1)).and_then(|s| s.split(' ').next()).and_then(|n| n.parse().ok()).unwrap_or(0);
+                let want = if frames >= 3 { 3 } else { 2 };
+                if frames == 0 || kind0 != want { return Err(format!("record-0 kind {kind0} with {frames} image frames (the rule wants {want}) — the client's PlayMap hangs on it")); }
+            }
             let lm = tmmaps::map::MapFile::load(&lit);
             let chunk = tmmaps::map::skip_chunks(&lm.gbx.body).into_iter().find(|(id, ..)| *id == 0x0304_305B).map(|(_, _, _, size)| size as u64).unwrap_or(0);
-            let (hu, lu) = (tmmaps::header::read(map.to_str().unwrap_or_default())?.uid, tmmaps::header::read(lit.to_str().unwrap_or_default())?.uid);
-            if lm.items.len() != m.items.len() || hu != lu {
-                return Err(format!("the lit file differs: {} vs {} items, uid {} vs {}", lm.items.len(), m.items.len(), lu, hu));
+            let (hu, lu) = (tmmaps::header::read(target.to_str().unwrap_or_default())?.uid, tmmaps::header::read(lit.to_str().unwrap_or_default())?.uid);
+            let tm = tmmaps::map::MapFile::load(&target);
+            if lm.items.len() != tm.items.len() || hu != lu {
+                return Err(format!("the lit file differs: {} vs {} items, uid {} vs {}", lm.items.len(), tm.items.len(), lu, hu));
             }
             Ok((base, chunk, std::fs::metadata(&lit).map(|x| x.len()).unwrap_or(0)))
         };
