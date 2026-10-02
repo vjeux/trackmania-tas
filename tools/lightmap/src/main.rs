@@ -3517,6 +3517,9 @@ fn run(mut a: Vec<String>) {
             // the frame records' time-of-day word: the MAP's (chunk 0x03043056), or the mood's default word
             // when the map has none (what Nadeo's editor baked the default-word sources with) — `--daytime N`
             // overrides, `--daytime template` keeps the template's (giant child 2026-09-23 + baker-3)
+            // --cache-words editor|template (default editor, 2026-10-01): cache chunks 0x06022017/0x06022018 written as every editor bake
+            // of a block-less map writes them — (0, 0) and 0 — instead of the template's (a Nadeo source's FILETIME): the port's files
+            // all carried the template's; see the Fall 2026 hang bisect (fix-19/README.md §4).
             // --bake-time solids|now|template|TICKS: the file's cache chunk 0x06022013 FILETIME word. DEFAULT = `solids` = THE GAME'S RULE
             // (the MK64 flat-lightmap lane, 2026-09-28; synth::most_recent_solid): the word must equal the newest CPlugSolid2Model.FileWriteTime
             // over the map's embedded item models or the game drops the chunk at load ("TimeWriteMostRecentSolid has changed") and plays its
@@ -3556,7 +3559,7 @@ fn run(mut a: Vec<String>) {
                 let n_tiles = base.saturating_sub(deco_const) as f32;
                 let quality: u32 = f("--quality").map(|s| s.parse::<u32>().unwrap()).unwrap_or(3).saturating_sub(1);
                 let xb = xml_blended_rec.as_ref().unwrap_or(x);
-                lightmap::synth::FrameParams { daytime, max_hdr_mood: xb.max_hdr, max_hdr: k, bounce: xb.bounce_factor, sky: xb.sky_factor, sum_area: Some(items_area + 2.0 * n_tiles), quality: Some(quality), filetime: bake_filetime, decoration: Some(mf0.decoration_id.clone()) }
+                lightmap::synth::FrameParams { daytime, max_hdr_mood: xb.max_hdr, max_hdr: k, bounce: xb.bounce_factor, sky: xb.sky_factor, sum_area: Some(items_area + 2.0 * n_tiles), quality: Some(quality), filetime: bake_filetime, decoration: Some(mf0.decoration_id.clone()), editor_cache_words: f("--cache-words").as_deref() != Some("template") }
             });
             // the game's positions when --layout-game: stored texel (px, py) = ((X + 1)/2, (Y + 1)/2) of the layout rect, for every chart
             // (the tiles included — their objects are the 4096 first)

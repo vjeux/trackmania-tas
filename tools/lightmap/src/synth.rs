@@ -216,6 +216,11 @@ pub struct FrameParams {
     /// then deterministic run to run (two bakes of the same inputs give byte-identical files; the wall clock was the
     /// only nondeterministic element, engineer 2 2026-09-25). `--bake-time now|TICKS` sets it.
     pub filetime: Option<u64>,
+    /// THE EDITOR'S 0x06022017 / 0x06022018 WORDS (the Fall 2026 hang bisect, 2026-10-01): every editor bake of a block-less
+    /// map writes cache chunk 0x06022018 = 0 and 0x06022017 = (0, small count); a template taken from a Nadeo source carries
+    /// that source's words (0x18 = a FILETIME) and the port copied them into every lit file. `true` = write the editor's
+    /// form (0x17 = (0, 0), 0x18 = 0); `false` = keep the template's.
+    pub editor_cache_words: bool,
 }
 
 /// THE FRAME RECORD COUNT (V's scan of all 30 editor refs, 2026-09-26 22:50Z; RE 13 0x140229620 l.524–560): every editor bake
@@ -265,6 +270,15 @@ fn patch_raw_chunk(id: u32, b: &[u8], fp: Option<&FrameParams>) -> Vec<u8> {
             if let Some(ft) = ft {
                 o[8..16].copy_from_slice(&ft.to_le_bytes());
             }
+        }
+        0x0602_2017 if o.len() >= 8 && fp.editor_cache_words => {
+            // the editor writes (0, n) with n = 0 on most block-less maps (615 / 47569 seen once each); a Nadeo source carries
+            // (40653, 1595650) — the template's words were shipped by the port until 2026-10-01
+            o[..8].copy_from_slice(&[0u8; 8]);
+        }
+        0x0602_2018 if o.len() >= 8 && fp.editor_cache_words => {
+            // a FILETIME in Nadeo sources (2024-07 in Fall's), ZERO in every editor bake of our maps
+            o[..8].copy_from_slice(&[0u8; 8]);
         }
         0x0602_2015 if o.len() >= 40 => {
             // (5, u64, 3, 0x1c, Id(0x40000000, len, name), 1, 0, DayTime, 0…): rewrite the name and the time
