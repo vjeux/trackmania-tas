@@ -39,6 +39,7 @@ const MAPS_SHOOT: &str = "/mnt/c/Users/vjeux/OneDrive/Documents/Trackmania/Maps/
 const GS_STORE: &str = "/mnt/c/Users/vjeux/OpenplanetNext/PluginStorage/GhostShooter";
 const LM_CACHE: &str = "/mnt/c/ProgramData/Trackmania/Cache";
 const STAGE: &str = "/home/vjeux/shoot/_stage";
+const SHOTS: &str = "/mnt/c/Users/vjeux/tinyshots/_check";
 
 fn get(shootctl: &str, route: &str, timeout_s: u64) -> String {
     let o = Command::new("timeout").arg(format!("{}", timeout_s + 5)).arg(shootctl).arg("get").arg(route).output();
@@ -138,7 +139,7 @@ impl Drop for MyGame {
 /// One map in the open game: load in the editor, compute, save, (the start check:
 /// the test drive and the car's position), back to the menu.
 /// Returns (saved WSL path, compute seconds, "x y z" of the car or "-").
-fn bake_one(g: &MyGame, map_wsl: &str, quality: u32, load_timeout: Duration, compute_timeout: Duration, startcheck: bool, check_only: bool, load_wait: Duration) -> Result<(String, f64, String), String> {
+fn bake_one(g: &MyGame, map_wsl: &str, quality: u32, load_timeout: Duration, compute_timeout: Duration, startcheck: bool, check_only: bool, load_wait: Duration, shots: usize, shot_every_ms: u64) -> Result<(String, f64, String), String> {
     let shootctl = &g.shootctl;
     let name = Path::new(map_wsl).file_name().and_then(|n| n.to_str()).ok_or("map path has no file name")?.to_string();
     let stem = name.strip_suffix(".Map.Gbx").unwrap_or(&name).to_string();
@@ -165,6 +166,21 @@ fn bake_one(g: &MyGame, map_wsl: &str, quality: u32, load_timeout: Duration, com
         // a PlayMap that has not produced a playground in 100 s is the black-screen load stall
         // (loadloop's class): the caller relaunches and retries once
         let car = wait_for_car(g, &name, load_wait)?;
+        // --shots N [--shot-every-ms MS]: screenshots of the playground (the intro camera flight, then
+        // the car) through the box's own shotdpi.ps1 — a LOOK at a lit map without `tinyctl play`
+        // (whose shootctl path cannot stage the quarantined plugin)
+        if shots > 0 && !car.starts_with("NO VEHICLE") {
+            let dir = format!("{SHOTS}/{stem}");
+            let _ = std::fs::create_dir_all(&dir);
+            for k in 0..shots {
+                let file = format!("{dir}/shot-{k}.png");
+                let win = format!("C:/Users/vjeux/tinyshots/_check/{stem}/shot-{k}.png").replace('/', "\\");
+                let o = Command::new("/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe").args(["-ExecutionPolicy", "Bypass", "-File", "C:\\Users\\vjeux\\shotdpi.ps1", &win]).output();
+                let ok = o.map(|o| o.status.success()).unwrap_or(false) && std::fs::metadata(&file).map(|m| m.len() > 0).unwrap_or(false);
+                println!("  {name}: shot {k} {} ({})", if ok { "taken" } else { "FAILED" }, file);
+                std::thread::sleep(Duration::from_millis(shot_every_ms));
+            }
+        }
         let _ = std::fs::remove_file(&game_copy);
         g.to_menu()?;
         return Ok(("-".into(), 0.0, car));
@@ -362,6 +378,8 @@ pub fn bake_run(args: &[String]) -> Result<(), String> {
     let check_only = tmmaps::cli::has(args, "--check-only");
     // --load-wait S: how long a /playmap may take to show a playground before it counts as the hang (100)
     let load_wait = Duration::from_secs(f("--load-wait").and_then(|s| s.parse().ok()).unwrap_or(100));
+    let shots: usize = f("--shots").and_then(|s| s.parse().ok()).unwrap_or(0);
+    let shot_every_ms: u64 = f("--shot-every-ms").and_then(|s| s.parse().ok()).unwrap_or(4000);
     if std::env::var("TM_LOCK_TOKEN").map(|t| t.is_empty()).unwrap_or(true) {
         return Err("no TM_LOCK_TOKEN in the environment — run this under `tmdrive run --purpose … -- tinyctl bake-run …`".into());
     }
@@ -422,7 +440,7 @@ pub fn bake_run(args: &[String]) -> Result<(), String> {
                 }
             }
             let g = game.as_ref().unwrap();
-            let row = match bake_one(g, m, quality, load_timeout, compute_timeout, startcheck || check_only, check_only, load_wait) {
+            let row = match bake_one(g, m, quality, load_timeout, compute_timeout, startcheck || check_only, check_only, load_wait, shots, shot_every_ms) {
                 Ok((_, _, car)) if car.starts_with("NO VEHICLE") && attempt == 1 => {
                     // the load stalled: a fresh game and one more try before the verdict
                     eprintln!("  {m}: no playground on attempt 1 — a fresh game, retrying once");
@@ -555,7 +573,7 @@ pub fn lightmap_run(args: &[String]) -> Result<(), String> {
         // --load-timeout S / --compute-timeout S ride through to the box side (tiny 22's 21k items
         // did not open in the default 420 s, 2026-10-01)
         let mut cmd = cmd;
-        for k in ["--load-timeout", "--compute-timeout", "--load-wait"] {
+        for k in ["--load-timeout", "--compute-timeout", "--load-wait", "--shots", "--shot-every-ms"] {
             if let Some(v) = f(k) {
                 cmd = cmd.replace(" > '", &format!(" {k} {v} > '"));
             }
@@ -603,6 +621,20 @@ pub fn lightmap_run(args: &[String]) -> Result<(), String> {
             };
             let mut out_bytes = 0u64;
             let verdict = if check_only {
+                // the shots, scaled on the box (ffmpeg) and pulled next to the report
+                if f("--shots").is_some() && verdict == "ok" {
+                    let dir = format!("{SHOTS}/{stem}");
+                    let local = report.with_file_name(format!("shots-{stem}"));
+                    let _ = std::fs::create_dir_all(&local);
+                    let n: usize = f("--shots").and_then(|s| s.parse().ok()).unwrap_or(0);
+                    for k in 0..n {
+                        let _ = wsx.sh(&format!("ffmpeg -y -loglevel error -i '{dir}/shot-{k}.png' -vf scale=1280:-1 '{dir}/shot-{k}.jpg'; true"));
+                        match wsx.pull(&format!("{dir}/shot-{k}.jpg"), &local.join(format!("shot-{k}.jpg"))) {
+                            Ok(b) => println!("[group {gi}] {copy}: shot {k} → {} ({b} B)", local.join(format!("shot-{k}.jpg")).display()),
+                            Err(e) => println!("[group {gi}] {copy}: shot {k} not pulled: {e}"),
+                        }
+                    }
+                }
                 if verdict == "ok" { out_bytes = std::fs::metadata(out).map(|m| m.len()).unwrap_or(0); "checked".to_string() } else { failed += 1; verdict }
             } else if verdict == "ok" && saved != "-" {
                 let resaved = Path::new(out).with_extension("resaved.Map.Gbx");
