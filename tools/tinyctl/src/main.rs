@@ -222,6 +222,14 @@ fn main() {
         "token-mint" => nadeo::token_mint(rest),
         "bake-run" => bakerun::bake_run(rest),
         "lightmap-run" => bakerun::lightmap_run(rest),
+        // tinyctl lightmap-graft --bake-copy COPY --resaved RESAVED --shipped SHIPPED --out OUT: the editor's
+        // re-save of a bake copy grafted onto (a rebuilt twin of) the shipped file — the item-list rule,
+        // the FILETIME rule (2026-10-02: A08 03/04 re-grafted after the shipped files lost a kept block)
+        "lightmap-graft" => (|| -> Result<(), String> {
+            let f = |k: &str| tmmaps::cli::flag(rest, k).map(std::path::PathBuf::from).ok_or_else(|| format!("lightmap-graft needs {k}"));
+            let (copy, resaved, shipped, out) = (f("--bake-copy")?, f("--resaved")?, f("--shipped")?, f("--out")?);
+            lightmap::finish_from_resaved(&copy, &resaved, &copy, &shipped, &out)
+        })(),
         "box-wait" => bakerun::box_wait(rest),
         "campaign-tracker" => tracker::cmd(rest),
         "genealogy-census" => gencensus::cmd(rest),

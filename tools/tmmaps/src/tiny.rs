@@ -1215,10 +1215,17 @@ pub fn cmd(args: &[String]) {
         // the published form has zero authored blocks like the reference maps.
         let keep_zone_block: Option<usize> = if keep_zone_flag {
             let zone = source.ambient_zone();
-            let pick = m.blocks.iter().find(|b| zone.as_deref() == Some(b.name.as_str())).or_else(|| m.blocks.first()).map(|b| b.index);
-            if let Some(i) = pick {
-                let b = &m.blocks[i];
-                println!("  kept authored block {} `{}` at cell {:?} (--keep-zone-block; zone {:?})", b.index, b.name, b.coords(), zone);
+            // ONLY a block named after the zone: the old fallback to the FIRST authored block kept
+            // Ludde A08 #11's RoadTechStart full size at its unscaled cell — a second start in the
+            // giant (2026-10-02). A map without an authored zone block keeps nothing (its big grid
+            // bakes in the editor without one; the 48x48 case has its tiles).
+            let pick = m.blocks.iter().find(|b| zone.as_deref() == Some(b.name.as_str())).map(|b| b.index);
+            match pick {
+                Some(i) => {
+                    let b = &m.blocks[i];
+                    println!("  kept authored block {} `{}` at cell {:?} (--keep-zone-block; zone {:?})", b.index, b.name, b.coords(), zone);
+                }
+                None => println!("  --keep-zone-block: no authored block named after the zone {:?} — none kept (a start/road block is never a stand-in)", zone),
             }
             pick
         } else {

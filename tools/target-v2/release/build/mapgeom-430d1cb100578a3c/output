@@ -4,4 +4,4 @@ cargo:rerun-if-changed=/home/vjeux/a08/tt/tools/mapgeom/../gbx/src
 cargo:rerun-if-changed=/home/vjeux/a08/tt/tools/mapgeom/../Cargo.lock
 cargo:rerun-if-changed=/home/vjeux/a08/tt/tools/mapgeom/../../.git/HEAD
 cargo:rerun-if-changed=/home/vjeux/a08/tt/tools/mapgeom/../../.git/refs/heads
-cargo:rustc-env=MAPGEOM_BUILD_ID=80f488bd664d-df3720f2a3591a64
+cargo:rustc-env=MAPGEOM_BUILD_ID=58cd451ce618-eec67f300e214cba
