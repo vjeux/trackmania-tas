@@ -70,7 +70,7 @@ pub fn loss_of(code: &str) -> &'static str {
         "GENEALOGY_CLEAR" => "visible",
         "BAKED_NO_MAPPING_SKIPPED" | "ITEM_CARRIED_ORIGINAL" => "fail",
         "ITEM_PARKED" => "visible",
-        "MT_BLOCK_VERBATIM" | "MT_UNTOUCHED" | "GHOST_REMOVED" | "MT_TRIGGER_GRID" => "behavioral",
+        "MT_BLOCK_VERBATIM" | "MT_UNTOUCHED" | "GHOST_REMOVED" | "MT_TRIGGER_GRID" | "MT_ENTITY_CLIP_DROPPED" => "behavioral",
         // ---- pipeline
         "MAP_LOD_LADDER" => "visible",
         "MAP_OVER_CAP" => "fail",

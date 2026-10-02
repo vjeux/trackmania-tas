@@ -1322,6 +1322,17 @@ pub fn cmd(args: &[String]) {
                     for (k, v) in &kinds {
                         dis.push("MT_BLOCK_VERBATIM", k, "", *v, &format!("MediaTracker block class {k}: layout unknown to the reader, copied verbatim (its coordinates, if any, stay full-size)"));
                     }
+                    // ENTITY clips (the author's cameo ghost, a recording of the SOURCE
+                    // geometry) are DROPPED by default (2026-10-01, decided on the box: Fall
+                    // 2026 map 22's in-game entity clip hung the client's PlayMap on every
+                    // conversion; the clip removed → loads and passes). TINY_MT_ENTITY=keep
+                    // keeps them (vjeux's call if he wants the cameos back).
+                    if std::env::var("TINY_MT_ENTITY").map(|v| v != "keep").unwrap_or(true) {
+                        for line in mt.drop_entity_clips() {
+                            println!("  MediaTracker: {line}");
+                            dis.push("MT_ENTITY_CLIP_DROPPED", "Entity", "", 1, &format!("MediaTracker {line} (a recording of the source map cannot play on a scaled map; map 22's hang; TINY_MT_ENTITY=keep keeps it)"));
+                        }
+                    }
                     println!(
                         "  MediaTracker: {} clips; {keys} camera keys and {verts} triangle vertices moved through the transform, trigger cells {c0} -> {c1} (grid {}x{}x{} per block), {left} blocks left alone ({} kept verbatim: {})",
                         mt.clips().len(),

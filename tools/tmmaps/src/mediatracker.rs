@@ -1199,6 +1199,10 @@ impl MediaTracker {
             "end-race" => &mut self.end_race,
             _ => return Err(format!("--drop-clip: slot {slot:?} is not a clip group (in-game, end-race)")),
         };
+        Self::drop_clip_in(s, slot, n)
+    }
+
+    fn drop_clip_in(s: &mut Slot, slot: &str, n: usize) -> Result<String, String> {
         let Slot::Group(g) = s else { return Err(format!("--drop-clip: the {slot} slot holds no clip group")) };
         if n == 0 || n > g.clips.len() {
             return Err(format!("--drop-clip: the {slot} group has {} clip(s); {n} is out of range", g.clips.len()));
@@ -1215,6 +1219,46 @@ impl MediaTracker {
             return Ok(format!("{msg}; the group is empty -> {slot} slot null"));
         }
         Ok(msg)
+    }
+
+    /// Every clip that carries an ENTITY block (CGameCtnMediaBlockEntity: a
+    /// recorded run of the SOURCE map, the author's cameo ghost) leaves the
+    /// chunk — with its trigger when it hangs off a group, the whole slot when
+    /// it is a single clip (intro / podium / ambiance). A recording of the
+    /// full-size geometry cannot play on a scaled map, and Fall 2026 map 22's
+    /// in-game entity clip hung the client's PlayMap on every conversion
+    /// (decided on the box 2026-10-01: the clip removed → loads and passes;
+    /// the skin neutralised alone still hung). Camera / text / FX clips stay.
+    /// Returns one line per clip dropped.
+    pub fn drop_entity_clips(&mut self) -> Vec<String> {
+        const CLASS_ENTITY: u32 = 0x0329_F000;
+        let has_entity = |c: &Clip| c.tracks.iter().any(|t| t.blocks.iter().any(|b| b.class == CLASS_ENTITY));
+        let mut out = Vec::new();
+        for (slot, s) in self.slots_mut() {
+            match s {
+                Slot::Null | Slot::Authored(_) => {}
+                Slot::Clip(c) => {
+                    if has_entity(c) {
+                        out.push(format!("{slot} clip {:?} (node {}, {} bytes, {} tracks) carries an entity (ghost) record: dropped, the slot goes null", c.name, c.index, c.span.1 - c.span.0, c.tracks.len()));
+                        *s = Slot::Null;
+                    }
+                }
+                Slot::Group(g) => {
+                    // highest first so the 1-based numbers stay valid while removing
+                    let hits: Vec<usize> = g.clips.iter().enumerate().filter(|(_, c)| has_entity(c)).map(|(i, _)| i + 1).rev().collect();
+                    for n in hits {
+                        match Self::drop_clip_in(s, slot, n) {
+                            Ok(msg) => out.push(format!("entity (ghost) record: {msg}")),
+                            Err(e) => out.push(format!("entity (ghost) clip {n} of {slot} NOT dropped: {e}")),
+                        }
+                        if matches!(s, Slot::Null) {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// The chunk's bytes (id word included) with the edits applied and the
