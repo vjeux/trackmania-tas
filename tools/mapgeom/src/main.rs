@@ -78,7 +78,7 @@ COMMANDS
                                 ITEMS are deleted; the validation ghost dropped
   center-finish <file.Map.Gbx> --out OUT [--center auto|bbox|X,Z]
       [--occupied overlap|raise|fail] [--include-startfinish] [--no-rename]
-      [--no-reuid] [--dry-run] [--report TSV]
+      [--no-reuid] [--lightmap strip|keep] [--dry-run] [--report TSV]
                                 every Finish (block info / item model type 1)
                                 and the baked clips it owns moved by one whole-
                                 cell offset onto the map centre ((size−1)/2:
@@ -4141,6 +4141,11 @@ fn sttc_center_opts(rest: &[String]) -> mapgeom::sttc::CenterOpts {
         include_startfinish: rest.iter().any(|x| x == "--include-startfinish"),
         rename: !rest.iter().any(|x| x == "--no-rename"),
         reuid: !rest.iter().any(|x| x == "--no-reuid"),
+        strip_lightmap: match flag(rest, "--lightmap").as_deref() {
+            None | Some("strip") => true,
+            Some("keep") => false,
+            Some(o) => die(format!("--lightmap strip | keep, not `{o}`")),
+        },
     }
 }
 

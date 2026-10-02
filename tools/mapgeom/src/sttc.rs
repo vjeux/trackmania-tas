@@ -703,6 +703,13 @@ pub struct CenterOpts {
     pub include_startfinish: bool,
     pub rename: bool,
     pub reuid: bool,
+    /// drop the source lightmap (chunk 0x0304305B → HasLightmaps 0): its charts
+    /// are bound to objects BY INDEX ([blocks][baked][items]) and to the
+    /// source geometry, so after records are removed or moved the game would
+    /// shade later items with other items' charts and keep the old finish's
+    /// shadows; stripped, the client bakes a coarse one at load (or the editor
+    /// re-bakes it properly on the box)
+    pub strip_lightmap: bool,
 }
 
 pub struct CenterOutcome {
@@ -718,6 +725,7 @@ pub struct CenterOutcome {
     pub mismatches: usize,
     pub new_name: String,
     pub new_uid: String,
+    pub lightmap_stripped: bool,
 }
 
 fn round_half_up(v: f64) -> i32 {
@@ -985,6 +993,7 @@ pub fn center_finish(ctx: &mut Ctx, src: &Path, out: &Path, o: &CenterOpts, dry:
         mismatches,
         new_name: new_name.clone(),
         new_uid: new_uid.clone(),
+        lightmap_stripped: o.strip_lightmap,
     };
     if dry {
         return Ok(outcome(rows));
@@ -1021,6 +1030,9 @@ pub fn center_finish(ctx: &mut Ctx, src: &Path, out: &Path, o: &CenterOpts, dry:
         m.move_baked_free(*idx, shifted(p, dw));
     }
     m.strip_validation_ghost_to(GhostForm::Remove);
+    if o.strip_lightmap {
+        m.strip_lightmap();
+    }
     if o.rename {
         let (h, b) = m.set_map_name(&hdr.name, &new_name);
         if h + b == 0 {
@@ -1110,6 +1122,12 @@ pub fn verify_center(src: &Path, out: &Path, outcome: &CenterOutcome) -> Result<
     let hb = tmmaps::header::read(out.to_str().unwrap_or_default())?;
     if hb.validated != "0" {
         bad.push(format!("header validated={}", hb.validated));
+    }
+    if let Some(&(_, _, payload, size)) = tmmaps::gbx::all_skip_chunks(&b.gbx.body).iter().find(|(c, ..)| *c == 0x0304_305B) {
+        let has = size >= 8 && u32::from_le_bytes(b.gbx.body[payload + 4..payload + 8].try_into().unwrap()) != 0;
+        if has && outcome.lightmap_stripped {
+            bad.push("the lightmap chunk still says HasLightmaps".into());
+        }
     }
     if has_chunk(&b.gbx.body, 0x0305_B00F) {
         bad.push("validation ghost chunk still present".into());
@@ -1327,7 +1345,7 @@ mod tests {
             return;
         };
         let out = std::env::temp_dir().join(format!("sttc-test-{}", std::process::id()));
-        let opts = PipelineOpts { cp: CpMode::Plain, center: CenterOpts { center: Center::Auto, occupied: Occupied::Overlap, include_startfinish: false, rename: true, reuid: true }, dry: false, keep_sttf: true };
+        let opts = PipelineOpts { cp: CpMode::Plain, center: CenterOpts { center: Center::Auto, occupied: Occupied::Overlap, include_startfinish: false, rename: true, reuid: true, strip_lightmap: true }, dry: false, keep_sttf: true };
         for (file, want) in [
             ("01-Fall-2026---01.Map.Gbx", "3 items + 0 baked moved by (7,0,-10)"),
             ("05-Fall-2026---05.Map.Gbx", "1 finish blocks + 0 items + 9 baked moved by (7,0,0)"),
