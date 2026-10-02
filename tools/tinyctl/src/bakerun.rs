@@ -138,7 +138,7 @@ impl Drop for MyGame {
 /// One map in the open game: load in the editor, compute, save, (the start check:
 /// the test drive and the car's position), back to the menu.
 /// Returns (saved WSL path, compute seconds, "x y z" of the car or "-").
-fn bake_one(g: &MyGame, map_wsl: &str, quality: u32, load_timeout: Duration, compute_timeout: Duration, startcheck: bool, check_only: bool) -> Result<(String, f64, String), String> {
+fn bake_one(g: &MyGame, map_wsl: &str, quality: u32, load_timeout: Duration, compute_timeout: Duration, startcheck: bool, check_only: bool, load_wait: Duration) -> Result<(String, f64, String), String> {
     let shootctl = &g.shootctl;
     let name = Path::new(map_wsl).file_name().and_then(|n| n.to_str()).ok_or("map path has no file name")?.to_string();
     let stem = name.strip_suffix(".Map.Gbx").unwrap_or(&name).to_string();
@@ -164,7 +164,7 @@ fn bake_one(g: &MyGame, map_wsl: &str, quality: u32, load_timeout: Duration, com
         println!("  {name}: /playmap: {}", get(shootctl, "/playmap?mode=", 30));
         // a PlayMap that has not produced a playground in 100 s is the black-screen load stall
         // (loadloop's class): the caller relaunches and retries once
-        let car = wait_for_car(g, &name, Duration::from_secs(100))?;
+        let car = wait_for_car(g, &name, load_wait)?;
         let _ = std::fs::remove_file(&game_copy);
         g.to_menu()?;
         return Ok(("-".into(), 0.0, car));
@@ -360,6 +360,8 @@ pub fn bake_run(args: &[String]) -> Result<(), String> {
     let compute_timeout = Duration::from_secs(f("--compute-timeout").and_then(|s| s.parse().ok()).unwrap_or(1800));
     let startcheck = tmmaps::cli::has(args, "--startcheck");
     let check_only = tmmaps::cli::has(args, "--check-only");
+    // --load-wait S: how long a /playmap may take to show a playground before it counts as the hang (100)
+    let load_wait = Duration::from_secs(f("--load-wait").and_then(|s| s.parse().ok()).unwrap_or(100));
     if std::env::var("TM_LOCK_TOKEN").map(|t| t.is_empty()).unwrap_or(true) {
         return Err("no TM_LOCK_TOKEN in the environment — run this under `tmdrive run --purpose … -- tinyctl bake-run …`".into());
     }
@@ -381,16 +383,46 @@ pub fn bake_run(args: &[String]) -> Result<(), String> {
                 game = None;
             }
             if game.is_none() {
-                let t0 = Instant::now();
-                let g = MyGame::launch(&shootctl, Duration::from_secs(240))?;
-                g.to_menu()?;
-                g.ready()?;
-                eprintln!("  game pid {} up and at the menu in {:.0} s", g.pid, t0.elapsed().as_secs_f64());
-                game = Some(g);
-                in_game = 0;
+                // three launch attempts (a cold Ubisoft launcher chain after a by-PID kill can run past
+                // 240 s; 2026-10-02 the third launch of a run answered no /ping in 240 s and the run died
+                // with its report unread); a run that cannot get a game marks the rest FAILED and returns
+                let mut launched = None;
+                let mut last_err = String::new();
+                for attempt in 1..=3 {
+                    let t0 = Instant::now();
+                    match MyGame::launch(&shootctl, Duration::from_secs(400)).and_then(|g| { g.to_menu()?; g.ready()?; Ok(g) }) {
+                        Ok(g) => {
+                            eprintln!("  game pid {} up and at the menu in {:.0} s (attempt {attempt})", g.pid, t0.elapsed().as_secs_f64());
+                            launched = Some(g);
+                            break;
+                        }
+                        Err(e) => {
+                            eprintln!("  launch attempt {attempt} failed: {e}");
+                            last_err = e;
+                            for pid in game_pids().unwrap_or_default() {
+                                kill_pid(pid);
+                            }
+                            std::thread::sleep(Duration::from_secs(30));
+                        }
+                    }
+                }
+                match launched {
+                    Some(g) => {
+                        game = Some(g);
+                        in_game = 0;
+                    }
+                    None => {
+                        rows.push_str(&format!("{m}\t-\tFAILED no game after 3 launches: {}\t-\t-\n", last_err.replace('\t', " ").lines().next().unwrap_or("")));
+                        for (rest, _) in queue.drain(..) {
+                            rows.push_str(&format!("{rest}\t-\tFAILED no game (run aborted)\t-\t-\n"));
+                        }
+                        std::fs::write(&report, &rows).map_err(|e| format!("{}: {e}", report.display()))?;
+                        return Err(format!("no game after 3 launches: {last_err}"));
+                    }
+                }
             }
             let g = game.as_ref().unwrap();
-            let row = match bake_one(g, m, quality, load_timeout, compute_timeout, startcheck || check_only, check_only) {
+            let row = match bake_one(g, m, quality, load_timeout, compute_timeout, startcheck || check_only, check_only, load_wait) {
                 Ok((_, _, car)) if car.starts_with("NO VEHICLE") && attempt == 1 => {
                     // the load stalled: a fresh game and one more try before the verdict
                     eprintln!("  {m}: no playground on attempt 1 — a fresh game, retrying once");
@@ -523,7 +555,7 @@ pub fn lightmap_run(args: &[String]) -> Result<(), String> {
         // --load-timeout S / --compute-timeout S ride through to the box side (tiny 22's 21k items
         // did not open in the default 420 s, 2026-10-01)
         let mut cmd = cmd;
-        for k in ["--load-timeout", "--compute-timeout"] {
+        for k in ["--load-timeout", "--compute-timeout", "--load-wait"] {
             if let Some(v) = f(k) {
                 cmd = cmd.replace(" > '", &format!(" {k} {v} > '"));
             }
@@ -532,7 +564,14 @@ pub fn lightmap_run(args: &[String]) -> Result<(), String> {
         // the pushed binary's exec bit does not survive `wsx push` (2026-10-01: "Permission denied" from tmdrive run)
         wsx.sh(&format!("chmod +x '{box_tinyctl}'"))?;
         wsx.sh(&cmd)?;
-        let done = wsx.wait_done(&r_done, &r_log, Duration::from_secs(3600 * 2), &format!("bake-run group {gi}"))?;
+        let done = match wsx.wait_done(&r_done, &r_log, Duration::from_secs(3600 * 2), &format!("bake-run group {gi}")) {
+            Ok(d) => d,
+            Err(e) => {
+                // the box side failed as a whole (no game, a panic): the rows it did write still count
+                println!("[group {gi}] box run FAILED: {} — reading what it reported", e.lines().next().unwrap_or(""));
+                format!("FAIL\t{e}")
+            }
+        };
         println!("[group {gi}] {}", done.trim());
         let rep = wsx.cat(&r_report).unwrap_or_default();
         for (bake_copy, r) in &copies {
