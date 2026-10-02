@@ -181,6 +181,14 @@ pub fn transplant_kept(resaved: &Path, shipped: &Path, kept_path: &Path, out: &P
     let dir = std::env::current_exe().map_err(|e| e.to_string())?.parent().ok_or("exe dir")?.to_path_buf();
     let lmtool = dir.join("lmtool");
     let kept_list = std::fs::read_to_string(kept_path).map_err(|e| format!("{}: {e}", kept_path.display()))?;
+    // the item-list rule for the reduced copy: kept item k of the re-save = shipped item kept[k]
+    let kept: Vec<usize> = kept_list.trim().split(',').filter_map(|x| x.trim().parse().ok()).collect();
+    let re = tmmaps::map::MapFile::load(resaved);
+    let sh = tmmaps::map::MapFile::load(shipped);
+    if re.items.len() != kept.len() {
+        return Err(format!("{}: the editor's save has {} items, the kept list {} — not transplanted", resaved.display(), re.items.len(), kept.len()));
+    }
+    item_lists_match(&re.items, &sh.items, &|k| kept.get(k).copied()).map_err(|e| format!("{}: the reduced copy's items do not match the shipped file's at the kept indices ({e}) — not transplanted", resaved.display()))?;
     let o = std::process::Command::new(&lmtool).args(["transplant", "--from", resaved.to_str().unwrap(), "--into", shipped.to_str().unwrap(), "--kept", kept_list.trim(), "--out", out.to_str().unwrap()]).output().map_err(|e| format!("lmtool: {e}"))?;
     if !o.status.success() {
         return Err(format!("lmtool transplant --kept: {}", String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or("").to_string()));
@@ -425,12 +433,32 @@ pub fn fresh_uid_like(old: &str, a: u32, b: u32) -> String {
     s
 }
 
+/// THE ITEM-LIST RULE (the 19 fixer's, 2026-10-02): a lightmap chunk only fits the file whose
+/// item list it was baked for — same count, same models in the same order, same positions.
+/// `b_index_of(i)` maps a's index to b's (identity for a full transplant, the kept list for a
+/// reduced one). The first mismatch names the two items.
+pub fn item_lists_match(a: &[tmmaps::map::ItemRec], b: &[tmmaps::map::ItemRec], b_index_of: &dyn Fn(usize) -> Option<usize>) -> Result<(), String> {
+    for (i, ia) in a.iter().enumerate() {
+        let Some(j) = b_index_of(i) else { return Err(format!("item {i} ({}) has no counterpart", ia.model)) };
+        let Some(ib) = b.get(j) else { return Err(format!("item {i} ({}) maps to index {j}, beyond the {} items", ia.model, b.len())) };
+        if ia.model != ib.model {
+            return Err(format!("item {i}: model {} vs {} at {j}", ia.model, ib.model));
+        }
+        let d = (0..3).map(|k| (ia.pos[k] - ib.pos[k]).abs()).fold(0.0f32, f32::max);
+        if d > 0.01 {
+            return Err(format!("item {i} ({}): position differs by {d:.3} m", ia.model));
+        }
+    }
+    Ok(())
+}
+
 fn transplant(target: &Path, re: &tmmaps::map::MapFile, resaved_path: &Path, out: &Path) -> Result<(), String> {
     let orig = tmmaps::map::MapFile::load(target);
     let (n_orig, n_re) = (orig.items.len(), re.items.len());
     if n_orig != n_re {
         return Err(format!("{}: item count differs from the editor's save ({n_orig} vs {n_re}); the lightmap would be misaligned — not transplanted (the re-save is at {})", target.display(), resaved_path.display()));
     }
+    item_lists_match(&orig.items, &re.items, &|i| Some(i)).map_err(|e| format!("{}: the editor's save was baked for a different item list ({e}); the lightmap would be misaligned — not transplanted", target.display()))?;
     let find = |body: &[u8]| tmmaps::gbx::all_skip_chunks(body).into_iter().find(|c| c.0 == LIGHTMAP_CHUNK);
     let ca = find(&orig.gbx.body).ok_or_else(|| format!("{}: no lightmap chunk 0x{LIGHTMAP_CHUNK:08X} to replace", target.display()))?;
     let cb = find(&re.gbx.body).ok_or_else(|| format!("{}: the editor's save has no lightmap chunk", resaved_path.display()))?;
