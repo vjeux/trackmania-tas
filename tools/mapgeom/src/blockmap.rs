@@ -83,6 +83,16 @@ pub fn footprint(v: &Variant, dir: u8) -> Vec<(usize, [i32; 3])> {
 /// Every block info file in the store, by upper-cased file stem.
 pub struct BlockInfoIndex {
     by_stem: HashMap<String, Vec<String>>,
+    /// Block info paths by the collector IDENT id inside the file (upper-cased),
+    /// built on the first stem miss over every block info of the packs (~0.8 s
+    /// for the 9 890 of WhiteShore + Stadium). A map record names a block info
+    /// by that id, and the id can differ from the file stem: Nadeo's
+    /// `LandHill2CornerToStadiumRoadSlopeBase2Curve2InFCLeft.EDClip.Gbx` is the
+    /// id `…RoadSlope2BaseCurve2InFCLeft` — Fall 2026 08 and 13 each place one
+    /// (the hill-side filler of `RoadTechSlope2BaseCurve2LeftOnLandHill2`), the
+    /// stem lookup missed it, the maps shipped with a see-through hole beside
+    /// 08's first checkpoint (vjeux's photo, 2026-10-01 20:08 PT).
+    by_ident: Option<HashMap<String, Vec<String>>>,
     cache: HashMap<String, Result<BlockInfo, String>>,
     /// The collection whose files win when two packs carry the same name
     /// (`BlueBay\...` vs `Stadium\...`): the Summer 2026 map's baked clips
@@ -113,7 +123,67 @@ impl BlockInfoIndex {
             let roots: std::collections::BTreeSet<String> = store.entries().map(|e| e.path().split('\\').next().unwrap_or("").to_string()).collect();
             eprintln!("    roots {:?}", roots);
         }
-        BlockInfoIndex { by_stem, cache: HashMap::new(), collection: collection.to_uppercase() }
+        BlockInfoIndex { by_stem, by_ident: None, cache: HashMap::new(), collection: collection.to_uppercase() }
+    }
+
+    /// The paths of a map block NAME, best first, through the file stems
+    /// first (`paths_for`) and then through the IDENT ids inside the files:
+    /// the lookup the game does. The ident map is built on the first stem
+    /// miss (every block info of the packs parsed once; they stay cached).
+    pub fn resolve(&mut self, store: &mut DataStore, name: &str) -> Vec<String> {
+        let by_stem = self.paths_for(name);
+        if !by_stem.is_empty() {
+            return by_stem;
+        }
+        // MAPGEOM_IDENT_INDEX=0: the stem-only lookup of the builds before
+        // 2026-10-01 (a study knob: reproduces the shipped Fall 2026 files)
+        if std::env::var("MAPGEOM_IDENT_INDEX").map(|v| v == "0").unwrap_or(false) {
+            return Vec::new();
+        }
+        if self.by_ident.is_none() {
+            let paths: Vec<String> = self.by_stem.values().flatten().cloned().collect();
+            let mut by_ident: HashMap<String, Vec<String>> = HashMap::new();
+            for p in paths {
+                if let Ok(bi) = self.load(store, &p) {
+                    if !bi.ident.is_empty() {
+                        by_ident.entry(bi.ident.to_uppercase()).or_default().push(p.clone());
+                    }
+                }
+            }
+            if crate::debug::on("lookup") {
+                eprintln!("  block info ident index: {} ids over {} files", by_ident.len(), by_ident.values().map(|v| v.len()).sum::<usize>());
+            }
+            self.by_ident = Some(by_ident);
+        }
+        let up = name.to_uppercase();
+        let mut cands: Vec<String> = self.by_ident.as_ref().and_then(|m| m.get(&up)).cloned().unwrap_or_default();
+        if cands.is_empty() {
+            return cands;
+        }
+        cands.sort_by_key(|p| (self.rank(p), p.len()));
+        cands
+    }
+
+    /// One path for a map block name, stems first, then ident ids (`resolve`).
+    pub fn resolve_one(&mut self, store: &mut DataStore, name: &str) -> Option<String> {
+        self.resolve(store, name).into_iter().next()
+    }
+
+    /// The preference order of candidate paths: the preferred collection
+    /// first, then Classic, Pillar, other, Clip.
+    fn rank(&self, p: &str) -> (u32, u32) {
+        let u = p.to_uppercase();
+        let coll = if u.starts_with(&format!("{}\\", self.collection)) { 0 } else { 1 };
+        let kind = if u.contains("GAMECTNBLOCKINFOCLASSIC\\") {
+            0
+        } else if u.contains("GAMECTNBLOCKINFOPILLAR\\") {
+            1
+        } else if u.contains("GAMECTNBLOCKINFOCLIP\\") {
+            9
+        } else {
+            2
+        };
+        (coll, kind)
     }
 
     /// Every block info path a map block NAME could refer to, best first:
@@ -136,22 +206,8 @@ impl BlockInfoIndex {
                 },
             },
         };
-        let rank = |p: &str| -> (u32, u32) {
-            let u = p.to_uppercase();
-            let coll = if u.starts_with(&format!("{}\\", self.collection)) { 0 } else { 1 };
-            let kind = if u.contains("GAMECTNBLOCKINFOCLASSIC\\") {
-                0
-            } else if u.contains("GAMECTNBLOCKINFOPILLAR\\") {
-                1
-            } else if u.contains("GAMECTNBLOCKINFOCLIP\\") {
-                9
-            } else {
-                2
-            };
-            (coll, kind)
-        };
         let mut best: Vec<&String> = cands.iter().collect();
-        best.sort_by_key(|p| (rank(p), p.len()));
+        best.sort_by_key(|p| (self.rank(p), p.len()));
         best.into_iter().cloned().collect()
     }
 
@@ -287,7 +343,7 @@ pub fn walk(
         let ground = b.flags & FLAG_GROUND != 0;
         let vindex = (b.flags & FLAG_VARIANT_MASK) as usize;
         let sub = ((b.flags >> FLAG_SUBVARIANT_SHIFT) & 63) as usize;
-        let paths = idx.paths_for(&b.name);
+        let paths = idx.resolve(store, &b.name);
         let mut p = Placement {
             index: b.index,
             name: b.name.clone(),

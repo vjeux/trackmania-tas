@@ -785,7 +785,10 @@ impl<'a> Graph<'a> {
                 Ok(())
             }
             0x2E00100B => {
-                self.r.meta()?;
+                let (id, _collection, _author) = self.r.meta()?;
+                if self.bi_stack.len() <= 1 {
+                    self.collector_id = id;
+                }
                 Ok(())
             }
             0x2E00100C => {

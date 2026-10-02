@@ -120,7 +120,7 @@ pub fn faces(store: &mut DataStore, idx: &mut BlockInfoIndex, m: &MapFile) -> Fa
     let mut occupants: HashMap<[u8; 3], Vec<Occupant>> = HashMap::new();
     let mut clip_names: std::collections::BTreeSet<String> = m.baked.iter().filter(|b| b.name != "Sea").map(|b| b.name.to_ascii_lowercase()).collect();
     for b in m.blocks.iter().filter(|b| b.flags & FLAG_FREE == 0) {
-        let Some(path) = idx.path_for(&b.name) else { continue };
+        let Some(path) = idx.resolve_one(store, &b.name) else { continue };
         let Ok(bi) = idx.load(store, &path) else { continue };
         let ground = b.flags & FLAG_GROUND != 0;
         let vindex = (b.flags & FLAG_VARIANT_MASK) as usize;
@@ -179,7 +179,7 @@ pub fn faces(store: &mut DataStore, idx: &mut BlockInfoIndex, m: &MapFile) -> Fa
     let mut clips: HashMap<String, ClipId> = HashMap::new();
     let mut aliases: HashMap<String, String> = HashMap::new();
     for n in clip_names {
-        let Some(p) = idx.path_for(&n) else { continue };
+        let Some(p) = idx.resolve_one(store, &n) else { continue };
         let Ok(bi) = idx.load(store, &p) else { continue };
         let Some(c) = bi.clip.as_ref() else { continue };
         let ident = bi.name.to_ascii_lowercase();

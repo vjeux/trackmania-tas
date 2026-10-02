@@ -734,9 +734,12 @@ pub fn block_rename(name: &str) -> Option<String> {
 }
 
 fn load_block_info(idx: &mut crate::blockmap::BlockInfoIndex, store: &mut DataStore, name: &str) -> Result<(String, crate::blockinfo::BlockInfo), String> {
-    let path = match idx.path_for(name) {
+    // stems first, then the IDENT ids inside the files (the game's lookup —
+    // Nadeo's typo'd `…RoadSlopeBase2Curve2InFCLeft.EDClip.Gbx` is the id
+    // `…RoadSlope2BaseCurve2InFCLeft` the Fall 2026 08/13 records carry)
+    let path = match idx.resolve_one(store, name) {
         Some(p) => p,
-        None => match block_rename(name).and_then(|n| idx.path_for(&n).map(|p| (n, p))) {
+        None => match block_rename(name).and_then(|n| idx.resolve_one(store, &n).map(|p| (n, p))) {
             Some((n, p)) => {
                 eprintln!("  block {name}: not in the pack; the current name {n} stands in");
                 p
@@ -1522,7 +1525,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     // kinds the block places (lowercase stems), unit is the origin cell)
     let mut unit_columns: std::collections::HashMap<(u8, u8), Vec<(u8, bool, Vec<String>, String, Vec<String>, bool)>> = std::collections::HashMap::new();
     for b in source.blocks.iter().filter(|b| b.flags & crate::blockmap::FLAG_FREE == 0) {
-        let Some(path) = idx.path_for(&b.name) else { continue };
+        let Some(path) = idx.resolve_one(store, &b.name) else { continue };
         let (mods, units, places): (Vec<String>, Vec<[i32; 3]>, Vec<String>) = match idx.load(store, &path) {
             Ok(bi) => {
                 let ground = b.flags & crate::blockmap::FLAG_GROUND != 0;
@@ -1634,7 +1637,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         .filter(|b| b.flags & crate::blockmap::FLAG_FREE != 0 && b.name.contains("Special"))
         .filter_map(|b| {
             let pos = b.free_pos?;
-            let path = idx.path_for(&b.name)?;
+            let path = idx.resolve_one(store, &b.name)?;
             let mods = idx.load(store, &path).map(|bi| terrain_mods(bi)).unwrap_or_default();
             let gameplay = mods.iter().any(|r| r.strip_suffix(".TerrainModifier.Gbx").map(|f| gameplay_folders.contains(&f.to_uppercase())).unwrap_or(false));
             gameplay.then(|| (b.name.clone(), pos, mods))
@@ -2771,7 +2774,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     // curved inner border and slope end cap)
     let side_clips: std::collections::HashSet<String> = {
         let names: std::collections::BTreeSet<String> = source.baked.iter().filter(|b| emitted_baked(b)).map(|b| b.name.clone()).collect();
-        names.into_iter().filter(|n| idx.path_for(n).and_then(|p| idx.load(store, &p).ok().map(|bi| bi.clip.as_ref().and_then(|c| c.clip_type) == Some(1))).unwrap_or(false)).collect()
+        names.into_iter().filter(|n| idx.resolve_one(store, n).and_then(|p| idx.load(store, &p).ok().map(|bi| bi.clip.as_ref().and_then(|c| c.clip_type) == Some(1))).unwrap_or(false)).collect()
     };
     let mut dropped_baked: BTreeMap<String, usize> = BTreeMap::new();
     let mut ghost_left_out = 0usize;
