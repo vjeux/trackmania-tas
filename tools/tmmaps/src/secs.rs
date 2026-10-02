@@ -80,3 +80,38 @@ mod secs_str_tests {
         assert_eq!(secs_str(""), "");
     }
 }
+
+/// A map time scaled by `k` (the giant / tiny campaigns' "ATs ×k the existing
+/// times"): the result in whole milliseconds, rounded; a time that WAS a whole
+/// number of seconds (every Nadeo medal) stays one — rounded UP to the next
+/// second, so a medal never gets harder than k × the source's by more than
+/// the rounding. `k` may be fractional (the tiny campaign at 0.5, 2026-10-01);
+/// a whole `k` reproduces the plain product exactly.
+pub fn scale_time_ms(old_ms: u32, k: f64) -> u32 {
+    let exact = old_ms as f64 * k;
+    if old_ms % 1000 == 0 && old_ms > 0 {
+        return ((exact / 1000.0).ceil() * 1000.0).round() as u32;
+    }
+    exact.round() as u32
+}
+
+#[cfg(test)]
+mod scale_time_tests {
+    use super::*;
+
+    #[test]
+    fn whole_k_is_the_plain_product() {
+        assert_eq!(scale_time_ms(23144, 2.0), 46288);
+        assert_eq!(scale_time_ms(25000, 2.0), 50000);
+        assert_eq!(scale_time_ms(25000, 1.0), 25000);
+    }
+
+    #[test]
+    fn half_k_rounds_the_author_time_and_keeps_medals_whole_seconds() {
+        assert_eq!(scale_time_ms(46288, 0.5), 23144);
+        assert_eq!(scale_time_ms(46289, 0.5), 23145); // 23144.5 rounds half away from zero
+        assert_eq!(scale_time_ms(46000, 0.5), 23000);
+        assert_eq!(scale_time_ms(47000, 0.5), 24000); // 23.5 s → 24 s, never a fractional medal
+        assert_eq!(scale_time_ms(0, 0.5), 0);
+    }
+}

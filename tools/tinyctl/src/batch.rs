@@ -2,7 +2,9 @@
 //! unpublished club "Tiny U10S", 2026-09-13), in two halves like `publish-map`:
 //!
 //! - `tinyctl publish-batch --manifest M.tsv --results R.tsv [--club C --campaign K
-//!   --campaign-name N] [--outdir D] [--detach]` runs ON THE BOX: one token mint
+//!   --campaign-name N] [--outdir D] [--detach] [--shootctl tokens:DIR]` runs ON THE BOX (or on a
+//!   devserver whose proxy routes Nadeo, with `--shootctl tokens:DIR` = the token files of a
+//!   `tinyctl token-mint` pulled from the box, 2026-10-01): one token mint
 //!   (re-minted on a 401), then per manifest row (`path<TAB>name`) the Nadeo
 //!   upload (create, or update when the uid exists) and the stored-bytes md5
 //!   readback, one result row each; at the end ONE playlist write with every uid
@@ -57,6 +59,27 @@ impl Tokens {
         // live token on its own schedule (a 401 on club/mine with 20-minute-old
         // files, 2026-09-13): a reused token is VALIDATED here, and a 401 drops the
         // files and mints fresh once before giving up.
+        //
+        // `tokens:DIR` as the shootctl argument: the two token files of DIR, read
+        // as they are (a devserver whose proxy routes Nadeo runs the uploads with
+        // tokens `wsx pull`ed from a `tinyctl token-mint` on the box — Fall 2026,
+        // 2026-10-01); no re-mint is possible there, a 401 is final.
+        if let Some(dir) = shootctl.strip_prefix("tokens:") {
+            let read = |aud: &str| -> Result<String, String> {
+                let p = format!("{dir}/token-{aud}.txt");
+                let t = std::fs::read_to_string(&p).map_err(|e| format!("{p}: {e}"))?.trim().to_string();
+                if t.len() < 20 {
+                    return Err(format!("{p}: not a token"));
+                }
+                Ok(t)
+            };
+            let (core, live) = (read("NadeoServices")?, read("NadeoLiveServices")?);
+            let (mine, c) = curl(&["-H", &format!("Authorization: {live}"), &format!("{LIVE}/api/token/club/mine?length=1&offset=0")])?;
+            return match json_str(&mine, "authorAccountId") {
+                Some(me) => Ok(Tokens { core, live, me, shootctl: shootctl.to_string() }),
+                None => Err(format!("club/mine: HTTP {c} with the tokens of {dir} — mint fresh ones on the box: {}", &mine[..mine.len().min(200)])),
+            };
+        }
         for attempt in 0..2 {
             let (core, live) = crate::nadeo::batch_tokens(shootctl)?;
             let (mine, c) = curl(&["-H", &format!("Authorization: {live}"), &format!("{LIVE}/api/token/club/mine?length=1&offset=0")])?;
@@ -76,6 +99,9 @@ impl Tokens {
     }
     /// A 401 means the game rotated its token: drop the files and mint again.
     fn refresh(&mut self) -> Result<(), String> {
+        if self.shootctl.starts_with("tokens:") {
+            return Err(format!("401 with the tokens of {} — mint fresh ones on the box and rerun", self.shootctl.trim_start_matches("tokens:")));
+        }
         for aud in ["NadeoServices", "NadeoLiveServices"] {
             let _ = std::fs::remove_file(format!("{}/token-{aud}.txt", crate::publish::STORE));
         }

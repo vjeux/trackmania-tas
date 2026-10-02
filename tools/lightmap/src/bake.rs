@@ -682,6 +682,11 @@ impl RadianceField {
             return None;
         }
         let (w, h, px) = self.charts.get(inst as usize)?.as_ref()?;
+        // a DEGENERATE chart (0 × N: an item the layout gave no texels — the WhiteShore x2 08 bake, 2026-10-01) holds no
+        // radiance: the clamp below panicked ("min > max. min = 0, max = -1") on every peel fragment that hit it
+        if *w == 0 || *h == 0 || px.is_empty() {
+            return None;
+        }
         let instance = &scene.instances[inst as usize];
         let m = &scene.models[instance.model];
         let t = m.tris.get(tri as usize)?;

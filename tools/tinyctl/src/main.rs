@@ -21,6 +21,8 @@ mod loadloop;
 mod camcheck;
 mod build;
 mod bakecopy;
+mod bakerun;
+mod tracker;
 mod lmbake;
 mod gianttracker;
 mod compare;
@@ -208,6 +210,10 @@ fn main() {
         "publish-map" => publish::publish_map_cmd(rest),
         "publish-here" => publish::publish_here_cmd(rest),
         "nadeo-here" => nadeo::cmd(rest),
+        "token-mint" => nadeo::token_mint(rest),
+        "bake-run" => bakerun::bake_run(rest),
+        "lightmap-run" => bakerun::lightmap_run(rest),
+        "campaign-tracker" => tracker::cmd(rest),
         "publish-batch" => batch::publish_batch_cmd(rest),
         "publish-set" => batch::publish_set_cmd(rest),
         "publish-dir" => batch::publish_dir_cmd(rest),

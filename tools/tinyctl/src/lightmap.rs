@@ -98,6 +98,97 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
 /// full map with `lmtool transplant` (item charts renumbered by the kept list; the dropped items get no
 /// chart — the game lights them from the probes; the local-light frames come from lmtool). The sibling
 /// binaries (`lmtool`, `tmmaps`) are taken from this executable's directory.
+/// The REDUCED copy of a bake copy for the editor's lightmapper (the 2026-09-23
+/// bisection: the stock vegetation clusters kill ComputeShadows, the light-carrying
+/// items kill SaveMap; `drop_av` also drops our own vegetation statics — GreenCoast):
+/// `tmmaps keepitems` of everything else into `reduced_out`, the kept list written
+/// to `<out>.kept`. The copy keeps its (stale) lightmap chunk — the editor wants one
+/// to work from and does not care which. Returns (kept list path, kept, dropped).
+pub fn reduced_copy(map: &Path, out: &Path, reduced_out: &Path, drop_av: bool) -> Result<(PathBuf, usize, usize), String> {
+    reduced_copy_n(map, out, reduced_out, drop_av, 0)
+}
+
+/// `reduced_copy` with a ceiling on the kept items: beyond `max_items` (> 0) the kept
+/// list is thinned evenly (every k-th placement kept) — tiny 22's 15.5k-item reduced copy
+/// never opened in the editor (2026-10-01); a thinner copy bakes a lightmap for the kept
+/// placements and the rest stay chartless (probe-lit), which beats the source's stale chunk.
+pub fn reduced_copy_n(map: &Path, out: &Path, reduced_out: &Path, drop_av: bool, max_items: usize) -> Result<(PathBuf, usize, usize), String> {
+    let dir = std::env::current_exe().map_err(|e| e.to_string())?.parent().ok_or("exe dir")?.to_path_buf();
+    let lmtool = dir.join("lmtool");
+    let tmmaps_bin = dir.join("tmmaps");
+    let run = |bin: &Path, a: &[&str]| -> Result<String, String> {
+        let o = std::process::Command::new(bin).args(a).output().map_err(|e| format!("{}: {e}", bin.display()))?;
+        if !o.status.success() {
+            return Err(format!("{} {}: {}", bin.display(), a.join(" "), String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or("").to_string()));
+        }
+        Ok(String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr))
+    };
+    let lights_out = run(&lmtool, &["lights", map.to_str().unwrap()])?;
+    let light_models: std::collections::HashSet<String> = lights_out
+        .lines()
+        .filter_map(|l| { let (name, rest) = l.split_once(" (")?; let n: usize = rest.split(' ').next()?.parse().ok()?; if n > 0 && !l.starts_with(' ') { Some(name.to_string()) } else { None } })
+        .collect();
+    const CLUSTERS: [&str; 6] = ["Grove", "Forest", "Ecotone", "SpringPalmTree", "Sparkler16m", "ShowFogger8m"];
+    // every STOCK vegetation item (a Nadeo placement-group or species item: Bush, Flower, Cactus,
+    // Tree…, Palm…, Plant, Sugar, Fir, Pine) — the client's lightmapper dies 5 s into
+    // ComputeShadows on Fall 2026's GreenCoast maps with the clusters already gone, and the only
+    // stock models they carry beyond the clusters are Bush*/Flower*/Ecotone (RedIsland 16: Bush,
+    // CactusSmallC; 2026-10-01). A stock vegetation item gets no chart from the editor anyway
+    // (lit at runtime through the vegetation path), so dropping it from the BAKE COPY changes
+    // nothing in the result: the kept-list transplant leaves it chartless, as the editor would.
+    const STOCK_VEGET_PREFIXES: [&str; 12] = ["Bush", "Flower", "Cactus", "Tree", "Palm", "Plant", "Sugar", "Fir", "Pine", "Grass", "Fern", "Spring"];
+    let is_stock = |model: &str| !model.ends_with(".Item.Gbx");
+    let m = tmmaps::map::MapFile::load(map);
+    let kept: Vec<usize> = m
+        .items
+        .iter()
+        .enumerate()
+        .filter(|(_, it)| {
+            let model = it.model.as_str();
+            !CLUSTERS.contains(&model)
+                && !light_models.contains(&it.model)
+                && !(drop_av && model.starts_with("AV") && model.ends_with(".Item.Gbx"))
+                && !(is_stock(model) && STOCK_VEGET_PREFIXES.iter().any(|p| model.starts_with(p)))
+        })
+        .map(|(i, _)| i)
+        .collect();
+    let kept: Vec<usize> = if max_items > 0 && kept.len() > max_items {
+        // thin evenly, the Spawn kept whatever happens (the editor wants a start)
+        let step = kept.len() as f64 / max_items as f64;
+        let mut thin: Vec<usize> = (0..max_items).map(|j| kept[(j as f64 * step) as usize]).collect();
+        if let Some(sp) = m.items.iter().position(|it| it.waypoint_tag.as_deref() == Some("Spawn")) {
+            if !thin.contains(&sp) {
+                thin.push(sp);
+                thin.sort_unstable();
+            }
+        }
+        eprintln!("reduced copy thinned to {} of {} kept items (--reduced-max-items {max_items})", thin.len(), kept.len());
+        thin
+    } else {
+        kept
+    };
+    let dropped = m.items.len() - kept.len();
+    let kept_list = kept.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+    let kept_path = out.with_extension("kept");
+    std::fs::write(&kept_path, &kept_list).map_err(|e| format!("{}: {e}", kept_path.display()))?;
+    run(&tmmaps_bin, &["keepitems", map.to_str().unwrap(), "--out", reduced_out.to_str().unwrap(), "--items", &kept_list])?;
+    Ok((kept_path, kept.len(), dropped))
+}
+
+/// The kept-list transplant: the REDUCED copy's editor lightmap into the full
+/// `shipped` file (charts renumbered by the kept list; dropped items chartless).
+pub fn transplant_kept(resaved: &Path, shipped: &Path, kept_path: &Path, out: &Path) -> Result<(), String> {
+    let dir = std::env::current_exe().map_err(|e| e.to_string())?.parent().ok_or("exe dir")?.to_path_buf();
+    let lmtool = dir.join("lmtool");
+    let kept_list = std::fs::read_to_string(kept_path).map_err(|e| format!("{}: {e}", kept_path.display()))?;
+    let o = std::process::Command::new(&lmtool).args(["transplant", "--from", resaved.to_str().unwrap(), "--into", shipped.to_str().unwrap(), "--kept", kept_list.trim(), "--out", out.to_str().unwrap()]).output().map_err(|e| format!("lmtool: {e}"))?;
+    if !o.status.success() {
+        return Err(format!("lmtool transplant --kept: {}", String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or("").to_string()));
+    }
+    verify_filetime(out)?;
+    report(out, "the kept-list transplant")
+}
+
 fn reduced(args: &[String], map: &Path, out: &Path) -> Result<(), String> {
     let dir = std::env::current_exe().map_err(|e| e.to_string())?.parent().ok_or("exe dir")?.to_path_buf();
     let lmtool = dir.join("lmtool");
@@ -141,8 +232,10 @@ fn reduced(args: &[String], map: &Path, out: &Path) -> Result<(), String> {
     let red = out.with_extension("reduced.Map.Gbx");
     let red_ed = out.with_extension("reduced-editor.Map.Gbx");
     run(&tmmaps_bin, &["keepitems", map.to_str().unwrap(), "--out", red0.to_str().unwrap(), "--items", &kept_list])?;
-    // a valid (lmtool) chunk in the copy: the editor's lightmapper wants one to work from
-    let q = tmmaps::cli::flag(args, "--quality").unwrap_or("3").to_string();
+    // a valid (lmtool) chunk in the copy: the editor's lightmapper wants one to work from —
+    // `--seed-quality Q` (default: the bake's --quality) keeps that seed cheap on a small
+    // devserver: the editor recomputes everything at its own quality anyway (2026-10-01)
+    let q = tmmaps::cli::flag(args, "--seed-quality").or(tmmaps::cli::flag(args, "--quality")).unwrap_or("3").to_string();
     run(&lmtool, &["bake", red0.to_str().unwrap(), "--out", red.to_str().unwrap(), "--quality", &q])?;
     one(args, &red, &red_ed)?;
     run(&lmtool, &["transplant", "--from", red_ed.to_str().unwrap(), "--into", map.to_str().unwrap(), "--kept", &kept_list, "--out", out.to_str().unwrap()])?;
@@ -180,8 +273,14 @@ fn one(args: &[String], map: &Path, out: &Path) -> Result<(), String> {
     {
         let mut m = tmmaps::map::MapFile::load(map);
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0);
-        let fresh = format!("Tlm1{:08X}{:07}{:08X}", nanos % 100_000_000, std::process::id() % 10_000_000, (nanos / 7) % 100_000_000);
+        let old_uid = tmmaps::header::read(map.to_str().unwrap_or_default()).map(|h| h.uid).unwrap_or_default();
+        let fresh = fresh_uid_like(&old_uid, nanos % 100_000_000, (nanos / 7) % 100_000_000);
         m.set_map_uid(&fresh);
+        // A Nadeo campaign map is editor-LOCKED (header NeedUnlock + chunk 0x03043029) and the
+        // converter keeps the chunk: the editor parks the title on a password popup the plugin
+        // cannot see (2026-09-29 21:50 PT) — the bake copy goes out unlocked, the shipped file
+        // keeps its lock untouched.
+        m.remove_password();
         m.write_to(&bake_copy).map_err(|e| format!("{}: {e}", bake_copy.display()))?;
         // The stale lightmap STAYS in the copy: without any lightmap the editor leaves to
         // the menu right after the compute (ctx 0, nothing saved — twice on 11, 2026-09-12);
@@ -294,11 +393,115 @@ fn one(args: &[String], map: &Path, out: &Path) -> Result<(), String> {
 /// `target` with its lightmap chunk replaced by the editor re-save's, written to `out`
 /// LZO-compressed (the shipped form; an uncompressed body is ~1 MB bigger — the Nadeo cap).
 /// The lightmap is applied by object index, so the two files must list the same items.
+/// The devserver tail of a bake whose editor save was pulled to `resaved`
+/// (`lightmap-run`): the support files the editor's save dropped restored from
+/// the bake copy, then the lightmap chunk transplanted from the re-save into
+/// the SHIPPED file → `out` (the shipped file and the copy carry the same item
+/// list, checked by the transplant).
+pub fn finish_from_resaved(bake_copy: &Path, resaved: &Path, _copy: &Path, shipped: &Path, out: &Path) -> Result<(), String> {
+    let restored_tmp = resaved.with_extension("restoring.Map.Gbx");
+    match tmmaps::header::restore_support_files(resaved, bake_copy, &restored_tmp, false) {
+        Ok(added) if added.is_empty() => {}
+        Ok(added) => {
+            std::fs::rename(&restored_tmp, resaved).map_err(|e| format!("{}: {e}", resaved.display()))?;
+            eprintln!("the editor's save lost {} support files (textures) of the archive — restored from the bake copy", added.len());
+        }
+        Err(e) => eprintln!("WARNING: support files not restored into the re-save ({e})"),
+    }
+    let re = tmmaps::map::MapFile::load(resaved);
+    transplant(shipped, &re, resaved, out)?;
+    report(out, "the transplant")
+}
+
+/// A fresh bake-copy uid of the SAME LENGTH as `old` (the in-place uid patch keeps
+/// the byte length: a source uid is 26 or 27 characters — "02b27YA4k3MWlS50A9TFGZy7Eu"
+/// gave Fall 2026 - 12 a 26-byte `Tin2…` uid, 2026-10-01): `Tlm1` + hex digits.
+pub fn fresh_uid_like(old: &str, a: u32, b: u32) -> String {
+    let want = if old.len() >= 20 { old.len() } else { 27 };
+    let mut s = format!("Tlm1{:08X}{:07}{:08X}", a, std::process::id() % 10_000_000, b);
+    while s.len() < want {
+        s.push('0');
+    }
+    s.truncate(want);
+    s
+}
+
+/// THE BAKE-COPY RULE (2026-09-12 "shadow seam", restated 2026-10-01 after the Fall 19 audit): a lightmap chunk binds
+/// its charts to objects BY INDEX, so the file a chunk is grafted onto must carry the SAME item list as the file it was
+/// baked on — same count, same model names in the same order (and the same placements: a moved item reads its chart on
+/// the wrong texels). Returns `None` when `a` and `b` agree, else one line naming the first differences.
+pub fn item_list_mismatch(a: &tmmaps::map::MapFile, b: &tmmaps::map::MapFile) -> Option<String> {
+    if a.items.len() != b.items.len() {
+        return Some(format!("item count {} vs {}", a.items.len(), b.items.len()));
+    }
+    let mut names = Vec::new();
+    let mut moved = Vec::new();
+    for (i, (x, y)) in a.items.iter().zip(b.items.iter()).enumerate() {
+        if x.model != y.model {
+            if names.len() < 5 { names.push(format!("item {i}: {} vs {}", x.model, y.model)); }
+            continue;
+        }
+        let d = (0..3).map(|k| (x.pos[k] - y.pos[k]).abs()).fold(0.0f32, f32::max);
+        if d > 0.01 || (x.yaw - y.yaw).abs() > 1e-4 {
+            if moved.len() < 5 { moved.push(format!("item {i} ({}): pos/yaw differ by {d:.3} m / {:.4} rad", x.model, (x.yaw - y.yaw).abs())); }
+        }
+    }
+    let n_names = a.items.iter().zip(b.items.iter()).filter(|(x, y)| x.model != y.model).count();
+    let n_moved = a.items.iter().zip(b.items.iter()).filter(|(x, y)| x.model == y.model && ((0..3).any(|k| (x.pos[k] - y.pos[k]).abs() > 0.01) || (x.yaw - y.yaw).abs() > 1e-4)).count();
+    if n_names == 0 && n_moved == 0 {
+        return None;
+    }
+    let mut s = String::new();
+    if n_names > 0 { s.push_str(&format!("{n_names} of {} items name a different model ({})", a.items.len(), names.join("; "))); }
+    if n_moved > 0 { if !s.is_empty() { s.push_str("; "); } s.push_str(&format!("{n_moved} items moved ({})", moved.join("; "))); }
+    Some(s)
+}
+
+/// THE CACHE FILETIME RULE after a graft (the tiny 04 case, 2026-10-01): the game keeps a lightmap at load only when
+/// cache chunk 0x06022013's word equals the newest CPlugSolid2Model.FileWriteTime over the map's OWN embedded items;
+/// a card-less bake copy can carry a newer model than the shipped file, so the editor's word is the copy's and the
+/// shipped file plays the coarse load-time bake. `lmtool filetime-check OUT` reads the verdict; on OFF the word is
+/// rewritten to the file's own solids (`lmtool filetime-set`, content untouched) and checked again. Default on;
+/// `TINY_LIGHTMAP_VERIFY=0` opts out (the check is reported but never acted on or failed).
+fn verify_filetime(out: &Path) -> Result<(), String> {
+    let dir = std::env::current_exe().map_err(|e| e.to_string())?.parent().ok_or("exe dir")?.to_path_buf();
+    let lmtool = dir.join("lmtool");
+    let enforce = std::env::var("TINY_LIGHTMAP_VERIFY").map(|v| v != "0").unwrap_or(true);
+    let check = |p: &Path| -> Result<(bool, String), String> {
+        let o = std::process::Command::new(&lmtool).args(["filetime-check", p.to_str().unwrap()]).output().map_err(|e| format!("lmtool: {e}"))?;
+        let text = String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr);
+        let verdict = text.lines().find(|l| l.trim_start().starts_with('→')).unwrap_or("").trim().to_string();
+        Ok((verdict.starts_with("→ EQUAL"), verdict))
+    };
+    let (ok, verdict) = check(out)?;
+    if ok {
+        eprintln!("{}: cache FILETIME {verdict}", out.display());
+        return Ok(());
+    }
+    if !enforce {
+        eprintln!("WARNING {}: cache FILETIME {verdict} — TINY_LIGHTMAP_VERIFY=0, left as is (the game will play its load-time bake)", out.display());
+        return Ok(());
+    }
+    eprintln!("{}: cache FILETIME {verdict} — rewriting the word to the file's own TimeWriteMostRecentSolid", out.display());
+    let fixed = out.with_extension("filetime.Map.Gbx");
+    let o = std::process::Command::new(&lmtool).args(["filetime-set", out.to_str().unwrap(), "--out", fixed.to_str().unwrap()]).output().map_err(|e| format!("lmtool: {e}"))?;
+    if !o.status.success() {
+        let _ = std::fs::remove_file(&fixed);
+        return Err(format!("{}: the cache FILETIME word is off ({verdict}) and lmtool filetime-set failed: {}", out.display(), String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or("")));
+    }
+    std::fs::rename(&fixed, out).map_err(|e| format!("{}: {e}", fixed.display()))?;
+    let (ok2, verdict2) = check(out)?;
+    if !ok2 {
+        return Err(format!("{}: the cache FILETIME word is still off after the rewrite ({verdict2}) — not shipped", out.display()));
+    }
+    eprintln!("{}: cache FILETIME {verdict2} after the rewrite", out.display());
+    Ok(())
+}
+
 fn transplant(target: &Path, re: &tmmaps::map::MapFile, resaved_path: &Path, out: &Path) -> Result<(), String> {
     let orig = tmmaps::map::MapFile::load(target);
-    let (n_orig, n_re) = (orig.items.len(), re.items.len());
-    if n_orig != n_re {
-        return Err(format!("{}: item count differs from the editor's save ({n_orig} vs {n_re}); the lightmap would be misaligned — not transplanted (the re-save is at {})", target.display(), resaved_path.display()));
+    if let Some(why) = item_list_mismatch(&orig, re) {
+        return Err(format!("{}: the editor's save does not carry this file's item list — {why}; the lightmap would bind its charts to the wrong items — not transplanted (the re-save is at {})", target.display(), resaved_path.display()));
     }
     let find = |body: &[u8]| tmmaps::gbx::all_skip_chunks(body).into_iter().find(|c| c.0 == LIGHTMAP_CHUNK);
     let ca = find(&orig.gbx.body).ok_or_else(|| format!("{}: no lightmap chunk 0x{LIGHTMAP_CHUNK:08X} to replace", target.display()))?;
@@ -314,6 +517,7 @@ fn transplant(target: &Path, re: &tmmaps::map::MapFile, resaved_path: &Path, out
     body.extend_from_slice(&orig.gbx.body[ca.2 + ca.3..]);
     std::fs::write(out, orig.gbx.write_body_recompressed(&body)).map_err(|e| format!("{}: {e}", out.display()))?;
     eprintln!("{}: lightmap chunk {} -> {} bytes, transplanted (textures, ghost, header, uid untouched) -> {}", target.display(), ca.3, cb.3, out.display());
+    verify_filetime(out)?;
     Ok(())
 }
 
@@ -380,11 +584,14 @@ pub fn batch(args: &[String]) -> Result<(), String> {
             attempts += 1;
             let fresh = since_fresh >= fresh_every || attempts > 1 || i == 0;
             let mut a: Vec<String> = vec![copy.clone(), "--out".into(), lit_copy.display().to_string(), "--quality".into(), quality.clone(), "--name".into(), name.clone(), "--into".into(), format!("{shipped}={out}")];
-            if fresh {
+            // With --stage-plugin every bake launches its own game and closes it by PID
+            // (the quarantine policy of 2026-09-27) — a fresh process per map, so the
+            // leak-driven --fresh (refused on the shared box) has nothing left to do.
+            if fresh && f("--stage-plugin").is_none() {
                 a.push("--fresh".into());
                 since_fresh = 0;
             }
-            for k in ["--wsx", "--box-shootctl"] {
+            for k in ["--wsx", "--box-shootctl", "--stage-plugin", "--owner"] {
                 if let Some(v) = f(k) {
                     a.push(k.into());
                     a.push(v);
@@ -403,6 +610,13 @@ pub fn batch(args: &[String]) -> Result<(), String> {
                     eprintln!("{copy}: attempt {attempts}: {verdict}");
                     let _ = std::fs::remove_file(out);
                     let _ = std::fs::remove_file(&lit_copy);
+                    // the lightmapper killing the client is a MAP property (stock vegetation clusters,
+                    // light-carrying items — bisected 2026-09-23), not a flake: a retry only costs
+                    // another launch; the map goes to the `--reduced` pass instead
+                    if e.contains("lightmapper crashed") {
+                        verdict = format!("CRASH: {}", e.lines().next().unwrap_or("").chars().take(160).collect::<String>());
+                        break;
+                    }
                 }
             }
         }

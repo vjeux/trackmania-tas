@@ -520,7 +520,7 @@ impl CPlugVisualIndexedTriangles {
         }
     }
 
-    fn parse_main(r: &mut Rd) -> R<VisualMain> {
+    pub(crate) fn parse_main(r: &mut Rd) -> R<VisualMain> {
         let version = r.u32()?;
         let chunk_flags = r.u32()?;
         let n_sets = r.count()?;
