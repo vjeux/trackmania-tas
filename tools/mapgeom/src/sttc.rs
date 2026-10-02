@@ -1171,6 +1171,26 @@ pub fn verify_sttf(src: &Path, out: &Path, outcome: &SttfOutcome) -> Result<Vec<
         bad.push(format!("{residue} checkpoint tags remain on replaced blocks, {residue_ok} expected"));
     }
     let _ = cps;
+    // every replaced block carries the twin's name and the dir the geometry chose
+    // (block indices are unchanged by a rename; removals come after, so map
+    // the source index through the dropped set)
+    {
+        let dropped: Vec<usize> = {
+            let mut v: Vec<usize> = outcome.rows.iter().filter(|r| r.kind == "block" && r.action == "removed").filter_map(|r| r.index.parse().ok()).collect();
+            v.sort_unstable();
+            v
+        };
+        for r in outcome.rows.iter().filter(|r| r.kind == "block" && r.action == "replaced") {
+            let Ok(i) = r.index.parse::<usize>() else { continue };
+            let shift = dropped.iter().filter(|d| **d < i).count();
+            let want_dir: u8 = r.dir_to.parse().unwrap_or(255);
+            match b.blocks.get(i - shift) {
+                Some(bl) if bl.name == r.to_name && bl.dir == want_dir => {}
+                Some(bl) => bad.push(format!("block#{i} should be {} dir {} and is {} dir {}", r.to_name, r.dir_to, bl.name, bl.dir)),
+                None => bad.push(format!("block#{i} missing from the output")),
+            }
+        }
+    }
     // nothing else moved: every kept block / item keeps its pose
     let kept_blocks: Vec<&BlockRec> = {
         let dropped: HashSet<usize> = outcome.rows.iter().filter(|r| r.kind == "block" && r.action == "removed").filter_map(|r| r.index.parse().ok()).collect();
