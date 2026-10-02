@@ -182,8 +182,16 @@ pub fn read(path: &Path, m: &MapFile, collection: u32) -> Result<Option<Oracle>,
     let (na, nb, ni) = (m.blocks.len() as u32, m.baked.len() as u32, m.items.len() as u32);
     let max = objects.iter().copied().max().unwrap_or(0);
     let space = base + na + nb + ni;
+    // THE FIT RULE (relaxed 2026-10-02, Ludde A08 #11): the mapping is this file's bake when its
+    // object indices fit the file's object space and reach at least its last baked record — the
+    // trailing objects may be UNCHARTED (the last 73 items of A08 #11 are ObstacleTurnstile8m
+    // dynamic items the lightmapper never charts, so max + 1 fell 73 short of the space); a bake
+    // whose indices run PAST the space, or stop inside the authored blocks, is not this file's.
+    if max + 1 > space || max + 1 < base + na + nb {
+        return Err(format!("lightmap mapping: object space {} (max object {max}) does not fit {base} + {na} authored + {nb} baked + {ni} items = {space}: not this file's bake, no oracle", max + 1));
+    }
     if max + 1 != space {
-        return Err(format!("lightmap mapping: object space {} (max object {max}) is not {base} + {na} authored + {nb} baked + {ni} items = {space}: not this file's bake, no oracle", max + 1));
+        eprintln!("  lightmap oracle: the last {} object(s) of the file (items) are uncharted — the mapping's max object {max} + 1 = {}, the object space {space}", space - (max + 1), max + 1);
     }
     let charts = objects.len();
     Ok(Some(Oracle { base, n_authored: na, n_baked: nb, n_items: ni, charted: objects.into_iter().collect(), charts }))

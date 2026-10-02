@@ -1318,7 +1318,14 @@ fn item_src<'a>(store: &DataStore, model: &str, items_dir: Option<&Path>, embedd
     if let Some(p) = items_dir.map(|d| d.join(format!("{model}.Item.Gbx"))).filter(|p| p.is_file()) {
         return Some(ItemSrc::Local(p));
     }
-    if let Some(bytes) = embedded.iter().find(|(k, _)| k.replace('/', "\\").eq_ignore_ascii_case(&format!("Items\\{model}"))).map(|(_, v)| v) {
+    // the map's own archive: a custom item under `Items\<model>`; a CLUB item (the placement
+    // names it `club:<clubId>\<pack>.zip\<path>.Item.Gbx`) under `ClubItems\<clubId>\<pack>.zip\
+    // <path>.Item.Gbx` — Ludde A08 #05's three Plastic_duck10x10 (2026-10-02)
+    let want: String = match model.strip_prefix("club:") {
+        Some(rest) => format!("ClubItems\\{}", rest.replace('/', "\\")),
+        None => format!("Items\\{model}"),
+    };
+    if let Some(bytes) = embedded.iter().find(|(k, _)| k.replace('/', "\\").eq_ignore_ascii_case(&want)).map(|(_, v)| v) {
         return Some(ItemSrc::Embedded(bytes));
     }
     find_item_file(store, model).map(ItemSrc::Pack)
