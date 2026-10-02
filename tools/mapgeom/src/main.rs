@@ -85,7 +85,7 @@ COMMANDS
                                 23.5 on 48, 31.5 on 64), y kept; new uid SttC…,
                                 name '<name> Straight to the Center'
   sttc <file.Map.Gbx>|DIR --out-dir DIR [--only 01-,05-] [sttf + center-finish flags]
-      [--no-sttf] [--out-name mapname] [--rule v1|v2] [--strip-name-suffix S]
+      [--no-sttf] [--out-name mapname] [--rule v1|v2|v3] [--strip-name-suffix S]
       [--uid-table results.tsv] [--originals DIR] [--unlock] [--item-offset exact|rounded|auto]
                                 both steps per map: DIR/sttf/<stem>.sttf.Map.Gbx
                                 then DIR/<stem>-Straight-to-the-Center.Map.Gbx,
@@ -5343,9 +5343,10 @@ fn sttc_center_opts(rest: &[String]) -> mapgeom::sttc::CenterOpts {
         },
         // --rule v1|v2 (default v2: bbox centre, ties down, items/free exact — Hugo's final rule 2026-10-02)
         rule: match flag(rest, "--rule").as_deref() {
-            None | Some("v2") => mapgeom::sttc::Rule::V2,
+            None | Some("v3") => mapgeom::sttc::Rule::V3,
+            Some("v2") => mapgeom::sttc::Rule::V2,
             Some("v1") => mapgeom::sttc::Rule::V1,
-            Some(o) => die(format!("--rule v1 | v2, not `{o}`")),
+            Some(o) => die(format!("--rule v1 | v2 | v3, not `{o}`")),
         },
         strip_name_suffix: flag(rest, "--strip-name-suffix"),
         // --uid-table FILE: TSV with a name column and a uid column (publish results: path name uid …; or name uid)
