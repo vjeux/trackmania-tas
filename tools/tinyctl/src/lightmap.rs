@@ -193,6 +193,7 @@ pub fn transplant_kept(resaved: &Path, shipped: &Path, kept_path: &Path, out: &P
     if !o.status.success() {
         return Err(format!("lmtool transplant --kept: {}", String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or("").to_string()));
     }
+    ensure_filetime(out)?;
     report(out, "the kept-list transplant")
 }
 
@@ -400,6 +401,38 @@ fn one(args: &[String], map: &Path, out: &Path) -> Result<(), String> {
 /// `target` with its lightmap chunk replaced by the editor re-save's, written to `out`
 /// LZO-compressed (the shipped form; an uncompressed body is ~1 MB bigger — the Nadeo cap).
 /// The lightmap is applied by object index, so the two files must list the same items.
+/// THE FILETIME RULE after every graft (the 19 fixer's, 2026-10-02): the lit file's cache chunk
+/// 0x06022013 word must equal its own placed solids' max — the editor writes the BAKE COPY's word,
+/// which differs whenever the copy carries a model the shipped file does not (4 of 25 Fall tinies
+/// every wave: 04 05 10 20) and the game then drops the whole lightmap at load. `lmtool
+/// filetime-check`, and on OFF `lmtool filetime-fix` in place + a re-check. TINY_LIGHTMAP_VERIFY=0 opts out.
+pub fn ensure_filetime(out: &Path) -> Result<(), String> {
+    if std::env::var("TINY_LIGHTMAP_VERIFY").map(|v| v == "0").unwrap_or(false) {
+        return Ok(());
+    }
+    let dir = std::env::current_exe().map_err(|e| e.to_string())?.parent().ok_or("exe dir")?.to_path_buf();
+    let lmtool = dir.join("lmtool");
+    let check = |p: &Path| -> Result<bool, String> {
+        let o = std::process::Command::new(&lmtool).arg("filetime-check").arg(p).output().map_err(|e| format!("{}: {e}", lmtool.display()))?;
+        let text = String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr);
+        Ok(text.contains("EQUAL") || text.contains("nothing to validate"))
+    };
+    if check(out)? {
+        return Ok(());
+    }
+    let tmp = out.with_extension("ftfix.Map.Gbx");
+    let o = std::process::Command::new(&lmtool).arg("filetime-fix").arg(out).arg("--out").arg(&tmp).output().map_err(|e| format!("{}: {e}", lmtool.display()))?;
+    if !o.status.success() {
+        return Err(format!("{}: the cache FILETIME word is off and filetime-fix failed: {}", out.display(), String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or("")));
+    }
+    std::fs::rename(&tmp, out).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    if !check(out)? {
+        return Err(format!("{}: the cache FILETIME word is still off after filetime-fix", out.display()));
+    }
+    eprintln!("{}: cache FILETIME word was the bake copy's — rewritten to the file's own solids (filetime-fix)", out.display());
+    Ok(())
+}
+
 /// The devserver tail of a bake whose editor save was pulled to `resaved`
 /// (`lightmap-run`): the support files the editor's save dropped restored from
 /// the bake copy, then the lightmap chunk transplanted from the re-save into
@@ -417,6 +450,7 @@ pub fn finish_from_resaved(bake_copy: &Path, resaved: &Path, _copy: &Path, shipp
     }
     let re = tmmaps::map::MapFile::load(resaved);
     transplant(shipped, &re, resaved, out)?;
+    ensure_filetime(out)?;
     report(out, "the transplant")
 }
 
