@@ -521,6 +521,31 @@ pub fn campaign_set(auth_live: &str, club: &str, campaign: &str, name: &str, uid
     post_json(auth_live, &format!("{LIVE}/api/token/club/{club}/campaign/{campaign}/edit"), &body)
 }
 
+/// The campaign's CURRENT playlist uids in position order (`GET /club/{club}/campaign/{id}`).
+pub fn campaign_playlist(auth_live: &str, club: &str, campaign: &str) -> Result<Vec<String>, String> {
+    let v = get_json(auth_live, &format!("{LIVE}/api/token/club/{club}/campaign/{campaign}"))?;
+    let pl = v.get("playlist").or_else(|| v.get("campaign").and_then(|c| c.get("playlist"))).and_then(|p| p.as_array()).cloned().unwrap_or_default();
+    let mut rows: Vec<(u64, String)> = pl.iter().map(|e| (e.get("position").and_then(|p| p.as_u64()).unwrap_or(0), s(e, "mapUid"))).collect();
+    rows.sort();
+    Ok(rows.into_iter().map(|(_, u)| u).collect())
+}
+
+/// `campaign_set` that MERGES: the campaign's current playlist with `uids` appended where new —
+/// a partial upload (round 4 of Hugo's STT Center: 4 of 25 maps re-uploaded, 2026-10-03) must
+/// never shrink the list to the maps of that run. The current list wins on order; uids not yet
+/// in it go to the end in the given order.
+pub fn campaign_merge(auth_live: &str, club: &str, campaign: &str, name: &str, uids: &[String]) -> Result<(Value, usize, usize), String> {
+    let mut list = campaign_playlist(auth_live, club, campaign)?;
+    let before = list.len();
+    for u in uids {
+        if !list.contains(u) {
+            list.push(u.clone());
+        }
+    }
+    let v = campaign_set(auth_live, club, campaign, name, &list)?;
+    Ok((v, before, list.len()))
+}
+
 /// `POST /club/{club}/campaign/create` → (campaignId, activityId); the activity is
 /// activated + published like `campaign-create` does.
 pub fn campaign_create(auth_live: &str, club: &str, name: &str) -> Result<(String, String), String> {

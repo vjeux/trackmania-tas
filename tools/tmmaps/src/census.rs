@@ -155,6 +155,9 @@ pub fn cmd_census(args: &[String]) {
     let pat = filter_of(args);
     let free_only = crate::cli::has(args, "--free");
     println!("src\tid\tname\tcx\tcy\tcz\tflags\tplacement\tx\ty\tz\trx\try\trz\twp");
+    // TMMAPS_CENSUS_EXACT=1: positions and angles printed with Rust's shortest round-trip
+    // representation instead of 3 / 4 decimals (sub-millimetre placement noise, 2026-10-03)
+    let exact = std::env::var("TMMAPS_CENSUS_EXACT").map(|v| v == "1").unwrap_or(false);
     let rows = m
         .blocks
         .iter()
@@ -175,6 +178,11 @@ pub fn cmd_census(args: &[String]) {
             nfree += 1;
         }
         let c = b.coords();
+        if exact {
+            let rot = b.free_rot.unwrap_or([0.0, 0.0, 0.0]);
+            println!("{}\t{}\t{}\t{}\t{}\t{}\t{:08X}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", src, e.id, b.name, c.0, c.1, c.2, b.flags, if is_free { "FREE" } else { "grid" }, e.pos[0], e.pos[1], e.pos[2], rot[0], rot[1], rot[2], b.waypoint_tag.clone().unwrap_or_default());
+            continue;
+        }
         println!(
             "{}\t{}\t{}\t{}\t{}\t{}\t{:08X}\t{}\t{:.3}\t{:.3}\t{:.3}\t{:.4}\t{:.4}\t{:.4}\t{}",
             src,

@@ -241,10 +241,19 @@ pub fn publish_batch_cmd(args: &[String]) -> Result<(), String> {
         let mut camp_line = String::from("campaign\tnot set");
         if let (Some(club), Some(camp), Some(cname)) = (f("--club"), f("--campaign"), f("--campaign-name")) {
             let auth_live = format!("Authorization: {}", t.live);
-            match crate::nadeo::campaign_set(&auth_live, &club, &camp, &cname, &uids) {
-                Ok(v) => {
+            // --playlist replace: the run's uids ARE the playlist (a whole-campaign publish); the
+            // default MERGES into the campaign's current list (a partial re-upload keeps the rest —
+            // 2026-10-03: a 4-map manifest had cut Hugo's 25-map list to 4 for 70 s)
+            let replace = tmmaps::cli::has(args, "--playlist") && f("--playlist").as_deref() == Some("replace");
+            let r = if replace {
+                crate::nadeo::campaign_set(&auth_live, &club, &camp, &cname, &uids).map(|v| (v, uids.len(), uids.len()))
+            } else {
+                crate::nadeo::campaign_merge(&auth_live, &club, &camp, &cname, &uids)
+            };
+            match r {
+                Ok((v, before, after)) => {
                     let n = serde_json::to_string(&v).unwrap_or_default().matches("\"mapUid\"").count();
-                    camp_line = format!("campaign\t{camp}\t{cname}\t{n} maps in the playlist");
+                    camp_line = format!("campaign\t{camp}\t{cname}\t{n} maps in the playlist ({})", if replace { "replaced".to_string() } else { format!("merged: {before} before, {} added", after - before) });
                 }
                 Err(e) => {
                     failed += 1;
