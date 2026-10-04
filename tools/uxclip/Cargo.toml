@@ -1,0 +1,19 @@
+[package]
+name = "uxclip"
+version = "1.0.0"
+edition = "2021"
+description = "Harvest UI-motion reference clips (contact sheets, GIFs, cuts) off public screen recordings"
+
+# Its own workspace on purpose: it lives under tools/ but is not (yet) a member
+# of the toolchain workspace, so it builds from its own directory without
+# touching the shared Cargo.toml -- the way fk and forkoracle do.
+[workspace]
+
+[dependencies]
+
+[[bin]]
+name = "uxclip"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 2
