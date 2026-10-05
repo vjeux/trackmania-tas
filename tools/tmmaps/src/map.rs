@@ -4212,12 +4212,26 @@ impl MapFile {
     /// chunk 0x03043002 and the header XML `<times …/>` (`tmmaps settimes`; moved here from the binary
     /// 2026-10-02 for `mapgeom sttc --originals`). The header must still read the OLD times (layout check).
     pub fn set_times(&mut self, hdr: &crate::header::MapHeader, bronze: u32, silver: u32, gold: u32, author: u32, set_validated: bool) {
+        self.set_times_full(hdr, bronze, silver, gold, author, set_validated, false)
+    }
+
+    /// The UNVALIDATED form — a map nobody ever drove: the four times 0xFFFFFFFF (the game's "no
+    /// time"), authorscore 0 in every copy, the header XML `<times>` reading -1 and `validated="0"`
+    /// (Hugo's "a zip with the validations stripped", 2026-10-05). Nadeo's upload refuses this form
+    /// (author -1), so it is for files handed out, never for `publish-batch`.
+    pub fn set_unvalidated(&mut self, hdr: &crate::header::MapHeader) {
+        self.set_times_full(hdr, 0xFFFF_FFFF, 0xFFFF_FFFF, 0xFFFF_FFFF, 0xFFFF_FFFF, false, true)
+    }
+
+    fn set_times_full(&mut self, hdr: &crate::header::MapHeader, bronze: u32, silver: u32, gold: u32, author: u32, set_validated: bool, unvalidated: bool) {
         let m = self;
+    let score: u32 = if unvalidated { 0 } else { author };
     let skips = crate::gbx::all_skip_chunks(&m.gbx.body);
-    let old_b: u32 = hdr.bronze.parse().ok().expect("header times");
-    let old_s: u32 = hdr.silver.parse().ok().expect("header times");
-    let old_g: u32 = hdr.gold.parse().ok().expect("header times");
-    let old_a: u32 = hdr.authortime.parse().ok().expect("header times");
+    let hdr_time = |s: &str| -> u32 { s.parse::<i64>().ok().expect("header times") as u32 };
+    let old_b: u32 = hdr_time(&hdr.bronze);
+    let old_s: u32 = hdr_time(&hdr.silver);
+    let old_g: u32 = hdr_time(&hdr.gold);
+    let old_a: u32 = hdr_time(&hdr.authortime);
     let expect = |buf: &[u8], at: usize, want: u32, what: &str| {
         let got = u32::from_le_bytes(buf[at..at + 4].try_into().unwrap());
         assert!(got == want, "{what}: read {got} where the header says {want} — layout mismatch, nothing written");
@@ -4230,7 +4244,7 @@ impl MapFile {
     expect(b00a, t0 + 4, old_s, "0x0305B00A silver");
     expect(b00a, t0 + 8, old_g, "0x0305B00A gold");
     expect(b00a, t0 + 12, old_a, "0x0305B00A author");
-    for (k, v) in [(0usize, bronze), (4, silver), (8, gold), (12, author), (20, author)] {
+    for (k, v) in [(0usize, bronze), (4, silver), (8, gold), (12, author), (20, score)] {
         m.raw_patches.push((pa + t0 + k, v.to_le_bytes().to_vec()));
     }
     // 0x0305B004 (bronze, silver, gold, author, u32) and 0x0305B008 (timelimit, authorscore): non-skippable,
@@ -4251,7 +4265,7 @@ impl MapFile {
         m.raw_patches.push((p4 + k, v.to_le_bytes().to_vec()));
     }
     let p8 = find_id(0x0305_B008);
-    m.raw_patches.push((p8 + 4, author.to_le_bytes().to_vec())); // authorscore
+    m.raw_patches.push((p8 + 4, score.to_le_bytes().to_vec())); // authorscore
     // ---- header chunk 0x03043002 (v13): version u8, needUnlock u32, bronze, silver, gold, author, cost, isLapRace,
     // playMode, u32, authorScore, editorMode, u32, nbCheckpoints, nbLaps
     {
@@ -4274,7 +4288,7 @@ impl MapFile {
                 ud[t + 4..t + 8].copy_from_slice(&silver.to_le_bytes());
                 ud[t + 8..t + 12].copy_from_slice(&gold.to_le_bytes());
                 ud[t + 12..t + 16].copy_from_slice(&author.to_le_bytes());
-                ud[t + 32..t + 36].copy_from_slice(&author.to_le_bytes()); // authorScore
+                ud[t + 32..t + 36].copy_from_slice(&score.to_le_bytes()); // authorScore
                 done = true;
             }
             data_off += size;
@@ -4282,7 +4296,8 @@ impl MapFile {
         assert!(done, "map has no header chunk 0x03043002");
     }
     // ---- header XML
-    let times = format!("<times bronze=\"{bronze}\" silver=\"{silver}\" gold=\"{gold}\" authortime=\"{author}\" authorscore=\"{author}\" hasclones=\"0\"/>");
+    let xt = |v: u32| -> String { if v == 0xFFFF_FFFF { "-1".to_string() } else { v.to_string() } };
+    let times = format!("<times bronze=\"{}\" silver=\"{}\" gold=\"{}\" authortime=\"{}\" authorscore=\"{score}\" hasclones=\"0\"/>", xt(bronze), xt(silver), xt(gold), xt(author));
     m.edit_header_xml(&|xml| {
         let start = xml.find("<times ")?;
         let end = xml[start..].find("/>")? + start + 2;
@@ -4290,7 +4305,7 @@ impl MapFile {
         s.push_str(&xml[..start]);
         s.push_str(&times);
         s.push_str(&xml[end..]);
-        Some(if set_validated { s.replace("validated=\"0\"", "validated=\"1\"") } else { s })
+        Some(if set_validated { s.replace("validated=\"0\"", "validated=\"1\"") } else if unvalidated { s.replace("validated=\"1\"", "validated=\"0\"") } else { s })
     });
 }
 }

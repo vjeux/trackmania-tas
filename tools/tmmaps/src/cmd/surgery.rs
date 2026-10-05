@@ -757,7 +757,17 @@ pub fn settimes(args: &[String]) {
     let out = f("--out").expect("settimes needs --out F");
     let mut m = map::MapFile::load(path);
     let hdr = tmmaps::header::read(path.to_str().unwrap()).expect("header");
-    let old = |s: &str| -> u32 { s.parse().unwrap_or_else(|_| panic!("header time `{s}` is not a number")) };
+    // `--unvalidated`: the four times -1, authorscore 0, validated 0 — a map nobody drove
+    // (a file to hand out; Nadeo's upload refuses author -1). The medal flags are ignored.
+    if args.iter().any(|a| a == "--unvalidated") {
+        m.set_unvalidated(&hdr);
+        m.write_to(std::path::Path::new(&out)).expect("write");
+        let back = tmmaps::header::read(&out).expect("header of the output");
+        assert!(back.authortime == "-1" && back.gold == "-1" && back.silver == "-1" && back.bronze == "-1", "readback: {} {} {} {}", back.authortime, back.gold, back.silver, back.bronze);
+        println!("{}: times {} / {} / {} / {} -> -1 / -1 / -1 / -1, authorscore 0, validated 0 -> {out}", path.display(), hdr.authortime, hdr.gold, hdr.silver, hdr.bronze);
+        return;
+    }
+    let old = |s: &str| -> u32 { s.parse::<i64>().unwrap_or_else(|_| panic!("header time `{s}` is not a number")) as u32 };
     let (old_b, old_s, old_g, old_a) = (old(&hdr.bronze), old(&hdr.silver), old(&hdr.gold), old(&hdr.authortime));
     let ceil_s = |ms: f64| ((ms / 1000.0).ceil() * 1000.0) as u32;
     let (bronze, silver, gold, author) = if let Some(k) = f("--scale") {
