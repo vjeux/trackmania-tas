@@ -84,6 +84,14 @@ COMMANDS
                                 cell offset onto the map centre ((size−1)/2:
                                 23.5 on 48, 31.5 on 64), y kept; new uid SttC…,
                                 name '<name> Straight to the Center'
+  podium-reverse <file.Map.Gbx>|DIR --out-dir DIR [--start-item GateStartCenter8m] [--rear M]
+      [--gap M] [--podium N | --podium-map 09=1,18=0] [--uid-prefix PdRv]
+      [--name-suffix ' Podium Reverse'] [--times none|keep|A,G,S,B] [--unlock]
+      [--lightmap keep-renumber|keep] [--out-name mapname] [--only ..] [--report R.tsv] [--dry-run]
+                                Hugo's Podium Reverse: checkpoints + finishes -> plain twins
+                                (items removed), the start -> its finish twin, a poleless
+                                start gate in front of the Podium item (the car's rear
+                                against its face: --rear = the car's origin-to-bumper m)
   sttc <file.Map.Gbx>|DIR --out-dir DIR [--only 01-,05-] [sttf + center-finish flags]
       [--no-sttf] [--out-name mapname] [--rule v1|v2|v3] [--strip-name-suffix S]
       [--uid-table results.tsv] [--originals DIR] [--unlock] [--item-offset exact|rounded|auto]
@@ -2635,6 +2643,102 @@ fn main() {
         // sttc MAP|DIR --out-dir DIR [center-finish flags] [--dry-run] [--report R.tsv]:
         // both steps per map (a directory = every *.Map.Gbx in it, sorted);
         // outputs DIR/sttf/<stem>.sttf.Map.Gbx and DIR/<stem>-Straight-to-the-Center.Map.Gbx
+        // podium-reverse <MAP|DIR> --out-dir DIR [--start-item GateStartCenter8m] [--rear M] [--gap M]
+        //   [--podium N] [--uid-prefix PdRv] [--name-suffix " Podium Reverse"] [--times none|keep|A,G,S,B]
+        //   [--unlock] [--lightmap keep-renumber|keep] [--out-name mapname] [--only ..] [--report R.tsv] [--dry-run]
+        "podium-reverse" => {
+            let mut store = open(&a);
+            let p = a.rest.get(1).cloned().unwrap_or_else(|| die("podium-reverse needs a MAP or a directory".into()));
+            let dry = a.rest.iter().any(|x| x == "--dry-run");
+            let out_dir = flag(&a.rest, "--out-dir").unwrap_or_else(|| die("podium-reverse needs --out-dir DIR".into()));
+            let keep_renumber = matches!(flag(&a.rest, "--lightmap").as_deref(), None | Some("keep-renumber"));
+            // --times none (default): 59:59.999 for every medal — a placeholder no player reads as a
+            // Nadeo time (Hugo: "I don't want Nadeo times"; the club upload needs SOME author time)
+            let times = match flag(&a.rest, "--times").as_deref() {
+                None | Some("none") => Some((3_599_999u32, 3_599_999u32, 3_599_999u32, 3_599_999u32)),
+                Some("keep") => None,
+                Some(spec) => {
+                    let v: Vec<u32> = spec.split(',').map(|x| x.trim().parse::<u32>().unwrap_or_else(|_| die(format!("--times A,G,S,B in ms, not `{spec}`")))).collect();
+                    if v.len() != 4 {
+                        die::<()>("--times none | keep | AUTHOR,GOLD,SILVER,BRONZE (ms)".into());
+                    }
+                    Some((v[3], v[2], v[1], v[0]))
+                }
+            };
+            let podium = mapgeom::podium::PodiumOpts {
+                start_item: flag(&a.rest, "--start-item").unwrap_or_else(|| "GateStartCenter8m".into()),
+                rear: flag(&a.rest, "--rear").map(|v| v.parse::<f32>().unwrap_or_else(|_| die("--rear M".into()))).unwrap_or(2.0),
+                gap: flag(&a.rest, "--gap").map(|v| v.parse::<f32>().unwrap_or_else(|_| die("--gap M".into()))).unwrap_or(0.0),
+                podium: flag(&a.rest, "--podium").map(|v| v.parse::<usize>().unwrap_or_else(|_| die("--podium N".into()))),
+                uid_prefix: flag(&a.rest, "--uid-prefix").unwrap_or_else(|| "PdRv".into()),
+                name_suffix: flag(&a.rest, "--name-suffix").unwrap_or_else(|| " Podium Reverse".into()),
+                times,
+                unlock: a.rest.iter().any(|x| x == "--unlock"),
+            };
+            // --podium-map "03=1,09=1": per-map podium picks by file-name prefix
+            let podium_map: Vec<(String, usize)> = flag(&a.rest, "--podium-map").map(|v| v.split(',').filter_map(|kv| kv.split_once('=').map(|(k, n)| (k.trim().to_string(), n.trim().parse::<usize>().unwrap_or(0)))).collect()).unwrap_or_default();
+            let path = std::path::Path::new(&p);
+            let mut maps: Vec<std::path::PathBuf> = if path.is_dir() {
+                let mut v: Vec<std::path::PathBuf> = std::fs::read_dir(path).unwrap_or_else(|e| die(e.to_string())).filter_map(|e| e.ok()).map(|e| e.path()).filter(|q| q.to_string_lossy().ends_with(".Map.Gbx")).collect();
+                v.sort();
+                v
+            } else {
+                vec![path.to_path_buf()]
+            };
+            if let Some(only) = flag(&a.rest, "--only") {
+                let keep: Vec<String> = only.split(',').map(|s| s.trim().to_string()).collect();
+                maps.retain(|q| keep.iter().any(|k| q.file_name().map(|f| f.to_string_lossy().starts_with(k.as_str())).unwrap_or(false)));
+            }
+            let mut tsv = String::from(mapgeom::sttc::REPORT_HEADER);
+            tsv.push('\n');
+            let mut failed = 0;
+            let t0 = std::time::Instant::now();
+            for mp in &maps {
+                let t = std::time::Instant::now();
+                let mut po = podium.clone();
+                if let Some((_, n)) = podium_map.iter().find(|(k, _)| mp.file_name().map(|f| f.to_string_lossy().starts_with(k.as_str())).unwrap_or(false)) {
+                    po.podium = Some(*n);
+                }
+                let opts = mapgeom::podium::PodiumPipelineOpts { podium: po, dry, keep_renumber, pak_specs: a.paks.clone(), out_by_map_name: flag(&a.rest, "--out-name").as_deref() == Some("mapname") };
+                match mapgeom::podium::pipeline(&mut store, mp, std::path::Path::new(&out_dir), &opts) {
+                    Ok((rows, summary, _)) => {
+                        for r in &rows {
+                            tsv.push_str(&r.tsv());
+                            tsv.push('\n');
+                        }
+                        println!("{summary}\t{:.1}s", t.elapsed().as_secs_f32());
+                        if summary.contains("VERIFY FAILED") {
+                            failed += 1;
+                        }
+                    }
+                    Err(e) => {
+                        failed += 1;
+                        let mut r = mapgeom::sttc::Row::default();
+                        r.map = mp.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                        r.step = "summary".into();
+                        r.kind = "map".into();
+                        r.action = "FAILED".into();
+                        r.note = e.clone();
+                        tsv.push_str(&r.tsv());
+                        tsv.push('\n');
+                        eprintln!("{}: FAILED: {e}", mp.display());
+                    }
+                }
+            }
+            if let Some(r) = flag(&a.rest, "--report") {
+                if let Some(d) = std::path::Path::new(&r).parent() {
+                    let _ = std::fs::create_dir_all(d);
+                }
+                std::fs::write(&r, &tsv).unwrap_or_else(|e| die(e.to_string()));
+                println!("wrote {r}");
+            } else if maps.len() == 1 {
+                print!("{tsv}");
+            }
+            println!("{} maps, {} failed, {:.1}s{}", maps.len(), failed, t0.elapsed().as_secs_f32(), if dry { " (dry run)" } else { "" });
+            if failed > 0 {
+                std::process::exit(2);
+            }
+        }
         "sttc" => {
             let mut store = open(&a);
             let p = a.rest.get(1).cloned().unwrap_or_else(|| die("sttc needs a MAP or a directory".into()));

@@ -208,7 +208,9 @@ pub fn relight(src_path: &str, dst_path: &str, objmap: &ObjMap, out: &str) -> Re
     }
     let n_dst = |v: &[(Option<usize>, State)]| v.iter().filter(|(d, _)| d.is_some()).count();
     // the output may carry MORE baked records than the objmap maps (the reconcile pass appends the twins' clips: chartless)
-    if n_dst(&objmap.block) != dst.blocks.len() || n_dst(&objmap.baked) > dst.baked.len() || n_dst(&objmap.item) != dst.items.len() {
+    // items APPENDED by the edit (the podium-reverse start gate, 2026-10-05) sit past every mapped
+    // item: they are new objects, chartless, and shift nothing before them
+    if n_dst(&objmap.block) != dst.blocks.len() || n_dst(&objmap.baked) > dst.baked.len() || n_dst(&objmap.item) > dst.items.len() {
         return Err(format!("objmap kept counts {}/{}/{} vs the output's {}/{}/{}", n_dst(&objmap.block), n_dst(&objmap.baked), n_dst(&objmap.item), dst.blocks.len(), dst.baked.len(), dst.items.len()));
     }
     for (class, v) in [("block", &objmap.block), ("baked", &objmap.baked), ("item", &objmap.item)] {

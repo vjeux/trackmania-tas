@@ -67,7 +67,7 @@ fn tag_type(tag: Option<&str>) -> Option<i32> {
     }
 }
 
-fn wp_str(t: Option<i32>) -> String {
+pub fn wp_str(t: Option<i32>) -> String {
     match t {
         Some(t) => waypoint_name(t).to_string(),
         None => "-".to_string(),
@@ -262,15 +262,15 @@ impl Row {
             .collect::<Vec<_>>()
             .join("\t")
     }
-    fn new(map: &str, step: &str, kind: &str, index: usize, name: &str) -> Row {
+    pub fn new(map: &str, step: &str, kind: &str, index: usize, name: &str) -> Row {
         Row { map: map.to_string(), step: step.to_string(), kind: kind.to_string(), index: index.to_string(), name: name.to_string(), ..Default::default() }
     }
 }
 
-fn cell_str(c: (i32, i32, i32)) -> String {
+pub fn cell_str(c: (i32, i32, i32)) -> String {
     format!("{},{},{}", c.0, c.1, c.2)
 }
-fn pos_str(p: [f32; 3]) -> String {
+pub fn pos_str(p: [f32; 3]) -> String {
     format!("{:.3},{:.3},{:.3}", p[0], p[1], p[2])
 }
 
@@ -306,6 +306,15 @@ pub fn twin_candidates(name: &str) -> Vec<String> {
         ("Checkpoint", "StraightX2"),
         ("Checkpoint", "Base"),
         ("Checkpoint", ""),
+        // the FINISH pieces (Podium Reverse, 2026-10-05): the same plain twins
+        ("FinishTiltLeft", "TiltStraight"),
+        ("FinishTiltRight", "TiltStraight"),
+        ("FinishSlopeUp", "SlopeStraight"),
+        ("FinishSlopeDown", "SlopeStraight"),
+        ("Finish", "Straight"),
+        ("Finish", "StraightX2"),
+        ("Finish", "Base"),
+        ("Finish", ""),
     ] {
         if norm.contains(from) {
             push(norm.replacen(from, to, 1));
@@ -439,7 +448,16 @@ pub enum CpMode {
 }
 
 pub fn sttf(ctx: &mut Ctx, src: &Path, out: &Path, cp: CpMode, dry: bool) -> Result<SttfOutcome, String> {
+    strip_waypoints(ctx, src, out, cp, dry, &[WP_CHECKPOINT])
+}
+
+/// `sttf` for any set of waypoint types: every block whose model is one of
+/// `targets` becomes its geometry-verified plain twin (or goes, with its clips,
+/// when none exists), every such item goes. `[WP_CHECKPOINT]` is STTF;
+/// `[WP_CHECKPOINT, WP_FINISH]` is the Podium Reverse's first step (2026-10-05).
+pub fn strip_waypoints(ctx: &mut Ctx, src: &Path, out: &Path, cp: CpMode, dry: bool, targets: &[i32]) -> Result<SttfOutcome, String> {
     let map_label = src.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let is_target = |c: &Class| c.effective().map(|t| targets.contains(&t)).unwrap_or(false);
     let mut m = MapFile::try_load(src)?;
     let mut rows = Vec::new();
     let (mut replaced, mut removed_blocks, mut removed_items, mut mismatches, mut unresolved) = (0, 0, 0, 0, 0);
@@ -469,7 +487,7 @@ pub fn sttf(ctx: &mut Ctx, src: &Path, out: &Path, cp: CpMode, dry: bool) -> Res
     }
     let mut twin_cache: HashMap<(String, u8, u32), Result<(String, u8, String), String>> = HashMap::new();
     for (i, b, c) in &classified {
-        if c.effective() != Some(WP_CHECKPOINT) {
+        if !is_target(c) {
             continue;
         }
         let mut r = Row::new(&map_label, "sttf", "block", *i, &b.name);
@@ -545,7 +563,7 @@ pub fn sttf(ctx: &mut Ctx, src: &Path, out: &Path, cp: CpMode, dry: bool) -> Res
         if !c.resolved && c.tag.is_some() {
             unresolved += 1;
         }
-        if c.effective() == Some(WP_CHECKPOINT) {
+        if is_target(&c) {
             let mut r = Row::new(&map_label, "sttf", "item", i, &it.model);
             r.tag = it.waypoint_tag.clone().unwrap_or_default();
             r.model_wp = wp_str(c.model);
@@ -1325,7 +1343,7 @@ pub fn center_finish(ctx: &mut Ctx, src: &Path, out: &Path, o: &CenterOpts, dry:
 
 // ------------------------------------------------------------------ verify
 
-fn has_chunk(body: &[u8], id: u32) -> bool {
+pub fn has_chunk(body: &[u8], id: u32) -> bool {
     tmmaps::gbx::all_skip_chunks(body).iter().any(|(c, ..)| *c == id)
 }
 

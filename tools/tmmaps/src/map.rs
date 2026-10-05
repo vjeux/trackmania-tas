@@ -2226,6 +2226,66 @@ impl MapFile {
             .push((it.yaw_off, yaw.to_le_bytes().to_vec()));
     }
 
+    /// The full rotation triple of a placement (yaw, pitch, roll), in-place patches.
+    pub fn set_item_rotation(&mut self, item_index: usize, yaw: f32, pitch: f32, roll: f32) {
+        let it = self.items[item_index].clone();
+        self.raw_patches.push((it.yaw_off, yaw.to_le_bytes().to_vec()));
+        self.raw_patches.push((it.pitch_off, pitch.to_le_bytes().to_vec()));
+        self.raw_patches.push((it.roll_off, roll.to_le_bytes().to_vec()));
+    }
+
+    /// The placement's pivot vector (three f32 after the flags word), in place.
+    pub fn set_item_pivot(&mut self, item_index: usize, pivot: [f32; 3]) {
+        let it = self.items[item_index].clone();
+        let mut p = Vec::new();
+        for v in pivot {
+            p.extend_from_slice(&v.to_le_bytes());
+        }
+        self.raw_patches.push((it.pivot_off, p));
+    }
+
+    /// The placement's block-cell bytes (x, y, z), in place.
+    pub fn set_item_cell(&mut self, item_index: usize, cell: [u8; 3]) {
+        let it = self.items[item_index].clone();
+        self.raw_patches.push((it.coord_off, cell.to_vec()));
+    }
+
+    /// Rewrite an authored block's waypoint node TAG ("Spawn" → "Goal" when a start
+    /// block becomes its finish twin — Hugo's Podium Reverse, 2026-10-05). The node
+    /// is the record's tail: `u32 node index`, then on its first use the inline
+    /// class 0x2E009000 + chunk 0x2E009000 (version 2, string, order) + chunk
+    /// 0x2E009001 (PIKS 8) + FACADE; the string is spliced. Refused (false) when the
+    /// record has no node, carries a skin (author + skin ref sit in between), or its
+    /// node is a bare reference (another record defined it). A splice: write and
+    /// reload before any rename.
+    pub fn set_block_waypoint_tag(&mut self, block_index: usize, tag: &str) -> bool {
+        let b = self.blocks[block_index].clone();
+        if b.flags & 0x100000 == 0 || b.flags & 0x8000 != 0 {
+            return false;
+        }
+        let spans = self.block_spans();
+        let (_, end) = spans[block_index];
+        let body = &self.gbx.body;
+        let rd = |o: usize| u32::from_le_bytes(body[o..o + 4].try_into().unwrap());
+        let start = b.coord_off + 7;
+        if start + 4 > end || rd(start) == 0xFFFF_FFFF || start + 4 == end {
+            return false;
+        }
+        // [idx][class][chunk][version][len][str]
+        if rd(start + 4) != WAYPOINT_CLASS || rd(start + 8) != WAYPOINT_CLASS || rd(start + 12) != 2 {
+            return false;
+        }
+        let len = rd(start + 16) as usize;
+        if start + 20 + len > end {
+            return false;
+        }
+        let mut bytes = Vec::with_capacity(4 + tag.len());
+        bytes.extend_from_slice(&(tag.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(tag.as_bytes());
+        self.raw_splices.push(((start + 16, start + 20 + len), bytes));
+        true
+    }
+
     /// The map's per-item ANIMATION PHASE OFFSET byte — chunk 0x03043063
     /// (`CGameCtnAnchoredObject::AnimPhaseOffset`, EPhaseOffset in eighths of
     /// the period: 4 = half). Summer 15's two facing channel pistons carry 0

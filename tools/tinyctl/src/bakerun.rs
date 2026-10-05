@@ -82,15 +82,22 @@ impl MyGame {
         }
         Command::new("/mnt/c/Windows/explorer.exe").arg(GAME_EXE).output().map_err(|e| format!("explorer.exe: {e}"))?;
         let t0 = Instant::now();
+        // OUR pid = the first Trackmania that appears after our launch; a silent plugin closes
+        // THAT pid only — never a sweep of every game pid (a human's game started during the
+        // wait is not ours to close; the no-kill rule of 2026-10-02)
+        let mut our_pid: Option<u32> = None;
         loop {
+            if our_pid.is_none() {
+                our_pid = game_pids().unwrap_or_default().into_iter().find(|p| !before.contains(p));
+            }
             if plugin_pong(shootctl) {
                 break;
             }
             if t0.elapsed() > timeout {
-                for pid in game_pids().unwrap_or_default() {
-                    kill_pid(pid);
+                if let Some(p) = our_pid {
+                    kill_pid(p);
                 }
-                return Err(format!("the plugin never answered /ping within {} s after the launch (our game closed again)", timeout.as_secs()));
+                return Err(format!("the plugin never answered /ping within {} s after the launch ({})", timeout.as_secs(), if our_pid.is_some() { "our game closed again" } else { "no game process appeared; nothing touched" }));
             }
             std::thread::sleep(Duration::from_millis(1500));
         }
@@ -164,7 +171,34 @@ fn bake_one(g: &MyGame, map_wsl: &str, quality: u32, load_timeout: Duration, com
         println!("  {name}: /playmap: {}", get(shootctl, "/playmap?mode=", 30));
         // a PlayMap that has not produced a playground in 100 s is the black-screen load stall
         // (loadloop's class): the caller relaunches and retries once
-        let car = wait_for_car(g, &name, Duration::from_secs(100))?;
+        let mut car = wait_for_car(g, &name, Duration::from_secs(100))?;
+        // BAKE_RUN_REVERSE_MS=N: after the countdown, REVERSE (the Down arrow held N ms) and
+        // report where the car comes to rest — the car's rear bumper against whatever stands
+        // behind it (Hugo's Podium Reverse: the podium's front face; the resting position minus
+        // the face plane = the car's origin-to-rear-bumper distance, 2026-10-05). The row's car
+        // column then reads "spawn [x y z] reversed [x y z]".
+        if let Some(ms) = std::env::var("BAKE_RUN_REVERSE_MS").ok().and_then(|v| v.parse::<u64>().ok()).filter(|v| *v > 0) {
+            std::thread::sleep(Duration::from_millis(5000)); // the 3-2-1 countdown
+            let spawn = get(shootctl, "/wheels?ms=100", 15);
+            let o = Command::new(shootctl).arg("key").arg("DOWN").arg("--hold-ms").arg(ms.to_string()).output();
+            println!("  {name}: reverse {ms} ms: {}", o.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_else(|e| e.to_string()));
+            // settle: the position stops moving
+            let mut last = String::new();
+            let mut rest = String::new();
+            for _ in 0..12 {
+                std::thread::sleep(Duration::from_millis(500));
+                let c = get(shootctl, "/wheels?ms=100", 15);
+                let p = car_xyz(&c);
+                if p == last && !p.is_empty() {
+                    rest = p.clone();
+                    break;
+                }
+                last = p;
+                rest = last.clone();
+            }
+            car = format!("spawn [{}] reversed [{rest}]", car_xyz(&spawn));
+            println!("  {name}: {car}");
+        }
         // BAKE_RUN_FRAMES=DIR (box-side, under /mnt/c): one 4K screenshot of the playground per
         // map, DIR/<stem>-<k>.png at FRAME_AT_MS (default 6000) — the lightmap A/B of Hugo's STT
         // Center maps (2026-10-02): the same spot of the source and the edited map, the edited
@@ -320,6 +354,20 @@ fn start_check(g: &MyGame, name: &str) -> Result<String, String> {
 /// The playground's car: ctx 3 held for a second and a /wheels row; the position read
 /// again 2.5 s later (the car has settled on the start). Logs /appstate every 20 s and
 /// re-clicks the editor's Test button while no playground appears (an editor session).
+/// The x y z of a `/wheels?ms=100` answer's first data row (wall_ms, t_ms, x, y, z, …), as "x y z".
+fn car_xyz(text: &str) -> String {
+    for line in text.lines() {
+        if line.starts_with('#') || line.starts_with("wall_ms") {
+            continue;
+        }
+        let cols: Vec<&str> = line.split('\t').collect();
+        if cols.len() > 4 {
+            return format!("{} {} {}", cols[2].trim(), cols[3].trim(), cols[4].trim());
+        }
+    }
+    String::new()
+}
+
 fn wait_for_car(g: &MyGame, name: &str, timeout: Duration) -> Result<String, String> {
     let shootctl = &g.shootctl;
     let mut car = String::from("-");
@@ -537,8 +585,11 @@ pub fn lightmap_run(args: &[String]) -> Result<(), String> {
         );
         // --frames DIR (box-side /mnt/c path): check-only takes a playground screenshot per map there
         let mut cmd = match f("--frames") {
-            Some(dir) => cmd.replacen("nohup setsid ", &format!("nohup setsid env BAKE_RUN_FRAMES='{dir}'{}{} ", f("--frame-at-ms").map(|v| format!(" BAKE_RUN_FRAME_AT_MS={v}")).unwrap_or_default(), f("--frame-shots").map(|v| format!(" BAKE_RUN_FRAME_SHOTS={v}")).unwrap_or_default()), 1),
-            None => cmd,
+            Some(dir) => cmd.replacen("nohup setsid ", &format!("nohup setsid env BAKE_RUN_FRAMES='{dir}'{}{}{} ", f("--frame-at-ms").map(|v| format!(" BAKE_RUN_FRAME_AT_MS={v}")).unwrap_or_default(), f("--frame-shots").map(|v| format!(" BAKE_RUN_FRAME_SHOTS={v}")).unwrap_or_default(), f("--reverse-ms").map(|v| format!(" BAKE_RUN_REVERSE_MS={v}")).unwrap_or_default()), 1),
+            None => match f("--reverse-ms") {
+                Some(v) => cmd.replacen("nohup setsid ", &format!("nohup setsid env BAKE_RUN_REVERSE_MS={v} "), 1),
+                None => cmd,
+            },
         };
         // --load-timeout S / --compute-timeout S ride through to the box side (tiny 22's 21k items
         // did not open in the default 420 s, 2026-10-01)
