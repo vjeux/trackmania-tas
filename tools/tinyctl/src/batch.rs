@@ -177,6 +177,16 @@ fn upload_one(t: &mut Tokens, map: &Path, name: &str, outdir: &Path) -> Result<(
 pub fn publish_batch_cmd(args: &[String]) -> Result<(), String> {
     let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
     let manifest = PathBuf::from(f("--manifest").ok_or("publish-batch needs --manifest M.tsv")?);
+    // the start checks and bakes leave `*.checkcopy.Map.Gbx` / `*.bakecopy.Map.Gbx` beside the
+    // finals; a manifest built by a glob catches them (2026-10-05: 25 extra maps with fresh uids
+    // went up with Hugo's Podium Reverse) — refused here, before any token is spent
+    {
+        let text = std::fs::read_to_string(&manifest).unwrap_or_default();
+        let bad: Vec<&str> = text.lines().filter(|l| { let p = l.split('\t').next().unwrap_or("").to_ascii_lowercase(); p.contains(".checkcopy.") || p.contains(".bakecopy.") || p.contains(".resaved.") || p.contains(".lit.tmp.") }).collect();
+        if !bad.is_empty() {
+            return Err(format!("the manifest names {} check/bake copies (e.g. {}) — not maps to publish", bad.len(), bad[0].split('\t').next().unwrap_or("")));
+        }
+    }
     let results = PathBuf::from(f("--results").ok_or("publish-batch needs --results R.tsv")?);
     let outdir = PathBuf::from(f("--outdir").unwrap_or_else(|| BOX_BATCH_DIR.into()));
     std::fs::create_dir_all(&outdir).map_err(|e| format!("{}: {e}", outdir.display()))?;

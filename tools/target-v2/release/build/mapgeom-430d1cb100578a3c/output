@@ -1,0 +1,7 @@
+cargo:rerun-if-changed=/home/vjeux/cf/tt/tools/mapgeom/src
+cargo:rerun-if-changed=/home/vjeux/cf/tt/tools/mapgeom/../tmmaps/src
+cargo:rerun-if-changed=/home/vjeux/cf/tt/tools/mapgeom/../gbx/src
+cargo:rerun-if-changed=/home/vjeux/cf/tt/tools/mapgeom/../Cargo.lock
+cargo:rerun-if-changed=/home/vjeux/cf/tt/tools/mapgeom/../../.git/HEAD
+cargo:rerun-if-changed=/home/vjeux/cf/tt/tools/mapgeom/../../.git/refs/heads
+cargo:rustc-env=MAPGEOM_BUILD_ID=e64edbb20317-d6cc7aee8c091fe9
