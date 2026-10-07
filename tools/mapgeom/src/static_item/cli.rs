@@ -66,6 +66,20 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
         // a pack ITEM: baked through its external prefab / static-object files
         let mut store = open();
         match flag(rest, "--waypoint") {
+            // --waypoint finish --cylinder CX,CZ,R,Y0,Y1[,SIDES]: an INVISIBLE waypoint carrier with a
+            // cylinder trigger (the pole of Hugo's flags, 2026-10-07)
+            Some(w) if flag(rest, "--cylinder").is_some() => {
+                let wtype = match w.to_ascii_lowercase().as_str() { "start" => 0, "finish" => 1, "checkpoint" => 2, other => return Err(format!("--waypoint {other}: start | finish | checkpoint")) };
+                let spec = flag(rest, "--cylinder").unwrap();
+                let v: Vec<f32> = spec.split(',').map(|x| x.trim().parse::<f32>().map_err(|e| format!("--cylinder {spec}: {e}"))).collect::<Result<_, _>>()?;
+                if v.len() < 5 {
+                    return Err("--cylinder CX,CZ,R,Y0,Y1[,SIDES]".into());
+                }
+                let sides = v.get(5).map(|s| *s as usize).unwrap_or(24);
+                let mut m = build::pack_item_merged(&mut store, &src, scale, collection, variant, light_skin)?;
+                build::make_invisible_cylinder_waypoint(&mut m, wtype, v[0], v[1], v[2], v[3], v[4], sides)?;
+                build::finish_item(m, &ident, &author, scale, collection)?
+            }
             // --waypoint start|finish|checkpoint [--trigger-pad M]: the item becomes a waypoint
             // whose trigger is its own bounding box (Hugo's flag finishes, 2026-10-07)
             Some(w) => {

@@ -2672,6 +2672,9 @@ fn main() {
                 author: flag(&a.rest, "--author").unwrap_or_else(|| "Nadeo".into()),
                 keep_lightmap: !a.rest.iter().any(|x| x == "--strip-lightmap"),
                 pak_specs: a.paks.clone(),
+                pole_triggers: !a.rest.iter().any(|x| x == "--flags-as-finish"),
+                pole_margin: flag(&a.rest, "--pole-margin").map(|v| v.parse::<f32>().unwrap_or_else(|_| die("--pole-margin M".into()))).unwrap_or(0.05),
+                pole_sides: flag(&a.rest, "--pole-sides").map(|v| v.parse::<usize>().unwrap_or_else(|_| die("--pole-sides N".into()))).unwrap_or(24),
             };
             let src = std::path::Path::new(&p);
             let outp = std::path::Path::new(&out);
@@ -2683,7 +2686,7 @@ fn main() {
                 tsv.push('\n');
             }
             let mut sum = mapgeom::sttc::Row::new(&p, "summary", "map", 0, &oc.new_name);
-            sum.action = format!("{} flags -> finish items ({}); {} finish items removed; {} finish blocks -> twins", oc.converted, oc.items.iter().map(|(s, i, _)| format!("{s} -> {i}")).collect::<Vec<_>>().join(", "), oc.finishes_removed, oc.finish_blocks_replaced);
+            sum.action = format!("{} flags {} ({}); {} finish items removed; {} finish blocks -> twins", oc.converted, if o.pole_triggers { "kept + pole finish triggers appended" } else { "-> finish items" }, oc.items.iter().map(|(s, i, _)| format!("{s} -> {i}")).collect::<Vec<_>>().join(", "), oc.finishes_removed, oc.finish_blocks_replaced);
             if !dry {
                 let bad = mapgeom::flags::verify_flags(src, outp, &oc, &o).unwrap_or_else(|e| die(e));
                 sum.note = if bad.is_empty() { "verified".into() } else { format!("VERIFY FAILED: {}", bad.join("; ")) };

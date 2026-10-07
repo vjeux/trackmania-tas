@@ -101,6 +101,56 @@ fn main() {
         "shift" => census::cmd_shift(&args),
         "recdump" => surgery::recdump(&args),
         // itempose MAP [--filter SUBSTR]: every item's index, model, pos, yaw/pitch/roll, PIVOT, scale, tag
+        // embedded-raw MAP: the 0x03043054 manifest rows (name, collection, author), the raw zip entry
+        // names, and each embedded item file's header (ident, author) — the embedding form check
+        "embedded-raw" => {
+            let m = tmmaps::map::MapFile::load(std::path::Path::new(&args[2]));
+            let chunks = tmmaps::gbx::all_skip_chunks(&m.gbx.body);
+            let Some(&(_, _, payload, size)) = chunks.iter().find(|(c, ..)| *c == 0x0304_3054) else { println!("no 0x03043054"); return; };
+            let p = &m.gbx.body[payload..payload + size];
+            let u32_at = |o: usize| u32::from_le_bytes(p[o..o + 4].try_into().unwrap());
+            println!("version {} u01 {} inner {} count {}", u32_at(0), u32_at(4), u32_at(8), u32_at(12));
+            let n = u32_at(12) as usize;
+            let mut o = 16;
+            let mut table: Vec<String> = Vec::new();
+            let mut rd_id = |o: &mut usize, table: &mut Vec<String>| -> String {
+                let w = u32_at(*o);
+                *o += 4;
+                if w == 0x4000_0000 {
+                    let l = u32_at(*o) as usize;
+                    *o += 4;
+                    let s = String::from_utf8_lossy(&p[*o..*o + l]).to_string();
+                    *o += l;
+                    table.push(s.clone());
+                    s
+                } else if w & 0x4000_0000 != 0 {
+                    table.get((w & 0x3FFF_FFFF) as usize - 1).cloned().unwrap_or(format!("ref#{}", w & 0x3FFF_FFFF))
+                } else if w == 0xFFFF_FFFF {
+                    "-".into()
+                } else {
+                    format!("0x{w:08X}")
+                }
+            };
+            if n > 0 {
+                println!("lookback version {}", u32_at(o));
+                o += 4;
+                for k in 0..n {
+                    let name = rd_id(&mut o, &mut table);
+                    let coll = u32_at(o);
+                    o += 4;
+                    let author = rd_id(&mut o, &mut table);
+                    println!("  manifest[{k}] name={name:?} collection={coll} author={author:?}");
+                }
+            }
+            let zl = u32_at(o) as usize;
+            o += 4;
+            let zip = &p[o..o + zl];
+            println!("zip {} bytes, tail word 0x{:08X}", zl, u32_at(o + zl));
+            for (name, data) in tmmaps::header::zip_entries(zip) {
+                let ia = tmmaps::header::item_ident_author(&data);
+                println!("  entry {name:?} {} bytes header (ident, author) = {ia:?}", data.len());
+            }
+        }
         "itempose" => {
             let m = tmmaps::map::MapFile::load(std::path::Path::new(&args[2]));
             let filter = tmmaps::cli::flag(&args, "--filter");

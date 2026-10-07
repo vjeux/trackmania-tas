@@ -761,6 +761,59 @@ pub fn finish_item(mut m: Merged, ident: &str, author: &str, scale: f32, collect
     Ok((super::write_file(&f), m))
 }
 
+/// Turn a baked item into an INVISIBLE WAYPOINT CARRIER with a CYLINDER trigger (Hugo's
+/// flag poles, 2026-10-07 round 2: "clip a cylinder custom finish trigger inside the pole,
+/// no red glow"): every visual but the first goes and that one collapses to a sub-millimetre
+/// speck 4 m under the origin (the assembler needs one visual; nothing draws), the collision
+/// goes (the editor-safe 1 mm NotCollidable placeholder is written by `build_surface`), the
+/// trigger = a closed `sides`-gon prism about the local y axis at (`cx`, `cz`), radius `r`,
+/// from `y0` to `y1`, ids (0, 0); waypoint `wtype`; spawn = the cylinder's floor centre.
+pub fn make_invisible_cylinder_waypoint(m: &mut Merged, wtype: i32, cx: f32, cz: f32, r: f32, y0: f32, y1: f32, sides: usize) -> R<()> {
+    if m.visuals.is_empty() {
+        return Err("no visual to keep as the carrier".into());
+    }
+    m.visuals.truncate(1);
+    super::merged::remap_positions(m, &|p| [p[0] * 1e-4, -4.0 + p[1] * 1e-4, p[2] * 1e-4]);
+    m.surf_vertices.clear();
+    m.surf_triangles.clear();
+    m.surf_ids.clear();
+    m.lights_out.clear();
+    m.pending_lights.clear();
+    m.fx.clear();
+    m.veget.clear();
+    m.pictures.clear();
+    let n = sides.max(3);
+    let mut verts: Vec<[f32; 3]> = Vec::with_capacity(2 * n + 2);
+    for k in 0..n {
+        let a = k as f32 / n as f32 * std::f32::consts::TAU;
+        verts.push([cx + r * a.cos(), y0, cz + r * a.sin()]);
+    }
+    for k in 0..n {
+        let a = k as f32 / n as f32 * std::f32::consts::TAU;
+        verts.push([cx + r * a.cos(), y1, cz + r * a.sin()]);
+    }
+    verts.push([cx, y0, cz]); // bottom centre
+    verts.push([cx, y1, cz]); // top centre
+    let (bc, tc) = ((2 * n) as u32, (2 * n + 1) as u32);
+    let mut tris: Vec<super::surface::Triangle> = Vec::new();
+    let tri = |a: u32, b: u32, c: u32| super::surface::Triangle { indices: [a, b, c], material_id: 0, gameplay: 0, surface_index: 0 };
+    for k in 0..n {
+        let k1 = (k + 1) % n;
+        let (b0, b1, t0, t1) = (k as u32, k1 as u32, (n + k) as u32, (n + k1) as u32);
+        // side quad, outward
+        tris.push(tri(b0, t0, t1));
+        tris.push(tri(b0, t1, b1));
+        // caps
+        tris.push(tri(bc, b1, b0));
+        tris.push(tri(tc, t0, t1));
+    }
+    m.trigger = Some(super::surface::CPlugSurface::mesh(verts, tris, vec![0u16], [0.0, 1.0, 0.0]));
+    m.waypoint_type = Some(wtype);
+    m.spawn = [cx, y0, cz];
+    m.notes.push(format!("invisible carrier: waypoint type {wtype}, cylinder trigger r {r:.3} y {y0:.3}..{y1:.3} at ({cx:.3},{cz:.3}), {n} sides, no collision"));
+    Ok(())
+}
+
 /// Make a baked item a WAYPOINT with a BOX trigger over its own geometry (Hugo's "every
 /// flag is a finish", 2026-10-07 — the Manslaughter mechanism: the audience block's bbox as
 /// the finish volume). `wtype`: 0 Start, 1 Finish, 2 Checkpoint. The box = the item's

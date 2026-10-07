@@ -24,6 +24,37 @@ pub struct FlagsOpts {
     /// keep the source lightmap, its chart table renumbered (the flags keep their charts)
     pub keep_lightmap: bool,
     pub pak_specs: Vec<String>,
+    /// round 2 (Hugo 04:01 PT): the flags stay untouched; an INVISIBLE `PoleFinishTrigger`
+    /// item (cylinder trigger about the pole) is ADDED at every flag's pose
+    pub pole_triggers: bool,
+    /// the cylinder: radius margin over the pole radius (m), sides
+    pub pole_margin: f32,
+    pub pole_sides: usize,
+}
+
+/// The pole of a flag model, in the item frame: (axis x, axis z, radius, base y, top y) — the
+/// collision mesh IS the pole (a 120-vertex tube). None when the collision is not a single tube.
+pub fn pole_of(ctx: &mut Ctx, pack_path: &str, collection: u32) -> Result<(f32, f32, f32, f32, f32), String> {
+    let mg = crate::static_item::build::pack_item_merged(ctx.store, pack_path, 1.0, collection, 0, None)?;
+    let pts = &mg.surf_vertices;
+    if pts.len() < 6 {
+        return Err(format!("{pack_path}: collision has {} vertices, not a pole tube", pts.len()));
+    }
+    let (mut y0, mut y1) = (f32::INFINITY, f32::NEG_INFINITY);
+    let (mut sx, mut sz) = (0.0f64, 0.0f64);
+    for p in pts {
+        y0 = y0.min(p[1]);
+        y1 = y1.max(p[1]);
+        sx += p[0] as f64;
+        sz += p[2] as f64;
+    }
+    let cx = (sx / pts.len() as f64) as f32;
+    let cz = (sz / pts.len() as f64) as f32;
+    let r = pts.iter().map(|p| ((p[0] - cx).powi(2) + (p[2] - cz).powi(2)).sqrt()).fold(0.0f32, f32::max);
+    if r > 1.0 {
+        return Err(format!("{pack_path}: collision radius {r:.2} m about ({cx:.2},{cz:.2}) — not a pole"));
+    }
+    Ok((cx, cz, r, y0, y1))
 }
 
 pub struct FlagsOutcome {
@@ -69,10 +100,35 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
         }
     }
     let finish_blocks: Vec<usize> = m.blocks.iter().filter(|b| b.flags != 0xFFFF_FFFF && ctx.block_class(b).effective() == Some(WP_FINISH)).map(|b| b.index).collect();
+    // THE CACHE FILETIME RULE (lmtool filetimecheck, 2026-09-28): the game keeps a map's lightmap in play only
+    // when the cache chunk 0x06022013's FILETIME word equals the MAX CPlugSolid2Model.FileWriteTime over the
+    // map's EMBEDDED items. 01 embeds nothing, so its word is the editor's own; our carrier item would bring a
+    // different (pack) write time and get the lightmap dropped → the carrier's solid is stamped with the word.
+    let lm_word: Option<u64> = if o.keep_lightmap { lightmap_cache_word(src) } else { None };
     // ---- the items: one per flag model
     let mut built: Vec<(String, String, [f32; 6], Vec<u8>)> = Vec::new();
     for stem in &models {
         let pack_path = format!("Stadium\\Items\\{stem}.Item.Gbx");
+        if o.pole_triggers {
+            // round 2: an invisible carrier with a cylinder trigger about the pole
+            let ident = if models.len() == 1 { "PoleFinishTrigger.Item.Gbx".to_string() } else { format!("PoleFinishTrigger{stem}.Item.Gbx") };
+            let (cx, cz, pr, y0, y1) = pole_of(&mut ctx, &pack_path, collection).map_err(|e| format!("{stem}: {e}"))?;
+            let r = pr + o.pole_margin;
+            let mut mg = crate::static_item::build::pack_item_merged(ctx.store, &pack_path, 1.0, collection, 0, None).map_err(|e| format!("{stem}: {e}"))?;
+            crate::static_item::build::make_invisible_cylinder_waypoint(&mut mg, WP_FINISH, cx, cz, r, y0, y1, o.pole_sides).map_err(|e| format!("{stem}: {e}"))?;
+            if let Some(w) = lm_word {
+                mg.file_write_time = w;
+                mg.notes.push(format!("solid FileWriteTime stamped with the map's lightmap cache word {w} (the cache FILETIME rule)"));
+            }
+            let (bytes, mg) = crate::static_item::build::finish_item(mg, &ident, &ident, 1.0, collection).map_err(|e| format!("{stem}: {e}"))?;
+            let mut row = Row::new(&map_label, "flags", "model", 0, stem);
+            row.action = "pole-trigger-item-built".into();
+            row.to_name = ident.clone();
+            row.note = format!("{} bytes; pole axis ({cx:.3},{cz:.3}) radius {pr:.3} m, y {y0:.3}..{y1:.3}; trigger cylinder r {r:.3} ({} sides), same y span; invisible (one sub-mm visual 4 m under the origin), no collision; {}", bytes.len(), o.pole_sides, mg.notes.last().cloned().unwrap_or_default());
+            rows.push(row);
+            built.push((stem.clone(), ident, [cx - r, y0, cz - r, cx + r, y1, cz + r], bytes));
+            continue;
+        }
         let ident = format!("{stem}Finish.Item.Gbx");
         let mut mg = crate::static_item::build::pack_item_merged(ctx.store, &pack_path, 1.0, collection, 0, None).map_err(|e| format!("{stem}: {e}"))?;
         let pts: Vec<[f32; 3]> = {
@@ -82,7 +138,10 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
             c.scene.groups.values().flat_map(|g| g.verts.iter().copied()).collect()
         };
         let bb = crate::static_item::build::make_waypoint_bbox(&mut mg, WP_FINISH, o.trigger_pad, &pts).map_err(|e| format!("{stem}: {e}"))?;
-        let (bytes, mg) = crate::static_item::build::finish_item(mg, &ident, &o.author, 1.0, collection).map_err(|e| format!("{stem}: {e}"))?;
+        if let Some(w) = lm_word {
+            mg.file_write_time = w;
+        }
+        let (bytes, mg) = crate::static_item::build::finish_item(mg, &ident, &ident, 1.0, collection).map_err(|e| format!("{stem}: {e}"))?;
         let mut r = Row::new(&map_label, "flags", "model", 0, stem);
         r.action = "finish-item-built".into();
         r.to_name = ident.clone();
@@ -92,15 +151,26 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
     }
     // ---- the placements
     let mut converted = 0usize;
+    // (flag item index, trigger ident stem, pose) for the appended triggers
+    let mut appended: Vec<(usize, String, [f32; 3], [f32; 3])> = Vec::new();
     for it in &m.items {
         let stem = it.model.trim_end_matches(".Item.Gbx");
         if let Some((_, ident, _, _)) = built.iter().find(|(s, ..)| s == stem) {
             let mut r = Row::new(&map_label, "flags", "item", it.index, &it.model);
-            r.action = "to-finish".into();
-            r.to_name = ident.trim_end_matches(".Item.Gbx").to_string();
-            r.from = format!("{} yaw {:.4}", pos_str(it.pos), it.yaw);
-            r.to = r.from.clone();
-            r.note = "model renamed in place (pose, scale, colour kept); tag Goal".into();
+            if o.pole_triggers {
+                r.action = "kept + trigger-added".into();
+                r.to_name = ident.trim_end_matches(".Item.Gbx").to_string();
+                r.from = format!("{} yaw {:.4} pitch {:.4} roll {:.4}", pos_str(it.pos), it.yaw, it.pitch, it.roll);
+                r.to = format!("new item#{} at the same pose", m.items.len() + appended.len());
+                r.note = "the flag record untouched (waving cloth, chart kept); an invisible PoleFinishTrigger appended at its pose, tag Goal".into();
+                appended.push((it.index, ident.trim_end_matches(".Item.Gbx").to_string(), it.pos, [it.yaw, it.pitch, it.roll]));
+            } else {
+                r.action = "to-finish".into();
+                r.to_name = ident.trim_end_matches(".Item.Gbx").to_string();
+                r.from = format!("{} yaw {:.4}", pos_str(it.pos), it.yaw);
+                r.to = r.from.clone();
+                r.note = "model renamed in place (pose, scale, colour kept); tag Goal".into();
+            }
             rows.push(r);
             converted += 1;
         }
@@ -112,7 +182,7 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
         let mut r = Row::new(&map_label, "flags", "map", 0, &new_name);
         r.action = "identity".into();
         r.to_name = new_uid.clone();
-        r.note = format!("{converted} flags -> finishes ({} model(s)); {} finish items removed, {} finish blocks -> plain twins; collection {collection}", built.len(), finish_items.len(), finish_blocks.len());
+        r.note = format!("{converted} flags {} ({} model(s)); {} finish items removed, {} finish blocks -> plain twins; collection {collection}", if o.pole_triggers { "kept + invisible pole finish triggers appended" } else { "-> finishes" }, built.len(), finish_items.len(), finish_blocks.len());
         rows.push(r);
     }
     let outcome = |rows: Vec<Row>| FlagsOutcome { rows, converted, finishes_removed: finish_items.len(), finish_blocks_replaced: finish_blocks.len(), items: built.iter().map(|(s, i, b, _)| (s.clone(), i.clone(), *b)).collect(), new_name: new_name.clone(), new_uid: new_uid.clone() };
@@ -150,24 +220,72 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
         let mut mm = MapFile::try_load(out)?;
         let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
         let mut manifest: Vec<(String, String)> = Vec::new();
+        // THE PROVEN FORM (the tiny campaign's embedded library items, 2026-09-08 "Missing Items"
+        // lesson; Hugo's game refused round 1 with exactly that dialog): the archive entry is
+        // `Items/<ident>`, the manifest row (ident, collection = the map's, author = ident), the
+        // item file's header + body ident (ident, collection, author = ident), and every placement
+        // names the FULL ident with its `.Item.Gbx` extension, author = ident, collection = the map's
         for (_, ident, _, bytes) in &built {
             let b = crate::tiny_assets::set_ident_collection(bytes, collection);
-            files.insert(ident.clone(), b);
-            manifest.push((ident.clone(), o.author.clone()));
+            files.insert(format!("Items/{ident}"), b);
+            manifest.push((ident.clone(), ident.clone()));
         }
         let zip = tmmaps::header::stored_zip(&files);
         let refs: Vec<(&str, &str)> = manifest.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
         mm.replace_embedded_objects(&refs, &zip);
         mm.write_to(out).map_err(|e| e.to_string())?;
     }
-    // pass 3: the flag placements renamed to the finish item (Id-table renames) + author
-    {
+    // pass 3: the trigger carriers
+    let base_items = MapFile::try_load(out)?.items.len();
+    if o.pole_triggers {
+        // 3a: clones appended (one per flag)
+        {
+            let mut mm = MapFile::try_load(out)?;
+            mm.append_item_clones(base_items + appended.len());
+            mm.write_to(out).map_err(|e| e.to_string())?;
+        }
+        // 3b: model + author (renames): the full ident, author = ident
+        {
+            let mut mm = MapFile::try_load(out)?;
+            for (k, (_, ident_stem, _, _)) in appended.iter().enumerate() {
+                let ident = format!("{ident_stem}.Item.Gbx");
+                mm.set_item_model(base_items + k, &ident);
+                mm.set_item_author(base_items + k, &ident);
+                mm.set_item_collection(base_items + k, collection);
+            }
+            mm.write_to(out).map_err(|e| e.to_string())?;
+        }
+        // 3c: pose / pivot / flags / scale / cell / colour (patches)
+        {
+            let mut mm = MapFile::try_load(out)?;
+            let ground = tmmaps::map::ground_y(collection);
+            for (k, (flag_index, _, pos, rot)) in appended.iter().enumerate() {
+                let i = base_items + k;
+                let it = mm.items[i].clone();
+                if it.skin_region.is_some() || it.flags & 4 != 0 {
+                    mm.set_item_skin(i, None);
+                }
+                mm.move_item_pos(i, *pos);
+                mm.set_item_rotation(i, rot[0], rot[1], rot[2]);
+                mm.set_item_pivot(i, [0.0, 0.0, 0.0]);
+                mm.set_item_flags(i, 0);
+                mm.set_item_scale(i, 1.0);
+                let cell = [((pos[0] / 32.0).floor() as i32).clamp(0, 255) as u8, (((pos[1] - ground) / 8.0).floor() as i32).clamp(0, 255) as u8, ((pos[2] / 32.0).floor() as i32).clamp(0, 255) as u8];
+                mm.set_item_cell(i, cell);
+                let _ = flag_index;
+            }
+            mm.write_to(out).map_err(|e| e.to_string())?;
+        }
+    } else {
+        // round 1: the flag placements renamed to the finish item (Id-table renames): the full
+        // ident, author = ident, collection = the map's
         let mut mm = MapFile::try_load(out)?;
         for (i, it) in mm.items.clone().iter().enumerate() {
             let stem = it.model.trim_end_matches(".Item.Gbx");
             if let Some((_, ident, _, _)) = built.iter().find(|(s, ..)| s == stem) {
-                mm.set_item_model(i, ident.trim_end_matches(".Item.Gbx"));
-                mm.set_item_author(i, &o.author);
+                mm.set_item_model(i, ident);
+                mm.set_item_author(i, ident);
+                mm.set_item_collection(i, collection);
             }
         }
         mm.write_to(out).map_err(|e| e.to_string())?;
@@ -175,9 +293,9 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
     // pass 4 (splices): the Goal tags, the name, the times
     {
         let mut mm = MapFile::try_load(out)?;
-        let stems: Vec<String> = built.iter().map(|(_, i, _, _)| i.trim_end_matches(".Item.Gbx").to_string()).collect();
+        let idents: Vec<String> = built.iter().map(|(_, i, _, _)| i.clone()).collect();
         for (i, it) in mm.items.clone().iter().enumerate() {
-            if stems.iter().any(|s| *s == it.model) {
+            if idents.iter().any(|s| *s == it.model) {
                 mm.set_item_waypoint(i, Some("Goal"), 0);
             }
         }
@@ -238,18 +356,57 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
     Ok(outcome(rows))
 }
 
+/// The map's lightmap cache FILETIME word (chunk 0x06022013 inside 0x0304305B), through `lmtool filetime-check --tsv`.
+pub fn lightmap_cache_word(map: &Path) -> Option<u64> {
+    let lmtool = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("lmtool"))).filter(|p| p.exists()).map(|p| p.display().to_string()).unwrap_or_else(|| "lmtool".to_string());
+    let tsv = std::env::temp_dir().join(format!("flags-ftcheck-{}.tsv", std::process::id()));
+    let ok = std::process::Command::new(&lmtool).arg("filetime-check").arg(map).arg("--tsv").arg(&tsv).output().ok()?.status.success();
+    if !ok {
+        return None;
+    }
+    let text = std::fs::read_to_string(&tsv).ok()?;
+    let _ = std::fs::remove_file(&tsv);
+    let line = text.lines().nth(1)?;
+    line.split('\t').nth(1)?.parse::<u64>().ok()
+}
+
 pub fn verify_flags(src: &Path, out: &Path, oc: &FlagsOutcome, o: &FlagsOpts) -> Result<Vec<String>, String> {
     let a = MapFile::try_load(src)?;
     let b = MapFile::try_load(out)?;
     let mut bad = Vec::new();
-    if a.items.len() - oc.finishes_removed != b.items.len() {
-        bad.push(format!("items {} - {} removed != {}", a.items.len(), oc.finishes_removed, b.items.len()));
+    let want_items = if o.pole_triggers { a.items.len() - oc.finishes_removed + oc.converted } else { a.items.len() - oc.finishes_removed };
+    if want_items != b.items.len() {
+        bad.push(format!("items: want {want_items}, got {}", b.items.len()));
+    }
+    if o.pole_triggers {
+        // the flags untouched: every source flag record equal in model/pos/rot/tag (indices shift by the removed finishes before them)
+        let removed_before = |i: usize| a.items.iter().take(i).filter(|x| x.waypoint_tag.as_deref() == Some("Goal")).count();
+        for x in a.items.iter().filter(|x| x.model.contains("Flag")) {
+            let j = x.index - removed_before(x.index);
+            match b.items.get(j) {
+                Some(y) if y.model == x.model && y.pos == x.pos && y.yaw == x.yaw && y.pitch == x.pitch && y.roll == x.roll && y.waypoint_tag == x.waypoint_tag => {}
+                Some(y) => { bad.push(format!("flag item#{} -> #{j}: {} at {} differs ({} at {})", x.index, x.model, pos_str(x.pos), y.model, pos_str(y.pos))); break; }
+                None => { bad.push(format!("flag item#{} missing", x.index)); break; }
+            }
+        }
+        // every appended trigger sits exactly at a flag's pose
+        let idents: Vec<String> = oc.items.iter().map(|(_, i, _)| i.clone()).collect();
+        for y in b.items.iter().filter(|y| idents.contains(&y.model)) {
+            if !a.items.iter().any(|x| x.model.contains("Flag") && x.pos == y.pos && (x.yaw - y.yaw).abs() < 1e-6) {
+                bad.push(format!("trigger item#{} at {} matches no flag pose", y.index, pos_str(y.pos)));
+                break;
+            }
+            if y.pivot != [0.0; 3] || y.scale != 1.0 {
+                bad.push(format!("trigger item#{} pivot {:?} scale {}", y.index, y.pivot, y.scale));
+                break;
+            }
+        }
     }
     let goals = b.items.iter().filter(|x| x.waypoint_tag.as_deref() == Some("Goal")).count() + b.blocks.iter().filter(|x| x.waypoint_tag.as_deref() == Some("Goal")).count();
     if goals != oc.converted {
         bad.push(format!("{goals} Goal placements, want {} (the flags)", oc.converted));
     }
-    let idents: Vec<String> = oc.items.iter().map(|(_, i, _)| i.trim_end_matches(".Item.Gbx").to_string()).collect();
+    let idents: Vec<String> = oc.items.iter().map(|(_, i, _)| i.clone()).collect();
     let n = b.items.iter().filter(|x| idents.contains(&x.model)).count();
     if n != oc.converted {
         bad.push(format!("{n} placements wear the finish item, want {}", oc.converted));
@@ -259,15 +416,27 @@ pub fn verify_flags(src: &Path, out: &Path, oc: &FlagsOutcome, o: &FlagsOpts) ->
             bad.push(format!("item#{} {} has tag {:?}", x.index, x.model, x.waypoint_tag));
             break;
         }
-        if x.author.as_deref() != Some(o.author.as_str()) {
-            bad.push(format!("item#{} author {:?} != {}", x.index, x.author, o.author));
+        if x.author.as_deref() != Some(x.model.as_str()) {
+            bad.push(format!("item#{} author {:?} != its ident {}", x.index, x.author, x.model));
+            break;
+        }
+        if x.collection_raw != b.body_collections().map(|c| c[0].1).unwrap_or(26) {
+            bad.push(format!("item#{} collection {} != the map's", x.index, x.collection_raw));
             break;
         }
     }
-    let emb = crate::embedded::items(&b)?;
+    let emb = crate::embedded::files(&b)?;
     for (_, ident, _) in &oc.items {
-        if !emb.keys().any(|k| k.to_lowercase().ends_with(&ident.to_lowercase())) {
-            bad.push(format!("{ident} not in the embedded zip ({} files)", emb.len()));
+        let key = format!("Items/{ident}");
+        if !emb.keys().any(|k| k.replace('\\', "/").eq_ignore_ascii_case(&key)) {
+            bad.push(format!("{key} not in the embedded zip ({} files: {})", emb.len(), emb.keys().cloned().collect::<Vec<_>>().join(", ")));
+        }
+        // the embedded file's header ident: (ident, the map's collection, author = ident)
+        if let Some(bytes) = emb.iter().find(|(k, _)| k.replace('\\', "/").eq_ignore_ascii_case(&key)).map(|(_, v)| v) {
+            match tmmaps::header::item_ident_author(bytes) {
+                Some((n, a)) if n == *ident && a == *ident => {}
+                other => bad.push(format!("{key}: header (ident, author) {other:?}, want ({ident}, {ident})")),
+            }
         }
     }
     let hb = tmmaps::header::read(out.to_str().unwrap_or_default())?;
