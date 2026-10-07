@@ -2669,6 +2669,7 @@ fn main() {
                 clear_genealogy: a.rest.iter().any(|x| x == "--clear-genealogy"),
                 row: flag(&a.rest, "--row").map(|v| v.parse::<i32>().unwrap_or_else(|_| die("--row N".into()))),
                 sink_items: !a.rest.iter().any(|x| x == "--items-on-deck"),
+                keep_ring_blocks: !a.rest.iter().any(|x| x == "--rings-to-platform"),
                 uid_prefix: flag(&a.rest, "--uid-prefix").unwrap_or_else(|| "Sbox".into()),
                 name_suffix: flag(&a.rest, "--name-suffix").unwrap_or_else(|| " Sandbox".into()),
                 unlock: a.rest.iter().any(|x| x == "--unlock"),

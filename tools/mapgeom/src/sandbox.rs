@@ -144,6 +144,86 @@ pub fn item_height(ctx: &mut Ctx, model: &str) -> Option<f32> {
     }
 }
 
+/// A ring-shaped BLOCK's geometry: (is_ring, centre of the ring in the block's own frame
+/// [x, y, z] metres from the cell origin corner, measurement note). Hugo round 4: ring
+/// pieces stay rings — the Stadium `GateCheckpoint` / `GateFinish` blocks are 32 m rings
+/// standing in a 1×4×1 column (their prefab's silhouette in x/y: 72 % of the vertices in
+/// a thin annulus, all 12 sectors populated); `GateSpecial*` / `GateExpandable*` are frames.
+pub fn block_ring(ctx: &mut Ctx, name: &str) -> Option<(bool, [f32; 3], String)> {
+    let path = ctx.idx.resolve_one(ctx.store, name)?;
+    let bi = ctx.idx.load(ctx.store, &path).ok()?.clone();
+    let v = bi.variant_base_air.as_ref().or(bi.variant_base_ground.as_ref())?;
+    let prefab = v.mobils.first().and_then(|m| m.first()).and_then(|m| m.prefab.clone())?;
+    let loaded = ctx.store.load_model(&prefab).ok()?;
+    let mut c = crate::geom::Collector::new(ctx.store);
+    c.model(&loaded, &crate::geom::IDENTITY, 0);
+    let mut pts: Vec<[f32; 3]> = Vec::new();
+    for g in c.scene.groups.values() {
+        pts.extend(g.verts.iter().copied());
+    }
+    if pts.len() < 12 {
+        return None;
+    }
+    let (mut xlo, mut xhi, mut ylo, mut yhi, mut zlo, mut zhi) = (f32::INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::NEG_INFINITY);
+    for p in &pts {
+        xlo = xlo.min(p[0]); xhi = xhi.max(p[0]);
+        ylo = ylo.min(p[1]); yhi = yhi.max(p[1]);
+        zlo = zlo.min(p[2]); zhi = zhi.max(p[2]);
+    }
+    let (w, h) = (xhi - xlo, yhi - ylo);
+    let (cx, cy, cz) = ((xlo + xhi) / 2.0, (ylo + yhi) / 2.0, (zlo + zhi) / 2.0);
+    let r = w.max(h) / 2.0;
+    let mut sectors = [0usize; 12];
+    let mut annulus = 0usize;
+    for p in &pts {
+        let (dx, dy) = (p[0] - cx, p[1] - cy);
+        let d = (dx * dx + dy * dy).sqrt();
+        if (d - r).abs() <= 0.15 * r {
+            annulus += 1;
+            let a = dy.atan2(dx).rem_euclid(2.0 * std::f32::consts::PI);
+            sectors[((a / (std::f32::consts::PI / 6.0)) as usize).min(11)] += 1;
+        }
+    }
+    let frac = annulus as f32 / pts.len() as f32;
+    let min_sector = annulus / 100;
+    let all_round = annulus > 0 && sectors.iter().all(|n| *n > min_sector);
+    let is_ring = (w - h).abs() <= 0.15 * w.max(h) && frac > 0.6 && all_round;
+    Some((is_ring, [cx, cy, cz], format!("w {w:.1} h {h:.1} annulus {:.0} % sectors {}/12", frac * 100.0, sectors.iter().filter(|n| **n > min_sector).count())))
+}
+
+/// An item model's geometry centre in its own frame (the x/z centre of its visual/collision
+/// footprint; y = its mid-height) — the point that must stay put when a pose is reset.
+pub fn item_centre(ctx: &mut Ctx, model: &str) -> Option<[f32; 3]> {
+    let refs = ctx.item_refs(model);
+    let prefab = refs.iter().find(|r| r.to_lowercase().ends_with(".prefab.gbx"))?.clone();
+    let cands: Vec<String> = if prefab.contains('\\') && !prefab.starts_with("Media\\") { vec![prefab.clone()] } else { ["Stadium", "BlueBay", "RedIsland", "WhiteShore", "GreenCoast"].iter().map(|c| format!("{c}\\{prefab}")).collect() };
+    let mut loaded = None;
+    for c in cands {
+        if let Ok(m) = ctx.store.load_model(&c) {
+            loaded = Some(m);
+            break;
+        }
+    }
+    let loaded = loaded?;
+    let mut c = crate::geom::Collector::new(ctx.store);
+    c.model(&loaded, &crate::geom::IDENTITY, 0);
+    let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+    let mut n = 0;
+    for g in c.scene.groups.values() {
+        for v in &g.verts {
+            for k in 0..3 {
+                lo[k] = lo[k].min(v[k]);
+                hi[k] = hi[k].max(v[k]);
+            }
+            n += 1;
+        }
+    }
+    if n < 3 {
+        return None;
+    }
+    Some([(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0, (lo[2] + hi[2]) / 2.0])
+}
+
 /// Whether an item model is a RING — a circular gate (Hugo 02:21 PT: only rings sink
 /// halfway into the deck; arches, pole gates and frames stand on it). Read off the
 /// prefab's visual geometry in the item's x/y plane: a ring is as tall as it is wide
@@ -324,6 +404,8 @@ pub struct SandboxOpts {
     pub row: Option<i32>,
     /// sink the kept items half into the deck (origin at deck − height/2) and reset pitch/roll
     pub sink_items: bool,
+    /// ring-shaped BLOCKS keep their model (a FREE block, ring centre at the deck top) instead of a platform twin
+    pub keep_ring_blocks: bool,
     pub uid_prefix: String,
     pub name_suffix: String,
     pub unlock: bool,
@@ -334,6 +416,7 @@ pub struct SandboxOpts {
 pub struct SandboxOutcome {
     pub rows: Vec<Row>,
     pub kept_blocks: usize,
+    pub rings: usize,
     pub kept_items: usize,
     pub removed_blocks: usize,
     pub removed_items: usize,
@@ -381,6 +464,9 @@ pub fn sandbox(ctx: &mut Ctx, src: &Path, out: &Path, o: &SandboxOpts, dry: bool
     let mut rows: Vec<Row> = Vec::new();
     // ---- plan
     let mut keep_blocks: Vec<(usize, String, (i32, i32, i32), u8, String, bool)> = Vec::new(); // (index, twin, new cell, dir, class, was free)
+    // ring blocks kept as FREE blocks: (index, pos, rot[yaw, pitch, roll], class)
+    let mut ring_blocks: Vec<(usize, [f32; 3], [f32; 3], String)> = Vec::new();
+    let mut ring_cache: HashMap<String, Option<(bool, [f32; 3], String)>> = HashMap::new();
     let mut occupied: HashSet<(i32, i32)> = HashSet::new();
     let mut no_twin: Vec<String> = Vec::new();
     for r in inv.iter().filter(|r| r.kind == "block") {
@@ -396,6 +482,39 @@ pub fn sandbox(ctx: &mut Ctx, src: &Path, out: &Path, o: &SandboxOpts, dry: bool
             (c, Some(twin)) => {
                 // the cell: a free block lands on the cell under its position
                 let (cx, cz) = if r.free { ((r.pos[0] / 32.0).floor() as i32, (r.pos[2] / 32.0).floor() as i32) } else { (r.cell.unwrap().0, r.cell.unwrap().2) };
+                let ring = if o.keep_ring_blocks { ring_cache.entry(r.model.clone()).or_insert_with(|| block_ring(ctx, &r.model)).clone() } else { None };
+                if let Some((true, centre, note)) = ring {
+                    // a RING stays a ring: the same block, FREE-placed, upright, heading kept, its ring
+                    // centre at the deck top (half of it inside the platform). A grid ring's heading is
+                    // its dir (quarter turns clockwise: yaw = −dir·π/2); a free ring keeps its yaw.
+                    // The block's origin corner = ring centre − the centre offset turned by the yaw.
+                    let yaw = if r.free { r.yaw } else { -(r.dir as f32) * std::f32::consts::FRAC_PI_2 };
+                    let (sy, cyw) = yaw.sin_cos();
+                    // local (cx, cz) turned by yaw about y: x' = cx·cos + cz·sin, z' = −cx·sin + cz·cos
+                    let ox = centre[0] * cyw + centre[2] * sy;
+                    let oz = -centre[0] * sy + centre[2] * cyw;
+                    // the ring centre in the world: the source piece's own centre (x/z), the deck top (y)
+                    let src_centre = if r.free {
+                        let m = crate::place::free(r.pos, [r.yaw, r.pitch, r.roll]);
+                        crate::geom::apply(&m, centre)
+                    } else {
+                        let c0 = r.cell.unwrap();
+                        let (sy0, cy0) = (-(r.dir as f32) * std::f32::consts::FRAC_PI_2).sin_cos();
+                        // dir0 origin (x0,z0); dir1 (x0+32,z0); dir2 (x0+32,z0+32); dir3 (x0,z0+32) — the engine's pose rule
+                        let (x0, z0) = (c0.0 as f32 * 32.0, c0.2 as f32 * 32.0);
+                        let (ox0, oz0) = match r.dir & 3 { 0 => (x0, z0), 1 => (x0 + 32.0, z0), 2 => (x0 + 32.0, z0 + 32.0), _ => (x0, z0 + 32.0) };
+                        [ox0 + centre[0] * cy0 + centre[2] * sy0, 0.0, oz0 - centre[0] * sy0 + centre[2] * cy0]
+                    };
+                    let pos = [src_centre[0] - ox, platform_top - centre[1], src_centre[2] - oz];
+                    row_r.action = "ring-kept".into();
+                    row_r.to_name = r.model.clone();
+                    row_r.to = format!("free {} yaw {:.4} pitch 0 roll 0", pos_str(pos), yaw);
+                    row_r.dir_to = "-".into();
+                    row_r.note = format!("{}; RING ({note}): kept as a FREE {} with its centre ({:.1},{:.1},{:.1} in the block frame) at the deck top {platform_top:.3} — half inside the platform{}", c.label(), r.model, centre[0], centre[1], centre[2], if r.pitch.abs() > 1e-4 || r.roll.abs() > 1e-4 { format!("; POSE RESET upright (was pitch {:.4} roll {:.4})", r.pitch, r.roll) } else { String::new() });
+                    ring_blocks.push((r.index, pos, [yaw, 0.0, 0.0], c.label()));
+                    rows.push(row_r);
+                    continue;
+                }
                 if occupied.contains(&(cx, cz)) {
                     row_r.action = "removed".into();
                     row_r.note = format!("{}: cell ({cx},{cz}) already holds a kept piece — dropped (stacked waypoints/effects on one cell)", c.label());
@@ -425,6 +544,7 @@ pub fn sandbox(ctx: &mut Ctx, src: &Path, out: &Path, o: &SandboxOpts, dry: bool
     let mut keep_items: Vec<(usize, [f32; 3], [f32; 3])> = Vec::new();
     let mut heights: HashMap<String, Option<f32>> = HashMap::new();
     let mut rings: HashMap<String, Option<(bool, String)>> = HashMap::new();
+    let mut centres: HashMap<String, Option<[f32; 3]>> = HashMap::new();
     for r in inv.iter().filter(|r| r.kind == "item") {
         let mut row_r = Row::new(&map_label, "sandbox", "item", r.index, &r.model);
         row_r.tag = r.tag.clone().unwrap_or_default();
@@ -448,12 +568,37 @@ pub fn sandbox(ctx: &mut Ctx, src: &Path, out: &Path, o: &SandboxOpts, dry: bool
                     (false, _) if is_start => (platform_top, "on the deck (a start gate spawns the car at its origin plane)".to_string()),
                     (false, _) => (platform_top, format!("on the deck (not a ring{})", ring.as_ref().map(|(_, d)| format!(": {d}")).unwrap_or_default())),
                 };
-                let np = [r.pos[0], y, r.pos[2]];
-                let nrot = if o.sink_items { [r.yaw, 0.0, 0.0] } else { [r.yaw, r.pitch, r.roll] };
+                // The pose reset pivots about the item's GEOMETRY CENTRE, not its placement origin
+                // (Hugo round 4: 19's Boost2 gate, placed upside down with pivot (−8, −8, 0), moved
+                // 16 m when its pitch was reset about the origin). The model's footprint centre in
+                // the source pose (full placement rule: position = pivot, rotation, pivot offset)
+                // is where the upright gate's centre goes (x/z); the pivot field is zeroed and the
+                // position becomes the upright model's origin = centre − turned local centre.
+                let it_rec = m.items.iter().find(|it| it.index == r.index).unwrap();
+                let centre_local = if o.sink_items { *centres.entry(r.model.clone()).or_insert_with(|| item_centre(ctx, &r.model)) } else { None };
+                let (np, nrot, moved_note) = if o.sink_items {
+                    let nrot = [r.yaw, 0.0f32, 0.0f32];
+                    match centre_local {
+                        Some(cl) => {
+                            let src_m = crate::place::anchored(r.pos, [r.yaw, r.pitch, r.roll], it_rec.pivot, it_rec.scale);
+                            let world_c = crate::geom::apply(&src_m, cl);
+                            // the upright model's origin so that its centre lands on (world_c.x, ·, world_c.z)
+                            let (sy, cy) = r.yaw.sin_cos();
+                            let ox = cl[0] * cy + cl[2] * sy;
+                            let oz = -cl[0] * sy + cl[2] * cy;
+                            let np = [world_c[0] - ox, y, world_c[2] - oz];
+                            let d = ((np[0] - r.pos[0]).powi(2) + (np[2] - r.pos[2]).powi(2)).sqrt();
+                            (np, nrot, if d > 0.01 || it_rec.pivot != [0.0; 3] { format!("; pivot about the geometry centre ({:.1},{:.1},{:.1} local): origin moved {d:.2} m in x/z, placement pivot {:?} -> 0", cl[0], cl[1], cl[2], it_rec.pivot) } else { String::new() })
+                        }
+                        None => ([r.pos[0], y, r.pos[2]], nrot, "; geometry centre unreadable: origin kept".to_string()),
+                    }
+                } else {
+                    ([r.pos[0], y, r.pos[2]], [r.yaw, r.pitch, r.roll], String::new())
+                };
                 let reset = o.sink_items && (r.pitch.abs() > 1e-4 || r.roll.abs() > 1e-4);
                 row_r.action = "set-down".into();
                 row_r.to = format!("{} yaw {:.4} pitch {:.4} roll {:.4}", pos_str(np), nrot[0], nrot[1], nrot[2]);
-                row_r.note = format!("{}; deck {platform_top:.3}; {how}{}", c.label(), if reset { format!("; POSE RESET upright (was pitch {:.4} roll {:.4})", r.pitch, r.roll) } else { String::new() });
+                row_r.note = format!("{}; deck {platform_top:.3}; {how}{}{moved_note}", c.label(), if reset { format!("; POSE RESET upright (was pitch {:.4} roll {:.4})", r.pitch, r.roll) } else { String::new() });
                 keep_items.push((r.index, np, nrot));
             }
         }
@@ -469,7 +614,7 @@ pub fn sandbox(ctx: &mut Ctx, src: &Path, out: &Path, o: &SandboxOpts, dry: bool
             }
         }
     }
-    let kept_blocks = keep_blocks.len();
+    let kept_blocks = keep_blocks.len() + ring_blocks.len();
     let kept_items = keep_items.len();
     let removed_blocks = m.blocks.iter().filter(|b| b.flags != 0xFFFF_FFFF).count() - kept_blocks;
     let removed_items = m.items.len() - kept_items;
@@ -486,14 +631,14 @@ pub fn sandbox(ctx: &mut Ctx, src: &Path, out: &Path, o: &SandboxOpts, dry: bool
     }
     let inventory = inventory_tsv(&map_label, &inv);
     if dry {
-        return Ok(SandboxOutcome { rows, kept_blocks, kept_items, removed_blocks, removed_items, removed_baked, fill: fill.len(), row, new_name, new_uid, inventory });
+        return Ok(SandboxOutcome { rows, kept_blocks, rings: ring_blocks.len(), kept_items, removed_blocks, removed_items, removed_baked, fill: fill.len(), row, new_name, new_uid, inventory });
     }
     if let Some(dir) = out.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
     // ---- write, in passes of compatible edits (tmmaps' rules: splices never share a
     // write with renames; the block/item removers want a fresh load)
-    let kept_set: HashSet<usize> = keep_blocks.iter().map(|k| k.0).collect();
+    let kept_set: HashSet<usize> = keep_blocks.iter().map(|k| k.0).chain(ring_blocks.iter().map(|k| k.0)).collect();
     // pass 1: the OTHER items go; the lightmap goes (the source's cannot bind to a rebuilt body)
     {
         let mut m1 = MapFile::try_load(src)?;
@@ -523,17 +668,21 @@ pub fn sandbox(ctx: &mut Ctx, src: &Path, out: &Path, o: &SandboxOpts, dry: bool
         m2.write_to(out).map_err(|e| e.to_string())?;
     }
     // pass 3: the kept blocks become their twins (renames) at the sandbox row (cell/dir patches);
-    // the kept items drop onto the deck (patches); the map name (splice) waits for pass 4
+    // the kept items drop onto the deck (patches); the map name (splice) waits for pass 4.
+    // The kept records come first in the rebuilt list, in their source order (twins and rings mixed).
+    let mut order: Vec<(usize, bool)> = keep_blocks.iter().map(|k| (k.0, false)).chain(ring_blocks.iter().map(|k| (k.0, true))).collect();
+    order.sort_by_key(|k| k.0);
     {
         let mut m3 = MapFile::try_load(out)?;
-        // the kept records come first in the rebuilt list, in their source order
-        let mut kept_sorted: Vec<&(usize, String, (i32, i32, i32), u8, String, bool)> = keep_blocks.iter().collect();
-        kept_sorted.sort_by_key(|k| k.0);
-        for (new_index, k) in kept_sorted.iter().enumerate() {
+        for (new_index, (src_index, is_ring)) in order.iter().enumerate() {
             let b = m3.blocks[new_index].clone();
             if b.flags == 0xFFFF_FFFF {
-                return Err(format!("{map_label}: rebuilt block#{new_index} is a dead record where kept block#{} was expected", k.0));
+                return Err(format!("{map_label}: rebuilt block#{new_index} is a dead record where kept block#{src_index} was expected"));
             }
+            if *is_ring {
+                continue; // pass 3b
+            }
+            let k = keep_blocks.iter().find(|k| k.0 == *src_index).unwrap();
             m3.set_block_name(new_index, &k.1);
             m3.move_block_cell(new_index, k.2);
             if b.dir != k.3 {
@@ -548,12 +697,43 @@ pub fn sandbox(ctx: &mut Ctx, src: &Path, out: &Path, o: &SandboxOpts, dry: bool
         for (new_index, (_, np, nrot)) in keep_items.iter().enumerate() {
             m3.move_item_pos(new_index, *np);
             m3.set_item_rotation(new_index, nrot[0], nrot[1], nrot[2]);
+            if o.sink_items {
+                m3.set_item_pivot(new_index, [0.0, 0.0, 0.0]);
+            }
             // the record's cell bytes follow the new position (x/z unchanged, the row = the cell the origin is in)
             let it = m3.items[new_index].clone();
             let cy = ((np[1] - ground) / 8.0).floor().clamp(0.0, 255.0) as u8;
             m3.set_item_cell(new_index, [it.file_cell[0], cy, it.file_cell[2]]);
         }
         m3.write_to(out).map_err(|e| e.to_string())?;
+    }
+    // pass 3b: the ring blocks → FREE-placed at their new pose (grid records converted in DESCENDING
+    // index order: each conversion splices a 24-byte entry into 0x0304305F at the block's rank; a
+    // source-FREE ring is already free: its entry is rewritten in place)
+    if !ring_blocks.is_empty() {
+        let mut m3b = MapFile::try_load(out)?;
+        let mut todo: Vec<(usize, &(usize, [f32; 3], [f32; 3], String))> = Vec::new();
+        for (new_index, (src_index, is_ring)) in order.iter().enumerate() {
+            if *is_ring {
+                todo.push((new_index, ring_blocks.iter().find(|k| k.0 == *src_index).unwrap()));
+            }
+        }
+        todo.sort_by_key(|(i, _)| std::cmp::Reverse(*i));
+        for (new_index, k) in todo {
+            let b = m3b.blocks[new_index].clone();
+            if b.flags & tmmaps::map::FREE_BLOCK_FLAG != 0 {
+                m3b.move_block_free(new_index, k.1);
+                m3b.set_block_free_rot(new_index, k.2);
+            } else {
+                m3b.convert_block_to_free(new_index, k.1, k.2);
+            }
+            // a free block carries no ground bit
+            let want = b.flags & !0x1000;
+            if want != b.flags && b.flags & tmmaps::map::FREE_BLOCK_FLAG != 0 {
+                m3b.set_block_flags(new_index, want);
+            }
+        }
+        m3b.write_to(out).map_err(|e| e.to_string())?;
     }
     // pass 4 (splices): the name, the unvalidated times
     {
@@ -585,7 +765,7 @@ pub fn sandbox(ctx: &mut Ctx, src: &Path, out: &Path, o: &SandboxOpts, dry: bool
     } else if o.clear_genealogy {
         let _ = MapFile::clear_genealogy_file(out)?;
     }
-    Ok(SandboxOutcome { rows, kept_blocks, kept_items, removed_blocks, removed_items, removed_baked, fill: fill.len(), row, new_name, new_uid, inventory })
+    Ok(SandboxOutcome { rows, kept_blocks, rings: ring_blocks.len(), kept_items, removed_blocks, removed_items, removed_baked, fill: fill.len(), row, new_name, new_uid, inventory })
 }
 
 /// Round-trip checks.
@@ -602,12 +782,13 @@ pub fn verify_sandbox(out: &Path, oc: &SandboxOutcome, o: &SandboxOpts) -> Resul
     if b.items.len() != oc.kept_items {
         bad.push(format!("items {} != kept {}", b.items.len(), oc.kept_items));
     }
-    let rows: HashSet<i32> = b.blocks.iter().filter(|x| x.flags != 0xFFFF_FFFF).map(|x| x.coords().1).collect();
+    let grid = |x: &&tmmaps::map::BlockRec| x.flags != 0xFFFF_FFFF && x.free_pos.is_none();
+    let rows: HashSet<i32> = b.blocks.iter().filter(grid).map(|x| x.coords().1).collect();
     if rows.len() != 1 || !rows.contains(&oc.row) {
         bad.push(format!("rows in use {:?}, want only {}", rows, oc.row));
     }
     let mut cells: HashSet<(i32, i32)> = HashSet::new();
-    for x in b.blocks.iter().filter(|x| x.flags != 0xFFFF_FFFF) {
+    for x in b.blocks.iter().filter(grid) {
         let c = x.coords();
         if !cells.insert((c.0, c.2)) {
             bad.push(format!("cell ({},{}) used twice", c.0, c.2));
@@ -616,6 +797,10 @@ pub fn verify_sandbox(out: &Path, oc: &SandboxOutcome, o: &SandboxOpts) -> Resul
     }
     if cells.len() != (b.size[0] * b.size[2]) as usize {
         bad.push(format!("{} cells covered of {}", cells.len(), b.size[0] * b.size[2]));
+    }
+    let free_n = b.blocks.iter().filter(|x| x.flags != 0xFFFF_FFFF && x.free_pos.is_some()).count();
+    if free_n != oc.rings {
+        bad.push(format!("{free_n} free blocks, want {} (the kept rings)", oc.rings));
     }
     let spawns = b.blocks.iter().filter(|x| x.waypoint_tag.as_deref() == Some("Spawn")).count() + b.items.iter().filter(|x| x.waypoint_tag.as_deref() == Some("Spawn")).count();
     if spawns != 1 {
@@ -658,7 +843,7 @@ pub fn pipeline(store: &mut crate::store::DataStore, src: &Path, out_dir: &Path,
     let mut rows = oc.rows.clone();
     let bad = if o.dry { Vec::new() } else { verify_sandbox(&final_out, &oc, &o.sandbox)? };
     let mut r = Row::new(&format!("{stem}.Map.Gbx"), "summary", "map", 0, &format!("{}", m.size[0]));
-    r.action = format!("kept {} blocks -> platform twins + {} items set down; removed {} blocks / {} items / {} generated; fill {} × {} at row {}", oc.kept_blocks, oc.kept_items, oc.removed_blocks, oc.removed_items, oc.removed_baked, oc.fill, o.sandbox.fill, oc.row);
+    r.action = format!("kept {} blocks ({} -> platform twins, {} rings kept as free rings) + {} items set down; removed {} blocks / {} items / {} generated; fill {} × {} at row {}", oc.kept_blocks, oc.kept_blocks - oc.rings, oc.rings, oc.kept_items, oc.removed_blocks, oc.removed_items, oc.removed_baked, oc.fill, o.sandbox.fill, oc.row);
     r.to_name = oc.new_name.clone();
     if !bad.is_empty() {
         r.note = format!("VERIFY FAILED: {}", bad.join("; "));

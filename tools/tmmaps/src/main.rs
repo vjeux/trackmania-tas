@@ -100,6 +100,17 @@ fn main() {
         "clear" => census::cmd_clear(&args),
         "shift" => census::cmd_shift(&args),
         "recdump" => surgery::recdump(&args),
+        // itempose MAP [--filter SUBSTR]: every item's index, model, pos, yaw/pitch/roll, PIVOT, scale, tag
+        "itempose" => {
+            let m = tmmaps::map::MapFile::load(std::path::Path::new(&args[2]));
+            let filter = tmmaps::cli::flag(&args, "--filter");
+            println!("index\tmodel\tx\ty\tz\tyaw\tpitch\troll\tpivot_x\tpivot_y\tpivot_z\tscale\ttag");
+            for it in &m.items {
+                if filter.as_deref().map(|f| it.model.contains(f)).unwrap_or(true) {
+                    println!("{}\t{}\t{:.3}\t{:.3}\t{:.3}\t{:.4}\t{:.4}\t{:.4}\t{:.3}\t{:.3}\t{:.3}\t{}\t{}", it.index, it.model, it.pos[0], it.pos[1], it.pos[2], it.yaw, it.pitch, it.roll, it.pivot[0], it.pivot[1], it.pivot[2], it.scale, it.waypoint_tag.clone().unwrap_or_default());
+                }
+            }
+        }
         // blockrec MAP --block IDX: one authored block record's bytes (hex), from its name Id to the next record
         "blockrec" => {
             let m = tmmaps::map::MapFile::load(std::path::Path::new(&args[2]));
