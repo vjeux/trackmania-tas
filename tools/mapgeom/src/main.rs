@@ -2679,6 +2679,7 @@ fn main() {
                 pole_margin: flag(&a.rest, "--pole-margin").map(|v| v.parse::<f32>().unwrap_or_else(|_| die("--pole-margin M".into()))).unwrap_or(0.05),
                 pole_sides: flag(&a.rest, "--pole-sides").map(|v| v.parse::<usize>().unwrap_or_else(|_| die("--pole-sides N".into()))).unwrap_or(24),
                 sttf: a.rest.iter().any(|x| x == "--sttf"),
+                allow_no_finish: a.rest.iter().any(|x| x == "--allow-no-finish"),
             };
             // a DIR: every *.Map.Gbx in it → --out-dir DIR (names "<map name> Flags.Map.Gbx")
             let srcp = std::path::Path::new(&p);

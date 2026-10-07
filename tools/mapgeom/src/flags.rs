@@ -32,6 +32,9 @@ pub struct FlagsOpts {
     pub pole_sides: usize,
     /// also strip the CHECKPOINTS (the sttf rule: blocks → plain twins by geometry, rings/arches + items removed)
     pub sttf: bool,
+    /// a map with NO flag item is built anyway — zero carriers, no finish left (Hugo 05:15 PT: "I want the
+    /// complete campaign locally"); the refusal stays the default
+    pub allow_no_finish: bool,
 }
 
 /// The pole of a flag model, in the item frame: (axis x, axis z, radius, base y, top y) — the
@@ -89,9 +92,10 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
             models.push(stem);
         }
     }
-    if models.is_empty() {
-        return Err(format!("{map_label}: NO FLAG ITEMS — a Flags map of it would have no finish; not built"));
+    if models.is_empty() && !o.allow_no_finish {
+        return Err(format!("{map_label}: NO FLAG ITEMS — a Flags map of it would have no finish; not built (--allow-no-finish overrides)"));
     }
+    let no_finish = models.is_empty();
     // ---- the finish pieces (classified from the packs)
     let mut ctx = Ctx::new(store, &m);
     let mut finish_items: HashSet<usize> = HashSet::new();
@@ -217,7 +221,7 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
     }
     // pass 2: embed the item(s) (a splice of 0x03043054) — MERGED with what the map already embeds
     // (Fall 21–25 carry Nadeo's TME_* items: their rows and entries stay, collection word as is)
-    {
+    if !no_finish {
         let mut mm = MapFile::try_load(out)?;
         let (old_rows, old_zip) = mm.embedded_manifest();
         let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
@@ -248,7 +252,12 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
     }
     // pass 3: the trigger carriers
     let base_items = MapFile::try_load(out)?.items.len();
-    if o.pole_triggers {
+    if no_finish {
+        let mut r = Row::new(&map_label, "flags", "map", 0, "no flags");
+        r.action = "NO FINISH".into();
+        r.note = "the map has no flag item: nothing embedded, no carrier placed; the map has NO finish (built on --allow-no-finish)".into();
+        rows.push(r);
+    } else if o.pole_triggers {
         // 3a: clones appended (one per flag)
         {
             let mut mm = MapFile::try_load(out)?;
