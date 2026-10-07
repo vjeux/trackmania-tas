@@ -417,6 +417,8 @@ pub struct SandboxOutcome {
     pub rows: Vec<Row>,
     pub kept_blocks: usize,
     pub rings: usize,
+    /// effect blocks stacked on a kept block, placed as free gate items on the deck
+    pub stacked: usize,
     pub kept_items: usize,
     pub removed_blocks: usize,
     pub removed_items: usize,
@@ -468,8 +470,20 @@ pub fn sandbox(ctx: &mut Ctx, src: &Path, out: &Path, o: &SandboxOpts, dry: bool
     let mut ring_blocks: Vec<(usize, [f32; 3], [f32; 3], String)> = Vec::new();
     let mut ring_cache: HashMap<String, Option<(bool, [f32; 3], String)>> = HashMap::new();
     let mut occupied: HashSet<(i32, i32)> = HashSet::new();
+    // per cell: the kinds (class labels) already kept there; a second DISTINCT kind in a cell becomes a
+    // free GateSpecial ITEM on the deck (round 5, Hugo 12:00 PT: 18's Reactor-Down frame under a
+    // checkpoint was dropped by the one-piece-per-cell rule); only true duplicates collapse
+    let mut cell_kinds: HashMap<(i32, i32), Vec<String>> = HashMap::new();
+    // (source block index, item model, cell, yaw, class) — effect blocks stacked on a kept block
+    let mut stacked_items: Vec<(usize, String, (i32, i32), f32, String)> = Vec::new();
     let mut no_twin: Vec<String> = Vec::new();
-    for r in inv.iter().filter(|r| r.kind == "block") {
+    // WAYPOINT blocks claim their cell first (the one block slot per cell), effect blocks after —
+    // whatever the source order: Egypt's expandable reactor towers wrap a checkpoint in one column
+    // (the effect below it comes first in the record list and would take the slot). Within a class
+    // the source order holds, so the rows stay by index for the write passes.
+    let mut block_rows: Vec<&InvRow> = inv.iter().filter(|r| r.kind == "block").collect();
+    block_rows.sort_by_key(|r| (match r.class { Class::Waypoint(_) => 0, Class::Effect(_) => 1, Class::Other => 2 }, r.index));
+    for r in block_rows {
         let mut row_r = Row::new(&map_label, "sandbox", "block", r.index, &r.model);
         row_r.tag = r.tag.clone().unwrap_or_default();
         row_r.from = if r.free { format!("free {}", pos_str(r.pos)) } else { cell_str(r.cell.unwrap()) };
@@ -516,10 +530,35 @@ pub fn sandbox(ctx: &mut Ctx, src: &Path, out: &Path, o: &SandboxOpts, dry: bool
                     continue;
                 }
                 if occupied.contains(&(cx, cz)) {
-                    row_r.action = "removed".into();
-                    row_r.note = format!("{}: cell ({cx},{cz}) already holds a kept piece — dropped (stacked waypoints/effects on one cell)", c.label());
+                    let kinds = cell_kinds.entry((cx, cz)).or_default();
+                    if kinds.contains(&c.label()) {
+                        row_r.action = "removed".into();
+                        row_r.note = format!("{}: cell ({cx},{cz}) already holds the same kind — a true duplicate, collapsed", c.label());
+                    } else if let Class::Effect(kind) = c {
+                        // the second block cannot share the cell: the same effect as the pack's free gate item, on the deck
+                        let model = format!("GateSpecial32m{kind}");
+                        let yaw = if r.free { r.yaw } else { -(r.dir as f32) * std::f32::consts::FRAC_PI_2 };
+                        match ctx.item_wp(&model) {
+                            (_, true) => {
+                                kinds.push(c.label());
+                                row_r.action = "stacked-to-item".into();
+                                row_r.to_name = model.clone();
+                                row_r.to = format!("item on the deck at cell ({cx},{cz}) centre, yaw {yaw:.4}");
+                                row_r.note = format!("{}: cell ({cx},{cz}) already holds {} — a second block cannot share the cell: placed as the free gate ITEM {model} (same effect) on the deck", c.label(), kinds.iter().filter(|k| **k != c.label()).cloned().collect::<Vec<_>>().join("+"));
+                                stacked_items.push((r.index, model, (cx, cz), yaw, c.label()));
+                            }
+                            _ => {
+                                row_r.action = "LOST".into();
+                                row_r.note = format!("{}: cell ({cx},{cz}) already holds {} and the pack has no free gate item {model} — LOST", c.label(), kinds.join("+"));
+                            }
+                        }
+                    } else {
+                        row_r.action = "LOST".into();
+                        row_r.note = format!("{}: cell ({cx},{cz}) already holds {} — a second WAYPOINT block cannot share the cell and has no item form — LOST (report to Hugo)", c.label(), kinds.join("+"));
+                    }
                 } else {
                     occupied.insert((cx, cz));
+                    cell_kinds.entry((cx, cz)).or_default().push(c.label());
                     // a free block's quarter turn from its yaw (dir1 = −π/2, dir2 = π, dir3 = +π/2: the engine's own pose rule)
                     let dir = if r.free { ((-(r.yaw) / std::f32::consts::FRAC_PI_2).round() as i32).rem_euclid(4) as u8 } else { r.dir };
                     row_r.action = "to-platform".into();
@@ -615,9 +654,9 @@ pub fn sandbox(ctx: &mut Ctx, src: &Path, out: &Path, o: &SandboxOpts, dry: bool
         }
     }
     let kept_blocks = keep_blocks.len() + ring_blocks.len();
-    let kept_items = keep_items.len();
+    let kept_items = keep_items.len() + stacked_items.len();
     let removed_blocks = m.blocks.iter().filter(|b| b.flags != 0xFFFF_FFFF).count() - kept_blocks;
-    let removed_items = m.items.len() - kept_items;
+    let removed_items = m.items.len() - keep_items.len();
     let removed_baked = m.baked.len();
     let new_name = format!("{}{}", hdr.name, o.name_suffix);
     let old_uid = hdr.uid.clone();
@@ -631,7 +670,7 @@ pub fn sandbox(ctx: &mut Ctx, src: &Path, out: &Path, o: &SandboxOpts, dry: bool
     }
     let inventory = inventory_tsv(&map_label, &inv);
     if dry {
-        return Ok(SandboxOutcome { rows, kept_blocks, rings: ring_blocks.len(), kept_items, removed_blocks, removed_items, removed_baked, fill: fill.len(), row, new_name, new_uid, inventory });
+        return Ok(SandboxOutcome { rows, kept_blocks, rings: ring_blocks.len(), stacked: stacked_items.len(), kept_items, removed_blocks, removed_items, removed_baked, fill: fill.len(), row, new_name, new_uid, inventory });
     }
     if let Some(dir) = out.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -639,10 +678,24 @@ pub fn sandbox(ctx: &mut Ctx, src: &Path, out: &Path, o: &SandboxOpts, dry: bool
     // ---- write, in passes of compatible edits (tmmaps' rules: splices never share a
     // write with renames; the block/item removers want a fresh load)
     let kept_set: HashSet<usize> = keep_blocks.iter().map(|k| k.0).chain(ring_blocks.iter().map(|k| k.0)).collect();
-    // pass 1: the OTHER items go; the lightmap goes (the source's cannot bind to a rebuilt body)
+    // pass 1: the OTHER items go; the lightmap goes (the source's cannot bind to a rebuilt body).
+    // With stacked effect items to place, ONE non-waypoint OTHER item survives as the clone donor
+    // (`append_item_clones` needs one): the highest-index OTHER item ABOVE every kept item, so the
+    // kept items keep their ranks 0..n−1 and the donor is item n — re-modelled in pass 3c.
+    let donor: Option<usize> = if stacked_items.is_empty() {
+        None
+    } else {
+        let max_kept = keep_items.iter().map(|k| k.0).max().unwrap_or(0);
+        let kept_set: HashSet<usize> = keep_items.iter().map(|k| k.0).collect();
+        let d = m.items.iter().filter(|it| it.index > max_kept && !kept_set.contains(&it.index) && it.waypoint_tag.is_none()).map(|it| it.index).max();
+        if d.is_none() {
+            return Err(format!("{map_label}: {} stacked effect block(s) need a non-waypoint item above the kept items as a clone donor — none (every item is a waypoint or kept)", stacked_items.len()));
+        }
+        d
+    };
     {
         let mut m1 = MapFile::try_load(src)?;
-        let keep_items_set: HashSet<usize> = keep_items.iter().map(|k| k.0).collect();
+        let keep_items_set: HashSet<usize> = keep_items.iter().map(|k| k.0).chain(donor).collect();
         m1.remove_items(|it| !keep_items_set.contains(&it.index));
         m1.write_to(out).map_err(|e| e.to_string())?;
     }
@@ -707,6 +760,55 @@ pub fn sandbox(ctx: &mut Ctx, src: &Path, out: &Path, o: &SandboxOpts, dry: bool
         }
         m3.write_to(out).map_err(|e| e.to_string())?;
     }
+    // pass 3c: the STACKED effect blocks as free gate items appended after the kept items (clones of a
+    // kept item, re-modelled: author Nadeo, no waypoint tag, pivot 0, scale 1, colour default), each at
+    // its cell's centre on the deck, standing (the ring rule: not a ring — GateSpecial frames stand)
+    if !stacked_items.is_empty() {
+        let base = keep_items.len();
+        // the donor is item `base`; it becomes stacked item 0, the clones (of it) the rest
+        if stacked_items.len() > 1 {
+            let mut mm = MapFile::try_load(out)?;
+            if mm.items.len() != base + 1 {
+                return Err(format!("{map_label}: expected {} kept items + the donor, found {} items", base, mm.items.len()));
+            }
+            mm.append_item_clones(base + stacked_items.len());
+            mm.write_to(out).map_err(|e| e.to_string())?;
+        }
+        {
+            let mut mm = MapFile::try_load(out)?;
+            for (k, (_, model, _, _, _)) in stacked_items.iter().enumerate() {
+                mm.set_item_model(base + k, model);
+                mm.set_item_author(base + k, "Nadeo");
+            }
+            mm.write_to(out).map_err(|e| e.to_string())?;
+        }
+        {
+            let mut mm = MapFile::try_load(out)?;
+            for (k, (_, _, (cx, cz), yaw, _)) in stacked_items.iter().enumerate() {
+                let i = base + k;
+                let it = mm.items[i].clone();
+                if it.skin_region.is_some() || it.flags & 4 != 0 {
+                    mm.set_item_skin(i, None);
+                }
+                let pos = [*cx as f32 * 32.0 + 16.0, platform_top, *cz as f32 * 32.0 + 16.0];
+                mm.move_item_pos(i, pos);
+                mm.set_item_rotation(i, *yaw, 0.0, 0.0);
+                mm.set_item_pivot(i, [0.0, 0.0, 0.0]);
+                mm.set_item_flags(i, 0);
+                mm.set_item_scale(i, 1.0);
+                mm.set_item_cell(i, [(*cx).clamp(0, 255) as u8, row.clamp(0, 255) as u8, (*cz).clamp(0, 255) as u8]);
+                mm.set_item_color(i, 0);
+            }
+            mm.write_to(out).map_err(|e| e.to_string())?;
+        }
+        {
+            let mut mm = MapFile::try_load(out)?;
+            for k in 0..stacked_items.len() {
+                mm.set_item_waypoint(base + k, None, 0);
+            }
+            mm.write_to(out).map_err(|e| e.to_string())?;
+        }
+    }
     // pass 3b: the ring blocks → FREE-placed at their new pose (grid records converted in DESCENDING
     // index order: each conversion splices a 24-byte entry into 0x0304305F at the block's rank; a
     // source-FREE ring is already free: its entry is rewritten in place)
@@ -765,10 +867,81 @@ pub fn sandbox(ctx: &mut Ctx, src: &Path, out: &Path, o: &SandboxOpts, dry: bool
     } else if o.clear_genealogy {
         let _ = MapFile::clear_genealogy_file(out)?;
     }
-    Ok(SandboxOutcome { rows, kept_blocks, rings: ring_blocks.len(), kept_items, removed_blocks, removed_items, removed_baked, fill: fill.len(), row, new_name, new_uid, inventory })
+    Ok(SandboxOutcome { rows, kept_blocks, rings: ring_blocks.len(), stacked: stacked_items.len(), kept_items, removed_blocks, removed_items, removed_baked, fill: fill.len(), row, new_name, new_uid, inventory })
 }
 
 /// Round-trip checks.
+/// THE KIND AUDIT (round 5): per x/z cell, the kinds (class labels) of the source's kept-class
+/// pieces (blocks + items) vs the output's — every cell where a kind was lost.
+pub fn kind_audit(ctx: &mut Ctx, src: &MapFile, inv: &[InvRow], out: &Path) -> Result<Vec<String>, String> {
+    let b = MapFile::try_load(out)?;
+    let inv_items: HashMap<usize, ([f32; 3], f32)> = src.items.iter().map(|it| (it.index, (it.pivot, it.scale))).collect();
+    let cell_of = |pos: [f32; 3]| ((pos[0] / 32.0).floor() as i32, (pos[2] / 32.0).floor() as i32);
+    // an ITEM's cell is that of its geometry CENTRE under the full placement rule (the round-4 pivot
+    // rule moves an item's origin by up to half its width: 15's GateSpecial32mBoost origins sit in the
+    // neighbouring cell after the reset) — the same centre on both sides
+    let mut centres: HashMap<String, Option<[f32; 3]>> = HashMap::new();
+    let mut item_cell = |ctx: &mut Ctx, model: &str, pos: [f32; 3], rot: [f32; 3], pivot: [f32; 3], scale: f32| -> (i32, i32) {
+        let c = *centres.entry(model.to_string()).or_insert_with(|| item_centre(ctx, model));
+        match c {
+            Some(cl) => {
+                let mtx = crate::place::anchored(pos, rot, pivot, scale);
+                let w = crate::geom::apply(&mtx, cl);
+                cell_of(w)
+            }
+            None => cell_of(pos),
+        }
+    };
+    let mut want: HashMap<(i32, i32), HashSet<String>> = HashMap::new();
+    for r in inv.iter().filter(|r| r.class != Class::Other) {
+        let cell = if r.kind == "block" && !r.free {
+            let c = r.cell.unwrap();
+            (c.0, c.2)
+        } else if r.kind == "item" {
+            let it = &inv_items[&r.index];
+            item_cell(ctx, &r.model, r.pos, [r.yaw, r.pitch, r.roll], it.0, it.1)
+        } else {
+            cell_of(r.pos)
+        };
+        want.entry(cell).or_default().insert(r.class.label());
+    }
+    let mut have: HashMap<(i32, i32), HashSet<String>> = HashMap::new();
+    for blk in b.blocks.iter().filter(|x| x.flags != 0xFFFF_FFFF) {
+        let c = match block_class(ctx, &blk.name) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        if c == Class::Other {
+            continue;
+        }
+        let cell = match blk.free_pos { Some(p) => cell_of(p), None => { let cc = blk.coords(); (cc.0, cc.2) } };
+        have.entry(cell).or_default().insert(c.label());
+    }
+    for it in &b.items {
+        let c = match item_class(ctx, &it.model) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        if c == Class::Other {
+            continue;
+        }
+        let cell = item_cell(ctx, &it.model, it.pos, [it.yaw, it.pitch, it.roll], it.pivot, it.scale);
+        have.entry(cell).or_default().insert(c.label());
+    }
+    let mut lost = Vec::new();
+    let mut cells: Vec<_> = want.keys().copied().collect();
+    cells.sort();
+    for cell in cells {
+        let w = &want[&cell];
+        let h = have.get(&cell).cloned().unwrap_or_default();
+        let missing: Vec<String> = w.iter().filter(|k| !h.contains(*k)).cloned().collect();
+        if !missing.is_empty() {
+            lost.push(format!("cell ({},{}): lost {} (source {}, output {})", cell.0, cell.1, missing.join("+"), w.iter().cloned().collect::<Vec<_>>().join("+"), if h.is_empty() { "nothing".to_string() } else { h.iter().cloned().collect::<Vec<_>>().join("+") }));
+        }
+    }
+    Ok(lost)
+}
+
 pub fn verify_sandbox(out: &Path, oc: &SandboxOutcome, o: &SandboxOpts) -> Result<Vec<String>, String> {
     let b = MapFile::try_load(out)?;
     let mut bad = Vec::new();
@@ -841,9 +1014,23 @@ pub fn pipeline(store: &mut crate::store::DataStore, src: &Path, out_dir: &Path,
     let mut ctx = Ctx::new(store, &m);
     let oc = sandbox(&mut ctx, src, &final_out, &o.sandbox, o.dry)?;
     let mut rows = oc.rows.clone();
-    let bad = if o.dry { Vec::new() } else { verify_sandbox(&final_out, &oc, &o.sandbox)? };
+    let mut bad = if o.dry { Vec::new() } else { verify_sandbox(&final_out, &oc, &o.sandbox)? };
+    // the kind audit: every x/z cell's kinds in the source vs the output (round 5)
+    if !o.dry {
+        let inv = inventory(&mut ctx, &m)?;
+        let lost = kind_audit(&mut ctx, &m, &inv, &final_out)?;
+        for l in &lost {
+            let mut lr = Row::new(&format!("{stem}.Map.Gbx"), "audit", "cell", 0, "kind lost");
+            lr.action = "LOST".into();
+            lr.note = l.clone();
+            rows.push(lr);
+        }
+        if !lost.is_empty() {
+            bad.push(format!("{} cell(s) lost a waypoint/effect kind: {}", lost.len(), lost.join(" | ")));
+        }
+    }
     let mut r = Row::new(&format!("{stem}.Map.Gbx"), "summary", "map", 0, &format!("{}", m.size[0]));
-    r.action = format!("kept {} blocks ({} -> platform twins, {} rings kept as free rings) + {} items set down; removed {} blocks / {} items / {} generated; fill {} × {} at row {}", oc.kept_blocks, oc.kept_blocks - oc.rings, oc.rings, oc.kept_items, oc.removed_blocks, oc.removed_items, oc.removed_baked, oc.fill, o.sandbox.fill, oc.row);
+    r.action = format!("kept {} blocks ({} -> platform twins, {} rings kept as free rings) + {} items set down ({} stacked effect blocks as gate items); removed {} blocks / {} items / {} generated; fill {} × {} at row {}", oc.kept_blocks, oc.kept_blocks - oc.rings, oc.rings, oc.kept_items, oc.stacked, oc.removed_blocks, oc.removed_items, oc.removed_baked, oc.fill, o.sandbox.fill, oc.row);
     r.to_name = oc.new_name.clone();
     if !bad.is_empty() {
         r.note = format!("VERIFY FAILED: {}", bad.join("; "));

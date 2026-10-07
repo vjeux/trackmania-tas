@@ -2643,6 +2643,21 @@ fn main() {
         // sttc MAP|DIR --out-dir DIR [center-finish flags] [--dry-run] [--report R.tsv]:
         // both steps per map (a directory = every *.Map.Gbx in it, sorted);
         // outputs DIR/sttf/<stem>.sttf.Map.Gbx and DIR/<stem>-Straight-to-the-Center.Map.Gbx
+        // blockinfo-resolve NAME..: the pack path the block-info index resolves a block name to
+        "blockinfo-resolve" => {
+            let mut store = open(&a);
+            let coll = flag(&a.rest, "--collection").unwrap_or_else(|| "Stadium".into());
+            let mut idx = mapgeom::blockmap::BlockInfoIndex::build(&mut store, &coll);
+            for n in a.rest.iter().skip(1) {
+                match idx.resolve_one(&mut store, n) {
+                    Some(p) => {
+                        let bi = idx.load(&mut store, &p).map(|b| format!("waypoint {:?} modifier slots {:?} / {:?}", b.waypoint_type, b.material_modifier_slots, b.material_modifier)).unwrap_or_else(|e| e);
+                        println!("{n}: {p}\n   {bi}");
+                    }
+                    None => println!("{n}: NOT RESOLVED"),
+                }
+            }
+        }
         // item-height MAP MODEL [MODEL..]: the item models' heights as `sandbox` reads them (the pack prefab's geometry)
         "item-height" => {
             let mut store = open(&a);
