@@ -2643,6 +2643,91 @@ fn main() {
         // sttc MAP|DIR --out-dir DIR [center-finish flags] [--dry-run] [--report R.tsv]:
         // both steps per map (a directory = every *.Map.Gbx in it, sorted);
         // outputs DIR/sttf/<stem>.sttf.Map.Gbx and DIR/<stem>-Straight-to-the-Center.Map.Gbx
+        // sandbox <MAP|DIR> --out-dir DIR [--fill PlatformTechBase] [--fill-flags HEX] [--row N] [--uid-prefix Sbox]
+        //   [--name-suffix " Sandbox"] [--unlock] [--unvalidated] [--keep-lightmap] [--keep-genealogy]
+        //   [--out-name mapname] [--only ..] [--report R.tsv] [--inventory I.tsv] [--dry-run]
+        "sandbox" => {
+            let mut store = open(&a);
+            let p = a.rest.get(1).cloned().unwrap_or_else(|| die("sandbox needs a MAP or a directory".into()));
+            let dry = a.rest.iter().any(|x| x == "--dry-run");
+            let out_dir = flag(&a.rest, "--out-dir").unwrap_or_else(|| die("sandbox needs --out-dir DIR".into()));
+            let sb = mapgeom::sandbox::SandboxOpts {
+                fill: flag(&a.rest, "--fill").unwrap_or_else(|| "PlatformTechBase".into()),
+                fill_flags: flag(&a.rest, "--fill-flags").map(|v| u32::from_str_radix(v.trim_start_matches("0x"), 16).unwrap_or_else(|_| die("--fill-flags HEX".into()))).unwrap_or(0x1000),
+                clear_genealogy: !a.rest.iter().any(|x| x == "--keep-genealogy"),
+                row: flag(&a.rest, "--row").map(|v| v.parse::<i32>().unwrap_or_else(|_| die("--row N".into()))),
+                uid_prefix: flag(&a.rest, "--uid-prefix").unwrap_or_else(|| "Sbox".into()),
+                name_suffix: flag(&a.rest, "--name-suffix").unwrap_or_else(|| " Sandbox".into()),
+                unlock: a.rest.iter().any(|x| x == "--unlock"),
+                unvalidated: a.rest.iter().any(|x| x == "--unvalidated"),
+                strip_lightmap: !a.rest.iter().any(|x| x == "--keep-lightmap"),
+            };
+            let opts = mapgeom::sandbox::PipelineOpts { sandbox: sb, dry, out_by_map_name: flag(&a.rest, "--out-name").as_deref() == Some("mapname") };
+            let path = std::path::Path::new(&p);
+            let mut maps: Vec<std::path::PathBuf> = if path.is_dir() {
+                let mut v: Vec<std::path::PathBuf> = std::fs::read_dir(path).unwrap_or_else(|e| die(e.to_string())).filter_map(|e| e.ok()).map(|e| e.path()).filter(|q| q.to_string_lossy().ends_with(".Map.Gbx")).collect();
+                v.sort();
+                v
+            } else {
+                vec![path.to_path_buf()]
+            };
+            if let Some(only) = flag(&a.rest, "--only") {
+                let keep: Vec<String> = only.split(',').map(|s| s.trim().to_string()).collect();
+                maps.retain(|q| keep.iter().any(|k| q.file_name().map(|f| f.to_string_lossy().starts_with(k.as_str())).unwrap_or(false)));
+            }
+            let mut tsv = String::from(mapgeom::sttc::REPORT_HEADER);
+            tsv.push('\n');
+            let mut inv_all = String::new();
+            let mut failed = 0;
+            let t0 = std::time::Instant::now();
+            for mp in &maps {
+                let t = std::time::Instant::now();
+                match mapgeom::sandbox::pipeline(&mut store, mp, std::path::Path::new(&out_dir), &opts) {
+                    Ok((rows, summary, oc)) => {
+                        for r in &rows {
+                            tsv.push_str(&r.tsv());
+                            tsv.push('\n');
+                        }
+                        if inv_all.is_empty() {
+                            inv_all.push_str(&oc.inventory);
+                        } else {
+                            inv_all.push_str(oc.inventory.splitn(2, '\n').nth(1).unwrap_or(""));
+                        }
+                        println!("{summary}\t{:.1}s", t.elapsed().as_secs_f32());
+                    }
+                    Err(e) => {
+                        failed += 1;
+                        let mut r = mapgeom::sttc::Row::default();
+                        r.map = mp.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                        r.step = "summary".into();
+                        r.kind = "map".into();
+                        r.action = "FAILED".into();
+                        r.note = e.clone();
+                        tsv.push_str(&r.tsv());
+                        tsv.push('\n');
+                        eprintln!("{}: FAILED: {e}", mp.display());
+                    }
+                }
+            }
+            if let Some(r) = flag(&a.rest, "--report") {
+                if let Some(d) = std::path::Path::new(&r).parent() {
+                    let _ = std::fs::create_dir_all(d);
+                }
+                std::fs::write(&r, &tsv).unwrap_or_else(|e| die(e.to_string()));
+                println!("wrote {r}");
+            }
+            if let Some(i) = flag(&a.rest, "--inventory") {
+                if let Some(d) = std::path::Path::new(&i).parent() {
+                    let _ = std::fs::create_dir_all(d);
+                }
+                std::fs::write(&i, &inv_all).unwrap_or_else(|e| die(e.to_string()));
+                println!("wrote {i}");
+            }
+            println!("{} maps, {} failed, {:.1}s{}", maps.len(), failed, t0.elapsed().as_secs_f32(), if dry { " (dry run)" } else { "" });
+            if failed > 0 {
+                std::process::exit(2);
+            }
+        }
         // podium-reverse <MAP|DIR> --out-dir DIR [--start-item GateStartCenter8m] [--rear M] [--gap M]
         //   [--podium N] [--uid-prefix PdRv] [--name-suffix " Podium Reverse"] [--times none|keep|A,G,S,B]
         //   [--unlock] [--lightmap keep-renumber|keep] [--out-name mapname] [--only ..] [--report R.tsv] [--dry-run]

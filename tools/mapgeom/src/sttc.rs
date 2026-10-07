@@ -221,6 +221,37 @@ impl<'a> Ctx<'a> {
         (wp, true)
     }
 
+    /// An item model's external references (the item file's own node table —
+    /// its prefab, its modifier folder, its icon …), transitively one level into
+    /// the prefab: enough to see a gate item's `Media\Modifier\<Kind>` folder.
+    pub fn item_refs(&mut self, model: &str) -> Vec<String> {
+        let base = model.rsplit(['/', '\\']).next().unwrap_or(model).to_lowercase();
+        let base = if base.ends_with(".item.gbx") { base } else { format!("{base}.item.gbx") };
+        let bytes: Option<Vec<u8>> = match self.embedded.get(&base) {
+            Some(b) => Some(b.clone()),
+            None => {
+                let stem = model.trim_end_matches(".Item.Gbx");
+                let mut cands = vec![format!("Stadium\\Items\\{stem}.Item.Gbx"), format!("Stadium\\Items\\Theme\\{stem}.Item.Gbx")];
+                for env in ["GreenCoast", "RedIsland", "BlueBay", "WhiteShore"] {
+                    cands.push(format!("{env}\\Items\\Stadium\\{stem}.Item.Gbx"));
+                    cands.push(format!("{env}\\Items\\{stem}.Item.Gbx"));
+                }
+                cands.into_iter().find_map(|p| self.store.read(&p).ok().map(|b| b.as_ref().clone()))
+            }
+        };
+        let Some(bytes) = bytes else { return Vec::new() };
+        let Ok(m) = crate::store::Model::parse(&bytes, model) else { return Vec::new() };
+        let mut out: Vec<String> = m.externals.iter().map(|(_, p)| p.clone()).collect();
+        for (_, p) in &m.externals {
+            if p.to_lowercase().ends_with(".prefab.gbx") {
+                if let Ok(child) = self.store.load_model(p) {
+                    out.extend(child.externals.iter().map(|(_, q)| q.clone()));
+                }
+            }
+        }
+        out
+    }
+
     pub fn item_class(&mut self, it: &ItemRec) -> Class {
         let tag = tag_type(it.waypoint_tag.as_deref());
         let (model, resolved) = self.item_wp(&it.model);
