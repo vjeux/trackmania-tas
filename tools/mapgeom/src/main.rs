@@ -2655,6 +2655,55 @@ fn main() {
                 println!("  height {:?}", mapgeom::sandbox::item_height(&mut ctx, model));
             }
         }
+        // flags MAP --out F [--model Flag16m,..] [--trigger-pad M] [--uid-prefix Flag] [--name-suffix " Flags"]
+        //   [--unlock] [--unvalidated] [--author Nadeo] [--report R.tsv] [--dry-run]
+        "flags" => {
+            let mut store = open(&a);
+            let p = a.rest.get(1).cloned().unwrap_or_else(|| die("flags needs a MAP".into()));
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("flags needs --out F".into()));
+            let dry = a.rest.iter().any(|x| x == "--dry-run");
+            let o = mapgeom::flags::FlagsOpts {
+                models: flag(&a.rest, "--model").map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()).unwrap_or_default(),
+                trigger_pad: flag(&a.rest, "--trigger-pad").map(|v| v.parse::<f32>().unwrap_or_else(|_| die("--trigger-pad M".into()))).unwrap_or(0.5),
+                uid_prefix: flag(&a.rest, "--uid-prefix").unwrap_or_else(|| "Flag".into()),
+                name_suffix: flag(&a.rest, "--name-suffix").unwrap_or_else(|| " Flags".into()),
+                unlock: a.rest.iter().any(|x| x == "--unlock"),
+                unvalidated: a.rest.iter().any(|x| x == "--unvalidated"),
+                author: flag(&a.rest, "--author").unwrap_or_else(|| "Nadeo".into()),
+                keep_lightmap: !a.rest.iter().any(|x| x == "--strip-lightmap"),
+                pak_specs: a.paks.clone(),
+            };
+            let src = std::path::Path::new(&p);
+            let outp = std::path::Path::new(&out);
+            let oc = mapgeom::flags::flags(&mut store, src, outp, &o, dry).unwrap_or_else(|e| die(e));
+            let mut tsv = String::from(mapgeom::sttc::REPORT_HEADER);
+            tsv.push('\n');
+            for r in &oc.rows {
+                tsv.push_str(&r.tsv());
+                tsv.push('\n');
+            }
+            let mut sum = mapgeom::sttc::Row::new(&p, "summary", "map", 0, &oc.new_name);
+            sum.action = format!("{} flags -> finish items ({}); {} finish items removed; {} finish blocks -> twins", oc.converted, oc.items.iter().map(|(s, i, _)| format!("{s} -> {i}")).collect::<Vec<_>>().join(", "), oc.finishes_removed, oc.finish_blocks_replaced);
+            if !dry {
+                let bad = mapgeom::flags::verify_flags(src, outp, &oc, &o).unwrap_or_else(|e| die(e));
+                sum.note = if bad.is_empty() { "verified".into() } else { format!("VERIFY FAILED: {}", bad.join("; ")) };
+            } else {
+                sum.note = "dry run".into();
+            }
+            tsv.push_str(&sum.tsv());
+            tsv.push('\n');
+            println!("{}", sum.tsv());
+            if let Some(r) = flag(&a.rest, "--report") {
+                if let Some(d) = std::path::Path::new(&r).parent() {
+                    let _ = std::fs::create_dir_all(d);
+                }
+                std::fs::write(&r, &tsv).unwrap_or_else(|e| die(e.to_string()));
+                println!("wrote {r}");
+            }
+            if sum.note.contains("VERIFY FAILED") {
+                std::process::exit(2);
+            }
+        }
         // sandbox <MAP|DIR> --out-dir DIR [--fill PlatformTechBase] [--fill-flags HEX] [--row N] [--uid-prefix Sbox]
         //   [--name-suffix " Sandbox"] [--unlock] [--unvalidated] [--keep-lightmap] [--keep-genealogy]
         //   [--out-name mapname] [--only ..] [--report R.tsv] [--inventory I.tsv] [--dry-run]

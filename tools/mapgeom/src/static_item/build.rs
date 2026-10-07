@@ -747,12 +747,57 @@ pub fn static_item_from_prefab_report(store: &mut crate::store::DataStore, prefa
     add_screen_logo_pictures(store, &mut m);
     m.darken_screen_faces();
     trigger_fx_pass(store, &mut m);
+    finish_item(m, ident, author, scale, collection)
+}
+
+/// The last step of every pack-item bake: assemble + write. Public so a caller can edit the
+/// `Merged` first (Hugo's flag finishes, 2026-10-07: a Finish waypoint with a box trigger).
+pub fn finish_item(mut m: Merged, ident: &str, author: &str, scale: f32, collection: u32) -> R<(Vec<u8>, Merged)> {
     let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, skin: m.skin.clone() };
     let f = assemble(&m, &opts)?;
     if let Some(n) = super::assemble::REPACK_NOTE.with(|c| c.get()) {
         m.notes.push(format!("lightmap atlas: {n} parts repacked into disjoint cells"));
     }
     Ok((super::write_file(&f), m))
+}
+
+/// Make a baked item a WAYPOINT with a BOX trigger over its own geometry (Hugo's "every
+/// flag is a finish", 2026-10-07 — the Manslaughter mechanism: the audience block's bbox as
+/// the finish volume). `wtype`: 0 Start, 1 Finish, 2 Checkpoint. The box = the item's
+/// visual+collision bounding box, grown by `pad` metres on every side, as a 12-triangle
+/// closed mesh with (physics 0, gameplay 0) ids — the canonical trigger form the game
+/// accepts from an item (`trigger_mesh`); spawn = the box's floor centre.
+pub fn make_waypoint_bbox(m: &mut Merged, wtype: i32, pad: f32, extra_points: &[[f32; 3]]) -> R<[f32; 6]> {
+    // the box spans the collision vertices AND the caller's geometry sample (the pack
+    // prefab's rendered points through `geom::Collector` — the merged visuals keep their
+    // part frames, so their own boxes are not in the item frame)
+    let mut pts: Vec<[f32; 3]> = m.surf_vertices.clone();
+    pts.extend_from_slice(extra_points);
+    if pts.len() < 2 {
+        return Err("no geometry to box".into());
+    }
+    let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+    for p in &pts {
+        for k in 0..3 {
+            lo[k] = lo[k].min(p[k]);
+            hi[k] = hi[k].max(p[k]);
+        }
+    }
+    let b = [lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]];
+    let (x0, y0, z0, x1, y1, z1) = (b[0] - pad, b[1] - pad, b[2] - pad, b[3] + pad, b[4] + pad, b[5] + pad);
+    let verts: Vec<[f32; 3]> = vec![[x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0], [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]];
+    // outward-facing quads (two triangles each)
+    let quads: [[u32; 4]; 6] = [[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4], [2, 3, 7, 6], [1, 2, 6, 5], [0, 4, 7, 3]];
+    let mut tris: Vec<super::surface::Triangle> = Vec::new();
+    for q in quads {
+        tris.push(super::surface::Triangle { indices: [q[0], q[1], q[2]], material_id: 0, gameplay: 0, surface_index: 0 });
+        tris.push(super::surface::Triangle { indices: [q[0], q[2], q[3]], material_id: 0, gameplay: 0, surface_index: 0 });
+    }
+    m.trigger = Some(super::surface::CPlugSurface::mesh(verts, tris, vec![0u16], [0.0, 0.0, 1.0]));
+    m.waypoint_type = Some(wtype);
+    m.spawn = [(x0 + x1) / 2.0, b[1], (z0 + z1) / 2.0];
+    m.notes.push(format!("waypoint type {wtype} with a bbox trigger {:.2}..{:.2} × {:.2}..{:.2} × {:.2}..{:.2} (pad {pad})", x0, x1, y0, y1, z0, z1));
+    Ok([x0, y0, z0, x1, y1, z1])
 }
 
 /// A Nadeo (or any) item that is already a static object, or a crystal item
@@ -1871,6 +1916,15 @@ pub fn static_item_from_pack_item_report(store: &mut crate::store::DataStore, it
 /// materials glow in it.
 #[allow(clippy::too_many_arguments)]
 pub fn static_item_from_pack_item_report_skin(store: &mut crate::store::DataStore, item_path: &str, ident: &str, author: &str, scale: f32, collection: u32, variant: usize, light_skin: Option<crate::light_skin::LightSkin>) -> R<(Vec<u8>, Merged)> {
+    let m = pack_item_merged(store, item_path, scale, collection, variant, light_skin)?;
+    if m.visuals.is_empty() && !m.veget.is_empty() {
+        return Ok((Vec::new(), m));
+    }
+    finish_item(m, ident, author, scale, collection)
+}
+
+/// A pack item baked to its `Merged` (everything but the assembly).
+pub fn pack_item_merged(store: &mut crate::store::DataStore, item_path: &str, scale: f32, collection: u32, variant: usize, light_skin: Option<crate::light_skin::LightSkin>) -> R<Merged> {
     let variants = pack_item_variants(store, item_path)?;
     let mut m = Merged::default();
     m.light_skin = light_skin;
@@ -1939,7 +1993,7 @@ pub fn static_item_from_pack_item_report_skin(store: &mut crate::store::DataStor
     // a prefab of tree entities and nothing else) has no mesh to bake; the
     // caller places its trees as stock items from `m.veget`.
     if m.visuals.is_empty() && !m.veget.is_empty() {
-        return Ok((Vec::new(), m));
+        return Ok(m);
     }
     // The gate sign panels' pictures (signlogo.rs), one per kind the item's
     // materials name; `sign_logo_material` re-points the panels at them.
@@ -1965,12 +2019,7 @@ pub fn static_item_from_pack_item_report_skin(store: &mut crate::store::DataStor
             m.pictures.push((skin.file(), skin.dds.to_vec()));
         }
     }
-    let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, skin: m.skin.clone() };
-    let f = assemble(&m, &opts)?;
-    if let Some(n) = super::assemble::REPACK_NOTE.with(|c| c.get()) {
-        m.notes.push(format!("lightmap atlas: {n} parts repacked into disjoint cells"));
-    }
-    Ok((super::write_file(&f), m))
+    Ok(m)
 }
 
 /// The waypoint type of a PACK item (its chunk 0x2E00201F: version, type).

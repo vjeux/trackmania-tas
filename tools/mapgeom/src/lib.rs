@@ -81,5 +81,6 @@ pub mod static_item;
 pub mod sttc;
 pub mod podium;
 pub mod sandbox;
+pub mod flags;
 
 pub use store::{DataStore, Model};
