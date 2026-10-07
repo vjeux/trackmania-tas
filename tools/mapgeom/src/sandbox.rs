@@ -144,9 +144,77 @@ pub fn item_height(ctx: &mut Ctx, model: &str) -> Option<f32> {
     }
 }
 
+/// Whether an item model is a RING — a circular gate (Hugo 02:21 PT: only rings sink
+/// halfway into the deck; arches, pole gates and frames stand on it). Read off the
+/// prefab's visual geometry in the item's x/y plane: a ring is as tall as it is wide
+/// (within 15 %) and its vertices sit in a thin annulus around the centre (0, h/2)
+/// — more than 60 % within ±15 % of the radius. The Fall 2026 gate items are 8–32 m
+/// wide and 9–11 m tall rectangular arches/frames: none is a ring.
+pub fn item_is_ring(ctx: &mut Ctx, model: &str) -> Option<(bool, String)> {
+    let refs = ctx.item_refs(model);
+    let prefab = refs.iter().find(|r| r.to_lowercase().ends_with(".prefab.gbx"))?.clone();
+    let cands: Vec<String> = if prefab.contains('\\') && !prefab.starts_with("Media\\") { vec![prefab.clone()] } else { ["Stadium", "BlueBay", "RedIsland", "WhiteShore", "GreenCoast"].iter().map(|c| format!("{c}\\{prefab}")).collect() };
+    let mut loaded = None;
+    for c in cands {
+        if let Ok(m) = ctx.store.load_model(&c) {
+            loaded = Some(m);
+            break;
+        }
+    }
+    let loaded = loaded?;
+    let mut c = crate::geom::Collector::new(ctx.store);
+    c.model(&loaded, &crate::geom::IDENTITY, 0);
+    let mut pts: Vec<[f32; 3]> = Vec::new();
+    for g in c.scene.groups.values() {
+        pts.extend(g.verts.iter().copied());
+    }
+    if pts.len() < 12 {
+        return None;
+    }
+    let (mut xlo, mut xhi, mut ylo, mut yhi) = (f32::INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::NEG_INFINITY);
+    for p in &pts {
+        xlo = xlo.min(p[0]);
+        xhi = xhi.max(p[0]);
+        ylo = ylo.min(p[1]);
+        yhi = yhi.max(p[1]);
+    }
+    let w = xhi - xlo;
+    let h = yhi - ylo;
+    let cx = (xlo + xhi) / 2.0;
+    let cy = (ylo + yhi) / 2.0;
+    let r = h.max(w) / 2.0;
+    // the annulus share, and whether every 30° sector of it is populated (a rectangular frame
+    // whose vertices happen to lie near the circle still leaves its lower-side sectors empty:
+    // GateSpecial8m is 8 × 9 m with 60 % of its vertices in the annulus and nothing at y 1..3)
+    let mut sectors = [0usize; 12];
+    let mut annulus = 0usize;
+    for p in &pts {
+        let (dx, dy) = (p[0] - cx, p[1] - cy);
+        let d = (dx * dx + dy * dy).sqrt();
+        if (d - r).abs() <= 0.15 * r {
+            annulus += 1;
+            let a = dy.atan2(dx).rem_euclid(2.0 * std::f32::consts::PI);
+            sectors[((a / (std::f32::consts::PI / 6.0)) as usize).min(11)] += 1;
+        }
+    }
+    let frac = annulus as f32 / pts.len() as f32;
+    let square = (w - h).abs() <= 0.15 * w.max(h);
+    let min_sector = annulus / 100; // 1 % of the annulus vertices per sector
+    let all_round = annulus > 0 && sectors.iter().all(|n| *n > min_sector);
+    let is_ring = square && frac > 0.6 && all_round;
+    Some((is_ring, format!("w {w:.1} h {h:.1} annulus {:.0} % sectors {}/12", frac * 100.0, sectors.iter().filter(|n| **n > min_sector).count())))
+}
+
 /// Whether the collection's base row is WATER (the most common genealogy zone names water):
 /// then blocks are built one row up, on top of the water (Hugo: "build on top of the water").
 pub fn water_base(m: &MapFile) -> Option<String> {
+    // the four vista collections' ambient terrain IS water (BlueBay Sea, RedIsland / WhiteShore
+    // Water, GreenCoast Lake): every map of theirs is an island in it, whatever its own zone
+    // histogram says (16 has more Dirt than Water cells) — a per-collection fact, not per map
+    let coll = m.body_collections().map(|c| c[0].1).unwrap_or(26);
+    if !matches!(coll, 0x10 | 0x1c | 0x1d | 0xf) {
+        return None;
+    }
     let chunks = tmmaps::gbx::all_skip_chunks(&m.gbx.body);
     let &(_, _, payload, size) = chunks.iter().find(|(c, ..)| *c == 0x0304_3043)?;
     let recs = tmmaps::map::genealogy_full(&m.gbx.body[payload..payload + size]).ok()?;
@@ -154,13 +222,9 @@ pub fn water_base(m: &MapFile) -> Option<String> {
     for r in &recs {
         *hist.entry(r.current.clone()).or_default() += 1;
     }
-    let (zone, _) = hist.iter().max_by_key(|(_, n)| **n)?;
-    let z = zone.to_lowercase();
-    if z.contains("water") || z.contains("sea") || z.contains("lake") {
-        Some(zone.clone())
-    } else {
-        None
-    }
+    // the water zone the map carries (the most common of Sea / Water / Lake)
+    let water = ["Sea", "Water", "Lake"].iter().filter_map(|z| hist.get(*z).map(|n| (*n, z.to_string()))).max().map(|(_, z)| z);
+    Some(water.unwrap_or_else(|| match coll { 0x1c => "Sea".into(), 0xf => "Lake".into(), _ => "Water".into() }))
 }
 
 pub struct InvRow {
@@ -304,6 +368,11 @@ pub fn sandbox(ctx: &mut Ctx, src: &Path, out: &Path, o: &SandboxOpts, dry: bool
     let base_row = ground_row(&m);
     let water = water_base(&m);
     let row = o.row.unwrap_or(if water.is_some() { base_row + 1 } else { base_row });
+    // the deck's variant: GROUND (0x1000) when it sits on the collection's ground row, AIR (0) when it
+    // floats over the water — the AIR variant's unit carries the bottom clip (PlatFormBaseFCB) the engine
+    // derives at load, which draws the underside (Hugo 02:21 PT: "from below the faces are missing";
+    // source 11's floating PlatformTechBase records are flags 0 with a PlatformBaseFCB under each)
+    let fill_flags = if row > base_row { o.fill_flags & !0x1000 } else { o.fill_flags | 0x1000 };
     let size = m.size;
     let coll = m.body_collections().map(|c| c[0].1).unwrap_or(26);
     let ground = tmmaps::map::ground_y(coll);
@@ -355,6 +424,7 @@ pub fn sandbox(ctx: &mut Ctx, src: &Path, out: &Path, o: &SandboxOpts, dry: bool
     // (index, new pos, new rotation [yaw, pitch, roll])
     let mut keep_items: Vec<(usize, [f32; 3], [f32; 3])> = Vec::new();
     let mut heights: HashMap<String, Option<f32>> = HashMap::new();
+    let mut rings: HashMap<String, Option<(bool, String)>> = HashMap::new();
     for r in inv.iter().filter(|r| r.kind == "item") {
         let mut row_r = Row::new(&map_label, "sandbox", "item", r.index, &r.model);
         row_r.tag = r.tag.clone().unwrap_or_default();
@@ -368,12 +438,15 @@ pub fn sandbox(ctx: &mut Ctx, src: &Path, out: &Path, o: &SandboxOpts, dry: bool
                 // a START gate spawns the car at its ORIGIN plane (the SSpawn entity at local (0,0,−10.6)):
                 // sunk, it would spawn the car inside the platform — a start item stays on the deck
                 let is_start = matches!(c, Class::Waypoint(t) if *t == crate::sttc::WP_START || *t == crate::sttc::WP_STARTFINISH);
-                let h = if o.sink_items && !is_start { *heights.entry(r.model.clone()).or_insert_with(|| item_height(ctx, &r.model)) } else { None };
-                let (y, how) = match (o.sink_items, h) {
-                    (true, Some(h)) => (platform_top - h / 2.0, format!("half-sunk: model height {h:.2} m, origin at deck − {:.2}", h / 2.0)),
-                    (true, None) if is_start => (platform_top, "ON the deck (a start gate spawns the car at its origin plane — not sunk)".to_string()),
-                    (true, None) => (platform_top, "ON the deck (model height unreadable — not sunk)".to_string()),
-                    (false, _) => (platform_top, "on the deck".to_string()),
+                // only a RING sinks (Hugo 02:21 PT); arches / pole gates / frames stand on the deck
+                let ring = if o.sink_items && !is_start { rings.entry(r.model.clone()).or_insert_with(|| item_is_ring(ctx, &r.model)).clone() } else { None };
+                let is_ring = ring.as_ref().map(|(b, _)| *b).unwrap_or(false);
+                let h = if is_ring { *heights.entry(r.model.clone()).or_insert_with(|| item_height(ctx, &r.model)) } else { None };
+                let (y, how) = match (is_ring, h) {
+                    (true, Some(h)) => (platform_top - h / 2.0, format!("RING ({}): half-sunk, model height {h:.2} m, origin at deck − {:.2}", ring.as_ref().map(|(_, d)| d.as_str()).unwrap_or(""), h / 2.0)),
+                    (true, None) => (platform_top, "RING but height unreadable: on the deck".to_string()),
+                    (false, _) if is_start => (platform_top, "on the deck (a start gate spawns the car at its origin plane)".to_string()),
+                    (false, _) => (platform_top, format!("on the deck (not a ring{})", ring.as_ref().map(|(_, d)| format!(": {d}")).unwrap_or_default())),
                 };
                 let np = [r.pos[0], y, r.pos[2]];
                 let nrot = if o.sink_items { [r.yaw, 0.0, 0.0] } else { [r.yaw, r.pitch, r.roll] };
@@ -408,7 +481,7 @@ pub fn sandbox(ctx: &mut Ctx, src: &Path, out: &Path, o: &SandboxOpts, dry: bool
         let mut r = Row::new(&map_label, "sandbox", "map", 0, &new_name);
         r.action = "identity".into();
         r.to_name = new_uid.clone();
-        r.note = format!("row {row} (base row {base_row}{}; deck y {platform_top}); fill {} × {}; {} kept blocks, {} kept items; {} blocks / {} items / {} generated records removed; no-twin models: {}; genealogy: {}", match &water { Some(z) => format!(", a WATER collection ({z}): built one row up, on top of the water"), None => String::new() }, fill.len(), o.fill, kept_blocks, kept_items, removed_blocks, removed_items, removed_baked, if no_twin.is_empty() { "none".to_string() } else { no_twin.join(", ") }, if water.is_some() { "filled with the water zone in every cell (the empty-vista form)" } else if o.clear_genealogy { "cleared" } else { "kept (land collection)" });
+        r.note = format!("row {row} (base row {base_row}{}; deck y {platform_top}; {} variant); fill {} × {}; {} kept blocks, {} kept items; {} blocks / {} items / {} generated records removed; no-twin models: {}; genealogy: {}", match &water { Some(z) => format!(", a WATER collection ({z}): built one row up, on top of the water"), None => String::new() }, if fill_flags & 0x1000 != 0 { "GROUND" } else { "AIR (bottom clip)" }, fill.len(), o.fill, kept_blocks, kept_items, removed_blocks, removed_items, removed_baked, if no_twin.is_empty() { "none".to_string() } else { no_twin.join(", ") }, if water.is_some() { "filled with the water zone in every cell (the empty-vista form)" } else if o.clear_genealogy { "cleared" } else { "kept (land collection)" });
         rows.push(r);
     }
     let inventory = inventory_tsv(&map_label, &inv);
@@ -443,7 +516,7 @@ pub fn sandbox(ctx: &mut Ctx, src: &Path, out: &Path, o: &SandboxOpts, dry: bool
         let mut m2 = MapFile::try_load(out)?;
         let fill_specs: Vec<tmmaps::map::FreeBlockSpec> = fill
             .iter()
-            .map(|(cx, cz)| tmmaps::map::FreeBlockSpec { name: o.fill.clone(), author: None, flags: o.fill_flags, pos: [0.0; 3], rot: [0.0; 3], grid: Some([*cx, row, *cz]), dir: 0 })
+            .map(|(cx, cz)| tmmaps::map::FreeBlockSpec { name: o.fill.clone(), author: None, flags: fill_flags, pos: [0.0; 3], rot: [0.0; 3], grid: Some([*cx, row, *cz]), dir: 0 })
             .collect();
         let to_grid: Vec<(usize, [i32; 3])> = keep_blocks.iter().filter(|k| k.5).map(|k| (k.0, [k.2 .0, k.2 .1, k.2 .2])).collect();
         m2.remove_and_add_blocks_ext2(|b| !kept_set.contains(&b.index), |_| true, &fill_specs, &[], &to_grid);
@@ -467,7 +540,7 @@ pub fn sandbox(ctx: &mut Ctx, src: &Path, out: &Path, o: &SandboxOpts, dry: bool
                 m3.set_block_dir(new_index, k.3);
             }
             // the ground-variant bit: the fill's convention (the twin sits on the same row)
-            let want = (b.flags & !0x1000) | (o.fill_flags & 0x1000);
+            let want = (b.flags & !0x1000) | (fill_flags & 0x1000);
             if want != b.flags {
                 m3.set_block_flags(new_index, want);
             }
