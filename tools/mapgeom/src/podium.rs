@@ -63,8 +63,8 @@ pub struct PodiumOutcome {
     pub start_pos: [f32; 3],
     pub start_yaw: f32,
     pub car_pos: [f32; 3],
-    pub start_block: Option<(usize, String, String)>,
-    pub start_item: Option<(usize, String, String)>,
+    pub start_block: Option<(usize, String, String, u8)>,
+    pub start_item: Option<(usize, String, String, f32)>,
     pub new_item_index: usize,
     pub new_name: String,
     pub new_uid: String,
@@ -72,7 +72,38 @@ pub struct PodiumOutcome {
 
 /// The pack's finish twin of a start model: `Start` → `Finish` in the name,
 /// verified to exist with waypoint type Finish.
-fn finish_twin_block(ctx: &mut Ctx, name: &str) -> Result<String, String> {
+/// The side faces (N E S W = 0..3) of a block info's base ground variant that carry
+/// a road clip — the faces the piece connects through.
+fn road_faces(ctx: &mut Ctx, name: &str) -> Result<Vec<usize>, String> {
+    let Some(path) = ctx.idx.resolve_one(ctx.store, name) else {
+        return Err(format!("{name}: not in the pack"));
+    };
+    let bi = ctx.idx.load(ctx.store, &path).map_err(|e| format!("{name}: {e}"))?;
+    let v = bi.variant_base_ground.as_ref().or(bi.variant_base_air.as_ref()).ok_or_else(|| format!("{name}: no base variant"))?;
+    let mut faces: Vec<usize> = Vec::new();
+    for u in &v.block_units {
+        for f in 0..4 {
+            if !u.clips[f].is_empty() && !faces.contains(&f) {
+                faces.push(f);
+            }
+        }
+    }
+    faces.sort_unstable();
+    Ok(faces)
+}
+
+/// The pack's finish twin of a start block — `Start` → `Finish` in the name, verified
+/// to exist with waypoint type Finish — and the QUARTER TURNS that put the finish's
+/// open side where the start's is (Hugo round 3, 2026-10-05: on 01 the finish "should
+/// be flipped towards the road"). The block infos say why: every Nadeo start spawns
+/// the car facing LOCAL +z (spawn_loc (16, y, 16) yaw 0, the open road face North),
+/// every Nadeo finish takes the car from local −z (its trigger plane at local z = 3,
+/// the open road face South): the finish's "forward" is the start's backward, so the
+/// finish stands in the start's orientation after a HALF TURN — for the one-sided road
+/// pieces (North ↔ South clips) and the four-sided platforms alike. The road-clip
+/// check is the proof where the clips can tell: the turned finish's faces must be the
+/// start's. Returns (twin, quarter turns, why).
+fn finish_twin_block(ctx: &mut Ctx, name: &str) -> Result<(String, u8, String), String> {
     if !name.contains("Start") {
         return Err(format!("{name}: no `Start` in the name"));
     }
@@ -84,33 +115,54 @@ fn finish_twin_block(ctx: &mut Ctx, name: &str) -> Result<String, String> {
     if bi.waypoint_type != Some(WP_FINISH) {
         return Err(format!("{cand}: waypoint type {:?}, not Finish", bi.waypoint_type));
     }
-    Ok(cand)
+    let sf = road_faces(ctx, name)?;
+    let ff = road_faces(ctx, &cand)?;
+    let names = |v: &[usize]| v.iter().map(|f| crate::blockinfo::SIDE_NAMES[*f]).collect::<Vec<_>>().join("+");
+    let turn = 2u8;
+    let mut turned: Vec<usize> = ff.iter().map(|f| (f + turn as usize) % 4).collect();
+    turned.sort_unstable();
+    if turned != sf {
+        return Err(format!("{cand}: its road faces {} turned by {turn} quarters are not {name}'s {}", names(&ff), names(&sf)));
+    }
+    Ok((cand, turn, format!("start faces {} / finish faces {} -> {} quarter turn(s) (the finish's trigger side −z onto the start's spawn side +z)", names(&sf), names(&ff), turn)))
 }
 
-/// A start GATE item's finish twin: the pack has `GateStart{Left,Center,Right}{8,16,32}m`
-/// but only `GateFinish{8,16,32}m` (both poles) and `GateFinishCenter{8,16,32}m[v2]`
-/// (poleless) — so every start gate of width W becomes `GateFinishCenter{W}mv2` (the
-/// Fall 2026 finishes' own generation), else the v1 centre, else `GateFinish{W}m`,
-/// else the plain `Start`→`Finish` spelling.
-fn finish_twin_item(ctx: &mut Ctx, model: &str) -> Result<String, String> {
-    if !model.contains("Start") {
-        return Err(format!("{model}: no `Start` in the name"));
+/// A start GATE item's finish twin, 1:1 in width AND pole side (Hugo, round 2).
+/// The pack's finish gates (measured on the prefabs' collision meshes, 2026-10-05):
+/// `GateFinish{8,16,32}m` has ONE pole on the −x side — the side `GateStartRight{W}m`'s
+/// pole is on — and is front/back symmetric (97 % of its visual vertices mirror in z),
+/// `GateFinishCenter{W}m[v2]` has none; there is no two-pole and no +x-pole finish.
+/// So: Right → `GateFinish{W}m` as is; Left → `GateFinish{W}m` turned half a turn (the
+/// pole lands on +x, the arch — symmetric about the pivot — stays put, the gate reads
+/// the same from both sides); Center → `GateFinishCenter{W}m` (the plain name twin).
+/// Returns (model, extra yaw).
+fn finish_twin_item(ctx: &mut Ctx, model: &str) -> Result<(String, f32), String> {
+    let stem = model.trim_end_matches(".Item.Gbx");
+    let Some(rest) = stem.strip_prefix("GateStart") else {
+        return Err(format!("{model}: not a GateStart* gate item"));
+    };
+    let (side, width) = ["Left", "Center", "Right"].iter().find_map(|s| rest.strip_prefix(s).map(|w| (*s, w.to_string()))).ok_or_else(|| format!("{model}: no Left/Center/Right side in the name"))?;
+    let (cand, turn) = match side {
+        "Center" => (format!("GateFinishCenter{width}"), 0.0f32),
+        "Right" => (format!("GateFinish{width}"), 0.0),
+        _ => (format!("GateFinish{width}"), std::f32::consts::PI),
+    };
+    match ctx.item_wp(&cand) {
+        (Some(WP_FINISH), _) => Ok((cand, turn)),
+        (other, resolved) => Err(format!("{cand}: {}", if resolved { format!("waypoint type {other:?}, not Finish") } else { "not in any pack".into() })),
     }
-    let mut cands: Vec<String> = Vec::new();
-    if let Some(w) = model.trim_end_matches('m').rsplit(|c: char| !c.is_ascii_digit()).next().filter(|w| !w.is_empty()) {
-        cands.push(format!("GateFinishCenter{w}mv2"));
-        cands.push(format!("GateFinishCenter{w}m"));
-        cands.push(format!("GateFinish{w}m"));
+}
+
+/// An angle wrapped into (−π, π].
+fn wrap_pi(a: f32) -> f32 {
+    let mut a = a;
+    while a > std::f32::consts::PI {
+        a -= 2.0 * std::f32::consts::PI;
     }
-    cands.push(model.replacen("Start", "Finish", 1));
-    let mut tried = Vec::new();
-    for cand in cands {
-        match ctx.item_wp(&cand) {
-            (Some(WP_FINISH), _) => return Ok(cand),
-            (other, resolved) => tried.push(format!("{cand} ({})", if resolved { format!("type {other:?}") } else { "absent".into() })),
-        }
+    while a <= -std::f32::consts::PI {
+        a += 2.0 * std::f32::consts::PI;
     }
-    Err(format!("{model}: no finish gate twin — tried {}", tried.join(", ")))
+    a
 }
 
 fn rot_apply(rot: [f32; 3], v: [f32; 3]) -> [f32; 3] {
@@ -191,8 +243,8 @@ pub fn podium_reverse(ctx: &mut Ctx, src: &Path, out: &Path, o: &PodiumOpts, dry
         rows.push(r);
     }
     // ---- the start → finish
-    let mut start_block: Option<(usize, String, String)> = None;
-    let mut start_item: Option<(usize, String, String)> = None;
+    let mut start_block: Option<(usize, String, String, u8)> = None;
+    let mut start_item: Option<(usize, String, String, f32)> = None;
     let mut starts = 0usize;
     for (i, b) in m.blocks.clone().iter().enumerate() {
         if b.flags == 0xFFFF_FFFF {
@@ -202,22 +254,25 @@ pub fn podium_reverse(ctx: &mut Ctx, src: &Path, out: &Path, o: &PodiumOpts, dry
         match c.effective() {
             Some(WP_START) => {
                 starts += 1;
-                let twin = finish_twin_block(ctx, &b.name)?;
+                let (twin, turn, why) = finish_twin_block(ctx, &b.name)?;
+                if b.free_pos.is_some() && turn != 0 {
+                    return Err(format!("{map_label}: block#{i} {} is FREE-placed and its finish twin needs a {turn}-quarter turn about its own cell — not handled", b.name));
+                }
                 let mut r = Row::new(&map_label, "podium", "block", i, &b.name);
                 r.tag = b.waypoint_tag.clone().unwrap_or_default();
                 r.model_wp = wp_str(c.model);
                 r.action = "start-to-finish".into();
                 r.to_name = twin.clone();
                 r.dir_from = b.dir.to_string();
-                r.dir_to = b.dir.to_string();
+                r.dir_to = ((b.dir + turn) & 3).to_string();
                 r.from = match b.free_pos {
                     Some(p) => format!("free {}", pos_str(p)),
                     None => cell_str(b.coords()),
                 };
                 r.to = r.from.clone();
-                r.note = format!("flags {:08X} kept; waypoint node tag Spawn -> Goal", b.flags);
+                r.note = format!("flags {:08X} kept (colour / lightmap-quality bytes untouched: same record); waypoint node tag Spawn -> Goal; {why}", b.flags);
                 rows.push(r);
-                start_block = Some((i, b.name.clone(), twin));
+                start_block = Some((i, b.name.clone(), twin, turn));
             }
             Some(WP_STARTFINISH) => return Err(format!("{map_label}: block#{i} {} is a StartFinish (multilap) — not handled", b.name)),
             _ => {}
@@ -228,17 +283,17 @@ pub fn podium_reverse(ctx: &mut Ctx, src: &Path, out: &Path, o: &PodiumOpts, dry
         match c.effective() {
             Some(WP_START) => {
                 starts += 1;
-                let twin = finish_twin_item(ctx, &it.model)?;
+                let (twin, turn) = finish_twin_item(ctx, &it.model)?;
                 let mut r = Row::new(&map_label, "podium", "item", i, &it.model);
                 r.tag = it.waypoint_tag.clone().unwrap_or_default();
                 r.model_wp = wp_str(c.model);
                 r.action = "start-to-finish".into();
                 r.to_name = twin.clone();
-                r.from = pos_str(it.pos);
-                r.to = r.from.clone();
-                r.note = "model renamed in place; tag Spawn -> Goal".into();
+                r.from = format!("{} yaw {:.4}", pos_str(it.pos), it.yaw);
+                r.to = format!("{} yaw {:.4}", pos_str(it.pos), wrap_pi(it.yaw + turn));
+                r.note = format!("model renamed in place; tag Spawn -> Goal{}", if turn != 0.0 { "; turned half a turn (the finish gate's single pole is on the −x side, the Left start's on +x; the gate is front/back symmetric)" } else { "" });
                 rows.push(r);
-                start_item = Some((i, it.model.clone(), twin));
+                start_item = Some((i, it.model.clone(), twin, turn));
             }
             Some(WP_STARTFINISH) => return Err(format!("{map_label}: item#{i} {} is a StartFinish — not handled", it.model)),
             _ => {}
@@ -290,7 +345,7 @@ pub fn podium_reverse(ctx: &mut Ctx, src: &Path, out: &Path, o: &PodiumOpts, dry
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
     // pass 1 (splices + patches, no rename): the start block's tag, the ghost, the times, the lock
-    if let Some((i, _, _)) = &start_block {
+    if let Some((i, _, _, _)) = &start_block {
         if !m.set_block_waypoint_tag(*i, "Goal") {
             return Err(format!("{map_label}: block#{i}: the waypoint node is not the plain layout (skinned or shared) — tag not rewritten"));
         }
@@ -306,11 +361,19 @@ pub fn podium_reverse(ctx: &mut Ctx, src: &Path, out: &Path, o: &PodiumOpts, dry
     // pass 2 (renames: the Id table): the block twin, the item twin
     if start_block.is_some() || start_item.is_some() {
         let mut m2 = MapFile::try_load(out)?;
-        if let Some((i, _, twin)) = &start_block {
+        if let Some((i, _, twin, turn)) = &start_block {
             m2.set_block_name(*i, twin);
+            if *turn != 0 {
+                let d = m2.blocks[*i].dir;
+                m2.set_block_dir(*i, (d + turn) & 3);
+            }
         }
-        if let Some((i, _, twin)) = &start_item {
+        if let Some((i, _, twin, turn)) = &start_item {
             m2.set_item_model(*i, twin);
+            if *turn != 0.0 {
+                let y = m2.items[*i].yaw;
+                m2.set_item_yaw(*i, wrap_pi(y + turn));
+            }
         }
         m2.write_to(out).map_err(|e| e.to_string())?;
     }
@@ -321,7 +384,7 @@ pub fn podium_reverse(ctx: &mut Ctx, src: &Path, out: &Path, o: &PodiumOpts, dry
         if h + b == 0 {
             return Err(format!("{map_label}: the map does not declare the name {:?}", hdr.name));
         }
-        if let Some((i, _, _)) = &start_item {
+        if let Some((i, _, _, _)) = &start_item {
             m3.set_item_waypoint(*i, Some("Goal"), 0);
         }
         m3.write_to(out).map_err(|e| e.to_string())?;
@@ -380,11 +443,19 @@ pub fn verify_podium(src: &Path, out: &Path, oc: &PodiumOutcome, o: &PodiumOpts)
         bad.push(format!("item count {} -> {} (want +1)", a.items.len(), b.items.len()));
     }
     for (i, (x, y)) in a.blocks.iter().zip(b.blocks.iter()).enumerate() {
-        let is_start = oc.start_block.as_ref().map(|(k, _, _)| *k == i).unwrap_or(false);
+        let is_start = oc.start_block.as_ref().map(|(k, _, _, _)| *k == i).unwrap_or(false);
         let want_name = if is_start { oc.start_block.as_ref().unwrap().2.as_str() } else { x.name.as_str() };
         let want_tag = if is_start { Some("Goal".to_string()) } else { x.waypoint_tag.clone() };
-        if y.name != want_name || y.dir != x.dir || y.flags != x.flags || y.coords() != x.coords() || y.free_pos != x.free_pos || y.free_rot != x.free_rot || y.waypoint_tag != want_tag {
-            bad.push(format!("block#{i} {} -> {} differs (tag {:?} -> {:?}, flags {:08X} -> {:08X})", x.name, y.name, x.waypoint_tag, y.waypoint_tag, x.flags, y.flags));
+        let want_dir = if is_start { (x.dir + oc.start_block.as_ref().unwrap().3) & 3 } else { x.dir };
+        if y.name != want_name || y.dir != want_dir || y.flags != x.flags || y.coords() != x.coords() || y.free_pos != x.free_pos || y.free_rot != x.free_rot || y.waypoint_tag != want_tag {
+            bad.push(format!("block#{i} {} -> {} differs (tag {:?} -> {:?}, flags {:08X} -> {:08X}, dir {} -> {} want {})", x.name, y.name, x.waypoint_tag, y.waypoint_tag, x.flags, y.flags, x.dir, y.dir, want_dir));
+        }
+    }
+    // the side tables ride with the record: the colour and lightmap-quality bytes of every block/item are unchanged
+    if let (Some(ca), Some(cb)) = (a.colors(), b.colors()) {
+        let na = a.blocks.len() + a.baked.len() + a.items.len();
+        if cb.bytes.len() < na || ca.bytes[..na] != cb.bytes[..na] {
+            bad.push("the colour bytes (0x03043062) of the kept records changed".into());
         }
     }
     for (x, y) in a.baked.iter().zip(b.baked.iter()) {
@@ -394,11 +465,12 @@ pub fn verify_podium(src: &Path, out: &Path, oc: &PodiumOutcome, o: &PodiumOpts)
         }
     }
     for (i, (x, y)) in a.items.iter().zip(b.items.iter()).enumerate() {
-        let is_start = oc.start_item.as_ref().map(|(k, _, _)| *k == i).unwrap_or(false);
+        let is_start = oc.start_item.as_ref().map(|(k, _, _, _)| *k == i).unwrap_or(false);
         let want_model = if is_start { oc.start_item.as_ref().unwrap().2.as_str() } else { x.model.as_str() };
         let want_tag = if is_start { Some("Goal".to_string()) } else { x.waypoint_tag.clone() };
-        if y.model != want_model || y.pos != x.pos || (y.yaw - x.yaw).abs() > 1e-6 || y.waypoint_tag != want_tag || y.coords() != x.coords() {
-            bad.push(format!("item#{i} {} -> {} differs (tag {:?} -> {:?})", x.model, y.model, x.waypoint_tag, y.waypoint_tag));
+        let want_yaw = if is_start { wrap_pi(x.yaw + oc.start_item.as_ref().unwrap().3) } else { x.yaw };
+        if y.model != want_model || y.pos != x.pos || (y.yaw - want_yaw).abs() > 1e-5 || y.waypoint_tag != want_tag || y.coords() != x.coords() {
+            bad.push(format!("item#{i} {} -> {} differs (tag {:?} -> {:?}, yaw {:.4} -> {:.4} want {:.4})", x.model, y.model, x.waypoint_tag, y.waypoint_tag, x.yaw, y.yaw, want_yaw));
         }
     }
     if let Some(n) = b.items.get(oc.new_item_index) {
@@ -487,8 +559,8 @@ pub fn pipeline(store: &mut crate::store::DataStore, src: &Path, out_dir: &Path,
         s.removed_blocks,
         s.removed_items,
         s.removed_baked,
-        p.start_block.as_ref().map(|(_, a, _)| a.clone()).or_else(|| p.start_item.as_ref().map(|(_, a, _)| a.clone())).unwrap_or_default(),
-        p.start_block.as_ref().map(|(_, _, t)| t.clone()).or_else(|| p.start_item.as_ref().map(|(_, _, t)| t.clone())).unwrap_or_default(),
+        p.start_block.as_ref().map(|(_, a, _, _)| a.clone()).or_else(|| p.start_item.as_ref().map(|(_, a, _, _)| a.clone())).unwrap_or_default(),
+        p.start_block.as_ref().map(|(_, _, t, turn)| if *turn != 0 { format!("{t} (dir +{turn})") } else { t.clone() }).or_else(|| p.start_item.as_ref().map(|(_, _, t, turn)| if *turn != 0.0 { format!("{t} (turned)") } else { t.clone() })).unwrap_or_default(),
         o.podium.start_item,
         pos_str(p.start_pos),
         p.start_yaw,
@@ -521,12 +593,12 @@ pub fn pipeline(store: &mut crate::store::DataStore, src: &Path, out_dir: &Path,
         rr.note = if rc.residue_stale == 0 && rc.residue_missing == 0 { "reconciled".into() } else { "RESIDUE".into() };
         // the object map: the strip rows (sttf vocabulary) + the start swap as "replaced" rows
         let mut swap_rows: Vec<Row> = Vec::new();
-        if let Some((i, a, _)) = &p.start_block {
+        if let Some((i, a, _, _)) = &p.start_block {
             let mut x = Row::new(&stem, "sttf", "block", *i, a);
             x.action = "replaced".into();
             swap_rows.push(x);
         }
-        if let Some((i, a, _)) = &p.start_item {
+        if let Some((i, a, _, _)) = &p.start_item {
             let mut x = Row::new(&stem, "sttf", "item", *i, a);
             x.action = "replaced".into();
             swap_rows.push(x);
