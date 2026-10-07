@@ -2643,6 +2643,108 @@ fn main() {
         // sttc MAP|DIR --out-dir DIR [center-finish flags] [--dry-run] [--report R.tsv]:
         // both steps per map (a directory = every *.Map.Gbx in it, sorted);
         // outputs DIR/sttf/<stem>.sttf.Map.Gbx and DIR/<stem>-Straight-to-the-Center.Map.Gbx
+        // dyna-frames <Flag.DynaObject.Gbx path> [--prefab-pos X,Y,Z --prefab-rot QX,QY,QZ,QW]: every vertex-animation
+        // frame of a dyna mesh (the flag cloth: 86 frames) → per frame the bbox in the given frame; the union bbox
+        "dyna-frames" => {
+            let mut store = open(&a);
+            let p = a.rest.get(1).cloned().unwrap_or_else(|| die("dyna-frames PATH".into()));
+            let mut mg = mapgeom::static_item::build::Merged::default();
+            let src = mapgeom::static_item::build::load_dyna_source(&mut store, &p, &mut mg, true).unwrap_or_else(die);
+            let pos: [f32; 3] = flag(&a.rest, "--prefab-pos").map(|v| { let f: Vec<f32> = v.split(',').map(|x| x.parse().unwrap()).collect(); [f[0], f[1], f[2]] }).unwrap_or([0.0; 3]);
+            let q: [f32; 4] = flag(&a.rest, "--prefab-rot").map(|v| { let f: Vec<f32> = v.split(',').map(|x| x.parse().unwrap()).collect(); [f[0], f[1], f[2], f[3]] }).unwrap_or([0.0, 0.0, 0.0, 1.0]);
+            // quaternion → rotation (x,y,z,w)
+            let (x, y, z, w) = (q[0], q[1], q[2], q[3]);
+            let rot = |v: [f32; 3]| -> [f32; 3] {
+                let (vx, vy, vz) = (v[0], v[1], v[2]);
+                // v' = v + 2w(q×v) + 2 q×(q×v)
+                let (cx, cy, cz) = (y * vz - z * vy, z * vx - x * vz, x * vy - y * vx);
+                let (dx, dy, dz) = (y * cz - z * cy, z * cx - x * cz, x * cy - y * cx);
+                [vx + 2.0 * (w * cx + dx) + pos[0], vy + 2.0 * (w * cy + dy) + pos[1], vz + 2.0 * (w * cz + dz) + pos[2]]
+            };
+            for vr in &src.s2.visuals {
+                let Some(mapgeom::static_item::Node::Visual(v)) = vr.inline.as_deref() else { continue };
+                let Some(main) = v.main.as_ref() else { continue };
+                let Some(mapgeom::static_item::Node::VertexStream(st)) = main.vertex_streams.first().and_then(|r| r.inline.as_deref()) else { continue };
+                let Some(mapgeom::static_item::vstream::Elem::Float3(pts)) = st.elems.first() else { continue };
+                let nf = v.sub_visuals.len().max(1);
+                let per = pts.len() / nf;
+                println!("visual: {} vertices, {} frames x {} ({} tris)", pts.len(), nf, per, v.index_buffer.as_ref().map(|b| b.indices.len() / 3).unwrap_or(0));
+                let (mut ulo, mut uhi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+                for f in 0..nf {
+                    let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+                    for pnt in &pts[f * per..(f + 1) * per] {
+                        let w = rot(*pnt);
+                        for k in 0..3 {
+                            lo[k] = lo[k].min(w[k]);
+                            hi[k] = hi[k].max(w[k]);
+                            ulo[k] = ulo[k].min(w[k]);
+                            uhi[k] = uhi[k].max(w[k]);
+                        }
+                    }
+                    if f % 10 == 0 || f == nf - 1 {
+                        println!("  frame {f:3}: x {:.2}..{:.2}  y {:.2}..{:.2}  z {:.2}..{:.2}", lo[0], hi[0], lo[1], hi[1], lo[2], hi[2]);
+                    }
+                }
+                println!("  UNION: x {:.3}..{:.3}  y {:.3}..{:.3}  z {:.3}..{:.3}", ulo[0], uhi[0], ulo[1], uhi[1], ulo[2], uhi[2]);
+                // the TIME-AVERAGED cloth (per-vertex mean over the frames): its bbox, and its top/bottom edge
+                // tilt (max/min y per z bin) — the "stationary flag" rectangle Hugo describes
+                {
+                    let mut mean: Vec<[f32; 3]> = vec![[0.0; 3]; per];
+                    for f in 0..nf {
+                        for (k, pnt) in pts[f * per..(f + 1) * per].iter().enumerate() {
+                            let w = rot(*pnt);
+                            for c in 0..3 {
+                                mean[k][c] += w[c] / nf as f32;
+                            }
+                        }
+                    }
+                    let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+                    for w in &mean {
+                        for c in 0..3 {
+                            lo[c] = lo[c].min(w[c]);
+                            hi[c] = hi[c].max(w[c]);
+                        }
+                    }
+                    println!("  TIME-AVERAGE cloth: x {:.3}..{:.3}  y {:.3}..{:.3}  z {:.3}..{:.3}", lo[0], hi[0], lo[1], hi[1], lo[2], hi[2]);
+                    let mut bins: std::collections::BTreeMap<i32, (f32, f32)> = std::collections::BTreeMap::new();
+                    for w in &mean {
+                        let e = bins.entry((w[2] * 2.0).round() as i32).or_insert((f32::INFINITY, f32::NEG_INFINITY));
+                        e.0 = e.0.min(w[1]);
+                        e.1 = e.1.max(w[1]);
+                    }
+                    for (b, (ylo, yhi)) in &bins {
+                        println!("    z {:.1}: y {:.2}..{:.2}  (height {:.2})", *b as f32 / 2.0, ylo, yhi, yhi - ylo);
+                    }
+                    // least-squares tilt of the top and bottom edges over z
+                    let fit = |sel: &dyn Fn(&(f32, f32)) -> f32| -> (f32, f32) {
+                        let n = bins.len() as f32;
+                        let (mut sx, mut sy, mut sxx, mut sxy) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+                        for (b, e) in &bins {
+                            let x = *b as f32 / 2.0;
+                            let y = sel(e);
+                            sx += x; sy += y; sxx += x * x; sxy += x * y;
+                        }
+                        let slope = (n * sxy - sx * sy) / (n * sxx - sx * sx);
+                        (slope, (sy - slope * sx) / n)
+                    };
+                    let (st, bt) = fit(&|e| e.1);
+                    let (sb, bb) = fit(&|e| e.0);
+                    println!("    top edge: y = {bt:.2} + {st:.3}·z (tilt {:.1}° down); bottom edge: y = {bb:.2} + {sb:.3}·z (tilt {:.1}° down)", (-st).atan().to_degrees(), (-sb).atan().to_degrees());
+                }
+                if flag(&a.rest, "--profile").is_some() {
+                    for f in [0usize, nf / 4, nf / 2, 3 * nf / 4] {
+                        let mut ws: Vec<[f32; 3]> = pts[f * per..(f + 1) * per].iter().map(|p| rot(*p)).collect();
+                        ws.sort_by(|a, b| a[2].partial_cmp(&b[2]).unwrap());
+                        let n10 = (ws.len() / 10).max(1);
+                        let near: f32 = ws[..n10].iter().map(|p| p[1]).sum::<f32>() / n10 as f32;
+                        let far: f32 = ws[ws.len() - n10..].iter().map(|p| p[1]).sum::<f32>() / n10 as f32;
+                        let znear: f32 = ws[..n10].iter().map(|p| p[2]).sum::<f32>() / n10 as f32;
+                        let zfar: f32 = ws[ws.len() - n10..].iter().map(|p| p[2]).sum::<f32>() / n10 as f32;
+                        println!("  frame {f:3}: mean y near z {znear:.2} = {near:.2}, far z {zfar:.2} = {far:.2} → tilt {:.1}°", ((near - far) / (zfar - znear)).atan().to_degrees());
+                    }
+                }
+            }
+        }
         // item-height MAP MODEL [MODEL..]: the item models' heights as `sandbox` reads them (the pack prefab's geometry)
         "item-height" => {
             let mut store = open(&a);
@@ -2680,6 +2782,9 @@ fn main() {
                 pole_sides: flag(&a.rest, "--pole-sides").map(|v| v.parse::<usize>().unwrap_or_else(|_| die("--pole-sides N".into()))).unwrap_or(24),
                 sttf: a.rest.iter().any(|x| x == "--sttf"),
                 allow_no_finish: a.rest.iter().any(|x| x == "--allow-no-finish"),
+                cloth: !a.rest.iter().any(|x| x == "--pole"),
+                cloth_pad: flag(&a.rest, "--cloth-pad").map(|v| v.parse::<f32>().unwrap_or_else(|_| die("--cloth-pad M".into()))).unwrap_or(0.3),
+                cloth_thick_pad: flag(&a.rest, "--cloth-thick-pad").map(|v| v.parse::<f32>().unwrap_or_else(|_| die("--cloth-thick-pad M".into()))).unwrap_or(0.35),
             };
             // a DIR: every *.Map.Gbx in it → --out-dir DIR (names "<map name> Flags.Map.Gbx")
             let srcp = std::path::Path::new(&p);

@@ -814,6 +814,38 @@ pub fn make_invisible_cylinder_waypoint(m: &mut Merged, wtype: i32, cx: f32, cz:
     Ok(())
 }
 
+/// Like `make_invisible_cylinder_waypoint`, with the trigger a closed HEXAHEDRON given by its 8
+/// corners in the item frame — the bbox corner order ([x0,y0,z0],[x1,y0,z0],[x1,y1,z0],[x0,y1,z0],
+/// then the same four at z1) — so a sheared slab (the flag cloth's tilted rectangle) is one call.
+pub fn make_invisible_hexahedron_waypoint(m: &mut Merged, wtype: i32, corners: [[f32; 3]; 8]) -> R<()> {
+    if m.visuals.is_empty() {
+        return Err("no visual to keep as the carrier".into());
+    }
+    m.visuals.truncate(1);
+    super::merged::remap_positions(m, &|p| [p[0] * 1e-4, -4.0 + p[1] * 1e-4, p[2] * 1e-4]);
+    m.surf_vertices.clear();
+    m.surf_triangles.clear();
+    m.surf_ids.clear();
+    m.lights_out.clear();
+    m.pending_lights.clear();
+    m.fx.clear();
+    m.veget.clear();
+    m.pictures.clear();
+    let quads: [[u32; 4]; 6] = [[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4], [2, 3, 7, 6], [1, 2, 6, 5], [0, 4, 7, 3]];
+    let mut tris: Vec<super::surface::Triangle> = Vec::new();
+    for q in quads {
+        tris.push(super::surface::Triangle { indices: [q[0], q[1], q[2]], material_id: 0, gameplay: 0, surface_index: 0 });
+        tris.push(super::surface::Triangle { indices: [q[0], q[2], q[3]], material_id: 0, gameplay: 0, surface_index: 0 });
+    }
+    let c = corners;
+    let floor = [(c[0][0] + c[6][0]) / 2.0, c.iter().map(|v| v[1]).fold(f32::INFINITY, f32::min), (c[0][2] + c[6][2]) / 2.0];
+    m.trigger = Some(super::surface::CPlugSurface::mesh(corners.to_vec(), tris, vec![0u16], [0.0, 0.0, 1.0]));
+    m.waypoint_type = Some(wtype);
+    m.spawn = floor;
+    m.notes.push(format!("invisible carrier: waypoint type {wtype}, hexahedron trigger (8 corners), no collision"));
+    Ok(())
+}
+
 /// Make a baked item a WAYPOINT with a BOX trigger over its own geometry (Hugo's "every
 /// flag is a finish", 2026-10-07 — the Manslaughter mechanism: the audience block's bbox as
 /// the finish volume). `wtype`: 0 Start, 1 Finish, 2 Checkpoint. The box = the item's

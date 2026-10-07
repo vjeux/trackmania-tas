@@ -151,6 +151,22 @@ fn main() {
                 println!("  entry {name:?} {} bytes header (ident, author) = {ia:?}", data.len());
             }
         }
+        // embedded-extract MAP DIR: every entry of the map's embedded zip written under DIR (its path kept)
+        "embedded-extract" => {
+            let m = tmmaps::map::MapFile::load(std::path::Path::new(&args[2]));
+            let dir = std::path::Path::new(&args[3]);
+            let (_, zip) = m.embedded_manifest();
+            let mut n = 0;
+            for (name, data) in tmmaps::header::zip_entries(&zip) {
+                let p = dir.join(name.replace('\\', "/"));
+                if let Some(d) = p.parent() {
+                    std::fs::create_dir_all(d).unwrap();
+                }
+                std::fs::write(&p, &data).unwrap();
+                n += 1;
+            }
+            println!("{n} entries written under {}", dir.display());
+        }
         "itempose" => {
             let m = tmmaps::map::MapFile::load(std::path::Path::new(&args[2]));
             let filter = tmmaps::cli::flag(&args, "--filter");

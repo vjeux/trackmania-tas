@@ -35,6 +35,114 @@ pub struct FlagsOpts {
     /// a map with NO flag item is built anyway — zero carriers, no finish left (Hugo 05:15 PT: "I want the
     /// complete campaign locally"); the refusal stays the default
     pub allow_no_finish: bool,
+    /// round 3 (Hugo 05:35 PT): the trigger is the CLOTH's resting rectangle (a sheared slab from the
+    /// time-averaged animation), not the pole; `cloth_pad` grows the rectangle's edges, `cloth_thick_pad`
+    /// its sway band
+    pub cloth: bool,
+    pub cloth_pad: f32,
+    pub cloth_thick_pad: f32,
+}
+
+/// The CLOTH of a flag model, measured on its vertex animation (the dyna mesh's 86 frames, placed
+/// by the prefab entity's pose): the time-averaged cloth's attachment edge at the pole (y range),
+/// its reach along the local +z axis, its sway band in x, and the least-squares tilt of its
+/// bottom edge over z — Hugo's "slightly tilted down rectangle" (round 3, 2026-10-07 05:35 PT).
+pub struct Cloth {
+    /// the cloth starts at this z (the pole surface)
+    pub z0: f32,
+    /// attachment edge y range at the pole
+    pub y_lo: f32,
+    pub y_hi: f32,
+    /// horizontal reach along +z of the time-averaged cloth
+    pub reach: f32,
+    /// the time-averaged cloth's x band (the sway axis)
+    pub x_lo: f32,
+    pub x_hi: f32,
+    /// the full animation's x band
+    pub x_lo_anim: f32,
+    pub x_hi_anim: f32,
+    /// bottom-edge downward tilt (degrees) and the top edge's (the free corner droops more)
+    pub tilt_bottom_deg: f32,
+    pub tilt_top_deg: f32,
+    pub frames: usize,
+}
+
+pub fn cloth_of(ctx: &mut Ctx, pack_path: &str) -> Result<Cloth, String> {
+    // the item → its prefab → the dyna entity (pos + quaternion)
+    let item = ctx.store.load_model(pack_path)?;
+    let prefab_path = item.externals.iter().map(|(_, p)| p.clone()).find(|p| p.to_lowercase().ends_with(".prefab.gbx")).ok_or_else(|| format!("{pack_path}: no prefab external"))?;
+    let pm = ctx.store.load_model(&prefab_path)?;
+    let prefab = crate::static_item::prefab::CPlugPrefab::from_model(&pm)?;
+    let mut dyna: Option<(String, [f32; 3], [f32; 4])> = None;
+    for e in &prefab.ents {
+        if let Some((_, path)) = pm.externals.iter().find(|(k, _)| *k as i32 == e.model.index) {
+            if path.to_lowercase().ends_with(".dynaobject.gbx") {
+                dyna = Some((path.clone(), e.pos, e.rot));
+                break;
+            }
+        }
+    }
+    let (dpath, pos, q) = dyna.ok_or_else(|| format!("{prefab_path}: no dyna-object entity (the cloth)"))?;
+    let mut scratch = crate::static_item::build::Merged::default();
+    let src = crate::static_item::build::load_dyna_source(ctx.store, &dpath, &mut scratch, true)?;
+    let (x, y, z, w) = (q[0], q[1], q[2], q[3]);
+    let rot = |v: [f32; 3]| -> [f32; 3] {
+        let (vx, vy, vz) = (v[0], v[1], v[2]);
+        let (cx, cy, cz) = (y * vz - z * vy, z * vx - x * vz, x * vy - y * vx);
+        let (dx, dy, dz) = (y * cz - z * cy, z * cx - x * cz, x * cy - y * cx);
+        [vx + 2.0 * (w * cx + dx) + pos[0], vy + 2.0 * (w * cy + dy) + pos[1], vz + 2.0 * (w * cz + dz) + pos[2]]
+    };
+    // the finest visual (most vertices)
+    let mut best: Option<(usize, Vec<[f32; 3]>, usize)> = None;
+    for vr in &src.s2.visuals {
+        let Some(crate::static_item::Node::Visual(v)) = vr.inline.as_deref() else { continue };
+        let Some(main) = v.main.as_ref() else { continue };
+        let Some(crate::static_item::Node::VertexStream(st)) = main.vertex_streams.first().and_then(|r| r.inline.as_deref()) else { continue };
+        let Some(crate::static_item::vstream::Elem::Float3(pts)) = st.elems.first() else { continue };
+        let nf = v.sub_visuals.len().max(1);
+        if best.as_ref().map(|b| pts.len() > b.1.len()).unwrap_or(true) {
+            best = Some((nf, pts.clone(), pts.len() / nf));
+        }
+    }
+    let (nf, pts, per) = best.ok_or_else(|| format!("{dpath}: no vertex-animated visual"))?;
+    let mut mean: Vec<[f32; 3]> = vec![[0.0; 3]; per];
+    let (mut alo, mut ahi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+    for f in 0..nf {
+        for (k, pnt) in pts[f * per..(f + 1) * per].iter().enumerate() {
+            let wv = rot(*pnt);
+            for c in 0..3 {
+                mean[k][c] += wv[c] / nf as f32;
+                alo[c] = alo[c].min(wv[c]);
+                ahi[c] = ahi[c].max(wv[c]);
+            }
+        }
+    }
+    let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+    for wv in &mean {
+        for c in 0..3 {
+            lo[c] = lo[c].min(wv[c]);
+            hi[c] = hi[c].max(wv[c]);
+        }
+    }
+    // per-z bins (0.5 m) of the time-averaged cloth: min/max y
+    let mut bins: std::collections::BTreeMap<i32, (f32, f32)> = std::collections::BTreeMap::new();
+    for wv in &mean {
+        let e = bins.entry((wv[2] * 2.0).round() as i32).or_insert((f32::INFINITY, f32::NEG_INFINITY));
+        e.0 = e.0.min(wv[1]);
+        e.1 = e.1.max(wv[1]);
+    }
+    let fit = |sel: &dyn Fn(&(f32, f32)) -> f32| -> f32 {
+        let n = bins.len() as f32;
+        let (mut sx, mut sy, mut sxx, mut sxy) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+        for (b, e) in &bins {
+            let xx = *b as f32 / 2.0;
+            let yy = sel(e);
+            sx += xx; sy += yy; sxx += xx * xx; sxy += xx * yy;
+        }
+        (n * sxy - sx * sy) / (n * sxx - sx * sx)
+    };
+    let (first_lo, first_hi) = bins.values().next().copied().unwrap_or((lo[1], hi[1]));
+    Ok(Cloth { z0: lo[2], y_lo: first_lo, y_hi: first_hi, reach: hi[2] - lo[2], x_lo: lo[0], x_hi: hi[0], x_lo_anim: alo[0], x_hi_anim: ahi[0], tilt_bottom_deg: (-fit(&|e| e.0)).atan().to_degrees(), tilt_top_deg: (-fit(&|e| e.1)).atan().to_degrees(), frames: nf })
 }
 
 /// The pole of a flag model, in the item frame: (axis x, axis z, radius, base y, top y) — the
@@ -122,20 +230,40 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
         let pack_path = format!("Stadium\\Items\\{stem}.Item.Gbx");
         if o.pole_triggers {
             // round 2: an invisible carrier with a cylinder trigger about the pole
-            let ident = if models.len() == 1 { "PoleFinishTrigger.Item.Gbx".to_string() } else { format!("PoleFinishTrigger{stem}.Item.Gbx") };
+            let ident = if o.cloth {
+                if models.len() == 1 { "ClothFinishTrigger.Item.Gbx".to_string() } else { format!("ClothFinishTrigger{stem}.Item.Gbx") }
+            } else if models.len() == 1 { "PoleFinishTrigger.Item.Gbx".to_string() } else { format!("PoleFinishTrigger{stem}.Item.Gbx") };
             let (cx, cz, pr, y0, y1) = pole_of(&mut ctx, &pack_path, collection).map_err(|e| format!("{stem}: {e}"))?;
             let r = pr + o.pole_margin;
             let mut mg = crate::static_item::build::pack_item_merged(ctx.store, &pack_path, 1.0, collection, 0, None).map_err(|e| format!("{stem}: {e}"))?;
-            crate::static_item::build::make_invisible_cylinder_waypoint(&mut mg, WP_FINISH, cx, cz, r, y0, y1, o.pole_sides).map_err(|e| format!("{stem}: {e}"))?;
+            let cloth_note = if o.cloth {
+                // THE CLOTH SLAB: a parallelogram prism in the item frame — attached along the pole at
+                // z0 with the cloth's height, reaching `reach` along +z, both edges sheared down by the
+                // cloth's bottom-edge tilt (the free top corner droops more in the animation; a flag
+                // held still by the wind is a parallelogram), `cloth_pad` on the height/length edges,
+                // the thickness = the time-averaged sway band ± `cloth_thick_pad`; the pole is NOT in it
+                let c = cloth_of(&mut ctx, &pack_path).map_err(|e| format!("{stem}: {e}"))?;
+                let t = c.tilt_bottom_deg.to_radians().tan();
+                let (z_near, z_far) = (c.z0 + pr, c.z0 + c.reach + o.cloth_pad);
+                let drop = t * (z_far - z_near);
+                let (xa, xb) = (c.x_lo - o.cloth_thick_pad, c.x_hi + o.cloth_thick_pad);
+                let (ya, yb) = (c.y_lo - o.cloth_pad, c.y_hi + o.cloth_pad);
+                let corners: [[f32; 3]; 8] = [[xa, ya, z_near], [xb, ya, z_near], [xb, yb, z_near], [xa, yb, z_near], [xa, ya - drop, z_far], [xb, ya - drop, z_far], [xb, yb - drop, z_far], [xa, yb - drop, z_far]];
+                crate::static_item::build::make_invisible_hexahedron_waypoint(&mut mg, WP_FINISH, corners).map_err(|e| format!("{stem}: {e}"))?;
+                format!("CLOTH slab (local +z = the cloth direction; {} animation frames averaged): attached at z {z_near:.3} along the pole, y {ya:.2}..{yb:.2} ({:.2} m tall incl. pad {}), reaching z {z_far:.2} ({:.2} m), both edges sheared down {:.1}° (the cloth's bottom-edge tilt; its top edge droops {:.1}° at the free corner; the far edge sits {drop:.2} m lower), thickness x {xa:.2}..{xb:.2} (the time-averaged sway band {:.2}..{:.2} ± {}; the full swing spans x {:.2}..{:.2})", c.frames, yb - ya, o.cloth_pad, z_far - z_near, c.tilt_bottom_deg, c.tilt_top_deg, c.x_lo, c.x_hi, o.cloth_thick_pad, c.x_lo_anim, c.x_hi_anim)
+            } else {
+                crate::static_item::build::make_invisible_cylinder_waypoint(&mut mg, WP_FINISH, cx, cz, r, y0, y1, o.pole_sides).map_err(|e| format!("{stem}: {e}"))?;
+                format!("trigger cylinder r {r:.3} ({} sides), same y span", o.pole_sides)
+            };
             if let Some(w) = lm_word {
                 mg.file_write_time = w;
                 mg.notes.push(format!("solid FileWriteTime stamped with the map's lightmap cache word {w} (the cache FILETIME rule)"));
             }
             let (bytes, mg) = crate::static_item::build::finish_item(mg, &ident, &ident, 1.0, collection).map_err(|e| format!("{stem}: {e}"))?;
             let mut row = Row::new(&map_label, "flags", "model", 0, stem);
-            row.action = "pole-trigger-item-built".into();
+            row.action = if o.cloth { "cloth-trigger-item-built".into() } else { "pole-trigger-item-built".into() };
             row.to_name = ident.clone();
-            row.note = format!("{} bytes; pole axis ({cx:.3},{cz:.3}) radius {pr:.3} m, y {y0:.3}..{y1:.3}; trigger cylinder r {r:.3} ({} sides), same y span; invisible (one sub-mm visual 4 m under the origin), no collision; {}", bytes.len(), o.pole_sides, mg.notes.last().cloned().unwrap_or_default());
+            row.note = format!("{} bytes; pole axis ({cx:.3},{cz:.3}) radius {pr:.3} m, y {y0:.3}..{y1:.3}; {cloth_note}; invisible (one sub-mm visual 4 m under the origin), no collision", bytes.len());
             rows.push(row);
             built.push((stem.clone(), ident, [cx - r, y0, cz - r, cx + r, y1, cz + r], bytes));
             continue;
@@ -173,7 +301,7 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
                 r.to_name = ident.trim_end_matches(".Item.Gbx").to_string();
                 r.from = format!("{} yaw {:.4} pitch {:.4} roll {:.4}", pos_str(it.pos), it.yaw, it.pitch, it.roll);
                 r.to = format!("new item#{} at the same pose", m.items.len() + appended.len());
-                r.note = "the flag record untouched (waving cloth, chart kept); an invisible PoleFinishTrigger appended at its pose, tag Goal".into();
+                r.note = format!("the flag record untouched (waving cloth, chart kept); an invisible {} appended at its pose (it turns with the flag's yaw), tag Goal", if o.cloth { "ClothFinishTrigger" } else { "PoleFinishTrigger" });
                 appended.push((it.index, ident.trim_end_matches(".Item.Gbx").to_string(), it.pos, [it.yaw, it.pitch, it.roll]));
             } else {
                 r.action = "to-finish".into();
@@ -388,7 +516,7 @@ pub fn verify_flags(src: &Path, out: &Path, oc: &FlagsOutcome, o: &FlagsOpts) ->
     if o.pole_triggers {
         // the flags untouched: the source's flag records, in order, equal the output's flag records in order
         let fa: Vec<&tmmaps::map::ItemRec> = a.items.iter().filter(|x| x.model.contains("Flag")).collect();
-        let fb: Vec<&tmmaps::map::ItemRec> = b.items.iter().filter(|x| x.model.contains("Flag") && !x.model.contains("PoleFinish")).collect();
+        let fb: Vec<&tmmaps::map::ItemRec> = b.items.iter().filter(|x| x.model.contains("Flag") && !x.model.contains("FinishTrigger")).collect();
         if fa.len() != fb.len() {
             bad.push(format!("{} flag records in, {} out", fa.len(), fb.len()));
         }
