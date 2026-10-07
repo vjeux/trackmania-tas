@@ -108,6 +108,61 @@ pub fn platform_twin(ctx: &mut Ctx, c: &Class) -> Result<String, String> {
     Ok(cand)
 }
 
+/// An item model's height in metres (the top of its visual/collision geometry over its
+/// origin plane), from the pack prefab the item references; None when nothing could be read.
+pub fn item_height(ctx: &mut Ctx, model: &str) -> Option<f32> {
+    let refs = ctx.item_refs(model);
+    let prefab = refs.iter().find(|r| r.to_lowercase().ends_with(".prefab.gbx"))?.clone();
+    // the item file's references are relative to its pack root (`Media\Prefab\…`): try the collections
+    let mut loaded = None;
+    let cands: Vec<String> = if prefab.contains('\\') && !prefab.starts_with("Media\\") {
+        vec![prefab.clone()]
+    } else {
+        ["Stadium", "BlueBay", "RedIsland", "WhiteShore", "GreenCoast"].iter().map(|c| format!("{c}\\{prefab}")).collect()
+    };
+    for c in cands {
+        if let Ok(m) = ctx.store.load_model(&c) {
+            loaded = Some(m);
+            break;
+        }
+    }
+    let loaded = loaded?;
+    let mut c = crate::geom::Collector::new(ctx.store);
+    c.model(&loaded, &crate::geom::IDENTITY, 0);
+    let mut lo = f32::INFINITY;
+    let mut hi = f32::NEG_INFINITY;
+    for g in c.scene.groups.values() {
+        for v in &g.verts {
+            lo = lo.min(v[1]);
+            hi = hi.max(v[1]);
+        }
+    }
+    if hi.is_finite() && lo.is_finite() {
+        Some(hi.max(0.0))
+    } else {
+        None
+    }
+}
+
+/// Whether the collection's base row is WATER (the most common genealogy zone names water):
+/// then blocks are built one row up, on top of the water (Hugo: "build on top of the water").
+pub fn water_base(m: &MapFile) -> Option<String> {
+    let chunks = tmmaps::gbx::all_skip_chunks(&m.gbx.body);
+    let &(_, _, payload, size) = chunks.iter().find(|(c, ..)| *c == 0x0304_3043)?;
+    let recs = tmmaps::map::genealogy_full(&m.gbx.body[payload..payload + size]).ok()?;
+    let mut hist: BTreeMap<String, usize> = BTreeMap::new();
+    for r in &recs {
+        *hist.entry(r.current.clone()).or_default() += 1;
+    }
+    let (zone, _) = hist.iter().max_by_key(|(_, n)| **n)?;
+    let z = zone.to_lowercase();
+    if z.contains("water") || z.contains("sea") || z.contains("lake") {
+        Some(zone.clone())
+    } else {
+        None
+    }
+}
+
 pub struct InvRow {
     pub kind: &'static str,
     pub index: usize,
@@ -118,6 +173,8 @@ pub struct InvRow {
     pub pos: [f32; 3],
     pub dir: u8,
     pub yaw: f32,
+    pub pitch: f32,
+    pub roll: f32,
     pub free: bool,
     pub tag: Option<String>,
 }
@@ -142,14 +199,14 @@ pub fn inventory(ctx: &mut Ctx, m: &MapFile) -> Result<Vec<InvRow>, String> {
                 [c.0 as f32 * 32.0 + 16.0, c.1 as f32 * 8.0 + ground, c.2 as f32 * 32.0 + 16.0]
             }
         };
-        let yaw = b.free_rot.map(|r| r[0]).unwrap_or(0.0);
-        out.push(InvRow { kind: "block", index: b.index, model: b.name.clone(), class, twin, cell: Some(b.coords()), pos, dir: b.dir, yaw, free: b.free_pos.is_some(), tag: b.waypoint_tag.clone() });
+        let rot = b.free_rot.unwrap_or([0.0; 3]);
+        out.push(InvRow { kind: "block", index: b.index, model: b.name.clone(), class, twin, cell: Some(b.coords()), pos, dir: b.dir, yaw: rot[0], pitch: rot[1], roll: rot[2], free: b.free_pos.is_some(), tag: b.waypoint_tag.clone() });
     }
     let mut icache: HashMap<String, Result<Class, String>> = HashMap::new();
     for it in &m.items {
         let c = icache.entry(it.model.clone()).or_insert_with(|| item_class(ctx, &it.model)).clone();
         let class = c.unwrap_or(Class::Other);
-        out.push(InvRow { kind: "item", index: it.index, model: it.model.clone(), class, twin: None, cell: None, pos: it.pos, dir: 0, yaw: it.yaw, free: true, tag: it.waypoint_tag.clone() });
+        out.push(InvRow { kind: "item", index: it.index, model: it.model.clone(), class, twin: None, cell: None, pos: it.pos, dir: 0, yaw: it.yaw, pitch: it.pitch, roll: it.roll, free: true, tag: it.waypoint_tag.clone() });
     }
     Ok(out)
 }
@@ -198,8 +255,11 @@ pub struct SandboxOpts {
     /// the fill records' flags (0x1000 = the ground variant)
     pub fill_flags: u32,
     pub clear_genealogy: bool,
-    /// the row for everything; None = the lowest row the collection accepts (ground row)
+    /// the row for everything; None = the collection's base row, +1 when that row is water
+    /// (the deck then stands on top of the water: Hugo, 2026-10-07 02:04 PT)
     pub row: Option<i32>,
+    /// sink the kept items half into the deck (origin at deck − height/2) and reset pitch/roll
+    pub sink_items: bool,
     pub uid_prefix: String,
     pub name_suffix: String,
     pub unlock: bool,
@@ -241,7 +301,9 @@ pub fn sandbox(ctx: &mut Ctx, src: &Path, out: &Path, o: &SandboxOpts, dry: bool
     let m = MapFile::try_load(src)?;
     let hdr = tmmaps::header::read(src.to_str().unwrap_or_default())?;
     let inv = inventory(ctx, &m)?;
-    let row = o.row.unwrap_or_else(|| ground_row(&m));
+    let base_row = ground_row(&m);
+    let water = water_base(&m);
+    let row = o.row.unwrap_or(if water.is_some() { base_row + 1 } else { base_row });
     let size = m.size;
     let coll = m.body_collections().map(|c| c[0].1).unwrap_or(26);
     let ground = tmmaps::map::ground_y(coll);
@@ -290,22 +352,36 @@ pub fn sandbox(ctx: &mut Ctx, src: &Path, out: &Path, o: &SandboxOpts, dry: bool
         }
         rows.push(row_r);
     }
-    let mut keep_items: Vec<(usize, [f32; 3])> = Vec::new();
+    // (index, new pos, new rotation [yaw, pitch, roll])
+    let mut keep_items: Vec<(usize, [f32; 3], [f32; 3])> = Vec::new();
+    let mut heights: HashMap<String, Option<f32>> = HashMap::new();
     for r in inv.iter().filter(|r| r.kind == "item") {
         let mut row_r = Row::new(&map_label, "sandbox", "item", r.index, &r.model);
         row_r.tag = r.tag.clone().unwrap_or_default();
-        row_r.from = pos_str(r.pos);
+        row_r.from = format!("{} yaw {:.4} pitch {:.4} roll {:.4}", pos_str(r.pos), r.yaw, r.pitch, r.roll);
         match &r.class {
             Class::Other => {
                 row_r.action = "removed".into();
                 row_r.note = "OTHER".into();
             }
             c => {
-                let np = [r.pos[0], platform_top, r.pos[2]];
+                // a START gate spawns the car at its ORIGIN plane (the SSpawn entity at local (0,0,−10.6)):
+                // sunk, it would spawn the car inside the platform — a start item stays on the deck
+                let is_start = matches!(c, Class::Waypoint(t) if *t == crate::sttc::WP_START || *t == crate::sttc::WP_STARTFINISH);
+                let h = if o.sink_items && !is_start { *heights.entry(r.model.clone()).or_insert_with(|| item_height(ctx, &r.model)) } else { None };
+                let (y, how) = match (o.sink_items, h) {
+                    (true, Some(h)) => (platform_top - h / 2.0, format!("half-sunk: model height {h:.2} m, origin at deck − {:.2}", h / 2.0)),
+                    (true, None) if is_start => (platform_top, "ON the deck (a start gate spawns the car at its origin plane — not sunk)".to_string()),
+                    (true, None) => (platform_top, "ON the deck (model height unreadable — not sunk)".to_string()),
+                    (false, _) => (platform_top, "on the deck".to_string()),
+                };
+                let np = [r.pos[0], y, r.pos[2]];
+                let nrot = if o.sink_items { [r.yaw, 0.0, 0.0] } else { [r.yaw, r.pitch, r.roll] };
+                let reset = o.sink_items && (r.pitch.abs() > 1e-4 || r.roll.abs() > 1e-4);
                 row_r.action = "set-down".into();
-                row_r.to = pos_str(np);
-                row_r.note = format!("{}; y -> the platform deck {platform_top}", c.label());
-                keep_items.push((r.index, np));
+                row_r.to = format!("{} yaw {:.4} pitch {:.4} roll {:.4}", pos_str(np), nrot[0], nrot[1], nrot[2]);
+                row_r.note = format!("{}; deck {platform_top:.3}; {how}{}", c.label(), if reset { format!("; POSE RESET upright (was pitch {:.4} roll {:.4})", r.pitch, r.roll) } else { String::new() });
+                keep_items.push((r.index, np, nrot));
             }
         }
         rows.push(row_r);
@@ -332,7 +408,7 @@ pub fn sandbox(ctx: &mut Ctx, src: &Path, out: &Path, o: &SandboxOpts, dry: bool
         let mut r = Row::new(&map_label, "sandbox", "map", 0, &new_name);
         r.action = "identity".into();
         r.to_name = new_uid.clone();
-        r.note = format!("row {row} (deck y {platform_top}); fill {} × {}; {} kept blocks, {} kept items; {} blocks / {} items / {} generated records removed; no-twin models: {}", fill.len(), o.fill, kept_blocks, kept_items, removed_blocks, removed_items, removed_baked, if no_twin.is_empty() { "none".to_string() } else { no_twin.join(", ") });
+        r.note = format!("row {row} (base row {base_row}{}; deck y {platform_top}); fill {} × {}; {} kept blocks, {} kept items; {} blocks / {} items / {} generated records removed; no-twin models: {}; genealogy: {}", match &water { Some(z) => format!(", a WATER collection ({z}): built one row up, on top of the water"), None => String::new() }, fill.len(), o.fill, kept_blocks, kept_items, removed_blocks, removed_items, removed_baked, if no_twin.is_empty() { "none".to_string() } else { no_twin.join(", ") }, if water.is_some() { "filled with the water zone in every cell (the empty-vista form)" } else if o.clear_genealogy { "cleared" } else { "kept (land collection)" });
         rows.push(r);
     }
     let inventory = inventory_tsv(&map_label, &inv);
@@ -396,11 +472,13 @@ pub fn sandbox(ctx: &mut Ctx, src: &Path, out: &Path, o: &SandboxOpts, dry: bool
                 m3.set_block_flags(new_index, want);
             }
         }
-        for (new_index, (_, np)) in keep_items.iter().enumerate() {
+        for (new_index, (_, np, nrot)) in keep_items.iter().enumerate() {
             m3.move_item_pos(new_index, *np);
-            // the record's cell bytes follow the new position (x/z unchanged, the row = the deck's)
+            m3.set_item_rotation(new_index, nrot[0], nrot[1], nrot[2]);
+            // the record's cell bytes follow the new position (x/z unchanged, the row = the cell the origin is in)
             let it = m3.items[new_index].clone();
-            m3.set_item_cell(new_index, [it.file_cell[0], row.clamp(0, 255) as u8, it.file_cell[2]]);
+            let cy = ((np[1] - ground) / 8.0).floor().clamp(0.0, 255.0) as u8;
+            m3.set_item_cell(new_index, [it.file_cell[0], cy, it.file_cell[2]]);
         }
         m3.write_to(out).map_err(|e| e.to_string())?;
     }
@@ -422,8 +500,16 @@ pub fn sandbox(ctx: &mut Ctx, src: &Path, out: &Path, o: &SandboxOpts, dry: bool
         m5.set_map_uid_any_len(&new_uid);
         m5.write_to(out).map_err(|e| e.to_string())?;
     }
-    // the genealogy: the zone records would regenerate the removed terrain tiles over the field
-    if o.clear_genealogy {
+    // the genealogy: a water collection becomes the empty vista — the water zone in every cell
+    // (the game regenerates a water tile per cell at the base row, under the deck one row up);
+    // a land collection (Stadium) keeps its records (every cell holds a block: nothing regenerates)
+    if water.is_some() && !o.clear_genealogy {
+        let (zone, n) = MapFile::fill_genealogy_file(out)?;
+        let z = zone.to_lowercase();
+        if !z.contains("water") && !z.contains("sea") && !z.contains("lake") {
+            return Err(format!("{map_label}: the genealogy fill template is {zone} ({n} cells), not a water zone"));
+        }
+    } else if o.clear_genealogy {
         let _ = MapFile::clear_genealogy_file(out)?;
     }
     Ok(SandboxOutcome { rows, kept_blocks, kept_items, removed_blocks, removed_items, removed_baked, fill: fill.len(), row, new_name, new_uid, inventory })

@@ -2643,6 +2643,18 @@ fn main() {
         // sttc MAP|DIR --out-dir DIR [center-finish flags] [--dry-run] [--report R.tsv]:
         // both steps per map (a directory = every *.Map.Gbx in it, sorted);
         // outputs DIR/sttf/<stem>.sttf.Map.Gbx and DIR/<stem>-Straight-to-the-Center.Map.Gbx
+        // item-height MAP MODEL [MODEL..]: the item models' heights as `sandbox` reads them (the pack prefab's geometry)
+        "item-height" => {
+            let mut store = open(&a);
+            let mp = a.rest.get(1).cloned().unwrap_or_else(|| die("item-height MAP MODEL..".into()));
+            let m = tmmaps::map::MapFile::try_load(std::path::Path::new(&mp)).unwrap_or_else(die);
+            let mut ctx = mapgeom::sttc::Ctx::new(&mut store, &m);
+            for model in a.rest.iter().skip(2).filter(|x| !x.starts_with("--")) {
+                let refs = ctx.item_refs(model);
+                println!("{model}: {} refs{}", refs.len(), refs.iter().take(4).map(|r| format!("\n    {r}")).collect::<String>());
+                println!("  height {:?}", mapgeom::sandbox::item_height(&mut ctx, model));
+            }
+        }
         // sandbox <MAP|DIR> --out-dir DIR [--fill PlatformTechBase] [--fill-flags HEX] [--row N] [--uid-prefix Sbox]
         //   [--name-suffix " Sandbox"] [--unlock] [--unvalidated] [--keep-lightmap] [--keep-genealogy]
         //   [--out-name mapname] [--only ..] [--report R.tsv] [--inventory I.tsv] [--dry-run]
@@ -2654,8 +2666,9 @@ fn main() {
             let sb = mapgeom::sandbox::SandboxOpts {
                 fill: flag(&a.rest, "--fill").unwrap_or_else(|| "PlatformTechBase".into()),
                 fill_flags: flag(&a.rest, "--fill-flags").map(|v| u32::from_str_radix(v.trim_start_matches("0x"), 16).unwrap_or_else(|_| die("--fill-flags HEX".into()))).unwrap_or(0x1000),
-                clear_genealogy: !a.rest.iter().any(|x| x == "--keep-genealogy"),
+                clear_genealogy: a.rest.iter().any(|x| x == "--clear-genealogy"),
                 row: flag(&a.rest, "--row").map(|v| v.parse::<i32>().unwrap_or_else(|_| die("--row N".into()))),
+                sink_items: !a.rest.iter().any(|x| x == "--items-on-deck"),
                 uid_prefix: flag(&a.rest, "--uid-prefix").unwrap_or_else(|| "Sbox".into()),
                 name_suffix: flag(&a.rest, "--name-suffix").unwrap_or_else(|| " Sandbox".into()),
                 unlock: a.rest.iter().any(|x| x == "--unlock"),
