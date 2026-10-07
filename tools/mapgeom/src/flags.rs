@@ -30,6 +30,8 @@ pub struct FlagsOpts {
     /// the cylinder: radius margin over the pole radius (m), sides
     pub pole_margin: f32,
     pub pole_sides: usize,
+    /// also strip the CHECKPOINTS (the sttf rule: blocks → plain twins by geometry, rings/arches + items removed)
+    pub sttf: bool,
 }
 
 /// The pole of a flag model, in the item frame: (axis x, axis z, radius, base y, top y) — the
@@ -60,8 +62,13 @@ pub fn pole_of(ctx: &mut Ctx, pack_path: &str, collection: u32) -> Result<(f32, 
 pub struct FlagsOutcome {
     pub rows: Vec<Row>,
     pub converted: usize,
+    /// items removed by the strip pass (finish items; with sttf the checkpoint items too)
     pub finishes_removed: usize,
     pub finish_blocks_replaced: usize,
+    /// the strip pass: blocks swapped for plain twins / removed (rings, arches) / generated records removed
+    pub replaced_blocks: usize,
+    pub removed_blocks: usize,
+    pub removed_baked: usize,
     pub items: Vec<(String, String, [f32; 6])>, // (flag model, finish ident, trigger box)
     pub new_name: String,
     pub new_uid: String,
@@ -83,7 +90,7 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
         }
     }
     if models.is_empty() {
-        return Err(format!("{map_label}: no flag items"));
+        return Err(format!("{map_label}: NO FLAG ITEMS — a Flags map of it would have no finish; not built"));
     }
     // ---- the finish pieces (classified from the packs)
     let mut ctx = Ctx::new(store, &m);
@@ -185,41 +192,39 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
         r.note = format!("{converted} flags {} ({} model(s)); {} finish items removed, {} finish blocks -> plain twins; collection {collection}", if o.pole_triggers { "kept + invisible pole finish triggers appended" } else { "-> finishes" }, built.len(), finish_items.len(), finish_blocks.len());
         rows.push(r);
     }
-    let outcome = |rows: Vec<Row>| FlagsOutcome { rows, converted, finishes_removed: finish_items.len(), finish_blocks_replaced: finish_blocks.len(), items: built.iter().map(|(s, i, b, _)| (s.clone(), i.clone(), *b)).collect(), new_name: new_name.clone(), new_uid: new_uid.clone() };
     if dry {
-        return Ok(outcome(rows));
+        return Ok(FlagsOutcome { rows, converted, finishes_removed: finish_items.len(), finish_blocks_replaced: finish_blocks.len(), replaced_blocks: 0, removed_blocks: 0, removed_baked: 0, items: built.iter().map(|(s, i, b, _)| (s.clone(), i.clone(), *b)).collect(), new_name: new_name.clone(), new_uid: new_uid.clone() });
     }
     if let Some(dir) = out.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    // pass 0: the finish BLOCKS → plain twins (sttc's strip pass on the finish type only)
-    let mut cur = src.to_path_buf();
-    if !finish_blocks.is_empty() {
-        let tmp = out.with_extension("nofinish.tmp.Map.Gbx");
-        let s = crate::sttc::strip_waypoints(&mut ctx, src, &tmp, crate::sttc::CpMode::Plain, false, &[WP_FINISH])?;
-        // the strip pass also removed the finish ITEMS; nothing left for pass 1
-        rows.extend(s.rows.iter().cloned());
-        cur = tmp;
-    }
-    // pass 1: the finish items go (when the strip pass did not run)
-    let m1 = MapFile::try_load(&cur)?;
-    let still: HashSet<usize> = m1.items.iter().filter(|it| finish_items.contains(&it.index) && m1.items.len() == m.items.len()).map(|it| it.index).collect();
+    // pass 0: the strip pass (sttc's): the FINISH pieces — blocks → plain twins by the geometry rule,
+    // items removed — and, with `sttf`, the CHECKPOINTS the same way. Its rows carry the objmap
+    // vocabulary (step "sttf": replaced / removed per block / item / baked) for the lightmap pass.
+    let targets: Vec<i32> = if o.sttf { vec![WP_FINISH, crate::sttc::WP_CHECKPOINT] } else { vec![WP_FINISH] };
+    let cur = out.with_extension("strip.tmp.Map.Gbx");
+    let strip = crate::sttc::strip_waypoints(&mut ctx, src, &cur, crate::sttc::CpMode::Plain, false, &targets)?;
+    let strip_rows: Vec<Row> = strip.rows.clone();
+    rows.extend(strip.rows.iter().cloned());
+    let finishes_removed_total = strip.removed_items;
     {
         let mut mm = MapFile::try_load(&cur)?;
-        if !still.is_empty() {
-            mm.remove_items(|it| still.contains(&it.index));
-        }
         mm.strip_validation_ghost_to(tmmaps::map::GhostForm::Remove);
         if o.unlock {
             mm.remove_password();
         }
         mm.write_to(out).map_err(|e| e.to_string())?;
     }
-    // pass 2: embed the item(s) (a splice of 0x03043054)
+    // pass 2: embed the item(s) (a splice of 0x03043054) — MERGED with what the map already embeds
+    // (Fall 21–25 carry Nadeo's TME_* items: their rows and entries stay, collection word as is)
     {
         let mut mm = MapFile::try_load(out)?;
+        let (old_rows, old_zip) = mm.embedded_manifest();
         let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
-        let mut manifest: Vec<(String, String)> = Vec::new();
+        for (name, data) in tmmaps::header::zip_entries(&old_zip) {
+            files.insert(name, data);
+        }
+        let mut manifest: Vec<(String, u32, String)> = old_rows.clone();
         // THE PROVEN FORM (the tiny campaign's embedded library items, 2026-09-08 "Missing Items"
         // lesson; Hugo's game refused round 1 with exactly that dialog): the archive entry is
         // `Items/<ident>`, the manifest row (ident, collection = the map's, author = ident), the
@@ -228,12 +233,18 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
         for (_, ident, _, bytes) in &built {
             let b = crate::tiny_assets::set_ident_collection(bytes, collection);
             files.insert(format!("Items/{ident}"), b);
-            manifest.push((ident.clone(), ident.clone()));
+            manifest.push((ident.clone(), collection, ident.clone()));
         }
         let zip = tmmaps::header::stored_zip(&files);
-        let refs: Vec<(&str, &str)> = manifest.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
-        mm.replace_embedded_objects(&refs, &zip);
+        let refs: Vec<(&str, u32, &str)> = manifest.iter().map(|(a, c, b)| (a.as_str(), *c, b.as_str())).collect();
+        mm.replace_embedded_objects_rows(&refs, &zip);
         mm.write_to(out).map_err(|e| e.to_string())?;
+        if !old_rows.is_empty() {
+            let mut r = Row::new(&map_label, "flags", "map", 0, "embedded");
+            r.action = "merged".into();
+            r.note = format!("{} existing embedded item(s) kept ({} zip entries) + {} of ours", old_rows.len(), files.len() - built.len(), built.len());
+            rows.push(r);
+        }
     }
     // pass 3: the trigger carriers
     let base_items = MapFile::try_load(out)?.items.len();
@@ -314,26 +325,13 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
         mm.set_map_uid_any_len(&new_uid);
         mm.write_to(out).map_err(|e| e.to_string())?;
     }
-    if cur != src {
-        let _ = std::fs::remove_file(&cur);
-    }
+    let _ = std::fs::remove_file(&cur);
     // pass 6: the lightmap chart table renumbered positionally (the removed finish items shift
     // every later item by their count; the flags KEEP their slots — same object, same look —
     // so their charts stay; the finish items' charts drop). The sttc object map vocabulary:
     // "sttf"-step rows, "removed" items = the finish items; everything else kept.
     if o.keep_lightmap {
-        let mut srows: Vec<Row> = Vec::new();
-        for i in &finish_items {
-            let mut r = Row::new(&map_label, "sttf", "item", *i, "finish");
-            r.action = "removed".into();
-            srows.push(r);
-        }
-        for i in &finish_blocks {
-            let mut r = Row::new(&map_label, "sttf", "block", *i, "finish");
-            r.action = "replaced".into();
-            srows.push(r);
-        }
-        let objmap = crate::sttc::objmap_rows(&m, &srows, &[], &[], &[]);
+        let objmap = crate::sttc::objmap_rows(&m, &strip_rows, &[], &[], &[]);
         let pth = out.with_extension("objmap.tsv");
         std::fs::write(&pth, objmap).map_err(|e| e.to_string())?;
         let lmtool = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("lmtool"))).filter(|p| p.exists()).map(|p| p.display().to_string()).unwrap_or_else(|| "lmtool".to_string());
@@ -353,7 +351,7 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
         rr.action = text.lines().next().unwrap_or("").trim().to_string();
         rows.push(rr);
     }
-    Ok(outcome(rows))
+    Ok(FlagsOutcome { rows, converted, finishes_removed: finishes_removed_total, finish_blocks_replaced: finish_blocks.len(), replaced_blocks: strip.replaced, removed_blocks: strip.removed_blocks, removed_baked: strip.removed_baked, items: built.iter().map(|(s, i, b, _)| (s.clone(), i.clone(), *b)).collect(), new_name: new_name.clone(), new_uid: new_uid.clone() })
 }
 
 /// The map's lightmap cache FILETIME word (chunk 0x06022013 inside 0x0304305B), through `lmtool filetime-check --tsv`.
@@ -379,14 +377,16 @@ pub fn verify_flags(src: &Path, out: &Path, oc: &FlagsOutcome, o: &FlagsOpts) ->
         bad.push(format!("items: want {want_items}, got {}", b.items.len()));
     }
     if o.pole_triggers {
-        // the flags untouched: every source flag record equal in model/pos/rot/tag (indices shift by the removed finishes before them)
-        let removed_before = |i: usize| a.items.iter().take(i).filter(|x| x.waypoint_tag.as_deref() == Some("Goal")).count();
-        for x in a.items.iter().filter(|x| x.model.contains("Flag")) {
-            let j = x.index - removed_before(x.index);
-            match b.items.get(j) {
-                Some(y) if y.model == x.model && y.pos == x.pos && y.yaw == x.yaw && y.pitch == x.pitch && y.roll == x.roll && y.waypoint_tag == x.waypoint_tag => {}
-                Some(y) => { bad.push(format!("flag item#{} -> #{j}: {} at {} differs ({} at {})", x.index, x.model, pos_str(x.pos), y.model, pos_str(y.pos))); break; }
-                None => { bad.push(format!("flag item#{} missing", x.index)); break; }
+        // the flags untouched: the source's flag records, in order, equal the output's flag records in order
+        let fa: Vec<&tmmaps::map::ItemRec> = a.items.iter().filter(|x| x.model.contains("Flag")).collect();
+        let fb: Vec<&tmmaps::map::ItemRec> = b.items.iter().filter(|x| x.model.contains("Flag") && !x.model.contains("PoleFinish")).collect();
+        if fa.len() != fb.len() {
+            bad.push(format!("{} flag records in, {} out", fa.len(), fb.len()));
+        }
+        for (x, y) in fa.iter().zip(fb.iter()) {
+            if !(y.model == x.model && y.pos == x.pos && y.yaw == x.yaw && y.pitch == x.pitch && y.roll == x.roll && y.waypoint_tag == x.waypoint_tag && y.scale == x.scale) {
+                bad.push(format!("flag item#{} -> #{}: {} at {} differs ({} at {})", x.index, y.index, x.model, pos_str(x.pos), y.model, pos_str(y.pos)));
+                break;
             }
         }
         // every appended trigger sits exactly at a flag's pose
@@ -426,6 +426,21 @@ pub fn verify_flags(src: &Path, out: &Path, oc: &FlagsOutcome, o: &FlagsOpts) ->
         }
     }
     let emb = crate::embedded::files(&b)?;
+    let (rows_a, _) = a.embedded_manifest();
+    let (rows_b, _) = b.embedded_manifest();
+    for ra in &rows_a {
+        if !rows_b.contains(ra) {
+            bad.push(format!("the source's embedded manifest row {ra:?} is gone"));
+            break;
+        }
+    }
+    let emb_a = crate::embedded::files(&a).unwrap_or_default();
+    for (k, v) in &emb_a {
+        match emb.get(k) {
+            Some(w) if w == v => {}
+            _ => { bad.push(format!("the source's embedded entry {k} is gone or changed")); break; }
+        }
+    }
     for (_, ident, _) in &oc.items {
         let key = format!("Items/{ident}");
         if !emb.keys().any(|k| k.replace('\\', "/").eq_ignore_ascii_case(&key)) {
@@ -438,6 +453,16 @@ pub fn verify_flags(src: &Path, out: &Path, oc: &FlagsOutcome, o: &FlagsOpts) ->
                 other => bad.push(format!("{key}: header (ident, author) {other:?}, want ({ident}, {ident})")),
             }
         }
+    }
+    if o.sttf {
+        let cps = b.items.iter().filter(|x| x.waypoint_tag.as_deref() == Some("Checkpoint")).count() + b.blocks.iter().filter(|x| x.waypoint_tag.as_deref() == Some("Checkpoint")).count();
+        if cps != 0 {
+            bad.push(format!("{cps} checkpoint placements remain (sttf)"));
+        }
+    }
+    let spawns = b.items.iter().filter(|x| x.waypoint_tag.as_deref() == Some("Spawn")).count() + b.blocks.iter().filter(|x| x.waypoint_tag.as_deref() == Some("Spawn")).count();
+    if spawns != 1 {
+        bad.push(format!("{spawns} Spawn placements, want 1"));
     }
     let hb = tmmaps::header::read(out.to_str().unwrap_or_default())?;
     if hb.validated != "0" || hb.name != oc.new_name || hb.uid != oc.new_uid {

@@ -2660,8 +2660,11 @@ fn main() {
         "flags" => {
             let mut store = open(&a);
             let p = a.rest.get(1).cloned().unwrap_or_else(|| die("flags needs a MAP".into()));
-            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("flags needs --out F".into()));
+            let out = flag(&a.rest, "--out").unwrap_or_default();
             let dry = a.rest.iter().any(|x| x == "--dry-run");
+            if out.is_empty() && flag(&a.rest, "--out-dir").is_none() {
+                die::<()>("flags needs --out F (one map) or --out-dir DIR (a DIR)".into());
+            }
             let o = mapgeom::flags::FlagsOpts {
                 models: flag(&a.rest, "--model").map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()).unwrap_or_default(),
                 trigger_pad: flag(&a.rest, "--trigger-pad").map(|v| v.parse::<f32>().unwrap_or_else(|_| die("--trigger-pad M".into()))).unwrap_or(0.5),
@@ -2675,27 +2678,70 @@ fn main() {
                 pole_triggers: !a.rest.iter().any(|x| x == "--flags-as-finish"),
                 pole_margin: flag(&a.rest, "--pole-margin").map(|v| v.parse::<f32>().unwrap_or_else(|_| die("--pole-margin M".into()))).unwrap_or(0.05),
                 pole_sides: flag(&a.rest, "--pole-sides").map(|v| v.parse::<usize>().unwrap_or_else(|_| die("--pole-sides N".into()))).unwrap_or(24),
+                sttf: a.rest.iter().any(|x| x == "--sttf"),
             };
-            let src = std::path::Path::new(&p);
-            let outp = std::path::Path::new(&out);
-            let oc = mapgeom::flags::flags(&mut store, src, outp, &o, dry).unwrap_or_else(|e| die(e));
+            // a DIR: every *.Map.Gbx in it → --out-dir DIR (names "<map name> Flags.Map.Gbx")
+            let srcp = std::path::Path::new(&p);
+            let inputs: Vec<std::path::PathBuf> = if srcp.is_dir() {
+                let mut v: Vec<std::path::PathBuf> = std::fs::read_dir(srcp).unwrap_or_else(|e| die(e.to_string())).filter_map(|e| e.ok()).map(|e| e.path()).filter(|q| q.to_string_lossy().ends_with(".Map.Gbx")).collect();
+                v.sort();
+                if let Some(o) = flag(&a.rest, "--only") {
+                    let pats: Vec<String> = o.split(',').map(|s| s.trim().to_string()).collect();
+                    v.retain(|q| { let n = q.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(); pats.iter().any(|pp| n.starts_with(pp.as_str())) });
+                }
+                v
+            } else {
+                vec![srcp.to_path_buf()]
+            };
+            let out_dir = flag(&a.rest, "--out-dir");
+            if srcp.is_dir() && out_dir.is_none() {
+                die::<()>("a DIR needs --out-dir DIR".into());
+            }
             let mut tsv = String::from(mapgeom::sttc::REPORT_HEADER);
             tsv.push('\n');
-            for r in &oc.rows {
-                tsv.push_str(&r.tsv());
+            let mut failed = 0usize;
+            let t0 = std::time::Instant::now();
+            for src in &inputs {
+                let label = src.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                let outp: std::path::PathBuf = match &out_dir {
+                    Some(d) => {
+                        let hdr = tmmaps::header::read(src.to_str().unwrap_or_default()).unwrap_or_else(|e| die(e));
+                        std::path::Path::new(d).join(format!("{}{}.Map.Gbx", hdr.name, o.name_suffix))
+                    }
+                    None => std::path::PathBuf::from(&out),
+                };
+                let oc = match mapgeom::flags::flags(&mut store, src, &outp, &o, dry) {
+                    Ok(oc) => oc,
+                    Err(e) => {
+                        failed += 1;
+                        let mut r = mapgeom::sttc::Row::new(&label, "summary", "map", 0, "-");
+                        r.action = "FAILED".into();
+                        r.note = e.clone();
+                        tsv.push_str(&r.tsv());
+                        tsv.push('\n');
+                        eprintln!("{label}: FAILED: {e}");
+                        continue;
+                    }
+                };
+                for r in &oc.rows {
+                    tsv.push_str(&r.tsv());
+                    tsv.push('\n');
+                }
+                let mut sum = mapgeom::sttc::Row::new(&label, "summary", "map", 0, &oc.new_name);
+                sum.action = format!("{} flags {} ({}); strip: {} blocks -> plain twins, {} blocks / {} items / {} generated removed{}", oc.converted, if o.pole_triggers { "kept + pole finish triggers appended" } else { "-> finish items" }, oc.items.iter().map(|(s, i, _)| format!("{s} -> {i}")).collect::<Vec<_>>().join(", "), oc.replaced_blocks, oc.removed_blocks, oc.finishes_removed, oc.removed_baked, if o.sttf { " (finishes + checkpoints)" } else { " (finishes)" });
+                if !dry {
+                    let bad = mapgeom::flags::verify_flags(src, &outp, &oc, &o).unwrap_or_else(|e| die(e));
+                    sum.note = if bad.is_empty() { "verified".into() } else { failed += 1; format!("VERIFY FAILED: {}", bad.join("; ")) };
+                } else {
+                    sum.note = "dry run".into();
+                }
+                tsv.push_str(&sum.tsv());
                 tsv.push('\n');
+                println!("{}", sum.tsv());
             }
-            let mut sum = mapgeom::sttc::Row::new(&p, "summary", "map", 0, &oc.new_name);
-            sum.action = format!("{} flags {} ({}); {} finish items removed; {} finish blocks -> twins", oc.converted, if o.pole_triggers { "kept + pole finish triggers appended" } else { "-> finish items" }, oc.items.iter().map(|(s, i, _)| format!("{s} -> {i}")).collect::<Vec<_>>().join(", "), oc.finishes_removed, oc.finish_blocks_replaced);
-            if !dry {
-                let bad = mapgeom::flags::verify_flags(src, outp, &oc, &o).unwrap_or_else(|e| die(e));
-                sum.note = if bad.is_empty() { "verified".into() } else { format!("VERIFY FAILED: {}", bad.join("; ")) };
-            } else {
-                sum.note = "dry run".into();
+            if inputs.len() > 1 {
+                println!("{} maps, {} failed, {:.1}s", inputs.len(), failed, t0.elapsed().as_secs_f32());
             }
-            tsv.push_str(&sum.tsv());
-            tsv.push('\n');
-            println!("{}", sum.tsv());
             if let Some(r) = flag(&a.rest, "--report") {
                 if let Some(d) = std::path::Path::new(&r).parent() {
                     let _ = std::fs::create_dir_all(d);
@@ -2703,7 +2749,7 @@ fn main() {
                 std::fs::write(&r, &tsv).unwrap_or_else(|e| die(e.to_string()));
                 println!("wrote {r}");
             }
-            if sum.note.contains("VERIFY FAILED") {
+            if failed > 0 {
                 std::process::exit(2);
             }
         }

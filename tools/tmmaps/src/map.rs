@@ -2674,6 +2674,62 @@ impl MapFile {
         self.raw_splices.push(((payload + z - 4, payload + z + old_len), b));
     }
 
+    /// The embedded-objects manifest of 0x03043054 as (name, collection, author) rows, and the zip
+    /// bytes (empty when the chunk is absent or holds nothing).
+    pub fn embedded_manifest(&self) -> (Vec<(String, u32, String)>, Vec<u8>) {
+        let Some((_, _, payload, size)) = crate::gbx::all_skip_chunks(&self.gbx.body).into_iter().find(|(cid, ..)| *cid == 0x0304_3054) else { return (Vec::new(), Vec::new()) };
+        if size < 16 {
+            return (Vec::new(), Vec::new());
+        }
+        let p = &self.gbx.body[payload..payload + size];
+        let u32_at = |o: usize| u32::from_le_bytes(p[o..o + 4].try_into().unwrap());
+        let n = u32_at(12) as usize;
+        let mut o = 16;
+        let mut table: Vec<String> = Vec::new();
+        let mut rows = Vec::new();
+        let rd_id = |o: &mut usize, table: &mut Vec<String>| -> String {
+            let w = u32_at(*o);
+            *o += 4;
+            if w == 0x4000_0000 {
+                let l = u32_at(*o) as usize;
+                *o += 4;
+                let st = String::from_utf8_lossy(&p[*o..*o + l]).to_string();
+                *o += l;
+                table.push(st.clone());
+                st
+            } else if w & 0x4000_0000 != 0 {
+                table.get((w & 0x3FFF_FFFF) as usize - 1).cloned().unwrap_or_default()
+            } else {
+                String::new()
+            }
+        };
+        if n > 0 {
+            o += 4; // lookback version
+            for _ in 0..n {
+                let name = rd_id(&mut o, &mut table);
+                let coll = u32_at(o);
+                o += 4;
+                let author = rd_id(&mut o, &mut table);
+                rows.push((name, coll, author));
+            }
+        }
+        let zl = u32_at(o) as usize;
+        o += 4;
+        (rows, p[o..o + zl].to_vec())
+    }
+
+    /// `replace_embedded_objects` with the collection word per row (a merge of Nadeo's rows —
+    /// collection 26 for its TME items even on a RedIsland map — with ours).
+    pub fn replace_embedded_objects_rows(&mut self, items: &[(&str, u32, &str)], zip: &[u8]) {
+        let (_, _, payload, size) = crate::gbx::all_skip_chunks(&self.gbx.body)
+            .into_iter()
+            .find(|(cid, ..)| *cid == 0x0304_3054)
+            .expect("map has no embedded-objects chunk 0x03043054");
+        assert!(size >= 24, "embedded-objects chunk is shorter than its fixed header");
+        let b = embedded_objects_payload_rows(items, zip);
+        self.raw_splices.push(((payload + 12, payload + size), b[12..].to_vec()));
+    }
+
     /// Replace the embedded-object manifest and ZIP in 0x03043054.
     /// The manifest lists item Idents only; support files (prefabs, materials)
     /// are ordinary ZIP entries and need no manifest row.
@@ -2736,6 +2792,12 @@ fn esc_xml(s: &str) -> String {
 /// of what follows, the manifest of (Ident, collection, author), the ZIP with
 /// its length, and a trailing zero. `items` are (item ident, author).
 pub fn embedded_objects_payload(items: &[(&str, &str)], zip: &[u8], collection: u32) -> Vec<u8> {
+    let rows: Vec<(&str, u32, &str)> = items.iter().map(|(n, a)| (*n, collection, *a)).collect();
+    embedded_objects_payload_rows(&rows, zip)
+}
+
+/// `embedded_objects_payload` with the collection word per row.
+pub fn embedded_objects_payload_rows(items: &[(&str, u32, &str)], zip: &[u8]) -> Vec<u8> {
     let mut b = Vec::new();
     b.extend_from_slice(&1u32.to_le_bytes());
     b.extend_from_slice(&0u32.to_le_bytes());
@@ -2756,7 +2818,7 @@ pub fn embedded_objects_payload(items: &[(&str, &str)], zip: &[u8], collection: 
                 b.extend_from_slice(s.as_bytes());
             }
         };
-        for (name, author) in items.iter() {
+        for (name, collection, author) in items.iter() {
             // The Ident is the file name relative to Items/, verbatim: it is
             // what the placements name and what the ZIP entry is called.
             put(&mut b, name);
