@@ -352,10 +352,10 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
     if !no_finish {
         let mut mm = MapFile::try_load(out)?;
         let (old_rows, old_zip) = mm.embedded_manifest();
-        let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
-        for (name, data) in tmmaps::header::zip_entries(&old_zip) {
-            files.insert(name, data);
-        }
+        // THE ORDER RULE (Hugo's country-map crash, 2026-10-08): the game maps manifest row i to zip
+        // entry i. The base archive is kept BYTE-FOR-BYTE (its deflated entries, headers, order) and
+        // ours are appended to both lists in the same order — never re-sorted, never re-encoded
+        let mut added: Vec<(String, Vec<u8>)> = Vec::new();
         let mut manifest: Vec<(String, u32, String)> = old_rows.clone();
         // THE PROVEN FORM (the tiny campaign's embedded library items, 2026-09-08 "Missing Items"
         // lesson; Hugo's game refused round 1 with exactly that dialog): the archive entry is
@@ -364,17 +364,18 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
         // names the FULL ident with its `.Item.Gbx` extension, author = ident, collection = the map's
         for (_, ident, _, bytes) in &built {
             let b = crate::tiny_assets::set_ident_collection(bytes, collection);
-            files.insert(format!("Items/{ident}"), b);
+            added.push((format!("Items/{ident}"), b));
             manifest.push((ident.clone(), collection, ident.clone()));
         }
-        let zip = tmmaps::header::stored_zip(&files);
+        let zip = tmmaps::header::append_stored_zip(&old_zip, &added);
         let refs: Vec<(&str, u32, &str)> = manifest.iter().map(|(a, c, b)| (a.as_str(), *c, b.as_str())).collect();
         mm.replace_embedded_objects_rows(&refs, &zip);
         mm.write_to(out).map_err(|e| e.to_string())?;
         if !old_rows.is_empty() {
+            let n_old = tmmaps::header::zip_entries(&old_zip).len();
             let mut r = Row::new(&map_label, "flags", "map", 0, "embedded");
             r.action = "merged".into();
-            r.note = format!("{} existing embedded item(s) kept ({} zip entries) + {} of ours", old_rows.len(), files.len() - built.len(), built.len());
+            r.note = format!("{} existing embedded item(s) kept byte-for-byte in their order ({} zip entries, base archive verbatim) + {} of ours appended to both lists", old_rows.len(), n_old, built.len());
             rows.push(r);
         }
     }
@@ -563,8 +564,31 @@ pub fn verify_flags(src: &Path, out: &Path, oc: &FlagsOutcome, o: &FlagsOpts) ->
         }
     }
     let emb = crate::embedded::files(&b)?;
-    let (rows_a, _) = a.embedded_manifest();
-    let (rows_b, _) = b.embedded_manifest();
+    let (rows_a, zip_a) = a.embedded_manifest();
+    let (rows_b, zip_b) = b.embedded_manifest();
+    // THE ORDER RULE: manifest row i ↔ zip entry i, the base's local entries a byte-prefix of ours
+    {
+        let names_b: Vec<String> = tmmaps::header::zip_entries(&zip_b).iter().map(|(n, _)| n.replace('\\', "/")).collect();
+        if names_b.len() != rows_b.len() {
+            bad.push(format!("{} zip entries vs {} manifest rows", names_b.len(), rows_b.len()));
+        }
+        for (i, (row, _, _)) in rows_b.iter().enumerate() {
+            let want = format!("Items/{}", row.replace('\\', "/"));
+            if names_b.get(i).map(|n| !n.eq_ignore_ascii_case(&want)).unwrap_or(true) {
+                bad.push(format!("manifest row {i} {row} vs zip entry {i} {:?}: ORDER MISMATCH", names_b.get(i)));
+                break;
+            }
+        }
+        if !zip_a.is_empty() {
+            let eocd_a = (0..zip_a.len().saturating_sub(21)).rev().find(|&i| &zip_a[i..i + 4] == b"PK\x05\x06");
+            if let Some(e) = eocd_a {
+                let cd_off = u32::from_le_bytes(zip_a[e + 16..e + 20].try_into().unwrap()) as usize;
+                if zip_b.len() < cd_off || zip_b[..cd_off] != zip_a[..cd_off] {
+                    bad.push("the source archive's local entries are not a byte-prefix of the output archive".into());
+                }
+            }
+        }
+    }
     for ra in &rows_a {
         if !rows_b.contains(ra) {
             bad.push(format!("the source's embedded manifest row {ra:?} is gone"));

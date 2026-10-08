@@ -152,6 +152,14 @@ fn main() {
             }
         }
         // embedded-extract MAP DIR: every entry of the map's embedded zip written under DIR (its path kept)
+        // embedded-zip MAP --out F.zip: the raw embedded archive bytes
+        "embedded-zip" => {
+            let m = tmmaps::map::MapFile::load(std::path::Path::new(&args[2]));
+            let out = tmmaps::cli::flag(&args, "--out").expect("--out F.zip");
+            let (_, zip) = m.embedded_manifest();
+            std::fs::write(&out, &zip).unwrap();
+            println!("wrote {out}: {} bytes", zip.len());
+        }
         "embedded-extract" => {
             let m = tmmaps::map::MapFile::load(std::path::Path::new(&args[2]));
             let dir = std::path::Path::new(&args[3]);

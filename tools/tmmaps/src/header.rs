@@ -700,6 +700,74 @@ pub fn deflated_zip(files: &std::collections::BTreeMap<String, Vec<u8>>) -> Vec<
     out
 }
 
+/// `base` (an existing zip) with `added` entries APPENDED, stored: every pre-existing local
+/// header + data byte-identical and in its original order (the game maps manifest row i to
+/// zip entry i — Hugo's country Flags maps crashed inside Nadeo's own TME item loader after a
+/// BTreeMap re-sort put our carriers first, 2026-10-08), the central directory rebuilt from the
+/// base's own central records (verbatim) plus ours. `added` is written in the given order.
+pub fn append_stored_zip(base: &[u8], added: &[(String, Vec<u8>)]) -> Vec<u8> {
+    if base.is_empty() {
+        let m: std::collections::BTreeMap<String, Vec<u8>> = added.iter().cloned().collect();
+        // a fresh archive keeps the caller's order too
+        let mut out = Vec::new();
+        let mut central = Vec::new();
+        for (name, data) in added {
+            push_stored(&mut out, &mut central, name, data);
+        }
+        let _ = m;
+        return finish_zip(out, central, added.len());
+    }
+    // the base's end-of-central-directory record
+    let eocd = (0..base.len().saturating_sub(21)).rev().find(|&i| &base[i..i + 4] == b"PK\x05\x06").expect("zip: no end-of-central-directory record");
+    let n = u16::from_le_bytes([base[eocd + 10], base[eocd + 11]]) as usize;
+    let cd_size = u32::from_le_bytes(base[eocd + 12..eocd + 16].try_into().unwrap()) as usize;
+    let cd_off = u32::from_le_bytes(base[eocd + 16..eocd + 20].try_into().unwrap()) as usize;
+    let mut out = base[..cd_off].to_vec(); // every local entry, verbatim
+    let mut central = base[cd_off..cd_off + cd_size].to_vec(); // the base's central records, verbatim
+    for (name, data) in added {
+        push_stored(&mut out, &mut central, name, data);
+    }
+    finish_zip(out, central, n + added.len())
+}
+
+fn push_stored(out: &mut Vec<u8>, central: &mut Vec<u8>, name: &str, data: &[u8]) {
+    let off = out.len() as u32;
+    let crc = crc32(data);
+    let nb = name.as_bytes();
+    out.extend_from_slice(b"PK\x03\x04");
+    out.extend_from_slice(&[20, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    out.extend_from_slice(&crc.to_le_bytes());
+    out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    out.extend_from_slice(&(nb.len() as u16).to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(nb);
+    out.extend_from_slice(data);
+    central.extend_from_slice(b"PK\x01\x02");
+    central.extend_from_slice(&[20, 0, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    central.extend_from_slice(&crc.to_le_bytes());
+    central.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    central.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    central.extend_from_slice(&(nb.len() as u16).to_le_bytes());
+    central.extend_from_slice(&[0u8; 8]);
+    central.extend_from_slice(&0u32.to_le_bytes());
+    central.extend_from_slice(&off.to_le_bytes());
+    central.extend_from_slice(nb);
+}
+
+fn finish_zip(mut out: Vec<u8>, central: Vec<u8>, n: usize) -> Vec<u8> {
+    let cd_off = out.len() as u32;
+    out.extend_from_slice(&central);
+    out.extend_from_slice(b"PK\x05\x06");
+    out.extend_from_slice(&[0, 0, 0, 0]);
+    out.extend_from_slice(&(n as u16).to_le_bytes());
+    out.extend_from_slice(&(n as u16).to_le_bytes());
+    out.extend_from_slice(&(central.len() as u32).to_le_bytes());
+    out.extend_from_slice(&cd_off.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out
+}
+
 pub fn stored_zip(files: &std::collections::BTreeMap<String, Vec<u8>>) -> Vec<u8> {
     let mut out = Vec::new();
     let mut central = Vec::new();
