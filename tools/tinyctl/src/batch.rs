@@ -1,7 +1,7 @@
 //! Batch publishing — the whole-club job (Everios96's ~975 u10s maps into the
 //! unpublished club "Tiny U10S", 2026-09-13), in two halves like `publish-map`:
 //!
-//! - `tinyctl publish-batch --manifest M.tsv --results R.tsv [--club C --campaign K
+//! - `tinyctl publish-batch --manifest M.tsv --results R.tsv [--allow-rename] [--club C --campaign K
 //!   --campaign-name N] [--outdir D] [--detach]` runs ON THE BOX: one token mint
 //!   (re-minted on a 401), then per manifest row (`path<TAB>name`) the Nadeo
 //!   upload (create, or update when the uid exists) and the stored-bytes md5
@@ -137,6 +137,24 @@ fn upload_one(t: &mut Tokens, map: &Path, name: &str, outdir: &Path) -> Result<(
         return Err(format!("GET /maps/?mapUidList: HTTP {rec_code} {}", &rec[..rec.len().min(300)]));
     }
     let existing = json_str(&rec, "mapId");
+    // ⛔ THE LIVE-MAP GUARD (2026-10-08). A build's uid is derived from its source's,
+    // so a TEST build of map 23 carried the very uid the live Dirt/Grass/Plastic/Wood
+    // 23 had in the hunt club — and this update route silently replaced those four
+    // live maps with "U10S 23 dirt test" (test medals, unagreed physics) for hours.
+    // An update that would CHANGE the stored name is not an in-place fix of our own
+    // map, it is a collision with someone's live map: refuse it. A real rename passes
+    // `--allow-rename` (TINYCTL_ALLOW_RENAME=1) on purpose.
+    if existing.is_some() {
+        let stored = json_str(&rec, "name").unwrap_or_default();
+        let allow = std::env::var("TINYCTL_ALLOW_RENAME").map(|v| v == "1").unwrap_or(false);
+        if !stored.is_empty() && stored != name && !allow {
+            return Err(format!(
+                "REFUSED: uid {uid} is already online as `{stored}` and this upload would rename it to `{name}` — \
+                 that is a LIVE map, not ours to overwrite (the 2026-10-08 map-23 incident). Re-uid the test build, \
+                 or pass --allow-rename if the rename is intended."
+            ));
+        }
+    }
     let auth_core = format!("Authorization: {}", t.core);
     let params = format!(
         "{{\"isPlayable\":true,\"author\":\"{}\",\"authorScore\":{at},\"bronzeScore\":{bronze},\"silverScore\":{silver},\"goldScore\":{gold},\"collectionName\":\"{envir}\",\"mapStyle\":\"\",\"mapType\":\"TrackMania\\\\TM_Race\",\"name\":\"{}\",\"mapUid\":\"{uid}\"}}",
@@ -259,6 +277,10 @@ pub fn publish_batch_cmd(args: &[String]) -> Result<(), String> {
         .collect();
     let jobs: usize = f("--jobs").and_then(|v| v.parse().ok()).unwrap_or(1).max(1);
     let files_only = tmmaps::cli::has(args, "--files-only");
+    // `--allow-rename`: an update may change the stored name (see the guard in upload_one)
+    if tmmaps::cli::has(args, "--allow-rename") {
+        std::env::set_var("TINYCTL_ALLOW_RENAME", "1");
+    }
     let summary = (|| -> Result<String, String> {
         let token_dir = f("--token-dir").unwrap_or_else(|| crate::publish::STORE.to_string());
         let mut t = if files_only { Tokens::from_files(&token_dir)? } else { Tokens::mint(&shootctl)? };

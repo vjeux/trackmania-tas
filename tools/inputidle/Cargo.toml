@@ -1,0 +1,11 @@
+[package]
+name = "inputidle"
+version = "0.1.0"
+edition = "2021"
+description = "Is anyone using this Windows machine? Keyboard/mouse idle time from the OS, controller activity from XInput; the free-box gate for every game launch on the render box."
+
+[dependencies]
+
+[profile.release]
+opt-level = 2
+panic = "abort"

@@ -109,6 +109,7 @@ fn one(args: &[String], map: &Path, out: &Path) -> Result<(), String> {
     let tag = format!("lm{}-{}", std::process::id(), stem.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>());
     let shootctl = f("--box-shootctl").unwrap_or_else(|| format!("{BOX_TOOLS}/shootctl"));
     let wsx = Wsx::new(args);
+    crate::inputidle::gate(&wsx, args, "tinyctl lightmap")?;
     let r_map = format!("{STAGE}/{tag}.Map.Gbx");
     let r_dir = format!("{SHOTS}/{tag}");
     let rel = format!("_lightmap/{stem}.Map.Gbx");

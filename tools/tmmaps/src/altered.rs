@@ -1516,3 +1516,569 @@ pub fn effect_catalog_cmd(args: &[String]) -> Result<(), String> {
     println!("{}: {} blocks on a {cols}-wide grid (pitch {pitch}), {} items parked, host cleared {:?}; grid {}", out.display(), rows.len(), n_items, r, tsv_path.display());
     Ok(())
 }
+
+/// `tmmaps block-lineup HOST.Map.Gbx --inventory inv.tsv --list NAMES.txt --out-prefix P
+/// [--lanes N] [--width 46] [--depth 44] [--y 9] [--gap 1] [--start-x 1 --start-z 3]`:
+/// the review map(s) of a block family (vjeux 2026-10-03: "inventory of all the black
+/// blocks and pool blocks, put them in a map side by side and build the dirt variant on
+/// the next row; different ways to convert → different rows"). Every name of NAMES.txt
+/// (one per line; `#` comments) is placed `lanes` times as a GRID block facing north on
+/// the ground row: lane 0 at the block's slot, lane k directly behind it (+z), so a
+/// reviewer compares the original with each converted lane at a glance. Slots are
+/// packed by the block's footprint from `mapgeom blockinfo-all --footprints` (x/z cell
+/// extents, `gap` cells between blocks); a block row is `lanes × (max z extent + gap)`
+/// deep; when the next row would leave the map's `depth`, a new map starts
+/// (`<P>-1.Map.Gbx`, `<P>-2.Map.Gbx`, …). The host is emptied like `effect-catalog`
+/// (its generated records kept), a start and a finish go in the south-west corner.
+/// Beside every map: `<map>.lanes.tsv` — `name lane cx cy cz wx wy wz` — and
+/// `<map>.lane<k>.Map.Gbx` for every k: the same map with ONLY lane k's blocks (lane 0 =
+/// the originals; a conversion run takes a lane map; `tmmaps merge` folds them back).
+pub fn block_lineup_cmd(args: &[String]) -> Result<(), String> {
+    let f = |k: &str| crate::cli::flag(args, k).map(String::from);
+    let host = PathBuf::from(args.iter().skip(1).find(|a| !a.starts_with("--") && a.ends_with(".Map.Gbx")).ok_or("HOST.Map.Gbx")?);
+    let inv = PathBuf::from(f("--inventory").ok_or("--inventory inv.tsv (mapgeom blockinfo-all --footprints)")?);
+    let list = PathBuf::from(f("--list").ok_or("--list NAMES.txt")?);
+    let prefix = f("--out-prefix").ok_or("--out-prefix P")?;
+    let lanes: i32 = f("--lanes").and_then(|v| v.parse().ok()).unwrap_or(2).max(1);
+    let width: i32 = f("--width").and_then(|v| v.parse().ok()).unwrap_or(46);
+    let depth: i32 = f("--depth").and_then(|v| v.parse().ok()).unwrap_or(44);
+    let y: i32 = f("--y").and_then(|v| v.parse().ok()).unwrap_or(9);
+    let gap: i32 = f("--gap").and_then(|v| v.parse().ok()).unwrap_or(1);
+    let x0: i32 = f("--start-x").and_then(|v| v.parse().ok()).unwrap_or(1);
+    let z0: i32 = f("--start-z").and_then(|v| v.parse().ok()).unwrap_or(3);
+    // --dir D: every block's cardinal (0 = the inventory's own, i.e. a road's axis along z).
+    // A drive test along a ROW (which runs along x) wants the road pieces turned onto the
+    // row's axis: `--dir 3` (2026-10-06, the water-road physics measurement).
+    let block_dir: u8 = f("--dir").and_then(|v| v.parse().ok()).unwrap_or(0);
+    // --lane: ONE drivable line instead of a grid — every name in the list is laid in
+    // the order given, one footprint after another along +z in a single column, with the
+    // start pad in front of it. That is the shape the physics bench needs: the car drives
+    // through every kind in one run and the wheel log segments by z (2026-10-07).
+    let lane_mode = crate::cli::has(args, "--lane");
+    // footprints: name → (x, z) cell extents of the ground (else air) variant
+    let mut foot: std::collections::BTreeMap<String, (i32, i32)> = std::collections::BTreeMap::new();
+    for line in std::fs::read_to_string(&inv).map_err(|e| format!("{}: {e}", inv.display()))?.lines().skip(1) {
+        let c: Vec<&str> = line.split('\t').collect();
+        if c.len() >= 7 {
+            if let (Ok(x), Ok(z)) = (c[4].parse::<i32>(), c[6].parse::<i32>()) {
+                foot.insert(c[0].to_string(), (x.max(1), z.max(1)));
+            }
+        }
+    }
+    let names: Vec<String> = std::fs::read_to_string(&list).map_err(|e| format!("{}: {e}", list.display()))?.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty() && !l.starts_with('#')).collect();
+    let mut missing: Vec<&String> = names.iter().filter(|n| !foot.contains_key(*n)).collect();
+    if !missing.is_empty() {
+        missing.truncate(8);
+        return Err(format!("{} name(s) not in the inventory, e.g. {:?}", names.iter().filter(|n| !foot.contains_key(*n)).count(), missing));
+    }
+    // deepest footprints first (then widest, then the name): rows stay uniform in
+    // depth instead of one arch making a whole row of 1×1 pools 3 cells deep
+    // (--keep-order leaves the list order alone)
+    let mut names = names;
+    if !crate::cli::has(args, "--keep-order") {
+        names.sort_by(|a, b| foot[b].1.cmp(&foot[a].1).then(foot[b].0.cmp(&foot[a].0)).then(a.cmp(b)));
+    }
+    // shelf packing: rows of blocks across x; each row `lanes` lanes deep
+    struct Slot { name: String, cx: i32, cz: i32, fz: i32 }
+    let mut maps: Vec<Vec<Slot>> = vec![Vec::new()];
+    let mut row: Vec<(String, i32, i32)> = Vec::new(); // name, x, fz
+    let mut x = x0;
+    let mut z = z0;
+    let flush_row = |row: &mut Vec<(String, i32, i32)>, z: &mut i32, maps: &mut Vec<Vec<Slot>>| {
+        if row.is_empty() {
+            return;
+        }
+        let pitch_z = row.iter().map(|r| r.2).max().unwrap_or(1) + gap;
+        if *z + lanes * pitch_z > z0 + depth && !maps.last().unwrap().is_empty() {
+            maps.push(Vec::new());
+            *z = z0;
+        }
+        for (name, rx, fz) in row.drain(..) {
+            maps.last_mut().unwrap().push(Slot { name, cx: rx, cz: *z, fz: pitch_z });
+            let _ = fz;
+        }
+        *z += lanes * pitch_z;
+    };
+    if lane_mode {
+        // one column: every name in order along +z, footprint after footprint
+        let mut z = z0;
+        let mut slots: Vec<Slot> = Vec::new();
+        for n in &names {
+            let (_fx, fz) = foot.get(n).copied().unwrap_or((1, 1));
+            slots.push(Slot { name: n.clone(), cx: x0, cz: z, fz });
+            z += fz.max(1) + gap;
+        }
+        maps.push(slots);
+    }
+    for n in &names {
+        if lane_mode {
+            break;
+        }
+        let (fx, fz) = foot[n];
+        if x + fx > x0 + width && !row.is_empty() {
+            flush_row(&mut row, &mut z, &mut maps);
+            x = x0;
+        }
+        row.push((n.clone(), x, fz));
+        x += fx + gap;
+    }
+    flush_row(&mut row, &mut z, &mut maps);
+    let hdr = crate::header::read(host.to_str().unwrap_or_default()).ok();
+    let uid_len = hdr.as_ref().map(|h| h.uid.len()).unwrap_or(27);
+    let mut total = 0usize;
+    for (mi, slots) in maps.iter().enumerate() {
+        let out = PathBuf::from(format!("{prefix}-{}.Map.Gbx", mi + 1));
+        let mut tsv = String::from("name\tlane\tcx\tcy\tcz\twx\twy\twz\n");
+        let mut per_lane: Vec<Vec<crate::map::FreeBlockSpec>> = vec![Vec::new(); lanes as usize];
+        for s in slots {
+            for lane in 0..lanes {
+                let cell = [s.cx, y, s.cz + lane * s.fz];
+                let world = [cell[0] as f32 * 32.0 + 16.0, cell[1] as f32 * 8.0 - 62.0, cell[2] as f32 * 32.0 + 16.0];
+                tsv.push_str(&format!("{}\t{lane}\t{}\t{}\t{}\t{:.1}\t{:.1}\t{:.1}\n", s.name, cell[0], cell[1], cell[2], world[0], world[1], world[2]));
+                // on the ground row the GROUND variant (flag 0x1000); anywhere above, the AIR
+                // variant (Everios96 2026-10-03 on the first lineup at ground level: "invisible
+                // parts everywhere, maybe place them not at ground level")
+                let flags = if y <= 9 { 0x1000 } else { 0 };
+                per_lane[lane as usize].push(crate::map::FreeBlockSpec { name: s.name.clone(), author: None, flags, pos: [0.0; 3], rot: [0.0; 3], grid: Some(cell), dir: block_dir });
+            }
+        }
+        let gates = [
+            crate::map::FreeBlockSpec { name: "PlatformTechStart".into(), author: None, flags: if y <= 9 { 0x1000 } else { 0 }, pos: [0.0; 3], rot: [0.0; 3], grid: Some([0, y, 0]), dir: 0 },
+            crate::map::FreeBlockSpec { name: "PlatformTechFinish".into(), author: None, flags: if y <= 9 { 0x1000 } else { 0 }, pos: [0.0; 3], rot: [0.0; 3], grid: Some([0, y, 1]), dir: 0 },
+        ];
+        // the full map (every lane) and one map per converted lane (lane k only)
+        let mut variants: Vec<(PathBuf, Vec<crate::map::FreeBlockSpec>)> = Vec::new();
+        let all: Vec<crate::map::FreeBlockSpec> = per_lane.iter().flatten().cloned().chain(gates.iter().cloned()).collect();
+        variants.push((out.clone(), all));
+        for lane in 0..lanes as usize {
+            let specs: Vec<crate::map::FreeBlockSpec> = per_lane[lane].iter().cloned().chain(gates.iter().cloned()).collect();
+            variants.push((PathBuf::from(format!("{prefix}-{}.lane{lane}.Map.Gbx", mi + 1)), specs));
+        }
+        for (path, specs) in variants {
+            let mut m = MapFile::load(&host);
+            // the host's generated records go, except the terrain zone plates (the
+            // ground the lineup stands on); the editor regenerates the rest on save
+            let _ = m.remove_and_add_blocks(|_| true, |b| !matches!(b.name.as_str(), "Grass" | "Dirt" | "Snow" | "Ice" | "Sand" | "Rock"), &specs);
+            m.write_to(&path).map_err(|e| e.to_string())?;
+            let mut m = MapFile::load(&path);
+            let n_items = m.items.len();
+            m.remove_items(&vec![false; n_items]);
+            m.write_to(&path).map_err(|e| e.to_string())?;
+            let mut m = MapFile::load(&path);
+            m.set_map_uid(&new_uid("Cat", uid_len));
+            m.write_to(&path).map_err(|e| e.to_string())?;
+            // the name is a variable-length splice: after the uid rename, on a reloaded file
+            let mut m = MapFile::load(&path);
+            if let Some(stem) = f("--name") {
+                let old = hdr.as_ref().map(|h| h.name.clone()).unwrap_or_default();
+                let lane_tag = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                let lane_tag = lane_tag.split(".lane").nth(1).map(|t| format!(" lane {}", t.trim_end_matches(".Map.Gbx"))).unwrap_or_default();
+                if !old.is_empty() {
+                    let _ = m.set_map_name(&old, &format!("{stem} {}/{}{lane_tag}", mi + 1, maps.len()));
+                }
+            }
+            m.write_to(&path).map_err(|e| e.to_string())?;
+            let _ = MapFile::clear_genealogy_file(&path);
+        }
+        std::fs::write(out.with_extension("lanes.tsv"), &tsv).map_err(|e| e.to_string())?;
+        total += slots.len();
+        println!("{}: {} blocks × {lanes} lanes (rows end at z {})", out.display(), slots.len(), slots.iter().map(|s| s.cz + lanes * s.fz).max().unwrap_or(z0));
+    }
+    println!("{} blocks over {} map(s)", total, maps.len());
+    Ok(())
+}
+
+/// `tmmaps merge BASE.Map.Gbx OTHER.Map.Gbx… --out F`: BASE plus every authored block,
+/// item placement and embedded item file of the OTHER maps (their generated records are
+/// not carried: the editor rebuilds them on save). Two archives naming the same file with
+/// different bytes is an error — give each conversion run its own alias base. The result
+/// gets a fresh uid. Built for the lane review maps of `block-lineup` (2026-10-03).
+pub fn merge_cmd(args: &[String]) -> Result<(), String> {
+    let f = |k: &str| crate::cli::flag(args, k).map(String::from);
+    let out = PathBuf::from(f("--out").ok_or("--out F")?);
+    // positionals only: a flag's VALUE (`--out X.Map.Gbx`) is not a map to merge
+    let mut maps: Vec<PathBuf> = Vec::new();
+    let mut skip_next = false;
+    for a in args.iter().skip(1) {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if a.starts_with("--") {
+            skip_next = true;
+            continue;
+        }
+        if a.ends_with(".Map.Gbx") {
+            maps.push(PathBuf::from(a));
+        }
+    }
+    if maps.len() < 2 {
+        return Err("merge needs BASE and at least one OTHER map".into());
+    }
+    let base = &maps[0];
+    let mut m = MapFile::load(base);
+    let mut specs: Vec<crate::map::FreeBlockSpec> = Vec::new();
+    struct NewItem { model: String, author: Option<String>, collection: u32, pos: [f32; 3], yaw: f32, frame: Option<([f32; 3], [f32; 3])>, scale: f32, variant: u8, color: u8, tag: Option<String>, order: u32, skin: Option<crate::header::FileRef> }
+    let mut new_items: Vec<NewItem> = Vec::new();
+    let mut files: std::collections::BTreeMap<String, Vec<u8>> = std::collections::BTreeMap::new();
+    let mut manifest: Vec<(String, String)> = Vec::new();
+    fn take_archive(mm: &MapFile, manifest: &mut Vec<(String, String)>, files: &mut std::collections::BTreeMap<String, Vec<u8>>) -> Result<(), String> {
+        if let Some((rows, zip)) = mm.embedded_objects() {
+            for (name, author) in rows {
+                if !manifest.iter().any(|(n, _)| *n == name) {
+                    manifest.push((name, author));
+                }
+            }
+            for (name, bytes) in crate::header::zip_entries(&zip) {
+                let key = name.replace('\\', "/");
+                match files.get(&key) {
+                    Some(old) if *old != bytes => return Err(format!("archive conflict: {key} differs between the merged maps (use distinct alias bases)")),
+                    Some(_) => {}
+                    None => { files.insert(key, bytes); }
+                }
+            }
+        }
+        Ok(())
+    }
+    take_archive(&m, &mut manifest, &mut files)?;
+    // --shift-z A,B,…: cells to move each OTHER map's content along +z (one value per
+    // OTHER map, or one for all) — a lineup lane converted from the saved lane-0 source
+    // lands in its own lane; items follow (×32 m)
+    let shifts: Vec<i32> = f("--shift-z").map(|v| v.split(',').filter_map(|t| t.trim().parse().ok()).collect()).unwrap_or_default();
+    // --lanes-tsv L.lanes.tsv --lane K[,K2,…]: a `block-lineup` lane table; every block and
+    // item of OTHER map i (converted from the saved lane-0 map) moves from its row's lane-0
+    // z to lane K_i's z of the SAME row (rows have their own lane pitch)
+    let lane_rows: Vec<(i32, i32, i32)> = f("--lanes-tsv").map(|p| {
+        std::fs::read_to_string(&p).unwrap_or_default().lines().skip(1).filter_map(|l| {
+            let c: Vec<&str> = l.split('\t').collect();
+            (c.len() >= 5).then(|| (c[1].parse::<i32>().unwrap_or(0), c[4].parse::<i32>().unwrap_or(0), c[2].parse::<i32>().unwrap_or(0)))
+        }).collect()
+    }).unwrap_or_default(); // (lane, cz, cx)
+    let lane_targets: Vec<i32> = f("--lane").map(|v| v.split(',').filter_map(|t| t.trim().parse().ok()).collect()).unwrap_or_default();
+    let lane_dz = |cz0: i32, lane: i32| -> i32 {
+        // the row whose lane-0 z band holds cz0: the greatest lane-0 cz <= cz0
+        // (+1: a wall's SOUTH face piece sits one cell before its row's first cell, in the
+        // previous row's gap cell — the one-cell gap keeps it inside this row's reach)
+        let row_z0 = lane_rows.iter().filter(|(l, z, _)| *l == 0 && *z <= cz0 + 1).map(|(_, z, _)| *z).max().unwrap_or(cz0);
+        let target = lane_rows.iter().filter(|(l, _, _)| *l == lane).map(|(_, z, _)| *z).filter(|z| *z > row_z0).min();
+        // lane k's z of this row = the k-th lane-z above row_z0 among this row's lanes: the
+        // table lists lane k of a row at row_z0 + k × pitch, so the first lane-k z above
+        // row_z0 that belongs to the same row is the one closest to row_z0
+        // shift = lane k's row z − lane 0's row z (a block's offset inside its row is kept)
+        target.map(|z| z - row_z0).unwrap_or(0)
+    };
+    for (oi, other) in maps[1..].iter().enumerate() {
+        let lane_k = lane_targets.get(oi).or(lane_targets.first()).copied();
+        let dz_fixed: i32 = shifts.get(oi).or(shifts.first()).copied().unwrap_or(0);
+        let o = MapFile::load(other);
+        let mut dup = 0;
+        for b in &o.blocks {
+            let (cx, cy, cz0) = b.coords();
+            let dz = match lane_k { Some(k) => lane_dz(cz0, k), None => dz_fixed };
+            let cz = cz0 + dz;
+            let grid = if b.free_pos.is_some() { None } else { Some([cx, cy, cz]) };
+            // a grid block on a cell the BASE already fills is the same lineup fixture
+            // (the start/finish gates every lane map carries): not doubled
+            if grid.is_some() && m.blocks.iter().any(|bb| bb.free_pos.is_none() && bb.coords() == (cx, cy, cz)) {
+                dup += 1;
+                continue;
+            }
+            let mut pos = b.free_pos.unwrap_or([0.0; 3]);
+            pos[2] += dz as f32 * 32.0;
+            // the waypoint-presence bit (0x00100000: an editor-saved start/finish/checkpoint
+            // record carries a waypoint node) goes — the spec writer carries no node, and
+            // the bit without the node mis-parses the record's tail (W-1 merge, 2026-10-04)
+            specs.push(crate::map::FreeBlockSpec { name: b.name.clone(), author: None, flags: b.flags & !0x0010_0000, pos, rot: b.free_rot.unwrap_or([0.0; 3]), grid, dir: b.dir });
+        }
+        if dup > 0 {
+            println!("  {}: {dup} grid block(s) on cells the base fills skipped", other.display());
+        }
+        let colors = o.colors();
+        let mut parked = 0;
+        for it in &o.items {
+            // the converter's seed placement (a RoadSign parked at y −900 when the source
+            // had no item to clone): not a lineup fixture, and under the map volume
+            if it.pos[1] < -500.0 {
+                parked += 1;
+                continue;
+            }
+            let dz = match lane_k { Some(k) => lane_dz((it.pos[2] / 32.0).floor() as i32, k), None => dz_fixed };
+            new_items.push(NewItem {
+                model: it.model.clone(),
+                author: it.author.clone(),
+                collection: it.collection_raw,
+                pos: [it.pos[0], it.pos[1], it.pos[2] + dz as f32 * 32.0],
+                yaw: it.yaw,
+                frame: Some(([it.pitch, it.yaw, it.roll], it.pivot)),
+                scale: it.scale,
+                variant: it.variant(),
+                color: colors.as_ref().map(|c| c.item(it.index)).unwrap_or(0),
+                tag: it.waypoint_tag.clone(),
+                order: it.waypoint_order,
+                skin: it.skin(&o.gbx.body),
+            });
+        }
+        take_archive(&o, &mut manifest, &mut files)?;
+        println!("  {}: {} blocks, {} items ({parked} parked seed item(s) dropped), archive now {} files", other.display(), o.blocks.len(), o.items.len(), files.len());
+    }
+    let tmp = out.with_extension("merge-stage.Map.Gbx");
+    let _ = m.remove_and_add_blocks(|_| false, |_| false, &specs);
+    m.write_to(&tmp).map_err(|e| e.to_string())?;
+    let mut m = MapFile::load(&tmp);
+    let first = m.items.len();
+    if !new_items.is_empty() {
+        if first == 0 {
+            // no clone donor in the base: seed one record (parked under the map, dropped
+            // below with the other parked seeds) — the converter's own trick
+            let g = crate::gbx::Gbx::parse(&std::fs::read(&tmp).map_err(|e| e.to_string())?);
+            let collection = new_items.first().map(|it| it.collection).unwrap_or(26);
+            let body = crate::map::seed_item_record(&g.body, collection)?;
+            std::fs::write(&tmp, g.write_body_recompressed(&body)).map_err(|e| e.to_string())?;
+            let mut m0 = MapFile::load(&tmp);
+            m0.move_item(0, [8.0, -900.0, 8.0], 0.0, crate::tiny::cell_for([8.0, -900.0, 8.0]));
+            m0.write_to(&tmp).map_err(|e| e.to_string())?;
+            m = MapFile::load(&tmp);
+        }
+        let first = m.items.len();
+        // the clones exist in the FILE only after a write: reload before addressing them
+        m.append_item_clones(first + new_items.len());
+        m.write_to(&tmp).map_err(|e| e.to_string())?;
+        m = MapFile::load(&tmp);
+        for (k, it) in new_items.iter().enumerate() {
+            let i = first + k;
+            m.set_item_model(i, &it.model);
+            if let Some(a) = &it.author {
+                m.set_item_author(i, a);
+            }
+            m.set_item_collection(i, it.collection);
+            // the item cell: 32 m columns, 8 m rows from the Stadium item ground at −64
+            // (the converted lane maps' own items read back that way)
+            let cell = ((it.pos[0] / 32.0).floor().clamp(0.0, 254.0) as i32, ((it.pos[1] + 64.0) / 8.0).floor().clamp(0.0, 255.0) as i32, (it.pos[2] / 32.0).floor().clamp(0.0, 254.0) as i32);
+            m.move_item(i, it.pos, it.yaw, cell);
+            if let Some((rot, pivot)) = it.frame {
+                m.set_item_frame(i, rot, pivot);
+            }
+            m.set_item_scale(i, it.scale);
+            if it.variant != 0 {
+                m.set_item_variant(i, it.variant);
+            } else {
+                m.clear_item_variant(i);
+            }
+            m.set_item_color(i, it.color);
+        }
+        m.write_to(&tmp).map_err(|e| e.to_string())?;
+        let mut m2 = MapFile::load(&tmp);
+        for (k, it) in new_items.iter().enumerate() {
+            m2.set_item_waypoint(first + k, it.tag.as_deref(), it.order);
+        }
+        m2.write_to(&tmp).map_err(|e| e.to_string())?;
+        let mut m3 = MapFile::load(&tmp);
+        for (k, it) in new_items.iter().enumerate() {
+            if it.skin.is_some() {
+                m3.set_item_skin(first + k, it.skin.as_ref());
+            }
+        }
+        m3.write_to(&tmp).map_err(|e| e.to_string())?;
+        m = MapFile::load(&tmp);
+    }
+    if !manifest.is_empty() {
+        let zip = crate::header::deflated_zip(&files);
+        let rows: Vec<(&str, &str)> = manifest.iter().map(|(n, a)| (n.as_str(), a.as_str())).collect();
+        m.replace_embedded_objects(&rows, &zip);
+    }
+    m.write_to(&tmp).map_err(|e| e.to_string())?;
+    let mut m = MapFile::load(&tmp);
+    let hdr = crate::header::read(base.to_str().unwrap_or_default()).ok();
+    m.set_map_uid(&new_uid("Mrg", hdr.as_ref().map(|h| h.uid.len()).unwrap_or(27)));
+    m.write_to(&tmp).map_err(|e| e.to_string())?;
+    // --name N: the merged map's name (a variable-length splice: on the reloaded file)
+    let mut m = MapFile::load(&tmp);
+    if let Some(new_name) = f("--name") {
+        let old = hdr.as_ref().map(|h| h.name.clone()).unwrap_or_default();
+        if !old.is_empty() {
+            let _ = m.set_map_name(&old, &new_name);
+        }
+    }
+    m.write_to(&tmp).map_err(|e| e.to_string())?;
+    // the BASE's own parked seed placement goes the same way
+    let mut m = MapFile::load(&tmp);
+    let keep: Vec<bool> = m.items.iter().map(|it| it.pos[1] >= -500.0).collect();
+    if keep.iter().any(|k| !k) {
+        m.remove_items(&keep);
+    }
+    m.write_to(&out).map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_file(&tmp);
+    let chk = MapFile::load(&out);
+    println!("{}: {} blocks, {} items, {} embedded files", out.display(), chk.blocks.len(), chk.items.len(), manifest.len());
+    Ok(())
+}
+
+/// `tmmaps swap-items LIVE.Map.Gbx --swap STOCK=F.Item.Gbx[,STOCK2=G.Item.Gbx…] --out OUT
+/// [--uid-prefix XXXX]`: every placement of the stock item STOCK (`RampMedv2`) is
+/// re-pointed at the embedded item F (its ident = its file name, its own author, the
+/// map's collection), F joins the map's archive and manifest; nothing else in the map
+/// changes — the in-place form of an item conversion (the ramp round, 2026-10-03: a
+/// full rebuild would have replayed every later round's choices, the live file is the
+/// truth). `--uid-prefix` gives the result a fresh uid (first four characters replaced):
+/// a records reset, the mapper's decision.
+pub fn swap_items_cmd(args: &[String]) -> Result<(), String> {
+    let f = |k: &str| crate::cli::flag(args, k).map(String::from);
+    let live = PathBuf::from(args.iter().skip(1).find(|a| !a.starts_with("--") && a.ends_with(".Map.Gbx")).ok_or("LIVE.Map.Gbx")?);
+    let out = PathBuf::from(f("--out").ok_or("--out OUT")?);
+    let swaps: Vec<(String, PathBuf)> = f("--swap").ok_or("--swap STOCK=F.Item.Gbx[,…]")?.split(',').filter(|s| !s.trim().is_empty()).map(|s| {
+        let (a, b) = s.split_once('=').ok_or_else(|| format!("--swap entry `{s}`: want STOCK=F.Item.Gbx"))?;
+        Ok::<_, String>((a.trim().to_string(), PathBuf::from(b.trim())))
+    }).collect::<Result<_, _>>()?;
+    let mut m = MapFile::load(&live);
+    let collection = m.items.first().map(|it| it.collection_raw).unwrap_or(26);
+    let mut manifest: Vec<(String, String)> = Vec::new();
+    let mut zip: Vec<u8> = Vec::new();
+    if let Some((rows, z)) = m.embedded_objects() {
+        manifest = rows;
+        zip = z;
+    }
+    let mut swapped = 0usize;
+    for (stock, file) in &swaps {
+        let ident = file.file_name().map(|n| n.to_string_lossy().to_string()).ok_or("item file name")?;
+        if !ident.ends_with(".Item.Gbx") {
+            return Err(format!("{ident}: an embedded item is named *.Item.Gbx"));
+        }
+        let bytes = std::fs::read(file).map_err(|e| format!("{}: {e}", file.display()))?;
+        let hits: Vec<usize> = m.items.iter().filter(|it| it.model == *stock).map(|it| it.index).collect();
+        if hits.is_empty() {
+            return Err(format!("{stock}: no placement in {}", live.display()));
+        }
+        let author = crate::surface::item_author(&ident);
+        for &i in &hits {
+            m.set_item_model(i, &ident);
+            m.set_item_author(i, &author);
+            m.set_item_collection(i, collection);
+            m.clear_item_variant(i);
+        }
+        swapped += hits.len();
+        if !manifest.iter().any(|(n, _)| *n == ident) {
+            manifest.push((ident.clone(), author.clone()));
+            zip = if zip.is_empty() {
+                let mut files = std::collections::BTreeMap::new();
+                files.insert(format!("Items/{ident}"), bytes);
+                crate::header::deflated_zip(&files)
+            } else {
+                crate::header::zip_add(&zip, &format!("Items/{ident}"), &bytes)
+            };
+        }
+        println!("  {stock}: {} placement(s) -> {ident}", hits.len());
+    }
+    // the renames are fixed-size patches; the archive is a variable-length splice:
+    // write, reload, then splice
+    let tmp = out.with_extension("swap-stage.Map.Gbx");
+    m.write_to(&tmp).map_err(|e| e.to_string())?;
+    let mut m = MapFile::load(&tmp);
+    let rows: Vec<(&str, &str)> = manifest.iter().map(|(n, a)| (n.as_str(), a.as_str())).collect();
+    m.replace_embedded_objects(&rows, &zip);
+    m.write_to(&tmp).map_err(|e| e.to_string())?;
+    let mut m = MapFile::load(&tmp);
+    if let Some(p) = f("--uid-prefix") {
+        if p.len() != 4 {
+            return Err("--uid-prefix is 4 characters".into());
+        }
+        let old = crate::header::read(live.to_str().unwrap_or_default()).map(|h| h.uid).map_err(|e| e.to_string())?;
+        m.set_map_uid(&format!("{p}{}", &old[4..]));
+        m.remove_password();
+    }
+    m.write_to(&out).map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_file(&tmp);
+    let chk = MapFile::load(&out);
+    let hdr = crate::header::read(out.to_str().unwrap_or_default()).map_err(|e| e.to_string())?;
+    println!("{}: {swapped} placement(s) swapped, {} items, {} embedded files, uid {}", out.display(), chk.items.len(), manifest.len(), hdr.uid);
+    Ok(())
+}
+
+/// `tmmaps restart MAP --cell x,y,z --dir D --out F [--block PlatformTechStart]`: the map's
+/// start block(s) (`Platform*Start`, `Road*Start`) replaced by ONE start at the given cell
+/// facing D (0 north/+z, 1 east/+x, 2 south/−z, 3 west/−x). A review camera: the race
+/// opens behind the car on the start, looking the way the start faces — so the start is
+/// where the camera must stand (the MediaTracker intro is not played by the plugin's
+/// /playmap, 2026-10-04). The uid stays (a review file).
+pub fn restart_cmd(args: &[String]) -> Result<(), String> {
+    let f = |k: &str| crate::cli::flag(args, k).map(String::from);
+    let map = PathBuf::from(args.iter().skip(1).find(|a| !a.starts_with("--") && a.ends_with(".Map.Gbx")).ok_or("MAP.Map.Gbx")?);
+    let out = PathBuf::from(f("--out").ok_or("--out F")?);
+    let cell: Vec<i32> = f("--cell").ok_or("--cell x,y,z")?.split(',').filter_map(|t| t.trim().parse().ok()).collect();
+    if cell.len() != 3 {
+        return Err("--cell wants x,y,z".into());
+    }
+    let dir: u8 = f("--dir").and_then(|d| d.parse().ok()).unwrap_or(0) & 3;
+    let block = f("--block").unwrap_or_else(|| "PlatformTechStart".into());
+    let mut m = MapFile::load(&map);
+    let is_start = |n: &str| (n.starts_with("Platform") || n.starts_with("Road")) && n.ends_with("Start");
+    // in place when the map has a start: its cell and dir bytes patched, the record (and
+    // its waypoint node — the editor-saved spawn) kept; a re-added node-less start block
+    // did NOT move the spawn (2026-10-04: two different cells, the same frame)
+    if let Some(b) = m.blocks.iter().find(|b| is_start(&b.name) && b.free_pos.is_none()).cloned() {
+        m.raw_patches.push((b.coord_off, vec![(cell[0] + 1) as u8, cell[1] as u8, (cell[2] + 1) as u8]));
+        m.raw_patches.push((b.coord_off - 1, vec![dir]));
+        m.write_to(&out).map_err(|e| e.to_string())?;
+        let chk = MapFile::load(&out);
+        let nb = chk.blocks.iter().find(|x| is_start(&x.name)).map(|x| (x.coords(), x.dir));
+        println!("{}: start {} moved in place to {:?} dir {dir} (reads back {:?})", out.display(), b.name, cell, nb);
+        return Ok(());
+    }
+    let specs = vec![crate::map::FreeBlockSpec { name: block.clone(), author: None, flags: if cell[1] <= 9 { 0x1000 } else { 0 }, pos: [0.0; 3], rot: [0.0; 3], grid: Some([cell[0], cell[1], cell[2]]), dir }];
+    let _ = m.remove_and_add_blocks(|_| false, |_| false, &specs);
+    m.write_to(&out).map_err(|e| e.to_string())?;
+    let chk = MapFile::load(&out);
+    println!("{}: no start block; {block} added at {:?} dir {dir}; {} blocks", out.display(), cell, chk.blocks.len());
+    Ok(())
+}
+
+/// `tmmaps set-times MAP --author MS [--gold MS --silver MS --bronze MS] --out F`: the medal
+/// times in the header (0x03043002 + the XML) and the body's challenge parameters (where
+/// the game reads them). A map without times (the editor's save of a merged lineup:
+/// author −1) is refused by Nadeo's upload ("validation error", 2026-10-04). Missing
+/// medals default to author × 1.06 / 1.2 / 1.5 (whole seconds rounded up).
+pub fn set_times_cmd(args: &[String]) -> Result<(), String> {
+    let f = |k: &str| crate::cli::flag(args, k).map(String::from);
+    let map = PathBuf::from(args.iter().skip(1).find(|a| !a.starts_with("--") && a.ends_with(".Map.Gbx")).ok_or("MAP.Map.Gbx")?);
+    let out = PathBuf::from(f("--out").ok_or("--out F")?);
+    let author: u32 = f("--author").ok_or("--author MS")?.parse().map_err(|_| "--author wants milliseconds")?;
+    let medal = |k: &str, factor: f64| -> u32 { f(k).and_then(|v| v.parse().ok()).unwrap_or_else(|| (((author as f64) * factor / 1000.0).ceil() * 1000.0) as u32) };
+    let times = [author, medal("--gold", 1.06), medal("--silver", 1.2), medal("--bronze", 1.5)];
+    let hdr = crate::header::read(map.to_str().unwrap_or_default()).map_err(|e| e.to_string())?;
+    let old_at: u32 = hdr.authortime.parse::<i64>().map(|v| if v < 0 { u32::MAX } else { v as u32 }).map_err(|_| format!("author time `{}` in the header", hdr.authortime))?;
+    let mut m = MapFile::load(&map);
+    let nick = m.author_nickname().unwrap_or_default();
+    let (hh, bh) = m.set_author_and_times(&hdr.author, &hdr.author, &nick, &nick, old_at, times)?;
+    m.set_body_times(old_at, times)?;
+    m.write_to(&out).map_err(|e| e.to_string())?;
+    let back = MapFile::load(&out);
+    match back.body_times() {
+        Some(t) if t == times => {}
+        other => return Err(format!("the body times read back as {other:?}, not {times:?}")),
+    }
+    println!("{}: times author {:.3} gold {:.3} silver {:.3} bronze {:.3} s ({hh} header hits, {bh} body hits)", out.display(), times[0] as f64 / 1000.0, times[1] as f64 / 1000.0, times[2] as f64 / 1000.0, times[3] as f64 / 1000.0);
+    Ok(())
+}
+
+/// `tmmaps drop-blocks MAP --name A[,B…] --out F`: remove every authored record of those
+/// block names (and the generated faces the game would grow around them die with the
+/// block). Used to pull a block out of a review lineup — `TrackWallWithHoleWater` is a
+/// WATER wall whose name does not start with `TrackWallWater`, so the water filter missed
+/// it and it flickered in the dirt lane (Everios96 2026-10-05: "the flickering block is
+/// the last block of the file").
+pub fn drop_blocks_cmd(args: &[String]) -> Result<(), String> {
+    let f = |k: &str| crate::cli::flag(args, k).map(String::from);
+    let map = PathBuf::from(args.iter().skip(1).find(|a| !a.starts_with("--") && a.ends_with(".Map.Gbx")).ok_or("MAP.Map.Gbx")?);
+    let out = PathBuf::from(f("--out").ok_or("--out F")?);
+    let names: Vec<String> = f("--name").ok_or("--name A[,B…]")?.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+    let mut m = MapFile::load(&map);
+    let hit = |n: &str| names.iter().any(|x| x == n);
+    let dropped: Vec<String> = m.blocks.iter().filter(|b| hit(&b.name)).map(|b| b.name.clone()).collect();
+    if dropped.is_empty() {
+        return Err(format!("none of {names:?} is in {}", map.display()));
+    }
+    let _ = m.remove_and_add_blocks(|b| hit(&b.name), |_| false, &[]);
+    m.write_to(&out).map_err(|e| e.to_string())?;
+    let chk = MapFile::load(&out);
+    println!("{}: dropped {} record(s) ({} left)", out.display(), dropped.len(), chk.blocks.len());
+    Ok(())
+}

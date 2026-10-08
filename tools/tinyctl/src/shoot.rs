@@ -56,6 +56,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     }
     std::fs::create_dir_all(&outdir).map_err(|e| format!("{}: {e}", outdir.display()))?;
     let wsx = Wsx::new(args);
+    crate::inputidle::gate(&wsx, args, "tinyctl shoot")?;
     let remote_dir = format!("{SHOTS}/{tag}");
     let r_orig = format!("{STAGE}/{tag}Orig.Map.Gbx");
     let r_tiny = format!("{STAGE}/{tag}Tiny.Map.Gbx");
@@ -104,7 +105,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         let log = format!("{STAGE}/{tag}-fresh.log");
         let owner = format!("{tag}-fresh");
         let job = format!("{shootctl} lock acquire --owner {owner} --wait 900 || exit 3; {shootctl} quit; {shootctl} launch 300 --force; rc=$?; {shootctl} lock release --owner {owner}; if [ $rc = 0 ]; then echo OK fresh game > {done}; else echo FAILED launch rc=$rc > {done}; fi");
-        wsx.sh(&format!("rm -f {done}; nohup setsid sh -c '{job}' > {log} 2>&1 < /dev/null &"))?;
+        wsx.sh(&format!("{}; rm -f {done}; nohup setsid sh -c '{job}' > {log} 2>&1 < /dev/null &", crate::remoteshots::ENV))?;
         let text = wsx.wait_done(&done, &log, Duration::from_secs(1200), "fresh game")?;
         eprintln!("  {}", text.trim());
     }
@@ -123,7 +124,10 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         let anchor_arg = if shoot_side == "t" { format!(" --anchor {anchor}{scale_arg}") } else { String::new() };
         // --shadows Q: compute the lightmap on both sides before shooting
         let shadows_arg = f("--shadows").map(|q| format!(" --shadows {q}")).unwrap_or_default();
-        let cmd = format!("{shootctl} shootset --detach --map {map} --views {r_views} --side {shoot_side} --tag {shoot_tag} --outdir {shoot_dir}{anchor_arg}{shadows_arg}{settle_arg}{get_args}");
+        // the box-side lock names its holder from TM_SESSION; the devserver's
+        // environment does not cross the relay, so the session is exported in
+        // the remote command itself (as remote-drive and round-publish do)
+        let cmd = format!("{}; {shootctl} shootset --detach --map {map} --views {r_views} --side {shoot_side} --tag {shoot_tag} --outdir {shoot_dir}{anchor_arg}{shadows_arg}{settle_arg}{get_args}", crate::remoteshots::ENV);
         eprintln!("shooting side {side}{} …", if as_t { " (a tiny build: through the anchor)" } else { "" });
         let started = wsx.sh(&cmd)?;
         if wsx.verbose {

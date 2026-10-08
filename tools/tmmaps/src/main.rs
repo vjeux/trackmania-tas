@@ -80,7 +80,7 @@ fn main() {
     // missing that is `index out of bounds: the len is 2 but the index is 2` —
     // a panic where a usage line belongs. Say what is missing instead.
     const WANTS_MAP: &[&str] = &[
-        "waypoints", "census", "skins", "fillers", "region", "colors", "phases", "genealogy", "tiny-catalog", "lineup", "shared-cells", "tiny", "tiny-batch", "clear", "shift", "segments", "move", "rotate", "ladder",
+        "waypoints", "census", "skins", "fillers", "region", "colors", "phases", "genealogy", "tiny-catalog", "block-lineup", "merge", "swap-items", "restart", "set-times", "drop-blocks", "lineup", "shared-cells", "tiny", "tiny-batch", "clear", "shift", "segments", "move", "rotate", "ladder",
         "roundtrip",
         "renamecheck", "cporder", "origin", "chunks", "blockrefs", "setuid", "lmquality", "delblocks", "striplightmap", "itembytes", "mediatracker",
     ];
@@ -92,6 +92,42 @@ fn main() {
         "selftest" => selftest::run(&args),
         "region" => census::cmd_region(&args),
         "tiny-catalog" => tmmaps::tiny::catalog_cmd(&args),
+        "block-lineup" => {
+            if let Err(e) = tmmaps::altered::block_lineup_cmd(&args) {
+                eprintln!("tmmaps block-lineup: {e}");
+                std::process::exit(2);
+            }
+        }
+        "drop-blocks" => {
+            if let Err(e) = tmmaps::altered::drop_blocks_cmd(&args) {
+                eprintln!("tmmaps drop-blocks: {e}");
+                std::process::exit(2);
+            }
+        }
+        "set-times" => {
+            if let Err(e) = tmmaps::altered::set_times_cmd(&args) {
+                eprintln!("tmmaps set-times: {e}");
+                std::process::exit(2);
+            }
+        }
+        "restart" => {
+            if let Err(e) = tmmaps::altered::restart_cmd(&args) {
+                eprintln!("tmmaps restart: {e}");
+                std::process::exit(2);
+            }
+        }
+        "swap-items" => {
+            if let Err(e) = tmmaps::altered::swap_items_cmd(&args) {
+                eprintln!("tmmaps swap-items: {e}");
+                std::process::exit(2);
+            }
+        }
+        "merge" => {
+            if let Err(e) = tmmaps::altered::merge_cmd(&args) {
+                eprintln!("tmmaps merge: {e}");
+                std::process::exit(2);
+            }
+        }
         "lineup" => tmmaps::tiny::lineup_cmd(&args),
         "shared-cells" => tmmaps::tiny::shared_cells_cmd(&args),
         "tiny" => tmmaps::tiny::cmd(&args),
@@ -795,6 +831,7 @@ fn main() {
         "dropbaked" => surgery::dropbaked(&args),
         "movebaked" => surgery::movebaked(&args),
         "census" => census::cmd_census(&args),
+        "ghost-touch" => std::process::exit(tmmaps::ghosttouch::cmd(&args)),
         "skins" => census::cmd_skins(&args),
         "fillers" => tmmaps::fillers::cmd(&args),
         // archive-only variants of a tiny map for the load-failure bisect (zippad.rs)

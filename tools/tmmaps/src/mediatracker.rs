@@ -1115,6 +1115,57 @@ impl MediaTracker {
     /// shows whether the trigger cells landed where the car is. Node indices
     /// stay unique (the clip's bytes move, its index with them); a reader
     /// stores nodes by index, so their order in the file does not matter.
+    /// `--intro-camera x,y,z/pitch,yaw/fov`: every key of every CameraCustom block of the
+    /// INTRO clip — the value and both tangents — set to one fixed camera (position, pitch /
+    /// yaw / roll 0, fov; the target position moved along), so the intro frames `tinyctl
+    /// play` takes are THIS view: a free camera over a lineup for a review frame
+    /// (2026-10-04). Angles in radians, the file's convention (pitch down = positive on
+    /// the editor's own intro key: 0.099 looking slightly down).
+    pub fn set_intro_camera(&mut self, pos: [f32; 3], pitch: f32, yaw: f32, fov: f32) -> Result<usize, String> {
+        let clips: Vec<&Clip> = match &self.intro {
+            Slot::Null => Vec::new(),
+            Slot::Clip(c) => vec![c],
+            Slot::Group(g) => g.clips.iter().collect(),
+        };
+        let mut keys = 0usize;
+        let mut edits: Vec<(usize, [u8; 4])> = Vec::new();
+        for c in clips {
+            for t in &c.tracks {
+                for b in &t.blocks {
+                    if let Kind::CameraCustom { keys: ks, .. } = &b.kind {
+                        for (ki, k) in ks.iter().enumerate() {
+                            // the clip must still be playing when the frames are taken: the
+                            // last key moves to t = 60 s (the race intro waits for the clip)
+                            if ki > 0 && ki + 1 == ks.len() {
+                                edits.push((k.off, 60.0f32.to_le_bytes()));
+                            }
+                            for state in 0..3usize {
+                                let so = k.off + 6 * 4 + state * 12 * 4;
+                                let vals: [f32; 7] = [pos[0], pos[1], pos[2], pitch, yaw, 0.0, fov];
+                                for (i, v) in vals.iter().enumerate() {
+                                    edits.push((so + i * 4, v.to_le_bytes()));
+                                }
+                                // the target position: 10 m ahead along the view direction
+                                let (sp, cp) = pitch.sin_cos();
+                                let (sy, cy) = yaw.sin_cos();
+                                let tgt = [pos[0] + 10.0 * cp * sy, pos[1] - 10.0 * sp, pos[2] + 10.0 * cp * cy];
+                                for (i, v) in tgt.iter().enumerate() {
+                                    edits.push((so + 7 * 4 + i * 4, v.to_le_bytes()));
+                                }
+                            }
+                            keys += 1;
+                        }
+                    }
+                }
+            }
+        }
+        if keys == 0 {
+            return Err("no CameraCustom key in the intro clip".into());
+        }
+        self.edits.extend(edits);
+        Ok(keys)
+    }
+
     pub fn promote_end_race(&mut self, n: usize) -> Result<(), String> {
         if !matches!(self.in_game, Slot::Group(_)) {
             return Err("promoting into a map without an in-game group would need a fresh node index: not supported".into());
@@ -1414,6 +1465,17 @@ pub fn cmd(args: &[String]) {
                 }
                 if crate::cli::has(args, "--strip") {
                     mt.strip = true;
+                }
+                if let Some(cam) = crate::cli::flag(args, "--intro-camera") {
+                    let parts: Vec<&str> = cam.split('/').collect();
+                    let nums = |s: &str| -> Vec<f32> { s.split(',').filter_map(|x| x.trim().parse().ok()).collect() };
+                    let (p, a) = (parts.first().map(|x| nums(x)).unwrap_or_default(), parts.get(1).map(|x| nums(x)).unwrap_or_default());
+                    let fov: f32 = parts.get(2).and_then(|x| x.trim().parse().ok()).unwrap_or(60.0);
+                    if p.len() != 3 || a.len() != 2 {
+                        crate::cli::die("--intro-camera wants x,y,z/pitch,yaw[/fov] (radians)");
+                    }
+                    let n = mt.set_intro_camera([p[0], p[1], p[2]], a[0], a[1], fov).unwrap_or_else(|e| crate::cli::die(&e));
+                    println!("intro camera: {n} key(s) set to pos ({:.1},{:.1},{:.1}) pitch {:.3} yaw {:.3} fov {fov}", p[0], p[1], p[2], a[0], a[1]);
                 }
                 let mut w = crate::map::MapFile::load(path);
                 w.set_mediatracker(&mt);

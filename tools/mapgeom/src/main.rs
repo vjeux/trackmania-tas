@@ -2143,6 +2143,17 @@ fn main() {
                 }
                 let (models, records) = mapgeom::surface::plan_records(&mut store, &mut idx, &maps[0], &surface, &coll).unwrap_or_else(|e| die(e));
                 mapgeom::surface::write_records(std::path::Path::new(&rec_out), &records).unwrap_or_else(|e| die(format!("{rec_out}: {e}")));
+                // …and the face table beside it: which block owns each GENERATED FACE, by
+                // the game's own rule (the owner's face list). The writer needs it to bake
+                // a face exactly when its owner converted (2026-10-06).
+                {
+                    let m = tmmaps::map::MapFile::load(&maps[0]);
+                    let fo = mapgeom::surface::face_owners(&mut store, &mut idx, &m);
+                    let fpath = std::path::Path::new(&rec_out).with_file_name("faces.tsv");
+                    let resolved = fo.iter().filter(|(_, _, o, _)| o.is_some()).count();
+                    mapgeom::surface::write_face_owners(&fpath, &fo).unwrap_or_else(|e| die(format!("{}: {e}", fpath.display())));
+                    println!("face owners: {resolved} of {} generated records resolved -> {}", fo.len(), fpath.display());
+                }
                 let mut tally: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
                 for r in &records {
                     *tally.entry(if r.delete { "delete".to_string() } else { r.action.as_str().to_string() }).or_default() += 1;
@@ -2199,6 +2210,37 @@ fn main() {
             // variants carry a prefab — the table the filler draw rule is read
             // off (2026-09-08)
             let clips_only = a.rest.iter().any(|x| x == "--clips");
+            // --footprints: one row per CLASSIC block — the inventory a block lineup
+            // needs (2026-10-03, the black-block / pool test map for Everios96):
+            // name, kind, waypoint, which base variants exist, the GROUND (else air)
+            // variant's cell extents x/y/z (max unit offset + 1), unit count, water
+            // volumes, and that variant's prefabs.
+            if a.rest.iter().any(|x| x == "--footprints") {
+                let needle = a.rest.get(1).cloned().filter(|s| !s.starts_with("--")).unwrap_or_default();
+                let mut store = open(&a);
+                let mut rows = String::from("name\tkind\twaypoint\tvariants\tx\ty\tz\tunits\twater\tprefabs\n");
+                let mut paths: Vec<String> = store.entries().map(|e| e.path()).filter(|p| p.contains("GameCtnBlockInfoClassic\\") && p.ends_with(".EDClassic.Gbx") && (needle.is_empty() || p.contains(&needle))).collect();
+                paths.sort();
+                for p in &paths {
+                    let b = match mapgeom::blockinfo::load(&mut store, p) { Ok(b) => b, Err(_) => continue };
+                    let v = b.variant_base_ground.as_ref().or(b.variant_base_air.as_ref());
+                    let variants = format!("{}{}", if b.variant_base_ground.is_some() { "G" } else { "" }, if b.variant_base_air.is_some() { "A" } else { "" });
+                    let (ext, units, water, prefabs) = match v {
+                        Some(v) => {
+                            let cells = v.cells();
+                            let ext = (0..3).map(|i| cells.iter().map(|c| c[i]).max().unwrap_or(0) + 1).collect::<Vec<_>>();
+                            (format!("{}\t{}\t{}", ext[0], ext[1], ext[2]), cells.len(), v.water_volumes, v.prefabs().iter().map(|q| q.rsplit('\\').next().unwrap_or(q).trim_end_matches(".Prefab.Gbx").to_string()).collect::<Vec<_>>().join("+"))
+                        }
+                        None => ("-\t-\t-".to_string(), 0, 0, String::new()),
+                    };
+                    rows.push_str(&format!("{}\t{:?}\t{}\t{}\t{}\t{}\t{}\t{}\n", b.name, b.kind, b.waypoint_type.map(|w| w.to_string()).unwrap_or_else(|| "-".into()), variants, ext, units, water, prefabs));
+                }
+                match flag(&a.rest, "--out") {
+                    Some(out) => { std::fs::write(&out, &rows).unwrap_or_else(|e| die(format!("{out}: {e}"))); eprintln!("{} blocks -> {out}", paths.len()); }
+                    None => print!("{rows}"),
+                }
+                return;
+            }
             let mut rows = if clips_only {
                 String::from("name\tkind\tclip_type\tfull_free\texclusive\tdeletable\ttop_bottom_multidir\tasym_id\tgroup\tsym_group\tv1_a\tv1_b\thorizontal\tvertical\tground_prefabs\tair_prefabs\talways_visible\tfct_fcb_ignored_by_vfc\tanti_clip\n")
             } else {

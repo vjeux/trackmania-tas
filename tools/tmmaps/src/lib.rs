@@ -27,6 +27,7 @@
 pub mod altered;
 pub mod stadium;
 pub mod census;
+pub mod ghosttouch;
 pub mod changelog;
 pub mod changelog_scan;
 pub mod cli;

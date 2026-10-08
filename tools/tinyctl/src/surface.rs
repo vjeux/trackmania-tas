@@ -66,12 +66,30 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
     // (custom castle roads of U10S_953 stayed in their look, Everios96 2026-09-15)
     // + `Underwater`: the water roads' pool floor and walls (physics Plastic 77) — only ever
     // baked as a visual-only WATER OVERLAY (TINY_WATER_OVERLAY=1, 2026-09-24), the block keeps its water
-    let road_stems = ["RoadTech", "RoadDirt", "RoadDirtFullColorize", "RoadBump", "RoadIce", "OpenTechBorders", "Underwater", "Waterground", "ItemInflatableTube", "ItemInflatableMat", "ItemInflatableFloor", "ThemeSnowRoad", "ThemeSnowRoadBorder", "ThemeRallyCastleWallUV", "ThemeRallyCastleWall"];
+    let road_stems = ["RoadTech", "ItemRamp", "RoadDirt", "RoadDirtFullColorize", "RoadBump", "RoadIce", "OpenTechBorders", "Underwater", "Waterground", "ItemInflatableTube", "ItemInflatableMat", "ItemInflatableFloor", "ThemeSnowRoad", "ThemeSnowRoadBorder", "ThemeRallyCastleWallUV", "ThemeRallyCastleWall"];
     let mut rows: Vec<String> = match s {
         // the snow PLANK roads take the ice platform look, not the bobsleigh one
         // (Everios96 2026-09-19 08:24 on icy 152: "use the ice platform texture")
         "Ice" => road_stems.iter().filter(|st| **st != "RoadIce").map(|st| if st.starts_with("ThemeSnowRoad") { format!("{st}=Stadium\\Media\\Modifier\\PlatformIce\\PlatformTech") } else { format!("{st}=Stadium\\Media\\Material\\RoadIce") }).collect(),
-        "Dirt" => road_stems.iter().filter(|st| !st.starts_with("RoadDirt")).chain(["TrackWall"].iter()).map(|st| format!("{st}=Stadium\\Media\\Material\\RoadDirt")).collect(),
+        // the black walls: the wood sides (`TrackWall`, Wood 14) STAY; the metal top rim
+        // (`TrackWallClips` on the generated top caps) takes the dirt PLATFORM look — not the
+        // road one (Everios96 2026-10-04: "change the metal surface at the top … use the dirt
+        // platform block texture"); the scoped row rides TINY_REDRESS_SCOPED below
+        // the POOL deck (`Underwater`, `Waterground`: the floor you drive on inside a water
+        // block) takes the dirt PLATFORM look, not the dirt ROAD one, and the pool's SIDES
+        // are not touched at all (Everios96 2026-10-06: "youre NOT supposed to texture the
+        // sides at all, only the drivable part/the floor and also with platform dirt
+        // texture. i said this many times now")
+        // ⛔ `OpenTechBorders` carries BOTH the pool's rim AND, on several pools, the pool
+        // FLOOR itself (`WaterFCCenter`, `WaterHFCLeft/Right` on U10S 72/306/10). Dropping
+        // it to kill the brown rim strip left those floors blue — far worse than the strip
+        // (2026-10-08). It stays in the swap; the rim needs a geometry split, not a
+        // material rule. `TINY_NO_POOL_BORDER_DIRT=1` drops it again.
+        "Dirt" => road_stems
+            .iter()
+            .filter(|st| !st.starts_with("RoadDirt") && !(std::env::var("TINY_NO_POOL_BORDER_DIRT").map(|v| v == "1").unwrap_or(false) && **st == "OpenTechBorders"))
+            .map(|st| if matches!(*st, "Underwater" | "Waterground" | "RoadWater" | "PlatformWater") { format!("{st}=Stadium\\Media\\Modifier\\PlatformDirt\\PlatformTech") } else { format!("{st}=Stadium\\Media\\Material\\RoadDirt") })
+            .collect(),
         "Grass" => road_stems.iter().chain(["TrackWall"].iter()).map(|st| format!("{st}=Stadium\\Media\\Modifier\\PlatformGrass\\PlatformTech")).collect(),
         "Plastic" => road_stems.iter().chain(["TrackWall"].iter()).map(|st| format!("{st}=Stadium\\Media\\Modifier\\PlatformPlastic\\PlatformTech")).collect(),
         // + `DecoHill`: the DecoPlatform hills' top (`Modifier\PlatformDirt\DecoHill` on
@@ -126,6 +144,118 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
     }
     if !rows.is_empty() {
         env.push(("TINY_REDRESS".to_string(), rows.join(";")));
+        // the black walls' metal top rim, per set (the top caps only; the sides stay wood)
+        let wall_top: Option<String> = match s {
+            "Dirt" => Some("Stadium\\Media\\Modifier\\PlatformDirt\\PlatformTech".to_string()),
+            "Grass" => Some("Stadium\\Media\\Modifier\\PlatformGrass\\PlatformTech".to_string()),
+            "Plastic" => Some("Stadium\\Media\\Modifier\\PlatformPlastic\\PlatformTech".to_string()),
+            "Ice" => Some("Stadium\\Media\\Modifier\\PlatformIce\\PlatformTech".to_string()),
+            _ => None,
+        };
+        // the FULL-BLOCK black family (`DecoWall*`) is a surface family by NAME ONLY:
+        // `DecoWallCurve5` and `DecoWallCurve5Dirt` share one prefab (`Curve5_Ground`) —
+        // the suffix picks the TERRAIN the game grows around the wall, not the wall's own
+        // dress, so a rename leaves the block exactly as black as before (Everios96
+        // 2026-10-05: "full blocks are not converted at all"). They bake instead, with
+        // the same top-rim rule as the road walls. TINY_DECOWALL_BAKE=0 opts out.
+        // the water ROADS' drive plane takes the set's physics (2026-10-06/07: the car
+        // rides just under the water surface there, so the surface id of a plane at that
+        // height is what it feels — measured dirt 41.2 / tech 43.2 / plastic 43.9 / the
+        // game's water 38.2 m/s over the same 200 m). Pools are excluded by family.
+        // ⛔ The water pipeline runs for EVERY surface. It used to sit inside this
+        // `if let`, so any set missing from `deck_physics_id` (magnet) silently converted
+        // no water at all — caught by testing 2 maps × 5 alterations before shipping.
+        {
+            if let Some(id) = deck_physics_id(&surface) {
+                env.push(("TINY_OVERLAY_WATER_DECK".to_string(), id.to_string()));
+            }
+            // …and the rest of the water pipeline, which until 2026-10-07 only ever ran
+            // from a hand-written env on the review lanes. A plain `tinyctl surface` now
+            // converts every water block the same way the review maps did:
+            //   KEEP_BLOCK  the game's block stays (its dirt "twin" shares one prefab, and
+            //               a PlatformWater→PlatformDirt rename loses the water outright)
+            //   OVERLAY     a visual-only copy beside it: DECK_ONLY + FLOOR_ONLY keep just
+            //               the re-dressed floor (a pool's floor and walls share one
+            //               material, so only the up-facing triangles survive)
+            //   COLLISION   that copy keeps its hull, lifted by the shell, so the floor of
+            //               a POOL is drivable dirt; WATER_DECK above does the same for a
+            //               water ROAD at the height the car actually rides.
+            // `TINY_WATER_PIPELINE=0` opts the whole thing out.
+            // the WATER FACE records the game generates for each configuration
+            // (`PlatformWater*FC*`, `DecoWallWater*FC*`, `TrackWallWater*FC*`): those ARE
+            // the floor the player sees and drives, so they bake and take the set's dress,
+            // the same path the black blocks' faces use (Everios96 2026-10-07).
+            if std::env::var("TINY_WATER_FACES").map(|v| v != "0").unwrap_or(true) {
+                let fams = env.iter().position(|(k, _)| k == "TINY_BAKE_FAMILY");
+                let add = "PlatformWater,DecoWallWater,TrackWallWater,RoadWater";
+                match fams {
+                    Some(i) => {
+                        let cur = env[i].1.clone();
+                        env[i].1 = format!("{cur},{add}");
+                    }
+                    None => env.push(("TINY_BAKE_FAMILY".to_string(), add.to_string())),
+                }
+            }
+            if std::env::var("TINY_WATER_PIPELINE").map(|v| v != "0").unwrap_or(true) {
+                for (k, v) in [
+                    ("TINY_WATER_OVERLAY", "1"),
+                    ("TINY_WATER_OVERLAY_ALL", "1"),
+                    ("TINY_WATER_KEEP_BLOCK", "1"),
+                    ("TINY_OVERLAY_FLOOR_ONLY", "1"),
+                    ("TINY_OVERLAY_DECK_ONLY", "1"),
+                    ("TINY_OVERLAY_COLLISION", "1"),
+                    // 40 mm, not 12: AR (who wrote the other water converter) measured the
+                    // overlay sitting ~10 mm up and said "should do at least 0.04 so that
+                    // there isn't that much clipping with the surface under" — relayed by
+                    // Everios96 2026-10-08. A thin shell z-fights the geometry beneath it,
+                    // which is the strip/fin artefact on U10S 276.
+                    ("TINY_OVERLAY_SHELL", "0.04"),
+                ] {
+                    if std::env::var(k).is_err() {
+                        env.push((k.to_string(), v.to_string()));
+                    }
+                }
+            }
+        }
+        if std::env::var("TINY_DECOWALL_BAKE").map(|v| v != "0").unwrap_or(true) {
+            env.push(("TINY_BAKE_FAMILY".to_string(), "DecoWall".to_string()));
+        }
+        if let Some(link) = wall_top {
+            // … and the HALFPIPE walls (`TrackWallSlopeU*`, `TrackWallArchSlopeU*`: the U
+            // blocks, normal and upside down): you drive INSIDE the curvature, and that
+            // face is the block's own `TrackWall` mesh — one material for the whole block,
+            // so the block takes the surface (Everios96 2026-10-05: "the halfpipe blocks
+            // (upside down/normal one) dont have dirt inside the curvature"). Their
+            // generated caps/panels share the name prefix and follow.
+            env.push((
+                "TINY_REDRESS_SCOPED".to_string(),
+                // the FULL-BLOCK family is the block itself — every face of it is body you
+                // see and drive on, so the whole `DecoWall*` bake takes the deck (not just
+                // the top caps); the road walls keep their wood sides, and so do the road
+                // walls' own faces. The halfpipes' slanted panels (`TrackWall*SlopeUp*`,
+                // the inside you ride) convert with their blocks (Everios96 2026-10-05:
+                // "the inside of the halfpipe needs to be changed, thats the part you
+                // drive on" + "many blocks are not converted").
+                // The FULL BLOCKS' bodies and side panels keep their own look: on those
+                // blocks the TOP CAP is the drivable face and the sides are the pillar
+                // texture ("you changed the entire block to be dirt, but the sides should
+                // stay as the pillar texture", Everios96 2026-10-06) — so no `[DecoWall*]`
+                // wood row; the cap rule below does the work.
+                // The METAL (`TrackWallClips`) goes to the surface wherever it appears —
+                // the top rim Everios96 asked for, the caps the game generates (named
+                // after the prefab they came from: a DecoWall's cap is `PlatformBaseFCT`,
+                // a road wall's `TrackWallStraightFCT`, so a family-scoped rule missed 17
+                // of them), and the arch blocks' own rim. The WOOD (`TrackWall`) stays,
+                // except where it IS the ride surface: the full blocks and the halfpipes'
+                // inside (2026-10-05, Everios96's third review round) — including the
+                // panel the game grows for the UPSIDE-DOWN one, `TrackWallVFCSlopeDown`
+                // ("there is also an upside down version of the block … its still the same
+                // face that needs to change, just upside down"). Its `*SlopeUp*` twin was
+                // already covered; the Down spelling was not, so that ride face stayed
+                // black while the block around it turned dirt.
+                format!("[*]TrackWallClips={link};[Platform*FCT*]TrackWall={link};[Platform*FCB*]TrackWall={link};[TrackWall*SlopeU*]TrackWall={link};[TrackWall*SlopeUp*]TrackWall={link};[TrackWall*SlopeDown*]TrackWall={link};[TrackWallArchSlope*U*]TrackWall={link}"),
+            ));
+        }
     }
     // Magnet: the DECK rule like every other alteration (Everios96 2026-09-15 04:30:
     // "penalty surface should stay penalty") — until then every drivable triangle
@@ -138,7 +268,10 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
     // TINY_ITEM_REDRESS_EXTRA=glob,glob: per-build additions (the inflatable mats of the
     // maps whose record ghosts drive on them, 2026-09-19)
     let extra = std::env::var("TINY_ITEM_REDRESS_EXTRA").ok().filter(|v| !v.trim().is_empty()).map(|v| format!(",{v}")).unwrap_or_default();
-    env.push(("TINY_ITEM_REDRESS".to_string(), format!("InflatableTube*,*ToTube*{extra}")));
+    // + the stock RAMP items (RampLow/Med/High, v2): `ItemRamp` is Metal 4 in every set —
+        // "metal preserves wet and icy tire conditions but does not have the same grip"
+        // (GeraldDuke 2026-09-27, Everios96 2026-10-03: "those should be all converted")
+        env.push(("TINY_ITEM_REDRESS".to_string(), format!("InflatableTube*,*ToTube*,Ramp*{extra}")));
     // the map's own custom BLOCKS take the alteration too (A5); TINY_CUSTOM_BLOCK_REDRESS=0 keeps them
     if std::env::var("TINY_CUSTOM_BLOCK_REDRESS").map(|v| v != "0").unwrap_or(true) {
         env.push(("TINY_CUSTOM_BLOCK_REDRESS".to_string(), "1".to_string()));
@@ -226,6 +359,26 @@ thread_local! {
     /// the `overlay` rows of the last plan read: the library bakes them visual-only
     /// (TINY_OVERLAY_NAMES), tmmaps surface places them without removing the block
     static OVERLAY_NAMES: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The physics id a surface's deck drives as: Dirt 6, Grass 76, Ice 74, Plastic 77,
+/// Sand 5, Snow 21, Wood 14 (the engine's surface enum, `tm-player-env-arm`).
+fn deck_physics_id(surface: &str) -> Option<u8> {
+    let (sf, _wet) = mapgeom::surface::parse_surface(surface)?;
+    Some(match &sf[..] {
+        // Magnet drives as 62 (`Material_BlockCustom\CustomConcrete@62`, the set's own row);
+        // without it the WHOLE water pipeline below was skipped for magnet — both test maps
+        // converted zero water blocks (2026-10-08).
+        "Magnet" => 62,
+        "Dirt" => 6,
+        "Grass" => 76,
+        "Ice" => 74,
+        "Plastic" => 77,
+        "Sand" => 5,
+        "Snow" => 21,
+        "Wood" => 14,
+        _ => return None,
+    })
 }
 
 pub fn cmd(args: &[String]) -> Result<(), String> {
@@ -401,6 +554,75 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                     }
                 }
             }
+            // … and the BLACK WALL family (`TrackWall*`, no surface variants → every
+            // non-water, non-pillar wall bakes) takes its generated FACES along: a wall
+            // block's prefab is a thin sheet; the body a player sees — the vertical faces
+            // (`TrackWall*VFC*`), the top and bottom caps (`*FCT`/`*FCB`) — is generated by
+            // the game for the AUTHORED block only. Baked without them the wall is a
+            // standing ribbon (Everios96 2026-10-03/04, the dirt review maps and the live
+            // "black platforms"). The fillers bake re-dressed like the wall and their
+            // records go (tmmaps surface `is_wall_filler`). TINY_WALL_FILLERS=0 opts out.
+            // the FULL-BLOCK black family (`DecoWall*`) is a surface family by name only:
+            // `DecoWallCurve5` and `DecoWallCurve5Dirt` share ONE prefab (Curve5_Ground) —
+            // the suffix picks the TERRAIN the game grows around the wall, not the wall's
+            // own dress, so the rename leaves the block looking exactly as black as before
+            // (Everios96 2026-10-05: "full blocks are not converted at all"). They bake
+            // instead, with the same top-rim rule as the road walls (TINY_DECOWALL_BAKE=0
+            // opts out).
+            // …a map with WATER blocks needs the same pass even when it holds no black
+            // walls at all (U10S 263 is pure water and skipped the whole branch, so its
+            // floors were never baked — 2026-10-07).
+            let has_water_blocks = std::env::var("TINY_WATER_FACES").map(|v| v != "0").unwrap_or(true) && names.iter().any(|n| n.contains("Water") && !n.contains("Pillar"));
+            if (std::env::var("TINY_WALL_FILLERS").map(|v| v != "0").unwrap_or(true) && names.iter().any(|n| (n.starts_with("TrackWall") || n.starts_with("DecoWall")) && !n.contains("Water") && !n.contains("Pillar"))) || has_water_blocks {
+                let src_map = tmmaps::map::MapFile::load(&src);
+                // only the faces of a wall that itself bakes: a face baked beside a wall
+                // that STAYED is drawn twice (the engine regenerates the clip from the
+                // authored block) — the flicker Everios96 saw on 2026-10-05
+                // every wall-face KIND of the map goes in the library; which RECORD is
+                // actually baked is decided per record by the writer, geometrically (a
+                // generic panel name like `DecoWallSimpleVFC` cannot name its owner)
+                let mut faces: Vec<String> = src_map.baked.iter().filter(|b| (b.name.starts_with("TrackWall") || b.name.starts_with("DecoWall") || b.name.starts_with("Platform")) && b.name.contains("FC") && !b.name.contains("Water") && !b.name.contains("Pillar")).map(|b| b.name.clone()).collect();
+                // …and the WATER faces, which are the floor of a water block: the block's
+                // own prefab has none and the shape depends on what it connects to, so the
+                // game's generated records are the only thing that fits (Everios96
+                // 2026-10-07). `TINY_WATER_FACES=0` leaves them alone.
+                if std::env::var("TINY_WATER_FACES").map(|v| v != "0").unwrap_or(true) {
+                    let water: Vec<String> = src_map
+                        .baked
+                        .iter()
+                        .filter(|b| b.name.contains("Water") && b.name.contains("FC") && !b.name.contains("Pillar"))
+                        .map(|b| b.name.clone())
+                        .collect();
+                    let n0 = faces.len();
+                    faces.extend(water);
+                    faces.sort();
+                    faces.dedup();
+                    if faces.len() > n0 {
+                        println!("  water floors: {} generated face kinds bake with their blocks", faces.len() - n0);
+                    }
+                }
+                faces.sort();
+                faces.dedup();
+                if !faces.is_empty() {
+                    println!("  black walls: {} generated face kinds bake with their walls", faces.len());
+                }
+                for n in faces {
+                    if !names.contains(&n) {
+                        names.push(n);
+                    }
+                }
+            }
+            // --bake-only A,B: bake just these models of the plan (an in-place item
+            // repair re-bakes one block per map; the writer step still runs the full
+            // plan, so the result map is only a reference — the live map takes the
+            // item through `tmmaps replace-embedded`, 2026-10-03 bobsleigh finish marks)
+            if let Some(only) = f("--bake-only") {
+                let keep: Vec<String> = only.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect();
+                names.retain(|n| keep.iter().any(|k| k == n));
+                if names.is_empty() {
+                    return Err(format!("{nn}: --bake-only {only}: none of these models is in the plan's bake list"));
+                }
+            }
             bake_models = names.clone();
             // the overlay kinds reach the library through the process environment (the
             // library command inherits it; `env` is shared read-only with the plan step)
@@ -483,6 +705,9 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             }
             // 3. the map
             let mut sw = Command::new(&tmmaps);
+            // the writer reads the same knobs as the plan (TINY_BAKE_FAMILY tells it which
+            // face-drawn blocks to remove in favour of their baked faces, 2026-10-05)
+            sw.envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
             sw.arg("surface").arg(&src).arg("--plan").arg(&records).arg("--out").arg(&out_map).arg("--name").arg(&out_name).arg("--uid-prefix").arg(&uid_prefix);
             // the winter trees are the ICE dress only; every other surface keeps the vegetation
             // … and the WET wood set since 2026-09-19 (GeraldDuke: snow trees like icy)

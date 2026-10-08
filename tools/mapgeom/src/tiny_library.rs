@@ -710,6 +710,14 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
     if std::env::var("TINY_WATER_VISUAL").map(|v| v == "drop").unwrap_or(false) {
         m.keep_water = false;
     }
+    // TINY_OVERLAY_FLOOR_ONLY=1 (the pool review lanes, 2026-10-03): an overlay copy
+    // without the baker's own water-surface quad — the block's real water stays the
+    // surface, the copy is the re-dressed FLOOR and walls seen through it. (The RoadWater
+    // prefabs carry no water mesh: the surface is the block's volume; the quad the
+    // overlay used to dress was this baker's `keep_water` sheet.)
+    if std::env::var("TINY_OVERLAY_FLOOR_ONLY").map(|v| v == "1").unwrap_or(false) && std::env::var("TINY_OVERLAY_NAMES").ok().map(|v| v.split(',').any(|n| n == name)).unwrap_or(false) {
+        m.keep_water = false;
+    }
     // a water OVERLAY dresses the water quad as the deck: planar UVs at the deck's 4 m tile
     if std::env::var("TINY_OVERLAY_NAMES").ok().map(|v| v.split(',').any(|n| n == name)).unwrap_or(false) {
         m.water_planar_uv = Some(std::env::var("TINY_OVERLAY_UV_TILE").ok().and_then(|v| v.parse().ok()).unwrap_or(4.0));
@@ -717,6 +725,9 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
     m.modifier = modifier_links(store, &plan.effective_mods);
     m.collision_redress = modifier_redress(store, &plan.effective_mods, &m.modifier);
     apply_surface_swap(store, &mut m, name);
+    if std::env::var("TINY_SPLIT_DEBUG").is_ok() && name.contains("Water") {
+        m.notes.push(format!("split setup: name={name} split_vertical={:?} link_rewrite={}", m.split_vertical, m.link_rewrite.len()));
+    }
     // The collection SKIN (`<Env>\Media\Modifier\StadiumOnTerrain\<slot>`, the
     // four terrain collections) is one material file per slot: look AND
     // surface. The visuals took it since 2026-09-06 (`skinned_material`); the
@@ -1149,10 +1160,245 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
     // its water volume and collision; this copy is LOOK only — no collision hull, and the
     // water quads dropped (the block draws them). Everios96 2026-09-24: "change the plastic
     // parts of those blocks to something else without losing the water physics".
-    if std::env::var("TINY_OVERLAY_NAMES").ok().map(|v| v.split(',').any(|n| n == name)).unwrap_or(false) {
+    // …and a WATER FACE item takes the same floor-only treatment: its own geometry carries
+    // the pool floor AND vertical skirt/fin, and only the floor may convert. Deciding by
+    // name or by an up-facing fraction cannot separate them (a 4 % piece and a 21 % piece
+    // are both floors) — the triangle's own normal can, which is exactly what this block
+    // does for overlays (Everios96 2026-10-08: 263's pool centre and 23's channel were
+    // skipped as "walls", and 276 grew an orange fin when I stopped skipping them).
+    let water_face_item = std::env::var("TINY_WATER_FACE_FLOORS_ONLY").map(|v| v != "0").unwrap_or(true) && name.contains("Water") && name.contains("FC") && !name.contains("Pillar");
+    if water_face_item || std::env::var("TINY_OVERLAY_NAMES").ok().map(|v| v.split(',').any(|n| n == name)).unwrap_or(false) {
         let tris = m.surf_triangles.len();
-        m.surf_triangles.clear();
-        m.surf_vertices.clear();
+        // a 3 cm shell: the copy's faces are the block's own faces, coplanar ones z-fight
+        let shell: f32 = std::env::var("TINY_OVERLAY_SHELL").ok().and_then(|v| v.parse().ok()).unwrap_or(0.03);
+        // TINY_OVERLAY_COLLISION=1 (2026-10-03, the pool review lanes for Everios96 /
+        // vjeux "1 mm above the water block put the new texture"): the copy KEEPS its
+        // hull — already re-dressed to the swap's deck physics by the rows — lifted by
+        // the shell so the car meets it before the block's own floor (physics Plastic 77
+        // under a RoadWater): a DRIVABLE dirt floor under the water. Default: look only.
+        let drivable = std::env::var("TINY_OVERLAY_COLLISION").map(|v| v == "1").unwrap_or(false);
+        if drivable {
+            // the copy's hull still carries the block's own WATER triangles (physics 13),
+            // and on a water ROAD those sit ABOVE the floor — the wheels meet water and
+            // the dirt below is never touched (measured on U10S_23: 13 in both the
+            // original and the copy, Everios96 2026-10-06 "the whole point of the change
+            // is so the physics change below the water"). Drop them: what is left is the
+            // re-dressed floor, lifted by the shell. `TINY_OVERLAY_KEEP_WATER_HULL=1` opts out.
+            // where the block's own WATER plane sits, before we drop it: on a water ROAD
+            // the car rides that plane (measured 13 on U10S_23, original and copy alike),
+            // so a hull left at floor level is never touched.
+            let water_top = m
+                .surf_triangles
+                .iter()
+                .filter(|t| t.material_id == 13)
+                .flat_map(|t| t.indices.iter())
+                .filter_map(|i| m.surf_vertices.get(*i as usize).map(|v| v[1]))
+                .fold(f32::NEG_INFINITY, f32::max);
+            // TINY_OVERLAY_WATER_DECK=<physics id>: the block's own WATER-DRIVE surface
+            // (physics 13 — the plane the car actually rides on a water ROAD, measured
+            // 2026-10-06: on a straight the wheels sit at that plane and never reach the
+            // floor) is KEPT in the copy and re-ided to the new surface, then lifted with
+            // everything else. The water volume, and therefore the look and the wetness,
+            // stay the block's own: the car meets DIRT where it used to meet water.
+            // …for the ROAD families only (`TINY_OVERLAY_WATER_DECK_FAMILIES`, default
+            // `RoadWater,PlatformWater`): on a water ROAD the car rides just under the
+            // surface, so a plane there is what it meets. In a POOL it sits on the floor
+            // metres below, and a plane at the surface would float it on top of the water.
+            let deck_families: Vec<String> = std::env::var("TINY_OVERLAY_WATER_DECK_FAMILIES")
+                .unwrap_or_else(|_| "RoadWater,PlatformWater".to_string())
+                .split(',')
+                .map(|f| f.trim().to_string())
+                .filter(|f| !f.is_empty())
+                .collect();
+            // …and NEVER a gameplay pad (`*Special*`: boost, turbo, reset, fragile, …).
+            // Our plane sits where the car rides, so on those blocks it covers the pad's
+            // own trigger surface and the effect never fires — the bench caught the car
+            // crawling over a converted `RoadWaterSpecialBoost` at 22.7 m/s where the
+            // original launched it at 34.6 and flew (2026-10-07). A pad keeps its own
+            // drive surface; it is still re-dressed visually.
+            // A gameplay pad is handled a different way: `pad_physics` re-ids the pad's
+            // OWN hull (keeping its gameplay byte, so the boost still fires) rather than
+            // laying a plane over it — our plane covered the trigger and killed the boost
+            // (bench, 2026-10-07). Both roads: pads get the set's physics AND the look.
+            let deck_family_hit = deck_families.iter().any(|f| name.starts_with(f.as_str())) && !name.contains("Special");
+            if name.contains("Special") && deck_families.iter().any(|f| name.starts_with(f.as_str())) {
+                if let Some(id) = std::env::var("TINY_OVERLAY_WATER_DECK").ok().and_then(|v| v.parse::<u8>().ok()) {
+                    let mut n = 0usize;
+                    for t in m.surf_triangles.iter_mut().filter(|t| t.material_id == 13) {
+                        t.material_id = id;
+                        n += 1;
+                    }
+                    if n > 0 {
+                        m.notes.push(format!("water gameplay pad: {n} drive triangle(s) re-ided to physics {id}, gameplay byte kept"));
+                    }
+                }
+            }
+            if let Some(id) = std::env::var("TINY_OVERLAY_WATER_DECK").ok().and_then(|v| v.parse::<u8>().ok()).filter(|_| deck_family_hit) {
+                // The prefab's water-drive plane sits at the block's nominal top, ~0.98 m
+                // ABOVE the water the game actually renders and drives (measured on a
+                // RoadWaterStraight: the prefab plane drives the car at 33.954, the game's
+                // own water at 33.021 — 0.933 m apart). Re-iding it in place floats the car
+                // a car's height over the water; dropping it the full 0.933 puts it under,
+                // and the game's water wins again. The default lands it 20 mm ABOVE the
+                // water line: invisible, and the wheels meet our surface first. Those
+                // triangles — and only those — move; their vertices are duplicated first
+                // where the floor shares them.
+                let dy: f32 = std::env::var("TINY_OVERLAY_WATER_DECK_DY").ok().and_then(|v| v.parse().ok()).unwrap_or(-0.913);
+                // ONLY the up-facing water triangles: the sheet also carries vertical
+                // skirt faces, and dropping those 0.9 m left a lip the car pins against
+                // (the bench caught it on `RoadWaterSpecialBoost`: stuck at z 412.8,
+                // airborne, 2026-10-07). A skirt face keeps its water id and its place.
+                let up = |t: &crate::static_item::surface::Triangle| -> bool {
+                    let v = |i: u32| m.surf_vertices.get(i as usize).copied().unwrap_or([0.0; 3]);
+                    let (a, b, c) = (v(t.indices[0]), v(t.indices[1]), v(t.indices[2]));
+                    let (u, w) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [c[0] - a[0], c[1] - a[1], c[2] - a[2]]);
+                    let n = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]];
+                    let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+                    len > 0.0 && (n[1] / len).abs() >= 0.7
+                };
+                let flat: Vec<bool> = m.surf_triangles.iter().map(&up).collect();
+                let mut water_idx: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+                let mut other_idx: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+                for (k, t) in m.surf_triangles.iter().enumerate() {
+                    let set = if t.material_id == 13 && flat[k] { &mut water_idx } else { &mut other_idx };
+                    set.extend(t.indices.iter().copied());
+                }
+                let shared: Vec<u32> = water_idx.intersection(&other_idx).copied().collect();
+                let mut remap: std::collections::BTreeMap<u32, u32> = std::collections::BTreeMap::new();
+                for i in shared {
+                    if let Some(v) = m.surf_vertices.get(i as usize).copied() {
+                        remap.insert(i, m.surf_vertices.len() as u32);
+                        m.surf_vertices.push(v);
+                    }
+                }
+                let mut n = 0usize;
+                let mut moved: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+                for (k0, t) in m.surf_triangles.iter_mut().enumerate().filter(|(k0, t)| t.material_id == 13 && flat[*k0]) {
+                    let _ = k0;
+                    for k in t.indices.iter_mut() {
+                        if let Some(nk) = remap.get(k) {
+                            *k = *nk;
+                        }
+                        moved.insert(*k);
+                    }
+                    t.material_id = id;
+                    // …but NEVER the gameplay byte: it is what makes a boost pad boost, a
+                    // turbo turbo, a reset reset. Zeroing it left the car unlaunched on a
+                    // converted `RoadWaterSpecialBoost`, so it hit the next pad's edge and
+                    // stuck there while the original flew over (bench, 2026-10-07).
+                    n += 1;
+                }
+                for i in moved {
+                    if let Some(v) = m.surf_vertices.get_mut(i as usize) {
+                        v[1] += dy;
+                    }
+                }
+                if n > 0 {
+                    m.notes.push(format!("water overlay: {n} water-drive collision triangle(s) re-ided to physics {id} and dropped {dy} m to the water line (the car rides THAT plane, not the floor)"));
+                }
+            } else if std::env::var("TINY_OVERLAY_KEEP_WATER_HULL").map(|v| v == "1").unwrap_or(false) {
+                // keep every triangle
+            } else {
+                let before = m.surf_triangles.len();
+                m.surf_triangles.retain(|t| t.material_id != 13);
+                if m.surf_triangles.len() != before {
+                    m.notes.push(format!("water overlay: {} water-surface collision triangle(s) dropped (the dirt floor is what the wheels meet)", before - m.surf_triangles.len()));
+                }
+            }
+            // TINY_OVERLAY_HULL_AT_WATER=1: raise the kept hull to just over that plane, so
+            // the DIRT is what the wheels meet while the look (water over a dirt floor) is
+            // untouched — the only way a water road can drive as dirt (Everios96 2026-10-06:
+            // "the whole point of the change is so the physics change below the water").
+            let floor_top = m.surf_vertices.iter().map(|v| v[1]).fold(f32::NEG_INFINITY, f32::max);
+            // A water block's VISIBLE floor is usually not in its prefab either: the game
+            // paints it from the terrain (that is why an Ice set's pools stay ice-blue
+            // however well the copy is re-dressed — Everios96 2026-10-07 on map 263,
+            // "the blocks still have the blue surface and not dirt"). When the copy has no
+            // visual carrying the set's deck link, GENERATE the floor: one flat quad over
+            // the block's own footprint at the height the car rides.
+            // ⛔ DEFAULT OFF since 2026-10-07: a water block's visible floor is
+            // CONFIGURATION-DEPENDENT — the game generates it as baked FACE records
+            // (`PlatformWaterFCSmall`, `PlatformWaterHFCInsideNoOut`, `DecoWallWaterFCBInside`,
+            // 83 of them in U10S 263), so a flat quad can never fit it and sat in the air
+            // at the hull's top ("the dirt layer is placed as a flat geometry, so it doesnt
+            // fit. Also one part there is too high up in the air" — Everios96). Those face
+            // records are what we re-dress instead (TINY_BAKE_FAMILY), exactly as the black
+            // blocks' faces are. `TINY_OVERLAY_DECK_VISUAL=1` restores the old quad.
+            if std::env::var("TINY_OVERLAY_DECK_VISUAL").map(|v| v == "1").unwrap_or(false) {
+                let link = surface_redress_rows(store).into_iter().map(|(_, l, _)| l).find(|l| !l.is_empty()).unwrap_or_default();
+                let has_deck_visual = m
+                    .visuals
+                    .iter()
+                    .any(|v| m.materials.get(v.material).and_then(|mm| mm.link()).map(|l| l == link || l.ends_with(&link)).unwrap_or(false));
+                if !link.is_empty() && !has_deck_visual && !m.surf_vertices.is_empty() {
+                    let (mut x0, mut z0, mut x1, mut z1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+                    let mut top = f32::MIN;
+                    for v in &m.surf_vertices {
+                        x0 = x0.min(v[0]);
+                        x1 = x1.max(v[0]);
+                        z0 = z0.min(v[2]);
+                        z1 = z1.max(v[2]);
+                        top = top.max(v[1]);
+                    }
+                    if x1 > x0 && z1 > z0 {
+                        let id = std::env::var("TINY_OVERLAY_WATER_DECK").ok().and_then(|v| v.parse::<u8>().ok()).unwrap_or(6);
+                        m.add_flat_quad(x0, z0, x1, z1, top, &link, id);
+                        m.notes.push(format!("water overlay: generated a {:.0}x{:.0} m floor at y {top:.3} (the game paints this block's floor from the terrain — nothing in the prefab to re-dress)", x1 - x0, z1 - z0));
+                    }
+                }
+            }
+            // TINY_OVERLAY_HULL_LIFT=<m>: lift the hull by a measured amount — the depth
+            // of the block's own water. The game's water is a VOLUME, not geometry, so its
+            // plane is not in the mesh to read: on a water ROAD the car rests at 49.09 over
+            // a floor at 48.0 (wheel log, U10S_23), i.e. ~0.8 m. Lifting the dirt hull to
+            // that height puts DIRT where the car already rides: same picture, dirt physics.
+            if let Some(extra) = std::env::var("TINY_OVERLAY_HULL_LIFT").ok().and_then(|v| v.parse::<f32>().ok()) {
+                for v in m.surf_vertices.iter_mut() {
+                    v[1] += extra;
+                }
+                m.notes.push(format!("water overlay: hull lifted {extra} m (the water plane the car rides)"));
+            }
+            let lift = if std::env::var("TINY_OVERLAY_HULL_AT_WATER").map(|v| v == "1").unwrap_or(false) && water_top.is_finite() && water_top > floor_top {
+                let d = water_top - floor_top + shell;
+                m.notes.push(format!("water overlay: hull raised {d:.3} m to the water plane (drives as the new surface)"));
+                d
+            } else {
+                shell
+            };
+            for v in m.surf_vertices.iter_mut() {
+                v[1] += lift;
+            }
+            // An overlay is a drivable FLOOR, nothing else: every vertical face of the
+            // copy is a lip in the driving line (the bench found the car pinned against
+            // one at a converted `RoadWaterSpecialBoost`, stuck at z 412.8 while the
+            // original flew on — 2026-10-07). Keep the near-horizontal triangles only.
+            if std::env::var("TINY_OVERLAY_HULL_FLAT").map(|v| v != "0").unwrap_or(true) {
+                let v = |i: u32| m.surf_vertices.get(i as usize).copied().unwrap_or([0.0; 3]);
+                let before = m.surf_triangles.len();
+                let flat: Vec<bool> = m
+                    .surf_triangles
+                    .iter()
+                    .map(|t| {
+                        let (a, b, c) = (v(t.indices[0]), v(t.indices[1]), v(t.indices[2]));
+                        let (u, w) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [c[0] - a[0], c[1] - a[1], c[2] - a[2]]);
+                        let n = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]];
+                        let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+                        len > 0.0 && (n[1] / len).abs() >= 0.5
+                    })
+                    .collect();
+                let mut k = 0;
+                m.surf_triangles.retain(|_| {
+                    k += 1;
+                    flat[k - 1]
+                });
+                if m.surf_triangles.len() != before {
+                    m.notes.push(format!("water overlay: {} vertical collision face(s) dropped (a lip in the driving line)", before - m.surf_triangles.len()));
+                }
+            }
+        } else {
+            m.surf_triangles.clear();
+            m.surf_vertices.clear();
+        }
         // no second start/finish/checkpoint: the block keeps the waypoint
         m.waypoint_type = None;
         let before = m.visuals.len();
@@ -1164,12 +1410,89 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
         // the rows did not re-dress (still `Material\Water`) goes — the block draws it.
         let water_mat: Vec<usize> = m.materials.iter().enumerate().filter(|(_, mat)| mat.link().map(|l| l.ends_with("\\Material\\Water")).unwrap_or(false)).map(|(i, _)| i).collect();
         m.visuals.retain(|v| !water_mat.contains(&v.material));
-        // a 3 cm shell: the copy's faces are the block's own faces, coplanar ones z-fight
-        let shell: f32 = std::env::var("TINY_OVERLAY_SHELL").ok().and_then(|v| v.parse().ok()).unwrap_or(0.03);
+        // TINY_OVERLAY_FLOOR_ONLY=1: the water-SURFACE quads go too (dropped at assembly,
+        // `merged.rs`, where the source link still says `Water`): the copy shows only the
+        // FLOOR and walls, seen through the block's own water ("just the water level",
+        // Everios96 2026-09-25, was the dressed surface quad).
+        if std::env::var("TINY_OVERLAY_FLOOR_ONLY").map(|v| v == "1").unwrap_or(false) {
+            m.notes.push("water overlay: floor only (no water-surface sheet in the copy)".to_string());
+        }
+        // TINY_OVERLAY_DECK_ONLY=1: the copy keeps ONLY what the surface swap re-dressed —
+        // the pool FLOOR you drive on — and drops the walls, rim and outer sides, which the
+        // block itself still draws in its own look ("youre NOT supposed to texture the
+        // sides at all, only the drivable part/the floor", Everios96 2026-10-06).
+        if std::env::var("TINY_OVERLAY_DECK_ONLY").map(|v| v == "1").unwrap_or(false) {
+            let targets: Vec<String> = surface_redress_rows(store).into_iter().map(|(_, link, _)| link).filter(|l| !l.is_empty()).collect();
+            let deck_mat: Vec<usize> = m
+                .materials
+                .iter()
+                .enumerate()
+                .filter(|(_, mat)| mat.link().map(|l| targets.iter().any(|t| l == t || l.ends_with(t.as_str()) || t.ends_with(l))).unwrap_or(false))
+                .map(|(i, _)| i)
+                .collect();
+            let before_deck = m.visuals.len();
+            // the floor and the walls of a pool share one material: keep only the
+            // UP-FACING triangles of the re-dressed visuals (2026-10-06)
+            let kept_before = m.visuals.clone();
+            let min_ny: f32 = std::env::var("TINY_OVERLAY_FLOOR_NY").ok().and_then(|v| v.parse().ok()).unwrap_or(0.5);
+            if min_ny > 0.0 {
+                // when no material matched (a pool whose floor and walls share one
+                // material — the usual case), filter EVERY visual: up-facing is the floor
+                let all = deck_mat.is_empty();
+                let (mut kept, mut dropped) = (0usize, 0usize);
+                for v in m.visuals.iter_mut().filter(|v| all || deck_mat.contains(&v.material)) {
+                    if let Ok((k, d)) = crate::static_item::build::keep_up_faces(&mut v.visual, min_ny) {
+                        kept += k;
+                        dropped += d;
+                    }
+                }
+                if kept + dropped > 0 {
+                    m.notes.push(format!("water overlay: floor faces only ({kept} up-facing triangles kept, {dropped} wall/rim dropped)"));
+                }
+                // a visual left with no triangles crashes the client on load (2026-10-06):
+                // drop the empties, and refuse the whole copy when nothing is left
+                let before_empty = m.visuals.len();
+                m.visuals.retain(|v| v.visual.index_buffer.as_ref().map(|ib| ib.indices.len() >= 3).unwrap_or(false));
+                if m.visuals.len() != before_empty {
+                    m.notes.push(format!("water overlay: {} empty visual(s) dropped", before_empty - m.visuals.len()));
+                }
+                // …but never DROP the block's conversion because the filter was too
+                // strict: a prefab whose floor is modelled with slanted or inward-facing
+                // triangles (`PlatformWaterBase`) ended up with an empty copy and no
+                // overlay at all — the block stayed vanilla and the bench read SAME
+                // (2026-10-07). Fall back to the unfiltered copy instead.
+                if m.visuals.is_empty() {
+                    m.visuals = kept_before;
+                    m.notes.push(format!("{name}: no up-facing floor face — the whole re-dressed copy is kept"));
+                }
+            }
+            if deck_mat.is_empty() {
+                m.notes.push("water overlay: deck-only asked but no re-dressed material in this block — copy kept whole".to_string());
+            } else {
+                m.visuals.retain(|v| deck_mat.contains(&v.material));
+                m.notes.push(format!("water overlay: deck only ({} of {before_deck} visuals kept: the re-dressed floor)", m.visuals.len()));
+            }
+        }
         for v in m.visuals.iter_mut() {
             let _ = crate::static_item::build::shell_offset(&mut v.visual, shell);
         }
         m.notes.push(format!("water overlay: visual-only copy ({tris} collision triangles dropped, {} water visuals dropped, {shell} m shell)", before - m.visuals.len()));
+    }
+    // A GENERATED FACE baked beside the body it covers is COPLANAR with it: the cap of a
+    // wall sits exactly on the wall's top plane, and two surfaces at the same depth stripe
+    // (Everios96 2026-10-06, the banded slabs). In the game's own drawing both are the same
+    // black so it never shows; once the cap is dirt and the body is not, it does. Lift a
+    // baked face by a hair along its normals, the way a water overlay is lifted.
+    // `TINY_FACE_SHELL=0` opts out.
+    let is_overlay = std::env::var("TINY_OVERLAY_NAMES").ok().map(|v| v.split(',').any(|n| n == name)).unwrap_or(false);
+    if name.contains("FC") && !is_overlay {
+        let lift: f32 = std::env::var("TINY_FACE_SHELL").ok().and_then(|v| v.parse().ok()).unwrap_or(0.004);
+        if lift != 0.0 {
+            for v in m.visuals.iter_mut() {
+                let _ = crate::static_item::build::shell_offset(&mut v.visual, lift);
+            }
+            m.notes.push(format!("generated face: lifted {lift} m off the body it covers (coplanar z-fight)"));
+        }
     }
     let opts = crate::static_item::build::BuildOpts { ident: ident.to_string(), author: item_author(ident), scale, collection, skin: m.skin.clone() };
     let f = crate::static_item::build::assemble(&m, &opts)?;
@@ -1935,6 +2258,12 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                     outcomes.push(key.outcome(&alias, format!("{} [{label}] {recipe}", key.source()), Err(format!("no visuals ({summary}); notes: {}", m.notes.iter().take(3).cloned().collect::<Vec<_>>().join(" | ")))));
                     continue;
                 }
+                // (No per-KIND skip for water faces: a name like `…VFC`, or a low up-facing
+                // share, does NOT mean wall — `DecoWallWaterFCBInside` is the pool floor under
+                // a deco wall and `RoadWaterVFC` is part of a water road's channel; skipping
+                // them by name left 263's pool centre and 23's channel blue, Everios96
+                // 2026-10-08. The wall BLOCKS are kept whole and their faces follow them,
+                // which is the only distinction that holds.)
                 outcomes.push(key.outcome(&alias, format!("{} [{label}] {}", key.source(), plan.prefabs.iter().map(|p| p.0.rsplit('\\').next().unwrap_or(&p.0).to_string()).collect::<Vec<_>>().join("+")), Ok(summary)));
                 files.insert(format!("Items/{ident}"), bytes);
                 alias_of_recipe.insert(recipe.clone(), alias.clone());
@@ -1948,10 +2277,48 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             // a prefab with no entities at all (Stadium\Structure\PillarToFlat_ACB
             // is one): the game draws nothing there either
             Err(e) if e.starts_with("no visuals: nothing to build") => {
-                next_alias -= 1;
-                block_map.insert(key.map_key(), ("-".into(), sx, sz, units.clone()));
-                alias_of_recipe.insert(recipe.clone(), "-".into());
-                outcomes.push(key.outcome("-", format!("{} [{label}] {recipe}", key.source()), Ok("empty prefab (no entities): intentionally no item".into())));
+                // …unless it is a WATER block whose deck we must own: `PlatformWater\Base_Air`
+                // is an empty prefab — the game draws and drives it from the water volume
+                // alone — so there is nothing to copy and the block kept the game's physics
+                // while the map looked converted (the bench's one red row, 2026-10-07).
+                // Generate the deck instead: a flat quad over the block's footprint at the
+                // height the car rides, carrying the set's surface.
+                let deck_id = std::env::var("TINY_OVERLAY_WATER_DECK").ok().and_then(|v| v.parse::<u8>().ok());
+                let deck_fams: Vec<String> = std::env::var("TINY_OVERLAY_WATER_DECK_FAMILIES")
+                    .unwrap_or_else(|_| "RoadWater,PlatformWater".to_string())
+                    .split(',')
+                    .map(|f| f.trim().to_string())
+                    .filter(|f| !f.is_empty())
+                    .collect();
+                // ⛔ FLAT BLOCKS ONLY. The generated quad is axis-aligned and flat, so on a
+                // SLOPED block (`…Ramp…`, `…Slope…`, `…Tilt…`) it lies across the slope
+                // instead of along it — U10S 276's one downhill water ramp lost its road
+                // surface and showed bare rails (Everios96 2026-10-08, "what happened to
+                // the block here?"). A sloped empty prefab keeps the game's own surface.
+                let sloped = ["Ramp", "Slope", "Tilt", "Down", "Up"].iter().any(|k| name.contains(k));
+                let want_deck = deck_id.is_some() && deck_fams.iter().any(|f| name.starts_with(f.as_str())) && !name.contains("Special") && !sloped;
+                let built = if want_deck {
+                    let id = deck_id.unwrap_or(6);
+                    let dy: f32 = std::env::var("TINY_EMPTY_DECK_Y").ok().and_then(|v| v.parse().ok()).unwrap_or(0.087);
+                    let link = surface_redress_rows(store).into_iter().map(|(_, l, _)| l).find(|l| !l.is_empty()).unwrap_or_default();
+                    let mut m = crate::static_item::merged::Merged::default();
+                    m.add_flat_quad(0.0, 0.0, 32.0 * sx as f32, 32.0 * sz as f32, dy, &link, id);
+                    let opts = crate::static_item::build::BuildOpts { ident: ident.to_string(), author: item_author(&ident), scale: 1.0, collection, skin: None };
+                    crate::static_item::build::assemble(&m, &opts).map(|f| (crate::static_item::file::write_file(&f), m)).ok()
+                } else {
+                    None
+                };
+                if let Some((out, m)) = built {
+                    files.insert(format!("Items/{ident}"), out);
+                    block_map.insert(key.map_key(), (alias.clone(), sx, sz, units.clone()));
+                    alias_of_recipe.insert(recipe.clone(), alias.clone());
+                    outcomes.push(key.outcome(&alias, format!("{} [{label}] {recipe}", key.source()), Ok(format!("empty prefab: a generated {sx}x{sz} deck quad at physics {} carries the surface", m.surf_triangles.first().map(|t| t.material_id).unwrap_or(0)))));
+                } else {
+                    next_alias -= 1;
+                    block_map.insert(key.map_key(), ("-".into(), sx, sz, units.clone()));
+                    alias_of_recipe.insert(recipe.clone(), "-".into());
+                    outcomes.push(key.outcome("-", format!("{} [{label}] {recipe}", key.source()), Ok("empty prefab (no entities): intentionally no item".into())));
+                }
             }
             Err(e) => outcomes.push(key.outcome(&alias, format!("{} [{label}] {recipe}", key.source()), Err(e))),
         }
@@ -2160,7 +2527,11 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         match res {
             // a moving item (rotor, tube) may have NO static visuals: all of
             // its geometry rides on the dyna parts
-            Ok((out, m)) if !m.visuals.is_empty() || !m.dyna.is_empty() => {
+            // …or a COLLISION-ONLY copy: a water overlay whose visuals the floor filter
+            // took away still carries the drivable hull, and dropping it here left the
+            // block vanilla with the map looking converted (`PlatformWaterBase`, caught
+            // by the physics bench 2026-10-07).
+            Ok((out, m)) if !m.visuals.is_empty() || !m.dyna.is_empty() || !m.surf_triangles.is_empty() => {
                 item_alias_n += 1;
                 let lights = if m.lights_out.is_empty() { String::new() } else { format!(", {} light(s) embedded", m.lights_out.len()) };
                 let moving = if m.dyna.is_empty() { String::new() } else { format!(", {} moving part(s)", m.dyna.len()) };
@@ -2442,14 +2813,44 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             ghost_left_out += 1;
             continue;
         }
-        // the runtime does not draw a record in a cell another block's unit occupies (fact 2 above)
-        if prefix == "b@" && occupied_hidden.contains(&b.index) {
+        // the runtime does not draw a record in a cell another block's unit occupies (fact 2
+        // above) — EXCEPT a water FACE, which by construction lives inside its own water
+        // block's cell and IS what the game draws there (the floor). Discarding it here is
+        // why 80 of 263's 83 water floors stayed the game's blue (2026-10-07).
+        let water_face = std::env::var("TINY_WATER_FACES").map(|v| v != "0").unwrap_or(true) && b.name.contains("Water") && b.name.contains("FC") && !b.name.contains("Pillar");
+        if prefix == "b@" && occupied_hidden.contains(&b.index) && !water_face {
             mapping.push_str(&format!("b@{}\t-\n", b.index));
             rows += 1;
             continue;
         }
         let inherited_mods = if prefix == "b@" { baked_key.get(&b.index).cloned().unwrap_or_default() } else { String::new() };
-        match block_map.get(&(b.name.clone(), b.flags, inherited_mods.clone())) {
+        // A BAKED record's flags are the game's, not the authored block's, so an exact
+        // (name, flags, mods) key misses every generated face — the water floors found
+        // their model this way and silently got none (`b@` rows absent, 80 of 83 floors
+        // left to the game, Everios96's blue pools, 2026-10-07). Fall back to the kind's
+        // single entry when the exact key is absent and the name has exactly one model.
+        let exact = block_map.get(&(b.name.clone(), b.flags, inherited_mods.clone()));
+        let by_name = if exact.is_none() && prefix == "b@" {
+            let mut hit: Option<&(String, u32, u32, Vec<[i32; 3]>)> = None;
+            let mut many = false;
+            for ((n, _, _), v) in block_map.iter() {
+                if n == &b.name {
+                    if hit.is_some() {
+                        many = true;
+                        break;
+                    }
+                    hit = Some(v);
+                }
+            }
+            if many {
+                None
+            } else {
+                hit
+            }
+        } else {
+            None
+        };
+        match exact.or(by_name) {
             Some((alias, sx, sz, units)) => {
                 let model = if alias == "-" { "-".to_string() } else { format!("{alias}.Item.Gbx") };
                 // the unit cells, so `tmmaps tiny` can hide the terrain tile under EVERY
@@ -2875,6 +3276,15 @@ pub fn apply_surface_swap(store: &mut DataStore, m: &mut crate::static_item::bui
     // puts the ice deck material (look + RoadIce physics 74) on a tech road's
     // deck. Rows go FIRST: the first matching collision row wins.
     let mut surface_rows = surface_redress_rows(store);
+    // a NAME-SCOPED row (`[glob]Stem=Link`, TINY_REDRESS_SCOPED): the row applies only to a
+    // block whose name matches the glob — the black walls' metal rim (`TrackWallClips`) is
+    // the dirt platform on the TOP caps (`TrackWall*FCT*`) and stays metal underneath
+    // (Everios96 2026-10-04: "change the metal surface at the top", not the wood sides)
+    for (glob, stem, link, ids) in scoped_redress_rows(store) {
+        if glob_name_match(&glob, name) {
+            surface_rows.insert(0, (stem, link, ids));
+        }
+    }
     // TINY_DECO_SNOW_SCOPE=<prefix>: the `Deco` snow-top row applies only to blocks of that
     // family (the author-placed DecoPlatformIce tops of the non-snow sets); every other
     // block keeps its grass `Deco` faces (the open roads' patches, wood 53, 2026-09-23)
@@ -2931,8 +3341,33 @@ pub fn apply_surface_swap(store: &mut DataStore, m: &mut crate::static_item::bui
         // one-sided deck materials the swaps put on them do not — magnet 11's start block
         // had "parts invisible" (Everios96 2026-09-24 17:57). Every RoadIce-family visual
         // of a RoadIce block gets its back faces (TINY_ICE_TWO_SIDED=0 leaves it).
+        // The BLACK WALL family (`TrackWall*`: the wall-ride walls) is one layer of faces
+        // drawn from both sides by the game's two-sided `TrackWall` material; re-dressed
+        // to a one-sided deck material the wall shows from one side only — "why are all
+        // these faces missing" (Everios96 2026-10-03 on the black-block review lanes).
+        // … and every GENERATED FACE piece (`*FC*`, `*VFC*`), which is a one-layer sheet
+        // with no back side (Everios96 2026-10-05: "some invisible parts where a face is
+        // missing"). NEVER a solid body: two-sided duplicates each triangle with the
+        // reversed winding, so on a closed mesh the copy lands exactly on the original and
+        // the two fight for depth — the mottled black-and-dirt speckle Everios96 saw on the
+        // full blocks' curves at 2026-10-05 21:28 ("many pieces have flickering now,
+        // texture overlap"). The road walls' own body IS a thin sheet, so it keeps the
+        // treatment; the `DecoWall` bodies are solid and must not get it.
+        let thin_sheet = name.contains("FC") || (name.starts_with("TrackWall") && !name.starts_with("DecoWall"));
+        if thin_sheet && std::env::var("TINY_WALL_TWO_SIDED").map(|v| v != "0").unwrap_or(true) {
+            for t in ["TrackWall", "TrackWallClips"] {
+                if !m.two_sided_links.iter().any(|x| x == t) {
+                    m.two_sided_links.push(t.to_string());
+                }
+            }
+        }
         if name.starts_with("RoadIce") && std::env::var("TINY_ICE_TWO_SIDED").map(|v| v != "0").unwrap_or(true) {
-            for l in ["RoadIce", "TrackWall", "DecalMarksStartOnRoadIce", "DecalSponsor1x1BigAOnRoadIce", "DecalSponsor4x1AOnRoadIce", "DecalSponsor4x1BOnRoadIce", "DecalSponsor4x1COnRoadIce", "DecalSponsor4x1DOnRoadIce"] {
+            // … and the FINISH line's marks: `DecalMarksOnRoadIce` paints the finish
+            // stripes up the trough's sides (295 vertices, 4.5–8 m on Finish_Airv2);
+            // left one-sided and ice-styled, their back half vanished from inside the
+            // trough — wet wood 64/100 "finish block has invisible parts" (GeraldDuke
+            // 2026-09-27, Everios96 2026-10-03). Same treatment as the start marks.
+            for l in ["RoadIce", "TrackWall", "DecalMarksStartOnRoadIce", "DecalMarksOnRoadIce", "DecalSponsor1x1BigAOnRoadIce", "DecalSponsor4x1AOnRoadIce", "DecalSponsor4x1BOnRoadIce", "DecalSponsor4x1COnRoadIce", "DecalSponsor4x1DOnRoadIce"] {
                 if !m.two_sided_links.iter().any(|t| t == l) {
                     m.two_sided_links.push(l.to_string());
                 }
@@ -2940,8 +3375,9 @@ pub fn apply_surface_swap(store: &mut DataStore, m: &mut crate::static_item::bui
         }
         // the pack stores these under hashed names, so they are named here; each
         // plain twin is looked up by name (the store hashes it) before a row is made
-        let pairs: [(&str, &[&str]); 6] = [
+        let pairs: [(&str, &[&str]); 7] = [
             ("DecalMarksStartOnRoadIce", &["DecalMarksStart"]),
+            ("DecalMarksOnRoadIce", &["DecalMarks"]),
             ("DecalSponsor1x1BigAOnRoadIce", &["DecalSponsor1x1BigA"]),
             ("DecalSponsor4x1AOnRoadIce", &["DecalSponsor4x1A", "DecalPaint2Sponsor4x1A", "DecalPaintSponsor4x1A"]),
             ("DecalSponsor4x1BOnRoadIce", &["DecalSponsor4x1B", "DecalPaint2Sponsor4x1B", "DecalPaintSponsor4x1B"]),
@@ -2994,6 +3430,11 @@ pub fn apply_surface_swap(store: &mut DataStore, m: &mut crate::static_item::bui
     // redress stems did not name (OpenTechBorders, Deco strips) drive as P
     if let Some(p) = std::env::var("TINY_DECK_PHYSICS").ok().and_then(|v| v.parse::<u8>().ok()) {
         m.deck_physics = Some(p);
+    }
+    // a WATER FACE copy re-dresses its floor triangles only; the vertical ones (the
+    // pool's side) keep their own look (Everios96 2026-10-07)
+    if name.contains("Water") && name.contains("FC") && !name.contains("Pillar") && std::env::var("TINY_WATER_FACE_FLOORS_ONLY").map(|v| v != "0").unwrap_or(true) {
+        m.split_vertical = Some(std::env::var("TINY_WATER_FACE_NY").ok().and_then(|v| v.parse().ok()).unwrap_or(0.5));
     }
     if !surface_rows.is_empty() && name.contains("Special") {
         let want = if name.starts_with("Platform") { "PlatformTech" } else { "RoadTech" };
@@ -3112,6 +3553,42 @@ thread_local! {
 /// swap: `RoadTech=@55` keeps every deck's own look — the block's modifier
 /// dress included — and drives it as TechMagnetic 55; `Stem=Link@P` re-dresses
 /// AND forces). An empty link means "keep the material the block would have".
+/// `TINY_REDRESS_SCOPED=[glob]Stem=Link[;…]`: redress rows that apply to the blocks whose
+/// name matches the glob only (`*` wildcards); the row syntax after the `]` is TINY_REDRESS's.
+pub fn scoped_redress_rows(store: &mut DataStore) -> Vec<(String, String, String, (u8, u8))> {
+    let Ok(spec) = std::env::var("TINY_REDRESS_SCOPED") else { return Vec::new() };
+    let mut out = Vec::new();
+    for row in spec.split(';').map(str::trim).filter(|s| !s.is_empty()) {
+        let Some(rest) = row.strip_prefix('[') else { panic!("TINY_REDRESS_SCOPED row `{row}`: want [glob]Stem=Link") };
+        let Some((glob, plain)) = rest.split_once(']') else { panic!("TINY_REDRESS_SCOPED row `{row}`: want [glob]Stem=Link") };
+        // parse the plain row through the TINY_REDRESS parser (one row at a time)
+        let saved = std::env::var("TINY_REDRESS").ok();
+        std::env::set_var("TINY_REDRESS", plain);
+        let parsed = surface_redress_rows(store);
+        match saved {
+            Some(v) => std::env::set_var("TINY_REDRESS", v),
+            None => std::env::remove_var("TINY_REDRESS"),
+        }
+        for (stem, link, ids) in parsed {
+            out.push((glob.to_string(), stem, link, ids));
+        }
+    }
+    out
+}
+
+/// `*`-glob match on a block name (`TrackWall*FCT*`).
+pub fn glob_name_match(glob: &str, name: &str) -> bool {
+    fn rec(g: &[u8], n: &[u8]) -> bool {
+        match (g.first(), n.first()) {
+            (None, None) => true,
+            (Some(b'*'), _) => rec(&g[1..], n) || (!n.is_empty() && rec(g, &n[1..])),
+            (Some(c), Some(d)) if c == d => rec(&g[1..], &n[1..]),
+            _ => false,
+        }
+    }
+    rec(glob.as_bytes(), name.as_bytes())
+}
+
 pub fn surface_redress_rows(store: &mut DataStore) -> Vec<(String, String, (u8, u8))> {
     let Ok(spec) = std::env::var("TINY_REDRESS") else { return Vec::new() };
     let mut out = Vec::new();

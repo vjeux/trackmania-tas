@@ -26,6 +26,7 @@ mod camcheck;
 mod build;
 mod compare;
 mod cropstats;
+mod physcheck;
 mod play;
 mod png;
 mod probe;
@@ -49,6 +50,7 @@ mod gistpub;
 mod terrainround;
 mod cupexport;
 mod gametoken;
+mod inputidle;
 mod ghrelease;
 mod batch;
 mod customsheet;
@@ -208,6 +210,7 @@ fn main() {
         "lightmap" => lightmap::cmd(rest),
         "compare" => compare::cmd(rest),
         "cropstats" => cropstats::cmd(rest),
+        "phys-check" => std::process::exit(physcheck::cmd(&args)),
         "play" => play::cmd(rest),
         "startcheck" => startcheck::run(rest),
         "loadloop" => loadloop::cmd(rest),
@@ -231,6 +234,7 @@ fn main() {
         // `token --from-game`: the tokens out of the RUNNING game, read-only — no lock, no
         // launch, no plugin (vjeux 2026-09-27). Falls back to nothing: if no game runs it
         // says so, and the caller decides whether to mint the old way.
+        "box-idle" => std::process::exit(inputidle::cmd(&args)),
         "token" => (|| -> Result<(), String> {
             let dir = tmmaps::cli::flag(rest, "--token-dir").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from("/tmp/tinyctl-tokens"));
             let wsx = wsx::Wsx::new(rest);

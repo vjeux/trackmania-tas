@@ -203,6 +203,16 @@ pub struct Merged {
     /// bordered roads drove as asphalt — their `OpenTechBorders` and `Deco`
     /// margins are 2/3 of the deck and were no redress stem.
     pub deck_physics: Option<u8>,
+    /// A WATER FACE copy: re-dress only the triangles whose geometric normal
+    /// faces up by at least this much; every steeper one keeps its ORIGINAL
+    /// material. A pool's floor piece carries its own vertical skirt, and that
+    /// skirt is the pool's SIDE — Everios96 2026-10-07: "if the face is 90
+    /// degrees vertically, standing up completely like that, then you leave it
+    /// as is". Nothing is dropped, so no hole is left where a side used to be.
+    pub split_vertical: Option<f32>,
+    /// For every slot a surface swap re-dressed: the link and physics it had
+    /// BEFORE (so `raw_slot_of` can hand the vertical triangles their own look).
+    pub redress_origin: std::collections::BTreeMap<usize, (String, u8)>,
     /// A SURFACE SWAP's explicit re-dress of the prefab's VISUAL materials
     /// (`TINY_REDRESS=RoadTech=Stadium\\Media\\Material\\RoadIce;…`, the ice
     /// conversion of 2026-09-13): rows of (material stem, replacement link,
@@ -503,6 +513,16 @@ pub const ALL_DRIVABLE_PHYSICS: [u8; 25] = [0, 1, 2, 3, 4, 5, 6, 8, 9, 12, 14, 1
 
 impl Merged {
     /// Slot of a game material, adding it when new.
+    /// The slot carrying a re-dressed slot's ORIGINAL look, adding it when new:
+    /// what `split_vertical` gives the vertical triangles.
+    pub fn raw_slot_of(&mut self, slot: usize) -> Option<usize> {
+        let orig = self.redress_origin.get(&slot).cloned()?;
+        let saved = std::mem::take(&mut self.link_rewrite);
+        let s = self.material_slot(&orig.0, orig.1);
+        self.link_rewrite = saved;
+        Some(s)
+    }
+
     pub fn material_slot(&mut self, link: &str, physics: u8) -> usize {
         // TINY_LINK_OVERRIDE=From=To[;From=To…] (experiments, 2026-09-18: the pad decal
         // look): a link or its stem replaced before anything else looks at it
@@ -536,6 +556,9 @@ impl Merged {
         // gives it below) and only FORCES the physics id (the magnet swap)
         let rewritten;
         let mut forced_physics: Option<u8> = None;
+        // what this slot looked like BEFORE the swap, for `split_vertical`
+        let origin = (link.to_string(), physics);
+        let was_rewritten = self.link_rewrite.iter().any(|(from, _, _)| link == from || link.rsplit('\\').next() == Some(from.as_str()));
         let (link, physics) = match self.link_rewrite.iter().find(|(from, _, _)| link == from || link.rsplit('\\').next() == Some(from.as_str())) {
             Some((_, to, phys)) if to.is_empty() => {
                 forced_physics = Some(*phys);
@@ -592,11 +615,17 @@ impl Merged {
             self.materials.push(inst);
             return self.materials.len() - 1;
         }
-        if let Some(i) = self.materials.iter().position(|m| m.link() == Some(link) && m.physics() == physics) {
-            return i;
+        let slot = match self.materials.iter().position(|m| m.link() == Some(link) && m.physics() == physics) {
+            Some(i) => i,
+            None => {
+                self.materials.push(CPlugMaterialUserInst::game_material(link, physics));
+                self.materials.len() - 1
+            }
+        };
+        if was_rewritten {
+            self.redress_origin.entry(slot).or_insert(origin);
         }
-        self.materials.push(CPlugMaterialUserInst::game_material(link, physics));
-        self.materials.len() - 1
+        slot
     }
 
     /// Slot of a game-material link.
@@ -1581,6 +1610,37 @@ impl Merged {
                 }
             }
             transform_visual(&mut v, iso, scale)?;
+            // A WATER FACE copy (`split_vertical`): the re-dress applies to the floor
+            // only. Split the visual by geometric normal and give the vertical part the
+            // material the prefab itself names — a pool's rim and border keep their own
+            // look while the floor becomes the new surface (Everios96 2026-10-07: "if the
+            // face is 90 degrees vertically, standing up completely like that, then you
+            // leave it as is").
+            if let Some(min_ny) = self.split_vertical {
+                if std::env::var("TINY_SPLIT_DEBUG").is_ok() {
+                    let known = self.redress_origin.contains_key(&mat);
+                    let raw = self.raw_slot_of(mat);
+                    self.notes.push(format!("split probe: slot {mat} ({}) origin_known={known} raw={raw:?}", self.materials[mat].link().unwrap_or("?")));
+                }
+                if let Some(raw) = self.raw_slot_of(mat) {
+                    if raw != mat {
+                        if let Ok(up) = crate::static_item::build::up_facing_mask(&v, min_ny) {
+                            let down: Vec<bool> = up.iter().map(|u| !*u).collect();
+                            let (n_up, n_down) = (up.iter().filter(|u| **u).count(), down.iter().filter(|d| **d).count());
+                            if n_up > 0 && n_down > 0 {
+                                if let (Ok(a), Ok(b)) = (sub_visual(&v, &up), sub_visual(&v, &down)) {
+                                    self.notes.push(format!("water face: {n_up} floor triangle(s) re-dressed, {n_down} vertical side triangle(s) kept as they are"));
+                                    visual_slots.push((self.visuals.len(), mat));
+                                    self.visuals.push(MergedVisual { visual: a, material: mat, lod_mask: lod.0, lod_ladder: lod.1.clone(), part });
+                                    visual_slots.push((self.visuals.len(), raw));
+                                    self.visuals.push(MergedVisual { visual: b, material: raw, lod_mask: lod.0, lod_ladder: lod.1.clone(), part });
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             visual_slots.push((self.visuals.len(), mat));
             self.visuals.push(MergedVisual { visual: v, material: mat, lod_mask: lod.0, lod_ladder: lod.1.clone(), part });
         }

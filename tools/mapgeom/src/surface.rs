@@ -99,11 +99,12 @@ fn strip_surface_word(rest: &str) -> Option<(&'static str, &str)> {
 /// deco platforms, deco hills, open roads, deco walls, water) — the families
 /// the swap touches. Pillars, structures, stands, gates, canopies are not.
 pub fn is_surface_family(name: &str) -> bool {
-    // `TrackWall…Pillar` is NOT a support column: its prefab is the wall ride itself
-    // (`TrackWall\Straight_Air`), the piece the game fills in under an elevated wall
-    // ride — 21,000 placements in 421 maps stayed wood beside converted wall rides
-    // (Everios96's Sept 17 list, 2026-09-18)
-    if name.ends_with("Pillar") && !name.starts_with("TrackWall") && !name.starts_with("RallyCastleRoad") {
+    // ⛔ EVERY `…Pillar` stays the game's own, `TrackWall…Pillar` included. The Sept 18
+    // carve-out (its prefab is the wall ride's, so it looked like drivable surface) was
+    // wrong in practice: on U10S 23 those 47 blocks stack vertically under the track —
+    // support columns — and converting them recoloured the wood. Everios96 2026-10-08,
+    // asked explicitly: "yes they should stay wood".
+    if name.ends_with("Pillar") && !name.starts_with("RallyCastleRoad") {
         return false;
     }
     // the snow theme's plank roads (`SnowRoad…`, the vanilla WOOD blocks — Dyl_Chill's
@@ -144,7 +145,7 @@ pub fn is_stage_deck(name: &str) -> bool {
 /// unverified. `None` for a block outside the surface families (pillars,
 /// structures, gates …). The result may equal `name` (already that surface).
 pub fn candidate(name: &str, s: &str) -> Option<String> {
-    if name.ends_with("Pillar") && !name.starts_with("TrackWall") && !name.starts_with("RallyCastleRoad") {
+    if name.ends_with("Pillar") && !name.starts_with("RallyCastleRoad") {
         return None;
     }
     if name.starts_with("SnowRoadPillar") {
@@ -573,6 +574,19 @@ fn plan_one_dry(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, cou
         // `…RoadDirtToRoadHalfB_Plastic` block is dirt-textured with an asphalt half
         // (plastic 26, shcr 2026-09-23) — every other surface re-dresses regardless
         let already = s == "Wood" && name.to_ascii_lowercase().contains("wood");
+        // ⛔ NEVER BAKE A WAYPOINT BLOCK. Baking turns the block into an ITEM, and an item
+        // does not act as a start/finish/checkpoint — U10S 354's finish is a custom block
+        // and the five sets that re-dressed it (Dirt, Grass, Icy, Magnet, Plastic) are
+        // unfinishable, while Wood and Wet Wood, which left it a block, work (leod,
+        // 2026-10-07). The block keeps its own look; a dead finish is never worth a dress.
+        let waypoint = idx
+            .path_for(name)
+            .and_then(|p| idx.load(store, &p).ok().cloned())
+            .map(|bi| bi.waypoint_type.is_some_and(|w| w != 3))
+            .unwrap_or(false);
+        if waypoint {
+            return mk(Action::Keep, "", "embedded custom block carrying a waypoint (start/finish/checkpoint): kept as a BLOCK so it still works".into());
+        }
         if redress && !already {
             return mk(Action::Bake, "", "embedded custom block: re-dressed copy".into());
         }
@@ -659,7 +673,7 @@ fn plan_one_dry(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, cou
     // The platform families keep their twins (same flat mesh, another dress).
     if s == "Dirt" && (name.starts_with("Road") || name.contains("ToRoad")) && std::env::var("TINY_DIRT_KEEP_GEOMETRY").map(|v| v == "1").unwrap_or(false) {
         if let Ok(src) = idx.load(store, &src_path).cloned() {
-            let has_water = src.variant_base_ground.as_ref().map(|v| v.water_volumes > 0).unwrap_or(false) || src.variant_base_air.as_ref().map(|v| v.water_volumes > 0).unwrap_or(false);
+                let has_water = src.variant_base_ground.as_ref().map(|v| v.water_volumes > 0).unwrap_or(false) || src.variant_base_air.as_ref().map(|v| v.water_volumes > 0).unwrap_or(false);
             if !has_water && base_prefab(&src).is_some() {
                 return mk(Action::Bake, "", "dirt keeps geometry: the road's own shape, dirt physics (the vanilla dirt road is a trough)".into());
             }
@@ -689,6 +703,81 @@ fn plan_one_dry(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, cou
     // pool edges) is never baked: an item carries no volume, so the copy would
     // drain the pool (the tiny converter's lesson, TINY.md "Water"). Renamed when
     // a same-mesh twin exists (`WaterBaseIce`, `WaterIceZoneStraight`), else kept.
+    // TINY_WATER_KEEP_BLOCK=1 (the pool rule, Everios96 2026-10-06: "youre NOT supposed to
+    // texture the sides at all, only the drivable part/the floor"): a block with a WATER
+    // volume is never renamed to a surface twin — the twin re-dresses the whole block,
+    // sides and rim included (and a `PlatformWater* -> PlatformDirt*` rename loses the
+    // water entirely). The block stays exactly as it is and only its FLOOR is overlaid.
+    let water_here = src.variant_base_ground.as_ref().map(|v| v.water_volumes > 0).unwrap_or(false) || src.variant_base_air.as_ref().map(|v| v.water_volumes > 0).unwrap_or(false);
+    // …but a water TERRAIN ZONE (`WaterRampZone*`: the sloped shore pieces) has no mesh of
+    // its own AND a real surface twin — the game draws it from the terrain, so the rename
+    // IS the conversion and keeping it leaves a half-blue ramp (Everios96 2026-10-06:
+    // "they also have the blue part, but not all the way"). Those take the normal path.
+    let zone_like = base_prefab(&src).is_none() && idx.path_for(&cand).is_some();
+    // …and the POOL family (`Water*`) has REAL vanilla dirt/grass/ice twins — `WaterBase`
+    // → `WaterBaseDirt` is the game's own dirt-floored pool, water volume included. That
+    // rename is the only thing that gives genuine dirt PHYSICS under water (an added hull
+    // never wins against the block's water volume: measured 13 on U10S_23 with the hull at
+    // the floor, dropped, and lifted to the water plane alike — 2026-10-06). The families
+    // that have no such twin (`RoadWater*`, `PlatformWater*`, `DecoWallWater*`) keep the
+    // block and take a visual overlay only.
+    // ⚠ NOT the `Water*` family: `WaterBase` and `WaterBaseDirt` share ONE prefab
+    // (`Water\Base_Air`), so that rename is a visual no-op exactly like the DecoWall twins
+    // — the suffix picks the terrain, not the dress (Everios96 2026-10-06: "now the pools
+    // have the blue texture again, so clearly the game doesnt have that version"). They
+    // keep the block and take the floor overlay, which is what actually shows.
+    // TINY_WATER_FORCE_BAKE=Fam[,Fam…]: those water families are REBUILT instead of kept —
+    // with `TINY_WATER=open` the copy carries no water collision, so the block loses its
+    // water volume and drives on the new surface. The only way a water ROAD can feel like
+    // dirt (the game has no dirt water road, and inside a water volume the wheels always
+    // report water): the trade is that the water is gone from those blocks.
+    let force_bake = std::env::var("TINY_WATER_FORCE_BAKE").ok().map(|v| v.split(',').any(|f| !f.trim().is_empty() && name.starts_with(f.trim()))).unwrap_or(false);
+    if water_here && force_bake && base_prefab(&src).is_some() {
+        return mk(Action::Bake, "", "water family forced to a re-dressed copy (TINY_WATER_FORCE_BAKE)".into());
+    }
+    // ⛔ A WATER WALL IS NOT A FLOOR: `WaterWall*` (and the deco walls around water) are
+    // the vertical sides of a pool, and Everios96 2026-10-07 settled it twice — "They stay
+    // the same, just the driving floor is changed. where you actually drive on", then "if
+    // the face is 90 degrees vertically … you leave it as is". Overlaying them painted 111
+    // pool walls dirt on U10S 72. `TINY_WATER_WALLS=1` converts them anyway.
+    let water_wall = (name.starts_with("WaterWall") || name.starts_with("DecoWallWater")) && !std::env::var("TINY_WATER_WALLS").map(|v| v == "1").unwrap_or(false);
+    // A water WALL block is treated exactly like a pool: a FLOOR-ONLY overlay. Keeping the
+    // whole block left its TOP — the surface you look down on and drive — as the game's
+    // blue (Everios96 2026-10-08 on U10S 306: "these blocks are not converted at the top"),
+    // while converting the whole block painted the sides dirt (map 72, 10-07). The overlay
+    // path re-dresses only up-facing geometry, which is precisely the distinction.
+    if water_here && water_wall {
+        if base_prefab(&src).is_some() && std::env::var("TINY_WATER_OVERLAY").map(|v| v == "1").unwrap_or(false) {
+            return mk(Action::Overlay, "", "water wall: the block is kept; only its top floor is overlaid".into());
+        }
+        return mk(Action::Keep, "", "water WALL: the vertical side stays the game's".into());
+    }
+    if water_here && !zone_like && std::env::var("TINY_WATER_KEEP_BLOCK").map(|v| v == "1").unwrap_or(false) {
+        if s != "Water" && base_prefab(&src).is_some() && std::env::var("TINY_WATER_OVERLAY").map(|v| v == "1").unwrap_or(false) {
+            return mk(Action::Overlay, "", "water volume: the block is kept untouched; only its drivable floor is overlaid".into());
+        }
+        return mk(Action::Keep, "", "water volume: kept as the game's block".into());
+    }
+    // TINY_BAKE_FAMILY=Fam[,Fam…]: a family whose "surface twin" is a twin in NAME ONLY —
+    // `DecoWallCurve5` and `DecoWallCurve5Dirt` share one prefab (`Curve5_Ground`), the
+    // suffix picking the TERRAIN the game grows around the wall and not the wall's own
+    // dress, so a rename leaves the block looking untouched (Everios96 2026-10-05: "full
+    // blocks are not converted at all"). Those bake as a re-dressed copy instead.
+    if std::env::var("TINY_BAKE_FAMILY").ok().map(|v| v.split(',').any(|f| !f.trim().is_empty() && name.starts_with(f.trim()))).unwrap_or(false) {
+        if base_prefab(&src).is_some() {
+            return mk(Action::Bake, "", "name-only surface twins (one prefab per suffix): re-dressed copy".into());
+        }
+        // A PREFAB-LESS member (38 of the 95 `DecoWall` kinds): the block draws nothing
+        // itself — the game grows its whole body as face clips around it, and it
+        // regenerates them from the authored record at load, so they stay black while the
+        // block is there (Everios96 2026-10-05, after the flicker fix: "yea try to convert
+        // them"). The record goes and its generated faces bake in its place
+        // (TINY_FACE_BLOCK_DELETE=0 leaves the block and the faces black).
+        if std::env::var("TINY_FACE_BLOCK_DELETE").map(|v| v != "0").unwrap_or(true) {
+            return mk(Action::Bake, "", "no mesh of its own: the block goes, its generated faces bake in its place".into());
+        }
+        return mk(Action::None_, "", "no mesh of its own: the game draws it from generated faces".into());
+    }
     let has_water = src.variant_base_ground.as_ref().map(|v| v.water_volumes > 0).unwrap_or(false) || src.variant_base_air.as_ref().map(|v| v.water_volumes > 0).unwrap_or(false);
     let Some(twin_path) = idx.path_for(&cand) else {
         let fam = if name.starts_with("TrackWall") { "TrackWall family has no surface variants" } else { "no such block in the pack" };
@@ -744,6 +833,12 @@ fn plan_one_dry(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, cou
         // `RoadIce\Straight_Air` has its deck 2.5 m higher (the trough) and is not
         let same_shape = stem(&sp) == stem(&tp) && matches!((ls, lt), (Some(a), Some(b)) if (a - b).abs() < 0.3) || (stem(&sp) == stem(&tp) && ls.is_none() && lt.is_none());
         if !same_shape && has_water {
+            // the same overlay option as the no-twin branch: a RoadWater piece under a
+            // DIRT swap has a RoadDirt twin of another shape (the trough), so it stayed
+            // bare water while the wood sets (no RoadWood) got the overlay (2026-10-03)
+            if s != "Water" && base_prefab(&src).is_some() && std::env::var("TINY_WATER_OVERLAY").map(|v| v == "1").unwrap_or(false) {
+                return mk(Action::Overlay, "", format!("water volume, twin {cand} is another shape: kept as water + visual-only re-dressed overlay"));
+            }
             return mk(Action::Keep, "", format!("water volume, twin {cand} is another shape: kept as water"));
         }
         if !same_shape {
@@ -883,6 +978,15 @@ mod tests {
 /// One authored block record's fate.
 #[derive(Clone, Debug)]
 pub struct RecordRow {
+    /// for a GENERATED FACE record: the index of the block record that owns it, resolved
+    /// the way the game does (`fillers::owner_cell_face` + the owner's face list) — a
+    /// face's own name is generic, so this is the only exact answer (2026-10-06)
+    pub owner: Option<usize>,
+    /// every grid cell this record's block covers (its footprint, in map coordinates):
+    /// the writer needs it to tell which block a GENERATED FACE belongs to, since a face's
+    /// name is generic (`DecoWallSimpleVFC`) and a 14-cell wall has one origin cell
+    /// (2026-10-05)
+    pub cells: Vec<[i32; 3]>,
     pub index: usize,
     pub name: String,
     pub action: Action,
@@ -944,6 +1048,32 @@ fn base_prefab(bi: &BlockInfo) -> Option<String> {
 
 /// Plan every authored record of one map. Returns the model rows (for the
 /// report) and the record rows (for `tmmaps surface`).
+/// `baked index -> owning block record index` for every GENERATED FACE of the map,
+/// resolved the way the game lists it. Written beside records.tsv as `faces.tsv`.
+pub fn face_owners(store: &mut DataStore, idx: &mut BlockInfoIndex, m: &tmmaps::map::MapFile) -> Vec<(usize, String, Option<usize>, String)> {
+    let f = crate::fillers::faces(store, idx, m);
+    let mut out = Vec::new();
+    for b in &m.baked {
+        let me = f.stem_of(&b.name);
+        let ty = f.clips.get(&me).and_then(|c| c.ty);
+        let owner = crate::fillers::owner_cell_face(b.file_cell, ty, b.dir).and_then(|(c, of)| {
+            f.occupants.get(&c).and_then(|v| v.iter().find(|o| o.faces[of].iter().any(|s| *s == me)).map(|o| (o.index, o.name.clone())))
+        });
+        out.push((b.index, b.name.clone(), owner.as_ref().map(|(i, _)| *i), owner.map(|(_, n)| n).unwrap_or_default()));
+    }
+    out
+}
+
+pub fn write_face_owners(path: &Path, rows: &[(usize, String, Option<usize>, String)]) -> std::io::Result<()> {
+    let mut s = String::from("baked	name	owner	owner_name
+");
+    for (i, name, owner, oname) in rows {
+        s.push_str(&format!("{i}	{name}	{}	{oname}
+", owner.map(|o| o.to_string()).unwrap_or_else(|| "-".into())));
+    }
+    std::fs::write(path, s)
+}
+
 pub fn plan_records(store: &mut DataStore, idx: &mut BlockInfoIndex, map: &Path, surface: &str, collection: &str) -> Result<(Vec<PlanRow>, Vec<RecordRow>), String> {
     let (s, wet) = parse_surface(surface).ok_or_else(|| format!("unknown surface `{surface}`"))?;
     let m = tmmaps::map::MapFile::try_load(map).map_err(|e| format!("{}: {e}", map.display()))?;
@@ -982,6 +1112,8 @@ pub fn plan_records(store: &mut DataStore, idx: &mut BlockInfoIndex, map: &Path,
         let cell = [c.0, c.1, c.2];
         let free = b.flags & 0x2000_0000 != 0;
         let mut r = RecordRow {
+            owner: None,
+            cells: by_index.get(&b.index).map(|p| p.cells.iter().map(|(_, rel)| [cell[0] + rel[0], cell[1] + rel[1], cell[2] + rel[2]]).collect()).unwrap_or_else(|| vec![cell]),
             index: b.index,
             name: b.name.clone(),
             action: row.action.clone(),
@@ -1051,6 +1183,26 @@ pub fn plan_records(store: &mut DataStore, idx: &mut BlockInfoIndex, map: &Path,
         }
         rows.push(r);
     }
+    // resolve each generated FACE record to the block that owns it, exactly as the game
+    // lists it (the owner's own face list names the clip): the writer then bakes a face
+    // only when its owner was converted, and keeps it when the owner stayed — a face's own
+    // name is generic (`DecoWallSimpleVFC` serves dozens of blocks), so nothing else is
+    // exact (Everios96 2026-10-06: "still some flickering, still some blocks with missing
+    // faces. CHECK THEM ALL").
+    {
+        let f = crate::fillers::faces(store, idx, &m);
+        for r in rows.iter_mut() {
+            if !r.name.contains("FC") {
+                continue;
+            }
+            let me = f.stem_of(&r.name);
+            let ty = f.clips.get(&me).and_then(|c| c.ty);
+            let cell8 = [r.cell[0] as u8, r.cell[1] as u8, r.cell[2] as u8];
+            r.owner = crate::fillers::owner_cell_face(cell8, ty, r.dir).and_then(|(c, of)| {
+                f.occupants.get(&c).and_then(|v| v.iter().find(|o| o.faces[of].iter().any(|s| *s == me)).map(|o| o.index))
+            });
+        }
+    }
     for r in rows.iter_mut() {
         if let Some(why) = deletions.get(&r.index) {
             r.delete = true;
@@ -1116,10 +1268,10 @@ pub fn plan_records(store: &mut DataStore, idx: &mut BlockInfoIndex, map: &Path,
 }
 
 pub fn write_records(path: &Path, rows: &[RecordRow]) -> std::io::Result<()> {
-    let mut s = String::from("index\tname\taction\ttarget\tdir\tflags\tfree\tcell_x\tcell_y\tcell_z\tnew_x\tnew_y\tnew_z\tnew_pos\tdelete\tnew_flags\tdetail\n");
+    let mut s = String::from("index\tname\taction\ttarget\tdir\tflags\tfree\tcell_x\tcell_y\tcell_z\tnew_x\tnew_y\tnew_z\tnew_pos\tdelete\tnew_flags\tdetail\tcells\towner\n");
     for r in rows {
         s.push_str(&format!(
-            "{}\t{}\t{}\t{}\t{}\t{:08x}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+            "{}\t{}\t{}\t{}\t{}\t{:08x}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
             r.index,
             r.name,
             r.action.as_str(),
@@ -1136,7 +1288,9 @@ pub fn write_records(path: &Path, rows: &[RecordRow]) -> std::io::Result<()> {
             r.new_pos.map(|p| format!("{},{},{}", p[0], p[1], p[2])).unwrap_or_else(|| "-".into()),
             if r.delete { 1 } else { 0 },
             r.new_flags.map(|f| format!("{f:08x}")).unwrap_or_else(|| "-".into()),
-            r.detail
+            r.detail,
+            r.cells.iter().map(|c| format!("{},{},{}", c[0], c[1], c[2])).collect::<Vec<_>>().join(";"),
+            r.owner.map(|i| i.to_string()).unwrap_or_else(|| "-".into())
         ));
     }
     std::fs::write(path, s)

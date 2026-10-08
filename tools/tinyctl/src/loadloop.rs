@@ -35,6 +35,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     let shootctl = f("--box-shootctl").unwrap_or_else(|| format!("{BOX_TOOLS}/shootctl"));
     std::fs::create_dir_all(&outdir).map_err(|e| format!("{}: {e}", outdir.display()))?;
     let wsx = Wsx::new(args);
+    crate::inputidle::gate(&wsx, args, "tinyctl loadloop")?;
     let mut remote = Vec::new();
     for (i, m) in maps.iter().enumerate() {
         if !m.exists() {
@@ -59,7 +60,8 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             pass.push_str(&format!(" {k}"));
         }
     }
-    let cmd = format!("{shootctl} loadloop --detach --maps {} --outdir {remote_dir} --tag {tag} --timeout {timeout}{pass}", remote.join(","));
+    let env = crate::remoteshots::ENV;
+    let cmd = format!("{env}; {shootctl} loadloop --detach --maps {} --outdir {remote_dir} --tag {tag} --timeout {timeout}{pass}", remote.join(","));
     let n_loads = f("--n").and_then(|s| s.parse::<usize>().ok()).unwrap_or(1) * f("--seq").map(|s| s.split(',').count()).unwrap_or(maps.len());
     eprintln!("running {n_loads} loads on the box — waits for the render lock if another thread holds the game …");
     let started = wsx.sh(&cmd)?;

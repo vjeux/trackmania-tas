@@ -41,6 +41,10 @@ pub struct PlanRec {
     pub free: bool,
     /// the planner's free-text note (`wetpad deck=<h>` on a wet plan's start block)
     pub detail: String,
+    /// every cell the block covers (the `cells` column of records.tsv; empty for an older file)
+    pub cells: Vec<[i32; 3]>,
+    /// for a generated face: the index of the block record that owns it (`owner` column)
+    pub owner: Option<usize>,
     /// the flags word the renamed record takes (`new_flags` column; `-` = unchanged)
     pub new_flags: Option<u32>,
 }
@@ -81,6 +85,20 @@ pub fn read_plan(path: &std::path::Path) -> Vec<PlanRec> {
             delete: col("delete") == "1",
             free: col("free") == "1",
             detail: head.iter().position(|h| h == "detail").and_then(|k| f.get(k)).unwrap_or(&"").to_string(),
+            cells: head
+                .iter()
+                .position(|h| h == "cells")
+                .and_then(|k| f.get(k))
+                .map(|v| {
+                    v.split(';')
+                        .filter_map(|c| {
+                            let n: Vec<i32> = c.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                            (n.len() == 3).then(|| [n[0], n[1], n[2]])
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            owner: head.iter().position(|h| h == "owner").and_then(|k| f.get(k)).and_then(|v| v.trim().parse().ok()),
             new_flags: head.iter().position(|h| h == "new_flags").and_then(|k| f.get(k)).filter(|v| **v != "-" && !v.is_empty()).map(|v| u32::from_str_radix(v.trim(), 16).unwrap_or_else(|_| panic!("{}:{}: new_flags {v:?}", path.display(), i + 1))),
         });
     }
@@ -117,6 +135,20 @@ pub fn cmd(args: &[String]) {
     // an `overlay` row's block stays (the water volume lives in the block; the item is look only)
     let overlay_indices: BTreeSet<usize> = plan.iter().filter(|r| r.action == "overlay" && !r.delete).map(|r| r.index).collect();
     let baked_indices: BTreeSet<usize> = item_specs.iter().map(|(i, _)| *i).filter(|i| !overlay_indices.contains(i)).collect();
+    // A bake row with no library model is normally left as a block; a PREFAB-LESS wall of
+    // a face-drawn family has no model BY NATURE (its body is the generated faces, which
+    // bake separately) — leaving the block would keep the game drawing them black
+    // (Everios96 2026-10-05). `TINY_FACE_BLOCK_DELETE=0` keeps the old behaviour.
+    let face_block_delete = std::env::var("TINY_FACE_BLOCK_DELETE").map(|v| v != "0").unwrap_or(true);
+    let face_families: Vec<String> = std::env::var("TINY_BAKE_FAMILY").unwrap_or_default().split(',').map(|f| f.trim().to_string()).filter(|f| !f.is_empty()).collect();
+    let face_only: BTreeSet<usize> = if face_block_delete {
+        plan.iter().filter(|r| r.action == "bake" && !baked_indices.contains(&r.index) && face_families.iter().any(|f| r.name.starts_with(f.as_str()))).map(|r| r.index).collect()
+    } else {
+        BTreeSet::new()
+    };
+    if !face_only.is_empty() {
+        println!("  {} face-drawn block(s) removed: their generated faces bake in their place", face_only.len());
+    }
     // The generated `<Road>PenaltyHFC*` filler records of every penalty frame that becomes
     // an item: the game draws the frame's whole FLOOR from them (deck at the ends, penalty
     // between the posts, kerbs — the vanilla Penalty_Air prefab is posts and kerbs only), so
@@ -160,7 +192,142 @@ pub fn cmd(args: &[String]) {
         }
         ranked.iter().find_map(|c| pads_by_cell.get(c).map(|(i, _)| *i))
     };
+    // The BLACK WALL family's generated faces (`TrackWall*VFC*`, `*FCT`, `*FCB`; not the
+    // water walls' nor the pillars'): every non-water, non-pillar TrackWall block bakes
+    // (the family has no surface variants), so every such record is owned by a baked
+    // wall → baked as a re-dressed item with it and the black record dropped (the wall
+    // is a thin sheet without them — the ribbon walls of 2026-10-03/04).
+    // … or a face-drawn wall that goes (`face_only`): a map whose walls are ALL prefab-less
+    // (five adjacent `DecoWallBase`, the cap-physics test of 2026-10-06) converted NOTHING
+    // because no wall had a model of its own and this gate stayed shut.
+    let wall_fillers = std::env::var("TINY_WALL_FILLERS").map(|v| v != "0").unwrap_or(true)
+        && (!face_only.is_empty() || plan.iter().any(|r| baked_indices.contains(&r.index) && (r.name.starts_with("TrackWall") || r.name.starts_with("DecoWall"))));
+    // A wall face belongs to the wall whose NAME it extends (`DecoWallArchSlope2End2FCT` →
+    // `DecoWallArchSlope2End2`): bake it only when that wall itself baked. The engine
+    // REGENERATES a clip for every authored block at load (crate::bake) — the file's record
+    // is only attributes — so a face baked beside a wall that STAYED is drawn twice:
+    // the game's own black face and our re-dressed copy, z-fighting (Everios96 2026-10-05
+    // "the full blocks look like they are flickering (2 textures overlapping)"; 38 of the
+    // 95 DecoWall kinds have no mesh of their own and could not bake).
+    // The owner is found by GEOMETRY, never by name: a generated face carries a generic
+    // name (`DecoWallSimpleVFC`, `DecoWallBaseVFC` — one panel kind serves many blocks), so
+    // a name match loses most of them and the faces of a removed block go missing
+    // (Everios96 2026-10-05: "many blocks still have invisible faces"). A side clip
+    // finishes the block ACROSS its side `dir`; a top cap (FCT) sits in the cell above its
+    // owner, a bottom cap (FCB) in the cell below; a panel may also sit in its owner's own
+    // cell.
+    let mut blocks_by_cell: std::collections::HashMap<[i32; 3], Vec<usize>> = std::collections::HashMap::new();
+    for r in plan.iter().filter(|r| !r.free && !r.name.contains("FC")) {
+        for c in if r.cells.is_empty() { vec![r.cell] } else { r.cells.clone() } {
+            blocks_by_cell.entry(c).or_default().push(r.index);
+        }
+    }
+    let converted = |i: &usize| baked_indices.contains(i) || face_only.contains(i);
+    // the exact answer first: `faces.tsv` beside the plan carries, for every GENERATED
+    // FACE record, the index of the block that owns it — resolved by the game's own rule
+    // (the owner's face list names the clip). A face's own name is generic, so nothing
+    // else is exact (2026-10-06).
+    let owner_of: std::collections::HashMap<usize, usize> = {
+        let fpath = plan_path.with_file_name("faces.tsv");
+        let mut m = std::collections::HashMap::new();
+        if let Ok(text) = std::fs::read_to_string(&fpath) {
+            let mut lines = text.lines();
+            let head: Vec<&str> = lines.next().unwrap_or_default().split('\t').collect();
+            let (bi, oi) = (head.iter().position(|h| *h == "baked"), head.iter().position(|h| *h == "owner"));
+            if let (Some(bi), Some(oi)) = (bi, oi) {
+                for l in lines {
+                    let f: Vec<&str> = l.split('\t').collect();
+                    if let (Some(b), Some(o)) = (f.get(bi).and_then(|v| v.parse::<usize>().ok()), f.get(oi).and_then(|v| v.parse::<usize>().ok())) {
+                        m.insert(b, o);
+                    }
+                }
+            }
+        }
+        m
+    };
+    if !owner_of.is_empty() {
+        println!("  face owners: {} generated records mapped to their block", owner_of.len());
+    }
+    let water_faces = std::env::var("TINY_WATER_FACES").map(|v| v != "0").unwrap_or(true);
+    // A water block RENAMED to the game's own dirt twin keeps drawing BLUE: the twin has
+    // no prefab either, and the floor comes from these stored face records, which the
+    // rename does not touch (map 734, verified in game 2026-10-07). So a renamed owner
+    // counts exactly like an overlaid one — its faces are re-dressed and replaced.
+    let rename_indices: std::collections::BTreeSet<usize> = plan.iter().filter(|r| r.action == "rename" && !r.delete).map(|r| r.index).collect();
+    let keep_indices: std::collections::BTreeSet<usize> = plan.iter().filter(|r| r.action == "keep" && !r.delete && r.name.contains("Water")).map(|r| r.index).collect();
+    // ⛔ NEVER decide this by the face's NAME. `DecoWallWaterFCBInside` is a BOTTOM cap —
+    // the pool floor under a deco wall — and `RoadWaterVFC` is part of a water road's
+    // drivable channel; excluding them as "walls" left map 263's pool centre and map 23's
+    // channel blue (Everios96 2026-10-08). The OWNER decides: a face whose block is a kept
+    // wall never passes `wall_owner_baked`, so it stays by itself.
+    let is_water_face = |b: &crate::map::BlockRec| water_faces && b.name.contains("Water") && b.name.contains("FC") && !b.name.contains("Pillar");
+    // A FREE-placed map has no grid cells at all (map 960's records all read cell -1,0,-1),
+    // so neither the owner table nor the cell search can find a water face's block. Match
+    // by WORLD POSITION there: a face sits on the block it finishes (2026-10-07).
+    let overlay_pos: Vec<[f32; 3]> = overlay_indices.iter().filter_map(|i| source.blocks.get(*i)).map(crate::tiny::block_pos).collect();
+    let keep_pos: Vec<[f32; 3]> = keep_indices.iter().filter_map(|i| source.blocks.get(*i)).map(crate::tiny::block_pos).collect();
+    let rename_pos: Vec<[f32; 3]> = rename_indices.iter().filter(|i| source.blocks.get(**i).map(|b| b.name.contains("Water")).unwrap_or(false)).filter_map(|i| source.blocks.get(*i)).map(crate::tiny::block_pos).collect();
+    // 160 m: map 960's free-placed floors sit far from the block origin the plan records,
+    // and 48 m left 8 of them behind. The swap stays 1:1 — a face is only removed when a
+    // re-dressed copy of ITS OWN geometry was placed at ITS OWN position.
+    let near_r: f32 = std::env::var("TINY_WATER_FACE_RADIUS").ok().and_then(|v| v.parse().ok()).unwrap_or(160.0);
+    let wall_owner_baked = |b: &crate::map::BlockRec| -> bool {
+        // A WATER face's owner is KEPT (`overlay`) — the game's block stays and only its
+        // floor is re-dressed — so `converted` is the wrong question for it: the face
+        // itself is what we replace, and leaving the original beside our copy means the
+        // game keeps drawing its blue floor on top (263, 2026-10-07). This holds for the
+        // geometric fallback too: 62 of map 960's water faces resolve to no owner at all.
+        // …and a KEPT water WALL block still owns FLOOR pieces (`WaterFCCenter` and friends
+        // sit inside the wall ring): the block's own wall geometry stays the game's because
+        // the block is kept, but the floor faces it owns are the pool bottom and convert.
+        // Without this, 853 floor pieces on U10S 72 and 179 on map 10 stayed blue
+        // (Everios96 2026-10-08).
+        let ok = |i: &usize| converted(i) || (is_water_face(b) && (overlay_indices.contains(i) || rename_indices.contains(i) || keep_indices.contains(i)));
+        if let Some(o) = owner_of.get(&b.index) {
+            return ok(o);
+        }
+        let (x, y, z) = b.coords();
+        let mut cells: Vec<[i32; 3]> = Vec::new();
+        if let Some(a) = crate::fillers::across(b.file_cell, b.dir) {
+            cells.push([a[0] as i32, y, a[2] as i32]);
+        }
+        cells.push([x, y, z]);
+        if b.name.ends_with("FCT") || b.name.contains("FCT") {
+            cells.push([x, y - 1, z]);
+        }
+        if b.name.ends_with("FCB") || b.name.contains("FCB") {
+            cells.push([x, y + 1, z]);
+        }
+        for dy in [0i32, -1, 1] {
+            cells.push([x, y + dy, z]);
+        }
+        if cells.iter().filter_map(|c| blocks_by_cell.get(c)).flatten().any(ok) {
+            return true;
+        }
+        if is_water_face(b) && !overlay_pos.is_empty() {
+            let p = crate::tiny::block_pos(b);
+            let r2 = near_r * near_r;
+            return overlay_pos.iter().chain(rename_pos.iter()).chain(keep_pos.iter()).any(|q| {
+                let (dx, dy, dz) = (p[0] - q[0], p[1] - q[1], p[2] - q[2]);
+                dx * dx + dy * dy + dz * dz <= r2
+            });
+        }
+        false
+    };
+    // The WATER faces the game generates per configuration (`PlatformWaterFCSmall`,
+    // `PlatformWaterHFCInsideNoOut`, `DecoWallWaterFCBInside`, …) ARE the floor the player
+    // sees and drives — a water block's own prefab has none, and its shape depends on what
+    // it connects to, so nothing can be generated to fit (Everios96 2026-10-07: "water
+    // blocks change their geometry when connected to other blocks… the dirt layer is
+    // placed as a flat geometry, so it doesnt fit"). They re-dress exactly like a wall's
+    // faces. `TINY_WATER_FACES=0` leaves them to the game.
     let is_frame_filler = |b: &crate::map::BlockRec| -> bool {
+        if water_faces && b.name.contains("Water") && b.name.contains("FC") && !b.name.contains("Pillar") {
+            return wall_owner_baked(b);
+        }
+        if wall_fillers && (b.name.starts_with("TrackWall") || b.name.starts_with("DecoWall") || b.name.starts_with("Platform")) && b.name.contains("FC") && !b.name.contains("Water") && !b.name.contains("Pillar") {
+            return wall_owner_baked(b);
+        }
         if b.name.contains("PenaltyHFC") {
             let (x, y, z) = b.coords();
             return frame_cells.iter().any(|c| (c[1] - y).abs() <= 1 && (c[0] - x).abs() <= 1 && (c[2] - z).abs() <= 1);
@@ -172,6 +339,7 @@ pub fn cmd(args: &[String]) {
         false
     };
     let mut filler_specs: Vec<ItemSpec> = Vec::new();
+    let mut filler_placed: BTreeSet<usize> = BTreeSet::new();
     let mut filler_unmapped = 0usize;
     if let Some(mp) = &mapping {
         for b in source.baked.iter().filter(|b| is_frame_filler(b)) {
@@ -183,18 +351,19 @@ pub fn cmd(args: &[String]) {
                         None => crate::tiny::block_pos(b),
                     };
                     filler_specs.push(ItemSpec { model: map.model.clone(), pos, rot, scale: 1.0 / map.model_scale, tag: None, color: 0 });
+                    filler_placed.insert(b.index);
                 }
                 None => filler_unmapped += 1,
             }
         }
     }
-    if !frame_cells.is_empty() || !pad_cells.is_empty() {
+    if !frame_cells.is_empty() || !pad_cells.is_empty() || wall_fillers {
         println!("  penalty frames: {} → items, pads: {} → items; {} owned filler records baked as items, {} without a library row", frame_cells.len(), pad_cells.len(), filler_specs.len(), filler_unmapped);
     }
     // the fillers ride with the authored bakes (index usize::MAX: no authored block behind them)
     let mut item_specs = item_specs;
     item_specs.extend(filler_specs.into_iter().map(|sp| (usize::MAX, sp)));
-    let deletions: BTreeSet<usize> = plan.iter().filter(|r| r.delete).map(|r| r.index).chain(baked_indices.iter().copied()).collect();
+    let deletions: BTreeSet<usize> = plan.iter().filter(|r| r.delete).map(|r| r.index).chain(baked_indices.iter().copied()).chain(face_only.iter().copied()).collect();
     let renames: Vec<&PlanRec> = plan.iter().filter(|r| r.action == "rename" && !r.delete).collect();
     let moves: Vec<&PlanRec> = renames.iter().copied().filter(|r| if r.free { r.new_pos.is_some() } else { r.new_cell != r.cell }).collect();
     if !overlay_indices.is_empty() {
@@ -215,9 +384,24 @@ pub fn cmd(args: &[String]) {
     // touch (wet wood 37, 2026-09-24). The fillers sit in the frame's cell and its four
     // neighbours (the "Ends" pieces one cell along the road, the side piece one cell across).
     let mut m = MapFile::load(&src);
-    if !deletions.is_empty() {
-        let r = m.remove_blocks(|b| deletions.contains(&b.index), |b| is_frame_filler(b));
-        println!("  stage 1: deleted {} blocks ({} free entries, {} snap groups), {} penalty-frame filler records", r.blocks, r.free_entries, r.snap_groups, r.baked);
+    // A water face goes ONLY when its re-dressed replacement was actually placed: removing
+    // one without a model leaves a hole in the floor (the invisible faces of 2026-10-05).
+    let drop_baked = |b: &crate::map::BlockRec| -> bool {
+        if is_water_face(b) {
+            return is_frame_filler(b) && filler_placed.contains(&b.index);
+        }
+        is_frame_filler(b)
+    };
+    let water_left = source.baked.iter().filter(|b| is_water_face(b) && is_frame_filler(b) && !filler_placed.contains(&b.index)).count();
+    if water_left > 0 {
+        println!("  ⛔ {water_left} water floor record(s) KEPT: no re-dressed model to put in their place — they still draw the game's own floor");
+    }
+    // …and the stage RUNS whenever anything goes, not only when an authored block does: a
+    // pure-water map deletes no block at all, so its floors were never removed and the game
+    // drew them over ours (960/734/10/72/748, 2026-10-07).
+    if !deletions.is_empty() || source.baked.iter().any(|b| drop_baked(b)) {
+        let r = m.remove_blocks(|b| deletions.contains(&b.index), |b| drop_baked(b));
+        println!("  stage 1: deleted {} blocks ({} free entries, {} snap groups), {} generated filler records", r.blocks, r.free_entries, r.snap_groups, r.baked);
     }
     m.write_to(&tmp1).expect("write stage 1");
     // old index -> new index

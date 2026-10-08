@@ -1338,6 +1338,25 @@ pub fn add_crystal(c: &CPlugCrystal, scale: f32, m: &mut Merged) -> R<()> {
     // material slot per crystal material index: the editor-resolved link, so
     // the baked item carries real `.Material.Gbx` paths instead of dangling
     // virtual names
+    // The UN-re-dressed slots FIRST, so each original material gets its own entry
+    // before the re-dressed one can claim it: both passes dedup into the same
+    // `materials` vec, so doing it the other way round returns the re-dressed slot
+    // twice and the split silently does nothing (2026-10-07).
+    let slots_raw: Vec<usize> = if m.split_vertical.is_some() {
+        let saved = std::mem::take(&mut m.link_rewrite);
+        let v: Vec<usize> = c
+            .materials
+            .iter()
+            .map(|mat| match mat.inst() {
+                Some(inst) => m.resolved_inst_slot(inst),
+                None => m.link_slot(&mat.name, 0),
+            })
+            .collect();
+        m.link_rewrite = saved;
+        v
+    } else {
+        Vec::new()
+    };
     let slots: Vec<usize> = c
         .materials
         .iter()
@@ -1572,9 +1591,36 @@ pub fn add_crystal(c: &CPlugCrystal, scale: f32, m: &mut Merged) -> R<()> {
             continue;
         }
         let slot = slots.get(i).copied().unwrap_or_else(|| m.material_slot("Stadium\\Media\\Material\\PlatformTech", 0));
-        let layout = visual_layout(&m.materials[slot].link().unwrap_or("").to_string());
-        for v in make_visuals(tris, layout, r.umode) {
-            m.visuals.push(MergedVisual::every_level(v, slot));
+        // split off the vertical triangles (the pool SIDE) and give them the
+        // un-re-dressed slot: only the floor becomes the new surface
+        let mut parts: Vec<(usize, Vec<[Corner; 3]>)> = Vec::new();
+        match (m.split_vertical, slots_raw.get(i).copied()) {
+            (Some(min_ny), Some(raw)) if raw != slot => {
+                let up_facing = |t: &[Corner; 3]| -> bool {
+                    let (a, b, cc) = (t[0].pos, t[1].pos, t[2].pos);
+                    let (u, w) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [cc[0] - a[0], cc[1] - a[1], cc[2] - a[2]]);
+                    let n = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]];
+                    let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+                    len > 0.0 && (n[1] / len).abs() >= min_ny
+                };
+                let (up, side): (Vec<[Corner; 3]>, Vec<[Corner; 3]>) = tris.iter().copied().partition(up_facing);
+                if !side.is_empty() && !up.is_empty() {
+                    m.notes.push(format!("water face: {} floor triangle(s) re-dressed, {} vertical side triangle(s) kept as they are", up.len(), side.len()));
+                }
+                if !up.is_empty() {
+                    parts.push((slot, up));
+                }
+                if !side.is_empty() {
+                    parts.push((raw, side));
+                }
+            }
+            _ => parts.push((slot, tris.clone())),
+        }
+        for (sl, tt) in parts {
+            let layout = visual_layout(&m.materials[sl].link().unwrap_or("").to_string());
+            for v in make_visuals(&tt, layout, r.umode) {
+                m.visuals.push(MergedVisual::every_level(v, sl));
+            }
         }
     }
     // collision: shared vertices by exact position; `surface_index` per

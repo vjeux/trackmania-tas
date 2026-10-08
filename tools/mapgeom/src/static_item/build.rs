@@ -3164,6 +3164,84 @@ pub fn ensure_texcoord1(s: &mut super::vstream::CPlugVertexStream) -> bool {
 /// visual-only overlay item that shares its faces with the block it dresses (the water
 /// overlays of 2026-09-24): coplanar faces z-fight, a 2–3 cm shell draws cleanly on top.
 /// Positions are FLOAT3 in these streams; a DEC3N-packed normal is unpacked for the direction.
+/// Keep only the UP-FACING triangles of a visual (vertex normal y >= `min_ny` on all three
+/// corners) — the FLOOR of a pool, dropping its walls and rim. A water block's floor and
+/// walls carry the SAME material, so a material filter cannot separate them; the normal
+/// can ("youre NOT supposed to texture the sides at all, only the drivable part/the
+/// floor", Everios96 2026-10-06). Returns (kept, dropped) triangles.
+/// Per-triangle "does this face up?", the mask `split_vertical` splits on —
+/// the same vertex-normal test `keep_up_faces` applies, reported instead of cut.
+pub fn up_facing_mask(v: &super::visual::CPlugVisualIndexedTriangles, min_ny: f32) -> Result<Vec<bool>, String> {
+    let mut probe = v.clone();
+    let normals = vertex_normals(&probe)?;
+    let Some(ib) = probe.index_buffer.as_mut() else { return Ok(Vec::new()) };
+    Ok(ib
+        .indices
+        .chunks(3)
+        .filter(|t| t.len() == 3)
+        .map(|tri| tri.iter().all(|i| normals.get(*i as usize).map(|n| n[1] >= min_ny).unwrap_or(false)))
+        .collect())
+}
+
+/// The per-vertex normals of a visual, unpacked from its stream.
+pub fn vertex_normals(v: &super::visual::CPlugVisualIndexedTriangles) -> Result<Vec<[f32; 3]>, String> {
+    use super::vstream::T_DEC3N;
+    let Some(main) = v.main.as_ref() else { return Ok(Vec::new()) };
+    let Some(Node::VertexStream(s)) = main.vertex_streams.first().and_then(|r| r.inline.as_deref()) else { return Ok(Vec::new()) };
+    let compress = s.compress_local3d.unwrap_or(false);
+    let mut normals: Vec<[f32; 3]> = Vec::new();
+    for (dcl, e) in s.decls.iter().zip(s.elems.iter()) {
+        if dcl.name() != N_NORMAL {
+            continue;
+        }
+        match e {
+            Elem::Float3(x) => normals = x.clone(),
+            Elem::Word(x) if dcl.stored_type(compress) == T_DEC3N => normals = x.iter().map(|w| dec3n_unpack(*w)).collect(),
+            _ => {}
+        }
+        break;
+    }
+    Ok(normals)
+}
+
+pub fn keep_up_faces(v: &mut super::visual::CPlugVisualIndexedTriangles, min_ny: f32) -> Result<(usize, usize), String> {
+    use super::vstream::T_DEC3N;
+    let Some(main) = v.main.as_mut() else { return Ok((0, 0)) };
+    let Some(Node::VertexStream(s)) = main.vertex_streams.first().and_then(|r| r.inline.as_deref()) else { return Ok((0, 0)) };
+    let compress = s.compress_local3d.unwrap_or(false);
+    let mut normals: Vec<[f32; 3]> = Vec::new();
+    for (dcl, e) in s.decls.iter().zip(s.elems.iter()) {
+        if dcl.name() != N_NORMAL {
+            continue;
+        }
+        match e {
+            Elem::Float3(x) => normals = x.clone(),
+            Elem::Word(x) if dcl.stored_type(compress) == T_DEC3N => normals = x.iter().map(|w| dec3n_unpack(*w)).collect(),
+            _ => {}
+        }
+    }
+    if normals.is_empty() {
+        return Ok((0, 0));
+    }
+    let Some(ib) = v.index_buffer.as_mut() else { return Ok((0, 0)) };
+    let mut kept: Vec<u32> = Vec::with_capacity(ib.indices.len());
+    let (mut k, mut d) = (0usize, 0usize);
+    for tri in ib.indices.chunks(3) {
+        if tri.len() < 3 {
+            continue;
+        }
+        let up = tri.iter().all(|i| normals.get(*i as usize).map(|n| n[1] >= min_ny).unwrap_or(false));
+        if up {
+            kept.extend_from_slice(tri);
+            k += 1;
+        } else {
+            d += 1;
+        }
+    }
+    ib.indices = kept;
+    Ok((k, d))
+}
+
 pub fn shell_offset(v: &mut super::visual::CPlugVisualIndexedTriangles, d: f32) -> Result<(), String> {
     use super::vstream::T_DEC3N;
     let Some(main) = v.main.as_mut() else { return Ok(()) };
