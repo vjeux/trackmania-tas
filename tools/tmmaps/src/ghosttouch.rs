@@ -128,11 +128,11 @@ pub fn classify(n: &str) -> Option<Kind> {
     // `PlatformWaterRampBase` is the flat 1×1 water platform (NOT a ramp — Everios96
     // 2026-10-09; it sits level with the start pad on U10S 32): its floor converts
     // like a pool's. Only a block that is genuinely sloped by name stays out.
-    if n.starts_with("PlatformWaterRamp") && n != "PlatformWaterRampBase" {
+    // `PlatformWaterRampBase` keeps the game's WATER physics (the car floats on its
+    // sheet; a floor under it is never reached and nothing may go above the water —
+    // Everios96 2026-10-09), so a record on it is on an UNCHANGED surface: no wipe.
+    if n.starts_with("PlatformWaterRamp") {
         return None;
-    }
-    if n == "PlatformWaterRampBase" {
-        return Some(Kind::Pool);
     }
     if n.starts_with("RoadWater") || n.starts_with("PlatformWater") || n.starts_with("WaterRampZone") {
         return Some(Kind::Road);
