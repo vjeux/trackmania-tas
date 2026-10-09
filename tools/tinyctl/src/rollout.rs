@@ -119,14 +119,14 @@ pub fn cmd(args: &[String]) -> i32 {
         }
     }
     std::fs::create_dir_all(&out).ok();
-    let log_path = out.join("build.log");
-    let tsv_path = out.join("build.tsv");
+    // a retry pass records beside the main run, never over it: build-retry.tsv
+    let (log_path, tsv_path) = if retry.is_some() { (out.join("build-retry.log"), out.join("build-retry.tsv")) } else { (out.join("build.log"), out.join("build.tsv")) };
     let mut tsv = String::from("set\tnum\tpath\tbytes\tstatus\n");
     let mut log = String::new();
 
     // the work list
     let mut work: Vec<(String, u32)> = Vec::new();
-    if let Some(r) = retry {
+    if let Some(r) = retry.clone() {
         work = r;
     } else {
         for s in &sets {
