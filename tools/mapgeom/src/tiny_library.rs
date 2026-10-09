@@ -2295,7 +2295,13 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 // instead of along it — U10S 276's one downhill water ramp lost its road
                 // surface and showed bare rails (Everios96 2026-10-08, "what happened to
                 // the block here?"). A sloped empty prefab keeps the game's own surface.
-                let sloped = ["Ramp", "Slope", "Tilt", "Down", "Up"].iter().any(|k| name.contains(k));
+                // …but `PlatformWaterRampBase` is NOT a slope: it is the 1×1 flat water
+                // platform (967 of 975 U10S maps have it, beside starts and in racing
+                // lines — Everios96 2026-10-09 "Its not a ramp?"). The 10-08 exemption read
+                // the NAME; the block's deck sits flat at its cell floor like a pool's.
+                // TINY_RAMPBASE_EXEMPT=1 restores the exemption for a test.
+                let rampbase = name == "PlatformWaterRampBase" && std::env::var("TINY_RAMPBASE_EXEMPT").map(|v| v != "1").unwrap_or(true);
+                let sloped = !rampbase && ["Ramp", "Slope", "Tilt", "Down", "Up"].iter().any(|k| name.contains(k));
                 let want_deck = deck_id.is_some() && deck_fams.iter().any(|f| name.starts_with(f.as_str())) && !name.contains("Special") && !sloped;
                 let built = if want_deck {
                     let id = deck_id.unwrap_or(6);

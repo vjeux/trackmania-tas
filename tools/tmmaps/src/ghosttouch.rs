@@ -125,8 +125,14 @@ pub fn classify(n: &str) -> Option<Kind> {
     if n.starts_with("Platform") && n.contains("Wall") && !n.contains("Water") {
         return Some(Kind::Black);
     }
-    if n.starts_with("PlatformWaterRamp") {
-        return None; // exempt since 2026-10-08: the generated flat deck broke the slope
+    // `PlatformWaterRampBase` is the flat 1×1 water platform (NOT a ramp — Everios96
+    // 2026-10-09; it sits level with the start pad on U10S 32): its floor converts
+    // like a pool's. Only a block that is genuinely sloped by name stays out.
+    if n.starts_with("PlatformWaterRamp") && n != "PlatformWaterRampBase" {
+        return None;
+    }
+    if n == "PlatformWaterRampBase" {
+        return Some(Kind::Pool);
     }
     if n.starts_with("RoadWater") || n.starts_with("PlatformWater") || n.starts_with("WaterRampZone") {
         return Some(Kind::Road);
