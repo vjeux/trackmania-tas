@@ -2303,7 +2303,13 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 // pool-floor piece (`DecoWallWaterFCBInside`) is re-dressed for the LOOK; the
                 // physics stays the game's water. Sloped water pieces likewise keep theirs.
                 let sloped = ["Ramp", "Slope", "Tilt", "Down", "Up"].iter().any(|k| name.contains(k));
-                let want_deck = deck_id.is_some() && deck_fams.iter().any(|f| name.starts_with(f.as_str())) && !name.contains("Special") && !sloped;
+                // …and never for a FILLER CLIP (`PlatformWaterFCSmall`, `…HFC…`, `…VFC…`):
+                // those are the game's connection pieces between water blocks, their empty
+                // prefab means "nothing here", and a quad generated for one is a loose
+                // plastic plane beside the block (Everios96 2026-10-09: "there is a plastic
+                // plane on the left and right too now, delete those").
+                let clip = name.contains("FC");
+                let want_deck = deck_id.is_some() && deck_fams.iter().any(|f| name.starts_with(f.as_str())) && !name.contains("Special") && !sloped && !clip;
                 let built = if want_deck {
                     let id = deck_id.unwrap_or(6);
                     let default_dy = 0.087;
