@@ -130,7 +130,14 @@ pub fn cmd(args: &[String]) {
         let mut demoted = 0;
         for r in plan.iter_mut().filter(|r| r.action == "bake" && !r.delete) {
             let tag = source.blocks[r.index].waypoint_tag.as_deref().unwrap_or("");
-            if matches!(tag, "Goal" | "Start" | "StartFinish" | "Checkpoint") {
+            // CUSTOM blocks only (`…_CustomBlock`, or an author path with a backslash): a
+            // STOCK waypoint block baked as a re-dressed copy keeps working — the whole
+            // September run shipped RoadTechFinish → dirt that way — and demoting it left
+            // U10S 58's finish plastic (Everios96 2026-10-09, picture 3). Why the custom
+            // one dies and the stock one does not is in the item's waypoint node, which
+            // the stock bake path writes and the custom path did not.
+            let custom = r.name.ends_with("_CustomBlock") || r.name.contains('\\');
+            if custom && matches!(tag, "Goal" | "Start" | "StartFinish" | "Checkpoint") {
                 r.action = "keep".to_string();
                 r.detail = format!("waypoint {tag}: kept as a BLOCK (a baked item would not count) — was: {}", r.detail);
                 demoted += 1;
@@ -282,7 +289,12 @@ pub fn cmd(args: &[String]) {
     // drivable channel; excluding them as "walls" left map 263's pool centre and map 23's
     // channel blue (Everios96 2026-10-08). The OWNER decides: a face whose block is a kept
     // wall never passes `wall_owner_baked`, so it stays by itself.
-    let is_water_face = |b: &crate::map::BlockRec| water_faces && b.name.contains("Water") && b.name.contains("FC") && !b.name.contains("Pillar");
+    // A water block's VERTICAL face clip (`…VFC…`: `DecoWallWaterBaseVFC`, `WaterWallVFC`)
+    // is the pool's SIDE WALL — the blue face Everios96 wants kept (2026-10-09, picture 4:
+    // "you deleted the side face of the deeper pool blocks… the side of the pool that
+    // should keep the blue material"). Only the horizontal clips (`HFC`, `FC`, `FCT`,
+    // `FCB`) are floor. `WaterWallVFC` escaped so far only because its prefab is empty.
+    let is_water_face = |b: &crate::map::BlockRec| water_faces && b.name.contains("Water") && b.name.contains("FC") && !b.name.contains("Pillar") && !b.name.contains("VFC");
     // A FREE-placed map has no grid cells at all (map 960's records all read cell -1,0,-1),
     // so neither the owner table nor the cell search can find a water face's block. Match
     // by WORLD POSITION there: a face sits on the block it finishes (2026-10-07).
@@ -344,7 +356,7 @@ pub fn cmd(args: &[String]) {
     // placed as a flat geometry, so it doesnt fit"). They re-dress exactly like a wall's
     // faces. `TINY_WATER_FACES=0` leaves them to the game.
     let is_frame_filler = |b: &crate::map::BlockRec| -> bool {
-        if water_faces && b.name.contains("Water") && b.name.contains("FC") && !b.name.contains("Pillar") {
+        if water_faces && b.name.contains("Water") && b.name.contains("FC") && !b.name.contains("Pillar") && !b.name.contains("VFC") {
             return wall_owner_baked(b);
         }
         if wall_fillers && (b.name.starts_with("TrackWall") || b.name.starts_with("DecoWall") || b.name.starts_with("Platform")) && b.name.contains("FC") && !b.name.contains("Water") && !b.name.contains("Pillar") {

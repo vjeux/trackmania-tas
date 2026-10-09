@@ -742,6 +742,15 @@ fn plan_one_dry(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, cou
         }
         return mk(Action::Keep, "", "water WALL: the vertical side stays the game's".into());
     }
+    // A water TERRAIN ZONE (`WaterRampZone*`) is KEPT too when the water pipeline runs: the
+    // rename to its `…Dirt` twin removes the WATER (the suffix is the terrain, the twin is a
+    // dry dirt shore — Everios96 2026-10-09, picture 5: "the sloped water block is missing
+    // water and looks weird"), and the 10-06 half-blue ramp was the kept block WITHOUT its
+    // floor clips re-dressed. Now its `…HFC` floor clips take the dress like a pool's.
+    let zone_kept = zone_like && std::env::var("TINY_WATER_OVERLAY").map(|v| v == "1").unwrap_or(false) && name.starts_with("WaterRampZone");
+    if water_here && zone_kept {
+        return mk(Action::Keep, "", "water ramp zone: kept with its water; its floor clips take the dress".into());
+    }
     if water_here && !zone_like && std::env::var("TINY_WATER_KEEP_BLOCK").map(|v| v == "1").unwrap_or(false) {
         if s != "Water" && base_prefab(&src).is_some() && std::env::var("TINY_WATER_OVERLAY").map(|v| v == "1").unwrap_or(false) {
             return mk(Action::Overlay, "", "water volume: the block is kept untouched; only its drivable floor is overlaid".into());
@@ -753,7 +762,11 @@ fn plan_one_dry(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, cou
     // suffix picking the TERRAIN the game grows around the wall and not the wall's own
     // dress, so a rename leaves the block looking untouched (Everios96 2026-10-05: "full
     // blocks are not converted at all"). Those bake as a re-dressed copy instead.
-    if std::env::var("TINY_BAKE_FAMILY").ok().map(|v| v.split(',').any(|f| !f.trim().is_empty() && name.starts_with(f.trim()))).unwrap_or(false) {
+    // …except a WATER block's vertical face clip (`DecoWallWaterBaseVFC`, `WaterWallVFC`):
+    // that is the pool's side wall, kept blue (Everios96 2026-10-09). Only its floor
+    // clips (HFC/FC/FCT/FCB) are re-dressed.
+    let water_side = name.contains("Water") && name.contains("VFC");
+    if !water_side && std::env::var("TINY_BAKE_FAMILY").ok().map(|v| v.split(',').any(|f| !f.trim().is_empty() && name.starts_with(f.trim()))).unwrap_or(false) {
         if base_prefab(&src).is_some() {
             return mk(Action::Bake, "", "name-only surface twins (one prefab per suffix): re-dressed copy".into());
         }
