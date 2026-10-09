@@ -574,19 +574,9 @@ fn plan_one_dry(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, cou
         // `…RoadDirtToRoadHalfB_Plastic` block is dirt-textured with an asphalt half
         // (plastic 26, shcr 2026-09-23) — every other surface re-dresses regardless
         let already = s == "Wood" && name.to_ascii_lowercase().contains("wood");
-        // ⛔ NEVER BAKE A WAYPOINT BLOCK. Baking turns the block into an ITEM, and an item
-        // does not act as a start/finish/checkpoint — U10S 354's finish is a custom block
-        // and the five sets that re-dressed it (Dirt, Grass, Icy, Magnet, Plastic) are
-        // unfinishable, while Wood and Wet Wood, which left it a block, work (leod,
-        // 2026-10-07). The block keeps its own look; a dead finish is never worth a dress.
-        let waypoint = idx
-            .path_for(name)
-            .and_then(|p| idx.load(store, &p).ok().cloned())
-            .map(|bi| bi.waypoint_type.is_some_and(|w| w != 3))
-            .unwrap_or(false);
-        if waypoint {
-            return mk(Action::Keep, "", "embedded custom block carrying a waypoint (start/finish/checkpoint): kept as a BLOCK so it still works".into());
-        }
+        // a waypoint-carrying custom block (U10S 354's finish) must stay a BLOCK — but the
+        // tag lives on the MAP record, not on the block info, so that rule is applied by
+        // `tmmaps surface` where the record is known (2026-10-09), not here
         if redress && !already {
             return mk(Action::Bake, "", "embedded custom block: re-dressed copy".into());
         }

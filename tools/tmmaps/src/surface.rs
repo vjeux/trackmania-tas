@@ -111,12 +111,34 @@ pub fn cmd(args: &[String]) {
     let plan_path = PathBuf::from(cli::flag(args, "--plan").expect("surface needs --plan RECORDS.tsv (mapgeom surface-plan --records)"));
     let uid_prefix = cli::flag(args, "--uid-prefix").unwrap_or("Ice2").to_string();
     assert!(uid_prefix.len() == 4, "--uid-prefix is 4 characters (it replaces the first 4 of the source uid)");
-    let plan = read_plan(&plan_path);
+    let mut plan = read_plan(&plan_path);
     let source = MapFile::load(&src);
     // the plan must describe THIS map: every row names the record it was read from
     for r in &plan {
         let b = source.blocks.get(r.index).unwrap_or_else(|| panic!("plan row #{} but the map has {} authored blocks", r.index, source.blocks.len()));
         assert_eq!(b.name, r.name, "plan row #{}: the map has `{}` there", r.index, b.name);
+    }
+    // ⛔ NEVER BAKE A WAYPOINT RECORD. A baked block becomes an ITEM, and an item with
+    // a Goal/Start/Checkpoint tag does not act as one: U10S 354's finish is a custom
+    // block (`PlatformWoodFinish.Block.Gbx_CustomBlock`) and every set that baked it
+    // (Dirt, Grass, Icy, Magnet, Plastic, Tiny) is unfinishable, while Wood and Wet
+    // Wood, which kept it a block, work (leod 2026-10-07). The planner only knows the
+    // block's NAME; the tag is on the map record, so the demotion lives here. The
+    // block keeps its own look — a dead finish is never worth a dress.
+    // TINY_BAKE_WAYPOINTS=1 restores the old behaviour.
+    if std::env::var("TINY_BAKE_WAYPOINTS").map(|v| v != "1").unwrap_or(true) {
+        let mut demoted = 0;
+        for r in plan.iter_mut().filter(|r| r.action == "bake" && !r.delete) {
+            let tag = source.blocks[r.index].waypoint_tag.as_deref().unwrap_or("");
+            if matches!(tag, "Goal" | "Start" | "StartFinish" | "Checkpoint") {
+                r.action = "keep".to_string();
+                r.detail = format!("waypoint {tag}: kept as a BLOCK (a baked item would not count) — was: {}", r.detail);
+                demoted += 1;
+            }
+        }
+        if demoted > 0 {
+            println!("  {demoted} waypoint record(s) kept as blocks instead of baked (TINY_BAKE_WAYPOINTS=1 to override)");
+        }
     }
     // --library ZIP --mapping TSV: the `bake` rows become ITEMS (mapgeom tiny-library
     // --scale 1 --only <names>, re-dressed through TINY_REDRESS / TINY_FORCE_MODIFIER)

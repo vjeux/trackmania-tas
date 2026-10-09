@@ -2003,14 +2003,31 @@ pub fn restart_cmd(args: &[String]) -> Result<(), String> {
     let f = |k: &str| crate::cli::flag(args, k).map(String::from);
     let map = PathBuf::from(args.iter().skip(1).find(|a| !a.starts_with("--") && a.ends_with(".Map.Gbx")).ok_or("MAP.Map.Gbx")?);
     let out = PathBuf::from(f("--out").ok_or("--out F")?);
-    let cell: Vec<i32> = f("--cell").ok_or("--cell x,y,z")?.split(',').filter_map(|t| t.trim().parse().ok()).collect();
-    if cell.len() != 3 {
-        return Err("--cell wants x,y,z".into());
-    }
     let dir: u8 = f("--dir").and_then(|d| d.parse().ok()).unwrap_or(0) & 3;
     let block = f("--block").unwrap_or_else(|| "PlatformTechStart".into());
     let mut m = MapFile::load(&map);
     let is_start = |n: &str| (n.starts_with("Platform") || n.starts_with("Road")) && n.ends_with("Start");
+    // `--free x,y,z`: a FREE start at a world point (yaw from --dir), the map's own starts
+    // removed — for a spot no grid cell reaches, e.g. right behind U10S 354's free-placed
+    // custom finish (2026-10-09: the grid start two cells back hung over a gap)
+    if let Some(free) = f("--free") {
+        let p: Vec<f32> = free.split(',').filter_map(|t| t.trim().parse().ok()).collect();
+        if p.len() != 3 {
+            return Err("--free wants x,y,z (world metres)".into());
+        }
+        let yaw = match dir { 0 => 0.0, 1 => std::f32::consts::FRAC_PI_2, 2 => std::f32::consts::PI, _ => -std::f32::consts::FRAC_PI_2 };
+        let specs = vec![crate::map::FreeBlockSpec { name: block.clone(), author: None, flags: 0, pos: [p[0], p[1], p[2]], rot: [yaw, 0.0, 0.0], grid: None, dir: 0 }];
+        let removed = m.remove_and_add_blocks(|b| is_start(&b.name), |_| false, &specs);
+        m.write_to(&out).map_err(|e| e.to_string())?;
+        let chk = MapFile::load(&out);
+        let nb = chk.blocks.iter().find(|x| is_start(&x.name)).map(|x| (x.name.clone(), x.free_pos));
+        println!("{}: {removed:?} start(s) removed; free {block} at {:?} yaw {yaw:.4} (reads back {:?})", out.display(), p, nb);
+        return Ok(());
+    }
+    let cell: Vec<i32> = f("--cell").ok_or("--cell x,y,z (or --free x,y,z)")?.split(',').filter_map(|t| t.trim().parse().ok()).collect();
+    if cell.len() != 3 {
+        return Err("--cell wants x,y,z".into());
+    }
     // in place when the map has a start: its cell and dir bytes patched, the record (and
     // its waypoint node — the editor-saved spawn) kept; a re-added node-less start block
     // did NOT move the spawn (2026-10-04: two different cells, the same frame)
