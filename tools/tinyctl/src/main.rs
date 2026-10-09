@@ -28,6 +28,7 @@ mod compare;
 mod cropstats;
 mod physcheck;
 mod rollout;
+mod reviewmap;
 mod play;
 mod png;
 mod probe;
@@ -213,6 +214,7 @@ fn main() {
         "cropstats" => cropstats::cmd(rest),
         "phys-check" => std::process::exit(physcheck::cmd(&args)),
         "rollout-build" => std::process::exit(rollout::cmd(&args)),
+        "review-map" => std::process::exit(reviewmap::cmd(&args)),
         "play" => play::cmd(rest),
         "startcheck" => startcheck::run(rest),
         "loadloop" => loadloop::cmd(rest),
