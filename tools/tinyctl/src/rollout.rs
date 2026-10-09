@@ -81,7 +81,27 @@ pub fn cmd(args: &[String]) -> i32 {
         std::process::exit(2)
     }));
     let sets: Vec<String> = f("--sets").unwrap_or_else(|| "dirt,grass,ice,plastic,magnet,wood,woodwet".into()).split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
-    let maps = parse_maps(&f("--maps").unwrap_or_else(|| "1-975".into()));
+    let mut maps = parse_maps(&f("--maps").unwrap_or_else(|| "1-975".into()));
+    // `--retry-failed PREV/build.tsv`: only the (set, map) rows that build marked FAILED —
+    // the 2026-10-09 icy run lost 169 maps to "Cannot allocate memory" with 6 jobs on a
+    // 15 GB box; they rebuild cleanly at 2-3 jobs. Overrides --sets and --maps.
+    let retry: Option<Vec<(String, u32)>> = f("--retry-failed").map(|prev| {
+        std::fs::read_to_string(&prev)
+            .unwrap_or_else(|e| panic!("{prev}: {e}"))
+            .lines()
+            .skip(1)
+            .filter_map(|l| {
+                let c: Vec<&str> = l.split('\t').collect();
+                (c.len() >= 5 && c[4].starts_with("FAILED")).then(|| (c[0].to_string(), c[1].parse::<u32>().unwrap_or(0)))
+            })
+            .filter(|(_, n)| *n > 0)
+            .collect()
+    });
+    if let Some(r) = &retry {
+        maps = r.iter().map(|(_, n)| *n).collect();
+        maps.sort_unstable();
+        maps.dedup();
+    }
     let jobs: usize = f("--jobs").and_then(|j| j.parse().ok()).unwrap_or(6).max(1);
     let keep = PathBuf::from(f("--keep").unwrap_or_else(|| format!("{}/u10s-keep", std::env::var("HOME").unwrap_or_default())));
     let bin_dir = f("--bin-dir").map(PathBuf::from).unwrap_or_else(|| std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf)).unwrap_or_default());
@@ -106,9 +126,13 @@ pub fn cmd(args: &[String]) -> i32 {
 
     // the work list
     let mut work: Vec<(String, u32)> = Vec::new();
-    for s in &sets {
-        for &n in &maps {
-            work.push((s.clone(), n));
+    if let Some(r) = retry {
+        work = r;
+    } else {
+        for s in &sets {
+            for &n in &maps {
+                work.push((s.clone(), n));
+            }
         }
     }
     println!("rollout-build: {} map-sets ({} sets × {} maps), {jobs} at a time, from {}", work.len(), sets.len(), maps.len(), src.display());
