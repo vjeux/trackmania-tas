@@ -31,6 +31,7 @@ mod compare;
 mod cropstats;
 mod play;
 mod png;
+mod flagdraw;
 mod probe;
 mod publish;
 mod replaypull;
@@ -202,6 +203,7 @@ fn main() {
     let rest = &args[1..];
     let r = match cmd.as_str() {
         "probe" => probe::cmd(rest),
+        "flag-hitbox-draw" => flagdraw::cmd(rest),
         "build" => build::cmd(rest),
         "views" => views::cmd(rest),
         "shoot" => shoot::cmd(rest),

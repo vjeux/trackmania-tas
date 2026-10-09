@@ -112,6 +112,12 @@ pub struct Ctx<'a> {
 }
 
 impl<'a> Ctx<'a> {
+    /// A context with no map: the named collection's block-info index, no embedded items.
+    pub fn for_collection(store: &'a mut DataStore, collection: &str) -> Ctx<'a> {
+        let idx = BlockInfoIndex::build(store, collection);
+        Ctx { store, idx, collection: collection.to_string(), embedded: Default::default(), item_wp: HashMap::new(), clip_names: HashMap::new() }
+    }
+
     pub fn new(store: &'a mut DataStore, m: &MapFile) -> Ctx<'a> {
         let coll = m.body_collections().map(|c| c[0].1).unwrap_or(26);
         let collection = collection_name(coll).to_string();
