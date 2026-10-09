@@ -2298,14 +2298,28 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 // …but `PlatformWaterRampBase` is NOT a slope: it is the 1×1 flat water
                 // platform (967 of 975 U10S maps have it, beside starts and in racing
                 // lines — Everios96 2026-10-09 "Its not a ramp?"). The 10-08 exemption read
-                // the NAME; the block's deck sits flat at its cell floor like a pool's.
+                // the NAME; the block's deck is flat, 2 m above its cell floor (measured).
                 // TINY_RAMPBASE_EXEMPT=1 restores the exemption for a test.
                 let rampbase = name == "PlatformWaterRampBase" && std::env::var("TINY_RAMPBASE_EXEMPT").map(|v| v != "1").unwrap_or(true);
                 let sloped = !rampbase && ["Ramp", "Slope", "Tilt", "Down", "Up"].iter().any(|k| name.contains(k));
                 let want_deck = deck_id.is_some() && deck_fams.iter().any(|f| name.starts_with(f.as_str())) && !name.contains("Special") && !sloped;
                 let built = if want_deck {
                     let id = deck_id.unwrap_or(6);
-                    let dy: f32 = std::env::var("TINY_EMPTY_DECK_Y").ok().and_then(|v| v.parse().ok()).unwrap_or(0.087);
+                    // the deck height above the cell floor: 0.087 for the pools and water
+                    // roads measured 10-06/07; the flat water PLATFORM (`PlatformWaterRampBase`)
+                    // carries the car at +2.00 m (U10S 32, driven 2026-10-09: car y 44.00 on a
+                    // cell whose floor is 42.0, grounddist 0), so its deck goes there (minus
+                    // the shell the placement adds). TINY_EMPTY_DECK_Y overrides both.
+                    // NB: a placed item's origin is the cell's ITEM ground (Stadium −64), 2 m
+                    // under the census floor (−62): the pools' 0.087 is really +2.09 above the
+                    // item origin ≈ the basin floor; the platform's car height 44.0 on a cell
+                    // whose item origin is 40.0 → +4.0, minus the 0.04 shell.
+                    // Bracketed by driving U10S 32 (2026-10-09): at +3.96 the car still rides
+                    // the game's water sheet (wheels 16, 11.3 m/s); at +4.08 it rides the deck
+                    // (wheels 77 plastic, 17.0 m/s) and sits 8 cm above the original height —
+                    // the water sheet is at exactly +4.00, the deck must clear it.
+                    let default_dy = if rampbase { 4.08 } else { 0.087 };
+                    let dy: f32 = std::env::var("TINY_EMPTY_DECK_Y").ok().and_then(|v| v.parse().ok()).unwrap_or(default_dy);
                     let link = surface_redress_rows(store).into_iter().map(|(_, l, _)| l).find(|l| !l.is_empty()).unwrap_or_default();
                     let mut m = crate::static_item::merged::Merged::default();
                     m.add_flat_quad(0.0, 0.0, 32.0 * sx as f32, 32.0 * sz as f32, dy, &link, id);
