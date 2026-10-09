@@ -46,6 +46,9 @@ const CELL: f32 = 32.0;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Kind {
     Black,
+    /// a black LOOP piece (`DecoWallLoop*`): the whole curved body is driving
+    /// surface — any grounded contact in its volume is a touch (Plastic 71, shcr)
+    Loop,
     Road,
     Pool,
 }
@@ -108,6 +111,11 @@ pub fn classify(n: &str) -> Option<Kind> {
     if is_pillar(n) {
         return None;
     }
+    // black DRIVING bodies: loops and slopes (`DecoWallLoop*`, `DecoWallSlope*`) are
+    // driven on their whole curved/sloped face — Plastic 71 (loop), 12 (slope descent)
+    if n.starts_with("DecoWallLoop") || n.starts_with("DecoWallSlope") {
+        return Some(Kind::Loop);
+    }
     if n.starts_with("DecoWall") {
         return if n.contains("Water") { Some(Kind::Pool) } else { Some(Kind::Black) };
     }
@@ -156,8 +164,8 @@ fn converted_blocks(m: &MapFile) -> Vec<Conv> {
     let covered = |x: f32, top: f32, z: f32| -> bool {
         entries.iter().any(|o| {
             !o.item && !o.baked && classify(&o.name) != Some(Kind::Black) && !o.name.contains("Pillar")
-                && (o.pos[0] - x).abs() <= 33.0 && (o.pos[2] - z).abs() <= 33.0
-                && (o.pos[1] - top).abs() <= 0.5
+                && (o.pos[0] - x).abs() <= 48.0 && (o.pos[2] - z).abs() <= 48.0
+                && (o.pos[1] - top).abs() <= 2.0
         })
     };
     for e in entries.clone() {
@@ -191,6 +199,8 @@ fn converted_blocks(m: &MapFile) -> Vec<Conv> {
             continue; // something is built on this wall: it is a pillar for that, not a deck
         }
         let (y0, y1) = match kind {
+            // the whole loop body, from its floor to its top
+            Kind::Loop => (y - 1.0, top + 2.0),
             // ON the top: the car's position sits ~0.5–1.5 m above it when it is standing
             // there. Plastic 147's record crosses the top height while sliding DOWN the
             // wall face (y 64 → 59 in 250 ms, "grounded" against the face): a narrow
@@ -308,8 +318,14 @@ fn touch(samples: &[Sample], conv: &[Conv]) -> Touch {
                 continue;
             }
             let inside_xz = s.x >= c.x0 && s.x < c.x1 && s.z >= c.z0 && s.z < c.z1;
-            if c.kind == Kind::Black && s.ground && !side_hit && s.y >= c.side_y0 && s.y <= c.side_y1 && !(inside_xz && s.y >= c.y0) {
-                // beside (or under the lip of) a wall, not on its top
+            // Side contact = riding the face LATERALLY (near-level vertical speed). A car
+            // rocketing straight up or down a wall (|vy| > 10 m/s: Plastic 113 climbs a
+            // 4-high column at 68 m/s, 147/280 slide down one) is a wall-ride the hunters
+            // do NOT count as driving the black surface (shcr 2026-10-09, six rulings).
+            // …and a car LEVEL WITH OR ABOVE the wall top, beside it, is on whatever
+            // stands next to the wall (Plastic 44: a grass road at the wall's top height),
+            // not on its face — the face ends at the top
+            if c.kind == Kind::Black && s.ground && !side_hit && s.vy.abs() < 10.0 && s.y >= c.side_y0 && s.y <= c.y0 - 0.5 && !inside_xz {
                 t.black_side += 1;
                 side_hit = true;
             }
@@ -319,6 +335,7 @@ fn touch(samples: &[Sample], conv: &[Conv]) -> Touch {
             match c.kind {
                 // level on the top (not sliding down the face through the top height)
                 Kind::Black if s.ground && s.vy.abs() < 2.0 => t.black += 1,
+                Kind::Loop if s.ground => t.black += 1,
                 Kind::Road if s.ground => t.road += 1,
                 Kind::Pool if s.ground => t.pool += 1,
                 _ => continue,
@@ -471,7 +488,7 @@ pub fn cmd(args: &[String]) -> i32 {
     let m = MapFile::load(Path::new(map));
     let conv = converted_blocks(&m);
     let (nb, nr, np) = conv.iter().fold((0, 0, 0), |a, c| match c.kind {
-        Kind::Black => (a.0 + 1, a.1, a.2),
+        Kind::Black | Kind::Loop => (a.0 + 1, a.1, a.2),
         Kind::Road => (a.0, a.1 + 1, a.2),
         Kind::Pool => (a.0, a.1, a.2 + 1),
     });
