@@ -131,7 +131,36 @@ pub fn classify(n: &str) -> Option<Kind> {
 
 fn converted_blocks(m: &MapFile) -> Vec<Conv> {
     let mut out = Vec::new();
-    for e in census::entries(m) {
+    // walls stack: a column of DecoWallBase at y 10/18/26/34 is ONE wall whose drivable
+    // top is the highest block's — the lower ones are faces, never driven. Without this
+    // the start pad of Plastic 14 "sat on" a wall two cells underground (shcr 2026-10-09).
+    let entries = census::entries(m);
+    let mut top_of_column: std::collections::HashMap<(i64, i64, String), f32> = Default::default();
+    for e in &entries {
+        if e.item || e.baked || classify(&e.name) != Some(Kind::Black) {
+            continue;
+        }
+        let key = ((e.pos[0] * 2.0) as i64, (e.pos[2] * 2.0) as i64, e.name.clone());
+        let t = top_of_column.entry(key).or_insert(f32::MIN);
+        if e.pos[1] > *t {
+            *t = e.pos[1];
+        }
+    }
+    // a wall with ANOTHER block standing on its top (a road, a start pad, a platform —
+    // grid or free-placed) is a support column: the car drives that block, never the
+    // wall. Plastic 96's start pad sits on a 16-high DecoWallBase column and every
+    // record "touched" the wall for its whole first second (shcr 2026-10-09: no wipe).
+    // "on its top" = any non-wall block whose floor is at the wall's top height (±0.5 m)
+    // and whose cell overlaps or neighbours the wall's: a DecoPlatformBase plateau over a
+    // DecoWallBase field (Plastic 96) is recorded one cell over from the walls it covers
+    let covered = |x: f32, top: f32, z: f32| -> bool {
+        entries.iter().any(|o| {
+            !o.item && !o.baked && classify(&o.name) != Some(Kind::Black) && !o.name.contains("Pillar")
+                && (o.pos[0] - x).abs() <= 33.0 && (o.pos[2] - z).abs() <= 33.0
+                && (o.pos[1] - top).abs() <= 0.5
+        })
+    };
+    for e in entries.clone() {
         // author blocks only: the game's generated `B` records are face clips
         // (`DecoWallBaseVFC`, `WaterWallVFC`: vertical, never driven, never
         // converted) and pool floor pieces that sit inside their owner's cell
@@ -140,8 +169,17 @@ fn converted_blocks(m: &MapFile) -> Vec<Conv> {
             continue;
         }
         let Some(kind) = classify(&e.name) else { continue };
+        if kind == Kind::Black {
+            let key = ((e.pos[0] * 2.0) as i64, (e.pos[2] * 2.0) as i64, e.name.clone());
+            if top_of_column.get(&key).map(|t| e.pos[1] < *t).unwrap_or(false) {
+                continue; // a lower block of a wall column: its "top" is inside the wall above
+            }
+        }
         let span = span_cells(&e.name);
-        let margin = (span - 1) as f32 * CELL;
+        // a wall's drivable top is its OWN cell (a Curve wall's extra cells are the wall
+        // face sweeping round, not deck): no horizontal margin for walls. Pools and water
+        // roads keep the span margin — their floor really spans the curve.
+        let margin = if kind == Kind::Black { 0.0 } else { (span - 1) as f32 * CELL };
         let (hx, hz) = match e.placement {
             Placement::Cell => (CELL / 2.0, CELL / 2.0),
             // a free block's pos is its pivot: give it a full cell either way
@@ -149,13 +187,26 @@ fn converted_blocks(m: &MapFile) -> Vec<Conv> {
         };
         let [x, y, z] = e.pos;
         let top = y + 8.0 * wall_height_cells(&e.name) as f32;
+        if kind == Kind::Black && covered(x, top, z) {
+            continue; // something is built on this wall: it is a pillar for that, not a deck
+        }
         let (y0, y1) = match kind {
-            // on top of the wall: the car's position sits ~0.5–1 m above the top
-            Kind::Black => (top - 2.0, top + 3.5),
-            // the water road's deck is ~0.1–1 m above the cell floor
-            Kind::Road => (y - 1.5, y + 9.0),
-            // anywhere in the basin volume (a water wall block's pool is its top)
-            Kind::Pool => (y - 1.5, y + 10.0),
+            // ON the top: the car's position sits ~0.5–1.5 m above it when it is standing
+            // there. Plastic 147's record crosses the top height while sliding DOWN the
+            // wall face (y 64 → 59 in 250 ms, "grounded" against the face): a narrow
+            // band, and `touch` additionally wants the car level (|vy| small) — see there.
+            Kind::Black => (top - 0.5, top + 2.0),
+            // IN the channel: a car on a water road rides ~0.9 m below the water sheet,
+            // i.e. ~0.1–2 m above the cell floor (measured 2026-10-06). A car 8–9 m up
+            // (Plastic 87, the whole run) is on a block BUILT OVER the water curves and
+            // never meets the deck. Band: floor to +4 m.
+            Kind::Road => (y - 1.5, y + 4.0),
+            // ON THE FLOOR, not anywhere in the basin: a car driving the pool floor sits
+            // ~0.1–1 m above the cell floor (measured 2026-10-07, standstill in the pool);
+            // a car BOUNCING ON THE WATER rides a full cell up (8.0–9.8 m on Plastic
+            // 33/43/55, shcr 2026-10-09 "bouncing on water but not touching the pool
+            // floor") and never meets the converted surface. Band: floor to +4 m.
+            Kind::Pool => (y - 1.5, y + 4.0),
         };
         out.push(Conv {
             name: e.name,
@@ -181,6 +232,7 @@ struct Sample {
     x: f32,
     y: f32,
     z: f32,
+    vy: f32,
     ground: bool,
 }
 
@@ -205,6 +257,7 @@ fn export_samples(tmtraj: &Path, ghost: &Path) -> Result<Vec<Sample>, String> {
     let header: Vec<&str> = lines.next().unwrap_or("").split(',').collect();
     let col = |n: &str| header.iter().position(|h| *h == n).ok_or_else(|| format!("tmtraj csv has no `{n}` column"));
     let (it, ix, iy, iz, ig) = (col("time_ms")?, col("x")?, col("y")?, col("z")?, col("is_ground_contact")?);
+    let ivy = col("vy").ok();
     let mut out = Vec::new();
     for l in lines {
         let f: Vec<&str> = l.trim_end().split(',').collect();
@@ -217,6 +270,7 @@ fn export_samples(tmtraj: &Path, ghost: &Path) -> Result<Vec<Sample>, String> {
             x: num(ix),
             y: num(iy),
             z: num(iz),
+            vy: ivy.map(num).unwrap_or(0.0),
             ground: f[ig].trim() == "True" || f[ig].trim() == "1" || f[ig].trim() == "true",
         });
     }
@@ -263,9 +317,10 @@ fn touch(samples: &[Sample], conv: &[Conv]) -> Touch {
                 continue;
             }
             match c.kind {
-                Kind::Black if s.ground => t.black += 1,
+                // level on the top (not sliding down the face through the top height)
+                Kind::Black if s.ground && s.vy.abs() < 2.0 => t.black += 1,
                 Kind::Road if s.ground => t.road += 1,
-                Kind::Pool => t.pool += 1,
+                Kind::Pool if s.ground => t.pool += 1,
                 _ => continue,
             }
             hit = true;
@@ -289,13 +344,14 @@ fn ghosts_for(dir: &Path, uid: &str) -> Vec<PathBuf> {
     v
 }
 
-/// `magnet`: the set drives on walls, so SIDE contact with a converted wall is
-/// a touch there and nowhere else.
-fn verdict(rows: &[Touch], magnet: bool) -> &'static str {
+/// SIDE contact with a converted wall counts in EVERY set (shcr 2026-10-09: Plastic
+/// 69/12/71 drive the black walls' FACES — wall-rides, bounces — and the re-dressed
+/// face is a different surface). `_magnet` is kept for the caller's report line.
+fn verdict(rows: &[Touch], _magnet: bool) -> &'static str {
     if rows.is_empty() {
         return "NO-GHOST";
     }
-    if rows.iter().any(|t| t.black > 0 || t.road > 0 || t.pool > 0 || (magnet && t.black_side > 0)) {
+    if rows.iter().any(|t| t.black > 0 || t.road > 0 || t.pool > 0 || t.black_side >= 3) {
         "TOUCH"
     } else {
         "CLEAR"
