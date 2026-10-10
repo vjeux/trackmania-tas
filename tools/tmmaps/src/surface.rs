@@ -459,11 +459,15 @@ pub fn cmd(args: &[String]) {
     let mut m = MapFile::load(&src);
     // A water face goes ONLY when its re-dressed replacement was actually placed: removing
     // one without a model leaves a hole in the floor (the invisible faces of 2026-10-05).
-    // `TINY_WATER_FACE_DELETE=0` keeps the game's water face clips under their re-dressed
-    // floor copies (tried 2026-10-10 for the missing pool walls of wet wood 55 — no visible
-    // difference at the spots checked; the default stays "delete", which the 10-07 double
-    // draw argued for).
-    let water_face_delete = std::env::var("TINY_WATER_FACE_DELETE").map(|v| v != "0").unwrap_or(true);
+
+    // Default since 2026-10-10: KEEP the game's water face clips under the re-dressed floor
+    // copies. A deep pool's OUTER wall lives in its edge clip (`HFCLeftEndEnd`…: Everios96
+    // "when you connect them to other pool blocks the wall disappears, but when there is
+    // no connection there should still be a wall… the blue original material") and the
+    // floor-only copy that replaced the clip dropped it — from inside the pool you saw
+    // the stadium (wood 61, wet wood 55/53/80). The copy sits 4 cm over the clip's floor.
+    // `TINY_WATER_FACE_DELETE=1` restores the replace-and-delete.
+    let water_face_delete = std::env::var("TINY_WATER_FACE_DELETE").map(|v| v == "1").unwrap_or(false);
     let drop_baked = |b: &crate::map::BlockRec| -> bool {
         if is_water_face(b) {
             return water_face_delete && is_frame_filler(b) && filler_placed.contains(&b.index);
