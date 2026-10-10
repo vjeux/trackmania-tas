@@ -150,6 +150,10 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
             "Grass" => Some("Stadium\\Media\\Modifier\\PlatformGrass\\PlatformTech".to_string()),
             "Plastic" => Some("Stadium\\Media\\Modifier\\PlatformPlastic\\PlatformTech".to_string()),
             "Ice" => Some("Stadium\\Media\\Modifier\\PlatformIce\\PlatformTech".to_string()),
+            // Wood had NO wall-top link: none of the scoped rows below ran, so a wood
+            // set's full-block ride faces (loops, bowls, slopes) and metal rims stayed
+            // black with wood physics (Everios96 2026-10-10, wet wood 69).
+            "Wood" => Some("Stadium\\Media\\Material\\ThemeSnowRoad".to_string()),
             _ => None,
         };
         // the FULL-BLOCK black family (`DecoWall*`) is a surface family by NAME ONLY:
@@ -253,7 +257,7 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
                 // face that needs to change, just upside down"). Its `*SlopeUp*` twin was
                 // already covered; the Down spelling was not, so that ride face stayed
                 // black while the block around it turned dirt.
-                format!("[*]TrackWallClips={link};[Platform*FCT*]TrackWall={link};[Platform*FCB*]TrackWall={link};[TrackWall*SlopeU*]TrackWall={link};[TrackWall*SlopeUp*]TrackWall={link};[TrackWall*SlopeDown*]TrackWall={link};[TrackWallArchSlope*U*]TrackWall={link}"),
+                format!("[*]TrackWallClips={link};[DecoWallLoop*]TrackWall={link};[DecoWallSlope*]TrackWall={link};[DecoWallCurve*]TrackWall={link};[DecoWallDiag*]TrackWall={link};[DecoWallBase]TrackWall={link};[DecoWallBaseFCT*]TrackWall={link};[DecoWallSimple]TrackWall={link};[Platform*FCT*]TrackWall={link};[Platform*FCB*]TrackWall={link};[TrackWall*SlopeU*]TrackWall={link};[TrackWall*SlopeUp*]TrackWall={link};[TrackWall*SlopeDown*]TrackWall={link};[TrackWallArchSlope*U*]TrackWall={link}"),
             ));
         }
     }

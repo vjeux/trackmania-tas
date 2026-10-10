@@ -459,15 +459,26 @@ pub fn cmd(args: &[String]) {
     let mut m = MapFile::load(&src);
     // A water face goes ONLY when its re-dressed replacement was actually placed: removing
     // one without a model leaves a hole in the floor (the invisible faces of 2026-10-05).
+    // `TINY_WATER_FACE_DELETE=0` keeps the game's water face clips under their re-dressed
+    // floor copies (tried 2026-10-10 for the missing pool walls of wet wood 55 — no visible
+    // difference at the spots checked; the default stays "delete", which the 10-07 double
+    // draw argued for).
+    let water_face_delete = std::env::var("TINY_WATER_FACE_DELETE").map(|v| v != "0").unwrap_or(true);
     let drop_baked = |b: &crate::map::BlockRec| -> bool {
         if is_water_face(b) {
-            return is_frame_filler(b) && filler_placed.contains(&b.index);
+            return water_face_delete && is_frame_filler(b) && filler_placed.contains(&b.index);
         }
         is_frame_filler(b)
     };
     let water_left = source.baked.iter().filter(|b| is_water_face(b) && is_frame_filler(b) && !filler_placed.contains(&b.index)).count();
     if water_left > 0 {
-        println!("  ⛔ {water_left} water floor record(s) KEPT: no re-dressed model to put in their place — they still draw the game's own floor");
+        println!("  ⛔ {water_left} water floor record(s) without a re-dressed model: the game's floor shows there");
+    }
+    if !water_face_delete {
+        let kept = source.baked.iter().filter(|b| is_water_face(b) && is_frame_filler(b) && filler_placed.contains(&b.index)).count();
+        if kept > 0 {
+            println!("  water faces: {kept} game clip(s) kept under their re-dressed floor copies (sides and water stay the game's)");
+        }
     }
     // …and the stage RUNS whenever anything goes, not only when an authored block does: a
     // pure-water map deletes no block at all, so its floors were never removed and the game
