@@ -25,7 +25,11 @@ const BOX_TOOLS: &str = "/home/vjeux/trackmania-tas/tools/target/release";
 
 pub fn cmd(args: &[String]) -> Result<(), String> {
     let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
-    let maps: Vec<PathBuf> = f("--maps").ok_or("loadloop needs --maps A[,B,…]")?.split(',').filter(|s| !s.is_empty()).map(PathBuf::from).collect();
+    let maps: Vec<PathBuf> = f("--maps").map(|v| v.split(',').filter(|s| !s.is_empty()).map(PathBuf::from).collect()).unwrap_or_default();
+    let box_list = f("--box-maps-file");
+    if maps.is_empty() && box_list.is_none() && f("--box-maps").is_none() {
+        return Err("loadloop needs --maps A[,B,…], --box-maps A[,B,…] or --box-maps-file LIST".into());
+    }
     let tag = f("--tag").ok_or("loadloop needs --tag T")?;
     if !tag.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
         return Err(format!("--tag {tag}: letters, digits, - and _ only"));
@@ -37,6 +41,21 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     let wsx = Wsx::new(args);
     crate::inputidle::gate(&wsx, args, "tinyctl loadloop")?;
     let mut remote = Vec::new();
+    // `--box-maps A,B,…` (or `--box-maps-file LIST`, one path a line): maps that already
+    // sit on the box (a rollout pre-build), loaded in place — nothing pushed. The
+    // 2026-10-09 Wet Wood set is 975 files / 1.8 GB that live only there.
+    let box_maps: Vec<String> = f("--box-maps").map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()).unwrap_or_default();
+    let mut n_box = box_maps.len();
+    remote.extend(box_maps);
+    // the list file travels to the box as-is and the loop reads it there (`--maps-file`)
+    let mut maps_file_arg = String::new();
+    if let Some(list) = &box_list {
+        let t = std::fs::read_to_string(list).map_err(|e| format!("{list}: {e}"))?;
+        n_box += t.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).count();
+        let r = format!("{STAGE}/ll-{tag}-maps.txt");
+        wsx.push(std::path::Path::new(list), &r)?;
+        maps_file_arg = format!(" --maps-file {r}");
+    }
     for (i, m) in maps.iter().enumerate() {
         if !m.exists() {
             return Err(format!("{}: no such file", m.display()));
@@ -61,8 +80,9 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         }
     }
     let env = crate::remoteshots::ENV;
-    let cmd = format!("{env}; {shootctl} loadloop --detach --maps {} --outdir {remote_dir} --tag {tag} --timeout {timeout}{pass}", remote.join(","));
-    let n_loads = f("--n").and_then(|s| s.parse::<usize>().ok()).unwrap_or(1) * f("--seq").map(|s| s.split(',').count()).unwrap_or(maps.len());
+    let maps_arg = if remote.is_empty() { String::new() } else { format!(" --maps {}", remote.join(",")) };
+    let cmd = format!("{env}; {shootctl} loadloop --detach{maps_arg}{maps_file_arg} --outdir {remote_dir} --tag {tag} --timeout {timeout}{pass}");
+    let n_loads = f("--n").and_then(|s| s.parse::<usize>().ok()).unwrap_or(1) * f("--seq").map(|s| s.split(',').count()).unwrap_or(maps.len() + n_box);
     eprintln!("running {n_loads} loads on the box — waits for the render lock if another thread holds the game …");
     let started = wsx.sh(&cmd)?;
     if wsx.verbose {

@@ -52,9 +52,15 @@ pub fn parse_opts(args: &[String]) -> Result<Opts, String> {
     if !outdir.starts_with("/mnt/") {
         return Err(format!("--outdir {} must live under /mnt/<drive>/ — the screenshot is taken by a Windows program", outdir.display()));
     }
-    let maps: Vec<String> = val("--maps").ok_or("loadloop needs --maps A[,B,…]")?.split(',').filter(|s| !s.is_empty()).map(String::from).collect();
+    // `--maps A,B,…` and/or `--maps-file LIST` (one path a line, spaces allowed, `#`
+    // comments): a rollout pre-build is hundreds of paths with spaces in them
+    let mut maps: Vec<String> = val("--maps").map(|v| v.split(',').filter(|s| !s.is_empty()).map(String::from).collect()).unwrap_or_default();
+    if let Some(list) = val("--maps-file") {
+        let t = std::fs::read_to_string(&list).map_err(|e| format!("{list}: {e}"))?;
+        maps.extend(t.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).map(String::from));
+    }
     if maps.is_empty() {
-        return Err("--maps names no map".into());
+        return Err("loadloop needs --maps A[,B,…] or --maps-file LIST".into());
     }
     let n = num("--n", 0)? as usize;
     let mut seq: Vec<usize> = match val("--seq") {
