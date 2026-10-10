@@ -365,6 +365,31 @@ fn main() {
             println!("{}: {swapped} embedded file(s) replaced, zip {} bytes", out.display(), zip.len());
         }
         // tmmaps set-thumbnail MAP --jpeg X.jpg --out OUT — the header thumbnail replaced
+        // tmmaps cover-check MAP — every one-cell black block with the cell above it:
+        // the data behind the covered-black rule in `tmmaps surface`
+        "cover-check" => {
+            let source = tmmaps::map::MapFile::load(std::path::Path::new(&args[2]));
+            let cell_of = |p: [f32; 3]| -> (i32, i32, i32) { ((p[0] / tmmaps::map::CELL_XZ).floor() as i32, ((p[1] + 62.0) / 8.0).round() as i32, (p[2] / tmmaps::map::CELL_XZ).floor() as i32) };
+            let mut occ: std::collections::HashMap<(i32, i32, i32), Vec<String>> = std::collections::HashMap::new();
+            for b in &source.blocks {
+                occ.entry(cell_of(tmmaps::tiny::block_pos(b))).or_default().push(b.name.clone());
+            }
+            let is_black = |n: &str| (n.starts_with("DecoWall") || (n.starts_with("Platform") && n.contains("Wall"))) && !n.contains("Pillar") && !n.contains("Water");
+            let (mut tot, mut cov) = (0, 0);
+            for b in source.blocks.iter().filter(|b| is_black(&b.name)) {
+                let p = tmmaps::tiny::block_pos(b);
+                let c = cell_of(p);
+                let above = occ.get(&(c.0, c.1 + 1, c.2));
+                tot += 1;
+                if above.is_some() {
+                    cov += 1;
+                }
+                if tot <= 12 {
+                    println!("{:<28} pos ({:.1}, {:.1}, {:.1}) cell {:?} free={} above: {:?}", b.name, p[0], p[1], p[2], c, b.free_pos.is_some(), above.map(|v| v.join(",")).unwrap_or_else(|| "-".into()));
+                }
+            }
+            println!("black blocks {tot}, covered {cov}, exposed {}", tot - cov);
+        }
         "set-thumbnail" => {
             let src = std::path::PathBuf::from(&args[2]);
             let jpeg = std::fs::read(tmmaps::cli::flag(&args, "--jpeg").expect("set-thumbnail needs --jpeg X.jpg")).expect("read jpeg");

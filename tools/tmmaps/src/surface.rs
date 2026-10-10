@@ -147,6 +147,40 @@ pub fn cmd(args: &[String]) {
             println!("  {demoted} waypoint record(s) kept as blocks instead of baked (TINY_BAKE_WAYPOINTS=1 to override)");
         }
     }
+    // A COVERED black block stays the game's own. Everios96 2026-10-09: "when you place
+    // down a dirt block it generates a pillar below it, and the black blocks are
+    // technically the top part of the pillar, and then there is a layer of dirt placed
+    // above it. But you can also place down the black roads without a surface on top,
+    // which is what I want to convert… only change them if there is air above". Of the
+    // 36,618 black blocks in the 975 originals 20,676 have a block directly on top. A
+    // one-cell black block (`DecoWall*`, `Platform*Wall*`; not a pillar, not water)
+    // whose top cell is occupied by another block is demoted to `keep`, sides and all.
+    // Bigger black pieces (curves, loops, slopes: several cells) convert as before —
+    // "partly covered counts as open". TINY_COVERED_BLACK=convert restores.
+    if std::env::var("TINY_COVERED_BLACK").map(|v| v != "convert").unwrap_or(true) {
+        let cell_of = |p: [f32; 3]| -> (i32, i32, i32) {
+            ((p[0] / crate::map::CELL_XZ).floor() as i32, ((p[1] + 62.0) / 8.0).round() as i32, (p[2] / crate::map::CELL_XZ).floor() as i32)
+        };
+        let occupied: std::collections::HashSet<(i32, i32, i32)> = source.blocks.iter().map(|b| cell_of(crate::tiny::block_pos(b))).collect();
+        let is_black = |n: &str| (n.starts_with("DecoWall") || (n.starts_with("Platform") && n.contains("Wall"))) && !n.contains("Pillar") && !n.contains("Water");
+        let one_cell = |n: &str| !["Curve", "Loop", "Slope", "Diag", "Corner", "x2", "x3", "x4", "x6", "2In", "2Out"].iter().any(|k| n.contains(k));
+        let mut covered = 0;
+        for r in plan.iter_mut().filter(|r| (r.action == "bake" || r.action == "rename") && !r.delete) {
+            if !is_black(&r.name) || !one_cell(&r.name) {
+                continue;
+            }
+            let b = &source.blocks[r.index];
+            let (cx, cy, cz) = cell_of(crate::tiny::block_pos(b));
+            if occupied.contains(&(cx, cy + 1, cz)) {
+                r.action = "keep".to_string();
+                r.detail = format!("covered black block (a block sits on its top): kept as the game's own — was: {}", r.detail);
+                covered += 1;
+            }
+        }
+        if covered > 0 {
+            println!("  {covered} covered black block(s) kept as they are (TINY_COVERED_BLACK=convert to override)");
+        }
+    }
     // --library ZIP --mapping TSV: the `bake` rows become ITEMS (mapgeom tiny-library
     // --scale 1 --only <names>, re-dressed through TINY_REDRESS / TINY_FORCE_MODIFIER)
     let library = cli::flag(args, "--library").map(PathBuf::from);
