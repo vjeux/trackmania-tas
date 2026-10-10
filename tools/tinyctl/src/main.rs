@@ -29,6 +29,7 @@ mod cropstats;
 mod physcheck;
 mod rollout;
 mod reviewmap;
+mod rolloutpub;
 mod play;
 mod png;
 mod probe;
@@ -215,6 +216,8 @@ fn main() {
         "phys-check" => std::process::exit(physcheck::cmd(&args)),
         "rollout-build" => std::process::exit(rollout::cmd(&args)),
         "review-map" => std::process::exit(reviewmap::cmd(&args)),
+        "rollout-publish" => std::process::exit(rolloutpub::cmd(&args)),
+        "__tmmaps-reuid" => std::process::exit(rolloutpub::reuid(&args)),
         "play" => play::cmd(rest),
         "startcheck" => startcheck::run(rest),
         "loadloop" => loadloop::cmd(rest),
