@@ -374,7 +374,11 @@ fn verdict(rows: &[Touch], _magnet: bool) -> &'static str {
     if rows.is_empty() {
         return "NO-GHOST";
     }
-    if rows.iter().any(|t| t.black > 0 || t.road > 0 || t.pool > 0 || t.black_side >= 3) {
+    // side contact: at least 0.25 s (5 samples at 50 ms) in ONE record — a 0.15 s brush
+    // that every record repeats (Dirt 44: 3+3+3) is one brush, not a ride; shcr's six
+    // rulings put the line between 6 samples (71, wipe… but that was a loop) and 4 (280,
+    // keep). Per record, not summed.
+    if rows.iter().any(|t| t.black > 0 || t.road > 0 || t.pool > 0 || t.black_side >= 5) {
         "TOUCH"
     } else {
         "CLEAR"
