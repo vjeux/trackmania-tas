@@ -156,6 +156,25 @@ pub fn plan(args: &[String]) -> i32 {
             }
         }
     }
+    // `--records R.tsv` (a `nadeo-here leaderboards` pull: mapUid first column): the
+    // COMPLETE "has records" set, by live uid. The touch file only knows the maps its
+    // batch was built from (the 10-08 scope missed the DecoWall maps), so a live map
+    // with records but no touch row would otherwise pass as "no records" — under a
+    // wipe-all-with-records rule that is the difference between an update and a wipe.
+    let records_by_uid: HashMap<String, usize> = f("--records")
+        .map(|p| {
+            let mut m: HashMap<String, usize> = HashMap::new();
+            for l in read(&p).lines().skip(1) {
+                if let Some(uid) = l.split('\t').next() {
+                    if !uid.is_empty() {
+                        *m.entry(uid.to_string()).or_default() += 1;
+                    }
+                }
+            }
+            m
+        })
+        .unwrap_or_default();
+    let have_records_file = f("--records").is_some();
     // live inventory rows
     let mut rows = String::from("set\tnum\tcampaignId\tcampaign\tlive_uid\tlive_name\taction\tnew_uid\tfile\treason\n");
     let mut counts: BTreeMap<(String, String), usize> = BTreeMap::new();
@@ -178,7 +197,15 @@ pub fn plan(args: &[String]) -> i32 {
         let pol_all = policy.get("*");
         let has = |g: fn(&Policy) -> &BTreeSet<u32>| pol_set.map(|p| g(p).contains(&num)).unwrap_or(false) || pol_all.map(|p| g(p).contains(&num)).unwrap_or(false);
         let key = (word.to_string(), num);
-        let v = verdict.get(&key).map(String::as_str).unwrap_or("none");
+        let n_rec = records_by_uid.get(uid).copied().unwrap_or(0);
+        let v_touch = verdict.get(&key).map(String::as_str);
+        // the touch verdict when there is one; else the pull decides between
+        // "records (unanalysed)" and "none"; without a pull, the touch file alone
+        let v: &str = match (v_touch, have_records_file, n_rec) {
+            (Some(t), _, _) => t,
+            (None, true, n) if n > 0 => "records (unanalysed)",
+            _ => "none",
+        };
         let in_scope = |p: &Policy| p.only.as_ref().map(|o| o.contains(&num)).unwrap_or(true);
         let out_of_scope = !pol_set.map(in_scope).unwrap_or(true) || !pol_all.map(in_scope).unwrap_or(true);
         let (action, new_uid, file, reason) = if has(|p| &p.exclude) {
@@ -197,7 +224,12 @@ pub fn plan(args: &[String]) -> i32 {
                         let nu = format!("{}{}", uid_prefix(word), &uid[4.min(uid.len())..]);
                         ("WIPE", nu, path.clone(), if force_wipe { format!("policy: wipe (records {v})") } else { "a record drives a changed surface".to_string() })
                     } else {
-                        ("UPDATE", String::new(), path.clone(), if v == "none" { "no records".to_string() } else { "records never touch a changed surface".to_string() })
+                        let why = match v {
+                            "none" => "no records".to_string(),
+                            "records (unanalysed)" => format!("{n_rec} record(s) NOT analysed by ghost-touch — review before shipping"),
+                            _ => "records never touch a changed surface".to_string(),
+                        };
+                        ("UPDATE", String::new(), path.clone(), why)
                     }
                 }
             }

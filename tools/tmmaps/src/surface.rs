@@ -162,7 +162,12 @@ pub fn cmd(args: &[String]) {
             ((p[0] / crate::map::CELL_XZ).floor() as i32, ((p[1] + 62.0) / 8.0).round() as i32, (p[2] / crate::map::CELL_XZ).floor() as i32)
         };
         let occupied: std::collections::HashSet<(i32, i32, i32)> = source.blocks.iter().map(|b| cell_of(crate::tiny::block_pos(b))).collect();
-        let is_black = |n: &str| (n.starts_with("DecoWall") || (n.starts_with("Platform") && n.contains("Wall"))) && !n.contains("Pillar") && !n.contains("Water");
+        // The DecoWall FULL blocks only — the kind nothing had converted before 2026-10-09.
+        // The platform-wall ROADS keep converting as every September set did: the live
+        // sets already carry their covered ones as wood/dirt items (1,831 blocks on 153
+        // wet wood maps), and the rule exists to avoid needless NEW conversions, not to
+        // turn converted blocks black again.
+        let is_black = |n: &str| n.starts_with("DecoWall") && !n.contains("Pillar") && !n.contains("Water");
         let one_cell = |n: &str| !["Curve", "Loop", "Slope", "Diag", "Corner", "x2", "x3", "x4", "x6", "2In", "2Out"].iter().any(|k| n.contains(k));
         let mut covered = 0;
         for r in plan.iter_mut().filter(|r| (r.action == "bake" || r.action == "rename") && !r.delete) {
