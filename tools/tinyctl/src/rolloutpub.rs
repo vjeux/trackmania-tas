@@ -194,6 +194,22 @@ pub fn plan(args: &[String]) -> i32 {
         *counts.entry((word.to_string(), action.to_string())).or_default() += 1;
         rows.push_str(&format!("{word}\t{num}\t{cid}\t{camp}\t{uid}\t{name}\t{action}\t{new_uid}\t{file}\t{reason}\n"));
     }
+    // a WIPE's fresh uid must not already be online anywhere in the inventory (a prefix
+    // reused from an earlier wipe round would make the "create" an UPDATE of that map)
+    let inv_text = read(&inv);
+    let online: BTreeSet<&str> = inv_text.lines().filter_map(|l| l.split('\t').nth(3)).collect();
+    let mut clashes = 0;
+    for l in rows.lines().skip(1) {
+        let c: Vec<&str> = l.split('\t').collect();
+        if c.len() >= 8 && c[6] == "WIPE" && online.contains(c[7]) {
+            println!("CLASH: new uid {} for {} {} is already online — pick another prefix", c[7], c[0], c[1]);
+            clashes += 1;
+        }
+    }
+    if clashes > 0 {
+        println!("plan NOT written: {clashes} uid clash(es)");
+        return 1;
+    }
     std::fs::write(&out, &rows).unwrap_or_else(|e| panic!("{out}: {e}"));
     println!("plan → {out}");
     let mut by_set: BTreeMap<String, (usize, usize, usize)> = BTreeMap::new();
@@ -254,11 +270,21 @@ pub fn apply(args: &[String]) -> i32 {
         }
         let stage = work.join(format!("{}-{cid}", set.replace(' ', "")));
         std::fs::create_dir_all(&stage).ok();
-        // UPDATE rows: the built file carries the live uid already (same source → same uid)
+        // UPDATE rows: the built file's uid is the deterministic one (`Wet2` + tail); the
+        // LIVE uid may carry an earlier wipe's prefix (`Wet6`/`WetC`/`WetH`/`Wet8` — 974 of
+        // 975 Wet Wood tails match, only the prefix differs). Re-id every update file to
+        // the live uid first, so the upload is an in-place update of THAT map.
         if !updates.is_empty() {
             let mut man = String::new();
             for r in &updates {
-                man.push_str(&format!("{}\t{}\n", r[8], r[5]));
+                let dst = stage.join(format!("upd-{}.Map.Gbx", r[4]));
+                let st = std::process::Command::new(&me).args(["__tmmaps-reuid", &r[8], &r[4], &dst.to_string_lossy()]).status();
+                if !st.map(|s| s.success()).unwrap_or(false) {
+                    println!("  STOP: re-id to the live uid failed for {} {}", r[0], r[1]);
+                    std::fs::write(&results, &res).ok();
+                    return 1;
+                }
+                man.push_str(&format!("{}\t{}\n", dst.display(), r[5]));
             }
             let mp = stage.join("update-manifest.tsv");
             std::fs::write(&mp, man).unwrap();
@@ -337,6 +363,16 @@ fn verdict_of(rp: &Path, uid: &str) -> String {
 /// shells out to another binary (one build, one version).
 pub fn reuid(args: &[String]) -> i32 {
     let (src, new, dst) = (&args[1], &args[2], &args[3]);
+    let cur = tmmaps::header::read(src).map(|h| h.uid).unwrap_or_default();
+    if cur == *new {
+        return match std::fs::copy(src, dst) {
+            Ok(_) => 0,
+            Err(e) => {
+                eprintln!("{dst}: {e}");
+                1
+            }
+        };
+    }
     let mut m = tmmaps::map::MapFile::load(Path::new(src));
     m.set_map_uid(new);
     match m.write_to(Path::new(dst)) {
