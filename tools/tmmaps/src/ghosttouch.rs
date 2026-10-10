@@ -410,10 +410,11 @@ fn build_batch(records: &str, sets: &str, src_index: &str) -> Result<String, Str
         let Some((uid, setnum)) = l.split_once('\t') else { continue };
         let Some(&records_n) = counted.get(uid) else { continue };
         let Some((set, num)) = setnum.rsplit_once(' ') else { continue };
-        // Wet Wood IS a target (Everios96 2026-10-08 "Didnt you forget wet wood"): its
-        // black walls were converted in September, its water floors were not — so its
-        // records are checked against the WATER blocks only (`--wet-wood-water-only`
-        // is implicit: the batch row carries the set and `touch` skips Black there).
+        // Wet Wood IS a target (Everios96 2026-10-08 "Didnt you forget wet wood"). Its
+        // black blocks count like every other set's: the September wet wood set only
+        // RENAMED its DecoWall blocks to the `…Ice` twins (unconverted, black — live vs
+        // rebuilt diff of 2026-10-09: 524 maps); the platform walls alone were done.
+        // `TINY_WETWOOD_WATER_ONLY=1` restores the 10-08 reading.
         let key = if num.len() < 2 { format!("0{num}") } else { num.to_string() };
         let Some(src) = idx.get(&key) else {
             eprintln!("no source for map {key} ({set}) — skipped");
@@ -457,7 +458,7 @@ pub fn cmd(args: &[String]) -> i32 {
             let (uid, set, num, map) = (f[0], f[1], f[2], Path::new(f[3]));
             let m = MapFile::load(map);
             let mut conv = converted_blocks(&m);
-            if set.eq_ignore_ascii_case("wet wood") {
+            if set.eq_ignore_ascii_case("wet wood") && std::env::var("TINY_WETWOOD_WATER_ONLY").map(|v| v == "1").unwrap_or(false) {
                 conv.retain(|c| c.kind != Kind::Black);
             }
             let mut rows = Vec::new();
