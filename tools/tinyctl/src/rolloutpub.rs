@@ -16,6 +16,7 @@
 //!   campaignId, campaign, pos, uid, name, …) — where every live map is and under which uid.
 //! - TOUCH.tsv: `tmmaps ghost-touch --batch` output (uid, set, num, verdict TOUCH|CLEAR, …).
 //! - POLICY.tsv: `set \t rule \t maps`, rules:
+//!     `only     <maps>`  the set's scope: maps outside it are left alone (SKIP)
 //!     `exclude  <maps>`  leave these maps of the set alone entirely (no update, no wipe)
 //!     `wipe     <maps>`  force a wipe (new uid) for these, whatever the touch verdict
 //!     `keep     <maps>`  force an in-place update (no wipe) for these, whatever the verdict
@@ -86,6 +87,11 @@ fn uid_prefix(word: &str) -> &'static str {
 
 #[derive(Default)]
 struct Policy {
+    /// `only <maps>`: the set's SCOPE — a map outside it is left alone (SKIP "out of
+    /// scope"): a Wet Wood map without a single water block converts to exactly what is
+    /// live already (the walls were done in September), and 754 of 975 are like that
+    /// (Everios96 2026-10-09: "Why update 912 maps? that seems a lot").
+    only: Option<BTreeSet<u32>>,
     exclude: BTreeSet<u32>,
     wipe: BTreeSet<u32>,
     keep: BTreeSet<u32>,
@@ -105,6 +111,7 @@ fn load_policy(p: &str) -> HashMap<String, Policy> {
         let maps = parse_maps(c[2]);
         let e = out.entry(c[0].trim().to_string()).or_default();
         match c[1].trim() {
+            "only" => e.only.get_or_insert_with(BTreeSet::new).extend(maps),
             "exclude" => e.exclude.extend(maps),
             "wipe" => e.wipe.extend(maps),
             "keep" => e.keep.extend(maps),
@@ -172,8 +179,12 @@ pub fn plan(args: &[String]) -> i32 {
         let has = |g: fn(&Policy) -> &BTreeSet<u32>| pol_set.map(|p| g(p).contains(&num)).unwrap_or(false) || pol_all.map(|p| g(p).contains(&num)).unwrap_or(false);
         let key = (word.to_string(), num);
         let v = verdict.get(&key).map(String::as_str).unwrap_or("none");
+        let in_scope = |p: &Policy| p.only.as_ref().map(|o| o.contains(&num)).unwrap_or(true);
+        let out_of_scope = !pol_set.map(in_scope).unwrap_or(true) || !pol_all.map(in_scope).unwrap_or(true);
         let (action, new_uid, file, reason) = if has(|p| &p.exclude) {
             ("SKIP", String::new(), String::new(), "policy: excluded".to_string())
+        } else if out_of_scope {
+            ("SKIP", String::new(), String::new(), "policy: out of scope (nothing to convert)".to_string())
         } else {
             match built.get(&key) {
                 None => ("SKIP", String::new(), String::new(), "no built file".to_string()),
@@ -243,6 +254,25 @@ pub fn apply(args: &[String]) -> i32 {
     let work = PathBuf::from(f("--workdir").unwrap_or_else(|| "/tmp/rollout-apply".into()));
     std::fs::create_dir_all(&work).ok();
     let me = std::env::current_exe().expect("own path");
+    // `--live-dir DIR`: the LIVE map files (any file names; indexed here by the uid in
+    // their header). Every staged upload takes its live map's THUMBNAIL: the live wet
+    // wood maps carry September's rendered wood view, the built files the original's
+    // vanilla one (2026-10-09, U10S_39 side by side). Required: a missing live file
+    // stops the run before anything moves.
+    let live_dir = f("--live-dir").map(PathBuf::from);
+    let mut live_by_uid: HashMap<String, PathBuf> = HashMap::new();
+    if let Some(d) = &live_dir {
+        for e in std::fs::read_dir(d).unwrap_or_else(|e| panic!("{}: {e}", d.display())).flatten() {
+            let p = e.path();
+            if p.extension().map(|x| x == "Gbx").unwrap_or(false) {
+                if let Some(uid) = header_uid(&p) {
+                    live_by_uid.insert(uid, p);
+                }
+            }
+        }
+        println!("live files: {} indexed by uid", live_by_uid.len());
+    }
+    let thumb_src = |live_uid: &str| -> Option<String> { live_by_uid.get(live_uid).map(|p| p.to_string_lossy().into_owned()) };
 
     // rows by campaign, in plan order
     let mut by_camp: BTreeMap<(String, String), Vec<Vec<String>>> = BTreeMap::new();
@@ -278,7 +308,21 @@ pub fn apply(args: &[String]) -> i32 {
             let mut man = String::new();
             for r in &updates {
                 let dst = stage.join(format!("upd-{}.Map.Gbx", r[4]));
-                let st = std::process::Command::new(&me).args(["__tmmaps-reuid", &r[8], &r[4], &dst.to_string_lossy()]).status();
+                let mut cmd = std::process::Command::new(&me);
+                cmd.args(["__tmmaps-reuid", &r[8], &r[4], &dst.to_string_lossy()]);
+                if live_dir.is_some() {
+                    match thumb_src(&r[4]) {
+                        Some(t) => {
+                            cmd.arg(t);
+                        }
+                        None => {
+                            println!("  STOP: no live file for {} {} ({}) in the live dir", r[0], r[1], r[4]);
+                            std::fs::write(&results, &res).ok();
+                            return 1;
+                        }
+                    }
+                }
+                let st = cmd.status();
                 if !st.map(|s| s.success()).unwrap_or(false) {
                     println!("  STOP: re-id to the live uid failed for {} {}", r[0], r[1]);
                     std::fs::write(&results, &res).ok();
@@ -309,7 +353,21 @@ pub fn apply(args: &[String]) -> i32 {
             let mut pairs = String::new();
             for r in &wipes {
                 let dst = stage.join(format!("{}.Map.Gbx", r[7]));
-                let st = std::process::Command::new(&me).args(["__tmmaps-reuid", &r[8], &r[7], &dst.to_string_lossy()]).status();
+                let mut cmd = std::process::Command::new(&me);
+                cmd.args(["__tmmaps-reuid", &r[8], &r[7], &dst.to_string_lossy()]);
+                if live_dir.is_some() {
+                    match thumb_src(&r[4]) {
+                        Some(t) => {
+                            cmd.arg(t);
+                        }
+                        None => {
+                            println!("  STOP: no live file for {} {} ({}) in the live dir", r[0], r[1], r[4]);
+                            std::fs::write(&results, &res).ok();
+                            return 1;
+                        }
+                    }
+                }
+                let st = cmd.status();
                 if !st.map(|s| s.success()).unwrap_or(false) {
                     println!("  STOP: re-uid failed for {} {}", r[0], r[1]);
                     std::fs::write(&results, &res).ok();
@@ -359,12 +417,27 @@ fn verdict_of(rp: &Path, uid: &str) -> String {
         .unwrap_or_else(|| "missing".into())
 }
 
-/// `tinyctl __tmmaps-reuid SRC NEWUID DST` — the re-id as a subcommand so `apply` never
-/// shells out to another binary (one build, one version).
+/// The uid in a map file's header, without loading the body.
+fn header_uid(p: &Path) -> Option<String> {
+    tmmaps::header::read(&p.to_string_lossy()).ok().map(|h| h.uid)
+}
+
+/// The header thumbnail's JPEG bytes of a map file, as stored.
+fn thumbnail_of(p: &str) -> Result<Vec<u8>, String> {
+    let bytes = std::fs::read(p).map_err(|e| format!("{p}: {e}"))?;
+    let start = bytes.windows(15).position(|w| w == b"<Thumbnail.jpg>").ok_or_else(|| format!("{p}: no <Thumbnail.jpg> in the header"))? + 15;
+    let end = start + bytes[start..].windows(16).position(|w| w == b"</Thumbnail.jpg>").ok_or_else(|| format!("{p}: no </Thumbnail.jpg>"))?;
+    Ok(bytes[start..end].to_vec())
+}
+
+/// `tinyctl __tmmaps-reuid SRC NEWUID DST [LIVE]` — the re-id as a subcommand so `apply`
+/// never shells out to another binary (one build, one version); with LIVE, the staged
+/// file also takes LIVE's header thumbnail.
 pub fn reuid(args: &[String]) -> i32 {
     let (src, new, dst) = (&args[1], &args[2], &args[3]);
+    let live = args.get(4);
     let cur = tmmaps::header::read(src).map(|h| h.uid).unwrap_or_default();
-    if cur == *new {
+    if cur == *new && live.is_none() {
         return match std::fs::copy(src, dst) {
             Ok(_) => 0,
             Err(e) => {
@@ -374,7 +447,22 @@ pub fn reuid(args: &[String]) -> i32 {
         };
     }
     let mut m = tmmaps::map::MapFile::load(Path::new(src));
-    m.set_map_uid(new);
+    if cur != *new {
+        m.set_map_uid(new);
+    }
+    if let Some(l) = live {
+        let jpeg = match thumbnail_of(l) {
+            Ok(j) => j,
+            Err(e) => {
+                eprintln!("{e}");
+                return 1;
+            }
+        };
+        if let Err(e) = m.set_thumbnail(&jpeg) {
+            eprintln!("{dst}: thumbnail: {e}");
+            return 1;
+        }
+    }
     match m.write_to(Path::new(dst)) {
         Ok(()) => {
             let back = tmmaps::header::read(dst).map(|h| h.uid).unwrap_or_default();
