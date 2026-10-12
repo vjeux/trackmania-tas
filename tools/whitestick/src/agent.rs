@@ -6,6 +6,7 @@
 //! killed (with their process group) the moment their channel disappears.
 
 use crate::config::Config;
+use crate::interop;
 use crate::proto::*;
 use crate::transport::{self, Ws};
 use anyhow::Result;
@@ -23,6 +24,9 @@ pub struct AgentOpts {
     pub name: String,
     pub cwd: Option<String>,
     pub shell: String,
+    /// PATH the box-side commands get when it differs from the agent's own
+    /// (under WSL: the Windows system directories appended when missing).
+    pub child_path: Option<String>,
 }
 
 /// Environment the box-side commands must not inherit: a proxy setting that
@@ -42,11 +46,23 @@ const DEAD_AFTER: Duration = Duration::from_secs(75);
 /// After the command exits, how long an open-but-silent output pipe is waited for.
 const DRAIN_IDLE: Duration = Duration::from_secs(10);
 
-pub async fn run(cfg: Config, opts: AgentOpts) -> Result<()> {
+pub async fn run(cfg: Config, mut opts: AgentOpts) -> Result<()> {
     let ep = cfg.endpoint()?;
     let token = cfg.token()?.to_string();
     let proxy = transport::resolve_proxy(cfg.proxy.as_deref()).await;
     let path = format!("/v1/agent/{}", opts.name);
+
+    // Under WSL the commands need the Windows system directories on PATH
+    // (cmd.exe, wslpath, powershell.exe), and the binfmt entry that makes
+    // those launchable needs guarding -- see interop.rs.
+    let on_wsl = interop::running_under_wsl();
+    if on_wsl && opts.child_path.is_none() {
+        let own = std::env::var("PATH").ok();
+        opts.child_path = interop::path_with_windows_dirs(own.as_deref());
+        if let Some(p) = &opts.child_path {
+            crate::log(&format!("commands get the Windows system directories on PATH: {p}"));
+        }
+    }
     let opts = Arc::new(opts);
     crate::log(&format!(
         "whitestick agent {} — box \"{}\", relay {}://{}:{}{}, cwd {}, shell {}",
@@ -62,6 +78,12 @@ pub async fn run(cfg: Config, opts: AgentOpts) -> Result<()> {
         opts.cwd.as_deref().unwrap_or("(inherited)"),
         opts.shell
     ));
+    match interop::decide(cfg.agent.interop_guard, on_wsl) {
+        interop::Decision::Run => {
+            tokio::spawn(interop::Guard::from_env().run());
+        }
+        interop::Decision::Off(why) => crate::log(&format!("interop guard: off ({why})")),
+    }
 
     let mut backoff = 1u64;
     loop {
@@ -270,6 +292,9 @@ async fn run_channel(
     }
     for k in PROXY_VARS {
         cmd.env_remove(k);
+    }
+    if let Some(p) = &opts.child_path {
+        cmd.env("PATH", p);
     }
     cmd.env("WHITESTICK", "1");
     for (k, v) in &req.env {
