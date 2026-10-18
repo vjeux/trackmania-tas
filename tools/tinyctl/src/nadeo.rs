@@ -332,6 +332,101 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             }
             Ok(())
         }
+        "club-inventory" => {
+            // tinyctl nadeo-here club-inventory --club ID --out INV.tsv [--sets "Wet Wood,Wood"]
+            //   [--fetch-root DIR] [--no-lock]
+            // The LIVE inventory of a hunt club in `rollout-publish --inventory` form —
+            // every campaign (paginated: the club list is 100 a page, the U10S club has
+            // 351), its playlist in position order, the core record per uid: one row
+            // `campaignId campaign pos uid name authorScore gold silver bronze collection
+            // author mapId file`. `--sets` keeps the campaigns whose name starts with one
+            // of the words (`<set> Part NN`); `--fetch-root DIR` downloads each live file
+            // to `DIR/<set-dir>/pNN/<pos>-<name>.Map.Gbx` (set-dir = the set word without
+            // spaces, lower-case; NN = the part number) — the thumbnails and the
+            // live-vs-build diff need the files (2026-10-17: the 10-10 inventory was stale
+            // after the Wet Wood/Wood wipes, and /tmp/ww/live-* died with the box).
+            let club = f("--club").ok_or("club-inventory needs --club ID")?;
+            let out = PathBuf::from(f("--out").ok_or("club-inventory needs --out INV.tsv")?);
+            let sets: Option<Vec<String>> = f("--sets").map(|x| x.split(',').map(|w| w.trim().to_string()).filter(|w| !w.is_empty()).collect());
+            let root = f("--fetch-root").map(PathBuf::from);
+            let mut camps: Vec<(String, String)> = Vec::new();
+            let mut offset = 0usize;
+            loop {
+                let v = get_json(&auth_live, &format!("{LIVE}/api/token/club/{club}/campaign?length=100&offset={offset}"))?;
+                let list = v.get("clubCampaignList").and_then(|l| l.as_array()).cloned().unwrap_or_default();
+                for c in &list {
+                    camps.push((s(c, "campaignId"), s(c, "name")));
+                }
+                let total: usize = s(&v, "itemCount").parse().unwrap_or(0);
+                offset += list.len();
+                if list.is_empty() || offset >= total {
+                    break;
+                }
+            }
+            let part_of = |name: &str| -> Option<(String, usize)> {
+                let (set, n) = name.rsplit_once(" Part ")?;
+                Some((set.to_string(), n.trim().parse().ok()?))
+            };
+            let mut rows = String::from("campaignId\tcampaign\tpos\tuid\tname\tauthorScore\tgold\tsilver\tbronze\tcollection\tauthor\tmapId\tfile\n");
+            let (mut n_maps, mut n_files) = (0usize, 0usize);
+            let mut wanted: Vec<(String, String, String, usize)> = Vec::new();
+            for (id, name) in &camps {
+                let Some((set, part)) = part_of(name) else { continue };
+                if sets.as_ref().map(|ss| !ss.iter().any(|w| *w == set)).unwrap_or(false) {
+                    continue;
+                }
+                wanted.push((id.clone(), name.clone(), set, part));
+            }
+            wanted.sort_by(|a, b| a.2.cmp(&b.2).then(a.3.cmp(&b.3)));
+            println!("club {club}: {} campaigns, {} in the wanted sets", camps.len(), wanted.len());
+            for (id, name, set, part) in &wanted {
+                let v = get_json(&auth_live, &format!("{LIVE}/api/token/club/{club}/campaign/{id}"))?;
+                let inner = v.get("campaign").cloned().unwrap_or(Value::Null);
+                let mut uids: Vec<(u64, String)> = inner
+                    .get("playlist")
+                    .and_then(|l| l.as_array())
+                    .map(|a| a.iter().map(|e| (e.get("position").and_then(|p| p.as_u64()).unwrap_or(0), s(e, "mapUid"))).collect())
+                    .unwrap_or_default();
+                uids.sort();
+                let recs = core_records(&auth_core, &uids.iter().map(|(_, u)| u.clone()).collect::<Vec<_>>())?;
+                let dir = root.as_ref().map(|r| r.join(set.to_lowercase().replace(' ', "")).join(format!("p{part}")));
+                if let Some(d) = &dir {
+                    std::fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
+                }
+                for (pos, uid) in &uids {
+                    let rec = recs.iter().find(|r| s(r, "mapUid") == *uid).cloned().unwrap_or(Value::Null);
+                    let fname = format!("{:02}-{}.Map.Gbx", pos + 1, file_safe_name(&s(&rec, "name")));
+                    let mut file_note = String::from("-");
+                    if let Some(d) = &dir {
+                        let p = d.join(&fname);
+                        let url = s(&rec, "fileUrl");
+                        if url == "-" {
+                            file_note = "NO fileUrl".into();
+                        } else if p.exists() && std::fs::metadata(&p).map(|m| m.len() > 0).unwrap_or(false) {
+                            file_note = format!("have {}", p.display());
+                        } else {
+                            let (_, code) = curl(&["-L", "-H", &auth_core, "-o", p.to_str().unwrap(), &url])?;
+                            let n = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+                            if !code.starts_with('2') || n == 0 {
+                                let _ = std::fs::remove_file(&p);
+                                return Err(format!("{name} pos {pos} {uid}: download HTTP {code}, {n} bytes"));
+                            }
+                            n_files += 1;
+                            file_note = p.display().to_string();
+                        }
+                    }
+                    rows.push_str(&format!(
+                        "{id}\t{name}\t{pos}\t{uid}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{file_note}\n",
+                        s(&rec, "name"), s(&rec, "authorScore"), s(&rec, "goldScore"), s(&rec, "silverScore"), s(&rec, "bronzeScore"), s(&rec, "collectionName"), s(&rec, "author"), s(&rec, "mapId")
+                    ));
+                    n_maps += 1;
+                }
+                std::fs::write(&out, &rows).map_err(|e| format!("{}: {e}", out.display()))?;
+                println!("{set} part {part} ({id}): {} maps", uids.len());
+            }
+            println!("club-inventory: {} campaigns, {n_maps} maps, {n_files} files downloaded → {}", wanted.len(), out.display());
+            Ok(())
+        }
         "campaign" => {
             let club = f("--club").ok_or("campaign needs --club ID")?;
             // --campaigns K1,K2,… --fetch-root DIR: several campaigns, each into DIR/pNN
