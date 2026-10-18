@@ -1427,8 +1427,9 @@ fn main() {
             println!("wrote {} ({} bytes)", out, bytes.len());
         }
         "dump" => {
-            let mut store = open(&a);
             let p = a.rest.get(1).cloned().unwrap_or_default();
+            // a local file needs no pack store
+            let mut store = if std::path::Path::new(&p).is_file() && a.paks.is_empty() { DataStore::empty() } else { open(&a) };
             let m = load_any(&mut store, &p);
             // The decompressed body, for when a chunk layout has to be read
             // off the bytes. `MAPGEOM_TRACE=1` says where in it the walk was.
