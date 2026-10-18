@@ -583,11 +583,38 @@ pub fn verify_flags(src: &Path, out: &Path, oc: &FlagsOutcome, o: &FlagsOpts) ->
                 break;
             }
         }
-        // every appended trigger sits exactly at a flag's pose
+        // every appended trigger sits exactly at a flag's pose — or, --stands, in a stand block's frame
         let idents: Vec<String> = oc.items.iter().map(|(_, i, _)| i.clone()).collect();
+        let stand_poses: Vec<([f32; 3], f32)> = if o.stands {
+            let coll = a.body_collections().map(|c| c[0].1).unwrap_or(26);
+            let yoff = tmmaps::map::ground_y(coll);
+            a.blocks
+                .iter()
+                .filter(|bk| bk.flags != 0xFFFF_FFFF && crate::stands::stand_kind(&bk.name).is_some())
+                .map(|bk| match bk.free_pos {
+                    Some(p) => (p, bk.free_rot.map(|r| r[0]).unwrap_or(0.0)),
+                    None => {
+                        let x = crate::place::grid_block(bk.coords(), bk.dir, (32.0, 32.0), yoff);
+                        let yaw = -(bk.dir as f32) * std::f32::consts::FRAC_PI_2;
+                        ([x[9], x[10], x[11]], if yaw <= -std::f32::consts::PI { yaw + 2.0 * std::f32::consts::PI } else { yaw })
+                    }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let triggers = b.items.iter().filter(|y| idents.contains(&y.model)).count();
+        if o.stands && triggers != stand_poses.len() {
+            bad.push(format!("{} stand blocks, {triggers} carriers", stand_poses.len()));
+        }
         for y in b.items.iter().filter(|y| idents.contains(&y.model)) {
-            if !a.items.iter().any(|x| x.model.contains("Flag") && x.pos == y.pos && (x.yaw - y.yaw).abs() < 1e-6) {
-                bad.push(format!("trigger item#{} at {} matches no flag pose", y.index, pos_str(y.pos)));
+            let at_source = if o.stands {
+                stand_poses.iter().any(|(p, yaw)| (p[0] - y.pos[0]).abs() < 1e-3 && (p[1] - y.pos[1]).abs() < 1e-3 && (p[2] - y.pos[2]).abs() < 1e-3 && (yaw - y.yaw).abs() < 1e-5)
+            } else {
+                a.items.iter().any(|x| x.model.contains("Flag") && x.pos == y.pos && (x.yaw - y.yaw).abs() < 1e-6)
+            };
+            if !at_source {
+                bad.push(format!("trigger item#{} at {} yaw {:.4} matches no {} pose", y.index, pos_str(y.pos), y.yaw, if o.stands { "stand block" } else { "flag" }));
                 break;
             }
             if y.pivot != [0.0; 3] || y.scale != 1.0 {
