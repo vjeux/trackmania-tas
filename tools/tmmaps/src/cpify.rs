@@ -199,7 +199,9 @@ fn one(args: &[String]) {
                         return None;
                     }
                     let (x, y, z) = (c[7].trim().parse().ok()?, c[8].trim().parse().ok()?, c[9].trim().parse().ok()?);
-                    Some(Cp { src: usize::MAX, model: format!("{}:{}", c[0].trim(), c[6].trim()), variant: 0, species: "baked".into(), pos: [x, y, z], yaw: 0.0 })
+                    // column 11 (yaw, radians) from the second block-trees cut; absent = 0
+                    let yaw: f32 = c.get(10).and_then(|v| v.trim().parse().ok()).unwrap_or(0.0);
+                    Some(Cp { src: usize::MAX, model: format!("{}:{}", c[0].trim(), c[6].trim()), variant: 0, species: "baked".into(), pos: [x, y, z], yaw })
                 })
                 .collect()
         }

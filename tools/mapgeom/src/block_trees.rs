@@ -25,6 +25,29 @@ pub struct BakedTree {
     pub prefab: String,
     pub model: String,
     pub pos: [f32; 3],
+    /// World heading in radians, the map item yaw convention (a right-handed
+    /// turn about +Y, `geom::yaw`): the entity quaternion's heading plus the
+    /// block's quarter turns. Altrd (2026-10-18): the first drop's baked
+    /// checkpoints all faced the same way.
+    pub yaw: f32,
+}
+
+/// The heading of a unit quaternion (x, y, z, w) about +Y, radians.
+pub fn quat_yaw(q: [f32; 4]) -> f32 {
+    let [x, y, z, w] = q;
+    (2.0 * (w * y + x * z)).atan2(1.0 - 2.0 * (y * y + z * z))
+}
+
+/// The block's own turn in the same convention: `place::grid_block` maps
+/// dir 1 → 3 quarter turns, 2 → 2, 3 → 1.
+pub fn dir_yaw(dir: u8) -> f32 {
+    let steps = match dir & 3 {
+        0 => 0u8,
+        1 => 3,
+        2 => 2,
+        _ => 1,
+    };
+    steps as f32 * std::f32::consts::FRAC_PI_2
 }
 
 /// Does this external reference name a tree model?
@@ -79,7 +102,7 @@ pub fn run(store: &mut DataStore, rest: &[String]) -> Result<(), String> {
     let (placements, _) = blockmap::walk(store, &m, false, &collection);
 
     // prefab -> its tree entities (local position, model path), read once
-    let mut cache: std::collections::HashMap<String, Vec<([f32; 3], String)>> = Default::default();
+    let mut cache: std::collections::HashMap<String, Vec<([f32; 3], [f32; 4], String)>> = Default::default();
     // model -> does it carry a collision hull (read once per model)
     let mut hull: std::collections::HashMap<String, Option<usize>> = Default::default();
     let mut trees: Vec<BakedTree> = Vec::new();
@@ -110,7 +133,7 @@ pub fn run(store: &mut DataStore, rest: &[String]) -> Result<(), String> {
             // footprint the rotation turns about (place::grid_block)
             let size = (32.0 * p.cells.iter().map(|(_, c)| c[0]).max().map(|v| v as f32 + 1.0).unwrap_or(1.0), 32.0 * p.cells.iter().map(|(_, c)| c[2]).max().map(|v| v as f32 + 1.0).unwrap_or(1.0));
             let xf = place::grid_block((p.cell[0], p.cell[1], p.cell[2]), p.dir, size, yoff);
-            for (local, model) in list {
+            for (local, rot, model) in list {
                 if hitbox_only {
                     let h = *hull.entry(model.clone()).or_insert_with(|| match crate::veget::parse_tree_model(store, model) {
                         Ok(t) => Some(t.hull_triangles.len()),
@@ -127,15 +150,22 @@ pub fn run(store: &mut DataStore, rest: &[String]) -> Result<(), String> {
                     }
                 }
                 let w = crate::geom::apply(&xf, *local);
-                trees.push(BakedTree { block: p.name.clone(), cell: p.cell, dir: p.dir, prefab: prefab.clone(), model: model.clone(), pos: w });
+                let mut yaw = quat_yaw(*rot) + dir_yaw(p.dir);
+                while yaw > std::f32::consts::PI {
+                    yaw -= 2.0 * std::f32::consts::PI;
+                }
+                while yaw < -std::f32::consts::PI {
+                    yaw += 2.0 * std::f32::consts::PI;
+                }
+                trees.push(BakedTree { block: p.name.clone(), cell: p.cell, dir: p.dir, prefab: prefab.clone(), model: model.clone(), pos: w, yaw });
             }
         }
     }
 
-    let mut t = String::from("block\tcell_x\tcell_y\tcell_z\tdir\tprefab\tmodel\tx\ty\tz\n");
+    let mut t = String::from("block\tcell_x\tcell_y\tcell_z\tdir\tprefab\tmodel\tx\ty\tz\tyaw\n");
     for b in &trees {
         t.push_str(&format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.3}\t{:.3}\t{:.3}\n",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.3}\t{:.3}\t{:.3}\t{:.4}\n",
             b.block,
             b.cell[0],
             b.cell[1],
@@ -145,7 +175,8 @@ pub fn run(store: &mut DataStore, rest: &[String]) -> Result<(), String> {
             b.model.rsplit('\\').next().unwrap_or(&b.model).trim_end_matches(".VegetTreeModel.Gbx"),
             b.pos[0],
             b.pos[1],
-            b.pos[2]
+            b.pos[2],
+            b.yaw
         ));
     }
     if let Some(out) = flag("--out") {
@@ -172,7 +203,7 @@ pub fn run(store: &mut DataStore, rest: &[String]) -> Result<(), String> {
 }
 
 /// The tree entities of one zone prefab: (local position, model path).
-fn prefab_trees(store: &mut DataStore, path: &str) -> Result<Vec<([f32; 3], String)>, String> {
+fn prefab_trees(store: &mut DataStore, path: &str) -> Result<Vec<([f32; 3], [f32; 4], String)>, String> {
     let model = store.load_model(path)?;
     let externals: std::collections::HashMap<u32, String> = model.externals.iter().map(|(i, e)| (*i, e.clone())).collect();
     // `load_model` hands back the body WITHOUT the class id: a prefab body
@@ -188,7 +219,7 @@ fn prefab_trees(store: &mut DataStore, path: &str) -> Result<Vec<([f32; 3], Stri
         }
         let Some(name) = externals.get(&(e.model.index as u32)) else { continue };
         if is_tree_ref(name) {
-            out.push((e.pos, name.clone()));
+            out.push((e.pos, e.rot, name.clone()));
         }
     }
     Ok(out)
