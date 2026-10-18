@@ -3376,6 +3376,22 @@ fn main() {
                         None => println!("  material {i}: {} (no inline user inst)", m.name),
                     }
                 }
+                if std::env::var("CRYSTAL_DEBUG").is_ok() {
+                    for (li, l) in it.model.layers.iter().enumerate() {
+                        if let Some(c) = l.kind.crystal() {
+                            let mut edges = std::collections::HashSet::new();
+                            for f in &c.faces {
+                                for k in 0..f.verts.len() {
+                                    let (a, b) = (f.verts[k], f.verts[(k + 1) % f.verts.len()]);
+                                    edges.insert((a.min(b), a.max(b)));
+                                }
+                            }
+                            let corners: usize = c.faces.iter().map(|f| f.verts.len()).sum();
+                            let uniq_corner: std::collections::HashSet<(u32, u32)> = c.faces.iter().flat_map(|f| f.verts.iter().copied().zip(f.uv_index.iter().copied())).collect();
+                            println!("  layer {li}: stored edge_count {} vs unique undirected face edges {}; {corners} corners, {} unique (position, texcoord) corner pairs", c.edge_count, edges.len(), uniq_corner.len());
+                        }
+                    }
+                }
                 for (li, l) in it.model.layers.iter().enumerate() {
                     match l.kind.crystal() {
                         Some(c) => {

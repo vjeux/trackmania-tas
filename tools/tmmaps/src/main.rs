@@ -466,6 +466,42 @@ fn main() {
             }
         }
         "chunks" => inspect::chunks(&args),
+        // body-patch IN OUT --replace OLDHEX=NEWHEX [--replace ..] [--at OFFSET:NEWHEX ..]: byte edits of the
+        // DECOMPRESSED body (each --replace must match exactly once; --at overwrites in place), the file
+        // rewritten through a fresh LZO stream (single-change test files, Hugo's Grass crash 2026-10-18)
+        "body-patch" => {
+            let (inp, out) = (args.get(2).cloned().unwrap_or_default(), args.get(3).cloned().unwrap_or_default());
+            let g = tmmaps::gbx::Gbx::load(std::path::Path::new(&inp)).unwrap_or_else(|e| { eprintln!("{inp}: {e}"); std::process::exit(2) });
+            let mut body = g.body.clone();
+            let hex = |s: &str| -> Vec<u8> { (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).expect("hex")).collect() };
+            let mut i = 4;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--replace" => {
+                        let (a, b) = args[i + 1].split_once('=').expect("--replace OLDHEX=NEWHEX");
+                        let (a, b) = (hex(a), hex(b));
+                        let hits: Vec<usize> = (0..body.len().saturating_sub(a.len() - 1)).filter(|&o| body[o..o + a.len()] == a[..]).collect();
+                        assert_eq!(hits.len(), 1, "--replace {}: {} matches (need exactly 1)", args[i + 1], hits.len());
+                        let o = hits[0];
+                        body.splice(o..o + a.len(), b.iter().copied());
+                        println!("replaced {} B at 0x{o:x} with {} B", a.len(), b.len());
+                        i += 2;
+                    }
+                    "--at" => {
+                        let (o, b) = args[i + 1].split_once(':').expect("--at OFFSET:NEWHEX");
+                        let o = usize::from_str_radix(o.trim_start_matches("0x"), 16).expect("hex offset");
+                        let b = hex(b);
+                        body[o..o + b.len()].copy_from_slice(&b);
+                        println!("overwrote {} B at 0x{o:x}", b.len());
+                        i += 2;
+                    }
+                    other => panic!("body-patch: unknown flag {other}"),
+                }
+            }
+            let bytes = g.write_body_recompressed(&body);
+            std::fs::write(&out, &bytes).unwrap_or_else(|e| { eprintln!("{out}: {e}"); std::process::exit(2) });
+            println!("wrote {out}: body {} -> {} B, file {} B", g.body.len(), body.len(), bytes.len());
+        }
         "chunkdiff" => inspect::chunkdiff(&args),
         "blockrefs" => inspect::blockrefs(&args),
         "genealogy" => inspect::genealogy(&args),
