@@ -178,10 +178,10 @@ fn main() {
         "itempose" => {
             let m = tmmaps::map::MapFile::load(std::path::Path::new(&args[2]));
             let filter = tmmaps::cli::flag(&args, "--filter");
-            println!("index\tmodel\tx\ty\tz\tyaw\tpitch\troll\tpivot_x\tpivot_y\tpivot_z\tscale\ttag");
+            println!("index\tmodel\tx\ty\tz\tyaw\tpitch\troll\tpivot_x\tpivot_y\tpivot_z\tscale\ttag\tcell\tflags\tcollection\tauthor\torder");
             for it in &m.items {
                 if filter.as_deref().map(|f| it.model.contains(f)).unwrap_or(true) {
-                    println!("{}\t{}\t{:.3}\t{:.3}\t{:.3}\t{:.4}\t{:.4}\t{:.4}\t{:.3}\t{:.3}\t{:.3}\t{}\t{}", it.index, it.model, it.pos[0], it.pos[1], it.pos[2], it.yaw, it.pitch, it.roll, it.pivot[0], it.pivot[1], it.pivot[2], it.scale, it.waypoint_tag.clone().unwrap_or_default());
+                    println!("{}\t{}\t{:.3}\t{:.3}\t{:.3}\t{:.4}\t{:.4}\t{:.4}\t{:.3}\t{:.3}\t{:.3}\t{}\t{}\t{},{},{}\t{:04X}\t{}\t{}\t{}", it.index, it.model, it.pos[0], it.pos[1], it.pos[2], it.yaw, it.pitch, it.roll, it.pivot[0], it.pivot[1], it.pivot[2], it.scale, it.waypoint_tag.clone().unwrap_or_default(), it.file_cell[0], it.file_cell[1], it.file_cell[2], it.flags, it.collection_raw, it.author.clone().unwrap_or_default(), it.waypoint_order);
                 }
             }
         }
