@@ -846,6 +846,43 @@ pub fn make_invisible_hexahedron_waypoint(m: &mut Merged, wtype: i32, corners: [
     Ok(())
 }
 
+/// An invisible carrier whose trigger is an ARBITRARY closed mesh in the item frame (Hugo's
+/// Manslaughter stands, 2026-10-18: the seating staircase as a slab). Same carrier form as the
+/// hexahedron: one sub-mm visual 4 m under the origin, no collision, `wtype` waypoint; spawn =
+/// the mesh's floor centre.
+pub fn make_invisible_mesh_waypoint(m: &mut Merged, wtype: i32, verts: Vec<[f32; 3]>, tris: Vec<[u32; 3]>) -> R<()> {
+    if m.visuals.is_empty() {
+        return Err("no visual to keep as the carrier".into());
+    }
+    if verts.len() < 4 || tris.len() < 4 {
+        return Err(format!("trigger mesh too small: {} vertices, {} triangles", verts.len(), tris.len()));
+    }
+    m.visuals.truncate(1);
+    super::merged::remap_positions(m, &|p| [p[0] * 1e-4, -4.0 + p[1] * 1e-4, p[2] * 1e-4]);
+    m.surf_vertices.clear();
+    m.surf_triangles.clear();
+    m.surf_ids.clear();
+    m.lights_out.clear();
+    m.pending_lights.clear();
+    m.fx.clear();
+    m.veget.clear();
+    m.pictures.clear();
+    let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+    for v in &verts {
+        for k in 0..3 {
+            lo[k] = lo[k].min(v[k]);
+            hi[k] = hi[k].max(v[k]);
+        }
+    }
+    let n = tris.len();
+    let t: Vec<super::surface::Triangle> = tris.into_iter().map(|q| super::surface::Triangle { indices: q, material_id: 0, gameplay: 0, surface_index: 0 }).collect();
+    m.trigger = Some(super::surface::CPlugSurface::mesh(verts, t, vec![0u16], [0.0, 0.0, 1.0]));
+    m.waypoint_type = Some(wtype);
+    m.spawn = [(lo[0] + hi[0]) / 2.0, lo[1], (lo[2] + hi[2]) / 2.0];
+    m.notes.push(format!("invisible carrier: waypoint type {wtype}, mesh trigger ({n} triangles, bbox [{:.2} {:.2} {:.2}]..[{:.2} {:.2} {:.2}]), no collision", lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]));
+    Ok(())
+}
+
 /// Make a baked item a WAYPOINT with a BOX trigger over its own geometry (Hugo's "every
 /// flag is a finish", 2026-10-07 — the Manslaughter mechanism: the audience block's bbox as
 /// the finish volume). `wtype`: 0 Start, 1 Finish, 2 Checkpoint. The box = the item's

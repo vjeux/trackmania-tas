@@ -33,6 +33,7 @@ mod play;
 mod png;
 mod boxgate;
 mod flagdraw;
+mod standdraw;
 mod probe;
 mod publish;
 mod replaypull;
@@ -205,6 +206,7 @@ fn main() {
     let r = match cmd.as_str() {
         "probe" => probe::cmd(rest),
         "flag-hitbox-draw" => flagdraw::cmd(rest),
+        "stand-hitbox-draw" => standdraw::cmd(rest),
         "build" => build::cmd(rest),
         "views" => views::cmd(rest),
         "shoot" => shoot::cmd(rest),

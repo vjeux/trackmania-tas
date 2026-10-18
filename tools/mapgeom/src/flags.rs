@@ -41,6 +41,11 @@ pub struct FlagsOpts {
     pub cloth: bool,
     pub cloth_pad: f32,
     pub cloth_thick_pad: f32,
+    /// Hugo's Manslaughter (2026-10-18): the source placements are the spectator-STAND BLOCKS, the
+    /// carriers `stands::carrier_item` (the seating slab), placed in each block's frame
+    pub stands: bool,
+    pub stand_pad_below: f32,
+    pub stand_thick: f32,
 }
 
 /// The CLOTH of a flag model, measured on its vertex animation (the dyna mesh's 86 frames, placed
@@ -193,15 +198,26 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
     let mut rows: Vec<Row> = Vec::new();
     // ---- the flag models present
     let mut models: Vec<String> = Vec::new();
-    for it in &m.items {
-        let stem = it.model.trim_end_matches(".Item.Gbx").to_string();
-        let wanted = if o.models.is_empty() { stem.contains("Flag") } else { o.models.iter().any(|w| w.eq_ignore_ascii_case(&stem)) };
-        if wanted && !models.contains(&stem) {
-            models.push(stem);
+    if o.stands {
+        for b in m.blocks.iter().filter(|b| b.flags != 0xFFFF_FFFF) {
+            if let Some(k) = crate::stands::stand_kind(&b.name) {
+                let wanted = o.models.is_empty() || o.models.iter().any(|w| w.eq_ignore_ascii_case(k));
+                if wanted && !models.iter().any(|x| x == k) {
+                    models.push(k.to_string());
+                }
+            }
+        }
+    } else {
+        for it in &m.items {
+            let stem = it.model.trim_end_matches(".Item.Gbx").to_string();
+            let wanted = if o.models.is_empty() { stem.contains("Flag") } else { o.models.iter().any(|w| w.eq_ignore_ascii_case(&stem)) };
+            if wanted && !models.contains(&stem) {
+                models.push(stem);
+            }
         }
     }
     if models.is_empty() && !o.allow_no_finish {
-        return Err(format!("{map_label}: NO FLAG ITEMS — a Flags map of it would have no finish; not built (--allow-no-finish overrides)"));
+        return Err(format!("{map_label}: NO {} — a map of it would have no finish; not built (--allow-no-finish overrides)", if o.stands { "SPECTATOR STAND BLOCKS" } else { "FLAG ITEMS" }));
     }
     let no_finish = models.is_empty();
     // ---- the finish pieces (classified from the packs)
@@ -227,6 +243,16 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
     // ---- the items: one per flag model
     let mut built: Vec<(String, String, [f32; 6], Vec<u8>)> = Vec::new();
     for stem in &models {
+        if o.stands {
+            let c = crate::stands::carrier_item(ctx.store, stem, collection, o.stand_pad_below, o.stand_thick, lm_word).map_err(|e| format!("{stem}: {e}"))?;
+            let mut row = Row::new(&map_label, "flags", "model", 0, stem);
+            row.action = "stand-carrier-item-built".into();
+            row.to_name = c.ident.clone();
+            row.note = format!("{} bytes; seating {} treads y {:.2}..{:.2} ({} seat triangles, material {}), slab {} triangles bbox [{:.2} {:.2} {:.2}]..[{:.2} {:.2} {:.2}] (pad below {}, thick {}); invisible, no collision, Finish waypoint", c.bytes.len(), c.seating.rows, c.seating.y_lo, c.seating.y_hi, c.seating.tris.len(), crate::stands::SEAT_MATERIAL, c.slab_tris, c.bbox[0], c.bbox[1], c.bbox[2], c.bbox[3], c.bbox[4], c.bbox[5], o.stand_pad_below, o.stand_thick);
+            rows.push(row);
+            built.push((stem.clone(), c.ident.clone(), c.bbox, c.bytes));
+            continue;
+        }
         let pack_path = format!("Stadium\\Items\\{stem}.Item.Gbx");
         if o.pole_triggers {
             // round 2: an invisible carrier with a cylinder trigger about the pole
@@ -292,7 +318,37 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
     let mut converted = 0usize;
     // (flag item index, trigger ident stem, pose) for the appended triggers
     let mut appended: Vec<(usize, String, [f32; 3], [f32; 3])> = Vec::new();
+    if o.stands {
+        // every stand block: the carrier in the block's frame — pos = the cell origin corner turned
+        // by `dir` (place::grid_block), yaw = −dir·π/2 (the map's own block→item convention)
+        let yoff = tmmaps::map::ground_y(collection);
+        for b in m.blocks.iter().filter(|b| b.flags != 0xFFFF_FFFF) {
+            let Some(kind) = crate::stands::stand_kind(&b.name) else { continue };
+            let Some((_, ident, _, _)) = built.iter().find(|(s, ..)| s == kind) else { continue };
+            let (pos, yaw) = match b.free_pos {
+                Some(p) => (p, b.free_rot.map(|r| r[0]).unwrap_or(0.0)),
+                None => {
+                    let x = crate::place::grid_block(b.coords(), b.dir, (32.0, 32.0), yoff);
+                    let yaw = -(b.dir as f32) * std::f32::consts::FRAC_PI_2;
+                    let yaw = if yaw <= -std::f32::consts::PI { yaw + 2.0 * std::f32::consts::PI } else { yaw };
+                    ([x[9], x[10], x[11]], yaw)
+                }
+            };
+            let mut r = Row::new(&map_label, "flags", "block", b.index, &b.name);
+            r.action = "kept + stand-carrier-added".into();
+            r.to_name = ident.trim_end_matches(".Item.Gbx").to_string();
+            r.from = format!("cell {:?} dir {}", b.coords(), b.dir);
+            r.to = format!("new item#{} at {} yaw {yaw:.4}", m.items.len() + appended.len(), pos_str(pos));
+            r.note = "the stand block untouched; an invisible seating-slab finish carrier appended in its frame, tag Goal".into();
+            rows.push(r);
+            appended.push((b.index, ident.trim_end_matches(".Item.Gbx").to_string(), pos, [yaw, 0.0, 0.0]));
+            converted += 1;
+        }
+    }
     for it in &m.items {
+        if o.stands {
+            break;
+        }
         let stem = it.model.trim_end_matches(".Item.Gbx");
         if let Some((_, ident, _, _)) = built.iter().find(|(s, ..)| s == stem) {
             let mut r = Row::new(&map_label, "flags", "item", it.index, &it.model);
@@ -321,7 +377,7 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
         let mut r = Row::new(&map_label, "flags", "map", 0, &new_name);
         r.action = "identity".into();
         r.to_name = new_uid.clone();
-        r.note = format!("{converted} flags {} ({} model(s)); {} finish items removed, {} finish blocks -> plain twins; collection {collection}", if o.pole_triggers { "kept + invisible pole finish triggers appended" } else { "-> finishes" }, built.len(), finish_items.len(), finish_blocks.len());
+        r.note = format!("{converted} {} {} ({} model(s)); {} finish items removed, {} finish blocks -> plain twins; collection {collection}", if o.stands { "stand blocks" } else { "flags" }, if o.stands { "kept + invisible seating-slab finish carriers appended in their frames" } else if o.pole_triggers { "kept + invisible pole finish triggers appended" } else { "-> finishes" }, built.len(), finish_items.len(), finish_blocks.len());
         rows.push(r);
     }
     if dry {

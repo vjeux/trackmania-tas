@@ -3558,7 +3558,8 @@ fn main() {
         // size — the layout an item in prefab form has to reproduce.
         "prefab-ents" => {
             let mut store = open(&a);
-            for path in a.rest.iter().skip(1) {
+            let hexn = flag(&a.rest, "--params-hex");
+            for path in a.rest.iter().skip(1).filter(|x| !x.starts_with("--") && Some(*x) != hexn.as_ref()) {
                 let model = store.load_model(path).unwrap_or_else(die);
                 let prefab = mapgeom::static_item::prefab::CPlugPrefab::from_model(&model).unwrap_or_else(die);
                 println!("{path}: prefab v{} {} entities", prefab.version, prefab.ents.len());
@@ -3571,6 +3572,15 @@ fn main() {
                     println!("  entity {i}: {what} pos {:?} rot {:?} params_id {} ({} bytes) u01 {} bytes", e.pos, e.rot, e.params_id, e.params.len(), e.u01.len());
                     // NPlugItemPlacement_SPlacement: version, i32, [[ (key, value) ]] — the
                     // zone vegetation names its species here (the model ref is null)
+                    if e.params_id == 0x2F0D8000 && hexn.is_some() {
+                        // the spectator (crowd) placement block of the Stand prefabs (2026-10-18)
+                        let n = e.params.len().min(hexn.as_ref().and_then(|v| v.parse().ok()).unwrap_or(256));
+                        for (k, ch) in e.params[..n].chunks(32).enumerate() {
+                            println!("    {:06x}: {}", k * 32, ch.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" "));
+                        }
+                        let floats: Vec<String> = e.params[..n.min(128)].chunks(4).map(|c| { let v = f32::from_le_bytes([c[0], c[1], c[2], c[3]]); if v.is_finite() && v.abs() < 1e5 { format!("{v:.3}") } else { format!("0x{:08x}", u32::from_le_bytes([c[0], c[1], c[2], c[3]])) } }).collect();
+                        println!("    as f32/u32: {}", floats.join(" "));
+                    }
                     if e.params_id == 0x2F0A9000 {
                         let mut r = mapgeom::crystal_model::Rd::new(&e.params, 0, Default::default());
                         let v = r.u32().unwrap_or(0);
@@ -3969,6 +3979,32 @@ fn main() {
         // both steps per map (a directory = every *.Map.Gbx in it, sorted);
         // outputs DIR/sttf/<stem>.sttf.Map.Gbx and DIR/<stem>-Straight-to-the-Center.Map.Gbx
         // blockinfo-resolve NAME..: the pack path the block-info index resolves a block name to
+        // stand-carriers --out-dir DIR [--kinds A,B] [--pad-below 0.3] [--thick 1.5] [--collection 26]: Hugo's
+        // Manslaughter carriers — one invisible Finish item per stand block kind, trigger = the seating slab
+        "stand-carriers" => {
+            let mut store = open(&a);
+            let out_dir = std::path::PathBuf::from(flag(&a.rest, "--out-dir").unwrap_or_else(|| die("stand-carriers needs --out-dir DIR".into())));
+            std::fs::create_dir_all(&out_dir).unwrap_or_else(|e| die(e.to_string()));
+            let kinds: Vec<String> = flag(&a.rest, "--kinds").map(|v| v.split(',').map(|s| s.trim().to_string()).collect()).unwrap_or_else(|| mapgeom::stands::STANDS.iter().map(|(k, _)| k.to_string()).collect());
+            let pad: f32 = flag(&a.rest, "--pad-below").and_then(|v| v.parse().ok()).unwrap_or(0.3);
+            let thick: f32 = flag(&a.rest, "--thick").and_then(|v| v.parse().ok()).unwrap_or(1.5);
+            let collection: u32 = flag(&a.rest, "--collection").and_then(|v| v.parse().ok()).unwrap_or(26);
+            println!("kind\tident\tbytes\trows\tseat_y\tseat_tris\tslab_tris\tbbox\tmaterials");
+            for k in &kinds {
+                let c = mapgeom::stands::carrier_item(&mut store, k, collection, pad, thick, None).unwrap_or_else(|e| die(format!("{k}: {e}")));
+                let p = out_dir.join(&c.ident);
+                std::fs::write(&p, &c.bytes).unwrap_or_else(|e| die(format!("{}: {e}", p.display())));
+                let mats: Vec<String> = c.seating.census.iter().map(|(m, (n, up, lo, hi, area))| format!("{m} {n} tris ({up} up) y {lo:.2}..{hi:.2} {area:.0} m2{}", if m.eq_ignore_ascii_case(mapgeom::stands::SEAT_MATERIAL) { " ← SEATING" } else { "" })).collect();
+                println!("{k}\t{}\t{}\t{}\t{:.2}..{:.2}\t{}\t{}\t[{:.2} {:.2} {:.2}]..[{:.2} {:.2} {:.2}]\t{}", c.ident, c.bytes.len(), c.seating.rows, c.seating.y_lo, c.seating.y_hi, c.seating.tris.len(), c.slab_tris, c.bbox[0], c.bbox[1], c.bbox[2], c.bbox[3], c.bbox[4], c.bbox[5], mats.join(" | "));
+                if a.rest.iter().any(|x| x == "--verbose") {
+                    for n in &c.notes {
+                        eprintln!("  {k}: {n}");
+                    }
+                }
+                let th = mapgeom::stands::tread_heights(&c.seating);
+                eprintln!("  {k}: tread heights ({}): {}", th.len(), th.iter().map(|v| format!("{v:.2}")).collect::<Vec<_>>().join(" "));
+            }
+        }
         "blockinfo-resolve" => {
             let mut store = open(&a);
             let coll = flag(&a.rest, "--collection").unwrap_or_else(|| "Stadium".into());
@@ -4125,6 +4161,20 @@ fn main() {
                 cloth: !a.rest.iter().any(|x| x == "--pole"),
                 cloth_pad: flag(&a.rest, "--cloth-pad").map(|v| v.parse::<f32>().unwrap_or_else(|_| die("--cloth-pad M".into()))).unwrap_or(0.3),
                 cloth_thick_pad: flag(&a.rest, "--cloth-thick-pad").map(|v| v.parse::<f32>().unwrap_or_else(|_| die("--cloth-thick-pad M".into()))).unwrap_or(0.35),
+                stands: a.rest.iter().any(|x| x == "--stands"),
+                stand_pad_below: flag(&a.rest, "--pad-below").map(|v| v.parse::<f32>().unwrap_or_else(|_| die("--pad-below M".into()))).unwrap_or(0.3),
+                stand_thick: flag(&a.rest, "--thick").map(|v| v.parse::<f32>().unwrap_or_else(|_| die("--thick M".into()))).unwrap_or(1.5),
+            };
+            // --stands (Hugo's Manslaughter): the stand BLOCKS are the sources; identity "<name> Manslaughter", uid Mans…
+            let o = if o.stands {
+                mapgeom::flags::FlagsOpts {
+                    uid_prefix: flag(&a.rest, "--uid-prefix").unwrap_or_else(|| "Mans".into()),
+                    name_suffix: flag(&a.rest, "--name-suffix").unwrap_or_else(|| " Manslaughter".into()),
+                    pole_triggers: true,
+                    ..o
+                }
+            } else {
+                o
             };
             // a DIR: every *.Map.Gbx in it → --out-dir DIR (names "<map name> Flags.Map.Gbx")
             let srcp = std::path::Path::new(&p);
@@ -4174,7 +4224,7 @@ fn main() {
                     tsv.push('\n');
                 }
                 let mut sum = mapgeom::sttc::Row::new(&label, "summary", "map", 0, &oc.new_name);
-                sum.action = format!("{} flags {} ({}); strip: {} blocks -> plain twins, {} blocks / {} items / {} generated removed{}", oc.converted, if o.pole_triggers { "kept + pole finish triggers appended" } else { "-> finish items" }, oc.items.iter().map(|(s, i, _)| format!("{s} -> {i}")).collect::<Vec<_>>().join(", "), oc.replaced_blocks, oc.removed_blocks, oc.finishes_removed, oc.removed_baked, if o.sttf { " (finishes + checkpoints)" } else { " (finishes)" });
+                sum.action = format!("{} {} {} ({}); strip: {} blocks -> plain twins, {} blocks / {} items / {} generated removed{}", oc.converted, if o.stands { "stand blocks" } else { "flags" }, if o.stands { "kept + seating-slab finish carriers appended" } else if o.pole_triggers { "kept + pole finish triggers appended" } else { "-> finish items" }, oc.items.iter().map(|(s, i, _)| format!("{s} -> {i}")).collect::<Vec<_>>().join(", "), oc.replaced_blocks, oc.removed_blocks, oc.finishes_removed, oc.removed_baked, if o.sttf { " (finishes + checkpoints)" } else { " (finishes)" });
                 if !dry {
                     let bad = mapgeom::flags::verify_flags(src, &outp, &oc, &o).unwrap_or_else(|e| die(e));
                     sum.note = if bad.is_empty() { "verified".into() } else { failed += 1; format!("VERIFY FAILED: {}", bad.join("; ")) };

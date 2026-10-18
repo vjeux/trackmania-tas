@@ -16,12 +16,12 @@ fn f(rest: &[String], k: &str) -> Option<String> {
 
 /// A tiny vector rasteriser over the RGB `Image`: lines, filled convex polygons (with alpha),
 /// hatching, dashed lines, thick strokes.
-struct Canvas {
-    img: Image,
+pub(crate) struct Canvas {
+    pub(crate) img: Image,
 }
 
 impl Canvas {
-    fn new(w: usize, h: usize) -> Canvas {
+    pub(crate) fn new(w: usize, h: usize) -> Canvas {
         let mut img = Image::new(w, h);
         img.fill(0, 0, w, h, [255, 255, 255]);
         Canvas { img }
@@ -34,7 +34,7 @@ impl Canvas {
         let m = |p: u8, q: u8| ((p as f32) * (1.0 - a) + (q as f32) * a).round().clamp(0.0, 255.0) as u8;
         self.img.set(x as usize, y as usize, [m(o[0], c[0]), m(o[1], c[1]), m(o[2], c[2])]);
     }
-    fn line(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, c: [u8; 3], t: f32, a: f32) {
+    pub(crate) fn line(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, c: [u8; 3], t: f32, a: f32) {
         let dx = x1 - x0;
         let dy = y1 - y0;
         let len = (dx * dx + dy * dy).sqrt().max(1e-3);
@@ -55,7 +55,7 @@ impl Canvas {
             }
         }
     }
-    fn dashed(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, c: [u8; 3], t: f32, dash: f32) {
+    pub(crate) fn dashed(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, c: [u8; 3], t: f32, dash: f32) {
         let dx = x1 - x0;
         let dy = y1 - y0;
         let len = (dx * dx + dy * dy).sqrt().max(1e-3);
@@ -67,7 +67,7 @@ impl Canvas {
         }
     }
     /// A filled polygon (even-odd scanline), with alpha.
-    fn poly(&mut self, pts: &[(f32, f32)], c: [u8; 3], a: f32) {
+    pub(crate) fn poly(&mut self, pts: &[(f32, f32)], c: [u8; 3], a: f32) {
         if pts.len() < 3 {
             return;
         }
@@ -93,7 +93,7 @@ impl Canvas {
             }
         }
     }
-    fn outline(&mut self, pts: &[(f32, f32)], c: [u8; 3], t: f32) {
+    pub(crate) fn outline(&mut self, pts: &[(f32, f32)], c: [u8; 3], t: f32) {
         for i in 0..pts.len() {
             let (a0, b0) = pts[i];
             let (a1, b1) = pts[(i + 1) % pts.len()];
@@ -101,7 +101,7 @@ impl Canvas {
         }
     }
     /// Diagonal hatching clipped to a polygon (even-odd), spacing in px.
-    fn hatch(&mut self, pts: &[(f32, f32)], c: [u8; 3], spacing: f32, t: f32) {
+    pub(crate) fn hatch(&mut self, pts: &[(f32, f32)], c: [u8; 3], spacing: f32, t: f32) {
         let xmin = pts.iter().map(|p| p.0).fold(f32::INFINITY, f32::min);
         let xmax = pts.iter().map(|p| p.0).fold(f32::NEG_INFINITY, f32::max);
         let ymin = pts.iter().map(|p| p.1).fold(f32::INFINITY, f32::min);
@@ -138,7 +138,7 @@ impl Canvas {
             k += spacing;
         }
     }
-    fn text(&mut self, x: f32, y: f32, s: &str, scale: usize, c: [u8; 3]) {
+    pub(crate) fn text(&mut self, x: f32, y: f32, s: &str, scale: usize, c: [u8; 3]) {
         // the glyph painter fills a black box; paint white-on-white instead: draw the glyph box in bg then letters
         let n = s.chars().count();
         let (w, h) = ((n * 6 + 1) * scale, 9 * scale);
@@ -157,7 +157,7 @@ impl Canvas {
         }
     }
     /// A dimension line with end ticks and a label at its middle.
-    fn dim(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, text: &str, c: [u8; 3], offset: (f32, f32)) {
+    pub(crate) fn dim(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, text: &str, c: [u8; 3], offset: (f32, f32)) {
         self.line(x0, y0, x1, y1, c, 1.5, 1.0);
         let (dx, dy) = (x1 - x0, y1 - y0);
         let len = (dx * dx + dy * dy).sqrt().max(1e-3);
@@ -259,12 +259,12 @@ fn measure(store: &mut mapgeom::store::DataStore, model: &str, pad: f32, thick_p
     Ok(Measured { pole_r, pole_y0, pole_y1, frames, mean, tris, slab, cloth })
 }
 
-const INK: [u8; 3] = [30, 30, 30];
-const POLE: [u8; 3] = [90, 90, 90];
-const CLOTH: [u8; 3] = [40, 120, 200];
+pub(crate) const INK: [u8; 3] = [30, 30, 30];
+pub(crate) const POLE: [u8; 3] = [90, 90, 90];
+pub(crate) const CLOTH: [u8; 3] = [40, 120, 200];
 const SWAY: [u8; 3] = [120, 170, 230];
-const SLAB: [u8; 3] = [220, 60, 40];
-const DIM: [u8; 3] = [0, 120, 60];
+pub(crate) const SLAB: [u8; 3] = [220, 60, 40];
+pub(crate) const DIM: [u8; 3] = [0, 120, 60];
 
 pub fn cmd(rest: &[String]) -> Result<(), String> {
     let model = f(rest, "--model").unwrap_or_else(|| "Flag16m".into());
