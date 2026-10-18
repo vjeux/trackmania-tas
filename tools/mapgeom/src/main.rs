@@ -3365,6 +3365,52 @@ fn main() {
             best.sort_by(|a, b| b.0.cmp(&a.0));
             println!("{n_crystal} crystal items of {} items; the 5 largest layers: {}", names.len(), best.iter().take(5).map(|(c, s)| format!("{c} corners {s}")).collect::<Vec<_>>().join(" | "));
         }
+        // vista-deck --list FILE | --names A,B [--out TSV]: for each terrain-integrated variant block (…On<Terrain><Cliff|Hill>N…)
+        // the Stadium base block its prefab embeds, and that base prefab's placement in the variant's frame (Hugo's Grass
+        // alteration on the vista collections, 2026-10-18). FILE: lines "count<TAB>name" or "name".
+        "vista-deck" => {
+            let mut store = open(&a);
+            let mut names: Vec<(String, u32)> = Vec::new();
+            if let Some(f) = flag(&a.rest, "--list") {
+                for l in std::fs::read_to_string(&f).unwrap_or_else(|e| die(format!("{f}: {e}"))).lines() {
+                    let parts: Vec<&str> = l.split_whitespace().collect();
+                    match parts.as_slice() {
+                        [c, n] if c.parse::<u32>().is_ok() => names.push((n.to_string(), c.parse().unwrap())),
+                        [n] => names.push((n.to_string(), 0)),
+                        _ => {}
+                    }
+                }
+            }
+            if let Some(n) = flag(&a.rest, "--names") {
+                names.extend(n.split(',').map(|s| (s.trim().to_string(), 0)));
+            }
+            eprintln!("indexing the Stadium block prefabs…");
+            let index = mapgeom::vista::base_prefab_index(&mut store).unwrap_or_else(|e| die(e));
+            eprintln!("{} prefabs indexed", index.len());
+            let mut rows = vec!["variant	base	dx	dy	dz	dyaw	size_cells	deck_match	used	notes".to_string()];
+            for (n, used) in &names {
+                match mapgeom::vista::deck_of(&mut store, &index, n) {
+                    Ok(d) => {
+                        let row = format!("{}	{}	{:.3}	{:.3}	{:.3}	{:.4}	{}x{}x{}	{:.1}% of {}	{}	{}", d.variant, d.base, d.dx, d.dy, d.dz, d.dyaw, d.size[0], d.size[1], d.size[2], d.deck_match * 100.0, d.base_tris, used, d.notes.join(" | "));
+                        println!("{row}");
+                        rows.push(row);
+                        for (b, x, y, z, yaw) in &d.extra {
+                            let row = format!("{}\t{}\t{:.3}\t{:.3}\t{:.3}\t{:.4}\t{}x{}x{}\t-\t{}\tEXTRA deck piece (also embedded)", d.variant, b, x, y, z, yaw, d.size[0], d.size[1], d.size[2], used);
+                            println!("{row}");
+                            rows.push(row);
+                        }
+                    }
+                    Err(e) => {
+                        println!("{n}	-	-	-	-	-	-	-	{used}	ERROR {e}");
+                        rows.push(format!("{n}	-	-	-	-	-	-	-	{used}	ERROR {e}"));
+                    }
+                }
+            }
+            if let Some(out) = flag(&a.rest, "--out") {
+                std::fs::write(&out, rows.join("\n") + "\n").unwrap_or_else(|e| die(format!("{out}: {e}")));
+                eprintln!("wrote {out}");
+            }
+        }
         "crystal-layers" => {
             for path in a.rest.iter().skip(1) {
                 let bytes = std::fs::read(path).unwrap_or_else(|e| die(format!("{path}: {e}")));
