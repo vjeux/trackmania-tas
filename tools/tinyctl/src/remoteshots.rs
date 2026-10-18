@@ -31,7 +31,7 @@ const MAPS_WIN: &str = "C:/Users/vjeux/OneDrive/Documents/Trackmania/Maps/_shoot
 const SHOTS: &str = "/mnt/c/Users/vjeux/tinyshots";
 pub const ENV: &str = "cd /home/vjeux/shoot/hunt; export TM_SESSION=080a15b8-2c6a-4fff-9d8a-db7d0072ee43; export TM_SESSION_TITLE=\"Tiny u10s publish\"; export PATH=/home/vjeux/mk64-fidelity/l1-enum24-stage/frozen-bin:/home/vjeux/bin:$PATH";
 
-/// `tinyctl remote-drive --maps A,B --outdir NAME [--drive-ms 10000] [--drive-at-ms 14500]
+/// `tinyctl remote-drive --maps A,B --outdir NAME [--push-from DIR] [--drive-ms 10000] [--drive-at-ms 14500]
 /// [--carlog-ms 26000] [--pull DIR] [--purpose "…"]` — PLAY-mode probe per map, on the box from
 /// the devserver: the car spawned at the start, the accelerator held, the live car position
 /// logged per frame (`car-<map>.tsv`) — json9841's wheel-status test as data (2026-09-24).
@@ -45,6 +45,20 @@ pub fn drive_cmd(args: &[String]) -> Result<(), String> {
     let carlog = f("--carlog-ms").unwrap_or_else(|| "26000".into());
     let purpose = f("--purpose").unwrap_or_else(|| format!("drive probe: {}", maps.join(" ")));
     let wsx = Wsx::new(args);
+    // `--push-from DIR`: `DIR/<name>.Map.Gbx` pushed to the box's `Maps/_shoot/` first, as
+    // remote-shots does (2026-10-17: a drive re-run without it tested the box's OLD file,
+    // and the new file's physics read as unfixed for a round).
+    if let Some(dir) = f("--push-from") {
+        for m in &maps {
+            let local = Path::new(&dir).join(format!("{m}.Map.Gbx"));
+            if !local.exists() {
+                return Err(format!("{}: no such file", local.display()));
+            }
+            wsx.push(&local, &format!("{HUNT}/rd-{m}.Map.Gbx"))?;
+            wsx.sh(&format!("cp {HUNT}/rd-{m}.Map.Gbx \"{MAPS_SHOOT}/{m}.Map.Gbx\" && rm -f {HUNT}/rd-{m}.Map.Gbx"))?;
+        }
+        println!("{} maps pushed", maps.len());
+    }
     let t0 = Instant::now();
     wsx.sh(&format!("mkdir -p {SHOTS}/{outdir}"))?;
     let mut failed = Vec::new();
