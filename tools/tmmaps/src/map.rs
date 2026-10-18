@@ -2111,7 +2111,9 @@ fn parse_items(
                 r.o - 4
             );
             let version = r.u32();
-            assert_eq!(version, 8, "unsupported CGameCtnAnchoredObject version");
+            // v8 = the game's own writes; v7 = the same record without the two trailing Vec3s
+            // (GBX.NET-written maps, Hugo's C# port 2026-10-18)
+            assert!(version == 7 || version == 8, "unsupported CGameCtnAnchoredObject version {version}");
             // this sub-archive keeps its OWN lookback state: the id version
             // word (3) is re-written here, and "Nadeo" is re-defined even
             // though the blocks chunk already defined it.
@@ -2173,7 +2175,9 @@ fn parse_items(
                 read_file_ref(&mut r);
                 skin_region = Some((skin_start, r.o));
             }
-            r.skip(12 + 12);
+            if version >= 8 {
+                r.skip(12 + 12);
+            }
             rec = Some(ItemRec {
                 index: i as usize,
                 model,
