@@ -881,6 +881,46 @@ fn main() {
             }
             // --probe X,Z: which visuals have a triangle covering that (x, z) from above,
             // and at what height — is there a deck under a decal patch?
+            // --up-hist: per visual, the UP-facing triangles' area by 0.25 m height bin
+            // (where a prefab's drivable or visible floors are — the water road's bed
+            // under its sheet vs the rims above it, 2026-10-17)
+            if a.rest.iter().any(|x| x == "--up-hist") {
+                for (i, s) in g.slots.iter().enumerate() {
+                    let Slot::Node(Node::Visual(v)) = s else { continue };
+                    let Some(&vs) = v.vertex_streams.first() else { continue };
+                    let Some(Slot::Node(Node::VertexStream(st))) = g.slots.get(vs as usize) else { continue };
+                    let pos = &st.positions;
+                    let mut bins: std::collections::BTreeMap<i32, (f64, usize)> = std::collections::BTreeMap::new();
+                    let mut side_area = 0.0f64;
+                    for t in v.indices.chunks(3) {
+                        if t.len() < 3 {
+                            continue;
+                        }
+                        let (Some(p0), Some(p1), Some(p2)) = (pos.get(t[0] as usize), pos.get(t[1] as usize), pos.get(t[2] as usize)) else { continue };
+                        let e1 = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+                        let e2 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
+                        let n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+                        let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+                        if len <= 0.0 {
+                            continue;
+                        }
+                        let area = (len / 2.0) as f64;
+                        if n[1] / len > 0.5 {
+                            let y = (p0[1] + p1[1] + p2[1]) / 3.0;
+                            if std::env::var("MAPGEOM_UP_DUMP").map(|x| x == "1").unwrap_or(false) {
+                                println!("    up tri [{i}] ny {:.2} area {area:.1}: ({:.2},{:.2},{:.2}) ({:.2},{:.2},{:.2}) ({:.2},{:.2},{:.2})", n[1] / len, p0[0], p0[1], p0[2], p1[0], p1[1], p1[2], p2[0], p2[1], p2[2]);
+                            }
+                            let e = bins.entry((y / 0.25).floor() as i32).or_insert((0.0, 0));
+                            e.0 += area;
+                            e.1 += 1;
+                        } else {
+                            side_area += area;
+                        }
+                    }
+                    let rows: Vec<String> = bins.iter().map(|(b, (ar, n))| format!("y{:.2}:{ar:.1}m2/{n}", *b as f32 * 0.25)).collect();
+                    println!("  visual [{i:4}] (stream {vs}): up-facing by height {}  | other faces {side_area:.1} m2", rows.join(" "));
+                }
+            }
             if let Some(pr) = flag(&a.rest, "--probe") {
                 let xz: Vec<f32> = pr.split(',').filter_map(|t| t.trim().parse().ok()).collect();
                 if xz.len() == 2 {

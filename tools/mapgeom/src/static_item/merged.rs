@@ -36,12 +36,16 @@ pub struct MergedVisual {
     /// at assembly gives every part its own cell (2026-09-09). 0 = unknown
     /// (never repacked).
     pub part: u32,
+    /// This visual was the prefab's WATER quad (source material `Material\Water`),
+    /// re-dressed by a row: a water road's overlay moves it down with the drive
+    /// plane (2026-10-17).
+    pub from_water: bool,
 }
 
 impl MergedVisual {
     /// A visual drawn at every distance (a part without detail levels).
     pub fn every_level(visual: CPlugVisualIndexedTriangles, material: usize) -> MergedVisual {
-        MergedVisual { visual, material, lod_mask: 0, lod_ladder: Vec::new(), part: 0 }
+        MergedVisual { from_water: false, visual, material, lod_mask: 0, lod_ladder: Vec::new(), part: 0 }
     }
 }
 
@@ -914,8 +918,20 @@ impl Merged {
         // a triangle a row re-dressed keeps the row's physics: the deck rule below
         // must not turn the snow top (Deco → PlatformIce\Deco @21) into wood (2026-09-20)
         let mut rowed: Vec<bool> = vec![false; out.len()];
+        // Under a water OVERLAY the WATER drive plane (physics 13) is the overlay's to
+        // place: tiny_library finds it BY its 13, re-ids it and drops it to the game's
+        // water line. A `Water` dress row (a water road's sheet, 2026-10-17) re-iding it
+        // here first left a wood lid at the prefab's nominal top, a car's height over the
+        // water — the shipped 56's "old wood physics" (Everios96 2026-10-10). So 13 stays 13
+        // in this pass; the row still dresses the VISUAL.
+        let water_plane_kept = std::env::var("TINY_WATER_OVERLAY").map(|v| v == "1").unwrap_or(false);
+        let mut water_kept = 0usize;
         for (k, t) in out.iter_mut().enumerate() {
             let si = t.surface_index.max(0) as usize;
+            if water_plane_kept && t.material_id == 13 {
+                water_kept += 1;
+                continue;
+            }
             if let Some(Some((_, _, ids))) = by_index.get(si) {
                 t.material_id = ids.0;
                 t.gameplay = ids.1;
@@ -937,10 +953,13 @@ impl Merged {
         if padded > 0 {
             self.notes.push(format!("hull: {padded} pad triangles take the surface swap's physics {} (gameplay kept)", self.pad_physics.unwrap_or(0)));
         }
+        if water_kept > 0 {
+            self.notes.push(format!("hull: {water_kept} Water-physics (13) triangle(s) left to the water overlay (TINY_WATER_OVERLAY=1)"));
+        }
         let mut forced_all = 0usize;
         if let Some(p) = self.all_drivable_physics {
             for t in out.iter_mut() {
-                let drivable = ALL_DRIVABLE_PHYSICS.contains(&t.material_id) && !self.all_drivable_keep.contains(&t.material_id);
+                let drivable = ALL_DRIVABLE_PHYSICS.contains(&t.material_id) && !self.all_drivable_keep.contains(&t.material_id) && !(water_plane_kept && t.material_id == 13);
                 if drivable && t.material_id != p {
                     t.material_id = p;
                     forced_all += 1;
@@ -953,7 +972,7 @@ impl Merged {
         let mut decked = 0usize;
         if let Some(p) = self.deck_physics {
             for (k, t) in out.iter_mut().enumerate() {
-                let deck = DECK_LIKE_PHYSICS.contains(&t.material_id) && !rowed[k];
+                let deck = DECK_LIKE_PHYSICS.contains(&t.material_id) && !rowed[k] && !(water_plane_kept && t.material_id == 13);
                 if deck && t.material_id != p {
                     t.material_id = p;
                     decked += 1;
@@ -1437,6 +1456,9 @@ impl Merged {
             // (`--debug decls` on Special24m.Prefab.Gbx: u01 -1, same lod
             // mask, u02 0; no u10/u12/u19 tables, flags 0) — no on/off flag.)
             let mut v = vis.clone();
+            // the prefab's water quad, by its SOURCE material (the row may have re-dressed it)
+            let water_src = src_links.get(mi).cloned().flatten().map(|l| l.rsplit('\\').next().unwrap_or("").trim_end_matches(".Material.Gbx").trim_end_matches(".Material.gbx") == "Water").unwrap_or(false)
+                || self.materials.get(mat).and_then(|m| m.link()).map(|l| l.rsplit('\\').next().unwrap_or("").trim_end_matches(".Material.Gbx") == "Water").unwrap_or(false);
             if std::env::var("MAPGEOM_DEBUG_WATER").map(|x| x == "1").unwrap_or(false) {
                 eprintln!("visual mi={mi} mat={mat} src_link={:?} link={:?} planar={:?}", src_links.get(mi).cloned().flatten(), self.materials.get(mat).and_then(|m| m.link()), self.water_planar_uv);
             }
@@ -1593,7 +1615,7 @@ impl Merged {
                         let has_color = sv.stream().map(|s| s.decls.iter().any(|d| d.name() == N_COLOR0)).unwrap_or(false);
                         let gm = if !has_color { self.plain_variant_slot(gm) } else { gm };
                         visual_slots.push((self.visuals.len(), gm));
-                        self.visuals.push(MergedVisual { visual: sv, material: gm, lod_mask: lod.0, lod_ladder: lod.1.clone(), part });
+                        self.visuals.push(MergedVisual { from_water: water_src, visual: sv, material: gm, lod_mask: lod.0, lod_ladder: lod.1.clone(), part });
                     }
                     continue;
                 }
@@ -1604,7 +1626,7 @@ impl Merged {
                         // triangles — but keep the per-triangle answer)
                         transform_visual(&mut v, iso, scale)?;
                         visual_slots.push((self.visuals.len(), only));
-                        self.visuals.push(MergedVisual { visual: v, material: only, lod_mask: lod.0, lod_ladder: lod.1.clone(), part });
+                        self.visuals.push(MergedVisual { from_water: water_src, visual: v, material: only, lod_mask: lod.0, lod_ladder: lod.1.clone(), part });
                         continue;
                     }
                 }
@@ -1631,9 +1653,9 @@ impl Merged {
                                 if let (Ok(a), Ok(b)) = (sub_visual(&v, &up), sub_visual(&v, &down)) {
                                     self.notes.push(format!("water face: {n_up} floor triangle(s) re-dressed, {n_down} vertical side triangle(s) kept as they are"));
                                     visual_slots.push((self.visuals.len(), mat));
-                                    self.visuals.push(MergedVisual { visual: a, material: mat, lod_mask: lod.0, lod_ladder: lod.1.clone(), part });
+                                    self.visuals.push(MergedVisual { from_water: water_src, visual: a, material: mat, lod_mask: lod.0, lod_ladder: lod.1.clone(), part });
                                     visual_slots.push((self.visuals.len(), raw));
-                                    self.visuals.push(MergedVisual { visual: b, material: raw, lod_mask: lod.0, lod_ladder: lod.1.clone(), part });
+                                    self.visuals.push(MergedVisual { from_water: water_src, visual: b, material: raw, lod_mask: lod.0, lod_ladder: lod.1.clone(), part });
                                     continue;
                                 }
                             }
@@ -1642,7 +1664,7 @@ impl Merged {
                 }
             }
             visual_slots.push((self.visuals.len(), mat));
-            self.visuals.push(MergedVisual { visual: v, material: mat, lod_mask: lod.0, lod_ladder: lod.1.clone(), part });
+            self.visuals.push(MergedVisual { from_water: water_src, visual: v, material: mat, lod_mask: lod.0, lod_ladder: lod.1.clone(), part });
         }
         if let Some(sf) = so.surface() {
             match &sf.surf {

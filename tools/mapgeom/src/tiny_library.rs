@@ -715,7 +715,14 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
     // surface, the copy is the re-dressed FLOOR and walls seen through it. (The RoadWater
     // prefabs carry no water mesh: the surface is the block's volume; the quad the
     // overlay used to dress was this baker's `keep_water` sheet.)
-    if std::env::var("TINY_OVERLAY_FLOOR_ONLY").map(|v| v == "1").unwrap_or(false) && std::env::var("TINY_OVERLAY_NAMES").ok().map(|v| v.split(',').any(|n| n == name)).unwrap_or(false) {
+    // …but NOT for a water ROAD (`RoadWater*`): its channel has no bed under the sheet —
+    // the sheet IS the drivable floor (the car rides the re-ided drive triangles at the
+    // water line) — so dropping the sheet left only the prefab's 32 m² deck strip as a
+    // brown stripe in a blue channel (Everios96 2026-10-10: wet wood 56/57 "just put a
+    // flat plane?" / "just the blue floor"). The road's sheet stays and takes the deck
+    // dress, as the 2026-09-24 overlay did. `TINY_ROADWATER_FLOOR_ONLY=1` restores.
+    let road_water_keeps_sheet = name.starts_with("RoadWater") && !std::env::var("TINY_ROADWATER_FLOOR_ONLY").map(|v| v == "1").unwrap_or(false);
+    if std::env::var("TINY_OVERLAY_FLOOR_ONLY").map(|v| v == "1").unwrap_or(false) && std::env::var("TINY_OVERLAY_NAMES").ok().map(|v| v.split(',').any(|n| n == name)).unwrap_or(false) && !road_water_keeps_sheet {
         m.keep_water = false;
     }
     // a water OVERLAY dresses the water quad as the deck: planar UVs at the deck's 4 m tile
@@ -1296,6 +1303,23 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
                 if n > 0 {
                     m.notes.push(format!("water overlay: {n} water-drive collision triangle(s) re-ided to physics {id} and dropped {dy} m to the water line (the car rides THAT plane, not the floor)"));
                 }
+                // A water ROAD's dressed sheet (the prefab's water quad, re-dressed by a
+                // `[RoadWater*]Water` row) goes down WITH the drive plane: the channel has no
+                // bed under its water, so the sheet is the wood the car rides, 20 mm over the
+                // game's water line — not a lid at the prefab's nominal top a car's height
+                // above the car (Everios96 2026-09-24 "just the water level"; 2026-10-10 56/57
+                // "just the blue floor", 2026-10-17). Pools keep their own floors.
+                if name.starts_with("RoadWater") {
+                    let mut moved_vis = 0usize;
+                    for v in m.visuals.iter_mut().filter(|v| v.from_water) {
+                        if crate::static_item::build::shift_y(&mut v.visual, dy).is_ok() {
+                            moved_vis += 1;
+                        }
+                    }
+                    if moved_vis > 0 {
+                        m.notes.push(format!("water overlay: {moved_vis} dressed water-sheet visual(s) dropped {dy} m with the drive plane"));
+                    }
+                }
             } else if std::env::var("TINY_OVERLAY_KEEP_WATER_HULL").map(|v| v == "1").unwrap_or(false) {
                 // keep every triangle
             } else {
@@ -1421,6 +1445,13 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
         // the pool FLOOR you drive on — and drops the walls, rim and outer sides, which the
         // block itself still draws in its own look ("youre NOT supposed to texture the
         // sides at all, only the drivable part/the floor", Everios96 2026-10-06).
+        // the census of what the overlay has to choose from (TINY_BAKE_NOTES reads it)
+        if std::env::var("TINY_BAKE_NOTES").map(|w| !w.is_empty() && name.contains(&w)).unwrap_or(false) {
+            for (vi, v) in m.visuals.iter().enumerate() {
+                let link = m.materials.get(v.material).and_then(|mat| mat.link()).unwrap_or_default();
+                m.notes.push(format!("census visual {vi} {link}: {}", crate::static_item::build::up_face_census(&v.visual, 0.5)));
+            }
+        }
         if std::env::var("TINY_OVERLAY_DECK_ONLY").map(|v| v == "1").unwrap_or(false) {
             let targets: Vec<String> = surface_redress_rows(store).into_iter().map(|(_, link, _)| link).filter(|l| !l.is_empty()).collect();
             let deck_mat: Vec<usize> = m
@@ -1434,7 +1465,18 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
             // the floor and the walls of a pool share one material: keep only the
             // UP-FACING triangles of the re-dressed visuals (2026-10-06)
             let kept_before = m.visuals.clone();
-            let min_ny: f32 = std::env::var("TINY_OVERLAY_FLOOR_NY").ok().and_then(|v| v.parse().ok()).unwrap_or(0.5);
+            // 0.8 (≈37°) keeps the Slope2 floors (ny 0.89) and drops a 45° bevel; the
+            // floor-EDGE clips (`*FC*`: WaterWallHFC, WaterFCCenter…) carry the quarter-round
+            // coving where the floor curves up into the wall (ny 0.94 → 0.50 over 0.33 m,
+            // 2026-10-17 census of 61) and Everios96 wants that whole curve the wall's blue
+            // ("this strip of wood on the wall should stay the blue material", 2026-10-10),
+            // so a clip keeps only its FLAT faces (≥ 0.95). Was 0.5 (≈60°) for everything.
+            let is_clip = name.contains("FC");
+            let min_ny: f32 = std::env::var(if is_clip { "TINY_OVERLAY_FLOOR_NY_CLIPS" } else { "TINY_OVERLAY_FLOOR_NY" })
+                .ok()
+                .or_else(|| if is_clip { std::env::var("TINY_OVERLAY_FLOOR_NY").ok() } else { None })
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(if is_clip { 0.95 } else { 0.8 });
             if min_ny > 0.0 {
                 // when no material matched (a pool whose floor and walls share one
                 // material — the usual case), filter EVERY visual: up-facing is the floor
@@ -2254,6 +2296,14 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                     }
                 }
                 let summary = format!("{} bytes, {} visuals, {} collision tris, {} vegetation entities ({} re-emitted as items), {} other skips{wp}{}{}", bytes.len(), nv, m.surf_triangles.len(), veget, re_emitted, other_skips, lod_summary(&m), m.notes.iter().filter(|n| n.contains("Water-physics collision triangles") || n.contains("TINY_FLOOR_PHYSICS") || n.contains("ad screen face") || n.contains("screen logo picture")).map(|n| format!("; {}", n.trim())).collect::<String>());
+                // TINY_BAKE_NOTES=<name substring>: a bake's notes on stderr (they are
+                // otherwise only shown for a bake that failed; the 56 channel, 2026-10-17)
+                if std::env::var("TINY_BAKE_NOTES").ok().map(|w| !w.is_empty() && key.source().contains(&w)).unwrap_or(false) {
+                    eprintln!("# notes {} [{label}]: {summary}", key.source());
+                    for n in &m.notes {
+                        eprintln!("#   {n}");
+                    }
+                }
                 if nv == 0 {
                     outcomes.push(key.outcome(&alias, format!("{} [{label}] {recipe}", key.source()), Err(format!("no visuals ({summary}); notes: {}", m.notes.iter().take(3).cloned().collect::<Vec<_>>().join(" | ")))));
                     continue;

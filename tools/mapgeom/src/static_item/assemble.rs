@@ -752,7 +752,7 @@ mod repack_tests {
             inline_uv_flags: 256,
             inline_tangents: false,
         };
-        MergedVisual { visual: v, material: 0, lod_mask: 0, lod_ladder: Vec::new(), part }
+        MergedVisual { from_water: false, visual: v, material: 0, lod_mask: 0, lod_ladder: Vec::new(), part }
     }
 
     fn uv1_of(mv: &MergedVisual) -> Vec<[f32; 2]> {

@@ -2755,7 +2755,7 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
                         counts.push(kept);
                         if kept > 0 {
                             let sv = super::merged::sub_visual(&v, &keep)?;
-                            m.visuals.push(MergedVisual { visual: sv, material: band_slots_per_mat[e.material as usize][bi], lod_mask, lod_ladder: ladder.clone(), part: 0 });
+                            m.visuals.push(MergedVisual { from_water: false, visual: sv, material: band_slots_per_mat[e.material as usize][bi], lod_mask, lod_ladder: ladder.clone(), part: 0 });
                             n += 1;
                         }
                         lo = *thr;
@@ -2765,7 +2765,7 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
                     counts.push(kept);
                     if kept > 0 {
                         let sv = super::merged::sub_visual(&v, &keep)?;
-                        m.visuals.push(MergedVisual { visual: sv, material: slots[e.material as usize], lod_mask, lod_ladder: ladder.clone(), part: 0 });
+                        m.visuals.push(MergedVisual { from_water: false, visual: sv, material: slots[e.material as usize], lod_mask, lod_ladder: ladder.clone(), part: 0 });
                         n += 1;
                     }
                     m.notes.push(format!("depth bands level {l}: {ntri} triangles per band (inner..outer) {counts:?}"));
@@ -2774,7 +2774,7 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
                     }
                 }
                 _ => {
-                    m.visuals.push(MergedVisual { visual: v, material: slots[e.material as usize], lod_mask, lod_ladder: ladder.clone(), part: 0 });
+                    m.visuals.push(MergedVisual { from_water: false, visual: v, material: slots[e.material as usize], lod_mask, lod_ladder: ladder.clone(), part: 0 });
                     n += 1;
                 }
             }
@@ -3242,6 +3242,96 @@ pub fn keep_up_faces(v: &mut super::visual::CPlugVisualIndexedTriangles, min_ny:
     Ok((k, d))
 }
 
+/// The up-facing (ny ≥ `min_ny`) triangles' area by 0.25 m height bin, plus the
+/// other faces' area — where a visual's floors are (the water road's bed under its
+/// sheet vs the rims above it, 2026-10-17). One line, for a bake note.
+pub fn up_face_census(v: &super::visual::CPlugVisualIndexedTriangles, min_ny: f32) -> String {
+    use super::vstream::T_DEC3N;
+    let Some(main) = v.main.as_ref() else { return "no main".into() };
+    let Some(Node::VertexStream(s)) = main.vertex_streams.first().and_then(|r| r.inline.as_deref()) else { return "no stream".into() };
+    let compress = s.compress_local3d.unwrap_or(false);
+    let mut normals: Vec<[f32; 3]> = Vec::new();
+    let mut positions: Vec<[f32; 3]> = Vec::new();
+    for (dcl, e) in s.decls.iter().zip(s.elems.iter()) {
+        if dcl.name() == N_NORMAL {
+            match e {
+                Elem::Float3(x) => normals = x.clone(),
+                Elem::Word(x) if dcl.stored_type(compress) == T_DEC3N => normals = x.iter().map(|w| dec3n_unpack(*w)).collect(),
+                _ => {}
+            }
+        } else if dcl.name() == N_POSITION {
+            if let Elem::Float3(x) = e {
+                positions = x.clone();
+            }
+        }
+    }
+    let Some(ib) = v.index_buffer.as_ref() else { return "no index buffer".into() };
+    let mut bins: std::collections::BTreeMap<i32, (f64, usize)> = std::collections::BTreeMap::new();
+    let (mut other, mut xlo, mut xhi) = (0.0f64, f32::MAX, f32::MIN);
+    // the up-facing area by steepness: flat (ny ≥ 0.95), gentle (0.8–0.95: the Slope2
+    // floors at 0.89), steep (min_ny–0.8: a 45° coving at 0.71)
+    let (mut flat, mut gentle, mut steep) = (0.0f64, 0.0f64, 0.0f64);
+    for tri in ib.indices.chunks(3) {
+        if tri.len() < 3 {
+            continue;
+        }
+        let (Some(a), Some(b), Some(c)) = (positions.get(tri[0] as usize), positions.get(tri[1] as usize), positions.get(tri[2] as usize)) else { continue };
+        let e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        let e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+        let n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+        let area = ((n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt() / 2.0) as f64;
+        let up = tri.iter().all(|i| normals.get(*i as usize).map(|n| n[1] >= min_ny).unwrap_or(false));
+        if up {
+            let ny_min = tri.iter().filter_map(|i| normals.get(*i as usize).map(|n| n[1])).fold(f32::MAX, f32::min);
+            if std::env::var("MAPGEOM_UP_DUMP").map(|x| x == "1").unwrap_or(false) && ny_min < 0.95 {
+                eprintln!("#     up tri ny_min {ny_min:.3} area {area:.2} y {:.2}..{:.2}", a[1].min(b[1]).min(c[1]), a[1].max(b[1]).max(c[1]));
+            }
+            if ny_min >= 0.95 {
+                flat += area;
+            } else if ny_min >= 0.8 {
+                gentle += area;
+            } else {
+                steep += area;
+            }
+            let y = (a[1] + b[1] + c[1]) / 3.0;
+            let e = bins.entry((y / 0.25).floor() as i32).or_insert((0.0, 0));
+            e.0 += area;
+            e.1 += 1;
+            for p in [a, b, c] {
+                xlo = xlo.min(p[0]);
+                xhi = xhi.max(p[0]);
+            }
+        } else {
+            other += area;
+        }
+    }
+    let rows: Vec<String> = bins.iter().map(|(b, (ar, n))| format!("y{:.2}:{ar:.1}m2/{n}", *b as f32 * 0.25)).collect();
+    format!("up {} (x {xlo:.2}..{xhi:.2}; flat {flat:.1} gentle {gentle:.1} steep {steep:.1} m2) | other {other:.1} m2", if rows.is_empty() { "none".to_string() } else { rows.join(" ") })
+}
+
+/// Move every vertex of a visual by `dy` along y (a water road's dressed sheet
+/// follows its drive plane down to the water line, 2026-10-17).
+pub fn shift_y(v: &mut super::visual::CPlugVisualIndexedTriangles, dy: f32) -> Result<(), String> {
+    let Some(main) = v.main.as_mut() else { return Ok(()) };
+    let Some(Node::VertexStream(s)) = main.vertex_streams.first_mut().and_then(|r| r.inline.as_deref_mut()) else { return Ok(()) };
+    let mut n = 0usize;
+    for (dcl, e) in s.decls.iter().zip(s.elems.iter_mut()) {
+        if dcl.name() != N_POSITION {
+            continue;
+        }
+        if let Elem::Float3(x) = e {
+            for p in x.iter_mut() {
+                p[1] += dy;
+                n += 1;
+            }
+        }
+    }
+    if n == 0 {
+        return Err("no float3 positions".into());
+    }
+    Ok(())
+}
+
 pub fn shell_offset(v: &mut super::visual::CPlugVisualIndexedTriangles, d: f32) -> Result<(), String> {
     use super::vstream::T_DEC3N;
     let Some(main) = v.main.as_mut() else { return Ok(()) };
@@ -3616,7 +3706,7 @@ pub fn inline_filler_foliage(store: &mut crate::store::DataStore, m: &mut Merged
                 m.notes.push(format!("filler foliage {species}: visual not transformed ({e})"));
                 continue;
             }
-            m.visuals.push(MergedVisual { visual: v, material: slots[sv.material], lod_mask: 0, lod_ladder: Vec::new(), part: 0 });
+            m.visuals.push(MergedVisual { from_water: false, visual: v, material: slots[sv.material], lod_mask: 0, lod_ladder: Vec::new(), part: 0 });
         }
         placed += 1;
     }
