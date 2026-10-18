@@ -1633,14 +1633,16 @@ fn main() {
             }
             let author = flag(&a.rest, "--author").unwrap_or_else(|| mapgeom::tiny_assets::AUTHOR.to_string());
             let rename = |bytes: &[u8], ident: &str| -> Vec<u8> {
-                let (from, _) = tmmaps::header::item_ident_author(bytes).unwrap_or_else(|| die("no ident in the header".into()));
+                let (from, from_author) = tmmaps::header::item_ident_author(bytes).unwrap_or_else(|| die("no ident in the header".into()));
                 let renamed = mapgeom::crystal::rename_ident(bytes, &from, ident);
-                // the author in both the header ident and the body ident
-                let g = tmmaps::gbx::Gbx::parse(&renamed);
-                let mut g2 = tmmaps::gbx::Gbx::parse(&renamed);
-                g2.user_data = mapgeom::tiny_assets::replace_lp(g.user_data.clone(), "Nadeo", &author);
-                let body = mapgeom::tiny_assets::replace_lp(g.body.clone(), "Nadeo", &author);
-                g2.write_body_recompressed(&body)
+                if from_author == author {
+                    return renamed;
+                }
+                // the author in the header ident and the body ident, with the header
+                // chunk table and skippable chunk sizes following the length change
+                // (replace_lp left the chunk sizes stale: the 2026-10-18 matrix of
+                // wrappers was refused by the game for THAT, not for its references)
+                mapgeom::crystal::rename_ident(&renamed, &from_author, &author)
             };
             if let Some(dir) = flag(&a.rest, "--matrix") {
                 std::fs::create_dir_all(&dir).expect("matrix dir");
