@@ -244,6 +244,27 @@ pub struct CPlugVisualIndexedTriangles {
 }
 
 impl CPlugVisualIndexedTriangles {
+    /// A visual with nothing in it: what a stripped (dedicated-server) tree
+    /// model's null visual slot reads as.
+    pub fn empty() -> CPlugVisualIndexedTriangles {
+        CPlugVisualIndexedTriangles {
+            chunks: Vec::new(),
+            id: Id::Null,
+            u_node: super::null_ref(),
+            sub_visuals: Vec::new(),
+            u_float: 0.0,
+            splits: Vec::new(),
+            main: None,
+            morph: None,
+            v3d_node: super::null_ref(),
+            tangents: None,
+            index_buffer: None,
+            inline_form: false,
+            inline_uv_sets: 1,
+            inline_uv_flags: 256,
+            inline_tangents: false,
+        }
+    }
     pub fn parse(r: &mut Rd) -> R<CPlugVisualIndexedTriangles> {
         let mut v = CPlugVisualIndexedTriangles {
             chunks: Vec::new(),

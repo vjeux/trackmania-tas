@@ -229,6 +229,18 @@ fn parse_body(body: &[u8], externals: &[(u32, String)]) -> R<VegetTreeModel> {
                 return Err(format!("level {l} visual {k}: material {material} of {material_count}"));
             }
             let node_index = r.u32()?;
+            // The dedicated-server packs ship every VegetTreeModel with its
+            // visuals STRIPPED: the node ref is null (0xFFFFFFFF) and no class
+            // word or body follows, only the flag byte. The hull after the
+            // levels is intact there — which is the one thing a server needs
+            // and the one thing `block-trees --hitbox` asks (2026-10-18:
+            // BlueBay's JungleForestA/B/C have no hull, PalmTreeD has 15
+            // vertices of trunk).
+            if node_index == u32::MAX {
+                let flag = r.u8()?;
+                entries.push(VegetLodEntry { material, node_index, visual: CPlugVisualIndexedTriangles::empty(), flag });
+                continue;
+            }
             let class = r.u32()?;
             if class != CLASS_VISUAL_INDEXED_TRIANGLES {
                 return Err(format!("level {l} visual {k} at {:#x}: class {class:#010x} is not CPlugVisualIndexedTriangles", r.o - 8));

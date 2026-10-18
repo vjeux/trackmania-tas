@@ -1,4 +1,4 @@
-//! `mapgeom block-trees MAP --out TSV [--collection BlueBay] [--yoff N]`:
+//! `mapgeom block-trees MAP --out TSV [--collection BlueBay] [--yoff N] [--all-trees]`:
 //! where the trees that are BAKED INTO THE TERRAIN stand, in world metres.
 //!
 //! Why (Altrd_Amill101, 2026-10-18): a checkpoint per tree is easy for the
@@ -37,7 +37,7 @@ pub fn is_tree_ref(path: &str) -> bool {
         return false;
     }
     let stem = p.rsplit('\\').next().unwrap_or(&p);
-    !(stem.contains("bush") || stem.contains("grass") || stem.contains("flower") || stem.contains("fern") || stem.contains("shrub"))
+    !(stem.contains("bush") || stem.contains("grass") || stem.contains("flower") || stem.contains("fern") || stem.contains("shrub") || stem.contains("plant"))
 }
 
 pub fn run(store: &mut DataStore, rest: &[String]) -> Result<(), String> {
@@ -47,10 +47,22 @@ pub fn run(store: &mut DataStore, rest: &[String]) -> Result<(), String> {
     // is not given (0xF GreenCoast, 0x10 RedIsland, 0x1A Stadium, 0x1C
     // BlueBay, 0x1D WhiteShore — measured on the Fall 2026 campaign)
     let collection = flag("--collection").unwrap_or_default();
-    let yoff: f32 = flag("--yoff").and_then(|s| s.parse().ok()).unwrap_or(0.0);
     let m = tmmaps::map::MapFile::load(std::path::Path::new(&path));
+    let coll_word = m.items.first().map(|it| it.collection_raw).unwrap_or(28);
+    // world_y = 8*cell_y + yoff, and yoff is the DECORATION's (-40 on BlueBay
+    // and GreenCoast, -120 on RedIsland and WhiteShore, -64 on Stadium —
+    // tmmaps::map::ground_y, each measured on a Summer 2026 map). The first
+    // cut of this tool used 0 and put 13 801 checkpoints 40 m up in the air
+    // (Altrd, 2026-10-18: "they are way above the map").
+    let yoff: f32 = flag("--yoff").and_then(|s| s.parse().ok()).unwrap_or_else(|| tmmaps::map::ground_y(coll_word));
+    // --all-trees keeps the drive-through foliage too; by default a tree
+    // counts only when its VegetTreeModel carries a collision hull — the
+    // palms do (PalmTreeD: 15 vertices of trunk), the JungleForestA/B/C
+    // card clusters do not, and a checkpoint on something a car passes
+    // through is not what "a CP on every tree" means.
+    let hitbox_only = !rest.iter().any(|a| a == "--all-trees");
     let collection = if collection.is_empty() {
-        let c = m.items.first().map(|it| it.collection_raw).unwrap_or(28);
+        let c = coll_word;
         match c {
             15 => "GreenCoast",
             16 => "RedIsland",
@@ -68,8 +80,11 @@ pub fn run(store: &mut DataStore, rest: &[String]) -> Result<(), String> {
 
     // prefab -> its tree entities (local position, model path), read once
     let mut cache: std::collections::HashMap<String, Vec<([f32; 3], String)>> = Default::default();
+    // model -> does it carry a collision hull (read once per model)
+    let mut hull: std::collections::HashMap<String, Option<usize>> = Default::default();
     let mut trees: Vec<BakedTree> = Vec::new();
     let mut missing: Vec<String> = Vec::new();
+    let mut dropped: std::collections::BTreeMap<String, usize> = Default::default();
     for p in placements.iter().filter(|p| !p.baked) {
         if p.free {
             // a free-placed terrain block is not a thing; skip rather than
@@ -96,6 +111,21 @@ pub fn run(store: &mut DataStore, rest: &[String]) -> Result<(), String> {
             let size = (32.0 * p.cells.iter().map(|(_, c)| c[0]).max().map(|v| v as f32 + 1.0).unwrap_or(1.0), 32.0 * p.cells.iter().map(|(_, c)| c[2]).max().map(|v| v as f32 + 1.0).unwrap_or(1.0));
             let xf = place::grid_block((p.cell[0], p.cell[1], p.cell[2]), p.dir, size, yoff);
             for (local, model) in list {
+                if hitbox_only {
+                    let h = *hull.entry(model.clone()).or_insert_with(|| match crate::veget::parse_tree_model(store, model) {
+                        Ok(t) => Some(t.hull_triangles.len()),
+                        Err(e) => {
+                            missing.push(format!("{model}: {e}"));
+                            None
+                        }
+                    });
+                    // unreadable = kept (a miss costs a checkpoint on a
+                    // drive-through tree; a false drop loses a real one)
+                    if h == Some(0) {
+                        *dropped.entry(model.rsplit('\\').next().unwrap_or(model).trim_end_matches(".VegetTreeModel.Gbx").to_string()).or_insert(0) += 1;
+                        continue;
+                    }
+                }
                 let w = crate::geom::apply(&xf, *local);
                 trees.push(BakedTree { block: p.name.clone(), cell: p.cell, dir: p.dir, prefab: prefab.clone(), model: model.clone(), pos: w });
             }
@@ -128,7 +158,10 @@ pub fn run(store: &mut DataStore, rest: &[String]) -> Result<(), String> {
         *a.entry(b.block.as_str()).or_insert(0) += 1;
         a
     });
-    println!("{}: {} baked trees in {} block kind(s) ({} authored blocks walked)", path, trees.len(), blocks.len(), placements.iter().filter(|p| !p.baked).count());
+    println!("{}: {} baked trees in {} block kind(s) ({} authored blocks walked, yoff {}, {})", path, trees.len(), blocks.len(), placements.iter().filter(|p| !p.baked).count(), yoff, if hitbox_only { "hitbox trees only" } else { "all trees" });
+    if !dropped.is_empty() {
+        println!("  dropped as drive-through (no collision hull): {}", dropped.iter().map(|(k, n)| format!("{k} {n}")).collect::<Vec<_>>().join(", "));
+    }
     for (k, n) in blocks.iter().take(12) {
         println!("  {k}: {n}");
     }
