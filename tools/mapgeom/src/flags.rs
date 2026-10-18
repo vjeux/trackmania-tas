@@ -247,7 +247,7 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
     let mut built: Vec<(String, String, [f32; 6], Vec<u8>)> = Vec::new();
     for stem in &models {
         if o.stands {
-            let c = crate::stands::carrier_item(ctx.store, stem, collection, o.stand_pad_below, o.stand_thick, lm_word).map_err(|e| format!("{stem}: {e}"))?;
+            let c = crate::stands::carrier_item_named(ctx.store, stem, &o.ident_prefix, collection, o.stand_pad_below, o.stand_thick, lm_word).map_err(|e| format!("{stem}: {e}"))?;
             let mut row = Row::new(&map_label, "flags", "model", 0, stem);
             row.action = "stand-carrier-item-built".into();
             row.to_name = c.ident.clone();

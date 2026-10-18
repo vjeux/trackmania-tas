@@ -4023,9 +4023,11 @@ fn main() {
             let pad: f32 = flag(&a.rest, "--pad-below").and_then(|v| v.parse().ok()).unwrap_or(0.0);
             let thick: f32 = flag(&a.rest, "--thick").and_then(|v| v.parse().ok()).unwrap_or(0.5);
             let collection: u32 = flag(&a.rest, "--collection").and_then(|v| v.parse().ok()).unwrap_or(26);
+            // --ident-prefix Finish: Hugo's names (FinishStandStraight.Item.Gbx …) instead of <Kind>FinishTrigger
+            let prefix = flag(&a.rest, "--ident-prefix").unwrap_or_default();
             println!("kind\tident\tbytes\trows\tseat_y\tseat_tris\tslab_tris\tbbox\tmaterials");
             for k in &kinds {
-                let c = mapgeom::stands::carrier_item(&mut store, k, collection, pad, thick, None).unwrap_or_else(|e| die(format!("{k}: {e}")));
+                let c = mapgeom::stands::carrier_item_named(&mut store, k, &prefix, collection, pad, thick, None).unwrap_or_else(|e| die(format!("{k}: {e}")));
                 let p = out_dir.join(&c.ident);
                 std::fs::write(&p, &c.bytes).unwrap_or_else(|e| die(format!("{}: {e}", p.display())));
                 let mats: Vec<String> = c.seating.census.iter().map(|(m, (n, up, lo, hi, area))| format!("{m} {n} tris ({up} up) y {lo:.2}..{hi:.2} {area:.0} m2{}", if m.eq_ignore_ascii_case(mapgeom::stands::SEAT_MATERIAL) { " ← SEATING" } else { "" })).collect();

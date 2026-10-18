@@ -263,7 +263,17 @@ pub struct Carrier {
     pub notes: Vec<String>,
 }
 
+/// The carrier ident for a stand kind: `<Kind>FinishTrigger.Item.Gbx` (ours) or `<prefix><Kind>.Item.Gbx` (Hugo's
+/// C# names, 2026-10-18 06:48: `FinishStandStraight.Item.Gbx` — the prefix "Finish").
+pub fn carrier_ident(kind: &str, prefix: &str) -> String {
+    if prefix.is_empty() { format!("{kind}FinishTrigger.Item.Gbx") } else { format!("{prefix}{kind}.Item.Gbx") }
+}
+
 pub fn carrier_item(store: &mut DataStore, kind: &str, collection: u32, pad_below: f32, thick: f32, lm_word: Option<u64>) -> Result<Carrier, String> {
+    carrier_item_named(store, kind, "", collection, pad_below, thick, lm_word)
+}
+
+pub fn carrier_item_named(store: &mut DataStore, kind: &str, prefix: &str, collection: u32, pad_below: f32, thick: f32, lm_word: Option<u64>) -> Result<Carrier, String> {
     let prefab = prefab_of(kind).ok_or_else(|| format!("{kind}: not a stand kind"))?;
     let seating = seating_of(store, prefab)?;
     let (verts, tris) = slab_of(&seating, pad_below, thick);
@@ -283,7 +293,7 @@ pub fn carrier_item(store: &mut DataStore, kind: &str, collection: u32, pad_belo
         mg.file_write_time = w;
         mg.notes.push(format!("solid FileWriteTime stamped with the map's lightmap cache word {w}"));
     }
-    let ident = format!("{kind}FinishTrigger.Item.Gbx");
+    let ident = carrier_ident(kind, prefix);
     let (bytes, mg) = crate::static_item::build::finish_item(mg, &ident, &ident, 1.0, collection)?;
     Ok(Carrier { kind: kind.to_string(), ident, bytes, seating, slab_tris, bbox: [lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]], notes: mg.notes.clone() })
 }
