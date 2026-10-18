@@ -224,11 +224,10 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
         if std::env::var("TINY_DECOWALL_BAKE").map(|v| v != "0").unwrap_or(true) {
             env.push(("TINY_BAKE_FAMILY".to_string(), "DecoWall".to_string()));
         }
-        // `[RoadWater*]TrackBorders`: a water ROAD's channel floor is mostly `TrackBorders`
-        // (the StraightV2 prefab: a 24-vertex `ThemeSnowRoad` centre strip, 4,400 vertices of
-        // borders for the banks), so the deck-only copy showed as a narrow strip under the
-        // water (Everios96 2026-10-10, wet wood 56/57 "just put a flat plane?"). The
-        // channel's banks take the surface; road borders elsewhere stay.
+        // (2026-10-10 a `[RoadWater*]TrackBorders` row coloured the water roads' BANKS to
+        // widen the 24-vertex floor strip; Everios96: "you actually colored the border pieces
+        // of 56 now. that is not what we want. just the blue floor" — reverted 10-17. The
+        // channel's blue floor is the water-floor material under the sheet, not the banks.)
         if let Some(link) = wall_top {
             // … and the HALFPIPE walls (`TrackWallSlopeU*`, `TrackWallArchSlopeU*`: the U
             // blocks, normal and upside down): you drive INSIDE the curvature, and that
@@ -262,7 +261,7 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
                 // face that needs to change, just upside down"). Its `*SlopeUp*` twin was
                 // already covered; the Down spelling was not, so that ride face stayed
                 // black while the block around it turned dirt.
-                format!("[*]TrackWallClips={link};[RoadWater*]TrackBorders={link};[DecoWallLoop*]TrackWall={link};[DecoWallSlope*]TrackWall={link};[DecoWallCurve*]TrackWall={link};[DecoWallDiag*]TrackWall={link};[DecoWallBase]TrackWall={link};[DecoWallBaseFCT*]TrackWall={link};[DecoWallSimple]TrackWall={link};[Platform*FCT*]TrackWall={link};[Platform*FCB*]TrackWall={link};[TrackWall*SlopeU*]TrackWall={link};[TrackWall*SlopeUp*]TrackWall={link};[TrackWall*SlopeDown*]TrackWall={link};[TrackWallArchSlope*U*]TrackWall={link}"),
+                format!("[*]TrackWallClips={link};[DecoWallLoop*]TrackWall={link};[DecoWallSlope*]TrackWall={link};[DecoWallCurve*]TrackWall={link};[DecoWallDiag*]TrackWall={link};[DecoWallBase]TrackWall={link};[DecoWallBaseFCT*]TrackWall={link};[DecoWallSimple]TrackWall={link};[Platform*FCT*]TrackWall={link};[Platform*FCB*]TrackWall={link};[TrackWall*SlopeU*]TrackWall={link};[TrackWall*SlopeUp*]TrackWall={link};[TrackWall*SlopeDown*]TrackWall={link};[TrackWallArchSlope*U*]TrackWall={link}"),
             ));
         }
     }
