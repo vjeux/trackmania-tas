@@ -152,6 +152,13 @@ fn upload_one(t: &mut Tokens, map: &Path, name: &str, outdir: &Path) -> Result<(
     // map, it is a collision with someone's live map: refuse it. A real rename passes
     // `--allow-rename` (TINYCTL_ALLOW_RENAME=1) on purpose.
     if existing.is_some() {
+        // …and a record ANOTHER account owns is never ours to update, whatever its name:
+        // the MK64 Bonk Cup's fresh uid Ek0fmwVE… (Rainbow Road) was already online under
+        // account ac30c580… since 2026-10-08 — same name, someone else's map (2026-10-17).
+        let owner = json_str(&rec, "author").unwrap_or_default();
+        if !owner.is_empty() && !t.me.is_empty() && owner != t.me {
+            return Err(format!("REFUSED: uid {uid} is already online as `{}` owned by account {owner}, not {} — someone else's live map; a fresh uid is needed", json_str(&rec, "name").unwrap_or_default(), t.me));
+        }
         let stored = json_str(&rec, "name").unwrap_or_default();
         let allow = std::env::var("TINYCTL_ALLOW_RENAME").map(|v| v == "1").unwrap_or(false);
         if !stored.is_empty() && stored != name && !allow {
