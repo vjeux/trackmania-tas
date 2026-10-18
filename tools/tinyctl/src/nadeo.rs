@@ -50,6 +50,15 @@ fn get_json(auth: &str, url: &str) -> Result<Value, String> {
     serde_json::from_str(&body).map_err(|e| format!("GET {url}: not JSON ({e}): {}", &body[..body.len().min(200)]))
 }
 
+/// A POST whose answer is read as text (the delete routes answer plain text).
+fn post_text(auth: &str, url: &str, body: &str) -> Result<String, String> {
+    let (resp, code) = curl(&["-X", "POST", "-H", auth, "-H", "Content-Type: application/json", "-d", body, url])?;
+    if !code.starts_with('2') {
+        return Err(format!("POST {url}: HTTP {code} {}", &resp[..resp.len().min(400)]));
+    }
+    Ok(resp)
+}
+
 fn post_json(auth: &str, url: &str, body: &str) -> Result<Value, String> {
     let (resp, code) = curl(&["-X", "POST", "-H", auth, "-H", "Content-Type: application/json", "-d", body, url])?;
     if !code.starts_with('2') {
@@ -410,7 +419,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             // campaignId, name, active, public) — the campaign ↔ activity mapping the store lost
             let club = f("--club").ok_or("activity-list needs --club ID")?;
             let length = f("--length").unwrap_or_else(|| "100".into());
-            let v = get_json(&auth_live, &format!("{LIVE}/api/token/club/{club}/activity/all?length={length}&offset=0&active=0"))?;
+            let v = get_json(&auth_live, &format!("{LIVE}/api/token/club/{club}/activity?length={length}&offset=0"))?;
             save(&format!("club-{club}-activities.json"), &v)?;
             let list = v.get("activityList").and_then(|l| l.as_array()).cloned().unwrap_or_default();
             println!("id\ttype\tcampaignId\tactive\tpublic\tname");
@@ -427,10 +436,11 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             let club = f("--club").ok_or("activity-delete needs --club ID")?;
             let act = f("--activity").ok_or("activity-delete needs --activity ID")?;
             let url = format!("{LIVE}/api/token/club/{club}/activity/{act}/delete");
-            match post_json(&auth_live, &url, "{}") {
-                Ok(v) => {
-                    save(&format!("club-{club}-activity-{act}-delete.json"), &v)?;
-                    println!("activity\t{act}\tDELETED\t{}", serde_json::to_string(&v).unwrap_or_default().chars().take(200).collect::<String>());
+            // the live API answers this one with PLAIN TEXT ("Activity deleted", 2026-10-18), not JSON
+            match post_text(&auth_live, &url, "{}") {
+                Ok(text) => {
+                    std::fs::write(outdir.join(format!("club-{club}-activity-{act}-delete.txt")), &text).map_err(|e| e.to_string())?;
+                    println!("activity\t{act}\tDELETED\t{}", text.trim().chars().take(200).collect::<String>());
                 }
                 Err(e) => {
                     println!("activity\t{act}\tdelete refused: {}", e.lines().next().unwrap_or(""));
@@ -443,8 +453,8 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                     }
                 }
             }
-            // the listing afterwards (active=0 includes hidden ones)
-            let v = get_json(&auth_live, &format!("{LIVE}/api/token/club/{club}/activity/all?length=100&offset=0&active=0"))?;
+            // the listing afterwards (the plain list carries hidden activities too; `active=false` filters to them)
+            let v = get_json(&auth_live, &format!("{LIVE}/api/token/club/{club}/activity?length=100&offset=0"))?;
             let list = v.get("activityList").and_then(|l| l.as_array()).cloned().unwrap_or_default();
             match list.iter().find(|a| s(a, "id") == act) {
                 Some(a) => println!("after\tactivity {act} still listed: active {} public {} name {}", s(a, "active"), s(a, "public"), s(a, "name")),

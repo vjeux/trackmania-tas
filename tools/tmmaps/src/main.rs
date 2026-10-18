@@ -195,7 +195,10 @@ fn main() {
             let yaw: f32 = tmmaps::cli::flag(&args, "--yaw").map(|v| v.parse::<f32>().expect("yaw in radians")).unwrap_or(m.items[idx].yaw);
             let out = tmmaps::cli::flag(&args, "--out").expect("--out OUT.Map.Gbx");
             let it = m.items[idx].clone();
-            let (cx, cy, cz) = ((pos[0] / 32.0).floor() as i32, (pos[1] / 8.0).floor() as i32, (pos[2] / 32.0).floor() as i32);
+            // the declared cell: x/z by 32, y by 8 from the collection's ground row offset (RedIsland −120, Stadium −64, …)
+            let coll = m.body_collections().map(|c| c[0].1).unwrap_or(26);
+            let ground = tmmaps::map::ground_y(coll);
+            let (cx, cy, cz) = ((pos[0] / 32.0).floor() as i32, ((pos[1] - ground) / 8.0).floor() as i32, (pos[2] / 32.0).floor() as i32);
             println!("item#{idx} {} tag {:?}: [{:.2} {:.2} {:.2}] yaw {:.4} cell {:?} → [{:.2} {:.2} {:.2}] yaw {yaw:.4} cell ({cx},{cy},{cz})", it.model, it.waypoint_tag, it.pos[0], it.pos[1], it.pos[2], it.yaw, it.file_cell, pos[0], pos[1], pos[2]);
             m.move_item(idx, [pos[0], pos[1], pos[2]], yaw, (cx, cy, cz));
             m.write_to(std::path::Path::new(&out)).expect("write");
