@@ -3844,6 +3844,108 @@ fn main() {
                 }
             }
         }
+        // dyna-frames <Flag.DynaObject.Gbx path> [--prefab-pos X,Y,Z --prefab-rot QX,QY,QZ,QW]: every vertex-animation
+        // frame of a dyna mesh (the flag cloth: 86 frames) → per frame the bbox in the given frame; the union bbox
+        "dyna-frames" => {
+            let mut store = open(&a);
+            let p = a.rest.get(1).cloned().unwrap_or_else(|| die("dyna-frames PATH".into()));
+            let mut mg = mapgeom::static_item::build::Merged::default();
+            let src = mapgeom::static_item::build::load_dyna_source(&mut store, &p, &mut mg, true).unwrap_or_else(die);
+            let pos: [f32; 3] = flag(&a.rest, "--prefab-pos").map(|v| { let f: Vec<f32> = v.split(',').map(|x| x.parse().unwrap()).collect(); [f[0], f[1], f[2]] }).unwrap_or([0.0; 3]);
+            let q: [f32; 4] = flag(&a.rest, "--prefab-rot").map(|v| { let f: Vec<f32> = v.split(',').map(|x| x.parse().unwrap()).collect(); [f[0], f[1], f[2], f[3]] }).unwrap_or([0.0, 0.0, 0.0, 1.0]);
+            // quaternion → rotation (x,y,z,w)
+            let (x, y, z, w) = (q[0], q[1], q[2], q[3]);
+            let rot = |v: [f32; 3]| -> [f32; 3] {
+                let (vx, vy, vz) = (v[0], v[1], v[2]);
+                // v' = v + 2w(q×v) + 2 q×(q×v)
+                let (cx, cy, cz) = (y * vz - z * vy, z * vx - x * vz, x * vy - y * vx);
+                let (dx, dy, dz) = (y * cz - z * cy, z * cx - x * cz, x * cy - y * cx);
+                [vx + 2.0 * (w * cx + dx) + pos[0], vy + 2.0 * (w * cy + dy) + pos[1], vz + 2.0 * (w * cz + dz) + pos[2]]
+            };
+            for vr in &src.s2.visuals {
+                let Some(mapgeom::static_item::Node::Visual(v)) = vr.inline.as_deref() else { continue };
+                let Some(main) = v.main.as_ref() else { continue };
+                let Some(mapgeom::static_item::Node::VertexStream(st)) = main.vertex_streams.first().and_then(|r| r.inline.as_deref()) else { continue };
+                let Some(mapgeom::static_item::vstream::Elem::Float3(pts)) = st.elems.first() else { continue };
+                let nf = v.sub_visuals.len().max(1);
+                let per = pts.len() / nf;
+                println!("visual: {} vertices, {} frames x {} ({} tris)", pts.len(), nf, per, v.index_buffer.as_ref().map(|b| b.indices.len() / 3).unwrap_or(0));
+                let (mut ulo, mut uhi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+                for f in 0..nf {
+                    let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+                    for pnt in &pts[f * per..(f + 1) * per] {
+                        let w = rot(*pnt);
+                        for k in 0..3 {
+                            lo[k] = lo[k].min(w[k]);
+                            hi[k] = hi[k].max(w[k]);
+                            ulo[k] = ulo[k].min(w[k]);
+                            uhi[k] = uhi[k].max(w[k]);
+                        }
+                    }
+                    if f % 10 == 0 || f == nf - 1 {
+                        println!("  frame {f:3}: x {:.2}..{:.2}  y {:.2}..{:.2}  z {:.2}..{:.2}", lo[0], hi[0], lo[1], hi[1], lo[2], hi[2]);
+                    }
+                }
+                println!("  UNION: x {:.3}..{:.3}  y {:.3}..{:.3}  z {:.3}..{:.3}", ulo[0], uhi[0], ulo[1], uhi[1], ulo[2], uhi[2]);
+                // the TIME-AVERAGED cloth (per-vertex mean over the frames): its bbox, and its top/bottom edge
+                // tilt (max/min y per z bin) — the "stationary flag" rectangle Hugo describes
+                {
+                    let mut mean: Vec<[f32; 3]> = vec![[0.0; 3]; per];
+                    for f in 0..nf {
+                        for (k, pnt) in pts[f * per..(f + 1) * per].iter().enumerate() {
+                            let w = rot(*pnt);
+                            for c in 0..3 {
+                                mean[k][c] += w[c] / nf as f32;
+                            }
+                        }
+                    }
+                    let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+                    for w in &mean {
+                        for c in 0..3 {
+                            lo[c] = lo[c].min(w[c]);
+                            hi[c] = hi[c].max(w[c]);
+                        }
+                    }
+                    println!("  TIME-AVERAGE cloth: x {:.3}..{:.3}  y {:.3}..{:.3}  z {:.3}..{:.3}", lo[0], hi[0], lo[1], hi[1], lo[2], hi[2]);
+                    let mut bins: std::collections::BTreeMap<i32, (f32, f32)> = std::collections::BTreeMap::new();
+                    for w in &mean {
+                        let e = bins.entry((w[2] * 2.0).round() as i32).or_insert((f32::INFINITY, f32::NEG_INFINITY));
+                        e.0 = e.0.min(w[1]);
+                        e.1 = e.1.max(w[1]);
+                    }
+                    for (b, (ylo, yhi)) in &bins {
+                        println!("    z {:.1}: y {:.2}..{:.2}  (height {:.2})", *b as f32 / 2.0, ylo, yhi, yhi - ylo);
+                    }
+                    // least-squares tilt of the top and bottom edges over z
+                    let fit = |sel: &dyn Fn(&(f32, f32)) -> f32| -> (f32, f32) {
+                        let n = bins.len() as f32;
+                        let (mut sx, mut sy, mut sxx, mut sxy) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+                        for (b, e) in &bins {
+                            let x = *b as f32 / 2.0;
+                            let y = sel(e);
+                            sx += x; sy += y; sxx += x * x; sxy += x * y;
+                        }
+                        let slope = (n * sxy - sx * sy) / (n * sxx - sx * sx);
+                        (slope, (sy - slope * sx) / n)
+                    };
+                    let (st, bt) = fit(&|e| e.1);
+                    let (sb, bb) = fit(&|e| e.0);
+                    println!("    top edge: y = {bt:.2} + {st:.3}·z (tilt {:.1}° down); bottom edge: y = {bb:.2} + {sb:.3}·z (tilt {:.1}° down)", (-st).atan().to_degrees(), (-sb).atan().to_degrees());
+                }
+                if flag(&a.rest, "--profile").is_some() {
+                    for f in [0usize, nf / 4, nf / 2, 3 * nf / 4] {
+                        let mut ws: Vec<[f32; 3]> = pts[f * per..(f + 1) * per].iter().map(|p| rot(*p)).collect();
+                        ws.sort_by(|a, b| a[2].partial_cmp(&b[2]).unwrap());
+                        let n10 = (ws.len() / 10).max(1);
+                        let near: f32 = ws[..n10].iter().map(|p| p[1]).sum::<f32>() / n10 as f32;
+                        let far: f32 = ws[ws.len() - n10..].iter().map(|p| p[1]).sum::<f32>() / n10 as f32;
+                        let znear: f32 = ws[..n10].iter().map(|p| p[2]).sum::<f32>() / n10 as f32;
+                        let zfar: f32 = ws[ws.len() - n10..].iter().map(|p| p[2]).sum::<f32>() / n10 as f32;
+                        println!("  frame {f:3}: mean y near z {znear:.2} = {near:.2}, far z {zfar:.2} = {far:.2} → tilt {:.1}°", ((near - far) / (zfar - znear)).atan().to_degrees());
+                    }
+                }
+            }
+        }
         // item-height MAP MODEL [MODEL..]: the item models' heights as `sandbox` reads them (the pack prefab's geometry)
         "item-height" => {
             let mut store = open(&a);
@@ -3854,6 +3956,108 @@ fn main() {
                 let refs = ctx.item_refs(model);
                 println!("{model}: {} refs{}", refs.len(), refs.iter().take(4).map(|r| format!("\n    {r}")).collect::<String>());
                 println!("  height {:?}", mapgeom::sandbox::item_height(&mut ctx, model));
+            }
+        }
+        // flags MAP --out F [--model Flag16m,..] [--trigger-pad M] [--uid-prefix Flag] [--name-suffix " Flags"]
+        //   [--unlock] [--unvalidated] [--author Nadeo] [--report R.tsv] [--dry-run]
+        "flags" => {
+            let mut store = open(&a);
+            let p = a.rest.get(1).cloned().unwrap_or_else(|| die("flags needs a MAP".into()));
+            let out = flag(&a.rest, "--out").unwrap_or_default();
+            let dry = a.rest.iter().any(|x| x == "--dry-run");
+            if out.is_empty() && flag(&a.rest, "--out-dir").is_none() {
+                die::<()>("flags needs --out F (one map) or --out-dir DIR (a DIR)".into());
+            }
+            let o = mapgeom::flags::FlagsOpts {
+                models: flag(&a.rest, "--model").map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()).unwrap_or_default(),
+                trigger_pad: flag(&a.rest, "--trigger-pad").map(|v| v.parse::<f32>().unwrap_or_else(|_| die("--trigger-pad M".into()))).unwrap_or(0.5),
+                uid_prefix: flag(&a.rest, "--uid-prefix").unwrap_or_else(|| "Flag".into()),
+                name_suffix: flag(&a.rest, "--name-suffix").unwrap_or_else(|| " Flags".into()),
+                unlock: a.rest.iter().any(|x| x == "--unlock"),
+                unvalidated: a.rest.iter().any(|x| x == "--unvalidated"),
+                author: flag(&a.rest, "--author").unwrap_or_else(|| "Nadeo".into()),
+                keep_lightmap: !a.rest.iter().any(|x| x == "--strip-lightmap"),
+                pak_specs: a.paks.clone(),
+                pole_triggers: !a.rest.iter().any(|x| x == "--flags-as-finish"),
+                pole_margin: flag(&a.rest, "--pole-margin").map(|v| v.parse::<f32>().unwrap_or_else(|_| die("--pole-margin M".into()))).unwrap_or(0.05),
+                pole_sides: flag(&a.rest, "--pole-sides").map(|v| v.parse::<usize>().unwrap_or_else(|_| die("--pole-sides N".into()))).unwrap_or(24),
+                sttf: a.rest.iter().any(|x| x == "--sttf"),
+                allow_no_finish: a.rest.iter().any(|x| x == "--allow-no-finish"),
+                cloth: !a.rest.iter().any(|x| x == "--pole"),
+                cloth_pad: flag(&a.rest, "--cloth-pad").map(|v| v.parse::<f32>().unwrap_or_else(|_| die("--cloth-pad M".into()))).unwrap_or(0.3),
+                cloth_thick_pad: flag(&a.rest, "--cloth-thick-pad").map(|v| v.parse::<f32>().unwrap_or_else(|_| die("--cloth-thick-pad M".into()))).unwrap_or(0.35),
+            };
+            // a DIR: every *.Map.Gbx in it → --out-dir DIR (names "<map name> Flags.Map.Gbx")
+            let srcp = std::path::Path::new(&p);
+            let inputs: Vec<std::path::PathBuf> = if srcp.is_dir() {
+                let mut v: Vec<std::path::PathBuf> = std::fs::read_dir(srcp).unwrap_or_else(|e| die(e.to_string())).filter_map(|e| e.ok()).map(|e| e.path()).filter(|q| q.to_string_lossy().ends_with(".Map.Gbx")).collect();
+                v.sort();
+                if let Some(o) = flag(&a.rest, "--only") {
+                    let pats: Vec<String> = o.split(',').map(|s| s.trim().to_string()).collect();
+                    v.retain(|q| { let n = q.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(); pats.iter().any(|pp| n.starts_with(pp.as_str())) });
+                }
+                v
+            } else {
+                vec![srcp.to_path_buf()]
+            };
+            let out_dir = flag(&a.rest, "--out-dir");
+            if srcp.is_dir() && out_dir.is_none() {
+                die::<()>("a DIR needs --out-dir DIR".into());
+            }
+            let mut tsv = String::from(mapgeom::sttc::REPORT_HEADER);
+            tsv.push('\n');
+            let mut failed = 0usize;
+            let t0 = std::time::Instant::now();
+            for src in &inputs {
+                let label = src.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                let outp: std::path::PathBuf = match &out_dir {
+                    Some(d) => {
+                        let hdr = tmmaps::header::read(src.to_str().unwrap_or_default()).unwrap_or_else(|e| die(e));
+                        std::path::Path::new(d).join(format!("{}{}.Map.Gbx", hdr.name, o.name_suffix))
+                    }
+                    None => std::path::PathBuf::from(&out),
+                };
+                let oc = match mapgeom::flags::flags(&mut store, src, &outp, &o, dry) {
+                    Ok(oc) => oc,
+                    Err(e) => {
+                        failed += 1;
+                        let mut r = mapgeom::sttc::Row::new(&label, "summary", "map", 0, "-");
+                        r.action = "FAILED".into();
+                        r.note = e.clone();
+                        tsv.push_str(&r.tsv());
+                        tsv.push('\n');
+                        eprintln!("{label}: FAILED: {e}");
+                        continue;
+                    }
+                };
+                for r in &oc.rows {
+                    tsv.push_str(&r.tsv());
+                    tsv.push('\n');
+                }
+                let mut sum = mapgeom::sttc::Row::new(&label, "summary", "map", 0, &oc.new_name);
+                sum.action = format!("{} flags {} ({}); strip: {} blocks -> plain twins, {} blocks / {} items / {} generated removed{}", oc.converted, if o.pole_triggers { "kept + pole finish triggers appended" } else { "-> finish items" }, oc.items.iter().map(|(s, i, _)| format!("{s} -> {i}")).collect::<Vec<_>>().join(", "), oc.replaced_blocks, oc.removed_blocks, oc.finishes_removed, oc.removed_baked, if o.sttf { " (finishes + checkpoints)" } else { " (finishes)" });
+                if !dry {
+                    let bad = mapgeom::flags::verify_flags(src, &outp, &oc, &o).unwrap_or_else(|e| die(e));
+                    sum.note = if bad.is_empty() { "verified".into() } else { failed += 1; format!("VERIFY FAILED: {}", bad.join("; ")) };
+                } else {
+                    sum.note = "dry run".into();
+                }
+                tsv.push_str(&sum.tsv());
+                tsv.push('\n');
+                println!("{}", sum.tsv());
+            }
+            if inputs.len() > 1 {
+                println!("{} maps, {} failed, {:.1}s", inputs.len(), failed, t0.elapsed().as_secs_f32());
+            }
+            if let Some(r) = flag(&a.rest, "--report") {
+                if let Some(d) = std::path::Path::new(&r).parent() {
+                    let _ = std::fs::create_dir_all(d);
+                }
+                std::fs::write(&r, &tsv).unwrap_or_else(|e| die(e.to_string()));
+                println!("wrote {r}");
+            }
+            if failed > 0 {
+                std::process::exit(2);
             }
         }
         // sandbox <MAP|DIR> --out-dir DIR [--fill PlatformTechBase] [--fill-flags HEX] [--row N] [--uid-prefix Sbox]

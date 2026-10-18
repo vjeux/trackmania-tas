@@ -747,12 +747,142 @@ pub fn static_item_from_prefab_report(store: &mut crate::store::DataStore, prefa
     add_screen_logo_pictures(store, &mut m);
     m.darken_screen_faces();
     trigger_fx_pass(store, &mut m);
+    finish_item(m, ident, author, scale, collection)
+}
+
+/// The last step of every pack-item bake: assemble + write. Public so a caller can edit the
+/// `Merged` first (Hugo's flag finishes, 2026-10-07: a Finish waypoint with a box trigger).
+pub fn finish_item(mut m: Merged, ident: &str, author: &str, scale: f32, collection: u32) -> R<(Vec<u8>, Merged)> {
     let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, skin: m.skin.clone() };
     let f = assemble(&m, &opts)?;
     if let Some(n) = super::assemble::REPACK_NOTE.with(|c| c.get()) {
         m.notes.push(format!("lightmap atlas: {n} parts repacked into disjoint cells"));
     }
     Ok((super::write_file(&f), m))
+}
+
+/// Turn a baked item into an INVISIBLE WAYPOINT CARRIER with a CYLINDER trigger (Hugo's
+/// flag poles, 2026-10-07 round 2: "clip a cylinder custom finish trigger inside the pole,
+/// no red glow"): every visual but the first goes and that one collapses to a sub-millimetre
+/// speck 4 m under the origin (the assembler needs one visual; nothing draws), the collision
+/// goes (the editor-safe 1 mm NotCollidable placeholder is written by `build_surface`), the
+/// trigger = a closed `sides`-gon prism about the local y axis at (`cx`, `cz`), radius `r`,
+/// from `y0` to `y1`, ids (0, 0); waypoint `wtype`; spawn = the cylinder's floor centre.
+pub fn make_invisible_cylinder_waypoint(m: &mut Merged, wtype: i32, cx: f32, cz: f32, r: f32, y0: f32, y1: f32, sides: usize) -> R<()> {
+    if m.visuals.is_empty() {
+        return Err("no visual to keep as the carrier".into());
+    }
+    m.visuals.truncate(1);
+    super::merged::remap_positions(m, &|p| [p[0] * 1e-4, -4.0 + p[1] * 1e-4, p[2] * 1e-4]);
+    m.surf_vertices.clear();
+    m.surf_triangles.clear();
+    m.surf_ids.clear();
+    m.lights_out.clear();
+    m.pending_lights.clear();
+    m.fx.clear();
+    m.veget.clear();
+    m.pictures.clear();
+    let n = sides.max(3);
+    let mut verts: Vec<[f32; 3]> = Vec::with_capacity(2 * n + 2);
+    for k in 0..n {
+        let a = k as f32 / n as f32 * std::f32::consts::TAU;
+        verts.push([cx + r * a.cos(), y0, cz + r * a.sin()]);
+    }
+    for k in 0..n {
+        let a = k as f32 / n as f32 * std::f32::consts::TAU;
+        verts.push([cx + r * a.cos(), y1, cz + r * a.sin()]);
+    }
+    verts.push([cx, y0, cz]); // bottom centre
+    verts.push([cx, y1, cz]); // top centre
+    let (bc, tc) = ((2 * n) as u32, (2 * n + 1) as u32);
+    let mut tris: Vec<super::surface::Triangle> = Vec::new();
+    let tri = |a: u32, b: u32, c: u32| super::surface::Triangle { indices: [a, b, c], material_id: 0, gameplay: 0, surface_index: 0 };
+    for k in 0..n {
+        let k1 = (k + 1) % n;
+        let (b0, b1, t0, t1) = (k as u32, k1 as u32, (n + k) as u32, (n + k1) as u32);
+        // side quad, outward
+        tris.push(tri(b0, t0, t1));
+        tris.push(tri(b0, t1, b1));
+        // caps
+        tris.push(tri(bc, b1, b0));
+        tris.push(tri(tc, t0, t1));
+    }
+    m.trigger = Some(super::surface::CPlugSurface::mesh(verts, tris, vec![0u16], [0.0, 1.0, 0.0]));
+    m.waypoint_type = Some(wtype);
+    m.spawn = [cx, y0, cz];
+    m.notes.push(format!("invisible carrier: waypoint type {wtype}, cylinder trigger r {r:.3} y {y0:.3}..{y1:.3} at ({cx:.3},{cz:.3}), {n} sides, no collision"));
+    Ok(())
+}
+
+/// Like `make_invisible_cylinder_waypoint`, with the trigger a closed HEXAHEDRON given by its 8
+/// corners in the item frame — the bbox corner order ([x0,y0,z0],[x1,y0,z0],[x1,y1,z0],[x0,y1,z0],
+/// then the same four at z1) — so a sheared slab (the flag cloth's tilted rectangle) is one call.
+pub fn make_invisible_hexahedron_waypoint(m: &mut Merged, wtype: i32, corners: [[f32; 3]; 8]) -> R<()> {
+    if m.visuals.is_empty() {
+        return Err("no visual to keep as the carrier".into());
+    }
+    m.visuals.truncate(1);
+    super::merged::remap_positions(m, &|p| [p[0] * 1e-4, -4.0 + p[1] * 1e-4, p[2] * 1e-4]);
+    m.surf_vertices.clear();
+    m.surf_triangles.clear();
+    m.surf_ids.clear();
+    m.lights_out.clear();
+    m.pending_lights.clear();
+    m.fx.clear();
+    m.veget.clear();
+    m.pictures.clear();
+    let quads: [[u32; 4]; 6] = [[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4], [2, 3, 7, 6], [1, 2, 6, 5], [0, 4, 7, 3]];
+    let mut tris: Vec<super::surface::Triangle> = Vec::new();
+    for q in quads {
+        tris.push(super::surface::Triangle { indices: [q[0], q[1], q[2]], material_id: 0, gameplay: 0, surface_index: 0 });
+        tris.push(super::surface::Triangle { indices: [q[0], q[2], q[3]], material_id: 0, gameplay: 0, surface_index: 0 });
+    }
+    let c = corners;
+    let floor = [(c[0][0] + c[6][0]) / 2.0, c.iter().map(|v| v[1]).fold(f32::INFINITY, f32::min), (c[0][2] + c[6][2]) / 2.0];
+    m.trigger = Some(super::surface::CPlugSurface::mesh(corners.to_vec(), tris, vec![0u16], [0.0, 0.0, 1.0]));
+    m.waypoint_type = Some(wtype);
+    m.spawn = floor;
+    m.notes.push(format!("invisible carrier: waypoint type {wtype}, hexahedron trigger (8 corners), no collision"));
+    Ok(())
+}
+
+/// Make a baked item a WAYPOINT with a BOX trigger over its own geometry (Hugo's "every
+/// flag is a finish", 2026-10-07 — the Manslaughter mechanism: the audience block's bbox as
+/// the finish volume). `wtype`: 0 Start, 1 Finish, 2 Checkpoint. The box = the item's
+/// visual+collision bounding box, grown by `pad` metres on every side, as a 12-triangle
+/// closed mesh with (physics 0, gameplay 0) ids — the canonical trigger form the game
+/// accepts from an item (`trigger_mesh`); spawn = the box's floor centre.
+pub fn make_waypoint_bbox(m: &mut Merged, wtype: i32, pad: f32, extra_points: &[[f32; 3]]) -> R<[f32; 6]> {
+    // the box spans the collision vertices AND the caller's geometry sample (the pack
+    // prefab's rendered points through `geom::Collector` — the merged visuals keep their
+    // part frames, so their own boxes are not in the item frame)
+    let mut pts: Vec<[f32; 3]> = m.surf_vertices.clone();
+    pts.extend_from_slice(extra_points);
+    if pts.len() < 2 {
+        return Err("no geometry to box".into());
+    }
+    let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+    for p in &pts {
+        for k in 0..3 {
+            lo[k] = lo[k].min(p[k]);
+            hi[k] = hi[k].max(p[k]);
+        }
+    }
+    let b = [lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]];
+    let (x0, y0, z0, x1, y1, z1) = (b[0] - pad, b[1] - pad, b[2] - pad, b[3] + pad, b[4] + pad, b[5] + pad);
+    let verts: Vec<[f32; 3]> = vec![[x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0], [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]];
+    // outward-facing quads (two triangles each)
+    let quads: [[u32; 4]; 6] = [[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4], [2, 3, 7, 6], [1, 2, 6, 5], [0, 4, 7, 3]];
+    let mut tris: Vec<super::surface::Triangle> = Vec::new();
+    for q in quads {
+        tris.push(super::surface::Triangle { indices: [q[0], q[1], q[2]], material_id: 0, gameplay: 0, surface_index: 0 });
+        tris.push(super::surface::Triangle { indices: [q[0], q[2], q[3]], material_id: 0, gameplay: 0, surface_index: 0 });
+    }
+    m.trigger = Some(super::surface::CPlugSurface::mesh(verts, tris, vec![0u16], [0.0, 0.0, 1.0]));
+    m.waypoint_type = Some(wtype);
+    m.spawn = [(x0 + x1) / 2.0, b[1], (z0 + z1) / 2.0];
+    m.notes.push(format!("waypoint type {wtype} with a bbox trigger {:.2}..{:.2} × {:.2}..{:.2} × {:.2}..{:.2} (pad {pad})", x0, x1, y0, y1, z0, z1));
+    Ok([x0, y0, z0, x1, y1, z1])
 }
 
 /// A Nadeo (or any) item that is already a static object, or a crystal item
@@ -1871,6 +2001,15 @@ pub fn static_item_from_pack_item_report(store: &mut crate::store::DataStore, it
 /// materials glow in it.
 #[allow(clippy::too_many_arguments)]
 pub fn static_item_from_pack_item_report_skin(store: &mut crate::store::DataStore, item_path: &str, ident: &str, author: &str, scale: f32, collection: u32, variant: usize, light_skin: Option<crate::light_skin::LightSkin>) -> R<(Vec<u8>, Merged)> {
+    let m = pack_item_merged(store, item_path, scale, collection, variant, light_skin)?;
+    if m.visuals.is_empty() && !m.veget.is_empty() {
+        return Ok((Vec::new(), m));
+    }
+    finish_item(m, ident, author, scale, collection)
+}
+
+/// A pack item baked to its `Merged` (everything but the assembly).
+pub fn pack_item_merged(store: &mut crate::store::DataStore, item_path: &str, scale: f32, collection: u32, variant: usize, light_skin: Option<crate::light_skin::LightSkin>) -> R<Merged> {
     let variants = pack_item_variants(store, item_path)?;
     let mut m = Merged::default();
     m.light_skin = light_skin;
@@ -1939,7 +2078,7 @@ pub fn static_item_from_pack_item_report_skin(store: &mut crate::store::DataStor
     // a prefab of tree entities and nothing else) has no mesh to bake; the
     // caller places its trees as stock items from `m.veget`.
     if m.visuals.is_empty() && !m.veget.is_empty() {
-        return Ok((Vec::new(), m));
+        return Ok(m);
     }
     // The gate sign panels' pictures (signlogo.rs), one per kind the item's
     // materials name; `sign_logo_material` re-points the panels at them.
@@ -1965,12 +2104,7 @@ pub fn static_item_from_pack_item_report_skin(store: &mut crate::store::DataStor
             m.pictures.push((skin.file(), skin.dds.to_vec()));
         }
     }
-    let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, skin: m.skin.clone() };
-    let f = assemble(&m, &opts)?;
-    if let Some(n) = super::assemble::REPACK_NOTE.with(|c| c.get()) {
-        m.notes.push(format!("lightmap atlas: {n} parts repacked into disjoint cells"));
-    }
-    Ok((super::write_file(&f), m))
+    Ok(m)
 }
 
 /// The waypoint type of a PACK item (its chunk 0x2E00201F: version, type).

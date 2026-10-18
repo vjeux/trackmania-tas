@@ -65,7 +65,39 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
     } else if src.to_ascii_lowercase().ends_with(".item.gbx") {
         // a pack ITEM: baked through its external prefab / static-object files
         let mut store = open();
-        build::static_item_from_pack_item_report_skin(&mut store, &src, &ident, &author, scale, collection, variant, light_skin)?
+        match flag(rest, "--waypoint") {
+            // --waypoint finish --cylinder CX,CZ,R,Y0,Y1[,SIDES]: an INVISIBLE waypoint carrier with a
+            // cylinder trigger (the pole of Hugo's flags, 2026-10-07)
+            Some(w) if flag(rest, "--cylinder").is_some() => {
+                let wtype = match w.to_ascii_lowercase().as_str() { "start" => 0, "finish" => 1, "checkpoint" => 2, other => return Err(format!("--waypoint {other}: start | finish | checkpoint")) };
+                let spec = flag(rest, "--cylinder").unwrap();
+                let v: Vec<f32> = spec.split(',').map(|x| x.trim().parse::<f32>().map_err(|e| format!("--cylinder {spec}: {e}"))).collect::<Result<_, _>>()?;
+                if v.len() < 5 {
+                    return Err("--cylinder CX,CZ,R,Y0,Y1[,SIDES]".into());
+                }
+                let sides = v.get(5).map(|s| *s as usize).unwrap_or(24);
+                let mut m = build::pack_item_merged(&mut store, &src, scale, collection, variant, light_skin)?;
+                build::make_invisible_cylinder_waypoint(&mut m, wtype, v[0], v[1], v[2], v[3], v[4], sides)?;
+                build::finish_item(m, &ident, &author, scale, collection)?
+            }
+            // --waypoint start|finish|checkpoint [--trigger-pad M]: the item becomes a waypoint
+            // whose trigger is its own bounding box (Hugo's flag finishes, 2026-10-07)
+            Some(w) => {
+                let wtype = match w.to_ascii_lowercase().as_str() { "start" => 0, "finish" => 1, "checkpoint" => 2, other => return Err(format!("--waypoint {other}: start | finish | checkpoint")) };
+                let pad: f32 = flag(rest, "--trigger-pad").unwrap_or_else(|| "0".into()).parse().map_err(|e| format!("--trigger-pad: {e}"))?;
+                let mut m = build::pack_item_merged(&mut store, &src, scale, collection, variant, light_skin)?;
+                // the item's rendered geometry (every prefab part placed) for the box
+                let pts: Vec<[f32; 3]> = {
+                    let loaded = store.load_model(&src)?;
+                    let mut c = crate::geom::Collector::new(&mut store);
+                    c.model(&loaded, &crate::geom::IDENTITY, 0);
+                    c.scene.groups.values().flat_map(|g| g.verts.iter().map(|v| [v[0] * scale, v[1] * scale, v[2] * scale])).collect()
+                };
+                build::make_waypoint_bbox(&mut m, wtype, pad, &pts)?;
+                build::finish_item(m, &ident, &author, scale, collection)?
+            }
+            None => build::static_item_from_pack_item_report_skin(&mut store, &src, &ident, &author, scale, collection, variant, light_skin)?,
+        }
     } else {
         let mut store = open();
         build::static_item_from_prefab_report(&mut store, &src, &ident, &author, scale, collection)?
