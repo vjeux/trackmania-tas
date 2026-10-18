@@ -4054,6 +4054,46 @@ impl MapFile {
             }
             splices.push(((payload + 4 + nb + nk, payload + 4 + nb + nk + ni), kept));
         }
+        // --- per-ITEM bytes: animation phase (0x63) and skins (0x65) — 4 + one per item; left
+        // unfiltered until 2026-10-18 (the Flags maps carried the 4 removed items' zero bytes at
+        // the end: harmless inside a skippable chunk, but not what the game writes)
+        if let Some(&(_, _, payload, size)) = chunks.iter().find(|(c, ..)| *c == 0x0304_3063) {
+            if size == 4 + ni {
+                let mut kept = Vec::with_capacity(ni - dropped);
+                for (j, k) in keep.iter().enumerate() {
+                    if *k {
+                        kept.push(body[payload + 4 + j]);
+                    }
+                }
+                splices.push(((payload + 4, payload + 4 + ni), kept));
+            } else {
+                eprintln!("remove_items: chunk 0x03043063 has {size} bytes, not 4 + {ni} items — left as it is");
+            }
+        }
+        // 0x65 is variable: per item a flag byte and, when set, a FileRef (the ad screens' skins)
+        if let Some(&(_, _, payload, size)) = chunks.iter().find(|(c, ..)| *c == 0x0304_3065) {
+            let mut r = Reader::at(body, payload + 4);
+            let mut spans: Vec<(usize, usize)> = Vec::with_capacity(ni);
+            for _ in 0..ni {
+                let s0 = r.o;
+                let flag = r.u8();
+                if flag & 1 != 0 {
+                    read_file_ref(&mut r);
+                }
+                spans.push((s0, r.o));
+            }
+            if r.o == payload + size {
+                let mut kept = Vec::with_capacity(size);
+                for (j, k) in keep.iter().enumerate() {
+                    if *k {
+                        kept.extend_from_slice(&body[spans[j].0..spans[j].1]);
+                    }
+                }
+                splices.push(((payload + 4, payload + size), kept));
+            } else {
+                eprintln!("remove_items: chunk 0x03043065 did not parse as {ni} (flag, FileRef?) entries ({} of {size} bytes) — left as it is", r.o - payload);
+            }
+        }
         // --- 0x03043069: the per-item macroblock refs
         if let Some(mb) = self.macroblock_refs() {
             let mut kept = Vec::with_capacity((ni - dropped) * 4);
