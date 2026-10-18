@@ -19,6 +19,7 @@
 //!        [--filter PAT[,PAT…]] [--skip PAT[,PAT…]] [--variants N[,N…]]
 //!        [--dy M] [--link-min N] [--order-base N] [--all-items] [--report TSV]
 //!        [--variant-table TSV] [--types A,B] [--no-clumps] [--box X0,Y0,Z0:X1,Y1,Z1]
+//!        [--trees TSV from `mapgeom block-trees` — the trees baked into the terrain]
 //!
 //!   --item     the checkpoint item to place; default is the game's own
 //!              `GateCheckpointCenter8mv2` (a STOCK pack item: nothing to
@@ -173,6 +174,29 @@ fn one(args: &[String]) {
     let list: Vec<String> = cli::flag(args, "--filter").map(|s| s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()).unwrap_or_else(|| TREE_NAMES.iter().map(|s| s.to_string()).collect());
     let skip: Vec<String> = cli::flag(args, "--skip").map(|s| s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()).unwrap_or_else(|| NOT_TREE.iter().map(|s| s.to_string()).collect());
     let variants: Option<Vec<u8>> = cli::flag(args, "--variants").map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect());
+    // --trees TSV: the trees BAKED INTO THE TERRAIN, from `mapgeom
+    // block-trees` (block, cell x/y/z, dir, prefab, model, x, y, z). They are
+    // in no item list — BlueBay's jungle hills carry their palms inside the
+    // zone prefab — so without this they get no checkpoint (Altrd, 2026-10-18;
+    // 13 801 of them on Fall 2026 - 04, each verified to sit on the grass
+    // surface under it).
+    let baked: Vec<Cp> = match cli::flag(args, "--trees") {
+        Some(f) => {
+            let text = std::fs::read_to_string(f).unwrap_or_else(|e| panic!("--trees {f}: {e}"));
+            text.lines()
+                .skip(1)
+                .filter_map(|l| {
+                    let c: Vec<&str> = l.split('\t').collect();
+                    if c.len() < 10 {
+                        return None;
+                    }
+                    let (x, y, z) = (c[7].trim().parse().ok()?, c[8].trim().parse().ok()?, c[9].trim().parse().ok()?);
+                    Some(Cp { src: usize::MAX, model: format!("{}:{}", c[0].trim(), c[6].trim()), variant: 0, species: "baked".into(), pos: [x, y, z], yaw: 0.0 })
+                })
+                .collect()
+        }
+        None => Vec::new(),
+    };
     // the species table from `mapgeom item-variants`: with it, a season item's
     // placements are judged by their own variant's Type tag (tree vs cactus vs
     // ground cover) instead of by the model name alone
@@ -261,6 +285,12 @@ fn one(args: &[String]) {
         }
         picked.push(Cp { src: it.index, model: name, variant: it.variant(), species, pos: [it.pos[0], it.pos[1] + dy, it.pos[2]], yaw: it.yaw });
     }
+    let baked: Vec<Cp> = match &bbox {
+        Some((lo, hi)) => baked.into_iter().filter(|c| c.pos[0] >= lo[0] && c.pos[0] <= hi[0] && c.pos[1] >= lo[1] && c.pos[1] <= hi[1] && c.pos[2] >= lo[2] && c.pos[2] <= hi[2]).collect(),
+        None => baked,
+    };
+    let n_baked = baked.len();
+    picked.extend(baked);
     if picked.is_empty() {
         eprintln!("cpify: no placement of {} matches (filter {:?}, skip {:?})", src.display(), list, skip);
         std::process::exit(1);
@@ -353,9 +383,10 @@ fn one(args: &[String]) {
     let groups = order_of.len();
     let biggest = sizes.values().copied().max().unwrap_or(0);
     println!(
-        "{}: {} item placements -> {} checkpoints ({} item), {} linked in {} group(s), {} standalone; biggest pile {}",
+        "{}: {} item placements{} -> {} checkpoints ({} item), {} linked in {} group(s), {} standalone; biggest pile {}",
         src.display(),
         n0,
+        if n_baked > 0 { format!(" + {n_baked} baked trees") } else { String::new() },
         picked.len(),
         item,
         linked,

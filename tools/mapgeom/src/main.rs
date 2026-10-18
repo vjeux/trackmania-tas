@@ -1961,6 +1961,10 @@ fn main() {
         "shot-crop" => mapgeom::item_set::shot_crop_cmd(&a.rest),
         "item-desc" => mapgeom::item_set::item_desc_cmd(&a.rest),
         "item-scale" => mapgeom::item_scale::cmd(&a.rest),
+        "block-trees" => {
+            let mut store = open(&a);
+            mapgeom::block_trees::run(&mut store, &a.rest).unwrap_or_else(die);
+        }
         "item-set-items" => {
             let mut store = open(&a);
             mapgeom::item_set::items_cmd(&mut store, &a.rest);

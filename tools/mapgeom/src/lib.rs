@@ -25,6 +25,7 @@
 pub mod assemble;
 pub mod blame;
 pub mod blockinfo;
+pub mod block_trees;
 pub mod blockmap;
 pub mod catalog;
 pub mod item_scale;
