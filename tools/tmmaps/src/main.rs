@@ -857,6 +857,7 @@ fn main() {
         "movebaked" => surgery::movebaked(&args),
         "census" => census::cmd_census(&args),
         "ghost-touch" => std::process::exit(tmmaps::ghosttouch::cmd(&args)),
+        "live-vs-build" => std::process::exit(tmmaps::livevsbuild::cmd(&args)),
         "skins" => census::cmd_skins(&args),
         "fillers" => tmmaps::fillers::cmd(&args),
         // archive-only variants of a tiny map for the load-failure bisect (zippad.rs)
