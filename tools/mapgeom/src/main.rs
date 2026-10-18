@@ -3986,8 +3986,9 @@ fn main() {
             let out_dir = std::path::PathBuf::from(flag(&a.rest, "--out-dir").unwrap_or_else(|| die("stand-carriers needs --out-dir DIR".into())));
             std::fs::create_dir_all(&out_dir).unwrap_or_else(|e| die(e.to_string()));
             let kinds: Vec<String> = flag(&a.rest, "--kinds").map(|v| v.split(',').map(|s| s.trim().to_string()).collect()).unwrap_or_else(|| mapgeom::stands::STANDS.iter().map(|(k, _)| k.to_string()).collect());
-            let pad: f32 = flag(&a.rest, "--pad-below").and_then(|v| v.parse().ok()).unwrap_or(0.3);
-            let thick: f32 = flag(&a.rest, "--thick").and_then(|v| v.parse().ok()).unwrap_or(1.5);
+            // Hugo's tweak (05:49 PT): the bottom skin ON the step surface, 0.5 m above it
+            let pad: f32 = flag(&a.rest, "--pad-below").and_then(|v| v.parse().ok()).unwrap_or(0.0);
+            let thick: f32 = flag(&a.rest, "--thick").and_then(|v| v.parse().ok()).unwrap_or(0.5);
             let collection: u32 = flag(&a.rest, "--collection").and_then(|v| v.parse().ok()).unwrap_or(26);
             println!("kind\tident\tbytes\trows\tseat_y\tseat_tris\tslab_tris\tbbox\tmaterials");
             for k in &kinds {
@@ -4162,8 +4163,8 @@ fn main() {
                 cloth_pad: flag(&a.rest, "--cloth-pad").map(|v| v.parse::<f32>().unwrap_or_else(|_| die("--cloth-pad M".into()))).unwrap_or(0.3),
                 cloth_thick_pad: flag(&a.rest, "--cloth-thick-pad").map(|v| v.parse::<f32>().unwrap_or_else(|_| die("--cloth-thick-pad M".into()))).unwrap_or(0.35),
                 stands: a.rest.iter().any(|x| x == "--stands"),
-                stand_pad_below: flag(&a.rest, "--pad-below").map(|v| v.parse::<f32>().unwrap_or_else(|_| die("--pad-below M".into()))).unwrap_or(0.3),
-                stand_thick: flag(&a.rest, "--thick").map(|v| v.parse::<f32>().unwrap_or_else(|_| die("--thick M".into()))).unwrap_or(1.5),
+                stand_pad_below: flag(&a.rest, "--pad-below").map(|v| v.parse::<f32>().unwrap_or_else(|_| die("--pad-below M".into()))).unwrap_or(0.0),
+                stand_thick: flag(&a.rest, "--thick").map(|v| v.parse::<f32>().unwrap_or_else(|_| die("--thick M".into()))).unwrap_or(0.5),
             };
             // --stands (Hugo's Manslaughter): the stand BLOCKS are the sources; identity "<name> Manslaughter", uid Mans…
             let o = if o.stands {

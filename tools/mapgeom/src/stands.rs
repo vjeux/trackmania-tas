@@ -6,10 +6,10 @@
 //! with their own material: `TechnicsStep.Material.Gbx` — the treads AND the risers, i.e. the
 //! staircase people sit on. The black side walls and frame are `TechnicsTrims`/`Technics`, the
 //! roof `CanopyGlass`/`PlatformTech`/`TrackWall`, the top deck `Show4x1`: none of those is in the
-//! trigger. The trigger = that staircase surface padded `pad_below` down (so a car whose wheels
-//! touch any step crosses it) and `thick` up (so a car landing on the steps from above crosses the
-//! top), closed along the surface's own outline — a slab in the exact shape of the seating, for
-//! any plan shape (straight, quarter circle, triangle).
+//! trigger. The trigger = that staircase surface padded `pad_below` down and `thick` up, closed
+//! along the surface's own outline — a slab in the exact shape of the seating, for any plan shape
+//! (straight, quarter circle, triangle). Hugo's numbers (05:49 PT): pad_below 0 (the bottom skin ON
+//! the step surface), thick 0.5 m.
 //!
 //! Frame: the prefab's = the block's local frame (dir 0: x 0..32 east, z 0..32 north, y 0 at the
 //! block's cell floor). A placement of the carrier at `place::grid_block(cell, dir, (32, 32), yoff)`

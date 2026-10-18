@@ -1,4 +1,4 @@
-//! `tinyctl stand-hitbox-draw --pak F:KEY --kind StandStraight --out F.png [--pad-below 0.3 --thick 1.5]`
+//! `tinyctl stand-hitbox-draw --pak F:KEY --kind StandStraight --out F.png [--pad-below 0 --thick 0.5]`
 //! — Hugo's Manslaughter stands (2026-10-18): the stand's collision geometry as measured on the
 //! pack prefab (the seating in blue, the walls / frame / roof in grey) and the finish slab the
 //! carrier item carries (red hatched), side view (depth z → right, y up) and plan view (x right,
@@ -16,8 +16,8 @@ fn f(rest: &[String], k: &str) -> Option<String> {
 pub fn cmd(rest: &[String]) -> Result<(), String> {
     let kind = f(rest, "--kind").unwrap_or_else(|| "StandStraight".into());
     let out = f(rest, "--out").unwrap_or_else(|| format!("{}-hitbox.png", kind.to_lowercase()));
-    let pad: f32 = f(rest, "--pad-below").and_then(|v| v.parse().ok()).unwrap_or(0.3);
-    let thick: f32 = f(rest, "--thick").and_then(|v| v.parse().ok()).unwrap_or(1.5);
+    let pad: f32 = f(rest, "--pad-below").and_then(|v| v.parse().ok()).unwrap_or(0.0);
+    let thick: f32 = f(rest, "--thick").and_then(|v| v.parse().ok()).unwrap_or(0.5);
     let mut store = mapgeom::store::DataStore::empty();
     let mut i = 0;
     while i < rest.len() {
