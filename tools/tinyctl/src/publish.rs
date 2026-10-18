@@ -37,7 +37,42 @@ pub fn json_str(body: &str, key: &str) -> Option<String> {
     let i = body.find(&k)? + k.len();
     let rest = &body[i..];
     let e = rest.find('"')?;
-    Some(rest[..e].to_string())
+    Some(json_unescape(&rest[..e]))
+}
+
+/// The JSON string escapes Nadeo's records use (`\u0027` for `'` in `Bowser's Castle`,
+/// `\"`, `\\`, `\/`): without this the rename guard read the stored name as
+/// `MK64 Bowser\u0027s Castle` and refused our own in-place update (2026-10-17).
+pub fn json_unescape(s: &str) -> String {
+    if !s.contains('\\') {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut it = s.chars().peekable();
+    while let Some(c) = it.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match it.next() {
+            Some('u') => {
+                let hex: String = (0..4).filter_map(|_| it.next()).collect();
+                match u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
+                    Some(ch) => out.push(ch),
+                    None => {
+                        out.push_str("\\u");
+                        out.push_str(&hex);
+                    }
+                }
+            }
+            Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
+            Some('r') => out.push('\r'),
+            Some(other) => out.push(other),
+            None => out.push('\\'),
+        }
+    }
+    out
 }
 pub fn json_strs(body: &str, key: &str) -> Vec<String> {
     let k = format!("\"{key}\":\"");
