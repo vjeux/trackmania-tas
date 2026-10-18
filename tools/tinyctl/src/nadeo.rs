@@ -519,10 +519,16 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             let text = std::fs::read_to_string(&uids_file).map_err(|e| format!("{uids_file}: {e}"))?;
             let uids: Vec<(String, String)> = text.lines().filter(|l| !l.trim().is_empty()).map(|l| { let mut it = l.split('\t'); (it.next().unwrap_or("").trim().to_string(), it.next().unwrap_or("").trim().to_string()) }).collect();
             // resume: uids already in the output are skipped
-            let done: std::collections::HashSet<String> = std::fs::read_to_string(&out).unwrap_or_default().lines().skip(1).filter_map(|l| l.split('\t').next().map(String::from)).collect();
+            // …and the ones with NO records too: they leave no row in the output, so a
+            // rerun walked every empty board again (2026-10-18: 789 of 1,574 redone after a
+            // token expiry). `OUT.done` lists every uid finished, records or not.
+            let done_path = format!("{}.done", out.display());
+            let mut done: std::collections::HashSet<String> = std::fs::read_to_string(&out).unwrap_or_default().lines().skip(1).filter_map(|l| l.split('\t').next().map(String::from)).collect();
+            done.extend(std::fs::read_to_string(&done_path).unwrap_or_default().lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()));
+            let mut done_w = std::fs::OpenOptions::new().create(true).append(true).open(&done_path).map_err(|e| format!("{done_path}: {e}"))?;
             let mut w = std::fs::OpenOptions::new().create(true).append(true).open(&out).map_err(|e| format!("{}: {e}", out.display()))?;
             use std::io::Write;
-            if done.is_empty() {
+            if std::fs::metadata(&out).map(|m| m.len() == 0).unwrap_or(true) {
                 writeln!(w, "mapUid\tmapName\taccountId\tposition\tscore").map_err(|e| e.to_string())?;
             }
             let mut accounts: std::collections::HashSet<String> = std::fs::read_to_string(&out).unwrap_or_default().lines().skip(1).filter_map(|l| l.split('\t').nth(2).map(String::from)).collect();
@@ -582,6 +588,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                     writeln!(w, "{r}").map_err(|e| e.to_string())?;
                 }
                 w.flush().map_err(|e| e.to_string())?;
+                writeln!(done_w, "{uid}").map_err(|e| e.to_string())?;
                 n_maps += 1;
                 n_rows += rows.len();
                 eprintln!("[{:>4}/{}] {name} {uid}: {} records", i + 1, uids.len(), rows.len());
