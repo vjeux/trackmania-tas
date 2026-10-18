@@ -48,6 +48,7 @@ mod motion;
 mod nadeo;
 mod roundpub;
 mod remoteshots;
+mod pulltree;
 mod portlayers;
 mod gistpub;
 mod terrainround;
@@ -276,6 +277,7 @@ fn main() {
             Ok(())
         })(),
         "remote-shots" => remoteshots::cmd(rest),
+        "pull-tree" => pulltree::cmd(rest),
         "remote-drive" => remoteshots::drive_cmd(rest),
         "skip-manifest" => batch::skip_manifest_cmd(rest),
         "custom-sheet" => customsheet::cmd(rest),
