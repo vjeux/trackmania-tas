@@ -16,6 +16,9 @@
 
 mod captest;
 mod reactortest;
+mod plugincmd;
+mod prefabtest;
+mod srvload;
 
 use std::fs;
 use std::path::PathBuf;
@@ -328,7 +331,7 @@ fn dur(v: Option<&String>, default: u64) -> Duration {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() {
-        eprintln!("usage: jumprig <launch|state|waitfor|cmd|jumptest|kill|captest|capstate|capcmd|reactortest|reactorstate|reactorcmd> [args]");
+        eprintln!("usage: jumprig <launch|state|waitfor|cmd|jumptest|kill|captest|capstate|capcmd|reactortest|reactorstate|reactorcmd|pcmd|pcmd-nolock> [args]");
         eprintln!("  waitfor <event> [timeout_s]  process exit lock-free alive hooked in-map");
         eprintln!("                               car ticking grounded airborne apex landed");
         eprintln!("Every game-driving subcommand takes the tmdrive lock first.");
@@ -491,6 +494,54 @@ fn main() {
             let arg = args[2..].join(" ");
             reactortest::send_probe_command(lock.host(), &verb, &arg, Duration::from_secs(30)).map(|_| ())
         }),
+
+        // Any storage-folder-protocol plugin (FidProbe, …): one command, the report printed.
+        //   jumprig pcmd <PluginStorageFolder> <verb> [arg…]   (under the lock: it reads the game)
+        //   jumprig pcmd-nolock <Folder> <verb> [arg…]        (when this session already holds it)
+        "pcmd" => with_lock(host.clone(), "plugin probe command", |lock| {
+            let _ = lock;
+            let folder = args.get(1).cloned().unwrap_or_default();
+            let verb = args.get(2).cloned().unwrap_or_default();
+            let arg = args[3.min(args.len())..].join(" ");
+            let out = plugincmd::plugin_cmd(&folder, &verb, &arg, Duration::from_secs(120))?;
+            print!("{out}");
+            if !out.ends_with('\n') {
+                println!();
+            }
+            Ok(())
+        }),
+        // PACK PREFAB REFERENCES (AR's 2026-10-11 ask): loose + embedded matrix, probed in the game.
+        //   jumprig prefabtest --map MAP --loose DIR [--install] [--out DIR]
+        "prefabtest" => {
+            let map = arg_after(&args, "--map").unwrap_or_else(|| "C:/Users/vjeux/OneDrive/Documents/Trackmania/Maps/Probe/prefabref.Map.Gbx".to_string());
+            let loose = std::path::PathBuf::from(arg_after(&args, "--loose").unwrap_or_else(|| "/home/vjeux/reactor/prefab/L".to_string()));
+            let out = std::path::PathBuf::from(arg_after(&args, "--out").unwrap_or_else(|| format!("/home/vjeux/reactor/prefab/run-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0))));
+            let install = args.iter().any(|a| a == "--install");
+            let no_loose = args.iter().any(|a| a == "--no-loose");
+            let editor = args.iter().any(|a| a == "--editor");
+            let wait = Duration::from_secs(arg_after(&args, "--wait").and_then(|s| s.parse().ok()).unwrap_or(0));
+            match tmdrive::loadable_map_path(&map) {
+                Ok(map) => with_lock_wait(host.clone(), "pack prefab references: probe run", wait, |lock| prefabtest::prefab_test(lock, &map, &loose, install, &out, no_loose, editor)),
+                Err(e) => Err(e),
+            }
+        }
+        // DEDICATED SERVER load verdicts (no game lock): jumprig srvload MAP… [--log]
+        "srvload" => srvload::cmd(&args[1..]),
+        "pcmd-nolock" => {
+            let folder = args.get(1).cloned().unwrap_or_default();
+            let verb = args.get(2).cloned().unwrap_or_default();
+            let arg = args[3.min(args.len())..].join(" ");
+            match plugincmd::plugin_cmd(&folder, &verb, &arg, Duration::from_secs(120)) {
+                Ok(out) => {
+                    print!("{out}");
+                    if !out.ends_with('\n') {
+                        println!();
+                    }
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            }
+        }
 
         other => Err(format!("unknown subcommand '{}'", other)),
     };
@@ -776,6 +827,35 @@ fn tune(lock: &GameLock, strengths: &[f64]) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// `with_lock`, retried while the box is busy: up to `wait` seconds of
+/// polling every 3 s. The lane that re-acquires between its own runs
+/// (2026-10-17: a `waitfor lock-free` + run chain lost that race) is beaten
+/// by trying the acquire itself in the loop.
+fn with_lock_wait<F>(host: Host, purpose: &str, wait: Duration, f: F) -> Result<(), String>
+where
+    F: FnOnce(&GameLock) -> Result<(), String>,
+{
+    let start = Instant::now();
+    let mut f = Some(f);
+    let mut last_note = Instant::now() - Duration::from_secs(60);
+    loop {
+        match tmdrive::acquire(host.clone(), purpose) {
+            Ok(lock) => return (f.take().unwrap())(&lock),
+            Err(Error::Busy(h)) => {
+                if start.elapsed() >= wait {
+                    return Err(format!("the box stayed busy for {:.0}s.\n{}", wait.as_secs_f64(), h.summary()));
+                }
+                if last_note.elapsed() >= Duration::from_secs(60) {
+                    last_note = Instant::now();
+                    println!("  ... box busy ({}), waiting ({:.0}s)", h.summary(), start.elapsed().as_secs_f64());
+                }
+                std::thread::sleep(Duration::from_secs(3));
+            }
+            Err(e) => return Err(e.to_string()),
+        }
+    }
 }
 
 fn with_lock<F>(host: Host, purpose: &str, f: F) -> Result<(), String>

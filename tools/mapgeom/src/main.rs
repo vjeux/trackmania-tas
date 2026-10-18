@@ -1605,6 +1605,143 @@ fn main() {
             std::fs::write(&out, mapgeom::tiny_assets::zip(&files)).expect("write");
             println!("wrote {out} ({n} items)");
         }
+        "reref" => {
+            // reref (IN.Gbx | --from-pack LOGICAL) --out OUT [--print] [--ancestor N] [--prefix P]
+            //       [--strip K] [--flags F] [--use-file U] [--entry NODE=PATH]... [--ident NAME.Item.Gbx]
+            //       [--author LOGIN] [--matrix DIR]
+            // The file with its REFERENCE TABLE rewritten and its body byte for byte
+            // (mapgeom::reftable). --print only describes the table. --matrix DIR
+            // writes the 2026-10-17 pack-reference matrix instead of one file: every
+            // (ancestor level, root spelling, useFile) of the table, one item each,
+            // ident = file name (the question: from where, if anywhere, can an item
+            // in a map archive or the user's Items folder reach a PACK prefab).
+            let from_pack = flag(&a.rest, "--from-pack");
+            let bytes: Vec<u8> = match &from_pack {
+                Some(logical) => {
+                    let mut store = open(&a);
+                    store.read(logical).unwrap_or_else(|e| die(format!("{logical}: {e}"))).as_ref().clone()
+                }
+                None => {
+                    let inp = a.rest.get(1).unwrap_or_else(|| die("reref IN.Gbx --out OUT (or --from-pack LOGICAL)".into()));
+                    std::fs::read(inp).unwrap_or_else(|e| die(format!("{inp}: {e}")))
+                }
+            };
+            let table = mapgeom::reftable::table_of(&bytes);
+            print!("{}", mapgeom::reftable::describe(&table));
+            if a.rest.iter().any(|x| x == "--print") {
+                return;
+            }
+            let author = flag(&a.rest, "--author").unwrap_or_else(|| mapgeom::tiny_assets::AUTHOR.to_string());
+            let rename = |bytes: &[u8], ident: &str| -> Vec<u8> {
+                let (from, _) = tmmaps::header::item_ident_author(bytes).unwrap_or_else(|| die("no ident in the header".into()));
+                let renamed = mapgeom::crystal::rename_ident(bytes, &from, ident);
+                // the author in both the header ident and the body ident
+                let g = tmmaps::gbx::Gbx::parse(&renamed);
+                let mut g2 = tmmaps::gbx::Gbx::parse(&renamed);
+                g2.user_data = mapgeom::tiny_assets::replace_lp(g.user_data.clone(), "Nadeo", &author);
+                let body = mapgeom::tiny_assets::replace_lp(g.body.clone(), "Nadeo", &author);
+                g2.write_body_recompressed(&body)
+            };
+            if let Some(dir) = flag(&a.rest, "--matrix") {
+                std::fs::create_dir_all(&dir).expect("matrix dir");
+                let ancestors: Vec<u32> = flag(&a.rest, "--ancestors").unwrap_or_else(|| "0,1,2,3,4,6".into()).split(',').map(|s| s.trim().parse().expect("--ancestors a,b,c")).collect();
+                // root spellings: the native one (nothing in front), the collection, the
+                // pack mount, the drive names a plugin sees
+                let roots: Vec<(String, String)> = flag(&a.rest, "--roots")
+                    .unwrap_or_else(|| "nat=,std=Stadium,gd=GameData\\Stadium,game=Game\\Stadium".into())
+                    .split(',')
+                    .map(|s| {
+                        let (tag, p) = s.split_once('=').expect("--roots tag=prefix,...");
+                        (tag.to_string(), p.to_string())
+                    })
+                    .collect();
+                let use_files: Vec<u32> = flag(&a.rest, "--use-files").unwrap_or_else(|| "0,1".into()).split(',').map(|s| s.trim().parse().expect("--use-files 0,1")).collect();
+                let flags_v: Option<u32> = flag(&a.rest, "--flags").map(|f| f.parse().expect("--flags N"));
+                let strip: usize = flag(&a.rest, "--strip").map(|s| s.parse().expect("--strip K")).unwrap_or(0);
+                let mut list = String::new();
+                let mut n = 0;
+                for anc in &ancestors {
+                    for (tag, prefix) in &roots {
+                        for uf in &use_files {
+                            let name = format!("R{tag}A{anc}U{uf}");
+                            let ident = format!("{name}.Item.Gbx");
+                            let rw = mapgeom::reftable::Rewrite { ancestor: Some(*anc), prefix: prefix.clone(), strip, flags: flags_v, use_file: Some(*uf), entry: vec![] };
+                            let t2 = mapgeom::reftable::rewrite(&table, &rw);
+                            let out = mapgeom::reftable::with_table(&rename(&bytes, &ident), &t2);
+                            let path = std::path::Path::new(&dir).join(&ident);
+                            std::fs::write(&path, &out).expect("write matrix item");
+                            list += &format!("{ident}\t{anc}\t{tag}\t{uf}\t{}\n", t2.entries.iter().filter_map(|e| e.target.clone().ok()).collect::<Vec<_>>().join(" | "));
+                            n += 1;
+                        }
+                    }
+                }
+                std::fs::write(std::path::Path::new(&dir).join("matrix.tsv"), format!("ident\tancestor\troot\tuse_file\tentries\n{list}")).expect("write matrix.tsv");
+                println!("wrote {n} items + matrix.tsv in {dir}");
+                return;
+            }
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("--out FILE".into()));
+            let mut rw = mapgeom::reftable::Rewrite::default();
+            rw.ancestor = flag(&a.rest, "--ancestor").map(|s| s.parse().expect("--ancestor N"));
+            rw.prefix = flag(&a.rest, "--prefix").unwrap_or_default();
+            rw.strip = flag(&a.rest, "--strip").map(|s| s.parse().expect("--strip K")).unwrap_or(0);
+            rw.flags = flag(&a.rest, "--flags").map(|s| s.parse().expect("--flags N"));
+            rw.use_file = flag(&a.rest, "--use-file").map(|s| s.parse().expect("--use-file 0|1"));
+            let mut i = 0;
+            while i < a.rest.len() {
+                if a.rest[i] == "--entry" {
+                    let spec = a.rest.get(i + 1).unwrap_or_else(|| die("--entry NODE=PATH".into()));
+                    let (node, path) = spec.split_once('=').unwrap_or_else(|| die("--entry NODE=PATH".into()));
+                    rw.entry.push((node.parse().expect("--entry: NODE is a number"), path.to_string()));
+                    i += 1;
+                }
+                i += 1;
+            }
+            let t2 = mapgeom::reftable::rewrite(&table, &rw);
+            let src = match flag(&a.rest, "--ident") {
+                Some(ident) => rename(&bytes, &ident),
+                None => bytes.clone(),
+            };
+            let outb = mapgeom::reftable::with_table(&src, &t2);
+            std::fs::write(&out, &outb).expect("write");
+            print!("-> {}", mapgeom::reftable::describe(&t2));
+            println!("wrote {out} ({} bytes, ident {:?})", outb.len(), tmmaps::header::item_ident_author(&outb));
+        }
+        "split-prefab" => {
+            // split-prefab IN.Item.Gbx --out-dir D --name NAME
+            // The item's inline entity model moved into its own NAME.Prefab.Gbx next to
+            // the item, the item left with an EXTERNAL reference to it (ancestor 0, the
+            // bare file name): the positive control of the 2026-10-17 pack-reference
+            // run — an external entity model the loader CAN reach (same archive folder).
+            let inp = a.rest.get(1).unwrap_or_else(|| die("split-prefab IN.Item.Gbx --out-dir D --name NAME".into()));
+            let dir = flag(&a.rest, "--out-dir").unwrap_or_else(|| ".".into());
+            let name = flag(&a.rest, "--name").unwrap_or_else(|| die("--name NAME".into()));
+            let bytes = std::fs::read(inp).unwrap_or_else(|e| die(format!("{inp}: {e}")));
+            let mut f = mapgeom::static_item::file::parse_file(&bytes).unwrap_or_else(|e| die(format!("{inp}: {e}")));
+            let num_nodes = f.num_nodes;
+            let mc = f.item.model_mut().unwrap_or_else(|| die("no model chunk".into()));
+            let slot = if mc.entity_model.inline.is_some() { &mut mc.entity_model } else { &mut mc.entity_model_edition };
+            let node = slot.inline.take().unwrap_or_else(|| die("the entity model is not inline (already external or null)".into()));
+            let idx = slot.index;
+            let class_id = node.class_id();
+            let mut body = Vec::new();
+            let mut lb = mapgeom::static_item::LookbackState::default();
+            {
+                let mut w = mapgeom::static_item::Wr { w: &mut body, lb: &mut lb };
+                mapgeom::static_item::write_node(&mut w, &node);
+            }
+            let prefab_name = format!("{name}.Prefab.Gbx");
+            let prefab_file = mapgeom::static_item::file::write_node_file(class_id, &body, num_nodes, &[]);
+            std::fs::create_dir_all(&dir).expect("out dir");
+            std::fs::write(std::path::Path::new(&dir).join(&prefab_name), &prefab_file).expect("write prefab");
+            f.ref_table = mapgeom::static_item::file::ref_table(&[(idx as u32, prefab_name.clone())]);
+            let item_bytes = mapgeom::static_item::file::write_file(&f);
+            let ident = format!("{name}.Item.Gbx");
+            let (from, _) = tmmaps::header::item_ident_author(&item_bytes).unwrap_or_else(|| die("no ident in the header".into()));
+            let item_bytes = mapgeom::crystal::rename_ident(&item_bytes, &from, &ident);
+            std::fs::write(std::path::Path::new(&dir).join(&ident), &item_bytes).expect("write item");
+            println!("wrote {dir}/{ident} ({} bytes; entity model node {idx} external -> {prefab_name}) and {dir}/{prefab_name} ({} bytes, class 0x{class_id:08X}, {num_nodes} node slots)", item_bytes.len(), prefab_file.len());
+            print!("{}", mapgeom::reftable::describe(&mapgeom::reftable::table_of(&item_bytes)));
+        }
         "rename-item" => {
             // rename-item IN.Item.Gbx --out OUT --to NAME [--from NAME] : the same file under
             // another ident (header + body, any length; the pack item Flag16m -> FlagCopy.Item.Gbx)

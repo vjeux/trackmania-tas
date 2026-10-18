@@ -486,6 +486,13 @@ string RunCommand(const string &in verb, const string &in arg) {
         g_ReloadPluginId = arg.Trim();
         return "reloadplugin: " + p.Name + " reloads on the next frame";
     }
+    if (verb == "loadplugin") {
+        // Load (or reload) a plugin FOLDER by name: the harness re-borrowing a
+        // plugin another lane removed from the shared Plugins folder mid-run
+        // (2026-10-18, GhostShooter). Armed here, done next frame.
+        g_LoadPluginFolder = arg.Trim();
+        return "loadplugin: " + g_LoadPluginFolder + " loads on the next frame";
+    }
     if (verb == "restartmap") {
         // The game's own restart, asked through the playground API instead of
         // a synthesised key: a key needs the game window in the foreground
@@ -605,6 +612,23 @@ void OnKeyPress(bool down, VirtualKey key) {
 uint64 g_LastIoMs = 0;
 const uint64 IO_PERIOD_MS = 50; // 20 Hz — the rate the harness polls at
 string g_ReloadPluginId = "";
+string g_LoadPluginFolder = "";
+
+void LoadPluginTick() {
+    if (g_LoadPluginFolder.Length == 0) return;
+    string folder = g_LoadPluginFolder;
+    g_LoadPluginFolder = "";
+    auto p = Meta::GetPluginFromID(folder);
+    if (p !is null) {
+        trace("[Jump] plugin " + folder + " is loaded; reloading it");
+        Meta::ReloadPlugin(p);
+        return;
+    }
+    string path = IO::FromDataFolder("Plugins/" + folder);
+    trace("[Jump] loading plugin folder " + path);
+    auto np = Meta::LoadPlugin(path, Meta::PluginSource::UserFolder, Meta::PluginType::Folder);
+    trace("[Jump] loadplugin " + folder + " -> " + (np is null ? "null" : np.Name));
+}
 
 void ReloadOtherPluginTick() {
     if (g_ReloadPluginId.Length == 0) return;
@@ -625,6 +649,7 @@ void Update(float dt) {
     if (now - g_LastIoMs < IO_PERIOD_MS) return;
     g_LastIoMs = now;
     ReloadOtherPluginTick();
+    LoadPluginTick();
     PollCommand();
     WriteState();
 }
