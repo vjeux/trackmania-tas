@@ -4012,6 +4012,237 @@ fn main() {
                 println!("{stem}\t{ident}\t{}\tx {xa:.2}..{xb:.2} y {ya:.2}..{yb:.2} at z {z_near:.2} -> {:.2}..{:.2} at z {z_far:.2}", bytes.len(), ya - drop, yb - drop);
             }
         }
+        // cp-effect MAP --out OUT --effect NAME[@dx,dy,dz] [--effect …]: at every CHECKPOINT ITEM GateCheckpoint(Left|
+        // Right|Center)<w>m[v2], the effect gate item GateSpecial<w>m<NAME> at the checkpoint's pose (+ the local offset,
+        // metres in the checkpoint item's frame: +z = the gate's own forward), same yaw; the checkpoints kept. Hugo's
+        // CPEffect reference output (2026-10-18). Pack items (no embedding); the lightmap is left as it is.
+        "cp-effect" => {
+            let mp = a.rest.get(1).cloned().unwrap_or_else(|| die("cp-effect MAP --out OUT --effect NAME[@dx,dy,dz]..".into()));
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("cp-effect needs --out OUT.Map.Gbx".into()));
+            let mut effects: Vec<(String, [f32; 3])> = Vec::new();
+            let mut i = 0;
+            while i < a.rest.len() {
+                if a.rest[i] == "--effect" {
+                    let v = a.rest.get(i + 1).cloned().unwrap_or_default();
+                    let (name, off) = match v.split_once('@') {
+                        Some((n, o)) => {
+                            let f: Vec<f32> = o.split(',').map(|x| x.trim().parse::<f32>().unwrap_or_else(|_| die(format!("--effect {v}: offset dx,dy,dz")))).collect();
+                            if f.len() != 3 { die::<()>(format!("--effect {v}: offset dx,dy,dz")); }
+                            (n.to_string(), [f[0], f[1], f[2]])
+                        }
+                        None => (v.clone(), [0.0, 0.0, 0.0]),
+                    };
+                    effects.push((name, off));
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            if effects.is_empty() { die::<()>("cp-effect needs at least one --effect".into()); }
+            let re_w = |model: &str| -> Option<u32> {
+                let rest = model.strip_prefix("GateCheckpoint")?;
+                let rest = rest.strip_prefix("Left").or_else(|| rest.strip_prefix("Right")).or_else(|| rest.strip_prefix("Center"))?;
+                let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+                let tail = &rest[digits.len()..];
+                if tail != "m" && tail != "mv2" { return None; }
+                digits.parse().ok()
+            };
+            let src = std::path::Path::new(&mp);
+            let outp = std::path::Path::new(&out);
+            // --start-blocks: the StartEffect blocks of Hugo's tool, as his output has them — a grid
+            // GateSpecial<Effect> at the start cell (flags 0x8000: author "AutoAltTag"; his 0x00108000 also carries a stray waypoint node) and a FREE
+            // GateSpecial<Effect2> 3 m along the start's forward (his Offset(0,0,3) on a −π/2 start: +x) …
+            // given explicitly as NAME@cell:cx,cy,cz:dir or NAME@free:x,y,z:yaw (repeatable)
+            let mut start_blocks: Vec<tmmaps::map::FreeBlockSpec> = Vec::new();
+            {
+                let mut i = 0;
+                while i < a.rest.len() {
+                    if a.rest[i] == "--start-block" {
+                        let v = a.rest.get(i + 1).cloned().unwrap_or_default();
+                        let parts: Vec<&str> = v.split('@').collect();
+                        let (name, spec) = (parts.first().copied().unwrap_or(""), parts.get(1).copied().unwrap_or(""));
+                        let sp: Vec<&str> = spec.split(':').collect();
+                        match sp.first().copied() {
+                            Some("cell") => {
+                                let c: Vec<i32> = sp.get(1).unwrap_or(&"").split(',').map(|x| x.trim().parse::<i32>().unwrap_or_else(|_| die(format!("--start-block {v}: cell cx,cy,cz")))).collect();
+                                let dir: u8 = sp.get(2).and_then(|d| d.parse().ok()).unwrap_or(0);
+                                start_blocks.push(tmmaps::map::FreeBlockSpec { name: name.to_string(), author: Some("AutoAltTag".into()), flags: 0x8000, pos: [0.0; 3], rot: [0.0; 3], grid: Some([c[0], c[1], c[2]]), dir });
+                            }
+                            Some("free") => {
+                                let p: Vec<f32> = sp.get(1).unwrap_or(&"").split(',').map(|x| x.trim().parse::<f32>().unwrap_or_else(|_| die(format!("--start-block {v}: free x,y,z")))).collect();
+                                let yaw: f32 = sp.get(2).and_then(|d| d.parse().ok()).unwrap_or(0.0);
+                                start_blocks.push(tmmaps::map::FreeBlockSpec { name: name.to_string(), author: Some("AutoAltTag".into()), flags: 0x2000_8000, pos: [p[0], p[1], p[2]], rot: [yaw, 0.0, 0.0], grid: None, dir: 0 });
+                            }
+                            _ => die::<()>(format!("--start-block {v}: NAME@cell:cx,cy,cz:dir or NAME@free:x,y,z:yaw")),
+                        }
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            let m0 = tmmaps::map::MapFile::try_load(src).unwrap_or_else(die);
+            let collection = m0.body_collections().map(|c| c[0].1).unwrap_or(26);
+            let ground = tmmaps::map::ground_y(collection);
+            // the plan: (checkpoint index, special model, world pos, yaw)
+            let mut plan: Vec<(usize, String, [f32; 3], f32)> = Vec::new();
+            for it in &m0.items {
+                let Some(w) = re_w(&it.model) else { continue };
+                let frame = mapgeom::place::anchored(it.pos, [it.yaw, it.pitch, it.roll], [0.0; 3], 1.0);
+                for (name, off) in &effects {
+                    let p = mapgeom::geom::apply(&frame, *off);
+                    plan.push((it.index, format!("GateSpecial{w}m{name}"), p, it.yaw));
+                }
+            }
+            if plan.is_empty() { die::<()>("no GateCheckpoint(Left|Right|Center)<w>m[v2] item in the map".into()); }
+            let base = m0.items.len();
+            std::fs::copy(src, outp).unwrap_or_else(|e| die(format!("{out}: {e}")));
+            // 0. the start-effect blocks (a variable-length block edit: its own write)
+            if !start_blocks.is_empty() {
+                let mut mm = tmmaps::map::MapFile::try_load(outp).unwrap_or_else(die);
+                mm.remove_and_add_blocks(|_| false, |_| false, &start_blocks);
+                mm.write_to(outp).unwrap_or_else(|e| die(e.to_string()));
+                let mm = tmmaps::map::MapFile::try_load(outp).unwrap_or_else(die);
+                for b in mm.blocks.iter().rev().take(start_blocks.len()) {
+                    println!("start block: #{} {} cell {:?} dir {} flags {:08X} free {:?}", b.index, b.name, b.coords(), b.dir, b.flags, b.free_pos);
+                }
+            }
+            // 1. clones appended
+            {
+                let mut mm = tmmaps::map::MapFile::try_load(outp).unwrap_or_else(die);
+                mm.append_item_clones(base + plan.len());
+                mm.write_to(outp).unwrap_or_else(|e| die(e.to_string()));
+            }
+            // 2. the clones' waypoint nodes stripped (the donor may be a checkpoint)
+            {
+                let mut mm = tmmaps::map::MapFile::try_load(outp).unwrap_or_else(die);
+                for k in 0..plan.len() {
+                    if mm.items[base + k].waypoint_tag.is_some() {
+                        mm.set_item_waypoint(base + k, None, 0);
+                    }
+                }
+                mm.write_to(outp).unwrap_or_else(|e| die(e.to_string()));
+            }
+            // 3. model + author (renames)
+            {
+                let mut mm = tmmaps::map::MapFile::try_load(outp).unwrap_or_else(die);
+                for (k, (_, model, _, _)) in plan.iter().enumerate() {
+                    mm.set_item_model(base + k, model);
+                    mm.set_item_author(base + k, "Nadeo");
+                    mm.set_item_collection(base + k, collection);
+                }
+                mm.write_to(outp).unwrap_or_else(|e| die(e.to_string()));
+            }
+            // 4. pose / pivot / flags / scale / cell (patches)
+            {
+                let mut mm = tmmaps::map::MapFile::try_load(outp).unwrap_or_else(die);
+                for (k, (_, _, pos, yaw)) in plan.iter().enumerate() {
+                    let i = base + k;
+                    let it = mm.items[i].clone();
+                    if it.skin_region.is_some() || it.flags & 4 != 0 {
+                        mm.set_item_skin(i, None);
+                    }
+                    mm.move_item_pos(i, *pos);
+                    mm.set_item_rotation(i, *yaw, 0.0, 0.0);
+                    mm.set_item_pivot(i, [0.0, 0.0, 0.0]);
+                    mm.set_item_flags(i, 0);
+                    mm.set_item_scale(i, 1.0);
+                    let cell = [((pos[0] / 32.0).floor() as i32).clamp(0, 255) as u8, (((pos[1] - ground) / 8.0).floor() as i32).clamp(0, 255) as u8, ((pos[2] / 32.0).floor() as i32).clamp(0, 255) as u8];
+                    mm.set_item_cell(i, cell);
+                }
+                mm.write_to(outp).unwrap_or_else(|e| die(e.to_string()));
+            }
+            let m1 = tmmaps::map::MapFile::try_load(outp).unwrap_or_else(die);
+            println!("checkpoint\tmodel\tpose\t→ item\teffect model\tpose");
+            for (k, (ci, model, pos, yaw)) in plan.iter().enumerate() {
+                let c = &m0.items[*ci];
+                let n = &m1.items[base + k];
+                println!("#{ci}\t{}\t({:.2}, {:.2}, {:.2}) yaw {:.4}\t#{}\t{}\t({:.2}, {:.2}, {:.2}) yaw {:.4} tag {:?} cell {:?}", c.model, c.pos[0], c.pos[1], c.pos[2], c.yaw, base + k, n.model, n.pos[0], n.pos[1], n.pos[2], n.yaw, n.waypoint_tag, n.file_cell);
+                if n.model != *model || (n.pos[0] - pos[0]).abs() > 1e-3 || (n.pos[1] - pos[1]).abs() > 1e-3 || (n.pos[2] - pos[2]).abs() > 1e-3 || (n.yaw - yaw).abs() > 1e-5 || n.waypoint_tag.is_some() {
+                    die::<()>(format!("item #{} did not land as planned", base + k));
+                }
+            }
+            println!("wrote {out}: {} items ({} checkpoints kept, {} effect gates added)", m1.items.len(), m0.items.len(), plan.len());
+        }
+        // gate-xhist ITEM..: the visual vertex histogram along local x (1 m bins) and the vertices below y 0 — where a
+        // Left/Right checkpoint gate's wall post stands (2026-10-18)
+        "gate-xhist" => {
+            let mut store = open(&a);
+            for stem in a.rest.iter().skip(1).filter(|x| !x.starts_with("--")) {
+                let p = format!("Stadium\\Items\\{stem}.Item.Gbx");
+                let loaded = store.load_model(&p).unwrap_or_else(die);
+                let mut c = mapgeom::geom::Collector::new(&mut store);
+                c.model(&loaded, &mapgeom::geom::IDENTITY, 0);
+                let mut bins: std::collections::BTreeMap<i32, (usize, f32)> = Default::default();
+                let mut below: Vec<[f32; 3]> = Vec::new();
+                for g in c.scene.groups.values() {
+                    for v in &g.verts {
+                        let e = bins.entry(v[0].floor() as i32).or_insert((0, f32::NEG_INFINITY));
+                        e.0 += 1;
+                        e.1 = e.1.max(v[1]);
+                        if v[1] < -0.01 {
+                            below.push(*v);
+                        }
+                    }
+                }
+                println!("{stem}: x-bin → (vertices, max y): {}", bins.iter().map(|(b, (n, y))| format!("[{b}..{}) {n}/{y:.1}", b + 1)).collect::<Vec<_>>().join("  "));
+                if !below.is_empty() {
+                    let (lo, hi) = below.iter().fold(([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]), |(l, h), v| ([l[0].min(v[0]), l[1].min(v[1]), l[2].min(v[2])], [h[0].max(v[0]), h[1].max(v[1]), h[2].max(v[2])]));
+                    println!("  below y 0: {} vertices in [{:.2} {:.2} {:.2}]..[{:.2} {:.2} {:.2}]", below.len(), lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]);
+                }
+            }
+        }
+        // gate-inventory [--filter GateCheckpoint,GateSpecial] [--collection Stadium]: every pack ITEM whose name matches,
+        // with its visual bbox (the prefab rendered in the item frame), the trigger shape (waypoint / special gate)
+        // extents, and the pivot: where the item origin sits relative to the geometry (Hugo's CPEffect table, 2026-10-18)
+        "gate-inventory" => {
+            let mut store = open(&a);
+            let pats: Vec<String> = flag(&a.rest, "--filter").map(|v| v.split(',').map(|s| s.trim().to_string()).collect()).unwrap_or_else(|| vec!["GateCheckpoint".into(), "GateSpecial".into(), "GateFinish".into(), "GateStart".into()]);
+            let coll = flag(&a.rest, "--collection").unwrap_or_else(|| "Stadium".into());
+            let mut names: Vec<String> = store.entries().map(|e| e.path()).filter(|p| { let up = p.to_uppercase(); up.starts_with(&format!("{}\\ITEMS\\", coll.to_uppercase())) && up.ends_with(".ITEM.GBX") && pats.iter().any(|q| up.contains(&q.to_uppercase())) }).collect();
+            names.sort();
+            println!("item\tvisual_bbox_lo\tvisual_bbox_hi\twidth_x\theight_y\tdepth_z\ttrigger_lo\ttrigger_hi\ttrigger_kind\tspawn\tnotes");
+            for p in &names {
+                let stem = p.rsplit('\\').next().unwrap_or(p).trim_end_matches(".Item.Gbx").to_string();
+                let loaded = match store.load_model(p) { Ok(m) => m, Err(e) => { println!("{stem}\tFAILED {e}"); continue; } };
+                let mut c = mapgeom::geom::Collector::new(&mut store);
+                c.model(&loaded, &mapgeom::geom::IDENTITY, 0);
+                let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+                let mut n = 0usize;
+                for g in c.scene.groups.values() {
+                    for v in &g.verts {
+                        for k in 0..3 {
+                            lo[k] = lo[k].min(v[k]);
+                            hi[k] = hi[k].max(v[k]);
+                        }
+                        n += 1;
+                    }
+                }
+                drop(c);
+                let vb = if n > 0 { (format!("[{:.2} {:.2} {:.2}]", lo[0], lo[1], lo[2]), format!("[{:.2} {:.2} {:.2}]", hi[0], hi[1], hi[2]), format!("{:.2}", hi[0] - lo[0]), format!("{:.2}", hi[1] - lo[1]), format!("{:.2}", hi[2] - lo[2])) } else { ("-".into(), "-".into(), "-".into(), "-".into(), "-".into()) };
+                // the trigger: the merged item's waypoint/special trigger surface
+                let (tlo, thi, tkind, spawn, notes) = match mapgeom::static_item::build::pack_item_merged(&mut store, p, 1.0, 26, 0, None) {
+                    Ok(mg) => {
+                        let tri = mg.trigger.as_ref().or(mg.special.as_ref());
+                        match tri.and_then(|sf| sf.surf.triangulate()) {
+                            Some((verts, tris)) => {
+                                let (mut l, mut h) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+                                for v in &verts {
+                                    for k in 0..3 {
+                                        l[k] = l[k].min(v[k]);
+                                        h[k] = h[k].max(v[k]);
+                                    }
+                                }
+                                (format!("[{:.2} {:.2} {:.2}]", l[0], l[1], l[2]), format!("[{:.2} {:.2} {:.2}]", h[0], h[1], h[2]), format!("{} ({} tris)", if mg.trigger.is_some() { "waypoint" } else { "special" }, tris.len()), format!("[{:.2} {:.2} {:.2}]", mg.spawn[0], mg.spawn[1], mg.spawn[2]), format!("wp {:?}", mg.waypoint_type))
+                            }
+                            None => ("-".into(), "-".into(), "none".into(), format!("[{:.2} {:.2} {:.2}]", mg.spawn[0], mg.spawn[1], mg.spawn[2]), format!("wp {:?}", mg.waypoint_type)),
+                        }
+                    }
+                    Err(e) => ("-".into(), "-".into(), "?".into(), "-".into(), format!("merge failed: {}", e.lines().next().unwrap_or(""))),
+                };
+                println!("{stem}\t{}\t{}\t{}\t{}\t{}\t{tlo}\t{thi}\t{tkind}\t{spawn}\t{notes}", vb.0, vb.1, vb.2, vb.3, vb.4);
+            }
+        }
         // stand-carriers --out-dir DIR [--kinds A,B] [--pad-below 0.3] [--thick 1.5] [--collection 26]: Hugo's
         // Manslaughter carriers — one invisible Finish item per stand block kind, trigger = the seating slab
         "stand-carriers" => {

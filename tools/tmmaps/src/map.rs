@@ -2437,12 +2437,17 @@ impl MapFile {
         // item of each model, 2026-09-13), the donor's definition fields are
         // rewritten in the CLONE as references to the slot the donor defined
         // (`0x40000000 | slot+1`), which follows the definition in the file.
+        // A map whose items are ALL waypoints (Hugo's gate-test, 2026-10-18: ten checkpoint gates) has no
+        // such donor: a waypoint item is cloned instead — the caller strips the clones' waypoint nodes
+        // (`set_item_waypoint(i, None, 0)`, a splice) on the next load before anything else.
         let donor = self
             .items
             .iter()
             .find(|it| it.waypoint_tag.is_none() && !self.item_ids[it.model_field].is_def && !self.item_ids[it.author_field].is_def)
             .or_else(|| self.items.iter().find(|it| it.waypoint_tag.is_none()))
-            .expect("map needs one non-waypoint item to clone");
+            .or_else(|| self.items.iter().find(|it| !self.item_ids[it.model_field].is_def && !self.item_ids[it.author_field].is_def))
+            .or_else(|| self.items.first())
+            .expect("map needs one item to clone");
         let mut bytes = self.gbx.body[donor.record_region.0..donor.record_region.1].to_vec();
         // The FIRST record of the chunk carries the private lookback table's version
         // word (3) right after the chunk version; a clone of it must not (the word is
