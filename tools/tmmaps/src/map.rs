@@ -1364,14 +1364,10 @@ impl MapFile {
         }
     }
 
-    /// w612: rotate a GRID block in place (the `dir` byte immediately before
-    /// the three cell bytes). Same model, same size, same record length --
-    /// only the facing changes. Needed because this map's Goal gate triggers
-    /// on a PLANE perpendicular to its facing: an unrotated gate is silent for
-    /// a car travelling along the plane's own axis.
     /// The record's flags word (fixed-size). Only bits that do not change the record's
     /// LAYOUT may be touched: 0x8000 (author + skin follow) and 0x100000 (waypoint node
-    /// follows) must keep their value.
+    /// follows) must keep their value. FREE may flip: it only governs the 0x0304305F side
+    /// table, which `remove_and_add_blocks` rebuilds from the flags on the next load.
     pub fn set_block_flags(&mut self, block_index: usize, flags: u32) {
         let b = self.blocks[block_index].clone();
         assert_eq!(flags & 0x8000, b.flags & 0x8000, "set_block_flags: bit 0x8000 changes the record layout");
@@ -1379,6 +1375,11 @@ impl MapFile {
         self.raw_patches.push((b.coord_off + 3, flags.to_le_bytes().to_vec()));
     }
 
+    /// w612: rotate a GRID block in place (the `dir` byte immediately before
+    /// the three cell bytes). Same model, same size, same record length --
+    /// only the facing changes. Needed because this map's Goal gate triggers
+    /// on a PLANE perpendicular to its facing: an unrotated gate is silent for
+    /// a car travelling along the plane's own axis.
     pub fn set_block_dir(&mut self, block_index: usize, dir: u8) {
         let b = self.blocks[block_index].clone();
         assert!(dir < 4, "dir is 0..3, got {}", dir);
@@ -3468,6 +3469,20 @@ impl MapFile {
         F: Fn(&BlockRec) -> bool,
         G: Fn(&BlockRec) -> bool,
     {
+        self.remove_and_add_blocks_ext2(drop_block, drop_baked, add, add_baked, &[])
+    }
+
+    /// `remove_and_add_blocks_ext` plus `to_grid`: kept FREE authored blocks (by index) that
+    /// become GRID records in the same rewrite — the FREE flag cleared and the game cell
+    /// written in the emitted record, their 0x0304305F entry not carried (Hugo's Sandbox,
+    /// 2026-10-07: a free-placed finish gate lands on the cell under it). The record keeps
+    /// its waypoint node, colour and lightmap-quality bytes.
+    pub fn remove_and_add_blocks_ext2<F, G>(&mut self, drop_block: F, drop_baked: G, add: &[FreeBlockSpec], add_baked: &[FreeBlockSpec], to_grid: &[(usize, [i32; 3])]) -> Removed
+    where
+        F: Fn(&BlockRec) -> bool,
+        G: Fn(&BlockRec) -> bool,
+    {
+        let to_grid_map: std::collections::HashMap<usize, [i32; 3]> = to_grid.iter().copied().collect();
         assert!(add_baked.iter().all(|s| s.grid.is_some()), "add_baked wants GRID records (grid = Some(cell))");
         assert!(add_baked.is_empty() || self.baked_records.is_some(), "the map has no baked chunk 0x03043048 to append records to");
         assert!(self.renames.is_empty(), "remove_blocks cannot share a write with renames (write and reload first)");
@@ -3570,7 +3585,23 @@ impl MapFile {
             let lay = walk_record(body, span.0, &mut seen);
             assert_eq!(lay.end, span.1, "block record {i} walks to {} but its span ends at {}", lay.end, span.1);
             if keep_block[i] {
+                let out_start = new_blocks.len();
                 emit(&mut new_blocks, span, &lay, &mut fields, &mut table, &mut dropped_nodes);
+                if let Some(cell) = to_grid_map.get(&i) {
+                    // the record's cell bytes and flags sit after its name Id; `emit` re-encodes the
+                    // Id, so locate them from the END of the emitted record (the tail is verbatim)
+                    let b = &self.blocks[i];
+                    assert!(b.flags & FREE_BLOCK_FLAG != 0, "block#{i} to_grid but not FREE");
+                    let tail_len = span.1 - b.coord_off; // cell(3) + flags(4) + [author/skin/waypoint tail]
+                    let rec_end = new_blocks.len();
+                    let coord_out = rec_end - tail_len;
+                    new_blocks[coord_out] = (cell[0] + 1) as u8;
+                    new_blocks[coord_out + 1] = cell[1] as u8;
+                    new_blocks[coord_out + 2] = (cell[2] + 1) as u8;
+                    let flags = b.flags & !FREE_BLOCK_FLAG;
+                    new_blocks[coord_out + 3..coord_out + 7].copy_from_slice(&flags.to_le_bytes());
+                    let _ = out_start;
+                }
                 if self.blocks[i].flags != 0xFFFF_FFFF {
                     kept_blocks += 1;
                 }
@@ -3673,9 +3704,9 @@ impl MapFile {
         let chunks = crate::gbx::all_skip_chunks(body);
         if let Some(&(_, _, payload, size)) = chunks.iter().find(|(c, ..)| *c == FREE_POS_CHUNK) {
             let mut entries = Vec::new();
-            for (b, keep) in self.blocks.iter().zip(&keep_block) {
+            for (i, (b, keep)) in self.blocks.iter().zip(&keep_block).enumerate() {
                 let Some(off) = b.free_off else { continue };
-                if *keep {
+                if *keep && !to_grid_map.contains_key(&i) {
                     entries.extend_from_slice(&body[off..off + 24]);
                 } else {
                     removed.free_entries += 1;

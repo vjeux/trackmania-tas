@@ -80,5 +80,6 @@ pub mod zipcheck;
 pub mod static_item;
 pub mod sttc;
 pub mod podium;
+pub mod sandbox;
 
 pub use store::{DataStore, Model};
