@@ -46,6 +46,9 @@ pub struct FlagsOpts {
     pub stands: bool,
     pub stand_pad_below: f32,
     pub stand_thick: f32,
+    /// the carrier ident as `<prefix><model>.Item.Gbx` (Hugo's C# names, 2026-10-18: `FinishFlag16m.Item.Gbx`);
+    /// empty = the ClothFinishTrigger[<model>] / PoleFinishTrigger[<model>] names
+    pub ident_prefix: String,
 }
 
 /// The CLOTH of a flag model, measured on its vertex animation (the dyna mesh's 86 frames, placed
@@ -256,7 +259,9 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
         let pack_path = format!("Stadium\\Items\\{stem}.Item.Gbx");
         if o.pole_triggers {
             // round 2: an invisible carrier with a cylinder trigger about the pole
-            let ident = if o.cloth {
+            let ident = if !o.ident_prefix.is_empty() {
+                format!("{}{stem}.Item.Gbx", o.ident_prefix)
+            } else if o.cloth {
                 if models.len() == 1 { "ClothFinishTrigger.Item.Gbx".to_string() } else { format!("ClothFinishTrigger{stem}.Item.Gbx") }
             } else if models.len() == 1 { "PoleFinishTrigger.Item.Gbx".to_string() } else { format!("PoleFinishTrigger{stem}.Item.Gbx") };
             let (cx, cz, pr, y0, y1) = pole_of(&mut ctx, &pack_path, collection).map_err(|e| format!("{stem}: {e}"))?;

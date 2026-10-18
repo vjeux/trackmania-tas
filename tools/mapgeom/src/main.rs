@@ -3979,6 +3979,39 @@ fn main() {
         // both steps per map (a directory = every *.Map.Gbx in it, sorted);
         // outputs DIR/sttf/<stem>.sttf.Map.Gbx and DIR/<stem>-Straight-to-the-Center.Map.Gbx
         // blockinfo-resolve NAME..: the pack path the block-info index resolves a block name to
+        // flag-carriers --out-dir DIR [--models Flag16m,Flag8m] [--ident-prefix Finish] [--collection 26] [--cloth-pad 0.3
+        // --cloth-thick-pad 0.35]: the flag carrier items ALONE (no map), the internal ident = `<prefix><model>.Item.Gbx` —
+        // Hugo's renamed files (2026-10-18: FinishFlag16m.Item.Gbx whose header still said ClothFinishTriggerFlag16m)
+        "flag-carriers" => {
+            let mut store = open(&a);
+            let out_dir = std::path::PathBuf::from(flag(&a.rest, "--out-dir").unwrap_or_else(|| die("flag-carriers needs --out-dir DIR".into())));
+            std::fs::create_dir_all(&out_dir).unwrap_or_else(|e| die(e.to_string()));
+            let models: Vec<String> = flag(&a.rest, "--models").map(|v| v.split(',').map(|s| s.trim().to_string()).collect()).unwrap_or_else(|| vec!["Flag16m".into(), "Flag8m".into()]);
+            let prefix = flag(&a.rest, "--ident-prefix").unwrap_or_else(|| "Finish".into());
+            let collection: u32 = flag(&a.rest, "--collection").and_then(|v| v.parse().ok()).unwrap_or(26);
+            let pad: f32 = flag(&a.rest, "--cloth-pad").and_then(|v| v.parse().ok()).unwrap_or(0.3);
+            let thick_pad: f32 = flag(&a.rest, "--cloth-thick-pad").and_then(|v| v.parse().ok()).unwrap_or(0.35);
+            let mut ctx = mapgeom::sttc::Ctx::for_collection(&mut store, "Stadium");
+            println!("model\tident\tbytes\tslab");
+            for stem in &models {
+                let pack_path = format!("Stadium\\Items\\{stem}.Item.Gbx");
+                let ident = format!("{prefix}{stem}.Item.Gbx");
+                let (_cx, _cz, pr, _y0, _y1) = mapgeom::flags::pole_of(&mut ctx, &pack_path, collection).unwrap_or_else(|e| die(format!("{stem}: {e}")));
+                let c = mapgeom::flags::cloth_of(&mut ctx, &pack_path).unwrap_or_else(|e| die(format!("{stem}: {e}")));
+                let mut mg = mapgeom::static_item::build::pack_item_merged(ctx.store, &pack_path, 1.0, collection, 0, None).unwrap_or_else(|e| die(format!("{stem}: {e}")));
+                let t = c.tilt_bottom_deg.to_radians().tan();
+                let (z_near, z_far) = (c.z0 + pr, c.z0 + c.reach + pad);
+                let drop = t * (z_far - z_near);
+                let (xa, xb) = (c.x_lo - thick_pad, c.x_hi + thick_pad);
+                let (ya, yb) = (c.y_lo - pad, c.y_hi + pad);
+                let corners: [[f32; 3]; 8] = [[xa, ya, z_near], [xb, ya, z_near], [xb, yb, z_near], [xa, yb, z_near], [xa, ya - drop, z_far], [xb, ya - drop, z_far], [xb, yb - drop, z_far], [xa, yb - drop, z_far]];
+                mapgeom::static_item::build::make_invisible_hexahedron_waypoint(&mut mg, mapgeom::sttc::WP_FINISH, corners).unwrap_or_else(|e| die(format!("{stem}: {e}")));
+                let (bytes, _) = mapgeom::static_item::build::finish_item(mg, &ident, &ident, 1.0, collection).unwrap_or_else(|e| die(format!("{stem}: {e}")));
+                let p = out_dir.join(&ident);
+                std::fs::write(&p, &bytes).unwrap_or_else(|e| die(format!("{}: {e}", p.display())));
+                println!("{stem}\t{ident}\t{}\tx {xa:.2}..{xb:.2} y {ya:.2}..{yb:.2} at z {z_near:.2} -> {:.2}..{:.2} at z {z_far:.2}", bytes.len(), ya - drop, yb - drop);
+            }
+        }
         // stand-carriers --out-dir DIR [--kinds A,B] [--pad-below 0.3] [--thick 1.5] [--collection 26]: Hugo's
         // Manslaughter carriers — one invisible Finish item per stand block kind, trigger = the seating slab
         "stand-carriers" => {
@@ -4165,6 +4198,7 @@ fn main() {
                 stands: a.rest.iter().any(|x| x == "--stands"),
                 stand_pad_below: flag(&a.rest, "--pad-below").map(|v| v.parse::<f32>().unwrap_or_else(|_| die("--pad-below M".into()))).unwrap_or(0.0),
                 stand_thick: flag(&a.rest, "--thick").map(|v| v.parse::<f32>().unwrap_or_else(|_| die("--thick M".into()))).unwrap_or(0.5),
+                ident_prefix: flag(&a.rest, "--ident-prefix").unwrap_or_default(),
             };
             // --stands (Hugo's Manslaughter): the stand BLOCKS are the sources; identity "<name> Manslaughter", uid Mans…
             let o = if o.stands {
