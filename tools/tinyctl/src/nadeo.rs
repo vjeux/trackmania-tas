@@ -10,6 +10,8 @@
 //!                    [--fetch DIR [--first N]]                … and the first N map files as NN-<name>.Map.Gbx
 //! tinyctl nadeo-here campaign-create --club ID --name NAME   a new (empty) campaign; prints its id
 //! tinyctl nadeo-here maps --uids UID,UID…                    core records for a list of uids
+//! tinyctl nadeo-here official [--name "Fall 2026"] [--length 4] [--fetch DIR]
+//!                                                            the OFFICIAL campaigns and their maps
 //! ```
 //!
 //! Every command mints fresh tokens through the GhostShooter `/nadeotoken`
@@ -328,6 +330,72 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                     }
                 }
                 println!("{pos}\t{uid}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{file_note}", s(&rec, "name"), s(&rec, "authorScore"), s(&rec, "goldScore"), s(&rec, "silverScore"), s(&rec, "bronzeScore"), s(&rec, "collectionName"), s(&rec, "author"), s(&rec, "mapId"), fname);
+            }
+            Ok(())
+        }
+        // tinyctl nadeo-here official [--name "Fall 2026"] [--length 4] [--fetch DIR]
+        // The OFFICIAL (Nadeo) campaigns, newest first, and their maps — the
+        // club commands above only see club campaigns. With --fetch the map
+        // files land in DIR as NN-<name>.Map.Gbx, which is what a batch tool
+        // (`tmmaps cpify --batch`) then reads (Altrd's CP-per-tree, 2026-10-18).
+        "official" => {
+            let length: usize = f("--length").unwrap_or_else(|| "4".into()).parse().map_err(|_| "--length N")?;
+            let url = format!("{LIVE}/api/token/campaign/official?length={length}&offset=0");
+            let v = get_json(&auth_live, &url)?;
+            save("campaign-official.json", &v)?;
+            let want = f("--name");
+            let list = v.get("campaignList").and_then(|l| l.as_array()).cloned().unwrap_or_default();
+            let mut chosen: Vec<&Value> = Vec::new();
+            for c in &list {
+                let name = s(c, "name");
+                match &want {
+                    Some(w) => {
+                        if name.to_lowercase().contains(&w.to_lowercase()) {
+                            chosen.push(c);
+                        }
+                    }
+                    None => chosen.push(c),
+                }
+            }
+            if chosen.is_empty() {
+                return Err(format!("no official campaign matches {:?} (have: {})", want, list.iter().map(|c| s(c, "name")).collect::<Vec<_>>().join(", ")));
+            }
+            let fetch = f("--fetch").map(PathBuf::from);
+            if let Some(d) = &fetch {
+                std::fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
+            }
+            println!("campaign\tpos\tmapUid\tname\tauthorTime\tfile");
+            for c in chosen {
+                let cname = s(c, "name");
+                let mut uids: Vec<(u64, String)> = c
+                    .get("playlist")
+                    .and_then(|l| l.as_array())
+                    .map(|a| a.iter().map(|e| (e.get("position").and_then(|p| p.as_u64()).unwrap_or(0), s(e, "mapUid"))).collect())
+                    .unwrap_or_default();
+                uids.sort();
+                let recs = core_records(&auth_core, &uids.iter().map(|(_, u)| u.clone()).collect::<Vec<_>>())?;
+                save(&format!("official-{}-maps.json", file_safe_name(&cname)), &Value::Array(recs.clone()))?;
+                for (pos, uid) in &uids {
+                    let rec = recs.iter().find(|r| s(r, "mapUid") == *uid).cloned().unwrap_or(Value::Null);
+                    let nn = pos + 1;
+                    let fname = format!("{nn:02}-{}.Map.Gbx", file_safe_name(&s(&rec, "name")));
+                    let mut note = String::from("-");
+                    if let Some(d) = &fetch {
+                        let p = d.join(&fname);
+                        if p.exists() && std::fs::metadata(&p).map(|m| m.len() > 0).unwrap_or(false) {
+                            note = format!("have {} B", std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0));
+                        } else {
+                            let url = s(&rec, "fileUrl");
+                            if url == "-" || url.is_empty() {
+                                note = "NO fileUrl".into();
+                            } else {
+                                let (_, code) = curl(&["-L", "-H", &auth_core, "-o", p.to_str().unwrap(), &url])?;
+                                note = format!("HTTP {code} {} B", std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0));
+                            }
+                        }
+                    }
+                    println!("{cname}\t{pos}\t{uid}\t{}\t{}\t{note}", s(&rec, "name"), s(&rec, "authorScore"));
+                }
             }
             Ok(())
         }

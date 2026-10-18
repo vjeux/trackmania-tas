@@ -69,19 +69,38 @@ pub const NOT_TREE: &[&str] = &["Bush", "Grass", "Flower", "Fern", "Shrub", "Roc
 /// of several plants and counts as a tree.
 pub const TREE_TYPES: &[&str] = &["Tree", "Fir", "Cypress", "Palm", "Cherry"];
 
-/// (item stem, variant) -> the variant's Type tag, from `mapgeom item-variants`.
-fn variant_table(path: &str) -> std::collections::HashMap<(String, u8), String> {
+/// (environment, item stem, variant) -> the variant's Type tag, from
+/// `mapgeom item-variants`. The environment matters: `Forest` is 42 variants
+/// in GreenCoast (14 Bush, 10 TreeThin, 7 Tree…) and 19 in WhiteShore (3 Bush,
+/// 12 TreeFir, 4 TreePineDead), so variant 4 is a bush in one and a fir in the
+/// other — reading the wrong table put checkpoints on the bushes of four Fall
+/// 2026 maps (2026-10-18).
+fn variant_table(path: &str) -> std::collections::HashMap<(String, String, u8), String> {
     let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("--variant-table {path}: {e}"));
     let mut out = std::collections::HashMap::new();
     for line in text.lines().skip(1) {
         let c: Vec<&str> = line.split('\t').collect();
-        if c.len() < 3 {
+        if c.len() < 4 {
             continue;
         }
-        let Ok(v) = c[1].trim().parse::<u8>() else { continue };
-        out.insert((c[0].trim().to_string(), v), c[2].trim().to_string());
+        let Ok(v) = c[2].trim().parse::<u8>() else { continue };
+        out.insert((c[0].trim().to_string(), c[1].trim().to_string(), v), c[3].trim().to_string());
     }
     out
+}
+
+/// A map's collection word -> the pack folder its items come from. Measured
+/// from the Fall 2026 campaign (2026-10-18): the season's maps are spread over
+/// four environments, and the species tables differ between them.
+pub fn env_of_collection(c: u32) -> &'static str {
+    match c {
+        15 => "GreenCoast",
+        16 => "RedIsland",
+        26 | 25 => "Stadium",
+        28 => "BlueBay",
+        29 => "WhiteShore",
+        _ => "-",
+    }
 }
 
 struct Cp {
@@ -95,6 +114,49 @@ struct Cp {
 }
 
 pub fn cmd(args: &[String]) {
+    // --batch DIR --out-dir DIR: every .Map.Gbx in DIR, same flags, each
+    // written to OUT/<name> (a whole campaign in one call — Altrd's 25 Fall
+    // 2026 maps, 2026-10-18)
+    if let Some(dir) = cli::flag(args, "--batch") {
+        let outdir = PathBuf::from(cli::flag(args, "--out-dir").expect("--batch needs --out-dir DIR"));
+        std::fs::create_dir_all(&outdir).unwrap_or_else(|e| panic!("{}: {e}", outdir.display()));
+        let mut maps: Vec<PathBuf> = std::fs::read_dir(dir)
+            .unwrap_or_else(|e| panic!("{dir}: {e}"))
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.to_string_lossy().ends_with(".Map.Gbx"))
+            .collect();
+        maps.sort();
+        assert!(!maps.is_empty(), "--batch {dir}: no .Map.Gbx in it");
+        for m in &maps {
+            let name = m.file_name().unwrap().to_string_lossy().to_string();
+            let out = outdir.join(&name);
+            let mut sub: Vec<String> = args.to_vec();
+            sub[2] = m.to_string_lossy().to_string();
+            // replace --out (and drop --batch/--out-dir) for this map
+            let mut i = 0;
+            while i < sub.len() {
+                match sub[i].as_str() {
+                    "--batch" | "--out-dir" | "--out" | "--report" => {
+                        sub.drain(i..(i + 2).min(sub.len()));
+                    }
+                    _ => i += 1,
+                }
+            }
+            sub.push("--out".into());
+            sub.push(out.to_string_lossy().to_string());
+            if let Some(rep) = cli::flag(args, "--report") {
+                sub.push("--report".into());
+                sub.push(format!("{rep}.{}.tsv", name.trim_end_matches(".Map.Gbx")));
+            }
+            one(&sub);
+        }
+        println!("batch: {} map(s) -> {}", maps.len(), outdir.display());
+        return;
+    }
+    one(args);
+}
+
+fn one(args: &[String]) {
     let src = PathBuf::from(&args[2]);
     let out = PathBuf::from(cli::flag(args, "--out").expect("cpify needs --out MAP"));
     let item = cli::flag(args, "--item").unwrap_or("GateCheckpointCenter8mv2").to_string();
@@ -132,6 +194,7 @@ pub fn cmd(args: &[String]) {
 
     let base = MapFile::load(&src);
     let n0 = base.items.len();
+
     // A link order is shared by the whole linked group, so ours must not
     // collide with a group the map already has (its own linked checkpoints
     // keep their order) — start above the highest one in the file unless the
@@ -168,7 +231,26 @@ pub fn cmd(args: &[String]) {
         // placement is a fir or a cactus depending on its variant byte
         let mut species = String::from("-");
         if let Some(t) = &table {
-            if let Some(ty) = t.get(&(name.clone(), it.variant())) {
+            // the map's own environment first; a stem only one environment has
+            // (the Stadium season items) resolves whatever the map's collection
+            // each PLACEMENT names its own item's collection — a GreenCoast
+            // map holds Stadium items too, so the map-wide collection is the
+            // wrong key (2026-10-18: reading item 0's collection put the
+            // whole of Fall 02 on the wrong species table)
+            let env = env_of_collection(it.collection_raw);
+            let hit = t.get(&(env.to_string(), name.clone(), it.variant())).or_else(|| {
+                let mut found = None;
+                for ((_, stem, v), ty) in t.iter() {
+                    if stem == &name && *v == it.variant() {
+                        if found.is_some() {
+                            return None; // ambiguous across environments
+                        }
+                        found = Some(ty);
+                    }
+                }
+                found
+            });
+            if let Some(ty) = hit {
                 species = ty.clone();
                 let is_clump = ty == "-" || ty.is_empty();
                 let wanted = if is_clump { clumps } else { types.iter().any(|k| ty.contains(k.as_str())) };

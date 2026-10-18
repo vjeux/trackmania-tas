@@ -1523,7 +1523,7 @@ fn main() {
             if files.is_empty() {
                 die::<()>("item-variants <item>… [--packs DIR]".into());
             }
-            println!("item\tvariant\ttype\tsize\tplacement\tmatmodifier\thidden\tmodel");
+            println!("env\titem\tvariant\ttype\tsize\tplacement\tmatmodifier\thidden\tmodel");
             for p in files {
                 let m = load_any(&mut store, &p);
                 let mut lb = mapgeom::static_item::LookbackState::default();
@@ -1532,11 +1532,16 @@ fn main() {
                 let item = match mapgeom::static_item::item::CGameItemModel::parse(&mut r) {
                     Ok(i) => i,
                     Err(e) => {
-                        println!("{p}\t-\tERROR\t{e}\t-\t-\t-\t-");
+                        println!("-\t{p}\t-\tERROR\t{e}\t-\t-\t-\t-");
                         continue;
                     }
                 };
                 let stem = p.rsplit('\\').next().unwrap_or(&p).trim_end_matches(".Item.Gbx").to_string();
+                // the pack folder the item came from IS its environment, and
+                // the same stem means different species in two of them
+                // (`Forest` is 42 variants in GreenCoast, 19 in WhiteShore):
+                // print it so a consumer can key on (environment, stem, variant)
+                let env = p.split('\\').next().unwrap_or("-").to_string();
                 let externals: std::collections::HashMap<u32, String> = m.externals.iter().map(|(i, e)| (*i, e.clone())).collect();
                 let mut found = false;
                 for c in &item.chunks {
@@ -1550,11 +1555,11 @@ fn main() {
                         } else {
                             "inline".into()
                         };
-                        println!("{stem}\t{i}\t{}\t{}\t{}\t{}\t{}\t{model}", tag("Type"), tag("Size"), tag("Placement"), tag("MatModifier"), v.hidden);
+                        println!("{env}\t{stem}\t{i}\t{}\t{}\t{}\t{}\t{}\t{model}", tag("Type"), tag("Size"), tag("Placement"), tag("MatModifier"), v.hidden);
                     }
                 }
                 if !found {
-                    println!("{stem}\t-\tNO_VARIANT_LIST\t-\t-\t-\t-\t-");
+                    println!("{env}\t{stem}\t-\tNO_VARIANT_LIST\t-\t-\t-\t-\t-");
                 }
             }
         }
@@ -1955,6 +1960,7 @@ fn main() {
         "item-set-shoot" => mapgeom::item_set::shoot_cmd(&a.rest),
         "shot-crop" => mapgeom::item_set::shot_crop_cmd(&a.rest),
         "item-desc" => mapgeom::item_set::item_desc_cmd(&a.rest),
+        "item-scale" => mapgeom::item_scale::cmd(&a.rest),
         "item-set-items" => {
             let mut store = open(&a);
             mapgeom::item_set::items_cmd(&mut store, &a.rest);
