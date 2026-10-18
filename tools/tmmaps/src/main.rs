@@ -185,6 +185,24 @@ fn main() {
                 }
             }
         }
+        // moveitem MAP --item IDX --pos X,Y,Z [--yaw RAD] --out OUT: relocate one item placement (position,
+        // yaw, the declared cell = floor(pos / block size)) — a check copy whose Spawn faces a finish
+        "moveitem" => {
+            let mut m = tmmaps::map::MapFile::load(std::path::Path::new(&args[2]));
+            let idx: usize = tmmaps::cli::flag(&args, "--item").expect("--item IDX").parse().expect("index");
+            let pos: Vec<f32> = tmmaps::cli::flag(&args, "--pos").expect("--pos X,Y,Z").split(',').map(|v| v.trim().parse::<f32>().expect("number")).collect();
+            assert_eq!(pos.len(), 3, "--pos X,Y,Z");
+            let yaw: f32 = tmmaps::cli::flag(&args, "--yaw").map(|v| v.parse::<f32>().expect("yaw in radians")).unwrap_or(m.items[idx].yaw);
+            let out = tmmaps::cli::flag(&args, "--out").expect("--out OUT.Map.Gbx");
+            let it = m.items[idx].clone();
+            let (cx, cy, cz) = ((pos[0] / 32.0).floor() as i32, (pos[1] / 8.0).floor() as i32, (pos[2] / 32.0).floor() as i32);
+            println!("item#{idx} {} tag {:?}: [{:.2} {:.2} {:.2}] yaw {:.4} cell {:?} → [{:.2} {:.2} {:.2}] yaw {yaw:.4} cell ({cx},{cy},{cz})", it.model, it.waypoint_tag, it.pos[0], it.pos[1], it.pos[2], it.yaw, it.file_cell, pos[0], pos[1], pos[2]);
+            m.move_item(idx, [pos[0], pos[1], pos[2]], yaw, (cx, cy, cz));
+            m.write_to(std::path::Path::new(&out)).expect("write");
+            let m2 = tmmaps::map::MapFile::load(std::path::Path::new(&out));
+            let it2 = &m2.items[idx];
+            println!("wrote {out}: item#{idx} now [{:.2} {:.2} {:.2}] yaw {:.4} cell {:?}", it2.pos[0], it2.pos[1], it2.pos[2], it2.yaw, it2.file_cell);
+        }
         // blockrec MAP --block IDX: one authored block record's bytes (hex), from its name Id to the next record
         "blockrec" => {
             let m = tmmaps::map::MapFile::load(std::path::Path::new(&args[2]));
