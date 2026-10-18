@@ -82,7 +82,7 @@ fn main() {
     const WANTS_MAP: &[&str] = &[
         "waypoints", "census", "gridinfo", "skins", "fillers", "region", "colors", "phases", "genealogy", "tiny-catalog", "lineup", "shared-cells", "ponds", "tiny", "tiny-batch", "clear", "shift", "segments", "move", "rotate", "ladder",
         "roundtrip",
-        "renamecheck", "cporder", "origin", "chunks", "blockrefs", "setuid", "lmquality", "ghostchunk", "genealogy-fill", "delblocks", "striplightmap", "itembytes", "mediatracker",
+        "cpify", "renamecheck", "cporder", "origin", "chunks", "blockrefs", "setuid", "lmquality", "ghostchunk", "genealogy-fill", "delblocks", "striplightmap", "itembytes", "mediatracker",
     ];
     if WANTS_MAP.contains(&cmd) && args.len() < 3 {
         eprintln!("tmmaps {} needs a MAP path.\n\n{}", cmd, USAGE);
@@ -98,6 +98,7 @@ fn main() {
         "tiny" => tmmaps::tiny::cmd(&args),
         "tiny-batch" => tmmaps::tiny::cmd_batch(&args),
         "clear" => census::cmd_clear(&args),
+        "cpify" => tmmaps::cpify::cmd(&args),
         "shift" => census::cmd_shift(&args),
         "recdump" => surgery::recdump(&args),
         "untag" => surgery::untag(&args),

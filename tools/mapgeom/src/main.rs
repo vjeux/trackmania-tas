@@ -1511,6 +1511,53 @@ fn main() {
                 eprintln!("  {k}: {} items", v.len());
             }
         }
+        // item-variants <pack .Item.Gbx | file>…: the item's VARIANT LIST as a
+        // table — index, the variant's own tags (Type / Size / Placement /
+        // MatModifier) and the model it names. The placement's variant byte
+        // indexes this list, so for a map's vegetation this is what says
+        // which placements are TREES and which are cacti or ground cover
+        // (`tmmaps cpify --variant-table`, Altrd's CP-per-tree, 2026-10-18).
+        "item-variants" => {
+            let mut store = open(&a);
+            let files: Vec<String> = a.rest.iter().skip(1).filter(|x| !x.starts_with("--")).cloned().collect();
+            if files.is_empty() {
+                die::<()>("item-variants <item>… [--packs DIR]".into());
+            }
+            println!("item\tvariant\ttype\tsize\tplacement\tmatmodifier\thidden\tmodel");
+            for p in files {
+                let m = load_any(&mut store, &p);
+                let mut lb = mapgeom::static_item::LookbackState::default();
+                lb.defined_nodes.extend(m.external_indices().iter().copied());
+                let mut r = mapgeom::static_item::Rd::new(&m.body, 0, lb);
+                let item = match mapgeom::static_item::item::CGameItemModel::parse(&mut r) {
+                    Ok(i) => i,
+                    Err(e) => {
+                        println!("{p}\t-\tERROR\t{e}\t-\t-\t-\t-");
+                        continue;
+                    }
+                };
+                let stem = p.rsplit('\\').next().unwrap_or(&p).trim_end_matches(".Item.Gbx").to_string();
+                let externals: std::collections::HashMap<u32, String> = m.externals.iter().map(|(i, e)| (*i, e.clone())).collect();
+                let mut found = false;
+                for c in &item.chunks {
+                    let mapgeom::static_item::item::ItemChunk::Model(mc) = c else { continue };
+                    let Some(mapgeom::static_item::Node::VariantList(vl)) = mc.entity_model.inline.as_deref() else { continue };
+                    found = true;
+                    for (i, v) in vl.variants.iter().enumerate() {
+                        let tag = |k: &str| v.tags.iter().find(|(a, _)| a == k).map(|(_, b)| b.clone()).unwrap_or_else(|| "-".into());
+                        let model = if v.model.index >= 0 {
+                            externals.get(&(v.model.index as u32)).cloned().unwrap_or_else(|| format!("node {}", v.model.index))
+                        } else {
+                            "inline".into()
+                        };
+                        println!("{stem}\t{i}\t{}\t{}\t{}\t{}\t{}\t{model}", tag("Type"), tag("Size"), tag("Placement"), tag("MatModifier"), v.hidden);
+                    }
+                }
+                if !found {
+                    println!("{stem}\t-\tNO_VARIANT_LIST\t-\t-\t-\t-\t-");
+                }
+            }
+        }
         "item-fields" => {
             let mut store = open(&a);
             let p = a.rest.get(1).cloned().unwrap_or_default();
