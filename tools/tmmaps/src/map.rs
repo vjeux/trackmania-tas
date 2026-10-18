@@ -2325,6 +2325,66 @@ impl MapFile {
             .push((it.yaw_off, yaw.to_le_bytes().to_vec()));
     }
 
+    /// The full rotation triple of a placement (yaw, pitch, roll), in-place patches.
+    pub fn set_item_rotation(&mut self, item_index: usize, yaw: f32, pitch: f32, roll: f32) {
+        let it = self.items[item_index].clone();
+        self.raw_patches.push((it.yaw_off, yaw.to_le_bytes().to_vec()));
+        self.raw_patches.push((it.pitch_off, pitch.to_le_bytes().to_vec()));
+        self.raw_patches.push((it.roll_off, roll.to_le_bytes().to_vec()));
+    }
+
+    /// The placement's pivot vector (three f32 after the flags word), in place.
+    pub fn set_item_pivot(&mut self, item_index: usize, pivot: [f32; 3]) {
+        let it = self.items[item_index].clone();
+        let mut p = Vec::new();
+        for v in pivot {
+            p.extend_from_slice(&v.to_le_bytes());
+        }
+        self.raw_patches.push((it.pivot_off, p));
+    }
+
+    /// The placement's block-cell bytes (x, y, z), in place.
+    pub fn set_item_cell(&mut self, item_index: usize, cell: [u8; 3]) {
+        let it = self.items[item_index].clone();
+        self.raw_patches.push((it.coord_off, cell.to_vec()));
+    }
+
+    /// Rewrite an authored block's waypoint node TAG ("Spawn" → "Goal" when a start
+    /// block becomes its finish twin — Hugo's Podium Reverse, 2026-10-05). The node
+    /// is the record's tail: `u32 node index`, then on its first use the inline
+    /// class 0x2E009000 + chunk 0x2E009000 (version 2, string, order) + chunk
+    /// 0x2E009001 (PIKS 8) + FACADE; the string is spliced. Refused (false) when the
+    /// record has no node, carries a skin (author + skin ref sit in between), or its
+    /// node is a bare reference (another record defined it). A splice: write and
+    /// reload before any rename.
+    pub fn set_block_waypoint_tag(&mut self, block_index: usize, tag: &str) -> bool {
+        let b = self.blocks[block_index].clone();
+        if b.flags & 0x100000 == 0 || b.flags & 0x8000 != 0 {
+            return false;
+        }
+        let spans = self.block_spans();
+        let (_, end) = spans[block_index];
+        let body = &self.gbx.body;
+        let rd = |o: usize| u32::from_le_bytes(body[o..o + 4].try_into().unwrap());
+        let start = b.coord_off + 7;
+        if start + 4 > end || rd(start) == 0xFFFF_FFFF || start + 4 == end {
+            return false;
+        }
+        // [idx][class][chunk][version][len][str]
+        if rd(start + 4) != WAYPOINT_CLASS || rd(start + 8) != WAYPOINT_CLASS || rd(start + 12) != 2 {
+            return false;
+        }
+        let len = rd(start + 16) as usize;
+        if start + 20 + len > end {
+            return false;
+        }
+        let mut bytes = Vec::with_capacity(4 + tag.len());
+        bytes.extend_from_slice(&(tag.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(tag.as_bytes());
+        self.raw_splices.push(((start + 16, start + 20 + len), bytes));
+        true
+    }
+
     /// The map's per-item ANIMATION PHASE OFFSET byte — chunk 0x03043063
     /// (`CGameCtnAnchoredObject::AnimPhaseOffset`, EPhaseOffset in eighths of
     /// the period: 4 = half). Summer 15's two facing channel pistons carry 0
@@ -4252,12 +4312,26 @@ impl MapFile {
     /// chunk 0x03043002 and the header XML `<times …/>` (`tmmaps settimes`; moved here from the binary
     /// 2026-10-02 for `mapgeom sttc --originals`). The header must still read the OLD times (layout check).
     pub fn set_times(&mut self, hdr: &crate::header::MapHeader, bronze: u32, silver: u32, gold: u32, author: u32, set_validated: bool) {
+        self.set_times_full(hdr, bronze, silver, gold, author, set_validated, false)
+    }
+
+    /// The UNVALIDATED form — a map nobody ever drove: the four times 0xFFFFFFFF (the game's "no
+    /// time"), authorscore 0 in every copy, the header XML `<times>` reading -1 and `validated="0"`
+    /// (Hugo's "a zip with the validations stripped", 2026-10-05). Nadeo's upload refuses this form
+    /// (author -1), so it is for files handed out, never for `publish-batch`.
+    pub fn set_unvalidated(&mut self, hdr: &crate::header::MapHeader) {
+        self.set_times_full(hdr, 0xFFFF_FFFF, 0xFFFF_FFFF, 0xFFFF_FFFF, 0xFFFF_FFFF, false, true)
+    }
+
+    fn set_times_full(&mut self, hdr: &crate::header::MapHeader, bronze: u32, silver: u32, gold: u32, author: u32, set_validated: bool, unvalidated: bool) {
         let m = self;
+    let score: u32 = if unvalidated { 0 } else { author };
     let skips = crate::gbx::all_skip_chunks(&m.gbx.body);
-    let old_b: u32 = hdr.bronze.parse().ok().expect("header times");
-    let old_s: u32 = hdr.silver.parse().ok().expect("header times");
-    let old_g: u32 = hdr.gold.parse().ok().expect("header times");
-    let old_a: u32 = hdr.authortime.parse().ok().expect("header times");
+    let hdr_time = |s: &str| -> u32 { s.parse::<i64>().ok().expect("header times") as u32 };
+    let old_b: u32 = hdr_time(&hdr.bronze);
+    let old_s: u32 = hdr_time(&hdr.silver);
+    let old_g: u32 = hdr_time(&hdr.gold);
+    let old_a: u32 = hdr_time(&hdr.authortime);
     let expect = |buf: &[u8], at: usize, want: u32, what: &str| {
         let got = u32::from_le_bytes(buf[at..at + 4].try_into().unwrap());
         assert!(got == want, "{what}: read {got} where the header says {want} — layout mismatch, nothing written");
@@ -4270,7 +4344,7 @@ impl MapFile {
     expect(b00a, t0 + 4, old_s, "0x0305B00A silver");
     expect(b00a, t0 + 8, old_g, "0x0305B00A gold");
     expect(b00a, t0 + 12, old_a, "0x0305B00A author");
-    for (k, v) in [(0usize, bronze), (4, silver), (8, gold), (12, author), (20, author)] {
+    for (k, v) in [(0usize, bronze), (4, silver), (8, gold), (12, author), (20, score)] {
         m.raw_patches.push((pa + t0 + k, v.to_le_bytes().to_vec()));
     }
     // 0x0305B004 (bronze, silver, gold, author, u32) and 0x0305B008 (timelimit, authorscore): non-skippable,
@@ -4291,7 +4365,7 @@ impl MapFile {
         m.raw_patches.push((p4 + k, v.to_le_bytes().to_vec()));
     }
     let p8 = find_id(0x0305_B008);
-    m.raw_patches.push((p8 + 4, author.to_le_bytes().to_vec())); // authorscore
+    m.raw_patches.push((p8 + 4, score.to_le_bytes().to_vec())); // authorscore
     // ---- header chunk 0x03043002 (v13): version u8, needUnlock u32, bronze, silver, gold, author, cost, isLapRace,
     // playMode, u32, authorScore, editorMode, u32, nbCheckpoints, nbLaps
     {
@@ -4314,7 +4388,7 @@ impl MapFile {
                 ud[t + 4..t + 8].copy_from_slice(&silver.to_le_bytes());
                 ud[t + 8..t + 12].copy_from_slice(&gold.to_le_bytes());
                 ud[t + 12..t + 16].copy_from_slice(&author.to_le_bytes());
-                ud[t + 32..t + 36].copy_from_slice(&author.to_le_bytes()); // authorScore
+                ud[t + 32..t + 36].copy_from_slice(&score.to_le_bytes()); // authorScore
                 done = true;
             }
             data_off += size;
@@ -4322,7 +4396,8 @@ impl MapFile {
         assert!(done, "map has no header chunk 0x03043002");
     }
     // ---- header XML
-    let times = format!("<times bronze=\"{bronze}\" silver=\"{silver}\" gold=\"{gold}\" authortime=\"{author}\" authorscore=\"{author}\" hasclones=\"0\"/>");
+    let xt = |v: u32| -> String { if v == 0xFFFF_FFFF { "-1".to_string() } else { v.to_string() } };
+    let times = format!("<times bronze=\"{}\" silver=\"{}\" gold=\"{}\" authortime=\"{}\" authorscore=\"{score}\" hasclones=\"0\"/>", xt(bronze), xt(silver), xt(gold), xt(author));
     m.edit_header_xml(&|xml| {
         let start = xml.find("<times ")?;
         let end = xml[start..].find("/>")? + start + 2;
@@ -4330,7 +4405,7 @@ impl MapFile {
         s.push_str(&xml[..start]);
         s.push_str(&times);
         s.push_str(&xml[end..]);
-        Some(if set_validated { s.replace("validated=\"0\"", "validated=\"1\"") } else { s })
+        Some(if set_validated { s.replace("validated=\"0\"", "validated=\"1\"") } else if unvalidated { s.replace("validated=\"1\"", "validated=\"0\"") } else { s })
     });
 }
 }

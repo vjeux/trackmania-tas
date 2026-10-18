@@ -229,6 +229,16 @@ fn publish_gate(paths: &[PathBuf], startcheck: Option<String>, census: Option<St
 pub fn publish_batch_cmd(args: &[String]) -> Result<(), String> {
     let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
     let manifest = PathBuf::from(f("--manifest").ok_or("publish-batch needs --manifest M.tsv")?);
+    // the start checks and bakes leave `*.checkcopy.Map.Gbx` / `*.bakecopy.Map.Gbx` beside the
+    // finals; a manifest built by a glob catches them (2026-10-05: 25 extra maps with fresh uids
+    // went up with Hugo's Podium Reverse) — refused here, before any token is spent
+    {
+        let text = std::fs::read_to_string(&manifest).unwrap_or_default();
+        let bad: Vec<&str> = text.lines().filter(|l| { let p = l.split('\t').next().unwrap_or("").to_ascii_lowercase(); p.contains(".checkcopy.") || p.contains(".bakecopy.") || p.contains(".resaved.") || p.contains(".lit.tmp.") }).collect();
+        if !bad.is_empty() {
+            return Err(format!("the manifest names {} check/bake copies (e.g. {}) — not maps to publish", bad.len(), bad[0].split('\t').next().unwrap_or("")));
+        }
+    }
     let results = PathBuf::from(f("--results").ok_or("publish-batch needs --results R.tsv")?);
     let outdir = PathBuf::from(f("--outdir").unwrap_or_else(|| BOX_BATCH_DIR.into()));
     std::fs::create_dir_all(&outdir).map_err(|e| format!("{}: {e}", outdir.display()))?;
@@ -302,32 +312,19 @@ pub fn publish_batch_cmd(args: &[String]) -> Result<(), String> {
         let mut camp_line = String::from("campaign\tnot set");
         if let (Some(club), Some(camp), Some(cname)) = (f("--club"), f("--campaign"), f("--campaign-name")) {
             let auth_live = format!("Authorization: {}", t.live);
-            // THE PLAYLIST IS MERGED, NEVER SHRUNK (2026-10-02 04:43Z: an in-place re-upload of 9 of 24 maps
-            // rewrote "Tiny Fall 2026" as a 9-map playlist for 15 s): the live playlist is read first and
-            // every uid of it that this batch did not touch keeps its place; the batch's uids take theirs
-            // (an existing uid stays where it was, a new one is appended in manifest order). `--playlist
-            // replace` writes the manifest's list alone (a campaign built from scratch).
-            let uids: Vec<String> = if f("--playlist").as_deref() == Some("replace") {
-                uids.clone()
+            // --playlist replace: the run's uids ARE the playlist (a whole-campaign publish); the
+            // default MERGES into the campaign's current list (a partial re-upload keeps the rest —
+            // 2026-10-03: a 4-map manifest had cut Hugo's 25-map list to 4 for 70 s)
+            let replace = tmmaps::cli::has(args, "--playlist") && f("--playlist").as_deref() == Some("replace");
+            let r = if replace {
+                crate::nadeo::campaign_set(&auth_live, &club, &camp, &cname, &uids).map(|v| (v, uids.len(), uids.len()))
             } else {
-                match crate::nadeo::campaign_uids(&auth_live, &club, &camp) {
-                    Ok(live) => {
-                        let mut merged = live.clone();
-                        for u in &uids {
-                            if !merged.contains(u) {
-                                merged.push(u.clone());
-                            }
-                        }
-                        println!("playlist: {} live + {} new of this batch's {} = {} (merged, nothing dropped)", live.len(), merged.len() - live.len(), uids.len(), merged.len());
-                        merged
-                    }
-                    Err(e) => return Err(format!("the live playlist could not be read before the write ({e}) — not writing a partial playlist")),
-                }
+                crate::nadeo::campaign_merge(&auth_live, &club, &camp, &cname, &uids)
             };
-            match crate::nadeo::campaign_set(&auth_live, &club, &camp, &cname, &uids) {
-                Ok(v) => {
+            match r {
+                Ok((v, before, after)) => {
                     let n = serde_json::to_string(&v).unwrap_or_default().matches("\"mapUid\"").count();
-                    camp_line = format!("campaign\t{camp}\t{cname}\t{n} maps in the playlist");
+                    camp_line = format!("campaign\t{camp}\t{cname}\t{n} maps in the playlist ({})", if replace { "replaced".to_string() } else { format!("merged: {before} before, {} added", after - before) });
                 }
                 Err(e) => {
                     failed += 1;

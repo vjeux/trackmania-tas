@@ -100,6 +100,16 @@ fn main() {
         "clear" => census::cmd_clear(&args),
         "shift" => census::cmd_shift(&args),
         "recdump" => surgery::recdump(&args),
+        // blockrec MAP --block IDX: one authored block record's bytes (hex), from its name Id to the next record
+        "blockrec" => {
+            let m = tmmaps::map::MapFile::load(std::path::Path::new(&args[2]));
+            let idx: usize = tmmaps::cli::flag(&args, "--block").expect("--block IDX").parse().expect("index");
+            let spans = m.block_spans();
+            let (s, e) = spans[idx];
+            let b = &m.blocks[idx];
+            println!("block#{idx} {} dir {} flags {:08X} coord_off {} span {}..{} ({} B) tag {:?}", b.name, b.dir, b.flags, b.coord_off, s, e, e - s, b.waypoint_tag);
+            println!("{}", m.gbx.body[s..e].iter().map(|x| format!("{x:02x}")).collect::<String>());
+        }
         "untag" => surgery::untag(&args),
         "swapplace" => surgery::swapplace(&args),
         "swaprec" => surgery::swaprec(&args),

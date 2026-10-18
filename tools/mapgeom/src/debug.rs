@@ -24,6 +24,9 @@ pub const NAMES: &[(&str, &str)] = &[
     ("fillers", "every recorded filler TINY_FILLER_RULE=accepted judges: the occupants of its cell, their clip lists on the shared face, the verdict"),
     ("pillars", "every generated pillar's parent: the block units in the first non-pillar cell above it, which one places this pillar kind, the dress taken"),
     ("bakes", "the parallel pre-bake phases of tiny-library: jobs, workers, seconds per phase"),
+    ("topbottom", "mapgeom bake diff: the top/bottom clip direction notes"),
+    ("bakediff", "mapgeom bake diff: free-record and unknown-name notes"),
+    ("footprint", "sttc: the world-space footprint box of every tilted free finish (corners, y range)"),
 ];
 
 static ENABLED: OnceLock<BTreeSet<String>> = OnceLock::new();

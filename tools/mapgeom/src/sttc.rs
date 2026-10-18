@@ -67,7 +67,7 @@ fn tag_type(tag: Option<&str>) -> Option<i32> {
     }
 }
 
-fn wp_str(t: Option<i32>) -> String {
+pub fn wp_str(t: Option<i32>) -> String {
     match t {
         Some(t) => waypoint_name(t).to_string(),
         None => "-".to_string(),
@@ -163,6 +163,21 @@ impl<'a> Ctx<'a> {
         Some(((w, d), cells))
     }
 
+    /// The picked variant's local BOX in metres (dir-0 frame, origin corner):
+    /// W·32 × H·8 × D·32 with H = max unit y + 1 — the volume a free pose turns.
+    pub fn block_box_m(&mut self, b: &BlockRec) -> Option<[f32; 3]> {
+        let ground = b.flags & FLAG_GROUND != 0;
+        let vindex = (b.flags & FLAG_VARIANT_MASK) as usize;
+        let sub = ((b.flags >> FLAG_SUBVARIANT_SHIFT) & 63) as usize;
+        let bi = self.block_info(&b.name)?;
+        let pk = bi.pick_placement(ground, vindex, sub)?;
+        let local = footprint(pk.variant, 0);
+        let w = local.iter().map(|(_, c)| c[0]).max().unwrap_or(0) + 1;
+        let h = local.iter().map(|(_, c)| c[1]).max().unwrap_or(0) + 1;
+        let d = local.iter().map(|(_, c)| c[2]).max().unwrap_or(0) + 1;
+        Some([w as f32 * 32.0, h as f32 * 8.0, d as f32 * 32.0])
+    }
+
     /// World grid cells of a GRID block (its record cell + the variant's
     /// footprint for its dir); the record cell alone when the info is unknown.
     pub fn world_cells(&mut self, b: &BlockRec) -> Vec<[i32; 3]> {
@@ -247,15 +262,15 @@ impl Row {
             .collect::<Vec<_>>()
             .join("\t")
     }
-    fn new(map: &str, step: &str, kind: &str, index: usize, name: &str) -> Row {
+    pub fn new(map: &str, step: &str, kind: &str, index: usize, name: &str) -> Row {
         Row { map: map.to_string(), step: step.to_string(), kind: kind.to_string(), index: index.to_string(), name: name.to_string(), ..Default::default() }
     }
 }
 
-fn cell_str(c: (i32, i32, i32)) -> String {
+pub fn cell_str(c: (i32, i32, i32)) -> String {
     format!("{},{},{}", c.0, c.1, c.2)
 }
-fn pos_str(p: [f32; 3]) -> String {
+pub fn pos_str(p: [f32; 3]) -> String {
     format!("{:.3},{:.3},{:.3}", p[0], p[1], p[2])
 }
 
@@ -291,6 +306,15 @@ pub fn twin_candidates(name: &str) -> Vec<String> {
         ("Checkpoint", "StraightX2"),
         ("Checkpoint", "Base"),
         ("Checkpoint", ""),
+        // the FINISH pieces (Podium Reverse, 2026-10-05): the same plain twins
+        ("FinishTiltLeft", "TiltStraight"),
+        ("FinishTiltRight", "TiltStraight"),
+        ("FinishSlopeUp", "SlopeStraight"),
+        ("FinishSlopeDown", "SlopeStraight"),
+        ("Finish", "Straight"),
+        ("Finish", "StraightX2"),
+        ("Finish", "Base"),
+        ("Finish", ""),
     ] {
         if norm.contains(from) {
             push(norm.replacen(from, to, 1));
@@ -424,7 +448,16 @@ pub enum CpMode {
 }
 
 pub fn sttf(ctx: &mut Ctx, src: &Path, out: &Path, cp: CpMode, dry: bool) -> Result<SttfOutcome, String> {
+    strip_waypoints(ctx, src, out, cp, dry, &[WP_CHECKPOINT])
+}
+
+/// `sttf` for any set of waypoint types: every block whose model is one of
+/// `targets` becomes its geometry-verified plain twin (or goes, with its clips,
+/// when none exists), every such item goes. `[WP_CHECKPOINT]` is STTF;
+/// `[WP_CHECKPOINT, WP_FINISH]` is the Podium Reverse's first step (2026-10-05).
+pub fn strip_waypoints(ctx: &mut Ctx, src: &Path, out: &Path, cp: CpMode, dry: bool, targets: &[i32]) -> Result<SttfOutcome, String> {
     let map_label = src.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let is_target = |c: &Class| c.effective().map(|t| targets.contains(&t)).unwrap_or(false);
     let mut m = MapFile::try_load(src)?;
     let mut rows = Vec::new();
     let (mut replaced, mut removed_blocks, mut removed_items, mut mismatches, mut unresolved) = (0, 0, 0, 0, 0);
@@ -454,7 +487,7 @@ pub fn sttf(ctx: &mut Ctx, src: &Path, out: &Path, cp: CpMode, dry: bool) -> Res
     }
     let mut twin_cache: HashMap<(String, u8, u32), Result<(String, u8, String), String>> = HashMap::new();
     for (i, b, c) in &classified {
-        if c.effective() != Some(WP_CHECKPOINT) {
+        if !is_target(c) {
             continue;
         }
         let mut r = Row::new(&map_label, "sttf", "block", *i, &b.name);
@@ -530,7 +563,7 @@ pub fn sttf(ctx: &mut Ctx, src: &Path, out: &Path, cp: CpMode, dry: bool) -> Res
         if !c.resolved && c.tag.is_some() {
             unresolved += 1;
         }
-        if c.effective() == Some(WP_CHECKPOINT) {
+        if is_target(&c) {
             let mut r = Row::new(&map_label, "sttf", "item", i, &it.model);
             r.tag = it.waypoint_tag.clone().unwrap_or_default();
             r.model_wp = wp_str(c.model);
@@ -856,20 +889,52 @@ pub fn center_finish(ctx: &mut Ctx, src: &Path, out: &Path, o: &CenterOpts, dry:
             let p = b.free_pos.unwrap_or([0.0; 3]);
             grow(p[0] as f64, p[2] as f64, &mut bbox);
             if is_fin {
-                // the block's centre: its origin corner + half the footprint,
-                // turned by the yaw (the first angle of the free triple); the
-                // footprint's four corners feed the bounding box
-                let (w, d) = ctx.block_footprint(b, 0).map(|(wd, _)| wd).unwrap_or((1, 1));
-                let yaw = b.free_rot.map(|r| r[0]).unwrap_or(0.0) as f64;
-                let turn = |lx: f64, lz: f64| (p[0] as f64 + lx * yaw.cos() + lz * yaw.sin(), p[2] as f64 - lx * yaw.sin() + lz * yaw.cos());
-                let (cx, cz) = turn(w as f64 * 16.0, d as f64 * 16.0);
-                for (lx, lz) in [(0.0, 0.0), (w as f64 * 32.0, 0.0), (0.0, d as f64 * 32.0), (w as f64 * 32.0, d as f64 * 32.0)] {
-                    let (x, z) = turn(lx, lz);
-                    fin_bbox = Some(match fin_bbox {
-                        None => ([x, z], [x, z]),
-                        Some((lo, hi)) => ([lo[0].min(x), lo[1].min(z)], [hi[0].max(x), hi[1].max(z)]),
-                    });
-                }
+                // the piece's WORLD footprint: the model's local box (W·32 × H·8 × D·32 from
+                // its origin corner) under the FULL free pose — yaw, pitch and roll, the same
+                // transform the renderer applies (`place::free`) — projected on xz. A finish
+                // pitched 90° to lie flat (Hugo's 03 / 10, round 4) lays its HEIGHT on the
+                // ground: its footprint is H × W, not the thin upright one; an upright piece
+                // (pitch = roll = 0) gives exactly the yaw-turned W × D of before.
+                let rot = b.free_rot.unwrap_or([0.0, 0.0, 0.0]);
+                let tilted = rot[1].abs() > 1e-3 || rot[2].abs() > 1e-3;
+                let (lo, hi, cx, cz) = if tilted {
+                    let [bw, bh, bd] = ctx.block_box_m(b).unwrap_or([32.0, 8.0, 32.0]);
+                    let m = crate::place::free(p, rot);
+                    let mut lo = [f64::MAX, f64::MAX];
+                    let mut hi = [f64::MIN, f64::MIN];
+                    for corner in [[0.0, 0.0, 0.0], [bw, 0.0, 0.0], [0.0, 0.0, bd], [bw, 0.0, bd], [0.0, bh, 0.0], [bw, bh, 0.0], [0.0, bh, bd], [bw, bh, bd]] {
+                        let q = crate::geom::apply(&m, corner);
+                        lo = [lo[0].min(q[0] as f64), lo[1].min(q[2] as f64)];
+                        hi = [hi[0].max(q[0] as f64), hi[1].max(q[2] as f64)];
+                    }
+                    // rounding of the pose matrix (±1e-4 m) must not move a whole-cell bbox
+                    let snap = |v: f64| (v * 1000.0).round() / 1000.0;
+                    let (lo, hi) = ([snap(lo[0]), snap(lo[1])], [snap(hi[0]), snap(hi[1])]);
+                    if crate::debug::on("footprint") {
+                        let ys: Vec<f32> = [[0.0, 0.0, 0.0], [bw, bh, bd]].iter().map(|c| crate::geom::apply(&m, *c)[1]).collect();
+                        eprintln!("# footprint {} block#{} box ({bw},{bh},{bd}) pos {:?} rot {:?} -> xz [{:.1},{:.1}]..[{:.1},{:.1}] y of corner0/corner7 {:?}", b.name, i, p, rot, lo[0], lo[1], hi[0], hi[1], ys);
+                    }
+                    (lo, hi, (lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0)
+                } else {
+                    // an UPRIGHT free block: the round-3 arithmetic, bit for bit (the 21 maps whose
+                    // finishes are upright stay byte-identical — Hugo's round-4 constraint)
+                    let (w, d) = ctx.block_footprint(b, 0).map(|(wd, _)| wd).unwrap_or((1, 1));
+                    let yaw = rot[0] as f64;
+                    let turn = |lx: f64, lz: f64| (p[0] as f64 + lx * yaw.cos() + lz * yaw.sin(), p[2] as f64 - lx * yaw.sin() + lz * yaw.cos());
+                    let (cx, cz) = turn(w as f64 * 16.0, d as f64 * 16.0);
+                    let mut lo = [f64::MAX, f64::MAX];
+                    let mut hi = [f64::MIN, f64::MIN];
+                    for (lx, lz) in [(0.0, 0.0), (w as f64 * 32.0, 0.0), (0.0, d as f64 * 32.0), (w as f64 * 32.0, d as f64 * 32.0)] {
+                        let (x, z) = turn(lx, lz);
+                        lo = [lo[0].min(x), lo[1].min(z)];
+                        hi = [hi[0].max(x), hi[1].max(z)];
+                    }
+                    (lo, hi, cx, cz)
+                };
+                fin_bbox = Some(match fin_bbox {
+                    None => (lo, hi),
+                    Some((l, h)) => ([l[0].min(lo[0]), l[1].min(lo[1])], [h[0].max(hi[0]), h[1].max(hi[1])]),
+                });
                 fin_blocks.push(FinBlock { index: *i, rec: b.clone(), cells: Vec::new(), centre: (cx, cz) });
             }
             continue;
@@ -1278,7 +1343,7 @@ pub fn center_finish(ctx: &mut Ctx, src: &Path, out: &Path, o: &CenterOpts, dry:
 
 // ------------------------------------------------------------------ verify
 
-fn has_chunk(body: &[u8], id: u32) -> bool {
+pub fn has_chunk(body: &[u8], id: u32) -> bool {
     tmmaps::gbx::all_skip_chunks(body).iter().any(|(c, ..)| *c == id)
 }
 
