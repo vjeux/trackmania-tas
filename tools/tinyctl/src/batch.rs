@@ -2,12 +2,19 @@
 //! unpublished club "Tiny U10S", 2026-09-13), in two halves like `publish-map`:
 //!
 //! - `tinyctl publish-batch --manifest M.tsv --results R.tsv [--allow-rename] [--club C --campaign K
-//!   --campaign-name N] [--outdir D] [--detach]` runs ON THE BOX: one token mint
+//!   --campaign-name N | --no-campaign] [--outdir D] [--detach]` runs ON THE BOX: one token mint
 //!   (re-minted on a 401), then per manifest row (`path<TAB>name`) the Nadeo
 //!   upload (create, or update when the uid exists) and the stored-bytes md5
 //!   readback, one result row each; at the end ONE playlist write with every uid
 //!   that uploaded, in manifest order. The readback copies are deleted as it goes
-//!   (C: is at 99 %).
+//!   (C: is at 99 %). `--no-campaign` = a STORAGE-ONLY upload, stated: the maps go
+//!   into Nadeo map storage under the uploading account (a client joining a server
+//!   that runs them fetches them by uid from Nadeo's CDN) and into no playlist — not
+//!   listed anywhere in-game (the 16 MK64 Bonk Cup maps for Shengar's dedicated
+//!   server, 2026-10-17). Omitting the campaign flags does the same silently (the
+//!   in-place UPDATE callers rely on it); the flag is for a human-run batch, so the
+//!   intent is in the command and the results file, and it refuses a campaign flag
+//!   beside it.
 //! - `tinyctl publish-set --parts 01,02,… --out-root R [--tag u10s] [--out-prefix U10S]
 //!   --club C [--campaign-prefix "Tiny U10S PART "] [--results DIR]` runs on the
 //!   devserver: per part it gates every built map (item-check with the packs, the
@@ -247,6 +254,10 @@ pub fn publish_batch_cmd(args: &[String]) -> Result<(), String> {
     let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
     let manifest = PathBuf::from(f("--manifest").ok_or("publish-batch needs --manifest M.tsv")?);
     let results = PathBuf::from(f("--results").ok_or("publish-batch needs --results R.tsv")?);
+    let no_campaign = tmmaps::cli::has(args, "--no-campaign");
+    if no_campaign && (f("--club").is_some() || f("--campaign").is_some() || f("--campaign-name").is_some()) {
+        return Err("publish-batch: --no-campaign (storage-only upload) and --club/--campaign/--campaign-name together: pick one".into());
+    }
     let outdir = PathBuf::from(f("--outdir").unwrap_or_else(|| BOX_BATCH_DIR.into()));
     std::fs::create_dir_all(&outdir).map_err(|e| format!("{}: {e}", outdir.display()))?;
     let done = results.with_extension("done");
@@ -394,7 +405,7 @@ pub fn publish_batch_cmd(args: &[String]) -> Result<(), String> {
             std::fs::write(&results, &out).map_err(|e| format!("{}: {e}", results.display()))?;
         }
         }
-        let mut camp_line = String::from("campaign\tnot set");
+        let mut camp_line = String::from(if no_campaign { "campaign\tnone (--no-campaign: storage-only upload, no playlist)" } else { "campaign\tnot set" });
         if failed > 0 && f("--campaign").is_some() {
             // a playlist written with the failed maps missing DROPPED them from the campaign
             // (Summer Wood 2026-09-25: 20 of 22 in the playlist) — the campaign is left as it
