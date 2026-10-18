@@ -43,9 +43,25 @@ pub fn is_tree_ref(path: &str) -> bool {
 pub fn run(store: &mut DataStore, rest: &[String]) -> Result<(), String> {
     let flag = |n: &str| rest.iter().position(|a| a == n).and_then(|i| rest.get(i + 1)).cloned();
     let path = rest.get(1).filter(|a| !a.starts_with("--")).cloned().ok_or("block-trees MAP --out TSV")?;
-    let collection = flag("--collection").unwrap_or_else(|| "BlueBay".into());
+    // the map's own collection word names its environment when --collection
+    // is not given (0xF GreenCoast, 0x10 RedIsland, 0x1A Stadium, 0x1C
+    // BlueBay, 0x1D WhiteShore — measured on the Fall 2026 campaign)
+    let collection = flag("--collection").unwrap_or_default();
     let yoff: f32 = flag("--yoff").and_then(|s| s.parse().ok()).unwrap_or(0.0);
     let m = tmmaps::map::MapFile::load(std::path::Path::new(&path));
+    let collection = if collection.is_empty() {
+        let c = m.items.first().map(|it| it.collection_raw).unwrap_or(28);
+        match c {
+            15 => "GreenCoast",
+            16 => "RedIsland",
+            25 | 26 => "Stadium",
+            29 => "WhiteShore",
+            _ => "BlueBay",
+        }
+        .to_string()
+    } else {
+        collection
+    };
     // authored blocks only: a baked record is a generated clip filler and
     // carries no vegetation of its own
     let (placements, _) = blockmap::walk(store, &m, false, &collection);
