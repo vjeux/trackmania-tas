@@ -5,7 +5,8 @@
 //! humans): any process with a main window outside the allowlist (Trackmania, Openplanet,
 //! Discord, RenderDoc, the shell hosts) refuses — a person is at the screen; (3) BOX-IDLE: the
 //! Windows last-input age must be ≥ --idle-secs (default 300) — a fresh input clock means a
-//! hand on the box; `--twice` repeats the whole check after 5 minutes (FREE-twice). Exit 3 on
+//! hand on the box; (4) `--lock-free TMDRIVE`: the tmdrive lock FREE or dead-reclaimable;
+//! `--twice` repeats the whole check after 5 minutes (FREE-twice). Exit 3 on
 //! refusal with the reason; exit 0 prints the census.
 use std::process::Command;
 
@@ -57,8 +58,15 @@ pub fn census(allow: &[String]) -> Result<Census, String> {
     Ok(Census { foreign, windows, idle_secs })
 }
 
+/// `--lock-free TMDRIVE`: the render lock must be FREE (or dead-reclaimable) too — another
+/// session's live hold refuses.
+fn lock_state(tmdrive: &str) -> Result<String, String> {
+    let o = Command::new(tmdrive).arg("status").output().map_err(|e| format!("{tmdrive}: {e}"))?;
+    Ok(String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or("").trim().to_string())
+}
+
 /// One census → the refusal reasons (empty = FREE), the line printed.
-fn check(allow: &[String], idle_min: f64) -> Result<Vec<String>, String> {
+fn check(allow: &[String], idle_min: f64, lock: Option<&str>) -> Result<Vec<String>, String> {
     let c = census(allow)?;
     let idle = c.idle_secs.map(|s| format!("{s:.0} s")).unwrap_or_else(|| "unknown".into());
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
@@ -75,6 +83,13 @@ fn check(allow: &[String], idle_min: f64) -> Result<Vec<String>, String> {
         None => reasons.push("last-input age unreadable".into()),
         _ => {}
     }
+    if let Some(t) = lock {
+        let st = lock_state(t)?;
+        println!("  lock: {st}");
+        if !(st.starts_with("FREE") || st.starts_with("DEAD(")) {
+            reasons.push(format!("THE RENDER LOCK IS HELD: {}", st.chars().take(120).collect::<String>()));
+        }
+    }
     Ok(reasons)
 }
 
@@ -86,13 +101,14 @@ pub fn cmd(rest: &[String]) -> Result<(), String> {
     let twice = rest.iter().any(|a| a == "--twice");
     let wait: u64 = f(rest, "--wait").and_then(|v| v.parse().ok()).unwrap_or(0);
     let every: u64 = f(rest, "--every").and_then(|v| v.parse().ok()).unwrap_or(300);
+    let lock = f(rest, "--lock-free");
     let t0 = std::time::Instant::now();
     loop {
-        let mut reasons = check(&allow, idle_min)?;
+        let mut reasons = check(&allow, idle_min, lock.as_deref())?;
         if reasons.is_empty() && twice {
             println!("second check in 300 s (FREE-twice)…");
             std::thread::sleep(std::time::Duration::from_secs(300));
-            reasons = check(&allow, idle_min)?;
+            reasons = check(&allow, idle_min, lock.as_deref())?;
         }
         if reasons.is_empty() {
             println!("box-gate: FREE{}", if twice { " (twice, 5 min apart)" } else { "" });
