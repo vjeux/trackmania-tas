@@ -31,6 +31,7 @@ mod compare;
 mod cropstats;
 mod play;
 mod png;
+mod boxgate;
 mod flagdraw;
 mod probe;
 mod publish;
@@ -222,6 +223,7 @@ fn main() {
         "publish-here" => publish::publish_here_cmd(rest),
         "nadeo-here" => nadeo::cmd(rest),
         "token-mint" => nadeo::token_mint(rest),
+        "box-gate" => boxgate::cmd(rest),
         "bake-run" => bakerun::bake_run(rest),
         "lightmap-run" => bakerun::lightmap_run(rest),
         // tinyctl lightmap-regraft --bake-copy COPY --resaved RESAVED --shipped SHIPPED --out OUT: the editor's

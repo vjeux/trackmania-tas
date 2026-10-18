@@ -405,7 +405,54 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             println!("activity\t{act}\tactive {}\tpublic {}\tname {}", s(&a, "active"), s(&a, "public"), s(&a, "name"));
             Ok(())
         }
-        other => Err(format!("nadeo-here: unknown subcommand `{other}` (club | campaigns | campaign | campaign-create | maps | official)")),
+        "activity-list" => {
+            // tinyctl nadeo-here activity-list --club ID [--length N]: the club's activities (id, type,
+            // campaignId, name, active, public) — the campaign ↔ activity mapping the store lost
+            let club = f("--club").ok_or("activity-list needs --club ID")?;
+            let length = f("--length").unwrap_or_else(|| "100".into());
+            let v = get_json(&auth_live, &format!("{LIVE}/api/token/club/{club}/activity/all?length={length}&offset=0&active=0"))?;
+            save(&format!("club-{club}-activities.json"), &v)?;
+            let list = v.get("activityList").and_then(|l| l.as_array()).cloned().unwrap_or_default();
+            println!("id\ttype\tcampaignId\tactive\tpublic\tname");
+            for a in &list {
+                println!("{}\t{}\t{}\t{}\t{}\t{}", s(a, "id"), s(a, "activityType"), s(a, "campaignId"), s(a, "active"), s(a, "public"), s(a, "name"));
+            }
+            println!("{} activities", list.len());
+            Ok(())
+        }
+        "activity-delete" => {
+            // tinyctl nadeo-here activity-delete --club ID --activity ID [--hide-if-refused]: a REAL delete
+            // (`POST club/{club}/activity/{id}/delete`); when the live API refuses the route, --hide-if-refused
+            // falls back to active=false public=false and says so. The listing afterwards is the proof.
+            let club = f("--club").ok_or("activity-delete needs --club ID")?;
+            let act = f("--activity").ok_or("activity-delete needs --activity ID")?;
+            let url = format!("{LIVE}/api/token/club/{club}/activity/{act}/delete");
+            match post_json(&auth_live, &url, "{}") {
+                Ok(v) => {
+                    save(&format!("club-{club}-activity-{act}-delete.json"), &v)?;
+                    println!("activity\t{act}\tDELETED\t{}", serde_json::to_string(&v).unwrap_or_default().chars().take(200).collect::<String>());
+                }
+                Err(e) => {
+                    println!("activity\t{act}\tdelete refused: {}", e.lines().next().unwrap_or(""));
+                    if tmmaps::cli::has(args, "--hide-if-refused") {
+                        let a = activity_edit(&auth_live, &club, &act, false, false)?;
+                        save(&format!("club-{club}-activity-{act}-edit.json"), &a)?;
+                        println!("activity\t{act}\tHIDDEN instead\tactive {}\tpublic {}\tname {}", s(&a, "active"), s(&a, "public"), s(&a, "name"));
+                    } else {
+                        return Err(e);
+                    }
+                }
+            }
+            // the listing afterwards (active=0 includes hidden ones)
+            let v = get_json(&auth_live, &format!("{LIVE}/api/token/club/{club}/activity/all?length=100&offset=0&active=0"))?;
+            let list = v.get("activityList").and_then(|l| l.as_array()).cloned().unwrap_or_default();
+            match list.iter().find(|a| s(a, "id") == act) {
+                Some(a) => println!("after\tactivity {act} still listed: active {} public {} name {}", s(a, "active"), s(a, "public"), s(a, "name")),
+                None => println!("after\tactivity {act} NOT in the club's activity list any more ({} activities)", list.len()),
+            }
+            Ok(())
+        }
+        other => Err(format!("nadeo-here: unknown subcommand `{other}` (club | campaigns | campaign | campaign-create | maps | official | activity-edit | activity-list | activity-delete)")),
     }
 }
 
