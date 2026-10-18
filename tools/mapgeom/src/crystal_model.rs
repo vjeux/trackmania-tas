@@ -193,9 +193,18 @@ impl<'a> Rd<'a> {
     /// tex coords is written as u16s), as GBX.NET's `ReadArrayOptimizedInt()`.
     pub fn opt_array(&mut self) -> R<Vec<u32>> {
         let n = self.count()?;
+        // CRYSTAL_OPT_ARRAY_WIDTH=1|2|4: force the element width (forensics, 2026-10-18: GBX.NET sizes the
+        // tex-coord index array from the TEX-COORD count, the game from the array length — they differ
+        // once an array passes 65 535 entries)
+        let forced: Option<usize> = std::env::var("CRYSTAL_OPT_ARRAY_WIDTH").ok().and_then(|v| v.parse().ok());
         let mut v = Vec::with_capacity(n);
         for _ in 0..n {
-            v.push(self.opt(n)?);
+            v.push(match forced {
+                Some(1) => self.u8()? as u32,
+                Some(2) => self.u16()? as u32,
+                Some(4) => self.u32()?,
+                _ => self.opt(n)?,
+            });
         }
         Ok(v)
     }
@@ -941,11 +950,25 @@ impl Crystal {
         let mut tex_indices: Vec<u32> = Vec::new();
         if version >= 37 {
             c.tex_coords = r.array(|r| r.vec2())?;
+            if std::env::var("CRYSTAL_DEBUG").is_ok() {
+                eprintln!("  tex-index array starts at 0x{:x}; next 40 bytes: {}", r.o, r.b[r.o..(r.o + 40).min(r.b.len())].iter().map(|x| format!("{x:02x}")).collect::<Vec<_>>().join(" "));
+            }
             tex_indices = r.opt_array()?;
+            if std::env::var("CRYSTAL_DEBUG").is_ok() {
+                eprintln!("crystal v{version}: {} positions, {} edges, {face_count} faces, {} tex coords, {} tex indices (width {} from the index-array length; max index {})", npos, c.edges.len(), c.tex_coords.len(), tex_indices.len(), opt_width(tex_indices.len()), tex_indices.iter().max().copied().unwrap_or(0));
+            }
         }
         let mut corner = 0usize;
-        for _ in 0..face_count {
+        let mut nv_hist: std::collections::BTreeMap<usize, usize> = Default::default();
+        if std::env::var("CRYSTAL_DEBUG").is_ok() {
+            eprintln!("  faces start at 0x{:x}; next 48 bytes: {}", r.o, r.b[r.o..(r.o + 48).min(r.b.len())].iter().map(|x| format!("{x:02x}")).collect::<Vec<_>>().join(" "));
+        }
+        for fi in 0..face_count {
             let nv = if version >= 35 { r.u8()? as usize + 3 } else { r.count()? };
+            *nv_hist.entry(nv).or_insert(0) += 1;
+            if std::env::var("CRYSTAL_DEBUG").is_ok() && (corner + nv > tex_indices.len() && version >= 37) {
+                eprintln!("  face {fi}/{face_count}: nv {nv} at corner {corner} exceeds {} tex indices; nv histogram so far {:?}; reader at 0x{:x}", tex_indices.len(), nv_hist, r.o);
+            }
             let mut f = Face::default();
             for _ in 0..nv {
                 f.verts.push(if version >= 34 { r.opt(npos)? } else { r.u32()? });

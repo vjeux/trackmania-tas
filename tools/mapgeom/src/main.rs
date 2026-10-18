@@ -3338,6 +3338,32 @@ fn main() {
         // editor writes for a gameplay gate (Nadeo.zip GateSpecialNoEngine: a
         // Trigger layer in `Modifier\NoEngine\Collision`, physics 0 gameplay 4)
         // — the reference for the static form's trigger (2026-09-08).
+        // crystal-census-pak [--min-corners N]: every pack ITEM whose mesh is a crystal — the tex-coord index
+        // array length (face corners) per layer; the ones past --min-corners (default 60000) printed: which width
+        // the GAME writes a > 65 535-entry optimized array with (Hugo's Grass crash, 2026-10-18)
+        "crystal-census-pak" => {
+            let mut store = open(&a);
+            let min: usize = flag(&a.rest, "--min-corners").and_then(|v| v.parse().ok()).unwrap_or(60000);
+            let names: Vec<String> = store.entries().map(|e| e.path()).filter(|p| p.to_uppercase().ends_with(".ITEM.GBX")).collect();
+            let mut n_crystal = 0usize;
+            let mut best: Vec<(usize, String)> = Vec::new();
+            for p in &names {
+                let Ok(bytes) = store.read(p) else { continue };
+                let Ok(it) = mapgeom::crystal::ItemCrystal::open(&bytes) else { continue };
+                n_crystal += 1;
+                for (li, l) in it.model.layers.iter().enumerate() {
+                    if let Some(c) = l.kind.crystal() {
+                        let corners: usize = c.faces.iter().map(|f| f.verts.len()).sum();
+                        best.push((corners, format!("{p} layer {li}: {} positions, {} faces, {} tex coords", c.positions.len(), c.faces.len(), c.tex_coords.len())));
+                        if corners >= min {
+                            println!("{corners} corners: {p} layer {li} ({} positions, {} faces, {} tex coords)", c.positions.len(), c.faces.len(), c.tex_coords.len());
+                        }
+                    }
+                }
+            }
+            best.sort_by(|a, b| b.0.cmp(&a.0));
+            println!("{n_crystal} crystal items of {} items; the 5 largest layers: {}", names.len(), best.iter().take(5).map(|(c, s)| format!("{c} corners {s}")).collect::<Vec<_>>().join(" | "));
+        }
         "crystal-layers" => {
             for path in a.rest.iter().skip(1) {
                 let bytes = std::fs::read(path).unwrap_or_else(|e| die(format!("{path}: {e}")));
