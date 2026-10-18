@@ -20,6 +20,7 @@
 //!        [--dy M] [--link-min N] [--order-base N] [--all-items] [--report TSV]
 //!        [--variant-table TSV] [--types A,B] [--no-clumps] [--box X0,Y0,Z0:X1,Y1,Z1]
 //!        [--trees TSV from `mapgeom block-trees` — the trees baked into the terrain]
+//!        [--item-collection N: the checkpoint item's own collection, default 26 Stadium]
 //!
 //!   --item     the checkpoint item to place; default is the game's own
 //!              `GateCheckpointCenter8mv2` (a STOCK pack item: nothing to
@@ -161,6 +162,13 @@ fn one(args: &[String]) {
     let src = PathBuf::from(&args[2]);
     let out = PathBuf::from(cli::flag(args, "--out").expect("cpify needs --out MAP"));
     let item = cli::flag(args, "--item").unwrap_or("GateCheckpointCenter8mv2").to_string();
+    // A placement resolves its model by the FULL identity: path + COLLECTION +
+    // author. The appended records are CLONES of one of the map's own items, so
+    // they inherit the MAP's collection — on a GreenCoast map (15) that made
+    // every checkpoint "Missing Items: TinyItems\…" even with the file in
+    // place, because our item declares Stadium (26). Always write the item's
+    // own collection (2026-10-18, Altrd's load error).
+    let item_collection: u32 = cli::flag(args, "--item-collection").unwrap_or("26").parse().expect("--item-collection N");
     let author = cli::flag(args, "--author").unwrap_or("Nadeo").to_string();
     let width: f32 = cli::flag(args, "--width").unwrap_or("8").parse().expect("--width metres");
     // the gate's catch slab is thin along its own axis; keep a little margin so
@@ -357,6 +365,7 @@ fn one(args: &[String]) {
         m.set_item_scale(i, 1.0);
         m.set_item_model(i, &item);
         m.set_item_author(i, &author);
+        m.set_item_collection(i, item_collection);
         // the donor record's variant byte means nothing on the gate and breaks
         // the placement (2026-09-23: no collision, a hung Validate)
         m.clear_item_variant(i);
