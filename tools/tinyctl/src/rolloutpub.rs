@@ -85,6 +85,29 @@ fn uid_prefix(word: &str) -> &'static str {
     }
 }
 
+/// The new uid for a wipe of `live`: the set's prefix on the live tail — unless the live
+/// uid ALREADY carries that prefix (a map wiped on 2026-10-10 wiped again for the fix
+/// round of 10-18): then the next prefix in the chain, so the "new" uid is never the live
+/// one (the clash check would only catch it after the plan was built; this is the rule).
+fn wipe_uid(word: &str, live: &str) -> String {
+    let p = uid_prefix(word);
+    let tail = &live[4.min(live.len())..];
+    if live.starts_with(p) {
+        let next = match word {
+            "Dirt" => "DirX",
+            "Grass" => "GraX",
+            "Icy" => "IceX",
+            "Plastic" => "PlaX",
+            "Magnet" => "MagX",
+            "Wood" => "WooX",
+            "Wet Wood" => "WetY",
+            _ => "TstX",
+        };
+        return format!("{next}{tail}");
+    }
+    format!("{p}{tail}")
+}
+
 #[derive(Default)]
 struct Policy {
     /// `only <maps>`: the set's SCOPE — a map outside it is left alone (SKIP "out of
@@ -221,7 +244,7 @@ pub fn plan(args: &[String]) -> i32 {
                     if force_keep {
                         ("UPDATE", String::new(), path.clone(), format!("policy: keep (records {v})"))
                     } else if force_wipe || v == "TOUCH" {
-                        let nu = format!("{}{}", uid_prefix(word), &uid[4.min(uid.len())..]);
+                        let nu = wipe_uid(word, uid);
                         ("WIPE", nu, path.clone(), if force_wipe { format!("policy: wipe (records {v})") } else { "a record drives a changed surface".to_string() })
                     } else {
                         let why = match v {
