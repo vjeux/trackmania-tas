@@ -4186,6 +4186,14 @@ fn main() {
                     }
                 }
                 println!("{stem}: x-bin → (vertices, max y): {}", bins.iter().map(|(b, (n, y))| format!("[{b}..{}) {n}/{y:.1}", b + 1)).collect::<Vec<_>>().join("  "));
+                // the y histogram too (1 m bins): a start gate's crossbar vs a full arch
+                let mut ybins: std::collections::BTreeMap<i32, usize> = Default::default();
+                for g in c.scene.groups.values() {
+                    for v in &g.verts {
+                        *ybins.entry(v[1].floor() as i32).or_insert(0) += 1;
+                    }
+                }
+                println!("  y-bin → vertices: {}", ybins.iter().map(|(b, n)| format!("[{b}..{}) {n}", b + 1)).collect::<Vec<_>>().join("  "));
                 if !below.is_empty() {
                     let (lo, hi) = below.iter().fold(([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]), |(l, h), v| ([l[0].min(v[0]), l[1].min(v[1]), l[2].min(v[2])], [h[0].max(v[0]), h[1].max(v[1]), h[2].max(v[2])]));
                     println!("  below y 0: {} vertices in [{:.2} {:.2} {:.2}]..[{:.2} {:.2} {:.2}]", below.len(), lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]);
