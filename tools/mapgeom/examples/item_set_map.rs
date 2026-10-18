@@ -6,10 +6,12 @@
 //! pivot says, and tiles against its neighbours.
 //!
 //! usage: item_set_map HOST.Map.Gbx OUT.Map.Gbx AUTHOR SPEC...
-//!   SPEC = IDENT@x,y,z[/yaw_deg[,pitch_deg[,roll_deg]]][/px,py,pz][#Spawn|Checkpoint|Goal]   (pivot default 8,0,8: a 1x1 tiny block's centre;
+//!   SPEC = [AUTHOR::]IDENT@x,y,z[/yaw_deg[,pitch_deg[,roll_deg]]][/px,py,pz][#Spawn|Checkpoint|Goal]   (pivot default 8,0,8: a 1x1 tiny block's centre;
 //!          x,y,z is the record position P; the game puts the item at P + R(p + V) — at yaw 0 the
 //!          piece's corner is P + pivot;
-//!          the #tag is the placement's waypoint property — a start/CP/finish item needs one)
+//!          a 4th slash field is the placement scale (`/0/0,0,0/0.5`);
+//!          the #tag is the placement's waypoint property — a start/CP/finish item needs one;
+//!          `Nadeo::GateCheckpointCenter8mv2` is a STOCK pack item, not a file under Items/)
 //!   e.g. 'TinyBlocks\Roads\RoadTech\Main\Main\RoadTechStraight.Item.Gbx@408,8,408'
 //! The host must have at least as many item records as specs.
 use std::{env, path::Path};
@@ -55,6 +57,14 @@ fn main() {
             eprintln!("spec {spec}: no '@'");
             std::process::exit(2);
         });
+        // `AUTHOR::IDENT` overrides the map-wide author for ONE record — a
+        // STOCK pack item is (name without `.Item.Gbx`, collection 26, author
+        // `Nadeo`), so a map can hold the game's own 8 m gate next to our
+        // loose copy of it (2026-10-17, the Editor++ find/replace test).
+        let (ident, author) = match ident.split_once("::") {
+            Some((a, id)) => (id, a),
+            None => (ident, author.as_str()),
+        };
         let mut parts = rest.split('/');
         let pos: Vec<f32> = parts.next().unwrap_or("").split(',').filter_map(|x| x.parse().ok()).collect();
         if pos.len() != 3 {
@@ -67,10 +77,14 @@ fn main() {
         let pitch_deg: f32 = angles.get(1).copied().unwrap_or(0.0);
         let roll_deg: f32 = angles.get(2).copied().unwrap_or(0.0);
         let pivot: Vec<f32> = parts.next().map(|p| p.split(',').filter_map(|x| x.parse().ok()).collect()).unwrap_or_else(|| vec![8.0, 0.0, 8.0]);
+        // a 4th field is the placement SCALE (the anchored object's own scale
+        // word): `…/0/0,0,0/0.5` puts a half-size copy of the item there —
+        // how small a gate's trigger can get without a new bake (2026-10-17)
+        let scale: f32 = parts.next().and_then(|s| s.trim().parse().ok()).unwrap_or(1.0);
         let pos = [pos[0], pos[1], pos[2]];
         m.move_item(i, pos, yaw_deg.to_radians(), cell(pos));
         m.set_item_frame(i, [yaw_deg.to_radians(), pitch_deg.to_radians(), roll_deg.to_radians()], [pivot[0], pivot[1], pivot[2]]);
-        m.set_item_scale(i, 1.0);
+        m.set_item_scale(i, scale);
         m.set_item_model(i, ident);
         m.set_item_author(i, author);
         // the donor's variant byte (the high byte of the placement flags: a
@@ -81,7 +95,7 @@ fn main() {
         if let Some(t) = tag {
             tags.push((i, t.to_string()));
         }
-        println!("item {i}: {ident} at {pos:?} yaw {yaw_deg} pivot {pivot:?}{}", tag.map(|t| format!(" waypoint {t}")).unwrap_or_default());
+        println!("item {i}: {ident} ({author}) at {pos:?} yaw {yaw_deg} pivot {pivot:?}{}", tag.map(|t| format!(" waypoint {t}")).unwrap_or_default());
     }
     let stage = Path::new(out).with_extension("stage.Map.Gbx");
     m.write_to(&stage).unwrap();

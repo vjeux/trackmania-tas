@@ -54,10 +54,29 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
                 for (ei, e) in p.ents.iter().enumerate() {
                     if let Some(super::Node::WaypointTrigger(wp)) = e.model.inline.as_deref() {
                         let shape = match wp.shape.inline.as_deref() {
-                            Some(super::Node::Surface(sf)) => format!("{} vertices {} triangles", sf.surf.counts().0, sf.surf.counts().1),
+                            Some(super::Node::Surface(sf)) => {
+                                // where the waypoint volume sits in the item's frame:
+                                // how wide a checkpoint actually is, which is what
+                                // decides whether two of them touch (2026-10-17)
+                                let bounds = match &sf.surf {
+                                    super::surface::Surf::Mesh { vertices, .. } if !vertices.is_empty() => {
+                                        let mut lo = [f32::MAX; 3];
+                                        let mut hi = [f32::MIN; 3];
+                                        for v in vertices {
+                                            for k in 0..3 {
+                                                lo[k] = lo[k].min(v[k]);
+                                                hi[k] = hi[k].max(v[k]);
+                                            }
+                                        }
+                                        format!(" bounds [{:.2}, {:.2}, {:.2}]..[{:.2}, {:.2}, {:.2}]", lo[0], lo[1], lo[2], hi[0], hi[1], hi[2])
+                                    }
+                                    _ => String::new(),
+                                };
+                                format!("{} vertices {} triangles{bounds}", sf.surf.counts().0, sf.surf.counts().1)
+                            }
                             _ => format!("shape node {} (not inline)", wp.shape.index),
                         };
-                        println!("{path}: prefab entity {ei} waypoint trigger v{} type {} no_respawn {} {shape}", wp.version, wp.wtype, wp.no_respawn);
+                        println!("{path}: prefab entity {ei} waypoint trigger v{} type {} no_respawn {} at [{:.2}, {:.2}, {:.2}] {shape}", wp.version, wp.wtype, wp.no_respawn, e.pos[0], e.pos[1], e.pos[2]);
                     }
                     if let Some(super::Node::GateSpecial(g)) = e.model.inline.as_deref() {
                         match g.shape.inline.as_deref() {
