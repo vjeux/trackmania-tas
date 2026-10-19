@@ -224,7 +224,12 @@ pub fn plan(args: &[String]) -> i32 {
         let v_touch = verdict.get(&key).map(String::as_str);
         // the touch verdict when there is one; else the pull decides between
         // "records (unanalysed)" and "none"; without a pull, the touch file alone
+        // With a records pull the PULL is the truth about "has records": a touch verdict
+        // for a map whose live uid has no record now is stale (its records were wiped on
+        // 2026-10-10 with the uid, the touch file predates that) — 45 ghost wipes on
+        // 2026-10-19. The verdict still refines a map that HAS records.
         let v: &str = match (v_touch, have_records_file, n_rec) {
+            (_, true, 0) => "none",
             (Some(t), _, _) => t,
             (None, true, n) if n > 0 => "records (unanalysed)",
             _ => "none",
