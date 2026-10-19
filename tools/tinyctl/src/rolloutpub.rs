@@ -322,15 +322,28 @@ pub fn apply(args: &[String]) -> i32 {
     let live_dir = f("--live-dir").map(PathBuf::from);
     let mut live_by_uid: HashMap<String, PathBuf> = HashMap::new();
     if let Some(d) = &live_dir {
+        // one level of `pNN/` part folders too (the `club-inventory --fetch-root` layout)
+        let mut dirs = vec![d.clone()];
         for e in std::fs::read_dir(d).unwrap_or_else(|e| panic!("{}: {e}", d.display())).flatten() {
-            let p = e.path();
-            if p.extension().map(|x| x == "Gbx").unwrap_or(false) {
-                if let Some(uid) = header_uid(&p) {
-                    live_by_uid.insert(uid, p);
+            if e.path().is_dir() {
+                dirs.push(e.path());
+            }
+        }
+        for dir in dirs {
+            for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                let p = e.path();
+                if p.extension().map(|x| x == "Gbx").unwrap_or(false) {
+                    if let Some(uid) = header_uid(&p) {
+                        live_by_uid.insert(uid, p);
+                    }
                 }
             }
         }
         println!("live files: {} indexed by uid", live_by_uid.len());
+        if live_by_uid.is_empty() {
+            eprintln!("--live-dir {}: no map files found (thumbnails would be lost)", d.display());
+            return 2;
+        }
     }
     let thumb_src = |live_uid: &str| -> Option<String> { live_by_uid.get(live_uid).map(|p| p.to_string_lossy().into_owned()) };
 
