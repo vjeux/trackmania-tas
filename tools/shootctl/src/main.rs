@@ -449,6 +449,38 @@ fn strip_comment(line: &str) -> &str {
     }
 }
 
+/// The line with every string literal's CONTENT replaced by spaces (the quotes
+/// stay, so the column count holds): a keyword inside a message is text, not
+/// code. `"(unknown node class)"` in Inventory.as:60 tripped the reserved-word
+/// rule and refused the whole plugin (2026-10-19).
+fn blank_strings(code: &str) -> String {
+    let mut out = String::with_capacity(code.len());
+    let mut in_str = false;
+    let mut esc = false;
+    for c in code.chars() {
+        if in_str {
+            if esc {
+                esc = false;
+                out.push(' ');
+            } else if c == '\\' {
+                esc = true;
+                out.push(' ');
+            } else if c == '"' {
+                in_str = false;
+                out.push('"');
+            } else {
+                out.push(' ');
+            }
+        } else {
+            if c == '"' {
+                in_str = true;
+            }
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// Every `CFoo` that looks like a type reference on this line.
 fn type_refs(code: &str) -> Vec<(String, bool)> {
     let mut out = Vec::new();
@@ -647,6 +679,8 @@ fn lint(api_path: &str, files: &[String]) -> i32 {
             // in front). The first cut of this rule listed `null` and `return`
             // too and fired on eleven correct lines -- a linter that cries wolf
             // is worse than none.
+            let code_nostr = blank_strings(code);
+            let code = code_nostr.as_str();
             for kw in ["out", "in", "inout", "cast", "class", "interface",
                        "namespace", "funcdef", "mixin", "shared", "enum"] {
                 for tail in [";", " =", ")", ","] {
