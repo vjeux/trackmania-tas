@@ -87,6 +87,48 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             writeln!(f, "{line}")
         });
     }
+    // the build ledgers (`build.tsv`, `build-retry.tsv`) live one level UP, at the
+    // rollout-build root (`REMOTE_DIR/..`), and `rollout-publish plan` reads them from
+    // its `--build ROOT`: pulled too, with the box's paths rewritten to the local root
+    // (2026-10-19: a maps-only pull left the plan with "no built file" for every map).
+    if let (Some(remote_root), Some(local_root)) = (remote.rsplit_once('/').map(|(r, _)| r.to_string()), local.parent().map(|p| p.to_path_buf())) {
+        for tsv in ["build.tsv", "build-retry.tsv"] {
+            let rp = format!("{remote_root}/{tsv}");
+            let Ok(text) = wsx.sh(&format!("cat '{rp}' 2>/dev/null")) else { continue };
+            if text.trim().is_empty() {
+                continue;
+            }
+            let rewritten = text.replace(&format!("{remote_root}/"), &format!("{}/", local_root.display()));
+            let lp = local_root.join(tsv);
+            // merge: rows of other sets already pulled stay
+            let mut rows: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+            let mut header = String::new();
+            for existing in std::fs::read_to_string(&lp).unwrap_or_default().lines().chain(rewritten.lines()) {
+                if existing.starts_with("set\t") {
+                    header = existing.to_string();
+                    continue;
+                }
+                let key: String = existing.split('\t').take(2).collect::<Vec<_>>().join("\t");
+                if !key.is_empty() {
+                    rows.insert(key, existing.to_string());
+                }
+            }
+            let mut out = String::new();
+            if !header.is_empty() {
+                out.push_str(&header);
+                out.push('\n');
+            }
+            for r in rows.values() {
+                out.push_str(r);
+                out.push('\n');
+            }
+            if let Err(e) = std::fs::write(&lp, out) {
+                eprintln!("{}: {e}", lp.display());
+            } else {
+                println!("ledger {tsv}: {} row(s) → {}", rows.len(), lp.display());
+            }
+        }
+    }
     println!("pull-tree: {done} part(s) pulled, {skipped} already here, {} total, {:.0}s → {}", parts.len(), t0.elapsed().as_secs_f64(), local.display());
     Ok(())
 }
