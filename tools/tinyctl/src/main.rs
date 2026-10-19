@@ -222,6 +222,7 @@ fn main() {
         "play" => play::cmd(rest),
         "startcheck" => startcheck::run(rest),
         "loadloop" => loadloop::cmd(rest),
+        "symlinks" => loadloop::symlinks_cmd(rest),
         "replay-pull" => replaypull::cmd(rest),
         "camcheck" => camcheck::cmd(rest),
         "publish-map" => publish::publish_map_cmd(rest),

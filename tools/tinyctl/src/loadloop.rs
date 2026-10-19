@@ -20,6 +20,7 @@ use std::time::Duration;
 use crate::wsx::Wsx;
 
 const STAGE: &str = "/home/vjeux/shoot/_stage";
+const BOX_TINYCTL: &str = "/home/vjeux/tools/cur/tinyctl";
 const SHOTS: &str = "/mnt/c/Users/vjeux/tinyshots";
 const BOX_TOOLS: &str = "/home/vjeux/trackmania-tas/tools/target/release";
 
@@ -47,15 +48,42 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     let box_maps: Vec<String> = f("--box-maps").map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()).unwrap_or_default();
     let mut n_box = box_maps.len();
     remote.extend(box_maps);
-    // the list file travels to the box as-is and the loop reads it there (`--maps-file`)
-    let mut maps_file_arg = String::new();
+    // The box's shootctl (2026-10-09, token-gated — never replaced from here) knows
+    // only `--maps A,B,…`: a 1,574-path list of names with spaces and brackets
+    // (134 KB) does not fit a command line. So the list becomes SHORT SYMLINKS on
+    // the box — `/home/vjeux/ll-<tag>/0001.Map.Gbx` … — created by the box's own
+    // tinyctl from a pushed `src\tdst` file (`tinyctl symlinks`; a shell loop
+    // mangled the quoting, 2026-10-19), and the loop runs in chunks of
+    // `--box-chunk N` (default 400 ≈ 14 KB a command; one game launch per chunk).
+    // `links-<tag>.tsv` beside the table maps link → source for the reading.
+    let mut chunk_lists: Vec<Vec<String>> = Vec::new();
     if let Some(list) = &box_list {
         let t = std::fs::read_to_string(list).map_err(|e| format!("{list}: {e}"))?;
-        n_box += t.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).count();
-        let r = format!("{STAGE}/ll-{tag}-maps.txt");
-        wsx.push(std::path::Path::new(list), &r)?;
-        maps_file_arg = format!(" --maps-file {r}");
+        let srcs: Vec<&str> = t.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).collect();
+        n_box += srcs.len();
+        let link_dir = format!("/home/vjeux/ll-{tag}");
+        let mut pairs = String::new();
+        let mut links_local = String::from("link\tsource\n");
+        let mut all_links = Vec::new();
+        for (i, src) in srcs.iter().enumerate() {
+            let dst = format!("{link_dir}/{:04}.Map.Gbx", i + 1);
+            pairs.push_str(&format!("{src}\t{dst}\n"));
+            links_local.push_str(&format!("{dst}\t{src}\n"));
+            all_links.push(dst);
+        }
+        let pairs_local = outdir.join(format!("pairs-{tag}.tsv"));
+        std::fs::write(&pairs_local, &pairs).map_err(|e| format!("{}: {e}", pairs_local.display()))?;
+        std::fs::write(outdir.join(format!("links-{tag}.tsv")), &links_local).map_err(|e| e.to_string())?;
+        let r = format!("{STAGE}/ll-{tag}-pairs.tsv");
+        wsx.push(&pairs_local, &r)?;
+        let made = wsx.sh(&format!("{BOX_TINYCTL} symlinks {r} --replace"))?;
+        eprintln!("{}", made.trim());
+        let chunk: usize = f("--box-chunk").and_then(|v| v.parse().ok()).unwrap_or(400);
+        for c in all_links.chunks(chunk.max(1)) {
+            chunk_lists.push(c.to_vec());
+        }
     }
+    let maps_file_arg = String::new();
     for (i, m) in maps.iter().enumerate() {
         if !m.exists() {
             return Err(format!("{}: no such file", m.display()));
@@ -80,32 +108,102 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         }
     }
     let env = crate::remoteshots::ENV;
-    let maps_arg = if remote.is_empty() { String::new() } else { format!(" --maps {}", remote.join(",")) };
-    let cmd = format!("{env}; {shootctl} loadloop --detach{maps_arg}{maps_file_arg} --outdir {remote_dir} --tag {tag} --timeout {timeout}{pass}");
-    let n_loads = f("--n").and_then(|s| s.parse::<usize>().ok()).unwrap_or(1) * f("--seq").map(|s| s.split(',').count()).unwrap_or(maps.len() + n_box);
-    eprintln!("running {n_loads} loads on the box — waits for the render lock if another thread holds the game …");
-    let started = wsx.sh(&cmd)?;
-    if wsx.verbose {
-        eprintln!("{}", started.trim());
+    // one run (pushed maps + `--box-maps`), or one run per chunk of a list
+    let mut runs: Vec<(String, Vec<String>)> = Vec::new();
+    if !remote.is_empty() || chunk_lists.is_empty() {
+        runs.push((tag.clone(), remote.clone()));
     }
-    // the lock wait (1500 s) + every load's timeout + the menu round trips
-    let budget = Duration::from_secs(1500 + n_loads as u64 * (timeout + 60));
-    let done = wsx.wait_done(&format!("{remote_dir}/done-loadloop.txt"), &format!("{remote_dir}/loadloop.log"), budget, &format!("loadloop {tag}"));
-    // the table is worth pulling even when the loop failed part-way
-    let tsv = format!("loadloop-{tag}.tsv");
-    let local = outdir.join(&tsv);
-    match wsx.pull(&format!("{remote_dir}/{tsv}"), &local) {
-        Ok(n) => eprintln!("  pulled {tsv} ({n} B)"),
-        Err(e) => eprintln!("  {tsv}: {e}"),
+    for (k, c) in chunk_lists.into_iter().enumerate() {
+        runs.push((format!("{tag}-c{}", k + 1), c));
     }
-    let log_local = outdir.join(format!("loadloop-{tag}.log"));
-    if let Ok(n) = wsx.pull(&format!("{remote_dir}/loadloop.log"), &log_local) {
-        eprintln!("  pulled loadloop-{tag}.log ({n} B)");
+    let n_runs = runs.len();
+    let mut table = String::new();
+    let mut first_err: Option<String> = None;
+    for (run_tag, run_maps) in runs {
+        let remote_dir = format!("{SHOTS}/loadloop-{run_tag}");
+        let maps_arg = if run_maps.is_empty() { String::new() } else { format!(" --maps {}", run_maps.join(",")) };
+        let cmd = format!("{env}; {shootctl} loadloop --detach{maps_arg}{maps_file_arg} --outdir {remote_dir} --tag {run_tag} --timeout {timeout}{pass}");
+        let n_loads = f("--n").and_then(|s| s.parse::<usize>().ok()).unwrap_or(1) * f("--seq").map(|s| s.split(',').count()).unwrap_or(if run_maps.is_empty() { maps.len() + n_box } else { run_maps.len() });
+        eprintln!("[{run_tag}] running {n_loads} loads on the box ({n_runs} run(s) in all) — waits for the render lock if another thread holds the game …");
+        let started = wsx.sh(&cmd)?;
+        if wsx.verbose {
+            eprintln!("{}", started.trim());
+        }
+        // the lock wait (1500 s) + every load's timeout + the menu round trips
+        let budget = Duration::from_secs(1500 + n_loads as u64 * (timeout + 60));
+        let done = wsx.wait_done(&format!("{remote_dir}/done-loadloop.txt"), &format!("{remote_dir}/loadloop.log"), budget, &format!("loadloop {run_tag}"));
+        // the table is worth pulling even when the loop failed part-way
+        let tsv = format!("loadloop-{run_tag}.tsv");
+        let local = outdir.join(&tsv);
+        match wsx.pull(&format!("{remote_dir}/{tsv}"), &local) {
+            Ok(n) => eprintln!("  pulled {tsv} ({n} B)"),
+            Err(e) => eprintln!("  {tsv}: {e}"),
+        }
+        let log_local = outdir.join(format!("loadloop-{run_tag}.log"));
+        if let Ok(n) = wsx.pull(&format!("{remote_dir}/loadloop.log"), &log_local) {
+            eprintln!("  pulled loadloop-{run_tag}.log ({n} B)");
+        }
+        if let Ok(t) = std::fs::read_to_string(&local) {
+            if table.is_empty() {
+                table.push_str(&t);
+            } else {
+                for l in t.lines().skip(1) {
+                    table.push_str(l);
+                    table.push('\n');
+                }
+            }
+        }
+        if let Err(e) = done {
+            eprintln!("[{run_tag}] {e}");
+            first_err.get_or_insert(e);
+            break;
+        }
     }
-    done?;
+    let local = outdir.join(format!("loadloop-{tag}.tsv"));
+    if n_runs > 1 {
+        std::fs::write(&local, &table).map_err(|e| format!("{}: {e}", local.display()))?;
+    }
+    if let Some(e) = first_err {
+        return Err(e);
+    }
     let text = std::fs::read_to_string(&local).map_err(|e| format!("{}: {e}", local.display()))?;
     print!("{}", summarize(&text));
     println!("table {}", local.display());
+    Ok(())
+}
+
+/// `tinyctl symlinks PAIRS.tsv [--replace]` — the BOX-side half of a long map
+/// list: one `source\tlink` a line, each link created (parents made; an existing
+/// link replaced with `--replace`). A program, not a shell loop: the bridge's
+/// quoting ate a `while read` on 2026-10-19 (tabs became literal, the prefix
+/// `/home/vjeux/rollout` vanished).
+pub fn symlinks_cmd(args: &[String]) -> Result<(), String> {
+    let path = args.first().filter(|a| !a.starts_with("--")).ok_or("symlinks needs PAIRS.tsv (source\\tlink a line)")?;
+    let replace = tmmaps::cli::has(args, "--replace");
+    let t = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
+    let (mut made, mut kept) = (0usize, 0usize);
+    for (i, l) in t.lines().enumerate() {
+        let l = l.trim_end_matches(['\r', '\n']);
+        if l.trim().is_empty() || l.starts_with('#') {
+            continue;
+        }
+        let (src, dst) = l.split_once('\t').ok_or_else(|| format!("{path}:{}: no tab", i + 1))?;
+        let dst = std::path::Path::new(dst);
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+        }
+        if dst.symlink_metadata().is_ok() {
+            if replace {
+                std::fs::remove_file(dst).map_err(|e| format!("{}: {e}", dst.display()))?;
+            } else {
+                kept += 1;
+                continue;
+            }
+        }
+        std::os::unix::fs::symlink(src, dst).map_err(|e| format!("{} -> {src}: {e}", dst.display()))?;
+        made += 1;
+    }
+    println!("symlinks: {made} made, {kept} kept");
     Ok(())
 }
 
