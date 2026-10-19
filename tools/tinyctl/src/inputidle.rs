@@ -29,7 +29,10 @@ pub struct Verdict {
 /// One reading. `Err` means the check could not run (missing exe, bridge down) — the
 /// caller must treat that as BUSY: an unknown box is never ours to take.
 pub fn read(wsx: &Wsx, window_s: u32) -> Result<Verdict, String> {
-    let out = wsx.sh(&format!("{EXE} status --window-s {window_s} --state {STATE} 2>&1; true"))?;
+    // one bridge call: the input verdict, the process list, the game lock
+    let out = wsx.sh(&format!(
+        "{EXE} status --window-s {window_s} --state {STATE} 2>&1; echo __TASKS__; /mnt/c/Windows/System32/tasklist.exe 2>/dev/null | tr -d '\\r'; echo __LOCK__; /home/vjeux/bin/tmdrive status 2>&1 | head -1; true"
+    ))?;
     let line = out.lines().find(|l| l.contains("verdict=")).unwrap_or("").trim().to_string();
     if line.is_empty() {
         return Err(format!("inputidle gave no verdict line: {}", out.trim().chars().take(200).collect::<String>()));
@@ -37,8 +40,45 @@ pub fn read(wsx: &Wsx, window_s: u32) -> Result<Verdict, String> {
     if line.contains("verdict=error") {
         return Err(line);
     }
-    Ok(Verdict { free: line.contains("verdict=free"), line })
+    let mut free = line.contains("verdict=free");
+    let mut line = line;
+    // The input clock is not the whole story (2026-10-19, 11:38: `verdict=free … clock=
+    // app-pumped` while vjeux had Minecraft AND his own Trackmania open for hours — a
+    // player holding a key, or a captured-cursor game, is indistinguishable from an app
+    // pumping the clock; the gate waved a 1,574-map load loop onto his screen). So two
+    // process facts are BUSY on their own, whatever the clock says:
+    //   • a game only a person launches (`HUMAN_APPS`) is running;
+    //   • a Trackmania.exe is running while the game lock (`tmdrive status`) names no
+    //     live driver — nobody drives it, so a person does (the 2026-10-18 rule: a game
+    //     no agent holds is vjeux's).
+    // `--ignore-idle` / `TINY_IGNORE_IDLE=1` still overrides, deliberately, upstream.
+    let tasks = out.split("__TASKS__").nth(1).and_then(|t| t.split("__LOCK__").next()).unwrap_or("");
+    let lock = out.split("__LOCK__").nth(1).unwrap_or("").trim();
+    let mut procs: Vec<String> = Vec::new();
+    for l in tasks.lines() {
+        let Some(exe) = l.split_whitespace().next() else { continue };
+        if HUMAN_APPS.iter().any(|h| exe.eq_ignore_ascii_case(h)) && !procs.iter().any(|p| p == exe) {
+            procs.push(exe.to_string());
+        }
+    }
+    let tm_running = tasks.lines().any(|l| l.split_whitespace().next().map(|e| e.eq_ignore_ascii_case("Trackmania.exe")).unwrap_or(false));
+    let lock_alive = lock.starts_with("ALIVE") || lock.starts_with("HELD") || (lock.contains("session=") && !lock.starts_with("DEAD") && !lock.starts_with("FREE"));
+    if !procs.is_empty() {
+        free = false;
+        line.push_str(&format!(" human_app={}", procs.join("+")));
+    }
+    if tm_running && !lock_alive {
+        free = false;
+        line.push_str(" undriven_game=Trackmania.exe");
+    }
+    if !free && line.contains("verdict=free") {
+        line = line.replacen("verdict=free", "verdict=busy(process)", 1);
+    }
+    Ok(Verdict { free, line })
 }
+
+/// Programs only a PERSON starts on the box: any of them running = busy.
+pub const HUMAN_APPS: &[&str] = &["Minecraft.exe", "MinecraftLauncher.exe", "Hades2.exe", "HadesII.exe", "Hades.exe", "javaw.exe"];
 
 /// Poll until the box is free or the deadline passes.
 pub fn wait_free(wsx: &Wsx, window_s: u32, wait_s: u32, poll_s: u32, quiet: bool) -> Result<Verdict, String> {
