@@ -767,7 +767,7 @@ fn plan_one_dry(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, cou
     // clips (HFC/FC/FCT/FCB) are re-dressed.
     // (`RoadWaterVFC*` is NOT a side: the water roads' "vertical" clips carry the channel
     // bed — 410 m² of up-facing floor in `RoadWaterVFCInside` — 2026-10-19)
-    let water_side = name.contains("Water") && name.contains("VFC") && !name.starts_with("RoadWaterVFC");
+    let water_side = name.contains("Water") && name.contains("VFC") && !name.starts_with("RoadWater");
     if !water_side && std::env::var("TINY_BAKE_FAMILY").ok().map(|v| v.split(',').any(|f| !f.trim().is_empty() && name.starts_with(f.trim()))).unwrap_or(false) {
         if base_prefab(&src).is_some() {
             return mk(Action::Bake, "", "name-only surface twins (one prefab per suffix): re-dressed copy".into());
