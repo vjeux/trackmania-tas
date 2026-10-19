@@ -3411,6 +3411,119 @@ fn main() {
                 eprintln!("wrote {out}");
             }
         }
+        // crystal-faces FILE.. : per crystal layer and per material, the face census for Hugo's deck/curb predicate
+        // (2026-10-19): count, normal classes (|ny| > 0.8 deck-like / 0.5..0.8 slope / < 0.5 vertical), y range,
+        // and the up-facing faces' footprint (their x/z extents) — all in the item frame.
+        "crystal-faces" => {
+            for path in a.rest.iter().skip(1) {
+                let bytes = std::fs::read(path).unwrap_or_else(|e| die(format!("{path}: {e}")));
+                let it = mapgeom::crystal::ItemCrystal::open(&bytes).unwrap_or_else(|e| die(format!("{path}: {e}")));
+                let mats: Vec<String> = it.model.materials.iter().map(|m| match m.inst().and_then(|x| x.main.as_ref()) {
+                    Some(main) => match &main.link { mapgeom::crystal_model::Id::Str(s) => s.clone(), other => format!("{other:?}") },
+                    None => m.name.clone(),
+                }).collect();
+                println!("{path}: {} materials, {} layers", mats.len(), it.model.layers.len());
+                for (li, l) in it.model.layers.iter().enumerate() {
+                    let Some(c) = l.kind.crystal() else { continue };
+                    #[derive(Default)]
+                    struct Acc { n: usize, deck: usize, slope: usize, vert: usize, down: usize, ylo: f32, yhi: f32, up_xlo: f32, up_xhi: f32, up_zlo: f32, up_zhi: f32, up_ylo: f32, up_yhi: f32, area_up: f64 }
+                    let mut per: std::collections::BTreeMap<i32, Acc> = Default::default();
+                    let mut bands: std::collections::BTreeMap<(i32, i32), (usize, f64, f32, f32)> = Default::default();
+                    let mut vert: std::collections::BTreeMap<(i32, i32, i32, i32, i32), (usize, f64)> = Default::default();
+                    let mut slopes: std::collections::BTreeMap<(i32, i32, i32, i32), (usize, f64, f32, f32, f32, f32)> = Default::default();
+                    for f in &c.faces {
+                        if f.verts.len() < 3 { continue; }
+                        let p: Vec<[f32; 3]> = f.verts.iter().filter_map(|&i| c.positions.get(i as usize).copied()).collect();
+                        if p.len() < 3 { continue; }
+                        // Newell normal
+                        let mut nrm = [0f32; 3];
+                        for i in 0..p.len() {
+                            let (a, b) = (p[i], p[(i + 1) % p.len()]);
+                            nrm[0] += (a[1] - b[1]) * (a[2] + b[2]);
+                            nrm[1] += (a[2] - b[2]) * (a[0] + b[0]);
+                            nrm[2] += (a[0] - b[0]) * (a[1] + b[1]);
+                        }
+                        let len = (nrm[0] * nrm[0] + nrm[1] * nrm[1] + nrm[2] * nrm[2]).sqrt();
+                        if len < 1e-9 { continue; }
+                        let ny = nrm[1] / len;
+                        let e = per.entry(f.material).or_insert_with(|| Acc { ylo: f32::INFINITY, yhi: f32::NEG_INFINITY, up_xlo: f32::INFINITY, up_xhi: f32::NEG_INFINITY, up_zlo: f32::INFINITY, up_zhi: f32::NEG_INFINITY, up_ylo: f32::INFINITY, up_yhi: f32::NEG_INFINITY, ..Default::default() });
+                        e.n += 1;
+                        if ny > 0.8 { e.deck += 1; e.area_up += (len / 2.0) as f64; for v in &p { e.up_xlo = e.up_xlo.min(v[0]); e.up_xhi = e.up_xhi.max(v[0]); e.up_zlo = e.up_zlo.min(v[2]); e.up_zhi = e.up_zhi.max(v[2]); e.up_ylo = e.up_ylo.min(v[1]); e.up_yhi = e.up_yhi.max(v[1]); } }
+                        else if ny < -0.8 { e.down += 1; }
+                        else if ny.abs() > 0.5 {
+                            e.slope += 1;
+                            if std::env::var("CRYSTAL_SLOPES").is_ok() {
+                                let ylo = p.iter().map(|v| v[1]).fold(f32::INFINITY, f32::min);
+                                let yhi = p.iter().map(|v| v[1]).fold(f32::NEG_INFINITY, f32::max);
+                                let xlo = p.iter().map(|v| v[0]).fold(f32::INFINITY, f32::min);
+                                let xhi = p.iter().map(|v| v[0]).fold(f32::NEG_INFINITY, f32::max);
+                                let zlo = p.iter().map(|v| v[2]).fold(f32::INFINITY, f32::min);
+                                let zhi = p.iter().map(|v| v[2]).fold(f32::NEG_INFINITY, f32::max);
+                                let key = (f.material, (ny * 20.0).round() as i32, (ylo * 10.0).round() as i32, (yhi * 10.0).round() as i32);
+                                let b = slopes.entry(key).or_insert((0usize, 0f64, f32::INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::NEG_INFINITY));
+                                b.0 += 1; b.1 += (len / 2.0) as f64; b.2 = b.2.min(xlo); b.3 = b.3.max(xhi); b.4 = b.4.min(zlo); b.5 = b.5.max(zhi);
+                            }
+                        }
+                        else {
+                            e.vert += 1;
+                            if std::env::var("CRYSTAL_VERT_X").is_ok() {
+                                // vertical faces: by x position (10 cm) and y band — where the curb's inner/outer faces stand
+                                let xmid = p.iter().map(|v| v[0]).sum::<f32>() / p.len() as f32;
+                                let ylo = p.iter().map(|v| v[1]).fold(f32::INFINITY, f32::min);
+                                let yhi = p.iter().map(|v| v[1]).fold(f32::NEG_INFINITY, f32::max);
+                                let nx = nrm[0] / len;
+                                let key = (f.material, (xmid * 10.0).round() as i32, (ylo * 10.0).round() as i32, (yhi * 10.0).round() as i32, if nx > 0.5 { 1 } else if nx < -0.5 { -1 } else { 0 });
+                                let b = vert.entry(key).or_insert((0usize, 0f64));
+                                b.0 += 1; b.1 += (len / 2.0) as f64;
+                            }
+                        }
+                        for v in &p { e.ylo = e.ylo.min(v[1]); e.yhi = e.yhi.max(v[1]); }
+                        // the up-facing TrackBorders faces by height band (the curb top vs the border's own deck)
+                        if ny > 0.8 && std::env::var("CRYSTAL_UP_BANDS").is_ok() {
+                            let ymid = p.iter().map(|v| v[1]).sum::<f32>() / p.len() as f32;
+                            let xmin = p.iter().map(|v| v[0]).fold(f32::INFINITY, f32::min);
+                            let xmax = p.iter().map(|v| v[0]).fold(f32::NEG_INFINITY, f32::max);
+                            let key = (f.material, (ymid * 20.0).round() as i32);
+                            let b = bands.entry(key).or_insert((0usize, 0f64, f32::INFINITY, f32::NEG_INFINITY));
+                            b.0 += 1; b.1 += (len / 2.0) as f64; b.2 = b.2.min(xmin); b.3 = b.3.max(xmax);
+                        }
+                    }
+                    if std::env::var("CRYSTAL_SLOPES").is_ok() {
+                        println!("    slope faces (0.5 < |ny| < 0.8) by (material, ny, y lo..hi): faces, area m2, x range, z range");
+                        for ((m, nyb, ylo, yhi), (n, area, xlo, xhi, zlo, zhi)) in &slopes {
+                            if *area < 0.3 { continue; }
+                            let name = mats.get(*m as usize).cloned().unwrap_or_else(|| format!("#{m}"));
+                            println!("      {}\tny≈{:.2}\ty {:.1}..{:.1}\t{n}\t{area:.1}\tx {xlo:.2}..{xhi:.2}\tz {zlo:.2}..{zhi:.2}", name.rsplit('\\').next().unwrap_or(&name), *nyb as f32 / 20.0, *ylo as f32 / 10.0, *yhi as f32 / 10.0);
+                        }
+                    }
+                    if std::env::var("CRYSTAL_VERT_X").is_ok() {
+                        println!("    vertical faces by (material, x 10 cm, y lo..hi, facing ±x): faces, area m2 (area ≥ 0.5 only)");
+                        for ((m, xb, ylo, yhi, nx), (n, area)) in &vert {
+                            if *area < 0.5 { continue; }
+                            let name = mats.get(*m as usize).cloned().unwrap_or_else(|| format!("#{m}"));
+                            println!("      {}\tx≈{:.1}\ty {:.1}..{:.1}\tfacing {}\t{n}\t{area:.1}", name.rsplit('\\').next().unwrap_or(&name), *xb as f32 / 10.0, *ylo as f32 / 10.0, *yhi as f32 / 10.0, match nx { 1 => "+x", -1 => "-x", _ => "±z" });
+                        }
+                    }
+                    if std::env::var("CRYSTAL_UP_BANDS").is_ok() {
+                        println!("    up-facing faces by (material, y band of 5 cm): faces, area m2, x range");
+                        for ((m, yb), (n, area, xlo, xhi)) in &bands {
+                            if *area < 0.05 { continue; }
+                            let name = mats.get(*m as usize).cloned().unwrap_or_else(|| format!("#{m}"));
+                            println!("      {}\ty≈{:.2}\t{n}\t{area:.1}\tx {xlo:.2}..{xhi:.2}", name.rsplit('\\').next().unwrap_or(&name), *yb as f32 / 20.0);
+                        }
+                    }
+                    println!("  layer {li} \"{}\": {} faces", l.base.layer_name, c.faces.len());
+                    println!("    material\tfaces\tup(ny>0.8)\tslope\tvertical\tdown\ty_range\tup_faces_y\tup_faces_x\tup_faces_z\tup_area_m2");
+                    for (m, e) in &per {
+                        let name = mats.get(*m as usize).cloned().unwrap_or_else(|| format!("#{m}"));
+                        let upy = if e.deck > 0 { format!("{:.2}..{:.2}", e.up_ylo, e.up_yhi) } else { "-".into() };
+                        let upx = if e.deck > 0 { format!("{:.2}..{:.2}", e.up_xlo, e.up_xhi) } else { "-".into() };
+                        let upz = if e.deck > 0 { format!("{:.2}..{:.2}", e.up_zlo, e.up_zhi) } else { "-".into() };
+                        println!("    {name}\t{}\t{}\t{}\t{}\t{}\t{:.2}..{:.2}\t{upy}\t{upx}\t{upz}\t{:.1}", e.n, e.deck, e.slope, e.vert, e.down, e.ylo, e.yhi, e.area_up);
+                    }
+                }
+            }
+        }
         "crystal-layers" => {
             for path in a.rest.iter().skip(1) {
                 let bytes = std::fs::read(path).unwrap_or_else(|e| die(format!("{path}: {e}")));
