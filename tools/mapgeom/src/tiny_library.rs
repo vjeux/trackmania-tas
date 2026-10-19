@@ -3791,3 +3791,38 @@ thread_local! {
     /// build (`inline_filler_foliage`): a species is baked once per process.
     static FILLER_CACHE: std::cell::RefCell<Option<BTreeMap<String, Result<crate::static_item::build::Merged, String>>>> = const { std::cell::RefCell::new(None) };
 }
+
+/// ONE named block as a full-size item (Hugo's vista terrain items, 2026-10-19): the block info
+/// resolved in the loaded paks under `collection`, its placement variant picked from `flags` (the
+/// map record's flags: ground bit, variant/subvariant/additional indices), the variant's prefabs
+/// merged with the block's modifier + the collection skin exactly as the tiny bake does — but at
+/// scale 1, under `ident`/`author`. Returns the item bytes + the merge report.
+#[allow(clippy::too_many_arguments)]
+pub fn bake_named_block(store: &mut DataStore, collection: u32, name: &str, flags: u32, ident: &str, author: &str, scale: f32) -> Result<(Vec<u8>, crate::static_item::build::Merged, String), String> {
+    let coll_name = crate::static_item::materials::env_name(collection);
+    let mut idx = crate::blockmap::BlockInfoIndex::build(store, coll_name);
+    let (path, bi) = load_block_info(&mut idx, store, name)?;
+    let key = BlockKey { name, flags, inherited_mods: "", placements: 1 };
+    let regen = std::collections::BTreeSet::new();
+    let tile_zones = std::collections::BTreeSet::new();
+    let alias_of_recipe: BTreeMap<String, String> = BTreeMap::new();
+    let plan = match plan_block(&bi, &key, collection, &regen, &tile_zones, &alias_of_recipe) {
+        BlockPlan::Bake(b) => b,
+        BlockPlan::Nothing { why, .. } => return Err(format!("{name}: no item: {why}")),
+        BlockPlan::Refused { source, error } => return Err(format!("{name}: refused: {error} ({source})")),
+        BlockPlan::Reuse { .. } => unreachable!("empty alias table"),
+    };
+    let label = plan.pk.label.clone();
+    let legacy: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    bake_env_reset(collection);
+    let (bytes, m, _) = bake_block(store, &plan, name, &path, &bi, ident, scale, collection, &legacy, None, false)?;
+    // the tiny bake signs author = ident; Hugo's items carry his author → re-assemble the same Merged
+    let bytes = if author == ident {
+        bytes
+    } else {
+        let opts = crate::static_item::build::BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, skin: m.skin.clone() };
+        let f = crate::static_item::build::assemble(&m, &opts)?;
+        crate::static_item::file::write_file(&f)
+    };
+    Ok((bytes, m, format!("{path} [{label}] prefabs {:?}", plan.prefabs.iter().map(|p| p.0.rsplit('\\').next().unwrap_or(&p.0).to_string()).collect::<Vec<_>>())))
+}

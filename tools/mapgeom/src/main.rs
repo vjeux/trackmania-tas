@@ -179,6 +179,10 @@ fn parse_args() -> Args {
     Args { packs, paks, key, rest }
 }
 
+fn crate_ground_flag() -> u32 {
+    mapgeom::blockmap::FLAG_GROUND
+}
+
 fn open(a: &Args) -> DataStore {
     if !a.paks.is_empty() {
         let mut store = DataStore::empty();
@@ -3523,6 +3527,45 @@ fn main() {
                     }
                 }
             }
+        }
+        // block-item NAME --collection RedIsland --out F.Item.Gbx [--ident NAME.Item.Gbx] [--author X] [--flags HEX|--ground]
+        //   [--scale 1]: ONE block (a vista terrain variant: RoadTechStraightOnDirtCliff4…) as a full-size item through the
+        //   tiny bake (deck + terrain prefabs merged, the collection skin's materials, the collision) — Hugo's vista items (2026-10-19)
+        "block-item" => {
+            let mut store = open(&a);
+            let name = a.rest.get(1).cloned().unwrap_or_else(|| die("block-item NAME …".into()));
+            let coll = flag(&a.rest, "--collection").unwrap_or_else(|| "Stadium".into());
+            let collection = match coll.as_str() { "Stadium" => 0x1a, "RedIsland" => 0x10, "BlueBay" => 0x1c, "WhiteShore" => 0x1d, "GreenCoast" => 0xf, other => die(format!("unknown collection {other}")) };
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("block-item needs --out F".into()));
+            let ident = flag(&a.rest, "--ident").unwrap_or_else(|| format!("{name}.Item.Gbx"));
+            let author = flag(&a.rest, "--author").unwrap_or_else(|| "Nadeo".into());
+            let scale: f32 = flag(&a.rest, "--scale").and_then(|v| v.parse().ok()).unwrap_or(1.0);
+            let mut flags: u32 = flag(&a.rest, "--flags").and_then(|v| u32::from_str_radix(v.trim_start_matches("0x"), 16).ok()).unwrap_or(0);
+            if a.rest.iter().any(|x| x == "--ground") { flags |= crate_ground_flag(); }
+            let (bytes, m, src) = mapgeom::tiny_library::bake_named_block(&mut store, collection, &name, flags, &ident, &author, scale).unwrap_or_else(|e| die(e));
+            std::fs::write(&out, &bytes).unwrap_or_else(|e| die(format!("{out}: {e}")));
+            println!("wrote {out}: {} bytes from {src}", bytes.len());
+            println!("  visuals {} materials {} collision tris {}", m.visuals.len(), m.materials.len(), m.surf_triangles.len());
+            for (i, mat) in m.materials.iter().enumerate() {
+                println!("  material {i}: {} physics {:?}", mat.link().unwrap_or("?"), mat.physics());
+            }
+            for n in m.notes.iter().take(40) {
+                println!("  note: {n}");
+            }
+        }
+        // vista-items MAP --out OUT [--only NAME,..] [--author X] [--items-dir D]: the map's vista variant blocks replaced
+        //   by whole-variant embedded items (Hugo's vista items, 2026-10-19)
+        "vista-items" => {
+            let mut store = open(&a);
+            let src = a.rest.get(1).cloned().unwrap_or_else(|| die("vista-items MAP …".into()));
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("vista-items needs --out OUT".into()));
+            let only: Vec<String> = flag(&a.rest, "--only").map(|s| s.split(',').map(|x| x.trim().to_string()).collect()).unwrap_or_default();
+            let author = flag(&a.rest, "--author").unwrap_or_else(|| "Nadeo".into());
+            let items_dir = flag(&a.rest, "--items-dir").map(std::path::PathBuf::from);
+            let o = mapgeom::vista_items::vista_items_map(&mut store, std::path::Path::new(&src), std::path::Path::new(&out), &only, &author, items_dir.as_deref()).unwrap_or_else(|e| die(e));
+            for n in &o.notes { println!("  {n}"); }
+            for r in &o.replaced { println!("  {} at cell {:?} dir {} -> {} at ({:.1}, {:.1}, {:.1}) yaw {:.4}", r.block, r.cell, r.dir, r.ident, r.pos[0], r.pos[1], r.pos[2], r.yaw); }
+            println!("wrote {out}: {} item(s) embedded, {} block(s) replaced", o.items.len(), o.replaced.len());
         }
         "crystal-layers" => {
             for path in a.rest.iter().skip(1) {
