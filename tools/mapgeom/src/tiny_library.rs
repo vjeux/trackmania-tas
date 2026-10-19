@@ -721,7 +721,7 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
     // brown stripe in a blue channel (Everios96 2026-10-10: wet wood 56/57 "just put a
     // flat plane?" / "just the blue floor"). The road's sheet stays and takes the deck
     // dress, as the 2026-09-24 overlay did. `TINY_ROADWATER_FLOOR_ONLY=1` restores.
-    let road_water_keeps_sheet = name.starts_with("RoadWater") && !std::env::var("TINY_ROADWATER_FLOOR_ONLY").map(|v| v == "1").unwrap_or(false);
+    let road_water_keeps_sheet = name.starts_with("RoadWater") && std::env::var("TINY_ROADWATER_SHEET").map(|v| v == "1").unwrap_or(false);
     if std::env::var("TINY_OVERLAY_FLOOR_ONLY").map(|v| v == "1").unwrap_or(false) && std::env::var("TINY_OVERLAY_NAMES").ok().map(|v| v.split(',').any(|n| n == name)).unwrap_or(false) && !road_water_keeps_sheet {
         m.keep_water = false;
     }
@@ -1309,7 +1309,9 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
                 // game's water line — not a lid at the prefab's nominal top a car's height
                 // above the car (Everios96 2026-09-24 "just the water level"; 2026-10-10 56/57
                 // "just the blue floor", 2026-10-17). Pools keep their own floors.
-                if name.starts_with("RoadWater") {
+                if name.starts_with("RoadWater") && std::env::var("TINY_ROADWATER_SHEET").map(|v| v == "1").unwrap_or(false) {
+                    // (off by default since 2026-10-19: the channel bed is the clips'; a
+                    // dressed sheet on the water is wood ON the water — TINY_ROADWATER_SHEET=1 restores)
                     let mut moved_vis = 0usize;
                     for v in m.visuals.iter_mut().filter(|v| v.from_water) {
                         if crate::static_item::build::shift_y(&mut v.visual, dy).is_ok() {

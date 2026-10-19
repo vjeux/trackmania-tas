@@ -333,7 +333,13 @@ pub fn cmd(args: &[String]) {
     // "you deleted the side face of the deeper pool blocks… the side of the pool that
     // should keep the blue material"). Only the horizontal clips (`HFC`, `FC`, `FCT`,
     // `FCB`) are floor. `WaterWallVFC` escaped so far only because its prefab is empty.
-    let is_water_face = |b: &crate::map::BlockRec| water_faces && b.name.contains("Water") && b.name.contains("FC") && !b.name.contains("Pillar") && !b.name.contains("VFC");
+    // …except the water ROADS' `RoadWaterVFC*`: despite the V, those carry the channel's
+    // BED — `RoadWaterVFCInside` is a 410 m² up-facing `Waterground` floor reaching 16 m
+    // into the neighbour cell, one per channel end; with the straight's middle cell they
+    // are the whole 3-cell channel (Everios96 2026-10-19 on 56: "there is some wood, but
+    // it cuts off" — only the middle third was wood). Their floor faces re-dress like
+    // any floor clip; `keep_up_faces` leaves their small side strips alone.
+    let is_water_face = |b: &crate::map::BlockRec| water_faces && b.name.contains("Water") && b.name.contains("FC") && !b.name.contains("Pillar") && (!b.name.contains("VFC") || b.name.starts_with("RoadWaterVFC"));
     // A FREE-placed map has no grid cells at all (map 960's records all read cell -1,0,-1),
     // so neither the owner table nor the cell search can find a water face's block. Match
     // by WORLD POSITION there: a face sits on the block it finishes (2026-10-07).
@@ -395,7 +401,7 @@ pub fn cmd(args: &[String]) {
     // placed as a flat geometry, so it doesnt fit"). They re-dress exactly like a wall's
     // faces. `TINY_WATER_FACES=0` leaves them to the game.
     let is_frame_filler = |b: &crate::map::BlockRec| -> bool {
-        if water_faces && b.name.contains("Water") && b.name.contains("FC") && !b.name.contains("Pillar") && !b.name.contains("VFC") {
+        if water_faces && b.name.contains("Water") && b.name.contains("FC") && !b.name.contains("Pillar") && (!b.name.contains("VFC") || b.name.starts_with("RoadWaterVFC")) {
             return wall_owner_baked(b);
         }
         if wall_fillers && (b.name.starts_with("TrackWall") || b.name.starts_with("DecoWall") || b.name.starts_with("Platform")) && b.name.contains("FC") && !b.name.contains("Water") && !b.name.contains("Pillar") {

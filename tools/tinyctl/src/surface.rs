@@ -224,15 +224,15 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
         if std::env::var("TINY_DECOWALL_BAKE").map(|v| v != "0").unwrap_or(true) {
             env.push(("TINY_BAKE_FAMILY".to_string(), "DecoWall".to_string()));
         }
-        // `[RoadWater*]Water`: a water ROAD's channel has no bed — its "blue floor" is the
-        // engine's water over nothing (RoadWaterStraight prefab census, 2026-10-17: the
-        // `Underwater` faces are the vertical channel walls, `TrackBorders` the banks and
-        // rims, the only up-facing deck a 32 m² lip at the cell ends). So the prefab's water
-        // QUAD takes the surface, and the overlay drops it to the drive plane with the
-        // collision (mapgeom tiny_library `from_water`); the banks stay the game's own.
-        // (2026-10-10 a `[RoadWater*]TrackBorders` row coloured the BANKS instead —
-        // Everios96: "you actually colored the border pieces of 56 now. that is not what
-        // we want. just the blue floor" — reverted 10-17.)
+        // Water ROADS: the prefab (StraightV2) has no bed — the channel floor the player
+        // sees is the game's clips: the flat bottom plate `TrackWallWater*FCBInside*` under
+        // the middle cell and the `RoadWaterVFC*` end clips, whose "vertical" name hides a
+        // 410 m² up-facing `Waterground` bed reaching into the neighbour cell. Those re-dress
+        // as floor clips (tmmaps surface `is_water_face`, 2026-10-19). Two wrong turns kept
+        // here as history: a `[RoadWater*]TrackBorders` row (2026-10-10) coloured the BANKS
+        // ("not what we want. just the blue floor"); a `[RoadWater*]Water` row (2026-10-17)
+        // dressed the water SHEET itself (wood on the water — never). The physics stays
+        // the overlay's: the water plane (13) re-ided and sunk to the drive line.
         if let Some(link) = wall_top {
             // … and the HALFPIPE walls (`TrackWallSlopeU*`, `TrackWallArchSlopeU*`: the U
             // blocks, normal and upside down): you drive INSIDE the curvature, and that
@@ -266,7 +266,7 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
                 // face that needs to change, just upside down"). Its `*SlopeUp*` twin was
                 // already covered; the Down spelling was not, so that ride face stayed
                 // black while the block around it turned dirt.
-                format!("[*]TrackWallClips={link};[RoadWater*]Water={link};[DecoWallLoop*]TrackWall={link};[DecoWallSlope*]TrackWall={link};[DecoWallCurve*]TrackWall={link};[DecoWallDiag*]TrackWall={link};[DecoWallBase]TrackWall={link};[DecoWallBaseFCT*]TrackWall={link};[DecoWallSimple]TrackWall={link};[Platform*FCT*]TrackWall={link};[Platform*FCB*]TrackWall={link};[TrackWall*SlopeU*]TrackWall={link};[TrackWall*SlopeUp*]TrackWall={link};[TrackWall*SlopeDown*]TrackWall={link};[TrackWallArchSlope*U*]TrackWall={link}"),
+                format!("[*]TrackWallClips={link};[DecoWallLoop*]TrackWall={link};[DecoWallSlope*]TrackWall={link};[DecoWallCurve*]TrackWall={link};[DecoWallDiag*]TrackWall={link};[DecoWallBase]TrackWall={link};[DecoWallBaseFCT*]TrackWall={link};[DecoWallSimple]TrackWall={link};[Platform*FCT*]TrackWall={link};[Platform*FCB*]TrackWall={link};[TrackWall*SlopeU*]TrackWall={link};[TrackWall*SlopeUp*]TrackWall={link};[TrackWall*SlopeDown*]TrackWall={link};[TrackWallArchSlope*U*]TrackWall={link}"),
             ));
         }
     }
