@@ -101,7 +101,7 @@ pub fn fresh_tokens_in(dir: &str) -> Option<(String, String)> {
 }
 
 /// The `exp` claim of a JWT (`[nadeo_v1 t=]header.payload.sig`), seconds since the epoch.
-fn jwt_exp(token: &str) -> Option<u64> {
+pub fn jwt_exp(token: &str) -> Option<u64> {
     let raw = token.split_whitespace().last()?;
     let raw = raw.strip_prefix("t=").unwrap_or(raw);
     let payload = raw.split('.').nth(1)?;

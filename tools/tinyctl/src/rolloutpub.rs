@@ -538,14 +538,18 @@ pub fn apply(args: &[String]) -> i32 {
             continue;
         }
         if token_refresh {
-            let age = std::fs::metadata(PathBuf::from(&token_dir).join("token-NadeoServices.txt"))
-                .and_then(|m| m.modified())
-                .ok()
-                .and_then(|t| t.elapsed().ok())
-                .map(|d| d.as_secs())
-                .unwrap_or(u64::MAX);
-            if age > 40 * 60 {
-                println!("  tokens are {} min old — refreshing from the game", age / 60);
+            // By the tokens' OWN expiry, not the file age: a pair read from the game
+            // (`token --from-game`) carries the game's remaining life, which can be 30 min
+            // on a file written a minute ago — Wood 156483 died on "no fresh token files"
+            // 35 min after a refresh the age rule did not think was due (2026-10-20 13:3x).
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+            let left = ["NadeoServices", "NadeoLiveServices"]
+                .iter()
+                .map(|aud| std::fs::read_to_string(PathBuf::from(&token_dir).join(format!("token-{aud}.txt"))).ok().and_then(|t| crate::nadeo::jwt_exp(&t)).map(|e| e.saturating_sub(now)).unwrap_or(0))
+                .min()
+                .unwrap_or(0);
+            if left < 15 * 60 {
+                println!("  tokens have {} min left — refreshing from the game", left / 60);
                 // the box game is between launches for ~40 s at a loadloop chunk edge
                 // (only one of the two tokens in memory) — a few tries, 30 s apart
                 let mut ok = false;
