@@ -141,8 +141,10 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             "DONE" => eprintln!("[{run_tag}] already finished on the box — tallying its table"),
             "RUNNING" => eprintln!("[{run_tag}] already running on the box — attaching"),
             "FAILED" => {
-                eprintln!("[{run_tag}] FAILED on the box earlier — relaunching the whole chunk");
-                wsx.sh(&format!("rm -rf '{remote_dir}'"))?;
+                // the box loop resumes from its own table (shootctl loadloop, 2026-10-20):
+                // only the done file and the old log go, the table stays
+                eprintln!("[{run_tag}] FAILED on the box earlier — relaunching the chunk (resumes from its table)");
+                wsx.sh(&format!("rm -f '{remote_dir}/done-loadloop.txt' '{remote_dir}/loadloop.log'"))?;
                 let started = wsx.sh(&cmd)?;
                 if wsx.verbose {
                     eprintln!("{}", started.trim());
