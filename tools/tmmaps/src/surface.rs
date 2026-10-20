@@ -364,11 +364,16 @@ pub fn cmd(args: &[String]) {
     // drivable surface of the block here is exposed to air"). Same rule as the water
     // fallback, by WORLD POSITION: a face within `TINY_WALL_FACE_RADIUS` (36 m: a 32 m
     // block plus its skirt) of a free baked black block belongs to it.
-    let free_black_pos: Vec<[f32; 3]> = plan
+    // Each entry carries the block's HEIGHT in cells too: a 4-cell `DecoWallLoopStart`'s
+    // top cap sits 32 m above and one cell beside its origin, 45 m away — the plain 36 m
+    // ball missed it and the far quarter-pipe of 124 stayed black (Everios96 2026-10-20:
+    // "the very last quarterpipe block is still not wood"). The test is a box: within the
+    // radius horizontally, and from the floor to the top + the radius vertically.
+    let free_black_pos: Vec<([f32; 3], f32)> = plan
         .iter()
         .filter(|r| r.free && !r.delete && (baked_indices.contains(&r.index) || face_only.contains(&r.index)) && !r.name.contains("Water") && !r.name.contains("FC"))
         .filter_map(|r| source.blocks.get(r.index))
-        .map(crate::tiny::block_pos)
+        .map(|b| (crate::tiny::block_pos(b), 8.0 * crate::tiny::block_height_cells(&b.name) as f32))
         .collect();
     let wall_r: f32 = std::env::var("TINY_WALL_FACE_RADIUS").ok().and_then(|v| v.parse().ok()).unwrap_or(36.0);
     if !free_black_pos.is_empty() {
@@ -418,9 +423,10 @@ pub fn cmd(args: &[String]) {
         if !is_water_face(b) && b.free_pos.is_some() && !free_black_pos.is_empty() {
             let p = crate::tiny::block_pos(b);
             let r2 = wall_r * wall_r;
-            return free_black_pos.iter().any(|q| {
-                let (dx, dy, dz) = (p[0] - q[0], p[1] - q[1], p[2] - q[2]);
-                dx * dx + dy * dy + dz * dz <= r2
+            return free_black_pos.iter().any(|(q, h)| {
+                let (dx, dz) = (p[0] - q[0], p[2] - q[2]);
+                let dy_ok = p[1] >= q[1] - wall_r && p[1] <= q[1] + h + wall_r;
+                dx * dx + dz * dz <= r2 && dy_ok
             });
         }
         false
@@ -461,7 +467,16 @@ pub fn cmd(args: &[String]) {
                         Some(fp) => crate::tiny::block_origin(b, fp),
                         None => crate::tiny::block_pos(b),
                     };
-                    filler_specs.push(ItemSpec { model: map.model.clone(), pos, rot, scale: 1.0 / map.model_scale, tag: None, color: 0 });
+                    // the generated face keeps its PLACEMENT COLOUR (chunk 0x03043062): the
+                    // pillar wood of a Black-painted full block is black; the item copy at
+                    // colour 0 came out the plain light wood beside black pillars
+                    // (Everios96 2026-10-20 on 124: "the entire map uses black coloring for
+                    // the pillar wood"). A face without a colour of its own takes its owner's.
+                    let color = {
+                        let own = colors.baked(b.index);
+                        if own != 0 { own } else { owner_of.get(&b.index).map(|o| colors.block(*o)).unwrap_or(0) }
+                    };
+                    filler_specs.push(ItemSpec { model: map.model.clone(), pos, rot, scale: 1.0 / map.model_scale, tag: None, color });
                     filler_placed.insert(b.index);
                 }
                 None => filler_unmapped += 1,

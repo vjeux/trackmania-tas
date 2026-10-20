@@ -2022,6 +2022,17 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         // not at all, and the original shows them in the concrete of the cliff
         // whose cell they stand in (2026-09-09; before, the empty answer of the
         // block across was returned and the panels came out red).
+        // A BLACK FULL BLOCK's side panel (`DecoWallLoop*VFC*`, `…Slope*VFC*`, …) is the
+        // wall of ITS OWN block, never a neighbour's: it takes that block's own look (the
+        // plain pillar wood, or the block's own `Ice`/`Dirt` suffix dress through the
+        // bake's modifier list) and nothing from the cells around it. The across/own-cell
+        // /first-up search below is for the panels that really do finish another block;
+        // on 124 it dressed a loop panel from the `DecoHillIceSlope2Straight` across and
+        // a loop-end panel from the `DecoPlatformIceBase` up its column — grey stone
+        // beside wood pillars (Everios96 2026-10-20: "this block is somehow stone pillar").
+        if b.name.starts_with("DecoWall") && b.name.contains("VFC") && !b.name.starts_with("DecoWallBaseVFC") && !b.name.contains("Water") {
+            return Vec::new();
+        }
         if let Some(a) = tmmaps::fillers::across(b.file_cell, b.dir) {
             // …except a PILLAR: its walls are `TrackWallFromParent` — the
             // dress of the block it supports, or none at all (Summer 20 cp3,

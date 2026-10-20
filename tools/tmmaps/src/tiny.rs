@@ -1202,3 +1202,23 @@ pub fn cmd(args: &[String]) {
     );
 }
 
+/// A black-wall block's HEIGHT in cells, read from its name: `…x4` / `…Straight4` (the
+/// tall walls), the LOOP pieces (`DecoWallLoopStart`, `DecoWallLoopOutStart`: 4 cells —
+/// the quarter-pipe of blockinfo `units 4`), everything else 1. Used where a generated
+/// face is matched to a free-placed owner by position (`tmmaps surface`, 2026-10-20).
+pub fn block_height_cells(n: &str) -> i32 {
+    if let Some(i) = n.rfind('x') {
+        if let Some(d) = n[i + 1..].chars().next().and_then(|c| c.to_digit(10)) {
+            return d.max(1) as i32;
+        }
+    }
+    if let Some(i) = n.find("Straight") {
+        if let Some(d) = n[i + "Straight".len()..].chars().next().and_then(|c| c.to_digit(10)) {
+            return d.max(1) as i32;
+        }
+    }
+    if n.starts_with("DecoWallLoop") || n.starts_with("TrackWallLoop") {
+        return 4;
+    }
+    1
+}
