@@ -347,6 +347,31 @@ pub fn apply(args: &[String]) -> i32 {
     }
     let thumb_src = |live_uid: &str| -> Option<String> { live_by_uid.get(live_uid).map(|p| p.to_string_lossy().into_owned()) };
 
+    // `--inventory INV.tsv --skip-foreign`: a live map another ACCOUNT uploaded cannot be
+    // updated by this one (Nadeo: only the uploader may) — 23 of 6,094 on 2026-10-19 were
+    // Everios96's own early uploads; publish-batch's owner guard refuses them and the
+    // campaign STOPs. With the inventory (its `author` column) those rows are set aside
+    // up front, listed in `foreign.tsv` in the workdir, and the rest of the campaign
+    // proceeds. What to do with them is the club owner's call (new id, or his own
+    // re-upload).
+    let mut foreign_rows: Vec<Vec<String>> = Vec::new();
+    let skip_foreign = tmmaps::cli::has(args, "--skip-foreign");
+    let owner_by_uid: HashMap<String, String> = match f("--inventory") {
+        Some(inv) => read(&inv)
+            .lines()
+            .skip(1)
+            .filter_map(|l| {
+                let c: Vec<&str> = l.split('\t').collect();
+                (c.len() > 10).then(|| (c[3].to_string(), c[10].to_string()))
+            })
+            .collect(),
+        None => HashMap::new(),
+    };
+    let me_account = f("--me").unwrap_or_else(|| "29368eb1-dfa5-4d1d-b392-8b2411349f3c".into());
+    if skip_foreign && owner_by_uid.is_empty() {
+        eprintln!("--skip-foreign needs --inventory INV.tsv (the live owners)");
+        return 2;
+    }
     // rows by campaign, in plan order
     let mut by_camp: BTreeMap<(String, String), Vec<Vec<String>>> = BTreeMap::new();
     for l in read(&plan).lines().skip(1) {
@@ -359,7 +384,25 @@ pub fn apply(args: &[String]) -> i32 {
                 continue;
             }
         }
+        if skip_foreign {
+            if let Some(owner) = owner_by_uid.get(&c[4]) {
+                if owner != &me_account {
+                    foreign_rows.push(c);
+                    continue;
+                }
+            }
+        }
         by_camp.entry((c[0].clone(), c[2].clone())).or_default().push(c);
+    }
+    if !foreign_rows.is_empty() {
+        std::fs::create_dir_all(&work).ok();
+        let mut t = String::from("set\tnum\tcampaignId\tlive_uid\tlive_name\taction\towner\n");
+        for c in &foreign_rows {
+            t.push_str(&format!("{}\t{}\t{}\t{}\t{}\t{}\t{}\n", c[0], c[1], c[2], c[4], c[5], c[6], owner_by_uid.get(&c[4]).cloned().unwrap_or_default()));
+        }
+        let fp = work.join("foreign.tsv");
+        std::fs::write(&fp, t).ok();
+        println!("skip-foreign: {} row(s) owned by another account set aside → {}", foreign_rows.len(), fp.display());
     }
     println!("apply: {} campaigns{}", by_camp.len(), if dry { " (DRY RUN)" } else { "" });
     // `--skip-done RESULTS.tsv` (one or more, comma-separated): campaigns whose every row
