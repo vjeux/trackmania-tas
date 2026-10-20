@@ -31,7 +31,7 @@ pub struct Verdict {
 pub fn read(wsx: &Wsx, window_s: u32) -> Result<Verdict, String> {
     // one bridge call: the input verdict, the process list, the game lock
     let out = wsx.sh(&format!(
-        "{EXE} status --window-s {window_s} --state {STATE} --agent-game C:/Users/vjeux/agent-game.txt 2>&1; echo __TASKS__; /mnt/c/Windows/System32/tasklist.exe 2>/dev/null | tr -d '\\r'; echo __LOCK__; /home/vjeux/bin/tmdrive status 2>&1 | head -1; true"
+        "{EXE} status --window-s {window_s} --state {STATE} --agent-game C:/Users/vjeux/agent-game.txt --agent-launch C:/Users/vjeux/agent-launch.txt 2>&1; echo __TASKS__; /mnt/c/Windows/System32/tasklist.exe 2>/dev/null | tr -d '\\r'; echo __LOCK__; /home/vjeux/bin/tmdrive status 2>&1 | head -1; true"
     ))?;
     let line = out.lines().find(|l| l.contains("verdict=")).unwrap_or("").trim().to_string();
     if line.is_empty() {

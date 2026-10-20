@@ -7,7 +7,7 @@
 //! game that a process-list count had not seen).
 //!
 //! ```text
-//! inputidle.exe status [--window-s 60] [--confirm-s 5] [--fresh-s 1800] [--agent-game FILE] [--pad-sample-ms 1500] [--state FILE]
+//! inputidle.exe status [--window-s 60] [--confirm-s 5] [--fresh-s 1800] [--agent-game FILE] [--agent-launch FILE [--agent-launch-window-s 900]] [--pad-sample-ms 1500] [--state FILE]
 //!     one line: verdict=free|busy kbm_idle_s=N pad_idle_s=N|unknown pads=K fg=<exe> "<title>"
 //!     exit 0 free, 1 busy, 2 error
 //! inputidle.exe watch --state FILE [--poll-ms 250]
@@ -389,6 +389,8 @@ fn status(args: &[String]) -> i32 {
     // a foreground app younger than this is a person's doing, never a parked pump
     let fresh_s: f64 = flag(args, "--fresh-s").and_then(|v| v.parse().ok()).unwrap_or(1800.0);
     let agent_game_pid: Option<u32> = flag(args, "--agent-game").and_then(|f| std::fs::read_to_string(f).ok()).and_then(|t| t.trim().parse().ok());
+    let agent_launch_at: Option<u64> = flag(args, "--agent-launch").and_then(|f| std::fs::read_to_string(f).ok()).and_then(|t| t.trim().parse().ok());
+    let agent_launch_window_s: f64 = flag(args, "--agent-launch-window-s").and_then(|v| v.parse().ok()).unwrap_or(900.0);
     let state = flag(args, "--state");
     let kbm = match win::kbm_idle_s() {
         Ok(v) => v,
@@ -470,7 +472,18 @@ fn status(args: &[String]) -> i32 {
         // a game an AGENT launched (`--agent-game FILE` holds its pid, written by the
         // launcher) is never a person's doing, however young it is
         let fg_pid = win::foreground_pid();
-        let agent_game = agent_game_pid.map(|p| p == fg_pid).unwrap_or(false);
+        // …or a foreground app BORN within `--agent-launch-window-s` (900) after the time an
+        // agent's launcher recorded in `--agent-launch FILE`: a game that came up late, after
+        // the launcher had given up on it, is still the agent's (2026-10-20 04:40)
+        let born_after_agent_launch = match (agent_launch_at, age) {
+            (Some(t), Some(a)) => {
+                let now = now_unix() as f64;
+                let born = now - a;
+                born >= t as f64 - 5.0 && born <= t as f64 + agent_launch_window_s
+            }
+            _ => false,
+        };
+        let agent_game = agent_game_pid.map(|p| p == fg_pid).unwrap_or(false) || born_after_agent_launch;
         let fresh = age.map(|a| a < fresh_s).unwrap_or(false) && !agent_game;
         pumped = flat && !fresh;
         let age_s = age.map(|a| format!("{a:.0}")).unwrap_or_else(|| "?".to_string());
