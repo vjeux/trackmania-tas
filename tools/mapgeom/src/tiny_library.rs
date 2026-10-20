@@ -1537,8 +1537,12 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
             if deck_mat.is_empty() {
                 m.notes.push("water overlay: deck-only asked but no re-dressed material in this block — copy kept whole".to_string());
             } else {
-                m.visuals.retain(|v| deck_mat.contains(&v.material));
-                m.notes.push(format!("water overlay: deck only ({} of {before_deck} visuals kept: the re-dressed floor)", m.visuals.len()));
+                // …plus the pad DECALS laid over the bed (`Modifier\<Kind>\Decal`, visual-only,
+                // 2026-10-19): the deck filter keeps the re-dressed floor materials and would
+                // drop them with the water visuals.
+                let decal_mat: Vec<usize> = m.materials.iter().enumerate().filter(|(_, mat)| mat.link().map(|l| l.ends_with("\\Decal") && l.contains("\\Modifier\\")).unwrap_or(false)).map(|(i, _)| i).collect();
+                m.visuals.retain(|v| deck_mat.contains(&v.material) || decal_mat.contains(&v.material));
+                m.notes.push(format!("water overlay: deck only ({} of {before_deck} visuals kept: the re-dressed floor{})", m.visuals.len(), if decal_mat.is_empty() { "" } else { " + pad decal" }));
             }
         }
         for v in m.visuals.iter_mut() {
