@@ -585,7 +585,14 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             // …a map with WATER blocks needs the same pass even when it holds no black
             // walls at all (U10S 263 is pure water and skipped the whole branch, so its
             // floors were never baked — 2026-10-07).
-            let has_water_blocks = std::env::var("TINY_WATER_FACES").map(|v| v != "0").unwrap_or(true) && names.iter().any(|n| n.contains("Water") && !n.contains("Pillar"));
+            // ⛔ tested against the MAP's blocks, not the bake list: a pool built only of
+            // KEPT water walls (`DecoWallWaterBase` ×220 on U10S 91) puts no water kind in
+            // `names`, the gate stayed shut and the pool floor shipped blue (Everios96
+            // 2026-10-19: "Map 91 pool floor is not wood"). The floor clips of a kept
+            // owner convert (tmmaps surface, keep_indices) — if they get into the library.
+            let has_water_blocks = std::env::var("TINY_WATER_FACES").map(|v| v != "0").unwrap_or(true)
+                && (names.iter().any(|n| n.contains("Water") && !n.contains("Pillar"))
+                    || std::fs::read_to_string(&records).unwrap_or_default().lines().skip(1).any(|l| l.split('\t').nth(1).map(|n| n.contains("Water") && !n.contains("Pillar")).unwrap_or(false)));
             if (std::env::var("TINY_WALL_FILLERS").map(|v| v != "0").unwrap_or(true) && names.iter().any(|n| (n.starts_with("TrackWall") || n.starts_with("DecoWall")) && !n.contains("Water") && !n.contains("Pillar"))) || has_water_blocks {
                 let src_map = tmmaps::map::MapFile::load(&src);
                 // only the faces of a wall that itself bakes: a face baked beside a wall
