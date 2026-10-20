@@ -362,7 +362,9 @@ pub fn apply(args: &[String]) -> i32 {
             .skip(1)
             .filter_map(|l| {
                 let c: Vec<&str> = l.split('\t').collect();
-                (c.len() > 10).then(|| (c[3].to_string(), c[10].to_string()))
+                // inventory column 10 is the record's `author` (free metadata); the
+                // uploader is `submitter` (column 13 when present) — see batch.rs
+                (c.len() > 10).then(|| (c[3].to_string(), c.get(13).filter(|s| !s.is_empty()).unwrap_or(&c[10]).to_string()))
             })
             .collect(),
         None => HashMap::new(),

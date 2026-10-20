@@ -367,7 +367,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                 let (set, n) = name.rsplit_once(" Part ")?;
                 Some((set.to_string(), n.trim().parse().ok()?))
             };
-            let mut rows = String::from("campaignId\tcampaign\tpos\tuid\tname\tauthorScore\tgold\tsilver\tbronze\tcollection\tauthor\tmapId\tfile\n");
+            let mut rows = String::from("campaignId\tcampaign\tpos\tuid\tname\tauthorScore\tgold\tsilver\tbronze\tcollection\tauthor\tmapId\tfile\tsubmitter\n");
             let (mut n_maps, mut n_files) = (0usize, 0usize);
             let mut wanted: Vec<(String, String, String, usize)> = Vec::new();
             for (id, name) in &camps {
@@ -416,8 +416,8 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                         }
                     }
                     rows.push_str(&format!(
-                        "{id}\t{name}\t{pos}\t{uid}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{file_note}\n",
-                        s(&rec, "name"), s(&rec, "authorScore"), s(&rec, "goldScore"), s(&rec, "silverScore"), s(&rec, "bronzeScore"), s(&rec, "collectionName"), s(&rec, "author"), s(&rec, "mapId")
+                        "{id}\t{name}\t{pos}\t{uid}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{file_note}\t{}\n",
+                        s(&rec, "name"), s(&rec, "authorScore"), s(&rec, "goldScore"), s(&rec, "silverScore"), s(&rec, "bronzeScore"), s(&rec, "collectionName"), s(&rec, "author"), s(&rec, "mapId"), s(&rec, "submitter")
                     ));
                     n_maps += 1;
                 }

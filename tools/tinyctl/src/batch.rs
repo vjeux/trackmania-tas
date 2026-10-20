@@ -155,7 +155,12 @@ fn upload_one(t: &mut Tokens, map: &Path, name: &str, outdir: &Path) -> Result<(
         // …and a record ANOTHER account owns is never ours to update, whatever its name:
         // the MK64 Bonk Cup's fresh uid Ek0fmwVE… (Rainbow Road) was already online under
         // account ac30c580… since 2026-10-08 — same name, someone else's map (2026-10-17).
-        let owner = json_str(&rec, "author").unwrap_or_default();
+        // The UPLOADER is the record's `submitter`; `author` is free metadata the upload
+        // sets (2026-10-19: six Wet Wood maps created on 2026-09-20 carry Everios96's
+        // editor login as `author` — the publish path of that evening sent the header's
+        // author — with the bot as `submitter`; the guard read `author` and refused the
+        // bot's own maps, and I told Everios he had uploaded them. He had not.)
+        let owner = json_str(&rec, "submitter").or_else(|| json_str(&rec, "author")).unwrap_or_default();
         if !owner.is_empty() && !t.me.is_empty() && owner != t.me {
             return Err(format!("REFUSED: uid {uid} is already online as `{}` owned by account {owner}, not {} — someone else's live map; a fresh uid is needed", json_str(&rec, "name").unwrap_or_default(), t.me));
         }
