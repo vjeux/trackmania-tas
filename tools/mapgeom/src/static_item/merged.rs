@@ -1497,10 +1497,18 @@ impl Merged {
                     // the back face with a normal pointing away from its viewer — the deck
                     // shaders answer that with nothing at all: the bobsleigh start/finish
                     // bowl "invisible face" (GeraldDuke 100/124, Everios96 "missing texture
-                    // in some parts of the block", 2026-10-19). `TINY_TWO_SIDED_SHARED=1`
-                    // restores the shortcut.
+                    // in some parts of the block", 2026-10-19).
                     let n_before = v.index_buffer.as_ref().map(|ib| ib.indices.len() / 3).unwrap_or(0);
-                    let shared = std::env::var("TINY_TWO_SIDED_SHARED").map(|x| x == "1").unwrap_or(false);
+                    // Scope (default `RoadIce`): only the bobsleigh family's links take the
+                    // proper form; the black-wall sheets keep the shortcut Everios96 approved
+                    // on the 10-08 lineups. `TINY_TWO_SIDED_PROPER=all|0|<substr,substr>`.
+                    let scope = std::env::var("TINY_TWO_SIDED_PROPER").unwrap_or_else(|_| "RoadIce".to_string());
+                    let proper = match scope.as_str() {
+                        "all" => true,
+                        "0" | "" => false,
+                        list => src_link.as_deref().map(|l| list.split(',').any(|w| !w.is_empty() && l.contains(w))).unwrap_or(false),
+                    };
+                    let shared = !proper || std::env::var("TINY_TWO_SIDED_SHARED").map(|x| x == "1").unwrap_or(false);
                     let mut done = false;
                     if !shared {
                         match crate::static_item::build::double_sided(&mut v) {
