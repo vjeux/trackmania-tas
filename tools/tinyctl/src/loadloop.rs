@@ -130,13 +130,24 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         let cmd = format!("{env}; {shootctl} loadloop --detach{maps_arg}{maps_file_arg} --outdir {remote_dir} --tag {run_tag} --timeout {timeout}{pass}");
         let n_loads = f("--n").and_then(|s| s.parse::<usize>().ok()).unwrap_or(1) * f("--seq").map(|s| s.split(',').count()).unwrap_or(if run_maps.is_empty() { maps.len() + n_box } else { run_maps.len() });
         let existing = if resume {
-            wsx.sh(&format!("if [ -f '{remote_dir}/done-loadloop.txt' ]; then echo DONE; elif [ -f '{remote_dir}/loadloop.log' ]; then echo RUNNING; else echo NONE; fi")).map(|o| o.trim().to_string()).unwrap_or_else(|_| "NONE".into())
+            // a FAILED chunk (done file not `OK…`: the game died and would not come back, c3
+            // of ll11 at #38, 2026-10-20) is RELAUNCHED whole — tallying it would silently
+            // pass 361 maps that were never loaded
+            wsx.sh(&format!("if [ -f '{remote_dir}/done-loadloop.txt' ]; then if head -c 2 '{remote_dir}/done-loadloop.txt' | grep -q OK; then echo DONE; else echo FAILED; fi; elif [ -f '{remote_dir}/loadloop.log' ]; then echo RUNNING; else echo NONE; fi")).map(|o| o.trim().to_string()).unwrap_or_else(|_| "NONE".into())
         } else {
             "NONE".to_string()
         };
         match existing.as_str() {
             "DONE" => eprintln!("[{run_tag}] already finished on the box — tallying its table"),
             "RUNNING" => eprintln!("[{run_tag}] already running on the box — attaching"),
+            "FAILED" => {
+                eprintln!("[{run_tag}] FAILED on the box earlier — relaunching the whole chunk");
+                wsx.sh(&format!("rm -rf '{remote_dir}'"))?;
+                let started = wsx.sh(&cmd)?;
+                if wsx.verbose {
+                    eprintln!("{}", started.trim());
+                }
+            }
             _ => {
                 eprintln!("[{run_tag}] running {n_loads} loads on the box ({n_runs} run(s) in all) — waits for the render lock if another thread holds the game …");
                 let started = wsx.sh(&cmd)?;
