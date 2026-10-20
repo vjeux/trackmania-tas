@@ -1491,15 +1491,34 @@ impl Merged {
                 let src_link: Option<String> = src_links.get(mi).cloned().flatten();
                 let hit = src_link.as_deref().map(|l| self.two_sided_links.iter().any(|t| l == t || l.rsplit('\\').next() == Some(t.as_str()) || l.ends_with(&format!("{t}.Material.Gbx")))).unwrap_or(false);
                 if hit {
-                    if let Some(ib) = v.index_buffer.as_mut() {
-                        let n = ib.indices.len() / 3 * 3;
-                        let mut back = Vec::with_capacity(n);
-                        for tri in ib.indices[..n].chunks(3) {
-                            back.extend_from_slice(&[tri[0], tri[2], tri[1]]);
+                    // PROPER two-sided (2026-10-19): duplicated vertices with reversed
+                    // normals + reversed winding (`build::double_sided`, the tree-leaf
+                    // path). The old shortcut (reversed winding on the SAME vertices) left
+                    // the back face with a normal pointing away from its viewer — the deck
+                    // shaders answer that with nothing at all: the bobsleigh start/finish
+                    // bowl "invisible face" (GeraldDuke 100/124, Everios96 "missing texture
+                    // in some parts of the block", 2026-10-19). `TINY_TWO_SIDED_SHARED=1`
+                    // restores the shortcut.
+                    let n_before = v.index_buffer.as_ref().map(|ib| ib.indices.len() / 3).unwrap_or(0);
+                    let shared = std::env::var("TINY_TWO_SIDED_SHARED").map(|x| x == "1").unwrap_or(false);
+                    let mut done = false;
+                    if !shared {
+                        match crate::static_item::build::double_sided(&mut v) {
+                            Ok(()) => done = true,
+                            Err(e) => self.notes.push(format!("visual {}: proper two-sided failed ({e}); shared-vertex form used", g.visual_index)),
                         }
-                        ib.indices.extend(back);
-                        self.notes.push(format!("visual {}: two-sided ({} back faces added, material {})", g.visual_index, n / 3, src_link.as_deref().unwrap_or("?").rsplit('\\').next().unwrap_or("?")));
                     }
+                    if !done {
+                        if let Some(ib) = v.index_buffer.as_mut() {
+                            let n = ib.indices.len() / 3 * 3;
+                            let mut back = Vec::with_capacity(n);
+                            for tri in ib.indices[..n].chunks(3) {
+                                back.extend_from_slice(&[tri[0], tri[2], tri[1]]);
+                            }
+                            ib.indices.extend(back);
+                        }
+                    }
+                    self.notes.push(format!("visual {}: two-sided ({} back faces added{}, material {})", g.visual_index, n_before, if done { ", own vertices" } else { ", shared vertices" }, src_link.as_deref().unwrap_or("?").rsplit('\\').next().unwrap_or("?")));
                 }
             }
             // A visual read in the pack's inline-vertex form is written back
