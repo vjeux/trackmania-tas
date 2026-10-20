@@ -3387,11 +3387,10 @@ pub fn apply_surface_swap(store: &mut DataStore, m: &mut crate::static_item::bui
     // convert (Everios96 2026-10-06 "the sides should stay as the pillar texture";
     // regressed by 328e2e4c on 2026-10-10, caught by him on 124, 2026-10-19).
     for (glob, stem, link, ids) in scoped_redress_rows(store) {
-        let (g, not) = match glob.split_once('!') {
-            Some((g, n)) => (g.to_string(), Some(n.to_string())),
-            None => (glob.clone(), None),
-        };
-        if glob_name_match(&g, name) && !not.map(|n| name.contains(n.as_str())).unwrap_or(false) {
+        let mut parts = glob.split('!');
+        let g = parts.next().unwrap_or("").to_string();
+        let nots: Vec<&str> = parts.filter(|w| !w.is_empty()).collect();
+        if glob_name_match(&g, name) && !nots.iter().any(|n| name.contains(n)) {
             surface_rows.insert(0, (stem, link, ids));
         }
     }

@@ -266,12 +266,19 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
                 // face that needs to change, just upside down"). Its `*SlopeUp*` twin was
                 // already covered; the Down spelling was not, so that ride face stayed
                 // black while the block around it turned dirt.
-                // `!VFC` on the DecoWall rows (2026-10-19): the generated SIDE panels of a
-                // loop/slope/curve (`DecoWallLoopOutStartVFCRight`…) share the family prefix
-                // and were taking the surface too since 328e2e4c — Everios96 on 124: "the top
-                // of it is wood BUT also the side of it, which is incorrect"; the 10-08 test
-                // lineup had the sides as pillar wood, and that is the agreed look.
-                format!("[*]TrackWallClips={link};[DecoWallLoop*!VFC]TrackWall={link};[DecoWallSlope*!VFC]TrackWall={link};[DecoWallCurve*!VFC]TrackWall={link};[DecoWallDiag*!VFC]TrackWall={link};[DecoWallBase]TrackWall={link};[DecoWallBaseFCT*]TrackWall={link};[DecoWallSimple]TrackWall={link};[Platform*FCT*]TrackWall={link};[Platform*FCB*]TrackWall={link};[TrackWall*SlopeU*]TrackWall={link};[TrackWall*SlopeUp*]TrackWall={link};[TrackWall*SlopeDown*]TrackWall={link};[TrackWallArchSlope*U*]TrackWall={link}"),
+                // 2026-10-19 — BACK TO THE APPROVED 10-08 RULE for the full-block family: only
+                // the TOP CAPS (`*FCT*`) take the surface; the bodies (curves, diagonals, loop
+                // and slope pieces), the generated side panels (`*VFC*`) and the undersides
+                // (`*FCB`) keep their pillar wood. 328e2e4c (10-10, "wet wood 69 still black")
+                // had added body rows for Loop/Slope/Curve/Diag/Base/Simple — the real fix that
+                // morning was Wood's missing `wall_top` link; the body rows overshot and every
+                // set's full blocks turned surface on all faces (Everios96 on 124: "the top of
+                // it is wood BUT also the side of it, which is incorrect"). Measured against the
+                // approved lineup x1-DW6-1 by a vertex-count+material census: with the body rows
+                // 141 dirt / 70 wood items, approved 99 dirt / 102 wood / 10 mixed. The loop
+                // INSIDES already carry `PlatformTech` in their own prefabs (the 10 mixed items)
+                // and convert through the plain stem rows, not through a body row.
+                format!("[*]TrackWallClips={link};[DecoWall*FCT*]TrackWall={link};[Platform*FCT*]TrackWall={link};[TrackWall*SlopeU*]TrackWall={link};[TrackWall*SlopeUp*]TrackWall={link};[TrackWall*SlopeDown*]TrackWall={link};[TrackWallArchSlope*U*]TrackWall={link}"),
             ));
         }
     }
