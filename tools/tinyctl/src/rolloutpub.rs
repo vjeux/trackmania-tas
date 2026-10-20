@@ -458,8 +458,19 @@ pub fn apply(args: &[String]) -> i32 {
                 .unwrap_or(u64::MAX);
             if age > 40 * 60 {
                 println!("  tokens are {} min old — refreshing from the game", age / 60);
-                let st = std::process::Command::new(&me).args(["token", "--from-game", "--token-dir", &token_dir]).status();
-                if !st.map(|s| s.success()).unwrap_or(false) {
+                // the box game is between launches for ~40 s at a loadloop chunk edge
+                // (only one of the two tokens in memory) — a few tries, 30 s apart
+                let mut ok = false;
+                for attempt in 1..=6 {
+                    let st = std::process::Command::new(&me).args(["token", "--from-game", "--token-dir", &token_dir]).status();
+                    if st.map(|s| s.success()).unwrap_or(false) {
+                        ok = true;
+                        break;
+                    }
+                    println!("  token refresh attempt {attempt} failed — retrying in 30 s");
+                    std::thread::sleep(std::time::Duration::from_secs(30));
+                }
+                if !ok {
                     println!("  STOP: token refresh failed (no logged-in game on the box?) — rerun with --skip-done {}", results.display());
                     std::fs::write(&results, &res).ok();
                     return 1;
