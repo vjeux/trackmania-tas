@@ -474,26 +474,35 @@ pub fn apply(args: &[String]) -> i32 {
     let gated_ok: Option<std::collections::HashSet<String>> = f("--gate").map(|dirs| {
         let mut ok: std::collections::HashSet<String> = std::collections::HashSet::new();
         for dir in dirs.split(',').map(str::trim).filter(|d| !d.is_empty()) {
-            // link name (`0001.Map.Gbx`) → source file (the BOX path of the built map)
-            let mut link_src: HashMap<String, String> = HashMap::new();
+            // (tag, link name `0001.Map.Gbx`) → source file (the BOX path of the built map).
+            // KEYED BY TAG: two loops in one dir (`links-ll12.tsv`, `links-ll12b.tsv`) number
+            // their links from 0001 both, and a flat map let the second overwrite the first —
+            // every gated file resolved to another loop's map and the whole apply was HELD
+            // (2026-10-20 13:02, nothing shipped: the gate failed closed, as it should).
+            let mut link_src: HashMap<(String, String), String> = HashMap::new();
             for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
                 let name = entry.file_name().to_string_lossy().to_string();
-                if name.starts_with("links-") && name.ends_with(".tsv") {
+                if let Some(tag) = name.strip_prefix("links-").and_then(|n| n.strip_suffix(".tsv")) {
                     for l in read(&entry.path().to_string_lossy()).lines().skip(1) {
                         if let Some((link, src)) = l.split_once('\t') {
                             let base = link.rsplit('/').next().unwrap_or(link).to_string();
-                            link_src.insert(base, src.to_string());
+                            link_src.insert((tag.to_string(), base), src.to_string());
                         }
                     }
                 }
             }
             for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
                 let name = entry.file_name().to_string_lossy().to_string();
-                if name.starts_with("loadloop-") && name.ends_with(".tsv") {
+                // `loadloop-<tag>-cN.tsv` (a chunk) or `loadloop-<tag>.tsv` (the merged table)
+                if let Some(stem) = name.strip_prefix("loadloop-").and_then(|n| n.strip_suffix(".tsv")) {
+                    let tag = match stem.rsplit_once("-c") {
+                        Some((t, n)) if n.chars().all(|ch| ch.is_ascii_digit()) => t.to_string(),
+                        _ => stem.to_string(),
+                    };
                     for l in read(&entry.path().to_string_lossy()).lines().skip(1) {
                         let c: Vec<&str> = l.split('\t').collect();
                         if c.len() >= 3 && c[2] == "OPENED" {
-                            if let Some(src) = link_src.get(c[1]) {
+                            if let Some(src) = link_src.get(&(tag.clone(), c[1].to_string())) {
                                 // the gate knows the BOX path; the plan the LOCAL one — match by file name
                                 ok.insert(src.rsplit('/').next().unwrap_or(src).to_string());
                             }
