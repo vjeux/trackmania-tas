@@ -119,15 +119,31 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     let n_runs = runs.len();
     let mut table = String::new();
     let mut first_err: Option<String> = None;
+    // `--resume`: a chunk whose box log already exists is NOT relaunched — a finished one
+    // (done file) is tallied from its table, a running one is waited on (the devserver
+    // driver died mid-chunk on 2026-10-19 while the box loop ran on; relaunching would
+    // have re-opened 364 maps or collided with the running loop).
+    let resume = tmmaps::cli::has(args, "--resume");
     for (run_tag, run_maps) in runs {
         let remote_dir = format!("{SHOTS}/loadloop-{run_tag}");
         let maps_arg = if run_maps.is_empty() { String::new() } else { format!(" --maps {}", run_maps.join(",")) };
         let cmd = format!("{env}; {shootctl} loadloop --detach{maps_arg}{maps_file_arg} --outdir {remote_dir} --tag {run_tag} --timeout {timeout}{pass}");
         let n_loads = f("--n").and_then(|s| s.parse::<usize>().ok()).unwrap_or(1) * f("--seq").map(|s| s.split(',').count()).unwrap_or(if run_maps.is_empty() { maps.len() + n_box } else { run_maps.len() });
-        eprintln!("[{run_tag}] running {n_loads} loads on the box ({n_runs} run(s) in all) — waits for the render lock if another thread holds the game …");
-        let started = wsx.sh(&cmd)?;
-        if wsx.verbose {
-            eprintln!("{}", started.trim());
+        let existing = if resume {
+            wsx.sh(&format!("if [ -f '{remote_dir}/done-loadloop.txt' ]; then echo DONE; elif [ -f '{remote_dir}/loadloop.log' ]; then echo RUNNING; else echo NONE; fi")).map(|o| o.trim().to_string()).unwrap_or_else(|_| "NONE".into())
+        } else {
+            "NONE".to_string()
+        };
+        match existing.as_str() {
+            "DONE" => eprintln!("[{run_tag}] already finished on the box — tallying its table"),
+            "RUNNING" => eprintln!("[{run_tag}] already running on the box — attaching"),
+            _ => {
+                eprintln!("[{run_tag}] running {n_loads} loads on the box ({n_runs} run(s) in all) — waits for the render lock if another thread holds the game …");
+                let started = wsx.sh(&cmd)?;
+                if wsx.verbose {
+                    eprintln!("{}", started.trim());
+                }
+            }
         }
         // the lock wait (1500 s) + every load's timeout + the menu round trips
         let budget = Duration::from_secs(1500 + n_loads as u64 * (timeout + 60));
