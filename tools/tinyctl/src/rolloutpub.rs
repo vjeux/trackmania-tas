@@ -665,10 +665,23 @@ pub fn apply(args: &[String]) -> i32 {
                 std::fs::write(&results, &res).ok();
                 return 1;
             }
+            // the swap reads its tokens from TINYCTL_TOKEN_DIR: hand it OUR token dir (the
+            // parent took `--token-dir`, the child only knows the env — with no env it fell
+            // back to the box-side minting path, which does not exist on the devserver, and
+            // three playlists stayed on their old uids while the log said "swap: Some(1)";
+            // Everios96 found 124 unchanged in the club, 2026-10-20 15:12). A failed swap is
+            // a STOP, never a note.
             let st = std::process::Command::new(&me)
+                .env("TINYCTL_TOKEN_DIR", &token_dir)
                 .args(["nadeo-here", "reuid-swap", "--club", &club, "--pairs", &pp.to_string_lossy(), "--no-lock", "--outdir", &stage.to_string_lossy()])
                 .status();
-            println!("  swap: {:?}", st.map(|s| s.code()));
+            let swapped = st.as_ref().map(|s| s.success()).unwrap_or(false);
+            println!("  swap: {}", if swapped { "OK".to_string() } else { format!("FAILED ({:?})", st.map(|s| s.code())) });
+            if !swapped {
+                println!("  STOP: the playlist swap failed in {set} {cid} — the new maps exist but the campaign still lists the old uids; rerun `nadeo-here reuid-swap --pairs {}`", pp.display());
+                std::fs::write(&results, &res).ok();
+                return 1;
+            }
         }
         std::fs::write(&results, &res).ok();
     }
