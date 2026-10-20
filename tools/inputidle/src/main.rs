@@ -7,7 +7,7 @@
 //! game that a process-list count had not seen).
 //!
 //! ```text
-//! inputidle.exe status [--window-s 60] [--confirm-s 5] [--fresh-s 1800] [--pad-sample-ms 1500] [--state FILE]
+//! inputidle.exe status [--window-s 60] [--confirm-s 5] [--fresh-s 1800] [--agent-game FILE] [--pad-sample-ms 1500] [--state FILE]
 //!     one line: verdict=free|busy kbm_idle_s=N pad_idle_s=N|unknown pads=K fg=<exe> "<title>"
 //!     exit 0 free, 1 busy, 2 error
 //! inputidle.exe watch --state FILE [--poll-ms 250]
@@ -244,6 +244,16 @@ mod win {
     /// seconds since the foreground window's PROCESS was created (None when unknown).
     /// A parked app is an OLD one; a person launches things — a foreground app a few
     /// minutes old with a flat input clock is someone playing it, not a pump.
+    pub fn foreground_pid() -> u32 {
+        let hwnd = unsafe { GetForegroundWindow() };
+        if hwnd.is_null() {
+            return 0;
+        }
+        let mut pid = 0u32;
+        unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+        pid
+    }
+
     pub fn foreground_age_s() -> Option<f64> {
         let hwnd = unsafe { GetForegroundWindow() };
         if hwnd.is_null() {
@@ -378,6 +388,7 @@ fn status(args: &[String]) -> i32 {
     let confirm_s: u64 = flag(args, "--confirm-s").and_then(|v| v.parse().ok()).unwrap_or(5);
     // a foreground app younger than this is a person's doing, never a parked pump
     let fresh_s: f64 = flag(args, "--fresh-s").and_then(|v| v.parse().ok()).unwrap_or(1800.0);
+    let agent_game_pid: Option<u32> = flag(args, "--agent-game").and_then(|f| std::fs::read_to_string(f).ok()).and_then(|t| t.trim().parse().ok());
     let state = flag(args, "--state");
     let kbm = match win::kbm_idle_s() {
         Ok(v) => v,
@@ -456,12 +467,17 @@ fn status(args: &[String]) -> i32 {
         // A parked app is an old one (`--fresh-s`, default 1800).
         let flat = !moved && !fg_changed && idle_max < 1.5;
         let age = win::foreground_age_s();
-        let fresh = age.map(|a| a < fresh_s).unwrap_or(false);
+        // a game an AGENT launched (`--agent-game FILE` holds its pid, written by the
+        // launcher) is never a person's doing, however young it is
+        let fg_pid = win::foreground_pid();
+        let agent_game = agent_game_pid.map(|p| p == fg_pid).unwrap_or(false);
+        let fresh = age.map(|a| a < fresh_s).unwrap_or(false) && !agent_game;
         pumped = flat && !fresh;
         let age_s = age.map(|a| format!("{a:.0}")).unwrap_or_else(|| "?".to_string());
         why = format!(
-            " pointer_moved={moved} window_changed={fg_changed} idle_max_s={idle_max:.1} fg_age_s={age_s}{}",
-            if flat && fresh { " clock=flat-but-fresh-app" } else { "" }
+            " pointer_moved={moved} window_changed={fg_changed} idle_max_s={idle_max:.1} fg_age_s={age_s}{}{}",
+            if flat && fresh { " clock=flat-but-fresh-app" } else { "" },
+            if agent_game { " fg=agent-game" } else { "" }
         );
     }
     let busy = (kbm < window && !pumped) || pad_idle.map(|v| v < window).unwrap_or(false);

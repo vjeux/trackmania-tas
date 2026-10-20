@@ -1996,6 +1996,11 @@ fn launch(timeout_s: u64, force: bool) -> i32 {
         }
         if up {
             println!("[{:.1}s] plugin up", el(&t0));
+            // the game is OURS: record its pid for the box-free gate (inputidle's
+            // fresh-app rule must not read an agent's own launch as a person playing)
+            if let Some(pid) = tm_pid() {
+                let _ = std::fs::write(AGENT_GAME_FILE, format!("{pid}\n"));
+            }
             // AND THE TITLE MUST BE READY. EditMap on a not-ready
             // ManiaTitleControlScriptAPI returns without error and loads
             // nothing -- the failure that reads as "the map did not open".
@@ -2054,6 +2059,20 @@ fn openplanet_stage() -> OpStage {
     if !log.contains("Openplanet starting on") { return OpStage::NotInjected; }
     if log.contains("Loop entry initialization") { return OpStage::Running; }
     OpStage::StalledAtLogin
+}
+
+/// Where the pid of the game an agent launched is recorded (read by `inputidle status
+/// --agent-game`): a foreground game with this pid is never evidence of a human.
+pub const AGENT_GAME_FILE: &str = "/mnt/c/Users/vjeux/agent-game.txt";
+
+fn tm_pid() -> Option<u32> {
+    let out = std::process::Command::new("/mnt/c/Windows/System32/tasklist.exe")
+        .args(["/FI", "IMAGENAME eq Trackmania.exe", "/NH", "/FO", "CSV"])
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let line = text.lines().find(|l| l.to_lowercase().contains("trackmania.exe"))?;
+    line.split(',').nth(1).map(|f| f.trim().trim_matches('"').to_string()).and_then(|f| f.parse().ok())
 }
 
 fn tm_running() -> bool {
