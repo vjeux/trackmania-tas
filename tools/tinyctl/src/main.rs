@@ -277,6 +277,32 @@ fn main() {
             println!("tokens in {}", dir.display());
             Ok(())
         })(),
+        // `tinyctl supervise [--every S] [--max N] -- CMD ARGS…`: run CMD until it exits 0,
+        // restarting it after S seconds (60) when it dies or fails, at most N times (100).
+        // The loadloop DRIVER on the devserver died twice without a word (2026-10-19 17:20,
+        // 2026-10-20 02:26) while the box loop ran on — an hour lost each time before a
+        // human noticed; under this it comes back by itself with `--resume`.
+        "supervise" => (|| -> Result<(), String> {
+            let sep = rest.iter().position(|a| a == "--").ok_or("supervise: want `-- CMD ARGS…`")?;
+            let every: u64 = tmmaps::cli::flag(&rest[..sep], "--every").and_then(|v| v.parse().ok()).unwrap_or(60);
+            let max: u32 = tmmaps::cli::flag(&rest[..sep], "--max").and_then(|v| v.parse().ok()).unwrap_or(100);
+            let cmd = &rest[sep + 1..];
+            if cmd.is_empty() {
+                return Err("supervise: empty command".into());
+            }
+            for attempt in 1..=max {
+                let t0 = std::time::Instant::now();
+                eprintln!("supervise: attempt {attempt}: {}", cmd.join(" "));
+                let st = std::process::Command::new(&cmd[0]).args(&cmd[1..]).status().map_err(|e| format!("supervise: {}: {e}", cmd[0]))?;
+                if st.success() {
+                    eprintln!("supervise: done after {attempt} attempt(s)");
+                    return Ok(());
+                }
+                eprintln!("supervise: exited {st} after {:.0}s — restarting in {every}s", t0.elapsed().as_secs_f64());
+                std::thread::sleep(std::time::Duration::from_secs(every));
+            }
+            Err(format!("supervise: gave up after {max} attempts"))
+        })(),
         "remote-shots" => remoteshots::cmd(rest),
         "pull-tree" => pulltree::cmd(rest),
         "remote-drive" => remoteshots::drive_cmd(rest),
