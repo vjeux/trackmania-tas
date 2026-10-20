@@ -1255,7 +1255,9 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
                 // channel (x 2.7..29.3 of the 32 m cell, the pad's full length), 20 mm above
                 // the drive plane so it draws over the bed under the water. `TINY_WATER_PAD_DECAL=0`
                 // opts out.
-                if std::env::var("TINY_WATER_PAD_DECAL").map(|v| v != "0").unwrap_or(true) && name.starts_with("RoadWater") {
+                // (the synthetic quad is OFF by default since the clip's own decal is kept:
+                // `TINY_WATER_PAD_DECAL=1` lays one anyway)
+                if std::env::var("TINY_WATER_PAD_DECAL").map(|v| v == "1").unwrap_or(false) && name.starts_with("RoadWater") {
                     let kind = bi
                         .material_modifier
                         .iter()
@@ -1547,7 +1549,17 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
                 // …plus the pad DECALS laid over the bed (`Modifier\<Kind>\Decal`, visual-only,
                 // 2026-10-19): the deck filter keeps the re-dressed floor materials and would
                 // drop them with the water visuals.
-                let decal_mat: Vec<usize> = m.materials.iter().enumerate().filter(|(_, mat)| mat.link().map(|l| l.ends_with("\\Decal") && l.contains("\\Modifier\\")).unwrap_or(false)).map(|(i, _)| i).collect();
+                // …and the game's OWN pad decal on a water pad's bottom clip
+                // (`TrackWallWater*FCBInsideSpecial`: `DecalSpecialTurbo`, 851 m² of arrows at
+                // the plate's top — the clip has no modifier, so the stock link is the right
+                // texture already; dropping it is what GeraldDuke saw on 49/263, 2026-10-19).
+                let decal_mat: Vec<usize> = m
+                    .materials
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, mat)| mat.link().map(|l| (l.ends_with("\\Decal") && l.contains("\\Modifier\\")) || l.rsplit('\\').next().map(|st| st.starts_with("DecalSpecial")).unwrap_or(false)).unwrap_or(false))
+                    .map(|(i, _)| i)
+                    .collect();
                 m.visuals.retain(|v| deck_mat.contains(&v.material) || decal_mat.contains(&v.material));
                 m.notes.push(format!("water overlay: deck only ({} of {before_deck} visuals kept: the re-dressed floor{})", m.visuals.len(), if decal_mat.is_empty() { "" } else { " + pad decal" }));
             }
