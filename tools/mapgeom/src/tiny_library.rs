@@ -1239,6 +1239,30 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
                         m.notes.push(format!("water gameplay pad: {n} drive triangle(s) re-ided to physics {id}, gameplay byte kept"));
                     }
                 }
+                // A WATER pad's prefab carries no floor decal (on water there is nothing to
+                // paint it on), so once the channel gets a wood bed the pad reads as bare
+                // wood — "correct physics, no pad texture" (Everios96 2026-10-19, U10S 127).
+                // The land pads (RoadTech\Special) carry `DecalSpecialTurbo` on a flat
+                // layer at deck height, re-dressed by the pad's `<Kind>.TerrainModifier` to
+                // `Modifier\<Kind>\Decal`. Lay that decal here: a visual-only quad over the
+                // channel (x 2.7..29.3 of the 32 m cell, the pad's full length), 20 mm above
+                // the drive plane so it draws over the bed under the water. `TINY_WATER_PAD_DECAL=0`
+                // opts out.
+                if std::env::var("TINY_WATER_PAD_DECAL").map(|v| v != "0").unwrap_or(true) && name.starts_with("RoadWater") {
+                    let kind = bi
+                        .material_modifier
+                        .iter()
+                        .filter_map(|r| r.rsplit('\\').next().and_then(|f| f.strip_suffix(".TerrainModifier.Gbx")).map(|k| k.replace(' ', "")))
+                        .find(|k| !k.is_empty() && !k.starts_with("Platform") && !k.starts_with("Road"));
+                    if let Some(kind) = kind {
+                        let dy: f32 = std::env::var("TINY_OVERLAY_WATER_DECK_DY").ok().and_then(|v| v.parse().ok()).unwrap_or(-0.913);
+                        let y = 2.0 + dy + 0.02;
+                        let link = format!("Stadium\\Media\\Modifier\\{kind}\\Decal");
+                        let cells_z = plan.footprint.sz.max(1) as f32;
+                        m.add_decal_quad(2.7, 0.0, 29.3, 32.0 * cells_z, y, &link);
+                        m.notes.push(format!("water gameplay pad: {kind} floor decal laid over the bed at y {y:.2}"));
+                    }
+                }
             }
             if let Some(id) = std::env::var("TINY_OVERLAY_WATER_DECK").ok().and_then(|v| v.parse::<u8>().ok()).filter(|_| deck_family_hit) {
                 // The prefab's water-drive plane sits at the block's nominal top, ~0.98 m
@@ -3346,8 +3370,17 @@ pub fn apply_surface_swap(store: &mut DataStore, m: &mut crate::static_item::bui
     // block whose name matches the glob — the black walls' metal rim (`TrackWallClips`) is
     // the dirt platform on the TOP caps (`TrackWall*FCT*`) and stays metal underneath
     // (Everios96 2026-10-04: "change the metal surface at the top", not the wood sides)
+    // `[glob!Word]`: the glob, minus any name carrying `Word` — the full-block rows
+    // (`[DecoWallLoop*!VFC]`) must not reach the generated SIDE panels
+    // (`DecoWallLoopOutStartVFCRight`): those stay the pillar wood, only the ride faces
+    // convert (Everios96 2026-10-06 "the sides should stay as the pillar texture";
+    // regressed by 328e2e4c on 2026-10-10, caught by him on 124, 2026-10-19).
     for (glob, stem, link, ids) in scoped_redress_rows(store) {
-        if glob_name_match(&glob, name) {
+        let (g, not) = match glob.split_once('!') {
+            Some((g, n)) => (g.to_string(), Some(n.to_string())),
+            None => (glob.clone(), None),
+        };
+        if glob_name_match(&g, name) && !not.map(|n| name.contains(n.as_str())).unwrap_or(false) {
             surface_rows.insert(0, (stem, link, ids));
         }
     }

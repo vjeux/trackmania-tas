@@ -801,6 +801,22 @@ impl Merged {
         self.notes.push(format!("generated flat quad {x0}..{x1} × {z0}..{z1} at y {y}: {link} (physics {physics})"));
     }
 
+    /// A VISUAL-ONLY flat quad (no hull): a pad decal laid over a floor. `uv` spans 0..1 across
+    /// the quad like the land pads' `DecalSpecialTurbo` layer. Both windings, every LOD.
+    pub fn add_decal_quad(&mut self, x0: f32, z0: f32, x1: f32, z1: f32, y: f32, link: &str) {
+        use super::bake::{make_visuals, visual_layout, Corner};
+        let slot = self.material_slot(link, 0);
+        let (w, d) = ((x1 - x0).max(1e-3), (z1 - z0).max(1e-3));
+        let c = |x: f32, z: f32| Corner { pos: [x, y, z], normal: [0.0, 1.0, 0.0], uv: [(x - x0) / w, (z - z0) / d], uv1: [(x - x0) / w, (z - z0) / d], tan_u: [1.0, 0.0, 0.0], tan_v: [0.0, 0.0, 1.0], face: 0, group: 0 };
+        let (a, b, cc, dd) = (c(x0, z0), c(x1, z0), c(x1, z1), c(x0, z1));
+        let tris = [[a, b, cc], [a, cc, dd], [a, cc, b], [a, dd, cc]];
+        let layout = visual_layout(link);
+        for v in make_visuals(&tris, layout, "off") {
+            self.visuals.push(MergedVisual::every_level(v, slot));
+        }
+        self.notes.push(format!("generated decal quad {x0}..{x1} × {z0}..{z1} at y {y}: {link} (visual only)"));
+    }
+
     /// A ribbon of terrain: `sections` are consecutive cross-sections of K points each (left to
     /// right across the driving line, world coordinates, ANY y per point); quads between
     /// neighbouring sections become visuals (both windings) and an up-facing hull with

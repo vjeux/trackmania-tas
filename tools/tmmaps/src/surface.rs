@@ -217,6 +217,11 @@ pub fn cmd(args: &[String]) {
     if !face_only.is_empty() {
         println!("  {} face-drawn block(s) removed: their generated faces bake in their place", face_only.len());
     }
+    if std::env::var("TINY_DEBUG_FREE").is_ok() {
+        for r in plan.iter().filter(|r| r.free && r.action == "bake") {
+            println!("  debug free #{} {}: baked={} face_only={} delete={}", r.index, r.name, baked_indices.contains(&r.index), face_only.contains(&r.index), r.delete);
+        }
+    }
     // The generated `<Road>PenaltyHFC*` filler records of every penalty frame that becomes
     // an item: the game draws the frame's whole FLOOR from them (deck at the ends, penalty
     // between the posts, kerbs — the vanilla Penalty_Air prefab is posts and kerbs only), so
@@ -352,6 +357,23 @@ pub fn cmd(args: &[String]) {
     // and 48 m left 8 of them behind. The swap stays 1:1 — a face is only removed when a
     // re-dressed copy of ITS OWN geometry was placed at ITS OWN position.
     let near_r: f32 = std::env::var("TINY_WATER_FACE_RADIUS").ok().and_then(|v| v.parse().ok()).unwrap_or(160.0);
+    // FREE-placed BLACK blocks (U10S 124: 36 `DecoWallBase` + 6 `DecoWallLoopStart` at cell
+    // −1,0,−1 form the pit floor under the finish): their faces have no cell to search and
+    // `faces.tsv` named only some of them, so `wall_owner_baked` said no, the faces stayed,
+    // and the blocks could not go — 30 black blocks shipped (Everios96 2026-10-19: "the
+    // drivable surface of the block here is exposed to air"). Same rule as the water
+    // fallback, by WORLD POSITION: a face within `TINY_WALL_FACE_RADIUS` (36 m: a 32 m
+    // block plus its skirt) of a free baked black block belongs to it.
+    let free_black_pos: Vec<[f32; 3]> = plan
+        .iter()
+        .filter(|r| r.free && !r.delete && (baked_indices.contains(&r.index) || face_only.contains(&r.index)) && !r.name.contains("Water") && !r.name.contains("FC"))
+        .filter_map(|r| source.blocks.get(r.index))
+        .map(crate::tiny::block_pos)
+        .collect();
+    let wall_r: f32 = std::env::var("TINY_WALL_FACE_RADIUS").ok().and_then(|v| v.parse().ok()).unwrap_or(36.0);
+    if !free_black_pos.is_empty() {
+        println!("  free black blocks: {} baked at free positions — their faces resolve by position ({wall_r} m)", free_black_pos.len());
+    }
     let wall_owner_baked = |b: &crate::map::BlockRec| -> bool {
         // A WATER face's owner is KEPT (`overlay`) — the game's block stays and only its
         // floor is re-dressed — so `converted` is the wrong question for it: the face
@@ -389,6 +411,14 @@ pub fn cmd(args: &[String]) {
             let p = crate::tiny::block_pos(b);
             let r2 = near_r * near_r;
             return overlay_pos.iter().chain(rename_pos.iter()).chain(keep_pos.iter()).any(|q| {
+                let (dx, dy, dz) = (p[0] - q[0], p[1] - q[1], p[2] - q[2]);
+                dx * dx + dy * dy + dz * dz <= r2
+            });
+        }
+        if !is_water_face(b) && b.free_pos.is_some() && !free_black_pos.is_empty() {
+            let p = crate::tiny::block_pos(b);
+            let r2 = wall_r * wall_r;
+            return free_black_pos.iter().any(|q| {
                 let (dx, dy, dz) = (p[0] - q[0], p[1] - q[1], p[2] - q[2]);
                 dx * dx + dy * dy + dz * dz <= r2
             });

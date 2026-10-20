@@ -266,7 +266,12 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
                 // face that needs to change, just upside down"). Its `*SlopeUp*` twin was
                 // already covered; the Down spelling was not, so that ride face stayed
                 // black while the block around it turned dirt.
-                format!("[*]TrackWallClips={link};[DecoWallLoop*]TrackWall={link};[DecoWallSlope*]TrackWall={link};[DecoWallCurve*]TrackWall={link};[DecoWallDiag*]TrackWall={link};[DecoWallBase]TrackWall={link};[DecoWallBaseFCT*]TrackWall={link};[DecoWallSimple]TrackWall={link};[Platform*FCT*]TrackWall={link};[Platform*FCB*]TrackWall={link};[TrackWall*SlopeU*]TrackWall={link};[TrackWall*SlopeUp*]TrackWall={link};[TrackWall*SlopeDown*]TrackWall={link};[TrackWallArchSlope*U*]TrackWall={link}"),
+                // `!VFC` on the DecoWall rows (2026-10-19): the generated SIDE panels of a
+                // loop/slope/curve (`DecoWallLoopOutStartVFCRight`…) share the family prefix
+                // and were taking the surface too since 328e2e4c — Everios96 on 124: "the top
+                // of it is wood BUT also the side of it, which is incorrect"; the 10-08 test
+                // lineup had the sides as pillar wood, and that is the agreed look.
+                format!("[*]TrackWallClips={link};[DecoWallLoop*!VFC]TrackWall={link};[DecoWallSlope*!VFC]TrackWall={link};[DecoWallCurve*!VFC]TrackWall={link};[DecoWallDiag*!VFC]TrackWall={link};[DecoWallBase]TrackWall={link};[DecoWallBaseFCT*]TrackWall={link};[DecoWallSimple]TrackWall={link};[Platform*FCT*]TrackWall={link};[Platform*FCB*]TrackWall={link};[TrackWall*SlopeU*]TrackWall={link};[TrackWall*SlopeUp*]TrackWall={link};[TrackWall*SlopeDown*]TrackWall={link};[TrackWallArchSlope*U*]TrackWall={link}"),
             ));
         }
     }
