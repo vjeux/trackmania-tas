@@ -1,4 +1,4 @@
-//! `tinyctl pull-tree REMOTE_DIR LOCAL_DIR [--parts p1,p2,…] [--maps-only] [--keep-tars]` — a
+//! `tinyctl pull-tree REMOTE_DIR LOCAL_DIR [--parts p1,p2,…] [--maps 11,20,…] [--maps-only] [--keep-tars]` — a
 //! built set's tree off the render box, one PART at a time (2026-10-17).
 //!
 //! `wsx pull` buffers the whole file in memory on both ends and a bridge call has a
@@ -32,6 +32,31 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     let wsx = Wsx::new(args);
     std::fs::create_dir_all(&local).map_err(|e| format!("{}: {e}", local.display()))?;
     let t0 = Instant::now();
+    // `--maps 11,20,…`: ONLY those maps' files (map + report), whatever part they sit in,
+    // extracted over the local tree — a handful of maps rebuilt in place (the 30 bobsleigh
+    // maps of 2026-10-20) without re-pulling 23 of 39 parts. No skip check: these are
+    // re-pulled because they CHANGED.
+    if let Some(list) = tmmaps::cli::flag(args, "--maps") {
+        let nums: Vec<u32> = list.split(',').filter_map(|n| n.trim().parse().ok()).collect();
+        if nums.is_empty() {
+            return Err("--maps wants a comma list of map numbers".into());
+        }
+        let pats: Vec<String> = nums.iter().map(|n| format!("-path '*/U10S_{n} By*'")).collect();
+        let tar_remote = format!("{remote}/.pull-maps.tar");
+        let flt = if maps_only { " \\( -name '*.Map.Gbx' -o -name 'report.tsv' \\)" } else { "" };
+        wsx.sh(&format!("cd '{remote}' && rm -f '{tar_remote}' && find p* -type f{flt} \\( {} \\) -print0 | tar cf '{tar_remote}' --null -T -", pats.join(" -o ")))?;
+        let tar_local = local.join(".pull-maps.tar");
+        let bytes = wsx.pull(&tar_remote, &tar_local)?;
+        let st = std::process::Command::new("tar").args(["xf", tar_local.to_str().unwrap_or(""), "-C", local.to_str().unwrap_or("")]).status().map_err(|e| format!("tar xf: {e}"))?;
+        if !st.success() {
+            return Err(format!("tar xf {} failed", tar_local.display()));
+        }
+        let n_files = std::process::Command::new("tar").args(["tf", tar_local.to_str().unwrap_or("")]).output().map(|o| String::from_utf8_lossy(&o.stdout).lines().count()).unwrap_or(0);
+        let _ = std::fs::remove_file(&tar_local);
+        wsx.sh(&format!("rm -f '{tar_remote}'"))?;
+        println!("pull-tree: {} map(s) → {n_files} files, {bytes} bytes in {:.0}s → {}", nums.len(), t0.elapsed().as_secs_f64(), local.display());
+        return Ok(());
+    }
     // the parts, in order, with their file counts
     let listing = wsx.sh(&format!("cd '{remote}' && for p in $(ls -d p* | sort -V); do echo \"$p $(find \"$p\" -type f{filter} | wc -l)\"; done"))?;
     let mut parts: Vec<(String, usize)> = Vec::new();
