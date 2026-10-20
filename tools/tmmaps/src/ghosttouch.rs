@@ -167,9 +167,15 @@ fn converted_blocks(m: &MapFile) -> Vec<Conv> {
     // "on its top" = any non-wall block whose floor is at the wall's top height (±0.5 m)
     // and whose cell overlaps or neighbours the wall's: a DecoPlatformBase plateau over a
     // DecoWallBase field (Plastic 96) is recorded one cell over from the walls it covers
+    // A black LOOP/SLOPE body is never a cover: it is a converted piece itself, standing
+    // on its OWN column. With loops allowed, the quarter-pipes of 124 (on the x-895
+    // column) "covered" the free-placed pit floor one column over (x 863, 36 blocks at
+    // the finish approach) and every record there read CLEAR — GeraldDuke drove it
+    // (2026-10-19). The 48 m reach stays: Plastic 96's start pad covers its column from
+    // a cell and a half away, and that CLEAR is the approved one.
     let covered = |x: f32, top: f32, z: f32| -> bool {
         entries.iter().any(|o| {
-            !o.item && !o.baked && classify(&o.name) != Some(Kind::Black) && !o.name.contains("Pillar")
+            !o.item && !o.baked && !matches!(classify(&o.name), Some(Kind::Black) | Some(Kind::Loop)) && !o.name.contains("Pillar")
                 && (o.pos[0] - x).abs() <= 48.0 && (o.pos[2] - z).abs() <= 48.0
                 && (o.pos[1] - top).abs() <= 2.0
         })
@@ -202,7 +208,14 @@ fn converted_blocks(m: &MapFile) -> Vec<Conv> {
         let [x, y, z] = e.pos;
         let top = y + 8.0 * wall_height_cells(&e.name) as f32;
         if kind == Kind::Black && covered(x, top, z) {
+            if std::env::var("TMMAPS_TOUCH_DEBUG").is_ok() {
+                let who: Vec<String> = entries.iter().filter(|o| !o.item && !o.baked && !matches!(classify(&o.name), Some(Kind::Black) | Some(Kind::Loop)) && !o.name.contains("Pillar") && (o.pos[0] - x).abs() <= 48.0 && (o.pos[2] - z).abs() <= 48.0 && (o.pos[1] - top).abs() <= 2.0).map(|o| format!("{}@{},{},{}", o.name, o.pos[0], o.pos[1], o.pos[2])).take(3).collect();
+                eprintln!("touch-debug: {} at {x},{y},{z} top {top} COVERED by {}", e.name, who.join(" "));
+            }
             continue; // something is built on this wall: it is a pillar for that, not a deck
+        }
+        if std::env::var("TMMAPS_TOUCH_DEBUG").is_ok() {
+            eprintln!("touch-debug: {} at {x},{y},{z} top {top} CONVERTED ({:?})", e.name, kind);
         }
         let (y0, y1) = match kind {
             // the whole loop body, from its floor to its top
