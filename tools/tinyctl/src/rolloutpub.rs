@@ -8,7 +8,7 @@
 //!                               --policy POLICY.tsv --out PLAN.tsv [--sets dirt,…]
 //!                               [--records REC.tsv] [--diff "Wet Wood=cmp.tsv;Wood=cmp.tsv"]
 //! tinyctl rollout-publish apply --plan PLAN.tsv --club 145872 --token-dir DIR
-//!                               [--only-sets dirt] [--dry-run]
+//!                               [--only-sets dirt] [--dry-run] [--gate LOADLOOP_DIR[,…]]
 //! ```
 //!
 //! Inputs
@@ -466,6 +466,45 @@ pub fn apply(args: &[String]) -> i32 {
     // re-read the pair from the logged-in game on the box (`token --from-game`), so a
     // long apply never dies on the ~1 h expiry.
     let token_refresh = tmmaps::cli::has(args, "--token-refresh");
+    // `--gate DIR[,DIR…]`: the load-gate tables (`tinyctl loadloop`: `loadloop-<tag>-cN.tsv`
+    // + `links-<tag>.tsv` in each DIR). A campaign is applied only when EVERY file it would
+    // publish was OPENED by the game in one of those tables; a campaign with a file not yet
+    // gated, or gated as anything but OPENED, is held ("every shipped file passes a
+    // play-load" — the 10-01 rule, now a flag instead of a reading of two files by hand).
+    let gated_ok: Option<std::collections::HashSet<String>> = f("--gate").map(|dirs| {
+        let mut ok: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for dir in dirs.split(',').map(str::trim).filter(|d| !d.is_empty()) {
+            // link name (`0001.Map.Gbx`) → source file (the BOX path of the built map)
+            let mut link_src: HashMap<String, String> = HashMap::new();
+            for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with("links-") && name.ends_with(".tsv") {
+                    for l in read(&entry.path().to_string_lossy()).lines().skip(1) {
+                        if let Some((link, src)) = l.split_once('\t') {
+                            let base = link.rsplit('/').next().unwrap_or(link).to_string();
+                            link_src.insert(base, src.to_string());
+                        }
+                    }
+                }
+            }
+            for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with("loadloop-") && name.ends_with(".tsv") {
+                    for l in read(&entry.path().to_string_lossy()).lines().skip(1) {
+                        let c: Vec<&str> = l.split('\t').collect();
+                        if c.len() >= 3 && c[2] == "OPENED" {
+                            if let Some(src) = link_src.get(c[1]) {
+                                // the gate knows the BOX path; the plan the LOCAL one — match by file name
+                                ok.insert(src.rsplit('/').next().unwrap_or(src).to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        println!("gate: {} file(s) OPENED by the game", ok.len());
+        ok
+    });
     let results = work.join("results.tsv");
     let mut res = String::from("set\tnum\tcampaignId\taction\tuid\tverdict\n");
     for ((set, cid), rows) in &by_camp {
@@ -474,6 +513,16 @@ pub fn apply(args: &[String]) -> i32 {
         if done_camps.contains(cid) {
             println!("[{set} {cid}] already applied — skipped");
             continue;
+        }
+        if let Some(ok) = &gated_ok {
+            let ungated: Vec<String> = rows.iter().filter(|r| r[6] == "UPDATE" || r[6] == "WIPE").filter(|r| !ok.contains(r[8].rsplit('/').next().unwrap_or(&r[8]))).map(|r| r[1].clone()).collect();
+            if !ungated.is_empty() {
+                println!("[{set} {cid}] HELD: {} file(s) not yet OPENED by the load gate ({})", ungated.len(), ungated.iter().take(6).cloned().collect::<Vec<_>>().join(" "));
+                for r in rows.iter().filter(|r| r[6] == "UPDATE" || r[6] == "WIPE") {
+                    res.push_str(&format!("{}\t{}\t{}\t{}\t{}\tHELD-GATE\n", r[0], r[1], cid, r[6], r[4]));
+                }
+                continue;
+            }
         }
         println!("[{set} {cid}] {} update, {} wipe", updates.len(), wipes.len());
         if dry {
