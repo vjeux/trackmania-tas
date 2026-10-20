@@ -6,6 +6,7 @@
 //! ```text
 //! tinyctl rollout-publish plan  --build ROOT --inventory INV.tsv --touch TOUCH.tsv
 //!                               --policy POLICY.tsv --out PLAN.tsv [--sets dirt,…]
+//!                               [--records REC.tsv] [--diff "Wet Wood=cmp.tsv;Wood=cmp.tsv"]
 //! tinyctl rollout-publish apply --plan PLAN.tsv --club 145872 --token-dir DIR
 //!                               [--only-sets dirt] [--dry-run]
 //! ```
@@ -198,6 +199,28 @@ pub fn plan(args: &[String]) -> i32 {
         })
         .unwrap_or_default();
     let have_records_file = f("--records").is_some();
+    // `--diff "Wet Wood=cmp/wetwood.tsv;Wood=cmp/wood.tsv;…"`: the live-vs-build files per
+    // set word — a map whose row says SAME is identical to the live file and is SKIPped
+    // ("live identical"), whatever the policy's scope says. Before this the `only` list
+    // was typed from the diff by hand (2026-10-19); the diff IS the scope.
+    let same_live: HashMap<(String, u32), bool> = f("--diff")
+        .map(|spec| {
+            let mut m: HashMap<(String, u32), bool> = HashMap::new();
+            for part in spec.split(';').map(str::trim).filter(|s| !s.is_empty()) {
+                let Some((word, path)) = part.split_once('=') else { panic!("--diff wants Set=cmp.tsv[;…], got `{part}`") };
+                for l in read(path.trim()).lines().skip(1) {
+                    let c: Vec<&str> = l.split('\t').collect();
+                    if c.len() >= 2 {
+                        if let Ok(n) = c[0].parse::<u32>() {
+                            m.insert((word.trim().to_string(), n), c[1] == "SAME");
+                        }
+                    }
+                }
+            }
+            m
+        })
+        .unwrap_or_default();
+    let have_diff = f("--diff").is_some();
     // live inventory rows
     let mut rows = String::from("set\tnum\tcampaignId\tcampaign\tlive_uid\tlive_name\taction\tnew_uid\tfile\treason\n");
     let mut counts: BTreeMap<(String, String), usize> = BTreeMap::new();
@@ -236,8 +259,13 @@ pub fn plan(args: &[String]) -> i32 {
         };
         let in_scope = |p: &Policy| p.only.as_ref().map(|o| o.contains(&num)).unwrap_or(true);
         let out_of_scope = !pol_set.map(in_scope).unwrap_or(true) || !pol_all.map(in_scope).unwrap_or(true);
+        let live_same = same_live.get(&key).copied();
         let (action, new_uid, file, reason) = if has(|p| &p.exclude) {
             ("SKIP", String::new(), String::new(), "policy: excluded".to_string())
+        } else if have_diff && live_same == Some(true) {
+            ("SKIP", String::new(), String::new(), "live identical (live-vs-build SAME)".to_string())
+        } else if have_diff && live_same.is_none() {
+            ("SKIP", String::new(), String::new(), "not in the live-vs-build file".to_string())
         } else if out_of_scope {
             ("SKIP", String::new(), String::new(), "policy: out of scope (nothing to convert)".to_string())
         } else {
