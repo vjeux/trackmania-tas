@@ -362,14 +362,66 @@ pub fn apply(args: &[String]) -> i32 {
         by_camp.entry((c[0].clone(), c[2].clone())).or_default().push(c);
     }
     println!("apply: {} campaigns{}", by_camp.len(), if dry { " (DRY RUN)" } else { "" });
+    // `--skip-done RESULTS.tsv` (one or more, comma-separated): campaigns whose every row
+    // reads IDENTICAL in an earlier run's results are skipped — a token expiry STOPs the
+    // apply mid-set, and the rerun must not touch what already landed (2026-10-19; the
+    // 10-10 runs were resumed by hand-filtered plans).
+    let mut done_camps: std::collections::HashSet<String> = std::collections::HashSet::new();
+    if let Some(list) = f("--skip-done") {
+        for path in list.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+            let mut per: HashMap<String, (usize, usize)> = HashMap::new();
+            for l in read(path).lines().skip(1) {
+                let c: Vec<&str> = l.split('\t').collect();
+                if c.len() >= 6 {
+                    let e = per.entry(c[2].to_string()).or_insert((0, 0));
+                    e.0 += 1;
+                    if c[5].contains("IDENTICAL") {
+                        e.1 += 1;
+                    }
+                }
+            }
+            for (cid, (n, ok)) in per {
+                let planned = by_camp.iter().filter(|((_, c), _)| *c == cid).map(|(_, rows)| rows.len()).sum::<usize>();
+                if n == ok && planned > 0 && n >= planned {
+                    done_camps.insert(cid);
+                }
+            }
+        }
+        println!("skip-done: {} campaign(s) already applied", done_camps.len());
+    }
+    // `--token-refresh` : before each campaign, if the token files are older than 40 min,
+    // re-read the pair from the logged-in game on the box (`token --from-game`), so a
+    // long apply never dies on the ~1 h expiry.
+    let token_refresh = tmmaps::cli::has(args, "--token-refresh");
     let results = work.join("results.tsv");
     let mut res = String::from("set\tnum\tcampaignId\taction\tuid\tverdict\n");
     for ((set, cid), rows) in &by_camp {
         let updates: Vec<&Vec<String>> = rows.iter().filter(|r| r[6] == "UPDATE").collect();
         let wipes: Vec<&Vec<String>> = rows.iter().filter(|r| r[6] == "WIPE").collect();
+        if done_camps.contains(cid) {
+            println!("[{set} {cid}] already applied — skipped");
+            continue;
+        }
         println!("[{set} {cid}] {} update, {} wipe", updates.len(), wipes.len());
         if dry {
             continue;
+        }
+        if token_refresh {
+            let age = std::fs::metadata(PathBuf::from(&token_dir).join("token-NadeoServices.txt"))
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(u64::MAX);
+            if age > 40 * 60 {
+                println!("  tokens are {} min old — refreshing from the game", age / 60);
+                let st = std::process::Command::new(&me).args(["token", "--from-game", "--token-dir", &token_dir]).status();
+                if !st.map(|s| s.success()).unwrap_or(false) {
+                    println!("  STOP: token refresh failed (no logged-in game on the box?) — rerun with --skip-done {}", results.display());
+                    std::fs::write(&results, &res).ok();
+                    return 1;
+                }
+            }
         }
         let stage = work.join(format!("{}-{cid}", set.replace(' ', "")));
         std::fs::create_dir_all(&stage).ok();
