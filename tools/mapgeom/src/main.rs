@@ -874,8 +874,20 @@ fn main() {
                 colors.sort();
                 colors.dedup();
                 let colors = if colors.is_empty() { String::new() } else { format!("  color0 {}", colors.iter().take(4).map(|c| format!("{c:08x}")).collect::<Vec<_>>().join(",")) };
+                let uvr = if v.uv0.is_empty() {
+                    String::new()
+                } else {
+                    let (mut ul, mut uh) = ([f32::MAX; 2], [f32::MIN; 2]);
+                    for q in &v.uv0 {
+                        for c in 0..2 {
+                            ul[c] = ul[c].min(q[c]);
+                            uh[c] = uh[c].max(q[c]);
+                        }
+                    }
+                    format!("  uv0 u {:.2}..{:.2} v {:.2}..{:.2}", ul[0], uh[0], ul[1], uh[1])
+                };
                 println!(
-                    "  [{i:4}] {} verts  x {:.2}..{:.2}  y {:.2}..{:.2}  z {:.2}..{:.2}  normals up {up} down {down} side {side}  decls {:?}{colors}",
+                    "  [{i:4}] {} verts  x {:.2}..{:.2}  y {:.2}..{:.2}  z {:.2}..{:.2}  normals up {up} down {down} side {side}  decls {:?}{colors}{uvr}",
                     v.positions.len(), lo[0], hi[0], lo[1], hi[1], lo[2], hi[2], v.decl_names
                 );
             }

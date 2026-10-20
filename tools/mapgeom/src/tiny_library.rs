@@ -674,6 +674,13 @@ fn plan_block<'b>(bi: &'b crate::blockinfo::BlockInfo, key: &BlockKey, collectio
     // for the plastic set kept its grass deck and grass borders (Everios96,
     // 2026-09-14 05:10: "Map 01 of Plastic has parts that are still grass").
     // Stems the forced folder lacks still fall through to the block's own.
+    // …except the full-block family's SIDE PANELS (`DecoWall*VFC*`): their look follows
+    // the ORIGINAL block's terrain suffix — plain `DecoWallBase` has wood pillar sides,
+    // `…Dirt` orange stone, `…Ice` grey stone — carried here by the owner's inherited
+    // modifier; the set's forced modifier would repaint every side in the set's stone
+    // (Everios96 2026-10-19: "wood pillars stay wood pillars"). `TINY_FORCE_SIDES=1` restores.
+    let side_panel = name.starts_with("DecoWall") && name.contains("VFC") && !std::env::var("TINY_FORCE_SIDES").map(|v| v == "1").unwrap_or(false);
+    let forced_mod = if side_panel { None } else { forced_mod };
     let effective_mods: Vec<String> = forced_mod.into_iter().chain(bi.material_modifier.iter().cloned()).chain(key.inherited_mods.split('|').filter(|s| !s.is_empty()).map(String::from)).collect();
     let recipe = if let Some(l) = legacy_item { format!("legacy:{l}") } else { format!("{}|wp{:?}|units{:?}|mod{:?}", prefabs.iter().map(|p| format!("{}@{:?}/{:?}", p.0, p.1, p.2)).collect::<Vec<_>>().join(","), bi.waypoint_type, units, effective_mods) };
     if prefabs.is_empty() && legacy_item.is_none() {
