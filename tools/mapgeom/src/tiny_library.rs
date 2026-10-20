@@ -3356,6 +3356,13 @@ pub fn special_family_name(name: &str) -> String {
 /// the same text up to and including `Special` once the owner's surface family
 /// is dropped.
 pub fn same_special_family(clip: &str, owner: &str) -> bool {
+    // the WATER pad's bottom plate (`TrackWallWaterStraightFCBInsideSpecial`) finishes a
+    // `RoadWaterSpecial<Kind>` pad: a different name root, the same gameplay piece — its
+    // arrow decal takes the pad's kind (Turbo2 = red; 263 showed yellow arrows on a red
+    // booster, 2026-10-20)
+    if clip.starts_with("TrackWallWater") && clip.contains("Special") && owner.starts_with("RoadWater") && owner.contains("Special") {
+        return true;
+    }
     let o = special_family_name(owner);
     match (clip.find("Special"), o.find("Special")) {
         (Some(a), Some(b)) => clip[..a + 7] == o[..b + 7],
