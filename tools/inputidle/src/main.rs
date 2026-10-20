@@ -7,7 +7,7 @@
 //! game that a process-list count had not seen).
 //!
 //! ```text
-//! inputidle.exe status [--window-s 60] [--confirm-s 5] [--pad-sample-ms 1500] [--state FILE]
+//! inputidle.exe status [--window-s 60] [--confirm-s 5] [--fresh-s 1800] [--pad-sample-ms 1500] [--state FILE]
 //!     one line: verdict=free|busy kbm_idle_s=N pad_idle_s=N|unknown pads=K fg=<exe> "<title>"
 //!     exit 0 free, 1 busy, 2 error
 //! inputidle.exe watch --state FILE [--poll-ms 250]
@@ -108,6 +108,7 @@ mod win {
         pub fn GetCommandLineW() -> *const u16;
         pub fn Sleep(ms: u32);
         pub fn GetSystemTimeAsFileTime(ft: *mut u64);
+        pub fn GetProcessTimes(h: *mut c_void, creation: *mut u64, exit: *mut u64, kernel: *mut u64, user: *mut u64) -> i32;
         pub fn CreateProcessW(app: *const u16, cmd: *mut u16, pa: *mut c_void, ta: *mut c_void, inherit: i32, flags: u32, env: *mut c_void, cwd: *const u16, si: *mut StartupInfoW, pi: *mut ProcessInformation) -> i32;
     }
     #[link(name = "shell32", kind = "raw-dylib")]
@@ -240,6 +241,31 @@ mod win {
         p
     }
 
+    /// seconds since the foreground window's PROCESS was created (None when unknown).
+    /// A parked app is an OLD one; a person launches things — a foreground app a few
+    /// minutes old with a flat input clock is someone playing it, not a pump.
+    pub fn foreground_age_s() -> Option<f64> {
+        let hwnd = unsafe { GetForegroundWindow() };
+        if hwnd.is_null() {
+            return None;
+        }
+        let mut pid = 0u32;
+        unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+        let h = unsafe { OpenProcess(0x1000, 0, pid) }; // PROCESS_QUERY_LIMITED_INFORMATION
+        if h.is_null() {
+            return None;
+        }
+        let (mut c, mut e, mut k, mut u) = (0u64, 0u64, 0u64, 0u64);
+        let ok = unsafe { GetProcessTimes(h, &mut c, &mut e, &mut k, &mut u) } != 0;
+        unsafe { CloseHandle(h) };
+        if !ok || c == 0 {
+            return None;
+        }
+        let mut now: u64 = 0;
+        unsafe { GetSystemTimeAsFileTime(&mut now) };
+        Some(now.saturating_sub(c) as f64 / 10_000_000.0)
+    }
+
     /// the foreground window's process image name and title
     pub fn foreground() -> (String, String) {
         let hwnd = unsafe { GetForegroundWindow() };
@@ -350,6 +376,8 @@ fn status(args: &[String]) -> i32 {
     // pointer, switches window, or produces DISCRETE events (the idle counter climbs between
     // them); an app pumping the clock shows a flat 0 with nothing else moving.
     let confirm_s: u64 = flag(args, "--confirm-s").and_then(|v| v.parse().ok()).unwrap_or(5);
+    // a foreground app younger than this is a person's doing, never a parked pump
+    let fresh_s: f64 = flag(args, "--fresh-s").and_then(|v| v.parse().ok()).unwrap_or(1800.0);
     let state = flag(args, "--state");
     let kbm = match win::kbm_idle_s() {
         Ok(v) => v,
@@ -421,9 +449,20 @@ fn status(args: &[String]) -> i32 {
             }
         }
         // a person's input is discrete: the counter climbs between keystrokes. A flat 0 with
-        // no pointer movement and no window change is the foreground app pumping it.
-        pumped = !moved && !fg_changed && idle_max < 1.5;
-        why = format!(" pointer_moved={moved} window_changed={fg_changed} idle_max_s={idle_max:.1}");
+        // no pointer movement and no window change is the foreground app pumping it…
+        // …UNLESS that app is young: a game launched minutes ago with the clock flat at 0
+        // is a person playing it with the mouse captured (Hades II, 2026-10-19 22:38 — the
+        // gate said free for 11 min while vjeux played and a 5-job build ran under him).
+        // A parked app is an old one (`--fresh-s`, default 1800).
+        let flat = !moved && !fg_changed && idle_max < 1.5;
+        let age = win::foreground_age_s();
+        let fresh = age.map(|a| a < fresh_s).unwrap_or(false);
+        pumped = flat && !fresh;
+        let age_s = age.map(|a| format!("{a:.0}")).unwrap_or_else(|| "?".to_string());
+        why = format!(
+            " pointer_moved={moved} window_changed={fg_changed} idle_max_s={idle_max:.1} fg_age_s={age_s}{}",
+            if flat && fresh { " clock=flat-but-fresh-app" } else { "" }
+        );
     }
     let busy = (kbm < window && !pumped) || pad_idle.map(|v| v < window).unwrap_or(false);
     let pad_s = match pad_idle {
