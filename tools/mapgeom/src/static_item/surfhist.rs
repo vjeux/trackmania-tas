@@ -28,6 +28,10 @@ struct Row {
     down: usize,
     ymin: f32,
     ymax: f32,
+    xmin: f32,
+    xmax: f32,
+    zmin: f32,
+    zmax: f32,
     area: f64,
     up_area: f64,
 }
@@ -99,7 +103,7 @@ pub fn census(label: &str, sf: &CPlugSurface, at: &Xform, up_cos: f32, mat_name:
             }
         }
         let area = (len / 2.0) as f64;
-        let row = rows.entry((t.material_id, t.gameplay, t.surface_index)).or_insert_with(|| Row { ymin: f32::MAX, ymax: f32::MIN, ..Default::default() });
+        let row = rows.entry((t.material_id, t.gameplay, t.surface_index)).or_insert_with(|| Row { ymin: f32::MAX, ymax: f32::MIN, xmin: f32::MAX, xmax: f32::MIN, zmin: f32::MAX, zmax: f32::MIN, ..Default::default() });
         row.count += 1;
         row.area += area;
         if ny > up_cos {
@@ -112,6 +116,10 @@ pub fn census(label: &str, sf: &CPlugSurface, at: &Xform, up_cos: f32, mat_name:
         for p in [a, b, c] {
             row.ymin = row.ymin.min(p[1]);
             row.ymax = row.ymax.max(p[1]);
+            row.xmin = row.xmin.min(p[0]);
+            row.xmax = row.xmax.max(p[0]);
+            row.zmin = row.zmin.min(p[2]);
+            row.zmax = row.zmax.max(p[2]);
         }
         let tot = totals.entry(t.material_id).or_default();
         tot.count += 1;
@@ -133,7 +141,7 @@ pub fn census(label: &str, sf: &CPlugSurface, at: &Xform, up_cos: f32, mat_name:
             _ => String::new(),
         };
         println!(
-            "  byte {phys:>3} {:<14} gameplay {gp} idx {si} -> table {} {}: {:>6} tris ({:>5} up, {:>5} down), y {:.2}..{:.2}, area {:.1} m2 (up {:.1}){note}",
+            "  byte {phys:>3} {:<14} gameplay {gp} idx {si} -> table {} {}: {:>6} tris ({:>5} up, {:>5} down), y {:.2}..{:.2}, area {:.1} m2 (up {:.1}), x {:.1}..{:.1} z {:.1}..{:.1}{note}",
             crate::scene::physics_name(*phys),
             table.map(|t| t.to_string()).unwrap_or_else(|| "-".into()),
             mat,
@@ -143,7 +151,11 @@ pub fn census(label: &str, sf: &CPlugSurface, at: &Xform, up_cos: f32, mat_name:
             r.ymin,
             r.ymax,
             r.area,
-            r.up_area
+            r.up_area,
+            r.xmin,
+            r.xmax,
+            r.zmin,
+            r.zmax
         );
     }
     totals

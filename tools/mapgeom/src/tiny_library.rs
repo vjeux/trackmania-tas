@@ -1252,14 +1252,49 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
             // (bench, 2026-10-07). Both roads: pads get the set's physics AND the look.
             let deck_family_hit = deck_families.iter().any(|f| name.starts_with(f.as_str())) && !name.contains("Special");
             if name.contains("Special") && deck_families.iter().any(|f| name.starts_with(f.as_str())) {
-                if let Some(id) = std::env::var("TINY_OVERLAY_WATER_DECK").ok().and_then(|v| v.parse::<u8>().ok()) {
-                    let mut n = 0usize;
-                    for t in m.surf_triangles.iter_mut().filter(|t| t.material_id == 13) {
-                        t.material_id = id;
-                        n += 1;
+                // A water PAD's own water plane (physics 13) sits at the SURFACE (y 2.04 over
+                // the cell: `RoadWaterSpecialTurbo2`, 819 m²), not at the ride height the
+                // straights' plane has (1.13). Re-ided to the set it was a solid, invisible
+                // floor a metre above the bed: nose the wall and the car climbs onto it and
+                // rides over the booster without touching it (GeraldDuke, Grass 49,
+                // 2026-10-20 23:46, car at y 50.05 = 48 + 2.04). In the original 13 is
+                // water, nothing to ride. DROP it: the pad's drive floor is its bottom
+                // plate (`TrackWallWater*FCBInsideSpecial`, re-dressed with the set's
+                // physics and the pad's gameplay byte, lifted to the straights' plane).
+                // `TINY_WATER_PAD_KEEP_PLANE=1` restores the old re-id.
+                if std::env::var("TINY_WATER_PAD_KEEP_PLANE").map(|v| v == "1").unwrap_or(false) {
+                    if let Some(id) = std::env::var("TINY_OVERLAY_WATER_DECK").ok().and_then(|v| v.parse::<u8>().ok()) {
+                        let mut n = 0usize;
+                        for t in m.surf_triangles.iter_mut().filter(|t| t.material_id == 13) {
+                            t.material_id = id;
+                            n += 1;
+                        }
+                        if n > 0 {
+                            m.notes.push(format!("water gameplay pad: {n} drive triangle(s) re-ided to physics {id}, gameplay byte kept"));
+                        }
                     }
-                    if n > 0 {
-                        m.notes.push(format!("water gameplay pad: {n} drive triangle(s) re-ided to physics {id}, gameplay byte kept"));
+                } else {
+                    let before = m.surf_triangles.len();
+                    m.surf_triangles.retain(|t| t.material_id != 13);
+                    if m.surf_triangles.len() != before {
+                        m.notes.push(format!("water gameplay pad: {} water-plane triangle(s) dropped (a solid plane at the surface was an invisible floor over the booster)", before - m.surf_triangles.len()));
+                    }
+                    // …and the re-dressed DECK strips at the sheet height (two 0.6 m ledges at
+                    // the pad's cell ends, y 2.04, 32 m²): the same invisible ledge, smaller.
+                    // Anything horizontal the set's physics id owns above the channel goes.
+                    if let Some(id) = std::env::var("TINY_OVERLAY_WATER_DECK").ok().and_then(|v| v.parse::<u8>().ok()) {
+                        let verts = m.surf_vertices.clone();
+                        let before = m.surf_triangles.len();
+                        m.surf_triangles.retain(|t| {
+                            if t.material_id != id {
+                                return true;
+                            }
+                            let low = t.indices.iter().filter_map(|i| verts.get(*i as usize).map(|v| v[1])).fold(f32::INFINITY, f32::min);
+                            low < 1.5
+                        });
+                        if m.surf_triangles.len() != before {
+                            m.notes.push(format!("water gameplay pad: {} re-dressed ledge triangle(s) above the channel dropped", before - m.surf_triangles.len()));
+                        }
                     }
                 }
                 // A WATER pad's prefab carries no floor decal (on water there is nothing to
