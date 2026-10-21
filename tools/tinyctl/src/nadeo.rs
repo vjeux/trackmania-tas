@@ -41,11 +41,36 @@ fn curl(args: &[&str]) -> Result<(String, String), String> {
 }
 
 fn get_json(auth: &str, url: &str) -> Result<Value, String> {
-    let (body, code) = curl(&["-H", auth, url])?;
-    if code != "200" {
-        return Err(format!("GET {url}: HTTP {code} {}", &body[..body.len().min(300)]));
+    // RETRIED (2026-10-21): the Live API answers a GET with an HTML error page (a 5xx
+    // through the CDN) or a stray 401 now and then; a playlist swap reads every
+    // campaign and room of the club (300+ GETs), so one such answer failed the whole
+    // swap and STOPped the apply twice tonight (Plastic 156579, 156580). Five tries,
+    // 3-8 s apart; a verdict only after the last.
+    let mut last = String::new();
+    for attempt in 0..5u32 {
+        if attempt > 0 {
+            std::thread::sleep(Duration::from_secs(3 + 5 * u64::from(attempt - 1)));
+        }
+        let (body, code) = match curl(&["-H", auth, url]) {
+            Ok(r) => r,
+            Err(e) => {
+                last = e;
+                continue;
+            }
+        };
+        if code != "200" {
+            last = format!("GET {url}: HTTP {code} {}", &body[..body.len().min(300)]);
+            if code == "404" || code == "403" {
+                return Err(last);
+            }
+            continue;
+        }
+        match serde_json::from_str(&body) {
+            Ok(v) => return Ok(v),
+            Err(e) => last = format!("GET {url}: not JSON ({e}): {}", &body[..body.len().min(200)]),
+        }
     }
-    serde_json::from_str(&body).map_err(|e| format!("GET {url}: not JSON ({e}): {}", &body[..body.len().min(200)]))
+    Err(format!("{last} (after 5 tries)"))
 }
 
 fn post_json(auth: &str, url: &str, body: &str) -> Result<Value, String> {
