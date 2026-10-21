@@ -1185,6 +1185,22 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
         let tris = m.surf_triangles.len();
         // a 3 cm shell: the copy's faces are the block's own faces, coplanar ones z-fight
         let shell: f32 = std::env::var("TINY_OVERLAY_SHELL").ok().and_then(|v| v.parse().ok()).unwrap_or(0.03);
+        // A WATER PAD's bottom plate (`TrackWallWater*FCBInsideSpecial`: the booster's floor,
+        // arrows and trigger) rides `TINY_WATER_PAD_LIFT` higher than the shell alone
+        // (default 0.09 m): the plain water-road cells drive on the block's water plane
+        // re-ided to the set (y 1.13 over the road cell, 49.13 on U10S 49) while the pad
+        // cell drove on this plate at the bed (9.04 over the cell below = 49.04), a 9 cm
+        // step down onto every booster and up after it — GeraldDuke measured the car at
+        // 49.18 before and after, 49.12 on the pad (2026-10-20; the original's ghosts ride
+        // 49.09 throughout). Everios96 picked "A": the pad up to the straights' level.
+        let pad_lift: f32 = if name.contains("Water") && name.contains("FCBInside") && name.contains("Special") {
+            std::env::var("TINY_WATER_PAD_LIFT").ok().and_then(|v| v.parse().ok()).unwrap_or(0.09)
+        } else {
+            0.0
+        };
+        if pad_lift != 0.0 {
+            m.notes.push(format!("water pad plate: lifted {pad_lift} m more than the shell (to the straights' drive plane)"));
+        }
         // TINY_OVERLAY_COLLISION=1 (2026-10-03, the pool review lanes for Everios96 /
         // vjeux "1 mm above the water block put the new texture"): the copy KEEPS its
         // hull — already re-dressed to the swap's deck physics by the rows — lifted by
@@ -1425,7 +1441,7 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
                 shell
             };
             for v in m.surf_vertices.iter_mut() {
-                v[1] += lift;
+                v[1] += lift + pad_lift;
             }
             // An overlay is a drivable FLOOR, nothing else: every vertical face of the
             // copy is a lip in the driving line (the bench found the car pinned against
@@ -1565,7 +1581,7 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
             }
         }
         for v in m.visuals.iter_mut() {
-            let _ = crate::static_item::build::shell_offset(&mut v.visual, shell);
+            let _ = crate::static_item::build::shell_offset(&mut v.visual, shell + pad_lift);
         }
         m.notes.push(format!("water overlay: visual-only copy ({tris} collision triangles dropped, {} water visuals dropped, {shell} m shell)", before - m.visuals.len()));
     }
