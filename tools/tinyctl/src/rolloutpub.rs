@@ -348,6 +348,7 @@ pub fn apply(args: &[String]) -> i32 {
     // vanilla one (2026-10-09, U10S_39 side by side). Required: a missing live file
     // stops the run before anything moves.
     let live_dir = f("--live-dir").map(PathBuf::from);
+    let live_optional = tmmaps::cli::has(args, "--live-optional");
     let mut live_by_uid: HashMap<String, PathBuf> = HashMap::new();
     if let Some(d) = &live_dir {
         // one level of `pNN/` part folders too (the `club-inventory --fetch-root` layout)
@@ -586,6 +587,12 @@ pub fn apply(args: &[String]) -> i32 {
                         Some(t) => {
                             cmd.arg(t);
                         }
+                        None if live_optional => {
+                            // `--live-optional` (2026-10-21): a map re-ided earlier today has no
+                            // file in an older live dir; its build file carries the original's
+                            // thumbnail, which is what every live file started from
+                            println!("  note: no live file for {} {} ({}) — the build's own thumbnail stays", r[0], r[1], r[4]);
+                        }
                         None => {
                             println!("  STOP: no live file for {} {} ({}) in the live dir", r[0], r[1], r[4]);
                             std::fs::write(&results, &res).ok();
@@ -630,6 +637,12 @@ pub fn apply(args: &[String]) -> i32 {
                     match thumb_src(&r[4]) {
                         Some(t) => {
                             cmd.arg(t);
+                        }
+                        None if live_optional => {
+                            // `--live-optional` (2026-10-21): a map re-ided earlier today has no
+                            // file in an older live dir; its build file carries the original's
+                            // thumbnail, which is what every live file started from
+                            println!("  note: no live file for {} {} ({}) — the build's own thumbnail stays", r[0], r[1], r[4]);
                         }
                         None => {
                             println!("  STOP: no live file for {} {} ({}) in the live dir", r[0], r[1], r[4]);
