@@ -522,3 +522,81 @@ pub fn cmd_skins(args: &[String]) {
         }
     }
 }
+
+// ---------------------------------------------------------------- unpillar
+
+/// `tmmaps unpillar BUILT.Map.Gbx --orig ORIGINAL.Map.Gbx --out F [--all]`
+///
+/// The game dresses a GENERATED pillar (flag 0x4000 under an authored block) like the
+/// block it supports: under a platform the alteration RENAMED to its dirt / ice twin,
+/// the pillar's sides turn orange / grey stone where the original's were wood
+/// (Everios96 2026-10-20, Dirt 26: "the black blocks still have orange stone instead of
+/// wood pillar texture on the side"). An AUTHORED pillar is not re-dressed, so this
+/// clears the generated bit on every pillar whose parent cell (one or two cells up the
+/// column) carries a different surface in the built map than in the original — `--all`
+/// does every generated pillar — and writes the result. The surface of a parent is the
+/// family suffix of a `Platform` / `DecoPlatform` / `DecoHill` block name.
+pub fn cmd_unpillar(args: &[String]) {
+    let src = PathBuf::from(&args[2]);
+    let out = PathBuf::from(crate::cli::flag(args, "--out").expect("--out F"));
+    let all = crate::cli::has(args, "--all");
+    let orig = crate::cli::flag(args, "--orig").map(PathBuf::from);
+    if !all && orig.is_none() {
+        panic!("unpillar needs --orig ORIGINAL.Map.Gbx (or --all)");
+    }
+    fn surface_of(name: &str) -> Option<&str> {
+        for fam in ["DecoPlatform", "DecoHill", "Platform"] {
+            if let Some(rest) = name.strip_prefix(fam) {
+                for s in ["Dirt", "Ice", "Grass", "Plastic", "Tech", "Snow", "Rally", "Desert"] {
+                    if rest.starts_with(s) {
+                        return Some(s);
+                    }
+                }
+            }
+        }
+        None
+    }
+    fn surfaces(m: &crate::map::MapFile) -> std::collections::HashMap<(i32, i32, i32), Vec<String>> {
+        let mut d: std::collections::HashMap<(i32, i32, i32), Vec<String>> = std::collections::HashMap::new();
+        for b in &m.blocks {
+            if let Some(s) = surface_of(&b.name) {
+                d.entry(b.coords()).or_default().push(s.to_string());
+            }
+        }
+        d
+    }
+    let mut m = crate::map::MapFile::load(&src);
+    let built = surfaces(&m);
+    let original = orig.as_ref().map(|p| surfaces(&crate::map::MapFile::load(p)));
+    let mut changed = 0usize;
+    let mut generated = 0usize;
+    let idx: Vec<(usize, u32, String, (i32, i32, i32))> = m
+        .blocks
+        .iter()
+        .enumerate()
+        .map(|(i, b)| (i, b.flags, b.name.clone(), b.coords()))
+        .collect();
+    for (i, flags, name, cell) in idx {
+        let pillar = flags & 0x4000 != 0 && name.contains("Pillar") && (name.starts_with("DecoWall") || name.starts_with("TrackWall"));
+        if !pillar {
+            continue;
+        }
+        generated += 1;
+        let wanted = all
+            || (1..=2).any(|dy| {
+                let up = (cell.0, cell.1 + dy, cell.2);
+                let b: Vec<&String> = built.get(&up).map(|v| v.iter().collect()).unwrap_or_default();
+                let o: Vec<&String> = original.as_ref().and_then(|d| d.get(&up)).map(|v| v.iter().collect()).unwrap_or_default();
+                !b.is_empty() && !o.is_empty() && b != o
+            });
+        if wanted {
+            m.set_block_flags(i, flags & !0x4000);
+            changed += 1;
+        }
+    }
+    let sp = m.write_to_reporting(&out).expect("write unpillared map");
+    println!("  {}", sp.summary());
+    let after = crate::map::MapFile::load(&out);
+    let left = after.blocks.iter().filter(|b| b.flags & 0x4000 != 0 && b.name.contains("Pillar")).count();
+    println!("unpillar: {changed} of {generated} generated pillar(s) made authored; {left} generated left; wrote {}", out.display());
+}

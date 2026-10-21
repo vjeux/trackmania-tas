@@ -134,6 +134,7 @@ fn main() {
         "surface" => tmmaps::surface::cmd(&args),
         "tiny-batch" => tmmaps::tiny::cmd_batch(&args),
         "clear" => census::cmd_clear(&args),
+        "unpillar" => census::cmd_unpillar(&args),
         "shift" => census::cmd_shift(&args),
         "recdump" => surgery::recdump(&args),
         "untag" => surgery::untag(&args),

@@ -224,6 +224,29 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
         if std::env::var("TINY_DECOWALL_BAKE").map(|v| v != "0").unwrap_or(true) {
             env.push(("TINY_BAKE_FAMILY".to_string(), "DecoWall".to_string()));
         }
+        // ONE `TINY_BAKE_FAMILY` row: the pushes above could leave two (the water faces'
+        // and the DecoWall one), and a child env keeps only the last — merged here. And
+        // `TINY_BAKE_FAMILY_EXTRA=Fam[,Fam…]` (2026-10-20, Dirt 26: the game dresses the
+        // generated pillars under a RENAMED platform in the new surface's stone; an item
+        // platform owns no pillar, so `Platform` here keeps the pillars wood) appends.
+        {
+            let mut fams: Vec<String> = Vec::new();
+            env.retain(|(k, v)| {
+                if k == "TINY_BAKE_FAMILY" {
+                    fams.extend(v.split(',').map(|f| f.trim().to_string()).filter(|f| !f.is_empty()));
+                    false
+                } else {
+                    true
+                }
+            });
+            if let Ok(extra) = std::env::var("TINY_BAKE_FAMILY_EXTRA") {
+                fams.extend(extra.split(',').map(|f| f.trim().to_string()).filter(|f| !f.is_empty()));
+            }
+            fams.dedup();
+            if !fams.is_empty() {
+                env.push(("TINY_BAKE_FAMILY".to_string(), fams.join(",")));
+            }
+        }
         // Water ROADS: the prefab (StraightV2) has no bed — the channel floor the player
         // sees is the game's clips: the flat bottom plate `TrackWallWater*FCBInside*` under
         // the middle cell and the `RoadWaterVFC*` end clips, whose "vertical" name hides a
