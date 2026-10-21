@@ -56,6 +56,14 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
         // the platform family's modifier folder (Modifier\Platform<S>\{PlatformTech, TrackWall, DecoHill, …})
         env.push(("TINY_FORCE_MODIFIER".to_string(), format!("Stadium\\Media\\Modifier\\Platform{s}.TerrainModifier.Gbx")));
     }
+    // DIRT KEEPS GEOMETRY (Everios96 2026-09-26 "alright yes thats the new rule"): a road
+    // under dirt is a re-dressed copy of its OWN shape, never the vanilla RoadDirt twin
+    // (a trough). The knob lived only in the hand-set env of the 09-26 rebuild, so every
+    // later build (v9…v12) renamed the slopes again — Dirt 57's two slopes, shcr 2026-10-20
+    // 21:52, 26 maps in all. Now the set's default; `TINY_DIRT_KEEP_GEOMETRY=0` opts out.
+    if s == "Dirt" && std::env::var("TINY_DIRT_KEEP_GEOMETRY").map(|v| v != "0").unwrap_or(true) {
+        env.push(("TINY_DIRT_KEEP_GEOMETRY".to_string(), "1".to_string()));
+    }
     // OpenTechBorders: the open roads' wide deck margins (drivable asphalt, 2/3
     // of that deck) — a stem like the road decks since 2026-09-14 (plastic 05)
     // ItemInflatableTube: the pipes' one material (Everios96 2026-09-14: pipes too)
