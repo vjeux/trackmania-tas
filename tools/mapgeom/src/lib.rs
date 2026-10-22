@@ -83,6 +83,7 @@ pub mod sttc;
 pub mod stands;
 pub mod vista;
 pub mod vista_items;
+pub mod lights;
 pub mod podium;
 pub mod sandbox;
 pub mod flags;

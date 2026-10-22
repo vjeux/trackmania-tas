@@ -3567,6 +3567,107 @@ fn main() {
             for r in &o.replaced { println!("  {} at cell {:?} dir {} -> {} at ({:.1}, {:.1}, {:.1}) yaw {:.4}", r.block, r.cell, r.dir, r.ident, r.pos[0], r.pos[1], r.pos[2], r.yaw); }
             println!("wrote {out}: {} item(s) embedded, {} block(s) replaced", o.items.len(), o.replaced.len());
         }
+        // lights-census [--collection Stadium] [--blocks] [--items] [--filter SUB,..] [--out TSV]: every block and item of the
+        //   loaded paks baked once (the tiny bake at scale 1) and its LIGHT SOURCES listed — real light nodes (pose, colour,
+        //   intensity, range) and self-illuminated materials (an `_I` texture / a light-ish name) with the emitting geometry's
+        //   local bbox (Hugo's Moth campaign, 2026-10-22)
+        "lights-census" => {
+            let mut store = open(&a);
+            let coll = flag(&a.rest, "--collection").unwrap_or_else(|| "Stadium".into());
+            let collection = match coll.as_str() { "Stadium" => 0x1a, "RedIsland" => 0x10, "BlueBay" => 0x1c, "WhiteShore" => 0x1d, "GreenCoast" => 0xf, other => die(format!("unknown collection {other}")) };
+            let want_blocks = a.rest.iter().any(|x| x == "--blocks") || !a.rest.iter().any(|x| x == "--items");
+            let want_items = a.rest.iter().any(|x| x == "--items") || !a.rest.iter().any(|x| x == "--blocks");
+            let filters: Vec<String> = flag(&a.rest, "--filter").map(|s| s.split(',').map(|x| x.trim().to_ascii_lowercase()).collect()).unwrap_or_default();
+            let keep = |n: &str| filters.is_empty() || filters.iter().any(|f| n.to_ascii_lowercase().contains(f));
+            let mut cache = mapgeom::lights::MatCache::new();
+            let mut rows: Vec<String> = vec!["kind\tname\tcollection\tsource\tlight_kind\tdetail\tparts\ttris\tbbox_local(x y z lo..hi)\tcolor\tintensity\trange\tsize_cells".to_string()];
+            let mut n_models = 0usize;
+            let mut n_with = 0usize;
+            let mut errors = 0usize;
+            let coll_folder = mapgeom::static_item::materials::env_name(collection);
+            if want_blocks {
+                let paths: Vec<String> = store.entries().map(|e| e.path()).filter(|p| {
+                    let u = p.to_uppercase();
+                    u.ends_with(".EDCLASSIC.GBX") && u.starts_with(&format!("{}\\GAMECTNBLOCKINFO\\GAMECTNBLOCKINFOCLASSIC\\", coll_folder.to_uppercase()))
+                }).collect();
+                eprintln!("{} block infos in {coll_folder}", paths.len());
+                for p in &paths {
+                    let name = p.rsplit('\\').next().unwrap_or(p).trim_end_matches(".EDClassic.Gbx").to_string();
+                    if !keep(&name) { continue; }
+                    n_models += 1;
+                    let flags = mapgeom::blockmap::FLAG_GROUND;
+                    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| mapgeom::tiny_library::bake_named_block(&mut store, collection, &name, flags, &format!("{name}.Item.Gbx"), "Nadeo", 1.0)));
+                    let (m, size) = match r {
+                        Ok(Ok((_, m, _))) => {
+                            let size = mapgeom::vista::find_block_info(&store, &name).and_then(|bp| mapgeom::blockinfo::load(&mut store, &bp).ok()).and_then(|bi| {
+                                let v = bi.variant_base_ground.as_ref().filter(|v| !v.block_units.is_empty()).or(bi.variant_base_air.as_ref())?;
+                                let mut s = [0i32; 3];
+                                for u in &v.block_units { for k in 0..3 { s[k] = s[k].max(u.offset[k] + 1); } }
+                                Some(s)
+                            });
+                            (m, size)
+                        }
+                        Ok(Err(e)) => { errors += 1; rows.push(format!("block\t{name}\t{coll_folder}\t-\tERROR\t{}\t\t\t\t\t\t\t", e.replace('\t', " "))); continue; }
+                        Err(_) => { errors += 1; rows.push(format!("block\t{name}\t{coll_folder}\t-\tERROR\tpanic in the bake\t\t\t\t\t\t\t")); continue; }
+                    };
+                    let (lights, em) = mapgeom::lights::census_of(&mut store, &mut cache, &m);
+                    if !lights.is_empty() || !em.is_empty() { n_with += 1; }
+                    let sz = size.map(|s| format!("{}x{}x{}", s[0], s[1], s[2])).unwrap_or_default();
+                    for l in &lights {
+                        rows.push(format!("block\t{name}\t{coll_folder}\t{}\tLIGHT\tat {:.2} {:.2} {:.2}\t1\t\t\t{:.2} {:.2} {:.2}\t{:.2}\t{:.1}\t{sz}", l.source, l.pos[0], l.pos[1], l.pos[2], l.color[0], l.color[1], l.color[2], l.intensity, l.range));
+                    }
+                    for e in &em {
+                        rows.push(format!("block\t{name}\t{coll_folder}\t{}\tEMISSIVE\t{}\t{}\t{}\t{}\t\t\t\t{sz}", e.material.rsplit('\\').next().unwrap_or(&e.material), e.textures, e.parts, e.tris, mapgeom::lights::fmt_bbox(&e.bbox)));
+                    }
+                }
+            }
+            if want_items {
+                let paths: Vec<String> = store.entries().map(|e| e.path()).filter(|p| {
+                    let u = p.to_uppercase();
+                    u.ends_with(".ITEM.GBX") && u.starts_with(&format!("{}\\ITEMS\\", coll_folder.to_uppercase()))
+                }).collect();
+                eprintln!("{} items in {coll_folder}", paths.len());
+                for p in &paths {
+                    let name = p.rsplit('\\').next().unwrap_or(p).trim_end_matches(".Item.Gbx").to_string();
+                    if !keep(&name) { continue; }
+                    n_models += 1;
+                    // every VARIANT of a multi-variant item (ShowLights = 34 rig/light pieces; the placement's
+                    // flags high byte picks one): the bake's note "variant k of N" gives N
+                    let mut variant = 0usize;
+                    let mut total = 1usize;
+                    while variant < total && variant < 64 {
+                        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| mapgeom::static_item::build::pack_item_merged(&mut store, p, 1.0, collection, variant, None)));
+                        let m = match r {
+                            Ok(Ok(m)) => m,
+                            Ok(Err(e)) => { errors += 1; rows.push(format!("item\t{name}\t{coll_folder}\t-\tERROR\t{}\t\t\t\t\t\t\t", e.replace('\t', " "))); break; }
+                            Err(_) => { errors += 1; rows.push(format!("item\t{name}\t{coll_folder}\t-\tERROR\tpanic in the bake\t\t\t\t\t\t\t")); break; }
+                        };
+                        if variant == 0 {
+                            for n in &m.notes {
+                                if let Some(rest) = n.strip_prefix("variant 0 of ") {
+                                    if let Some(t) = rest.split(|c: char| !c.is_ascii_digit()).next().and_then(|x| x.parse::<usize>().ok()) { total = t.max(1); }
+                                }
+                            }
+                        }
+                        let vname = if total > 1 { format!("{name}@v{variant}") } else { name.clone() };
+                        let (lights, em) = mapgeom::lights::census_of(&mut store, &mut cache, &m);
+                        if !lights.is_empty() || !em.is_empty() { n_with += 1; }
+                        for l in &lights {
+                            rows.push(format!("item\t{vname}\t{coll_folder}\t{}\tLIGHT\tat {:.2} {:.2} {:.2}\t1\t\t\t{:.2} {:.2} {:.2}\t{:.2}\t{:.1}\t", l.source, l.pos[0], l.pos[1], l.pos[2], l.color[0], l.color[1], l.color[2], l.intensity, l.range));
+                        }
+                        for e in &em {
+                            rows.push(format!("item\t{vname}\t{coll_folder}\t{}\tEMISSIVE\t{}\t{}\t{}\t{}\t\t\t\t", e.material.rsplit('\\').next().unwrap_or(&e.material), e.textures, e.parts, e.tris, mapgeom::lights::fmt_bbox(&e.bbox)));
+                        }
+                        variant += 1;
+                    }
+                }
+            }
+            eprintln!("{n_models} models baked, {n_with} with a light source, {errors} errors");
+            match flag(&a.rest, "--out") {
+                Some(out) => { std::fs::write(&out, rows.join("\n") + "\n").unwrap_or_else(|e| die(format!("{out}: {e}"))); eprintln!("wrote {out} ({} rows)", rows.len() - 1); }
+                None => for r in &rows { println!("{r}"); },
+            }
+        }
         "crystal-layers" => {
             for path in a.rest.iter().skip(1) {
                 let bytes = std::fs::read(path).unwrap_or_else(|e| die(format!("{path}: {e}")));
