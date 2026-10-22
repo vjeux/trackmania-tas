@@ -16,6 +16,7 @@
 //! `selfbuild`; the shooting half is `shootctl shootset`.
 
 mod boxbuild;
+mod mothsheet;
 mod discard;
 mod lightmap;
 mod loadloop;
@@ -209,6 +210,7 @@ fn main() {
         "flag-hitbox-draw" => flagdraw::cmd(rest),
         "stand-hitbox-draw" => standdraw::cmd(rest),
         "gate-align-draw" => gatedraw::cmd(rest),
+        "moth-sheet" => mothsheet::cmd(rest),
         "build" => build::cmd(rest),
         "views" => views::cmd(rest),
         "shoot" => shoot::cmd(rest),

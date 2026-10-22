@@ -310,7 +310,13 @@ fn light_sources_from_tsv(tsv: &str, groups: Option<String>, exclude: Option<Str
     let groups: Vec<String> = groups.map(|v| v.split(',').map(|s| s.trim().to_ascii_lowercase()).collect()).unwrap_or_else(|| vec!["poles/lamps".into(), "light blocks".into(), "show-rig".into(), "ground screens".into()]);
     let exclude: Vec<String> = exclude.map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()).unwrap_or_default();
     let text = std::fs::read_to_string(tsv).unwrap_or_else(|e| die(format!("{tsv}: {e}")));
-    let mut by_key: std::collections::BTreeMap<String, (bool, [f32; 3], [f32; 3])> = Default::default();
+    // per kind: the EMISSIVE box (the lit geometry) and the LIGHT-node box, merged afterwards — a node
+    // joins the box only when it sits within 1 m of the emissive geometry (LampSmallB/C carry their
+    // `ItemLampSpotB` node at 6.36 m, the TALL lamp's height, while their head is at 2.8–4.4 m: a pak
+    // quirk that would stretch the trigger down the pole); a kind without emissive rows is boxed by its
+    // nodes (half a metre about each).
+    let mut emis: std::collections::BTreeMap<String, (bool, [f32; 3], [f32; 3])> = Default::default();
+    let mut nodes: std::collections::BTreeMap<String, (bool, Vec<([f32; 3], [f32; 3])>)> = Default::default();
     for l in text.lines().skip(1) {
         let f: Vec<&str> = l.split('\t').collect();
         if f.len() < 19 { continue; }
@@ -326,12 +332,33 @@ fn light_sources_from_tsv(tsv: &str, groups: Option<String>, exclude: Option<Str
         if !want { continue; }
         let rng = |col: &str| -> Option<(f32, f32)> { let (a, b) = col.split_once("..")?; Some((a.parse().ok()?, b.parse().ok()?)) };
         let (Some(x), Some(y), Some(z)) = (rng(f[7]), rng(f[8]), rng(f[9])) else { continue };
-        let (mut lo, mut hi) = ([x.0, y.0, z.0], [x.1, y.1, z.1]);
+        let (lo, hi) = ([x.0, y.0, z.0], [x.1, y.1, z.1]);
         if lk == "LIGHT" {
-            for k in 0..3 { lo[k] -= 0.25; hi[k] += 0.25; }
+            nodes.entry(name.to_string()).or_insert((kind == "block", Vec::new())).1.push(([lo[0] - 0.25, lo[1] - 0.25, lo[2] - 0.25], [hi[0] + 0.25, hi[1] + 0.25, hi[2] + 0.25]));
+        } else {
+            let e = emis.entry(name.to_string()).or_insert((kind == "block", lo, hi));
+            for k in 0..3 { e.1[k] = e.1[k].min(lo[k]); e.2[k] = e.2[k].max(hi[k]); }
         }
-        let e = by_key.entry(name.to_string()).or_insert((kind == "block", lo, hi));
-        for k in 0..3 { e.1[k] = e.1[k].min(lo[k]); e.2[k] = e.2[k].max(hi[k]); }
+    }
+    let mut by_key: std::collections::BTreeMap<String, (bool, [f32; 3], [f32; 3])> = emis.clone();
+    for (name, (is_block, boxes)) in nodes {
+        match by_key.get_mut(&name) {
+            Some(e) => {
+                for (lo, hi) in boxes {
+                    let near = (0..3).all(|k| hi[k] >= e.1[k] - 1.0 && lo[k] <= e.2[k] + 1.0);
+                    if near {
+                        for k in 0..3 { e.1[k] = e.1[k].min(lo[k]); e.2[k] = e.2[k].max(hi[k]); }
+                    } else {
+                        eprintln!("{name}: light node box [{:.2} {:.2} {:.2}]..[{:.2} {:.2} {:.2}] is > 1 m from the lit geometry [{:.2} {:.2} {:.2}]..[{:.2} {:.2} {:.2}]: ignored", lo[0], lo[1], lo[2], hi[0], hi[1], hi[2], e.1[0], e.1[1], e.1[2], e.2[0], e.2[1], e.2[2]);
+                    }
+                }
+            }
+            None => {
+                let mut e = (is_block, [f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+                for (lo, hi) in boxes { for k in 0..3 { e.1[k] = e.1[k].min(lo[k]); e.2[k] = e.2[k].max(hi[k]); } }
+                by_key.insert(name, e);
+            }
+        }
     }
     let keys: Vec<String> = by_key.keys().cloned().collect();
     for k in keys {
