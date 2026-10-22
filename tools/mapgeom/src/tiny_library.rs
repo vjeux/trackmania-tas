@@ -2084,6 +2084,21 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         if b.name.starts_with("DecoWall") && b.name.contains("VFC") && !b.name.starts_with("DecoWallBaseVFC") && !b.name.contains("Water") {
             return Vec::new();
         }
+        // …and a `DecoWallBaseVFC` panel that walls an AUTHORED black full block (a
+        // `DecoWall*` that is not a pillar, across the panel's side or in its own cell) is
+        // that block's own wood side too: on Grass 124 the pit's panels inherited the
+        // renamed `PlatformGrassBase` next to them and came out green ("the sides of the
+        // black blocks", Everios96 2026-10-22). A pillar's `DecoWallBaseVFC` walls keep the
+        // from-parent rule below.
+        if b.name.starts_with("DecoWallBaseVFC") {
+            let own_black = |cell: &(u8, u8, u8)| {
+                cell_blocks.get(cell).map(|v| v.iter().any(|(n, _)| n.starts_with("DecoWall") && !n.contains("Pillar") && !n.contains("Water"))).unwrap_or(false)
+            };
+            let across_cell = tmmaps::fillers::across(b.file_cell, b.dir).map(|a| (a[0], a[1], a[2]));
+            if across_cell.map(|a| own_black(&a)).unwrap_or(false) || own_black(&c) {
+                return Vec::new();
+            }
+        }
         if let Some(a) = tmmaps::fillers::across(b.file_cell, b.dir) {
             // …except a PILLAR: its walls are `TrackWallFromParent` — the
             // dress of the block it supports, or none at all (Summer 20 cp3,

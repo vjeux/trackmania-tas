@@ -98,8 +98,12 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
             .filter(|st| !st.starts_with("RoadDirt") && !(std::env::var("TINY_NO_POOL_BORDER_DIRT").map(|v| v == "1").unwrap_or(false) && **st == "OpenTechBorders"))
             .map(|st| if matches!(*st, "Underwater" | "Waterground" | "RoadWater" | "PlatformWater") { format!("{st}=Stadium\\Media\\Modifier\\PlatformDirt\\PlatformTech") } else { format!("{st}=Stadium\\Media\\Material\\RoadDirt") })
             .collect(),
-        "Grass" => road_stems.iter().chain(["TrackWall"].iter()).map(|st| format!("{st}=Stadium\\Media\\Modifier\\PlatformGrass\\PlatformTech")).collect(),
-        "Plastic" => road_stems.iter().chain(["TrackWall"].iter()).map(|st| format!("{st}=Stadium\\Media\\Modifier\\PlatformPlastic\\PlatformTech")).collect(),
+        // No global `TrackWall` row for Grass / Plastic (2026-10-22): it re-dressed every
+        // wood-pillar SIDE — black full blocks and road walls alike — in the set's look
+        // (Grass 124: "the sides of the black blocks", Everios96). The caps, rims and
+        // halfpipe insides take the set through the SCOPED rows below, as Dirt's do.
+        "Grass" => road_stems.iter().map(|st| format!("{st}=Stadium\\Media\\Modifier\\PlatformGrass\\PlatformTech")).collect(),
+        "Plastic" => road_stems.iter().map(|st| format!("{st}=Stadium\\Media\\Modifier\\PlatformPlastic\\PlatformTech")).collect(),
         // + `DecoHill`: the DecoPlatform hills' top (`Modifier\PlatformDirt\DecoHill` on
         // the castle towers of 267 stayed dirt under wood — Everios96 2026-09-15)
         // + `Deco`: the plain DecoPlatform tops (`Material\Deco`, physics Grass — the
