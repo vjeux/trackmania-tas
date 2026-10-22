@@ -347,16 +347,29 @@ pub fn apply(args: &[String]) -> i32 {
     // wood maps carry September's rendered wood view, the built files the original's
     // vanilla one (2026-10-09, U10S_39 side by side). Required: a missing live file
     // stops the run before anything moves.
-    let live_dir = f("--live-dir").map(PathBuf::from);
+    // `--live-root DIR` (2026-10-22): the live files of SEVERAL sets under one root
+    // (`DIR/<set>/…`, each set dir as `--live-dir` takes it) — one apply over a multi-set
+    // plan instead of a shell loop per set (vjeux: no shell logic, ever).
+    let live_dir = f("--live-dir").or_else(|| f("--live-root")).map(PathBuf::from);
+    let live_depth = if f("--live-root").is_some() { 2 } else { 1 };
     let live_optional = tmmaps::cli::has(args, "--live-optional");
     let mut live_by_uid: HashMap<String, PathBuf> = HashMap::new();
     if let Some(d) = &live_dir {
-        // one level of `pNN/` part folders too (the `club-inventory --fetch-root` layout)
+        // one level of `pNN/` part folders too (the `club-inventory --fetch-root` layout);
+        // two under a `--live-root`
         let mut dirs = vec![d.clone()];
-        for e in std::fs::read_dir(d).unwrap_or_else(|e| panic!("{}: {e}", d.display())).flatten() {
-            if e.path().is_dir() {
-                dirs.push(e.path());
+        let mut frontier = vec![d.clone()];
+        for _ in 0..live_depth {
+            let mut next = Vec::new();
+            for dir in &frontier {
+                for e in std::fs::read_dir(dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())).flatten() {
+                    if e.path().is_dir() {
+                        dirs.push(e.path());
+                        next.push(e.path());
+                    }
+                }
             }
+            frontier = next;
         }
         for dir in dirs {
             for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
@@ -441,8 +454,28 @@ pub fn apply(args: &[String]) -> i32 {
     // apply mid-set, and the rerun must not touch what already landed (2026-10-19; the
     // 10-10 runs were resumed by hand-filtered plans).
     let mut done_camps: std::collections::HashSet<String> = std::collections::HashSet::new();
-    if let Some(list) = f("--skip-done") {
-        for path in list.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+    // `--skip-done-prefix PATH`: every `PATH*/results.tsv` (the earlier passes' workdirs),
+    // so a rerun names no list by hand (2026-10-22)
+    let mut skip_lists: Vec<String> = f("--skip-done").map(|l| l.split(',').map(str::trim).filter(|p| !p.is_empty()).map(String::from).collect()).unwrap_or_default();
+    if let Some(prefix) = f("--skip-done-prefix") {
+        let pp = PathBuf::from(&prefix);
+        let parent = pp.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
+        let base = pp.file_name().map(|b| b.to_string_lossy().to_string()).unwrap_or_default();
+        let mut found: Vec<String> = std::fs::read_dir(&parent)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with(&base))
+            .map(|e| e.path().join("results.tsv"))
+            .filter(|r| r.is_file())
+            .map(|r| r.to_string_lossy().to_string())
+            .collect();
+        found.sort();
+        println!("skip-done-prefix: {} earlier results file(s)", found.len());
+        skip_lists.extend(found);
+    }
+    if !skip_lists.is_empty() {
+        for path in skip_lists.iter().map(|s| s.as_str()) {
             let mut per: HashMap<String, (usize, usize)> = HashMap::new();
             for l in read(path).lines().skip(1) {
                 let c: Vec<&str> = l.split('\t').collect();
