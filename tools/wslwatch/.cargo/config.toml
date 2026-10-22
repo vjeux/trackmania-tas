@@ -1,0 +1,5 @@
+# wslwatch runs ON the WhiteStick box (i7-12700F: AVX2, no AVX-512). The tools/
+# config above builds for Zen 4 (target-cpu=znver4), and such a binary dies with
+# SIGILL here. Arrays from both files are joined, so this later -C wins.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "target-cpu=x86-64-v3"]

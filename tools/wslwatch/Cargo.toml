@@ -1,0 +1,13 @@
+[package]
+name = "wslwatch"
+version = "0.1.0"
+edition = "2021"
+description = "Restarts WhiteStick's WSL when it freezes while the agent still looks online"
+
+[[bin]]
+name = "wslwatch"
+path = "src/main.rs"
+
+# Its own workspace, no dependencies: the Windows half is built by cargo.exe
+# from a copy of this directory on C:, away from the tools/ workspace.
+[workspace]
