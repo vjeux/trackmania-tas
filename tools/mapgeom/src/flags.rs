@@ -49,6 +49,24 @@ pub struct FlagsOpts {
     /// the carrier ident as `<prefix><model>.Item.Gbx` (Hugo's C# names, 2026-10-18: `FinishFlag16m.Item.Gbx`);
     /// empty = the ClothFinishTrigger[<model>] / PoleFinishTrigger[<model>] names
     pub ident_prefix: String,
+    /// Hugo's Moth (2026-10-22): the carriers are box triggers around LIGHT SOURCES. Each entry names a
+    /// source kind — an item `Model` or `Model@vN` (variant N: the placement's flags high byte), or a block
+    /// name — with the emitting part's LOCAL bbox (lo, hi) in that model's frame; the carrier is an
+    /// invisible Finish hexahedron over that box padded `source_pad`, one item per kind, placed at every
+    /// placement of the kind (items: the item's pose; blocks: the block frame rule).
+    pub sources: Vec<LightSource>,
+    pub source_pad: f32,
+}
+
+#[derive(Clone, Debug)]
+pub struct LightSource {
+    /// `Lamp`, `ShowLights@v23`, `StageTechnicsLightStraight`
+    pub key: String,
+    pub is_block: bool,
+    pub lo: [f32; 3],
+    pub hi: [f32; 3],
+    /// a label for the carrier ident (`<ident_prefix><label>.Item.Gbx`), e.g. `Lamp`, `ShowLightsV23`
+    pub label: String,
 }
 
 /// The CLOTH of a flag model, measured on its vertex animation (the dyna mesh's 86 frames, placed
@@ -201,7 +219,25 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
     let mut rows: Vec<Row> = Vec::new();
     // ---- the flag models present
     let mut models: Vec<String> = Vec::new();
-    if o.stands {
+    if !o.sources.is_empty() {
+        // the source kinds present in the map (items by model+variant, blocks by name)
+        for it in &m.items {
+            let stem = it.model.trim_end_matches(".Item.Gbx");
+            let k1 = format!("{stem}@v{}", it.variant());
+            for src in &o.sources {
+                if !src.is_block && (src.key == k1 || src.key == stem) && !models.contains(&src.key) {
+                    models.push(src.key.clone());
+                }
+            }
+        }
+        for b in m.blocks.iter().filter(|b| b.flags != 0xFFFF_FFFF) {
+            for src in &o.sources {
+                if src.is_block && src.key.eq_ignore_ascii_case(&b.name) && !models.contains(&src.key) {
+                    models.push(src.key.clone());
+                }
+            }
+        }
+    } else if o.stands {
         for b in m.blocks.iter().filter(|b| b.flags != 0xFFFF_FFFF) {
             if let Some(k) = crate::stands::stand_kind(&b.name) {
                 let wanted = o.models.is_empty() || o.models.iter().any(|w| w.eq_ignore_ascii_case(k));
@@ -220,7 +256,7 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
         }
     }
     if models.is_empty() && !o.allow_no_finish {
-        return Err(format!("{map_label}: NO {} — a map of it would have no finish; not built (--allow-no-finish overrides)", if o.stands { "SPECTATOR STAND BLOCKS" } else { "FLAG ITEMS" }));
+        return Err(format!("{map_label}: NO {} — a map of it would have no finish; not built (--allow-no-finish overrides)", if !o.sources.is_empty() { "LIGHT SOURCES of the given kinds" } else if o.stands { "SPECTATOR STAND BLOCKS" } else { "FLAG ITEMS" }));
     }
     let no_finish = models.is_empty();
     // ---- the finish pieces (classified from the packs)
@@ -246,6 +282,28 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
     // ---- the items: one per flag model
     let mut built: Vec<(String, String, [f32; 6], Vec<u8>)> = Vec::new();
     for stem in &models {
+        if let Some(src) = o.sources.iter().find(|s| &s.key == stem) {
+            // a Moth carrier: an invisible Finish hexahedron over the emitting part's bbox (padded), its
+            // mesh = a pack donor item's (one sub-mm visual 4 m under the origin, no collision)
+            let ident = format!("{}{}.Item.Gbx", if o.ident_prefix.is_empty() { "MothFinish" } else { o.ident_prefix.as_str() }, src.label);
+            let donor = "Stadium\\Items\\LightCube2m.Item.Gbx";
+            let mut mg = crate::static_item::build::pack_item_merged(ctx.store, donor, 1.0, collection, 0, None).map_err(|e| format!("{stem}: donor {donor}: {e}"))?;
+            let p = o.source_pad;
+            let (lo, hi) = ([src.lo[0] - p, src.lo[1] - p, src.lo[2] - p], [src.hi[0] + p, src.hi[1] + p, src.hi[2] + p]);
+            let corners: [[f32; 3]; 8] = [[lo[0], lo[1], lo[2]], [hi[0], lo[1], lo[2]], [hi[0], hi[1], lo[2]], [lo[0], hi[1], lo[2]], [lo[0], lo[1], hi[2]], [hi[0], lo[1], hi[2]], [hi[0], hi[1], hi[2]], [lo[0], hi[1], hi[2]]];
+            crate::static_item::build::make_invisible_hexahedron_waypoint(&mut mg, WP_FINISH, corners).map_err(|e| format!("{stem}: {e}"))?;
+            if let Some(w) = lm_word {
+                mg.file_write_time = w;
+            }
+            let (bytes, _mg) = crate::static_item::build::finish_item(mg, &ident, &ident, 1.0, collection).map_err(|e| format!("{stem}: {e}"))?;
+            let mut row = Row::new(&map_label, "flags", "model", 0, stem);
+            row.action = "light-carrier-item-built".into();
+            row.to_name = ident.clone();
+            row.note = format!("{} bytes; Finish box over the emitting part: local [{:.2} {:.2} {:.2}]..[{:.2} {:.2} {:.2}] (source bbox padded {p} m); invisible, no collision", bytes.len(), lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]);
+            rows.push(row);
+            built.push((stem.clone(), ident, [lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]], bytes));
+            continue;
+        }
         if o.stands {
             let c = crate::stands::carrier_item_named(ctx.store, stem, &o.ident_prefix, collection, o.stand_pad_below, o.stand_thick, lm_word).map_err(|e| format!("{stem}: {e}"))?;
             let mut row = Row::new(&map_label, "flags", "model", 0, stem);
@@ -323,7 +381,44 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
     let mut converted = 0usize;
     // (flag item index, trigger ident stem, pose) for the appended triggers
     let mut appended: Vec<(usize, String, [f32; 3], [f32; 3])> = Vec::new();
-    if o.stands {
+    if !o.sources.is_empty() {
+        let yoff = tmmaps::map::ground_y(collection);
+        for it in &m.items {
+            let stem = it.model.trim_end_matches(".Item.Gbx");
+            let k1 = format!("{stem}@v{}", it.variant());
+            let Some((_, ident, _, _)) = built.iter().find(|(s, ..)| *s == k1 || s == stem) else { continue };
+            let mut r = Row::new(&map_label, "flags", "item", it.index, &it.model);
+            r.action = "kept + light-carrier-added".into();
+            r.to_name = ident.trim_end_matches(".Item.Gbx").to_string();
+            r.from = format!("variant {} {} yaw {:.4} pitch {:.4} roll {:.4}", it.variant(), pos_str(it.pos), it.yaw, it.pitch, it.roll);
+            r.to = format!("new item#{} at the same pose", m.items.len() + appended.len());
+            r.note = "the light item untouched; an invisible finish box over its emitting part appended at its pose, tag Goal".into();
+            rows.push(r);
+            appended.push((it.index, ident.trim_end_matches(".Item.Gbx").to_string(), it.pos, [it.yaw, it.pitch, it.roll]));
+            converted += 1;
+        }
+        for b in m.blocks.iter().filter(|b| b.flags != 0xFFFF_FFFF) {
+            let Some((_, ident, _, _)) = built.iter().find(|(s, ..)| s.eq_ignore_ascii_case(&b.name)) else { continue };
+            let (pos, yaw) = match b.free_pos {
+                Some(p) => (p, b.free_rot.map(|r| r[0]).unwrap_or(0.0)),
+                None => {
+                    let x = crate::place::grid_block(b.coords(), b.dir, (32.0, 32.0), yoff);
+                    let yaw = -(b.dir as f32) * std::f32::consts::FRAC_PI_2;
+                    let yaw = if yaw <= -std::f32::consts::PI { yaw + 2.0 * std::f32::consts::PI } else { yaw };
+                    ([x[9], x[10], x[11]], yaw)
+                }
+            };
+            let mut r = Row::new(&map_label, "flags", "block", b.index, &b.name);
+            r.action = "kept + light-carrier-added".into();
+            r.to_name = ident.trim_end_matches(".Item.Gbx").to_string();
+            r.from = format!("cell {:?} dir {}", b.coords(), b.dir);
+            r.to = format!("new item#{} at {} yaw {yaw:.4}", m.items.len() + appended.len(), pos_str(pos));
+            r.note = "the light block untouched; an invisible finish box over its light strip appended in its frame, tag Goal".into();
+            rows.push(r);
+            appended.push((b.index, ident.trim_end_matches(".Item.Gbx").to_string(), pos, [yaw, 0.0, 0.0]));
+            converted += 1;
+        }
+    } else if o.stands {
         // every stand block: the carrier in the block's frame — pos = the cell origin corner turned
         // by `dir` (place::grid_block), yaw = −dir·π/2 (the map's own block→item convention)
         let yoff = tmmaps::map::ground_y(collection);
@@ -351,7 +446,7 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
         }
     }
     for it in &m.items {
-        if o.stands {
+        if o.stands || !o.sources.is_empty() {
             break;
         }
         let stem = it.model.trim_end_matches(".Item.Gbx");
@@ -577,8 +672,15 @@ pub fn verify_flags(src: &Path, out: &Path, oc: &FlagsOutcome, o: &FlagsOpts) ->
     }
     if o.pole_triggers {
         // the flags untouched: the source's flag records, in order, equal the output's flag records in order
-        let fa: Vec<&tmmaps::map::ItemRec> = a.items.iter().filter(|x| x.model.contains("Flag")).collect();
-        let fb: Vec<&tmmaps::map::ItemRec> = b.items.iter().filter(|x| x.model.contains("Flag") && !x.model.contains("FinishTrigger")).collect();
+        // (sources mode: every source item of the map, in order)
+        let is_src = |x: &tmmaps::map::ItemRec| -> bool {
+            if o.sources.is_empty() { return x.model.contains("Flag"); }
+            let stem = x.model.trim_end_matches(".Item.Gbx");
+            let k1 = format!("{stem}@v{}", x.variant());
+            o.sources.iter().any(|sv| !sv.is_block && (sv.key == k1 || sv.key == stem))
+        };
+        let fa: Vec<&tmmaps::map::ItemRec> = a.items.iter().filter(|x| is_src(x)).collect();
+        let fb: Vec<&tmmaps::map::ItemRec> = b.items.iter().filter(|x| is_src(x) && !x.model.contains("FinishTrigger") && !x.model.starts_with("MothFinish")).collect();
         if fa.len() != fb.len() {
             bad.push(format!("{} flag records in, {} out", fa.len(), fb.len()));
         }
@@ -590,12 +692,12 @@ pub fn verify_flags(src: &Path, out: &Path, oc: &FlagsOutcome, o: &FlagsOpts) ->
         }
         // every appended trigger sits exactly at a flag's pose — or, --stands, in a stand block's frame
         let idents: Vec<String> = oc.items.iter().map(|(_, i, _)| i.clone()).collect();
-        let stand_poses: Vec<([f32; 3], f32)> = if o.stands {
+        let stand_poses: Vec<([f32; 3], f32)> = if o.stands || !o.sources.is_empty() {
             let coll = a.body_collections().map(|c| c[0].1).unwrap_or(26);
             let yoff = tmmaps::map::ground_y(coll);
             a.blocks
                 .iter()
-                .filter(|bk| bk.flags != 0xFFFF_FFFF && crate::stands::stand_kind(&bk.name).is_some())
+                .filter(|bk| bk.flags != 0xFFFF_FFFF && (if o.sources.is_empty() { crate::stands::stand_kind(&bk.name).is_some() } else { o.sources.iter().any(|sv| sv.is_block && sv.key.eq_ignore_ascii_case(&bk.name)) }))
                 .map(|bk| match bk.free_pos {
                     Some(p) => (p, bk.free_rot.map(|r| r[0]).unwrap_or(0.0)),
                     None => {
@@ -613,8 +715,11 @@ pub fn verify_flags(src: &Path, out: &Path, oc: &FlagsOutcome, o: &FlagsOpts) ->
             bad.push(format!("{} stand blocks, {triggers} carriers", stand_poses.len()));
         }
         for y in b.items.iter().filter(|y| idents.contains(&y.model)) {
+            let at_block = stand_poses.iter().any(|(p, yaw)| (p[0] - y.pos[0]).abs() < 1e-3 && (p[1] - y.pos[1]).abs() < 1e-3 && (p[2] - y.pos[2]).abs() < 1e-3 && (yaw - y.yaw).abs() < 1e-5);
             let at_source = if o.stands {
-                stand_poses.iter().any(|(p, yaw)| (p[0] - y.pos[0]).abs() < 1e-3 && (p[1] - y.pos[1]).abs() < 1e-3 && (p[2] - y.pos[2]).abs() < 1e-3 && (yaw - y.yaw).abs() < 1e-5)
+                at_block
+            } else if !o.sources.is_empty() {
+                at_block || a.items.iter().any(|x| is_src(x) && x.pos == y.pos && (x.yaw - y.yaw).abs() < 1e-6)
             } else {
                 a.items.iter().any(|x| x.model.contains("Flag") && x.pos == y.pos && (x.yaw - y.yaw).abs() < 1e-6)
             };

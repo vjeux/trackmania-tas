@@ -4786,6 +4786,67 @@ fn main() {
                 stand_pad_below: flag(&a.rest, "--pad-below").map(|v| v.parse::<f32>().unwrap_or_else(|_| die("--pad-below M".into()))).unwrap_or(0.0),
                 stand_thick: flag(&a.rest, "--thick").map(|v| v.parse::<f32>().unwrap_or_else(|_| die("--thick M".into()))).unwrap_or(0.5),
                 ident_prefix: flag(&a.rest, "--ident-prefix").unwrap_or_default(),
+                sources: Vec::new(),
+                source_pad: flag(&a.rest, "--source-pad").map(|v| v.parse::<f32>().unwrap_or_else(|_| die("--source-pad M".into()))).unwrap_or(0.3),
+            };
+            // --lights SOURCES.tsv (Hugo's Moth, 2026-10-22): the light sources are the carriers' seats. The TSV = the
+            // census LIGHTS.tsv (group, kind, name, …, local_x, local_y, local_z …); rows are taken when their group
+            // is in --light-groups (default: the recommended set) — EMISSIVE rows give the emitting part's bbox, LIGHT
+            // rows (a light node only) a 0.5-m box about the node; several rows of one model merge into one box.
+            let o = if let Some(tsv) = flag(&a.rest, "--lights") {
+                let groups: Vec<String> = flag(&a.rest, "--light-groups").map(|v| v.split(',').map(|s| s.trim().to_ascii_lowercase()).collect()).unwrap_or_else(|| vec!["poles/lamps".into(), "light blocks".into(), "show-rig".into(), "ground screens".into()]);
+                let text = std::fs::read_to_string(&tsv).unwrap_or_else(|e| die(format!("{tsv}: {e}")));
+                let mut by_key: std::collections::BTreeMap<String, (bool, [f32; 3], [f32; 3])> = Default::default();
+                for l in text.lines().skip(1) {
+                    let f: Vec<&str> = l.split('\t').collect();
+                    if f.len() < 19 { continue; }
+                    let (group, kind, name, lk) = (f[0].to_ascii_lowercase(), f[1], f[2], f[4]);
+                    let h: f32 = f[10].parse().unwrap_or(99.0);
+                    let want = groups.iter().any(|g| match g.as_str() {
+                        "show-rig" => group.starts_with("structural") && (name.starts_with("ShowLights@") || name.starts_with("Show@")),
+                        "ground screens" => group.starts_with("screens") && kind == "item" && h <= 3.0 && !name.starts_with("TechnicsScreen"),
+                        other => group.starts_with(other),
+                    });
+                    // the structural pieces that happen to carry a ground-level screen or a lamp (the podium's step
+                    // screen, the stands' screens) are not light sources of the recommended set
+                    if name.starts_with("Podium") || name.starts_with("Stand") || name.starts_with("Canopy") || name.starts_with("Tunnel") { continue; }
+                    if !want { continue; }
+                    let rng = |col: &str| -> Option<(f32, f32)> { let (a, b) = col.split_once("..")?; Some((a.parse().ok()?, b.parse().ok()?)) };
+                    let (Some(x), Some(y), Some(z)) = (rng(f[7]), rng(f[8]), rng(f[9])) else { continue };
+                    let (mut lo, mut hi) = ([x.0, y.0, z.0], [x.1, y.1, z.1]);
+                    if lk == "LIGHT" {
+                        // a bare light node: a half-metre box about the node positions
+                        for k in 0..3 { lo[k] -= 0.25; hi[k] += 0.25; }
+                    }
+                    let e = by_key.entry(name.to_string()).or_insert((kind == "block", lo, hi));
+                    for k in 0..3 { e.1[k] = e.1[k].min(lo[k]); e.2[k] = e.2[k].max(hi[k]); }
+                }
+                // `Model` and `Model@v0` are the same single-variant item (the census keys a bare light node by the
+                // model and an emissive by model@variant): merge into the bare key
+                let keys: Vec<String> = by_key.keys().cloned().collect();
+                for k in keys {
+                    if let Some(base) = k.strip_suffix("@v0") {
+                        if by_key.contains_key(base) {
+                            let (_, lo, hi) = by_key.remove(&k).unwrap();
+                            let e = by_key.get_mut(base).unwrap();
+                            for i in 0..3 { e.1[i] = e.1[i].min(lo[i]); e.2[i] = e.2[i].max(hi[i]); }
+                        }
+                    }
+                }
+                let sources: Vec<mapgeom::flags::LightSource> = by_key.into_iter().map(|(key, (is_block, lo, hi))| {
+                    let label = key.replace("@v", "V");
+                    mapgeom::flags::LightSource { key, is_block, lo, hi, label }
+                }).collect();
+                eprintln!("{} light-source kinds from {tsv}", sources.len());
+                mapgeom::flags::FlagsOpts {
+                    uid_prefix: flag(&a.rest, "--uid-prefix").unwrap_or_else(|| "Moth".into()),
+                    name_suffix: flag(&a.rest, "--name-suffix").unwrap_or_else(|| " Moth".into()),
+                    pole_triggers: true,
+                    sources,
+                    ..o
+                }
+            } else {
+                o
             };
             // --stands (Hugo's Manslaughter): the stand BLOCKS are the sources; identity "<name> Manslaughter", uid Mans…
             let o = if o.stands {
