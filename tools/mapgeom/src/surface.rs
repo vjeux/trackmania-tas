@@ -624,7 +624,13 @@ fn plan_one_dry(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, cou
     // towers of 267" — those are ITEMS (Everios96 2026-09-22), and the bake picked up the
     // every-set snow-top row: grass platforms turned to snow across the wood set —
     // Everios96 2026-09-23 11:12 "only wet wood". The author-placed ice tops still bake above.)
-    if deck_only(s) && is_terrain_family(name) {
+    // …but never a member of the BAKE family (`TINY_BAKE_FAMILY`, the black full blocks):
+    // under Wood / Wet Wood / Plastic / Magnet this Keep fired first, the block stayed a
+    // kept vanilla block and its generated faces were never placed (only FREE-placed black
+    // blocks converted, by position) — Everios96 2026-10-21 "the black blocks on the magnet
+    // alterations are not converted" (magnet 12). The bake-family rule below handles them.
+    let bake_family_member = std::env::var("TINY_BAKE_FAMILY").ok().map(|v| v.split(',').any(|f| !f.trim().is_empty() && name.starts_with(f.trim()))).unwrap_or(false) && !(name.contains("Water") && name.contains("VFC") && !name.starts_with("RoadWater"));
+    if deck_only(s) && is_terrain_family(name) && !bake_family_member {
         // TINY_WATER_OVERLAY=1: a WATER piece of the terrain families (`WaterBase`, the pool
         // walls and floors) keeps its volume and gets the visual-only re-dressed copy
         if name.contains("Water") && std::env::var("TINY_WATER_OVERLAY_ALL").map(|v| v == "1").unwrap_or(false) {

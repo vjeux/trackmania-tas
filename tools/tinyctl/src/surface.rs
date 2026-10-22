@@ -162,6 +162,11 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
             // set's full-block ride faces (loops, bowls, slopes) and metal rims stayed
             // black with wood physics (Everios96 2026-10-10, wet wood 69).
             "Wood" => Some("Stadium\\Media\\Material\\ThemeSnowRoad".to_string()),
+            // Magnet had none either (2026-10-21, Everios96: "the black blocks on the magnet
+            // alterations are not converted", magnet 12): the scoped rows never ran, the
+            // DecoWall bakes came out stock and the placement step kept the vanilla blocks.
+            // The same black strong-magnet concrete the decks wear.
+            "Magnet" => Some("Stadium\\Media\\Material_BlockCustom\\CustomConcrete@62#101010".to_string()),
             _ => None,
         };
         // the FULL-BLOCK black family (`DecoWall*`) is a surface family by NAME ONLY:
