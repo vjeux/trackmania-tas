@@ -300,6 +300,52 @@ fn score_at(scene: &mapgeom::scene::Scene, runs: &[Run], reach: f32) -> (usize, 
     (score, centre)
 }
 
+/// Hugo's Moth (2026-10-22): the light-source kinds of the census TSV (`LIGHTS.tsv`: group, kind, name, …,
+/// local_x, local_y, local_z …) whose group is wanted — `groups` names (default: poles/lamps, light blocks,
+/// show-rig = the ShowLights@/Show@ rows of "structural", ground screens = screen ITEMS ≤ 3 m) — minus the
+/// `exclude` name prefixes. EMISSIVE rows give the emitting part's bbox, LIGHT rows a half-metre box about the
+/// node; a model's rows merge into one box; `Model` and `Model@v0` are one kind. Podium/Stand/Canopy/Tunnel
+/// pieces are never sources (structural pieces that happen to carry a screen or a lamp).
+fn light_sources_from_tsv(tsv: &str, groups: Option<String>, exclude: Option<String>) -> Vec<mapgeom::flags::LightSource> {
+    let groups: Vec<String> = groups.map(|v| v.split(',').map(|s| s.trim().to_ascii_lowercase()).collect()).unwrap_or_else(|| vec!["poles/lamps".into(), "light blocks".into(), "show-rig".into(), "ground screens".into()]);
+    let exclude: Vec<String> = exclude.map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()).unwrap_or_default();
+    let text = std::fs::read_to_string(tsv).unwrap_or_else(|e| die(format!("{tsv}: {e}")));
+    let mut by_key: std::collections::BTreeMap<String, (bool, [f32; 3], [f32; 3])> = Default::default();
+    for l in text.lines().skip(1) {
+        let f: Vec<&str> = l.split('\t').collect();
+        if f.len() < 19 { continue; }
+        let (group, kind, name, lk) = (f[0].to_ascii_lowercase(), f[1], f[2], f[4]);
+        let h: f32 = f[10].parse().unwrap_or(99.0);
+        if name.starts_with("Podium") || name.starts_with("Stand") || name.starts_with("Canopy") || name.starts_with("Tunnel") { continue; }
+        if exclude.iter().any(|x| name.starts_with(x.as_str())) { continue; }
+        let want = groups.iter().any(|g| match g.as_str() {
+            "show-rig" => group.starts_with("structural") && (name.starts_with("ShowLights@") || name.starts_with("Show@") || name.starts_with("ShowLight4Spots") || name.starts_with("ShowLightRamp")),
+            "ground screens" => group.starts_with("screens") && kind == "item" && h <= 3.0 && !name.starts_with("TechnicsScreen"),
+            other => group.starts_with(other),
+        });
+        if !want { continue; }
+        let rng = |col: &str| -> Option<(f32, f32)> { let (a, b) = col.split_once("..")?; Some((a.parse().ok()?, b.parse().ok()?)) };
+        let (Some(x), Some(y), Some(z)) = (rng(f[7]), rng(f[8]), rng(f[9])) else { continue };
+        let (mut lo, mut hi) = ([x.0, y.0, z.0], [x.1, y.1, z.1]);
+        if lk == "LIGHT" {
+            for k in 0..3 { lo[k] -= 0.25; hi[k] += 0.25; }
+        }
+        let e = by_key.entry(name.to_string()).or_insert((kind == "block", lo, hi));
+        for k in 0..3 { e.1[k] = e.1[k].min(lo[k]); e.2[k] = e.2[k].max(hi[k]); }
+    }
+    let keys: Vec<String> = by_key.keys().cloned().collect();
+    for k in keys {
+        if let Some(base) = k.strip_suffix("@v0") {
+            if by_key.contains_key(base) {
+                let (_, lo, hi) = by_key.remove(&k).unwrap();
+                let e = by_key.get_mut(base).unwrap();
+                for i in 0..3 { e.1[i] = e.1[i].min(lo[i]); e.2[i] = e.2[i].max(hi[i]); }
+            }
+        }
+    }
+    by_key.into_iter().map(|(key, (is_block, lo, hi))| { let label = key.replace("@v", "V"); mapgeom::flags::LightSource { key, is_block, lo, hi, label } }).collect()
+}
+
 fn main() {
     mapgeom::par::process_started();
     mapgeom::par::tune_malloc();
@@ -4754,6 +4800,33 @@ fn main() {
                 println!("  height {:?}", mapgeom::sandbox::item_height(&mut ctx, model));
             }
         }
+        // moth-carriers --lights LIGHTS.tsv --out DIR [--collection 26] [--light-groups ..] [--light-exclude A,B] [--only K1,K2]
+        //   [--source-pad 0.3] [--ident-prefix MothFinish] [--mapping F.tsv]: every light-source kind's carrier item written
+        //   to DIR (Hugo's own tool places them), plus the mapping TSV (source model, variant, carrier file, trigger bbox)
+        "moth-carriers" => {
+            let mut store = open(&a);
+            let tsv = flag(&a.rest, "--lights").unwrap_or_else(|| die("moth-carriers needs --lights LIGHTS.tsv".into()));
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("moth-carriers needs --out DIR".into()));
+            let collection: u32 = flag(&a.rest, "--collection").map(|v| v.parse().unwrap_or_else(|_| die("--collection N".into()))).unwrap_or(26);
+            let pad: f32 = flag(&a.rest, "--source-pad").map(|v| v.parse().unwrap_or_else(|_| die("--source-pad M".into()))).unwrap_or(0.3);
+            let prefix = flag(&a.rest, "--ident-prefix").unwrap_or_default();
+            let only: Vec<String> = flag(&a.rest, "--only").map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()).unwrap_or_default();
+            let mut sources = light_sources_from_tsv(&tsv, flag(&a.rest, "--light-groups"), flag(&a.rest, "--light-exclude"));
+            if !only.is_empty() { sources.retain(|s| only.iter().any(|k| *k == s.key)); }
+            std::fs::create_dir_all(&out).unwrap_or_else(|e| die(format!("{out}: {e}")));
+            let mut map = String::from("source_model\tvariant\tsource_kind\tcarrier_file\tcarrier_ident\ttrigger_bbox_lo_x\tlo_y\tlo_z\thi_x\thi_y\thi_z\tpose_rule\n");
+            for src in &sources {
+                let (ident, bb, bytes) = mapgeom::flags::build_light_carrier(&mut store, src, pad, collection, &prefix, None).unwrap_or_else(|e| die(format!("{}: {e}", src.key)));
+                let path = std::path::Path::new(&out).join(&ident);
+                std::fs::write(&path, &bytes).unwrap_or_else(|e| die(format!("{}: {e}", path.display())));
+                let (model, variant) = match src.key.split_once("@v") { Some((m, v)) => (m.to_string(), v.to_string()), None => (src.key.clone(), if src.is_block { "block".into() } else { "any".into() }) };
+                let rule = if src.is_block { "block: carrier at the block's cell corner turned by dir ((0,0) (32,0) (32,32) (0,32) in x,z for dir 0..3), yaw = -dir*90deg, y = 8*cy + ground, pivot 0, scale 1" } else { "item: carrier at the source item's position with its yaw/pitch/roll, pivot 0, scale 1" };
+                map.push_str(&format!("{model}\t{variant}\t{}\t{ident}\t{ident}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{rule}\n", if src.is_block { "block" } else { "item" }, bb[0], bb[1], bb[2], bb[3], bb[4], bb[5]));
+                println!("{ident}\t{} bytes\t[{:.2} {:.2} {:.2}]..[{:.2} {:.2} {:.2}]", bytes.len(), bb[0], bb[1], bb[2], bb[3], bb[4], bb[5]);
+            }
+            if let Some(m) = flag(&a.rest, "--mapping") { std::fs::write(&m, map).unwrap_or_else(|e| die(format!("{m}: {e}"))); eprintln!("wrote {m}"); }
+            eprintln!("{} carriers in {out}", sources.len());
+        }
         // flags MAP --out F [--model Flag16m,..] [--trigger-pad M] [--uid-prefix Flag] [--name-suffix " Flags"]
         //   [--unlock] [--unvalidated] [--author Nadeo] [--report R.tsv] [--dry-run]
         "flags" => {
@@ -4794,49 +4867,7 @@ fn main() {
             // is in --light-groups (default: the recommended set) — EMISSIVE rows give the emitting part's bbox, LIGHT
             // rows (a light node only) a 0.5-m box about the node; several rows of one model merge into one box.
             let o = if let Some(tsv) = flag(&a.rest, "--lights") {
-                let groups: Vec<String> = flag(&a.rest, "--light-groups").map(|v| v.split(',').map(|s| s.trim().to_ascii_lowercase()).collect()).unwrap_or_else(|| vec!["poles/lamps".into(), "light blocks".into(), "show-rig".into(), "ground screens".into()]);
-                let text = std::fs::read_to_string(&tsv).unwrap_or_else(|e| die(format!("{tsv}: {e}")));
-                let mut by_key: std::collections::BTreeMap<String, (bool, [f32; 3], [f32; 3])> = Default::default();
-                for l in text.lines().skip(1) {
-                    let f: Vec<&str> = l.split('\t').collect();
-                    if f.len() < 19 { continue; }
-                    let (group, kind, name, lk) = (f[0].to_ascii_lowercase(), f[1], f[2], f[4]);
-                    let h: f32 = f[10].parse().unwrap_or(99.0);
-                    let want = groups.iter().any(|g| match g.as_str() {
-                        "show-rig" => group.starts_with("structural") && (name.starts_with("ShowLights@") || name.starts_with("Show@")),
-                        "ground screens" => group.starts_with("screens") && kind == "item" && h <= 3.0 && !name.starts_with("TechnicsScreen"),
-                        other => group.starts_with(other),
-                    });
-                    // the structural pieces that happen to carry a ground-level screen or a lamp (the podium's step
-                    // screen, the stands' screens) are not light sources of the recommended set
-                    if name.starts_with("Podium") || name.starts_with("Stand") || name.starts_with("Canopy") || name.starts_with("Tunnel") { continue; }
-                    if !want { continue; }
-                    let rng = |col: &str| -> Option<(f32, f32)> { let (a, b) = col.split_once("..")?; Some((a.parse().ok()?, b.parse().ok()?)) };
-                    let (Some(x), Some(y), Some(z)) = (rng(f[7]), rng(f[8]), rng(f[9])) else { continue };
-                    let (mut lo, mut hi) = ([x.0, y.0, z.0], [x.1, y.1, z.1]);
-                    if lk == "LIGHT" {
-                        // a bare light node: a half-metre box about the node positions
-                        for k in 0..3 { lo[k] -= 0.25; hi[k] += 0.25; }
-                    }
-                    let e = by_key.entry(name.to_string()).or_insert((kind == "block", lo, hi));
-                    for k in 0..3 { e.1[k] = e.1[k].min(lo[k]); e.2[k] = e.2[k].max(hi[k]); }
-                }
-                // `Model` and `Model@v0` are the same single-variant item (the census keys a bare light node by the
-                // model and an emissive by model@variant): merge into the bare key
-                let keys: Vec<String> = by_key.keys().cloned().collect();
-                for k in keys {
-                    if let Some(base) = k.strip_suffix("@v0") {
-                        if by_key.contains_key(base) {
-                            let (_, lo, hi) = by_key.remove(&k).unwrap();
-                            let e = by_key.get_mut(base).unwrap();
-                            for i in 0..3 { e.1[i] = e.1[i].min(lo[i]); e.2[i] = e.2[i].max(hi[i]); }
-                        }
-                    }
-                }
-                let sources: Vec<mapgeom::flags::LightSource> = by_key.into_iter().map(|(key, (is_block, lo, hi))| {
-                    let label = key.replace("@v", "V");
-                    mapgeom::flags::LightSource { key, is_block, lo, hi, label }
-                }).collect();
+                let sources = light_sources_from_tsv(&tsv, flag(&a.rest, "--light-groups"), flag(&a.rest, "--light-exclude"));
                 eprintln!("{} light-source kinds from {tsv}", sources.len());
                 mapgeom::flags::FlagsOpts {
                     uid_prefix: flag(&a.rest, "--uid-prefix").unwrap_or_else(|| "Moth".into()),
@@ -4848,6 +4879,7 @@ fn main() {
             } else {
                 o
             };
+
             // --stands (Hugo's Manslaughter): the stand BLOCKS are the sources; identity "<name> Manslaughter", uid Mans…
             let o = if o.stands {
                 mapgeom::flags::FlagsOpts {

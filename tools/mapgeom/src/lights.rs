@@ -77,6 +77,10 @@ impl MatCache {
 /// Name patterns that mark a material as a light even without an `_I` map (screens whose glow is a
 /// FuncShader, LED strips…).
 pub fn name_says_light(link: &str) -> bool {
+    // LIGHTS_ALL_MATERIALS=1: every material is listed (a geometry census by material, not a light census)
+    if std::env::var_os("LIGHTS_ALL_MATERIALS").is_some() {
+        return true;
+    }
     let s = link.rsplit('\\').next().unwrap_or(link).to_ascii_lowercase();
     ["light", "emissive", "screen", "neon", "led", "lamp", "glow", "cells", "speedometer", "racead"].iter().any(|k| s.contains(k))
 }
@@ -90,7 +94,9 @@ pub fn census_of(store: &mut DataStore, cache: &mut MatCache, m: &Merged) -> (Ve
     }
     // per material slot: is it emissive?
     let mut per: BTreeMap<usize, (String, String, usize, usize, [f32; 3], [f32; 3])> = BTreeMap::new();
-    for mv in &m.visuals {
+    // LIGHTS_PER_PART=1: one row per visual (part) instead of one per material
+    let per_part = std::env::var_os("LIGHTS_PER_PART").is_some();
+    for (vi, mv) in m.visuals.iter().enumerate() {
         let Some(mat) = m.materials.get(mv.material) else { continue };
         let link = mat.link().unwrap_or("").to_string();
         let tex = cache.emissive(store, &link);
@@ -103,7 +109,7 @@ pub fn census_of(store: &mut DataStore, cache: &mut MatCache, m: &Merged) -> (Ve
         let b = main.bounding_box;
         let (lo, hi) = ([b[0] - b[3], b[1] - b[4], b[2] - b[5]], [b[0] + b[3], b[1] + b[4], b[2] + b[5]]);
         let tris = mv.visual.index_buffer.as_ref().map(|ib| ib.indices.len() / 3).unwrap_or(0);
-        let e = per.entry(mv.material).or_insert_with(|| {
+        let e = per.entry(if per_part { 1000 + vi } else { mv.material }).or_insert_with(|| {
             let mut t = ill.clone();
             t.extend(lmap.iter().map(|s| format!("{s} (L)")));
             if ill.is_empty() {

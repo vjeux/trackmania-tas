@@ -69,6 +69,23 @@ pub struct LightSource {
     pub label: String,
 }
 
+/// A Moth carrier: an invisible Finish hexahedron over the source's emitting bbox padded `pad`, its mesh a
+/// pack donor item's (one sub-mm visual 4 m under the origin, no collision); ident = author =
+/// `<prefix|MothFinish><label>.Item.Gbx`. Returns (ident, padded local bbox lo..hi, file bytes).
+pub fn build_light_carrier(store: &mut crate::store::DataStore, src: &LightSource, pad: f32, collection: u32, ident_prefix: &str, lm_word: Option<u64>) -> Result<(String, [f32; 6], Vec<u8>), String> {
+    let ident = format!("{}{}.Item.Gbx", if ident_prefix.is_empty() { "MothFinish" } else { ident_prefix }, src.label);
+    let donor = "Stadium\\Items\\LightCube2m.Item.Gbx";
+    let mut mg = crate::static_item::build::pack_item_merged(store, donor, 1.0, collection, 0, None).map_err(|e| format!("donor {donor}: {e}"))?;
+    let (lo, hi) = ([src.lo[0] - pad, src.lo[1] - pad, src.lo[2] - pad], [src.hi[0] + pad, src.hi[1] + pad, src.hi[2] + pad]);
+    let corners: [[f32; 3]; 8] = [[lo[0], lo[1], lo[2]], [hi[0], lo[1], lo[2]], [hi[0], hi[1], lo[2]], [lo[0], hi[1], lo[2]], [lo[0], lo[1], hi[2]], [hi[0], lo[1], hi[2]], [hi[0], hi[1], hi[2]], [lo[0], hi[1], hi[2]]];
+    crate::static_item::build::make_invisible_hexahedron_waypoint(&mut mg, WP_FINISH, corners)?;
+    if let Some(w) = lm_word {
+        mg.file_write_time = w;
+    }
+    let (bytes, _mg) = crate::static_item::build::finish_item(mg, &ident, &ident, 1.0, collection)?;
+    Ok((ident, [lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]], bytes))
+}
+
 /// The CLOTH of a flag model, measured on its vertex animation (the dyna mesh's 86 frames, placed
 /// by the prefab entity's pose): the time-averaged cloth's attachment edge at the pole (y range),
 /// its reach along the local +z axis, its sway band in x, and the least-squares tilt of its
@@ -283,25 +300,14 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
     let mut built: Vec<(String, String, [f32; 6], Vec<u8>)> = Vec::new();
     for stem in &models {
         if let Some(src) = o.sources.iter().find(|s| &s.key == stem) {
-            // a Moth carrier: an invisible Finish hexahedron over the emitting part's bbox (padded), its
-            // mesh = a pack donor item's (one sub-mm visual 4 m under the origin, no collision)
-            let ident = format!("{}{}.Item.Gbx", if o.ident_prefix.is_empty() { "MothFinish" } else { o.ident_prefix.as_str() }, src.label);
-            let donor = "Stadium\\Items\\LightCube2m.Item.Gbx";
-            let mut mg = crate::static_item::build::pack_item_merged(ctx.store, donor, 1.0, collection, 0, None).map_err(|e| format!("{stem}: donor {donor}: {e}"))?;
-            let p = o.source_pad;
-            let (lo, hi) = ([src.lo[0] - p, src.lo[1] - p, src.lo[2] - p], [src.hi[0] + p, src.hi[1] + p, src.hi[2] + p]);
-            let corners: [[f32; 3]; 8] = [[lo[0], lo[1], lo[2]], [hi[0], lo[1], lo[2]], [hi[0], hi[1], lo[2]], [lo[0], hi[1], lo[2]], [lo[0], lo[1], hi[2]], [hi[0], lo[1], hi[2]], [hi[0], hi[1], hi[2]], [lo[0], hi[1], hi[2]]];
-            crate::static_item::build::make_invisible_hexahedron_waypoint(&mut mg, WP_FINISH, corners).map_err(|e| format!("{stem}: {e}"))?;
-            if let Some(w) = lm_word {
-                mg.file_write_time = w;
-            }
-            let (bytes, _mg) = crate::static_item::build::finish_item(mg, &ident, &ident, 1.0, collection).map_err(|e| format!("{stem}: {e}"))?;
+            let c = build_light_carrier(ctx.store, src, o.source_pad, collection, &o.ident_prefix, lm_word).map_err(|e| format!("{stem}: {e}"))?;
             let mut row = Row::new(&map_label, "flags", "model", 0, stem);
             row.action = "light-carrier-item-built".into();
-            row.to_name = ident.clone();
-            row.note = format!("{} bytes; Finish box over the emitting part: local [{:.2} {:.2} {:.2}]..[{:.2} {:.2} {:.2}] (source bbox padded {p} m); invisible, no collision", bytes.len(), lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]);
+            row.to_name = c.0.clone();
+            let (lo, hi) = (&c.1[..3], &c.1[3..]);
+            row.note = format!("{} bytes; Finish box over the emitting part: local [{:.2} {:.2} {:.2}]..[{:.2} {:.2} {:.2}] (source bbox padded {} m); invisible, no collision", c.2.len(), lo[0], lo[1], lo[2], hi[0], hi[1], hi[2], o.source_pad);
             rows.push(row);
-            built.push((stem.clone(), ident, [lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]], bytes));
+            built.push((stem.clone(), c.0, c.1, c.2));
             continue;
         }
         if o.stands {
