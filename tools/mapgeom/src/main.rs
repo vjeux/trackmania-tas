@@ -5043,10 +5043,31 @@ fn main() {
                 cells.sort_unstable();
                 rows.insert(name, (sx, sz, cells, which));
             }
-            let mut s = String::from("block\tsize_x\tsize_z\tbase_cells\tvariant\n");
+            // v2 (2026-10-23 12:20): per base cell a 64-bit 4 m mask of the ground-touching geometry ("ux,uz:mask16hex")
+            let with_masks = a.rest.iter().any(|x| x == "--masks");
+            let mut s = String::from(if with_masks { "block\tsize_x\tsize_z\tbase_cells\tvariant\tmasks\n" } else { "block\tsize_x\tsize_z\tbase_cells\tvariant\n" });
+            let mut n_mask = 0usize;
+            let mut n_partial = 0usize;
             for (name, (sx, sz, cells, which)) in &rows {
-                s.push_str(&format!("{name}\t{sx}\t{sz}\t{}\t{which}\n", cells.iter().map(|(x, z)| format!("{x},{z}")).collect::<Vec<_>>().join(" ")));
+                let cells_s = cells.iter().map(|(x, z)| format!("{x},{z}")).collect::<Vec<_>>().join(" ");
+                if with_masks {
+                    let bp = mapgeom::vista::find_block_info(&store, name);
+                    let masks: BTreeMap<(i32, i32), u64> = match bp.and_then(|bp| mapgeom::blockinfo::load(&mut store, &bp).ok()) {
+                        Some(bi) => {
+                            let v = if *which == "air" { bi.variant_base_air.clone() } else { bi.variant_base_ground.clone() };
+                            match v { Some(v) => mapgeom::floor_finish::variant_masks(&mut store, &v, 8.0).unwrap_or_default(), None => Default::default() }
+                        }
+                        None => Default::default(),
+                    };
+                    let masks: BTreeMap<(i32, i32), u64> = if masks.is_empty() { cells.iter().map(|&(x, z)| ((x, z), u64::MAX)).collect() } else { masks };
+                    n_mask += 1;
+                    if masks.values().any(|&v| v != u64::MAX) { n_partial += 1; }
+                    s.push_str(&format!("{name}\t{sx}\t{sz}\t{cells_s}\t{which}\t{}\n", masks.iter().map(|((x, z), m)| format!("{x},{z}:{m:016x}")).collect::<Vec<_>>().join(" ")));
+                } else {
+                    s.push_str(&format!("{name}\t{sx}\t{sz}\t{cells_s}\t{which}\n"));
+                }
             }
+            if with_masks { println!("masks: {n_mask} variants baked, {n_partial} with free 4 m squares inside their footprint"); }
             std::fs::write(&out, s).unwrap_or_else(|e| die(format!("{out}: {e}")));
             let multi = rows.values().filter(|r| r.0 > 1 || r.1 > 1).count();
             let holes = rows.values().filter(|r| (r.2.len() as i32) < r.0 * r.1).count();
@@ -5076,7 +5097,8 @@ fn main() {
                 let mut out = String::new();
                 for z in 0..=zmax {
                     for x in 0..=xmax {
-                        out.push(if !f.grass.contains(&(x, z)) { ' ' } else if f.occupied.contains(&(x, z)) { '#' } else { '.' });
+                        let occ = f.squares.get(&(x, z)).copied().unwrap_or(0);
+                        out.push(if !f.grass.contains(&(x, z)) { ' ' } else if occ == u64::MAX { '#' } else if occ != 0 { '+' } else { '.' });
                     }
                     out.push('\n');
                 }
@@ -5093,8 +5115,9 @@ fn main() {
             let hdr0 = tmmaps::header::read(&p).unwrap_or_else(|e| die(e));
             let map_coll = m.body_collections().map(|c| c[0].1).unwrap_or(26);
             let item_coll: u32 = flag(&a.rest, "--collection").map(|v| v.parse().unwrap_or_else(|_| die("--collection N".into()))).unwrap_or(26);
-            let below: f32 = flag(&a.rest, "--floor-below").map(|v| v.parse().unwrap_or_else(|_| die("--floor-below M".into()))).unwrap_or(0.1);
-            let above: f32 = flag(&a.rest, "--floor-above").map(|v| v.parse().unwrap_or_else(|_| die("--floor-above M".into()))).unwrap_or(0.4);
+            let stadium = map_coll == 0x1a;
+            let below: f32 = flag(&a.rest, "--floor-below").map(|v| v.parse().unwrap_or_else(|_| die("--floor-below M".into()))).unwrap_or(if stadium { 0.0 } else { 0.1 });
+            let above: f32 = flag(&a.rest, "--floor-above").map(|v| v.parse().unwrap_or_else(|_| die("--floor-above M".into()))).unwrap_or(if stadium { 1.0 } else { 0.4 });
             let ident = flag(&a.rest, "--ident").unwrap_or_else(|| format!("FinishFloor_{}.Item.Gbx", hdr0.uid));
             // the mesh is computed in the MAP's collection frame (its ground row), the file carries `item_coll`
             let shores = a.rest.iter().any(|x| x == "--shores");
@@ -5165,8 +5188,10 @@ fn main() {
             // surface slab per tile, N items).
             let o = if a.rest.iter().any(|x| x == "--floor") {
                 let hdr0 = tmmaps::header::read(&p).unwrap_or_else(|e| die(e));
-                let below: f32 = flag(&a.rest, "--floor-below").map(|v| v.parse().unwrap_or_else(|_| die("--floor-below M".into()))).unwrap_or(0.1);
-                let above: f32 = flag(&a.rest, "--floor-above").map(|v| v.parse().unwrap_or_else(|_| die("--floor-above M".into()))).unwrap_or(0.4);
+                // Stadium (Hugo 12:00): the slab sits ON the grass, 1 m thick (grass .. +1.0); the vista beds keep −0.1 .. +0.4
+                let stadium = hdr0.envir.eq_ignore_ascii_case("Stadium");
+                let below: f32 = flag(&a.rest, "--floor-below").map(|v| v.parse().unwrap_or_else(|_| die("--floor-below M".into()))).unwrap_or(if stadium { 0.0 } else { 0.1 });
+                let above: f32 = flag(&a.rest, "--floor-above").map(|v| v.parse().unwrap_or_else(|_| die("--floor-above M".into()))).unwrap_or(if stadium { 1.0 } else { 0.4 });
                 let stem = flag(&a.rest, "--floor-label").unwrap_or_else(|| format!("FinishFloor_{}", hdr0.uid));
                 mapgeom::flags::FlagsOpts {
                     uid_prefix: flag(&a.rest, "--uid-prefix").unwrap_or_else(|| "Floor".into()),

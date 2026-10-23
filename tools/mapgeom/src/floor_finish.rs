@@ -285,6 +285,8 @@ pub struct StadiumFloor {
     pub grass_y: f32,
     /// block name → (size x, size z) in cells at dir 0 (the footprint table the C# needs)
     pub sizes: BTreeMap<String, (i32, i32)>,
+    /// per grass cell the occupied 4 m squares (bit zi·8+xi in the world cell frame); absent = free cell
+    pub squares: BTreeMap<(i32, i32), u64>,
     pub notes: Vec<String>,
 }
 
@@ -319,6 +321,101 @@ pub fn turn_unit(c: (i32, i32, i32), dir: u8, u: [i32; 3], size: (i32, i32)) -> 
     }
 }
 
+/// The 4 m sub-cell footprint of a block VARIANT (Hugo, 2026-10-23 12:10: the grass between a TrackWall
+/// pillar's thin walls and inside a road loop must finish): per base-row unit cell a 64-bit mask (bit zi·8+xi =
+/// the 4 m square at local x 4·xi.., z 4·zi.. of that cell) of the geometry WITHIN THE BASE UNIT ROW — every
+/// collision and visual triangle of the variant's mobils whose lowest vertex is under `touch_y` (8 m, the unit
+/// height: a road deck at 2–2.8 m replaces the grass under it just like a wall standing on it) — rasterised
+/// conservatively: a square is occupied when any such triangle covers its centre OR any of its edges crosses the
+/// square (thin walls have ~no area). Squares nothing touches are free grass. The whole-cell table stays for
+/// variants that fail to bake (returned as full masks).
+pub fn variant_masks(store: &mut crate::store::DataStore, variant: &crate::blockinfo::Variant, touch_y: f32) -> Result<BTreeMap<(i32, i32), u64>, String> {
+    let mut m = crate::static_item::build::Merged::default();
+    m.keep_water = true;
+    let mut n_mobils = 0usize;
+    for list in &variant.mobils {
+        for mobil in list {
+            let Some(prefab) = mobil.prefab.as_deref() else { continue };
+            let low = prefab.to_ascii_lowercase();
+            if low.ends_with(".vegettreemodel.gbx") { continue; }
+            let mut at = crate::geom::IDENTITY;
+            if let Some(t) = mobil.translation { at[9] = t[0]; at[10] = t[1]; at[11] = t[2]; }
+            let r = if low.ends_with(".prefab.gbx") { crate::static_item::build::add_prefab(store, prefab, &at, 1.0, &mut m, 0) } else { crate::static_item::build::add_static_object_file(store, prefab, &at, 1.0, &mut m) };
+            if r.is_ok() { n_mobils += 1; }
+        }
+    }
+    // the base-row cells
+    let mut masks: BTreeMap<(i32, i32), u64> = BTreeMap::new();
+    for u in &variant.block_units {
+        if u.offset[1] == 0 { masks.insert((u.offset[0], u.offset[2]), 0); }
+    }
+    if masks.is_empty() { masks.insert((0, 0), 0); }
+    if n_mobils == 0 {
+        // nothing to bake (procedural terrain / pillar fillers): the whole footprint stands
+        for v in masks.values_mut() { *v = u64::MAX; }
+        return Ok(masks);
+    }
+    // ground-touching triangles (block frame, dir 0): collision + visuals
+    let mut tris: Vec<[[f32; 3]; 3]> = Vec::new();
+    for t in &m.surf_triangles {
+        let pts: Vec<[f32; 3]> = t.indices.iter().filter_map(|&i| m.surf_vertices.get(i as usize).copied()).collect();
+        if pts.len() == 3 && pts.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min) < touch_y { tris.push([pts[0], pts[1], pts[2]]); }
+    }
+    for mv in &m.visuals {
+        let Some(main) = mv.visual.main.as_ref() else { continue };
+        let Some(crate::static_item::Node::VertexStream(stream)) = main.vertex_streams.first().and_then(|r| r.inline.as_deref()) else { continue };
+        let compress = stream.compress_local3d.unwrap_or(false);
+        let mut pos: &[[f32; 3]] = &[];
+        for (d, e) in stream.decls.iter().zip(stream.elems.iter()) {
+            if let (crate::static_item::vstream::N_POSITION, crate::static_item::vstream::T_FLOAT3, crate::static_item::vstream::Elem::Float3(p)) = (d.name(), d.stored_type(compress), e) { pos = p; }
+        }
+        if let Some(ib) = mv.visual.index_buffer.as_ref() {
+            for t in ib.indices.chunks(3) {
+                if t.len() == 3 && t.iter().all(|&i| (i as usize) < pos.len()) {
+                    let p = [pos[t[0] as usize], pos[t[1] as usize], pos[t[2] as usize]];
+                    if p.iter().map(|v| v[1]).fold(f32::INFINITY, f32::min) < touch_y { tris.push(p); }
+                }
+            }
+        }
+    }
+    let inside = |p: [f32; 2], t: &[[f32; 3]; 3]| -> bool {
+        let s = |a: [f32; 2], b: [f32; 2], c: [f32; 2]| (c[0] - a[0]) * (b[1] - a[1]) - (b[0] - a[0]) * (c[1] - a[1]);
+        let (a, b, c) = ([t[0][0], t[0][2]], [t[1][0], t[1][2]], [t[2][0], t[2][2]]);
+        let (d1, d2, d3) = (s(p, a, b), s(p, b, c), s(p, c, a));
+        !((d1 < 0.0 || d2 < 0.0 || d3 < 0.0) && (d1 > 0.0 || d2 > 0.0 || d3 > 0.0))
+    };
+    // segment–square overlap (Liang–Barsky style clip test)
+    let seg_hits = |a: [f32; 2], b: [f32; 2], x0: f32, z0: f32, x1: f32, z1: f32| -> bool {
+        let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
+        let (mut t0, mut t1) = (0.0f32, 1.0f32);
+        for (p, q) in [(-dx, a[0] - x0), (dx, x1 - a[0]), (-dz, a[1] - z0), (dz, z1 - a[1])] {
+            if p == 0.0 { if q < 0.0 { return false; } continue; }
+            let r = q / p;
+            if p < 0.0 { if r > t1 { return false; } if r > t0 { t0 = r; } } else { if r < t0 { return false; } if r < t1 { t1 = r; } }
+        }
+        true
+    };
+    for ((ux, uz), mask) in masks.iter_mut() {
+        let (cx0, cz0) = (32.0 * *ux as f32, 32.0 * *uz as f32);
+        for zi in 0..8 {
+            for xi in 0..8 {
+                let (x0, z0) = (cx0 + 4.0 * xi as f32, cz0 + 4.0 * zi as f32);
+                let (x1, z1) = (x0 + 4.0, z0 + 4.0);
+                let centre = [x0 + 2.0, z0 + 2.0];
+                let hit = tris.iter().any(|t| {
+                    // quick reject by bbox
+                    let (tx0, tx1) = (t.iter().map(|v| v[0]).fold(f32::INFINITY, f32::min), t.iter().map(|v| v[0]).fold(f32::NEG_INFINITY, f32::max));
+                    let (tz0, tz1) = (t.iter().map(|v| v[2]).fold(f32::INFINITY, f32::min), t.iter().map(|v| v[2]).fold(f32::NEG_INFINITY, f32::max));
+                    if tx1 < x0 || tx0 > x1 || tz1 < z0 || tz0 > z1 { return false; }
+                    inside(centre, t) || (0..3).any(|k| seg_hits([t[k][0], t[k][2]], [t[(k + 1) % 3][0], t[(k + 1) % 3][2]], x0, z0, x1, z1))
+                });
+                if hit { *mask |= 1u64 << (zi * 8 + xi); }
+            }
+        }
+    }
+    Ok(masks)
+}
+
 pub fn stadium_floor(store: &mut crate::store::DataStore, m: &MapFile) -> Result<StadiumFloor, String> {
     let collection = 0x1a;
     let ground = tmmaps::map::ground_y(collection);
@@ -335,11 +432,16 @@ pub fn stadium_floor(store: &mut crate::store::DataStore, m: &MapFile) -> Result
         return Err("no Grass tile in the map (authored or baked)".into());
     }
     let base_row = *grass_rows.iter().next().unwrap();
-    let grass_y = ground + 8.0 * base_row as f32 + 2.0;
+    // the Grass tile's collision quad is at local 0.00 (Zone\Grass\Base: 8 tris, 1 024 m², measured 2026-10-23 12:10;
+    // the vista zone planes sit at +2 — Stadium's does not)
+    let grass_y = ground + 8.0 * base_row as f32;
     let mut notes = vec![format!("{} grass cells on row {} (rows seen {:?}); grass plane world y {grass_y:.2}", grass.len(), base_row, grass_rows)];
     let mut occupied: std::collections::HashSet<(i32, i32)> = Default::default();
     let mut unit_cache: BTreeMap<(String, u32), Vec<[i32; 3]>> = BTreeMap::new();
+    let mut mask_cache: BTreeMap<(String, u32), BTreeMap<(i32, i32), u64>> = BTreeMap::new();
     let mut sizes: BTreeMap<String, (i32, i32)> = BTreeMap::new();
+    // 4 m squares: (cx, cz) -> 64-bit occupied mask in the WORLD cell frame
+    let mut squares: BTreeMap<(i32, i32), u64> = BTreeMap::new();
     let mut ground_blocks = 0usize;
     let mut off_grass = 0usize;
     let mut air_at_base = 0usize;
@@ -367,12 +469,27 @@ pub fn stadium_floor(store: &mut crate::store::DataStore, m: &MapFile) -> Result
             Some(u) => u.clone(),
             None => {
                 let u = block_units(store, &b.name, b.flags);
-                unit_cache.insert(key, u.clone());
+                unit_cache.insert(key.clone(), u.clone());
                 u
             }
         };
         let size = (units.iter().map(|u| u[0]).max().unwrap_or(0) + 1, units.iter().map(|u| u[2]).max().unwrap_or(0) + 1);
         sizes.entry(b.name.clone()).and_modify(|s| { s.0 = s.0.max(size.0); s.1 = s.1.max(size.1); }).or_insert(size);
+        // the sub-cell masks of this placement kind
+        let masks = match mask_cache.get(&key) {
+            Some(mm) => mm.clone(),
+            None => {
+                let mm = placement_masks(store, &b.name, b.flags).unwrap_or_default();
+                mask_cache.insert(key.clone(), mm.clone());
+                mm
+            }
+        };
+        for (&(ux, uz), &mask) in &masks {
+            let cell = turn_unit(c, b.dir, [ux, 0, uz], size);
+            if !grass.contains(&cell) { continue; }
+            let turned = turn_mask(mask, b.dir);
+            *squares.entry(cell).or_default() |= turned;
+        }
         for u in &units {
             // only the unit cells AT the base row remove grass (a 2-high block's upper unit is air over the
             // same column; a ramp's raised unit does not touch the ground)
@@ -393,56 +510,108 @@ pub fn stadium_floor(store: &mut crate::store::DataStore, m: &MapFile) -> Result
         }
     }
     notes.push(format!("{ground_blocks} authored grass-removing blocks ({} IsGround + {air_at_base} air pieces standing at the base row; Grass excepted), {} distinct names; occupied grass columns {}, free {}; {off_grass} footprint cells fell outside the grass grid, {overlaps} footprint cells claimed twice (turn check: 0 expected); {ghosts} ghost placements at the base row left out (they keep the grass)", ground_blocks - air_at_base, sizes.len(), occupied.len(), grass.len() - occupied.len()));
-    Ok(StadiumFloor { occupied, grass, ground_blocks, grass_y, sizes, notes })
+    let full: usize = squares.values().filter(|&&v| v == u64::MAX).count();
+    let partial: usize = squares.values().filter(|&&v| v != u64::MAX && v != 0).count();
+    let free_sq: u32 = grass.iter().map(|c| 64 - squares.get(c).copied().unwrap_or(0).count_ones()).sum();
+    notes.push(format!("4 m squares: {} cells fully occupied, {} partially (grass between the geometry), {} free squares of {} ({:.1} free cells-equivalent)", full, partial, free_sq, grass.len() * 64, free_sq as f32 / 64.0));
+    Ok(StadiumFloor { occupied, grass, ground_blocks, grass_y, sizes, squares, notes })
+}
+
+/// The sub-cell masks of a placement kind: the variant its flags pick, baked (`variant_masks`); full masks when
+/// the info is unknown.
+pub fn placement_masks(store: &mut crate::store::DataStore, name: &str, flags: u32) -> Result<BTreeMap<(i32, i32), u64>, String> {
+    let Some(bp) = crate::vista::find_block_info(store, name) else { return Err(format!("{name}: no block info")) };
+    let bi = crate::blockinfo::load(store, &bp)?;
+    let ground_v = flags & crate::blockmap::FLAG_GROUND != 0;
+    let variant = (flags & 63) as usize;
+    let sub = ((flags >> crate::blockmap::FLAG_SUBVARIANT_SHIFT) & 63) as usize;
+    let addv = ((flags >> crate::blockmap::FLAG_ADDITIONAL_SHIFT) & 0x7F) as usize;
+    let Some(p) = bi.pick_placement_add(ground_v, variant, sub, addv) else { return Err(format!("{name}: no variant for flags {flags:#x}")) };
+    // bake only the mobils the placement draws (the picked list), on the variant's units
+    let mut v = p.variant.clone();
+    v.mobils = vec![p.mobils.iter().map(|m| (*m).clone()).collect()];
+    variant_masks(store, &v, 8.0)
+}
+
+/// Turn a cell's 8×8 mask (bit zi·8+xi, dir 0) by the placement dir — the same frame as `turn_unit`: dir 1 maps
+/// local (x, z) → (W − z, x) with W = 32 m → square (xi, zi) → (7 − zi, xi).
+pub fn turn_mask(mask: u64, dir: u8) -> u64 {
+    if dir & 3 == 0 { return mask; }
+    let mut out = 0u64;
+    for zi in 0..8 {
+        for xi in 0..8 {
+            if mask & (1u64 << (zi * 8 + xi)) == 0 { continue; }
+            let (nx, nz) = match dir & 3 {
+                1 => (7 - zi, xi),
+                2 => (7 - xi, 7 - zi),
+                _ => (zi, 7 - xi),
+            };
+            out |= 1u64 << (nz * 8 + nx);
+        }
+    }
+    out
 }
 
 /// The Stadium floor mesh: the FREE grass cells as row strips, slab on the grass plane.
 pub fn stadium_floor_mesh(store: &mut crate::store::DataStore, m: &MapFile, below: f32, above: f32) -> Result<FloorMesh, String> {
     let f = stadium_floor(store, m)?;
-    let mut rows: BTreeMap<i32, Vec<i32>> = BTreeMap::new();
-    let mut free = 0usize;
+    // free 4 m squares → (z row of 4 m) -> x list (4 m units)
+    let mut rows: BTreeMap<i64, Vec<i64>> = BTreeMap::new();
+    let mut free_sq = 0usize;
     for &(cx, cz) in &f.grass {
-        if !f.occupied.contains(&(cx, cz)) {
-            rows.entry(cz).or_default().push(cx);
-            free += 1;
+        let occ = f.squares.get(&(cx, cz)).copied().unwrap_or(0);
+        for zi in 0..8 {
+            for xi in 0..8 {
+                if occ & (1u64 << (zi * 8 + xi)) == 0 {
+                    rows.entry(cz as i64 * 32 + 4 * zi).or_default().push(cx as i64 * 32 + 4 * xi);
+                    free_sq += 1;
+                }
+            }
         }
     }
-    if free == 0 {
-        return Err("every grass cell is occupied".into());
+    if free_sq == 0 {
+        return Err("every grass square is occupied".into());
+    }
+    let mut spans: Vec<(i64, i64, i64)> = Vec::new(); // (z0, x0, x1)
+    for (z0, mut xs) in rows {
+        xs.sort_unstable();
+        xs.dedup();
+        let mut i = 0;
+        while i < xs.len() {
+            let start = xs[i];
+            let mut end = start;
+            while i + 1 < xs.len() && xs[i + 1] == end + 4 { i += 1; end = xs[i]; }
+            i += 1;
+            spans.push((z0, start, end + 4));
+        }
+    }
+    spans.sort_unstable_by_key(|&(z0, x0, x1)| (x0, x1, z0));
+    let mut boxes: Vec<(f32, f32, f32, f32)> = Vec::new(); // x0 x1 z0 z1
+    let mut i = 0;
+    while i < spans.len() {
+        let (z0, x0, x1) = spans[i];
+        let mut z1 = z0 + 4;
+        while i + 1 < spans.len() && spans[i + 1].1 == x0 && spans[i + 1].2 == x1 && spans[i + 1].0 == z1 { i += 1; z1 += 4; }
+        i += 1;
+        boxes.push((x0 as f32, x1 as f32, z0 as f32, z1 as f32));
     }
     let mut verts: Vec<[f32; 3]> = Vec::new();
     let mut tris: Vec<[u32; 3]> = Vec::new();
     let quads: [[u32; 4]; 6] = [[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4], [2, 3, 7, 6], [1, 2, 6, 5], [0, 4, 7, 3]];
     let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
-    let mut strips = 0usize;
     let (y0, y1) = (f.grass_y - below, f.grass_y + above);
-    for (cz, mut xs) in rows {
-        xs.sort_unstable();
-        xs.dedup();
-        let (z0, z1) = (32.0 * cz as f32, 32.0 * (cz + 1) as f32);
-        let mut i = 0;
-        while i < xs.len() {
-            let start = xs[i];
-            let mut end = start;
-            while i + 1 < xs.len() && xs[i + 1] == end + 1 {
-                i += 1;
-                end = xs[i];
-            }
-            i += 1;
-            let (x0, x1) = (32.0 * start as f32, 32.0 * (end + 1) as f32);
-            let base = verts.len() as u32;
-            verts.extend_from_slice(&[[x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0], [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]]);
-            for q in quads {
-                tris.push([base + q[0], base + q[1], base + q[2]]);
-                tris.push([base + q[0], base + q[2], base + q[3]]);
-            }
-            for v in &verts[base as usize..] { for k in 0..3 { lo[k] = lo[k].min(v[k]); hi[k] = hi[k].max(v[k]); } }
-            strips += 1;
+    for (x0, x1, z0, z1) in &boxes {
+        let base = verts.len() as u32;
+        verts.extend_from_slice(&[[*x0, y0, *z0], [*x1, y0, *z0], [*x1, y1, *z0], [*x0, y1, *z0], [*x0, y0, *z1], [*x1, y0, *z1], [*x1, y1, *z1], [*x0, y1, *z1]]);
+        for q in quads {
+            tris.push([base + q[0], base + q[1], base + q[2]]);
+            tris.push([base + q[0], base + q[2], base + q[3]]);
         }
+        for v in &verts[base as usize..] { for k in 0..3 { lo[k] = lo[k].min(v[k]); hi[k] = hi[k].max(v[k]); } }
     }
     let mut notes = f.notes.clone();
-    notes.push(format!("free grass cells {free} of {} → {strips} row strips", f.grass.len()));
-    Ok(FloorMesh { verts, tris, cells: free, strips, shore_boxes: 0, shore_prisms: 0, notes, bbox: (lo, hi) })
+    notes.push(format!("free 4 m squares {free_sq} ({:.1} cells-equivalent of {}) → {} boxes", free_sq as f32 / 64.0, f.grass.len(), boxes.len()));
+    Ok(FloorMesh { verts, tris, cells: free_sq, strips: boxes.len(), shore_boxes: 0, shore_prisms: 0, notes, bbox: (lo, hi) })
 }
 
 /// The world-frame slab mesh of a map's water: open-water cells merged into ROW STRIPS (same cz, same bed,
