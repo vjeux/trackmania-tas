@@ -62,6 +62,10 @@ pub struct FlagsOpts {
     pub floor_item: Option<(String, f32, f32)>,
     /// `--shores`: the shore tiles' water parts join the floor item (off by default since 2026-10-23 09:51)
     pub floor_shores: bool,
+    /// Hugo's round 4 (2026-10-23 13:51, Stadium): `--cutouts` adds one carrier per ground-block KIND whose ground
+    /// fill leaves standable grass inside its hidden cells (`FloorFinish<Block>[V<n>].Item.Gbx`, block frame), placed
+    /// in every such block's frame; the main plane item covers the kept grass cells only
+    pub floor_cutouts: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -264,8 +268,18 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
     let mut rows: Vec<Row> = Vec::new();
     // ---- the flag models present
     let mut models: Vec<String> = Vec::new();
+    // cutout kinds of the map: stem -> (block name, kind flags)
+    let mut cutout_kinds: BTreeMap<String, (String, u32)> = BTreeMap::new();
     if let Some((stem, ..)) = &o.floor_item {
         models.push(stem.clone());
+        if o.floor_cutouts && collection == 0x1a {
+            for b in m.blocks.iter().filter(|b| b.flags != 0xFFFF_FFFF && b.free_pos.is_none() && b.flags & crate::blockmap::FLAG_GROUND != 0 && !b.name.eq_ignore_ascii_case("Grass")) {
+                let kflags = b.flags & crate::floor_finish::VARIANT_FLAG_MASK;
+                let var = crate::floor_finish::variant_byte(kflags);
+                let cstem = if var == 0 { format!("FloorFinish{}", b.name) } else { format!("FloorFinish{}V{var}", b.name) };
+                cutout_kinds.entry(cstem).or_insert((b.name.clone(), kflags));
+            }
+        }
     } else if !o.sources.is_empty() {
         // the source kinds present in the map (items by model+variant, blocks by name)
         for it in &m.items {
@@ -328,6 +342,31 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
     let lm_word: Option<u64> = if o.keep_lightmap { lightmap_cache_word(src) } else { None };
     // ---- the items: one per flag model
     let mut built: Vec<(String, String, [f32; 6], Vec<u8>)> = Vec::new();
+    // the cutout carriers (Stadium, --cutouts): built here, placed per block below; kinds without a standable
+    // fill produce no carrier
+    let mut cutout_built: BTreeMap<String, String> = BTreeMap::new(); // stem -> ident
+    if let Some((_, below, above)) = &o.floor_item {
+        for (cstem, (name, kflags)) in &cutout_kinds {
+            let ident = format!("{cstem}.Item.Gbx");
+            match crate::floor_finish::build_cutout_item(ctx.store, name, *kflags, &ident, collection, 0.5, *below, *above).map_err(|e| format!("{cstem}: {e}"))? {
+                Some((bytes, c)) => {
+                    let mut row = Row::new(&map_label, "flags", "model", 0, cstem);
+                    row.action = "cutout-built".into();
+                    row.to_name = ident.clone();
+                    row.note = format!("{} bytes; {} boxes over {:.0} m² of the {name} ground fill (1 m raster, 0.5 m inset from structure; {} m² squares dropped near structure), block frame bbox [{:.1} {:.2} {:.1}]..[{:.1} {:.2} {:.1}]", bytes.len(), c.kept, c.area, c.dropped, c.bbox.0[0], c.bbox.0[1], c.bbox.0[2], c.bbox.1[0], c.bbox.1[1], c.bbox.1[2]);
+                    rows.push(row);
+                    built.push((cstem.clone(), ident.clone(), [c.bbox.0[0], c.bbox.0[1], c.bbox.0[2], c.bbox.1[0], c.bbox.1[1], c.bbox.1[2]], bytes));
+                    cutout_built.insert(cstem.clone(), ident);
+                }
+                None => {
+                    let mut row = Row::new(&map_label, "flags", "model", 0, cstem);
+                    row.action = "cutout-none".into();
+                    row.note = format!("{name}: no standable grass fill inside its hidden cells (deck, water or void) — no cutout");
+                    rows.push(row);
+                }
+            }
+        }
+    }
     for stem in &models {
         if let Some((_, below, above)) = &o.floor_item {
             let ident = format!("{stem}.Item.Gbx");
@@ -437,6 +476,33 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
         rows.push(r);
         appended.push((0, stem.clone(), [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]));
         converted += 1;
+        if !cutout_built.is_empty() {
+            let yoff = tmmaps::map::ground_y(collection);
+            let mut per_kind: BTreeMap<String, usize> = BTreeMap::new();
+            for b in m.blocks.iter().filter(|b| b.flags != 0xFFFF_FFFF && b.free_pos.is_none() && b.flags & crate::blockmap::FLAG_GROUND != 0 && !b.name.eq_ignore_ascii_case("Grass")) {
+                let kflags = b.flags & crate::floor_finish::VARIANT_FLAG_MASK;
+                let var = crate::floor_finish::variant_byte(kflags);
+                let cstem = if var == 0 { format!("FloorFinish{}", b.name) } else { format!("FloorFinish{}V{var}", b.name) };
+                if !cutout_built.contains_key(&cstem) { continue; }
+                // the block's frame as the GAME stores it and as Hugo's MapUtility.PlaceRelative computes it: the
+                // file cell's corner turned by dir with the 1×1 offsets ((0,0) (32,0) (32,32) (0,32)), yaw −dir·90° —
+                // whatever the footprint (the census pose of a 3×2 Y pillar at dir 1 is cell·32 + (32, 0)); the cutout
+                // mesh is authored in the block prefab's frame, which is this one
+                let x = crate::place::grid_block(b.coords(), b.dir, (32.0, 32.0), yoff);
+                let yaw = -(b.dir as f32) * std::f32::consts::FRAC_PI_2;
+                let yaw = if yaw <= -std::f32::consts::PI { yaw + 2.0 * std::f32::consts::PI } else { yaw };
+                appended.push((0, cstem.clone(), [x[9], x[10], x[11]], [yaw, 0.0, 0.0]));
+                converted += 1;
+                *per_kind.entry(cstem).or_default() += 1;
+            }
+            for (cstem, n) in per_kind {
+                let mut r = Row::new(&map_label, "flags", "map", 0, &cstem);
+                r.action = "cutouts-placed".into();
+                r.to_name = cstem.clone();
+                r.note = format!("{n} placement(s) in the blocks' frames (cell corner turned by dir, yaw −dir·90°), tag Goal");
+                rows.push(r);
+            }
+        }
     } else if !o.sources.is_empty() {
         let yoff = tmmaps::map::ground_y(collection);
         for it in &m.items {
@@ -778,7 +844,7 @@ pub fn verify_flags(src: &Path, out: &Path, oc: &FlagsOutcome, o: &FlagsOpts) ->
         for y in b.items.iter().filter(|y| idents.contains(&y.model)) {
             let at_block = stand_poses.iter().any(|(p, yaw)| (p[0] - y.pos[0]).abs() < 1e-3 && (p[1] - y.pos[1]).abs() < 1e-3 && (p[2] - y.pos[2]).abs() < 1e-3 && (yaw - y.yaw).abs() < 1e-5);
             let at_source = if o.floor_item.is_some() {
-                y.pos == [0.0, 0.0, 0.0] && y.yaw == 0.0
+                (y.pos == [0.0, 0.0, 0.0] && y.yaw == 0.0) || (o.floor_cutouts && y.model.starts_with("FloorFinish") && y.pos[0].rem_euclid(32.0) == 0.0 && y.pos[2].rem_euclid(32.0) == 0.0)
             } else if o.stands {
                 at_block
             } else if !o.sources.is_empty() {

@@ -5082,6 +5082,111 @@ fn main() {
             let holes = rows.values().filter(|r| (r.2.len() as i32) < r.0 * r.1).count();
             println!("{}: {} block infos ({} failed to load), {} multi-cell, {} with base-row holes (footprint smaller than its size box)", out, rows.len(), failed, multi, holes);
         }
+        // stadium-kinds MAP... [--out F.tsv]: Hugo's cutout feasibility (2026-10-23 13:51) — per ground-block KIND placed in
+        //   the maps: placements, base cells, and its hidden cells' 4 m squares as (a) structure / (b) standable
+        //   grass-level surface / (c) void; the kinds with (b) > 0 are the cutout shapes
+        "stadium-kinds" => {
+            let mut store = open(&a);
+            let out = flag(&a.rest, "--out");
+            let maps: Vec<String> = a.rest[1..].iter().filter(|x| !x.starts_with("--") && Some(x.as_str()) != out.as_deref()).cloned().collect();
+            // kind (name, flags) -> (placements, maps)
+            let mut kinds: BTreeMap<(String, u32), (usize, std::collections::BTreeSet<String>)> = BTreeMap::new();
+            for p in &maps {
+                let m = tmmaps::map::MapFile::try_load(std::path::Path::new(p)).unwrap_or_else(die);
+                let label = std::path::Path::new(p).file_stem().map(|s| s.to_string_lossy().chars().take(2).collect::<String>()).unwrap_or_default();
+                for b in m.blocks.iter().filter(|b| b.flags != 0xFFFF_FFFF && b.free_pos.is_none() && b.flags & mapgeom::blockmap::FLAG_GROUND != 0 && !b.name.eq_ignore_ascii_case("Grass")) {
+                    let e = kinds.entry((b.name.clone(), b.flags)).or_default();
+                    e.0 += 1;
+                    e.1.insert(label.clone());
+                }
+            }
+            let mut s = String::from("block\tflags\tplacements\tmaps\tbase_cells\tsq_structure\tsq_standable\tsq_void\tstandable_cells\n");
+            let (mut n_kinds, mut n_b, mut n_names_b) = (0usize, 0usize, std::collections::BTreeSet::new());
+            for ((name, flags), (n, labels)) in &kinds {
+                let masks = mapgeom::floor_finish::placement_masks(&mut store, name, *flags).unwrap_or_default();
+                let cells = masks.len();
+                let (mut sa, mut sb, mut sc, mut cb) = (0u32, 0u32, 0u32, 0usize);
+                for (_, (occ, grn)) in &masks {
+                    let b_only = grn & !occ;
+                    sa += occ.count_ones();
+                    sb += b_only.count_ones();
+                    sc += (!(occ | grn)).count_ones();
+                    if b_only != 0 { cb += 1; }
+                }
+                n_kinds += 1;
+                if sb > 0 { n_b += 1; n_names_b.insert(name.clone()); }
+                s.push_str(&format!("{name}\t{flags:08x}\t{n}\t{}\t{cells}\t{sa}\t{sb}\t{sc}\t{cb}\n", labels.iter().cloned().collect::<Vec<_>>().join(" ")));
+            }
+            print!("{s}");
+            println!("# {n_kinds} ground-block kinds (name, flags) over {} maps; {n_b} kinds / {} distinct block names with standable grass-level squares (the cutout shapes)", maps.len(), n_names_b.len());
+            if let Some(o) = out { std::fs::write(&o, s).unwrap_or_else(|e| die(format!("{o}: {e}"))); }
+        }
+        // stadium-cutouts --out DIR [--blocks A,B,..] [--maps M1 M2 ..] [--inset 0.5] [--collection 26] [--report F.tsv]:
+        //   Hugo's per-block-kind cutout items FloorFinish<Block>.Item.Gbx (the ground fill's standable outline, block
+        //   frame, 8.0..9.0) for the blocks named, or for every IsGround kind placed in the maps given
+        "stadium-cutouts" => {
+            let mut store = open(&a);
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("stadium-cutouts needs --out DIR".into()));
+            std::fs::create_dir_all(&out).unwrap_or_else(|e| die(format!("{out}: {e}")));
+            let inset: f32 = flag(&a.rest, "--inset").map(|v| v.parse().unwrap_or_else(|_| die("--inset M".into()))).unwrap_or(0.5);
+            let coll: u32 = flag(&a.rest, "--collection").map(|v| v.parse().unwrap_or_else(|_| die("--collection N".into()))).unwrap_or(26);
+            // kinds = (name, VARIANT byte) — the variant the game draws (flags bits 0..5 | additional 21..27 → one byte
+            // as GBX.NET's CGameCtnBlock.Variant exposes it: low 6 bits the variant, high bits the additional index);
+            // `--blocks A:V,B` names them (V = the variant byte, 0 when omitted)
+            let mut kinds: std::collections::BTreeMap<(String, u32), usize> = Default::default();
+            if let Some(v) = flag(&a.rest, "--blocks") {
+                for s in v.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                    let (name, var) = s.split_once(':').map(|(n, v)| (n.to_string(), v.parse::<u32>().unwrap_or(0))).unwrap_or((s.to_string(), 0));
+                    kinds.insert((name, mapgeom::floor_finish::flags_of_variant(var)), 0);
+                }
+            }
+            if let Some(i) = a.rest.iter().position(|x| x == "--maps") {
+                for p in a.rest[i + 1..].iter().take_while(|x| !x.starts_with("--")) {
+                    let m = tmmaps::map::MapFile::try_load(std::path::Path::new(p)).unwrap_or_else(die);
+                    for b in m.blocks.iter().filter(|b| b.flags != 0xFFFF_FFFF && b.free_pos.is_none() && b.flags & mapgeom::blockmap::FLAG_GROUND != 0 && !b.name.eq_ignore_ascii_case("Grass")) {
+                        *kinds.entry((b.name.clone(), b.flags & mapgeom::floor_finish::VARIANT_FLAG_MASK)).or_default() += 1;
+                    }
+                }
+            }
+            let mut rep = String::from("block\tvariant\tflags\tplacements\titem\tbytes\tkept_tris\tdropped_tris\tarea_m2\tbbox\n");
+            let (mut built, mut none) = (0usize, 0usize);
+            for ((name, kflags), n) in &kinds {
+                let var = mapgeom::floor_finish::variant_byte(*kflags);
+                let ident = if var == 0 { format!("FloorFinish{name}.Item.Gbx") } else { format!("FloorFinish{name}V{var}.Item.Gbx") };
+                match mapgeom::floor_finish::build_cutout_item(&mut store, name, *kflags, &ident, coll, inset, 0.0, 1.0) {
+                    Ok(Some((bytes, c))) => {
+                        std::fs::write(format!("{out}/{ident}"), &bytes).unwrap_or_else(|e| die(format!("{ident}: {e}")));
+                        rep.push_str(&format!("{name}\t{var}\t{kflags:08x}\t{n}\t{ident}\t{}\t{}\t{}\t{:.1}\t[{:.2} {:.2} {:.2}]..[{:.2} {:.2} {:.2}]\n", bytes.len(), c.kept, c.dropped, c.area, c.bbox.0[0], c.bbox.0[1], c.bbox.0[2], c.bbox.1[0], c.bbox.1[1], c.bbox.1[2]));
+                        built += 1;
+                    }
+                    Ok(None) => { rep.push_str(&format!("{name}\t{var}\t{kflags:08x}\t{n}\t-\t0\t0\t0\t0.0\tno standable fill\n")); none += 1; }
+                    Err(e) => { rep.push_str(&format!("{name}\t{var}\t{kflags:08x}\t{n}\t-\t0\t0\t0\t0.0\tERROR {e}\n")); none += 1; }
+                }
+            }
+            print!("{rep}");
+            println!("# {built} cutout items written to {out}, {none} kinds without a standable fill");
+            // --ascii: a 2 m-grid picture of each cutout (block frame, x right, z down) for the eye
+            if a.rest.iter().any(|x| x == "--ascii") {
+                for ((name, kflags), _) in &kinds {
+                    if let Ok(Some(c)) = mapgeom::floor_finish::cutout_for_block(&mut store, name, *kflags, inset, 0.0, 1.0) {
+                        let boxes: Vec<[f32; 4]> = c.verts.chunks(8).map(|b| [b[0][0], b[1][0], b[0][2], b[4][2]]).collect();
+                        let (w, h) = ((c.bbox.1[0].ceil() / 2.0) as usize, (c.bbox.1[2].ceil() / 2.0) as usize);
+                        println!("== {name} ({} boxes, {:.0} m²):", boxes.len(), c.area);
+                        for zi in 0..h.max(16) {
+                            let mut row = String::new();
+                            for xi in 0..w.max(16) {
+                                let (x, z) = (2.0 * xi as f32 + 1.0, 2.0 * zi as f32 + 1.0);
+                                row.push(if boxes.iter().any(|b| x >= b[0] && x < b[1] && z >= b[2] && z < b[3]) { '#' } else { '.' });
+                                if xi % 16 == 15 { row.push('|'); }
+                            }
+                            println!("  {row}");
+                            if zi % 16 == 15 { println!("  {}", "-".repeat(row.len())); }
+                        }
+                    }
+                }
+            }
+            if let Some(f) = flag(&a.rest, "--report") { std::fs::write(&f, rep).unwrap_or_else(|e| die(format!("{f}: {e}"))); }
+        }
         // stadium-floor MAP [--sizes F.tsv] [--cells F.tsv]: Hugo's Stadium floor occupancy (authored IsGround blocks'
         //   footprints turned by dir; Grass excepted) — the counts, the name → (size x, size z) table for his C#,
         //   and the free/occupied cell grid
@@ -5185,6 +5290,7 @@ fn main() {
                 source_pad: flag(&a.rest, "--source-pad").map(|v| v.parse::<f32>().unwrap_or_else(|_| die("--source-pad M".into()))).unwrap_or(0.3),
                 floor_item: None,
                 floor_shores: a.rest.iter().any(|x| x == "--shores"),
+                floor_cutouts: a.rest.iter().any(|x| x == "--cutouts"),
             };
             // --lights SOURCES.tsv (Hugo's Moth, 2026-10-22): the light sources are the carriers' seats. The TSV = the
             // census LIGHTS.tsv (group, kind, name, …, local_x, local_y, local_z …); rows are taken when their group

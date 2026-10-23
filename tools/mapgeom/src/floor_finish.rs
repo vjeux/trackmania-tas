@@ -331,19 +331,16 @@ pub fn turn_unit(c: (i32, i32, i32), dir: u8, u: [i32; 3], size: (i32, i32)) -> 
 /// conservatively: a square is occupied when any such triangle covers its centre OR any of its edges crosses the
 /// square (thin walls have ~no area). Squares nothing touches are free grass. The whole-cell table stays for
 /// variants that fail to bake (returned as full masks).
-/// Physics ids of grass-like collision (the Stadium terrain's Green 76, the Grass surface 2).
-pub fn is_grass_physics(id: u8) -> bool {
-    id == 76 || id == 2
-}
-
-/// Per base cell `(occupied, green)`: `occupied` = geometry within the base unit row other than grass-level
-/// grass-physics collision (decks, borders, walls, pillars, decals — anything a car can clip into or stand on
-/// that is not grass); `green` = collision triangles of grass physics lying at grass level (|y| < 0.3): a
-/// collidable grass surface the block itself (or a baked filler) brings — the car can stand on grass there.
+/// Per base cell `(occupied, standable)`: `occupied` = geometry within the base unit row other than the
+/// grass-level floor (decks, borders, walls, pillars, decals — anything a car can clip into); `standable` =
+/// upward-facing collision within ±0.3 m of local 0, any physics id — a ground fill the block itself (or a
+/// baked filler) brings into a cell whose Grass tile the game hides: the car can stand there.
 /// Round 3 (Hugo 2026-10-23 12:55: a car clipping through a road block and falling into the VOID must never
 /// finish): the Grass tile is HIDDEN under every unit of a ground-variant block (read off the game's lightmaps,
 /// tmmaps::tiny::tiles::HiddenTiles, 93 440 tile records), geometry notwithstanding — so inside such cells only
 /// `green` squares are grass; everything else there is void or structure.
+fn is_up_debug(upward: bool, ylo: f32, yhi: f32) -> bool { upward && yhi - ylo < 0.5 }
+
 pub fn variant_masks(store: &mut crate::store::DataStore, variant: &crate::blockinfo::Variant, touch_y: f32) -> Result<BTreeMap<(i32, i32), (u64, u64)>, String> {
     let mut m = crate::static_item::build::Merged::default();
     m.keep_water = true;
@@ -357,6 +354,36 @@ pub fn variant_masks(store: &mut crate::store::DataStore, variant: &crate::block
             if let Some(t) = mobil.translation { at[9] = t[0]; at[10] = t[1]; at[11] = t[2]; }
             let r = if low.ends_with(".prefab.gbx") { crate::static_item::build::add_prefab(store, prefab, &at, 1.0, &mut m, 0) } else { crate::static_item::build::add_static_object_file(store, prefab, &at, 1.0, &mut m) };
             if r.is_ok() { n_mobils += 1; }
+        }
+    }
+    // the units' BOTTOM clips: the `*FCBGround` ground fills (TrackToGrassCurve2FCBGround: the grass lobes around a
+    // curve, Green 76 collision at y 0 — Hugo 2026-10-23 13:56 "it stands on it"). The clip sits one unit under the
+    // block's unit; its mobil carries translation +8, so baked at the unit's x/z offset and y −8 it lands at the base
+    let debug = std::env::var_os("FLOOR_DEBUG").is_some();
+    for u in &variant.block_units {
+        for clip in &u.clips[5] {
+            let ci = match crate::blockinfo::load(store, clip) {
+                Ok(ci) => ci,
+                Err(e) => { if debug { eprintln!("clip {clip}: load failed: {e}"); } continue }
+            };
+            if debug { eprintln!("clip {clip}: air {} ground {}", ci.variant_base_air.as_ref().map(|v| v.mobils.iter().map(|l| l.len()).sum::<usize>()).unwrap_or(0), ci.variant_base_ground.as_ref().map(|v| v.mobils.iter().map(|l| l.len()).sum::<usize>()).unwrap_or(0)); }
+            let Some(cv) = ci.variant_base_air.as_ref().or(ci.variant_base_ground.as_ref()) else { continue };
+            for list in &cv.mobils {
+                for mobil in list {
+                    let Some(prefab) = mobil.prefab.as_deref() else { continue };
+                    let low = prefab.to_ascii_lowercase();
+                    if !low.ends_with(".prefab.gbx") { continue; }
+                    let mut at = crate::geom::IDENTITY;
+                    at[9] = 32.0 * u.offset[0] as f32;
+                    at[10] = 8.0 * (u.offset[1] - 1) as f32;
+                    at[11] = 32.0 * u.offset[2] as f32;
+                    if let Some(t) = mobil.translation { at[9] += t[0]; at[10] += t[1]; at[11] += t[2]; }
+                    match crate::static_item::build::add_prefab(store, prefab, &at, 1.0, &mut m, 0) {
+                        Ok(()) => { n_mobils += 1; if debug { eprintln!("  baked {prefab} at {:?}: surf tris now {}", [at[9], at[10], at[11]], m.surf_triangles.len()); } }
+                        Err(e) => { if debug { eprintln!("  {prefab}: {e}"); } }
+                    }
+                }
+            }
         }
     }
     // the base-row cells
@@ -378,12 +405,26 @@ pub fn variant_masks(store: &mut crate::store::DataStore, variant: &crate::block
         let pts: Vec<[f32; 3]> = t.indices.iter().filter_map(|&i| m.surf_vertices.get(i as usize).copied()).collect();
         if pts.len() != 3 { continue; }
         let (ylo, yhi) = (pts.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min), pts.iter().map(|p| p[1]).fold(f32::NEG_INFINITY, f32::max));
-        if is_grass_physics(t.material_id) && ylo > -0.3 && yhi < 0.3 {
+        // round 4 (Hugo 13:51): a STANDABLE grass-level surface of ANY physics id — an upward-facing collision
+        // triangle within ±0.3 m of local 0 (the block's own ground fill: grass, dirt, sand, asphalt aprons)
+        let n = {
+            let (a, b, c) = (pts[0], pts[1], pts[2]);
+            let (u, v) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [c[0] - a[0], c[1] - a[1], c[2] - a[2]]);
+            [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]]
+        };
+        let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+        let upward = len > 1e-6 && n[1] / len > 0.7;
+        if upward && ylo > -0.3 && yhi < 0.3 {
             green_tris.push([pts[0], pts[1], pts[2]]);
-        } else if ylo < touch_y {
+        } else if ylo < touch_y && yhi > 0.3 {
             tris.push([pts[0], pts[1], pts[2]]);
         }
+        if std::env::var_os("FLOOR_DEBUG").is_some() && is_up_debug(upward, ylo, yhi) {
+            eprintln!("  surf tri phys {} y {:.2}..{:.2} upward {upward}", t.material_id, ylo, yhi);
+        }
     }
+    // visuals: structure only when they rise above the grass-level floor (a ground fill's grass visual lies
+    // flat at y ≈ 0 and is the floor itself, not something to clip into); decals a few cm up count as floor too
     for mv in &m.visuals {
         let Some(main) = mv.visual.main.as_ref() else { continue };
         let Some(crate::static_item::Node::VertexStream(stream)) = main.vertex_streams.first().and_then(|r| r.inline.as_deref()) else { continue };
@@ -396,7 +437,8 @@ pub fn variant_masks(store: &mut crate::store::DataStore, variant: &crate::block
             for t in ib.indices.chunks(3) {
                 if t.len() == 3 && t.iter().all(|&i| (i as usize) < pos.len()) {
                     let p = [pos[t[0] as usize], pos[t[1] as usize], pos[t[2] as usize]];
-                    if p.iter().map(|v| v[1]).fold(f32::INFINITY, f32::min) < touch_y { tris.push(p); }
+                    let (ylo, yhi) = (p.iter().map(|v| v[1]).fold(f32::INFINITY, f32::min), p.iter().map(|v| v[1]).fold(f32::NEG_INFINITY, f32::max));
+                    if ylo < touch_y && yhi > 0.3 { tris.push(p); }
                 }
             }
         }
@@ -438,6 +480,9 @@ pub fn variant_masks(store: &mut crate::store::DataStore, variant: &crate::block
                 if covers(&green_tris, x0, z0, x1, z1, false) { *green |= 1u64 << (zi * 8 + xi); }
             }
         }
+    }
+    if std::env::var_os("FLOOR_DEBUG").is_some() {
+        eprintln!("  masks: {} structure tris, {} standable tris → {:?}", tris.len(), green_tris.len(), masks.iter().map(|(c, (o, g))| format!("{c:?}:{o:016x}:{g:016x}")).collect::<Vec<_>>());
     }
     Ok(masks)
 }
@@ -575,6 +620,271 @@ pub fn turn_mask(mask: u64, dir: u8) -> u64 {
         }
     }
     out
+}
+
+/// Hugo's round-4 design (2026-10-23 13:51): the MAIN PLANE = the grass cells the game keeps (whole cells, row
+/// strips) and one CUTOUT item per block kind whose ground fill leaves standable grass inside its hidden cells.
+/// The cutout trigger follows the fill's own collision outline: every standable triangle (upward, |y| < 0.3)
+/// shrunk toward its centroid by `inset` metres, dropped when its footprint comes within `inset` of a structure
+/// triangle's footprint, extruded `below`..`above` — in the block frame at dir 0 (the game's placement turns it).
+/// The flag bits that pick a block's drawn variant: the low 6 (variant), 6..11 (subvariant), 12 (ground) and
+/// 21..27 (additional) — the placement KIND for cutouts.
+pub const VARIANT_FLAG_MASK: u32 = 0x3F | (0x3F << 6) | crate::blockmap::FLAG_GROUND | (0x7F << crate::blockmap::FLAG_ADDITIONAL_SHIFT);
+
+/// GBX.NET's `CGameCtnBlock.Variant` byte for our flags: the low 6 bits the variant index, the high 2 bits… the
+/// Variant byte GBX.NET exposes is `(Flags >> 0) & 0x3F` for the base variant; the additional index lives in
+/// bits 21..27 and is what distinguishes `ground/add0` (Fall 05's DecoHill* at 00201000 → add 1). We encode a
+/// kind's variant as `additional * 64 + variant` so one byte-ish number names it in the item file.
+pub fn variant_byte(flags: u32) -> u32 {
+    (flags & 0x3F) + 64 * ((flags >> crate::blockmap::FLAG_ADDITIONAL_SHIFT) & 0x7F)
+}
+
+pub fn flags_of_variant(var: u32) -> u32 {
+    (var & 0x3F) | ((var / 64) << crate::blockmap::FLAG_ADDITIONAL_SHIFT) | crate::blockmap::FLAG_GROUND
+}
+
+pub struct Cutout {
+    pub verts: Vec<[f32; 3]>,
+    pub tris: Vec<[u32; 3]>,
+    /// boxes in the item / 1 m squares dropped near structure
+    pub kept: usize,
+    pub dropped: usize,
+    /// standable area kept, m²
+    pub area: f32,
+    pub bbox: ([f32; 3], [f32; 3]),
+}
+
+/// Bake a block's base variant (+ its units' Bottom clips) and split the triangles within the base unit row into
+/// standable floor and structure, in the block frame.
+fn variant_floor_and_structure(store: &mut crate::store::DataStore, variant: &crate::blockinfo::Variant) -> Result<(Vec<[[f32; 3]; 3]>, Vec<[[f32; 3]; 3]>), String> {
+    let mut m = crate::static_item::build::Merged::default();
+    m.keep_water = true;
+    for list in &variant.mobils {
+        for mobil in list {
+            let Some(prefab) = mobil.prefab.as_deref() else { continue };
+            let low = prefab.to_ascii_lowercase();
+            if low.ends_with(".vegettreemodel.gbx") { continue; }
+            let mut at = crate::geom::IDENTITY;
+            if let Some(t) = mobil.translation { at[9] = t[0]; at[10] = t[1]; at[11] = t[2]; }
+            let _ = if low.ends_with(".prefab.gbx") { crate::static_item::build::add_prefab(store, prefab, &at, 1.0, &mut m, 0) } else { crate::static_item::build::add_static_object_file(store, prefab, &at, 1.0, &mut m) };
+        }
+    }
+    for u in &variant.block_units {
+        for clip in &u.clips[5] {
+            let Ok(ci) = crate::blockinfo::load(store, clip) else { continue };
+            let Some(cv) = ci.variant_base_air.as_ref().or(ci.variant_base_ground.as_ref()) else { continue };
+            for list in &cv.mobils {
+                for mobil in list {
+                    let Some(prefab) = mobil.prefab.as_deref() else { continue };
+                    if !prefab.to_ascii_lowercase().ends_with(".prefab.gbx") { continue; }
+                    let mut at = crate::geom::IDENTITY;
+                    at[9] = 32.0 * u.offset[0] as f32;
+                    at[10] = 8.0 * (u.offset[1] - 1) as f32;
+                    at[11] = 32.0 * u.offset[2] as f32;
+                    if let Some(t) = mobil.translation { at[9] += t[0]; at[10] += t[1]; at[11] += t[2]; }
+                    let _ = crate::static_item::build::add_prefab(store, prefab, &at, 1.0, &mut m, 0);
+                }
+            }
+        }
+    }
+    let mut floor: Vec<[[f32; 3]; 3]> = Vec::new();
+    let mut structure: Vec<[[f32; 3]; 3]> = Vec::new();
+    for t in &m.surf_triangles {
+        let pts: Vec<[f32; 3]> = t.indices.iter().filter_map(|&i| m.surf_vertices.get(i as usize).copied()).collect();
+        if pts.len() != 3 { continue; }
+        let (ylo, yhi) = (pts.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min), pts.iter().map(|p| p[1]).fold(f32::NEG_INFINITY, f32::max));
+        let (a, b, c) = (pts[0], pts[1], pts[2]);
+        let (u, v) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [c[0] - a[0], c[1] - a[1], c[2] - a[2]]);
+        let n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+        let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+        let upward = len > 1e-6 && n[1] / len > 0.7;
+        if upward && ylo > -0.3 && yhi < 0.3 {
+            floor.push([a, b, c]);
+        } else if ylo < 8.0 && yhi > 0.3 {
+            structure.push([a, b, c]);
+        }
+    }
+    for mv in &m.visuals {
+        let Some(main) = mv.visual.main.as_ref() else { continue };
+        let Some(crate::static_item::Node::VertexStream(stream)) = main.vertex_streams.first().and_then(|r| r.inline.as_deref()) else { continue };
+        let compress = stream.compress_local3d.unwrap_or(false);
+        let mut pos: &[[f32; 3]] = &[];
+        for (d, e) in stream.decls.iter().zip(stream.elems.iter()) {
+            if let (crate::static_item::vstream::N_POSITION, crate::static_item::vstream::T_FLOAT3, crate::static_item::vstream::Elem::Float3(p)) = (d.name(), d.stored_type(compress), e) { pos = p; }
+        }
+        if let Some(ib) = mv.visual.index_buffer.as_ref() {
+            for t in ib.indices.chunks(3) {
+                if t.len() == 3 && t.iter().all(|&i| (i as usize) < pos.len()) {
+                    let p = [pos[t[0] as usize], pos[t[1] as usize], pos[t[2] as usize]];
+                    let (ylo, yhi) = (p.iter().map(|v| v[1]).fold(f32::INFINITY, f32::min), p.iter().map(|v| v[1]).fold(f32::NEG_INFINITY, f32::max));
+                    if ylo < 8.0 && yhi > 0.3 { structure.push(p); }
+                }
+            }
+        }
+    }
+    Ok((floor, structure))
+}
+
+/// Distance in xz from a point to a triangle's footprint (0 inside).
+fn dist_xz(p: [f32; 2], t: &[[f32; 3]; 3]) -> f32 {
+    let (a, b, c) = ([t[0][0], t[0][2]], [t[1][0], t[1][2]], [t[2][0], t[2][2]]);
+    let s = |a: [f32; 2], b: [f32; 2], c: [f32; 2]| (c[0] - a[0]) * (b[1] - a[1]) - (b[0] - a[0]) * (c[1] - a[1]);
+    let (d1, d2, d3) = (s(p, a, b), s(p, b, c), s(p, c, a));
+    if !((d1 < 0.0 || d2 < 0.0 || d3 < 0.0) && (d1 > 0.0 || d2 > 0.0 || d3 > 0.0)) {
+        return 0.0;
+    }
+    let seg = |a: [f32; 2], b: [f32; 2]| -> f32 {
+        let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
+        let l2 = dx * dx + dz * dz;
+        let t = if l2 > 0.0 { (((p[0] - a[0]) * dx + (p[1] - a[1]) * dz) / l2).clamp(0.0, 1.0) } else { 0.0 };
+        let (qx, qz) = (a[0] + t * dx, a[1] + t * dz);
+        ((p[0] - qx).powi(2) + (p[1] - qz).powi(2)).sqrt()
+    };
+    seg(a, b).min(seg(b, c)).min(seg(c, a))
+}
+
+/// The cutout of a PLACEMENT KIND (name + flags): the variant the flags pick (base / additional, the mobil list
+/// drawn), as the game places it — a block kind placed with two variants gets two items.
+pub fn cutout_for_block(store: &mut crate::store::DataStore, name: &str, flags: u32, inset: f32, below: f32, above: f32) -> Result<Option<Cutout>, String> {
+    let Some(bp) = crate::vista::find_block_info(store, name) else { return Err(format!("{name}: no block info")) };
+    let bi = crate::blockinfo::load(store, &bp)?;
+    let ground_v = flags & crate::blockmap::FLAG_GROUND != 0;
+    let variant = (flags & 63) as usize;
+    let sub = ((flags >> crate::blockmap::FLAG_SUBVARIANT_SHIFT) & 63) as usize;
+    let addv = ((flags >> crate::blockmap::FLAG_ADDITIONAL_SHIFT) & 0x7F) as usize;
+    let Some(p) = bi.pick_placement_add(ground_v, variant, sub, addv) else { return Ok(None) };
+    let mut v = p.variant.clone();
+    v.mobils = vec![p.mobils.iter().map(|m| (*m).clone()).collect()];
+    let (floor, structure) = variant_floor_and_structure(store, &v)?;
+    if std::env::var_os("FLOOR_DEBUG").is_some() {
+        eprintln!("cutout {name} {flags:08x}: variant {} units {} mobils {}; floor tris {} structure tris {}", p.label, v.block_units.len(), v.mobils.iter().map(|l| l.len()).sum::<usize>(), floor.len(), structure.len());
+    }
+    if floor.is_empty() {
+        return Ok(None);
+    }
+    // a 1 m raster over the variant's footprint: a square is FLOOR when its centre lies on a standable triangle,
+    // and kept only when no structure triangle's footprint comes within `inset` of the square (its centre's
+    // distance to the triangle < inset + 0.71 m, the half-diagonal) — the true curved outline at 1 m, inset
+    let sb: Vec<([f32; 2], [f32; 2], &[[f32; 3]; 3])> = structure.iter().map(|t| ([t.iter().map(|v| v[0]).fold(f32::INFINITY, f32::min), t.iter().map(|v| v[2]).fold(f32::INFINITY, f32::min)], [t.iter().map(|v| v[0]).fold(f32::NEG_INFINITY, f32::max), t.iter().map(|v| v[2]).fold(f32::NEG_INFINITY, f32::max)], t)).collect();
+    let reach = inset + 0.71;
+    let near_structure = |p: [f32; 2]| -> bool {
+        sb.iter().any(|(lo, hi, t)| p[0] >= lo[0] - reach && p[0] <= hi[0] + reach && p[1] >= lo[1] - reach && p[1] <= hi[1] + reach && dist_xz(p, t) < reach)
+    };
+    let fb: Vec<([f32; 2], [f32; 2], &[[f32; 3]; 3])> = floor.iter().map(|t| ([t.iter().map(|v| v[0]).fold(f32::INFINITY, f32::min), t.iter().map(|v| v[2]).fold(f32::INFINITY, f32::min)], [t.iter().map(|v| v[0]).fold(f32::NEG_INFINITY, f32::max), t.iter().map(|v| v[2]).fold(f32::NEG_INFINITY, f32::max)], t)).collect();
+    let on_floor = |p: [f32; 2]| -> bool {
+        fb.iter().any(|(lo, hi, t)| p[0] >= lo[0] && p[0] <= hi[0] && p[1] >= lo[1] && p[1] <= hi[1] && dist_xz(p, t) == 0.0)
+    };
+    let (sx, sz) = (v.block_units.iter().map(|u| u.offset[0] + 1).max().unwrap_or(1), v.block_units.iter().map(|u| u.offset[2] + 1).max().unwrap_or(1));
+    let (nx, nz) = ((32 * sx) as usize, (32 * sz) as usize);
+    let mut grid = vec![false; nx * nz];
+    let (mut kept, mut dropped) = (0usize, 0usize);
+    for zi in 0..nz {
+        for xi in 0..nx {
+            let c = [xi as f32 + 0.5, zi as f32 + 0.5];
+            if !on_floor(c) { continue; }
+            if near_structure(c) { dropped += 1; continue; }
+            grid[zi * nx + xi] = true;
+            kept += 1;
+        }
+    }
+    if kept == 0 {
+        return Ok(None);
+    }
+    // merge: x-runs per row, then equal consecutive rows
+    let mut spans: Vec<(usize, usize, usize)> = Vec::new(); // (z, x0, x1)
+    for zi in 0..nz {
+        let mut xi = 0;
+        while xi < nx {
+            if !grid[zi * nx + xi] { xi += 1; continue; }
+            let x0 = xi;
+            while xi < nx && grid[zi * nx + xi] { xi += 1; }
+            spans.push((zi, x0, xi));
+        }
+    }
+    spans.sort_unstable_by_key(|&(z, x0, x1)| (x0, x1, z));
+    let mut boxes: Vec<(f32, f32, f32, f32)> = Vec::new();
+    let mut i = 0;
+    while i < spans.len() {
+        let (z0, x0, x1) = spans[i];
+        let mut z1 = z0 + 1;
+        while i + 1 < spans.len() && spans[i + 1].1 == x0 && spans[i + 1].2 == x1 && spans[i + 1].0 == z1 { i += 1; z1 += 1; }
+        i += 1;
+        boxes.push((x0 as f32, x1 as f32, z0 as f32, z1 as f32));
+    }
+    let mut verts: Vec<[f32; 3]> = Vec::new();
+    let mut tris: Vec<[u32; 3]> = Vec::new();
+    let quads: [[u32; 4]; 6] = [[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4], [2, 3, 7, 6], [1, 2, 6, 5], [0, 4, 7, 3]];
+    let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+    let (y0, y1) = (-below, above);
+    for (x0, x1, z0, z1) in &boxes {
+        let base = verts.len() as u32;
+        verts.extend_from_slice(&[[*x0, y0, *z0], [*x1, y0, *z0], [*x1, y1, *z0], [*x0, y1, *z0], [*x0, y0, *z1], [*x1, y0, *z1], [*x1, y1, *z1], [*x0, y1, *z1]]);
+        for q in quads {
+            tris.push([base + q[0], base + q[1], base + q[2]]);
+            tris.push([base + q[0], base + q[2], base + q[3]]);
+        }
+        for v in &verts[base as usize..] { for k in 0..3 { lo[k] = lo[k].min(v[k]); hi[k] = hi[k].max(v[k]); } }
+    }
+    let area = kept as f32;
+    let _ = &v.block_units;
+    let kept = boxes.len();
+    Ok(Some(Cutout { verts, tris, kept, dropped, area, bbox: (lo, hi) }))
+}
+
+/// Build the cutout carrier for a block name: an invisible Finish item in the block frame.
+pub fn build_cutout_item(store: &mut crate::store::DataStore, name: &str, flags: u32, ident: &str, collection: u32, inset: f32, below: f32, above: f32) -> Result<Option<(Vec<u8>, Cutout)>, String> {
+    let Some(c) = cutout_for_block(store, name, flags, inset, below, above)? else { return Ok(None) };
+    let donor = "Stadium\\Items\\LightCube2m.Item.Gbx";
+    let mut mg = crate::static_item::build::pack_item_merged(store, donor, 1.0, collection, 0, None).map_err(|e| format!("donor {donor}: {e}"))?;
+    crate::static_item::build::make_invisible_mesh_waypoint(&mut mg, crate::sttc::WP_FINISH, c.verts.clone(), c.tris.clone())?;
+    let (bytes, _mg) = crate::static_item::build::finish_item(mg, ident, ident, 1.0, collection)?;
+    Ok(Some((bytes, c)))
+}
+
+/// The MAIN PLANE mesh (round 4): the grass cells the game keeps (not hidden), whole cells as row strips.
+pub fn stadium_plane_mesh(store: &mut crate::store::DataStore, m: &MapFile, below: f32, above: f32) -> Result<FloorMesh, String> {
+    let f = stadium_floor(store, m)?;
+    let mut rows: BTreeMap<i32, Vec<i32>> = BTreeMap::new();
+    let mut free = 0usize;
+    for &(cx, cz) in &f.grass {
+        if !f.hidden.contains(&(cx, cz)) {
+            rows.entry(cz).or_default().push(cx);
+            free += 1;
+        }
+    }
+    if free == 0 {
+        return Err("every grass cell is hidden".into());
+    }
+    let mut verts: Vec<[f32; 3]> = Vec::new();
+    let mut tris: Vec<[u32; 3]> = Vec::new();
+    let quads: [[u32; 4]; 6] = [[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4], [2, 3, 7, 6], [1, 2, 6, 5], [0, 4, 7, 3]];
+    let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+    let (y0, y1) = (f.grass_y - below, f.grass_y + above);
+    let mut strips = 0usize;
+    for (cz, mut xs) in rows {
+        xs.sort_unstable();
+        xs.dedup();
+        let (z0, z1) = (32.0 * cz as f32, 32.0 * (cz + 1) as f32);
+        let mut i = 0;
+        while i < xs.len() {
+            let start = xs[i];
+            let mut end = start;
+            while i + 1 < xs.len() && xs[i + 1] == end + 1 { i += 1; end = xs[i]; }
+            i += 1;
+            let (x0, x1) = (32.0 * start as f32, 32.0 * (end + 1) as f32);
+            let base = verts.len() as u32;
+            verts.extend_from_slice(&[[x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0], [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]]);
+            for q in quads {
+                tris.push([base + q[0], base + q[1], base + q[2]]);
+                tris.push([base + q[0], base + q[2], base + q[3]]);
+            }
+            for v in &verts[base as usize..] { for k in 0..3 { lo[k] = lo[k].min(v[k]); hi[k] = hi[k].max(v[k]); } }
+            strips += 1;
+        }
+    }
+    let mut notes = f.notes.clone();
+    notes.push(format!("main plane: {free} kept grass cells of {} → {strips} row strips", f.grass.len()));
+    Ok(FloorMesh { verts, tris, cells: free, strips, shore_boxes: 0, shore_prisms: 0, notes, bbox: (lo, hi) })
 }
 
 /// The Stadium floor mesh: the FREE grass cells as row strips, slab on the grass plane.
@@ -799,7 +1109,7 @@ pub fn floor_mesh(store: &mut crate::store::DataStore, m: &MapFile, collection: 
 /// The one-per-map carrier: an invisible Finish item (speck visual, no collision) whose trigger is the
 /// floor mesh; ident = author = `<ident>`; collection = the map's. Returns (bytes, mesh).
 pub fn build_floor_item(store: &mut crate::store::DataStore, m: &MapFile, collection: u32, ident: &str, below: f32, above: f32, shores: bool, lm_word: Option<u64>) -> Result<(Vec<u8>, FloorMesh), String> {
-    let mesh = if collection == 0x1a { stadium_floor_mesh(store, m, below, above)? } else { floor_mesh(store, m, collection, below, above, shores)? };
+    let mesh = if collection == 0x1a { stadium_plane_mesh(store, m, below, above)? } else { floor_mesh(store, m, collection, below, above, shores)? };
     let donor = "Stadium\\Items\\LightCube2m.Item.Gbx";
     let mut mg = crate::static_item::build::pack_item_merged(store, donor, 1.0, collection, 0, None).map_err(|e| format!("donor {donor}: {e}"))?;
     crate::static_item::build::make_invisible_mesh_waypoint(&mut mg, crate::sttc::WP_FINISH, mesh.verts.clone(), mesh.tris.clone())?;
