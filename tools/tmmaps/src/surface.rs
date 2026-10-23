@@ -862,6 +862,14 @@ fn item_specs(source: &MapFile, plan: &[PlanRec], mapping: &crate::tiny::Mapping
     let mut specs = Vec::new();
     let mut unbaked = Vec::new();
     for r in plan.iter().filter(|r| (r.action == "bake" || r.action == "overlay") && !r.delete) {
+        // A generated PILLAR baked for its re-surfaced parent (mapgeom surface, 2026-10-22)
+        // gets NO item of its own: its block info's prefab is a full-cell box, while the
+        // game draws a pillar as the thin generated faces (`DecoWallBaseVFC` records) at
+        // the exterior of the stack — the box copies walled Dirt 26's whole underdeck in.
+        // The record goes (face_only) and only its generated faces bake.
+        if r.detail.starts_with("pillar under a re-surfaced parent") {
+            continue;
+        }
         let b = &source.blocks[r.index];
         let Some(map) = mapping.by_index.get(&r.index).or_else(|| mapping.by_name.get(&r.name)) else {
             unbaked.push(format!("#{} {} (no library row)", r.index, r.name));

@@ -1139,6 +1139,38 @@ pub fn plan_records(store: &mut DataStore, idx: &mut BlockInfoIndex, map: &Path,
             detail: row.detail.clone(),
             new_flags: row.flag_rewrites.iter().find(|(from, _)| *from == b.flags).map(|(_, to)| *to),
         };
+        // A generated PILLAR (flag 0x4000) under a parent block that gets RENAMED to another
+        // surface: the game dresses the pillar's faces at load from the parent it finds
+        // above — a plastic platform turned PlatformDirtBase paints its 3x3 pillar stack
+        // in the Dirt pillar look (orange stone; Dirt 26, Everios96 2026-10-21 "the black
+        // blocks still have orange stone instead of wood pillar texture on the side").
+        // Baked instead, the pillar record goes and its generated faces bake as items
+        // from the ORIGINAL map's view (the library reads the original: a plastic parent
+        // dresses nothing → plain TrackWall = pillar wood; a grass hill's green stays).
+        // `TINY_PILLAR_BAKE=0` keeps the old behaviour (pillars always the game's own).
+        if !free && (b.flags & 0x4000 != 0) && b.name.starts_with("DecoWall") && b.name.ends_with("Pillar") && std::env::var("TINY_PILLAR_BAKE").map(|v| v != "0").unwrap_or(true) {
+            let mut renamed_parent: Option<String> = None;
+            'up: for dy in 1..=3 {
+                let above = [cell[0], cell[1] + dy, cell[2]];
+                for o in occ.get(&above).into_iter().flatten() {
+                    let ob = &m.blocks[*o];
+                    if is_pillar(ob) {
+                        continue;
+                    }
+                    if models.get(&ob.name).map(|orow| orow.action == Action::Rename && orow.target != ob.name).unwrap_or(false) {
+                        renamed_parent = Some(ob.name.clone());
+                    }
+                    break 'up;
+                }
+            }
+            if let Some(parent) = renamed_parent {
+                r.action = Action::Bake;
+                r.target = String::new();
+                r.detail = format!("pillar under a re-surfaced parent ({parent}): the block goes, its generated faces bake with the original look");
+                rows.push(r);
+                continue;
+            }
+        }
         if row.action == Action::Rename {
             let dy = dy_of.get(&b.name).copied().unwrap_or(0);
             if free {
