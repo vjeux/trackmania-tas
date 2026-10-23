@@ -17,6 +17,7 @@
 
 mod boxbuild;
 mod mothsheet;
+mod floordraw;
 mod discard;
 mod lightmap;
 mod loadloop;
@@ -211,6 +212,7 @@ fn main() {
         "stand-hitbox-draw" => standdraw::cmd(rest),
         "gate-align-draw" => gatedraw::cmd(rest),
         "moth-sheet" => mothsheet::cmd(rest),
+        "floorfinish-draw" => floordraw::cmd(rest),
         "build" => build::cmd(rest),
         "views" => views::cmd(rest),
         "shoot" => shoot::cmd(rest),

@@ -484,11 +484,14 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
                 let var = crate::floor_finish::variant_byte(kflags);
                 let cstem = if var == 0 { format!("FloorFinish{}", b.name) } else { format!("FloorFinish{}V{var}", b.name) };
                 if !cutout_built.contains_key(&cstem) { continue; }
-                // the block's frame as the GAME stores it and as Hugo's MapUtility.PlaceRelative computes it: the
-                // file cell's corner turned by dir with the 1×1 offsets ((0,0) (32,0) (32,32) (0,32)), yaw −dir·90° —
-                // whatever the footprint (the census pose of a 3×2 Y pillar at dir 1 is cell·32 + (32, 0)); the cutout
-                // mesh is authored in the block prefab's frame, which is this one
-                let x = crate::place::grid_block(b.coords(), b.dir, (32.0, 32.0), yoff);
+                // the block's frame: the file cell (the min corner of the turned footprint) + the FOOTPRINT offsets
+                // ((0,0) (SZ,0) (SX,SZ) (0,SX) in metres for dir 0..3), yaw −dir·90° — `grid_block` with the variant's
+                // size, the rule the tiny pipeline places every block model with (verified in game). For a 1×1 block it
+                // is Hugo's MapUtility.GetDirectionOffset; a 3×2 Y pillar at dir 1 pivots at +64, not +32 (the round-4
+                // render showed the lobes one cell off with the 1×1 rule, 2026-10-23 15:00)
+                let units = crate::floor_finish::block_units(ctx.store, &b.name, b.flags);
+                let size = (32.0 * (units.iter().map(|u| u[0]).max().unwrap_or(0) + 1) as f32, 32.0 * (units.iter().map(|u| u[2]).max().unwrap_or(0) + 1) as f32);
+                let x = crate::place::grid_block(b.coords(), b.dir, size, yoff);
                 let yaw = -(b.dir as f32) * std::f32::consts::FRAC_PI_2;
                 let yaw = if yaw <= -std::f32::consts::PI { yaw + 2.0 * std::f32::consts::PI } else { yaw };
                 appended.push((0, cstem.clone(), [x[9], x[10], x[11]], [yaw, 0.0, 0.0]));
