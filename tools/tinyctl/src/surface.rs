@@ -645,7 +645,19 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             let has_water_blocks = std::env::var("TINY_WATER_FACES").map(|v| v != "0").unwrap_or(true)
                 && (names.iter().any(|n| n.contains("Water") && !n.contains("Pillar"))
                     || std::fs::read_to_string(&records).unwrap_or_default().lines().skip(1).any(|l| l.split('\t').nth(1).map(|n| n.contains("Water") && !n.contains("Pillar")).unwrap_or(false)));
-            if (std::env::var("TINY_WALL_FILLERS").map(|v| v != "0").unwrap_or(true) && names.iter().any(|n| (n.starts_with("TrackWall") || n.starts_with("DecoWall")) && !n.contains("Water") && !n.contains("Pillar"))) || has_water_blocks {
+            // …and a map whose RECORDS plan bakes generated pillars (a pillar under a
+            // re-surfaced parent, 2026-10-22) needs the pillar face kinds in the library
+            // even when it holds no black wall at all: Icy 76 (1,182 pillars under renamed
+            // platforms, no DecoWall block) shipped its 475 pillar faces deleted with no
+            // item in their place (2026-10-23 frames: inner pillars showing through).
+            let has_pillar_bakes = std::fs::read_to_string(&records).unwrap_or_default().lines().skip(1).any(|l| {
+                let c: Vec<&str> = l.split('\t').collect();
+                c.len() > 2 && c[1].ends_with("Pillar") && c[2] == "bake"
+            });
+            if has_pillar_bakes {
+                println!("  pillar bakes: the records plan removes generated pillars; their face kinds go in the library");
+            }
+            if has_pillar_bakes || (std::env::var("TINY_WALL_FILLERS").map(|v| v != "0").unwrap_or(true) && names.iter().any(|n| (n.starts_with("TrackWall") || n.starts_with("DecoWall")) && !n.contains("Water") && !n.contains("Pillar"))) || has_water_blocks {
                 let src_map = tmmaps::map::MapFile::load(&src);
                 // only the faces of a wall that itself bakes: a face baked beside a wall
                 // that STAYED is drawn twice (the engine regenerates the clip from the
