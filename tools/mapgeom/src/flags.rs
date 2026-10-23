@@ -56,6 +56,10 @@ pub struct FlagsOpts {
     /// placement of the kind (items: the item's pose; blocks: the block frame rule).
     pub sources: Vec<LightSource>,
     pub source_pad: f32,
+    /// Hugo's Floor Finish v2 (2026-10-23): ONE carrier per map — its trigger the union of all open-water
+    /// cells as slabs on the lake bed in WORLD coordinates — placed once at the map origin (0,0,0), yaw 0,
+    /// tag Goal. `(ident stem, bed_below, bed_above)`; the sources list is ignored.
+    pub floor_item: Option<(String, f32, f32)>,
 }
 
 #[derive(Clone, Debug)]
@@ -258,7 +262,9 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
     let mut rows: Vec<Row> = Vec::new();
     // ---- the flag models present
     let mut models: Vec<String> = Vec::new();
-    if !o.sources.is_empty() {
+    if let Some((stem, ..)) = &o.floor_item {
+        models.push(stem.clone());
+    } else if !o.sources.is_empty() {
         // the source kinds present in the map (items by model+variant, blocks by name)
         for it in &m.items {
             let stem = it.model.trim_end_matches(".Item.Gbx");
@@ -295,7 +301,7 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
         }
     }
     if models.is_empty() && !o.allow_no_finish {
-        return Err(format!("{map_label}: NO {} — a map of it would have no finish; not built (--allow-no-finish overrides)", if !o.sources.is_empty() { "LIGHT SOURCES of the given kinds" } else if o.stands { "SPECTATOR STAND BLOCKS" } else { "FLAG ITEMS" }));
+        return Err(format!("{map_label}: NO {} — a map of it would have no finish; not built (--allow-no-finish overrides)", if o.floor_item.is_some() { "OPEN-WATER TILES" } else if !o.sources.is_empty() { "LIGHT SOURCES of the given kinds" } else if o.stands { "SPECTATOR STAND BLOCKS" } else { "FLAG ITEMS" }));
     }
     let no_finish = models.is_empty();
     // ---- the finish pieces (classified from the packs)
@@ -321,6 +327,17 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
     // ---- the items: one per flag model
     let mut built: Vec<(String, String, [f32; 6], Vec<u8>)> = Vec::new();
     for stem in &models {
+        if let Some((_, below, above)) = &o.floor_item {
+            let ident = format!("{stem}.Item.Gbx");
+            let (bytes, mesh) = crate::floor_finish::build_floor_item(ctx.store, &m, collection, &ident, *below, *above, lm_word).map_err(|e| format!("{stem}: {e}"))?;
+            let mut row = Row::new(&map_label, "flags", "model", 0, stem);
+            row.action = "floor-item-built".into();
+            row.to_name = ident.clone();
+            row.note = format!("{} bytes; ONE trigger mesh of {} row strips over {} open-water cells ({} vertices, {} triangles), slabs on the lake bed (bed −{below} .. +{above} m), world frame bbox [{:.1} {:.2} {:.1}]..[{:.1} {:.2} {:.1}]; invisible, no collision", bytes.len(), mesh.strips, mesh.cells, mesh.verts.len(), mesh.tris.len(), mesh.bbox.0[0], mesh.bbox.0[1], mesh.bbox.0[2], mesh.bbox.1[0], mesh.bbox.1[1], mesh.bbox.1[2]);
+            rows.push(row);
+            built.push((stem.clone(), ident, [mesh.bbox.0[0], mesh.bbox.0[1], mesh.bbox.0[2], mesh.bbox.1[0], mesh.bbox.1[1], mesh.bbox.1[2]], bytes));
+            continue;
+        }
         if let Some(src) = o.sources.iter().find(|s| &s.key == stem) {
             let c = build_light_carrier(ctx.store, src, o.source_pad, collection, &o.ident_prefix, lm_word).map_err(|e| format!("{stem}: {e}"))?;
             let mut row = Row::new(&map_label, "flags", "model", 0, stem);
@@ -409,7 +426,16 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
     let mut converted = 0usize;
     // (flag item index, trigger ident stem, pose) for the appended triggers
     let mut appended: Vec<(usize, String, [f32; 3], [f32; 3])> = Vec::new();
-    if !o.sources.is_empty() {
+    if let Some((stem, ..)) = &o.floor_item {
+        let mut r = Row::new(&map_label, "flags", "map", 0, stem);
+        r.action = "floor-item-placed".into();
+        r.to_name = stem.clone();
+        r.to = format!("new item#{} at 0,0,0 yaw 0 (world-frame trigger)", m.items.len());
+        r.note = "the one finish item of the map, tag Goal".into();
+        rows.push(r);
+        appended.push((0, stem.clone(), [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]));
+        converted += 1;
+    } else if !o.sources.is_empty() {
         let yoff = tmmaps::map::ground_y(collection);
         for it in &m.items {
             let stem = it.model.trim_end_matches(".Item.Gbx");
@@ -474,7 +500,7 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
         }
     }
     for it in &m.items {
-        if o.stands || !o.sources.is_empty() {
+        if o.stands || !o.sources.is_empty() || o.floor_item.is_some() {
             break;
         }
         let stem = it.model.trim_end_matches(".Item.Gbx");
@@ -749,7 +775,9 @@ pub fn verify_flags(src: &Path, out: &Path, oc: &FlagsOutcome, o: &FlagsOpts) ->
         }
         for y in b.items.iter().filter(|y| idents.contains(&y.model)) {
             let at_block = stand_poses.iter().any(|(p, yaw)| (p[0] - y.pos[0]).abs() < 1e-3 && (p[1] - y.pos[1]).abs() < 1e-3 && (p[2] - y.pos[2]).abs() < 1e-3 && (yaw - y.yaw).abs() < 1e-5);
-            let at_source = if o.stands {
+            let at_source = if o.floor_item.is_some() {
+                y.pos == [0.0, 0.0, 0.0] && y.yaw == 0.0
+            } else if o.stands {
                 at_block
             } else if !o.sources.is_empty() {
                 at_block || a.items.iter().any(|x| is_src(x) && x.pos == y.pos && (x.yaw - y.yaw).abs() < 1e-6)

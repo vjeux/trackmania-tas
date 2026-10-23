@@ -4974,6 +4974,35 @@ fn main() {
             if let Some(m) = flag(&a.rest, "--mapping") { std::fs::write(&m, map).unwrap_or_else(|e| die(format!("{m}: {e}"))); eprintln!("wrote {m}"); }
             eprintln!("{} carriers in {out}", sources.len());
         }
+        // floor-finish MAP --out ITEM.Item.Gbx [--ident NAME.Item.Gbx] [--floor-below 0.1] [--floor-above 0.4] [--collection 26]:
+        //   the one-per-map Floor Finish carrier alone (Hugo embeds + places it himself at the map origin)
+        "floor-finish" => {
+            let mut store = open(&a);
+            let p = a.rest.get(1).cloned().unwrap_or_else(|| die("floor-finish needs a MAP".into()));
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("floor-finish needs --out ITEM".into()));
+            let m = tmmaps::map::MapFile::try_load(std::path::Path::new(&p)).unwrap_or_else(die);
+            let hdr0 = tmmaps::header::read(&p).unwrap_or_else(|e| die(e));
+            let map_coll = m.body_collections().map(|c| c[0].1).unwrap_or(26);
+            let item_coll: u32 = flag(&a.rest, "--collection").map(|v| v.parse().unwrap_or_else(|_| die("--collection N".into()))).unwrap_or(26);
+            let below: f32 = flag(&a.rest, "--floor-below").map(|v| v.parse().unwrap_or_else(|_| die("--floor-below M".into()))).unwrap_or(0.1);
+            let above: f32 = flag(&a.rest, "--floor-above").map(|v| v.parse().unwrap_or_else(|_| die("--floor-above M".into()))).unwrap_or(0.4);
+            let ident = flag(&a.rest, "--ident").unwrap_or_else(|| format!("FinishFloor_{}.Item.Gbx", hdr0.uid));
+            // the mesh is computed in the MAP's collection frame (its ground row), the file carries `item_coll`
+            let mesh = mapgeom::floor_finish::floor_mesh(&m, map_coll, below, above).unwrap_or_else(die);
+            let (bytes, _) = mapgeom::floor_finish::build_floor_item(&mut store, &m, map_coll, &ident, below, above, None).unwrap_or_else(die);
+            let bytes = if item_coll != map_coll { mapgeom::tiny_assets::set_ident_collection(&bytes, item_coll) } else { bytes };
+            std::fs::write(&out, &bytes).unwrap_or_else(|e| die(format!("{out}: {e}")));
+            println!("wrote {out}: {} bytes, ident {ident}, collection {item_coll}; {} open-water cells → {} row strips, {} vertices, {} triangles; slab bed −{below}..+{above}; world bbox [{:.1} {:.2} {:.1}]..[{:.1} {:.2} {:.1}]", bytes.len(), mesh.cells, mesh.strips, mesh.verts.len(), mesh.tris.len(), mesh.bbox.0[0], mesh.bbox.0[1], mesh.bbox.0[2], mesh.bbox.1[0], mesh.bbox.1[1], mesh.bbox.1[2]);
+            if let Some(t) = flag(&a.rest, "--mesh-tsv") {
+                let mut s = String::from("strip	x0	x1	y_bed	z0	z1
+");
+                for (k, c) in mesh.verts.chunks(8).enumerate() {
+                    s.push_str(&format!("{k}	{:.1}	{:.1}	{:.2}	{:.1}	{:.1}
+", c[0][0], c[1][0], c[0][1] + below, c[0][2], c[4][2]));
+                }
+                std::fs::write(&t, s).unwrap_or_else(|e| die(format!("{t}: {e}")));
+            }
+        }
         // flags MAP --out F [--model Flag16m,..] [--trigger-pad M] [--uid-prefix Flag] [--name-suffix " Flags"]
         //   [--unlock] [--unvalidated] [--author Nadeo] [--report R.tsv] [--dry-run]
         "flags" => {
@@ -5008,6 +5037,7 @@ fn main() {
                 ident_prefix: flag(&a.rest, "--ident-prefix").unwrap_or_default(),
                 sources: Vec::new(),
                 source_pad: flag(&a.rest, "--source-pad").map(|v| v.parse::<f32>().unwrap_or_else(|_| die("--source-pad M".into()))).unwrap_or(0.3),
+                floor_item: None,
             };
             // --lights SOURCES.tsv (Hugo's Moth, 2026-10-22): the light sources are the carriers' seats. The TSV = the
             // census LIGHTS.tsv (group, kind, name, …, local_x, local_y, local_z …); rows are taken when their group
@@ -5016,7 +5046,23 @@ fn main() {
             // --floor (Hugo's Floor Finish): every open-water tile of the map gets a full-cell finish slab at the water
             // surface; --floor-below M / --floor-above M set the slab's span under / over the surface (default 3 / 0.5),
             // --floor-label NAME the carrier ident stem (default Floor32m → FinishFloor32m.Item.Gbx with --ident-prefix Finish)
+            // --floor (v2, Hugo 2026-10-23 08:20): ONE finish item per map, trigger = every open-water cell as a slab on the
+            // lake bed (bed −0.1 .. +0.4 by default: --floor-below / --floor-above), world frame, placed at the origin;
+            // ident FinishFloor_<map uid>.Item.Gbx (--floor-label overrides the stem). --floor-slabs = the v1 form (one
+            // surface slab per tile, N items).
             let o = if a.rest.iter().any(|x| x == "--floor") {
+                let hdr0 = tmmaps::header::read(&p).unwrap_or_else(|e| die(e));
+                let below: f32 = flag(&a.rest, "--floor-below").map(|v| v.parse().unwrap_or_else(|_| die("--floor-below M".into()))).unwrap_or(0.1);
+                let above: f32 = flag(&a.rest, "--floor-above").map(|v| v.parse().unwrap_or_else(|_| die("--floor-above M".into()))).unwrap_or(0.4);
+                let stem = flag(&a.rest, "--floor-label").unwrap_or_else(|| format!("FinishFloor_{}", hdr0.uid));
+                mapgeom::flags::FlagsOpts {
+                    uid_prefix: flag(&a.rest, "--uid-prefix").unwrap_or_else(|| "Floor".into()),
+                    name_suffix: flag(&a.rest, "--name-suffix").unwrap_or_else(|| " Floor Finish".into()),
+                    pole_triggers: true,
+                    floor_item: Some((stem, below, above)),
+                    ..o
+                }
+            } else if a.rest.iter().any(|x| x == "--floor-slabs") {
                 let m0 = tmmaps::map::MapFile::try_load(std::path::Path::new(&p)).unwrap_or_else(die);
                 let collection = m0.body_collections().map(|c| c[0].1).unwrap_or(26);
                 let below: f32 = flag(&a.rest, "--floor-below").map(|v| v.parse().unwrap_or_else(|_| die("--floor-below M".into()))).unwrap_or(3.0);
