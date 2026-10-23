@@ -5020,7 +5020,7 @@ fn main() {
             let coll = flag(&a.rest, "--collection").unwrap_or_else(|| "Stadium".into());
             let prefix = format!("{}\\GAMECTNBLOCKINFO\\", coll.to_uppercase());
             let paths: Vec<String> = store.entries().map(|e| e.path()).filter(|p| { let u = p.to_uppercase(); u.starts_with(&prefix) && u.ends_with(".GBX") }).collect();
-            let mut rows: std::collections::BTreeMap<String, (i32, i32, Vec<(i32, i32)>, &'static str)> = Default::default();
+            let mut rows: std::collections::BTreeMap<String, (i32, i32, Vec<(i32, i32)>, &'static str, Vec<(i32, i32)>)> = Default::default();
             let mut failed = 0usize;
             for p in &paths {
                 let name = p.rsplit('\\').next().unwrap_or(p).split('.').next().unwrap_or("").to_string();
@@ -5031,26 +5031,31 @@ fn main() {
                 let (v, which) = match (&bi.variant_base_ground, &bi.variant_base_air) {
                     (Some(g), _) if !g.block_units.is_empty() => (g, "ground"),
                     (_, Some(air)) if !air.block_units.is_empty() => (air, "air"),
-                    _ => { rows.insert(name, (1, 1, vec![(0, 0)], "none")); continue }
+                    _ => { rows.insert(name, (1, 1, vec![(0, 0)], "none", vec![(0, 0)])); continue }
                 };
                 let (mut sx, mut sz) = (0, 0);
                 let mut cells: Vec<(i32, i32)> = Vec::new();
+                // every unit's column (any row): the tile-hiding footprint (a slope's top unit hides its column too)
+                let mut cols: Vec<(i32, i32)> = Vec::new();
                 for u in &v.block_units {
                     sx = sx.max(u.offset[0] + 1);
                     sz = sz.max(u.offset[2] + 1);
                     if u.offset[1] == 0 && !cells.contains(&(u.offset[0], u.offset[2])) { cells.push((u.offset[0], u.offset[2])); }
+                    if !cols.contains(&(u.offset[0], u.offset[2])) { cols.push((u.offset[0], u.offset[2])); }
                 }
                 cells.sort_unstable();
-                rows.insert(name, (sx, sz, cells, which));
+                cols.sort_unstable();
+                rows.insert(name, (sx, sz, cells, which, cols));
             }
             // v2 (2026-10-23 12:20): per base cell a 64-bit 4 m mask of the ground-touching geometry ("ux,uz:mask16hex")
             let with_masks = a.rest.iter().any(|x| x == "--masks");
-            let mut s = String::from(if with_masks { "block\tsize_x\tsize_z\tbase_cells\tvariant\tmasks\n" } else { "block\tsize_x\tsize_z\tbase_cells\tvariant\n" });
+            let mut s = String::from(if with_masks { "block\tsize_x\tsize_z\tbase_cells\tvariant\tmasks\tcolumns\n" } else { "block\tsize_x\tsize_z\tbase_cells\tvariant\tcolumns\n" });
             let mut n_mask = 0usize;
             let mut n_partial = 0usize;
             let mut n_green = 0usize;
-            for (name, (sx, sz, cells, which)) in &rows {
+            for (name, (sx, sz, cells, which, cols)) in &rows {
                 let cells_s = cells.iter().map(|(x, z)| format!("{x},{z}")).collect::<Vec<_>>().join(" ");
+                let cols_s = cols.iter().map(|(x, z)| format!("{x},{z}")).collect::<Vec<_>>().join(" ");
                 if with_masks {
                     let bp = mapgeom::vista::find_block_info(&store, name);
                     let masks: BTreeMap<(i32, i32), (u64, u64)> = match bp.and_then(|bp| mapgeom::blockinfo::load(&mut store, &bp).ok()) {
@@ -5065,14 +5070,15 @@ fn main() {
                     if masks.values().any(|&(o, _)| o != u64::MAX) { n_partial += 1; }
                     if masks.values().any(|&(_, g)| g != 0) { n_green += 1; }
                     // "ux,uz:occupied:green" — two 64-bit masks per base cell
-                    s.push_str(&format!("{name}\t{sx}\t{sz}\t{cells_s}\t{which}\t{}\n", masks.iter().map(|((x, z), (o, g))| format!("{x},{z}:{o:016x}:{g:016x}")).collect::<Vec<_>>().join(" ")));
+                    s.push_str(&format!("{name}\t{sx}\t{sz}\t{cells_s}\t{which}\t{}\t{cols_s}\n", masks.iter().map(|((x, z), (o, g))| format!("{x},{z}:{o:016x}:{g:016x}")).collect::<Vec<_>>().join(" ")));
                 } else {
-                    s.push_str(&format!("{name}\t{sx}\t{sz}\t{cells_s}\t{which}\n"));
+                    s.push_str(&format!("{name}\t{sx}\t{sz}\t{cells_s}\t{which}\t{cols_s}\n"));
                 }
             }
             if with_masks { println!("masks: {n_mask} variants baked, {n_partial} with structure-free 4 m squares inside their footprint, {n_green} carrying a collidable grass fill"); }
             std::fs::write(&out, s).unwrap_or_else(|e| die(format!("{out}: {e}")));
             let multi = rows.values().filter(|r| r.0 > 1 || r.1 > 1).count();
+            let _ = &multi;
             let holes = rows.values().filter(|r| (r.2.len() as i32) < r.0 * r.1).count();
             println!("{}: {} block infos ({} failed to load), {} multi-cell, {} with base-row holes (footprint smaller than its size box)", out, rows.len(), failed, multi, holes);
         }
