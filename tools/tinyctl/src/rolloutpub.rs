@@ -586,21 +586,46 @@ pub fn apply(args: &[String]) -> i32 {
                 println!("  tokens have {} min left — refreshing from the game", left / 60);
                 // the box game is between launches for ~40 s at a loadloop chunk edge
                 // (only one of the two tokens in memory) — a few tries, 30 s apart
+                // A game's token file holds the pair it got at LOGIN (an hour's life): from
+                // a game up for hours `--from-game` hands back a near-dead pair, and with no
+                // game it hands back nothing. Either way the standalone mint (its own game,
+                // fresh pair, closed again; an agent's leftover game on an idle box is replaced)
+                // is the fallback, 3 tries 60 s apart (2026-10-22: the 5-h Grass/Plastic pass).
+                let read_left = || {
+                    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+                    ["NadeoServices", "NadeoLiveServices"]
+                        .iter()
+                        .map(|aud| std::fs::read_to_string(PathBuf::from(&token_dir).join(format!("token-{aud}.txt"))).ok().and_then(|t| crate::nadeo::jwt_exp(&t)).map(|e| e.saturating_sub(now)).unwrap_or(0))
+                        .min()
+                        .unwrap_or(0)
+                };
                 let mut ok = false;
-                for attempt in 1..=6 {
+                for attempt in 1..=2 {
                     let st = std::process::Command::new(&me).args(["token", "--from-game", "--token-dir", &token_dir]).status();
-                    if st.map(|s| s.success()).unwrap_or(false) {
+                    if st.map(|s| s.success()).unwrap_or(false) && read_left() >= 20 * 60 {
                         ok = true;
                         break;
                     }
-                    println!("  token refresh attempt {attempt} failed — retrying in 30 s");
+                    println!("  token refresh attempt {attempt} from the game gave no pair with 20 min left — retrying in 30 s");
                     std::thread::sleep(std::time::Duration::from_secs(30));
                 }
                 if !ok {
-                    println!("  STOP: token refresh failed (no logged-in game on the box?) — rerun with --skip-done {}", results.display());
+                    for attempt in 1..=3 {
+                        println!("  minting a fresh pair standalone (attempt {attempt})");
+                        let st = std::process::Command::new(&me).args(["mint-tokens", "--standalone", "--token-dir", &token_dir]).status();
+                        if st.map(|s| s.success()).unwrap_or(false) && read_left() >= 20 * 60 {
+                            ok = true;
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_secs(60));
+                    }
+                }
+                if !ok {
+                    println!("  STOP: token refresh failed (no logged-in game on the box and the standalone mint refused?) — rerun with --skip-done {}", results.display());
                     std::fs::write(&results, &res).ok();
                     return 1;
                 }
+                println!("  tokens refreshed: {} min left", read_left() / 60);
             }
         }
         let stage = work.join(format!("{}-{cid}", set.replace(' ', "")));
