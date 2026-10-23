@@ -120,7 +120,10 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     let mut table = String::new();
     let mut first_err: Option<String> = None;
     // `--resume`: a chunk whose box log already exists is NOT relaunched — a finished one
-    // (done file) is tallied from its table, a running one is waited on (the devserver
+    // (done file) is tallied from its table, a running one (a live `shootctl loadloop --tag`
+    // process; a log with NO process is a KILLED chunk = FAILED, relaunched from its table —
+    // the 19:11 hand-over kill of fixsides-c2 on 2026-10-22 left exactly that and the driver
+    // "attached" to nothing for 40 min) is waited on (the devserver
     // driver died mid-chunk on 2026-10-19 while the box loop ran on; relaunching would
     // have re-opened 364 maps or collided with the running loop).
     let resume = tmmaps::cli::has(args, "--resume");
@@ -133,7 +136,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             // a FAILED chunk (done file not `OK…`: the game died and would not come back, c3
             // of ll11 at #38, 2026-10-20) is RELAUNCHED whole — tallying it would silently
             // pass 361 maps that were never loaded
-            wsx.sh(&format!("if [ -f '{remote_dir}/done-loadloop.txt' ]; then if head -c 2 '{remote_dir}/done-loadloop.txt' | grep -q OK; then echo DONE; else echo FAILED; fi; elif [ -f '{remote_dir}/loadloop.log' ]; then echo RUNNING; else echo NONE; fi")).map(|o| o.trim().to_string()).unwrap_or_else(|_| "NONE".into())
+            wsx.sh(&format!("if [ -f '{remote_dir}/done-loadloop.txt' ]; then if head -c 2 '{remote_dir}/done-loadloop.txt' | grep -q OK; then echo DONE; else echo FAILED; fi; elif [ -f '{remote_dir}/loadloop.log' ]; then if pgrep -f 'shootctl loadloop.*--tag {run_tag}' >/dev/null; then echo RUNNING; else echo FAILED; fi; else echo NONE; fi")).map(|o| o.trim().to_string()).unwrap_or_else(|_| "NONE".into())
         } else {
             "NONE".to_string()
         };
