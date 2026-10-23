@@ -546,7 +546,12 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
         // `Items/<ident>`, the manifest row (ident, collection = the map's, author = ident), the
         // item file's header + body ident (ident, collection, author = ident), and every placement
         // names the FULL ident with its `.Item.Gbx` extension, author = ident, collection = the map's
+        // one archive entry per IDENT (the Floor Finish's Water and WaterHill kinds share one carrier)
+        let mut embedded_idents: HashSet<String> = HashSet::new();
         for (_, ident, _, bytes) in &built {
+            if !embedded_idents.insert(ident.clone()) {
+                continue;
+            }
             let b = crate::tiny_assets::set_ident_collection(bytes, collection);
             added.push((format!("Items/{ident}"), b));
             manifest.push((ident.clone(), collection, ident.clone()));

@@ -373,6 +373,35 @@ fn light_sources_from_tsv(tsv: &str, groups: Option<String>, exclude: Option<Str
     by_key.into_iter().map(|(key, (is_block, lo, hi))| { let label = key.replace("@v", "V"); mapgeom::flags::LightSource { key, is_block, lo, hi, label, boxes: Vec::new() } }).collect()
 }
 
+/// Hugo's Floor Finish (2026-10-23): the OPEN-WATER terrain tiles of a vista collection, each the seat of one
+/// full-cell finish slab. Tiles: RedIsland `Water`, `WaterHill` (the lake with the shallow hill rim — open water
+/// at the surface); WhiteShore `Water`; BlueBay `Sea`; GreenCoast `Lake`. NOT the shore/transition tiles
+/// (WaterShore1, Beach, Sea_Land0_Land12, SeaCliff13, LakeShore: land in the cell) nor the Deco* bays. The slab:
+/// x 0..32 × z 0..32 in the block frame (one cell); y from `surface − below` to `surface + above` where surface =
+/// the collection's water plane relative to the tile's cell floor — the zone prefabs put their Water quad at
+/// local +7.70 (RedIsland), +7.00 (WhiteShore, BlueBay), +7.20 (GreenCoast) — measured on the prefabs
+/// 2026-10-23, and the water row is the one row every open-water tile sits on (RedIsland/WhiteShore cy 14,
+/// BlueBay cy 5, GreenCoast cy 4), so the surface is ONE world level per map: RedIsland −0.3, WhiteShore −1.0,
+/// BlueBay 7.0, GreenCoast −0.8. A Water tile at another row (Fall 06's cy-18 pond) is a raised lake: its slab
+/// follows its own cell (the quad is the prefab's), which is exactly what the block frame gives.
+fn floor_sources(collection: u32, below: f32, above: f32, label: &str) -> Vec<mapgeom::flags::LightSource> {
+    let (tiles, quad): (&[&str], f32) = match collection {
+        0x10 => (&["Water", "WaterHill"], 7.70),
+        0x1d => (&["Water"], 7.00),
+        0x1c => (&["Sea"], 7.00),
+        0xf => (&["Lake"], 7.20),
+        _ => (&[], 0.0),
+    };
+    tiles.iter().map(|t| mapgeom::flags::LightSource {
+        key: t.to_string(),
+        is_block: true,
+        lo: [0.0, quad - below, 0.0],
+        hi: [32.0, quad + above, 32.0],
+        label: label.to_string(),
+        boxes: Vec::new(),
+    }).collect()
+}
+
 /// Hugo's lanterns (2026-10-23): light-source kinds whose trigger is ONE BOX PER LANTERN BODY, read from a
 /// per-part census (`lights-census` with LIGHTS_PER_PART=1 LIGHTS_ALL_MATERIALS=1): the rows whose material is
 /// in `materials` (the lantern shades: ThemeSnowTempleLamp = the paper lampion, LightShape = the stone-lantern
@@ -4908,13 +4937,21 @@ fn main() {
         //   to DIR (Hugo's own tool places them), plus the mapping TSV (source model, variant, carrier file, trigger bbox)
         "moth-carriers" => {
             let mut store = open(&a);
-            let tsv = flag(&a.rest, "--lights").or_else(|| flag(&a.rest, "--lantern-parts")).unwrap_or_else(|| die("moth-carriers needs --lights LIGHTS.tsv (or --lantern-parts PARTS.tsv)".into()));
+            let tsv = flag(&a.rest, "--lights").or_else(|| flag(&a.rest, "--lantern-parts")).or_else(|| flag(&a.rest, "--floor")).unwrap_or_else(|| die("moth-carriers needs --lights LIGHTS.tsv, --lantern-parts PARTS.tsv or --floor COLLECTION".into()));
             let out = flag(&a.rest, "--out").unwrap_or_else(|| die("moth-carriers needs --out DIR".into()));
             let collection: u32 = flag(&a.rest, "--collection").map(|v| v.parse().unwrap_or_else(|_| die("--collection N".into()))).unwrap_or(26);
-            let pad: f32 = flag(&a.rest, "--source-pad").map(|v| v.parse().unwrap_or_else(|_| die("--source-pad M".into()))).unwrap_or(0.3);
+            let pad: f32 = flag(&a.rest, "--source-pad").map(|v| v.parse().unwrap_or_else(|_| die("--source-pad M".into()))).unwrap_or(if flag(&a.rest, "--floor").is_some() { 0.0 } else { 0.3 });
             let prefix = flag(&a.rest, "--ident-prefix").unwrap_or_default();
             let only: Vec<String> = flag(&a.rest, "--only").map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()).unwrap_or_default();
-            let mut sources = if let Some(parts) = flag(&a.rest, "--lantern-parts") {
+            let mut sources = if let Some(fc) = flag(&a.rest, "--floor") {
+                let coll = match fc.as_str() { "RedIsland" => 0x10, "WhiteShore" => 0x1d, "BlueBay" => 0x1c, "GreenCoast" => 0xf, other => die(format!("--floor {other}: RedIsland|WhiteShore|BlueBay|GreenCoast")) };
+                let below: f32 = flag(&a.rest, "--floor-below").map(|v| v.parse().unwrap_or_else(|_| die("--floor-below M".into()))).unwrap_or(3.0);
+                let above: f32 = flag(&a.rest, "--floor-above").map(|v| v.parse().unwrap_or_else(|_| die("--floor-above M".into()))).unwrap_or(0.5);
+                let label = flag(&a.rest, "--floor-label").unwrap_or_else(|| "Floor32m".into());
+                let mut v = floor_sources(coll, below, above, &label);
+                v.truncate(1); // one carrier per collection (every open-water tile of it shares the slab)
+                v
+            } else if let Some(parts) = flag(&a.rest, "--lantern-parts") {
                 let mats: Vec<String> = flag(&a.rest, "--lantern-materials").map(|v| v.split(',').map(|s| s.trim().to_string()).collect()).unwrap_or_else(|| vec!["ThemeSnowTempleLamp".into(), "LightShape".into(), "ThemeSnowTempleTransparent".into()]);
                 let lonly: Vec<String> = flag(&a.rest, "--lantern-only").map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()).unwrap_or_default();
                 lantern_sources_from_parts(&parts, &mats, &lonly)
@@ -4976,7 +5013,28 @@ fn main() {
             // census LIGHTS.tsv (group, kind, name, …, local_x, local_y, local_z …); rows are taken when their group
             // is in --light-groups (default: the recommended set) — EMISSIVE rows give the emitting part's bbox, LIGHT
             // rows (a light node only) a 0.5-m box about the node; several rows of one model merge into one box.
-            let o = if let Some(tsv) = flag(&a.rest, "--lights") {
+            // --floor (Hugo's Floor Finish): every open-water tile of the map gets a full-cell finish slab at the water
+            // surface; --floor-below M / --floor-above M set the slab's span under / over the surface (default 3 / 0.5),
+            // --floor-label NAME the carrier ident stem (default Floor32m → FinishFloor32m.Item.Gbx with --ident-prefix Finish)
+            let o = if a.rest.iter().any(|x| x == "--floor") {
+                let m0 = tmmaps::map::MapFile::try_load(std::path::Path::new(&p)).unwrap_or_else(die);
+                let collection = m0.body_collections().map(|c| c[0].1).unwrap_or(26);
+                let below: f32 = flag(&a.rest, "--floor-below").map(|v| v.parse().unwrap_or_else(|_| die("--floor-below M".into()))).unwrap_or(3.0);
+                let above: f32 = flag(&a.rest, "--floor-above").map(|v| v.parse().unwrap_or_else(|_| die("--floor-above M".into()))).unwrap_or(0.5);
+                let label = flag(&a.rest, "--floor-label").unwrap_or_else(|| "Floor32m".into());
+                let sources = floor_sources(collection, below, above, &label);
+                if sources.is_empty() { die::<()>(format!("--floor: collection {collection:#x} has no open-water tile table (vista collections only)")); }
+                eprintln!("floor finish: tiles {:?}, slab y {:.2}..{:.2} in the block frame", sources.iter().map(|s| s.key.as_str()).collect::<Vec<_>>(), sources[0].lo[1], sources[0].hi[1]);
+                mapgeom::flags::FlagsOpts {
+                    uid_prefix: flag(&a.rest, "--uid-prefix").unwrap_or_else(|| "Floor".into()),
+                    name_suffix: flag(&a.rest, "--name-suffix").unwrap_or_else(|| " Floor Finish".into()),
+                    pole_triggers: true,
+                    source_pad: flag(&a.rest, "--source-pad").map(|v| v.parse::<f32>().unwrap_or_else(|_| die("--source-pad M".into()))).unwrap_or(0.0),
+                    ident_prefix: flag(&a.rest, "--ident-prefix").unwrap_or_else(|| "Finish".into()),
+                    sources,
+                    ..o
+                }
+            } else if let Some(tsv) = flag(&a.rest, "--lights") {
                 let mut sources = light_sources_from_tsv(&tsv, flag(&a.rest, "--light-groups"), flag(&a.rest, "--light-exclude"));
                 if let Some(parts) = flag(&a.rest, "--lantern-parts") {
                     let mats: Vec<String> = flag(&a.rest, "--lantern-materials").map(|v| v.split(',').map(|s| s.trim().to_string()).collect()).unwrap_or_else(|| vec!["ThemeSnowTempleLamp".into(), "LightShape".into(), "ThemeSnowTempleTransparent".into()]);
