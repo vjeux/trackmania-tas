@@ -146,6 +146,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "dmdel"
+version = "0.1.0"
+
+[[package]]
 name = "dmwatch"
 version = "0.1.0"
 dependencies = [
