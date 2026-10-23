@@ -55,6 +55,7 @@ mod terrainround;
 mod cupexport;
 mod gametoken;
 mod inputidle;
+mod matcensus;
 mod ghrelease;
 mod batch;
 mod customsheet;
@@ -218,6 +219,7 @@ fn main() {
         "rollout-build" => std::process::exit(rollout::cmd(&args)),
         "review-map" => std::process::exit(reviewmap::cmd(&args)),
         "rollout-publish" => std::process::exit(rolloutpub::cmd(&args)),
+        "material-census" => std::process::exit(matcensus::cmd(&args)),
         "__tmmaps-reuid" => std::process::exit(rolloutpub::reuid(&args)),
         "play" => play::cmd(rest),
         "startcheck" => startcheck::run(rest),
