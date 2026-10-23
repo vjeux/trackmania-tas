@@ -885,6 +885,7 @@ version = "1.0.0"
 dependencies = [
  "clip",
  "gbx",
+ "image-webp",
  "mapgeom",
  "miniz_oxide",
  "serde_json",

@@ -3659,13 +3659,17 @@ fn main() {
             let mut errors = 0usize;
             let coll_folder = mapgeom::static_item::materials::env_name(collection);
             if want_blocks {
+                // every block info of the collection: the Classic, Clip, Pillar and Flat folders, their `Theme\`
+                // sub-folders included (the SnowRoad/Japanese-temple set lives in `…\Theme\`; a Classic-only
+                // scan missed it and the StructurePillar family, 2026-10-23)
                 let paths: Vec<String> = store.entries().map(|e| e.path()).filter(|p| {
                     let u = p.to_uppercase();
-                    u.ends_with(".EDCLASSIC.GBX") && u.starts_with(&format!("{}\\GAMECTNBLOCKINFO\\GAMECTNBLOCKINFOCLASSIC\\", coll_folder.to_uppercase()))
+                    (u.ends_with(".EDCLASSIC.GBX") || u.ends_with(".EDCLIP.GBX") || u.ends_with(".EDVERTICALCLIP.GBX") || u.ends_with(".EDFLAT.GBX")) && u.starts_with(&format!("{}\\GAMECTNBLOCKINFO\\", coll_folder.to_uppercase()))
                 }).collect();
                 eprintln!("{} block infos in {coll_folder}", paths.len());
                 for p in &paths {
-                    let name = p.rsplit('\\').next().unwrap_or(p).trim_end_matches(".EDClassic.Gbx").to_string();
+                    let stem = p.rsplit('\\').next().unwrap_or(p);
+                    let name = stem.rsplit_once('.').map(|(a, _)| a).unwrap_or(stem).trim_end_matches(".EDClassic").trim_end_matches(".EDClip").trim_end_matches(".EDVerticalClip").trim_end_matches(".EDFlat").to_string();
                     if !keep(&name) { continue; }
                     n_models += 1;
                     let flags = mapgeom::blockmap::FLAG_GROUND;
