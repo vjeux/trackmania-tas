@@ -333,7 +333,7 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
             let mut row = Row::new(&map_label, "flags", "model", 0, stem);
             row.action = "floor-item-built".into();
             row.to_name = ident.clone();
-            row.note = format!("{} bytes; ONE trigger mesh of {} row strips over {} open-water cells ({} vertices, {} triangles), slabs on the lake bed (bed −{below} .. +{above} m), world frame bbox [{:.1} {:.2} {:.1}]..[{:.1} {:.2} {:.1}]; invisible, no collision", bytes.len(), mesh.strips, mesh.cells, mesh.verts.len(), mesh.tris.len(), mesh.bbox.0[0], mesh.bbox.0[1], mesh.bbox.0[2], mesh.bbox.1[0], mesh.bbox.1[1], mesh.bbox.1[2]);
+            row.note = format!("{} bytes; ONE trigger mesh of {} row strips over {} open-water cells (authored + baked) + {} shore cells' water as {} 4 m boxes ({} vertices, {} triangles), slabs on the lake bed (bed −{below} .. +{above} m), world frame bbox [{:.1} {:.2} {:.1}]..[{:.1} {:.2} {:.1}]; invisible, no collision; {}", bytes.len(), mesh.strips, mesh.cells, mesh.shore_boxes, mesh.shore_prisms, mesh.verts.len(), mesh.tris.len(), mesh.bbox.0[0], mesh.bbox.0[1], mesh.bbox.0[2], mesh.bbox.1[0], mesh.bbox.1[1], mesh.bbox.1[2], mesh.notes.join(" | "));
             rows.push(row);
             built.push((stem.clone(), ident, [mesh.bbox.0[0], mesh.bbox.0[1], mesh.bbox.0[2], mesh.bbox.1[0], mesh.bbox.1[1], mesh.bbox.1[2]], bytes));
             continue;

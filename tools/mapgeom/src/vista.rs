@@ -91,10 +91,21 @@ pub fn base_prefab_index(store: &mut DataStore) -> Result<HashMap<String, Vec<St
 /// The block info path of a block name across every loaded pak (the `GameCtnBlockInfoClassic\…` tree,
 /// any sub-folder).
 pub fn find_block_info(store: &DataStore, name: &str) -> Option<String> {
+    // Classic first (`\<name>.EDClassic.Gbx` under GameCtnBlockInfoClassic), then any other block-info family
+    // (Flat `Sea.EDFlat`, Frontier `Beach.EDFrontier`, Transition `Sea_Land0_Land12.EDTransition`, Pillar, Clip —
+    // the zone tiles of the vista collections live there, 2026-10-23)
     let want = format!("\\{}.EDCLASSIC.GBX", name.to_uppercase());
-    store.entries().map(|e| e.path()).find(|p| {
+    let classic = store.entries().map(|e| e.path()).find(|p| {
         let u = p.to_uppercase();
         u.contains("\\GAMECTNBLOCKINFOCLASSIC\\") && u.ends_with(&want)
+    });
+    if classic.is_some() {
+        return classic;
+    }
+    let prefix = format!("\\{}.ED", name.to_uppercase());
+    store.entries().map(|e| e.path()).find(|p| {
+        let u = p.to_uppercase();
+        u.contains("\\GAMECTNBLOCKINFO\\") && u.ends_with(".GBX") && u.rfind(&prefix).map(|i| !u[i + 1..].contains('\\')).unwrap_or(false)
     })
 }
 

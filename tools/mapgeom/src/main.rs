@@ -4974,6 +4974,29 @@ fn main() {
             if let Some(m) = flag(&a.rest, "--mapping") { std::fs::write(&m, map).unwrap_or_else(|e| die(format!("{m}: {e}"))); eprintln!("wrote {m}"); }
             eprintln!("{} carriers in {out}", sources.len());
         }
+        // water-rects MAP: every terrain tile placement KIND (name, flags) of the map that carries a water quad — the
+        //   prefab the flags pick, the quad's rect in the block frame, the surface and the bed under it (Hugo's Floor
+        //   Finish v2 on shore tiles, 2026-10-23); --tiles A,B restricts the names
+        "water-rects" => {
+            let mut store = open(&a);
+            let p = a.rest.get(1).cloned().unwrap_or_else(|| die("water-rects needs a MAP".into()));
+            let m = tmmaps::map::MapFile::try_load(std::path::Path::new(&p)).unwrap_or_else(die);
+            let collection = m.body_collections().map(|c| c[0].1).unwrap_or(26);
+            let only: Vec<String> = flag(&a.rest, "--tiles").map(|v| v.split(',').map(|s| s.trim().to_string()).collect()).unwrap_or_default();
+            let mut kinds: std::collections::BTreeMap<(String, u32), usize> = Default::default();
+            for b in m.blocks.iter().filter(|b| b.flags != 0xFFFF_FFFF && b.free_pos.is_none()) {
+                if !only.is_empty() && !only.iter().any(|t| t.eq_ignore_ascii_case(&b.name)) { continue; }
+                *kinds.entry((b.name.clone(), b.flags)).or_default() += 1;
+            }
+            println!("tile\tflags\tplacements\tprefab\tx0\tx1\tz0\tz1\tsurface\tbed_lo\tbed_hi\tbed_tris");
+            for ((name, flags), n) in kinds {
+                match mapgeom::floor_finish::water_rect(&mut store, collection, &name, flags) {
+                    Ok(Some(w)) => println!("{name}\t{flags:08x}\t{n}\t{}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{}", w.prefab, w.x0, w.x1, w.z0, w.z1, w.surface, w.bed_lo, w.bed_hi, w.bed_tris),
+                    Ok(None) => if !only.is_empty() { println!("{name}\t{flags:08x}\t{n}\t-\tno water quad") },
+                    Err(e) => if !only.is_empty() { println!("{name}\t{flags:08x}\t{n}\tERROR {e}") },
+                }
+            }
+        }
         // floor-finish MAP --out ITEM.Item.Gbx [--ident NAME.Item.Gbx] [--floor-below 0.1] [--floor-above 0.4] [--collection 26]:
         //   the one-per-map Floor Finish carrier alone (Hugo embeds + places it himself at the map origin)
         "floor-finish" => {
@@ -4988,17 +5011,19 @@ fn main() {
             let above: f32 = flag(&a.rest, "--floor-above").map(|v| v.parse().unwrap_or_else(|_| die("--floor-above M".into()))).unwrap_or(0.4);
             let ident = flag(&a.rest, "--ident").unwrap_or_else(|| format!("FinishFloor_{}.Item.Gbx", hdr0.uid));
             // the mesh is computed in the MAP's collection frame (its ground row), the file carries `item_coll`
-            let mesh = mapgeom::floor_finish::floor_mesh(&m, map_coll, below, above).unwrap_or_else(die);
-            let (bytes, _) = mapgeom::floor_finish::build_floor_item(&mut store, &m, map_coll, &ident, below, above, None).unwrap_or_else(die);
+            let (bytes, mesh) = mapgeom::floor_finish::build_floor_item(&mut store, &m, map_coll, &ident, below, above, None).unwrap_or_else(die);
+            for n in &mesh.notes { eprintln!("  {n}"); }
             let bytes = if item_coll != map_coll { mapgeom::tiny_assets::set_ident_collection(&bytes, item_coll) } else { bytes };
             std::fs::write(&out, &bytes).unwrap_or_else(|e| die(format!("{out}: {e}")));
-            println!("wrote {out}: {} bytes, ident {ident}, collection {item_coll}; {} open-water cells → {} row strips, {} vertices, {} triangles; slab bed −{below}..+{above}; world bbox [{:.1} {:.2} {:.1}]..[{:.1} {:.2} {:.1}]", bytes.len(), mesh.cells, mesh.strips, mesh.verts.len(), mesh.tris.len(), mesh.bbox.0[0], mesh.bbox.0[1], mesh.bbox.0[2], mesh.bbox.1[0], mesh.bbox.1[1], mesh.bbox.1[2]);
+            println!("wrote {out}: {} bytes, ident {ident}, collection {item_coll}; {} open-water cells → {} row strips + {} shore cells' water → {} 4 m boxes, {} vertices, {} triangles; slab bed −{below}..+{above}; world bbox [{:.1} {:.2} {:.1}]..[{:.1} {:.2} {:.1}]", bytes.len(), mesh.cells, mesh.strips, mesh.shore_boxes, mesh.shore_prisms, mesh.verts.len(), mesh.tris.len(), mesh.bbox.0[0], mesh.bbox.0[1], mesh.bbox.0[2], mesh.bbox.1[0], mesh.bbox.1[1], mesh.bbox.1[2]);
             if let Some(t) = flag(&a.rest, "--mesh-tsv") {
-                let mut s = String::from("strip	x0	x1	y_bed	z0	z1
-");
+                // the row strips (8 vertices each) come first, then the shore prisms (6 each)
+                let mut s = String::from("piece\tkind\tx0\tx1\ty_bed\tz0\tz1\n");
+                // every piece is an 8-vertex box: the open-water row strips first (32 m rows), then the shore
+                // water boxes (4 m rows)
                 for (k, c) in mesh.verts.chunks(8).enumerate() {
-                    s.push_str(&format!("{k}	{:.1}	{:.1}	{:.2}	{:.1}	{:.1}
-", c[0][0], c[1][0], c[0][1] + below, c[0][2], c[4][2]));
+                    let kind = if k < mesh.strips { "strip" } else { "shore-box" };
+                    s.push_str(&format!("{k}\t{kind}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\n", c[0][0], c[1][0], c[0][1] + below, c[0][2], c[4][2]));
                 }
                 std::fs::write(&t, s).unwrap_or_else(|e| die(format!("{t}: {e}")));
             }
