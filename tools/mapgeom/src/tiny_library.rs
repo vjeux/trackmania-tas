@@ -1971,7 +1971,14 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         .unwrap_or_default();
     let inherited_mod = |b: &tmmaps::map::BlockRec| -> Vec<String> {
         if let Some(o) = face_owner.get(&b.index) {
-            if o.starts_with("DecoWall") && !o.contains("Pillar") && !o.contains("Water") && b.name.starts_with("DecoWall") && b.name.contains("VFC") {
+            let black_owner = o.starts_with("DecoWall") && !o.contains("Pillar") && !o.contains("Water") && b.name.starts_with("DecoWall") && b.name.contains("VFC");
+            // …and a WALL-RIDE's panel (`TrackWall*VFC*`, `TrackWallArch*VFC`, owner a
+            // `TrackWall*` body that is not a halfpipe inside) is the wall's own wood face:
+            // Ice 11's arch-top panel and Grass 11's tilt panel took the ice/grass hill
+            // next to them (material census, 2026-10-23)
+            let ride = |n: &str| n.contains("SlopeU") || n.contains("SlopeUp") || n.contains("SlopeDown") || (n.contains("ArchSlope") && n.contains('U'));
+            let wall_owner = o.starts_with("TrackWall") && !o.contains("Pillar") && !ride(o) && b.name.starts_with("TrackWall") && b.name.contains("VFC") && !ride(&b.name);
+            if black_owner || wall_owner {
                 return Vec::new();
             }
         }

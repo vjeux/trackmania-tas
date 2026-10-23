@@ -74,8 +74,12 @@ pub fn cmd(args: &[String]) -> i32 {
         "ice" => "icy".to_string(),
         s => s.to_string(),
     };
-    let needle = format!("Modifier\\{folder}\\TrackWall");
+    // `--any-modifier`: flag ANY modifier-folder TrackWall dress on a wood-rule item (a
+    // neighbour's hill dress counts too), not just the set's own folder
+    let any = args.iter().any(|a| a == "--any-modifier");
+    let needle = if any { "\\TrackWall".to_string() } else { format!("Modifier\\{folder}\\TrackWall") };
     let needle_b = needle.as_bytes();
+    let modifier_b = b"Modifier\\";
     let dirs = map_dirs(Path::new(&build), &set_dir);
     if dirs.is_empty() {
         eprintln!("material-census: no map dirs under {build}/{set_dir}");
@@ -162,7 +166,13 @@ pub fn cmd(args: &[String]) -> i32 {
                 },
             };
             items += 1;
-            if bytes.windows(needle_b.len()).any(|w| w == needle_b) {
+            let hit = if any {
+                // a `Modifier\<Folder>\TrackWall` link of any folder
+                bytes.windows(needle_b.len()).enumerate().any(|(i, w)| w == needle_b && bytes[..i].ends_with(&[]) && bytes[i.saturating_sub(64)..i].windows(modifier_b.len()).any(|m| m == modifier_b))
+            } else {
+                bytes.windows(needle_b.len()).any(|w| w == needle_b)
+            };
+            if hit {
                 violations.push(format!("{}\t{}\t{}", d.display(), id, name));
             }
         }
