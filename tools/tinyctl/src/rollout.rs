@@ -82,6 +82,40 @@ pub fn cmd(args: &[String]) -> i32 {
     }));
     let sets: Vec<String> = f("--sets").unwrap_or_else(|| "dirt,grass,ice,plastic,magnet,wood,woodwet".into()).split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
     let mut maps = parse_maps(&f("--maps").unwrap_or_else(|| "1-975".into()));
+    // `--index-only`: rewrite build.tsv from the map files already in the tree (every
+    // `<out>/<set>/pNN/<set>NN/U10S_<num> …Map.Gbx`), building nothing — the repair for an
+    // index a partial run clobbered (2026-10-23)
+    if tmmaps::cli::has(args, "--index-only") {
+        let out = PathBuf::from(f("--out").unwrap_or_else(|| ".".into()));
+        let mut tsv = String::from("set\tnum\tpath\tbytes\tstatus\n");
+        let mut n_rows = 0;
+        for s in &sets {
+            let set_dir = out.join(s);
+            for part in std::fs::read_dir(&set_dir).into_iter().flatten().flatten() {
+                for mapdir in std::fs::read_dir(part.path()).into_iter().flatten().flatten() {
+                    for file in std::fs::read_dir(mapdir.path()).into_iter().flatten().flatten() {
+                        let name = file.file_name().to_string_lossy().to_string();
+                        if !name.ends_with(".Map.Gbx") {
+                            continue;
+                        }
+                        let num: Option<u32> = name.strip_prefix("U10S_").and_then(|r| r.split(' ').next()).and_then(|x| x.parse().ok());
+                        if let Some(n) = num {
+                            let bytes = file.metadata().map(|m| m.len()).unwrap_or(0);
+                            tsv.push_str(&format!("{s}\t{n}\t{}\t{bytes}\tOK\n", file.path().display()));
+                            n_rows += 1;
+                        }
+                    }
+                }
+            }
+        }
+        let tsv_path = out.join("build.tsv");
+        if let Err(e) = std::fs::write(&tsv_path, &tsv) {
+            eprintln!("rollout-build: {}: {e}", tsv_path.display());
+            return 2;
+        }
+        println!("rollout-build --index-only: {n_rows} rows → {}", tsv_path.display());
+        return 0;
+    }
     // `--retry-failed PREV/build.tsv`: only the (set, map) rows that build marked FAILED —
     // the 2026-10-09 icy run lost 169 maps to "Cannot allocate memory" with 6 jobs on a
     // 15 GB box; they rebuild cleanly at 2-3 jobs. Overrides --sets and --maps.
@@ -121,7 +155,25 @@ pub fn cmd(args: &[String]) -> i32 {
     std::fs::create_dir_all(&out).ok();
     // a retry pass records beside the main run, never over it: build-retry.tsv
     let (log_path, tsv_path) = if retry.is_some() { (out.join("build-retry.log"), out.join("build-retry.tsv")) } else { (out.join("build.log"), out.join("build.tsv")) };
+    // The index MERGES with an existing one: a partial run (`--maps 11,110,936` after a
+    // full build) keeps every other map-set's row, so the plan still sees the whole tree
+    // (2026-10-23: a 3-map rebuild left a 12-row build.tsv and the plan said "no built
+    // file" for 2,298 maps). Rows of the map-sets this run builds are replaced.
+    let this_run: std::collections::HashSet<(String, u32)> = sets.iter().flat_map(|s| maps.iter().map(move |n| (s.to_string(), *n))).collect();
     let mut tsv = String::from("set\tnum\tpath\tbytes\tstatus\n");
+    if let Ok(old) = std::fs::read_to_string(&tsv_path) {
+        for l in old.lines().skip(1) {
+            let c: Vec<&str> = l.split('\t').collect();
+            if c.len() >= 2 {
+                if let Ok(n) = c[1].parse::<u32>() {
+                    if !this_run.contains(&(c[0].to_string(), n)) {
+                        tsv.push_str(l);
+                        tsv.push('\n');
+                    }
+                }
+            }
+        }
+    }
     let mut log = String::new();
 
     // the work list
