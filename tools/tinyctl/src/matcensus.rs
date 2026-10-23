@@ -80,7 +80,11 @@ pub fn cmd(args: &[String]) -> i32 {
     let needle = if any { "\\TrackWall".to_string() } else { format!("Modifier\\{folder}\\TrackWall") };
     let needle_b = needle.as_bytes();
     let modifier_b = b"Modifier\\";
-    let dirs = map_dirs(Path::new(&build), &set_dir);
+    // the Ice set's tree is `ice/` (rollout-build's set word) or `icy/` (the inventory word)
+    let mut dirs = map_dirs(Path::new(&build), &set_dir);
+    if dirs.is_empty() && set_dir == "icy" {
+        dirs = map_dirs(Path::new(&build), "ice");
+    }
     if dirs.is_empty() {
         eprintln!("material-census: no map dirs under {build}/{set_dir}");
         return 2;
