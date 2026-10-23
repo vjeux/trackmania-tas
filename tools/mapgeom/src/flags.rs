@@ -67,6 +67,10 @@ pub struct LightSource {
     pub hi: [f32; 3],
     /// a label for the carrier ident (`<ident_prefix><label>.Item.Gbx`), e.g. `Lamp`, `ShowLightsV23`
     pub label: String,
+    /// Hugo's lanterns (2026-10-23): when a kind carries SEVERAL lantern bodies (a temple with four
+    /// hanging lanterns), one trigger box per body — the carrier's trigger surface is the union of these
+    /// boxes (each padded `source_pad`); `lo`/`hi` then hold their overall bounds. Empty = the single box.
+    pub boxes: Vec<([f32; 3], [f32; 3])>,
 }
 
 /// A Moth carrier: an invisible Finish hexahedron over the source's emitting bbox padded `pad`, its mesh a
@@ -77,8 +81,26 @@ pub fn build_light_carrier(store: &mut crate::store::DataStore, src: &LightSourc
     let donor = "Stadium\\Items\\LightCube2m.Item.Gbx";
     let mut mg = crate::static_item::build::pack_item_merged(store, donor, 1.0, collection, 0, None).map_err(|e| format!("donor {donor}: {e}"))?;
     let (lo, hi) = ([src.lo[0] - pad, src.lo[1] - pad, src.lo[2] - pad], [src.hi[0] + pad, src.hi[1] + pad, src.hi[2] + pad]);
-    let corners: [[f32; 3]; 8] = [[lo[0], lo[1], lo[2]], [hi[0], lo[1], lo[2]], [hi[0], hi[1], lo[2]], [lo[0], hi[1], lo[2]], [lo[0], lo[1], hi[2]], [hi[0], lo[1], hi[2]], [hi[0], hi[1], hi[2]], [lo[0], hi[1], hi[2]]];
-    crate::static_item::build::make_invisible_hexahedron_waypoint(&mut mg, WP_FINISH, corners)?;
+    if src.boxes.len() > 1 {
+        // several lantern bodies: one closed box per body, all in ONE trigger mesh
+        let mut verts: Vec<[f32; 3]> = Vec::new();
+        let mut tris: Vec<[u32; 3]> = Vec::new();
+        let quads: [[u32; 4]; 6] = [[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4], [2, 3, 7, 6], [1, 2, 6, 5], [0, 4, 7, 3]];
+        for (blo, bhi) in &src.boxes {
+            let (l, h) = ([blo[0] - pad, blo[1] - pad, blo[2] - pad], [bhi[0] + pad, bhi[1] + pad, bhi[2] + pad]);
+            let base = verts.len() as u32;
+            verts.extend_from_slice(&[[l[0], l[1], l[2]], [h[0], l[1], l[2]], [h[0], h[1], l[2]], [l[0], h[1], l[2]], [l[0], l[1], h[2]], [h[0], l[1], h[2]], [h[0], h[1], h[2]], [l[0], h[1], h[2]]]);
+            for q in quads {
+                tris.push([base + q[0], base + q[1], base + q[2]]);
+                tris.push([base + q[0], base + q[2], base + q[3]]);
+            }
+        }
+        crate::static_item::build::make_invisible_mesh_waypoint(&mut mg, WP_FINISH, verts, tris)?;
+        mg.notes.push(format!("{} lantern boxes in one trigger", src.boxes.len()));
+    } else {
+        let corners: [[f32; 3]; 8] = [[lo[0], lo[1], lo[2]], [hi[0], lo[1], lo[2]], [hi[0], hi[1], lo[2]], [lo[0], hi[1], lo[2]], [lo[0], lo[1], hi[2]], [hi[0], lo[1], hi[2]], [hi[0], hi[1], hi[2]], [lo[0], hi[1], hi[2]]];
+        crate::static_item::build::make_invisible_hexahedron_waypoint(&mut mg, WP_FINISH, corners)?;
+    }
     if let Some(w) = lm_word {
         mg.file_write_time = w;
     }

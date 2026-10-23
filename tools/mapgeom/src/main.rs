@@ -370,7 +370,79 @@ fn light_sources_from_tsv(tsv: &str, groups: Option<String>, exclude: Option<Str
             }
         }
     }
-    by_key.into_iter().map(|(key, (is_block, lo, hi))| { let label = key.replace("@v", "V"); mapgeom::flags::LightSource { key, is_block, lo, hi, label } }).collect()
+    by_key.into_iter().map(|(key, (is_block, lo, hi))| { let label = key.replace("@v", "V"); mapgeom::flags::LightSource { key, is_block, lo, hi, label, boxes: Vec::new() } }).collect()
+}
+
+/// Hugo's lanterns (2026-10-23): light-source kinds whose trigger is ONE BOX PER LANTERN BODY, read from a
+/// per-part census (`lights-census` with LIGHTS_PER_PART=1 LIGHTS_ALL_MATERIALS=1): the rows whose material is
+/// in `materials` (the lantern shades: ThemeSnowTempleLamp = the paper lampion, LightShape = the stone-lantern
+/// head, ThemeSnowTempleTransparent = its glass) are clustered by overlap (two parts whose boxes intersect
+/// after a 0.1 m grow are one body); kinds restricted to `only` names (prefix match) when given. The kind's
+/// `lo`/`hi` = the union; the carrier gets one box per cluster.
+fn lantern_sources_from_parts(tsv: &str, materials: &[String], only: &[String]) -> Vec<mapgeom::flags::LightSource> {
+    let text = std::fs::read_to_string(tsv).unwrap_or_else(|e| die(format!("{tsv}: {e}")));
+    let mut parts: std::collections::BTreeMap<String, (bool, Vec<([f32; 3], [f32; 3])>)> = Default::default();
+    for l in text.lines().skip(1) {
+        let f: Vec<&str> = l.split('\t').collect();
+        if f.len() < 9 || f[4] != "EMISSIVE" { continue; }
+        let (kind, name, mat) = (f[0], f[1], f[3]);
+        if !materials.iter().any(|m| m == mat) { continue; }
+        if !only.is_empty() && !only.iter().any(|o| name.starts_with(o.as_str())) { continue; }
+        // a lantern body is small: a part wider than 4 m is a roof pane / glass sheet, not a shade
+        let span_ok = f[8].split(' ').take(3).all(|col| col.split_once("..").and_then(|(a, b)| Some(b.parse::<f32>().ok()? - a.parse::<f32>().ok()?)).map(|d| d <= 4.0).unwrap_or(false));
+        if !span_ok { continue; }
+        // "x0..x1 y0..y1 z0..z1"
+        let mut lo = [0f32; 3];
+        let mut hi = [0f32; 3];
+        let mut ok = true;
+        for (k, col) in f[8].split(' ').take(3).enumerate() {
+            match col.split_once("..").and_then(|(a, b)| Some((a.parse::<f32>().ok()?, b.parse::<f32>().ok()?))) {
+                Some((a, b)) => { lo[k] = a; hi[k] = b; }
+                None => ok = false,
+            }
+        }
+        if !ok { continue; }
+        parts.entry(name.to_string()).or_insert((kind == "block", Vec::new())).1.push((lo, hi));
+    }
+    let mut out = Vec::new();
+    for (name, (is_block, boxes)) in parts {
+        // cluster by overlap
+        let mut clusters: Vec<([f32; 3], [f32; 3])> = Vec::new();
+        for (lo, hi) in boxes {
+            let mut merged_into: Option<usize> = None;
+            for (ci, c) in clusters.iter_mut().enumerate() {
+                let overlaps = (0..3).all(|k| hi[k] + 0.1 >= c.0[k] && lo[k] - 0.1 <= c.1[k]);
+                if overlaps {
+                    for k in 0..3 { c.0[k] = c.0[k].min(lo[k]); c.1[k] = c.1[k].max(hi[k]); }
+                    merged_into = Some(ci);
+                    break;
+                }
+            }
+            if merged_into.is_none() { clusters.push((lo, hi)); }
+        }
+        // a second pass merges clusters that grew into each other
+        let mut changed = true;
+        while changed {
+            changed = false;
+            'outer: for i in 0..clusters.len() {
+                for j in (i + 1)..clusters.len() {
+                    let (a, b) = (clusters[i], clusters[j]);
+                    if (0..3).all(|k| b.1[k] + 0.1 >= a.0[k] && b.0[k] - 0.1 <= a.1[k]) {
+                        clusters[i] = ([a.0[0].min(b.0[0]), a.0[1].min(b.0[1]), a.0[2].min(b.0[2])], [a.1[0].max(b.1[0]), a.1[1].max(b.1[1]), a.1[2].max(b.1[2])]);
+                        clusters.remove(j);
+                        changed = true;
+                        break 'outer;
+                    }
+                }
+            }
+        }
+        let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+        for (a, b) in &clusters { for k in 0..3 { lo[k] = lo[k].min(a[k]); hi[k] = hi[k].max(b[k]); } }
+        eprintln!("{name}: {} lantern bod{}", clusters.len(), if clusters.len() == 1 { "y" } else { "ies" });
+        let label = name.replace("@v", "V");
+        out.push(mapgeom::flags::LightSource { key: name, is_block, lo, hi, label, boxes: clusters });
+    }
+    out
 }
 
 fn main() {
@@ -4836,13 +4908,19 @@ fn main() {
         //   to DIR (Hugo's own tool places them), plus the mapping TSV (source model, variant, carrier file, trigger bbox)
         "moth-carriers" => {
             let mut store = open(&a);
-            let tsv = flag(&a.rest, "--lights").unwrap_or_else(|| die("moth-carriers needs --lights LIGHTS.tsv".into()));
+            let tsv = flag(&a.rest, "--lights").or_else(|| flag(&a.rest, "--lantern-parts")).unwrap_or_else(|| die("moth-carriers needs --lights LIGHTS.tsv (or --lantern-parts PARTS.tsv)".into()));
             let out = flag(&a.rest, "--out").unwrap_or_else(|| die("moth-carriers needs --out DIR".into()));
             let collection: u32 = flag(&a.rest, "--collection").map(|v| v.parse().unwrap_or_else(|_| die("--collection N".into()))).unwrap_or(26);
             let pad: f32 = flag(&a.rest, "--source-pad").map(|v| v.parse().unwrap_or_else(|_| die("--source-pad M".into()))).unwrap_or(0.3);
             let prefix = flag(&a.rest, "--ident-prefix").unwrap_or_default();
             let only: Vec<String> = flag(&a.rest, "--only").map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()).unwrap_or_default();
-            let mut sources = light_sources_from_tsv(&tsv, flag(&a.rest, "--light-groups"), flag(&a.rest, "--light-exclude"));
+            let mut sources = if let Some(parts) = flag(&a.rest, "--lantern-parts") {
+                let mats: Vec<String> = flag(&a.rest, "--lantern-materials").map(|v| v.split(',').map(|s| s.trim().to_string()).collect()).unwrap_or_else(|| vec!["ThemeSnowTempleLamp".into(), "LightShape".into(), "ThemeSnowTempleTransparent".into()]);
+                let lonly: Vec<String> = flag(&a.rest, "--lantern-only").map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()).unwrap_or_default();
+                lantern_sources_from_parts(&parts, &mats, &lonly)
+            } else {
+                light_sources_from_tsv(&tsv, flag(&a.rest, "--light-groups"), flag(&a.rest, "--light-exclude"))
+            };
             if !only.is_empty() { sources.retain(|s| only.iter().any(|k| *k == s.key)); }
             std::fs::create_dir_all(&out).unwrap_or_else(|e| die(format!("{out}: {e}")));
             let mut map = String::from("source_model\tvariant\tsource_kind\tcarrier_file\tcarrier_ident\ttrigger_bbox_lo_x\tlo_y\tlo_z\thi_x\thi_y\thi_z\tpose_rule\n");
@@ -4852,7 +4930,8 @@ fn main() {
                 std::fs::write(&path, &bytes).unwrap_or_else(|e| die(format!("{}: {e}", path.display())));
                 let (model, variant) = match src.key.split_once("@v") { Some((m, v)) => (m.to_string(), v.to_string()), None => (src.key.clone(), if src.is_block { "block".into() } else { "any".into() }) };
                 let rule = if src.is_block { "block: carrier at the block's cell corner turned by dir ((0,0) (32,0) (32,32) (0,32) in x,z for dir 0..3), yaw = -dir*90deg, y = 8*cy + ground, pivot 0, scale 1" } else { "item: carrier at the source item's position with its yaw/pitch/roll, pivot 0, scale 1" };
-                map.push_str(&format!("{model}\t{variant}\t{}\t{ident}\t{ident}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{rule}\n", if src.is_block { "block" } else { "item" }, bb[0], bb[1], bb[2], bb[3], bb[4], bb[5]));
+                let boxes = if src.boxes.len() > 1 { format!(" | {} boxes (+pad): {}", src.boxes.len(), src.boxes.iter().map(|(l, h)| format!("[{:.2} {:.2} {:.2}]..[{:.2} {:.2} {:.2}]", l[0] - pad, l[1] - pad, l[2] - pad, h[0] + pad, h[1] + pad, h[2] + pad)).collect::<Vec<_>>().join(" ")) } else { String::new() };
+                map.push_str(&format!("{model}\t{variant}\t{}\t{ident}\t{ident}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{rule}{boxes}\n", if src.is_block { "block" } else { "item" }, bb[0], bb[1], bb[2], bb[3], bb[4], bb[5]));
                 println!("{ident}\t{} bytes\t[{:.2} {:.2} {:.2}]..[{:.2} {:.2} {:.2}]", bytes.len(), bb[0], bb[1], bb[2], bb[3], bb[4], bb[5]);
             }
             if let Some(m) = flag(&a.rest, "--mapping") { std::fs::write(&m, map).unwrap_or_else(|e| die(format!("{m}: {e}"))); eprintln!("wrote {m}"); }
@@ -4898,7 +4977,14 @@ fn main() {
             // is in --light-groups (default: the recommended set) — EMISSIVE rows give the emitting part's bbox, LIGHT
             // rows (a light node only) a 0.5-m box about the node; several rows of one model merge into one box.
             let o = if let Some(tsv) = flag(&a.rest, "--lights") {
-                let sources = light_sources_from_tsv(&tsv, flag(&a.rest, "--light-groups"), flag(&a.rest, "--light-exclude"));
+                let mut sources = light_sources_from_tsv(&tsv, flag(&a.rest, "--light-groups"), flag(&a.rest, "--light-exclude"));
+                if let Some(parts) = flag(&a.rest, "--lantern-parts") {
+                    let mats: Vec<String> = flag(&a.rest, "--lantern-materials").map(|v| v.split(',').map(|s| s.trim().to_string()).collect()).unwrap_or_else(|| vec!["ThemeSnowTempleLamp".into(), "LightShape".into(), "ThemeSnowTempleTransparent".into()]);
+                    let lonly: Vec<String> = flag(&a.rest, "--lantern-only").map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()).unwrap_or_default();
+                    let lant = lantern_sources_from_parts(&parts, &mats, &lonly);
+                    sources.retain(|s| !lant.iter().any(|l| l.key == s.key));
+                    sources.extend(lant);
+                }
                 eprintln!("{} light-source kinds from {tsv}", sources.len());
                 mapgeom::flags::FlagsOpts {
                     uid_prefix: flag(&a.rest, "--uid-prefix").unwrap_or_else(|| "Moth".into()),
