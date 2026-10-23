@@ -3700,7 +3700,13 @@ pub fn modifier_links(store: &DataStore, refs: &[String]) -> Vec<String> {
     for r in refs {
         let r = r.replace(' ', "");
         if is_track_wall_to_deco_cliff(&r) {
-            let link = format!("{TRACK_WALL_TO_DECO_CLIFF_FOLDER}TrackWall");
+            // The skin's NAME says what it does: TrackWall TO DecoCliff — the wood wall
+            // material becomes the cliff concrete. The folder's own `TrackWall` stem is the
+            // GRASS platform's green wall, and that is what the pillar faces under a renamed
+            // DecoPlatformBase came out as (Icy 76, 2026-10-23: green stripes where the
+            // original shows grey concrete). `TINY_TW2DC_STEM` overrides the stem.
+            let stem = std::env::var("TINY_TW2DC_STEM").unwrap_or_else(|_| "DecoCliff".into());
+            let link = format!("{TRACK_WALL_TO_DECO_CLIFF_FOLDER}{stem}");
             if store.entries().any(|e| e.path().eq_ignore_ascii_case(&format!("{link}.Material.Gbx"))) {
                 out.push(link);
             }
