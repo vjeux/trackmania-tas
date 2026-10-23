@@ -680,7 +680,18 @@ fn plan_block<'b>(bi: &'b crate::blockinfo::BlockInfo, key: &BlockKey, collectio
     // modifier; the set's forced modifier would repaint every side in the set's stone
     // (Everios96 2026-10-19: "wood pillars stay wood pillars"). `TINY_FORCE_SIDES=1` restores.
     let side_panel = name.starts_with("DecoWall") && name.contains("VFC") && !std::env::var("TINY_FORCE_SIDES").map(|v| v == "1").unwrap_or(false);
-    let forced_mod = if side_panel { None } else { forced_mod };
+    // …and the WALL-RIDE family's bodies (`TrackWall*`: walls, arches, their caps and
+    // panels) keep their wood too — the approved rule since 2026-10-04/05: the wood stays,
+    // only the metal top rim (`TrackWallClips`, a scoped row) and the halfpipe INSIDES
+    // (`*SlopeU*`, `*SlopeUp*`, `*SlopeDown*`, `TrackWallArchSlope*U*`: the face you ride)
+    // take the surface. The forced folder has a `TrackWall` stem in Dirt/Ice/Grass and
+    // painted Dirt 26's black arch orange on every face (Everios96 2026-10-23: "again you
+    // didn't properly convert the black blocks … I see orange stone there").
+    // `TINY_TRACKWALL_WOOD=0` (Magnet: the walls are ridden, every hull face magnetic) keeps
+    // the forced folder on them.
+    let ride_face = name.contains("SlopeU") || name.contains("SlopeUp") || name.contains("SlopeDown") || (name.contains("ArchSlope") && name.contains('U'));
+    let wood_body = name.starts_with("TrackWall") && !ride_face && std::env::var("TINY_TRACKWALL_WOOD").map(|v| v != "0").unwrap_or(true);
+    let forced_mod = if side_panel || wood_body { None } else { forced_mod };
     let effective_mods: Vec<String> = forced_mod.into_iter().chain(bi.material_modifier.iter().cloned()).chain(key.inherited_mods.split('|').filter(|s| !s.is_empty()).map(String::from)).collect();
     let recipe = if let Some(l) = legacy_item { format!("legacy:{l}") } else { format!("{}|wp{:?}|units{:?}|mod{:?}", prefabs.iter().map(|p| format!("{}@{:?}/{:?}", p.0, p.1, p.2)).collect::<Vec<_>>().join(","), bi.waypoint_type, units, effective_mods) };
     if prefabs.is_empty() && legacy_item.is_none() {

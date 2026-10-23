@@ -12,6 +12,7 @@
 //!                --comments-file F [--unlisted] [--dry-run]   the whole form for one map
 //!   tmxup comments --id MAPID --comments-file F    re-set an uploaded map's comments
 //!   tmxup listed --id MAPID                        switch an uploaded map from unlisted to listed
+//!   tmxup mappack --name N --ids-file F [--type 0] [--description-file F] [--tags ID,…] [--dry-run]
 //!   tmxup batch --playlist P.json --sheet S.csv --maps-dir DIR --alteration Tiny --done D.tsv
 //!               [--surface-tag ID] [--difficulty N] [--limit N] [--unlisted] [--dry-run]
 //!
@@ -132,13 +133,18 @@ impl Cdp {
     }
 
     fn set_comments(&mut self, comments: &str) -> Result<(), String> {
+        self.set_editor(".bbeditor .cm-content", comments)
+    }
+
+    /// Replace the text of a CodeMirror bbcode editor (`sel` = its `.cm-content`).
+    fn set_editor(&mut self, sel: &str, comments: &str) -> Result<(), String> {
         // Select the editor's whole content with a DOM Range (a synthetic Ctrl+A and
         // execCommand('selectAll') select nothing inside CodeMirror); the first insertText
         // then REPLACES it — the append of the 22:26 pass on 367061 came from that.
         // CodeMirror restores its own selection when focus arrives by .focus(): a real
         // click first (focus + cursor), THEN the Range — CM's selectionchange handler
         // adopts a DOM selection made while it already has the focus.
-        let p = self.eval("(function(){const e=document.querySelector('.bbeditor .cm-content'); if(!e) return null; e.scrollIntoView({block:'center'}); const r=e.getBoundingClientRect(); return [r.left+Math.min(r.width/2, 200), r.top+Math.min(r.height/2, 20)];})()")?;
+        let p = self.eval(&format!("(function(){{const e=document.querySelector({sel}); if(!e) return null; e.scrollIntoView({{block:'center'}}); const r=e.getBoundingClientRect(); return [r.left+Math.min(r.width/2, 200), r.top+Math.min(r.height/2, 20)];}})()", sel = serde_json::to_string(sel).unwrap()))?;
         let (x, y) = match p.as_array() {
             Some(a) if a.len() == 2 => (a[0].as_f64().unwrap_or(0.0), a[1].as_f64().unwrap_or(0.0)),
             _ => return Err("no CodeMirror comments editor (.bbeditor .cm-content) on the page".into()),
@@ -147,8 +153,8 @@ impl Cdp {
             self.call("Input.dispatchMouseEvent", json!({"type": t, "x": x, "y": y, "button": "left", "clickCount": n}))?;
         }
         std::thread::sleep(Duration::from_millis(200));
-        let selected = self.eval("(function(){const e=document.querySelector('.bbeditor .cm-content'); const r=document.createRange(); r.selectNodeContents(e); const s=window.getSelection(); s.removeAllRanges(); s.addRange(r); return s.toString().length;})()")?;
-        let have = self.eval("document.querySelector('.bbeditor .cm-content').innerText.trim().length")?;
+        let selected = self.eval(&format!("(function(){{const e=document.querySelector({sel}); const r=document.createRange(); r.selectNodeContents(e); const s=window.getSelection(); s.removeAllRanges(); s.addRange(r); return s.toString().length;}})()", sel = serde_json::to_string(sel).unwrap()))?;
+        let have = self.eval(&format!("document.querySelector({}).innerText.trim().length", serde_json::to_string(sel).unwrap()))?;
         eprintln!("  comments editor: {} chars present, {} selected", have, selected);
         if comments.trim().is_empty() {
             self.call("Input.insertText", json!({"text": " "}))?;
@@ -164,8 +170,8 @@ impl Cdp {
             }
         }
         std::thread::sleep(Duration::from_millis(500));
-        let shown = self.eval("document.querySelector('.bbeditor .cm-content').innerText.length")?;
-        eprintln!("  comments: {} chars in the editor (the textarea syncs on submit)", shown);
+        let shown = self.eval(&format!("document.querySelector({}).innerText.length", serde_json::to_string(sel).unwrap()))?;
+        eprintln!("  editor {sel}: {} chars (the textarea syncs on submit)", shown);
         Ok(())
     }
 
@@ -614,6 +620,110 @@ fn run(args: &[String]) -> Result<(), String> {
             }
             let still = c.eval("!!document.body.innerText.match(/Map is unlisted/)")?;
             println!("page says unlisted: {still}");
+            Ok(())
+        }
+        // A mappack from uploaded maps: /mappackcreate — name, type, the maps added one by
+        // one through the page's own "enter MapId → Add" (it looks each one up), the
+        // description editor, Mini tag, submit; lands on /mappackshow/<id>.
+        "mappack" => {
+            let name = flag(args, "--name").ok_or("mappack needs --name")?;
+            let ids_file = flag(args, "--ids-file").ok_or("mappack needs --ids-file F (one TMX map id per line, or a done.tsv whose 3rd column is the map url)")?;
+            let mtype = flag(args, "--type").unwrap_or_else(|| "0".into());
+            let desc = match flag(args, "--description-file") {
+                Some(f) => std::fs::read_to_string(&f).map_err(|e| format!("{f}: {e}"))?,
+                None => String::new(),
+            };
+            let tags: Vec<String> = flag(args, "--tags").map(|t| t.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()).unwrap_or_default();
+            let dry = args.iter().any(|a| a == "--dry-run");
+            let ids: Vec<String> = std::fs::read_to_string(&ids_file)
+                .map_err(|e| format!("{ids_file}: {e}"))?
+                .lines()
+                .filter_map(|l| {
+                    let l = l.trim();
+                    if l.is_empty() {
+                        return None;
+                    }
+                    let f: Vec<&str> = l.split('\t').collect();
+                    let cand = if f.len() >= 3 { f[2] } else { f[0] };
+                    cand.rsplit('/').next().map(|x| x.trim().to_string()).filter(|x| x.chars().all(|c| c.is_ascii_digit()) && !x.is_empty())
+                })
+                .collect();
+            if ids.is_empty() {
+                return Err("no map ids in the ids file".into());
+            }
+            let mut c = Cdp::attach(port, target.as_deref())?;
+            c.call("Page.navigate", json!({"url": "https://trackmania.exchange/mappackcreate"}))?;
+            std::thread::sleep(Duration::from_millis(800));
+            let at = c.wait_ready(60)?;
+            if !at.contains("/mappackcreate") {
+                return Err(format!("not on the mappack form but at {at} — logged out?"));
+            }
+            c.eval(&format!("(function(){{const e=document.querySelector('#Name'); e.value={}; e.dispatchEvent(new Event('input',{{bubbles:true}})); e.dispatchEvent(new Event('change',{{bubbles:true}})); return e.value;}})()", serde_json::to_string(&name).unwrap()))?;
+            c.eval(&format!("(function(){{const e=document.querySelector('#MappackType'); e.value={}; e.dispatchEvent(new Event('change',{{bubbles:true}})); return e.value;}})()", serde_json::to_string(&mtype).unwrap()))?;
+            let input_sel = "input[placeholder=\"Search by name or enter MapId\"]";
+            for (i, id) in ids.iter().enumerate() {
+                // the page reads the id from real key input (a value set by script + an
+                // input event added nothing): focus + select, insert as typing, then Add
+                // a real click into the field, the id as typed text, then the page's lookup
+                // needs a moment (a debounced search) before Add uses its result
+                let p = c.eval(&format!("(function(){{const e=document.querySelector('{input_sel}'); e.scrollIntoView({{block:'center'}}); e.value=''; const r=e.getBoundingClientRect(); return [r.left+r.width/2, r.top+r.height/2];}})()"))?;
+                let (x, y) = match p.as_array() {
+                    Some(a) if a.len() == 2 => (a[0].as_f64().unwrap_or(0.0), a[1].as_f64().unwrap_or(0.0)),
+                    _ => return Err("no map-id input on the mappack form".into()),
+                };
+                for (t, n) in [("mouseMoved", 0), ("mousePressed", 1), ("mouseReleased", 1)] {
+                    c.call("Input.dispatchMouseEvent", json!({"type": t, "x": x, "y": y, "button": "left", "clickCount": n}))?;
+                }
+                c.call("Input.insertText", json!({"text": id}))?;
+                std::thread::sleep(Duration::from_millis(2500));
+                c.eval(&format!("(function(){{const inp=document.querySelector('{input_sel}'); inp.nextElementSibling.click(); return 1;}})()"))?;
+                let t0 = std::time::Instant::now();
+                loop {
+                    std::thread::sleep(Duration::from_millis(400));
+                    let has = c.eval(&format!("document.querySelector('#MapEntries').value.includes('\"MapId\":{id},')"))?;
+                    if has == json!(true) {
+                        break;
+                    }
+                    if t0.elapsed().as_secs() > 20 {
+                        return Err(format!("map {id} was not added after 20 s (entry {})", i + 1));
+                    }
+                }
+                if (i + 1) % 10 == 0 {
+                    eprintln!("  {} of {} maps added", i + 1, ids.len());
+                }
+            }
+            if !desc.trim().is_empty() {
+                c.set_editor(".bbeditor .cm-content", &desc)?;
+            }
+            for _ in 1..tags.len() {
+                c.eval("document.querySelector('#trackTagAdd').click(); 1")?;
+                std::thread::sleep(Duration::from_millis(300));
+            }
+            for (i, t) in tags.iter().enumerate() {
+                c.eval(&format!("(function(){{const e=document.getElementById('Tags[{i}]'); if(!e) return 'missing'; e.value={}; e.dispatchEvent(new Event('change',{{bubbles:true}})); return e.value;}})()", serde_json::to_string(t).unwrap()))?;
+            }
+            let summary = c.eval("JSON.stringify({name:document.querySelector('#Name').value, type:document.querySelector('#MappackType').value, maps:JSON.parse(document.querySelector('#MapEntries').value).length, visible:document.querySelector('#TrackVisible').checked, tags:[...document.querySelectorAll('#trackTagList input[type=hidden]')].map(e=>e.value), errors:[...document.querySelectorAll('.field-validation-error')].map(e=>e.innerText).filter(Boolean)})")?;
+            println!("form: {}", summary.as_str().unwrap_or(""));
+            if dry {
+                println!("dry run: not submitted");
+                return Ok(());
+            }
+            c.eval("document.querySelector('form[enctype] button[type=submit]').click(); 1")?;
+            let t0 = std::time::Instant::now();
+            loop {
+                std::thread::sleep(Duration::from_millis(1000));
+                let h = c.eval("document.readyState + ' ' + location.href").unwrap_or(Value::Null).as_str().unwrap_or("").to_string();
+                if h.starts_with("complete ") && !h.contains("/mappackcreate") {
+                    println!("landed: {}", &h[9..]);
+                    break;
+                }
+                if t0.elapsed().as_secs() > 120 {
+                    let errs = c.eval("JSON.stringify([...document.querySelectorAll('.field-validation-error, .validation-summary-errors, .alert-danger')].map(e=>e.innerText).filter(Boolean))").unwrap_or(Value::Null);
+                    return Err(format!("no new page after 120 s (still at {h}); form errors: {errs}"));
+                }
+            }
+            let title = c.eval("document.title")?;
+            println!("title: {}", title.as_str().unwrap_or(""));
             Ok(())
         }
         _ => Err("usage: tmxup targets | eval --expr JS | nav --url U [--wait-s N] | html [--selector CSS] | setfile --selector CSS --file WINPATH | shot --out FILE.png | click --selector CSS | type --selector CSS --text T   [--port 9222] [--target SUBSTR]".into()),
