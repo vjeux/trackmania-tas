@@ -60,6 +60,8 @@ pub struct FlagsOpts {
     /// cells as slabs on the lake bed in WORLD coordinates — placed once at the map origin (0,0,0), yaw 0,
     /// tag Goal. `(ident stem, bed_below, bed_above)`; the sources list is ignored.
     pub floor_item: Option<(String, f32, f32)>,
+    /// `--shores`: the shore tiles' water parts join the floor item (off by default since 2026-10-23 09:51)
+    pub floor_shores: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -329,7 +331,7 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
     for stem in &models {
         if let Some((_, below, above)) = &o.floor_item {
             let ident = format!("{stem}.Item.Gbx");
-            let (bytes, mesh) = crate::floor_finish::build_floor_item(ctx.store, &m, collection, &ident, *below, *above, lm_word).map_err(|e| format!("{stem}: {e}"))?;
+            let (bytes, mesh) = crate::floor_finish::build_floor_item(ctx.store, &m, collection, &ident, *below, *above, o.floor_shores, lm_word).map_err(|e| format!("{stem}: {e}"))?;
             let mut row = Row::new(&map_label, "flags", "model", 0, stem);
             row.action = "floor-item-built".into();
             row.to_name = ident.clone();

@@ -22,7 +22,10 @@ use tmmaps::map::MapFile;
 /// The open-water tiles and the bed height above the cell floor, per collection.
 pub fn water_tiles(collection: u32) -> (&'static [&'static str], f32) {
     match collection {
-        0x10 => (&["Water", "WaterHill"], 2.0),
+        // RedIsland's `WaterHill` is the lake's HILL RIM (a 26-prefab shore family: its water quad covers 24–61 of
+        // the cell's 64 four-metre squares and its bed climbs from the deep 2.0 to the surface), not open water —
+        // Hugo (2026-10-23 09:51): "only full seabed blocks … only where the car can reach seafloor level" → out
+        0x10 => (&["Water"], 2.0),
         0x1d => (&["Water"], 2.0),
         0x1c => (&["Sea"], 4.0),
         0xf => (&["Lake"], 2.0),
@@ -164,7 +167,7 @@ pub fn shore_tiles(collection: u32) -> &'static [&'static str] {
         0x1c => &["Beach", "SeaCliff13", "Sea_Land0_Land12"],
         0x1d => &["WaterShore1"],
         0xf => &["LakeShore"],
-        0x10 => &["WaterShore1"],
+        0x10 => &["WaterHill", "WaterShore1"],
         _ => &[],
     }
 }
@@ -216,13 +219,14 @@ fn turn_rect(cell: (i32, i32, i32), dir: u8, x0: f32, x1: f32, z0: f32, z1: f32)
 /// Every water rectangle of the map in the world frame: the OPEN-WATER tiles (authored AND baked — BlueBay bakes
 /// its `Sea` under the editor's auto-terrain; RedIsland/WhiteShore/GreenCoast author theirs) as full cells on the
 /// bed, plus the shore tiles' water parts (measured per flags kind, turned by the placement's dir).
-pub fn water_rects(store: &mut crate::store::DataStore, m: &MapFile, collection: u32) -> Result<(Vec<WorldRect>, usize, usize, Vec<String>), String> {
+pub fn water_rects(store: &mut crate::store::DataStore, m: &MapFile, collection: u32, shores: bool) -> Result<(Vec<WorldRect>, usize, usize, Vec<String>), String> {
     let (tiles, bed) = water_tiles(collection);
     if tiles.is_empty() {
         return Err(format!("collection {collection:#x}: no open-water tile table (vista collections only)"));
     }
     let ground = tmmaps::map::ground_y(collection);
-    let shore = shore_tiles(collection);
+    // the shore tiles' water parts only on request (Hugo 09:51: finishes only where the car can reach the seafloor)
+    let shore: &[&str] = if shores { shore_tiles(collection) } else { &[] };
     let mut out: Vec<WorldRect> = Vec::new();
     let mut notes: Vec<String> = Vec::new();
     let mut n_open = 0usize;
@@ -263,8 +267,8 @@ pub fn water_rects(store: &mut crate::store::DataStore, m: &MapFile, collection:
 
 /// The world-frame slab mesh of a map's water: open-water cells merged into ROW STRIPS (same cz, same bed,
 /// consecutive cx), the shore water parts as their own boxes. `below`/`above`: the slab's span under / over the bed.
-pub fn floor_mesh(store: &mut crate::store::DataStore, m: &MapFile, collection: u32, below: f32, above: f32) -> Result<FloorMesh, String> {
-    let (rects, n_open, n_shore, notes) = water_rects(store, m, collection)?;
+pub fn floor_mesh(store: &mut crate::store::DataStore, m: &MapFile, collection: u32, below: f32, above: f32, shores: bool) -> Result<FloorMesh, String> {
+    let (rects, n_open, n_shore, notes) = water_rects(store, m, collection, shores)?;
     if rects.is_empty() {
         return Err("no water tile in the map (authored or baked)".into());
     }
@@ -395,8 +399,8 @@ pub fn floor_mesh(store: &mut crate::store::DataStore, m: &MapFile, collection: 
 
 /// The one-per-map carrier: an invisible Finish item (speck visual, no collision) whose trigger is the
 /// floor mesh; ident = author = `<ident>`; collection = the map's. Returns (bytes, mesh).
-pub fn build_floor_item(store: &mut crate::store::DataStore, m: &MapFile, collection: u32, ident: &str, below: f32, above: f32, lm_word: Option<u64>) -> Result<(Vec<u8>, FloorMesh), String> {
-    let mesh = floor_mesh(store, m, collection, below, above)?;
+pub fn build_floor_item(store: &mut crate::store::DataStore, m: &MapFile, collection: u32, ident: &str, below: f32, above: f32, shores: bool, lm_word: Option<u64>) -> Result<(Vec<u8>, FloorMesh), String> {
+    let mesh = floor_mesh(store, m, collection, below, above, shores)?;
     let donor = "Stadium\\Items\\LightCube2m.Item.Gbx";
     let mut mg = crate::static_item::build::pack_item_merged(store, donor, 1.0, collection, 0, None).map_err(|e| format!("donor {donor}: {e}"))?;
     crate::static_item::build::make_invisible_mesh_waypoint(&mut mg, crate::sttc::WP_FINISH, mesh.verts.clone(), mesh.tris.clone())?;

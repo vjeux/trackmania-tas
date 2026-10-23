@@ -5026,7 +5026,8 @@ fn main() {
             let above: f32 = flag(&a.rest, "--floor-above").map(|v| v.parse().unwrap_or_else(|_| die("--floor-above M".into()))).unwrap_or(0.4);
             let ident = flag(&a.rest, "--ident").unwrap_or_else(|| format!("FinishFloor_{}.Item.Gbx", hdr0.uid));
             // the mesh is computed in the MAP's collection frame (its ground row), the file carries `item_coll`
-            let (bytes, mesh) = mapgeom::floor_finish::build_floor_item(&mut store, &m, map_coll, &ident, below, above, None).unwrap_or_else(die);
+            let shores = a.rest.iter().any(|x| x == "--shores");
+            let (bytes, mesh) = mapgeom::floor_finish::build_floor_item(&mut store, &m, map_coll, &ident, below, above, shores, None).unwrap_or_else(die);
             for n in &mesh.notes { eprintln!("  {n}"); }
             let bytes = if item_coll != map_coll { mapgeom::tiny_assets::set_ident_collection(&bytes, item_coll) } else { bytes };
             std::fs::write(&out, &bytes).unwrap_or_else(|e| die(format!("{out}: {e}")));
@@ -5078,6 +5079,7 @@ fn main() {
                 sources: Vec::new(),
                 source_pad: flag(&a.rest, "--source-pad").map(|v| v.parse::<f32>().unwrap_or_else(|_| die("--source-pad M".into()))).unwrap_or(0.3),
                 floor_item: None,
+                floor_shores: a.rest.iter().any(|x| x == "--shores"),
             };
             // --lights SOURCES.tsv (Hugo's Moth, 2026-10-22): the light sources are the carriers' seats. The TSV = the
             // census LIGHTS.tsv (group, kind, name, …, local_x, local_y, local_z …); rows are taken when their group
