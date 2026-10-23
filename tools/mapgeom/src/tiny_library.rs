@@ -3336,6 +3336,8 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
 /// folder, the skin ref `TrackWallToDecoCliff.GameSkin.gbx` — a skin the pack
 /// does not ship, so the slot set is taken from its name: TrackWall).
 pub const TRACK_WALL_TO_DECO_CLIFF_FOLDER: &str = "Stadium\\Media\\Modifier\\PlatformGrass\\";
+/// The link the TrackWall slot takes under that modifier (see `modifier_links`).
+pub const TRACK_WALL_TO_DECO_CLIFF_LINK: &str = "Stadium\\Media\\Material_BlockCustom\\CustomConcrete";
 
 /// A block info's `…\Modifier\TrackWallToDecoCliff.Gbx` material modifier ref
 /// (DecoHill*, DecoPlatformBase, PlatformTechBase, WaterBase, WaterWall,
@@ -3410,6 +3412,20 @@ pub fn modifier_collision_redress(store: &mut DataStore, refs: &[String]) -> Vec
 pub fn modifier_folder_redress(store: &mut DataStore, links: &[String]) -> Vec<Redress> {
     let mut out: Vec<Redress> = Vec::new();
     for link in links {
+        // The TrackWallToDecoCliff skin's one row: the prefab's TrackWall slot takes the
+        // CLIFF concrete (`…\PlatformGrass\DecoCliff`). The folder's own `TrackWall` stem
+        // is the grass platform's GREEN wall — that is what the pillar faces under a Tech
+        // platform came out as (Icy 76, 2026-10-23 frames), where the original draws grey
+        // concrete. So the row is keyed on the TrackWall FILE, not on the link's stem.
+        if link.eq_ignore_ascii_case(TRACK_WALL_TO_DECO_CLIFF_LINK) || link.eq_ignore_ascii_case(&std::env::var("TINY_TW2DC_LINK").unwrap_or_default()) {
+            let file = RedressKey::File("trackwall.material.gbx".to_string());
+            if !out.iter().any(|r| r.matches == file) {
+                if let Some(ids) = crate::static_item::build::material_surface_ids(store, &format!("{link}.Material.Gbx")) {
+                    out.push(Redress { matches: file, link: link.clone(), ids });
+                }
+            }
+            continue;
+        }
         let file = RedressKey::File(format!("{}.material.gbx", link.rsplit('\\').next().unwrap_or(link).to_ascii_lowercase()));
         if out.iter().any(|r| r.matches == file) {
             continue;
@@ -3700,14 +3716,15 @@ pub fn modifier_links(store: &DataStore, refs: &[String]) -> Vec<String> {
     for r in refs {
         let r = r.replace(' ', "");
         if is_track_wall_to_deco_cliff(&r) {
-            // `PlatformGrass\TrackWall` IS the DecoCliffPxz concrete (see the constant's
-            // note): the redress row it makes matches the prefab's TrackWall slot. (A
-            // 2026-10-23 detour to the folder's `DecoCliff` stem matched no slot at all and
-            // left the pillar faces plain wood; the green stripes that prompted it were
-            // game-drawn pillars whose faces had not been baked.) `TINY_TW2DC_STEM`
-            // overrides the stem for experiments.
-            let stem = std::env::var("TINY_TW2DC_STEM").unwrap_or_else(|_| "TrackWall".into());
-            let link = format!("{TRACK_WALL_TO_DECO_CLIFF_FOLDER}{stem}");
+            // What the TrackWall slot becomes under `TrackWallToDecoCliff` (Tech platforms,
+            // hills, water walls; the generated pillars under them). The modifier file names
+            // the PlatformGrass folder, but BOTH of that folder's candidates render green in
+            // the editor (`PlatformGrass\TrackWall` = the grass wall, `PlatformGrass\DecoCliff`
+            // = the grass cliff; Icy 76 frames, 2026-10-23), where the original draws plain
+            // grey concrete. The pack has no `Material\DecoCliff` file; the mesh-modeler
+            // concrete (`Material_BlockCustom\CustomConcrete`, untinted) is the grey that
+            // matches. `TINY_TW2DC_LINK` overrides (a full link).
+            let link = std::env::var("TINY_TW2DC_LINK").unwrap_or_else(|_| TRACK_WALL_TO_DECO_CLIFF_LINK.to_string());
             if store.entries().any(|e| e.path().eq_ignore_ascii_case(&format!("{link}.Material.Gbx"))) {
                 out.push(link);
             }

@@ -1148,7 +1148,11 @@ pub fn plan_records(store: &mut DataStore, idx: &mut BlockInfoIndex, map: &Path,
         // from the ORIGINAL map's view (the library reads the original: a plastic parent
         // dresses nothing → plain TrackWall = pillar wood; a grass hill's green stays).
         // `TINY_PILLAR_BAKE=0` keeps the old behaviour (pillars always the game's own).
-        if !free && (b.flags & 0x4000 != 0) && b.name.starts_with("DecoWall") && b.name.ends_with("Pillar") && std::env::var("TINY_PILLAR_BAKE").map(|v| v != "0").unwrap_or(true) {
+        // ⛔ OFF by default (2026-10-23): with the pillar records gone the GAME REGENERATES the
+        // pillars at load and dresses them from the renamed parent (Icy 76: a green wall of
+        // regenerated pillars, our baked faces hidden inside) — the bake changes nothing
+        // for the eye. `TINY_PILLAR_BAKE=1` turns it on for experiments.
+        if !free && (b.flags & 0x4000 != 0) && b.name.starts_with("DecoWall") && b.name.ends_with("Pillar") && std::env::var("TINY_PILLAR_BAKE").map(|v| v == "1").unwrap_or(false) {
             let mut renamed_parent: Option<String> = None;
             'up: for dy in 1..=3 {
                 let above = [cell[0], cell[1] + dy, cell[2]];
