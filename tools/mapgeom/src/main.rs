@@ -5012,6 +5012,77 @@ fn main() {
                 std::fs::write(&f, out).unwrap_or_else(|e| die(format!("{f}: {e}")));
             }
         }
+        // stadium-footprints --out F.tsv [--collection Stadium]: every block info of the collection → its ground-variant
+        //   footprint (size x/z in cells + the unit cells at the base row, dir 0) — the static table Hugo's C# reads
+        "stadium-footprints" => {
+            let mut store = open(&a);
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("stadium-footprints needs --out F.tsv".into()));
+            let coll = flag(&a.rest, "--collection").unwrap_or_else(|| "Stadium".into());
+            let prefix = format!("{}\\GAMECTNBLOCKINFO\\", coll.to_uppercase());
+            let paths: Vec<String> = store.entries().map(|e| e.path()).filter(|p| { let u = p.to_uppercase(); u.starts_with(&prefix) && u.ends_with(".GBX") }).collect();
+            let mut rows: std::collections::BTreeMap<String, (i32, i32, Vec<(i32, i32)>, &'static str)> = Default::default();
+            let mut failed = 0usize;
+            for p in &paths {
+                let name = p.rsplit('\\').next().unwrap_or(p).split('.').next().unwrap_or("").to_string();
+                if name.is_empty() { continue; }
+                let Ok(bi) = mapgeom::blockinfo::load(&mut store, p) else { failed += 1; continue };
+                // the info's own name (the pak file name differs in CASE for a few: PlatFormTechBase.EDClassic.Gbx)
+                let name = if bi.name.is_empty() { name } else { bi.name.clone() };
+                let (v, which) = match (&bi.variant_base_ground, &bi.variant_base_air) {
+                    (Some(g), _) if !g.block_units.is_empty() => (g, "ground"),
+                    (_, Some(air)) if !air.block_units.is_empty() => (air, "air"),
+                    _ => { rows.insert(name, (1, 1, vec![(0, 0)], "none")); continue }
+                };
+                let (mut sx, mut sz) = (0, 0);
+                let mut cells: Vec<(i32, i32)> = Vec::new();
+                for u in &v.block_units {
+                    sx = sx.max(u.offset[0] + 1);
+                    sz = sz.max(u.offset[2] + 1);
+                    if u.offset[1] == 0 && !cells.contains(&(u.offset[0], u.offset[2])) { cells.push((u.offset[0], u.offset[2])); }
+                }
+                cells.sort_unstable();
+                rows.insert(name, (sx, sz, cells, which));
+            }
+            let mut s = String::from("block\tsize_x\tsize_z\tbase_cells\tvariant\n");
+            for (name, (sx, sz, cells, which)) in &rows {
+                s.push_str(&format!("{name}\t{sx}\t{sz}\t{}\t{which}\n", cells.iter().map(|(x, z)| format!("{x},{z}")).collect::<Vec<_>>().join(" ")));
+            }
+            std::fs::write(&out, s).unwrap_or_else(|e| die(format!("{out}: {e}")));
+            let multi = rows.values().filter(|r| r.0 > 1 || r.1 > 1).count();
+            let holes = rows.values().filter(|r| (r.2.len() as i32) < r.0 * r.1).count();
+            println!("{}: {} block infos ({} failed to load), {} multi-cell, {} with base-row holes (footprint smaller than its size box)", out, rows.len(), failed, multi, holes);
+        }
+        // stadium-floor MAP [--sizes F.tsv] [--cells F.tsv]: Hugo's Stadium floor occupancy (authored IsGround blocks'
+        //   footprints turned by dir; Grass excepted) — the counts, the name → (size x, size z) table for his C#,
+        //   and the free/occupied cell grid
+        "stadium-floor" => {
+            let mut store = open(&a);
+            let p = a.rest.get(1).cloned().unwrap_or_else(|| die("stadium-floor needs a MAP".into()));
+            let m = tmmaps::map::MapFile::try_load(std::path::Path::new(&p)).unwrap_or_else(die);
+            let f = mapgeom::floor_finish::stadium_floor(&mut store, &m).unwrap_or_else(die);
+            for n in &f.notes { println!("{n}"); }
+            if let Some(t) = flag(&a.rest, "--sizes") {
+                let existing = std::fs::read_to_string(&t).unwrap_or_default();
+                let mut out = if existing.is_empty() { String::from("block\tsize_x\tsize_z\n") } else { existing.clone() };
+                for (name, (sx, sz)) in &f.sizes {
+                    let line = format!("{name}\t{sx}\t{sz}\n");
+                    if !existing.contains(&format!("{name}\t")) { out.push_str(&line); }
+                }
+                std::fs::write(&t, out).unwrap_or_else(|e| die(format!("{t}: {e}")));
+            }
+            if let Some(t) = flag(&a.rest, "--cells") {
+                let (mut xmax, mut zmax) = (0, 0);
+                for &(x, z) in &f.grass { xmax = xmax.max(x); zmax = zmax.max(z); }
+                let mut out = String::new();
+                for z in 0..=zmax {
+                    for x in 0..=xmax {
+                        out.push(if !f.grass.contains(&(x, z)) { ' ' } else if f.occupied.contains(&(x, z)) { '#' } else { '.' });
+                    }
+                    out.push('\n');
+                }
+                std::fs::write(&t, out).unwrap_or_else(|e| die(format!("{t}: {e}")));
+            }
+        }
         // floor-finish MAP --out ITEM.Item.Gbx [--ident NAME.Item.Gbx] [--floor-below 0.1] [--floor-above 0.4] [--collection 26]:
         //   the one-per-map Floor Finish carrier alone (Hugo embeds + places it himself at the map origin)
         "floor-finish" => {
