@@ -5048,26 +5048,29 @@ fn main() {
             let mut s = String::from(if with_masks { "block\tsize_x\tsize_z\tbase_cells\tvariant\tmasks\n" } else { "block\tsize_x\tsize_z\tbase_cells\tvariant\n" });
             let mut n_mask = 0usize;
             let mut n_partial = 0usize;
+            let mut n_green = 0usize;
             for (name, (sx, sz, cells, which)) in &rows {
                 let cells_s = cells.iter().map(|(x, z)| format!("{x},{z}")).collect::<Vec<_>>().join(" ");
                 if with_masks {
                     let bp = mapgeom::vista::find_block_info(&store, name);
-                    let masks: BTreeMap<(i32, i32), u64> = match bp.and_then(|bp| mapgeom::blockinfo::load(&mut store, &bp).ok()) {
+                    let masks: BTreeMap<(i32, i32), (u64, u64)> = match bp.and_then(|bp| mapgeom::blockinfo::load(&mut store, &bp).ok()) {
                         Some(bi) => {
                             let v = if *which == "air" { bi.variant_base_air.clone() } else { bi.variant_base_ground.clone() };
                             match v { Some(v) => mapgeom::floor_finish::variant_masks(&mut store, &v, 8.0).unwrap_or_default(), None => Default::default() }
                         }
                         None => Default::default(),
                     };
-                    let masks: BTreeMap<(i32, i32), u64> = if masks.is_empty() { cells.iter().map(|&(x, z)| ((x, z), u64::MAX)).collect() } else { masks };
+                    let masks: BTreeMap<(i32, i32), (u64, u64)> = if masks.is_empty() { cells.iter().map(|&(x, z)| ((x, z), (u64::MAX, 0))).collect() } else { masks };
                     n_mask += 1;
-                    if masks.values().any(|&v| v != u64::MAX) { n_partial += 1; }
-                    s.push_str(&format!("{name}\t{sx}\t{sz}\t{cells_s}\t{which}\t{}\n", masks.iter().map(|((x, z), m)| format!("{x},{z}:{m:016x}")).collect::<Vec<_>>().join(" ")));
+                    if masks.values().any(|&(o, _)| o != u64::MAX) { n_partial += 1; }
+                    if masks.values().any(|&(_, g)| g != 0) { n_green += 1; }
+                    // "ux,uz:occupied:green" — two 64-bit masks per base cell
+                    s.push_str(&format!("{name}\t{sx}\t{sz}\t{cells_s}\t{which}\t{}\n", masks.iter().map(|((x, z), (o, g))| format!("{x},{z}:{o:016x}:{g:016x}")).collect::<Vec<_>>().join(" ")));
                 } else {
                     s.push_str(&format!("{name}\t{sx}\t{sz}\t{cells_s}\t{which}\n"));
                 }
             }
-            if with_masks { println!("masks: {n_mask} variants baked, {n_partial} with free 4 m squares inside their footprint"); }
+            if with_masks { println!("masks: {n_mask} variants baked, {n_partial} with structure-free 4 m squares inside their footprint, {n_green} carrying a collidable grass fill"); }
             std::fs::write(&out, s).unwrap_or_else(|e| die(format!("{out}: {e}")));
             let multi = rows.values().filter(|r| r.0 > 1 || r.1 > 1).count();
             let holes = rows.values().filter(|r| (r.2.len() as i32) < r.0 * r.1).count();
@@ -5097,8 +5100,10 @@ fn main() {
                 let mut out = String::new();
                 for z in 0..=zmax {
                     for x in 0..=xmax {
-                        let occ = f.squares.get(&(x, z)).copied().unwrap_or(0);
-                        out.push(if !f.grass.contains(&(x, z)) { ' ' } else if occ == u64::MAX { '#' } else if occ != 0 { '+' } else { '.' });
+                        // '.' real grass, '#' hidden & structure, 'o' hidden with a collidable grass fill, 'x' hidden void (no grass, no structure)
+                        let occ = f.occupied.get(&(x, z)).copied().unwrap_or(0);
+                        let grn = f.green.get(&(x, z)).copied().unwrap_or(0);
+                        out.push(if !f.grass.contains(&(x, z)) { ' ' } else if !f.hidden.contains(&(x, z)) { '.' } else if grn & !occ != 0 { 'o' } else if occ == u64::MAX { '#' } else if occ != 0 { 'x' } else { 'x' });
                     }
                     out.push('\n');
                 }

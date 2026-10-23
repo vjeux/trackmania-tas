@@ -277,16 +277,18 @@ pub fn water_rects(store: &mut crate::store::DataStore, m: &MapFile, collection:
 /// maths is needed. The grass plane of the base row: Stadium ground −64, Grass at cy 9, zone plane local +2 →
 /// world y 10.00 (the sources' SupportTube items standing on the grass are at y 10.00).
 pub struct StadiumFloor {
-    /// occupied (cx, cz) columns among the grass cells
-    pub occupied: std::collections::HashSet<(i32, i32)>,
+    /// grass cells whose tile the game HIDES (a ground-variant authored block's turned unit covers them)
+    pub hidden: std::collections::HashSet<(i32, i32)>,
     /// the grass cells
     pub grass: std::collections::BTreeSet<(i32, i32)>,
     pub ground_blocks: usize,
     pub grass_y: f32,
-    /// block name → (size x, size z) in cells at dir 0 (the footprint table the C# needs)
+    /// block name → (size x, size z) in cells at dir 0
     pub sizes: BTreeMap<String, (i32, i32)>,
-    /// per grass cell the occupied 4 m squares (bit zi·8+xi in the world cell frame); absent = free cell
-    pub squares: BTreeMap<(i32, i32), u64>,
+    /// per cell the OCCUPIED 4 m squares (bit zi·8+xi, world cell frame): structure a car can clip into
+    pub occupied: BTreeMap<(i32, i32), u64>,
+    /// per cell the GREEN squares: a collidable grass surface a block or baked filler brings into a hidden cell
+    pub green: BTreeMap<(i32, i32), u64>,
     pub notes: Vec<String>,
 }
 
@@ -329,7 +331,20 @@ pub fn turn_unit(c: (i32, i32, i32), dir: u8, u: [i32; 3], size: (i32, i32)) -> 
 /// conservatively: a square is occupied when any such triangle covers its centre OR any of its edges crosses the
 /// square (thin walls have ~no area). Squares nothing touches are free grass. The whole-cell table stays for
 /// variants that fail to bake (returned as full masks).
-pub fn variant_masks(store: &mut crate::store::DataStore, variant: &crate::blockinfo::Variant, touch_y: f32) -> Result<BTreeMap<(i32, i32), u64>, String> {
+/// Physics ids of grass-like collision (the Stadium terrain's Green 76, the Grass surface 2).
+pub fn is_grass_physics(id: u8) -> bool {
+    id == 76 || id == 2
+}
+
+/// Per base cell `(occupied, green)`: `occupied` = geometry within the base unit row other than grass-level
+/// grass-physics collision (decks, borders, walls, pillars, decals — anything a car can clip into or stand on
+/// that is not grass); `green` = collision triangles of grass physics lying at grass level (|y| < 0.3): a
+/// collidable grass surface the block itself (or a baked filler) brings — the car can stand on grass there.
+/// Round 3 (Hugo 2026-10-23 12:55: a car clipping through a road block and falling into the VOID must never
+/// finish): the Grass tile is HIDDEN under every unit of a ground-variant block (read off the game's lightmaps,
+/// tmmaps::tiny::tiles::HiddenTiles, 93 440 tile records), geometry notwithstanding — so inside such cells only
+/// `green` squares are grass; everything else there is void or structure.
+pub fn variant_masks(store: &mut crate::store::DataStore, variant: &crate::blockinfo::Variant, touch_y: f32) -> Result<BTreeMap<(i32, i32), (u64, u64)>, String> {
     let mut m = crate::static_item::build::Merged::default();
     m.keep_water = true;
     let mut n_mobils = 0usize;
@@ -345,21 +360,29 @@ pub fn variant_masks(store: &mut crate::store::DataStore, variant: &crate::block
         }
     }
     // the base-row cells
-    let mut masks: BTreeMap<(i32, i32), u64> = BTreeMap::new();
+    let mut masks: BTreeMap<(i32, i32), (u64, u64)> = BTreeMap::new();
     for u in &variant.block_units {
-        if u.offset[1] == 0 { masks.insert((u.offset[0], u.offset[2]), 0); }
+        if u.offset[1] == 0 { masks.insert((u.offset[0], u.offset[2]), (0, 0)); }
     }
-    if masks.is_empty() { masks.insert((0, 0), 0); }
+    if masks.is_empty() { masks.insert((0, 0), (0, 0)); }
     if n_mobils == 0 {
-        // nothing to bake (procedural terrain / pillar fillers): the whole footprint stands
-        for v in masks.values_mut() { *v = u64::MAX; }
+        // nothing to bake (procedural terrain / pillar fillers): the whole footprint stands, no grass
+        for v in masks.values_mut() { *v = (u64::MAX, 0); }
         return Ok(masks);
     }
-    // ground-touching triangles (block frame, dir 0): collision + visuals
+    // triangles within the base unit row (block frame, dir 0): collision + visuals; grass-level grass-physics
+    // collision goes to `green`, everything else to `occupied`
     let mut tris: Vec<[[f32; 3]; 3]> = Vec::new();
+    let mut green_tris: Vec<[[f32; 3]; 3]> = Vec::new();
     for t in &m.surf_triangles {
         let pts: Vec<[f32; 3]> = t.indices.iter().filter_map(|&i| m.surf_vertices.get(i as usize).copied()).collect();
-        if pts.len() == 3 && pts.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min) < touch_y { tris.push([pts[0], pts[1], pts[2]]); }
+        if pts.len() != 3 { continue; }
+        let (ylo, yhi) = (pts.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min), pts.iter().map(|p| p[1]).fold(f32::NEG_INFINITY, f32::max));
+        if is_grass_physics(t.material_id) && ylo > -0.3 && yhi < 0.3 {
+            green_tris.push([pts[0], pts[1], pts[2]]);
+        } else if ylo < touch_y {
+            tris.push([pts[0], pts[1], pts[2]]);
+        }
     }
     for mv in &m.visuals {
         let Some(main) = mv.visual.main.as_ref() else { continue };
@@ -395,21 +418,24 @@ pub fn variant_masks(store: &mut crate::store::DataStore, variant: &crate::block
         }
         true
     };
-    for ((ux, uz), mask) in masks.iter_mut() {
+    let covers = |list: &[[[f32; 3]; 3]], x0: f32, z0: f32, x1: f32, z1: f32, conservative: bool| -> bool {
+        let centre = [x0 + 2.0, z0 + 2.0];
+        list.iter().any(|t| {
+            let (tx0, tx1) = (t.iter().map(|v| v[0]).fold(f32::INFINITY, f32::min), t.iter().map(|v| v[0]).fold(f32::NEG_INFINITY, f32::max));
+            let (tz0, tz1) = (t.iter().map(|v| v[2]).fold(f32::INFINITY, f32::min), t.iter().map(|v| v[2]).fold(f32::NEG_INFINITY, f32::max));
+            if tx1 < x0 || tx0 > x1 || tz1 < z0 || tz0 > z1 { return false; }
+            inside(centre, t) || (conservative && (0..3).any(|k| seg_hits([t[k][0], t[k][2]], [t[(k + 1) % 3][0], t[(k + 1) % 3][2]], x0, z0, x1, z1)))
+        })
+    };
+    for ((ux, uz), (occ, green)) in masks.iter_mut() {
         let (cx0, cz0) = (32.0 * *ux as f32, 32.0 * *uz as f32);
         for zi in 0..8 {
             for xi in 0..8 {
                 let (x0, z0) = (cx0 + 4.0 * xi as f32, cz0 + 4.0 * zi as f32);
                 let (x1, z1) = (x0 + 4.0, z0 + 4.0);
-                let centre = [x0 + 2.0, z0 + 2.0];
-                let hit = tris.iter().any(|t| {
-                    // quick reject by bbox
-                    let (tx0, tx1) = (t.iter().map(|v| v[0]).fold(f32::INFINITY, f32::min), t.iter().map(|v| v[0]).fold(f32::NEG_INFINITY, f32::max));
-                    let (tz0, tz1) = (t.iter().map(|v| v[2]).fold(f32::INFINITY, f32::min), t.iter().map(|v| v[2]).fold(f32::NEG_INFINITY, f32::max));
-                    if tx1 < x0 || tx0 > x1 || tz1 < z0 || tz0 > z1 { return false; }
-                    inside(centre, t) || (0..3).any(|k| seg_hits([t[k][0], t[k][2]], [t[(k + 1) % 3][0], t[(k + 1) % 3][2]], x0, z0, x1, z1))
-                });
-                if hit { *mask |= 1u64 << (zi * 8 + xi); }
+                // occupied: conservative (centre or any edge); green: the square's centre must lie on grass
+                if covers(&tris, x0, z0, x1, z1, true) { *occ |= 1u64 << (zi * 8 + xi); }
+                if covers(&green_tris, x0, z0, x1, z1, false) { *green |= 1u64 << (zi * 8 + xi); }
             }
         }
     }
@@ -436,33 +462,24 @@ pub fn stadium_floor(store: &mut crate::store::DataStore, m: &MapFile) -> Result
     // the vista zone planes sit at +2 — Stadium's does not)
     let grass_y = ground + 8.0 * base_row as f32;
     let mut notes = vec![format!("{} grass cells on row {} (rows seen {:?}); grass plane world y {grass_y:.2}", grass.len(), base_row, grass_rows)];
-    let mut occupied: std::collections::HashSet<(i32, i32)> = Default::default();
+    let mut hidden: std::collections::HashSet<(i32, i32)> = Default::default();
+    let mut occupied: BTreeMap<(i32, i32), u64> = BTreeMap::new();
+    let mut green: BTreeMap<(i32, i32), u64> = BTreeMap::new();
     let mut unit_cache: BTreeMap<(String, u32), Vec<[i32; 3]>> = BTreeMap::new();
-    let mut mask_cache: BTreeMap<(String, u32), BTreeMap<(i32, i32), u64>> = BTreeMap::new();
+    let mut mask_cache: BTreeMap<(String, u32), BTreeMap<(i32, i32), (u64, u64)>> = BTreeMap::new();
     let mut sizes: BTreeMap<String, (i32, i32)> = BTreeMap::new();
-    // 4 m squares: (cx, cz) -> 64-bit occupied mask in the WORLD cell frame
-    let mut squares: BTreeMap<(i32, i32), u64> = BTreeMap::new();
-    let mut ground_blocks = 0usize;
-    let mut off_grass = 0usize;
-    let mut air_at_base = 0usize;
-    // two grass-removing blocks never share a base cell: a footprint cell claimed twice means a wrong turn
-    let mut overlaps = 0usize;
-    let mut ghosts = 0usize;
-    for b in m.blocks.iter().filter(|b| b.flags != 0xFFFF_FFFF && b.free_pos.is_none()) {
-        let c = b.coords();
-        let is_ground = b.flags & crate::blockmap::FLAG_GROUND != 0;
-        // a GHOST placement (flag 0x1000_0000, the editor's block-mixing overlay) leaves the terrain alone: the
-        // grass stays under it (Fall 05's DecoWall*Grass walls at the base row are ghosts over the pillar walls)
-        let is_ghost = b.flags & 0x1000_0000 != 0;
-        if b.name.eq_ignore_ascii_case("Grass") || is_ghost || !(is_ground || c.1 == base_row) {
-            if is_ghost && !b.name.eq_ignore_ascii_case("Grass") && (is_ground || c.1 == base_row) {
-                ghosts += 1;
-            }
+    let (mut ground_blocks, mut ghost_ground, mut air_at_base, mut baked_fillers, mut overlaps) = (0usize, 0usize, 0usize, 0usize, 0usize);
+    let mut base_claims: std::collections::HashSet<(i32, i32)> = Default::default();
+    // authored blocks first (hiding + geometry), then the baked fillers at the base row (geometry only)
+    for (authored, b) in m.blocks.iter().map(|b| (true, b)).chain(m.baked.iter().map(|b| (false, b))).filter(|(_, b)| b.flags != 0xFFFF_FFFF && b.free_pos.is_none()) {
+        if b.name.eq_ignore_ascii_case("Grass") {
             continue;
         }
-        ground_blocks += 1;
-        if !is_ground {
-            air_at_base += 1;
+        let c = b.coords();
+        let is_ground = b.flags & crate::blockmap::FLAG_GROUND != 0;
+        let is_ghost = b.flags & 0x1000_0000 != 0;
+        if !(is_ground || c.1 == base_row) {
+            continue;
         }
         let key = (b.name.clone(), b.flags);
         let units = match unit_cache.get(&key) {
@@ -474,8 +491,32 @@ pub fn stadium_floor(store: &mut crate::store::DataStore, m: &MapFile) -> Result
             }
         };
         let size = (units.iter().map(|u| u[0]).max().unwrap_or(0) + 1, units.iter().map(|u| u[2]).max().unwrap_or(0) + 1);
-        sizes.entry(b.name.clone()).and_modify(|s| { s.0 = s.0.max(size.0); s.1 = s.1.max(size.1); }).or_insert(size);
-        // the sub-cell masks of this placement kind
+        if authored {
+            ground_blocks += 1;
+            if is_ground && is_ghost { ghost_ground += 1; }
+            if !is_ground { air_at_base += 1; }
+            sizes.entry(b.name.clone()).and_modify(|s| { s.0 = s.0.max(size.0); s.1 = s.1.max(size.1); }).or_insert(size);
+            // THE HIDING RULE (the game's lightmaps, tmmaps::tiny::tiles): a ground-variant authored block hides
+            // the tile under every turned unit, ghost or not; an air variant hides nothing
+            if is_ground {
+                for u in &units {
+                    // every unit hides the tile of its column (Summer 12's Dirt under a slope's TOP unit stays
+                    // hidden — tmmaps::tiny::tiles); the turn check counts only the base-row units, which two
+                    // ground blocks never share
+                    let cell = turn_unit(c, b.dir, *u, size);
+                    if grass.contains(&cell) {
+                        hidden.insert(cell);
+                        // the turn check: two ground blocks' BASE-ROW units never share a 3-D cell
+                        if u[1] == 0 && c.1 == base_row && !base_claims.insert(cell) {
+                            overlaps += 1;
+                        }
+                    }
+                }
+            }
+        } else {
+            baked_fillers += 1;
+        }
+        // geometry: the sub-cell masks of the placement kind, turned by dir
         let masks = match mask_cache.get(&key) {
             Some(mm) => mm.clone(),
             None => {
@@ -484,42 +525,26 @@ pub fn stadium_floor(store: &mut crate::store::DataStore, m: &MapFile) -> Result
                 mm
             }
         };
-        for (&(ux, uz), &mask) in &masks {
+        for (&(ux, uz), &(occ, grn)) in &masks {
             let cell = turn_unit(c, b.dir, [ux, 0, uz], size);
             if !grass.contains(&cell) { continue; }
-            let turned = turn_mask(mask, b.dir);
-            *squares.entry(cell).or_default() |= turned;
-        }
-        for u in &units {
-            // only the unit cells AT the base row remove grass (a 2-high block's upper unit is air over the
-            // same column; a ramp's raised unit does not touch the ground)
-            if c.1 + u[1] != base_row {
-                continue;
-            }
-            let cell = turn_unit(c, b.dir, *u, size);
-            if grass.contains(&cell) {
-                if !occupied.insert(cell) {
-                    overlaps += 1;
-                    if std::env::var_os("FLOOR_OVERLAPS").is_some() {
-                        eprintln!("overlap {:?} by {} {}x{} dir {} at {:?} unit {:?}", cell, b.name, size.0, size.1, b.dir, c, u);
-                    }
-                }
-            } else {
-                off_grass += 1;
-            }
+            *occupied.entry(cell).or_default() |= turn_mask(occ, b.dir);
+            *green.entry(cell).or_default() |= turn_mask(grn, b.dir);
         }
     }
-    notes.push(format!("{ground_blocks} authored grass-removing blocks ({} IsGround + {air_at_base} air pieces standing at the base row; Grass excepted), {} distinct names; occupied grass columns {}, free {}; {off_grass} footprint cells fell outside the grass grid, {overlaps} footprint cells claimed twice (turn check: 0 expected); {ghosts} ghost placements at the base row left out (they keep the grass)", ground_blocks - air_at_base, sizes.len(), occupied.len(), grass.len() - occupied.len()));
-    let full: usize = squares.values().filter(|&&v| v == u64::MAX).count();
-    let partial: usize = squares.values().filter(|&&v| v != u64::MAX && v != 0).count();
-    let free_sq: u32 = grass.iter().map(|c| 64 - squares.get(c).copied().unwrap_or(0).count_ones()).sum();
-    notes.push(format!("4 m squares: {} cells fully occupied, {} partially (grass between the geometry), {} free squares of {} ({:.1} free cells-equivalent)", full, partial, free_sq, grass.len() * 64, free_sq as f32 / 64.0));
-    Ok(StadiumFloor { occupied, grass, ground_blocks, grass_y, sizes, squares, notes })
+    notes.push(format!("{ground_blocks} authored blocks at the base row or IsGround ({ghost_ground} ghost ground blocks hide like the others, {air_at_base} air variants hide nothing), {} distinct names, {baked_fillers} baked fillers at the base row (geometry only); hidden grass cells {}, kept {}; {overlaps} unit cells claimed by two ground blocks (turn check: 0 expected)", sizes.len(), hidden.len(), grass.len() - hidden.len()));
+    let full: usize = grass.iter().filter(|c| occupied.get(c).copied().unwrap_or(0) == u64::MAX).count();
+    let green_cells: usize = hidden.iter().filter(|c| green.get(c).copied().unwrap_or(0) != 0).count();
+    let green_sq: u32 = hidden.iter().map(|c| (green.get(c).copied().unwrap_or(0) & !occupied.get(c).copied().unwrap_or(0)).count_ones()).sum();
+    let void_sq: u32 = hidden.iter().map(|c| (!(green.get(c).copied().unwrap_or(0) | occupied.get(c).copied().unwrap_or(0))).count_ones()).sum();
+    let occ_hidden_sq: u32 = hidden.iter().map(|c| occupied.get(c).copied().unwrap_or(0).count_ones()).sum();
+    notes.push(format!("hidden cells' 4 m squares: {occ_hidden_sq} structure (a), {green_sq} collidable grass fill (b) in {green_cells} cells, {void_sq} VOID (c); {full} cells fully structure"));
+    Ok(StadiumFloor { hidden, grass, ground_blocks, grass_y, sizes, occupied, green, notes })
 }
 
 /// The sub-cell masks of a placement kind: the variant its flags pick, baked (`variant_masks`); full masks when
 /// the info is unknown.
-pub fn placement_masks(store: &mut crate::store::DataStore, name: &str, flags: u32) -> Result<BTreeMap<(i32, i32), u64>, String> {
+pub fn placement_masks(store: &mut crate::store::DataStore, name: &str, flags: u32) -> Result<BTreeMap<(i32, i32), (u64, u64)>, String> {
     let Some(bp) = crate::vista::find_block_info(store, name) else { return Err(format!("{name}: no block info")) };
     let bi = crate::blockinfo::load(store, &bp)?;
     let ground_v = flags & crate::blockmap::FLAG_GROUND != 0;
@@ -555,20 +580,46 @@ pub fn turn_mask(mask: u64, dir: u8) -> u64 {
 /// The Stadium floor mesh: the FREE grass cells as row strips, slab on the grass plane.
 pub fn stadium_floor_mesh(store: &mut crate::store::DataStore, m: &MapFile, below: f32, above: f32) -> Result<FloorMesh, String> {
     let f = stadium_floor(store, m)?;
-    // free 4 m squares → (z row of 4 m) -> x list (4 m units)
-    let mut rows: BTreeMap<i64, Vec<i64>> = BTreeMap::new();
-    let mut free_sq = 0usize;
-    for &(cx, cz) in &f.grass {
-        let occ = f.squares.get(&(cx, cz)).copied().unwrap_or(0);
-        for zi in 0..8 {
-            for xi in 0..8 {
-                if occ & (1u64 << (zi * 8 + xi)) == 0 {
-                    rows.entry(cz as i64 * 32 + 4 * zi).or_default().push(cx as i64 * 32 + 4 * xi);
-                    free_sq += 1;
+    // the occupied 4 m squares on the world square grid, dilated by one square (8-neighbourhood): the safety
+    // margin — the slab never borders structure (a car clipping along a deck edge falls beside it)
+    let mut occ_world: std::collections::HashSet<(i64, i64)> = Default::default();
+    for (&(cx, cz), &mask) in &f.occupied {
+        for zi in 0..8i64 {
+            for xi in 0..8i64 {
+                if mask & (1u64 << (zi * 8 + xi)) != 0 {
+                    occ_world.insert((cx as i64 * 8 + xi, cz as i64 * 8 + zi));
                 }
             }
         }
     }
+    let mut margin: std::collections::HashSet<(i64, i64)> = Default::default();
+    for &(x, z) in &occ_world {
+        for dz in -1..=1 {
+            for dx in -1..=1 {
+                margin.insert((x + dx, z + dz));
+            }
+        }
+    }
+    let mut rows: BTreeMap<i64, Vec<i64>> = BTreeMap::new();
+    let (mut free_sq, mut grass_sq, mut green_sq, mut margin_sq) = (0usize, 0usize, 0usize, 0usize);
+    for &(cx, cz) in &f.grass {
+        let hidden = f.hidden.contains(&(cx, cz));
+        let grn = f.green.get(&(cx, cz)).copied().unwrap_or(0);
+        for zi in 0..8i64 {
+            for xi in 0..8i64 {
+                let bit = 1u64 << (zi * 8 + xi);
+                let is_grass = if hidden { grn & bit != 0 } else { true };
+                if !is_grass { continue; }
+                if hidden { green_sq += 1 } else { grass_sq += 1 }
+                let sq = (cx as i64 * 8 + xi, cz as i64 * 8 + zi);
+                if margin.contains(&sq) { margin_sq += 1; continue; }
+                rows.entry(sq.1 * 4).or_default().push(sq.0 * 4);
+                free_sq += 1;
+            }
+        }
+    }
+    let mut notes = f.notes.clone();
+    notes.push(format!("grass squares: {grass_sq} real grass (tile kept) + {green_sq} collidable fill in hidden cells; {margin_sq} within 4 m of structure dropped (margin) → {free_sq} FREE squares ({:.1} cells-eq of {})", free_sq as f32 / 64.0, f.grass.len()));
     if free_sq == 0 {
         return Err("every grass square is occupied".into());
     }
@@ -609,8 +660,7 @@ pub fn stadium_floor_mesh(store: &mut crate::store::DataStore, m: &MapFile, belo
         }
         for v in &verts[base as usize..] { for k in 0..3 { lo[k] = lo[k].min(v[k]); hi[k] = hi[k].max(v[k]); } }
     }
-    let mut notes = f.notes.clone();
-    notes.push(format!("free 4 m squares {free_sq} ({:.1} cells-equivalent of {}) → {} boxes", free_sq as f32 / 64.0, f.grass.len(), boxes.len()));
+    notes.push(format!("→ {} boxes", boxes.len()));
     Ok(FloorMesh { verts, tris, cells: free_sq, strips: boxes.len(), shore_boxes: 0, shore_prisms: 0, notes, bbox: (lo, hi) })
 }
 
