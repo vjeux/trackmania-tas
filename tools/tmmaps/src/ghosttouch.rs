@@ -235,7 +235,12 @@ fn converted_blocks(m: &MapFile) -> Vec<Conv> {
             // a car BOUNCING ON THE WATER rides a full cell up (8.0–9.8 m on Plastic
             // 33/43/55, shcr 2026-10-09 "bouncing on water but not touching the pool
             // floor") and never meets the converted surface. Band: floor to +4 m.
-            Kind::Pool => (y - 1.5, y + 4.0),
+            // …but a `WaterBase` pool is SHALLOW: its floor sits ~3.5 m above the cell
+            // base, and Wet Wood 45's record drives it grounded at y + 4.1…4.5 (GeraldDuke
+            // 2026-10-23: "it def missed 45 … the grip at the end isn't possible") — the
+            // +4.0 band missed it by a few decimetres. Floor to +6 m keeps the bouncing
+            // case (+8 and up) out.
+            Kind::Pool => (y - 1.5, y + 6.0),
         };
         out.push(Conv {
             name: e.name,
