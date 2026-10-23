@@ -742,6 +742,14 @@ pub fn mint_tokens_standalone(wsx: &Wsx, token_dir: &Path) -> Result<(), String>
         let game_pids = wsx.sh("/mnt/c/Windows/System32/tasklist.exe 2>/dev/null | grep -i 'trackmania.exe' | awk '{print $2}'; true").unwrap_or_default();
         let only_agent = up == "1" && !agent_pid.is_empty() && game_pids.trim() == agent_pid;
         let idle = crate::inputidle::read(wsx, 60).map(|v| v.free).unwrap_or(false);
+        // The pid marker can be stale (a loadloop relaunch on 2026-10-22 left 28756 in it
+        // while the game was 22164): the render LOCK is the other witness — a game on an idle
+        // box whose lock is dead, free, or this session's own is an agent's leftover too; one
+        // HELD by another session is theirs and stays.
+        let lock = wsx.sh("/home/vjeux/bin/tmdrive status 2>/dev/null | head -1; true").unwrap_or_default().trim().to_string();
+        let lock_mine_or_free = !lock.starts_with("HELD") || lock.contains("080a15b8-2c6a-4fff-9d8a-db7d0072ee43");
+        let only_agent = only_agent || (up == "1" && idle && lock_mine_or_free);
+        let agent_pid = if agent_pid.is_empty() || game_pids.trim() != agent_pid { game_pids.trim().to_string() } else { agent_pid };
         // …and not a game a load gate is driving right now (a live `shootctl loadloop`)
         let gate_live = wsx.sh("pgrep -f 'shootctl loadloo[p]' >/dev/null && echo LIVE || echo none; true").unwrap_or_default().contains("LIVE");
         if gate_live {
@@ -755,7 +763,7 @@ pub fn mint_tokens_standalone(wsx: &Wsx, token_dir: &Path) -> Result<(), String>
                 return Err(format!("mint-standalone: the agent game (pid {agent_pid}) did not close ({still} still running)"));
             }
         } else {
-            return Err(format!("mint-standalone: {up} game process(es) already running on the box (not mine: agent pid {agent_pid:?}, game pids {:?}, idle {idle}) — ask for a free window; this mint only ever uses a game it launched", game_pids.trim()));
+            return Err(format!("mint-standalone: {up} game process(es) already running on the box (not mine: agent pid {agent_pid:?}, game pids {:?}, idle {idle}, lock {lock:?}) — ask for a free window; this mint only ever uses a game it launched", game_pids.trim()));
         }
     }
     let marker = wsx.sh("test -e /mnt/c/Users/vjeux/OpenplanetNext/PluginStorage/TmDriveRecovery.v1 && echo DIRTY || echo clean").unwrap_or_default();
