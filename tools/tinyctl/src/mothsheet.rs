@@ -26,11 +26,36 @@ struct Kind {
     carrier: String,
     lo: [f32; 3],
     hi: [f32; 3],
+    /// several lantern bodies (the mapping's "| N boxes (+pad): [..]..[..] …" tail), already padded
+    boxes: Vec<([f32; 3], [f32; 3])>,
+}
+
+fn parse_boxes(rule: &str) -> Vec<([f32; 3], [f32; 3])> {
+    let mut out = Vec::new();
+    let Some(i) = rule.find("boxes (+pad): ") else { return out };
+    let tail = &rule[i + "boxes (+pad): ".len()..];
+    for chunk in tail.split("] [") {
+        let nums: Vec<f32> = chunk.split(|c: char| c == '[' || c == ']' || c == ' ' || c == '.' && false).flat_map(|t| t.split("..")).filter_map(|t| t.trim().parse::<f32>().ok()).collect();
+        if nums.len() >= 6 {
+            out.push(([nums[0], nums[1], nums[2]], [nums[3], nums[4], nums[5]]));
+        }
+    }
+    out
+}
+
+/// The pak path of an item: `Stadium\Items\<model>.Item.Gbx`, or its `Items\Theme\` twin (the SnowTemple set).
+fn item_path(store: &mut mapgeom::store::DataStore, model: &str) -> String {
+    let a = format!("Stadium\\Items\\{model}.Item.Gbx");
+    if store.read(&a).is_ok() { return a; }
+    let b = format!("Stadium\\Items\\Theme\\{model}.Item.Gbx");
+    if store.read(&b).is_ok() { return b; }
+    a
 }
 
 /// The header icon of a pak item (chunk 0x2E001004 carries a WEBP), decoded to RGB.
 fn icon(store: &mut mapgeom::store::DataStore, model: &str) -> Option<Image> {
-    let bytes = store.read(&format!("Stadium\\Items\\{model}.Item.Gbx")).ok()?;
+    let ip = item_path(store, model);
+    let bytes = store.read(&ip).ok()?;
     let b: &[u8] = &bytes;
     if b.len() < 21 || &b[..3] != b"GBX" {
         return None;
@@ -98,7 +123,7 @@ fn is_light_material(store: &mut mapgeom::store::DataStore, cache: &mut mapgeom:
     let tex = cache.emissive(store, link);
     let has_i = tex.map(|(i, _)| !i.is_empty()).unwrap_or(false);
     let s = link.rsplit('\\').next().unwrap_or(link).to_ascii_lowercase();
-    has_i || s.contains("lightspot") || s.contains("itemlamplight") || s.contains("lightshape") || s.contains("lighttube")
+    has_i || s.contains("lightspot") || s.contains("itemlamplight") || s.contains("lightshape") || s.contains("lighttube") || s.contains("themesnowtemplelamp")
 }
 
 fn mesh_of(m: &Merged, store: &mut mapgeom::store::DataStore, cache: &mut mapgeom::lights::MatCache) -> Mesh {
@@ -149,6 +174,17 @@ fn describe(model: &str, variant: Option<u8>, is_block: bool) -> &'static str {
         ("StageTechnicsLightDown", _) => "THE SAME LIGHT BAR MOUNTED LOW: STRIP AT 0.2-1.4 M (FLOOR LEVEL)",
         ("StageTechnicsLightStraight", _) => "STAGE LIGHT BAR, STRAIGHT: 14 M STRIP ALONG THE CELL, 4 SPOTS, 6.2-7.4 M",
         ("StageTechnicsLightToStructure", _) => "STAGE LIGHT BAR WITH A STRUCTURE CONNECTOR, HUNG AT 6.2-7.4 M",
+        ("SnowLampSupportLampion", _) => "TEMPLE LAMP POST: ONE PAPER LANTERN (LAMPION), BODY 5.4-7.7 M",
+        ("SnowLampSupportLamp1", _) => "TEMPLE LAMP POST: ONE LANTERN HEAD (LAMP1M), 7.0-7.9 M",
+        ("SnowLampSupportLamp2", _) => "TEMPLE LAMP POST: ONE WIDER HEAD (LAMP2M), 6.1-7.8 M",
+        ("SnowTemple16m", _) => "PAGODA 16 M: 4 LAMPIONS HANGING UNDER THE ROOF CORNERS, 2.8-5.1 M",
+        ("SnowTemple24m", _) => "PAGODA 24 M: 4 LAMPIONS UNDER THE ROOF CORNERS, 6.8-9.1 M",
+        ("SnowTemple32m", _) => "PAGODA 32 M: 4 LAMPIONS UNDER THE ROOF CORNERS, 6.8-9.1 M",
+        ("SnowTempleCross", _) => "TEMPLE HALL CROSSING: 4 LAMPS HANGING INSIDE THE HALL (CEILING AT 10 M), 9.1-10 M",
+        ("SnowTempleDeadEnd", _) => "TEMPLE HALL DEAD END: 1 HALL LAMP 9.5-10.4 M + 2 SIDE LAMPS 7.0-7.9 M",
+        ("SnowTempleRoadCorner", _) => "TEMPLE HALL CORNER: 1 LAMP HANGING INSIDE THE HALL, 9.1-10 M",
+        ("SnowTempleRoadStraight", _) => "TEMPLE HALL STRAIGHT: 1 LAMP HANGING INSIDE THE HALL, 9.1-10 M",
+        ("SnowTempleRoadTShaped", _) => "TEMPLE HALL T: 2 LAMPS HANGING INSIDE THE HALL, 9.1-10 M",
         _ if model.starts_with("LightTube") && model.contains("Curve") => "LIGHT TUBE, CURVED (THE WHOLE TUBE IS THE LIGHT)",
         _ if model.starts_with("LightTube") && model.contains("Diag") => "LIGHT TUBE, DIAGONAL (THE WHOLE TUBE IS THE LIGHT)",
         _ if model.starts_with("LightTube") => "LIGHT TUBE, STRAIGHT (THE WHOLE TUBE IS THE LIGHT)",
@@ -193,7 +229,7 @@ pub fn cmd(rest: &[String]) -> Result<(), String> {
         let want = if set == "core" { s == "core" } else if set == "all" { true } else { s.starts_with("optional") && s.contains(&set) };
         if !want { continue; }
         let g = |k: usize| -> f32 { p[k].parse().unwrap_or(0.0) };
-        kinds.push(Kind { set: s.to_string(), model: model.to_string(), variant: variant.parse::<u8>().ok(), is_block: kind == "block", carrier: carrier.to_string(), lo: [g(7), g(8), g(9)], hi: [g(10), g(11), g(12)] });
+        kinds.push(Kind { set: s.to_string(), model: model.to_string(), variant: variant.parse::<u8>().ok(), is_block: kind == "block", carrier: carrier.to_string(), lo: [g(7), g(8), g(9)], hi: [g(10), g(11), g(12)], boxes: parse_boxes(p[13]) });
     }
     if kinds.is_empty() {
         return Err(format!("no kinds of set {set:?} in {mapping}"));
@@ -243,7 +279,7 @@ pub fn cmd(rest: &[String]) -> Result<(), String> {
         let merged: Result<Merged, String> = if kind.is_block {
             mapgeom::tiny_library::bake_named_block(&mut store, 26, &kind.model, mapgeom::blockmap::FLAG_GROUND, &format!("{}.Item.Gbx", kind.model), "Nadeo", 1.0).map(|(_, m, _)| m)
         } else {
-            mapgeom::static_item::build::pack_item_merged(&mut store, &format!("Stadium\\Items\\{}.Item.Gbx", kind.model), 1.0, 26, kind.variant.unwrap_or(0) as usize, None)
+            { let ip = item_path(&mut store, &kind.model); mapgeom::static_item::build::pack_item_merged(&mut store, &ip, 1.0, 26, kind.variant.unwrap_or(0) as usize, None) }
         };
         let (vx, vy, vw, vh) = (tx + icon_px + 20, ty + 8, tile_w - icon_px - 48, view_h);
         cv.img.fill(vx, vy, vw, vh, [245, 245, 245]);
@@ -287,12 +323,18 @@ pub fn cmd(rest: &[String]) -> Result<(), String> {
                     cv.poly(&dot, LIGHT, 1.0);
                     cv.outline(&dot, [120, 90, 0], 1.0);
                 }
-                // the trigger box
-                let bl = px([kind.lo[0], kind.lo[1], kind.lo[2]]);
-                let tr = px([kind.hi[0], kind.hi[1], kind.hi[2]]);
-                let rect = [(bl.0, bl.1), (tr.0, bl.1), (tr.0, tr.1), (bl.0, tr.1)];
-                cv.hatch(&rect, TRIG, 9.0, 1.0);
-                cv.outline(&rect, TRIG, 2.0);
+                // the trigger box(es): one per lantern body when the kind has several
+                let boxes: Vec<([f32; 3], [f32; 3])> = if kind.boxes.len() > 1 { kind.boxes.clone() } else { vec![(kind.lo, kind.hi)] };
+                for (blo, bhi) in &boxes {
+                    let bl = px(*blo);
+                    let tr = px(*bhi);
+                    let rect = [(bl.0, bl.1), (tr.0, bl.1), (tr.0, tr.1), (bl.0, tr.1)];
+                    cv.hatch(&rect, TRIG, 9.0, 1.0);
+                    cv.outline(&rect, TRIG, 2.0);
+                }
+                if boxes.len() > 1 {
+                    cv.text(vx as f32 + 10.0, vy as f32 + 10.0, &format!("{} LANTERN BOXES IN ONE TRIGGER", boxes.len()), 1, TRIG);
+                }
                 // ground line + scale bar
                 let g = px([0.0, 0.0, 0.0]);
                 cv.dashed(vx as f32 + 4.0, g.1, (vx + vw) as f32 - 4.0, g.1, [120, 120, 120], 1.0, 5.0);
