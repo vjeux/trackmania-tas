@@ -88,6 +88,30 @@ pub fn cmd(args: &[String]) -> i32 {
     for d in &dirs {
         maps += 1;
         let report = std::fs::read_to_string(d.join("report.tsv")).unwrap_or_default();
+        // a GENERATED FACE item is judged by its OWNER (faces.tsv: baked index → owner name,
+        // placements.tsv: b@index → item): a pillar's faces and a hill's or platform's side
+        // panels carry the parent's dress by the game's own rule (Dirt 3: pillars under dirt
+        // hills are orange in the original too); only a black block's own panels (owner
+        // `DecoWall*`, not a pillar) must stay wood
+        let faces = std::fs::read_to_string(d.join("faces.tsv")).unwrap_or_default();
+        let owner_of: std::collections::HashMap<String, String> = faces
+            .lines()
+            .skip(1)
+            .filter_map(|l| {
+                let c: Vec<&str> = l.split('\t').collect();
+                (c.len() >= 4).then(|| (c[0].to_string(), c[3].to_string()))
+            })
+            .collect();
+        let placements = std::fs::read_to_string(d.join("placements.tsv")).unwrap_or_default();
+        let mut face_owners: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+        for l in placements.lines() {
+            let c: Vec<&str> = l.split('\t').collect();
+            if c.len() >= 2 && c[0].starts_with("b@") && c[1].ends_with(".Item.Gbx") {
+                if let Some(o) = owner_of.get(&c[0][2..]) {
+                    face_owners.entry(c[1].trim_end_matches(".Item.Gbx").to_string()).or_default().push(o.clone());
+                }
+            }
+        }
         let mut wanted: Vec<(String, String)> = Vec::new();
         for line in report.lines() {
             let c: Vec<&str> = line.split('\t').collect();
@@ -98,6 +122,14 @@ pub fn cmd(args: &[String]) -> i32 {
             let name = c[4].split(' ').next().unwrap_or("");
             if !must_stay_wood(name) {
                 continue;
+            }
+            if let Some(owners) = face_owners.get(c[1]) {
+                // a face item: wood-rule only when a black block (not a pillar) owns it
+                let black_owner = owners.iter().any(|o| o.starts_with("DecoWall") && !o.contains("Pillar") && !o.contains("Water"));
+                let wall_owner = owners.iter().any(|o| o.starts_with("TrackWall") && !o.contains("Pillar") && !ride_face(o));
+                if !black_owner && !wall_owner {
+                    continue;
+                }
             }
             wanted.push((c[1].to_string(), name.to_string()));
         }

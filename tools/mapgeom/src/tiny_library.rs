@@ -1950,7 +1950,31 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             gameplay.then(|| (b.name.clone(), centre, mods))
         })
         .collect();
+    // The OWNER of every generated face, as the plan resolved it (`faces.tsv` beside the
+    // report: baked index → owner name; mapgeom surface-plan writes it before this runs).
+    // A face a BLACK BLOCK owns (`DecoWall*`, not a pillar, not water) is that block's own
+    // wood side whatever stands around it — the cell rules below guessed from neighbours
+    // and gave Dirt 3's slope panels the hill's dirt (material census, 2026-10-23).
+    let face_owner: std::collections::HashMap<usize, String> = report
+        .and_then(|r| r.parent())
+        .map(|dir| dir.join("faces.tsv"))
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|t| {
+            t.lines()
+                .skip(1)
+                .filter_map(|l| {
+                    let c: Vec<&str> = l.split('\t').collect();
+                    (c.len() >= 4).then(|| c[0].parse::<usize>().ok().map(|i| (i, c[3].to_string()))).flatten()
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     let inherited_mod = |b: &tmmaps::map::BlockRec| -> Vec<String> {
+        if let Some(o) = face_owner.get(&b.index) {
+            if o.starts_with("DecoWall") && !o.contains("Pillar") && !o.contains("Water") && b.name.starts_with("DecoWall") && b.name.contains("VFC") {
+                return Vec::new();
+            }
+        }
         if b.flags & crate::blockmap::FLAG_FREE != 0 {
             // a FREE block's clip is free too: the free gameplay block of the
             // same family nearest to it (a clip stands within its owner's
