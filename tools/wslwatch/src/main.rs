@@ -1,20 +1,27 @@
 //! wslwatch: restarts WhiteStick's WSL when it freezes behind an agent that
-//! still looks online.
+//! still looks online. It never restarts Windows.
 //!
 //! Oct 21 2026, 2:00 AM: the box's WSL stopped completing disk I/O. The
 //! whitestick agent kept its relay connection (that needs no disk), so the box
 //! read "online" for 18 hours while every command hung. Nothing inside WSL can
 //! recover from that, so the watcher runs on the Windows side:
 //!
-//!   wslwatch watch     (Windows) every --interval s, run `wslwatch probe` in
-//!                      the distro through wsl.exe. When probes have failed for
-//!                      --hang-after s: `wsl.exe --shutdown`, then `--force`.
-//!                      The Startup-folder .vbs loop brings the agent back.
-//!   wslwatch probe     (Linux, inside WSL) write + fsync + read back one file.
-//!   wslwatch install   (Windows) copy to %USERPROFILE%\.whitestick, register in
-//!                      HKCU\...\Run, stop an older copy, start the new one.
-//!   wslwatch uninstall (Windows) remove the Run entry, stop it.
-//!   wslwatch status    is one running? + the log tail.
+//!   wslwatch watch      (Windows) every --interval s, run `wslwatch probe` in
+//!                       the distro through wsl.exe. When probes have gone
+//!                       unanswered for --hang-after s: `wsl.exe --shutdown`
+//!                       (then `--force`), and check that WSL and the agent come
+//!                       back. Limits: one restart per --min-gap, --max-per-day
+//!                       per 24 h; a restart that does not bring WSL + the agent
+//!                       back within --recover-within, or a cap hit, turns the
+//!                       watcher OFF (log-only) and reports.
+//!   wslwatch test-cycle (Windows) simulated hang -> real WSL restart -> WSL and
+//!                       agent back. A pass removes the off switch: enforcing.
+//!   wslwatch probe      (Linux, inside WSL) write + fsync + read back one file;
+//!                       with --agent-since, also "the agent reconnected since".
+//!   wslwatch off | on   the off switch, DIR\wslwatch.off: log-only while it exists.
+//!   wslwatch install    (Windows) copy to %USERPROFILE%\.whitestick, HKCU Run
+//!                       entry, start it LOG-ONLY (off switch set).
+//!   wslwatch uninstall | status
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 use std::fs::{self, File, OpenOptions};
@@ -28,27 +35,33 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 const USAGE: &str = "usage:
   wslwatch watch [--distro Ubuntu] [--user U] [--probe-bin PATH] [--interval 60]
                  [--probe-timeout 60] [--hang-after 300] [--cooldown 600]
-                 [--log FILE] [--lock FILE] [--dry-run] [--max-restarts N]
-                 [-- PROBE ARGV...]
-  wslwatch probe [--file PATH]
+                 [--min-gap 3600] [--max-per-day 3] [--recover-within 600]
+                 [--dir DIR] [--dry-run] [--max-restarts N] [-- PROBE ARGV...]
+  wslwatch test-cycle [--detach] [watch flags...]
+  wslwatch probe [--file PATH] [--agent-since ISO] [--agent-log PATH]
+  wslwatch off [--reason TEXT] [--dir DIR]
+  wslwatch on [--dir DIR]
   wslwatch install [watch flags...]
   wslwatch uninstall
-  wslwatch status [--log FILE] [--lock FILE] [-n 20]
+  wslwatch status [--dir DIR] [-n 20]
 ";
 #[cfg(windows)]
 const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
 #[cfg(windows)]
 const RUN_VALUE: &str = "WhiteStick wslwatch";
+/// probe exit code: WSL answered, but the agent has not reconnected yet
+const AGENT_NOT_BACK: i32 = 5;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let rest = args.get(1..).unwrap_or(&[]);
     let code = match args.first().map(String::as_str) {
-        Some("watch") => match WatchOpts::parse(rest) {
-            Ok(o) => watch(o),
-            Err(e) => fail(&e),
-        },
+        Some("watch") => WatchOpts::parse(rest).map_or_else(|e| fail(&e), watch),
+        Some("test-cycle") if rest.iter().any(|a| a == "--detach") => detach_self("test-cycle", rest),
+        Some("test-cycle") => WatchOpts::parse(rest).map_or_else(|e| fail(&e), test_cycle),
         Some("probe") => probe(rest),
+        Some("off") => off_cmd(rest),
+        Some("on") => on_cmd(rest),
         Some("install") => install(rest),
         Some("uninstall") => uninstall(),
         Some("status") => status(rest),
@@ -73,6 +86,97 @@ fn state_dir() -> PathBuf {
 
 fn wsl_exe() -> String {
     std::env::var("SystemRoot").map(|r| format!(r"{r}\System32\wsl.exe")).unwrap_or_else(|_| "wsl.exe".into())
+}
+
+/// `--dir DIR` from a flag list, else the state dir.
+fn dir_flag(a: &[String]) -> Result<PathBuf, String> {
+    match a.iter().position(|x| x == "--dir") {
+        Some(i) => a.get(i + 1).map(PathBuf::from).ok_or_else(|| "--dir needs a value".into()),
+        None => Ok(state_dir()),
+    }
+}
+
+// ---------------------------------------------------------------- state files
+
+struct Paths {
+    dir: PathBuf,
+}
+
+impl Paths {
+    fn log(&self) -> PathBuf {
+        self.dir.join("wslwatch.log")
+    }
+    fn lock(&self) -> PathBuf {
+        self.dir.join("wslwatch.lock")
+    }
+    fn test_lock(&self) -> PathBuf {
+        self.dir.join("wslwatch-test.lock")
+    }
+    fn off(&self) -> PathBuf {
+        self.dir.join("wslwatch.off")
+    }
+    fn restarts(&self) -> PathBuf {
+        self.dir.join("wslwatch.restarts")
+    }
+}
+
+/// Some(reason) while the off switch exists.
+fn off_reason(p: &Paths) -> Option<String> {
+    fs::read_to_string(p.off()).ok().map(|s| s.trim().to_string())
+}
+
+fn set_off(p: &Paths, reason: &str) -> std::io::Result<()> {
+    fs::create_dir_all(&p.dir)?;
+    fs::write(p.off(), format!("{} {reason}\n", utc_now()))
+}
+
+/// Ok(true) when an off switch was removed.
+fn set_on(p: &Paths) -> std::io::Result<bool> {
+    match fs::remove_file(p.off()) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+fn now_secs() -> i64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
+}
+
+/// Every WSL restart wslwatch made (watch and test-cycle alike), unix seconds.
+fn history(p: &Paths) -> Vec<i64> {
+    fs::read_to_string(p.restarts())
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| l.split_whitespace().next()?.parse().ok())
+        .collect()
+}
+
+fn record_restart(p: &Paths, at: i64, why: &str) {
+    let _ = fs::create_dir_all(&p.dir);
+    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(p.restarts()) {
+        let _ = writeln!(f, "{at} {} {why}", utc(at));
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum Gate {
+    Go,
+    /// seconds since the last restart, inside --min-gap
+    Wait(i64),
+    /// restarts in the last 24 h, at --max-per-day
+    Cap(usize),
+}
+
+fn gate(hist: &[i64], now: i64, min_gap: i64, max_per_day: usize) -> Gate {
+    let recent = hist.iter().filter(|&&t| now - t < 86_400).count();
+    if recent >= max_per_day {
+        return Gate::Cap(recent);
+    }
+    match hist.iter().filter(|&&t| now - t < min_gap).max() {
+        Some(&last) => Gate::Wait(now - last),
+        None => Gate::Go,
+    }
 }
 
 // ---------------------------------------------------------------- decision
@@ -220,7 +324,7 @@ fn run(argv: &[String], timeout: Duration) -> Outcome {
     }
 }
 
-// ---------------------------------------------------------------- log + lock
+// ---------------------------------------------------------------- log, lock, report
 
 fn utc(secs: i64) -> String {
     let (days, sod) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
@@ -236,11 +340,12 @@ fn utc(secs: i64) -> String {
 }
 
 fn utc_now() -> String {
-    utc(SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64))
+    utc(now_secs())
 }
 
 struct Log {
     path: PathBuf,
+    prefix: &'static str,
 }
 
 impl Log {
@@ -252,7 +357,7 @@ impl Log {
             let _ = fs::rename(&self.path, self.path.with_extension("log.1"));
         }
         if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&self.path) {
-            let _ = writeln!(f, "[{}] {msg}", utc_now());
+            let _ = writeln!(f, "[{}] {}{msg}", utc_now(), self.prefix);
         }
     }
 }
@@ -273,6 +378,30 @@ fn take_lock(p: &Path) -> std::io::Result<File> {
     o.open(p)
 }
 
+/// The watcher stops acting: off switch with the reason, a log line, and a
+/// message box on the box's screen (not topmost: it never steals a game's focus).
+fn disarm(p: &Paths, log: &Log, reason: &str) {
+    if let Err(e) = set_off(p, reason) {
+        log.line(&format!("could not write the off switch {}: {e}", p.off().display()));
+    }
+    log.line(&format!("OFF, log-only from now on: {reason}"));
+    notify(&format!("wslwatch stopped restarting WSL:\n\n{reason}\n\nLog: {}", p.log().display()));
+}
+
+#[cfg(windows)]
+fn notify(text: &str) {
+    #[link(name = "user32")]
+    extern "system" {
+        fn MessageBoxW(owner: isize, text: *const u16, caption: *const u16, kind: u32) -> i32;
+    }
+    let text: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
+    let caption: Vec<u16> = "WhiteStick wslwatch".encode_utf16().chain(Some(0)).collect();
+    // SAFETY: both buffers are NUL-terminated UTF-16 and live in the thread.
+    thread::spawn(move || unsafe { MessageBoxW(0, text.as_ptr(), caption.as_ptr(), 0x30) }); // MB_OK | MB_ICONWARNING
+}
+#[cfg(not(windows))]
+fn notify(_: &str) {}
+
 // ---------------------------------------------------------------- watch
 
 #[derive(Clone, Debug)]
@@ -284,18 +413,19 @@ struct WatchOpts {
     probe_timeout: u64,
     hang_after: u64,
     cooldown: u64,
-    log: PathBuf,
-    lock: PathBuf,
+    min_gap: u64,
+    max_per_day: usize,
+    recover_within: u64,
+    dir: PathBuf,
     dry_run: bool,
-    /// Exit after this many restarts (dry-run ones count): bounds a test
-    /// instance, which otherwise outlives the WSL it just shut down.
+    /// Exit after this many restart decisions (dry-run ones count): bounds a
+    /// test instance.
     max_restarts: Option<u32>,
     probe_argv: Vec<String>,
 }
 
 impl WatchOpts {
     fn parse(a: &[String]) -> Result<Self, String> {
-        let dir = state_dir();
         let mut o = WatchOpts {
             distro: "Ubuntu".into(),
             user: std::env::var("USERNAME").or_else(|_| std::env::var("USER")).unwrap_or_else(|_| "vjeux".into()).to_lowercase(),
@@ -304,8 +434,10 @@ impl WatchOpts {
             probe_timeout: 60,
             hang_after: 300,
             cooldown: 600,
-            log: dir.join("wslwatch.log"),
-            lock: dir.join("wslwatch.lock"),
+            min_gap: 3600,
+            max_per_day: 3,
+            recover_within: 600,
+            dir: state_dir(),
             dry_run: false,
             max_restarts: None,
             probe_argv: vec![],
@@ -332,9 +464,11 @@ impl WatchOpts {
                 "--probe-timeout" => o.probe_timeout = num(&v)?.max(1),
                 "--hang-after" => o.hang_after = num(&v)?,
                 "--cooldown" => o.cooldown = num(&v)?,
+                "--min-gap" => o.min_gap = num(&v)?,
+                "--max-per-day" => o.max_per_day = num(&v)?.max(1) as usize,
+                "--recover-within" => o.recover_within = num(&v)?.max(1),
+                "--dir" => o.dir = v.into(),
                 "--max-restarts" => o.max_restarts = Some(num(&v)?.clamp(1, u64::from(u32::MAX)) as u32),
-                "--log" => o.log = v.into(),
-                "--lock" => o.lock = v.into(),
                 _ => return Err(format!("unknown flag {f}\n{USAGE}")),
             }
             i += 2;
@@ -342,34 +476,55 @@ impl WatchOpts {
         Ok(o)
     }
 
-    fn probe_cmd(&self) -> Vec<String> {
-        if !self.probe_argv.is_empty() {
-            return self.probe_argv.clone();
-        }
+    /// The real probe: ignores any `-- PROBE ARGV` override.
+    fn real_probe(&self) -> Vec<String> {
         let bin = self.probe_bin.clone().unwrap_or_else(|| format!("/home/{}/bin/wslwatch", self.user));
         vec![wsl_exe(), "-d".into(), self.distro.clone(), "-u".into(), self.user.clone(), "--exec".into(), bin, "probe".into()]
+    }
+
+    fn probe_cmd(&self) -> Vec<String> {
+        if self.probe_argv.is_empty() {
+            self.real_probe()
+        } else {
+            self.probe_argv.clone()
+        }
+    }
+
+    /// The probe that also requires the agent to have reconnected since `since`.
+    fn agent_probe(&self, since: &str) -> Vec<String> {
+        let mut v = self.real_probe();
+        v.extend(["--agent-since".to_string(), since.to_string()]);
+        v
+    }
+
+    fn paths(&self) -> Paths {
+        Paths { dir: self.dir.clone() }
     }
 }
 
 fn watch(o: WatchOpts) -> i32 {
-    let log = Log { path: o.log.clone() };
-    let _lock = match take_lock(&o.lock) {
+    let p = o.paths();
+    let log = Log { path: p.log(), prefix: "" };
+    let _lock = match take_lock(&p.lock()) {
         Ok(f) => f,
         Err(e) => {
-            log.line(&format!("not starting: {} is held ({e}); another wslwatch is running", o.lock.display()));
+            log.line(&format!("not starting: {} is held ({e}); another wslwatch is running", p.lock().display()));
             return 0;
         }
     };
     let probe = o.probe_cmd();
     log.line(&format!(
-        "wslwatch {} pid {}: probe every {} s (timeout {} s), restart WSL after {} s of failures, then quiet {} s{}; probe = {}",
+        "wslwatch {} pid {}: probe every {} s (timeout {} s); after {} s unanswered, restart WSL (never Windows): at most one per {} min, {} per 24 h, and WSL + agent must be back within {} s or it stops acting{}{}; probe = {}",
         env!("CARGO_PKG_VERSION"),
         std::process::id(),
         o.interval,
         o.probe_timeout,
         o.hang_after,
-        o.cooldown,
+        o.min_gap / 60,
+        o.max_per_day,
+        o.recover_within,
         if o.dry_run { "; DRY RUN" } else { "" },
+        off_reason(&p).map(|r| format!("; OFF (log-only): {r}")).unwrap_or_default(),
         probe.join(" ")
     ));
     let mut hang = Hang::new(Duration::from_secs(o.hang_after), Duration::from_secs(o.cooldown));
@@ -409,24 +564,77 @@ fn watch(o: WatchOpts) -> i32 {
             Verdict::Restart => {
                 failing = true;
                 log.line(&format!("probe FAILED ({:.1} s): {}", took.as_secs_f64(), describe(&outcome)));
-                if o.dry_run {
-                    log.line(&format!("WSL has not answered for {} s: DRY RUN, would run wsl.exe --shutdown", o.hang_after));
-                } else {
-                    log.line(&format!("WSL has not answered for {} s: restarting it", o.hang_after));
-                    restart_wsl(&log);
-                }
+                act(&o, &p, &log);
                 restarts += 1;
                 if o.max_restarts.is_some_and(|m| restarts >= m) {
-                    log.line(&format!("exiting after {restarts} restart(s) (--max-restarts)"));
+                    log.line(&format!("exiting after {restarts} restart decision(s) (--max-restarts)"));
                     return 0;
                 }
             }
         }
         if beat.elapsed() >= Duration::from_secs(3600) {
-            log.line(&format!("alive: {n_ok} probes ok in the last hour, slowest {:.1} s", slowest.as_secs_f64()));
+            let state = off_reason(&p).map_or("enforcing".to_string(), |r| format!("OFF (log-only): {r}"));
+            log.line(&format!("alive: {n_ok} probes ok in the last hour, slowest {:.1} s; {state}", slowest.as_secs_f64()));
             (n_ok, slowest, beat) = (0, Duration::ZERO, Instant::now());
         }
         thread::sleep(Duration::from_secs(o.interval).saturating_sub(started.elapsed()));
+    }
+}
+
+/// A hang was confirmed: decide whether to restart WSL, and do it.
+fn act(o: &WatchOpts, p: &Paths, log: &Log) {
+    let why = format!("WSL has not answered for {} s", o.hang_after);
+    if let Some(r) = off_reason(p) {
+        log.line(&format!("{why}: OFF, not restarting (off switch {}: {r})", p.off().display()));
+        return;
+    }
+    if o.dry_run {
+        log.line(&format!("{why}: DRY RUN, would run wsl.exe --shutdown"));
+        return;
+    }
+    match gate(&history(p), now_secs(), o.min_gap as i64, o.max_per_day) {
+        Gate::Cap(n) => disarm(p, log, &format!("{why}, but wslwatch already restarted WSL {n} times in 24 h; `wslwatch.exe on` re-arms it")),
+        Gate::Wait(ago) => log.line(&format!("{why}: not restarting, the last restart was {} min ago (at most one per {} min)", ago / 60, o.min_gap / 60)),
+        Gate::Go => restart_and_verify(o, p, log, &why),
+    }
+}
+
+fn restart_and_verify(o: &WatchOpts, p: &Paths, log: &Log, why: &str) {
+    log.line(&format!("{why}: restarting WSL"));
+    let (since, t0) = (utc_now(), Instant::now());
+    record_restart(p, now_secs(), why);
+    restart_wsl(log);
+    match recover(&o.agent_probe(&since), o, t0) {
+        Ok((wsl, agent)) => log.line(&format!("back: WSL answered {wsl:.0} s after the restart, the agent was connected at {agent:.0} s")),
+        Err(e) => disarm(p, log, &format!("WSL or the agent was not back {} s after the restart at {since} ({e}), so it stopped acting instead of looping; `wslwatch.exe on` re-arms it", o.recover_within)),
+    }
+}
+
+/// Poll `argv` (the agent probe) until it passes or --recover-within runs out.
+/// Ok((s until WSL answered, s until the agent was connected)).
+fn recover(argv: &[String], o: &WatchOpts, t0: Instant) -> Result<(f64, f64), String> {
+    let deadline = t0 + Duration::from_secs(o.recover_within);
+    let poll = Duration::from_secs(o.interval.min(5));
+    let mut wsl_back = None::<f64>;
+    loop {
+        let t = Instant::now();
+        let out = run(argv, Duration::from_secs(o.probe_timeout.min(o.recover_within)));
+        let at = t0.elapsed().as_secs_f64();
+        match &out {
+            Outcome::Exited { ok: true, .. } => return Ok((wsl_back.unwrap_or(at), at)),
+            Outcome::Exited { code: Some(AGENT_NOT_BACK), .. } => {
+                wsl_back.get_or_insert(at);
+            }
+            _ => {}
+        }
+        let last = describe(&out);
+        if Instant::now() >= deadline {
+            return Err(match wsl_back {
+                Some(w) => format!("WSL answered at {w:.0} s, the agent never reconnected: {last}"),
+                None => format!("WSL never answered: {last}"),
+            });
+        }
+        thread::sleep(poll.saturating_sub(t.elapsed()));
     }
 }
 
@@ -442,14 +650,109 @@ fn restart_wsl(log: &Log) {
     log.line(&format!("wsl.exe --shutdown --force: {}", describe(&forced)));
 }
 
+// ---------------------------------------------------------------- test cycle
+
+/// The controlled cycle that must pass before the watcher enforces: a
+/// simulated hang (a probe that never answers) is detected, WSL is really
+/// restarted, and WSL + the agent come back. Pass: the off switch goes.
+fn test_cycle(o: WatchOpts) -> i32 {
+    let p = o.paths();
+    let log = Log { path: p.log(), prefix: "test-cycle: " };
+    let _lock = match take_lock(&p.test_lock()) {
+        Ok(f) => f,
+        Err(e) => {
+            log.line(&format!("not starting: another test cycle holds {} ({e})", p.test_lock().display()));
+            return 1;
+        }
+    };
+    let fake = if o.probe_argv.is_empty() {
+        vec![wsl_exe(), "-d".into(), o.distro.clone(), "-u".into(), o.user.clone(), "--exec".into(), "/bin/sleep".into(), "30".into()]
+    } else {
+        o.probe_argv.clone()
+    };
+    let (step, window) = (Duration::from_secs(5), Duration::from_secs(20));
+    log.line(&format!("wslwatch {} pid {}: 1/3 simulated hang, probe = {} (killed after 5 s), window 20 s", env!("CARGO_PKG_VERSION"), std::process::id(), fake.join(" ")));
+    let (mut hang, t_start) = (Hang::new(window, Duration::from_secs(600)), Instant::now());
+    loop {
+        let t = Instant::now();
+        let out = run(&fake, step);
+        let hung = is_hang(&out, t.elapsed(), step);
+        match hang.observe(!hung, t) {
+            Verdict::Restart => break,
+            Verdict::Ok => {
+                log.line(&format!("FAIL: the simulated hang answered ({}); nothing restarted", describe(&out)));
+                return 1;
+            }
+            Verdict::Failing => log.line(&format!("simulated probe unanswered ({} in a row)", hang.fails)),
+        }
+        if t_start.elapsed() > Duration::from_secs(120) {
+            log.line("FAIL: no restart decision within 120 s; nothing restarted");
+            return 1;
+        }
+        thread::sleep(step.saturating_sub(t.elapsed()));
+    }
+    log.line(&format!("hang detected after {:.0} s", t_start.elapsed().as_secs_f64()));
+    if o.dry_run {
+        log.line("2/3 DRY RUN: would run wsl.exe --shutdown; the off switch is unchanged");
+        return 0;
+    }
+    if let Gate::Cap(n) = gate(&history(&p), now_secs(), 0, o.max_per_day) {
+        log.line(&format!("FAIL: wslwatch already restarted WSL {n} times in 24 h; not restarting"));
+        return 1;
+    }
+    log.line("2/3 restarting WSL for real");
+    let (since, t0) = (utc_now(), Instant::now());
+    record_restart(&p, now_secs(), "test-cycle");
+    restart_wsl(&log);
+    match recover(&o.agent_probe(&since), &o, t0) {
+        Ok((wsl, agent)) => {
+            log.line(&format!("3/3 PASS: WSL answered {wsl:.0} s after the restart, the agent was connected at {agent:.0} s"));
+            match set_on(&p) {
+                Ok(true) => log.line("off switch removed: ENFORCING"),
+                Ok(false) => log.line("there was no off switch: already enforcing"),
+                Err(e) => log.line(&format!("could not remove the off switch {}: {e}; still log-only", p.off().display())),
+            }
+            0
+        }
+        Err(e) => {
+            disarm(&p, &log, &format!("test cycle FAILED: {e}"));
+            1
+        }
+    }
+}
+
 // ---------------------------------------------------------------- probe
 
+/// The agent's last connection event in its log: (timestamp, connected?).
+fn agent_state(text: &str) -> Option<(String, bool)> {
+    text.lines().rev().find_map(|l| {
+        let (ts, msg) = l.strip_prefix('[')?.split_once("] ")?;
+        if msg.starts_with("connected to relay") {
+            Some((ts.to_string(), true))
+        } else if msg.starts_with("disconnected") {
+            Some((ts.to_string(), false))
+        } else {
+            None
+        }
+    })
+}
+
 fn probe(a: &[String]) -> i32 {
-    let path = match a {
-        [] => state_dir().join("wslwatch-probe"),
-        [f, p] if f == "--file" => PathBuf::from(p),
-        _ => return fail(USAGE),
-    };
+    let (mut path, mut since, mut agent_log) = (state_dir().join("wslwatch-probe"), None::<String>, state_dir().join("agent.log"));
+    let mut i = 0;
+    while i < a.len() {
+        let v = match a.get(i + 1) {
+            Some(v) => v.clone(),
+            None => return fail(USAGE),
+        };
+        match a[i].as_str() {
+            "--file" => path = v.into(),
+            "--agent-since" => since = Some(v),
+            "--agent-log" => agent_log = v.into(),
+            _ => return fail(USAGE),
+        }
+        i += 2;
+    }
     let t0 = Instant::now();
     let stamp = format!("{} {}\n", utc_now(), std::process::id());
     let tmp = path.with_extension("tmp");
@@ -469,55 +772,91 @@ fn probe(a: &[String]) -> i32 {
         }
         Ok(())
     })();
-    match r {
-        Ok(()) => {
-            println!("ok {:.3} s {}", t0.elapsed().as_secs_f64(), path.display());
+    if let Err(e) = r {
+        eprintln!("probe failed: {e} ({})", path.display());
+        return 1;
+    }
+    let disk = t0.elapsed().as_secs_f64();
+    let Some(since) = since else {
+        println!("ok {disk:.3} s {}", path.display());
+        return 0;
+    };
+    match agent_state(&fs::read_to_string(&agent_log).unwrap_or_default()) {
+        Some((ts, true)) if ts.as_str() >= since.as_str() => {
+            println!("ok {disk:.3} s; agent connected at {ts}");
             0
         }
-        Err(e) => {
-            eprintln!("probe failed: {e} ({})", path.display());
-            1
+        state => {
+            println!("disk ok {disk:.3} s; agent not reconnected since {since} (last event: {state:?})");
+            AGENT_NOT_BACK
         }
     }
 }
 
-// ---------------------------------------------------------------- status
+// ---------------------------------------------------------------- off / on / status
+
+fn off_cmd(a: &[String]) -> i32 {
+    let p = match dir_flag(a) {
+        Ok(d) => Paths { dir: d },
+        Err(e) => return fail(&e),
+    };
+    let reason = a.iter().position(|x| x == "--reason").and_then(|i| a.get(i + 1)).cloned().unwrap_or_else(|| "turned off by hand".into());
+    match set_off(&p, &reason) {
+        Ok(()) => {
+            Log { path: p.log(), prefix: "" }.line(&format!("off switch set: {reason}"));
+            println!("OFF: {} (log-only until `wslwatch on`)", p.off().display());
+            0
+        }
+        Err(e) => fail(&format!("{}: {e}", p.off().display())),
+    }
+}
+
+fn on_cmd(a: &[String]) -> i32 {
+    let p = match dir_flag(a) {
+        Ok(d) => Paths { dir: d },
+        Err(e) => return fail(&e),
+    };
+    match set_on(&p) {
+        Ok(removed) => {
+            Log { path: p.log(), prefix: "" }.line(if removed { "off switch removed by hand: enforcing" } else { "on: there was no off switch" });
+            println!("enforcing{}", if removed { "" } else { " (there was no off switch)" });
+            0
+        }
+        Err(e) => fail(&format!("{}: {e}", p.off().display())),
+    }
+}
 
 fn status(a: &[String]) -> i32 {
-    let dir = state_dir();
-    let (mut log, mut lock, mut n) = (dir.join("wslwatch.log"), dir.join("wslwatch.lock"), 20usize);
-    let mut i = 0;
-    while i + 1 < a.len() {
-        match a[i].as_str() {
-            "--log" => log = a[i + 1].clone().into(),
-            "--lock" => lock = a[i + 1].clone().into(),
-            "-n" => n = a[i + 1].parse().unwrap_or(20),
-            _ => return fail(USAGE),
-        }
-        i += 2;
-    }
-    if i != a.len() {
-        return fail(USAGE);
-    }
-    let running = if cfg!(windows) { take_lock(&lock).is_err() } else { false };
+    let p = match dir_flag(a) {
+        Ok(d) => Paths { dir: d },
+        Err(e) => return fail(&e),
+    };
+    let n = a.iter().position(|x| x == "-n").and_then(|i| a.get(i + 1)).and_then(|v| v.parse().ok()).unwrap_or(20usize);
+    let running = cfg!(windows) && take_lock(&p.lock()).is_err();
     if cfg!(windows) {
         println!("wslwatch: {}", if running { "running" } else { "NOT running" });
-    } else {
-        println!("wslwatch: (the running check is Windows-only)");
     }
-    let text = fs::read_to_string(&log).unwrap_or_default();
+    let off = off_reason(&p);
+    match &off {
+        Some(r) => println!("OFF (log-only): {r}"),
+        None => println!("enforcing (no off switch)"),
+    }
+    let now = now_secs();
+    let day: Vec<String> = history(&p).into_iter().filter(|&t| now - t < 86_400).map(utc).collect();
+    println!("WSL restarts in the last 24 h: {}{}", day.len(), if day.is_empty() { String::new() } else { format!(" ({})", day.join(", ")) });
+    let text = fs::read_to_string(p.log()).unwrap_or_default();
     let lines: Vec<&str> = text.lines().collect();
     for l in &lines[lines.len().saturating_sub(n)..] {
         println!("{l}");
     }
-    if running || !cfg!(windows) {
-        0
-    } else {
-        3
+    match (cfg!(windows), running, off.is_some()) {
+        (true, false, _) => 3,
+        (_, _, true) => 4,
+        _ => 0,
     }
 }
 
-// ---------------------------------------------------------------- install
+// ---------------------------------------------------------------- install, detach
 
 #[cfg(windows)]
 fn reg(args: &[&str]) -> bool {
@@ -537,12 +876,74 @@ fn stop_others() {
     thread::sleep(Duration::from_millis(500));
 }
 
+/// CreateProcess inherits every inheritable handle, and the std handles WSL
+/// interop gives us are inheritable pipes: a child holding them keeps the
+/// caller (a whitestick command) from ever seeing EOF. Unmark them first.
 #[cfg(windows)]
-fn install(a: &[String]) -> i32 {
+fn stop_inheriting_stdio() {
+    extern "system" {
+        fn GetStdHandle(which: u32) -> isize;
+        fn SetHandleInformation(handle: isize, mask: u32, flags: u32) -> i32;
+    }
+    for which in [-10i32, -11, -12] {
+        // SAFETY: plain kernel32 calls on our own std handles; null or
+        // INVALID_HANDLE_VALUE is skipped.
+        unsafe {
+            let h = GetStdHandle(which as u32);
+            if h != 0 && h != -1 {
+                SetHandleInformation(h, 1, 0); // HANDLE_FLAG_INHERIT off
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn spawn_detached(exe: &Path, args: &[String]) -> std::io::Result<u32> {
     use std::os::windows::process::CommandExt;
-    if let Err(e) = WatchOpts::parse(a) {
+    let _ = std::io::stdout().flush();
+    stop_inheriting_stdio();
+    const DETACHED: u32 = 0x0000_0008 | 0x0000_0200; // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    const BREAKAWAY: u32 = 0x0100_0000; // CREATE_BREAKAWAY_FROM_JOB
+    let mk = |flags: u32| {
+        let mut c = Command::new(exe);
+        c.args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).creation_flags(flags);
+        c
+    };
+    mk(DETACHED | BREAKAWAY).spawn().or_else(|_| mk(DETACHED).spawn()).map(|c| c.id())
+}
+
+/// `test-cycle --detach ...`: the cycle shuts WSL down, which would kill a
+/// caller running inside WSL, so it continues as its own Windows process.
+#[cfg(windows)]
+fn detach_self(sub: &str, rest: &[String]) -> i32 {
+    let mut args = vec![sub.to_string()];
+    args.extend(rest.iter().filter(|a| *a != "--detach").cloned());
+    if let Err(e) = WatchOpts::parse(&args[1..]) {
         return fail(&e);
     }
+    let me = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => return fail(&format!("current_exe: {e}")),
+    };
+    match spawn_detached(&me, &args) {
+        Ok(pid) => {
+            println!("{sub} running detached as pid {pid}; follow it with `wslwatch.exe status`");
+            0
+        }
+        Err(e) => fail(&format!("could not start {sub}: {e}")),
+    }
+}
+#[cfg(not(windows))]
+fn detach_self(_: &str, _: &[String]) -> i32 {
+    fail("--detach is Windows-only")
+}
+
+#[cfg(windows)]
+fn install(a: &[String]) -> i32 {
+    let o = match WatchOpts::parse(a) {
+        Ok(o) => o,
+        Err(e) => return fail(&e),
+    };
     let dir = state_dir();
     let _ = fs::create_dir_all(&dir);
     let dest = dir.join("wslwatch.exe");
@@ -551,8 +952,7 @@ fn install(a: &[String]) -> i32 {
         Err(e) => return fail(&format!("current_exe: {e}")),
     };
     stop_others();
-    let same = fs::canonicalize(&me).ok() == fs::canonicalize(&dest).ok();
-    if !same {
+    if fs::canonicalize(&me).ok() != fs::canonicalize(&dest).ok() {
         if dest.exists() {
             let old = dir.join("wslwatch.old.exe");
             let _ = fs::remove_file(&old);
@@ -564,6 +964,12 @@ fn install(a: &[String]) -> i32 {
             return fail(&format!("copy to {}: {e}", dest.display()));
         }
     }
+    let p = o.paths();
+    let reason = format!("installed wslwatch {} log-only; `wslwatch.exe test-cycle --detach` must pass before it acts", env!("CARGO_PKG_VERSION"));
+    if let Err(e) = set_off(&p, &reason) {
+        return fail(&format!("could not set the off switch {}: {e}; not installing", p.off().display()));
+    }
+    println!("OFF (log-only): {}", p.off().display());
     let exe = dest.display().to_string();
     let mut cmdline = if exe.contains(' ') { format!("\"{exe}\" watch") } else { format!("{exe} watch") };
     for x in a {
@@ -574,45 +980,14 @@ fn install(a: &[String]) -> i32 {
         return fail("reg.exe add failed");
     }
     println!("{RUN_KEY}\\{RUN_VALUE} = {cmdline}");
-    let _ = std::io::stdout().flush();
-    // CreateProcess here inherits every inheritable handle, and the std handles
-    // WSL interop gave us are inheritable pipes: a watcher holding them keeps
-    // the caller's `wslwatch.exe install` from ever seeing EOF (it hung until
-    // `timeout` killed it). Unmark them first.
-    stop_inheriting_stdio();
-    const DETACHED: u32 = 0x0000_0008 | 0x0000_0200; // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
-    const BREAKAWAY: u32 = 0x0100_0000; // CREATE_BREAKAWAY_FROM_JOB
-    let mk = |flags: u32| {
-        let mut c = Command::new(&dest);
-        c.arg("watch").args(a).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).creation_flags(flags);
-        c
-    };
-    match mk(DETACHED | BREAKAWAY).spawn().or_else(|_| mk(DETACHED).spawn()) {
-        Ok(c) => {
-            println!("started pid {}", c.id());
+    let mut args = vec!["watch".to_string()];
+    args.extend(a.iter().cloned());
+    match spawn_detached(&dest, &args) {
+        Ok(pid) => {
+            println!("started pid {pid}");
             0
         }
         Err(e) => fail(&format!("installed, but could not start it: {e}")),
-    }
-}
-
-#[cfg(windows)]
-fn stop_inheriting_stdio() {
-    extern "system" {
-        fn GetStdHandle(which: u32) -> isize;
-        fn SetHandleInformation(handle: isize, mask: u32, flags: u32) -> i32;
-    }
-    const HANDLE_FLAG_INHERIT: u32 = 1;
-    // STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE = (DWORD)-10, -11, -12
-    for which in [-10i32, -11, -12] {
-        // SAFETY: plain kernel32 calls on our own std handles; a null or
-        // INVALID_HANDLE_VALUE result is skipped.
-        unsafe {
-            let h = GetStdHandle(which as u32);
-            if h != 0 && h != -1 {
-                SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0);
-            }
-        }
     }
 }
 
@@ -640,6 +1015,17 @@ mod tests {
 
     fn s(n: u64) -> Duration {
         Duration::from_secs(n)
+    }
+
+    fn tmpdir(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("wslwatch-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn strs(x: &[&str]) -> Vec<String> {
+        x.iter().map(|s| s.to_string()).collect()
     }
 
     #[test]
@@ -681,8 +1067,94 @@ mod tests {
         for k in 1..10 {
             assert_eq!(h.observe(false, t + s(300 + 60 * k)), Verdict::Failing, "quiet probe {k}");
         }
-        // quiet ends at 900; the failures began at 360, so the next one restarts
         assert_eq!(h.observe(false, t + s(900)), Verdict::Restart);
+    }
+
+    #[test]
+    fn rate_limits() {
+        let now = 1_000_000;
+        assert_eq!(gate(&[], now, 3600, 3), Gate::Go);
+        assert_eq!(gate(&[now - 600], now, 3600, 3), Gate::Wait(600));
+        assert_eq!(gate(&[now - 7200], now, 3600, 3), Gate::Go);
+        assert_eq!(gate(&[now - 80_000, now - 40_000, now - 7200], now, 3600, 3), Gate::Cap(3));
+        assert_eq!(gate(&[now - 90_000, now - 40_000, now - 7200], now, 3600, 3), Gate::Go, "a restart over 24 h old does not count");
+    }
+
+    #[test]
+    fn history_and_off_switch_round_trip() {
+        let p = Paths { dir: tmpdir("state") };
+        assert!(off_reason(&p).is_none());
+        set_off(&p, "maintenance").unwrap();
+        assert!(off_reason(&p).unwrap().ends_with("maintenance"));
+        assert!(set_on(&p).unwrap());
+        assert!(!set_on(&p).unwrap());
+        record_restart(&p, 1_000, "a");
+        record_restart(&p, 2_000, "b");
+        assert_eq!(history(&p), vec![1_000, 2_000]);
+        let _ = fs::remove_dir_all(&p.dir);
+    }
+
+    #[test]
+    fn the_off_switch_wins_over_a_hang() {
+        let dir = tmpdir("off");
+        let p = Paths { dir: dir.clone() };
+        set_off(&p, "test").unwrap();
+        let mut args = strs(&["--interval", "1", "--probe-timeout", "1", "--hang-after", "1", "--max-restarts", "1", "--dir"]);
+        args.push(dir.display().to_string());
+        args.extend(strs(&["--", "sleep", "5"]));
+        assert_eq!(watch(WatchOpts::parse(&args).unwrap()), 0);
+        let log = fs::read_to_string(p.log()).unwrap();
+        assert!(log.contains("OFF, not restarting"), "{log}");
+        assert!(history(&p).is_empty(), "nothing was restarted");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn max_restarts_ends_a_dry_run_instance() {
+        let dir = tmpdir("max");
+        let mut args = strs(&["--dry-run", "--interval", "1", "--probe-timeout", "1", "--hang-after", "1", "--max-restarts", "1", "--dir"]);
+        args.push(dir.display().to_string());
+        args.extend(strs(&["--", "sleep", "5"]));
+        let t0 = Instant::now();
+        assert_eq!(watch(WatchOpts::parse(&args).unwrap()), 0);
+        assert!(t0.elapsed() < s(10), "took {:?}", t0.elapsed());
+        let log = fs::read_to_string(dir.join("wslwatch.log")).unwrap();
+        assert!(log.contains("DRY RUN, would run wsl.exe --shutdown"), "{log}");
+        assert!(log.contains("exiting after 1 restart decision(s)"), "{log}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn agent_log_last_event() {
+        let text = "[2026-10-22T16:08:01Z] whitestick agent 1.0.0\n[2026-10-22T16:08:02Z] connected to relay\n[2026-10-22T16:08:05Z] [0005d] pid 1: ls\n";
+        assert_eq!(agent_state(text), Some(("2026-10-22T16:08:02Z".into(), true)));
+        let later = format!("{text}[2026-10-22T16:09:00Z] disconnected after 58 s: nothing heard\n");
+        assert_eq!(agent_state(&later), Some(("2026-10-22T16:09:00Z".into(), false)));
+        assert_eq!(agent_state("[x] nothing\n"), None);
+    }
+
+    #[test]
+    fn probe_checks_the_agent_since() {
+        let dir = tmpdir("agent");
+        let (file, log) = (dir.join("probe"), dir.join("agent.log"));
+        fs::write(&log, "[2026-10-22T16:08:02Z] connected to relay\n").unwrap();
+        let run_probe = |since: &str| probe(&strs(&["--file", &file.display().to_string(), "--agent-log", &log.display().to_string(), "--agent-since", since]));
+        assert_eq!(run_probe("2026-10-22T16:07:44Z"), 0);
+        assert_eq!(run_probe("2026-10-22T16:08:03Z"), AGENT_NOT_BACK);
+        assert_eq!(probe(&strs(&["--file", &file.display().to_string()])), 0);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn recovery_passes_or_gives_up() {
+        let mut o = WatchOpts::parse(&strs(&["--interval", "1", "--probe-timeout", "1", "--recover-within", "2"])).unwrap();
+        assert!(recover(&strs(&["true"]), &o, Instant::now()).is_ok());
+        let t0 = Instant::now();
+        let e = recover(&strs(&["false"]), &o, t0).unwrap_err();
+        assert!(e.contains("WSL never answered"), "{e}");
+        assert!(t0.elapsed() < s(6));
+        o.recover_within = 1;
+        assert!(recover(&strs(&["sleep", "5"]), &o, Instant::now()).is_err());
     }
 
     #[test]
@@ -693,17 +1165,9 @@ mod tests {
     }
 
     #[test]
-    fn probe_writes_and_reads_back() {
-        let p = std::env::temp_dir().join(format!("wslwatch-test-{}", std::process::id())).join("probe");
-        assert_eq!(probe(&["--file".into(), p.display().to_string()]), 0);
-        assert!(fs::read_to_string(&p).unwrap().ends_with(&format!(" {}\n", std::process::id())));
-        let _ = fs::remove_dir_all(p.parent().unwrap());
-    }
-
-    #[test]
     fn a_hung_command_is_killed_at_the_timeout() {
         let t0 = Instant::now();
-        let o = run(&["sleep".into(), "30".into()], s(1));
+        let o = run(&strs(&["sleep", "30"]), s(1));
         assert!(matches!(o, Outcome::TimedOut));
         assert!(t0.elapsed() < s(5));
     }
@@ -723,26 +1187,11 @@ mod tests {
 
     #[test]
     fn flags_parse() {
-        let o = WatchOpts::parse(&["--interval".into(), "5".into(), "--dry-run".into(), "--".into(), "sleep".into(), "9".into()]).unwrap();
-        assert_eq!((o.interval, o.dry_run, o.max_restarts), (5, true, None));
-        assert_eq!(o.probe_cmd(), vec!["sleep".to_string(), "9".to_string()]);
-        assert!(WatchOpts::parse(&["--bogus".into(), "1".into()]).is_err());
-        assert_eq!(WatchOpts::parse(&["--max-restarts".into(), "1".into()]).unwrap().max_restarts, Some(1));
-    }
-
-    #[test]
-    fn max_restarts_ends_a_test_instance() {
-        let dir = std::env::temp_dir().join(format!("wslwatch-max-{}", std::process::id()));
-        let a = |x: &[&str]| x.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        let mut args = a(&["--dry-run", "--interval", "1", "--probe-timeout", "1", "--hang-after", "1", "--max-restarts", "1"]);
-        args.extend(a(&["--log", &dir.join("w.log").display().to_string(), "--lock", &dir.join("w.lock").display().to_string()]));
-        args.extend(a(&["--", "sleep", "5"]));
-        let t0 = Instant::now();
-        assert_eq!(watch(WatchOpts::parse(&args).unwrap()), 0);
-        assert!(t0.elapsed() < s(10), "took {:?}", t0.elapsed());
-        let log = fs::read_to_string(dir.join("w.log")).unwrap();
-        assert!(log.contains("DRY RUN, would run wsl.exe --shutdown"), "{log}");
-        assert!(log.contains("exiting after 1 restart(s)"), "{log}");
-        let _ = fs::remove_dir_all(&dir);
+        let o = WatchOpts::parse(&strs(&["--interval", "5", "--dry-run", "--", "sleep", "9"])).unwrap();
+        assert_eq!((o.interval, o.dry_run, o.max_restarts, o.min_gap, o.max_per_day, o.recover_within), (5, true, None, 3600, 3, 600));
+        assert_eq!(o.probe_cmd(), strs(&["sleep", "9"]));
+        assert_eq!(o.agent_probe("T").last().unwrap(), "T");
+        assert!(o.agent_probe("T").contains(&"probe".to_string()), "the agent probe is always the real one");
+        assert!(WatchOpts::parse(&strs(&["--bogus", "1"])).is_err());
     }
 }
