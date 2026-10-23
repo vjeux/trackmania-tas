@@ -8,6 +8,9 @@
 //!   tmxup shot --out FILE.png             a screenshot of the page
 //!   tmxup click --selector CSS            a real mouse click at the element's centre
 //!   tmxup type --selector CSS --text T|--text-file F   focus the element and insert the text
+//!   tmxup upload --map WINPATH --name N [--difficulty 0-5] [--routes 0-2] --tags ID,ID,ID
+//!                --comments-file F [--unlisted] [--dry-run]   the whole form for one map
+//!   tmxup comments --id MAPID --comments-file F    re-set an uploaded map's comments
 //!
 //! Every command talks to Chrome's DevTools port on the loopback (`--port`, default
 //! 9222): Chrome binds it to 127.0.0.1, so this runs ON Windows (built for
@@ -123,6 +126,44 @@ impl Cdp {
             Some(n) if n > 0 => Ok(n),
             _ => Err(format!("no element matches {selector:?}")),
         }
+    }
+
+    fn set_comments(&mut self, comments: &str) -> Result<(), String> {
+        // Select the editor's whole content with a DOM Range (a synthetic Ctrl+A and
+        // execCommand('selectAll') select nothing inside CodeMirror); the first insertText
+        // then REPLACES it — the append of the 22:26 pass on 367061 came from that.
+        // CodeMirror restores its own selection when focus arrives by .focus(): a real
+        // click first (focus + cursor), THEN the Range — CM's selectionchange handler
+        // adopts a DOM selection made while it already has the focus.
+        let p = self.eval("(function(){const e=document.querySelector('.bbeditor .cm-content'); if(!e) return null; e.scrollIntoView({block:'center'}); const r=e.getBoundingClientRect(); return [r.left+Math.min(r.width/2, 200), r.top+Math.min(r.height/2, 20)];})()")?;
+        let (x, y) = match p.as_array() {
+            Some(a) if a.len() == 2 => (a[0].as_f64().unwrap_or(0.0), a[1].as_f64().unwrap_or(0.0)),
+            _ => return Err("no CodeMirror comments editor (.bbeditor .cm-content) on the page".into()),
+        };
+        for (t, n) in [("mouseMoved", 0), ("mousePressed", 1), ("mouseReleased", 1)] {
+            self.call("Input.dispatchMouseEvent", json!({"type": t, "x": x, "y": y, "button": "left", "clickCount": n}))?;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+        let selected = self.eval("(function(){const e=document.querySelector('.bbeditor .cm-content'); const r=document.createRange(); r.selectNodeContents(e); const s=window.getSelection(); s.removeAllRanges(); s.addRange(r); return s.toString().length;})()")?;
+        let have = self.eval("document.querySelector('.bbeditor .cm-content').innerText.trim().length")?;
+        eprintln!("  comments editor: {} chars present, {} selected", have, selected);
+        if comments.trim().is_empty() {
+            self.call("Input.insertText", json!({"text": " "}))?;
+        }
+        // one insertText per line, Enter between them (CodeMirror splits lines on Enter)
+        for (i, line) in comments.split('\n').enumerate() {
+            if i > 0 {
+                self.call("Input.dispatchKeyEvent", json!({"type": "keyDown", "key": "Enter", "code": "Enter", "windowsVirtualKeyCode": 13, "text": "\r"}))?;
+                self.call("Input.dispatchKeyEvent", json!({"type": "keyUp", "key": "Enter", "code": "Enter", "windowsVirtualKeyCode": 13}))?;
+            }
+            if !line.is_empty() {
+                self.call("Input.insertText", json!({"text": line}))?;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(500));
+        let shown = self.eval("document.querySelector('.bbeditor .cm-content').innerText.length")?;
+        eprintln!("  comments: {} chars in the editor (the textarea syncs on submit)", shown);
+        Ok(())
     }
 
     fn wait_ready(&mut self, wait_s: u64) -> Result<String, String> {
@@ -253,6 +294,116 @@ fn run(args: &[String]) -> Result<(), String> {
             }
             c.call("Input.insertText", json!({"text": text}))?;
             println!("typed {} chars into {sel}", text.chars().count());
+            Ok(())
+        }
+        // The whole form for ONE map, then the page it lands on. Every value is a flag
+        // (the comments from a file: bbcode with newlines); the tags are TMX tag ids.
+        "upload" => {
+            let map = flag(args, "--map").ok_or("upload needs --map WINPATH (.Map.Gbx)")?;
+            let name = flag(args, "--name").ok_or("upload needs --name")?;
+            let difficulty = flag(args, "--difficulty").unwrap_or_else(|| "1".into());
+            let routes = flag(args, "--routes").unwrap_or_else(|| "0".into());
+            let tags: Vec<String> = flag(args, "--tags").map(|t| t.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()).unwrap_or_default();
+            let comments = match flag(args, "--comments-file") {
+                Some(f) => std::fs::read_to_string(&f).map_err(|e| format!("{f}: {e}"))?,
+                None => flag(args, "--comments").unwrap_or_default(),
+            };
+            let unlisted = args.iter().any(|a| a == "--unlisted");
+            let dry = args.iter().any(|a| a == "--dry-run");
+            let mut c = Cdp::attach(port, target.as_deref())?;
+            c.call("Page.navigate", json!({"url": "https://trackmania.exchange/mapupload"}))?;
+            std::thread::sleep(Duration::from_millis(800));
+            let at = c.wait_ready(60)?;
+            if !at.contains("/mapupload") {
+                return Err(format!("not on the upload form but at {at} — logged out?"));
+            }
+            // the map file (the page reads the Gbx and prefills name/length/author)
+            let n = c.node("#mapUploadForm input[type=file][accept='.map.gbx']")?;
+            c.call("DOM.setFileInputFiles", json!({"files": [map], "nodeId": n}))?;
+            std::thread::sleep(Duration::from_millis(2500));
+            let prefilled = c.eval("document.querySelector('#TrackName').value")?;
+            eprintln!("  file set; TrackName prefilled: {prefilled}");
+            // the name
+            c.eval(&format!("(function(){{const e=document.querySelector('#TrackName'); e.value={}; e.dispatchEvent(new Event('input',{{bubbles:true}})); e.dispatchEvent(new Event('change',{{bubbles:true}})); return e.value;}})()", serde_json::to_string(&name).unwrap()))?;
+            // difficulty + routes
+            for (sel, val) in [("#Difficulty", &difficulty), ("#Routes", &routes)] {
+                c.eval(&format!("(function(){{const e=document.querySelector('{sel}'); e.value={}; e.dispatchEvent(new Event('change',{{bubbles:true}})); return e.value;}})()", serde_json::to_string(val).unwrap()))?;
+            }
+            // tags: one hidden Tags[i] per tag — the + button adds a row
+            for _ in 1..tags.len() {
+                c.eval("document.querySelector('#trackTagAdd').click(); 1")?;
+                std::thread::sleep(Duration::from_millis(300));
+            }
+            for (i, t) in tags.iter().enumerate() {
+                let set = c.eval(&format!("(function(){{const e=document.getElementById('Tags[{i}]'); if(!e) return 'missing'; e.value={}; e.dispatchEvent(new Event('change',{{bubbles:true}})); return e.value;}})()", serde_json::to_string(t).unwrap()))?;
+                eprintln!("  Tags[{i}] = {set}");
+            }
+            // the comments: a CodeMirror 6 editor (`.cm-content`, contenteditable) that syncs
+            // to the hidden #AuthorComments textarea — only typed text reaches its state
+            // (a value set on the textarea was dropped on submit: map 367061 came out with
+            // "(No text defined)"); focus it, select all, insert the text as typing
+            c.set_comments(&comments)?;
+            if unlisted {
+                c.eval("(function(){const e=document.querySelector('#Unlisted'); if(!e.checked){e.click();} return e.checked;})()")?;
+            }
+            let summary = c.eval("JSON.stringify({name:document.querySelector('#TrackName').value, len:document.querySelector('#MapLengthFormatted').value, difficulty:document.querySelector('#Difficulty').value, routes:document.querySelector('#Routes').value, tags:[...document.querySelectorAll('#trackTagList input[type=hidden]')].map(e=>e.value), unlisted:document.querySelector('#Unlisted').checked, visible:document.querySelector('#Visible').checked, comments:document.querySelector('#AuthorComments').value.length, errors:[...document.querySelectorAll('.field-validation-error')].map(e=>e.innerText).filter(Boolean)})")?;
+            println!("form: {}", summary.as_str().unwrap_or(""));
+            if dry {
+                println!("dry run: not submitted");
+                return Ok(());
+            }
+            let before = c.eval("location.href")?.as_str().unwrap_or("").to_string();
+            c.eval("document.querySelector('#mapUploadForm button[type=submit]').click(); 1")?;
+            // the upload takes a while (the file is a few MB); wait for a new page
+            let t0 = std::time::Instant::now();
+            loop {
+                std::thread::sleep(Duration::from_millis(1000));
+                let here = c.eval("document.readyState + ' ' + location.href").unwrap_or(Value::Null);
+                let h = here.as_str().unwrap_or("").to_string();
+                if h.starts_with("complete ") && !h.ends_with(&before) && !h.contains("/mapupload") {
+                    println!("landed: {}", &h[9..]);
+                    break;
+                }
+                if t0.elapsed().as_secs() > 180 {
+                    let errs = c.eval("JSON.stringify([...document.querySelectorAll('.field-validation-error, .validation-summary-errors, .alert-danger')].map(e=>e.innerText).filter(Boolean))").unwrap_or(Value::Null);
+                    return Err(format!("no new page after 180 s (still at {h}); form errors: {errs}"));
+                }
+            }
+            let title = c.eval("document.title")?;
+            println!("title: {}", title.as_str().unwrap_or(""));
+            Ok(())
+        }
+        // Re-set the comments of an uploaded map through its edit form (/mapupload/<id>).
+        "comments" => {
+            let id = flag(args, "--id").ok_or("comments needs --id MAPID")?;
+            let comments = match flag(args, "--comments-file") {
+                Some(f) => std::fs::read_to_string(&f).map_err(|e| format!("{f}: {e}"))?,
+                None => flag(args, "--comments").ok_or("comments needs --comments-file F")?,
+            };
+            let mut c = Cdp::attach(port, target.as_deref())?;
+            c.call("Page.navigate", json!({"url": format!("https://trackmania.exchange/mapupload/{id}")}))?;
+            std::thread::sleep(Duration::from_millis(800));
+            let at = c.wait_ready(60)?;
+            if !at.contains(&format!("/mapupload/{id}")) {
+                return Err(format!("not on the edit form but at {at}"));
+            }
+            c.set_comments(&comments)?;
+            c.eval("document.querySelector('#mapUploadForm button[type=submit]').click(); 1")?;
+            let t0 = std::time::Instant::now();
+            loop {
+                std::thread::sleep(Duration::from_millis(1000));
+                let h = c.eval("document.readyState + ' ' + location.href").unwrap_or(Value::Null).as_str().unwrap_or("").to_string();
+                if h.starts_with("complete ") && !h.contains("/mapupload") {
+                    println!("landed: {}", &h[9..]);
+                    break;
+                }
+                if t0.elapsed().as_secs() > 120 {
+                    let errs = c.eval("JSON.stringify([...document.querySelectorAll('.field-validation-error, .validation-summary-errors, .alert-danger')].map(e=>e.innerText).filter(Boolean))").unwrap_or(Value::Null);
+                    return Err(format!("no new page after 120 s (still at {h}); form errors: {errs}"));
+                }
+            }
+            let shown = c.eval("(document.querySelector('.authorcomments, [class*=authorcomment], .bbcode') || {innerText: ''}).innerText.slice(0, 400)")?;
+            println!("comments shown: {}", shown.as_str().unwrap_or(""));
             Ok(())
         }
         _ => Err("usage: tmxup targets | eval --expr JS | nav --url U [--wait-s N] | html [--selector CSS] | setfile --selector CSS --file WINPATH | shot --out FILE.png | click --selector CSS | type --selector CSS --text T   [--port 9222] [--target SUBSTR]".into()),
