@@ -658,6 +658,7 @@ fn run(args: &[String]) -> Result<(), String> {
             if !at.contains("/mappackcreate") {
                 return Err(format!("not on the mappack form but at {at} — logged out?"));
             }
+            std::thread::sleep(Duration::from_millis(2000));
             c.eval(&format!("(function(){{const e=document.querySelector('#Name'); e.value={}; e.dispatchEvent(new Event('input',{{bubbles:true}})); e.dispatchEvent(new Event('change',{{bubbles:true}})); return e.value;}})()", serde_json::to_string(&name).unwrap()))?;
             c.eval(&format!("(function(){{const e=document.querySelector('#MappackType'); e.value={}; e.dispatchEvent(new Event('change',{{bubbles:true}})); return e.value;}})()", serde_json::to_string(&mtype).unwrap()))?;
             let input_sel = "input[placeholder=\"Search by name or enter MapId\"]";
@@ -674,18 +675,35 @@ fn run(args: &[String]) -> Result<(), String> {
                 for (t, n) in [("mouseMoved", 0), ("mousePressed", 1), ("mouseReleased", 1)] {
                     c.call("Input.dispatchMouseEvent", json!({"type": t, "x": x, "y": y, "button": "left", "clickCount": n}))?;
                 }
-                c.call("Input.insertText", json!({"text": id}))?;
-                std::thread::sleep(Duration::from_millis(2500));
-                c.eval(&format!("(function(){{const inp=document.querySelector('{input_sel}'); inp.nextElementSibling.click(); return 1;}})()"))?;
+                // the explicit focus + select after the click is what the working CLI
+                // sequence (click, type, Add) did; without it the typed id was ignored
+                // the page looks the id up on input and Add uses the answer; a slow or
+                // missed lookup leaves Add a no-op — so: type, wait, Add, and when nothing
+                // lands within 4 s type it again (up to 5 rounds)
                 let t0 = std::time::Instant::now();
+                let mut round = 0;
                 loop {
-                    std::thread::sleep(Duration::from_millis(400));
-                    let has = c.eval(&format!("document.querySelector('#MapEntries').value.includes('\"MapId\":{id},')"))?;
-                    if has == json!(true) {
+                    c.eval(&format!("(function(){{const e=document.querySelector('{input_sel}'); e.focus(); e.select && e.select(); e.value=''; return 1;}})()"))?;
+                    c.call("Input.insertText", json!({"text": id}))?;
+                    std::thread::sleep(Duration::from_millis(3000));
+                    c.eval(&format!("(function(){{const inp=document.querySelector('{input_sel}'); inp.nextElementSibling.click(); return 1;}})()"))?;
+                    let t1 = std::time::Instant::now();
+                    let mut landed = false;
+                    while t1.elapsed().as_secs() < 4 {
+                        std::thread::sleep(Duration::from_millis(400));
+                        let has = c.eval(&format!("document.querySelector('#MapEntries').value.includes('\"MapId\":{id},')"))?;
+                        if has == json!(true) {
+                            landed = true;
+                            break;
+                        }
+                    }
+                    if landed {
                         break;
                     }
-                    if t0.elapsed().as_secs() > 20 {
-                        return Err(format!("map {id} was not added after 20 s (entry {})", i + 1));
+                    round += 1;
+                    if round >= 5 || t0.elapsed().as_secs() > 60 {
+                        let diag = c.eval(&format!("JSON.stringify({{value: document.querySelector('{input_sel}').value, active: document.activeElement && (document.activeElement.tagName + '#' + document.activeElement.id + '.' + document.activeElement.className), entries: document.querySelector('#MapEntries').value.slice(0, 120), modals: [...document.querySelectorAll('.modal.show, .swal2-container, .featherlight')].map(e => e.innerText.slice(0, 100)), errs: [...document.querySelectorAll('.field-validation-error, .text-danger')].map(e => e.innerText).filter(Boolean)}})")).unwrap_or(Value::Null);
+                        return Err(format!("map {id} was not added after {round} rounds (entry {}): {diag}", i + 1));
                     }
                 }
                 if (i + 1) % 10 == 0 {
