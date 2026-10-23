@@ -742,6 +742,11 @@ pub fn mint_tokens_standalone(wsx: &Wsx, token_dir: &Path) -> Result<(), String>
         let game_pids = wsx.sh("/mnt/c/Windows/System32/tasklist.exe 2>/dev/null | grep -i 'trackmania.exe' | awk '{print $2}'; true").unwrap_or_default();
         let only_agent = up == "1" && !agent_pid.is_empty() && game_pids.trim() == agent_pid;
         let idle = crate::inputidle::read(wsx, 60).map(|v| v.free).unwrap_or(false);
+        // …and not a game a load gate is driving right now (a live `shootctl loadloop`)
+        let gate_live = wsx.sh("pgrep -f 'shootctl loadloo[p]' >/dev/null && echo LIVE || echo none; true").unwrap_or_default().contains("LIVE");
+        if gate_live {
+            return Err("mint-standalone: a load gate (shootctl loadloop) is driving the running game — wait for it".into());
+        }
         if only_agent && idle {
             eprintln!("mint-standalone: the running game (pid {agent_pid}) is an agent's leftover on an idle box — closing it");
             wsx.sh(&format!("/mnt/c/Windows/System32/taskkill.exe /PID {agent_pid} /F >/dev/null 2>&1; sleep 6; true")).map_err(|e| format!("close agent game: {e}"))?;
