@@ -120,6 +120,27 @@ pub fn water_rect(store: &mut crate::store::DataStore, collection: u32, tile: &s
     Ok(Some(WaterRect { prefab: prefab.rsplit('\\').next().unwrap_or(&prefab).to_string(), x0: lo[0], x1: hi[0], z0: lo[2], z1: hi[2], surface, bed_lo: blo, bed_hi: bhi, bed_tris: nb, tris: wtris }))
 }
 
+/// The 4 m-grid water mask of a shore kind in the block frame: bit (zi·8 + xi) = the square at x 4·xi..4·xi+4,
+/// z 4·zi..4·zi+4 (its centre inside a water triangle). The same rasterisation `floor_mesh` uses.
+pub fn footprint_mask(w: &WaterRect) -> u64 {
+    let inside = |p: [f32; 2], t: &[[f32; 3]; 3]| -> bool {
+        let s = |a: [f32; 2], b: [f32; 2], c: [f32; 2]| (c[0] - a[0]) * (b[1] - a[1]) - (b[0] - a[0]) * (c[1] - a[1]);
+        let (a, b, c) = ([t[0][0], t[0][2]], [t[1][0], t[1][2]], [t[2][0], t[2][2]]);
+        let (d1, d2, d3) = (s(p, a, b), s(p, b, c), s(p, c, a));
+        !((d1 < 0.0 || d2 < 0.0 || d3 < 0.0) && (d1 > 0.0 || d2 > 0.0 || d3 > 0.0))
+    };
+    let mut mask = 0u64;
+    for zi in 0..8 {
+        for xi in 0..8 {
+            let p = [4.0 * xi as f32 + 2.0, 4.0 * zi as f32 + 2.0];
+            if w.tris.iter().any(|t| inside(p, t)) {
+                mask |= 1u64 << (zi * 8 + xi);
+            }
+        }
+    }
+    mask
+}
+
 pub struct FloorMesh {
     pub verts: Vec<[f32; 3]>,
     pub tris: Vec<[u32; 3]>,

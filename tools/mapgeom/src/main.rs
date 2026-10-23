@@ -4988,13 +4988,28 @@ fn main() {
                 if !only.is_empty() && !only.iter().any(|t| t.eq_ignore_ascii_case(&b.name)) { continue; }
                 *kinds.entry((b.name.clone(), b.flags)).or_default() += 1;
             }
-            println!("tile\tflags\tplacements\tprefab\tx0\tx1\tz0\tz1\tsurface\tbed_lo\tbed_hi\tbed_tris");
+            // --footprints F.tsv: the per-kind 4 m water mask for Hugo's C# (collection, tile, flags, prefab, bed, mask64:
+            // bit (zi*8 + xi) set = the 4 m square at block-frame x 4·xi..4·xi+4, z 4·zi..4·zi+4 is water)
+            let mut fp = String::from("collection\ttile\tflags_hex\tprefab\tbed_local\tsurface_local\tmask64_hex\twater_squares\n");
+            let coll_name = match collection { 0x10 => "RedIsland", 0x1d => "WhiteShore", 0x1c => "BlueBay", 0xf => "GreenCoast", _ => "Stadium" };
+            println!("tile\tflags\tplacements\tprefab\tx0\tx1\tz0\tz1\tsurface\tbed_lo\tbed_hi\tbed_tris\twater_4m_squares");
             for ((name, flags), n) in kinds {
                 match mapgeom::floor_finish::water_rect(&mut store, collection, &name, flags) {
-                    Ok(Some(w)) => println!("{name}\t{flags:08x}\t{n}\t{}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{}", w.prefab, w.x0, w.x1, w.z0, w.z1, w.surface, w.bed_lo, w.bed_hi, w.bed_tris),
+                    Ok(Some(w)) => {
+                        let mask = mapgeom::floor_finish::footprint_mask(&w);
+                        println!("{name}\t{flags:08x}\t{n}\t{}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{}\t{}", w.prefab, w.x0, w.x1, w.z0, w.z1, w.surface, w.bed_lo, w.bed_hi, w.bed_tris, mask.count_ones());
+                        fp.push_str(&format!("{coll_name}\t{name}\t{flags:08x}\t{}\t{:.2}\t{:.2}\t{mask:016x}\t{}\n", w.prefab, w.bed_lo, w.surface, mask.count_ones()));
+                    }
                     Ok(None) => if !only.is_empty() { println!("{name}\t{flags:08x}\t{n}\t-\tno water quad") },
                     Err(e) => if !only.is_empty() { println!("{name}\t{flags:08x}\t{n}\tERROR {e}") },
                 }
+            }
+            if let Some(f) = flag(&a.rest, "--footprints") {
+                // append (several maps feed one table); the header once
+                let existing = std::fs::read_to_string(&f).unwrap_or_default();
+                let body: String = fp.lines().skip(1).filter(|l| !existing.contains(l)).map(|l| format!("{l}\n")).collect();
+                let out = if existing.is_empty() { fp.lines().next().unwrap().to_string() + "\n" + &body } else { existing + &body };
+                std::fs::write(&f, out).unwrap_or_else(|e| die(format!("{f}: {e}")));
             }
         }
         // floor-finish MAP --out ITEM.Item.Gbx [--ident NAME.Item.Gbx] [--floor-below 0.1] [--floor-above 0.4] [--collection 26]:
