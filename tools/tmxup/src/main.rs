@@ -11,6 +11,9 @@
 //!   tmxup upload --map WINPATH --name N [--difficulty 0-5] [--routes 0-2] --tags ID,ID,ID
 //!                --comments-file F [--unlisted] [--dry-run]   the whole form for one map
 //!   tmxup comments --id MAPID --comments-file F    re-set an uploaded map's comments
+//!   tmxup listed --id MAPID                        switch an uploaded map from unlisted to listed
+//!   tmxup batch --playlist P.json --sheet S.csv --maps-dir DIR --alteration Tiny --done D.tsv
+//!               [--surface-tag ID] [--difficulty N] [--limit N] [--unlisted] [--dry-run]
 //!
 //! Every command talks to Chrome's DevTools port on the loopback (`--port`, default
 //! 9222): Chrome binds it to 127.0.0.1, so this runs ON Windows (built for
@@ -206,6 +209,176 @@ fn b64dec(s: &str) -> Vec<u8> {
     out
 }
 
+struct UploadSpec {
+    map: String,
+    name: String,
+    difficulty: String,
+    routes: String,
+    tags: Vec<String>,
+    comments: String,
+    unlisted: bool,
+}
+
+/// The whole upload form for one map; `Ok(Some(url))` is the map page it landed on,
+/// `Ok(None)` a dry run.
+fn upload_one(c: &mut Cdp, u: &UploadSpec, dry: bool) -> Result<Option<String>, String> {
+    c.call("Page.navigate", json!({"url": "https://trackmania.exchange/mapupload"}))?;
+    std::thread::sleep(Duration::from_millis(800));
+    let at = c.wait_ready(60)?;
+    if !at.contains("/mapupload") {
+        return Err(format!("not on the upload form but at {at} — logged out?"));
+    }
+    // the map file (the page reads the Gbx and prefills name/length/author)
+    let n = c.node("#mapUploadForm input[type=file][accept='.map.gbx']")?;
+    c.call("DOM.setFileInputFiles", json!({"files": [u.map], "nodeId": n}))?;
+    std::thread::sleep(Duration::from_millis(2500));
+    let prefilled = c.eval("document.querySelector('#TrackName').value")?;
+    eprintln!("  file set; TrackName prefilled: {prefilled}");
+    c.eval(&format!("(function(){{const e=document.querySelector('#TrackName'); e.value={}; e.dispatchEvent(new Event('input',{{bubbles:true}})); e.dispatchEvent(new Event('change',{{bubbles:true}})); return e.value;}})()", serde_json::to_string(&u.name).unwrap()))?;
+    for (sel, val) in [("#Difficulty", &u.difficulty), ("#Routes", &u.routes)] {
+        c.eval(&format!("(function(){{const e=document.querySelector('{sel}'); e.value={}; e.dispatchEvent(new Event('change',{{bubbles:true}})); return e.value;}})()", serde_json::to_string(val).unwrap()))?;
+    }
+    // tags: one hidden Tags[i] per tag — the + button adds a row
+    for _ in 1..u.tags.len() {
+        c.eval("document.querySelector('#trackTagAdd').click(); 1")?;
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    for (i, t) in u.tags.iter().enumerate() {
+        let set = c.eval(&format!("(function(){{const e=document.getElementById('Tags[{i}]'); if(!e) return 'missing'; e.value={}; e.dispatchEvent(new Event('change',{{bubbles:true}})); return e.value;}})()", serde_json::to_string(t).unwrap()))?;
+        if set.as_str() != Some(t.as_str()) {
+            return Err(format!("Tags[{i}] did not take {t}: {set}"));
+        }
+    }
+    // the comments: a CodeMirror 6 editor (`.cm-content`, contenteditable) that syncs to the
+    // hidden #AuthorComments textarea on submit — only typed text reaches its state (a value
+    // set on the textarea was dropped: map 367061 first came out with "(No text defined)")
+    c.set_comments(&u.comments)?;
+    if u.unlisted {
+        c.eval("(function(){const e=document.querySelector('#Unlisted'); if(!e.checked){e.click();} return e.checked;})()")?;
+    }
+    let summary = c.eval("JSON.stringify({name:document.querySelector('#TrackName').value, len:document.querySelector('#MapLengthFormatted').value, difficulty:document.querySelector('#Difficulty').value, routes:document.querySelector('#Routes').value, tags:[...document.querySelectorAll('#trackTagList input[type=hidden]')].map(e=>e.value), unlisted:document.querySelector('#Unlisted').checked, visible:document.querySelector('#Visible').checked, comments:document.querySelector('.bbeditor .cm-content').innerText.length, errors:[...document.querySelectorAll('.field-validation-error')].map(e=>e.innerText).filter(Boolean)})")?;
+    let sum = summary.as_str().unwrap_or("").to_string();
+    println!("form: {sum}");
+    if sum.contains("\"errors\":[\"") {
+        return Err(format!("form validation errors: {sum}"));
+    }
+    if dry {
+        println!("dry run: not submitted");
+        return Ok(None);
+    }
+    let before = c.eval("location.href")?.as_str().unwrap_or("").to_string();
+    c.eval("document.querySelector('#mapUploadForm button[type=submit]').click(); 1")?;
+    let t0 = std::time::Instant::now();
+    loop {
+        std::thread::sleep(Duration::from_millis(1000));
+        let h = c.eval("document.readyState + ' ' + location.href").unwrap_or(Value::Null).as_str().unwrap_or("").to_string();
+        if h.starts_with("complete ") && !h.ends_with(&before) && !h.contains("/mapupload") {
+            let url = h[9..].to_string();
+            if !url.contains("/mapshow/") {
+                return Err(format!("submitted but landed on {url}"));
+            }
+            // the page's own check: the name and that it is ours
+            let title = c.eval("document.title")?.as_str().unwrap_or("").to_string();
+            if !title.starts_with(&u.name) {
+                return Err(format!("landed on {url} but its title is {title:?}, not {:?}", u.name));
+            }
+            return Ok(Some(url));
+        }
+        if t0.elapsed().as_secs() > 180 {
+            let errs = c.eval("JSON.stringify([...document.querySelectorAll('.field-validation-error, .validation-summary-errors, .alert-danger')].map(e=>e.innerText).filter(Boolean))").unwrap_or(Value::Null);
+            return Err(format!("no new page after 180 s (still at {h}); form errors: {errs}"));
+        }
+    }
+}
+
+/// One line of a CSV with quoted fields.
+fn csv_fields(line: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut q = false;
+    let mut chars = line.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' if q && chars.peek() == Some(&'"') => {
+                cur.push('"');
+                chars.next();
+            }
+            '"' => q = !q,
+            ',' if !q => out.push(std::mem::take(&mut cur)),
+            _ => cur.push(ch),
+        }
+    }
+    out.push(cur);
+    out
+}
+
+/// The TMX tag id a word of Everios96's description sheet stands for (None: not a tag).
+fn sheet_tag(word: &str) -> Option<u32> {
+    Some(match word {
+        "Dirt" | "Dirt_Road" | "Penalty_Sand" => 15,
+        "Grass" | "Penalty_Grass" => 33,
+        "Ice" | "Snow" => 14,
+        "Plastic" | "Plastic_Bounce" => 39,
+        "Magnet" => 66,
+        "Wood" => 51,
+        "Water" | "Wet_Wheels" => 38,
+        "Reactor_Up" | "Reactor_Down" | "Orange_Reactor" | "Yellow_Reactor" => 17,
+        "Bob" => 44,
+        "Sausage" => 43,
+        "Bugslide" => 56,
+        "Platform" => 18,
+        "Tech" => 3,
+        "Fullspeed" => 2,
+        "LOL" => 5,
+        "Slow-Mo" | "Quantum" => 19,
+        "Rally" => 54,
+        "Desert" => 59,
+        "Mixed" => 27,
+        "Precision" => 68,
+        "Speed_Slide" => 29,
+        "Wallride" => 41,
+        _ => return None,
+    })
+}
+
+/// Everios96's rule: Mini, then up to two of the sheet's words as TMX tags, Race when the
+/// sheet knows nothing. `surface` (a surface alteration's tag id) takes the second slot and
+/// drops the sheet's surface words — the surface changed.
+fn tags_for(sheet_row: Option<&[String]>, surface: Option<u32>) -> Vec<u32> {
+    let mut out = vec![25u32];
+    if let Some(s) = surface {
+        out.push(s);
+    }
+    if let Some(r) = sheet_row {
+        for w in r.iter().skip(3) {
+            let w = w.trim();
+            if let Some(t) = sheet_tag(w) {
+                let is_surface = matches!(t, 15 | 33 | 14 | 39 | 66 | 51);
+                if surface.is_some() && is_surface {
+                    continue;
+                }
+                if !out.contains(&t) {
+                    out.push(t);
+                }
+            }
+            if out.len() == 3 {
+                break;
+            }
+        }
+    }
+    if out.len() == 1 {
+        out.push(1);
+    }
+    out
+}
+
+fn description(alteration: &str, num: &str, orig_link: &str, hunter: &str) -> String {
+    let orig = if orig_link.is_empty() { format!("U10S_{num}") } else { format!("[url={orig_link}]U10S_{num}[/url]") };
+    format!(
+        "This map was created using vjeux's AI agent (automated alteration tool).\n\n{alteration} alteration of U10S_{num} from the Under 10 Seconds maps by Everios96. Original map: {orig}\n\nAuthor times hunted by the Everios96 Community; the AT on this map was set by: {hunter}\n\nAll released maps are playable in the Altered U10S club. Discord for the club: https://discord.gg/zNbJN5sH5D"
+    )
+}
+
 fn run(args: &[String]) -> Result<(), String> {
     let port: u16 = flag(args, "--port").and_then(|p| p.parse().ok()).unwrap_or(9222);
     let target = flag(args, "--target");
@@ -311,66 +484,10 @@ fn run(args: &[String]) -> Result<(), String> {
             let unlisted = args.iter().any(|a| a == "--unlisted");
             let dry = args.iter().any(|a| a == "--dry-run");
             let mut c = Cdp::attach(port, target.as_deref())?;
-            c.call("Page.navigate", json!({"url": "https://trackmania.exchange/mapupload"}))?;
-            std::thread::sleep(Duration::from_millis(800));
-            let at = c.wait_ready(60)?;
-            if !at.contains("/mapupload") {
-                return Err(format!("not on the upload form but at {at} — logged out?"));
+            let landed = upload_one(&mut c, &UploadSpec { map, name, difficulty, routes, tags, comments, unlisted }, dry)?;
+            if let Some(url) = landed {
+                println!("landed: {url}");
             }
-            // the map file (the page reads the Gbx and prefills name/length/author)
-            let n = c.node("#mapUploadForm input[type=file][accept='.map.gbx']")?;
-            c.call("DOM.setFileInputFiles", json!({"files": [map], "nodeId": n}))?;
-            std::thread::sleep(Duration::from_millis(2500));
-            let prefilled = c.eval("document.querySelector('#TrackName').value")?;
-            eprintln!("  file set; TrackName prefilled: {prefilled}");
-            // the name
-            c.eval(&format!("(function(){{const e=document.querySelector('#TrackName'); e.value={}; e.dispatchEvent(new Event('input',{{bubbles:true}})); e.dispatchEvent(new Event('change',{{bubbles:true}})); return e.value;}})()", serde_json::to_string(&name).unwrap()))?;
-            // difficulty + routes
-            for (sel, val) in [("#Difficulty", &difficulty), ("#Routes", &routes)] {
-                c.eval(&format!("(function(){{const e=document.querySelector('{sel}'); e.value={}; e.dispatchEvent(new Event('change',{{bubbles:true}})); return e.value;}})()", serde_json::to_string(val).unwrap()))?;
-            }
-            // tags: one hidden Tags[i] per tag — the + button adds a row
-            for _ in 1..tags.len() {
-                c.eval("document.querySelector('#trackTagAdd').click(); 1")?;
-                std::thread::sleep(Duration::from_millis(300));
-            }
-            for (i, t) in tags.iter().enumerate() {
-                let set = c.eval(&format!("(function(){{const e=document.getElementById('Tags[{i}]'); if(!e) return 'missing'; e.value={}; e.dispatchEvent(new Event('change',{{bubbles:true}})); return e.value;}})()", serde_json::to_string(t).unwrap()))?;
-                eprintln!("  Tags[{i}] = {set}");
-            }
-            // the comments: a CodeMirror 6 editor (`.cm-content`, contenteditable) that syncs
-            // to the hidden #AuthorComments textarea — only typed text reaches its state
-            // (a value set on the textarea was dropped on submit: map 367061 came out with
-            // "(No text defined)"); focus it, select all, insert the text as typing
-            c.set_comments(&comments)?;
-            if unlisted {
-                c.eval("(function(){const e=document.querySelector('#Unlisted'); if(!e.checked){e.click();} return e.checked;})()")?;
-            }
-            let summary = c.eval("JSON.stringify({name:document.querySelector('#TrackName').value, len:document.querySelector('#MapLengthFormatted').value, difficulty:document.querySelector('#Difficulty').value, routes:document.querySelector('#Routes').value, tags:[...document.querySelectorAll('#trackTagList input[type=hidden]')].map(e=>e.value), unlisted:document.querySelector('#Unlisted').checked, visible:document.querySelector('#Visible').checked, comments:document.querySelector('#AuthorComments').value.length, errors:[...document.querySelectorAll('.field-validation-error')].map(e=>e.innerText).filter(Boolean)})")?;
-            println!("form: {}", summary.as_str().unwrap_or(""));
-            if dry {
-                println!("dry run: not submitted");
-                return Ok(());
-            }
-            let before = c.eval("location.href")?.as_str().unwrap_or("").to_string();
-            c.eval("document.querySelector('#mapUploadForm button[type=submit]').click(); 1")?;
-            // the upload takes a while (the file is a few MB); wait for a new page
-            let t0 = std::time::Instant::now();
-            loop {
-                std::thread::sleep(Duration::from_millis(1000));
-                let here = c.eval("document.readyState + ' ' + location.href").unwrap_or(Value::Null);
-                let h = here.as_str().unwrap_or("").to_string();
-                if h.starts_with("complete ") && !h.ends_with(&before) && !h.contains("/mapupload") {
-                    println!("landed: {}", &h[9..]);
-                    break;
-                }
-                if t0.elapsed().as_secs() > 180 {
-                    let errs = c.eval("JSON.stringify([...document.querySelectorAll('.field-validation-error, .validation-summary-errors, .alert-danger')].map(e=>e.innerText).filter(Boolean))").unwrap_or(Value::Null);
-                    return Err(format!("no new page after 180 s (still at {h}); form errors: {errs}"));
-                }
-            }
-            let title = c.eval("document.title")?;
-            println!("title: {}", title.as_str().unwrap_or(""));
             Ok(())
         }
         // Re-set the comments of an uploaded map through its edit form (/mapupload/<id>).
@@ -404,6 +521,99 @@ fn run(args: &[String]) -> Result<(), String> {
             }
             let shown = c.eval("(document.querySelector('.authorcomments, [class*=authorcomment], .bbcode') || {innerText: ''}).innerText.slice(0, 400)")?;
             println!("comments shown: {}", shown.as_str().unwrap_or(""));
+            Ok(())
+        }
+        // A whole campaign folder: the trackmania.io playlist JSON (name, mapUid, filename,
+        // authorplayer.name), the sheet CSV for the tags, the files in --maps-dir; one map
+        // per submission, each landing appended to --done (num, uid, tmx url) so a rerun
+        // skips it; the first error stops the batch.
+        "batch" => {
+            let playlist = flag(args, "--playlist").ok_or("batch needs --playlist playlist.json")?;
+            let sheet = flag(args, "--sheet").ok_or("batch needs --sheet u10s-tags.csv")?;
+            let maps_dir = flag(args, "--maps-dir").ok_or("batch needs --maps-dir DIR")?;
+            let alteration = flag(args, "--alteration").ok_or("batch needs --alteration Tiny|Dirt|…")?;
+            let surface: Option<u32> = flag(args, "--surface-tag").and_then(|t| t.parse().ok());
+            let done_path = flag(args, "--done").ok_or("batch needs --done DONE.tsv")?;
+            let difficulty = flag(args, "--difficulty").unwrap_or_else(|| "1".into());
+            let limit: usize = flag(args, "--limit").and_then(|l| l.parse().ok()).unwrap_or(usize::MAX);
+            let unlisted = args.iter().any(|a| a == "--unlisted");
+            let dry = args.iter().any(|a| a == "--dry-run");
+            let rows: Value = serde_json::from_str(&std::fs::read_to_string(&playlist).map_err(|e| format!("{playlist}: {e}"))?).map_err(|e| format!("{playlist}: {e}"))?;
+            let rows = rows.as_array().ok_or("playlist: not a JSON array")?;
+            let sheet_rows: std::collections::HashMap<String, Vec<String>> = std::fs::read_to_string(&sheet)
+                .map_err(|e| format!("{sheet}: {e}"))?
+                .lines()
+                .map(csv_fields)
+                .filter(|f| f.first().map(|x| x.starts_with("U10S_")).unwrap_or(false))
+                .map(|f| (f[0].trim_start_matches("U10S_").trim_start_matches('0').to_string(), f))
+                .collect();
+            let done_text = std::fs::read_to_string(&done_path).unwrap_or_default();
+            let done: std::collections::HashSet<String> = done_text.lines().filter_map(|l| l.split('\t').nth(1).map(String::from)).collect();
+            let mut c = Cdp::attach(port, target.as_deref())?;
+            let mut n = 0usize;
+            for r in rows {
+                let uid = r["mapUid"].as_str().unwrap_or("").to_string();
+                let name = r["name"].as_str().unwrap_or("").to_string();
+                if done.contains(&uid) {
+                    continue;
+                }
+                if n >= limit {
+                    break;
+                }
+                let num = name.strip_prefix("U10S_").and_then(|x| x.split(' ').next()).unwrap_or("").trim_start_matches('0').to_string();
+                let hunter = r["authorplayer"]["name"].as_str().unwrap_or("").to_string();
+                let file = r["filename"].as_str().unwrap_or("").to_string();
+                let row = sheet_rows.get(&num).map(|v| v.as_slice());
+                let tags: Vec<String> = tags_for(row, surface).iter().map(|t| t.to_string()).collect();
+                let link = row.and_then(|f| f.get(1)).cloned().unwrap_or_default();
+                let spec = UploadSpec {
+                    map: format!("{}\\{}", maps_dir.trim_end_matches(['\\', '/']), file),
+                    name: name.clone(),
+                    difficulty: difficulty.clone(),
+                    routes: "0".into(),
+                    tags: tags.clone(),
+                    comments: description(&alteration, &num, &link, &hunter),
+                    unlisted,
+                };
+                println!("[{}] {name} tags {} hunter {hunter}", n + 1, tags.join(","));
+                match upload_one(&mut c, &spec, dry)? {
+                    Some(url) => {
+                        println!("  -> {url}");
+                        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&done_path).map_err(|e| format!("{done_path}: {e}"))?;
+                        writeln!(f, "{num}\t{uid}\t{url}\t{}", tags.join(",")).map_err(|e| e.to_string())?;
+                    }
+                    None => {}
+                }
+                n += 1;
+                std::thread::sleep(Duration::from_secs(2));
+            }
+            println!("batch: {n} map(s) this run; {} already done before", done.len());
+            Ok(())
+        }
+        // Flip an uploaded map to listed (the edit form's Unlisted switch off).
+        "listed" => {
+            let id = flag(args, "--id").ok_or("listed needs --id MAPID")?;
+            let mut c = Cdp::attach(port, target.as_deref())?;
+            c.call("Page.navigate", json!({"url": format!("https://trackmania.exchange/mapupload/{id}")}))?;
+            std::thread::sleep(Duration::from_millis(800));
+            c.wait_ready(60)?;
+            let was = c.eval("(function(){const e=document.querySelector('#Unlisted'); const was=e.checked; if(e.checked){e.click();} return was;})()")?;
+            println!("unlisted was {was}, now off");
+            c.eval("document.querySelector('#mapUploadForm button[type=submit]').click(); 1")?;
+            let t0 = std::time::Instant::now();
+            loop {
+                std::thread::sleep(Duration::from_millis(1000));
+                let h = c.eval("document.readyState + ' ' + location.href").unwrap_or(Value::Null).as_str().unwrap_or("").to_string();
+                if h.starts_with("complete ") && !h.contains("/mapupload") {
+                    println!("landed: {}", &h[9..]);
+                    break;
+                }
+                if t0.elapsed().as_secs() > 120 {
+                    return Err(format!("no new page after 120 s (still at {h})"));
+                }
+            }
+            let still = c.eval("!!document.body.innerText.match(/Map is unlisted/)")?;
+            println!("page says unlisted: {still}");
             Ok(())
         }
         _ => Err("usage: tmxup targets | eval --expr JS | nav --url U [--wait-s N] | html [--selector CSS] | setfile --selector CSS --file WINPATH | shot --out FILE.png | click --selector CSS | type --selector CSS --text T   [--port 9222] [--target SUBSTR]".into()),
