@@ -1631,6 +1631,18 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
         }
         m.notes.push(format!("water overlay: visual-only copy ({tris} collision triangles dropped, {} water visuals dropped, {shell} m shell)", before - m.visuals.len()));
     }
+    // A PILLAR-FACE OVERLAY (`OVERLAY` in the key's mods): the game's pillar and its own
+    // panel stay; this copy is look only — no collision — and sits `TINY_PILLAR_SHELL`
+    // (default 3 cm) outside the panel so the two never z-fight (Icy 76 / Dirt 26, 2026-10-23).
+    if plan.effective_mods.iter().any(|x| x == OVERLAY_MARK) {
+        let shell: f32 = std::env::var("TINY_PILLAR_SHELL").ok().and_then(|v| v.parse().ok()).unwrap_or(0.03);
+        let tris = m.surf_triangles.len();
+        m.surf_triangles.clear();
+        for v in m.visuals.iter_mut() {
+            let _ = crate::static_item::build::shell_offset(&mut v.visual, shell);
+        }
+        m.notes.push(format!("pillar overlay: look-only copy ({tris} collision triangles dropped, {shell} m shell)"));
+    }
     // A GENERATED FACE baked beside the body it covers is COPLANAR with it: the cap of a
     // wall sits exactly on the wall's top plane, and two surfaces at the same depth stripe
     // (Everios96 2026-10-06, the banded slabs). In the game's own drawing both are the same
@@ -1638,7 +1650,7 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
     // baked face by a hair along its normals, the way a water overlay is lifted.
     // `TINY_FACE_SHELL=0` opts out.
     let is_overlay = std::env::var("TINY_OVERLAY_NAMES").ok().map(|v| v.split(',').any(|n| n == name)).unwrap_or(false);
-    if name.contains("FC") && !is_overlay {
+    if name.contains("FC") && !is_overlay && !plan.effective_mods.iter().any(|x| x == OVERLAY_MARK) {
         let lift: f32 = std::env::var("TINY_FACE_SHELL").ok().and_then(|v| v.parse().ok()).unwrap_or(0.004);
         if lift != 0.0 {
             for v in m.visuals.iter_mut() {
@@ -1955,10 +1967,9 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     // A face a BLACK BLOCK owns (`DecoWall*`, not a pillar, not water) is that block's own
     // wood side whatever stands around it — the cell rules below guessed from neighbours
     // and gave Dirt 3's slope panels the hill's dirt (material census, 2026-10-23).
-    let face_owner: std::collections::HashMap<usize, String> = report
-        .and_then(|r| r.parent())
-        .map(|dir| dir.join("faces.tsv"))
-        .and_then(|p| std::fs::read_to_string(p).ok())
+    let faces_text: Option<String> = report.and_then(|r| r.parent()).map(|dir| dir.join("faces.tsv")).and_then(|p| std::fs::read_to_string(p).ok());
+    let face_owner: std::collections::HashMap<usize, String> = faces_text
+        .as_deref()
         .map(|t| {
             t.lines()
                 .skip(1)
@@ -1969,6 +1980,42 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 .collect()
         })
         .unwrap_or_default();
+    // face index -> owner block INDEX (faces.tsv: baked, name, owner, owner_name)
+    let face_owner_index: std::collections::HashMap<usize, usize> = faces_text
+        .as_deref()
+        .map(|t| {
+            t.lines()
+                .skip(1)
+                .filter_map(|l| {
+                    let c: Vec<&str> = l.split('\t').collect();
+                    (c.len() >= 3).then(|| c[0].parse::<usize>().ok().zip(c[2].parse::<usize>().ok())).flatten()
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    // The pillars the records plan OVERLAYS (`records.tsv` beside the report: detail
+    // "pillar under a re-surfaced parent … overlaid"): the game's pillar stays and keeps
+    // drawing its own faces in the set's look; our copy of each face is a LOOK-ONLY shell
+    // 3 cm outside it, in the original dress. Those faces bake under their own key
+    // (the `OVERLAY` marker in the inherited mods) so the black blocks' side panels of the
+    // same kind keep their collision.
+    let overlay_pillars: std::collections::HashSet<usize> = report
+        .and_then(|r| r.parent())
+        .map(|dir| dir.join("records.tsv"))
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|t| {
+            t.lines()
+                .skip(1)
+                .filter_map(|l| {
+                    let c: Vec<&str> = l.split('\t').collect();
+                    (c.len() > 16 && c[16].contains(PILLAR_OVERLAY_DETAIL)).then(|| c[0].parse::<usize>().ok()).flatten()
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if !overlay_pillars.is_empty() {
+        println!("  pillar overlay: {} kept pillars; their generated faces bake as look-only shells in the original dress", overlay_pillars.len());
+    }
     let inherited_mod = |b: &tmmaps::map::BlockRec| -> Vec<String> {
         if let Some(o) = face_owner.get(&b.index) {
             let black_owner = o.starts_with("DecoWall") && !o.contains("Pillar") && !o.contains("Water") && b.name.starts_with("DecoWall") && b.name.contains("VFC");
@@ -2175,6 +2222,14 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             }
         }
         first_up(c.0, c.2).unwrap_or_default()
+    };
+    let inherited_mod_raw = inherited_mod;
+    let inherited_mod = |b: &tmmaps::map::BlockRec| -> Vec<String> {
+        let mut m = inherited_mod_raw(b);
+        if face_owner_index.get(&b.index).map(|o| overlay_pillars.contains(o)).unwrap_or(false) {
+            m.push(OVERLAY_MARK.to_string());
+        }
+        m
     };
     let mods_key = |mods: &[String]| -> String { mods.join("|") };
 
@@ -3335,9 +3390,17 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
 /// chunk 0x0915D000 (read off the file: the string is the PlatformGrass
 /// folder, the skin ref `TrackWallToDecoCliff.GameSkin.gbx` — a skin the pack
 /// does not ship, so the slot set is taken from its name: TrackWall).
+/// The records-plan detail of a pillar whose faces are overlaid (shared with `surface.rs`).
+pub const PILLAR_OVERLAY_DETAIL: &str = "overlaid with the original look";
+/// The pseudo-modifier a face owned by such a pillar carries in its library key.
+pub const OVERLAY_MARK: &str = "OVERLAY";
 pub const TRACK_WALL_TO_DECO_CLIFF_FOLDER: &str = "Stadium\\Media\\Modifier\\PlatformGrass\\";
-/// The link the TrackWall slot takes under that modifier (see `modifier_links`).
-pub const TRACK_WALL_TO_DECO_CLIFF_LINK: &str = "Stadium\\Media\\Material_BlockCustom\\CustomConcrete";
+/// The link the TrackWall slot takes under that modifier (see `modifier_links`):
+/// `PlatformGrass\TrackWall` carries the DecoCliffPxz textures (read off the material
+/// file: DecoCliffPxz_D/_R/_N) — the grey concrete the original draws on the pillars
+/// under a Tech platform. (The 2026-10-23 detours to `DecoCliff` and `CustomConcrete`
+/// came from reading a GREEN wall of regenerated pillars as our items' colour.)
+pub const TRACK_WALL_TO_DECO_CLIFF_LINK: &str = "Stadium\\Media\\Modifier\\PlatformGrass\\TrackWall";
 
 /// A block info's `…\Modifier\TrackWallToDecoCliff.Gbx` material modifier ref
 /// (DecoHill*, DecoPlatformBase, PlatformTechBase, WaterBase, WaterWall,
@@ -3417,7 +3480,7 @@ pub fn modifier_folder_redress(store: &mut DataStore, links: &[String]) -> Vec<R
         // is the grass platform's GREEN wall — that is what the pillar faces under a Tech
         // platform came out as (Icy 76, 2026-10-23 frames), where the original draws grey
         // concrete. So the row is keyed on the TrackWall FILE, not on the link's stem.
-        if link.eq_ignore_ascii_case(TRACK_WALL_TO_DECO_CLIFF_LINK) || link.eq_ignore_ascii_case(&std::env::var("TINY_TW2DC_LINK").unwrap_or_default()) {
+        if link.eq_ignore_ascii_case(&std::env::var("TINY_TW2DC_LINK").unwrap_or_default()) {
             let file = RedressKey::File("trackwall.material.gbx".to_string());
             if !out.iter().any(|r| r.matches == file) {
                 if let Some(ids) = crate::static_item::build::material_surface_ids(store, &format!("{link}.Material.Gbx")) {
@@ -3716,14 +3779,8 @@ pub fn modifier_links(store: &DataStore, refs: &[String]) -> Vec<String> {
     for r in refs {
         let r = r.replace(' ', "");
         if is_track_wall_to_deco_cliff(&r) {
-            // What the TrackWall slot becomes under `TrackWallToDecoCliff` (Tech platforms,
-            // hills, water walls; the generated pillars under them). The modifier file names
-            // the PlatformGrass folder, but BOTH of that folder's candidates render green in
-            // the editor (`PlatformGrass\TrackWall` = the grass wall, `PlatformGrass\DecoCliff`
-            // = the grass cliff; Icy 76 frames, 2026-10-23), where the original draws plain
-            // grey concrete. The pack has no `Material\DecoCliff` file; the mesh-modeler
-            // concrete (`Material_BlockCustom\CustomConcrete`, untinted) is the grey that
-            // matches. `TINY_TW2DC_LINK` overrides (a full link).
+            // the TrackWall slot under `TrackWallToDecoCliff`: see TRACK_WALL_TO_DECO_CLIFF_LINK
+            // (`TINY_TW2DC_LINK` overrides with a full link)
             let link = std::env::var("TINY_TW2DC_LINK").unwrap_or_else(|_| TRACK_WALL_TO_DECO_CLIFF_LINK.to_string());
             if store.entries().any(|e| e.path().eq_ignore_ascii_case(&format!("{link}.Material.Gbx"))) {
                 out.push(link);

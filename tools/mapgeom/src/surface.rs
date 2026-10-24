@@ -1148,29 +1148,56 @@ pub fn plan_records(store: &mut DataStore, idx: &mut BlockInfoIndex, map: &Path,
         // from the ORIGINAL map's view (the library reads the original: a plastic parent
         // dresses nothing → plain TrackWall = pillar wood; a grass hill's green stays).
         // `TINY_PILLAR_BAKE=0` keeps the old behaviour (pillars always the game's own).
-        // ⛔ OFF by default (2026-10-23): with the pillar records gone the GAME REGENERATES the
-        // pillars at load and dresses them from the renamed parent (Icy 76: a green wall of
-        // regenerated pillars, our baked faces hidden inside) — the bake changes nothing
-        // for the eye. `TINY_PILLAR_BAKE=1` turns it on for experiments.
-        if !free && (b.flags & 0x4000 != 0) && b.name.starts_with("DecoWall") && b.name.ends_with("Pillar") && std::env::var("TINY_PILLAR_BAKE").map(|v| v == "1").unwrap_or(false) {
-            let mut renamed_parent: Option<String> = None;
-            'up: for dy in 1..=3 {
+        // ⛔ The BAKE is off by default (2026-10-23): with the pillar records gone the GAME
+        // REGENERATES the pillars at load and dresses them itself (Icy 76: a green wall of
+        // regenerated pillars, our baked faces hidden inside). `TINY_PILLAR_BAKE=1` keeps
+        // that path for experiments.
+        // The OVERLAY (default, `TINY_PILLAR_OVERLAY=0` opts out): the pillar block STAYS
+        // (the game draws it in the set's look, as it does now), and its generated faces
+        // bake as look-only shells 3 cm outside the game's own panels, in the dress the
+        // ORIGINAL map gave them (plastic parent → pillar wood, Tech → cliff concrete). A
+        // parent counts as re-surfaced when its plan row renames OR bakes it (a baked
+        // parent leaves the pillars orphaned and the game paints them a default grey-blue).
+        let bake_mode = std::env::var("TINY_PILLAR_BAKE").map(|v| v == "1").unwrap_or(false);
+        let overlay_mode = !bake_mode && std::env::var("TINY_PILLAR_OVERLAY").map(|v| v != "0").unwrap_or(true);
+        if !free && (b.flags & 0x4000 != 0) && b.name.starts_with("DecoWall") && b.name.ends_with("Pillar") && (bake_mode || overlay_mode) {
+            // walk UP the whole pillar stack (a deck can stand on 8+ pillars: Icy 76's
+            // mass is 8 cells tall, and a 3-cell look-up left the lower pillars without a
+            // parent, 2026-10-23): a cell holding another pillar is still the stack, the
+            // first non-pillar block above it is the parent; two empty cells = no parent
+            let mut resurfaced_parent: Option<String> = None;
+            let mut gap = 0;
+            'up: for dy in 1..=64 {
                 let above = [cell[0], cell[1] + dy, cell[2]];
-                for o in occ.get(&above).into_iter().flatten() {
+                let here: Vec<&usize> = occ.get(&above).into_iter().flatten().collect();
+                if here.is_empty() {
+                    gap += 1;
+                    if gap > 2 {
+                        break;
+                    }
+                    continue;
+                }
+                gap = 0;
+                for o in here {
                     let ob = &m.blocks[*o];
                     if is_pillar(ob) {
                         continue;
                     }
-                    if models.get(&ob.name).map(|orow| orow.action == Action::Rename && orow.target != ob.name).unwrap_or(false) {
-                        renamed_parent = Some(ob.name.clone());
+                    let re = models.get(&ob.name).map(|orow| (orow.action == Action::Rename && orow.target != ob.name) || (overlay_mode && orow.action == Action::Bake)).unwrap_or(false);
+                    if re {
+                        resurfaced_parent = Some(ob.name.clone());
                     }
                     break 'up;
                 }
             }
-            if let Some(parent) = renamed_parent {
-                r.action = Action::Bake;
-                r.target = String::new();
-                r.detail = format!("pillar under a re-surfaced parent ({parent}): the block goes, its generated faces bake with the original look");
+            if let Some(parent) = resurfaced_parent {
+                if bake_mode {
+                    r.action = Action::Bake;
+                    r.target = String::new();
+                    r.detail = format!("pillar under a re-surfaced parent ({parent}): the block goes, its generated faces bake with the original look");
+                } else {
+                    r.detail = format!("pillar under a re-surfaced parent ({parent}): the block stays, its generated faces are {}", crate::tiny_library::PILLAR_OVERLAY_DETAIL);
+                }
                 rows.push(r);
                 continue;
             }

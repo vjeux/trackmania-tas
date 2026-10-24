@@ -438,7 +438,19 @@ pub fn cmd(args: &[String]) {
     // blocks change their geometry when connected to other blocks… the dirt layer is
     // placed as a flat geometry, so it doesnt fit"). They re-dress exactly like a wall's
     // faces. `TINY_WATER_FACES=0` leaves them to the game.
+    // The pillars the plan OVERLAYS (detail "… overlaid with the original look", the block
+    // stays): their generated faces bake as look-only shells and the game's own records
+    // stay under them (nothing to regenerate — Icy 76, 2026-10-23).
+    let overlay_pillars: BTreeSet<usize> = plan.iter().filter(|r| !r.delete && r.detail.contains("overlaid with the original look")).map(|r| r.index).collect();
+    let pillar_overlay_face = |b: &crate::map::BlockRec| -> bool { owner_of.get(&b.index).map(|o| overlay_pillars.contains(o)).unwrap_or(false) };
+    if !overlay_pillars.is_empty() {
+        let n = source.baked.iter().filter(|b| pillar_overlay_face(b)).count();
+        println!("  pillar overlay: {} kept pillars, {n} generated faces get a look-only shell copy", overlay_pillars.len());
+    }
     let is_frame_filler = |b: &crate::map::BlockRec| -> bool {
+        if pillar_overlay_face(b) {
+            return true;
+        }
         if water_faces && b.name.contains("Water") && b.name.contains("FC") && !b.name.contains("Pillar") && (!b.name.contains("VFC") || b.name.starts_with("RoadWater")) {
             return wall_owner_baked(b);
         }
@@ -522,6 +534,9 @@ pub fn cmd(args: &[String]) {
     // `TINY_WATER_FACE_DELETE=1` restores the replace-and-delete.
     let water_face_delete = std::env::var("TINY_WATER_FACE_DELETE").map(|v| v == "1").unwrap_or(false);
     let drop_baked = |b: &crate::map::BlockRec| -> bool {
+        if pillar_overlay_face(b) {
+            return false; // the game's panel stays under the shell copy
+        }
         if is_water_face(b) {
             return water_face_delete && is_frame_filler(b) && filler_placed.contains(&b.index);
         }

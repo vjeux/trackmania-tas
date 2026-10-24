@@ -652,10 +652,10 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             // item in their place (2026-10-23 frames: inner pillars showing through).
             let has_pillar_bakes = std::fs::read_to_string(&records).unwrap_or_default().lines().skip(1).any(|l| {
                 let c: Vec<&str> = l.split('\t').collect();
-                c.len() > 2 && c[1].ends_with("Pillar") && c[2] == "bake"
+                c.len() > 2 && c[1].ends_with("Pillar") && (c[2] == "bake" || c.get(16).map(|d| d.contains("overlaid with the original look")).unwrap_or(false))
             });
             if has_pillar_bakes {
-                println!("  pillar bakes: the records plan removes generated pillars; their face kinds go in the library");
+                println!("  pillar bakes/overlays: the records plan re-dresses generated pillars; their face kinds go in the library");
             }
             if has_pillar_bakes || (std::env::var("TINY_WALL_FILLERS").map(|v| v != "0").unwrap_or(true) && names.iter().any(|n| (n.starts_with("TrackWall") || n.starts_with("DecoWall")) && !n.contains("Water") && !n.contains("Pillar"))) || has_water_blocks {
                 let src_map = tmmaps::map::MapFile::load(&src);
