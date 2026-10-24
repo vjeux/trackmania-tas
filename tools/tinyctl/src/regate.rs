@@ -245,8 +245,9 @@ pub fn cmd(args: &[String]) -> i32 {
             let live_item = work.join(format!("live-{file}"));
             std::fs::write(&live_item, live_bytes).ok();
             let live_mats = item_materials(&mapgeom, &live_item);
-            if live_mats.iter().any(|m| m.contains(&format!("Modifier\\GateGameplay{kind}"))) {
-                println!("{num}: {file} ({model}) already carries the {kind} dress — nothing to do");
+            // the full dress = Decal + Screen + SIGN of the kind folder (the sign carries the car glyph)
+            if live_mats.iter().any(|m| m.ends_with(&format!("Modifier\\GateGameplay{kind}\\Sign"))) && live_mats.iter().any(|m| m.ends_with(&format!("Modifier\\GateGameplay{kind}\\Screen"))) {
+                println!("{num}: {file} ({model}) already carries the {kind} dress (sign + screen) — nothing to do");
                 continue;
             }
             let live_vis = item_visuals(&mapgeom, &live_item);
@@ -321,7 +322,7 @@ pub fn cmd(args: &[String]) -> i32 {
                 ok = false;
                 break;
             }
-            if !new_mats.iter().any(|m| m.contains(&format!("Modifier\\GateGameplay{kind}"))) {
+            if !new_mats.iter().any(|m| m.ends_with(&format!("Modifier\\GateGameplay{kind}\\Sign"))) {
                 println!("{num}: {file} ({model}): the rebuilt item carries no Modifier\\GateGameplay{kind} material: {new_mats:?}");
                 ok = false;
                 break;

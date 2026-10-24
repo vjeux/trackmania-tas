@@ -207,6 +207,11 @@ pub fn gate_special_stem(stem: &str) -> Option<&'static str> {
         "GateGameplayScreen" => "Screen",
         "DecalGateGameplay" => "Decal",
         "CollisionGateGameplay" => "Collision",
+        // the lit SIGN panel carries the car glyph (`SpecialFXGateGameplay_I`): the kind
+        // folder's `Sign` (LightCells + the kind's screen texture). Without this row the
+        // Tiny 202/206 rally gates kept the Stadium car on the sign after the Decal/Screen
+        // re-skin (Everios96 2026-10-24: "still has the stadium car texture on the gate")
+        "SpecialFXGateGameplay" => "Sign",
         _ => return None,
     })
 }
