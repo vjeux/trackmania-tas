@@ -12,10 +12,10 @@
 //! only its materials do, so the live map is patched IN PLACE — same uid, records kept:
 //!
 //! 1. the live tiny file (the club inventory's fileUrl) and the ORIGINAL map;
-//! 2. the gates: an original ITEM `GateGameplay<Kind>…` is the k-th item of both maps
-//!    (the tiny pass keeps the item order: U10S 182's snow gate is item 1 in both); an
-//!    original BLOCK `GateGameplay<Kind>` / `GateExpandableGameplay<Kind>` became an `AC`
-//!    item, found at the block's position under the tiny transform fitted on the item pairs;
+//! 2. the gates: an original stock ITEM `GateGameplay<Kind>…` is the k-th item of both maps
+//!    (the tiny pass keeps the item order: U10S 182's snow gate is item 1 in both). The
+//!    gate BLOCKS were baked right in the old build (their block info carries the kind
+//!    modifier): nothing to do for them;
 //! 3. every alias so found is rebuilt from the ORIGINAL with `mapgeom tiny-library --only
 //!    <model> --scale 0.5` (every detail level, as the set was built; `--lod-pick N` otherwise), `TINY_ALIAS_BASE` set so the produced file carries
 //!    the live alias (a second run re-bases when the kind has several variants);
@@ -36,12 +36,13 @@ use std::process::Command;
 
 const PAK: &str = "/tmp/current-Stadium.pak:B773D73047A4104857722366D78D28A6";
 
+/// `GateGameplay<Kind>…` / `GateExpandableGameplay<Kind>…` only: the environment-themed
+/// gates (`RallyGateGameplay`, `SnowGateGameplay`: castle/temple dress of their own) never
+/// had the stadium-skin defect
 fn kind_of(name: &str) -> Option<&'static str> {
-    if !name.contains("GateGameplay") {
-        return None;
-    }
+    let rest = name.strip_prefix("GateGameplay").or_else(|| name.strip_prefix("GateExpandableGameplay"))?;
     for k in ["Snow", "Rally", "Desert"] {
-        if name.contains(k) {
+        if rest.starts_with(k) {
             return Some(match k {
                 "Snow" => "Snow",
                 "Rally" => "Rally",
@@ -175,8 +176,19 @@ pub fn cmd(args: &[String]) -> i32 {
                 continue;
             }
         }
-        let orig = tmmaps::map::MapFile::load(&orig_path);
-        let tiny = tmmaps::map::MapFile::load(&live_path);
+        // a truncated download (282: 254 KB of a 6 MB file) panics the parser: load under
+        // catch_unwind, delete the file and let the next run fetch it again
+        let loaded = std::panic::catch_unwind(|| (tmmaps::map::MapFile::load(&orig_path), tmmaps::map::MapFile::load(&live_path)));
+        let (orig, tiny) = match loaded {
+            Ok(x) => x,
+            Err(_) => {
+                println!("{num}: the live file does not parse (truncated download?) — deleted, rerun fetches it again");
+                std::fs::remove_file(&live_path).ok();
+                results.push_str(&format!("{num}\t{uid}\t-\t-\tBAD DOWNLOAD\n"));
+                failed += 1;
+                continue;
+            }
+        };
         let tiny_uid = tmmaps::header::read(&live_path.to_string_lossy()).map(|h| h.uid).unwrap_or_default();
         if tiny_uid != *uid {
             println!("{num}: live file uid {tiny_uid} ≠ inventory {uid}");
@@ -200,34 +212,10 @@ pub fn cmd(args: &[String]) -> i32 {
             }
             targets.insert(t.model.trim_end_matches(".Item.Gbx").to_string(), (it.model.clone(), kind, false));
         }
-        let tr = fit_transform(&orig, &tiny);
-        for b in orig.blocks.iter() {
-            let Some(kind) = kind_of(&b.name) else { continue };
-            if !b.name.starts_with("GateGameplay") && !b.name.starts_with("GateExpandableGameplay") {
-                continue;
-            }
-            gates += 1;
-            let Some(tr) = tr else {
-                println!("{num}: block {} — no transform (too few items)", b.name);
-                continue;
-            };
-            let p = tmmaps::tiny::block_pos(b);
-            let want = [tr[0].0 + tr[0].1 * (p[0] + 16.0), tr[1].0 + tr[1].1 * p[1], tr[2].0 + tr[2].1 * (p[2] + 16.0)];
-            let mut best: Option<(f32, &tmmaps::map::ItemRec)> = None;
-            for t in tiny.items.iter().filter(|t| t.model.starts_with("AC")) {
-                let d = ((t.pos[0] - want[0]).powi(2) + (t.pos[1] - want[1]).powi(2) + (t.pos[2] - want[2]).powi(2)).sqrt();
-                if best.map(|(bd, _)| d < bd).unwrap_or(true) {
-                    best = Some((d, t));
-                }
-            }
-            match best {
-                Some((d, t)) if d < 12.0 => {
-                    targets.insert(t.model.trim_end_matches(".Item.Gbx").to_string(), (b.name.clone(), kind, true));
-                }
-                Some((d, t)) => println!("{num}: block {} at {:?}: nearest AC item {} is {d:.1} m away — not matched", b.name, want, t.model),
-                None => println!("{num}: block {}: no AC items in the tiny", b.name),
-            }
-        }
+        // (the gate BLOCKS — `GateGameplay<Kind>` / `GateExpandableGameplay<Kind>` — baked
+        // right in the old build too: U10S 277's AC01202040 carries the Rally Decal/Screen
+        // with the whole 25-part prefab; only the stock ITEM form had the stadium skin)
+        let _ = fit_transform(&orig, &tiny);
         if targets.is_empty() {
             println!("{num}: {gates} gate(s) in the original, none matched in the tiny");
             results.push_str(&format!("{num}\t{uid}\t{gates}\t0\tNO MATCH\n"));
@@ -246,6 +234,7 @@ pub fn cmd(args: &[String]) -> i32 {
         std::fs::create_dir_all(&work).ok();
         let mut new_files: Vec<PathBuf> = Vec::new();
         let mut ok = true;
+        let mut skipped_geometry = 0usize;
         for (alias, (model, kind, is_block)) in &targets {
             let file = format!("{alias}.Item.Gbx");
             let Some(live_bytes) = entries.get(&file) else {
@@ -301,9 +290,12 @@ pub fn cmd(args: &[String]) -> i32 {
                 }
             }
             let Some(j) = pick else {
-                println!("{num}: {file} ({model}): none of {} rebuilt copies has the live item's visuals ({} parts)", produced.len(), live_vis.len());
-                ok = false;
-                break;
+                // the old build's copy of a gate BLOCK is a 4-part stub (the trigger and sign
+                // pieces); today's library bakes the whole gate prefab — a different item, not
+                // a skin change: left alone and reported (the stock-ITEM gates match exactly)
+                println!("{num}: {file} ({model}): none of {} rebuilt copies has the live item's visuals ({} parts) — skin left as it is", produced.len(), live_vis.len());
+                skipped_geometry += 1;
+                continue;
             };
             let pj: u32 = produced[j][2..].trim_end_matches(".Item.Gbx").parse().unwrap_or(0);
             let base = n.saturating_sub(pj);
@@ -343,7 +335,7 @@ pub fn cmd(args: &[String]) -> i32 {
             continue;
         }
         if new_files.is_empty() {
-            results.push_str(&format!("{num}\t{uid}\t{gates}\t{}\tALREADY OK\n", targets.len()));
+            results.push_str(&format!("{num}\t{uid}\t{gates}\t{}\t{}\n", targets.len(), if skipped_geometry > 0 { "SKIPPED (geometry)" } else { "ALREADY OK" }));
             continue;
         }
         let fixed = out.join("fixed").join(format!("U10S_{num} By Everios96 [Tiny].Map.Gbx"));
@@ -365,8 +357,8 @@ pub fn cmd(args: &[String]) -> i32 {
             failed += 1;
             continue;
         }
-        println!("{num}: {} gate item(s) re-dressed → {}", new_files.len(), fixed.display());
-        results.push_str(&format!("{num}\t{uid}\t{gates}\t{}\tPATCHED\n", new_files.len()));
+        println!("{num}: {} gate item(s) re-dressed → {}{}", new_files.len(), fixed.display(), if skipped_geometry > 0 { format!(" ({skipped_geometry} block-gate stub(s) left)") } else { String::new() });
+        results.push_str(&format!("{num}\t{uid}\t{gates}\t{}\tPATCHED{}\n", new_files.len(), if skipped_geometry > 0 { " (partial)" } else { "" }));
         manifest.push_str(&format!("{}\tU10S_{num} By Everios96 [Tiny]\n", fixed.display()));
     }
     std::fs::write(out.join("results.tsv"), &results).ok();

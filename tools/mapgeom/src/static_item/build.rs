@@ -824,8 +824,21 @@ pub fn custom_redress_pre(st: &mut crate::store::DataStore, source_model: &str, 
 /// every drivable hull triangle takes the surface physics — Everios96
 /// 2026-09-14 14:31: "change the custom items". Needs the store for the rows.
 pub fn static_item_from_item_report_redress(store: Option<&mut crate::store::DataStore>, item_bytes: &[u8], ident: &str, author: &str, scale: f32, collection: u32, source_model: &str) -> R<(Vec<u8>, Merged)> {
+    static_item_rebake(store, item_bytes, ident, author, scale, collection, source_model, None)
+}
+
+/// An existing item file re-encoded with explicit `(from stem, to link, physics)` material
+/// rows and nothing else: the geometry stays, the materials change. The Tiny U10S gate
+/// stubs (2026-10-23): a `GateGameplaySnow` block's 4-part copy in the stadium dress takes
+/// the kind folder's Decal/Screen/Collision.
+pub fn static_item_relink(item_bytes: &[u8], ident: &str, author: &str, collection: u32, rows: Vec<(String, String, u8)>) -> R<(Vec<u8>, Merged)> {
+    static_item_rebake(None, item_bytes, ident, author, 1.0, collection, "", Some(rows))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn static_item_rebake(store: Option<&mut crate::store::DataStore>, item_bytes: &[u8], ident: &str, author: &str, scale: f32, collection: u32, source_model: &str, relink: Option<Vec<(String, String, u8)>>) -> R<(Vec<u8>, Merged)> {
     let mut m = Merged::default();
-    let redress = !source_model.is_empty() && store.is_some() && (crate::tiny_library::item_redress_wanted(source_model) || std::env::var("TINY_CUSTOM_ITEM_REDRESS").map(|v| v != "0").unwrap_or(false));
+    let redress = relink.is_some() || !source_model.is_empty() && store.is_some() && (crate::tiny_library::item_redress_wanted(source_model) || std::env::var("TINY_CUSTOM_ITEM_REDRESS").map(|v| v != "0").unwrap_or(false));
     // TINY_CUSTOM_ITEM_PHYSICS_LIST=<file>: items (one model per line, lowercased,
     // matched by file stem) that take the surface PHYSICS but keep their look
     // (Everios96 2026-09-14 15:08: the snow-tube finish, the snow-globe glass)
@@ -835,7 +848,10 @@ pub fn static_item_from_item_report_redress(store: Option<&mut crate::store::Dat
     }).unwrap_or(false);
     let mut pre = Merged::default();
     let mut store = store;
-    if redress {
+    if let Some(rows) = relink {
+        pre.link_rewrite = rows;
+        pre.notes.push("relink: explicit material rows, geometry kept".into());
+    } else if redress {
         let st = store.as_deref_mut().unwrap();
         pre = custom_redress_pre(st, source_model, physics_only);
     }

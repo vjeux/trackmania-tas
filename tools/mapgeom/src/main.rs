@@ -2002,6 +2002,38 @@ fn main() {
                 Err(e) => println!("{p}: FAILED: {e}"),
             }
         }
+        // mapgeom item-relink FILE.Item.Gbx --ident NAME.Item.Gbx --rows Stem=Link[@P];… --out OUT
+        // — the item re-encoded with these material rows (geometry kept): the Tiny U10S gate
+        // stubs (2026-10-23) take their kind folder's Decal/Screen/Collision
+        "item-relink" => {
+            let p = a.rest.get(1).cloned().unwrap_or_default();
+            let bytes = std::fs::read(&p).unwrap_or_else(|e| die(format!("{p}: {e}")));
+            let ident = flag(&a.rest, "--ident").unwrap_or_else(|| die("item-relink needs --ident NAME.Item.Gbx".to_string()));
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("item-relink needs --out FILE".to_string()));
+            let rows_s = flag(&a.rest, "--rows").unwrap_or_else(|| die("item-relink needs --rows Stem=Link[@P];…".to_string()));
+            let rows: Vec<(String, String, u8)> = rows_s
+                .split(';')
+                .filter_map(|r| {
+                    let (stem, rest) = r.split_once('=')?;
+                    let (link, p) = match rest.rsplit_once('@') {
+                        Some((l, p)) => (l.to_string(), p.parse::<u8>().ok()?),
+                        None => (rest.to_string(), mapgeom::static_item::materials::physics_for_link(rest).unwrap_or(0)),
+                    };
+                    Some((stem.trim().to_string(), link, p))
+                })
+                .collect();
+            let author = mapgeom::tiny_library::item_author(&ident);
+            match mapgeom::static_item::build::static_item_relink(&bytes, &ident, &author, 26, rows) {
+                Ok((bytes_out, m)) => {
+                    std::fs::write(&out, &bytes_out).unwrap_or_else(|e| die(e.to_string()));
+                    println!("{p} -> {out}: {} bytes; {} visuals, {} hull triangles", bytes_out.len(), m.visuals.len(), m.surf_triangles.len());
+                    for mat in &m.materials {
+                        println!("  material {} ({})", mat.link().unwrap_or("-"), mat.physics());
+                    }
+                }
+                Err(e) => die(format!("{p}: {e}")),
+            }
+        }
         // mapgeom dds-png LOGICAL-or-FILE --out X.png [--max 1024] — decode a DDS (a pack
         // texture by logical path, or a file) to PNG, to check the decoder by eye
         "dds-png" => {
