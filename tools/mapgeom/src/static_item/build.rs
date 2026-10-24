@@ -896,6 +896,24 @@ pub fn make_invisible_mesh_waypoint(m: &mut Merged, wtype: i32, verts: Vec<[f32;
 /// (0.943, 0.358, 0.358) tint (CPlugMaterialUserInst v11, is_using_game_material 1). Physics NotCollidable 28
 /// (the item's collision is its trigger mesh alone). UVs are irrelevant for a solid pane; kept per metre.
 pub const INDICATOR_LINK: &str = "Stadium\\Media\\Material_BlockCustom\\CustomGlass";
+/// v4.8 (Hugo 09:15, artefacts persisted after the lightmap fix on both plane and cutouts; "a static version of
+/// the vanilla finish gate texture instead of glass"): the DEFAULT indicator is the vanilla gate pane again —
+/// `RaceTriggerFXFinish` (shader SpecialFXGate / TAddModCV: unlit, additive, no lightmap dependence) with its UVs
+/// in WORLD metres at the gate's own scale, one texture repeat per 8 m (`GATE_TILE_M`: the GateFinishCenter8m pane
+/// is 8 m wide), so the pattern is continuous across boxes; the cutouts are in the block frame, but blocks sit on
+/// 32 m cells and 32 is a multiple of 8, so local = world mod 8 → seamless with the plane for an unturned block.
+/// The texture (RaceTriggerFXFinish_I.dds, 1024², DXT1) is a bright vertical bar per repeat + faint horizontal
+/// lines: mirror-symmetric top/bottom but NOT 4-fold (rot-90 mean difference 7.4/255 vs 1.1 for a vertical
+/// mirror), so a quarter-turned block shows its stripes turned 90°. `--indicator glass` keeps the v4.7 glass.
+pub const GATE_LINK: &str = "Stadium\\Media\\Material\\RaceTriggerFXFinish";
+pub const GATE_TILE_M: f32 = 8.0;
+static INDICATOR_GLASS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub fn set_indicator_glass(glass: bool) {
+    INDICATOR_GLASS.store(glass, std::sync::atomic::Ordering::Relaxed);
+}
+pub fn indicator_is_glass() -> bool {
+    INDICATOR_GLASS.load(std::sync::atomic::Ordering::Relaxed)
+}
 /// v4.6 (Hugo 08:44): (1, 0, 0) rendered as a dark wine red; lighter = (1.0, 0.5, 0.5) (his friend's 0.943/0.358/0.358
 /// looked right to them) — opacity is fixed in CustomGlass, only the tint moves.
 pub const INDICATOR_RGB: [f32; 3] = [1.0, 0.5, 0.5];
@@ -958,13 +976,15 @@ pub fn set_indicator_prelight(m: &mut Merged, metres_per_uv: f32, bounds: [f32; 
 
 pub fn add_finish_plane_visual(m: &mut Merged, quads: &[(f32, f32, f32, f32, f32)], lift: f32) -> R<()> {
     use super::bake::{make_visuals, Corner, VisualLayout};
-    let link = INDICATOR_LINK;
-    let slot = indicator_slot(m);
+    let glass = indicator_is_glass();
+    let link = if glass { INDICATOR_LINK } else { GATE_LINK };
+    let slot = if glass { indicator_slot(m) } else { m.material_slot(GATE_LINK, 28) };
+    let tile = if glass { 4.0 } else { GATE_TILE_M };
     let mut tris: Vec<[Corner; 3]> = Vec::new();
     let mut face = 1u32;
     for &(x0, x1, z0, z1, ay) in quads {
         let y = ay + lift;
-        let c = |x: f32, z: f32| Corner { pos: [x, y, z], normal: [0.0, 1.0, 0.0], uv: [x / 4.0, z / 4.0], uv1: [x / 4.0, z / 4.0], tan_u: [1.0, 0.0, 0.0], tan_v: [0.0, 0.0, 1.0], face, group: 1 };
+        let c = |x: f32, z: f32| Corner { pos: [x, y, z], normal: [0.0, 1.0, 0.0], uv: [x / tile, z / tile], uv1: [x / tile, z / tile], tan_u: [1.0, 0.0, 0.0], tan_v: [0.0, 0.0, 1.0], face, group: 1 };
         // two triangles facing up (counter-clockwise seen from +y: (x0,z0) (x0,z1) (x1,z1) / (x0,z0) (x1,z1) (x1,z0))
         tris.push([c(x0, z0), c(x0, z1), c(x1, z1)]);
         tris.push([c(x0, z0), c(x1, z1), c(x1, z0)]);
@@ -974,15 +994,22 @@ pub fn add_finish_plane_visual(m: &mut Merged, quads: &[(f32, f32, f32, f32, f32
         return Err("finish plane: no quads".into());
     }
     m.visuals.clear();
-    // v4.7: the Full layout (Position, Normal, TexCoord0, TexCoord1, tangents) — the game's own layout for a LIT
-    // material — with the lightmap chart of `lightmap_projection`; v4.6's minimal layout had no TexCoord1 and the
-    // shadow bake streaked the glass.
-    let (mpu, bounds) = lightmap_projection(&mut tris);
-    for v in make_visuals(&tris, VisualLayout::Full, "off") {
-        m.visuals.push(super::merged::MergedVisual::every_level(v, slot));
+    if glass {
+        // v4.7: the Full layout (Position, Normal, TexCoord0, TexCoord1, tangents) — the game's own layout for a LIT
+        // material — with the lightmap chart of `lightmap_projection`
+        let (mpu, bounds) = lightmap_projection(&mut tris);
+        for v in make_visuals(&tris, VisualLayout::Full, "off") {
+            m.visuals.push(super::merged::MergedVisual::every_level(v, slot));
+        }
+        set_indicator_prelight(m, mpu, bounds);
+        m.notes.push(format!("finish indicator: {} quads, {link} TargetColor {:?}, {lift:.2} m over the anchor, non-collidable, Full layout + lightmap chart", quads.len(), INDICATOR_RGB));
+    } else {
+        // v4.8: the gate pane — the minimal layout (Position, Normal, Color0, TexCoord0) the game's own gate uses
+        for v in make_visuals(&tris, VisualLayout::DecalPaint, "off") {
+            m.visuals.push(super::merged::MergedVisual::every_level(v, slot));
+        }
+        m.notes.push(format!("finish indicator: {} quads, {link} tiled every {tile:.0} m in world metres, {lift:.2} m over the anchor, non-collidable, DecalPaint layout", quads.len()));
     }
-    set_indicator_prelight(m, mpu, bounds);
-    m.notes.push(format!("finish indicator: {} quads, {link} TargetColor {:?}, {lift:.2} m over the anchor, non-collidable, Full layout + lightmap chart", quads.len(), INDICATOR_RGB));
     Ok(())
 }
 
@@ -990,9 +1017,11 @@ pub fn add_finish_plane_visual(m: &mut Merged, quads: &[(f32, f32, f32, f32, f32
 /// counter-clockwise seen from above; same material and layout as `add_finish_plane_visual`, UVs per 4 m.
 pub fn add_finish_mesh_visual(m: &mut Merged, verts: &[[f32; 3]], tris: &[[u32; 3]]) -> R<()> {
     use super::bake::{make_visuals, Corner, VisualLayout};
-    let link = INDICATOR_LINK;
-    let slot = indicator_slot(m);
-    let c = |p: [f32; 3], face: u32| Corner { pos: p, normal: [0.0, 1.0, 0.0], uv: [p[0] / 4.0, p[2] / 4.0], uv1: [p[0] / 4.0, p[2] / 4.0], tan_u: [1.0, 0.0, 0.0], tan_v: [0.0, 0.0, 1.0], face, group: 1 };
+    let glass = indicator_is_glass();
+    let link = if glass { INDICATOR_LINK } else { GATE_LINK };
+    let slot = if glass { indicator_slot(m) } else { m.material_slot(GATE_LINK, 28) };
+    let tile = if glass { 4.0 } else { GATE_TILE_M };
+    let c = |p: [f32; 3], face: u32| Corner { pos: p, normal: [0.0, 1.0, 0.0], uv: [p[0] / tile, p[2] / tile], uv1: [p[0] / tile, p[2] / tile], tan_u: [1.0, 0.0, 0.0], tan_v: [0.0, 0.0, 1.0], face, group: 1 };
     let mut out: Vec<[Corner; 3]> = Vec::with_capacity(tris.len());
     // the winding that faces UP is the plane quads' own: (x0,z0) (x0,z1) (x1,z1), whose xz cross
     // (b−a)×(c−a) = −(x1−x0)(z1−z0) is NEGATIVE — v4.5 kept the positive ones and every cutout indicator came out
@@ -1013,12 +1042,19 @@ pub fn add_finish_mesh_visual(m: &mut Merged, verts: &[[f32; 3]], tris: &[[u32; 
         return Err("finish mesh visual: no triangles".into());
     }
     m.visuals.clear();
-    let (mpu, bounds) = lightmap_projection(&mut out);
-    for v in make_visuals(&out, VisualLayout::Full, "off") {
-        m.visuals.push(super::merged::MergedVisual::every_level(v, slot));
+    if glass {
+        let (mpu, bounds) = lightmap_projection(&mut out);
+        for v in make_visuals(&out, VisualLayout::Full, "off") {
+            m.visuals.push(super::merged::MergedVisual::every_level(v, slot));
+        }
+        set_indicator_prelight(m, mpu, bounds);
+        m.notes.push(format!("finish indicator mesh: {} triangles ({flipped} re-wound to the plane's up-facing order), {link} TargetColor {:?}, non-collidable, Full layout + lightmap chart", tris.len(), INDICATOR_RGB));
+    } else {
+        for v in make_visuals(&out, VisualLayout::DecalPaint, "off") {
+            m.visuals.push(super::merged::MergedVisual::every_level(v, slot));
+        }
+        m.notes.push(format!("finish indicator mesh: {} triangles ({flipped} re-wound to the plane's up-facing order), {link} tiled every {tile:.0} m (block frame = world mod 32), non-collidable, DecalPaint layout", tris.len()));
     }
-    set_indicator_prelight(m, mpu, bounds);
-    m.notes.push(format!("finish indicator mesh: {} triangles ({flipped} re-wound to the plane's up-facing order), {link} TargetColor {:?}, non-collidable, Full layout + lightmap chart", tris.len(), INDICATOR_RGB));
     Ok(())
 }
 

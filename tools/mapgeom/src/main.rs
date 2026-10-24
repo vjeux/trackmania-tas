@@ -498,6 +498,11 @@ fn main() {
         std::process::exit(0);
     }
     let a = parse_args();
+    // --indicator glass|gate: the finish indicator material (static_item::build; default gate = RaceTriggerFXFinish)
+    if let Some(i) = a.rest.iter().position(|x| x == "--indicator") {
+        let v = a.rest.get(i + 1).map(|s| s.as_str()).unwrap_or("gate");
+        mapgeom::static_item::build::set_indicator_glass(v == "glass");
+    }
     let cmd = a.rest.first().cloned().unwrap_or_default();
     match cmd.as_str() {
         "ls" => {
@@ -5306,7 +5311,7 @@ fn main() {
             }
         }
         // floor-template --out F.Item.Gbx [--collection 26]: Hugo's Floor Finish template — ONE unit box (0..32 × 0..1 × 0..32)
-        //   trigger + ONE solid-red CustomGlass quad (TargetColor 1,0,0; v4.5) at y 0.02 (the C# swaps both buffers), Finish waypoint, ident = file name
+        //   trigger + ONE indicator quad (v4.8 gate pane, 8 m world tiling; --indicator glass) at y 0.02 (the C# swaps both buffers), Finish waypoint, ident = file name
         "floor-template" => {
             let mut store = open(&a);
             let out = flag(&a.rest, "--out").unwrap_or_else(|| die("floor-template needs --out F.Item.Gbx".into()));
@@ -5323,7 +5328,7 @@ fn main() {
             mapgeom::static_item::build::add_finish_plane_visual(&mut mg, &[(x0, x1, z0, z1, 0.0)], mapgeom::floor_finish::INDICATOR_LIFT).unwrap_or_else(die);
             let (bytes, _) = mapgeom::static_item::build::finish_item(mg, &ident, &ident, 1.0, coll).unwrap_or_else(die);
             std::fs::write(&out, &bytes).unwrap_or_else(|e| die(format!("{out}: {e}")));
-            println!("wrote {out}: {} bytes, ident {ident}, collection {coll}; trigger = one 32×1×32 box, visual = one solid-red CustomGlass quad (TargetColor 1,0,0) at y 0.02 (4 vertices, 2 triangles)", bytes.len());
+            println!("wrote {out}: {} bytes, ident {ident}, collection {coll}; trigger = one 32×1×32 box, visual = one indicator quad at y 0.02 (4 vertices, 2 triangles)", bytes.len());
         }
         // checkpoint-catalogue SOURCE.Map.Gbx --out MAP --mapping MAPPING.tsv [--name NAME]: Hugo's test map — every
         //   checkpoint block at North on a 4-cell grid (west half), again at East (east half), the multi-cell ones at

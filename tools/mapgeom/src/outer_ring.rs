@@ -151,7 +151,8 @@ fn vista_ring(store: &mut crate::store::DataStore, collection: u32, size: (i32, 
     if cnt == 0 {
         return Err("outer ring: no seabed under the band".into());
     }
-    let anchor = (bed_max * 100.0).round() / 100.0;
+    // never under the bed: up to the next 5 cm
+    let anchor = ((bed_max - 0.005) * 20.0).ceil() / 20.0;
     let rects = vec![
         OuterRect { x0: -margin, x1: gx + margin, z0: -margin, z1: 0.0, floor: anchor, kind: "sea" },
         OuterRect { x0: -margin, x1: gx + margin, z0: gz, z1: gz + margin, floor: anchor, kind: "sea" },
@@ -218,10 +219,47 @@ fn stadium_ring(store: &mut crate::store::DataStore, m: &MapFile, size: (i32, i3
             notes.push(format!("  {} at ({cx},{cz}) dir {dir}: only dir 0/2 placements are understood — skipped", b.name));
             continue;
         }
-        let dir_name = format!("Stadium256\\Media\\Solid\\Warp\\");
-        let mut files = vec![format!("{dir_name}{}.HitShape.Gbx", b.name)];
-        if !grass.is_empty() {
-            files.push(format!("{dir_name}{grass}.StaticObject.Gbx"));
+        // the piece's prefab from the block info (Stade1536_Screen155 → Stade1536v2.Prefab: its own Mesh/HitShape,
+        // the shared Grass1536); a `Solid\Warp` prefab splits its hit shape / grass into sibling files, any other
+        // prefab (NoStadium: three inline sub-prefabs) is baked whole
+        let prefab = crate::vista::find_block_info(store, &b.name).and_then(|bp| crate::blockinfo::load(store, &bp).ok()).and_then(|bi| {
+            let v = bi.variant_base_air.as_ref().or(bi.variant_base_ground.as_ref())?;
+            v.mobils.iter().flatten().find_map(|mb| mb.prefab.clone())
+        });
+        let Some(prefab) = prefab else {
+            notes.push(format!("  {} at ({cx},{cz}): no prefab in its block info — skipped", b.name));
+            continue;
+        };
+        let prefab = prefab.trim().to_string();
+        let prefab = if prefab.to_ascii_lowercase().ends_with(".prefab.gbx") { prefab } else { format!("{prefab}.Prefab.Gbx") };
+        let mut files: Vec<String> = Vec::new();
+        if let Some((dir_name, file)) = prefab.rsplit_once('\\') {
+            if dir_name.to_ascii_lowercase().ends_with("solid\\warp") {
+                let stem = file.trim_end_matches(".Prefab.Gbx").trim_end_matches(".prefab.gbx");
+                files.push(format!("{dir_name}\\{stem}.HitShape.Gbx"));
+                if !grass.is_empty() {
+                    files.push(format!("{dir_name}\\{grass}.StaticObject.Gbx"));
+                }
+            }
+        }
+        if files.is_empty() {
+            // bake the prefab's static objects (collision) whole
+            let mut mg = crate::static_item::build::Merged::default();
+            match crate::static_item::build::add_prefab(store, &prefab, &crate::geom::IDENTITY, 1.0, &mut mg, 0) {
+                Ok(_) => {
+                    let mut n = 0;
+                    for t in &mg.surf_triangles {
+                        let pts: Vec<[f32; 3]> = t.indices.iter().filter_map(|&i| mg.surf_vertices.get(i as usize).copied()).collect();
+                        if pts.len() == 3 {
+                            pieces.push((format!("phys{}", t.material_id), [pl.to_map(pts[0]), pl.to_map(pts[1]), pl.to_map(pts[2])]));
+                            n += 1;
+                        }
+                    }
+                    notes.push(format!("  {} at ({cx},{cz}) dir {dir}: {prefab} baked whole: {n} collision triangles", b.name));
+                }
+                Err(e) => notes.push(format!("  {} at ({cx},{cz}): {prefab}: {e}", b.name)),
+            }
+            continue;
         }
         for f in files {
             let loaded = match store.load_model(&f) {

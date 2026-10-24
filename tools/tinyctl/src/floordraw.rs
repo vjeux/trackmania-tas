@@ -9,6 +9,8 @@ use crate::flagdraw::{Canvas, INK};
 use std::collections::BTreeMap;
 
 const PLANE: [u8; 3] = [110, 190, 90];
+/// the outer ring (decoration grass / sea) in a paler finish tone
+const RING: [u8; 3] = [235, 160, 160];
 const HIDDEN: [u8; 3] = [214, 214, 214];
 const VOID: [u8; 3] = [70, 70, 80];
 const STRUCT: [u8; 3] = [40, 40, 40];
@@ -81,6 +83,9 @@ pub fn cmd(rest: &[String]) -> Result<(), String> {
     }
     let floor = mapgeom::floor_finish::stadium_floor(&mut store, &m)?;
     let plane = mapgeom::floor_finish::stadium_plane_mesh(&mut store, &m, 0.0, 1.0)?;
+    // v4.7: the outer ring (6 cells of the decoration's flat grass) — drawn around the grid, the grid boundary thick
+    let ring = if rest.iter().any(|x| x == "--no-ring") { None } else { mapgeom::outer_ring::ring(&mut store, &m, 0x1a).ok() };
+    let margin = if ring.is_some() { 32.0 * mapgeom::outer_ring::RING_CELLS as f32 } else { 0.0 };
     let (mut nx, mut nz) = (0, 0);
     for &(x, z) in &floor.grass {
         nx = nx.max(x + 1);
@@ -116,6 +121,14 @@ pub fn cmd(rest: &[String]) -> Result<(), String> {
     let colour_of = |stem: &str| -> [u8; 3] { KINDS[kinds.iter().position(|k| k == stem).unwrap_or(0) % KINDS.len()] };
 
     let draw = |sc: &Scene, cv: &mut Canvas, w: usize, h: usize, label_scale: usize| {
+        if let Some(r) = &ring {
+            for q in &r.rects {
+                let (a, b) = (sc.p(q.x0, q.z0), sc.p(q.x1, q.z1));
+                cv.poly(&[a, (b.0, a.1), b, (a.0, b.1)], RING, 1.0);
+            }
+            let (a, b) = (sc.p(0.0, 0.0), sc.p(32.0 * nx as f32, 32.0 * nz as f32));
+            cv.outline(&[a, (b.0, a.1), b, (a.0, b.1)], INK, 3.0);
+        }
         // the kept grass: the plane's strips
         for c in plane.verts.chunks(8) {
             let (x0, x1, z0, z1) = (c[0][0], c[1][0], c[0][2], c[4][2]);
@@ -209,11 +222,11 @@ pub fn cmd(rest: &[String]) -> Result<(), String> {
         (n_placed, placements)
     };
 
-    // the full map
-    let (w, h) = ((nx as f32 * px) as usize, (nz as f32 * px) as usize);
+    // the full map (+ the ring margin)
+    let (w, h) = (((32.0 * nx as f32 + 2.0 * margin) * px / 32.0) as usize, ((32.0 * nz as f32 + 2.0 * margin) * px / 32.0) as usize);
     let legend_w = 900usize;
     let mut cv = Canvas::new(w + legend_w, h.max(900));
-    let sc = Scene { px, ox: 0.0, oz: 0.0 };
+    let sc = Scene { px, ox: -margin, oz: -margin };
     let (n_placed, placements) = draw(&sc, &mut cv, w, h, 2);
     // legend
     let lx = w as f32 + 20.0;
@@ -223,7 +236,12 @@ pub fn cmd(rest: &[String]) -> Result<(), String> {
     cv.text(lx, ly, &format!("main plane: {} kept grass cells, {} strips", plane.cells, plane.strips), 2, INK);
     ly += 24.0;
     cv.text(lx, ly, &format!("hidden cells (ground blocks): {}; cutouts: {} placements, {} kinds", floor.hidden.len(), n_placed, kinds.len()), 2, INK);
-    ly += 34.0;
+    ly += 24.0;
+    if let Some(r) = &ring {
+        cv.text(lx, ly, &format!("outer ring: {} flat-grass strips (6 cells outside the grid, black = grid edge)", r.rects.len()), 2, INK);
+        ly += 24.0;
+    }
+    ly += 10.0;
     for (name, col) in [("kept grass = the main plane", PLANE), ("hidden cell (grass tile gone)", HIDDEN), ("void inside it (no collision, no slab)", VOID), ("structure (walls / decks / plates)", STRUCT)] {
         cv.poly(&[(lx, ly), (lx + 24.0, ly), (lx + 24.0, ly + 18.0), (lx, ly + 18.0)], col, 1.0);
         cv.text(lx + 32.0, ly, name, 2, INK);
@@ -285,6 +303,8 @@ fn vista(store: &mut mapgeom::store::DataStore, m: &tmmaps::map::MapFile, collec
     let (tiles, bed) = mapgeom::floor_finish::water_tiles(collection);
     let (below, above) = mapgeom::floor_finish::vista_slab(collection);
     let mesh = mapgeom::floor_finish::floor_mesh(store, m, collection, below, above, true)?;
+    let ring = if rest.iter().any(|x| x == "--no-ring") { None } else { mapgeom::outer_ring::ring(store, m, collection).ok() };
+    let margin = if ring.is_some() { 32.0 * mapgeom::outer_ring::RING_CELLS as f32 } else { 0.0 };
     let shore = mapgeom::floor_finish::shore_tiles(collection);
     let (mut nx, mut nz) = (0, 0);
     for b in m.blocks.iter().chain(m.baked.iter()).filter(|b| b.flags != 0xFFFF_FFFF && b.free_pos.is_none()) {
@@ -322,8 +342,15 @@ fn vista(store: &mut mapgeom::store::DataStore, m: &tmmaps::map::MapFile, collec
         }
     }
     let legend_w = 820usize;
-    let (w, h) = ((nx as f32 * px) as usize, (nz as f32 * px) as usize);
+    let (w, h) = (((32.0 * nx as f32 + 2.0 * margin) * px / 32.0) as usize, ((32.0 * nz as f32 + 2.0 * margin) * px / 32.0) as usize);
     let draw = |sc: &Scene, cv: &mut Canvas, label_scale: usize| {
+        if let Some(r) = &ring {
+            for q in &r.rects {
+                let (a, b) = (sc.p(q.x0, q.z0), sc.p(q.x1, q.z1));
+                cv.poly(&[a, (b.0, a.1), b, (a.0, b.1)], RING, 1.0);
+                cv.outline(&[a, (b.0, a.1), b, (a.0, b.1)], FINISH, 1.5);
+            }
+        }
         let (a, b) = (sc.p(0.0, 0.0), sc.p(32.0 * nx as f32, 32.0 * nz as f32));
         cv.poly(&[a, (b.0, a.1), b, (a.0, b.1)], LAND, 1.0);
         for &(cx, cz) in &open {
@@ -355,6 +382,10 @@ fn vista(store: &mut mapgeom::store::DataStore, m: &tmmaps::map::MapFile, collec
             let (a, b) = (sc.p(x0, z0), sc.p(x1, z1));
             cv.outline(&[a, (b.0, a.1), b, (a.0, b.1)], FINISH, 1.5);
         }
+        if ring.is_some() {
+            let (a, b) = (sc.p(0.0, 0.0), sc.p(32.0 * nx as f32, 32.0 * nz as f32));
+            cv.outline(&[a, (b.0, a.1), b, (a.0, b.1)], INK, 3.0);
+        }
         if let Some(st) = m.blocks.iter().find(|b| b.waypoint_tag.as_deref() == Some("Spawn") || b.name.contains("Start")) {
             let c = st.coords();
             let (a, b) = (sc.p(32.0 * c.0 as f32 + 4.0, 32.0 * c.2 as f32 + 4.0), sc.p(32.0 * c.0 as f32 + 28.0, 32.0 * c.2 as f32 + 28.0));
@@ -363,13 +394,18 @@ fn vista(store: &mut mapgeom::store::DataStore, m: &tmmaps::map::MapFile, collec
         }
     };
     let mut cv = Canvas::new(w + legend_w, h.max(900));
-    let sc = Scene { px, ox: 0.0, oz: 0.0 };
+    let sc = Scene { px, ox: -margin, oz: -margin };
     draw(&sc, &mut cv, 2);
     let lx = w as f32 + 20.0;
     let mut ly = 20.0;
     let coll_name = match collection { 0x10 => "RedIsland", 0x1d => "WhiteShore", 0x1c => "BlueBay", 0xf => "GreenCoast", _ => "?" };
     cv.text(lx, ly, &format!("Floor Finish v4 - {coll_name}"), 2, INK);
     ly += 30.0;
+    if let Some(r) = &ring {
+        let anchor = r.rects.first().map(|q| q.floor).unwrap_or(0.0);
+        cv.text(lx, ly, &format!("outer ring: open sea 6 cells out, slab on bed {anchor:.2} (black = grid edge)"), 2, INK);
+        ly += 26.0;
+    }
     cv.text(lx, ly, &format!("open-water cells {} -> {} strips; shore deep boxes {}", mesh.cells, mesh.strips, mesh.shore_prisms), 2, INK);
     ly += 24.0;
     cv.text(lx, ly, &format!("slab: bed -{below:.1} .. bed +{above:.1}; shore squares: >= 2 m water AND min bed within 0.75 m of the seabed; every box on the seabed (v4.3)"), 2, INK);
