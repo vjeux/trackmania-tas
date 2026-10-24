@@ -503,8 +503,8 @@ fn main() {
         mapgeom::outer_ring::set_ring_wedges(false);
     }
     if let Some(i) = a.rest.iter().position(|x| x == "--indicator") {
-        let v = a.rest.get(i + 1).map(|s| s.as_str()).unwrap_or("chrono");
-        mapgeom::static_item::build::set_indicator(match v { "glass" => mapgeom::static_item::build::Indicator::Glass, "gate" => mapgeom::static_item::build::Indicator::Gate, "decal" => mapgeom::static_item::build::Indicator::Decal, "chrono-pole" => mapgeom::static_item::build::Indicator::ChronoPole, _ => mapgeom::static_item::build::Indicator::Chrono });
+        let v = a.rest.get(i + 1).map(|s| s.as_str()).unwrap_or("none");
+        mapgeom::static_item::build::set_indicator(match v { "glass" => mapgeom::static_item::build::Indicator::Glass, "gate" => mapgeom::static_item::build::Indicator::Gate, "decal" => mapgeom::static_item::build::Indicator::Decal, "chrono-pole" => mapgeom::static_item::build::Indicator::ChronoPole, "chrono" => mapgeom::static_item::build::Indicator::Chrono, _ => mapgeom::static_item::build::Indicator::None });
     }
     let cmd = a.rest.first().cloned().unwrap_or_default();
     match cmd.as_str() {
@@ -5314,7 +5314,7 @@ fn main() {
             }
         }
         // floor-template --out F.Item.Gbx [--collection 26]: Hugo's Floor Finish template — ONE unit box (0..32 × 0..1 × 0..32)
-        //   trigger + ONE indicator quad (v4.12 finish chrono panel in a constant deep-red uv window; --indicator chrono-pole|decal|gate|glass) at y 0.02 (the C# swaps both buffers), Finish waypoint, ident = file name
+        //   trigger only (v4.14: no indicator; --indicator chrono|chrono-pole|decal|gate|glass adds one) (the C# swaps both buffers), Finish waypoint, ident = file name
         "floor-template" => {
             let mut store = open(&a);
             let out = flag(&a.rest, "--out").unwrap_or_else(|| die("floor-template needs --out F.Item.Gbx".into()));

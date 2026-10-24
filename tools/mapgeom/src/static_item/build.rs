@@ -932,7 +932,13 @@ pub const CHRONO_WINDOW: (f32, f32, f32, f32) = (0.71484375, 0.72265625, 0.43359
 pub const CHRONO_POLE_WINDOW: (f32, f32, f32, f32) = (0.25, 0.3125, 0.5, 0.75);
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Indicator {
-    /// v4.12 default: the finish chrono panel in a constant deep-red window
+    /// v4.14 default (Hugo 13:02: "remove textures from all Floor Finish items"): NO indicator — the item keeps only
+    /// the invisible carrier speck `make_invisible_mesh_waypoint` leaves (one 4-vertex visual collapsed to 0.1 mm,
+    /// 4 m under the origin, the donor's own material: nothing draws) + the trigger. The form every STTC / flag /
+    /// v1–v3 floor item shipped in and the game accepted; the item format needs one visual (an empty Visuals list is
+    /// not something any Nadeo static item or the mesh modeler writes — Nadeo's gate items are prefab references).
+    None,
+    /// v4.12: the finish chrono panel in a constant deep-red window
     Chrono,
     /// v4.12: the chrono panel with the pole's own window (cells visible)
     ChronoPole,
@@ -943,12 +949,12 @@ pub enum Indicator {
     /// v4.5–v4.7: tinted CustomGlass with a lightmap chart (lit)
     Glass,
 }
-static INDICATOR: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+static INDICATOR: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(5);
 pub fn set_indicator(mode: Indicator) {
-    INDICATOR.store(match mode { Indicator::Chrono => 0, Indicator::ChronoPole => 4, Indicator::Decal => 3, Indicator::Gate => 1, Indicator::Glass => 2 }, std::sync::atomic::Ordering::Relaxed);
+    INDICATOR.store(match mode { Indicator::None => 5, Indicator::Chrono => 0, Indicator::ChronoPole => 4, Indicator::Decal => 3, Indicator::Gate => 1, Indicator::Glass => 2 }, std::sync::atomic::Ordering::Relaxed);
 }
 pub fn indicator() -> Indicator {
-    match INDICATOR.load(std::sync::atomic::Ordering::Relaxed) { 1 => Indicator::Gate, 2 => Indicator::Glass, 3 => Indicator::Decal, 4 => Indicator::ChronoPole, _ => Indicator::Chrono }
+    match INDICATOR.load(std::sync::atomic::Ordering::Relaxed) { 1 => Indicator::Gate, 2 => Indicator::Glass, 3 => Indicator::Decal, 4 => Indicator::ChronoPole, 0 => Indicator::Chrono, _ => Indicator::None }
 }
 fn chrono_window() -> Option<(f32, f32, f32, f32)> {
     match indicator() { Indicator::Chrono => Some(CHRONO_WINDOW), Indicator::ChronoPole => Some(CHRONO_POLE_WINDOW), _ => None }
@@ -1030,9 +1036,30 @@ pub fn add_finish_plane_visual(m: &mut Merged, quads: &[(f32, f32, f32, f32, f32
     add_finish_visual(m, quads, &[], lift)
 }
 
+/// The carrier speck as a single 4-vertex quad (two triangles, 0.1 mm across) 4 m under the origin, in the first
+/// material slot the merged item already has: the format needs one visual, nothing is ever seen.
+pub fn speck_visual(m: &mut Merged) -> R<()> {
+    use super::bake::{make_visuals, Corner, VisualLayout};
+    let slot = m.visuals.first().map(|v| v.material).unwrap_or(0);
+    let c = |x: f32, z: f32| Corner { pos: [x, -4.0, z], normal: [0.0, 1.0, 0.0], uv: [0.0, 0.0], uv1: [0.001, 0.001], tan_u: [1.0, 0.0, 0.0], tan_v: [0.0, 0.0, 1.0], face: 1, group: 1 };
+    let tris = vec![[c(0.0, 0.0), c(0.0, 1e-4), c(1e-4, 1e-4)], [c(0.0, 0.0), c(1e-4, 1e-4), c(1e-4, 0.0)]];
+    m.visuals.clear();
+    for v in make_visuals(&tris, VisualLayout::DecalPaint, "off") {
+        m.visuals.push(super::merged::MergedVisual::every_level(v, slot));
+    }
+    Ok(())
+}
+
 /// v4.13: flat quads (anchor + lift) plus SLOPED quads (corners with their own y, already lifted) in one visual.
 pub fn add_finish_visual(m: &mut Merged, quads: &[(f32, f32, f32, f32, f32)], sloped: &[[[f32; 3]; 4]], lift: f32) -> R<()> {
     use super::bake::{make_visuals, Corner, VisualLayout};
+    if indicator() == Indicator::None {
+        // the smallest carrier the format needs: one 4-vertex quad of the donor's material, 0.1 mm wide, 4 m under
+        // the origin (the invisible-speck form every STTC / flag item ships in)
+        speck_visual(m)?;
+        m.notes.push(format!("no indicator (v4.14): trigger-only item, one 4-vertex carrier speck is the only visual ({} boxes, {} wedges unmarked)", quads.len(), sloped.len()));
+        return Ok(());
+    }
     let glass = indicator_is_glass();
     let chrono = chrono_window();
     let (link, slot, color0) = if glass { (INDICATOR_LINK, indicator_slot(m), 0xFFFF_FFFFu32) } else if chrono.is_some() { (CHRONO_LINK, m.material_slot(CHRONO_LINK, 28), 0xFFFF_FFFFu32) } else { indicator_unlit(m) };
@@ -1101,6 +1128,11 @@ pub fn add_finish_visual(m: &mut Merged, quads: &[(f32, f32, f32, f32, f32)], sl
 /// counter-clockwise seen from above; same material and layout as `add_finish_plane_visual`, UVs per 4 m.
 pub fn add_finish_mesh_visual(m: &mut Merged, verts: &[[f32; 3]], tris: &[[u32; 3]]) -> R<()> {
     use super::bake::{make_visuals, Corner, VisualLayout};
+    if indicator() == Indicator::None {
+        speck_visual(m)?;
+        m.notes.push(format!("no indicator (v4.14): trigger-only cutout, one 4-vertex carrier speck is the only visual ({} polygon triangles unmarked)", tris.len()));
+        return Ok(());
+    }
     let glass = indicator_is_glass();
     let chrono = chrono_window();
     let (link, slot, color0) = if glass { (INDICATOR_LINK, indicator_slot(m), 0xFFFF_FFFFu32) } else if chrono.is_some() { (CHRONO_LINK, m.material_slot(CHRONO_LINK, 28), 0xFFFF_FFFFu32) } else { indicator_unlit(m) };
