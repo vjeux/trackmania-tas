@@ -35,7 +35,14 @@ const BOX_TOOLS: &str = "/home/vjeux/trackmania-tas/tools/target/release";
 const BOX_BATCH_DIR: &str = "/home/vjeux/shoot/u10s/batch";
 
 fn curl(args: &[&str]) -> Result<(String, String), String> {
-    let out = Command::new("curl").arg("-s").arg("--max-time").arg("600").arg("--retry").arg("1").arg("-w").arg("\n%{http_code}").args(args).output().map_err(|e| format!("curl: {e}"))?;
+    // --max-time: `TINYCTL_CURL_MAX_TIME` (default 600 s). 2026-10-24: Nadeo's core service
+    // hung one upload in ten for 5-7 minutes (a 4 MB body that normally lands in 8 s); at
+    // 600 s a hung worker idled the batch — 2 maps/min against 16 the day before. 150 s
+    // with 2 retries turns a hang into a 2.5-minute retry; a re-upload of the same bytes
+    // is idempotent (update by uid, md5 read back).
+    let max_time = std::env::var("TINYCTL_CURL_MAX_TIME").unwrap_or_else(|_| "600".into());
+    let retries = std::env::var("TINYCTL_CURL_RETRY").unwrap_or_else(|_| "1".into());
+    let out = Command::new("curl").arg("-s").arg("--max-time").arg(&max_time).arg("--retry").arg(&retries).arg("-w").arg("\n%{http_code}").args(args).output().map_err(|e| format!("curl: {e}"))?;
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
     let (body, code) = match text.rfind('\n') {
         Some(i) => (text[..i].to_string(), text[i + 1..].trim().to_string()),
