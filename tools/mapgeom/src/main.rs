@@ -5309,6 +5309,135 @@ fn main() {
             std::fs::write(&out, &bytes).unwrap_or_else(|e| die(format!("{out}: {e}")));
             println!("wrote {out}: {} bytes, ident {ident}, collection {coll}; trigger = one 32×1×32 box, visual = one RaceTriggerFXFinish quad at y 0.02 (4 vertices, 2 triangles)", bytes.len());
         }
+        // heightfield BLOCK [--dir D] [--all]: ASCII dump of a block's standable surface (or its collision silhouette with
+        //   --all) on the 1 m grid — the checkpoint-map metric made visible (digits = metres, '.' = nothing)
+        "heightfield" => {
+            let mut store = open(&a);
+            let name = a.rest.get(1).cloned().unwrap_or_else(|| die("heightfield needs a BLOCK name".into()));
+            let dir: u8 = flag(&a.rest, "--dir").map(|v| v.parse().unwrap_or(0)).unwrap_or(0);
+            let all = a.rest.iter().any(|x| x == "--all");
+            let blocks = mapgeom::checkpoint_map::all_blocks(&mut store, None);
+            let b = blocks.iter().find(|b| b.name.eq_ignore_ascii_case(&name)).unwrap_or_else(|| die(format!("{name}: no block info")));
+            let bi = mapgeom::blockinfo::load(&mut store, &b.path).unwrap_or_else(die);
+            let v = bi.variant_base_ground.as_ref().or(bi.variant_base_air.as_ref()).unwrap_or_else(|| die("no base variant".into()));
+            let f = mapgeom::checkpoint_map::variant_heightfield(&mut store, v).unwrap_or_else(die).turned(dir);
+            let w = 32 * f.size.0 as usize;
+            println!("{name} dir {dir} size {}x{} standable {} m² ({})", f.size.0, f.size.1, f.covered(), if all { "silhouette" } else { "standable" });
+            let field = if all { &f.all } else { &f.h };
+            for z in (0..32 * f.size.1 as usize).rev() {
+                let row: String = (0..w).map(|x| match field[z * w + x] { None => '.', Some(y) => { let d = y.round().clamp(0.0, 35.0) as i64; if d < 10 { (b'0' + d as u8) as char } else { (b'a' + (d - 10) as u8) as char } } }).collect();
+                println!("{row}");
+            }
+        }
+        // checkpoint-map --out DIR [--hugo CheckpointsCleaned.cs]: every checkpoint block of the loaded paks → plain block +
+        //   DirectionOffset by drivable-surface comparison (checkpoint_map.rs); writes MAPPING.tsv, DETAILS.tsv,
+        //   CheckpointsCleaned.cs (Hugo's format, // Family groups, vista-only entries marked)
+        //   ONE pak per run, --label = the collection it is (the vista paks re-author Stadium block infos under Stadium\
+        //   paths); --merge A/MAPPING.tsv,B/MAPPING.tsv,.. combines per-collection runs into one dictionary instead
+        "checkpoint-map" => {
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("checkpoint-map needs --out DIR".into()));
+            std::fs::create_dir_all(&out).unwrap_or_else(|e| die(format!("{out}: {e}")));
+            let hugo = flag(&a.rest, "--hugo").map(|f| mapgeom::checkpoint_map::parse_hugo(&std::fs::read_to_string(&f).unwrap_or_else(|e| die(format!("{f}: {e}"))))).unwrap_or_default();
+            let label = flag(&a.rest, "--label");
+            let mut log = Vec::new();
+            let maps: Vec<mapgeom::checkpoint_map::Mapping> = if let Some(merge) = flag(&a.rest, "--merge") {
+                let mut v = Vec::new();
+                for f in merge.split(',') {
+                    let text = std::fs::read_to_string(f.trim()).unwrap_or_else(|e| die(format!("{f}: {e}")));
+                    v.extend(mapgeom::checkpoint_map::parse_mapping_tsv(&text));
+                }
+                v
+            } else {
+                // the collection = the FIRST --pak: its block infos only (listed from a store holding just that pak); the
+                // other paks (Stadium) supply the prefabs those block infos reference
+                let only: Option<std::collections::BTreeSet<String>> = a.paks.first().map(|spec| {
+                    let (path, key) = match spec.rsplit_once(':') { Some((p, k)) if k.len() == 32 => (p.to_string(), k.to_string()), _ => (spec.clone(), a.key.clone()) };
+                    let mut one = mapgeom::store::DataStore::empty();
+                    one.add_pak(&path, &key).unwrap_or_else(die);
+                    one.entries().map(|e| e.path().to_uppercase()).filter(|u| u.contains("\\GAMECTNBLOCKINFO\\") && u.ends_with(".GBX")).collect()
+                });
+                let mut store = open(&a);
+                mapgeom::checkpoint_map::map_all(&mut store, label.as_deref(), only.as_ref(), &hugo, &mut log).unwrap_or_else(die)
+            };
+            for l in &log { eprintln!("  {l}"); }
+            // MAPPING.tsv: one row per (collection, block)
+            let mut tsv = String::from("collection\tblock\tsize\tvariant\twaypoint_type\tcovered_m2\treplacement\toffset\tmismatch\tverdict\tsecond\tsecond_offset\tsecond_mismatch\tcandidates\thugo_replacement\thugo_offset\thugo_mismatch\tagree\n");
+            let mut details = String::from("collection\tblock\trank\tcandidate\toffset\tmismatch\n");
+            // the dictionary: block → (replacement, offset, verdict, collections, agree-with-hugo); the first collection's
+            // pick wins, others reported when they differ
+            let mut dict: BTreeMap<String, (String, u8, &'static str, Vec<String>, Vec<String>)> = BTreeMap::new();
+            for m in &maps {
+                let v = mapgeom::checkpoint_map::verdict(m);
+                let best = m.ranked.first();
+                let second = m.ranked.iter().find(|c| best.map_or(true, |b| c.name != b.name || c.dir != b.dir));
+                let h = hugo.get(&m.block);
+                let hscore = h.and_then(|(hn, hd)| m.ranked.iter().find(|c| &c.name == hn && c.dir == *hd).map(|c| c.mismatch));
+                let agree = match (h, best) { (Some((hn, hd)), Some(b)) => if &b.name == hn && b.dir == *hd { "yes" } else if hscore.map_or(false, |s| s <= mapgeom::checkpoint_map::MATCH_MAX_PUB) { "both-match" } else { "NO" }, (Some(_), None) => "NO", _ => "-" };
+                tsv.push_str(&format!("{}\t{}\t{}x{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                    m.collection, m.block, m.size.0, m.size.1, if m.ground { "ground" } else { "air" }, m.waypoint_type.map(|w| w.to_string()).unwrap_or("-".into()), m.covered,
+                    best.map(|b| b.name.clone()).unwrap_or("-".into()), best.map(|b| mapgeom::checkpoint_map::offset_name(b.dir)).unwrap_or("-"), best.map(|b| format!("{:.4}", b.mismatch)).unwrap_or("-".into()), v,
+                    second.map(|c| c.name.clone()).unwrap_or("-".into()), second.map(|c| mapgeom::checkpoint_map::offset_name(c.dir)).unwrap_or("-"), second.map(|c| format!("{:.4}", c.mismatch)).unwrap_or("-".into()), m.candidates_tried,
+                    h.map(|(n, _)| n.clone()).unwrap_or("-".into()), h.map(|(_, d)| mapgeom::checkpoint_map::offset_name(*d)).unwrap_or("-"), hscore.map(|s| format!("{s:.4}")).unwrap_or("-".into()), agree));
+                for (i, c) in m.ranked.iter().take(6).enumerate() {
+                    details.push_str(&format!("{}\t{}\t{}\t{}\t{}\t{:.4}\n", m.collection, m.block, i + 1, c.name, mapgeom::checkpoint_map::offset_name(c.dir), c.mismatch));
+                }
+                let e = dict.entry(m.block.clone()).or_insert_with(|| (best.map(|b| b.name.clone()).unwrap_or_default(), best.map(|b| b.dir).unwrap_or(0), v, Vec::new(), Vec::new()));
+                e.3.push(m.collection.clone());
+                if let Some(b) = best { if b.name != e.0 || b.dir != e.1 { e.4.push(format!("{}: {} {}", m.collection, b.name, mapgeom::checkpoint_map::offset_name(b.dir))); } }
+            }
+            std::fs::write(format!("{out}/MAPPING.tsv"), &tsv).unwrap_or_else(|e| die(format!("{out}: {e}")));
+            std::fs::write(format!("{out}/DETAILS.tsv"), &details).unwrap_or_else(|e| die(format!("{out}: {e}")));
+            // CheckpointsCleaned.cs in Hugo's format: `// Family` groups in his order of appearance, vista-only marked
+            let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
+            let mut order: Vec<String> = Vec::new();
+            for (block, _) in &dict {
+                let fam = mapgeom::checkpoint_map::family_label(block);
+                if !groups.contains_key(&fam) { order.push(fam.clone()); }
+                groups.entry(fam).or_default().push(block.clone());
+            }
+            let mut cs = String::new();
+            cs.push_str("        private static readonly Dictionary<string, (string Name, DirectionOffset Rotation)> BlockReplacements = new()\n        {\n");
+            let mut first = true;
+            for fam in &order {
+                if !first { cs.push('\n'); }
+                first = false;
+                cs.push_str(&format!("            // {fam}\n"));
+                for block in &groups[fam] {
+                    let (rep, dir, v, colls, others) = &dict[block];
+                    let vista_only = !colls.iter().any(|c| c == "Stadium");
+                    let mut note = String::new();
+                    if *v == "approx" { note.push_str(if block.contains("WallCheckpoint") { " // the standing deck = the 32 m wall on the same side (approx: the deck's thick ends differ)" } else { " // closest surface, not exact" }); }
+                    if *v == "none" || *v == "no-candidate" { note.push_str(" // NO plain equivalent — remove the block (the closest surface is shown)"); }
+                    if vista_only { note.push_str(&format!(" // vista only: {}", colls.join(", "))); }
+                    if !others.is_empty() { note.push_str(&format!(" // differs by collection: {}", others.join("; "))); }
+                    if rep.is_empty() || *v == "none" || *v == "no-candidate" {
+                        cs.push_str(&format!("            // [\"{block}\"] = remove{note}\n"));
+                    } else {
+                        cs.push_str(&format!("            [\"{block}\"] = (\"{rep}\", DirectionOffset.{}),{note}\n", mapgeom::checkpoint_map::offset_name(*dir)));
+                    }
+                }
+            }
+            cs.push_str("        };\n");
+            std::fs::write(format!("{out}/CheckpointsCleaned.cs"), &cs).unwrap_or_else(|e| die(format!("{out}: {e}")));
+            // SUMMARY.tsv: block, replacement, offset, verified-by, mismatch, collections, size, hugo
+            let mut sm = String::from("block\treplacement\toffset\tverdict\tverified_by\tmismatch\tcollections\tsize\thugo\n");
+            for (block, (rep, dir, v, colls, _)) in &dict {
+                let m0 = maps.iter().find(|m| &m.block == block).unwrap();
+                let wall = (m0.covered as f32) < 0.2 * (32 * 32 * m0.size.0 * m0.size.1) as f32;
+                let by = if m0.ranked.is_empty() { "no candidate" } else if wall { "collision silhouette, 32 m wall squares, 1 m grid, 4 rotations" } else { "standable surface, 1 m grid, lowest height per square, 4 rotations, 0.1 m tolerance" };
+                let h = match hugo.get(block) { Some((hn, hd)) => if hn == rep && *hd == *dir { "same".to_string() } else { format!("Hugo: {hn} {}", mapgeom::checkpoint_map::offset_name(*hd)) }, None => "new".into() };
+                sm.push_str(&format!("{block}\t{}\t{}\t{v}\t{by}\t{}\t{}\t{}x{}\t{h}\n", if *v == "none" || *v == "no-candidate" { "(remove)".to_string() } else { rep.clone() }, mapgeom::checkpoint_map::offset_name(*dir), m0.ranked.first().map(|c| format!("{:.4}", c.mismatch)).unwrap_or("-".into()), colls.join(","), m0.size.0, m0.size.1));
+            }
+            for (hn, (hr, hd)) in &hugo {
+                if !dict.contains_key(hn) {
+                    sm.push_str(&format!("{hn}\t{hr}\t{}\tdead\tno such block in any pak\t-\t-\t-\tHugo only\n", mapgeom::checkpoint_map::offset_name(*hd)));
+                }
+            }
+            std::fs::write(format!("{out}/SUMMARY.tsv"), &sm).unwrap_or_else(|e| die(format!("{out}: {e}")));
+            let n_match = maps.iter().filter(|m| mapgeom::checkpoint_map::verdict(m) == "match").count();
+            let n_approx = maps.iter().filter(|m| mapgeom::checkpoint_map::verdict(m) == "approx").count();
+            println!("wrote {out}/MAPPING.tsv ({} checkpoint blocks over the loaded collections: {n_match} match, {n_approx} approx, {} none), DETAILS.tsv, CheckpointsCleaned.cs ({} distinct blocks, {} families)", maps.len(), maps.len() - n_match - n_approx, dict.len(), order.len());
+        }
         // ground-clippers MAP --out ITEM.Item.Gbx [--ident NAME]: Hugo's GroundClippers item — one box under the whole
         //   map, floor (lowest terrain row + bed) − 1.15 .. − 0.15
         "ground-clippers" => {

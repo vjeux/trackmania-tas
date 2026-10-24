@@ -117,6 +117,31 @@ pub fn yaw_quarter(steps: u8, t: [f32; 3]) -> Xform {
     [c, 0.0, -s, 0.0, 1.0, 0.0, s, 0.0, c, t[0], t[1], t[2]]
 }
 
+/// A block-info mobil's `GeomRotation` (degrees, (x, y, z)) then a translation: the X pitch is applied first, then
+/// the Y yaw, then the Z roll (R = Rz·Ry·Rx) — the order that puts the four `Platform*WallCheckpoint*` mobils
+/// ((−90, 0, 180/0/−90/90) with their translations) inside their 1×4 column as one standing deck on the +z side
+/// (checked numerically 2026-10-24; the other orders throw the deck out of the cell). Column-major like `yaw`.
+pub fn euler_xyz_deg(r: [f32; 3], t: [f32; 3]) -> Xform {
+    let (sx, cx) = r[0].to_radians().sin_cos();
+    let (sy, cy) = r[1].to_radians().sin_cos();
+    let (sz, cz) = r[2].to_radians().sin_cos();
+    let rx = [[1.0, 0.0, 0.0], [0.0, cx, -sx], [0.0, sx, cx]];
+    let ry = [[cy, 0.0, sy], [0.0, 1.0, 0.0], [-sy, 0.0, cy]];
+    let rz = [[cz, -sz, 0.0], [sz, cz, 0.0], [0.0, 0.0, 1.0]];
+    let mul = |a: [[f32; 3]; 3], b: [[f32; 3]; 3]| -> [[f32; 3]; 3] {
+        let mut m = [[0.0f32; 3]; 3];
+        for i in 0..3 {
+            for j in 0..3 {
+                m[i][j] = (0..3).map(|k| a[i][k] * b[k][j]).sum();
+            }
+        }
+        m
+    };
+    let m = mul(mul(rz, ry), rx);
+    // column-major: slot 3j + i = M[i][j]
+    [m[0][0], m[1][0], m[2][0], m[0][1], m[1][1], m[2][1], m[0][2], m[1][2], m[2][2], t[0], t[1], t[2]]
+}
+
 /// A yaw of an arbitrary angle about +Y, then a translation.
 pub fn yaw(angle: f32, t: [f32; 3]) -> Xform {
     let (s, c) = angle.sin_cos();

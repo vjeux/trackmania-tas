@@ -85,6 +85,7 @@ pub mod vista;
 pub mod vista_items;
 pub mod lights;
 pub mod floor_finish;
+pub mod checkpoint_map;
 pub mod podium;
 pub mod sandbox;
 pub mod flags;
