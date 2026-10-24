@@ -1164,7 +1164,10 @@ pub fn plan_records(store: &mut DataStore, idx: &mut BlockInfoIndex, map: &Path,
         // sets leave the pillars the game's planks, which is what the original shows —
         // on a Tech parent the `TrackWallToDecoCliff` modifier is a no-op in the game and
         // the planks take the block's colour). `TINY_PILLAR_OVERLAY_SURFACES` overrides.
-        let overlay_surfaces = std::env::var("TINY_PILLAR_OVERLAY_SURFACES").unwrap_or_else(|_| "dirt,ice,grass".into());
+        // …and Tech/Tarmac (2026-10-24): a dirt/ice/grass parent renamed to its tech twin
+        // leaves the game drawing plain planks where the original showed the parent's
+        // stone — the original look wins there too.
+        let overlay_surfaces = std::env::var("TINY_PILLAR_OVERLAY_SURFACES").unwrap_or_else(|_| "dirt,ice,grass,tech".into());
         let surface_wants_overlay = overlay_surfaces.split(',').any(|w| w.trim().eq_ignore_ascii_case(surface));
         let bake_mode = std::env::var("TINY_PILLAR_BAKE").map(|v| v == "1").unwrap_or(false);
         let overlay_mode = !bake_mode && surface_wants_overlay && std::env::var("TINY_PILLAR_OVERLAY").map(|v| v != "0").unwrap_or(true);

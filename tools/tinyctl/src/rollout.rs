@@ -209,6 +209,10 @@ pub fn cmd(args: &[String]) -> i32 {
             if s == "ice" {
                 c.arg("--label").arg("Icy");
             }
+            // the tech swap is Everios96's "Tarmac" set (2026-10-24): `[Tarmac]` names, `Tar2` uids
+            if s == "tech" {
+                c.arg("--label").arg("Tarmac").arg("--uid-prefix").arg("Tar2");
+            }
             c.env("TINY_CUSTOM_ITEM_LIST", &custom_list).env("TINY_CUSTOM_ITEM_PHYSICS_LIST", &physics_list);
             if sb.contains(&n) {
                 c.env("TINY_STRUCTURE_BASE", "1");

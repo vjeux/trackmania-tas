@@ -128,7 +128,16 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
             .chain(["PlatformTech", "TrackWall", "DecalSponsor1x1BigAOnRoadIce", "DecalSponsor4x1AOnRoadIce", "DecalSponsor4x1BOnRoadIce", "DecalSponsor4x1COnRoadIce", "DecalSponsor4x1DOnRoadIce"].iter())
             .map(|st| format!("{st}=Stadium\\Media\\Material_BlockCustom\\CustomConcrete@62#101010"))
             .collect(),
-        "Tech" => road_stems.iter().filter(|st| **st != "RoadTech").map(|st| format!("{st}=Stadium\\Media\\Material\\RoadTech")).collect(),
+        // TARMAC (Everios96 2026-10-24 16:12: "change the driving surfaces to asphalt/tarmac,
+        // penalty surfaces dont change"): every ROAD stem (dirt, bobsleigh, bump, plank roads,
+        // ramps, tubes) takes the asphalt road material; the POOL decks take the tech PLATFORM
+        // look, as every set gives its pools its platform dress; `OpenTechBorders` is already
+        // the tech border and stays; the grass shoulders (`DecoHill2`) are never listed.
+        "Tech" => road_stems
+            .iter()
+            .filter(|st| **st != "RoadTech" && **st != "OpenTechBorders")
+            .map(|st| if matches!(*st, "Underwater" | "Waterground" | "RoadWater" | "PlatformWater") { format!("{st}=Stadium\\Media\\Material\\PlatformTech") } else { format!("{st}=Stadium\\Media\\Material\\RoadTech") })
+            .collect(),
         other => return Err(format!("surface `{other}`: no dress table")),
     };
     // the DecoPlatform tops of the ICE set and of WET wood: baked with the vanilla snow-top
@@ -171,6 +180,9 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
             // DecoWall bakes came out stock and the placement step kept the vanilla blocks.
             // The same black strong-magnet concrete the decks wear.
             "Magnet" => Some("Stadium\\Media\\Material_BlockCustom\\CustomConcrete@62#101010".to_string()),
+            // Tarmac: the black blocks' caps, rims and halfpipe insides take the tech
+            // PLATFORM (concrete) — the cap of a full block is a platform top
+            "Tech" => Some("Stadium\\Media\\Material\\PlatformTech".to_string()),
             _ => None,
         };
         // the FULL-BLOCK black family (`DecoWall*`) is a surface family by NAME ONLY:
@@ -442,6 +454,7 @@ fn deck_physics_id(surface: &str) -> Option<u8> {
         "Sand" => 5,
         "Snow" => 21,
         "Wood" => 14,
+        "Tech" => 16,
         _ => return None,
     })
 }
