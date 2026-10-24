@@ -35,10 +35,9 @@ pub fn water_surface(collection: u32) -> f32 {
 /// Hugo's round 5 (2026-10-24 00:12): the slab TOP sits a constant 2.5 m under the water surface on every vista
 /// (so the finish depth reads the same everywhere), the BOTTOM 0.1 m under the bed (a car resting on the bed is
 /// inside). Returns (below the bed, above the bed) for `floor_mesh`.
-pub const SLAB_TOP_UNDER_SURFACE: f32 = 2.5;
-pub fn vista_slab(collection: u32) -> (f32, f32) {
-    let (_, bed) = water_tiles(collection);
-    (0.1, (water_surface(collection) - SLAB_TOP_UNDER_SURFACE - bed).max(0.5))
+/// v4.1 (Hugo 2026-10-24 00:57, "revert the equal height"): bed-anchored again, bed − 0.1 .. bed + 0.4 everywhere.
+pub fn vista_slab(_collection: u32) -> (f32, f32) {
+    (0.1, 0.4)
 }
 
 pub fn water_tiles(collection: u32) -> (&'static [&'static str], f32) {
@@ -185,7 +184,13 @@ pub fn deep_mask(w: &WaterRect, _bed: f32) -> u64 {
     deep_squares(w).iter().enumerate().fold(0u64, |m, (i, d)| if d.is_some() { m | (1u64 << i) } else { m })
 }
 
-/// Per 4 m square (index zi·8+xi): the bed height under the square's centre when the square is deep water.
+/// v4.1 (Hugo 00:57: "put it on any FLAT ocean/canal floor, so you don't instantly finish on the slopes"): a
+/// square's bed must be LEVEL — the bed height sampled at its centre and four inner points (±1.5 m) varies by
+/// at most this, and every collision triangle under it faces up within ~14° (|n.y| > 0.97).
+pub const FLAT_BED_MAX_RISE: f32 = 0.25;
+
+/// Per 4 m square (index zi·8+xi): the bed height under the square's centre when the square is DEEP (≥ 2 m of
+/// water) AND FLAT (see `FLAT_BED_MAX_RISE`).
 pub fn deep_squares(w: &WaterRect) -> Vec<Option<f32>> {
     let water = footprint_mask(w);
     let mut out = vec![None; 64];
@@ -193,10 +198,36 @@ pub fn deep_squares(w: &WaterRect) -> Vec<Option<f32>> {
         for xi in 0..8 {
             let bit = 1u64 << (zi * 8 + xi);
             if water & bit == 0 { continue; }
-            let p = [4.0 * xi as f32 + 2.0, 4.0 * zi as f32 + 2.0];
-            if let Some(y) = bed_height_at(w, p) {
-                if w.surface - y >= DEEP_WATER_MIN { out[zi * 8 + xi] = Some(y); }
+            let (cx, cz) = (4.0 * xi as f32 + 2.0, 4.0 * zi as f32 + 2.0);
+            let Some(y) = bed_height_at(w, [cx, cz]) else { continue };
+            if w.surface - y < DEEP_WATER_MIN { continue; }
+            // flat: the five samples within 0.25 m of each other …
+            let samples = [[cx - 1.5, cz - 1.5], [cx + 1.5, cz - 1.5], [cx - 1.5, cz + 1.5], [cx + 1.5, cz + 1.5]];
+            let (mut lo, mut hi) = (y, y);
+            let mut ok = true;
+            for p in samples {
+                match bed_height_at(w, p) {
+                    Some(h) => { lo = lo.min(h); hi = hi.max(h); }
+                    None => { ok = false; }
+                }
             }
+            if !ok || hi - lo > FLAT_BED_MAX_RISE { continue; }
+            // … and every bed triangle touching the square faces up
+            let (x0, z0, x1, z1) = (cx - 2.0, cz - 2.0, cx + 2.0, cz + 2.0);
+            let steep = w.bed_tris_geo.iter().any(|t| {
+                let (tx0, tx1) = (t.iter().map(|v| v[0]).fold(f32::INFINITY, f32::min), t.iter().map(|v| v[0]).fold(f32::NEG_INFINITY, f32::max));
+                let (tz0, tz1) = (t.iter().map(|v| v[2]).fold(f32::INFINITY, f32::min), t.iter().map(|v| v[2]).fold(f32::NEG_INFINITY, f32::max));
+                if tx1 <= x0 || tx0 >= x1 || tz1 <= z0 || tz0 >= z1 { return false; }
+                let ymax = t.iter().map(|v| v[1]).fold(f32::NEG_INFINITY, f32::max);
+                if ymax > w.surface - 0.05 { return false; }
+                let (a, b, c) = (t[0], t[1], t[2]);
+                let (u, v) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [c[0] - a[0], c[1] - a[1], c[2] - a[2]]);
+                let n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+                let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+                len > 1e-6 && (n[1] / len).abs() < 0.97
+            });
+            if steep { continue; }
+            out[zi * 8 + xi] = Some(y);
         }
     }
     out
@@ -1178,15 +1209,9 @@ pub fn floor_mesh(store: &mut crate::store::DataStore, m: &MapFile, collection: 
     let mut tris: Vec<[u32; 3]> = Vec::new();
     let quads: [[u32; 4]; 6] = [[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4], [2, 3, 7, 6], [1, 2, 6, 5], [0, 4, 7, 3]];
     let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
-    // the slab TOP is surface-anchored (water surface − 2.5 m, the same depth on every box of the map), the
-    // BOTTOM bed-anchored (bed − below); `above` is the open-water value and sets the top for the open cells —
-    // for a shore square on the bank's ramp the top is that same absolute height (its bed is higher, the slab thinner)
-    let (_, open_bed) = water_tiles(collection);
-    for (x0, x1, z0, z1, y_bed, floor_y) in &boxes {
-        let y0 = y_bed - below;
-        // top = the cell floor + open bed + `above` (= water surface − 2.5 with the default `above`), the same absolute
-        // height for every box of a row; a shore square on the bank's ramp gets a thinner slab (never < 0.3 m)
-        let y1 = (floor_y + open_bed + above).max(y0 + 0.3);
+    // bed-anchored slab on every box (v4.1): bed − below .. bed + above
+    for (x0, x1, z0, z1, y_bed, _floor_y) in &boxes {
+        let (y0, y1) = (y_bed - below, y_bed + above);
         let base = verts.len() as u32;
         verts.extend_from_slice(&[[*x0, y0, *z0], [*x1, y0, *z0], [*x1, y1, *z0], [*x0, y1, *z0], [*x0, y0, *z1], [*x1, y0, *z1], [*x1, y1, *z1], [*x0, y1, *z1]]);
         for q in quads {
