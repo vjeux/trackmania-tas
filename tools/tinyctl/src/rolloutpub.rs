@@ -474,6 +474,10 @@ pub fn apply(args: &[String]) -> i32 {
         println!("skip-done-prefix: {} earlier results file(s)", found.len());
         skip_lists.extend(found);
     }
+    // rows (by live uid) that an earlier pass already landed IDENTICAL: skipped one by one,
+    // so a campaign that lost one upload to a server-side hang (Dirt 206, 2026-10-24: four
+    // attempts, 0 bytes back) is not re-uploaded whole on the rerun
+    let mut done_rows: std::collections::HashSet<String> = std::collections::HashSet::new();
     if !skip_lists.is_empty() {
         for path in skip_lists.iter().map(|s| s.as_str()) {
             let mut per: HashMap<String, (usize, usize)> = HashMap::new();
@@ -484,6 +488,9 @@ pub fn apply(args: &[String]) -> i32 {
                     e.0 += 1;
                     if c[5].contains("IDENTICAL") {
                         e.1 += 1;
+                        if c[3] == "UPDATE" {
+                            done_rows.insert(c[4].to_string());
+                        }
                     }
                 }
             }
@@ -494,8 +501,9 @@ pub fn apply(args: &[String]) -> i32 {
                 }
             }
         }
-        println!("skip-done: {} campaign(s) already applied", done_camps.len());
+        println!("skip-done: {} campaign(s) already applied, {} update row(s) already landed", done_camps.len(), done_rows.len());
     }
+    let mut failed_updates = 0usize;
     // `--token-refresh` : before each campaign, if the token files are older than 40 min,
     // re-read the pair from the logged-in game on the box (`token --from-game`), so a
     // long apply never dies on the ~1 h expiry.
@@ -638,6 +646,13 @@ pub fn apply(args: &[String]) -> i32 {
         // LIVE uid may carry an earlier wipe's prefix (`Wet6`/`WetC`/`WetH`/`Wet8` — 974 of
         // 975 Wet Wood tails match, only the prefix differs). Re-id every update file to
         // the live uid first, so the upload is an in-place update of THAT map.
+        let (updates, landed): (Vec<_>, Vec<_>) = updates.into_iter().partition(|r| !done_rows.contains(&r[4]));
+        if !landed.is_empty() {
+            println!("  {} update row(s) landed in an earlier pass — skipped", landed.len());
+            for r in &landed {
+                res.push_str(&format!("{}\t{}\t{cid}\tUPDATE\t{}\tIDENTICAL (earlier pass)\n", r[0], r[1], r[4]));
+            }
+        }
         if !updates.is_empty() {
             let mut man = String::new();
             for r in &updates {
@@ -682,6 +697,14 @@ pub fn apply(args: &[String]) -> i32 {
                 res.push_str(&format!("{}\t{}\t{cid}\tUPDATE\t{}\t{}\n", r[0], r[1], r[4], verdict_of(&rp, &r[4])));
             }
             if ok != updates.len() {
+                if wipes.is_empty() {
+                    // in-place updates are independent of each other: the rest of the run
+                    // goes on, the missing rows are rerun with --skip-done-prefix
+                    failed_updates += updates.len() - ok;
+                    println!("  WARN: {} update(s) did not land in {set} {cid} — rerun later, see {}", updates.len() - ok, rp.display());
+                    std::fs::write(&results, &res).ok();
+                    continue;
+                }
                 println!("  STOP: not every update landed in {set} {cid}; nothing swapped, see {}", rp.display());
                 std::fs::write(&results, &res).ok();
                 return 1;
@@ -762,6 +785,10 @@ pub fn apply(args: &[String]) -> i32 {
     }
     std::fs::write(&results, &res).ok();
     println!("results → {}", results.display());
+    if failed_updates > 0 {
+        println!("{failed_updates} update(s) did not land — rerun with --skip-done-prefix (the landed rows are skipped)");
+        return 1;
+    }
     0
 }
 
