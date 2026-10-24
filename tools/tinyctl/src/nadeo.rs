@@ -389,7 +389,8 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                 }
             }
             let part_of = |name: &str| -> Option<(String, usize)> {
-                let (set, n) = name.rsplit_once(" Part ")?;
+                // `<set> Part NN` (the hunt clubs) or `<set> PART NN` (the Tiny U10S club, 145858)
+                let (set, n) = name.rsplit_once(" Part ").or_else(|| name.rsplit_once(" PART "))?;
                 Some((set.to_string(), n.trim().parse().ok()?))
             };
             let mut rows = String::from("campaignId\tcampaign\tpos\tuid\tname\tauthorScore\tgold\tsilver\tbronze\tcollection\tauthor\tmapId\tfile\tsubmitter\n");
