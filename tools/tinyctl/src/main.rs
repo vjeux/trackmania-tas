@@ -19,6 +19,7 @@ mod boxbuild;
 mod mothsheet;
 mod floordraw;
 mod floorprofile;
+mod cpdraw;
 mod discard;
 mod lightmap;
 mod loadloop;
@@ -215,6 +216,7 @@ fn main() {
         "moth-sheet" => mothsheet::cmd(rest),
         "floorfinish-draw" => floordraw::cmd(rest),
         "floorfinish-profile" => floorprofile::cmd(rest),
+        "checkpoint-draw" => cpdraw::cmd(rest),
         "build" => build::cmd(rest),
         "views" => views::cmd(rest),
         "shoot" => shoot::cmd(rest),

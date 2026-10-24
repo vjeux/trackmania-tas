@@ -1205,7 +1205,7 @@ fn main() {
                     let renamed = mapgeom::crystal::rename_ident(&raw, &old_ident, &ident);
                     files.insert(zip_path.clone(), renamed);
                 }
-                specs.push(tmmaps::map::FreeBlockSpec { name: format!("{ident}_CustomBlock"), author: Some(author.clone()), flags: 0x1020_8000, pos: d.origin, rot: [d.yaw, 0.0, 0.0], grid: None, dir: 0 });
+                specs.push(tmmaps::map::FreeBlockSpec { name: format!("{ident}_CustomBlock"), author: Some(author.clone()), flags: 0x1020_8000, pos: d.origin, rot: [d.yaw, 0.0, 0.0], grid: None, dir: 0, waypoint: None });
             }
             println!("{p}: {} water bodies handled, {} as blocks, {} archetype files", decisions.len(), n_block, files.len());
             if let Some(t) = &table_out {
@@ -4590,12 +4590,12 @@ fn main() {
                             Some("cell") => {
                                 let c: Vec<i32> = sp.get(1).unwrap_or(&"").split(',').map(|x| x.trim().parse::<i32>().unwrap_or_else(|_| die(format!("--start-block {v}: cell cx,cy,cz")))).collect();
                                 let dir: u8 = sp.get(2).and_then(|d| d.parse().ok()).unwrap_or(0);
-                                start_blocks.push(tmmaps::map::FreeBlockSpec { name: name.to_string(), author: Some("AutoAltTag".into()), flags: 0x8000, pos: [0.0; 3], rot: [0.0; 3], grid: Some([c[0], c[1], c[2]]), dir });
+                                start_blocks.push(tmmaps::map::FreeBlockSpec { name: name.to_string(), author: Some("AutoAltTag".into()), flags: 0x8000, pos: [0.0; 3], rot: [0.0; 3], grid: Some([c[0], c[1], c[2]]), dir, waypoint: None });
                             }
                             Some("free") => {
                                 let p: Vec<f32> = sp.get(1).unwrap_or(&"").split(',').map(|x| x.trim().parse::<f32>().unwrap_or_else(|_| die(format!("--start-block {v}: free x,y,z")))).collect();
                                 let yaw: f32 = sp.get(2).and_then(|d| d.parse().ok()).unwrap_or(0.0);
-                                start_blocks.push(tmmaps::map::FreeBlockSpec { name: name.to_string(), author: Some("AutoAltTag".into()), flags: 0x2000_8000, pos: [p[0], p[1], p[2]], rot: [yaw, 0.0, 0.0], grid: None, dir: 0 });
+                                start_blocks.push(tmmaps::map::FreeBlockSpec { name: name.to_string(), author: Some("AutoAltTag".into()), flags: 0x2000_8000, pos: [p[0], p[1], p[2]], rot: [yaw, 0.0, 0.0], grid: None, dir: 0, waypoint: None });
                             }
                             _ => die::<()>(format!("--start-block {v}: NAME@cell:cx,cy,cz:dir or NAME@free:x,y,z:yaw")),
                         }
@@ -5308,6 +5308,51 @@ fn main() {
             let (bytes, _) = mapgeom::static_item::build::finish_item(mg, &ident, &ident, 1.0, coll).unwrap_or_else(die);
             std::fs::write(&out, &bytes).unwrap_or_else(|e| die(format!("{out}: {e}")));
             println!("wrote {out}: {} bytes, ident {ident}, collection {coll}; trigger = one 32×1×32 box, visual = one RaceTriggerFXFinish quad at y 0.02 (4 vertices, 2 triangles)", bytes.len());
+        }
+        // checkpoint-catalogue SOURCE.Map.Gbx --out MAP --mapping MAPPING.tsv [--name NAME]: Hugo's test map — every
+        //   checkpoint block at North on a 4-cell grid (west half), again at East (east half), the multi-cell ones at
+        //   South, a start and a finish; prints the slot table (block, group, cell, dir)
+        "checkpoint-catalogue" => {
+            let mut store = open(&a);
+            let src = a.rest.get(1).cloned().unwrap_or_else(|| die("checkpoint-catalogue needs a SOURCE map".into()));
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("--out MAP".into()));
+            let mapping = flag(&a.rest, "--mapping").unwrap_or_else(|| die("--mapping MAPPING.tsv".into()));
+            let rules = mapgeom::checkpoint_catalogue::read_mapping(&mapping).unwrap_or_else(die);
+            let slots = mapgeom::checkpoint_catalogue::build_catalogue(&mut store, &src, &out, &rules).unwrap_or_else(die);
+            if let Some(name) = flag(&a.rest, "--name") {
+                let hdr = tmmaps::header::read(&out).unwrap_or_else(|e| die(e));
+                let mut m = tmmaps::map::MapFile::try_load(std::path::Path::new(&out)).unwrap_or_else(die);
+                m.set_map_name(&hdr.name, &name);
+                m.write_to(std::path::Path::new(&out)).unwrap_or_else(|e| die(e.to_string()));
+            }
+            if let Some(tsv) = flag(&a.rest, "--slots") {
+                let mut s = String::from("block\tgroup\tcell_x\tcell_y\tcell_z\tdir\tvariant\n");
+                for sl in &slots { s.push_str(&format!("{}\t{}\t{}\t{}\t{}\t{}\t{}\n", sl.name, sl.group, sl.cell[0], sl.cell[1], sl.cell[2], sl.dir, if sl.ground { "ground" } else { "air" })); }
+                std::fs::write(&tsv, s).unwrap_or_else(|e| die(format!("{tsv}: {e}")));
+            }
+            let m = tmmaps::map::MapFile::try_load(std::path::Path::new(&out)).unwrap_or_else(die);
+            let (mut sp, mut cp, mut go) = (0, 0, 0);
+            for b in &m.blocks { match b.waypoint_tag.as_deref() { Some("Spawn") => sp += 1, Some("Checkpoint") => cp += 1, Some("Goal") => go += 1, _ => {} } }
+            println!("wrote {out}: {} slots ({} rules), {} blocks, {} items; waypoints: {sp} Spawn, {cp} Checkpoint, {go} Goal", slots.len(), rules.len(), m.blocks.iter().filter(|b| b.flags != 0xFFFF_FFFF).count(), m.items.len());
+        }
+        // checkpoint-clean MAP --out MAP --mapping MAPPING.tsv: apply the mapping (the Rust twin of Hugo's CheckpointsCleaned)
+        "checkpoint-clean" => {
+            let mut store = open(&a);
+            let src = a.rest.get(1).cloned().unwrap_or_else(|| die("checkpoint-clean needs a MAP".into()));
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("--out MAP".into()));
+            let mapping = flag(&a.rest, "--mapping").unwrap_or_else(|| die("--mapping MAPPING.tsv".into()));
+            let rules = mapgeom::checkpoint_catalogue::read_mapping(&mapping).unwrap_or_else(die);
+            let (replaced, removed, left) = mapgeom::checkpoint_catalogue::clean(&mut store, &src, &out, &rules).unwrap_or_else(die);
+            if let Some(name) = flag(&a.rest, "--name") {
+                let hdr = tmmaps::header::read(&out).unwrap_or_else(|e| die(e));
+                let mut m = tmmaps::map::MapFile::try_load(std::path::Path::new(&out)).unwrap_or_else(die);
+                m.set_map_name(&hdr.name, &name);
+                m.write_to(std::path::Path::new(&out)).unwrap_or_else(|e| die(e.to_string()));
+            }
+            let m = tmmaps::map::MapFile::try_load(std::path::Path::new(&out)).unwrap_or_else(die);
+            let (mut sp, mut cp, mut go) = (0, 0, 0);
+            for b in &m.blocks { match b.waypoint_tag.as_deref() { Some("Spawn") => sp += 1, Some("Checkpoint") => cp += 1, Some("Goal") => go += 1, _ => {} } }
+            println!("wrote {out}: {replaced} checkpoint blocks replaced, {removed} removed, {} without a rule {:?}; waypoints: {sp} Spawn, {cp} Checkpoint, {go} Goal", left.len(), left);
         }
         // heightfield BLOCK [--dir D] [--all]: ASCII dump of a block's standable surface (or its collision silhouette with
         //   --all) on the 1 m grid — the checkpoint-map metric made visible (digits = metres, '.' = nothing)

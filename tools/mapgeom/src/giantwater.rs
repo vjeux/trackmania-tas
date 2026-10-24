@@ -313,7 +313,7 @@ pub fn plan_free(source: &MapFile, ground: f32, s: [f32; 3], t: [f32; 3], scale:
                             p.archetypes.entry(b.name.clone()).or_insert(ident.clone());
                             let (origin, yaw) = frame(b.dir, cell[0] as f32 * CELL_XZ, cell[2] as f32 * CELL_XZ, CELL_XZ);
                             let y = cell[1] as f32 * CELL_Y + ground;
-                            p.roads.push(FreeBlockSpec { name: format!("{ident}_CustomBlock"), author: Some(author.to_string()), flags: flags | 0x1000_8000, pos: [origin[0], y, origin[1]], rot: [yaw, 0.0, 0.0], grid: None, dir: 0 });
+                            p.roads.push(FreeBlockSpec { name: format!("{ident}_CustomBlock"), author: Some(author.to_string()), flags: flags | 0x1000_8000, pos: [origin[0], y, origin[1]], rot: [yaw, 0.0, 0.0], grid: None, dir: 0, waypoint: None });
                             e.1 += 1;
                             continue;
                         }
@@ -321,7 +321,7 @@ pub fn plan_free(source: &MapFile, ground: f32, s: [f32; 3], t: [f32; 3], scale:
                             p.clipped += 1;
                             continue;
                         }
-                        p.grid.push(FreeBlockSpec { name: b.name.clone(), author: None, flags, pos: [0.0; 3], rot: [0.0; 3], grid: Some(cell), dir: b.dir });
+                        p.grid.push(FreeBlockSpec { name: b.name.clone(), author: None, flags, pos: [0.0; 3], rot: [0.0; 3], grid: Some(cell), dir: b.dir, waypoint: None });
                         e.1 += 1;
                     }
                 }
@@ -362,7 +362,7 @@ pub fn plan_free(source: &MapFile, ground: f32, s: [f32; 3], t: [f32; 3], scale:
                     let ident = format!("Water\\{arch}.Block.Gbx");
                     p.archetypes.entry(arch.to_string()).or_insert(ident.clone());
                     let w = local_to_world(origin, yaw, lx, lz);
-                    p.roads.push(FreeBlockSpec { name: format!("{ident}_CustomBlock"), author: Some(author.to_string()), flags: 0x1000_8000, pos: [w[0], y, w[1]], rot: [yaw, 0.0, 0.0], grid: None, dir: 0 });
+                    p.roads.push(FreeBlockSpec { name: format!("{ident}_CustomBlock"), author: Some(author.to_string()), flags: 0x1000_8000, pos: [w[0], y, w[1]], rot: [yaw, 0.0, 0.0], grid: None, dir: 0, waypoint: None });
                     e.1 += 1;
                 }
             }
@@ -718,7 +718,7 @@ pub fn plan_volumes(store: &mut crate::store::DataStore, idx: &mut crate::blockm
         }
         let above = rowtop.contains_key(&[cell[0], cell[1] + 1, cell[2]]);
         let flags = if above { below_flags | if *ground_bit { FLAG_GROUND } else { 0 } } else { 0 };
-        p.grid.push(FreeBlockSpec { name: tile.clone(), author: None, flags, pos: [0.0; 3], rot: [0.0; 3], grid: Some(*cell), dir: *dir });
+        p.grid.push(FreeBlockSpec { name: tile.clone(), author: None, flags, pos: [0.0; 3], rot: [0.0; 3], grid: Some(*cell), dir: *dir, waypoint: None });
         by_name.entry(tile.clone()).or_insert((0, 0, "")).1 += 1;
     }
     // emit the PLATFORM tiles
@@ -730,7 +730,7 @@ pub fn plan_volumes(store: &mut crate::store::DataStore, idx: &mut crate::blockm
             clipped_free.push((*cell, 2.0 - CELL_Y));
             continue;
         }
-        p.grid.push(FreeBlockSpec { name: tile.clone(), author: None, flags: *flags, pos: [0.0; 3], rot: [0.0; 3], grid: Some(*cell), dir: *dir });
+        p.grid.push(FreeBlockSpec { name: tile.clone(), author: None, flags: *flags, pos: [0.0; 3], rot: [0.0; 3], grid: Some(*cell), dir: *dir, waypoint: None });
         by_name.entry(tile.clone()).or_insert((0, 0, "")).1 += 1;
     }
     if !clipped_free.is_empty() {
@@ -738,7 +738,7 @@ pub fn plan_volumes(store: &mut crate::store::DataStore, idx: &mut crate::blockm
         p.archetypes.entry("DecoWallWaterBase".to_string()).or_insert(ident.clone());
         for (cell, dy) in &clipped_free {
             let y = ground + cell[1] as f32 * CELL_Y + dy;
-            p.roads.push(FreeBlockSpec { name: format!("{ident}_CustomBlock"), author: Some(author.to_string()), flags: FREE_WATER_FLAGS, pos: [cell[0] as f32 * CELL_XZ, y, cell[2] as f32 * CELL_XZ], rot: [0.0, 0.0, 0.0], grid: None, dir: 0 });
+            p.roads.push(FreeBlockSpec { name: format!("{ident}_CustomBlock"), author: Some(author.to_string()), flags: FREE_WATER_FLAGS, pos: [cell[0] as f32 * CELL_XZ, y, cell[2] as f32 * CELL_XZ], rot: [0.0, 0.0, 0.0], grid: None, dir: 0, waypoint: None });
         }
         p.notes.push(format!("{} grid water tiles beyond the {}x{}x{} grid -> free DecoWallWaterBase tiles at their place (the sheet is drawn there, NO volume: a block cannot stand beyond the u8 grid)", clipped_free.len(), size[0], size[1], size[2]));
     }
@@ -752,7 +752,7 @@ pub fn plan_volumes(store: &mut crate::store::DataStore, idx: &mut crate::blockm
             for k in 0..layers {
                 let y = *sy as f32 - CELL_Y * (k + 1) as f32;
                 let flags = if k == 0 { FREE_WATER_FLAGS } else { FREE_WATER_FLAGS | below_flags };
-                p.roads.push(FreeBlockSpec { name: format!("{ident}_CustomBlock"), author: Some(author.to_string()), flags, pos: [*cx as f32 * CELL_XZ, y, *cz as f32 * CELL_XZ], rot: [0.0, 0.0, 0.0], grid: None, dir: 0 });
+                p.roads.push(FreeBlockSpec { name: format!("{ident}_CustomBlock"), author: Some(author.to_string()), flags, pos: [*cx as f32 * CELL_XZ, y, *cz as f32 * CELL_XZ], rot: [0.0, 0.0, 0.0], grid: None, dir: 0, waypoint: None });
                 free_n += 1;
             }
         }
@@ -794,7 +794,7 @@ pub fn plan_volumes(store: &mut crate::store::DataStore, idx: &mut crate::blockm
                 let ident = format!("Water\\{arch}.Block.Gbx");
                 p.archetypes.entry(arch.to_string()).or_insert(ident.clone());
                 let w = local_to_world(origin, yaw, lx, lz);
-                p.roads.push(FreeBlockSpec { name: format!("{ident}_CustomBlock"), author: Some(author.to_string()), flags: FREE_WATER_FLAGS, pos: [w[0], y, w[1]], rot: [yaw, 0.0, 0.0], grid: None, dir: 0 });
+                p.roads.push(FreeBlockSpec { name: format!("{ident}_CustomBlock"), author: Some(author.to_string()), flags: FREE_WATER_FLAGS, pos: [w[0], y, w[1]], rot: [yaw, 0.0, 0.0], grid: None, dir: 0, waypoint: None });
                 e.1 += 1;
             }
         }

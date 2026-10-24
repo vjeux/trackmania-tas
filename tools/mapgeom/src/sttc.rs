@@ -1818,7 +1818,7 @@ pub fn reconcile_clips(ctx: &mut Ctx, src: &Path, out: &Path) -> Result<Reconcil
         let rm: HashSet<usize> = removed.iter().copied().collect();
         let specs: Vec<tmmaps::map::FreeBlockSpec> = added
             .iter()
-            .map(|a| tmmaps::map::FreeBlockSpec { name: a.name.clone(), author: None, flags: a.flags, pos: [0.0; 3], rot: [0.0; 3], grid: Some(a.cell), dir: a.dir })
+            .map(|a| tmmaps::map::FreeBlockSpec { name: a.name.clone(), author: None, flags: a.flags, pos: [0.0; 3], rot: [0.0; 3], grid: Some(a.cell), dir: a.dir, waypoint: None })
             .collect();
         mo.remove_and_add_blocks_ext(|_| false, |r| rm.contains(&r.index), &[], &specs);
         mo.write_to(out).map_err(|e| e.to_string())?;

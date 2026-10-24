@@ -3686,6 +3686,9 @@ impl MapFile {
         // defined (or back-referenced) through the same table the baked chunk
         // continues with, so every later index stays right.
         let mut added_free_entries: Vec<u8> = Vec::new();
+        // fresh node indices for the added records' waypoint nodes: above every index the file uses
+        let mut next_node: u32 = self.gbx.num_nodes.max(1);
+        let added_nodes = add.iter().filter(|s| s.waypoint.is_some()).count() as u32;
         for spec in add {
             let mut put_id = |out: &mut Vec<u8>, name: &str, table: &mut Vec<String>| match table.iter().position(|t| t == name) {
                 Some(i) => out.extend_from_slice(&(0x4000_0000u32 | (i as u32 + 1)).to_le_bytes()),
@@ -3708,10 +3711,23 @@ impl MapFile {
                     spec.flags | FREE_BLOCK_FLAG
                 }
             };
+            let flags = if spec.waypoint.is_some() { flags | 0x100000 } else { flags };
             new_blocks.extend_from_slice(&flags.to_le_bytes());
             if flags & 0x8000 != 0 {
                 put_id(&mut new_blocks, spec.author.as_deref().unwrap_or("Nadeo"), &mut table);
                 new_blocks.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes()); // skin: none
+            }
+            if let Some(tag) = &spec.waypoint {
+                // [idx][class][chunk 0x2E009000 v2: len, tag, order][FACADE]
+                new_blocks.extend_from_slice(&next_node.to_le_bytes());
+                next_node += 1;
+                new_blocks.extend_from_slice(&WAYPOINT_CLASS.to_le_bytes());
+                new_blocks.extend_from_slice(&WAYPOINT_CLASS.to_le_bytes());
+                new_blocks.extend_from_slice(&2u32.to_le_bytes());
+                new_blocks.extend_from_slice(&(tag.len() as u32).to_le_bytes());
+                new_blocks.extend_from_slice(tag.as_bytes());
+                new_blocks.extend_from_slice(&0u32.to_le_bytes());
+                new_blocks.extend_from_slice(&FACADE.to_le_bytes());
             }
             kept_blocks += 1;
             if spec.grid.is_none() {
@@ -3907,6 +3923,8 @@ impl MapFile {
 
         self.raw_patches.extend(patches);
         self.raw_splices.extend(splices);
+        // the header's node count covers the added waypoint nodes
+        self.gbx.num_nodes = self.gbx.num_nodes.max(1) + added_nodes;
         removed
     }
 }
@@ -4257,6 +4275,10 @@ pub struct FreeBlockSpec {
     /// game for a GRID block; a free block turns by `rot` instead (2026-09-13,
     /// the giant maps' native water tiles copy the source block's).
     pub dir: u8,
+    /// A waypoint tag ("Checkpoint", "Spawn", "Goal") written as the record's
+    /// inline CGameWaypointSpecialProperty node (flag bit 0x100000 set, a fresh
+    /// node index above the file's count; order 0). None: no node.
+    pub waypoint: Option<String>,
 }
 
 /// A map with NO items cannot be converted by the tiny writer, which clones an

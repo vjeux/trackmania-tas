@@ -164,7 +164,7 @@ pub fn straight(args: &[String]) {
     {
         let mut m = MapFile::load(&tmp3);
         let mut specs: Vec<FreeBlockSpec> = Vec::new();
-        let grid = |name: &str, cx: i32, cy: i32, cz: i32, dir: u8| FreeBlockSpec { name: name.to_string(), author: None, flags: 0, pos: [0.0; 3], rot: [0.0; 3], grid: Some([cx, cy, cz]), dir };
+        let grid = |name: &str, cx: i32, cy: i32, cz: i32, dir: u8| FreeBlockSpec { name: name.to_string(), author: None, flags: 0, pos: [0.0; 3], rot: [0.0; 3], grid: Some([cx, cy, cz]), dir, waypoint: None };
         let n_goal = m.blocks.iter().filter(|b| b.waypoint_tag.as_deref() == Some("Goal")).count() as i32;
         let waypoint_cells: Vec<i32> = std::iter::once(z_start).chain(cps.iter().cloned()).chain((0..n_goal).map(|k| z_finish + k)).collect();
         // --specials CZ[-CZ2]:BLOCK[@DIR][^DY][,…]: the road cell(s) at CZ (a range CZ-CZ2
@@ -227,7 +227,7 @@ pub fn straight(args: &[String]) {
             for (_, name, dir, ym, centre) in free_specials.iter().filter(|(c, _, _, _, _)| *c == cz) {
                 let half = if *centre { 16.0 } else { 0.0 };
                 let floor_y = 8.0 * (GROUND_CY as f32 - 8.0);
-                specs.push(FreeBlockSpec { name: name.to_string(), author: None, flags: 0, pos: [x_cell as f32 * 32.0 + half, floor_y + ym, cz as f32 * 32.0 + half], rot: [(*dir as f32) * std::f32::consts::FRAC_PI_2, 0.0, 0.0], grid: None, dir: *dir });
+                specs.push(FreeBlockSpec { name: name.to_string(), author: None, flags: 0, pos: [x_cell as f32 * 32.0 + half, floor_y + ym, cz as f32 * 32.0 + half], rot: [(*dir as f32) * std::f32::consts::FRAC_PI_2, 0.0, 0.0], grid: None, dir: *dir, waypoint: None });
                 println!("  free {name} at ({:.1}, {:.1}, {:.1}) yaw {} quarter turn(s)", x_cell as f32 * 32.0 + half, floor_y + ym, cz as f32 * 32.0 + half, dir);
                 n_special += 1;
             }

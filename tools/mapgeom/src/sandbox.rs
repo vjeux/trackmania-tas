@@ -714,7 +714,7 @@ pub fn sandbox(ctx: &mut Ctx, src: &Path, out: &Path, o: &SandboxOpts, dry: bool
         let mut m2 = MapFile::try_load(out)?;
         let fill_specs: Vec<tmmaps::map::FreeBlockSpec> = fill
             .iter()
-            .map(|(cx, cz)| tmmaps::map::FreeBlockSpec { name: o.fill.clone(), author: None, flags: fill_flags, pos: [0.0; 3], rot: [0.0; 3], grid: Some([*cx, row, *cz]), dir: 0 })
+            .map(|(cx, cz)| tmmaps::map::FreeBlockSpec { name: o.fill.clone(), author: None, flags: fill_flags, pos: [0.0; 3], rot: [0.0; 3], grid: Some([*cx, row, *cz]), dir: 0, waypoint: None })
             .collect();
         let to_grid: Vec<(usize, [i32; 3])> = keep_blocks.iter().filter(|k| k.5).map(|k| (k.0, [k.2 .0, k.2 .1, k.2 .2])).collect();
         m2.remove_and_add_blocks_ext2(|b| !kept_set.contains(&b.index), |_| true, &fill_specs, &[], &to_grid);
