@@ -60,6 +60,8 @@ pub struct FlagsOpts {
     /// cells as slabs on the lake bed in WORLD coordinates — placed once at the map origin (0,0,0), yaw 0,
     /// tag Goal. `(ident stem, bed_below, bed_above)`; the sources list is ignored.
     pub floor_item: Option<(String, f32, f32)>,
+    /// `--ground-clippers`: the floor item is Hugo's GroundClippers box instead (one slab under the whole map)
+    pub ground_clippers: bool,
     /// `--shores`: the shore tiles' water parts join the floor item (off by default since 2026-10-23 09:51)
     pub floor_shores: bool,
     /// Hugo's round 4 (2026-10-23 13:51, Stadium): `--cutouts` adds one carrier per ground-block KIND whose ground
@@ -370,9 +372,13 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
     for stem in &models {
         if let Some((_, below, above)) = &o.floor_item {
             let ident = format!("{stem}.Item.Gbx");
-            let (bytes, mesh) = crate::floor_finish::build_floor_item(ctx.store, &m, collection, &ident, *below, *above, o.floor_shores, lm_word).map_err(|e| format!("{stem}: {e}"))?;
+            let (bytes, mesh) = if o.ground_clippers {
+                crate::floor_finish::build_ground_clippers_item(ctx.store, &m, collection, &ident).map_err(|e| format!("{stem}: {e}"))?
+            } else {
+                crate::floor_finish::build_floor_item(ctx.store, &m, collection, &ident, *below, *above, o.floor_shores, lm_word).map_err(|e| format!("{stem}: {e}"))?
+            };
             let mut row = Row::new(&map_label, "flags", "model", 0, stem);
-            row.action = "floor-item-built".into();
+            row.action = if o.ground_clippers { "ground-clippers-built".into() } else { "floor-item-built".into() };
             row.to_name = ident.clone();
             row.note = format!("{} bytes; ONE trigger mesh of {} row strips over {} open-water cells (authored + baked) + {} shore cells' water as {} 4 m boxes ({} vertices, {} triangles), slabs on the lake bed (bed −{below} .. +{above} m), world frame bbox [{:.1} {:.2} {:.1}]..[{:.1} {:.2} {:.1}]; invisible, no collision; {}", bytes.len(), mesh.strips, mesh.cells, mesh.shore_boxes, mesh.shore_prisms, mesh.verts.len(), mesh.tris.len(), mesh.bbox.0[0], mesh.bbox.0[1], mesh.bbox.0[2], mesh.bbox.1[0], mesh.bbox.1[1], mesh.bbox.1[2], mesh.notes.join(" | "));
             rows.push(row);

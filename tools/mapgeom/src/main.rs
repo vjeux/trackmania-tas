@@ -5290,6 +5290,23 @@ fn main() {
             std::fs::write(&out, &bytes).unwrap_or_else(|e| die(format!("{out}: {e}")));
             println!("wrote {out}: {} bytes, ident {ident}, collection {coll}; trigger = one 32×1×32 box, visual = one RaceTriggerFXFinish quad at y 0.02 (4 vertices, 2 triangles)", bytes.len());
         }
+        // ground-clippers MAP --out ITEM.Item.Gbx [--ident NAME]: Hugo's GroundClippers item — one box under the whole
+        //   map, floor (lowest terrain row + bed) − 1.15 .. − 0.15
+        "ground-clippers" => {
+            let mut store = open(&a);
+            let p = a.rest.get(1).cloned().unwrap_or_else(|| die("ground-clippers needs a MAP".into()));
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("ground-clippers needs --out ITEM.Item.Gbx".into()));
+            let m = tmmaps::map::MapFile::try_load(std::path::Path::new(&p)).unwrap_or_else(die);
+            let map_coll = m.body_collections().map(|c| c[0].1).unwrap_or(26);
+            let hdr0 = tmmaps::header::read(&p).unwrap_or_else(|e| die(e));
+            let ident = flag(&a.rest, "--ident").unwrap_or_else(|| format!("GroundClippers_{}.Item.Gbx", hdr0.uid));
+            let (bytes, mesh) = mapgeom::floor_finish::build_ground_clippers_item(&mut store, &m, map_coll, &ident).unwrap_or_else(die);
+            std::fs::write(&out, &bytes).unwrap_or_else(|e| die(format!("{out}: {e}")));
+            for n in &mesh.notes {
+                println!("  {n}");
+            }
+            println!("wrote {out}: {} bytes, ident {ident}, collection {map_coll}", bytes.len());
+        }
         // floor-finish MAP --out ITEM.Item.Gbx [--ident NAME.Item.Gbx] [--floor-below 0.1] [--floor-above 0.4] [--collection 26]:
         //   the one-per-map Floor Finish carrier alone (Hugo embeds + places it himself at the map origin)
         "floor-finish" => {
@@ -5360,6 +5377,7 @@ fn main() {
                 source_pad: flag(&a.rest, "--source-pad").map(|v| v.parse::<f32>().unwrap_or_else(|_| die("--source-pad M".into()))).unwrap_or(0.3),
                 floor_item: None,
                 floor_shores: !a.rest.iter().any(|x| x == "--no-shores"),
+                ground_clippers: a.rest.iter().any(|x| x == "--ground-clippers"),
                 floor_cutouts: a.rest.iter().any(|x| x == "--cutouts"),
             };
             // --lights SOURCES.tsv (Hugo's Moth, 2026-10-22): the light sources are the carriers' seats. The TSV = the
@@ -5383,7 +5401,7 @@ fn main() {
                 let (vb, va) = mapgeom::floor_finish::vista_slab(coll0);
                 let below: f32 = flag(&a.rest, "--floor-below").map(|v| v.parse().unwrap_or_else(|_| die("--floor-below M".into()))).unwrap_or(if stadium { 0.0 } else { vb });
                 let above: f32 = flag(&a.rest, "--floor-above").map(|v| v.parse().unwrap_or_else(|_| die("--floor-above M".into()))).unwrap_or(if stadium { 1.0 } else { va });
-                let stem = flag(&a.rest, "--floor-label").unwrap_or_else(|| format!("FinishFloor_{}", hdr0.uid));
+                let stem = flag(&a.rest, "--floor-label").unwrap_or_else(|| if a.rest.iter().any(|x| x == "--ground-clippers") { format!("GroundClippers_{}", hdr0.uid) } else { format!("FinishFloor_{}", hdr0.uid) });
                 mapgeom::flags::FlagsOpts {
                     uid_prefix: flag(&a.rest, "--uid-prefix").unwrap_or_else(|| "Floor".into()),
                     name_suffix: flag(&a.rest, "--name-suffix").unwrap_or_else(|| " Floor Finish".into()),

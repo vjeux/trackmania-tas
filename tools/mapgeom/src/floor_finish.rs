@@ -1282,3 +1282,58 @@ pub fn build_floor_item(store: &mut crate::store::DataStore, m: &MapFile, collec
 
 /// The indicator plane sits this far over the ground it marks (Hugo: "2 cm above").
 pub const INDICATOR_LIFT: f32 = 0.02;
+
+/// Hugo's GroundClippers (2026-10-24 02:10–02:16): a finish for cars that clip through the ground into the void —
+/// ONE box under the whole map, x 0..size_x·32, z 0..size_z·32, top = the map's FLOOR − 0.15 (a landing's wheel
+/// penetration never reaches it), 1 m thick. The floor comes from the map: the lowest terrain row present
+/// (authored + baked zone tiles: the open-water and shore tiles, the land tiles) → that row's floor + the
+/// collection's bed-local constant (RedIsland/WhiteShore/GreenCoast 2.0, BlueBay 4.0, Stadium grass 0.0).
+/// Measured on the 25 Fall sources: RedIsland row 14 → −6.0, WhiteShore row 14 → −6.0, BlueBay row 5 → 4.0,
+/// GreenCoast row 4 → −6.0, Stadium row 9 → 8.0, the same on every map of a collection.
+pub const CLIPPER_TOP_UNDER_FLOOR: f32 = 0.15;
+pub const CLIPPER_THICKNESS: f32 = 1.0;
+
+/// The terrain tiles whose rows define the floor (open water, shores, land) per collection.
+pub fn terrain_tiles(collection: u32) -> Vec<&'static str> {
+    let mut v: Vec<&'static str> = water_tiles(collection).0.to_vec();
+    v.extend_from_slice(shore_tiles(collection));
+    v.extend_from_slice(match collection {
+        0x10 => &["Dirt"],
+        0x1d => &["Land"],
+        0xf => &["Grass"],
+        0x1a => &["Grass"],
+        _ => &[],
+    });
+    v
+}
+
+/// The map's floor: (world y, lowest terrain row, bed-local constant), or None when no terrain tile is placed.
+pub fn map_floor(m: &MapFile, collection: u32) -> Option<(f32, i32, f32)> {
+    let tiles = terrain_tiles(collection);
+    let row = m.blocks.iter().chain(m.baked.iter()).filter(|b| b.flags != 0xFFFF_FFFF && b.free_pos.is_none() && tiles.iter().any(|t| t.eq_ignore_ascii_case(&b.name))).map(|b| b.coords().1).min()?;
+    let bed = if collection == 0x1a { 0.0 } else { water_tiles(collection).1 };
+    Some((tmmaps::map::ground_y(collection) + 8.0 * row as f32 + bed, row, bed))
+}
+
+/// The GroundClippers item of a map: one box 0..size·32 in x and z, floor − 1.15 .. floor − 0.15, the
+/// RaceTriggerFXFinish plane on its top (under the terrain, never seen), Finish waypoint. Returns the bytes and
+/// the mesh (one box).
+pub fn build_ground_clippers_item(store: &mut crate::store::DataStore, m: &MapFile, collection: u32, ident: &str) -> Result<(Vec<u8>, FloorMesh), String> {
+    let (floor, row, bed) = map_floor(m, collection).ok_or("no terrain tile in the map (authored or baked): no floor to clip through")?;
+    let (x1, z1) = (32.0 * m.size[0] as f32, 32.0 * m.size[2] as f32);
+    let (y1, y0) = (floor - CLIPPER_TOP_UNDER_FLOOR, floor - CLIPPER_TOP_UNDER_FLOOR - CLIPPER_THICKNESS);
+    let verts = vec![[0.0, y0, 0.0], [x1, y0, 0.0], [x1, y1, 0.0], [0.0, y1, 0.0], [0.0, y0, z1], [x1, y0, z1], [x1, y1, z1], [0.0, y1, z1]];
+    let quads: [[u32; 4]; 6] = [[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4], [2, 3, 7, 6], [1, 2, 6, 5], [0, 4, 7, 3]];
+    let mut tris = Vec::new();
+    for q in quads {
+        tris.push([q[0], q[1], q[2]]);
+        tris.push([q[0], q[2], q[3]]);
+    }
+    let donor = "Stadium\\Items\\LightCube2m.Item.Gbx";
+    let mut mg = crate::static_item::build::pack_item_merged(store, donor, 1.0, collection, 0, None).map_err(|e| format!("donor {donor}: {e}"))?;
+    crate::static_item::build::make_invisible_mesh_waypoint(&mut mg, crate::sttc::WP_FINISH, verts.clone(), tris.clone())?;
+    crate::static_item::build::add_finish_plane_visual(&mut mg, &[(0.0, x1, 0.0, z1, y1 - INDICATOR_LIFT)], INDICATOR_LIFT)?;
+    let (bytes, _) = crate::static_item::build::finish_item(mg, ident, ident, 1.0, collection)?;
+    let notes = vec![format!("ground clippers: map {}×{} cells → box 0..{x1:.0} × 0..{z1:.0} m, floor = lowest terrain row {row} (floor y {:.2} + bed {bed:.1}) = {floor:.2} → slab {y0:.2} .. {y1:.2}", m.size[0], m.size[2], floor - bed)];
+    Ok((bytes, FloorMesh { verts, tris, quads: vec![(0.0, x1, 0.0, z1, y1 - INDICATOR_LIFT)], cells: (m.size[0] * m.size[2]) as usize, strips: 1, shore_boxes: 0, shore_prisms: 0, notes, bbox: ([0.0, y0, 0.0], [x1, y1, z1]) }))
+}
