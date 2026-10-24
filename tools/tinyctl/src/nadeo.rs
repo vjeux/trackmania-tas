@@ -947,6 +947,38 @@ pub fn campaign_create(auth_live: &str, club: &str, name: &str) -> Result<(Strin
     Ok((camp, act))
 }
 
+/// Every campaign of a club: (campaignId, name), paged 100 at a time.
+pub fn club_campaigns(auth_live: &str, club: &str) -> Result<Vec<(String, String)>, String> {
+    let mut camps: Vec<(String, String)> = Vec::new();
+    let mut offset = 0usize;
+    loop {
+        let v = get_json(auth_live, &format!("{LIVE}/api/token/club/{club}/campaign?length=100&offset={offset}"))?;
+        let list = v.get("clubCampaignList").and_then(|l| l.as_array()).cloned().unwrap_or_default();
+        for c in &list {
+            camps.push((s(c, "campaignId"), s(c, "name")));
+        }
+        let total: usize = s(&v, "itemCount").parse().unwrap_or(0);
+        offset += list.len();
+        if list.is_empty() || offset >= total {
+            break;
+        }
+    }
+    Ok(camps)
+}
+
+/// A campaign's playlist uids, in position order.
+pub fn campaign_playlist(auth_live: &str, club: &str, campaign: &str) -> Result<Vec<String>, String> {
+    let v = get_json(auth_live, &format!("{LIVE}/api/token/club/{club}/campaign/{campaign}"))?;
+    let mut rows: Vec<(u64, String)> = v
+        .get("campaign")
+        .and_then(|c| c.get("playlist"))
+        .and_then(|p| p.as_array())
+        .map(|a| a.iter().map(|m| (m.get("position").and_then(|x| x.as_u64()).unwrap_or(0), s(m, "mapUid"))).collect())
+        .unwrap_or_default();
+    rows.sort();
+    Ok(rows.into_iter().map(|(_, u)| u).collect())
+}
+
 /// The fresh (core, live) tokens for a batch: the plugin's files when young, else a
 /// mint through the game (no render lock: the batch runs alone on the box).
 pub fn batch_tokens(shootctl: &str) -> Result<(String, String), String> {

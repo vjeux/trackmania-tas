@@ -889,10 +889,171 @@ pub fn reuid(args: &[String]) -> i32 {
     }
 }
 
+/// `tinyctl rollout-publish create-set --build ROOT --set tech --club 145872 --prefix "Tarmac Part "
+/// --token-dir D --workdir W [--parts 1-39] [--per-part 25] [--dry-run]` — a NEW alteration
+/// into the hunt club (Everios96's Tarmac, 2026-10-24): per part, the campaign `<prefix>NN`
+/// (reused by name when the club already has it, created + published otherwise) and ONE
+/// `publish-batch --files-only` of the part's built maps in map order (create or update,
+/// stored-bytes md5 readback) that writes the playlist. A part whose results file reads all
+/// IDENTICAL and whose playlist holds every uid is skipped on a rerun. Tokens: minted
+/// standalone before a part when the files have less than 25 min left.
+pub fn create_set(args: &[String]) -> i32 {
+    let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
+    let build = PathBuf::from(f("--build").unwrap_or_else(|| { eprintln!("create-set needs --build ROOT"); std::process::exit(2) }));
+    let set = f("--set").unwrap_or_else(|| { eprintln!("create-set needs --set WORD (the build.tsv set column)"); std::process::exit(2) });
+    let club = f("--club").unwrap_or_else(|| { eprintln!("create-set needs --club ID"); std::process::exit(2) });
+    let prefix = f("--prefix").unwrap_or_else(|| { eprintln!("create-set needs --prefix \"Tarmac Part \""); std::process::exit(2) });
+    let token_dir = f("--token-dir").unwrap_or_else(|| "/tmp/tinyctl-tokens".into());
+    let workdir = PathBuf::from(f("--workdir").unwrap_or_else(|| build.join("create-set").to_string_lossy().into_owned()));
+    let per_part: u32 = f("--per-part").and_then(|v| v.parse().ok()).unwrap_or(25);
+    let dry = tmmaps::cli::has(args, "--dry-run");
+    let parts: Vec<u32> = match f("--parts") {
+        Some(p) => match p.split_once('-') {
+            Some((a, b)) => (a.parse().unwrap_or(1)..=b.parse().unwrap_or(39)).collect(),
+            None => p.split(',').filter_map(|x| x.trim().parse().ok()).collect(),
+        },
+        None => (1..=39).collect(),
+    };
+    std::fs::create_dir_all(&workdir).ok();
+    let me = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("tinyctl"));
+    // the built files: build.tsv rows of this set, status OK
+    let tsv = read(&build.join("build.tsv").to_string_lossy());
+    let mut by_num: HashMap<u32, PathBuf> = HashMap::new();
+    for l in tsv.lines().skip(1) {
+        let c: Vec<&str> = l.split('\t').collect();
+        if c.len() >= 5 && c[0] == set && c[4].starts_with("OK") {
+            if let Ok(n) = c[1].parse::<u32>() {
+                by_num.insert(n, PathBuf::from(c[2]));
+            }
+        }
+    }
+    println!("create-set: {} built {set} maps in {}", by_num.len(), build.display());
+    let tokens = || -> Option<(String, String)> {
+        let left = ["NadeoServices", "NadeoLiveServices"]
+            .iter()
+            .map(|aud| std::fs::read_to_string(PathBuf::from(&token_dir).join(format!("token-{aud}.txt"))).ok().and_then(|t| crate::nadeo::jwt_exp(&t)).map(|e| e.saturating_sub(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0))).unwrap_or(0))
+            .min()
+            .unwrap_or(0);
+        // `--files-only` wants files younger than 20 min: mint when under 25 min of life
+        // or when the files are older than 15 min
+        let age = std::fs::metadata(PathBuf::from(&token_dir).join("token-NadeoServices.txt")).ok().and_then(|m| m.modified().ok()).and_then(|t| t.elapsed().ok()).map(|d| d.as_secs()).unwrap_or(u64::MAX);
+        if left < 25 * 60 || age > 15 * 60 {
+            for attempt in 1..=3 {
+                println!("  minting a fresh pair standalone (attempt {attempt}; {} min left, {} min old)", left / 60, age.min(99 * 60) / 60);
+                let st = std::process::Command::new(&me).args(["mint-tokens", "--standalone", "--token-dir", &token_dir]).status();
+                if st.map(|s| s.success()).unwrap_or(false) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_secs(60));
+            }
+        }
+        crate::nadeo::fresh_tokens_in(&token_dir)
+    };
+    let Some((_core, live)) = tokens() else {
+        println!("STOP: no fresh tokens in {token_dir}");
+        return 1;
+    };
+    let auth_live = format!("Authorization: {live}");
+    let camps = match crate::nadeo::club_campaigns(&auth_live, &club) {
+        Ok(c) => c,
+        Err(e) => {
+            println!("STOP: club {club} campaigns: {e}");
+            return 1;
+        }
+    };
+    let mut failed = 0usize;
+    for part in parts {
+        let nn = format!("{part:02}");
+        let cname = format!("{prefix}{nn}");
+        let nums: Vec<u32> = ((part - 1) * per_part + 1..=part * per_part).filter(|n| by_num.contains_key(n)).collect();
+        if nums.is_empty() {
+            println!("[{cname}] no built maps — skipped");
+            continue;
+        }
+        let stage = workdir.join(format!("part-{nn}"));
+        std::fs::create_dir_all(&stage).ok();
+        let results = stage.join("results.tsv");
+        // the manifest: path<TAB>name (the file's own header name)
+        let mut man = String::new();
+        let mut uids: Vec<String> = Vec::new();
+        let mut bad = false;
+        for n in &nums {
+            let p = &by_num[n];
+            match tmmaps::header::read(&p.to_string_lossy()) {
+                Ok(h) => {
+                    man.push_str(&format!("{}\t{}\n", p.display(), h.name));
+                    uids.push(h.uid.clone());
+                }
+                Err(e) => {
+                    println!("[{cname}] {}: {e}", p.display());
+                    bad = true;
+                }
+            }
+        }
+        if bad {
+            failed += 1;
+            continue;
+        }
+        // done already? every row IDENTICAL and the playlist holds the uids in order
+        let done_rows = read(&results.to_string_lossy()).lines().skip(1).filter(|l| !l.starts_with('#') && l.ends_with("IDENTICAL")).count();
+        let existing: Option<String> = camps.iter().find(|(_, n)| n == &cname).map(|(id, _)| id.clone());
+        if done_rows == nums.len() {
+            if let Some(id) = existing.as_ref() {
+                if let Ok(pl) = crate::nadeo::campaign_playlist(&auth_live, &club, id) {
+                    if pl == uids {
+                        println!("[{cname}] {id}: {} maps already live in order — skipped", nums.len());
+                        continue;
+                    }
+                }
+            }
+        }
+        if dry {
+            println!("[{cname}] {} maps {}..{} → campaign {}", nums.len(), nums[0], nums[nums.len() - 1], existing.clone().unwrap_or_else(|| "(new)".into()));
+            continue;
+        }
+        let Some((_core, live)) = tokens() else {
+            println!("STOP: no fresh tokens in {token_dir}");
+            return 1;
+        };
+        let auth_live = format!("Authorization: {live}");
+        let camp_id = match existing {
+            Some(id) => id,
+            None => match crate::nadeo::campaign_create(&auth_live, &club, &cname) {
+                Ok((id, act)) => {
+                    println!("[{cname}] created campaign {id} (activity {act})");
+                    id
+                }
+                Err(e) => {
+                    println!("[{cname}] campaign create failed: {e}");
+                    failed += 1;
+                    continue;
+                }
+            },
+        };
+        let mp = stage.join("manifest.tsv");
+        std::fs::write(&mp, &man).ok();
+        println!("[{cname}] {camp_id}: {} maps {}..{}", nums.len(), nums[0], nums[nums.len() - 1]);
+        let st = std::process::Command::new(&me)
+            .args(["publish-batch", "--manifest", &mp.to_string_lossy(), "--results", &results.to_string_lossy(), "--outdir", &stage.to_string_lossy(), "--files-only", "--token-dir", &token_dir, "--club", &club, "--campaign", &camp_id, "--campaign-name", &cname, "--jobs", &std::env::var("TINYCTL_BATCH_JOBS").unwrap_or_else(|_| "3".into())])
+            .status();
+        let ok = read(&results.to_string_lossy()).lines().skip(1).filter(|l| !l.starts_with('#') && l.ends_with("IDENTICAL")).count();
+        println!("[{cname}] {ok}/{} IDENTICAL ({:?})", nums.len(), st.map(|s| s.code()));
+        if ok != nums.len() {
+            failed += 1;
+        }
+    }
+    if failed > 0 {
+        println!("{failed} part(s) incomplete — rerun the same command (done parts are skipped)");
+        return 1;
+    }
+    0
+}
+
 pub fn cmd(args: &[String]) -> i32 {
     match args.get(1).map(String::as_str) {
         Some("plan") => plan(args),
         Some("apply") => apply(args),
+        Some("create-set") => create_set(args),
         _ => {
             eprintln!("rollout-publish plan --build ROOT --inventory INV.tsv --touch TOUCH.tsv [--policy POLICY.tsv] --out PLAN.tsv\nrollout-publish apply --plan PLAN.tsv [--club 145872] [--token-dir DIR] [--only-sets dirt] [--dry-run]");
             2
