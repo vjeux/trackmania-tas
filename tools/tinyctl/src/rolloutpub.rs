@@ -995,7 +995,7 @@ pub fn create_set(args: &[String]) -> i32 {
             continue;
         }
         // done already? every row IDENTICAL and the playlist holds the uids in order
-        let done_rows = read(&results.to_string_lossy()).lines().skip(1).filter(|l| !l.starts_with('#') && l.ends_with("IDENTICAL")).count();
+        let done_rows = std::fs::read_to_string(&results).unwrap_or_default().lines().skip(1).filter(|l| !l.starts_with('#') && l.ends_with("IDENTICAL")).count();
         let existing: Option<String> = camps.iter().find(|(_, n)| n == &cname).map(|(id, _)| id.clone());
         if done_rows == nums.len() {
             if let Some(id) = existing.as_ref() {
@@ -1036,7 +1036,7 @@ pub fn create_set(args: &[String]) -> i32 {
         let st = std::process::Command::new(&me)
             .args(["publish-batch", "--manifest", &mp.to_string_lossy(), "--results", &results.to_string_lossy(), "--outdir", &stage.to_string_lossy(), "--files-only", "--token-dir", &token_dir, "--club", &club, "--campaign", &camp_id, "--campaign-name", &cname, "--jobs", &std::env::var("TINYCTL_BATCH_JOBS").unwrap_or_else(|_| "3".into())])
             .status();
-        let ok = read(&results.to_string_lossy()).lines().skip(1).filter(|l| !l.starts_with('#') && l.ends_with("IDENTICAL")).count();
+        let ok = std::fs::read_to_string(&results).unwrap_or_default().lines().skip(1).filter(|l| !l.starts_with('#') && l.ends_with("IDENTICAL")).count();
         println!("[{cname}] {ok}/{} IDENTICAL ({:?})", nums.len(), st.map(|s| s.code()));
         if ok != nums.len() {
             failed += 1;
