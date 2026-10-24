@@ -1122,7 +1122,9 @@ impl Merged {
                             p.push_str(&format!(" f4[{:?}..]", f.first()));
                         }
                         if let Elem::Float2(f) = e {
-                            p.push_str(&format!(" f2[{:?}..]", f.first()));
+                            let (mut lo, mut hi) = ([f32::INFINITY; 2], [f32::NEG_INFINITY; 2]);
+                            for v in f.iter() { for k in 0..2 { lo[k] = lo[k].min(v[k]); hi[k] = hi[k].max(v[k]); } }
+                            p.push_str(&format!(" f2[{:?}.. u {:.4}..{:.4} v {:.4}..{:.4}]", f.first(), lo[0], hi[0], lo[1], hi[1]));
                         }
                         parts.push(p);
                     }

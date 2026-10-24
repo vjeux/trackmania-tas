@@ -915,9 +915,28 @@ pub const GATE_TILE_M: f32 = 8.0;
 /// use of Color0 RGB is the one unverified assumption (every Nadeo item leaves it white).
 pub const DECAL_LINK: &str = "Stadium\\Media\\Material\\DecalObstacleTurnstileRight";
 pub const DECAL_COLOR0: u32 = 0xFFFF_3C3C;
+/// v4.12 (Hugo 11:04, the decal was "worse"; the item he LIKES is Finish-Pole-1 from item.mania.exchange 266984):
+/// that pole is a mesh-modeler crystal whose body faces carry `Stadium\Media\Material\ChronoFinish` — the vanilla
+/// finish chrono panel: shader Tech3_Block_TDSN_CubeOut_DispIn (lit, the "light cells" look: LightCells2 D/R/N/H/L
+/// tiled 64× per uv unit) with the self-illum map ChronoFinish_I (256², red everywhere: deep red (232, 7, 4) in the
+/// plain cells, pinkish where the 7-segment digits glow); the base material has NO FuncShader (static — only the
+/// ChronoFinish-XX-XX-XX digit variants animate), instance = plain v11 game material, no constants, no colour, Full
+/// layout (uv0 + lightmap uv1 + tangents). The pole's body maps a 1/16 × 1/4 window of the texture (u 0.25..0.3125,
+/// v 0.5..0.75 — a uniform deep-red region: mean (232, 9, 5)). Ours maps every pane into a TINY constant window at
+/// the centre of such a region (CHRONO_WINDOW, 1/128 of the texture): the SI glow is the uniform deep red and the
+/// 64×-tiled cell textures cover a quarter of one cell — no visible grid, no pattern to align, no world tiling.
+/// `--indicator chrono-pole` keeps the pole's exact window instead (its cell grid stretched over each pane).
+pub const CHRONO_LINK: &str = "Stadium\\Media\\Material\\ChronoFinish";
+/// (u0, u1, v0, v1) in the texture; v top-down as the DDS rows
+pub const CHRONO_WINDOW: (f32, f32, f32, f32) = (0.71484375, 0.72265625, 0.43359375, 0.44140625);
+pub const CHRONO_POLE_WINDOW: (f32, f32, f32, f32) = (0.25, 0.3125, 0.5, 0.75);
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Indicator {
-    /// v4.10 default: the flat decal tinted by Color0
+    /// v4.12 default: the finish chrono panel in a constant deep-red window
+    Chrono,
+    /// v4.12: the chrono panel with the pole's own window (cells visible)
+    ChronoPole,
+    /// v4.10: the flat decal tinted by Color0
     Decal,
     /// v4.8: the vanilla gate pane (animates in game)
     Gate,
@@ -926,10 +945,13 @@ pub enum Indicator {
 }
 static INDICATOR: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 pub fn set_indicator(mode: Indicator) {
-    INDICATOR.store(match mode { Indicator::Decal => 0, Indicator::Gate => 1, Indicator::Glass => 2 }, std::sync::atomic::Ordering::Relaxed);
+    INDICATOR.store(match mode { Indicator::Chrono => 0, Indicator::ChronoPole => 4, Indicator::Decal => 3, Indicator::Gate => 1, Indicator::Glass => 2 }, std::sync::atomic::Ordering::Relaxed);
 }
 pub fn indicator() -> Indicator {
-    match INDICATOR.load(std::sync::atomic::Ordering::Relaxed) { 1 => Indicator::Gate, 2 => Indicator::Glass, _ => Indicator::Decal }
+    match INDICATOR.load(std::sync::atomic::Ordering::Relaxed) { 1 => Indicator::Gate, 2 => Indicator::Glass, 3 => Indicator::Decal, 4 => Indicator::ChronoPole, _ => Indicator::Chrono }
+}
+fn chrono_window() -> Option<(f32, f32, f32, f32)> {
+    match indicator() { Indicator::Chrono => Some(CHRONO_WINDOW), Indicator::ChronoPole => Some(CHRONO_POLE_WINDOW), _ => None }
 }
 pub fn set_indicator_glass(glass: bool) {
     set_indicator(if glass { Indicator::Glass } else { Indicator::Gate });
@@ -1007,13 +1029,21 @@ pub fn set_indicator_prelight(m: &mut Merged, metres_per_uv: f32, bounds: [f32; 
 pub fn add_finish_plane_visual(m: &mut Merged, quads: &[(f32, f32, f32, f32, f32)], lift: f32) -> R<()> {
     use super::bake::{make_visuals, Corner, VisualLayout};
     let glass = indicator_is_glass();
-    let (link, slot, color0) = if glass { (INDICATOR_LINK, indicator_slot(m), 0xFFFF_FFFFu32) } else { indicator_unlit(m) };
+    let chrono = chrono_window();
+    let (link, slot, color0) = if glass { (INDICATOR_LINK, indicator_slot(m), 0xFFFF_FFFFu32) } else if chrono.is_some() { (CHRONO_LINK, m.material_slot(CHRONO_LINK, 28), 0xFFFF_FFFFu32) } else { indicator_unlit(m) };
     let tile = if glass { 4.0 } else { GATE_TILE_M };
     let mut tris: Vec<[Corner; 3]> = Vec::new();
     let mut face = 1u32;
     for &(x0, x1, z0, z1, ay) in quads {
         let y = ay + lift;
-        let c = |x: f32, z: f32| Corner { pos: [x, y, z], normal: [0.0, 1.0, 0.0], uv: [x / tile, z / tile], uv1: [x / tile, z / tile], tan_u: [1.0, 0.0, 0.0], tan_v: [0.0, 0.0, 1.0], face, group: 1 };
+        // chrono: each box mapped into the constant window (x → u, z → v)
+        let uvw = |x: f32, z: f32| -> [f32; 2] {
+            match chrono {
+                Some((u0, u1, v0, v1)) => [u0 + (u1 - u0) * ((x - x0) / (x1 - x0).max(1e-3)), v0 + (v1 - v0) * ((z - z0) / (z1 - z0).max(1e-3))],
+                None => [x / tile, z / tile],
+            }
+        };
+        let c = |x: f32, z: f32| Corner { pos: [x, y, z], normal: [0.0, 1.0, 0.0], uv: uvw(x, z), uv1: [x / tile, z / tile], tan_u: [1.0, 0.0, 0.0], tan_v: [0.0, 0.0, 1.0], face, group: 1 };
         // two triangles facing up (counter-clockwise seen from +y: (x0,z0) (x0,z1) (x1,z1) / (x0,z0) (x1,z1) (x1,z0))
         tris.push([c(x0, z0), c(x0, z1), c(x1, z1)]);
         tris.push([c(x0, z0), c(x1, z1), c(x1, z0)]);
@@ -1023,15 +1053,19 @@ pub fn add_finish_plane_visual(m: &mut Merged, quads: &[(f32, f32, f32, f32, f32
         return Err("finish plane: no quads".into());
     }
     m.visuals.clear();
-    if glass {
-        // v4.7: the Full layout (Position, Normal, TexCoord0, TexCoord1, tangents) — the game's own layout for a LIT
-        // material — with the lightmap chart of `lightmap_projection`
+    if glass || chrono.is_some() {
+        // v4.7 / v4.12: the Full layout (Position, Normal, TexCoord0, TexCoord1, tangents) — the game's own layout for
+        // a LIT material — with the lightmap chart of `lightmap_projection`
         let (mpu, bounds) = lightmap_projection(&mut tris);
         for v in make_visuals(&tris, VisualLayout::Full, "off") {
             m.visuals.push(super::merged::MergedVisual::every_level(v, slot));
         }
         set_indicator_prelight(m, mpu, bounds);
-        m.notes.push(format!("finish indicator: {} quads, {link} TargetColor {:?}, {lift:.2} m over the anchor, non-collidable, Full layout + lightmap chart", quads.len(), INDICATOR_RGB));
+        if let Some(w) = chrono {
+            m.notes.push(format!("finish indicator: {} quads, {link} (the finish chrono panel, static) in the constant uv window u {:.4}..{:.4} v {:.4}..{:.4}, {lift:.2} m over the anchor, non-collidable, Full layout + lightmap chart", quads.len(), w.0, w.1, w.2, w.3));
+        } else {
+            m.notes.push(format!("finish indicator: {} quads, {link} TargetColor {:?}, {lift:.2} m over the anchor, non-collidable, Full layout + lightmap chart", quads.len(), INDICATOR_RGB));
+        }
     } else {
         // v4.8/v4.10: the unlit panes — the minimal layout (Position, Normal, Color0, TexCoord0); Color0 carries the tint
         super::bake::set_vertex_color0(color0);
@@ -1049,9 +1083,18 @@ pub fn add_finish_plane_visual(m: &mut Merged, quads: &[(f32, f32, f32, f32, f32
 pub fn add_finish_mesh_visual(m: &mut Merged, verts: &[[f32; 3]], tris: &[[u32; 3]]) -> R<()> {
     use super::bake::{make_visuals, Corner, VisualLayout};
     let glass = indicator_is_glass();
-    let (link, slot, color0) = if glass { (INDICATOR_LINK, indicator_slot(m), 0xFFFF_FFFFu32) } else { indicator_unlit(m) };
+    let chrono = chrono_window();
+    let (link, slot, color0) = if glass { (INDICATOR_LINK, indicator_slot(m), 0xFFFF_FFFFu32) } else if chrono.is_some() { (CHRONO_LINK, m.material_slot(CHRONO_LINK, 28), 0xFFFF_FFFFu32) } else { indicator_unlit(m) };
     let tile = if glass { 4.0 } else { GATE_TILE_M };
-    let c = |p: [f32; 3], face: u32| Corner { pos: p, normal: [0.0, 1.0, 0.0], uv: [p[0] / tile, p[2] / tile], uv1: [p[0] / tile, p[2] / tile], tan_u: [1.0, 0.0, 0.0], tan_v: [0.0, 0.0, 1.0], face, group: 1 };
+    // chrono: the whole mesh's xz box mapped into the constant window
+    let (bx0, bx1, bz0, bz1) = verts.iter().fold((f32::INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::NEG_INFINITY), |a, p| (a.0.min(p[0]), a.1.max(p[0]), a.2.min(p[2]), a.3.max(p[2])));
+    let uvw = |p: [f32; 3]| -> [f32; 2] {
+        match chrono {
+            Some((u0, u1, v0, v1)) => [u0 + (u1 - u0) * ((p[0] - bx0) / (bx1 - bx0).max(1e-3)), v0 + (v1 - v0) * ((p[2] - bz0) / (bz1 - bz0).max(1e-3))],
+            None => [p[0] / tile, p[2] / tile],
+        }
+    };
+    let c = |p: [f32; 3], face: u32| Corner { pos: p, normal: [0.0, 1.0, 0.0], uv: uvw(p), uv1: [p[0] / tile, p[2] / tile], tan_u: [1.0, 0.0, 0.0], tan_v: [0.0, 0.0, 1.0], face, group: 1 };
     let mut out: Vec<[Corner; 3]> = Vec::with_capacity(tris.len());
     // the winding that faces UP is the plane quads' own: (x0,z0) (x0,z1) (x1,z1), whose xz cross
     // (b−a)×(c−a) = −(x1−x0)(z1−z0) is NEGATIVE — v4.5 kept the positive ones and every cutout indicator came out
@@ -1072,13 +1115,13 @@ pub fn add_finish_mesh_visual(m: &mut Merged, verts: &[[f32; 3]], tris: &[[u32; 
         return Err("finish mesh visual: no triangles".into());
     }
     m.visuals.clear();
-    if glass {
+    if glass || chrono.is_some() {
         let (mpu, bounds) = lightmap_projection(&mut out);
         for v in make_visuals(&out, VisualLayout::Full, "off") {
             m.visuals.push(super::merged::MergedVisual::every_level(v, slot));
         }
         set_indicator_prelight(m, mpu, bounds);
-        m.notes.push(format!("finish indicator mesh: {} triangles ({flipped} re-wound to the plane's up-facing order), {link} TargetColor {:?}, non-collidable, Full layout + lightmap chart", tris.len(), INDICATOR_RGB));
+        m.notes.push(format!("finish indicator mesh: {} triangles ({flipped} re-wound to the plane's up-facing order), {link}{}, non-collidable, Full layout + lightmap chart", tris.len(), if chrono.is_some() { " (chrono panel, constant uv window)".to_string() } else { format!(" TargetColor {:?}", INDICATOR_RGB) }));
     } else {
         super::bake::set_vertex_color0(color0);
         for v in make_visuals(&out, VisualLayout::DecalPaint, "off") {
