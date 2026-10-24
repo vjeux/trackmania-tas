@@ -1442,7 +1442,7 @@ pub fn build_ground_clippers_item(store: &mut crate::store::DataStore, m: &MapFi
 /// and where it is lower a car sinking / falling there meets the clipper first: a finish either way.
 pub fn build_ground_clippers_item_ring(store: &mut crate::store::DataStore, m: &MapFile, collection: u32, ident: &str, ring: bool) -> Result<(Vec<u8>, FloorMesh), String> {
     let (floor, row, bed) = map_floor(m, collection).ok_or("no terrain tile in the map (authored or baked): no floor to clip through")?;
-    let margin = if ring { 32.0 * crate::outer_ring::RING_CELLS as f32 } else { 0.0 };
+    let margin = if ring { 32.0 * crate::outer_ring::ring_cells(collection) as f32 } else { 0.0 };
     let (x1, z1) = (32.0 * m.size[0] as f32 + margin, 32.0 * m.size[2] as f32 + margin);
     let (y1, y0) = (floor - CLIPPER_TOP_UNDER_FLOOR, floor - CLIPPER_TOP_UNDER_FLOOR - CLIPPER_THICKNESS);
     let x0m = -margin;

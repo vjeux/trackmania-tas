@@ -5462,6 +5462,7 @@ fn main() {
             let mut store = open(&a);
             let out = flag(&a.rest, "--out").unwrap_or_else(|| die("--out F.tsv".into()));
             let maps: Vec<String> = a.rest.iter().skip(1).filter(|x| x.to_lowercase().ends_with(".map.gbx")).cloned().collect();
+            if let Some(z) = flag(&a.rest, "--zone-step").and_then(|v| v.parse::<f32>().ok()) { mapgeom::outer_ring::set_zone_step(z); }
             let mut tsv = String::from("collection\tdecoration\tx0\tx1\tz0\tz1\tfloor\tkind\n");
             let mut seen: std::collections::BTreeSet<String> = Default::default();
             for mp in &maps {
@@ -5471,8 +5472,9 @@ fn main() {
                 let deco = if coll == 0x1a { m.decoration_id.trim_end_matches("Day").trim_end_matches("Night").trim_end_matches("Sunrise").trim_end_matches("Sunset").to_string() } else { "Base64x64".to_string() };
                 let key = format!("{cname}/{deco}");
                 if !seen.insert(key.clone()) { continue; }
-                let r = mapgeom::outer_ring::ring(&mut store, &m, coll).unwrap_or_else(|e| die(format!("{mp}: {e}")));
-                println!("== {key} ({} rects)", r.rects.len());
+                let cells: i32 = flag(&a.rest, "--cells").and_then(|v| v.parse().ok()).unwrap_or(mapgeom::outer_ring::ring_cells(coll));
+                let r = mapgeom::outer_ring::ring_cells_of(&mut store, &m, coll, cells).unwrap_or_else(|e| die(format!("{mp}: {e}")));
+                println!("== {key} ({} rects, {cells} cells)", r.rects.len());
                 for n in &r.notes { println!("   {n}"); }
                 tsv.push_str(&mapgeom::outer_ring::tsv_rows(cname, &deco, &r));
             }

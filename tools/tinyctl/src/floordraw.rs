@@ -85,7 +85,7 @@ pub fn cmd(rest: &[String]) -> Result<(), String> {
     let plane = mapgeom::floor_finish::stadium_plane_mesh(&mut store, &m, 0.0, 1.0)?;
     // v4.7: the outer ring (6 cells of the decoration's flat grass) — drawn around the grid, the grid boundary thick
     let ring = if rest.iter().any(|x| x == "--no-ring") { None } else { mapgeom::outer_ring::ring(&mut store, &m, 0x1a).ok() };
-    let margin = if ring.is_some() { 32.0 * mapgeom::outer_ring::RING_CELLS as f32 } else { 0.0 };
+    let margin = if ring.is_some() { 32.0 * mapgeom::outer_ring::ring_cells(0x1a) as f32 } else { 0.0 };
     let (mut nx, mut nz) = (0, 0);
     for &(x, z) in &floor.grass {
         nx = nx.max(x + 1);
@@ -306,7 +306,7 @@ fn vista(store: &mut mapgeom::store::DataStore, m: &tmmaps::map::MapFile, collec
     let (below, above) = mapgeom::floor_finish::vista_slab(collection);
     let mesh = mapgeom::floor_finish::floor_mesh(store, m, collection, below, above, true)?;
     let ring = if rest.iter().any(|x| x == "--no-ring") { None } else { mapgeom::outer_ring::ring(store, m, collection).ok() };
-    let margin = if ring.is_some() { 32.0 * mapgeom::outer_ring::RING_CELLS as f32 } else { 0.0 };
+    let margin = if ring.is_some() { 32.0 * mapgeom::outer_ring::ring_cells(collection) as f32 } else { 0.0 };
     let shore = mapgeom::floor_finish::shore_tiles(collection);
     let (mut nx, mut nz) = (0, 0);
     for b in m.blocks.iter().chain(m.baked.iter()).filter(|b| b.flags != 0xFFFF_FFFF && b.free_pos.is_none()) {
@@ -404,8 +404,8 @@ fn vista(store: &mut mapgeom::store::DataStore, m: &tmmaps::map::MapFile, collec
     cv.text(lx, ly, &format!("Floor Finish v4 - {coll_name}"), 2, INK);
     ly += 30.0;
     if let Some(r) = &ring {
-        let anchor = r.rects.first().map(|q| q.floor).unwrap_or(0.0);
-        cv.text(lx, ly, &format!("outer ring: open sea 6 cells out, slab on bed {anchor:.2} (black = grid edge)"), 2, INK);
+        let (lo, hi) = r.rects.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |a, q| (a.0.min(q.floor), a.1.max(q.floor)));
+        cv.text(lx, ly, &format!("outer ring: open sea {} cells out, {} rows, slabs on the cell beds {lo:.2}..{hi:.2} (black = grid edge)", mapgeom::outer_ring::ring_cells(collection), r.rects.len()), 2, INK);
         ly += 26.0;
     }
     cv.text(lx, ly, &format!("open-water cells {} -> {} strips; shore deep boxes {}", mesh.cells, mesh.strips, mesh.shore_prisms), 2, INK);

@@ -24,8 +24,21 @@ use std::collections::BTreeMap;
 
 use tmmaps::map::MapFile;
 
-/// The band outside the grid, in cells.
+static ZONE_STEP_MILLI: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1000);
+pub fn set_zone_step(m: f32) {
+    ZONE_STEP_MILLI.store((m * 1000.0).round().max(10.0) as u32, std::sync::atomic::Ordering::Relaxed);
+}
+pub fn zone_step() -> f32 {
+    ZONE_STEP_MILLI.load(std::sync::atomic::Ordering::Relaxed) as f32 / 1000.0
+}
+
+/// The band outside the grid, in cells: Stadium's flat grass ends at the stands within 6; the vistas' sea goes on
+/// (v4.11, Hugo: "going out 16 cells each way instead of 6").
 pub const RING_CELLS: i32 = 6;
+pub const RING_CELLS_VISTA: i32 = 16;
+pub fn ring_cells(collection: u32) -> i32 {
+    if collection == 0x1a { RING_CELLS } else { RING_CELLS_VISTA }
+}
 /// Band raster for the Stadium flat-grass test.
 pub const STEP: f32 = 4.0;
 /// Stadium: a hit-shape face this far above the grass inside a square makes it structure (walls, seats, banks).
@@ -102,7 +115,7 @@ fn height_at(t: &[[f32; 3]; 3], x: f32, z: f32) -> Option<f32> {
 }
 
 /// The vista ring: 4 frame rectangles on one anchor.
-fn vista_ring(store: &mut crate::store::DataStore, collection: u32, size: (i32, i32)) -> Result<Ring, String> {
+fn vista_ring(store: &mut crate::store::DataStore, collection: u32, size: (i32, i32), cells: i32) -> Result<Ring, String> {
     let coll = crate::sttc::collection_name(collection);
     let water = crate::terrain::collection_water(store, coll)?;
     let path = format!("{coll}\\GameCtnDecoration\\Scene3d\\Base64x64.Scene3d.Gbx");
@@ -116,19 +129,22 @@ fn vista_ring(store: &mut crate::store::DataStore, collection: u32, size: (i32, 
     let scene_water_y = sea.iter().map(|t| t[0][1]).fold(f32::NEG_INFINITY, f32::max);
     let yoff = water.top - scene_water_y;
     let (gx, gz) = (32.0 * size.0 as f32, 32.0 * size.1 as f32);
-    let margin = 32.0 * RING_CELLS as f32;
-    // sample the band's bed on the 4 m raster (centres), the sea's coverage too
+    let margin = 32.0 * cells as f32;
+    // sample the band's bed on the 4 m raster (centres), the sea's coverage too; the per-32 m-cell maxima feed the zones
     let n = ((gx + 2.0 * margin) / STEP).round() as i32;
     let nz = ((gz + 2.0 * margin) / STEP).round() as i32;
     let (mut bed_min, mut bed_max, mut bed_sum, mut cnt, mut dry, mut no_bed) = (f32::INFINITY, f32::NEG_INFINITY, 0.0f64, 0usize, 0usize, 0usize);
-    let mut per_cell: BTreeMap<i32, (f32, f32)> = BTreeMap::new();
+    let mut per_ring: BTreeMap<i32, (f32, f32)> = BTreeMap::new();
+    // 32 m cell (cx, cz) in the band frame (cell 0 = the first cell outside at −margin) → max bed
+    let mut cell_max: BTreeMap<(i32, i32), f32> = BTreeMap::new();
+    let ground_up: Vec<&[[f32; 3]; 3]> = ground.iter().filter(|t| upward(t)).collect();
     for j in 0..nz {
         for i in 0..n {
             let (x, z) = (-margin + (i as f32 + 0.5) * STEP, -margin + (j as f32 + 0.5) * STEP);
             if x >= 0.0 && x <= gx && z >= 0.0 && z <= gz {
                 continue;
             }
-            let bed = ground.iter().filter(|t| upward(t)).filter_map(|t| height_at(t, x, z)).fold(f32::INFINITY, f32::min);
+            let bed = ground_up.iter().filter_map(|t| height_at(t, x, z)).fold(f32::INFINITY, f32::min);
             let wet = sea.iter().any(|t| height_at(t, x, z).is_some());
             if !wet {
                 dry += 1;
@@ -143,24 +159,64 @@ fn vista_ring(store: &mut crate::store::DataStore, collection: u32, size: (i32, 
             bed_sum += bed as f64;
             cnt += 1;
             let d = (-x).max(x - gx).max(-z).max(z - gz);
-            let e = per_cell.entry((d / 32.0).floor() as i32).or_insert((f32::INFINITY, f32::NEG_INFINITY));
+            let e = per_ring.entry((d / 32.0).floor() as i32).or_insert((f32::INFINITY, f32::NEG_INFINITY));
             e.0 = e.0.min(bed);
             e.1 = e.1.max(bed);
+            let key = (((x + margin) / 32.0).floor() as i32, ((z + margin) / 32.0).floor() as i32);
+            let m = cell_max.entry(key).or_insert(f32::NEG_INFINITY);
+            *m = m.max(bed);
         }
     }
     if cnt == 0 {
         return Err("outer ring: no seabed under the band".into());
     }
-    // never under the bed: up to the next 5 cm
-    let anchor = ((bed_max - 0.005) * 20.0).ceil() / 20.0;
-    let rects = vec![
-        OuterRect { x0: -margin, x1: gx + margin, z0: -margin, z1: 0.0, floor: anchor, kind: "sea" },
-        OuterRect { x0: -margin, x1: gx + margin, z0: gz, z1: gz + margin, floor: anchor, kind: "sea" },
-        OuterRect { x0: -margin, x1: 0.0, z0: 0.0, z1: gz, floor: anchor, kind: "sea" },
-        OuterRect { x0: gx, x1: gx + margin, z0: 0.0, z1: gz, floor: anchor, kind: "sea" },
-    ];
+    // zones (v4.11): per 32 m cell the slab anchor = that cell's highest bed, up to the next 5 cm (never under the
+    // bed); along each side of each ring, consecutive cells with the same anchor merge into one row. Rings are
+    // frames: the N and S bands span the full width (corners included), E and W the grid's own z range.
+    // the anchor quantum (ZONE_STEP, default 1 m — Hugo: "per 1 m bed step"): a coarser step merges more cells into one row; the slab then sits
+    // up to one step above the cell's highest bed — still above every bed of the zone, which is all the rule needs
+    let step = zone_step();
+    let anchor_of = |v: f32| ((v - 0.005) / step).ceil() * step;
+    let (ncx, ncz) = (size.0 + 2 * cells, size.1 + 2 * cells);
+    let mut rects: Vec<OuterRect> = Vec::new();
+    let mut push_run = |cx0: i32, cx1: i32, cz0: i32, cz1: i32, floor: f32| {
+        rects.push(OuterRect { x0: -margin + 32.0 * cx0 as f32, x1: -margin + 32.0 * cx1 as f32, z0: -margin + 32.0 * cz0 as f32, z1: -margin + 32.0 * cz1 as f32, floor, kind: "sea" });
+    };
+    for d in 0..cells {
+        // ring d: the frame of cells at distance d outside the grid (band frame indices)
+        let (lo_x, hi_x, lo_z, hi_z) = (cells - 1 - d, size.0 + cells + d, cells - 1 - d, size.1 + cells + d);
+        // N row (cz = lo_z) and S row (cz = hi_z): cx lo_x..=hi_x; W column (cx = lo_x) and E column (cx = hi_x): cz lo_z+1..hi_z
+        for (cz, horizontal) in [(lo_z, true), (hi_z, true)] {
+            let _ = horizontal;
+            let mut cx = lo_x;
+            while cx <= hi_x {
+                let v = anchor_of(cell_max.get(&(cx, cz)).copied().unwrap_or(bed_max));
+                let start = cx;
+                while cx + 1 <= hi_x && anchor_of(cell_max.get(&(cx + 1, cz)).copied().unwrap_or(bed_max)) == v {
+                    cx += 1;
+                }
+                push_run(start, cx + 1, cz, cz + 1, v);
+                cx += 1;
+            }
+        }
+        for cx in [lo_x, hi_x] {
+            let mut cz = lo_z + 1;
+            while cz < hi_z {
+                let v = anchor_of(cell_max.get(&(cx, cz)).copied().unwrap_or(bed_max));
+                let start = cz;
+                while cz + 1 < hi_z && anchor_of(cell_max.get(&(cx, cz + 1)).copied().unwrap_or(bed_max)) == v {
+                    cz += 1;
+                }
+                push_run(cx, cx + 1, start, cz + 1, v);
+                cz += 1;
+            }
+        }
+    }
+    let _ = (ncx, ncz);
+    let zones: std::collections::BTreeSet<i64> = rects.iter().map(|r| (r.floor * 100.0).round() as i64).collect();
     let notes = vec![
-        format!("outer ring ({coll}, Base64x64 Scene3d): scene frame = map frame + {yoff:.1} m in y (water type {:?} top {:.2} vs the scene's Water plane {scene_water_y:.2}); band −{margin:.0}..+{margin:.0} m: {cnt} squares of 4 m, {dry} dry, {no_bed} without a bed; seabed {bed_min:.2}..{bed_max:.2} (mean {:.2}); per ring cell (min..max): {}; ring slab anchored on the highest bed {anchor:.2} → 4 frame boxes", water.name, water.top, bed_sum / cnt as f64, per_cell.iter().map(|(k, (lo, hi))| format!("{k}: {lo:.2}..{hi:.2}")).collect::<Vec<_>>().join(", ")),
+        format!("outer ring ({coll}, Base64x64 Scene3d, {cells} cells): scene frame = map frame + {yoff:.1} m in y (water type {:?} top {:.2} vs the scene's Water plane {scene_water_y:.2}); band −{margin:.0}..+{margin:.0} m: {cnt} squares of 4 m, {dry} dry, {no_bed} without a bed; seabed {bed_min:.2}..{bed_max:.2} (mean {:.2}); per ring cell (min..max): {}", water.name, water.top, bed_sum / cnt as f64, per_ring.iter().map(|(k, (lo, hi))| format!("{k}: {lo:.2}..{hi:.2}")).collect::<Vec<_>>().join(", ")),
+        format!("zones: per 32 m cell the slab sits on that cell's highest bed (up to the next {step:.2} m), runs merged along each side → {} rows over {} distinct anchors ({:.2}..{:.2})", rects.len(), zones.len(), zones.iter().next().map(|v| *v as f32 / 100.0).unwrap_or(0.0), zones.iter().next_back().map(|v| *v as f32 / 100.0).unwrap_or(0.0)),
     ];
     Ok(Ring { rects, squares: BTreeMap::new(), notes })
 }
@@ -380,11 +436,15 @@ fn stadium_ring(store: &mut crate::store::DataStore, m: &MapFile, size: (i32, i3
 
 /// The ring for a map: Stadium → the flat-grass strips of its decoration; vistas → 4 sea frame boxes.
 pub fn ring(store: &mut crate::store::DataStore, m: &MapFile, collection: u32) -> Result<Ring, String> {
+    ring_cells_of(store, m, collection, ring_cells(collection))
+}
+
+pub fn ring_cells_of(store: &mut crate::store::DataStore, m: &MapFile, collection: u32, cells: i32) -> Result<Ring, String> {
     let size = (m.size[0] as i32, m.size[2] as i32);
     if collection == 0x1a {
         stadium_ring(store, m, size)
     } else {
-        vista_ring(store, collection, size)
+        vista_ring(store, collection, size, cells)
     }
 }
 
