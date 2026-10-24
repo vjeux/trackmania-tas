@@ -896,7 +896,9 @@ pub fn make_invisible_mesh_waypoint(m: &mut Merged, wtype: i32, verts: Vec<[f32;
 /// (0.943, 0.358, 0.358) tint (CPlugMaterialUserInst v11, is_using_game_material 1). Physics NotCollidable 28
 /// (the item's collision is its trigger mesh alone). UVs are irrelevant for a solid pane; kept per metre.
 pub const INDICATOR_LINK: &str = "Stadium\\Media\\Material_BlockCustom\\CustomGlass";
-pub const INDICATOR_RGB: [f32; 3] = [1.0, 0.0, 0.0];
+/// v4.6 (Hugo 08:44): (1, 0, 0) rendered as a dark wine red; lighter = (1.0, 0.5, 0.5) (his friend's 0.943/0.358/0.358
+/// looked right to them) — opacity is fixed in CustomGlass, only the tint moves.
+pub const INDICATOR_RGB: [f32; 3] = [1.0, 0.5, 0.5];
 
 pub fn indicator_material() -> CPlugMaterialUserInst {
     let mut inst = CPlugMaterialUserInst::game_material(INDICATOR_LINK, 28);
@@ -929,10 +931,13 @@ pub fn add_finish_plane_visual(m: &mut Merged, quads: &[(f32, f32, f32, f32, f32
         return Err("finish plane: no quads".into());
     }
     m.visuals.clear();
-    for v in make_visuals(&tris, VisualLayout::Full, "off") {
+    // v4.6: the MINIMAL layout (Position, Normal, Color0, TexCoord0 — `DecalPaint`), the one v4 shipped and the one
+    // Hugo's FinishPlane.Build fills; the Full layout's TexCoord1 / tangent arrays were null at his write time
+    // (CPlugVertexStream "Null when it shouldn't be"). GlassBasic has no normal map, so no tangents are needed.
+    for v in make_visuals(&tris, VisualLayout::DecalPaint, "off") {
         m.visuals.push(super::merged::MergedVisual::every_level(v, slot));
     }
-    m.notes.push(format!("finish indicator: {} quads, {link} TargetColor {:?}, {lift:.2} m over the anchor, non-collidable", quads.len(), INDICATOR_RGB));
+    m.notes.push(format!("finish indicator: {} quads, {link} TargetColor {:?}, {lift:.2} m over the anchor, non-collidable, DecalPaint layout", quads.len(), INDICATOR_RGB));
     Ok(())
 }
 
@@ -944,21 +949,29 @@ pub fn add_finish_mesh_visual(m: &mut Merged, verts: &[[f32; 3]], tris: &[[u32; 
     let slot = indicator_slot(m);
     let c = |p: [f32; 3], face: u32| Corner { pos: p, normal: [0.0, 1.0, 0.0], uv: [p[0] / 4.0, p[2] / 4.0], uv1: [p[0] / 4.0, p[2] / 4.0], tan_u: [1.0, 0.0, 0.0], tan_v: [0.0, 0.0, 1.0], face, group: 1 };
     let mut out: Vec<[Corner; 3]> = Vec::with_capacity(tris.len());
+    // the winding that faces UP is the plane quads' own: (x0,z0) (x0,z1) (x1,z1), whose xz cross
+    // (b−a)×(c−a) = −(x1−x0)(z1−z0) is NEGATIVE — v4.5 kept the positive ones and every cutout indicator came out
+    // face-down (culled from above: "the cutouts show no red", Hugo 08:44). Same test as the quads now.
+    let plane_cross = {
+        let (a, b, cc) = ([0.0f32, 0.0f32], [0.0f32, 1.0f32], [1.0f32, 1.0f32]);
+        (b[0] - a[0]) * (cc[1] - a[1]) - (cc[0] - a[0]) * (b[1] - a[1])
+    };
+    let mut flipped = 0usize;
     for (i, t) in tris.iter().enumerate() {
         let (a, b, cc) = (verts[t[0] as usize], verts[t[1] as usize], verts[t[2] as usize]);
-        // ensure the face points up (+y) in the stream order
         let cross = (b[0] - a[0]) * (cc[2] - a[2]) - (cc[0] - a[0]) * (b[2] - a[2]);
-        let tri = if cross > 0.0 { [c(a, i as u32 + 1), c(b, i as u32 + 1), c(cc, i as u32 + 1)] } else { [c(a, i as u32 + 1), c(cc, i as u32 + 1), c(b, i as u32 + 1)] };
+        let same_as_plane = (cross < 0.0) == (plane_cross < 0.0);
+        let tri = if same_as_plane { [c(a, i as u32 + 1), c(b, i as u32 + 1), c(cc, i as u32 + 1)] } else { flipped += 1; [c(a, i as u32 + 1), c(cc, i as u32 + 1), c(b, i as u32 + 1)] };
         out.push(tri);
     }
     if out.is_empty() {
         return Err("finish mesh visual: no triangles".into());
     }
     m.visuals.clear();
-    for v in make_visuals(&out, VisualLayout::Full, "off") {
+    for v in make_visuals(&out, VisualLayout::DecalPaint, "off") {
         m.visuals.push(super::merged::MergedVisual::every_level(v, slot));
     }
-    m.notes.push(format!("finish indicator mesh: {} triangles, {link} TargetColor {:?}, non-collidable", tris.len(), INDICATOR_RGB));
+    m.notes.push(format!("finish indicator mesh: {} triangles ({flipped} re-wound to the plane's up-facing order), {link} TargetColor {:?}, non-collidable, DecalPaint layout", tris.len(), INDICATOR_RGB));
     Ok(())
 }
 
