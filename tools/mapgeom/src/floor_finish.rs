@@ -78,6 +78,8 @@ pub struct WaterRect {
     pub bed_tris_geo: Vec<[[f32; 3]; 3]>,
     /// every collision triangle of the tile (block frame): the dry land / sand top for the section drawings
     pub all_tris_geo: Vec<[[f32; 3]; 3]>,
+    /// the block's footprint in cells at dir 0 (1×1 for the zone tiles; the Deco bays span 2×1 .. 2×4)
+    pub size: (i32, i32),
 }
 
 /// Measure a tile placement's water footprint: bake the picked prefab (water quad kept), take the Water
@@ -91,6 +93,10 @@ pub fn water_rect(store: &mut crate::store::DataStore, collection: u32, tile: &s
     let sub = ((flags >> crate::blockmap::FLAG_SUBVARIANT_SHIFT) & 63) as usize;
     let addv = ((flags >> crate::blockmap::FLAG_ADDITIONAL_SHIFT) & 0x7F) as usize;
     let Some(picked) = bi.pick_placement_add(ground, variant, sub, addv) else { return Err(format!("{tile}: no variant for flags {flags:#x}")) };
+    let size = {
+        let units = &picked.variant.block_units;
+        if units.is_empty() { (1, 1) } else { (units.iter().map(|u| u.offset[0]).max().unwrap_or(0) + 1, units.iter().map(|u| u.offset[2]).max().unwrap_or(0) + 1) }
+    };
     let Some(mobil) = picked.mobils.first() else { return Ok(None) };
     let Some(prefab) = mobil.prefab.clone() else { return Ok(None) };
     let mut m = crate::static_item::build::Merged::default();
@@ -149,7 +155,7 @@ pub fn water_rect(store: &mut crate::store::DataStore, collection: u32, tile: &s
             bed_geo.push([pts[0], pts[1], pts[2]]);
         }
     }
-    Ok(Some(WaterRect { prefab: prefab.rsplit('\\').next().unwrap_or(&prefab).to_string(), x0: lo[0], x1: hi[0], z0: lo[2], z1: hi[2], surface, bed_lo: blo, bed_hi: bhi, bed_tris: nb, tris: wtris, bed_tris_geo: bed_geo, all_tris_geo: all_geo }))
+    Ok(Some(WaterRect { prefab: prefab.rsplit('\\').next().unwrap_or(&prefab).to_string(), x0: lo[0], x1: hi[0], z0: lo[2], z1: hi[2], surface, bed_lo: blo, bed_hi: bhi, bed_tris: nb, tris: wtris, bed_tris_geo: bed_geo, all_tris_geo: all_geo, size }))
 }
 
 /// The 4 m-grid water mask of a shore kind in the block frame: bit (zi·8 + xi) = the square at x 4·xi..4·xi+4,
@@ -192,25 +198,7 @@ pub const NEAR_FLOOR_MAX: f32 = 0.75;
 /// Per 4 m square (index zi·8+xi): the square's MINIMUM bed height when the square is deep (≥ 2 m of water at
 /// its centre) and near the floor (`bed_min ≤ open floor + NEAR_FLOOR_MAX`). The slab sits on that minimum.
 pub fn deep_squares_near(w: &WaterRect, open_bed: f32) -> Vec<Option<f32>> {
-    let water = footprint_mask(w);
-    let mut out = vec![None; 64];
-    for zi in 0..8 {
-        for xi in 0..8 {
-            let bit = 1u64 << (zi * 8 + xi);
-            if water & bit == 0 { continue; }
-            let (cx, cz) = (4.0 * xi as f32 + 2.0, 4.0 * zi as f32 + 2.0);
-            let Some(yc) = bed_height_at(w, [cx, cz]) else { continue };
-            if w.surface - yc < DEEP_WATER_MIN { continue; }
-            let mut ymin = yc;
-            for p in [[cx - 1.9, cz - 1.9], [cx + 1.9, cz - 1.9], [cx - 1.9, cz + 1.9], [cx + 1.9, cz + 1.9], [cx, cz - 1.9], [cx, cz + 1.9], [cx - 1.9, cz], [cx + 1.9, cz]] {
-                if let Some(h) = bed_height_at(w, p) { ymin = ymin.min(h); }
-            }
-            if ymin <= open_bed + NEAR_FLOOR_MAX {
-                out[zi * 8 + xi] = Some(ymin);
-            }
-        }
-    }
-    out
+    cell_deep_squares(w, open_bed, 0, 0)
 }
 
 /// `bed_height_at` for the drawing tools.
@@ -249,23 +237,70 @@ pub fn deep_squares(w: &WaterRect) -> Vec<Option<f32>> {
     deep_squares_near(w, w.bed_lo)
 }
 
-pub fn footprint_mask(w: &WaterRect) -> u64 {
+/// Is the block-frame point under the water quad?
+fn under_water(w: &WaterRect, p: [f32; 2]) -> bool {
     let inside = |p: [f32; 2], t: &[[f32; 3]; 3]| -> bool {
         let s = |a: [f32; 2], b: [f32; 2], c: [f32; 2]| (c[0] - a[0]) * (b[1] - a[1]) - (b[0] - a[0]) * (c[1] - a[1]);
         let (a, b, c) = ([t[0][0], t[0][2]], [t[1][0], t[1][2]], [t[2][0], t[2][2]]);
         let (d1, d2, d3) = (s(p, a, b), s(p, b, c), s(p, c, a));
         !((d1 < 0.0 || d2 < 0.0 || d3 < 0.0) && (d1 > 0.0 || d2 > 0.0 || d3 > 0.0))
     };
+    w.tris.iter().any(|t| inside(p, t))
+}
+
+/// The water mask of ONE unit cell (ux, uz) of the block (bit zi·8+xi = the 4 m square at block-frame
+/// x 32·ux + 4·xi.., z 32·uz + 4·zi..).
+pub fn cell_water_mask(w: &WaterRect, ux: i32, uz: i32) -> u64 {
     let mut mask = 0u64;
     for zi in 0..8 {
         for xi in 0..8 {
-            let p = [4.0 * xi as f32 + 2.0, 4.0 * zi as f32 + 2.0];
-            if w.tris.iter().any(|t| inside(p, t)) {
+            let p = [32.0 * ux as f32 + 4.0 * xi as f32 + 2.0, 32.0 * uz as f32 + 4.0 * zi as f32 + 2.0];
+            if under_water(w, p) {
                 mask |= 1u64 << (zi * 8 + xi);
             }
         }
     }
     mask
+}
+
+/// The water mask of the block's first cell (the 1×1 zone tiles' whole footprint).
+pub fn footprint_mask(w: &WaterRect) -> u64 {
+    cell_water_mask(w, 0, 0)
+}
+
+/// The near-floor (finish) squares of ONE unit cell: per square (index zi·8+xi) the square's minimum bed when it
+/// has ≥ 2 m of water at its centre and that minimum lies within `NEAR_FLOOR_MAX` of `open_bed`.
+pub fn cell_deep_squares(w: &WaterRect, open_bed: f32, ux: i32, uz: i32) -> Vec<Option<f32>> {
+    let mut out = vec![None; 64];
+    for zi in 0..8 {
+        for xi in 0..8 {
+            let (cx, cz) = (32.0 * ux as f32 + 4.0 * xi as f32 + 2.0, 32.0 * uz as f32 + 4.0 * zi as f32 + 2.0);
+            if !under_water(w, [cx, cz]) { continue; }
+            let Some(yc) = bed_height_at(w, [cx, cz]) else { continue };
+            if w.surface - yc < DEEP_WATER_MIN { continue; }
+            let mut ymin = yc;
+            for p in [[cx - 1.9, cz - 1.9], [cx + 1.9, cz - 1.9], [cx - 1.9, cz + 1.9], [cx + 1.9, cz + 1.9], [cx, cz - 1.9], [cx, cz + 1.9], [cx - 1.9, cz], [cx + 1.9, cz]] {
+                if let Some(h) = bed_height_at(w, p) { ymin = ymin.min(h); }
+            }
+            if ymin <= open_bed + NEAR_FLOOR_MAX {
+                out[zi * 8 + xi] = Some(ymin);
+            }
+        }
+    }
+    out
+}
+
+/// Every unit cell of the block with its water mask and its near-floor squares: ((ux, uz), water, deep squares).
+pub fn cell_footprints(w: &WaterRect, open_bed: f32) -> Vec<((i32, i32), u64, Vec<Option<f32>>)> {
+    let mut v = Vec::new();
+    for uz in 0..w.size.1 {
+        for ux in 0..w.size.0 {
+            let water = cell_water_mask(w, ux, uz);
+            if water == 0 { continue; }
+            v.push(((ux, uz), water, cell_deep_squares(w, open_bed, ux, uz)));
+        }
+    }
+    v
 }
 
 pub struct FloorMesh {
@@ -289,11 +324,26 @@ pub struct FloorMesh {
 /// water rect depends on the placement's flags (the prefab the flags pick), so it is measured per kind
 /// (`water_rect`) rather than tabled.
 pub fn shore_tiles(collection: u32) -> &'static [&'static str] {
+    // v4.2 (coordinator 02:43 GO): every tile family that holds real water with an open-bed floor — found by
+    // baking every kind placed at the lowest terrain row of the 20 Fall vista sources and keeping the ones with a
+    // Water quad (BlueBay deco beach / mangrove bays, the DecoLake / DecoRiver pieces, RedIsland's painted
+    // WaterHill terrain and its platform-on-water-hill, WhiteShore's rocky shore); several are MULTI-CELL blocks
     match collection {
-        0x1c => &["Beach", "SeaCliff13", "Sea_Land0_Land12"],
-        0x1d => &["WaterShore1"],
-        0xf => &["LakeShore"],
-        0x10 => &["WaterHill", "WaterShore1"],
+        0x1c => &[
+            "Beach", "SeaCliff13", "Sea_Land0_Land12",
+            "DecoBeachBase5-2x1", "DecoBeachGTDiag3", "DecoBeachGTDiag3Mirror", "DecoBeachMangrove", "DecoBeachSandbar2x1", "DecoBeachSandbar2x1Mirror",
+            "DecoTreeBeach", "DecoTreeBeachDeadend3x2", "DecoTreeBeachDeadend3x2In", "DecoTreeBeachGT2In", "DecoTreeBeachGT2out", "DecoTreeBeachGT3In",
+        ],
+        0x1d => &["WaterShore1", "DecoTerrainRocky"],
+        0xf => &[
+            "LakeShore",
+            "DecoLakeCurve2In", "DecoLakeCurve2Out", "DecoLakeCurve3Out", "DecoLakeCurve4Out", "DecoLakeDiag2x2", "DecoLakeDiag2x2Mirror", "DecoLakeDiag2x3", "DecoLakeDiag2x4Mirror",
+        ],
+        0x10 => &[
+            "WaterHill", "WaterShore1",
+            "DecoLakeCurve2In", "DecoLakeCurve3In", "DecoLakeCurve3Out", "DecoLakeDiag2x2", "DecoLakeDiag2x2Mirror", "DecoLakeDiag2x3Mirror", "DecoLakeDiag2x4", "DecoLakeDiag2x4Mirror",
+            "DecoRiverDiag4", "DecoRiverDiag4Mirror", "DecoTerrainHD", "PlatformTechBaseOnWaterHillStraight",
+        ],
         _ => &[],
     }
 }
@@ -315,6 +365,20 @@ pub struct WorldRect {
 }
 
 /// A block-frame (dir 0) point → the world xz of a placement at `cell` with `dir`.
+/// A block-frame point of a (sx, sz)-metre footprint → world (the grid_block rule: pivot = the file cell, offsets
+/// East (+sz, 0), South (+sx, +sz), West (0, +sx), yaw −dir·90°).
+pub fn turn_pt_sized(cell: (i32, i32, i32), dir: u8, size_m: (f32, f32), x: f32, z: f32) -> [f32; 2] {
+    let (bx, bz) = (32.0 * cell.0 as f32, 32.0 * cell.2 as f32);
+    let (sx, sz) = size_m;
+    let (ox, oz) = match dir & 3 {
+        0 => (x, z),
+        1 => (sz - z, x),
+        2 => (sx - x, sz - z),
+        _ => (z, sx - x),
+    };
+    [bx + ox, bz + oz]
+}
+
 fn turn_pt(cell: (i32, i32, i32), dir: u8, x: f32, z: f32) -> [f32; 2] {
     let (bx, bz) = (32.0 * cell.0 as f32, 32.0 * cell.2 as f32);
     let (ox, oz) = match dir & 3 {
@@ -377,27 +441,29 @@ pub fn water_rects(store: &mut crate::store::DataStore, m: &MapFile, collection:
                 shore_cache.insert(key.clone(), r);
             }
             if let Some(Some(w)) = shore_cache.get(&key) {
-                let (x0, x1, z0, z1) = turn_rect(c, b.dir, w.x0, w.x1, w.z0, w.z1);
-                // the DEEP squares only (≥ 2 m of water), each as its own 4 m square with the LOCAL bed under it (the
-                // slab bottom follows the bank's ramp; the top is surface-anchored anyway)
-                let deep = deep_squares_near(w, bed);
-                if deep.iter().all(|d| d.is_none()) { continue; }
-                let _ = (x0, x1, z0, z1, bed);
-                for zi in 0..8 {
+                // the near-floor squares of every unit cell of the block (a Deco bay spans several), each as its own 4 m
+                // square with the LOCAL bed under it; the block frame turned with the footprint size (grid_block rule)
+                let cells = cell_footprints(w, bed);
+                if cells.iter().all(|(_, _, d)| d.iter().all(|s| s.is_none())) { continue; }
+                let size_m = (32.0 * w.size.0 as f32, 32.0 * w.size.1 as f32);
+                for ((ux, uz), _, deep) in &cells {
+                    for zi in 0..8 {
                     for xi in 0..8 {
                         let Some(y_local) = deep[zi * 8 + xi] else { continue };
                         // the bed quantised to 0.25 m (rounded DOWN: the slab bottom never rises above the real bed), so
                         // neighbouring squares on one ramp band share a box
                         let y_local = (y_local * 4.0).floor() / 4.0;
-                        let (lx0, lz0) = (4.0 * xi as f32, 4.0 * zi as f32);
+                        let (lx0, lz0) = (32.0 * *ux as f32 + 4.0 * xi as f32, 32.0 * *uz as f32 + 4.0 * zi as f32);
                         let (lx1, lz1) = (lx0 + 4.0, lz0 + 4.0);
+                        let tp = |x: f32, z: f32| turn_pt_sized(c, b.dir, size_m, x, z);
                         let tris = vec![
-                            [turn_pt(c, b.dir, lx0, lz0), turn_pt(c, b.dir, lx1, lz0), turn_pt(c, b.dir, lx1, lz1)],
-                            [turn_pt(c, b.dir, lx0, lz0), turn_pt(c, b.dir, lx1, lz1), turn_pt(c, b.dir, lx0, lz1)],
+                            [tp(lx0, lz0), tp(lx1, lz0), tp(lx1, lz1)],
+                            [tp(lx0, lz0), tp(lx1, lz1), tp(lx0, lz1)],
                         ];
                         let xs = [tris[0][0][0], tris[0][1][0], tris[0][2][0], tris[1][2][0]];
                         let zs = [tris[0][0][1], tris[0][1][1], tris[0][2][1], tris[1][2][1]];
                         out.push(WorldRect { x0: xs.iter().cloned().fold(f32::INFINITY, f32::min), x1: xs.iter().cloned().fold(f32::NEG_INFINITY, f32::max), z0: zs.iter().cloned().fold(f32::INFINITY, f32::min), z1: zs.iter().cloned().fold(f32::NEG_INFINITY, f32::max), y_bed: ground + 8.0 * c.1 as f32 + y_local, floor_y: ground + 8.0 * c.1 as f32, full_cell: false, tris });
+                    }
                     }
                 }
                 n_shore += 1;
@@ -406,7 +472,11 @@ pub fn water_rects(store: &mut crate::store::DataStore, m: &MapFile, collection:
     }
     for ((name, flags), r) in &shore_cache {
         match r {
-            Some(w) => notes.push(format!("{name} flags {flags:08x}: {} water x {:.2}..{:.2} z {:.2}..{:.2} (block frame), surface {:.2}, bed {:.2}..{:.2}, water squares {} of which DEEP {}", w.prefab, w.x0, w.x1, w.z0, w.z1, w.surface, w.bed_lo, w.bed_hi, footprint_mask(w).count_ones(), deep_mask(w, bed).count_ones())),
+            Some(w) => {
+                let cells = cell_footprints(w, bed);
+                let (wsq, dsq) = cells.iter().fold((0u32, 0usize), |(a, b), (_, m, d)| (a + m.count_ones(), b + d.iter().filter(|s| s.is_some()).count()));
+                notes.push(format!("{name} flags {flags:08x}: {} ({}×{} cells) water x {:.2}..{:.2} z {:.2}..{:.2} (block frame), surface {:.2}, bed {:.2}..{:.2}, water squares {wsq} of which DEEP {dsq}", w.prefab, w.size.0, w.size.1, w.x0, w.x1, w.z0, w.z1, w.surface, w.bed_lo, w.bed_hi))
+            }
             None => notes.push(format!("{name} flags {flags:08x}: no water quad")),
         }
     }

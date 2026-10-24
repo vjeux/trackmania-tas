@@ -294,8 +294,8 @@ fn vista(store: &mut mapgeom::store::DataStore, m: &tmmaps::map::MapFile, collec
     }
     // open-water cells (authored + baked), shore placements with their water / deep masks (turned)
     let mut open: Vec<(i32, i32)> = Vec::new();
-    let mut shore_sq: Vec<((i32, i32), u64, u64, u8)> = Vec::new(); // cell, water mask, deep mask, dir
-    let mut cache: BTreeMap<(String, u32), Option<(u64, u64)>> = BTreeMap::new();
+    let mut shore_sq: Vec<((i32, i32), u64, u64, u8)> = Vec::new(); // (turned) cell, water mask, deep mask, dir
+    let mut cache: BTreeMap<(String, u32), Option<((i32, i32), Vec<((i32, i32), u64, u64)>)>> = BTreeMap::new();
     let mut kinds: BTreeMap<String, (usize, u32, u32)> = BTreeMap::new();
     for b in m.blocks.iter().chain(m.baked.iter()).filter(|b| b.flags != 0xFFFF_FFFF && b.free_pos.is_none()) {
         let c = b.coords();
@@ -304,14 +304,20 @@ fn vista(store: &mut mapgeom::store::DataStore, m: &tmmaps::map::MapFile, collec
         } else if shore.iter().any(|t| t.eq_ignore_ascii_case(&b.name)) {
             let key = (b.name.clone(), b.flags);
             let e = cache.entry(key).or_insert_with(|| {
-                mapgeom::floor_finish::water_rect(store, collection, &b.name, b.flags).ok().flatten().map(|w| (mapgeom::floor_finish::footprint_mask(&w), mapgeom::floor_finish::deep_mask(&w, bed)))
+                mapgeom::floor_finish::water_rect(store, collection, &b.name, b.flags).ok().flatten().map(|w| {
+                    let cells = mapgeom::floor_finish::cell_footprints(&w, bed).into_iter().map(|(u, wm, d)| (u, wm, d.iter().enumerate().fold(0u64, |m, (i, s)| if s.is_some() { m | (1u64 << i) } else { m }))).collect();
+                    (w.size, cells)
+                })
             });
-            if let Some((wm, dm)) = *e {
-                shore_sq.push(((c.0, c.2), wm, dm, b.dir));
+            if let Some((size, cells)) = e.as_ref() {
                 let k = kinds.entry(b.name.clone()).or_default();
                 k.0 += 1;
-                k.1 += wm.count_ones();
-                k.2 += dm.count_ones();
+                for ((ux, uz), wm, dm) in cells {
+                    let tc = mapgeom::floor_finish::turn_unit(c, b.dir, [*ux, 0, *uz], *size);
+                    shore_sq.push((tc, *wm, *dm, b.dir));
+                    k.1 += wm.count_ones();
+                    k.2 += dm.count_ones();
+                }
             }
         }
     }

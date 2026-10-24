@@ -4984,7 +4984,8 @@ fn main() {
             let collection = m.body_collections().map(|c| c[0].1).unwrap_or(26);
             let only: Vec<String> = flag(&a.rest, "--tiles").map(|v| v.split(',').map(|s| s.trim().to_string()).collect()).unwrap_or_default();
             let mut kinds: std::collections::BTreeMap<(String, u32), usize> = Default::default();
-            for b in m.blocks.iter().filter(|b| b.flags != 0xFFFF_FFFF && b.free_pos.is_none()) {
+            // authored + BAKED (the Deco bays and the zone tiles may be baked)
+            for b in m.blocks.iter().chain(m.baked.iter()).filter(|b| b.flags != 0xFFFF_FFFF && b.free_pos.is_none()) {
                 if !only.is_empty() && !only.iter().any(|t| t.eq_ignore_ascii_case(&b.name)) { continue; }
                 *kinds.entry((b.name.clone(), b.flags)).or_default() += 1;
             }
@@ -4992,18 +4993,23 @@ fn main() {
             // bit (zi*8 + xi) set = the 4 m square at block-frame x 4·xi..4·xi+4, z 4·zi..4·zi+4 is water)
             // deep_beds: per deep square (bit order zi*8+xi, deep squares only, in order) the LOCAL bed under its centre
             // rounded DOWN to 0.25 m, as "y,y,y" — the C# slab bottom follows the bank's ramp like ours
-            let mut fp = String::from("collection\ttile\tflags_hex\tprefab\tbed_local\tsurface_local\tmask64_hex\twater_squares\tdeep_mask64_hex\tdeep_squares\tdeep_beds\n");
+            // v4.2: one row per UNIT CELL of the block (size_x, size_z = the footprint in cells at dir 0; cell = "ux,uz"
+            // like the Stadium masks; the C# turns the cell with the footprint size and the squares within it)
+            let mut fp = String::from("collection\ttile\tflags_hex\tprefab\tsize_x\tsize_z\tcell\tbed_local\tsurface_local\tmask64_hex\twater_squares\tdeep_mask64_hex\tdeep_squares\tdeep_beds\n");
             let (_, open_bed) = mapgeom::floor_finish::water_tiles(collection);
             let coll_name = match collection { 0x10 => "RedIsland", 0x1d => "WhiteShore", 0x1c => "BlueBay", 0xf => "GreenCoast", _ => "Stadium" };
             println!("tile\tflags\tplacements\tprefab\tx0\tx1\tz0\tz1\tsurface\tbed_lo\tbed_hi\tbed_tris\twater_4m_squares");
             for ((name, flags), n) in kinds {
                 match mapgeom::floor_finish::water_rect(&mut store, collection, &name, flags) {
                     Ok(Some(w)) => {
-                        let mask = mapgeom::floor_finish::footprint_mask(&w);
-                        let deep = mapgeom::floor_finish::deep_mask(&w, open_bed);
-                        println!("{name}\t{flags:08x}\t{n}\t{}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{}\t{}\tdeep {}", w.prefab, w.x0, w.x1, w.z0, w.z1, w.surface, w.bed_lo, w.bed_hi, w.bed_tris, mask.count_ones(), deep.count_ones());
-                        let beds: Vec<String> = mapgeom::floor_finish::deep_squares_near(&w, open_bed).iter().filter_map(|d| d.map(|y| format!("{:.2}", (y * 4.0).floor() / 4.0))).collect();
-                        fp.push_str(&format!("{coll_name}\t{name}\t{flags:08x}\t{}\t{:.2}\t{:.2}\t{mask:016x}\t{}\t{deep:016x}\t{}\t{}\n", w.prefab, w.bed_lo, w.surface, mask.count_ones(), deep.count_ones(), beds.join(",")));
+                        let cells = mapgeom::floor_finish::cell_footprints(&w, open_bed);
+                        let (wsq, dsq) = cells.iter().fold((0u32, 0usize), |(a, b), (_, m, d)| (a + m.count_ones(), b + d.iter().filter(|s| s.is_some()).count()));
+                        println!("{name}\t{flags:08x}\t{n}\t{}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{}\t{wsq}\tdeep {dsq}\tcells {}x{}", w.prefab, w.x0, w.x1, w.z0, w.z1, w.surface, w.bed_lo, w.bed_hi, w.bed_tris, w.size.0, w.size.1);
+                        for ((ux, uz), mask, deep) in &cells {
+                            let dmask = deep.iter().enumerate().fold(0u64, |m, (i, d)| if d.is_some() { m | (1u64 << i) } else { m });
+                            let beds: Vec<String> = deep.iter().filter_map(|d| d.map(|y| format!("{:.2}", (y * 4.0).floor() / 4.0))).collect();
+                            fp.push_str(&format!("{coll_name}\t{name}\t{flags:08x}\t{}\t{}\t{}\t{ux},{uz}\t{:.2}\t{:.2}\t{mask:016x}\t{}\t{dmask:016x}\t{}\t{}\n", w.prefab, w.size.0, w.size.1, w.bed_lo, w.surface, mask.count_ones(), dmask.count_ones(), beds.join(",")));
+                        }
                     }
                     Ok(None) => if !only.is_empty() { println!("{name}\t{flags:08x}\t{n}\t-\tno water quad") },
                     Err(e) => if !only.is_empty() { println!("{name}\t{flags:08x}\t{n}\tERROR {e}") },
