@@ -505,6 +505,10 @@ pub fn apply(args: &[String]) -> i32 {
     // publish was OPENED by the game in one of those tables; a campaign with a file not yet
     // gated, or gated as anything but OPENED, is held ("every shipped file passes a
     // play-load" — the 10-01 rule, now a flag instead of a reading of two files by hand).
+    // `TINYCTL_BATCH_JOBS` (default 3): parallel uploads per campaign. 2026-10-24 (a Saturday
+    // evening in Europe): one upload in six hung for minutes at Nadeo's end; six workers
+    // keep the batch moving while two of them wait.
+    let batch_jobs = std::env::var("TINYCTL_BATCH_JOBS").unwrap_or_else(|_| "3".into());
     let gated_ok: Option<std::collections::HashSet<String>> = f("--gate").map(|dirs| {
         let mut ok: std::collections::HashSet<String> = std::collections::HashSet::new();
         for dir in dirs.split(',').map(str::trim).filter(|d| !d.is_empty()) {
@@ -670,7 +674,7 @@ pub fn apply(args: &[String]) -> i32 {
             std::fs::write(&mp, man).unwrap();
             let rp = stage.join("update-results.tsv");
             let st = std::process::Command::new(&me)
-                .args(["publish-batch", "--manifest", &mp.to_string_lossy(), "--results", &rp.to_string_lossy(), "--outdir", &stage.to_string_lossy(), "--jobs", "3", "--token-dir", &token_dir, "--files-only", "--no-gate"])
+                .args(["publish-batch", "--manifest", &mp.to_string_lossy(), "--results", &rp.to_string_lossy(), "--outdir", &stage.to_string_lossy(), "--jobs", &batch_jobs, "--token-dir", &token_dir, "--files-only", "--no-gate"])
                 .status();
             let ok = count_identical(&rp);
             println!("  updates: {ok}/{} IDENTICAL ({:?})", updates.len(), st.map(|s| s.code()));
@@ -724,7 +728,7 @@ pub fn apply(args: &[String]) -> i32 {
             std::fs::write(&pp, &pairs).unwrap();
             let rp = stage.join("wipe-results.tsv");
             let _ = std::process::Command::new(&me)
-                .args(["publish-batch", "--manifest", &mp.to_string_lossy(), "--results", &rp.to_string_lossy(), "--outdir", &stage.to_string_lossy(), "--jobs", "3", "--token-dir", &token_dir, "--files-only", "--no-gate"])
+                .args(["publish-batch", "--manifest", &mp.to_string_lossy(), "--results", &rp.to_string_lossy(), "--outdir", &stage.to_string_lossy(), "--jobs", &batch_jobs, "--token-dir", &token_dir, "--files-only", "--no-gate"])
                 .status();
             let ok = count_identical(&rp);
             println!("  wipes: {ok}/{} created IDENTICAL", wipes.len());
