@@ -5082,6 +5082,50 @@ fn main() {
             let holes = rows.values().filter(|r| (r.2.len() as i32) < r.0 * r.1).count();
             println!("{}: {} block infos ({} failed to load), {} multi-cell, {} with base-row holes (footprint smaller than its size box)", out, rows.len(), failed, multi, holes);
         }
+        // block-sizes --out F.tsv [--conflicts F.tsv]: every block info of EVERY loaded pak → size_x, size_z (cells at
+        //   dir 0: the footprint box of the ground base variant, air when no ground one) for Hugo's MapUtility
+        //   (2026-10-23 22:45); names present in several collections / variants with different sizes are reported
+        "block-sizes" => {
+            let store = open(&a);
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("block-sizes needs --out F.tsv".into()));
+            let mut store = store;
+            let paths: Vec<String> = store.entries().map(|e| e.path()).filter(|p| { let u = p.to_uppercase(); u.contains("\\GAMECTNBLOCKINFO\\") && u.ends_with(".GBX") }).collect();
+            // name -> set of (collection, variant label, sx, sz)
+            let mut seen: BTreeMap<String, Vec<(String, &'static str, i32, i32)>> = BTreeMap::new();
+            let mut failed = 0usize;
+            for p in &paths {
+                let coll = p.split('\\').next().unwrap_or("").to_string();
+                let Ok(bi) = mapgeom::blockinfo::load(&mut store, p) else { failed += 1; continue };
+                let name = if bi.name.is_empty() { p.rsplit('\\').next().unwrap_or(p).split('.').next().unwrap_or("").to_string() } else { bi.name.clone() };
+                let size_of = |v: &mapgeom::blockinfo::Variant| -> Option<(i32, i32)> {
+                    if v.block_units.is_empty() { return None; }
+                    Some((v.block_units.iter().map(|u| u.offset[0] + 1).max().unwrap_or(1), v.block_units.iter().map(|u| u.offset[2] + 1).max().unwrap_or(1)))
+                };
+                let e = seen.entry(name).or_default();
+                if let Some(sz) = bi.variant_base_ground.as_ref().and_then(|v| size_of(v)) { e.push((coll.clone(), "ground", sz.0, sz.1)); }
+                if let Some(sz) = bi.variant_base_air.as_ref().and_then(|v| size_of(v)) { e.push((coll.clone(), "air", sz.0, sz.1)); }
+                for (k, v) in bi.additional_ground.iter().enumerate() { if let Some(sz) = size_of(v) { let _ = k; e.push((coll.clone(), "ground/add", sz.0, sz.1)); } }
+                for v in &bi.additional_air { if let Some(sz) = size_of(v) { e.push((coll.clone(), "air/add", sz.0, sz.1)); } }
+                if e.is_empty() { e.push((coll.clone(), "none", 1, 1)); }
+            }
+            let mut s = String::from("block\tsize_x\tsize_z\n");
+            let mut conflicts = String::from("block\tcollection\tvariant\tsize_x\tsize_z\n");
+            let (mut n, mut nc) = (0usize, 0usize);
+            for (name, list) in &seen {
+                // the size the placement uses: the ground base variant of the first collection, else air
+                let pick = list.iter().find(|(_, v, _, _)| *v == "ground").or_else(|| list.iter().find(|(_, v, _, _)| *v == "air")).or(list.first()).unwrap();
+                s.push_str(&format!("{name}\t{}\t{}\n", pick.2, pick.3));
+                n += 1;
+                let distinct: std::collections::BTreeSet<(i32, i32)> = list.iter().map(|(_, _, x, z)| (*x, *z)).collect();
+                if distinct.len() > 1 {
+                    nc += 1;
+                    for (c, v, x, z) in list { conflicts.push_str(&format!("{name}\t{c}\t{v}\t{x}\t{z}\n")); }
+                }
+            }
+            std::fs::write(&out, &s).unwrap_or_else(|e| die(format!("{out}: {e}")));
+            if let Some(cf) = flag(&a.rest, "--conflicts") { std::fs::write(&cf, &conflicts).unwrap_or_else(|e| die(format!("{cf}: {e}"))); }
+            println!("{out}: {n} block names from {} infos ({failed} failed to load); {nc} names whose variants / collections disagree on the size", paths.len());
+        }
         // stadium-kinds MAP... [--out F.tsv]: Hugo's cutout feasibility (2026-10-23 13:51) — per ground-block KIND placed in
         //   the maps: placements, base cells, and its hidden cells' 4 m squares as (a) structure / (b) standable
         //   grass-level surface / (c) void; the kinds with (b) > 0 are the cutout shapes
