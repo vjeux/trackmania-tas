@@ -324,26 +324,17 @@ pub struct FloorMesh {
 /// water rect depends on the placement's flags (the prefab the flags pick), so it is measured per kind
 /// (`water_rect`) rather than tabled.
 pub fn shore_tiles(collection: u32) -> &'static [&'static str] {
-    // v4.2 (coordinator 02:43 GO): every tile family that holds real water with an open-bed floor — found by
-    // baking every kind placed at the lowest terrain row of the 20 Fall vista sources and keeping the ones with a
-    // Water quad (BlueBay deco beach / mangrove bays, the DecoLake / DecoRiver pieces, RedIsland's painted
-    // WaterHill terrain and its platform-on-water-hill, WhiteShore's rocky shore); several are MULTI-CELL blocks
+    // v4.1 list. v4.2 (02:55) had added 29 Deco water families (DecoBeach*/DecoTreeBeach*/Mangrove, DecoLake*/
+    // DecoRiver*, DecoTerrainHD/Rocky, PlatformTechBaseOnWaterHillStraight) found by baking every kind at the lowest
+    // terrain row and keeping the ones with a Water quad — REVERTED (coordinator 03:06): those pieces are OVERLAYS
+    // standing on authored terrain tiles that already carry the same water (Fall 14's DecoTreeBeach cells have Beach
+    // tiles under them, Fall 07's DecoLake pieces LakeShore/Lake), so they only doubled the boxes. A water quad in a
+    // kind's prefab is not evidence of new water: check what the kind sits on (`deco_water_overlay_check`).
     match collection {
-        0x1c => &[
-            "Beach", "SeaCliff13", "Sea_Land0_Land12",
-            "DecoBeachBase5-2x1", "DecoBeachGTDiag3", "DecoBeachGTDiag3Mirror", "DecoBeachMangrove", "DecoBeachSandbar2x1", "DecoBeachSandbar2x1Mirror",
-            "DecoTreeBeach", "DecoTreeBeachDeadend3x2", "DecoTreeBeachDeadend3x2In", "DecoTreeBeachGT2In", "DecoTreeBeachGT2out", "DecoTreeBeachGT3In",
-        ],
-        0x1d => &["WaterShore1", "DecoTerrainRocky"],
-        0xf => &[
-            "LakeShore",
-            "DecoLakeCurve2In", "DecoLakeCurve2Out", "DecoLakeCurve3Out", "DecoLakeCurve4Out", "DecoLakeDiag2x2", "DecoLakeDiag2x2Mirror", "DecoLakeDiag2x3", "DecoLakeDiag2x4Mirror",
-        ],
-        0x10 => &[
-            "WaterHill", "WaterShore1",
-            "DecoLakeCurve2In", "DecoLakeCurve3In", "DecoLakeCurve3Out", "DecoLakeDiag2x2", "DecoLakeDiag2x2Mirror", "DecoLakeDiag2x3Mirror", "DecoLakeDiag2x4", "DecoLakeDiag2x4Mirror",
-            "DecoRiverDiag4", "DecoRiverDiag4Mirror", "DecoTerrainHD", "PlatformTechBaseOnWaterHillStraight",
-        ],
+        0x1c => &["Beach", "SeaCliff13", "Sea_Land0_Land12"],
+        0x1d => &["WaterShore1"],
+        0xf => &["LakeShore"],
+        0x10 => &["WaterHill", "WaterShore1"],
         _ => &[],
     }
 }

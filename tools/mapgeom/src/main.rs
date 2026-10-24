@@ -4993,9 +4993,15 @@ fn main() {
             // bit (zi*8 + xi) set = the 4 m square at block-frame x 4·xi..4·xi+4, z 4·zi..4·zi+4 is water)
             // deep_beds: per deep square (bit order zi*8+xi, deep squares only, in order) the LOCAL bed under its centre
             // rounded DOWN to 0.25 m, as "y,y,y" — the C# slab bottom follows the bank's ramp like ours
-            // v4.2: one row per UNIT CELL of the block (size_x, size_z = the footprint in cells at dir 0; cell = "ux,uz"
-            // like the Stadium masks; the C# turns the cell with the footprint size and the squares within it)
-            let mut fp = String::from("collection\ttile\tflags_hex\tprefab\tsize_x\tsize_z\tcell\tbed_local\tsurface_local\tmask64_hex\twater_squares\tdeep_mask64_hex\tdeep_squares\tdeep_beds\n");
+            // the table format Hugo's C# reads (v4.1, one row per kind, 1×1 tiles). `--per-cell` writes one row per UNIT
+            // CELL instead (size_x, size_z = the footprint in cells at dir 0; cell = "ux,uz" like the Stadium masks) for
+            // multi-cell kinds; without it a multi-cell kind is an ERROR, never a silently truncated row
+            let per_cell = a.rest.iter().any(|x| x == "--per-cell");
+            let mut fp = String::from(if per_cell {
+                "collection\ttile\tflags_hex\tprefab\tsize_x\tsize_z\tcell\tbed_local\tsurface_local\tmask64_hex\twater_squares\tdeep_mask64_hex\tdeep_squares\tdeep_beds\n"
+            } else {
+                "collection\ttile\tflags_hex\tprefab\tbed_local\tsurface_local\tmask64_hex\twater_squares\tdeep_mask64_hex\tdeep_squares\tdeep_beds\n"
+            });
             let (_, open_bed) = mapgeom::floor_finish::water_tiles(collection);
             let coll_name = match collection { 0x10 => "RedIsland", 0x1d => "WhiteShore", 0x1c => "BlueBay", 0xf => "GreenCoast", _ => "Stadium" };
             println!("tile\tflags\tplacements\tprefab\tx0\tx1\tz0\tz1\tsurface\tbed_lo\tbed_hi\tbed_tris\twater_4m_squares");
@@ -5005,10 +5011,17 @@ fn main() {
                         let cells = mapgeom::floor_finish::cell_footprints(&w, open_bed);
                         let (wsq, dsq) = cells.iter().fold((0u32, 0usize), |(a, b), (_, m, d)| (a + m.count_ones(), b + d.iter().filter(|s| s.is_some()).count()));
                         println!("{name}\t{flags:08x}\t{n}\t{}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{}\t{wsq}\tdeep {dsq}\tcells {}x{}", w.prefab, w.x0, w.x1, w.z0, w.z1, w.surface, w.bed_lo, w.bed_hi, w.bed_tris, w.size.0, w.size.1);
+                        if !per_cell && w.size != (1, 1) {
+                            die::<()>(format!("{name} flags {flags:08x} spans {}×{} cells: the one-row-per-kind table cannot hold it — pass --per-cell (and a C# that reads the per-cell format)", w.size.0, w.size.1));
+                        }
                         for ((ux, uz), mask, deep) in &cells {
                             let dmask = deep.iter().enumerate().fold(0u64, |m, (i, d)| if d.is_some() { m | (1u64 << i) } else { m });
                             let beds: Vec<String> = deep.iter().filter_map(|d| d.map(|y| format!("{:.2}", (y * 4.0).floor() / 4.0))).collect();
-                            fp.push_str(&format!("{coll_name}\t{name}\t{flags:08x}\t{}\t{}\t{}\t{ux},{uz}\t{:.2}\t{:.2}\t{mask:016x}\t{}\t{dmask:016x}\t{}\t{}\n", w.prefab, w.size.0, w.size.1, w.bed_lo, w.surface, mask.count_ones(), dmask.count_ones(), beds.join(",")));
+                            if per_cell {
+                                fp.push_str(&format!("{coll_name}\t{name}\t{flags:08x}\t{}\t{}\t{}\t{ux},{uz}\t{:.2}\t{:.2}\t{mask:016x}\t{}\t{dmask:016x}\t{}\t{}\n", w.prefab, w.size.0, w.size.1, w.bed_lo, w.surface, mask.count_ones(), dmask.count_ones(), beds.join(",")));
+                            } else {
+                                fp.push_str(&format!("{coll_name}\t{name}\t{flags:08x}\t{}\t{:.2}\t{:.2}\t{mask:016x}\t{}\t{dmask:016x}\t{}\t{}\n", w.prefab, w.bed_lo, w.surface, mask.count_ones(), dmask.count_ones(), beds.join(",")));
+                            }
                         }
                     }
                     Ok(None) => if !only.is_empty() { println!("{name}\t{flags:08x}\t{n}\t-\tno water quad") },
