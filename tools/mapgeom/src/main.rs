@@ -4990,15 +4990,17 @@ fn main() {
             }
             // --footprints F.tsv: the per-kind 4 m water mask for Hugo's C# (collection, tile, flags, prefab, bed, mask64:
             // bit (zi*8 + xi) set = the 4 m square at block-frame x 4·xi..4·xi+4, z 4·zi..4·zi+4 is water)
-            let mut fp = String::from("collection\ttile\tflags_hex\tprefab\tbed_local\tsurface_local\tmask64_hex\twater_squares\n");
+            let mut fp = String::from("collection\ttile\tflags_hex\tprefab\tbed_local\tsurface_local\tmask64_hex\twater_squares\tdeep_mask64_hex\tdeep_squares\n");
+            let (_, open_bed) = mapgeom::floor_finish::water_tiles(collection);
             let coll_name = match collection { 0x10 => "RedIsland", 0x1d => "WhiteShore", 0x1c => "BlueBay", 0xf => "GreenCoast", _ => "Stadium" };
             println!("tile\tflags\tplacements\tprefab\tx0\tx1\tz0\tz1\tsurface\tbed_lo\tbed_hi\tbed_tris\twater_4m_squares");
             for ((name, flags), n) in kinds {
                 match mapgeom::floor_finish::water_rect(&mut store, collection, &name, flags) {
                     Ok(Some(w)) => {
                         let mask = mapgeom::floor_finish::footprint_mask(&w);
-                        println!("{name}\t{flags:08x}\t{n}\t{}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{}\t{}", w.prefab, w.x0, w.x1, w.z0, w.z1, w.surface, w.bed_lo, w.bed_hi, w.bed_tris, mask.count_ones());
-                        fp.push_str(&format!("{coll_name}\t{name}\t{flags:08x}\t{}\t{:.2}\t{:.2}\t{mask:016x}\t{}\n", w.prefab, w.bed_lo, w.surface, mask.count_ones()));
+                        let deep = mapgeom::floor_finish::deep_mask(&w, open_bed);
+                        println!("{name}\t{flags:08x}\t{n}\t{}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{}\t{}\tdeep {}", w.prefab, w.x0, w.x1, w.z0, w.z1, w.surface, w.bed_lo, w.bed_hi, w.bed_tris, mask.count_ones(), deep.count_ones());
+                        fp.push_str(&format!("{coll_name}\t{name}\t{flags:08x}\t{}\t{:.2}\t{:.2}\t{mask:016x}\t{}\t{deep:016x}\t{}\n", w.prefab, w.bed_lo, w.surface, mask.count_ones(), deep.count_ones()));
                     }
                     Ok(None) => if !only.is_empty() { println!("{name}\t{flags:08x}\t{n}\t-\tno water quad") },
                     Err(e) => if !only.is_empty() { println!("{name}\t{flags:08x}\t{n}\tERROR {e}") },
@@ -5276,11 +5278,12 @@ fn main() {
             let map_coll = m.body_collections().map(|c| c[0].1).unwrap_or(26);
             let item_coll: u32 = flag(&a.rest, "--collection").map(|v| v.parse().unwrap_or_else(|_| die("--collection N".into()))).unwrap_or(26);
             let stadium = map_coll == 0x1a;
-            let below: f32 = flag(&a.rest, "--floor-below").map(|v| v.parse().unwrap_or_else(|_| die("--floor-below M".into()))).unwrap_or(if stadium { 0.0 } else { 0.1 });
-            let above: f32 = flag(&a.rest, "--floor-above").map(|v| v.parse().unwrap_or_else(|_| die("--floor-above M".into()))).unwrap_or(if stadium { 1.0 } else { 0.4 });
+            let (vb, va) = mapgeom::floor_finish::vista_slab(map_coll);
+            let below: f32 = flag(&a.rest, "--floor-below").map(|v| v.parse().unwrap_or_else(|_| die("--floor-below M".into()))).unwrap_or(if stadium { 0.0 } else { vb });
+            let above: f32 = flag(&a.rest, "--floor-above").map(|v| v.parse().unwrap_or_else(|_| die("--floor-above M".into()))).unwrap_or(if stadium { 1.0 } else { va });
             let ident = flag(&a.rest, "--ident").unwrap_or_else(|| format!("FinishFloor_{}.Item.Gbx", hdr0.uid));
             // the mesh is computed in the MAP's collection frame (its ground row), the file carries `item_coll`
-            let shores = a.rest.iter().any(|x| x == "--shores");
+            let shores = !a.rest.iter().any(|x| x == "--no-shores");
             let (bytes, mesh) = mapgeom::floor_finish::build_floor_item(&mut store, &m, map_coll, &ident, below, above, shores, None).unwrap_or_else(die);
             for n in &mesh.notes { eprintln!("  {n}"); }
             let bytes = if item_coll != map_coll { mapgeom::tiny_assets::set_ident_collection(&bytes, item_coll) } else { bytes };
@@ -5333,7 +5336,7 @@ fn main() {
                 sources: Vec::new(),
                 source_pad: flag(&a.rest, "--source-pad").map(|v| v.parse::<f32>().unwrap_or_else(|_| die("--source-pad M".into()))).unwrap_or(0.3),
                 floor_item: None,
-                floor_shores: a.rest.iter().any(|x| x == "--shores"),
+                floor_shores: !a.rest.iter().any(|x| x == "--no-shores"),
                 floor_cutouts: a.rest.iter().any(|x| x == "--cutouts"),
             };
             // --lights SOURCES.tsv (Hugo's Moth, 2026-10-22): the light sources are the carriers' seats. The TSV = the
@@ -5349,10 +5352,14 @@ fn main() {
             // surface slab per tile, N items).
             let o = if a.rest.iter().any(|x| x == "--floor") {
                 let hdr0 = tmmaps::header::read(&p).unwrap_or_else(|e| die(e));
-                // Stadium (Hugo 12:00): the slab sits ON the grass, 1 m thick (grass .. +1.0); the vista beds keep −0.1 .. +0.4
+                // Stadium (Hugo 12:00): the slab sits ON the grass, 1 m thick (grass .. +1.0); vistas (Hugo 2026-10-24
+                // 00:12): bottom = bed − 0.1, top = water surface − 2.5 (a constant depth on every collection)
                 let stadium = hdr0.envir.eq_ignore_ascii_case("Stadium");
-                let below: f32 = flag(&a.rest, "--floor-below").map(|v| v.parse().unwrap_or_else(|_| die("--floor-below M".into()))).unwrap_or(if stadium { 0.0 } else { 0.1 });
-                let above: f32 = flag(&a.rest, "--floor-above").map(|v| v.parse().unwrap_or_else(|_| die("--floor-above M".into()))).unwrap_or(if stadium { 1.0 } else { 0.4 });
+                let m0 = tmmaps::map::MapFile::try_load(std::path::Path::new(&p)).unwrap_or_else(die);
+                let coll0 = m0.body_collections().map(|c| c[0].1).unwrap_or(26);
+                let (vb, va) = mapgeom::floor_finish::vista_slab(coll0);
+                let below: f32 = flag(&a.rest, "--floor-below").map(|v| v.parse().unwrap_or_else(|_| die("--floor-below M".into()))).unwrap_or(if stadium { 0.0 } else { vb });
+                let above: f32 = flag(&a.rest, "--floor-above").map(|v| v.parse().unwrap_or_else(|_| die("--floor-above M".into()))).unwrap_or(if stadium { 1.0 } else { va });
                 let stem = flag(&a.rest, "--floor-label").unwrap_or_else(|| format!("FinishFloor_{}", hdr0.uid));
                 mapgeom::flags::FlagsOpts {
                     uid_prefix: flag(&a.rest, "--uid-prefix").unwrap_or_else(|| "Floor".into()),

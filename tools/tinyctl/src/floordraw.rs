@@ -75,6 +75,10 @@ pub fn cmd(rest: &[String]) -> Result<(), String> {
         }
     }
     let m = tmmaps::map::MapFile::try_load(std::path::Path::new(&map))?;
+    let collection = m.body_collections().map(|c| c[0].1).unwrap_or(26);
+    if collection != 0x1a {
+        return vista(&mut store, &m, collection, &out, px, rest);
+    }
     let floor = mapgeom::floor_finish::stadium_floor(&mut store, &m)?;
     let plane = mapgeom::floor_finish::stadium_plane_mesh(&mut store, &m, 0.0, 1.0)?;
     let (mut nx, mut nz) = (0, 0);
@@ -263,6 +267,133 @@ pub fn cmd(rest: &[String]) -> Result<(), String> {
             let (n2, _) = draw(&scz, &mut cz, cw, ch, 3);
             std::fs::write(&zo, crate::png::encode(&cz.img)).map_err(|e| format!("{zo}: {e}"))?;
             println!("wrote {zo}: {cw}x{ch} px (2x), cells {}..{} x {}..{}, {n2} cutouts in view or not", v[0], v[2], v[1], v[3]);
+        }
+    }
+    Ok(())
+}
+
+const OPEN_WATER: [u8; 3] = [70, 130, 220];
+const SHORE_DEEP: [u8; 3] = [40, 200, 230];
+const SHORE_SHALLOW: [u8; 3] = [190, 215, 235];
+const LAND: [u8; 3] = [236, 232, 220];
+const FINISH: [u8; 3] = [220, 40, 40];
+
+/// The vista branch (Hugo 2026-10-24): open-water cells blue, the shore tiles' water squares pale blue with
+/// the DEEP ones (finish) bright cyan, every finish box outlined red, the grid, the start, a legend; `--zoom`
+/// as for Stadium.
+fn vista(store: &mut mapgeom::store::DataStore, m: &tmmaps::map::MapFile, collection: u32, out: &str, px: f32, rest: &[String]) -> Result<(), String> {
+    let (tiles, bed) = mapgeom::floor_finish::water_tiles(collection);
+    let (below, above) = mapgeom::floor_finish::vista_slab(collection);
+    let mesh = mapgeom::floor_finish::floor_mesh(store, m, collection, below, above, true)?;
+    let shore = mapgeom::floor_finish::shore_tiles(collection);
+    let (mut nx, mut nz) = (0, 0);
+    for b in m.blocks.iter().chain(m.baked.iter()).filter(|b| b.flags != 0xFFFF_FFFF && b.free_pos.is_none()) {
+        let c = b.coords();
+        nx = nx.max(c.0 + 1);
+        nz = nz.max(c.2 + 1);
+    }
+    // open-water cells (authored + baked), shore placements with their water / deep masks (turned)
+    let mut open: Vec<(i32, i32)> = Vec::new();
+    let mut shore_sq: Vec<((i32, i32), u64, u64, u8)> = Vec::new(); // cell, water mask, deep mask, dir
+    let mut cache: BTreeMap<(String, u32), Option<(u64, u64)>> = BTreeMap::new();
+    let mut kinds: BTreeMap<String, (usize, u32, u32)> = BTreeMap::new();
+    for b in m.blocks.iter().chain(m.baked.iter()).filter(|b| b.flags != 0xFFFF_FFFF && b.free_pos.is_none()) {
+        let c = b.coords();
+        if tiles.iter().any(|t| t.eq_ignore_ascii_case(&b.name)) {
+            open.push((c.0, c.2));
+        } else if shore.iter().any(|t| t.eq_ignore_ascii_case(&b.name)) {
+            let key = (b.name.clone(), b.flags);
+            let e = cache.entry(key).or_insert_with(|| {
+                mapgeom::floor_finish::water_rect(store, collection, &b.name, b.flags).ok().flatten().map(|w| (mapgeom::floor_finish::footprint_mask(&w), mapgeom::floor_finish::deep_mask(&w, bed)))
+            });
+            if let Some((wm, dm)) = *e {
+                shore_sq.push(((c.0, c.2), wm, dm, b.dir));
+                let k = kinds.entry(b.name.clone()).or_default();
+                k.0 += 1;
+                k.1 += wm.count_ones();
+                k.2 += dm.count_ones();
+            }
+        }
+    }
+    let legend_w = 820usize;
+    let (w, h) = ((nx as f32 * px) as usize, (nz as f32 * px) as usize);
+    let draw = |sc: &Scene, cv: &mut Canvas, label_scale: usize| {
+        let (a, b) = (sc.p(0.0, 0.0), sc.p(32.0 * nx as f32, 32.0 * nz as f32));
+        cv.poly(&[a, (b.0, a.1), b, (a.0, b.1)], LAND, 1.0);
+        for &(cx, cz) in &open {
+            let (a, b) = (sc.p(32.0 * cx as f32, 32.0 * cz as f32), sc.p(32.0 * (cx + 1) as f32, 32.0 * (cz + 1) as f32));
+            cv.poly(&[a, (b.0, a.1), b, (a.0, b.1)], OPEN_WATER, 1.0);
+        }
+        for &((cx, cz), wm, dm, dir) in &shore_sq {
+            let wm_t = mapgeom::floor_finish::turn_mask(wm, dir);
+            let dm_t = mapgeom::floor_finish::turn_mask(dm, dir);
+            for zi in 0..8 {
+                for xi in 0..8 {
+                    let bit = 1u64 << (zi * 8 + xi);
+                    if wm_t & bit == 0 { continue; }
+                    let col = if dm_t & bit != 0 { SHORE_DEEP } else { SHORE_SHALLOW };
+                    let (a, b) = (sc.p(32.0 * cx as f32 + 4.0 * xi as f32, 32.0 * cz as f32 + 4.0 * zi as f32), sc.p(32.0 * cx as f32 + 4.0 * (xi + 1) as f32, 32.0 * cz as f32 + 4.0 * (zi + 1) as f32));
+                    cv.poly(&[a, (b.0, a.1), b, (a.0, b.1)], col, 1.0);
+                }
+            }
+        }
+        for x in 0..=nx {
+            let (a, b) = (sc.p(32.0 * x as f32, 0.0), sc.p(32.0 * x as f32, 32.0 * nz as f32));
+            cv.line(a.0, a.1, b.0, b.1, GRID, 1.0, 0.5);
+        }
+        for z in 0..=nz {
+            let (a, b) = (sc.p(0.0, 32.0 * z as f32), sc.p(32.0 * nx as f32, 32.0 * z as f32));
+            cv.line(a.0, a.1, b.0, b.1, GRID, 1.0, 0.5);
+        }
+        for &(x0, x1, z0, z1, _) in &mesh.quads {
+            let (a, b) = (sc.p(x0, z0), sc.p(x1, z1));
+            cv.outline(&[a, (b.0, a.1), b, (a.0, b.1)], FINISH, 1.5);
+        }
+        if let Some(st) = m.blocks.iter().find(|b| b.waypoint_tag.as_deref() == Some("Spawn") || b.name.contains("Start")) {
+            let c = st.coords();
+            let (a, b) = (sc.p(32.0 * c.0 as f32 + 4.0, 32.0 * c.2 as f32 + 4.0), sc.p(32.0 * c.0 as f32 + 28.0, 32.0 * c.2 as f32 + 28.0));
+            cv.outline(&[a, (b.0, a.1), b, (a.0, b.1)], [0, 0, 0], 2.0);
+            cv.text(a.0 + 2.0, a.1 + 2.0, "START", label_scale.max(1), INK);
+        }
+    };
+    let mut cv = Canvas::new(w + legend_w, h.max(900));
+    let sc = Scene { px, ox: 0.0, oz: 0.0 };
+    draw(&sc, &mut cv, 2);
+    let lx = w as f32 + 20.0;
+    let mut ly = 20.0;
+    let coll_name = match collection { 0x10 => "RedIsland", 0x1d => "WhiteShore", 0x1c => "BlueBay", 0xf => "GreenCoast", _ => "?" };
+    cv.text(lx, ly, &format!("Floor Finish v4 - {coll_name}"), 2, INK);
+    ly += 30.0;
+    cv.text(lx, ly, &format!("open-water cells {} -> {} strips; shore deep boxes {}", mesh.cells, mesh.strips, mesh.shore_prisms), 2, INK);
+    ly += 24.0;
+    cv.text(lx, ly, &format!("slab: bed -{below:.1} .. bed +{above:.1} (top = surface - 2.5)", ), 2, INK);
+    ly += 34.0;
+    for (name, col) in [("open water (full cell, bed depth)", OPEN_WATER), ("shore tile water at seabed depth = finish", SHORE_DEEP), ("shore tile water, shallow / sloping (no finish)", SHORE_SHALLOW), ("land", LAND)] {
+        cv.poly(&[(lx, ly), (lx + 24.0, ly), (lx + 24.0, ly + 18.0), (lx, ly + 18.0)], col, 1.0);
+        cv.text(lx + 32.0, ly, name, 2, INK);
+        ly += 26.0;
+    }
+    cv.outline(&[(lx, ly), (lx + 24.0, ly), (lx + 24.0, ly + 18.0), (lx, ly + 18.0)], FINISH, 1.5);
+    cv.text(lx + 32.0, ly, "finish box (one item, all boxes)", 2, INK);
+    ly += 40.0;
+    cv.text(lx, ly, "shore kinds: placements / water sq / deep sq", 2, INK);
+    ly += 26.0;
+    for (name, (n, wsq, dsq)) in &kinds {
+        cv.text(lx, ly, &format!("{name}: {n} / {wsq} / {dsq}"), 2, [90, 90, 90]);
+        ly += 22.0;
+    }
+    std::fs::write(out, crate::png::encode(&cv.img)).map_err(|e| format!("{out}: {e}"))?;
+    println!("wrote {out}: {}x{} px; open {} cells / {} strips; shore deep boxes {}; shore kinds {}", w + legend_w, h.max(900), mesh.cells, mesh.strips, mesh.shore_prisms, kinds.len());
+    if let (Some(z), Some(zo)) = (f(rest, "--zoom"), f(rest, "--zoom-out")) {
+        let v: Vec<i32> = z.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+        if v.len() == 4 {
+            let zpx = px * 2.0;
+            let (cw, ch) = (((v[2] - v[0]) as f32 * zpx) as usize, ((v[3] - v[1]) as f32 * zpx) as usize);
+            let mut cz = Canvas::new(cw, ch);
+            let scz = Scene { px: zpx, ox: 32.0 * v[0] as f32, oz: 32.0 * v[1] as f32 };
+            draw(&scz, &mut cz, 3);
+            std::fs::write(&zo, crate::png::encode(&cz.img)).map_err(|e| format!("{zo}: {e}"))?;
+            println!("wrote {zo}: {cw}x{ch} px (2x), cells {}..{} x {}..{}", v[0], v[2], v[1], v[3]);
         }
     }
     Ok(())

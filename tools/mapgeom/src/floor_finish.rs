@@ -20,6 +20,27 @@ use std::collections::BTreeMap;
 use tmmaps::map::MapFile;
 
 /// The open-water tiles and the bed height above the cell floor, per collection.
+/// The water SURFACE (the Water quad's local height over the cell floor) per vista collection — measured on the
+/// zone prefabs with `static-item --collection 26`: RedIsland 7.70, WhiteShore 7.00, BlueBay 7.00, GreenCoast 7.20.
+pub fn water_surface(collection: u32) -> f32 {
+    match collection {
+        0x10 => 7.70,
+        0x1d => 7.00,
+        0x1c => 7.00,
+        0xf => 7.20,
+        _ => 0.0,
+    }
+}
+
+/// Hugo's round 5 (2026-10-24 00:12): the slab TOP sits a constant 2.5 m under the water surface on every vista
+/// (so the finish depth reads the same everywhere), the BOTTOM 0.1 m under the bed (a car resting on the bed is
+/// inside). Returns (below the bed, above the bed) for `floor_mesh`.
+pub const SLAB_TOP_UNDER_SURFACE: f32 = 2.5;
+pub fn vista_slab(collection: u32) -> (f32, f32) {
+    let (_, bed) = water_tiles(collection);
+    (0.1, (water_surface(collection) - SLAB_TOP_UNDER_SURFACE - bed).max(0.5))
+}
+
 pub fn water_tiles(collection: u32) -> (&'static [&'static str], f32) {
     match collection {
         // RedIsland's `WaterHill` is the lake's HILL RIM (a 26-prefab shore family: its water quad covers 24–61 of
@@ -53,6 +74,9 @@ pub struct WaterRect {
     /// the water quad's own triangles (block frame; the slab footprint — a shore's water is a triangle / an L,
     /// not its bounding box)
     pub tris: Vec<[[f32; 3]; 3]>,
+    /// the collision triangles under the quad (block frame) — the bed; a square is DEEP when the bed under its
+    /// centre lies within ±0.3 m of the collection's open-water bed (Hugo 2026-10-24: "same depth")
+    pub bed_tris_geo: Vec<[[f32; 3]; 3]>,
 }
 
 /// Measure a tile placement's water footprint: bake the picked prefab (water quad kept), take the Water
@@ -111,6 +135,7 @@ pub fn water_rect(store: &mut crate::store::DataStore, collection: u32, tile: &s
     let surface = (lo[1] + hi[1]) / 2.0;
     // the bed: collision triangles under the quad's footprint
     let (mut blo, mut bhi, mut nb) = (f32::INFINITY, f32::NEG_INFINITY, 0usize);
+    let mut bed_geo: Vec<[[f32; 3]; 3]> = Vec::new();
     for t in &m.surf_triangles {
         let pts: Vec<[f32; 3]> = t.indices.iter().filter_map(|&i| m.surf_vertices.get(i as usize).copied()).collect();
         if pts.len() < 3 { continue; }
@@ -118,13 +143,65 @@ pub fn water_rect(store: &mut crate::store::DataStore, collection: u32, tile: &s
         if c[0] >= lo[0] - 0.01 && c[0] <= hi[0] + 0.01 && c[2] >= lo[2] - 0.01 && c[2] <= hi[2] + 0.01 && c[1] < surface - 0.05 {
             for p in &pts { blo = blo.min(p[1]); bhi = bhi.max(p[1]); }
             nb += 1;
+            bed_geo.push([pts[0], pts[1], pts[2]]);
         }
     }
-    Ok(Some(WaterRect { prefab: prefab.rsplit('\\').next().unwrap_or(&prefab).to_string(), x0: lo[0], x1: hi[0], z0: lo[2], z1: hi[2], surface, bed_lo: blo, bed_hi: bhi, bed_tris: nb, tris: wtris }))
+    Ok(Some(WaterRect { prefab: prefab.rsplit('\\').next().unwrap_or(&prefab).to_string(), x0: lo[0], x1: hi[0], z0: lo[2], z1: hi[2], surface, bed_lo: blo, bed_hi: bhi, bed_tris: nb, tris: wtris, bed_tris_geo: bed_geo }))
 }
 
 /// The 4 m-grid water mask of a shore kind in the block frame: bit (zi·8 + xi) = the square at x 4·xi..4·xi+4,
 /// z 4·zi..4·zi+4 (its centre inside a water triangle). The same rasterisation `floor_mesh` uses.
+/// The height of the bed collision under a block-frame point (the highest collision triangle covering it,
+/// below the water surface), or None when none covers it.
+fn bed_height_at(w: &WaterRect, p: [f32; 2]) -> Option<f32> {
+    let mut best: Option<f32> = None;
+    for t in &w.bed_tris_geo {
+        let (a, b, c) = ([t[0][0], t[0][2]], [t[1][0], t[1][2]], [t[2][0], t[2][2]]);
+        let s = |a: [f32; 2], b: [f32; 2], c: [f32; 2]| (c[0] - a[0]) * (b[1] - a[1]) - (b[0] - a[0]) * (c[1] - a[1]);
+        let (d1, d2, d3) = (s(p, a, b), s(p, b, c), s(p, c, a));
+        if (d1 < 0.0 || d2 < 0.0 || d3 < 0.0) && (d1 > 0.0 || d2 > 0.0 || d3 > 0.0) { continue; }
+        // barycentric height
+        let det = (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]);
+        let y = if det.abs() < 1e-9 { (t[0][1] + t[1][1] + t[2][1]) / 3.0 } else {
+            let l1 = ((b[0] - p[0]) * (c[1] - p[1]) - (c[0] - p[0]) * (b[1] - p[1])) / det;
+            let l2 = ((c[0] - p[0]) * (a[1] - p[1]) - (a[0] - p[0]) * (c[1] - p[1])) / det;
+            let l3 = 1.0 - l1 - l2;
+            l1 * t[0][1] + l2 * t[1][1] + l3 * t[2][1]
+        };
+        if y < w.surface - 0.05 { best = Some(best.map_or(y, |b: f32| b.max(y))); }
+    }
+    best
+}
+
+/// A shore square counts as DEEP water when the water over its bed is at least this deep (Hugo 2026-10-24:
+/// "same depth" — the Beach bank is a continuous ramp 6.6 → 4.5 → 4.0 over its last 12 m, so a one-cell channel
+/// between two banks bottoms out at ~4.5 under a 7.0 surface = 2.5 m of water, never at the 4.0 open-sea bed;
+/// the shallow upper ramp (< 2 m of water) stays out).
+pub const DEEP_WATER_MIN: f32 = 2.0;
+
+/// The DEEP mask of a shore kind (bit zi·8+xi): water squares with ≥ `DEEP_WATER_MIN` m of water over the bed
+/// under their centre. `_bed` is the open-water bed (unused by the depth test, kept for the callers).
+pub fn deep_mask(w: &WaterRect, _bed: f32) -> u64 {
+    deep_squares(w).iter().enumerate().fold(0u64, |m, (i, d)| if d.is_some() { m | (1u64 << i) } else { m })
+}
+
+/// Per 4 m square (index zi·8+xi): the bed height under the square's centre when the square is deep water.
+pub fn deep_squares(w: &WaterRect) -> Vec<Option<f32>> {
+    let water = footprint_mask(w);
+    let mut out = vec![None; 64];
+    for zi in 0..8 {
+        for xi in 0..8 {
+            let bit = 1u64 << (zi * 8 + xi);
+            if water & bit == 0 { continue; }
+            let p = [4.0 * xi as f32 + 2.0, 4.0 * zi as f32 + 2.0];
+            if let Some(y) = bed_height_at(w, p) {
+                if w.surface - y >= DEEP_WATER_MIN { out[zi * 8 + xi] = Some(y); }
+            }
+        }
+    }
+    out
+}
+
 pub fn footprint_mask(w: &WaterRect) -> u64 {
     let inside = |p: [f32; 2], t: &[[f32; 3]; 3]| -> bool {
         let s = |a: [f32; 2], b: [f32; 2], c: [f32; 2]| (c[0] - a[0]) * (b[1] - a[1]) - (b[0] - a[0]) * (c[1] - a[1]);
@@ -147,6 +224,8 @@ pub fn footprint_mask(w: &WaterRect) -> u64 {
 pub struct FloorMesh {
     pub verts: Vec<[f32; 3]>,
     pub tris: Vec<[u32; 3]>,
+    /// every box (x0, x1, z0, z1, anchor y = the ground it marks: bed / grass), for the indicator plane
+    pub quads: Vec<(f32, f32, f32, f32, f32)>,
     /// open-water cells (authored + baked)
     pub cells: usize,
     /// row strips the open-water cells merged into
@@ -181,6 +260,8 @@ pub struct WorldRect {
     pub z0: f32,
     pub z1: f32,
     pub y_bed: f32,
+    /// the world y of the cell floor (ground + 8·cy): the water surface is `floor + water_surface(collection)`
+    pub floor_y: f32,
     pub full_cell: bool,
     /// shore water: the footprint triangles in world xz (empty for a full cell)
     pub tris: Vec<[[f32; 2]; 3]>,
@@ -225,7 +306,8 @@ pub fn water_rects(store: &mut crate::store::DataStore, m: &MapFile, collection:
         return Err(format!("collection {collection:#x}: no open-water tile table (vista collections only)"));
     }
     let ground = tmmaps::map::ground_y(collection);
-    // the shore tiles' water parts only on request (Hugo 09:51: finishes only where the car can reach the seafloor)
+    // the shore tiles' DEEP water squares (Hugo 2026-10-24 00:12: the same-depth channels between banks finish);
+    // `shores = false` turns them off (the 10-23 09:51 open-water-only form)
     let shore: &[&str] = if shores { shore_tiles(collection) } else { &[] };
     let mut out: Vec<WorldRect> = Vec::new();
     let mut notes: Vec<String> = Vec::new();
@@ -239,7 +321,7 @@ pub fn water_rects(store: &mut crate::store::DataStore, m: &MapFile, collection:
             if !seen_open.insert(c) {
                 continue;
             }
-            out.push(WorldRect { x0: 32.0 * c.0 as f32, x1: 32.0 * (c.0 + 1) as f32, z0: 32.0 * c.2 as f32, z1: 32.0 * (c.2 + 1) as f32, y_bed: ground + 8.0 * c.1 as f32 + bed, full_cell: true, tris: Vec::new() });
+            out.push(WorldRect { x0: 32.0 * c.0 as f32, x1: 32.0 * (c.0 + 1) as f32, z0: 32.0 * c.2 as f32, z1: 32.0 * (c.2 + 1) as f32, y_bed: ground + 8.0 * c.1 as f32 + bed, floor_y: ground + 8.0 * c.1 as f32, full_cell: true, tris: Vec::new() });
             n_open += 1;
         } else if shore.iter().any(|t| t.eq_ignore_ascii_case(&b.name)) {
             let key = (b.name.clone(), b.flags);
@@ -249,16 +331,35 @@ pub fn water_rects(store: &mut crate::store::DataStore, m: &MapFile, collection:
             }
             if let Some(Some(w)) = shore_cache.get(&key) {
                 let (x0, x1, z0, z1) = turn_rect(c, b.dir, w.x0, w.x1, w.z0, w.z1);
-                let tris: Vec<[[f32; 2]; 3]> = w.tris.iter().map(|t| [turn_pt(c, b.dir, t[0][0], t[0][2]), turn_pt(c, b.dir, t[1][0], t[1][2]), turn_pt(c, b.dir, t[2][0], t[2][2])]).collect();
-                // the bed under a shore's water = its lowest collision (the open-water bed; a beach slopes down to it)
-                out.push(WorldRect { x0, x1, z0, z1, y_bed: ground + 8.0 * c.1 as f32 + w.bed_lo, full_cell: false, tris });
+                // the DEEP squares only (≥ 2 m of water), each as its own 4 m square with the LOCAL bed under it (the
+                // slab bottom follows the bank's ramp; the top is surface-anchored anyway)
+                let deep = deep_squares(w);
+                if deep.iter().all(|d| d.is_none()) { continue; }
+                let _ = (x0, x1, z0, z1, bed);
+                for zi in 0..8 {
+                    for xi in 0..8 {
+                        let Some(y_local) = deep[zi * 8 + xi] else { continue };
+                        // the bed quantised to 0.25 m (rounded DOWN: the slab bottom never rises above the real bed), so
+                        // neighbouring squares on one ramp band share a box
+                        let y_local = (y_local * 4.0).floor() / 4.0;
+                        let (lx0, lz0) = (4.0 * xi as f32, 4.0 * zi as f32);
+                        let (lx1, lz1) = (lx0 + 4.0, lz0 + 4.0);
+                        let tris = vec![
+                            [turn_pt(c, b.dir, lx0, lz0), turn_pt(c, b.dir, lx1, lz0), turn_pt(c, b.dir, lx1, lz1)],
+                            [turn_pt(c, b.dir, lx0, lz0), turn_pt(c, b.dir, lx1, lz1), turn_pt(c, b.dir, lx0, lz1)],
+                        ];
+                        let xs = [tris[0][0][0], tris[0][1][0], tris[0][2][0], tris[1][2][0]];
+                        let zs = [tris[0][0][1], tris[0][1][1], tris[0][2][1], tris[1][2][1]];
+                        out.push(WorldRect { x0: xs.iter().cloned().fold(f32::INFINITY, f32::min), x1: xs.iter().cloned().fold(f32::NEG_INFINITY, f32::max), z0: zs.iter().cloned().fold(f32::INFINITY, f32::min), z1: zs.iter().cloned().fold(f32::NEG_INFINITY, f32::max), y_bed: ground + 8.0 * c.1 as f32 + y_local, floor_y: ground + 8.0 * c.1 as f32, full_cell: false, tris });
+                    }
+                }
                 n_shore += 1;
             }
         }
     }
     for ((name, flags), r) in &shore_cache {
         match r {
-            Some(w) => notes.push(format!("{name} flags {flags:08x}: {} water x {:.2}..{:.2} z {:.2}..{:.2} (block frame), surface {:.2}, bed {:.2}..{:.2}", w.prefab, w.x0, w.x1, w.z0, w.z1, w.surface, w.bed_lo, w.bed_hi)),
+            Some(w) => notes.push(format!("{name} flags {flags:08x}: {} water x {:.2}..{:.2} z {:.2}..{:.2} (block frame), surface {:.2}, bed {:.2}..{:.2}, water squares {} of which DEEP {}", w.prefab, w.x0, w.x1, w.z0, w.z1, w.surface, w.bed_lo, w.bed_hi, footprint_mask(w).count_ones(), deep_mask(w, bed).count_ones())),
             None => notes.push(format!("{name} flags {flags:08x}: no water quad")),
         }
     }
@@ -837,6 +938,8 @@ pub fn build_cutout_item(store: &mut crate::store::DataStore, name: &str, flags:
     let donor = "Stadium\\Items\\LightCube2m.Item.Gbx";
     let mut mg = crate::static_item::build::pack_item_merged(store, donor, 1.0, collection, 0, None).map_err(|e| format!("donor {donor}: {e}"))?;
     crate::static_item::build::make_invisible_mesh_waypoint(&mut mg, crate::sttc::WP_FINISH, c.verts.clone(), c.tris.clone())?;
+    let quads: Vec<(f32, f32, f32, f32, f32)> = c.verts.chunks(8).map(|b| (b[0][0], b[1][0], b[0][2], b[4][2], 0.0)).collect();
+    crate::static_item::build::add_finish_plane_visual(&mut mg, &quads, INDICATOR_LIFT)?;
     let (bytes, _mg) = crate::static_item::build::finish_item(mg, ident, ident, 1.0, collection)?;
     Ok(Some((bytes, c)))
 }
@@ -861,6 +964,7 @@ pub fn stadium_plane_mesh(store: &mut crate::store::DataStore, m: &MapFile, belo
     let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
     let (y0, y1) = (f.grass_y - below, f.grass_y + above);
     let mut strips = 0usize;
+    let mut anchors: Vec<(f32, f32, f32, f32, f32)> = Vec::new();
     for (cz, mut xs) in rows {
         xs.sort_unstable();
         xs.dedup();
@@ -879,12 +983,13 @@ pub fn stadium_plane_mesh(store: &mut crate::store::DataStore, m: &MapFile, belo
                 tris.push([base + q[0], base + q[2], base + q[3]]);
             }
             for v in &verts[base as usize..] { for k in 0..3 { lo[k] = lo[k].min(v[k]); hi[k] = hi[k].max(v[k]); } }
+            anchors.push((x0, x1, z0, z1, f.grass_y));
             strips += 1;
         }
     }
     let mut notes = f.notes.clone();
     notes.push(format!("main plane: {free} kept grass cells of {} → {strips} row strips", f.grass.len()));
-    Ok(FloorMesh { verts, tris, cells: free, strips, shore_boxes: 0, shore_prisms: 0, notes, bbox: (lo, hi) })
+    Ok(FloorMesh { verts, tris, quads: anchors, cells: free, strips, shore_boxes: 0, shore_prisms: 0, notes, bbox: (lo, hi) })
 }
 
 /// The Stadium floor mesh: the FREE grass cells as row strips, slab on the grass plane.
@@ -971,7 +1076,8 @@ pub fn stadium_floor_mesh(store: &mut crate::store::DataStore, m: &MapFile, belo
         for v in &verts[base as usize..] { for k in 0..3 { lo[k] = lo[k].min(v[k]); hi[k] = hi[k].max(v[k]); } }
     }
     notes.push(format!("→ {} boxes", boxes.len()));
-    Ok(FloorMesh { verts, tris, cells: free_sq, strips: boxes.len(), shore_boxes: 0, shore_prisms: 0, notes, bbox: (lo, hi) })
+    let anchors: Vec<(f32, f32, f32, f32, f32)> = boxes.iter().map(|&(x0, x1, z0, z1)| (x0, x1, z0, z1, f.grass_y)).collect();
+    Ok(FloorMesh { verts, tris, quads: anchors, cells: free_sq, strips: boxes.len(), shore_boxes: 0, shore_prisms: 0, notes, bbox: (lo, hi) })
 }
 
 /// The world-frame slab mesh of a map's water: open-water cells merged into ROW STRIPS (same cz, same bed,
@@ -983,32 +1089,34 @@ pub fn floor_mesh(store: &mut crate::store::DataStore, m: &MapFile, collection: 
     }
     // the full cells: (bed, z0) -> sorted x0 list (cells are 32 m); merge consecutive ones
     let mut rows: BTreeMap<(i64, i64), Vec<i64>> = BTreeMap::new();
-    let mut boxes: Vec<(f32, f32, f32, f32, f32)> = Vec::new(); // x0 x1 z0 z1 y_bed
+    let mut boxes: Vec<(f32, f32, f32, f32, f32, f32)> = Vec::new(); // x0 x1 z0 z1 y_bed floor_y
     let prisms: Vec<([[f32; 2]; 3], f32)> = Vec::new();
     // a shore cell's water footprint, rasterised on a 4 m grid (8×8 per cell; a grid square is water when its
     // centre lies inside a water triangle) → grid-aligned boxes merged along x per grid row — a few boxes per
     // shore cell instead of one prism per (tessellated) water triangle
-    let mut shore_rows: BTreeMap<(i64, i64), Vec<i64>> = BTreeMap::new(); // (bed cm, z0 of the 4 m row) -> x0 list (4 m)
+    let mut shore_rows: BTreeMap<(i64, i64, i64), Vec<i64>> = BTreeMap::new(); // (bed cm, floor cm, z0 of the 4 m row) -> x0 list (4 m)
     let inside = |p: [f32; 2], t: &[[f32; 2]; 3]| -> bool {
         let s = |a: [f32; 2], b: [f32; 2], c: [f32; 2]| (c[0] - a[0]) * (b[1] - a[1]) - (b[0] - a[0]) * (c[1] - a[1]);
         let (d1, d2, d3) = (s(p, t[0], t[1]), s(p, t[1], t[2]), s(p, t[2], t[0]));
         !((d1 < 0.0 || d2 < 0.0 || d3 < 0.0) && (d1 > 0.0 || d2 > 0.0 || d3 > 0.0))
     };
+    let mut floors: BTreeMap<i64, f32> = BTreeMap::new(); // bed cm -> floor y (open cells share one per row)
     for r in &rects {
         if r.full_cell {
             rows.entry(((r.y_bed * 100.0).round() as i64, (r.z0).round() as i64)).or_default().push(r.x0.round() as i64);
+            floors.insert((r.y_bed * 100.0).round() as i64, r.floor_y);
         } else if !r.tris.is_empty() {
             let (cx0, cz0) = ((r.x0 / 32.0).floor() * 32.0, (r.z0 / 32.0).floor() * 32.0);
             for zi in 0..8 {
                 for xi in 0..8 {
                     let p = [cx0 + 4.0 * xi as f32 + 2.0, cz0 + 4.0 * zi as f32 + 2.0];
                     if r.tris.iter().any(|t| inside(p, t)) {
-                        shore_rows.entry(((r.y_bed * 100.0).round() as i64, (cz0 + 4.0 * zi as f32).round() as i64)).or_default().push((cx0 + 4.0 * xi as f32).round() as i64);
+                        shore_rows.entry(((r.y_bed * 100.0).round() as i64, (r.floor_y * 100.0).round() as i64, (cz0 + 4.0 * zi as f32).round() as i64)).or_default().push((cx0 + 4.0 * xi as f32).round() as i64);
                     }
                 }
             }
         } else {
-            boxes.push((r.x0, r.x1, r.z0, r.z1, r.y_bed));
+            boxes.push((r.x0, r.x1, r.z0, r.z1, r.y_bed, r.floor_y));
         }
     }
     let mut strips = 0usize;
@@ -1025,14 +1133,14 @@ pub fn floor_mesh(store: &mut crate::store::DataStore, m: &MapFile, collection: 
                 end = xs[i];
             }
             i += 1;
-            boxes.push((start as f32, (end + 32) as f32, z0 as f32, (z0 + 32) as f32, y_bed));
+            boxes.push((start as f32, (end + 32) as f32, z0 as f32, (z0 + 32) as f32, y_bed, floors.get(&ybed_c).copied().unwrap_or(y_bed - water_tiles(collection).1)));
             strips += 1;
         }
     }
     // the shore 4 m rows → x-spans per row (merged across cell borders: the rows are keyed by world z), then
     // consecutive rows (z, z+4) with an identical span merge into one taller box
-    let mut spans: BTreeMap<i64, Vec<(i64, i64, i64)>> = BTreeMap::new(); // bed cm -> (z0, x0, x1)
-    for ((ybed_c, z0), mut xs) in shore_rows {
+    let mut spans: BTreeMap<(i64, i64), Vec<(i64, i64, i64)>> = BTreeMap::new(); // (bed cm, floor cm) -> (z0, x0, x1)
+    for ((ybed_c, floor_c, z0), mut xs) in shore_rows {
         xs.sort_unstable();
         xs.dedup();
         let mut i = 0;
@@ -1044,12 +1152,13 @@ pub fn floor_mesh(store: &mut crate::store::DataStore, m: &MapFile, collection: 
                 end = xs[i];
             }
             i += 1;
-            spans.entry(ybed_c).or_default().push((z0, start, end + 4));
+            spans.entry((ybed_c, floor_c)).or_default().push((z0, start, end + 4));
         }
     }
     let mut shore_box_count = 0usize;
-    for (ybed_c, mut list) in spans {
+    for ((ybed_c, floor_c), mut list) in spans {
         let y_bed = ybed_c as f32 / 100.0;
+        let floor_y = floor_c as f32 / 100.0;
         // group by (x0, x1), merge consecutive z rows
         list.sort_unstable_by_key(|&(z0, x0, x1)| (x0, x1, z0));
         let mut i = 0;
@@ -1061,7 +1170,7 @@ pub fn floor_mesh(store: &mut crate::store::DataStore, m: &MapFile, collection: 
                 z1 += 4;
             }
             i += 1;
-            boxes.push((x0 as f32, x1 as f32, z0 as f32, z1 as f32, y_bed));
+            boxes.push((x0 as f32, x1 as f32, z0 as f32, z1 as f32, y_bed, floor_y));
             shore_box_count += 1;
         }
     }
@@ -1069,8 +1178,15 @@ pub fn floor_mesh(store: &mut crate::store::DataStore, m: &MapFile, collection: 
     let mut tris: Vec<[u32; 3]> = Vec::new();
     let quads: [[u32; 4]; 6] = [[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4], [2, 3, 7, 6], [1, 2, 6, 5], [0, 4, 7, 3]];
     let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
-    for (x0, x1, z0, z1, y_bed) in &boxes {
-        let (y0, y1) = (y_bed - below, y_bed + above);
+    // the slab TOP is surface-anchored (water surface − 2.5 m, the same depth on every box of the map), the
+    // BOTTOM bed-anchored (bed − below); `above` is the open-water value and sets the top for the open cells —
+    // for a shore square on the bank's ramp the top is that same absolute height (its bed is higher, the slab thinner)
+    let (_, open_bed) = water_tiles(collection);
+    for (x0, x1, z0, z1, y_bed, floor_y) in &boxes {
+        let y0 = y_bed - below;
+        // top = the cell floor + open bed + `above` (= water surface − 2.5 with the default `above`), the same absolute
+        // height for every box of a row; a shore square on the bank's ramp gets a thinner slab (never < 0.3 m)
+        let y1 = (floor_y + open_bed + above).max(y0 + 0.3);
         let base = verts.len() as u32;
         verts.extend_from_slice(&[[*x0, y0, *z0], [*x1, y0, *z0], [*x1, y1, *z0], [*x0, y1, *z0], [*x0, y0, *z1], [*x1, y0, *z1], [*x1, y1, *z1], [*x0, y1, *z1]]);
         for q in quads {
@@ -1103,7 +1219,8 @@ pub fn floor_mesh(store: &mut crate::store::DataStore, m: &MapFile, collection: 
             }
         }
     }
-    Ok(FloorMesh { verts, tris, cells: n_open, strips, shore_boxes: n_shore, shore_prisms: shore_box_count, notes, bbox: (lo, hi) })
+    let anchors: Vec<(f32, f32, f32, f32, f32)> = boxes.iter().map(|&(x0, x1, z0, z1, y_bed, _)| (x0, x1, z0, z1, y_bed)).collect();
+    Ok(FloorMesh { verts, tris, quads: anchors, cells: n_open, strips, shore_boxes: n_shore, shore_prisms: shore_box_count, notes, bbox: (lo, hi) })
 }
 
 /// The one-per-map carrier: an invisible Finish item (speck visual, no collision) whose trigger is the
@@ -1113,9 +1230,14 @@ pub fn build_floor_item(store: &mut crate::store::DataStore, m: &MapFile, collec
     let donor = "Stadium\\Items\\LightCube2m.Item.Gbx";
     let mut mg = crate::static_item::build::pack_item_merged(store, donor, 1.0, collection, 0, None).map_err(|e| format!("donor {donor}: {e}"))?;
     crate::static_item::build::make_invisible_mesh_waypoint(&mut mg, crate::sttc::WP_FINISH, mesh.verts.clone(), mesh.tris.clone())?;
+    // the indicator: a static red RaceTriggerFXFinish plane 2 cm over the ground each box marks
+    crate::static_item::build::add_finish_plane_visual(&mut mg, &mesh.quads, INDICATOR_LIFT)?;
     if let Some(w) = lm_word {
         mg.file_write_time = w;
     }
     let (bytes, _mg) = crate::static_item::build::finish_item(mg, ident, ident, 1.0, collection)?;
     Ok((bytes, mesh))
 }
+
+/// The indicator plane sits this far over the ground it marks (Hugo: "2 cm above").
+pub const INDICATOR_LIFT: f32 = 0.02;

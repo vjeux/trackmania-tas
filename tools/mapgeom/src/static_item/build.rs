@@ -883,6 +883,37 @@ pub fn make_invisible_mesh_waypoint(m: &mut Merged, wtype: i32, verts: Vec<[f32;
     Ok(())
 }
 
+/// Hugo's Floor Finish indicator (2026-10-24 00:12): replace the carrier's speck visual with a flat RED plane
+/// over the finish footprint — the top quad of every trigger box lifted `lift` m above its anchor
+/// (`anchor_y`: the ground the slab marks — the bed for water, the grass for Stadium), drawn with
+/// `Stadium\Media\Material\RaceTriggerFXFinish`: the finish gates' own static red trigger pane
+/// (NotCollidable, DecalPaint layout — pos / normal / white colour / uv). UVs tile per 4 m. Non-collidable:
+/// the surface stays the trigger mesh alone. `quads`: (x0, x1, z0, z1, anchor_y) per box.
+pub fn add_finish_plane_visual(m: &mut Merged, quads: &[(f32, f32, f32, f32, f32)], lift: f32) -> R<()> {
+    use super::bake::{make_visuals, Corner, VisualLayout};
+    let link = "Stadium\\Media\\Material\\RaceTriggerFXFinish";
+    let slot = m.material_slot(link, 28);
+    let mut tris: Vec<[Corner; 3]> = Vec::new();
+    let mut face = 1u32;
+    for &(x0, x1, z0, z1, ay) in quads {
+        let y = ay + lift;
+        let c = |x: f32, z: f32| Corner { pos: [x, y, z], normal: [0.0, 1.0, 0.0], uv: [x / 4.0, z / 4.0], uv1: [x / 4.0, z / 4.0], tan_u: [1.0, 0.0, 0.0], tan_v: [0.0, 0.0, 1.0], face, group: 1 };
+        // two triangles facing up (counter-clockwise seen from +y: (x0,z0) (x0,z1) (x1,z1) / (x0,z0) (x1,z1) (x1,z0))
+        tris.push([c(x0, z0), c(x0, z1), c(x1, z1)]);
+        tris.push([c(x0, z0), c(x1, z1), c(x1, z0)]);
+        face += 1;
+    }
+    if tris.is_empty() {
+        return Err("finish plane: no quads".into());
+    }
+    m.visuals.clear();
+    for v in make_visuals(&tris, VisualLayout::DecalPaint, "off") {
+        m.visuals.push(super::merged::MergedVisual::every_level(v, slot));
+    }
+    m.notes.push(format!("finish indicator: {} quads, {link}, {lift:.2} m over the anchor, non-collidable", quads.len()));
+    Ok(())
+}
+
 /// Make a baked item a WAYPOINT with a BOX trigger over its own geometry (Hugo's "every
 /// flag is a finish", 2026-10-07 — the Manslaughter mechanism: the audience block's bbox as
 /// the finish volume). `wtype`: 0 Start, 1 Finish, 2 Checkpoint. The box = the item's
