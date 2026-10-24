@@ -499,6 +499,9 @@ fn main() {
     }
     let a = parse_args();
     // --indicator glass|gate: the finish indicator material (static_item::build; default gate = RaceTriggerFXFinish)
+    if a.rest.iter().any(|x| x == "--ring-rows") {
+        mapgeom::outer_ring::set_ring_wedges(false);
+    }
     if let Some(i) = a.rest.iter().position(|x| x == "--indicator") {
         let v = a.rest.get(i + 1).map(|s| s.as_str()).unwrap_or("chrono");
         mapgeom::static_item::build::set_indicator(match v { "glass" => mapgeom::static_item::build::Indicator::Glass, "gate" => mapgeom::static_item::build::Indicator::Gate, "decal" => mapgeom::static_item::build::Indicator::Decal, "chrono-pole" => mapgeom::static_item::build::Indicator::ChronoPole, _ => mapgeom::static_item::build::Indicator::Chrono });
@@ -5463,7 +5466,8 @@ fn main() {
             let out = flag(&a.rest, "--out").unwrap_or_else(|| die("--out F.tsv".into()));
             let maps: Vec<String> = a.rest.iter().skip(1).filter(|x| x.to_lowercase().ends_with(".map.gbx")).cloned().collect();
             if let Some(z) = flag(&a.rest, "--zone-step").and_then(|v| v.parse::<f32>().ok()) { mapgeom::outer_ring::set_zone_step(z); }
-            let mut tsv = String::from("collection\tdecoration\tx0\tx1\tz0\tz1\tfloor\tkind\n");
+            if a.rest.iter().any(|x| x == "--ring-rows") { mapgeom::outer_ring::set_ring_wedges(false); }
+            let mut tsv = String::from("collection\tdecoration\tx0\tx1\tz0\tz1\tfloor\tkind\ty_outer\tside\n");
             let mut seen: std::collections::BTreeSet<String> = Default::default();
             for mp in &maps {
                 let m = tmmaps::map::MapFile::try_load(std::path::Path::new(mp)).unwrap_or_else(die);
@@ -5474,7 +5478,7 @@ fn main() {
                 if !seen.insert(key.clone()) { continue; }
                 let cells: i32 = flag(&a.rest, "--cells").and_then(|v| v.parse().ok()).unwrap_or(mapgeom::outer_ring::ring_cells(coll));
                 let r = mapgeom::outer_ring::ring_cells_of(&mut store, &m, coll, cells).unwrap_or_else(|e| die(format!("{mp}: {e}")));
-                println!("== {key} ({} rects, {cells} cells)", r.rects.len());
+                println!("== {key} ({} rects, {} ramps, {cells} cells)", r.rects.len(), r.ramps.len());
                 for n in &r.notes { println!("   {n}"); }
                 tsv.push_str(&mapgeom::outer_ring::tsv_rows(cname, &deco, &r));
             }

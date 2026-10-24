@@ -1027,6 +1027,11 @@ pub fn set_indicator_prelight(m: &mut Merged, metres_per_uv: f32, bounds: [f32; 
 }
 
 pub fn add_finish_plane_visual(m: &mut Merged, quads: &[(f32, f32, f32, f32, f32)], lift: f32) -> R<()> {
+    add_finish_visual(m, quads, &[], lift)
+}
+
+/// v4.13: flat quads (anchor + lift) plus SLOPED quads (corners with their own y, already lifted) in one visual.
+pub fn add_finish_visual(m: &mut Merged, quads: &[(f32, f32, f32, f32, f32)], sloped: &[[[f32; 3]; 4]], lift: f32) -> R<()> {
     use super::bake::{make_visuals, Corner, VisualLayout};
     let glass = indicator_is_glass();
     let chrono = chrono_window();
@@ -1047,6 +1052,20 @@ pub fn add_finish_plane_visual(m: &mut Merged, quads: &[(f32, f32, f32, f32, f32
         // two triangles facing up (counter-clockwise seen from +y: (x0,z0) (x0,z1) (x1,z1) / (x0,z0) (x1,z1) (x1,z0))
         tris.push([c(x0, z0), c(x0, z1), c(x1, z1)]);
         tris.push([c(x0, z0), c(x1, z1), c(x1, z0)]);
+        face += 1;
+    }
+    for q in sloped {
+        // corners (x0,z0) (x0,z1) (x1,z1) (x1,z0), the ramp's own heights; the same up-facing winding as the flat quads
+        let (x0, x1, z0, z1) = (q[0][0], q[2][0], q[0][2], q[2][2]);
+        let uvw = |x: f32, z: f32| -> [f32; 2] {
+            match chrono {
+                Some((u0, u1, v0, v1)) => [u0 + (u1 - u0) * ((x - x0) / (x1 - x0).max(1e-3)), v0 + (v1 - v0) * ((z - z0) / (z1 - z0).max(1e-3))],
+                None => [x / tile, z / tile],
+            }
+        };
+        let c = |p: [f32; 3]| Corner { pos: p, normal: [0.0, 1.0, 0.0], uv: uvw(p[0], p[2]), uv1: [p[0] / tile, p[2] / tile], tan_u: [1.0, 0.0, 0.0], tan_v: [0.0, 0.0, 1.0], face, group: 1 };
+        tris.push([c(q[0]), c(q[1]), c(q[2])]);
+        tris.push([c(q[0]), c(q[2]), c(q[3])]);
         face += 1;
     }
     if tris.is_empty() {

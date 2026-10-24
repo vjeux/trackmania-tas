@@ -352,6 +352,14 @@ fn vista(store: &mut mapgeom::store::DataStore, m: &tmmaps::map::MapFile, collec
                 cv.poly(&[a, (b.0, a.1), b, (a.0, b.1)], RING, 1.0);
                 cv.outline(&[a, (b.0, a.1), b, (a.0, b.1)], FINISH, 1.5);
             }
+            for q in &r.ramps {
+                let (a, b) = (sc.p(q.x0, q.z0), sc.p(q.x1, q.z1));
+                cv.poly(&[a, (b.0, a.1), b, (a.0, b.1)], RING, 1.0);
+                cv.outline(&[a, (b.0, a.1), b, (a.0, b.1)], FINISH, 1.5);
+                if sc.px >= 12.0 {
+                    cv.text(a.0 + 4.0, a.1 + 4.0, &format!("{} {:.2} to {:.2}", q.side, q.y_inner, q.y_outer), 1, INK);
+                }
+            }
         }
         let (a, b) = (sc.p(0.0, 0.0), sc.p(32.0 * nx as f32, 32.0 * nz as f32));
         cv.poly(&[a, (b.0, a.1), b, (a.0, b.1)], LAND, 1.0);
@@ -404,8 +412,8 @@ fn vista(store: &mut mapgeom::store::DataStore, m: &tmmaps::map::MapFile, collec
     cv.text(lx, ly, &format!("Floor Finish v4 - {coll_name}"), 2, INK);
     ly += 30.0;
     if let Some(r) = &ring {
-        let (lo, hi) = r.rects.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |a, q| (a.0.min(q.floor), a.1.max(q.floor)));
-        cv.text(lx, ly, &format!("outer ring: open sea {} cells out, {} rows, slabs on the cell beds {lo:.2}..{hi:.2} (black = grid edge)", mapgeom::outer_ring::ring_cells(collection), r.rects.len()), 2, INK);
+        let (lo, hi) = r.rects.iter().map(|q| q.floor).chain(r.ramps.iter().flat_map(|q| [q.y_inner, q.y_outer])).fold((f32::INFINITY, f32::NEG_INFINITY), |a, v| (a.0.min(v), a.1.max(v)));
+        cv.text(lx, ly, &format!("outer ring: open sea {} cells out, {} rows + {} wedges, envelope {lo:.2}..{hi:.2} (black = grid edge)", mapgeom::outer_ring::ring_cells(collection), r.rects.len(), r.ramps.len()), 2, INK);
         ly += 26.0;
     }
     cv.text(lx, ly, &format!("open-water cells {} -> {} strips; shore deep boxes {}", mesh.cells, mesh.strips, mesh.shore_prisms), 2, INK);

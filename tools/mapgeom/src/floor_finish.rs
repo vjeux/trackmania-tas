@@ -321,6 +321,8 @@ pub struct FloorMesh {
     pub shore_prisms: usize,
     pub notes: Vec<String>,
     pub bbox: ([f32; 3], [f32; 3]),
+    /// v4.13: sloped indicator quads (the ring wedges' tops), corners (x0,z0) (x0,z1) (x1,z1) (x1,z0) with their y
+    pub sloped: Vec<[[f32; 3]; 4]>,
 }
 
 /// The shore tiles whose water PART counts too (Hugo: "inside the water everywhere"), per collection — their
@@ -1140,7 +1142,7 @@ pub fn stadium_plane_mesh(store: &mut crate::store::DataStore, m: &MapFile, belo
     }
     let mut notes = f.notes.clone();
     notes.push(format!("main plane: {free} kept grass cells of {} → {strips} row strips", f.grass.len()));
-    Ok(FloorMesh { verts, tris, quads: anchors, cells: free, strips, shore_boxes: 0, shore_prisms: 0, notes, bbox: (lo, hi) })
+    Ok(FloorMesh { verts, tris, quads: anchors, cells: free, strips, shore_boxes: 0, shore_prisms: 0, notes, bbox: (lo, hi), sloped: Vec::new() })
 }
 
 /// The Stadium floor mesh: the FREE grass cells as row strips, slab on the grass plane.
@@ -1228,7 +1230,7 @@ pub fn stadium_floor_mesh(store: &mut crate::store::DataStore, m: &MapFile, belo
     }
     notes.push(format!("→ {} boxes", boxes.len()));
     let anchors: Vec<(f32, f32, f32, f32, f32)> = boxes.iter().map(|&(x0, x1, z0, z1)| (x0, x1, z0, z1, f.grass_y)).collect();
-    Ok(FloorMesh { verts, tris, quads: anchors, cells: free_sq, strips: boxes.len(), shore_boxes: 0, shore_prisms: 0, notes, bbox: (lo, hi) })
+    Ok(FloorMesh { verts, tris, quads: anchors, cells: free_sq, strips: boxes.len(), shore_boxes: 0, shore_prisms: 0, notes, bbox: (lo, hi), sloped: Vec::new() })
 }
 
 /// The world-frame slab mesh of a map's water: open-water cells merged into ROW STRIPS (same cz, same bed,
@@ -1365,7 +1367,7 @@ pub fn floor_mesh(store: &mut crate::store::DataStore, m: &MapFile, collection: 
         }
     }
     let anchors: Vec<(f32, f32, f32, f32, f32)> = boxes.iter().map(|&(x0, x1, z0, z1, y_bed, _)| (x0, x1, z0, z1, y_bed)).collect();
-    Ok(FloorMesh { verts, tris, quads: anchors, cells: n_open, strips, shore_boxes: n_shore, shore_prisms: shore_box_count, notes, bbox: (lo, hi) })
+    Ok(FloorMesh { verts, tris, quads: anchors, cells: n_open, strips, shore_boxes: n_shore, shore_prisms: shore_box_count, notes, bbox: (lo, hi), sloped: Vec::new() })
 }
 
 /// The one-per-map carrier: an invisible Finish item (speck visual, no collision) whose trigger is the
@@ -1379,15 +1381,23 @@ pub fn build_floor_item(store: &mut crate::store::DataStore, m: &MapFile, collec
 /// 6 cells outside the grid.
 pub fn build_floor_item_ring(store: &mut crate::store::DataStore, m: &MapFile, collection: u32, ident: &str, below: f32, above: f32, shores: bool, lm_word: Option<u64>, ring: bool) -> Result<(Vec<u8>, FloorMesh), String> {
     let mut mesh = if collection == 0x1a { stadium_plane_mesh(store, m, below, above)? } else { floor_mesh(store, m, collection, below, above, shores)? };
+    let mut ramps: Vec<crate::outer_ring::Ramp> = Vec::new();
     if ring {
         let r = crate::outer_ring::ring(store, m, collection)?;
         crate::outer_ring::append_to_mesh(&mut mesh, &r, collection, below, above);
+        ramps = r.ramps.clone();
+    }
+    // v4.13: the maximal-rectangle merge (+ the ring wedges as sloped prisms)
+    let (rb, ra) = if collection == 0x1a { (below, above) } else { vista_slab(collection) };
+    let (nb, na, same) = crate::floor_merge::merge_mesh(&mut mesh, &ramps, rb, ra, INDICATOR_LIFT);
+    if !same {
+        return Err(format!("maximal-rectangle merge changed the trigger union ({nb} → {na} boxes)"));
     }
     let donor = "Stadium\\Items\\LightCube2m.Item.Gbx";
     let mut mg = crate::static_item::build::pack_item_merged(store, donor, 1.0, collection, 0, None).map_err(|e| format!("donor {donor}: {e}"))?;
     crate::static_item::build::make_invisible_mesh_waypoint(&mut mg, crate::sttc::WP_FINISH, mesh.verts.clone(), mesh.tris.clone())?;
-    // the indicator: a solid-red translucent CustomGlass pane (TargetColor 1,0,0; v4.5 — was the RaceTriggerFXFinish pattern) 2 cm over the ground each box marks
-    crate::static_item::build::add_finish_plane_visual(&mut mg, &mesh.quads, INDICATOR_LIFT)?;
+    // the indicator pane 2 cm over the ground each box marks (+ the sloped wedge tops)
+    crate::static_item::build::add_finish_visual(&mut mg, &mesh.quads, &mesh.sloped, INDICATOR_LIFT)?;
     if let Some(w) = lm_word {
         mg.file_write_time = w;
     }
@@ -1459,7 +1469,7 @@ pub fn build_ground_clippers_item_ring(store: &mut crate::store::DataStore, m: &
     crate::static_item::build::add_finish_plane_visual(&mut mg, &[(x0m, x1, x0m, z1, y1 - INDICATOR_LIFT)], INDICATOR_LIFT)?;
     let (bytes, _) = crate::static_item::build::finish_item(mg, ident, ident, 1.0, collection)?;
     let notes = vec![format!("ground clippers: map {}×{} cells → box {x0m:.0}..{x1:.0} × {x0m:.0}..{z1:.0} m (ring margin {margin:.0} m), floor = lowest terrain row {row} (floor y {:.2} + bed {bed:.1}) = {floor:.2} → slab {y0:.2} .. {y1:.2}", m.size[0], m.size[2], floor - bed)];
-    Ok((bytes, FloorMesh { verts, tris, quads: vec![(x0m, x1, x0m, z1, y1 - INDICATOR_LIFT)], cells: (m.size[0] * m.size[2]) as usize, strips: 1, shore_boxes: 0, shore_prisms: 0, notes, bbox: ([0.0, y0, 0.0], [x1, y1, z1]) }))
+    Ok((bytes, FloorMesh { verts, tris, quads: vec![(x0m, x1, x0m, z1, y1 - INDICATOR_LIFT)], cells: (m.size[0] * m.size[2]) as usize, strips: 1, shore_boxes: 0, shore_prisms: 0, notes, bbox: ([0.0, y0, 0.0], [x1, y1, z1]) , sloped: Vec::new() }))
 }
 
 /// The standable fill triangles and the structure triangles of a block's picked variant (block frame).

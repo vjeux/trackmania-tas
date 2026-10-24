@@ -56,8 +56,47 @@ pub struct OuterRect {
     pub kind: &'static str,
 }
 
+/// v4.13: a SLOPED ring wedge — a prism whose bottom / top / indicator are planar between the inner edge (at the
+/// grid side, height `y_inner`) and the outer edge (`y_outer`), `side` = the outward direction ('N' = −z, 'S' = +z,
+/// 'W' = −x, 'E' = +x). The heights are bed ENVELOPE values; the slab offsets (−0.1 / +1.15) are applied by the builder.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Ramp {
+    pub x0: f32,
+    pub x1: f32,
+    pub z0: f32,
+    pub z1: f32,
+    pub y_inner: f32,
+    pub y_outer: f32,
+    pub side: char,
+}
+
+impl Ramp {
+    /// 0 at the inner edge, 1 at the outer edge.
+    pub fn t(&self, x: f32, z: f32) -> f32 {
+        match self.side {
+            'N' => (self.z1 - z) / (self.z1 - self.z0).max(1e-6),
+            'S' => (z - self.z0) / (self.z1 - self.z0).max(1e-6),
+            'W' => (self.x1 - x) / (self.x1 - self.x0).max(1e-6),
+            _ => (x - self.x0) / (self.x1 - self.x0).max(1e-6),
+        }
+    }
+    pub fn y_at(&self, x: f32, z: f32) -> f32 {
+        self.y_inner + (self.y_outer - self.y_inner) * self.t(x, z).clamp(0.0, 1.0)
+    }
+}
+
+static RING_WEDGES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+pub fn set_ring_wedges(on: bool) {
+    RING_WEDGES.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+pub fn ring_wedges() -> bool {
+    RING_WEDGES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub struct Ring {
     pub rects: Vec<OuterRect>,
+    /// v4.13 vista wedges (empty when rows are used)
+    pub ramps: Vec<Ramp>,
     /// per-square (x index, z index) → floor for the drawing tools (Stadium only; vistas are uniform)
     pub squares: BTreeMap<(i32, i32), f32>,
     pub notes: Vec<String>,
@@ -214,11 +253,80 @@ fn vista_ring(store: &mut crate::store::DataStore, collection: u32, size: (i32, 
     }
     let _ = (ncx, ncz);
     let zones: std::collections::BTreeSet<i64> = rects.iter().map(|r| (r.floor * 100.0).round() as i64).collect();
-    let notes = vec![
+    let mut notes = vec![
         format!("outer ring ({coll}, Base64x64 Scene3d, {cells} cells): scene frame = map frame + {yoff:.1} m in y (water type {:?} top {:.2} vs the scene's Water plane {scene_water_y:.2}); band −{margin:.0}..+{margin:.0} m: {cnt} squares of 4 m, {dry} dry, {no_bed} without a bed; seabed {bed_min:.2}..{bed_max:.2} (mean {:.2}); per ring cell (min..max): {}", water.name, water.top, bed_sum / cnt as f64, per_ring.iter().map(|(k, (lo, hi))| format!("{k}: {lo:.2}..{hi:.2}")).collect::<Vec<_>>().join(", ")),
         format!("zones: per 32 m cell the slab sits on that cell's highest bed (up to the next {step:.2} m), runs merged along each side → {} rows over {} distinct anchors ({:.2}..{:.2})", rects.len(), zones.len(), zones.iter().next().map(|v| *v as f32 / 100.0).unwrap_or(0.0), zones.iter().next_back().map(|v| *v as f32 / 100.0).unwrap_or(0.0)),
     ];
-    Ok(Ring { rects, squares: BTreeMap::new(), notes })
+    // v4.13 WEDGES: the crest ENVELOPE vs distance — env[d] = max over rings d' ≥ d of that ring's max bed (so any
+    // square at ring ≥ d, corners included, has bed ≤ env[d]), rounded up 0.25 m; the requirement at the integer
+    // position k (the outer edge of cell k−1) is E[k] = env[k−1] (E[0] = env[0]); the fewest planar segments
+    // through the knots (a, E[a]) → (b, E[b]) that stay ≥ E at every knot between (greedy longest from the edge).
+    let mut env: Vec<f32> = (0..cells).map(|d| per_ring.get(&d).map(|e| e.1).unwrap_or(bed_max)).collect();
+    for d in (0..cells as usize).rev() {
+        if d + 1 < cells as usize {
+            env[d] = env[d].max(env[d + 1]);
+        }
+    }
+    let q = |v: f32| ((v - 0.001) / 0.25).ceil() * 0.25;
+    let e: Vec<f32> = (0..=cells as usize).map(|k| if k == 0 { q(env[0]) } else { q(env[k - 1]) }).collect();
+    let mut segs: Vec<(usize, usize)> = Vec::new();
+    let mut a = 0usize;
+    while a < cells as usize {
+        let mut b = cells as usize;
+        while b > a + 1 {
+            let ok = (a + 1..b).all(|k| {
+                let line = e[a] + (e[b] - e[a]) * ((k - a) as f32 / (b - a) as f32);
+                line + 1e-4 >= e[k]
+            });
+            if ok {
+                break;
+            }
+            b -= 1;
+        }
+        segs.push((a, b));
+        a = b;
+    }
+    let mut ramps: Vec<Ramp> = Vec::new();
+    for &(a, b) in &segs {
+        let (d0, d1) = (32.0 * a as f32, 32.0 * b as f32);
+        let (yi, yo) = (e[a], e[b]);
+        // N / S bands span the full width (corners included); W / E the grid's z range
+        ramps.push(Ramp { x0: -margin, x1: gx + margin, z0: -d1, z1: -d0, y_inner: yi, y_outer: yo, side: 'N' });
+        ramps.push(Ramp { x0: -margin, x1: gx + margin, z0: gz + d0, z1: gz + d1, y_inner: yi, y_outer: yo, side: 'S' });
+        ramps.push(Ramp { x0: -d1, x1: -d0, z0: 0.0, z1: gz, y_inner: yi, y_outer: yo, side: 'W' });
+        ramps.push(Ramp { x0: gx + d0, x1: gx + d1, z0: 0.0, z1: gz, y_inner: yi, y_outer: yo, side: 'E' });
+    }
+    // clearance of every band square's bed under the wedge it falls in: top (envelope) and slab bottom (−0.1)
+    let (vb, va) = crate::floor_finish::vista_slab(collection);
+    let (mut c_min, mut c_max, mut c_sum, mut c_n, mut under) = (f32::INFINITY, f32::NEG_INFINITY, 0.0f64, 0usize, 0usize);
+    for j in 0..nz {
+        for i in 0..n {
+            let (x, z) = (-margin + (i as f32 + 0.5) * STEP, -margin + (j as f32 + 0.5) * STEP);
+            if x >= 0.0 && x <= gx && z >= 0.0 && z <= gz {
+                continue;
+            }
+            let bed = ground_up.iter().filter_map(|t| height_at(t, x, z)).fold(f32::INFINITY, f32::min);
+            if bed == f32::INFINITY {
+                continue;
+            }
+            let bed = bed + yoff;
+            let Some(r) = ramps.iter().find(|r| x >= r.x0 && x <= r.x1 && z >= r.z0 && z <= r.z1) else { continue };
+            let c = r.y_at(x, z) - bed;
+            c_min = c_min.min(c);
+            c_max = c_max.max(c);
+            c_sum += c as f64;
+            c_n += 1;
+            if c - vb < 0.0 {
+                under += 1;
+            }
+        }
+    }
+    notes.push(format!("wedges (v4.13): envelope per cell {} → E at the knots {}; {} planar segment(s) per side {:?} → {} ramps (slab {:.2} under .. {:.2} over the envelope); bed-to-envelope clearance over {c_n} squares: min {c_min:.2} max {c_max:.2} mean {:.2}; squares where the slab BOTTOM would be under the bed: {under}", env.iter().map(|v| format!("{:.2}", v)).collect::<Vec<_>>().join(" "), e.iter().map(|v| format!("{:.2}", v)).collect::<Vec<_>>().join(" "), segs.len(), segs.iter().map(|(a, b)| format!("{a}→{b}: {:.2}→{:.2}", e[*a], e[*b])).collect::<Vec<_>>(), ramps.len(), vb, va, c_sum / c_n.max(1) as f64));
+    if ring_wedges() {
+        Ok(Ring { rects: Vec::new(), ramps, squares: BTreeMap::new(), notes })
+    } else {
+        Ok(Ring { rects, ramps: Vec::new(), squares: BTreeMap::new(), notes })
+    }
 }
 
 /// A Stadium decoration piece placed in the deco map: (x, y, z) local → map frame.
@@ -431,7 +539,7 @@ fn stadium_ring(store: &mut crate::store::DataStore, m: &MapFile, size: (i32, i3
         out
     };
     notes.push(format!("band 4 m squares: {clear} clear flat grass at {grass_y:.1} (→ {} row strips), {flat_blocked} flat but structure within {WALL_UNDER:.0} m above, {other} other floor heights, {none} without a floor; clear depth (m) every 128 m — W {:?} E {:?} N {:?} S {:?}", rects.len(), depth('W'), depth('E'), depth('N'), depth('S')));
-    Ok(Ring { rects, squares, notes })
+    Ok(Ring { rects, ramps: Vec::new(), squares, notes })
 }
 
 /// The ring for a map: Stadium → the flat-grass strips of its decoration; vistas → 4 sea frame boxes.
@@ -472,7 +580,7 @@ pub fn append_to_mesh(mesh: &mut crate::floor_finish::FloorMesh, ring: &Ring, co
         n += 1;
     }
     mesh.notes.extend(ring.notes.iter().cloned());
-    mesh.notes.push(format!("outer ring: {n} boxes appended"));
+    mesh.notes.push(format!("outer ring: {n} boxes appended, {} ramps", ring.ramps.len()));
     n
 }
 
@@ -481,7 +589,10 @@ pub fn append_to_mesh(mesh: &mut crate::floor_finish::FloorMesh, ring: &Ring, co
 pub fn tsv_rows(collection_name: &str, decoration: &str, ring: &Ring) -> String {
     let mut s = String::new();
     for r in &ring.rects {
-        s.push_str(&format!("{collection_name}\t{decoration}\t{:.1}\t{:.1}\t{:.1}\t{:.1}\t{:.2}\t{}\n", r.x0, r.x1, r.z0, r.z1, r.floor, r.kind));
+        s.push_str(&format!("{collection_name}\t{decoration}\t{:.1}\t{:.1}\t{:.1}\t{:.1}\t{:.2}\t{}\t{:.2}\t-\n", r.x0, r.x1, r.z0, r.z1, r.floor, r.kind, r.floor));
+    }
+    for r in &ring.ramps {
+        s.push_str(&format!("{collection_name}\t{decoration}\t{:.1}\t{:.1}\t{:.1}\t{:.1}\t{:.2}\tramp\t{:.2}\t{}\n", r.x0, r.x1, r.z0, r.z1, r.y_inner, r.y_outer, r.side));
     }
     s
 }
