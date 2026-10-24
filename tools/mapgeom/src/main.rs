@@ -5489,8 +5489,9 @@ fn main() {
             let w = 32 * f.size.0 as usize;
             println!("{name} dir {dir} size {}x{} standable {} m² ({})", f.size.0, f.size.1, f.covered(), if all { "silhouette" } else { "standable" });
             let field = if all { &f.all } else { &f.h };
+            let mats = a.rest.iter().any(|x| x == "--mat");
             for z in (0..32 * f.size.1 as usize).rev() {
-                let row: String = (0..w).map(|x| match field[z * w + x] { None => '.', Some(y) => { let d = y.round().clamp(0.0, 35.0) as i64; if d < 10 { (b'0' + d as u8) as char } else { (b'a' + (d - 10) as u8) as char } } }).collect();
+                let row: String = (0..w).map(|x| if mats { match field[z * w + x] { None => '.', Some(_) => { let m = f.mat[z * w + x]; if m < 10 { (b'0' + m) as char } else { (b'a' + (m - 10).min(25)) as char } } } } else { match field[z * w + x] { None => '.', Some(y) => { let d = y.round().clamp(0.0, 35.0) as i64; if d < 10 { (b'0' + d as u8) as char } else { (b'a' + (d - 10) as u8) as char } } } }).collect();
                 println!("{row}");
             }
         }
@@ -5526,8 +5527,8 @@ fn main() {
             };
             for l in &log { eprintln!("  {l}"); }
             // MAPPING.tsv: one row per (collection, block)
-            let mut tsv = String::from("collection\tblock\tsize\tvariant\twaypoint_type\tcovered_m2\treplacement\toffset\tmismatch\tverdict\tsecond\tsecond_offset\tsecond_mismatch\tcandidates\thugo_replacement\thugo_offset\thugo_mismatch\tagree\n");
-            let mut details = String::from("collection\tblock\trank\tcandidate\toffset\tmismatch\n");
+            let mut tsv = String::from("collection\tblock\tsize\tvariant\twaypoint_type\tcovered_m2\treplacement\toffset\tmismatch\tverdict\tsecond\tsecond_offset\tsecond_mismatch\tcandidates\thugo_replacement\thugo_offset\thugo_mismatch\tagree\troad_mismatch\tzone_mismatch\n");
+            let mut details = String::from("collection\tblock\trank\tcandidate\toffset\tmismatch\troad_mismatch\tzone_mismatch\n");
             // the dictionary: block → (replacement, offset, verdict, collections, agree-with-hugo); the first collection's
             // pick wins, others reported when they differ
             let mut dict: BTreeMap<String, (String, u8, &'static str, Vec<String>, Vec<String>)> = BTreeMap::new();
@@ -5538,13 +5539,14 @@ fn main() {
                 let h = hugo.get(&m.block);
                 let hscore = h.and_then(|(hn, hd)| m.ranked.iter().find(|c| &c.name == hn && c.dir == *hd).map(|c| c.mismatch));
                 let agree = match (h, best) { (Some((hn, hd)), Some(b)) => if &b.name == hn && b.dir == *hd { "yes" } else if hscore.map_or(false, |s| s <= mapgeom::checkpoint_map::MATCH_MAX_PUB) { "both-match" } else { "NO" }, (Some(_), None) => "NO", _ => "-" };
-                tsv.push_str(&format!("{}\t{}\t{}x{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                tsv.push_str(&format!("{}\t{}\t{}x{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
                     m.collection, m.block, m.size.0, m.size.1, if m.ground { "ground" } else { "air" }, m.waypoint_type.map(|w| w.to_string()).unwrap_or("-".into()), m.covered,
                     best.map(|b| b.name.clone()).unwrap_or("-".into()), best.map(|b| mapgeom::checkpoint_map::offset_name(b.dir)).unwrap_or("-"), best.map(|b| format!("{:.4}", b.mismatch)).unwrap_or("-".into()), v,
                     second.map(|c| c.name.clone()).unwrap_or("-".into()), second.map(|c| mapgeom::checkpoint_map::offset_name(c.dir)).unwrap_or("-"), second.map(|c| format!("{:.4}", c.mismatch)).unwrap_or("-".into()), m.candidates_tried,
-                    h.map(|(n, _)| n.clone()).unwrap_or("-".into()), h.map(|(_, d)| mapgeom::checkpoint_map::offset_name(*d)).unwrap_or("-"), hscore.map(|s| format!("{s:.4}")).unwrap_or("-".into()), agree));
+                    h.map(|(n, _)| n.clone()).unwrap_or("-".into()), h.map(|(_, d)| mapgeom::checkpoint_map::offset_name(*d)).unwrap_or("-"), hscore.map(|s| format!("{s:.4}")).unwrap_or("-".into()), agree,
+                    best.map(|b| format!("{:.4}", b.road_mismatch)).unwrap_or("-".into()), best.map(|b| format!("{:.4}", b.zone_mismatch)).unwrap_or("-".into())));
                 for (i, c) in m.ranked.iter().take(6).enumerate() {
-                    details.push_str(&format!("{}\t{}\t{}\t{}\t{}\t{:.4}\n", m.collection, m.block, i + 1, c.name, mapgeom::checkpoint_map::offset_name(c.dir), c.mismatch));
+                    details.push_str(&format!("{}\t{}\t{}\t{}\t{}\t{:.4}\t{:.4}\t{:.4}\n", m.collection, m.block, i + 1, c.name, mapgeom::checkpoint_map::offset_name(c.dir), c.mismatch, c.road_mismatch, c.zone_mismatch));
                 }
                 let e = dict.entry(m.block.clone()).or_insert_with(|| (best.map(|b| b.name.clone()).unwrap_or_default(), best.map(|b| b.dir).unwrap_or(0), v, Vec::new(), Vec::new()));
                 e.3.push(m.collection.clone());
@@ -5585,17 +5587,17 @@ fn main() {
             cs.push_str("        };\n");
             std::fs::write(format!("{out}/CheckpointsCleaned.cs"), &cs).unwrap_or_else(|e| die(format!("{out}: {e}")));
             // SUMMARY.tsv: block, replacement, offset, verified-by, mismatch, collections, size, hugo
-            let mut sm = String::from("block\treplacement\toffset\tverdict\tverified_by\tmismatch\tcollections\tsize\thugo\n");
+            let mut sm = String::from("block\treplacement\toffset\tverdict\tverified_by\tmismatch\tcollections\tsize\thugo\troad_mismatch\tzone_mismatch\n");
             for (block, (rep, dir, v, colls, _)) in &dict {
                 let m0 = maps.iter().find(|m| &m.block == block).unwrap();
                 let wall = (m0.covered as f32) < 0.2 * (32 * 32 * m0.size.0 * m0.size.1) as f32;
                 let by = if m0.ranked.is_empty() { "no candidate" } else if wall { "collision silhouette, 32 m wall squares, 1 m grid, 4 rotations" } else { "standable surface, 1 m grid, lowest height per square, 4 rotations, 0.1 m tolerance" };
                 let h = match hugo.get(block) { Some((hn, hd)) => if hn == rep && *hd == *dir { "same".to_string() } else { format!("Hugo: {hn} {}", mapgeom::checkpoint_map::offset_name(*hd)) }, None => "new".into() };
-                sm.push_str(&format!("{block}\t{}\t{}\t{v}\t{by}\t{}\t{}\t{}x{}\t{h}\n", if *v == "none" || *v == "no-candidate" { "(remove)".to_string() } else { rep.clone() }, mapgeom::checkpoint_map::offset_name(*dir), m0.ranked.first().map(|c| format!("{:.4}", c.mismatch)).unwrap_or("-".into()), colls.join(","), m0.size.0, m0.size.1));
+                sm.push_str(&format!("{block}\t{}\t{}\t{v}\t{by}\t{}\t{}\t{}x{}\t{h}\t{}\t{}\n", if *v == "none" || *v == "no-candidate" { "(remove)".to_string() } else { rep.clone() }, mapgeom::checkpoint_map::offset_name(*dir), m0.ranked.first().map(|c| format!("{:.4}", c.mismatch)).unwrap_or("-".into()), colls.join(","), m0.size.0, m0.size.1, m0.ranked.first().map(|c| format!("{:.4}", c.road_mismatch)).unwrap_or("-".into()), m0.ranked.first().map(|c| format!("{:.4}", c.zone_mismatch)).unwrap_or("-".into())));
             }
             for (hn, (hr, hd)) in &hugo {
                 if !dict.contains_key(hn) {
-                    sm.push_str(&format!("{hn}\t{hr}\t{}\tdead\tno such block in any pak\t-\t-\t-\tHugo only\n", mapgeom::checkpoint_map::offset_name(*hd)));
+                    sm.push_str(&format!("{hn}\t{hr}\t{}\tdead\tno such block in any pak\t-\t-\t-\tHugo only\t-\t-\n", mapgeom::checkpoint_map::offset_name(*hd)));
                 }
             }
             std::fs::write(format!("{out}/SUMMARY.tsv"), &sm).unwrap_or_else(|e| die(format!("{out}: {e}")));

@@ -35,6 +35,9 @@ pub struct HeightField {
     pub size: (i32, i32),
     pub h: Vec<Option<f32>>,
     pub all: Vec<Option<f32>>,
+    /// the physics id of the standable face that set `h` (the road surface vs the zone fill): the material
+    /// CHANNEL of the square — a road strip must match in position AND orientation, not just the height field
+    pub mat: Vec<u8>,
 }
 
 impl HeightField {
@@ -55,6 +58,7 @@ impl HeightField {
         let (w, d) = (32 * size.0 as usize, 32 * size.1 as usize);
         let mut h = vec![None; w * d];
         let mut all = vec![None; w * d];
+        let mut mat = vec![0u8; w * d];
         let (smx, smz) = (32.0 * sx as f32, 32.0 * sz as f32);
         for z in 0..self.d() {
             for x in 0..self.w() {
@@ -69,10 +73,16 @@ impl HeightField {
                 if ix < w && iz < d {
                     h[iz * w + ix] = self.h[z * self.w() + x];
                     all[iz * w + ix] = self.all[z * self.w() + x];
+                    mat[iz * w + ix] = self.mat[z * self.w() + x];
                 }
             }
         }
-        HeightField { size, h, all }
+        HeightField { size, h, all, mat }
+    }
+    /// The squares whose standable face is NOT the zone fill (Grass 2 / Dirt 6 / Ice 21 / Snow … the terrain
+    /// physics), i.e. the road / deck channel.
+    pub fn road_mask(&self) -> Vec<bool> {
+        self.h.iter().zip(self.mat.iter()).map(|(hh, m)| hh.is_some() && !is_zone_physics(*m)).collect()
     }
     pub fn covered(&self) -> usize {
         self.h.iter().filter(|v| v.is_some()).count()
@@ -81,6 +91,53 @@ impl HeightField {
 
 /// The mismatch fraction between two fields of the same size: squares that differ by more than `TOLERANCE` or
 /// that only one covers, over the squares either covers. `None` when the sizes differ.
+/// The three mismatches (combined, road channel, zone channel) of two fields of the same size.
+pub fn mismatch3(a: &HeightField, b: &HeightField) -> Option<(f32, f32, f32)> {
+    if a.size != b.size {
+        return None;
+    }
+    let surface = mismatch(a, b)?;
+    let (ra, rb) = (a.road_mask(), b.road_mask());
+    // a road channel exists when the BLOCK's non-zone standable squares are at least 5 % of its footprint
+    // (the Open* roads: 14 m of 32; a few arch-foot squares on a water/zone deck are not a road)
+    let road_squares = ra.iter().filter(|&&r| r).count();
+    if road_squares < a.h.len() / 20 || (a.covered() as f32) < 0.2 * a.h.len() as f32 {
+        return Some((surface, 0.0, surface));
+    }
+    let (mut rbad, mut rany, mut zbad, mut zany) = (0usize, 0usize, 0usize, 0usize);
+    for i in 0..a.h.len() {
+        match (ra[i], rb[i]) {
+            (true, true) => {
+                rany += 1;
+                if (a.h[i].unwrap() - b.h[i].unwrap()).abs() > TOLERANCE {
+                    rbad += 1;
+                }
+            }
+            (true, false) | (false, true) => {
+                rany += 1;
+                rbad += 1;
+            }
+            (false, false) => match (a.h[i], b.h[i]) {
+                (None, None) => {}
+                (Some(p), Some(q)) => {
+                    zany += 1;
+                    if (p - q).abs() > TOLERANCE {
+                        zbad += 1;
+                    }
+                }
+                _ => {
+                    zany += 1;
+                    zbad += 1;
+                }
+            },
+        }
+    }
+    let road = if rany == 0 { 0.0 } else { rbad as f32 / rany as f32 };
+    let zone = if zany == 0 { 0.0 } else { zbad as f32 / zany as f32 };
+    // the road is what the car drives: it must match on its own; the combined score is the worse channel
+    Some((road.max(zone), road, zone))
+}
+
 pub fn mismatch(a: &HeightField, b: &HeightField) -> Option<f32> {
     if a.size != b.size {
         return None;
@@ -166,6 +223,7 @@ pub fn variant_heightfield(store: &mut DataStore, v: &crate::blockinfo::Variant)
     let (w, d) = (32 * size.0 as usize, 32 * size.1 as usize);
     let mut h: Vec<Option<f32>> = vec![None; w * d];
     let mut all: Vec<Option<f32>> = vec![None; w * d];
+    let mut mat: Vec<u8> = vec![0u8; w * d];
     for t in &m.surf_triangles {
         let pts: Vec<[f32; 3]> = t.indices.iter().filter_map(|&i| m.surf_vertices.get(i as usize).copied()).collect();
         if pts.len() < 3 {
@@ -216,11 +274,22 @@ pub fn variant_heightfield(store: &mut DataStore, v: &crate::blockinfo::Variant)
                 }
                 let y = l1 * a[1] + l2 * b[1] + l3 * c[1];
                 let cell = &mut h[iz * w + ix];
-                *cell = Some(cell.map_or(y, |q: f32| q.min(y)));
+                if cell.map_or(true, |q: f32| y < q) {
+                    *cell = Some(y);
+                    mat[iz * w + ix] = t.material_id;
+                }
             }
         }
     }
-    Ok(HeightField { size, h, all })
+    Ok(HeightField { size, h, all, mat })
+}
+
+/// The terrain / zone fill physics ids — the grass / sand / water / stone the Open* roads' zone fill is made of.
+/// Road SURFACES (Asphalt 16, Dirt 6, Ice 21, Grass-road … the deck a car drives) count as road: RoadDirt's deck
+/// is Dirt 6 and must stay in the road channel (2026-10-24 07:59: listing 6 here turned its deck into zone and
+/// left only the rubber borders as "road").
+pub fn is_zone_physics(id: u8) -> bool {
+    matches!(id, 2 | 76 | 5 | 13 | 33)
 }
 
 /// One block of one collection: name, path, waypoint type, the variant used for the surface (ground, else air).
@@ -281,7 +350,13 @@ pub fn family_prefix(name: &str) -> &str {
 pub struct Candidate {
     pub name: String,
     pub dir: u8,
+    /// the combined mismatch (max of the channels when the block has a road channel, else the surface one)
     pub mismatch: f32,
+    /// the ROAD channel: squares where exactly one side is road, or both are road with heights apart, over the
+    /// squares either side has as road (1.0 when the block has no road channel but the candidate does)
+    pub road_mismatch: f32,
+    /// the ZONE channel (the rest of the standable surface)
+    pub zone_mismatch: f32,
 }
 
 #[derive(Debug)]
@@ -365,8 +440,8 @@ pub fn map_all(store: &mut DataStore, label: Option<&str>, only: Option<&BTreeSe
                     if !fits(d) {
                         continue;
                     }
-                    if let Some(mm) = mismatch(&kf, &cf.turned(d)) {
-                        ranked.push(Candidate { name: c.name.clone(), dir: d, mismatch: mm });
+                    if let Some((mm, rm, zm)) = mismatch3(&kf, &cf.turned(d)) {
+                        ranked.push(Candidate { name: c.name.clone(), dir: d, mismatch: mm, road_mismatch: rm, zone_mismatch: zm });
                     }
                 }
             }
@@ -381,7 +456,8 @@ pub fn map_all(store: &mut DataStore, label: Option<&str>, only: Option<&BTreeSe
                 if let Some(c) = blocks.iter().find(|c| c.collection == k.collection && &c.name == hname) {
                     if let Some(cf) = field(store, &c.collection, &c.name, &c.path, &mut fields) {
                         let t = cf.turned(*hdir);
-                        ranked.push(Candidate { name: hname.clone(), dir: *hdir, mismatch: mismatch(&kf, &t).unwrap_or(1.0) });
+                        let (mm, rm, zm) = mismatch3(&kf, &t).unwrap_or((1.0, 1.0, 1.0));
+                        ranked.push(Candidate { name: hname.clone(), dir: *hdir, mismatch: mm, road_mismatch: rm, zone_mismatch: zm });
                     }
                 }
             }
@@ -393,7 +469,9 @@ pub fn map_all(store: &mut DataStore, label: Option<&str>, only: Option<&BTreeSe
         let shape_words: Vec<String> = shape_words_of(&k.name);
         ranked.sort_by(|a, b| {
             let (ma, mb) = ((a.mismatch * 200.0).round() as i64, (b.mismatch * 200.0).round() as i64);
+            let (ra, rb) = ((a.road_mismatch * 200.0).round() as i64, (b.road_mismatch * 200.0).round() as i64);
             ma.cmp(&mb)
+                .then_with(|| ra.cmp(&rb))
                 .then_with(|| shared_words(&b.name, &shape_words).cmp(&shared_words(&a.name, &shape_words)))
                 .then_with(|| plainness(&b.name).cmp(&plainness(&a.name)))
                 .then_with(|| a.name.len().cmp(&b.name.len()))
@@ -505,10 +583,10 @@ pub fn parse_mapping_tsv(text: &str) -> Vec<Mapping> {
         let dir_of = |s: &str| match s { "Quarter" => 1u8, "Half" => 2, "ThreeQuarters" => 3, _ => 0 };
         let mut ranked = Vec::new();
         if f[6] != "-" {
-            ranked.push(Candidate { name: f[6].to_string(), dir: dir_of(f[7]), mismatch: f[8].parse().unwrap_or(1.0) });
+            ranked.push(Candidate { name: f[6].to_string(), dir: dir_of(f[7]), mismatch: f[8].parse().unwrap_or(1.0), road_mismatch: f.get(18).and_then(|v| v.parse().ok()).unwrap_or(0.0), zone_mismatch: f.get(19).and_then(|v| v.parse().ok()).unwrap_or(0.0) });
         }
         if f[10] != "-" {
-            ranked.push(Candidate { name: f[10].to_string(), dir: dir_of(f[11]), mismatch: f[12].parse().unwrap_or(1.0) });
+            ranked.push(Candidate { name: f[10].to_string(), dir: dir_of(f[11]), mismatch: f[12].parse().unwrap_or(1.0), road_mismatch: 0.0, zone_mismatch: 0.0 });
         }
         out.push(Mapping { collection: f[0].to_string(), block: f[1].to_string(), size, ground: f[3] == "ground", waypoint_type: f[4].parse().ok(), covered: f[5].parse().unwrap_or(0), ranked, candidates_tried: f[13].parse().unwrap_or(0) });
     }
