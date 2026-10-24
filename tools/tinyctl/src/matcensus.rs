@@ -65,13 +65,22 @@ pub fn cmd(args: &[String]) -> i32 {
         "Ice" | "Icy" | "ice" | "icy" => "PlatformIce",
         "Grass" | "grass" => "PlatformGrass",
         "Plastic" | "plastic" => "PlatformPlastic",
+        // Tarmac has no forced folder: the strict needle below would match nothing, so the
+        // set is only meaningful with `--any-modifier` (any platform folder's TrackWall on a
+        // wood-rule item is a stray neighbour dress there)
+        "Tech" | "tech" | "Tarmac" | "tarmac" => "",
         other => {
             eprintln!("material-census: no forced modifier folder for set {other:?} — nothing to check");
             return 0;
         }
     };
+    if folder.is_empty() && !args.iter().any(|a| a == "--any-modifier") {
+        eprintln!("material-census: set {set} has no forced folder — run it with --any-modifier");
+        return 2;
+    }
     let set_dir = match set.to_ascii_lowercase().as_str() {
         "ice" => "icy".to_string(),
+        "tarmac" => "tech".to_string(),
         s => s.to_string(),
     };
     // `--any-modifier`: flag ANY modifier-folder TrackWall dress on a wood-rule item (a
