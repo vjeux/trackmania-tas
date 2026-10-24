@@ -4990,7 +4990,9 @@ fn main() {
             }
             // --footprints F.tsv: the per-kind 4 m water mask for Hugo's C# (collection, tile, flags, prefab, bed, mask64:
             // bit (zi*8 + xi) set = the 4 m square at block-frame x 4·xi..4·xi+4, z 4·zi..4·zi+4 is water)
-            let mut fp = String::from("collection\ttile\tflags_hex\tprefab\tbed_local\tsurface_local\tmask64_hex\twater_squares\tdeep_mask64_hex\tdeep_squares\n");
+            // deep_beds: per deep square (bit order zi*8+xi, deep squares only, in order) the LOCAL bed under its centre
+            // rounded DOWN to 0.25 m, as "y,y,y" — the C# slab bottom follows the bank's ramp like ours
+            let mut fp = String::from("collection\ttile\tflags_hex\tprefab\tbed_local\tsurface_local\tmask64_hex\twater_squares\tdeep_mask64_hex\tdeep_squares\tdeep_beds\n");
             let (_, open_bed) = mapgeom::floor_finish::water_tiles(collection);
             let coll_name = match collection { 0x10 => "RedIsland", 0x1d => "WhiteShore", 0x1c => "BlueBay", 0xf => "GreenCoast", _ => "Stadium" };
             println!("tile\tflags\tplacements\tprefab\tx0\tx1\tz0\tz1\tsurface\tbed_lo\tbed_hi\tbed_tris\twater_4m_squares");
@@ -5000,7 +5002,8 @@ fn main() {
                         let mask = mapgeom::floor_finish::footprint_mask(&w);
                         let deep = mapgeom::floor_finish::deep_mask(&w, open_bed);
                         println!("{name}\t{flags:08x}\t{n}\t{}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{}\t{}\tdeep {}", w.prefab, w.x0, w.x1, w.z0, w.z1, w.surface, w.bed_lo, w.bed_hi, w.bed_tris, mask.count_ones(), deep.count_ones());
-                        fp.push_str(&format!("{coll_name}\t{name}\t{flags:08x}\t{}\t{:.2}\t{:.2}\t{mask:016x}\t{}\t{deep:016x}\t{}\n", w.prefab, w.bed_lo, w.surface, mask.count_ones(), deep.count_ones()));
+                        let beds: Vec<String> = mapgeom::floor_finish::deep_squares(&w).iter().filter_map(|d| d.map(|y| format!("{:.2}", (y * 4.0).floor() / 4.0))).collect();
+                        fp.push_str(&format!("{coll_name}\t{name}\t{flags:08x}\t{}\t{:.2}\t{:.2}\t{mask:016x}\t{}\t{deep:016x}\t{}\t{}\n", w.prefab, w.bed_lo, w.surface, mask.count_ones(), deep.count_ones(), beds.join(",")));
                     }
                     Ok(None) => if !only.is_empty() { println!("{name}\t{flags:08x}\t{n}\t-\tno water quad") },
                     Err(e) => if !only.is_empty() { println!("{name}\t{flags:08x}\t{n}\tERROR {e}") },
@@ -5266,6 +5269,26 @@ fn main() {
                 }
                 std::fs::write(&t, out).unwrap_or_else(|e| die(format!("{t}: {e}")));
             }
+        }
+        // floor-template --out F.Item.Gbx [--collection 26]: Hugo's Floor Finish template — ONE unit box (0..32 × 0..1 × 0..32)
+        //   trigger + ONE RaceTriggerFXFinish quad at y 0.02 (the C# swaps both buffers), Finish waypoint, ident = file name
+        "floor-template" => {
+            let mut store = open(&a);
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("floor-template needs --out F.Item.Gbx".into()));
+            let coll: u32 = flag(&a.rest, "--collection").map(|v| v.parse().unwrap_or_else(|_| die("--collection N".into()))).unwrap_or(26);
+            let ident = std::path::Path::new(&out).file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "FinishFloorTemplate.Item.Gbx".into());
+            let donor = "Stadium\\Items\\LightCube2m.Item.Gbx";
+            let mut mg = mapgeom::static_item::build::pack_item_merged(&mut store, donor, 1.0, coll, 0, None).unwrap_or_else(|e| die(format!("donor {donor}: {e}")));
+            let (x0, x1, z0, z1, y0, y1) = (0.0f32, 32.0f32, 0.0f32, 32.0f32, 0.0f32, 1.0f32);
+            let verts = vec![[x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0], [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]];
+            let quads: [[u32; 4]; 6] = [[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4], [2, 3, 7, 6], [1, 2, 6, 5], [0, 4, 7, 3]];
+            let mut tris = Vec::new();
+            for q in quads { tris.push([q[0], q[1], q[2]]); tris.push([q[0], q[2], q[3]]); }
+            mapgeom::static_item::build::make_invisible_mesh_waypoint(&mut mg, mapgeom::sttc::WP_FINISH, verts, tris).unwrap_or_else(die);
+            mapgeom::static_item::build::add_finish_plane_visual(&mut mg, &[(x0, x1, z0, z1, 0.0)], mapgeom::floor_finish::INDICATOR_LIFT).unwrap_or_else(die);
+            let (bytes, _) = mapgeom::static_item::build::finish_item(mg, &ident, &ident, 1.0, coll).unwrap_or_else(die);
+            std::fs::write(&out, &bytes).unwrap_or_else(|e| die(format!("{out}: {e}")));
+            println!("wrote {out}: {} bytes, ident {ident}, collection {coll}; trigger = one 32×1×32 box, visual = one RaceTriggerFXFinish quad at y 0.02 (4 vertices, 2 triangles)", bytes.len());
         }
         // floor-finish MAP --out ITEM.Item.Gbx [--ident NAME.Item.Gbx] [--floor-below 0.1] [--floor-above 0.4] [--collection 26]:
         //   the one-per-map Floor Finish carrier alone (Hugo embeds + places it himself at the map origin)
