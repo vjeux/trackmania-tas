@@ -246,7 +246,9 @@ pub fn cmd(args: &[String]) -> i32 {
             std::fs::write(&live_item, live_bytes).ok();
             let live_mats = item_materials(&mapgeom, &live_item);
             // the full dress = Decal + Screen + SIGN of the kind folder (the sign carries the car glyph)
-            if live_mats.iter().any(|m| m.ends_with(&format!("Modifier\\GateGameplay{kind}\\Sign"))) && live_mats.iter().any(|m| m.ends_with(&format!("Modifier\\GateGameplay{kind}\\Screen"))) {
+            // (the Desert folder has no Sign file: Collision, Decal, Screen, Spot only)
+            let has_sign_file = *kind != "Desert";
+            if (!has_sign_file || live_mats.iter().any(|m| m.ends_with(&format!("Modifier\\GateGameplay{kind}\\Sign")))) && live_mats.iter().any(|m| m.ends_with(&format!("Modifier\\GateGameplay{kind}\\Screen"))) {
                 println!("{num}: {file} ({model}) already carries the {kind} dress (sign + screen) — nothing to do");
                 continue;
             }
@@ -322,7 +324,7 @@ pub fn cmd(args: &[String]) -> i32 {
                 ok = false;
                 break;
             }
-            if !new_mats.iter().any(|m| m.ends_with(&format!("Modifier\\GateGameplay{kind}\\Sign"))) {
+            if !new_mats.iter().any(|m| m.ends_with(&format!("Modifier\\GateGameplay{kind}\\Screen"))) || (has_sign_file && !new_mats.iter().any(|m| m.ends_with(&format!("Modifier\\GateGameplay{kind}\\Sign")))) {
                 println!("{num}: {file} ({model}): the rebuilt item carries no Modifier\\GateGameplay{kind} material: {new_mats:?}");
                 ok = false;
                 break;
