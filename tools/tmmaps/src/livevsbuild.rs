@@ -71,6 +71,23 @@ fn norm_name(n: &str) -> String {
 /// One census line per block / baked block / item, in a form two bakes agree on.
 pub fn census_lines(m: &MapFile) -> Vec<String> {
     let mut out = Vec::new();
+    // an embedded item's ALIAS is a numbering, not an identity: a library whose key set
+    // grew renumbers every alias after the new keys (Magnet 3, 2026-10-24: 51 placements
+    // moved from AC03700000… to AC03700008… with byte-identical items) — a placement is
+    // compared by the FINGERPRINT of the item it places
+    let alias_fp: std::collections::HashMap<String, String> = m
+        .embedded_objects()
+        .map(|(_, zip)| {
+            crate::header::zip_entries(&zip)
+                .into_iter()
+                .filter_map(|(name, bytes)| {
+                    let base = name.rsplit('/').next().unwrap_or(&name).to_string();
+                    let stem = base.trim_end_matches(".Item.Gbx").trim_end_matches(".Block.Gbx").to_string();
+                    base.ends_with(".Item.Gbx").then(|| (base.clone(), format!("fp:{:016x}", fingerprint(&bytes, stem.as_bytes()))))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     for b in &m.blocks {
         let (cx, cy, cz) = b.coords();
         let pos = b.free_pos.map(|p| format!("{:.3},{:.3},{:.3}", p[0], p[1], p[2])).unwrap_or_default();
@@ -82,7 +99,8 @@ pub fn census_lines(m: &MapFile) -> Vec<String> {
         out.push(format!("B\t{}\t{cx},{cy},{cz}\t{}\t{:08X}\t{pos}", norm_name(&b.name), b.dir, b.flags));
     }
     for it in &m.items {
-        out.push(format!("I\t{}\t{:.3},{:.3},{:.3}\t{:.4},{:.4},{:.4}\t{:08X}", norm_name(&it.model), it.pos[0], it.pos[1], it.pos[2], it.yaw, it.pitch, it.roll, it.flags));
+        let model = alias_fp.get(&it.model).cloned().unwrap_or_else(|| norm_name(&it.model));
+        out.push(format!("I\t{}\t{:.3},{:.3},{:.3}\t{:.4},{:.4},{:.4}\t{:08X}", model, it.pos[0], it.pos[1], it.pos[2], it.yaw, it.pitch, it.roll, it.flags));
     }
     if let Some((_, zip)) = m.embedded_objects() {
         for (name, bytes) in crate::header::zip_entries(&zip) {
