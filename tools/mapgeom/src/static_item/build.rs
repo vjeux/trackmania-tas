@@ -889,10 +889,32 @@ pub fn make_invisible_mesh_waypoint(m: &mut Merged, wtype: i32, verts: Vec<[f32;
 /// `Stadium\Media\Material\RaceTriggerFXFinish`: the finish gates' own static red trigger pane
 /// (NotCollidable, DecalPaint layout — pos / normal / white colour / uv). UVs tile per 4 m. Non-collidable:
 /// the surface stays the trigger mesh alone. `quads`: (x0, x1, z0, z1, anchor_y) per box.
+/// The indicator material (v4.5, Hugo 2026-10-24 08:15: "solid red, still see-through — RaceTriggerFXFinish is a
+/// pattern and the squares don't align between boxes"): the mesh modeler's `CustomGlass` — a textureless
+/// `GlassBasic` pane whose ONE parameter is `TargetColor` — carried as a game material with the constant
+/// `TargetColor Real 3` + the three floats, exactly as Hugo's PureFloor1QuarterCircle.Item.Gbx carries its
+/// (0.943, 0.358, 0.358) tint (CPlugMaterialUserInst v11, is_using_game_material 1). Physics NotCollidable 28
+/// (the item's collision is its trigger mesh alone). UVs are irrelevant for a solid pane; kept per metre.
+pub const INDICATOR_LINK: &str = "Stadium\\Media\\Material_BlockCustom\\CustomGlass";
+pub const INDICATOR_RGB: [f32; 3] = [1.0, 0.0, 0.0];
+
+pub fn indicator_material() -> CPlugMaterialUserInst {
+    let mut inst = CPlugMaterialUserInst::game_material(INDICATOR_LINK, 28);
+    let main = inst.main.as_mut().unwrap();
+    main.csts = vec![crate::crystal_model::Cst { u01: crate::crystal_model::Id::Str("TargetColor".into()), u02: crate::crystal_model::Id::Str("Real".into()), u03: 3 }];
+    main.color = INDICATOR_RGB.iter().map(|c| c.to_bits() as i32).collect();
+    inst
+}
+
+/// The indicator's material slot: the tinted glass (deduplicated by its whole look).
+pub fn indicator_slot(m: &mut Merged) -> usize {
+    m.material_inst_slot(&indicator_material(), "Stadium\\Media\\Material\\")
+}
+
 pub fn add_finish_plane_visual(m: &mut Merged, quads: &[(f32, f32, f32, f32, f32)], lift: f32) -> R<()> {
     use super::bake::{make_visuals, Corner, VisualLayout};
-    let link = "Stadium\\Media\\Material\\RaceTriggerFXFinish";
-    let slot = m.material_slot(link, 28);
+    let link = INDICATOR_LINK;
+    let slot = indicator_slot(m);
     let mut tris: Vec<[Corner; 3]> = Vec::new();
     let mut face = 1u32;
     for &(x0, x1, z0, z1, ay) in quads {
@@ -907,10 +929,10 @@ pub fn add_finish_plane_visual(m: &mut Merged, quads: &[(f32, f32, f32, f32, f32
         return Err("finish plane: no quads".into());
     }
     m.visuals.clear();
-    for v in make_visuals(&tris, VisualLayout::DecalPaint, "off") {
+    for v in make_visuals(&tris, VisualLayout::Full, "off") {
         m.visuals.push(super::merged::MergedVisual::every_level(v, slot));
     }
-    m.notes.push(format!("finish indicator: {} quads, {link}, {lift:.2} m over the anchor, non-collidable", quads.len()));
+    m.notes.push(format!("finish indicator: {} quads, {link} TargetColor {:?}, {lift:.2} m over the anchor, non-collidable", quads.len(), INDICATOR_RGB));
     Ok(())
 }
 
@@ -918,8 +940,8 @@ pub fn add_finish_plane_visual(m: &mut Merged, quads: &[(f32, f32, f32, f32, f32
 /// counter-clockwise seen from above; same material and layout as `add_finish_plane_visual`, UVs per 4 m.
 pub fn add_finish_mesh_visual(m: &mut Merged, verts: &[[f32; 3]], tris: &[[u32; 3]]) -> R<()> {
     use super::bake::{make_visuals, Corner, VisualLayout};
-    let link = "Stadium\\Media\\Material\\RaceTriggerFXFinish";
-    let slot = m.material_slot(link, 28);
+    let link = INDICATOR_LINK;
+    let slot = indicator_slot(m);
     let c = |p: [f32; 3], face: u32| Corner { pos: p, normal: [0.0, 1.0, 0.0], uv: [p[0] / 4.0, p[2] / 4.0], uv1: [p[0] / 4.0, p[2] / 4.0], tan_u: [1.0, 0.0, 0.0], tan_v: [0.0, 0.0, 1.0], face, group: 1 };
     let mut out: Vec<[Corner; 3]> = Vec::with_capacity(tris.len());
     for (i, t) in tris.iter().enumerate() {
@@ -933,10 +955,10 @@ pub fn add_finish_mesh_visual(m: &mut Merged, verts: &[[f32; 3]], tris: &[[u32; 
         return Err("finish mesh visual: no triangles".into());
     }
     m.visuals.clear();
-    for v in make_visuals(&out, VisualLayout::DecalPaint, "off") {
+    for v in make_visuals(&out, VisualLayout::Full, "off") {
         m.visuals.push(super::merged::MergedVisual::every_level(v, slot));
     }
-    m.notes.push(format!("finish indicator mesh: {} triangles, {link}, non-collidable", tris.len()));
+    m.notes.push(format!("finish indicator mesh: {} triangles, {link} TargetColor {:?}, non-collidable", tris.len(), INDICATOR_RGB));
     Ok(())
 }
 

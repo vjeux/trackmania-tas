@@ -1375,7 +1375,7 @@ pub fn build_floor_item(store: &mut crate::store::DataStore, m: &MapFile, collec
     let donor = "Stadium\\Items\\LightCube2m.Item.Gbx";
     let mut mg = crate::static_item::build::pack_item_merged(store, donor, 1.0, collection, 0, None).map_err(|e| format!("donor {donor}: {e}"))?;
     crate::static_item::build::make_invisible_mesh_waypoint(&mut mg, crate::sttc::WP_FINISH, mesh.verts.clone(), mesh.tris.clone())?;
-    // the indicator: a static red RaceTriggerFXFinish plane 2 cm over the ground each box marks
+    // the indicator: a solid-red translucent CustomGlass pane (TargetColor 1,0,0; v4.5 — was the RaceTriggerFXFinish pattern) 2 cm over the ground each box marks
     crate::static_item::build::add_finish_plane_visual(&mut mg, &mesh.quads, INDICATOR_LIFT)?;
     if let Some(w) = lm_word {
         mg.file_write_time = w;
@@ -1420,7 +1420,7 @@ pub fn map_floor(m: &MapFile, collection: u32) -> Option<(f32, i32, f32)> {
 }
 
 /// The GroundClippers item of a map: one box 0..size·32 in x and z, floor − 1.15 .. floor − 0.15, the
-/// RaceTriggerFXFinish plane on its top (under the terrain, never seen), Finish waypoint. Returns the bytes and
+/// indicator pane on its top (under the terrain, never seen), Finish waypoint. Returns the bytes and
 /// the mesh (one box).
 pub fn build_ground_clippers_item(store: &mut crate::store::DataStore, m: &MapFile, collection: u32, ident: &str) -> Result<(Vec<u8>, FloorMesh), String> {
     let (floor, row, bed) = map_floor(m, collection).ok_or("no terrain tile in the map (authored or baked): no floor to clip through")?;
