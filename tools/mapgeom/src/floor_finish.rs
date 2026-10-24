@@ -35,9 +35,12 @@ pub fn water_surface(collection: u32) -> f32 {
 /// Hugo's round 5 (2026-10-24 00:12): the slab TOP sits a constant 2.5 m under the water surface on every vista
 /// (so the finish depth reads the same everywhere), the BOTTOM 0.1 m under the bed (a car resting on the bed is
 /// inside). Returns (below the bed, above the bed) for `floor_mesh`.
-/// v4.1 (Hugo 2026-10-24 00:57, "revert the equal height"): bed-anchored again, bed − 0.1 .. bed + 0.4 everywhere.
+/// v4.3 (Hugo, via the coordinator 06:25: "all finishes on the same y on a map" — his friend saw the shore slabs
+/// stepping up the bank in 25 cm quanta): every box of a water row sits on the row's OPEN BED — seabed − 0.1 ..
+/// seabed + 1.15 — and the indicator at seabed + 0.02; the shore squares no longer carry their own bed (the
+/// 1.15 m top still covers a car on a bank square whose bed is up to ~1 m above the seabed).
 pub fn vista_slab(_collection: u32) -> (f32, f32) {
-    (0.1, 0.4)
+    (0.1, 1.15)
 }
 
 pub fn water_tiles(collection: u32) -> (&'static [&'static str], f32) {
@@ -440,10 +443,9 @@ pub fn water_rects(store: &mut crate::store::DataStore, m: &MapFile, collection:
                 for ((ux, uz), _, deep) in &cells {
                     for zi in 0..8 {
                     for xi in 0..8 {
-                        let Some(y_local) = deep[zi * 8 + xi] else { continue };
-                        // the bed quantised to 0.25 m (rounded DOWN: the slab bottom never rises above the real bed), so
-                        // neighbouring squares on one ramp band share a box
-                        let y_local = (y_local * 4.0).floor() / 4.0;
+                        let Some(_y_local) = deep[zi * 8 + xi] else { continue };
+                        // v4.3: the square's own bed is NOT used — every box of the water row sits on the open bed
+                        let y_local = bed;
                         let (lx0, lz0) = (32.0 * *ux as f32 + 4.0 * xi as f32, 32.0 * *uz as f32 + 4.0 * zi as f32);
                         let (lx1, lz1) = (lx0 + 4.0, lz0 + 4.0);
                         let tp = |x: f32, z: f32| turn_pt_sized(c, b.dir, size_m, x, z);
