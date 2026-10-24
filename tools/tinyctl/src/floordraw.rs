@@ -126,8 +126,6 @@ pub fn cmd(rest: &[String]) -> Result<(), String> {
                 let (a, b) = (sc.p(q.x0, q.z0), sc.p(q.x1, q.z1));
                 cv.poly(&[a, (b.0, a.1), b, (a.0, b.1)], RING, 1.0);
             }
-            let (a, b) = (sc.p(0.0, 0.0), sc.p(32.0 * nx as f32, 32.0 * nz as f32));
-            cv.outline(&[a, (b.0, a.1), b, (a.0, b.1)], INK, 3.0);
         }
         // the kept grass: the plane's strips
         for c in plane.verts.chunks(8) {
@@ -217,6 +215,10 @@ pub fn cmd(rest: &[String]) -> Result<(), String> {
             let (a, b) = (sc.p(32.0 * c.0 as f32 + 4.0, 32.0 * c.2 as f32 + 4.0), sc.p(32.0 * c.0 as f32 + 28.0, 32.0 * c.2 as f32 + 28.0));
             cv.outline(&[a, (b.0, a.1), b, (a.0, b.1)], [0, 0, 0], 2.0);
             cv.text(a.0 + 2.0, a.1 + 2.0, "START", label_scale.max(1), INK);
+        }
+        if ring.is_some() {
+            let (a, b) = (sc.p(0.0, 0.0), sc.p(32.0 * nx as f32, 32.0 * nz as f32));
+            cv.outline(&[a, (b.0, a.1), b, (a.0, b.1)], INK, 3.0);
         }
         let _ = (w, h);
         (n_placed, placements)
