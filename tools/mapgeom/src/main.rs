@@ -5370,6 +5370,29 @@ fn main() {
             for b in &m.blocks { match b.waypoint_tag.as_deref() { Some("Spawn") => sp += 1, Some("Checkpoint") => cp += 1, Some("Goal") => go += 1, _ => {} } }
             println!("wrote {out}: {replaced} checkpoint blocks replaced, {removed} removed, {} without a rule {:?}; waypoints: {sp} Spawn, {cp} Checkpoint, {go} Goal", left.len(), left);
         }
+        // outer-terrain MAP.. --out F.tsv: the OUTER RING table (outer_ring.rs) of every map's collection/decoration,
+        //   one row per rectangle (collection, decoration, x0, x1, z0, z1, floor, kind) + the measurement notes
+        "outer-terrain" => {
+            let mut store = open(&a);
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("--out F.tsv".into()));
+            let maps: Vec<String> = a.rest.iter().skip(1).filter(|x| x.to_lowercase().ends_with(".map.gbx")).cloned().collect();
+            let mut tsv = String::from("collection\tdecoration\tx0\tx1\tz0\tz1\tfloor\tkind\n");
+            let mut seen: std::collections::BTreeSet<String> = Default::default();
+            for mp in &maps {
+                let m = tmmaps::map::MapFile::try_load(std::path::Path::new(mp)).unwrap_or_else(die);
+                let coll = m.body_collections().map(|c| c[0].1).unwrap_or(26);
+                let cname = mapgeom::sttc::collection_name(coll);
+                let deco = if coll == 0x1a { m.decoration_id.trim_end_matches("Day").trim_end_matches("Night").trim_end_matches("Sunrise").trim_end_matches("Sunset").to_string() } else { "Base64x64".to_string() };
+                let key = format!("{cname}/{deco}");
+                if !seen.insert(key.clone()) { continue; }
+                let r = mapgeom::outer_ring::ring(&mut store, &m, coll).unwrap_or_else(|e| die(format!("{mp}: {e}")));
+                println!("== {key} ({} rects)", r.rects.len());
+                for n in &r.notes { println!("   {n}"); }
+                tsv.push_str(&mapgeom::outer_ring::tsv_rows(cname, &deco, &r));
+            }
+            std::fs::write(&out, &tsv).unwrap_or_else(|e| die(format!("{out}: {e}")));
+            println!("wrote {out}: {} rows", tsv.lines().count() - 1);
+        }
         // cutout-verify --blocks A:FLAGS,..: for each exact cutout, sample every trigger-top triangle's centroid + edge
         //   midpoints and report any within the inset of a structure triangle (the "no overlap" check)
         "cutout-verify" => {
@@ -5694,6 +5717,7 @@ fn main() {
                 floor_shores: !a.rest.iter().any(|x| x == "--no-shores"),
                 ground_clippers: a.rest.iter().any(|x| x == "--ground-clippers"),
                 cutout_squares: a.rest.iter().any(|x| x == "--squares"),
+                no_ring: a.rest.iter().any(|x| x == "--no-ring"),
                 floor_cutouts: a.rest.iter().any(|x| x == "--cutouts"),
             };
             // --lights SOURCES.tsv (Hugo's Moth, 2026-10-22): the light sources are the carriers' seats. The TSV = the

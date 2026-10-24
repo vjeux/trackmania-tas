@@ -913,6 +913,49 @@ pub fn indicator_slot(m: &mut Merged) -> usize {
     m.material_inst_slot(&indicator_material(), "Stadium\\Media\\Material\\")
 }
 
+/// LIGHTMAP UVs for the indicator (v4.7, Hugo's shadow bake: "both the cutouts and the plane glitch out after
+/// calculating the shadows" — CustomGlass is a LIT material; without a TexCoord1 stream the baked lightmap was
+/// sampled with whatever the vertex declaration fed → streaks / a flat olive tint). Every box / polygon of one
+/// item is disjoint in plan, so ONE planar projection of the item's xz bounding box is a non-overlapping chart:
+/// `uv1 = (0.001 + (x − min_x)·s, 0.001 + (z − min_z)·s)`, `s = 0.998 / max(extent_x, extent_z)` (one uniform
+/// scale, square texels); the PreLightGenerator then says `u02 = 1/s` metres per uv unit with the chart's bounds
+/// in `u04[0..4]` (the reference items' own fields: version 1, u01 1, u03 true, u04[4..8] the ±MAX sentinels, no
+/// boxes, no uv groups). Tangents are the constants (1,0,0) / (0,0,1) of an up-facing pane.
+pub fn lightmap_projection(corners: &mut [[super::bake::Corner; 3]]) -> (f32, [f32; 4]) {
+    let (mut mnx, mut mxx, mut mnz, mut mxz) = (f32::INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::NEG_INFINITY);
+    for t in corners.iter() {
+        for c in t {
+            mnx = mnx.min(c.pos[0]);
+            mxx = mxx.max(c.pos[0]);
+            mnz = mnz.min(c.pos[2]);
+            mxz = mxz.max(c.pos[2]);
+        }
+    }
+    let ext = (mxx - mnx).max(mxz - mnz).max(1e-3);
+    let s = 0.998 / ext;
+    for t in corners.iter_mut() {
+        for c in t.iter_mut() {
+            c.uv1 = [0.001 + (c.pos[0] - mnx) * s, 0.001 + (c.pos[2] - mnz) * s];
+        }
+    }
+    (1.0 / s, [0.001, 0.001, 0.001 + (mxx - mnx) * s, 0.001 + (mxz - mnz) * s])
+}
+
+pub fn set_indicator_prelight(m: &mut Merged, metres_per_uv: f32, bounds: [f32; 4]) {
+    m.pre_light_gen = Some(super::solid2::PreLightGen {
+        version: 1,
+        u01: 1,
+        u02: metres_per_uv,
+        u03: true,
+        u04: [bounds[0], bounds[1], bounds[2], bounds[3], f32::MAX, f32::MAX, f32::MIN, f32::MIN],
+        sprite_count: [0, 0],
+        boxes: Vec::new(),
+        uv_groups: Vec::new(),
+    });
+    m.no_prelight = false;
+    m.notes.push(format!("lightmap: one planar chart, {metres_per_uv:.2} m per uv unit, uv1 bounds [{:.3} {:.3} {:.3} {:.3}]", bounds[0], bounds[1], bounds[2], bounds[3]));
+}
+
 pub fn add_finish_plane_visual(m: &mut Merged, quads: &[(f32, f32, f32, f32, f32)], lift: f32) -> R<()> {
     use super::bake::{make_visuals, Corner, VisualLayout};
     let link = INDICATOR_LINK;
@@ -931,13 +974,15 @@ pub fn add_finish_plane_visual(m: &mut Merged, quads: &[(f32, f32, f32, f32, f32
         return Err("finish plane: no quads".into());
     }
     m.visuals.clear();
-    // v4.6: the MINIMAL layout (Position, Normal, Color0, TexCoord0 — `DecalPaint`), the one v4 shipped and the one
-    // Hugo's FinishPlane.Build fills; the Full layout's TexCoord1 / tangent arrays were null at his write time
-    // (CPlugVertexStream "Null when it shouldn't be"). GlassBasic has no normal map, so no tangents are needed.
-    for v in make_visuals(&tris, VisualLayout::DecalPaint, "off") {
+    // v4.7: the Full layout (Position, Normal, TexCoord0, TexCoord1, tangents) — the game's own layout for a LIT
+    // material — with the lightmap chart of `lightmap_projection`; v4.6's minimal layout had no TexCoord1 and the
+    // shadow bake streaked the glass.
+    let (mpu, bounds) = lightmap_projection(&mut tris);
+    for v in make_visuals(&tris, VisualLayout::Full, "off") {
         m.visuals.push(super::merged::MergedVisual::every_level(v, slot));
     }
-    m.notes.push(format!("finish indicator: {} quads, {link} TargetColor {:?}, {lift:.2} m over the anchor, non-collidable, DecalPaint layout", quads.len(), INDICATOR_RGB));
+    set_indicator_prelight(m, mpu, bounds);
+    m.notes.push(format!("finish indicator: {} quads, {link} TargetColor {:?}, {lift:.2} m over the anchor, non-collidable, Full layout + lightmap chart", quads.len(), INDICATOR_RGB));
     Ok(())
 }
 
@@ -968,10 +1013,12 @@ pub fn add_finish_mesh_visual(m: &mut Merged, verts: &[[f32; 3]], tris: &[[u32; 
         return Err("finish mesh visual: no triangles".into());
     }
     m.visuals.clear();
-    for v in make_visuals(&out, VisualLayout::DecalPaint, "off") {
+    let (mpu, bounds) = lightmap_projection(&mut out);
+    for v in make_visuals(&out, VisualLayout::Full, "off") {
         m.visuals.push(super::merged::MergedVisual::every_level(v, slot));
     }
-    m.notes.push(format!("finish indicator mesh: {} triangles ({flipped} re-wound to the plane's up-facing order), {link} TargetColor {:?}, non-collidable, DecalPaint layout", tris.len(), INDICATOR_RGB));
+    set_indicator_prelight(m, mpu, bounds);
+    m.notes.push(format!("finish indicator mesh: {} triangles ({flipped} re-wound to the plane's up-facing order), {link} TargetColor {:?}, non-collidable, Full layout + lightmap chart", tris.len(), INDICATOR_RGB));
     Ok(())
 }
 

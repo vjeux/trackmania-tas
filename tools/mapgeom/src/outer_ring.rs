@@ -1,0 +1,389 @@
+//! The OUTER RING (Hugo, 2026-10-24 08:27: "people fly off the map and land on the grass/water outside the
+//! buildable area" — can the finish extend ~6 cells outside the grid?). The terrain outside the grid is the
+//! map's DECORATION, measured here per 4 m square over the band −6..+6 cells around the grid:
+//!
+//! * **Stadium** (`48x48*` decorations): the decoration is itself a map in the `Stadium256` collection (256 m
+//!   cells, 16×12 = 4096×3072 m; the 1536 m grid sits 1280 / 768 m in — cells 5 / 3) holding two `Stade1536`
+//!   halves (east/west, each spanning exactly the grid's z range) and two `Stade4096` halves (north/south, the
+//!   long sides). Each half prefab = a hit shape (`<Name>.HitShape.Gbx`, the stands' collision) + a grass static
+//!   object (`Grass1536` 213 m × 1536 m, `Grass4096` 1630 m × 78 m) at y 128 in the deco frame = the grid's own
+//!   grass height 8.0 (deco y − 120). The second half of each pair is the point reflection of the first through the
+//!   stadium centre (dir 2 = yaw π: `deco = origin + (W − x, D − z)`, footprints (1280, 1536) and (4096, 768)).
+//!   The clear flat grass at 8.0 (no hit-shape face within 3 m above it in the square) reaches 188–192 m (6 cells)
+//!   along the east/west sides, tapering to 40–80 m at the corners, and only 0–72 m along north/south; beyond it the
+//!   ground dips into a trench (−7 / −16) or climbs into the stands (+9 / +23). Not a constant → a table of
+//!   4 m-row strips. `NoStadium48x48*` decorations: one flat `NoStadium` piece — measured the same way.
+//! * **Vistas** (`Base64x64*`): the `Base64x64.Scene3d` is a huge sea (`Water` plane) over a `WarpSand` /
+//!   `WarpGround` seabed, with an `InvisibleShadowCaster` box under the grid ± 198 m. The scene frame is the map
+//!   frame horizontally; vertically it is `WaterDesc.top − the scene's Water plane y` (BlueBay 0, the other three
+//!   +8.0 m — their scene sits one row lower). In the band the sea covers every square; the bed starts at 4.0 at
+//!   the grid edge (all four) and undulates down to about −3.5 by the 6th cell. Ring slab = ONE body anchored on the
+//!   band's highest bed (4.0 — identical to BlueBay's inside open bed, 2 m over the other three's 2.0): a car sinking
+//!   anywhere in the ring passes through 3.9..5.15 before it can reach a bed ≤ 4.0, so one y catches everything.
+use std::collections::BTreeMap;
+
+use tmmaps::map::MapFile;
+
+/// The band outside the grid, in cells.
+pub const RING_CELLS: i32 = 6;
+/// Band raster for the Stadium flat-grass test.
+pub const STEP: f32 = 4.0;
+/// Stadium: a hit-shape face this far above the grass inside a square makes it structure (walls, seats, banks).
+const WALL_ABOVE: f32 = 0.3;
+const WALL_UNDER: f32 = 3.0;
+
+#[derive(Clone, Debug)]
+pub struct OuterRect {
+    pub x0: f32,
+    pub x1: f32,
+    pub z0: f32,
+    pub z1: f32,
+    /// the ground the slab is anchored on (Stadium grass 8.0; vista seabed anchor)
+    pub floor: f32,
+    pub kind: &'static str,
+}
+
+pub struct Ring {
+    pub rects: Vec<OuterRect>,
+    /// per-square (x index, z index) → floor for the drawing tools (Stadium only; vistas are uniform)
+    pub squares: BTreeMap<(i32, i32), f32>,
+    pub notes: Vec<String>,
+}
+
+fn scene_tris(c: &crate::geom::Collector<'_>, group_starts: &str) -> Vec<[[f32; 3]; 3]> {
+    let mut out = Vec::new();
+    for (name, g) in &c.scene.groups {
+        if !name.starts_with(group_starts) {
+            continue;
+        }
+        for t in &g.tris {
+            if let (Some(a), Some(b), Some(cc)) = (g.verts.get(t[0] as usize), g.verts.get(t[1] as usize), g.verts.get(t[2] as usize)) {
+                out.push([*a, *b, *cc]);
+            }
+        }
+    }
+    out
+}
+
+fn all_tris(c: &crate::geom::Collector<'_>) -> Vec<(String, [[f32; 3]; 3])> {
+    let mut out = Vec::new();
+    for (name, g) in &c.scene.groups {
+        for t in &g.tris {
+            if let (Some(a), Some(b), Some(cc)) = (g.verts.get(t[0] as usize), g.verts.get(t[1] as usize), g.verts.get(t[2] as usize)) {
+                out.push((name.clone(), [*a, *b, *cc]));
+            }
+        }
+    }
+    out
+}
+
+fn upward(t: &[[f32; 3]; 3]) -> bool {
+    let (a, b, c) = (t[0], t[1], t[2]);
+    let (u, v) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [c[0] - a[0], c[1] - a[1], c[2] - a[2]]);
+    let n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+    let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+    len > 1e-9 && n[1] / len > 0.7
+}
+
+/// Height of a triangle's plane at (x, z) when the point lies inside its xz projection.
+fn height_at(t: &[[f32; 3]; 3], x: f32, z: f32) -> Option<f32> {
+    let (a, b, c) = (t[0], t[1], t[2]);
+    let det = (b[0] - a[0]) * (c[2] - a[2]) - (c[0] - a[0]) * (b[2] - a[2]);
+    if det.abs() < 1e-9 {
+        return None;
+    }
+    let l1 = ((b[0] - x) * (c[2] - z) - (c[0] - x) * (b[2] - z)) / det;
+    let l2 = ((c[0] - x) * (a[2] - z) - (a[0] - x) * (c[2] - z)) / det;
+    let l3 = 1.0 - l1 - l2;
+    if l1 < -1e-5 || l2 < -1e-5 || l3 < -1e-5 {
+        return None;
+    }
+    Some(l1 * a[1] + l2 * b[1] + l3 * c[1])
+}
+
+/// The vista ring: 4 frame rectangles on one anchor.
+fn vista_ring(store: &mut crate::store::DataStore, collection: u32, size: (i32, i32)) -> Result<Ring, String> {
+    let coll = crate::sttc::collection_name(collection);
+    let water = crate::terrain::collection_water(store, coll)?;
+    let path = format!("{coll}\\GameCtnDecoration\\Scene3d\\Base64x64.Scene3d.Gbx");
+    let mut c = crate::geom::Collector::new(store);
+    crate::scene3d::collect(&mut c, &path)?;
+    let sea = scene_tris(&c, "Water");
+    let ground = scene_tris(&c, "Warp");
+    if sea.is_empty() || ground.is_empty() {
+        return Err(format!("{path}: no Water / Warp* solids ({} groups: {:?})", c.scene.groups.len(), c.scene.groups.keys().collect::<Vec<_>>()));
+    }
+    let scene_water_y = sea.iter().map(|t| t[0][1]).fold(f32::NEG_INFINITY, f32::max);
+    let yoff = water.top - scene_water_y;
+    let (gx, gz) = (32.0 * size.0 as f32, 32.0 * size.1 as f32);
+    let margin = 32.0 * RING_CELLS as f32;
+    // sample the band's bed on the 4 m raster (centres), the sea's coverage too
+    let n = ((gx + 2.0 * margin) / STEP).round() as i32;
+    let nz = ((gz + 2.0 * margin) / STEP).round() as i32;
+    let (mut bed_min, mut bed_max, mut bed_sum, mut cnt, mut dry, mut no_bed) = (f32::INFINITY, f32::NEG_INFINITY, 0.0f64, 0usize, 0usize, 0usize);
+    let mut per_cell: BTreeMap<i32, (f32, f32)> = BTreeMap::new();
+    for j in 0..nz {
+        for i in 0..n {
+            let (x, z) = (-margin + (i as f32 + 0.5) * STEP, -margin + (j as f32 + 0.5) * STEP);
+            if x >= 0.0 && x <= gx && z >= 0.0 && z <= gz {
+                continue;
+            }
+            let bed = ground.iter().filter(|t| upward(t)).filter_map(|t| height_at(t, x, z)).fold(f32::INFINITY, f32::min);
+            let wet = sea.iter().any(|t| height_at(t, x, z).is_some());
+            if !wet {
+                dry += 1;
+            }
+            if bed == f32::INFINITY {
+                no_bed += 1;
+                continue;
+            }
+            let bed = bed + yoff;
+            bed_min = bed_min.min(bed);
+            bed_max = bed_max.max(bed);
+            bed_sum += bed as f64;
+            cnt += 1;
+            let d = (-x).max(x - gx).max(-z).max(z - gz);
+            let e = per_cell.entry((d / 32.0).floor() as i32).or_insert((f32::INFINITY, f32::NEG_INFINITY));
+            e.0 = e.0.min(bed);
+            e.1 = e.1.max(bed);
+        }
+    }
+    if cnt == 0 {
+        return Err("outer ring: no seabed under the band".into());
+    }
+    let anchor = (bed_max * 100.0).round() / 100.0;
+    let rects = vec![
+        OuterRect { x0: -margin, x1: gx + margin, z0: -margin, z1: 0.0, floor: anchor, kind: "sea" },
+        OuterRect { x0: -margin, x1: gx + margin, z0: gz, z1: gz + margin, floor: anchor, kind: "sea" },
+        OuterRect { x0: -margin, x1: 0.0, z0: 0.0, z1: gz, floor: anchor, kind: "sea" },
+        OuterRect { x0: gx, x1: gx + margin, z0: 0.0, z1: gz, floor: anchor, kind: "sea" },
+    ];
+    let notes = vec![
+        format!("outer ring ({coll}, Base64x64 Scene3d): scene frame = map frame + {yoff:.1} m in y (water type {:?} top {:.2} vs the scene's Water plane {scene_water_y:.2}); band −{margin:.0}..+{margin:.0} m: {cnt} squares of 4 m, {dry} dry, {no_bed} without a bed; seabed {bed_min:.2}..{bed_max:.2} (mean {:.2}); per ring cell (min..max): {}; ring slab anchored on the highest bed {anchor:.2} → 4 frame boxes", water.name, water.top, bed_sum / cnt as f64, per_cell.iter().map(|(k, (lo, hi))| format!("{k}: {lo:.2}..{hi:.2}")).collect::<Vec<_>>().join(", ")),
+    ];
+    Ok(Ring { rects, squares: BTreeMap::new(), notes })
+}
+
+/// A Stadium decoration piece placed in the deco map: (x, y, z) local → map frame.
+struct Placement {
+    origin: [f32; 2],
+    /// dir 2: `deco = origin + (W − x, D − z)`; dir 0: `deco = origin + (x, z)`
+    footprint: Option<[f32; 2]>,
+}
+
+impl Placement {
+    fn to_map(&self, p: [f32; 3]) -> [f32; 3] {
+        let (x, z) = match self.footprint {
+            None => (self.origin[0] + p[0], self.origin[1] + p[2]),
+            Some([w, d]) => (self.origin[0] + w - p[0], self.origin[1] + d - p[2]),
+        };
+        [x - 1280.0, p[1] - 120.0, z - 768.0]
+    }
+}
+
+fn stadium_ring(store: &mut crate::store::DataStore, m: &MapFile, size: (i32, i32)) -> Result<Ring, String> {
+    // the deco map behind the decoration id (48x48Day, 48x48Screen155Sunset, NoStadium48x48Night …)
+    let deco_id = m.decoration_id.clone();
+    let deco_map = if deco_id.starts_with("NoStadium") {
+        "Stadium\\GameCtnDecoration\\Map\\DecoNoStadium48x48.Map.Gbx"
+    } else if deco_id.contains("Screen155") {
+        "Stadium\\GameCtnDecoration\\Map\\Deco48x48_Screen155.Map.Gbx"
+    } else {
+        "Stadium\\GameCtnDecoration\\Map\\Deco48x48.Map.Gbx"
+    };
+    let bytes = store.read(deco_map)?;
+    let tmp = std::env::temp_dir().join(format!("mapgeom-deco-{}.Map.Gbx", std::process::id()));
+    std::fs::write(&tmp, &bytes[..]).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    let deco = MapFile::try_load(&tmp).map_err(|e| format!("{deco_map}: {e}"))?;
+    let _ = std::fs::remove_file(&tmp);
+    let mut notes = vec![format!("outer ring (Stadium, decoration {deco_id:?} → {deco_map}): {} blocks", deco.blocks.len())];
+    // every placed piece: its hit shape + grass object, into the map frame
+    let mut pieces: Vec<(String, [[f32; 3]; 3])> = Vec::new();
+    for b in &deco.blocks {
+        if b.flags == 0xFFFF_FFFF || b.name.eq_ignore_ascii_case("Grass") {
+            continue;
+        }
+        let (cx, cz) = (b.coords().0, b.coords().2);
+        let dir = b.dir;
+        let origin = [256.0 * cx as f32, 256.0 * cz as f32];
+        let (footprint, grass) = if b.name.starts_with("Stade1536") {
+            ([1280.0, 1536.0], "Grass1536")
+        } else if b.name.starts_with("Stade4096") {
+            ([4096.0, 768.0], "Grass4096")
+        } else {
+            ([4096.0, 3072.0], "")
+        };
+        let pl = Placement { origin, footprint: if dir == 2 { Some(footprint) } else { None } };
+        if dir != 0 && dir != 2 {
+            notes.push(format!("  {} at ({cx},{cz}) dir {dir}: only dir 0/2 placements are understood — skipped", b.name));
+            continue;
+        }
+        let dir_name = format!("Stadium256\\Media\\Solid\\Warp\\");
+        let mut files = vec![format!("{dir_name}{}.HitShape.Gbx", b.name)];
+        if !grass.is_empty() {
+            files.push(format!("{dir_name}{grass}.StaticObject.Gbx"));
+        }
+        for f in files {
+            let loaded = match store.load_model(&f) {
+                Ok(l) => l,
+                Err(e) => {
+                    notes.push(format!("  {f}: {e}"));
+                    continue;
+                }
+            };
+            let mut c = crate::geom::Collector::new(store);
+            c.model(&loaded, &crate::geom::IDENTITY, 0);
+            let tris = all_tris(&c);
+            notes.push(format!("  {} at ({cx},{cz}) dir {dir}: {f}: {} triangles", b.name, tris.len()));
+            for (g, t) in tris {
+                pieces.push((g, [pl.to_map(t[0]), pl.to_map(t[1]), pl.to_map(t[2])]));
+            }
+        }
+    }
+    if pieces.is_empty() {
+        return Err(format!("{deco_map}: no decoration geometry loaded"));
+    }
+    let (gx, gz) = (32.0 * size.0 as f32, 32.0 * size.1 as f32);
+    let margin = 32.0 * RING_CELLS as f32;
+    let n = ((gx + 2.0 * margin) / STEP).round() as i32;
+    let nz = ((gz + 2.0 * margin) / STEP).round() as i32;
+    // bucket the triangles touching the band by 4 m square: lowest upward face min-y (floor), structure flag
+    let mut low: BTreeMap<(i32, i32), f32> = BTreeMap::new();
+    let mut wall: BTreeMap<(i32, i32), bool> = BTreeMap::new();
+    let grass_y = 8.0f32;
+    for (_g, t) in &pieces {
+        let (x0, x1) = (t.iter().map(|v| v[0]).fold(f32::INFINITY, f32::min), t.iter().map(|v| v[0]).fold(f32::NEG_INFINITY, f32::max));
+        let (z0, z1) = (t.iter().map(|v| v[2]).fold(f32::INFINITY, f32::min), t.iter().map(|v| v[2]).fold(f32::NEG_INFINITY, f32::max));
+        let (y0, y1) = (t.iter().map(|v| v[1]).fold(f32::INFINITY, f32::min), t.iter().map(|v| v[1]).fold(f32::NEG_INFINITY, f32::max));
+        if x1 < -margin || x0 > gx + margin || z1 < -margin || z0 > gz + margin || y0 > grass_y + 40.0 {
+            continue;
+        }
+        let (i0, i1) = ((((x0 + margin) / STEP).floor() as i32).max(0), (((x1 + margin) / STEP).floor() as i32).min(n - 1));
+        let (j0, j1) = ((((z0 + margin) / STEP).floor() as i32).max(0), (((z1 + margin) / STEP).floor() as i32).min(nz - 1));
+        let up = upward(t);
+        for j in j0..=j1 {
+            for i in i0..=i1 {
+                if up {
+                    let e = low.entry((i, j)).or_insert(f32::INFINITY);
+                    *e = e.min(y0);
+                }
+                if y1 > grass_y + WALL_ABOVE && y0 < grass_y + WALL_UNDER + WALL_ABOVE {
+                    wall.insert((i, j), true);
+                }
+            }
+        }
+    }
+    let mut squares: BTreeMap<(i32, i32), f32> = BTreeMap::new();
+    let (mut clear, mut flat_blocked, mut other, mut none) = (0usize, 0usize, 0usize, 0usize);
+    let mut rows: BTreeMap<i32, Vec<i32>> = BTreeMap::new();
+    for j in 0..nz {
+        for i in 0..n {
+            let (x, z) = (-margin + (i as f32 + 0.5) * STEP, -margin + (j as f32 + 0.5) * STEP);
+            if x >= 0.0 && x <= gx && z >= 0.0 && z <= gz {
+                continue;
+            }
+            match low.get(&(i, j)) {
+                None => none += 1,
+                Some(&y) if (y - grass_y).abs() <= 0.1 && !wall.contains_key(&(i, j)) => {
+                    clear += 1;
+                    squares.insert((i, j), grass_y);
+                    rows.entry(j).or_default().push(i);
+                }
+                Some(&y) if (y - grass_y).abs() <= 0.1 => flat_blocked += 1,
+                Some(_) => other += 1,
+            }
+        }
+    }
+    // strips along x per 4 m row
+    let mut rects = Vec::new();
+    for (j, mut xs) in rows {
+        xs.sort_unstable();
+        let mut k = 0;
+        while k < xs.len() {
+            let start = xs[k];
+            let mut end = start;
+            while k + 1 < xs.len() && xs[k + 1] == end + 1 {
+                k += 1;
+                end = xs[k];
+            }
+            k += 1;
+            rects.push(OuterRect { x0: -margin + start as f32 * STEP, x1: -margin + (end + 1) as f32 * STEP, z0: -margin + j as f32 * STEP, z1: -margin + (j + 1) as f32 * STEP, floor: grass_y, kind: "grass" });
+        }
+    }
+    // depth of the clear ring per side, sampled every 128 m, for the report
+    let depth = |side: char| -> Vec<i32> {
+        let mut out = Vec::new();
+        let len = if side == 'W' || side == 'E' { gz } else { gx };
+        let mut t = 64.0;
+        while t < len {
+            let mut d = 0;
+            for k in 1..=(margin / STEP) as i32 {
+                let (x, z) = match side {
+                    'W' => (-(k as f32) * STEP + STEP / 2.0, t),
+                    'E' => (gx + k as f32 * STEP - STEP / 2.0, t),
+                    'N' => (t, -(k as f32) * STEP + STEP / 2.0),
+                    _ => (t, gz + k as f32 * STEP - STEP / 2.0),
+                };
+                let key = (((x + margin) / STEP).floor() as i32, ((z + margin) / STEP).floor() as i32);
+                if squares.contains_key(&key) {
+                    d = k;
+                } else {
+                    break;
+                }
+            }
+            out.push(d * STEP as i32);
+            t += 128.0;
+        }
+        out
+    };
+    notes.push(format!("band 4 m squares: {clear} clear flat grass at {grass_y:.1} (→ {} row strips), {flat_blocked} flat but structure within {WALL_UNDER:.0} m above, {other} other floor heights, {none} without a floor; clear depth (m) every 128 m — W {:?} E {:?} N {:?} S {:?}", rects.len(), depth('W'), depth('E'), depth('N'), depth('S')));
+    Ok(Ring { rects, squares, notes })
+}
+
+/// The ring for a map: Stadium → the flat-grass strips of its decoration; vistas → 4 sea frame boxes.
+pub fn ring(store: &mut crate::store::DataStore, m: &MapFile, collection: u32) -> Result<Ring, String> {
+    let size = (m.size[0] as i32, m.size[2] as i32);
+    if collection == 0x1a {
+        stadium_ring(store, m, size)
+    } else {
+        vista_ring(store, collection, size)
+    }
+}
+
+/// Append ring boxes to a floor mesh: Stadium rects as slabs floor−below..floor+above (the plane's own), vista
+/// rects on the vista slab (bed − 0.1 .. bed + 1.15). Returns the number of boxes added.
+pub fn append_to_mesh(mesh: &mut crate::floor_finish::FloorMesh, ring: &Ring, collection: u32, below: f32, above: f32) -> usize {
+    let quads: [[u32; 4]; 6] = [[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4], [2, 3, 7, 6], [1, 2, 6, 5], [0, 4, 7, 3]];
+    let (vb, va) = crate::floor_finish::vista_slab(collection);
+    let mut n = 0;
+    for r in &ring.rects {
+        let (y0, y1) = if collection == 0x1a { (r.floor - below, r.floor + above) } else { (r.floor - vb, r.floor + va) };
+        let base = mesh.verts.len() as u32;
+        mesh.verts.extend_from_slice(&[[r.x0, y0, r.z0], [r.x1, y0, r.z0], [r.x1, y1, r.z0], [r.x0, y1, r.z0], [r.x0, y0, r.z1], [r.x1, y0, r.z1], [r.x1, y1, r.z1], [r.x0, y1, r.z1]]);
+        for q in quads {
+            mesh.tris.push([base + q[0], base + q[1], base + q[2]]);
+            mesh.tris.push([base + q[0], base + q[2], base + q[3]]);
+        }
+        for v in &mesh.verts[base as usize..] {
+            for k in 0..3 {
+                mesh.bbox.0[k] = mesh.bbox.0[k].min(v[k]);
+                mesh.bbox.1[k] = mesh.bbox.1[k].max(v[k]);
+            }
+        }
+        mesh.quads.push((r.x0, r.x1, r.z0, r.z1, r.floor));
+        n += 1;
+    }
+    mesh.notes.extend(ring.notes.iter().cloned());
+    mesh.notes.push(format!("outer ring: {n} boxes appended"));
+    n
+}
+
+/// `OuterTerrain.tsv` rows for the C#: collection, decoration (Stadium: the deco map's stem; vistas "Base64x64"),
+/// x0 x1 z0 z1 (m, map frame), floor, kind.
+pub fn tsv_rows(collection_name: &str, decoration: &str, ring: &Ring) -> String {
+    let mut s = String::new();
+    for r in &ring.rects {
+        s.push_str(&format!("{collection_name}\t{decoration}\t{:.1}\t{:.1}\t{:.1}\t{:.1}\t{:.2}\t{}\n", r.x0, r.x1, r.z0, r.z1, r.floor, r.kind));
+    }
+    s
+}

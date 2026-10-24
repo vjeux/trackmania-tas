@@ -64,6 +64,8 @@ pub struct FlagsOpts {
     pub ground_clippers: bool,
     /// `--squares`: the v3/v4 1 m-raster cutouts instead of the exact outlines (v4.4 default)
     pub cutout_squares: bool,
+    /// `--no-ring`: no outer ring (v4.7 default: the plane and the GroundClippers extend 6 cells outside the grid)
+    pub no_ring: bool,
     /// `--shores`: the shore tiles' water parts join the floor item (off by default since 2026-10-23 09:51)
     pub floor_shores: bool,
     /// Hugo's round 4 (2026-10-23 13:51, Stadium): `--cutouts` adds one carrier per ground-block KIND whose ground
@@ -380,9 +382,9 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
         if let Some((_, below, above)) = &o.floor_item {
             let ident = format!("{stem}.Item.Gbx");
             let (bytes, mesh) = if o.ground_clippers {
-                crate::floor_finish::build_ground_clippers_item(ctx.store, &m, collection, &ident).map_err(|e| format!("{stem}: {e}"))?
+                crate::floor_finish::build_ground_clippers_item_ring(ctx.store, &m, collection, &ident, !o.no_ring).map_err(|e| format!("{stem}: {e}"))?
             } else {
-                crate::floor_finish::build_floor_item(ctx.store, &m, collection, &ident, *below, *above, o.floor_shores, lm_word).map_err(|e| format!("{stem}: {e}"))?
+                crate::floor_finish::build_floor_item_ring(ctx.store, &m, collection, &ident, *below, *above, o.floor_shores, lm_word, !o.no_ring).map_err(|e| format!("{stem}: {e}"))?
             };
             let mut row = Row::new(&map_label, "flags", "model", 0, stem);
             row.action = if o.ground_clippers { "ground-clippers-built".into() } else { "floor-item-built".into() };

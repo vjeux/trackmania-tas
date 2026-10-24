@@ -1371,7 +1371,18 @@ pub fn floor_mesh(store: &mut crate::store::DataStore, m: &MapFile, collection: 
 /// The one-per-map carrier: an invisible Finish item (speck visual, no collision) whose trigger is the
 /// floor mesh; ident = author = `<ident>`; collection = the map's. Returns (bytes, mesh).
 pub fn build_floor_item(store: &mut crate::store::DataStore, m: &MapFile, collection: u32, ident: &str, below: f32, above: f32, shores: bool, lm_word: Option<u64>) -> Result<(Vec<u8>, FloorMesh), String> {
-    let mesh = if collection == 0x1a { stadium_plane_mesh(store, m, below, above)? } else { floor_mesh(store, m, collection, below, above, shores)? };
+    build_floor_item_ring(store, m, collection, ident, below, above, shores, lm_word, true)
+}
+
+/// `ring`: append the OUTER RING (outer_ring.rs — v4.7, Hugo: "people fly off the map and land on the grass/water
+/// outside the buildable area") to the plane: the decoration's flat grass (Stadium) / the open sea (vistas) up to
+/// 6 cells outside the grid.
+pub fn build_floor_item_ring(store: &mut crate::store::DataStore, m: &MapFile, collection: u32, ident: &str, below: f32, above: f32, shores: bool, lm_word: Option<u64>, ring: bool) -> Result<(Vec<u8>, FloorMesh), String> {
+    let mut mesh = if collection == 0x1a { stadium_plane_mesh(store, m, below, above)? } else { floor_mesh(store, m, collection, below, above, shores)? };
+    if ring {
+        let r = crate::outer_ring::ring(store, m, collection)?;
+        crate::outer_ring::append_to_mesh(&mut mesh, &r, collection, below, above);
+    }
     let donor = "Stadium\\Items\\LightCube2m.Item.Gbx";
     let mut mg = crate::static_item::build::pack_item_merged(store, donor, 1.0, collection, 0, None).map_err(|e| format!("donor {donor}: {e}"))?;
     crate::static_item::build::make_invisible_mesh_waypoint(&mut mg, crate::sttc::WP_FINISH, mesh.verts.clone(), mesh.tris.clone())?;
@@ -1423,10 +1434,19 @@ pub fn map_floor(m: &MapFile, collection: u32) -> Option<(f32, i32, f32)> {
 /// indicator pane on its top (under the terrain, never seen), Finish waypoint. Returns the bytes and
 /// the mesh (one box).
 pub fn build_ground_clippers_item(store: &mut crate::store::DataStore, m: &MapFile, collection: u32, ident: &str) -> Result<(Vec<u8>, FloorMesh), String> {
+    build_ground_clippers_item_ring(store, m, collection, ident, true)
+}
+
+/// `ring`: the clipper box grows by the outer ring's 6 cells on every side (v4.7) — under the ring the decoration
+/// ground is at or below the clipper only in places (the vista seabed dips to −3.5, the Stadium trench to −16),
+/// and where it is lower a car sinking / falling there meets the clipper first: a finish either way.
+pub fn build_ground_clippers_item_ring(store: &mut crate::store::DataStore, m: &MapFile, collection: u32, ident: &str, ring: bool) -> Result<(Vec<u8>, FloorMesh), String> {
     let (floor, row, bed) = map_floor(m, collection).ok_or("no terrain tile in the map (authored or baked): no floor to clip through")?;
-    let (x1, z1) = (32.0 * m.size[0] as f32, 32.0 * m.size[2] as f32);
+    let margin = if ring { 32.0 * crate::outer_ring::RING_CELLS as f32 } else { 0.0 };
+    let (x1, z1) = (32.0 * m.size[0] as f32 + margin, 32.0 * m.size[2] as f32 + margin);
     let (y1, y0) = (floor - CLIPPER_TOP_UNDER_FLOOR, floor - CLIPPER_TOP_UNDER_FLOOR - CLIPPER_THICKNESS);
-    let verts = vec![[0.0, y0, 0.0], [x1, y0, 0.0], [x1, y1, 0.0], [0.0, y1, 0.0], [0.0, y0, z1], [x1, y0, z1], [x1, y1, z1], [0.0, y1, z1]];
+    let x0m = -margin;
+    let verts = vec![[x0m, y0, x0m], [x1, y0, x0m], [x1, y1, x0m], [x0m, y1, x0m], [x0m, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0m, y1, z1]];
     let quads: [[u32; 4]; 6] = [[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4], [2, 3, 7, 6], [1, 2, 6, 5], [0, 4, 7, 3]];
     let mut tris = Vec::new();
     for q in quads {
@@ -1436,10 +1456,10 @@ pub fn build_ground_clippers_item(store: &mut crate::store::DataStore, m: &MapFi
     let donor = "Stadium\\Items\\LightCube2m.Item.Gbx";
     let mut mg = crate::static_item::build::pack_item_merged(store, donor, 1.0, collection, 0, None).map_err(|e| format!("donor {donor}: {e}"))?;
     crate::static_item::build::make_invisible_mesh_waypoint(&mut mg, crate::sttc::WP_FINISH, verts.clone(), tris.clone())?;
-    crate::static_item::build::add_finish_plane_visual(&mut mg, &[(0.0, x1, 0.0, z1, y1 - INDICATOR_LIFT)], INDICATOR_LIFT)?;
+    crate::static_item::build::add_finish_plane_visual(&mut mg, &[(x0m, x1, x0m, z1, y1 - INDICATOR_LIFT)], INDICATOR_LIFT)?;
     let (bytes, _) = crate::static_item::build::finish_item(mg, ident, ident, 1.0, collection)?;
-    let notes = vec![format!("ground clippers: map {}×{} cells → box 0..{x1:.0} × 0..{z1:.0} m, floor = lowest terrain row {row} (floor y {:.2} + bed {bed:.1}) = {floor:.2} → slab {y0:.2} .. {y1:.2}", m.size[0], m.size[2], floor - bed)];
-    Ok((bytes, FloorMesh { verts, tris, quads: vec![(0.0, x1, 0.0, z1, y1 - INDICATOR_LIFT)], cells: (m.size[0] * m.size[2]) as usize, strips: 1, shore_boxes: 0, shore_prisms: 0, notes, bbox: ([0.0, y0, 0.0], [x1, y1, z1]) }))
+    let notes = vec![format!("ground clippers: map {}×{} cells → box {x0m:.0}..{x1:.0} × {x0m:.0}..{z1:.0} m (ring margin {margin:.0} m), floor = lowest terrain row {row} (floor y {:.2} + bed {bed:.1}) = {floor:.2} → slab {y0:.2} .. {y1:.2}", m.size[0], m.size[2], floor - bed)];
+    Ok((bytes, FloorMesh { verts, tris, quads: vec![(x0m, x1, x0m, z1, y1 - INDICATOR_LIFT)], cells: (m.size[0] * m.size[2]) as usize, strips: 1, shore_boxes: 0, shore_prisms: 0, notes, bbox: ([0.0, y0, 0.0], [x1, y1, z1]) }))
 }
 
 /// The standable fill triangles and the structure triangles of a block's picked variant (block frame).
