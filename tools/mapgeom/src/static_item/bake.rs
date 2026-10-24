@@ -1128,6 +1128,16 @@ pub fn color_decls() -> Vec<Decl> {
 /// share a vertex. The vertex layout follows the material family (see
 /// [`visual_layout`]): color is always flat white, flags 0x78 only on the
 /// Pxz white bases.
+/// The Color0 word every vertex of a `make_visuals` stream gets (`0xAARRGGBB` as stored, little-endian):
+/// white in every Nadeo item; the finish indicator's decal pane (v4.10) tints its flat white texture through it.
+static VERTEX_COLOR0: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0xFFFF_FFFF);
+pub fn set_vertex_color0(word: u32) {
+    VERTEX_COLOR0.store(word, std::sync::atomic::Ordering::Relaxed);
+}
+pub fn vertex_color0() -> u32 {
+    VERTEX_COLOR0.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub fn make_visuals(tris: &[[Corner; 3]], layout: VisualLayout, umode: &str) -> Vec<CPlugVisualIndexedTriangles> {
     let want_color = !matches!(layout, VisualLayout::Full | VisualLayout::SpecialFX);
     let want_uv1 = matches!(layout, VisualLayout::Full | VisualLayout::White);
@@ -1163,7 +1173,7 @@ pub fn make_visuals(tris: &[[Corner; 3]], layout: VisualLayout, umode: &str) -> 
                     key.push(v.to_bits());
                 }
                 if want_color {
-                    key.push(0xFFFF_FFFF);
+                    key.push(vertex_color0());
                 }
                 key.push(c.uv[0].to_bits());
                 key.push(c.uv[1].to_bits());
@@ -1238,7 +1248,7 @@ pub fn make_visuals(tris: &[[Corner; 3]], layout: VisualLayout, umode: &str) -> 
                     pos.push(c.pos);
                     nrm.push(dec3n_pack(c.normal));
                     if want_color {
-                        col.push(0xFFFF_FFFF);
+                        col.push(vertex_color0());
                     }
                     uv.push(c.uv);
                     if want_uv1 {

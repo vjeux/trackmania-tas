@@ -907,12 +907,42 @@ pub const INDICATOR_LINK: &str = "Stadium\\Media\\Material_BlockCustom\\CustomGl
 /// mirror), so a quarter-turned block shows its stripes turned 90°. `--indicator glass` keeps the v4.7 glass.
 pub const GATE_LINK: &str = "Stadium\\Media\\Material\\RaceTriggerFXFinish";
 pub const GATE_TILE_M: f32 = 8.0;
-static INDICATOR_GLASS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// v4.10 (Hugo 09:33: the gate pane ANIMATES; "unlit + static + solid red, ideally translucent"): the survey of the
+/// 478 Stadium materials (`mapgeom material-survey`) leaves the DECAL GEOMETRY family as the only unlit (no lightmap
+/// stream in any game decal visual), static (no FuncShader) materials with a FLAT texture; `DecalObstacleTurnstileRight`
+/// is the brightest flat one: 128×32 uniform (241, 241, 241) at alpha 66/255 = 26 %. The pane's colour comes from
+/// the vertex colour: Color0 = (255, 60, 60, 255) = `0xFFFF3C3C` as stored (AARRGGBB, little-endian) — the shader's
+/// use of Color0 RGB is the one unverified assumption (every Nadeo item leaves it white).
+pub const DECAL_LINK: &str = "Stadium\\Media\\Material\\DecalObstacleTurnstileRight";
+pub const DECAL_COLOR0: u32 = 0xFFFF_3C3C;
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Indicator {
+    /// v4.10 default: the flat decal tinted by Color0
+    Decal,
+    /// v4.8: the vanilla gate pane (animates in game)
+    Gate,
+    /// v4.5–v4.7: tinted CustomGlass with a lightmap chart (lit)
+    Glass,
+}
+static INDICATOR: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+pub fn set_indicator(mode: Indicator) {
+    INDICATOR.store(match mode { Indicator::Decal => 0, Indicator::Gate => 1, Indicator::Glass => 2 }, std::sync::atomic::Ordering::Relaxed);
+}
+pub fn indicator() -> Indicator {
+    match INDICATOR.load(std::sync::atomic::Ordering::Relaxed) { 1 => Indicator::Gate, 2 => Indicator::Glass, _ => Indicator::Decal }
+}
 pub fn set_indicator_glass(glass: bool) {
-    INDICATOR_GLASS.store(glass, std::sync::atomic::Ordering::Relaxed);
+    set_indicator(if glass { Indicator::Glass } else { Indicator::Gate });
 }
 pub fn indicator_is_glass() -> bool {
-    INDICATOR_GLASS.load(std::sync::atomic::Ordering::Relaxed)
+    indicator() == Indicator::Glass
+}
+/// The unlit modes' material slot + the Color0 word they need.
+fn indicator_unlit(m: &mut Merged) -> (&'static str, usize, u32) {
+    match indicator() {
+        Indicator::Gate => (GATE_LINK, m.material_slot(GATE_LINK, 28), 0xFFFF_FFFF),
+        _ => (DECAL_LINK, m.material_slot(DECAL_LINK, 28), DECAL_COLOR0),
+    }
 }
 /// v4.6 (Hugo 08:44): (1, 0, 0) rendered as a dark wine red; lighter = (1.0, 0.5, 0.5) (his friend's 0.943/0.358/0.358
 /// looked right to them) — opacity is fixed in CustomGlass, only the tint moves.
@@ -977,8 +1007,7 @@ pub fn set_indicator_prelight(m: &mut Merged, metres_per_uv: f32, bounds: [f32; 
 pub fn add_finish_plane_visual(m: &mut Merged, quads: &[(f32, f32, f32, f32, f32)], lift: f32) -> R<()> {
     use super::bake::{make_visuals, Corner, VisualLayout};
     let glass = indicator_is_glass();
-    let link = if glass { INDICATOR_LINK } else { GATE_LINK };
-    let slot = if glass { indicator_slot(m) } else { m.material_slot(GATE_LINK, 28) };
+    let (link, slot, color0) = if glass { (INDICATOR_LINK, indicator_slot(m), 0xFFFF_FFFFu32) } else { indicator_unlit(m) };
     let tile = if glass { 4.0 } else { GATE_TILE_M };
     let mut tris: Vec<[Corner; 3]> = Vec::new();
     let mut face = 1u32;
@@ -1004,11 +1033,13 @@ pub fn add_finish_plane_visual(m: &mut Merged, quads: &[(f32, f32, f32, f32, f32
         set_indicator_prelight(m, mpu, bounds);
         m.notes.push(format!("finish indicator: {} quads, {link} TargetColor {:?}, {lift:.2} m over the anchor, non-collidable, Full layout + lightmap chart", quads.len(), INDICATOR_RGB));
     } else {
-        // v4.8: the gate pane — the minimal layout (Position, Normal, Color0, TexCoord0) the game's own gate uses
+        // v4.8/v4.10: the unlit panes — the minimal layout (Position, Normal, Color0, TexCoord0); Color0 carries the tint
+        super::bake::set_vertex_color0(color0);
         for v in make_visuals(&tris, VisualLayout::DecalPaint, "off") {
             m.visuals.push(super::merged::MergedVisual::every_level(v, slot));
         }
-        m.notes.push(format!("finish indicator: {} quads, {link} tiled every {tile:.0} m in world metres, {lift:.2} m over the anchor, non-collidable, DecalPaint layout", quads.len()));
+        super::bake::set_vertex_color0(0xFFFF_FFFF);
+        m.notes.push(format!("finish indicator: {} quads, {link} Color0 {color0:08X}, uv per {tile:.0} m in world metres, {lift:.2} m over the anchor, non-collidable, DecalPaint layout", quads.len()));
     }
     Ok(())
 }
@@ -1018,8 +1049,7 @@ pub fn add_finish_plane_visual(m: &mut Merged, quads: &[(f32, f32, f32, f32, f32
 pub fn add_finish_mesh_visual(m: &mut Merged, verts: &[[f32; 3]], tris: &[[u32; 3]]) -> R<()> {
     use super::bake::{make_visuals, Corner, VisualLayout};
     let glass = indicator_is_glass();
-    let link = if glass { INDICATOR_LINK } else { GATE_LINK };
-    let slot = if glass { indicator_slot(m) } else { m.material_slot(GATE_LINK, 28) };
+    let (link, slot, color0) = if glass { (INDICATOR_LINK, indicator_slot(m), 0xFFFF_FFFFu32) } else { indicator_unlit(m) };
     let tile = if glass { 4.0 } else { GATE_TILE_M };
     let c = |p: [f32; 3], face: u32| Corner { pos: p, normal: [0.0, 1.0, 0.0], uv: [p[0] / tile, p[2] / tile], uv1: [p[0] / tile, p[2] / tile], tan_u: [1.0, 0.0, 0.0], tan_v: [0.0, 0.0, 1.0], face, group: 1 };
     let mut out: Vec<[Corner; 3]> = Vec::with_capacity(tris.len());
@@ -1050,10 +1080,12 @@ pub fn add_finish_mesh_visual(m: &mut Merged, verts: &[[f32; 3]], tris: &[[u32; 
         set_indicator_prelight(m, mpu, bounds);
         m.notes.push(format!("finish indicator mesh: {} triangles ({flipped} re-wound to the plane's up-facing order), {link} TargetColor {:?}, non-collidable, Full layout + lightmap chart", tris.len(), INDICATOR_RGB));
     } else {
+        super::bake::set_vertex_color0(color0);
         for v in make_visuals(&out, VisualLayout::DecalPaint, "off") {
             m.visuals.push(super::merged::MergedVisual::every_level(v, slot));
         }
-        m.notes.push(format!("finish indicator mesh: {} triangles ({flipped} re-wound to the plane's up-facing order), {link} tiled every {tile:.0} m (block frame = world mod 32), non-collidable, DecalPaint layout", tris.len()));
+        super::bake::set_vertex_color0(0xFFFF_FFFF);
+        m.notes.push(format!("finish indicator mesh: {} triangles ({flipped} re-wound to the plane's up-facing order), {link} Color0 {color0:08X}, uv per {tile:.0} m (block frame = world mod 32), non-collidable, DecalPaint layout", tris.len()));
     }
     Ok(())
 }

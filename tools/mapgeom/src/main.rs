@@ -500,8 +500,8 @@ fn main() {
     let a = parse_args();
     // --indicator glass|gate: the finish indicator material (static_item::build; default gate = RaceTriggerFXFinish)
     if let Some(i) = a.rest.iter().position(|x| x == "--indicator") {
-        let v = a.rest.get(i + 1).map(|s| s.as_str()).unwrap_or("gate");
-        mapgeom::static_item::build::set_indicator_glass(v == "glass");
+        let v = a.rest.get(i + 1).map(|s| s.as_str()).unwrap_or("decal");
+        mapgeom::static_item::build::set_indicator(match v { "glass" => mapgeom::static_item::build::Indicator::Glass, "gate" => mapgeom::static_item::build::Indicator::Gate, _ => mapgeom::static_item::build::Indicator::Decal });
     }
     let cmd = a.rest.first().cloned().unwrap_or_default();
     match cmd.as_str() {
@@ -5311,7 +5311,7 @@ fn main() {
             }
         }
         // floor-template --out F.Item.Gbx [--collection 26]: Hugo's Floor Finish template — ONE unit box (0..32 × 0..1 × 0..32)
-        //   trigger + ONE indicator quad (v4.8 gate pane, 8 m world tiling; --indicator glass) at y 0.02 (the C# swaps both buffers), Finish waypoint, ident = file name
+        //   trigger + ONE indicator quad (v4.10 flat decal tinted by Color0; --indicator gate|glass) at y 0.02 (the C# swaps both buffers), Finish waypoint, ident = file name
         "floor-template" => {
             let mut store = open(&a);
             let out = flag(&a.rest, "--out").unwrap_or_else(|| die("floor-template needs --out F.Item.Gbx".into()));
@@ -5374,6 +5374,87 @@ fn main() {
             let (mut sp, mut cp, mut go) = (0, 0, 0);
             for b in &m.blocks { match b.waypoint_tag.as_deref() { Some("Spawn") => sp += 1, Some("Checkpoint") => cp += 1, Some("Goal") => go += 1, _ => {} } }
             println!("wrote {out}: {replaced} checkpoint blocks replaced, {removed} removed, {} without a rule {:?}; waypoints: {sp} Spawn, {cp} Checkpoint, {go} Goal", left.len(), left);
+        }
+        // material-survey --out F.tsv [--filter SUB]: every material entry of the loaded packs (class 0x09079000, hashed
+        //   or named): name guess (its textures' stem / the entry name), base shader (the Techno3 material it derives
+        //   from), the CPlugMaterialCustom bitmaps / params / switches, its diffuse-or-intensity texture's mean and
+        //   standard deviation (uniformity), and the derived flags: unlit (TAdd*/TMod*/Decal*/SpecialFX*/PreLightGen
+        //   switch), animated (time / scroll / sequence params), vertex colour ("CV" / "VertexColor"), translucent
+        "material-survey" => {
+            let mut store = open(&a);
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("--out F.tsv".into()));
+            let filt = flag(&a.rest, "--filter").map(|f| f.to_ascii_lowercase());
+            let entries: Vec<String> = store.entries().filter(|e| e.class_id == 0x09079000).map(|e| e.path().to_string()).collect();
+            let mut rows: Vec<String> = Vec::new();
+            let header = "entry\tname\tbase_shader\tbitmaps\tparams\tswitches\ttexture\tsize\tmean_rgb\tstddev\tunlit\tanimated\tvertex_colour\ttranslucent\tno_lightmap_switch";
+            println!("{header}");
+            for e in &entries {
+                let Ok(m) = store.load_model(e) else { continue };
+                let Ok(g) = m.graph() else { continue };
+                let mut base = String::new();
+                let mut textures: Vec<String> = Vec::new();
+                let mut dds: Vec<String> = Vec::new();
+                for (_, p) in &m.externals {
+                    let low = p.to_ascii_lowercase();
+                    if low.contains("\\media\\material\\") && low.ends_with(".material.gbx") && (low.starts_with("techno") || low.starts_with("vehicles") || !low.starts_with("stadium")) { base = p.clone(); }
+                    else if low.ends_with(".material.gbx") && base.is_empty() { base = p.clone(); }
+                    if low.ends_with(".texture.gbx") || low.ends_with(".dds") { textures.push(p.clone()); }
+                }
+                // follow the textures to their dds
+                for t in textures.clone() {
+                    if t.to_ascii_lowercase().ends_with(".dds") { dds.push(t); continue; }
+                    if let Ok(tm) = store.load_model(&t) {
+                        for (_, p) in &tm.externals { if p.to_ascii_lowercase().ends_with(".dds") { dds.push(p.clone()); } }
+                    }
+                }
+                let (mut bitmaps, mut params, mut switches) = (String::new(), String::new(), String::new());
+                for sl in g.slots.iter() {
+                    if let mapgeom::node::Slot::Node(mapgeom::node::Node::MaterialCustom(mc)) = sl {
+                        bitmaps = mc.bitmaps.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>().join(",");
+                        params = mc.params.iter().map(|(n, v)| format!("{n}={:?}", v.iter().map(|x| (x * 1000.0).round() / 1000.0).collect::<Vec<_>>())).collect::<Vec<_>>().join(";");
+                        switches = mc.switches.iter().map(|(n, v)| format!("{n}={}", *v as u8)).collect::<Vec<_>>().join(",");
+                    }
+                }
+                let stem = |p: &str| p.rsplit('\\').next().unwrap_or(p).to_string();
+                let name = if e.contains("\\Material") && !e.rsplit('\\').next().unwrap_or("").chars().all(|c| c.is_ascii_hexdigit()) {
+                    stem(e).trim_end_matches(".Material.Gbx").to_string()
+                } else {
+                    dds.iter().map(|d| stem(d)).find(|s| s.contains('_')).map(|s| s.rsplit_once('_').map(|(a, _)| a.to_string()).unwrap_or(s)).unwrap_or_else(|| format!("?{}", &stem(e)[..8.min(stem(e).len())]))
+                };
+                if let Some(f) = &filt { if !name.to_ascii_lowercase().contains(f) && !base.to_ascii_lowercase().contains(f) { continue; } }
+                // the diffuse / intensity image statistics
+                let pick = dds.iter().find(|p| { let s = stem(p).to_ascii_lowercase(); s.ends_with("_d.dds") }).or_else(|| dds.iter().find(|p| stem(p).to_ascii_lowercase().ends_with("_i.dds"))).or_else(|| dds.first());
+                let (mut tex, mut size, mut mean, mut sd) = (String::from("-"), String::from("-"), String::from("-"), String::from("-"));
+                if let Some(img) = pick {
+                    tex = stem(img);
+                    if let Ok(b) = store.read(img) {
+                        if let Ok((w, h, rgba)) = mapgeom::static_item::texture::decode_capped_rgba(&b, 128) {
+                            size = format!("{w}x{h}");
+                            let n = (rgba.len() / 4) as f64;
+                            let mut acc = [0f64; 4];
+                            for p in rgba.chunks_exact(4) { for k in 0..4 { acc[k] += p[k] as f64; } }
+                            let mu: Vec<f64> = acc.iter().map(|v| v / n).collect();
+                            let mut var = 0f64;
+                            for p in rgba.chunks_exact(4) { for k in 0..3 { var += (p[k] as f64 - mu[k]).powi(2); } }
+                            mean = format!("{:.0},{:.0},{:.0},a{:.0}", mu[0], mu[1], mu[2], mu[3]);
+                            sd = format!("{:.1}", (var / (3.0 * n)).sqrt());
+                        }
+                    }
+                }
+                let bl = base.to_ascii_lowercase();
+                let bstem = stem(&base).to_ascii_lowercase();
+                let unlit_shader = bstem.contains(" tadd") || bstem.contains(" tmod") || bstem.contains("tadd") || bstem.contains("tmod") || bstem.contains("decal") || bstem.contains("specialfx") || bstem.contains("selfillum") || bstem.contains("unlit") || bstem.contains("tdecal");
+                let no_lm_switch = switches.contains("PreLightGen=1");
+                let pl = params.to_ascii_lowercase();
+                let animated = pl.contains("anim") || pl.contains("scroll") || pl.contains("speed") || pl.contains("time") || pl.contains("sequence") || pl.contains("blink") || pl.contains("flow") || bstem.contains("anim") || bstem.contains("gate") || bitmaps.to_ascii_lowercase().contains("anim") || name.to_ascii_lowercase().contains("anim") && !name.to_ascii_lowercase().contains("noanim");
+                let cv = bstem.contains("cv") || pl.contains("vertexcolor") || pl.contains("colorvertex") || bl.contains("cv.");
+                let translucent = bstem.contains("tadd") || bstem.contains("tmod") || bstem.contains("talpha") || bstem.contains("trans") || bstem.contains("tdiffa") || bstem.contains("glass") || bstem.contains("tblend") || bstem.contains("alpha") || bstem.starts_with("tech3 block t") || bstem.contains(" t");
+                let row = format!("{e}\t{name}\t{}\t{bitmaps}\t{params}\t{switches}\t{tex}\t{size}\t{mean}\t{sd}\t{}\t{}\t{}\t{}\t{}", stem(&base), (unlit_shader || no_lm_switch) as u8, animated as u8, cv as u8, translucent as u8, no_lm_switch as u8);
+                println!("{row}");
+                rows.push(row);
+            }
+            std::fs::write(&out, format!("{header}\n{}\n", rows.join("\n"))).unwrap_or_else(|e| die(format!("{out}: {e}")));
+            eprintln!("wrote {out}: {} materials", rows.len());
         }
         // outer-terrain MAP.. --out F.tsv: the OUTER RING table (outer_ring.rs) of every map's collection/decoration,
         //   one row per rectangle (collection, decoration, x0, x1, z0, z1, floor, kind) + the measurement notes
