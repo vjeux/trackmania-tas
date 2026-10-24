@@ -178,20 +178,16 @@ fn bed_height_at(w: &WaterRect, p: [f32; 2]) -> Option<f32> {
 /// the shallow upper ramp (< 2 m of water) stays out).
 pub const DEEP_WATER_MIN: f32 = 2.0;
 
-/// The DEEP mask of a shore kind (bit zi·8+xi): water squares with ≥ `DEEP_WATER_MIN` m of water over the bed
-/// under their centre. `_bed` is the open-water bed (unused by the depth test, kept for the callers).
-pub fn deep_mask(w: &WaterRect, _bed: f32) -> u64 {
-    deep_squares(w).iter().enumerate().fold(0u64, |m, (i, d)| if d.is_some() { m | (1u64 << i) } else { m })
-}
+/// v4.1 (Hugo 00:57 "don't instantly finish on the slopes" + the coordinator's NEAR-FLOOR decision, 01:12): a
+/// shore square counts when it has ≥ 2 m of water AND its LOWEST bed sample lies within this of the collection's
+/// open-water floor (BlueBay 4.0, the others 2.0). The Beach bank is a uniform ramp (0.31 m/m, 1.24 m per 4 m
+/// square) with no level part, so this keeps exactly the lowest square of each bank — an ~8 m lane along the
+/// trough bottom of a two-bank channel — and drops the banks above; WaterHill keeps its deep part, loses the rim.
+pub const NEAR_FLOOR_MAX: f32 = 0.75;
 
-/// v4.1 (Hugo 00:57: "put it on any FLAT ocean/canal floor, so you don't instantly finish on the slopes"): a
-/// square's bed must be LEVEL — the bed height sampled at its centre and four inner points (±1.5 m) varies by
-/// at most this, and every collision triangle under it faces up within ~14° (|n.y| > 0.97).
-pub const FLAT_BED_MAX_RISE: f32 = 0.25;
-
-/// Per 4 m square (index zi·8+xi): the bed height under the square's centre when the square is DEEP (≥ 2 m of
-/// water) AND FLAT (see `FLAT_BED_MAX_RISE`).
-pub fn deep_squares(w: &WaterRect) -> Vec<Option<f32>> {
+/// Per 4 m square (index zi·8+xi): the square's MINIMUM bed height when the square is deep (≥ 2 m of water at
+/// its centre) and near the floor (`bed_min ≤ open floor + NEAR_FLOOR_MAX`). The slab sits on that minimum.
+pub fn deep_squares_near(w: &WaterRect, open_bed: f32) -> Vec<Option<f32>> {
     let water = footprint_mask(w);
     let mut out = vec![None; 64];
     for zi in 0..8 {
@@ -199,38 +195,28 @@ pub fn deep_squares(w: &WaterRect) -> Vec<Option<f32>> {
             let bit = 1u64 << (zi * 8 + xi);
             if water & bit == 0 { continue; }
             let (cx, cz) = (4.0 * xi as f32 + 2.0, 4.0 * zi as f32 + 2.0);
-            let Some(y) = bed_height_at(w, [cx, cz]) else { continue };
-            if w.surface - y < DEEP_WATER_MIN { continue; }
-            // flat: the five samples within 0.25 m of each other …
-            let samples = [[cx - 1.5, cz - 1.5], [cx + 1.5, cz - 1.5], [cx - 1.5, cz + 1.5], [cx + 1.5, cz + 1.5]];
-            let (mut lo, mut hi) = (y, y);
-            let mut ok = true;
-            for p in samples {
-                match bed_height_at(w, p) {
-                    Some(h) => { lo = lo.min(h); hi = hi.max(h); }
-                    None => { ok = false; }
-                }
+            let Some(yc) = bed_height_at(w, [cx, cz]) else { continue };
+            if w.surface - yc < DEEP_WATER_MIN { continue; }
+            let mut ymin = yc;
+            for p in [[cx - 1.9, cz - 1.9], [cx + 1.9, cz - 1.9], [cx - 1.9, cz + 1.9], [cx + 1.9, cz + 1.9], [cx, cz - 1.9], [cx, cz + 1.9], [cx - 1.9, cz], [cx + 1.9, cz]] {
+                if let Some(h) = bed_height_at(w, p) { ymin = ymin.min(h); }
             }
-            if !ok || hi - lo > FLAT_BED_MAX_RISE { continue; }
-            // … and every bed triangle touching the square faces up
-            let (x0, z0, x1, z1) = (cx - 2.0, cz - 2.0, cx + 2.0, cz + 2.0);
-            let steep = w.bed_tris_geo.iter().any(|t| {
-                let (tx0, tx1) = (t.iter().map(|v| v[0]).fold(f32::INFINITY, f32::min), t.iter().map(|v| v[0]).fold(f32::NEG_INFINITY, f32::max));
-                let (tz0, tz1) = (t.iter().map(|v| v[2]).fold(f32::INFINITY, f32::min), t.iter().map(|v| v[2]).fold(f32::NEG_INFINITY, f32::max));
-                if tx1 <= x0 || tx0 >= x1 || tz1 <= z0 || tz0 >= z1 { return false; }
-                let ymax = t.iter().map(|v| v[1]).fold(f32::NEG_INFINITY, f32::max);
-                if ymax > w.surface - 0.05 { return false; }
-                let (a, b, c) = (t[0], t[1], t[2]);
-                let (u, v) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [c[0] - a[0], c[1] - a[1], c[2] - a[2]]);
-                let n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
-                let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
-                len > 1e-6 && (n[1] / len).abs() < 0.97
-            });
-            if steep { continue; }
-            out[zi * 8 + xi] = Some(y);
+            if ymin <= open_bed + NEAR_FLOOR_MAX {
+                out[zi * 8 + xi] = Some(ymin);
+            }
         }
     }
     out
+}
+
+/// The DEEP mask of a shore kind (bit zi·8+xi): the near-floor squares of `deep_squares_near`.
+pub fn deep_mask(w: &WaterRect, bed: f32) -> u64 {
+    deep_squares_near(w, bed).iter().enumerate().fold(0u64, |m, (i, d)| if d.is_some() { m | (1u64 << i) } else { m })
+}
+
+/// Kept for the callers that want the squares with their beds: the near-floor rule with the open bed.
+pub fn deep_squares(w: &WaterRect) -> Vec<Option<f32>> {
+    deep_squares_near(w, w.bed_lo)
 }
 
 pub fn footprint_mask(w: &WaterRect) -> u64 {
@@ -364,7 +350,7 @@ pub fn water_rects(store: &mut crate::store::DataStore, m: &MapFile, collection:
                 let (x0, x1, z0, z1) = turn_rect(c, b.dir, w.x0, w.x1, w.z0, w.z1);
                 // the DEEP squares only (≥ 2 m of water), each as its own 4 m square with the LOCAL bed under it (the
                 // slab bottom follows the bank's ramp; the top is surface-anchored anyway)
-                let deep = deep_squares(w);
+                let deep = deep_squares_near(w, bed);
                 if deep.iter().all(|d| d.is_none()) { continue; }
                 let _ = (x0, x1, z0, z1, bed);
                 for zi in 0..8 {

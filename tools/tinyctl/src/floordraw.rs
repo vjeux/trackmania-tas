@@ -366,9 +366,9 @@ fn vista(store: &mut mapgeom::store::DataStore, m: &tmmaps::map::MapFile, collec
     ly += 30.0;
     cv.text(lx, ly, &format!("open-water cells {} -> {} strips; shore deep boxes {}", mesh.cells, mesh.strips, mesh.shore_prisms), 2, INK);
     ly += 24.0;
-    cv.text(lx, ly, &format!("slab: bed -{below:.1} .. bed +{above:.1}; shore squares: >= 2 m water AND flat bed"), 2, INK);
+    cv.text(lx, ly, &format!("slab: bed -{below:.1} .. bed +{above:.1}; shore squares: >= 2 m water AND bed within 0.75 m of the floor"), 2, INK);
     ly += 34.0;
-    for (name, col) in [("open water (full cell, bed depth)", OPEN_WATER), ("shore tile water, deep AND flat bed = finish", SHORE_DEEP), ("shore tile water, shallow or sloping (no finish)", SHORE_SHALLOW), ("land", LAND)] {
+    for (name, col) in [("open water (full cell, bed depth)", OPEN_WATER), ("shore tile water, deep AND near the floor = finish", SHORE_DEEP), ("shore tile water, shallow or up the bank (no finish)", SHORE_SHALLOW), ("land", LAND)] {
         cv.poly(&[(lx, ly), (lx + 24.0, ly), (lx + 24.0, ly + 18.0), (lx, ly + 18.0)], col, 1.0);
         cv.text(lx + 32.0, ly, name, 2, INK);
         ly += 26.0;

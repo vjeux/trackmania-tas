@@ -5002,7 +5002,7 @@ fn main() {
                         let mask = mapgeom::floor_finish::footprint_mask(&w);
                         let deep = mapgeom::floor_finish::deep_mask(&w, open_bed);
                         println!("{name}\t{flags:08x}\t{n}\t{}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{}\t{}\tdeep {}", w.prefab, w.x0, w.x1, w.z0, w.z1, w.surface, w.bed_lo, w.bed_hi, w.bed_tris, mask.count_ones(), deep.count_ones());
-                        let beds: Vec<String> = mapgeom::floor_finish::deep_squares(&w).iter().filter_map(|d| d.map(|y| format!("{:.2}", (y * 4.0).floor() / 4.0))).collect();
+                        let beds: Vec<String> = mapgeom::floor_finish::deep_squares_near(&w, open_bed).iter().filter_map(|d| d.map(|y| format!("{:.2}", (y * 4.0).floor() / 4.0))).collect();
                         fp.push_str(&format!("{coll_name}\t{name}\t{flags:08x}\t{}\t{:.2}\t{:.2}\t{mask:016x}\t{}\t{deep:016x}\t{}\t{}\n", w.prefab, w.bed_lo, w.surface, mask.count_ones(), deep.count_ones(), beds.join(",")));
                     }
                     Ok(None) => if !only.is_empty() { println!("{name}\t{flags:08x}\t{n}\t-\tno water quad") },
