@@ -376,7 +376,7 @@ pub fn cmd(args: &[String]) -> i32 {
             return 1;
         }
         let up = std::fs::read_to_string(out.join("upload-results.tsv")).unwrap_or_default();
-        let bad: Vec<&str> = up.lines().skip(1).filter(|l| !l.ends_with("IDENTICAL")).collect();
+        let bad: Vec<&str> = up.lines().skip(1).filter(|l| !l.trim().is_empty() && !l.starts_with("campaign") && !l.starts_with('#') && !l.ends_with("IDENTICAL")).collect();
         if !bad.is_empty() {
             eprintln!("tiny-regate: {} upload(s) not IDENTICAL:\n{}", bad.len(), bad.join("\n"));
             return 1;
