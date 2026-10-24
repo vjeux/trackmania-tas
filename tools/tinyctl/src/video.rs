@@ -617,8 +617,25 @@ fn one(args: &[String]) -> Result<Done, String> {
     let s0 = g.samples.first().ok_or("the ghost has no samples — nothing to render")?;
     println!("{}: {} samples, race time {time}, checkpoints at {}", ghost.display(), g.samples.len(), g.checkpoints_ms.iter().map(|c| format!("{:.3}", *c as f64 / 1000.0)).collect::<Vec<_>>().join(" "));
     let mut m = tmmaps::map::MapFile::load(&map);
-    let spawn = m.items.iter().find(|it| it.waypoint_tag.as_deref() == Some("Spawn")).ok_or_else(|| format!("{}: no placement tagged Spawn", map.display()))?;
-    let (dx, dz) = start_centre(spawn.yaw);
+    // the start: a placement tagged Spawn (the tiny maps), else the START BLOCK
+    // (`*Start*` authored block — a full-size U10S map, 2026-10-23: the pillar look check
+    // renders the altered maps, whose start is a block); its cell centre is the spawn
+    let (spawn_pos, spawn_yaw): ([f32; 3], f32) = match m.items.iter().find(|it| it.waypoint_tag.as_deref() == Some("Spawn")) {
+        Some(it) => (it.pos, it.yaw),
+        None => {
+            let b = m
+                .blocks
+                .iter()
+                .find(|b| b.name.contains("Start") && !b.name.contains("Finish"))
+                .ok_or_else(|| format!("{}: no placement tagged Spawn and no *Start* block", map.display()))?;
+            let p = tmmaps::tiny::block_pos(b);
+            ([p[0] + 16.0, p[1], p[2] + 16.0], tmmaps::tiny::block_yaw(b))
+        }
+    };
+    let spawn_pos_v = spawn_pos;
+    struct SpawnRef { pos: [f32; 3], yaw: f32 }
+    let spawn = SpawnRef { pos: spawn_pos_v, yaw: spawn_yaw };
+    let (dx, dz) = if m.items.iter().any(|it| it.waypoint_tag.as_deref() == Some("Spawn")) { start_centre(spawn.yaw) } else { (0.0, 0.0) };
     let want = [spawn.pos[0] + dx, spawn.pos[1], spawn.pos[2] + dz];
     // the block-centre model (a block-derived start) or the placement itself (a
     // start GATE item spawns a few metres from its pivot: Summer 19, 5.0 m) —
@@ -789,7 +806,10 @@ fn one(args: &[String]) -> Result<Done, String> {
 
         // --- render there, poll here
         let r_dir = format!("{VID}/{tag}");
-        let cmd = format!("{shootctl} render --detach --map {r_map} --name {tag} --outdir {r_dir} --cam {cam} --load-timeout {load_timeout} --footage {:.1} {r_ghost}", race_ms as f64 / 1000.0);
+        // the box-side render lock names its holder from TM_SESSION; the devserver's
+        // environment does not cross the relay, so the session is exported in the
+        // remote command itself (as remote-shots and round-publish do)
+        let cmd = format!("export TM_SESSION=080a15b8-2c6a-4fff-9d8a-db7d0072ee43; {shootctl} render --detach --map {r_map} --name {tag} --outdir {r_dir} --cam {cam} --load-timeout {load_timeout} --footage {:.1} {r_ghost}", race_ms as f64 / 1000.0);
         eprintln!("rendering {tag} on the box — waits for the render lock if another thread holds the game …");
         let started = wsx.sh(&cmd)?;
         if wsx.verbose {
