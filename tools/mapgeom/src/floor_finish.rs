@@ -76,6 +76,8 @@ pub struct WaterRect {
     /// the collision triangles under the quad (block frame) — the bed; a square is DEEP when the bed under its
     /// centre lies within ±0.3 m of the collection's open-water bed (Hugo 2026-10-24: "same depth")
     pub bed_tris_geo: Vec<[[f32; 3]; 3]>,
+    /// every collision triangle of the tile (block frame): the dry land / sand top for the section drawings
+    pub all_tris_geo: Vec<[[f32; 3]; 3]>,
 }
 
 /// Measure a tile placement's water footprint: bake the picked prefab (water quad kept), take the Water
@@ -135,9 +137,11 @@ pub fn water_rect(store: &mut crate::store::DataStore, collection: u32, tile: &s
     // the bed: collision triangles under the quad's footprint
     let (mut blo, mut bhi, mut nb) = (f32::INFINITY, f32::NEG_INFINITY, 0usize);
     let mut bed_geo: Vec<[[f32; 3]; 3]> = Vec::new();
+    let mut all_geo: Vec<[[f32; 3]; 3]> = Vec::new();
     for t in &m.surf_triangles {
         let pts: Vec<[f32; 3]> = t.indices.iter().filter_map(|&i| m.surf_vertices.get(i as usize).copied()).collect();
         if pts.len() < 3 { continue; }
+        all_geo.push([pts[0], pts[1], pts[2]]);
         let c = [(pts[0][0] + pts[1][0] + pts[2][0]) / 3.0, (pts[0][1] + pts[1][1] + pts[2][1]) / 3.0, (pts[0][2] + pts[1][2] + pts[2][2]) / 3.0];
         if c[0] >= lo[0] - 0.01 && c[0] <= hi[0] + 0.01 && c[2] >= lo[2] - 0.01 && c[2] <= hi[2] + 0.01 && c[1] < surface - 0.05 {
             for p in &pts { blo = blo.min(p[1]); bhi = bhi.max(p[1]); }
@@ -145,7 +149,7 @@ pub fn water_rect(store: &mut crate::store::DataStore, collection: u32, tile: &s
             bed_geo.push([pts[0], pts[1], pts[2]]);
         }
     }
-    Ok(Some(WaterRect { prefab: prefab.rsplit('\\').next().unwrap_or(&prefab).to_string(), x0: lo[0], x1: hi[0], z0: lo[2], z1: hi[2], surface, bed_lo: blo, bed_hi: bhi, bed_tris: nb, tris: wtris, bed_tris_geo: bed_geo }))
+    Ok(Some(WaterRect { prefab: prefab.rsplit('\\').next().unwrap_or(&prefab).to_string(), x0: lo[0], x1: hi[0], z0: lo[2], z1: hi[2], surface, bed_lo: blo, bed_hi: bhi, bed_tris: nb, tris: wtris, bed_tris_geo: bed_geo, all_tris_geo: all_geo }))
 }
 
 /// The 4 m-grid water mask of a shore kind in the block frame: bit (zi·8 + xi) = the square at x 4·xi..4·xi+4,
@@ -207,6 +211,32 @@ pub fn deep_squares_near(w: &WaterRect, open_bed: f32) -> Vec<Option<f32>> {
         }
     }
     out
+}
+
+/// `bed_height_at` for the drawing tools.
+pub fn bed_height_at_pub(w: &WaterRect, p: [f32; 2]) -> Option<f32> {
+    bed_height_at(w, p)
+}
+
+/// The dry TOP of the tile under a block-frame point: the highest collision triangle covering it that is NOT the
+/// water quad (the sand / land / bank), or None when nothing covers it.
+pub fn top_height_at(w: &WaterRect, p: [f32; 2]) -> Option<f32> {
+    let mut best: Option<f32> = None;
+    for t in &w.all_tris_geo {
+        let (a, b, c) = ([t[0][0], t[0][2]], [t[1][0], t[1][2]], [t[2][0], t[2][2]]);
+        let s = |a: [f32; 2], b: [f32; 2], c: [f32; 2]| (c[0] - a[0]) * (b[1] - a[1]) - (b[0] - a[0]) * (c[1] - a[1]);
+        let (d1, d2, d3) = (s(p, a, b), s(p, b, c), s(p, c, a));
+        if (d1 < 0.0 || d2 < 0.0 || d3 < 0.0) && (d1 > 0.0 || d2 > 0.0 || d3 > 0.0) { continue; }
+        let det = (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]);
+        let y = if det.abs() < 1e-9 { (t[0][1] + t[1][1] + t[2][1]) / 3.0 } else {
+            let l1 = ((b[0] - p[0]) * (c[1] - p[1]) - (c[0] - p[0]) * (b[1] - p[1])) / det;
+            let l2 = ((c[0] - p[0]) * (a[1] - p[1]) - (a[0] - p[0]) * (c[1] - p[1])) / det;
+            l1 * t[0][1] + l2 * t[1][1] + (1.0 - l1 - l2) * t[2][1]
+        };
+        if (y - w.surface).abs() < 0.05 { continue; } // the water quad's own collision
+        best = Some(best.map_or(y, |b: f32| b.max(y)));
+    }
+    best
 }
 
 /// The DEEP mask of a shore kind (bit zi·8+xi): the near-floor squares of `deep_squares_near`.
