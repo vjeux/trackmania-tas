@@ -1158,8 +1158,16 @@ pub fn plan_records(store: &mut DataStore, idx: &mut BlockInfoIndex, map: &Path,
         // ORIGINAL map gave them (plastic parent → pillar wood, Tech → cliff concrete). A
         // parent counts as re-surfaced when its plan row renames OR bakes it (a baked
         // parent leaves the pillars orphaned and the game paints them a default grey-blue).
+        // …and only for the SETS whose platform folder re-dresses `TrackWall` into a stone
+        // the original never had (play-mode facts, Everios96 2026-10-23: Dirt → orange
+        // sandstone, Ice → ice cliff, Grass → grey concrete; the plastic, magnet and wood
+        // sets leave the pillars the game's planks, which is what the original shows —
+        // on a Tech parent the `TrackWallToDecoCliff` modifier is a no-op in the game and
+        // the planks take the block's colour). `TINY_PILLAR_OVERLAY_SURFACES` overrides.
+        let overlay_surfaces = std::env::var("TINY_PILLAR_OVERLAY_SURFACES").unwrap_or_else(|_| "dirt,ice,grass".into());
+        let surface_wants_overlay = overlay_surfaces.split(',').any(|w| w.trim().eq_ignore_ascii_case(surface));
         let bake_mode = std::env::var("TINY_PILLAR_BAKE").map(|v| v == "1").unwrap_or(false);
-        let overlay_mode = !bake_mode && std::env::var("TINY_PILLAR_OVERLAY").map(|v| v != "0").unwrap_or(true);
+        let overlay_mode = !bake_mode && surface_wants_overlay && std::env::var("TINY_PILLAR_OVERLAY").map(|v| v != "0").unwrap_or(true);
         if !free && (b.flags & 0x4000 != 0) && b.name.starts_with("DecoWall") && b.name.ends_with("Pillar") && (bake_mode || overlay_mode) {
             // walk UP the whole pillar stack (a deck can stand on 8+ pillars: Icy 76's
             // mass is 8 cells tall, and a 3-cell look-up left the lower pillars without a

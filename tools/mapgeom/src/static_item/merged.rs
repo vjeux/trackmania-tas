@@ -589,11 +589,10 @@ impl Merged {
                 // slot (the skin's name says so; the pillar faces under a Tech platform
                 // are grey concrete in the original — Icy 76, 2026-10-23)
                 let deco_cliff_for_track_wall = || {
-                    if stem == "TrackWall" {
-                        let want = std::env::var("TINY_TW2DC_LINK").unwrap_or_else(|_| crate::tiny_library::TRACK_WALL_TO_DECO_CLIFF_LINK.to_string());
-                        self.modifier.iter().find(|m| m.eq_ignore_ascii_case(&want) || m.ends_with("\\DecoCliff")).cloned()
-                    } else {
-                        None
+                    // only with an experimental `TINY_TW2DC_LINK` (the modifier is a no-op otherwise)
+                    match (stem, std::env::var("TINY_TW2DC_LINK")) {
+                        ("TrackWall", Ok(want)) if !want.is_empty() => self.modifier.iter().find(|m| m.eq_ignore_ascii_case(&want)).cloned(),
+                        _ => None,
                     }
                 };
                 match by_stem(stem).or_else(|| gate_special_stem(stem).and_then(|s| by_stem(s))).or_else(deco_cliff_for_track_wall) {

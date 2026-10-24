@@ -3395,12 +3395,9 @@ pub const PILLAR_OVERLAY_DETAIL: &str = "overlaid with the original look";
 /// The pseudo-modifier a face owned by such a pillar carries in its library key.
 pub const OVERLAY_MARK: &str = "OVERLAY";
 pub const TRACK_WALL_TO_DECO_CLIFF_FOLDER: &str = "Stadium\\Media\\Modifier\\PlatformGrass\\";
-/// The link the TrackWall slot takes under that modifier (see `modifier_links`):
-/// `PlatformGrass\TrackWall` carries the DecoCliffPxz textures (read off the material
-/// file: DecoCliffPxz_D/_R/_N) — the grey concrete the original draws on the pillars
-/// under a Tech platform. (The 2026-10-23 detours to `DecoCliff` and `CustomConcrete`
-/// came from reading a GREEN wall of regenerated pillars as our items' colour.)
-pub const TRACK_WALL_TO_DECO_CLIFF_LINK: &str = "Stadium\\Media\\Modifier\\PlatformGrass\\TrackWall";
+/// The link the TrackWall slot takes under that modifier: NONE (see `modifier_links`);
+/// `TINY_TW2DC_LINK` forces one for experiments.
+pub const TRACK_WALL_TO_DECO_CLIFF_LINK: &str = "";
 
 /// A block info's `…\Modifier\TrackWallToDecoCliff.Gbx` material modifier ref
 /// (DecoHill*, DecoPlatformBase, PlatformTechBase, WaterBase, WaterWall,
@@ -3480,7 +3477,7 @@ pub fn modifier_folder_redress(store: &mut DataStore, links: &[String]) -> Vec<R
         // is the grass platform's GREEN wall — that is what the pillar faces under a Tech
         // platform came out as (Icy 76, 2026-10-23 frames), where the original draws grey
         // concrete. So the row is keyed on the TrackWall FILE, not on the link's stem.
-        if link.eq_ignore_ascii_case(&std::env::var("TINY_TW2DC_LINK").unwrap_or_default()) {
+        if !link.is_empty() && link.eq_ignore_ascii_case(&std::env::var("TINY_TW2DC_LINK").unwrap_or_default()) {
             let file = RedressKey::File("trackwall.material.gbx".to_string());
             if !out.iter().any(|r| r.matches == file) {
                 if let Some(ids) = crate::static_item::build::material_surface_ids(store, &format!("{link}.Material.Gbx")) {
@@ -3779,11 +3776,16 @@ pub fn modifier_links(store: &DataStore, refs: &[String]) -> Vec<String> {
     for r in refs {
         let r = r.replace(' ', "");
         if is_track_wall_to_deco_cliff(&r) {
-            // the TrackWall slot under `TrackWallToDecoCliff`: see TRACK_WALL_TO_DECO_CLIFF_LINK
-            // (`TINY_TW2DC_LINK` overrides with a full link)
-            let link = std::env::var("TINY_TW2DC_LINK").unwrap_or_else(|_| TRACK_WALL_TO_DECO_CLIFF_LINK.to_string());
-            if store.entries().any(|e| e.path().eq_ignore_ascii_case(&format!("{link}.Material.Gbx"))) {
-                out.push(link);
+            // `TrackWallToDecoCliff` re-dresses NOTHING in the game: its skin file is not
+            // shipped, and in play mode the pillars under a Tech platform are the plain
+            // `TrackWall` planks in the block's colour (U10S 76, every block painted green:
+            // green planks — Everios96's screenshots, 2026-10-23). The editor on the rig
+            // draws them as `PlatformGrass\TrackWall` concrete, which misled two days of
+            // frames. `TINY_TW2DC_LINK=<link>` forces a link for experiments.
+            if let Ok(link) = std::env::var("TINY_TW2DC_LINK") {
+                if !link.is_empty() && store.entries().any(|e| e.path().eq_ignore_ascii_case(&format!("{link}.Material.Gbx"))) {
+                    out.push(link);
+                }
             }
             continue;
         }
