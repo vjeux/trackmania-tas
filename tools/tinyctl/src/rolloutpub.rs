@@ -457,6 +457,7 @@ pub fn apply(args: &[String]) -> i32 {
     // `--skip-done-prefix PATH`: every `PATH*/results.tsv` (the earlier passes' workdirs),
     // so a rerun names no list by hand (2026-10-22)
     let mut skip_lists: Vec<String> = f("--skip-done").map(|l| l.split(',').map(str::trim).filter(|p| !p.is_empty()).map(String::from).collect()).unwrap_or_default();
+    let mut partial_rows: std::collections::HashSet<String> = std::collections::HashSet::new();
     if let Some(prefix) = f("--skip-done-prefix") {
         let pp = PathBuf::from(&prefix);
         let parent = pp.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
@@ -473,11 +474,33 @@ pub fn apply(args: &[String]) -> i32 {
         found.sort();
         println!("skip-done-prefix: {} earlier results file(s)", found.len());
         skip_lists.extend(found);
+        // a pass killed mid-campaign wrote no results.tsv row for that campaign; its
+        // per-campaign `update-results.tsv` (publish-batch's own table: path, name, uid,
+        // mapId, how, bytes, md5, verdict) still names every row that landed
+        let mut partial = 0usize;
+        for e in std::fs::read_dir(&parent).into_iter().flatten().flatten().filter(|e| e.file_name().to_string_lossy().starts_with(&base)) {
+            for c in std::fs::read_dir(e.path()).into_iter().flatten().flatten() {
+                let ur = c.path().join("update-results.tsv");
+                if !ur.is_file() {
+                    continue;
+                }
+                for l in read(&ur.to_string_lossy()).lines().skip(1) {
+                    let col: Vec<&str> = l.split('\t').collect();
+                    if col.len() >= 8 && col[4] == "update" && col[7].trim() == "IDENTICAL" {
+                        partial_rows.insert(col[2].to_string());
+                        partial += 1;
+                    }
+                }
+            }
+        }
+        if partial > 0 {
+            println!("skip-done-prefix: {partial} landed row(s) from per-campaign tables");
+        }
     }
     // rows (by live uid) that an earlier pass already landed IDENTICAL: skipped one by one,
     // so a campaign that lost one upload to a server-side hang (Dirt 206, 2026-10-24: four
     // attempts, 0 bytes back) is not re-uploaded whole on the rerun
-    let mut done_rows: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut done_rows: std::collections::HashSet<String> = partial_rows;
     if !skip_lists.is_empty() {
         for path in skip_lists.iter().map(|s| s.as_str()) {
             let mut per: HashMap<String, (usize, usize)> = HashMap::new();
