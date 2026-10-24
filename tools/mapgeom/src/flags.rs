@@ -62,6 +62,8 @@ pub struct FlagsOpts {
     pub floor_item: Option<(String, f32, f32)>,
     /// `--ground-clippers`: the floor item is Hugo's GroundClippers box instead (one slab under the whole map)
     pub ground_clippers: bool,
+    /// `--squares`: the v3/v4 1 m-raster cutouts instead of the exact outlines (v4.4 default)
+    pub cutout_squares: bool,
     /// `--shores`: the shore tiles' water parts join the floor item (off by default since 2026-10-23 09:51)
     pub floor_shores: bool,
     /// Hugo's round 4 (2026-10-23 13:51, Stadium): `--cutouts` adds one carrier per ground-block KIND whose ground
@@ -350,12 +352,17 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
     if let Some((_, below, above)) = &o.floor_item {
         for (cstem, (name, kflags)) in &cutout_kinds {
             let ident = format!("{cstem}.Item.Gbx");
-            match crate::floor_finish::build_cutout_item(ctx.store, name, *kflags, &ident, collection, 0.5, *below, *above).map_err(|e| format!("{cstem}: {e}"))? {
+            let built_item = if o.cutout_squares {
+                crate::floor_finish::build_cutout_item(ctx.store, name, *kflags, &ident, collection, 0.5, *below, *above).map_err(|e| format!("{cstem}: {e}"))?
+            } else {
+                crate::floor_finish::build_cutout_item_exact(ctx.store, name, *kflags, &ident, collection, 0.5, *below, *above).map_err(|e| format!("{cstem}: {e}"))?.map(|(b, c, _)| (b, c))
+            };
+            match built_item {
                 Some((bytes, c)) => {
                     let mut row = Row::new(&map_label, "flags", "model", 0, cstem);
                     row.action = "cutout-built".into();
                     row.to_name = ident.clone();
-                    row.note = format!("{} bytes; {} boxes over {:.0} m² of the {name} ground fill (1 m raster, 0.5 m inset from structure; {} m² squares dropped near structure), block frame bbox [{:.1} {:.2} {:.1}]..[{:.1} {:.2} {:.1}]", bytes.len(), c.kept, c.area, c.dropped, c.bbox.0[0], c.bbox.0[1], c.bbox.0[2], c.bbox.1[0], c.bbox.1[1], c.bbox.1[2]);
+                    row.note = if o.cutout_squares { format!("{} bytes; {} boxes over {:.0} m² of the {name} ground fill (1 m raster, 0.5 m inset from structure; {} m² squares dropped near structure), block frame bbox [{:.1} {:.2} {:.1}]..[{:.1} {:.2} {:.1}]", bytes.len(), c.kept, c.area, c.dropped, c.bbox.0[0], c.bbox.0[1], c.bbox.0[2], c.bbox.1[0], c.bbox.1[1], c.bbox.1[2]) } else { format!("{} bytes; exact outline: {} polygon vertices over {:.0} m² of the {name} ground fill (pak fill mesh, 0.5 m inset from structure; {} sliver polygons dropped), block frame bbox [{:.1} {:.2} {:.1}]..[{:.1} {:.2} {:.1}]", bytes.len(), c.kept, c.area, c.dropped, c.bbox.0[0], c.bbox.0[1], c.bbox.0[2], c.bbox.1[0], c.bbox.1[1], c.bbox.1[2]) };
                     rows.push(row);
                     built.push((cstem.clone(), ident.clone(), [c.bbox.0[0], c.bbox.0[1], c.bbox.0[2], c.bbox.1[0], c.bbox.1[1], c.bbox.1[2]], bytes));
                     cutout_built.insert(cstem.clone(), ident);

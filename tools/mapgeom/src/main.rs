@@ -5216,11 +5216,27 @@ fn main() {
                     }
                 }
             }
-            let mut rep = String::from("block\tvariant\tflags\tplacements\titem\tbytes\tkept_tris\tdropped_tris\tarea_m2\tbbox\n");
+            // v4.4: EXACT outlines by default (polygons traced from the pak fill mesh, cutout_outline.rs); --squares = the
+            // 1 m-raster boxes of v3/v4
+            let squares = a.rest.iter().any(|x| x == "--squares");
+            let mut rep = String::from(if squares { "block\tvariant\tflags\tplacements\titem\tbytes\tkept_tris\tdropped_tris\tarea_m2\tbbox\n" } else { "block\tvariant\tflags\tplacements\titem\tbytes\tvertices\tpolygons\tholes\ton_mesh\tslivers_dropped\tarea_m2\traster_area_m2\tbbox\tnotes\n" });
             let (mut built, mut none) = (0usize, 0usize);
             for ((name, kflags), n) in &kinds {
                 let var = mapgeom::floor_finish::variant_byte(*kflags);
                 let ident = if var == 0 { format!("FloorFinish{name}.Item.Gbx") } else { format!("FloorFinish{name}V{var}.Item.Gbx") };
+                if !squares {
+                    match mapgeom::floor_finish::build_cutout_item_exact(&mut store, name, *kflags, &ident, coll, inset, 0.0, 1.0) {
+                        Ok(Some((bytes, c, o))) => {
+                            std::fs::write(format!("{out}/{ident}"), &bytes).unwrap_or_else(|e| die(format!("{ident}: {e}")));
+                            let raster_area = mapgeom::floor_finish::cutout_for_block(&mut store, name, *kflags, inset, 0.0, 1.0).ok().flatten().map(|r| r.area).unwrap_or(0.0);
+                            rep.push_str(&format!("{name}\t{var}\t{kflags:08x}\t{n}\t{ident}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.1}\t{:.1}\t[{:.2} {:.2} {:.2}]..[{:.2} {:.2} {:.2}]\t{}\n", bytes.len(), o.vertices, o.polygons.len(), o.polygons.iter().map(|(_, h)| h.len()).sum::<usize>(), o.on_mesh, c.dropped, o.area, raster_area, c.bbox.0[0], c.bbox.0[1], c.bbox.0[2], c.bbox.1[0], c.bbox.1[1], c.bbox.1[2], o.notes.join(" | ")));
+                            built += 1;
+                        }
+                        Ok(None) => { rep.push_str(&format!("{name}\t{var}\t{kflags:08x}\t{n}\t-\t0\t0\t0\t0\t0\t0\t0.0\t0.0\t-\tno standable fill\n")); none += 1; }
+                        Err(e) => { rep.push_str(&format!("{name}\t{var}\t{kflags:08x}\t{n}\t-\t0\t0\t0\t0\t0\t0\t0.0\t0.0\t-\tERROR {e}\n")); none += 1; }
+                    }
+                    continue;
+                }
                 match mapgeom::floor_finish::build_cutout_item(&mut store, name, *kflags, &ident, coll, inset, 0.0, 1.0) {
                     Ok(Some((bytes, c))) => {
                         std::fs::write(format!("{out}/{ident}"), &bytes).unwrap_or_else(|e| die(format!("{ident}: {e}")));
@@ -5353,6 +5369,110 @@ fn main() {
             let (mut sp, mut cp, mut go) = (0, 0, 0);
             for b in &m.blocks { match b.waypoint_tag.as_deref() { Some("Spawn") => sp += 1, Some("Checkpoint") => cp += 1, Some("Goal") => go += 1, _ => {} } }
             println!("wrote {out}: {replaced} checkpoint blocks replaced, {removed} removed, {} without a rule {:?}; waypoints: {sp} Spawn, {cp} Checkpoint, {go} Goal", left.len(), left);
+        }
+        // cutout-verify --blocks A:FLAGS,..: for each exact cutout, sample every trigger-top triangle's centroid + edge
+        //   midpoints and report any within the inset of a structure triangle (the "no overlap" check)
+        "cutout-verify" => {
+            let mut store = open(&a);
+            let blocks = flag(&a.rest, "--blocks").unwrap_or_else(|| die("--blocks A:FLAGS,..".into()));
+            let inset: f32 = flag(&a.rest, "--inset").and_then(|v| v.parse().ok()).unwrap_or(0.5);
+            let mut bad_total = 0usize;
+            for spec in blocks.split(',') {
+                let (name, fl) = spec.split_once(':').unwrap_or((spec, "1000"));
+                let flags = u32::from_str_radix(fl.trim_start_matches("0x"), 16).unwrap_or(0x1000);
+                let (floor, structure) = mapgeom::floor_finish::floor_and_structure_of(&mut store, name, flags).unwrap_or_else(die);
+                let size = mapgeom::floor_finish::variant_size_of(&mut store, name, flags).unwrap_or_else(die);
+                let o = mapgeom::cutout_outline::trace(&floor, &structure, (32.0 * size.0 as f32, 32.0 * size.1 as f32), inset, mapgeom::cutout_outline::CONTOUR_STEP);
+                let ((tv, tt), _) = mapgeom::cutout_outline::extrude(&o, 0.0, 1.0, 0.02);
+                let tops: Vec<[u32; 3]> = tt.iter().filter(|t| t.iter().all(|&i| tv[i as usize][1] > 0.5)).cloned().collect();
+                let (mut bad, mut samples, mut min_d) = (0usize, 0usize, f32::INFINITY);
+                for t in &tops {
+                    let (a3, b3, c3) = (tv[t[0] as usize], tv[t[1] as usize], tv[t[2] as usize]);
+                    let pts = [[(a3[0] + b3[0] + c3[0]) / 3.0, (a3[2] + b3[2] + c3[2]) / 3.0], [(a3[0] + b3[0]) / 2.0, (a3[2] + b3[2]) / 2.0], [(b3[0] + c3[0]) / 2.0, (b3[2] + c3[2]) / 2.0], [(c3[0] + a3[0]) / 2.0, (c3[2] + a3[2]) / 2.0]];
+                    for p in pts {
+                        samples += 1;
+                        let d = structure.iter().map(|s| mapgeom::floor_finish::dist_xz_pub(p, s)).fold(f32::INFINITY, f32::min);
+                        min_d = min_d.min(d);
+                        if d < inset - 0.02 { bad += 1; }
+                    }
+                }
+                bad_total += bad;
+                println!("{name}: {} top triangles, {samples} samples, {bad} within the inset of structure (min distance to structure {:.3} m)", tops.len(), min_d);
+            }
+            println!("# total violations: {bad_total}");
+        }
+        // cutout-outlines-tsv --out F.tsv --blocks A:FLAGS,B:FLAGS,..: every block's outline polygons as rows
+        //   (block, polygon, ring (outer|hole n), vertex index, x, z) for the drawing tools
+        "cutout-outlines-tsv" => {
+            let mut store = open(&a);
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("--out F.tsv".into()));
+            let blocks = flag(&a.rest, "--blocks").unwrap_or_else(|| die("--blocks A:FLAGS,..".into()));
+            let inset: f32 = flag(&a.rest, "--inset").and_then(|v| v.parse().ok()).unwrap_or(0.5);
+            let mut s = String::from("block\tflags\tsize_x\tsize_z\tpolygon\tring\ti\tx\tz\n");
+            let mut summary = String::from("block\tflags\tpolygons\tholes\tvertices\ton_mesh\tarea_m2\tfill_tris\tstructure_tris\n");
+            for spec in blocks.split(',') {
+                let (name, fl) = spec.split_once(':').unwrap_or((spec, "1000"));
+                let flags = u32::from_str_radix(fl.trim_start_matches("0x"), 16).unwrap_or(0x1000);
+                let (floor, structure) = mapgeom::floor_finish::floor_and_structure_of(&mut store, name, flags).unwrap_or_else(die);
+                let size = mapgeom::floor_finish::variant_size_of(&mut store, name, flags).unwrap_or_else(die);
+                let o = mapgeom::cutout_outline::trace(&floor, &structure, (32.0 * size.0 as f32, 32.0 * size.1 as f32), inset, mapgeom::cutout_outline::CONTOUR_STEP);
+                for (pi, (outer, holes)) in o.polygons.iter().enumerate() {
+                    for (i, p) in outer.iter().enumerate() { s.push_str(&format!("{name}\t{flags:08x}\t{}\t{}\t{pi}\touter\t{i}\t{:.4}\t{:.4}\n", size.0, size.1, p[0], p[1])); }
+                    for (hi, h) in holes.iter().enumerate() { for (i, p) in h.iter().enumerate() { s.push_str(&format!("{name}\t{flags:08x}\t{}\t{}\t{pi}\thole {hi}\t{i}\t{:.4}\t{:.4}\n", size.0, size.1, p[0], p[1])); } }
+                }
+                // the structure footprint too (for the drawing): its triangles' xz as rows ring = "structure"
+                for (ti, t) in structure.iter().enumerate() { for (i, v) in t.iter().enumerate() { s.push_str(&format!("{name}\t{flags:08x}\t{}\t{}\t{ti}\tstructure\t{i}\t{:.4}\t{:.4}\n", size.0, size.1, v[0], v[2])); } }
+                summary.push_str(&format!("{name}\t{flags:08x}\t{}\t{}\t{}\t{}\t{:.1}\t{}\t{}\n", o.polygons.len(), o.polygons.iter().map(|(_, h)| h.len()).sum::<usize>(), o.vertices, o.on_mesh, o.area, floor.len(), structure.len()));
+                eprintln!("  {name}: {}", o.notes.join("; "));
+            }
+            std::fs::write(&out, &s).unwrap_or_else(|e| die(format!("{out}: {e}")));
+            let sum_path = format!("{}.summary.tsv", out.trim_end_matches(".tsv"));
+            std::fs::write(&sum_path, &summary).unwrap_or_else(|e| die(format!("{sum_path}: {e}")));
+            println!("wrote {out} + {sum_path}");
+        }
+        // cutout-outline BLOCK [--flags HEX] [--inset 0.5] [--step 0.125] [--obj F] [--verts]: the exact-outline cutout
+        //   polygon(s) of a block variant (cutout_outline.rs) — loops, vertex counts, area; --obj writes the prism
+        "cutout-outline" => {
+            let mut store = open(&a);
+            let name = a.rest.get(1).cloned().unwrap_or_else(|| die("cutout-outline needs a BLOCK".into()));
+            let flags: u32 = flag(&a.rest, "--flags").map(|v| u32::from_str_radix(v.trim_start_matches("0x"), 16).unwrap_or(0x1000)).unwrap_or(0x1000);
+            let inset: f32 = flag(&a.rest, "--inset").and_then(|v| v.parse().ok()).unwrap_or(0.5);
+            let step: f32 = flag(&a.rest, "--step").and_then(|v| v.parse().ok()).unwrap_or(mapgeom::cutout_outline::CONTOUR_STEP);
+            let (floor, structure) = mapgeom::floor_finish::floor_and_structure_of(&mut store, &name, flags).unwrap_or_else(die);
+            let size = mapgeom::floor_finish::variant_size_of(&mut store, &name, flags).unwrap_or_else(die);
+            let o = mapgeom::cutout_outline::trace(&floor, &structure, (32.0 * size.0 as f32, 32.0 * size.1 as f32), inset, step);
+            println!("{name} {flags:08x} ({}×{} cells): {}", size.0, size.1, o.notes.join("; "));
+            for (i, (outer, holes)) in o.polygons.iter().enumerate() {
+                println!("  polygon {i}: outer {} vertices, area {:.1} m², {} holes {:?}", outer.len(), mapgeom::floor_finish::polygon_area(outer), holes.len(), holes.iter().map(|h| h.len()).collect::<Vec<_>>());
+                if a.rest.iter().any(|x| x == "--verts") {
+                    for p in outer { println!("    {:.3} {:.3}", p[0], p[1]); }
+                }
+            }
+            if let Some(obj) = flag(&a.rest, "--obj") {
+                let ((v, t), _) = mapgeom::cutout_outline::extrude(&o, 0.0, 1.0, 0.02);
+                let mut s = String::new();
+                for p in &v { s.push_str(&format!("v {} {} {}\n", p[0], p[1], p[2])); }
+                for q in &t { s.push_str(&format!("f {} {} {}\n", q[0] + 1, q[1] + 1, q[2] + 1)); }
+                std::fs::write(&obj, s).unwrap_or_else(|e| die(format!("{obj}: {e}")));
+                println!("  wrote {obj}: {} vertices, {} triangles", v.len(), t.len());
+            }
+        }
+        // cutout-edges BLOCK [--flags HEX]: the standable fill's boundary polylines (edges of the fill triangles not
+        //   shared by another fill triangle) — the pak's own curb outline resolution, for the exact-outline cutouts
+        "cutout-edges" => {
+            let mut store = open(&a);
+            let name = a.rest.get(1).cloned().unwrap_or_else(|| die("cutout-edges needs a BLOCK".into()));
+            let flags: u32 = flag(&a.rest, "--flags").map(|v| u32::from_str_radix(v.trim_start_matches("0x"), 16).unwrap_or(0x1000)).unwrap_or(0x1000);
+            let (floor, structure) = mapgeom::floor_finish::floor_and_structure_of(&mut store, &name, flags).unwrap_or_else(die);
+            let loops = mapgeom::floor_finish::boundary_loops(&floor);
+            println!("{name}: {} fill triangles, {} structure triangles, {} boundary loops", floor.len(), structure.len(), loops.len());
+            for (i, l) in loops.iter().enumerate() {
+                let area = mapgeom::floor_finish::polygon_area(l);
+                println!("  loop {i}: {} vertices, area {:.1} m², bbox x {:.2}..{:.2} z {:.2}..{:.2}", l.len(), area.abs(), l.iter().map(|p| p[0]).fold(f32::INFINITY, f32::min), l.iter().map(|p| p[0]).fold(f32::NEG_INFINITY, f32::max), l.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min), l.iter().map(|p| p[1]).fold(f32::NEG_INFINITY, f32::max));
+                if a.rest.iter().any(|x| x == "--verts") {
+                    for p in l { println!("    {:.3} {:.3}", p[0], p[1]); }
+                }
+            }
         }
         // heightfield BLOCK [--dir D] [--all]: ASCII dump of a block's standable surface (or its collision silhouette with
         //   --all) on the 1 m grid — the checkpoint-map metric made visible (digits = metres, '.' = nothing)
@@ -5571,6 +5691,7 @@ fn main() {
                 floor_item: None,
                 floor_shores: !a.rest.iter().any(|x| x == "--no-shores"),
                 ground_clippers: a.rest.iter().any(|x| x == "--ground-clippers"),
+                cutout_squares: a.rest.iter().any(|x| x == "--squares"),
                 floor_cutouts: a.rest.iter().any(|x| x == "--cutouts"),
             };
             // --lights SOURCES.tsv (Hugo's Moth, 2026-10-22): the light sources are the carriers' seats. The TSV = the

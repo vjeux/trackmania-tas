@@ -867,7 +867,7 @@ pub struct Cutout {
 
 /// Bake a block's base variant (+ its units' Bottom clips) and split the triangles within the base unit row into
 /// standable floor and structure, in the block frame.
-fn variant_floor_and_structure(store: &mut crate::store::DataStore, variant: &crate::blockinfo::Variant) -> Result<(Vec<[[f32; 3]; 3]>, Vec<[[f32; 3]; 3]>), String> {
+pub fn variant_floor_and_structure(store: &mut crate::store::DataStore, variant: &crate::blockinfo::Variant) -> Result<(Vec<[[f32; 3]; 3]>, Vec<[[f32; 3]; 3]>), String> {
     let mut m = crate::static_item::build::Merged::default();
     m.keep_water = true;
     for list in &variant.mobils {
@@ -1043,6 +1043,47 @@ pub fn cutout_for_block(store: &mut crate::store::DataStore, name: &str, flags: 
 }
 
 /// Build the cutout carrier for a block name: an invisible Finish item in the block frame.
+/// The exact-outline cutout item (v4.4, Hugo's tester: "perfect cutouts of the blocks"): the fill region traced
+/// as polygons (`cutout_outline::trace`), triangulated with holes, extruded into the trigger prism (−below ..
+/// +above in the block frame) with the indicator as the same polygon mesh at +lift. Polygons under 1 m² or
+/// thinner than a car (area / perimeter < 0.3 m) are dropped and reported in the Cutout's notes-ish `dropped`.
+pub fn build_cutout_item_exact(store: &mut crate::store::DataStore, name: &str, flags: u32, ident: &str, collection: u32, inset: f32, below: f32, above: f32) -> Result<Option<(Vec<u8>, Cutout, crate::cutout_outline::Outline)>, String> {
+    let (floor, structure) = floor_and_structure_of(store, name, flags)?;
+    if floor.is_empty() {
+        return Ok(None);
+    }
+    let size = variant_size_of(store, name, flags)?;
+    let mut o = crate::cutout_outline::trace(&floor, &structure, (32.0 * size.0 as f32, 32.0 * size.1 as f32), inset, crate::cutout_outline::CONTOUR_STEP);
+    let mut dropped_slivers = 0usize;
+    o.polygons.retain(|(outer, holes)| {
+        let area = polygon_area(outer) + holes.iter().map(|h| polygon_area(h)).sum::<f32>();
+        let perim: f32 = (0..outer.len()).map(|i| { let (a, b) = (outer[i], outer[(i + 1) % outer.len()]); ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt() }).sum();
+        let keep = area >= 1.0 && perim > 0.0 && area / perim >= 0.3;
+        if !keep { dropped_slivers += 1; }
+        keep
+    });
+    if o.polygons.is_empty() {
+        return Ok(None);
+    }
+    o.area = o.polygons.iter().map(|(outer, holes)| polygon_area(outer) + holes.iter().map(|h| polygon_area(h)).sum::<f32>()).sum();
+    o.vertices = o.polygons.iter().map(|(outer, holes)| outer.len() + holes.iter().map(|h| h.len()).sum::<usize>()).sum();
+    if dropped_slivers > 0 {
+        o.notes.push(format!("{dropped_slivers} sliver polygon(s) under 1 m² or thinner than 0.3 m area/perimeter dropped"));
+    }
+    let ((tv, tt), (iv, it)) = crate::cutout_outline::extrude(&o, below, above, above + INDICATOR_LIFT - above + INDICATOR_LIFT);
+    // the indicator sits 2 cm over the block frame's grass (y 0), not over the slab top
+    let iv: Vec<[f32; 3]> = iv.iter().map(|p| [p[0], INDICATOR_LIFT, p[2]]).collect();
+    let donor = "Stadium\\Items\\LightCube2m.Item.Gbx";
+    let mut mg = crate::static_item::build::pack_item_merged(store, donor, 1.0, collection, 0, None).map_err(|e| format!("donor {donor}: {e}"))?;
+    crate::static_item::build::make_invisible_mesh_waypoint(&mut mg, crate::sttc::WP_FINISH, tv.clone(), tt.clone())?;
+    crate::static_item::build::add_finish_mesh_visual(&mut mg, &iv, &it)?;
+    let (bytes, _mg) = crate::static_item::build::finish_item(mg, ident, ident, 1.0, collection)?;
+    let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+    for v in &tv { for k in 0..3 { lo[k] = lo[k].min(v[k]); hi[k] = hi[k].max(v[k]); } }
+    let c = Cutout { verts: tv, tris: tt, kept: o.vertices, dropped: dropped_slivers, area: o.area, bbox: (lo, hi) };
+    Ok(Some((bytes, c, o)))
+}
+
 pub fn build_cutout_item(store: &mut crate::store::DataStore, name: &str, flags: u32, ident: &str, collection: u32, inset: f32, below: f32, above: f32) -> Result<Option<(Vec<u8>, Cutout)>, String> {
     let Some(c) = cutout_for_block(store, name, flags, inset, below, above)? else { return Ok(None) };
     let donor = "Stadium\\Items\\LightCube2m.Item.Gbx";
@@ -1399,4 +1440,103 @@ pub fn build_ground_clippers_item(store: &mut crate::store::DataStore, m: &MapFi
     let (bytes, _) = crate::static_item::build::finish_item(mg, ident, ident, 1.0, collection)?;
     let notes = vec![format!("ground clippers: map {}×{} cells → box 0..{x1:.0} × 0..{z1:.0} m, floor = lowest terrain row {row} (floor y {:.2} + bed {bed:.1}) = {floor:.2} → slab {y0:.2} .. {y1:.2}", m.size[0], m.size[2], floor - bed)];
     Ok((bytes, FloorMesh { verts, tris, quads: vec![(0.0, x1, 0.0, z1, y1 - INDICATOR_LIFT)], cells: (m.size[0] * m.size[2]) as usize, strips: 1, shore_boxes: 0, shore_prisms: 0, notes, bbox: ([0.0, y0, 0.0], [x1, y1, z1]) }))
+}
+
+/// The standable fill triangles and the structure triangles of a block's picked variant (block frame).
+pub fn floor_and_structure_of(store: &mut crate::store::DataStore, name: &str, flags: u32) -> Result<(Vec<[[f32; 3]; 3]>, Vec<[[f32; 3]; 3]>), String> {
+    let Some(bp) = crate::vista::find_block_info(store, name) else { return Err(format!("{name}: no block info")) };
+    let bi = crate::blockinfo::load(store, &bp)?;
+    let ground = flags & crate::blockmap::FLAG_GROUND != 0;
+    let variant = (flags & 63) as usize;
+    let sub = ((flags >> crate::blockmap::FLAG_SUBVARIANT_SHIFT) & 63) as usize;
+    let addv = ((flags >> crate::blockmap::FLAG_ADDITIONAL_SHIFT) & 0x7F) as usize;
+    let Some(p) = bi.pick_placement_add(ground, variant, sub, addv) else { return Err(format!("{name}: no variant for flags {flags:#x}")) };
+    // the PICKED placement's mobils only (as cutout_for_block does): the variant lists every placement's
+    let mut v = p.variant.clone();
+    v.mobils = vec![p.mobils.iter().map(|m| (*m).clone()).collect()];
+    variant_floor_and_structure(store, &v)
+}
+
+/// The boundary of a triangle soup in the xz plane: the directed edges that no other triangle shares (vertices
+/// keyed on a 1 mm grid), chained into closed loops. Each loop is a polyline of the mesh's OWN vertices — the
+/// pak's curb resolution, nothing invented.
+pub fn boundary_loops(tris: &[[[f32; 3]; 3]]) -> Vec<Vec<[f32; 2]>> {
+    use std::collections::HashMap;
+    let key = |p: [f32; 3]| -> (i64, i64) { ((p[0] * 1000.0).round() as i64, (p[2] * 1000.0).round() as i64) };
+    let mut count: HashMap<((i64, i64), (i64, i64)), i32> = HashMap::new();
+    for t in tris {
+        // make every triangle counter-clockwise in xz (looking down −y … use the signed area)
+        let (a, b, c) = ([t[0][0], t[0][2]], [t[1][0], t[1][2]], [t[2][0], t[2][2]]);
+        let area = (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]);
+        if area.abs() < 1e-6 { continue; }
+        let (ka, kb, kc) = (key(t[0]), key(t[1]), key(t[2]));
+        let edges = if area > 0.0 { [(ka, kb), (kb, kc), (kc, ka)] } else { [(kb, ka), (kc, kb), (ka, kc)] };
+        for (p, q) in edges {
+            *count.entry((p, q)).or_default() += 1;
+        }
+    }
+    // an edge is a boundary when its reverse is absent (interior edges appear once each way)
+    let mut next: HashMap<(i64, i64), Vec<(i64, i64)>> = HashMap::new();
+    for ((p, q), _) in count.iter() {
+        if !count.contains_key(&(*q, *p)) {
+            next.entry(*p).or_default().push(*q);
+        }
+    }
+    let mut loops = Vec::new();
+    let mut used: std::collections::HashSet<((i64, i64), (i64, i64))> = Default::default();
+    let mut starts: Vec<(i64, i64)> = next.keys().copied().collect();
+    starts.sort_unstable();
+    for s in starts {
+        let Some(qs) = next.get(&s) else { continue };
+        for q0 in qs {
+            if used.contains(&(s, *q0)) { continue; }
+            let mut lp = vec![s];
+            let (mut p, mut q) = (s, *q0);
+            used.insert((p, q));
+            let mut guard = 0;
+            while q != s && guard < 100_000 {
+                lp.push(q);
+                let Some(cands) = next.get(&q) else { break };
+                let Some(&n) = cands.iter().find(|n| !used.contains(&(q, **n))) else { break };
+                used.insert((q, n));
+                p = n;
+                let _ = p;
+                let old = q;
+                q = n;
+                let _ = old;
+                guard += 1;
+            }
+            if lp.len() >= 3 {
+                loops.push(lp.into_iter().map(|(x, z)| [x as f32 / 1000.0, z as f32 / 1000.0]).collect());
+            }
+        }
+    }
+    loops
+}
+
+/// Signed area of a polygon (counter-clockwise positive in xz).
+pub fn polygon_area(p: &[[f32; 2]]) -> f32 {
+    let mut a = 0.0;
+    for i in 0..p.len() {
+        let (u, v) = (p[i], p[(i + 1) % p.len()]);
+        a += u[0] * v[1] - v[0] * u[1];
+    }
+    a / 2.0
+}
+
+/// The footprint size (cells at dir 0) of a block's picked variant.
+pub fn variant_size_of(store: &mut crate::store::DataStore, name: &str, flags: u32) -> Result<(i32, i32), String> {
+    let Some(bp) = crate::vista::find_block_info(store, name) else { return Err(format!("{name}: no block info")) };
+    let bi = crate::blockinfo::load(store, &bp)?;
+    let ground = flags & crate::blockmap::FLAG_GROUND != 0;
+    let variant = (flags & 63) as usize;
+    let sub = ((flags >> crate::blockmap::FLAG_SUBVARIANT_SHIFT) & 63) as usize;
+    let addv = ((flags >> crate::blockmap::FLAG_ADDITIONAL_SHIFT) & 0x7F) as usize;
+    let Some(p) = bi.pick_placement_add(ground, variant, sub, addv) else { return Err(format!("{name}: no variant for flags {flags:#x}")) };
+    let units = &p.variant.block_units;
+    Ok(if units.is_empty() { (1, 1) } else { (units.iter().map(|u| u.offset[0]).max().unwrap_or(0) + 1, units.iter().map(|u| u.offset[2]).max().unwrap_or(0) + 1) })
+}
+
+pub fn dist_xz_pub(p: [f32; 2], t: &[[f32; 3]; 3]) -> f32 {
+    dist_xz(p, t)
 }

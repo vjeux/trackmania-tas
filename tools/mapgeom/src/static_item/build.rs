@@ -914,6 +914,32 @@ pub fn add_finish_plane_visual(m: &mut Merged, quads: &[(f32, f32, f32, f32, f32
     Ok(())
 }
 
+/// The indicator as an arbitrary flat mesh (the exact-outline cutouts): `verts` already at their height, `tris`
+/// counter-clockwise seen from above; same material and layout as `add_finish_plane_visual`, UVs per 4 m.
+pub fn add_finish_mesh_visual(m: &mut Merged, verts: &[[f32; 3]], tris: &[[u32; 3]]) -> R<()> {
+    use super::bake::{make_visuals, Corner, VisualLayout};
+    let link = "Stadium\\Media\\Material\\RaceTriggerFXFinish";
+    let slot = m.material_slot(link, 28);
+    let c = |p: [f32; 3], face: u32| Corner { pos: p, normal: [0.0, 1.0, 0.0], uv: [p[0] / 4.0, p[2] / 4.0], uv1: [p[0] / 4.0, p[2] / 4.0], tan_u: [1.0, 0.0, 0.0], tan_v: [0.0, 0.0, 1.0], face, group: 1 };
+    let mut out: Vec<[Corner; 3]> = Vec::with_capacity(tris.len());
+    for (i, t) in tris.iter().enumerate() {
+        let (a, b, cc) = (verts[t[0] as usize], verts[t[1] as usize], verts[t[2] as usize]);
+        // ensure the face points up (+y) in the stream order
+        let cross = (b[0] - a[0]) * (cc[2] - a[2]) - (cc[0] - a[0]) * (b[2] - a[2]);
+        let tri = if cross > 0.0 { [c(a, i as u32 + 1), c(b, i as u32 + 1), c(cc, i as u32 + 1)] } else { [c(a, i as u32 + 1), c(cc, i as u32 + 1), c(b, i as u32 + 1)] };
+        out.push(tri);
+    }
+    if out.is_empty() {
+        return Err("finish mesh visual: no triangles".into());
+    }
+    m.visuals.clear();
+    for v in make_visuals(&out, VisualLayout::DecalPaint, "off") {
+        m.visuals.push(super::merged::MergedVisual::every_level(v, slot));
+    }
+    m.notes.push(format!("finish indicator mesh: {} triangles, {link}, non-collidable", tris.len()));
+    Ok(())
+}
+
 /// Make a baked item a WAYPOINT with a BOX trigger over its own geometry (Hugo's "every
 /// flag is a finish", 2026-10-07 — the Manslaughter mechanism: the audience block's bbox as
 /// the finish volume). `wtype`: 0 Start, 1 Finish, 2 Checkpoint. The box = the item's
