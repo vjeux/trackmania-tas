@@ -179,8 +179,15 @@ pub fn candidate(name: &str, s: &str) -> Option<String> {
         if let Some(rest) = name.strip_prefix(fam) {
             // Tech is spelled with NO word in the Deco families — and the Tech
             // deco platform / deco hill IS the grass-topped one (`Deco` /
-            // `DecoHill` materials, Grass 2), so Grass spells them the same way
-            let word = if fam != "Platform" && (s == "Tech" || s == "Grass") { "" } else { s };
+            // `DecoHill` materials, Grass 2), so Grass spells them the same way.
+            // TARMAC (Everios96 2026-10-24: "penalty surfaces dont change"): the deco
+            // pieces — rounded corners, slopes, hills — are PENALTY surfaces (Everios96
+            // 2026-09-22), so under Tech they stay whatever the original made them
+            // (dirt terraces stay dirt, snow tops stay snow): no twin, no bake.
+            if fam != "Platform" && s == "Tech" {
+                return None;
+            }
+            let word = if fam != "Platform" && s == "Grass" { "" } else { s };
             return Some(match strip_surface_word(rest) {
                 Some((_w, tail)) => format!("{fam}{word}{tail}"),
                 None if fam != "Platform" => format!("{fam}{word}{rest}"),
@@ -980,7 +987,8 @@ mod tests {
         assert_eq!(c("GateFinish"), "-");
         assert_eq!(c("StageSupportCrossPillar"), "-");
         assert_eq!(candidate("PlatformDirtBase", "Tech").unwrap(), "PlatformTechBase");
-        assert_eq!(candidate("DecoPlatformIceBase", "Tech").unwrap(), "DecoPlatformBase");
+        assert_eq!(candidate("DecoPlatformIceBase", "Tech"), None); // penalty pieces stay under Tarmac
+        assert_eq!(candidate("DecoPlatformIceBase", "Grass").unwrap(), "DecoPlatformBase");
     }
 }
 
@@ -1199,6 +1207,35 @@ pub fn plan_records(store: &mut DataStore, idx: &mut BlockInfoIndex, map: &Path,
                         resurfaced_parent = Some(ob.name.clone());
                     }
                     break 'up;
+                }
+            }
+            // the overlay is only worth a shell when the pillar's LOOK actually changes: the
+            // game dresses a generated pillar from its parent's folder — `PlatformDirt` /
+            // `PlatformIce` / `PlatformGrass` carry their own `TrackWall` (orange sandstone,
+            // ice cliff, grey concrete), every other parent (tech, plastic, magnet, wood…)
+            // leaves plain planks. Original parent plastic → Tarmac parent tech: planks
+            // both ways, no shell (26 under Tarmac: 888 useless plank shells, 2026-10-24).
+            let pillar_dress = |word: &str| -> &'static str {
+                match word {
+                    "Dirt" => "stone:dirt",
+                    "Ice" => "stone:ice",
+                    "Grass" => "stone:grass",
+                    _ => "planks",
+                }
+            };
+            let parent_word = |name: &str| -> &'static str {
+                for fam in ["DecoPlatform", "DecoHill", "Platform", "Open", "Road", "Water"] {
+                    if let Some(rest) = name.strip_prefix(fam) {
+                        return strip_surface_word(rest).map(|(w, _)| w).unwrap_or("Tech");
+                    }
+                }
+                "Tech"
+            };
+            if let Some(parent) = resurfaced_parent.as_ref() {
+                if !bake_mode && pillar_dress(parent_word(parent)) == pillar_dress(s) {
+                    r.detail = format!("pillar under a re-surfaced parent ({parent}): same pillar look before and after, the game's own");
+                    rows.push(r);
+                    continue;
                 }
             }
             if let Some(parent) = resurfaced_parent {
