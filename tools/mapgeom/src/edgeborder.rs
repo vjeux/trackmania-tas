@@ -159,9 +159,15 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> crate::store::DataStore) -
     let mut edges: HashMap<((i32, i32, i32), (i32, i32, i32)), (usize, [f32; 3], [f32; 3], [f32; 3], [f32; 3], usize)> = HashMap::new();
     for (ci, cap) in caps.iter().enumerate() {
         for t in &cap.tris {
-            let n = norm(cross(sub(t[1], t[0]), sub(t[2], t[0])));
-            if n[1] < 0.3 {
+            let mut n = norm(cross(sub(t[1], t[0]), sub(t[2], t[0])));
+            // a hull's winding is whatever the baker left (the ground slopes' caps face down):
+            // the face is a cap when it is near-horizontal either way, and the normal we keep
+            // points up
+            if n[1].abs() < 0.3 {
                 continue; // a wall or a steep side is not a driving cap
+            }
+            if n[1] < 0.0 {
+                n = [-n[0], -n[1], -n[2]];
             }
             for k in 0..3 {
                 let (a, b, c) = (t[k], t[(k + 1) % 3], t[(k + 2) % 3]);
@@ -174,8 +180,16 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> crate::store::DataStore) -
     }
     let mut rims: BTreeMap<usize, Vec<([f32; 3], [f32; 3], [f32; 3], [f32; 3])>> = BTreeMap::new();
     let (mut total, mut against_block, mut kept_rims) = (0usize, 0usize, 0usize);
+    if std::env::var("MAPGEOM_BORDER_DEBUG").is_ok() {
+        for (ci, cap) in caps.iter().enumerate() {
+            println!("  cap {ci} = placement {} at ({:.0},{:.0},{:.0}) colour {}, {} tris", cap.placement, cap.pos[0], cap.pos[1], cap.pos[2], cap.color, cap.tris.len());
+        }
+    }
     for (_, (count, a, b, c, n, ci)) in edges {
         if count != 1 {
+            if std::env::var("MAPGEOM_BORDER_DEBUG").is_ok() && count > 2 {
+                println!("  edge ×{count} cap {ci} ({:.0},{:.1},{:.0})-({:.0},{:.1},{:.0})", a[0], a[1], a[2], b[0], b[1], b[2]);
+            }
             continue;
         }
         total += 1;
