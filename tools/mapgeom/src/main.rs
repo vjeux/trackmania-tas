@@ -502,9 +502,12 @@ fn main() {
     if a.rest.iter().any(|x| x == "--ring-rows") {
         mapgeom::outer_ring::set_ring_wedges(false);
     }
-    // --slab-gate: the v4.15 translucent gate pane on the slab instead of the v4.16 lit flat red
+    // --slab-gate: the v4.15 translucent gate pane on the slab; --slab-wood: the v4.16 ThemeSnowTempleFloor red
     if a.rest.iter().any(|x| x == "--slab-gate") {
         mapgeom::static_item::build::set_slab_lit(false);
+    }
+    if a.rest.iter().any(|x| x == "--slab-wood") {
+        mapgeom::static_item::build::set_slab_plastic(false);
     }
     if let Some(i) = a.rest.iter().position(|x| x == "--indicator") {
         let v = a.rest.get(i + 1).map(|s| s.as_str()).unwrap_or("slab");

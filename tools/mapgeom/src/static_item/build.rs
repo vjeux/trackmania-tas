@@ -1043,8 +1043,7 @@ pub fn add_finish_plane_visual(m: &mut Merged, quads: &[(f32, f32, f32, f32, f32
 pub fn add_finish_prism_visual(m: &mut Merged, verts: &[[f32; 3]], tris: &[[u32; 3]]) -> R<()> {
     use super::bake::{make_visuals, Corner, VisualLayout};
     let lit = slab_lit();
-    let link = if lit { SLAB_LINK } else { GATE_LINK };
-    let slot = m.material_slot(link, 28);
+    let (link, slot) = slab_slot(m);
     let tile = GATE_TILE_M;
     let mut centre = [0.0f32; 3];
     for v in verts { for k in 0..3 { centre[k] += v[k] / verts.len().max(1) as f32; } }
@@ -1107,6 +1106,35 @@ pub fn add_finish_prism_visual(m: &mut Merged, verts: &[[f32; 3]], tris: &[[u32;
 /// Lit → the Full layout with lightmap charts: three planar sub-charts by face axis — top (+y) in [0, 0.5]²,
 /// bottom (−y) in [0.5, 1] × [0, 0.5], walls (±x, ±z) in [0, 1] × [0.5, 1] by their horizontal axis and y.
 pub const SLAB_LINK: &str = "Stadium\\Media\\Material\\ThemeSnowTempleFloor";
+/// v4.17 (Hugo 02:43: "you used wood — an OPAQUE TEXTURELESS slab of the colour red; not a floor from items"):
+/// the mesh modeler's own solid-colour material `Material_BlockCustom\CustomPlastic` — shader
+/// `Tech3 Block PyPxz_Hue` (lit, opaque): its base colour map is a FLAT hue-key green (0, 231, 0) that the shader
+/// replaces by `TargetColor` (the pak default 1.0/0.086/0.086 is itself a red), so the look is one solid colour
+/// with a plastic normal/rough response — the "Plastic" of the mesh modeler. Same instance layout as the glass:
+/// a v11 game material + the constant `TargetColor Real 3` + the three floats; TargetColor = (1.0, 0.1, 0.1).
+pub const PLASTIC_LINK: &str = "Stadium\\Media\\Material_BlockCustom\\CustomPlastic";
+pub const PLASTIC_RGB: [f32; 3] = [1.0, 0.1, 0.1];
+static SLAB_PLASTIC: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+pub fn set_slab_plastic(on: bool) {
+    SLAB_PLASTIC.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+pub fn plastic_material() -> CPlugMaterialUserInst {
+    let mut inst = CPlugMaterialUserInst::game_material(PLASTIC_LINK, 28);
+    let main = inst.main.as_mut().unwrap();
+    main.csts = vec![crate::crystal_model::Cst { u01: crate::crystal_model::Id::Str("TargetColor".into()), u02: crate::crystal_model::Id::Str("Real".into()), u03: 3 }];
+    main.color = PLASTIC_RGB.iter().map(|c| c.to_bits() as i32).collect();
+    inst
+}
+/// The slab's material slot: plastic (tinted) by default, else the lit flat red or the gate pane.
+fn slab_slot(m: &mut Merged) -> (&'static str, usize) {
+    if slab_lit() && SLAB_PLASTIC.load(std::sync::atomic::Ordering::Relaxed) {
+        (PLASTIC_LINK, m.material_inst_slot(&plastic_material(), "Stadium\\Media\\Material\\"))
+    } else if slab_lit() {
+        (SLAB_LINK, m.material_slot(SLAB_LINK, 28))
+    } else {
+        (GATE_LINK, m.material_slot(GATE_LINK, 28))
+    }
+}
 static SLAB_LIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 pub fn set_slab_lit(on: bool) {
     SLAB_LIT.store(on, std::sync::atomic::Ordering::Relaxed);
@@ -1169,8 +1197,7 @@ pub fn slab_lightmap_charts(tris: &mut [[super::bake::Corner; 3]]) -> (f32, [f32
 pub fn add_finish_slab_visual(m: &mut Merged, bodies: &[[[f32; 3]; 8]]) -> R<()> {
     use super::bake::{make_visuals, Corner, VisualLayout};
     let lit = slab_lit();
-    let link = if lit { SLAB_LINK } else { GATE_LINK };
-    let slot = m.material_slot(link, 28);
+    let (link, slot) = slab_slot(m);
     let tile = GATE_TILE_M;
     // the six faces as corner quads, each listed counter-clockwise seen from OUTSIDE the box
     let faces: [([usize; 4], [f32; 3]); 6] = [
@@ -1223,7 +1250,7 @@ pub fn add_finish_slab_visual(m: &mut Merged, bodies: &[[[f32; 3]; 8]]) -> R<()>
             m.visuals.push(super::merged::MergedVisual::every_level(v, slot));
         }
         set_indicator_prelight(m, mpu, bounds);
-        m.notes.push(format!("finish slab visual (v4.16): {} bodies → {} faces, {} triangles, {link} (lit flat red), uv0 per {tile:.0} m per face, 3 lightmap charts (top / bottom / walls), {inward} faces re-wound outward, non-collidable, Full layout", bodies.len(), face_id - 1, tris.len()));
+        m.notes.push(format!("finish slab visual (v4.17): {} bodies → {} faces, {} triangles, {link} (lit, opaque, textureless; TargetColor {:?} when plastic), uv0 per {tile:.0} m per face, 3 lightmap charts (top / bottom / walls), {inward} faces re-wound outward, non-collidable, Full layout", bodies.len(), face_id - 1, tris.len(), PLASTIC_RGB));
     } else {
         for v in make_visuals(&tris, VisualLayout::DecalPaint, "off") {
             m.visuals.push(super::merged::MergedVisual::every_level(v, slot));
