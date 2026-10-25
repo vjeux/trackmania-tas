@@ -502,6 +502,10 @@ fn main() {
     if a.rest.iter().any(|x| x == "--ring-rows") {
         mapgeom::outer_ring::set_ring_wedges(false);
     }
+    // --slab-gate: the v4.15 translucent gate pane on the slab instead of the v4.16 lit flat red
+    if a.rest.iter().any(|x| x == "--slab-gate") {
+        mapgeom::static_item::build::set_slab_lit(false);
+    }
     if let Some(i) = a.rest.iter().position(|x| x == "--indicator") {
         let v = a.rest.get(i + 1).map(|s| s.as_str()).unwrap_or("slab");
         mapgeom::static_item::build::set_indicator(match v { "glass" => mapgeom::static_item::build::Indicator::Glass, "gate" => mapgeom::static_item::build::Indicator::Gate, "decal" => mapgeom::static_item::build::Indicator::Decal, "chrono-pole" => mapgeom::static_item::build::Indicator::ChronoPole, "chrono" => mapgeom::static_item::build::Indicator::Chrono, "none" => mapgeom::static_item::build::Indicator::None, _ => mapgeom::static_item::build::Indicator::Slab });

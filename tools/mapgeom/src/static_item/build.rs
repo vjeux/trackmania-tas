@@ -1042,8 +1042,9 @@ pub fn add_finish_plane_visual(m: &mut Merged, quads: &[(f32, f32, f32, f32, f32
 /// own flat normal, wound outward (tested against the prism's centroid), UV0 from the face's dominant axes / 8.
 pub fn add_finish_prism_visual(m: &mut Merged, verts: &[[f32; 3]], tris: &[[u32; 3]]) -> R<()> {
     use super::bake::{make_visuals, Corner, VisualLayout};
-    let link = GATE_LINK;
-    let slot = m.material_slot(GATE_LINK, 28);
+    let lit = slab_lit();
+    let link = if lit { SLAB_LINK } else { GATE_LINK };
+    let slot = m.material_slot(link, 28);
     let tile = GATE_TILE_M;
     let mut centre = [0.0f32; 3];
     for v in verts { for k in 0..3 { centre[k] += v[k] / verts.len().max(1) as f32; } }
@@ -1073,10 +1074,19 @@ pub fn add_finish_prism_visual(m: &mut Merged, verts: &[[f32; 3]], tris: &[[u32;
         return Err("finish prism: no triangles".into());
     }
     m.visuals.clear();
-    for v in make_visuals(&out, VisualLayout::DecalPaint, "off") {
-        m.visuals.push(super::merged::MergedVisual::every_level(v, slot));
+    if lit {
+        let (mpu, bounds) = slab_lightmap_charts(&mut out);
+        for v in make_visuals(&out, VisualLayout::Full, "off") {
+            m.visuals.push(super::merged::MergedVisual::every_level(v, slot));
+        }
+        set_indicator_prelight(m, mpu, bounds);
+        m.notes.push(format!("finish prism visual (v4.16): {} triangles ({inward} caps re-wound outward), {link} (lit flat red), 3 lightmap charts, non-collidable, Full layout", out.len()));
+    } else {
+        for v in make_visuals(&out, VisualLayout::DecalPaint, "off") {
+            m.visuals.push(super::merged::MergedVisual::every_level(v, slot));
+        }
+        m.notes.push(format!("finish prism visual (v4.15): {} triangles ({inward} caps re-wound outward), {link}, uv per {tile:.0} m per face, non-collidable, DecalPaint layout", out.len()));
     }
-    m.notes.push(format!("finish prism visual (v4.15): {} triangles ({inward} caps re-wound outward), {link}, uv per {tile:.0} m per face, non-collidable, DecalPaint layout", out.len()));
     Ok(())
 }
 
@@ -1088,10 +1098,79 @@ pub fn add_finish_prism_visual(m: &mut Merged, verts: &[[f32; 3]], tris: &[[u32;
 /// the red he approved; no OPAQUE red FX pane exists in the pak: the whole FX family is additive TAdd*, see the
 /// README). `bodies`: 8 corners each in the box order (x0z0 x1z0 x1z0 x0z0 at y0/y1 … exactly `rebuild`'s layout:
 /// 0 (x0,y0,z0) 1 (x1,y0,z0) 2 (x1,y1,z0) 3 (x0,y1,z0) 4 (x0,y0,z1) 5 (x1,y0,z1) 6 (x1,y1,z1) 7 (x0,y1,z1)).
+/// v4.16 (Hugo 02:29: the gate pane "is the moving finish texture again … use a STATIC red one"): the slab's
+/// material is the LIT flat red `Stadium\Media\Material\ThemeSnowTempleFloor` — shader Tech3_Block_TDSN_CubeOut,
+/// diffuse 2048² uniform (164, 70, 46) ± 11 (a dark brick red; the only brighter flat red in the pak, the
+/// obstacles' (219, 61, 0), is applied through a GameSkin MODIFIER, not a material a custom item can link), its
+/// hue mask set over the whole texture (DXT5 alpha 243/255 everywhere) so the MAP's item colour byte (chunk
+/// 0x03043062: 4 = Red, 1 = White …) re-tints the whole slab; a plain v11 game-material instance, NotCollidable.
+/// Lit → the Full layout with lightmap charts: three planar sub-charts by face axis — top (+y) in [0, 0.5]²,
+/// bottom (−y) in [0.5, 1] × [0, 0.5], walls (±x, ±z) in [0, 1] × [0.5, 1] by their horizontal axis and y.
+pub const SLAB_LINK: &str = "Stadium\\Media\\Material\\ThemeSnowTempleFloor";
+static SLAB_LIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+pub fn set_slab_lit(on: bool) {
+    SLAB_LIT.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+pub fn slab_lit() -> bool {
+    SLAB_LIT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The three-chart lightmap projection of a slab mesh: charts by face normal axis (top / bottom / walls), each a
+/// planar projection of its faces' extent into its own atlas rectangle with a 0.002 gutter. Returns (metres per
+/// uv unit = the LARGEST chart's scale, atlas bounds).
+pub fn slab_lightmap_charts(tris: &mut [[super::bake::Corner; 3]]) -> (f32, [f32; 4]) {
+    #[derive(Clone, Copy)]
+    struct Chart { lo: [f32; 2], hi: [f32; 2], rect: [f32; 4] } // rect: u0 v0 u1 v1
+    // which chart a corner belongs to, by the face normal
+    let which = |n: [f32; 3]| -> usize { if n[1] > 0.5 { 0 } else if n[1] < -0.5 { 1 } else { 2 } };
+    // the in-plane coordinates of a point for a chart
+    let coord = |c: &super::bake::Corner, k: usize| -> [f32; 2] {
+        match k {
+            0 | 1 => [c.pos[0], c.pos[2]],
+            _ => { if c.normal[0].abs() > 0.5 { [c.pos[2], c.pos[1]] } else { [c.pos[0], c.pos[1]] } }
+        }
+    };
+    let mut charts = [
+        Chart { lo: [f32::INFINITY; 2], hi: [f32::NEG_INFINITY; 2], rect: [0.001, 0.001, 0.499, 0.499] },
+        Chart { lo: [f32::INFINITY; 2], hi: [f32::NEG_INFINITY; 2], rect: [0.501, 0.001, 0.999, 0.499] },
+        Chart { lo: [f32::INFINITY; 2], hi: [f32::NEG_INFINITY; 2], rect: [0.001, 0.501, 0.999, 0.999] },
+    ];
+    for t in tris.iter() {
+        let k = which(t[0].normal);
+        for c in t {
+            let q = coord(c, k);
+            for a in 0..2 { charts[k].lo[a] = charts[k].lo[a].min(q[a]); charts[k].hi[a] = charts[k].hi[a].max(q[a]); }
+        }
+    }
+    // the walls' chart: every wall face projected by its own horizontal axis lands in the same rectangle — faces
+    // with different axes overlap in uv. Walls are 1 m tall strips the lightmap shades uniformly, so an overlap
+    // between the ±x and ±z walls costs nothing visible; the top and bottom charts are exact.
+    let mut mpu = 0.0f32;
+    for ch in charts.iter() {
+        let ext = (ch.hi[0] - ch.lo[0]).max(ch.hi[1] - ch.lo[1]);
+        if ext.is_finite() && ext > 0.0 {
+            let s = ((ch.rect[2] - ch.rect[0]).min(ch.rect[3] - ch.rect[1])) / ext;
+            mpu = mpu.max(1.0 / s);
+        }
+    }
+    for t in tris.iter_mut() {
+        let k = which(t[0].normal);
+        let ch = charts[k];
+        let ext = (ch.hi[0] - ch.lo[0]).max(ch.hi[1] - ch.lo[1]).max(1e-3);
+        let s = ((ch.rect[2] - ch.rect[0]).min(ch.rect[3] - ch.rect[1])) / ext;
+        for c in t.iter_mut() {
+            let q = coord(c, k);
+            c.uv1 = [ch.rect[0] + (q[0] - ch.lo[0]) * s, ch.rect[1] + (q[1] - ch.lo[1]) * s];
+        }
+    }
+    (mpu, [0.001, 0.001, 0.999, 0.999])
+}
+
 pub fn add_finish_slab_visual(m: &mut Merged, bodies: &[[[f32; 3]; 8]]) -> R<()> {
     use super::bake::{make_visuals, Corner, VisualLayout};
-    let link = GATE_LINK;
-    let slot = m.material_slot(GATE_LINK, 28);
+    let lit = slab_lit();
+    let link = if lit { SLAB_LINK } else { GATE_LINK };
+    let slot = m.material_slot(link, 28);
     let tile = GATE_TILE_M;
     // the six faces as corner quads, each listed counter-clockwise seen from OUTSIDE the box
     let faces: [([usize; 4], [f32; 3]); 6] = [
@@ -1138,10 +1217,19 @@ pub fn add_finish_slab_visual(m: &mut Merged, bodies: &[[[f32; 3]; 8]]) -> R<()>
         return Err("finish slab: no bodies".into());
     }
     m.visuals.clear();
-    for v in make_visuals(&tris, VisualLayout::DecalPaint, "off") {
-        m.visuals.push(super::merged::MergedVisual::every_level(v, slot));
+    if lit {
+        let (mpu, bounds) = slab_lightmap_charts(&mut tris);
+        for v in make_visuals(&tris, VisualLayout::Full, "off") {
+            m.visuals.push(super::merged::MergedVisual::every_level(v, slot));
+        }
+        set_indicator_prelight(m, mpu, bounds);
+        m.notes.push(format!("finish slab visual (v4.16): {} bodies → {} faces, {} triangles, {link} (lit flat red), uv0 per {tile:.0} m per face, 3 lightmap charts (top / bottom / walls), {inward} faces re-wound outward, non-collidable, Full layout", bodies.len(), face_id - 1, tris.len()));
+    } else {
+        for v in make_visuals(&tris, VisualLayout::DecalPaint, "off") {
+            m.visuals.push(super::merged::MergedVisual::every_level(v, slot));
+        }
+        m.notes.push(format!("finish slab visual (v4.15): {} bodies → {} faces, {} triangles, {link}, uv per {tile:.0} m per face, {inward} faces re-wound outward, non-collidable, DecalPaint layout", bodies.len(), face_id - 1, tris.len()));
     }
-    m.notes.push(format!("finish slab visual (v4.15): {} bodies → {} faces, {} triangles, {link}, uv per {tile:.0} m per face, {inward} faces re-wound outward, non-collidable, DecalPaint layout", bodies.len(), face_id - 1, tris.len()));
     Ok(())
 }
 
