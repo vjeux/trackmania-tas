@@ -1082,8 +1082,19 @@ pub fn build_cutout_item_exact(store: &mut crate::store::DataStore, name: &str, 
         // v4.19: the cutout as a PureFloor-recipe crystal item — Geometry = the exact-outline prism (top / bottom /
         // walls), Trigger layer = the same closed prism, WaypointType Finish from the template
         let mut mesh = crate::crystal::CrystalMesh::default();
-        crate::floor_tiles::tri_faces(&mut mesh, &tv, &tt, 0);
-        let bytes = crate::floor_tiles::build_pure_item(ident, collection, &mesh, Some(&mesh))?;
+        let bytes = if crate::floor_tiles::pure_top_only() {
+            // v4.21 (Hugo 06:26 "remove the faces on the sides so neighbouring items connect without an edge"):
+            // the outline polygon's top cap (up) and bottom cap (down), NO walls; the trigger stays the closed prism
+            let (y0, y1) = tv.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), v| (a.min(v[1]), b.max(v[1])));
+            crate::floor_tiles::polygon_faces(&mut mesh, &iv, &it, y1, true, 0);
+            crate::floor_tiles::polygon_faces(&mut mesh, &iv, &it, y0, false, 0);
+            let mut trig = crate::crystal::CrystalMesh::default();
+            crate::floor_tiles::tri_faces(&mut trig, &tv, &tt, 0);
+            crate::floor_tiles::build_pure_item(ident, collection, &mesh, Some(&trig))?
+        } else {
+            crate::floor_tiles::tri_faces(&mut mesh, &tv, &tt, 0);
+            crate::floor_tiles::build_pure_item(ident, collection, &mesh, Some(&mesh))?
+        };
         let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
         for v in &tv { for k in 0..3 { lo[k] = lo[k].min(v[k]); hi[k] = hi[k].max(v[k]); } }
         let c = Cutout { verts: tv, tris: tt, kept: o.vertices, dropped: dropped_slivers, area: o.area, bbox: (lo, hi) };

@@ -6,6 +6,8 @@
 use crate::static_item::build::Merged;
 
 pub const TILE_M: f32 = 128.0;
+/// The build tag in the tile idents (bump per delivered build: the game caches embedded items by ident).
+pub const BUILD_TAG: &str = "v21";
 pub type Body = [[f32; 3]; 8];
 
 /// Corner order of a body: 0 (x0,z0) 1 (x1,z0) 2 (x1,z0)↑ 3 (x0,z0)↑ 4 (x0,z1) 5 (x1,z1) 6 (x1,z1)↑ 7 (x0,z1)↑
@@ -300,16 +302,71 @@ pub fn build_pure_item(ident: &str, collection: u32, mesh: &crate::crystal::Crys
     Ok(it.close(first_node, n_old))
 }
 
+/// v4.21: a body's TOP face only (the friend's single up-facing quad) and its bottom footprint as a flat trigger
+/// quad wound DOWN (the friend's trigger quad [3,0,1,2] has (p1−p0)×(p2−p0) = −y).
+pub fn body_top_face(mesh: &mut crate::crystal::CrystalMesh, b: &Body, material: u32) {
+    let top = [b[3], b[7], b[6], b[2]]; // (x0,z0)↑ (x0,z1)↑ (x1,z1)↑ (x1,z0)↑ — the friend's order, cross = +y
+    let base = mesh.positions.len() as u32;
+    mesh.positions.extend_from_slice(&top);
+    mesh.faces.push(crate::crystal::Face { verts: (0..4).map(|k| base + k).collect(), uvs: vec![[4.0, 4.0], [4.0, 0.0], [0.0, 0.0], [0.0, 4.0]], material });
+}
+pub fn body_bottom_face(mesh: &mut crate::crystal::CrystalMesh, b: &Body, material: u32) {
+    let bottom = [b[0], b[1], b[5], b[4]]; // wound −y (seen from below)
+    let base = mesh.positions.len() as u32;
+    mesh.positions.extend_from_slice(&bottom);
+    mesh.faces.push(crate::crystal::Face { verts: (0..4).map(|k| base + k).collect(), uvs: vec![[4.0, 4.0], [4.0, 0.0], [0.0, 0.0], [0.0, 4.0]], material });
+}
+pub fn body_trigger_face(mesh: &mut crate::crystal::CrystalMesh, b: &Body, material: u32) {
+    let bottom = [b[0], b[1], b[5], b[4]]; // (x0,z0) (x1,z0) (x1,z1) (x0,z1) at the floor — cross = −y like the friend's trigger
+    let base = mesh.positions.len() as u32;
+    mesh.positions.extend_from_slice(&bottom);
+    mesh.faces.push(crate::crystal::Face { verts: (0..4).map(|k| base + k).collect(), uvs: vec![[0.0, 0.0]; 4], material });
+}
+
+/// v4.21: a polygon's top cap only (triangles at the cap's y, wound +y) / the same polygon at the floor wound −y.
+pub fn polygon_faces(mesh: &mut crate::crystal::CrystalMesh, verts: &[[f32; 3]], tris: &[[u32; 3]], y: f32, up: bool, material: u32) {
+    for t in tris {
+        let mut p = [verts[t[0] as usize], verts[t[1] as usize], verts[t[2] as usize]];
+        for q in p.iter_mut() { q[1] = y; }
+        let (u, v) = ([p[1][0] - p[0][0], 0.0, p[1][2] - p[0][2]], [p[2][0] - p[0][0], 0.0, p[2][2] - p[0][2]]);
+        let ny = u[2] * v[0] - u[0] * v[2];
+        if ny.abs() < 1e-9 { continue; }
+        if (ny > 0.0) != up { p.swap(1, 2); }
+        let base = mesh.positions.len() as u32;
+        mesh.positions.extend_from_slice(&p);
+        mesh.faces.push(crate::crystal::Face { verts: (0..3).map(|k| base + k).collect(), uvs: p.iter().map(|q| [q[0] / 8.0, q[2] / 8.0]).collect(), material });
+    }
+}
+
 /// The per-tile PureFloor-recipe visual item: closed slabs, no trigger. v4.20: the geometry is LOCAL to the tile
 /// corner `origin` (x, 0, z) like the friend's plates, and the item is placed there (the v4.19 tiles, world
 /// coordinates up to 2 km from an item at the origin, did not render; the cutouts, local to their block, did).
 pub fn build_pure_tile(bodies: &[Body], ident: &str, collection: u32, origin: [f32; 3]) -> Result<(Vec<u8>, usize), String> {
     let mut mesh = crate::crystal::CrystalMesh::default();
+    let mut trig = crate::crystal::CrystalMesh::default();
     for b in bodies {
         let mut lb = *b;
         for p in lb.iter_mut() { p[0] -= origin[0]; p[1] -= origin[1]; p[2] -= origin[2]; }
-        body_faces(&mut mesh, &lb, 0);
+        if pure_top_only() {
+            // v4.21: top face (up) + bottom face (down) per body, no walls (Hugo 06:26); the trigger layer KEPT as the
+            // friend's flat quad at the floor, so the item is a Finish exactly like PureFloorN — the v4.19/4.20 tiles
+            // (no trigger layer, WaypointType None) never rendered while the cutouts (trigger layer, Finish) did
+            body_top_face(&mut mesh, &lb, 0);
+            body_bottom_face(&mut mesh, &lb, 0);
+            body_trigger_face(&mut trig, &lb, 0);
+        } else {
+            body_faces(&mut mesh, &lb, 0);
+        }
     }
-    let bytes = build_pure_item(ident, collection, &mesh, None)?;
+    let bytes = build_pure_item(ident, collection, &mesh, if pure_top_only() { Some(&trig) } else { None })?;
     Ok((bytes, mesh.faces.len()))
+}
+
+/// v4.21 default: the friend's single-sided form (top face + flat trigger); `--tiles-slab` = the v4.20 closed slabs.
+static PURE_TOP_ONLY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+pub fn set_pure_top_only(on: bool) {
+    PURE_TOP_ONLY.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+pub fn pure_top_only() -> bool {
+    PURE_TOP_ONLY.load(std::sync::atomic::Ordering::Relaxed)
 }

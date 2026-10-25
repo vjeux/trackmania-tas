@@ -409,7 +409,9 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
                 let (mut n_bodies, mut total_bytes, mut mpu_max) = (0usize, 0usize, 0f32);
                 let disable_lm = crate::static_item::build::tiles_disable_lightmap();
                 for ((tx, tz), bodies) in &tiles {
-                    let tstem = format!("FinishSlab_{uid_stem}_{}{}_{}{}", if *tx < 0 { "m" } else { "" }, tx.abs(), if *tz < 0 { "m" } else { "" }, tz.abs());
+                    // v4.21: a build tag in the ident — the game caches embedded items by ident within a session, so a
+                    // re-test of a rebuilt map under the same names can show the OLD items
+                    let tstem = format!("FinishSlab_{uid_stem}_{}_{}{}_{}{}", crate::floor_tiles::BUILD_TAG, if *tx < 0 { "m" } else { "" }, tx.abs(), if *tz < 0 { "m" } else { "" }, tz.abs());
                     let tident = format!("{tstem}.Item.Gbx");
                     let origin = if crate::static_item::build::indicator() == crate::static_item::build::Indicator::Pure { [*tx as f32 * crate::floor_tiles::TILE_M, 0.0, *tz as f32 * crate::floor_tiles::TILE_M] } else { [0.0; 3] };
                     let (tbytes, ntri, mpu) = if crate::static_item::build::indicator() == crate::static_item::build::Indicator::Pure {
@@ -790,7 +792,10 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
     // pass 4 (splices): the Goal tags, the name, the times
     {
         let mut mm = MapFile::try_load(out)?;
-        let idents: Vec<String> = built.iter().filter(|(s, ..)| !visual_stems.contains(s)).map(|(_, i, _, _)| i.clone()).collect();
+        // v4.21: the PureFloor-form tiles are Finish items themselves (trigger layer + WaypointType 1, like the
+        // friend's plates) → their placements carry the Goal tag too; the static visual tiles (v4.18) stay untagged
+        let tiles_are_finishes = crate::static_item::build::indicator() == crate::static_item::build::Indicator::Pure && crate::floor_tiles::pure_top_only();
+        let idents: Vec<String> = built.iter().filter(|(s, ..)| tiles_are_finishes || !visual_stems.contains(s)).map(|(_, i, _, _)| i.clone()).collect();
         for (i, it) in mm.items.clone().iter().enumerate() {
             if idents.iter().any(|s| *s == it.model) {
                 mm.set_item_waypoint(i, Some("Goal"), 0);
@@ -810,6 +815,18 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
         let mut mm = MapFile::try_load(out)?;
         mm.set_map_uid_any_len(&new_uid);
         mm.write_to(out).map_err(|e| e.to_string())?;
+    }
+    // pass 5b (v4.21, --strip-lightmap): the source's baked lightmap is STALE for the new object list — the game
+    // gave our appended items other objects' lightmap regions (Hugo's fan "waver" on the cutouts, fixed by his
+    // "calculate shadows"); the output opens clean when the chunk says HasLightmaps = 0
+    if !o.keep_lightmap {
+        let mut mm = MapFile::try_load(out)?;
+        let removed = mm.strip_lightmap();
+        mm.write_to(out).map_err(|e| e.to_string())?;
+        let mut rr = Row::new(&map_label, "lightmap", "map", 0, "stripped");
+        rr.action = "lightmap-stripped".into();
+        rr.note = format!("{removed} bytes of the source's baked lightmap removed (chunk 0x0304305B → HasLightmaps 0): the bake was for the source's object list; the game opens the map unbaked");
+        rows.push(rr);
     }
     let _ = std::fs::remove_file(&cur);
     // pass 6: the lightmap chart table renumbered positionally (the removed finish items shift
@@ -927,9 +944,11 @@ pub fn verify_flags(src: &Path, out: &Path, oc: &FlagsOutcome, o: &FlagsOpts) ->
             }
         }
     }
+    let tiles_are_finishes = crate::static_item::build::indicator() == crate::static_item::build::Indicator::Pure && crate::floor_tiles::pure_top_only();
     let goals = b.items.iter().filter(|x| x.waypoint_tag.as_deref() == Some("Goal")).count() + b.blocks.iter().filter(|x| x.waypoint_tag.as_deref() == Some("Goal")).count();
-    if goals != oc.converted {
-        bad.push(format!("{goals} Goal placements, want {} (the flags)", oc.converted));
+    let want_goals = oc.converted + if tiles_are_finishes { oc.visual_items.len() } else { 0 };
+    if goals != want_goals {
+        bad.push(format!("{goals} Goal placements, want {want_goals} (the flags{})", if tiles_are_finishes { " + the finish tiles" } else { "" }));
     }
     let idents: Vec<String> = oc.items.iter().map(|(_, i, _)| i.clone()).filter(|i| !oc.visual_items.contains(i)).collect();
     let n = b.items.iter().filter(|x| idents.contains(&x.model)).count();
@@ -954,7 +973,8 @@ pub fn verify_flags(src: &Path, out: &Path, oc: &FlagsOutcome, o: &FlagsOpts) ->
                 _ => [0.0; 3],
             }
         };
-        if x.waypoint_tag.is_some() || x.author.as_deref() != Some(vi.as_str()) || x.pos != want {
+        let tag_ok = if crate::static_item::build::indicator() == crate::static_item::build::Indicator::Pure && crate::floor_tiles::pure_top_only() { x.waypoint_tag.as_deref() == Some("Goal") } else { x.waypoint_tag.is_none() };
+        if !tag_ok || x.author.as_deref() != Some(vi.as_str()) || x.pos != want {
             bad.push(format!("visual item#{} {vi}: tag {:?} pos {:?} author {:?}", x.index, x.waypoint_tag, x.pos, x.author));
             break;
         }

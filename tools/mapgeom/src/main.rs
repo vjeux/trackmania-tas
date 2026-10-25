@@ -517,6 +517,10 @@ fn main() {
     if a.rest.iter().any(|x| x == "--tiles-glass") {
         mapgeom::floor_tiles::set_pure_glass(true);
     }
+    // --tiles-slab: the v4.20 closed-slab crystal tiles (default v4.21: the friend's top-face-only form + flat trigger)
+    if a.rest.iter().any(|x| x == "--tiles-slab") {
+        mapgeom::floor_tiles::set_pure_top_only(false);
+    }
     // --pure-template F.Item.Gbx: the mesh-modeler template (default: the bank's PureFloor4.Item.Gbx)
     if let Some(i) = a.rest.iter().position(|x| x == "--pure-template") {
         if let Some(p) = a.rest.get(i + 1) { mapgeom::floor_tiles::set_pure_template(p); }
