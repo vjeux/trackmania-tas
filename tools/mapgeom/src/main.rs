@@ -5504,6 +5504,11 @@ fn main() {
                     };
                     println!("  layer {li} id {:?} name {:?} enabled {} base v{}: {kind}", l.base.layer_id, l.base.layer_name, l.base.is_enabled, l.base.version);
                 }
+                println!("  smoothing v{} groups {:?} per_face_ints {} (distinct {:?}); lightmap {}", it.model.smoothing_version, it.model.smoothing_groups, it.model.per_face_ints.len(), { let mut d = it.model.per_face_ints.clone(); d.sort(); d.dedup(); d }, it.model.lightmap.as_ref().map(|l| format!("{l:?}")).unwrap_or("none".into()).chars().take(300).collect::<String>());
+                if let Some(mapgeom::crystal_model::Lightmap::V2 { coords, indices }) = it.model.lightmap.as_ref() {
+                    let q = |c: &[u16; 2], k: usize| -> bool { match k { 0 => c[0] < 32768 && c[1] < 32768, 1 => c[0] >= 32768 && c[1] < 32768, _ => c[1] >= 32768 } };
+                    println!("  lightmap islands: {} coords / {} corner indices; lower-left quadrant {} coords, lower-right {}, upper half {}", coords.len(), indices.len(), coords.iter().filter(|c| q(c, 0)).count(), coords.iter().filter(|c| q(c, 1)).count(), coords.iter().filter(|c| q(c, 2)).count());
+                }
                 // the item chunk 0x2E00201F (WaypointType, DisableLightmap) found by its id in the body
                 let body = &it.body;
                 let pat = 0x2E00201Fu32.to_le_bytes();

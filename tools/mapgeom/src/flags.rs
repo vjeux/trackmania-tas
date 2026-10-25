@@ -352,6 +352,7 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
     let mut built: Vec<(String, String, [f32; 6], Vec<u8>)> = Vec::new();
     // v4.18: the visual-only tile items (no Goal tag)
     let mut visual_stems: Vec<String> = Vec::new();
+    let mut visual_pos: Vec<[f32; 3]> = Vec::new();
     // the cutout carriers (Stadium, --cutouts): built here, placed per block below; kinds without a standable
     // fill produce no carrier
     let mut cutout_built: BTreeMap<String, String> = BTreeMap::new(); // stem -> ident
@@ -410,8 +411,9 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
                 for ((tx, tz), bodies) in &tiles {
                     let tstem = format!("FinishSlab_{uid_stem}_{}{}_{}{}", if *tx < 0 { "m" } else { "" }, tx.abs(), if *tz < 0 { "m" } else { "" }, tz.abs());
                     let tident = format!("{tstem}.Item.Gbx");
+                    let origin = if crate::static_item::build::indicator() == crate::static_item::build::Indicator::Pure { [*tx as f32 * crate::floor_tiles::TILE_M, 0.0, *tz as f32 * crate::floor_tiles::TILE_M] } else { [0.0; 3] };
                     let (tbytes, ntri, mpu) = if crate::static_item::build::indicator() == crate::static_item::build::Indicator::Pure {
-                        let (b, nf) = crate::floor_tiles::build_pure_tile(bodies, &tident, collection).map_err(|e| format!("{tstem}: {e}"))?;
+                        let (b, nf) = crate::floor_tiles::build_pure_tile(bodies, &tident, collection, origin).map_err(|e| format!("{tstem}: {e}"))?;
                         (b, nf, 0.0)
                     } else {
                         crate::floor_tiles::build_tile_item(ctx.store, bodies, &tident, collection, disable_lm).map_err(|e| format!("{tstem}: {e}"))?
@@ -421,6 +423,7 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
                     mpu_max = mpu_max.max(mpu);
                     let _ = ntri;
                     visual_stems.push(tstem.clone());
+                    visual_pos.push(origin);
                     built.push((tstem, tident, [0.0; 6], tbytes));
                 }
                 let mut r = Row::new(&map_label, "flags", "model", 0, stem);
@@ -532,8 +535,8 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
         appended.push((0, stem.clone(), [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]));
         converted += 1;
         // v4.18: the visual tile items, placed at the origin after the trigger item (no Goal tag)
-        for vs in &visual_stems {
-            appended.push((0, vs.clone(), [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]));
+        for (vs, vp) in visual_stems.iter().zip(visual_pos.iter()) {
+            appended.push((0, vs.clone(), *vp, [0.0, 0.0, 0.0]));
         }
         if !cutout_built.is_empty() {
             let yoff = tmmaps::map::ground_y(collection);
@@ -880,7 +883,7 @@ pub fn verify_flags(src: &Path, out: &Path, oc: &FlagsOutcome, o: &FlagsOpts) ->
             }
         }
         // every appended trigger sits exactly at a flag's pose — or, --stands, in a stand block's frame
-        let idents: Vec<String> = oc.items.iter().map(|(_, i, _)| i.clone()).collect();
+        let idents: Vec<String> = oc.items.iter().map(|(_, i, _)| i.clone()).filter(|i| !oc.visual_items.contains(i)).collect();
         let stand_poses: Vec<([f32; 3], f32)> = if o.stands || !o.sources.is_empty() {
             let coll = a.body_collections().map(|c| c[0].1).unwrap_or(26);
             let yoff = tmmaps::map::ground_y(coll);
@@ -941,7 +944,17 @@ pub fn verify_flags(src: &Path, out: &Path, oc: &FlagsOutcome, o: &FlagsOpts) ->
             break;
         }
         let x = placed[0];
-        if x.waypoint_tag.is_some() || x.pos != [0.0; 3] || x.author.as_deref() != Some(vi.as_str()) {
+        // a Pure tile sits at its tile corner (the ident's `_<tx>_<tz>` suffix, `m` = minus), the static tiles at the origin
+        let want = {
+            let stem = vi.trim_end_matches(".Item.Gbx");
+            let parts: Vec<&str> = stem.rsplitn(3, '_').collect();
+            let num = |t: &str| -> Option<f32> { let (neg, d) = if let Some(r) = t.strip_prefix('m') { (true, r) } else { (false, t) }; d.parse::<f32>().ok().map(|v| if neg { -v } else { v }) };
+            match (parts.first().and_then(|t| num(t)), parts.get(1).and_then(|t| num(t))) {
+                (Some(tz), Some(tx)) if crate::static_item::build::indicator() == crate::static_item::build::Indicator::Pure => [tx * crate::floor_tiles::TILE_M, 0.0, tz * crate::floor_tiles::TILE_M],
+                _ => [0.0; 3],
+            }
+        };
+        if x.waypoint_tag.is_some() || x.author.as_deref() != Some(vi.as_str()) || x.pos != want {
             bad.push(format!("visual item#{} {vi}: tag {:?} pos {:?} author {:?}", x.index, x.waypoint_tag, x.pos, x.author));
             break;
         }

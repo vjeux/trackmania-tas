@@ -109,8 +109,6 @@ pub fn pure_template() -> Result<Vec<u8>, String> {
 /// A closed slab body as crystal faces (6 quads, wound so (p1−p0)×(p2−p0) points OUT of the body — the friend's
 /// up-facing quad (−N,0,0)(−N,0,N)(0,0,N)(0,0,0) has that cross product +y).
 pub fn body_faces(mesh: &mut crate::crystal::CrystalMesh, b: &Body, material: u32) {
-    let base = mesh.positions.len() as u32;
-    mesh.positions.extend_from_slice(b);
     let centre = [b.iter().map(|p| p[0]).sum::<f32>() / 8.0, b.iter().map(|p| p[1]).sum::<f32>() / 8.0, b.iter().map(|p| p[2]).sum::<f32>() / 8.0];
     let faces: [[u32; 4]; 6] = [[0, 1, 2, 3], [5, 4, 7, 6], [4, 0, 3, 7], [1, 5, 6, 2], [4, 5, 1, 0], [3, 2, 6, 7]];
     for f in faces {
@@ -125,14 +123,16 @@ pub fn body_faces(mesh: &mut crate::crystal::CrystalMesh, b: &Body, material: u3
         let uv = |q: [f32; 3]| -> [f32; 2] {
             if n[1].abs() >= n[0].abs() && n[1].abs() >= n[2].abs() { [q[0] / 8.0, q[2] / 8.0] } else if n[0].abs() >= n[2].abs() { [q[2] / 8.0, q[1] / 8.0] } else { [q[0] / 8.0, q[1] / 8.0] }
         };
-        mesh.faces.push(crate::crystal::Face { verts: idx.iter().map(|i| base + i).collect(), uvs: idx.iter().map(|i| uv(b[*i as usize])).collect(), material });
+        // v4.20: every face owns its corners — nothing shared between the caps and the walls, so the game's
+        // vertex-normal smoothing cannot tilt a cap's rim (the "waver")
+        let base = mesh.positions.len() as u32;
+        mesh.positions.extend(idx.iter().map(|i| b[*i as usize]));
+        mesh.faces.push(crate::crystal::Face { verts: (0..4).map(|k| base + k).collect(), uvs: idx.iter().map(|i| uv(b[*i as usize])).collect(), material });
     }
 }
 
 /// Triangles (a cutout prism) as crystal faces, wound outward by the centroid test.
 pub fn tri_faces(mesh: &mut crate::crystal::CrystalMesh, verts: &[[f32; 3]], tris: &[[u32; 3]], material: u32) {
-    let base = mesh.positions.len() as u32;
-    mesh.positions.extend_from_slice(verts);
     let n_v = verts.len().max(1) as f32;
     let centre = [verts.iter().map(|p| p[0]).sum::<f32>() / n_v, verts.iter().map(|p| p[1]).sum::<f32>() / n_v, verts.iter().map(|p| p[2]).sum::<f32>() / n_v];
     for t in tris {
@@ -154,8 +154,88 @@ pub fn tri_faces(mesh: &mut crate::crystal::CrystalMesh, verts: &[[f32; 3]], tri
         let uv = |q: [f32; 3]| -> [f32; 2] {
             if horizontal { [q[0] / 8.0, q[2] / 8.0] } else if n[0].abs() >= n[2].abs() { [q[2] / 8.0, q[1] / 8.0] } else { [q[0] / 8.0, q[1] / 8.0] }
         };
-        mesh.faces.push(crate::crystal::Face { verts: idx.iter().map(|i| base + i).collect(), uvs: idx.iter().map(|i| uv(verts[*i as usize])).collect(), material });
+        let base = mesh.positions.len() as u32;
+        mesh.positions.extend(idx.iter().map(|i| verts[*i as usize]));
+        mesh.faces.push(crate::crystal::Face { verts: (0..3).map(|k| base + k).collect(), uvs: idx.iter().map(|i| uv(verts[*i as usize])).collect(), material });
     }
+}
+
+/// v4.20: the crystal's lightmap table with ONE island per planar group — every up-facing face in one chart
+/// (the xz projection, square texels) in [0, 0.5)², every down-facing face in one chart in [0.5, 1) × [0, 0.5),
+/// and the walls each their own rectangle (real proportions) in a grid over [0, 1) × [0.5, 1). Our generic
+/// `lightmap_atlas` gives EVERY face its own small chart: on a fan-triangulated cap the game bakes each triangle
+/// separately and the cap shows the triangles (Hugo's "waver", w1.png); the mesh modeler charts a connected
+/// planar region as one island (PureFloor1QuarterCircle: 32 fan faces, one island over the uv square).
+pub fn grouped_lightmap(model: &crate::crystal_model::CPlugCrystal) -> crate::crystal_model::Lightmap {
+    let mut coords: Vec<[u16; 2]> = Vec::new();
+    let mut indices: Vec<u32> = Vec::new();
+    let mut faces: Vec<(usize, Vec<[f32; 3]>)> = Vec::new(); // (class, corners)
+    for l in &model.layers {
+        if let crate::crystal_model::LayerKind::Geometry { crystal, is_visible, .. } = &l.kind {
+            if !l.base.is_enabled || !*is_visible {
+                continue;
+            }
+            for f in &crystal.faces {
+                let p: Vec<[f32; 3]> = f.verts.iter().map(|i| crystal.positions[*i as usize]).collect();
+                let (u, v) = ([p[1][0] - p[0][0], p[1][1] - p[0][1], p[1][2] - p[0][2]], [p[2][0] - p[0][0], p[2][1] - p[0][1], p[2][2] - p[0][2]]);
+                let n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+                let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt().max(1e-12);
+                let class = if n[1] / len > 0.5 { 0 } else if n[1] / len < -0.5 { 1 } else { 2 };
+                faces.push((class, p));
+            }
+        }
+    }
+    let q = |x: f64| -> u16 { (x.clamp(0.0, 1.0) * 65535.0) as u16 };
+    // caps: one island each
+    for class in 0..2 {
+        let (mut lo, mut hi) = ([f32::INFINITY; 2], [f32::NEG_INFINITY; 2]);
+        for (c, p) in &faces {
+            if *c == class {
+                for v in p { lo[0] = lo[0].min(v[0]); lo[1] = lo[1].min(v[2]); hi[0] = hi[0].max(v[0]); hi[1] = hi[1].max(v[2]); }
+            }
+        }
+        let ext = (hi[0] - lo[0]).max(hi[1] - lo[1]).max(1e-3) as f64;
+        let s = 0.48 / ext;
+        let (ox, oy) = if class == 0 { (0.01, 0.01) } else { (0.51, 0.01) };
+        for (c, p) in &faces {
+            if *c != class { continue; }
+            for v in p {
+                coords.push([q(ox + (v[0] - lo[0]) as f64 * s), q(oy + (v[2] - lo[1]) as f64 * s)]);
+            }
+        }
+    }
+    // walls: a grid of cells over the upper half, each face its own rectangle (its horizontal extent × height)
+    let n_walls = faces.iter().filter(|(c, _)| *c == 2).count().max(1);
+    let grid = (n_walls as f64).sqrt().ceil().max(1.0) as usize;
+    let cell = 1.0 / grid as f64;
+    let mut wi = 0usize;
+    for (c, p) in &faces {
+        if *c != 2 { continue; }
+        let (cx, cy) = ((wi % grid) as f64 * cell, 0.5 + (wi / grid) as f64 * cell * 0.5);
+        // in-plane axes: horizontal along the face's longest xz direction, vertical = y
+        let (mut lo, mut hi) = ([f32::INFINITY; 2], [f32::NEG_INFINITY; 2]);
+        let ax = |v: &[f32; 3]| -> f32 { if (p[1][0] - p[0][0]).abs() + (p[2][0] - p[0][0]).abs() >= (p[1][2] - p[0][2]).abs() + (p[2][2] - p[0][2]).abs() { v[0] } else { v[2] } };
+        for v in p { lo[0] = lo[0].min(ax(v)); lo[1] = lo[1].min(v[1]); hi[0] = hi[0].max(ax(v)); hi[1] = hi[1].max(v[1]); }
+        let ext = (hi[0] - lo[0]).max(hi[1] - lo[1]).max(1e-3) as f64;
+        let s = cell * 0.8 / ext;
+        for v in p {
+            coords.push([q(cx + cell * 0.1 + (ax(v) - lo[0]) as f64 * s), q(cy + cell * 0.05 + (v[1] - lo[1]) as f64 * s * 0.5)]);
+        }
+        wi += 1;
+    }
+    // the coords were pushed class by class; the indices must follow FACE order
+    let mut per_class_cursor = [0usize; 3];
+    let mut class_starts = [0usize; 3];
+    let counts: Vec<usize> = (0..3).map(|k| faces.iter().filter(|(c, _)| *c == k).map(|(_, p)| p.len()).sum()).collect();
+    class_starts[1] = counts[0];
+    class_starts[2] = counts[0] + counts[1];
+    for (c, p) in &faces {
+        for _ in p {
+            indices.push((class_starts[*c] + per_class_cursor[*c]) as u32);
+            per_class_cursor[*c] += 1;
+        }
+    }
+    crate::crystal_model::Lightmap::V2 { coords, indices }
 }
 
 /// Build a PureFloor-recipe crystal item: the template's bytes with its Geometry layer = `mesh` (visible, NOT
@@ -207,6 +287,7 @@ pub fn build_pure_item(ident: &str, collection: u32, mesh: &crate::crystal::Crys
         }
     }
     it.model.layers = kept;
+    it.model.lightmap = Some(grouped_lightmap(&it.model));
     if trigger.is_none() {
         // the item chunk 0x2E00201F: WaypointType 1 (Finish) → 3 (None)
         let pat = 0x2E00201Fu32.to_le_bytes();
@@ -219,11 +300,15 @@ pub fn build_pure_item(ident: &str, collection: u32, mesh: &crate::crystal::Crys
     Ok(it.close(first_node, n_old))
 }
 
-/// The per-tile PureFloor-recipe visual item: closed slabs, no trigger.
-pub fn build_pure_tile(bodies: &[Body], ident: &str, collection: u32) -> Result<(Vec<u8>, usize), String> {
+/// The per-tile PureFloor-recipe visual item: closed slabs, no trigger. v4.20: the geometry is LOCAL to the tile
+/// corner `origin` (x, 0, z) like the friend's plates, and the item is placed there (the v4.19 tiles, world
+/// coordinates up to 2 km from an item at the origin, did not render; the cutouts, local to their block, did).
+pub fn build_pure_tile(bodies: &[Body], ident: &str, collection: u32, origin: [f32; 3]) -> Result<(Vec<u8>, usize), String> {
     let mut mesh = crate::crystal::CrystalMesh::default();
     for b in bodies {
-        body_faces(&mut mesh, b, 0);
+        let mut lb = *b;
+        for p in lb.iter_mut() { p[0] -= origin[0]; p[1] -= origin[1]; p[2] -= origin[2]; }
+        body_faces(&mut mesh, &lb, 0);
     }
     let bytes = build_pure_item(ident, collection, &mesh, None)?;
     Ok((bytes, mesh.faces.len()))
