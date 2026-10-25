@@ -1086,8 +1086,10 @@ pub fn build_cutout_item_exact(store: &mut crate::store::DataStore, name: &str, 
             // v4.21 (Hugo 06:26 "remove the faces on the sides so neighbouring items connect without an edge"):
             // the outline polygon's top cap (up) and bottom cap (down), NO walls; the trigger stays the closed prism
             let (y0, y1) = tv.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), v| (a.min(v[1]), b.max(v[1])));
-            crate::floor_tiles::polygon_faces(&mut mesh, &iv, &it, y1, true, 0);
-            crate::floor_tiles::polygon_faces(&mut mesh, &iv, &it, y0, false, 0);
+            // v4.25: the caps as axis-aligned quads from the rasterised outline (no sliver triangles)
+            let (rects, rect_area) = crate::floor_tiles::rect_fill(&o.polygons, (32.0 * size.0 as f32, 32.0 * size.1 as f32), crate::cutout_outline::CONTOUR_STEP);
+            crate::floor_tiles::rect_faces(&mut mesh, &rects, y0, y1, 0);
+            o.notes.push(format!("caps as {} rectangles ({:.1} m² of the outline's {:.1} m²)", rects.len(), rect_area, o.area));
             let mut trig = crate::crystal::CrystalMesh::default();
             crate::floor_tiles::tri_faces(&mut trig, &tv, &tt, 0);
             crate::floor_tiles::build_pure_item(ident, collection, &mesh, Some(&trig))?

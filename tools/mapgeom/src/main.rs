@@ -509,6 +509,10 @@ fn main() {
         mapgeom::outer_ring::set_ring_flat(true);
         mapgeom::outer_ring::set_ring_band(false);
     }
+    // --ring-shelf: the v4.13 envelope wedges (32 m knots) instead of the v4.25 track fit
+    if a.rest.iter().any(|x| x == "--ring-shelf") {
+        mapgeom::outer_ring::set_ring_track(false);
+    }
     if a.rest.iter().any(|x| x == "--ring-band") {
         mapgeom::outer_ring::set_ring_band(true);
         mapgeom::outer_ring::set_ring_wedges(false);

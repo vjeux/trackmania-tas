@@ -388,3 +388,77 @@ pub fn build_pure_plane(verts: &[[f32; 3]], ident: &str, collection: u32) -> Res
     let bytes = build_pure_item(ident, collection, &mesh, Some(&trig))?;
     Ok((bytes, mesh.faces.len(), trig.faces.len()))
 }
+
+/// v4.25: a polygon set (outer loops + holes, the cutout outline) rasterised at `step` and decomposed into
+/// axis-aligned rectangles (row runs, consecutive rows with identical runs merged) — the glass caps of a cutout as
+/// well-shaped quads instead of a fan of sliver triangles (StructurePillar: 70 of 228 triangles under 5 cm tall,
+/// 90 with edges over 20 m → Hugo's "4 thin lines sticking out of the pillar foot"). Returns (x0, x1, z0, z1) rects
+/// and the covered area.
+pub fn rect_fill(polygons: &[(Vec<[f32; 2]>, Vec<Vec<[f32; 2]>>)], size: (f32, f32), step: f32) -> (Vec<[f32; 4]>, f32) {
+    let inside = |x: f32, z: f32| -> bool {
+        // even-odd over every loop (outer and holes alike)
+        let mut hits = 0usize;
+        for (outer, holes) in polygons {
+            for lp in std::iter::once(outer).chain(holes.iter()) {
+                let n = lp.len();
+                for i in 0..n {
+                    let (a, b) = (lp[i], lp[(i + 1) % n]);
+                    if (a[1] > z) != (b[1] > z) {
+                        let xi = a[0] + (z - a[1]) / (b[1] - a[1]) * (b[0] - a[0]);
+                        if xi > x {
+                            hits += 1;
+                        }
+                    }
+                }
+            }
+        }
+        hits % 2 == 1
+    };
+    let (nx, nz) = ((size.0 / step).round() as usize, (size.1 / step).round() as usize);
+    let mut rows: Vec<Vec<(usize, usize)>> = Vec::with_capacity(nz);
+    for j in 0..nz {
+        let z = (j as f32 + 0.5) * step;
+        let mut runs: Vec<(usize, usize)> = Vec::new();
+        let mut i = 0usize;
+        while i < nx {
+            if inside((i as f32 + 0.5) * step, z) {
+                let start = i;
+                while i + 1 < nx && inside((i as f32 + 1.5) * step, z) {
+                    i += 1;
+                }
+                runs.push((start, i + 1));
+            }
+            i += 1;
+        }
+        rows.push(runs);
+    }
+    // merge vertically: a run (a, b) in row j extends a rect ending at row j with the same (a, b)
+    let mut open: Vec<(usize, usize, usize)> = Vec::new(); // (a, b, z0 row)
+    let mut rects: Vec<[f32; 4]> = Vec::new();
+    for j in 0..=nz {
+        let runs: &[(usize, usize)] = if j < nz { &rows[j] } else { &[] };
+        let mut next_open: Vec<(usize, usize, usize)> = Vec::new();
+        for &(a, b) in runs {
+            if let Some(pos) = open.iter().position(|&(oa, ob, _)| oa == a && ob == b) {
+                next_open.push(open.remove(pos));
+            } else {
+                next_open.push((a, b, j));
+            }
+        }
+        for (a, b, z0) in open.drain(..) {
+            rects.push([a as f32 * step, b as f32 * step, z0 as f32 * step, j as f32 * step]);
+        }
+        open = next_open;
+    }
+    let area = rects.iter().map(|r| (r[1] - r[0]) * (r[3] - r[2])).sum();
+    (rects, area)
+}
+
+/// The rectangles as crystal faces: top quads at `y1` (up) and bottom quads at `y0` (down).
+pub fn rect_faces(mesh: &mut crate::crystal::CrystalMesh, rects: &[[f32; 4]], y0: f32, y1: f32, material: u32) {
+    for r in rects {
+        let b: Body = [[r[0], y0, r[2]], [r[1], y0, r[2]], [r[1], y1, r[2]], [r[0], y1, r[2]], [r[0], y0, r[3]], [r[1], y0, r[3]], [r[1], y1, r[3]], [r[0], y1, r[3]]];
+        body_top_face(mesh, &b, material);
+        body_bottom_face(mesh, &b, material);
+    }
+}

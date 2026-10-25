@@ -184,6 +184,7 @@ fn vista_ring(store: &mut crate::store::DataStore, collection: u32, size: (i32, 
     let nz = ((gz + 2.0 * margin) / STEP).round() as i32;
     let (mut bed_min, mut bed_max, mut bed_sum, mut cnt, mut dry, mut no_bed) = (f32::INFINITY, f32::NEG_INFINITY, 0.0f64, 0usize, 0usize, 0usize);
     let mut per_ring: BTreeMap<i32, (f32, f32)> = BTreeMap::new();
+    let mut per_band4: BTreeMap<i32, (f32, f32)> = BTreeMap::new();
     // 32 m cell (cx, cz) in the band frame (cell 0 = the first cell outside at −margin) → max bed
     let mut cell_max: BTreeMap<(i32, i32), f32> = BTreeMap::new();
     let mut cell_min: BTreeMap<(i32, i32), f32> = BTreeMap::new();
@@ -212,6 +213,9 @@ fn vista_ring(store: &mut crate::store::DataStore, collection: u32, size: (i32, 
             let e = per_ring.entry((d / 32.0).floor() as i32).or_insert((f32::INFINITY, f32::NEG_INFINITY));
             e.0 = e.0.min(bed);
             e.1 = e.1.max(bed);
+            let e4 = per_band4.entry((d / STEP).floor() as i32).or_insert((f32::INFINITY, f32::NEG_INFINITY));
+            e4.0 = e4.0.min(bed);
+            e4.1 = e4.1.max(bed);
             let key = (((x + margin) / 32.0).floor() as i32, ((z + margin) / 32.0).floor() as i32);
             let m = cell_max.entry(key).or_insert(f32::NEG_INFINITY);
             *m = m.max(bed);
@@ -345,15 +349,95 @@ fn vista_ring(store: &mut crate::store::DataStore, collection: u32, size: (i32, 
         segs.push((a, b));
         a = b;
     }
+    // v4.25 TRACK (Hugo 07:40 "cover the slope with a sloped plane"): the ring surface starts EXACTLY at the inside
+    // open-water bed at the grid edge and follows the seabed outward on 4 m knots — H[0] = inside bed, H[k] = the
+    // crest around knot k (max of the two 4 m bands it borders, rounded up 5 cm); the fewest planar segments such
+    // that over every 4 m band under a segment the line is ≥ the band's highest bed at both ends (the slab's −0.1
+    // under the surface reaches the bed) and ≤ its lowest bed + 1.15 at both ends where that is feasible (the slab
+    // top reaches down to the car on the bed); greedy longest from the edge.
+    let track = ring_track();
+    let mut knots_h: Vec<f32> = Vec::new();
+    let mut track_segs: Vec<(usize, usize)> = Vec::new();
+    let mut edge_step = 0.0f32;
+    let mut track_infeasible = 0usize;
+    if track {
+        let nb = (cells * 8) as usize;
+        let band = |k: usize| per_band4.get(&(k as i32)).copied().unwrap_or((bed_max, bed_max));
+        let y_in = open_water_bed(collection)?;
+        let q5 = |v: f32| ((v - 0.001) / 0.05).ceil() * 0.05;
+        knots_h = (0..=nb).map(|k| if k == 0 { y_in } else { q5(band(k - 1).1.max(if k < nb { band(k).1 } else { f32::NEG_INFINITY })) }).collect();
+        // the first band's crest above the inside bed: the surface cannot start lower than it (reported as the edge step)
+        if band(0).1 > y_in + 1e-3 {
+            edge_step = band(0).1 - y_in;
+            knots_h[0] = q5(band(0).1);
+        }
+        let (vb, va) = crate::floor_finish::vista_slab(collection);
+        let fits = |a: usize, b: usize| -> bool {
+            (a..b).all(|k| {
+                let (mn, mx) = band(k);
+                let l0 = knots_h[a] + (knots_h[b] - knots_h[a]) * ((k - a) as f32 / (b - a) as f32);
+                let l1 = knots_h[a] + (knots_h[b] - knots_h[a]) * ((k + 1 - a) as f32 / (b - a) as f32);
+                let above_ok = l0 + vb + 1e-4 >= mx && l1 + vb + 1e-4 >= mx;
+                let reach_ok = (mx - mn > va - vb) || (l0 <= mn + va + 1e-4 && l1 <= mn + va + 1e-4);
+                above_ok && reach_ok
+            })
+        };
+        let mut a = 0usize;
+        while a < nb {
+            let mut b = nb;
+            while b > a + 1 && !fits(a, b) {
+                b -= 1;
+            }
+            if b == a + 1 && !fits(a, b) {
+                track_infeasible += 1;
+            }
+            track_segs.push((a, b));
+            a = b;
+        }
+    }
     let mut ramps: Vec<Ramp> = Vec::new();
-    for &(a, b) in &segs {
-        let (d0, d1) = (32.0 * a as f32, 32.0 * b as f32);
-        let (yi, yo) = (e[a], e[b]);
-        // N / S bands span the full width (corners included); W / E the grid's z range
-        ramps.push(Ramp { x0: -margin, x1: gx + margin, z0: -d1, z1: -d0, y_inner: yi, y_outer: yo, side: 'N' });
-        ramps.push(Ramp { x0: -margin, x1: gx + margin, z0: gz + d0, z1: gz + d1, y_inner: yi, y_outer: yo, side: 'S' });
-        ramps.push(Ramp { x0: -d1, x1: -d0, z0: 0.0, z1: gz, y_inner: yi, y_outer: yo, side: 'W' });
-        ramps.push(Ramp { x0: gx + d0, x1: gx + d1, z0: 0.0, z1: gz, y_inner: yi, y_outer: yo, side: 'E' });
+    let seg_list: Vec<(usize, usize, f32, f32, f32, f32)> = if track {
+        track_segs.iter().map(|&(a, b)| (a, b, STEP * a as f32, STEP * b as f32, knots_h[a], knots_h[b])).collect()
+    } else {
+        segs.iter().map(|&(a, b)| (a, b, 32.0 * a as f32, 32.0 * b as f32, e[a], e[b])).collect()
+    };
+    // the ramps' lateral extent: the envelope wedges (monotone outward) may carry the N / S ramps across the corners;
+    // the track fit (a surface that first RISES to the shelf crest) must not — a corner square far along the other
+    // axis sits on the crest while the ramp there is still low — so in track mode the ramps cover the side strips
+    // only and the four corner squares get `band` rows (per 32 m cell, the cell's full bed range)
+    let (lx0, lx1, lz0, lz1) = if track { (0.0, gx, 0.0, gz) } else { (-margin, gx + margin, 0.0, gz) };
+    for &(_a, _b, d0, d1, yi, yo) in &seg_list {
+        ramps.push(Ramp { x0: lx0, x1: lx1, z0: -d1, z1: -d0, y_inner: yi, y_outer: yo, side: 'N' });
+        ramps.push(Ramp { x0: lx0, x1: lx1, z0: gz + d0, z1: gz + d1, y_inner: yi, y_outer: yo, side: 'S' });
+        ramps.push(Ramp { x0: -d1, x1: -d0, z0: lz0, z1: lz1, y_inner: yi, y_outer: yo, side: 'W' });
+        ramps.push(Ramp { x0: gx + d0, x1: gx + d1, z0: lz0, z1: lz1, y_inner: yi, y_outer: yo, side: 'E' });
+    }
+    let mut corner_rects: Vec<OuterRect> = Vec::new();
+    if track {
+        let corner_x: Vec<i32> = (0..cells).chain(cells + size.0..cells + size.0 + cells).collect();
+        let corner_z: Vec<i32> = (0..cells).chain(cells + size.1..cells + size.1 + cells).collect();
+        for &cz in &corner_z {
+            // two runs per corner row (west corner cells, east corner cells), merged on equal (min, max)
+            for half in [&corner_x[..cells as usize], &corner_x[cells as usize..]] {
+                let key = |cx: i32| -> (i64, i64) {
+                    let mn = (cell_min.get(&(cx, cz)).copied().unwrap_or(bed_min) / BAND_Q).floor() * BAND_Q;
+                    let mx = (cell_max.get(&(cx, cz)).copied().unwrap_or(bed_max) / BAND_Q).ceil() * BAND_Q;
+                    ((mn * 100.0).round() as i64, (mx * 100.0).round() as i64)
+                };
+                let mut i = 0usize;
+                while i < half.len() {
+                    let k = key(half[i]);
+                    let start = half[i];
+                    let mut end = half[i];
+                    while i + 1 < half.len() && key(half[i + 1]) == k {
+                        i += 1;
+                        end = half[i];
+                    }
+                    corner_rects.push(OuterRect { x0: -margin + 32.0 * start as f32, x1: -margin + 32.0 * (end + 1) as f32, z0: -margin + 32.0 * cz as f32, z1: -margin + 32.0 * (cz + 1) as f32, floor: k.0 as f32 / 100.0, kind: "band", y_outer: k.1 as f32 / 100.0 });
+                    i += 1;
+                }
+            }
+        }
     }
     // clearance of every band square's bed under the wedge it falls in: top (envelope) and slab bottom (−0.1)
     let (vb, va) = crate::floor_finish::vista_slab(collection);
@@ -380,11 +464,50 @@ fn vista_ring(store: &mut crate::store::DataStore, collection: u32, size: (i32, 
             }
         }
     }
+    if track {
+        let (vb, va) = crate::floor_finish::vista_slab(collection);
+        let (mut out_low, mut out_high, mut n_sq) = (0usize, 0usize, 0usize);
+        let mut steep = 0.0f32;
+        for &(a, b, d0, d1, yi, yo) in &seg_list {
+            let _ = (a, b);
+            steep = steep.max(((yo - yi) / (d1 - d0)).abs());
+        }
+        // the HIT window: the trigger spans [y − vb, y + va]; a car standing on the bed reaches ~1.2 m up, so it is
+        // hit when bed ≤ y + va (not above the top) and bed + 1.2 ≥ y − vb (its body reaches the bottom)
+        let (mut uncovered, mut corner_sq) = (0usize, 0usize);
+        for j in 0..nz {
+            for i in 0..n {
+                let (x, z) = (-margin + (i as f32 + 0.5) * STEP, -margin + (j as f32 + 0.5) * STEP);
+                if x >= 0.0 && x <= gx && z >= 0.0 && z <= gz { continue; }
+                let bed = ground_up.iter().filter_map(|t| height_at(t, x, z)).fold(f32::INFINITY, f32::min);
+                if bed == f32::INFINITY { continue; }
+                let bed = bed + yoff;
+                let (lo, hi) = if let Some(r) = ramps.iter().find(|r| x >= r.x0 && x <= r.x1 && z >= r.z0 && z <= r.z1) {
+                    let y = r.y_at(x, z);
+                    (y - vb, y + va)
+                } else if let Some(c) = corner_rects.iter().find(|c| x >= c.x0 && x <= c.x1 && z >= c.z0 && z <= c.z1) {
+                    corner_sq += 1;
+                    (c.floor - vb, c.y_outer + va)
+                } else {
+                    uncovered += 1;
+                    continue;
+                };
+                n_sq += 1;
+                if bed > hi + 1e-3 { out_high += 1; }
+                if bed + 1.2 < lo - 1e-3 { out_low += 1; }
+            }
+        }
+        notes.push(format!("track (v4.25): {} planar segment(s) per side over {} knots of {STEP} m (edge step {edge_step:.2} m, steepest {:.1} %, {track_infeasible} single-band segment(s) outside the window) → {} ramps on the side strips + {} corner `band` rows; segments (d0→d1 m: y_in→y_out) {}; hit-window check over {n_sq} band squares ({corner_sq} in the corners, {uncovered} uncovered): {out_high} with the bed ABOVE the trigger top (miss), {out_low} with the bed more than 1.2 m under the trigger bottom (miss)", seg_list.len(), knots_h.len(), steep * 100.0, ramps.len(), corner_rects.len(), seg_list.iter().map(|&(_, _, d0, d1, yi, yo)| format!("{d0:.0}→{d1:.0}: {yi:.2}→{yo:.2}")).collect::<Vec<_>>().join(", ")));
+        rects.extend(corner_rects.iter().cloned());
+    }
     notes.push(format!("wedges (v4.13): envelope per cell {} → E at the knots {}; {} planar segment(s) per side {:?} → {} ramps (slab {:.2} under .. {:.2} over the envelope); bed-to-envelope clearance over {c_n} squares: min {c_min:.2} max {c_max:.2} mean {:.2}; squares where the slab BOTTOM would be under the bed: {under}", env.iter().map(|v| format!("{:.2}", v)).collect::<Vec<_>>().join(" "), e.iter().map(|v| format!("{:.2}", v)).collect::<Vec<_>>().join(" "), segs.len(), segs.iter().map(|(a, b)| format!("{a}→{b}: {:.2}→{:.2}", e[*a], e[*b])).collect::<Vec<_>>(), ramps.len(), vb, va, c_sum / c_n.max(1) as f64));
     if let Some(nn) = band_note {
         notes.push(nn);
     }
-    if ring_wedges() && !ring_band() {
+    if track {
+        let corner_only: Vec<OuterRect> = rects.iter().filter(|r| r.kind == "band").cloned().collect();
+        Ok(Ring { rects: corner_only, ramps, squares: BTreeMap::new(), notes })
+    } else if ring_wedges() && !ring_band() {
         Ok(Ring { rects: Vec::new(), ramps, squares: BTreeMap::new(), notes })
     } else {
         Ok(Ring { rects, ramps: Vec::new(), squares: BTreeMap::new(), notes })
@@ -636,6 +759,15 @@ pub fn ring_band() -> bool {
 }
 /// The `band` rows' height quantum (metres): a cell's (min, max) bed is widened outward to this grid.
 pub const BAND_Q: f32 = 0.25;
+/// v4.25 default: the TRACK fit (the ramp surface starts at the inside bed and follows the seabed on 4 m knots);
+/// `--ring-shelf` = the v4.13 envelope wedges (32 m knots, a step at the grid edge).
+static RING_TRACK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+pub fn set_ring_track(on: bool) {
+    RING_TRACK.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+pub fn ring_track() -> bool {
+    RING_TRACK.load(std::sync::atomic::Ordering::Relaxed)
+}
 pub fn set_ring_flat(on: bool) {
     RING_FLAT.store(on, std::sync::atomic::Ordering::Relaxed);
 }
