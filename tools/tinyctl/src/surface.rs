@@ -136,9 +136,11 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
         // ramps, tubes) takes the asphalt road material; the POOL decks take the tech PLATFORM
         // look, as every set gives its pools its platform dress; `OpenTechBorders` is already
         // the tech border and stays; the grass shoulders (`DecoHill2`) are never listed.
+        // the metal ramp blocks (`Technics*`) stay metal under Tarmac (Everios96 2026-10-24:
+        // "all alterations besides tarmac")
         "Tech" => road_stems
             .iter()
-            .filter(|st| **st != "RoadTech" && **st != "OpenTechBorders")
+            .filter(|st| **st != "RoadTech" && **st != "OpenTechBorders" && !st.starts_with("Technics"))
             .map(|st| if matches!(*st, "Underwater" | "Waterground" | "RoadWater" | "PlatformWater") { format!("{st}=Stadium\\Media\\Material\\PlatformTech") } else { format!("{st}=Stadium\\Media\\Material\\RoadTech") })
             .collect(),
         other => return Err(format!("surface `{other}`: no dress table")),
