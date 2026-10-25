@@ -501,6 +501,11 @@ fn main() {
     // --indicator glass|gate: the finish indicator material (static_item::build; default gate = RaceTriggerFXFinish)
     if a.rest.iter().any(|x| x == "--ring-rows") {
         mapgeom::outer_ring::set_ring_wedges(false);
+        mapgeom::outer_ring::set_ring_flat(false);
+    }
+    // --ring-shelf: the v4.13 sloped wedges following the seabed (default since v4.23: flat bands at the inside bed)
+    if a.rest.iter().any(|x| x == "--ring-shelf") {
+        mapgeom::outer_ring::set_ring_flat(false);
     }
     // --slab-gate: the v4.15 translucent gate pane on the slab; --slab-wood: the v4.16 ThemeSnowTempleFloor red
     if a.rest.iter().any(|x| x == "--slab-gate") {

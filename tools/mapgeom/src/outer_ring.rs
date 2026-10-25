@@ -558,9 +558,46 @@ pub fn ring_cells_of(store: &mut crate::store::DataStore, m: &MapFile, collectio
     let size = (m.size[0] as i32, m.size[2] as i32);
     if collection == 0x1a {
         stadium_ring(store, m, size)
+    } else if ring_flat() {
+        vista_ring_flat(collection, size, cells)
     } else {
         vista_ring(store, collection, size, cells)
     }
+}
+
+/// v4.23 (Hugo 07:11, option b): the vista ring at the INSIDE water level — four flat `sea` bands (the frame, `cells`
+/// cells wide, corners included) at the collection's open-water bed; no slope following (the first cells sit inside
+/// the shelf, accepted). `--ring-shelf` restores the v4.13 wedges.
+static RING_FLAT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+pub fn set_ring_flat(on: bool) {
+    RING_FLAT.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+pub fn ring_flat() -> bool {
+    RING_FLAT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The collection's open-water bed (map frame), measured on all 25 Fall sources (floor_finish.rs CLIPPER notes):
+/// RedIsland / WhiteShore / GreenCoast −6.0, BlueBay 4.0.
+pub fn open_water_bed(collection: u32) -> Result<f32, String> {
+    match collection {
+        0x10 | 0x1d | 0xf => Ok(-6.0),
+        0x1c => Ok(4.0),
+        _ => Err(format!("open_water_bed: collection {collection:#x} has no vista bed")),
+    }
+}
+
+pub fn vista_ring_flat(collection: u32, size: (i32, i32), cells: i32) -> Result<Ring, String> {
+    let bed = open_water_bed(collection)?;
+    let (gx, gz) = (32.0 * size.0 as f32, 32.0 * size.1 as f32);
+    let m = 32.0 * cells as f32;
+    let rects = vec![
+        OuterRect { x0: -m, x1: gx + m, z0: -m, z1: 0.0, floor: bed, kind: "sea" },
+        OuterRect { x0: -m, x1: gx + m, z0: gz, z1: gz + m, floor: bed, kind: "sea" },
+        OuterRect { x0: -m, x1: 0.0, z0: 0.0, z1: gz, floor: bed, kind: "sea" },
+        OuterRect { x0: gx, x1: gx + m, z0: 0.0, z1: gz, floor: bed, kind: "sea" },
+    ];
+    let notes = vec![format!("outer ring ({}, flat, {cells} cells): four sea bands at the open-water bed {bed:.2} (slab {:.2}..{:.2}), no slope following", crate::sttc::collection_name(collection), bed - crate::floor_finish::vista_slab(collection).0, bed + crate::floor_finish::vista_slab(collection).1)];
+    Ok(Ring { rects, ramps: Vec::new(), squares: BTreeMap::new(), notes })
 }
 
 /// Append ring boxes to a floor mesh: Stadium rects as slabs floor−below..floor+above (the plane's own), vista

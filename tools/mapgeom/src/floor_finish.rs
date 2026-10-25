@@ -1417,6 +1417,14 @@ pub fn build_floor_item_ring(store: &mut crate::store::DataStore, m: &MapFile, c
     let mut ramps: Vec<crate::outer_ring::Ramp> = Vec::new();
     if ring {
         let r = crate::outer_ring::ring(store, m, collection)?;
+        // v4.23: a flat vista ring must sit at the INSIDE plane's level — checked against the mesh, not assumed
+        if collection != 0x1a && crate::outer_ring::ring_flat() {
+            let inside_bed = mesh.verts.iter().map(|v| v[1]).fold(f32::INFINITY, f32::min) + vista_slab(collection).0;
+            let ring_bed = r.rects.first().map(|q| q.floor).unwrap_or(f32::NAN);
+            if (inside_bed - ring_bed).abs() > 1e-3 {
+                return Err(format!("flat ring bed {ring_bed:.2} ≠ the inside plane's lowest bed {inside_bed:.2}"));
+            }
+        }
         crate::outer_ring::append_to_mesh(&mut mesh, &r, collection, below, above);
         ramps = r.ramps.clone();
     }
