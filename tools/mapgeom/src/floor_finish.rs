@@ -1064,6 +1064,21 @@ pub fn build_cutout_item_exact(store: &mut crate::store::DataStore, name: &str, 
     }
     let size = variant_size_of(store, name, flags)?;
     let mut o = crate::cutout_outline::trace(&floor, &structure, (32.0 * size.0 as f32, 32.0 * size.1 as f32), inset, crate::cutout_outline::CONTOUR_STEP);
+    // v4.28 (Hugo 08:07 "a smooth perfect square hole, no notches"): the pillar plates (StructurePillar / StructureBase,
+    // a 32 m square with a 3 × 3 m foot at 14.5…17.5 and four ground braces along the axes) get an ANALYTIC polygon —
+    // outer = the cell square, hole = the foot's bounding square grown by the inset (4 × 4 m at 14.0…18.0), the
+    // braces ignored (filled). Caps = 4 trapezoids per side, no fan.
+    let pillar_square = pillar_hole_square(&structure, inset);
+    if let Some((sq0, sq1)) = pillar_square {
+        let g = 32.0 * size.0 as f32;
+        let outer = vec![[0.0, 0.0], [g, 0.0], [g, g], [0.0, g]];
+        let hole = vec![[sq0, sq0], [sq0, sq1], [sq1, sq1], [sq1, sq0]];
+        o.polygons = vec![(outer, vec![hole])];
+        o.area = g * g - (sq1 - sq0) * (sq1 - sq0);
+        o.vertices = 8;
+        o.on_mesh = 0;
+        o.notes.push(format!("analytic pillar plate: outer {g:.0} m square, hole {:.2} m square at {sq0:.2}…{sq1:.2} (foot bounding square + inset {inset})", sq1 - sq0));
+    }
     let mut dropped_slivers = 0usize;
     o.polygons.retain(|(outer, holes)| {
         let area = polygon_area(outer) + holes.iter().map(|h| polygon_area(h)).sum::<f32>();
@@ -1094,10 +1109,14 @@ pub fn build_cutout_item_exact(store: &mut crate::store::DataStore, name: &str, 
             // v4.21 (Hugo 06:26 "remove the faces on the sides so neighbouring items connect without an edge"):
             // the outline polygon's top cap (up) and bottom cap (down), NO walls; the trigger stays the closed prism
             let (y0, y1) = tv.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), v| (a.min(v[1]), b.max(v[1])));
-            // v4.25: the caps as axis-aligned quads from the rasterised outline (no sliver triangles)
-            let (rects, rect_area) = crate::floor_tiles::rect_fill(&o.polygons, (32.0 * size.0 as f32, 32.0 * size.1 as f32), crate::cutout_outline::CONTOUR_STEP);
-            crate::floor_tiles::rect_faces(&mut mesh, &rects, y0, y1, 0);
-            o.notes.push(format!("caps as {} rectangles ({:.1} m² of the outline's {:.1} m²)", rects.len(), rect_area, o.area));
+            // v4.28 (Hugo 08:07: the quad raster "removed the rounding/smoothness from ALL cutouts"): the smooth
+            // exact-polygon caps again (the v4.21 form Hugo kept); the pillar plates get the analytic polygon below
+            if let Some((sq0, sq1)) = pillar_square {
+                crate::floor_tiles::frame_faces(&mut mesh, 32.0 * size.0 as f32, sq0, sq1, y0, y1, 0);
+            } else {
+                crate::floor_tiles::polygon_faces(&mut mesh, &iv, &it, y1, true, 0);
+                crate::floor_tiles::polygon_faces(&mut mesh, &iv, &it, y0, false, 0);
+            }
             let mut trig = crate::crystal::CrystalMesh::default();
             crate::floor_tiles::tri_faces(&mut trig, &tv, &tt, 0);
             crate::floor_tiles::build_pure_item(ident, collection, &mesh, Some(&trig))?
@@ -1548,6 +1567,27 @@ pub fn build_ground_clippers_item_ring(store: &mut crate::store::DataStore, m: &
 }
 
 /// The standable fill triangles and the structure triangles of a block's picked variant (block frame).
+/// The pillar plates' hole: when the structure's ground-level footprint is ONE compact square (its extent ≤ 4 m on
+/// both axes and centred in the cell) the hole is that square grown by `inset`; None for every other block.
+pub fn pillar_hole_square(structure: &[[[f32; 3]; 3]], inset: f32) -> Option<(f32, f32)> {
+    let mut e = [f32::INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::NEG_INFINITY];
+    let mut any = false;
+    for t in structure {
+        for v in t {
+            if v[1] <= 0.05 {
+                any = true;
+                e[0] = e[0].min(v[0]); e[1] = e[1].max(v[0]); e[2] = e[2].min(v[2]); e[3] = e[3].max(v[2]);
+            }
+        }
+    }
+    if !any { return None; }
+    let (wx, wz) = (e[1] - e[0], e[3] - e[2]);
+    if wx > 4.0 || wz > 4.0 || (wx - wz).abs() > 0.01 || (e[0] + e[1] - 32.0).abs() > 0.01 || (e[2] + e[3] - 32.0).abs() > 0.01 || (e[0] - e[2]).abs() > 0.01 {
+        return None;
+    }
+    Some((e[0] - inset, e[1] + inset))
+}
+
 pub fn floor_and_structure_of(store: &mut crate::store::DataStore, name: &str, flags: u32) -> Result<(Vec<[[f32; 3]; 3]>, Vec<[[f32; 3]; 3]>), String> {
     let Some(bp) = crate::vista::find_block_info(store, name) else { return Err(format!("{name}: no block info")) };
     let bi = crate::blockinfo::load(store, &bp)?;

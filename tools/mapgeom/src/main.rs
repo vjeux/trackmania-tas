@@ -5271,10 +5271,11 @@ fn main() {
                 let var = mapgeom::floor_finish::variant_byte(*kflags);
                 let ident = if var == 0 { format!("FloorFinish{name}.Item.Gbx") } else { format!("FloorFinish{name}V{var}.Item.Gbx") };
                 if !squares {
-                    match mapgeom::floor_finish::build_cutout_item_exact(&mut store, name, *kflags, &ident, coll, inset, 0.0, mapgeom::floor_finish::GRASS_ABOVE) {
+                    let above_c: f32 = flag(&a.rest, "--cutout-above").and_then(|v| v.parse().ok()).unwrap_or(mapgeom::floor_finish::GRASS_ABOVE);
+                    match mapgeom::floor_finish::build_cutout_item_exact(&mut store, name, *kflags, &ident, coll, inset, 0.0, above_c) {
                         Ok(Some((bytes, c, o))) => {
                             std::fs::write(format!("{out}/{ident}"), &bytes).unwrap_or_else(|e| die(format!("{ident}: {e}")));
-                            let raster_area = mapgeom::floor_finish::cutout_for_block(&mut store, name, *kflags, inset, 0.0, mapgeom::floor_finish::GRASS_ABOVE).ok().flatten().map(|r| r.area).unwrap_or(0.0);
+                            let raster_area = mapgeom::floor_finish::cutout_for_block(&mut store, name, *kflags, inset, 0.0, above_c).ok().flatten().map(|r| r.area).unwrap_or(0.0);
                             rep.push_str(&format!("{name}\t{var}\t{kflags:08x}\t{n}\t{ident}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.1}\t{:.1}\t[{:.2} {:.2} {:.2}]..[{:.2} {:.2} {:.2}]\t{}\n", bytes.len(), o.vertices, o.polygons.len(), o.polygons.iter().map(|(_, h)| h.len()).sum::<usize>(), o.on_mesh, c.dropped, o.area, raster_area, c.bbox.0[0], c.bbox.0[1], c.bbox.0[2], c.bbox.1[0], c.bbox.1[1], c.bbox.1[2], o.notes.join(" | ")));
                             built += 1;
                         }
@@ -5501,6 +5502,40 @@ fn main() {
             }
             std::fs::write(&out, format!("{header}\n{}\n", rows.join("\n"))).unwrap_or_else(|e| die(format!("{out}: {e}")));
             eprintln!("wrote {out}: {} materials", rows.len());
+        }
+        // structure-footprint BLOCK [--flags HEX]: the standable fill's extent and the structure triangles' xz extents per
+        //   height band (for the analytic pillar hole)
+        "structure-footprint" => {
+            let mut store = open(&a);
+            let name = a.rest.get(1).cloned().unwrap_or_default();
+            let flags = flag(&a.rest, "--flags").and_then(|v| u32::from_str_radix(&v, 16).ok()).unwrap_or(0x1000);
+            let (floor, structure) = mapgeom::floor_finish::floor_and_structure_of(&mut store, &name, flags).unwrap_or_else(die);
+            let ext = |tris: &[[[f32; 3]; 3]], lo: f32, hi: f32| -> Option<[f32; 4]> {
+                let mut e = [f32::INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::NEG_INFINITY];
+                let mut any = false;
+                for t in tris {
+                    for v in t {
+                        if v[1] >= lo && v[1] <= hi {
+                            any = true;
+                            e[0] = e[0].min(v[0]); e[1] = e[1].max(v[0]); e[2] = e[2].min(v[2]); e[3] = e[3].max(v[2]);
+                        }
+                    }
+                }
+                if any { Some(e) } else { None }
+            };
+            println!("{name} {flags:08x}: {} floor triangles, {} structure triangles", floor.len(), structure.len());
+            if let Some(e) = ext(&floor, -1e9, 1e9) { println!("  floor fill extent x [{:.3}, {:.3}] z [{:.3}, {:.3}]", e[0], e[1], e[2], e[3]); }
+            for (lo, hi) in [(-0.01, 0.01), (0.01, 0.5), (0.5, 1.0), (1.0, 2.0), (2.0, 4.0), (4.0, 8.0), (8.0, 1e9)] {
+                if let Some(e) = ext(&structure, lo, hi) { println!("  structure vertices with y in [{lo}, {hi}]: x [{:.3}, {:.3}] z [{:.3}, {:.3}]", e[0], e[1], e[2], e[3]); }
+            }
+            // the structure's footprint at ground: vertices with y ≤ 0.05, histogram of x and z to see the foot vs the braces
+            let mut xs: Vec<f32> = Vec::new();
+            let mut zs: Vec<f32> = Vec::new();
+            for t in &structure { for v in t { if v[1] <= 0.05 { xs.push(v[0]); zs.push(v[2]); } } }
+            xs.sort_by(|a, b| a.partial_cmp(b).unwrap()); xs.dedup_by(|a, b| (*a - *b).abs() < 1e-3);
+            zs.sort_by(|a, b| a.partial_cmp(b).unwrap()); zs.dedup_by(|a, b| (*a - *b).abs() < 1e-3);
+            println!("  ground-level structure x values {:?}", xs.iter().map(|v| format!("{v:.3}")).collect::<Vec<_>>());
+            println!("  ground-level structure z values {:?}", zs.iter().map(|v| format!("{v:.3}")).collect::<Vec<_>>());
         }
         // crystal-info FILE.Item.Gbx…: a mesh-modeler item's recipe — materials (link, physics, gameplay, constants, colour),
         //   every layer (kind, crystal positions / faces), the item's waypoint type (chunk 0x2E00201F in the body)

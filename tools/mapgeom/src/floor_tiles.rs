@@ -462,3 +462,26 @@ pub fn rect_faces(mesh: &mut crate::crystal::CrystalMesh, rects: &[[f32; 4]], y0
         body_bottom_face(mesh, &b, material);
     }
 }
+
+/// The square-with-square-hole caps as four trapezoids (one per side), top (up) and bottom (down).
+pub fn frame_faces(mesh: &mut crate::crystal::CrystalMesh, g: f32, s0: f32, s1: f32, y0: f32, y1: f32, material: u32) {
+    // the four trapezoids in xz, CCW seen from above (+y): bottom side, right side, top side, left side
+    let quads: [[[f32; 2]; 4]; 4] = [
+        [[0.0, 0.0], [g, 0.0], [s1, s0], [s0, s0]],
+        [[g, 0.0], [g, g], [s1, s1], [s1, s0]],
+        [[g, g], [0.0, g], [s0, s1], [s1, s1]],
+        [[0.0, g], [0.0, 0.0], [s0, s0], [s0, s1]],
+    ];
+    for q in quads {
+        // CCW in (x, z) seen from +y means the cross product (p1−p0)×(p2−p0) has NEGATIVE y in a right-handed xz
+        // frame; the friend's up-facing quad (−N,0,0)(−N,0,N)(0,0,N)(0,0,0) is CW in (x,z) → +y. So the top face is
+        // the reversed order, the bottom the given order.
+        let top: Vec<[f32; 3]> = q.iter().rev().map(|p| [p[0], y1, p[1]]).collect();
+        let bottom: Vec<[f32; 3]> = q.iter().map(|p| [p[0], y0, p[1]]).collect();
+        for face in [top, bottom] {
+            let base = mesh.positions.len() as u32;
+            mesh.positions.extend_from_slice(&face);
+            mesh.faces.push(crate::crystal::Face { verts: (0..4).map(|k| base + k).collect(), uvs: face.iter().map(|p| [p[0] / 8.0, p[2] / 8.0]).collect(), material });
+        }
+    }
+}
