@@ -3737,13 +3737,16 @@ pub fn inline_filler_foliage(store: &mut crate::store::DataStore, m: &mut Merged
 /// the block's ARCHETYPE (a GateSpecial*/PlatformTechSpecial* block info the
 /// custom block borrows its effect from), already scaled, with its kind.
 /// Returns the item bytes, the merged model, and the archetype name.
-pub fn static_item_from_custom_block(store: Option<&mut crate::store::DataStore>, bytes: &[u8], ident: &str, author: &str, scale: f32, collection: u32, special: Option<(super::surface::CPlugSurface, Option<String>)>) -> R<(Vec<u8>, Merged, Option<String>)> {
+pub fn static_item_from_custom_block(store: Option<&mut crate::store::DataStore>, bytes: &[u8], ident: &str, author: &str, scale: f32, collection: u32, special: Option<(super::surface::CPlugSurface, Option<String>)>, scope_name: &str) -> R<(Vec<u8>, Merged, Option<String>)> {
     // TINY_CUSTOM_BLOCK_REDRESS=1 (the surface pipeline): the embedded block's materials
     // take the alteration like a custom item's — Everios96's A5 (2026-09-19 06:41: the
     // community wood blocks, kept wood in every alteration until now)
     let mut m = match store {
         Some(st) if std::env::var("TINY_CUSTOM_BLOCK_REDRESS").map(|v| v == "1").unwrap_or(false) => {
-            let mut pre = custom_redress_pre(st, ident, false);
+            // the swap's NAME-scoped rows (`[*_CustomBlock]Technics=…`) see the block's record
+            // name, not the alias — the alias matched nothing (2026-10-25, the SKI ramp blocks)
+            let scope = if scope_name.is_empty() { ident } else { scope_name };
+            let mut pre = custom_redress_pre(st, scope, false);
             pre.notes.push("custom block re-dressed by the surface swap".into());
             pre
         }

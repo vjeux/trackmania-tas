@@ -1187,6 +1187,61 @@ fn main() {
             std::fs::write(&out, mapgeom::tiny_assets::zip(&files)).expect("write");
             println!("wrote {out} ({n} items)");
         }
+        // item-twin LIVE.Map.Gbx --build-item FILE.Item.Gbx --out-dir D : the LIVE map's embedded
+        // item of the same SHAPE as the built item (vertex count per visual, geom count), and the
+        // built item written under that live alias into D — the file `tmmaps replace-embedded`
+        // takes for an in-place item repair (2026-10-25: the SKI metal ramp copies on 107/135/
+        // 194/927, re-dressed by a fresh build whose alias numbering need not match the live one)
+        "item-twin" => {
+            let live = a.rest.get(1).unwrap_or_else(|| die("item-twin LIVE.Map.Gbx --build-item FILE --out-dir D".into()));
+            let built_path = flag(&a.rest, "--build-item").unwrap_or_else(|| die("--build-item FILE.Item.Gbx".into()));
+            let out_dir = std::path::PathBuf::from(flag(&a.rest, "--out-dir").unwrap_or_else(|| die("--out-dir D".into())));
+            // the shape = total vertices and total triangles over the visuals: a re-dress can
+            // merge two same-material visuals into one (the live ramp copy has 117 + 4, the
+            // rebuilt one 121), the sums do not move
+            let shape = |bytes: &[u8]| -> Option<(usize, usize)> {
+                let f = mapgeom::static_item::parse_file(bytes).ok()?;
+                let so = f.item.static_object()?;
+                let s2 = so.solid2()?;
+                let mut verts = 0usize;
+                let mut tris = 0usize;
+                for r in &s2.visuals {
+                    if let Some(mapgeom::static_item::Node::Visual(v)) = r.inline.as_deref() {
+                        verts += v.main.as_ref().map(|m| m.count.max(0) as usize).unwrap_or(0);
+                        tris += v.index_buffer.as_ref().map(|b| b.indices.len() / 3).unwrap_or(0);
+                    }
+                }
+                Some((verts, tris))
+            };
+            let built = std::fs::read(&built_path).unwrap_or_else(|e| die(format!("{built_path}: {e}")));
+            let want = shape(&built).unwrap_or_else(|| die(format!("{built_path}: not a static item with a solid")));
+            let m = tmmaps::map::MapFile::load(std::path::Path::new(live));
+            let (_, zip) = m.embedded_objects().unwrap_or_else(|| die(format!("{live}: no embedded objects")));
+            let mut hits: Vec<String> = Vec::new();
+            let mut n = 0usize;
+            for (name, bytes) in tmmaps::header::zip_entries(&zip) {
+                if !name.to_ascii_lowercase().ends_with(".item.gbx") {
+                    continue;
+                }
+                n += 1;
+                if shape(&bytes) == Some(want.clone()) {
+                    hits.push(name.rsplit(|c| c == '/' || c == '\\').next().unwrap_or(&name).to_string());
+                }
+            }
+            match hits.len() {
+                1 => {
+                    let alias = &hits[0];
+                    let from = tmmaps::header::item_ident_author(&built).map(|(i, _)| i).unwrap_or_else(|| die("built item: no ident in the header".into()));
+                    let renamed = mapgeom::crystal::rename_ident(&built, &from, alias);
+                    std::fs::create_dir_all(&out_dir).unwrap_or_else(|e| die(format!("{}: {e}", out_dir.display())));
+                    let out = out_dir.join(alias);
+                    std::fs::write(&out, &renamed).unwrap_or_else(|e| die(format!("{}: {e}", out.display())));
+                    println!("{live}: shape {} verts / {} tris matches live item {alias} (of {n}); built item {from} -> {}", want.0, want.1, out.display());
+                }
+                0 => die(format!("{live}: no embedded item of shape {} verts / {} tris among {n}", want.0, want.1)),
+                k => die(format!("{live}: {k} embedded items share the shape {} verts / {} tris: {}", want.0, want.1, hits.join(", "))),
+            }
+        }
         "rename-item" => {
             // rename-item IN.Item.Gbx --out OUT --to NAME [--from NAME] : the same file under
             // another ident (header + body, any length; the pack item Flag16m -> FlagCopy.Item.Gbx)

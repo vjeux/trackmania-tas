@@ -74,10 +74,7 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
     // (custom castle roads of U10S_953 stayed in their look, Everios96 2026-09-15)
     // + `Underwater`: the water roads' pool floor and walls (physics Plastic 77) — only ever
     // baked as a visual-only WATER OVERLAY (TINY_WATER_OVERLAY=1, 2026-09-24), the block keeps its water
-    // + `Technics` / `TechnicsTrims` (Metal 4): the community ramp BLOCKS (`PlatformRamp1M`,
-    // `DirtRamp625MM` of the SKI pack) are built of them — GeraldDuke 2026-10-24 on wet wood
-    // 135/194 "metal block should be converted to wood", Everios96 "told the bot to change it"
-    let road_stems = ["RoadTech", "ItemRamp", "Technics", "TechnicsTrims", "RoadDirt", "RoadDirtFullColorize", "RoadBump", "RoadIce", "OpenTechBorders", "Underwater", "Waterground", "ItemInflatableTube", "ItemInflatableMat", "ItemInflatableFloor", "ThemeSnowRoad", "ThemeSnowRoadBorder", "ThemeRallyCastleWallUV", "ThemeRallyCastleWall"];
+    let road_stems = ["RoadTech", "ItemRamp", "RoadDirt", "RoadDirtFullColorize", "RoadBump", "RoadIce", "OpenTechBorders", "Underwater", "Waterground", "ItemInflatableTube", "ItemInflatableMat", "ItemInflatableFloor", "ThemeSnowRoad", "ThemeSnowRoadBorder", "ThemeRallyCastleWallUV", "ThemeRallyCastleWall"];
     let mut rows: Vec<String> = match s {
         // the snow PLANK roads take the ice platform look, not the bobsleigh one
         // (Everios96 2026-09-19 08:24 on icy 152: "use the ice platform texture")
@@ -136,11 +133,9 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
         // ramps, tubes) takes the asphalt road material; the POOL decks take the tech PLATFORM
         // look, as every set gives its pools its platform dress; `OpenTechBorders` is already
         // the tech border and stays; the grass shoulders (`DecoHill2`) are never listed.
-        // the metal ramp blocks (`Technics*`) stay metal under Tarmac (Everios96 2026-10-24:
-        // "all alterations besides tarmac")
         "Tech" => road_stems
             .iter()
-            .filter(|st| **st != "RoadTech" && **st != "OpenTechBorders" && !st.starts_with("Technics"))
+            .filter(|st| **st != "RoadTech" && **st != "OpenTechBorders")
             .map(|st| if matches!(*st, "Underwater" | "Waterground" | "RoadWater" | "PlatformWater") { format!("{st}=Stadium\\Media\\Material\\PlatformTech") } else { format!("{st}=Stadium\\Media\\Material\\RoadTech") })
             .collect(),
         other => return Err(format!("surface `{other}`: no dress table")),
@@ -337,6 +332,26 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
                 // and convert through the plain stem rows, not through a body row.
                 format!("[*]TrackWallClips={link};[DecoWall*FCT*]TrackWall={link};[Platform*FCT*]TrackWall={link};[TrackWall*SlopeU*]TrackWall={link};[TrackWall*SlopeUp*]TrackWall={link};[TrackWall*SlopeDown*]TrackWall={link};[TrackWallArchSlope*U*]TrackWall={link}"),
             ));
+        }
+        // The community RAMP BLOCKS (`PlatformRamp1M`, `DirtRamp625MM` of the SKI pack, in
+        // originals 107/135/194/927) are built of `Technics`/`TechnicsTrims` (Metal 4) and
+        // came through the custom-block bake as metal in every set — GeraldDuke 2026-10-24 on
+        // wet wood 135/194 "metal block should be converted to wood", Everios96 "told the bot
+        // to change it … for all alterations besides tarmac". Scoped to `*_CustomBlock` records:
+        // the start/finish ARCHES carry the same two materials in their frames (a global stem
+        // row turned the finish arch of 135 to planks — checked on the first build) and keep
+        // them. The ramp takes what the stock ramp items take (the `ItemRamp` row).
+        if s != "Tech" {
+            if let Some(link) = rows.iter().find_map(|r| r.strip_prefix("ItemRamp=")).map(String::from) {
+                let add = format!("[*_CustomBlock]Technics={link};[*_CustomBlock]TechnicsTrims={link}");
+                match env.iter_mut().find(|(k, _)| k == "TINY_REDRESS_SCOPED") {
+                    Some((_, v)) => {
+                        v.push(';');
+                        v.push_str(&add);
+                    }
+                    None => env.push(("TINY_REDRESS_SCOPED".to_string(), add)),
+                }
+            }
         }
     }
     // Magnet: the DECK rule like every other alteration (Everios96 2026-09-15 04:30:
