@@ -74,7 +74,10 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
     // (custom castle roads of U10S_953 stayed in their look, Everios96 2026-09-15)
     // + `Underwater`: the water roads' pool floor and walls (physics Plastic 77) — only ever
     // baked as a visual-only WATER OVERLAY (TINY_WATER_OVERLAY=1, 2026-09-24), the block keeps its water
-    let road_stems = ["RoadTech", "ItemRamp", "RoadDirt", "RoadDirtFullColorize", "RoadBump", "RoadIce", "OpenTechBorders", "Underwater", "Waterground", "ItemInflatableTube", "ItemInflatableMat", "ItemInflatableFloor", "ThemeSnowRoad", "ThemeSnowRoadBorder", "ThemeRallyCastleWallUV", "ThemeRallyCastleWall"];
+    // + `Technics` / `TechnicsTrims` (Metal 4): the community ramp BLOCKS (`PlatformRamp1M`,
+    // `DirtRamp625MM` of the SKI pack) are built of them — GeraldDuke 2026-10-24 on wet wood
+    // 135/194 "metal block should be converted to wood", Everios96 "told the bot to change it"
+    let road_stems = ["RoadTech", "ItemRamp", "Technics", "TechnicsTrims", "RoadDirt", "RoadDirtFullColorize", "RoadBump", "RoadIce", "OpenTechBorders", "Underwater", "Waterground", "ItemInflatableTube", "ItemInflatableMat", "ItemInflatableFloor", "ThemeSnowRoad", "ThemeSnowRoadBorder", "ThemeRallyCastleWallUV", "ThemeRallyCastleWall"];
     let mut rows: Vec<String> = match s {
         // the snow PLANK roads take the ice platform look, not the bobsleigh one
         // (Everios96 2026-09-19 08:24 on icy 152: "use the ice platform texture")
