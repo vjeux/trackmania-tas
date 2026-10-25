@@ -513,9 +513,17 @@ fn main() {
     if a.rest.iter().any(|x| x == "--tiles-lightmap") {
         mapgeom::static_item::build::set_tiles_lightmap(true);
     }
+    // --tiles-glass: the PureFloor-recipe tiles in the friend's pink CustomGlass instead of CustomPlastic red
+    if a.rest.iter().any(|x| x == "--tiles-glass") {
+        mapgeom::floor_tiles::set_pure_glass(true);
+    }
+    // --pure-template F.Item.Gbx: the mesh-modeler template (default: the bank's PureFloor4.Item.Gbx)
+    if let Some(i) = a.rest.iter().position(|x| x == "--pure-template") {
+        if let Some(p) = a.rest.get(i + 1) { mapgeom::floor_tiles::set_pure_template(p); }
+    }
     if let Some(i) = a.rest.iter().position(|x| x == "--indicator") {
-        let v = a.rest.get(i + 1).map(|s| s.as_str()).unwrap_or("tiles");
-        mapgeom::static_item::build::set_indicator(match v { "glass" => mapgeom::static_item::build::Indicator::Glass, "gate" => mapgeom::static_item::build::Indicator::Gate, "decal" => mapgeom::static_item::build::Indicator::Decal, "chrono-pole" => mapgeom::static_item::build::Indicator::ChronoPole, "chrono" => mapgeom::static_item::build::Indicator::Chrono, "none" => mapgeom::static_item::build::Indicator::None, "slab" => mapgeom::static_item::build::Indicator::Slab, _ => mapgeom::static_item::build::Indicator::Tiles });
+        let v = a.rest.get(i + 1).map(|s| s.as_str()).unwrap_or("pure");
+        mapgeom::static_item::build::set_indicator(match v { "glass" => mapgeom::static_item::build::Indicator::Glass, "gate" => mapgeom::static_item::build::Indicator::Gate, "decal" => mapgeom::static_item::build::Indicator::Decal, "chrono-pole" => mapgeom::static_item::build::Indicator::ChronoPole, "chrono" => mapgeom::static_item::build::Indicator::Chrono, "none" => mapgeom::static_item::build::Indicator::None, "slab" => mapgeom::static_item::build::Indicator::Slab, "tiles" => mapgeom::static_item::build::Indicator::Tiles, _ => mapgeom::static_item::build::Indicator::Pure });
     }
     let cmd = a.rest.first().cloned().unwrap_or_default();
     match cmd.as_str() {
@@ -5474,6 +5482,36 @@ fn main() {
             }
             std::fs::write(&out, format!("{header}\n{}\n", rows.join("\n"))).unwrap_or_else(|e| die(format!("{out}: {e}")));
             eprintln!("wrote {out}: {} materials", rows.len());
+        }
+        // crystal-info FILE.Item.Gbx…: a mesh-modeler item's recipe — materials (link, physics, gameplay, constants, colour),
+        //   every layer (kind, crystal positions / faces), the item's waypoint type (chunk 0x2E00201F in the body)
+        "crystal-info" => {
+            for p in a.rest.iter().skip(1) {
+                let bytes = std::fs::read(p).unwrap_or_else(|e| die(format!("{p}: {e}")));
+                let it = mapgeom::crystal::ItemCrystal::open(&bytes).unwrap_or_else(|e| die(format!("{p}: {e}")));
+                println!("== {p}: {} bytes, body {} bytes, crystal node {} at {:#x}", bytes.len(), it.body.len(), it.loc.node_index, it.loc.at);
+                for (i, m) in it.model.materials.iter().enumerate() {
+                    match m.inst().and_then(|mi| mi.main.as_ref()) {
+                        Some(mm) => println!("  material {i} {:?}: link {:?} v{} game_material {} name {:?} model {:?} physics {} gameplay {} csts {:?} color {:?} uv_anims {} user_textures {} hiding {:?}", m.name, mm.link, mm.version, mm.is_using_game_material, mm.material_name, mm.model, mm.surface_physic_id, mm.surface_gameplay_id, mm.csts.iter().map(|c| format!("{:?}:{:?}x{}", c.u01, c.u02, c.u03)).collect::<Vec<_>>(), mm.color.iter().map(|w| f32::from_bits(*w as u32)).collect::<Vec<_>>(), mm.uv_anims.len(), mm.user_textures.len(), mm.hiding_group),
+                        None => println!("  material {i} {:?}: no inst", m.name),
+                    }
+                }
+                for (li, l) in it.model.layers.iter().enumerate() {
+                    let kind = match &l.kind {
+                        mapgeom::crystal_model::LayerKind::Geometry { version, crystal, is_visible, collidable, .. } => format!("Geometry v{version} visible {is_visible} collidable {collidable}: {} positions {:?}, {} faces {:?}", crystal.positions.len(), crystal.positions, crystal.faces.len(), crystal.faces.iter().map(|f| format!("verts {:?} mat {} uvs {:?}", f.verts, f.material, crystal.face_uvs(f))).collect::<Vec<_>>()),
+                        mapgeom::crystal_model::LayerKind::Trigger { version, crystal, .. } => format!("Trigger v{version}: {} positions {:?}, {} faces {:?}", crystal.positions.len(), crystal.positions, crystal.faces.len(), crystal.faces.iter().map(|f| f.verts.clone()).collect::<Vec<_>>()),
+                        other => format!("{:?}", std::mem::discriminant(other)),
+                    };
+                    println!("  layer {li} id {:?} name {:?} enabled {} base v{}: {kind}", l.base.layer_id, l.base.layer_name, l.base.is_enabled, l.base.version);
+                }
+                // the item chunk 0x2E00201F (WaypointType, DisableLightmap) found by its id in the body
+                let body = &it.body;
+                let pat = 0x2E00201Fu32.to_le_bytes();
+                if let Some(pos) = body.windows(4).position(|w| w == pat) {
+                    let rd = |o: usize| u32::from_le_bytes([body[o], body[o + 1], body[o + 2], body[o + 3]]);
+                    println!("  chunk 0x2E00201F at {pos:#x}: version {} waypoint_type {} disable_lightmap {}", rd(pos + 4), rd(pos + 8) as i32, rd(pos + 12));
+                }
+            }
         }
         // slab-template --out F.Item.Gbx [--collection N]: the v4.18 VISUAL slab template — a 32 × 1 × 32 m body at the
         //   origin, visual-only (no trigger, no waypoint), CustomPlastic, Full layout, six lightmap charts, DisableLightmap

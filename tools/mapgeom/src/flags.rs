@@ -397,7 +397,7 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
             rows.push(row);
             built.push((stem.clone(), ident, [mesh.bbox.0[0], mesh.bbox.0[1], mesh.bbox.0[2], mesh.bbox.1[0], mesh.bbox.1[1], mesh.bbox.1[2]], bytes));
             // v4.18: the slab visual as per-tile visual-only items (floor_tiles.rs)
-            if !o.ground_clippers && crate::static_item::build::indicator() == crate::static_item::build::Indicator::Tiles {
+            if !o.ground_clippers && crate::static_item::build::tiled() {
                 let tiles = crate::floor_tiles::tiles_of(&mesh.verts, crate::floor_tiles::TILE_M);
                 let all: Vec<crate::floor_tiles::Body> = mesh.verts.chunks_exact(8).map(|c| [c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]).collect();
                 let (v_all, v_tiles) = (crate::floor_tiles::volume(&all), tiles.iter().map(|(_, b)| crate::floor_tiles::volume(b)).sum::<f64>());
@@ -410,7 +410,12 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
                 for ((tx, tz), bodies) in &tiles {
                     let tstem = format!("FinishSlab_{uid_stem}_{}{}_{}{}", if *tx < 0 { "m" } else { "" }, tx.abs(), if *tz < 0 { "m" } else { "" }, tz.abs());
                     let tident = format!("{tstem}.Item.Gbx");
-                    let (tbytes, ntri, mpu) = crate::floor_tiles::build_tile_item(ctx.store, bodies, &tident, collection, disable_lm).map_err(|e| format!("{tstem}: {e}"))?;
+                    let (tbytes, ntri, mpu) = if crate::static_item::build::indicator() == crate::static_item::build::Indicator::Pure {
+                        let (b, nf) = crate::floor_tiles::build_pure_tile(bodies, &tident, collection).map_err(|e| format!("{tstem}: {e}"))?;
+                        (b, nf, 0.0)
+                    } else {
+                        crate::floor_tiles::build_tile_item(ctx.store, bodies, &tident, collection, disable_lm).map_err(|e| format!("{tstem}: {e}"))?
+                    };
                     n_bodies += bodies.len();
                     total_bytes += tbytes.len();
                     mpu_max = mpu_max.max(mpu);
@@ -420,7 +425,11 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
                 }
                 let mut r = Row::new(&map_label, "flags", "model", 0, stem);
                 r.action = "slab-tiles-built".into();
-                r.note = format!("{} visual-only tile items ({} m tiles; {} bodies after the cuts from {} trigger bodies; volume {:.0} m³ unchanged; {} bytes in all; DisableLightmap {}; metres per lightmap uv unit ≤ {:.1})", tiles.len(), crate::floor_tiles::TILE_M, n_bodies, all.len(), v_all, total_bytes, disable_lm, mpu_max);
+                r.note = if crate::static_item::build::indicator() == crate::static_item::build::Indicator::Pure {
+                    format!("{} visual-only PureFloor-recipe crystal tile items ({} m tiles; {} bodies after the cuts from {} trigger bodies; volume {:.0} m³ unchanged; {} bytes in all; material {})", tiles.len(), crate::floor_tiles::TILE_M, n_bodies, all.len(), v_all, total_bytes, if crate::floor_tiles::pure_glass() { "CustomGlass (friend's pink)" } else { "CustomPlastic (1, 0.1, 0.1)" })
+                } else {
+                    format!("{} visual-only tile items ({} m tiles; {} bodies after the cuts from {} trigger bodies; volume {:.0} m³ unchanged; {} bytes in all; DisableLightmap {}; metres per lightmap uv unit ≤ {:.1})", tiles.len(), crate::floor_tiles::TILE_M, n_bodies, all.len(), v_all, total_bytes, disable_lm, mpu_max)
+                };
                 rows.push(r);
             }
             continue;

@@ -356,7 +356,7 @@ pub fn build_item_with(template: &[u8], ident: &str, author: &str, materials: &[
 /// Fill a Geometry layer's crystal from `mesh`: the template's version,
 /// visual levels and anchors stay; groups, positions, tex coords and faces
 /// are the mesh's.
-fn fill_crystal(c: &mut Crystal, mesh: &CrystalMesh, n_mat: usize) {
+pub(crate) fn fill_crystal(c: &mut Crystal, mesh: &CrystalMesh, n_mat: usize) {
     assert_eq!(c.version, 37, "template crystal version {}, writer knows 37", c.version);
     // Groups form a tree: folders (no name, parent -1, a list of children)
     // and leaves ("part", parent = folder index, no children); faces name

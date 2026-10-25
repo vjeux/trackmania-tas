@@ -1077,6 +1077,18 @@ pub fn build_cutout_item_exact(store: &mut crate::store::DataStore, name: &str, 
     let iv: Vec<[f32; 3]> = iv.iter().map(|p| [p[0], INDICATOR_LIFT, p[2]]).collect();
     let donor = "Stadium\\Items\\LightCube2m.Item.Gbx";
     let mut mg = crate::static_item::build::pack_item_merged(store, donor, 1.0, collection, 0, None).map_err(|e| format!("donor {donor}: {e}"))?;
+    let pure = crate::static_item::build::indicator() == crate::static_item::build::Indicator::Pure;
+    if pure {
+        // v4.19: the cutout as a PureFloor-recipe crystal item — Geometry = the exact-outline prism (top / bottom /
+        // walls), Trigger layer = the same closed prism, WaypointType Finish from the template
+        let mut mesh = crate::crystal::CrystalMesh::default();
+        crate::floor_tiles::tri_faces(&mut mesh, &tv, &tt, 0);
+        let bytes = crate::floor_tiles::build_pure_item(ident, collection, &mesh, Some(&mesh))?;
+        let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+        for v in &tv { for k in 0..3 { lo[k] = lo[k].min(v[k]); hi[k] = hi[k].max(v[k]); } }
+        let c = Cutout { verts: tv, tris: tt, kept: o.vertices, dropped: dropped_slivers, area: o.area, bbox: (lo, hi) };
+        return Ok(Some((bytes, c, o)));
+    }
     crate::static_item::build::make_invisible_mesh_waypoint(&mut mg, crate::sttc::WP_FINISH, tv.clone(), tt.clone())?;
     if matches!(crate::static_item::build::indicator(), crate::static_item::build::Indicator::Slab | crate::static_item::build::Indicator::Tiles) {
         // v4.15: the cutout prism itself (walls along the exact outline + top + bottom = the trigger mesh);
@@ -1410,7 +1422,7 @@ pub fn build_floor_item_ring(store: &mut crate::store::DataStore, m: &MapFile, c
         // v4.15: the trigger volume itself — every 8-vertex body of the trigger mesh (boxes and ramps alike)
         let bodies: Vec<[[f32; 3]; 8]> = mesh.verts.chunks_exact(8).map(|c| [c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]).collect();
         crate::static_item::build::add_finish_slab_visual(&mut mg, &bodies)?;
-    } else if crate::static_item::build::indicator() == crate::static_item::build::Indicator::Tiles {
+    } else if crate::static_item::build::tiled() {
         // v4.18: the trigger item carries only the speck; the tiles are built by the caller from `mesh.verts`
         crate::static_item::build::speck_visual(&mut mg)?;
         mg.notes.push("tiles mode: trigger item speck-only; the slab visual is the per-tile items".into());
@@ -1489,7 +1501,7 @@ pub fn build_ground_clippers_item_ring(store: &mut crate::store::DataStore, m: &
     if crate::static_item::build::indicator() == crate::static_item::build::Indicator::Slab {
         let b: [[f32; 3]; 8] = [verts[0], verts[1], verts[2], verts[3], verts[4], verts[5], verts[6], verts[7]];
         crate::static_item::build::add_finish_slab_visual(&mut mg, &[b])?;
-    } else if crate::static_item::build::indicator() == crate::static_item::build::Indicator::Tiles {
+    } else if crate::static_item::build::tiled() {
         crate::static_item::build::speck_visual(&mut mg)?;
     } else {
         crate::static_item::build::add_finish_plane_visual(&mut mg, &[(x0m, x1, x0m, z1, y1 - INDICATOR_LIFT)], INDICATOR_LIFT)?;
