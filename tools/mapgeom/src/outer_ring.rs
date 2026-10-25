@@ -51,9 +51,12 @@ pub struct OuterRect {
     pub x1: f32,
     pub z0: f32,
     pub z1: f32,
-    /// the ground the slab is anchored on (Stadium grass 8.0; vista seabed anchor)
+    /// the ground the slab is anchored on (Stadium grass 8.0; vista seabed anchor); for a `band` row the cell run's
+    /// LOWEST bed (the trigger bottom = floor − below)
     pub floor: f32,
     pub kind: &'static str,
+    /// v4.24 `band` rows: the run's HIGHEST bed (the trigger top = y_outer + above); = floor for every other kind
+    pub y_outer: f32,
 }
 
 /// v4.13: a SLOPED ring wedge — a prism whose bottom / top / indicator are planar between the inner edge (at the
@@ -183,6 +186,7 @@ fn vista_ring(store: &mut crate::store::DataStore, collection: u32, size: (i32, 
     let mut per_ring: BTreeMap<i32, (f32, f32)> = BTreeMap::new();
     // 32 m cell (cx, cz) in the band frame (cell 0 = the first cell outside at −margin) → max bed
     let mut cell_max: BTreeMap<(i32, i32), f32> = BTreeMap::new();
+    let mut cell_min: BTreeMap<(i32, i32), f32> = BTreeMap::new();
     let ground_up: Vec<&[[f32; 3]; 3]> = ground.iter().filter(|t| upward(t)).collect();
     for j in 0..nz {
         for i in 0..n {
@@ -211,6 +215,8 @@ fn vista_ring(store: &mut crate::store::DataStore, collection: u32, size: (i32, 
             let key = (((x + margin) / 32.0).floor() as i32, ((z + margin) / 32.0).floor() as i32);
             let m = cell_max.entry(key).or_insert(f32::NEG_INFINITY);
             *m = m.max(bed);
+            let mn = cell_min.entry(key).or_insert(f32::INFINITY);
+            *mn = mn.min(bed);
         }
     }
     if cnt == 0 {
@@ -225,8 +231,25 @@ fn vista_ring(store: &mut crate::store::DataStore, collection: u32, size: (i32, 
     let anchor_of = |v: f32| ((v - 0.005) / step).ceil() * step;
     let (ncx, ncz) = (size.0 + 2 * cells, size.1 + 2 * cells);
     let mut rects: Vec<OuterRect> = Vec::new();
-    let mut push_run = |cx0: i32, cx1: i32, cz0: i32, cz1: i32, floor: f32| {
-        rects.push(OuterRect { x0: -margin + 32.0 * cx0 as f32, x1: -margin + 32.0 * cx1 as f32, z0: -margin + 32.0 * cz0 as f32, z1: -margin + 32.0 * cz1 as f32, floor, kind: "sea" });
+    // v4.24 `band` (Hugo 07:20, option c: "I can't finish in the outer ring" on the flat ring — the shelf crests above
+    // it): per 32 m cell the trigger spans the cell's FULL bed range, bottom = min bed − below, top = max bed + above;
+    // consecutive cells with the same (min, max) (to the cm) merge into one row. Rows mode (v4.11): anchor only.
+    let band = ring_band();
+    let key_of = |cx: i32, cz: i32| -> (i64, i64) {
+        if band {
+            // the cell's bed range widened OUTWARD to the 25 cm grid (min down, max up): fewer distinct keys → longer
+            // rows, and the cover guarantee holds by construction
+            let mn = (cell_min.get(&(cx, cz)).copied().unwrap_or(bed_min) / BAND_Q).floor() * BAND_Q;
+            let mx = (cell_max.get(&(cx, cz)).copied().unwrap_or(bed_max) / BAND_Q).ceil() * BAND_Q;
+            ((mn * 100.0).round() as i64, (mx * 100.0).round() as i64)
+        } else {
+            let v = anchor_of(cell_max.get(&(cx, cz)).copied().unwrap_or(bed_max));
+            ((v * 100.0).round() as i64, (v * 100.0).round() as i64)
+        }
+    };
+    let mut push_run = |cx0: i32, cx1: i32, cz0: i32, cz1: i32, key: (i64, i64)| {
+        let (floor, y_outer) = (key.0 as f32 / 100.0, key.1 as f32 / 100.0);
+        rects.push(OuterRect { x0: -margin + 32.0 * cx0 as f32, x1: -margin + 32.0 * cx1 as f32, z0: -margin + 32.0 * cz0 as f32, z1: -margin + 32.0 * cz1 as f32, floor, kind: if band { "band" } else { "sea" }, y_outer });
     };
     for d in 0..cells {
         // ring d: the frame of cells at distance d outside the grid (band frame indices)
@@ -236,9 +259,9 @@ fn vista_ring(store: &mut crate::store::DataStore, collection: u32, size: (i32, 
             let _ = horizontal;
             let mut cx = lo_x;
             while cx <= hi_x {
-                let v = anchor_of(cell_max.get(&(cx, cz)).copied().unwrap_or(bed_max));
+                let v = key_of(cx, cz);
                 let start = cx;
-                while cx + 1 <= hi_x && anchor_of(cell_max.get(&(cx + 1, cz)).copied().unwrap_or(bed_max)) == v {
+                while cx + 1 <= hi_x && key_of(cx + 1, cz) == v {
                     cx += 1;
                 }
                 push_run(start, cx + 1, cz, cz + 1, v);
@@ -248,9 +271,9 @@ fn vista_ring(store: &mut crate::store::DataStore, collection: u32, size: (i32, 
         for cx in [lo_x, hi_x] {
             let mut cz = lo_z + 1;
             while cz < hi_z {
-                let v = anchor_of(cell_max.get(&(cx, cz)).copied().unwrap_or(bed_max));
+                let v = key_of(cx, cz);
                 let start = cz;
-                while cz + 1 < hi_z && anchor_of(cell_max.get(&(cx, cz + 1)).copied().unwrap_or(bed_max)) == v {
+                while cz + 1 < hi_z && key_of(cx, cz + 1) == v {
                     cz += 1;
                 }
                 push_run(cx, cx + 1, start, cz + 1, v);
@@ -259,6 +282,35 @@ fn vista_ring(store: &mut crate::store::DataStore, collection: u32, size: (i32, 
         }
     }
     let _ = (ncx, ncz);
+    let mut band_note: Option<String> = None;
+    if band {
+        // cover check over every 4 m square of the band: its row must have floor ≤ bed ≤ y_outer; stats of the slack
+        let mut rows_by_cell: BTreeMap<(i32, i32), usize> = BTreeMap::new();
+        for (ri, r) in rects.iter().enumerate() {
+            let (cx0, cx1) = (((r.x0 + margin) / 32.0).round() as i32, ((r.x1 + margin) / 32.0).round() as i32);
+            let (cz0, cz1) = (((r.z0 + margin) / 32.0).round() as i32, ((r.z1 + margin) / 32.0).round() as i32);
+            for cx in cx0..cx1 { for cz in cz0..cz1 { rows_by_cell.insert((cx, cz), ri); } }
+        }
+        let (mut below_max, mut above_max, mut uncovered, mut checked) = (0.0f32, 0.0f32, 0usize, 0usize);
+        for i in 0..n {
+            for j in 0..nz {
+                let (x, z) = (-margin + (i as f32 + 0.5) * STEP, -margin + (j as f32 + 0.5) * STEP);
+                if x >= 0.0 && x <= gx && z >= 0.0 && z <= gz { continue; }
+                let Some(bed) = ground_up.iter().filter_map(|t| height_at(t, x, z)).fold(None, |a: Option<f32>, b| Some(a.map_or(b, |a| a.min(b)))) else { continue };
+                let key = (((x + margin) / 32.0).floor() as i32, ((z + margin) / 32.0).floor() as i32);
+                let Some(&ri) = rows_by_cell.get(&key) else { uncovered += 1; continue };
+                let r = &rects[ri];
+                checked += 1;
+                if bed < r.floor - 1e-4 || bed > r.y_outer + 1e-4 { uncovered += 1; }
+                below_max = below_max.max(bed - r.floor);
+                above_max = above_max.max(r.y_outer - bed);
+            }
+        }
+        band_note = Some(format!("band rows (v4.24): {} rows ({BAND_Q} m quantum), {checked} squares checked, {uncovered} outside their row's [floor, y_outer]; slack: bed above floor ≤ {below_max:.2} m, y_outer above bed ≤ {above_max:.2} m; rows span (y_outer − floor) ≤ {:.2} m", rects.len(), rects.iter().map(|r| r.y_outer - r.floor).fold(0.0f32, f32::max)));
+        if uncovered > 0 {
+            return Err(format!("band rows: {uncovered} band squares not covered by their row's bed range"));
+        }
+    }
     let zones: std::collections::BTreeSet<i64> = rects.iter().map(|r| (r.floor * 100.0).round() as i64).collect();
     let mut notes = vec![
         format!("outer ring ({coll}, Base64x64 Scene3d, {cells} cells): scene frame = map frame + {yoff:.1} m in y (water type {:?} top {:.2} vs the scene's Water plane {scene_water_y:.2}); band −{margin:.0}..+{margin:.0} m: {cnt} squares of 4 m, {dry} dry, {no_bed} without a bed; seabed {bed_min:.2}..{bed_max:.2} (mean {:.2}); per ring cell (min..max): {}", water.name, water.top, bed_sum / cnt as f64, per_ring.iter().map(|(k, (lo, hi))| format!("{k}: {lo:.2}..{hi:.2}")).collect::<Vec<_>>().join(", ")),
@@ -329,7 +381,10 @@ fn vista_ring(store: &mut crate::store::DataStore, collection: u32, size: (i32, 
         }
     }
     notes.push(format!("wedges (v4.13): envelope per cell {} → E at the knots {}; {} planar segment(s) per side {:?} → {} ramps (slab {:.2} under .. {:.2} over the envelope); bed-to-envelope clearance over {c_n} squares: min {c_min:.2} max {c_max:.2} mean {:.2}; squares where the slab BOTTOM would be under the bed: {under}", env.iter().map(|v| format!("{:.2}", v)).collect::<Vec<_>>().join(" "), e.iter().map(|v| format!("{:.2}", v)).collect::<Vec<_>>().join(" "), segs.len(), segs.iter().map(|(a, b)| format!("{a}→{b}: {:.2}→{:.2}", e[*a], e[*b])).collect::<Vec<_>>(), ramps.len(), vb, va, c_sum / c_n.max(1) as f64));
-    if ring_wedges() {
+    if let Some(nn) = band_note {
+        notes.push(nn);
+    }
+    if ring_wedges() && !ring_band() {
         Ok(Ring { rects: Vec::new(), ramps, squares: BTreeMap::new(), notes })
     } else {
         Ok(Ring { rects, ramps: Vec::new(), squares: BTreeMap::new(), notes })
@@ -516,7 +571,7 @@ fn stadium_ring(store: &mut crate::store::DataStore, m: &MapFile, size: (i32, i3
                 end = xs[k];
             }
             k += 1;
-            rects.push(OuterRect { x0: -margin + start as f32 * STEP, x1: -margin + (end + 1) as f32 * STEP, z0: -margin + j as f32 * STEP, z1: -margin + (j + 1) as f32 * STEP, floor: grass_y, kind: "grass" });
+            rects.push(OuterRect { x0: -margin + start as f32 * STEP, x1: -margin + (end + 1) as f32 * STEP, z0: -margin + j as f32 * STEP, z1: -margin + (j + 1) as f32 * STEP, floor: grass_y, kind: "grass", y_outer: grass_y });
         }
     }
     // depth of the clear ring per side, sampled every 128 m, for the report
@@ -561,6 +616,7 @@ pub fn ring_cells_of(store: &mut crate::store::DataStore, m: &MapFile, collectio
     } else if ring_flat() {
         vista_ring_flat(collection, size, cells)
     } else {
+        // band (default) and rows share the raster pass; the wedges need `--ring-shelf` (band off, wedges on)
         vista_ring(store, collection, size, cells)
     }
 }
@@ -568,7 +624,18 @@ pub fn ring_cells_of(store: &mut crate::store::DataStore, m: &MapFile, collectio
 /// v4.23 (Hugo 07:11, option b): the vista ring at the INSIDE water level — four flat `sea` bands (the frame, `cells`
 /// cells wide, corners included) at the collection's open-water bed; no slope following (the first cells sit inside
 /// the shelf, accepted). `--ring-shelf` restores the v4.13 wedges.
-static RING_FLAT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+static RING_FLAT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// v4.24 `band` rows (per-cell full bed range, option c) — behind `--ring-band`; Hugo reverted to the v4.22 shelf
+/// wedges ("works fine for now"), the default; `--ring-rows` = anchors, `--ring-flat` = v4.23
+static RING_BAND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub fn set_ring_band(on: bool) {
+    RING_BAND.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+pub fn ring_band() -> bool {
+    RING_BAND.load(std::sync::atomic::Ordering::Relaxed)
+}
+/// The `band` rows' height quantum (metres): a cell's (min, max) bed is widened outward to this grid.
+pub const BAND_Q: f32 = 0.25;
 pub fn set_ring_flat(on: bool) {
     RING_FLAT.store(on, std::sync::atomic::Ordering::Relaxed);
 }
@@ -591,10 +658,10 @@ pub fn vista_ring_flat(collection: u32, size: (i32, i32), cells: i32) -> Result<
     let (gx, gz) = (32.0 * size.0 as f32, 32.0 * size.1 as f32);
     let m = 32.0 * cells as f32;
     let rects = vec![
-        OuterRect { x0: -m, x1: gx + m, z0: -m, z1: 0.0, floor: bed, kind: "sea" },
-        OuterRect { x0: -m, x1: gx + m, z0: gz, z1: gz + m, floor: bed, kind: "sea" },
-        OuterRect { x0: -m, x1: 0.0, z0: 0.0, z1: gz, floor: bed, kind: "sea" },
-        OuterRect { x0: gx, x1: gx + m, z0: 0.0, z1: gz, floor: bed, kind: "sea" },
+        OuterRect { x0: -m, x1: gx + m, z0: -m, z1: 0.0, floor: bed, kind: "sea", y_outer: bed },
+        OuterRect { x0: -m, x1: gx + m, z0: gz, z1: gz + m, floor: bed, kind: "sea", y_outer: bed },
+        OuterRect { x0: -m, x1: 0.0, z0: 0.0, z1: gz, floor: bed, kind: "sea", y_outer: bed },
+        OuterRect { x0: gx, x1: gx + m, z0: 0.0, z1: gz, floor: bed, kind: "sea", y_outer: bed },
     ];
     let notes = vec![format!("outer ring ({}, flat, {cells} cells): four sea bands at the open-water bed {bed:.2} (slab {:.2}..{:.2}), no slope following", crate::sttc::collection_name(collection), bed - crate::floor_finish::vista_slab(collection).0, bed + crate::floor_finish::vista_slab(collection).1)];
     Ok(Ring { rects, ramps: Vec::new(), squares: BTreeMap::new(), notes })
@@ -607,7 +674,7 @@ pub fn append_to_mesh(mesh: &mut crate::floor_finish::FloorMesh, ring: &Ring, co
     let (vb, va) = crate::floor_finish::vista_slab(collection);
     let mut n = 0;
     for r in &ring.rects {
-        let (y0, y1) = if collection == 0x1a { (r.floor - below, r.floor + above) } else { (r.floor - vb, r.floor + va) };
+        let (y0, y1) = if collection == 0x1a { (r.floor - below, r.floor + above) } else { (r.floor - vb, r.y_outer + va) };
         let base = mesh.verts.len() as u32;
         mesh.verts.extend_from_slice(&[[r.x0, y0, r.z0], [r.x1, y0, r.z0], [r.x1, y1, r.z0], [r.x0, y1, r.z0], [r.x0, y0, r.z1], [r.x1, y0, r.z1], [r.x1, y1, r.z1], [r.x0, y1, r.z1]]);
         for q in quads {
@@ -633,7 +700,7 @@ pub fn append_to_mesh(mesh: &mut crate::floor_finish::FloorMesh, ring: &Ring, co
 pub fn tsv_rows(collection_name: &str, decoration: &str, ring: &Ring) -> String {
     let mut s = String::new();
     for r in &ring.rects {
-        s.push_str(&format!("{collection_name}\t{decoration}\t{:.1}\t{:.1}\t{:.1}\t{:.1}\t{:.2}\t{}\t{:.2}\t-\n", r.x0, r.x1, r.z0, r.z1, r.floor, r.kind, r.floor));
+        s.push_str(&format!("{collection_name}\t{decoration}\t{:.1}\t{:.1}\t{:.1}\t{:.1}\t{:.2}\t{}\t{:.2}\t-\n", r.x0, r.x1, r.z0, r.z1, r.floor, r.kind, r.y_outer));
     }
     for r in &ring.ramps {
         s.push_str(&format!("{collection_name}\t{decoration}\t{:.1}\t{:.1}\t{:.1}\t{:.1}\t{:.2}\tramp\t{:.2}\t{}\n", r.x0, r.x1, r.z0, r.z1, r.y_inner, r.y_outer, r.side));

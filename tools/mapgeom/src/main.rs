@@ -503,9 +503,15 @@ fn main() {
         mapgeom::outer_ring::set_ring_wedges(false);
         mapgeom::outer_ring::set_ring_flat(false);
     }
-    // --ring-shelf: the v4.13 sloped wedges following the seabed (default since v4.23: flat bands at the inside bed)
-    if a.rest.iter().any(|x| x == "--ring-shelf") {
-        mapgeom::outer_ring::set_ring_flat(false);
+    // the vista ring form: default = the v4.13/v4.22 sloped shelf wedges (Hugo's choice); --ring-flat = v4.23 flat bands at
+    // the inside bed; --ring-band = v4.24 per-cell full-range rows; --ring-rows = v4.11 anchor rows
+    if a.rest.iter().any(|x| x == "--ring-flat") {
+        mapgeom::outer_ring::set_ring_flat(true);
+        mapgeom::outer_ring::set_ring_band(false);
+    }
+    if a.rest.iter().any(|x| x == "--ring-band") {
+        mapgeom::outer_ring::set_ring_band(true);
+        mapgeom::outer_ring::set_ring_wedges(false);
     }
     // --slab-gate: the v4.15 translucent gate pane on the slab; --slab-wood: the v4.16 ThemeSnowTempleFloor red
     if a.rest.iter().any(|x| x == "--slab-gate") {
