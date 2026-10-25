@@ -166,7 +166,14 @@ fn vista_ring(store: &mut crate::store::DataStore, collection: u32, size: (i32, 
         return Err(format!("{path}: no Water / Warp* solids ({} groups: {:?})", c.scene.groups.len(), c.scene.groups.keys().collect::<Vec<_>>()));
     }
     let scene_water_y = sea.iter().map(|t| t[0][1]).fold(f32::NEG_INFINITY, f32::max);
-    let yoff = water.top - scene_water_y;
+    // v4.22 (Hugo's Fall 01 screenshot, 2026-10-25 06:49: the ring floating above the sea): the Scene3d IS in the map
+    // frame — RedIsland's WarpGround under the grid sits at −6.00, exactly the map's own deep-water bed (the floor
+    // item's bottom −6.10 = bed − 0.1), and its Water plane at −0.30 is the open SEA, not the collection's water-
+    // BLOCK top (7.70, the lakes on the plateau). v4.9's `yoff = water.top − scene water` (≈ +8 on RedIsland /
+    // WhiteShore / GreenCoast, 0 on BlueBay whose block water and sea are both at 7.0) lifted those three rings 8 m
+    // above the sea. The offset is zero; the sea level reported is the scene's own.
+    let yoff = 0.0f32;
+    let _ = water.top;
     let (gx, gz) = (32.0 * size.0 as f32, 32.0 * size.1 as f32);
     let margin = 32.0 * cells as f32;
     // sample the band's bed on the 4 m raster (centres), the sea's coverage too; the per-32 m-cell maxima feed the zones

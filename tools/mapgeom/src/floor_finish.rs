@@ -1077,7 +1077,7 @@ pub fn build_cutout_item_exact(store: &mut crate::store::DataStore, name: &str, 
     let iv: Vec<[f32; 3]> = iv.iter().map(|p| [p[0], INDICATOR_LIFT, p[2]]).collect();
     let donor = "Stadium\\Items\\LightCube2m.Item.Gbx";
     let mut mg = crate::static_item::build::pack_item_merged(store, donor, 1.0, collection, 0, None).map_err(|e| format!("donor {donor}: {e}"))?;
-    let pure = crate::static_item::build::indicator() == crate::static_item::build::Indicator::Pure;
+    let pure = crate::static_item::build::crystal_cutouts();
     if pure {
         // v4.19: the cutout as a PureFloor-recipe crystal item — Geometry = the exact-outline prism (top / bottom /
         // walls), Trigger layer = the same closed prism, WaypointType Finish from the template
@@ -1425,6 +1425,13 @@ pub fn build_floor_item_ring(store: &mut crate::store::DataStore, m: &MapFile, c
     let (nb, na, same) = crate::floor_merge::merge_mesh(&mut mesh, &ramps, rb, ra, INDICATOR_LIFT);
     if !same {
         return Err(format!("maximal-rectangle merge changed the trigger union ({nb} → {na} boxes)"));
+    }
+    if crate::static_item::build::indicator() == crate::static_item::build::Indicator::PureOne {
+        // v4.22: ONE PureFloor-recipe crystal item for the whole plane (+ ring): geometry = top + bottom faces of every
+        // body in world coordinates (the item is placed at the origin), trigger = the closed prisms
+        let (bytes, nf, nt) = crate::floor_tiles::build_pure_plane(&mesh.verts, ident, collection)?;
+        mesh.notes.push(format!("single crystal finish plane (v4.22): {} bodies → {nf} glass faces (top + bottom, no walls) + {nt} trigger faces, WaypointType Finish, {} bytes", mesh.verts.len() / 8, bytes.len()));
+        return Ok((bytes, mesh));
     }
     let donor = "Stadium\\Items\\LightCube2m.Item.Gbx";
     let mut mg = crate::static_item::build::pack_item_merged(store, donor, 1.0, collection, 0, None).map_err(|e| format!("donor {donor}: {e}"))?;

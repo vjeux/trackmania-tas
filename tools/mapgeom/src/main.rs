@@ -513,9 +513,9 @@ fn main() {
     if a.rest.iter().any(|x| x == "--tiles-lightmap") {
         mapgeom::static_item::build::set_tiles_lightmap(true);
     }
-    // --tiles-glass: the PureFloor-recipe tiles in the friend's pink CustomGlass instead of CustomPlastic red
-    if a.rest.iter().any(|x| x == "--tiles-glass") {
-        mapgeom::floor_tiles::set_pure_glass(true);
+    // --tiles-glass (default since v4.22): the friend's pink CustomGlass; --tiles-plastic: CustomPlastic red
+    if a.rest.iter().any(|x| x == "--tiles-plastic") {
+        mapgeom::floor_tiles::set_pure_glass(false);
     }
     // --tiles-slab: the v4.20 closed-slab crystal tiles (default v4.21: the friend's top-face-only form + flat trigger)
     if a.rest.iter().any(|x| x == "--tiles-slab") {
@@ -526,8 +526,8 @@ fn main() {
         if let Some(p) = a.rest.get(i + 1) { mapgeom::floor_tiles::set_pure_template(p); }
     }
     if let Some(i) = a.rest.iter().position(|x| x == "--indicator") {
-        let v = a.rest.get(i + 1).map(|s| s.as_str()).unwrap_or("pure");
-        mapgeom::static_item::build::set_indicator(match v { "glass" => mapgeom::static_item::build::Indicator::Glass, "gate" => mapgeom::static_item::build::Indicator::Gate, "decal" => mapgeom::static_item::build::Indicator::Decal, "chrono-pole" => mapgeom::static_item::build::Indicator::ChronoPole, "chrono" => mapgeom::static_item::build::Indicator::Chrono, "none" => mapgeom::static_item::build::Indicator::None, "slab" => mapgeom::static_item::build::Indicator::Slab, "tiles" => mapgeom::static_item::build::Indicator::Tiles, _ => mapgeom::static_item::build::Indicator::Pure });
+        let v = a.rest.get(i + 1).map(|s| s.as_str()).unwrap_or("pure-one");
+        mapgeom::static_item::build::set_indicator(match v { "glass" => mapgeom::static_item::build::Indicator::Glass, "gate" => mapgeom::static_item::build::Indicator::Gate, "decal" => mapgeom::static_item::build::Indicator::Decal, "chrono-pole" => mapgeom::static_item::build::Indicator::ChronoPole, "chrono" => mapgeom::static_item::build::Indicator::Chrono, "none" => mapgeom::static_item::build::Indicator::None, "slab" => mapgeom::static_item::build::Indicator::Slab, "tiles" => mapgeom::static_item::build::Indicator::Tiles, "pure" | "pure-tiles" => mapgeom::static_item::build::Indicator::Pure, _ => mapgeom::static_item::build::Indicator::PureOne });
     }
     let cmd = a.rest.first().cloned().unwrap_or_default();
     match cmd.as_str() {
@@ -5502,8 +5502,8 @@ fn main() {
                 }
                 for (li, l) in it.model.layers.iter().enumerate() {
                     let kind = match &l.kind {
-                        mapgeom::crystal_model::LayerKind::Geometry { version, crystal, is_visible, collidable, .. } => format!("Geometry v{version} visible {is_visible} collidable {collidable}: {} positions {:?}, {} faces {:?}", crystal.positions.len(), crystal.positions, crystal.faces.len(), crystal.faces.iter().map(|f| format!("verts {:?} mat {} uvs {:?}", f.verts, f.material, crystal.face_uvs(f))).collect::<Vec<_>>()),
-                        mapgeom::crystal_model::LayerKind::Trigger { version, crystal, .. } => format!("Trigger v{version}: {} positions {:?}, {} faces {:?}", crystal.positions.len(), crystal.positions, crystal.faces.len(), crystal.faces.iter().map(|f| f.verts.clone()).collect::<Vec<_>>()),
+                        mapgeom::crystal_model::LayerKind::Geometry { version, crystal, is_visible, collidable, u02, .. } => format!("Geometry v{version} visible {is_visible} collidable {collidable} u02 {u02:?} [crystal v{} u01 {} u02 {} u03 {} u04 {} edge_count {} edges {} visual_levels {} anchors {} groups {:?}]: {} positions {:?}, {} faces {:?}", crystal.version, crystal.u01, crystal.u02, crystal.u03, crystal.u04, crystal.edge_count, crystal.edges.len(), crystal.visual_levels.len(), crystal.anchor_infos.len(), crystal.groups.iter().map(|g| format!("{:?}/{}/{}/{}/{}/{:?}", g.name, g.u01, g.u02, g.u03, g.u04, g.u05)).collect::<Vec<_>>(), crystal.positions.len(), crystal.positions, crystal.faces.len(), crystal.faces.iter().map(|f| format!("verts {:?} mat {} grp {} uvs {:?}", f.verts, f.material, f.group, crystal.face_uvs(f))).collect::<Vec<_>>()),
+                        mapgeom::crystal_model::LayerKind::Trigger { version, crystal, .. } => format!("Trigger v{version} [crystal v{} u01 {} u02 {} u03 {} u04 {} edge_count {} edges {} groups {:?}]: {} positions {:?}, {} faces {:?}", crystal.version, crystal.u01, crystal.u02, crystal.u03, crystal.u04, crystal.edge_count, crystal.edges.len(), crystal.groups.iter().map(|g| format!("{:?}/{}/{}/{}/{}/{:?}", g.name, g.u01, g.u02, g.u03, g.u04, g.u05)).collect::<Vec<_>>(), crystal.positions.len(), crystal.positions, crystal.faces.len(), crystal.faces.iter().map(|f| f.verts.clone()).collect::<Vec<_>>()),
                         other => format!("{:?}", std::mem::discriminant(other)),
                     };
                     println!("  layer {li} id {:?} name {:?} enabled {} base v{}: {kind}", l.base.layer_id, l.base.layer_name, l.base.is_enabled, l.base.version);
@@ -5931,7 +5931,8 @@ fn main() {
                 unlock: a.rest.iter().any(|x| x == "--unlock"),
                 unvalidated: a.rest.iter().any(|x| x == "--unvalidated"),
                 author: flag(&a.rest, "--author").unwrap_or_else(|| "Nadeo".into()),
-                keep_lightmap: !a.rest.iter().any(|x| x == "--strip-lightmap"),
+                // v4.21: a Floor Finish build strips the source's (stale) bake unless --keep-lightmap
+                keep_lightmap: !a.rest.iter().any(|x| x == "--strip-lightmap") && !(a.rest.iter().any(|x| x == "--floor") && !a.rest.iter().any(|x| x == "--keep-lightmap")),
                 pak_specs: a.paks.clone(),
                 pole_triggers: !a.rest.iter().any(|x| x == "--flags-as-finish"),
                 pole_margin: flag(&a.rest, "--pole-margin").map(|v| v.parse::<f32>().unwrap_or_else(|_| die("--pole-margin M".into()))).unwrap_or(0.05),

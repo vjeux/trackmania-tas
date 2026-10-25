@@ -932,7 +932,11 @@ pub const CHRONO_WINDOW: (f32, f32, f32, f32) = (0.71484375, 0.72265625, 0.43359
 pub const CHRONO_POLE_WINDOW: (f32, f32, f32, f32) = (0.25, 0.3125, 0.5, 0.75);
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Indicator {
-    /// v4.19 default: as Tiles, but the tile items (and the cutouts) are mesh-modeler CRYSTAL items in the friend's
+    /// v4.22 default (Hugo 06:44 "go back to a SINGLE FinishPlane"): ONE PureFloor-recipe crystal item per map for
+    /// everything that is not a cutout — geometry top + bottom faces of every body in WORLD coordinates at the origin,
+    /// trigger = the closed prisms, WaypointType Finish, the friend's glass; no speck item
+    PureOne,
+    /// v4.19: as Tiles, but the tile items (and the cutouts) are mesh-modeler CRYSTAL items in the friend's
     /// PureFloor recipe (floor_tiles.rs `build_pure_item`); the trigger item stays the speck
     Pure,
     /// v4.18: the trigger item is speck-only; the slab is drawn by separate visual-only static tile items (floor_tiles.rs)
@@ -956,12 +960,16 @@ pub enum Indicator {
     /// v4.5–v4.7: tinted CustomGlass with a lightmap chart (lit)
     Glass,
 }
-static INDICATOR: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(8);
+static INDICATOR: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(9);
 pub fn set_indicator(mode: Indicator) {
-    INDICATOR.store(match mode { Indicator::Pure => 8, Indicator::Tiles => 7, Indicator::Slab => 6, Indicator::None => 5, Indicator::Chrono => 0, Indicator::ChronoPole => 4, Indicator::Decal => 3, Indicator::Gate => 1, Indicator::Glass => 2 }, std::sync::atomic::Ordering::Relaxed);
+    INDICATOR.store(match mode { Indicator::PureOne => 9, Indicator::Pure => 8, Indicator::Tiles => 7, Indicator::Slab => 6, Indicator::None => 5, Indicator::Chrono => 0, Indicator::ChronoPole => 4, Indicator::Decal => 3, Indicator::Gate => 1, Indicator::Glass => 2 }, std::sync::atomic::Ordering::Relaxed);
 }
 pub fn indicator() -> Indicator {
-    match INDICATOR.load(std::sync::atomic::Ordering::Relaxed) { 1 => Indicator::Gate, 2 => Indicator::Glass, 3 => Indicator::Decal, 4 => Indicator::ChronoPole, 0 => Indicator::Chrono, 5 => Indicator::None, 6 => Indicator::Slab, 7 => Indicator::Tiles, _ => Indicator::Pure }
+    match INDICATOR.load(std::sync::atomic::Ordering::Relaxed) { 1 => Indicator::Gate, 2 => Indicator::Glass, 3 => Indicator::Decal, 4 => Indicator::ChronoPole, 0 => Indicator::Chrono, 5 => Indicator::None, 6 => Indicator::Slab, 7 => Indicator::Tiles, 8 => Indicator::Pure, _ => Indicator::PureOne }
+}
+/// Crystal-family modes (the cutouts are PureFloor-recipe crystal items).
+pub fn crystal_cutouts() -> bool {
+    matches!(indicator(), Indicator::Pure | Indicator::PureOne)
 }
 /// Tiles-family modes: the trigger item is speck-only and the slab lives in separate per-tile items.
 pub fn tiled() -> bool {

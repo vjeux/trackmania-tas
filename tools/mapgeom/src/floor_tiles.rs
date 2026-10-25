@@ -7,7 +7,7 @@ use crate::static_item::build::Merged;
 
 pub const TILE_M: f32 = 128.0;
 /// The build tag in the tile idents (bump per delivered build: the game caches embedded items by ident).
-pub const BUILD_TAG: &str = "v21";
+pub const BUILD_TAG: &str = "v22";
 pub type Body = [[f32; 3]; 8];
 
 /// Corner order of a body: 0 (x0,z0) 1 (x1,z0) 2 (x1,z0)↑ 3 (x0,z0)↑ 4 (x0,z1) 5 (x1,z1) 6 (x1,z1)↑ 7 (x0,z1)↑
@@ -90,7 +90,7 @@ pub const PURE_GLASS_LINK: &str = "Stadium\\Media\\Material_BlockCustom\\CustomG
 pub const PURE_GLASS_RGB: [f32; 3] = [0.9434388, 0.3585064, 0.3585064];
 pub const PURE_PLASTIC_LINK: &str = "Stadium\\Media\\Material_BlockCustom\\CustomPlastic";
 pub const PURE_PLASTIC_RGB: [f32; 3] = [1.0, 0.1, 0.1];
-static PURE_GLASS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static PURE_GLASS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 pub fn set_pure_glass(on: bool) {
     PURE_GLASS.store(on, std::sync::atomic::Ordering::Relaxed);
 }
@@ -369,4 +369,22 @@ pub fn set_pure_top_only(on: bool) {
 }
 pub fn pure_top_only() -> bool {
     PURE_TOP_ONLY.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// v4.22: the single-item plane — every body's top + bottom faces (world coordinates) and the closed prisms as the
+/// trigger layer; returns (bytes, glass faces, trigger faces).
+pub fn build_pure_plane(verts: &[[f32; 3]], ident: &str, collection: u32) -> Result<(Vec<u8>, usize, usize), String> {
+    let mut mesh = crate::crystal::CrystalMesh::default();
+    let mut trig = crate::crystal::CrystalMesh::default();
+    for c in verts.chunks_exact(8) {
+        let b: Body = [c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]];
+        body_top_face(&mut mesh, &b, 0);
+        body_bottom_face(&mut mesh, &b, 0);
+        body_faces(&mut trig, &b, 0);
+    }
+    if mesh.faces.is_empty() {
+        return Err("single crystal plane: no bodies".into());
+    }
+    let bytes = build_pure_item(ident, collection, &mesh, Some(&trig))?;
+    Ok((bytes, mesh.faces.len(), trig.faces.len()))
 }
