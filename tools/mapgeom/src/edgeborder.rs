@@ -94,6 +94,59 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> crate::store::DataStore) -
     let mut store = open();
     let mut asm = crate::assemble::Assembler::new(&mut store);
     asm.with_embedded(&m)?;
+    // the whole map's drivable geometry (blocks at the Stadium grid height, items at their
+    // positions), bucketed by 32 m cell in x/z: a rim's outward probe asks whether a surface
+    // continues within a metre of the lip's height — the cell test above said "a block is
+    // there" for a hill whose top sits 10 m below a lip (Icy 78, Everios96 2026-10-24: "there
+    // is a jump down where the arrows are")
+    let world = asm.map(&m, -64.0, true);
+    let mut buckets: HashMap<(i32, i32), Vec<[[f32; 3]; 3]>> = HashMap::new();
+    let mut n_world = 0usize;
+    for g in world.groups.values() {
+        for t in &g.tris {
+            let w = [g.verts[t[0] as usize], g.verts[t[1] as usize], g.verts[t[2] as usize]];
+            let (x0, x1) = (w.iter().map(|p| p[0]).fold(f32::MAX, f32::min), w.iter().map(|p| p[0]).fold(f32::MIN, f32::max));
+            let (z0, z1) = (w.iter().map(|p| p[2]).fold(f32::MAX, f32::min), w.iter().map(|p| p[2]).fold(f32::MIN, f32::max));
+            for cx in (x0 / 32.0).floor() as i32..=(x1 / 32.0).floor() as i32 {
+                for cz in (z0 / 32.0).floor() as i32..=(z1 / 32.0).floor() as i32 {
+                    buckets.entry((cx, cz)).or_default().push(w);
+                }
+            }
+            n_world += 1;
+        }
+    }
+    println!("world: {n_world} triangle(s) in {} cells", buckets.len());
+    // the highest surface under (x, z) within [y_lo, y_hi]
+    let surface_near = |x: f32, z: f32, y_lo: f32, y_hi: f32| -> Option<f32> {
+        let mut best: Option<f32> = None;
+        if let Some(list) = buckets.get(&((x / 32.0).floor() as i32, (z / 32.0).floor() as i32)) {
+            for t in list {
+                // 2D point-in-triangle (x, z)
+                let (ax, az, bx, bz, cx, cz) = (t[0][0], t[0][2], t[1][0], t[1][2], t[2][0], t[2][2]);
+                let d1 = (x - bx) * (az - bz) - (ax - bx) * (z - bz);
+                let d2 = (x - cx) * (bz - cz) - (bx - cx) * (z - cz);
+                let d3 = (x - ax) * (cz - az) - (cx - ax) * (z - az);
+                let has_neg = d1 < 0.0 || d2 < 0.0 || d3 < 0.0;
+                let has_pos = d1 > 0.0 || d2 > 0.0 || d3 > 0.0;
+                if has_neg && has_pos {
+                    continue;
+                }
+                // barycentric height
+                let det = (bz - cz) * (ax - cx) + (cx - bx) * (az - cz);
+                if det.abs() < 1e-6 {
+                    continue;
+                }
+                let l1 = ((bz - cz) * (x - cx) + (cx - bx) * (z - cz)) / det;
+                let l2 = ((cz - az) * (x - cx) + (ax - cx) * (z - cz)) / det;
+                let l3 = 1.0 - l1 - l2;
+                let y = l1 * t[0][1] + l2 * t[1][1] + l3 * t[2][1];
+                if y >= y_lo && y <= y_hi && best.map(|b| y > b).unwrap_or(true) {
+                    best = Some(y);
+                }
+            }
+        }
+        best
+    };
 
     // world triangles of every selected placement's collision hull, tagged by placement
     struct Cap {
@@ -135,10 +188,11 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> crate::store::DataStore) -
                 }
             }
         }
-        if std::env::var("MAPGEOM_BORDER_DEBUG").is_ok() && tris.len() > 32 {
-            for t in tris.iter().take(4) {
-                println!("    tri {:?}", t);
-            }
+        if std::env::var("MAPGEOM_BORDER_VERTS").is_ok() {
+            let mut vs: Vec<(i32, i32, i32)> = tris.iter().flat_map(|t| t.iter().map(|p| ((p[0] * 10.0).round() as i32, (p[1] * 10.0).round() as i32, (p[2] * 10.0).round() as i32))).collect();
+            vs.sort();
+            vs.dedup();
+            println!("    hull vertices (dm): {:?}", vs);
         }
         if std::env::var("MAPGEOM_BORDER_DEBUG").is_ok() {
             let mut ys: Vec<i32> = tris.iter().flat_map(|t| t.iter().map(|p| (p[1] * 1000.0).round() as i32)).collect();
@@ -179,6 +233,7 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> crate::store::DataStore) -
         }
     }
     let mut rims: BTreeMap<usize, Vec<([f32; 3], [f32; 3], [f32; 3], [f32; 3])>> = BTreeMap::new();
+    let mut seen_rims: HashSet<((i32, i32, i32), (i32, i32, i32))> = HashSet::new();
     let (mut total, mut against_block, mut kept_rims) = (0usize, 0usize, 0usize);
     if std::env::var("MAPGEOM_BORDER_DEBUG").is_ok() {
         for (ci, cap) in caps.iter().enumerate() {
@@ -200,14 +255,23 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> crate::store::DataStore) -
         if dot(out, sub(c, mid)) > 0.0 {
             out = [-out[0], -out[1], -out[2]];
         }
-        // a rim against another block of the map: that block draws its own edge (or is a wall)
-        let q = [mid[0] + out[0] * probe, mid[1] + out[1] * probe - 0.3, mid[2] + out[2] * probe];
-        let q_up = [q[0], q[1] + 1.0, q[2]];
-        if occupied.contains(&cell_of(q)) || occupied.contains(&cell_of(q_up)) {
+        // a rim where the ground goes on at the lip's height (another block's deck, a hill
+        // flush with it): that neighbour draws its own edge, or there is no edge to see.
+        // A surface more than a metre below is a jump.
+        let q = [mid[0] + out[0] * probe, mid[1], mid[2] + out[2] * probe];
+        let cont = surface_near(q[0], q[2], mid[1] - 1.0, mid[1] + 1.5);
+        if let Some(y) = cont {
             against_block += 1;
             if std::env::var("MAPGEOM_BORDER_DEBUG").is_ok() {
-                println!("  against cap {ci} ({:.0},{:.1},{:.0})-({:.0},{:.1},{:.0}) probe cell {:?}", a[0], a[1], a[2], b[0], b[1], b[2], cell_of(q));
+                println!("  continues cap {ci} ({:.0},{:.1},{:.0})-({:.0},{:.1},{:.0}) surface at {y:.2} (cell {:?})", a[0], a[1], a[2], b[0], b[1], b[2], cell_of(q));
             }
+            continue;
+        }
+        let _ = &occupied;
+        // one strip per place: a finely tessellated cap hands the same rim twice (two
+        // triangles whose shared edge did not weld), and two coplanar strips flicker
+        let ek = { let (ka, kb) = (key(&a), key(&b)); if ka <= kb { (ka, kb) } else { (kb, ka) } };
+        if !seen_rims.insert(ek) {
             continue;
         }
         kept_rims += 1;
