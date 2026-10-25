@@ -759,9 +759,9 @@ pub fn ring_band() -> bool {
 }
 /// The `band` rows' height quantum (metres): a cell's (min, max) bed is widened outward to this grid.
 pub const BAND_Q: f32 = 0.25;
-/// v4.25 default: the TRACK fit (the ramp surface starts at the inside bed and follows the seabed on 4 m knots);
-/// `--ring-shelf` = the v4.13 envelope wedges (32 m knots, a step at the grid edge).
-static RING_TRACK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+/// v4.25 TRACK fit (the ramp surface starts at the inside bed and follows the seabed on 4 m knots) behind
+/// `--ring-track`; Hugo reverted to the v4.13/v4.22 envelope wedges ("what we had was fine") = the default.
+static RING_TRACK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 pub fn set_ring_track(on: bool) {
     RING_TRACK.store(on, std::sync::atomic::Ordering::Relaxed);
 }
