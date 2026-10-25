@@ -110,6 +110,44 @@ fn main() {
                 std::process::exit(2);
             }
         }
+        // tmmaps add-blocks MAP --out OUT --blocks NAME@cx,cy,cz@dir[@flagshex],… — GRID block
+        // records added to a map (the cell as the game counts it; flags as the census prints
+        // them, hex). Everios96 2026-10-25 on wet wood 197: "place a second water after the
+        // start" — two WaterBase under the booster pads so the car stays in water to 100 % wet.
+        "add-blocks" => {
+            let src = std::path::PathBuf::from(&args[2]);
+            let out = std::path::PathBuf::from(tmmaps::cli::flag(&args, "--out").expect("add-blocks needs --out OUT"));
+            let spec = tmmaps::cli::flag(&args, "--blocks").expect("add-blocks needs --blocks NAME@cx,cy,cz@dir[@flags],…");
+            let mut specs: Vec<tmmaps::map::FreeBlockSpec> = Vec::new();
+            for one in spec.split(',').collect::<Vec<_>>().chunks(3) {
+                // NAME@cx , cy , cz@dir[@flags] — the cell's commas split the spec: re-join
+                let joined = one.join(",");
+                let parts: Vec<&str> = joined.split('@').collect();
+                if parts.len() < 3 {
+                    eprintln!("add-blocks: bad spec `{joined}` (want NAME@cx,cy,cz@dir[@flags])");
+                    std::process::exit(2);
+                }
+                let cell: Vec<i32> = parts[1].split(',').filter_map(|v| v.trim().parse().ok()).collect();
+                if cell.len() != 3 {
+                    eprintln!("add-blocks: bad cell in `{joined}`");
+                    std::process::exit(2);
+                }
+                let dir: u8 = parts[2].trim().parse::<u8>().unwrap_or(0) & 3;
+                let flags: u32 = parts.get(3).and_then(|h| u32::from_str_radix(h.trim(), 16).ok()).unwrap_or(0);
+                specs.push(tmmaps::map::FreeBlockSpec { name: parts[0].to_string(), author: None, flags, pos: [0.0; 3], rot: [0.0; 3], grid: Some([cell[0], cell[1], cell[2]]), dir });
+            }
+            let mut m = tmmaps::map::MapFile::load(&src);
+            let before = m.blocks.len();
+            let _ = m.remove_and_add_blocks(|_| false, |_| false, &specs);
+            m.write_to(&out).expect("write");
+            let chk = tmmaps::map::MapFile::load(&out);
+            println!("{}: {} block(s) added ({} -> {} records)", out.display(), specs.len(), before, chk.blocks.len());
+            for sp in &specs {
+                let g = sp.grid.unwrap();
+                let hit = chk.blocks.iter().find(|b| b.name == sp.name && b.coords() == (g[0], g[1], g[2]));
+                println!("  {} @ {:?} dir {} flags {:08x}: {}", sp.name, g, sp.dir, sp.flags, if hit.is_some() { "present" } else { "MISSING" });
+            }
+        }
         "restart" => {
             if let Err(e) = tmmaps::altered::restart_cmd(&args) {
                 eprintln!("tmmaps restart: {e}");
