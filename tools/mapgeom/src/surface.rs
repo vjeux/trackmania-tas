@@ -1175,10 +1175,18 @@ pub fn plan_records(store: &mut DataStore, idx: &mut BlockInfoIndex, map: &Path,
         // …and Tech/Tarmac (2026-10-24): a dirt/ice/grass parent renamed to its tech twin
         // leaves the game drawing plain planks where the original showed the parent's
         // stone — the original look wins there too.
-        let overlay_surfaces = std::env::var("TINY_PILLAR_OVERLAY_SURFACES").unwrap_or_else(|_| "dirt,ice,grass,tech".into());
-        let surface_wants_overlay = overlay_surfaces.split(',').any(|w| w.trim().eq_ignore_ascii_case(surface));
+        // ⛔ 2026-10-24, Everios96 on Icy 78 ("the pillars around the map are orange concrete …
+        // the original maps ONLY have wood pillars on most maps and below most blocks"): the
+        // GAME draws every generated pillar as plain planks in the block colour, whatever
+        // block stands on it — the parent's modifier folder never reaches a pillar, in any
+        // set. Every stone pillar ever seen was ours (a bake or a shell). So: NO pillar
+        // treatment at all by default — the block stays, nothing baked, nothing overlaid.
+        // `TINY_PILLAR_OVERLAY=1` (or `TINY_PILLAR_OVERLAY_SURFACES`) brings the shells back
+        // for experiments only.
+        let overlay_surfaces = std::env::var("TINY_PILLAR_OVERLAY_SURFACES").unwrap_or_default();
+        let surface_wants_overlay = overlay_surfaces.split(',').any(|w| !w.trim().is_empty() && w.trim().eq_ignore_ascii_case(surface));
         let bake_mode = std::env::var("TINY_PILLAR_BAKE").map(|v| v == "1").unwrap_or(false);
-        let overlay_mode = !bake_mode && surface_wants_overlay && std::env::var("TINY_PILLAR_OVERLAY").map(|v| v != "0").unwrap_or(true);
+        let overlay_mode = !bake_mode && (surface_wants_overlay || std::env::var("TINY_PILLAR_OVERLAY").map(|v| v == "1").unwrap_or(false));
         if !free && (b.flags & 0x4000 != 0) && b.name.starts_with("DecoWall") && b.name.ends_with("Pillar") && (bake_mode || overlay_mode) {
             // walk UP the whole pillar stack (a deck can stand on 8+ pillars: Icy 76's
             // mass is 8 cells tall, and a 3-cell look-up left the lower pillars without a
