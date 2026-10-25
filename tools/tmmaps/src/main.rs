@@ -577,20 +577,23 @@ fn main() {
                 println!("{}: name `{old}` -> `{new}` ({h} header, {b} body)", out.display());
             }
         }
-        // tmmaps add-items MAP --out OUT --items FILE.Item.Gbx@x,y,z[@yaw][;FILE2@…]: item files
-        //   embedded (ident = file name, manifest row added) and placed at world positions —
-        //   the route patch strips of `mapgeom route-audit --patch-item` (2026-09-25)
+        // tmmaps add-items MAP --out OUT --items FILE.Item.Gbx@x,y,z[@yaw[@color]][;FILE2@…]: item
+        //   files embedded (ident = file name, manifest row added) and placed at world positions —
+        //   the route patch strips of `mapgeom route-audit --patch-item` (2026-09-25); `color` is
+        //   the placement colour byte (0 Default, 1 White, 2 Green, 3 Blue, 4 Red, 5 Black — the
+        //   border decals of `mapgeom edge-border` take their cap's, 2026-10-24)
         "add-items" => {
             let out = tmmaps::cli::flag(&args, "--out").expect("--out OUT");
             let spec = tmmaps::cli::flag(&args, "--items").expect("--items FILE@x,y,z;…");
-            let mut placements: Vec<(std::path::PathBuf, [f32; 3], f32)> = Vec::new();
+            let mut placements: Vec<(std::path::PathBuf, [f32; 3], f32, u8)> = Vec::new();
             for part in spec.split(';').map(str::trim).filter(|p| !p.is_empty()) {
                 let mut it = part.split('@');
                 let file = std::path::PathBuf::from(it.next().unwrap_or(""));
                 let pos: Vec<f32> = it.next().unwrap_or("0,0,0").split(',').filter_map(|v| v.trim().parse().ok()).collect();
                 let yaw: f32 = it.next().and_then(|v| v.trim().parse().ok()).unwrap_or(0.0);
+                let color: u8 = it.next().and_then(|v| v.trim().parse().ok()).unwrap_or(0);
                 if pos.len() != 3 { eprintln!("add-items: bad position in `{part}`"); std::process::exit(2); }
-                placements.push((file, [pos[0], pos[1], pos[2]], yaw));
+                placements.push((file, [pos[0], pos[1], pos[2]], yaw, color));
             }
             let src = std::path::PathBuf::from(&args[2]);
             let tmp = std::path::PathBuf::from(out);
@@ -610,7 +613,7 @@ fn main() {
             m.append_item_clones(first + placements.len());
             m.write_to(&tmp).expect("write (clones)");
             let mut m = tmmaps::map::MapFile::load(&tmp);
-            for (k, (file, pos, yaw)) in placements.iter().enumerate() {
+            for (k, (file, pos, yaw, color)) in placements.iter().enumerate() {
                 let i = first + k;
                 let ident = file.file_name().unwrap().to_string_lossy().into_owned();
                 m.set_item_model(i, &ident);
@@ -621,6 +624,9 @@ fn main() {
                 m.set_item_scale(i, 1.0);
                 m.clear_item_variant(i);
                 m.set_item_flags(i, 1);
+                if m.colors().is_some() {
+                    m.set_item_color(i, *color);
+                }
             }
             m.write_to(&tmp).expect("write (placements)");
             let mut m = tmmaps::map::MapFile::load(&tmp);
@@ -630,7 +636,7 @@ fn main() {
             let mut m = tmmaps::map::MapFile::load(&tmp);
             let (mut rows, zip) = m.embedded_objects().unwrap_or((Vec::new(), Vec::new()));
             let mut files: std::collections::BTreeMap<String, Vec<u8>> = tmmaps::header::zip_entries(&zip).into_iter().collect();
-            for (file, _, _) in &placements {
+            for (file, _, _, _) in &placements {
                 let ident = file.file_name().unwrap().to_string_lossy().into_owned();
                 files.insert(format!("Items/{ident}"), std::fs::read(file).expect("read item file"));
                 if !rows.iter().any(|(p, _)| *p == ident) {

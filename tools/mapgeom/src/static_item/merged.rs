@@ -828,6 +828,39 @@ impl Merged {
         self.notes.push(format!("generated decal quad {x0}..{x1} × {z0}..{z1} at y {y}: {link} (visual only)"));
     }
 
+    /// A VISUAL-ONLY quad with its own corners, normal and UVs (no hull): the border decal strips
+    /// of `mapgeom edge-border` (2026-10-24). Both windings, every LOD.
+    pub fn add_decal_quad4(&mut self, corners: [[f32; 3]; 4], uvs: [[f32; 2]; 4], normal: [f32; 3], link: &str) {
+        use super::bake::{make_visuals, visual_layout, Corner};
+        let slot = self.material_slot(link, 0);
+        // tangents from the quad's own edges (U along corner 0→3, V along corner 0→1)
+        let t = |a: [f32; 3], b: [f32; 3]| { let d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]]; let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-6); [d[0] / l, d[1] / l, d[2] / l] };
+        let tan_u = t(corners[0], corners[3]);
+        let tan_v = t(corners[0], corners[1]);
+        let c = |i: usize| Corner { pos: corners[i], normal, uv: uvs[i], uv1: uvs[i], tan_u, tan_v, face: 0, group: 0 };
+        let (a, b, cc, dd) = (c(0), c(1), c(2), c(3));
+        let tris = [[a, b, cc], [a, cc, dd], [a, cc, b], [a, dd, cc]];
+        let layout = visual_layout(link);
+        for v in make_visuals(&tris, layout, "off") {
+            self.visuals.push(MergedVisual::every_level(v, slot));
+        }
+        self.notes.push(format!("generated decal quad4 at {:?}: {link} (visual only)", corners[0]));
+    }
+
+    /// The same quad WITH a collision hull (`physics`) — the probe of 2026-10-24 (does a
+    /// visual-only strip item crash the client?).
+    pub fn add_quad4_hull(&mut self, corners: [[f32; 3]; 4], physics: u8) {
+        use super::surface::Triangle;
+        let verts = corners;
+        let hull = [
+            Triangle { indices: [0, 2, 1], material_id: physics, gameplay: 0, surface_index: 0 },
+            Triangle { indices: [0, 3, 2], material_id: physics, gameplay: 0, surface_index: 0 },
+            Triangle { indices: [0, 1, 2], material_id: physics, gameplay: 0, surface_index: 0 },
+            Triangle { indices: [0, 2, 3], material_id: physics, gameplay: 0, surface_index: 0 },
+        ];
+        self.add_surface_mesh(&verts, &hull, &IDENTITY, 1.0);
+    }
+
     /// A ribbon of terrain: `sections` are consecutive cross-sections of K points each (left to
     /// right across the driving line, world coordinates, ANY y per point); quads between
     /// neighbouring sections become visuals (both windings) and an up-facing hull with

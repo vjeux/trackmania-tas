@@ -1252,6 +1252,12 @@ fn main() {
             let mut open_store = || open(&a);
             mapgeom::static_item::cli::run(&a.rest, &mut open_store).unwrap_or_else(die);
         }
+        // edge-border MAP --items A,B --records R.tsv --out-dir D: border decal strips along the
+        // open rims of converted blocks (Icy 78, 2026-10-24) — see edgeborder.rs
+        "edge-border" => {
+            let mut open_store = || open(&a);
+            mapgeom::edgeborder::run(&a.rest, &mut open_store).unwrap_or_else(die);
+        }
         // fx-dump [--check] FILE…: the typed particle reader on an extracted
         // FxSys / ParticleModel file, with a byte-identical round-trip check.
         "fx-dump" => {

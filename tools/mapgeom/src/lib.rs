@@ -32,6 +32,7 @@ pub mod classes;
 pub mod container;
 pub mod corpus;
 pub mod collhash;
+pub mod edgeborder;
 pub mod waterblocks;
 pub mod coverage;
 pub mod dds;
