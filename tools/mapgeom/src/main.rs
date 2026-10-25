@@ -5271,10 +5271,10 @@ fn main() {
                 let var = mapgeom::floor_finish::variant_byte(*kflags);
                 let ident = if var == 0 { format!("FloorFinish{name}.Item.Gbx") } else { format!("FloorFinish{name}V{var}.Item.Gbx") };
                 if !squares {
-                    match mapgeom::floor_finish::build_cutout_item_exact(&mut store, name, *kflags, &ident, coll, inset, 0.0, 1.0) {
+                    match mapgeom::floor_finish::build_cutout_item_exact(&mut store, name, *kflags, &ident, coll, inset, 0.0, mapgeom::floor_finish::GRASS_ABOVE) {
                         Ok(Some((bytes, c, o))) => {
                             std::fs::write(format!("{out}/{ident}"), &bytes).unwrap_or_else(|e| die(format!("{ident}: {e}")));
-                            let raster_area = mapgeom::floor_finish::cutout_for_block(&mut store, name, *kflags, inset, 0.0, 1.0).ok().flatten().map(|r| r.area).unwrap_or(0.0);
+                            let raster_area = mapgeom::floor_finish::cutout_for_block(&mut store, name, *kflags, inset, 0.0, mapgeom::floor_finish::GRASS_ABOVE).ok().flatten().map(|r| r.area).unwrap_or(0.0);
                             rep.push_str(&format!("{name}\t{var}\t{kflags:08x}\t{n}\t{ident}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.1}\t{:.1}\t[{:.2} {:.2} {:.2}]..[{:.2} {:.2} {:.2}]\t{}\n", bytes.len(), o.vertices, o.polygons.len(), o.polygons.iter().map(|(_, h)| h.len()).sum::<usize>(), o.on_mesh, c.dropped, o.area, raster_area, c.bbox.0[0], c.bbox.0[1], c.bbox.0[2], c.bbox.1[0], c.bbox.1[1], c.bbox.1[2], o.notes.join(" | ")));
                             built += 1;
                         }
@@ -5907,7 +5907,7 @@ fn main() {
             let stadium = map_coll == 0x1a;
             let (vb, va) = mapgeom::floor_finish::vista_slab(map_coll);
             let below: f32 = flag(&a.rest, "--floor-below").map(|v| v.parse().unwrap_or_else(|_| die("--floor-below M".into()))).unwrap_or(if stadium { 0.0 } else { vb });
-            let above: f32 = flag(&a.rest, "--floor-above").map(|v| v.parse().unwrap_or_else(|_| die("--floor-above M".into()))).unwrap_or(if stadium { 1.0 } else { va });
+            let above: f32 = flag(&a.rest, "--floor-above").map(|v| v.parse().unwrap_or_else(|_| die("--floor-above M".into()))).unwrap_or(if stadium { mapgeom::floor_finish::GRASS_ABOVE } else { va });
             let ident = flag(&a.rest, "--ident").unwrap_or_else(|| format!("FinishFloor_{}.Item.Gbx", hdr0.uid));
             // the mesh is computed in the MAP's collection frame (its ground row), the file carries `item_coll`
             let shores = !a.rest.iter().any(|x| x == "--no-shores");
@@ -5990,7 +5990,7 @@ fn main() {
                 let coll0 = m0.body_collections().map(|c| c[0].1).unwrap_or(26);
                 let (vb, va) = mapgeom::floor_finish::vista_slab(coll0);
                 let below: f32 = flag(&a.rest, "--floor-below").map(|v| v.parse().unwrap_or_else(|_| die("--floor-below M".into()))).unwrap_or(if stadium { 0.0 } else { vb });
-                let above: f32 = flag(&a.rest, "--floor-above").map(|v| v.parse().unwrap_or_else(|_| die("--floor-above M".into()))).unwrap_or(if stadium { 1.0 } else { va });
+                let above: f32 = flag(&a.rest, "--floor-above").map(|v| v.parse().unwrap_or_else(|_| die("--floor-above M".into()))).unwrap_or(if stadium { mapgeom::floor_finish::GRASS_ABOVE } else { va });
                 let stem = flag(&a.rest, "--floor-label").unwrap_or_else(|| if a.rest.iter().any(|x| x == "--ground-clippers") { format!("GroundClippers_{}", hdr0.uid) } else { format!("FinishFloor_{}", hdr0.uid) });
                 mapgeom::flags::FlagsOpts {
                     uid_prefix: flag(&a.rest, "--uid-prefix").unwrap_or_else(|| "Floor".into()),

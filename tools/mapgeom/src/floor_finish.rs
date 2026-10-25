@@ -39,8 +39,16 @@ pub fn water_surface(collection: u32) -> f32 {
 /// stepping up the bank in 25 cm quanta): every box of a water row sits on the row's OPEN BED — seabed − 0.1 ..
 /// seabed + 1.15 — and the indicator at seabed + 0.02; the shore squares no longer carry their own bed (the
 /// 1.15 m top still covers a car on a bank square whose bed is up to ~1 m above the seabed).
+/// v4.26 (Hugo 07:56 "as thick as the gate finishes"): the vanilla gate triggers are 8 m wide × 7.3 m tall panes
+/// 0.108 m thick along the road, starting at the deck (Stadium\Media\Prefab\Items\Gate\*_Trigger.Shape.Gbx) — the
+/// game tests the car's whole hull against them, so a thin band suffices as long as the hull is inside it. A car on
+/// the floor keeps its hull from ~0.1 m to ~1.2 m above the contact plane: the floor slab now spans bed − 0.1 …
+/// bed + GRASS_ABOVE / BED_ABOVE = 0.3 m (was 1.0 on grass, 1.15 on the water bed — "almost a car length").
+pub const GRASS_ABOVE: f32 = 0.3;
+pub const BED_BELOW: f32 = 0.1;
+pub const BED_ABOVE: f32 = 0.3;
 pub fn vista_slab(_collection: u32) -> (f32, f32) {
-    (0.1, 1.15)
+    (BED_BELOW, BED_ABOVE)
 }
 
 pub fn water_tiles(collection: u32) -> (&'static [&'static str], f32) {
