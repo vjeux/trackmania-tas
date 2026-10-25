@@ -932,7 +932,9 @@ pub const CHRONO_WINDOW: (f32, f32, f32, f32) = (0.71484375, 0.72265625, 0.43359
 pub const CHRONO_POLE_WINDOW: (f32, f32, f32, f32) = (0.25, 0.3125, 0.5, 0.75);
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Indicator {
-    /// v4.14 default (Hugo 13:02: "remove textures from all Floor Finish items"): NO indicator — the item keeps only
+    /// v4.15 default (Hugo 02:10 next day): the trigger volume itself as an opaque-looking red slab (gate pane material)
+    Slab,
+    /// v4.14 (Hugo 13:02: "remove textures from all Floor Finish items"): NO indicator — the item keeps only
     /// the invisible carrier speck `make_invisible_mesh_waypoint` leaves (one 4-vertex visual collapsed to 0.1 mm,
     /// 4 m under the origin, the donor's own material: nothing draws) + the trigger. The form every STTC / flag /
     /// v1–v3 floor item shipped in and the game accepted; the item format needs one visual (an empty Visuals list is
@@ -949,12 +951,12 @@ pub enum Indicator {
     /// v4.5–v4.7: tinted CustomGlass with a lightmap chart (lit)
     Glass,
 }
-static INDICATOR: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(5);
+static INDICATOR: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(6);
 pub fn set_indicator(mode: Indicator) {
-    INDICATOR.store(match mode { Indicator::None => 5, Indicator::Chrono => 0, Indicator::ChronoPole => 4, Indicator::Decal => 3, Indicator::Gate => 1, Indicator::Glass => 2 }, std::sync::atomic::Ordering::Relaxed);
+    INDICATOR.store(match mode { Indicator::Slab => 6, Indicator::None => 5, Indicator::Chrono => 0, Indicator::ChronoPole => 4, Indicator::Decal => 3, Indicator::Gate => 1, Indicator::Glass => 2 }, std::sync::atomic::Ordering::Relaxed);
 }
 pub fn indicator() -> Indicator {
-    match INDICATOR.load(std::sync::atomic::Ordering::Relaxed) { 1 => Indicator::Gate, 2 => Indicator::Glass, 3 => Indicator::Decal, 4 => Indicator::ChronoPole, 0 => Indicator::Chrono, _ => Indicator::None }
+    match INDICATOR.load(std::sync::atomic::Ordering::Relaxed) { 1 => Indicator::Gate, 2 => Indicator::Glass, 3 => Indicator::Decal, 4 => Indicator::ChronoPole, 0 => Indicator::Chrono, 5 => Indicator::None, _ => Indicator::Slab }
 }
 fn chrono_window() -> Option<(f32, f32, f32, f32)> {
     match indicator() { Indicator::Chrono => Some(CHRONO_WINDOW), Indicator::ChronoPole => Some(CHRONO_POLE_WINDOW), _ => None }
@@ -1034,6 +1036,113 @@ pub fn set_indicator_prelight(m: &mut Merged, metres_per_uv: f32, bounds: [f32; 
 
 pub fn add_finish_plane_visual(m: &mut Merged, quads: &[(f32, f32, f32, f32, f32)], lift: f32) -> R<()> {
     add_finish_visual(m, quads, &[], lift)
+}
+
+/// v4.15: a closed trigger prism (the exact-outline cutouts' `extrude`) as the visual — every triangle with its
+/// own flat normal, wound outward (tested against the prism's centroid), UV0 from the face's dominant axes / 8.
+pub fn add_finish_prism_visual(m: &mut Merged, verts: &[[f32; 3]], tris: &[[u32; 3]]) -> R<()> {
+    use super::bake::{make_visuals, Corner, VisualLayout};
+    let link = GATE_LINK;
+    let slot = m.material_slot(GATE_LINK, 28);
+    let tile = GATE_TILE_M;
+    let mut centre = [0.0f32; 3];
+    for v in verts { for k in 0..3 { centre[k] += v[k] / verts.len().max(1) as f32; } }
+    let mut out: Vec<[Corner; 3]> = Vec::with_capacity(tris.len());
+    let mut inward = 0usize;
+    for (i, t) in tris.iter().enumerate() {
+        let mut p = [verts[t[0] as usize], verts[t[1] as usize], verts[t[2] as usize]];
+        let (u, v) = ([p[1][0] - p[0][0], p[1][1] - p[0][1], p[1][2] - p[0][2]], [p[2][0] - p[0][0], p[2][1] - p[0][1], p[2][2] - p[0][2]]);
+        let mut n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+        let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+        if len < 1e-9 { continue; }
+        for k in 0..3 { n[k] /= len; }
+        // outward: for a prism whose top/bottom are at y1/y0 the vertical faces are tested against the centroid in
+        // plan; the caps by their y side. A concave outline makes the centroid test unreliable for walls, so walls
+        // use the cap orientation instead: the extrude winds its walls consistently with its CCW outer loop.
+        let fc = [(p[0][0] + p[1][0] + p[2][0]) / 3.0, (p[0][1] + p[1][1] + p[2][1]) / 3.0, (p[0][2] + p[1][2] + p[2][2]) / 3.0];
+        let horizontal = n[1].abs() > 0.5;
+        let flip = if horizontal { (fc[1] - centre[1]) * n[1] < 0.0 } else { false };
+        if flip { inward += 1; p.swap(1, 2); for k in 0..3 { n[k] = -n[k]; } }
+        let uv = |q: [f32; 3]| -> [f32; 2] {
+            if n[1].abs() > 0.5 { [q[0] / tile, q[2] / tile] } else if n[0].abs() >= n[2].abs() { [q[2] / tile, q[1] / tile] } else { [q[0] / tile, q[1] / tile] }
+        };
+        let c = |q: [f32; 3]| Corner { pos: q, normal: n, uv: uv(q), uv1: uv(q), tan_u: [1.0, 0.0, 0.0], tan_v: [0.0, 0.0, 1.0], face: i as u32 + 1, group: 1 };
+        out.push([c(p[0]), c(p[1]), c(p[2])]);
+    }
+    if out.is_empty() {
+        return Err("finish prism: no triangles".into());
+    }
+    m.visuals.clear();
+    for v in make_visuals(&out, VisualLayout::DecalPaint, "off") {
+        m.visuals.push(super::merged::MergedVisual::every_level(v, slot));
+    }
+    m.notes.push(format!("finish prism visual (v4.15): {} triangles ({inward} caps re-wound outward), {link}, uv per {tile:.0} m per face, non-collidable, DecalPaint layout", out.len()));
+    Ok(())
+}
+
+/// v4.15 (Hugo 02:10: "map out the TRIGGER ZONE as a 3D SLAB, opaque, the red I approved, same height as the
+/// trigger, I want to see it from below"): the visual IS the trigger volume — every trigger box as a closed 6-face
+/// box, every ramp as a 6-face sloped prism, faces wound OUTWARD (checked: each face's normal points away from
+/// the body's centre), flat normals per face, UV0 per face in world metres / 8 from the face's two in-plane axes
+/// (top/bottom: x,z; x-walls: z,y; z-walls: x,y), Color0 white, the gate pane material (RaceTriggerFXFinish —
+/// the red he approved; no OPAQUE red FX pane exists in the pak: the whole FX family is additive TAdd*, see the
+/// README). `bodies`: 8 corners each in the box order (x0z0 x1z0 x1z0 x0z0 at y0/y1 … exactly `rebuild`'s layout:
+/// 0 (x0,y0,z0) 1 (x1,y0,z0) 2 (x1,y1,z0) 3 (x0,y1,z0) 4 (x0,y0,z1) 5 (x1,y0,z1) 6 (x1,y1,z1) 7 (x0,y1,z1)).
+pub fn add_finish_slab_visual(m: &mut Merged, bodies: &[[[f32; 3]; 8]]) -> R<()> {
+    use super::bake::{make_visuals, Corner, VisualLayout};
+    let link = GATE_LINK;
+    let slot = m.material_slot(GATE_LINK, 28);
+    let tile = GATE_TILE_M;
+    // the six faces as corner quads, each listed counter-clockwise seen from OUTSIDE the box
+    let faces: [([usize; 4], [f32; 3]); 6] = [
+        ([0, 1, 2, 3], [0.0, 0.0, -1.0]), // z0 wall (−z)
+        ([5, 4, 7, 6], [0.0, 0.0, 1.0]),  // z1 wall (+z)
+        ([4, 0, 3, 7], [-1.0, 0.0, 0.0]), // x0 wall (−x)
+        ([1, 5, 6, 2], [1.0, 0.0, 0.0]),  // x1 wall (+x)
+        ([4, 5, 1, 0], [0.0, -1.0, 0.0]), // bottom (−y)
+        ([3, 2, 6, 7], [0.0, 1.0, 0.0]),  // top (+y)
+    ];
+    let mut tris: Vec<[Corner; 3]> = Vec::new();
+    let mut face_id = 1u32;
+    let mut inward = 0usize;
+    for b in bodies {
+        let centre = {
+            let mut c = [0.0f32; 3];
+            for p in b { for k in 0..3 { c[k] += p[k] / 8.0; } }
+            c
+        };
+        for (idx, n0) in &faces {
+            let p: [[f32; 3]; 4] = [b[idx[0]], b[idx[1]], b[idx[2]], b[idx[3]]];
+            // the actual face normal from the winding (ramps tilt the top/bottom): (p1−p0)×(p2−p0)
+            let (u, v) = ([p[1][0] - p[0][0], p[1][1] - p[0][1], p[1][2] - p[0][2]], [p[2][0] - p[0][0], p[2][1] - p[0][1], p[2][2] - p[0][2]]);
+            let mut n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+            let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+            if len < 1e-9 { continue; }
+            for k in 0..3 { n[k] /= len; }
+            // outward test: the face centre minus the body centre must agree with the normal
+            let fc = [(p[0][0] + p[2][0]) / 2.0, (p[0][1] + p[2][1]) / 2.0, (p[0][2] + p[2][2]) / 2.0];
+            let dot = (fc[0] - centre[0]) * n[0] + (fc[1] - centre[1]) * n[1] + (fc[2] - centre[2]) * n[2];
+            let p = if dot < 0.0 { inward += 1; [p[0], p[3], p[2], p[1]] } else { p };
+            let n = if dot < 0.0 { [-n[0], -n[1], -n[2]] } else { n };
+            let _ = n0;
+            let uv = |q: [f32; 3]| -> [f32; 2] {
+                if n[1].abs() > 0.5 { [q[0] / tile, q[2] / tile] } else if n[0].abs() > 0.5 { [q[2] / tile, q[1] / tile] } else { [q[0] / tile, q[1] / tile] }
+            };
+            let c = |q: [f32; 3]| Corner { pos: q, normal: n, uv: uv(q), uv1: uv(q), tan_u: [1.0, 0.0, 0.0], tan_v: [0.0, 0.0, 1.0], face: face_id, group: 1 };
+            tris.push([c(p[0]), c(p[1]), c(p[2])]);
+            tris.push([c(p[0]), c(p[2]), c(p[3])]);
+            face_id += 1;
+        }
+    }
+    if tris.is_empty() {
+        return Err("finish slab: no bodies".into());
+    }
+    m.visuals.clear();
+    for v in make_visuals(&tris, VisualLayout::DecalPaint, "off") {
+        m.visuals.push(super::merged::MergedVisual::every_level(v, slot));
+    }
+    m.notes.push(format!("finish slab visual (v4.15): {} bodies → {} faces, {} triangles, {link}, uv per {tile:.0} m per face, {inward} faces re-wound outward, non-collidable, DecalPaint layout", bodies.len(), face_id - 1, tris.len()));
+    Ok(())
 }
 
 /// The carrier speck as a single 4-vertex quad (two triangles, 0.1 mm across) 4 m under the origin, in the first

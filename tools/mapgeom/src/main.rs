@@ -503,8 +503,8 @@ fn main() {
         mapgeom::outer_ring::set_ring_wedges(false);
     }
     if let Some(i) = a.rest.iter().position(|x| x == "--indicator") {
-        let v = a.rest.get(i + 1).map(|s| s.as_str()).unwrap_or("none");
-        mapgeom::static_item::build::set_indicator(match v { "glass" => mapgeom::static_item::build::Indicator::Glass, "gate" => mapgeom::static_item::build::Indicator::Gate, "decal" => mapgeom::static_item::build::Indicator::Decal, "chrono-pole" => mapgeom::static_item::build::Indicator::ChronoPole, "chrono" => mapgeom::static_item::build::Indicator::Chrono, _ => mapgeom::static_item::build::Indicator::None });
+        let v = a.rest.get(i + 1).map(|s| s.as_str()).unwrap_or("slab");
+        mapgeom::static_item::build::set_indicator(match v { "glass" => mapgeom::static_item::build::Indicator::Glass, "gate" => mapgeom::static_item::build::Indicator::Gate, "decal" => mapgeom::static_item::build::Indicator::Decal, "chrono-pole" => mapgeom::static_item::build::Indicator::ChronoPole, "chrono" => mapgeom::static_item::build::Indicator::Chrono, "none" => mapgeom::static_item::build::Indicator::None, _ => mapgeom::static_item::build::Indicator::Slab });
     }
     let cmd = a.rest.first().cloned().unwrap_or_default();
     match cmd.as_str() {
@@ -5314,7 +5314,7 @@ fn main() {
             }
         }
         // floor-template --out F.Item.Gbx [--collection 26]: Hugo's Floor Finish template — ONE unit box (0..32 × 0..1 × 0..32)
-        //   trigger only (v4.14: no indicator; --indicator chrono|chrono-pole|decal|gate|glass adds one) (the C# swaps both buffers), Finish waypoint, ident = file name
+        //   trigger + its own volume drawn as a red gate-pane SLAB (v4.15; --indicator none|chrono|chrono-pole|decal|gate|glass) (the C# swaps both buffers), Finish waypoint, ident = file name
         "floor-template" => {
             let mut store = open(&a);
             let out = flag(&a.rest, "--out").unwrap_or_else(|| die("floor-template needs --out F.Item.Gbx".into()));
@@ -5327,8 +5327,13 @@ fn main() {
             let quads: [[u32; 4]; 6] = [[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4], [2, 3, 7, 6], [1, 2, 6, 5], [0, 4, 7, 3]];
             let mut tris = Vec::new();
             for q in quads { tris.push([q[0], q[1], q[2]]); tris.push([q[0], q[2], q[3]]); }
+            let body: [[f32; 3]; 8] = [verts[0], verts[1], verts[2], verts[3], verts[4], verts[5], verts[6], verts[7]];
             mapgeom::static_item::build::make_invisible_mesh_waypoint(&mut mg, mapgeom::sttc::WP_FINISH, verts, tris).unwrap_or_else(die);
-            mapgeom::static_item::build::add_finish_plane_visual(&mut mg, &[(x0, x1, z0, z1, 0.0)], mapgeom::floor_finish::INDICATOR_LIFT).unwrap_or_else(die);
+            if mapgeom::static_item::build::indicator() == mapgeom::static_item::build::Indicator::Slab {
+                mapgeom::static_item::build::add_finish_slab_visual(&mut mg, &[body]).unwrap_or_else(die);
+            } else {
+                mapgeom::static_item::build::add_finish_plane_visual(&mut mg, &[(x0, x1, z0, z1, 0.0)], mapgeom::floor_finish::INDICATOR_LIFT).unwrap_or_else(die);
+            }
             let (bytes, _) = mapgeom::static_item::build::finish_item(mg, &ident, &ident, 1.0, coll).unwrap_or_else(die);
             std::fs::write(&out, &bytes).unwrap_or_else(|e| die(format!("{out}: {e}")));
             println!("wrote {out}: {} bytes, ident {ident}, collection {coll}; trigger = one 32×1×32 box, visual = one indicator quad at y 0.02 (4 vertices, 2 triangles)", bytes.len());

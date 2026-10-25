@@ -1078,7 +1078,12 @@ pub fn build_cutout_item_exact(store: &mut crate::store::DataStore, name: &str, 
     let donor = "Stadium\\Items\\LightCube2m.Item.Gbx";
     let mut mg = crate::static_item::build::pack_item_merged(store, donor, 1.0, collection, 0, None).map_err(|e| format!("donor {donor}: {e}"))?;
     crate::static_item::build::make_invisible_mesh_waypoint(&mut mg, crate::sttc::WP_FINISH, tv.clone(), tt.clone())?;
-    crate::static_item::build::add_finish_mesh_visual(&mut mg, &iv, &it)?;
+    if crate::static_item::build::indicator() == crate::static_item::build::Indicator::Slab {
+        // v4.15: the cutout prism itself (walls along the exact outline + top + bottom = the trigger mesh)
+        crate::static_item::build::add_finish_prism_visual(&mut mg, &tv, &tt)?;
+    } else {
+        crate::static_item::build::add_finish_mesh_visual(&mut mg, &iv, &it)?;
+    }
     let (bytes, _mg) = crate::static_item::build::finish_item(mg, ident, ident, 1.0, collection)?;
     let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
     for v in &tv { for k in 0..3 { lo[k] = lo[k].min(v[k]); hi[k] = hi[k].max(v[k]); } }
@@ -1396,8 +1401,14 @@ pub fn build_floor_item_ring(store: &mut crate::store::DataStore, m: &MapFile, c
     let donor = "Stadium\\Items\\LightCube2m.Item.Gbx";
     let mut mg = crate::static_item::build::pack_item_merged(store, donor, 1.0, collection, 0, None).map_err(|e| format!("donor {donor}: {e}"))?;
     crate::static_item::build::make_invisible_mesh_waypoint(&mut mg, crate::sttc::WP_FINISH, mesh.verts.clone(), mesh.tris.clone())?;
-    // the indicator pane 2 cm over the ground each box marks (+ the sloped wedge tops)
-    crate::static_item::build::add_finish_visual(&mut mg, &mesh.quads, &mesh.sloped, INDICATOR_LIFT)?;
+    if crate::static_item::build::indicator() == crate::static_item::build::Indicator::Slab {
+        // v4.15: the trigger volume itself — every 8-vertex body of the trigger mesh (boxes and ramps alike)
+        let bodies: Vec<[[f32; 3]; 8]> = mesh.verts.chunks_exact(8).map(|c| [c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]).collect();
+        crate::static_item::build::add_finish_slab_visual(&mut mg, &bodies)?;
+    } else {
+        // the indicator pane 2 cm over the ground each box marks (+ the sloped wedge tops)
+        crate::static_item::build::add_finish_visual(&mut mg, &mesh.quads, &mesh.sloped, INDICATOR_LIFT)?;
+    }
     if let Some(w) = lm_word {
         mg.file_write_time = w;
     }
@@ -1466,7 +1477,12 @@ pub fn build_ground_clippers_item_ring(store: &mut crate::store::DataStore, m: &
     let donor = "Stadium\\Items\\LightCube2m.Item.Gbx";
     let mut mg = crate::static_item::build::pack_item_merged(store, donor, 1.0, collection, 0, None).map_err(|e| format!("donor {donor}: {e}"))?;
     crate::static_item::build::make_invisible_mesh_waypoint(&mut mg, crate::sttc::WP_FINISH, verts.clone(), tris.clone())?;
-    crate::static_item::build::add_finish_plane_visual(&mut mg, &[(x0m, x1, x0m, z1, y1 - INDICATOR_LIFT)], INDICATOR_LIFT)?;
+    if crate::static_item::build::indicator() == crate::static_item::build::Indicator::Slab {
+        let b: [[f32; 3]; 8] = [verts[0], verts[1], verts[2], verts[3], verts[4], verts[5], verts[6], verts[7]];
+        crate::static_item::build::add_finish_slab_visual(&mut mg, &[b])?;
+    } else {
+        crate::static_item::build::add_finish_plane_visual(&mut mg, &[(x0m, x1, x0m, z1, y1 - INDICATOR_LIFT)], INDICATOR_LIFT)?;
+    }
     let (bytes, _) = crate::static_item::build::finish_item(mg, ident, ident, 1.0, collection)?;
     let notes = vec![format!("ground clippers: map {}×{} cells → box {x0m:.0}..{x1:.0} × {x0m:.0}..{z1:.0} m (ring margin {margin:.0} m), floor = lowest terrain row {row} (floor y {:.2} + bed {bed:.1}) = {floor:.2} → slab {y0:.2} .. {y1:.2}", m.size[0], m.size[2], floor - bed)];
     Ok((bytes, FloorMesh { verts, tris, quads: vec![(x0m, x1, x0m, z1, y1 - INDICATOR_LIFT)], cells: (m.size[0] * m.size[2]) as usize, strips: 1, shore_boxes: 0, shore_prisms: 0, notes, bbox: ([0.0, y0, 0.0], [x1, y1, z1]) , sloped: Vec::new() }))

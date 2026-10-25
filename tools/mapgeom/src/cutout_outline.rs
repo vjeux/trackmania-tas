@@ -435,21 +435,25 @@ pub fn extrude(outline: &Outline, below: f32, above: f32, lift: f32) -> ((Vec<[f
                 tv.push([p[0], y1, p[1]]);
             }
             let m = lp.len() as u32;
+            // outward walls (v4.15, now that the prism is drawn): for an edge (dx, dz) of a CCW loop (positive area,
+            // x right / z up) the outward normal is (dz, −dx); the triangle (a0, b1, b0) has normal (dz·h, 0, −dx·h)
+            // — the (a0, b0, b1) order gives the inward one. Holes are CW and get the opposite order, which faces
+            // into the hole = outward from the solid.
             for i in 0..m {
                 let j = (i + 1) % m;
                 let (a0, b0i, a1, b1) = (b0 + i, b0 + j, b0 + m + i, b0 + m + j);
                 if ccw {
-                    tt.push([a0, b0i, b1]);
-                    tt.push([a0, b1, a1]);
-                } else {
                     tt.push([a0, b1, b0i]);
                     tt.push([a0, a1, b1]);
+                } else {
+                    tt.push([a0, b0i, b1]);
+                    tt.push([a0, b1, a1]);
                 }
             }
         };
         wall(outer, true);
         for h in holes {
-            wall(h, true); // holes are CW: the same winding order yields inward-facing walls
+            wall(h, true); // holes are CW, so the same branch yields walls facing into the hole = outward from the solid
         }
         let ib = iv.len() as u32;
         for p in &pts {
