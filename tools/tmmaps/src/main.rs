@@ -127,13 +127,25 @@ fn main() {
                     eprintln!("add-blocks: bad spec `{joined}` (want NAME@cx,cy,cz@dir[@flags])");
                     std::process::exit(2);
                 }
+                let flags: u32 = parts.get(3).and_then(|h| u32::from_str_radix(h.trim(), 16).ok()).unwrap_or(0);
+                // `NAME@free:x,y,z@yaw[@flags]`: a FREE block at a world point (the wet pads of
+                // `tmmaps surface` stage 3c: `PlatformWaterRampBase@free:32,40.4,800@1.5708@200000`)
+                if let Some(xyz) = parts[1].strip_prefix("free:") {
+                    let pos: Vec<f32> = xyz.split(',').filter_map(|v| v.trim().parse().ok()).collect();
+                    if pos.len() != 3 {
+                        eprintln!("add-blocks: bad free position in `{joined}`");
+                        std::process::exit(2);
+                    }
+                    let yaw: f32 = parts[2].trim().parse().unwrap_or(0.0);
+                    specs.push(tmmaps::map::FreeBlockSpec { name: parts[0].to_string(), author: None, flags, pos: [pos[0], pos[1], pos[2]], rot: [yaw, 0.0, 0.0], grid: None, dir: 0 });
+                    continue;
+                }
                 let cell: Vec<i32> = parts[1].split(',').filter_map(|v| v.trim().parse().ok()).collect();
                 if cell.len() != 3 {
                     eprintln!("add-blocks: bad cell in `{joined}`");
                     std::process::exit(2);
                 }
                 let dir: u8 = parts[2].trim().parse::<u8>().unwrap_or(0) & 3;
-                let flags: u32 = parts.get(3).and_then(|h| u32::from_str_radix(h.trim(), 16).ok()).unwrap_or(0);
                 specs.push(tmmaps::map::FreeBlockSpec { name: parts[0].to_string(), author: None, flags, pos: [0.0; 3], rot: [0.0; 3], grid: Some([cell[0], cell[1], cell[2]]), dir });
             }
             let mut m = tmmaps::map::MapFile::load(&src);
@@ -143,9 +155,16 @@ fn main() {
             let chk = tmmaps::map::MapFile::load(&out);
             println!("{}: {} block(s) added ({} -> {} records)", out.display(), specs.len(), before, chk.blocks.len());
             for sp in &specs {
-                let g = sp.grid.unwrap();
-                let hit = chk.blocks.iter().find(|b| b.name == sp.name && b.coords() == (g[0], g[1], g[2]));
-                println!("  {} @ {:?} dir {} flags {:08x}: {}", sp.name, g, sp.dir, sp.flags, if hit.is_some() { "present" } else { "MISSING" });
+                match sp.grid {
+                    Some(g) => {
+                        let hit = chk.blocks.iter().find(|b| b.name == sp.name && b.coords() == (g[0], g[1], g[2]));
+                        println!("  {} @ {:?} dir {} flags {:08x}: {}", sp.name, g, sp.dir, sp.flags, if hit.is_some() { "present" } else { "MISSING" });
+                    }
+                    None => {
+                        let hit = chk.blocks.iter().find(|b| b.name == sp.name && b.free_pos.map(|p| (p[0] - sp.pos[0]).abs() < 0.01 && (p[1] - sp.pos[1]).abs() < 0.01 && (p[2] - sp.pos[2]).abs() < 0.01).unwrap_or(false));
+                        println!("  {} free @ ({:.1}, {:.2}, {:.1}) yaw {:.4} flags {:08x}: {}", sp.name, sp.pos[0], sp.pos[1], sp.pos[2], sp.rot[0], sp.flags, if hit.is_some() { "present" } else { "MISSING" });
+                    }
+                }
             }
         }
         "restart" => {
