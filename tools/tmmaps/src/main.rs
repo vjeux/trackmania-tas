@@ -40,6 +40,10 @@ fn restore_sigpipe() {
     }
 }
 
+fn zip_count(zip: &[u8]) -> usize {
+    tmmaps::header::zip_entries(zip).len()
+}
+
 fn main() {
     restore_sigpipe();
     // A refusal that reaches the user as a Rust panic tells them to run with
@@ -97,6 +101,36 @@ fn main() {
                 eprintln!("tmmaps block-lineup: {e}");
                 std::process::exit(2);
             }
+        }
+        // tmmaps drop-items MAP --model A[,B…] --out OUT [--drop-files] — every item placement
+        // of those models removed (and, with --drop-files, their embedded files too). Wet Wood
+        // 188 (2026-10-25): the only map that plays OLD wood physics is the only map embedding
+        // the author's `WaterFront.Item.Gbx` + `Trou.Block.Gbx` — bisect by test maps.
+        "drop-items" => {
+            let src = std::path::PathBuf::from(&args[2]);
+            let out = std::path::PathBuf::from(tmmaps::cli::flag(&args, "--out").expect("drop-items needs --out OUT"));
+            let models: Vec<String> = tmmaps::cli::flag(&args, "--model").expect("drop-items needs --model A[,B…]").split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+            let mut m = tmmaps::map::MapFile::load(&src);
+            let keep: Vec<bool> = m.items.iter().map(|it| !models.iter().any(|md| it.model == *md || it.model.rsplit(|c| c == '/' || c == '\\').next() == Some(md.as_str()))).collect();
+            let removed = m.remove_items(&keep);
+            if tmmaps::cli::has(&args, "--drop-files") {
+                if let Some((rows, zip)) = m.embedded_objects() {
+                    let base = |n: &str| n.rsplit(|c| c == '/' || c == '\\').next().unwrap_or(n).to_string();
+                    let drop = |n: &str| models.iter().any(|md| base(n) == base(md));
+                    let kept: std::collections::BTreeMap<String, Vec<u8>> = tmmaps::header::zip_entries(&zip).into_iter().filter(|(n, _)| !drop(n)).collect();
+                    let rows2: Vec<(String, String)> = rows.into_iter().filter(|(i, _)| !drop(i)).collect();
+                    let zip2 = tmmaps::header::deflated_zip(&kept);
+                    let manifest: Vec<(&str, &str)> = rows2.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+                    m.write_to(&out).expect("write");
+                    let mut m2 = tmmaps::map::MapFile::load(&out);
+                    m2.replace_embedded_objects(&manifest, &zip2);
+                    m2.write_to(&out).expect("write");
+                    println!("{}: {removed} item placement(s) removed; embedded files {} -> {}", out.display(), kept.len() + (zip_count(&zip) - kept.len()), kept.len());
+                    return;
+                }
+            }
+            m.write_to(&out).expect("write");
+            println!("{}: {removed} item placement(s) removed", out.display());
         }
         "drop-blocks" => {
             if let Err(e) = tmmaps::altered::drop_blocks_cmd(&args) {
