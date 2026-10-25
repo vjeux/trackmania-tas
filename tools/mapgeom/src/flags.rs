@@ -262,6 +262,8 @@ pub struct FlagsOutcome {
     pub removed_blocks: usize,
     pub removed_baked: usize,
     pub items: Vec<(String, String, [f32; 6])>, // (flag model, finish ident, trigger box)
+    /// v4.18: the visual-only slab tile idents (placed once each, no waypoint tag)
+    pub visual_items: Vec<String>,
     pub new_name: String,
     pub new_uid: String,
 }
@@ -348,6 +350,8 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
     let lm_word: Option<u64> = if o.keep_lightmap { lightmap_cache_word(src) } else { None };
     // ---- the items: one per flag model
     let mut built: Vec<(String, String, [f32; 6], Vec<u8>)> = Vec::new();
+    // v4.18: the visual-only tile items (no Goal tag)
+    let mut visual_stems: Vec<String> = Vec::new();
     // the cutout carriers (Stadium, --cutouts): built here, placed per block below; kinds without a standable
     // fill produce no carrier
     let mut cutout_built: BTreeMap<String, String> = BTreeMap::new(); // stem -> ident
@@ -392,6 +396,33 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
             row.note = format!("{} bytes; ONE trigger mesh of {} row strips over {} open-water cells (authored + baked) + {} shore cells' water as {} 4 m boxes ({} vertices, {} triangles), slabs on the lake bed (bed −{below} .. +{above} m), world frame bbox [{:.1} {:.2} {:.1}]..[{:.1} {:.2} {:.1}]; invisible, no collision; {}", bytes.len(), mesh.strips, mesh.cells, mesh.shore_boxes, mesh.shore_prisms, mesh.verts.len(), mesh.tris.len(), mesh.bbox.0[0], mesh.bbox.0[1], mesh.bbox.0[2], mesh.bbox.1[0], mesh.bbox.1[1], mesh.bbox.1[2], mesh.notes.join(" | "));
             rows.push(row);
             built.push((stem.clone(), ident, [mesh.bbox.0[0], mesh.bbox.0[1], mesh.bbox.0[2], mesh.bbox.1[0], mesh.bbox.1[1], mesh.bbox.1[2]], bytes));
+            // v4.18: the slab visual as per-tile visual-only items (floor_tiles.rs)
+            if !o.ground_clippers && crate::static_item::build::indicator() == crate::static_item::build::Indicator::Tiles {
+                let tiles = crate::floor_tiles::tiles_of(&mesh.verts, crate::floor_tiles::TILE_M);
+                let all: Vec<crate::floor_tiles::Body> = mesh.verts.chunks_exact(8).map(|c| [c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]).collect();
+                let (v_all, v_tiles) = (crate::floor_tiles::volume(&all), tiles.iter().map(|(_, b)| crate::floor_tiles::volume(b)).sum::<f64>());
+                if (v_all - v_tiles).abs() > 1e-3 * v_all.max(1.0) {
+                    return Err(format!("{stem}: tile split changed the volume ({v_all:.1} → {v_tiles:.1} m³)"));
+                }
+                let uid_stem = stem.trim_start_matches("FinishFloor_");
+                let (mut n_bodies, mut total_bytes, mut mpu_max) = (0usize, 0usize, 0f32);
+                let disable_lm = crate::static_item::build::tiles_disable_lightmap();
+                for ((tx, tz), bodies) in &tiles {
+                    let tstem = format!("FinishSlab_{uid_stem}_{}{}_{}{}", if *tx < 0 { "m" } else { "" }, tx.abs(), if *tz < 0 { "m" } else { "" }, tz.abs());
+                    let tident = format!("{tstem}.Item.Gbx");
+                    let (tbytes, ntri, mpu) = crate::floor_tiles::build_tile_item(ctx.store, bodies, &tident, collection, disable_lm).map_err(|e| format!("{tstem}: {e}"))?;
+                    n_bodies += bodies.len();
+                    total_bytes += tbytes.len();
+                    mpu_max = mpu_max.max(mpu);
+                    let _ = ntri;
+                    visual_stems.push(tstem.clone());
+                    built.push((tstem, tident, [0.0; 6], tbytes));
+                }
+                let mut r = Row::new(&map_label, "flags", "model", 0, stem);
+                r.action = "slab-tiles-built".into();
+                r.note = format!("{} visual-only tile items ({} m tiles; {} bodies after the cuts from {} trigger bodies; volume {:.0} m³ unchanged; {} bytes in all; DisableLightmap {}; metres per lightmap uv unit ≤ {:.1})", tiles.len(), crate::floor_tiles::TILE_M, n_bodies, all.len(), v_all, total_bytes, disable_lm, mpu_max);
+                rows.push(r);
+            }
             continue;
         }
         if let Some(src) = o.sources.iter().find(|s| &s.key == stem) {
@@ -491,6 +522,10 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
         rows.push(r);
         appended.push((0, stem.clone(), [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]));
         converted += 1;
+        // v4.18: the visual tile items, placed at the origin after the trigger item (no Goal tag)
+        for vs in &visual_stems {
+            appended.push((0, vs.clone(), [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]));
+        }
         if !cutout_built.is_empty() {
             let yoff = tmmaps::map::ground_y(collection);
             let mut per_kind: BTreeMap<String, usize> = BTreeMap::new();
@@ -621,7 +656,7 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
         rows.push(r);
     }
     if dry {
-        return Ok(FlagsOutcome { rows, converted, finishes_removed: finish_items.len(), finish_blocks_replaced: finish_blocks.len(), replaced_blocks: 0, removed_blocks: 0, removed_baked: 0, items: built.iter().map(|(s, i, b, _)| (s.clone(), i.clone(), *b)).collect(), new_name: new_name.clone(), new_uid: new_uid.clone() });
+        return Ok(FlagsOutcome { rows, converted, finishes_removed: finish_items.len(), finish_blocks_replaced: finish_blocks.len(), replaced_blocks: 0, removed_blocks: 0, removed_baked: 0, items: built.iter().map(|(s, i, b, _)| (s.clone(), i.clone(), *b)).collect(), visual_items: visual_stems.iter().map(|v| format!("{v}.Item.Gbx")).collect(), new_name: new_name.clone(), new_uid: new_uid.clone() });
     }
     if let Some(dir) = out.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -743,7 +778,7 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
     // pass 4 (splices): the Goal tags, the name, the times
     {
         let mut mm = MapFile::try_load(out)?;
-        let idents: Vec<String> = built.iter().map(|(_, i, _, _)| i.clone()).collect();
+        let idents: Vec<String> = built.iter().filter(|(s, ..)| !visual_stems.contains(s)).map(|(_, i, _, _)| i.clone()).collect();
         for (i, it) in mm.items.clone().iter().enumerate() {
             if idents.iter().any(|s| *s == it.model) {
                 mm.set_item_waypoint(i, Some("Goal"), 0);
@@ -790,7 +825,7 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
         rr.action = text.lines().next().unwrap_or("").trim().to_string();
         rows.push(rr);
     }
-    Ok(FlagsOutcome { rows, converted, finishes_removed: finishes_removed_total, finish_blocks_replaced: finish_blocks.len(), replaced_blocks: strip.replaced, removed_blocks: strip.removed_blocks, removed_baked: strip.removed_baked, items: built.iter().map(|(s, i, b, _)| (s.clone(), i.clone(), *b)).collect(), new_name: new_name.clone(), new_uid: new_uid.clone() })
+    Ok(FlagsOutcome { rows, converted, finishes_removed: finishes_removed_total, finish_blocks_replaced: finish_blocks.len(), replaced_blocks: strip.replaced, removed_blocks: strip.removed_blocks, removed_baked: strip.removed_baked, items: built.iter().map(|(s, i, b, _)| (s.clone(), i.clone(), *b)).collect(), visual_items: visual_stems.iter().map(|v| format!("{v}.Item.Gbx")).collect(), new_name: new_name.clone(), new_uid: new_uid.clone() })
 }
 
 /// The map's lightmap cache FILETIME word (chunk 0x06022013 inside 0x0304305B), through `lmtool filetime-check --tsv`.
@@ -811,7 +846,7 @@ pub fn verify_flags(src: &Path, out: &Path, oc: &FlagsOutcome, o: &FlagsOpts) ->
     let a = MapFile::try_load(src)?;
     let b = MapFile::try_load(out)?;
     let mut bad = Vec::new();
-    let want_items = if o.pole_triggers { a.items.len() - oc.finishes_removed + oc.converted } else { a.items.len() - oc.finishes_removed };
+    let want_items = if o.pole_triggers { a.items.len() - oc.finishes_removed + oc.converted + oc.visual_items.len() } else { a.items.len() - oc.finishes_removed };
     if want_items != b.items.len() {
         bad.push(format!("items: want {want_items}, got {}", b.items.len()));
     }
@@ -884,10 +919,23 @@ pub fn verify_flags(src: &Path, out: &Path, oc: &FlagsOutcome, o: &FlagsOpts) ->
     if goals != oc.converted {
         bad.push(format!("{goals} Goal placements, want {} (the flags)", oc.converted));
     }
-    let idents: Vec<String> = oc.items.iter().map(|(_, i, _)| i.clone()).collect();
+    let idents: Vec<String> = oc.items.iter().map(|(_, i, _)| i.clone()).filter(|i| !oc.visual_items.contains(i)).collect();
     let n = b.items.iter().filter(|x| idents.contains(&x.model)).count();
     if n != oc.converted {
         bad.push(format!("{n} placements wear the finish item, want {}", oc.converted));
+    }
+    // v4.18: every visual tile item placed exactly once, at the origin, with NO waypoint tag
+    for vi in &oc.visual_items {
+        let placed: Vec<_> = b.items.iter().filter(|x| &x.model == vi).collect();
+        if placed.len() != 1 {
+            bad.push(format!("visual item {vi} placed {} times, want 1", placed.len()));
+            break;
+        }
+        let x = placed[0];
+        if x.waypoint_tag.is_some() || x.pos != [0.0; 3] || x.author.as_deref() != Some(vi.as_str()) {
+            bad.push(format!("visual item#{} {vi}: tag {:?} pos {:?} author {:?}", x.index, x.waypoint_tag, x.pos, x.author));
+            break;
+        }
     }
     for x in b.items.iter().filter(|x| idents.contains(&x.model)) {
         if x.waypoint_tag.as_deref() != Some("Goal") {

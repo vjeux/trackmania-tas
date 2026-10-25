@@ -509,9 +509,13 @@ fn main() {
     if a.rest.iter().any(|x| x == "--slab-wood") {
         mapgeom::static_item::build::set_slab_plastic(false);
     }
+    // --tiles-lightmap: the visual tile items take lightmap charts (default: DisableLightmap on them)
+    if a.rest.iter().any(|x| x == "--tiles-lightmap") {
+        mapgeom::static_item::build::set_tiles_lightmap(true);
+    }
     if let Some(i) = a.rest.iter().position(|x| x == "--indicator") {
-        let v = a.rest.get(i + 1).map(|s| s.as_str()).unwrap_or("slab");
-        mapgeom::static_item::build::set_indicator(match v { "glass" => mapgeom::static_item::build::Indicator::Glass, "gate" => mapgeom::static_item::build::Indicator::Gate, "decal" => mapgeom::static_item::build::Indicator::Decal, "chrono-pole" => mapgeom::static_item::build::Indicator::ChronoPole, "chrono" => mapgeom::static_item::build::Indicator::Chrono, "none" => mapgeom::static_item::build::Indicator::None, _ => mapgeom::static_item::build::Indicator::Slab });
+        let v = a.rest.get(i + 1).map(|s| s.as_str()).unwrap_or("tiles");
+        mapgeom::static_item::build::set_indicator(match v { "glass" => mapgeom::static_item::build::Indicator::Glass, "gate" => mapgeom::static_item::build::Indicator::Gate, "decal" => mapgeom::static_item::build::Indicator::Decal, "chrono-pole" => mapgeom::static_item::build::Indicator::ChronoPole, "chrono" => mapgeom::static_item::build::Indicator::Chrono, "none" => mapgeom::static_item::build::Indicator::None, "slab" => mapgeom::static_item::build::Indicator::Slab, _ => mapgeom::static_item::build::Indicator::Tiles });
     }
     let cmd = a.rest.first().cloned().unwrap_or_default();
     match cmd.as_str() {
@@ -5470,6 +5474,85 @@ fn main() {
             }
             std::fs::write(&out, format!("{header}\n{}\n", rows.join("\n"))).unwrap_or_else(|e| die(format!("{out}: {e}")));
             eprintln!("wrote {out}: {} materials", rows.len());
+        }
+        // slab-template --out F.Item.Gbx [--collection N]: the v4.18 VISUAL slab template — a 32 × 1 × 32 m body at the
+        //   origin, visual-only (no trigger, no waypoint), CustomPlastic, Full layout, six lightmap charts, DisableLightmap
+        "slab-template" => {
+            let mut store = open(&a);
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("slab-template: --out".into()));
+            let collection: u32 = flag(&a.rest, "--collection").and_then(|v| v.parse().ok()).unwrap_or(26);
+            let body: mapgeom::floor_tiles::Body = [[0.0, 0.0, 0.0], [32.0, 0.0, 0.0], [32.0, 1.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 32.0], [32.0, 0.0, 32.0], [32.0, 1.0, 32.0], [0.0, 1.0, 32.0]];
+            let ident = std::path::Path::new(&out).file_name().unwrap().to_string_lossy().to_string();
+            let (bytes, _, mpu) = mapgeom::floor_tiles::build_tile_item(&mut store, &[body], &ident, collection, mapgeom::static_item::build::tiles_disable_lightmap()).unwrap_or_else(die);
+            std::fs::write(&out, &bytes).unwrap_or_else(|e| die(format!("{out}: {e}")));
+            println!("wrote {out}: {} bytes (visual-only slab template, metres per lightmap uv {mpu:.2}, DisableLightmap {})", bytes.len(), mapgeom::static_item::build::tiles_disable_lightmap());
+        }
+        // solid2-fields FILE.Item.Gbx: the CPlugSolid2Model / visual fields that must track the geometry (bounding boxes,
+        //   LOD distances, vis_cst_type, prelight, flags, shaded geoms, per-visual counts/flags/bboxes/splits)
+        "solid2-fields" => {
+            let p = a.rest.get(1).cloned().unwrap_or_default();
+            let bytes = std::fs::read(&p).unwrap_or_else(|e| die(format!("{p}: {e}")));
+            let f = mapgeom::static_item::parse_file(&bytes).unwrap_or_else(die);
+            let Some(so) = f.item.static_object() else { die::<()>("no static object (prefab item?)".into()); unreachable!() };
+            println!("CPlugStaticObjectModel v{} is_mesh_collidable {}", so.version, so.is_mesh_collidable);
+            if let Some(e) = f.item.model().and_then(|mc| mc.entity_model()) {
+                println!("EntityModel v{} iso (spawn) {:?} trigger {}", e.version, [e.iso[9], e.iso[10], e.iso[11]], e.trigger_shape.inline.is_some());
+            }
+            for c in f.item.chunks.iter() {
+                if let mapgeom::static_item::item::ItemChunk::Waypoint { version, waypoint_type, disable_lightmap, .. } = c { println!("Waypoint chunk v{version}: type {waypoint_type} disable_lightmap {disable_lightmap}"); }
+            }
+            let Some(s2) = so.solid2() else { die::<()>("no solid2".into()); unreachable!() };
+            println!("CPlugSolid2Model v{} chunks {:?}", s2.version, s2.chunks.iter().map(|c| format!("{c:08X}")).collect::<Vec<_>>());
+            println!("  shaded_geoms {:?}", s2.shaded_geoms.iter().map(|g| format!("vis {} mat {} lod_mask {} u01 {} u02 {}", g.visual_index, g.material_index, g.lod_mask, g.u01, g.u02)).collect::<Vec<_>>());
+            println!("  visuals {} materials {} material_ids {} material_insts {} custom_materials {}", s2.visuals.len(), s2.materials.len(), s2.material_ids.len(), s2.material_insts.len(), s2.custom_materials.len());
+            println!("  lod_max_dist {:?} vis_cst_type {} flags {:#x} u05 {} u07 {} u11 {} u13 {} damage_zone {}", s2.lod_max_dist, s2.vis_cst_type, s2.flags, s2.u05, s2.u07, s2.u11, s2.u13, s2.damage_zone);
+            println!("  boxes (Solid2-level) {:?}", s2.boxes);
+            println!("  lights {} light_insts {:?} joints {} u10 {:?} u12 {:?}", s2.lights.len(), s2.light_insts, s2.joints.len(), s2.u10, s2.u12);
+            match &s2.pre_light_gen {
+                Some(pl) => println!("  pre_light_gen v{} u01 {} u02 {:.3} u03 {} u04 {:?} sprite_count {:?} boxes {} uv_groups {:?}", pl.version, pl.u01, pl.u02, pl.u03, pl.u04.iter().map(|v| if v.abs() > 1e30 { format!("{}MAX", if *v > 0.0 { "+" } else { "-" }) } else { format!("{v:.4}") }).collect::<Vec<_>>(), pl.sprite_count, pl.boxes.len(), pl.uv_groups),
+                None => println!("  pre_light_gen NONE"),
+            }
+            println!("  file_write_time {} materials_folder {:?} u03 {:?} u04 {:?} u06 {:?}", s2.file_write_time, s2.materials_folder, s2.u03, s2.u04, s2.u06);
+            for (vi, r) in s2.visuals.iter().enumerate() {
+                let Some(mapgeom::static_item::Node::Visual(v)) = r.inline.as_deref() else { println!("  visual {vi}: external/none"); continue };
+                println!("  visual {vi}: chunks {:?} sub_visuals {:?} u_float {} splits {} tangents {} indices {}", v.chunks.iter().map(|c| format!("{c:08X}")).collect::<Vec<_>>(), v.sub_visuals, v.u_float, v.splits.len(), v.tangents.is_some(), v.index_buffer.as_ref().map(|ib| ib.indices.len()).unwrap_or(0));
+                if let Some(mn) = v.main.as_ref() {
+                    println!("    main v{} flags {:#x} count {} tex_coord_sets {} bbox {:?} bitmap_elems {} uv_groups {:?} u02 {} u03 {} u04 {} bytes", mn.version, mn.flags(), mn.count, mn.tex_coord_sets.len(), mn.bounding_box, mn.bitmap_elems.len(), mn.uv_groups, mn.u02, mn.u03, mn.u04.len());
+                    for (k, t) in mn.tex_coord_sets.iter().enumerate() { println!("    tex_coord_set {k}: v{} flags {:?} coords {} u01 {:?}", t.version, t.flags, t.coords.len(), t.u01); }
+                    if let Some(mapgeom::static_item::Node::VertexStream(vs)) = mn.vertex_streams.first().and_then(|r| r.inline.as_deref()) {
+                        println!("    vertex_stream v{} count {} flags {:#x} compress_local3d {:?} decls {:?}", vs.version, vs.count, vs.flags, vs.compress_local3d, vs.decls.iter().map(|d| format!("n{} t{} s{} @{}", d.name(), d.ty(), d.space(), d.offset())).collect::<Vec<_>>());
+                        // uv1 range per normal class (top / bottom / −x / +x / −z / +z)
+                        let mut normals: Vec<[f32; 3]> = Vec::new();
+                        let mut uv1: Vec<[f32; 2]> = Vec::new();
+                        for (d, e) in vs.decls.iter().zip(vs.elems.iter()) {
+                            // Dec3N: 10-bit signed x, y, z in one word (the compressed normal)
+                            let dec = |w: u32| -> [f32; 3] { let c = |sh: u32| { let v = ((w >> sh) & 0x3FF) as i32; (if v >= 512 { v - 1024 } else { v }) as f32 / 511.0 }; [c(0), c(10), c(20)] };
+                            match (d.name(), e) {
+                                (5, mapgeom::static_item::vstream::Elem::Float3(v)) => normals = v.clone(),
+                                (11, mapgeom::static_item::vstream::Elem::Float2(v)) => uv1 = v.clone(),
+                                (5, mapgeom::static_item::vstream::Elem::Word(v)) => normals = v.iter().map(|w| dec(*w)).collect(),
+                                _ => {}
+                            }
+                        }
+                        if !uv1.is_empty() && normals.len() == uv1.len() {
+                            let names = ["top", "bottom", "-x", "+x", "-z", "+z"];
+                            let mut lo = [[f32::INFINITY; 2]; 6];
+                            let mut hi = [[f32::NEG_INFINITY; 2]; 6];
+                            let mut cnt = [0usize; 6];
+                            for (n, u) in normals.iter().zip(uv1.iter()) {
+                                let k = if n[1] > 0.5 { 0 } else if n[1] < -0.5 { 1 } else if n[0] < -0.5 { 2 } else if n[0] > 0.5 { 3 } else if n[2] < -0.5 { 4 } else { 5 };
+                                cnt[k] += 1;
+                                for a in 0..2 { lo[k][a] = lo[k][a].min(u[a]); hi[k][a] = hi[k][a].max(u[a]); }
+                            }
+                            for k in 0..6 { if cnt[k] > 0 { println!("    uv1 {:>6}: {} verts u [{:.4}, {:.4}] v [{:.4}, {:.4}]", names[k], cnt[k], lo[k][0], hi[k][0], lo[k][1], hi[k][1]); } }
+                        }
+                    }
+                }
+                for (k, sp) in v.splits.iter().enumerate().take(3) { println!("    split {k}: {:?}", sp); }
+            }
+            for (mi, r) in s2.materials.iter().enumerate() {
+                if let Some(mapgeom::static_item::Node::Material(mu)) = r.inline.as_deref() { println!("  material {mi}: {:?} physics {}", mu.link(), mu.physics()); }
+            }
         }
         // outer-terrain MAP.. --out F.tsv: the OUTER RING table (outer_ring.rs) of every map's collection/decoration,
         //   one row per rectangle (collection, decoration, x0, x1, z0, z1, floor, kind) + the measurement notes

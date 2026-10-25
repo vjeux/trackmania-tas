@@ -932,7 +932,9 @@ pub const CHRONO_WINDOW: (f32, f32, f32, f32) = (0.71484375, 0.72265625, 0.43359
 pub const CHRONO_POLE_WINDOW: (f32, f32, f32, f32) = (0.25, 0.3125, 0.5, 0.75);
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Indicator {
-    /// v4.15 default (Hugo 02:10 next day): the trigger volume itself as an opaque-looking red slab (gate pane material)
+    /// v4.18 default: the trigger item is speck-only; the slab is drawn by separate visual-only tile items (floor_tiles.rs)
+    Tiles,
+    /// v4.15 (Hugo 02:10 next day): the trigger volume itself as a slab on the ONE waypoint item
     Slab,
     /// v4.14 (Hugo 13:02: "remove textures from all Floor Finish items"): NO indicator — the item keeps only
     /// the invisible carrier speck `make_invisible_mesh_waypoint` leaves (one 4-vertex visual collapsed to 0.1 mm,
@@ -951,12 +953,21 @@ pub enum Indicator {
     /// v4.5–v4.7: tinted CustomGlass with a lightmap chart (lit)
     Glass,
 }
-static INDICATOR: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(6);
+static INDICATOR: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(7);
 pub fn set_indicator(mode: Indicator) {
-    INDICATOR.store(match mode { Indicator::Slab => 6, Indicator::None => 5, Indicator::Chrono => 0, Indicator::ChronoPole => 4, Indicator::Decal => 3, Indicator::Gate => 1, Indicator::Glass => 2 }, std::sync::atomic::Ordering::Relaxed);
+    INDICATOR.store(match mode { Indicator::Tiles => 7, Indicator::Slab => 6, Indicator::None => 5, Indicator::Chrono => 0, Indicator::ChronoPole => 4, Indicator::Decal => 3, Indicator::Gate => 1, Indicator::Glass => 2 }, std::sync::atomic::Ordering::Relaxed);
 }
 pub fn indicator() -> Indicator {
-    match INDICATOR.load(std::sync::atomic::Ordering::Relaxed) { 1 => Indicator::Gate, 2 => Indicator::Glass, 3 => Indicator::Decal, 4 => Indicator::ChronoPole, 0 => Indicator::Chrono, 5 => Indicator::None, _ => Indicator::Slab }
+    match INDICATOR.load(std::sync::atomic::Ordering::Relaxed) { 1 => Indicator::Gate, 2 => Indicator::Glass, 3 => Indicator::Decal, 4 => Indicator::ChronoPole, 0 => Indicator::Chrono, 5 => Indicator::None, 6 => Indicator::Slab, _ => Indicator::Tiles }
+}
+/// v4.18: the visual tile items' `DisableLightmap` (default ON — RESEARCH-visual.md: the map's lightmap atlas cannot
+/// resolve a 2–3 km slab, and a lit slab degrades every other object's chart; `--tiles-lightmap` turns it off)
+static TILES_NO_LIGHTMAP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+pub fn set_tiles_lightmap(on: bool) {
+    TILES_NO_LIGHTMAP.store(!on, std::sync::atomic::Ordering::Relaxed);
+}
+pub fn tiles_disable_lightmap() -> bool {
+    TILES_NO_LIGHTMAP.load(std::sync::atomic::Ordering::Relaxed)
 }
 fn chrono_window() -> Option<(f32, f32, f32, f32)> {
     match indicator() { Indicator::Chrono => Some(CHRONO_WINDOW), Indicator::ChronoPole => Some(CHRONO_POLE_WINDOW), _ => None }
@@ -1074,12 +1085,12 @@ pub fn add_finish_prism_visual(m: &mut Merged, verts: &[[f32; 3]], tris: &[[u32;
     }
     m.visuals.clear();
     if lit {
-        let (mpu, bounds) = slab_lightmap_charts(&mut out);
+        let (mpu, bounds) = slab_lightmap_charts6(&mut out);
         for v in make_visuals(&out, VisualLayout::Full, "off") {
             m.visuals.push(super::merged::MergedVisual::every_level(v, slot));
         }
         set_indicator_prelight(m, mpu, bounds);
-        m.notes.push(format!("finish prism visual (v4.16): {} triangles ({inward} caps re-wound outward), {link} (lit flat red), 3 lightmap charts, non-collidable, Full layout", out.len()));
+        m.notes.push(format!("finish prism visual (v4.18): {} triangles ({inward} caps re-wound outward), {link} (lit flat red), 6 lightmap charts (top / bottom / 4 wall orientations by dominant axis), non-collidable, Full layout", out.len()));
     } else {
         for v in make_visuals(&out, VisualLayout::DecalPaint, "off") {
             m.visuals.push(super::merged::MergedVisual::every_level(v, slot));
@@ -1194,6 +1205,67 @@ pub fn slab_lightmap_charts(tris: &mut [[super::bake::Corner; 3]]) -> (f32, [f32
     (mpu, [0.001, 0.001, 0.999, 0.999])
 }
 
+/// v4.18: SIX lightmap sub-charts — top, bottom, and one per wall orientation (−x, +x, −z, +z), each a planar
+/// projection of its faces' extent into its own atlas rectangle, square texels, gutters between the rectangles.
+/// Layout (u, v): top [0.001, 0.499] × [0.001, 0.499]; bottom [0.501, 0.999] × [0.001, 0.499]; the four wall strips
+/// stacked in v from 0.501 up, each `strip_h` tall (the wall height / the chart's metres-per-uv) with a 0.004 gap,
+/// full width. Returns (metres per uv unit = the top chart's scale, the atlas bounds actually used).
+pub fn slab_lightmap_charts6(tris: &mut [[super::bake::Corner; 3]]) -> (f32, [f32; 4]) {
+    let which = |n: [f32; 3]| -> usize { if n[1] > 0.5 { 0 } else if n[1] < -0.5 { 1 } else if n[0] < -0.5 { 2 } else if n[0] > 0.5 { 3 } else if n[2] < -0.5 { 4 } else { 5 } };
+    let coord = |c: &super::bake::Corner, k: usize| -> [f32; 2] {
+        match k { 0 | 1 => [c.pos[0], c.pos[2]], 2 | 3 => [c.pos[2], c.pos[1]], _ => [c.pos[0], c.pos[1]] }
+    };
+    let mut lo = [[f32::INFINITY; 2]; 6];
+    let mut hi = [[f32::NEG_INFINITY; 2]; 6];
+    for t in tris.iter() {
+        let k = which(t[0].normal);
+        for c in t {
+            let q = coord(c, k);
+            for a in 0..2 { lo[k][a] = lo[k][a].min(q[a]); hi[k][a] = hi[k][a].max(q[a]); }
+        }
+    }
+    // one scale for every chart: the top's (metres → uv), so the walls keep square texels at the same density
+    let top_ext = (hi[0][0] - lo[0][0]).max(hi[0][1] - lo[0][1]).max(hi[1][0] - lo[1][0]).max(hi[1][1] - lo[1][1]).max(1e-3);
+    let s = 0.498 / top_ext;
+    let wall_h = (2..6).map(|k| if hi[k][1].is_finite() { hi[k][1] - lo[k][1] } else { 0.0 }).fold(0.0f32, f32::max);
+    let strip_h = (wall_h * s).max(0.002);
+    let gap = 0.004;
+    let rect = |k: usize| -> [f32; 2] {
+        match k {
+            0 => [0.001, 0.001],
+            1 => [0.501, 0.001],
+            _ => [0.001, 0.501 + (k - 2) as f32 * (strip_h + gap)],
+        }
+    };
+    let mut vmax: f32 = 0.499;
+    for t in tris.iter_mut() {
+        let k = which(t[0].normal);
+        let r = rect(k);
+        for c in t.iter_mut() {
+            let q = coord(c, k);
+            c.uv1 = [r[0] + (q[0] - lo[k][0]) * s, r[1] + (q[1] - lo[k][1]) * s];
+            vmax = vmax.max(c.uv1[1]);
+        }
+    }
+    (1.0 / s, [0.001, 0.001, 0.999, (vmax + 0.001).min(0.999)])
+}
+
+/// Strip a merged donor down to a VISUAL-ONLY item: no collision, no trigger, no waypoint (type None), the
+/// placeholder spawn at the origin. The Nadeo deco items' form (a static object, nothing else).
+pub fn make_visual_only(m: &mut Merged) {
+    m.surf_vertices.clear();
+    m.surf_triangles.clear();
+    m.surf_ids.clear();
+    m.lights_out.clear();
+    m.pending_lights.clear();
+    m.fx.clear();
+    m.veget.clear();
+    m.pictures.clear();
+    m.trigger = None;
+    m.waypoint_type = None;
+    m.spawn = [0.0, 0.0, 0.0];
+}
+
 pub fn add_finish_slab_visual(m: &mut Merged, bodies: &[[[f32; 3]; 8]]) -> R<()> {
     use super::bake::{make_visuals, Corner, VisualLayout};
     let lit = slab_lit();
@@ -1245,12 +1317,12 @@ pub fn add_finish_slab_visual(m: &mut Merged, bodies: &[[[f32; 3]; 8]]) -> R<()>
     }
     m.visuals.clear();
     if lit {
-        let (mpu, bounds) = slab_lightmap_charts(&mut tris);
+        let (mpu, bounds) = slab_lightmap_charts6(&mut tris);
         for v in make_visuals(&tris, VisualLayout::Full, "off") {
             m.visuals.push(super::merged::MergedVisual::every_level(v, slot));
         }
         set_indicator_prelight(m, mpu, bounds);
-        m.notes.push(format!("finish slab visual (v4.17): {} bodies → {} faces, {} triangles, {link} (lit, opaque, textureless; TargetColor {:?} when plastic), uv0 per {tile:.0} m per face, 3 lightmap charts (top / bottom / walls), {inward} faces re-wound outward, non-collidable, Full layout", bodies.len(), face_id - 1, tris.len(), PLASTIC_RGB));
+        m.notes.push(format!("finish slab visual (v4.18): {} bodies → {} faces, {} triangles, {link} (lit, opaque, textureless; TargetColor {:?} when plastic), uv0 per {tile:.0} m per face, 6 lightmap charts (top / bottom / 4 wall orientations), {inward} faces re-wound outward, non-collidable, Full layout", bodies.len(), face_id - 1, tris.len(), PLASTIC_RGB));
     } else {
         for v in make_visuals(&tris, VisualLayout::DecalPaint, "off") {
             m.visuals.push(super::merged::MergedVisual::every_level(v, slot));
@@ -1277,7 +1349,7 @@ pub fn speck_visual(m: &mut Merged) -> R<()> {
 /// v4.13: flat quads (anchor + lift) plus SLOPED quads (corners with their own y, already lifted) in one visual.
 pub fn add_finish_visual(m: &mut Merged, quads: &[(f32, f32, f32, f32, f32)], sloped: &[[[f32; 3]; 4]], lift: f32) -> R<()> {
     use super::bake::{make_visuals, Corner, VisualLayout};
-    if indicator() == Indicator::None {
+    if matches!(indicator(), Indicator::None | Indicator::Tiles) {
         // the smallest carrier the format needs: one 4-vertex quad of the donor's material, 0.1 mm wide, 4 m under
         // the origin (the invisible-speck form every STTC / flag item ships in)
         speck_visual(m)?;
@@ -1357,6 +1429,7 @@ pub fn add_finish_mesh_visual(m: &mut Merged, verts: &[[f32; 3]], tris: &[[u32; 
         m.notes.push(format!("no indicator (v4.14): trigger-only cutout, one 4-vertex carrier speck is the only visual ({} polygon triangles unmarked)", tris.len()));
         return Ok(());
     }
+
     let glass = indicator_is_glass();
     let chrono = chrono_window();
     let (link, slot, color0) = if glass { (INDICATOR_LINK, indicator_slot(m), 0xFFFF_FFFFu32) } else if chrono.is_some() { (CHRONO_LINK, m.material_slot(CHRONO_LINK, 28), 0xFFFF_FFFFu32) } else { indicator_unlit(m) };

@@ -258,6 +258,9 @@ pub struct Merged {
     /// Write NO PreLightGen (the pack's dyna meshes — Flag.Mesh.Gbx — carry
     /// none; a static item always gets one).
     pub no_prelight: bool,
+    /// v4.18: the item chunk's `DisableLightmap` (CGameItemModel 0x2E00201F v6+) — the game gives the item no lightmap
+    /// chart at all; the visual-only Floor Finish slabs set it (see floor_tiles.rs).
+    pub disable_lightmap: bool,
 }
 
 /// One `CPlugDynaObjectModel` entity of the source prefab, scaled: its mesh

@@ -650,7 +650,7 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
         ItemChunk::Node201A(super::null_ref()),
         ItemChunk::DefaultPlacement { version: 5, placement: inline(placement_index, Node::Placement(placement_param(sclass_index))) },
         ItemChunk::Archetype { version: 7, archetype_ref: String::new(), archetype_fid: Some(super::null_ref()), skin_dir: Some(String::new()), u01: Some(-1) },
-        ItemChunk::Waypoint { version: 12, waypoint_type: m.waypoint_type.unwrap_or(3), disable_lightmap: false, u_node: Some(super::null_ref()), u_byte: Some(0), u_ints: Some((-1, -1)) },
+        ItemChunk::Waypoint { version: 12, waypoint_type: m.waypoint_type.unwrap_or(3), disable_lightmap: m.disable_lightmap, u_node: Some(super::null_ref()), u_byte: Some(0), u_ints: Some((-1, -1)) },
         ItemChunk::Icon { version: 3, icon_fid: String::new(), u_byte: Some(1) },
         ItemChunk::Skippable(super::RawChunk { id: 0x2E002025, payload: vec![0; 8] }),
         ItemChunk::Skippable(super::RawChunk { id: 0x2E002026, payload: vec![0; 8] }),

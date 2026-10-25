@@ -90,6 +90,7 @@ pub mod checkpoint_catalogue;
 pub mod cutout_outline;
 pub mod outer_ring;
 pub mod floor_merge;
+pub mod floor_tiles;
 pub mod podium;
 pub mod sandbox;
 pub mod flags;
