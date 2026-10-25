@@ -1124,11 +1124,23 @@ pub fn club_layout(args: &[String]) -> Result<(), String> {
     let auth = format!("Authorization: {live}");
     // the folder
     let acts = all_activities(&auth, &club, None)?;
-    let fid = acts
+    let found = acts
         .iter()
         .find(|a| a["activityType"] == "folder" && a["name"] == folder_name.as_str())
-        .and_then(|a| a["id"].as_u64())
-        .ok_or_else(|| format!("folder {folder_name:?} not found in club {club} ({} activities)", acts.len()))?;
+        .and_then(|a| a["id"].as_u64());
+    // `--create-folder`: a new alteration's folder (Tarmac, 2026-10-25 — Everios96: "You didnt
+    // put the tarmac campaigns and rooms into a folder") is made here, the way club-rooms makes it
+    let fid = match found {
+        Some(id) => id,
+        None if tmmaps::cli::has(args, "--create-folder") => {
+            let body = serde_json::json!({"name": folder_name, "folderId": 0}).to_string();
+            let v = post_json(&auth, &format!("{LIVE}/api/token/club/{club}/folder/create"), &body)?;
+            let id = v["id"].as_u64().or_else(|| v["targetActivityId"].as_u64()).ok_or_else(|| format!("folder create: no id in {v}"))?;
+            println!("folder {folder_name:?}: created activity {id}");
+            id
+        }
+        None => return Err(format!("folder {folder_name:?} not found in club {club} ({} activities); --create-folder makes it", acts.len())),
+    };
     println!("folder {folder_name:?}: activity {fid}");
     // state
     let state_path = outdir.join(format!("club-{club}-layout-{}.tsv", folder_name.replace(' ', "_")));
