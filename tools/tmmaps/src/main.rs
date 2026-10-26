@@ -173,6 +173,22 @@ fn main() {
             let now = tmmaps::gbx::all_skip_chunks(&chk.gbx.body).into_iter().find(|(c, ..)| *c == cid).map(|(_, _, _, s)| s);
             println!("{}: chunk {cid_s} {n} -> {} bytes (reads back {:?})", out.display(), payload_new.len(), now);
         }
+        // tmmaps bodyhex MAP --off N --len M — raw bytes of the DECOMPRESSED body (the
+        // non-skippable chunks, e.g. the block list 0x0304301F, are not reachable by `chunks`)
+        "bodyhex" => {
+            let m = tmmaps::map::MapFile::load(std::path::Path::new(&args[2]));
+            let off: usize = tmmaps::cli::flag(&args, "--off").and_then(|v| v.parse().ok()).unwrap_or(0);
+            let len: usize = tmmaps::cli::flag(&args, "--len").and_then(|v| v.parse().ok()).unwrap_or(64);
+            let b = &m.gbx.body;
+            let end = (off + len).min(b.len());
+            println!("body {} bytes; {off}..{end}", b.len());
+            for row in (off..end).step_by(16) {
+                let e = (row + 16).min(end);
+                let hex: Vec<String> = b[row..e].iter().map(|x| format!("{x:02x}")).collect();
+                let asc: String = b[row..e].iter().map(|&x| if (32..127).contains(&x) { x as char } else { '.' }).collect();
+                println!("  {row:08x}: {:<48} {asc}", hex.join(" "));
+            }
+        }
         "drop-blocks" => {
             if let Err(e) = tmmaps::altered::drop_blocks_cmd(&args) {
                 eprintln!("tmmaps drop-blocks: {e}");

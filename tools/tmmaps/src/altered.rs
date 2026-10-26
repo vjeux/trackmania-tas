@@ -2086,14 +2086,23 @@ pub fn drop_blocks_cmd(args: &[String]) -> Result<(), String> {
     let f = |k: &str| crate::cli::flag(args, k).map(String::from);
     let map = PathBuf::from(args.iter().skip(1).find(|a| !a.starts_with("--") && a.ends_with(".Map.Gbx")).ok_or("MAP.Map.Gbx")?);
     let out = PathBuf::from(f("--out").ok_or("--out F")?);
-    let names: Vec<String> = f("--name").ok_or("--name A[,B…]")?.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+    // `--all-baked`: every GENERATED (baked) record goes, the authored blocks stay — the
+    // 188 old-wood bisect (2026-10-25): are the original's generated records the carrier?
+    let all_baked = crate::cli::has(args, "--all-baked");
+    let names: Vec<String> = f("--name").unwrap_or_default().split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+    if names.is_empty() && !all_baked {
+        return Err("--name A[,B…] (or --all-baked)".into());
+    }
     let mut m = MapFile::load(&map);
     let hit = |n: &str| names.iter().any(|x| x == n);
     let dropped: Vec<String> = m.blocks.iter().filter(|b| hit(&b.name)).map(|b| b.name.clone()).collect();
-    if dropped.is_empty() {
+    if dropped.is_empty() && !all_baked {
         return Err(format!("none of {names:?} is in {}", map.display()));
     }
-    let _ = m.remove_and_add_blocks(|b| hit(&b.name), |_| false, &[]);
+    let r = m.remove_and_add_blocks(|b| hit(&b.name), |_| all_baked, &[]);
+    if all_baked {
+        println!("  baked records dropped: {:?}", r);
+    }
     m.write_to(&out).map_err(|e| e.to_string())?;
     let chk = MapFile::load(&out);
     println!("{}: dropped {} record(s) ({} left)", out.display(), dropped.len(), chk.blocks.len());
