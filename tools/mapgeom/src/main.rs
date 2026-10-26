@@ -5163,6 +5163,174 @@ fn main() {
                 println!("# {c}: highest selected shore-square bed {:.3} local = {:+.3} map frame ({who}); open cells {:+.2}", mx, mx + off, mapgeom::outer_ring::open_water_bed(collection).unwrap_or(f32::NAN));
             }
         }
+        // blocks-table --sizes BlockSizes.tsv --footprints StadiumBlockFootprints.tsv --out Blocks.tsv [--maps M..]: Hugo's
+        //   merged table (v4.36): BlockSizes + a 4th column `cells` = the block's footprint cells "ux,uz ux,uz" (the
+        //   footprints' `columns`) ONLY when fewer than size_x × size_z, empty otherwise; same names / order / sizes.
+        //   Checks: cells == columns for every Stadium name; the vista paks' re-authored copies of partial-footprint
+        //   blocks carry the same cells; with --maps, the Stadium decorations the maps use
+        "blocks-table" => {
+            let mut store = open(&a);
+            let sizes = flag(&a.rest, "--sizes").unwrap_or_else(|| die("blocks-table needs --sizes BlockSizes.tsv".into()));
+            let fps = flag(&a.rest, "--footprints").unwrap_or_else(|| die("blocks-table needs --footprints StadiumBlockFootprints.tsv".into()));
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("blocks-table needs --out Blocks.tsv".into()));
+            let sizes_txt = std::fs::read_to_string(&sizes).unwrap_or_else(|e| die(format!("{sizes}: {e}")));
+            let fps_txt = std::fs::read_to_string(&fps).unwrap_or_else(|e| die(format!("{fps}: {e}")));
+            // footprints: name -> (size_x, size_z, columns)
+            let mut cols: BTreeMap<String, (i32, i32, Vec<(i32, i32)>)> = BTreeMap::new();
+            for l in fps_txt.lines().skip(1) {
+                let f: Vec<&str> = l.split('\t').collect();
+                if f.len() < 7 { continue; }
+                let cells: Vec<(i32, i32)> = f[6].split(' ').filter(|c| !c.is_empty()).filter_map(|c| { let (x, z) = c.split_once(',')?; Some((x.parse().ok()?, z.parse().ok()?)) }).collect();
+                cols.insert(f[0].to_string(), (f[1].parse().unwrap_or(1), f[2].parse().unwrap_or(1), cells));
+            }
+            let mut tsv = String::from("block\tsize_x\tsize_z\tcells\n");
+            let (mut n, mut partial, mut mismatch) = (0usize, 0usize, Vec::new());
+            let mut partial_names: Vec<String> = Vec::new();
+            for l in sizes_txt.lines().skip(1) {
+                let f: Vec<&str> = l.split('\t').collect();
+                if f.len() < 3 { continue; }
+                let (name, sx, sz): (&str, i32, i32) = (f[0], f[1].parse().unwrap_or(1), f[2].parse().unwrap_or(1));
+                let cells_txt = match cols.get(name) {
+                    Some((fx, fz, cells)) => {
+                        if (*fx, *fz) != (sx, sz) { mismatch.push(format!("{name}: BlockSizes {sx}×{sz} vs footprints {fx}×{fz}")); }
+                        if (cells.len() as i32) < sx * sz { partial += 1; partial_names.push(name.to_string()); cells.iter().map(|(x, z)| format!("{x},{z}")).collect::<Vec<_>>().join(" ") } else { String::new() }
+                    }
+                    None => String::new(),
+                };
+                tsv.push_str(&format!("{name}\t{sx}\t{sz}\t{cells_txt}\n"));
+                n += 1;
+            }
+            std::fs::write(&out, &tsv).unwrap_or_else(|e| die(format!("{out}: {e}")));
+            println!("wrote {out}: {n} blocks, {partial} with a partial footprint (cells filled), {} Stadium names in the footprints table", cols.len());
+            // --json Blocks.json: {"<block>": {"sizeX": n, "sizeZ": n[, "cells": [[ux, uz], ..]]}} in the TSV's order
+            if let Some(jp) = flag(&a.rest, "--json") {
+                let mut root = serde_json::Map::new();
+                for l in tsv.lines().skip(1) {
+                    let f: Vec<&str> = l.split('\t').collect();
+                    if f.len() < 4 { continue; }
+                    let mut o = serde_json::Map::new();
+                    o.insert("sizeX".into(), serde_json::Value::from(f[1].parse::<i64>().unwrap_or(1)));
+                    o.insert("sizeZ".into(), serde_json::Value::from(f[2].parse::<i64>().unwrap_or(1)));
+                    if !f[3].is_empty() {
+                        let cells: Vec<serde_json::Value> = f[3].split(' ').filter_map(|c| { let (x, z) = c.split_once(',')?; Some(serde_json::Value::Array(vec![serde_json::Value::from(x.parse::<i64>().ok()?), serde_json::Value::from(z.parse::<i64>().ok()?)])) }).collect();
+                        o.insert("cells".into(), serde_json::Value::Array(cells));
+                    }
+                    root.insert(f[0].to_string(), serde_json::Value::Object(o));
+                }
+                let txt = serde_json::to_string_pretty(&serde_json::Value::Object(root)).unwrap_or_else(|e| die(format!("json: {e}")));
+                std::fs::write(&jp, txt.as_bytes()).unwrap_or_else(|e| die(format!("{jp}: {e}")));
+                println!("wrote {jp}: {n} blocks ({partial} with cells)");
+            }
+            // check 1: every Stadium name's cells == columns (full footprints → empty)
+            let mut bad = 0usize;
+            for (name, (fx, fz, cells)) in &cols {
+                let row = tsv.lines().find(|l| l.split('\t').next() == Some(name.as_str()));
+                match row {
+                    None => { bad += 1; println!("  MISSING in BlockSizes: {name}"); }
+                    Some(r) => {
+                        let f: Vec<&str> = r.split('\t').collect();
+                        let expect = if (cells.len() as i32) < fx * fz { cells.iter().map(|(x, z)| format!("{x},{z}")).collect::<Vec<_>>().join(" ") } else { String::new() };
+                        if f.get(3).copied().unwrap_or("") != expect { bad += 1; println!("  cells mismatch: {name}: {:?} vs columns {:?}", f.get(3), expect); }
+                    }
+                }
+            }
+            println!("check 1: cells == StadiumBlockFootprints columns for {} of {} Stadium names ({bad} differ){}", cols.len() - bad, cols.len(), if mismatch.is_empty() { String::new() } else { format!("; size disagreements: {}", mismatch.join("; ")) });
+            // check 2: the vista paks' copies of the partial-footprint blocks
+            let (mut same, mut differ, mut absent) = (0usize, Vec::new(), 0usize);
+            let entries: Vec<String> = store.entries().map(|e| e.path()).filter(|p| { let u = p.to_uppercase(); u.contains("\\GAMECTNBLOCKINFO\\") && u.ends_with(".GBX") }).collect();
+            for name in &partial_names {
+                let want: std::collections::BTreeSet<(i32, i32)> = cols[name].2.iter().cloned().collect();
+                let needle = format!("\\{}.ED", name).to_uppercase();
+                let mut found_any = false;
+                for p in entries.iter().filter(|p| !p.to_uppercase().starts_with("STADIUM\\") && p.to_uppercase().contains(&needle)) {
+                    let Ok(bi) = mapgeom::blockinfo::load(&mut store, p) else { continue };
+                    let v = match (&bi.variant_base_ground, &bi.variant_base_air) { (Some(g), _) if !g.block_units.is_empty() => g, (_, Some(air)) if !air.block_units.is_empty() => air, _ => continue };
+                    let got: std::collections::BTreeSet<(i32, i32)> = v.block_units.iter().map(|u| (u.offset[0], u.offset[2])).collect();
+                    found_any = true;
+                    if got == want { same += 1; } else { differ.push(format!("{name} in {}: {:?} vs Stadium {:?}", p.split('\\').next().unwrap_or(""), got, want)); }
+                }
+                if !found_any { absent += 1; }
+            }
+            println!("check 2: vista-pak copies of the {partial} partial-footprint blocks: {same} identical, {} differ, {absent} blocks absent from the vista paks{}", differ.len(), if differ.is_empty() { String::new() } else { format!(": {}", differ.join("; ")) });
+            // check 3: the decorations of the maps
+            if let Some(i) = a.rest.iter().position(|x| x == "--maps") {
+                for mp in a.rest[i + 1..].iter().take_while(|x| !x.starts_with("--")) {
+                    let m = tmmaps::map::MapFile::try_load(std::path::Path::new(mp)).unwrap_or_else(die);
+                    let coll = m.body_collections().map(|c| c[0].1).unwrap_or(26);
+                    println!("  {}: collection {} decoration {}", std::path::Path::new(mp).file_name().unwrap().to_string_lossy(), mapgeom::sttc::collection_name(coll), m.decoration_id);
+                }
+            }
+        }
+        // water-table-slim --table IN.tsv --out OUT.tsv: collection, tile, flags_hex, mask64_hex (= the table's
+        //   deep_mask64_hex, the selected squares), same rows and order (v4.36)
+        "water-table-slim" => {
+            let table = flag(&a.rest, "--table").unwrap_or_else(|| die("water-table-slim needs --table IN.tsv".into()));
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("water-table-slim needs --out OUT.tsv".into()));
+            let txt = std::fs::read_to_string(&table).unwrap_or_else(|e| die(format!("{table}: {e}")));
+            let mut lines = txt.lines();
+            let header: Vec<&str> = lines.next().unwrap_or_default().split('\t').collect();
+            let col = header.iter().position(|h| *h == "deep_mask64_hex").unwrap_or_else(|| die("no deep_mask64_hex column".into()));
+            let mut s = String::from("collection\ttile\tflags_hex\tmask64_hex\n");
+            let mut n = 0usize;
+            for l in lines {
+                let f: Vec<&str> = l.split('\t').collect();
+                if f.len() <= col { continue; }
+                s.push_str(&format!("{}\t{}\t{}\t{}\n", f[0], f[1], f[2], f[col]));
+                n += 1;
+            }
+            std::fs::write(&out, &s).unwrap_or_else(|e| die(format!("{out}: {e}")));
+            println!("wrote {out}: {n} rows (mask = column {} `{}` of {table})", col + 1, header[col]);
+            // --json WaterFootprints.json: {"<collection>": {"<tile>": {"<flags_hex>": "<mask64 hex>"}}}
+            if let Some(jp) = flag(&a.rest, "--json") {
+                let mut root = serde_json::Map::new();
+                let mut leaves = 0usize;
+                for l in s.lines().skip(1) {
+                    let f: Vec<&str> = l.split('\t').collect();
+                    if f.len() < 4 { continue; }
+                    let coll = root.entry(f[0].to_string()).or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+                    let tile = coll.as_object_mut().unwrap().entry(f[1].to_string()).or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+                    tile.as_object_mut().unwrap().insert(f[2].to_string(), serde_json::Value::String(f[3].to_string()));
+                    leaves += 1;
+                }
+                let txt = serde_json::to_string_pretty(&serde_json::Value::Object(root)).unwrap_or_else(|e| die(format!("json: {e}")));
+                std::fs::write(&jp, txt.as_bytes()).unwrap_or_else(|e| die(format!("{jp}: {e}")));
+                println!("wrote {jp}: {leaves} leaf entries");
+            }
+        }
+        // outer-terrain-slim --table OuterTerrain.tsv --out StadiumOuterGrass.tsv: the Stadium rows as decoration, x0, x1,
+        //   z0, z1 (floor 8.0 on all, dropped; vista rows dropped — the ring is 4 rectangles in C#) (v4.36)
+        "outer-terrain-slim" => {
+            let table = flag(&a.rest, "--table").unwrap_or_else(|| die("outer-terrain-slim needs --table IN.tsv".into()));
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("outer-terrain-slim needs --out OUT.tsv".into()));
+            let txt = std::fs::read_to_string(&table).unwrap_or_else(|e| die(format!("{table}: {e}")));
+            let mut s = String::from("decoration\tx0\tx1\tz0\tz1\n");
+            let (mut n, mut floors) = (0usize, std::collections::BTreeSet::new());
+            let mut decos: BTreeMap<String, usize> = BTreeMap::new();
+            for l in txt.lines().skip(1) {
+                let f: Vec<&str> = l.split('\t').collect();
+                if f.len() < 9 || f[0] != "Stadium" { continue; }
+                floors.insert(f[6].to_string());
+                *decos.entry(f[1].to_string()).or_default() += 1;
+                s.push_str(&format!("{}\t{}\t{}\t{}\t{}\n", f[1], f[2], f[3], f[4], f[5]));
+                n += 1;
+            }
+            std::fs::write(&out, &s).unwrap_or_else(|e| die(format!("{out}: {e}")));
+            println!("wrote {out}: {n} Stadium rows; floors dropped: {:?}; decorations: {:?}", floors, decos);
+            // --json StadiumOuterGrass.json: {"<decoration>": [[x0, x1, z0, z1], ..]} (numbers as in the TSV)
+            if let Some(jp) = flag(&a.rest, "--json") {
+                let mut root = serde_json::Map::new();
+                let num = |v: &str| -> serde_json::Value { let x: f64 = v.parse().unwrap_or(0.0); if x.fract() == 0.0 { serde_json::Value::from(x as i64) } else { serde_json::json!(((x * 10.0).round()) / 10.0) } };
+                for l in s.lines().skip(1) {
+                    let f: Vec<&str> = l.split('\t').collect();
+                    if f.len() < 5 { continue; }
+                    let arr = root.entry(f[0].to_string()).or_insert_with(|| serde_json::Value::Array(Vec::new()));
+                    arr.as_array_mut().unwrap().push(serde_json::Value::Array(vec![num(f[1]), num(f[2]), num(f[3]), num(f[4])]));
+                }
+                let txt = serde_json::to_string_pretty(&serde_json::Value::Object(root)).unwrap_or_else(|e| die(format!("json: {e}")));
+                std::fs::write(&jp, txt.as_bytes()).unwrap_or_else(|e| die(format!("{jp}: {e}")));
+                println!("wrote {jp}: {n} strips");
+            }
+        }
         // stadium-footprints --out F.tsv [--collection Stadium]: every block info of the collection → its ground-variant
         //   footprint (size x/z in cells + the unit cells at the base row, dir 0) — the static table Hugo's C# reads
         "stadium-footprints" => {
@@ -5625,6 +5793,33 @@ fn main() {
                 let c = b.coords();
                 if c.0 < w[0] || c.0 > w[1] || c.2 < w[2] || c.2 > w[3] || c.1 < rows[0] || c.1 > rows[1] { continue; }
                 println!("B\t{}\t{}\t{}\t{}\t{:08x}\t{}\t{}", b.name, c.0, c.1, c.2, b.flags, b.dir, o.baked_charted(i));
+            }
+        }
+        // stadium-grass --deco 48x48Screen155 --out F.Item.Gbx [--margin-cells 12] [--inset 0.5] [--step 0.5] [--above 0.3]
+        //   [--strips OuterTerrain.tsv]: Hugo's penalty-grass item (stadium_grass::build), ident = file name
+        "stadium-grass" => {
+            let mut store = open(&a);
+            let deco = flag(&a.rest, "--deco").unwrap_or_else(|| "48x48Screen155".into());
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("stadium-grass needs --out F.Item.Gbx".into()));
+            let margin_cells: i32 = flag(&a.rest, "--margin-cells").and_then(|v| v.parse().ok()).unwrap_or(12);
+            let inset: f32 = flag(&a.rest, "--inset").and_then(|v| v.parse().ok()).unwrap_or(0.5);
+            let step: f32 = flag(&a.rest, "--step").and_then(|v| v.parse().ok()).unwrap_or(0.5);
+            let above: f32 = flag(&a.rest, "--above").and_then(|v| v.parse().ok()).unwrap_or(0.3);
+            let strips: Vec<(f32, f32, f32, f32)> = flag(&a.rest, "--strips").map(|f| {
+                std::fs::read_to_string(&f).unwrap_or_default().lines().skip(1).filter_map(|l| { let c: Vec<&str> = l.split('\t').collect(); if c.len() < 6 || c[0] != "Stadium" { return None; } Some((c[2].parse().ok()?, c[3].parse().ok()?, c[4].parse().ok()?, c[5].parse().ok()?)) }).collect()
+            }).unwrap_or_default();
+            let ident = std::path::Path::new(&out).file_name().unwrap().to_string_lossy().to_string();
+            let g = mapgeom::stadium_grass::build(&mut store, &deco, 48, margin_cells, inset, step, above, &ident, &strips).unwrap_or_else(die);
+            std::fs::write(&out, &g.bytes).unwrap_or_else(|e| die(format!("{out}: {e}")));
+            for n in &g.notes { println!("  {n}"); }
+            println!("wrote {out}: {} bytes, {} polygons, {} vertices, {:.0} m²", g.bytes.len(), g.outline.polygons.len(), g.outline.vertices, g.outline.area);
+            if let Some(d) = flag(&a.rest, "--dump-outline") {
+                let mut s = String::from("polygon\tring\tx\tz\n");
+                for (i, (outer, holes)) in g.outline.polygons.iter().enumerate() {
+                    for p in outer { s.push_str(&format!("{i}\touter\t{:.3}\t{:.3}\n", p[0], p[1])); }
+                    for (h, hole) in holes.iter().enumerate() { for p in hole { s.push_str(&format!("{i}\thole{h}\t{:.3}\t{:.3}\n", p[0], p[1])); } }
+                }
+                std::fs::write(&d, s).unwrap_or_else(|e| die(format!("{d}: {e}")));
             }
         }
         // cutout-audit --items DIR --maps M.. [--out-tsv F] [--out-md F]: Hugo's robustness check of the cutout set

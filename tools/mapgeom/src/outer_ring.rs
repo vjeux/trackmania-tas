@@ -42,8 +42,8 @@ pub fn ring_cells(collection: u32) -> i32 {
 /// Band raster for the Stadium flat-grass test.
 pub const STEP: f32 = 4.0;
 /// Stadium: a hit-shape face this far above the grass inside a square makes it structure (walls, seats, banks).
-const WALL_ABOVE: f32 = 0.3;
-const WALL_UNDER: f32 = 3.0;
+pub const WALL_ABOVE: f32 = 0.3;
+pub const WALL_UNDER: f32 = 3.0;
 
 #[derive(Clone, Debug)]
 pub struct OuterRect {
@@ -531,9 +531,11 @@ impl Placement {
     }
 }
 
-fn stadium_ring(store: &mut crate::store::DataStore, m: &MapFile, size: (i32, i32)) -> Result<Ring, String> {
+/// The Stadium decoration's placed pieces (stands, grass carpet) as tagged triangles in the MAP frame — the loader
+/// shared by the 4 m ring strips (`stadium_ring`) and the exact penalty-grass item (`stadium_grass`).
+pub fn stadium_deco_pieces(store: &mut crate::store::DataStore, deco_id: &str) -> Result<(Vec<(String, [[f32; 3]; 3])>, Vec<String>, &'static str), String> {
     // the deco map behind the decoration id (48x48Day, 48x48Screen155Sunset, NoStadium48x48Night …)
-    let deco_id = m.decoration_id.clone();
+    let deco_id = deco_id.to_string();
     let deco_map = if deco_id.starts_with("NoStadium") {
         "Stadium\\GameCtnDecoration\\Map\\DecoNoStadium48x48.Map.Gbx"
     } else if deco_id.contains("Screen155") {
@@ -630,6 +632,11 @@ fn stadium_ring(store: &mut crate::store::DataStore, m: &MapFile, size: (i32, i3
     if pieces.is_empty() {
         return Err(format!("{deco_map}: no decoration geometry loaded"));
     }
+    Ok((pieces, notes, deco_map))
+}
+
+fn stadium_ring(store: &mut crate::store::DataStore, m: &MapFile, size: (i32, i32)) -> Result<Ring, String> {
+    let (pieces, mut notes, _deco_map) = stadium_deco_pieces(store, &m.decoration_id)?;
     let (gx, gz) = (32.0 * size.0 as f32, 32.0 * size.1 as f32);
     let margin = 32.0 * RING_CELLS as f32;
     let n = ((gx + 2.0 * margin) / STEP).round() as i32;

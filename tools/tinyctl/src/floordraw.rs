@@ -85,7 +85,19 @@ pub fn cmd(rest: &[String]) -> Result<(), String> {
     let plane = mapgeom::floor_finish::stadium_plane_mesh(&mut store, &m, 0.0, 1.0)?;
     // v4.7: the outer ring (6 cells of the decoration's flat grass) — drawn around the grid, the grid boundary thick
     let ring = if rest.iter().any(|x| x == "--no-ring") { None } else { mapgeom::outer_ring::ring(&mut store, &m, 0x1a).ok() };
-    let margin = if ring.is_some() { 32.0 * mapgeom::outer_ring::ring_cells(0x1a) as f32 } else { 0.0 };
+    // v4.36 `--outline F.tsv [--margin-cells N]`: the penalty-grass item's polygons (map frame; `stadium-grass
+    // --dump-outline`) drawn in magenta over the picture, the margin widened to hold them
+    let outline: Vec<Vec<(f32, f32)>> = f(rest, "--outline").map(|p| {
+        let mut polys: std::collections::BTreeMap<String, Vec<(f32, f32)>> = Default::default();
+        for l in std::fs::read_to_string(&p).unwrap_or_default().lines().skip(1) {
+            let c: Vec<&str> = l.split('\t').collect();
+            if c.len() < 4 { continue; }
+            if let (Ok(x), Ok(z)) = (c[2].parse::<f32>(), c[3].parse::<f32>()) { polys.entry(format!("{}/{}", c[0], c[1])).or_default().push((x, z)); }
+        }
+        polys.into_values().collect()
+    }).unwrap_or_default();
+    let margin_cells: i32 = f(rest, "--margin-cells").and_then(|v| v.parse().ok()).unwrap_or(if outline.is_empty() { mapgeom::outer_ring::ring_cells(0x1a) } else { 8 });
+    let margin = if ring.is_some() || !outline.is_empty() { 32.0 * margin_cells as f32 } else { 0.0 };
     let (mut nx, mut nz) = (0, 0);
     for &(x, z) in &floor.grass {
         nx = nx.max(x + 1);
@@ -219,6 +231,10 @@ pub fn cmd(rest: &[String]) -> Result<(), String> {
         if ring.is_some() {
             let (a, b) = (sc.p(0.0, 0.0), sc.p(32.0 * nx as f32, 32.0 * nz as f32));
             cv.outline(&[a, (b.0, a.1), b, (a.0, b.1)], INK, 3.0);
+        }
+        for poly in &outline {
+            let pts: Vec<(f32, f32)> = poly.iter().map(|(x, z)| sc.p(*x, *z)).collect();
+            cv.outline(&pts, [200, 0, 200], 2.0);
         }
         let _ = (w, h);
         (n_placed, placements)
