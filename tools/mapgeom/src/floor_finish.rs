@@ -55,7 +55,7 @@ pub const BED_ABOVE: f32 = 0.3;
 static FIXED_LEVELS: std::sync::Mutex<Option<Vec<(u32, f32)>>> = std::sync::Mutex::new(None);
 pub const FIXED_THICKNESS: f32 = 0.3;
 pub fn hugo_fixed_levels() -> Vec<(u32, f32)> {
-    vec![(0x10, -4.0), (0x1d, -4.0), (0xf, -4.0), (0x1c, 4.75)]
+    vec![(0x10, -4.0), (0x1d, -4.0), (0xf, -4.0), (0x1c, 4.8)]
 }
 pub fn set_fixed_levels(levels: Option<Vec<(u32, f32)>>) {
     *FIXED_LEVELS.lock().unwrap() = levels;
