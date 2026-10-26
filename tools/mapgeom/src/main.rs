@@ -5537,6 +5537,54 @@ fn main() {
             println!("  ground-level structure x values {:?}", xs.iter().map(|v| format!("{v:.3}")).collect::<Vec<_>>());
             println!("  ground-level structure z values {:?}", zs.iter().map(|v| format!("{v:.3}")).collect::<Vec<_>>());
         }
+        // drivability --blocks A,B,.. [--items X,Y,..]: per kind the standable deck area from the pak geometry (blocks: the
+        //   base variant's standable heightfield, in m² and as a fraction of the footprint; items: the item's upward
+        //   collision area under 2 m of slope... items report their collision bbox and whether any upward surface exists)
+        "drivability" => {
+            let mut store = open(&a);
+            let blocks_all = mapgeom::checkpoint_map::all_blocks(&mut store, None);
+            println!("type\tkind\tfound\tfootprint_cells\tstandable_m2\tstandable_frac\tzone_frac\tnote");
+            if let Some(v) = flag(&a.rest, "--blocks") {
+                for name in v.split(',').map(|t| t.trim()).filter(|t| !t.is_empty()) {
+                    let Some(b) = blocks_all.iter().find(|b| b.name.eq_ignore_ascii_case(name)) else { println!("block\t{name}\tno\t-\t-\t-\t-\tno block info"); continue };
+                    let bi = match mapgeom::blockinfo::load(&mut store, &b.path) { Ok(x) => x, Err(e) => { println!("block\t{name}\tno\t-\t-\t-\t-\t{e}"); continue } };
+                    let Some(var) = bi.variant_base_ground.as_ref().or(bi.variant_base_air.as_ref()) else { println!("block\t{name}\tyes\t-\t-\t-\t-\tno base variant"); continue };
+                    match mapgeom::checkpoint_map::variant_heightfield(&mut store, var) {
+                        Ok(f) => {
+                            let cells = (f.size.0 as f32) * (f.size.1 as f32);
+                            let area = f.covered();
+                            let zone = f.mat.iter().zip(f.h.iter()).filter(|(m, h)| h.is_some() && mapgeom::checkpoint_map::is_zone_physics(**m)).count() as f32;
+                            println!("block\t{name}\tyes\t{cells:.0}\t{area:.1}\t{:.3}\t{:.3}\twaypoint {:?}", area as f32 / (1024.0 * cells), zone / (1024.0 * cells), bi.waypoint_type);
+                        }
+                        Err(e) => println!("block\t{name}\tyes\t-\t-\t-\t-\t{e}"),
+                    }
+                }
+            }
+            if let Some(v) = flag(&a.rest, "--items") {
+                for name in v.split(',').map(|t| t.trim()).filter(|t| !t.is_empty()) {
+                    let path = format!("Stadium\\Items\\{name}.Item.Gbx");
+                    match mapgeom::static_item::build::pack_item_merged(&mut store, &path, 1.0, 26, 0, None) {
+                        Ok(m) => {
+                            // upward collision triangles' area (normal y > 0.7) = where a car could stand
+                            let mut up = 0.0f32;
+                            let mut total = 0.0f32;
+                            for t in &m.surf_triangles {
+                                let p = [m.surf_vertices[t.indices[0] as usize], m.surf_vertices[t.indices[1] as usize], m.surf_vertices[t.indices[2] as usize]];
+                                let (u, v) = ([p[1][0] - p[0][0], p[1][1] - p[0][1], p[1][2] - p[0][2]], [p[2][0] - p[0][0], p[2][1] - p[0][1], p[2][2] - p[0][2]]);
+                                let n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+                                let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+                                total += len / 2.0;
+                                if len > 1e-9 && n[1] / len > 0.7 { up += len / 2.0; }
+                            }
+                            let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+                            for v in &m.surf_vertices { for k in 0..3 { lo[k] = lo[k].min(v[k]); hi[k] = hi[k].max(v[k]); } }
+                            println!("item\t{name}\tyes\t-\t{up:.1}\t{:.3}\t-\tcollision {} tris, bbox [{:.1} {:.1} {:.1}]..[{:.1} {:.1} {:.1}], {} visuals", if total > 0.0 { up / total } else { 0.0 }, m.surf_triangles.len(), lo[0], lo[1], lo[2], hi[0], hi[1], hi[2], m.visuals.len());
+                        }
+                        Err(e) => println!("item\t{name}\tno\t-\t-\t-\t-\t{e}"),
+                    }
+                }
+            }
+        }
         // crystal-info FILE.Item.Gbx…: a mesh-modeler item's recipe — materials (link, physics, gameplay, constants, colour),
         //   every layer (kind, crystal positions / faces), the item's waypoint type (chunk 0x2E00201F in the body)
         "crystal-info" => {
