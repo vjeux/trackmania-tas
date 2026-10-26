@@ -774,6 +774,17 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
                 }
                 if facts {
                     println!("{path}: {label}collision {} vertices {} triangles physics {:?} gameplay_main_dir {:?} surf_version {}", vertices.len(), triangles.len(), sf.material_ids, sf.gameplay_main_dir, sf.surf_version);
+                    if !vertices.is_empty() {
+                        let mut lo = [f32::MAX; 3];
+                        let mut hi = [f32::MIN; 3];
+                        for v in vertices.iter() {
+                            for k in 0..3 {
+                                lo[k] = lo[k].min(v[k]);
+                                hi[k] = hi[k].max(v[k]);
+                            }
+                        }
+                        println!("{path}: {label}collision bbox x {:.2}..{:.2} y {:.2}..{:.2} z {:.2}..{:.2}", lo[0], hi[0], lo[1], hi[1], lo[2], hi[2]);
+                    }
                     // the gameplay id rides the table's high byte (Turbo 1, Reset 8, …)
                     let mut gp: std::collections::BTreeMap<(u8, u8), usize> = std::collections::BTreeMap::new();
                     for t in triangles {

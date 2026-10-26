@@ -1060,8 +1060,27 @@ pub fn cmd(args: &[String]) {
                 zip = crate::header::deflated_zip(&kept);
             }
         }
-        let authors: Vec<String> = embedded_names.iter().map(|n| crate::surface::item_author(n)).collect();
-        let manifest: Vec<(&str, &str)> = embedded_names.iter().zip(authors.iter()).map(|(name, a)| (name.as_str(), a.as_str())).collect();
+        // A CARRIED custom item keeps the SOURCE's manifest row: its ident spelled the way
+        // the placements spell it (backslashes) and its real author — the game matches a
+        // placement to an embedded file by (ident, author), and the library form
+        // (ident = author, slashes) left Everios96's PMC light item unmatched: Tiny 302
+        // "missing items", the finish froze the game (shcr 2026-10-18).
+        let source_rows: std::collections::HashMap<String, (String, String)> = source
+            .embedded_objects()
+            .map(|(rows, _)| rows.into_iter().map(|(ident, author)| (ident.replace('\\', "/").to_ascii_lowercase(), (ident, author))).collect())
+            .unwrap_or_default();
+        let carried_set: std::collections::BTreeSet<&str> = carried.iter().map(|(n, _)| n.trim_start_matches("Items/")).collect();
+        let mut manifest_owned: Vec<(String, String)> = Vec::new();
+        for n in &embedded_names {
+            if carried_set.contains(n.as_str()) {
+                if let Some((ident, author)) = source_rows.get(&n.to_ascii_lowercase()) {
+                    manifest_owned.push((ident.clone(), author.clone()));
+                    continue;
+                }
+            }
+            manifest_owned.push((n.clone(), crate::surface::item_author(n)));
+        }
+        let manifest: Vec<(&str, &str)> = manifest_owned.iter().map(|(name, a)| (name.as_str(), a.as_str())).collect();
         m.replace_embedded_objects(&manifest, &zip);
     }
     // The source's VALIDATION GHOST (chunk 0x0305B00F) is the original's

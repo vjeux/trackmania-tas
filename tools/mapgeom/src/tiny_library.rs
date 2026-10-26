@@ -2379,7 +2379,45 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             let alias = format!("AC{next_alias:08}");
             next_alias += 1;
             let ident = format!("{alias}.Item.Gbx");
-            match crate::static_item::build::static_item_from_custom_block(Some(store), bytes, &ident, &ident, scale, collection, special, name) {
+            // the record's waypoint tag (the map's, not the block file's): a custom block
+            // placed as the finish/start/checkpoint gets a footprint trigger (U10S 354)
+            let wp_tag: Option<&str> = source.blocks.iter().find(|b| b.name == *name && b.waypoint_tag.is_some()).and_then(|b| b.waypoint_tag.as_deref());
+            let wp_type: Option<i32> = match wp_tag {
+                Some("Start") => Some(0),
+                Some("Goal") => Some(1),
+                Some("Checkpoint") => Some(2),
+                Some("StartFinish") => Some(4),
+                _ => None,
+            };
+            // the footprint is only known after the bake: a first pass without the trigger
+            // gives the extents, the second emits with it (two bakes of one small block)
+            let first = crate::static_item::build::static_item_from_custom_block(Some(store), bytes, &ident, &ident, scale, collection, special.clone(), name, None);
+            let waypoint: Option<(i32, CPlugSurface)> = match (&first, wp_type) {
+                (Ok((_, m0, _)), Some(wt)) if !m0.visuals.is_empty() => {
+                    let mut max = [0.0f32; 3];
+                    let pts: Vec<[f32; 3]> = if m0.surf_vertices.is_empty() { m0.visuals.iter().filter_map(|v| v.visual.main.as_ref().map(|mm| { let b = mm.bounding_box; [b[3], b[4], b[5]] })).collect() } else { m0.surf_vertices.clone() };
+                    for p in &pts {
+                        for i in 0..3 {
+                            max[i] = max[i].max(p[i] / scale);
+                        }
+                    }
+                    let cells = |extent: f32, size: f32| ((extent - 0.05) / size).ceil().max(1.0) as i32;
+                    let (sx, sy, sz) = (cells(max[0], 32.0), cells(max[1], 8.0), cells(max[2], 32.0));
+                    let mut units: Vec<[i32; 3]> = Vec::new();
+                    for x in 0..sx {
+                        for y in 0..sy {
+                            for z in 0..sz {
+                                units.push([x, y, z]);
+                            }
+                        }
+                    }
+                    eprintln!("  {alias}: custom block tagged {} → waypoint type {wt}, footprint {sx}x{sy}x{sz} box trigger", wp_tag.unwrap_or("?"));
+                    Some((wt, unit_box_trigger(&units, scale)))
+                }
+                _ => None,
+            };
+            let result = if waypoint.is_some() { crate::static_item::build::static_item_from_custom_block(Some(store), bytes, &ident, &ident, scale, collection, special, name, waypoint) } else { first };
+            match result {
                 Ok((out, m, arche)) if !m.visuals.is_empty() => {
                     // footprint in cells from the scaled collision (fallback: the visuals)
                     let mut max = [0.0f32; 3];

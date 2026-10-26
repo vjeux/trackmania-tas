@@ -219,6 +219,65 @@ fn main() {
             m.write_to(&out).expect("write");
             println!("{}: {hh} header + {bh} body occurrence(s) replaced", out.display());
         }
+        // tmmaps item-authors MAP [--model SUBSTR] — every item placement's (model, author,
+        // collection) + the manifest row for it: the Tiny 302 "PMC items missing" check
+        // (the author's own light item must be placed AND listed under the author's login)
+        "item-authors" => {
+            let m = tmmaps::map::MapFile::load(std::path::Path::new(&args[2]));
+            let filt = tmmaps::cli::flag(&args, "--model").map(String::from);
+            let rows: std::collections::HashMap<String, String> = m.embedded_objects().map(|(r, _)| r.into_iter().collect()).unwrap_or_default();
+            let mut seen: std::collections::BTreeMap<(String, String, u32), usize> = std::collections::BTreeMap::new();
+            for it in &m.items {
+                if let Some(f) = &filt {
+                    if !it.model.contains(f.as_str()) {
+                        continue;
+                    }
+                }
+                *seen.entry((it.model.clone(), it.author.clone().unwrap_or_else(|| "-".into()), it.collection_raw)).or_default() += 1;
+            }
+            println!("model\tplacement author\tcollection\tcount\tmanifest author");
+            for ((model, author, coll), n) in seen {
+                let mrow = rows.get(&model).cloned().or_else(|| rows.get(&model.replace('\\', "/")).cloned()).unwrap_or_else(|| "(no manifest row)".into());
+                println!("{model}\t{author}\t{coll:#x}\t{n}\t{mrow}");
+            }
+        }
+        // tmmaps fix-manifest MAP --out OUT — every embedded-object manifest row whose author
+        // equals its own ident (the Tiny converter's library form) but whose placements name a
+        // real author gets that author; idents with '/' are respelled with '\\' (Tiny 302's
+        // PMC light item: "missing items", the finish freezes — shcr 2026-10-18)
+        "fix-manifest" => {
+            let src = std::path::PathBuf::from(&args[2]);
+            let out = std::path::PathBuf::from(tmmaps::cli::flag(&args, "--out").expect("fix-manifest needs --out OUT"));
+            let mut m = tmmaps::map::MapFile::load(&src);
+            let (rows, zip) = m.embedded_objects().expect("map has no embedded objects");
+            let mut by_model: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+            for it in &m.items {
+                if let Some(a) = &it.author {
+                    by_model.entry(it.model.clone()).or_insert_with(|| a.clone());
+                }
+            }
+            let mut fixed = 0usize;
+            let rows2: Vec<(String, String)> = rows
+                .into_iter()
+                .map(|(ident, author)| {
+                    let ident_bs = ident.replace('/', "\\");
+                    let placed = by_model.get(&ident_bs).or_else(|| by_model.get(&ident)).cloned();
+                    let new_author = match placed {
+                        Some(a) if author == ident || author == ident_bs || author != a => a,
+                        _ => author.clone(),
+                    };
+                    if ident_bs != ident || new_author != author {
+                        fixed += 1;
+                        println!("  {ident} [{author}] -> {ident_bs} [{new_author}]");
+                    }
+                    (ident_bs, new_author)
+                })
+                .collect();
+            let manifest: Vec<(&str, &str)> = rows2.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+            m.replace_embedded_objects(&manifest, &zip);
+            m.write_to(&out).expect("write");
+            println!("{}: {fixed} manifest row(s) fixed of {}", out.display(), rows2.len());
+        }
         "drop-blocks" => {
             if let Err(e) = tmmaps::altered::drop_blocks_cmd(&args) {
                 eprintln!("tmmaps drop-blocks: {e}");
