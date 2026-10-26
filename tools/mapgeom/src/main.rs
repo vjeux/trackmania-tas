@@ -5809,7 +5809,7 @@ fn main() {
                 std::fs::read_to_string(&f).unwrap_or_default().lines().skip(1).filter_map(|l| { let c: Vec<&str> = l.split('\t').collect(); if c.len() < 6 || c[0] != "Stadium" { return None; } Some((c[2].parse().ok()?, c[3].parse().ok()?, c[4].parse().ok()?, c[5].parse().ok()?)) }).collect()
             }).unwrap_or_default();
             let ident = std::path::Path::new(&out).file_name().unwrap().to_string_lossy().to_string();
-            let g = mapgeom::stadium_grass::build(&mut store, &deco, 48, margin_cells, inset, step, above, &ident, &strips, a.rest.iter().any(|x| x == "--airborne")).unwrap_or_else(die);
+            let g = mapgeom::stadium_grass::build(&mut store, &deco, 48, margin_cells, inset, step, above, &ident, &strips, a.rest.iter().any(|x| x == "--airborne"), !a.rest.iter().any(|x| x == "--no-connect")).unwrap_or_else(die);
             std::fs::write(&out, &g.bytes).unwrap_or_else(|e| die(format!("{out}: {e}")));
             for n in &g.notes { println!("  {n}"); }
             println!("wrote {out}: {} bytes, {} polygons, {} vertices, {:.0} m²", g.bytes.len(), g.outline.polygons.len(), g.outline.vertices, g.outline.area);

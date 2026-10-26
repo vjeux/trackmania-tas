@@ -106,7 +106,7 @@ impl Grid {
     }
 }
 
-pub fn build(store: &mut crate::store::DataStore, deco_id: &str, grid_cells: i32, margin_cells: i32, inset: f32, step: f32, above: f32, ident: &str, strips: &[(f32, f32, f32, f32)], old_rule: bool) -> Result<GrassItem, String> {
+pub fn build(store: &mut crate::store::DataStore, deco_id: &str, grid_cells: i32, margin_cells: i32, inset: f32, step: f32, above: f32, ident: &str, strips: &[(f32, f32, f32, f32)], old_rule: bool, connect: bool) -> Result<GrassItem, String> {
     let (pieces, mut notes, deco_map) = crate::outer_ring::stadium_deco_pieces(store, deco_id)?;
     let grass_y = 8.0f32;
     let (gx, gz) = (32.0 * grid_cells as f32, 32.0 * grid_cells as f32);
@@ -171,6 +171,84 @@ pub fn build(store: &mut crate::store::DataStore, deco_id: &str, grid_cells: i32
     } else {
         notes.push(format!("extent x {:.1}..{:.1} z {:.1}..{:.1} (grid 0..{gx:.0}; margin {margin:.0} m)", lo[0], hi[0], lo[1], hi[1]));
     }
+    // v4.38 CONNECTIVITY (Hugo 12:26 "remove any island piece of grass that does not connect to the buildable
+    // area"): flood-fill the clear-grass raster (0.5 m; clear = grass with no standing structure, before the inset)
+    // from the grid boundary; keep only the outline polygons whose interior meets the flooded region AND which touch
+    // the grid edge themselves (a polygon connected only through a gap narrower than twice the inset is not
+    // drivable from the grid); the corner patches and the islands behind walls / rails under the stands go.
+    let origin = [-margin, -margin];
+    let gsize = [gx + 2.0 * margin, gz + 2.0 * margin];
+    let grass_grid = Grid::new(fill.clone(), origin, gsize, 2.0);
+    let struct_grid = Grid::new(structure.clone(), origin, gsize, 2.0);
+    let rstep = 0.5f32;
+    let (nx, nz) = ((gsize[0] / rstep) as i32, (gsize[1] / rstep) as i32);
+    let idx = |i: i32, j: i32| (j * nx + i) as usize;
+    let mut clear = vec![false; (nx * nz) as usize];
+    let mut flooded = vec![false; (nx * nz) as usize];
+    let at = |i: i32, j: i32| -> [f32; 2] { [origin[0] + rstep * (i as f32 + 0.5), origin[1] + rstep * (j as f32 + 0.5)] };
+    for j in 0..nz {
+        for i in 0..nx {
+            let p = at(i, j);
+            if p[0] >= 0.0 && p[0] <= gx && p[1] >= 0.0 && p[1] <= gz { continue; }
+            clear[idx(i, j)] = grass_grid.hit(p) && !struct_grid.hit(p);
+        }
+    }
+    let mut stack: Vec<(i32, i32)> = Vec::new();
+    for j in 0..nz {
+        for i in 0..nx {
+            let p = at(i, j);
+            let on_edge = (p[0] < 0.0 && p[0] > -rstep && p[1] >= 0.0 && p[1] <= gz) || (p[0] > gx && p[0] < gx + rstep && p[1] >= 0.0 && p[1] <= gz) || (p[1] < 0.0 && p[1] > -rstep && p[0] >= 0.0 && p[0] <= gx) || (p[1] > gz && p[1] < gz + rstep && p[0] >= 0.0 && p[0] <= gx);
+            if on_edge && clear[idx(i, j)] { flooded[idx(i, j)] = true; stack.push((i, j)); }
+        }
+    }
+    while let Some((i, j)) = stack.pop() {
+        for (di, dj) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            let (a, b) = (i + di, j + dj);
+            if a < 0 || b < 0 || a >= nx || b >= nz { continue; }
+            let k = idx(a, b);
+            if clear[k] && !flooded[k] { flooded[k] = true; stack.push((a, b)); }
+        }
+    }
+    let n_clear = clear.iter().filter(|c| **c).count();
+    let n_flooded = flooded.iter().filter(|c| **c).count();
+    let mut kept: Vec<(Vec<[f32; 2]>, Vec<Vec<[f32; 2]>>)> = Vec::new();
+    let mut dropped: Vec<(f32, [f32; 2], &'static str)> = Vec::new();
+    let touches_edge = |outer: &[[f32; 2]]| outer.iter().any(|p| (p[0].abs() < 0.05 || (p[0] - gx).abs() < 0.05) && p[1] >= -0.05 && p[1] <= gz + 0.05 || (p[1].abs() < 0.05 || (p[1] - gz).abs() < 0.05) && p[0] >= -0.05 && p[0] <= gx + 0.05);
+    for (outer, holes) in o.polygons.drain(..) {
+        let area = crate::floor_finish::polygon_area(&outer) + holes.iter().map(|h| crate::floor_finish::polygon_area(h)).sum::<f32>();
+        let (bx0, bx1, bz0, bz1) = outer.iter().fold((f32::INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::NEG_INFINITY), |a, p| (a.0.min(p[0]), a.1.max(p[0]), a.2.min(p[1]), a.3.max(p[1])));
+        let centre = [(bx0 + bx1) / 2.0, (bz0 + bz1) / 2.0];
+        // interior meets the flooded region?
+        let mut meets = false;
+        let (i0, i1) = ((((bx0 - origin[0]) / rstep).floor() as i32).max(0), (((bx1 - origin[0]) / rstep).ceil() as i32).min(nx - 1));
+        let (j0, j1) = ((((bz0 - origin[1]) / rstep).floor() as i32).max(0), (((bz1 - origin[1]) / rstep).ceil() as i32).min(nz - 1));
+        'scan: for j in j0..=j1 {
+            for i in i0..=i1 {
+                if flooded[idx(i, j)] {
+                    let p = at(i, j);
+                    if crate::cutout_outline::point_in_poly(p, &outer) && !holes.iter().any(|h| crate::cutout_outline::point_in_poly(p, h)) { meets = true; break 'scan; }
+                }
+            }
+        }
+        let edge = touches_edge(&outer);
+        if !connect || (meets && edge) {
+            kept.push((outer, holes));
+        } else {
+            dropped.push((area, centre, if !meets { "not connected to the grid" } else { "connected only through a gap under 1 m (no grid-edge contact)" }));
+        }
+    }
+    o.polygons = kept;
+    o.area = o.polygons.iter().map(|(outer, holes)| crate::floor_finish::polygon_area(outer) + holes.iter().map(|h| crate::floor_finish::polygon_area(h)).sum::<f32>()).sum();
+    o.vertices = o.polygons.iter().map(|(outer, holes)| outer.len() + holes.iter().map(|h| h.len()).sum::<usize>()).sum();
+    if connect {
+        let corner = |c: [f32; 2]| (c[0] < 0.0 || c[0] > gx) && (c[1] < 0.0 || c[1] > gz);
+        let (nc, ac) = dropped.iter().filter(|(_, c, _)| corner(*c)).fold((0usize, 0.0f32), |(n, a), (ar, _, _)| (n + 1, a + ar));
+        let (nd, ad) = dropped.iter().fold((0usize, 0.0f32), |(n, a), (ar, _, _)| (n + 1, a + ar));
+        notes.push(format!("connectivity: clear-grass raster {n_clear} samples, {n_flooded} reachable from the grid edge ({:.1} %); kept {} polygons ({:.0} m², {} vertices), dropped {nd} ({ad:.0} m²): {nc} corner patches outside the stadium ends ({ac:.0} m²), {} islands under the stands ({:.0} m²); {} of the dropped were raster-connected but reach the grid only through a gap under 1 m", 100.0 * n_flooded as f32 / n_clear.max(1) as f32, o.polygons.len(), o.area, o.vertices, nd - nc, ad - ac, dropped.iter().filter(|(_, _, why)| why.starts_with("connected only")).count()));
+        let mut biggest: Vec<&(f32, [f32; 2], &str)> = dropped.iter().collect();
+        biggest.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+        for (ar, c, why) in biggest.iter().take(6) { notes.push(format!("  dropped {ar:.0} m² at ({:.0}, {:.0}): {why}", c[0], c[1])); }
+    }
     // the crystal: caps at 0 (down) and `above` (up) + the trigger prism 0..above
     let ((tv, tt), (iv, it)) = crate::cutout_outline::extrude(&o, 0.0, above, 0.0);
     let mut mesh = crate::crystal::CrystalMesh::default();
@@ -180,22 +258,18 @@ pub fn build(store: &mut crate::store::DataStore, deco_id: &str, grid_cells: i32
     crate::floor_tiles::tri_faces(&mut trig, &tv, &tt, 0);
     let bytes = crate::floor_tiles::build_pure_item(ident, 26, &mesh, Some(&trig))?;
     // verification raster (0.5 m): inside the polygon ⇒ grass under it and no structure; grass outside the polygon = missed
-    let origin = [-margin, -margin];
-    let gsize = [gx + 2.0 * margin, gz + 2.0 * margin];
-    let grass_grid = Grid::new(fill.clone(), origin, gsize, 2.0);
-    let struct_grid = Grid::new(structure.clone(), origin, gsize, 2.0);
     let top: Vec<Tri> = it.iter().map(|t| [iv[t[0] as usize], iv[t[1] as usize], iv[t[2] as usize]]).collect();
     let poly_grid = Grid::new(top, origin, gsize, 4.0);
     let (mut n_in, mut n_nograss, mut n_struct, mut n_missed, mut n_grass) = (0usize, 0usize, 0usize, 0usize, 0usize);
-    let (nx, nz) = ((gsize[0] / 0.5) as i32, (gsize[1] / 0.5) as i32);
     for j in 0..nz {
         for i in 0..nx {
-            let p = [origin[0] + 0.5 * (i as f32 + 0.5), origin[1] + 0.5 * (j as f32 + 0.5)];
+            let p = at(i, j);
             if p[0] >= 0.0 && p[0] <= gx && p[1] >= 0.0 && p[1] <= gz { continue; }
             let g = grass_grid.hit(p);
             let s = struct_grid.hit(p);
             let inp = poly_grid.hit(p);
-            if g && !s { n_grass += 1; if !inp { n_missed += 1; } }
+            let reachable = !connect || flooded[idx(i, j)];
+            if g && !s && reachable { n_grass += 1; if !inp { n_missed += 1; } }
             if inp {
                 n_in += 1;
                 if !g { n_nograss += 1; }
@@ -203,7 +277,7 @@ pub fn build(store: &mut crate::store::DataStore, deco_id: &str, grid_cells: i32
             }
         }
     }
-    notes.push(format!("raster 0.5 m outside the grid: {n_in} samples in the polygon — {n_nograss} over no grass, {n_struct} under the stands' structure; {n_grass} clear grass samples, {n_missed} outside the polygon ({:.1} %, the {inset} m inset and the slivers)", 100.0 * n_missed as f32 / n_grass.max(1) as f32));
+    notes.push(format!("raster 0.5 m outside the grid: {n_in} samples in the polygon — {n_nograss} over no grass, {n_struct} under the stands' structure; {n_grass} clear{} grass samples, {n_missed} outside the polygon ({:.1} %, the {inset} m inset and the slivers)", if connect { " grid-connected" } else { "" }, 100.0 * n_missed as f32 / n_grass.max(1) as f32));
     // the 4 m strips (OuterTerrain's Stadium rows): area and how much of them the polygon covers
     if !strips.is_empty() {
         let strip_area: f32 = strips.iter().map(|(x0, x1, z0, z1)| (x1 - x0) * (z1 - z0)).sum();
