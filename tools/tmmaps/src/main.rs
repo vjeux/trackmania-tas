@@ -278,7 +278,7 @@ fn main() {
             m.write_to(&out).expect("write");
             println!("{}: {fixed} manifest row(s) fixed of {}", out.display(), rows2.len());
         }
-        // tmmaps carry-missing LIVE --from ORIGINAL --out OUT — every custom item LIVE places
+        // tmmaps carry-missing LIVE --from ORIGINAL --out OUT [--scaled-dir D] — every custom item LIVE places
         // without an embedded file gets the file from ORIGINAL's archive (matched by suffix:
         // the original stores it under the author's disk path or a club-store path) plus a
         // manifest row (ident as placed, the placement's author). The minimal live-file fix
@@ -287,6 +287,10 @@ fn main() {
             let live = std::path::PathBuf::from(&args[2]);
             let from = std::path::PathBuf::from(tmmaps::cli::flag(&args, "--from").expect("carry-missing needs --from ORIGINAL"));
             let out = std::path::PathBuf::from(tmmaps::cli::flag(&args, "--out").expect("carry-missing needs --out OUT"));
+            // --scaled-dir D: the file embedded is D/<ident with '/'> when that exists — the
+            // half-scale copy `mapgeom static-item ORIGINAL_FILE --scale 0.5` wrote there (a Tiny
+            // map must not carry a full-size road item: 828's CastlePlastic, 846's RG-RT roads)
+            let scaled_dir = tmmaps::cli::flag(&args, "--scaled-dir").map(std::path::PathBuf::from);
             let mut m = tmmaps::map::MapFile::load(&live);
             let (rows, mut zip) = m.embedded_objects().expect("live map has no embedded objects");
             let have: std::collections::BTreeSet<String> = rows.iter().map(|(i, _)| i.replace('\\', "/").to_ascii_lowercase()).collect();
@@ -317,10 +321,20 @@ fn main() {
                     continue;
                 };
                 let entry_name = &src_names[idx];
-                let bytes = src_entries.iter().find(|(n, _)| n == entry_name).map(|(_, b)| b.clone()).unwrap_or_default();
+                let mut bytes = src_entries.iter().find(|(n, _)| n == entry_name).map(|(_, b)| b.clone()).unwrap_or_default();
                 if bytes.is_empty() {
                     eprintln!("  {model}: original entry `{entry_name}` is empty — left as is");
                     continue;
+                }
+                let mut from_note = format!("from `{entry_name}`");
+                if let Some(d) = &scaled_dir {
+                    let p = d.join(model.replace('\\', "/"));
+                    if p.is_file() {
+                        bytes = std::fs::read(&p).expect("read scaled copy");
+                        from_note = format!("SCALED copy {}", p.display());
+                    } else {
+                        eprintln!("  {model}: no scaled copy at {} — the original file goes in as is", p.display());
+                    }
                 }
                 let author = it
                     .author
@@ -330,12 +344,26 @@ fn main() {
                 let canon = format!("Items/{}", model.replace('\\', "/"));
                 zip = tmmaps::header::zip_add(&zip, &canon, &bytes);
                 rows2.push((model.clone(), author.clone()));
-                println!("  + {canon} ({} B) from `{entry_name}`, author {author}", bytes.len());
+                println!("  + {canon} ({} B) {from_note}, author {author}", bytes.len());
                 added += 1;
             }
             if added == 0 {
                 println!("{}: nothing to carry", live.display());
                 std::process::exit(3);
+            }
+            // --dump-dir D: the ORIGINAL bytes of every carried item also land in D/<ident>
+            // (the input of `mapgeom static-item … --scale 0.5` for the scaled round)
+            if let Some(d) = tmmaps::cli::flag(&args, "--dump-dir").map(std::path::PathBuf::from) {
+                for (ident, _) in rows2.iter().skip(rows.len()) {
+                    let canon = format!("Items/{}", ident.replace('\\', "/"));
+                    if let Some((_, b)) = tmmaps::header::zip_entries(&zip).into_iter().find(|(n, _)| *n == canon) {
+                        let p = d.join(ident.replace('\\', "/"));
+                        if let Some(parent) = p.parent() {
+                            std::fs::create_dir_all(parent).expect("mkdir");
+                        }
+                        std::fs::write(&p, &b).expect("dump");
+                    }
+                }
             }
             let manifest: Vec<(&str, &str)> = rows2.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
             m.replace_embedded_objects(&manifest, &zip);
