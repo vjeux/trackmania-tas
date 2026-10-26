@@ -5627,6 +5627,26 @@ fn main() {
                 println!("B\t{}\t{}\t{}\t{}\t{:08x}\t{}\t{}", b.name, c.0, c.1, c.2, b.flags, b.dir, o.baked_charted(i));
             }
         }
+        // cutout-audit --items DIR --maps M.. [--out-tsv F] [--out-md F]: Hugo's robustness check of the cutout set
+        "cutout-audit" => {
+            let mut store = open(&a);
+            mapgeom::cutout_audit::cmd(&mut store, &a.rest, &|r, k| flag(r, k)).unwrap_or_else(die);
+        }
+        // bake-physics BLOCK [--flags HEX]: the physics ids of a baked block's floor triangles (plan area per id)
+        "bake-physics" => {
+            let mut store = open(&a);
+            let name = a.rest.get(1).cloned().unwrap_or_default();
+            let flags = flag(&a.rest, "--flags").and_then(|v| u32::from_str_radix(v.trim_start_matches("0x"), 16).ok()).unwrap_or(0x1000);
+            let var = mapgeom::floor_finish::picked_variant_of(&mut store, &name, flags).unwrap_or_else(die);
+            let m = mapgeom::floor_finish::variant_bake(&mut store, &var).unwrap_or_else(die);
+            let (floor, structure) = mapgeom::floor_finish::classify_floor_structure(&m);
+            let mut by: std::collections::BTreeMap<u8, f32> = Default::default();
+            for (t, mat) in &floor {
+                *by.entry(*mat).or_default() += ((t[1][0] - t[0][0]) * (t[2][2] - t[0][2]) - (t[2][0] - t[0][0]) * (t[1][2] - t[0][2])).abs() / 2.0;
+            }
+            println!("{name} {flags:08x}: {} floor triangles, {} structure; floor plan area by physics: {}", floor.len(), structure.len(), by.iter().map(|(k, a)| format!("{} ({k}) {a:.1} m²", mapgeom::scene::physics_name(*k))).collect::<Vec<_>>().join(", "));
+            println!("  surface material table: {:?}", m.materials.iter().map(|mm| format!("{:?}", mm.link())).collect::<Vec<_>>());
+        }
         // floor-faces BLOCK [--flags HEX]: the standable-floor triangles of a cutout kind split by flatness (ny > 0.97 vs
         //   sloped) with their areas and y ranges — is a cutout's fill a flat apron or a slope's low end?
         "floor-faces" => {

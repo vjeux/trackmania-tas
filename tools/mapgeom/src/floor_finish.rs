@@ -991,6 +991,14 @@ pub struct Cutout {
 /// Bake a block's base variant (+ its units' Bottom clips) and split the triangles within the base unit row into
 /// standable floor and structure, in the block frame.
 pub fn variant_floor_and_structure(store: &mut crate::store::DataStore, variant: &crate::blockinfo::Variant) -> Result<(Vec<[[f32; 3]; 3]>, Vec<[[f32; 3]; 3]>), String> {
+    let m = variant_bake(store, variant)?;
+    let (floor, structure) = classify_floor_structure(&m);
+    Ok((floor.into_iter().map(|(t, _)| t).collect(), structure))
+}
+
+/// The baked block (every mobil prefab of the variant + every unit's Bottom clips turned by their clip dir), for
+/// the cutout generator and the audit alike.
+pub fn variant_bake(store: &mut crate::store::DataStore, variant: &crate::blockinfo::Variant) -> Result<crate::static_item::build::Merged, String> {
     let mut m = crate::static_item::build::Merged::default();
     m.keep_water = true;
     for list in &variant.mobils {
@@ -1038,7 +1046,13 @@ pub fn variant_floor_and_structure(store: &mut crate::store::DataStore, variant:
             }
         }
     }
-    let mut floor: Vec<[[f32; 3]; 3]> = Vec::new();
+    Ok(m)
+}
+
+/// Split a baked block's triangles into standable floor (upward, |y| < 0.3; with the surface physics id) and
+/// structure (anything within the base unit row above 0.3 m) — the collision triangles, then the visuals.
+pub fn classify_floor_structure(m: &crate::static_item::build::Merged) -> (Vec<([[f32; 3]; 3], u8)>, Vec<[[f32; 3]; 3]>) {
+    let mut floor: Vec<([[f32; 3]; 3], u8)> = Vec::new();
     let mut structure: Vec<[[f32; 3]; 3]> = Vec::new();
     for t in &m.surf_triangles {
         let pts: Vec<[f32; 3]> = t.indices.iter().filter_map(|&i| m.surf_vertices.get(i as usize).copied()).collect();
@@ -1050,7 +1064,7 @@ pub fn variant_floor_and_structure(store: &mut crate::store::DataStore, variant:
         let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
         let upward = len > 1e-6 && n[1] / len > 0.7;
         if upward && ylo > -0.3 && yhi < 0.3 {
-            floor.push([a, b, c]);
+            floor.push(([a, b, c], t.material_id));
         } else if ylo < 8.0 && yhi > 0.3 {
             structure.push([a, b, c]);
         }
@@ -1073,7 +1087,7 @@ pub fn variant_floor_and_structure(store: &mut crate::store::DataStore, variant:
             }
         }
     }
-    Ok((floor, structure))
+    (floor, structure)
 }
 
 /// Distance in xz from a point to a triangle's footprint (0 inside).
@@ -1716,6 +1730,20 @@ pub fn pillar_hole_square(structure: &[[[f32; 3]; 3]], inset: f32) -> Option<(f3
         return None;
     }
     Some((e[0] - inset, e[1] + inset))
+}
+
+/// The picked placement's variant of a block (its mobils only), for the bake.
+pub fn picked_variant_of(store: &mut crate::store::DataStore, name: &str, flags: u32) -> Result<crate::blockinfo::Variant, String> {
+    let Some(bp) = crate::vista::find_block_info(store, name) else { return Err(format!("{name}: no block info")) };
+    let bi = crate::blockinfo::load(store, &bp)?;
+    let ground = flags & crate::blockmap::FLAG_GROUND != 0;
+    let variant = (flags & 63) as usize;
+    let sub = ((flags >> crate::blockmap::FLAG_SUBVARIANT_SHIFT) & 63) as usize;
+    let addv = ((flags >> crate::blockmap::FLAG_ADDITIONAL_SHIFT) & 0x7F) as usize;
+    let Some(p) = bi.pick_placement_add(ground, variant, sub, addv) else { return Err(format!("{name}: no variant for flags {flags:#x}")) };
+    let mut v = p.variant.clone();
+    v.mobils = vec![p.mobils.iter().map(|m| (*m).clone()).collect()];
+    Ok(v)
 }
 
 pub fn floor_and_structure_of(store: &mut crate::store::DataStore, name: &str, flags: u32) -> Result<(Vec<[[f32; 3]; 3]>, Vec<[[f32; 3]; 3]>), String> {
