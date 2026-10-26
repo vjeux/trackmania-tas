@@ -302,6 +302,21 @@ const FINISH: [u8; 3] = [220, 40, 40];
 /// the DEEP ones (finish) bright cyan, every finish box outlined red, the grid, the start, a legend; `--zoom`
 /// as for Stadium.
 fn vista(store: &mut mapgeom::store::DataStore, m: &tmmaps::map::MapFile, collection: u32, out: &str, px: f32, rest: &[String]) -> Result<(), String> {
+    // v4.32: `--fixed-level [Coll=Y,..]` draws Hugo's fixed-level selection (mapgeom::floor_finish) and overlays
+    // the bank CONTOURS at the band's bottom (black) and top (grey) so the selected squares can be read against them
+    let fixed = if let Some(i) = rest.iter().position(|x| x == "--fixed-level") {
+        let levels = match rest.get(i + 1).filter(|v| !v.starts_with("--") && v.contains('=')) {
+            Some(spec) => spec.split(',').filter_map(|kv| {
+                let (k, v) = kv.split_once('=')?;
+                let c = match k.trim().to_ascii_lowercase().as_str() { "redisland" => 0x10, "whiteshore" => 0x1d, "greencoast" => 0xf, "bluebay" => 0x1c, _ => return None };
+                Some((c, v.trim().parse::<f32>().ok()?))
+            }).collect(),
+            None => mapgeom::floor_finish::hugo_fixed_levels(),
+        };
+        mapgeom::floor_finish::set_fixed_levels(Some(levels));
+        if rest.iter().any(|x| x == "--fixed-level-bed-at-top") { mapgeom::floor_finish::set_fixed_bed_at_top(true); }
+        mapgeom::floor_finish::fixed_level(collection)
+    } else { None };
     let (tiles, bed) = mapgeom::floor_finish::water_tiles(collection);
     let (below, above) = mapgeom::floor_finish::vista_slab(collection);
     let mesh = mapgeom::floor_finish::floor_mesh(store, m, collection, below, above, true)?;
@@ -340,6 +355,41 @@ fn vista(store: &mut mapgeom::store::DataStore, m: &tmmaps::map::MapFile, collec
                     k.1 += wm.count_ones();
                     k.2 += dm.count_ones();
                 }
+            }
+        }
+    }
+    // the bank contours (fixed level): per shore kind the 1 m block-frame points whose bed lies within ±6 cm of the
+    // band bottom (level − clearance) / top (level), turned into the world per placement
+    let mut iso: Vec<((f32, f32), bool)> = Vec::new(); // world point, true = bottom contour
+    if let Some(level) = fixed {
+        let local = mapgeom::floor_finish::fixed_level_local(collection, level);
+        let bottom = local - mapgeom::floor_finish::fixed_bed_clearance();
+        let mut pts_cache: BTreeMap<(String, u32), ((i32, i32), Vec<((f32, f32), bool)>)> = BTreeMap::new();
+        for b in m.blocks.iter().chain(m.baked.iter()).filter(|b| b.flags != 0xFFFF_FFFF && b.free_pos.is_none()) {
+            if !shore.iter().any(|t| t.eq_ignore_ascii_case(&b.name)) { continue; }
+            let key = (b.name.clone(), b.flags);
+            if !pts_cache.contains_key(&key) {
+                let mut v = Vec::new();
+                let mut size = (1, 1);
+                if let Ok(Some(w)) = mapgeom::floor_finish::water_rect(store, collection, &b.name, b.flags) {
+                    size = w.size;
+                    let (sx, sz) = (32 * w.size.0, 32 * w.size.1);
+                    for zi in 0..(sz * 2) {
+                        for xi in 0..(sx * 2) {
+                            let p = [0.5 * xi as f32 + 0.25, 0.5 * zi as f32 + 0.25];
+                            let y = mapgeom::floor_finish::bed_height_at_pub(&w, p).or_else(|| mapgeom::floor_finish::top_height_at(&w, p));
+                            let Some(y) = y else { continue };
+                            if (y - bottom).abs() <= 0.06 { v.push(((p[0], p[1]), true)); } else if (y - local).abs() <= 0.06 { v.push(((p[0], p[1]), false)); }
+                        }
+                    }
+                }
+                pts_cache.insert(key.clone(), (size, v));
+            }
+            let (size, v) = &pts_cache[&key];
+            let size_m = (32.0 * size.0 as f32, 32.0 * size.1 as f32);
+            for ((x, z), is_bottom) in v {
+                let q = mapgeom::floor_finish::turn_pt_sized(b.coords(), b.dir, size_m, *x, *z);
+                iso.push(((q[0], q[1]), *is_bottom));
             }
         }
     }
@@ -392,6 +442,10 @@ fn vista(store: &mut mapgeom::store::DataStore, m: &tmmaps::map::MapFile, collec
             let (a, b) = (sc.p(x0, z0), sc.p(x1, z1));
             cv.outline(&[a, (b.0, a.1), b, (a.0, b.1)], FINISH, 1.5);
         }
+        for ((x, z), is_bottom) in &iso {
+            let (a, b) = (sc.p(*x - 0.25, *z - 0.25), sc.p(*x + 0.25, *z + 0.25));
+            cv.poly(&[a, (b.0, a.1), b, (a.0, b.1)], if *is_bottom { [0, 0, 0] } else { [120, 120, 120] }, 1.0);
+        }
         if ring.is_some() {
             let (a, b) = (sc.p(0.0, 0.0), sc.p(32.0 * nx as f32, 32.0 * nz as f32));
             cv.outline(&[a, (b.0, a.1), b, (a.0, b.1)], INK, 3.0);
@@ -418,6 +472,12 @@ fn vista(store: &mut mapgeom::store::DataStore, m: &tmmaps::map::MapFile, collec
     }
     cv.text(lx, ly, &format!("open-water cells {} -> {} strips; shore deep boxes {}", mesh.cells, mesh.strips, mesh.shore_prisms), 2, INK);
     ly += 24.0;
+    if let Some(level) = fixed {
+        cv.text(lx, ly, &format!("FIXED LEVEL {level:+.2}: every box {:+.2}..{level:+.2} (map frame); black dots = bank contour at the band bottom, grey = at the top", level - mapgeom::floor_finish::FIXED_THICKNESS), 2, INK);
+        ly += 24.0;
+        cv.text(lx, ly, "bright cyan squares = selected (bed entirely below the band); pale = water squares left out", 2, INK);
+        ly += 24.0;
+    }
     cv.text(lx, ly, &format!("slab: bed -{below:.1} .. bed +{above:.1}; shore squares: >= 2 m water AND min bed within 0.75 m of the seabed; every box on the seabed (v4.3)"), 2, INK);
     ly += 34.0;
     for (name, col) in [("open water (full cell, bed depth)", OPEN_WATER), ("shore tile water, deep AND near the floor = finish", SHORE_DEEP), ("shore tile water, shallow or up the bank (no finish)", SHORE_SHALLOW), ("land", LAND)] {

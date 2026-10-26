@@ -536,6 +536,22 @@ fn main() {
     if a.rest.iter().any(|x| x == "--tiles-slab") {
         mapgeom::floor_tiles::set_pure_top_only(false);
     }
+    // --fixed-level [Coll=Y,..] (v4.32, Hugo's FloorFinish-0712.cs): every vista water box level − 0.3 .. level in the
+    // map frame, the ring flat at the level; bare = his table (RedIsland/WhiteShore/GreenCoast −3.7, BlueBay 5.1)
+    if let Some(i) = a.rest.iter().position(|x| x == "--fixed-level") {
+        let levels = match a.rest.get(i + 1).filter(|v| !v.starts_with("--") && v.contains('=')) {
+            Some(spec) => spec.split(',').map(|kv| {
+                let (k, v) = kv.split_once('=').unwrap_or_else(|| die(format!("--fixed-level {kv}: Coll=Y")));
+                let c = match k.trim().to_ascii_lowercase().as_str() { "redisland" => 0x10, "whiteshore" => 0x1d, "greencoast" => 0xf, "bluebay" => 0x1c, "stadium" => 0x1a, other => u32::from_str_radix(other.trim_start_matches("0x"), 16).unwrap_or_else(|_| die(format!("--fixed-level: unknown collection {other}"))) };
+                (c, v.trim().parse::<f32>().unwrap_or_else(|_| die(format!("--fixed-level {kv}: Y is a number"))))
+            }).collect(),
+            None => mapgeom::floor_finish::hugo_fixed_levels(),
+        };
+        mapgeom::floor_finish::set_fixed_levels(Some(levels));
+        if a.rest.iter().any(|x| x == "--fixed-level-bed-at-top") {
+            mapgeom::floor_finish::set_fixed_bed_at_top(true);
+        }
+    }
     // --pure-template F.Item.Gbx: the mesh-modeler template (default: the bank's PureFloor4.Item.Gbx)
     if let Some(i) = a.rest.iter().position(|x| x == "--pure-template") {
         if let Some(p) = a.rest.get(i + 1) { mapgeom::floor_tiles::set_pure_template(p); }
@@ -5050,6 +5066,9 @@ fn main() {
             });
             let (_, open_bed) = mapgeom::floor_finish::water_tiles(collection);
             let coll_name = match collection { 0x10 => "RedIsland", 0x1d => "WhiteShore", 0x1c => "BlueBay", 0xf => "GreenCoast", _ => "Stadium" };
+            if let Some(level) = mapgeom::floor_finish::fixed_level(collection) {
+                println!("# fixed-level rule: {coll_name} level {level:+.2} (map frame) = {:+.2} in the water row's block frame; a shore square is in when its bed is entirely under level − {:.1} and it lies under the water quad", mapgeom::floor_finish::fixed_level_local(collection, level), mapgeom::floor_finish::fixed_bed_clearance());
+            }
             println!("tile\tflags\tplacements\tprefab\tx0\tx1\tz0\tz1\tsurface\tbed_lo\tbed_hi\tbed_tris\twater_4m_squares");
             for ((name, flags), n) in kinds {
                 match mapgeom::floor_finish::water_rect(&mut store, collection, &name, flags) {
@@ -5080,6 +5099,62 @@ fn main() {
                 let body: String = fp.lines().skip(1).filter(|l| !existing.contains(l)).map(|l| format!("{l}\n")).collect();
                 let out = if existing.is_empty() { fp.lines().next().unwrap().to_string() + "\n" + &body } else { existing + &body };
                 std::fs::write(&f, out).unwrap_or_else(|e| die(format!("{f}: {e}")));
+            }
+        }
+        // water-table-regen --table IN.tsv --out OUT.tsv [--fixed-level ..]: every (collection, tile, flags) row of an
+        //   existing WaterFootprints table re-derived with the CURRENT square rule (near-floor, or fixed level with the
+        //   flag) — same keys, same format, no maps needed (the paks of every collection must be given)
+        "water-table-regen" => {
+            let mut store = open(&a);
+            let table = flag(&a.rest, "--table").unwrap_or_else(|| die("water-table-regen needs --table IN.tsv".into()));
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("water-table-regen needs --out OUT.tsv".into()));
+            let txt = std::fs::read_to_string(&table).unwrap_or_else(|e| die(format!("{table}: {e}")));
+            let mut lines = txt.lines();
+            let header = lines.next().unwrap_or_default().to_string();
+            let per_cell = header.contains("\tcell\t");
+            let mut fp = header.clone() + "\n";
+            let mut stats: std::collections::BTreeMap<String, (usize, usize)> = Default::default();
+            // per collection: the exact highest bed of a selected shore square (the band's bottom must sit on it)
+            let mut max_sel: std::collections::BTreeMap<String, (f32, String)> = Default::default();
+            for l in lines {
+                let f: Vec<&str> = l.split('\t').collect();
+                if f.len() < 4 { continue; }
+                let coll_name = f[0];
+                let collection: u32 = match coll_name { "RedIsland" => 0x10, "WhiteShore" => 0x1d, "BlueBay" => 0x1c, "GreenCoast" => 0xf, _ => 0x1a };
+                let name = f[1];
+                let flags = u32::from_str_radix(f[2], 16).unwrap_or_else(|_| die(format!("{l}: flags")));
+                let (_, open_bed) = mapgeom::floor_finish::water_tiles(collection);
+                let w = match mapgeom::floor_finish::water_rect(&mut store, collection, name, flags) { Ok(Some(w)) => w, Ok(None) => die(format!("{coll_name} {name} {flags:08x}: no water quad now")), Err(e) => die(format!("{coll_name} {name} {flags:08x}: {e}")) };
+                let cells = mapgeom::floor_finish::cell_footprints(&w, open_bed);
+                let old_deep = if per_cell { f.get(12).and_then(|v| v.parse::<usize>().ok()).unwrap_or(0) } else { f.get(9).and_then(|v| v.parse::<usize>().ok()).unwrap_or(0) };
+                let want_cell = if per_cell { f.get(6).map(|c| c.to_string()) } else { None };
+                for ((ux, uz), mask, deep) in &cells {
+                    if let Some(wc) = &want_cell { if *wc != format!("{ux},{uz}") { continue; } }
+                    let dmask = deep.iter().enumerate().fold(0u64, |m, (i, d)| if d.is_some() { m | (1u64 << i) } else { m });
+                    let beds: Vec<String> = deep.iter().filter_map(|d| d.map(|y| format!("{:.2}", (y * 4.0).floor() / 4.0))).collect();
+                    let e = stats.entry(format!("{coll_name}\t{name}")).or_default();
+                    e.0 += old_deep;
+                    e.1 += dmask.count_ones() as usize;
+                    if let Some(mx) = deep.iter().filter_map(|d| *d).fold(None, |a: Option<f32>, y| Some(a.map_or(y, |v| v.max(y)))) {
+                        let ms = max_sel.entry(coll_name.to_string()).or_insert((f32::NEG_INFINITY, String::new()));
+                        if mx > ms.0 { *ms = (mx, format!("{name} {flags:08x} cell {ux},{uz}")); }
+                    }
+                    if per_cell {
+                        fp.push_str(&format!("{coll_name}\t{name}\t{flags:08x}\t{}\t{}\t{}\t{ux},{uz}\t{:.2}\t{:.2}\t{mask:016x}\t{}\t{dmask:016x}\t{}\t{}\n", w.prefab, w.size.0, w.size.1, w.bed_lo, w.surface, mask.count_ones(), dmask.count_ones(), beds.join(",")));
+                    } else {
+                        fp.push_str(&format!("{coll_name}\t{name}\t{flags:08x}\t{}\t{:.2}\t{:.2}\t{mask:016x}\t{}\t{dmask:016x}\t{}\t{}\n", w.prefab, w.bed_lo, w.surface, mask.count_ones(), dmask.count_ones(), beds.join(",")));
+                    }
+                }
+            }
+            std::fs::write(&out, &fp).unwrap_or_else(|e| die(format!("{out}: {e}")));
+            println!("wrote {out}: {} rows", fp.lines().count() - 1);
+            println!("collection\ttile\tsquares_before\tsquares_after");
+            for (k, (b, a2)) in &stats { println!("{k}\t{b}\t{a2}"); }
+            for (c, (mx, who)) in &max_sel {
+                let collection: u32 = match c.as_str() { "RedIsland" => 0x10, "WhiteShore" => 0x1d, "BlueBay" => 0x1c, "GreenCoast" => 0xf, _ => 0x1a };
+                let (_, bed_local) = mapgeom::floor_finish::water_tiles(collection);
+                let off = mapgeom::outer_ring::open_water_bed(collection).unwrap_or(bed_local) - bed_local;
+                println!("# {c}: highest selected shore-square bed {:.3} local = {:+.3} map frame ({who}); open cells {:+.2}", mx, mx + off, mapgeom::outer_ring::open_water_bed(collection).unwrap_or(f32::NAN));
             }
         }
         // stadium-footprints --out F.tsv [--collection Stadium]: every block info of the collection → its ground-variant

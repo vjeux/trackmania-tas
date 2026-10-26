@@ -729,7 +729,46 @@ fn stadium_ring(store: &mut crate::store::DataStore, m: &MapFile, size: (i32, i3
 
 /// The ring for a map: Stadium → the flat-grass strips of its decoration; vistas → 4 sea frame boxes.
 pub fn ring(store: &mut crate::store::DataStore, m: &MapFile, collection: u32) -> Result<Ring, String> {
-    ring_cells_of(store, m, collection, ring_cells(collection))
+    let mut r = ring_cells_of(store, m, collection, ring_cells(collection))?;
+    // v4.32 fixed level (Hugo's OuterRing: `level is { } fixedLevel ? (fixedLevel − Thickness, fixedLevel)`): every
+    // vista ring row flat at the level, its extents unchanged (the shelf's 16-cell bands), no wedges
+    if let Some(level) = crate::floor_finish::fixed_level(collection) {
+        for q in &mut r.rects {
+            q.floor = level;
+            q.y_outer = level;
+        }
+        // the shelf's wedges (the default ring IS its ramps) become flat rows over the same extents
+        let wedges = std::mem::take(&mut r.ramps);
+        for w in &wedges {
+            r.rects.push(OuterRect { x0: w.x0, x1: w.x1, z0: w.z0, z1: w.z1, floor: level, kind: "ramp", y_outer: level });
+        }
+        // merge the per-side runs: rows sharing (z0, z1) and touching in x, then (x0, x1) touching in z
+        r.rects.sort_by(|a, b| (a.z0, a.z1, a.x0).partial_cmp(&(b.z0, b.z1, b.x0)).unwrap());
+        let mut merged: Vec<OuterRect> = Vec::new();
+        for q in r.rects.drain(..) {
+            if let Some(last) = merged.last_mut() {
+                if (last.z0 - q.z0).abs() < 1e-3 && (last.z1 - q.z1).abs() < 1e-3 && (last.x1 - q.x0).abs() < 1e-3 {
+                    last.x1 = q.x1;
+                    continue;
+                }
+            }
+            merged.push(q);
+        }
+        merged.sort_by(|a, b| (a.x0, a.x1, a.z0).partial_cmp(&(b.x0, b.x1, b.z0)).unwrap());
+        let mut merged2: Vec<OuterRect> = Vec::new();
+        for q in merged {
+            if let Some(last) = merged2.last_mut() {
+                if (last.x0 - q.x0).abs() < 1e-3 && (last.x1 - q.x1).abs() < 1e-3 && (last.z1 - q.z0).abs() < 1e-3 {
+                    last.z1 = q.z1;
+                    continue;
+                }
+            }
+            merged2.push(q);
+        }
+        r.rects = merged2;
+        r.notes.push(format!("fixed level {level:+.2}: {} ring rows flat at the level ({} wedges flattened)", r.rects.len(), wedges.len()));
+    }
+    Ok(r)
 }
 
 pub fn ring_cells_of(store: &mut crate::store::DataStore, m: &MapFile, collection: u32, cells: i32) -> Result<Ring, String> {

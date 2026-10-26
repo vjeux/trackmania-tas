@@ -47,7 +47,45 @@ pub fn water_surface(collection: u32) -> f32 {
 pub const GRASS_ABOVE: f32 = 0.3;
 pub const BED_BELOW: f32 = 0.1;
 pub const BED_ABOVE: f32 = 0.3;
+/// v4.32 (Hugo's FloorFinish-0712.cs, 2026-10-26 07:12): FIXED finish levels per vista — every water box of the
+/// collection spans `level − Thickness .. level` in the MAP frame (OpenWater: RedIsland / WhiteShore / GreenCoast
+/// −4, BlueBay +4 at 07:12; 07:28 BlueBay +5; 07:3x final: the band BOTTOM on the highest bed of the footprint — the ring
+/// sand bar −4.0 → −3.7 on the three, BlueBay 5.1; Thickness 0.3), the ring rows flat at the level, Stadium unchanged. Off by default (the bed-
+/// anchored rule stays the Rust default); `--fixed-level [Coll=Y,..]` turns it on with his table or a custom one.
+static FIXED_LEVELS: std::sync::Mutex<Option<Vec<(u32, f32)>>> = std::sync::Mutex::new(None);
+pub const FIXED_THICKNESS: f32 = 0.3;
+/// The bed clearance a shore square needs under the band: `level − FIXED_THICKNESS` (strict, the spec: no sand
+/// inside the slab) by default; `--fixed-level-bed-at-top` relaxes it to `level` (the band's top may sit AT the
+/// bed, as the open-water cells of BlueBay do, whose bed 4.0 is the level).
+static FIXED_BED_AT_TOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub fn set_fixed_bed_at_top(on: bool) {
+    FIXED_BED_AT_TOP.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+pub fn fixed_bed_clearance() -> f32 {
+    if FIXED_BED_AT_TOP.load(std::sync::atomic::Ordering::Relaxed) { 0.0 } else { FIXED_THICKNESS }
+}
+pub fn hugo_fixed_levels() -> Vec<(u32, f32)> {
+    vec![(0x10, -3.7), (0x1d, -3.7), (0xf, -3.7), (0x1c, 5.1)]
+}
+pub fn set_fixed_levels(levels: Option<Vec<(u32, f32)>>) {
+    *FIXED_LEVELS.lock().unwrap() = levels;
+}
+/// The fixed level of a collection (map frame), when the mode is on and the collection has one.
+pub fn fixed_level(collection: u32) -> Option<f32> {
+    FIXED_LEVELS.lock().unwrap().as_ref().and_then(|v| v.iter().find(|(c, _)| *c == collection).map(|(_, y)| *y))
+}
+/// The fixed level in a water row's BLOCK frame: world level − the row's floor (ground + 8·cy). The shore tiles
+/// share the water row, so per collection this is world level − (open bed world − open bed local).
+pub fn fixed_level_local(collection: u32, level: f32) -> f32 {
+    let (_, bed_local) = water_tiles(collection);
+    let bed_world = crate::outer_ring::open_water_bed(collection).unwrap_or(bed_local);
+    level - (bed_world - bed_local)
+}
+
 pub fn vista_slab(_collection: u32) -> (f32, f32) {
+    if fixed_level(_collection).is_some() {
+        return (FIXED_THICKNESS, 0.0);
+    }
     (BED_BELOW, BED_ABOVE)
 }
 
@@ -91,6 +129,8 @@ pub struct WaterRect {
     pub all_tris_geo: Vec<[[f32; 3]; 3]>,
     /// the block's footprint in cells at dir 0 (1×1 for the zone tiles; the Deco bays span 2×1 .. 2×4)
     pub size: (i32, i32),
+    /// the collection the tile was measured for (the fixed-level rule looks its level up)
+    pub collection: u32,
 }
 
 /// Measure a tile placement's water footprint: bake the picked prefab (water quad kept), take the Water
@@ -166,7 +206,7 @@ pub fn water_rect(store: &mut crate::store::DataStore, collection: u32, tile: &s
             bed_geo.push([pts[0], pts[1], pts[2]]);
         }
     }
-    Ok(Some(WaterRect { prefab: prefab.rsplit('\\').next().unwrap_or(&prefab).to_string(), x0: lo[0], x1: hi[0], z0: lo[2], z1: hi[2], surface, bed_lo: blo, bed_hi: bhi, bed_tris: nb, tris: wtris, bed_tris_geo: bed_geo, all_tris_geo: all_geo, size }))
+    Ok(Some(WaterRect { prefab: prefab.rsplit('\\').next().unwrap_or(&prefab).to_string(), x0: lo[0], x1: hi[0], z0: lo[2], z1: hi[2], surface, bed_lo: blo, bed_hi: bhi, bed_tris: nb, tris: wtris, bed_tris_geo: bed_geo, all_tris_geo: all_geo, size, collection }))
 }
 
 /// The 4 m-grid water mask of a shore kind in the block frame: bit (zi·8 + xi) = the square at x 4·xi..4·xi+4,
@@ -301,14 +341,48 @@ pub fn cell_deep_squares(w: &WaterRect, open_bed: f32, ux: i32, uz: i32) -> Vec<
     out
 }
 
-/// Every unit cell of the block with its water mask and its near-floor squares: ((ux, uz), water, deep squares).
+/// v4.32 FIXED-LEVEL rule, per 4 m square of a unit cell: the square is in when its centre is under the water quad,
+/// the water surface is at or above the band (`surface ≥ level`) and the bed is ENTIRELY below the band — the
+/// highest of its 9 bed samples ≤ level − thickness (no sand pokes through the slab). Value = the square's max bed.
+pub fn cell_level_squares(w: &WaterRect, level_local: f32, thickness: f32, ux: i32, uz: i32) -> Vec<Option<f32>> {
+    let mut out = vec![None; 64];
+    if w.surface < level_local - 1e-3 { return out; }
+    for zi in 0..8 {
+        for xi in 0..8 {
+            let (cx, cz) = (32.0 * ux as f32 + 4.0 * xi as f32 + 2.0, 32.0 * uz as f32 + 4.0 * zi as f32 + 2.0);
+            if !under_water(w, [cx, cz]) { continue; }
+            let Some(yc) = bed_height_at(w, [cx, cz]) else { continue };
+            let mut ymax = yc;
+            let mut all = true;
+            for p in [[cx - 1.9, cz - 1.9], [cx + 1.9, cz - 1.9], [cx - 1.9, cz + 1.9], [cx + 1.9, cz + 1.9], [cx, cz - 1.9], [cx, cz + 1.9], [cx - 1.9, cz], [cx + 1.9, cz]] {
+                match bed_height_at(w, p) { Some(h) => ymax = ymax.max(h), None => all = false }
+            }
+            // a sample with no bed under it is the tile's dry top (the bank above the water quad): not entirely below
+            if !all {
+                let dry = [[cx - 1.9, cz - 1.9], [cx + 1.9, cz - 1.9], [cx - 1.9, cz + 1.9], [cx + 1.9, cz + 1.9]].iter().filter_map(|p| top_height_at(w, *p)).fold(f32::NEG_INFINITY, f32::max);
+                if dry > level_local - thickness { continue; }
+            }
+            if ymax <= level_local - thickness + 1e-4 {
+                out[zi * 8 + xi] = Some(ymax);
+            }
+        }
+    }
+    out
+}
+
+/// Every unit cell of the block with its water mask and its selected squares: ((ux, uz), water, squares) — the
+/// near-floor rule with `open_bed`, or the fixed-level rule when `fixed_level(collection)` is set.
 pub fn cell_footprints(w: &WaterRect, open_bed: f32) -> Vec<((i32, i32), u64, Vec<Option<f32>>)> {
     let mut v = Vec::new();
     for uz in 0..w.size.1 {
         for ux in 0..w.size.0 {
             let water = cell_water_mask(w, ux, uz);
             if water == 0 { continue; }
-            v.push(((ux, uz), water, cell_deep_squares(w, open_bed, ux, uz)));
+            let squares = match fixed_level(w.collection) {
+                Some(level) => cell_level_squares(w, fixed_level_local(w.collection, level), fixed_bed_clearance(), ux, uz),
+                None => cell_deep_squares(w, open_bed, ux, uz),
+            };
+            v.push(((ux, uz), water, squares));
         }
     }
     v
@@ -436,7 +510,7 @@ pub fn water_rects(store: &mut crate::store::DataStore, m: &MapFile, collection:
             if !seen_open.insert(c) {
                 continue;
             }
-            out.push(WorldRect { x0: 32.0 * c.0 as f32, x1: 32.0 * (c.0 + 1) as f32, z0: 32.0 * c.2 as f32, z1: 32.0 * (c.2 + 1) as f32, y_bed: ground + 8.0 * c.1 as f32 + bed, floor_y: ground + 8.0 * c.1 as f32, full_cell: true, tris: Vec::new() });
+            out.push(WorldRect { x0: 32.0 * c.0 as f32, x1: 32.0 * (c.0 + 1) as f32, z0: 32.0 * c.2 as f32, z1: 32.0 * (c.2 + 1) as f32, y_bed: fixed_level(collection).unwrap_or(ground + 8.0 * c.1 as f32 + bed), floor_y: ground + 8.0 * c.1 as f32, full_cell: true, tris: Vec::new() });
             n_open += 1;
         } else if shore.iter().any(|t| t.eq_ignore_ascii_case(&b.name)) {
             let key = (b.name.clone(), b.flags);
@@ -454,8 +528,9 @@ pub fn water_rects(store: &mut crate::store::DataStore, m: &MapFile, collection:
                     for zi in 0..8 {
                     for xi in 0..8 {
                         let Some(_y_local) = deep[zi * 8 + xi] else { continue };
-                        // v4.3: the square's own bed is NOT used — every box of the water row sits on the open bed
-                        let y_local = bed;
+                        // v4.3: the square's own bed is NOT used — every box of the water row sits on the open bed;
+                        // v4.32 fixed level: the box sits at the level (world) whatever the row
+                        let y_local = match fixed_level(collection) { Some(level) => level - (ground + 8.0 * c.1 as f32), None => bed };
                         let (lx0, lz0) = (32.0 * *ux as f32 + 4.0 * xi as f32, 32.0 * *uz as f32 + 4.0 * zi as f32);
                         let (lx1, lz1) = (lx0 + 4.0, lz0 + 4.0);
                         let tp = |x: f32, z: f32| turn_pt_sized(c, b.dir, size_m, x, z);
