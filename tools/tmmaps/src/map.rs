@@ -3810,6 +3810,42 @@ impl MapFile {
         Ok(size)
     }
 
+    /// Replace every occurrence of a SAME-LENGTH string in the header user data and the
+    /// (decompressed) body — an account id swap (the author login of a map someone else
+    /// re-saved: Gerald's E++ fix of 188, 2026-10-25). Returns (header hits, body hits).
+    pub fn replace_same_len(&mut self, from: &str, to: &str) -> Result<(usize, usize), String> {
+        if from.len() != to.len() || from.is_empty() {
+            return Err("replace_same_len wants two non-empty strings of the same length".into());
+        }
+        let (f, t) = (from.as_bytes(), to.as_bytes());
+        let mut hh = 0usize;
+        let mut ud = self.gbx.user_data.clone();
+        let mut i = 0;
+        while i + f.len() <= ud.len() {
+            if &ud[i..i + f.len()] == f {
+                ud[i..i + f.len()].copy_from_slice(t);
+                hh += 1;
+                i += f.len();
+            } else {
+                i += 1;
+            }
+        }
+        self.gbx.user_data = ud;
+        let mut bh = 0usize;
+        let body = &self.gbx.body;
+        let mut i = 0;
+        while i + f.len() <= body.len() {
+            if &body[i..i + f.len()] == f {
+                self.raw_patches.push((i, t.to_vec()));
+                bh += 1;
+                i += f.len();
+            } else {
+                i += 1;
+            }
+        }
+        Ok((hh, bh))
+    }
+
     /// Remove one skippable body chunk entirely (header + payload). Returns the old size.
     pub fn remove_chunk(&mut self, cid: u32) -> Result<usize, String> {
         let Some(&(_, off, payload, size)) = crate::gbx::all_skip_chunks(&self.gbx.body).iter().find(|(c, ..)| *c == cid) else { return Err(format!("no chunk {cid:#010x}")) };

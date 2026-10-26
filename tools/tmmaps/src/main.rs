@@ -189,6 +189,36 @@ fn main() {
                 println!("  {row:08x}: {:<48} {asc}", hex.join(" "));
             }
         }
+        // tmmaps clear-flag-bits MAP --name A[,B…] --bits HEX --out OUT — the given flag bits
+        // cleared on every authored record of those names (188 old-wood bisect: the royal-map
+        // water blocks carry 0x00800000, a bit no other original uses except 574's same blocks)
+        "clear-flag-bits" => {
+            let src = std::path::PathBuf::from(&args[2]);
+            let out = std::path::PathBuf::from(tmmaps::cli::flag(&args, "--out").expect("clear-flag-bits needs --out OUT"));
+            let names: Vec<String> = tmmaps::cli::flag(&args, "--name").expect("clear-flag-bits needs --name A[,B…]").split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+            let bits = u32::from_str_radix(tmmaps::cli::flag(&args, "--bits").expect("--bits HEX").trim_start_matches("0x"), 16).expect("bits hex");
+            let mut m = tmmaps::map::MapFile::load(&src);
+            let idx: Vec<(usize, u32)> = m.blocks.iter().enumerate().filter(|(_, b)| names.iter().any(|n| *n == b.name) && b.flags & bits != 0).map(|(i, b)| (i, b.flags)).collect();
+            for (i, fl) in &idx {
+                m.set_block_flags(*i, fl & !bits);
+            }
+            m.write_to(&out).expect("write");
+            let chk = tmmaps::map::MapFile::load(&out);
+            let left = chk.blocks.iter().filter(|b| names.iter().any(|n| *n == b.name) && b.flags & bits != 0).count();
+            println!("{}: {} record(s) had bits {bits:#010x}; cleared; {left} still carry them", out.display(), idx.len());
+        }
+        // tmmaps replace-string MAP --from A --to B --out OUT — same-length string swap in the
+        // header and the body (an author account id: Gerald's re-save of 188 carries his login)
+        "replace-string" => {
+            let src = std::path::PathBuf::from(&args[2]);
+            let out = std::path::PathBuf::from(tmmaps::cli::flag(&args, "--out").expect("replace-string needs --out OUT"));
+            let from = tmmaps::cli::flag(&args, "--from").expect("--from A");
+            let to = tmmaps::cli::flag(&args, "--to").expect("--to B");
+            let mut m = tmmaps::map::MapFile::load(&src);
+            let (hh, bh) = m.replace_same_len(from, to).unwrap_or_else(|e| { eprintln!("{e}"); std::process::exit(2) });
+            m.write_to(&out).expect("write");
+            println!("{}: {hh} header + {bh} body occurrence(s) replaced", out.display());
+        }
         "drop-blocks" => {
             if let Err(e) = tmmaps::altered::drop_blocks_cmd(&args) {
                 eprintln!("tmmaps drop-blocks: {e}");
