@@ -84,6 +84,19 @@ pub fn fixed_level_is_top() -> bool {
 pub fn fixed_band_bottom_offset() -> f32 {
     if fixed_level_is_top() { -FIXED_THICKNESS } else { 0.0 }
 }
+/// Which shore squares a fixed band takes (Hugo 07:56 "still gaps where you can get UNDER the finish — include
+/// shorelines more aggressively"): `Max` = the square's highest bed ≤ bottom (07:42 — no sand inside the slab),
+/// `Min` = ANY of its bed samples ≤ bottom (a floor exists under the band somewhere in the square; the slab enters
+/// the sand there, accepted), `AllWater` = every square under the water quad, bed ignored.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FixedSquareRule { Max, Min, AllWater }
+static FIXED_RULE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(1);
+pub fn set_fixed_square_rule(r: FixedSquareRule) {
+    FIXED_RULE.store(match r { FixedSquareRule::Max => 0, FixedSquareRule::Min => 1, FixedSquareRule::AllWater => 2 }, std::sync::atomic::Ordering::Relaxed);
+}
+pub fn fixed_square_rule() -> FixedSquareRule {
+    match FIXED_RULE.load(std::sync::atomic::Ordering::Relaxed) { 0 => FixedSquareRule::Max, 1 => FixedSquareRule::Min, _ => FixedSquareRule::AllWater }
+}
 
 pub fn vista_slab(_collection: u32) -> (f32, f32) {
     if fixed_level(_collection).is_some() {
@@ -351,25 +364,45 @@ pub fn cell_deep_squares(w: &WaterRect, open_bed: f32, ux: i32, uz: i32) -> Vec<
 /// 0.3 under the 07:12 "level = top" convention). Value = the square's max bed.
 pub fn cell_level_squares(w: &WaterRect, level_local: f32, clearance: f32, ux: i32, uz: i32) -> Vec<Option<f32>> {
     let thickness = clearance;
+    let rule = fixed_square_rule();
     let mut out = vec![None; 64];
     if w.surface < level_local - 1e-3 { return out; }
     for zi in 0..8 {
         for xi in 0..8 {
             let (cx, cz) = (32.0 * ux as f32 + 4.0 * xi as f32 + 2.0, 32.0 * uz as f32 + 4.0 * zi as f32 + 2.0);
-            if !under_water(w, [cx, cz]) { continue; }
-            let Some(yc) = bed_height_at(w, [cx, cz]) else { continue };
-            let mut ymax = yc;
-            let mut all = true;
-            for p in [[cx - 1.9, cz - 1.9], [cx + 1.9, cz - 1.9], [cx - 1.9, cz + 1.9], [cx + 1.9, cz + 1.9], [cx, cz - 1.9], [cx, cz + 1.9], [cx - 1.9, cz], [cx + 1.9, cz]] {
-                match bed_height_at(w, p) { Some(h) => ymax = ymax.max(h), None => all = false }
-            }
-            // a sample with no bed under it is the tile's dry top (the bank above the water quad): not entirely below
-            if !all {
-                let dry = [[cx - 1.9, cz - 1.9], [cx + 1.9, cz - 1.9], [cx - 1.9, cz + 1.9], [cx + 1.9, cz + 1.9]].iter().filter_map(|p| top_height_at(w, *p)).fold(f32::NEG_INFINITY, f32::max);
-                if dry > level_local - thickness { continue; }
-            }
-            if ymax <= level_local - thickness + 1e-4 {
-                out[zi * 8 + xi] = Some(ymax);
+            // the square counts as water when its centre or (Min / AllWater) any of its 9 samples is under the quad
+            let samples = [[cx, cz], [cx - 1.9, cz - 1.9], [cx + 1.9, cz - 1.9], [cx - 1.9, cz + 1.9], [cx + 1.9, cz + 1.9], [cx, cz - 1.9], [cx, cz + 1.9], [cx - 1.9, cz], [cx + 1.9, cz]];
+            let wet = if rule == FixedSquareRule::Max { under_water(w, [cx, cz]) } else { samples.iter().any(|p| under_water(w, *p)) };
+            if !wet { continue; }
+            let beds: Vec<Option<f32>> = samples.iter().map(|p| bed_height_at(w, *p)).collect();
+            match rule {
+                FixedSquareRule::AllWater => {
+                    let y = beds.iter().filter_map(|b| *b).fold(f32::INFINITY, f32::min);
+                    out[zi * 8 + xi] = Some(if y.is_finite() { y } else { level_local });
+                }
+                FixedSquareRule::Min => {
+                    // any bed sample at or under the band bottom → a floor exists under the band in this square
+                    let ymin = beds.iter().filter_map(|b| *b).fold(f32::INFINITY, f32::min);
+                    if ymin <= level_local - thickness + 1e-4 {
+                        out[zi * 8 + xi] = Some(ymin);
+                    }
+                }
+                FixedSquareRule::Max => {
+                    let Some(yc) = beds[0] else { continue };
+                    let mut ymax = yc;
+                    let mut all = true;
+                    for b in &beds[1..] {
+                        match b { Some(h) => ymax = ymax.max(*h), None => all = false }
+                    }
+                    // a sample with no bed under it is the tile's dry top (the bank above the water quad): not entirely below
+                    if !all {
+                        let dry = [[cx - 1.9, cz - 1.9], [cx + 1.9, cz - 1.9], [cx - 1.9, cz + 1.9], [cx + 1.9, cz + 1.9]].iter().filter_map(|p| top_height_at(w, *p)).fold(f32::NEG_INFINITY, f32::max);
+                        if dry > level_local - thickness { continue; }
+                    }
+                    if ymax <= level_local - thickness + 1e-4 {
+                        out[zi * 8 + xi] = Some(ymax);
+                    }
+                }
             }
         }
     }

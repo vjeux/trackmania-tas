@@ -551,6 +551,10 @@ fn main() {
         if a.rest.iter().any(|x| x == "--fixed-level-top") {
             mapgeom::floor_finish::set_fixed_level_is_top(true);
         }
+        // --fixed-rule min|max|allwater: which shore squares the band takes (default min — Hugo 07:56)
+        if let Some(r) = flag(&a.rest, "--fixed-rule") {
+            mapgeom::floor_finish::set_fixed_square_rule(match r.to_ascii_lowercase().as_str() { "max" => mapgeom::floor_finish::FixedSquareRule::Max, "min" => mapgeom::floor_finish::FixedSquareRule::Min, "allwater" | "all" => mapgeom::floor_finish::FixedSquareRule::AllWater, other => die(format!("--fixed-rule {other}: min | max | allwater")) });
+        }
     }
     // --pure-template F.Item.Gbx: the mesh-modeler template (default: the bank's PureFloor4.Item.Gbx)
     if let Some(i) = a.rest.iter().position(|x| x == "--pure-template") {
@@ -5067,7 +5071,7 @@ fn main() {
             let (_, open_bed) = mapgeom::floor_finish::water_tiles(collection);
             let coll_name = match collection { 0x10 => "RedIsland", 0x1d => "WhiteShore", 0x1c => "BlueBay", 0xf => "GreenCoast", _ => "Stadium" };
             if let Some(level) = mapgeom::floor_finish::fixed_level(collection) {
-                println!("# fixed-level rule: {coll_name} level {level:+.2} (map frame) = {:+.2} in the water row's block frame; a shore square is in when its bed is entirely under the band bottom (level {:+.1}) and it lies under the water quad", mapgeom::floor_finish::fixed_level_local(collection, level), mapgeom::floor_finish::fixed_band_bottom_offset());
+                println!("# fixed-level rule: {coll_name} level {level:+.2} (map frame) = {:+.2} in the water row's block frame; rule {:?} (max: bed entirely under the band bottom; min: any bed sample under it; allwater: every water square)", mapgeom::floor_finish::fixed_level_local(collection, level), mapgeom::floor_finish::fixed_square_rule());
             }
             println!("tile\tflags\tplacements\tprefab\tx0\tx1\tz0\tz1\tsurface\tbed_lo\tbed_hi\tbed_tris\twater_4m_squares");
             for ((name, flags), n) in kinds {

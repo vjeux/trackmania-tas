@@ -315,6 +315,9 @@ fn vista(store: &mut mapgeom::store::DataStore, m: &tmmaps::map::MapFile, collec
         };
         mapgeom::floor_finish::set_fixed_levels(Some(levels));
         if rest.iter().any(|x| x == "--fixed-level-top") { mapgeom::floor_finish::set_fixed_level_is_top(true); }
+        if let Some(r) = f(rest, "--fixed-rule") {
+            mapgeom::floor_finish::set_fixed_square_rule(match r.to_ascii_lowercase().as_str() { "max" => mapgeom::floor_finish::FixedSquareRule::Max, "allwater" | "all" => mapgeom::floor_finish::FixedSquareRule::AllWater, _ => mapgeom::floor_finish::FixedSquareRule::Min });
+        }
         mapgeom::floor_finish::fixed_level(collection)
     } else { None };
     let (tiles, bed) = mapgeom::floor_finish::water_tiles(collection);
@@ -477,7 +480,7 @@ fn vista(store: &mut mapgeom::store::DataStore, m: &tmmaps::map::MapFile, collec
         let b0 = level + mapgeom::floor_finish::fixed_band_bottom_offset();
         cv.text(lx, ly, &format!("FIXED LEVEL {level:+.2}: every box {b0:+.2}..{:+.2} (map frame); black dots = bank contour at the band bottom, grey = at the top", b0 + mapgeom::floor_finish::FIXED_THICKNESS), 2, INK);
         ly += 24.0;
-        cv.text(lx, ly, "bright cyan squares = selected (bed entirely below the band); pale = water squares left out", 2, INK);
+        cv.text(lx, ly, &format!("bright cyan squares = selected (rule {:?}: max = bed entirely under the band bottom, min = any bed sample under it); pale = water squares left out", mapgeom::floor_finish::fixed_square_rule()), 2, INK);
         ly += 24.0;
     }
     cv.text(lx, ly, &format!("slab: bed -{below:.1} .. bed +{above:.1}; shore squares: >= 2 m water AND min bed within 0.75 m of the seabed; every box on the seabed (v4.3)"), 2, INK);
