@@ -5507,6 +5507,30 @@ fn main() {
             std::fs::write(&out, format!("{header}\n{}\n", rows.join("\n"))).unwrap_or_else(|e| die(format!("{out}: {e}")));
             eprintln!("wrote {out}: {} materials", rows.len());
         }
+        // lm-oracle-cells MAP --cells x0,x1,z0,z1 [--rows y0,y1]: which authored / baked blocks in the cell window are
+        //   CHARTED in the map's own editor lightmap (an uncharted baked Grass tile = the game hid it under a block; an
+        //   uncharted authored block = the game drew nothing for it)
+        "lm-oracle-cells" => {
+            let p = a.rest.get(1).cloned().unwrap_or_default();
+            let m = tmmaps::map::MapFile::try_load(std::path::Path::new(&p)).unwrap_or_else(die);
+            let coll = m.body_collections().map(|c| c[0].1).unwrap_or(26);
+            let o = mapgeom::lm_oracle::read(std::path::Path::new(&p), &m, coll).unwrap_or_else(die).unwrap_or_else(|| die("no lightmap in the map".into()));
+            let w: Vec<i32> = flag(&a.rest, "--cells").map(|v| v.split(',').map(|t| t.parse().unwrap()).collect()).unwrap_or(vec![0, 63, 0, 63]);
+            let rows: Vec<i32> = flag(&a.rest, "--rows").map(|v| v.split(',').map(|t| t.parse().unwrap()).collect()).unwrap_or(vec![0, 63]);
+            println!("src\tname\tcx\tcy\tcz\tflags\tdir\tcharted");
+            for (i, b) in m.blocks.iter().enumerate() {
+                if b.flags == 0xFFFF_FFFF || b.free_pos.is_some() { continue; }
+                let c = b.coords();
+                if c.0 < w[0] || c.0 > w[1] || c.2 < w[2] || c.2 > w[3] || c.1 < rows[0] || c.1 > rows[1] { continue; }
+                println!("U\t{}\t{}\t{}\t{}\t{:08x}\t{}\t{}", b.name, c.0, c.1, c.2, b.flags, b.dir, o.authored_charted(i));
+            }
+            for (i, b) in m.baked.iter().enumerate() {
+                if b.flags == 0xFFFF_FFFF || b.free_pos.is_some() { continue; }
+                let c = b.coords();
+                if c.0 < w[0] || c.0 > w[1] || c.2 < w[2] || c.2 > w[3] || c.1 < rows[0] || c.1 > rows[1] { continue; }
+                println!("B\t{}\t{}\t{}\t{}\t{:08x}\t{}\t{}", b.name, c.0, c.1, c.2, b.flags, b.dir, o.baked_charted(i));
+            }
+        }
         // floor-faces BLOCK [--flags HEX]: the standable-floor triangles of a cutout kind split by flatness (ny > 0.97 vs
         //   sloped) with their areas and y ranges — is a cutout's fill a flat apron or a slope's low end?
         "floor-faces" => {

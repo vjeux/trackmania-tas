@@ -898,11 +898,28 @@ pub fn variant_floor_and_structure(store: &mut crate::store::DataStore, variant:
                 for mobil in list {
                     let Some(prefab) = mobil.prefab.as_deref() else { continue };
                     if !prefab.to_ascii_lowercase().ends_with(".prefab.gbx") { continue; }
-                    let mut at = crate::geom::IDENTITY;
-                    at[9] = 32.0 * u.offset[0] as f32;
-                    at[10] = 8.0 * (u.offset[1] - 1) as f32;
-                    at[11] = 32.0 * u.offset[2] as f32;
-                    if let Some(t) = mobil.translation { at[9] += t[0]; at[10] += t[1]; at[11] += t[2]; }
+                    // v4.31 (Hugo's Fall 15 chicane, 2026-10-26): a Bottom clip is placed as a 1 × 1 block at its unit's
+                    // cell, TURNED by the unit's bottom-clip direction (`u00c[1]`, chunk 0x0303600C's second u16; GBX.NET
+                    // BottomClipDir). `TrackToGrassChicaneX2LeftFCBGround` hangs on unit (1, 1) of the 2 × 2 chicane with
+                    // bottom-clip dir 2, and its floor is authored over [0, 64]² — the half turn about the unit cell brings
+                    // it back over the whole block (the game's own baked record on Fall 15: cell (16, 8, 23), dir = block
+                    // dir + 2); placed unturned it sat one cell off in x and z (Hugo's "finish without grass at (16, 23),
+                    // grass without finish at (16, 24)"). Every other cutout kind's ground clip has dir 0 (unchanged).
+                    let cdir = (u.u00c[1] & 3) as u8;
+                    let (r, t): ([f32; 9], [f32; 3]) = match cdir {
+                        0 => ([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 0.0]),
+                        1 => ([0.0, 0.0, 1.0, 0.0, 1.0, 0.0, -1.0, 0.0, 0.0], [32.0, 0.0, 0.0]),
+                        2 => ([-1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, -1.0], [32.0, 0.0, 32.0]),
+                        _ => ([0.0, 0.0, -1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 32.0]),
+                    };
+                    let mut at: crate::geom::Xform = [r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], t[0], t[1], t[2]];
+                    at[9] += 32.0 * u.offset[0] as f32;
+                    at[10] += 8.0 * (u.offset[1] - 1) as f32;
+                    at[11] += 32.0 * u.offset[2] as f32;
+                    if let Some(tr) = mobil.translation {
+                        let d = crate::geom::apply_normal(&at, tr);
+                        at[9] += d[0]; at[10] += d[1]; at[11] += d[2];
+                    }
                     let _ = crate::static_item::build::add_prefab(store, prefab, &at, 1.0, &mut m, 0);
                 }
             }
