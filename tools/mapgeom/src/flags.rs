@@ -87,6 +87,9 @@ pub struct LightSource {
     /// hanging lanterns), one trigger box per body — the carrier's trigger surface is the union of these
     /// boxes (each padded `source_pad`); `lo`/`hi` then hold their overall bounds. Empty = the single box.
     pub boxes: Vec<([f32; 3], [f32; 3])>,
+    /// v4.29: a PREBUILT carrier item (ident, bytes) placed at every source pose instead of a generated light box
+    /// (the StructurePillar sleeve: `--block-item NAME=FILE.Item.Gbx`)
+    pub prebuilt: Option<(String, Vec<u8>)>,
 }
 
 /// A Moth carrier: an invisible Finish hexahedron over the source's emitting bbox padded `pad`, its mesh a
@@ -440,6 +443,15 @@ pub fn flags(store: &mut crate::store::DataStore, src: &Path, out: &Path, o: &Fl
             continue;
         }
         if let Some(src) = o.sources.iter().find(|s| &s.key == stem) {
+            if let Some((ident, bytes)) = &src.prebuilt {
+                let mut row = Row::new(&map_label, "flags", "model", 0, stem);
+                row.action = "prebuilt-carrier".into();
+                row.to_name = ident.clone();
+                row.note = format!("{} bytes; the prebuilt item placed in every {stem} block's frame, tag Goal", bytes.len());
+                rows.push(row);
+                built.push((stem.clone(), ident.clone(), [src.lo[0], src.lo[1], src.lo[2], src.hi[0], src.hi[1], src.hi[2]], bytes.clone()));
+                continue;
+            }
             let c = build_light_carrier(ctx.store, src, o.source_pad, collection, &o.ident_prefix, lm_word).map_err(|e| format!("{stem}: {e}"))?;
             let mut row = Row::new(&map_label, "flags", "model", 0, stem);
             row.action = "light-carrier-item-built".into();

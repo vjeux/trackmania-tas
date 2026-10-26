@@ -485,3 +485,23 @@ pub fn frame_faces(mesh: &mut crate::crystal::CrystalMesh, g: f32, s0: f32, s1: 
         }
     }
 }
+
+/// v4.29 (Hugo 04:16 "finishable assets for StructurePillar"; 04:18 "no glass, just the trigger"): a crystal item whose
+/// Trigger layer is a SLEEVE prism around the pillar column — the 3 × 3 m shaft (14.5…17.5 on both axes in the
+/// block frame) dilated by `pad` → a 4 × 4 m box, from `y0` (the plate / grass level) to `y1` (0.3 m under the row
+/// top so a car on the deck above never overlaps) — and whose Geometry layer is a 0.1 mm speck hidden inside the
+/// column (a crystal needs at least one face; the friend's items always carry one). Finish, friend's material slot.
+pub fn build_pillar_sleeve(ident: &str, collection: u32, shaft: [f32; 4], pad: f32, y0: f32, y1: f32) -> Result<(Vec<u8>, usize), String> {
+    let (x0, x1, z0, z1) = (shaft[0] - pad, shaft[1] + pad, shaft[2] - pad, shaft[3] + pad);
+    let body: Body = [[x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0], [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]];
+    let mut trig = crate::crystal::CrystalMesh::default();
+    body_faces(&mut trig, &body, 0);
+    // the speck: a 0.1 mm quad at the column's centre, 1 m up (inside the shaft, never visible)
+    let (cx, cz) = ((shaft[0] + shaft[1]) / 2.0, (shaft[2] + shaft[3]) / 2.0);
+    let e = 0.00005;
+    let speck: Body = [[cx - e, y0 + 1.0, cz - e], [cx + e, y0 + 1.0, cz - e], [cx + e, y0 + 1.0 + e, cz - e], [cx - e, y0 + 1.0 + e, cz - e], [cx - e, y0 + 1.0, cz + e], [cx + e, y0 + 1.0, cz + e], [cx + e, y0 + 1.0 + e, cz + e], [cx - e, y0 + 1.0 + e, cz + e]];
+    let mut geo = crate::crystal::CrystalMesh::default();
+    body_top_face(&mut geo, &speck, 0);
+    let bytes = build_pure_item(ident, collection, &geo, Some(&trig))?;
+    Ok((bytes, trig.faces.len()))
+}

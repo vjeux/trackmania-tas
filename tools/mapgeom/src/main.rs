@@ -370,7 +370,7 @@ fn light_sources_from_tsv(tsv: &str, groups: Option<String>, exclude: Option<Str
             }
         }
     }
-    by_key.into_iter().map(|(key, (is_block, lo, hi))| { let label = key.replace("@v", "V"); mapgeom::flags::LightSource { key, is_block, lo, hi, label, boxes: Vec::new() } }).collect()
+    by_key.into_iter().map(|(key, (is_block, lo, hi))| { let label = key.replace("@v", "V"); mapgeom::flags::LightSource { key, is_block, lo, hi, label, boxes: Vec::new() , prebuilt: None} }).collect()
 }
 
 /// Hugo's Floor Finish (2026-10-23): the OPEN-WATER terrain tiles of a vista collection, each the seat of one
@@ -398,7 +398,7 @@ fn floor_sources(collection: u32, below: f32, above: f32, label: &str) -> Vec<ma
         lo: [0.0, quad - below, 0.0],
         hi: [32.0, quad + above, 32.0],
         label: label.to_string(),
-        boxes: Vec::new(),
+        boxes: Vec::new(), prebuilt: None
     }).collect()
 }
 
@@ -469,7 +469,7 @@ fn lantern_sources_from_parts(tsv: &str, materials: &[String], only: &[String]) 
         for (a, b) in &clusters { for k in 0..3 { lo[k] = lo[k].min(a[k]); hi[k] = hi[k].max(b[k]); } }
         eprintln!("{name}: {} lantern bod{}", clusters.len(), if clusters.len() == 1 { "y" } else { "ies" });
         let label = name.replace("@v", "V");
-        out.push(mapgeom::flags::LightSource { key: name, is_block, lo, hi, label, boxes: clusters });
+        out.push(mapgeom::flags::LightSource { key: name, is_block, lo, hi, label, boxes: clusters , prebuilt: None});
     }
     out
 }
@@ -5620,6 +5620,19 @@ fn main() {
                 }
             }
         }
+        // pillar-sleeve --out F.Item.Gbx [--collection N] [--pad 0.5] [--y0 0] [--y1 7.7]: the StructurePillar finish sleeve
+        //   (floor_tiles::build_pillar_sleeve), block frame dir 0
+        "pillar-sleeve" => {
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("pillar-sleeve: --out".into()));
+            let collection: u32 = flag(&a.rest, "--collection").and_then(|v| v.parse().ok()).unwrap_or(26);
+            let pad: f32 = flag(&a.rest, "--pad").and_then(|v| v.parse().ok()).unwrap_or(0.5);
+            let y0: f32 = flag(&a.rest, "--y0").and_then(|v| v.parse().ok()).unwrap_or(0.0);
+            let y1: f32 = flag(&a.rest, "--y1").and_then(|v| v.parse().ok()).unwrap_or(7.7);
+            let ident = std::path::Path::new(&out).file_name().unwrap().to_string_lossy().to_string();
+            let (bytes, nf) = mapgeom::floor_tiles::build_pillar_sleeve(&ident, collection, [14.5, 17.5, 14.5, 17.5], pad, y0, y1).unwrap_or_else(die);
+            std::fs::write(&out, &bytes).unwrap_or_else(|e| die(format!("{out}: {e}")));
+            println!("wrote {out}: {} bytes (sleeve {:.1}…{:.1} × y {y0}…{y1} × {:.1}…{:.1}, {nf} trigger faces, speck geometry)", bytes.len(), 14.5 - pad, 17.5 + pad, 14.5 - pad, 17.5 + pad);
+        }
         // slab-template --out F.Item.Gbx [--collection N]: the v4.18 VISUAL slab template — a 32 × 1 × 32 m body at the
         //   origin, visual-only (no trigger, no waypoint), CustomPlastic, Full layout, six lightmap charts, DisableLightmap
         "slab-template" => {
@@ -6097,6 +6110,23 @@ fn main() {
                     pole_triggers: true,
                     source_pad: flag(&a.rest, "--source-pad").map(|v| v.parse::<f32>().unwrap_or_else(|_| die("--source-pad M".into()))).unwrap_or(0.0),
                     ident_prefix: flag(&a.rest, "--ident-prefix").unwrap_or_else(|| "Finish".into()),
+                    sources,
+                    ..o
+                }
+            } else if let Some(spec) = flag(&a.rest, "--block-item") {
+                // --block-item NAME=FILE.Item.Gbx[,NAME2=FILE2]: a PREBUILT carrier placed in every NAME block's frame
+                // (v4.29 StructurePillar sleeve); identity "<name> <suffix>", default suffix " Structure Pillar Finish"
+                let mut sources = Vec::new();
+                for part in spec.split(',').map(|t| t.trim()).filter(|t| !t.is_empty()) {
+                    let (name, file) = part.split_once('=').unwrap_or_else(|| die(format!("--block-item {part}: NAME=FILE")));
+                    let bytes = std::fs::read(file).unwrap_or_else(|e| die(format!("{file}: {e}")));
+                    let ident = std::path::Path::new(file).file_name().unwrap().to_string_lossy().to_string();
+                    sources.push(mapgeom::flags::LightSource { key: name.to_string(), is_block: true, lo: [0.0; 3], hi: [32.0, 8.0, 32.0], label: name.to_string(), boxes: Vec::new(), prebuilt: Some((ident, bytes)) });
+                }
+                mapgeom::flags::FlagsOpts {
+                    uid_prefix: flag(&a.rest, "--uid-prefix").unwrap_or_else(|| "Pill".into()),
+                    name_suffix: flag(&a.rest, "--name-suffix").unwrap_or_else(|| " Structure Pillar Finish".into()),
+                    pole_triggers: true,
                     sources,
                     ..o
                 }
