@@ -47,43 +47,42 @@ pub fn water_surface(collection: u32) -> f32 {
 pub const GRASS_ABOVE: f32 = 0.3;
 pub const BED_BELOW: f32 = 0.1;
 pub const BED_ABOVE: f32 = 0.3;
-/// v4.32 (Hugo's FloorFinish-0712.cs, 2026-10-26 07:12 → 07:42 convention): FIXED finish levels per vista — every
-/// water box of the collection spans `level .. level + Thickness` in the MAP frame (the level is the band's BOTTOM,
-/// on the bed: OpenWater RedIsland / WhiteShore / GreenCoast −4.0, BlueBay 4.75; Thickness 0.3), the ring rows flat
-/// at the level, Stadium unchanged. Off by default (the bed-anchored rule stays the Rust default); `--fixed-level
-/// [Coll=Y,..]` turns it on with his table or a custom one.
-static FIXED_LEVELS: std::sync::Mutex<Option<Vec<(u32, f32)>>> = std::sync::Mutex::new(None);
+/// v4.32–v4.34 (Hugo's FloorFinish-0712.cs → 08:01 THICK band): FIXED finish bands per vista — every water box of
+/// the collection spans `bottom .. top` in the MAP frame; the ring rows the same; Stadium unchanged. Hugo's table
+/// (08:01): OpenWater (Tiles, Bottom, Top) = RedIsland / WhiteShore / GreenCoast (−13.6, −3.7), BlueBay (−10.1,
+/// 5.1) — the bottom under the lowest floor of the environment incl. the 16-cell ring (measured: −13.06 / −6.34
+/// within 512 m, −13.53 / −9.99 at 636 m), the top = the thin band's top (−4.0 + 0.3 / 4.8 + 0.3). Off by default
+/// (the bed-anchored rule stays the Rust default); `--fixed-level [Coll=BOTTOM:TOP,..]` turns it on with his table
+/// or a custom one (`Coll=Y` alone = the thin band Y .. Y + 0.3).
+static FIXED_BANDS: std::sync::Mutex<Option<Vec<(u32, f32, f32)>>> = std::sync::Mutex::new(None);
 pub const FIXED_THICKNESS: f32 = 0.3;
-pub fn hugo_fixed_levels() -> Vec<(u32, f32)> {
-    vec![(0x10, -4.0), (0x1d, -4.0), (0xf, -4.0), (0x1c, 4.8)]
+pub fn hugo_fixed_bands() -> Vec<(u32, f32, f32)> {
+    vec![(0x10, -13.6, -3.7), (0x1d, -13.6, -3.7), (0xf, -13.6, -3.7), (0x1c, -10.1, 5.1)]
 }
-pub fn set_fixed_levels(levels: Option<Vec<(u32, f32)>>) {
-    *FIXED_LEVELS.lock().unwrap() = levels;
+pub fn set_fixed_bands(bands: Option<Vec<(u32, f32, f32)>>) {
+    *FIXED_BANDS.lock().unwrap() = bands;
 }
-/// The fixed level of a collection (map frame), when the mode is on and the collection has one.
+/// The band of a collection (map frame): (bottom, top), when the mode is on and the collection has one.
+pub fn fixed_band(collection: u32) -> Option<(f32, f32)> {
+    FIXED_BANDS.lock().unwrap().as_ref().and_then(|v| v.iter().find(|(c, _, _)| *c == collection).map(|(_, b, t)| (*b, *t)))
+}
+/// The band's TOP (the mask threshold and the box anchor) — the "level" the rest of the code keys on.
 pub fn fixed_level(collection: u32) -> Option<f32> {
-    FIXED_LEVELS.lock().unwrap().as_ref().and_then(|v| v.iter().find(|(c, _)| *c == collection).map(|(_, y)| *y))
+    fixed_band(collection).map(|(_, t)| t)
 }
-/// The fixed level in a water row's BLOCK frame: world level − the row's floor (ground + 8·cy). The shore tiles
-/// share the water row, so per collection this is world level − (open bed world − open bed local).
+/// A map-frame height in a water row's BLOCK frame: world − the row's floor (ground + 8·cy). The shore tiles share
+/// the water row, so per collection this is world − (open bed world − open bed local).
 pub fn fixed_level_local(collection: u32, level: f32) -> f32 {
     let (_, bed_local) = water_tiles(collection);
     let bed_world = crate::outer_ring::open_water_bed(collection).unwrap_or(bed_local);
     level - (bed_world - bed_local)
 }
-/// A shore square's bed may reach up to the band's bottom = the level (the 07:42 convention; the 07:12 one put
-/// the bottom 0.3 under the level — `--fixed-level-top` restores it: band `level − 0.3 .. level`, bed ≤ level − 0.3).
-static FIXED_LEVEL_IS_TOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-pub fn set_fixed_level_is_top(on: bool) {
-    FIXED_LEVEL_IS_TOP.store(on, std::sync::atomic::Ordering::Relaxed);
-}
-pub fn fixed_level_is_top() -> bool {
-    FIXED_LEVEL_IS_TOP.load(std::sync::atomic::Ordering::Relaxed)
-}
-/// The band's bottom relative to the level: 0 (level = bottom) or −Thickness (level = top).
+/// The mask threshold relative to the top: 0 — a square is in when a bed sample lies at or under the band TOP
+/// ("nothing under the band top is missed", Hugo 08:01).
 pub fn fixed_band_bottom_offset() -> f32 {
-    if fixed_level_is_top() { -FIXED_THICKNESS } else { 0.0 }
+    0.0
 }
+
 /// Which shore squares a fixed band takes (Hugo 07:56 "still gaps where you can get UNDER the finish — include
 /// shorelines more aggressively"): `Max` = the square's highest bed ≤ bottom (07:42 — no sand inside the slab),
 /// `Min` = ANY of its bed samples ≤ bottom (a floor exists under the band somewhere in the square; the slab enters
@@ -99,9 +98,9 @@ pub fn fixed_square_rule() -> FixedSquareRule {
 }
 
 pub fn vista_slab(_collection: u32) -> (f32, f32) {
-    if fixed_level(_collection).is_some() {
-        // the box anchors on the level: level + bottom_offset .. + Thickness
-        return if fixed_level_is_top() { (FIXED_THICKNESS, 0.0) } else { (0.0, FIXED_THICKNESS) };
+    if let Some((bottom, top)) = fixed_band(_collection) {
+        // the box anchors on the top: top − (top − bottom) .. top
+        return (top - bottom, 0.0);
     }
     (BED_BELOW, BED_ABOVE)
 }
