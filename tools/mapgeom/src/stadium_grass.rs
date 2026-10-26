@@ -106,7 +106,7 @@ impl Grid {
     }
 }
 
-pub fn build(store: &mut crate::store::DataStore, deco_id: &str, grid_cells: i32, margin_cells: i32, inset: f32, step: f32, above: f32, ident: &str, strips: &[(f32, f32, f32, f32)]) -> Result<GrassItem, String> {
+pub fn build(store: &mut crate::store::DataStore, deco_id: &str, grid_cells: i32, margin_cells: i32, inset: f32, step: f32, above: f32, ident: &str, strips: &[(f32, f32, f32, f32)], old_rule: bool) -> Result<GrassItem, String> {
     let (pieces, mut notes, deco_map) = crate::outer_ring::stadium_deco_pieces(store, deco_id)?;
     let grass_y = 8.0f32;
     let (gx, gz) = (32.0 * grid_cells as f32, 32.0 * grid_cells as f32);
@@ -119,20 +119,29 @@ pub fn build(store: &mut crate::store::DataStore, deco_id: &str, grid_cells: i32
         for v in t { e.1 = e.1.min(v[1]); e.2 = e.2.max(v[1]); }
     }
     notes.push(format!("{deco_map}: tags {}", tags.iter().map(|(k, (n, lo, hi))| format!("{k} ×{n} y {lo:.1}..{hi:.1}")).collect::<Vec<_>>().join(", ")));
-    // fill = the grass collision (Green physics 76 / a Grass group), upward, at the grass level; structure = the
-    // stands' walls over it (the 4 m strips' rule: top over grass + 0.3 and bottom under grass + 3.3)
+    // fill = the grass collision (Green physics 76 / a Grass group), upward, at the grass level; structure = only what
+    // STANDS on the grass (v4.37, Hugo 12:17 "fill those holes so it's a flush line": the floodlight rigs hanging in
+    // front of the stands carved a notch each) — a collision triangle whose lowest point is within `stand_tol` of the
+    // grass level and which rises above it (walls, pillars, barriers, the stairs' feet); airborne geometry (rigs,
+    // screens, roofs, beams, overhangs) carves nothing. `--airborne` restores the old 0.3..3.3 m rule.
     let is_grass = |g: &str| g.contains("phys76") || g.to_ascii_lowercase().contains("grass");
+    let stand_tol = 0.3f32;
     let mut fill: Vec<Tri> = Vec::new();
     let mut structure: Vec<Tri> = Vec::new();
+    let mut airborne = 0usize;
     for (g, t) in &pieces {
         let (y0, y1) = (t.iter().map(|v| v[1]).fold(f32::INFINITY, f32::min), t.iter().map(|v| v[1]).fold(f32::NEG_INFINITY, f32::max));
         if is_grass(g) && upward(t) && (y0 - grass_y).abs() <= 0.3 && (y1 - grass_y).abs() <= 0.3 {
             fill.extend(outside_grid(t, gx, gz));
         } else if y1 > grass_y + crate::outer_ring::WALL_ABOVE && y0 < grass_y + crate::outer_ring::WALL_UNDER + crate::outer_ring::WALL_ABOVE {
-            structure.push(*t);
+            if old_rule || y0 <= grass_y + stand_tol {
+                structure.push(*t);
+            } else {
+                airborne += 1;
+            }
         }
     }
-    notes.push(format!("fill: {} grass triangles outside the grid; structure: {} triangles within 0.3..3.3 m over the grass", fill.len(), structure.len()));
+    notes.push(format!("fill: {} grass triangles outside the grid; structure: {} triangles standing on the grass (lowest point within {stand_tol} m of it); {airborne} airborne triangles within 0.3..3.3 m ignored{}", fill.len(), structure.len(), if old_rule { " (old rule: all counted)" } else { "" }));
     if fill.is_empty() { return Err("no grass fill found".into()); }
     // trace in a box frame: map (x, z) → box (x + margin, z + margin), box size grid + 2·margin
     let shift = |t: &Tri| -> Tri { [[t[0][0] + margin, t[0][1], t[0][2] + margin], [t[1][0] + margin, t[1][1], t[1][2] + margin], [t[2][0] + margin, t[2][1], t[2][2] + margin]] };

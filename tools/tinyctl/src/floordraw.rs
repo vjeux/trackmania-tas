@@ -96,6 +96,15 @@ pub fn cmd(rest: &[String]) -> Result<(), String> {
         }
         polys.into_values().collect()
     }).unwrap_or_default();
+    let outline2: Vec<Vec<(f32, f32)>> = f(rest, "--outline2").map(|p| {
+        let mut polys: std::collections::BTreeMap<String, Vec<(f32, f32)>> = Default::default();
+        for l in std::fs::read_to_string(&p).unwrap_or_default().lines().skip(1) {
+            let c: Vec<&str> = l.split('\t').collect();
+            if c.len() < 4 { continue; }
+            if let (Ok(x), Ok(z)) = (c[2].parse::<f32>(), c[3].parse::<f32>()) { polys.entry(format!("{}/{}", c[0], c[1])).or_default().push((x, z)); }
+        }
+        polys.into_values().collect()
+    }).unwrap_or_default();
     let margin_cells: i32 = f(rest, "--margin-cells").and_then(|v| v.parse().ok()).unwrap_or(if outline.is_empty() { mapgeom::outer_ring::ring_cells(0x1a) } else { 8 });
     let margin = if ring.is_some() || !outline.is_empty() { 32.0 * margin_cells as f32 } else { 0.0 };
     let (mut nx, mut nz) = (0, 0);
@@ -231,6 +240,10 @@ pub fn cmd(rest: &[String]) -> Result<(), String> {
         if ring.is_some() {
             let (a, b) = (sc.p(0.0, 0.0), sc.p(32.0 * nx as f32, 32.0 * nz as f32));
             cv.outline(&[a, (b.0, a.1), b, (a.0, b.1)], INK, 3.0);
+        }
+        for poly in &outline2 {
+            let pts: Vec<(f32, f32)> = poly.iter().map(|(x, z)| sc.p(*x, *z)).collect();
+            cv.outline(&pts, [255, 140, 0], 3.0);
         }
         for poly in &outline {
             let pts: Vec<(f32, f32)> = poly.iter().map(|(x, z)| sc.p(*x, *z)).collect();
