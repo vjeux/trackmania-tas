@@ -47,25 +47,15 @@ pub fn water_surface(collection: u32) -> f32 {
 pub const GRASS_ABOVE: f32 = 0.3;
 pub const BED_BELOW: f32 = 0.1;
 pub const BED_ABOVE: f32 = 0.3;
-/// v4.32 (Hugo's FloorFinish-0712.cs, 2026-10-26 07:12): FIXED finish levels per vista — every water box of the
-/// collection spans `level − Thickness .. level` in the MAP frame (OpenWater: RedIsland / WhiteShore / GreenCoast
-/// −4, BlueBay +4 at 07:12; 07:28 BlueBay +5; 07:3x final: the band BOTTOM on the highest bed of the footprint — the ring
-/// sand bar −4.0 → −3.7 on the three, BlueBay 5.1; Thickness 0.3), the ring rows flat at the level, Stadium unchanged. Off by default (the bed-
-/// anchored rule stays the Rust default); `--fixed-level [Coll=Y,..]` turns it on with his table or a custom one.
+/// v4.32 (Hugo's FloorFinish-0712.cs, 2026-10-26 07:12 → 07:42 convention): FIXED finish levels per vista — every
+/// water box of the collection spans `level .. level + Thickness` in the MAP frame (the level is the band's BOTTOM,
+/// on the bed: OpenWater RedIsland / WhiteShore / GreenCoast −4.0, BlueBay 4.75; Thickness 0.3), the ring rows flat
+/// at the level, Stadium unchanged. Off by default (the bed-anchored rule stays the Rust default); `--fixed-level
+/// [Coll=Y,..]` turns it on with his table or a custom one.
 static FIXED_LEVELS: std::sync::Mutex<Option<Vec<(u32, f32)>>> = std::sync::Mutex::new(None);
 pub const FIXED_THICKNESS: f32 = 0.3;
-/// The bed clearance a shore square needs under the band: `level − FIXED_THICKNESS` (strict, the spec: no sand
-/// inside the slab) by default; `--fixed-level-bed-at-top` relaxes it to `level` (the band's top may sit AT the
-/// bed, as the open-water cells of BlueBay do, whose bed 4.0 is the level).
-static FIXED_BED_AT_TOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-pub fn set_fixed_bed_at_top(on: bool) {
-    FIXED_BED_AT_TOP.store(on, std::sync::atomic::Ordering::Relaxed);
-}
-pub fn fixed_bed_clearance() -> f32 {
-    if FIXED_BED_AT_TOP.load(std::sync::atomic::Ordering::Relaxed) { 0.0 } else { FIXED_THICKNESS }
-}
 pub fn hugo_fixed_levels() -> Vec<(u32, f32)> {
-    vec![(0x10, -3.7), (0x1d, -3.7), (0xf, -3.7), (0x1c, 5.1)]
+    vec![(0x10, -4.0), (0x1d, -4.0), (0xf, -4.0), (0x1c, 4.75)]
 }
 pub fn set_fixed_levels(levels: Option<Vec<(u32, f32)>>) {
     *FIXED_LEVELS.lock().unwrap() = levels;
@@ -81,10 +71,24 @@ pub fn fixed_level_local(collection: u32, level: f32) -> f32 {
     let bed_world = crate::outer_ring::open_water_bed(collection).unwrap_or(bed_local);
     level - (bed_world - bed_local)
 }
+/// A shore square's bed may reach up to the band's bottom = the level (the 07:42 convention; the 07:12 one put
+/// the bottom 0.3 under the level — `--fixed-level-top` restores it: band `level − 0.3 .. level`, bed ≤ level − 0.3).
+static FIXED_LEVEL_IS_TOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub fn set_fixed_level_is_top(on: bool) {
+    FIXED_LEVEL_IS_TOP.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+pub fn fixed_level_is_top() -> bool {
+    FIXED_LEVEL_IS_TOP.load(std::sync::atomic::Ordering::Relaxed)
+}
+/// The band's bottom relative to the level: 0 (level = bottom) or −Thickness (level = top).
+pub fn fixed_band_bottom_offset() -> f32 {
+    if fixed_level_is_top() { -FIXED_THICKNESS } else { 0.0 }
+}
 
 pub fn vista_slab(_collection: u32) -> (f32, f32) {
     if fixed_level(_collection).is_some() {
-        return (FIXED_THICKNESS, 0.0);
+        // the box anchors on the level: level + bottom_offset .. + Thickness
+        return if fixed_level_is_top() { (FIXED_THICKNESS, 0.0) } else { (0.0, FIXED_THICKNESS) };
     }
     (BED_BELOW, BED_ABOVE)
 }
@@ -342,9 +346,11 @@ pub fn cell_deep_squares(w: &WaterRect, open_bed: f32, ux: i32, uz: i32) -> Vec<
 }
 
 /// v4.32 FIXED-LEVEL rule, per 4 m square of a unit cell: the square is in when its centre is under the water quad,
-/// the water surface is at or above the band (`surface ≥ level`) and the bed is ENTIRELY below the band — the
-/// highest of its 9 bed samples ≤ level − thickness (no sand pokes through the slab). Value = the square's max bed.
-pub fn cell_level_squares(w: &WaterRect, level_local: f32, thickness: f32, ux: i32, uz: i32) -> Vec<Option<f32>> {
+/// the water surface is at or above the level and the bed is ENTIRELY below the band's bottom — the highest of its
+/// 9 bed samples (and the dry top at its corners) ≤ level − `clearance` (clearance 0 when the level IS the bottom;
+/// 0.3 under the 07:12 "level = top" convention). Value = the square's max bed.
+pub fn cell_level_squares(w: &WaterRect, level_local: f32, clearance: f32, ux: i32, uz: i32) -> Vec<Option<f32>> {
+    let thickness = clearance;
     let mut out = vec![None; 64];
     if w.surface < level_local - 1e-3 { return out; }
     for zi in 0..8 {
@@ -379,7 +385,7 @@ pub fn cell_footprints(w: &WaterRect, open_bed: f32) -> Vec<((i32, i32), u64, Ve
             let water = cell_water_mask(w, ux, uz);
             if water == 0 { continue; }
             let squares = match fixed_level(w.collection) {
-                Some(level) => cell_level_squares(w, fixed_level_local(w.collection, level), fixed_bed_clearance(), ux, uz),
+                Some(level) => cell_level_squares(w, fixed_level_local(w.collection, level), -fixed_band_bottom_offset(), ux, uz),
                 None => cell_deep_squares(w, open_bed, ux, uz),
             };
             v.push(((ux, uz), water, squares));

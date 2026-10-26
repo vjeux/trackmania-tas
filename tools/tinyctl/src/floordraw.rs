@@ -314,7 +314,7 @@ fn vista(store: &mut mapgeom::store::DataStore, m: &tmmaps::map::MapFile, collec
             None => mapgeom::floor_finish::hugo_fixed_levels(),
         };
         mapgeom::floor_finish::set_fixed_levels(Some(levels));
-        if rest.iter().any(|x| x == "--fixed-level-bed-at-top") { mapgeom::floor_finish::set_fixed_bed_at_top(true); }
+        if rest.iter().any(|x| x == "--fixed-level-top") { mapgeom::floor_finish::set_fixed_level_is_top(true); }
         mapgeom::floor_finish::fixed_level(collection)
     } else { None };
     let (tiles, bed) = mapgeom::floor_finish::water_tiles(collection);
@@ -363,7 +363,8 @@ fn vista(store: &mut mapgeom::store::DataStore, m: &tmmaps::map::MapFile, collec
     let mut iso: Vec<((f32, f32), bool)> = Vec::new(); // world point, true = bottom contour
     if let Some(level) = fixed {
         let local = mapgeom::floor_finish::fixed_level_local(collection, level);
-        let bottom = local - mapgeom::floor_finish::fixed_bed_clearance();
+        let bottom = local + mapgeom::floor_finish::fixed_band_bottom_offset();
+        let top = bottom + mapgeom::floor_finish::FIXED_THICKNESS;
         let mut pts_cache: BTreeMap<(String, u32), ((i32, i32), Vec<((f32, f32), bool)>)> = BTreeMap::new();
         for b in m.blocks.iter().chain(m.baked.iter()).filter(|b| b.flags != 0xFFFF_FFFF && b.free_pos.is_none()) {
             if !shore.iter().any(|t| t.eq_ignore_ascii_case(&b.name)) { continue; }
@@ -379,7 +380,7 @@ fn vista(store: &mut mapgeom::store::DataStore, m: &tmmaps::map::MapFile, collec
                             let p = [0.5 * xi as f32 + 0.25, 0.5 * zi as f32 + 0.25];
                             let y = mapgeom::floor_finish::bed_height_at_pub(&w, p).or_else(|| mapgeom::floor_finish::top_height_at(&w, p));
                             let Some(y) = y else { continue };
-                            if (y - bottom).abs() <= 0.06 { v.push(((p[0], p[1]), true)); } else if (y - local).abs() <= 0.06 { v.push(((p[0], p[1]), false)); }
+                            if (y - bottom).abs() <= 0.06 { v.push(((p[0], p[1]), true)); } else if (y - top).abs() <= 0.06 { v.push(((p[0], p[1]), false)); }
                         }
                     }
                 }
@@ -473,7 +474,8 @@ fn vista(store: &mut mapgeom::store::DataStore, m: &tmmaps::map::MapFile, collec
     cv.text(lx, ly, &format!("open-water cells {} -> {} strips; shore deep boxes {}", mesh.cells, mesh.strips, mesh.shore_prisms), 2, INK);
     ly += 24.0;
     if let Some(level) = fixed {
-        cv.text(lx, ly, &format!("FIXED LEVEL {level:+.2}: every box {:+.2}..{level:+.2} (map frame); black dots = bank contour at the band bottom, grey = at the top", level - mapgeom::floor_finish::FIXED_THICKNESS), 2, INK);
+        let b0 = level + mapgeom::floor_finish::fixed_band_bottom_offset();
+        cv.text(lx, ly, &format!("FIXED LEVEL {level:+.2}: every box {b0:+.2}..{:+.2} (map frame); black dots = bank contour at the band bottom, grey = at the top", b0 + mapgeom::floor_finish::FIXED_THICKNESS), 2, INK);
         ly += 24.0;
         cv.text(lx, ly, "bright cyan squares = selected (bed entirely below the band); pale = water squares left out", 2, INK);
         ly += 24.0;

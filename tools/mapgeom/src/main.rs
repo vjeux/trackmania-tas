@@ -536,8 +536,8 @@ fn main() {
     if a.rest.iter().any(|x| x == "--tiles-slab") {
         mapgeom::floor_tiles::set_pure_top_only(false);
     }
-    // --fixed-level [Coll=Y,..] (v4.32, Hugo's FloorFinish-0712.cs): every vista water box level − 0.3 .. level in the
-    // map frame, the ring flat at the level; bare = his table (RedIsland/WhiteShore/GreenCoast −3.7, BlueBay 5.1)
+    // --fixed-level [Coll=Y,..] (v4.32, Hugo's FloorFinish-0712.cs, 07:42 convention): every vista water box level ..
+    // level + 0.3 in the map frame, the ring flat at the level; bare = his table (RedIsland/WhiteShore/GreenCoast −4.0, BlueBay 4.75; the level is the band BOTTOM, band level .. level + 0.3; `--fixed-level-top` = the 07:12 convention)
     if let Some(i) = a.rest.iter().position(|x| x == "--fixed-level") {
         let levels = match a.rest.get(i + 1).filter(|v| !v.starts_with("--") && v.contains('=')) {
             Some(spec) => spec.split(',').map(|kv| {
@@ -548,8 +548,8 @@ fn main() {
             None => mapgeom::floor_finish::hugo_fixed_levels(),
         };
         mapgeom::floor_finish::set_fixed_levels(Some(levels));
-        if a.rest.iter().any(|x| x == "--fixed-level-bed-at-top") {
-            mapgeom::floor_finish::set_fixed_bed_at_top(true);
+        if a.rest.iter().any(|x| x == "--fixed-level-top") {
+            mapgeom::floor_finish::set_fixed_level_is_top(true);
         }
     }
     // --pure-template F.Item.Gbx: the mesh-modeler template (default: the bank's PureFloor4.Item.Gbx)
@@ -5067,7 +5067,7 @@ fn main() {
             let (_, open_bed) = mapgeom::floor_finish::water_tiles(collection);
             let coll_name = match collection { 0x10 => "RedIsland", 0x1d => "WhiteShore", 0x1c => "BlueBay", 0xf => "GreenCoast", _ => "Stadium" };
             if let Some(level) = mapgeom::floor_finish::fixed_level(collection) {
-                println!("# fixed-level rule: {coll_name} level {level:+.2} (map frame) = {:+.2} in the water row's block frame; a shore square is in when its bed is entirely under level − {:.1} and it lies under the water quad", mapgeom::floor_finish::fixed_level_local(collection, level), mapgeom::floor_finish::fixed_bed_clearance());
+                println!("# fixed-level rule: {coll_name} level {level:+.2} (map frame) = {:+.2} in the water row's block frame; a shore square is in when its bed is entirely under the band bottom (level {:+.1}) and it lies under the water quad", mapgeom::floor_finish::fixed_level_local(collection, level), mapgeom::floor_finish::fixed_band_bottom_offset());
             }
             println!("tile\tflags\tplacements\tprefab\tx0\tx1\tz0\tz1\tsurface\tbed_lo\tbed_hi\tbed_tris\twater_4m_squares");
             for ((name, flags), n) in kinds {
