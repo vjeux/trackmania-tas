@@ -5507,6 +5507,21 @@ fn main() {
             std::fs::write(&out, format!("{header}\n{}\n", rows.join("\n"))).unwrap_or_else(|e| die(format!("{out}: {e}")));
             eprintln!("wrote {out}: {} materials", rows.len());
         }
+        // vista-bed-profile --collection N [--inner 8] [--outer 20] [--size 64]: the seabed by distance from the grid
+        //   edge (4 m bands, TSV: d_m min max mean n wet) + the sea level and the inside bed (outer_ring::bed_profile)
+        "vista-bed-profile" => {
+            let mut store = open(&a);
+            let collection: u32 = flag(&a.rest, "--collection").map(|v| u32::from_str_radix(v.trim_start_matches("0x"), 16).unwrap_or(0x10)).unwrap_or(0x10);
+            let inner: i32 = flag(&a.rest, "--inner").and_then(|v| v.parse().ok()).unwrap_or(8);
+            let outer: i32 = flag(&a.rest, "--outer").and_then(|v| v.parse().ok()).unwrap_or(20);
+            let size: i32 = flag(&a.rest, "--size").and_then(|v| v.parse().ok()).unwrap_or(64);
+            let p = mapgeom::outer_ring::bed_profile(&mut store, collection, (size, size), inner, outer).unwrap_or_else(die);
+            println!("# collection {collection:#x} {} grid {} x {} m sea_y {:.2} inside_bed {:?} water_surface_block {:.2}", mapgeom::sttc::collection_name(collection), p.grid_m.0, p.grid_m.1, p.sea_y, mapgeom::outer_ring::open_water_bed(collection).ok(), mapgeom::floor_finish::water_surface(collection));
+            println!("d_m\tmin\tmax\tmean\tn\twet");
+            for (d, mn, mx, mean, n, wet) in &p.bands {
+                println!("{d:.0}\t{mn:.2}\t{mx:.2}\t{mean:.2}\t{n}\t{wet:.2}");
+            }
+        }
         // lm-oracle-cells MAP --cells x0,x1,z0,z1 [--rows y0,y1]: which authored / baked blocks in the cell window are
         //   CHARTED in the map's own editor lightmap (an uncharted baked Grass tile = the game hid it under a block; an
         //   uncharted authored block = the game drew nothing for it)

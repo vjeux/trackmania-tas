@@ -839,3 +839,51 @@ pub fn tsv_rows(collection_name: &str, decoration: &str, ring: &Ring) -> String 
     }
     s
 }
+
+/// v4.32 (Hugo, 2026-10-26: "a side-view diagram of the vista seabed"): the bed profile of a vista collection by
+/// distance from the grid edge — 4 m bands from `inner` cells INSIDE the grid (negative d) to `outer` cells outside —
+/// over all four sides and the corners: (d0, min, max, mean, n, wet fraction). Map frame (yoff 0, v4.22). Also
+/// returns the scene's sea level (the Water solid's y) and the grid size in metres.
+pub struct BedProfile {
+    pub bands: Vec<(f32, f32, f32, f32, usize, f32)>,
+    pub sea_y: f32,
+    pub grid_m: (f32, f32),
+}
+
+pub fn bed_profile(store: &mut crate::store::DataStore, collection: u32, size: (i32, i32), inner: i32, outer: i32) -> Result<BedProfile, String> {
+    let coll = crate::sttc::collection_name(collection);
+    let path = format!("{coll}\\GameCtnDecoration\\Scene3d\\Base64x64.Scene3d.Gbx");
+    let mut c = crate::geom::Collector::new(store);
+    crate::scene3d::collect(&mut c, &path)?;
+    let sea = scene_tris(&c, "Water");
+    let ground = scene_tris(&c, "Warp");
+    if ground.is_empty() {
+        return Err(format!("{path}: no Warp* solids"));
+    }
+    let sea_y = sea.iter().map(|t| t[0][1]).fold(f32::NEG_INFINITY, f32::max);
+    let (gx, gz) = (32.0 * size.0 as f32, 32.0 * size.1 as f32);
+    let margin = 32.0 * outer as f32;
+    let ground_up: Vec<&[[f32; 3]; 3]> = ground.iter().filter(|t| upward(t)).collect();
+    let n = ((gx + 2.0 * margin) / STEP).round() as i32;
+    let nz = ((gz + 2.0 * margin) / STEP).round() as i32;
+    let mut acc: std::collections::BTreeMap<i32, (f32, f32, f64, usize, usize)> = Default::default();
+    for j in 0..nz {
+        for i in 0..n {
+            let (x, z) = (-margin + (i as f32 + 0.5) * STEP, -margin + (j as f32 + 0.5) * STEP);
+            // signed distance from the grid edge: negative inside
+            let d = (-x).max(x - gx).max(-z).max(z - gz);
+            if d < -32.0 * inner as f32 { continue; }
+            let bed = ground_up.iter().filter_map(|t| height_at(t, x, z)).fold(f32::INFINITY, f32::min);
+            if bed == f32::INFINITY { continue; }
+            let wet = sea.iter().any(|t| height_at(t, x, z).is_some());
+            let e = acc.entry((d / STEP).floor() as i32).or_insert((f32::INFINITY, f32::NEG_INFINITY, 0.0, 0, 0));
+            e.0 = e.0.min(bed);
+            e.1 = e.1.max(bed);
+            e.2 += bed as f64;
+            e.3 += 1;
+            if wet { e.4 += 1; }
+        }
+    }
+    let bands = acc.into_iter().map(|(k, (mn, mx, sum, cnt, wet))| (k as f32 * STEP, mn, mx, (sum / cnt as f64) as f32, cnt, wet as f32 / cnt as f32)).collect();
+    Ok(BedProfile { bands, sea_y, grid_m: (gx, gz) })
+}

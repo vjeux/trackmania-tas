@@ -19,6 +19,7 @@ mod boxbuild;
 mod mothsheet;
 mod floordraw;
 mod floorprofile;
+mod seabed;
 mod cpdraw;
 mod cutdraw;
 mod discard;
@@ -217,6 +218,7 @@ fn main() {
         "moth-sheet" => mothsheet::cmd(rest),
         "floorfinish-draw" => floordraw::cmd(rest),
         "floorfinish-profile" => floorprofile::cmd(rest),
+        "seabed-profile" => seabed::cmd(rest),
         "checkpoint-draw" => cpdraw::cmd(rest),
         "cutouts-draw" => cutdraw::cmd(rest),
         "build" => build::cmd(rest),
