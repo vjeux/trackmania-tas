@@ -5269,7 +5269,11 @@ fn main() {
             let (mut built, mut none) = (0usize, 0usize);
             for ((name, kflags), n) in &kinds {
                 let var = mapgeom::floor_finish::variant_byte(*kflags);
-                let ident = if var == 0 { format!("FloorFinish{name}.Item.Gbx") } else { format!("FloorFinish{name}V{var}.Item.Gbx") };
+                // v4.30: a kind with SEVERAL ground variants of which only some have fill carries the V<var> suffix even
+                // for variant 0 (Hugo's dictionary keys are suffix-less = "all variants"; DecoPlatformSlopeBaseCurve1InFull
+                // variant 64 has no fill, so its variant-0 item must be keyed V0); --v0-suffix NAME,.. names them
+                let v0_suffixed: Vec<String> = flag(&a.rest, "--v0-suffix").map(|v| v.split(',').map(|t| t.trim().to_string()).collect()).unwrap_or_else(|| vec!["DecoPlatformSlopeBaseCurve1InFull".to_string()]);
+                let ident = if var == 0 && !v0_suffixed.iter().any(|k| k == name) { format!("FloorFinish{name}.Item.Gbx") } else { format!("FloorFinish{name}V{var}.Item.Gbx") };
                 if !squares {
                     let above_c: f32 = flag(&a.rest, "--cutout-above").and_then(|v| v.parse().ok()).unwrap_or(mapgeom::floor_finish::GRASS_ABOVE);
                     match mapgeom::floor_finish::build_cutout_item_exact(&mut store, name, *kflags, &ident, coll, inset, 0.0, above_c) {
