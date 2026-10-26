@@ -913,20 +913,45 @@ pub fn cmd(args: &[String]) {
     // not carry is a refusal.
     let mut carried: Vec<(String, Vec<u8>)> = Vec::new();
     if let Some((src_zip, names)) = crate::header::embedded_zip_bytes(&source.gbx.body) {
+        // An archive entry is `Items\<ident>` in the editor's own saves, but a map saved
+        // with items dragged in from elsewhere stores the entry under the item's path ON THE
+        // AUTHOR'S DISK (`C:/Users/David/Documents/Trackmania/Items/<ident>`) or a club
+        // store path (`<fake>/MemoryTemp/FavoriteClubItems/12730/<zip>/<file>`), so the
+        // match is by SUFFIX: the entry ends with the ident (U10S 448/521/535/562/596 placed
+        // such items; the live Tiny files carried no file for them, 2026-10-26).
         let files: Vec<String> = names.iter().map(|n| n.replace('/', "\\").to_ascii_lowercase()).collect();
+        let entry_for = |model: &str| -> Option<usize> {
+            let m = model.to_ascii_lowercase();
+            let exact = format!("items\\{m}");
+            files.iter().position(|f| *f == exact).or_else(|| {
+                // `club:12730\HtimH_Stadium.zip\HtimH_Floodlight_03.Item.gbx` is stored as
+                // `…/FavoriteClubItems/12730/HtimH_Stadium.zip/HtimH_Floodlight_03.Item.gbx`
+                let tail = m.strip_prefix("club:").map(|r| r.replacen('\\', "\\", 1)).unwrap_or(m.clone());
+                let tail_no_club = m.split_once('\\').filter(|_| m.starts_with("club:")).map(|(_, r)| r.to_string()).unwrap_or(m.clone());
+                files.iter().position(|f| f.ends_with(&format!("\\{tail}")) || f.ends_with(&format!("\\{tail_no_club}")))
+            })
+        };
         let still: Vec<String> = specs
             .iter()
             .map(|s| s.model.clone())
-            .filter(|m| files.iter().any(|f| f == &format!("items\\{}", m.to_ascii_lowercase())))
+            .filter(|m| entry_for(m).is_some())
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
             .collect();
         if !still.is_empty() {
             let entries = crate::header::zip_entries(&src_zip);
             for model in &still {
-                let want = format!("items\\{}", model.to_ascii_lowercase());
-                match entries.iter().find(|(n, _)| n.replace('/', "\\").to_ascii_lowercase() == want) {
-                    Some((n, bytes)) if !bytes.is_empty() => carried.push((n.replace('\\', "/"), bytes.clone())),
+                let idx = entry_for(model).expect("matched above");
+                let entry_name = &names[idx];
+                match entries.iter().find(|(n, _)| n == entry_name) {
+                    // stored under the canonical `Items/<ident>` name whatever the source called it
+                    Some((_, bytes)) if !bytes.is_empty() => {
+                        let canon = format!("Items/{}", model.replace('\\', "/"));
+                        if entry_name.replace('\\', "/") != canon {
+                            println!("  custom item {model}: source entry `{entry_name}` carried as `{canon}`");
+                        }
+                        carried.push((canon, bytes.clone()));
+                    }
                     _ => panic!("source map embeds custom object {model} still placed after the mapping, and its file cannot be read from the source archive"),
                 }
             }

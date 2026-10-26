@@ -278,6 +278,70 @@ fn main() {
             m.write_to(&out).expect("write");
             println!("{}: {fixed} manifest row(s) fixed of {}", out.display(), rows2.len());
         }
+        // tmmaps carry-missing LIVE --from ORIGINAL --out OUT — every custom item LIVE places
+        // without an embedded file gets the file from ORIGINAL's archive (matched by suffix:
+        // the original stores it under the author's disk path or a club-store path) plus a
+        // manifest row (ident as placed, the placement's author). The minimal live-file fix
+        // for Tiny 448/521/535/562/596 (2026-10-26): nothing else in LIVE changes.
+        "carry-missing" => {
+            let live = std::path::PathBuf::from(&args[2]);
+            let from = std::path::PathBuf::from(tmmaps::cli::flag(&args, "--from").expect("carry-missing needs --from ORIGINAL"));
+            let out = std::path::PathBuf::from(tmmaps::cli::flag(&args, "--out").expect("carry-missing needs --out OUT"));
+            let mut m = tmmaps::map::MapFile::load(&live);
+            let (rows, mut zip) = m.embedded_objects().expect("live map has no embedded objects");
+            let have: std::collections::BTreeSet<String> = rows.iter().map(|(i, _)| i.replace('\\', "/").to_ascii_lowercase()).collect();
+            let src = tmmaps::map::MapFile::load(&from);
+            let (src_zip, src_names) = tmmaps::header::embedded_zip_bytes(&src.gbx.body).expect("original has no archive");
+            let src_entries = tmmaps::header::zip_entries(&src_zip);
+            let src_rows: Vec<(String, String)> = src.embedded_objects().map(|(r, _)| r).unwrap_or_default();
+            let mut rows2 = rows.clone();
+            let mut added = 0usize;
+            let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+            for it in &m.items {
+                let model = it.model.clone();
+                let key = model.replace('\\', "/").to_ascii_lowercase();
+                if have.contains(&key) || !seen.insert(key.clone()) {
+                    continue;
+                }
+                // a stock item has no backslash and no .Item.Gbx suffix in its name
+                if !model.contains('\\') && !model.to_ascii_lowercase().ends_with(".item.gbx") {
+                    continue;
+                }
+                let tail_no_club = model.split_once('\\').filter(|_| model.starts_with("club:")).map(|(_, r)| r.to_string()).unwrap_or(model.clone()).replace('\\', "/").to_ascii_lowercase();
+                let found = src_names.iter().position(|n| {
+                    let f = n.replace('\\', "/").to_ascii_lowercase();
+                    f == format!("items/{key}") || f.ends_with(&format!("/{key}")) || f.ends_with(&format!("/{tail_no_club}"))
+                });
+                let Some(idx) = found else {
+                    eprintln!("  {model}: placed, no file in the live archive, and the original's archive has no entry for it either — left as is");
+                    continue;
+                };
+                let entry_name = &src_names[idx];
+                let bytes = src_entries.iter().find(|(n, _)| n == entry_name).map(|(_, b)| b.clone()).unwrap_or_default();
+                if bytes.is_empty() {
+                    eprintln!("  {model}: original entry `{entry_name}` is empty — left as is");
+                    continue;
+                }
+                let author = it
+                    .author
+                    .clone()
+                    .or_else(|| src_rows.iter().find(|(i, _)| i.replace('\\', "/").to_ascii_lowercase() == key).map(|(_, a)| a.clone()))
+                    .unwrap_or_else(|| "Nadeo".to_string());
+                let canon = format!("Items/{}", model.replace('\\', "/"));
+                zip = tmmaps::header::zip_add(&zip, &canon, &bytes);
+                rows2.push((model.clone(), author.clone()));
+                println!("  + {canon} ({} B) from `{entry_name}`, author {author}", bytes.len());
+                added += 1;
+            }
+            if added == 0 {
+                println!("{}: nothing to carry", live.display());
+                std::process::exit(3);
+            }
+            let manifest: Vec<(&str, &str)> = rows2.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+            m.replace_embedded_objects(&manifest, &zip);
+            m.write_to(&out).expect("write");
+            println!("{}: {added} custom item file(s) carried, {} manifest rows", out.display(), rows2.len());
+        }
         "drop-blocks" => {
             if let Err(e) = tmmaps::altered::drop_blocks_cmd(&args) {
                 eprintln!("tmmaps drop-blocks: {e}");
