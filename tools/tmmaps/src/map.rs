@@ -3801,6 +3801,15 @@ pub fn octree_chunk_summary(payload: &[u8]) -> Result<Option<(u32, [i32; 3], usi
 }
 
 impl MapFile {
+    /// Replace one skippable body chunk's payload (size field rewritten). Returns the old
+    /// size. The 188 old-wood bisect, 2026-10-25.
+    pub fn reset_chunk(&mut self, cid: u32, payload_new: &[u8]) -> Result<usize, String> {
+        let Some(&(_, off, payload, size)) = crate::gbx::all_skip_chunks(&self.gbx.body).iter().find(|(c, ..)| *c == cid) else { return Err(format!("no chunk {cid:#010x}")) };
+        self.raw_patches.push((off + 8, (payload_new.len() as u32).to_le_bytes().to_vec()));
+        self.raw_splices.push(((payload, payload + size), payload_new.to_vec()));
+        Ok(size)
+    }
+
     /// Drop the stored lightmap: chunk 0x0304305B becomes `version,
     /// HasLightmaps = 0, U01, U02` (16 bytes, the form of a map whose shadows
     /// were never computed). A tiny map's lightmap would have to be computed

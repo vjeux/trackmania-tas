@@ -132,6 +132,30 @@ fn main() {
             m.write_to(&out).expect("write");
             println!("{}: {removed} item placement(s) removed", out.display());
         }
+        // tmmaps reset-chunk MAP --chunk 0xID --out OUT [--payload HEX] — one skippable body
+        // chunk's payload replaced by the given bytes (default: the 20-byte form every other
+        // map carries for 0x03043061: `01 00 00 00` + 16 zero bytes). The 188 old-wood bisect
+        // (2026-10-25): 188 is the only original whose 0x03043061 is 20,972 bytes.
+        "reset-chunk" => {
+            let src = std::path::PathBuf::from(&args[2]);
+            let out = std::path::PathBuf::from(tmmaps::cli::flag(&args, "--out").expect("reset-chunk needs --out OUT"));
+            let cid_s = tmmaps::cli::flag(&args, "--chunk").expect("reset-chunk needs --chunk 0xID");
+            let cid = u32::from_str_radix(cid_s.trim_start_matches("0x"), 16).expect("chunk id hex");
+            let payload_new: Vec<u8> = match tmmaps::cli::flag(&args, "--payload") {
+                Some(h) => (0..h.len()).step_by(2).map(|i| u8::from_str_radix(&h[i..i + 2], 16).expect("payload hex")).collect(),
+                None => {
+                    let mut v = vec![1u8, 0, 0, 0];
+                    v.extend(std::iter::repeat(0u8).take(16));
+                    v
+                }
+            };
+            let mut m = tmmaps::map::MapFile::load(&src);
+            let n = m.reset_chunk(cid, &payload_new).unwrap_or_else(|e| { eprintln!("{e}"); std::process::exit(2) });
+            m.write_to(&out).expect("write");
+            let chk = tmmaps::map::MapFile::load(&out);
+            let now = tmmaps::gbx::all_skip_chunks(&chk.gbx.body).into_iter().find(|(c, ..)| *c == cid).map(|(_, _, _, s)| s);
+            println!("{}: chunk {cid_s} {n} -> {} bytes (reads back {:?})", out.display(), payload_new.len(), now);
+        }
         "drop-blocks" => {
             if let Err(e) = tmmaps::altered::drop_blocks_cmd(&args) {
                 eprintln!("tmmaps drop-blocks: {e}");
