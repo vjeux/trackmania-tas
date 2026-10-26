@@ -3810,6 +3810,13 @@ impl MapFile {
         Ok(size)
     }
 
+    /// Remove one skippable body chunk entirely (header + payload). Returns the old size.
+    pub fn remove_chunk(&mut self, cid: u32) -> Result<usize, String> {
+        let Some(&(_, off, payload, size)) = crate::gbx::all_skip_chunks(&self.gbx.body).iter().find(|(c, ..)| *c == cid) else { return Err(format!("no chunk {cid:#010x}")) };
+        self.raw_splices.push(((off, payload + size), Vec::new()));
+        Ok(size)
+    }
+
     /// Drop the stored lightmap: chunk 0x0304305B becomes `version,
     /// HasLightmaps = 0, U01, U02` (16 bytes, the form of a map whose shadows
     /// were never computed). A tiny map's lightmap would have to be computed

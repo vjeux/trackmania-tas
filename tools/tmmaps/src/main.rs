@@ -150,6 +150,23 @@ fn main() {
                 }
             };
             let mut m = tmmaps::map::MapFile::load(&src);
+            if tmmaps::cli::has(&args, "--remove") {
+                let n = m.remove_chunk(cid).unwrap_or_else(|e| { eprintln!("{e}"); std::process::exit(2) });
+                m.write_to(&out).expect("write");
+                let chk = tmmaps::map::MapFile::load(&out);
+                let still = tmmaps::gbx::all_skip_chunks(&chk.gbx.body).into_iter().any(|(c, ..)| c == cid);
+                println!("{}: chunk {cid_s} ({n} bytes) removed (still present: {still})", out.display());
+                return;
+            }
+            // --from OTHER.Map.Gbx: take the payload from another map's same chunk
+            let payload_new: Vec<u8> = match tmmaps::cli::flag(&args, "--from") {
+                Some(other) => {
+                    let o = tmmaps::map::MapFile::load(std::path::Path::new(&other));
+                    let (_, _, p, sz) = tmmaps::gbx::all_skip_chunks(&o.gbx.body).into_iter().find(|(c, ..)| *c == cid).unwrap_or_else(|| { eprintln!("{other}: no chunk {cid_s}"); std::process::exit(2) });
+                    o.gbx.body[p..p + sz].to_vec()
+                }
+                None => payload_new,
+            };
             let n = m.reset_chunk(cid, &payload_new).unwrap_or_else(|e| { eprintln!("{e}"); std::process::exit(2) });
             m.write_to(&out).expect("write");
             let chk = tmmaps::map::MapFile::load(&out);
