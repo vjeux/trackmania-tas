@@ -5503,6 +5503,29 @@ fn main() {
             std::fs::write(&out, format!("{header}\n{}\n", rows.join("\n"))).unwrap_or_else(|e| die(format!("{out}: {e}")));
             eprintln!("wrote {out}: {} materials", rows.len());
         }
+        // floor-faces BLOCK [--flags HEX]: the standable-floor triangles of a cutout kind split by flatness (ny > 0.97 vs
+        //   sloped) with their areas and y ranges — is a cutout's fill a flat apron or a slope's low end?
+        "floor-faces" => {
+            let mut store = open(&a);
+            let name = a.rest.get(1).cloned().unwrap_or_default();
+            let flags = flag(&a.rest, "--flags").and_then(|v| u32::from_str_radix(&v, 16).ok()).unwrap_or(0x1000);
+            let (floor, _structure) = mapgeom::floor_finish::floor_and_structure_of(&mut store, &name, flags).unwrap_or_else(die);
+            let (mut flat_a, mut slope_a, mut flat_n, mut slope_n) = (0.0f32, 0.0f32, 0usize, 0usize);
+            let (mut flat_y, mut slope_y) = ([f32::INFINITY, f32::NEG_INFINITY], [f32::INFINITY, f32::NEG_INFINITY]);
+            let mut ny_hist: std::collections::BTreeMap<i32, usize> = Default::default();
+            for t in &floor {
+                let (u, v) = ([t[1][0] - t[0][0], t[1][1] - t[0][1], t[1][2] - t[0][2]], [t[2][0] - t[0][0], t[2][1] - t[0][1], t[2][2] - t[0][2]]);
+                let n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+                let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+                if len < 1e-9 { continue; }
+                let ny = n[1] / len;
+                let area_xz = (u[0] * v[2] - u[2] * v[0]).abs() / 2.0;
+                let (ylo, yhi) = (t.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min), t.iter().map(|p| p[1]).fold(f32::NEG_INFINITY, f32::max));
+                *ny_hist.entry((ny * 100.0).round() as i32).or_default() += 1;
+                if ny > 0.97 { flat_a += area_xz; flat_n += 1; flat_y[0] = flat_y[0].min(ylo); flat_y[1] = flat_y[1].max(yhi); } else { slope_a += area_xz; slope_n += 1; slope_y[0] = slope_y[0].min(ylo); slope_y[1] = slope_y[1].max(yhi); }
+            }
+            println!("{name} {flags:08x}: floor triangles {} — FLAT (ny > 0.97): {flat_n} tris, {flat_a:.1} m² plan area, y [{:.2}, {:.2}]; SLOPED: {slope_n} tris, {slope_a:.1} m², y [{:.2}, {:.2}]; ny histogram (×100) {:?}", floor.len(), flat_y[0], flat_y[1], slope_y[0], slope_y[1], ny_hist);
+        }
         // structure-footprint BLOCK [--flags HEX]: the standable fill's extent and the structure triangles' xz extents per
         //   height band (for the analytic pillar hole)
         "structure-footprint" => {
