@@ -4291,3 +4291,54 @@ pub fn static_item_from_custom_block(bytes: &[u8], ident: &str, author: &str, sc
 pub fn card_uv1_legacy() -> bool {
     std::env::var("TINY_CARD_UV1").map(|v| v == "legacy").unwrap_or(false)
 }
+
+/// Hugo's CheckpointExpandable v2 (10-27): "literally the GateExpandableFinish block but a checkpoint" — the segment's
+/// own prefab geometry as a static item in the BLOCK frame (offset 0 / yaw 0 on the segment's pose): the Air variant =
+/// the bare 32 × 8 × 0.84 m pane; `ground` = the Ground variant's pane + its TechnicsTrims foot trims (the grass fill,
+/// the speedometer light strips and their lights/collision dropped — they are the cell's terrain and the gate's
+/// helpers, not the gate). The pane's `RaceTriggerFXFinish` link is swapped for the kind's FX material
+/// (`RaceTriggerFXCheckpoint` / `RaceTriggerFXMultilap`, same shader and parameters — 1:1); the trigger is the pak's own
+/// `ExpandableCheckpoint_Trigger.Shape` slab (x 0..32, y 0..7.18, z 15.58..16.42); the waypoint type is `wtype`.
+/// Returns (item bytes, material swaps as "from → to", visuals kept, visuals dropped).
+pub fn expandable_item(store: &mut crate::store::DataStore, ident: &str, collection: u32, ground: bool, wtype: i32) -> R<(Vec<u8>, Vec<String>, usize, usize)> {
+    let prefab = if ground { "Stadium\\Media\\Prefab\\Gate\\ExpandableFinish_Ground.Prefab.Gbx" } else { "Stadium\\Media\\Prefab\\Gate\\ExpandableFinish_Air.Prefab.Gbx" };
+    let mut m = Merged::default();
+    add_prefab(store, prefab, &IDENTITY, 1.0, &mut m, 0)?;
+    let before = m.visuals.len();
+    if ground {
+        let keep: Vec<bool> = m.materials.iter().map(|mat| mat.link().map_or(false, |l| { let u = l.to_ascii_uppercase(); u.contains("TECHNICSTRIMS") || u.contains("RACETRIGGERFX") })).collect();
+        m.visuals.retain(|v| keep.get(v.material).copied().unwrap_or(false));
+        m.lights_out.clear();
+        m.pending_lights.clear();
+        m.fx.clear();
+        m.veget.clear();
+        m.pictures.clear();
+        m.surf_vertices.clear();
+        m.surf_triangles.clear();
+        m.surf_ids.clear();
+    }
+    let target = match wtype {
+        WP_CHECKPOINT_T => "RaceTriggerFXCheckpoint",
+        4 => "RaceTriggerFXMultilap",
+        _ => "RaceTriggerFXFinish",
+    };
+    let mut swaps = Vec::new();
+    for mat in &mut m.materials {
+        let Some(main) = mat.main.as_mut() else { continue };
+        let Some(link) = main.link.as_str().map(|s| s.to_string()) else { continue };
+        // a user-inst link names the material without the `.Material.Gbx` suffix
+        let up = link.to_ascii_uppercase();
+        if up.ends_with("\\RACETRIGGERFXFINISH") || up.ends_with("\\RACETRIGGERFXFINISH.MATERIAL.GBX") {
+            let to = format!("Stadium\\Media\\Material\\{target}{}", if up.ends_with(".GBX") { ".Material.Gbx" } else { "" });
+            swaps.push(format!("{link} → {to}"));
+            main.link = crate::crystal_model::Id::Str(to);
+        }
+    }
+    m.trigger = Some(trigger_from_shape_file(store, "Stadium\\Media\\Prefab\\Gate\\ExpandableCheckpoint_Trigger.Shape.Gbx", &IDENTITY, 1.0)?);
+    m.waypoint_type = Some(wtype);
+    m.spawn = [16.0, 0.0, 16.0];
+    let kept = m.visuals.len();
+    let (bytes, _) = finish_item(m, ident, ident, 1.0, collection)?;
+    Ok((bytes, swaps, kept, before - kept))
+}
+const WP_CHECKPOINT_T: i32 = 2;

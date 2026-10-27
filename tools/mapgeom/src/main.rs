@@ -5992,6 +5992,22 @@ fn main() {
         // expandable-checkpoint --out F.Item.Gbx [--collection N]: Hugo's CheckpointExpandable item — the
         //   GateExpandableFinish segment's pane (x 0..32, y 0..7.18, z 15.58..16.42, block frame) as a glass crystal
         //   checkpoint with the full slab as trigger; placed at offset 0 / yaw 0 on each segment's pose
+        // expandable-item --out F.Item.Gbx [--ground] [--waypoint checkpoint|finish|multilap] [--collection N]: Hugo's
+        //   CheckpointExpandable v2 — the GateExpandableFinish segment's OWN prefab geometry (Air pane; --ground = pane +
+        //   foot trims) as a static item in the block frame, the pane's FX material swapped for the kind's, the pak's
+        //   trigger slab, waypoint type by kind
+        "expandable-item" => {
+            let mut store = open(&a);
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("expandable-item: --out".into()));
+            let collection: u32 = flag(&a.rest, "--collection").and_then(|v| v.parse().ok()).unwrap_or(26);
+            let ground = a.rest.iter().any(|x| x == "--ground");
+            let wtype = match flag(&a.rest, "--waypoint").unwrap_or_else(|| "checkpoint".into()).to_ascii_lowercase().as_str() { "finish" => 1, "multilap" | "startfinish" => 4, "start" => 0, _ => 2 };
+            let ident = std::path::Path::new(&out).file_name().unwrap().to_string_lossy().to_string();
+            let (bytes, swaps, kept, dropped) = mapgeom::static_item::build::expandable_item(&mut store, &ident, collection, ground, wtype).unwrap_or_else(die);
+            std::fs::write(&out, &bytes).unwrap_or_else(|e| die(format!("{out}: {e}")));
+            println!("wrote {out}: {} bytes ({} variant: {kept} visuals kept, {dropped} dropped; waypoint type {wtype}; trigger = ExpandableCheckpoint_Trigger.Shape)", bytes.len(), if ground { "Ground" } else { "Air" });
+            for s in &swaps { println!("  material swap: {s}"); }
+        }
         "expandable-checkpoint" => {
             let out = flag(&a.rest, "--out").unwrap_or_else(|| die("expandable-checkpoint: --out".into()));
             let collection: u32 = flag(&a.rest, "--collection").and_then(|v| v.parse().ok()).unwrap_or(26);

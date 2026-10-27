@@ -92,19 +92,39 @@ pub fn cmd(rest: &[String]) -> Result<(), String> {
     let local_file = std::path::Path::new(&item).is_file();
     let (item_verts, item_trig): (Vec<[f32; 3]>, Vec<[f32; 3]>) = if local_file {
         let bytes = std::fs::read(&item).map_err(|e| format!("{item}: {e}"))?;
-        let it = mapgeom::crystal::ItemCrystal::open(&bytes)?;
-        let (mut g, mut t) = (Vec::new(), Vec::new());
-        for l in &it.model.layers {
-            match &l.kind {
-                mapgeom::crystal_model::LayerKind::Geometry { crystal, .. } => g.extend(crystal.positions.iter().copied()),
-                mapgeom::crystal_model::LayerKind::Trigger { crystal, .. } => t.extend(crystal.positions.iter().copied()),
-                _ => {}
+        if let Ok(it) = mapgeom::crystal::ItemCrystal::open(&bytes) {
+            let (mut g, mut t) = (Vec::new(), Vec::new());
+            for l in &it.model.layers {
+                match &l.kind {
+                    mapgeom::crystal_model::LayerKind::Geometry { crystal, .. } => g.extend(crystal.positions.iter().copied()),
+                    mapgeom::crystal_model::LayerKind::Trigger { crystal, .. } => t.extend(crystal.positions.iter().copied()),
+                    _ => {}
+                }
             }
+            if t.is_empty() {
+                return Err(format!("{item}: no trigger layer"));
+            }
+            (g, t)
+        } else {
+            // a static item (our carriers): the visuals' boxes (centre + half extents) and the entity model's trigger mesh
+            let f = mapgeom::static_item::parse_file(&bytes).map_err(|e| format!("{item}: {e}"))?;
+            let mut g = Vec::new();
+            for b in mapgeom::static_item::file::item_bboxes(&f.item) {
+                g.extend(corners([b[0], b[1], b[2]], [b[3], b[4], b[5]]));
+            }
+            let mut t = Vec::new();
+            if let Some(em) = f.item.model().and_then(|m| m.entity_model()) {
+                if let Some(mapgeom::static_item::Node::Surface(sf)) = em.trigger_shape.inline.as_deref() {
+                    if let mapgeom::static_item::surface::Surf::Mesh { vertices, .. } = &sf.surf {
+                        t.extend(vertices.iter().copied());
+                    }
+                }
+            }
+            if t.is_empty() {
+                return Err(format!("{item}: no trigger shape"));
+            }
+            (g, t)
         }
-        if t.is_empty() {
-            return Err(format!("{item}: no trigger layer"));
-        }
-        (g, t)
     } else {
         let item_path = format!("Stadium\\Items\\{item}.Item.Gbx");
         let loaded = store.load_model(&item_path)?;

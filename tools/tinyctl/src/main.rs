@@ -42,6 +42,7 @@ mod flagdraw;
 mod standdraw;
 mod gatedraw;
 mod expandabledraw;
+mod expandablelineup;
 mod probe;
 mod publish;
 mod replaypull;
@@ -217,6 +218,7 @@ fn main() {
         "stand-hitbox-draw" => standdraw::cmd(rest),
         "gate-align-draw" => gatedraw::cmd(rest),
         "expandable-draw" => expandabledraw::cmd(rest),
+        "expandable-lineup" => expandablelineup::cmd(rest),
         "moth-sheet" => mothsheet::cmd(rest),
         "floorfinish-draw" => floordraw::cmd(rest),
         "floorfinish-profile" => floorprofile::cmd(rest),
