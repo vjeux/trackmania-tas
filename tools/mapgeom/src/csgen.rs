@@ -180,7 +180,7 @@ pub fn item_waypoint(body: &[u8]) -> Option<i32> {
 /// Waypoint families, as tman.Generator computes them: a waypoint block/item's twins of the other kinds = its name
 /// with the kind token (Start / Finish / Checkpoint / Multilap) swapped, kept when that name exists with the expected
 /// waypoint; `gates`: GateFinish{W}m ↔ the Right-side gate family (there is no GateFinishRight). (name, kind, twin).
-fn families(waypoints: &BTreeMap<String, Option<i32>>, gates: bool) -> Vec<(String, i32, String)> {
+fn families(waypoints: &BTreeMap<String, Option<i32>>, gates: bool) -> Vec<(String, i32, String, bool)> {
     const KINDS: [(i32, &str); 4] = [(0, "Start"), (1, "Finish"), (2, "Checkpoint"), (4, "Multilap")];
     let is = |name: &str, kind: i32| waypoints.get(name).map_or(false, |w| *w == Some(kind));
     let mut out = Vec::new();
@@ -188,28 +188,38 @@ fn families(waypoints: &BTreeMap<String, Option<i32>>, gates: bool) -> Vec<(Stri
         let Some(w) = *wp else { continue };
         let Some((_, own)) = KINDS.iter().find(|(k, _)| *k == w) else { continue };
         let at = name.find(own);
-        let right_gate = if gates { name.strip_prefix("Gate").and_then(|r| ["Start", "Checkpoint", "Multilap"].iter().find_map(|t| r.strip_prefix(t))).and_then(|r| r.strip_prefix("Right")).and_then(|r| r.strip_suffix('m')).filter(|w| !w.is_empty() && w.chars().all(|c| c.is_ascii_digit())) } else { None };
+        // (side, width) of a Gate{Start|Checkpoint|Multilap}{Left|Right}{W}m item; its Finish twin is the one-pole
+        // GateFinish{W}m — turned by a half-turn for the Left side (the pole swaps sides), `HalfTurned` lists those
+        let side_gate: Option<(&str, &str)> = if gates {
+            name.strip_prefix("Gate").and_then(|r| ["Start", "Checkpoint", "Multilap"].iter().find_map(|t| r.strip_prefix(t))).and_then(|r| ["Left", "Right"].iter().find_map(|side| r.strip_prefix(side).map(|w| (*side, w)))).and_then(|(side, r)| r.strip_suffix('m').map(|w| (side, w))).filter(|(_, w)| !w.is_empty() && w.chars().all(|c| c.is_ascii_digit()))
+        } else { None };
         let finish_gate = if gates { name.strip_prefix("GateFinish").and_then(|r| r.strip_suffix('m')).filter(|w| !w.is_empty() && w.chars().all(|c| c.is_ascii_digit())) } else { None };
         for (kind, token) in KINDS {
             if kind == w { continue; }
             let mut twin = at.map(|i| format!("{}{}{}", &name[..i], token, &name[i + own.len()..]));
+            let mut half_turned = false;
             if twin.as_deref().map_or(true, |t| !is(t, kind)) {
-                twin = match (finish_gate, right_gate) {
+                twin = match (finish_gate, side_gate) {
                     (Some(width), _) => Some(format!("Gate{token}Right{width}m")),
-                    (None, Some(width)) if kind == 1 => Some(format!("GateFinish{width}m")),
+                    (None, Some((side, width))) if kind == 1 => { half_turned = side == "Left"; Some(format!("GateFinish{width}m")) }
                     _ => None,
                 };
             }
-            if let Some(t) = twin { if is(&t, kind) { out.push((name.clone(), kind, t)); } }
+            if let Some(t) = twin { if is(&t, kind) { out.push((name.clone(), kind, t, half_turned)); } }
         }
     }
     out
 }
 
-fn families_cs(ty: &str, fams: &[(String, i32, String)], ident_of: &BTreeMap<&str, &str>) -> String {
+fn families_cs(ty: &str, fams: &[(String, i32, String, bool)], ident_of: &BTreeMap<&str, &str>) -> String {
     let mut s = format!("\n    public static readonly IReadOnlyDictionary<(string, Waypoint), {ty}> Families = new Dictionary<(string, Waypoint), {ty}>\n    {{\n");
-    for (name, kind, twin) in fams { s.push_str(&format!("        [(\"{name}\", {})] = {},\n", waypoint_cs(Some(*kind)), ident_of.get(twin.as_str()).copied().unwrap_or(""))); }
+    for (name, kind, twin, _) in fams { s.push_str(&format!("        [(\"{name}\", {})] = {},\n", waypoint_cs(Some(*kind)), ident_of.get(twin.as_str()).copied().unwrap_or(""))); }
     s.push_str("    };\n");
+    if ty == "Item" {
+        s.push_str("\n    public static readonly IReadOnlySet<(string, Waypoint)> HalfTurned = new HashSet<(string, Waypoint)>\n    {\n");
+        for (name, kind, _, half) in fams.iter().filter(|f| f.3) { s.push_str(&format!("        (\"{name}\", {}),\n", waypoint_cs(Some(*kind)))); let _ = half; }
+        s.push_str("    };\n");
+    }
     s
 }
 
