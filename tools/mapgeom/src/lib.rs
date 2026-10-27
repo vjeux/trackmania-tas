@@ -33,6 +33,7 @@ pub mod container;
 pub mod corpus;
 pub mod collhash;
 pub mod edgeborder;
+pub mod beambend;
 pub mod waterblocks;
 pub mod coverage;
 pub mod dds;

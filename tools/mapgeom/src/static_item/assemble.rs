@@ -61,8 +61,10 @@ pub fn placement_param(sclass_index: i32) -> super::item::CGameItemPlacementPara
     p0.extend_from_slice(&0u32.to_le_bytes()); // version
     p0.extend_from_slice(&1u16.to_le_bytes()); // flags
     // cube center, cube size 0, grid snap h 1 m / v 0, offsets 0, fly v step
-    // 1 m, fly v offset 0, pivot snap distance -1
-    for f in [0.0f32, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, -1.0] {
+    // 1 m, fly v offset 0, pivot snap distance -1 — the grid from GRID_SNAP when set
+    // (a block-like item: 32 m / 8 m, Everios96's beam ring and arch, 2026-10-27)
+    let (gh, gv) = GRID_SNAP.with(|g| g.get()).unwrap_or((1.0, 0.0));
+    for f in [0.0f32, 0.0, 0.0, 0.0, gh, gv, 0.0, 0.0, 1.0, 0.0, -1.0] {
         p0.extend_from_slice(&f.to_le_bytes());
     }
     let mut p5 = Vec::new();
@@ -82,6 +84,9 @@ pub fn placement_param(sclass_index: i32) -> super::item::CGameItemPlacementPara
 }
 
 thread_local! {
+    /// The placement grid (horizontal, vertical metres) for the next assembled item;
+    /// None = the item default (1 m / free).
+    pub static GRID_SNAP: std::cell::Cell<Option<(f32, f32)>> = const { std::cell::Cell::new(None) };
     /// External files the item names (node index, pack path) — its reference
     /// table: the effect systems' particle textures (`fx_entities`), which
     /// the game resolves by pack path. (A light's `.Light.Gbx` or bitmaps by

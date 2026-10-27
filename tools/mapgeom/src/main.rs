@@ -1309,6 +1309,15 @@ fn main() {
         }
         // edge-border MAP --items A,B --records R.tsv --out-dir D: border decal strips along the
         // open rims of converted blocks (Icy 78, 2026-10-24) — see edgeborder.rs
+        // beam-ring / beam-arch: Everios96's missing Structure beams (beambend.rs)
+        "beam-ring" => {
+            let mut store = open(&a);
+            mapgeom::beambend::ring_cmd(&mut store, &a.rest).unwrap_or_else(die);
+        }
+        "beam-arch" => {
+            let mut store = open(&a);
+            mapgeom::beambend::arch_cmd(&mut store, &a.rest).unwrap_or_else(die);
+        }
         "edge-border" => {
             let mut open_store = || open(&a);
             mapgeom::edgeborder::run(&a.rest, &mut open_store).unwrap_or_else(die);
