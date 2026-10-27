@@ -7,6 +7,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 const COLLECTIONS: [(&str, u32, u32); 5] = [("Stadium", 0x1a, 1), ("RedIsland", 0x10, 2), ("WhiteShore", 0x1d, 4), ("GreenCoast", 0xf, 8), ("BlueBay", 0x1c, 16)];
 
+/// `v` to three decimals as the C# generator does it: thousandths rounded half away from zero on the f64 value.
+pub fn f3(v: f32) -> String {
+    let t = (v as f64 * 1000.0).round() as i64;
+    format!("{}{}.{:03}", if t < 0 { "-" } else { "" }, t.abs() / 1000, t.abs() % 1000)
+}
+
 fn waypoint_cs(t: Option<i32>) -> &'static str {
     match t {
         Some(0) => "Waypoint.Start",
@@ -55,6 +61,122 @@ struct ItemRow {
     conflicts: Vec<String>,
 }
 
+/// The Size rule shared with tman.Generator (C#): the bbox of every vertex of the variant-0 model — prefab entities
+/// posed by `from_quat` (the formula copied verbatim on the C# side), static / dyna objects (static shape, mesh, and
+/// the moving shape when it is another node), surfaces (their meshes, compounds flattened by their Iso4s), every
+/// visual's positions (inline + streams), solid trees composed — nothing else (triggers, spawns, helpers, lights,
+/// materials carry no size). Externals are followed by name; a vegetation model is a tree (the (2r, h, 2r) rule).
+struct SizeWalk<'a> {
+    store: &'a mut crate::store::DataStore,
+    lo: [f32; 3],
+    hi: [f32; 3],
+    any: bool,
+    depth: usize,
+}
+
+impl<'a> SizeWalk<'a> {
+    fn point(&mut self, p: [f32; 3]) {
+        for k in 0..3 { self.lo[k] = self.lo[k].min(p[k]); self.hi[k] = self.hi[k].max(p[k]); }
+        self.any = true;
+    }
+    fn file(&mut self, path: &str, at: &crate::geom::Xform) {
+        if self.depth > 16 { return; }
+        let Ok(model) = self.store.load_model(path) else { return };
+        let Ok(graph) = model.graph() else { return };
+        let root = graph.root.clone();
+        let slots = graph.slots.clone();
+        drop(graph);
+        if let Some(n) = root {
+            self.depth += 1;
+            self.node(&n, &slots, at);
+            self.depth -= 1;
+        }
+    }
+    fn slot(&mut self, idx: i32, slots: &[crate::node::Slot], at: &crate::geom::Xform) {
+        if idx < 0 { return; }
+        match slots.get(idx as usize) {
+            Some(crate::node::Slot::Node(n)) => { let n = n.clone(); self.node(&n, slots, at); }
+            Some(crate::node::Slot::External(path)) => {
+                let up = path.to_uppercase();
+                if up.ends_with(".PREFAB.GBX") || up.ends_with(".STATICOBJECT.GBX") || up.ends_with(".DYNAOBJECT.GBX") || up.ends_with(".MESH.GBX") || up.ends_with(".SOLID2MODEL.GBX") || up.ends_with(".SHAPE.GBX") || up.ends_with(".HITSHAPE.GBX") || up.ends_with(".SOLID.GBX") {
+                    let path = path.clone();
+                    self.file(&path, at);
+                }
+            }
+            _ => {}
+        }
+    }
+    fn node(&mut self, n: &crate::node::Node, slots: &[crate::node::Slot], at: &crate::geom::Xform) {
+        use crate::node::Node;
+        match n {
+            Node::Prefab(p) => {
+                for e in &p.ents {
+                    let m = crate::geom::compose(at, &crate::geom::from_quat(e.rot, e.pos));
+                    self.slot(e.model, slots, &m);
+                }
+            }
+            Node::StaticObject(s) => {
+                self.slot(s.shape, slots, at);
+                self.slot(s.mesh, slots, at);
+            }
+            Node::Dyna(d) => {
+                self.slot(d.static_shape, slots, at);
+                self.slot(d.mesh, slots, at);
+                if d.dyna_shape != d.static_shape { self.slot(d.dyna_shape, slots, at); }
+            }
+            Node::Surface(s) => {
+                for m in &s.meshes {
+                    for v in &m.verts { let q = crate::geom::apply(at, *v); self.point(q); }
+                }
+            }
+            Node::Solid2(s) => {
+                for vi in &s.visuals {
+                    if let Some(crate::node::Slot::Node(Node::Visual(v))) = slots.get((*vi).max(0) as usize) {
+                        for p in &v.inline_positions { let q = crate::geom::apply(at, *p); self.point(q); }
+                        for si in &v.vertex_streams {
+                            if let Some(crate::node::Slot::Node(Node::VertexStream(vs))) = slots.get((*si).max(0) as usize) {
+                                for p in &vs.positions { let q = crate::geom::apply(at, *p); self.point(q); }
+                            }
+                        }
+                    }
+                }
+            }
+            Node::Tree(t) => {
+                let m = match &t.transform { Some(x) => crate::geom::compose(at, x), None => *at };
+                if t.visual >= 0 {
+                    if let Some(crate::node::Slot::Node(Node::Visual(v))) = slots.get(t.visual as usize) {
+                        for p in &v.inline_positions { let q = crate::geom::apply(&m, *p); self.point(q); }
+                        for si in &v.vertex_streams {
+                            if let Some(crate::node::Slot::Node(Node::VertexStream(vs))) = slots.get((*si).max(0) as usize) {
+                                for p in &vs.positions { let q = crate::geom::apply(&m, *p); self.point(q); }
+                            }
+                        }
+                    }
+                }
+                for c in &t.children { self.slot(*c, slots, &m); }
+            }
+            Node::ItemModel(i) => self.slot(*i, slots, at),
+            _ => {}
+        }
+    }
+}
+
+/// Size of a pack item's variant-0 model by the shared rule; None when nothing has geometry.
+pub fn model_size(store: &mut crate::store::DataStore, path: &str) -> Option<[f32; 3]> {
+    let mut w = SizeWalk { store, lo: [f32::INFINITY; 3], hi: [f32::NEG_INFINITY; 3], any: false, depth: 0 };
+    w.file(path, &crate::geom::IDENTITY);
+    if w.any { Some([w.hi[0] - w.lo[0], w.hi[1] - w.lo[1], w.hi[2] - w.lo[2]]) } else { None }
+}
+
+/// The item's own waypoint type: chunk 0x2E00201F (version, type) in its body, None when absent.
+pub fn item_waypoint(body: &[u8]) -> Option<i32> {
+    let pos = body.windows(4).position(|w| w == [0x1F, 0x20, 0x00, 0x2E])?;
+    if pos + 12 > body.len() { return None; }
+    let ver = u32::from_le_bytes([body[pos + 4], body[pos + 5], body[pos + 6], body[pos + 7]]);
+    let wp = u32::from_le_bytes([body[pos + 8], body[pos + 9], body[pos + 10], body[pos + 11]]);
+    if ver <= 20 && wp <= 5 { Some(wp as i32) } else { None }
+}
+
 fn variant_facts(v: &crate::blockinfo::Variant) -> Option<((i32, i32), Vec<(i32, i32)>)> {
     if v.block_units.is_empty() { return None; }
     let sx = v.block_units.iter().map(|u| u.offset[0] + 1).max().unwrap_or(1);
@@ -67,7 +189,7 @@ fn variant_facts(v: &crate::blockinfo::Variant) -> Option<((i32, i32), Vec<(i32,
 
 pub fn cmd(store: &mut crate::store::DataStore, rest: &[String], flag: &dyn Fn(&[String], &str) -> Option<String>) -> Result<(), String> {
     let out = flag(rest, "--out").ok_or("csgen needs --out DIR")?;
-    let label = flag(rest, "--paks-label").unwrap_or_else(|| "the Trackmania 2020 Stadium / RedIsland / WhiteShore / GreenCoast / BlueBay paks".into());
+    let label = flag(rest, "--paks-label").unwrap_or_else(|| "Trackmania 2020 Stadium.pak / RedIsland.pak / WhiteShore.pak / GreenCoast.pak / BlueBay.pak (client 2026-10, tm-paks store)".into());
     std::fs::create_dir_all(&out).map_err(|e| format!("{out}: {e}"))?;
     let entries: Vec<String> = store.entries().map(|e| e.path()).collect();
     // ---- blocks
@@ -106,34 +228,27 @@ pub fn cmd(store: &mut crate::store::DataStore, rest: &[String], flag: &dyn Fn(&
     // ---- items
     let mut items: BTreeMap<String, ItemRow> = BTreeMap::new();
     let mut item_failed: Vec<String> = Vec::new();
+    // --trees-out F.tsv: the vegetation items (variant 0 = a VegetTreeModel) with their sizes — the data table the C#
+    // generator carries, since GBX.NET.PAK cannot read those pak entries
+    let mut trees: Vec<(String, [f32; 3])> = Vec::new();
     for p in entries.iter().filter(|p| { let u = p.to_uppercase(); u.contains("\\ITEMS\\") && u.ends_with(".ITEM.GBX") }) {
         let coll_name = p.split('\\').next().unwrap_or("");
         let Some((_, coll_id, bit)) = COLLECTIONS.iter().find(|(n, _, _)| n.eq_ignore_ascii_case(coll_name)) else { continue };
         let name = p.rsplit('\\').next().unwrap_or(p).trim_end_matches(".Item.Gbx").trim_end_matches(".item.gbx").to_string();
         let variants = crate::static_item::build::pack_item_variants(store, p).map(|v| v.len()).unwrap_or(0);
-        // the waypoint from the item's trigger entity (pack_item_merged reads it; a failure there only loses the waypoint)
-        let waypoint = crate::static_item::build::pack_item_merged(store, p, 1.0, *coll_id, 0, None).ok().and_then(|m| m.waypoint_type);
-        // the bbox of variant 0: the picked external baked whole through the Collector (prefab / static object with
-        // every entity incl. the dyna parts of the obstacles); a tree species by its baked height and radius
+        let waypoint = store.load_model(p).ok().and_then(|m| item_waypoint(&m.body));
         let picked = crate::static_item::build::pack_item_variants(store, p).ok().and_then(|v| v.into_iter().next());
         let size = match picked {
             Some(sp) if sp.to_ascii_lowercase().ends_with(".vegettreemodel.gbx") => {
                 let mut mm = crate::static_item::build::Merged::default();
-                match crate::static_item::build::add_veget_tree_model(store, &sp, 1.0, &mut mm) {
+                let sz = match crate::static_item::build::add_veget_tree_model(store, &sp, 1.0, &mut mm) {
                     Ok(vb) => [2.0 * vb.radius, vb.height, 2.0 * vb.radius],
                     Err(e2) => { item_failed.push(format!("{p}: {e2}")); [0.0; 3] }
-                }
+                };
+                if !items.contains_key(&name) { trees.push((name.clone(), sz)); }
+                sz
             }
-            Some(sp) => match store.load_model(&sp) {
-                Ok(loaded) => {
-                    let mut c = crate::geom::Collector::new(store);
-                    c.model(&loaded, &crate::geom::IDENTITY, 0);
-                    let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
-                    for g in c.scene.groups.values() { for v in &g.verts { for k in 0..3 { lo[k] = lo[k].min(v[k]); hi[k] = hi[k].max(v[k]); } } }
-                    if lo[0].is_finite() { [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]] } else { item_failed.push(format!("{p}: {sp}: no geometry")); [0.0; 3] }
-                }
-                Err(e) => { item_failed.push(format!("{p}: {e}")); [0.0; 3] }
-            },
+            Some(sp) => match model_size(store, &sp) { Some(sz) => sz, None => { item_failed.push(format!("{p}: {sp}: no geometry")); [0.0; 3] } },
             None => { item_failed.push(format!("{p}: no prefab / static object / tree external")); [0.0; 3] }
         };
         let row = ItemRow { id: name.clone(), collections: *bit, waypoint, variants, size, conflicts: Vec::new() };
@@ -146,6 +261,13 @@ pub fn cmd(store: &mut crate::store::DataStore, rest: &[String], flag: &dyn Fn(&
                 if e.variants != row.variants { e.conflicts.push(format!("{coll_name}: {} variants vs {}", row.variants, e.variants)); e.variants = e.variants.max(row.variants); }
             }
         }
+    }
+    if let Some(tp) = flag(rest, "--trees-out") {
+        let mut t = String::from("item\tsize_x\tsize_y\tsize_z\n");
+        trees.sort_by(|a, b| a.0.cmp(&b.0));
+        for (n, sz) in &trees { t.push_str(&format!("{n}\t{}\t{}\t{}\n", f3(sz[0]), f3(sz[1]), f3(sz[2]))); }
+        std::fs::write(&tp, t).map_err(|e| format!("{tp}: {e}"))?;
+        println!("wrote {tp}: {} vegetation items", trees.len());
     }
     // ---- identifiers (unique)
     let mut used: BTreeSet<String> = BTreeSet::new();
@@ -163,9 +285,11 @@ pub fn cmd(store: &mut crate::store::DataStore, rest: &[String], flag: &dyn Fn(&
         std::fs::read_to_string(&f).unwrap_or_default().lines().skip(1).filter_map(|l| { let c: Vec<&str> = l.split('\t').collect(); if c.len() < 2 || c[1].is_empty() || c[1].starts_with('(') { return None; } Some((c[0].to_string(), c[1].to_string())) }).collect()
     }).unwrap_or_default();
     let plain_missing: Vec<String> = plain.iter().filter(|(k, v)| !blocks.contains_key(*k) || !blocks.contains_key(*v)).map(|(k, v)| format!("{k} → {v}")).collect();
-    let header = format!("// generated by mapgeom csgen from {label}\n");
+    let header = format!("// generated by tman.Generator from {label}\n");
+    let namespace = flag(rest, "--namespace").unwrap_or_else(|| "tman.Core".into());
     // `#nullable enable`: the compiler treats *.g.cs as auto-generated and wants the context explicit (CS8669)
-    let common = "#nullable enable\nusing System.Collections.Generic;\nusing GBX.NET;\n\nnamespace tman.src.Inventory;\n\n";
+    let common_s = format!("#nullable enable\nusing System.Collections.Generic;\nusing GBX.NET;\n\nnamespace {namespace};\n\n");
+    let common = common_s.as_str();
     let enums = "[System.Flags]\npublic enum Collections { Stadium = 1, RedIsland = 2, WhiteShore = 4, GreenCoast = 8, BlueBay = 16, All = 31 }\n\npublic enum Waypoint { None, Start, Finish, Checkpoint, StartFinish }\n\n";
     // Blocks.g.cs
     let mut cs = String::new();
@@ -219,7 +343,7 @@ pub fn cmd(store: &mut crate::store::DataStore, rest: &[String], flag: &dyn Fn(&
     let mut item_idents: Vec<(String, String)> = Vec::new();
     for (id, it) in &items {
         let ident = ident_of2(id);
-        ci.push_str(&format!("    public static readonly Item {ident} = new(\"{id}\", \"Nadeo\", null, {}, {}, {}, new Vec3({:.3}f, {:.3}f, {:.3}f));\n", collections_cs(it.collections), waypoint_cs(it.waypoint), it.variants, it.size[0], it.size[1], it.size[2]));
+        ci.push_str(&format!("    public static readonly Item {ident} = new(\"{id}\", \"Nadeo\", null, {}, {}, {}, new Vec3({}f, {}f, {}f));\n", collections_cs(it.collections), waypoint_cs(it.waypoint), it.variants, f3(it.size[0]), f3(it.size[1]), f3(it.size[2])));
         item_idents.push((ident, id.clone()));
     }
     ci.push_str("\n    public static readonly IReadOnlyDictionary<string, Item> ById = new Dictionary<string, Item>\n    {\n");
@@ -293,7 +417,7 @@ pub fn cmd(store: &mut crate::store::DataStore, rest: &[String], flag: &dyn Fn(&
             } else {
                 waypoint = find_wp(&bytes);
             }
-            cc.push_str(&format!("    public static readonly Item {ident} = new(\"{file}\", \"{file}\", \"{rel}\", Collections.All, {}, 1, new Vec3({:.3}f, {:.3}f, {:.3}f));\n", waypoint_cs(waypoint), size[0], size[1], size[2]));
+            cc.push_str(&format!("    public static readonly Item {ident} = new(\"{file}\", \"{file}\", \"{rel}\", Collections.All, {}, 1, new Vec3({}f, {}f, {}f));\n", waypoint_cs(waypoint), f3(size[0]), f3(size[1]), f3(size[2])));
             custom_idents.push((ident, file));
             custom_n += 1;
         }

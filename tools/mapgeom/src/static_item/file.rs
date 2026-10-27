@@ -302,7 +302,8 @@ pub fn item_bboxes(item: &CGameItemModel) -> Vec<[f32; 6]> {
     if let Some(s2) = item.static_object().and_then(|so| so.solid2()) {
         for r in &s2.visuals {
             if let Some(super::Node::Visual(v)) = r.inline.as_deref() {
-                if let Some(main) = v.main.as_ref() { out.push(main.bounding_box); }
+                // the visual's box is centre + half extents
+                if let Some(main) = v.main.as_ref() { let b = main.bounding_box; out.push([b[0] - b[3], b[1] - b[4], b[2] - b[5], b[0] + b[3], b[1] + b[4], b[2] + b[5]]); }
             }
         }
     }
