@@ -139,8 +139,9 @@ pub fn build(opts: &TestMapOpts) -> Result<Vec<String>, String> {
     {
         let mut m = MapFile::try_load(out)?;
         let old_uid = hdr.uid.clone();
-        // a prefix derived from the map name, so two test maps from one source never share a uid
-        let h = opts.name.bytes().fold(5381u32, |h, b| h.wrapping_mul(33) ^ b as u32);
+        // a prefix derived from the map name and the build time, so no two builds share a uid (the game caches by uid)
+        let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as u32).unwrap_or(0);
+        let h = opts.name.bytes().fold(5381u32 ^ seed, |h, b| h.wrapping_mul(33) ^ b as u32);
         let prefix: String = (0..4).map(|k| "ABCDEFGHJKLMNPQRSTUVWXYZ".as_bytes()[((h >> (k * 5)) % 24) as usize] as char).collect();
         let new_uid = if old_uid.len() > 4 { format!("{prefix}{}", &old_uid[..old_uid.len() - 4]) } else { old_uid.clone() };
         m.set_map_uid_any_len(&new_uid);

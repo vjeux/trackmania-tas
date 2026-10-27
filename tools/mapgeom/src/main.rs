@@ -6052,7 +6052,7 @@ fn main() {
                 ("alt/CheckpointExpandableLeftTop.Item.Gbx", format!("{g}ExpandableCheckpointLeftVFCTop.Prefab.Gbx"), cell((1, 0, 0), 1), None),
                 ("alt/CheckpointExpandableLeftTopBottom.Item.Gbx", format!("{g}ExpandableCheckpointLeftVFCTopBottom.Prefab.Gbx"), cell((1, 0, 0), 1), None),
             ];
-            println!("item\tbytes\tvisuals kept/dropped\tmaterials\tbbox (segment frame)");
+            println!("item\tbytes\tvisuals kept/dropped\tmaterials\tbbox (segment frame)\tcollision");
             for (name, prefab, at, keep) in jobs {
                 let ident = std::path::Path::new(name).file_name().unwrap().to_string_lossy().to_string();
                 let (bytes, kept, dropped, links) = mapgeom::static_item::build::frame_item(&mut store, &prefab, &at, &ident, collection, keep).unwrap_or_else(|e| die(format!("{name}: {e}")));
@@ -6061,7 +6061,9 @@ fn main() {
                 let f = mapgeom::static_item::parse_file(&bytes).unwrap_or_else(|e| die(format!("{name}: {e}")));
                 let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
                 for b in mapgeom::static_item::file::item_bboxes(&f.item) { if b[1] < -3.0 { continue; } for k in 0..3 { lo[k] = lo[k].min(b[k]); hi[k] = hi[k].max(b[k + 3]); } }
-                println!("{name}\t{}\t{kept}/{dropped}\t{}\tx {:.2}..{:.2} y {:.2}..{:.2} z {:.2}..{:.2}", bytes.len(), links.join(","), lo[0], hi[0], lo[1], hi[1], lo[2], hi[2]);
+                // the collision: the static object's surface mesh (triangle count + extent)
+                let coll = f.item.static_object().and_then(|so| so.surface()).and_then(|sf| if let mapgeom::static_item::surface::Surf::Mesh { vertices, triangles, .. } = &sf.surf { let (mut l, mut h) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]); for v in vertices { for k in 0..3 { l[k] = l[k].min(v[k]); h[k] = h[k].max(v[k]); } } Some(format!("{} tris x {:.2}..{:.2} y {:.2}..{:.2} z {:.2}..{:.2}", triangles.len(), l[0], h[0], l[1], h[1], l[2], h[2])) } else { None }).unwrap_or_else(|| "none".into());
+                println!("{name}\t{}\t{kept}/{dropped}\t{}\tx {:.2}..{:.2} y {:.2}..{:.2} z {:.2}..{:.2}\tcollision {coll}", bytes.len(), links.join(","), lo[0], hi[0], lo[1], hi[1], lo[2], hi[2]);
             }
         }
         "expandable-item" => {

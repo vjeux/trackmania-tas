@@ -117,6 +117,10 @@ pub struct BlockRec {
     pub coord_off: usize,
     pub flags: u32,
     pub waypoint_tag: Option<String>,
+    /// The waypoint node's ORDER word (linked checkpoints share it) and its body-level node INDEX (several blocks
+    /// may reference ONE node: the ref is written inline the first time, a back reference afterwards).
+    pub waypoint_order: u32,
+    pub waypoint_node: Option<u32>,
     /// `prs`: a FREE block ignores its cell bytes entirely. Its position lives
     /// as six f32 (Vec3 position, Vec3 pitch/yaw/roll) in chunk `0x0304305F`,
     /// one entry per free block in block order. `free_off` is the absolute
@@ -242,6 +246,11 @@ pub struct Waypoint {
     pub yaw: Option<f32>,
     /// Grid-block direction 0..3. `None` for item-carried waypoints.
     pub dir: Option<u8>,
+    /// The waypoint node's ORDER word (linked checkpoints share it), the block record's flags, and for a block the
+    /// body-level node index it references (a repeated index = several blocks sharing ONE node).
+    pub order: u32,
+    pub flags: u32,
+    pub node: Option<u32>,
 }
 
 impl std::fmt::Display for Waypoint {
@@ -257,8 +266,8 @@ impl std::fmt::Display for Waypoint {
         };
         write!(
             f,
-            "<{}#{} {} tag={} cell={:?} pos={} dir={:?}>",
-            k, self.index, self.name, self.tag, self.coords, pos, self.dir
+            "<{}#{} {} tag={} cell={:?} pos={} dir={:?} order={} flags={:#x}{}>",
+            k, self.index, self.name, self.tag, self.coords, pos, self.dir, self.order, self.flags, self.node.map(|n| format!(" node={n}")).unwrap_or_default()
         )
     }
 }
@@ -778,6 +787,9 @@ impl MapFile {
                 // how it must be moved.
                 pos: b.free_pos,
                 yaw: Some(yaw),
+                order: b.waypoint_order,
+                flags: b.flags,
+                node: b.waypoint_node,
                 dir: Some(b.dir),
             });
         }
@@ -795,6 +807,9 @@ impl MapFile {
                 pos: Some(it.pos),
                 yaw: Some(it.yaw),
                 dir: None,
+                order: it.waypoint_order,
+                flags: it.flags as u32,
+                node: None,
             });
         }
         out
@@ -1899,6 +1914,8 @@ fn parse_blocks(
                 coord_off,
                 flags,
                 waypoint_tag: None,
+                waypoint_order: 0,
+                waypoint_node: None,
                 free_off: None,
                 free_pos: None,
                 free_rot: None,
@@ -1910,8 +1927,12 @@ fn parse_blocks(
             read_node_ref(&mut r, seen_nodes); // skin
         }
         let mut tag = None;
+        let (mut worder, mut wnode) = (0u32, None);
         if flags & 0x100000 != 0 {
-            tag = read_node_ref(&mut r, seen_nodes);
+            let (t, o, n) = read_node_ref_wp(&mut r, seen_nodes);
+            tag = t;
+            worder = o;
+            wnode = n;
         }
         blocks.push(BlockRec {
             index: blocks.len(),
@@ -1922,6 +1943,8 @@ fn parse_blocks(
             coord_off,
             flags,
             waypoint_tag: tag,
+            waypoint_order: worder,
+            waypoint_node: wnode,
             free_off: None,
             free_pos: None,
             free_rot: None,
@@ -1987,6 +2010,8 @@ fn parse_baked(
             coord_off,
             flags,
             waypoint_tag: tag,
+            waypoint_order: 0,
+            waypoint_node: None,
             free_off: None,
             free_pos: None,
             free_rot: None,
@@ -2026,9 +2051,15 @@ fn plausible_blocks(body: &[u8], h: usize) -> bool {
 /// the first time its index appears. Returns the waypoint tag when the node is
 /// a CGameWaypointSpecialProperty.
 fn read_node_ref(r: &mut Reader, seen: &mut std::collections::HashSet<u32>) -> Option<String> {
+    read_node_ref_wp(r, seen).0
+}
+
+/// `read_node_ref` with the waypoint node's order and index too (order 0 / None when the ref is null or a back
+/// reference to a node read earlier — a back reference means the block SHARES that node with an earlier block).
+fn read_node_ref_wp(r: &mut Reader, seen: &mut std::collections::HashSet<u32>) -> (Option<String>, u32, Option<u32>) {
     let idx = r.u32();
     if idx == 0xFFFF_FFFF {
-        return None;
+        return (None, 0, None);
     }
     let fresh = seen.insert(idx);
     if std::env::var("TMMAPS_DEBUG_NODES").is_ok() {
@@ -2040,15 +2071,16 @@ fn read_node_ref(r: &mut Reader, seen: &mut std::collections::HashSet<u32>) -> O
         );
     }
     if !fresh {
-        return None; // already-written node, only the index is stored
+        return (None, 0, Some(idx)); // already-written node, only the index is stored
     }
     let class = r.u32();
     if class == WAYPOINT_CLASS {
-        return read_waypoint_node(r).0;
+        let (tag, order) = read_waypoint_node(r);
+        return (tag, order, Some(idx));
     }
     if class == 0x03059000 {
         read_skin_node(r);
-        return None;
+        return (None, 0, Some(idx));
     }
     // any other inline node would need its own reader
     panic!("unhandled inline node class 0x{:08X} at {}", class, r.o - 4);
