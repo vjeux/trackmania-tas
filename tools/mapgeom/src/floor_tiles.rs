@@ -505,3 +505,35 @@ pub fn build_pillar_sleeve(ident: &str, collection: u32, shaft: [f32; 4], pad: f
     let bytes = build_pure_item(ident, collection, &geo, Some(&trig))?;
     Ok((bytes, trig.faces.len()))
 }
+
+/// Hugo's There-and-Back fallback for `GateExpandableFinish` (10-27): the segment's pane as a crystal CHECKPOINT item in
+/// the BLOCK frame — placed with offset 0 / yaw 0 on the segment's own pose, upright or pitched. Pane x 0..32,
+/// y 0..7.18, z 15.579..16.416 (the pak's ExpandableCheckpoint_Trigger slab): glass caps on the two big faces only,
+/// trigger prism = the full slab, WaypointType Checkpoint.
+pub fn build_expandable_checkpoint(ident: &str, collection: u32) -> Result<(Vec<u8>, usize), String> {
+    let (x0, x1, y0, y1, z0, z1) = (0.0f32, 32.0f32, 0.0f32, 7.18f32, 15.579172f32, 16.416002f32);
+    let b: Body = [[x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0], [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]];
+    let mut trig = crate::crystal::CrystalMesh::default();
+    body_faces(&mut trig, &b, 0);
+    let mut geo = crate::crystal::CrystalMesh::default();
+    // (p1−p0)×(p2−p0) = the outward normal: −z for the z0 cap, +z for the z1 cap
+    for (corners, _n) in [([b[0], b[3], b[2], b[1]], -1.0f32), ([b[4], b[5], b[6], b[7]], 1.0f32)] {
+        let base = geo.positions.len() as u32;
+        geo.positions.extend_from_slice(&corners);
+        geo.faces.push(crate::crystal::Face { verts: (0..4).map(|k| base + k).collect(), uvs: vec![[0.0, 0.0], [0.0, 2.0], [8.0, 2.0], [8.0, 0.0]], material: 0 });
+    }
+    let was_glass = pure_glass();
+    set_pure_glass(true);
+    let built = build_pure_item(ident, collection, &geo, Some(&trig));
+    set_pure_glass(was_glass);
+    let bytes = built?;
+    // the item chunk 0x2E00201F: WaypointType 1 (Finish, the template's) → 2 (Checkpoint); the chunk sits after the
+    // crystal region of the decompressed body, so the search cannot hit crystal data
+    let mut it = crate::crystal::ItemCrystal::open(&bytes)?;
+    let (first_node, n_old) = it.material_node_range();
+    let pat = 0x2E00201Fu32.to_le_bytes();
+    let end = it.end;
+    let pos = it.body[end..].windows(4).position(|w| w == pat).ok_or("no 0x2E00201F chunk after the crystal")? + end;
+    it.body[pos + 8..pos + 12].copy_from_slice(&2i32.to_le_bytes());
+    Ok((it.close(first_node, n_old), trig.faces.len()))
+}

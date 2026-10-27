@@ -52,6 +52,7 @@ struct Seg {
 pub fn cmd(rest: &[String]) -> Result<(), String> {
     let map = f(rest, "--map").ok_or("expandable-draw needs --map F.Map.Gbx")?;
     let item = f(rest, "--item").unwrap_or_else(|| "GateCheckpointCenter32m".into());
+    let item_label = std::path::Path::new(&item).file_name().map(|s| s.to_string_lossy().trim_end_matches(".Item.Gbx").to_string()).unwrap_or_else(|| item.clone());
     let out = f(rest, "--out").unwrap_or_else(|| "expandable.png".into());
     let mut store = mapgeom::store::DataStore::empty();
     let mut i = 0;
@@ -86,23 +87,40 @@ pub fn cmd(rest: &[String]) -> Result<(), String> {
     let (tl, th) = bbox(&trig_local);
     let (pl, ph) = bbox(&pane_local);
     println!("segment (block frame): trigger x {:.2}..{:.2} y {:.2}..{:.2} z {:.2}..{:.2}; pane x {:.2}..{:.2} y {:.2}..{:.2} z {:.2}..{:.2}", tl[0], th[0], tl[1], th[1], tl[2], th[2], pl[0], ph[0], pl[1], ph[1], pl[2], ph[2]);
-    // the replacement item: visual vertices + trigger box, item frame
-    let item_path = format!("Stadium\\Items\\{item}.Item.Gbx");
-    let item_verts: Vec<[f32; 3]> = {
+    // the replacement item: visual vertices + trigger box, item frame — a pak gate item (centred on its origin: the
+    // offset puts it on the pane) or a local crystal item file authored in the BLOCK frame (offset 0)
+    let local_file = std::path::Path::new(&item).is_file();
+    let (item_verts, item_trig): (Vec<[f32; 3]>, Vec<[f32; 3]>) = if local_file {
+        let bytes = std::fs::read(&item).map_err(|e| format!("{item}: {e}"))?;
+        let it = mapgeom::crystal::ItemCrystal::open(&bytes)?;
+        let (mut g, mut t) = (Vec::new(), Vec::new());
+        for l in &it.model.layers {
+            match &l.kind {
+                mapgeom::crystal_model::LayerKind::Geometry { crystal, .. } => g.extend(crystal.positions.iter().copied()),
+                mapgeom::crystal_model::LayerKind::Trigger { crystal, .. } => t.extend(crystal.positions.iter().copied()),
+                _ => {}
+            }
+        }
+        if t.is_empty() {
+            return Err(format!("{item}: no trigger layer"));
+        }
+        (g, t)
+    } else {
+        let item_path = format!("Stadium\\Items\\{item}.Item.Gbx");
         let loaded = store.load_model(&item_path)?;
         let mut c = mapgeom::geom::Collector::new(&mut store);
         c.model(&loaded, &mapgeom::geom::IDENTITY, 0);
-        c.scene.groups.values().flat_map(|g| g.verts.iter().copied()).collect()
-    };
-    let item_trig: Vec<[f32; 3]> = {
+        let verts: Vec<[f32; 3]> = c.scene.groups.values().flat_map(|g| g.verts.iter().copied()).collect();
+        drop(c);
         let mg = mapgeom::static_item::build::pack_item_merged(&mut store, &item_path, 1.0, 26, 0, None)?;
-        mg.trigger.as_ref().and_then(|sf| sf.surf.triangulate()).map(|(v, _)| v).ok_or("item has no trigger")?
+        let trig = mg.trigger.as_ref().and_then(|sf| sf.surf.triangulate()).map(|(v, _)| v).ok_or("item has no trigger")?;
+        (verts, trig)
     };
     let (il, ih) = bbox(&item_verts);
     let (itl, ith) = bbox(&item_trig);
-    println!("{item} (item frame): visual x {:.2}..{:.2} y {:.2}..{:.2} z {:.2}..{:.2}; trigger x {:.2}..{:.2} y {:.2}..{:.2} z {:.2}..{:.2}", il[0], ih[0], il[1], ih[1], il[2], ih[2], itl[0], ith[0], itl[1], ith[1], itl[2], ith[2]);
-    let offset = [(tl[0] + th[0]) / 2.0, 0.0, (tl[2] + th[2]) / 2.0];
-    println!("proposed item pose in the block frame: offset ({:.3}, {:.3}, {:.3}), yaw +0 (same yaw as the block)", offset[0], offset[1], offset[2]);
+    println!("{item_label} (item frame): visual x {:.2}..{:.2} y {:.2}..{:.2} z {:.2}..{:.2}; trigger x {:.2}..{:.2} y {:.2}..{:.2} z {:.2}..{:.2}", il[0], ih[0], il[1], ih[1], il[2], ih[2], itl[0], ith[0], itl[1], ith[1], itl[2], ith[2]);
+    let offset = if local_file { [0.0, 0.0, 0.0] } else { [(tl[0] + th[0]) / 2.0, 0.0, (tl[2] + th[2]) / 2.0] };
+    println!("proposed item pose in the block frame: offset ({:.3}, {:.3}, {:.3}), yaw +0 (same yaw as the block){}", offset[0], offset[1], offset[2], if local_file { " — a block-frame item" } else { "" });
     // every segment of the map
     let mut segs: Vec<Seg> = Vec::new();
     for b in m.blocks.iter().chain(m.baked.iter()) {
@@ -147,26 +165,30 @@ pub fn cmd(rest: &[String]) -> Result<(), String> {
         stacks.push(grp);
     }
     println!("{} segments in {} stacks (same x/z and rotation)", segs.len(), stacks.len());
-    // item poses: one per stack at its bottom segment
+    // item poses: a pak gate item goes once per stack at its bottom segment; a block-frame item goes on EVERY segment
     let mut items: Vec<(Xform, Vec<[f32; 3]>, Vec<[f32; 3]>)> = Vec::new();
-    for (si, st) in stacks.iter().enumerate() {
-        let bottom = &segs[st[0]];
+    let targets: Vec<(usize, Vec<usize>)> = if local_file { (0..segs.len()).map(|k| (k, vec![k])).collect() } else { stacks.iter().map(|st| (st[0], st.clone())).collect() };
+    let mut ok = 0usize;
+    for (si, (bi, st)) in targets.iter().enumerate() {
+        let bottom = &segs[*bi];
         let pose = compose(&bottom.frame, &translate(offset));
         let tw: Vec<[f32; 3]> = item_trig.iter().map(|v| apply(&pose, *v)).collect();
         let vw: Vec<[f32; 3]> = item_verts.iter().map(|v| apply(&pose, *v)).collect();
         let (sl, sh) = bbox(&bottom.trig);
         let (ql, qh) = bbox(&tw);
-        let covered = (0..3).all(|k| if k == 1 { qh[k] >= sh[k] - 0.01 && ql[k] <= sl[k] + 0.01 } else { ql[k] <= sl[k] + 0.05 && qh[k] >= sh[k] - 0.05 || (sh[k] - sl[k]) < 1.0 });
+        let covered = (0..3).all(|k| ql[k] <= sl[k] + 0.05 && qh[k] >= sh[k] - 0.05);
         let yaw = (pose[2]).atan2(pose[0]);
-        println!("stack {}: {} segments, bottom {}; item origin ({:.3}, {:.3}, {:.3}) yaw {:.4} rad; segment trigger {:?}..{:?}; item trigger {:?}..{:?}; ground opening covered: {}", si + 1, st.len(), bottom.label, pose[9], pose[10], pose[11], yaw, [sl[0], sl[1], sl[2]].map(|v| (v * 100.0).round() / 100.0), [sh[0], sh[1], sh[2]].map(|v| (v * 100.0).round() / 100.0), [ql[0], ql[1], ql[2]].map(|v| (v * 100.0).round() / 100.0), [qh[0], qh[1], qh[2]].map(|v| (v * 100.0).round() / 100.0), if covered { "YES" } else { "NO" });
+        if covered { ok += 1; }
+        println!("{} {}: {} segments, bottom {}; item origin ({:.3}, {:.3}, {:.3}) yaw {:.4} rad; segment trigger {:?}..{:?}; item trigger {:?}..{:?}; ground opening covered: {}", if local_file { "segment" } else { "stack" }, si + 1, st.len(), bottom.label, pose[9], pose[10], pose[11], yaw, [sl[0], sl[1], sl[2]].map(|v| (v * 100.0).round() / 100.0), [sh[0], sh[1], sh[2]].map(|v| (v * 100.0).round() / 100.0), [ql[0], ql[1], ql[2]].map(|v| (v * 100.0).round() / 100.0), [qh[0], qh[1], qh[2]].map(|v| (v * 100.0).round() / 100.0), if covered { "YES" } else { "NO" });
         items.push((pose, tw, vw));
     }
+    println!("coverage: {ok} of {} {} pass the box test", targets.len(), if local_file { "segments" } else { "stacks" });
     // ---- drawing: PLAN (top), SIDE along the first stack's gate line (bottom)
     let all: Vec<[f32; 3]> = segs.iter().flat_map(|s| s.pane.iter().copied()).chain(items.iter().flat_map(|(_, _, v)| v.iter().copied())).collect();
     let (wl, wh) = bbox(&all);
     let (w, h) = (1800usize, 1300usize);
     let mut cv = Canvas::new(w, h);
-    cv.text(40.0, 16.0, &format!("{} -- GATEEXPANDABLEFINISH SEGMENTS (GREY) AND {} AT BLOCK + (16, 0, 16) (BLUE); TRIGGERS HATCHED", std::path::Path::new(&map).file_name().map(|s| s.to_string_lossy().to_uppercase()).unwrap_or_default(), item.to_uppercase()), 2, INK);
+    cv.text(40.0, 16.0, &format!("{} -- GATEEXPANDABLEFINISH SEGMENTS (GREY) AND {} AT BLOCK + ({:.0}, {:.0}, {:.0}) (BLUE); TRIGGERS HATCHED", std::path::Path::new(&map).file_name().map(|s| s.to_string_lossy().to_uppercase()).unwrap_or_default(), item_label.to_uppercase(), offset[0], offset[1], offset[2]), 2, INK);
     let margin = 6.0f32;
     let span_x = (wh[0] - wl[0]).max(40.0) + 2.0 * margin;
     let span_z = (wh[2] - wl[2]).max(40.0) + 2.0 * margin;
@@ -198,7 +220,8 @@ pub fn cmd(rest: &[String]) -> Result<(), String> {
     for &k in st {
         side_pts.extend(segs[k].pane.iter().map(|p| proj(*p)));
     }
-    side_pts.extend(items[0].2.iter().map(|p| proj(*p)));
+    let side_set: Vec<usize> = if local_file { st.clone() } else { vec![0] };
+    for k in &side_set { side_pts.extend(items[*k].2.iter().map(|p| proj(*p))); }
     let (mut ul, mut uh, mut vl, mut vh) = (f32::INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::NEG_INFINITY);
     for (u, v) in &side_pts {
         ul = ul.min(*u);
@@ -232,8 +255,8 @@ pub fn cmd(rest: &[String]) -> Result<(), String> {
         }
         cv.hatch(&[(su(a), sv(c)), (su(b), sv(c)), (su(b), sv(d)), (su(a), sv(d))], SEG, 8.0, 1.0);
     }
-    {
-        let (pose, tw, vw) = &items[0];
+    for (ii, k) in side_set.iter().enumerate() {
+        let (pose, tw, vw) = &items[*k];
         // the arch as its true silhouette: every visual triangle edge would be too much; the hull of its vertices per column
         let pts: Vec<(f32, f32)> = vw.iter().map(|p| proj(*p)).collect();
         let (mut a, mut b, mut c, mut d) = (f32::INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::NEG_INFINITY);
@@ -269,7 +292,9 @@ pub fn cmd(rest: &[String]) -> Result<(), String> {
         let (ou, ov) = proj([pose[9], pose[10], pose[11]]);
         cv.line(su(ou) - 8.0, sv(ov), su(ou) + 8.0, sv(ov), SLAB, 2.0, 1.0);
         cv.line(su(ou), sv(ov) - 8.0, su(ou), sv(ov) + 8.0, SLAB, 2.0, 1.0);
-        cv.dim(su(a), sv(c) + 14.0, su(b), sv(c) + 14.0, &format!("ITEM TRIGGER {:.2} M WIDE, {:.2} M TALL", b - a, d - c), DIM, (0.0, 14.0));
+        if ii == 0 {
+            cv.dim(su(a), sv(c) + 14.0, su(b), sv(c) + 14.0, &format!("ITEM TRIGGER {:.2} M WIDE, {:.2} M TALL{}", b - a, d - c, if side_set.len() > 1 { format!(", ONE PER SEGMENT ({})", side_set.len()) } else { String::new() }), DIM, (0.0, 14.0));
+        }
     }
     cv.text(60.0, h as f32 - 40.0, "GREY OUTLINE = SEGMENT PANE (32 X 8 X 0.84 M, PLANE AT LOCAL Z 16); GREY HATCH = SEGMENT TRIGGER (Y 0..7.18); BLUE = THE ITEM (VISUAL BOX, ARCH UNDERSIDE, TRIGGER PANE Y 0..7.30); RED CROSS = ITEM ORIGIN", 2, INK);
     std::fs::write(&out, crate::png::encode(&cv.img)).map_err(|e| format!("{out}: {e}"))?;
