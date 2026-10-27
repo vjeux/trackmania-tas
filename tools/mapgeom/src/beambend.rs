@@ -299,8 +299,13 @@ fn write_item(m: &mut Merged, args: &[String], out: &str, default_ident: &str, g
     } else {
         crate::static_item::assemble::GRID_SNAP.with(|g| g.set(Some(grid)));
     }
-    let f = assemble(m, &opts)?;
+    let mut f = assemble(m, &opts)?;
     crate::static_item::assemble::GRID_SNAP.with(|g| g.set(None));
+    // ⛔ an embedded item's body must be LZO-compressed ("BUCR"): an uncompressed body
+    // ("BUUR") crashes the client at map load — edge-border learnt it 2026-10-24, and the
+    // first beam items relearnt it today (five crashing variants before the header byte
+    // was compared with a working library item)
+    f.body_comp = b'C';
     let bytes = crate::static_item::write_file(&f);
     std::fs::write(out, &bytes).map_err(|e| format!("{out}: {e}"))?;
     let tris: usize = m.visuals.iter().filter_map(|v| v.visual.index_buffer.as_ref()).map(|ib| ib.indices.len() / 3).sum();
