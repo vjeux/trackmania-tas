@@ -278,6 +278,24 @@ pub fn build_solid2(m: &Merged, opts: &BuildOpts, next: &mut i32) -> R<CPlugSoli
     Ok(s2)
 }
 
+/// How far under the item's origin the no-collision dummy triangle sits (metres).
+pub const DUMMY_DEPTH: f32 = 400.0;
+
+/// The no-collision dummy: one 1 mm triangle `DUMMY_DEPTH` under the item's origin.
+pub fn dummy_tri() -> Vec<[f32; 3]> {
+    vec![[0.0, -DUMMY_DEPTH, 0.0], [0.001, -DUMMY_DEPTH, 0.0], [0.0, -DUMMY_DEPTH, 0.001]]
+}
+
+/// Is this collision mesh a dummy triangle of either generation (the 4 m form or
+/// `DUMMY_DEPTH`)? Three vertices within 2 mm of each other, one triangle.
+pub fn is_dummy_mesh(vertices: &[[f32; 3]], triangles: &[super::surface::Triangle]) -> bool {
+    if vertices.len() != 3 || triangles.len() != 1 {
+        return false;
+    }
+    let v0 = vertices[0];
+    vertices.iter().all(|v| (v[0] - v0[0]).abs() < 0.002 && (v[1] - v0[1]).abs() < 0.002 && (v[2] - v0[2]).abs() < 0.002) && v0[0].abs() < 0.002 && v0[2].abs() < 0.002 && v0[1] < -3.0
+}
+
 /// The merged collision as the canonical mesh surface.
 pub fn build_surface(m: &Merged) -> CPlugSurface {
     if m.surf_triangles.is_empty() {
@@ -285,9 +303,18 @@ pub fn build_surface(m: &Merged) -> CPlugSurface {
         // DecalPlatform quads, 8 of Summer 09's models) is DROPPED by the
         // editor on re-save — all 122 placements of exactly those 8 models were
         // gone after SaveMap, everything else kept (2026-09-07). Play mode
-        // draws them. So it gets one 1 mm triangle 4 m under the item's origin —
-        // a shape the editor accepts and nothing can hit.
-        let v = vec![[0.0, -4.0, 0.0], [0.001, -4.0, 0.0], [0.0, -4.0, 0.001]];
+        // draws them. So it gets one 1 mm triangle under the item's origin — a
+        // shape the editor accepts.
+        // ⛔ "nothing can hit" was wrong at 4 m: the game DOES collide with it
+        // (NotCollidable or not). A gate stacked on another gate put its dummy
+        // in the lower gate's opening at roof height — shcr's "invisible edge,
+        // pushed down like a roof hit" on Tiny 210/274/311 (2026-10-26; his
+        // ghost loses 5.5 m/s of vertical speed at the stack's origin corner).
+        // So the triangle sits DUMMY_DEPTH below — under any ground a car can
+        // reach, whatever stands below the item. `dummy_tri` is the one
+        // definition; the live-file repair (`mapgeom item-dummy-fix`) rewrites
+        // the old 4 m form to it.
+        let v = dummy_tri();
         // byte and table both NotCollidable (28): the one place the two
         // disagreed in a whole library (surfhist, 2026-09-07)
         let t = vec![super::surface::Triangle { indices: [0, 1, 2], material_id: 28, gameplay: 0, surface_index: 0 }];

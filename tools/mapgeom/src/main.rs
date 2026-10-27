@@ -1322,6 +1322,79 @@ fn main() {
             let mut open_store = || open(&a);
             mapgeom::static_item::check::run(&a.rest, &mut open_store).unwrap_or_else(die);
         }
+        // map-dummy-fix MAP --out OUT: `item-dummy-fix` over every embedded item of a
+        // map, archive re-deflated, manifest kept, nothing else touched (the live
+        // Tiny files: the stacked gates' invisible edge, 2026-10-26)
+        "map-dummy-fix" => {
+            let src = a.rest.iter().find(|x| !x.starts_with("--") && x.ends_with(".Map.Gbx")).cloned().unwrap_or_else(|| die("map-dummy-fix MAP.Map.Gbx --out OUT".to_string()));
+            let out = tmmaps::cli::flag(&a.rest, "--out").map(std::path::PathBuf::from).unwrap_or_else(|| die("--out OUT".to_string()));
+            let mut m = tmmaps::map::MapFile::load(std::path::Path::new(&src));
+            let (_rows, zip) = m.embedded_objects().unwrap_or_else(|| die(format!("{src}: no embedded objects")));
+            let entries = tmmaps::header::zip_entries(&zip);
+            let mut files: std::collections::BTreeMap<String, Vec<u8>> = std::collections::BTreeMap::new();
+            let (mut fixed, mut items, mut unparsed) = (0usize, 0usize, 0usize);
+            for (name, bytes) in entries {
+                let lower = name.to_ascii_lowercase();
+                if lower.ends_with(".item.gbx") {
+                    items += 1;
+                    match mapgeom::static_item::parse_file(&bytes) {
+                        Ok(mut file) => {
+                            let n = mapgeom::static_item::fix_dummies(&mut file.item);
+                            if n > 0 {
+                                fixed += 1;
+                                files.insert(name, mapgeom::static_item::write_file(&file));
+                                continue;
+                            }
+                        }
+                        Err(_) => unparsed += 1,
+                    }
+                }
+                files.insert(name, bytes);
+            }
+            if fixed == 0 {
+                println!("{src}: {items} items, none with the 4 m dummy ({unparsed} unparsed: author/crystal items, left as they are)");
+                std::process::exit(3);
+            }
+            let zip2 = tmmaps::header::deflated_zip(&files);
+            m.replace_embedded_zip_keep_manifest(&zip2);
+            m.write_to(&out).unwrap_or_else(|e| die(format!("{}: {e}", out.display())));
+            println!("{}: {fixed} of {items} items fixed ({unparsed} unparsed left as they are); archive {} -> {} bytes", out.display(), zip.len(), zip2.len());
+        }
+        // item-dummy-fix FILE... --out-dir D | --in-place: every no-collision dummy
+        // triangle (the old "4 m under the origin" form) moved DUMMY_DEPTH down.
+        // Prints one line per file: fixed / already / no dummy. Exit 0 either way.
+        "item-dummy-fix" => {
+            let out_dir: Option<std::path::PathBuf> = tmmaps::cli::flag(&a.rest, "--out-dir").map(std::path::PathBuf::from);
+            let in_place = a.rest.iter().any(|x| x == "--in-place");
+            if out_dir.is_none() && !in_place {
+                die::<()>("item-dummy-fix: --out-dir D or --in-place".to_string());
+            }
+            let files: Vec<&String> = a.rest.iter().filter(|x| !x.starts_with("--") && (x.ends_with(".Item.Gbx") || x.ends_with(".Item.gbx"))).collect();
+            let mut fixed = 0usize;
+            for f in files {
+                let bytes = std::fs::read(f).unwrap_or_else(|e| die(format!("{f}: {e}")));
+                let mut file = match mapgeom::static_item::parse_file(&bytes) {
+                    Ok(x) => x,
+                    Err(e) => {
+                        println!("{f}\tunparsed\t{e}");
+                        continue;
+                    }
+                };
+                let n = mapgeom::static_item::fix_dummies(&mut file.item);
+                if n > 0 {
+                    let out = match &out_dir {
+                        Some(d) => d.join(std::path::Path::new(f).file_name().unwrap()),
+                        None => std::path::PathBuf::from(f),
+                    };
+                    std::fs::write(&out, mapgeom::static_item::write_file(&file)).unwrap_or_else(|e| die(format!("{}: {e}", out.display())));
+                    fixed += 1;
+                    println!("{f}\tfixed\t{n} dummy triangle(s) moved to -{} m", mapgeom::static_item::assemble::DUMMY_DEPTH);
+                } else {
+                    println!("{f}\tunchanged");
+                }
+            }
+            eprintln!("item-dummy-fix: {fixed} file(s) rewritten");
+        }
         // surfhist <pack prefab | pack .StaticObject.Gbx | local .Item.Gbx>...:
         // the collision census source by source — per surface its material
         // nodes and id table, per (physics, gameplay, index) the triangles,

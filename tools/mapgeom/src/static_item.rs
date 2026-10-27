@@ -382,6 +382,39 @@ pub fn write_node(w: &mut Wr, n: &Node) {
 /// A node reference whose inline body (if any) is a `Node`.
 pub type Ref = NodeRef<Node>;
 
+/// Every surface node reachable from the item whose mesh is the no-collision dummy
+/// triangle in its old 4 m form gets the `DUMMY_DEPTH` form. Returns how many changed.
+pub fn fix_dummies(item: &mut item::CGameItemModel) -> usize {
+    fn fix_surface(s: &mut surface::CPlugSurface) -> usize {
+        if let surface::Surf::Mesh { vertices, triangles, .. } = &mut s.surf {
+            if assemble::is_dummy_mesh(vertices, triangles) && (vertices[0][1] + assemble::DUMMY_DEPTH).abs() > 0.01 {
+                *vertices = assemble::dummy_tri();
+                return 1;
+            }
+        }
+        0
+    }
+    fn walk(n: &mut Node) -> usize {
+        match n {
+            Node::Surface(s) => fix_surface(s),
+            Node::StaticObject(so) => so.shape.inline.as_deref_mut().map(walk).unwrap_or(0),
+            Node::EntityModel(e) => e.static_object.inline.as_deref_mut().map(walk).unwrap_or(0),
+            Node::Prefab(p) => p.ents.iter_mut().filter_map(|e| e.model.inline.as_deref_mut()).map(walk).sum(),
+            Node::BlockItem(b) => b.variants.iter_mut().filter_map(|(_, r)| r.inline.as_deref_mut()).map(walk).sum(),
+            Node::VariantList(v) => v.variants.iter_mut().filter_map(|x| x.model.inline.as_deref_mut()).map(walk).sum(),
+            _ => 0,
+        }
+    }
+    let Some(mc) = item.model_mut() else { return 0 };
+    let mut n = 0;
+    for slot in [&mut mc.entity_model_edition, &mut mc.entity_model] {
+        if let Some(node) = slot.inline.as_deref_mut() {
+            n += walk(node);
+        }
+    }
+    n
+}
+
 pub fn read_ref(r: &mut Rd) -> R<Ref> {
     r.noderef(read_node)
 }
