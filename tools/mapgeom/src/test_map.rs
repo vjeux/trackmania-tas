@@ -12,6 +12,10 @@ pub struct TestMapOpts {
     pub source: String,
     pub out: String,
     pub stacks: Vec<(i32, String)>,
+    /// single placements: (file, cx, dy above the grass row, cz)
+    pub items: Vec<(String, i32, i32, i32)>,
+    /// extra grid blocks: (name, cx, dy above the grass row, cz, dir)
+    pub blocks: Vec<(String, i32, i32, i32, u8)>,
     pub start: (i32, i32),
     pub finish: (i32, i32),
     pub z: i32,
@@ -38,14 +42,29 @@ pub fn build(opts: &TestMapOpts) -> Result<Vec<String>, String> {
         m.write_to(out).map_err(|e| e.to_string())?;
     }
     // 2. every authored block goes; the start and the finish come in
-    let specs = vec![
+    let mut specs = vec![
         FreeBlockSpec { name: "RoadTechStart".into(), author: None, flags: 0, pos: [0.0; 3], rot: [0.0; 3], grid: Some([opts.start.0, grass_row, opts.start.1]), dir: 0, waypoint: Some("Spawn".into()) },
         FreeBlockSpec { name: "RoadTechFinish".into(), author: None, flags: 0, pos: [0.0; 3], rot: [0.0; 3], grid: Some([opts.finish.0, grass_row, opts.finish.1]), dir: 0, waypoint: Some("Goal".into()) },
     ];
+    for (name, cx, dy, cz, dir) in &opts.blocks {
+        let wp = if name.ends_with("Finish") { Some("Goal".to_string()) } else if name.ends_with("Checkpoint") { Some("Checkpoint".to_string()) } else { None };
+        specs.push(FreeBlockSpec { name: name.clone(), author: None, flags: 0, pos: [0.0; 3], rot: [0.0; 3], grid: Some([*cx, grass_row + dy, *cz]), dir: *dir, waypoint: wp });
+        report.push(format!("block {name} at cell ({cx}, {}, {cz}) dir {dir}", grass_row + dy));
+    }
     {
         let mut m = MapFile::try_load(out)?;
         m.remove_and_add_blocks(|b| b.flags != 0xFFFF_FFFF, |_| false, &specs);
         m.write_to(out).map_err(|e| e.to_string())?;
+    }
+    // the placement list: every stack level, then the single items
+    let mut places: Vec<(String, i32, i32, i32)> = Vec::new();
+    for (cx, file) in &opts.stacks {
+        for k in 0..opts.height {
+            places.push((file.clone(), *cx, grass_row + k, opts.z));
+        }
+    }
+    for (file, cx, dy, cz) in &opts.items {
+        places.push((file.clone(), *cx, grass_row + dy, *cz));
     }
     // 3. the items embedded (merged with whatever the source embeds, in order)
     let mut idents: Vec<String> = Vec::new();
@@ -55,7 +74,7 @@ pub fn build(opts: &TestMapOpts) -> Result<Vec<String>, String> {
         let mut added: Vec<(String, Vec<u8>)> = Vec::new();
         let mut manifest = old_rows.clone();
         let mut seen: HashSet<String> = HashSet::new();
-        for (_, file) in &opts.stacks {
+        for (file, _, _, _) in &places {
             let ident = Path::new(file).file_name().map(|s| s.to_string_lossy().to_string()).ok_or_else(|| format!("{file}: no file name"))?;
             idents.push(ident.clone());
             if !seen.insert(ident.clone()) {
@@ -72,8 +91,8 @@ pub fn build(opts: &TestMapOpts) -> Result<Vec<String>, String> {
         m.write_to(out).map_err(|e| e.to_string())?;
         report.push(format!("embedded {} item file(s) ({} kept from the source)", added.len(), old_rows.len()));
     }
-    // 4. the placements: one clone per stack level, posed at the cell's block frame (dir 0: the cell corner)
-    let total = opts.stacks.len() * opts.height as usize;
+    // 4. the placements: one clone per entry, posed at its cell's block frame (dir 0: the cell corner)
+    let total = places.len();
     {
         let mut m = MapFile::try_load(out)?;
         m.append_item_clones(total);
@@ -81,35 +100,28 @@ pub fn build(opts: &TestMapOpts) -> Result<Vec<String>, String> {
     }
     {
         let mut m = MapFile::try_load(out)?;
-        for (s, (_, _)) in opts.stacks.iter().enumerate() {
-            for k in 0..opts.height as usize {
-                let i = s * opts.height as usize + k;
-                m.set_item_model(i, &idents[s]);
-                m.set_item_author(i, &idents[s]);
-                m.set_item_collection(i, collection);
-            }
+        for (i, _) in places.iter().enumerate() {
+            m.set_item_model(i, &idents[i]);
+            m.set_item_author(i, &idents[i]);
+            m.set_item_collection(i, collection);
         }
         m.write_to(out).map_err(|e| e.to_string())?;
     }
     {
         let mut m = MapFile::try_load(out)?;
-        for (s, (cx, _)) in opts.stacks.iter().enumerate() {
-            for k in 0..opts.height {
-                let i = s * opts.height as usize + k as usize;
-                let cy = grass_row + k;
-                let pos = [*cx as f32 * 32.0, cy as f32 * 8.0 + ground, opts.z as f32 * 32.0];
-                let it = m.items[i].clone();
-                if it.skin_region.is_some() || it.flags & 4 != 0 {
-                    m.set_item_skin(i, None);
-                }
-                m.move_item_pos(i, pos);
-                m.set_item_rotation(i, 0.0, 0.0, 0.0);
-                m.set_item_pivot(i, [0.0, 0.0, 0.0]);
-                m.set_item_flags(i, 0);
-                m.set_item_scale(i, 1.0);
-                m.set_item_cell(i, [(*cx).clamp(0, 255) as u8, cy.clamp(0, 255) as u8, opts.z.clamp(0, 255) as u8]);
-                report.push(format!("{}: cell ({cx}, {cy}, {}) pos ({:.1}, {:.1}, {:.1}) yaw 0", idents[s], opts.z, pos[0], pos[1], pos[2]));
+        for (i, (_, cx, cy, cz)) in places.iter().enumerate() {
+            let pos = [*cx as f32 * 32.0, *cy as f32 * 8.0 + ground, *cz as f32 * 32.0];
+            let it = m.items[i].clone();
+            if it.skin_region.is_some() || it.flags & 4 != 0 {
+                m.set_item_skin(i, None);
             }
+            m.move_item_pos(i, pos);
+            m.set_item_rotation(i, 0.0, 0.0, 0.0);
+            m.set_item_pivot(i, [0.0, 0.0, 0.0]);
+            m.set_item_flags(i, 0);
+            m.set_item_scale(i, 1.0);
+            m.set_item_cell(i, [(*cx).clamp(0, 255) as u8, (*cy).clamp(0, 255) as u8, (*cz).clamp(0, 255) as u8]);
+            report.push(format!("{}: cell ({cx}, {cy}, {cz}) pos ({:.1}, {:.1}, {:.1}) yaw 0", idents[i], pos[0], pos[1], pos[2]));
         }
         m.write_to(out).map_err(|e| e.to_string())?;
     }
@@ -127,7 +139,10 @@ pub fn build(opts: &TestMapOpts) -> Result<Vec<String>, String> {
     {
         let mut m = MapFile::try_load(out)?;
         let old_uid = hdr.uid.clone();
-        let new_uid = if old_uid.len() > 4 { format!("XPND{}", &old_uid[..old_uid.len() - 4]) } else { old_uid.clone() };
+        // a prefix derived from the map name, so two test maps from one source never share a uid
+        let h = opts.name.bytes().fold(5381u32, |h, b| h.wrapping_mul(33) ^ b as u32);
+        let prefix: String = (0..4).map(|k| "ABCDEFGHJKLMNPQRSTUVWXYZ".as_bytes()[((h >> (k * 5)) % 24) as usize] as char).collect();
+        let new_uid = if old_uid.len() > 4 { format!("{prefix}{}", &old_uid[..old_uid.len() - 4]) } else { old_uid.clone() };
         m.set_map_uid_any_len(&new_uid);
         m.write_to(out).map_err(|e| e.to_string())?;
         report.push(format!("uid {old_uid} -> {new_uid}"));

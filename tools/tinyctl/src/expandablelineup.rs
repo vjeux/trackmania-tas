@@ -16,10 +16,14 @@ struct Panel {
 }
 
 fn collect(store: &mut mapgeom::store::DataStore, path: &str) -> Result<Vec<(String, Vec<[f32; 3]>, Vec<[u32; 3]>)>, String> {
+    collect_at(store, path, &mapgeom::geom::IDENTITY)
+}
+
+fn collect_at(store: &mut mapgeom::store::DataStore, path: &str, at: &mapgeom::geom::Xform) -> Result<Vec<(String, Vec<[f32; 3]>, Vec<[u32; 3]>)>, String> {
     let loaded = store.load_model(path)?;
     let mut c = mapgeom::geom::Collector::new(store);
     c.link_labels = true;
-    c.model(&loaded, &mapgeom::geom::IDENTITY, 0);
+    c.model(&loaded, at, 0);
     let mut out: Vec<(String, Vec<[f32; 3]>, Vec<[u32; 3]>)> = c.scene.groups.iter().map(|(k, g)| (k.clone(), g.verts.clone(), g.tris.clone())).collect();
     out.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(out)
@@ -78,15 +82,23 @@ pub fn cmd(rest: &[String]) -> Result<(), String> {
     let item: Vec<(String, Vec<[f32; 3]>, Vec<[u32; 3]>)> = air.iter().map(|(k, v, t)| (if stem(k) == "RaceTriggerFXFinish" { "RaceTriggerFXCheckpoint".to_string() } else { k.clone() }, v.clone(), t.clone())).collect();
     // the gate item is centred on its origin: shift it to the block frame (16, 0, 16) so the three line up
     let gate: Vec<(String, Vec<[f32; 3]>, Vec<[u32; 3]>)> = gate.into_iter().map(|(k, v, t)| (k, v.into_iter().map(|p| [p[0] + 16.0, p[1], p[2] + 16.0]).collect(), t)).collect();
+    // the frame set (expandable-frames): the fillers' prefabs posed by their clip cells into the segment frame
+    let cell = |c: (i32, i32, i32), d: u8| mapgeom::place::grid_block(c, d, (32.0, 32.0), 0.0);
+    let g = "Stadium\\Media\\Prefab\\Gate\\";
+    let mut framed = item.clone();
+    for (prefab, at) in [(format!("{g}ExpandableCheckpointFCB.Prefab.Gbx"), cell((0, -1, 0), 0)), (format!("{g}ExpandableCheckpointFCT.Prefab.Gbx"), cell((0, 1, 0), 0)), (format!("{g}ExpandableCheckpointRightVFCMiddle.Prefab.Gbx"), cell((-1, 0, 0), 3)), (format!("{g}ExpandableCheckpointLeftVFCMiddle.Prefab.Gbx"), cell((1, 0, 0), 1))] {
+        framed.extend(collect_at(&mut store, &prefab, &at)?);
+    }
     let panels = [
         Panel { title: "GATEEXPANDABLEFINISH GROUND SEGMENT (ORIGINAL, RED)".into(), groups: ground },
         Panel { title: "CHECKPOINTEXPANDABLE.ITEM.GBX (NEW: THE AIR PANE, BLUE)".into(), groups: item },
         Panel { title: "GATECHECKPOINTCENTER32M (PAK ITEM, FOR THE COLOUR)".into(), groups: gate },
+        Panel { title: "PANE + BOTTOM/TOP/RIGHT/LEFT FRAME ITEMS (SEGMENT FRAME)".into(), groups: framed },
     ];
-    let (w, h) = (2400usize, 1500usize);
+    let (w, h) = (3200usize, 1500usize);
     let mut cv = Canvas::new(w, h);
     cv.text(40.0, 16.0, "EXPANDABLE GATE LINE-UP: FRONT ELEVATION (BLOCK X RIGHT, Y UP) OVER PLAN (X RIGHT, Z UP); COLOURS = MATERIAL MEAN RGB FROM THE PAK TEXTURES (MATERIAL-SURVEY); SAME SCALE", 2, INK);
-    let pw = (w as f32 - 80.0) / 3.0;
+    let pw = (w as f32 - 80.0) / panels.len() as f32;
     // common frame: block x -2..34, y -1..13, z -2..34
     let (x0, x1, y0, y1, z0, z1) = (-2.0f32, 34.0f32, -1.0f32, 13.0f32, -2.0f32, 34.0f32);
     let scale = ((pw - 40.0) / (x1 - x0)).min(520.0 / (y1 - y0)).min(620.0 / (z1 - z0));

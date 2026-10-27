@@ -6005,10 +6005,64 @@ fn main() {
             let out = flag(&a.rest, "--out").unwrap_or_else(|| die("test-map: --out OUT.Map.Gbx".into()));
             let pair = |k: &str, d: (i32, i32)| -> (i32, i32) { flag(&a.rest, k).and_then(|v| { let p: Vec<i32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect(); if p.len() == 2 { Some((p[0], p[1])) } else { None } }).unwrap_or(d) };
             let stacks: Vec<(i32, String)> = flag(&a.rest, "--stack").unwrap_or_default().split(',').filter(|s| !s.is_empty()).map(|s| { let (x, f) = s.split_once('=').unwrap_or_else(|| die(format!("--stack {s}: X=FILE"))); (x.trim().parse::<i32>().unwrap_or_else(|_| die(format!("--stack {s}: X=FILE"))), f.trim().to_string()) }).collect();
-            if stacks.is_empty() { die::<()>("test-map: --stack X=FILE.Item.Gbx[,…]".into()); }
-            let opts = mapgeom::test_map::TestMapOpts { source, out: out.clone(), stacks, start: pair("--start", (24, 8)), finish: pair("--finish", (24, 34)), z: flag(&a.rest, "--z").and_then(|v| v.parse().ok()).unwrap_or(20), height: flag(&a.rest, "--height").and_then(|v| v.parse().ok()).unwrap_or(3), name: flag(&a.rest, "--name").unwrap_or_else(|| "Expandable Test".into()) };
+            // --item FILE@cx,dy,cz (repeatable; dy = rows above the grass row); --block NAME@cx,dy,cz[,dir] (repeatable)
+            let mut items: Vec<(String, i32, i32, i32)> = Vec::new();
+            let mut blocks: Vec<(String, i32, i32, i32, u8)> = Vec::new();
+            let mut i = 0;
+            while i < a.rest.len() {
+                if a.rest[i] == "--item" || a.rest[i] == "--block" {
+                    let v = a.rest.get(i + 1).cloned().unwrap_or_default();
+                    let (name, coords) = v.split_once('@').unwrap_or_else(|| die(format!("{} {v}: NAME@cx,dy,cz", a.rest[i])));
+                    let c: Vec<i32> = coords.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                    if c.len() < 3 { die::<()>(format!("{} {v}: NAME@cx,dy,cz", a.rest[i])); }
+                    if a.rest[i] == "--item" { items.push((name.to_string(), c[0], c[1], c[2])); } else { blocks.push((name.to_string(), c[0], c[1], c[2], c.get(3).copied().unwrap_or(0) as u8)); }
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            if stacks.is_empty() && items.is_empty() { die::<()>("test-map: --stack X=FILE.Item.Gbx[,…] or --item FILE@cx,dy,cz".into()); }
+            let opts = mapgeom::test_map::TestMapOpts { source, out: out.clone(), stacks, items, blocks, start: pair("--start", (24, 8)), finish: pair("--finish", (24, 34)), z: flag(&a.rest, "--z").and_then(|v| v.parse().ok()).unwrap_or(20), height: flag(&a.rest, "--height").and_then(|v| v.parse().ok()).unwrap_or(3), name: flag(&a.rest, "--name").unwrap_or_else(|| "Expandable Test".into()) };
             for line in mapgeom::test_map::build(&opts).unwrap_or_else(die) { println!("{line}"); }
             println!("wrote {out}");
+        }
+        // expandable-frames --out-dir D [--collection N]: the CheckpointExpandable BORDER items from the checkpoint
+        //   fillers' own prefabs, each in the SEGMENT's block frame (the filler's clip cell composed in): Bottom = FCB
+        //   (cell below), Top = FCT (cell above), Right/Left = the Middle VFC posts (cells beside, their own dirs), Foot =
+        //   the ground segment's TechnicsTrims; alt/: InPillar beams and the Bottom/Top/TopBottom post variants
+        "expandable-frames" => {
+            let mut store = open(&a);
+            let dir = std::path::PathBuf::from(flag(&a.rest, "--out-dir").unwrap_or_else(|| die("expandable-frames: --out-dir D".into())));
+            let collection: u32 = flag(&a.rest, "--collection").and_then(|v| v.parse().ok()).unwrap_or(26);
+            std::fs::create_dir_all(dir.join("alt")).unwrap_or_else(|e| die(e.to_string()));
+            let cell = |c: (i32, i32, i32), d: u8| mapgeom::place::grid_block(c, d, (32.0, 32.0), 0.0);
+            let g = "Stadium\\Media\\Prefab\\Gate\\";
+            let jobs: Vec<(&str, String, mapgeom::geom::Xform, Option<&[&str]>)> = vec![
+                ("CheckpointExpandableBottom.Item.Gbx", format!("{g}ExpandableCheckpointFCB.Prefab.Gbx"), cell((0, -1, 0), 0), None),
+                ("CheckpointExpandableTop.Item.Gbx", format!("{g}ExpandableCheckpointFCT.Prefab.Gbx"), cell((0, 1, 0), 0), None),
+                ("CheckpointExpandableRight.Item.Gbx", format!("{g}ExpandableCheckpointRightVFCMiddle.Prefab.Gbx"), cell((-1, 0, 0), 3), None),
+                ("CheckpointExpandableLeft.Item.Gbx", format!("{g}ExpandableCheckpointLeftVFCMiddle.Prefab.Gbx"), cell((1, 0, 0), 1), None),
+                ("CheckpointExpandableFoot.Item.Gbx", format!("{g}ExpandableFinish_Ground.Prefab.Gbx"), mapgeom::geom::IDENTITY, Some(&["TechnicsTrims"])),
+                ("alt/CheckpointExpandableBottomInPillar.Item.Gbx", format!("{g}ExpandableCheckpointInPillarFCB.Prefab.Gbx"), cell((0, -1, 0), 0), None),
+                ("alt/CheckpointExpandableTopInPillar.Item.Gbx", format!("{g}ExpandableCheckpointInPillarFCT.Prefab.Gbx"), cell((0, 1, 0), 0), None),
+                ("alt/CheckpointExpandableRightBottom.Item.Gbx", format!("{g}ExpandableCheckpointRightVFCBottom.Prefab.Gbx"), cell((-1, 0, 0), 3), None),
+                ("alt/CheckpointExpandableRightTop.Item.Gbx", format!("{g}ExpandableCheckpointRightVFCTop.Prefab.Gbx"), cell((-1, 0, 0), 3), None),
+                ("alt/CheckpointExpandableRightTopBottom.Item.Gbx", format!("{g}ExpandableCheckpointRightVFCTopBottom.Prefab.Gbx"), cell((-1, 0, 0), 3), None),
+                ("alt/CheckpointExpandableLeftBottom.Item.Gbx", format!("{g}ExpandableCheckpointLeftVFCBottom.Prefab.Gbx"), cell((1, 0, 0), 1), None),
+                ("alt/CheckpointExpandableLeftTop.Item.Gbx", format!("{g}ExpandableCheckpointLeftVFCTop.Prefab.Gbx"), cell((1, 0, 0), 1), None),
+                ("alt/CheckpointExpandableLeftTopBottom.Item.Gbx", format!("{g}ExpandableCheckpointLeftVFCTopBottom.Prefab.Gbx"), cell((1, 0, 0), 1), None),
+            ];
+            println!("item\tbytes\tvisuals kept/dropped\tmaterials\tbbox (segment frame)");
+            for (name, prefab, at, keep) in jobs {
+                let ident = std::path::Path::new(name).file_name().unwrap().to_string_lossy().to_string();
+                let (bytes, kept, dropped, links) = mapgeom::static_item::build::frame_item(&mut store, &prefab, &at, &ident, collection, keep).unwrap_or_else(|e| die(format!("{name}: {e}")));
+                let p = dir.join(name);
+                std::fs::write(&p, &bytes).unwrap_or_else(|e| die(format!("{}: {e}", p.display())));
+                let f = mapgeom::static_item::parse_file(&bytes).unwrap_or_else(|e| die(format!("{name}: {e}")));
+                let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+                for b in mapgeom::static_item::file::item_bboxes(&f.item) { if b[1] < -3.0 { continue; } for k in 0..3 { lo[k] = lo[k].min(b[k]); hi[k] = hi[k].max(b[k + 3]); } }
+                println!("{name}\t{}\t{kept}/{dropped}\t{}\tx {:.2}..{:.2} y {:.2}..{:.2} z {:.2}..{:.2}", bytes.len(), links.join(","), lo[0], hi[0], lo[1], hi[1], lo[2], hi[2]);
+            }
         }
         "expandable-item" => {
             let mut store = open(&a);

@@ -238,6 +238,7 @@ pub fn cmd(store: &mut crate::store::DataStore, rest: &[String], flag: &dyn Fn(&
     let label = flag(rest, "--paks-label").unwrap_or_else(|| "Trackmania 2020 Stadium.pak / RedIsland.pak / WhiteShore.pak / GreenCoast.pak / BlueBay.pak (client 2026-10, tm-paks store)".into());
     std::fs::create_dir_all(&out).map_err(|e| format!("{out}: {e}"))?;
     let entries: Vec<String> = store.entries().map(|e| e.path()).collect();
+    let name_vs_ident = rest.iter().any(|x| x == "--name-vs-ident");
     // ---- blocks
     let mut blocks: BTreeMap<String, BlockRow> = BTreeMap::new();
     let mut failed = 0usize;
@@ -247,6 +248,8 @@ pub fn cmd(store: &mut crate::store::DataStore, rest: &[String], flag: &dyn Fn(&
         let Ok(bi) = crate::blockinfo::load(store, p) else { failed += 1; continue };
         let name = if bi.name.is_empty() { p.rsplit('\\').next().unwrap_or(p).split('.').next().unwrap_or("").to_string() } else { bi.name.clone() };
         if name.is_empty() { continue; }
+        // --name-vs-ident: the block infos whose display name differs from their ident (the id map records carry)
+        if name_vs_ident && !bi.ident.is_empty() && !bi.ident.eq_ignore_ascii_case(&name) { println!("name/ident differ: {coll_name}: name {name} ident {} ({p})", bi.ident); }
         let g = bi.variant_base_ground.as_ref().and_then(variant_facts);
         let a = bi.variant_base_air.as_ref().and_then(variant_facts);
         let ground = g.is_some();

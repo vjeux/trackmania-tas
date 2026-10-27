@@ -4347,3 +4347,30 @@ pub fn expandable_item_ext(store: &mut crate::store::DataStore, ident: &str, col
     Ok((bytes, swaps, kept, before - kept))
 }
 const WP_CHECKPOINT_T: i32 = 2;
+
+/// A FRAME item (Hugo's CheckpointExpandable borders, 10-27): a pak prefab's static geometry posed by `at` (the
+/// filler's clip cell relative to the segment, so the item is in the SEGMENT's block frame), verbatim meshes and
+/// materials, `keep` = material stems to keep (None = everything), no trigger, no waypoint, no collision.
+pub fn frame_item(store: &mut crate::store::DataStore, prefab: &str, at: &Xform, ident: &str, collection: u32, keep: Option<&[&str]>) -> R<(Vec<u8>, usize, usize, Vec<String>)> {
+    let mut m = Merged::default();
+    add_prefab(store, prefab, at, 1.0, &mut m, 0)?;
+    let before = m.visuals.len();
+    if let Some(keep) = keep {
+        let flags: Vec<bool> = m.materials.iter().map(|mat| mat.link().map_or(false, |l| { let u = l.to_ascii_uppercase(); keep.iter().any(|k| u.ends_with(&format!("\\{}", k.to_ascii_uppercase()))) })).collect();
+        m.visuals.retain(|v| flags.get(v.material).copied().unwrap_or(false));
+    }
+    m.lights_out.clear();
+    m.pending_lights.clear();
+    m.fx.clear();
+    m.veget.clear();
+    m.surf_vertices.clear();
+    m.surf_triangles.clear();
+    m.surf_ids.clear();
+    m.trigger = None;
+    m.waypoint_type = None;
+    let used: std::collections::BTreeSet<usize> = m.visuals.iter().map(|v| v.material).collect();
+    let links: Vec<String> = used.iter().filter_map(|i| m.materials.get(*i).and_then(|mat| mat.link().map(|s| s.rsplit('\\').next().unwrap_or(s).to_string()))).collect();
+    let kept = m.visuals.len();
+    let (bytes, _) = finish_item(m, ident, ident, 1.0, collection)?;
+    Ok((bytes, kept, before - kept, links))
+}
