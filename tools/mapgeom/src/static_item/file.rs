@@ -294,3 +294,29 @@ pub fn write_node_file(class_id: u32, body: &[u8], num_nodes: u32, externals: &[
     out.extend_from_slice(body);
     out
 }
+
+/// The bounding boxes of a parsed item's geometry: every solid visual's `bounding_box` (lo xyz, hi xyz) plus the
+/// collision / trigger meshes' vertex extents — for the catalogs' `Size` (csgen).
+pub fn item_bboxes(item: &CGameItemModel) -> Vec<[f32; 6]> {
+    let mut out = Vec::new();
+    if let Some(s2) = item.static_object().and_then(|so| so.solid2()) {
+        for r in &s2.visuals {
+            if let Some(super::Node::Visual(v)) = r.inline.as_deref() {
+                if let Some(main) = v.main.as_ref() { out.push(main.bounding_box); }
+            }
+        }
+    }
+    let mut push_surf = |sf: &super::surface::CPlugSurface| {
+        if let super::surface::Surf::Mesh { vertices, .. } = &sf.surf {
+            let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+            for v in vertices { for k in 0..3 { lo[k] = lo[k].min(v[k]); hi[k] = hi[k].max(v[k]); } }
+            if lo[0].is_finite() { out.push([lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]]); }
+        }
+    };
+    if let Some(sf) = item.static_object().and_then(|so| so.surface()) { push_surf(sf); }
+    // the waypoint trigger shape of the entity model (our carriers' finish volume)
+    if let Some(em) = item.model().and_then(|m| m.entity_model()) {
+        if let Some(super::Node::Surface(sf)) = em.trigger_shape.inline.as_deref() { push_surf(sf); }
+    }
+    out
+}
