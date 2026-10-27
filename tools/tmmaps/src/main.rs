@@ -370,6 +370,21 @@ fn main() {
             m.write_to(&out).expect("write");
             println!("{}: {added} custom item file(s) carried, {} manifest rows", out.display(), rows2.len());
         }
+        // tmmaps color-blocks MAP --name A[,B…] --color N --out OUT — every authored record of
+        // those names takes colour byte N (0 Default, 1 White, 2 Green, 3 Blue, 4 Red, 5 Black)
+        "color-blocks" => {
+            let src = std::path::PathBuf::from(&args[2]);
+            let out = std::path::PathBuf::from(tmmaps::cli::flag(&args, "--out").expect("color-blocks needs --out OUT"));
+            let names: Vec<String> = tmmaps::cli::flag(&args, "--name").expect("--name A[,B…]").split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+            let color: u8 = tmmaps::cli::flag(&args, "--color").and_then(|v| v.parse().ok()).expect("--color N");
+            let mut m = tmmaps::map::MapFile::load(&src);
+            let idx: Vec<usize> = m.blocks.iter().enumerate().filter(|(_, b)| names.iter().any(|n| *n == b.name)).map(|(i, _)| i).collect();
+            for i in &idx {
+                m.set_block_color(*i, color);
+            }
+            m.write_to(&out).expect("write");
+            println!("{}: {} block record(s) set to colour {color}", out.display(), idx.len());
+        }
         "drop-blocks" => {
             if let Err(e) = tmmaps::altered::drop_blocks_cmd(&args) {
                 eprintln!("tmmaps drop-blocks: {e}");

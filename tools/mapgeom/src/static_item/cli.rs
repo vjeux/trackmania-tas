@@ -70,6 +70,16 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
         let mut store = open();
         build::static_item_from_prefab_report(&mut store, &src, &ident, &author, scale, collection)?
     };
+    // `--compressed`: the body LZO-compressed ("BUCR") — what an item EMBEDDED in a map must
+    // be (an uncompressed one crashes the client at map load, 2026-10-24/27); the default
+    // stays uncompressed for the byte-identical round-trip checks
+    let bytes = if flag(rest, "--compressed").is_some() || rest.iter().any(|a| a == "--compressed") {
+        let mut f = super::parse_file(&bytes)?;
+        f.body_comp = b'C';
+        super::write_file(&f)
+    } else {
+        bytes
+    };
     std::fs::write(&out, &bytes).map_err(|e| format!("{out}: {e}"))?;
     // the side files the item names (its `.Light.Gbx` copies, sign logos):
     // next to the output, as they ride next to the item in a library archive

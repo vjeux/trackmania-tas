@@ -2636,6 +2636,15 @@ impl MapFile {
         Some(Colors { bytes: self.gbx.body[payload + 4..payload + size].to_vec(), n_blocks: self.blocks.len(), n_baked: self.baked.len() })
     }
 
+    /// Set an authored BLOCK's colour byte in chunk 0x03043062 (blocks come first).
+    pub fn set_block_color(&mut self, block_index: usize, color: u8) {
+        let chunks = crate::gbx::all_skip_chunks(&self.gbx.body);
+        let &(_, _, payload, size) = chunks.iter().find(|(c, ..)| *c == 0x0304_3062).expect("colour chunk 0x03043062");
+        let off = payload + 4 + block_index;
+        assert!(off < payload + size, "block {block_index} past the colour chunk ({} bytes)", size - 4);
+        self.raw_patches.push((off, vec![color]));
+    }
+
     /// Set an item's colour byte in chunk 0x03043062 (see [`Self::colors`]).
     /// Must run on a file whose item array is already its final size.
     pub fn set_item_color(&mut self, item_index: usize, color: u8) {

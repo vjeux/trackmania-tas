@@ -14,11 +14,12 @@
 //! ```
 //!
 //! The source beam (SupportCurve1In_Airv2): a quarter circle about the cell corner
-//! (0, 32), centreline radius ≈ 30 m (verts 29.5..30.5), y 0..2, angle 0..90°, plus the
-//! junction cube and braces toward the cell centre (radius 20..25) and end plates at the
-//! cell edge (radius 32). Everios96 wants "just the simple beam, without the extra
-//! geometry": the junction/brace triangles go (centroid radius < 27), the end plates go
-//! too unless `--keep-ends` (a ring has no ends; the arch gets its own).
+//! (0, 32): a 2.5 m × 2 m shell (TechnicsTrimsColorize, radius 29.5..32, y 0..2, the
+//! TRACKMANIA decal on its outer face) around an inner TechnicsTrims lattice, angle 0..90°,
+//! plus the junction cube (Structure/Pylon, r ≈ 22.6) and two braces (r 20..25) toward the
+//! cell centre. Everios96 wants "just the simple beam, without the extra geometry": every
+//! triangle with a vertex under r 29 goes. The shell takes the ITEM COLOUR (Blue = the
+//! vanilla block's look in his maps; Default renders white).
 //!
 //! Ring: 4 quarters bent to `--radius` (default 13 m: inner edge 12.5 m, just outside the
 //! 12 m hole) around the cell centre (16, 0, 16); pivot at the cell corner, 32 m grid, so
@@ -252,15 +253,22 @@ fn source_beam(store: &mut crate::store::DataStore, prefab: &str, keep_ends: boo
     let before: usize = m.visuals.iter().filter_map(|v| v.visual.index_buffer.as_ref()).map(|ib| ib.indices.len() / 3).sum();
     // BEAM_KEEP_ALL=1: no filtering at all (the pipeline bisect of 2026-10-27)
     let keep_all = std::env::var("BEAM_KEEP_ALL").map(|v| v == "1").unwrap_or(false);
+    // The beam (measured 2026-10-27 on the box, Q1v2 A/B): a 2.5 m × 2 m shell of
+    // TechnicsTrimsColorize (radius 29.5..32 — its OUTER face carries the TRACKMANIA decal
+    // at r 32) around an inner TechnicsTrims lattice (r ≈ 30..30.5); the braces (r 20..25)
+    // and the junction cube (Structure + Pylon at r ≈ 22.6) are the "extra geometry".
+    // Everything from r 29 outward stays — the first cut (d < 1.2) threw the shell away and
+    // shipped the bare dark lattice ("texture looks a bit off").
+    let _ = keep_ends;
     retain_triangles(&mut m, &|c| {
         if keep_all {
             return true;
         }
         let (_, d, _) = polar(c);
-        d > -2.0 && (keep_ends || d < 1.2)
+        d >= -1.0
     });
     let after: usize = m.visuals.iter().filter_map(|v| v.visual.index_buffer.as_ref()).map(|ib| ib.indices.len() / 3).sum();
-    m.notes.push(format!("beam: {} copies, {after} of {before} triangles kept (junction/braces{} removed)", copies.len(), if keep_ends { "" } else { "/end plates" }));
+    m.notes.push(format!("beam: {} copies, {after} of {before} triangles kept (junction cube + braces removed)", copies.len()));
     Ok(m)
 }
 
@@ -350,7 +358,7 @@ pub fn arch_cmd(store: &mut crate::store::DataStore, args: &[String]) -> R<()> {
     let out = flag(args, "--out").ok_or("--out F")?;
     let contour_path = flag(args, "--contour").ok_or("--contour PTS.json (ordered [[z, Y], …])")?;
     let face_x: f32 = flag(args, "--face-x").and_then(|v| v.parse().ok()).unwrap_or(1.5);
-    let offset: f32 = flag(args, "--offset").and_then(|v| v.parse().ok()).unwrap_or(0.75);
+    let offset: f32 = flag(args, "--offset").and_then(|v| v.parse().ok()).unwrap_or(0.5);
     let prefab = flag(args, "--prefab").unwrap_or(SRC_PREFAB);
     let text = std::fs::read_to_string(contour_path).map_err(|e| format!("{contour_path}: {e}"))?;
     // minimal JSON: [[z, y], [z, y], …]
