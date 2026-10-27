@@ -177,6 +177,42 @@ pub fn item_waypoint(body: &[u8]) -> Option<i32> {
     if ver <= 20 && wp <= 5 { Some(wp as i32) } else { None }
 }
 
+/// Waypoint families, as tman.Generator computes them: a waypoint block/item's twins of the other kinds = its name
+/// with the kind token (Start / Finish / Checkpoint / Multilap) swapped, kept when that name exists with the expected
+/// waypoint; `gates`: GateFinish{W}m ↔ the Right-side gate family (there is no GateFinishRight). (name, kind, twin).
+fn families(waypoints: &BTreeMap<String, Option<i32>>, gates: bool) -> Vec<(String, i32, String)> {
+    const KINDS: [(i32, &str); 4] = [(0, "Start"), (1, "Finish"), (2, "Checkpoint"), (4, "Multilap")];
+    let is = |name: &str, kind: i32| waypoints.get(name).map_or(false, |w| *w == Some(kind));
+    let mut out = Vec::new();
+    for (name, wp) in waypoints {
+        let Some(w) = *wp else { continue };
+        let Some((_, own)) = KINDS.iter().find(|(k, _)| *k == w) else { continue };
+        let at = name.find(own);
+        let right_gate = if gates { name.strip_prefix("Gate").and_then(|r| ["Start", "Checkpoint", "Multilap"].iter().find_map(|t| r.strip_prefix(t))).and_then(|r| r.strip_prefix("Right")).and_then(|r| r.strip_suffix('m')).filter(|w| !w.is_empty() && w.chars().all(|c| c.is_ascii_digit())) } else { None };
+        let finish_gate = if gates { name.strip_prefix("GateFinish").and_then(|r| r.strip_suffix('m')).filter(|w| !w.is_empty() && w.chars().all(|c| c.is_ascii_digit())) } else { None };
+        for (kind, token) in KINDS {
+            if kind == w { continue; }
+            let mut twin = at.map(|i| format!("{}{}{}", &name[..i], token, &name[i + own.len()..]));
+            if twin.as_deref().map_or(true, |t| !is(t, kind)) {
+                twin = match (finish_gate, right_gate) {
+                    (Some(width), _) => Some(format!("Gate{token}Right{width}m")),
+                    (None, Some(width)) if kind == 1 => Some(format!("GateFinish{width}m")),
+                    _ => None,
+                };
+            }
+            if let Some(t) = twin { if is(&t, kind) { out.push((name.clone(), kind, t)); } }
+        }
+    }
+    out
+}
+
+fn families_cs(ty: &str, fams: &[(String, i32, String)], ident_of: &BTreeMap<&str, &str>) -> String {
+    let mut s = format!("\n    public static readonly IReadOnlyDictionary<(string, Waypoint), {ty}> Families = new Dictionary<(string, Waypoint), {ty}>\n    {{\n");
+    for (name, kind, twin) in fams { s.push_str(&format!("        [(\"{name}\", {})] = {},\n", waypoint_cs(Some(*kind)), ident_of.get(twin.as_str()).copied().unwrap_or(""))); }
+    s.push_str("    };\n");
+    s
+}
+
 fn variant_facts(v: &crate::blockinfo::Variant) -> Option<((i32, i32), Vec<(i32, i32)>)> {
     if v.block_units.is_empty() { return None; }
     let sx = v.block_units.iter().map(|u| u.offset[0] + 1).max().unwrap_or(1);
@@ -297,7 +333,7 @@ pub fn cmd(store: &mut crate::store::DataStore, rest: &[String], flag: &dyn Fn(&
     cs.push_str(common);
     cs.push_str(enums);
     cs.push_str("public readonly record struct BlockVariant(Block Model, int Variant);\n\n");
-    cs.push_str("public sealed record Block(string Id, int SizeX, int SizeZ, int[][]? Cells, Collections Collections, Waypoint Waypoint, bool Ground, bool Air, int Variants)\n{\n    public Block? Plain => Blocks.PlainOf.TryGetValue(Id, out var plain) ? plain : null;\n\n    public BlockVariant Variant(int n) => new(this, n);\n}\n\n");
+    cs.push_str("public sealed record Block(string Id, int SizeX, int SizeZ, int[][]? Cells, Collections Collections, Waypoint Waypoint, bool Ground, bool Air, int Variants)\n{\n    public Block? Plain => Blocks.PlainOf.TryGetValue(Id, out var plain) ? plain : null;\n\n    public Block? As(Waypoint kind) => kind == Waypoint ? this : Blocks.Families.TryGetValue((Id, kind), out var twin) ? twin : null;\n\n    public BlockVariant Variant(int n) => new(this, n);\n}\n\n");
     cs.push_str("public static class Blocks\n{\n");
     let mut block_idents: Vec<(String, String)> = Vec::new();
     for (id, b) in &blocks {
@@ -321,7 +357,10 @@ pub fn cmd(store: &mut crate::store::DataStore, rest: &[String], flag: &dyn Fn(&
             plain_written += 1;
         }
     }
-    cs.push_str("    };\n}\n");
+    cs.push_str("    };\n");
+    let block_wps: BTreeMap<String, Option<i32>> = blocks.iter().map(|(k, b)| (k.clone(), b.waypoint)).collect();
+    cs.push_str(&families_cs("Block", &families(&block_wps, false), &ident_lookup));
+    cs.push_str("}\n");
     let blocks_path = format!("{out}/Blocks.g.cs");
     std::fs::write(&blocks_path, &cs).map_err(|e| format!("{blocks_path}: {e}"))?;
     // Items.g.cs
@@ -338,7 +377,7 @@ pub fn cmd(store: &mut crate::store::DataStore, rest: &[String], flag: &dyn Fn(&
     ci.push_str(&header);
     ci.push_str(common);
     ci.push_str("public readonly record struct ItemVariant(Item Model, int Variant);\n\n");
-    ci.push_str("public sealed record Item(string Id, string Author, string? Path, Collections Collections, Waypoint Waypoint, int Variants, Vec3 Size)\n{\n    public ItemVariant Variant(int n) => new(this, n);\n}\n\n");
+    ci.push_str("public sealed record Item(string Id, string Author, string? Path, Collections Collections, Waypoint Waypoint, int Variants, Vec3 Size)\n{\n    public Item? As(Waypoint kind) => kind == Waypoint ? this : Items.Families.TryGetValue((Id, kind), out var twin) ? twin : null;\n\n    public ItemVariant Variant(int n) => new(this, n);\n}\n\n");
     ci.push_str("public static class Items\n{\n");
     let mut item_idents: Vec<(String, String)> = Vec::new();
     for (id, it) in &items {
@@ -348,7 +387,11 @@ pub fn cmd(store: &mut crate::store::DataStore, rest: &[String], flag: &dyn Fn(&
     }
     ci.push_str("\n    public static readonly IReadOnlyDictionary<string, Item> ById = new Dictionary<string, Item>\n    {\n");
     for (ident, id) in &item_idents { ci.push_str(&format!("        [\"{id}\"] = {ident},\n")); }
-    ci.push_str("    };\n\n    public static Item? FromId(string id) => ById.TryGetValue(id, out var item) ? item : null;\n}\n");
+    ci.push_str("    };\n\n    public static Item? FromId(string id) => ById.TryGetValue(id, out var item) ? item : null;\n");
+    let item_wps: BTreeMap<String, Option<i32>> = items.iter().map(|(k, b)| (k.clone(), b.waypoint)).collect();
+    let item_lookup: BTreeMap<&str, &str> = item_idents.iter().map(|(i, id)| (id.as_str(), i.as_str())).collect();
+    ci.push_str(&families_cs("Item", &families(&item_wps, true), &item_lookup));
+    ci.push_str("}\n");
     let items_path = format!("{out}/Items.g.cs");
     std::fs::write(&items_path, &ci).map_err(|e| format!("{items_path}: {e}"))?;
     // (c) Custom.g.cs: `--project ROOT --custom SUBDIR` (repeatable SUBDIR): every *.Item.Gbx under ROOT/SUBDIR
