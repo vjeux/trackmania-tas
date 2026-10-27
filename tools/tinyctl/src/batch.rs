@@ -396,6 +396,23 @@ pub fn publish_batch_cmd(args: &[String]) -> Result<(), String> {
             }
             std::fs::write(&results, &out).map_err(|e| format!("{}: {e}", results.display()))?;
         } else {
+        // `--remint`: a long files-only batch (609 Tiny+Giant in-place updates, 2026-10-26)
+        // outlives one token (~1 h): when the live token's own expiry is under 4 min away,
+        // or an upload comes back 401, the box mints fresh tokens (roundpub::mint_tokens,
+        // the same mint `round-publish` uses) and the batch goes on with the same row.
+        let remint = f("--remint").is_some() || args.iter().any(|a| a == "--remint");
+        let wsx = crate::wsx::Wsx::new(args);
+        let near_expiry = |dir: &str| -> bool {
+            let p = format!("{dir}/token-live.txt");
+            let tok = std::fs::read_to_string(&p).unwrap_or_default();
+            match crate::nadeo::jwt_exp(tok.trim()) {
+                Some(exp) => {
+                    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+                    exp < now + 240
+                }
+                None => false,
+            }
+        };
         for (i, (p, name, skip)) in rows.iter().enumerate() {
             let t1 = Instant::now();
             if let Some(skip) = skip {
@@ -405,7 +422,23 @@ pub fn publish_batch_cmd(args: &[String]) -> Result<(), String> {
                 out.push_str(&format!("{}\t{name}\t{uid}\t-\tskip\t0\t{md5}\tIDENTICAL\n", p.display()));
                 continue;
             }
-            match upload_one(&mut t, p, name, &outdir) {
+            if remint && t.files_only && near_expiry(&token_dir) {
+                println!("[{:>4.0}s] token expiry under 4 min — re-minting on the box", t0.elapsed().as_secs_f64());
+                crate::roundpub::mint_tokens(&wsx, std::path::Path::new(&token_dir))?;
+                t = Tokens::from_files(&token_dir)?;
+            }
+            let mut attempt = upload_one(&mut t, p, name, &outdir);
+            if remint && t.files_only {
+                if let Err(e) = &attempt {
+                    if e.contains("401") {
+                        println!("[{:>4.0}s] {name}: 401 — re-minting on the box and retrying", t0.elapsed().as_secs_f64());
+                        crate::roundpub::mint_tokens(&wsx, std::path::Path::new(&token_dir))?;
+                        t = Tokens::from_files(&token_dir)?;
+                        attempt = upload_one(&mut t, p, name, &outdir);
+                    }
+                }
+            }
+            match attempt {
                 Ok((uid, map_id, how, bytes, md5, verdict)) => {
                     println!("[{:>4.0}s] {}/{} {name}\t{uid}\t{how}\t{bytes} B\t{verdict}\t({:.0}s)", t0.elapsed().as_secs_f64(), i + 1, rows.len(), t1.elapsed().as_secs_f64());
                     if verdict == "IDENTICAL" {
