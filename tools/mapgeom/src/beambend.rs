@@ -30,6 +30,7 @@
 
 use crate::geom::IDENTITY;
 use crate::static_item::build::{add_prefab, assemble, BuildOpts};
+use crate::crystal_model::CPlugMaterialUserInst;
 use crate::static_item::merged::Merged;
 use crate::static_item::surface::Triangle;
 use crate::static_item::vstream::{Elem, N_NORMAL, N_POSITION, N_TANGENT_U, N_TANGENT_V, T_DEC3N, T_FLOAT3};
@@ -247,6 +248,21 @@ fn remap_frames(m: &mut Merged, f: &dyn Fn([f32; 3]) -> ([f32; 3], [[f32; 3]; 3]
 /// circle), junction/braces (and end plates unless `keep_ends`) removed.
 fn source_beam(store: &mut crate::store::DataStore, prefab: &str, keep_ends: bool, copies: &[f32]) -> R<Merged> {
     let mut m = Merged::default();
+    // Two-sided (env `BEAM_TWO_SIDED`, default on; judged at merge time, so set before the
+    // prefabs are added): the beam's top and inner skin are wound inward — the game's own
+    // material draws them from both sides, a one-sided copy loses them (the "open trough"
+    // of every build before this one, box A/B 2026-10-27 16:28).
+    if std::env::var("BEAM_TWO_SIDED").map(|v| v != "0").unwrap_or(true) {
+        for l in ["TechnicsTrims", "TechnicsTrimsColorize", "DecalPaintLogo8x1Colorize"] {
+            m.two_sided_links.push(l.to_string());
+        }
+        // the PROPER form (duplicated vertices, reversed normals + winding): the shared-vertex
+        // shortcut leaves the back copy with a normal facing away (merged.rs); the beam is a
+        // closed box, so the back copies sit inside it and never fight the front ones
+        if std::env::var("TINY_TWO_SIDED_PROPER").is_err() {
+            std::env::set_var("TINY_TWO_SIDED_PROPER", "all");
+        }
+    }
     for a in copies {
         add_prefab(store, prefab, &rot_about_src(*a), 1.0, &mut m, 0)?;
     }
@@ -298,6 +314,40 @@ fn mat_mul(a: &[[f32; 3]; 3], b: &[[f32; 3]; 3]) -> [[f32; 3]; 3] {
 }
 
 fn write_item(m: &mut Merged, args: &[String], out: &str, default_ident: &str, grid: (f32, f32)) -> R<()> {
+    // A BLOCK's colour tints every `*Trims` material; an ITEM's colour tints only the
+    // `*Colorize` ones. The beam is half TechnicsTrims (top strip, inner wall, lattice) and
+    // half TechnicsTrimsColorize (outer skin): as an item the Trims half stayed grey — Everios96
+    // 16:06 "I can still see invisible faces / it looks like the inner material" (the vanilla
+    // block beside it: solid blue). So every TechnicsTrims link becomes TechnicsTrimsColorize
+    // (same texture, colour-masked), and the item colours like the block.
+    let mut relinked = 0;
+    for mat in m.materials.iter_mut() {
+        if let Some(main) = mat.main.as_mut() {
+            if main.link.as_str().map(|l| l.ends_with("\\TechnicsTrims")).unwrap_or(false) {
+                main.link = crate::crystal_model::Id::Str("Stadium\\Media\\Material\\TechnicsTrimsColorize".to_string());
+                relinked += 1;
+            }
+        }
+    }
+    if relinked > 0 {
+        m.notes.push(format!("beam: {relinked} TechnicsTrims material(s) → TechnicsTrimsColorize (the item colour tints the whole beam, like the block colour does)"));
+        // the relink leaves two slots with one link: fold them (item-check: "duplicate slot")
+        let mut remap: Vec<usize> = (0..m.materials.len()).collect();
+        let mut keep: Vec<CPlugMaterialUserInst> = Vec::new();
+        for (i, mat) in m.materials.iter().enumerate() {
+            let key = (mat.link().map(|l| l.to_string()), mat.physics());
+            if let Some(j) = keep.iter().position(|k| (k.link().map(|l| l.to_string()), k.physics()) == key) {
+                remap[i] = j;
+            } else {
+                remap[i] = keep.len();
+                keep.push(mat.clone());
+            }
+        }
+        for v in m.visuals.iter_mut() {
+            v.material = remap[v.material];
+        }
+        m.materials = keep;
+    }
     let ident = flag(args, "--ident").unwrap_or(default_ident).to_string();
     let author = flag(args, "--author").unwrap_or("Everios96").to_string();
     let opts = BuildOpts { ident: ident.clone(), author, scale: 1.0, collection: 26, skin: None };
@@ -396,6 +446,30 @@ pub fn arch_cmd(store: &mut crate::store::DataStore, args: &[String]) -> R<()> {
             [p[0] + d[0] / l * offset, p[1] + d[1] / l * offset]
         })
         .collect();
+    // handedness: the beam frame is left-handed (t × r = −u); the target frame must be too,
+    // or the map is a reflection. Reverse the traversal when the contour runs the other way.
+    let path: Vec<[f32; 2]> = {
+        let mut sgn = 0.0f32;
+        for w in path.windows(2) {
+            let (tz, ty) = (w[1][0] - w[0][0], w[1][1] - w[0][1]);
+            let l = (tz * tz + ty * ty).sqrt().max(1e-6);
+            let (tz, ty) = (tz / l, ty / l);
+            let (mut nz, mut ny) = (-ty, tz);
+            let mid = [(w[0][0] + w[1][0]) / 2.0, (w[0][1] + w[1][1]) / 2.0];
+            if nz * (centroid[0] - mid[0]) + ny * (centroid[1] - mid[1]) > 0.0 {
+                nz = -nz;
+                ny = -ny;
+            }
+            sgn += ty * nz - tz * ny;
+        }
+        if sgn < 0.0 {
+            let mut r = path.clone();
+            r.reverse();
+            r
+        } else {
+            path
+        }
+    };
     // arc lengths
     let mut cum = vec![0.0f32];
     for w in path.windows(2) {
@@ -443,11 +517,17 @@ pub fn arch_cmd(store: &mut crate::store::DataStore, args: &[String]) -> R<()> {
         let (pt, t, nrm) = at(s);
         // the beam's height (y, 0..2) goes along −x, out of the face; radial offset along the outward normal
         let pos = [face_x - y, pt[1] + d * nrm[1], pt[0] + d * nrm[0]];
-        // source frame at θ: tangent (−sinθ, 0, −cosθ) for increasing s, radial (cosθ, 0, −sinθ), up (0,1,0);
-        // target: tangent (0, t[1], t[0]), radial (0, nrm[1], nrm[0]), up (−1, 0, 0). R = T_target · T_source^T
+        // source frame at θ: s grows as θ FALLS (s = (π/2 − θ)·R), so the tangent for
+        // increasing s is d(p)/d(−θ) = (sinθ, 0, cosθ) — the first build had it negated, a
+        // reflection: the arch came out mirror-imaged with its skin inside out (Everios96
+        // 16:09 "the entire outside texture is flipped"); radial (cosθ, 0, −sinθ), up (0,1,0).
+        // target: tangent (0, t[1], t[0]), radial (0, nrm[1], nrm[0]), up (−1, 0, 0).
+        // R = T_target · T_source^T; both frames are left-handed (t × r = −u), so R is a
+        // proper rotation when the contour runs so that t[1]·nrm[0] − t[0]·nrm[1] = +1
+        // (checked on the TrackWallArch contour: +1).
         let (sn, cs) = theta.sin_cos();
         let a = [[0.0, 0.0, -1.0], [t[1], nrm[1], 0.0], [t[0], nrm[0], 0.0]];
-        let b = [[-sn, 0.0, -cs], [cs, 0.0, -sn], [0.0, 1.0, 0.0]];
+        let b = [[sn, 0.0, cs], [cs, 0.0, -sn], [0.0, 1.0, 0.0]];
         if no_rot {
             (pos, [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
         } else {
