@@ -5822,6 +5822,11 @@ fn main() {
                 std::fs::write(&d, s).unwrap_or_else(|e| die(format!("{d}: {e}")));
             }
         }
+        // csgen --out DIR [--paks-label TEXT]: Hugo's generated C# (Blocks.g.cs, Items.g.cs) from the loaded paks
+        "csgen" => {
+            let mut store = open(&a);
+            mapgeom::csgen::cmd(&mut store, &a.rest, &|r, k| flag(r, k)).unwrap_or_else(die);
+        }
         // cutout-audit --items DIR --maps M.. [--out-tsv F] [--out-md F]: Hugo's robustness check of the cutout set
         "cutout-audit" => {
             let mut store = open(&a);

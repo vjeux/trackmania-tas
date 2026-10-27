@@ -90,6 +90,7 @@ pub mod checkpoint_catalogue;
 pub mod cutout_outline;
 pub mod cutout_audit;
 pub mod stadium_grass;
+pub mod csgen;
 pub mod outer_ring;
 pub mod floor_merge;
 pub mod floor_tiles;
