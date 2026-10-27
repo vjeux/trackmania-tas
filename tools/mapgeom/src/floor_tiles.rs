@@ -243,9 +243,19 @@ pub fn grouped_lightmap(model: &crate::crystal_model::CPlugCrystal) -> crate::cr
 /// Build a PureFloor-recipe crystal item: the template's bytes with its Geometry layer = `mesh` (visible, NOT
 /// collidable), its Trigger layer = `trigger` (or removed, and the item's WaypointType set to None), material 0 =
 /// plastic (1, 0.1, 0.1) or the friend's glass, the ident/author = `ident`, the ident collection = `collection`.
+static PURE_LINK_OVERRIDE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+/// A game material link (`Stadium\Media\Material\X`) in place of the modeler's CustomGlass / CustomPlastic for the
+/// crystal's slot 0 — no TargetColor constants then (a game material carries its own look). `None` restores.
+pub fn set_pure_material_link(link: Option<&str>) {
+    *PURE_LINK_OVERRIDE.lock().unwrap() = link.map(|s| s.to_string());
+}
+
 pub fn build_pure_item(ident: &str, collection: u32, mesh: &crate::crystal::CrystalMesh, trigger: Option<&crate::crystal::CrystalMesh>) -> Result<Vec<u8>, String> {
     let template = pure_template()?;
-    let (link, rgb) = if pure_glass() { (PURE_GLASS_LINK, PURE_GLASS_RGB) } else { (PURE_PLASTIC_LINK, PURE_PLASTIC_RGB) };
+    let (mut link, rgb) = if pure_glass() { (PURE_GLASS_LINK.to_string(), PURE_GLASS_RGB) } else { (PURE_PLASTIC_LINK.to_string(), PURE_PLASTIC_RGB) };
+    let override_link = PURE_LINK_OVERRIDE.lock().unwrap().clone();
+    if let Some(l) = &override_link { link = l.clone(); }
+    let link = link.as_str();
     // the friend's material table: slot 0 the plate, slot 1 `ERROR_MAT` (physics 0) for the trigger layer
     let mut specs = vec![crate::crystal::MaterialSpec { link: link.to_string(), physics: PURE_PHYSICS }];
     if trigger.is_some() {
@@ -258,9 +268,12 @@ pub fn build_pure_item(ident: &str, collection: u32, mesh: &crate::crystal::Crys
     let n_mat = it.model.materials.len();
     for (mi, m) in it.model.materials.iter_mut().enumerate() {
         if let Some(main) = m.node.as_mut().and_then(|n| n.inline.as_mut()).and_then(|inst| inst.main.as_mut()) {
-            if mi == 0 {
+            if mi == 0 && override_link.is_none() {
                 main.csts = vec![crate::crystal_model::Cst { u01: crate::crystal_model::Id::Str("TargetColor".into()), u02: crate::crystal_model::Id::Str("Real".into()), u03: 3 }];
                 main.color = rgb.iter().map(|c| c.to_bits() as i32).collect();
+            } else if mi == 0 {
+                main.csts.clear();
+                main.color.clear();
             } else {
                 // the friend's ERROR_MAT slot carries no constants
                 main.csts.clear();
@@ -511,16 +524,25 @@ pub fn build_pillar_sleeve(ident: &str, collection: u32, shaft: [f32; 4], pad: f
 /// y 0..7.18, z 15.579..16.416 (the pak's ExpandableCheckpoint_Trigger slab): glass caps on the two big faces only,
 /// trigger prism = the full slab, WaypointType Checkpoint.
 pub fn build_expandable_checkpoint(ident: &str, collection: u32) -> Result<(Vec<u8>, usize), String> {
+    build_expandable_checkpoint_ext(ident, collection, false)
+}
+
+/// `all_faces`: the full 6-face box (the pane's exact 24-vertex form) instead of the two caps.
+pub fn build_expandable_checkpoint_ext(ident: &str, collection: u32, all_faces: bool) -> Result<(Vec<u8>, usize), String> {
     let (x0, x1, y0, y1, z0, z1) = (0.0f32, 32.0f32, 0.0f32, 7.18f32, 15.579172f32, 16.416002f32);
     let b: Body = [[x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0], [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]];
     let mut trig = crate::crystal::CrystalMesh::default();
     body_faces(&mut trig, &b, 0);
     let mut geo = crate::crystal::CrystalMesh::default();
-    // (p1−p0)×(p2−p0) = the outward normal: −z for the z0 cap, +z for the z1 cap
-    for (corners, _n) in [([b[0], b[3], b[2], b[1]], -1.0f32), ([b[4], b[5], b[6], b[7]], 1.0f32)] {
-        let base = geo.positions.len() as u32;
-        geo.positions.extend_from_slice(&corners);
-        geo.faces.push(crate::crystal::Face { verts: (0..4).map(|k| base + k).collect(), uvs: vec![[0.0, 0.0], [0.0, 2.0], [8.0, 2.0], [8.0, 0.0]], material: 0 });
+    if all_faces {
+        body_faces(&mut geo, &b, 0);
+    } else {
+        // (p1−p0)×(p2−p0) = the outward normal: −z for the z0 cap, +z for the z1 cap
+        for (corners, _n) in [([b[0], b[3], b[2], b[1]], -1.0f32), ([b[4], b[5], b[6], b[7]], 1.0f32)] {
+            let base = geo.positions.len() as u32;
+            geo.positions.extend_from_slice(&corners);
+            geo.faces.push(crate::crystal::Face { verts: (0..4).map(|k| base + k).collect(), uvs: vec![[0.0, 0.0], [0.0, 2.0], [8.0, 2.0], [8.0, 0.0]], material: 0 });
+        }
     }
     let was_glass = pure_glass();
     set_pure_glass(true);

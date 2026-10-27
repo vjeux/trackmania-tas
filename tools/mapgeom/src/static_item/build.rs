@@ -4301,6 +4301,11 @@ pub fn card_uv1_legacy() -> bool {
 /// `ExpandableCheckpoint_Trigger.Shape` slab (x 0..32, y 0..7.18, z 15.58..16.42); the waypoint type is `wtype`.
 /// Returns (item bytes, material swaps as "from → to", visuals kept, visuals dropped).
 pub fn expandable_item(store: &mut crate::store::DataStore, ident: &str, collection: u32, ground: bool, wtype: i32) -> R<(Vec<u8>, Vec<String>, usize, usize)> {
+    expandable_item_ext(store, ident, collection, ground, wtype, None)
+}
+
+/// `pane_material`: the pane's material stem instead of the kind's (`RaceTriggerFXFinish` = the red control).
+pub fn expandable_item_ext(store: &mut crate::store::DataStore, ident: &str, collection: u32, ground: bool, wtype: i32, pane_material: Option<&str>) -> R<(Vec<u8>, Vec<String>, usize, usize)> {
     let prefab = if ground { "Stadium\\Media\\Prefab\\Gate\\ExpandableFinish_Ground.Prefab.Gbx" } else { "Stadium\\Media\\Prefab\\Gate\\ExpandableFinish_Air.Prefab.Gbx" };
     let mut m = Merged::default();
     add_prefab(store, prefab, &IDENTITY, 1.0, &mut m, 0)?;
@@ -4317,11 +4322,11 @@ pub fn expandable_item(store: &mut crate::store::DataStore, ident: &str, collect
         m.surf_triangles.clear();
         m.surf_ids.clear();
     }
-    let target = match wtype {
+    let target = pane_material.unwrap_or(match wtype {
         WP_CHECKPOINT_T => "RaceTriggerFXCheckpoint",
         4 => "RaceTriggerFXMultilap",
         _ => "RaceTriggerFXFinish",
-    };
+    });
     let mut swaps = Vec::new();
     for mat in &mut m.materials {
         let Some(main) = mat.main.as_mut() else { continue };

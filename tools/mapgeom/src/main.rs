@@ -1468,6 +1468,8 @@ fn main() {
                             format!("[{:.3},{:.3}]..[{:.3},{:.3}] {} distinct", lo[0], lo[1], hi[0], hi[1], q.len())
                         };
                         let same = matches!((&uv0, &uv1), (Some(a), Some(b)) if a == b);
+                        let colours: Vec<String> = s.decls.iter().zip(s.elems.iter()).find(|(d, _)| d.name() == mapgeom::static_item::vstream::N_COLOR0).and_then(|(_, e)| if let Elem::Word(w) = e { Some(w) } else { None }).map(|w| { let mut q = w.clone(); q.sort(); q.dedup(); q.iter().take(6).map(|c| format!("{c:08X}")).collect() }).unwrap_or_default();
+                        println!("  visual {vi}: stream v{} flags {:#x} compress_local3d {:?} color0 distinct {:?}", s.version, s.flags, s.compress_local3d, colours);
                         println!("  visual {vi}: {} verts, decl names {:?}, uv0 {}, uv1 {}{}", s.count, names, uv0.as_ref().map(&stats).unwrap_or_else(|| "-".into()), uv1.as_ref().map(&stats).unwrap_or_else(|| "-".into()), if same { " (uv1 == uv0)" } else { "" });
                     }
                 }
@@ -5996,6 +5998,18 @@ fn main() {
         //   CheckpointExpandable v2 — the GateExpandableFinish segment's OWN prefab geometry (Air pane; --ground = pane +
         //   foot trims) as a static item in the block frame, the pane's FX material swapped for the kind's, the pak's
         //   trigger slab, waypoint type by kind
+        // test-map --source MAP --out OUT --stack X=FILE.Item.Gbx[,…] [--start CX,CZ] [--finish CX,CZ] [--z CZ] [--height N]
+        //   [--name NAME]: the A/B test map (mapgeom::test_map)
+        "test-map" => {
+            let source = flag(&a.rest, "--source").unwrap_or_else(|| die("test-map: --source MAP".into()));
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("test-map: --out OUT.Map.Gbx".into()));
+            let pair = |k: &str, d: (i32, i32)| -> (i32, i32) { flag(&a.rest, k).and_then(|v| { let p: Vec<i32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect(); if p.len() == 2 { Some((p[0], p[1])) } else { None } }).unwrap_or(d) };
+            let stacks: Vec<(i32, String)> = flag(&a.rest, "--stack").unwrap_or_default().split(',').filter(|s| !s.is_empty()).map(|s| { let (x, f) = s.split_once('=').unwrap_or_else(|| die(format!("--stack {s}: X=FILE"))); (x.trim().parse::<i32>().unwrap_or_else(|_| die(format!("--stack {s}: X=FILE"))), f.trim().to_string()) }).collect();
+            if stacks.is_empty() { die::<()>("test-map: --stack X=FILE.Item.Gbx[,…]".into()); }
+            let opts = mapgeom::test_map::TestMapOpts { source, out: out.clone(), stacks, start: pair("--start", (24, 8)), finish: pair("--finish", (24, 34)), z: flag(&a.rest, "--z").and_then(|v| v.parse().ok()).unwrap_or(20), height: flag(&a.rest, "--height").and_then(|v| v.parse().ok()).unwrap_or(3), name: flag(&a.rest, "--name").unwrap_or_else(|| "Expandable Test".into()) };
+            for line in mapgeom::test_map::build(&opts).unwrap_or_else(die) { println!("{line}"); }
+            println!("wrote {out}");
+        }
         "expandable-item" => {
             let mut store = open(&a);
             let out = flag(&a.rest, "--out").unwrap_or_else(|| die("expandable-item: --out".into()));
@@ -6003,7 +6017,8 @@ fn main() {
             let ground = a.rest.iter().any(|x| x == "--ground");
             let wtype = match flag(&a.rest, "--waypoint").unwrap_or_else(|| "checkpoint".into()).to_ascii_lowercase().as_str() { "finish" => 1, "multilap" | "startfinish" => 4, "start" => 0, _ => 2 };
             let ident = std::path::Path::new(&out).file_name().unwrap().to_string_lossy().to_string();
-            let (bytes, swaps, kept, dropped) = mapgeom::static_item::build::expandable_item(&mut store, &ident, collection, ground, wtype).unwrap_or_else(die);
+            let pane_material = flag(&a.rest, "--pane-material");
+            let (bytes, swaps, kept, dropped) = mapgeom::static_item::build::expandable_item_ext(&mut store, &ident, collection, ground, wtype, pane_material.as_deref()).unwrap_or_else(die);
             std::fs::write(&out, &bytes).unwrap_or_else(|e| die(format!("{out}: {e}")));
             println!("wrote {out}: {} bytes ({} variant: {kept} visuals kept, {dropped} dropped; waypoint type {wtype}; trigger = ExpandableCheckpoint_Trigger.Shape)", bytes.len(), if ground { "Ground" } else { "Air" });
             for s in &swaps { println!("  material swap: {s}"); }
@@ -6012,9 +6027,13 @@ fn main() {
             let out = flag(&a.rest, "--out").unwrap_or_else(|| die("expandable-checkpoint: --out".into()));
             let collection: u32 = flag(&a.rest, "--collection").and_then(|v| v.parse().ok()).unwrap_or(26);
             let ident = std::path::Path::new(&out).file_name().unwrap().to_string_lossy().to_string();
-            let (bytes, nf) = mapgeom::floor_tiles::build_expandable_checkpoint(&ident, collection).unwrap_or_else(die);
+            // --material STEM: a game material (Stadium\Media\Material\STEM) on the crystal instead of CustomGlass; --box: all six faces
+            if let Some(stem) = flag(&a.rest, "--material") { mapgeom::floor_tiles::set_pure_material_link(Some(&format!("Stadium\\Media\\Material\\{stem}"))); }
+            let all_faces = a.rest.iter().any(|x| x == "--box");
+            let (bytes, nf) = mapgeom::floor_tiles::build_expandable_checkpoint_ext(&ident, collection, all_faces).unwrap_or_else(die);
+            mapgeom::floor_tiles::set_pure_material_link(None);
             std::fs::write(&out, &bytes).unwrap_or_else(|e| die(format!("{out}: {e}")));
-            println!("wrote {out}: {} bytes (pane x 0..32 × y 0..7.18 × z 15.58..16.42, 2 glass caps, {nf} trigger faces, WaypointType Checkpoint)", bytes.len());
+            println!("wrote {out}: {} bytes (pane x 0..32 × y 0..7.18 × z 15.58..16.42, {} faces, {nf} trigger faces, WaypointType Checkpoint)", bytes.len(), if all_faces { "6 box" } else { "2 cap" });
         }
         "pillar-sleeve" => {
             let out = flag(&a.rest, "--out").unwrap_or_else(|| die("pillar-sleeve: --out".into()));
@@ -8529,9 +8548,10 @@ fn describe(n: &Node) -> String {
         ),
         Node::VertexStream(v) => {
             format!(
-                "CPlugVertexStream, {} positions, {} normals",
+                "CPlugVertexStream, {} positions, {} normals, decls [{}]",
                 v.positions.len(),
-                v.normals.len()
+                v.normals.len(),
+                v.decls.iter().map(|(n, t)| format!("n{n} t{t}")).collect::<Vec<_>>().join(", ")
             )
         }
         Node::Crystal(c) => format!(
