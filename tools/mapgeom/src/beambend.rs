@@ -61,10 +61,10 @@ fn polar(p: [f32; 3]) -> (f32, f32, f32) {
 /// compacting the vertex streams; visuals left empty go.
 fn retain_triangles(m: &mut Merged, keep: &dyn Fn([f32; 3]) -> bool) {
     let mut dropped_meta = 0usize;
+    let mut tangent_note: Vec<String> = Vec::new();
     for mv in &mut m.visuals {
         let v = &mut mv.visual;
         let Some(main) = v.main.as_mut() else { continue };
-        let main_flags = main.flags();
         let Some(Node::VertexStream(stream)) = main.vertex_streams.first_mut().and_then(|r| r.inline.as_deref_mut()) else { continue };
         let compress = stream.compress_local3d.unwrap_or(false);
         let positions: Vec<[f32; 3]> = stream
@@ -138,14 +138,19 @@ fn retain_triangles(m: &mut Merged, keep: &dyn Fn([f32; 3]) -> bool) {
         v.sub_visuals.clear();
         v.splits.clear();
         if let Some((a, b)) = v.tangents.as_mut() {
-            let per = (((!(main_flags >> 17)) & 8) | 4) as usize;
-            let pick = |t: &Vec<u8>| -> Vec<u8> {
-                if t.len() / per.max(1) != positions.len() {
+            // the two arrays are per-vertex; their stride is whatever the source wrote
+            // (bytes / vertex count), never guessed from the flags
+            let n = positions.len().max(1);
+            let mut pick = |t: &Vec<u8>| -> Vec<u8> {
+                if t.is_empty() || t.len() % n != 0 {
+                    tangent_note.push(format!("tangent array of {} bytes does not divide by {n} vertices: left as is", t.len()));
                     return t.clone();
                 }
+                let per = t.len() / n;
                 order.iter().flat_map(|&i| t[i * per..(i + 1) * per].to_vec()).collect()
             };
             let (na, nb) = (pick(a), pick(b));
+            tangent_note.push(format!("tangents {}+{} B / {n} verts compacted to {}+{} B", a.len(), b.len(), na.len(), nb.len()));
             *a = na;
             *b = nb;
         }
@@ -177,7 +182,10 @@ fn retain_triangles(m: &mut Merged, keep: &dyn Fn([f32; 3]) -> bool) {
     // an emptied visual (a material group that was all junction) would fail the checker
     m.visuals.retain(|mv| mv.visual.index_buffer.as_ref().map(|ib| !ib.indices.is_empty()).unwrap_or(false));
     if dropped_meta > 0 {
-        m.notes.push(format!("beam: {dropped_meta} visual(s) had sub-visual/split/tangent metadata, dropped"));
+        m.notes.push(format!("beam: {dropped_meta} visual(s) had sub-visual/split metadata, dropped"));
+    }
+    for t in tangent_note.into_iter().take(3) {
+        m.notes.push(format!("beam: {t}"));
     }
 }
 
@@ -239,11 +247,15 @@ fn remap_frames(m: &mut Merged, f: &dyn Fn([f32; 3]) -> ([f32; 3], [[f32; 3]; 3]
 fn source_beam(store: &mut crate::store::DataStore, prefab: &str, keep_ends: bool, copies: &[f32]) -> R<Merged> {
     let mut m = Merged::default();
     for a in copies {
-        m.parts = 0; // every copy is "part 1" again: the lightmap/part bookkeeping is per source
         add_prefab(store, prefab, &rot_about_src(*a), 1.0, &mut m, 0)?;
     }
     let before: usize = m.visuals.iter().filter_map(|v| v.visual.index_buffer.as_ref()).map(|ib| ib.indices.len() / 3).sum();
+    // BEAM_KEEP_ALL=1: no filtering at all (the pipeline bisect of 2026-10-27)
+    let keep_all = std::env::var("BEAM_KEEP_ALL").map(|v| v == "1").unwrap_or(false);
     retain_triangles(&mut m, &|c| {
+        if keep_all {
+            return true;
+        }
         let (_, d, _) = polar(c);
         d > -2.0 && (keep_ends || d < 1.2)
     });
@@ -281,7 +293,12 @@ fn write_item(m: &mut Merged, args: &[String], out: &str, default_ident: &str, g
     let ident = flag(args, "--ident").unwrap_or(default_ident).to_string();
     let author = flag(args, "--author").unwrap_or("Everios96").to_string();
     let opts = BuildOpts { ident: ident.clone(), author, scale: 1.0, collection: 26, skin: None };
-    crate::static_item::assemble::GRID_SNAP.with(|g| g.set(Some(grid)));
+    // BEAM_NO_GRID=1: the item default placement (the pipeline bisect)
+    if std::env::var("BEAM_NO_GRID").map(|v| v == "1").unwrap_or(false) {
+        crate::static_item::assemble::GRID_SNAP.with(|g| g.set(None));
+    } else {
+        crate::static_item::assemble::GRID_SNAP.with(|g| g.set(Some(grid)));
+    }
     let f = assemble(m, &opts)?;
     crate::static_item::assemble::GRID_SNAP.with(|g| g.set(None));
     let bytes = crate::static_item::write_file(&f);
@@ -309,11 +326,16 @@ pub fn ring_cmd(store: &mut crate::store::DataStore, args: &[String]) -> R<()> {
     let copies: Vec<f32> = (0..quarters).map(|q| q as f32 * std::f32::consts::FRAC_PI_2).collect();
     let mut m = source_beam(store, prefab, keep_ends, &copies)?;
     let ident3 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-    remap_frames(&mut m, &|p| {
-        let (theta, d, y) = polar(p);
-        let r = radius + d;
-        ([cx + r * theta.cos(), y, cz - r * theta.sin()], ident3)
-    });
+    // BEAM_NO_BEND=1: geometry left where the source put it (the pipeline bisect)
+    if std::env::var("BEAM_NO_BEND").map(|v| v == "1").unwrap_or(false) {
+        m.notes.push("ring: NO BEND (bisect)".into());
+    } else {
+        remap_frames(&mut m, &|p| {
+            let (theta, d, y) = polar(p);
+            let r = radius + d;
+            ([cx + r * theta.cos(), y, cz - r * theta.sin()], ident3)
+        });
+    }
     m.notes.push(format!("ring: {quarters} quarters of {prefab} bent from radius {SRC_R} to {radius} m about ({cx}, {cz})"));
     write_item(&mut m, args, out, "StructureSupportRing1x1.Item.Gbx", (32.0, 8.0))
 }
@@ -327,7 +349,7 @@ pub fn arch_cmd(store: &mut crate::store::DataStore, args: &[String]) -> R<()> {
     let prefab = flag(args, "--prefab").unwrap_or(SRC_PREFAB);
     let text = std::fs::read_to_string(contour_path).map_err(|e| format!("{contour_path}: {e}"))?;
     // minimal JSON: [[z, y], [z, y], …]
-    let nums: Vec<f32> = text.split(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-')).filter(|s| !s.is_empty()).filter_map(|s| s.parse().ok()).collect();
+    let nums: Vec<f32> = text.split(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-' || c == 'e' || c == 'E' || c == '+')).filter(|s| !s.is_empty()).filter_map(|s| s.parse().ok()).collect();
     if nums.len() < 6 || nums.len() % 2 != 0 {
         return Err(format!("{contour_path}: want an even list of numbers, got {}", nums.len()));
     }
@@ -393,6 +415,14 @@ pub fn arch_cmd(store: &mut crate::store::DataStore, args: &[String]) -> R<()> {
     let copies: Vec<f32> = (0..n_q).map(|q| -(q as f32) * std::f32::consts::FRAC_PI_2).collect();
     let mut m = source_beam(store, prefab, false, &copies)?;
     let src_len = n_q as f32 * quarter_len;
+    // BEAM_NO_ROT=1: positions bent, normals/tangents left (the bisect); BEAM_NO_BEND=1: nothing moved
+    let no_rot = std::env::var("BEAM_NO_ROT").map(|v| v == "1").unwrap_or(false);
+    if std::env::var("BEAM_NO_BEND").map(|v| v == "1").unwrap_or(false) {
+        m.notes.push("arch: NO BEND (bisect)".into());
+        let mut all = m;
+        all.notes.push(format!("arch: {} contour points, length {total:.1} m, {n_q} quarter(s) unbent", raw.len()));
+        return write_item(&mut all, args, out, "StructureSupportArch1x1.Item.Gbx", (32.0, 8.0));
+    }
     remap_frames(&mut m, &|p| {
         let (theta, d, y) = polar(p);
         let s_src = (std::f32::consts::FRAC_PI_2 - theta) * SRC_R;
@@ -405,7 +435,11 @@ pub fn arch_cmd(store: &mut crate::store::DataStore, args: &[String]) -> R<()> {
         let (sn, cs) = theta.sin_cos();
         let a = [[0.0, 0.0, -1.0], [t[1], nrm[1], 0.0], [t[0], nrm[0], 0.0]];
         let b = [[-sn, 0.0, -cs], [cs, 0.0, -sn], [0.0, 1.0, 0.0]];
-        (pos, mat_mul(&a, &b))
+        if no_rot {
+            (pos, [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+        } else {
+            (pos, mat_mul(&a, &b))
+        }
     });
     let mut all = m;
     all.notes.push(format!("arch: {} contour points, length {total:.1} m (+{offset} m outward), face x {face_x}, {n_q} quarter(s) of {prefab} ({src_len:.1} m) stretched ×{:.2}", raw.len(), total / src_len));
