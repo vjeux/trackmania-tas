@@ -14,6 +14,9 @@ pub struct TestMapOpts {
     pub stacks: Vec<(i32, String)>,
     /// single placements: (file, cx, dy above the grass row, cz)
     pub items: Vec<(String, i32, i32, i32)>,
+    /// Nadeo pak items by ident (not embedded), posed at the cell's road-deck centre: pos = corner + (16, 2, 16),
+    /// yaw 0 (the gate items' origin = the arch foot centre on the deck; Fall 01/06/12: deck = cell floor + 2)
+    pub native_items: Vec<(String, i32, i32, i32)>,
     /// extra grid blocks: (name, cx, dy above the grass row, cz, dir)
     pub blocks: Vec<(String, i32, i32, i32, u8)>,
     pub start: (i32, i32),
@@ -68,6 +71,10 @@ pub fn build(opts: &TestMapOpts) -> Result<Vec<String>, String> {
     for (file, cx, dy, cz) in &opts.items {
         places.push((file.clone(), *cx, grass_row + dy, *cz));
     }
+    let n_embedded = places.len();
+    for (ident, cx, dy, cz) in &opts.native_items {
+        places.push((ident.clone(), *cx, grass_row + dy, *cz));
+    }
     // 3. the items embedded (merged with whatever the source embeds, in order)
     let mut idents: Vec<String> = Vec::new();
     {
@@ -76,7 +83,11 @@ pub fn build(opts: &TestMapOpts) -> Result<Vec<String>, String> {
         let mut added: Vec<(String, Vec<u8>)> = Vec::new();
         let mut manifest = old_rows.clone();
         let mut seen: HashSet<String> = HashSet::new();
-        for (file, _, _, _) in &places {
+        for (pi, (file, _, _, _)) in places.iter().enumerate() {
+            if pi >= n_embedded {
+                idents.push(file.clone());
+                continue;
+            }
             let ident = Path::new(file).file_name().map(|s| s.to_string_lossy().to_string()).ok_or_else(|| format!("{file}: no file name"))?;
             idents.push(ident.clone());
             if !seen.insert(ident.clone()) {
@@ -104,7 +115,7 @@ pub fn build(opts: &TestMapOpts) -> Result<Vec<String>, String> {
         let mut m = MapFile::try_load(out)?;
         for (i, _) in places.iter().enumerate() {
             m.set_item_model(i, &idents[i]);
-            m.set_item_author(i, &idents[i]);
+            m.set_item_author(i, if i >= n_embedded { "Nadeo" } else { &idents[i] });
             m.set_item_collection(i, collection);
         }
         m.write_to(out).map_err(|e| e.to_string())?;
@@ -112,7 +123,9 @@ pub fn build(opts: &TestMapOpts) -> Result<Vec<String>, String> {
     {
         let mut m = MapFile::try_load(out)?;
         for (i, (_, cx, cy, cz)) in places.iter().enumerate() {
-            let pos = [*cx as f32 * 32.0, *cy as f32 * 8.0 + ground, *cz as f32 * 32.0];
+            let native = i >= n_embedded;
+            let off = if native { [16.0, 2.0, 16.0] } else { [0.0; 3] };
+            let pos = [*cx as f32 * 32.0 + off[0], *cy as f32 * 8.0 + ground + off[1], *cz as f32 * 32.0 + off[2]];
             let it = m.items[i].clone();
             if it.skin_region.is_some() || it.flags & 4 != 0 {
                 m.set_item_skin(i, None);

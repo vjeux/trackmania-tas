@@ -4389,6 +4389,26 @@ pub fn frame_item(store: &mut crate::store::DataStore, prefab: &str, at: &Xform,
 /// InStructurePillar variant, a pillar continuing above). The spawn = the block info's (16, 1.7, 11.2) facing +z —
 /// the entity-model form the game respawns at (no NPlugTrigger_SWaypoint, so no NoRespawn).
 pub fn ring_item(store: &mut crate::store::DataStore, ident: &str, collection: u32, fixation: bool, top_fixation: bool) -> R<(Vec<u8>, usize, usize)> {
+    ring_item_ext(store, ident, collection, fixation, top_fixation, RingForm::EntityModel)
+}
+
+/// How the ring item's waypoint is written (Hugo's animation test, 10-28).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RingForm {
+    /// CGameCommonItemEntityModel + TriggerShape + spawn iso (the Fall carriers' proven form)
+    EntityModel,
+    /// Nadeo's gate-item prefab layout: SWaypoint (NoRespawn 0) + CPlugSpawnModel at the spawn (entity pos) + a
+    /// CPlugEditorHelper with a null helper ref
+    PrefabHelper,
+    /// the same without the editor-helper companion
+    PrefabNoHelper,
+    /// the spawn carried in the CPlugSpawnModel's Iso4 (entity at 0) — the pack's own encoding — with the null helper
+    PrefabIsoHelper,
+    /// the entity-model form with Nadeo's current item chunk versions (0x2E00201F v13)
+    EntityModelV13,
+}
+
+pub fn ring_item_ext(store: &mut crate::store::DataStore, ident: &str, collection: u32, fixation: bool, top_fixation: bool, form: RingForm) -> R<(Vec<u8>, usize, usize)> {
     let mut m = Merged::default();
     add_prefab(store, "Stadium\\Media\\Prefab\\Gate\\Checkpoint_AirNPB.Prefab.Gbx", &IDENTITY, 1.0, &mut m, 0)?;
     if fixation {
@@ -4407,6 +4427,13 @@ pub fn ring_item(store: &mut crate::store::DataStore, ident: &str, collection: u
     // the GAME's own spawn point (Hugo, 10-28): the GateCheckpoint block info's spawn (16, 1.7, 11.2) facing +z — the
     // road centre 4.8 m before the ring plane
     m.spawn = [16.0, 1.7, 11.2];
+    match form {
+        RingForm::EntityModel => {}
+        RingForm::EntityModelV13 => m.waypoint_chunk_version = Some(13),
+        RingForm::PrefabHelper => { m.prefab_waypoint = true; m.prefab_editor_helper = true; }
+        RingForm::PrefabNoHelper => { m.prefab_waypoint = true; }
+        RingForm::PrefabIsoHelper => { m.prefab_waypoint = true; m.prefab_spawn_iso = true; m.prefab_editor_helper = true; }
+    }
     let tris = m.surf_triangles.len();
     let (bytes, _) = finish_item(m, ident, ident, 1.0, collection)?;
     Ok((bytes, visuals, tris))

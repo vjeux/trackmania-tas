@@ -6007,22 +6007,24 @@ fn main() {
             let stacks: Vec<(i32, String)> = flag(&a.rest, "--stack").unwrap_or_default().split(',').filter(|s| !s.is_empty()).map(|s| { let (x, f) = s.split_once('=').unwrap_or_else(|| die(format!("--stack {s}: X=FILE"))); (x.trim().parse::<i32>().unwrap_or_else(|_| die(format!("--stack {s}: X=FILE"))), f.trim().to_string()) }).collect();
             // --item FILE@cx,dy,cz (repeatable; dy = rows above the grass row); --block NAME@cx,dy,cz[,dir] (repeatable)
             let mut items: Vec<(String, i32, i32, i32)> = Vec::new();
+            // --native-item IDENT@cx,dy,cz: a Nadeo pak item (not embedded) at the cell's deck centre, yaw 0
+            let mut native_items: Vec<(String, i32, i32, i32)> = Vec::new();
             let mut blocks: Vec<(String, i32, i32, i32, u8)> = Vec::new();
             let mut i = 0;
             while i < a.rest.len() {
-                if a.rest[i] == "--item" || a.rest[i] == "--block" {
+                if a.rest[i] == "--item" || a.rest[i] == "--block" || a.rest[i] == "--native-item" {
                     let v = a.rest.get(i + 1).cloned().unwrap_or_default();
                     let (name, coords) = v.split_once('@').unwrap_or_else(|| die(format!("{} {v}: NAME@cx,dy,cz", a.rest[i])));
                     let c: Vec<i32> = coords.split(',').filter_map(|x| x.trim().parse().ok()).collect();
                     if c.len() < 3 { die::<()>(format!("{} {v}: NAME@cx,dy,cz", a.rest[i])); }
-                    if a.rest[i] == "--item" { items.push((name.to_string(), c[0], c[1], c[2])); } else { blocks.push((name.to_string(), c[0], c[1], c[2], c.get(3).copied().unwrap_or(0) as u8)); }
+                    if a.rest[i] == "--item" { items.push((name.to_string(), c[0], c[1], c[2])); } else if a.rest[i] == "--native-item" { native_items.push((name.to_string(), c[0], c[1], c[2])); } else { blocks.push((name.to_string(), c[0], c[1], c[2], c.get(3).copied().unwrap_or(0) as u8)); }
                     i += 2;
                 } else {
                     i += 1;
                 }
             }
             if stacks.is_empty() && items.is_empty() { die::<()>("test-map: --stack X=FILE.Item.Gbx[,…] or --item FILE@cx,dy,cz".into()); }
-            let opts = mapgeom::test_map::TestMapOpts { source, out: out.clone(), stacks, items, blocks, start: pair("--start", (24, 8)), finish: pair("--finish", (24, 34)), course_dy: flag(&a.rest, "--course-dy").and_then(|v| v.parse().ok()).unwrap_or(0), z: flag(&a.rest, "--z").and_then(|v| v.parse().ok()).unwrap_or(20), height: flag(&a.rest, "--height").and_then(|v| v.parse().ok()).unwrap_or(3), name: flag(&a.rest, "--name").unwrap_or_else(|| "Expandable Test".into()) };
+            let opts = mapgeom::test_map::TestMapOpts { source, out: out.clone(), stacks, items, native_items, blocks, start: pair("--start", (24, 8)), finish: pair("--finish", (24, 34)), course_dy: flag(&a.rest, "--course-dy").and_then(|v| v.parse().ok()).unwrap_or(0), z: flag(&a.rest, "--z").and_then(|v| v.parse().ok()).unwrap_or(20), height: flag(&a.rest, "--height").and_then(|v| v.parse().ok()).unwrap_or(3), name: flag(&a.rest, "--name").unwrap_or_else(|| "Expandable Test".into()) };
             for line in mapgeom::test_map::build(&opts).unwrap_or_else(die) { println!("{line}"); }
             println!("wrote {out}");
         }
@@ -6094,6 +6096,21 @@ fn main() {
                 let p = dir.join(name);
                 std::fs::write(&p, &bytes).unwrap_or_else(|e| die(format!("{}: {e}", p.display())));
                 println!("wrote {}: {} bytes ({visuals} visuals, {tris} collision tris, trigger Checkpoint_Trigger.Shape, WaypointType 2, spawn (16, 1.7, 11.2) facing +z)", p.display(), bytes.len());
+            }
+        }
+        // ring-forms --out-dir D: the ring animation test set — P1 prefab form + SSpawn + null editor helper, P2 prefab
+        //   form without the helper, P3 the pack's iso-encoded spawn + helper, P4 entity model with the v13 waypoint chunk
+        "ring-forms" => {
+            let mut store = open(&a);
+            let dir = std::path::PathBuf::from(flag(&a.rest, "--out-dir").unwrap_or_else(|| die("ring-forms: --out-dir D".into())));
+            let collection: u32 = flag(&a.rest, "--collection").and_then(|v| v.parse().ok()).unwrap_or(26);
+            std::fs::create_dir_all(&dir).unwrap_or_else(|e| die(e.to_string()));
+            use mapgeom::static_item::build::RingForm;
+            for (name, form) in [("CheckpointRingP1.Item.Gbx", RingForm::PrefabHelper), ("CheckpointRingP2.Item.Gbx", RingForm::PrefabNoHelper), ("CheckpointRingP3.Item.Gbx", RingForm::PrefabIsoHelper), ("CheckpointRingP4.Item.Gbx", RingForm::EntityModelV13)] {
+                let (bytes, visuals, tris) = mapgeom::static_item::build::ring_item_ext(&mut store, name, collection, true, false, form).unwrap_or_else(|e| die(format!("{name}: {e}")));
+                let p = dir.join(name);
+                std::fs::write(&p, &bytes).unwrap_or_else(|e| die(format!("{}: {e}", p.display())));
+                println!("wrote {}: {} bytes ({visuals} visuals, {tris} collision tris, form {form:?})", p.display(), bytes.len());
             }
         }
         "expandable-item" => {

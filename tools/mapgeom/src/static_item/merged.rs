@@ -121,6 +121,15 @@ pub struct Merged {
     /// Written as the pack's own prefab layout, the only item form that
     /// carries the flag (assemble.rs).
     pub no_respawn: bool,
+    /// Hugo's ring animation test (10-28): write the waypoint in the PREFAB form even when it respawns — Nadeo's gate
+    /// item layout: static entity, then NPlugTrigger_SWaypoint (NoRespawn = `no_respawn`), CPlugSpawnModel at the spawn
+    /// (`prefab_spawn_iso`: the translation in the node's Iso4 with the entity at 0 — the pack's form — else in the
+    /// entity pos), then a CPlugEditorHelper companion with a NULL helper ref when `prefab_editor_helper`.
+    pub prefab_waypoint: bool,
+    pub prefab_spawn_iso: bool,
+    pub prefab_editor_helper: bool,
+    /// The item's 0x2E00201F waypoint chunk version (12 = ours since Sept; 13 = Nadeo's current, no node ref).
+    pub waypoint_chunk_version: Option<u32>,
     /// Things skipped, for the report.
     pub notes: Vec<String>,
     /// The prefab's procedural vegetation entities (`.VegetTreeModel.Gbx`

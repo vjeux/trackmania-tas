@@ -379,7 +379,7 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
     // its own origin, beside the ring (Argentina 21, 2026-09-09). A finish
     // (GateFinish, GateExpandableFinish: NoRespawn too) keeps the entity-model
     // form — nobody respawns at a finish, and the form is the proven one.
-    let no_respawn_wp = m.no_respawn && m.trigger.is_some() && m.waypoint_type == Some(2);
+    let no_respawn_wp = (m.no_respawn || m.prefab_waypoint) && m.trigger.is_some() && m.waypoint_type == Some(2);
     let prefab_form = !m.dyna.is_empty() || m.special.is_some() || !m.fx.is_empty() || no_respawn_wp;
     SHARED_MATS.with(|s| s.borrow_mut().clear());
     let mut next = if !prefab_form { 4i32 } else { 2i32 };
@@ -556,7 +556,7 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
         // (chunk 0x0917A000 v3: Iso4, then 24 bytes 0,0,0,0,-1.0,0; FACADE).
         if no_respawn_wp {
             let wi = next_index(&mut next);
-            let wp = super::WaypointTrigger { version: 1, wtype: m.waypoint_type.unwrap_or(2), shape: trigger.clone(), no_respawn: 1 };
+            let wp = super::WaypointTrigger { version: 1, wtype: m.waypoint_type.unwrap_or(2), shape: trigger.clone(), no_respawn: if m.no_respawn { 1 } else { 0 } };
             ents.push(super::prefab::Entity { model: inline(wi, Node::WaypointTrigger(wp)), rot: [0.0, 0.0, 0.0, 1.0], pos: [0.0; 3], params_id: -1, params: Vec::new(), u01: Vec::new() });
             // TINY_RING_SPAWN=1 opts IN. The SSpawn entity CRASHES THE CLIENT at map
             // load (2026-09-10, startcheck bisect on Summer 15: every build with
@@ -575,7 +575,11 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
             // TINY_RING_SPAWN=1: spawn in the ENTITY pos (our first form); =iso: the pack's
             // form, entity at 0 and the Iso4 carrying the spawn; =1nobody / =isonobody: the
             // same without the 0x0917B000 companion (the bisect of 2026-09-11)
-            let ring_mode = std::env::var("TINY_RING_SPAWN").unwrap_or_default();
+            // the companion's 8-byte body is (version 0, NODE REF) — in Nadeo's gate items the ref names the
+            // `*_Helper.Prefab.Gbx` of the ref table (14 / 11 / 26 / 5 = that file's node index). Sept's crash: our
+            // companion pointed the ref at an arbitrary node of our own item (0, then 11). A NULL ref (-1) is the
+            // safe equivalent; `prefab_waypoint` writes that form.
+            let ring_mode = if m.prefab_waypoint { (if m.prefab_spawn_iso { "iso" } else { "1" }).to_string() + if m.prefab_editor_helper { "" } else { "nobody" } } else { std::env::var("TINY_RING_SPAWN").unwrap_or_default() };
             let ring_spawn = matches!(ring_mode.as_str(), "1" | "iso" | "1nobody" | "isonobody");
             if ring_spawn {
             let iso_form = ring_mode.starts_with("iso");
@@ -584,7 +588,8 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
             ents.push(super::prefab::Entity { model: inline(si, Node::Opaque(node)), rot: [0.0, 0.0, 0.0, 1.0], pos: epos, params_id: -1, params: Vec::new(), u01: Vec::new() });
             if !ring_mode.ends_with("nobody") {
             let ti = next_index(&mut next);
-            ents.push(super::prefab::Entity { model: inline(ti, Node::Opaque(super::OpaqueNode { class_id: 0x0917B000, raw: { let mut r = vec![0u8; 8]; r[4] = 0x0b; r } })), rot: [0.0, 0.0, 0.0, 1.0], pos: [0.0; 3], params_id: -1, params: Vec::new(), u01: Vec::new() });
+            let helper_raw: Vec<u8> = if m.prefab_waypoint { let mut r = vec![0u8; 8]; r[4..8].copy_from_slice(&0xFFFF_FFFFu32.to_le_bytes()); r } else { let mut r = vec![0u8; 8]; r[4] = 0x0b; r };
+            ents.push(super::prefab::Entity { model: inline(ti, Node::Opaque(super::OpaqueNode { class_id: 0x0917B000, raw: helper_raw })), rot: [0.0, 0.0, 0.0, 1.0], pos: [0.0; 3], params_id: -1, params: Vec::new(), u01: Vec::new() });
             }
             }
         }
@@ -650,7 +655,7 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
         ItemChunk::Node201A(super::null_ref()),
         ItemChunk::DefaultPlacement { version: 5, placement: inline(placement_index, Node::Placement(placement_param(sclass_index))) },
         ItemChunk::Archetype { version: 7, archetype_ref: String::new(), archetype_fid: Some(super::null_ref()), skin_dir: Some(String::new()), u01: Some(-1) },
-        ItemChunk::Waypoint { version: 12, waypoint_type: m.waypoint_type.unwrap_or(3), disable_lightmap: m.disable_lightmap, u_node: Some(super::null_ref()), u_byte: Some(0), u_ints: Some((-1, -1)) },
+        ItemChunk::Waypoint { version: m.waypoint_chunk_version.unwrap_or(12), waypoint_type: m.waypoint_type.unwrap_or(3), disable_lightmap: m.disable_lightmap, u_node: if m.waypoint_chunk_version.unwrap_or(12) <= 12 { Some(super::null_ref()) } else { None }, u_byte: Some(0), u_ints: Some((-1, -1)) },
         ItemChunk::Icon { version: 3, icon_fid: String::new(), u_byte: Some(1) },
         ItemChunk::Skippable(super::RawChunk { id: 0x2E002025, payload: vec![0; 8] }),
         ItemChunk::Skippable(super::RawChunk { id: 0x2E002026, payload: vec![0; 8] }),

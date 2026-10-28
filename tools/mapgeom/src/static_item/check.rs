@@ -224,9 +224,8 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
                         if item_type != Some(wp.wtype) {
                             problems.push(format!("entity {i}: waypoint trigger type {} but the item chunk says {:?}", wp.wtype, item_type));
                         }
-                        if wp.no_respawn == 0 {
-                            problems.push(format!("entity {i}: waypoint trigger in prefab form without NoRespawn — the entity-model form is the one for a respawnable waypoint"));
-                        }
+                        // a respawnable waypoint in the prefab form is Nadeo's own gate-item layout (SWaypoint
+                        // NoRespawn 0 + CPlugSpawnModel); it was flagged here while the form was unproven (10-28)
                     }
                     // an effect system (the Show items' smoke / sparks): an entity
                     // of its own, no mesh; its emitters must name inline models
