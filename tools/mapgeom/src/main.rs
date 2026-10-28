@@ -891,6 +891,24 @@ fn main() {
                     v.positions.len(), lo[0], hi[0], lo[1], hi[1], lo[2], hi[2], v.decl_names
                 );
             }
+            // --profile AXIS=lo..hi: the (other-axis, y) pairs of every vertex whose AXIS
+            // coordinate lies in the range — the cross-section of an extruded piece (the
+            // pool coving's shape, 2026-10-28)
+            if let Some(spec) = flag(&a.rest, "--profile") {
+                let (axis, range) = spec.split_once('=').unwrap_or(("x", "0..0"));
+                let (lo, hi) = range.split_once("..").map(|(a, b)| (a.parse::<f32>().unwrap_or(0.0), b.parse::<f32>().unwrap_or(0.0))).unwrap_or((0.0, 0.0));
+                let ai = if axis == "z" { 2 } else { 0 };
+                let oi = if ai == 0 { 2 } else { 0 };
+                for (i, s) in g.slots.iter().enumerate() {
+                    let Slot::Node(Node::VertexStream(v)) = s else { continue };
+                    let mut pts: Vec<(i64, i64)> = v.positions.iter().filter(|q| q[ai] >= lo && q[ai] <= hi).map(|q| ((q[oi] * 100.0).round() as i64, (q[1] * 100.0).round() as i64)).collect();
+                    pts.sort();
+                    pts.dedup();
+                    if !pts.is_empty() {
+                        println!("  [{i:4}] profile ({},y) cm: {}", if oi == 0 { "x" } else { "z" }, pts.iter().map(|(a, b)| format!("({a},{b})")).collect::<Vec<_>>().join(" "));
+                    }
+                }
+            }
             // --probe X,Z: which visuals have a triangle covering that (x, z) from above,
             // and at what height — is there a deck under a decal patch?
             // --up-hist: per visual, the UP-facing triangles' area by 0.25 m height bin

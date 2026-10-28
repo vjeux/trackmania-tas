@@ -3734,12 +3734,32 @@ pub fn apply_surface_swap(store: &mut DataStore, m: &mut crate::static_item::bui
                     m.two_sided_links.push(t.to_string());
                 }
             }
-            // …and the WATER pieces' blue sheet (`Waterground`: a water road's end cushion
-            // `RoadWaterVFC`, a pool's inner wall): one layer drawn two-sided by the game —
-            // baked whole and one-sided, a closed channel showed no far end wall from
-            // inside (Everios96's dry blockset, 2026-10-28 06:15 box shot)
-            if name.contains("Water") && !m.two_sided_links.iter().any(|x| x == "Waterground") {
-                m.two_sided_links.push("Waterground".to_string());
+        }
+        // …and the WATER pieces' blue sheet (`Waterground`: a water road's end cushion
+        // `RoadWaterVFC`, a pool's inner wall): one layer drawn two-sided by the game —
+        // baked whole and one-sided, a closed channel showed no far end wall from
+        // inside (Everios96's dry blockset, 2026-10-28 06:15 box shot)
+        // …and the pool's inner materials: the 1 m coving from the rim down to the floor
+        // (`Underwater`, `PoolBorders` on `PlatformWaterHFCInsideShort`) is wound INWARD in
+        // Nadeo's own prefab (24 of its normals point down) and shows only through a
+        // two-sided material — one-sided it vanished from the pool side and the dry
+        // basin read as a floor meeting the rim at a sharp edge (Everios96 2026-10-28
+        // 10:46: "the geometry of the water block is curved, while your version is flat")
+        // Per family, not blanket: `Waterground` two-sided on the POOL pieces also
+        // showed the floor box's inner ceiling, coplanar with the floor (a tile grid
+        // z-fighting through the dirt, 2026-10-28 11:58).
+        // (a water ROAD's channel walls are `Underwater` too, wound the same way: the
+        // dry cross read as a dirt plane at rim level, Everios96 12:16)
+        let two: &[&str] = if name.starts_with("RoadWater") {
+            &["Waterground", "Underwater"]
+        } else if name.starts_with("PlatformWater") {
+            &["Underwater", "PoolBorders"]
+        } else {
+            &[]
+        };
+        for t in two {
+            if !m.two_sided_links.iter().any(|x| x == t) {
+                m.two_sided_links.push(t.to_string());
             }
         }
         if name.starts_with("RoadIce") && std::env::var("TINY_ICE_TWO_SIDED").map(|v| v != "0").unwrap_or(true) {
@@ -3822,7 +3842,11 @@ pub fn apply_surface_swap(store: &mut DataStore, m: &mut crate::static_item::bui
     // the drivable tops take the surface — Everios96 2026-10-07 "just the driving floor
     // is changed", 2026-10-28 "literally flat": an all-dirt tray reads as a slab)
     if name.contains("Water") && !name.contains("Pillar") && std::env::var("TINY_WATER_SPLIT_ALL").map(|v| v == "1").unwrap_or(false) {
-        m.split_vertical = Some(std::env::var("TINY_WATER_FACE_NY").ok().and_then(|v| v.parse().ok()).unwrap_or(0.5));
+        // a pool RIM piece (`PlatformWaterHFC…`: the white top strip and the 45° edge down
+        // to the floor) is not driven on: nothing of it takes the surface (a dressed top
+        // strip drew an orange line along every white rim, 2026-10-28)
+        let rim = name.starts_with("PlatformWater") && name.contains("HFC");
+        m.split_vertical = Some(if rim { 1.01 } else { std::env::var("TINY_WATER_FACE_NY").ok().and_then(|v| v.parse().ok()).unwrap_or(0.5) });
     }
     if !surface_rows.is_empty() && name.contains("Special") {
         let want = if name.starts_with("Platform") { "PlatformTech" } else { "RoadTech" };
