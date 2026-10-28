@@ -545,6 +545,47 @@ fn mirror_outer_skin(m: &mut Merged, from_d: f32, to_d: f32) -> usize {
     added
 }
 
+/// Overwrite the normal of every vertex `f` names (by position), DEC3N or float form.
+fn set_normals(m: &mut Merged, f: &dyn Fn([f32; 3]) -> Option<[f32; 3]>) -> usize {
+    let mut n_set = 0usize;
+    for mv in &mut m.visuals {
+        let Some(main) = mv.visual.main.as_mut() else { continue };
+        let Some(Node::VertexStream(stream)) = main.vertex_streams.first_mut().and_then(|r| r.inline.as_deref_mut()) else { continue };
+        let compress = stream.compress_local3d.unwrap_or(false);
+        let Some(pi) = stream.decls.iter().position(|d| d.name() == N_POSITION) else { continue };
+        let positions: Vec<[f32; 3]> = match &stream.elems[pi] {
+            Elem::Float3(p) => p.clone(),
+            _ => continue,
+        };
+        let wanted: Vec<Option<[f32; 3]>> = positions.iter().map(|p| f(*p)).collect();
+        for (d, e) in stream.decls.iter().zip(stream.elems.iter_mut()) {
+            if d.name() != N_NORMAL {
+                continue;
+            }
+            match (d.stored_type(compress), e) {
+                (T_DEC3N, Elem::Word(w)) => {
+                    for (x, want) in w.iter_mut().zip(wanted.iter()) {
+                        if let Some(n) = want {
+                            *x = crate::static_item::merged::dec3n_pack(*n);
+                            n_set += 1;
+                        }
+                    }
+                }
+                (T_FLOAT3, Elem::Float3(p)) => {
+                    for (q, want) in p.iter_mut().zip(wanted.iter()) {
+                        if let Some(n) = want {
+                            *q = *n;
+                            n_set += 1;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    n_set
+}
+
 /// Every position through `f`, every normal/tangent through the rotation `f` returns
 /// for that position (column-major 3×3 applied to the vector).
 fn remap_frames(m: &mut Merged, f: &dyn Fn([f32; 3]) -> ([f32; 3], [[f32; 3]; 3])) {
@@ -711,6 +752,22 @@ fn source_beam(store: &mut crate::store::DataStore, prefab: &str, ends: Ends, co
                 ([p[0], 0.0, p[2]], ident)
             } else {
                 (p, ident)
+            }
+        });
+        // The moved vertices kept the chamfer's 45° normals: the now-flat band shaded as a
+        // steep slope — a dark "groove" along the inner edge of the top and odd fins at the
+        // joints (Everios96 18:24 "a part of the side is open / weird faces"; it is lighting,
+        // the geometry is closed to within 4 cm). Every vertex of the top/bottom band from
+        // the lip to the back wall faces straight up / down now; the inner skin (d −0.36)
+        // keeps its own.
+        set_normals(&mut m, &|p| {
+            let (_, d, y) = polar(p);
+            if (-0.3..=0.6).contains(&d) && (y - 2.0).abs() <= 0.1 {
+                Some([0.0, 1.0, 0.0])
+            } else if (-0.3..=0.6).contains(&d) && y.abs() <= 0.1 {
+                Some([0.0, -1.0, 0.0])
+            } else {
+                None
             }
         });
     }
