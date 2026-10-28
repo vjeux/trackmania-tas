@@ -6087,8 +6087,15 @@ fn main() {
             let env = flag(&a.rest, "--env");
             let collection: u32 = match env.as_deref() { Some("RedIsland") => 0x10, Some("WhiteShore") => 0x1d, Some("GreenCoast") => 0xf, Some("BlueBay") => 0x1c, Some(other) => die(format!("--env {other}: RedIsland | WhiteShore | GreenCoast | BlueBay")), None => flag(&a.rest, "--collection").and_then(|v| v.parse().ok()).unwrap_or(26) };
             let suffix = env.clone().unwrap_or_default();
-            std::fs::create_dir_all(dir.join("alt")).unwrap_or_else(|e| die(e.to_string()));
-            for (name0, fix, top) in [("CheckpointRing.Item.Gbx", false, false), ("CheckpointRingPillar.Item.Gbx", true, false), ("alt/CheckpointRingInPillar.Item.Gbx", true, true)] {
+            // --stem NAME: the family stem (Hugo's `CheckpointGateRespawnable`, 10-28); with it the InPillar variant is
+            //   written flat beside the others instead of under alt/
+            let stem = flag(&a.rest, "--stem");
+            let jobs: Vec<(String, bool, bool)> = match &stem {
+                Some(st) => vec![(format!("{st}.Item.Gbx"), false, false), (format!("{st}Pillar.Item.Gbx"), true, false), (format!("{st}InPillar.Item.Gbx"), true, true)],
+                None => { std::fs::create_dir_all(dir.join("alt")).unwrap_or_else(|e| die(e.to_string())); vec![("CheckpointRing.Item.Gbx".into(), false, false), ("CheckpointRingPillar.Item.Gbx".into(), true, false), ("alt/CheckpointRingInPillar.Item.Gbx".into(), true, true)] }
+            };
+            std::fs::create_dir_all(&dir).unwrap_or_else(|e| die(e.to_string()));
+            for (name0, fix, top) in jobs {
                 let name = name0.replace(".Item.Gbx", &format!("{suffix}.Item.Gbx"));
                 let name = name.as_str();
                 let ident = std::path::Path::new(name).file_name().unwrap().to_string_lossy().to_string();
