@@ -780,12 +780,19 @@ fn source_beam(store: &mut crate::store::DataStore, prefab: &str, ends: Ends, co
     // and the junction cube (Structure + Pylon at r ≈ 22.6) are the "extra geometry".
     // Everything from r 29 outward stays — the first cut (d < 1.2) threw the shell away and
     // shipped the bare dark lattice ("texture looks a bit off").
-    retain_triangles(&mut m, &|c| {
+    // Everything from r 29 outward stays — except the BRACE ROOTS: where the two braces
+    // meet the beam (source θ ≈ 9° and 81°) the lip plate carries 26 cm stubs pointing
+    // at the cell centre (d −0.62..−0.36, two 8 cm-tall tabs per root) that pierce the
+    // inner skin — Everios96 20:13 "little things that stick out" at four points of the
+    // ring. Triangles with any vertex inside d −0.37 go (the skin sits at −0.36).
+    retain_triangles_by(&mut m, &|t: &[[f32; 3]; 3]| {
         if keep_all {
             return true;
         }
-        let (_, d, _) = polar(c);
-        d >= -1.0
+        t.iter().all(|c| {
+            let (_, d, _) = polar(*c);
+            d >= -1.0
+        }) && !t.iter().any(|c| polar(*c).1 < -0.37)
     });
     // The quarter's END CAPS (the plates and lattice ends in the planes θ = 0° and 90°, 9 cm
     // deep): a ring has no ends, and two caps meeting at a joint showed as a dark seam with
