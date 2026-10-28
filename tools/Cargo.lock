@@ -919,6 +919,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tmlb"
+version = "1.0.0"
+dependencies = [
+ "serde_json",
+ "ureq",
+]
+
+[[package]]
 name = "tmmaps"
 version = "1.0.0"
 dependencies = [
