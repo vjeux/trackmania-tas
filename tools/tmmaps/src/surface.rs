@@ -273,8 +273,12 @@ pub fn cmd(args: &[String]) {
     // … or a face-drawn wall that goes (`face_only`): a map whose walls are ALL prefab-less
     // (five adjacent `DecoWallBase`, the cap-physics test of 2026-10-06) converted NOTHING
     // because no wall had a model of its own and this gate stayed shut.
+    // … and a WATER ROAD baked whole (`TINY_WATER_FORCE_BAKE`, Everios96's dry blockset
+    // 2026-10-28) owns black-wall undersides too (`TrackWallStraightFCB` under a
+    // `RoadWaterStraight`): without this gate open its bottom skirt stayed the game's
+    // record and the dry channel had no underside at all.
     let wall_fillers = std::env::var("TINY_WALL_FILLERS").map(|v| v != "0").unwrap_or(true)
-        && (!face_only.is_empty() || plan.iter().any(|r| baked_indices.contains(&r.index) && (r.name.starts_with("TrackWall") || r.name.starts_with("DecoWall"))));
+        && (!face_only.is_empty() || plan.iter().any(|r| baked_indices.contains(&r.index) && (r.name.starts_with("TrackWall") || r.name.starts_with("DecoWall") || r.name.starts_with("RoadWater"))));
     // A wall face belongs to the wall whose NAME it extends (`DecoWallArchSlope2End2FCT` →
     // `DecoWallArchSlope2End2`): bake it only when that wall itself baked. The engine
     // REGENERATES a clip for every authored block at load (crate::bake) — the file's record

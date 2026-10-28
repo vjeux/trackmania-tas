@@ -211,6 +211,20 @@ fn main() {
         "build" => build::cmd(rest),
         "views" => views::cmd(rest),
         "shoot" => shoot::cmd(rest),
+        // `tinyctl box-front front|restore`: raise the (human-minimized) game for a run
+        // that needs it rendering — an editor load stalls at "Updating data…" while the
+        // window is iconic (2026-10-28) — and put it back afterwards
+        "box-front" => {
+            let wsx = wsx::Wsx::new(rest);
+            // the foreground dance taps a key on the box (the OS idle clock restarts): log
+            // it as our own run so the next gate() does not read it as the human
+            inputidle::runlog::start(&format!("tinyctl box-front {}", rest.first().cloned().unwrap_or_default()), 0.0);
+            match rest.first().map(|s| s.as_str()) {
+                Some("front") => boxfront::front(&wsx).map(|r| println!("{}", r.trim())),
+                Some("restore") => boxfront::restore(&wsx).map(|r| println!("{}", r.trim())),
+                _ => Err("tinyctl box-front front|restore".to_string()),
+            }
+        }
         "treelineup" => treelineup::cmd(rest),
         "pulljpg" => pulljpg::cmd(rest),
         "ship" => ship::cmd(rest),

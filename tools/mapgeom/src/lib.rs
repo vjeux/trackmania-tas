@@ -34,6 +34,7 @@ pub mod corpus;
 pub mod collhash;
 pub mod edgeborder;
 pub mod beambend;
+pub mod tileset;
 pub mod waterblocks;
 pub mod coverage;
 pub mod dds;

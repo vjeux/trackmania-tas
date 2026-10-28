@@ -1318,6 +1318,11 @@ fn main() {
             let mut store = open(&a);
             mapgeom::beambend::arch_cmd(&mut store, &a.rest).unwrap_or_else(die);
         }
+        "tileset" => {
+            let mut open_store = || open(&a);
+            mapgeom::tileset::run(&a.rest, &mut open_store).unwrap_or_else(die);
+        }
+        "tileset-patterns" => mapgeom::tileset::patterns(&a.rest).unwrap_or_else(die),
         "edge-border" => {
             let mut open_store = || open(&a);
             mapgeom::edgeborder::run(&a.rest, &mut open_store).unwrap_or_else(die);

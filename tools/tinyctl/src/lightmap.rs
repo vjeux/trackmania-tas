@@ -38,7 +38,7 @@ const LIGHTMAP_CHUNK: u32 = 0x0304_305B;
 pub fn cmd(args: &[String]) -> Result<(), String> {
     let f = |k: &str| tmmaps::cli::flag(args, k).map(|s| s.to_string());
     // every positional that is not a flag value is a map
-    let flag_with_value = ["--out", "--out-dir", "--quality", "--name", "--uid", "--box-shootctl", "--wsx"];
+    let flag_with_value = ["--out", "--out-dir", "--quality", "--name", "--uid", "--box-shootctl", "--wsx", "--idle-window-s", "--idle-s"];
     let mut maps: Vec<PathBuf> = Vec::new();
     let mut i = 0;
     while i < args.len() {
@@ -137,7 +137,9 @@ fn one(args: &[String], map: &Path, out: &Path) -> Result<(), String> {
     // 11 with different quality bytes came back "never busy" at q=4). Drop them first.
     let dropped = wsx.sh("ls /mnt/c/ProgramData/Trackmania/Cache/ | grep -c LightMap.zip; rm -f /mnt/c/ProgramData/Trackmania/Cache/*.LightMap.zip").unwrap_or_default();
     eprintln!("game lightmap cache: {} entries dropped", dropped.trim());
-    let cmd = format!("{shootctl} lightmap --detach --map {r_map} --out '{rel}' --quality {quality} --outdir {r_dir}");
+    // the box-side lock names its holder from TM_SESSION; the devserver's environment does
+    // not cross the relay, so the session is exported in the remote command (as `shoot` does)
+    let cmd = format!("{}; {shootctl} lightmap --detach --map {r_map} --out '{rel}' --quality {quality} --outdir {r_dir}", crate::remoteshots::ENV);
     eprintln!("computing the lightmap (quality {quality}) …");
     let started = wsx.sh(&cmd)?;
     if wsx.verbose {
