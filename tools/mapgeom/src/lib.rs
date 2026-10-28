@@ -35,6 +35,7 @@ pub mod collhash;
 pub mod edgeborder;
 pub mod beambend;
 pub mod tileset;
+pub mod itemicon;
 pub mod waterblocks;
 pub mod coverage;
 pub mod dds;

@@ -1323,6 +1323,7 @@ fn main() {
             mapgeom::tileset::run(&a.rest, &mut open_store).unwrap_or_else(die);
         }
         "tileset-patterns" => mapgeom::tileset::patterns(&a.rest).unwrap_or_else(die),
+        "item-icon" => mapgeom::itemicon::run(&a.rest).unwrap_or_else(die),
         "edge-border" => {
             let mut open_store = || open(&a);
             mapgeom::edgeborder::run(&a.rest, &mut open_store).unwrap_or_else(die);

@@ -141,6 +141,7 @@ pub fn run(args: &[String], open_store: &mut dyn FnMut() -> crate::store::DataSt
     let conv_path = args.get(2).ok_or("tileset needs SOURCE.Map.Gbx CONVERTED.Map.Gbx")?;
     let out_dir = flag(args, "--out-dir").ok_or("--out-dir DIR")?;
     let prefix = flag(args, "--prefix").unwrap_or("Dirt").to_string();
+    let simple = flag(args, "--layout").unwrap_or("simple") != "flat";
     let author = flag(args, "--author").unwrap_or("Everios96").to_string();
     let collection: u32 = flag(args, "--collection").and_then(|v| v.parse().ok()).unwrap_or(26);
     std::fs::create_dir_all(out_dir).map_err(|e| format!("{out_dir}: {e}"))?;
@@ -438,7 +439,23 @@ pub fn run(args: &[String], open_store: &mut dyn FnMut() -> crate::store::DataSt
         let diag_names = ["NE", "SE", "SW", "NW"];
         let relevant: Vec<usize> = if b.rec.name == "PlatformWaterBase" { relevant_diagonals(&b.open) } else { Vec::new() };
         let wet: Vec<&str> = relevant.iter().filter(|&&d| b.diag[d]).map(|&d| diag_names[d]).collect();
-        let base_name = if wet.is_empty() { format!("{prefix}_{short}_{role}") } else { format!("{prefix}_{short}_{role}_{}", wet.join("_")) };
+        // `--layout simple` (the default; Everios96 2026-10-28 "a simple naming scheme …
+        // that they appear in a simple way in the folders"): the surface is the folder,
+        // so the names drop it — `Pool/End_NW_SW`, `Pool/Island`, `Channel/Curve3_NE`,
+        // `Channel/Cross` (closed = no suffix). `--layout flat` keeps the one-folder
+        // `<prefix>_Pool_End_NW_SW` form.
+        let base_name = if simple {
+            if b.rec.name == "PlatformWaterBase" {
+                if wet.is_empty() { format!("Pool/{role}") } else { format!("Pool/{role}_{}", wet.join("_")) }
+            } else {
+                let kind = b.rec.name.trim_start_matches("RoadWater").replace("BranchTShaped", "T").replace("BranchCross", "Cross");
+                if open.is_empty() { format!("Channel/{kind}") } else { format!("Channel/{kind}_{open}") }
+            }
+        } else if wet.is_empty() {
+            format!("{prefix}_{short}_{role}")
+        } else {
+            format!("{prefix}_{short}_{role}_{}", wet.join("_"))
+        };
         let k = used.entry(base_name.clone()).or_insert(0);
         let name = if *k == 0 { base_name.clone() } else { format!("{base_name}{}", (b'A' + *k as u8) as char) };
         *k += 1;
@@ -466,14 +483,18 @@ pub fn run(args: &[String], open_store: &mut dyn FnMut() -> crate::store::DataSt
             println!("  {name}: nothing visible — skipped");
             continue;
         }
-        let ident = format!("{name}.Item.Gbx");
+        // the ident is the FILE name; the folder is the browser's (and a map's) business
+        let ident = format!("{}.Item.Gbx", name.rsplit('/').next().unwrap_or(name));
         let opts = BuildOpts { ident: ident.clone(), author: author.clone(), scale: 1.0, collection, skin: None };
         crate::static_item::assemble::GRID_SNAP.with(|g| g.set(Some((32.0, 8.0))));
         let mut f = assemble(&m, &opts)?;
         crate::static_item::assemble::GRID_SNAP.with(|g| g.set(None));
         f.body_comp = b'C';
         let bytes = crate::static_item::write_file(&f);
-        let out = format!("{out_dir}/{ident}");
+        let out = format!("{out_dir}/{name}.Item.Gbx");
+        if let Some(parent) = Path::new(&out).parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+        }
         std::fs::write(&out, &bytes).map_err(|e| format!("{out}: {e}"))?;
         let tris: usize = m.visuals.iter().filter_map(|v| v.visual.index_buffer.as_ref()).map(|ib| ib.indices.len() / 3).sum();
         println!("wrote {out}: {} bytes, {} pieces, {tris} tris, collision {} tris, {} block(s)", bytes.len(), b.items.len(), m.surf_triangles.len(), members.len());

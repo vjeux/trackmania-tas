@@ -17,6 +17,8 @@
 
 mod boxbuild;
 mod boxfront;
+mod iconcrops;
+mod tileicons;
 mod credits;
 pub use credits::expand as credits_expand;
 mod tmio;
@@ -214,11 +216,20 @@ fn main() {
         // `tinyctl box-front front|restore`: raise the (human-minimized) game for a run
         // that needs it rendering — an editor load stalls at "Updating data…" while the
         // window is iconic (2026-10-28) — and put it back afterwards
+        "icon-crops" => iconcrops::cmd(rest),
+        "tile-icons" => tileicons::cmd(rest),
         "box-front" => {
             let wsx = wsx::Wsx::new(rest);
             // the foreground dance taps a key on the box (the OS idle clock restarts): log
             // it as our own run so the next gate() does not read it as the human
-            inputidle::runlog::start(&format!("tinyctl box-front {}", rest.first().cloned().unwrap_or_default()), 0.0);
+            // …with the HUMAN idle seen before the tap (the gate measures a person's idle
+            // from `run start − idle_at_start`; a 0 there reads as "active at the start"
+            // and locked the next gate for 30 min — 2026-10-28 04:23)
+            let idle_before = inputidle::read(&wsx, 1800)
+                .ok()
+                .and_then(|v| v.line.split_whitespace().find_map(|w| w.strip_prefix("kbm_idle_s=")).and_then(|x| x.parse::<f64>().ok()))
+                .unwrap_or(0.0);
+            inputidle::runlog::start(&format!("tinyctl box-front {}", rest.first().cloned().unwrap_or_default()), idle_before);
             match rest.first().map(|s| s.as_str()) {
                 Some("front") => boxfront::front(&wsx).map(|r| println!("{}", r.trim())),
                 Some("restore") => boxfront::restore(&wsx).map(|r| println!("{}", r.trim())),

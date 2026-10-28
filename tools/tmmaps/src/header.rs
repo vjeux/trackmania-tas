@@ -894,17 +894,43 @@ pub fn game_skin(bytes: &[u8]) -> Option<GameSkin> {
 /// where Nadeo's items carry it). The body is untouched; the header table is
 /// rebuilt. Uncompressed and compressed bodies both come back as they were.
 pub fn set_game_skin_chunk(bytes: &[u8], payload: &[u8]) -> Vec<u8> {
+    set_header_chunk(bytes, GAME_SKIN_CHUNK, payload, false)
+}
+
+/// The collector ICON header chunk 0x2E001004 of an item: a 64×64 raw BGRA
+/// picture, `u16 width, u16 height` then width×height×4 bytes, rows stored
+/// BOTTOM-UP (Nadeo's and the community's items alike: Bridge_Wood.Item.Gbx
+/// carries exactly 16,388 bytes, heavy). `pixels` are BGRA rows top-down.
+pub const ICON_CHUNK: u32 = 0x2E00_1004;
+pub fn set_icon_chunk(bytes: &[u8], width: u16, height: u16, pixels_top_down: &[u8], flip: bool) -> Vec<u8> {
+    let row = width as usize * 4;
+    let mut payload = Vec::with_capacity(4 + pixels_top_down.len());
+    payload.extend_from_slice(&width.to_le_bytes());
+    payload.extend_from_slice(&height.to_le_bytes());
+    for y in 0..height as usize {
+        let sy = if flip { height as usize - 1 - y } else { y };
+        payload.extend_from_slice(&pixels_top_down[sy * row..(sy + 1) * row]);
+    }
+    set_header_chunk(bytes, ICON_CHUNK, &payload, true)
+}
+
+/// The file with header chunk `id` replaced, or inserted after the
+/// collector-description chunk 0x2E001003 (and the icon 0x2E001004 when that
+/// is not the chunk being set) where Nadeo's items carry them. The body is
+/// untouched; the header table is rebuilt.
+pub fn set_header_chunk(bytes: &[u8], id: u32, payload: &[u8], heavy: bool) -> Vec<u8> {
     let mut g = Gbx::parse(bytes);
     let mut chunks = user_chunks(&g.user_data).expect("header chunk table");
-    if let Some(c) = chunks.iter_mut().find(|c| c.id == GAME_SKIN_CHUNK) {
+    if let Some(c) = chunks.iter_mut().find(|c| c.id == id) {
         c.data = payload.to_vec();
+        c.heavy = heavy;
     } else {
         let at = chunks
             .iter()
-            .rposition(|c| c.id == 0x2E00_1003 || c.id == 0x2E00_1004)
+            .rposition(|c| c.id == 0x2E00_1003 || (c.id == 0x2E00_1004 && id != 0x2E00_1004))
             .map(|i| i + 1)
             .unwrap_or(0);
-        chunks.insert(at, HChunk { id: GAME_SKIN_CHUNK, heavy: false, data: payload.to_vec() });
+        chunks.insert(at, HChunk { id, heavy, data: payload.to_vec() });
     }
     let mut ud = Vec::new();
     ud.extend_from_slice(&(chunks.len() as u32).to_le_bytes());
