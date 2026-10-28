@@ -239,6 +239,8 @@ pub fn cmd(store: &mut crate::store::DataStore, rest: &[String], flag: &dyn Fn(&
     std::fs::create_dir_all(&out).map_err(|e| format!("{out}: {e}"))?;
     let entries: Vec<String> = store.entries().map(|e| e.path()).collect();
     let name_vs_ident = rest.iter().any(|x| x == "--name-vs-ident");
+    // --catalogs-only: no enum / record declarations in the files (Hugo's reorg keeps those hand-written)
+    let catalogs_only = rest.iter().any(|x| x == "--catalogs-only");
     // ---- blocks
     let mut blocks: BTreeMap<String, BlockRow> = BTreeMap::new();
     let mut failed = 0usize;
@@ -246,10 +248,11 @@ pub fn cmd(store: &mut crate::store::DataStore, rest: &[String], flag: &dyn Fn(&
         let coll_name = p.split('\\').next().unwrap_or("");
         let Some((_, _, bit)) = COLLECTIONS.iter().find(|(n, _, _)| n.eq_ignore_ascii_case(coll_name)) else { continue };
         let Ok(bi) = crate::blockinfo::load(store, p) else { failed += 1; continue };
-        let name = if bi.name.is_empty() { p.rsplit('\\').next().unwrap_or(p).split('.').next().unwrap_or("").to_string() } else { bi.name.clone() };
+        // the IDENT (what the map records carry), the display name only when the file has no ident chunk
+        let name = if !bi.ident.is_empty() { bi.ident.clone() } else if !bi.name.is_empty() { bi.name.clone() } else { p.rsplit('\\').next().unwrap_or(p).split('.').next().unwrap_or("").to_string() };
         if name.is_empty() { continue; }
-        // --name-vs-ident: the block infos whose display name differs from their ident (the id map records carry)
-        if name_vs_ident && !bi.ident.is_empty() && !bi.ident.eq_ignore_ascii_case(&name) { println!("name/ident differ: {coll_name}: name {name} ident {} ({p})", bi.ident); }
+        // --name-vs-ident: the block infos whose display name differs from their ident
+        if name_vs_ident && !bi.ident.is_empty() && !bi.name.is_empty() && !bi.ident.eq_ignore_ascii_case(&bi.name) { println!("name/ident differ: {coll_name}: name {} ident {} ({p})", bi.name, bi.ident); }
         let g = bi.variant_base_ground.as_ref().and_then(variant_facts);
         let a = bi.variant_base_air.as_ref().and_then(variant_facts);
         let ground = g.is_some();
@@ -344,9 +347,11 @@ pub fn cmd(store: &mut crate::store::DataStore, rest: &[String], flag: &dyn Fn(&
     let mut cs = String::new();
     cs.push_str(&header);
     cs.push_str(common);
+    if !catalogs_only {
     cs.push_str(enums);
     cs.push_str("public readonly record struct BlockVariant(Block Model, int Variant);\n\n");
     cs.push_str("public sealed record Block(string Id, int SizeX, int SizeZ, int[][]? Cells, Collections Collections, Waypoint Waypoint, bool Ground, bool Air, int Variants)\n{\n    public Block? Plain => Blocks.PlainOf.TryGetValue(Id, out var plain) ? plain : null;\n\n    public Block? As(Waypoint kind) => kind == Waypoint ? this : Blocks.Families.TryGetValue((Id, kind), out var twin) ? twin : null;\n\n    public BlockVariant Variant(int n) => new(this, n);\n}\n\n");
+    }
     cs.push_str("public static class Blocks\n{\n");
     let mut block_idents: Vec<(String, String)> = Vec::new();
     for (id, b) in &blocks {
@@ -389,8 +394,10 @@ pub fn cmd(store: &mut crate::store::DataStore, rest: &[String], flag: &dyn Fn(&
     let mut ci = String::new();
     ci.push_str(&header);
     ci.push_str(common);
+    if !catalogs_only {
     ci.push_str("public readonly record struct ItemVariant(Item Model, int Variant);\n\n");
     ci.push_str("public sealed record Item(string Id, string Author, string? Path, Collections Collections, Waypoint Waypoint, int Variants, Vec3 Size)\n{\n    public Item? As(Waypoint kind) => kind == Waypoint ? this : Items.Families.TryGetValue((Id, kind), out var twin) ? twin : null;\n\n    public ItemVariant Variant(int n) => new(this, n);\n}\n\n");
+    }
     ci.push_str("public static class Items\n{\n");
     let mut item_idents: Vec<(String, String)> = Vec::new();
     for (id, it) in &items {
