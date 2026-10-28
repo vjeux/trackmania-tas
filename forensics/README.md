@@ -268,11 +268,32 @@ Public endpoints, no login. Pace every request (≥ 1 s; the investigations
 ran at 1.2 s and were asked once not to hammer trackmania.io). One command per
 step; the orchestration is a loop over a TSV, not a program.
 
+For the seasonal campaigns there is one tool that does the whole loop,
+`tools/tmlb`:
+
+```
+tmlb campaigns                                   the 26 seasonal campaigns
+tmlb sweep --out DIR [--length 500] [--pace-ms 1200] [--campaign "Summer 2021"]...
+                                                 every map of every campaign, the top N of
+                                                 each (pages of 100, raw JSON kept under
+                                                 DIR/pages/<uid>/, resumable), flattened to
+                                                 DIR/records.tsv: campaign, map, uid, map_id,
+                                                 author_ms, position, time_ms, account_id,
+                                                 player, zone chain, set_utc, ghost_url
+tmlb flatten DIR/pages --maps DIR/maps.tsv --out records.tsv
+```
+
+650 maps × 5 pages at 1.2 s ≈ 65 minutes for the top 500 of everything; a
+stopped sweep resumes where it was, a 429 waits a minute, five failures skip
+the page and name it at the end.
+
 | need | source |
 |---|---|
 | a player's current world records | `https://tmworldrecords.net/api/user?userId=<displayName>` → `nrOfWr`; `…/api/user/maps?userId=<name>&offset=N&limit=100` → `trackID` (TMX id), `onlineRecordTime`, `trackName` |
 | TMX id → map uid, author time | `https://trackmania.exchange/api/maps?id=<id,id,…>&fields=MapId%2CMapUid%2CMedals.Author%2CName%2COnlineRecordCount&count=100` (50 ids a call) |
-| a board, with ghost download urls | `https://trackmania.io/api/leaderboard/map/<uid>?offset=0&length=100` → `tops[].position/time/timestamp/url/player.id` — top 100 only, no per-player endpoint |
+| a board, with ghost download urls | `https://trackmania.io/api/leaderboard/map/<uid>?offset=0&length=100` → `tops[].position/time/timestamp/url/player.id` — 100 a page, `offset` reaches at least 900; no per-player endpoint |
+| the seasonal campaigns and their maps | `https://trackmania.io/api/campaigns/seasonal/0` → `campaigns[].id/name`; `https://trackmania.io/api/campaign/seasonal/<id>` → `playlist[].mapUid/mapId/name/authorScore` |
+| a player by display name | `https://trackmania.io/api/players/find?search=<name>` |
 | the ghost itself | `https://trackmania.io<url>` (`/api/download/ghost/<id>`) |
 | the map file | `https://trackmania.io/api/map/<uid>` → `fileUrl` |
 | the global top 50 | `https://trackmania.io/api/top/trophies/0` |

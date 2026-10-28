@@ -1,0 +1,9 @@
+[package]
+name = "tmlb"
+version.workspace = true
+edition.workspace = true
+description = "trackmania.io leaderboards: the top N of every Nadeo seasonal-campaign map, paced, resumable, as one TSV"
+
+[dependencies]
+serde_json = "1"
+ureq = { version = "3", default-features = false, features = ["rustls", "gzip"] }
