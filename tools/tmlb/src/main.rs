@@ -1,8 +1,12 @@
 //! tmlb -- the leaderboards of Nadeo's seasonal campaigns, from trackmania.io.
 //!
-//!   tmlb campaigns                         the seasonal campaigns (id, name, maps, published)
-//!   tmlb maps --out maps.tsv [--campaign "Summer 2021"]...
-//!                                          every map of every seasonal campaign
+//!   tmlb campaigns [--kind seasonal|totd|weekly]
+//!                                          the campaigns (id, name, maps, published)
+//!   tmlb maps --out maps.tsv [--kind seasonal|totd|weekly] [--campaign "Summer 2021"]...
+//!                                          every map of every campaign of that kind:
+//!                                          seasonal = the 26 Nadeo seasons (650 maps),
+//!                                          totd = every Track of the Day by month,
+//!                                          weekly = every Weekly Shorts week (5 maps each)
 //!   tmlb top --maps maps.tsv --out DIR [--length 500] [--pace-ms 1200] [--campaign NAME]...
 //!                                          the top N of each map: raw pages of 100 in
 //!                                          DIR/<uid>/<offset>.json; a page already on disk is
@@ -11,7 +15,7 @@
 //!                                          one row a record: campaign, map, uid, position,
 //!                                          time_ms, account_id, player, zone chain, set_utc,
 //!                                          ghost_url
-//!   tmlb sweep --out DIR [--length 500] [--pace-ms 1200] [--campaign NAME]...
+//!   tmlb sweep --out DIR [--kind seasonal|totd|weekly] [--length 500] [--pace-ms 1200] [--campaign NAME]...
 //!                                          campaigns -> maps -> top -> flatten, in one go
 //!   tmlb report records.tsv [--top 10] [--late-years 2] [--players 40]
 //!                                          what the table says: records per campaign and
@@ -145,6 +149,24 @@ impl Client {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kind {
+    Seasonal,
+    Totd,
+    Weekly,
+}
+
+impl Kind {
+    fn parse(s: Option<&str>) -> Kind {
+        match s.unwrap_or("seasonal") {
+            "seasonal" => Kind::Seasonal,
+            "totd" => Kind::Totd,
+            "weekly" | "weeklyshorts" | "shorts" => Kind::Weekly,
+            other => die(format!("--kind {other}: seasonal, totd or weekly")),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct Campaign {
     id: i64,
@@ -153,18 +175,30 @@ struct Campaign {
     published: i64,
 }
 
-fn campaigns(c: &mut Client) -> Vec<Campaign> {
+/// The seasonal campaigns, or the Weekly Shorts weeks: the same paged listing
+/// under two paths. Track of the Day has no campaign listing -- its "campaigns"
+/// are the months, produced by `totd_maps` directly.
+fn campaigns(c: &mut Client, kind: Kind) -> Vec<Campaign> {
+    let (path, prefix) = match kind {
+        Kind::Seasonal => ("seasonal", ""),
+        Kind::Weekly => ("weeklyshorts", "Weekly Shorts "),
+        Kind::Totd => die("Track of the Day has months, not campaigns: use `maps --kind totd`"),
+    };
     let mut out = Vec::new();
     let mut page = 0;
     loop {
-        let v = c.get_json(&format!("{BASE}/campaigns/seasonal/{page}")).unwrap_or_else(|e| die(e));
+        let v = c.get_json(&format!("{BASE}/campaigns/{path}/{page}")).unwrap_or_else(|e| die(e));
         for k in v["campaigns"].as_array().cloned().unwrap_or_default() {
-            if k["seasonal"].as_bool() != Some(true) {
+            let ok = match kind {
+                Kind::Seasonal => k["seasonal"].as_bool() == Some(true),
+                _ => k["weekly"].as_bool() == Some(true),
+            };
+            if !ok {
                 continue;
             }
             out.push(Campaign {
                 id: k["id"].as_i64().unwrap_or(0),
-                name: k["name"].as_str().unwrap_or("").to_string(),
+                name: format!("{prefix}{}", k["name"].as_str().unwrap_or("")),
                 mapcount: k["mapcount"].as_i64().unwrap_or(0),
                 published: k["timestamp"].as_i64().unwrap_or(0),
             });
@@ -178,6 +212,67 @@ fn campaigns(c: &mut Client) -> Vec<Campaign> {
     out
 }
 
+/// Every Track of the Day, month by month (`/api/totd/<monthoffset>`, 0 = the
+/// current month). The campaign is the month ("TOTD 2024-03"), the index the
+/// day of the month, `published` the month's first day.
+fn totd_maps(c: &mut Client) -> Vec<MapRow> {
+    let mut out = Vec::new();
+    let mut offset = 0;
+    let mut months = 1;
+    while offset < months {
+        let v = c.get_json(&format!("{BASE}/totd/{offset}")).unwrap_or_else(|e| die(e));
+        months = v["monthcount"].as_i64().unwrap_or(1) as usize;
+        let year = v["year"].as_i64().unwrap_or(0);
+        let month = v["month"].as_i64().unwrap_or(0);
+        let published = days_from_civil(year, month, 1) * 86400;
+        for d in v["days"].as_array().cloned().unwrap_or_default() {
+            let m = &d["map"];
+            if m["mapUid"].as_str().is_none() {
+                continue;
+            }
+            out.push(MapRow {
+                campaign: format!("TOTD {year}-{month:02}"),
+                campaign_id: d["campaignid"].as_i64().unwrap_or(0),
+                index: d["monthday"].as_i64().unwrap_or(0) as usize,
+                name: m["name"].as_str().unwrap_or("").replace('\t', " "),
+                uid: m["mapUid"].as_str().unwrap_or("").to_string(),
+                map_id: m["mapId"].as_str().unwrap_or("").to_string(),
+                author_ms: m["authorScore"].as_i64().unwrap_or(0),
+                published,
+            });
+        }
+        if offset % 12 == 0 {
+            eprintln!("  totd month {offset}/{months}: {year}-{month:02}, {} maps so far", out.len());
+        }
+        offset += 1;
+    }
+    out
+}
+
+/// Days since 1970-01-01 for a civil date (Howard Hinnant's algorithm).
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe - 719468
+}
+
+fn all_maps(c: &mut Client, kind: Kind, only: &[&str]) -> Vec<MapRow> {
+    match kind {
+        Kind::Totd => totd_maps(c),
+        _ => {
+            let mut rows = Vec::new();
+            for k in campaigns(c, kind).iter().filter(|k| only.is_empty() || only.iter().any(|o| o.eq_ignore_ascii_case(&k.name))) {
+                rows.extend(maps_of(c, k, kind));
+            }
+            rows
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct MapRow {
     campaign: String,
@@ -187,12 +282,19 @@ struct MapRow {
     uid: String,
     map_id: String,
     author_ms: i64,
+    /// The campaign's publish time, Unix seconds (0 when the table predates the column).
+    published: i64,
 }
 
-const MAPS_HEADER: &str = "campaign\tcampaign_id\tindex\tname\tuid\tmap_id\tauthor_ms";
+const MAPS_HEADER: &str = "campaign\tcampaign_id\tindex\tname\tuid\tmap_id\tauthor_ms\tpublished";
 
-fn maps_of(c: &mut Client, k: &Campaign) -> Vec<MapRow> {
-    let v = c.get_json(&format!("{BASE}/campaign/seasonal/{}", k.id)).unwrap_or_else(|e| die(e));
+fn maps_of(c: &mut Client, k: &Campaign, kind: Kind) -> Vec<MapRow> {
+    let path = match kind {
+        Kind::Seasonal => "seasonal",
+        Kind::Weekly => "weeklyshorts",
+        Kind::Totd => unreachable!("totd has no campaign detail"),
+    };
+    let v = c.get_json(&format!("{BASE}/campaign/{path}/{}", k.id)).unwrap_or_else(|e| die(e));
     v["playlist"]
         .as_array()
         .cloned()
@@ -203,10 +305,11 @@ fn maps_of(c: &mut Client, k: &Campaign) -> Vec<MapRow> {
             campaign: k.name.clone(),
             campaign_id: k.id,
             index: i + 1,
-            name: m["name"].as_str().unwrap_or("").to_string(),
+            name: m["name"].as_str().unwrap_or("").replace('\t', " "),
             uid: m["mapUid"].as_str().unwrap_or("").to_string(),
             map_id: m["mapId"].as_str().unwrap_or("").to_string(),
             author_ms: m["authorScore"].as_i64().unwrap_or(0),
+            published: k.published,
         })
         .collect()
 }
@@ -216,8 +319,8 @@ fn write_maps(path: &str, rows: &[MapRow]) {
     s.push('\n');
     for r in rows {
         s.push_str(&format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
-            r.campaign, r.campaign_id, r.index, r.name, r.uid, r.map_id, r.author_ms
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+            r.campaign, r.campaign_id, r.index, r.name, r.uid, r.map_id, r.author_ms, r.published
         ));
     }
     fs::write(path, s).unwrap_or_else(|e| die(format!("{path}: {e}")));
@@ -241,6 +344,7 @@ fn read_maps(path: &str) -> Vec<MapRow> {
                 uid: f[4].to_string(),
                 map_id: f[5].to_string(),
                 author_ms: f[6].parse().unwrap_or(0),
+                published: f.get(7).and_then(|x| x.parse().ok()).unwrap_or(0),
             }
         })
         .collect()
@@ -318,7 +422,25 @@ fn zone_chain(z: &Value) -> String {
 }
 
 const RECORDS_HEADER: &str =
-    "campaign\tmap_index\tmap\tuid\tmap_id\tauthor_ms\tposition\ttime_ms\taccount_id\tplayer\tzone\tset_utc\tghost_url";
+    "campaign\tmap_index\tmap\tuid\tmap_id\tauthor_ms\tposition\ttime_ms\taccount_id\tplayer\tzone\tset_utc\tghost_url\tcampaign_published";
+
+/// Unix seconds -> "YYYY-MM-DD" (empty for 0).
+fn ymd(secs: i64) -> String {
+    if secs <= 0 {
+        return String::new();
+    }
+    let z = secs.div_euclid(86400) + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}")
+}
 
 fn flatten(dir: &Path, maps: &[MapRow], out: &str) -> (usize, usize) {
     let by_uid: BTreeMap<&str, &MapRow> = maps.iter().map(|m| (m.uid.as_str(), m)).collect();
@@ -344,7 +466,7 @@ fn flatten(dir: &Path, maps: &[MapRow], out: &str) -> (usize, usize) {
                 n_rows += 1;
                 let mr = by_uid.get(m.uid.as_str()).copied().unwrap_or(m);
                 s.push_str(&format!(
-                    "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                    "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
                     mr.campaign,
                     mr.index,
                     mr.name,
@@ -357,7 +479,8 @@ fn flatten(dir: &Path, maps: &[MapRow], out: &str) -> (usize, usize) {
                     t["player"]["name"].as_str().unwrap_or("").replace('\t', " "),
                     zone_chain(&t["player"]["zone"]),
                     t["timestamp"].as_str().unwrap_or(""),
-                    t["url"].as_str().map(|u| format!("https://trackmania.io{u}")).unwrap_or_default()
+                    t["url"].as_str().map(|u| format!("https://trackmania.io{u}")).unwrap_or_default(),
+                    ymd(mr.published)
                 ));
             }
         }
@@ -383,6 +506,7 @@ struct Rec {
     zone: String,
     set_utc: String,
     ghost_url: String,
+    campaign_published: String,
 }
 
 fn read_records(path: &str) -> Vec<Rec> {
@@ -405,9 +529,16 @@ fn read_records(path: &str) -> Vec<Rec> {
             zone: f[10].to_string(),
             set_utc: f[11].to_string(),
             ghost_url: f[12].to_string(),
+            campaign_published: f.get(13).unwrap_or(&"").to_string(),
         });
     }
     out
+}
+
+/// The campaign's publish time as a decimal year: the table's own column when
+/// it has one, else read off a seasonal name.
+fn rec_campaign_year(r: &Rec) -> Option<f64> {
+    stamp_year(&r.campaign_published).or_else(|| campaign_year(&r.campaign))
 }
 
 /// "Summer 2021" -> 2021.5 (the season's rough publish time as a decimal year).
@@ -446,13 +577,17 @@ fn report(recs: &[Rec], top: i64, late_years: f64, players: usize) {
 
     // per campaign: maps, records, depth reached, how many of the top-N were set in the campaign's own year
     println!("\nBY CAMPAIGN (records / maps / deepest position / top-{top} set within a year of release / top-{top} set {late_years}+ years later)");
-    let mut camps: Vec<&str> = recs.iter().map(|r| r.campaign.as_str()).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
-    camps.sort_by(|a, b| campaign_year(a).partial_cmp(&campaign_year(b)).unwrap_or(std::cmp::Ordering::Equal));
+    let mut camp_year: BTreeMap<&str, f64> = BTreeMap::new();
+    for r in recs {
+        camp_year.entry(r.campaign.as_str()).or_insert_with(|| rec_campaign_year(r).unwrap_or(0.0));
+    }
+    let mut camps: Vec<&str> = camp_year.keys().copied().collect();
+    camps.sort_by(|a, b| camp_year[a].partial_cmp(&camp_year[b]).unwrap_or(std::cmp::Ordering::Equal));
     for c in &camps {
         let rs: Vec<&Rec> = recs.iter().filter(|r| r.campaign == *c).collect();
         let maps = rs.iter().map(|r| r.uid.as_str()).collect::<std::collections::BTreeSet<_>>().len();
         let deepest = rs.iter().map(|r| r.position).max().unwrap_or(0);
-        let cy = campaign_year(c).unwrap_or(0.0);
+        let cy = camp_year[c];
         let topn: Vec<&&Rec> = rs.iter().filter(|r| r.position <= top).collect();
         let fresh = topn.iter().filter(|r| stamp_year(&r.set_utc).map_or(false, |y| y - cy < 1.0)).count();
         let late = topn.iter().filter(|r| stamp_year(&r.set_utc).map_or(false, |y| y - cy >= late_years)).count();
@@ -526,7 +661,7 @@ fn report(recs: &[Rec], top: i64, late_years: f64, players: usize) {
     let mut late: Vec<&Rec> = recs
         .iter()
         .filter(|r| r.position <= top)
-        .filter(|r| match (campaign_year(&r.campaign), stamp_year(&r.set_utc)) {
+        .filter(|r| match (rec_campaign_year(r), stamp_year(&r.set_utc)) {
             (Some(c), Some(y)) => y - c >= late_years,
             _ => false,
         })
@@ -568,21 +703,19 @@ fn main() {
     let pace: u64 = flag(rest, "--pace-ms").map(|v| v.parse().unwrap_or_else(|_| die("--pace-ms wants milliseconds"))).unwrap_or(1200);
     let length: usize = flag(rest, "--length").map(|v| v.parse().unwrap_or_else(|_| die("--length wants a number"))).unwrap_or(500);
     let only = flags(rest, "--campaign");
+    let kind = Kind::parse(flag(rest, "--kind"));
     match what {
         "campaigns" => {
             let mut c = Client::new(pace);
             println!("id\tname\tmaps\tpublished_utc");
-            for k in campaigns(&mut c) {
+            for k in campaigns(&mut c, kind) {
                 println!("{}\t{}\t{}\t{}", k.id, k.name, k.mapcount, k.published);
             }
         }
         "maps" => {
             let out = need(rest, "--out");
             let mut c = Client::new(pace);
-            let mut rows = Vec::new();
-            for k in campaigns(&mut c).iter().filter(|k| only.is_empty() || only.iter().any(|o| o.eq_ignore_ascii_case(&k.name))) {
-                rows.extend(maps_of(&mut c, k));
-            }
+            let rows = all_maps(&mut c, kind, &only);
             write_maps(out, &rows);
             eprintln!("wrote {out}: {} maps ({} requests)", rows.len(), c.requests);
         }
@@ -626,10 +759,7 @@ fn main() {
             let rows = if maps_path.exists() {
                 read_maps(maps_path.to_str().unwrap())
             } else {
-                let mut rows = Vec::new();
-                for k in campaigns(&mut c) {
-                    rows.extend(maps_of(&mut c, &k));
-                }
+                let rows = all_maps(&mut c, kind, &[]);
                 write_maps(maps_path.to_str().unwrap(), &rows);
                 eprintln!("{} maps in {} campaigns", rows.len(), rows.iter().map(|r| r.campaign_id).collect::<std::collections::BTreeSet<_>>().len());
                 rows
@@ -653,11 +783,11 @@ fn main() {
             }
         }
         _ => die(
-            "tmlb campaigns\n\
-             tmlb maps --out maps.tsv [--campaign NAME]...\n\
+            "tmlb campaigns [--kind seasonal|totd|weekly]\n\
+             tmlb maps --out maps.tsv [--kind seasonal|totd|weekly] [--campaign NAME]...\n\
              tmlb top --maps maps.tsv --out DIR [--length 500] [--pace-ms 1200] [--campaign NAME]...\n\
              tmlb flatten DIR --maps maps.tsv --out records.tsv\n\
-             tmlb sweep --out DIR [--length 500] [--pace-ms 1200] [--campaign NAME]...\n\
+             tmlb sweep --out DIR [--kind seasonal|totd|weekly] [--length 500] [--pace-ms 1200] [--campaign NAME]...\n\
              tmlb report records.tsv [--top 10] [--late-years 2] [--players 40]",
         ),
     }
@@ -685,6 +815,15 @@ mod tests {
         let y = stamp_year("2026-10-22T18:10:41+00:00").unwrap();
         assert!((y - 2026.807).abs() < 0.01, "{y}");
         assert_eq!(secs(43961), "43.961");
+    }
+
+    #[test]
+    fn civil_dates_round_trip() {
+        assert_eq!(days_from_civil(1970, 1, 1), 0);
+        assert_eq!(days_from_civil(2026, 10, 1) * 86400, 1790812800);
+        assert_eq!(ymd(1790812800), "2026-10-01");
+        assert_eq!(ymd(1625151600), "2021-07-01"); // Summer 2021's publish stamp (15:00 UTC)
+        assert_eq!(ymd(0), "");
     }
 
     #[test]
