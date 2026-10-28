@@ -691,7 +691,12 @@ fn plan_block<'b>(bi: &'b crate::blockinfo::BlockInfo, key: &BlockKey, collectio
     // the forced folder on them.
     let ride_face = name.contains("SlopeU") || name.contains("SlopeUp") || name.contains("SlopeDown") || (name.contains("ArchSlope") && name.contains('U'));
     let wood_body = name.starts_with("TrackWall") && !ride_face && std::env::var("TINY_TRACKWALL_WOOD").map(|v| v != "0").unwrap_or(true);
-    let forced_mod = if side_panel || wood_body { None } else { forced_mod };
+    // …and a water block's BASE slab (`DecoWallWaterBaseFCB`, the 1 m concrete plinth under
+    // a pool: underside + outer sides, nothing drivable) keeps its concrete — the forced
+    // folder's `PlatformTech` stem turned the whole plinth dirt and the dry pool read as a
+    // dirt lump (Everios96 2026-10-28 "literally flat"). The bed (`…FCBInside`) still converts.
+    let water_plinth = name.contains("Water") && name.ends_with("FCB");
+    let forced_mod = if side_panel || wood_body || water_plinth { None } else { forced_mod };
     let effective_mods: Vec<String> = forced_mod.into_iter().chain(bi.material_modifier.iter().cloned()).chain(key.inherited_mods.split('|').filter(|s| !s.is_empty()).map(String::from)).collect();
     let recipe = if let Some(l) = legacy_item { format!("legacy:{l}") } else { format!("{}|wp{:?}|units{:?}|mod{:?}", prefabs.iter().map(|p| format!("{}@{:?}/{:?}", p.0, p.1, p.2)).collect::<Vec<_>>().join(","), bi.waypoint_type, units, effective_mods) };
     if prefabs.is_empty() && legacy_item.is_none() {
@@ -1191,7 +1196,15 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
     // are both floors) — the triangle's own normal can, which is exactly what this block
     // does for overlays (Everios96 2026-10-08: 263's pool centre and 23's channel were
     // skipped as "walls", and 276 grew an orange fin when I stopped skipping them).
-    let water_face_item = std::env::var("TINY_WATER_FACE_FLOORS_ONLY").map(|v| v != "0").unwrap_or(true) && name.contains("Water") && name.contains("FC") && !name.contains("Pillar");
+    // …but only under the water OVERLAY design (the game's block stays and carries the
+    // walls). A water face baked WHOLE (`TINY_WATER_FORCE_BAKE`, Everios96's dry blockset
+    // 2026-10-28) keeps its geometry and hull; `split_vertical` below still limits the
+    // re-dress to its floor triangles.
+    let water_face_item = std::env::var("TINY_WATER_FACE_FLOORS_ONLY").map(|v| v != "0").unwrap_or(true)
+        && std::env::var("TINY_WATER_OVERLAY").map(|v| v == "1").unwrap_or(false)
+        && name.contains("Water")
+        && name.contains("FC")
+        && !name.contains("Pillar");
     if water_face_item || std::env::var("TINY_OVERLAY_NAMES").ok().map(|v| v.split(',').any(|n| n == name)).unwrap_or(false) {
         let tris = m.surf_triangles.len();
         // a 3 cm shell: the copy's faces are the block's own faces, coplanar ones z-fight
@@ -3721,6 +3734,13 @@ pub fn apply_surface_swap(store: &mut DataStore, m: &mut crate::static_item::bui
                     m.two_sided_links.push(t.to_string());
                 }
             }
+            // …and the WATER pieces' blue sheet (`Waterground`: a water road's end cushion
+            // `RoadWaterVFC`, a pool's inner wall): one layer drawn two-sided by the game —
+            // baked whole and one-sided, a closed channel showed no far end wall from
+            // inside (Everios96's dry blockset, 2026-10-28 06:15 box shot)
+            if name.contains("Water") && !m.two_sided_links.iter().any(|x| x == "Waterground") {
+                m.two_sided_links.push("Waterground".to_string());
+            }
         }
         if name.starts_with("RoadIce") && std::env::var("TINY_ICE_TWO_SIDED").map(|v| v != "0").unwrap_or(true) {
             // … and the FINISH line's marks: `DecalMarksOnRoadIce` paints the finish
@@ -3795,6 +3815,13 @@ pub fn apply_surface_swap(store: &mut DataStore, m: &mut crate::static_item::bui
     // a WATER FACE copy re-dresses its floor triangles only; the vertical ones (the
     // pool's side) keep their own look (Everios96 2026-10-07)
     if name.contains("Water") && name.contains("FC") && !name.contains("Pillar") && std::env::var("TINY_WATER_FACE_FLOORS_ONLY").map(|v| v != "0").unwrap_or(true) {
+        m.split_vertical = Some(std::env::var("TINY_WATER_FACE_NY").ok().and_then(|v| v.parse().ok()).unwrap_or(0.5));
+    }
+    // TINY_WATER_SPLIT_ALL=1: the same floor-only re-dress for every water BLOCK baked
+    // whole (the dry blockset: a channel's walls and rims keep their look, its bed and
+    // the drivable tops take the surface — Everios96 2026-10-07 "just the driving floor
+    // is changed", 2026-10-28 "literally flat": an all-dirt tray reads as a slab)
+    if name.contains("Water") && !name.contains("Pillar") && std::env::var("TINY_WATER_SPLIT_ALL").map(|v| v == "1").unwrap_or(false) {
         m.split_vertical = Some(std::env::var("TINY_WATER_FACE_NY").ok().and_then(|v| v.parse().ok()).unwrap_or(0.5));
     }
     if !surface_rows.is_empty() && name.contains("Special") {

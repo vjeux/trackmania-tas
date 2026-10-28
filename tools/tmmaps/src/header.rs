@@ -914,6 +914,20 @@ pub fn set_icon_chunk(bytes: &[u8], width: u16, height: u16, pixels_top_down: &[
     set_header_chunk(bytes, ICON_CHUNK, &payload, true)
 }
 
+/// The WebP form of the icon chunk (TM2020 since April 2022: `u16 width|0x8000,
+/// u16 height|0x8000, u16 encoding = 1, u32 size, the WebP file`; GBX.NET
+/// `CGameCtnCollector` HeaderChunk2E001004). The picture is stored as the file
+/// is — no row flip.
+pub fn set_icon_chunk_webp(bytes: &[u8], width: u16, height: u16, webp: &[u8]) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(10 + webp.len());
+    payload.extend_from_slice(&(width | 0x8000).to_le_bytes());
+    payload.extend_from_slice(&(height | 0x8000).to_le_bytes());
+    payload.extend_from_slice(&1u16.to_le_bytes());
+    payload.extend_from_slice(&(webp.len() as u32).to_le_bytes());
+    payload.extend_from_slice(webp);
+    set_header_chunk(bytes, ICON_CHUNK, &payload, true)
+}
+
 /// The file with header chunk `id` replaced, or inserted after the
 /// collector-description chunk 0x2E001003 (and the icon 0x2E001004 when that
 /// is not the chunk being set) where Nadeo's items carry them. The body is

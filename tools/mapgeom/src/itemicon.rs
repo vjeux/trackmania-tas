@@ -1,5 +1,5 @@
 //! `mapgeom item-icon ITEM.Item.Gbx --bgra CROP.bgra --size 256 [--out OUT] [--margin 0.06]
-//! [--no-flip] [--opaque]` — the item's inventory icon (header chunk 0x2E001004, 64×64 raw
+//! [--no-flip] [--opaque] [--raw]` — the item's inventory icon (header chunk 0x2E001004, 64×64 raw
 //! BGRA) from a top-down box capture: `CROP.bgra` is a `size`×`size` 32-bit BGRA dump of the
 //! capture's centre (tinyctl icon-crops), the item sits on grass, so the picture's corners
 //! give the background colour; the foreground's bounding box, squared with a margin, is
@@ -125,13 +125,27 @@ pub fn icon_pixels(crop: &[u8], size: usize, margin: f32, opaque: bool) -> R<Vec
     Ok(out)
 }
 
-fn one(item: &Path, crop_path: &Path, out: &Path, size: usize, margin: f32, flip: bool, opaque: bool) -> R<()> {
+/// The 64×64 BGRA picture as a lossless WebP file (RGBA, top-down).
+pub fn webp_of(px_bgra: &[u8]) -> R<Vec<u8>> {
+    let mut rgba = Vec::with_capacity(px_bgra.len());
+    for p in px_bgra.chunks(4) {
+        rgba.extend_from_slice(&[p[2], p[1], p[0], p[3]]);
+    }
+    let mut out = Vec::new();
+    image_webp::WebPEncoder::new(&mut out).encode(&rgba, 64, 64, image_webp::ColorType::Rgba8).map_err(|e| format!("webp: {e}"))?;
+    Ok(out)
+}
+
+fn one(item: &Path, crop_path: &Path, out: &Path, size: usize, margin: f32, flip: bool, opaque: bool, raw: bool) -> R<()> {
     let bytes = std::fs::read(item).map_err(|e| format!("{}: {e}", item.display()))?;
     let crop = std::fs::read(crop_path).map_err(|e| format!("{}: {e}", crop_path.display()))?;
     let px = icon_pixels(&crop, size, margin, opaque)?;
-    let out_bytes = tmmaps::header::set_icon_chunk(&bytes, 64, 64, &px, flip);
+    // TM2020 shows WebP icons (its own items carry them since the April 2022 update; a raw
+    // ARGB icon showed as NO icon in Everios96's browser, 2026-10-28); `--raw` writes the
+    // old ARGB form (rows bottom-up) for older games
+    let out_bytes = if raw { tmmaps::header::set_icon_chunk(&bytes, 64, 64, &px, flip) } else { tmmaps::header::set_icon_chunk_webp(&bytes, 64, 64, &webp_of(&px)?) };
     std::fs::write(out, &out_bytes).map_err(|e| format!("{}: {e}", out.display()))?;
-    println!("{}: icon 64×64 from {} ({} bytes → {} bytes)", out.display(), crop_path.display(), bytes.len(), out_bytes.len());
+    println!("{}: icon 64×64 {} from {} ({} bytes → {} bytes)", out.display(), if raw { "raw" } else { "webp" }, crop_path.display(), bytes.len(), out_bytes.len());
     Ok(())
 }
 
@@ -140,6 +154,7 @@ pub fn run(args: &[String]) -> R<()> {
     let margin: f32 = flag(args, "--margin").and_then(|v| v.parse().ok()).unwrap_or(0.06);
     let flip = !args.iter().any(|a| a == "--no-flip");
     let opaque = args.iter().any(|a| a == "--opaque");
+    let raw = args.iter().any(|a| a == "--raw");
     if let (Some(dir), Some(crops)) = (flag(args, "--dir"), flag(args, "--crops")) {
         let mut n = 0usize;
         let mut missing = Vec::new();
@@ -153,7 +168,7 @@ pub fn run(args: &[String]) -> R<()> {
                 missing.push(stem.to_string());
                 continue;
             }
-            one(&p, &crop, &p, size, margin, flip, opaque)?;
+            one(&p, &crop, &p, size, margin, flip, opaque, raw)?;
             n += 1;
         }
         println!("{n} items iconed; {} without a crop{}", missing.len(), if missing.is_empty() { String::new() } else { format!(": {}", missing.join(" ")) });
@@ -162,5 +177,5 @@ pub fn run(args: &[String]) -> R<()> {
     let item = args.get(1).ok_or("item-icon ITEM.Item.Gbx --bgra CROP.bgra [--out OUT] | --dir ITEMS --crops CROPS")?;
     let crop = flag(args, "--bgra").ok_or("--bgra CROP.bgra")?;
     let out = flag(args, "--out").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(item));
-    one(Path::new(item), Path::new(crop), &out, size, margin, flip, opaque)
+    one(Path::new(item), Path::new(crop), &out, size, margin, flip, opaque, raw)
 }

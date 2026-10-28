@@ -17,5 +17,7 @@ path = "src/lib.rs"
 [dependencies]
 tmmaps = { path = "../tmmaps" }
 miniz_oxide = "0.9.1"
+# item icons: TM2020 reads WebP icons only since the April 2022 update (GBX.NET notes); lossless VP8L encoder
+image-webp = "0.2.4"
 gbx = { path = "../gbx" }
 

@@ -1736,6 +1736,15 @@ impl Merged {
                         if let Ok(up) = crate::static_item::build::up_facing_mask(&v, min_ny) {
                             let down: Vec<bool> = up.iter().map(|u| !*u).collect();
                             let (n_up, n_down) = (up.iter().filter(|u| **u).count(), down.iter().filter(|d| **d).count());
+                            // nothing drivable in this visual (a plinth's sides and underside,
+                            // a wall sheet): it keeps its own look entirely — re-dressing it
+                            // whole turned a pool's concrete base dirt (2026-10-28)
+                            if n_up == 0 && n_down > 0 {
+                                self.notes.push(format!("water face: {n_down} vertical/underside triangle(s) kept as they are (no floor in this visual)"));
+                                visual_slots.push((self.visuals.len(), raw));
+                                self.visuals.push(MergedVisual { from_water: water_src, visual: v, material: raw, lod_mask: lod.0, lod_ladder: lod.1.clone(), part });
+                                continue;
+                            }
                             if n_up > 0 && n_down > 0 {
                                 if let (Ok(a), Ok(b)) = (sub_visual(&v, &up), sub_visual(&v, &down)) {
                                     self.notes.push(format!("water face: {n_up} floor triangle(s) re-dressed, {n_down} vertical side triangle(s) kept as they are"));
