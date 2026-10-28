@@ -34,6 +34,7 @@ pub mod regen;
 pub mod roundtrip;
 pub mod script;
 pub mod selftest;
+pub mod cursor;
 pub mod shifts;
 pub mod splice;
 pub mod statik;

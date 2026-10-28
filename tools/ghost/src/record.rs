@@ -58,6 +58,26 @@ fn pick_vehicle(rd: &RecordData) -> Option<usize> {
 
 pub fn cmd(a: &[String]) {
     match a.first().map(String::as_str) {
+        Some("samples") => {
+            // The driver's telemetry as a table: one row a sample, race time,
+            // position, speed, contact flags. The forensics question this
+            // answers is "what was the car doing at THIS tick" -- the tick an
+            // input anomaly sits on -- without a render. `--from/--to` are race
+            // milliseconds.
+            let inp = a.get(1).unwrap_or_else(|| die("ghost record samples FILE [--from MS] [--to MS]"));
+            let d = gbx::record::decode_ghost(inp).unwrap_or_else(|e| die(format!("{inp}: {e}")));
+            let from = num(a, "--from").unwrap_or(i64::MIN);
+            let to = num(a, "--to").unwrap_or(i64::MAX);
+            println!("time_s\tx\ty\tz\tspeed_kmh\tvx\tvy\tvz\tyaw\tpitch\troll\tground\ttop\tgear\tsteer\tgas\tbrake\tsim_time_coef\tturbo\tturbo_time\twetness\trpm_raw");
+            for s in d.samples.iter().filter(|s| (s.time_ms as i64) >= from && (s.time_ms as i64) <= to) {
+                println!(
+                    "{:.3}\t{:.2}\t{:.2}\t{:.2}\t{:.1}\t{:.2}\t{:.2}\t{:.2}\t{:.3}\t{:.3}\t{:.3}\t{}\t{}\t{}\t{:.2}\t{:.2}\t{:.2}\t{:.3}\t{}\t{:.3}\t{:.3}\t{}",
+                    s.time_ms as f64 / 1000.0, s.x, s.y, s.z, s.speed_kmh, s.vx, s.vy, s.vz, s.yaw, s.pitch, s.roll,
+                    s.is_ground_contact as u8, s.is_top_contact as u8, s.gear, s.steer, s.gas, s.brake,
+                    s.sim_time_coef, s.is_turbo as u8, s.turbo_time, s.wetness, s.rpm_raw
+                );
+            }
+        }
         Some("seed-x") => {
             let inp = a.get(1).unwrap_or_else(|| die("ghost record seed-x IN OUT --dx METRES"));
             let out = a.get(2).unwrap_or_else(|| die("ghost record seed-x IN OUT --dx METRES"));
@@ -362,7 +382,10 @@ pub fn cmd(a: &[String]) {
             }
         }
         _ => die(
-            "ghost record seed-x IN OUT --dx METRES\n\
+            "ghost record samples FILE [--from MS] [--to MS]\n\
+             \x20                            -- the driver's telemetry as a table (race time, position,\n\
+             \x20                               speed, contacts): what the car was doing at a tick\n\
+             ghost record seed-x IN OUT --dx METRES\n\
              \x20                            -- causal probe: move only the first vehicle sample's x\n\
              ghost record rebuild IN OUT --span MS [--period MS] [--template N] [--hold-last]\n\
              \x20                            -- --hold-last extends a record the car already\n\

@@ -11,7 +11,7 @@ use gbx::container::{secs, set_embedded_map, Container};
 use ghost::regen::raw_vehicle_samples;
 use gbx::tape::{Encoding, Tape};
 use gbx::{container, tape};
-use ghost::{census, declare, engine, hdr, ident, map_uid_of, phase, record, regen, roundtrip, selftest, shifts, splice, synth, trim, verify, wallclock};
+use ghost::{census, cursor, declare, engine, hdr, ident, map_uid_of, phase, record, regen, roundtrip, selftest, shifts, splice, synth, trim, verify, wallclock};
 
 const HELP: &str = r#"ghost -- the TM2020 ghost / replay API
 
@@ -68,6 +68,10 @@ INPUTS  (operation 1 and 2)
         by -k..+k ticks, one file each, validated in ONE server launch. How
         many neighbours still finish is the run's slack; a station ladder
         (relocated-finish maps, in track order) says WHERE each one died.
+  ghost tape cursor FILE|DIR... [--events] [--tsv OUT]
+                              the OS-cursor samples inside the input tape: a hand on a mouse
+                              moves in streams and nudges of a few units; a program places the
+                              cursor in one tick, from rest, often at the corner (0,0)
   ghost tape csv FILE|TAPE.gtape [--out F.csv] [--from MS] [--to MS]
         The tape as `race_ms,steer,accel,brake`, one row a tick -- the format
         every map page publishes under `inputs/`. Those files had no writer in
@@ -882,10 +886,11 @@ mod film;
 mod sweep;
 
 fn cmd_tape(a: &[String]) {
-    let what = a.first().map(|s| s.as_str()).unwrap_or_else(|| die("ghost tape <extract|inject|script|expand|graft|poke|set|diff|stats|csv|bits|shifts>"));
+    let what = a.first().map(|s| s.as_str()).unwrap_or_else(|| die("ghost tape <extract|inject|script|expand|graft|poke|set|diff|stats|csv|bits|shifts|cursor>"));
     let rest = &a[1..];
     match what {
         "shifts" => shifts::cmd(rest),
+        "cursor" => cursor::cmd(rest),
         "poke" => {
             // Override the vehicle inputs over a tick range, leaving every
             // other tick byte-identical. A brake pulse, a lifted throttle, a

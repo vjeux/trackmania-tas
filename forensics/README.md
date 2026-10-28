@@ -210,6 +210,56 @@ cleared the bounty run itself: κ = 1.000 over 309 samples, a keyboard tape
 shaped like every other finisher's, a landing 3 m short of the pad edge rolled
 in at 64 km/h — a near-miss that barely counted, not a tool's line.
 
+### 2.7 `ghost tape cursor` — the OS cursor inside the input tape
+
+A second instrument, for runs the clock does not catch. Every input packet
+carries one bit "cursor unchanged"; when the OS cursor moved since the
+previous tick the packet carries its new **absolute position**, two 16-bit
+axes in Windows' normalised virtual-desktop space (0..65535 across the primary
+monitor; a monitor to the left shows up as a wrap through 65535). The game
+writes it for every player, mouse-steerer or not: most runs have one sample at
+tick 0 — where the cursor sat when the countdown ended — and nothing after.
+
+```
+ghost tape cursor FILE|DIR... [--events] [--tsv OUT]
+```
+
+One row a file: `tick0_cursor`, `midrun_samples`, `streams` (runs of
+consecutive-tick samples), `singletons` (no sample within 50 ms on either
+side), `max_isolated_jump` (the largest move that started from rest, measured
+from the previous known position), `edge` (x = 0 or y = 0), `corner` (0,0).
+`--events` lists every mid-run sample with its gaps and jump. The footer is
+the pile's base rates.
+
+What a hand does and what a program does are different shapes:
+
+- **A hand** moves in streams — one sample per tick while the mouse moves, a
+  few hundred units per tick at the fastest — and at rest produces nudges of a
+  few units (a pad hit shaking the desk). A big move always has a run-up and a
+  run-down because a physical mouse accelerates and stops over several ticks.
+- **A program** (`SetCursorPos` and everything wrapping it: AutoHotkey
+  `MouseMove`, pywinauto, a tool clicking the game window to focus it, a tool
+  parking the cursor out of the way) moves the cursor in **one tick, from
+  rest, by any distance, to a round place** — the corner (0,0) is the classic.
+
+Read the result against the base rates in §4. A keyboard or pad player with
+no cursor sample at all is the normal case; a mouse-steerer has hundreds in
+streams; one or two singletons that land on a screen edge after a large jump
+from rest are the shape no hand produced in the measured population.
+
+### 2.8 `ghost record samples` — what the car was doing at that tick
+
+```
+ghost record samples FILE [--from MS] [--to MS]
+```
+
+The driver's telemetry as a table (race time, position, speed, velocity,
+attitude, ground/top contact, gear, the sampled steer/gas/brake). The question
+it answers: an input anomaly sits at tick N — what was the car doing at that
+moment, and in the 100 ms around it? A cursor warp that lands within a few
+ticks of the run's decisive physics event (a launch, a collision, a landing)
+is a different fact from one in the middle of a straight.
+
 ---
 
 ## 3. The data: where records and ghosts come from
@@ -264,7 +314,26 @@ numbers through `census`.
 Nadeo's refusal threshold, from accepted/refused pairs in the corpus: +10.8 s
 accepted / +11.6 s refused at 12–14 s runs; +15.02 s accepted / +14.22 s
 refused at 40–50 s runs (ratio ≈ 1.33–1.34). Not a single number; the 1-s
-stamp resolution blurs it.
+stamp resolution blurs it. The tolerance grows with the run: an 83.5-s run
+with +13.0 s (×1.153) is accepted.
+
+**Cursor base rates** (`ghost tape cursor`, the top 300 of *Summer 2021 - 17*,
+2026-10-27 — 2021 keyboard/pad players through 2026 builds):
+
+| measure | value |
+|---|---|
+| files with any mid-run cursor sample | 6 of 300 (2 mouse-active players with 697 and 226 samples in streams; 4 with 1–23 nudges) |
+| mid-run cursor samples | 966 |
+| moves that started from rest (> 50 ms since the previous sample) | 140; the largest **76 units**; 112 of them ≤ 10 |
+| mid-run samples on a screen edge (x = 0 or y = 0) | **0**; at the corner (0,0): **0** |
+| tick-0 cursors on an edge | 4 of 207 (a cursor parked in a corner before the run is real, (5,0) twice) |
+
+So a mid-run singleton that moved ≥ 300 units from rest, or that landed on an
+edge, is outside everything 300 honest runs on the same map produced. One such
+sample is a lead; several, each within a few ticks of the run's decisive
+physics events, is the shape of a tool's hand on the window — still to be read
+together with the splits (where the time was gained) and the player's other
+records (does the cursor ever move in them?).
 
 ---
 
@@ -272,8 +341,14 @@ stamp resolution blurs it.
 
 - **An input macro replaying a perfect line at normal speed.** Deterministic
   physics makes it validate perfectly; the stamps read ×1.00. This is the most
-  plausible remaining cheat and nothing in a ghost sees it. Only a POV
-  recording does.
+  plausible remaining cheat and nothing in the clock sees it. The cursor
+  instrument (§2.7) sees the tool's window interactions when there are any; a
+  tool that never touches the cursor leaves nothing but the run itself. Only a
+  POV recording does.
+- **A save-state tool that restores the seed.** The tape re-simulates, the
+  clock reads real time, V13 says valid: the file is indistinguishable from a
+  live run except by what the tool did around the game — the cursor, the
+  Openplanet signature, the pattern over records.
 - **Account sharing without overlap.** The overlap test catches two people
   driving *at the same time*; alternating sharers leave nothing.
 - **Which tool, or whether it was a tool, from one file.** A single refused
