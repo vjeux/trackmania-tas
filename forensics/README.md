@@ -283,9 +283,19 @@ tmlb sweep --out DIR [--length 500] [--pace-ms 1200] [--campaign "Summer 2021"].
 tmlb flatten DIR/pages --maps DIR/maps.tsv --out records.tsv
 ```
 
-650 maps × 5 pages at 1.2 s ≈ 65 minutes for the top 500 of everything; a
-stopped sweep resumes where it was, a 429 waits a minute, five failures skip
-the page and name it at the end.
+650 maps × 5 pages at 2.2 s ≈ 2 hours for the top 500 of the seasons (1.2 s
+drew 429s after ~40 requests; 2.2 s drew none over 17,000); a stopped sweep
+resumes where it was, a 429 waits a minute, five failures skip the page and
+name it at the end.
+
+**The tables are published**, so nobody has to sweep again for a snapshot:
+release [`leaderboards-2026-10-28`](https://github.com/vjeux/trackmania-tas/releases/tag/leaderboards-2026-10-28)
+carries the top 500 of every seasonal-campaign map (650 maps, 325,000
+records, 2026-10-27), every Track of the Day (2,310 maps, 1,155,000 records)
+and every Weekly Shorts map (490 maps, 245,000 records) as xz'd TSVs with the
+ghost download URL on every row, plus the map lists and the `tmlb report`
+output for each. `time_ms` −1 is trackmania.io masking the live Weekly Shorts
+week.
 
 | need | source |
 |---|---|
