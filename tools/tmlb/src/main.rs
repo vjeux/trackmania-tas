@@ -13,6 +13,13 @@
 //!                                          ghost_url
 //!   tmlb sweep --out DIR [--length 500] [--pace-ms 1200] [--campaign NAME]...
 //!                                          campaigns -> maps -> top -> flatten, in one go
+//!   tmlb report records.tsv [--top 10] [--late-years 2] [--players 40]
+//!                                          what the table says: records per campaign and
+//!                                          year, the players with the most top-N records,
+//!                                          the #1s with the largest lead over #2, and the
+//!                                          LATE records -- top-N positions taken years after
+//!                                          the campaign was published (a 2026 record on a
+//!                                          2021 map at #1 is where this started)
 //!
 //! Pace: never two requests closer than --pace-ms (default 1200 ms -- the same
 //! courtesy the investigations used); a 429 waits 60 s, a 5xx 10 s, five
@@ -362,6 +369,198 @@ fn flatten(dir: &Path, maps: &[MapRow], out: &str) -> (usize, usize) {
     (n_maps, n_rows)
 }
 
+/// One flattened record, as `report` reads it back.
+#[derive(Clone, Debug)]
+struct Rec {
+    campaign: String,
+    map: String,
+    uid: String,
+    author_ms: i64,
+    position: i64,
+    time_ms: i64,
+    account_id: String,
+    player: String,
+    zone: String,
+    set_utc: String,
+    ghost_url: String,
+}
+
+fn read_records(path: &str) -> Vec<Rec> {
+    let s = fs::read_to_string(path).unwrap_or_else(|e| die(format!("{path}: {e}")));
+    let mut out = Vec::new();
+    for l in s.lines().skip(1).filter(|l| !l.trim().is_empty()) {
+        let f: Vec<&str> = l.split('\t').collect();
+        if f.len() < 13 {
+            die(format!("{path}: short row: {l}"));
+        }
+        out.push(Rec {
+            campaign: f[0].to_string(),
+            map: f[2].to_string(),
+            uid: f[3].to_string(),
+            author_ms: f[5].parse().unwrap_or(0),
+            position: f[6].parse().unwrap_or(0),
+            time_ms: f[7].parse().unwrap_or(0),
+            account_id: f[8].to_string(),
+            player: f[9].to_string(),
+            zone: f[10].to_string(),
+            set_utc: f[11].to_string(),
+            ghost_url: f[12].to_string(),
+        });
+    }
+    out
+}
+
+/// "Summer 2021" -> 2021.5 (the season's rough publish time as a decimal year).
+fn campaign_year(name: &str) -> Option<f64> {
+    let mut it = name.split_whitespace();
+    let season = it.next()?;
+    let year: f64 = it.next()?.parse().ok()?;
+    let frac = match season {
+        "Winter" => 0.0,
+        "Spring" => 0.25,
+        "Summer" => 0.5,
+        "Fall" => 0.75,
+        _ => return None,
+    };
+    Some(year + frac)
+}
+
+/// "2026-10-22T18:10:41+00:00" -> 2026.81
+fn stamp_year(s: &str) -> Option<f64> {
+    let y: f64 = s.get(0..4)?.parse().ok()?;
+    let m: f64 = s.get(5..7)?.parse().ok()?;
+    let d: f64 = s.get(8..10)?.parse().ok()?;
+    Some(y + (m - 1.0) / 12.0 + (d - 1.0) / 365.0)
+}
+
+fn secs(ms: i64) -> String {
+    format!("{}.{:03}", ms / 1000, ms % 1000)
+}
+
+fn report(recs: &[Rec], top: i64, late_years: f64, players: usize) {
+    println!("RECORDS TABLE: {} records, {} maps, {} campaigns, {} distinct accounts",
+        recs.len(),
+        recs.iter().map(|r| r.uid.as_str()).collect::<std::collections::BTreeSet<_>>().len(),
+        recs.iter().map(|r| r.campaign.as_str()).collect::<std::collections::BTreeSet<_>>().len(),
+        recs.iter().map(|r| r.account_id.as_str()).collect::<std::collections::BTreeSet<_>>().len());
+
+    // per campaign: maps, records, depth reached, how many of the top-N were set in the campaign's own year
+    println!("\nBY CAMPAIGN (records / maps / deepest position / top-{top} set within a year of release / top-{top} set {late_years}+ years later)");
+    let mut camps: Vec<&str> = recs.iter().map(|r| r.campaign.as_str()).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+    camps.sort_by(|a, b| campaign_year(a).partial_cmp(&campaign_year(b)).unwrap_or(std::cmp::Ordering::Equal));
+    for c in &camps {
+        let rs: Vec<&Rec> = recs.iter().filter(|r| r.campaign == *c).collect();
+        let maps = rs.iter().map(|r| r.uid.as_str()).collect::<std::collections::BTreeSet<_>>().len();
+        let deepest = rs.iter().map(|r| r.position).max().unwrap_or(0);
+        let cy = campaign_year(c).unwrap_or(0.0);
+        let topn: Vec<&&Rec> = rs.iter().filter(|r| r.position <= top).collect();
+        let fresh = topn.iter().filter(|r| stamp_year(&r.set_utc).map_or(false, |y| y - cy < 1.0)).count();
+        let late = topn.iter().filter(|r| stamp_year(&r.set_utc).map_or(false, |y| y - cy >= late_years)).count();
+        println!("  {:<12} {:>6} {:>4} {:>5}   {:>4}/{:<4} {:>4}", c, rs.len(), maps, deepest, fresh, topn.len(), late);
+    }
+
+    // by year the record was set
+    println!("\nBY YEAR THE RECORD WAS SET (all positions / top-{top})");
+    let mut by_year: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+    for r in recs {
+        let y = r.set_utc.get(0..4).unwrap_or("?").to_string();
+        let e = by_year.entry(y).or_insert((0, 0));
+        e.0 += 1;
+        if r.position <= top {
+            e.1 += 1;
+        }
+    }
+    for (y, (n, t)) in &by_year {
+        println!("  {y}  {n:>7}  {t:>6}");
+    }
+
+    // players
+    println!("\nPLAYERS with the most top-{top} records (top-{top} / #1s / all in table / campaigns spanned / first..last set)");
+    let mut per: BTreeMap<&str, (String, usize, usize, usize, std::collections::BTreeSet<&str>, String, String)> = BTreeMap::new();
+    for r in recs {
+        let e = per.entry(r.account_id.as_str()).or_insert((r.player.clone(), 0, 0, 0, Default::default(), r.set_utc.clone(), r.set_utc.clone()));
+        e.3 += 1;
+        if r.position <= top {
+            e.1 += 1;
+        }
+        if r.position == 1 {
+            e.2 += 1;
+        }
+        e.4.insert(r.campaign.as_str());
+        if r.set_utc < e.5 {
+            e.5 = r.set_utc.clone();
+        }
+        if r.set_utc > e.6 {
+            e.6 = r.set_utc.clone();
+        }
+    }
+    let mut pv: Vec<_> = per.iter().collect();
+    pv.sort_by(|a, b| b.1 .1.cmp(&a.1 .1).then(b.1 .2.cmp(&a.1 .2)).then(b.1 .3.cmp(&a.1 .3)));
+    for (id, (name, t, ones, all, camps, first, last)) in pv.iter().take(players) {
+        println!("  {:<20} {:>4} {:>4} {:>6} {:>3}   {}..{}   {}", name, t, ones, all, camps.len(), first.get(0..10).unwrap_or(""), last.get(0..10).unwrap_or(""), id);
+    }
+
+    // #1 leads over #2
+    println!("\n#1s WITH THE LARGEST LEAD OVER #2 (lead / lead % of the time / set / player / map)");
+    let mut leads: Vec<(i64, f64, &Rec)> = Vec::new();
+    let mut by_map: BTreeMap<&str, Vec<&Rec>> = BTreeMap::new();
+    for r in recs {
+        by_map.entry(r.uid.as_str()).or_default().push(r);
+    }
+    for (_, v) in by_map.iter_mut() {
+        v.sort_by_key(|r| r.position);
+        if v.len() >= 2 && v[0].position == 1 && v[1].position == 2 {
+            let lead = v[1].time_ms - v[0].time_ms;
+            leads.push((lead, 100.0 * lead as f64 / v[0].time_ms.max(1) as f64, v[0]));
+        }
+    }
+    leads.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    for (lead, pct, r) in leads.iter().take(25) {
+        println!("  {:>7} {:>5.2}%  {}  {:<20} {}", secs(*lead), pct, r.set_utc.get(0..10).unwrap_or(""), r.player, r.map);
+    }
+    let med = if leads.is_empty() { 0.0 } else { let mut p: Vec<f64> = leads.iter().map(|l| l.1).collect(); p.sort_by(|a, b| a.partial_cmp(b).unwrap()); p[p.len() / 2] };
+    println!("  ({} maps with a #1 and #2; median lead {:.2}%)", leads.len(), med);
+
+    // late records: top-N positions taken late_years+ after the campaign
+    println!("\nLATE RECORDS: top-{top} positions taken {late_years}+ years after the campaign was published, newest first (set / pos / time / vs #2 or #1 / player / map)");
+    let mut late: Vec<&Rec> = recs
+        .iter()
+        .filter(|r| r.position <= top)
+        .filter(|r| match (campaign_year(&r.campaign), stamp_year(&r.set_utc)) {
+            (Some(c), Some(y)) => y - c >= late_years,
+            _ => false,
+        })
+        .collect();
+    late.sort_by(|a, b| b.set_utc.cmp(&a.set_utc));
+    println!("  {} such records by {} accounts", late.len(), late.iter().map(|r| r.account_id.as_str()).collect::<std::collections::BTreeSet<_>>().len());
+    for r in late.iter().take(60) {
+        let others = by_map.get(r.uid.as_str()).cloned().unwrap_or_default();
+        let neighbour = if r.position == 1 {
+            others.iter().find(|o| o.position == 2).map(|o| format!("{} ahead of #2", secs(o.time_ms - r.time_ms)))
+        } else {
+            others.iter().find(|o| o.position == 1).map(|o| format!("{} behind #1", secs(r.time_ms - o.time_ms)))
+        }
+        .unwrap_or_default();
+        println!("  {}  #{:<3} {:>8}  {:<22} {:<20} {}", r.set_utc.get(0..10).unwrap_or(""), r.position, secs(r.time_ms), neighbour, r.player, r.map);
+    }
+    // the accounts with the most late top-N records
+    let mut late_per: BTreeMap<&str, (String, usize, usize)> = BTreeMap::new();
+    for r in &late {
+        let e = late_per.entry(r.account_id.as_str()).or_insert((r.player.clone(), 0, 0));
+        e.1 += 1;
+        if r.position == 1 {
+            e.2 += 1;
+        }
+    }
+    let mut lp: Vec<_> = late_per.iter().collect();
+    lp.sort_by(|a, b| b.1 .1.cmp(&a.1 .1));
+    println!("\n  accounts with the most late top-{top} records (late top-{top} / late #1s):");
+    for (id, (name, n, ones)) in lp.iter().take(30) {
+        println!("    {:<20} {:>4} {:>4}   {}", name, n, ones, id);
+    }
+    let _ = (&recs[0].zone, &recs[0].ghost_url, &recs[0].author_ms);
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let what = args.first().map(String::as_str).unwrap_or("");
@@ -400,6 +599,17 @@ fn main() {
             if !failed.is_empty() {
                 std::process::exit(1);
             }
+        }
+        "report" => {
+            let path = rest.first().unwrap_or_else(|| die("tmlb report records.tsv [--top 10] [--late-years 2] [--players 40]"));
+            let recs = read_records(path);
+            if recs.is_empty() {
+                die("no records");
+            }
+            let top: i64 = flag(rest, "--top").map(|v| v.parse().unwrap_or_else(|_| die("--top wants a number"))).unwrap_or(10);
+            let late: f64 = flag(rest, "--late-years").map(|v| v.parse().unwrap_or_else(|_| die("--late-years wants years"))).unwrap_or(2.0);
+            let players: usize = flag(rest, "--players").map(|v| v.parse().unwrap_or_else(|_| die("--players wants a number"))).unwrap_or(40);
+            report(&recs, top, late, players);
         }
         "flatten" => {
             let dir = PathBuf::from(rest.first().unwrap_or_else(|| die("tmlb flatten DIR --maps maps.tsv --out records.tsv")));
@@ -447,7 +657,8 @@ fn main() {
              tmlb maps --out maps.tsv [--campaign NAME]...\n\
              tmlb top --maps maps.tsv --out DIR [--length 500] [--pace-ms 1200] [--campaign NAME]...\n\
              tmlb flatten DIR --maps maps.tsv --out records.tsv\n\
-             tmlb sweep --out DIR [--length 500] [--pace-ms 1200] [--campaign NAME]...",
+             tmlb sweep --out DIR [--length 500] [--pace-ms 1200] [--campaign NAME]...\n\
+             tmlb report records.tsv [--top 10] [--late-years 2] [--players 40]",
         ),
     }
 }
@@ -464,6 +675,16 @@ mod tests {
         .unwrap();
         assert_eq!(zone_chain(&z), "South West England|England|United Kingdom|Europe|World");
         assert_eq!(zone_chain(&Value::Null), "");
+    }
+
+    #[test]
+    fn years_read_as_decimals() {
+        assert_eq!(campaign_year("Summer 2021"), Some(2021.5));
+        assert_eq!(campaign_year("Winter 2026"), Some(2026.0));
+        assert_eq!(campaign_year("Weekly Shorts"), None);
+        let y = stamp_year("2026-10-22T18:10:41+00:00").unwrap();
+        assert!((y - 2026.807).abs() < 0.01, "{y}");
+        assert_eq!(secs(43961), "43.961");
     }
 
     #[test]
