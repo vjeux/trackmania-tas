@@ -28,7 +28,6 @@
 //! the beam's 2 m height along the face normal (−x, out of the face), two quarters' worth
 //! of beam length mapped onto the contour length.
 
-use crate::geom::IDENTITY;
 use crate::static_item::build::{add_prefab, assemble, BuildOpts};
 use crate::crystal_model::CPlugMaterialUserInst;
 use crate::static_item::merged::Merged;
@@ -62,6 +61,11 @@ fn polar(p: [f32; 3]) -> (f32, f32, f32) {
 /// Drop every triangle with a vertex failing `keep` (visuals and the collision mesh),
 /// compacting the vertex streams; visuals left empty go.
 fn retain_triangles(m: &mut Merged, keep: &dyn Fn([f32; 3]) -> bool) {
+    retain_triangles_by(m, &|t: &[[f32; 3]; 3]| t.iter().all(|c| keep(*c)))
+}
+
+/// Keep the triangles `keep` accepts (judged whole), compacting every stream.
+fn retain_triangles_by(m: &mut Merged, keep: &dyn Fn(&[[f32; 3]; 3]) -> bool) {
     let mut dropped_meta = 0usize;
     let mut tangent_note: Vec<String> = Vec::new();
     for mv in &mut m.visuals {
@@ -84,7 +88,8 @@ fn retain_triangles(m: &mut Merged, keep: &dyn Fn([f32; 3]) -> bool) {
         }
         let mut kept: Vec<u32> = Vec::with_capacity(ib.indices.len());
         for t in ib.indices.chunks(3) {
-            if t.iter().all(|i| keep(positions[*i as usize])) {
+            let tri = [positions[t[0] as usize], positions[t[1] as usize], positions[t[2] as usize]];
+            if keep(&tri) {
                 kept.extend_from_slice(t);
             }
         }
@@ -164,7 +169,8 @@ fn retain_triangles(m: &mut Merged, keep: &dyn Fn([f32; 3]) -> bool) {
     let verts = m.surf_vertices.clone();
     let mut kept_t: Vec<Triangle> = Vec::new();
     for t in &m.surf_triangles {
-        if t.indices.iter().all(|i| keep(verts[*i as usize])) {
+        let tri = [verts[t.indices[0] as usize], verts[t.indices[1] as usize], verts[t.indices[2] as usize]];
+        if keep(&tri) {
             kept_t.push(t.clone());
         }
     }
@@ -246,7 +252,17 @@ fn remap_frames(m: &mut Merged, f: &dyn Fn([f32; 3]) -> ([f32; 3], [[f32; 3]; 3]
 /// The source beam as a Merged: the prefab loaded once per entry of `copies` (each a
 /// rotation about the source centre, radians, so the copies lie end to end on the source
 /// circle), junction/braces (and end plates unless `keep_ends`) removed.
-fn source_beam(store: &mut crate::store::DataStore, prefab: &str, keep_ends: bool, copies: &[f32]) -> R<Merged> {
+/// What happens to the quarter's end caps.
+enum Ends {
+    /// every cap stays
+    Keep,
+    /// every cap goes (a closed ring)
+    Drop,
+    /// only the caps at these source angles stay (an open path keeps its two feet closed)
+    KeepAt(Vec<f32>),
+}
+
+fn source_beam(store: &mut crate::store::DataStore, prefab: &str, ends: Ends, copies: &[f32]) -> R<Merged> {
     let mut m = Merged::default();
     // Two-sided (env `BEAM_TWO_SIDED`, default on; judged at merge time, so set before the
     // prefabs are added): the beam's top and inner skin are wound inward — the game's own
@@ -275,7 +291,6 @@ fn source_beam(store: &mut crate::store::DataStore, prefab: &str, keep_ends: boo
     // and the junction cube (Structure + Pylon at r ≈ 22.6) are the "extra geometry".
     // Everything from r 29 outward stays — the first cut (d < 1.2) threw the shell away and
     // shipped the bare dark lattice ("texture looks a bit off").
-    let _ = keep_ends;
     retain_triangles(&mut m, &|c| {
         if keep_all {
             return true;
@@ -283,6 +298,49 @@ fn source_beam(store: &mut crate::store::DataStore, prefab: &str, keep_ends: boo
         let (_, d, _) = polar(c);
         d >= -1.0
     });
+    // The quarter's END CAPS (the plates and lattice ends in the planes θ = 0° and 90°, 9 cm
+    // deep): a ring has no ends, and two caps meeting at a joint showed as a dark seam with
+    // a step (Everios96 16:43 side-by-side review). Dropped unless `--keep-ends` (the arch
+    // keeps its feet closed).
+    if !matches!(ends, Ends::Keep) && !keep_all {
+        let kept_angles: Vec<f32> = match &ends {
+            Ends::KeepAt(a) => a.clone(),
+            _ => Vec::new(),
+        };
+        // The lattice and the inner wall stop 9 cm short of each end plane (the cap plate's
+        // thickness): with the caps gone that left an 18 cm slot at every joint (seam view,
+        // 16:58). Every vertex within 0.35° of an end plane is snapped onto it first, so the
+        // walls meet at the joint and the plates collapse to nothing.
+        let ident = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        remap_frames(&mut m, &|p| {
+            let (theta, d, y) = polar(p);
+            let q = theta.rem_euclid(std::f32::consts::FRAC_PI_2);
+            if q < 0.0061 || q > std::f32::consts::FRAC_PI_2 - 0.0061 {
+                let t = (theta / std::f32::consts::FRAC_PI_2).round() * std::f32::consts::FRAC_PI_2;
+                let r = SRC_R + d;
+                ([SRC_CENTRE[0] + r * t.cos(), y, SRC_CENTRE[1] - r * t.sin()], ident)
+            } else {
+                (p, ident)
+            }
+        });
+        let at_end = |c: [f32; 3]| -> bool {
+            let (theta, _, _) = polar(c);
+            let q = theta.rem_euclid(std::f32::consts::FRAC_PI_2);
+            let near = q < 0.0061 || q > std::f32::consts::FRAC_PI_2 - 0.0061; // 0.35° ≈ 18 cm at r 30
+            if !near {
+                return false;
+            }
+            // a cap the caller keeps: within 0.35° of one of its angles (mod 2π)
+            !kept_angles.iter().any(|a| {
+                let dd = (theta - a).rem_euclid(std::f32::consts::TAU);
+                dd < 0.0061 || dd > std::f32::consts::TAU - 0.0061
+            })
+        };
+        let n0: usize = m.visuals.iter().filter_map(|v| v.visual.index_buffer.as_ref()).map(|ib| ib.indices.len() / 3).sum();
+        retain_triangles_by(&mut m, &|t: &[[f32; 3]; 3]| !t.iter().all(|c| at_end(*c)));
+        let n1: usize = m.visuals.iter().filter_map(|v| v.visual.index_buffer.as_ref()).map(|ib| ib.indices.len() / 3).sum();
+        m.notes.push(format!("beam: {} end-cap triangle(s) removed ({} cap angle(s) kept)", n0 - n1, kept_angles.len()));
+    }
     let after: usize = m.visuals.iter().filter_map(|v| v.visual.index_buffer.as_ref()).map(|ib| ib.indices.len() / 3).sum();
     m.notes.push(format!("beam: {} copies, {after} of {before} triangles kept (junction cube + braces removed)", copies.len()));
     Ok(m)
@@ -383,12 +441,18 @@ pub fn ring_cmd(store: &mut crate::store::DataStore, args: &[String]) -> R<()> {
     let radius: f32 = flag(args, "--radius").and_then(|v| v.parse().ok()).unwrap_or(13.0);
     let prefab = flag(args, "--prefab").unwrap_or(SRC_PREFAB);
     let keep_ends = args.iter().any(|a| a == "--keep-ends");
-    let quarters: usize = flag(args, "--quarters").and_then(|v| v.parse().ok()).unwrap_or(4);
+    let quarters: usize = flag(args, "--quarters").and_then(|v| v.parse().ok()).unwrap_or(2);
     let cx = flag(args, "--centre-x").and_then(|v| v.parse().ok()).unwrap_or(16.0f32);
     let cz = flag(args, "--centre-z").and_then(|v| v.parse().ok()).unwrap_or(16.0f32);
     let copies: Vec<f32> = (0..quarters).map(|q| q as f32 * std::f32::consts::FRAC_PI_2).collect();
-    let mut m = source_beam(store, prefab, keep_ends, &copies)?;
+    let mut m = source_beam(store, prefab, if keep_ends { Ends::Keep } else { Ends::Drop }, &copies)?;
     let ident3 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    // `quarters` copies share the 360°: with 2, each 90° quarter opens to 180° (the arc
+    // length 47.1 → 40.8 m at r 13: texture and TRACKMANIA decal nearly natural, 2 joints
+    // instead of 4); with 4 each quarter is squeezed to 43 % (the first builds). Frames turn
+    // with the angle (rotation about y by θ' − θ).
+    let k = 4.0 / quarters.max(1) as f32;
+    let _ = ident3;
     // BEAM_NO_BEND=1: geometry left where the source put it (the pipeline bisect)
     if std::env::var("BEAM_NO_BEND").map(|v| v == "1").unwrap_or(false) {
         m.notes.push("ring: NO BEND (bisect)".into());
@@ -396,7 +460,9 @@ pub fn ring_cmd(store: &mut crate::store::DataStore, args: &[String]) -> R<()> {
         remap_frames(&mut m, &|p| {
             let (theta, d, y) = polar(p);
             let r = radius + d;
-            ([cx + r * theta.cos(), y, cz - r * theta.sin()], ident3)
+            let t2 = theta * k;
+            let (sd, cd) = (t2 - theta).sin_cos();
+            ([cx + r * t2.cos(), y, cz - r * t2.sin()], [[cd, 0.0, sd], [0.0, 1.0, 0.0], [-sd, 0.0, cd]])
         });
     }
     m.notes.push(format!("ring: {quarters} quarters of {prefab} bent from radius {SRC_R} to {radius} m about ({cx}, {cz})"));
@@ -500,7 +566,8 @@ pub fn arch_cmd(store: &mut crate::store::DataStore, args: &[String]) -> R<()> {
     let quarter_len = std::f32::consts::FRAC_PI_2 * SRC_R;
     let n_q = (1..=3).min_by(|a, b| (total / (*a as f32 * quarter_len)).ln().abs().partial_cmp(&(total / (*b as f32 * quarter_len)).ln().abs()).unwrap()).unwrap_or(2);
     let copies: Vec<f32> = (0..n_q).map(|q| -(q as f32) * std::f32::consts::FRAC_PI_2).collect();
-    let mut m = source_beam(store, prefab, false, &copies)?;
+    let feet = vec![std::f32::consts::FRAC_PI_2, -((copies.len() as f32 - 1.0) * std::f32::consts::FRAC_PI_2)];
+    let mut m = source_beam(store, prefab, if args.iter().any(|a| a == "--keep-ends") { Ends::Keep } else { Ends::KeepAt(feet) }, &copies)?;
     let src_len = n_q as f32 * quarter_len;
     // BEAM_NO_ROT=1: positions bent, normals/tangents left (the bisect); BEAM_NO_BEND=1: nothing moved
     let no_rot = std::env::var("BEAM_NO_ROT").map(|v| v == "1").unwrap_or(false);
