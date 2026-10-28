@@ -161,6 +161,18 @@ pub fn run(args: &[String], open_store: &mut dyn FnMut() -> crate::store::DataSt
     // already carries (coplanar at y 1: a lighter patch and a z-fighting line in the dirt
     // bed, 2026-10-28 02:00 box shot); under water the game never shows the duplicate.
     let drop_pieces: Vec<String> = flag(args, "--drop-pieces").map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()).unwrap_or_default();
+    // --lift-pieces 'GLOB=dy[,GLOB=dy]': pieces whose SOURCE record name matches are placed
+    // dy metres higher — the dry basin's floor at the WATER LINE instead of the bed (a
+    // variant for Everios96 to judge against the floor-at-the-bed one, 2026-10-28 13:24:
+    // "one is completely straight (your dirt version) while in the water version there
+    // is clearly a slope there" — the water hides the vertical metre under the banks)
+    let lift_pieces: Vec<(String, f32)> = flag(args, "--lift-pieces")
+        .map(|v| {
+            v.split(',')
+                .filter_map(|s| s.trim().split_once('=').map(|(g, d)| (g.to_string(), d.parse::<f32>().unwrap_or(0.0))))
+                .collect()
+        })
+        .unwrap_or_default();
     let mut source_of: HashMap<String, String> = HashMap::new();
     if let Some(dir) = Path::new(conv_path).parent() {
         if let Ok(text) = std::fs::read_to_string(dir.join("report.tsv")) {
@@ -205,7 +217,10 @@ pub fn run(args: &[String], open_store: &mut dyn FnMut() -> crate::store::DataSt
                 continue;
             }
         }
-        let world = crate::place::anchored(it.pos, [it.yaw, it.pitch, it.roll], it.pivot, 1.0);
+        let mut world = crate::place::anchored(it.pos, [it.yaw, it.pitch, it.roll], it.pivot, 1.0);
+        if let Some(dy) = source_of.get(&stem).and_then(|srcname| lift_pieces.iter().find(|(g, _)| wild_match(g, srcname)).map(|(_, d)| *d)) {
+            world[10] += dy;
+        }
         let mut tmp = Merged::default();
         let mut resolve = |_: i32| -> Option<(String, String, u8)> { None };
         tmp.add_static_object(so, &world, 1.0, &mut resolve)?;
