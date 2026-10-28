@@ -744,6 +744,34 @@ pub fn run(path: &str, a: &[String]) -> Report {
                         ),
                     },
                 }
+
+                // ---- V13 the server's OWN verdict ---------------------------
+                //
+                // V7 compares TIMES. The server also says whether it would
+                // ACCEPT the file, and the two are not the same question: a
+                // ghost whose real-time span is too long for its race time
+                // re-simulates to exactly the declared time and is still
+                // refused -- `IsValid false, Desc "unexcepted walltime (39s)"`.
+                // That one line is the whole wall-clock investigation of
+                // September 2026 (`forensics/README.md`); V7 alone called every
+                // one of those files good. So the verdict is a gate of its own.
+                match res.is_valid {
+                    Some(true) => r.add("V13", Verdict::Pass, "the server's own verdict: IsValid true"),
+                    Some(false) if res.time_ms.is_some() => r.add(
+                        "V13",
+                        Verdict::Fail,
+                        format!(
+                            "the server re-simulated the time but says IsValid FALSE: {}",
+                            if res.desc.trim().is_empty() { "(no Desc given)" } else { res.desc.trim() }
+                        ),
+                    ),
+                    Some(false) => r.add(
+                        "V13",
+                        Verdict::Na,
+                        format!("IsValid false on a file that did not finish -- V7 carries that; the server said: {}", res.desc.trim()),
+                    ),
+                    None => r.add("V13", Verdict::Na, "the server printed no IsValid line for this file"),
+                }
             }
         }
     }

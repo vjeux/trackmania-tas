@@ -11,7 +11,7 @@ use gbx::container::{secs, set_embedded_map, Container};
 use ghost::regen::raw_vehicle_samples;
 use gbx::tape::{Encoding, Tape};
 use gbx::{container, tape};
-use ghost::{census, declare, engine, hdr, ident, map_uid_of, phase, record, regen, roundtrip, selftest, splice, synth, trim, verify};
+use ghost::{census, declare, engine, hdr, ident, map_uid_of, phase, record, regen, roundtrip, selftest, shifts, splice, synth, trim, verify, wallclock};
 
 const HELP: &str = r#"ghost -- the TM2020 ghost / replay API
 
@@ -25,6 +25,16 @@ INSPECT
         the input tape, and the telemetry record.
   ghost chunks FILE
         The skippable-chunk table, for forensics.
+  ghost wallclock files DIR|FILE... [--tsv OUT]
+  ghost wallclock census WALL.tsv [--records REC.tsv] [--flag-s 10] [--top N]
+        The REAL-TIME clock of a ghost: the validation chunk's walltime stamps
+        against race time + countdown. Honest runs sit at +/-1 s; a game that
+        ran slow (a tool, a freeze) leaves a longer span and Nadeo's server
+        refuses the file ("unexcepted walltime"); a game that ran FAST leaves a
+        shorter one and only the stamps can see it. `census` turns a table of
+        files into base rates, per-player patterns (a speed setting snaps to
+        x2.0/x2.5 on every map; stalls scatter) and the overlap test. See
+        forensics/README.md.
   ghost manifest FILE
   ghost manifest diff LEFT RIGHT
         Deterministic JSON: GBX header/chunks, packet-mode histogram and payload
@@ -52,6 +62,12 @@ INPUTS  (operation 1 and 2)
         off-by-one is invisible and lands in a measurement.
   ghost tape stats TAPE.gtape
         Tick count, input events, packet modes, respawns.
+  ghost tape shifts --template RUN --out DIR --map MAP [--max-shift 1] [--until-ms MS]
+                    [--no-validate] [--stations NAME=MAP,...]
+        The +/-k-tick boundary-shift family of a run: every input event moved
+        by -k..+k ticks, one file each, validated in ONE server launch. How
+        many neighbours still finish is the run's slack; a station ladder
+        (relocated-finish maps, in track order) says WHERE each one died.
   ghost tape csv FILE|TAPE.gtape [--out F.csv] [--from MS] [--to MS]
         The tape as `race_ms,steer,accel,brake`, one row a tick -- the format
         every map page publishes under `inputs/`. Those files had no writer in
@@ -678,6 +694,7 @@ fn main() {
         "regen-control" => regen::control(rest),
         "roundtrip" => roundtrip::cmd(rest),
         "verify" => verify::cmd(rest),
+        "wallclock" => wallclock::cmd(rest),
         "selftest" => selftest::cmd(rest),
         o => die(format!("unknown command {:?} (try `ghost --help`)", o)),
     }
@@ -865,9 +882,10 @@ mod film;
 mod sweep;
 
 fn cmd_tape(a: &[String]) {
-    let what = a.first().map(|s| s.as_str()).unwrap_or_else(|| die("ghost tape <extract|inject|script|expand|graft|poke|set|diff|stats|csv|bits>"));
+    let what = a.first().map(|s| s.as_str()).unwrap_or_else(|| die("ghost tape <extract|inject|script|expand|graft|poke|set|diff|stats|csv|bits|shifts>"));
     let rest = &a[1..];
     match what {
+        "shifts" => shifts::cmd(rest),
         "poke" => {
             // Override the vehicle inputs over a tick range, leaving every
             // other tick byte-identical. A brake pulse, a lifted throttle, a

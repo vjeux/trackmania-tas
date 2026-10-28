@@ -34,12 +34,14 @@ pub mod regen;
 pub mod roundtrip;
 pub mod script;
 pub mod selftest;
+pub mod shifts;
 pub mod splice;
 pub mod statik;
 pub mod synth;
 pub mod trim;
 pub mod unwrap;
 pub mod verify;
+pub mod wallclock;
 
 pub use gbx::container::{secs, Container};
 // `tools/gbx` owns the format; the crates above this one address it through
