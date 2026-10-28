@@ -695,6 +695,25 @@ fn source_beam(store: &mut crate::store::DataStore, prefab: &str, ends: Ends, co
         let n1: usize = m.visuals.iter().filter_map(|v| v.visual.index_buffer.as_ref()).map(|ib| ib.indices.len() / 3).sum();
         m.notes.push(format!("beam: {} end-cap triangle(s) removed ({} cap angle(s) kept)", n0 - n1, kept_angles.len()));
     }
+    // The lips (the channel's top and bottom edges, d −0.35..0, y 1.83–1.91 / 0.09–0.17)
+    // sit 9 cm below the top skin and 9 cm above the bottom one: with the inner skin in
+    // front of them that left a 35 cm groove along the inner edge of the top — Everios96
+    // 18:15 "a weird rim that doesn't need to be there, just flat everywhere". Every vertex
+    // of the inner 5 cm band within 20 cm of the top or bottom plane goes onto that plane:
+    // the lip tops become part of the top, the lips' faces collapse.
+    if std::env::var("BEAM_FLAT_LIPS").map(|v| v != "0").unwrap_or(true) {
+        let ident = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        remap_frames(&mut m, &|p| {
+            let (_, d, y) = polar(p);
+            if d <= 0.05 && y >= 1.80 {
+                ([p[0], 2.0, p[2]], ident)
+            } else if d <= 0.05 && y <= 0.20 {
+                ([p[0], 0.0, p[2]], ident)
+            } else {
+                (p, ident)
+            }
+        });
+    }
     // the flat inner face (env `BEAM_INNER_SKIN=0` to skip, the bisect)
     if std::env::var("BEAM_INNER_SKIN").map(|v| v != "0").unwrap_or(true) {
         let n = mirror_outer_skin(&mut m, 1.9, -0.36);
