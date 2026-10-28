@@ -69,6 +69,36 @@ fn flags<'a>(a: &'a [String], k: &str) -> Vec<&'a str> {
     out
 }
 
+/// A TSV cell: tabs, carriage returns and newlines become spaces. Map and
+/// player names carry all three (a Track of the Day of 2023-01 has a newline
+/// inside its name), and one of them splits a row.
+fn cell(s: &str) -> String {
+    s.replace(['\t', '\r', '\n'], " ")
+}
+
+/// Rows of a TSV whose cells were NOT sanitised when written (the first
+/// sweeps): a physical line with fewer than `n` fields is joined to the next
+/// line until the row is whole. A rewritten table never needs this.
+fn tsv_rows(text: &str, n: usize) -> Vec<String> {
+    let mut rows: Vec<String> = Vec::new();
+    let mut pending = String::new();
+    for l in text.lines() {
+        if pending.is_empty() {
+            pending = l.to_string();
+        } else {
+            pending.push(' ');
+            pending.push_str(l);
+        }
+        if pending.split('\t').count() >= n {
+            rows.push(std::mem::take(&mut pending));
+        }
+    }
+    if !pending.trim().is_empty() {
+        rows.push(pending);
+    }
+    rows
+}
+
 fn need<'a>(a: &'a [String], k: &str) -> &'a str {
     flag(a, k).unwrap_or_else(|| die(format!("missing {k} VALUE")))
 }
@@ -234,7 +264,7 @@ fn totd_maps(c: &mut Client) -> Vec<MapRow> {
                 campaign: format!("TOTD {year}-{month:02}"),
                 campaign_id: d["campaignid"].as_i64().unwrap_or(0),
                 index: d["monthday"].as_i64().unwrap_or(0) as usize,
-                name: m["name"].as_str().unwrap_or("").replace('\t', " "),
+                name: cell(m["name"].as_str().unwrap_or("")),
                 uid: m["mapUid"].as_str().unwrap_or("").to_string(),
                 map_id: m["mapId"].as_str().unwrap_or("").to_string(),
                 author_ms: m["authorScore"].as_i64().unwrap_or(0),
@@ -305,7 +335,7 @@ fn maps_of(c: &mut Client, k: &Campaign, kind: Kind) -> Vec<MapRow> {
             campaign: k.name.clone(),
             campaign_id: k.id,
             index: i + 1,
-            name: m["name"].as_str().unwrap_or("").replace('\t', " "),
+            name: cell(m["name"].as_str().unwrap_or("")),
             uid: m["mapUid"].as_str().unwrap_or("").to_string(),
             map_id: m["mapId"].as_str().unwrap_or("").to_string(),
             author_ms: m["authorScore"].as_i64().unwrap_or(0),
@@ -320,7 +350,7 @@ fn write_maps(path: &str, rows: &[MapRow]) {
     for r in rows {
         s.push_str(&format!(
             "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
-            r.campaign, r.campaign_id, r.index, r.name, r.uid, r.map_id, r.author_ms, r.published
+            cell(&r.campaign), r.campaign_id, r.index, cell(&r.name), r.uid, r.map_id, r.author_ms, r.published
         ));
     }
     fs::write(path, s).unwrap_or_else(|e| die(format!("{path}: {e}")));
@@ -328,7 +358,9 @@ fn write_maps(path: &str, rows: &[MapRow]) {
 
 fn read_maps(path: &str) -> Vec<MapRow> {
     let s = fs::read_to_string(path).unwrap_or_else(|e| die(format!("{path}: {e}")));
-    s.lines()
+    let n = s.lines().next().map(|h| h.split('\t').count()).unwrap_or(7);
+    tsv_rows(&s, n)
+        .iter()
         .skip(1)
         .filter(|l| !l.trim().is_empty())
         .map(|l| {
@@ -467,17 +499,17 @@ fn flatten(dir: &Path, maps: &[MapRow], out: &str) -> (usize, usize) {
                 let mr = by_uid.get(m.uid.as_str()).copied().unwrap_or(m);
                 s.push_str(&format!(
                     "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
-                    mr.campaign,
+                    cell(&mr.campaign),
                     mr.index,
-                    mr.name,
+                    cell(&mr.name),
                     mr.uid,
                     mr.map_id,
                     mr.author_ms,
                     t["position"].as_i64().unwrap_or(0),
                     t["time"].as_i64().unwrap_or(0),
                     t["player"]["id"].as_str().unwrap_or(""),
-                    t["player"]["name"].as_str().unwrap_or("").replace('\t', " "),
-                    zone_chain(&t["player"]["zone"]),
+                    cell(t["player"]["name"].as_str().unwrap_or("")),
+                    cell(&zone_chain(&t["player"]["zone"])),
                     t["timestamp"].as_str().unwrap_or(""),
                     t["url"].as_str().map(|u| format!("https://trackmania.io{u}")).unwrap_or_default(),
                     ymd(mr.published)
@@ -511,8 +543,9 @@ struct Rec {
 
 fn read_records(path: &str) -> Vec<Rec> {
     let s = fs::read_to_string(path).unwrap_or_else(|e| die(format!("{path}: {e}")));
+    let n = s.lines().next().map(|h| h.split('\t').count()).unwrap_or(13);
     let mut out = Vec::new();
-    for l in s.lines().skip(1).filter(|l| !l.trim().is_empty()) {
+    for l in tsv_rows(&s, n).iter().skip(1).filter(|l| !l.trim().is_empty()) {
         let f: Vec<&str> = l.split('\t').collect();
         if f.len() < 13 {
             die(format!("{path}: short row: {l}"));
@@ -815,6 +848,14 @@ mod tests {
         let y = stamp_year("2026-10-22T18:10:41+00:00").unwrap();
         assert!((y - 2026.807).abs() < 0.01, "{y}");
         assert_eq!(secs(43961), "43.961");
+    }
+
+    #[test]
+    fn cells_never_break_a_row() {
+        assert_eq!(cell("a\tb\r\nc"), "a b  c");
+        let legacy = "h1\th2\th3\nx\tbroken\nname\t3\ny\twhole\t4\n";
+        let rows = tsv_rows(legacy, 3);
+        assert_eq!(rows, vec!["h1\th2\th3", "x\tbroken name\t3", "y\twhole\t4"]);
     }
 
     #[test]
