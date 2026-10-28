@@ -16,6 +16,7 @@
 //! `selfbuild`; the shooting half is `shootctl shootset`.
 
 mod boxbuild;
+mod boxfront;
 mod credits;
 pub use credits::expand as credits_expand;
 mod tmio;

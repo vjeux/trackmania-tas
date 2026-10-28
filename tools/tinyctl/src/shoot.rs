@@ -109,40 +109,23 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         let text = wsx.wait_done(&done, &log, Duration::from_secs(1200), "fresh game")?;
         eprintln!("  {}", text.trim());
     }
-    for side in &sides {
-        let map = if *side == "o" { &r_orig } else { &r_tiny };
-        // shootset maps the camera through the anchor for --side t only, so
-        // an --ab orig is shot AS side t (own tag, own dir) and its frames
-        // are then moved under the compare's -o names.
-        let as_t = *side == "o" && ab;
-        let (shoot_side, shoot_tag, shoot_dir) = if as_t { ("t", format!("{tag}A"), format!("{remote_dir}A")) } else { (*side, tag.clone(), remote_dir.clone()) };
-        // --scale S: the tiny side's camera scale (default 0.5); `--scale 1 --anchor
-        // 0,0,0:0,0,0` shoots a FULL-SIZE variant of the original (a map with
-        // records removed) from the very same cameras — the "original minus X"
-        // protocol that tells what a record contributes to the picture
-        let scale_arg = f("--scale").map(|s| format!(" --scale {s}")).unwrap_or_default();
-        let anchor_arg = if shoot_side == "t" { format!(" --anchor {anchor}{scale_arg}") } else { String::new() };
-        // --shadows Q: compute the lightmap on both sides before shooting
-        let shadows_arg = f("--shadows").map(|q| format!(" --shadows {q}")).unwrap_or_default();
-        // the box-side lock names its holder from TM_SESSION; the devserver's
-        // environment does not cross the relay, so the session is exported in
-        // the remote command itself (as remote-drive and round-publish do)
-        let cmd = format!("{}; {shootctl} shootset --detach --map {map} --views {r_views} --side {shoot_side} --tag {shoot_tag} --outdir {shoot_dir}{anchor_arg}{shadows_arg}{settle_arg}{get_args}", crate::remoteshots::ENV);
-        eprintln!("shooting side {side}{} …", if as_t { " (a tiny build: through the anchor)" } else { "" });
-        let started = wsx.sh(&cmd)?;
-        if wsx.verbose {
-            eprintln!("{}", started.trim());
-        }
-        let done = wsx.wait_done(&format!("{shoot_dir}/done-{shoot_side}.txt"), &format!("{shoot_dir}/shootset-{shoot_side}.log"), Duration::from_secs(1800), &format!("shootset {side}"))?;
-        for l in done.lines() {
-            eprintln!("  {l}");
-        }
-        if as_t {
-            let names = crate::compare_view_names(&views)?;
-            let mvs: Vec<String> = names.iter().map(|n| format!("mv -f {shoot_dir}/cmp-{shoot_tag}{n}-t.png {remote_dir}/cmp-{tag}{n}-o.png")).collect();
-            wsx.sh(&format!("mkdir -p {remote_dir}; {}; cp -f {shoot_dir}/shootset-t.log {remote_dir}/shootset-o.log", mvs.join("; ")))?;
+    // --front: put the game window on top of whatever else is on the screen for the
+    // shots (a parked Hades II sat TOPMOST over the editor 2026-10-27 19:24 and every
+    // frame was Hades; the capture is a screen copy), and put things back afterwards.
+    // Inside gate()'s logged run, so the Alt tap it needs is not read as a person's.
+    let front = tmmaps::cli::has(args, "--front");
+    if front {
+        let r = crate::boxfront::front(&wsx)?;
+        eprintln!("  {r}");
+    }
+    let shot = shoot_sides(&wsx, args, &sides, &r_orig, &r_tiny, ab, &tag, &remote_dir, &r_views, &views, &shootctl, &settle_arg, &get_args, &anchor);
+    if front {
+        match crate::boxfront::restore(&wsx) {
+            Ok(r) => eprintln!("  {r}"),
+            Err(e) => eprintln!("  restore: {e}"),
         }
     }
+    shot?;
     // One side re-shot (a fix on the tiny side): the other side's frames are
     // still on the box from the first shoot, so the comparison runs the same
     // way — it needs the frames, not the shoot. `--no-compare` skips it.
@@ -203,6 +186,46 @@ fn pull_frames(wsx: &Wsx, remote_dir: &str, tag: &str, names: &[String], sides: 
             let f = format!("cmp-{tag}{name}-{side}.png");
             let n = wsx.pull(&format!("{remote_dir}/{f}"), &outdir.join(&f))?;
             eprintln!("  pulled {f} ({n} B)");
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn shoot_sides(wsx: &crate::wsx::Wsx, args: &[String], sides: &[&str], r_orig: &str, r_tiny: &str, ab: bool, tag: &str, remote_dir: &str, r_views: &str, views: &std::path::Path, shootctl: &str, settle_arg: &str, get_args: &str, anchor: &str) -> Result<(), String> {
+    let f = |k: &str| tmmaps::cli::flag(args, k);
+    for side in sides {
+        let map = if *side == "o" { r_orig } else { r_tiny };
+        // shootset maps the camera through the anchor for --side t only, so
+        // an --ab orig is shot AS side t (own tag, own dir) and its frames
+        // are then moved under the compare's -o names.
+        let as_t = *side == "o" && ab;
+        let (shoot_side, shoot_tag, shoot_dir) = if as_t { ("t", format!("{tag}A"), format!("{remote_dir}A")) } else { (*side, tag.to_string(), remote_dir.to_string()) };
+        // --scale S: the tiny side's camera scale (default 0.5); `--scale 1 --anchor
+        // 0,0,0:0,0,0` shoots a FULL-SIZE variant of the original (a map with
+        // records removed) from the very same cameras — the "original minus X"
+        // protocol that tells what a record contributes to the picture
+        let scale_arg = f("--scale").map(|s| format!(" --scale {s}")).unwrap_or_default();
+        let anchor_arg = if shoot_side == "t" { format!(" --anchor {anchor}{scale_arg}") } else { String::new() };
+        // --shadows Q: compute the lightmap on both sides before shooting
+        let shadows_arg = f("--shadows").map(|q| format!(" --shadows {q}")).unwrap_or_default();
+        // the box-side lock names its holder from TM_SESSION; the devserver's
+        // environment does not cross the relay, so the session is exported in
+        // the remote command itself (as remote-drive and round-publish do)
+        let cmd = format!("{}; {shootctl} shootset --detach --map {map} --views {r_views} --side {shoot_side} --tag {shoot_tag} --outdir {shoot_dir}{anchor_arg}{shadows_arg}{settle_arg}{get_args}", crate::remoteshots::ENV);
+        eprintln!("shooting side {side}{} …", if as_t { " (a tiny build: through the anchor)" } else { "" });
+        let started = wsx.sh(&cmd)?;
+        if wsx.verbose {
+            eprintln!("{}", started.trim());
+        }
+        let done = wsx.wait_done(&format!("{shoot_dir}/done-{shoot_side}.txt"), &format!("{shoot_dir}/shootset-{shoot_side}.log"), Duration::from_secs(1800), &format!("shootset {side}"))?;
+        for l in done.lines() {
+            eprintln!("  {l}");
+        }
+        if as_t {
+            let names = crate::compare_view_names(views)?;
+            let mvs: Vec<String> = names.iter().map(|n| format!("mv -f {shoot_dir}/cmp-{shoot_tag}{n}-t.png {remote_dir}/cmp-{tag}{n}-o.png")).collect();
+            wsx.sh(&format!("mkdir -p {remote_dir}; {}; cp -f {shoot_dir}/shootset-t.log {remote_dir}/shootset-o.log", mvs.join("; ")))?;
         }
     }
     Ok(())
