@@ -1617,6 +1617,11 @@ impl BlockInfo {
                 v.no_pillar_below_index, multi_dir_name(v.multi_dir), v.block_units.len(), v.mobils.len()
             ));
             p(&mut s, format!("    spawn {:?}  manual symmetry {:?}", v.spawn_loc, v.manual_symmetry));
+            for u in &v.block_units {
+                let short = |c: &Option<String>| c.as_deref().map(|x| x.rsplit('\\').next().unwrap_or(x).trim_end_matches(".Gbx").to_string()).unwrap_or_else(|| "-".into());
+                let list = |l: &Vec<String>| if l.is_empty() { "-".to_string() } else { l.iter().map(|x| x.rsplit('\\').next().unwrap_or(x).trim_end_matches(".Gbx").to_string()).collect::<Vec<_>>().join("+") };
+                p(&mut s, format!("    unit {:?}  T {}  B {}  N {} E {} S {} W {}  (0x00B bottom {} dir {} / top {} dir {})", u.offset, list(&u.clips[4]), list(&u.clips[5]), list(&u.clips[0]), list(&u.clips[1]), list(&u.clips[2]), list(&u.clips[3]), short(&u.bottom_clip), u.bottom_clip_dir, short(&u.top_clip), u.top_clip_dir));
+            }
             if v.helper_solid.is_some() || v.waypoint_trigger_solid.is_some() || v.gate.is_some() || !v.trigger_shapes.is_empty() {
                 p(&mut s, format!("    helper solid {:?}  waypoint trigger {:?}  trigger shapes {:?}  gate {:?}", v.helper_solid, v.waypoint_trigger_solid, v.trigger_shapes, v.gate));
             }

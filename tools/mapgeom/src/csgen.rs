@@ -43,6 +43,8 @@ pub fn identifier(id: &str) -> (String, bool) {
 struct BlockRow {
     id: String,
     size: (i32, i32),
+    /// cells tall: the base variant's units' max y offset + 1 (StructurePillar 1, DecoWallSlope2Straight 2, …)
+    size_y: i32,
     cells: Option<Vec<(i32, i32)>>,
     collections: u32,
     waypoint: Option<i32>,
@@ -241,6 +243,8 @@ pub fn cmd(store: &mut crate::store::DataStore, rest: &[String], flag: &dyn Fn(&
     let name_vs_ident = rest.iter().any(|x| x == "--name-vs-ident");
     // --catalogs-only: no enum / record declarations in the files (Hugo's reorg keeps those hand-written)
     let catalogs_only = rest.iter().any(|x| x == "--catalogs-only");
+    // --size-y: `Block(string Id, int SizeX, int SizeZ, int SizeY, int[][]? Cells, …)` — the block's height in cells
+    let size_y_field = rest.iter().any(|x| x == "--size-y");
     // ---- blocks
     let mut blocks: BTreeMap<String, BlockRow> = BTreeMap::new();
     let mut failed = 0usize;
@@ -258,17 +262,19 @@ pub fn cmd(store: &mut crate::store::DataStore, rest: &[String], flag: &dyn Fn(&
         let ground = g.is_some();
         let air = a.is_some();
         let (size, cells) = match g.clone().or(a.clone()) { Some(x) => x, None => ((1, 1), vec![(0, 0)]) };
+        let size_y = bi.variant_base_ground.as_ref().or(bi.variant_base_air.as_ref()).map(|v| v.block_units.iter().map(|u| u.offset[1] + 1).max().unwrap_or(1)).unwrap_or(1).max(1);
         let full = (cells.len() as i32) >= size.0 * size.1;
         // the variant count: every placement the editor can pick — the base ground + base air + the additional
         // ground/air variants that carry content (the same families `pick_placement_add` chooses from)
         let has = |v: &crate::blockinfo::Variant| !v.block_units.is_empty() || v.mobils.iter().any(|l| !l.is_empty());
         let variants = bi.variant_base_ground.iter().filter(|v| has(v)).count() + bi.variant_base_air.iter().filter(|v| has(v)).count() + bi.additional_ground.iter().filter(|v| has(v)).count() + bi.additional_air.iter().filter(|v| has(v)).count();
-        let row = BlockRow { id: name.clone(), size, cells: if full { None } else { Some(cells) }, collections: *bit, waypoint: bi.waypoint_type, ground, air, variants, conflicts: Vec::new() };
+        let row = BlockRow { id: name.clone(), size, size_y, cells: if full { None } else { Some(cells) }, collections: *bit, waypoint: bi.waypoint_type, ground, air, variants, conflicts: Vec::new() };
         match blocks.get_mut(&name) {
             None => { blocks.insert(name, row); }
             Some(e) => {
                 e.collections |= bit;
                 if e.size != row.size { e.conflicts.push(format!("{coll_name}: size {}x{} vs {}x{}", row.size.0, row.size.1, e.size.0, e.size.1)); }
+                if e.size_y != row.size_y { e.conflicts.push(format!("{coll_name}: height {} vs {}", row.size_y, e.size_y)); e.size_y = e.size_y.max(row.size_y); }
                 if e.cells != row.cells { e.conflicts.push(format!("{coll_name}: cells differ")); }
                 if e.variants != row.variants { e.conflicts.push(format!("{coll_name}: {} variants vs {}", row.variants, e.variants)); e.variants = e.variants.max(row.variants); }
                 if e.waypoint != row.waypoint { e.conflicts.push(format!("{coll_name}: waypoint {:?} vs {:?}", row.waypoint, e.waypoint)); }
@@ -350,7 +356,8 @@ pub fn cmd(store: &mut crate::store::DataStore, rest: &[String], flag: &dyn Fn(&
     if !catalogs_only {
     cs.push_str(enums);
     cs.push_str("public readonly record struct BlockVariant(Block Model, int Variant);\n\n");
-    cs.push_str("public sealed record Block(string Id, int SizeX, int SizeZ, int[][]? Cells, Collections Collections, Waypoint Waypoint, bool Ground, bool Air, int Variants)\n{\n    public Block? Plain => Blocks.PlainOf.TryGetValue(Id, out var plain) ? plain : null;\n\n    public Block? As(Waypoint kind) => kind == Waypoint ? this : Blocks.Families.TryGetValue((Id, kind), out var twin) ? twin : null;\n\n    public BlockVariant Variant(int n) => new(this, n);\n}\n\n");
+    cs.push_str(&format!("public sealed record Block(string Id, int SizeX, int SizeZ, {}int[][]? Cells, Collections Collections, Waypoint Waypoint, bool Ground, bool Air, int Variants)\n{{\n", if size_y_field { "int SizeY, " } else { "" }));
+    cs.push_str("    public Block? Plain => Blocks.PlainOf.TryGetValue(Id, out var plain) ? plain : null;\n\n    public Block? As(Waypoint kind) => kind == Waypoint ? this : Blocks.Families.TryGetValue((Id, kind), out var twin) ? twin : null;\n\n    public BlockVariant Variant(int n) => new(this, n);\n}\n\n");
     }
     cs.push_str("public static class Blocks\n{\n");
     let mut block_idents: Vec<(String, String)> = Vec::new();
@@ -360,7 +367,8 @@ pub fn cmd(store: &mut crate::store::DataStore, rest: &[String], flag: &dyn Fn(&
             None => "null".to_string(),
             Some(c) => format!("new[] {{ {} }}", c.iter().map(|(x, z)| format!("new[] {{ {x}, {z} }}")).collect::<Vec<_>>().join(", ")),
         };
-        cs.push_str(&format!("    public static readonly Block {ident} = new(\"{id}\", {}, {}, {cells}, {}, {}, {}, {}, {});\n", b.size.0, b.size.1, collections_cs(b.collections), waypoint_cs(b.waypoint), b.ground, b.air, b.variants));
+        let sy = if size_y_field { format!("{}, ", b.size_y) } else { String::new() };
+        cs.push_str(&format!("    public static readonly Block {ident} = new(\"{id}\", {}, {}, {sy}{cells}, {}, {}, {}, {}, {});\n", b.size.0, b.size.1, collections_cs(b.collections), waypoint_cs(b.waypoint), b.ground, b.air, b.variants));
         block_idents.push((ident, id.clone()));
     }
     cs.push_str("\n    public static readonly IReadOnlyDictionary<string, Block> ById = new Dictionary<string, Block>\n    {\n");
@@ -490,6 +498,11 @@ pub fn cmd(store: &mut crate::store::DataStore, rest: &[String], flag: &dyn Fn(&
         let custom_path = format!("{out}/Custom.g.cs");
         std::fs::write(&custom_path, &cc).map_err(|e| format!("{custom_path}: {e}"))?;
         println!("wrote {custom_path}: {custom_n} items ({} bytes) from {} under {}{}", cc.len(), custom_dirs.join(", "), root.display(), if dup_names.is_empty() { String::new() } else { format!("; duplicate file names skipped: {}", dup_names.join(", ")) });
+    }
+    {
+        let mut hist: BTreeMap<i32, usize> = BTreeMap::new();
+        for b in blocks.values() { *hist.entry(b.size_y).or_default() += 1; }
+        println!("block heights (cells): {}", hist.iter().map(|(h, n)| format!("{h} → {n}")).collect::<Vec<_>>().join(", "));
     }
     println!("plain twins written: {plain_written} of {} mapping rows{}", plain.len(), if plain_missing.is_empty() { String::new() } else { format!("; unresolved: {}", plain_missing.join(", ")) });
     // report
