@@ -4341,7 +4341,9 @@ pub fn expandable_item_ext(store: &mut crate::store::DataStore, ident: &str, col
     }
     m.trigger = Some(trigger_from_shape_file(store, "Stadium\\Media\\Prefab\\Gate\\ExpandableCheckpoint_Trigger.Shape.Gbx", &IDENTITY, 1.0)?);
     m.waypoint_type = Some(wtype);
-    m.spawn = [16.0, 0.0, 16.0];
+    // the respawn pose: the pane's centre, airborne (the trigger slab x 0..32 × y 0..7.18 × z 15.58..16.42 → (16,
+    // 3.59, 16)), facing the gameplay direction +z — consistent with the ring item (Hugo, 10-28)
+    m.spawn = [16.0, 3.59, 16.0];
     let kept = m.visuals.len();
     let (bytes, _) = finish_item(m, ident, ident, 1.0, collection)?;
     Ok((bytes, swaps, kept, before - kept))
@@ -4402,7 +4404,10 @@ pub fn ring_item(store: &mut crate::store::DataStore, ident: &str, collection: u
     m.trigger = Some(trigger_from_shape_file(store, "Stadium\\Media\\Prefab\\Gate\\Checkpoint_Trigger.Shape.Gbx", &IDENTITY, 1.0)?);
     m.waypoint_type = Some(WP_CHECKPOINT_T);
     m.no_respawn = false;
-    m.spawn = [16.0, 1.7, 11.2];
+    // the respawn pose like the gate ITEMS' (their NPlugTrigger_SSpawn sits at the item origin = the arch centre
+    // plane, facing +z): the ring's centre, airborne in the middle of the trigger disc (its bbox centre (16, 16, 16);
+    // the arch's own centre (16.0, 15.9, 15.6) agrees), facing the gameplay direction +z (Hugo, 10-28)
+    m.spawn = [16.0, 16.0, 16.0];
     let tris = m.surf_triangles.len();
     let (bytes, _) = finish_item(m, ident, ident, 1.0, collection)?;
     Ok((bytes, visuals, tris))

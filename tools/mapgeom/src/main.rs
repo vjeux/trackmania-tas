@@ -6079,7 +6079,7 @@ fn main() {
                 let (bytes, visuals, tris) = mapgeom::static_item::build::ring_item(&mut store, &ident, collection, fix, top).unwrap_or_else(|e| die(format!("{name}: {e}")));
                 let p = dir.join(name);
                 std::fs::write(&p, &bytes).unwrap_or_else(|e| die(format!("{}: {e}", p.display())));
-                println!("wrote {}: {} bytes ({visuals} visuals, {tris} collision tris, trigger Checkpoint_Trigger.Shape, WaypointType 2, spawn (16, 1.7, 11.2))", p.display(), bytes.len());
+                println!("wrote {}: {} bytes ({visuals} visuals, {tris} collision tris, trigger Checkpoint_Trigger.Shape, WaypointType 2, spawn (16, 16, 16) facing +z)", p.display(), bytes.len());
             }
         }
         "expandable-item" => {
