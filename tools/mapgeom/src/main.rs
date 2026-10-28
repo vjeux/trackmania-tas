@@ -6033,7 +6033,11 @@ fn main() {
         "expandable-frames" => {
             let mut store = open(&a);
             let dir = std::path::PathBuf::from(flag(&a.rest, "--out-dir").unwrap_or_else(|| die("expandable-frames: --out-dir D".into())));
-            let collection: u32 = flag(&a.rest, "--collection").and_then(|v| v.parse().ok()).unwrap_or(26);
+            let env = flag(&a.rest, "--env");
+            let collection: u32 = match env.as_deref() { Some("RedIsland") => 0x10, Some("WhiteShore") => 0x1d, Some("GreenCoast") => 0xf, Some("BlueBay") => 0x1c, Some(other) => die(format!("--env {other}: RedIsland | WhiteShore | GreenCoast | BlueBay")), None => flag(&a.rest, "--collection").and_then(|v| v.parse().ok()).unwrap_or(26) };
+            let suffix = env.clone().unwrap_or_default();
+            // --only A,B: a subset of the item stems (the skinned set: the beams and posts, not the Foot)
+            let only: Option<Vec<String>> = flag(&a.rest, "--only").map(|v| v.split(',').map(|x| x.trim().to_string()).collect());
             std::fs::create_dir_all(dir.join("alt")).unwrap_or_else(|e| die(e.to_string()));
             let cell = |c: (i32, i32, i32), d: u8| mapgeom::place::grid_block(c, d, (32.0, 32.0), 0.0);
             let g = "Stadium\\Media\\Prefab\\Gate\\";
@@ -6053,7 +6057,11 @@ fn main() {
                 ("alt/CheckpointExpandableLeftTopBottom.Item.Gbx", format!("{g}ExpandableCheckpointLeftVFCTopBottom.Prefab.Gbx"), cell((1, 0, 0), 1), None),
             ];
             println!("item\tbytes\tvisuals kept/dropped\tmaterials\tbbox (segment frame)\tcollision");
-            for (name, prefab, at, keep) in jobs {
+            for (name0, prefab, at, keep) in jobs {
+                let stem = std::path::Path::new(name0).file_name().unwrap().to_string_lossy().trim_end_matches(".Item.Gbx").to_string();
+                if let Some(o) = &only { if !o.iter().any(|x| *x == stem) { continue; } }
+                let name = name0.replace(".Item.Gbx", &format!("{suffix}.Item.Gbx"));
+                let name = name.as_str();
                 let ident = std::path::Path::new(name).file_name().unwrap().to_string_lossy().to_string();
                 let (bytes, kept, dropped, links) = mapgeom::static_item::build::frame_item(&mut store, &prefab, &at, &ident, collection, keep).unwrap_or_else(|e| die(format!("{name}: {e}")));
                 let p = dir.join(name);
@@ -6069,12 +6077,18 @@ fn main() {
         // ring-items --out-dir D [--collection N]: Hugo's respawnable ring — CheckpointRing.Item.Gbx (the bare ring = the
         //   NPB variants), CheckpointRingPillar.Item.Gbx (+ the pillar-top fixation = WithPillar Air), alt/
         //   CheckpointRingInPillar.Item.Gbx (+ both fixations = InStructurePillar); block frame, WaypointType Checkpoint
+        // --env RedIsland|WhiteShore|GreenCoast|BlueBay: the collection's StadiumOnTerrain skin (Structure → StructureInWorld,
+        //   TrackBorders(Off) → …InWorld, the sponsor D decals) applied by the writer; files suffixed `<Env>`
         "ring-items" => {
             let mut store = open(&a);
             let dir = std::path::PathBuf::from(flag(&a.rest, "--out-dir").unwrap_or_else(|| die("ring-items: --out-dir D".into())));
-            let collection: u32 = flag(&a.rest, "--collection").and_then(|v| v.parse().ok()).unwrap_or(26);
+            let env = flag(&a.rest, "--env");
+            let collection: u32 = match env.as_deref() { Some("RedIsland") => 0x10, Some("WhiteShore") => 0x1d, Some("GreenCoast") => 0xf, Some("BlueBay") => 0x1c, Some(other) => die(format!("--env {other}: RedIsland | WhiteShore | GreenCoast | BlueBay")), None => flag(&a.rest, "--collection").and_then(|v| v.parse().ok()).unwrap_or(26) };
+            let suffix = env.clone().unwrap_or_default();
             std::fs::create_dir_all(dir.join("alt")).unwrap_or_else(|e| die(e.to_string()));
-            for (name, fix, top) in [("CheckpointRing.Item.Gbx", false, false), ("CheckpointRingPillar.Item.Gbx", true, false), ("alt/CheckpointRingInPillar.Item.Gbx", true, true)] {
+            for (name0, fix, top) in [("CheckpointRing.Item.Gbx", false, false), ("CheckpointRingPillar.Item.Gbx", true, false), ("alt/CheckpointRingInPillar.Item.Gbx", true, true)] {
+                let name = name0.replace(".Item.Gbx", &format!("{suffix}.Item.Gbx"));
+                let name = name.as_str();
                 let ident = std::path::Path::new(name).file_name().unwrap().to_string_lossy().to_string();
                 let (bytes, visuals, tris) = mapgeom::static_item::build::ring_item(&mut store, &ident, collection, fix, top).unwrap_or_else(|e| die(format!("{name}: {e}")));
                 let p = dir.join(name);
