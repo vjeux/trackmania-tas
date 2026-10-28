@@ -602,6 +602,13 @@ fn secs(ms: i64) -> String {
 }
 
 fn report(recs: &[Rec], top: i64, late_years: f64, players: usize) {
+    // trackmania.io hides the times of the live Weekly Shorts week (and the odd
+    // old record) as -1: those rows keep their position but carry no time, so
+    // nothing below measures them.
+    let hidden = recs.iter().filter(|r| r.time_ms <= 0).count();
+    if hidden > 0 {
+        println!("({hidden} records carry a hidden time of -1 -- trackmania.io masks the live Weekly Shorts week; positions kept, times excluded below)");
+    }
     println!("RECORDS TABLE: {} records, {} maps, {} campaigns, {} distinct accounts",
         recs.len(),
         recs.iter().map(|r| r.uid.as_str()).collect::<std::collections::BTreeSet<_>>().len(),
@@ -677,7 +684,7 @@ fn report(recs: &[Rec], top: i64, late_years: f64, players: usize) {
     }
     for (_, v) in by_map.iter_mut() {
         v.sort_by_key(|r| r.position);
-        if v.len() >= 2 && v[0].position == 1 && v[1].position == 2 {
+        if v.len() >= 2 && v[0].position == 1 && v[1].position == 2 && v[0].time_ms > 0 && v[1].time_ms > 0 {
             let lead = v[1].time_ms - v[0].time_ms;
             leads.push((lead, 100.0 * lead as f64 / v[0].time_ms.max(1) as f64, v[0]));
         }
@@ -693,7 +700,7 @@ fn report(recs: &[Rec], top: i64, late_years: f64, players: usize) {
     println!("\nLATE RECORDS: top-{top} positions taken {late_years}+ years after the campaign was published, newest first (set / pos / time / vs #2 or #1 / player / map)");
     let mut late: Vec<&Rec> = recs
         .iter()
-        .filter(|r| r.position <= top)
+        .filter(|r| r.position <= top && r.time_ms > 0)
         .filter(|r| match (rec_campaign_year(r), stamp_year(&r.set_utc)) {
             (Some(c), Some(y)) => y - c >= late_years,
             _ => false,
