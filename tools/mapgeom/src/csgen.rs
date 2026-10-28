@@ -320,6 +320,30 @@ pub fn cmd(store: &mut crate::store::DataStore, rest: &[String], flag: &dyn Fn(&
             }
         }
     }
+    // --respawn-census F.tsv: every waypoint block's NoRespawn (chunk 0x0304E00F) and every waypoint item's
+    // NPlugTrigger_SWaypoint NoRespawn field (prefab form; an entity-model item has no such field), per pak
+    if let Some(cp) = flag(rest, "--respawn-census") {
+        let mut t = String::from("kind\tpak\tname\twaypoint\tno_respawn\tsource\n");
+        for p in entries.iter().filter(|p| { let u = p.to_uppercase(); u.contains("\\GAMECTNBLOCKINFO\\") && u.ends_with(".GBX") }) {
+            let coll_name = p.split('\\').next().unwrap_or("").to_string();
+            let Ok(bi) = crate::blockinfo::load(store, p) else { continue };
+            if bi.waypoint_type.map_or(true, |w| w == 3) { continue; }
+            let name = if !bi.ident.is_empty() { bi.ident.clone() } else { bi.name.clone() };
+            t.push_str(&format!("block\t{coll_name}\t{name}\t{}\t{}\tchunk 0x0304E00F\n", waypoint_cs(bi.waypoint_type), bi.no_respawn));
+        }
+        for p in entries.iter().filter(|p| { let u = p.to_uppercase(); u.contains("\\ITEMS\\") && u.ends_with(".ITEM.GBX") }) {
+            let coll_name = p.split('\\').next().unwrap_or("").to_string();
+            let name = p.rsplit('\\').next().unwrap_or(p).trim_end_matches(".Item.Gbx").to_string();
+            let wp = store.load_model(p).ok().and_then(|m| item_waypoint(&m.body));
+            if wp.map_or(true, |w| w == 3) { continue; }
+            match crate::static_item::build::pack_item_merged(store, p, 1.0, 26, 0, None) {
+                Ok(mg) => t.push_str(&format!("item\t{coll_name}\t{name}\t{}\t{}\t{}\n", waypoint_cs(wp), mg.no_respawn, if mg.trigger.is_some() { "NPlugTrigger_SWaypoint.NoRespawn" } else { "no trigger entity" })),
+                Err(e) => t.push_str(&format!("item\t{coll_name}\t{name}\t{}\t?\tunreadable: {e}\n", waypoint_cs(wp))),
+            }
+        }
+        std::fs::write(&cp, t).map_err(|e| format!("{cp}: {e}"))?;
+        println!("wrote {cp}");
+    }
     if let Some(tp) = flag(rest, "--trees-out") {
         let mut t = String::from("item\tsize_x\tsize_y\tsize_z\n");
         trees.sort_by(|a, b| a.0.cmp(&b.0));

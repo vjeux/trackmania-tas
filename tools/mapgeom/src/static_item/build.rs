@@ -4378,3 +4378,32 @@ pub fn frame_item(store: &mut crate::store::DataStore, prefab: &str, at: &Xform,
     let (bytes, _) = finish_item(m, ident, ident, 1.0, collection)?;
     Ok((bytes, kept, before - kept, links))
 }
+
+/// Hugo's RESPAWNABLE ring (10-28): the `GateCheckpoint` ring block's own geometry as a static item in the BLOCK
+/// frame (the block is 1 × 1 cell, 4 units tall; the ring arch is x 0.28..31.72, y 0.28..31.72, z 13.24..18.04),
+/// WaypointType Checkpoint, the pak's `Checkpoint_Trigger.Shape` compound as the trigger, the ring's own collision,
+/// materials verbatim. `fixation`: the pillar-top fixation (GateStructureFixation at (16, 0, 16), the WithPillar /
+/// InStructurePillar variants' extra) baked in; `top_fixation` adds the one at (16, 32, 16) turned over (the
+/// InStructurePillar variant, a pillar continuing above). The spawn = the block info's (16, 1.7, 11.2) facing +z —
+/// the entity-model form the game respawns at (no NPlugTrigger_SWaypoint, so no NoRespawn).
+pub fn ring_item(store: &mut crate::store::DataStore, ident: &str, collection: u32, fixation: bool, top_fixation: bool) -> R<(Vec<u8>, usize, usize)> {
+    let mut m = Merged::default();
+    add_prefab(store, "Stadium\\Media\\Prefab\\Gate\\Checkpoint_AirNPB.Prefab.Gbx", &IDENTITY, 1.0, &mut m, 0)?;
+    if fixation {
+        let at: Xform = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 16.0, 0.0, 16.0];
+        add_prefab(store, "Stadium\\Media\\Prefab\\TreeGen\\GateStructureFixation.Prefab.Gbx", &at, 1.0, &mut m, 0)?;
+    }
+    if top_fixation {
+        // rot (0, 0, 1, 0) = a half turn about z: upside down, at the cell's top
+        let at: Xform = [-1.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 1.0, 16.0, 32.0, 16.0];
+        add_prefab(store, "Stadium\\Media\\Prefab\\TreeGen\\GateStructureFixation.Prefab.Gbx", &at, 1.0, &mut m, 0)?;
+    }
+    let visuals = m.visuals.len();
+    m.trigger = Some(trigger_from_shape_file(store, "Stadium\\Media\\Prefab\\Gate\\Checkpoint_Trigger.Shape.Gbx", &IDENTITY, 1.0)?);
+    m.waypoint_type = Some(WP_CHECKPOINT_T);
+    m.no_respawn = false;
+    m.spawn = [16.0, 1.7, 11.2];
+    let tris = m.surf_triangles.len();
+    let (bytes, _) = finish_item(m, ident, ident, 1.0, collection)?;
+    Ok((bytes, visuals, tris))
+}

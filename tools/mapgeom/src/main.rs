@@ -6022,7 +6022,7 @@ fn main() {
                 }
             }
             if stacks.is_empty() && items.is_empty() { die::<()>("test-map: --stack X=FILE.Item.Gbx[,…] or --item FILE@cx,dy,cz".into()); }
-            let opts = mapgeom::test_map::TestMapOpts { source, out: out.clone(), stacks, items, blocks, start: pair("--start", (24, 8)), finish: pair("--finish", (24, 34)), z: flag(&a.rest, "--z").and_then(|v| v.parse().ok()).unwrap_or(20), height: flag(&a.rest, "--height").and_then(|v| v.parse().ok()).unwrap_or(3), name: flag(&a.rest, "--name").unwrap_or_else(|| "Expandable Test".into()) };
+            let opts = mapgeom::test_map::TestMapOpts { source, out: out.clone(), stacks, items, blocks, start: pair("--start", (24, 8)), finish: pair("--finish", (24, 34)), course_dy: flag(&a.rest, "--course-dy").and_then(|v| v.parse().ok()).unwrap_or(0), z: flag(&a.rest, "--z").and_then(|v| v.parse().ok()).unwrap_or(20), height: flag(&a.rest, "--height").and_then(|v| v.parse().ok()).unwrap_or(3), name: flag(&a.rest, "--name").unwrap_or_else(|| "Expandable Test".into()) };
             for line in mapgeom::test_map::build(&opts).unwrap_or_else(die) { println!("{line}"); }
             println!("wrote {out}");
         }
@@ -6064,6 +6064,22 @@ fn main() {
                 // the collision: the static object's surface mesh (triangle count + extent)
                 let coll = f.item.static_object().and_then(|so| so.surface()).and_then(|sf| if let mapgeom::static_item::surface::Surf::Mesh { vertices, triangles, .. } = &sf.surf { let (mut l, mut h) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]); for v in vertices { for k in 0..3 { l[k] = l[k].min(v[k]); h[k] = h[k].max(v[k]); } } Some(format!("{} tris x {:.2}..{:.2} y {:.2}..{:.2} z {:.2}..{:.2}", triangles.len(), l[0], h[0], l[1], h[1], l[2], h[2])) } else { None }).unwrap_or_else(|| "none".into());
                 println!("{name}\t{}\t{kept}/{dropped}\t{}\tx {:.2}..{:.2} y {:.2}..{:.2} z {:.2}..{:.2}\tcollision {coll}", bytes.len(), links.join(","), lo[0], hi[0], lo[1], hi[1], lo[2], hi[2]);
+            }
+        }
+        // ring-items --out-dir D [--collection N]: Hugo's respawnable ring — CheckpointRing.Item.Gbx (the bare ring = the
+        //   NPB variants), CheckpointRingPillar.Item.Gbx (+ the pillar-top fixation = WithPillar Air), alt/
+        //   CheckpointRingInPillar.Item.Gbx (+ both fixations = InStructurePillar); block frame, WaypointType Checkpoint
+        "ring-items" => {
+            let mut store = open(&a);
+            let dir = std::path::PathBuf::from(flag(&a.rest, "--out-dir").unwrap_or_else(|| die("ring-items: --out-dir D".into())));
+            let collection: u32 = flag(&a.rest, "--collection").and_then(|v| v.parse().ok()).unwrap_or(26);
+            std::fs::create_dir_all(dir.join("alt")).unwrap_or_else(|e| die(e.to_string()));
+            for (name, fix, top) in [("CheckpointRing.Item.Gbx", false, false), ("CheckpointRingPillar.Item.Gbx", true, false), ("alt/CheckpointRingInPillar.Item.Gbx", true, true)] {
+                let ident = std::path::Path::new(name).file_name().unwrap().to_string_lossy().to_string();
+                let (bytes, visuals, tris) = mapgeom::static_item::build::ring_item(&mut store, &ident, collection, fix, top).unwrap_or_else(|e| die(format!("{name}: {e}")));
+                let p = dir.join(name);
+                std::fs::write(&p, &bytes).unwrap_or_else(|e| die(format!("{}: {e}", p.display())));
+                println!("wrote {}: {} bytes ({visuals} visuals, {tris} collision tris, trigger Checkpoint_Trigger.Shape, WaypointType 2, spawn (16, 1.7, 11.2))", p.display(), bytes.len());
             }
         }
         "expandable-item" => {

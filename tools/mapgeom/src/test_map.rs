@@ -18,6 +18,8 @@ pub struct TestMapOpts {
     pub blocks: Vec<(String, i32, i32, i32, u8)>,
     pub start: (i32, i32),
     pub finish: (i32, i32),
+    /// rows above the grass row for the start / finish blocks
+    pub course_dy: i32,
     pub z: i32,
     pub height: i32,
     pub name: String,
@@ -43,8 +45,8 @@ pub fn build(opts: &TestMapOpts) -> Result<Vec<String>, String> {
     }
     // 2. every authored block goes; the start and the finish come in
     let mut specs = vec![
-        FreeBlockSpec { name: "RoadTechStart".into(), author: None, flags: 0, pos: [0.0; 3], rot: [0.0; 3], grid: Some([opts.start.0, grass_row, opts.start.1]), dir: 0, waypoint: Some("Spawn".into()) },
-        FreeBlockSpec { name: "RoadTechFinish".into(), author: None, flags: 0, pos: [0.0; 3], rot: [0.0; 3], grid: Some([opts.finish.0, grass_row, opts.finish.1]), dir: 0, waypoint: Some("Goal".into()) },
+        FreeBlockSpec { name: "RoadTechStart".into(), author: None, flags: 0, pos: [0.0; 3], rot: [0.0; 3], grid: Some([opts.start.0, grass_row + opts.course_dy, opts.start.1]), dir: 0, waypoint: Some("Spawn".into()) },
+        FreeBlockSpec { name: "RoadTechFinish".into(), author: None, flags: 0, pos: [0.0; 3], rot: [0.0; 3], grid: Some([opts.finish.0, grass_row + opts.course_dy, opts.finish.1]), dir: 0, waypoint: Some("Goal".into()) },
     ];
     for (name, cx, dy, cz, dir) in &opts.blocks {
         let wp = if name.ends_with("Finish") { Some("Goal".to_string()) } else if name.ends_with("Checkpoint") { Some("Checkpoint".to_string()) } else { None };
