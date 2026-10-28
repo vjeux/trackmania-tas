@@ -18,7 +18,7 @@ const POWERSHELL: &str = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powersh
 /// Where `front` notes the window that had the foreground, for `restore`.
 const PREV: &str = "C:\\Users\\vjeux\\boxfront-prev.txt";
 
-const SIG: &str = r#"$sig = '[DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, System.UIntPtr dwExtraInfo); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(System.IntPtr hWnd); [DllImport("user32.dll")] public static extern bool SetWindowPos(System.IntPtr hWnd, System.IntPtr after, int x, int y, int cx, int cy, uint flags); [DllImport("user32.dll")] public static extern System.IntPtr GetForegroundWindow(); [DllImport("user32.dll")] public static extern int GetWindowText(System.IntPtr hWnd, System.Text.StringBuilder t, int n); [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(System.IntPtr hWnd, out uint pid);'
+const SIG: &str = r#"$sig = '[DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, System.UIntPtr dwExtraInfo); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(System.IntPtr hWnd); [DllImport("user32.dll")] public static extern bool SetWindowPos(System.IntPtr hWnd, System.IntPtr after, int x, int y, int cx, int cy, uint flags); [DllImport("user32.dll")] public static extern System.IntPtr GetForegroundWindow(); [DllImport("user32.dll")] public static extern int GetWindowText(System.IntPtr hWnd, System.Text.StringBuilder t, int n); [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(System.IntPtr hWnd, out uint pid); [DllImport("user32.dll")] public static extern bool IsIconic(System.IntPtr hWnd); [DllImport("user32.dll")] public static extern bool ShowWindow(System.IntPtr hWnd, int cmd);'
 $k = Add-Type -MemberDefinition $sig -Name Keys -Namespace BoxFront -PassThru
 "#;
 
@@ -42,8 +42,11 @@ fn run(wsx: &Wsx, script: &str, marker: &str) -> Result<String, String> {
     out.lines().find(|l| l.contains(marker)).map(|l| l.trim().to_string()).ok_or_else(|| format!("boxfront: no '{marker}' line in: {}", out.trim().chars().take(300).collect::<String>()))
 }
 
-/// The game window in front: foreground + TOPMOST. Notes the previous foreground
-/// window's process id in `PREV` for `restore`.
+/// The game window in front: restored if it was minimized (a person had minimized
+/// the game on 2026-10-27 — `IsIconic`; `SetForegroundWindow` alone leaves an iconic
+/// window where it is, which is why three shoots captured the window behind it),
+/// foreground + TOPMOST. Notes the previous foreground window's process id and the
+/// minimized state in `PREV` for `restore`, which puts both back.
 pub fn front(wsx: &Wsx) -> Result<String, String> {
     let script = format!(
         r#"{SIG}
@@ -52,12 +55,14 @@ if (-not $p) {{ 'front: no Trackmania process'; exit 1 }}
 $h = $p.MainWindowHandle
 $prev = $k::GetForegroundWindow()
 $pid0 = [uint32]0; [void]$k::GetWindowThreadProcessId($prev, [ref]$pid0)
-if ($prev -ne $h) {{ Set-Content -Path '{PREV}' -Value ([string]$pid0) }}
+$wasIconic = $k::IsIconic($h)
+if ($prev -ne $h) {{ Set-Content -Path '{PREV}' -Value (([string]$pid0) + ' ' + ([string]$wasIconic)) }}
+if ($wasIconic) {{ [void]$k::ShowWindow($h, 9); Start-Sleep -Milliseconds 700 }}
 $k::keybd_event(0x12, 0x38, 0, [System.UIntPtr]::Zero); [void]$k::SetForegroundWindow($h); $k::keybd_event(0x12, 0x38, 2, [System.UIntPtr]::Zero)
 [void]$k::SetWindowPos($h, [System.IntPtr](-1), 0, 0, 0, 0, 0x0003)
 Start-Sleep -Milliseconds 500
 $sb = New-Object System.Text.StringBuilder 256; [void]$k::GetWindowText($k::GetForegroundWindow(), $sb, 256)
-'front: fg=[' + $sb.ToString() + '] prev-pid=' + $pid0
+'front: fg=[' + $sb.ToString() + '] prev-pid=' + $pid0 + ' was-minimized=' + $wasIconic
 "#
     );
     run(wsx, &script, "front:")
@@ -72,8 +77,11 @@ $t = Get-Process Trackmania -ErrorAction SilentlyContinue | Select-Object -First
 if ($t) {{ [void]$k::SetWindowPos($t.MainWindowHandle, [System.IntPtr](-2), 0, 0, 0, 0, 0x0003) }}
 $who = 'none'
 if (Test-Path '{PREV}') {{
-  $pid0 = [int](Get-Content '{PREV}' | Select-Object -First 1)
+  $line = (Get-Content '{PREV}' | Select-Object -First 1) -split ' '
+  $pid0 = [int]$line[0]
+  $wasIconic = ($line.Length -gt 1 -and $line[1] -eq 'True')
   Remove-Item '{PREV}' -ErrorAction SilentlyContinue
+  if ($wasIconic -and $t) {{ [void]$k::ShowWindow($t.MainWindowHandle, 6) }}
   $p = Get-Process -Id $pid0 -ErrorAction SilentlyContinue
   if ($p -and $p.MainWindowHandle -ne 0) {{
     $h = $p.MainWindowHandle

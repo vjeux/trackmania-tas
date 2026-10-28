@@ -467,10 +467,17 @@ fn mirror_outer_skin(m: &mut Merged, from_d: f32, to_d: f32) -> usize {
         for &i in &used {
             let p = positions[i as usize];
             let (theta, d, y) = polar(p);
-            let d2 = 2.0 * d_mid - d;
+            // the outer face bulges 3 cm (r 32.03 at y 0.32 / 1.68): mirrored, that bulge
+            // was a ridge along the inner face catching the light (19:59 "rim") — the
+            // inner skin is a true cylinder at `to_d`, its normal pure −radial
+            let flat_wall = d >= 1.95;
+            let d2 = if flat_wall { to_d } else { 2.0 * d_mid - d };
             let r2 = SRC_R + d2;
             let radial = [theta.cos(), 0.0, -theta.sin()];
             let reflect = |n: [f32; 3]| -> [f32; 3] {
+                if flat_wall {
+                    return [-radial[0], 0.0, -radial[2]];
+                }
                 let k = 2.0 * (n[0] * radial[0] + n[2] * radial[2]);
                 [n[0] - k * radial[0], n[1], n[2] - k * radial[2]]
             };
@@ -543,6 +550,93 @@ fn mirror_outer_skin(m: &mut Merged, from_d: f32, to_d: f32) -> usize {
         }
     }
     added
+}
+
+/// Flat strips closing the top (y 2, normal up) and bottom (y 0, normal down) of the
+/// beam between the inner skin and the shell plates, over source angles `lo..hi`, as one
+/// visual each on the Colorize material. UVs continue the plate's own: the plate's
+/// vertices at its inner edge (d ≈ 0.5) and outer edge (d ≈ 2) at y 2 give (θ, u, v)
+/// samples; a strip vertex takes the nearest-θ inner sample extrapolated along d with
+/// the inner→outer gradient, so the texture runs across the d 0.5 line without a seam.
+fn add_cap_strips(m: &mut Merged, lo: f32, hi: f32, d0: f32, d1: f32) -> usize {
+    use crate::static_item::bake::{make_visuals, visual_layout, Corner};
+    use crate::static_item::merged::MergedVisual;
+    let link = "Stadium\\Media\\Material\\TechnicsTrimsColorize";
+    // samples from the Colorize shell: (theta, u, v) at d≈0.5 and d≈2.0, y≈2
+    let mut inner: Vec<(f32, [f32; 2])> = Vec::new();
+    let mut outer: Vec<(f32, [f32; 2])> = Vec::new();
+    for mv in &m.visuals {
+        let is_colorize = m.materials.get(mv.material).and_then(|x| x.link()).map(|l| l.ends_with("TechnicsTrimsColorize")).unwrap_or(false);
+        if !is_colorize {
+            continue;
+        }
+        let Some(main) = mv.visual.main.as_ref() else { continue };
+        let Some(Node::VertexStream(stream)) = main.vertex_streams.first().and_then(|r| r.inline.as_deref()) else { continue };
+        let pos = stream.decls.iter().zip(stream.elems.iter()).find_map(|(d, e)| if d.name() == N_POSITION { if let Elem::Float3(p) = e { Some(p) } else { None } } else { None });
+        let uv = stream.decls.iter().zip(stream.elems.iter()).find_map(|(d, e)| if d.name() == N_TEXCOORD0 { if let Elem::Float2(p) = e { Some(p) } else { None } } else { None });
+        let (Some(pos), Some(uv)) = (pos, uv) else { continue };
+        for (p, t) in pos.iter().zip(uv.iter()) {
+            let (theta, d, y) = polar(*p);
+            if (y - 2.0).abs() > 0.02 {
+                continue;
+            }
+            if (d - 0.5).abs() < 0.06 {
+                inner.push((theta, *t));
+            } else if (d - 2.0).abs() < 0.06 {
+                outer.push((theta, *t));
+            }
+        }
+    }
+    let nearest = |set: &[(f32, [f32; 2])], theta: f32| -> Option<[f32; 2]> {
+        set.iter().min_by(|a, b| (a.0 - theta).abs().partial_cmp(&(b.0 - theta).abs()).unwrap_or(std::cmp::Ordering::Equal)).map(|s| s.1)
+    };
+    let uv_at = |theta: f32, d: f32| -> [f32; 2] {
+        match (nearest(&inner, theta), nearest(&outer, theta)) {
+            (Some(a), Some(b)) => {
+                let k = (0.5 - d) / 1.5;
+                [a[0] + (a[0] - b[0]) * k, a[1] + (a[1] - b[1]) * k]
+            }
+            (Some(a), None) => a,
+            _ => [theta * SRC_R / 8.0, d / 8.0],
+        }
+    };
+    let step = std::f32::consts::FRAC_PI_2 / 32.0;
+    let n = ((hi - lo) / step).round().max(1.0) as usize;
+    let mut tris: Vec<[Corner; 3]> = Vec::new();
+    for (y, up) in [(2.0f32, true), (0.0f32, false)] {
+        let normal = if up { [0.0, 1.0, 0.0] } else { [0.0, -1.0, 0.0] };
+        for i in 0..n {
+            let ta = lo + i as f32 * step;
+            let tb = lo + (i + 1) as f32 * step;
+            let at = |theta: f32, d: f32| -> Corner {
+                let r = SRC_R + d;
+                let p = [SRC_CENTRE[0] + r * theta.cos(), y, SRC_CENTRE[1] - r * theta.sin()];
+                let tan_u = [-theta.sin(), 0.0, -theta.cos()];
+                let tan_v = [theta.cos(), 0.0, -theta.sin()];
+                let uv = uv_at(theta, d);
+                Corner { pos: p, normal, uv, uv1: uv, tan_u, tan_v, face: 0, group: 0 }
+            };
+            let (a, b, c, d) = (at(ta, d0), at(ta, d1), at(tb, d1), at(tb, d0));
+            // winding: the face normal must agree with `normal` (counter-clockwise seen from it)
+            let e1 = [b.pos[0] - a.pos[0], b.pos[1] - a.pos[1], b.pos[2] - a.pos[2]];
+            let e2 = [c.pos[0] - a.pos[0], c.pos[1] - a.pos[1], c.pos[2] - a.pos[2]];
+            let ny = e1[2] * e2[0] - e1[0] * e2[2];
+            if (ny > 0.0) == up {
+                tris.push([a, b, c]);
+                tris.push([a, c, d]);
+            } else {
+                tris.push([a, c, b]);
+                tris.push([a, d, c]);
+            }
+        }
+    }
+    let count = tris.len();
+    let slot = m.material_slot(link, 0);
+    let layout = visual_layout(link);
+    for v in make_visuals(&tris, layout, "off") {
+        m.visuals.push(MergedVisual::every_level(v, slot));
+    }
+    count
 }
 
 /// Overwrite the normal of every vertex `f` names (by position), DEC3N or float form.
@@ -736,45 +830,48 @@ fn source_beam(store: &mut crate::store::DataStore, prefab: &str, ends: Ends, co
         let n1: usize = m.visuals.iter().filter_map(|v| v.visual.index_buffer.as_ref()).map(|ib| ib.indices.len() / 3).sum();
         m.notes.push(format!("beam: {} end-cap triangle(s) removed ({} cap angle(s) kept)", n0 - n1, kept_angles.len()));
     }
-    // The lips (the channel's top and bottom edges, d −0.35..0, y 1.83–1.91 / 0.09–0.17)
-    // sit 9 cm below the top skin and 9 cm above the bottom one: with the inner skin in
-    // front of them that left a 35 cm groove along the inner edge of the top — Everios96
-    // 18:15 "a weird rim that doesn't need to be there, just flat everywhere". Every vertex
-    // of the inner 5 cm band within 20 cm of the top or bottom plane goes onto that plane:
-    // the lip tops become part of the top, the lips' faces collapse.
-    if std::env::var("BEAM_FLAT_LIPS").map(|v| v != "0").unwrap_or(true) {
-        let ident = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-        remap_frames(&mut m, &|p| {
-            let (_, d, y) = polar(p);
-            if d <= 0.05 && y >= 1.80 {
-                ([p[0], 2.0, p[2]], ident)
-            } else if d <= 0.05 && y <= 0.20 {
-                ([p[0], 0.0, p[2]], ident)
-            } else {
-                (p, ident)
-            }
-        });
-        // The moved vertices kept the chamfer's 45° normals: the now-flat band shaded as a
-        // steep slope — a dark "groove" along the inner edge of the top and odd fins at the
-        // joints (Everios96 18:24 "a part of the side is open / weird faces"; it is lighting,
-        // the geometry is closed to within 4 cm). Every vertex of the top/bottom band from
-        // the lip to the back wall faces straight up / down now; the inner skin (d −0.36)
-        // keeps its own.
-        set_normals(&mut m, &|p| {
-            let (_, d, y) = polar(p);
-            if (-0.3..=0.6).contains(&d) && (y - 2.0).abs() <= 0.1 {
-                Some([0.0, 1.0, 0.0])
-            } else if (-0.3..=0.6).contains(&d) && y.abs() <= 0.1 {
-                Some([0.0, -1.0, 0.0])
-            } else {
-                None
-            }
-        });
-    }
     // the flat inner face (env `BEAM_INNER_SKIN=0` to skip, the bisect)
     if std::env::var("BEAM_INNER_SKIN").map(|v| v != "0").unwrap_or(true) {
         let n = mirror_outer_skin(&mut m, 1.9, -0.36);
         m.notes.push(format!("beam: {n} outer-skin/decal triangle(s) mirrored onto the inner face at d −0.36 (the vanilla block's flat concave side)"));
+        // The top plate (y 2) and bottom plate (y 0) of the shell start at d 0.5; inboard
+        // of that the lip plate sits 9 cm lower — a 9 cm step, which is the "groove"
+        // along the inner edge (Everios96 18:15/18:24; v6/v7 moved vertices and normals
+        // and got z-fighting, 19:48). Here: a flat strip at y 2 / y 0 from the inner skin
+        // (d −0.36) to the plate edge (d 0.5), its texture continued from the plate.
+        // A separate strip (BEAM_CAP_STRIPS=1) rendered as its own lighter band — the
+        // plate's texture does not extrapolate (19:55). Instead the plates themselves are
+        // EXTENDED: their inner-edge vertices (d 0.0, top y ≥ 1.85 / bottom y ≤ 0.15) move
+        // to d −0.36, the inner skin's own line; the plate texture stretches 1.5 → 2.36 m,
+        // the step face and the lip plate collapse to nothing behind the skin.
+        if std::env::var("BEAM_CAP_STRIPS").map(|v| v == "1").unwrap_or(false) {
+            let (lo, hi) = (copies.iter().cloned().fold(f32::INFINITY, f32::min), copies.iter().cloned().fold(f32::NEG_INFINITY, f32::max) + std::f32::consts::FRAC_PI_2);
+            let n2 = add_cap_strips(&mut m, lo, hi, -0.36, 0.5);
+            m.notes.push(format!("beam: {n2} triangle(s) of flat top/bottom strips d −0.36..0.5 over θ {:.0}°..{:.0}°", lo.to_degrees(), hi.to_degrees()));
+        } else {
+            let ident = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+            let mut moved = 0usize;
+            let moved_cell = std::cell::Cell::new(0usize);
+            remap_frames(&mut m, &|p| {
+                let (theta, d, y) = polar(p);
+                // measured on the final LOD1 mesh (20:04): the plate reaches d 0.0 (r 30),
+                // the 9 cm step face stands at d 0, the lip plate spans d −0.35..0 — the
+                // first guess (d 0.5 = the back wall) moved the wrong vertices
+                if (-0.02..=0.06).contains(&d) && (y >= 1.85 || y <= 0.15) {
+                    moved_cell.set(moved_cell.get() + 1);
+                    // the plate edge (y 2 / y 0) onto the skin's line; the step's other edge
+                    // (y 1.91 / 0.09) 6 cm behind it, so the collapsed step is a slant hidden
+                    // behind the skin instead of a coplanar band fighting it
+                    let on_skin = y >= 1.95 || y <= 0.05;
+                    let r = SRC_R - if on_skin { 0.36 } else { 0.30 };
+                    ([SRC_CENTRE[0] + r * theta.cos(), y, SRC_CENTRE[1] - r * theta.sin()], ident)
+                } else {
+                    (p, ident)
+                }
+            });
+            moved += moved_cell.get();
+            m.notes.push(format!("beam: {moved} plate inner-edge vertices moved from d 0 to d −0.36 (flat top and bottom to the inner skin)"));
+        }
     }
     let after: usize = m.visuals.iter().filter_map(|v| v.visual.index_buffer.as_ref()).map(|ib| ib.indices.len() / 3).sum();
     m.notes.push(format!("beam: {} copies, {after} of {before} triangles kept (junction cube + braces removed)", copies.len()));
