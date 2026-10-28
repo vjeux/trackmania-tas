@@ -32,7 +32,7 @@ use crate::static_item::build::{add_prefab, assemble, BuildOpts};
 use crate::crystal_model::CPlugMaterialUserInst;
 use crate::static_item::merged::Merged;
 use crate::static_item::surface::Triangle;
-use crate::static_item::vstream::{Elem, N_NORMAL, N_POSITION, N_TANGENT_U, N_TANGENT_V, T_DEC3N, T_FLOAT3};
+use crate::static_item::vstream::{Elem, N_COLOR0, N_NORMAL, N_POSITION, N_TANGENT_U, N_TANGENT_V, N_TEXCOORD0, T_COLOR, T_DEC3N, T_FLOAT3};
 use crate::static_item::Node;
 
 type R<T> = Result<T, String>;
@@ -197,6 +197,354 @@ fn retain_triangles_by(m: &mut Merged, keep: &dyn Fn(&[[f32; 3]; 3]) -> bool) {
     }
 }
 
+/// Split every triangle whose vertices span more than `max_span` radians of source angle
+/// (longest-edge bisection, midpoints shared between the two triangles of an edge, every
+/// vertex attribute interpolated: floats lerped, DEC3N normals/tangents lerped and
+/// renormalised, colours lerped per byte, anything else copied from the edge's first end).
+/// The vanilla beam's inner wall is 8 flat panels per quarter (11.25° each): bent onto a
+/// 2-half ring those panels span 22.5° and poke through the curved lips — Everios96 17:05
+/// "the inside of the ring is not flat like the original block". Chords this short hug the
+/// curve. The collision mesh gets the same cut.
+fn subdivide_by_angle(m: &mut Merged, max_span: f32) -> usize {
+    use std::collections::HashMap;
+    let span_of = |a: [f32; 3], b: [f32; 3]| -> f32 {
+        let (ta, _, _) = polar(a);
+        let (tb, _, _) = polar(b);
+        let d = (ta - tb).abs();
+        d.min(std::f32::consts::TAU - d)
+    };
+    let mut added = 0usize;
+    let mut dbg: Vec<String> = Vec::new();
+    for mv in &mut m.visuals {
+        // the nearest detail level only: the far levels draw from 64 m out, where a chord
+        // this size is under a pixel
+        if mv.lod_mask != 0 && mv.lod_mask & 1 == 0 {
+            continue;
+        }
+        dbg.push(format!("mask{}", mv.lod_mask));
+        let v = &mut mv.visual;
+        let Some(main) = v.main.as_mut() else { continue };
+        let Some(Node::VertexStream(stream)) = main.vertex_streams.first_mut().and_then(|r| r.inline.as_deref_mut()) else { continue };
+        let compress = stream.compress_local3d.unwrap_or(false);
+        let pos_slot = stream.decls.iter().zip(stream.elems.iter()).position(|(d, e)| d.name() == N_POSITION && matches!(e, Elem::Float3(_)));
+        let Some(pos_slot) = pos_slot else { continue };
+        let Some(ib) = v.index_buffer.as_mut() else { continue };
+        if ib.indices.len() % 3 != 0 {
+            continue;
+        }
+        let n0 = match &stream.elems[pos_slot] {
+            Elem::Float3(p) => p.len(),
+            _ => continue,
+        };
+        // the kinds per slot, decided once
+        let kinds: Vec<u8> = stream
+            .decls
+            .iter()
+            .map(|d| {
+                let t = d.stored_type(compress);
+                if t == T_DEC3N {
+                    1
+                } else if t == T_COLOR || d.name() == N_COLOR0 {
+                    2
+                } else {
+                    0
+                }
+            })
+            .collect();
+        let per_tangent: Vec<usize> = match v.tangents.as_ref() {
+            Some((a, b)) => vec![if n0 > 0 && a.len() % n0 == 0 { a.len() / n0 } else { 0 }, if n0 > 0 && b.len() % n0 == 0 { b.len() / n0 } else { 0 }],
+            None => Vec::new(),
+        };
+        let mut mids: HashMap<(u32, u32), u32> = HashMap::new();
+        let mut work: Vec<[u32; 3]> = ib.indices.chunks(3).map(|t| [t[0], t[1], t[2]]).collect();
+        let mut out: Vec<[u32; 3]> = Vec::with_capacity(work.len() * 2);
+        let mut guard = 0usize;
+        while let Some(t) = work.pop() {
+            guard += 1;
+            if guard > 4_000_000 {
+                break;
+            }
+            let p = |i: u32, elems: &Vec<Elem>| -> [f32; 3] {
+                match &elems[pos_slot] {
+                    Elem::Float3(p) => p[i as usize],
+                    _ => [0.0; 3],
+                }
+            };
+            let (pa, pb, pc) = (p(t[0], &stream.elems), p(t[1], &stream.elems), p(t[2], &stream.elems));
+            let spans = [span_of(pa, pb), span_of(pb, pc), span_of(pc, pa)];
+            let (k, &worst) = spans.iter().enumerate().max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal)).unwrap();
+            if worst <= max_span {
+                out.push(t);
+                continue;
+            }
+            let (i, j) = (t[k], t[(k + 1) % 3]);
+            let key = (i.min(j), i.max(j));
+            let mid = if let Some(&mv) = mids.get(&key) {
+                mv
+            } else {
+                // a new vertex: every element interpolated
+                for (slot, e) in stream.elems.iter_mut().enumerate() {
+                    let kind = kinds[slot];
+                    match e {
+                        Elem::Float2(x) => {
+                            let (a, b) = (x[i as usize], x[j as usize]);
+                            x.push([(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0]);
+                        }
+                        Elem::Float3(x) => {
+                            let (a, b) = (x[i as usize], x[j as usize]);
+                            let mut mval = [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0, (a[2] + b[2]) / 2.0];
+                            if stream.decls[slot].name() == N_NORMAL || stream.decls[slot].name() == N_TANGENT_U || stream.decls[slot].name() == N_TANGENT_V {
+                                let l = (mval[0] * mval[0] + mval[1] * mval[1] + mval[2] * mval[2]).sqrt();
+                                if l > 1e-6 {
+                                    mval = [mval[0] / l, mval[1] / l, mval[2] / l];
+                                }
+                            }
+                            x.push(mval);
+                        }
+                        Elem::Float4(x) => {
+                            let (a, b) = (x[i as usize], x[j as usize]);
+                            x.push([(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0, (a[2] + b[2]) / 2.0, (a[3] + b[3]) / 2.0]);
+                        }
+                        Elem::Word(x) => {
+                            let (a, b) = (x[i as usize], x[j as usize]);
+                            let val = match kind {
+                                1 => {
+                                    let (na, nb) = (crate::static_item::merged::dec3n_unpack(a), crate::static_item::merged::dec3n_unpack(b));
+                                    let mut mval = [(na[0] + nb[0]) / 2.0, (na[1] + nb[1]) / 2.0, (na[2] + nb[2]) / 2.0];
+                                    let l = (mval[0] * mval[0] + mval[1] * mval[1] + mval[2] * mval[2]).sqrt();
+                                    if l > 1e-6 {
+                                        mval = [mval[0] / l, mval[1] / l, mval[2] / l];
+                                    }
+                                    crate::static_item::merged::dec3n_pack(mval)
+                                }
+                                2 => {
+                                    let mut o = 0u32;
+                                    for sh in [0, 8, 16, 24] {
+                                        let ca = (a >> sh) & 0xFF;
+                                        let cb = (b >> sh) & 0xFF;
+                                        o |= ((ca + cb) / 2) << sh;
+                                    }
+                                    o
+                                }
+                                _ => a,
+                            };
+                            x.push(val);
+                        }
+                        Elem::Raw { size, bytes } => {
+                            let sz = *size;
+                            let rec = bytes[i as usize * sz..(i as usize + 1) * sz].to_vec();
+                            bytes.extend_from_slice(&rec);
+                        }
+                    }
+                }
+                if let Some((a, b)) = v.tangents.as_mut() {
+                    for (arr, per) in [(a, per_tangent[0]), (b, per_tangent[1])] {
+                        if per > 0 {
+                            let rec = arr[i as usize * per..(i as usize + 1) * per].to_vec();
+                            arr.extend_from_slice(&rec);
+                        }
+                    }
+                }
+                let idx = match &stream.elems[pos_slot] {
+                    Elem::Float3(p) => (p.len() - 1) as u32,
+                    _ => unreachable!(),
+                };
+                mids.insert(key, idx);
+                added += 1;
+                idx
+            };
+            // the two halves, winding kept
+            let third = t[(k + 2) % 3];
+            work.push([i, mid, third]);
+            work.push([mid, j, third]);
+        }
+        ib.indices = out.iter().flat_map(|t| t.iter().copied()).collect();
+        let n = match &stream.elems[pos_slot] {
+            Elem::Float3(p) => p.len(),
+            _ => n0,
+        };
+        stream.count = n as i32;
+        main.count = n as i32;
+        if let Some(Elem::Float3(p)) = stream.elems.get(pos_slot) {
+            main.bounding_box = crate::static_item::merged::bbox(p);
+        }
+    }
+    if std::env::var("BEAM_DEBUG").is_ok() {
+        eprintln!("subdivide: visuals {} / {} judged: {}", dbg.len(), m.visuals.len(), dbg.join(","));
+    }
+    // collision: positions only
+    {
+        let mut verts = m.surf_vertices.clone();
+        let mut mids: HashMap<(u32, u32), u32> = HashMap::new();
+        let mut work: Vec<Triangle> = m.surf_triangles.clone();
+        let mut out: Vec<Triangle> = Vec::with_capacity(work.len() * 2);
+        let mut guard = 0usize;
+        while let Some(t) = work.pop() {
+            guard += 1;
+            if guard > 4_000_000 {
+                break;
+            }
+            let (pa, pb, pc) = (verts[t.indices[0] as usize], verts[t.indices[1] as usize], verts[t.indices[2] as usize]);
+            let spans = [span_of(pa, pb), span_of(pb, pc), span_of(pc, pa)];
+            let (k, &worst) = spans.iter().enumerate().max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal)).unwrap();
+            if worst <= max_span {
+                out.push(t);
+                continue;
+            }
+            let (i, j) = (t.indices[k], t.indices[(k + 1) % 3]);
+            let key = (i.min(j), i.max(j));
+            let mid = *mids.entry(key).or_insert_with(|| {
+                let (a, b) = (verts[i as usize], verts[j as usize]);
+                verts.push([(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0, (a[2] + b[2]) / 2.0]);
+                (verts.len() - 1) as u32
+            });
+            let third = t.indices[(k + 2) % 3];
+            let mut t1 = t.clone();
+            t1.indices = [i, mid, third];
+            let mut t2 = t.clone();
+            t2.indices = [mid, j, third];
+            work.push(t1);
+            work.push(t2);
+        }
+        m.surf_vertices = verts;
+        m.surf_triangles = out;
+    }
+    added
+}
+
+/// The game draws the vanilla beam as a closed box: its concave face is FLAT and carries
+/// the TRACKMANIA decal like the convex one (StructureSupportCurve1In, Blue, concave side at
+/// 30 m: box shot h7 2026-10-27 17:45), while the prefab's own inner side is a chamfered
+/// channel (lips at r 29.65, a rail at 30.4, a back wall at 30.5, no decal) — whatever the
+/// engine does with the block, a one-to-one item shows the channel (Everios96 17:05 "the
+/// inside of the ring is not flat like the original block"). So the OUTER SKIN and its
+/// decal (every triangle whose vertices all sit at d ≥ `from_d`) are copied to the inner
+/// side: positions reflected across the cylinder midway between d = 2 and `to_d` (the
+/// skin lands at `to_d`, the decal 3 cm proud of it toward the centre), winding reversed
+/// and radial normal components flipped so the copy faces the centre, u mirrored so the
+/// decal reads the right way. The channel stays behind the new skin, 1 cm back, unseen.
+fn mirror_outer_skin(m: &mut Merged, from_d: f32, to_d: f32) -> usize {
+    let d_mid = (2.0 + to_d) / 2.0;
+    let mut added = 0usize;
+    for mv in &mut m.visuals {
+        let v = &mut mv.visual;
+        let Some(main) = v.main.as_mut() else { continue };
+        let Some(Node::VertexStream(stream)) = main.vertex_streams.first_mut().and_then(|r| r.inline.as_deref_mut()) else { continue };
+        let compress = stream.compress_local3d.unwrap_or(false);
+        let Some(pos_slot) = stream.decls.iter().zip(stream.elems.iter()).position(|(d, e)| d.name() == N_POSITION && matches!(e, Elem::Float3(_))) else { continue };
+        let positions: Vec<[f32; 3]> = match &stream.elems[pos_slot] {
+            Elem::Float3(p) => p.clone(),
+            _ => continue,
+        };
+        let Some(ib) = v.index_buffer.as_mut() else { continue };
+        if ib.indices.len() % 3 != 0 {
+            continue;
+        }
+        let picked: Vec<[u32; 3]> = ib
+            .indices
+            .chunks(3)
+            .filter(|t| t.iter().all(|&i| polar(positions[i as usize]).1 >= from_d))
+            .map(|t| [t[0], t[1], t[2]])
+            .collect();
+        if picked.is_empty() {
+            continue;
+        }
+        // the u range of the picked vertices (per visual): the mirror line for u
+        let mut used: Vec<u32> = picked.iter().flat_map(|t| t.iter().copied()).collect();
+        used.sort_unstable();
+        used.dedup();
+        let uv_slot = stream.decls.iter().position(|d| d.name() == N_TEXCOORD0);
+        let (umin, umax) = match uv_slot.map(|k| &stream.elems[k]) {
+            Some(Elem::Float2(uv)) => used.iter().fold((f32::MAX, f32::MIN), |(lo, hi), &i| (lo.min(uv[i as usize][0]), hi.max(uv[i as usize][0]))),
+            _ => (0.0, 0.0),
+        };
+        let n0 = positions.len();
+        let mut map: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+        let per_tangent: Vec<usize> = match v.tangents.as_ref() {
+            Some((a, b)) => vec![if a.len() % n0.max(1) == 0 { a.len() / n0.max(1) } else { 0 }, if b.len() % n0.max(1) == 0 { b.len() / n0.max(1) } else { 0 }],
+            None => Vec::new(),
+        };
+        for &i in &used {
+            let p = positions[i as usize];
+            let (theta, d, y) = polar(p);
+            let d2 = 2.0 * d_mid - d;
+            let r2 = SRC_R + d2;
+            let radial = [theta.cos(), 0.0, -theta.sin()];
+            let reflect = |n: [f32; 3]| -> [f32; 3] {
+                let k = 2.0 * (n[0] * radial[0] + n[2] * radial[2]);
+                [n[0] - k * radial[0], n[1], n[2] - k * radial[2]]
+            };
+            for (slot, e) in stream.elems.iter_mut().enumerate() {
+                let name = stream.decls[slot].name();
+                let ty = stream.decls[slot].stored_type(compress);
+                match e {
+                    Elem::Float3(x) => {
+                        let val = if name == N_POSITION {
+                            [SRC_CENTRE[0] + r2 * theta.cos(), y, SRC_CENTRE[1] - r2 * theta.sin()]
+                        } else if name == N_NORMAL || name == N_TANGENT_U || name == N_TANGENT_V {
+                            reflect(x[i as usize])
+                        } else {
+                            x[i as usize]
+                        };
+                        x.push(val);
+                    }
+                    Elem::Float2(x) => {
+                        let mut val = x[i as usize];
+                        if name == N_TEXCOORD0 {
+                            val[0] = umin + umax - val[0];
+                        }
+                        x.push(val);
+                    }
+                    Elem::Float4(x) => {
+                        let val = x[i as usize];
+                        x.push(val);
+                    }
+                    Elem::Word(x) => {
+                        let mut val = x[i as usize];
+                        if ty == T_DEC3N && (name == N_NORMAL || name == N_TANGENT_U || name == N_TANGENT_V) {
+                            val = crate::static_item::merged::dec3n_pack(reflect(crate::static_item::merged::dec3n_unpack(val)));
+                        }
+                        x.push(val);
+                    }
+                    Elem::Raw { size, bytes } => {
+                        let sz = *size;
+                        let rec = bytes[i as usize * sz..(i as usize + 1) * sz].to_vec();
+                        bytes.extend_from_slice(&rec);
+                    }
+                }
+            }
+            if let Some((a, b)) = v.tangents.as_mut() {
+                for (arr, per) in [(a, per_tangent[0]), (b, per_tangent[1])] {
+                    if per > 0 {
+                        let rec = arr[i as usize * per..(i as usize + 1) * per].to_vec();
+                        arr.extend_from_slice(&rec);
+                    }
+                }
+            }
+            let idx = match &stream.elems[pos_slot] {
+                Elem::Float3(p) => (p.len() - 1) as u32,
+                _ => unreachable!(),
+            };
+            map.insert(i, idx);
+        }
+        for t in &picked {
+            // reversed winding: the reflection turned the face inside out
+            ib.indices.extend_from_slice(&[map[&t[0]], map[&t[2]], map[&t[1]]]);
+        }
+        added += picked.len();
+        let n = match &stream.elems[pos_slot] {
+            Elem::Float3(p) => p.len(),
+            _ => n0,
+        };
+        stream.count = n as i32;
+        main.count = n as i32;
+        if let Some(Elem::Float3(p)) = stream.elems.get(pos_slot) {
+            main.bounding_box = crate::static_item::merged::bbox(p);
+        }
+    }
+    added
+}
+
 /// Every position through `f`, every normal/tangent through the rotation `f` returns
 /// for that position (column-major 3×3 applied to the vector).
 fn remap_frames(m: &mut Merged, f: &dyn Fn([f32; 3]) -> ([f32; 3], [[f32; 3]; 3])) {
@@ -268,8 +616,14 @@ fn source_beam(store: &mut crate::store::DataStore, prefab: &str, ends: Ends, co
     // prefabs are added): the beam's top and inner skin are wound inward — the game's own
     // material draws them from both sides, a one-sided copy loses them (the "open trough"
     // of every build before this one, box A/B 2026-10-27 16:28).
-    if std::env::var("BEAM_TWO_SIDED").map(|v| v != "0").unwrap_or(true) {
-        for l in ["TechnicsTrims", "TechnicsTrimsColorize", "DecalPaintLogo8x1Colorize"] {
+    // Scope (`BEAM_TWO_SIDED=shell|all|0`, default shell): only the Colorize SHELL and its
+    // decal are wound inward; the TechnicsTrims lattice, lips and channel wall render fine
+    // one-sided, and their back copies showed inside the channel as odd geometry (Everios96
+    // 17:05 "some geometry on the inside is looking odd").
+    let scope = std::env::var("BEAM_TWO_SIDED").unwrap_or_else(|_| "shell".to_string());
+    if scope != "0" {
+        let links: &[&str] = if scope == "all" { &["TechnicsTrims", "TechnicsTrimsColorize", "DecalPaintLogo8x1Colorize"] } else { &["TechnicsTrimsColorize", "DecalPaintLogo8x1Colorize"] };
+        for l in links {
             m.two_sided_links.push(l.to_string());
         }
         // the PROPER form (duplicated vertices, reversed normals + winding): the shared-vertex
@@ -340,6 +694,11 @@ fn source_beam(store: &mut crate::store::DataStore, prefab: &str, ends: Ends, co
         retain_triangles_by(&mut m, &|t: &[[f32; 3]; 3]| !t.iter().all(|c| at_end(*c)));
         let n1: usize = m.visuals.iter().filter_map(|v| v.visual.index_buffer.as_ref()).map(|ib| ib.indices.len() / 3).sum();
         m.notes.push(format!("beam: {} end-cap triangle(s) removed ({} cap angle(s) kept)", n0 - n1, kept_angles.len()));
+    }
+    // the flat inner face (env `BEAM_INNER_SKIN=0` to skip, the bisect)
+    if std::env::var("BEAM_INNER_SKIN").map(|v| v != "0").unwrap_or(true) {
+        let n = mirror_outer_skin(&mut m, 1.9, -0.36);
+        m.notes.push(format!("beam: {n} outer-skin/decal triangle(s) mirrored onto the inner face at d −0.36 (the vanilla block's flat concave side)"));
     }
     let after: usize = m.visuals.iter().filter_map(|v| v.visual.index_buffer.as_ref()).map(|ib| ib.indices.len() / 3).sum();
     m.notes.push(format!("beam: {} copies, {after} of {before} triangles kept (junction cube + braces removed)", copies.len()));
@@ -454,6 +813,12 @@ pub fn ring_cmd(store: &mut crate::store::DataStore, args: &[String]) -> R<()> {
     let k = 4.0 / quarters.max(1) as f32;
     let _ = ident3;
     // BEAM_NO_BEND=1: geometry left where the source put it (the pipeline bisect)
+    // chord tolerance (`--chord-tol` metres, default 3 cm) → the largest angle a chord may
+    // span at the TARGET radius: 2·acos(1 − tol/R)
+    let tol: f32 = flag(args, "--chord-tol").and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.03);
+    let max_span = 2.0 * (1.0 - tol / radius.max(1.0)).clamp(-1.0, 1.0).acos();
+    let added = subdivide_by_angle(&mut m, max_span);
+    m.notes.push(format!("ring: {added} vertices added so no chord spans more than {:.1}° ({tol} m at r {radius})", max_span.to_degrees()));
     if std::env::var("BEAM_NO_BEND").map(|v| v == "1").unwrap_or(false) {
         m.notes.push("ring: NO BEND (bisect)".into());
     } else {
@@ -571,6 +936,13 @@ pub fn arch_cmd(store: &mut crate::store::DataStore, args: &[String]) -> R<()> {
     let src_len = n_q as f32 * quarter_len;
     // BEAM_NO_ROT=1: positions bent, normals/tangents left (the bisect); BEAM_NO_BEND=1: nothing moved
     let no_rot = std::env::var("BEAM_NO_ROT").map(|v| v == "1").unwrap_or(false);
+    // chord tolerance (`--chord-tol` metres, default 3 cm) at the contour's own scale: the
+    // source angle maps onto the contour at (path length / source length) m per radian
+    let tol: f32 = flag(args, "--chord-tol").and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.03);
+    let eff_r = (total / src_len) * SRC_R;
+    let max_span = 2.0 * (1.0 - tol / eff_r.max(1.0)).clamp(-1.0, 1.0).acos();
+    let added = subdivide_by_angle(&mut m, max_span);
+    m.notes.push(format!("arch: {added} vertices added so no chord spans more than {:.1}° ({tol} m at an effective radius of {eff_r:.1} m)", max_span.to_degrees()));
     if std::env::var("BEAM_NO_BEND").map(|v| v == "1").unwrap_or(false) {
         m.notes.push("arch: NO BEND (bisect)".into());
         let mut all = m;

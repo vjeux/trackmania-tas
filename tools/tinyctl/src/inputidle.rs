@@ -161,7 +161,7 @@ pub fn cmd(args: &[String]) -> i32 {
 /// `pid \t start_unix \t end_unix \t idle_at_start_s \t what`. `start` writes the line and
 /// spawns a heartbeat thread that moves `end` forward every 20 s for as long as the
 /// process lives, so a killed run is dated to within 20 s of its death; `covering(t)`
-/// finds a run whose [start − 5, end + 45] holds the instant `t`.
+/// finds a run whose [start − 5, end + 120] holds the instant `t`.
 pub mod runlog {
     use std::io::Write;
 
@@ -212,7 +212,11 @@ pub mod runlog {
                 continue;
             }
             let (Ok(start), Ok(end), Ok(idle)) = (f[1].parse::<f64>(), f[2].parse::<f64>(), f[3].parse::<f64>()) else { continue };
-            if t >= start - 5.0 && t <= end + 45.0 {
+            // 120 s of grace after the run's last heartbeat: the game keeps swallowing the
+            // run's trailing synthetic input (the foreground helper's Alt, the plugin's pointer
+            // warps) for a while after this process has exited — 17:02 on 10-27 the last
+            // input landed 55 s after a shoot's end and the next shoot held itself for a person
+            if t >= start - 5.0 && t <= end + 120.0 {
                 // the run whose START is earliest wins: the human reading it carries is the oldest
                 if best.as_ref().map(|b| start < b.0).unwrap_or(true) {
                     best = Some((start, end, idle, f[4].to_string()));
