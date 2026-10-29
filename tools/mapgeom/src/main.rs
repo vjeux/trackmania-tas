@@ -886,8 +886,22 @@ fn main() {
                     }
                     format!("  uv0 u {:.2}..{:.2} v {:.2}..{:.2}", ul[0], uh[0], ul[1], uh[1])
                 };
+                // the lightmap uv (TexCoord1): a visual whose uv1 collapses to a point takes one
+                // lightmap texel for its whole surface (the bobsleigh bowl question, 2026-10-29)
+                let uv1r = if v.uv1.is_empty() {
+                    String::new()
+                } else {
+                    let (mut ul, mut uh) = ([f32::MAX; 2], [f32::MIN; 2]);
+                    for q in &v.uv1 {
+                        for c in 0..2 {
+                            ul[c] = ul[c].min(q[c]);
+                            uh[c] = uh[c].max(q[c]);
+                        }
+                    }
+                    format!("  uv1 u {:.3}..{:.3} v {:.3}..{:.3}", ul[0], uh[0], ul[1], uh[1])
+                };
                 println!(
-                    "  [{i:4}] {} verts  x {:.2}..{:.2}  y {:.2}..{:.2}  z {:.2}..{:.2}  normals up {up} down {down} side {side}  decls {:?}{colors}{uvr}",
+                    "  [{i:4}] {} verts  x {:.2}..{:.2}  y {:.2}..{:.2}  z {:.2}..{:.2}  normals up {up} down {down} side {side}  decls {:?}{colors}{uvr}{uv1r}",
                     v.positions.len(), lo[0], hi[0], lo[1], hi[1], lo[2], hi[2], v.decl_names
                 );
             }

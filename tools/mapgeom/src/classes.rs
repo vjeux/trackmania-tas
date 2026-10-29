@@ -2211,6 +2211,11 @@ impl<'a> Graph<'a> {
                         out.uv0.push(self.r.vec2()?);
                     }
                 }
+                (11, T_FLOAT2) => {
+                    for _ in 0..num {
+                        out.uv1.push(self.r.vec2()?);
+                    }
+                }
                 (N_COLOR0, T_COLOR) => {
                     for _ in 0..num {
                         out.color0.push(self.r.u32()?);

@@ -279,6 +279,14 @@ pub fn build_solid2(m: &Merged, opts: &BuildOpts, next: &mut i32) -> R<CPlugSoli
         s2.lights.push(socket);
     }
     s2.pre_light_gen = if m.no_prelight { None } else { Some(m.pre_light_gen.clone().unwrap_or_else(default_prelight)) };
+    // TINY_PRELIGHT_U02=F (probe, 2026-10-29): the PreLightGen scale word of EVERY assembled
+    // item — metres per lightmap uv unit, the texel budget the game's per-item lightmap
+    // gives the item (the bobsleigh bowl: one dark texel for 800 m² of trough)
+    if let Some(u02) = std::env::var("TINY_PRELIGHT_U02").ok().and_then(|v| v.parse::<f32>().ok()) {
+        if let Some(p) = s2.pre_light_gen.as_mut() {
+            p.u02 = u02;
+        }
+    }
     s2.file_write_time = m.file_write_time;
     Ok(s2)
 }
