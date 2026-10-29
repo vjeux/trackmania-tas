@@ -3829,6 +3829,26 @@ pub fn apply_surface_swap(store: &mut DataStore, m: &mut crate::static_item::bui
                     }
                 }
             }
+            // …and THE LOGOS THEMSELVES (Everios96 14:53: "only parts of them are showing"):
+            // the ice decals' TexCoord0 is the ice shader's block-space tiling; the plain
+            // decal shader samples the logo with it. Re-UVed per patch along the tech
+            // start/finish's plain decals (same layout): decaluv.rs. `TINY_ICE_DECAL_UV=0` off.
+            if std::env::var("TINY_ICE_DECAL_UV").map(|v| v != "0").unwrap_or(true) {
+                let role = if name.starts_with("RoadIceStart") { Some("Start") } else if name.starts_with("RoadIceFinish") { Some("Finish") } else { None };
+                if let Some(role) = role {
+                    let tech = format!("Stadium\\Media\\Prefab\\RoadTech\\{role}_Air.Prefab.Gbx");
+                    match crate::static_item::decaluv::reference_patches(store, &tech) {
+                        Ok(refs) => {
+                            m.notes.push(format!("decal uv reference: {} patch(es) from {tech}", refs.len()));
+                            m.decal_uv_refs = refs;
+                        }
+                        Err(e) => m.notes.push(format!("decal uv reference {tech}: {e} (long-axis rule for every patch)")),
+                    }
+                    for stem in ["DecalMarksOnRoadIce", "DecalMarksStartOnRoadIce", "DecalSponsor1x1BigAOnRoadIce", "DecalSponsor4x1AOnRoadIce", "DecalSponsor4x1BOnRoadIce", "DecalSponsor4x1COnRoadIce", "DecalSponsor4x1DOnRoadIce"] {
+                        m.decal_uv_links.push(stem.to_string());
+                    }
+                }
+            }
         }
         for (stem, plains) in pairs {
             if m.link_rewrite.iter().any(|(from, _, _)| from == stem) {

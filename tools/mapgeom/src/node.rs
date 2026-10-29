@@ -126,6 +126,8 @@ pub struct VertexStream {
     pub uv0: Vec<[f32; 2]>,
     /// TexCoord1 (decl 11) — the lightmap uv, when the stream has one
     pub uv1: Vec<[f32; 2]>,
+    /// TexCoord2 (decl 12) — a layered shader's decal uv (the ice `…OnRoadIce` decals)
+    pub uv2: Vec<[f32; 2]>,
     /// the declaration names, in order (10 = TexCoord0, 11 = TexCoord1 = the lightmap uv)
     pub decl_names: Vec<u32>,
     /// COLOR0 (decl 8) words when the stream has one — the decal on/off vertex colour

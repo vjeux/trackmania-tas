@@ -160,7 +160,11 @@ pub fn build_solid2(m: &Merged, opts: &BuildOpts, next: &mut i32) -> R<CPlugSoli
     }
     // a plain decal material on geometry without a vertex colour: the colour says
     // "decal on" (see `harmonize_layouts_full`)
-    let want_color0: Vec<usize> = m.materials.iter().enumerate().filter(|(_, mat)| mat.link().map(|l| l.rsplit('\\').next().map(|st| st.starts_with("DecalMarks")).unwrap_or(false)).unwrap_or(false)).map(|(i, _)| i).collect();
+    // …and the plain SPONSOR decals (`DecalSponsor1x1BigA`, `DecalPaintSponsor4x1*`): the
+    // tech start/finish paint them on white-coloured vertices; the ice decals they
+    // replace carry no colour, and the big centre logo of the converted bobsleigh finish
+    // stayed invisible for it (2026-10-29)
+    let want_color0: Vec<usize> = m.materials.iter().enumerate().filter(|(_, mat)| mat.link().map(|l| l.rsplit('\\').next().map(|st| st.starts_with("DecalMarks") || (st.starts_with("Decal") && st.contains("Sponsor") && !st.contains("OnRoadIce"))).unwrap_or(false)).unwrap_or(false)).map(|(i, _)| i).collect();
     // every pack DECK material gets a lightmap uv (TexCoord1) as its prefabs carry one; the
     // decals and the mesh-modeler / custom materials are left as authored (see
     // `harmonize_layouts_full_uv1`). TINY_UV1_ALL=0 restores the old layouts.

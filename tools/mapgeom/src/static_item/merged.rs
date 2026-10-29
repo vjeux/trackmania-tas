@@ -240,6 +240,11 @@ pub struct Merged {
     /// start/finish). Each such visual is emitted twice: a copy in the given deck
     /// material (link, physics) under the decal, then the decal itself.
     pub deck_under: Vec<(String, String, u8)>,
+    /// The plain-decal reference patches (the tech start/finish, `decaluv::reference_patches`)
+    /// and the source decal stems whose visuals are re-UVed against them (the ice
+    /// `…OnRoadIce` decals: their TexCoord0 is the ice shader's, 2026-10-29).
+    pub decal_uv_refs: Vec<super::decaluv::RefPatch>,
+    pub decal_uv_links: Vec<String>,
     /// An ITEM modifier names its materials with a suffix: the obstacle items
     /// (Summer 15's pushers and rotors) reference
     /// `Stadium\Media\Modifier\ItemObstacleLevel1.Gbx`, whose materials live
@@ -1776,11 +1781,22 @@ impl Merged {
                     self.notes.push(format!("visual {}: deck copy under the `{stem}` decal ({} triangles, material {deck_link})", g.visual_index, v.index_buffer.as_ref().map(|ib| ib.indices.len() / 3).unwrap_or(0)));
                     visual_slots.push((self.visuals.len(), slot));
                     self.visuals.push(MergedVisual { from_water: water_src, visual: v.clone(), material: slot, lod_mask: lod.0, lod_ladder: lod.1.clone(), part });
-                    // the finish line itself: the ice strip's UVs are for the ice shader; the
-                    // plain `DecalMarks` atlas wants its finish band across the strip
-                    if stem == "DecalMarksOnRoadIce" {
-                        let n = crate::static_item::build::finish_marks_uv(&mut v);
-                        self.notes.push(format!("visual {}: finish-line strip re-UVed for the plain DecalMarks atlas ({n} vertices)", g.visual_index));
+                }
+            }
+            // an ice decal under a plain decal material: its TexCoord0 is the ice shader's
+            // (block-space tiling), the plain `DecalGeom` shader samples the logo with it —
+            // re-UVed 0..1 per patch along the tech twin's directions (decaluv.rs)
+            if !self.decal_uv_links.is_empty() {
+                let src_link: Option<String> = src_links.get(mi).cloned().flatten();
+                let hit = src_link.as_deref().filter(|l| self.decal_uv_links.iter().any(|t| *l == t || l.rsplit('\\').next() == Some(t.as_str()) || l.ends_with(&format!("{t}.Material.Gbx")))).map(|s| s.to_string());
+                if let Some(l) = hit {
+                    if let Some(key) = crate::static_item::decaluv::decal_key(&l) {
+                        // the visual's own positions (a block bake sits in the prefab frame; the
+                        // two-sided copy above duplicated the vertices, so the source visual's
+                        // count no longer matches)
+                        let (src_pos, _) = visual_triangles(&v);
+                        let (done, fb) = crate::static_item::decaluv::retarget(&mut v, &src_pos, &self.decal_uv_refs, &key);
+                        self.notes.push(format!("visual {}: `{key}` decal re-UVed for the plain material: {done} patch(es){}", g.visual_index, if fb > 0 { format!(", {fb} without a tech twin (long-axis rule)") } else { String::new() }));
                     }
                 }
             }

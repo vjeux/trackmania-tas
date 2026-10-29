@@ -930,7 +930,8 @@ fn main() {
                     for (i, q) in v.positions.iter().enumerate() {
                         let uv = v.uv0.get(i).map(|u| format!(" uv0 ({:.3},{:.3})", u[0], u[1])).unwrap_or_default();
                         let uv1 = v.uv1.get(i).map(|u| format!(" uv1 ({:.3},{:.3})", u[0], u[1])).unwrap_or_default();
-                        println!("  v{i}: ({:.2},{:.2},{:.2}){uv}{uv1}", q[0], q[1], q[2]);
+                        let uv2 = v.uv2.get(i).map(|u| format!(" uv2 ({:.3},{:.3})", u[0], u[1])).unwrap_or_default();
+                        println!("  v{i}: ({:.2},{:.2},{:.2}){uv}{uv1}{uv2}", q[0], q[1], q[2]);
                     }
                 }
             }

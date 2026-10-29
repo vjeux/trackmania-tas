@@ -3387,36 +3387,6 @@ pub fn shell_offset(v: &mut super::visual::CPlugVisualIndexedTriangles, d: f32) 
 /// Planar UVs from the XZ position, `scale` metres per texture tile — for a face whose
 /// own UVs are meaningless under a new dress (a water quad's are all zero: the water
 /// shader never used them; dressed as wood it drew one flat colour, 2026-09-24).
-/// The finish-line strip of an ICE finish re-UVed for the plain `DecalMarks` atlas
-/// (2026-10-29, Everios96: "the finish line now disappeared"). The ice shader samples a
-/// narrow u band (1.047..1.109 across the 2 m strip, v 0..1 along the arc); the tech
-/// finish's own `DecalMarks` strip uses u 0.75..1.0 across (the atlas's finish band,
-/// u 1.0 at the near edge) and v 0..1 along. The strip's narrow axis is read off its
-/// own u range, so a plain decal paints the checkers instead of one texel of the
-/// atlas's edge. Returns the number of vertices remapped.
-pub fn finish_marks_uv(v: &mut super::visual::CPlugVisualIndexedTriangles) -> usize {
-    let Some(main) = v.main.as_mut() else { return 0 };
-    let Some(Node::VertexStream(s)) = main.vertex_streams.first_mut().and_then(|r| r.inline.as_deref_mut()) else { return 0 };
-    let mut n = 0usize;
-    for (dcl, e) in s.decls.iter().zip(s.elems.iter_mut()) {
-        if dcl.name() != N_TEXCOORD0 {
-            continue;
-        }
-        if let Elem::Float2(uv) = e {
-            let (lo, hi) = uv.iter().fold((f32::MAX, f32::MIN), |(a, b), q| (a.min(q[0]), b.max(q[0])));
-            if hi - lo < 1e-4 {
-                return 0;
-            }
-            for q in uv.iter_mut() {
-                let t = (q[0] - lo) / (hi - lo);
-                q[0] = 1.0 - 0.25 * t;
-                n += 1;
-            }
-        }
-    }
-    n
-}
-
 pub fn planar_uv(v: &mut super::visual::CPlugVisualIndexedTriangles, scale: f32) -> Result<(), String> {
     let Some(main) = v.main.as_mut() else { return Ok(()) };
     let Some(Node::VertexStream(s)) = main.vertex_streams.first_mut().and_then(|r| r.inline.as_deref_mut()) else { return Ok(()) };
