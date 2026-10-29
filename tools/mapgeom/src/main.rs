@@ -2183,6 +2183,92 @@ fn main() {
                 Err(e) => println!("{p}: FAILED: {e}"),
             }
         }
+        // mapgeom swap-waypoint-items LIVE --from FRESH --out OUT [--tags Spawn,Goal] — the
+        // embedded item file behind every tagged item placement of LIVE (Spawn = the start,
+        // Goal = a finish) replaced by the file behind the same-tagged placement of FRESH
+        // (a fresh build of the same map), renamed to LIVE's ident. The bobsleigh round of
+        // 2026-10-29: the live file keeps every unshipped byte, only its ice start/finish
+        // items change (texture only). Refuses when the tagged models differ in count.
+        "swap-waypoint-items" => {
+            let live_p = std::path::PathBuf::from(a.rest.get(1).cloned().unwrap_or_default());
+            let fresh_p = std::path::PathBuf::from(flag(&a.rest, "--from").unwrap_or_else(|| die("swap-waypoint-items needs --from FRESH".into())));
+            let out = std::path::PathBuf::from(flag(&a.rest, "--out").unwrap_or_else(|| die("swap-waypoint-items needs --out OUT".into())));
+            let tags: Vec<String> = flag(&a.rest, "--tags").unwrap_or_else(|| "Spawn,Goal".to_string()).split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+            let mut live = tmmaps::map::MapFile::load(&live_p);
+            let fresh = tmmaps::map::MapFile::load(&fresh_p);
+            // tagged item models per side, in placement order
+            let pick = |m: &tmmaps::map::MapFile| -> Vec<(String, String)> {
+                let mut v: Vec<(String, String)> = Vec::new();
+                for it in &m.items {
+                    if let Some(t) = it.waypoint_tag.as_deref() {
+                        if tags.iter().any(|x| x == t) && !v.iter().any(|(tag, model)| tag == t && model == &it.model) {
+                            v.push((t.to_string(), it.model.clone()));
+                        }
+                    }
+                }
+                v
+            };
+            let (lv, fv) = (pick(&live), pick(&fresh));
+            if lv.len() != fv.len() || lv.iter().zip(fv.iter()).any(|(a, b)| a.0 != b.0) {
+                eprintln!("tagged item models differ: live {lv:?} vs fresh {fv:?}");
+                std::process::exit(2);
+            }
+            // --source-prefix P (with the fresh build's report.tsv beside it): only the
+            // items baked from blocks whose name starts with P are swapped — the round
+            // touches the ice starts/finishes and nothing else
+            let source_prefix = flag(&a.rest, "--source-prefix");
+            let mut source_of: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+            if source_prefix.is_some() {
+                let rep = fresh_p.parent().map(|d| d.join("report.tsv")).unwrap_or_default();
+                let text = std::fs::read_to_string(&rep).unwrap_or_else(|e| die(format!("{}: {e} (--source-prefix needs the fresh build's report.tsv)", rep.display())));
+                for l in text.lines().skip(1) {
+                    let f: Vec<&str> = l.split('\t').collect();
+                    if f.len() >= 5 && f[0] == "block" && f[1] != "-" {
+                        source_of.insert(format!("{}.Item.Gbx", f[1]), f[4].split_whitespace().next().unwrap_or("").to_string());
+                    }
+                }
+            }
+            let (_, lzip) = live.embedded_objects().unwrap_or_else(|| die("live map has no embedded objects".into()));
+            let (_, fzip) = fresh.embedded_objects().unwrap_or_else(|| die("fresh map has no embedded objects".into()));
+            let mut kept: std::collections::BTreeMap<String, Vec<u8>> = std::collections::BTreeMap::new();
+            for (name, bytes) in tmmaps::header::zip_entries(&lzip) {
+                kept.insert(name, bytes);
+            }
+            let fresh_files: Vec<(String, Vec<u8>)> = tmmaps::header::zip_entries(&fzip);
+            let mut swapped = 0usize;
+            for ((tag, lmodel), (_, fmodel)) in lv.iter().zip(fv.iter()) {
+                if let Some(pfx) = source_prefix.as_deref() {
+                    let src = source_of.get(fmodel).cloned().unwrap_or_default();
+                    if !src.starts_with(pfx) {
+                        println!("  {tag}: {lmodel} <- {fmodel} ({src}): not a {pfx}* block, left alone");
+                        continue;
+                    }
+                }
+                let lkey = kept.keys().find(|k| k.rsplit(|c| c == '/' || c == '\\').next().unwrap_or(k) == lmodel).cloned();
+                let fbytes = fresh_files.iter().find(|(k, _)| k.rsplit(|c| c == '/' || c == '\\').next().unwrap_or(k) == fmodel).map(|(_, b)| b.clone());
+                match (lkey, fbytes) {
+                    (Some(k), Some(b)) => {
+                        // the fresh file renamed to the live ident (header + body idents)
+                        let renamed = mapgeom::crystal::rename_ident(&b, fmodel, lmodel);
+                        if kept.get(&k).map(|v| *v == renamed).unwrap_or(false) {
+                            println!("  {tag}: {k} identical already, left alone");
+                            continue;
+                        }
+                        let old = kept.insert(k.clone(), renamed.clone()).map(|v| v.len()).unwrap_or(0);
+                        println!("  {tag}: {k} ({lmodel}) <- {fmodel}: {old} -> {} bytes", renamed.len());
+                        swapped += 1;
+                    }
+                    (lk, fb) => {
+                        eprintln!("{tag}: live entry {lmodel} {} / fresh entry {fmodel} {}", if lk.is_some() { "found" } else { "MISSING" }, if fb.is_some() { "found" } else { "MISSING" });
+                        std::process::exit(2);
+                    }
+                }
+            }
+            let zip = tmmaps::header::deflated_zip(&kept);
+            live.replace_embedded_zip_keep_manifest(&zip);
+            live.write_to(&out).unwrap_or_else(|e| die(format!("{}: {e:?}", out.display())));
+            println!("{}: {swapped} waypoint item file(s) swapped, zip {} bytes", out.display(), zip.len());
+        }
         // mapgeom item-relink FILE.Item.Gbx --ident NAME.Item.Gbx --rows Stem=Link[@P];… --out OUT
         // — the item re-encoded with these material rows (geometry kept): the Tiny U10S gate
         // stubs (2026-10-23) take their kind folder's Decal/Screen/Collision
