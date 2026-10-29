@@ -321,6 +321,36 @@ pub fn cmd(store: &mut crate::store::DataStore, rest: &[String], flag: &dyn Fn(&
             }
         }
     }
+    // --symmetry-census F.tsv (Hugo's Mirrored alteration, 10-29): every block info's symmetry data — chunk 0x0304E028
+    // (SymmetricalBlockInfoId + Dir), the base variant's 0x0315B003 SymmetricalVariantIndex, 0x0315B008 ManualSymmetry
+    // ×4, multi-dir, the footprint and every unit's offset — one row per pak file (dedup downstream)
+    if let Some(cp) = flag(rest, "--symmetry-census") {
+        let mut t = String::from("pak	ident	name	sym_block	dir	base	sym_variant_index	cardinal	multi_dir	manual_symmetry	size_x	size_z	size_y	units	waypoint	is_pillar	variants
+");
+        for p in entries.iter().filter(|p| { let u = p.to_uppercase(); u.contains("\\GAMECTNBLOCKINFO\\") && u.ends_with(".GBX") }) {
+            let coll_name = p.split('\\').next().unwrap_or("").to_string();
+            let Ok(bi) = crate::blockinfo::load(store, p) else { continue };
+            let (base, v) = match (&bi.variant_base_ground, &bi.variant_base_air) {
+                (Some(g), _) if !g.block_units.is_empty() => ("ground", Some(g)),
+                (_, Some(a)) if !a.block_units.is_empty() => ("air", Some(a)),
+                (Some(g), _) => ("ground", Some(g)),
+                (_, Some(a)) => ("air", Some(a)),
+                _ => ("none", None),
+            };
+            let units: Vec<String> = v.map(|v| v.block_units.iter().map(|u| format!("{},{},{}", u.offset[0], u.offset[1], u.offset[2])).collect()).unwrap_or_default();
+            let sx = v.map(|v| v.block_units.iter().map(|u| u.offset[0] + 1).max().unwrap_or(1)).unwrap_or(1);
+            let sz = v.map(|v| v.block_units.iter().map(|u| u.offset[2] + 1).max().unwrap_or(1)).unwrap_or(1);
+            let sy = v.map(|v| v.block_units.iter().map(|u| u.offset[1] + 1).max().unwrap_or(1)).unwrap_or(1);
+            let variants = bi.variant_base_ground.is_some() as usize + bi.variant_base_air.is_some() as usize + bi.additional_ground.len() + bi.additional_air.len();
+            t.push_str(&format!("{coll_name}\t{}\t{}\t{}\t{}\t{base}\t{}\t{}\t{}\t{}\t{sx}\t{sz}\t{sy}\t{}\t{}\t{:?}\t{variants}\n",
+                bi.ident, bi.name, bi.symmetrical_block_info_id, bi.dir,
+                v.map(|v| v.symmetrical_variant_index).unwrap_or(-99), v.map(|v| v.cardinal_dir).unwrap_or(-99), v.map(|v| crate::blockinfo::multi_dir_name(v.multi_dir)).unwrap_or("?"),
+                v.map(|v| v.manual_symmetry.iter().map(|b| if *b { "1" } else { "0" }).collect::<Vec<_>>().join("")).unwrap_or_default(),
+                units.join(";"), waypoint_cs(bi.waypoint_type), bi.is_pillar));
+        }
+        std::fs::write(&cp, t).map_err(|e| format!("{cp}: {e}"))?;
+        println!("wrote {cp}");
+    }
     // --respawn-census F.tsv: every waypoint block's NoRespawn (chunk 0x0304E00F) and every waypoint item's
     // NPlugTrigger_SWaypoint NoRespawn field (prefab form; an entity-model item has no such field), per pak
     if let Some(cp) = flag(rest, "--respawn-census") {
