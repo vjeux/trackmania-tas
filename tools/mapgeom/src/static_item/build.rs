@@ -4469,10 +4469,11 @@ pub fn ring_item_ext(store: &mut crate::store::DataStore, ident: &str, collectio
 /// collision, spawn = the first box's floor centre. The source frame is kept: a block's prefab is in the BLOCK frame
 /// (multi-cell kinds included), an item's prefab in the item's origin frame — `PlaceRelative(source, finish)` lands it.
 pub enum ScreenSource<'a> {
-    /// a block info by name, the base variant picked `ground` / air (`pick_placement_add(ground, 0, 0, 0)`)
-    Block(&'a str, bool),
-    /// a pak item path (`Stadium\Items\Screen2x1Small.Item.Gbx`)
-    Item(&'a str),
+    /// a block info by name, the variant picked `ground` / air and the additional index (0 = base; `pick_placement_add(ground, 0, 0, add)`)
+    Block(&'a str, bool, usize),
+    /// a pak item path (`Stadium\Items\Screen2x1Small.Item.Gbx`) and its variant index (the placement's flags >> 8
+    /// for a variant-list item such as ShowScreen / ShowRace; 0 for a single-model item)
+    Item(&'a str, usize),
 }
 
 pub struct ScreenReport {
@@ -4489,11 +4490,11 @@ fn is_screen_face_link(link: &str) -> bool {
 
 pub fn screen_finish_item(store: &mut crate::store::DataStore, source: ScreenSource, ident: &str, collection: u32) -> R<(Vec<u8>, ScreenReport)> {
     let mut m = match source {
-        ScreenSource::Block(name, ground) => {
+        ScreenSource::Block(name, ground, add) => {
             let coll_name = crate::static_item::materials::env_name(collection);
             let mut idx = crate::blockmap::BlockInfoIndex::build(store, coll_name);
             let (_path, bi) = crate::tiny_library::load_block_info_pub(&mut idx, store, name)?;
-            let picked = bi.pick_placement_add(ground, 0, 0, 0).ok_or_else(|| format!("{name}: no variant"))?;
+            let picked = bi.pick_placement_add(ground, 0, 0, add).ok_or_else(|| format!("{name}: no variant"))?;
             let mut m = Merged::default();
             for mo in &picked.mobils {
                 let Some(pf) = mo.prefab.as_ref() else { continue };
@@ -4505,7 +4506,7 @@ pub fn screen_finish_item(store: &mut crate::store::DataStore, source: ScreenSou
             }
             m
         }
-        ScreenSource::Item(path) => pack_item_merged(store, path, 1.0, collection, 0, None)?,
+        ScreenSource::Item(path, variant) => pack_item_merged(store, path, 1.0, collection, variant, None)?,
     };
     let before = m.visuals.len();
     let face_slots: Vec<usize> = m.materials.iter().enumerate().filter(|(_, mat)| mat.link().map_or(false, is_screen_face_link)).map(|(i, _)| i).collect();

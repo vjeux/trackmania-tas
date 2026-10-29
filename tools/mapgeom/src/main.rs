@@ -774,23 +774,57 @@ fn main() {
             let blocks: Vec<String> = flag(&a.rest, "--block").unwrap_or_default().split(',').filter(|x| !x.is_empty()).map(|x| x.trim().to_string()).collect();
             let items: Vec<String> = flag(&a.rest, "--item").unwrap_or_default().split(',').filter(|x| !x.is_empty()).map(|x| x.trim().to_string()).collect();
             use mapgeom::static_item::build::{screen_finish_item, ScreenSource};
-            let mut jobs: Vec<(String, String, bool)> = blocks.iter().map(|b| (b.clone(), b.trim_start_matches("Technics").to_string(), true)).collect();
-            jobs.extend(items.iter().map(|i| (i.clone(), i.clone(), false)));
-            for (source, kind, is_block) in jobs {
-                let name = format!("FinishScreen{}.Item.Gbx", kind.trim_start_matches("Screen"));
-                let src = if is_block { ScreenSource::Block(&source, ground) } else { ScreenSource::Item(&format!("Stadium\\Items\\{source}.Item.Gbx")) };
+            // the name: `Finish` + the source name minus a leading `Technics` (blocks) — Screen… kinds keep `Screen`
+            // (FinishScreen2x1StraightSmall, FinishScreen2x1Small), the others their full name (FinishRaceScreen6x1,
+            // FinishShowRace, FinishShowScreen)
+            // an item given as NAME:V is a variant-list item's variant V (ShowScreen:6) → FinishShowScreen6
+            let mut jobs: Vec<(String, String, bool, usize)> = blocks.iter().map(|b| (b.clone(), format!("Finish{}", b.trim_start_matches("Technics")), true, 0)).collect();
+            jobs.extend(items.iter().map(|i| match i.split_once(':') { Some((n, v)) => (n.to_string(), format!("Finish{n}{v}"), false, v.parse().unwrap_or(0)), None => (i.clone(), format!("Finish{i}"), false, 0) }));
+            // --check-variants: bake EVERY variant of a block kind (ground/air base + additional) and compare the trigger
+            //   boxes with the written one — a kind whose variants move the LED face needs per-variant items
+            let check = a.rest.iter().any(|x| x == "--check-variants");
+            let mut table: Vec<String> = vec!["source\tkind\titem\tfaces\tboxes\tmaterials\tvariants_checked\tvariants_differ".into()];
+            for (source, stem, is_block, variant) in jobs {
+                let name = format!("{stem}.Item.Gbx");
                 let path_item = format!("Stadium\\Items\\{source}.Item.Gbx");
-                let src = if is_block { src } else { ScreenSource::Item(&path_item) };
+                let src = if is_block { ScreenSource::Block(&source, ground, 0) } else { ScreenSource::Item(&path_item, variant) };
                 match screen_finish_item(&mut store, src, &name, collection) {
                     Ok((bytes, rep)) => {
                         let p = dir.join(&name);
                         std::fs::write(&p, &bytes).unwrap_or_else(|e| die(format!("{}: {e}", p.display())));
                         println!("wrote {}: {} bytes — {} LED face visual(s) kept of {} ({}), {} trigger box(es): {}", p.display(), bytes.len(), rep.faces, rep.faces + rep.dropped_visuals, rep.materials.join(" "), rep.groups.len(),
                             rep.groups.iter().map(|(n, c, e)| format!("normal ({:.2}, {:.2}, {:.2}) centre ({:.2}, {:.2}, {:.2}) size {:.2} × {:.2} × {:.2}", n[0], n[1], n[2], c[0], c[1], c[2], e[0], e[1], e[2])).collect::<Vec<_>>().join("; "));
+                        let (mut checked, mut differ) = (0usize, Vec::new());
+                        if check && is_block {
+                            let coll_name = mapgeom::static_item::materials::env_name(collection);
+                            let mut idx = mapgeom::blockmap::BlockInfoIndex::build(&mut store, coll_name);
+                            if let Ok((_, bi)) = mapgeom::tiny_library::load_block_info_pub(&mut idx, &mut store, &source) {
+                                let mut variants: Vec<(bool, usize, String)> = Vec::new();
+                                if bi.variant_base_ground.is_some() { variants.push((true, 0, "ground".into())); }
+                                if bi.variant_base_air.is_some() { variants.push((false, 0, "air".into())); }
+                                for k in 0..bi.additional_ground.len() { variants.push((true, k + 1, format!("ground/add{k}"))); }
+                                for k in 0..bi.additional_air.len() { variants.push((false, k + 1, format!("air/add{k}"))); }
+                                for (g, add, label) in variants {
+                                    match screen_finish_item(&mut store, ScreenSource::Block(&source, g, add), &name, collection) {
+                                        Ok((_, r2)) => {
+                                            checked += 1;
+                                            let same = r2.groups.len() == rep.groups.len() && r2.groups.iter().all(|(n, c, e)| rep.groups.iter().any(|(n0, c0, e0)| (0..3).all(|i| (n[i] - n0[i]).abs() < 0.01 && (c[i] - c0[i]).abs() < 0.02 && (e[i] - e0[i]).abs() < 0.02)));
+                                            if !same { differ.push(format!("{label}: {}", r2.groups.iter().map(|(n, c, e)| format!("n({:.2},{:.2},{:.2}) c({:.2},{:.2},{:.2}) {:.1}×{:.1}", n[0], n[1], n[2], c[0], c[1], c[2], e[0], e[1])).collect::<Vec<_>>().join(" | "))); }
+                                        }
+                                        Err(e) => differ.push(format!("{label}: no LED face ({e})")),
+                                    }
+                                }
+                            }
+                            if !differ.is_empty() { println!("  VARIANTS DIFFER for {source}: {}", differ.join(" ;; ")); }
+                        }
+                        let label = if is_block || !source.starts_with("Show") { source.clone() } else { format!("{source} (variant {variant})") };
+                        table.push(format!("{label}\t{}\t{name}\t{}\t{}\t{}\t{checked}\t{}", if is_block { "block" } else { "item" }, rep.faces, rep.groups.len(), rep.materials.join(" "), if differ.is_empty() { "-".to_string() } else { differ.join(" ;; ") }));
                     }
-                    Err(e) => println!("{name}: FAILED: {e}"),
+                    Err(e) => { println!("{name}: FAILED: {e}"); table.push(format!("{source}{}\t{}\t{name}\tFAILED\t\t{e}\t\t", if is_block { String::new() } else { format!(" (variant {variant})") }, if is_block { "block" } else { "item" })); }
                 }
             }
+            std::fs::write(dir.join("screens-table.tsv"), table.join("\n") + "\n").unwrap_or_else(|e| die(e.to_string()));
+            println!("table: {}", dir.join("screens-table.tsv").display());
         }
         "screen-census" => {
             let mut store = open(&a);
