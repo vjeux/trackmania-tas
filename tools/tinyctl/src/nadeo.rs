@@ -525,12 +525,44 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             Ok(())
         }
         "maps" => {
-            let uids: Vec<String> = f("--uids").ok_or("maps needs --uids A,B,…")?.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect();
+            // --uids A,B,… or --uids-file F (one uid per line, extra columns ignored);
+            // --fetch DIR downloads each map's live file to DIR/<uid>.Map.Gbx (the live
+            // bytes of an in-place edit, 2026-10-29: the staged copies die with /tmp)
+            let uids: Vec<String> = match (f("--uids"), f("--uids-file")) {
+                (Some(u), _) => u.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect(),
+                (None, Some(file)) => std::fs::read_to_string(&file).map_err(|e| format!("{file}: {e}"))?.lines().filter_map(|l| l.split('\t').next().map(|x| x.trim().to_string())).filter(|x| !x.is_empty() && !x.starts_with('#')).collect(),
+                (None, None) => return Err("maps needs --uids A,B,… or --uids-file F".into()),
+            };
             let recs = core_records(&auth_core, &uids)?;
             save("maps.json", &Value::Array(recs.clone()))?;
-            println!("mapUid\tname\tauthorTime\tgold\tsilver\tbronze\tcollection\tauthor\tmapId\tfileUrl");
+            let fetch = f("--fetch").map(PathBuf::from);
+            if let Some(d) = &fetch {
+                std::fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
+            }
+            println!("mapUid\tname\tauthorTime\tgold\tsilver\tbronze\tcollection\tauthor\tmapId\tfileUrl{}", if fetch.is_some() { "\tfile" } else { "" });
+            let mut n_files = 0usize;
             for r in &recs {
-                println!("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", s(r, "mapUid"), s(r, "name"), s(r, "authorScore"), s(r, "goldScore"), s(r, "silverScore"), s(r, "bronzeScore"), s(r, "collectionName"), s(r, "author"), s(r, "mapId"), s(r, "fileUrl"));
+                let mut file_note = String::new();
+                if let Some(d) = &fetch {
+                    let p = d.join(format!("{}.Map.Gbx", s(r, "mapUid")));
+                    let url = s(r, "fileUrl");
+                    if url == "-" {
+                        file_note = "\tNO fileUrl".into();
+                    } else {
+                        let (_, code) = curl(&["-L", "-H", &auth_core, "-o", p.to_str().unwrap(), &url])?;
+                        let n = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+                        if !code.starts_with('2') || n == 0 {
+                            let _ = std::fs::remove_file(&p);
+                            return Err(format!("{}: download HTTP {code}, {n} bytes", s(r, "mapUid")));
+                        }
+                        n_files += 1;
+                        file_note = format!("\t{}", p.display());
+                    }
+                }
+                println!("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}{file_note}", s(r, "mapUid"), s(r, "name"), s(r, "authorScore"), s(r, "goldScore"), s(r, "silverScore"), s(r, "bronzeScore"), s(r, "collectionName"), s(r, "author"), s(r, "mapId"), s(r, "fileUrl"));
+            }
+            if fetch.is_some() {
+                eprintln!("maps: {n_files} of {} files downloaded", recs.len());
             }
             Ok(())
         }
