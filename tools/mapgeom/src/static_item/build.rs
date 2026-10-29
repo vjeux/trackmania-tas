@@ -4461,3 +4461,138 @@ pub fn ring_item_ext(store: &mut crate::store::DataStore, ident: &str, collectio
     let (bytes, _) = finish_item(m, ident, ident, 1.0, collection)?;
     Ok((bytes, visuals, tris))
 }
+
+/// Hugo's "Signs" finishes (10-29): the LED FACE polygons of a screen kind (the visuals under an `Ad*Screen` / `RaceAd6x1`
+/// material — `materials::is_ad_screen_link` + the Small/VeryBig variants), re-dressed with `RaceTriggerFXFinish`, pushed
+/// 2 cm out along each face's own normal (a double-sided screen pushes both faces), the trigger = each coplanar face group's
+/// in-plane bounding rectangle extruded ±0.5 m (one box per group, all in one mesh surface), WaypointType Finish, no
+/// collision, spawn = the first box's floor centre. The source frame is kept: a block's prefab is in the BLOCK frame
+/// (multi-cell kinds included), an item's prefab in the item's origin frame — `PlaceRelative(source, finish)` lands it.
+pub enum ScreenSource<'a> {
+    /// a block info by name, the base variant picked `ground` / air (`pick_placement_add(ground, 0, 0, 0)`)
+    Block(&'a str, bool),
+    /// a pak item path (`Stadium\Items\Screen2x1Small.Item.Gbx`)
+    Item(&'a str),
+}
+
+pub struct ScreenReport {
+    pub faces: usize,
+    pub dropped_visuals: usize,
+    pub groups: Vec<([f32; 3], [f32; 3], [f32; 3])>,
+    pub materials: Vec<String>,
+}
+
+fn is_screen_face_link(link: &str) -> bool {
+    let stem = link.rsplit('\\').next().unwrap_or(link).trim_end_matches(".Material.Gbx").to_ascii_lowercase();
+    (stem.starts_with("ad") && stem.contains("screen")) || stem == "racead6x1"
+}
+
+pub fn screen_finish_item(store: &mut crate::store::DataStore, source: ScreenSource, ident: &str, collection: u32) -> R<(Vec<u8>, ScreenReport)> {
+    let mut m = match source {
+        ScreenSource::Block(name, ground) => {
+            let coll_name = crate::static_item::materials::env_name(collection);
+            let mut idx = crate::blockmap::BlockInfoIndex::build(store, coll_name);
+            let (_path, bi) = crate::tiny_library::load_block_info_pub(&mut idx, store, name)?;
+            let picked = bi.pick_placement_add(ground, 0, 0, 0).ok_or_else(|| format!("{name}: no variant"))?;
+            let mut m = Merged::default();
+            for mo in &picked.mobils {
+                let Some(pf) = mo.prefab.as_ref() else { continue };
+                let at: Xform = match (mo.translation, mo.rotation) {
+                    (None, None) => IDENTITY,
+                    (t, r) => crate::geom::euler_xyz_deg(r.unwrap_or([0.0; 3]), t.unwrap_or([0.0; 3])),
+                };
+                add_prefab(store, pf, &at, 1.0, &mut m, 0)?;
+            }
+            m
+        }
+        ScreenSource::Item(path) => pack_item_merged(store, path, 1.0, collection, 0, None)?,
+    };
+    let before = m.visuals.len();
+    let face_slots: Vec<usize> = m.materials.iter().enumerate().filter(|(_, mat)| mat.link().map_or(false, is_screen_face_link)).map(|(i, _)| i).collect();
+    let materials: Vec<String> = face_slots.iter().filter_map(|i| m.materials[*i].link().map(|l| l.rsplit('\\').next().unwrap_or(l).to_string())).collect();
+    if face_slots.is_empty() {
+        return Err(format!("{ident}: no LED face material among {:?}", m.materials.iter().filter_map(|x| x.link().map(|l| l.rsplit('\\').next().unwrap_or(l).to_string())).collect::<Vec<_>>()));
+    }
+    // the nearest LOD copy of each face only (the screens carry the quad once per LOD level)
+    m.visuals.retain(|v| face_slots.contains(&v.material) && (v.lod_mask == 0 || v.lod_mask & 1 != 0));
+    for v in m.visuals.iter_mut() { v.lod_mask = 0; }
+    m.lights_out.clear();
+    m.pending_lights.clear();
+    m.fx.clear();
+    m.veget.clear();
+    m.pictures.clear();
+    m.surf_vertices.clear();
+    m.surf_triangles.clear();
+    m.surf_ids.clear();
+    // face planes from the triangles, the offset along each face's normal, the coplanar groups' rectangles
+    let mut groups: Vec<([f32; 3], f32, Vec<[f32; 3]>)> = Vec::new();
+    let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    for mv in m.visuals.iter_mut() {
+        let Some(main) = mv.visual.main.as_mut() else { continue };
+        let Some(Node::VertexStream(stream)) = main.vertex_streams.first_mut().and_then(|r| r.inline.as_deref_mut()) else { continue };
+        let compress = stream.compress_local3d.unwrap_or(false);
+        let indices: Vec<u32> = mv.visual.index_buffer.as_ref().map(|ib| ib.indices.clone()).unwrap_or_default();
+        for (d, e) in stream.decls.iter().zip(stream.elems.iter_mut()) {
+            if let (N_POSITION, T_FLOAT3, Elem::Float3(p)) = (d.name(), d.stored_type(compress), e) {
+                let mut n = [0.0f32; 3];
+                for t in indices.chunks(3) {
+                    if t.len() < 3 { continue; }
+                    let (a, b, c) = (p[t[0] as usize], p[t[1] as usize], p[t[2] as usize]);
+                    let (u, w) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [c[0] - a[0], c[1] - a[1], c[2] - a[2]]);
+                    n[0] += u[1] * w[2] - u[2] * w[1]; n[1] += u[2] * w[0] - u[0] * w[2]; n[2] += u[0] * w[1] - u[1] * w[0];
+                }
+                let len = dot(n, n).sqrt();
+                if len < 1e-9 { continue; }
+                let n = [n[0] / len, n[1] / len, n[2] / len];
+                let d0 = dot(n, p[0]);
+                for q in p.iter_mut() { *q = [q[0] + 0.02 * n[0], q[1] + 0.02 * n[1], q[2] + 0.02 * n[2]]; }
+                main.bounding_box = crate::static_item::merged::bbox(p);
+                match groups.iter_mut().find(|(gn, gd, _)| dot(*gn, n) > 0.999 && (*gd - d0).abs() < 0.05) {
+                    Some((_, _, pts)) => pts.extend(p.iter().copied()),
+                    None => groups.push((n, d0, p.clone())),
+                }
+            }
+        }
+    }
+    if groups.is_empty() {
+        return Err(format!("{ident}: the LED faces have no readable positions"));
+    }
+    let mut verts: Vec<[f32; 3]> = Vec::new();
+    let mut tris: Vec<super::surface::Triangle> = Vec::new();
+    let tri = |a: u32, b: u32, c: u32| super::surface::Triangle { indices: [a, b, c], material_id: 0, gameplay: 0, surface_index: 0 };
+    let mut report_groups = Vec::new();
+    for (n, _d, pts) in &groups {
+        // in-plane axes: e1 = the world axis least aligned with n, orthogonalised; e2 = n × e1
+        let seed = if n[1].abs() < 0.9 { [0.0, 1.0, 0.0] } else { [1.0, 0.0, 0.0] };
+        let k = dot(seed, *n);
+        let mut e1 = [seed[0] - k * n[0], seed[1] - k * n[1], seed[2] - k * n[2]];
+        let l1 = dot(e1, e1).sqrt(); e1 = [e1[0] / l1, e1[1] / l1, e1[2] / l1];
+        let e2 = [n[1] * e1[2] - n[2] * e1[1], n[2] * e1[0] - n[0] * e1[2], n[0] * e1[1] - n[1] * e1[0]];
+        let (mut a0, mut a1, mut b0, mut b1, mut c0, mut c1) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+        for p in pts { let (a, b, c) = (dot(*p, e1), dot(*p, e2), dot(*p, *n)); a0 = a0.min(a); a1 = a1.max(a); b0 = b0.min(b); b1 = b1.max(b); c0 = c0.min(c); c1 = c1.max(c); }
+        let (c0, c1) = (c0 - 0.5, c1 + 0.5);
+        let corner = |a: f32, b: f32, c: f32| [a * e1[0] + b * e2[0] + c * n[0], a * e1[1] + b * e2[1] + c * n[1], a * e1[2] + b * e2[2] + c * n[2]];
+        let base = verts.len() as u32;
+        for (c, a, b) in [(c0, a0, b0), (c0, a1, b0), (c0, a1, b1), (c0, a0, b1), (c1, a0, b0), (c1, a1, b0), (c1, a1, b1), (c1, a0, b1)] { verts.push(corner(a, b, c)); }
+        // a closed box: back face (c0) winding inward-facing from +n, front (c1) outward, four sides
+        for (i, j, k) in [(0, 2, 1), (0, 3, 2), (4, 5, 6), (4, 6, 7), (0, 1, 5), (0, 5, 4), (1, 2, 6), (1, 6, 5), (2, 3, 7), (2, 7, 6), (3, 0, 4), (3, 4, 7)] { tris.push(tri(base + i, base + j, base + k)); }
+        let centre = corner((a0 + a1) * 0.5, (b0 + b1) * 0.5, (c0 + c1) * 0.5);
+        report_groups.push((*n, centre, [a1 - a0, b1 - b0, c1 - c0]));
+    }
+    let main_dir = groups[0].0;
+    m.trigger = Some(super::surface::CPlugSurface::mesh(verts.clone(), tris, vec![0u16], main_dir));
+    for mat in &mut m.materials {
+        let Some(main) = mat.main.as_mut() else { continue };
+        let Some(link) = main.link.as_str().map(|s| s.to_string()) else { continue };
+        if is_screen_face_link(&link) {
+            main.link = crate::crystal_model::Id::Str(format!("Stadium\\Media\\Material\\RaceTriggerFXFinish{}", if link.to_ascii_uppercase().ends_with(".GBX") { ".Material.Gbx" } else { "" }));
+        }
+    }
+    m.waypoint_type = Some(1);
+    m.no_respawn = false;
+    let floor = verts.iter().fold([0.0f32; 3], |acc, v| [acc[0] + v[0] / 8.0, acc[1].min(v[1]), acc[2] + v[2] / 8.0]);
+    m.spawn = [floor[0], verts.iter().map(|v| v[1]).fold(f32::MAX, f32::min), floor[2]];
+    let faces = m.visuals.len();
+    let (bytes, _) = finish_item(m, ident, ident, 1.0, collection)?;
+    Ok((bytes, ScreenReport { faces, dropped_visuals: before - faces, groups: report_groups, materials }))
+}

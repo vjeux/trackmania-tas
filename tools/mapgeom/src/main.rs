@@ -759,6 +759,76 @@ fn main() {
             }
             println!("{n} references in {parsed} GBX files ({} entries, {failed} unreadable)", paths.len());
         }
+        // screen-census [--out F.tsv]: every block info (Stadium pak, all variants' prefabs) and item whose transitive
+        //   externals reach an LED screen material (Ad*Screen, RaceAd*, *Screen* bar ScreenBack/ScreenPusher) — Hugo's
+        //   "Signs" finishes (10-29); clip block infos excluded
+        // screen-finish --out-dir D [--collection N] --block NAME[,NAME…] [--air] --item IDENT[,…]: Hugo's "Signs" finishes —
+        //   FinishScreen<Kind>.Item.Gbx = the kind's LED faces as RaceTriggerFXFinish 2 cm proud + a ±0.5 m box trigger per face
+        //   plane, WaypointType Finish, in the source's frame (block frame for blocks, item origin for items)
+        "screen-finish" => {
+            let mut store = open(&a);
+            let dir = std::path::PathBuf::from(flag(&a.rest, "--out-dir").unwrap_or_else(|| die("screen-finish: --out-dir D".into())));
+            let collection: u32 = flag(&a.rest, "--collection").and_then(|v| v.parse().ok()).unwrap_or(26);
+            let ground = !a.rest.iter().any(|x| x == "--air");
+            std::fs::create_dir_all(&dir).unwrap_or_else(|e| die(e.to_string()));
+            let blocks: Vec<String> = flag(&a.rest, "--block").unwrap_or_default().split(',').filter(|x| !x.is_empty()).map(|x| x.trim().to_string()).collect();
+            let items: Vec<String> = flag(&a.rest, "--item").unwrap_or_default().split(',').filter(|x| !x.is_empty()).map(|x| x.trim().to_string()).collect();
+            use mapgeom::static_item::build::{screen_finish_item, ScreenSource};
+            let mut jobs: Vec<(String, String, bool)> = blocks.iter().map(|b| (b.clone(), b.trim_start_matches("Technics").to_string(), true)).collect();
+            jobs.extend(items.iter().map(|i| (i.clone(), i.clone(), false)));
+            for (source, kind, is_block) in jobs {
+                let name = format!("FinishScreen{}.Item.Gbx", kind.trim_start_matches("Screen"));
+                let src = if is_block { ScreenSource::Block(&source, ground) } else { ScreenSource::Item(&format!("Stadium\\Items\\{source}.Item.Gbx")) };
+                let path_item = format!("Stadium\\Items\\{source}.Item.Gbx");
+                let src = if is_block { src } else { ScreenSource::Item(&path_item) };
+                match screen_finish_item(&mut store, src, &name, collection) {
+                    Ok((bytes, rep)) => {
+                        let p = dir.join(&name);
+                        std::fs::write(&p, &bytes).unwrap_or_else(|e| die(format!("{}: {e}", p.display())));
+                        println!("wrote {}: {} bytes — {} LED face visual(s) kept of {} ({}), {} trigger box(es): {}", p.display(), bytes.len(), rep.faces, rep.faces + rep.dropped_visuals, rep.materials.join(" "), rep.groups.len(),
+                            rep.groups.iter().map(|(n, c, e)| format!("normal ({:.2}, {:.2}, {:.2}) centre ({:.2}, {:.2}, {:.2}) size {:.2} × {:.2} × {:.2}", n[0], n[1], n[2], c[0], c[1], c[2], e[0], e[1], e[2])).collect::<Vec<_>>().join("; "));
+                    }
+                    Err(e) => println!("{name}: FAILED: {e}"),
+                }
+            }
+        }
+        "screen-census" => {
+            let mut store = open(&a);
+            let out = flag(&a.rest, "--out");
+            let is_screen_mat = |p: &str| { let stem = p.rsplit('\\').next().unwrap_or(p).trim_end_matches(".Material.Gbx").to_string(); let l = stem.to_ascii_lowercase(); (l.starts_with("ad") && l.contains("screen")) || l.starts_with("racead") || (l.contains("screen") && !l.contains("screenback") && !l.contains("screenpusher")) };
+            let mut memo: std::collections::HashMap<String, std::collections::BTreeSet<String>> = std::collections::HashMap::new();
+            fn mats(store: &mut mapgeom::store::DataStore, path: &str, memo: &mut std::collections::HashMap<String, std::collections::BTreeSet<String>>, is_screen_mat: &dyn Fn(&str) -> bool, depth: usize) -> std::collections::BTreeSet<String> {
+                if let Some(m) = memo.get(path) { return m.clone(); }
+                let mut out = std::collections::BTreeSet::new();
+                if depth > 8 { return out; }
+                memo.insert(path.to_string(), out.clone());
+                if let Ok(m) = store.load_model(path) {
+                    for (_, e) in &m.externals {
+                        let u = e.to_ascii_uppercase();
+                        if u.ends_with(".MATERIAL.GBX") { if is_screen_mat(e) { out.insert(e.rsplit('\\').next().unwrap_or(e).trim_end_matches(".Material.Gbx").to_string()); } }
+                        else if u.ends_with(".PREFAB.GBX") || u.ends_with(".STATICOBJECT.GBX") || u.ends_with(".MESH.GBX") || u.ends_with(".SOLID2.GBX") || u.ends_with(".ITEM.GBX") || u.ends_with(".DYNAOBJECT.GBX") { out.extend(mats(store, e, memo, is_screen_mat, depth + 1)); }
+                    }
+                }
+                memo.insert(path.to_string(), out.clone());
+                out
+            }
+            let entries: Vec<String> = store.entries().map(|e| e.path()).filter(|p| p.to_ascii_uppercase().starts_with("STADIUM\\")).collect();
+            let mut rows: Vec<String> = vec!["kind\tname\tmaterials\tsource".into()];
+            for p in entries.iter().filter(|p| { let u = p.to_ascii_uppercase(); u.contains("\\GAMECTNBLOCKINFO\\") && u.ends_with(".GBX") }) {
+                let Ok(bi) = mapgeom::blockinfo::load(&mut store, p) else { continue };
+                if matches!(bi.kind, mapgeom::blockinfo::Kind::Clip | mapgeom::blockinfo::Kind::ClipHorizontal | mapgeom::blockinfo::Kind::ClipVertical) { continue; }
+                let name = if !bi.ident.is_empty() { bi.ident.clone() } else { bi.name.clone() };
+                let mut found: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+                for (_, v) in bi.all_variants() { for list in &v.mobils { for mo in list { if let Some(pf) = mo.prefab.as_ref() { found.extend(mats(&mut store, pf, &mut memo, &is_screen_mat, 0)); } } } }
+                if !found.is_empty() { rows.push(format!("block\t{name}\t{}\t{p}", found.into_iter().collect::<Vec<_>>().join(" "))); }
+            }
+            for p in entries.iter().filter(|p| { let u = p.to_ascii_uppercase(); u.contains("\\ITEMS\\") && u.ends_with(".ITEM.GBX") }) {
+                let found = mats(&mut store, p, &mut memo, &is_screen_mat, 0);
+                if !found.is_empty() { rows.push(format!("item\t{}\t{}\t{p}", p.rsplit('\\').next().unwrap_or(p).trim_end_matches(".Item.Gbx"), found.into_iter().collect::<Vec<_>>().join(" "))); }
+            }
+            let text = rows.join("\n") + "\n";
+            match out { Some(f) => { std::fs::write(&f, &text).unwrap_or_else(|e| die(e.to_string())); println!("wrote {f}: {} rows", rows.len() - 1); } None => print!("{text}") }
+        }
         "refs" => {
             let mut store = open(&a);
             let p = a.rest.get(1).cloned().unwrap_or_default();

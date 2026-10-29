@@ -733,6 +733,10 @@ pub fn block_rename(name: &str) -> Option<String> {
     None
 }
 
+pub fn load_block_info_pub(idx: &mut crate::blockmap::BlockInfoIndex, store: &mut DataStore, name: &str) -> Result<(String, crate::blockinfo::BlockInfo), String> {
+    load_block_info(idx, store, name)
+}
+
 fn load_block_info(idx: &mut crate::blockmap::BlockInfoIndex, store: &mut DataStore, name: &str) -> Result<(String, crate::blockinfo::BlockInfo), String> {
     // stems first, then the IDENT ids inside the files (the game's lookup —
     // Nadeo's typo'd `…RoadSlopeBase2Curve2InFCLeft.EDClip.Gbx` is the id
