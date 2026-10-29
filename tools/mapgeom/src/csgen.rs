@@ -262,7 +262,8 @@ pub fn cmd(store: &mut crate::store::DataStore, rest: &[String], flag: &dyn Fn(&
         let ground = g.is_some();
         let air = a.is_some();
         let (size, cells) = match g.clone().or(a.clone()) { Some(x) => x, None => ((1, 1), vec![(0, 0)]) };
-        let size_y = bi.variant_base_ground.as_ref().or(bi.variant_base_air.as_ref()).map(|v| v.block_units.iter().map(|u| u.offset[1] + 1).max().unwrap_or(1)).unwrap_or(1).max(1);
+        // the height in cells from the variant that gives the footprint (the first base variant WITH units), as the C#
+        let size_y = [bi.variant_base_ground.as_ref(), bi.variant_base_air.as_ref()].into_iter().flatten().find(|v| !v.block_units.is_empty()).map(|v| v.block_units.iter().map(|u| u.offset[1] + 1).max().unwrap_or(1).max(1)).unwrap_or(1);
         let full = (cells.len() as i32) >= size.0 * size.1;
         // the variant count: every placement the editor can pick — the base ground + base air + the additional
         // ground/air variants that carry content (the same families `pick_placement_add` chooses from)
