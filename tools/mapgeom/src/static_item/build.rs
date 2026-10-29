@@ -4406,19 +4406,39 @@ pub enum RingForm {
     PrefabIsoHelper,
     /// the entity-model form with Nadeo's current item chunk versions (0x2E00201F v13)
     EntityModelV13,
+    /// no geometry of ours: the prefab's static entities are EXTERNAL REFS to the pak's Checkpoint_AirNPB prefab (+
+    /// the GateStructureFixation shoe); trigger inline; P2-style waypoint wiring (no helper)
+    ExternalPrefab,
+    /// ExternalPrefab + the trigger shape as an external ref to Checkpoint_Trigger.Shape.Gbx (Nadeo's own SWaypoint form)
+    ExternalPrefabTrigger,
+    /// our inlined geometry, every material an external `<link>.Material.Gbx` reference instead of a user-inst node
+    ExternalMaterials,
 }
 
 pub fn ring_item_ext(store: &mut crate::store::DataStore, ident: &str, collection: u32, fixation: bool, top_fixation: bool, form: RingForm) -> R<(Vec<u8>, usize, usize)> {
     let mut m = Merged::default();
-    add_prefab(store, "Stadium\\Media\\Prefab\\Gate\\Checkpoint_AirNPB.Prefab.Gbx", &IDENTITY, 1.0, &mut m, 0)?;
-    if fixation {
-        let at: Xform = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 16.0, 0.0, 16.0];
-        add_prefab(store, "Stadium\\Media\\Prefab\\TreeGen\\GateStructureFixation.Prefab.Gbx", &at, 1.0, &mut m, 0)?;
-    }
-    if top_fixation {
-        // rot (0, 0, 1, 0) = a half turn about z: upside down, at the cell's top
-        let at: Xform = [-1.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 1.0, 16.0, 32.0, 16.0];
-        add_prefab(store, "Stadium\\Media\\Prefab\\TreeGen\\GateStructureFixation.Prefab.Gbx", &at, 1.0, &mut m, 0)?;
+    let external = matches!(form, RingForm::ExternalPrefab | RingForm::ExternalPrefabTrigger);
+    const RING: &str = "Stadium\\Media\\Prefab\\Gate\\Checkpoint_AirNPB.Prefab.Gbx";
+    const SHOE: &str = "Stadium\\Media\\Prefab\\TreeGen\\GateStructureFixation.Prefab.Gbx";
+    if external {
+        m.external_entities.push((RING.into(), [0.0; 3], [0.0, 0.0, 0.0, 1.0]));
+        if fixation {
+            m.external_entities.push((SHOE.into(), [16.0, 0.0, 16.0], [0.0, 0.0, 0.0, 1.0]));
+        }
+        if top_fixation {
+            m.external_entities.push((SHOE.into(), [16.0, 32.0, 16.0], [0.0, 0.0, 1.0, 0.0]));
+        }
+    } else {
+        add_prefab(store, RING, &IDENTITY, 1.0, &mut m, 0)?;
+        if fixation {
+            let at: Xform = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 16.0, 0.0, 16.0];
+            add_prefab(store, SHOE, &at, 1.0, &mut m, 0)?;
+        }
+        if top_fixation {
+            // rot (0, 0, 1, 0) = a half turn about z: upside down, at the cell's top
+            let at: Xform = [-1.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 1.0, 16.0, 32.0, 16.0];
+            add_prefab(store, SHOE, &at, 1.0, &mut m, 0)?;
+        }
     }
     let visuals = m.visuals.len();
     m.trigger = Some(trigger_from_shape_file(store, "Stadium\\Media\\Prefab\\Gate\\Checkpoint_Trigger.Shape.Gbx", &IDENTITY, 1.0)?);
@@ -4433,6 +4453,9 @@ pub fn ring_item_ext(store: &mut crate::store::DataStore, ident: &str, collectio
         RingForm::PrefabHelper => { m.prefab_waypoint = true; m.prefab_editor_helper = true; }
         RingForm::PrefabNoHelper => { m.prefab_waypoint = true; }
         RingForm::PrefabIsoHelper => { m.prefab_waypoint = true; m.prefab_spawn_iso = true; m.prefab_editor_helper = true; }
+        RingForm::ExternalPrefab => { m.prefab_waypoint = true; }
+        RingForm::ExternalPrefabTrigger => { m.prefab_waypoint = true; m.trigger_external = Some("Stadium\\Media\\Prefab\\Gate\\Checkpoint_Trigger.Shape.Gbx".into()); }
+        RingForm::ExternalMaterials => { m.prefab_waypoint = true; m.materials_external = true; }
     }
     let tris = m.surf_triangles.len();
     let (bytes, _) = finish_item(m, ident, ident, 1.0, collection)?;

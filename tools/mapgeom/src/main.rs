@@ -6113,7 +6113,11 @@ fn main() {
             let collection: u32 = flag(&a.rest, "--collection").and_then(|v| v.parse().ok()).unwrap_or(26);
             std::fs::create_dir_all(&dir).unwrap_or_else(|e| die(e.to_string()));
             use mapgeom::static_item::build::RingForm;
-            for (name, form) in [("CheckpointRingP1.Item.Gbx", RingForm::PrefabHelper), ("CheckpointRingP2.Item.Gbx", RingForm::PrefabNoHelper), ("CheckpointRingP3.Item.Gbx", RingForm::PrefabIsoHelper), ("CheckpointRingP4.Item.Gbx", RingForm::EntityModelV13)] {
+            // --set 2: P5 external prefab entities, P6 + external trigger shape, P7 external materials
+            let set2 = a.rest.iter().any(|x| x == "--set") && flag(&a.rest, "--set").as_deref() == Some("2");
+            let set1 = vec![("CheckpointRingP1.Item.Gbx", RingForm::PrefabHelper), ("CheckpointRingP2.Item.Gbx", RingForm::PrefabNoHelper), ("CheckpointRingP3.Item.Gbx", RingForm::PrefabIsoHelper), ("CheckpointRingP4.Item.Gbx", RingForm::EntityModelV13)];
+            let set2v = vec![("CheckpointRingP5.Item.Gbx", RingForm::ExternalPrefab), ("CheckpointRingP6.Item.Gbx", RingForm::ExternalPrefabTrigger), ("CheckpointRingP7.Item.Gbx", RingForm::ExternalMaterials)];
+            for (name, form) in if set2 { set2v } else { set1 } {
                 let (bytes, visuals, tris) = mapgeom::static_item::build::ring_item_ext(&mut store, name, collection, true, false, form).unwrap_or_else(|e| die(format!("{name}: {e}")));
                 let p = dir.join(name);
                 std::fs::write(&p, &bytes).unwrap_or_else(|e| die(format!("{}: {e}", p.display())));

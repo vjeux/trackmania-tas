@@ -130,6 +130,12 @@ pub struct Merged {
     pub prefab_editor_helper: bool,
     /// The item's 0x2E00201F waypoint chunk version (12 = ours since Sept; 13 = Nadeo's current, no node ref).
     pub waypoint_chunk_version: Option<u32>,
+    /// Prefab entities that are EXTERNAL REFERENCES to pak prefabs (path, pos, rot xyzw): no geometry of ours, the
+    /// entity IS Nadeo's prefab (the ring animation test's P5/P6, 10-28).
+    pub external_entities: Vec<(String, [f32; 3], [f32; 4])>,
+    /// The waypoint trigger as an external reference to a pak `.Shape.Gbx` (Nadeo's SWaypoint form) instead of the
+    /// inline surface — `trigger` still has to be set (it says there IS a trigger).
+    pub trigger_external: Option<String>,
     /// Things skipped, for the report.
     pub notes: Vec<String>,
     /// The prefab's procedural vegetation entities (`.VegetTreeModel.Gbx`

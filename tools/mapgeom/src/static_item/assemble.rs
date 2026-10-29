@@ -363,7 +363,7 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
     REPACK_NOTE.with(|c| c.set(None));
     use super::item::*;
     use super::Id;
-    if m.visuals.is_empty() && m.dyna.is_empty() {
+    if m.visuals.is_empty() && m.dyna.is_empty() && m.external_entities.is_empty() {
         return Err("no visuals: nothing to build".into());
     }
     // node 1 = the entity model; a static item fixes 2 (static object) and 3
@@ -380,7 +380,7 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
     // (GateFinish, GateExpandableFinish: NoRespawn too) keeps the entity-model
     // form — nobody respawns at a finish, and the form is the proven one.
     let no_respawn_wp = (m.no_respawn || m.prefab_waypoint) && m.trigger.is_some() && m.waypoint_type == Some(2);
-    let prefab_form = !m.dyna.is_empty() || m.special.is_some() || !m.fx.is_empty() || no_respawn_wp;
+    let prefab_form = !m.dyna.is_empty() || m.special.is_some() || !m.fx.is_empty() || no_respawn_wp || !m.external_entities.is_empty();
     SHARED_MATS.with(|s| s.borrow_mut().clear());
     let mut next = if !prefab_form { 4i32 } else { 2i32 };
     // The static geometry: one static object (mesh + collision) — the whole
@@ -394,6 +394,11 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
         Some(CPlugStaticObjectModel { version: 3, mesh: inline(mesh_index, Node::Solid2(s2)), is_mesh_collidable: false, shape: inline(surface_index, Node::Surface(build_surface(m))) })
     };
     let trigger = match m.trigger.as_ref() {
+        Some(_) if m.trigger_external.is_some() => {
+            let i = next_index(&mut next);
+            EXTERNALS.with(|e| e.borrow_mut().push((i as u32, m.trigger_external.clone().unwrap())));
+            super::NodeRef { index: i, inline: None }
+        }
         Some(t) => {
             let i = next_index(&mut next);
             let mut t = t.clone();
@@ -529,6 +534,11 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
             };
             let i = next_index(&mut next);
             ents.push(super::prefab::Entity { model: inline(i, Node::Dyna(model)), rot: part.rot, pos: part.pos, params_id: part.instance_params_id, params: part.instance_params.clone(), u01: Vec::new() });
+        }
+        for (path, pos, rot) in &m.external_entities {
+            let i = next_index(&mut next);
+            EXTERNALS.with(|e| e.borrow_mut().push((i as u32, path.clone())));
+            ents.push(super::prefab::Entity { model: super::NodeRef { index: i, inline: None }, rot: *rot, pos: *pos, params_id: -1, params: Vec::new(), u01: Vec::new() });
         }
         if let Some(so) = static_object {
             ents.push(static_entity(&mut next, so));
