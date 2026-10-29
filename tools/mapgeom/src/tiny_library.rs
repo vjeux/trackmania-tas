@@ -3809,6 +3809,27 @@ pub fn apply_surface_swap(store: &mut DataStore, m: &mut crate::static_item::bui
                 }
             }
         }
+        // THE DECK UNDER THE DECALS (shcr/hobbit via Everios96 2026-10-29: "invisible
+        // bits" on the bobsleigh start of 98/124 and the finish of 64, every baked set but
+        // Icy): the ice start/finish prefabs CUT the trough surface out under their
+        // `…OnRoadIce` sponsor and finish-marks decals (the RoadIce mesh shares the
+        // decal's boundary vertices and has nothing inside — `vstream-stats --profile
+        // x=9.5..10.5` on Start_Air: deck vertices at z 5.45–5.89 and 7.63–8.22, the decal
+        // across) and the ice-styled decal material paints ice + logo there. The plain
+        // twins are see-through, so each footprint was a window into the block (the box
+        // editor frames of 2026-10-29 08:00: the pad's sponsor ring as holes down to the
+        // wooden base). Those visuals now carry a deck copy underneath, in the swap's
+        // RoadIce deck material — the start marks excluded (the deck runs under them,
+        // 2026-09-20). `TINY_ICE_DECAL_DECK=0` restores the holes.
+        if name.starts_with("RoadIce") && std::env::var("TINY_ICE_DECAL_DECK").map(|v| v != "0").unwrap_or(true) {
+            if let Some((_, link, ids)) = &ice_deck_row {
+                for stem in ["DecalMarksOnRoadIce", "DecalSponsor1x1BigAOnRoadIce", "DecalSponsor4x1AOnRoadIce", "DecalSponsor4x1BOnRoadIce", "DecalSponsor4x1COnRoadIce", "DecalSponsor4x1DOnRoadIce"] {
+                    if !m.deck_under.iter().any(|(s, _, _)| s == stem) {
+                        m.deck_under.push((stem.to_string(), link.clone(), ids.0));
+                    }
+                }
+            }
+        }
         for (stem, plains) in pairs {
             if m.link_rewrite.iter().any(|(from, _, _)| from == stem) {
                 continue;

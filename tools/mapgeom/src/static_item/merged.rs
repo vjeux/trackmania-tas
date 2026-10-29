@@ -231,6 +231,15 @@ pub struct Merged {
     /// under the original's two-sided decal material — under a one-sided deck
     /// material they culled to a hole into the pad (Dirt 11, 2026-09-15).
     pub two_sided_links: Vec<String>,
+    /// Source material stems whose visuals ARE the deck where they sit — the ice
+    /// start/finish `…OnRoadIce` sponsor and marks decals: Nadeo cut the trough
+    /// surface out under them (the deck mesh shares the decal's boundary vertices and
+    /// has nothing inside) and the ice-styled decal material paints ice + logo there.
+    /// Swapped to a plain see-through decal, the footprint became a hole into the
+    /// block (shcr/hobbit 2026-10-29, "invisible bits" on every baked bobsleigh
+    /// start/finish). Each such visual is emitted twice: a copy in the given deck
+    /// material (link, physics) under the decal, then the decal itself.
+    pub deck_under: Vec<(String, String, u8)>,
     /// An ITEM modifier names its materials with a suffix: the obstacle items
     /// (Summer 15's pushers and rotors) reference
     /// `Stadium\Media\Modifier\ItemObstacleLevel1.Gbx`, whose materials live
@@ -1757,6 +1766,16 @@ impl Merged {
                             }
                         }
                     }
+                }
+            }
+            if !self.deck_under.is_empty() {
+                let src_link: Option<String> = src_links.get(mi).cloned().flatten();
+                let hit = src_link.as_deref().and_then(|l| self.deck_under.iter().find(|(t, _, _)| l == t || l.rsplit('\\').next() == Some(t.as_str()) || l.ends_with(&format!("{t}.Material.Gbx"))).cloned());
+                if let Some((stem, deck_link, phys)) = hit {
+                    let slot = self.material_slot(&deck_link, phys);
+                    self.notes.push(format!("visual {}: deck copy under the `{stem}` decal ({} triangles, material {deck_link})", g.visual_index, v.index_buffer.as_ref().map(|ib| ib.indices.len() / 3).unwrap_or(0)));
+                    visual_slots.push((self.visuals.len(), slot));
+                    self.visuals.push(MergedVisual { from_water: water_src, visual: v.clone(), material: slot, lod_mask: lod.0, lod_ladder: lod.1.clone(), part });
                 }
             }
             visual_slots.push((self.visuals.len(), mat));
