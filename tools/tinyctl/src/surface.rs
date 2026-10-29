@@ -354,6 +354,20 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
             }
         }
     }
+    // TINY_REDRESS_SCOPED_EXTRA=[glob]Stem=Link[;…] (the caller's own scoped rows, appended
+    // after the set's: the bobsleigh bowl A/Bs of 2026-10-29 swap one material of one block
+    // family without touching the set's rows)
+    if let Ok(extra) = std::env::var("TINY_REDRESS_SCOPED_EXTRA") {
+        if !extra.trim().is_empty() {
+            match env.iter_mut().find(|(k, _)| k == "TINY_REDRESS_SCOPED") {
+                Some((_, v)) => {
+                    v.push(';');
+                    v.push_str(extra.trim());
+                }
+                None => env.push(("TINY_REDRESS_SCOPED".to_string(), extra.trim().to_string())),
+            }
+        }
+    }
     // Magnet: the DECK rule like every other alteration (Everios96 2026-09-15 04:30:
     // "penalty surface should stay penalty") — until then every drivable triangle
     // was forced magnetic (the 2026-09-14 "everything magnetic" v2), shoulders included

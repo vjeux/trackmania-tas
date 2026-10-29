@@ -385,6 +385,29 @@ fn main() {
             m.write_to(&out).expect("write");
             println!("{}: {} block record(s) set to colour {color}", out.display(), idx.len());
         }
+        // tmmaps color-items MAP --model A[,B…] --color N --out OUT — every item placement of
+        // those models takes colour byte N (the custom-block materials — CustomPlastic… —
+        // tint by it; the bobsleigh bowl in the Plastic set, 2026-10-29). --model takes the
+        // embedded model name (`AC98700040.Item.Gbx`) or a `*` glob on it.
+        "color-items" => {
+            let src = std::path::PathBuf::from(&args[2]);
+            let out = std::path::PathBuf::from(tmmaps::cli::flag(&args, "--out").expect("color-items needs --out OUT"));
+            let pats: Vec<String> = tmmaps::cli::flag(&args, "--model").expect("--model A[,B…]").split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+            let color: u8 = tmmaps::cli::flag(&args, "--color").and_then(|v| v.parse().ok()).expect("--color N");
+            let mut m = tmmaps::map::MapFile::load(&src);
+            let hit = |model: &str| pats.iter().any(|p| if let Some(stem) = p.strip_suffix('*') { model.starts_with(stem) } else { p == model });
+            let idx: Vec<usize> = m.items.iter().enumerate().filter(|(_, it)| hit(&it.model)).map(|(i, _)| i).collect();
+            if let Some(c) = m.colors() {
+                for i in &idx {
+                    println!("  item {i} {}: colour {} -> {color}", m.items[*i].model, c.item(*i));
+                }
+            }
+            for i in &idx {
+                m.set_item_color(*i, color);
+            }
+            m.write_to(&out).expect("write");
+            println!("{}: {} item placement(s) set to colour {color}", out.display(), idx.len());
+        }
         "drop-blocks" => {
             if let Err(e) = tmmaps::altered::drop_blocks_cmd(&args) {
                 eprintln!("tmmaps drop-blocks: {e}");
