@@ -1776,6 +1776,12 @@ impl Merged {
                     self.notes.push(format!("visual {}: deck copy under the `{stem}` decal ({} triangles, material {deck_link})", g.visual_index, v.index_buffer.as_ref().map(|ib| ib.indices.len() / 3).unwrap_or(0)));
                     visual_slots.push((self.visuals.len(), slot));
                     self.visuals.push(MergedVisual { from_water: water_src, visual: v.clone(), material: slot, lod_mask: lod.0, lod_ladder: lod.1.clone(), part });
+                    // the finish line itself: the ice strip's UVs are for the ice shader; the
+                    // plain `DecalMarks` atlas wants its finish band across the strip
+                    if stem == "DecalMarksOnRoadIce" {
+                        let n = crate::static_item::build::finish_marks_uv(&mut v);
+                        self.notes.push(format!("visual {}: finish-line strip re-UVed for the plain DecalMarks atlas ({n} vertices)", g.visual_index));
+                    }
                 }
             }
             visual_slots.push((self.visuals.len(), mat));

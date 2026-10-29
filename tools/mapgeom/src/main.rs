@@ -923,6 +923,17 @@ fn main() {
                     }
                 }
             }
+            // --verts N: every vertex of stream slot N as (x,y,z) uv0 [uv1] — reading a
+            // decal's UV convention off the pack (the finish line, 2026-10-29)
+            if let Some(n) = flag(&a.rest, "--verts").and_then(|v| v.parse::<usize>().ok()) {
+                if let Some(Slot::Node(Node::VertexStream(v))) = g.slots.get(n) {
+                    for (i, q) in v.positions.iter().enumerate() {
+                        let uv = v.uv0.get(i).map(|u| format!(" uv0 ({:.3},{:.3})", u[0], u[1])).unwrap_or_default();
+                        let uv1 = v.uv1.get(i).map(|u| format!(" uv1 ({:.3},{:.3})", u[0], u[1])).unwrap_or_default();
+                        println!("  v{i}: ({:.2},{:.2},{:.2}){uv}{uv1}", q[0], q[1], q[2]);
+                    }
+                }
+            }
             // --probe X,Z: which visuals have a triangle covering that (x, z) from above,
             // and at what height — is there a deck under a decal patch?
             // --up-hist: per visual, the UP-facing triangles' area by 0.25 m height bin
