@@ -3,7 +3,7 @@
 //! collection paks) and `Items.g.cs` (one `Item` per item of the paks' item libraries), namespace
 //! `tman.src.Inventory.Generated`, a single header comment line.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 const COLLECTIONS: [(&str, u32, u32); 5] = [("Stadium", 0x1a, 1), ("RedIsland", 0x10, 2), ("WhiteShore", 0x1d, 4), ("GreenCoast", 0xf, 8), ("BlueBay", 0x1c, 16)];
 
@@ -52,6 +52,14 @@ struct BlockRow {
     air: bool,
     variants: usize,
     conflicts: Vec<String>,
+    /// chunk 0x0304E028: the mirror twin's ident (first non-empty across the paks) and its extra quarter turns
+    sym_block: String,
+    sym_dir: i32,
+    /// the base variant's ManualSymmetry H, V, D1, D2 (OR across the paks)
+    sym_flags: [bool; 4],
+    /// `--mirror`: the resolved twin (None = itself) and the quarter turns added after the mirror
+    mirror: Option<String>,
+    mirror_turn: i32,
 }
 
 struct ItemRow {
@@ -269,7 +277,8 @@ pub fn cmd(store: &mut crate::store::DataStore, rest: &[String], flag: &dyn Fn(&
         // ground/air variants that carry content (the same families `pick_placement_add` chooses from)
         let has = |v: &crate::blockinfo::Variant| !v.block_units.is_empty() || v.mobils.iter().any(|l| !l.is_empty());
         let variants = bi.variant_base_ground.iter().filter(|v| has(v)).count() + bi.variant_base_air.iter().filter(|v| has(v)).count() + bi.additional_ground.iter().filter(|v| has(v)).count() + bi.additional_air.iter().filter(|v| has(v)).count();
-        let row = BlockRow { id: name.clone(), size, size_y, cells: if full { None } else { Some(cells) }, collections: *bit, waypoint: bi.waypoint_type, ground, air, variants, conflicts: Vec::new() };
+        let sym_variant = [bi.variant_base_ground.as_ref(), bi.variant_base_air.as_ref()].into_iter().flatten().find(|v| !v.block_units.is_empty()).or(bi.variant_base_ground.as_ref()).or(bi.variant_base_air.as_ref());
+        let row = BlockRow { id: name.clone(), size, size_y, cells: if full { None } else { Some(cells) }, collections: *bit, waypoint: bi.waypoint_type, ground, air, variants, conflicts: Vec::new(), sym_block: bi.symmetrical_block_info_id.clone(), sym_dir: bi.dir, sym_flags: sym_variant.map(|v| v.manual_symmetry).unwrap_or([false; 4]), mirror: None, mirror_turn: 0 };
         match blocks.get_mut(&name) {
             None => { blocks.insert(name, row); }
             Some(e) => {
@@ -281,7 +290,36 @@ pub fn cmd(store: &mut crate::store::DataStore, rest: &[String], flag: &dyn Fn(&
                 if e.waypoint != row.waypoint { e.conflicts.push(format!("{coll_name}: waypoint {:?} vs {:?}", row.waypoint, e.waypoint)); }
                 e.ground |= row.ground;
                 e.air |= row.air;
+                if e.sym_block.is_empty() { e.sym_block = row.sym_block.clone(); }
+                for k in 0..4 { e.sym_flags[k] |= row.sym_flags[k]; }
             }
+        }
+    }
+    // --mirror: `Block(…, int Variants, string? Mirror, int MirrorTurn)` — the twin's ident when the block mirrors
+    // onto ANOTHER block (chunk 0x0304E028 resolved case-insensitively, else the Left↔Right name twin), null when it
+    // mirrors onto itself; the extra quarter turns after the x-mirror: the twin's Dir, or from the ManualSymmetry
+    // flags V → 0, H → 2, D1 → 1, D2 → 3 (Hugo's Mirrored alteration, 10-29). Same rule as the C# generator.
+    let mirror_field = rest.iter().any(|x| x == "--mirror");
+    {
+        let lower: HashMap<String, String> = blocks.keys().fold(HashMap::new(), |mut m, k| { m.entry(k.to_lowercase()).or_insert_with(|| k.clone()); m });
+        let keys: Vec<String> = blocks.keys().cloned().collect();
+        let exists: std::collections::HashSet<String> = keys.iter().cloned().collect();
+        for id in keys {
+            let (sym_block, sym_dir, flags) = { let r = &blocks[&id]; (r.sym_block.clone(), r.sym_dir, r.sym_flags) };
+            let twin = if !sym_block.is_empty() && sym_block != id { lower.get(&sym_block.to_lowercase()).cloned() } else { None };
+            let (mirror, turn) = if let Some(t) = twin {
+                (Some(t), sym_dir & 3)
+            } else {
+                let swapped = id.replace("Left", "\0").replace("Right", "Left").replace("\0", "Right");
+                if swapped != id && exists.contains(&swapped) {
+                    (Some(swapped), 0)
+                } else {
+                    (None, if flags[1] { 0 } else if flags[0] { 2 } else if flags[2] { 1 } else if flags[3] { 3 } else { 0 })
+                }
+            };
+            let r = blocks.get_mut(&id).unwrap();
+            r.mirror = mirror;
+            r.mirror_turn = turn;
         }
     }
     // ---- items
@@ -411,7 +449,7 @@ pub fn cmd(store: &mut crate::store::DataStore, rest: &[String], flag: &dyn Fn(&
     if !catalogs_only {
     cs.push_str(enums);
     cs.push_str("public readonly record struct BlockVariant(Block Model, int Variant);\n\n");
-    cs.push_str(&format!("public sealed record Block(string Id, int SizeX, int SizeZ, {}int[][]? Cells, Collections Collections, Waypoint Waypoint, bool Ground, bool Air, int Variants)\n{{\n", if size_y_field { "int SizeY, " } else { "" }));
+    cs.push_str(&format!("public sealed record Block(string Id, int SizeX, int SizeZ, {}int[][]? Cells, Collections Collections, Waypoint Waypoint, bool Ground, bool Air, int Variants{})\n{{\n", if size_y_field { "int SizeY, " } else { "" }, if mirror_field { ", string? Mirror, int MirrorTurn" } else { "" }));
     cs.push_str("    public Block? Plain => Blocks.PlainOf.TryGetValue(Id, out var plain) ? plain : null;\n\n    public Block? As(Waypoint kind) => kind == Waypoint ? this : Blocks.Families.TryGetValue((Id, kind), out var twin) ? twin : null;\n\n    public BlockVariant Variant(int n) => new(this, n);\n}\n\n");
     }
     cs.push_str("public static class Blocks\n{\n");
@@ -423,7 +461,8 @@ pub fn cmd(store: &mut crate::store::DataStore, rest: &[String], flag: &dyn Fn(&
             Some(c) => format!("new[] {{ {} }}", c.iter().map(|(x, z)| format!("new[] {{ {x}, {z} }}")).collect::<Vec<_>>().join(", ")),
         };
         let sy = if size_y_field { format!("{}, ", b.size_y) } else { String::new() };
-        cs.push_str(&format!("    public static readonly Block {ident} = new(\"{id}\", {}, {}, {sy}{cells}, {}, {}, {}, {}, {});\n", b.size.0, b.size.1, collections_cs(b.collections), waypoint_cs(b.waypoint), b.ground, b.air, b.variants));
+        let mi = if mirror_field { format!(", {}, {}", b.mirror.as_ref().map(|m| format!("\"{m}\"")).unwrap_or_else(|| "null".into()), b.mirror_turn) } else { String::new() };
+        cs.push_str(&format!("    public static readonly Block {ident} = new(\"{id}\", {}, {}, {sy}{cells}, {}, {}, {}, {}, {}{mi});\n", b.size.0, b.size.1, collections_cs(b.collections), waypoint_cs(b.waypoint), b.ground, b.air, b.variants));
         block_idents.push((ident, id.clone()));
     }
     cs.push_str("\n    public static readonly IReadOnlyDictionary<string, Block> ById = new Dictionary<string, Block>\n    {\n");
