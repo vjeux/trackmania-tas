@@ -743,6 +743,17 @@ pub fn static_item_from_prefab_report(store: &mut crate::store::DataStore, prefa
 /// A Nadeo (or any) item that is already a static object, or a crystal item
 /// (`CGameCommonItemEntityModelEdition` -> `CPlugCrystal`) baked to visuals
 /// + collision, rewritten as a static item.
+/// An axis-aligned box trigger surface (12 triangles, the waypoint ids given): the
+/// volume form a flat authored trigger is re-emitted in (see `static_item_from_item_report`).
+pub fn box_trigger(lo: [f32; 3], hi: [f32; 3], ids: (u8, u8)) -> super::surface::CPlugSurface {
+    use super::surface::{CPlugSurface, Triangle};
+    let (x0, y0, z0, x1, y1, z1) = (lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]);
+    let verts = vec![[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1], [x0, y1, z0], [x1, y1, z0], [x1, y1, z1], [x0, y1, z1]];
+    let faces: [[u32; 3]; 12] = [[0, 2, 1], [0, 3, 2], [4, 5, 6], [4, 6, 7], [0, 1, 5], [0, 5, 4], [1, 2, 6], [1, 6, 5], [2, 3, 7], [2, 7, 6], [3, 0, 4], [3, 4, 7]];
+    let tris: Vec<Triangle> = faces.iter().map(|f| Triangle { indices: *f, material_id: ids.0, gameplay: ids.1, surface_index: 0 }).collect();
+    CPlugSurface::mesh(verts, tris, vec![ids.0 as u16 | ((ids.1 as u16) << 8)], [0.0, 0.0, 1.0])
+}
+
 pub fn static_item_from_item(item_bytes: &[u8], ident: &str, author: &str, scale: f32) -> R<Vec<u8>> {
     let (bytes, _) = static_item_from_item_report(item_bytes, ident, author, scale, 26)?;
     Ok(bytes)
@@ -910,6 +921,40 @@ fn static_item_rebake(store: Option<&mut crate::store::DataStore>, item_bytes: &
                     if let super::surface::Surf::Mesh { vertices, .. } = &mut t.surf {
                         for v in vertices.iter_mut() {
                             *v = [v[0] * scale, v[1] * scale, v[2] * scale];
+                        }
+                    }
+                    // A FLAT trigger (the SnowTubes finish ring: a 54-triangle disc, zero
+                    // thickness) never fires in this item form — Tiny 491's car sat inside
+                    // the ring with the clock running (box drive, 2026-10-30; leod: "491 fin
+                    // dont work"). Re-emitted as its bounding box, every axis at least 1 m
+                    // thick: the volume form the unit-box and gate triggers use, which fires.
+                    // `TINY_FLAT_TRIGGER_KEEP=1` keeps the authored mesh.
+                    if std::env::var("TINY_FLAT_TRIGGER_KEEP").map(|v| v != "1").unwrap_or(true) {
+                        if let super::surface::Surf::Mesh { vertices, .. } = &t.surf {
+                            let mut lo = [f32::MAX; 3];
+                            let mut hi = [f32::MIN; 3];
+                            for v in vertices {
+                                for k in 0..3 {
+                                    lo[k] = lo[k].min(v[k]);
+                                    hi[k] = hi[k].max(v[k]);
+                                }
+                            }
+                            let thin = (0..3).any(|k| hi[k] - lo[k] < 1.0) && !vertices.is_empty();
+                            if thin {
+                                for k in 0..3 {
+                                    if hi[k] - lo[k] < 1.0 {
+                                        let c = (hi[k] + lo[k]) * 0.5;
+                                        lo[k] = c - 0.5;
+                                        hi[k] = c + 0.5;
+                                    }
+                                }
+                                let ids = match &t.surf {
+                                    super::surface::Surf::Mesh { triangles, .. } => triangles.first().map(|tr| (tr.material_id, tr.gameplay)).unwrap_or((0, 0)),
+                                    _ => (0, 0),
+                                };
+                                t = box_trigger(lo, hi, ids);
+                                m2.notes.push(format!("flat waypoint trigger re-emitted as a box [{:.2},{:.2},{:.2}]..[{:.2},{:.2},{:.2}]", lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]));
+                            }
                         }
                     }
                     m2.trigger = Some(t);

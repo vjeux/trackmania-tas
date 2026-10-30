@@ -342,8 +342,9 @@ impl<'a> Graph<'a> {
             // carries no skeleton, so nothing of it is needed downstream.
             0x090BA000 => {
                 let v = self.r.u32()?;
-                if v != 20 {
-                    return Err(format!("CPlugSkel version {v} (only 20 is read)"));
+                // version 19 too (custom items, 2026-10-30): same joint layout, recovered tail
+                if v != 20 && v != 19 {
+                    return Err(format!("CPlugSkel version {v} (only 19 and 20 are read)"));
                 }
                 self.r.lookback()?; // name
                 let n = self.r.u16()? as usize;

@@ -33,6 +33,11 @@ pub struct Opts {
     /// it, measured on Summer 15).
     pub drive_ms: u64,
     pub drive_at_ms: u64,
+    /// `--tap-enter`: tap Enter right before the accelerator — the "PRESS A BUTTON"
+    /// intro gate takes a button, not the Up arrow; without it the car drives under
+    /// the intro camera with no race running, and no waypoint ever fires (the Tiny
+    /// 491 finish test, 2026-10-30)
+    pub tap_enter: bool,
     /// `--camlog-ms MS`: the live CAMERA (and the car) per frame from the
     /// moment the playground opens, for MS milliseconds, into
     /// `OUTDIR/cam-<tag>.tsv` — on its own thread, alongside the shots and
@@ -66,6 +71,7 @@ pub fn parse_opts(args: &[String]) -> Result<Opts, String> {
         carlog_ms: num("--carlog-ms", 0)?,
         drive_ms: num("--drive-ms", 0)?,
         drive_at_ms: num("--drive-at-ms", 13500)?,
+        tap_enter: args.iter().any(|a| a == "--tap-enter"),
         camlog_ms: num("--camlog-ms", 0)?,
         wheels_ms: num("--wheels-ms", 0)?,
         detach: args.iter().any(|a| a == "--detach"),
@@ -216,12 +222,12 @@ fn run_shots(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
     }
     if opts.drive_ms > 0 {
         // the key is held on its own thread so the shots keep their cadence
-        let (at, hold) = (opts.drive_at_ms, opts.drive_ms);
+        let (at, hold, tap) = (opts.drive_at_ms, opts.drive_ms, opts.tap_enter);
         let opened_at = load0;
         driver = Some(std::thread::spawn(move || {
             let wait = Duration::from_millis(at).saturating_sub(opened_at.elapsed());
             std::thread::sleep(wait);
-            hold_accelerator(hold)
+            hold_accelerator(hold, tap)
         }));
         lines.push(format!("drive\taccelerator held {} ms from {} ms after the playground opened", opts.drive_ms, opts.drive_at_ms));
     }
@@ -304,7 +310,8 @@ fn run_shots(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
 /// `SwitchToThisWindow` as the second attempt). The foreground window's
 /// title after that is what the result reports: `fg=[Trackmania]` is the
 /// proof the keys went to the game.
-fn hold_accelerator(ms: u64) -> Result<String, String> {
+fn hold_accelerator(ms: u64, tap_enter: bool) -> Result<String, String> {
+    let enter = if tap_enter { "$k::keybd_event(0x0D, 0x1C, 0, [System.UIntPtr]::Zero); Start-Sleep -Milliseconds 80; $k::keybd_event(0x0D, 0x1C, 2, [System.UIntPtr]::Zero); Start-Sleep -Milliseconds 400; " } else { "" };
     let script = format!(
         "$sig = '[DllImport(\"user32.dll\")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, System.UIntPtr dwExtraInfo); \
          [DllImport(\"user32.dll\")] public static extern bool SetForegroundWindow(System.IntPtr hWnd); \
@@ -318,7 +325,7 @@ fn hold_accelerator(ms: u64) -> Result<String, String> {
          $k::keybd_event(0x12, 0x38, 0, [System.UIntPtr]::Zero); [void]$k::SetForegroundWindow($h); $k::keybd_event(0x12, 0x38, 2, [System.UIntPtr]::Zero); Start-Sleep -Milliseconds 200; \
          if ($k::GetForegroundWindow() -ne $h) {{ $k::SwitchToThisWindow($h, $true); Start-Sleep -Milliseconds 300 }}; \
          $sb = New-Object System.Text.StringBuilder 256; [void]$k::GetWindowText($k::GetForegroundWindow(), $sb, 256); \
-         $k::keybd_event(0x26, 0x48, 1, [System.UIntPtr]::Zero); Start-Sleep -Milliseconds {ms}; $k::keybd_event(0x26, 0x48, 3, [System.UIntPtr]::Zero); \
+         {enter}$k::keybd_event(0x26, 0x48, 1, [System.UIntPtr]::Zero); Start-Sleep -Milliseconds {ms}; $k::keybd_event(0x26, 0x48, 3, [System.UIntPtr]::Zero); \
          'held fg=[' + $sb.ToString() + ']'"
     );
     let out = std::process::Command::new(super::shootset::POWERSHELL)

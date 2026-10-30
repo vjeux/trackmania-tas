@@ -1833,13 +1833,21 @@ impl Merged {
             }
         } else if so.is_mesh_collidable {
             // Collide against the visuals themselves — the nearest level's
-            // (a coarser level is the same surface, coarser).
+            // (a coarser level is the same surface, coarser). A NotCollidable (28)
+            // material collides with nothing in the game's own mesh test, but an
+            // explicit surface triangle carrying id 28 is SOLID: the SnowTubes finish
+            // ring (Tiny 491) stopped the car dead at its plane (box drive, 2026-10-30).
+            // Those faces stay out, as the bake path keeps them out.
             for (vi, mat) in visual_slots {
                 if self.visuals[vi].lod_mask > 0 && self.visuals[vi].lod_mask & 1 == 0 {
                     continue;
                 }
                 let v = &self.visuals[vi].visual;
                 let phys = self.materials[mat].physics();
+                if phys == 28 {
+                    self.notes.push(format!("visual {vi}: NotCollidable material, no collision from it"));
+                    continue;
+                }
                 let (pos, idx) = visual_triangles(v);
                 let tris: Vec<Triangle> = idx.chunks(3).filter(|c| c.len() == 3).map(|c| Triangle { indices: [c[0], c[1], c[2]], material_id: phys, gameplay: 0, surface_index: 0 }).collect();
                 self.add_surface_mesh(&pos, &tris, &IDENTITY, 1.0);

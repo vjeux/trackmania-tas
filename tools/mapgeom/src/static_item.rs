@@ -472,8 +472,11 @@ fn read_opaque(r: &mut Rd, class_id: u32) -> R<OpaqueNode> {
         // static item drops the skeleton, so its bytes only need skipping.
         if class_id == 0x090BA000 && cid == 0x090BA000 {
             let v = r.u32()?;
-            if v != 20 {
-                return Err(format!("CPlugSkel version {v} (only 20 is read)"));
+            // version 19 (custom items: Ealipse's Desert planes, Juice's CastleIce roof,
+            // 2026-10-30) lays its joints out the same way; the tail differs and the
+            // terminator scan below skips it either way
+            if v != 20 && v != 19 {
+                return Err(format!("CPlugSkel version {v} (only 19 and 20 are read)"));
             }
             r.id()?;
             let n = r.u16()? as usize;

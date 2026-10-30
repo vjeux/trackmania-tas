@@ -43,6 +43,13 @@ pub fn drive_cmd(args: &[String]) -> Result<(), String> {
     let drive_ms = f("--drive-ms").unwrap_or_else(|| "10000".into());
     let drive_at = f("--drive-at-ms").unwrap_or_else(|| "14500".into());
     let carlog = f("--carlog-ms").unwrap_or_else(|| "26000".into());
+    // the frames: `--shots N --first-ms MS --every-ms MS` (a finish test wants a frame
+    // right after the crossing, the finish panel shows ~3 s; 2026-10-30)
+    let shots = f("--shots").unwrap_or_else(|| "2".into());
+    let first_ms = f("--first-ms").unwrap_or_else(|| "16000".into());
+    let every_ms = f("--every-ms").unwrap_or_else(|| "6000".into());
+    // `--tap-enter`: Enter tapped before the accelerator (the intro's "press a button")
+    let tap_enter = if args.iter().any(|a| a == "--tap-enter") { " --tap-enter" } else { "" };
     let purpose = f("--purpose").unwrap_or_else(|| format!("drive probe: {}", maps.join(" ")));
     let wsx = Wsx::new(args);
     // `--push-from DIR`: `DIR/<name>.Map.Gbx` pushed to the box's `Maps/_shoot/` first, as
@@ -67,7 +74,7 @@ pub fn drive_cmd(args: &[String]) -> Result<(), String> {
         wait_box(&wsx, &purpose, 3600)?;
         // the playground load + intro (~15 s) + the drive + the log: one call under 150 s
         let run = format!(
-            "{ENV}; tmdrive run --purpose \"{purpose}\" --wait 100 -- /home/vjeux/bin/shootctl playshots --map \"{MAPS_WIN}/{m}.Map.Gbx\" --outdir {SHOTS}/{outdir} --tag {m} --shots 2 --first-ms 16000 --every-ms 6000 --drive-ms {drive_ms} --drive-at-ms {drive_at} --carlog-ms {carlog} --timeout 130 2>&1 | tail -3"
+            "{ENV}; tmdrive run --purpose \"{purpose}\" --wait 100 -- /home/vjeux/bin/shootctl playshots --map \"{MAPS_WIN}/{m}.Map.Gbx\" --outdir {SHOTS}/{outdir} --tag {m} --shots {shots} --first-ms {first_ms} --every-ms {every_ms} --drive-ms {drive_ms} --drive-at-ms {drive_at}{tap_enter} --carlog-ms {carlog} --timeout 130 2>&1 | tail -3"
         );
         let mut out = wsx.sh(&run).unwrap_or_else(|e| format!("bridge: {e}"));
         let mut rows: usize = wsx.sh(&format!("wc -l < {SHOTS}/{outdir}/car-{m}.tsv 2>/dev/null")).ok().and_then(|t| t.trim().parse().ok()).unwrap_or(0);
