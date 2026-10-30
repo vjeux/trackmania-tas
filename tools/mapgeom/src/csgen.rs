@@ -16,6 +16,8 @@ pub fn f3(v: f32) -> String {
 thread_local! {
     /// `--penalty-census` leaves the (penalty, plain) pairs here for the `--penalty` emitter (Blocks.PenaltyOf)
     static PENALTY_PAIRS: std::cell::RefCell<Vec<(String, String)>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// `--surface-twins` leaves the (source, surface, twin) triples here for the `--surfaces` emitter (Blocks.Surfaces)
+    static SURFACE_PAIRS: std::cell::RefCell<Vec<(String, String, String)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 fn waypoint_cs(t: Option<i32>) -> &'static str {
@@ -364,6 +366,69 @@ pub fn cmd(store: &mut crate::store::DataStore, rest: &[String], flag: &dyn Fn(&
             }
         }
     }
+    // --surface-twins F.tsv --deck-kinds K.txt (Hugo's surface alterations, 10-30): for every deck kind and every target
+    // surface the NATIVE block with the same geometry and that surface: the family token swapped (PlatformTech ↔
+    // PlatformDirt/Ice/Grass/Plastic, OpenTech ↔ OpenDirt/Ice/Grass), the candidate must exist, carry the target's
+    // modifier (TrackWallToDecoCliff / none = Road, PlatformDirt/Ice/Grass/Plastic.TerrainModifier), and have the SAME
+    // prefab paths per variant and the same unit set (the modifier re-skins the shared prefab); "-" = overlay
+    if let Some(cp) = flag(rest, "--surface-twins") {
+        let kinds: Vec<String> = flag(rest, "--deck-kinds").map(|f| std::fs::read_to_string(&f).unwrap_or_default().lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect()).unwrap_or_default();
+        struct Sig { prefabs: String, units: String, surface: &'static str }
+        let mut sigs: BTreeMap<String, Sig> = BTreeMap::new();
+        for p in entries.iter().filter(|p| { let u = p.to_uppercase(); u.contains("\\GAMECTNBLOCKINFO\\") && u.ends_with(".GBX") }) {
+            let Ok(bi) = crate::blockinfo::load(store, p) else { continue };
+            let name = if !bi.ident.is_empty() { bi.ident.clone() } else { bi.name.clone() };
+            if name.is_empty() || sigs.contains_key(&name) { continue; }
+            let mut prefabs: Vec<String> = Vec::new();
+            let mut units: Vec<String> = Vec::new();
+            // the signature: the BASE variants' mobil-0 prefabs (the look-alike alternates — Special_AirV2, SpecialV2 — and
+            // the additional pillar variants differ between the families without changing the deck) + the base unit set
+            for (label, v) in bi.all_variants() {
+                if !label.ends_with("/base") { continue; }
+                if let Some(mo) = v.mobils.first().and_then(|l| l.first()) { if let Some(pf) = &mo.prefab { prefabs.push(format!("{label}:{pf}")); } }
+                if units.is_empty() { units = v.block_units.iter().map(|u| format!("{},{},{}", u.offset[0], u.offset[1], u.offset[2])).collect(); units.sort(); }
+            }
+            let mods: Vec<String> = bi.material_modifier_slots.iter().flatten().filter(|s| s.contains("Modifier")).map(|s| s.rsplit('\\').next().unwrap_or(s).to_string()).collect();
+            // the surface: the Platform<X> terrain modifier; the Special* platforms carry a gameplay modifier instead and
+            // their own per-family prefab folder (PlatformDirt\Special_Air …) → the family token says it
+            let by_token = |n: &str| -> Option<&'static str> { if n.starts_with("PlatformDirt") || n.starts_with("OpenDirt") { Some("Dirt") } else if n.starts_with("PlatformIce") || n.starts_with("OpenIce") { Some("Ice") } else if n.starts_with("PlatformGrass") || n.starts_with("OpenGrass") { Some("Grass") } else if n.starts_with("PlatformPlastic") { Some("Plastic") } else if n.starts_with("PlatformTech") || n.starts_with("OpenTech") { Some("Road") } else { None } };
+            let surface = if mods.iter().any(|m| m.starts_with("PlatformDirt")) { "Dirt" } else if mods.iter().any(|m| m.starts_with("PlatformIce")) { "Ice" } else if mods.iter().any(|m| m.starts_with("PlatformGrass")) { "Grass" } else if mods.iter().any(|m| m.starts_with("PlatformPlastic")) { "Plastic" } else { by_token(&name).unwrap_or("Road") };
+            // prefab paths with the family folder neutralised (PlatformDirt\Special_Air ≡ PlatformTech\Special_Air): the
+            // per-family Special prefabs are the same mesh under another material/physics
+            let neutral = |p: &str| -> String { let mut q = p.to_string(); for f in ["PlatformDirt\\", "PlatformIce\\", "PlatformGrass\\", "PlatformPlastic\\"] { q = q.replace(f, "PlatformTech\\"); } q };
+            sigs.insert(name, Sig { prefabs: prefabs.iter().map(|p| neutral(p)).collect::<Vec<_>>().join("|"), units: units.join(";"), surface });
+        }
+        let surfaces = ["Road", "Dirt", "Ice", "Grass", "Plastic"];
+        let token = |surface: &str, platform: bool| -> &'static str { match (surface, platform) { ("Road", true) => "PlatformTech", ("Dirt", true) => "PlatformDirt", ("Ice", true) => "PlatformIce", ("Grass", true) => "PlatformGrass", ("Plastic", true) => "PlatformPlastic", ("Road", false) => "OpenTech", ("Dirt", false) => "OpenDirt", ("Ice", false) => "OpenIce", ("Grass", false) => "OpenGrass", _ => "" } };
+        let mut t = String::from("source\tsurface\ttwin\tcheck\n");
+        let mut pairs: Vec<(String, String, String)> = Vec::new();
+        let (mut twins_n, mut overlay_n) = (0usize, 0usize);
+        for k in &kinds {
+            let Some(src) = sigs.get(k) else { for s in surfaces { t.push_str(&format!("{k}\t{s}\t-\tno block info\n")); overlay_n += 1; } continue };
+            let fam = ["PlatformTech", "PlatformDirt", "PlatformIce", "PlatformGrass", "PlatformPlastic", "OpenTech", "OpenDirt", "OpenIce", "OpenGrass"].iter().find(|f| k.starts_with(*f)).copied();
+            for s in surfaces {
+                if src.surface == s && !k.starts_with("Road") { t.push_str(&format!("{k}\t{s}\t{k}\tidentity (own surface)\n")); pairs.push((k.clone(), s.to_string(), k.clone())); twins_n += 1; continue; }
+                let Some(f) = fam else { t.push_str(&format!("{k}\t{s}\t-\tno native family (overlay)\n")); overlay_n += 1; continue };
+                let tok = token(s, f.starts_with("Platform"));
+                if tok.is_empty() { t.push_str(&format!("{k}\t{s}\t-\tno {s} variant of the Open family (overlay)\n")); overlay_n += 1; continue; }
+                let cand = format!("{tok}{}", &k[f.len()..]);
+                match sigs.get(&cand) {
+                    None => { t.push_str(&format!("{k}\t{s}\t-\t{cand} does not exist (overlay)\n")); overlay_n += 1; }
+                    Some(c) => {
+                        let mut why = Vec::new();
+                        if c.surface != s { why.push(format!("candidate surface {}", c.surface)); }
+                        if c.prefabs != src.prefabs { why.push("prefabs differ".into()); }
+                        if c.units != src.units { why.push("units differ".into()); }
+                        if why.is_empty() { t.push_str(&format!("{k}\t{s}\t{cand}\tsame prefabs + units, modifier {s}\n")); pairs.push((k.clone(), s.to_string(), cand.clone())); twins_n += 1; }
+                        else { t.push_str(&format!("{k}\t{s}\t-\t{cand}: {} (overlay)\n", why.join(", "))); overlay_n += 1; }
+                    }
+                }
+            }
+        }
+        std::fs::write(&cp, t).map_err(|e| format!("{cp}: {e}"))?;
+        println!("wrote {cp}: {} kinds × 5 surfaces: {twins_n} native twins (incl. identities), {overlay_n} overlays", kinds.len());
+        SURFACE_PAIRS.with(|c| *c.borrow_mut() = pairs);
+    }
     // --penalty-census F.tsv (Hugo's surface alterations, 10-30): every *Penalty* block info's plain twin — the block of
     // the same family whose base-variant ROAD CHUNK edge polylines (every chunk id "Road*", all points) and unit set are
     // identical; the penalty roads have no deck mesh (the engine draws a procedural road with the penalty band), their
@@ -553,6 +618,19 @@ pub fn cmd(store: &mut crate::store::DataStore, rest: &[String], flag: &dyn Fn(&
         for (pen, pl) in &pairs {
             if let (Some(_), Some(pi)) = (ident_lookup.get(pen.as_str()), ident_lookup.get(pl.as_str())) {
                 cs.push_str(&format!("        [\"{pen}\"] = {pi},\n"));
+            }
+        }
+        cs.push_str("    };\n");
+    }
+    // --surfaces: `Blocks.Surfaces` — (source id, Surface) → the native twin block of that surface (the --surface-twins
+    // triples incl. identities); the `Surface` enum {Road, Dirt, Ice, Grass, Plastic} is hand-written in the Inventory
+    if rest.iter().any(|x| x == "--surfaces") {
+        let mut triples = SURFACE_PAIRS.with(|c| c.borrow().clone());
+        triples.sort();
+        cs.push_str("\n    public static readonly IReadOnlyDictionary<(string Id, Surface Surface), Block> Surfaces = new Dictionary<(string, Surface), Block>\n    {\n");
+        for (src, surface, twin) in &triples {
+            if let (Some(_), Some(ti)) = (ident_lookup.get(src.as_str()), ident_lookup.get(twin.as_str())) {
+                cs.push_str(&format!("        [(\"{src}\", Surface.{surface})] = {ti},\n"));
             }
         }
         cs.push_str("    };\n");
