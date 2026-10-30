@@ -1012,6 +1012,19 @@ fn main() {
             let text = rows.join("\n") + "\n";
             match flag(&a.rest, "--out") { Some(f) => { std::fs::write(&f, &text).unwrap_or_else(|e| die(e.to_string())); println!("wrote {f}: {} rows", rows.len() - 1); } None => print!("{text}") }
         }
+        // deck-profile --block KIND[,…]: the deck's boundary (kerb-side vs open), shoulder vertex count and shoulder width
+        "deck-profile" => {
+            let mut store = open(&a);
+            let blocks: Vec<String> = flag(&a.rest, "--block").unwrap_or_default().split(',').filter(|x| !x.is_empty()).map(|x| x.trim().to_string()).collect();
+            let decks: Vec<&str> = vec!["RoadTech", "RoadDirt", "RoadIce", "RoadBump", "PlatformTech"];
+            println!("kind\tdeck_tris\tboundary_edges\tkerb_side_verts\topen_verts\tshoulder_verts\tshoulder_w_min\tshoulder_w_max\tshoulder_w_mean");
+            for b in &blocks {
+                match mapgeom::static_item::build::deck_profile(&mut store, b, &decks, 26) {
+                    Ok((t, be, kv, ov, sh, w0, w1, wm)) => println!("{b}\t{t}\t{be}\t{kv}\t{ov}\t{sh}\t{w0:.2}\t{w1:.2}\t{wm:.2}"),
+                    Err(e) => println!("{b}\tFAILED: {e}"),
+                }
+            }
+        }
         // deck-deviation --block KIND[,…]: collision deck vs visual deck vs the procedural chunk surface, per kind
         "deck-deviation" => {
             let mut store = open(&a);

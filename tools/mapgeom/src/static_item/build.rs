@@ -4827,3 +4827,74 @@ pub fn deck_deviation(store: &mut crate::store::DataStore, name: &str, decks: &[
     };
     Ok(DeckDeviation { visual_tris: vis_tris.len(), collision_tris: coll_tris.len(), coll_minus_vis: if n > 0 { (lo, hi, n) } else { (0.0, 0.0, 0) }, chunk_minus_coll: chunk, chunk_ids })
 }
+
+/// The deck's boundary structure for the edge-taper idea (10-30): the kept deck triangles (lift 0) → boundary edges
+/// (edges used by exactly one deck triangle), split into "kerb-side" (the boundary vertex is also within 2 mm of a
+/// NON-deck vertex of the prefab — the shoulder meets the kerb/border there) and "open" (segment ends / cuts), the
+/// shoulder = deck vertices above the flat deck plane; returns (deck tris, boundary edges, kerb-side boundary verts,
+/// open boundary verts, shoulder vertex count, shoulder width stats (min, max) measured as the horizontal distance from a
+/// kerb-side boundary vertex to the nearest deck vertex at the flat level).
+pub fn deck_profile(store: &mut crate::store::DataStore, name: &str, decks: &[&str], collection: u32) -> R<(usize, usize, usize, usize, usize, f32, f32, f32)> {
+    let coll_name = crate::static_item::materials::env_name(collection);
+    let mut idx = crate::blockmap::BlockInfoIndex::build(store, coll_name);
+    let (_path, bi) = crate::tiny_library::load_block_info_pub(&mut idx, store, name)?;
+    let picked = bi.pick_placement_add(true, 0, 0, 0).ok_or_else(|| format!("{name}: no variant"))?;
+    let mut m = Merged::default();
+    for mo in &picked.mobils {
+        let Some(pf) = mo.prefab.as_ref() else { continue };
+        let at: Xform = match (mo.translation, mo.rotation) { (None, None) => IDENTITY, (t, r) => crate::geom::euler_xyz_deg(r.unwrap_or([0.0; 3]), t.unwrap_or([0.0; 3])) };
+        add_prefab(store, pf, &at, 1.0, &mut m, 0)?;
+    }
+    let stem_of = |l: &str| l.rsplit('\\').next().unwrap_or(l).trim_end_matches(".Material.Gbx").to_string();
+    let deck_slots: Vec<usize> = m.materials.iter().enumerate().filter(|(_, mat)| mat.link().map_or(false, |l| decks.iter().any(|d| d.eq_ignore_ascii_case(&stem_of(l))))).map(|(i, _)| i).collect();
+    let mut deck_pts: Vec<[f32; 3]> = Vec::new();
+    let mut deck_tris: Vec<[u32; 3]> = Vec::new();
+    let mut other_pts: Vec<[f32; 3]> = Vec::new();
+    for mv in &m.visuals {
+        let is_deck = deck_slots.contains(&mv.material) && (mv.lod_mask == 0 || mv.lod_mask & 1 != 0);
+        let Some(main) = mv.visual.main.as_ref() else { continue };
+        let Some(Node::VertexStream(stream)) = main.vertex_streams.first().and_then(|r| r.inline.as_deref()) else { continue };
+        let compress = stream.compress_local3d.unwrap_or(false);
+        let indices: Vec<u32> = mv.visual.index_buffer.as_ref().map(|ib| ib.indices.clone()).unwrap_or_default();
+        for (d, e) in stream.decls.iter().zip(stream.elems.iter()) {
+            if let (N_POSITION, T_FLOAT3, Elem::Float3(p)) = (d.name(), d.stored_type(compress), e) {
+                if is_deck {
+                    let base = deck_pts.len() as u32;
+                    deck_pts.extend(p.iter().copied());
+                    for t in indices.chunks(3) { if t.len() == 3 { deck_tris.push([base + t[0], base + t[1], base + t[2]]); } }
+                } else if mv.lod_mask == 0 || mv.lod_mask & 1 != 0 {
+                    other_pts.extend(p.iter().copied());
+                }
+            }
+        }
+    }
+    // weld by position (1 mm) so shared edges across visuals count once
+    let key = |p: [f32; 3]| ((p[0] * 1000.0).round() as i64, (p[1] * 1000.0).round() as i64, (p[2] * 1000.0).round() as i64);
+    let mut wid: std::collections::HashMap<(i64, i64, i64), usize> = std::collections::HashMap::new();
+    let mut wpts: Vec<[f32; 3]> = Vec::new();
+    let w: Vec<usize> = deck_pts.iter().map(|p| { let n = wpts.len(); *wid.entry(key(*p)).or_insert_with(|| { wpts.push(*p); n }) }).collect();
+    let mut edge_count: std::collections::HashMap<(usize, usize), usize> = std::collections::HashMap::new();
+    for t in &deck_tris {
+        let v = [w[t[0] as usize], w[t[1] as usize], w[t[2] as usize]];
+        for k in 0..3 { let (a, b) = (v[k], v[(k + 1) % 3]); if a == b { continue; } *edge_count.entry((a.min(b), a.max(b))).or_default() += 1; }
+    }
+    let boundary: Vec<(usize, usize)> = edge_count.iter().filter(|(_, n)| **n == 1).map(|(e, _)| *e).collect();
+    let other_keys: std::collections::HashSet<(i64, i64, i64)> = other_pts.iter().map(|p| key(*p)).collect();
+    let near_other = |p: [f32; 3]| -> bool { let k = key(p); (-2..=2).any(|dx| (-2..=2).any(|dy| (-2..=2).any(|dz| other_keys.contains(&(k.0 + dx, k.1 + dy, k.2 + dz))))) };
+    let bverts: std::collections::BTreeSet<usize> = boundary.iter().flat_map(|(a, b)| [*a, *b]).collect();
+    let kerb: Vec<usize> = bverts.iter().copied().filter(|v| near_other(wpts[*v])).collect();
+    let open = bverts.len() - kerb.len();
+    // the flat deck level = the most common y (1 cm bins) among deck vertices; shoulder = deck verts > level + 5 cm
+    let mut hist: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
+    for p in &wpts { *hist.entry((p[1] * 100.0).round() as i64).or_default() += 1; }
+    let level = hist.iter().max_by_key(|(_, n)| **n).map(|(y, _)| *y as f32 / 100.0).unwrap_or(0.0);
+    let flat: Vec<[f32; 3]> = wpts.iter().copied().filter(|p| (p[1] - level).abs() < 0.05).collect();
+    let shoulder = wpts.iter().filter(|p| p[1] > level + 0.05).count();
+    let (mut wmin, mut wmax, mut wsum, mut wn) = (f32::MAX, f32::MIN, 0.0f32, 0usize);
+    for v in &kerb {
+        let p = wpts[*v];
+        let dmin = flat.iter().map(|q| ((q[0] - p[0]).powi(2) + (q[2] - p[2]).powi(2)).sqrt()).fold(f32::MAX, f32::min);
+        if dmin < f32::MAX { wmin = wmin.min(dmin); wmax = wmax.max(dmin); wsum += dmin; wn += 1; }
+    }
+    Ok((deck_tris.len(), boundary.len(), kerb.len(), open, shoulder, if wn > 0 { wmin } else { 0.0 }, if wn > 0 { wmax } else { 0.0 }, if wn > 0 { wsum / wn as f32 } else { 0.0 }))
+}
