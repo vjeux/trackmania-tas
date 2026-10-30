@@ -4721,3 +4721,100 @@ pub fn surface_overlay_item_ext(store: &mut crate::store::DataStore, name: &str,
     let (bytes, _) = finish_item(m, ident, ident, 1.0, collection)?;
     Ok((bytes, OverlayReport { tris, dropped_visuals: before - kept, deck_materials, y_min: lo[1], y_max: hi[1], pieces: pieces.len(), piece_tris: pieces, bbox: bb }))
 }
+
+/// Height of the triangle soup at (x, z): the highest hit of a vertical ray (None = no triangle covers the point).
+fn soup_height_at(pts: &[[f32; 3]], tris: &[[u32; 3]], x: f32, z: f32) -> Option<f32> {
+    let mut best: Option<f32> = None;
+    for t in tris {
+        let (a, b, c) = (pts[t[0] as usize], pts[t[1] as usize], pts[t[2] as usize]);
+        let (ax, az, bx, bz, cx, cz) = (a[0], a[2], b[0], b[2], c[0], c[2]);
+        let det = (bx - ax) * (cz - az) - (cx - ax) * (bz - az);
+        if det.abs() < 1e-9 { continue; }
+        let l1 = ((bx - x) * (cz - z) - (cx - x) * (bz - z)) / det;
+        let l2 = ((cx - x) * (az - z) - (ax - x) * (cz - z)) / det;
+        let l3 = 1.0 - l1 - l2;
+        if l1 < -1e-4 || l2 < -1e-4 || l3 < -1e-4 { continue; }
+        let y = l1 * a[1] + l2 * b[1] + l3 * c[1];
+        best = Some(best.map_or(y, |b: f32| b.max(y)));
+    }
+    best
+}
+
+pub struct DeckDeviation {
+    pub visual_tris: usize,
+    pub collision_tris: usize,
+    /// collision deck height minus visual deck height, sampled on the visual deck's triangle centroids (m): min, max
+    pub coll_minus_vis: (f32, f32, usize),
+    /// procedural (chunk) ruled surface minus the collision deck, sampled across the chunk span: min, max, samples
+    pub chunk_minus_coll: Option<(f32, f32, usize)>,
+    pub chunk_ids: Vec<String>,
+}
+
+/// How far a kind's COLLISION deck (the prefab surface triangles carrying the deck physics id) sits from its VISUAL deck
+/// mesh, and how far the engine's procedural road (the CPlugRoadChunk edge polylines, ruled across) sits from the
+/// collision — Hugo's "grip on slopes" (10-30).
+pub fn deck_deviation(store: &mut crate::store::DataStore, name: &str, decks: &[&str], deck_physics: &[u8], collection: u32) -> R<DeckDeviation> {
+    let coll_name = crate::static_item::materials::env_name(collection);
+    let mut idx = crate::blockmap::BlockInfoIndex::build(store, coll_name);
+    let (_path, bi) = crate::tiny_library::load_block_info_pub(&mut idx, store, name)?;
+    let picked = bi.pick_placement_add(true, 0, 0, 0).ok_or_else(|| format!("{name}: no variant"))?;
+    let mut m = Merged::default();
+    let mut chunk_ids = Vec::new();
+    let mut chunk_edges: Vec<(Vec<[f32; 3]>, Vec<[f32; 3]>)> = Vec::new();
+    for mo in &picked.mobils {
+        let Some(pf) = mo.prefab.as_ref() else { continue };
+        let at: Xform = match (mo.translation, mo.rotation) { (None, None) => IDENTITY, (t, r) => crate::geom::euler_xyz_deg(r.unwrap_or([0.0; 3]), t.unwrap_or([0.0; 3])) };
+        add_prefab(store, pf, &at, 1.0, &mut m, 0)?;
+        for c in &mo.road_chunk_data {
+            if c.u14.starts_with("Road") && c.u04.len() == c.u05.len() && c.u04.len() >= 2 {
+                chunk_ids.push(c.u14.clone());
+                chunk_edges.push((c.u04.clone(), c.u05.clone()));
+            }
+        }
+    }
+    let stem_of = |l: &str| l.rsplit('\\').next().unwrap_or(l).trim_end_matches(".Material.Gbx").to_string();
+    let deck_slots: Vec<usize> = m.materials.iter().enumerate().filter(|(_, mat)| mat.link().map_or(false, |l| decks.iter().any(|d| d.eq_ignore_ascii_case(&stem_of(l))))).map(|(i, _)| i).collect();
+    let mut vis_pts: Vec<[f32; 3]> = Vec::new();
+    let mut vis_tris: Vec<[u32; 3]> = Vec::new();
+    for mv in m.visuals.iter().filter(|v| deck_slots.contains(&v.material) && (v.lod_mask == 0 || v.lod_mask & 1 != 0)) {
+        let Some(main) = mv.visual.main.as_ref() else { continue };
+        let Some(Node::VertexStream(stream)) = main.vertex_streams.first().and_then(|r| r.inline.as_deref()) else { continue };
+        let compress = stream.compress_local3d.unwrap_or(false);
+        let indices: Vec<u32> = mv.visual.index_buffer.as_ref().map(|ib| ib.indices.clone()).unwrap_or_default();
+        for (d, e) in stream.decls.iter().zip(stream.elems.iter()) {
+            if let (N_POSITION, T_FLOAT3, Elem::Float3(p)) = (d.name(), d.stored_type(compress), e) {
+                let base = vis_pts.len() as u32;
+                vis_pts.extend(p.iter().copied());
+                for t in indices.chunks(3) { if t.len() == 3 { vis_tris.push([base + t[0], base + t[1], base + t[2]]); } }
+            }
+        }
+    }
+    let coll_tris: Vec<[u32; 3]> = m.surf_triangles.iter().filter(|t| deck_physics.contains(&t.material_id)).map(|t| t.indices).collect();
+    let coll_pts = m.surf_vertices.clone();
+    // only the near-horizontal visual triangles (|normal.y| > 0.9: the deck proper, not the shoulder slopes, where a
+    // vertical ray on a step reads metres of "deviation")
+    let (mut lo, mut hi, mut n) = (f32::MAX, f32::MIN, 0usize);
+    for t in &vis_tris {
+        let (a, b, c) = (vis_pts[t[0] as usize], vis_pts[t[1] as usize], vis_pts[t[2] as usize]);
+        let (u, w) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [c[0] - a[0], c[1] - a[1], c[2] - a[2]]);
+        let nrm = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]];
+        let len = (nrm[0] * nrm[0] + nrm[1] * nrm[1] + nrm[2] * nrm[2]).sqrt();
+        if len < 1e-9 || (nrm[1] / len).abs() < 0.9 { continue; }
+        let (cx, cy, cz) = ((a[0] + b[0] + c[0]) / 3.0, (a[1] + b[1] + c[1]) / 3.0, (a[2] + b[2] + c[2]) / 3.0);
+        if let Some(y) = soup_height_at(&coll_pts, &coll_tris, cx, cz) { let d = y - cy; lo = lo.min(d); hi = hi.max(d); n += 1; }
+    }
+    let chunk = if chunk_edges.is_empty() { None } else {
+        let (mut lo2, mut hi2, mut n2) = (f32::MAX, f32::MIN, 0usize);
+        for (l, r) in &chunk_edges {
+            for i in 0..l.len() {
+                for k in 0..=8 {
+                    let t = k as f32 / 8.0;
+                    let p = [l[i][0] + (r[i][0] - l[i][0]) * t, l[i][1] + (r[i][1] - l[i][1]) * t, l[i][2] + (r[i][2] - l[i][2]) * t];
+                    if let Some(y) = soup_height_at(&coll_pts, &coll_tris, p[0], p[2]) { let d = p[1] - y; lo2 = lo2.min(d); hi2 = hi2.max(d); n2 += 1; }
+                }
+            }
+        }
+        if n2 > 0 { Some((lo2, hi2, n2)) } else { None }
+    };
+    Ok(DeckDeviation { visual_tris: vis_tris.len(), collision_tris: coll_tris.len(), coll_minus_vis: if n > 0 { (lo, hi, n) } else { (0.0, 0.0, 0) }, chunk_minus_coll: chunk, chunk_ids })
+}
