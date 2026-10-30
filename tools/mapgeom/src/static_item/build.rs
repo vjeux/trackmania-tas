@@ -4597,3 +4597,111 @@ pub fn screen_finish_item(store: &mut crate::store::DataStore, source: ScreenSou
     let (bytes, _) = finish_item(m, ident, ident, 1.0, collection)?;
     Ok((bytes, ScreenReport { faces, dropped_visuals: before - faces, groups: report_groups, materials }))
 }
+
+/// Hugo's ALTERNATE SURFACE OVERLAYS (10-30): the DRIVABLE DECK triangles of a block kind (the visuals under the deck
+/// materials `decks`, e.g. RoadTech / PlatformTech), lifted `lift` metres along their vertex normals, re-dressed with
+/// `ice_link` (RoadIce / the PlatformIce modifier's PlatformTech), and the same triangles as the item's COLLISION with
+/// physics id `physics` (Ice 74) — no waypoint, no trigger, block frame (the variant's prefabs at translation 0).
+pub struct OverlayReport {
+    pub tris: usize,
+    pub dropped_visuals: usize,
+    pub deck_materials: Vec<String>,
+    pub y_min: f32,
+    pub y_max: f32,
+    pub pieces: usize,
+    pub piece_tris: Vec<usize>,
+    pub bbox: [f32; 6],
+}
+
+pub fn surface_overlay_item(store: &mut crate::store::DataStore, name: &str, ground: bool, add: usize, decks: &[&str], ice_link: &str, physics: u8, lift: f32, ident: &str, collection: u32) -> R<(Vec<u8>, OverlayReport)> {
+    let coll_name = crate::static_item::materials::env_name(collection);
+    let mut idx = crate::blockmap::BlockInfoIndex::build(store, coll_name);
+    let (_path, bi) = crate::tiny_library::load_block_info_pub(&mut idx, store, name)?;
+    let picked = bi.pick_placement_add(ground, 0, 0, add).ok_or_else(|| format!("{name}: no variant"))?;
+    let mut m = Merged::default();
+    for mo in &picked.mobils {
+        let Some(pf) = mo.prefab.as_ref() else { continue };
+        let at: Xform = match (mo.translation, mo.rotation) { (None, None) => IDENTITY, (t, r) => crate::geom::euler_xyz_deg(r.unwrap_or([0.0; 3]), t.unwrap_or([0.0; 3])) };
+        add_prefab(store, pf, &at, 1.0, &mut m, 0)?;
+    }
+    let before = m.visuals.len();
+    let stem_of = |l: &str| l.rsplit('\\').next().unwrap_or(l).trim_end_matches(".Material.Gbx").to_string();
+    let deck_slots: Vec<usize> = m.materials.iter().enumerate().filter(|(_, mat)| mat.link().map_or(false, |l| decks.iter().any(|d| d.eq_ignore_ascii_case(&stem_of(l))))).map(|(i, _)| i).collect();
+    if deck_slots.is_empty() {
+        return Err(format!("{name}: no deck material among {:?}", m.materials.iter().filter_map(|x| x.link().map(|l| stem_of(l))).collect::<Vec<_>>()));
+    }
+    let deck_materials: Vec<String> = deck_slots.iter().filter_map(|i| m.materials[*i].link().map(|l| stem_of(l))).collect();
+    m.visuals.retain(|v| deck_slots.contains(&v.material) && (v.lod_mask == 0 || v.lod_mask & 1 != 0));
+    for v in m.visuals.iter_mut() { v.lod_mask = 0; }
+    m.lights_out.clear();
+    m.pending_lights.clear();
+    m.fx.clear();
+    m.veget.clear();
+    m.pictures.clear();
+    m.surf_vertices.clear();
+    m.surf_triangles.clear();
+    m.surf_ids.clear();
+    let mut all_pts: Vec<[f32; 3]> = Vec::new();
+    let mut all_tris: Vec<[u32; 3]> = Vec::new();
+    for mv in m.visuals.iter_mut() {
+        let Some(main) = mv.visual.main.as_mut() else { continue };
+        let Some(Node::VertexStream(stream)) = main.vertex_streams.first_mut().and_then(|r| r.inline.as_deref_mut()) else { continue };
+        let compress = stream.compress_local3d.unwrap_or(false);
+        let indices: Vec<u32> = mv.visual.index_buffer.as_ref().map(|ib| ib.indices.clone()).unwrap_or_default();
+        for (d, e) in stream.decls.iter().zip(stream.elems.iter_mut()) {
+            if let (N_POSITION, T_FLOAT3, Elem::Float3(p)) = (d.name(), d.stored_type(compress), e) {
+                // area-weighted vertex normals from the triangles, then the lift
+                let mut vn = vec![[0.0f32; 3]; p.len()];
+                for t in indices.chunks(3) {
+                    if t.len() < 3 { continue; }
+                    let (a, b, c) = (p[t[0] as usize], p[t[1] as usize], p[t[2] as usize]);
+                    let (u, w) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [c[0] - a[0], c[1] - a[1], c[2] - a[2]]);
+                    let n = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]];
+                    for k in 0..3 { for i in 0..3 { vn[t[k] as usize][i] += n[i]; } }
+                }
+                for (q, n) in p.iter_mut().zip(vn.iter()) {
+                    let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+                    if len > 1e-12 { *q = [q[0] + lift * n[0] / len, q[1] + lift * n[1] / len, q[2] + lift * n[2] / len]; }
+                }
+                main.bounding_box = crate::static_item::merged::bbox(p);
+                let base = all_pts.len() as u32;
+                all_pts.extend(p.iter().copied());
+                for t in indices.chunks(3) { if t.len() == 3 { all_tris.push([base + t[0], base + t[1], base + t[2]]); } }
+            }
+        }
+    }
+    if all_tris.is_empty() {
+        return Err(format!("{name}: the deck visuals have no readable triangles"));
+    }
+    // the collision: the lifted deck triangles, every one at `physics`
+    m.surf_vertices = all_pts.clone();
+    m.surf_ids = vec![physics as u16];
+    m.surf_triangles = all_tris.iter().map(|t| super::surface::Triangle { indices: *t, material_id: physics, gameplay: 0, surface_index: 0 }).collect();
+    for mat in &mut m.materials {
+        let Some(main) = mat.main.as_mut() else { continue };
+        let Some(link) = main.link.as_str().map(|s| s.to_string()) else { continue };
+        if decks.iter().any(|d| d.eq_ignore_ascii_case(&stem_of(&link))) {
+            main.link = crate::crystal_model::Id::Str(format!("{ice_link}{}", if link.to_ascii_uppercase().ends_with(".GBX") { ".Material.Gbx" } else { "" }));
+        }
+    }
+    m.waypoint_type = None;
+    // connected pieces of the deck (triangles sharing a vertex position within 1 mm)
+    let key = |p: [f32; 3]| ((p[0] * 1000.0).round() as i64, (p[1] * 1000.0).round() as i64, (p[2] * 1000.0).round() as i64);
+    let mut id_of: std::collections::HashMap<(i64, i64, i64), usize> = std::collections::HashMap::new();
+    let mut parent: Vec<usize> = Vec::new();
+    fn find(parent: &mut Vec<usize>, mut x: usize) -> usize { while parent[x] != x { parent[x] = parent[parent[x]]; x = parent[x]; } x }
+    let mut vid: Vec<usize> = Vec::with_capacity(all_pts.len());
+    for p in &all_pts { let n = parent.len(); let id = *id_of.entry(key(*p)).or_insert_with(|| { parent.push(n); n }); vid.push(id); }
+    for t in &all_tris { for k in 1..3 { let (a, b) = (find(&mut parent, vid[t[0] as usize]), find(&mut parent, vid[t[k] as usize])); if a != b { parent[a] = b; } } }
+    let mut piece_tris: std::collections::BTreeMap<usize, usize> = std::collections::BTreeMap::new();
+    for t in &all_tris { *piece_tris.entry(find(&mut parent, vid[t[0] as usize])).or_default() += 1; }
+    let mut pieces: Vec<usize> = piece_tris.values().copied().collect();
+    pieces.sort_unstable_by(|a, b| b.cmp(a));
+    let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+    for p in &all_pts { for k in 0..3 { lo[k] = lo[k].min(p[k]); hi[k] = hi[k].max(p[k]); } }
+    let bb = [lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]];
+    let tris = all_tris.len();
+    let kept = m.visuals.len();
+    let (bytes, _) = finish_item(m, ident, ident, 1.0, collection)?;
+    Ok((bytes, OverlayReport { tris, dropped_visuals: before - kept, deck_materials, y_min: lo[1], y_max: hi[1], pieces: pieces.len(), piece_tris: pieces, bbox: bb }))
+}

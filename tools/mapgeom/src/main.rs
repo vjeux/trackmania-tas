@@ -826,6 +826,61 @@ fn main() {
             std::fs::write(dir.join("screens-table.tsv"), table.join("\n") + "\n").unwrap_or_else(|e| die(e.to_string()));
             println!("table: {}", dir.join("screens-table.tsv").display());
         }
+        // surface-overlay --out-dir D --block NAME[,…] [--deck RoadTech,PlatformTech] [--ice-road LINK --ice-platform LINK]
+        //   [--physics 74] [--lift 0.01] [--prefix Ice] [--check-variants]: Hugo's alternate-surface overlays
+        "surface-overlay" => {
+            let mut store = open(&a);
+            let dir = std::path::PathBuf::from(flag(&a.rest, "--out-dir").unwrap_or_else(|| die("surface-overlay: --out-dir D".into())));
+            let collection: u32 = flag(&a.rest, "--collection").and_then(|v| v.parse().ok()).unwrap_or(26);
+            std::fs::create_dir_all(&dir).unwrap_or_else(|e| die(e.to_string()));
+            let blocks: Vec<String> = flag(&a.rest, "--block").unwrap_or_default().split(',').filter(|x| !x.is_empty()).map(|x| x.trim().to_string()).collect();
+            let decks: Vec<String> = flag(&a.rest, "--deck").unwrap_or_else(|| "RoadTech,PlatformTech".into()).split(',').map(|x| x.trim().to_string()).collect();
+            let deck_refs: Vec<&str> = decks.iter().map(|s| s.as_str()).collect();
+            let ice_road = flag(&a.rest, "--ice-road").unwrap_or_else(|| "Stadium\\Media\\Material\\RoadIce".into());
+            let ice_platform = flag(&a.rest, "--ice-platform").unwrap_or_else(|| "Stadium\\Media\\Modifier\\PlatformIce\\PlatformTech".into());
+            let physics: u8 = flag(&a.rest, "--physics").and_then(|v| v.parse().ok()).unwrap_or(74);
+            let lift: f32 = flag(&a.rest, "--lift").and_then(|v| v.parse().ok()).unwrap_or(0.01);
+            let prefix = flag(&a.rest, "--prefix").unwrap_or_else(|| "Ice".into());
+            let check = a.rest.iter().any(|x| x == "--check-variants");
+            use mapgeom::static_item::build::surface_overlay_item;
+            let mut total = 0usize;
+            let mut table: Vec<String> = vec!["source\titem\tbytes\tdeck_tris\tdeck_materials\tdeck_y_min\tdeck_y_max\tpieces\tvariants_checked\tvariants_differ".into()];
+            for b in &blocks {
+                let name = format!("{prefix}{b}.Item.Gbx");
+                let ice = if b.starts_with("Platform") { ice_platform.as_str() } else { ice_road.as_str() };
+                let ground = true;
+                match surface_overlay_item(&mut store, b, ground, 0, &deck_refs, ice, physics, lift, &name, collection) {
+                    Ok((bytes, rep)) => {
+                        let p = dir.join(&name);
+                        std::fs::write(&p, &bytes).unwrap_or_else(|e| die(format!("{}: {e}", p.display())));
+                        total += bytes.len();
+                        let (mut checked, mut differ) = (0usize, Vec::new());
+                        if check {
+                            let coll_name = mapgeom::static_item::materials::env_name(collection);
+                            let mut idx = mapgeom::blockmap::BlockInfoIndex::build(&mut store, coll_name);
+                            if let Ok((_, bi)) = mapgeom::tiny_library::load_block_info_pub(&mut idx, &mut store, b) {
+                                let mut variants: Vec<(bool, usize, String)> = Vec::new();
+                                if bi.variant_base_ground.is_some() { variants.push((true, 0, "ground".into())); }
+                                if bi.variant_base_air.is_some() { variants.push((false, 0, "air".into())); }
+                                for k in 0..bi.additional_ground.len() { variants.push((true, k + 1, format!("ground/add{k}"))); }
+                                for k in 0..bi.additional_air.len() { variants.push((false, k + 1, format!("air/add{k}"))); }
+                                for (g, add, label) in variants {
+                                    match surface_overlay_item(&mut store, b, g, add, &deck_refs, ice, physics, lift, &name, collection) {
+                                        Ok((_, r2)) => { checked += 1; let same = r2.tris == rep.tris && (0..6).all(|i| (r2.bbox[i] - rep.bbox[i]).abs() < 0.02); if !same { differ.push(format!("{label}: {} tris bbox {:?}", r2.tris, r2.bbox.iter().map(|v| (v * 100.0).round() / 100.0).collect::<Vec<_>>())); } }
+                                        Err(e) => differ.push(format!("{label}: {e}")),
+                                    }
+                                }
+                            }
+                        }
+                        println!("wrote {}: {} bytes — {} deck tris ({}), deck y {:.2}..{:.2}, {} piece(s) {:?}, bbox x {:.1}..{:.1} z {:.1}..{:.1}{}", p.display(), bytes.len(), rep.tris, rep.deck_materials.join(" "), rep.y_min, rep.y_max, rep.pieces, rep.piece_tris, rep.bbox[0], rep.bbox[3], rep.bbox[2], rep.bbox[5], if differ.is_empty() { String::new() } else { format!("  VARIANTS DIFFER: {}", differ.join(" ;; ")) });
+                        table.push(format!("{b}\t{name}\t{}\t{}\t{}\t{:.2}\t{:.2}\t{}\t{checked}\t{}", bytes.len(), rep.tris, rep.deck_materials.join(" "), rep.y_min, rep.y_max, rep.pieces, if differ.is_empty() { "-".to_string() } else { differ.join(" ;; ") }));
+                    }
+                    Err(e) => { println!("{name}: FAILED: {e}"); table.push(format!("{b}\t{name}\tFAILED\t\t{e}\t\t\t\t\t")); }
+                }
+            }
+            std::fs::write(dir.join("overlays-table.tsv"), table.join("\n") + "\n").unwrap_or_else(|e| die(e.to_string()));
+            println!("total {} bytes over {} items; table {}", total, blocks.len(), dir.join("overlays-table.tsv").display());
+        }
         "screen-census" => {
             let mut store = open(&a);
             let out = flag(&a.rest, "--out");
