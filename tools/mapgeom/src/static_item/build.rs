@@ -4613,6 +4613,9 @@ pub struct OverlayReport {
     pub bbox: [f32; 6],
     /// the block info's terrain modifier file stems (PlatformDirt.TerrainModifier.Gbx …): what re-skins a PlatformTech deck
     pub modifiers: Vec<String>,
+    /// the deck slots' physics ids as merged (a modifier-resolved slot carries the modified surface: PlatformDirtSpecialBoost's
+    /// PlatformTech slot is Dirt 6 while its link stays `Material\PlatformTech`)
+    pub deck_physics: Vec<u8>,
 }
 
 pub fn surface_overlay_item(store: &mut crate::store::DataStore, name: &str, ground: bool, add: usize, decks: &[&str], ice_link: &str, physics: u8, lift: f32, ident: &str, collection: u32) -> R<(Vec<u8>, OverlayReport)> {
@@ -4643,6 +4646,7 @@ pub fn surface_overlay_item_ext(store: &mut crate::store::DataStore, name: &str,
         return Err(format!("{name}: no deck material among {:?}", m.materials.iter().filter_map(|x| x.link().map(|l| stem_of(l))).collect::<Vec<_>>()));
     }
     let deck_materials: Vec<String> = deck_slots.iter().filter_map(|i| m.materials[*i].link().map(|l| stem_of(l))).collect();
+    let deck_physics: Vec<u8> = deck_slots.iter().map(|i| m.materials[*i].physics()).collect();
     m.visuals.retain(|v| deck_slots.contains(&v.material) && (v.lod_mask == 0 || v.lod_mask & 1 != 0));
     for v in m.visuals.iter_mut() { v.lod_mask = 0; }
     m.lights_out.clear();
@@ -4724,7 +4728,7 @@ pub fn surface_overlay_item_ext(store: &mut crate::store::DataStore, name: &str,
     let tris = all_tris.len();
     let kept = m.visuals.len();
     let (bytes, _) = finish_item(m, ident, ident, 1.0, collection)?;
-    Ok((bytes, OverlayReport { tris, dropped_visuals: before - kept, deck_materials, y_min: lo[1], y_max: hi[1], pieces: pieces.len(), piece_tris: pieces, bbox: bb, modifiers }))
+    Ok((bytes, OverlayReport { tris, dropped_visuals: before - kept, deck_materials, y_min: lo[1], y_max: hi[1], pieces: pieces.len(), piece_tris: pieces, bbox: bb, modifiers, deck_physics }))
 }
 
 /// Height of the triangle soup at (x, z): the highest hit of a vertical ray (None = no triangle covers the point).

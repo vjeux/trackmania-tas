@@ -947,10 +947,11 @@ fn main() {
             };
             // a deck slot's EFFECTIVE surface: the road decks by material, a PlatformTech deck by the block's terrain
             // modifier (PlatformDirt/Ice/Grass/Plastic re-skin it) — identity = every deck slot already is the target
-            let effective = |stem: &str, modifiers: &[String]| -> &'static str {
+            let effective = |stem: &str, physics: u8, modifiers: &[String]| -> &'static str {
                 match stem {
                     "RoadTech" => "Road", "RoadDirt" => "Dirt", "RoadIce" | "RoadTechSubIce" => "Ice", "RoadBump" => "Bump", "ThemeSnowRoad" => "Snow",
-                    _ => if modifiers.iter().any(|m| m.starts_with("PlatformDirt")) { "Dirt" } else if modifiers.iter().any(|m| m.starts_with("PlatformIce")) { "Ice" } else if modifiers.iter().any(|m| m.starts_with("PlatformGrass")) { "Grass" } else if modifiers.iter().any(|m| m.starts_with("PlatformPlastic")) { "Plastic" } else { "Road" },
+                    // a PlatformTech deck: the slot's merged physics first (a modifier-resolved slot), else the block's terrain modifier
+                    _ => match physics { 6 => "Dirt", 74 => "Ice", 76 => "Grass", 77 => "Plastic", _ => if modifiers.iter().any(|m| m.starts_with("PlatformDirt")) { "Dirt" } else if modifiers.iter().any(|m| m.starts_with("PlatformIce")) { "Ice" } else if modifiers.iter().any(|m| m.starts_with("PlatformGrass")) { "Grass" } else if modifiers.iter().any(|m| m.starts_with("PlatformPlastic")) { "Plastic" } else { "Road" } },
                 }
             };
             use mapgeom::static_item::build::surface_overlay_item_ext;
@@ -972,7 +973,7 @@ fn main() {
                     let name = format!("{surface}{b}.Item.Gbx");
                     match surface_overlay_item_ext(&mut store, &geometry_source, true, 0, &decks, &link_for, physics, lift, &name, collection, cut) {
                         Ok((bytes, rep)) => {
-                            if rep.deck_materials.iter().all(|d| effective(d, &rep.modifiers) == surface.as_str()) { skipped += 1; continue; }
+                            if rep.deck_materials.iter().zip(rep.deck_physics.iter()).all(|(d, ph)| effective(d, *ph, &rep.modifiers) == surface.as_str()) { skipped += 1; continue; }
                             std::fs::write(dir.join(&name), &bytes).unwrap_or_else(|e| die(e.to_string()));
                             total += bytes.len(); count += 1;
                             table.push(format!("{surface}\t{b}\t{name}\t{}\t{}\t{geometry_source}\t{}{note}", bytes.len(), rep.tris, format!("decks {} modifiers {}; ", rep.deck_materials.join("+"), rep.modifiers.join("+"))));
