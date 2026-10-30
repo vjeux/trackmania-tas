@@ -1107,6 +1107,9 @@ pub struct Mobil {
     /// Placement patches / road chunks hanging off the mobil, as their
     /// (left edge, right edge) point counts — enough to say the road runs.
     pub road_chunks: Vec<(usize, usize)>,
+    /// The chunks' full point lists (u03, u04, u05, u07) and their two id strings — the procedural road surface
+    /// (`CPlugRoadChunk`): what the game lays where the prefab has no deck mesh (RoadTechSlopePenaltyDirt, 10-30)
+    pub road_chunk_data: Vec<RoadChunkRaw>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1496,10 +1499,12 @@ impl BlockInfo {
                         solid_frequency: m.solid_frequency,
                         version: m.version,
                         road_chunks: Vec::new(),
+                        road_chunk_data: Vec::new(),
                     };
                     for rc in m.road_chunks.iter().chain(m.u16.iter()) {
                         if let Some(Node::RoadChunk(r)) = g.node(*rc) {
                             mob.road_chunks.push((r.u04.len(), r.u05.len()));
+                            mob.road_chunk_data.push((**r).clone());
                         }
                     }
                     ms.push(mob);

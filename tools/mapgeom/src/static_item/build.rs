@@ -4614,6 +4614,14 @@ pub struct OverlayReport {
 }
 
 pub fn surface_overlay_item(store: &mut crate::store::DataStore, name: &str, ground: bool, add: usize, decks: &[&str], ice_link: &str, physics: u8, lift: f32, ident: &str, collection: u32) -> R<(Vec<u8>, OverlayReport)> {
+    surface_overlay_item_ext(store, name, ground, add, decks, ice_link, physics, lift, ident, collection, None)
+}
+
+/// `cutout` = a block-frame rectangle (x0, z0, x1, z1) whose deck triangles (by centroid) are DROPPED — the penalty
+/// patch of RoadTechSlopePenaltyDirt (its deck is the engine's procedural road, not a pak mesh: the overlay borrows
+/// RoadTechSlopeStraight's identical slope deck and leaves the patch uncovered).
+#[allow(clippy::too_many_arguments)]
+pub fn surface_overlay_item_ext(store: &mut crate::store::DataStore, name: &str, ground: bool, add: usize, decks: &[&str], ice_link: &str, physics: u8, lift: f32, ident: &str, collection: u32, cutout: Option<[f32; 4]>) -> R<(Vec<u8>, OverlayReport)> {
     let coll_name = crate::static_item::materials::env_name(collection);
     let mut idx = crate::blockmap::BlockInfoIndex::build(store, coll_name);
     let (_path, bi) = crate::tiny_library::load_block_info_pub(&mut idx, store, name)?;
@@ -4664,9 +4672,17 @@ pub fn surface_overlay_item(store: &mut crate::store::DataStore, name: &str, gro
                     if len > 1e-12 { *q = [q[0] + lift * n[0] / len, q[1] + lift * n[1] / len, q[2] + lift * n[2] / len]; }
                 }
                 main.bounding_box = crate::static_item::merged::bbox(p);
+                if let Some(c) = cutout {
+                    // drop the patch triangles from the visual's index buffer (vertices stay; unreferenced ones are harmless)
+                    if let Some(ib) = mv.visual.index_buffer.as_mut() {
+                        let keep: Vec<u32> = ib.indices.chunks(3).filter(|t| t.len() == 3).filter(|t| { let (a, b, d) = (p[t[0] as usize], p[t[1] as usize], p[t[2] as usize]); let cx = (a[0] + b[0] + d[0]) / 3.0; let cz = (a[2] + b[2] + d[2]) / 3.0; !(cx >= c[0] && cx <= c[2] && cz >= c[1] && cz <= c[3]) }).flatten().copied().collect();
+                        ib.indices = keep;
+                    }
+                }
+                let kept_indices: Vec<u32> = mv.visual.index_buffer.as_ref().map(|ib| ib.indices.clone()).unwrap_or_default();
                 let base = all_pts.len() as u32;
                 all_pts.extend(p.iter().copied());
-                for t in indices.chunks(3) { if t.len() == 3 { all_tris.push([base + t[0], base + t[1], base + t[2]]); } }
+                for t in kept_indices.chunks(3) { if t.len() == 3 { all_tris.push([base + t[0], base + t[1], base + t[2]]); } }
             }
         }
     }

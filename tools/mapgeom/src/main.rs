@@ -842,14 +842,19 @@ fn main() {
             let lift: f32 = flag(&a.rest, "--lift").and_then(|v| v.parse().ok()).unwrap_or(0.01);
             let prefix = flag(&a.rest, "--prefix").unwrap_or_else(|| "Ice".into());
             let check = a.rest.iter().any(|x| x == "--check-variants");
-            use mapgeom::static_item::build::surface_overlay_item;
+            // --as SOURCE: bake the geometry of SOURCE under the named kind's file name; --patch x0,z0,x1,z1: drop the deck
+            //   triangles inside that block-frame rectangle (the procedural penalty patch)
+            let as_source = flag(&a.rest, "--as");
+            let patch: Option<[f32; 4]> = flag(&a.rest, "--patch").map(|v| { let f: Vec<f32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect(); if f.len() != 4 { die::<()>("--patch x0,z0,x1,z1".into()); } [f[0], f[1], f[2], f[3]] });
+            use mapgeom::static_item::build::{surface_overlay_item, surface_overlay_item_ext};
             let mut total = 0usize;
             let mut table: Vec<String> = vec!["source\titem\tbytes\tdeck_tris\tdeck_materials\tdeck_y_min\tdeck_y_max\tpieces\tvariants_checked\tvariants_differ".into()];
             for b in &blocks {
                 let name = format!("{prefix}{b}.Item.Gbx");
                 let ice = if b.starts_with("Platform") { ice_platform.as_str() } else { ice_road.as_str() };
                 let ground = true;
-                match surface_overlay_item(&mut store, b, ground, 0, &deck_refs, ice, physics, lift, &name, collection) {
+                let geometry_source = as_source.clone().unwrap_or_else(|| b.clone());
+                match surface_overlay_item_ext(&mut store, &geometry_source, ground, 0, &deck_refs, ice, physics, lift, &name, collection, patch) {
                     Ok((bytes, rep)) => {
                         let p = dir.join(&name);
                         std::fs::write(&p, &bytes).unwrap_or_else(|e| die(format!("{}: {e}", p.display())));
@@ -880,6 +885,28 @@ fn main() {
             }
             std::fs::write(dir.join("overlays-table.tsv"), table.join("\n") + "\n").unwrap_or_else(|e| die(e.to_string()));
             println!("total {} bytes over {} items; table {}", total, blocks.len(), dir.join("overlays-table.tsv").display());
+        }
+        // road-chunks NAME: the procedural road surface data (CPlugRoadChunk point lists) of a block info's mobils
+        "road-chunks" => {
+            let mut store = open(&a);
+            let name = a.rest.get(1).cloned().unwrap_or_else(|| die("road-chunks NAME".into()));
+            let coll_name = mapgeom::static_item::materials::env_name(26);
+            let mut idx = mapgeom::blockmap::BlockInfoIndex::build(&mut store, coll_name);
+            let (_, bi) = mapgeom::tiny_library::load_block_info_pub(&mut idx, &mut store, &name).unwrap_or_else(die);
+            for (label, v) in bi.all_variants() {
+                for (li, list) in v.mobils.iter().enumerate() {
+                    for (mi, mo) in list.iter().enumerate() {
+                        for (ci, c) in mo.road_chunk_data.iter().enumerate() {
+                            println!("{label} mobil[{li}][{mi}] chunk {ci}: v{} u01 {} u02 {} ids {:?} / {:?} quat {:?}", c.version, c.u01, c.u02, c.u14, c.u17, c.quat);
+                            for (nm, pts) in [("u03", &c.u03), ("u04", &c.u04), ("u05", &c.u05), ("u07", &c.u07)] {
+                                if pts.is_empty() { continue; }
+                                let (lo, hi) = pts.iter().fold(([f32::MAX; 3], [f32::MIN; 3]), |(lo, hi), p| ([lo[0].min(p[0]), lo[1].min(p[1]), lo[2].min(p[2])], [hi[0].max(p[0]), hi[1].max(p[1]), hi[2].max(p[2])]));
+                                println!("   {nm}: {} pts  bbox ({:.2}, {:.2}, {:.2})..({:.2}, {:.2}, {:.2})  first {:?} last {:?}", pts.len(), lo[0], lo[1], lo[2], hi[0], hi[1], hi[2], pts.first().map(|p| [(p[0] * 100.0).round() / 100.0, (p[1] * 100.0).round() / 100.0, (p[2] * 100.0).round() / 100.0]), pts.last().map(|p| [(p[0] * 100.0).round() / 100.0, (p[1] * 100.0).round() / 100.0, (p[2] * 100.0).round() / 100.0]));
+                            }
+                        }
+                    }
+                }
+            }
         }
         "screen-census" => {
             let mut store = open(&a);
