@@ -897,7 +897,13 @@ fn main() {
                 for (li, list) in v.mobils.iter().enumerate() {
                     for (mi, mo) in list.iter().enumerate() {
                         for (ci, c) in mo.road_chunk_data.iter().enumerate() {
-                            println!("{label} mobil[{li}][{mi}] chunk {ci}: v{} u01 {} u02 {} ids {:?} / {:?} quat {:?}", c.version, c.u01, c.u02, c.u14, c.u17, c.quat);
+                            println!("{label} mobil[{li}][{mi}] chunk {ci}: v{} u01 {} u02 {} u06 {} u08 {} u09 {:?} u10 {:?} u11 {} u15 {} ids {:?} / {:?} quat {:?} u13 {} arrays {:?} u16 {:?}", c.version, c.u01, c.u02, c.u06, c.u08, c.u09, c.u10, c.u11, c.u15, c.u14, c.u17, c.quat, c.u13.len(), c.u13.iter().map(|a| a.len()).collect::<Vec<_>>(), c.u16);
+                            if a.rest.iter().any(|x| x == "--points") {
+                                for (nm, pts) in [("u03", &c.u03), ("u04", &c.u04), ("u05", &c.u05), ("u07", &c.u07)] {
+                                    if !pts.is_empty() { println!("   {nm} all: {}", pts.iter().map(|p| format!("({:.2},{:.2},{:.2})", p[0], p[1], p[2])).collect::<Vec<_>>().join(" ")); }
+                                }
+                                for (k, arr) in c.u13.iter().enumerate() { println!("   u13[{k}]: {}", arr.iter().map(|p| format!("({:.2},{:.2},{:.2})", p[0], p[1], p[2])).collect::<Vec<_>>().join(" ")); }
+                            }
                             for (nm, pts) in [("u03", &c.u03), ("u04", &c.u04), ("u05", &c.u05), ("u07", &c.u07)] {
                                 if pts.is_empty() { continue; }
                                 let (lo, hi) = pts.iter().fold(([f32::MAX; 3], [f32::MIN; 3]), |(lo, hi), p| ([lo[0].min(p[0]), lo[1].min(p[1]), lo[2].min(p[2])], [hi[0].max(p[0]), hi[1].max(p[1]), hi[2].max(p[2])]));

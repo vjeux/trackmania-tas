@@ -319,6 +319,16 @@ pub struct RoadChunkRaw {
     pub u14: String,
     pub u17: String,
     pub quat: [f32; 4],
+    /// every other field, in file order (the v≥2 i32, v≥3 i32, v≥5 2 bytes, v≥6 8 bytes, v≥7 u8, v≥10 u8, the v≥9
+    /// point arrays) — kept raw so two chunks can be diffed field by field (the penalty roads, 10-30)
+    pub u06: i32,
+    pub u08: i32,
+    pub u09: Vec<u8>,
+    pub u10: Vec<u8>,
+    pub u11: u8,
+    pub u13: Vec<Vec<[f32; 3]>>,
+    pub u15: u8,
+    pub u16: [f32; 3],
 }
 
 /// The block-info side of `Acc`: one slot per node kind, created on the first
@@ -1055,28 +1065,28 @@ impl<'a> Graph<'a> {
         c.u04 = self.r.array(|r| r.vec3())?;
         c.u05 = self.r.array(|r| r.vec3())?;
         if v >= 2 {
-            self.r.i32()?;
+            c.u06 = self.r.i32()?;
             c.u07 = self.r.array(|r| r.vec3())?;
             if v >= 3 {
-                self.r.i32()?;
+                c.u08 = self.r.i32()?;
                 if v >= 5 {
-                    self.r.take(2)?;
+                    c.u09 = self.r.take(2)?.to_vec();
                     if v >= 6 {
-                        self.r.take(8)?;
+                        c.u10 = self.r.take(8)?.to_vec();
                         if v >= 7 {
-                            self.r.u8()?;
+                            c.u11 = self.r.u8()?;
                             if v >= 8 {
                                 c.u14 = self.r.lookback()?;
                                 if v >= 9 {
                                     let n = self.r.u32()? as usize;
                                     for _ in 0..n {
-                                        self.r.array(|r| r.vec3())?;
+                                        c.u13.push(self.r.array(|r| r.vec3())?);
                                     }
                                     if v >= 10 {
-                                        self.r.u8()?;
+                                        c.u15 = self.r.u8()?;
                                         c.u17 = self.r.lookback()?;
                                         if v == 11 {
-                                            self.r.vec3()?;
+                                            c.u16 = self.r.vec3()?;
                                         }
                                         if v >= 12 {
                                             c.quat = self.r.quat()?;
