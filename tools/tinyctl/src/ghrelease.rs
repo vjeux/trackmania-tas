@@ -71,7 +71,40 @@ fn curl(token: &str, args: &[&str]) -> Result<(String, u32), String> {
     Ok((body.to_string(), code.trim().parse().unwrap_or(0)))
 }
 
+/// `tinyctl gh-release create --tag TAG --repo OWNER/REPO [--name TITLE] [--notes TEXT] [--token-file F]`
+/// — the release itself (upload needs one to exist; it used to be made by hand with
+/// `gh` on the box, 2026-10-30). An existing release of the tag is reused.
+fn create(args: &[String]) -> Result<(), String> {
+    let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
+    let tag = f("--tag").ok_or("gh-release create needs --tag TAG")?;
+    let repo = f("--repo").ok_or("gh-release create needs --repo OWNER/REPO")?;
+    let tok = token(args)?;
+    let (body, code) = curl(&tok, &[&format!("{API}/repos/{repo}/releases/tags/{tag}")])?;
+    if code == 200 {
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+        println!("release {tag} exists: {}", v.get("html_url").and_then(|u| u.as_str()).unwrap_or("?"));
+        return Ok(());
+    }
+    let payload = serde_json::json!({
+        "tag_name": tag,
+        "name": f("--name").unwrap_or_else(|| tag.clone()),
+        "body": f("--notes").unwrap_or_default(),
+        "draft": false,
+        "prerelease": false,
+    });
+    let (body, code) = curl(&tok, &["-X", "POST", "-H", "Content-Type: application/json", "-d", &payload.to_string(), &format!("{API}/repos/{repo}/releases")])?;
+    if code != 201 {
+        return Err(format!("create release {tag}: HTTP {code} ({})", body.chars().take(200).collect::<String>()));
+    }
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+    println!("release {tag} created: {}", v.get("html_url").and_then(|u| u.as_str()).unwrap_or("?"));
+    Ok(())
+}
+
 pub fn cmd(args: &[String]) -> Result<(), String> {
+    if args.first().map(|a| a == "create").unwrap_or(false) {
+        return create(args);
+    }
     let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
     let tag = f("--tag").ok_or("gh-release upload needs --tag TAG")?;
     let repo = f("--repo").ok_or("gh-release upload needs --repo OWNER/REPO")?;
