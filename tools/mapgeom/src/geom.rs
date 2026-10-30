@@ -433,7 +433,7 @@ fn as_node(s: &Slot) -> Option<&Node> {
 }
 
 /// A GBX index buffer is either absolute indices or a delta chain from 0.
-fn decode_indices(raw: &[u32], absolute: bool, n: usize) -> Vec<[i32; 3]> {
+pub fn decode_indices(raw: &[u32], absolute: bool, n: usize) -> Vec<[i32; 3]> {
     let mut flat: Vec<i32> = Vec::with_capacity(raw.len());
     // The flag is not always trustworthy: an "absolute" stream whose values
     // exceed the vertex count is a delta stream (0xFFFF is -1).

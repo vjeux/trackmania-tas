@@ -978,6 +978,7 @@ fn main() {
                 }
             }
             if let Some(pr) = flag(&a.rest, "--probe") {
+                let verbose = a.rest.iter().any(|x| x == "--probe-verbose");
                 let xz: Vec<f32> = pr.split(',').filter_map(|t| t.trim().parse().ok()).collect();
                 if xz.len() == 2 {
                     for (i, s) in g.slots.iter().enumerate() {
@@ -986,18 +987,30 @@ fn main() {
                         let Some(Slot::Node(Node::VertexStream(st))) = g.slots.get(vs as usize) else { continue };
                         let pos = &st.positions;
                         let mut hits: Vec<f32> = Vec::new();
-                        for t in v.indices.chunks(3) {
-                            if t.len() < 3 {
-                                break;
+                        // the index list may be the delta-chain form (geom.rs decodes it the same way)
+                        let decoded = mapgeom::geom::decode_indices(&v.indices, v.index_is_absolute, pos.len());
+                        for t in &decoded {
+                            if t[0] < 0 || t[1] < 0 || t[2] < 0 {
+                                continue;
                             }
-                            let (Some(a), Some(b), Some(c)) = (pos.get(t[0] as usize), pos.get(t[1] as usize), pos.get(t[2] as usize)) else { continue };
+                            let (Some(ta), Some(tb), Some(tc)) = (pos.get(t[0] as usize), pos.get(t[1] as usize), pos.get(t[2] as usize)) else { continue };
+                            // a triangle with no footprint seen from above (a vertical face, a
+                            // sliver) passes every edge test — skip it (the 2026-10-29 probe
+                            // "found" 82 wall triangles over one point)
+                            let area2 = (tb[0] - ta[0]) * (tc[2] - ta[2]) - (tc[0] - ta[0]) * (tb[2] - ta[2]);
+                            if area2.abs() < 1e-3 {
+                                continue;
+                            }
                             let (px, pz) = (xz[0], xz[1]);
                             let sgn = |p: &[f32; 3], q: &[f32; 3]| (px - q[0]) * (p[2] - q[2]) - (p[0] - q[0]) * (pz - q[2]);
-                            let (d1, d2, d3) = (sgn(a, b), sgn(b, c), sgn(c, a));
+                            let (d1, d2, d3) = (sgn(ta, tb), sgn(tb, tc), sgn(tc, ta));
                             let neg = d1 < 0.0 || d2 < 0.0 || d3 < 0.0;
                             let posi = d1 > 0.0 || d2 > 0.0 || d3 > 0.0;
                             if !(neg && posi) {
-                                hits.push((a[1] + b[1] + c[1]) / 3.0);
+                                hits.push((ta[1] + tb[1] + tc[1]) / 3.0);
+                                if verbose {
+                                    println!("    tri ({:.2},{:.2},{:.2}) ({:.2},{:.2},{:.2}) ({:.2},{:.2},{:.2})", ta[0], ta[1], ta[2], tb[0], tb[1], tb[2], tc[0], tc[1], tc[2]);
+                                }
                             }
                         }
                         if !hits.is_empty() {

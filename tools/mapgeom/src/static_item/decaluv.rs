@@ -211,3 +211,34 @@ pub fn retarget(v: &mut CPlugVisualIndexedTriangles, src_pos: &[[f32; 3]], refs:
     }
     (done, fallback)
 }
+
+/// The stream without the named declarations (offsets and stride recomputed): the
+/// plain decal materials of the tech start/finish carry position, normal, colour,
+/// TexCoord0 and tangents only — the ice decals' TexCoord1 (lightmap chart) and
+/// TexCoord2 (the layered shader's logo uv) under a plain decal material made the
+/// whole BigA footprint a lighter square on the wood pad (Everios96 2026-10-29
+/// 17:11 "the shadow calculation is weird"). Returns how many were dropped.
+pub fn strip_decls(v: &mut CPlugVisualIndexedTriangles, names: &[u32]) -> usize {
+    use super::vstream::Decl;
+    let Some(main) = v.main.as_mut() else { return 0 };
+    let Some(super::Node::VertexStream(s)) = main.vertex_streams.first_mut().and_then(|r| r.inline.as_deref_mut()) else { return 0 };
+    let compress = s.compress_local3d.unwrap_or(false);
+    let keep: Vec<(Decl, Elem)> = s.decls.iter().zip(s.elems.iter()).filter(|(d, _)| !names.contains(&d.name())).map(|(d, e)| (d.clone(), e.clone())).collect();
+    let dropped = s.decls.len() - keep.len();
+    if dropped == 0 {
+        return 0;
+    }
+    let stride: u32 = keep.iter().map(|(d, _)| super::vstream::type_size(d.stored_type(compress)).unwrap_or(4) as u32).sum();
+    let mut offset = 0u32;
+    let mut decls = Vec::with_capacity(keep.len());
+    let mut elems = Vec::with_capacity(keep.len());
+    for (d, e) in keep {
+        let size = super::vstream::type_size(d.stored_type(compress)).unwrap_or(4) as u32;
+        decls.push(Decl::with_stride(d.name(), d.ty(), d.space(), offset, stride / 4));
+        offset += size;
+        elems.push(e);
+    }
+    s.decls = decls;
+    s.elems = elems;
+    dropped
+}

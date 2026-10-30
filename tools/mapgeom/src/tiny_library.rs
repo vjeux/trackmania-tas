@@ -3819,11 +3819,16 @@ pub fn apply_surface_swap(store: &mut DataStore, m: &mut crate::static_item::bui
         // twins are see-through, so each footprint was a window into the block (the box
         // editor frames of 2026-10-29 08:00: the pad's sponsor ring as holes down to the
         // wooden base). Those visuals now carry a deck copy underneath, in the swap's
-        // RoadIce deck material — the start marks excluded (the deck runs under them,
-        // 2026-09-20). `TINY_ICE_DECAL_DECK=0` restores the holes.
+        // RoadIce deck material, the start marks included (see below).
+        // `TINY_ICE_DECAL_DECK=0` restores the holes.
         if name.starts_with("RoadIce") && std::env::var("TINY_ICE_DECAL_DECK").map(|v| v != "0").unwrap_or(true) {
             if let Some((_, link, ids)) = &ice_deck_row {
-                for stem in ["DecalMarksOnRoadIce", "DecalSponsor1x1BigAOnRoadIce", "DecalSponsor4x1AOnRoadIce", "DecalSponsor4x1BOnRoadIce", "DecalSponsor4x1COnRoadIce", "DecalSponsor4x1DOnRoadIce"] {
+                // …the START MARKS too: the 2026-09-20 "the deck runs under the marks" came from
+                // a probe that counted every vertical face as a hit; the corrected probe
+                // (2026-10-29) finds NO deck triangle inside the marks rectangle (x 14.6..17.4,
+                // z 10.3..15.9) — Everios96 17:11 "below the spawnplatform there is the face
+                // missing" on Wood 98
+                for stem in ["DecalMarksOnRoadIce", "DecalMarksStartOnRoadIce", "DecalSponsor1x1BigAOnRoadIce", "DecalSponsor4x1AOnRoadIce", "DecalSponsor4x1BOnRoadIce", "DecalSponsor4x1COnRoadIce", "DecalSponsor4x1DOnRoadIce"] {
                     if !m.deck_under.iter().any(|(s, _, _)| s == stem) {
                         m.deck_under.push((stem.to_string(), link.clone(), ids.0));
                     }

@@ -1796,7 +1796,10 @@ impl Merged {
                         // count no longer matches)
                         let (src_pos, _) = visual_triangles(&v);
                         let (done, fb) = crate::static_item::decaluv::retarget(&mut v, &src_pos, &self.decal_uv_refs, &key);
-                        self.notes.push(format!("visual {}: `{key}` decal re-UVed for the plain material: {done} patch(es){}", g.visual_index, if fb > 0 { format!(", {fb} without a tech twin (long-axis rule)") } else { String::new() }));
+                        // …and the tech decals' layout: no lightmap chart, no layered-shader uv
+                        // (`TINY_ICE_DECAL_STRIP=0` keeps them)
+                        let stripped = if std::env::var("TINY_ICE_DECAL_STRIP").map(|x| x != "0").unwrap_or(true) { crate::static_item::decaluv::strip_decls(&mut v, &[11, 12]) } else { 0 };
+                        self.notes.push(format!("visual {}: `{key}` decal re-UVed for the plain material: {done} patch(es){}{}", g.visual_index, if fb > 0 { format!(", {fb} without a tech twin (long-axis rule)") } else { String::new() }, if stripped > 0 { format!(", {stripped} stream decl(s) dropped (TexCoord1/2)") } else { String::new() }));
                     }
                 }
             }
