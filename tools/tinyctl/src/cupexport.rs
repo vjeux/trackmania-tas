@@ -169,8 +169,18 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     // 4. the exports
     let mut manifest = String::from("file\tname\told_uid\tnew_uid\twr_ms\thunter\taccount\tlogin\n");
     let mut made: Vec<PathBuf> = Vec::new();
+    // file names: the map's own name (`U10S_26 By Everios96 [Wet Wood].Map.Gbx`, the way
+    // the club's files are named) — the fetch's `01-U10S_26-By-Everios96-Wet-Wood` form
+    // "seems off" to the cup uploader (Danyy via Everios96, 2026-10-30 02:17);
+    // `--file-names fetch` keeps the fetched names
+    let fetch_names = f("--file-names").map(|v| v == "fetch").unwrap_or(false);
     for (p, hdr, wr) in &wrs {
-        let fname = p.file_name().unwrap().to_string_lossy().into_owned();
+        let fname = if fetch_names {
+            p.file_name().unwrap().to_string_lossy().into_owned()
+        } else {
+            let clean: String = hdr.name.chars().map(|c| if matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') { '_' } else { c }).collect();
+            format!("{}.Map.Gbx", clean.trim())
+        };
         let dst = out.join(&fname);
         let new_uid = format!("{prefix}{}", &hdr.uid[4..]);
         // pass 1: the uid
