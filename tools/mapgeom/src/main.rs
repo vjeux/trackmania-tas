@@ -854,7 +854,8 @@ fn main() {
                 let ice = if b.starts_with("Platform") { ice_platform.as_str() } else { ice_road.as_str() };
                 let ground = true;
                 let geometry_source = as_source.clone().unwrap_or_else(|| b.clone());
-                match surface_overlay_item_ext(&mut store, &geometry_source, ground, 0, &deck_refs, ice, physics, lift, &name, collection, patch) {
+                let ice_s = ice.to_string();
+                match surface_overlay_item_ext(&mut store, &geometry_source, ground, 0, &deck_refs, &|_s: &str| ice_s.clone(), physics, lift, &name, collection, patch) {
                     Ok((bytes, rep)) => {
                         let p = dir.join(&name);
                         std::fs::write(&p, &bytes).unwrap_or_else(|e| die(format!("{}: {e}", p.display())));
@@ -927,7 +928,9 @@ fn main() {
             let patch: Option<[f32; 4]> = flag(&a.rest, "--patch").map(|v| { let f: Vec<f32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect(); if f.len() != 4 { die::<()>("--patch x0,z0,x1,z1".into()); } [f[0], f[1], f[2], f[3]] });
             // every source family's deck material (the Platform families all draw the PlatformTech slot, re-skinned by
             // their terrain modifier); RoadWater's dry deck is RoadTech (the submerged `Underwater` part is left alone)
-            let decks: Vec<&str> = vec!["RoadTech", "RoadDirt", "RoadIce", "RoadBump", "PlatformTech"];
+            // every deck material of the 25 Fall sources (deck-census): the road decks, the platform deck (also the Open*
+            // roads/zones, the Stand tops, WaterGrass, Rally high roads), the ice patches of RoadTechToRoadIce, the snow road
+            let decks: Vec<&str> = vec!["RoadTech", "RoadDirt", "RoadIce", "RoadBump", "PlatformTech", "RoadTechSubIce", "ThemeSnowRoad"];
             // (surface) → (road link, platform link, physics id) — read off the pak materials (material-ids)
             let target = |surface: &str, platform: bool| -> Option<(String, u8)> {
                 Some(match (surface, platform) {
@@ -942,13 +945,14 @@ fn main() {
                     _ => return None,
                 })
             };
-            let family = |kind: &str| -> (bool, String) {
-                let platform = kind.starts_with("Platform");
-                let rest = kind.trim_start_matches("Platform").trim_start_matches("Road");
-                let fam = ["Tech", "Dirt", "Ice", "Grass", "Plastic", "Bump", "Water"].iter().find(|f| rest.starts_with(*f)).map(|f| f.to_string()).unwrap_or_default();
-                (platform, fam)
+            // a deck slot's EFFECTIVE surface: the road decks by material, a PlatformTech deck by the block's terrain
+            // modifier (PlatformDirt/Ice/Grass/Plastic re-skin it) — identity = every deck slot already is the target
+            let effective = |stem: &str, modifiers: &[String]| -> &'static str {
+                match stem {
+                    "RoadTech" => "Road", "RoadDirt" => "Dirt", "RoadIce" | "RoadTechSubIce" => "Ice", "RoadBump" => "Bump", "ThemeSnowRoad" => "Snow",
+                    _ => if modifiers.iter().any(|m| m.starts_with("PlatformDirt")) { "Dirt" } else if modifiers.iter().any(|m| m.starts_with("PlatformIce")) { "Ice" } else if modifiers.iter().any(|m| m.starts_with("PlatformGrass")) { "Grass" } else if modifiers.iter().any(|m| m.starts_with("PlatformPlastic")) { "Plastic" } else { "Road" },
+                }
             };
-            let identity = |surface: &str, fam: &str| matches!((surface, fam), ("Road", "Tech") | ("Dirt", "Dirt") | ("Ice", "Ice") | ("Grass", "Grass") | ("Plastic", "Plastic"));
             use mapgeom::static_item::build::surface_overlay_item_ext;
             let mut table: Vec<String> = vec!["surface\tsource\titem\tbytes\tdeck_tris\tgeometry_source\tnote".into()];
             let (mut total, mut count, mut skipped, mut failed) = (0usize, 0usize, 0usize, 0usize);
@@ -956,9 +960,9 @@ fn main() {
                 let dir = root.join(surface);
                 std::fs::create_dir_all(&dir).unwrap_or_else(|e| die(e.to_string()));
                 for b in &blocks {
-                    let (platform, fam) = family(b);
-                    if identity(surface, &fam) { skipped += 1; continue; }
-                    let Some((link, physics)) = target(surface, platform) else { continue };
+                    let Some((road_link, physics)) = target(surface, false) else { continue };
+                    let platform_link = target(surface, true).map(|t| t.0).unwrap_or_else(|| road_link.clone());
+                    let link_for = |stem: &str| -> String { if stem.eq_ignore_ascii_case("PlatformTech") { platform_link.clone() } else { road_link.clone() } };
                     // the penalty roads have no deck mesh (the engine's procedural road): borrow the plain kind's deck
                     let (geometry_source, cut, note) = if b.contains("Penalty") {
                         let base = b.split("Penalty").next().unwrap_or(b).to_string();
@@ -966,11 +970,12 @@ fn main() {
                         (plain.clone(), patch, format!("procedural deck: geometry of {plain}, patch {:?} left uncovered", patch))
                     } else { (b.clone(), None, String::new()) };
                     let name = format!("{surface}{b}.Item.Gbx");
-                    match surface_overlay_item_ext(&mut store, &geometry_source, true, 0, &decks, &link, physics, lift, &name, collection, cut) {
+                    match surface_overlay_item_ext(&mut store, &geometry_source, true, 0, &decks, &link_for, physics, lift, &name, collection, cut) {
                         Ok((bytes, rep)) => {
+                            if rep.deck_materials.iter().all(|d| effective(d, &rep.modifiers) == surface.as_str()) { skipped += 1; continue; }
                             std::fs::write(dir.join(&name), &bytes).unwrap_or_else(|e| die(e.to_string()));
                             total += bytes.len(); count += 1;
-                            table.push(format!("{surface}\t{b}\t{name}\t{}\t{}\t{geometry_source}\t{note}", bytes.len(), rep.tris));
+                            table.push(format!("{surface}\t{b}\t{name}\t{}\t{}\t{geometry_source}\t{}{note}", bytes.len(), rep.tris, format!("decks {} modifiers {}; ", rep.deck_materials.join("+"), rep.modifiers.join("+"))));
                         }
                         Err(e) => { failed += 1; table.push(format!("{surface}\t{b}\t{name}\tFAILED\t\t{geometry_source}\t{e}")); eprintln!("{name}: {e}"); }
                     }
@@ -978,6 +983,33 @@ fn main() {
             }
             std::fs::write(root.join("surfaces-table.tsv"), table.join("\n") + "\n").unwrap_or_else(|e| die(e.to_string()));
             println!("{count} items, {total} bytes; {skipped} identity pairs skipped, {failed} failed; table {}", root.join("surfaces-table.tsv").display());
+        }
+        // deck-census --block KIND[,…] [--out F.tsv]: every kind's base-variant material stems (physics) + its terrain
+        //   modifier — to find the drivable deck materials beyond RoadTech/RoadDirt/RoadIce/RoadBump/PlatformTech
+        "deck-census" => {
+            let mut store = open(&a);
+            let blocks: Vec<String> = flag(&a.rest, "--block").unwrap_or_default().split(',').filter(|x| !x.is_empty()).map(|x| x.trim().to_string()).collect();
+            let coll_name = mapgeom::static_item::materials::env_name(26);
+            let mut idx = mapgeom::blockmap::BlockInfoIndex::build(&mut store, coll_name);
+            let mut rows: Vec<String> = vec!["kind\tmodifier\tmaterials(physics)\tcollision_physics".into()];
+            for b in &blocks {
+                let Ok((_, bi)) = mapgeom::tiny_library::load_block_info_pub(&mut idx, &mut store, b) else { rows.push(format!("{b}\t?\tNO BLOCK INFO\t")); continue };
+                let Some(picked) = bi.pick_placement_add(true, 0, 0, 0) else { rows.push(format!("{b}\t\tno variant\t")); continue };
+                let mut m = mapgeom::static_item::build::Merged::default();
+                let mut err = String::new();
+                for mo in &picked.mobils {
+                    let Some(pf) = mo.prefab.as_ref() else { continue };
+                    let at = match (mo.translation, mo.rotation) { (None, None) => mapgeom::geom::IDENTITY, (t, r) => mapgeom::geom::euler_xyz_deg(r.unwrap_or([0.0; 3]), t.unwrap_or([0.0; 3])) };
+                    if let Err(e) = mapgeom::static_item::build::add_prefab(&mut store, pf, &at, 1.0, &mut m, 0) { err = e; }
+                }
+                let modif = bi.material_modifier_slots.iter().flatten().filter(|s| s.contains("Modifier")).map(|s| s.rsplit('\\').next().unwrap_or(s).to_string()).collect::<Vec<_>>().join(" ");
+                let mut mats: Vec<String> = m.materials.iter().filter_map(|x| x.link().map(|l| format!("{}({})", l.rsplit('\\').next().unwrap_or(l).trim_end_matches(".Material.Gbx"), x.physics()))).collect();
+                mats.sort(); mats.dedup();
+                let mut phys: Vec<u8> = m.surf_triangles.iter().map(|t| t.material_id).collect(); phys.sort_unstable(); phys.dedup();
+                rows.push(format!("{b}\t{modif}\t{}\t{:?}{}", mats.join(" "), phys, if err.is_empty() { String::new() } else { format!(" ERR {err}") }));
+            }
+            let text = rows.join("\n") + "\n";
+            match flag(&a.rest, "--out") { Some(f) => { std::fs::write(&f, &text).unwrap_or_else(|e| die(e.to_string())); println!("wrote {f}: {} rows", rows.len() - 1); } None => print!("{text}") }
         }
         // deck-deviation --block KIND[,…]: collision deck vs visual deck vs the procedural chunk surface, per kind
         "deck-deviation" => {

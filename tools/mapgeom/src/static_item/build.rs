@@ -4611,20 +4611,24 @@ pub struct OverlayReport {
     pub pieces: usize,
     pub piece_tris: Vec<usize>,
     pub bbox: [f32; 6],
+    /// the block info's terrain modifier file stems (PlatformDirt.TerrainModifier.Gbx …): what re-skins a PlatformTech deck
+    pub modifiers: Vec<String>,
 }
 
 pub fn surface_overlay_item(store: &mut crate::store::DataStore, name: &str, ground: bool, add: usize, decks: &[&str], ice_link: &str, physics: u8, lift: f32, ident: &str, collection: u32) -> R<(Vec<u8>, OverlayReport)> {
-    surface_overlay_item_ext(store, name, ground, add, decks, ice_link, physics, lift, ident, collection, None)
+    let link = ice_link.to_string();
+    surface_overlay_item_ext(store, name, ground, add, decks, &|_stem: &str| link.clone(), physics, lift, ident, collection, None)
 }
 
 /// `cutout` = a block-frame rectangle (x0, z0, x1, z1) whose deck triangles (by centroid) are DROPPED — the penalty
 /// patch of RoadTechSlopePenaltyDirt (its deck is the engine's procedural road, not a pak mesh: the overlay borrows
 /// RoadTechSlopeStraight's identical slope deck and leaves the patch uncovered).
 #[allow(clippy::too_many_arguments)]
-pub fn surface_overlay_item_ext(store: &mut crate::store::DataStore, name: &str, ground: bool, add: usize, decks: &[&str], ice_link: &str, physics: u8, lift: f32, ident: &str, collection: u32, cutout: Option<[f32; 4]>) -> R<(Vec<u8>, OverlayReport)> {
+pub fn surface_overlay_item_ext(store: &mut crate::store::DataStore, name: &str, ground: bool, add: usize, decks: &[&str], link_for: &dyn Fn(&str) -> String, physics: u8, lift: f32, ident: &str, collection: u32, cutout: Option<[f32; 4]>) -> R<(Vec<u8>, OverlayReport)> {
     let coll_name = crate::static_item::materials::env_name(collection);
     let mut idx = crate::blockmap::BlockInfoIndex::build(store, coll_name);
     let (_path, bi) = crate::tiny_library::load_block_info_pub(&mut idx, store, name)?;
+    let modifiers: Vec<String> = bi.material_modifier_slots.iter().flatten().filter(|s| s.contains("Modifier")).map(|s| s.rsplit('\\').next().unwrap_or(s).to_string()).collect();
     let picked = bi.pick_placement_add(ground, 0, 0, add).ok_or_else(|| format!("{name}: no variant"))?;
     let mut m = Merged::default();
     for mo in &picked.mobils {
@@ -4697,7 +4701,8 @@ pub fn surface_overlay_item_ext(store: &mut crate::store::DataStore, name: &str,
         let Some(main) = mat.main.as_mut() else { continue };
         let Some(link) = main.link.as_str().map(|s| s.to_string()) else { continue };
         if decks.iter().any(|d| d.eq_ignore_ascii_case(&stem_of(&link))) {
-            main.link = crate::crystal_model::Id::Str(format!("{ice_link}{}", if link.to_ascii_uppercase().ends_with(".GBX") { ".Material.Gbx" } else { "" }));
+            let target = link_for(&stem_of(&link));
+            main.link = crate::crystal_model::Id::Str(format!("{target}{}", if link.to_ascii_uppercase().ends_with(".GBX") { ".Material.Gbx" } else { "" }));
         }
     }
     m.waypoint_type = None;
@@ -4719,7 +4724,7 @@ pub fn surface_overlay_item_ext(store: &mut crate::store::DataStore, name: &str,
     let tris = all_tris.len();
     let kept = m.visuals.len();
     let (bytes, _) = finish_item(m, ident, ident, 1.0, collection)?;
-    Ok((bytes, OverlayReport { tris, dropped_visuals: before - kept, deck_materials, y_min: lo[1], y_max: hi[1], pieces: pieces.len(), piece_tris: pieces, bbox: bb }))
+    Ok((bytes, OverlayReport { tris, dropped_visuals: before - kept, deck_materials, y_min: lo[1], y_max: hi[1], pieces: pieces.len(), piece_tris: pieces, bbox: bb, modifiers }))
 }
 
 /// Height of the triangle soup at (x, z): the highest hit of a vertical ray (None = no triangle covers the point).
