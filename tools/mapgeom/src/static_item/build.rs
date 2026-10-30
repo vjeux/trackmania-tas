@@ -4965,6 +4965,11 @@ pub fn deck_ends(store: &mut crate::store::DataStore, name: &str, decks: &[&str]
     }
     // boundary edges on a cell-boundary plane with the far cell outside the footprint, grouped by (axis, plane, side)
     let on_plane = |v: f32| -> Option<i32> { let k = (v / 32.0).round(); if (v - k * 32.0).abs() < 0.003 { Some(k as i32) } else { None } };
+    if std::env::var_os("MAPGEOM_DEBUG_ENDS").is_some() {
+        eprintln!("{name}: footprint {:?}, deck tris {}, pts {}, plate tris {}, boundary edges {}", footprint, tris.len(), pts.len(), plate.len(), edge_count.values().filter(|n| **n == 1).count());
+        for t in tris.iter().take(4) { eprintln!("  tri {:?} {:?} {:?}", pts[t[0] as usize], pts[t[1] as usize], pts[t[2] as usize]); }
+        for ((a, b), n) in &edge_count { if *n == 1 { let (pa, pb) = (wpts[*a], wpts[*b]); eprintln!("  edge ({:.3},{:.3},{:.3})-({:.3},{:.3},{:.3})", pa[0], pa[1], pa[2], pb[0], pb[1], pb[2]); } }
+    }
     let mut groups: std::collections::BTreeMap<(u8, i32, i8), Vec<(usize, usize)>> = std::collections::BTreeMap::new();
     for ((a, b), n) in &edge_count {
         if *n != 1 { continue; }
