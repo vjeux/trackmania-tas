@@ -559,3 +559,38 @@ pub fn build_expandable_checkpoint_ext(ident: &str, collection: u32, all_faces: 
     it.body[pos + 8..pos + 12].copy_from_slice(&2i32.to_le_bytes());
     Ok((it.close(first_node, n_old), trig.faces.len()))
 }
+
+/// Hugo's JOINT RAMP (10-30): a wedge the car rides from an overlaid deck (lifted by `lift`) down onto a native
+/// neighbour's deck — item frame: x −w/2..w/2, z 0..1 (the shared face at z = 0, outward = +z), top face from y = lift
+/// at z = 0 to y = 0 at z = 1, plus the two side slivers; the target surface's material + physics; collidable, no
+/// trigger, no waypoint. A crystal item on the PureFloor template.
+pub fn build_wedge_item(ident: &str, collection: u32, link: &str, physics: u8, width: f32, lift: f32) -> Result<Vec<u8>, String> {
+    let template = pure_template()?;
+    let (hw, len) = (width * 0.5, 1.0f32);
+    let mut mesh = crate::crystal::CrystalMesh::default();
+    // top: (−hw, lift, 0) (−hw, 0, len) (hw, 0, len) (hw, lift, 0) — cross = +y (the friend's order)
+    mesh.positions.extend_from_slice(&[[-hw, lift, 0.0], [-hw, 0.0, len], [hw, 0.0, len], [hw, lift, 0.0]]);
+    let (u, v) = (width / 8.0, len / 8.0);
+    mesh.faces.push(crate::crystal::Face { verts: vec![0, 1, 2, 3], uvs: vec![[0.0, 0.0], [0.0, v], [u, v], [u, 0.0]], material: 0 });
+    // side slivers: −x face (seen from −x: wound so the normal points −x) and +x face
+    mesh.positions.extend_from_slice(&[[-hw, 0.0, 0.0], [hw, 0.0, 0.0]]);
+    mesh.faces.push(crate::crystal::Face { verts: vec![4, 1, 0], uvs: vec![[0.0, 0.0], [v, 0.0], [0.0, lift / 8.0]], material: 0 });
+    mesh.faces.push(crate::crystal::Face { verts: vec![5, 3, 2], uvs: vec![[0.0, 0.0], [0.0, lift / 8.0], [v, 0.0]], material: 0 });
+    let specs = vec![crate::crystal::MaterialSpec { link: link.to_string(), physics }];
+    let bytes = crate::crystal::build_item(&template, ident, ident, &specs, &mesh);
+    let bytes = if collection != 26 { crate::tiny_assets::set_ident_collection(&bytes, collection) } else { bytes };
+    let mut it = crate::crystal::ItemCrystal::open(&bytes)?;
+    let (first_node, n_old) = it.material_node_range();
+    for m in it.model.materials.iter_mut() {
+        if let Some(main) = m.node.as_mut().and_then(|n| n.inline.as_mut()).and_then(|inst| inst.main.as_mut()) { main.csts.clear(); main.color.clear(); }
+    }
+    // keep the collidable geometry layer only (no trigger) and make the item waypoint-less
+    it.model.layers.retain(|l| matches!(l.kind, crate::crystal_model::LayerKind::Geometry { .. }));
+    for l in it.model.layers.iter_mut() { if let crate::crystal_model::LayerKind::Geometry { collidable, .. } = &mut l.kind { *collidable = true; } }
+    it.model.lightmap = Some(grouped_lightmap(&it.model));
+    let pat = 0x2E00201Fu32.to_le_bytes();
+    let pos = it.body.windows(4).position(|w| w == pat).ok_or("no 0x2E00201F chunk in the template")?;
+    if pos < it.end { return Err("waypoint chunk inside the crystal region".into()); }
+    it.body[pos + 8..pos + 12].copy_from_slice(&3i32.to_le_bytes());
+    Ok(it.close(first_node, n_old))
+}

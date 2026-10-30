@@ -839,7 +839,7 @@ fn main() {
             let ice_road = flag(&a.rest, "--ice-road").unwrap_or_else(|| "Stadium\\Media\\Material\\RoadIce".into());
             let ice_platform = flag(&a.rest, "--ice-platform").unwrap_or_else(|| "Stadium\\Media\\Modifier\\PlatformIce\\PlatformTech".into());
             let physics: u8 = flag(&a.rest, "--physics").and_then(|v| v.parse().ok()).unwrap_or(74);
-            let lift: f32 = flag(&a.rest, "--lift").and_then(|v| v.parse().ok()).unwrap_or(0.01);
+            let lift: f32 = flag(&a.rest, "--lift").and_then(|v| v.parse().ok()).unwrap_or(mapgeom::static_item::build::OVERLAY_LIFT);
             let prefix = flag(&a.rest, "--prefix").unwrap_or_else(|| "Ice".into());
             let check = a.rest.iter().any(|x| x == "--check-variants");
             // --as SOURCE: bake the geometry of SOURCE under the named kind's file name; --patch x0,z0,x1,z1: drop the deck
@@ -924,7 +924,7 @@ fn main() {
             let collection: u32 = flag(&a.rest, "--collection").and_then(|v| v.parse().ok()).unwrap_or(26);
             let blocks: Vec<String> = flag(&a.rest, "--block").unwrap_or_default().split(',').filter(|x| !x.is_empty()).map(|x| x.trim().to_string()).collect();
             let surfaces: Vec<String> = flag(&a.rest, "--surfaces").unwrap_or_else(|| "Road,Dirt,Ice,Grass,Plastic".into()).split(',').map(|x| x.trim().to_string()).collect();
-            let lift: f32 = flag(&a.rest, "--lift").and_then(|v| v.parse().ok()).unwrap_or(0.01);
+            let lift: f32 = flag(&a.rest, "--lift").and_then(|v| v.parse().ok()).unwrap_or(mapgeom::static_item::build::OVERLAY_LIFT);
             let patch: Option<[f32; 4]> = flag(&a.rest, "--patch").map(|v| { let f: Vec<f32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect(); if f.len() != 4 { die::<()>("--patch x0,z0,x1,z1".into()); } [f[0], f[1], f[2], f[3]] });
             // every source family's deck material (the Platform families all draw the PlatformTech slot, re-skinned by
             // their terrain modifier); RoadWater's dry deck is RoadTech (the submerged `Underwater` part is left alone)
@@ -1011,6 +1011,66 @@ fn main() {
             }
             let text = rows.join("\n") + "\n";
             match flag(&a.rest, "--out") { Some(f) => { std::fs::write(&f, &text).unwrap_or_else(|e| die(e.to_string())); println!("wrote {f}: {} rows", rows.len() - 1); } None => print!("{text}") }
+        }
+        // surface-wedges --out-dir ROOT --deck-ends F.tsv [--lift L] [--census deck-census.tsv]: Hugo's joint ramps —
+        //   `<Surface>Wedge<W>.Item.Gbx` per target surface and distinct face width W (dm) into ROOT/<Surface>/, the
+        //   wedge's look = the platform modifier look when the faces of that width belong to PlatformTech-deck kinds
+        "surface-wedges" => {
+            let root = flag(&a.rest, "--out-dir").unwrap_or_else(|| die("--out-dir ROOT".into()));
+            let lift: f32 = flag(&a.rest, "--lift").and_then(|v| v.parse().ok()).unwrap_or(mapgeom::static_item::build::OVERLAY_LIFT);
+            let ends = std::fs::read_to_string(flag(&a.rest, "--deck-ends").unwrap_or_else(|| die("--deck-ends F.tsv".into()))).unwrap_or_else(|e| die(e.to_string()));
+            let census: std::collections::HashMap<String, bool> = flag(&a.rest, "--census").map(|f| std::fs::read_to_string(&f).unwrap_or_default().lines().skip(1).filter_map(|l| { let c: Vec<&str> = l.split('\t').collect(); if c.len() < 3 { None } else { Some((c[0].to_string(), c[2].contains("PlatformTech(") && !c[2].contains("RoadTech(") && !c[2].contains("RoadDirt(") && !c[2].contains("RoadIce(") && !c[2].contains("RoadBump("))) } }).collect()).unwrap_or_default();
+            // width (dm) → (faces, faces of PlatformTech-only kinds)
+            let mut widths: std::collections::BTreeMap<u32, (usize, usize)> = std::collections::BTreeMap::new();
+            for line in ends.lines().skip(1) {
+                let c: Vec<&str> = line.split('\t').collect();
+                if c.len() < 8 || c[1] == "FAILED" { continue; }
+                let w: f32 = c[7].parse().unwrap_or(0.0);
+                if w < 2.0 { continue; }
+                let e = widths.entry((w * 10.0).round() as u32).or_default();
+                e.0 += 1; if census.get(c[0]).copied().unwrap_or(false) { e.1 += 1; }
+            }
+            let targets: [(&str, &str, &str, u8); 5] = [
+                ("Road", "Stadium\\Media\\Material\\RoadTech", "Stadium\\Media\\Material\\PlatformTech", 16),
+                ("Dirt", "Stadium\\Media\\Material\\RoadDirt", "Stadium\\Media\\Modifier\\PlatformDirt\\PlatformTech", 6),
+                ("Ice", "Stadium\\Media\\Material\\RoadIce", "Stadium\\Media\\Modifier\\PlatformIce\\PlatformTech", 74),
+                ("Grass", "Stadium\\Media\\Modifier\\PlatformGrass\\PlatformTech", "Stadium\\Media\\Modifier\\PlatformGrass\\PlatformTech", 76),
+                ("Plastic", "Stadium\\Media\\Modifier\\PlatformPlastic\\PlatformTech", "Stadium\\Media\\Modifier\\PlatformPlastic\\PlatformTech", 77),
+            ];
+            let mut table = vec![String::from("surface\twidth_dm\titem\tbytes\tfaces\tlook")];
+            let (mut count, mut total) = (0usize, 0usize);
+            for (surface, road_link, platform_link, physics) in targets {
+                let dir = std::path::Path::new(&root).join(surface);
+                std::fs::create_dir_all(&dir).unwrap_or_else(|e| die(e.to_string()));
+                for (w_dm, (faces, platform_faces)) in &widths {
+                    let platform_look = *platform_faces * 2 > *faces;
+                    let link = if platform_look { platform_link } else { road_link };
+                    let name = format!("{surface}Wedge{w_dm}.Item.Gbx");
+                    let bytes = mapgeom::floor_tiles::build_wedge_item(&name, 26, link, physics, *w_dm as f32 / 10.0, lift).unwrap_or_else(|e| die(format!("{name}: {e}")));
+                    std::fs::write(dir.join(&name), &bytes).unwrap_or_else(|e| die(e.to_string()));
+                    count += 1; total += bytes.len();
+                    table.push(format!("{surface}\t{w_dm}\t{name}\t{}\t{faces}\t{}", bytes.len(), if platform_look { "platform" } else { "road" }));
+                }
+            }
+            std::fs::write(std::path::Path::new(&root).join("wedges-table.tsv"), table.join("\n") + "\n").unwrap_or_else(|e| die(e.to_string()));
+            println!("{count} wedge items ({} widths × 5 surfaces), {total} bytes, lift {lift}; table {root}/wedges-table.tsv", widths.len());
+        }
+        // deck-ends --block KIND[,…] [--out F.tsv]: every kind's deck END FACES (centre, outward yaw, roll, width) — the
+        //   joint-ramp table (Blocks.DeckEnds)
+        "deck-ends" => {
+            let mut store = open(&a);
+            let blocks: Vec<String> = flag(&a.rest, "--block").unwrap_or_default().split(',').filter(|x| !x.is_empty()).map(|x| x.trim().to_string()).collect();
+            let decks: Vec<&str> = vec!["RoadTech", "RoadDirt", "RoadIce", "RoadBump", "PlatformTech", "RoadTechSubIce", "ThemeSnowRoad"];
+            let mut rows: Vec<String> = vec!["kind\tface\tcx\tcy\tcz\tyaw_rad\troll_rad\twidth".into()];
+            let (mut kinds_ok, mut faces_n) = (0usize, 0usize);
+            for b in &blocks {
+                match mapgeom::static_item::build::deck_ends(&mut store, b, &decks, 26) {
+                    Ok(ends) => { kinds_ok += 1; faces_n += ends.len(); for e in ends { rows.push(format!("{b}\t{}\t{:.3}\t{:.3}\t{:.3}\t{:.4}\t{:.4}\t{:.3}", e.face, e.centre[0], e.centre[1], e.centre[2], e.yaw, e.roll, e.width)); } }
+                    Err(e) => rows.push(format!("{b}\tFAILED\t\t\t\t\t\t{e}")),
+                }
+            }
+            let text = rows.join("\n") + "\n";
+            match flag(&a.rest, "--out") { Some(f) => { std::fs::write(&f, &text).unwrap_or_else(|e| die(e.to_string())); println!("wrote {f}: {kinds_ok} kinds, {faces_n} faces"); } None => print!("{text}") }
         }
         // deck-profile --block KIND[,…]: the deck's boundary (kerb-side vs open), shoulder vertex count and shoulder width
         "deck-profile" => {

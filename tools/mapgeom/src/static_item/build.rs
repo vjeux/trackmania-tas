@@ -4618,6 +4618,10 @@ pub struct OverlayReport {
     pub deck_physics: Vec<u8>,
 }
 
+/// Hugo's production overlay lift (10-30: 2 cm; the lift ladder 1 / 1.5 / 2 / 3 / 4 cm) — ONE constant for the overlays
+/// (`surface-matrix` / `surface-overlay` default) and the joint-ramp wedges (`surface-wedges`), so they always agree
+pub const OVERLAY_LIFT: f32 = 0.02;
+
 pub fn surface_overlay_item(store: &mut crate::store::DataStore, name: &str, ground: bool, add: usize, decks: &[&str], ice_link: &str, physics: u8, lift: f32, ident: &str, collection: u32) -> R<(Vec<u8>, OverlayReport)> {
     let link = ice_link.to_string();
     surface_overlay_item_ext(store, name, ground, add, decks, &|_stem: &str| link.clone(), physics, lift, ident, collection, None)
@@ -4897,4 +4901,116 @@ pub fn deck_profile(store: &mut crate::store::DataStore, name: &str, decks: &[&s
         if dmin < f32::MAX { wmin = wmin.min(dmin); wmax = wmax.max(dmin); wsum += dmin; wn += 1; }
     }
     Ok((deck_tris.len(), boundary.len(), kerb.len(), open, shoulder, if wn > 0 { wmin } else { 0.0 }, if wn > 0 { wmax } else { 0.0 }, if wn > 0 { wsum / wn as f32 } else { 0.0 }))
+}
+
+/// One END FACE of a kind's deck plate (Hugo's joint ramps, 10-30): the span of deck-plate boundary edges lying on a
+/// cell boundary whose far side is outside the block's footprint — centre (block frame), outward yaw (radians: yaw ψ
+/// sends the item's +z to (sin ψ, 0, cos ψ)), roll of the face line (0 = level; a tilted deck's end face slants), width.
+#[derive(Clone, Debug)]
+pub struct DeckEnd {
+    pub centre: [f32; 3],
+    pub yaw: f32,
+    pub roll: f32,
+    pub width: f32,
+    pub face: &'static str,
+}
+
+pub fn deck_ends(store: &mut crate::store::DataStore, name: &str, decks: &[&str], collection: u32) -> R<Vec<DeckEnd>> {
+    let coll_name = crate::static_item::materials::env_name(collection);
+    let mut idx = crate::blockmap::BlockInfoIndex::build(store, coll_name);
+    let (_path, bi) = crate::tiny_library::load_block_info_pub(&mut idx, store, name)?;
+    let picked = bi.pick_placement_add(true, 0, 0, 0).ok_or_else(|| format!("{name}: no variant"))?;
+    let footprint: std::collections::HashSet<(i32, i32)> = picked.variant.block_units.iter().map(|u| (u.offset[0], u.offset[2])).collect();
+    let mut m = Merged::default();
+    for mo in &picked.mobils {
+        let Some(pf) = mo.prefab.as_ref() else { continue };
+        let at: Xform = match (mo.translation, mo.rotation) { (None, None) => IDENTITY, (t, r) => crate::geom::euler_xyz_deg(r.unwrap_or([0.0; 3]), t.unwrap_or([0.0; 3])) };
+        add_prefab(store, pf, &at, 1.0, &mut m, 0)?;
+    }
+    let stem_of = |l: &str| l.rsplit('\\').next().unwrap_or(l).trim_end_matches(".Material.Gbx").to_string();
+    let deck_slots: Vec<usize> = m.materials.iter().enumerate().filter(|(_, mat)| mat.link().map_or(false, |l| decks.iter().any(|d| d.eq_ignore_ascii_case(&stem_of(l))))).map(|(i, _)| i).collect();
+    let mut pts: Vec<[f32; 3]> = Vec::new();
+    let mut tris: Vec<[u32; 3]> = Vec::new();
+    for mv in &m.visuals {
+        if !(deck_slots.contains(&mv.material) && (mv.lod_mask == 0 || mv.lod_mask & 1 != 0)) { continue; }
+        let Some(main) = mv.visual.main.as_ref() else { continue };
+        let Some(Node::VertexStream(stream)) = main.vertex_streams.first().and_then(|r| r.inline.as_deref()) else { continue };
+        let compress = stream.compress_local3d.unwrap_or(false);
+        let indices: Vec<u32> = mv.visual.index_buffer.as_ref().map(|ib| ib.indices.clone()).unwrap_or_default();
+        for (d, e) in stream.decls.iter().zip(stream.elems.iter()) {
+            if let (N_POSITION, T_FLOAT3, Elem::Float3(p)) = (d.name(), d.stored_type(compress), e) {
+                let base = pts.len() as u32;
+                pts.extend(p.iter().copied());
+                for t in indices.chunks(3) { if t.len() == 3 { tris.push([base + t[0], base + t[1], base + t[2]]); } }
+            }
+        }
+    }
+    if tris.is_empty() { return Err(format!("{name}: no deck")); }
+    // the PLATE: near-horizontal deck triangles only (the vertical skirts' edges are not road ends)
+    let plate: Vec<[u32; 3]> = tris.iter().copied().filter(|t| {
+        let (a, b, c) = (pts[t[0] as usize], pts[t[1] as usize], pts[t[2] as usize]);
+        let (u, w) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [c[0] - a[0], c[1] - a[1], c[2] - a[2]]);
+        let n = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]];
+        let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+        len > 1e-9 && (n[1] / len).abs() > 0.5
+    }).collect();
+    let key = |p: [f32; 3]| ((p[0] * 1000.0).round() as i64, (p[1] * 1000.0).round() as i64, (p[2] * 1000.0).round() as i64);
+    let mut wid: std::collections::HashMap<(i64, i64, i64), usize> = std::collections::HashMap::new();
+    let mut wpts: Vec<[f32; 3]> = Vec::new();
+    let w: Vec<usize> = pts.iter().map(|p| { let n = wpts.len(); *wid.entry(key(*p)).or_insert_with(|| { wpts.push(*p); n }) }).collect();
+    let mut edge_count: std::collections::HashMap<(usize, usize), usize> = std::collections::HashMap::new();
+    for t in &plate {
+        let v = [w[t[0] as usize], w[t[1] as usize], w[t[2] as usize]];
+        for k in 0..3 { let (a, b) = (v[k], v[(k + 1) % 3]); if a == b { continue; } *edge_count.entry((a.min(b), a.max(b))).or_default() += 1; }
+    }
+    // boundary edges on a cell-boundary plane with the far cell outside the footprint, grouped by (axis, plane, side)
+    let on_plane = |v: f32| -> Option<i32> { let k = (v / 32.0).round(); if (v - k * 32.0).abs() < 0.003 { Some(k as i32) } else { None } };
+    let mut groups: std::collections::BTreeMap<(u8, i32, i8), Vec<(usize, usize)>> = std::collections::BTreeMap::new();
+    for ((a, b), n) in &edge_count {
+        if *n != 1 { continue; }
+        let (pa, pb) = (wpts[*a], wpts[*b]);
+        for (axis, ia, iz) in [(0u8, 0usize, 2usize), (2u8, 2usize, 0usize)] {
+            let (Some(ka), Some(kb)) = (on_plane(pa[ia]), on_plane(pb[ia])) else { continue };
+            if ka != kb { continue; }
+            // the edge must run along the plane (not be a degenerate point) — its other coordinate spans something
+            if (pa[iz] - pb[iz]).abs() < 1e-4 && (pa[1] - pb[1]).abs() < 1e-4 { continue; }
+            let mid_other = ((pa[iz] + pb[iz]) * 0.5 / 32.0).floor() as i32;
+            let cell = |k: i32| if axis == 0 { (k, mid_other) } else { (mid_other, k) };
+            let inside_pos = footprint.contains(&cell(ka));
+            let inside_neg = footprint.contains(&cell(ka - 1));
+            let side: i8 = match (inside_neg, inside_pos) { (true, false) => 1, (false, true) => -1, _ => continue };
+            groups.entry((axis, ka, side)).or_default().push((*a, *b));
+        }
+    }
+    let mut out = Vec::new();
+    for ((axis, k, side), edges) in groups {
+        // connected runs within the group (edges sharing a welded vertex)
+        let mut parent: Vec<usize> = (0..edges.len()).collect();
+        fn find(p: &mut Vec<usize>, mut x: usize) -> usize { while p[x] != x { p[x] = p[p[x]]; x = p[x]; } x }
+        for i in 0..edges.len() { for j in (i + 1)..edges.len() { let (a, b) = edges[i]; let (c, d) = edges[j]; if a == c || a == d || b == c || b == d { let (ri, rj) = (find(&mut parent, i), find(&mut parent, j)); if ri != rj { parent[ri] = rj; } } } }
+        let mut runs: std::collections::BTreeMap<usize, Vec<usize>> = std::collections::BTreeMap::new();
+        for i in 0..edges.len() { let r = find(&mut parent, i); runs.entry(r).or_default().push(i); }
+        for (_, idxs) in runs {
+            let vs: Vec<[f32; 3]> = idxs.iter().flat_map(|i| [wpts[edges[*i].0], wpts[edges[*i].1]]).collect();
+            let along = if axis == 0 { 2 } else { 0 };
+            let lo = vs.iter().copied().fold(None::<[f32; 3]>, |acc, p| match acc { None => Some(p), Some(q) => Some(if p[along] < q[along] { p } else { q }) }).unwrap();
+            let hi = vs.iter().copied().fold(None::<[f32; 3]>, |acc, p| match acc { None => Some(p), Some(q) => Some(if p[along] > q[along] { p } else { q }) }).unwrap();
+            let width = ((hi[0] - lo[0]).powi(2) + (hi[1] - lo[1]).powi(2) + (hi[2] - lo[2]).powi(2)).sqrt();
+            if width < 0.5 { continue; }
+            let centre = [(lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5, (lo[2] + hi[2]) * 0.5];
+            let outward: [f32; 3] = if axis == 0 { [side as f32, 0.0, 0.0] } else { [0.0, 0.0, side as f32] };
+            let yaw = outward[0].atan2(outward[2]);
+            // the face line from the item's −x end to its +x end: with the item facing `outward`, +x = outward × up … the
+            // item's +x is (cos ψ, 0, −sin ψ); roll = atan2(Δy, horizontal length) along that direction
+            let item_x = [yaw.cos(), 0.0, -yaw.sin()];
+            let (first, last) = if (hi[0] - lo[0]) * item_x[0] + (hi[2] - lo[2]) * item_x[2] >= 0.0 { (lo, hi) } else { (hi, lo) };
+            let horiz = ((last[0] - first[0]).powi(2) + (last[2] - first[2]).powi(2)).sqrt();
+            let roll = (last[1] - first[1]).atan2(horiz);
+            let face = match (axis, side) { (0, 1) => "+x (W)", (0, -1) => "-x (E)", (2, 1) => "+z (N)", _ => "-z (S)" };
+            let _ = k;
+            out.push(DeckEnd { centre, yaw, roll, width, face });
+        }
+    }
+    out.sort_by(|a, b| a.centre[2].partial_cmp(&b.centre[2]).unwrap().then(a.centre[0].partial_cmp(&b.centre[0]).unwrap()));
+    Ok(out)
 }

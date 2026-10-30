@@ -18,6 +18,25 @@ thread_local! {
     static PENALTY_PAIRS: std::cell::RefCell<Vec<(String, String)>> = const { std::cell::RefCell::new(Vec::new()) };
     /// `--surface-twins` leaves the (source, surface, twin) triples here for the `--surfaces` emitter (Blocks.Surfaces)
     static SURFACE_PAIRS: std::cell::RefCell<Vec<(String, String, String)>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// `--deck-ends F.tsv` rows (kind, centre, yaw, roll, width) for the Blocks.DeckEnds emitter
+    static DECK_ENDS: std::cell::RefCell<Vec<(String, [f32; 3], f32, f32, f32)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// A yaw that is an exact quarter turn prints as the MathF constant (the deck end faces lie on cell planes, so every
+/// yaw is one of 0, ±π/2, π); anything else as a plain literal
+pub fn yaw_cs(yaw: f32) -> String {
+    let q = yaw / std::f32::consts::FRAC_PI_2;
+    if (q - q.round()).abs() < 1e-3 {
+        match q.round() as i32 { 0 => "0f".into(), 1 => "System.MathF.PI / 2".into(), -1 => "-System.MathF.PI / 2".into(), 2 | -2 => "System.MathF.PI".into(), _ => format!("{yaw:.4}f") }
+    } else { format!("{yaw:.4}f") }
+}
+
+/// A float literal for the catalog: 3 decimals, trailing zeros trimmed, "-0" normalised, `f` suffix
+pub fn f3_cs(v: f32) -> String {
+    let mut t = format!("{:.3}", if v.abs() < 0.0005 { 0.0 } else { v });
+    while t.contains('.') && t.ends_with('0') { t.pop(); }
+    if t.ends_with('.') { t.pop(); }
+    format!("{t}f")
 }
 
 fn waypoint_cs(t: Option<i32>) -> &'static str {
@@ -429,6 +448,21 @@ pub fn cmd(store: &mut crate::store::DataStore, rest: &[String], flag: &dyn Fn(&
         println!("wrote {cp}: {} kinds × 5 surfaces: {twins_n} native twins (incl. identities), {overlay_n} overlays", kinds.len());
         SURFACE_PAIRS.with(|c| *c.borrow_mut() = pairs);
     }
+    // --deck-ends F.tsv (Hugo's joint ramps, 10-30): the deck-ends census table (mapgeom deck-ends --out) → Blocks.DeckEnds;
+    // faces narrower than 2 m (the ice kerb strips, transition slivers) are dropped
+    if let Some(f) = flag(rest, "--deck-ends") {
+        let text = std::fs::read_to_string(&f).map_err(|e| format!("{f}: {e}"))?;
+        let mut rows: Vec<(String, [f32; 3], f32, f32, f32)> = Vec::new();
+        for line in text.lines().skip(1) {
+            let c: Vec<&str> = line.split('\t').collect();
+            if c.len() < 8 || c[1] == "FAILED" { continue; }
+            let num = |i: usize| c[i].parse::<f32>().unwrap_or(0.0);
+            let width = num(7);
+            if width < 2.0 { continue; }
+            rows.push((c[0].to_string(), [num(2), num(3), num(4)], num(5), num(6), width));
+        }
+        DECK_ENDS.with(|d| *d.borrow_mut() = rows);
+    }
     // --penalty-census F.tsv (Hugo's surface alterations, 10-30): every *Penalty* block info's plain twin — the block of
     // the same family whose base-variant ROAD CHUNK edge polylines (every chunk id "Road*", all points) and unit set are
     // identical; the penalty roads have no deck mesh (the engine draws a procedural road with the penalty band), their
@@ -632,6 +666,20 @@ pub fn cmd(store: &mut crate::store::DataStore, rest: &[String], flag: &dyn Fn(&
             if let (Some(_), Some(ti)) = (ident_lookup.get(src.as_str()), ident_lookup.get(twin.as_str())) {
                 cs.push_str(&format!("        [(\"{src}\", Surface.{surface})] = {ti},\n"));
             }
+        }
+        cs.push_str("    };\n");
+    }
+    // --deck-ends: `Blocks.DeckEnds` — per kind the deck's end faces (centre in the block frame, outward yaw, roll of the
+    // face line, width), the joint-ramp anchors
+    if rest.iter().any(|x| x == "--deck-ends") {
+        let rows = DECK_ENDS.with(|d| d.borrow().clone());
+        let mut by_kind: BTreeMap<String, Vec<([f32; 3], f32, f32, f32)>> = BTreeMap::new();
+        for (k, c, y, r, w) in rows { by_kind.entry(k).or_default().push((c, y, r, w)); }
+        cs.push_str("\n    public static readonly IReadOnlyDictionary<string, (Vec3 Centre, float Yaw, float Roll, float Width)[]> DeckEnds = new Dictionary<string, (Vec3, float, float, float)[]>\n    {\n");
+        for (k, faces) in &by_kind {
+            if !ident_lookup.contains_key(k.as_str()) { continue; }
+            let items: Vec<String> = faces.iter().map(|(c, y, r, w)| format!("(new Vec3({}, {}, {}), {}, {}, {})", f3_cs(c[0]), f3_cs(c[1]), f3_cs(c[2]), yaw_cs(*y), f3_cs(*r), f3_cs(*w))).collect();
+            cs.push_str(&format!("        [\"{k}\"] = [{}],\n", items.join(", ")));
         }
         cs.push_str("    };\n");
     }
