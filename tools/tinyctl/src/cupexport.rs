@@ -1,7 +1,8 @@
 //! `tinyctl cup-export --club C --campaign K --out DIR --prefix Cup5 [--token-dir D] [--zip NAME.zip]`
 //! — Everios96 2026-09-26 (scrapie's Altered U10S cup, Danyy): the campaign's LIVE maps,
 //! each re-authored for the cup: the world record becomes the author time (medals from it:
-//! gold ×1.06, silver ×1.2, bronze ×1.5, rounded up to 10 ms), the WR holder becomes the map's
+//! gold ×1.06, silver ×1.2, bronze ×1.5, rounded up to the next full second like the game —
+//! `--medal-step 10` for the 10 ms rounding of the September cups), the WR holder becomes the map's
 //! author (account id as the login, display name as the nickname), a fresh uid (`<prefix>` +
 //! the live uid's tail). Files land in `OUT/NN-<name>.Map.Gbx`, a manifest in
 //! `OUT/manifest.tsv`, and one stored zip of all of them (`--zip`, default `OUT/<campaign>.zip`).
@@ -36,8 +37,13 @@ fn login_of(account_id: &str) -> Result<String, String> {
     Ok(s)
 }
 
-fn medal(at: u32, factor: f64) -> u32 {
-    let v = (at as f64 * factor / 10.0).ceil() * 10.0;
+/// A medal time from the author time: the GAME's rule — ×1.06 / ×1.2 / ×1.5 rounded UP to
+/// the next full second (30 of 30 of Everios96's editor-saved originals match it; he wants
+/// the exports "the same way the game handles it without custom medals", 2026-10-30 01:32).
+/// `--medal-step 10` restores the September cups' 10 ms rounding.
+fn medal(at: u32, factor: f64, step_ms: u32) -> u32 {
+    let step = step_ms.max(1) as f64;
+    let v = (at as f64 * factor / step - 1e-9).ceil() * step;
     v as u32
 }
 
@@ -83,6 +89,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     }
     let camp = f("--campaign").ok_or("cup-export needs --campaign ID or --campaigns A,B,C")?;
     let out = PathBuf::from(f("--out").ok_or("cup-export needs --out DIR")?);
+    let medal_step: u32 = f("--medal-step").map(|v| v.parse::<u32>().map_err(|_| "--medal-step wants milliseconds (1000 = the game's full seconds, 10 = the cups' 10 ms)")).transpose()?.unwrap_or(1000);
     let prefix = f("--prefix").unwrap_or_else(|| "Cup5".into());
     if prefix.len() != 4 {
         return Err("--prefix is 4 characters".into());
@@ -175,7 +182,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             let nick = names.get(&w.account).cloned().unwrap_or_else(|| w.account.clone());
             let new_login = login_of(&w.account)?;
             let old_at: u32 = hdr.authortime.parse().map_err(|_| format!("{fname}: author time `{}`", hdr.authortime))?;
-            let times = [w.score, medal(w.score, 1.06), medal(w.score, 1.2), medal(w.score, 1.5)];
+            let times = [w.score, medal(w.score, 1.06, medal_step), medal(w.score, 1.2, medal_step), medal(w.score, 1.5, medal_step)];
             // pass 2: author + times on a fresh load (splices of another length)
             let mut m2 = tmmaps::map::MapFile::load(&dst);
             let old_nick = m2.author_nickname().unwrap_or_else(|| "Everios96".to_string());
