@@ -5198,3 +5198,37 @@ pub fn swap_deck_surface(m: &mut Merged, decks: &[&str], link_for: &dyn Fn(&str)
     m.surf_ids = ids;
     (deck_visuals, retagged, gameplay_n)
 }
+
+/// Hugo's size lever on a whole-block bake (10-31): keep the `n` nearest detail levels — a geom keeps the mask bits
+/// below `n` (none left → dropped), the ladder keeps `n − 1` switch distances so the last kept level draws on
+/// unbounded. Returns (visuals dropped, visuals kept).
+pub fn keep_lod_levels(m: &mut Merged, n: u32) -> (usize, usize) {
+    let before = m.visuals.len();
+    let keep_mask: u32 = (1u32 << n.max(1)) - 1;
+    for mv in m.visuals.iter_mut() { mv.lod_mask &= keep_mask; }
+    m.visuals.retain(|mv| mv.lod_mask != 0);
+    m.lod_max_dist.truncate(n.max(1) as usize - 1);
+    (before - m.visuals.len(), m.visuals.len())
+}
+
+/// Where a whole-block item's bytes go: per detail level (by the lowest mask bit) the visuals' vertex/index bytes,
+/// plus the collision mesh and the light count — an estimate from the merged model (vertex stride from the decls)
+pub fn size_breakdown(m: &Merged) -> String {
+    let mut per_level: std::collections::BTreeMap<u32, (usize, usize, usize)> = std::collections::BTreeMap::new(); // visuals, vertex bytes, index bytes
+    for mv in &m.visuals {
+        let level = if mv.lod_mask == 0 { 0 } else { mv.lod_mask.trailing_zeros() };
+        let Some(main) = mv.visual.main.as_ref() else { continue };
+        let Some(Node::VertexStream(stream)) = main.vertex_streams.first().and_then(|r| r.inline.as_deref()) else { continue };
+        let compress = stream.compress_local3d.unwrap_or(false);
+        let nverts = stream.elems.iter().map(|e| match e { Elem::Float3(p) => p.len(), _ => 0 }).max().unwrap_or(0);
+        let stride: usize = stream.decls.iter().map(|d| match d.stored_type(compress) { super::vstream::T_FLOAT3 => 12, super::vstream::T_FLOAT2 => 8, super::vstream::T_FLOAT4 => 16, super::vstream::T_FLOAT1 => 4, _ => 4 }).sum();
+        let nidx = mv.visual.index_buffer.as_ref().map(|ib| ib.indices.len()).unwrap_or(0);
+        let e = per_level.entry(level).or_default();
+        e.0 += 1; e.1 += nverts * stride; e.2 += nidx * 2;
+    }
+    let coll = m.surf_vertices.len() * 12 + m.surf_triangles.len() * 16;
+    let mut out = String::new();
+    for (l, (v, vb, ib)) in &per_level { out.push_str(&format!("LOD{l}: {v} visuals, {} KB vertices, {} KB indices; ", vb / 1024, ib / 1024)); }
+    out.push_str(&format!("collision {} verts / {} tris ≈ {} KB; lights {}; ladder {:?}", m.surf_vertices.len(), m.surf_triangles.len(), coll / 1024, m.lights_out.len(), m.lod_max_dist));
+    out
+}

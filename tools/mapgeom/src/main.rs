@@ -4196,6 +4196,8 @@ fn main() {
             let kinds: Vec<String> = std::fs::read_to_string(flag(&a.rest, "--kinds").unwrap_or_else(|| die("--kinds F.txt".into()))).unwrap_or_else(|e| die(e.to_string())).lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
             let surfaces: Vec<String> = flag(&a.rest, "--surfaces").unwrap_or_else(|| "Ice,Plastic,Dirt,Grass,Road".into()).split(',').map(|x| x.trim().to_string()).collect();
             let author = flag(&a.rest, "--author").unwrap_or_else(|| "Nadeo".into());
+            let lods: Option<u32> = flag(&a.rest, "--lods").and_then(|v| v.parse().ok());
+            let sizes = a.rest.iter().any(|x| x == "--sizes");
             let used: Option<std::collections::HashSet<(String, u32)>> = flag(&a.rest, "--used").map(|f| std::fs::read_to_string(&f).unwrap_or_default().lines().filter_map(|l| { let c: Vec<&str> = l.split('\t').collect(); if c.len() >= 2 { u32::from_str_radix(c[1].trim_start_matches("0x"), 16).ok().map(|fl| (c[0].to_string(), fl & (mapgeom::blockmap::FLAG_GROUND | (0x7F << mapgeom::blockmap::FLAG_ADDITIONAL_SHIFT)))) } else { None } }).collect());
             let decks: Vec<&str> = vec!["RoadTech", "RoadDirt", "RoadIce", "RoadBump"];
             let deck_surface = |stem: &str| -> &'static str { match stem { "RoadTech" => "Road", "RoadDirt" => "Dirt", "RoadIce" => "Ice", "RoadBump" => "Bump", _ => "?" } };
@@ -4231,6 +4233,8 @@ fn main() {
                         }
                         match mapgeom::tiny_library::bake_named_block(&mut store, 26, kind, *fl, &name, &author, 1.0) {
                             Ok((_, mut m, _src)) => {
+                                if sizes { println!("{kind} [{fl:08X}] full: {}", mapgeom::static_item::build::size_breakdown(&m)); }
+                                if let Some(n) = lods { let (d, k) = mapgeom::static_item::build::keep_lod_levels(&mut m, n); if sizes { println!("{kind} [{fl:08X}] --lods {n}: dropped {d} visuals, kept {k}: {}", mapgeom::static_item::build::size_breakdown(&m)); } }
                                 let (dv, rt, gp) = mapgeom::static_item::build::swap_deck_surface(&mut m, &decks, &link_for, physics);
                                 let opts = mapgeom::static_item::build::BuildOpts { ident: name.clone(), author: author.clone(), scale: 1.0, collection: 26, skin: m.skin.clone() };
                                 match mapgeom::static_item::build::assemble(&m, &opts) {
