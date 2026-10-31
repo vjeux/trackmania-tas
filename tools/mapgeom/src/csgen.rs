@@ -86,6 +86,9 @@ struct BlockRow {
     /// `--mirror`: the resolved twin (None = itself) and the quarter turns added after the mirror
     mirror: Option<String>,
     mirror_turn: i32,
+    /// the air base variant's no_pillar_below index is 1 and an additional (NPB) air variant exists — the kinds the
+    /// game re-selects at load by what stands below, which take no custom block on Stadium (10-31); OR across paks
+    no_pillar_below: bool,
 }
 
 struct ItemRow {
@@ -304,7 +307,7 @@ pub fn cmd(store: &mut crate::store::DataStore, rest: &[String], flag: &dyn Fn(&
         let has = |v: &crate::blockinfo::Variant| !v.block_units.is_empty() || v.mobils.iter().any(|l| !l.is_empty());
         let variants = bi.variant_base_ground.iter().filter(|v| has(v)).count() + bi.variant_base_air.iter().filter(|v| has(v)).count() + bi.additional_ground.iter().filter(|v| has(v)).count() + bi.additional_air.iter().filter(|v| has(v)).count();
         let sym_variant = [bi.variant_base_ground.as_ref(), bi.variant_base_air.as_ref()].into_iter().flatten().find(|v| !v.block_units.is_empty()).or(bi.variant_base_ground.as_ref()).or(bi.variant_base_air.as_ref());
-        let row = BlockRow { id: name.clone(), size, size_y, cells: if full { None } else { Some(cells) }, collections: *bit, waypoint: bi.waypoint_type, ground, air, variants, conflicts: Vec::new(), sym_block: bi.symmetrical_block_info_id.clone(), sym_dir: bi.dir, sym_flags: sym_variant.map(|v| v.manual_symmetry).unwrap_or([false; 4]), mirror: None, mirror_turn: 0 };
+        let row = BlockRow { id: name.clone(), size, size_y, cells: if full { None } else { Some(cells) }, collections: *bit, waypoint: bi.waypoint_type, ground, air, variants, conflicts: Vec::new(), sym_block: bi.symmetrical_block_info_id.clone(), sym_dir: bi.dir, sym_flags: sym_variant.map(|v| v.manual_symmetry).unwrap_or([false; 4]), mirror: None, mirror_turn: 0, no_pillar_below: bi.variant_base_air.as_ref().map(|v| v.no_pillar_below_index == 1).unwrap_or(false) && bi.additional_air.iter().any(|v| has(v)) };
         match blocks.get_mut(&name) {
             None => { blocks.insert(name, row); }
             Some(e) => {
@@ -318,6 +321,7 @@ pub fn cmd(store: &mut crate::store::DataStore, rest: &[String], flag: &dyn Fn(&
                 e.air |= row.air;
                 if e.sym_block.is_empty() { e.sym_block = row.sym_block.clone(); }
                 for k in 0..4 { e.sym_flags[k] |= row.sym_flags[k]; }
+                e.no_pillar_below |= row.no_pillar_below;
             }
         }
     }
@@ -685,6 +689,13 @@ pub fn cmd(store: &mut crate::store::DataStore, rest: &[String], flag: &dyn Fn(&
     }
     let block_wps: BTreeMap<String, Option<i32>> = blocks.iter().map(|(k, b)| (k.clone(), b.waypoint)).collect();
     cs.push_str(&families_cs("Block", &families(&block_wps, false), &ident_lookup));
+    // --no-pillar-below: `Blocks.NoPillarBelow` — the idents whose air base variant has no_pillar_below 1 and an
+    // additional NPB air variant (the game picks the variant at load; no custom block takes on Stadium, 10-31)
+    if rest.iter().any(|x| x == "--no-pillar-below") {
+        cs.push_str("\n    public static readonly IReadOnlySet<string> NoPillarBelow = new HashSet<string>(StringComparer.Ordinal)\n    {\n");
+        for (id, b) in blocks.iter().filter(|(_, b)| b.no_pillar_below) { cs.push_str(&format!("        \"{id}\",\n")); }
+        cs.push_str("    };\n");
+    }
     cs.push_str("}\n");
     let blocks_path = format!("{out}/Blocks.g.cs");
     std::fs::write(&blocks_path, &cs).map_err(|e| format!("{blocks_path}: {e}"))?;

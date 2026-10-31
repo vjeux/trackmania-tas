@@ -4263,7 +4263,9 @@ fn main() {
                     std::fs::create_dir_all(&dir).unwrap_or_else(|e| die(e.to_string()));
                     let mut first_of_sig: std::collections::HashMap<String, String> = std::collections::HashMap::new();
                     for (ground, add, fl, sig) in &variants {
-                        let key: u32 = if *ground { *add as u32 } else { 1_000_000 + *add as u32 };
+                        // the game's variant key: millions = air, thousands = additional variant index (units = sub-variant,
+                        // 0 for roads) — read off a game-made custom block of RoadTechSlopeBase: 1001000 (10-31)
+                        let key: u32 = (if *ground { 0 } else { 1_000_000 }) + 1_000 * *add as u32;
                         let name = if blocks { format!("{surface}{kind}_{key}{env_tag}.Block.Gbx") } else { format!("{surface}{kind}{}{}{env_suffix}.Item.Gbx", if *ground { "" } else { "Air" }, if *add > 0 { if *ground { format!("Ground{add}") } else { add.to_string() } } else { String::new() }) };
                         // one set for every environment: no env in the path — the embedder patches the collection words
                         let dir = if blocks { dir.join(if *ground { "Ground" } else { "Air" }) } else { dir.clone() };
