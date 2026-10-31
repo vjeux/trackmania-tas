@@ -5150,3 +5150,51 @@ pub fn split_by_plate(pts: &[[f32; 3]], tris: &[[u32; 3]], hull: &[[f32; 2]], to
     }
     (out_pts, out)
 }
+
+/// Hugo's FULL-BLOCK SURFACE ITEMS (10-31): on a whole-block bake (`tiny_library::bake_named_block`, scale 1) swap the
+/// DECK only — every material slot whose stem is a deck material gets the target link + physics; every collision
+/// triangle whose three vertices coincide (1 mm) with a deck-visual vertex gets the target physics, its gameplay byte
+/// kept (the Special plates: `physics | gameplay << 8`); the ids table is rebuilt. Returns (deck visuals, collision
+/// triangles re-tagged, of which gameplay).
+pub fn swap_deck_surface(m: &mut Merged, decks: &[&str], link_for: &dyn Fn(&str) -> String, physics: u8) -> (usize, usize, usize) {
+    let stem_of = |l: &str| l.rsplit('\\').next().unwrap_or(l).trim_end_matches(".Material.Gbx").to_string();
+    let deck_slots: Vec<usize> = m.materials.iter().enumerate().filter(|(_, mat)| mat.link().map_or(false, |l| decks.iter().any(|d| d.eq_ignore_ascii_case(&stem_of(l))))).map(|(i, _)| i).collect();
+    let key = |p: [f32; 3]| ((p[0] * 1000.0).round() as i64, (p[1] * 1000.0).round() as i64, (p[2] * 1000.0).round() as i64);
+    let mut deck_keys: std::collections::HashSet<(i64, i64, i64)> = std::collections::HashSet::new();
+    let mut deck_visuals = 0usize;
+    for mv in &m.visuals {
+        if !deck_slots.contains(&mv.material) { continue; }
+        deck_visuals += 1;
+        let Some(main) = mv.visual.main.as_ref() else { continue };
+        let Some(Node::VertexStream(stream)) = main.vertex_streams.first().and_then(|r| r.inline.as_deref()) else { continue };
+        let compress = stream.compress_local3d.unwrap_or(false);
+        for (d, e) in stream.decls.iter().zip(stream.elems.iter()) {
+            if let (N_POSITION, T_FLOAT3, Elem::Float3(p)) = (d.name(), d.stored_type(compress), e) {
+                for q in p { deck_keys.insert(key(*q)); }
+            }
+        }
+    }
+    for i in &deck_slots {
+        if let Some(main) = m.materials[*i].main.as_mut() {
+            if let Some(link) = main.link.as_str().map(|s| s.to_string()) {
+                let target = link_for(&stem_of(&link));
+                main.link = crate::crystal_model::Id::Str(format!("{target}{}", if link.to_ascii_uppercase().ends_with(".GBX") { ".Material.Gbx" } else { "" }));
+                main.surface_physic_id = physics;
+            }
+        }
+    }
+    let (mut retagged, mut gameplay_n) = (0usize, 0usize);
+    for t in m.surf_triangles.iter_mut() {
+        let on_deck = t.indices.iter().all(|i| m.surf_vertices.get(*i as usize).map_or(false, |p| deck_keys.contains(&key(*p))));
+        if on_deck { t.material_id = physics; retagged += 1; if t.gameplay != 0 { gameplay_n += 1; } }
+    }
+    // rebuild the ids table: distinct (physics, gameplay) in first-seen order, surface_index re-pointed
+    let mut ids: Vec<u16> = Vec::new();
+    for t in m.surf_triangles.iter_mut() {
+        let id = t.material_id as u16 | (t.gameplay as u16) << 8;
+        let idx = match ids.iter().position(|x| *x == id) { Some(i) => i, None => { ids.push(id); ids.len() - 1 } };
+        t.surface_index = idx as i16;
+    }
+    m.surf_ids = ids;
+    (deck_visuals, retagged, gameplay_n)
+}

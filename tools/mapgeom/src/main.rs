@@ -4186,6 +4186,73 @@ fn main() {
                 println!("  note: {n}");
             }
         }
+        // block-surface-items --kinds F.txt --out-dir ROOT [--surfaces Ice,Plastic,Dirt,Grass,Road] [--used F.tsv] [--author X]:
+        //   Hugo's FULL-BLOCK SURFACE ITEMS (10-31) — every variant with distinct geometry of every kind, whole block baked at
+        //   scale 1 (tiny bake: waypoint trigger + spawn, modifier redress), the DECK alone re-dressed → ROOT/<Surface>/
+        //   <Surface><Kind>[Air][<n>].Item.Gbx + ROOT/variants-table.tsv; --used restricts to the (kind, flags) pairs of a census
+        "block-surface-items" => {
+            let mut store = open(&a);
+            let root = flag(&a.rest, "--out-dir").unwrap_or_else(|| die("--out-dir ROOT".into()));
+            let kinds: Vec<String> = std::fs::read_to_string(flag(&a.rest, "--kinds").unwrap_or_else(|| die("--kinds F.txt".into()))).unwrap_or_else(|e| die(e.to_string())).lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
+            let surfaces: Vec<String> = flag(&a.rest, "--surfaces").unwrap_or_else(|| "Ice,Plastic,Dirt,Grass,Road".into()).split(',').map(|x| x.trim().to_string()).collect();
+            let author = flag(&a.rest, "--author").unwrap_or_else(|| "Nadeo".into());
+            let used: Option<std::collections::HashSet<(String, u32)>> = flag(&a.rest, "--used").map(|f| std::fs::read_to_string(&f).unwrap_or_default().lines().filter_map(|l| { let c: Vec<&str> = l.split('\t').collect(); if c.len() >= 2 { u32::from_str_radix(c[1].trim_start_matches("0x"), 16).ok().map(|fl| (c[0].to_string(), fl & (mapgeom::blockmap::FLAG_GROUND | (0x7F << mapgeom::blockmap::FLAG_ADDITIONAL_SHIFT)))) } else { None } }).collect());
+            let decks: Vec<&str> = vec!["RoadTech", "RoadDirt", "RoadIce", "RoadBump"];
+            let deck_surface = |stem: &str| -> &'static str { match stem { "RoadTech" => "Road", "RoadDirt" => "Dirt", "RoadIce" => "Ice", "RoadBump" => "Bump", _ => "?" } };
+            let target = |surface: &str| -> Option<(String, u8)> { match surface { "Road" => Some(("Stadium\\Media\\Material\\RoadTech".into(), 16)), "Dirt" => Some(("Stadium\\Media\\Material\\RoadDirt".into(), 6)), "Ice" => Some(("Stadium\\Media\\Material\\RoadIce".into(), 74)), "Grass" => Some(("Stadium\\Media\\Modifier\\PlatformGrass\\PlatformTech".into(), 76)), "Plastic" => Some(("Stadium\\Media\\Modifier\\PlatformPlastic\\PlatformTech".into(), 77)), _ => None } };
+            let coll_name = mapgeom::static_item::materials::env_name(26);
+            let mut idx = mapgeom::blockmap::BlockInfoIndex::build(&mut store, coll_name);
+            let mut table = vec![String::from("kind\tground\tadditional\tflags\tsurface\titem\tbytes\tshares_geometry_with\tdeck_visuals\tcollision_retagged\tgameplay_tris\tnotes")];
+            let (mut built, mut total, mut shared, mut skipped) = (0usize, 0usize, 0usize, 0usize);
+            for kind in &kinds {
+                let Ok((_, bi)) = mapgeom::tiny_library::load_block_info_pub(&mut idx, &mut store, kind) else { table.push(format!("{kind}\t\t\t\t\t\t\t\t\t\t\tNO BLOCK INFO")); continue };
+                // the variants: (ground, additional index as the flags carry it: 0 = base, n = additional[n-1]) and their signature
+                let mut variants: Vec<(bool, usize, u32, String)> = Vec::new();
+                for (ground, base, adds) in [(true, bi.variant_base_ground.as_ref(), &bi.additional_ground), (false, bi.variant_base_air.as_ref(), &bi.additional_air)] {
+                    let sig = |v: &mapgeom::blockinfo::Variant| -> String { v.mobils.first().map(|l| l.iter().map(|mo| format!("{}@{:?}/{:?}", mo.prefab.clone().unwrap_or_default(), mo.translation, mo.rotation)).collect::<Vec<_>>().join("|")).unwrap_or_default() };
+                    if let Some(v) = base { if v.mobils.iter().any(|l| !l.is_empty()) { variants.push((ground, 0, if ground { mapgeom::blockmap::FLAG_GROUND } else { 0 }, sig(v))); } }
+                    for (i, v) in adds.iter().enumerate() { if v.mobils.iter().any(|l| !l.is_empty()) { variants.push((ground, i + 1, (if ground { mapgeom::blockmap::FLAG_GROUND } else { 0 }) | ((i as u32 + 1) << mapgeom::blockmap::FLAG_ADDITIONAL_SHIFT), sig(v))); } }
+                }
+                if let Some(u) = &used { variants.retain(|(_, _, fl, _)| u.contains(&(kind.clone(), *fl))); }
+                let stem_of_kind = decks.iter().find(|d| kind.starts_with(*d)).copied().unwrap_or("RoadTech");
+                for surface in &surfaces {
+                    if deck_surface(stem_of_kind) == surface.as_str() { skipped += variants.len(); continue; }
+                    let Some((link, physics)) = target(surface) else { continue };
+                    let link_for = |_stem: &str| -> String { link.clone() };
+                    let dir = std::path::Path::new(&root).join(surface);
+                    std::fs::create_dir_all(&dir).unwrap_or_else(|e| die(e.to_string()));
+                    let mut first_of_sig: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+                    for (ground, add, fl, sig) in &variants {
+                        let name = format!("{surface}{kind}{}{}.Item.Gbx", if *ground { "" } else { "Air" }, if *add > 0 { if *ground { format!("Ground{add}") } else { add.to_string() } } else { String::new() });
+                        if let Some(prev) = first_of_sig.get(sig) {
+                            shared += 1;
+                            table.push(format!("{kind}\t{}\t{add}\t{fl:08X}\t{surface}\t{prev}\t\t{prev}\t\t\t\tsame geometry", *ground as u8));
+                            continue;
+                        }
+                        match mapgeom::tiny_library::bake_named_block(&mut store, 26, kind, *fl, &name, &author, 1.0) {
+                            Ok((_, mut m, _src)) => {
+                                let (dv, rt, gp) = mapgeom::static_item::build::swap_deck_surface(&mut m, &decks, &link_for, physics);
+                                let opts = mapgeom::static_item::build::BuildOpts { ident: name.clone(), author: author.clone(), scale: 1.0, collection: 26, skin: m.skin.clone() };
+                                match mapgeom::static_item::build::assemble(&m, &opts) {
+                                    Ok(f) => {
+                                        let bytes = mapgeom::static_item::file::write_file(&f);
+                                        std::fs::write(dir.join(&name), &bytes).unwrap_or_else(|e| die(e.to_string()));
+                                        built += 1; total += bytes.len();
+                                        first_of_sig.insert(sig.clone(), name.clone());
+                                        let notes: Vec<String> = m.notes.iter().filter(|n| n.contains("waypoint") || n.contains("trigger") || n.contains("not embedded")).take(3).cloned().collect();
+                                        table.push(format!("{kind}\t{}\t{add}\t{fl:08X}\t{surface}\t{name}\t{}\t\t{dv}\t{rt}\t{gp}\t{}", *ground as u8, bytes.len(), notes.join(" / ")));
+                                    }
+                                    Err(e) => table.push(format!("{kind}\t{}\t{add}\t{fl:08X}\t{surface}\t{name}\tFAILED\t\t\t\t\t{e}", *ground as u8)),
+                                }
+                            }
+                            Err(e) => table.push(format!("{kind}\t{}\t{add}\t{fl:08X}\t{surface}\t{name}\tFAILED\t\t\t\t\t{e}", *ground as u8)),
+                        }
+                    }
+                }
+            }
+            std::fs::write(std::path::Path::new(&root).join("variants-table.tsv"), table.join("\n") + "\n").unwrap_or_else(|e| die(e.to_string()));
+            println!("{built} items built ({total} bytes), {shared} variants share a built file, {skipped} identity (kind already that surface); table {root}/variants-table.tsv");
+        }
         // vista-items MAP --out OUT [--only NAME,..] [--author X] [--items-dir D]: the map's vista variant blocks replaced
         //   by whole-variant embedded items (Hugo's vista items, 2026-10-19)
         "vista-items" => {
