@@ -5157,6 +5157,11 @@ pub fn split_by_plate(pts: &[[f32; 3]], tris: &[[u32; 3]], hull: &[[f32; 2]], to
 /// kept (the Special plates: `physics | gameplay << 8`); the ids table is rebuilt. Returns (deck visuals, collision
 /// triangles re-tagged, of which gameplay).
 pub fn swap_deck_surface(m: &mut Merged, decks: &[&str], link_for: &dyn Fn(&str) -> String, physics: u8) -> (usize, usize, usize) {
+    swap_deck_surface_ext(m, decks, link_for, physics, false)
+}
+
+/// `swap_deck_surface`; `plain_nondeck` = the custom-block form (non-deck modifier slots back to plain links).
+pub fn swap_deck_surface_ext(m: &mut Merged, decks: &[&str], link_for: &dyn Fn(&str) -> String, physics: u8, plain_nondeck: bool) -> (usize, usize, usize) {
     let stem_of = |l: &str| l.rsplit('\\').next().unwrap_or(l).trim_end_matches(".Material.Gbx").to_string();
     let deck_slots: Vec<usize> = m.materials.iter().enumerate().filter(|(_, mat)| mat.link().map_or(false, |l| decks.iter().any(|d| d.eq_ignore_ascii_case(&stem_of(l))))).map(|(i, _)| i).collect();
     let key = |p: [f32; 3]| ((p[0] * 1000.0).round() as i64, (p[1] * 1000.0).round() as i64, (p[2] * 1000.0).round() as i64);
@@ -5180,6 +5185,23 @@ pub fn swap_deck_surface(m: &mut Merged, decks: &[&str], link_for: &dyn Fn(&str)
                 let target = link_for(&stem_of(&link));
                 main.link = crate::crystal_model::Id::Str(format!("{target}{}", if link.to_ascii_uppercase().ends_with(".GBX") { ".Material.Gbx" } else { "" }));
                 main.surface_physic_id = physics;
+            }
+        }
+    }
+    // non-deck slots of a CUSTOM BLOCK keep the prefab's PLAIN links: a tiny-bake slot resolved through the block's
+    // TerrainModifier (`Stadium\Media\Modifier\PlatformDirt\DecoHill2` = sand) is final in the file, while the game
+    // re-dresses a plain `Stadium\Media\Material\DecoHill2` itself — modifier on Stadium, the env's StadiumOnTerrain
+    // skin on a vista (grass). Fall 19 OpenDirt zones came out sand on BlueBay (Hugo, 10-31). Physics untouched.
+    if plain_nondeck {
+        for (i, mat) in m.materials.iter_mut().enumerate() {
+            if deck_slots.contains(&i) { continue; }
+            let Some(link) = mat.link().map(|l| l.to_string()) else { continue };
+            if let Some(rest) = link.strip_prefix("Stadium\\Media\\Modifier\\") {
+                if let Some((folder, stem)) = rest.split_once('\\') {
+                    if !stem.contains('\\') && folder.starts_with("Platform") {
+                        if let Some(main) = mat.main.as_mut() { main.link = crate::crystal_model::Id::Str(format!("Stadium\\Media\\Material\\{stem}")); }
+                    }
+                }
             }
         }
     }
