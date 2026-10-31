@@ -4683,6 +4683,12 @@ pub fn surface_overlay_item_ext2(store: &mut crate::store::DataStore, name: &str
     m.fx.clear();
     m.veget.clear();
     m.pictures.clear();
+    // the pak's GAMEPLAY plate (collision triangles with the gameplay byte set): its xz convex hull bounds the booster —
+    // the whole deck on straights/slopes, the middle stretch on the diagonals (Special_DiagLeft: x 28.95..67.05 of 17..79)
+    let plate_hull: Vec<[f32; 2]> = if gameplay != 0 {
+        let pts: Vec<[f32; 2]> = m.surf_triangles.iter().filter(|t| t.gameplay != 0).flat_map(|t| t.indices).filter_map(|i| m.surf_vertices.get(i as usize).map(|p| [p[0], p[2]])).collect();
+        convex_hull_xz(&pts)
+    } else { Vec::new() };
     m.surf_vertices.clear();
     m.surf_triangles.clear();
     m.surf_ids.clear();
@@ -4729,11 +4735,19 @@ pub fn surface_overlay_item_ext2(store: &mut crate::store::DataStore, name: &str
     if all_tris.is_empty() {
         return Err(format!("{name}: the deck visuals have no readable triangles"));
     }
-    // the collision: the lifted deck triangles, every one at `physics` (| gameplay << 8 for a Special* deck: the pak's
-    // gameplay plate is the WHOLE deck, coincident with the asphalt plate, so the sheet simply carries the id)
+    // the collision: the lifted deck triangles at `physics`; for a Special* deck the triangles under the pak's gameplay
+    // plate carry `physics | gameplay << 8` (straddlers are split along the plate's hull) — the plate is the whole deck on
+    // straights/slopes, the middle stretch on the diagonals
     m.surf_vertices = all_pts.clone();
-    m.surf_ids = vec![physics as u16 | (gameplay as u16) << 8];
-    m.surf_triangles = all_tris.iter().map(|t| super::surface::Triangle { indices: *t, material_id: physics, gameplay, surface_index: 0 }).collect();
+    if gameplay != 0 && plate_hull.len() >= 3 {
+        let (pts, tris) = split_by_plate(&all_pts, &all_tris, &plate_hull, lift + 0.002);
+        m.surf_vertices = pts;
+        m.surf_ids = vec![physics as u16, physics as u16 | (gameplay as u16) << 8];
+        m.surf_triangles = tris.iter().map(|(t, inside)| super::surface::Triangle { indices: *t, material_id: physics, gameplay: if *inside { gameplay } else { 0 }, surface_index: if *inside { 1 } else { 0 } }).collect();
+    } else {
+        m.surf_ids = vec![physics as u16 | (gameplay as u16) << 8];
+        m.surf_triangles = all_tris.iter().map(|t| super::surface::Triangle { indices: *t, material_id: physics, gameplay, surface_index: 0 }).collect();
+    }
     for mat in &mut m.materials {
         let Some(main) = mat.main.as_mut() else { continue };
         let Some(link) = main.link.as_str().map(|s| s.to_string()) else { continue };
@@ -5049,4 +5063,90 @@ pub fn deck_ends(store: &mut crate::store::DataStore, name: &str, decks: &[&str]
     }
     out.sort_by(|a, b| a.centre[2].partial_cmp(&b.centre[2]).unwrap().then(a.centre[0].partial_cmp(&b.centre[0]).unwrap()));
     Ok(out)
+}
+
+/// Andrew's monotone chain in the xz plane (counter-clockwise when seen from +y looking down, i.e. in (x, z) coordinates
+/// with the usual orientation); fewer than 3 distinct points → empty
+pub fn convex_hull_xz(pts: &[[f32; 2]]) -> Vec<[f32; 2]> {
+    let mut p: Vec<[f32; 2]> = pts.to_vec();
+    p.sort_by(|a, b| a[0].partial_cmp(&b[0]).unwrap().then(a[1].partial_cmp(&b[1]).unwrap()));
+    p.dedup_by(|a, b| (a[0] - b[0]).abs() < 1e-4 && (a[1] - b[1]).abs() < 1e-4);
+    if p.len() < 3 { return Vec::new(); }
+    let cross = |o: [f32; 2], a: [f32; 2], b: [f32; 2]| (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+    let mut lower: Vec<[f32; 2]> = Vec::new();
+    for q in &p { while lower.len() >= 2 && cross(lower[lower.len() - 2], lower[lower.len() - 1], *q) <= 1e-6 { lower.pop(); } lower.push(*q); }
+    let mut upper: Vec<[f32; 2]> = Vec::new();
+    for q in p.iter().rev() { while upper.len() >= 2 && cross(upper[upper.len() - 2], upper[upper.len() - 1], *q) <= 1e-6 { upper.pop(); } upper.push(*q); }
+    lower.pop(); upper.pop();
+    lower.extend(upper);
+    lower
+}
+
+/// Split triangles against a convex xz polygon: returns the vertex list (the input vertices first, clip vertices appended,
+/// y interpolated on each triangle's plane) and the triangles tagged inside (true) / outside (false). A triangle that is
+/// vertical in xz (a skirt) is tagged by its centroid, unsplit.
+pub fn split_by_plate(pts: &[[f32; 3]], tris: &[[u32; 3]], hull: &[[f32; 2]], tol: f32) -> (Vec<[f32; 3]>, Vec<([u32; 3], bool)>) {
+    let mut out_pts: Vec<[f32; 3]> = pts.to_vec();
+    let mut out: Vec<([u32; 3], bool)> = Vec::new();
+    let n = hull.len();
+    // half-planes: inside = left of each ccw edge (cross >= 0)
+    // signed distance (metres) to each ccw hull edge, positive inside; 1 mm tolerance against vertex noise on the plate edge
+    let side = |i: usize, q: [f32; 2]| -> f32 { let (a, b) = (hull[i], hull[(i + 1) % n]); let len = ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2)).sqrt().max(1e-9); ((b[0] - a[0]) * (q[1] - a[1]) - (b[1] - a[1]) * (q[0] - a[0])) / len };
+    let inside_all = |q: [f32; 2]| (0..n).all(|i| side(i, q) >= -1e-3);
+    let mut push_poly = |poly: &[[f32; 3]], inside: bool, out_pts: &mut Vec<[f32; 3]>, out: &mut Vec<([u32; 3], bool)>| {
+        if poly.len() < 3 { return; }
+        // drop slivers: xz area
+        let mut area = 0.0f32;
+        for i in 0..poly.len() { let (a, b) = (poly[i], poly[(i + 1) % poly.len()]); area += a[0] * b[2] - b[0] * a[2]; }
+        if area.abs() < 2e-6 { return; }
+        let base = out_pts.len() as u32;
+        out_pts.extend_from_slice(poly);
+        for i in 1..poly.len() - 1 { out.push(([base, base + i as u32, base + i as u32 + 1], inside)); }
+    };
+    for t in tris {
+        let (a, b, c) = (pts[t[0] as usize], pts[t[1] as usize], pts[t[2] as usize]);
+        let area_xz = (b[0] - a[0]) * (c[2] - a[2]) - (c[0] - a[0]) * (b[2] - a[2]);
+        let centroid = [(a[0] + b[0] + c[0]) / 3.0, (a[2] + b[2] + c[2]) / 3.0];
+        if area_xz.abs() < 1e-5 { out.push((*t, inside_all(centroid))); continue; }
+        let corners = [a, b, c];
+        let all_in = corners.iter().all(|q| inside_all([q[0], q[2]]));
+        let all_out_one_edge = (0..n).any(|i| corners.iter().all(|q| side(i, [q[0], q[2]]) < 1e-3));
+        if all_in { out.push((*t, true)); continue; }
+        if all_out_one_edge { out.push((*t, false)); continue; }
+        // straddler: Sutherland–Hodgman inside piece; the outside pieces fall off one half-plane at a time
+        let plane_y = |q: [f32; 2]| -> f32 {
+            // barycentric in xz
+            let d = (b[0] - a[0]) * (c[2] - a[2]) - (c[0] - a[0]) * (b[2] - a[2]);
+            let l1 = ((b[0] - q[0]) * (c[2] - q[1]) - (c[0] - q[0]) * (b[2] - q[1])) / d;
+            let l2 = ((c[0] - q[0]) * (a[2] - q[1]) - (a[0] - q[0]) * (c[2] - q[1])) / d;
+            let l3 = 1.0 - l1 - l2;
+            l1 * a[1] + l2 * b[1] + l3 * c[1]
+        };
+        let mut cur: Vec<[f32; 3]> = corners.to_vec();
+        for i in 0..n {
+            let mut inside_piece: Vec<[f32; 3]> = Vec::new();
+            let mut outside_piece: Vec<[f32; 3]> = Vec::new();
+            for k in 0..cur.len() {
+                let (p0, p1) = (cur[k], cur[(k + 1) % cur.len()]);
+                let (s0, s1) = (side(i, [p0[0], p0[2]]), side(i, [p1[0], p1[2]]));
+                let in0 = s0 >= -1e-3;
+                let in1 = s1 >= -1e-3;
+                if in0 { inside_piece.push(p0); } else { outside_piece.push(p0); }
+                if in0 != in1 {
+                    let tt = s0 / (s0 - s1);
+                    let q = [p0[0] + tt * (p1[0] - p0[0]), 0.0, p0[2] + tt * (p1[2] - p0[2])];
+                    let q = [q[0], plane_y([q[0], q[2]]), q[2]];
+                    inside_piece.push(q); outside_piece.push(q);
+                }
+            }
+            // an outside piece thinner than `tol` (the lift's own sideways displacement on a sloped deck + noise) is not a
+            // plain region: it stays gameplay
+            let depth = outside_piece.iter().map(|q| -side(i, [q[0], q[2]])).fold(0.0f32, f32::max);
+            push_poly(&outside_piece, depth < tol, &mut out_pts, &mut out);
+            cur = inside_piece;
+            if cur.len() < 3 { break; }
+        }
+        push_poly(&cur, true, &mut out_pts, &mut out);
+    }
+    (out_pts, out)
 }
