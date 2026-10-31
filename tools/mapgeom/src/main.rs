@@ -4255,9 +4255,13 @@ fn main() {
                 }
                 if let Some(u) = &used { variants.retain(|(_, _, fl, _)| u.contains(&(kind.clone(), *fl))); }
                 let stem_of_kind = decks.iter().find(|d| kind.starts_with(*d)).copied().unwrap_or("RoadTech");
+                // Open* roads/zones: the family token names the deck surface (OpenDirt* = Dirt …); their Road look is the
+                // plain PlatformTech plate, not the RoadTech asphalt
+                let open_family: Option<&str> = kind.strip_prefix("Open").map(|r| if r.starts_with("Tech") { "Road" } else if r.starts_with("Dirt") { "Dirt" } else if r.starts_with("Grass") { "Grass" } else if r.starts_with("Ice") { "Ice" } else { "?" });
                 for surface in &surfaces {
-                    if deck_surface(stem_of_kind) == surface.as_str() { skipped += variants.len(); continue; }
-                    let Some((link, physics)) = target(surface) else { continue };
+                    let identity = match open_family { Some(f) => f == surface.as_str(), None => deck_surface(stem_of_kind) == surface.as_str() };
+                    if identity { skipped += variants.len(); continue; }
+                    let Some((link, physics)) = (if open_family.is_some() && surface == "Road" { Some(("Stadium\\Media\\Material\\PlatformTech".to_string(), 16u8)) } else { target(surface) }) else { continue };
                     let link_for = |_stem: &str| -> String { link.clone() };
                     let dir = std::path::Path::new(&root).join(surface);
                     std::fs::create_dir_all(&dir).unwrap_or_else(|e| die(e.to_string()));
@@ -4290,7 +4294,9 @@ fn main() {
                                 // blocks: no light sources (the archetype's block lights stay the game's), no file time
                                 if blocks || a.rest.iter().any(|x| x == "--no-lights") { m.lights_out.clear(); m.file_write_time = 0; }
                                 if let Some(n) = lods { let (d, k) = mapgeom::static_item::build::keep_lod_levels(&mut m, n); if sizes { println!("{kind} [{fl:08X}] --lods {n}: dropped {d} visuals, kept {k}: {}", mapgeom::static_item::build::size_breakdown(&m)); } }
-                                let (dv, rt, gp) = mapgeom::static_item::build::swap_deck_surface(&mut m, &decks, &link_for, physics);
+                                // Open* roads/zones: the deck is the PlatformTech slot (modifier-resolved: Modifier\Platform<Family>\PlatformTech)
+                                let kind_decks: Vec<&str> = if kind.starts_with("Open") { decks.iter().copied().chain(["PlatformTech"]).collect() } else { decks.clone() };
+                                let (dv, rt, gp) = mapgeom::static_item::build::swap_deck_surface(&mut m, &kind_decks, &link_for, physics);
                                 // TMAN_BLOCK_SECOND=KEY:FLAGS — a second geometry (the kind's variant FLAGS, e.g. 0x200000 = air add1) under KEY in the same file (10-31 key test)
                                 if let Some(spec) = std::env::var("TMAN_BLOCK_SECOND").ok().filter(|_| blocks) {
                                     let (k, f2) = spec.split_once(':').unwrap_or_else(|| die("TMAN_BLOCK_SECOND=KEY:FLAGS".into()));
@@ -4298,7 +4304,7 @@ fn main() {
                                     let f2 = u32::from_str_radix(f2.trim_start_matches("0x"), 16).unwrap_or_else(|_| die("TMAN_BLOCK_SECOND flags (hex)".into()));
                                     let (_, mut m2, _) = mapgeom::tiny_library::bake_named_block_from(&mut store, info_collection, collection, kind, f2, &name, &author, 1.0).unwrap_or_else(|e| die(e));
                                     m2.lights_out.clear(); m2.file_write_time = 0;
-                                    mapgeom::static_item::build::swap_deck_surface(&mut m2, &decks, &link_for, physics);
+                                    mapgeom::static_item::build::swap_deck_surface(&mut m2, &kind_decks, &link_for, physics);
                                     mapgeom::static_item::build::BLOCK_EXTRA_VARIANTS.with(|v| v.borrow_mut().push((k, m2)));
                                 }
                                 let opts = mapgeom::static_item::build::BuildOpts { ident: ident.clone(), author: author.clone(), scale: 1.0, collection, skin: m.skin.clone(), block: if blocks { Some(mapgeom::static_item::build::BlockForm { archetype: kind.clone(), variant_key: std::env::var("TMAN_BLOCK_KEY").ok().and_then(|v| v.parse().ok()).unwrap_or(key), extra_keys: std::env::var("TMAN_BLOCK_EXTRA_KEYS").ok().map(|v| v.split(',').filter_map(|x| x.trim().parse().ok()).collect()).unwrap_or_default() }) } else { None } };
