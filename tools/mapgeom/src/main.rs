@@ -990,6 +990,29 @@ fn main() {
             std::fs::write(root.join("surfaces-table.tsv"), table.join("\n") + "\n").unwrap_or_else(|e| die(e.to_string()));
             println!("{count} items, {total} bytes; {skipped} identity pairs skipped, {failed} failed; table {}", root.join("surfaces-table.tsv").display());
         }
+        // ground-void-census [--out F.tsv]: every Stadium block whose GROUND variant voids its cell's terrain (auto terrain
+        //   zone VoidToGrass) with how much geometry it carries — the search for a terrain-cutting "empty" block (10-31)
+        "ground-void-census" => {
+            let mut store = open(&a);
+            let entries: Vec<String> = store.entries().map(|e| e.path().to_string()).filter(|p| { let u = p.to_uppercase(); u.starts_with("STADIUM\\") && u.contains("\\GAMECTNBLOCKINFO\\") && u.ends_with(".GBX") }).collect();
+            let mut rows: Vec<String> = vec!["ident\tkind\tground_units\tauto_terrain_zones\tcurrent\tground_prefabs\tvisual_tris\tcollision_tris".into()];
+            for p in &entries {
+                let Ok(bi) = mapgeom::blockinfo::load(&mut store, p) else { continue };
+                let Some(v) = bi.variant_base_ground.as_ref() else { continue };
+                if v.block_units.is_empty() { continue; }
+                let zones: Vec<String> = v.auto_terrains.iter().flat_map(|(_, z, _)| z.iter().cloned()).collect();
+                if zones.is_empty() { continue; }
+                let prefabs: Vec<String> = v.mobils.first().map(|l| l.iter().filter_map(|mo| mo.prefab.clone()).map(|pf| pf.rsplit('\\').next().unwrap_or(&pf).to_string()).collect()).unwrap_or_default();
+                // geometry size: merge the ground prefabs (list 0)
+                let mut m = mapgeom::static_item::build::Merged::default();
+                for mo in v.mobils.first().into_iter().flatten() { if let Some(pf) = &mo.prefab { let at = match (mo.translation, mo.rotation) { (None, None) => mapgeom::geom::IDENTITY, (t, r) => mapgeom::geom::euler_xyz_deg(r.unwrap_or([0.0; 3]), t.unwrap_or([0.0; 3])) }; let _ = mapgeom::static_item::build::add_prefab(&mut store, pf, &at, 1.0, &mut m, 0); } }
+                let vis_tris: usize = m.visuals.iter().map(|mv| mv.visual.index_buffer.as_ref().map(|ib| ib.indices.len() / 3).unwrap_or(0)).sum();
+                let name = if !bi.ident.is_empty() { bi.ident.clone() } else { bi.name.clone() };
+                rows.push(format!("{name}\t{:?}\t{}\t{}\t{}\t{}\t{vis_tris}\t{}", bi.kind, v.block_units.len(), zones.join("+"), v.auto_terrains.first().map(|(_, _, c)| c.clone()).unwrap_or_default(), prefabs.join("+"), m.surf_triangles.len()));
+            }
+            let text = rows.join("\n") + "\n";
+            match flag(&a.rest, "--out") { Some(f) => { std::fs::write(&f, &text).unwrap_or_else(|e| die(e.to_string())); println!("wrote {f}: {} rows", rows.len() - 1); } None => print!("{text}") }
+        }
         // deck-census --block KIND[,…] [--out F.tsv]: every kind's base-variant material stems (physics) + its terrain
         //   modifier — to find the drivable deck materials beyond RoadTech/RoadDirt/RoadIce/RoadBump/PlatformTech
         "deck-census" => {
@@ -4197,6 +4220,8 @@ fn main() {
             let surfaces: Vec<String> = flag(&a.rest, "--surfaces").unwrap_or_else(|| "Ice,Plastic,Dirt,Grass,Road".into()).split(',').map(|x| x.trim().to_string()).collect();
             let author = flag(&a.rest, "--author").unwrap_or_else(|| "Nadeo".into());
             let lods: Option<u32> = flag(&a.rest, "--lods").and_then(|v| v.parse().ok());
+            // --penalty-twins F.tsv: a *Penalty* kind (no deck mesh in the pak) gets the plain twin's deck grafted in
+            let penalty_twin: std::collections::HashMap<String, String> = flag(&a.rest, "--penalty-twins").map(|f| std::fs::read_to_string(&f).unwrap_or_default().lines().skip(1).filter_map(|l| { let c: Vec<&str> = l.split('\t').collect(); if c.len() >= 2 && !c[1].is_empty() { Some((c[0].to_string(), c[1].to_string())) } else { None } }).collect()).unwrap_or_default();
             let sizes = a.rest.iter().any(|x| x == "--sizes");
             let used: Option<std::collections::HashSet<(String, u32)>> = flag(&a.rest, "--used").map(|f| std::fs::read_to_string(&f).unwrap_or_default().lines().filter_map(|l| { let c: Vec<&str> = l.split('\t').collect(); if c.len() >= 2 { u32::from_str_radix(c[1].trim_start_matches("0x"), 16).ok().map(|fl| (c[0].to_string(), fl & (mapgeom::blockmap::FLAG_GROUND | (0x7F << mapgeom::blockmap::FLAG_ADDITIONAL_SHIFT)))) } else { None } }).collect());
             let decks: Vec<&str> = vec!["RoadTech", "RoadDirt", "RoadIce", "RoadBump"];
@@ -4233,6 +4258,13 @@ fn main() {
                         }
                         match mapgeom::tiny_library::bake_named_block(&mut store, 26, kind, *fl, &name, &author, 1.0) {
                             Ok((_, mut m, _src)) => {
+                                let mut graft_note = String::new();
+                                if let Some(tw) = penalty_twin.get(kind) {
+                                    match mapgeom::tiny_library::bake_named_block(&mut store, 26, tw, *fl, &name, &author, 1.0) {
+                                        Ok((_, twin, _)) => { let (gv, gt) = mapgeom::static_item::build::graft_deck(&mut m, &twin, &decks); graft_note = format!("deck grafted from {tw}: {gv} visuals, {gt} collision tris / "); }
+                                        Err(e) => graft_note = format!("twin {tw} bake failed: {e} / "),
+                                    }
+                                }
                                 if sizes { println!("{kind} [{fl:08X}] full: {}", mapgeom::static_item::build::size_breakdown(&m)); }
                                 if let Some(n) = lods { let (d, k) = mapgeom::static_item::build::keep_lod_levels(&mut m, n); if sizes { println!("{kind} [{fl:08X}] --lods {n}: dropped {d} visuals, kept {k}: {}", mapgeom::static_item::build::size_breakdown(&m)); } }
                                 let (dv, rt, gp) = mapgeom::static_item::build::swap_deck_surface(&mut m, &decks, &link_for, physics);
@@ -4244,7 +4276,7 @@ fn main() {
                                         built += 1; total += bytes.len();
                                         first_of_sig.insert(sig.clone(), name.clone());
                                         let notes: Vec<String> = m.notes.iter().filter(|n| n.contains("waypoint") || n.contains("trigger") || n.contains("not embedded")).take(3).cloned().collect();
-                                        table.push(format!("{kind}\t{}\t{add}\t{fl:08X}\t{surface}\t{name}\t{}\t\t{dv}\t{rt}\t{gp}\t{}", *ground as u8, bytes.len(), notes.join(" / ")));
+                                        table.push(format!("{kind}\t{}\t{add}\t{fl:08X}\t{surface}\t{name}\t{}\t\t{dv}\t{rt}\t{gp}\t{graft_note}{}", *ground as u8, bytes.len(), notes.join(" / ")));
                                     }
                                     Err(e) => table.push(format!("{kind}\t{}\t{add}\t{fl:08X}\t{surface}\t{name}\tFAILED\t\t\t\t\t{e}", *ground as u8)),
                                 }

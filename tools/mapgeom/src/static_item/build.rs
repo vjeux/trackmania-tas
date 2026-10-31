@@ -5232,3 +5232,56 @@ pub fn size_breakdown(m: &Merged) -> String {
     out.push_str(&format!("collision {} verts / {} tris ≈ {} KB; lights {}; ladder {:?}", m.surf_vertices.len(), m.surf_triangles.len(), coll / 1024, m.lights_out.len(), m.lod_max_dist));
     out
 }
+
+/// Hugo's penalty roads (10-31): the pak prefab has no deck mesh (the engine draws the procedural road from the chunk
+/// edges), so the whole-block item would show kerbs with a hole. Graft the DECK of the plain twin's bake (its deck-material
+/// visuals + the collision triangles on those vertices) into this bake; the twin's deck materials come along as new slots
+/// (the surface swap re-dresses them afterwards). Returns (visuals grafted, collision triangles grafted).
+pub fn graft_deck(m: &mut Merged, twin: &Merged, decks: &[&str]) -> (usize, usize) {
+    let stem_of = |l: &str| l.rsplit('\\').next().unwrap_or(l).trim_end_matches(".Material.Gbx").to_string();
+    let twin_deck_slots: Vec<usize> = twin.materials.iter().enumerate().filter(|(_, mat)| mat.link().map_or(false, |l| decks.iter().any(|d| d.eq_ignore_ascii_case(&stem_of(l))))).map(|(i, _)| i).collect();
+    let key = |p: [f32; 3]| ((p[0] * 1000.0).round() as i64, (p[1] * 1000.0).round() as i64, (p[2] * 1000.0).round() as i64);
+    let mut slot_map: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+    let mut deck_keys: std::collections::HashSet<(i64, i64, i64)> = std::collections::HashSet::new();
+    let mut grafted = 0usize;
+    for mv in &twin.visuals {
+        if !twin_deck_slots.contains(&mv.material) { continue; }
+        let new_slot = *slot_map.entry(mv.material).or_insert_with(|| { m.materials.push(twin.materials[mv.material].clone()); m.materials.len() - 1 });
+        let mut v = mv.clone();
+        v.material = new_slot;
+        if let Some(main) = v.visual.main.as_ref() {
+            if let Some(Node::VertexStream(stream)) = main.vertex_streams.first().and_then(|r| r.inline.as_deref()) {
+                let compress = stream.compress_local3d.unwrap_or(false);
+                for (d, e) in stream.decls.iter().zip(stream.elems.iter()) { if let (N_POSITION, T_FLOAT3, Elem::Float3(p)) = (d.name(), d.stored_type(compress), e) { for q in p { deck_keys.insert(key(*q)); } } }
+            }
+        }
+        m.visuals.push(v);
+        grafted += 1;
+    }
+    // the twin's collision triangles that lie on its deck → appended with their vertices
+    let base = m.surf_vertices.len() as u32;
+    let mut vmap: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+    let mut tris = 0usize;
+    for t in &twin.surf_triangles {
+        let on_deck = t.indices.iter().all(|i| twin.surf_vertices.get(*i as usize).map_or(false, |p| deck_keys.contains(&key(*p))));
+        if !on_deck { continue; }
+        let mut nt = *t;
+        for k in 0..3 {
+            let old = t.indices[k];
+            let n = vmap.len() as u32;
+            let idx = *vmap.entry(old).or_insert_with(|| { m.surf_vertices.push(twin.surf_vertices[old as usize]); base + n });
+            nt.indices[k] = idx;
+        }
+        m.surf_triangles.push(nt);
+        tris += 1;
+    }
+    // ids table rebuilt from the triangles (surface_index re-pointed)
+    let mut ids: Vec<u16> = Vec::new();
+    for t in m.surf_triangles.iter_mut() {
+        let id = t.material_id as u16 | (t.gameplay as u16) << 8;
+        let idx = match ids.iter().position(|x| *x == id) { Some(i) => i, None => { ids.push(id); ids.len() - 1 } };
+        t.surface_index = idx as i16;
+    }
+    m.surf_ids = ids;
+    (grafted, tris)
+}
