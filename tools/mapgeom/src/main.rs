@@ -4228,6 +4228,10 @@ fn main() {
             // --penalty-twins F.tsv: a *Penalty* kind (no deck mesh in the pak) gets the plain twin's deck grafted in
             let penalty_twin: std::collections::HashMap<String, String> = flag(&a.rest, "--penalty-twins").map(|f| std::fs::read_to_string(&f).unwrap_or_default().lines().skip(1).filter_map(|l| { let c: Vec<&str> = l.split('\t').collect(); if c.len() >= 2 && !c[1].is_empty() { Some((c[0].to_string(), c[1].to_string())) } else { None } }).collect()).unwrap_or_default();
             let sizes = a.rest.iter().any(|x| x == "--sizes");
+            // --blocks: the CUSTOM BLOCK form instead of items — `<Surface>/<Env>/{Ground,Air}/<Surface><Kind>_<key>.Block.Gbx`
+            // (key = ground variant n / air 1000000 + n, as ManiaKit names them), ident path `tman\<Surface>\<Env>\…`, the
+            // Nadeo kind as archetype; the record then keeps the terrain cut, clips, pillars and waypoint of the archetype
+            let blocks = a.rest.iter().any(|x| x == "--blocks");
             let used: Option<std::collections::HashSet<(String, u32)>> = flag(&a.rest, "--used").map(|f| std::fs::read_to_string(&f).unwrap_or_default().lines().filter_map(|l| { let c: Vec<&str> = l.split('\t').collect(); if c.len() >= 2 { u32::from_str_radix(c[1].trim_start_matches("0x"), 16).ok().map(|fl| (c[0].to_string(), fl & (mapgeom::blockmap::FLAG_GROUND | (0x7F << mapgeom::blockmap::FLAG_ADDITIONAL_SHIFT)))) } else { None } }).collect());
             let decks: Vec<&str> = vec!["RoadTech", "RoadDirt", "RoadIce", "RoadBump"];
             let deck_surface = |stem: &str| -> &'static str { match stem { "RoadTech" => "Road", "RoadDirt" => "Dirt", "RoadIce" => "Ice", "RoadBump" => "Bump", _ => "?" } };
@@ -4255,8 +4259,13 @@ fn main() {
                     std::fs::create_dir_all(&dir).unwrap_or_else(|e| die(e.to_string()));
                     let mut first_of_sig: std::collections::HashMap<String, String> = std::collections::HashMap::new();
                     for (ground, add, fl, sig) in &variants {
-                        let name = format!("{surface}{kind}{}{}{env_suffix}.Item.Gbx", if *ground { "" } else { "Air" }, if *add > 0 { if *ground { format!("Ground{add}") } else { add.to_string() } } else { String::new() });
-                        if let Some(prev) = first_of_sig.get(sig) {
+                        let key: u32 = if *ground { *add as u32 } else { 1_000_000 + *add as u32 };
+                        let name = if blocks { format!("{surface}{kind}_{key}.Block.Gbx") } else { format!("{surface}{kind}{}{}{env_suffix}.Item.Gbx", if *ground { "" } else { "Air" }, if *add > 0 { if *ground { format!("Ground{add}") } else { add.to_string() } } else { String::new() }) };
+                        let dir = if blocks { dir.join(&coll_label).join(if *ground { "Ground" } else { "Air" }) } else { dir.clone() };
+                        if blocks { std::fs::create_dir_all(&dir).unwrap_or_else(|e| die(e.to_string())); }
+                        let ident = if blocks { format!("tman\\{surface}\\{coll_label}\\{}\\{name}", if *ground { "Ground" } else { "Air" }) } else { name.clone() };
+                        // (blocks: a file per key even when the geometry repeats — the key is the file's content)
+                        if let Some(prev) = first_of_sig.get(sig).filter(|_| !blocks) {
                             shared += 1;
                             table.push(format!("{kind}\t{}\t{add}\t{fl:08X}\t{surface}\t{prev}\t\t{prev}\t\t\t\tsame geometry", *ground as u8));
                             continue;
@@ -4271,9 +4280,11 @@ fn main() {
                                     }
                                 }
                                 if sizes { println!("{kind} [{fl:08X}] full: {}", mapgeom::static_item::build::size_breakdown(&m)); }
+                                // blocks: no light sources (the archetype's block lights stay the game's), no file time
+                                if blocks || a.rest.iter().any(|x| x == "--no-lights") { m.lights_out.clear(); m.file_write_time = 0; }
                                 if let Some(n) = lods { let (d, k) = mapgeom::static_item::build::keep_lod_levels(&mut m, n); if sizes { println!("{kind} [{fl:08X}] --lods {n}: dropped {d} visuals, kept {k}: {}", mapgeom::static_item::build::size_breakdown(&m)); } }
                                 let (dv, rt, gp) = mapgeom::static_item::build::swap_deck_surface(&mut m, &decks, &link_for, physics);
-                                let opts = mapgeom::static_item::build::BuildOpts { ident: name.clone(), author: author.clone(), scale: 1.0, collection, skin: m.skin.clone() };
+                                let opts = mapgeom::static_item::build::BuildOpts { ident: ident.clone(), author: author.clone(), scale: 1.0, collection, skin: m.skin.clone(), block: if blocks { Some(mapgeom::static_item::build::BlockForm { archetype: kind.clone(), variant_key: key }) } else { None } };
                                 match mapgeom::static_item::build::assemble(&m, &opts) {
                                     Ok(f) => {
                                         let bytes = mapgeom::static_item::file::write_file(&f);

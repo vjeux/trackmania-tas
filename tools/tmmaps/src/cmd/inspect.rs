@@ -116,6 +116,22 @@ pub fn chunks(args: &[String]) {
 }
 
 /// `tmmaps blockrefs`.
+
+/// `blockbytes MAP --name SUBSTR [--after N]`: the raw record bytes of every block whose name
+/// contains SUBSTR — from 24 bytes before the cell bytes to N (default 48) after — to compare a
+/// record's encoding against a reference map's (the custom-block records of 2026-10-31).
+pub fn blockbytes(args: &[String]) {
+    let m = map::MapFile::load(Path::new(&args[2]));
+    let sub = args.iter().position(|a| a == "--name").and_then(|i| args.get(i + 1)).cloned().unwrap_or_default();
+    let after: usize = args.iter().position(|a| a == "--after").and_then(|i| args.get(i + 1)).and_then(|v| v.parse().ok()).unwrap_or(48);
+    for b in m.blocks.iter().filter(|b| b.name.contains(&sub)) {
+        let s = b.coord_off.saturating_sub(24);
+        let e = (b.coord_off + after).min(m.gbx.body.len());
+        let hex: Vec<String> = m.gbx.body[s..e].iter().map(|x| format!("{x:02x}")).collect();
+        println!("#{} {} flags {:08X} cell {:?} | bytes [{}..{}) coord_off {}:\n  {}", b.index, b.name, b.flags, b.file_cell, s, e, b.coord_off, hex.join(" "));
+    }
+}
+
 pub fn blockrefs(args: &[String]) {
         // Everything in the file that lists blocks by INDEX or per block,
         // against the parsed block and item counts — the audit behind

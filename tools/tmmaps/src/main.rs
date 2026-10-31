@@ -410,6 +410,7 @@ fn main() {
         "dropbaked" => surgery::dropbaked(&args),
         "movebaked" => surgery::movebaked(&args),
         "census" => census::cmd_census(&args),
+        "blockbytes" => inspect::blockbytes(&args),
         "censusdiff" => census::cmd_censusdiff(&args),
         "skins" => census::cmd_skins(&args),
         "packdescs" => skins::packdescs(&args),

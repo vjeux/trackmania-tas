@@ -33,6 +33,20 @@ pub struct BuildOpts {
                 // identical). `leaf-rgba` ships the leaf images UNCOMPRESSED 32-bit
                 // at the capped level (three times the bytes), `rgba` everything.` panel.
     pub skin: Option<Vec<u8>>,
+    /// The CUSTOM BLOCK form (`.Block.Gbx`, ItemType 11): the same static
+    /// object, but hung as a `CGameBlockItem` edition under the model chunk,
+    /// naming the Nadeo block info it stands in for (`archetype`, in
+    /// `collection`) and the variant key the record selects (ground variants
+    /// 0, 1, …; air variants 1 000 000 + n). The game keeps every behaviour of
+    /// the archetype — terrain cut, clips, pillars, waypoint — and draws this
+    /// mesh instead (read off ManiaKit's Summer 2026 - 01 Wood blocks).
+    pub block: Option<BlockForm>,
+}
+
+#[derive(Clone, Debug)]
+pub struct BlockForm {
+    pub archetype: String,
+    pub variant_key: u32,
 }
 
 pub fn inline(index: i32, node: Node) -> Ref {
@@ -429,7 +443,38 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
         expr_validator: 0,
         u_byte: 1,
     };
-    let entity_model: Ref = if !prefab_form {
+    let mut entity_model_edition: Ref = super::null_ref();
+    let entity_model: Ref = if let Some(block) = &opts.block {
+        let so = static_object.ok_or("no visuals: nothing to build")?;
+        // one variant: flags 1 = mesh, 2 = trigger shape, 4 = spawn pose
+        let has_trigger = trigger.index >= 0;
+        let has_spawn = m.spawn != [0.0; 3] || m.waypoint_type.map(|t| t != 3).unwrap_or(false);
+        let flags: u8 = 1 | if has_trigger { 2 } else { 0 } | if has_spawn { 4 } else { 0 };
+        let mut extra = Vec::new();
+        if has_spawn {
+            for v in m.spawn.iter().chain([0.0f32, -0.0, 0.0].iter()) {
+                extra.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        let mut raw_tail = Vec::new();
+        for (id, n) in [(0x2E02_5002u32, 8usize), (0x2E02_5003, 5)] {
+            raw_tail.extend_from_slice(&id.to_le_bytes());
+            raw_tail.extend_from_slice(b"PIKS");
+            raw_tail.extend_from_slice(&(n as u32).to_le_bytes());
+            raw_tail.extend(std::iter::repeat(0u8).take(n));
+        }
+        raw_tail.extend_from_slice(&super::FACADE.to_le_bytes());
+        entity_model_edition = inline(1, Node::BlockItem(super::BlockItem {
+            version: 1,
+            archetype: Id::Str(block.archetype.clone()),
+            archetype_collection: Id::Raw(opts.collection),
+            variants: vec![(block.variant_key, super::null_ref())],
+            table: vec![(flags, inline(2, Node::StaticObject(so)), trigger.clone())],
+            table_extra: vec![extra],
+            raw_tail,
+        }));
+        super::null_ref()
+    } else if !prefab_form {
         let so = static_object.ok_or("no visuals: nothing to build")?;
         inline(1, Node::EntityModel(common(inline(2, Node::StaticObject(so)))))
     } else {
@@ -632,8 +677,8 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
             inline(1, Node::Prefab(prefab))
         }
     };
-    let placement_index = next_index(&mut next);
-    let sclass_index = next_index(&mut next);
+    let block_form = opts.block.is_some();
+    let (placement_index, sclass_index) = if block_form { (-1, -1) } else { (next_index(&mut next), next_index(&mut next)) };
     let ident = || ItemChunk::Ident { path: Id::Str(opts.ident.clone()), collection: Id::Raw(opts.collection), author: Id::Str(opts.author.clone()) };
     let model = ModelChunk {
         version: 15,
@@ -643,29 +688,40 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
         vis_model_custom: super::null_ref(),
         actions: Vec::new(),
         default_cam: 0,
-        entity_model_edition: super::null_ref(),
+        entity_model_edition,
         entity_model,
         vfx: super::null_ref(),
         material_modifier: super::null_ref(),
     };
+    let (page, name, descr, prod, skin_fids, ground_floats) = match &opts.block {
+        Some(b) => (b.archetype.clone(), block_stem(&opts.ident), String::new(), 0u8, Vec::new(), [0.0f32; 4]),
+        None => ("Items".to_string(), "New Item".to_string(), "No Description".to_string(), 3u8, vec![super::null_ref(); 7], [0.0, 0.0, -1.0, 0.15]),
+    };
     let chunks = vec![
-        ItemChunk::Collector1009 { page_name: "Items".into(), icon: None, u01: Id::Null },
+        ItemChunk::Collector1009 { page_name: page, icon: None, u01: Id::Null },
         ident(),
-        ItemChunk::Name("New Item".into()),
-        ItemChunk::Description("No Description".into()),
+        ItemChunk::Name(name),
+        ItemChunk::Description(descr),
         ItemChunk::Skin { version: 4, default_skin: super::null_ref(), skin_directory: String::new(), extra: Some(super::null_ref()) },
-        ItemChunk::Catalog { version: 1, is_internal: false, is_advanced: false, position: 1, prod_state: Some(3) },
+        ItemChunk::Catalog { version: 1, is_internal: false, is_advanced: false, position: 1, prod_state: Some(prod) },
         ItemChunk::Ints1012([0, 1, 0, 0]),
-        ItemChunk::NadeoSkinFids(vec![super::null_ref(); 7]),
+        ItemChunk::NadeoSkinFids(skin_fids),
         ItemChunk::Cameras(10, Vec::new()),
         ItemChunk::RaceInterface(super::null_ref()),
-        ItemChunk::Ground { ground_point: [0.0; 3], floats: [0.0, 0.0, -1.0, 0.15] },
-        ItemChunk::ItemType(1),
+        ItemChunk::Ground { ground_point: [0.0; 3], floats: ground_floats },
+        ItemChunk::ItemType(if block_form { 11 } else { 1 }),
         ItemChunk::Model(model),
         ItemChunk::Node201A(super::null_ref()),
-        ItemChunk::DefaultPlacement { version: 5, placement: inline(placement_index, Node::Placement(placement_param(sclass_index))) },
+        // a custom block has no placement parameters (null node) and its
+        // waypoint chunk reads v13 type 0 whatever the kind (the archetype
+        // decides), as the reference blocks have it
+        ItemChunk::DefaultPlacement { version: 5, placement: if block_form { super::null_ref() } else { inline(placement_index, Node::Placement(placement_param(sclass_index))) } },
         ItemChunk::Archetype { version: 7, archetype_ref: String::new(), archetype_fid: Some(super::null_ref()), skin_dir: Some(String::new()), u01: Some(-1) },
-        ItemChunk::Waypoint { version: m.waypoint_chunk_version.unwrap_or(12), waypoint_type: m.waypoint_type.unwrap_or(3), disable_lightmap: m.disable_lightmap, u_node: if m.waypoint_chunk_version.unwrap_or(12) <= 12 { Some(super::null_ref()) } else { None }, u_byte: Some(0), u_ints: Some((-1, -1)) },
+        if block_form {
+            ItemChunk::Waypoint { version: 13, waypoint_type: 0, disable_lightmap: false, u_node: None, u_byte: Some(0), u_ints: Some((-1, -1)) }
+        } else {
+            ItemChunk::Waypoint { version: m.waypoint_chunk_version.unwrap_or(12), waypoint_type: m.waypoint_type.unwrap_or(3), disable_lightmap: m.disable_lightmap, u_node: if m.waypoint_chunk_version.unwrap_or(12) <= 12 { Some(super::null_ref()) } else { None }, u_byte: Some(0), u_ints: Some((-1, -1)) }
+        },
         ItemChunk::Icon { version: 3, icon_fid: String::new(), u_byte: Some(1) },
         ItemChunk::Skippable(super::RawChunk { id: 0x2E002025, payload: vec![0; 8] }),
         ItemChunk::Skippable(super::RawChunk { id: 0x2E002026, payload: vec![0; 8] }),
@@ -690,6 +746,12 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
     })
 }
 
+/// `tman\Plastic\RedIsland\Ground\PlasticRoadTechStart_0.Block.Gbx` → `PlasticRoadTechStart_0`
+pub fn block_stem(ident: &str) -> String {
+    let file = ident.rsplit('\\').next().unwrap_or(ident);
+    file.strip_suffix(".Block.Gbx").or_else(|| file.strip_suffix(".Item.Gbx")).unwrap_or(file).to_string()
+}
+
 pub fn next_index(next: &mut i32) -> i32 {
     let i = *next;
     *next += 1;
@@ -711,7 +773,9 @@ pub fn header_chunks(opts: &BuildOpts) -> Vec<super::file::HeaderChunk> {
         w.id(&super::Id::Raw(opts.collection));
         w.id(&super::Id::Str(opts.author.clone()));
         w.u32(8);
-        w.string("Items");
+        // a custom block's page is its archetype's name and its name the file stem (the reference blocks)
+        let (page, name, prod) = match &opts.block { Some(b) => (b.archetype.clone(), block_stem(&opts.ident), 0u8), None => ("Items".to_string(), "New Item".to_string(), 3u8) };
+        w.string(&page);
         w.id(&super::Id::Null);
         // the collector flags word: 8 on every item-editor item, 0x10 on
         // every pack item (Flag16m, ObstaclePusher8mLevel1: flags 0x10,
@@ -721,8 +785,8 @@ pub fn header_chunks(opts: &BuildOpts) -> Vec<super::file::HeaderChunk> {
         let desc_flags: i32 = std::env::var("TINY_ITEM_DESC_FLAGS").ok().and_then(|v| v.strip_prefix("0x").map(|h| i32::from_str_radix(h, 16).ok()).unwrap_or_else(|| v.parse().ok())).unwrap_or(8);
         w.i32(desc_flags);
         w.i16(1);
-        w.string("New Item");
-        w.u8(3);
+        w.string(&name);
+        w.u8(prod);
     }
     let mut out = vec![HeaderChunk { id: 0x2E001003, heavy: false, payload: d }];
     if let Some(skin) = opts.skin.as_ref() {
@@ -730,7 +794,7 @@ pub fn header_chunks(opts: &BuildOpts) -> Vec<super::file::HeaderChunk> {
     }
     out.extend([
         HeaderChunk { id: 0x2E001006, heavy: false, payload: vec![0; 8] },
-        HeaderChunk { id: 0x2E002000, heavy: false, payload: 1u32.to_le_bytes().to_vec() },
+        HeaderChunk { id: 0x2E002000, heavy: false, payload: (if opts.block.is_some() { 11u32 } else { 1u32 }).to_le_bytes().to_vec() },
         HeaderChunk { id: 0x2E002001, heavy: false, payload: vec![0; 4] },
     ]);
     out

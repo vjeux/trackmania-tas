@@ -1245,7 +1245,7 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
             m.notes.push(format!("{n} of {} filler foliage entities inlined into the item", filler.len()));
         }
     }
-    let opts = crate::static_item::build::BuildOpts { ident: ident.to_string(), author: ident.to_string(), scale, collection, skin: m.skin.clone() };
+    let opts = crate::static_item::build::BuildOpts { ident: ident.to_string(), author: ident.to_string(), scale, collection, skin: m.skin.clone(), block: None };
     let f = crate::static_item::build::assemble(&m, &opts)?;
     Ok((crate::static_item::file::write_file(&f), m, deepened))
 }
@@ -3824,7 +3824,7 @@ pub fn bake_named_block(store: &mut DataStore, collection: u32, name: &str, flag
     let bytes = if author == ident {
         bytes
     } else {
-        let opts = crate::static_item::build::BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, skin: m.skin.clone() };
+        let opts = crate::static_item::build::BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, skin: m.skin.clone(), block: None };
         let f = crate::static_item::build::assemble(&m, &opts)?;
         crate::static_item::file::write_file(&f)
     };

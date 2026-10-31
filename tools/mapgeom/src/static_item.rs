@@ -141,6 +141,9 @@ pub struct BlockItem {
     pub variants: Vec<(u32, Ref)>,
     /// v1: per variant (flags, mesh, collision)
     pub table: Vec<(u8, Ref, Ref)>,
+    /// v1: per variant the fixed bytes behind the refs — flags&4: 24 bytes
+    /// (the spawn position + rotation of a waypoint kind), flags&8: 12 bytes
+    pub table_extra: Vec<Vec<u8>>,
     pub raw_tail: Vec<u8>,
 }
 
@@ -300,25 +303,26 @@ pub fn read_node(r: &mut Rd, class_id: u32) -> R<Node> {
                 variants.push((key, model));
             }
             let mut table = Vec::new();
+            let mut table_extra = Vec::new();
             if version >= 1 && r.u8()? != 0 {
                 for _ in 0..n {
                     let flags = r.u8()?;
                     let mesh = if flags & 1 != 0 { read_ref(r)? } else { null_ref() };
                     let surf = if flags & 2 != 0 { read_ref(r)? } else { null_ref() };
+                    let mut extra = Vec::new();
                     if flags & 4 != 0 {
-                        r.take(24)?;
+                        extra.extend_from_slice(r.take(24)?);
                     }
                     if flags & 8 != 0 {
-                        r.take(12)?;
+                        extra.extend_from_slice(r.take(12)?);
                     }
                     table.push((flags, mesh, surf));
+                    table_extra.push(extra);
                 }
             }
             // the remaining chunks (0x2E025002/003 …) up to the FACADE, raw
-            let start = r.o;
             let tail = read_opaque(r, class_id)?;
-            let _ = start;
-            Node::BlockItem(BlockItem { version, archetype, archetype_collection, variants, table, raw_tail: tail.raw })
+            Node::BlockItem(BlockItem { version, archetype, archetype_collection, variants, table, table_extra, raw_tail: tail.raw })
         }
         0x0917A000 | 0x0917B000 | 0x09119000 | 0x09118000 => Node::Opaque(read_fixed_opaque(r, class_id)?),
         C_VISUAL_SPRITE => Node::Opaque(read_sprite_visual(r)?),
@@ -382,7 +386,35 @@ pub fn write_node(w: &mut Wr, n: &Node) {
         Node::Skel(x) => x.write(w),
         Node::Particle(x) => x.write(w),
         Node::Opaque(o) => w.bytes(&o.raw),
-        Node::BlockItem(_) => panic!("CGameBlockItem is a read-only source node (the tiny bake rewrites it as a static item)"),
+        Node::BlockItem(b) => {
+            // the reverse of the reader: chunk 0x2E025000, then the trailing
+            // chunks raw (0x2E025002/003 skippables as the game writes them)
+            w.u32(C_BLOCK_ITEM);
+            w.u32(b.version);
+            w.id(&b.archetype);
+            w.id(&b.archetype_collection);
+            w.u32(b.variants.len() as u32);
+            for (key, model) in &b.variants {
+                w.u32(*key);
+                write_ref(w, model);
+            }
+            if b.version >= 1 {
+                w.u8(if b.table.is_empty() { 0 } else { 1 });
+                for (i, (flags, mesh, surf)) in b.table.iter().enumerate() {
+                    w.u8(*flags);
+                    if flags & 1 != 0 {
+                        write_ref(w, mesh);
+                    }
+                    if flags & 2 != 0 {
+                        write_ref(w, surf);
+                    }
+                    if let Some(extra) = b.table_extra.get(i) {
+                        w.bytes(extra);
+                    }
+                }
+            }
+            w.bytes(&b.raw_tail);
+        }
         Node::VariantList(v) => {
             w.u32(v.version);
             w.u32(v.variants.len() as u32);

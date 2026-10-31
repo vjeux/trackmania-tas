@@ -753,7 +753,7 @@ pub fn static_item_from_prefab_report(store: &mut crate::store::DataStore, prefa
 /// The last step of every pack-item bake: assemble + write. Public so a caller can edit the
 /// `Merged` first (Hugo's flag finishes, 2026-10-07: a Finish waypoint with a box trigger).
 pub fn finish_item(mut m: Merged, ident: &str, author: &str, scale: f32, collection: u32) -> R<(Vec<u8>, Merged)> {
-    let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, skin: m.skin.clone() };
+    let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, skin: m.skin.clone(), block: None };
     let f = assemble(&m, &opts)?;
     if let Some(n) = super::assemble::REPACK_NOTE.with(|c| c.get()) {
         m.notes.push(format!("lightmap atlas: {n} parts repacked into disjoint cells"));
@@ -1589,7 +1589,7 @@ pub fn static_item_from_item_report(item_bytes: &[u8], ident: &str, author: &str
         }
     }
     m.skin = skin;
-    let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, skin: m.skin.clone() };
+    let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, skin: m.skin.clone(), block: None };
     let f = assemble(&m, &opts)?;
     if let Some(n) = super::assemble::REPACK_NOTE.with(|c| c.get()) {
         m.notes.push(format!("lightmap atlas: {n} parts repacked into disjoint cells"));
@@ -3712,7 +3712,7 @@ pub fn static_item_from_veget_report(store: &mut crate::store::DataStore, path: 
     if std::env::var_os("TINY_TREE_KINEMATIC").is_some() {
         veget_as_kinematic(store, &mut m, scale)?;
     }
-    let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, skin: None };
+    let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, skin: None, block: None };
     let file = assemble(&m, &opts)?;
     Ok((super::file::write_file(&file), m, bake))
 }
@@ -4277,7 +4277,7 @@ pub fn static_item_from_custom_block(bytes: &[u8], ident: &str, author: &str, sc
         }
     }
     m.skin = tmmaps::header::game_skin_chunk(bytes);
-    let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, skin: m.skin.clone() };
+    let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, skin: m.skin.clone(), block: None };
     let f = assemble(&m, &opts)?;
     if let Some(n) = super::assemble::REPACK_NOTE.with(|c| c.get()) {
         m.notes.push(format!("lightmap atlas: {n} parts repacked into disjoint cells"));
