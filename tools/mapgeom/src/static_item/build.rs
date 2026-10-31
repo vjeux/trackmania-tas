@@ -4631,7 +4631,31 @@ pub fn surface_overlay_item(store: &mut crate::store::DataStore, name: &str, gro
 /// patch of RoadTechSlopePenaltyDirt (its deck is the engine's procedural road, not a pak mesh: the overlay borrows
 /// RoadTechSlopeStraight's identical slope deck and leaves the patch uncovered).
 #[allow(clippy::too_many_arguments)]
+/// The gameplay id a Special* block's deck carries, from the KIND NAME (the pak prefab only says "gameplay 1": the real
+/// id comes from the block's TerrainModifier at load) — GBX.NET `CPlugSurface.GameplayId`: Turbo 1, Turbo2 2,
+/// TurboRoulette 3, FreeWheeling 4 (NoEngine), NoGrip 5, NoSteering 6, ForceAcceleration 7, Reset 8, SlowMotion 9,
+/// Bumper 10, Bumper2 11, ReactorBoost_Legacy 12, Fragile 13, ReactorBoost2_Legacy 14, Bouncy 15, NoBrakes 16, Cruise 17,
+/// ReactorBoost_Oriented 18, ReactorBoost2_Oriented 19
+pub fn gameplay_id_of(kind: &str) -> u8 {
+    let Some(i) = kind.find("Special") else { return 0 };
+    let rest = &kind[i + 7..];
+    for (tok, id) in [("TurboRoulette", 3u8), ("Turbo2", 2), ("Turbo", 1), ("Boost2", 19), ("Boost", 18), ("Reset", 8), ("SlowMotion", 9), ("NoEngine", 4), ("NoGrip", 5), ("NoSteering", 6), ("NoBrake", 16), ("Fragile", 13), ("Cruise", 17), ("Bumper2", 11), ("Bumper", 10), ("Bouncy", 15), ("ForceAcceleration", 7)] {
+        if rest.starts_with(tok) { return id; }
+    }
+    0
+}
+
+/// The decoration materials of a Special* deck (the animated arrows / FX band) — carried along on top of the sheet so the
+/// booster stays visible after the overlay
+pub const SPECIAL_DECOR: [&str; 2] = ["SpecialFXTurbo", "DecalSpecialTurbo"];
+
 pub fn surface_overlay_item_ext(store: &mut crate::store::DataStore, name: &str, ground: bool, add: usize, decks: &[&str], link_for: &dyn Fn(&str) -> String, physics: u8, lift: f32, ident: &str, collection: u32, cutout: Option<[f32; 4]>) -> R<(Vec<u8>, OverlayReport)> {
+    surface_overlay_item_ext2(store, name, ground, add, decks, link_for, physics, lift, ident, collection, cutout, 0, &[])
+}
+
+/// `gameplay` ≠ 0: every collision triangle of the sheet carries `physics | gameplay << 8` (a "plastic booster"); `decor`:
+/// material stems whose visuals ride on top of the sheet (lift + 3 mm), materials untouched, no collision
+pub fn surface_overlay_item_ext2(store: &mut crate::store::DataStore, name: &str, ground: bool, add: usize, decks: &[&str], link_for: &dyn Fn(&str) -> String, physics: u8, lift: f32, ident: &str, collection: u32, cutout: Option<[f32; 4]>, gameplay: u8, decor: &[&str]) -> R<(Vec<u8>, OverlayReport)> {
     let coll_name = crate::static_item::materials::env_name(collection);
     let mut idx = crate::blockmap::BlockInfoIndex::build(store, coll_name);
     let (_path, bi) = crate::tiny_library::load_block_info_pub(&mut idx, store, name)?;
@@ -4651,7 +4675,8 @@ pub fn surface_overlay_item_ext(store: &mut crate::store::DataStore, name: &str,
     }
     let deck_materials: Vec<String> = deck_slots.iter().filter_map(|i| m.materials[*i].link().map(|l| stem_of(l))).collect();
     let deck_physics: Vec<u8> = deck_slots.iter().map(|i| m.materials[*i].physics()).collect();
-    m.visuals.retain(|v| deck_slots.contains(&v.material) && (v.lod_mask == 0 || v.lod_mask & 1 != 0));
+    let decor_slots: Vec<usize> = m.materials.iter().enumerate().filter(|(_, mat)| mat.link().map_or(false, |l| decor.iter().any(|d| d.eq_ignore_ascii_case(&stem_of(l))))).map(|(i, _)| i).collect();
+    m.visuals.retain(|v| (deck_slots.contains(&v.material) || decor_slots.contains(&v.material)) && (v.lod_mask == 0 || v.lod_mask & 1 != 0));
     for v in m.visuals.iter_mut() { v.lod_mask = 0; }
     m.lights_out.clear();
     m.pending_lights.clear();
@@ -4664,6 +4689,8 @@ pub fn surface_overlay_item_ext(store: &mut crate::store::DataStore, name: &str,
     let mut all_pts: Vec<[f32; 3]> = Vec::new();
     let mut all_tris: Vec<[u32; 3]> = Vec::new();
     for mv in m.visuals.iter_mut() {
+        let is_decor = decor_slots.contains(&mv.material) && !deck_slots.contains(&mv.material);
+        let lift = if is_decor { lift + 0.003 } else { lift };
         let Some(main) = mv.visual.main.as_mut() else { continue };
         let Some(Node::VertexStream(stream)) = main.vertex_streams.first_mut().and_then(|r| r.inline.as_deref_mut()) else { continue };
         let compress = stream.compress_local3d.unwrap_or(false);
@@ -4691,6 +4718,7 @@ pub fn surface_overlay_item_ext(store: &mut crate::store::DataStore, name: &str,
                         ib.indices = keep;
                     }
                 }
+                if is_decor { continue; }
                 let kept_indices: Vec<u32> = mv.visual.index_buffer.as_ref().map(|ib| ib.indices.clone()).unwrap_or_default();
                 let base = all_pts.len() as u32;
                 all_pts.extend(p.iter().copied());
@@ -4701,16 +4729,19 @@ pub fn surface_overlay_item_ext(store: &mut crate::store::DataStore, name: &str,
     if all_tris.is_empty() {
         return Err(format!("{name}: the deck visuals have no readable triangles"));
     }
-    // the collision: the lifted deck triangles, every one at `physics`
+    // the collision: the lifted deck triangles, every one at `physics` (| gameplay << 8 for a Special* deck: the pak's
+    // gameplay plate is the WHOLE deck, coincident with the asphalt plate, so the sheet simply carries the id)
     m.surf_vertices = all_pts.clone();
-    m.surf_ids = vec![physics as u16];
-    m.surf_triangles = all_tris.iter().map(|t| super::surface::Triangle { indices: *t, material_id: physics, gameplay: 0, surface_index: 0 }).collect();
+    m.surf_ids = vec![physics as u16 | (gameplay as u16) << 8];
+    m.surf_triangles = all_tris.iter().map(|t| super::surface::Triangle { indices: *t, material_id: physics, gameplay, surface_index: 0 }).collect();
     for mat in &mut m.materials {
         let Some(main) = mat.main.as_mut() else { continue };
         let Some(link) = main.link.as_str().map(|s| s.to_string()) else { continue };
         if decks.iter().any(|d| d.eq_ignore_ascii_case(&stem_of(&link))) {
             let target = link_for(&stem_of(&link));
             main.link = crate::crystal_model::Id::Str(format!("{target}{}", if link.to_ascii_uppercase().ends_with(".GBX") { ".Material.Gbx" } else { "" }));
+            main.surface_physic_id = physics;
+            main.surface_gameplay_id = gameplay;
         }
     }
     m.waypoint_type = None;
