@@ -17,8 +17,8 @@ pub struct TestMapOpts {
     /// Nadeo pak items by ident (not embedded), posed at the cell's road-deck centre: pos = corner + (16, 2, 16),
     /// yaw 0 (the gate items' origin = the arch foot centre on the deck; Fall 01/06/12: deck = cell floor + 2)
     pub native_items: Vec<(String, i32, i32, i32)>,
-    /// extra grid blocks: (name, cx, dy above the grass row, cz, dir)
-    pub blocks: Vec<(String, i32, i32, i32, u8)>,
+    /// extra grid blocks: (name, cx, dy above the grass row, cz, dir, additional variant index — flags bits 21–27)
+    pub blocks: Vec<(String, i32, i32, i32, u8, u32)>,
     pub start: (i32, i32),
     pub finish: (i32, i32),
     /// rows above the grass row for the start / finish blocks
@@ -51,13 +51,13 @@ pub fn build(opts: &TestMapOpts) -> Result<Vec<String>, String> {
         FreeBlockSpec { name: "RoadTechStart".into(), author: None, flags: 0, pos: [0.0; 3], rot: [0.0; 3], grid: Some([opts.start.0, grass_row + opts.course_dy, opts.start.1]), dir: 0, waypoint: Some("Spawn".into()) },
         FreeBlockSpec { name: "RoadTechFinish".into(), author: None, flags: 0, pos: [0.0; 3], rot: [0.0; 3], grid: Some([opts.finish.0, grass_row + opts.course_dy, opts.finish.1]), dir: 0, waypoint: Some("Goal".into()) },
     ];
-    for (name, cx, dy, cz, dir) in &opts.blocks {
+    for (name, cx, dy, cz, dir, add) in &opts.blocks {
         let wp = if name.ends_with("Finish") { Some("Goal".to_string()) } else if name.ends_with("Checkpoint") { Some("Checkpoint".to_string()) } else { None };
         // a block on the grass row is a GROUND placement (FLAG_GROUND 0x1000): the editor's own rule, and what makes the
         // ground variant (and its terrain void) apply — the PlatformBase / DecoCliffMid render test of 10-31
-        let flags = if *dy == 0 { crate::blockmap::FLAG_GROUND } else { 0 };
+        let flags = (if *dy == 0 { crate::blockmap::FLAG_GROUND } else { 0 }) | ((*add & 0x7F) << 21);
         specs.push(FreeBlockSpec { name: name.clone(), author: None, flags, pos: [0.0; 3], rot: [0.0; 3], grid: Some([*cx, grass_row + dy, *cz]), dir: *dir, waypoint: wp });
-        report.push(format!("block {name} at cell ({cx}, {}, {cz}) dir {dir}", grass_row + dy));
+        report.push(format!("block {name} at cell ({cx}, {}, {cz}) dir {dir} flags {flags:#x}", grass_row + dy));
     }
     {
         let mut m = MapFile::try_load(out)?;

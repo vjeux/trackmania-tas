@@ -43,10 +43,18 @@ pub struct BuildOpts {
     pub block: Option<BlockForm>,
 }
 
+thread_local! {
+    /// Extra variants of the next custom block built: (key, geometry), each written as its own inline
+    /// static object (the 10-31 two-variant test); taken by `assemble`, empty afterwards.
+    pub static BLOCK_EXTRA_VARIANTS: std::cell::RefCell<Vec<(u32, Merged)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 #[derive(Clone, Debug)]
 pub struct BlockForm {
     pub archetype: String,
     pub variant_key: u32,
+    /// further keys sharing the same geometry (the 10-31 key test: one file answering several variant keys)
+    pub extra_keys: Vec<u32>,
 }
 
 pub fn inline(index: i32, node: Node) -> Ref {
@@ -464,13 +472,33 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
             raw_tail.extend(std::iter::repeat(0u8).take(n));
         }
         raw_tail.extend_from_slice(&super::FACADE.to_le_bytes());
+        let mut variants = vec![(block.variant_key, super::null_ref())];
+        let mut table = vec![(flags, inline(2, Node::StaticObject(so)), trigger.clone())];
+        let mut table_extra = vec![extra.clone()];
+        for k in &block.extra_keys {
+            // the same nodes again: a back reference to the static object (and the trigger) already defined
+            variants.push((*k, super::null_ref()));
+            table.push((flags, super::NodeRef { index: 2, inline: None }, super::NodeRef { index: trigger.index, inline: None }));
+            table_extra.push(extra.clone());
+        }
+        for (k, m2) in BLOCK_EXTRA_VARIANTS.with(|v| std::mem::take(&mut *v.borrow_mut())) {
+            // a further geometry under its own key: its own static object, fresh node indices
+            let so_index = next_index(&mut next);
+            let mesh_index = next_index(&mut next);
+            let s2 = build_solid2(&m2, opts, &mut next)?;
+            let surface_index = next_index(&mut next);
+            let so2 = CPlugStaticObjectModel { version: 3, mesh: inline(mesh_index, Node::Solid2(s2)), is_mesh_collidable: false, shape: inline(surface_index, Node::Surface(build_surface(&m2))) };
+            variants.push((k, super::null_ref()));
+            table.push((flags & !2, inline(so_index, Node::StaticObject(so2)), super::null_ref()));
+            table_extra.push(extra.clone());
+        }
         entity_model_edition = inline(1, Node::BlockItem(super::BlockItem {
             version: 1,
             archetype: Id::Str(block.archetype.clone()),
             archetype_collection: Id::Raw(opts.collection),
-            variants: vec![(block.variant_key, super::null_ref())],
-            table: vec![(flags, inline(2, Node::StaticObject(so)), trigger.clone())],
-            table_extra: vec![extra],
+            variants,
+            table,
+            table_extra,
             raw_tail,
         }));
         super::null_ref()

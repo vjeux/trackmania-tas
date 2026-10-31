@@ -4289,7 +4289,17 @@ fn main() {
                                 if blocks || a.rest.iter().any(|x| x == "--no-lights") { m.lights_out.clear(); m.file_write_time = 0; }
                                 if let Some(n) = lods { let (d, k) = mapgeom::static_item::build::keep_lod_levels(&mut m, n); if sizes { println!("{kind} [{fl:08X}] --lods {n}: dropped {d} visuals, kept {k}: {}", mapgeom::static_item::build::size_breakdown(&m)); } }
                                 let (dv, rt, gp) = mapgeom::static_item::build::swap_deck_surface(&mut m, &decks, &link_for, physics);
-                                let opts = mapgeom::static_item::build::BuildOpts { ident: ident.clone(), author: author.clone(), scale: 1.0, collection, skin: m.skin.clone(), block: if blocks { Some(mapgeom::static_item::build::BlockForm { archetype: kind.clone(), variant_key: key }) } else { None } };
+                                // TMAN_BLOCK_SECOND=KEY:FLAGS — a second geometry (the kind's variant FLAGS, e.g. 0x200000 = air add1) under KEY in the same file (10-31 key test)
+                                if let Some(spec) = std::env::var("TMAN_BLOCK_SECOND").ok().filter(|_| blocks) {
+                                    let (k, f2) = spec.split_once(':').unwrap_or_else(|| die("TMAN_BLOCK_SECOND=KEY:FLAGS".into()));
+                                    let k: u32 = k.parse().unwrap_or_else(|_| die("TMAN_BLOCK_SECOND key".into()));
+                                    let f2 = u32::from_str_radix(f2.trim_start_matches("0x"), 16).unwrap_or_else(|_| die("TMAN_BLOCK_SECOND flags (hex)".into()));
+                                    let (_, mut m2, _) = mapgeom::tiny_library::bake_named_block_from(&mut store, info_collection, collection, kind, f2, &name, &author, 1.0).unwrap_or_else(|e| die(e));
+                                    m2.lights_out.clear(); m2.file_write_time = 0;
+                                    mapgeom::static_item::build::swap_deck_surface(&mut m2, &decks, &link_for, physics);
+                                    mapgeom::static_item::build::BLOCK_EXTRA_VARIANTS.with(|v| v.borrow_mut().push((k, m2)));
+                                }
+                                let opts = mapgeom::static_item::build::BuildOpts { ident: ident.clone(), author: author.clone(), scale: 1.0, collection, skin: m.skin.clone(), block: if blocks { Some(mapgeom::static_item::build::BlockForm { archetype: kind.clone(), variant_key: std::env::var("TMAN_BLOCK_KEY").ok().and_then(|v| v.parse().ok()).unwrap_or(key), extra_keys: std::env::var("TMAN_BLOCK_EXTRA_KEYS").ok().map(|v| v.split(',').filter_map(|x| x.trim().parse().ok()).collect()).unwrap_or_default() }) } else { None } };
                                 match mapgeom::static_item::build::assemble(&m, &opts) {
                                     Ok(f) => {
                                         let bytes = mapgeom::static_item::file::write_file(&f);
@@ -6522,11 +6532,11 @@ fn main() {
             let out = flag(&a.rest, "--out").unwrap_or_else(|| die("test-map: --out OUT.Map.Gbx".into()));
             let pair = |k: &str, d: (i32, i32)| -> (i32, i32) { flag(&a.rest, k).and_then(|v| { let p: Vec<i32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect(); if p.len() == 2 { Some((p[0], p[1])) } else { None } }).unwrap_or(d) };
             let stacks: Vec<(i32, String)> = flag(&a.rest, "--stack").unwrap_or_default().split(',').filter(|s| !s.is_empty()).map(|s| { let (x, f) = s.split_once('=').unwrap_or_else(|| die(format!("--stack {s}: X=FILE"))); (x.trim().parse::<i32>().unwrap_or_else(|_| die(format!("--stack {s}: X=FILE"))), f.trim().to_string()) }).collect();
-            // --item FILE@cx,dy,cz (repeatable; dy = rows above the grass row); --block NAME@cx,dy,cz[,dir] (repeatable)
+            // --item FILE@cx,dy,cz (repeatable; dy = rows above the grass row); --block NAME@cx,dy,cz[,dir[,add]] (repeatable; add = additional variant index)
             let mut items: Vec<(String, i32, i32, i32)> = Vec::new();
             // --native-item IDENT@cx,dy,cz: a Nadeo pak item (not embedded) at the cell's deck centre, yaw 0
             let mut native_items: Vec<(String, i32, i32, i32)> = Vec::new();
-            let mut blocks: Vec<(String, i32, i32, i32, u8)> = Vec::new();
+            let mut blocks: Vec<(String, i32, i32, i32, u8, u32)> = Vec::new();
             let mut i = 0;
             while i < a.rest.len() {
                 if a.rest[i] == "--item" || a.rest[i] == "--block" || a.rest[i] == "--native-item" {
@@ -6534,7 +6544,7 @@ fn main() {
                     let (name, coords) = v.split_once('@').unwrap_or_else(|| die(format!("{} {v}: NAME@cx,dy,cz", a.rest[i])));
                     let c: Vec<i32> = coords.split(',').filter_map(|x| x.trim().parse().ok()).collect();
                     if c.len() < 3 { die::<()>(format!("{} {v}: NAME@cx,dy,cz", a.rest[i])); }
-                    if a.rest[i] == "--item" { items.push((name.to_string(), c[0], c[1], c[2])); } else if a.rest[i] == "--native-item" { native_items.push((name.to_string(), c[0], c[1], c[2])); } else { blocks.push((name.to_string(), c[0], c[1], c[2], c.get(3).copied().unwrap_or(0) as u8)); }
+                    if a.rest[i] == "--item" { items.push((name.to_string(), c[0], c[1], c[2])); } else if a.rest[i] == "--native-item" { native_items.push((name.to_string(), c[0], c[1], c[2])); } else { blocks.push((name.to_string(), c[0], c[1], c[2], c.get(3).copied().unwrap_or(0) as u8, c.get(4).copied().unwrap_or(0) as u32)); }
                     i += 2;
                 } else {
                     i += 1;
