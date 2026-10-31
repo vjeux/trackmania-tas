@@ -930,7 +930,10 @@ fn main() {
             // their terrain modifier); RoadWater's dry deck is RoadTech (the submerged `Underwater` part is left alone)
             // every deck material of the 25 Fall sources (deck-census): the road decks, the platform deck (also the Open*
             // roads/zones, the Stand tops, WaterGrass, Rally high roads), the ice patches of RoadTechToRoadIce, the snow road
-            let decks: Vec<&str> = vec!["RoadTech", "RoadDirt", "RoadIce", "RoadBump", "PlatformTech", "RoadTechSubIce", "ThemeSnowRoad"];
+            // NOT ThemeSnowRoad: the Snow theme's "road" is a WOODEN plank road (physics 14 = Wood, deck undulating y 2.2..8.0),
+            // the material covers only fragments of the drivable wood → ice shards over planks (Fall 05, 10-31); the Stand*
+            // walkway strips, the RoadWater* water decks and the Special* gameplay kinds are excluded by the kind list
+            let decks: Vec<&str> = vec!["RoadTech", "RoadDirt", "RoadIce", "RoadBump", "PlatformTech", "RoadTechSubIce"];
             // (surface) → (road link, platform link, physics id) — read off the pak materials (material-ids)
             let target = |surface: &str, platform: bool| -> Option<(String, u8)> {
                 Some(match (surface, platform) {
