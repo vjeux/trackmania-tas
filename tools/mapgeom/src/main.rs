@@ -4220,6 +4220,11 @@ fn main() {
             let surfaces: Vec<String> = flag(&a.rest, "--surfaces").unwrap_or_else(|| "Ice,Plastic,Dirt,Grass,Road".into()).split(',').map(|x| x.trim().to_string()).collect();
             let author = flag(&a.rest, "--author").unwrap_or_else(|| "Nadeo".into());
             let lods: Option<u32> = flag(&a.rest, "--lods").and_then(|v| v.parse().ok());
+            // --collection Env: the bake under that collection's StadiumOnTerrain skin (visual links + the skin's collision
+            // ids, as the tiny bake does for every vista map) and the item named `<Stem><Env>` (Stadium: no suffix)
+            let coll_label = flag(&a.rest, "--collection").unwrap_or_else(|| "Stadium".into());
+            let collection: u32 = match coll_label.as_str() { "Stadium" => 0x1a, "RedIsland" => 0x10, "BlueBay" => 0x1c, "WhiteShore" => 0x1d, "GreenCoast" => 0xf, other => die(format!("unknown collection {other}")) };
+            let env_suffix = if collection == 0x1a { String::new() } else { coll_label.clone() };
             // --penalty-twins F.tsv: a *Penalty* kind (no deck mesh in the pak) gets the plain twin's deck grafted in
             let penalty_twin: std::collections::HashMap<String, String> = flag(&a.rest, "--penalty-twins").map(|f| std::fs::read_to_string(&f).unwrap_or_default().lines().skip(1).filter_map(|l| { let c: Vec<&str> = l.split('\t').collect(); if c.len() >= 2 && !c[1].is_empty() { Some((c[0].to_string(), c[1].to_string())) } else { None } }).collect()).unwrap_or_default();
             let sizes = a.rest.iter().any(|x| x == "--sizes");
@@ -4227,7 +4232,7 @@ fn main() {
             let decks: Vec<&str> = vec!["RoadTech", "RoadDirt", "RoadIce", "RoadBump"];
             let deck_surface = |stem: &str| -> &'static str { match stem { "RoadTech" => "Road", "RoadDirt" => "Dirt", "RoadIce" => "Ice", "RoadBump" => "Bump", _ => "?" } };
             let target = |surface: &str| -> Option<(String, u8)> { match surface { "Road" => Some(("Stadium\\Media\\Material\\RoadTech".into(), 16)), "Dirt" => Some(("Stadium\\Media\\Material\\RoadDirt".into(), 6)), "Ice" => Some(("Stadium\\Media\\Material\\RoadIce".into(), 74)), "Grass" => Some(("Stadium\\Media\\Modifier\\PlatformGrass\\PlatformTech".into(), 76)), "Plastic" => Some(("Stadium\\Media\\Modifier\\PlatformPlastic\\PlatformTech".into(), 77)), _ => None } };
-            let coll_name = mapgeom::static_item::materials::env_name(26);
+            let coll_name = mapgeom::static_item::materials::env_name(collection);
             let mut idx = mapgeom::blockmap::BlockInfoIndex::build(&mut store, coll_name);
             let mut table = vec![String::from("kind\tground\tadditional\tflags\tsurface\titem\tbytes\tshares_geometry_with\tdeck_visuals\tcollision_retagged\tgameplay_tris\tnotes")];
             let (mut built, mut total, mut shared, mut skipped) = (0usize, 0usize, 0usize, 0usize);
@@ -4250,17 +4255,17 @@ fn main() {
                     std::fs::create_dir_all(&dir).unwrap_or_else(|e| die(e.to_string()));
                     let mut first_of_sig: std::collections::HashMap<String, String> = std::collections::HashMap::new();
                     for (ground, add, fl, sig) in &variants {
-                        let name = format!("{surface}{kind}{}{}.Item.Gbx", if *ground { "" } else { "Air" }, if *add > 0 { if *ground { format!("Ground{add}") } else { add.to_string() } } else { String::new() });
+                        let name = format!("{surface}{kind}{}{}{env_suffix}.Item.Gbx", if *ground { "" } else { "Air" }, if *add > 0 { if *ground { format!("Ground{add}") } else { add.to_string() } } else { String::new() });
                         if let Some(prev) = first_of_sig.get(sig) {
                             shared += 1;
                             table.push(format!("{kind}\t{}\t{add}\t{fl:08X}\t{surface}\t{prev}\t\t{prev}\t\t\t\tsame geometry", *ground as u8));
                             continue;
                         }
-                        match mapgeom::tiny_library::bake_named_block(&mut store, 26, kind, *fl, &name, &author, 1.0) {
+                        match mapgeom::tiny_library::bake_named_block(&mut store, collection, kind, *fl, &name, &author, 1.0) {
                             Ok((_, mut m, _src)) => {
                                 let mut graft_note = String::new();
                                 if let Some(tw) = penalty_twin.get(kind) {
-                                    match mapgeom::tiny_library::bake_named_block(&mut store, 26, tw, *fl, &name, &author, 1.0) {
+                                    match mapgeom::tiny_library::bake_named_block(&mut store, collection, tw, *fl, &name, &author, 1.0) {
                                         Ok((_, twin, _)) => { let (gv, gt) = mapgeom::static_item::build::graft_deck(&mut m, &twin, &decks); graft_note = format!("deck grafted from {tw}: {gv} visuals, {gt} collision tris / "); }
                                         Err(e) => graft_note = format!("twin {tw} bake failed: {e} / "),
                                     }
@@ -4268,7 +4273,7 @@ fn main() {
                                 if sizes { println!("{kind} [{fl:08X}] full: {}", mapgeom::static_item::build::size_breakdown(&m)); }
                                 if let Some(n) = lods { let (d, k) = mapgeom::static_item::build::keep_lod_levels(&mut m, n); if sizes { println!("{kind} [{fl:08X}] --lods {n}: dropped {d} visuals, kept {k}: {}", mapgeom::static_item::build::size_breakdown(&m)); } }
                                 let (dv, rt, gp) = mapgeom::static_item::build::swap_deck_surface(&mut m, &decks, &link_for, physics);
-                                let opts = mapgeom::static_item::build::BuildOpts { ident: name.clone(), author: author.clone(), scale: 1.0, collection: 26, skin: m.skin.clone() };
+                                let opts = mapgeom::static_item::build::BuildOpts { ident: name.clone(), author: author.clone(), scale: 1.0, collection, skin: m.skin.clone() };
                                 match mapgeom::static_item::build::assemble(&m, &opts) {
                                     Ok(f) => {
                                         let bytes = mapgeom::static_item::file::write_file(&f);
@@ -6515,7 +6520,7 @@ fn main() {
                     i += 1;
                 }
             }
-            if stacks.is_empty() && items.is_empty() { die::<()>("test-map: --stack X=FILE.Item.Gbx[,…] or --item FILE@cx,dy,cz".into()); }
+            if stacks.is_empty() && items.is_empty() && blocks.is_empty() && native_items.is_empty() { die::<()>("test-map: --stack X=FILE.Item.Gbx[,…] or --item FILE@cx,dy,cz".into()); }
             let opts = mapgeom::test_map::TestMapOpts { source, out: out.clone(), stacks, items, native_items, blocks, start: pair("--start", (24, 8)), finish: pair("--finish", (24, 34)), course_dy: flag(&a.rest, "--course-dy").and_then(|v| v.parse().ok()).unwrap_or(0), z: flag(&a.rest, "--z").and_then(|v| v.parse().ok()).unwrap_or(20), height: flag(&a.rest, "--height").and_then(|v| v.parse().ok()).unwrap_or(3), name: flag(&a.rest, "--name").unwrap_or_else(|| "Expandable Test".into()) };
             for line in mapgeom::test_map::build(&opts).unwrap_or_else(die) { println!("{line}"); }
             println!("wrote {out}");

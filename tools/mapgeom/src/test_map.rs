@@ -53,7 +53,10 @@ pub fn build(opts: &TestMapOpts) -> Result<Vec<String>, String> {
     ];
     for (name, cx, dy, cz, dir) in &opts.blocks {
         let wp = if name.ends_with("Finish") { Some("Goal".to_string()) } else if name.ends_with("Checkpoint") { Some("Checkpoint".to_string()) } else { None };
-        specs.push(FreeBlockSpec { name: name.clone(), author: None, flags: 0, pos: [0.0; 3], rot: [0.0; 3], grid: Some([*cx, grass_row + dy, *cz]), dir: *dir, waypoint: wp });
+        // a block on the grass row is a GROUND placement (FLAG_GROUND 0x1000): the editor's own rule, and what makes the
+        // ground variant (and its terrain void) apply — the PlatformBase / DecoCliffMid render test of 10-31
+        let flags = if *dy == 0 { crate::blockmap::FLAG_GROUND } else { 0 };
+        specs.push(FreeBlockSpec { name: name.clone(), author: None, flags, pos: [0.0; 3], rot: [0.0; 3], grid: Some([*cx, grass_row + dy, *cz]), dir: *dir, waypoint: wp });
         report.push(format!("block {name} at cell ({cx}, {}, {cz}) dir {dir}", grass_row + dy));
     }
     {
