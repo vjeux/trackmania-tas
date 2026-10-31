@@ -4236,9 +4236,13 @@ fn main() {
             let decks: Vec<&str> = vec!["RoadTech", "RoadDirt", "RoadIce", "RoadBump"];
             let deck_surface = |stem: &str| -> &'static str { match stem { "RoadTech" => "Road", "RoadDirt" => "Dirt", "RoadIce" => "Ice", "RoadBump" => "Bump", _ => "?" } };
             let target = |surface: &str| -> Option<(String, u8)> { match surface { "Road" => Some(("Stadium\\Media\\Material\\RoadTech".into(), 16)), "Dirt" => Some(("Stadium\\Media\\Material\\RoadDirt".into(), 6)), "Ice" => Some(("Stadium\\Media\\Material\\RoadIce".into(), 74)), "Grass" => Some(("Stadium\\Media\\Modifier\\PlatformGrass\\PlatformTech".into(), 76)), "Plastic" => Some(("Stadium\\Media\\Modifier\\PlatformPlastic\\PlatformTech".into(), 77)), _ => None } };
-            let coll_name = mapgeom::static_item::materials::env_name(collection);
+            // --infos-from Env: the block infos of another collection's catalog (vista-only kinds), baked under --collection
+            let info_collection: u32 = match flag(&a.rest, "--infos-from").as_deref() { None => collection, Some("Stadium") => 0x1a, Some("RedIsland") => 0x10, Some("BlueBay") => 0x1c, Some("WhiteShore") => 0x1d, Some("GreenCoast") => 0xf, Some(other) => die(format!("unknown collection {other}")) };
+            let coll_name = mapgeom::static_item::materials::env_name(info_collection);
             let mut idx = mapgeom::blockmap::BlockInfoIndex::build(&mut store, coll_name);
-            let mut table = vec![String::from("kind\tground\tadditional\tflags\tsurface\titem\tbytes\tshares_geometry_with\tdeck_visuals\tcollision_retagged\tgameplay_tris\tnotes")];
+            // a vista-only kind (infos from another catalog) keeps that env's terrain materials → one file per env, `<Env>` suffix
+            let env_tag: String = if info_collection != collection { mapgeom::static_item::materials::env_name(info_collection).to_string() } else { String::new() };
+            let mut table = vec![String::from(if blocks { "surface\tkind\tground\tn\tkey\tenv\tfile\tbytes\tdeck_visuals\tcollision_retagged\tgameplay_tris\tnotes" } else { "kind\tground\tadditional\tflags\tsurface\titem\tbytes\tshares_geometry_with\tdeck_visuals\tcollision_retagged\tgameplay_tris\tnotes" })];
             let (mut built, mut total, mut shared, mut skipped) = (0usize, 0usize, 0usize, 0usize);
             for kind in &kinds {
                 let Ok((_, bi)) = mapgeom::tiny_library::load_block_info_pub(&mut idx, &mut store, kind) else { table.push(format!("{kind}\t\t\t\t\t\t\t\t\t\t\tNO BLOCK INFO")); continue };
@@ -4260,21 +4264,22 @@ fn main() {
                     let mut first_of_sig: std::collections::HashMap<String, String> = std::collections::HashMap::new();
                     for (ground, add, fl, sig) in &variants {
                         let key: u32 = if *ground { *add as u32 } else { 1_000_000 + *add as u32 };
-                        let name = if blocks { format!("{surface}{kind}_{key}.Block.Gbx") } else { format!("{surface}{kind}{}{}{env_suffix}.Item.Gbx", if *ground { "" } else { "Air" }, if *add > 0 { if *ground { format!("Ground{add}") } else { add.to_string() } } else { String::new() }) };
-                        let dir = if blocks { dir.join(&coll_label).join(if *ground { "Ground" } else { "Air" }) } else { dir.clone() };
+                        let name = if blocks { format!("{surface}{kind}_{key}{env_tag}.Block.Gbx") } else { format!("{surface}{kind}{}{}{env_suffix}.Item.Gbx", if *ground { "" } else { "Air" }, if *add > 0 { if *ground { format!("Ground{add}") } else { add.to_string() } } else { String::new() }) };
+                        // one set for every environment: no env in the path — the embedder patches the collection words
+                        let dir = if blocks { dir.join(if *ground { "Ground" } else { "Air" }) } else { dir.clone() };
                         if blocks { std::fs::create_dir_all(&dir).unwrap_or_else(|e| die(e.to_string())); }
-                        let ident = if blocks { format!("tman\\{surface}\\{coll_label}\\{}\\{name}", if *ground { "Ground" } else { "Air" }) } else { name.clone() };
+                        let ident = if blocks { format!("tman\\{surface}\\{}\\{name}", if *ground { "Ground" } else { "Air" }) } else { name.clone() };
                         // (blocks: a file per key even when the geometry repeats — the key is the file's content)
                         if let Some(prev) = first_of_sig.get(sig).filter(|_| !blocks) {
                             shared += 1;
                             table.push(format!("{kind}\t{}\t{add}\t{fl:08X}\t{surface}\t{prev}\t\t{prev}\t\t\t\tsame geometry", *ground as u8));
                             continue;
                         }
-                        match mapgeom::tiny_library::bake_named_block(&mut store, collection, kind, *fl, &name, &author, 1.0) {
+                        match mapgeom::tiny_library::bake_named_block_from(&mut store, info_collection, collection, kind, *fl, &name, &author, 1.0) {
                             Ok((_, mut m, _src)) => {
                                 let mut graft_note = String::new();
                                 if let Some(tw) = penalty_twin.get(kind) {
-                                    match mapgeom::tiny_library::bake_named_block(&mut store, collection, tw, *fl, &name, &author, 1.0) {
+                                    match mapgeom::tiny_library::bake_named_block_from(&mut store, info_collection, collection, tw, *fl, &name, &author, 1.0) {
                                         Ok((_, twin, _)) => { let (gv, gt) = mapgeom::static_item::build::graft_deck(&mut m, &twin, &decks); graft_note = format!("deck grafted from {tw}: {gv} visuals, {gt} collision tris / "); }
                                         Err(e) => graft_note = format!("twin {tw} bake failed: {e} / "),
                                     }
@@ -4292,7 +4297,11 @@ fn main() {
                                         built += 1; total += bytes.len();
                                         first_of_sig.insert(sig.clone(), name.clone());
                                         let notes: Vec<String> = m.notes.iter().filter(|n| n.contains("waypoint") || n.contains("trigger") || n.contains("not embedded")).take(3).cloned().collect();
-                                        table.push(format!("{kind}\t{}\t{add}\t{fl:08X}\t{surface}\t{name}\t{}\t\t{dv}\t{rt}\t{gp}\t{graft_note}{}", *ground as u8, bytes.len(), notes.join(" / ")));
+                                        if blocks {
+                                            table.push(format!("{surface}\t{kind}\t{}\t{add}\t{key}\t{env_tag}\t{}/{name}\t{}\t{dv}\t{rt}\t{gp}\t{graft_note}{}", *ground as u8, if *ground { "Ground" } else { "Air" }, bytes.len(), notes.join(" / ")));
+                                        } else {
+                                            table.push(format!("{kind}\t{}\t{add}\t{fl:08X}\t{surface}\t{name}\t{}\t\t{dv}\t{rt}\t{gp}\t{graft_note}{}", *ground as u8, bytes.len(), notes.join(" / ")));
+                                        }
                                     }
                                     Err(e) => table.push(format!("{kind}\t{}\t{add}\t{fl:08X}\t{surface}\t{name}\tFAILED\t\t\t\t\t{e}", *ground as u8)),
                                 }
@@ -4302,7 +4311,7 @@ fn main() {
                     }
                 }
             }
-            std::fs::write(std::path::Path::new(&root).join("variants-table.tsv"), table.join("\n") + "\n").unwrap_or_else(|e| die(e.to_string()));
+            std::fs::write(std::path::Path::new(&root).join(if blocks { "custom-blocks-table.tsv" } else { "variants-table.tsv" }), table.join("\n") + "\n").unwrap_or_else(|e| die(e.to_string()));
             println!("{built} items built ({total} bytes), {shared} variants share a built file, {skipped} identity (kind already that surface); table {root}/variants-table.tsv");
         }
         // vista-items MAP --out OUT [--only NAME,..] [--author X] [--items-dir D]: the map's vista variant blocks replaced

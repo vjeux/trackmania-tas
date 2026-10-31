@@ -3803,7 +3803,15 @@ thread_local! {
 /// scale 1, under `ident`/`author`. Returns the item bytes + the merge report.
 #[allow(clippy::too_many_arguments)]
 pub fn bake_named_block(store: &mut DataStore, collection: u32, name: &str, flags: u32, ident: &str, author: &str, scale: f32) -> Result<(Vec<u8>, crate::static_item::build::Merged, String), String> {
-    let coll_name = crate::static_item::materials::env_name(collection);
+    bake_named_block_from(store, collection, collection, name, flags, ident, author, scale)
+}
+
+/// `bake_named_block` with the block info taken from `info_collection`'s catalog while the bake
+/// itself (material links, skin) runs under `collection`: a vista-only kind (RoadTechStraightOnDirtCliff4
+/// lives in RedIsland's pak alone) baked with plain Stadium links, as a custom block wants it — the game
+/// applies the terrain skin to a custom block like to a native one (2026-10-31).
+pub fn bake_named_block_from(store: &mut DataStore, info_collection: u32, collection: u32, name: &str, flags: u32, ident: &str, author: &str, scale: f32) -> Result<(Vec<u8>, crate::static_item::build::Merged, String), String> {
+    let coll_name = crate::static_item::materials::env_name(info_collection);
     let mut idx = crate::blockmap::BlockInfoIndex::build(store, coll_name);
     let (path, bi) = load_block_info(&mut idx, store, name)?;
     let key = BlockKey { name, flags, inherited_mods: "", placements: 1 };
