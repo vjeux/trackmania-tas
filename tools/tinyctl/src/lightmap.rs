@@ -284,10 +284,14 @@ fn one(args: &[String], map: &Path, out: &Path) -> Result<(), String> {
         let old_uid = tmmaps::header::read(map.to_str().unwrap_or_default()).map(|h| h.uid).unwrap_or_default();
         let fresh = fresh_uid_like(&old_uid, nanos % 100_000_000, (nanos / 7) % 100_000_000);
         m.set_map_uid(&fresh);
+        m.write_to(&bake_copy).map_err(|e| format!("{}: {e}", bake_copy.display()))?;
         // A Nadeo campaign map is editor-LOCKED (header NeedUnlock + chunk 0x03043029) and the
         // converter keeps the chunk: the editor parks the title on a password popup the plugin
         // cannot see (2026-09-29 21:50 PT) — the bake copy goes out unlocked, the shipped file
-        // keeps its lock untouched.
+        // keeps its lock untouched. The uid change is an Id-table rename and the password
+        // removal a variable-length splice: two passes (write, reload, splice), as
+        // `patched_body` demands — one pass panicked on a map that carries both (2026-11-01).
+        let mut m = tmmaps::map::MapFile::load(&bake_copy);
         m.remove_password();
         m.write_to(&bake_copy).map_err(|e| format!("{}: {e}", bake_copy.display()))?;
         // The stale lightmap STAYS in the copy: without any lightmap the editor leaves to
