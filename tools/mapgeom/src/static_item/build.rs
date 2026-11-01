@@ -150,15 +150,27 @@ pub fn add_prefab(store: &mut crate::store::DataStore, path: &str, at: &Xform, s
         };
         constraints.push((target, modified_constraint_path(store, m, &cp), params));
     }
-    // TINY_DECK_ENTITY_ONLY=1 (custom blocks, 10-31): keep only the static objects whose Solid2 names a DECK material
-    // (RoadTech/RoadDirt/RoadIce/RoadBump/PlatformTech) — the game draws the archetype's other entities (kerbs, lamps,
-    // logos, terrain parts) itself for a custom block; sub-prefabs are still followed (a vista deck sits one level down).
+    // CUSTOM-BLOCK entity rule (TINY_DECK_ENTITY_ONLY=1, 10-31): the game regenerates the archetype's STANDARD
+    // sub-prefabs around a custom block — the `TrackBorders\` kerb prefabs, the `TreeGen\` lamps and barrier supports,
+    // the SPlacement vegetation (null-model entities) — but not a variant's own geometry (the vista bridge piers and
+    // cliff caps, any other inline static object). So: inline static objects and other external prefabs are merged,
+    // TrackBorders/TreeGen externals skipped; the decision per prefab is noted as `cbents\ttotal\tmerged\tskipped`.
     let deck_only = std::env::var("TINY_DECK_ENTITY_ONLY").map(|v| v == "1").unwrap_or(false);
-    let names_deck = |so: &super::item::CPlugStaticObjectModel| -> bool {
-        let Some(s2) = so.solid2() else { return false };
-        s2.materials.iter().any(|r| ext_name(r.index).map(|p| { let st = p.rsplit('\\').next().unwrap_or(&p).to_ascii_lowercase(); ["roadtech.material.gbx", "roaddirt.material.gbx", "roadice.material.gbx", "roadbump.material.gbx", "platformtech.material.gbx"].contains(&st.as_str()) }).unwrap_or(false))
-    };
+    let regenerated = |p: &str| -> bool { let l = p.to_ascii_lowercase(); l.contains("\\prefab\\trackborders\\") || l.contains("\\prefab\\treegen\\") };
+    let (mut cb_merged, mut cb_skipped) = (0usize, 0usize);
     for (i, e) in prefab.ents.iter().enumerate() {
+        if deck_only {
+            match e.model.inline.as_deref() {
+                Some(Node::StaticObject(_)) => cb_merged += 1,
+                Some(_) => cb_skipped += 1,
+                None => match ext_name(e.model.index) {
+                    Some(p) if regenerated(&p) => { cb_skipped += 1; m.notes.push(format!("{path} entity {i}: {} skipped (the game regenerates it)", p.rsplit('\\').next().unwrap_or(&p))); continue; }
+                    Some(p) if p.to_ascii_lowercase().ends_with(".prefab.gbx") => cb_merged += 1,
+                    Some(_) => cb_skipped += 1,
+                    None => cb_skipped += 1,
+                },
+            }
+        }
         let iso = compose(at, &super::prefab::CPlugPrefab::entity_iso(e));
         match e.model.inline.as_deref() {
             Some(Node::StaticObject(so)) => {
@@ -167,11 +179,7 @@ pub fn add_prefab(store: &mut crate::store::DataStore, path: &str, at: &Xform, s
                     m.notes.push(format!("{path} entity {i}: static part skipped (strip item k > 0 carries the strip alone)"));
                     continue;
                 }
-                if deck_only && !names_deck(so) {
-                    m.notes.push(format!("{path} entity {i}: non-deck static object skipped (deck entity only)"));
-                    continue;
-                }
-                if deck_only { m.notes.push(format!("{path} entity {i}: DECK ENTITY (depth {depth})")); }
+
                 // Physics: the game's library table first, the .Material.Gbx's
                 // own surface id (usually 0) next, else the object's most
                 // common collision physics.
@@ -412,6 +420,9 @@ pub fn add_prefab(store: &mut crate::store::DataStore, path: &str, at: &Xform, s
                 None => m.notes.push(format!("{path} entity {i}: external node {} unnamed", e.model.index)),
             },
         }
+    }
+    if deck_only {
+        m.notes.push(format!("cbents\t{}\t{cb_merged}\t{cb_skipped}", prefab.ents.len()));
     }
     Ok(())
 }

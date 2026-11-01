@@ -4242,7 +4242,7 @@ fn main() {
             let mut idx = mapgeom::blockmap::BlockInfoIndex::build(&mut store, coll_name);
             // a vista-only kind (infos from another catalog) keeps that env's terrain materials → one file per env, `<Env>` suffix
             let env_tag: String = if info_collection != collection { mapgeom::static_item::materials::env_name(info_collection).to_string() } else { String::new() };
-            let mut table = vec![String::from(if blocks { "surface\tkind\tground\tn\tkey\tenv\tfile\tbytes\tdeck_visuals\tcollision_retagged\tgameplay_tris\tnotes" } else { "kind\tground\tadditional\tflags\tsurface\titem\tbytes\tshares_geometry_with\tdeck_visuals\tcollision_retagged\tgameplay_tris\tnotes" })];
+            let mut table = vec![String::from(if blocks { "surface\tkind\tground\tn\tkey\tenv\tfile\tbytes\tdeck_visuals\tcollision_retagged\tgameplay_tris\tnotes\tentities_total\tentities_merged\tentities_skipped" } else { "kind\tground\tadditional\tflags\tsurface\titem\tbytes\tshares_geometry_with\tdeck_visuals\tcollision_retagged\tgameplay_tris\tnotes" })];
             let (mut built, mut total, mut shared, mut skipped) = (0usize, 0usize, 0usize, 0usize);
             for kind in &kinds {
                 let Ok((_, bi)) = mapgeom::tiny_library::load_block_info_pub(&mut idx, &mut store, kind) else { table.push(format!("{kind}\t\t\t\t\t\t\t\t\t\t\tNO BLOCK INFO")); continue };
@@ -4293,6 +4293,14 @@ fn main() {
                                 if sizes { println!("{kind} [{fl:08X}] full: {}", mapgeom::static_item::build::size_breakdown(&m)); }
                                 // blocks: no light sources (the archetype's block lights stay the game's), no file time
                                 if blocks || a.rest.iter().any(|x| x == "--no-lights") { m.lights_out.clear(); m.file_write_time = 0; }
+                                // TINY_OPEN_DROP_FILL=1 (10-31 experiment): a GROUND Open* block without its zone-fill plates (DecoHill2/DecoHill/Deco
+                                // slots) — the generated terrain shows through with its own grass detail instead of our flat plate
+                                if blocks && *ground && kind.starts_with("Open") && std::env::var("TINY_OPEN_DROP_FILL").map(|v| v == "1").unwrap_or(false) {
+                                    let fill: Vec<usize> = m.materials.iter().enumerate().filter(|(_, mat)| mat.link().map(|l| { let st = l.rsplit('\\').next().unwrap_or(l).to_ascii_lowercase(); st == "decohill2" || st == "decohill" || st == "deco" }).unwrap_or(false)).map(|(i, _)| i).collect();
+                                    let before = m.visuals.len();
+                                    m.visuals.retain(|v| !fill.contains(&v.material));
+                                    m.notes.push(format!("open fill dropped: {} of {before} visuals", before - m.visuals.len()));
+                                }
                                 if let Some(n) = lods { let (d, k) = mapgeom::static_item::build::keep_lod_levels(&mut m, n); if sizes { println!("{kind} [{fl:08X}] --lods {n}: dropped {d} visuals, kept {k}: {}", mapgeom::static_item::build::size_breakdown(&m)); } }
                                 // Open* roads/zones: the deck is the PlatformTech slot (modifier-resolved: Modifier\Platform<Family>\PlatformTech)
                                 let kind_decks: Vec<&str> = if kind.starts_with("Open") { decks.iter().copied().chain(["PlatformTech"]).collect() } else { decks.clone() };
@@ -4314,9 +4322,11 @@ fn main() {
                                         std::fs::write(dir.join(&name), &bytes).unwrap_or_else(|e| die(e.to_string()));
                                         built += 1; total += bytes.len();
                                         first_of_sig.insert(sig.clone(), name.clone());
-                                        let notes: Vec<String> = m.notes.iter().filter(|n| n.contains("waypoint") || n.contains("trigger") || n.contains("not embedded") || n.contains("DECK ENTITY")).take(6).cloned().collect();
+                                        let notes: Vec<String> = m.notes.iter().filter(|n| n.contains("waypoint") || n.contains("trigger") || n.contains("not embedded")).take(3).cloned().collect();
                                         if blocks {
-                                            table.push(format!("{surface}\t{kind}\t{}\t{add}\t{key}\t{env_tag}\t{}/{name}\t{}\t{dv}\t{rt}\t{gp}\t{graft_note}{}", *ground as u8, if *ground { "Ground" } else { "Air" }, bytes.len(), notes.join(" / ")));
+                                            let (mut et, mut em, mut es) = (0usize, 0usize, 0usize);
+                                            for n in m.notes.iter().filter(|n| n.starts_with("cbents\t")) { let c: Vec<usize> = n.split('\t').skip(1).filter_map(|x| x.parse().ok()).collect(); if c.len() == 3 { et += c[0]; em += c[1]; es += c[2]; } }
+                                            table.push(format!("{surface}\t{kind}\t{}\t{add}\t{key}\t{env_tag}\t{}/{name}\t{}\t{dv}\t{rt}\t{gp}\t{graft_note}{}\t{et}\t{em}\t{es}", *ground as u8, if *ground { "Ground" } else { "Air" }, bytes.len(), notes.join(" / ")));
                                         } else {
                                             table.push(format!("{kind}\t{}\t{add}\t{fl:08X}\t{surface}\t{name}\t{}\t\t{dv}\t{rt}\t{gp}\t{graft_note}{}", *ground as u8, bytes.len(), notes.join(" / ")));
                                         }
