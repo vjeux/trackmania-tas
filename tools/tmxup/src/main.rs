@@ -14,7 +14,7 @@
 //!   tmxup listed --id MAPID                        switch an uploaded map from unlisted to listed
 //!   tmxup mappack --name N --ids-file F [--type 0] [--description-file F] [--tags ID,…] [--dry-run]
 //!   tmxup batch --playlist P.json --sheet S.csv --maps-dir DIR --alteration Tiny --done D.tsv
-//!               [--surface-tag ID] [--difficulty N] [--limit N] [--unlisted] [--dry-run]
+//!               [--surface-tag ID] [--difficulty N] [--limit N] [--unlisted] [--dry-run] [--not-agent-built]
 //!
 //! Every command talks to Chrome's DevTools port on the loopback (`--port`, default
 //! 9222): Chrome binds it to 127.0.0.1, so this runs ON Windows (built for
@@ -227,6 +227,46 @@ struct UploadSpec {
 
 /// The whole upload form for one map; `Ok(Some(url))` is the map page it landed on,
 /// `Ok(None)` a dry run.
+/// Set a map's tags the only way that survives TMX's DropdownFilter (2026-10-31): navigate
+/// to its edit form and re-POST it via fetch() with a FormData whose `Tags[i]` entries we
+/// append ourselves. The native widget blanks directly-set hidden inputs on submit; a
+/// programmatic POST skips the widget. Verifies via the read API and retries once.
+fn force_tags(c: &mut Cdp, id: u64, tags: &[String]) -> Result<(), String> {
+    let want: Vec<String> = tags.iter().filter(|t| !t.trim().is_empty()).cloned().collect();
+    if want.is_empty() {
+        return Ok(());
+    }
+    for attempt in 0..2 {
+        c.call("Page.navigate", json!({"url": format!("https://trackmania.exchange/mapupload/{id}")}))?;
+        std::thread::sleep(Duration::from_millis(1500));
+        c.wait_ready(30)?;
+        // build FormData from the edit form, drop every Tags[*] it carries, append ours
+        let appends: String = want.iter().enumerate().map(|(i, t)| format!("fd.append('Tags[{i}]', {});", serde_json::to_string(t).unwrap())).collect();
+        let js = format!(
+            "(async function(){{var f=document.querySelector('#mapUploadForm'); if(!f) return 'noform'; var fd=new FormData(f);              [...fd.keys()].filter(function(k){{return k.indexOf('Tags[')===0}}).forEach(function(k){{fd.delete(k)}}); {appends}              var r=await fetch(f.action,{{method:'POST',body:fd,redirect:'manual'}}); return 'status '+r.status+' '+r.type;}})()"
+        );
+        let res = c.eval(&js)?;
+        let _ = res;
+        std::thread::sleep(Duration::from_millis(800));
+        // verify
+        let got = c.eval(&format!("fetch('https://trackmania.exchange/api/maps?id={id}&fields=Tags').then(function(r){{return r.text()}})"))?;
+        let got = got.as_str().unwrap_or("");
+        let ok = want.iter().all(|t| {
+            let needle = format!("\"TagId\":{t},");
+            let needle2 = format!("\"TagId\":{t}}}");
+            got.contains(&needle) || got.contains(&needle2)
+        });
+        if ok {
+            println!("  tags set via POST: {} on {id}", want.join(","));
+            return Ok(());
+        }
+        if attempt == 1 {
+            return Err(format!("tags not confirmed on {id} after 2 tries; want {:?} got {got}", want));
+        }
+    }
+    Ok(())
+}
+
 fn upload_one(c: &mut Cdp, u: &UploadSpec, dry: bool) -> Result<Option<String>, String> {
     c.call("Page.navigate", json!({"url": "https://trackmania.exchange/mapupload"}))?;
     std::thread::sleep(Duration::from_millis(800));
@@ -287,6 +327,15 @@ fn upload_one(c: &mut Cdp, u: &UploadSpec, dry: bool) -> Result<Option<String>, 
             let title = c.eval("document.title")?.as_str().unwrap_or("").to_string();
             if !title.starts_with(&u.name) {
                 return Err(format!("landed on {url} but its title is {title:?}, not {:?}", u.name));
+            }
+            // TAGS: the DropdownFilter widget blanks any Tags[i] hidden input that was not
+            // picked through its own UI before the native submit (TMX changed it after
+            // 2026-10-22; direct-set + native submit now lands Mini-only). So set the tags
+            // authoritatively by RE-POSTing the map's edit form through fetch() with a
+            // FormData whose Tags[] we control — the widget never runs on a programmatic
+            // POST. Verified 2026-10-31 on maps 368922/368923. Idempotent; retried once.
+            if let Some(id) = url.rsplit('/').next().and_then(|x| x.parse::<u64>().ok()) {
+                force_tags(c, id, &u.tags)?;
             }
             return Ok(Some(url));
         }
@@ -378,10 +427,13 @@ fn tags_for(sheet_row: Option<&[String]>, surface: Option<u32>) -> Vec<u32> {
     out
 }
 
-fn description(alteration: &str, num: &str, orig_link: &str, hunter: &str) -> String {
+fn description(alteration: &str, num: &str, orig_link: &str, hunter: &str, agent_built: bool) -> String {
     let orig = if orig_link.is_empty() { format!("U10S_{num}") } else { format!("[url={orig_link}]U10S_{num}[/url]") };
+    // `agent_built` false (`--not-agent-built`): a map the community altered by hand (the
+    // Altered club's part 1/2 sets of 2026-10-31) — no AI-agent line, nothing else differs
+    let head = if agent_built { "This map was created using vjeux's AI agent (automated alteration tool).\n\n" } else { "" };
     format!(
-        "This map was created using vjeux's AI agent (automated alteration tool).\n\n{alteration} alteration of U10S_{num} from the Under 10 Seconds maps by Everios96. Original map: {orig}\n\nAuthor times hunted by the Everios96 Community; the AT on this map was set by: {hunter}\n\nAll released maps are playable in the Altered U10S club. Discord for the club: https://discord.gg/zNbJN5sH5D"
+        "{head}{alteration} alteration of U10S_{num} from the Under 10 Seconds maps by Everios96. Original map: {orig}\n\nAuthor times hunted by the Everios96 Community; the AT on this map was set by: {hunter}\n\nAll released maps are playable in the Altered U10S club. Discord for the club: https://discord.gg/zNbJN5sH5D"
     )
 }
 
@@ -537,6 +589,7 @@ fn run(args: &[String]) -> Result<(), String> {
             let playlist = flag(args, "--playlist").ok_or("batch needs --playlist playlist.json")?;
             let sheet = flag(args, "--sheet").ok_or("batch needs --sheet u10s-tags.csv")?;
             let maps_dir = flag(args, "--maps-dir").ok_or("batch needs --maps-dir DIR")?;
+            let agent_built = !args.iter().any(|a| a == "--not-agent-built");
             let alteration = flag(args, "--alteration").ok_or("batch needs --alteration Tiny|Dirt|…")?;
             let surface: Option<u32> = flag(args, "--surface-tag").and_then(|t| t.parse().ok());
             let done_path = flag(args, "--done").ok_or("batch needs --done DONE.tsv")?;
@@ -578,7 +631,7 @@ fn run(args: &[String]) -> Result<(), String> {
                     difficulty: difficulty.clone(),
                     routes: "0".into(),
                     tags: tags.clone(),
-                    comments: description(&alteration, &num, &link, &hunter),
+                    comments: description(&alteration, &num, &link, &hunter, agent_built),
                     unlisted,
                 };
                 println!("[{}] {name} tags {} hunter {hunter}", n + 1, tags.join(","));
