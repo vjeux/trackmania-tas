@@ -754,6 +754,9 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
     }
     m.modifier = modifier_links(store, &plan.effective_mods);
     m.collision_redress = modifier_redress(store, &plan.effective_mods, &m.modifier);
+    // the water roads' channel bed is wound downward and drawn two-sided by the game:
+    // its horizontal faces are floor (TINY_WATER_BED_BOTH=0 restores the one-sided test)
+    m.bed_both_sided = name.starts_with("RoadWater") && std::env::var("TINY_WATER_BED_BOTH").map(|v| v != "0").unwrap_or(true);
     apply_surface_swap(store, &mut m, name);
     if std::env::var("TINY_SPLIT_DEBUG").is_ok() && name.contains("Water") {
         m.notes.push(format!("split setup: name={name} split_vertical={:?} link_rewrite={}", m.split_vertical, m.link_rewrite.len()));
@@ -1592,8 +1595,18 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
                 // material — the usual case), filter EVERY visual: up-facing is the floor
                 let all = deck_mat.is_empty();
                 let (mut kept, mut dropped) = (0usize, 0usize);
+                // the links the game draws two-sided (the water roads' bed `Underwater` /
+                // `Waterground`, the pools' coving): their down-wound floor faces count as
+                // floor too (|ny|), else the lower bed vanishes — Tarmac 127, 2026-11-01
+                // (a water ROAD's whole copy is bed or wall and the walls are vertical, so
+                // |ny| ≥ 0.8 admits no wall; pools keep the one-sided test — their coving
+                // and rims were tuned on it, 2026-10-17). TINY_WATER_BED_BOTH=0 restores.
+                let both = name.starts_with("RoadWater") && std::env::var("TINY_WATER_BED_BOTH").map(|v| v != "0").unwrap_or(true);
                 for v in m.visuals.iter_mut().filter(|v| all || deck_mat.contains(&v.material)) {
-                    if let Ok((k, d)) = crate::static_item::build::keep_up_faces(&mut v.visual, min_ny) {
+                    crate::static_item::build::KEEP_UP_FACES_BOTH.with(|b| b.set(both));
+                    let r = crate::static_item::build::keep_up_faces(&mut v.visual, min_ny);
+                    crate::static_item::build::KEEP_UP_FACES_BOTH.with(|b| b.set(false));
+                    if let Ok((k, d)) = r {
                         kept += k;
                         dropped += d;
                     }

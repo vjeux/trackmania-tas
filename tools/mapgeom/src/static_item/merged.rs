@@ -260,6 +260,9 @@ pub struct Merged {
     /// planar XZ UVs at that scale — the water overlays dress the driving surface as the
     /// deck, and the quad's own UVs are all zero (2026-09-24)
     pub water_planar_uv: Option<f32>,
+    /// A water ROAD bake: the two-sided bed links' down-wound horizontal faces count as
+    /// floor (`KEEP_UP_FACES_BOTH`) in the split and in the floor filter (2026-11-01).
+    pub bed_both_sided: bool,
     /// The source model's CPlugGameSkin header chunk (0x090F4000), verbatim
     /// — see `BuildOpts::skin`. Set from the pack item file or the block
     /// info file; the built item carries it in its own header.
@@ -1755,7 +1758,16 @@ impl Merged {
                 }
                 if let Some(raw) = self.raw_slot_of(mat) {
                     if raw != mat {
-                        if let Ok(up) = crate::static_item::build::up_facing_mask(&v, min_ny) {
+                        // a two-sided water link (the channel bed `Underwater`/`Waterground`
+                        // of a water ROAD, wound downward by Nadeo and drawn two-sided): its
+                        // down-wound horizontal faces are the FLOOR, judged by |ny| — else
+                        // the whole lower bed read as "underside, no floor" and kept the
+                        // game's look under the water (Tarmac 127, 2026-11-01)
+                        let both = self.bed_both_sided && self.two_sided_links.iter().any(|t| self.materials.get(raw).and_then(|m| m.link()).map(|l| l.ends_with(&format!("\\{t}"))).unwrap_or(false));
+                        crate::static_item::build::KEEP_UP_FACES_BOTH.with(|b| b.set(both));
+                        let mask = crate::static_item::build::up_facing_mask(&v, min_ny);
+                        crate::static_item::build::KEEP_UP_FACES_BOTH.with(|b| b.set(false));
+                        if let Ok(up) = mask {
                             let down: Vec<bool> = up.iter().map(|u| !*u).collect();
                             let (n_up, n_down) = (up.iter().filter(|u| **u).count(), down.iter().filter(|d| **d).count());
                             // nothing drivable in this visual (a plinth's sides and underside,

@@ -948,8 +948,10 @@ fn main() {
                     let pos = &st.positions;
                     let mut bins: std::collections::BTreeMap<i32, (f64, usize)> = std::collections::BTreeMap::new();
                     let mut side_area = 0.0f64;
-                    for t in v.indices.chunks(3) {
-                        if t.len() < 3 {
+                    // decoded like --probe (2026-11-01): the raw list is the delta-chain form
+                    let decoded = mapgeom::geom::decode_indices(&v.indices, v.index_is_absolute, pos.len());
+                    for t in &decoded {
+                        if t[0] < 0 || t[1] < 0 || t[2] < 0 {
                             continue;
                         }
                         let (Some(p0), Some(p1), Some(p2)) = (pos.get(t[0] as usize), pos.get(t[1] as usize), pos.get(t[2] as usize)) else { continue };

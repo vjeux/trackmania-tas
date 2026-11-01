@@ -3240,7 +3240,7 @@ pub fn up_facing_mask(v: &super::visual::CPlugVisualIndexedTriangles, min_ny: f3
         .indices
         .chunks(3)
         .filter(|t| t.len() == 3)
-        .map(|tri| tri.iter().all(|i| normals.get(*i as usize).map(|n| n[1] >= min_ny).unwrap_or(false)))
+        .map(|tri| tri.iter().all(|i| normals.get(*i as usize).map(|n| if KEEP_UP_FACES_BOTH.with(|b| b.get()) { n[1].abs() >= min_ny } else { n[1] >= min_ny }).unwrap_or(false)))
         .collect())
 }
 
@@ -3287,11 +3287,21 @@ pub fn keep_up_faces(v: &mut super::visual::CPlugVisualIndexedTriangles, min_ny:
     let Some(ib) = v.index_buffer.as_mut() else { return Ok((0, 0)) };
     let mut kept: Vec<u32> = Vec::with_capacity(ib.indices.len());
     let (mut k, mut d) = (0usize, 0usize);
+    // KEEP_UP_FACES_BOTH (set by the caller for a link the game draws two-sided): a face
+    // whose vertex normals point DOWN is a floor too when it is a horizontal-ish sheet seen
+    // from above through water — Nadeo authors the water roads' channel bed (`Underwater`,
+    // the lower metre of `RoadWater*VFCInside*`, 388 m² on the chicane) and the pools'
+    // coving with inward/downward normals and renders them two-sided. Judged by |ny|: the
+    // triangle is kept with its winding as is (the two-sided pass adds the other side).
+    // Found 2026-11-01 on Tarmac 127: the whole lower bed was dropped as "wall/rim" and
+    // the game's own brown bed showed through the water (Everios96: "you can even see the
+    // dirt in your screenshot").
+    let both = KEEP_UP_FACES_BOTH.with(|b| b.get());
     for tri in ib.indices.chunks(3) {
         if tri.len() < 3 {
             continue;
         }
-        let up = tri.iter().all(|i| normals.get(*i as usize).map(|n| n[1] >= min_ny).unwrap_or(false));
+        let up = tri.iter().all(|i| normals.get(*i as usize).map(|n| if both { n[1].abs() >= min_ny } else { n[1] >= min_ny }).unwrap_or(false));
         if up {
             kept.extend_from_slice(tri);
             k += 1;
@@ -3301,6 +3311,11 @@ pub fn keep_up_faces(v: &mut super::visual::CPlugVisualIndexedTriangles, min_ny:
     }
     ib.indices = kept;
     Ok((k, d))
+}
+
+thread_local! {
+    /// `keep_up_faces` judges |ny| instead of ny while this is set (a two-sided water link).
+    pub static KEEP_UP_FACES_BOTH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// The up-facing (ny ≥ `min_ny`) triangles' area by 0.25 m height bin, plus the
