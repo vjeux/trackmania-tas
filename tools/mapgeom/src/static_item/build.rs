@@ -150,6 +150,14 @@ pub fn add_prefab(store: &mut crate::store::DataStore, path: &str, at: &Xform, s
         };
         constraints.push((target, modified_constraint_path(store, m, &cp), params));
     }
+    // TINY_DECK_ENTITY_ONLY=1 (custom blocks, 10-31): keep only the static objects whose Solid2 names a DECK material
+    // (RoadTech/RoadDirt/RoadIce/RoadBump/PlatformTech) — the game draws the archetype's other entities (kerbs, lamps,
+    // logos, terrain parts) itself for a custom block; sub-prefabs are still followed (a vista deck sits one level down).
+    let deck_only = std::env::var("TINY_DECK_ENTITY_ONLY").map(|v| v == "1").unwrap_or(false);
+    let names_deck = |so: &super::item::CPlugStaticObjectModel| -> bool {
+        let Some(s2) = so.solid2() else { return false };
+        s2.materials.iter().any(|r| ext_name(r.index).map(|p| { let st = p.rsplit('\\').next().unwrap_or(&p).to_ascii_lowercase(); ["roadtech.material.gbx", "roaddirt.material.gbx", "roadice.material.gbx", "roadbump.material.gbx", "platformtech.material.gbx"].contains(&st.as_str()) }).unwrap_or(false))
+    };
     for (i, e) in prefab.ents.iter().enumerate() {
         let iso = compose(at, &super::prefab::CPlugPrefab::entity_iso(e));
         match e.model.inline.as_deref() {
@@ -159,6 +167,11 @@ pub fn add_prefab(store: &mut crate::store::DataStore, path: &str, at: &Xform, s
                     m.notes.push(format!("{path} entity {i}: static part skipped (strip item k > 0 carries the strip alone)"));
                     continue;
                 }
+                if deck_only && !names_deck(so) {
+                    m.notes.push(format!("{path} entity {i}: non-deck static object skipped (deck entity only)"));
+                    continue;
+                }
+                if deck_only { m.notes.push(format!("{path} entity {i}: DECK ENTITY (depth {depth})")); }
                 // Physics: the game's library table first, the .Material.Gbx's
                 // own surface id (usually 0) next, else the object's most
                 // common collision physics.

@@ -4314,7 +4314,7 @@ fn main() {
                                         std::fs::write(dir.join(&name), &bytes).unwrap_or_else(|e| die(e.to_string()));
                                         built += 1; total += bytes.len();
                                         first_of_sig.insert(sig.clone(), name.clone());
-                                        let notes: Vec<String> = m.notes.iter().filter(|n| n.contains("waypoint") || n.contains("trigger") || n.contains("not embedded")).take(3).cloned().collect();
+                                        let notes: Vec<String> = m.notes.iter().filter(|n| n.contains("waypoint") || n.contains("trigger") || n.contains("not embedded") || n.contains("DECK ENTITY")).take(6).cloned().collect();
                                         if blocks {
                                             table.push(format!("{surface}\t{kind}\t{}\t{add}\t{key}\t{env_tag}\t{}/{name}\t{}\t{dv}\t{rt}\t{gp}\t{graft_note}{}", *ground as u8, if *ground { "Ground" } else { "Air" }, bytes.len(), notes.join(" / ")));
                                         } else {
