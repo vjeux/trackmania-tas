@@ -370,6 +370,29 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
             }
         }
     }
+    // THE OPEN ROADS' PATH, per set (Everios96 2026-11-01 04:59: "scan all the path+penalty
+    // blocks, thats 4 groups: road+slowgrass, dirt+sand, ice+snow, grass+slowgrass … Penalty
+    // stays the same, unless theres a rule like for icy or wet wood, and the drivable path
+    // changes per alteration"). The four Open families share ONE prefab set (OpenTech\…)
+    // whose path is the `OpenTechBorders` + `PlatformTech` slots and whose shoulders are
+    // `DecoHill2`, all three dressed by the block's terrain modifier. mapgeom's plan now
+    // BAKES a foreign-family Open block (no rename: the twin would swap the shoulders too);
+    // these scoped rows give the PATH the set's modifier look + physics, explicit rows win
+    // over the block's own modifier (merged.rs), the shoulders match no row and keep theirs
+    // (Icy / wet wood re-dress DecoHill2 to snow through their own rows). Tech, Wood and
+    // Magnet already carry global rows for both slots.
+    if let Some(folder) = match s { "Dirt" => Some("PlatformDirt"), "Grass" => Some("PlatformGrass"), "Ice" => Some("PlatformIce"), "Plastic" => Some("PlatformPlastic"), _ => None } {
+        // PlatformPlastic has no OpenTechBorders file: the plastic deck material stands in
+        let path = if s == "Plastic" { format!("Stadium\\Media\\Modifier\\{folder}\\PlatformTech") } else { format!("Stadium\\Media\\Modifier\\{folder}\\OpenTechBorders") };
+        let add = format!("[Open*]OpenTechBorders={path};[Open*]PlatformTech=Stadium\\Media\\Modifier\\{folder}\\PlatformTech");
+        match env.iter_mut().find(|(k, _)| k == "TINY_REDRESS_SCOPED") {
+            Some((_, v)) => {
+                v.push(';');
+                v.push_str(&add);
+            }
+            None => env.push(("TINY_REDRESS_SCOPED".to_string(), add)),
+        }
+    }
     // TINY_REDRESS_SCOPED_EXTRA=[glob]Stem=Link[;…] (the caller's own scoped rows, appended
     // after the set's: the bobsleigh bowl A/Bs of 2026-10-29 swap one material of one block
     // family without touching the set's rows)

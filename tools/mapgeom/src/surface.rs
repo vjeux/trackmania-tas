@@ -683,10 +683,16 @@ fn plan_one_dry(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, cou
     // for the tech twin's GRASS ones. They bake as a re-dressed copy of their OWN shape
     // instead: the `RoadDirt` deck takes the asphalt row, the hill shoulders match no row
     // and stay what they were. TINY_TECH_OPEN_RENAME=1 restores the rename.
-    if s == "Tech" && name.starts_with("Open") && !name.starts_with("OpenTech") && std::env::var("TINY_TECH_OPEN_RENAME").map(|v| v != "1").unwrap_or(true) {
+    // … and every other set the same way since 2026-11-01 04:59 (Everios96: "Penalty stays
+    // the same, unless theres a rule like for icy or wet wood, and the drivable path changes
+    // per alteration" — the four Open families, v2 onwards): the set's scoped rows dress the
+    // path slots, the shoulders keep the block's own modifier (or the set's snow rule).
+    // TINY_OPEN_RENAME=1 restores the twin rename (TINY_TECH_OPEN_RENAME=1 for Tech alone).
+    let open_rename = std::env::var("TINY_OPEN_RENAME").map(|v| v == "1").unwrap_or(false) || (s == "Tech" && std::env::var("TINY_TECH_OPEN_RENAME").map(|v| v == "1").unwrap_or(false));
+    if name.starts_with("Open") && !name.starts_with(&format!("Open{s}")) && !open_rename {
         if let Ok(src) = idx.load(store, &src_path) {
             if base_prefab(src).is_some() {
-                return mk(Action::Bake, "", "tarmac keeps the open road's shoulders: own shape, asphalt deck only".into());
+                return mk(Action::Bake, "", format!("{s} keeps the open road's shoulders: own shape, the path re-dressed only"));
             }
         }
     }
