@@ -163,6 +163,14 @@ pub fn candidate(name: &str, s: &str) -> Option<String> {
     // later against the pack (it will not exist) and reported as `none`.
     if let Some(rest) = name.strip_prefix("Road") {
         if let Some((_a, tail)) = strip_surface_word(rest) {
+            // a transition INTO the snow theme's plank road (`RoadTechToThemeSnowRoad`,
+            // `…X2`): the tail is not a surface word, so under Tech the candidate used to
+            // be the name itself ("already Tech") and the WOOD half stayed wood (Everios96
+            // 2026-11-01, Tarmac 152/159/185 "some wood roads not converted"). The pack has
+            // no `…Tech` twin → the plan bakes a re-dressed copy (plank stems → platform tech).
+            if _a == s && tail.starts_with("ToThemeSnowRoad") {
+                return Some(format!("{name}{s}"));
+            }
             if let Some(after_to) = tail.strip_prefix("ToRoad") {
                 if let Some((b, tail2)) = strip_surface_word(after_to) {
                     if _a == s && b == s {
@@ -668,6 +676,20 @@ fn plan_one_dry(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, cou
     let Some(src_path) = idx.path_for(name) else {
         return mk(Action::Keep, "", "source model not in the pack".into());
     };
+    // TARMAC keeps the OPEN roads' shoulders (Everios96 2026-10-24 "change the driving
+    // surfaces to asphalt/tarmac, penalty surfaces dont change"; 2026-11-01, Tarmac
+    // 147/148/190 "tarmac blocks with penalty on the sides have the incorrect penalty"):
+    // the `Open<X>Road…` / `Open<X>Hills…` → `OpenTech…` rename swapped the dirt shoulders
+    // for the tech twin's GRASS ones. They bake as a re-dressed copy of their OWN shape
+    // instead: the `RoadDirt` deck takes the asphalt row, the hill shoulders match no row
+    // and stay what they were. TINY_TECH_OPEN_RENAME=1 restores the rename.
+    if s == "Tech" && name.starts_with("Open") && !name.starts_with("OpenTech") && std::env::var("TINY_TECH_OPEN_RENAME").map(|v| v != "1").unwrap_or(true) {
+        if let Ok(src) = idx.load(store, &src_path) {
+            if base_prefab(src).is_some() {
+                return mk(Action::Bake, "", "tarmac keeps the open road's shoulders: own shape, asphalt deck only".into());
+            }
+        }
+    }
     // TINY_DIRT_KEEP_GEOMETRY=1 (Everios96 2026-09-26 14:42Z, U10S_57: "change the surface of
     // that flat road block to dirt, but keep its geometry"): under DIRT a ROAD never takes
     // its vanilla dirt twin — the RoadDirt family is a TROUGH (deck 0.5 m at the centre vs

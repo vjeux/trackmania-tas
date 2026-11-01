@@ -577,6 +577,13 @@ impl Merged {
         // what this slot looked like BEFORE the swap, for `split_vertical`
         let origin = (link.to_string(), physics);
         let was_rewritten = self.link_rewrite.iter().any(|(from, _, _)| link == from || link.rsplit('\\').next() == Some(from.as_str()));
+        // an explicit row that NAMES a link is the dress, full stop: the block's terrain
+        // modifier below must not shadow it again. `PlatformTech=Material\PlatformTech`
+        // on an `OpenDirtRoad` (modifier PlatformDirt) used to come back out as
+        // `Modifier\PlatformDirt\PlatformTech` — the dirt deck the row was there to
+        // replace (Tarmac 147/190, 2026-11-01). An EMPTY replacement (physics only) still
+        // takes the modifier's look.
+        let mut explicit_dress = false;
         let (link, physics) = match self.link_rewrite.iter().find(|(from, _, _)| link == from || link.rsplit('\\').next() == Some(from.as_str())) {
             Some((_, to, phys)) if to.is_empty() => {
                 forced_physics = Some(*phys);
@@ -584,13 +591,14 @@ impl Merged {
             }
             Some((_, to, phys)) => {
                 rewritten = to.clone();
+                explicit_dress = true;
                 (rewritten.as_str(), *phys)
             }
             None => (link, physics),
         };
         let modified;
         let link = match link.strip_prefix("Stadium\\Media\\Material\\") {
-            Some(stem) if !self.modifier.is_empty() => {
+            Some(stem) if !self.modifier.is_empty() && !explicit_dress => {
                 let by_stem = |want: &str| self.modifier.iter().find(|m| m.rsplit('\\').next().map(|t| t.strip_suffix(self.modifier_suffix.as_str())) == Some(Some(want))).cloned();
                 // The gameplay-gate prefabs (Special8m/16m/24m/32m) are
                 // authored in their Turbo dress; a gate item's

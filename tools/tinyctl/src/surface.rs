@@ -133,10 +133,26 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
         // ramps, tubes) takes the asphalt road material; the POOL decks take the tech PLATFORM
         // look, as every set gives its pools its platform dress; `OpenTechBorders` is already
         // the tech border and stays; the grass shoulders (`DecoHill2`) are never listed.
+        // … the snow PLANK roads (`ThemeSnowRoad*`) take the tech PLATFORM look, not the
+        // road one (Everios96 2026-11-01 02:02, Tarmac 152: "the wood roads that have been
+        // converted should use platform texture, not road texture (also other maps)")
+        // … and the COMMUNITY platform items' decks: every `Modifier\Platform<X>\PlatformTech`
+        // (the game's PlatformTech shape in the X look — what TM_Items_Sorted's PD/PP/PI/PG
+        // pieces and the DirtRamp custom block are painted with) collapses onto the plain
+        // `Material\PlatformTech`; the rows match by stem, so the one row covers every X
+        // and maps the plain material onto itself (Everios96 2026-11-01: Tarmac 171/174/
+        // 179/183/191 "tarmac physics, but look like dirt/grass/plastic/ice", 135 "ramp is dirt")
+        // … and the OPEN roads' path (`OpenTechBorders`: the wide strip of the open-road
+        // prefab — 32 of its 80 hull triangles; under the Dirt modifier it is the "narrow
+        // dirt path", Dirt 6) maps onto its own plain material: an explicit row is not
+        // shadowed by the block's modifier any more (merged.rs), so the path drives
+        // asphalt while the `DecoHill2` shoulders keep the modifier's penalty sand
+        // (Everios96 2026-11-01 02:58: "a tarmac path with penalty sand on the side")
         "Tech" => road_stems
             .iter()
-            .filter(|st| **st != "RoadTech" && **st != "OpenTechBorders")
-            .map(|st| if matches!(*st, "Underwater" | "Waterground" | "RoadWater" | "PlatformWater") { format!("{st}=Stadium\\Media\\Material\\PlatformTech") } else { format!("{st}=Stadium\\Media\\Material\\RoadTech") })
+            .filter(|st| **st != "RoadTech")
+            .map(|st| if matches!(*st, "Underwater" | "Waterground" | "RoadWater" | "PlatformWater") || st.starts_with("ThemeSnowRoad") { format!("{st}=Stadium\\Media\\Material\\PlatformTech") } else if *st == "OpenTechBorders" { format!("{st}=Stadium\\Media\\Material\\OpenTechBorders") } else { format!("{st}=Stadium\\Media\\Material\\RoadTech") })
+            .chain(std::iter::once("PlatformTech=Stadium\\Media\\Material\\PlatformTech".to_string()))
             .collect(),
         other => return Err(format!("surface `{other}`: no dress table")),
     };
