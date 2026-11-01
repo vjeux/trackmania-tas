@@ -34,7 +34,9 @@ pub fn build(opts: &TestMapOpts) -> Result<Vec<String>, String> {
     let m0 = MapFile::try_load(Path::new(&opts.source))?;
     let collection = m0.body_collections().map(|c| c[0].1).unwrap_or(26);
     let ground = tmmaps::map::ground_y(collection);
-    let grass_row = m0.blocks.iter().chain(m0.baked.iter()).filter(|b| b.flags != 0xFFFF_FFFF && b.free_pos.is_none() && b.name.eq_ignore_ascii_case("Grass")).map(|b| b.coords().1).min().ok_or("source map: no Grass row")?;
+    // the ground row: Stadium's baked Grass tiles, else the vista's default zone tile (RedIsland Dirt, BlueBay Sea,
+    // GreenCoast Grass, WhiteShore Land) — the most common ground-row tile name
+    let grass_row = m0.blocks.iter().chain(m0.baked.iter()).filter(|b| b.flags != 0xFFFF_FFFF && b.free_pos.is_none() && ["Grass", "Dirt", "Sea", "Land"].iter().any(|n| b.name.eq_ignore_ascii_case(n))).map(|b| b.coords().1).min().ok_or("source map: no Grass/Dirt/Sea/Land row")?;
     if m0.items.is_empty() {
         return Err("source map has no item to clone as the placement donor".into());
     }

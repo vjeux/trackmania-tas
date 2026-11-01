@@ -156,7 +156,9 @@ pub fn add_prefab(store: &mut crate::store::DataStore, path: &str, at: &Xform, s
     // cliff caps, any other inline static object). So: inline static objects and other external prefabs are merged,
     // TrackBorders/TreeGen externals skipped; the decision per prefab is noted as `cbents\ttotal\tmerged\tskipped`.
     let deck_only = std::env::var("TINY_DECK_ENTITY_ONLY").map(|v| v == "1").unwrap_or(false);
-    let regenerated = |p: &str| -> bool { let l = p.to_ascii_lowercase(); l.contains("\\prefab\\trackborders\\") || l.contains("\\prefab\\treegen\\") };
+    // rev 4 (Hugo's RedIsland frame, 11-01): the TrackBorders kerb prefabs are NOT regenerated for a custom block —
+    // only the TreeGen pieces (lamps, barrier supports) and the SPlacement vegetation are; kerbs merge again.
+    let regenerated = |p: &str| -> bool { let l = p.to_ascii_lowercase(); l.contains("\\prefab\\treegen\\") };
     let (mut cb_merged, mut cb_skipped) = (0usize, 0usize);
     for (i, e) in prefab.ents.iter().enumerate() {
         if deck_only {
