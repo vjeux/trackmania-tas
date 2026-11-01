@@ -56,6 +56,8 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     }
     std::fs::create_dir_all(&outdir).map_err(|e| format!("{}: {e}", outdir.display()))?;
     let wsx = Wsx::new(args);
+    // the game this run launches is closed when the run ends (--keep-game keeps it; gameclose.rs)
+    let _game = crate::gameclose::GameGuard::new(&wsx, args);
     crate::inputidle::gate(&wsx, args, "tinyctl shoot")?;
     let remote_dir = format!("{SHOTS}/{tag}");
     let r_orig = format!("{STAGE}/{tag}Orig.Map.Gbx");

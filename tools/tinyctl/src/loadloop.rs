@@ -40,6 +40,8 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     let shootctl = f("--box-shootctl").unwrap_or_else(|| format!("{BOX_TOOLS}/shootctl"));
     std::fs::create_dir_all(&outdir).map_err(|e| format!("{}: {e}", outdir.display()))?;
     let wsx = Wsx::new(args);
+    // the game this run launches is closed when the run ends (--keep-game keeps it; gameclose.rs)
+    let _game = crate::gameclose::GameGuard::new(&wsx, args);
     crate::inputidle::gate(&wsx, args, "tinyctl loadloop")?;
     let mut remote = Vec::new();
     // `--box-maps A,B,…` (or `--box-maps-file LIST`, one path a line): maps that already

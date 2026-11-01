@@ -17,6 +17,7 @@
 
 mod boxbuild;
 mod boxfront;
+mod gameclose;
 mod iconcrops;
 mod tileicons;
 mod credits;
@@ -116,6 +117,14 @@ const USAGE: &str = r#"tinyctl — tiny-campaign operations (Rust, no shell)
         in play mode (or waits while somebody drives it), then pulls the new
         `…_PersonalBest_TimeAttack.Replay.Gbx` with its md5 verified. Only a
         FINISHED run autosaves; a map needing steering wants --wait-only or a tape
+  (shoot | play | loadloop | remote-drive) … [--keep-game]
+        a game these runs LAUNCH is closed by pid when the run ends (vjeux 2026-10-31:
+        "close the game if you're not using it"); --keep-game (or TINY_KEEP_GAME=1)
+        keeps it for the next run of a sequence — pass it on all but the last
+  tinyctl box-close-game [--idle-s 600] [--dry-run]
+        the sweep: close an agent's leftover game on an idle box (lock dead/free/ours,
+        no shootctl run driving it, no input for --idle-s); a held foreign lock or
+        recent input refuses — a human's game is never closed
   tinyctl camcheck --orig cam-O.tsv --tiny cam-T.tsv --anchor sx,sy,sz:tx,ty,tz [--scale 0.5] [--trigger lo:hi]
         two --camlog-ms logs aligned on the intro's first camera cut: the tiny camera
         vs the original's through the transform, per 250 ms; the in-game trigger jump
@@ -218,6 +227,7 @@ fn main() {
         // window is iconic (2026-10-28) — and put it back afterwards
         "icon-crops" => iconcrops::cmd(rest),
         "tile-icons" => tileicons::cmd(rest),
+        "box-close-game" => gameclose::cmd(rest),
         "box-front" => {
             let wsx = wsx::Wsx::new(rest);
             // the foreground dance taps a key on the box (the OS idle clock restarts): log
