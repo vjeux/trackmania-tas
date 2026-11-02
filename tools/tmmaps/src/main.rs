@@ -424,6 +424,39 @@ fn main() {
         // records added to a map (the cell as the game counts it; flags as the census prints
         // them, hex). Everios96 2026-10-25 on wet wood 197: "place a second water after the
         // start" — two WaterBase under the booster pads so the car stays in water to 100 % wet.
+        // tmmaps promote-baked MAP --out OUT [--only NAME,...]: every GENERATED record (the
+        // baked chunk 0x03043048 — pillars, stage bases, wall clips the game derived from the
+        // placed blocks) re-placed as an AUTHORED grid block, the baked list emptied. The
+        // EDITOR rebuilds generated pieces from the placed blocks on load, so a piece whose
+        // parent became one of our items vanished from every editor render (the September
+        // thumbnails, 2026-11-02); play mode draws the saved pieces as they are. A copy with
+        // the pieces promoted renders them in the editor too — for the thumbnail only, the
+        // shipped file stays as it is. Free (non-grid) baked records are promoted with their
+        // free position.
+        "promote-baked" => {
+            let src = args.get(2).cloned().unwrap_or_else(|| { eprintln!("tmmaps promote-baked MAP --out OUT [--only A,B]"); std::process::exit(2) });
+            let out = tmmaps::cli::flag(&args, "--out").map(String::from).unwrap_or_else(|| { eprintln!("--out OUT"); std::process::exit(2) });
+            let only: Option<Vec<String>> = tmmaps::cli::flag(&args, "--only").map(|s| s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect());
+            let m = tmmaps::map::MapFile::load(std::path::Path::new(&src));
+            let pick = |b: &tmmaps::map::BlockRec| only.as_ref().map(|o| o.iter().any(|n| *n == b.name)).unwrap_or(true);
+            let specs: Vec<tmmaps::map::FreeBlockSpec> = m
+                .baked
+                .iter()
+                .filter(|b| pick(b))
+                .map(|b| {
+                    let (cx, cy, cz) = b.coords();
+                    match (b.free_pos, b.free_rot) {
+                        (Some(pos), Some(rot)) => tmmaps::map::FreeBlockSpec { name: b.name.clone(), author: None, flags: b.flags & !tmmaps::map::FREE_BLOCK_FLAG, pos, rot, grid: None, dir: 0 },
+                        _ => tmmaps::map::FreeBlockSpec { name: b.name.clone(), author: None, flags: b.flags, pos: [0.0; 3], rot: [0.0; 3], grid: Some([cx, cy, cz]), dir: b.dir },
+                    }
+                })
+                .collect();
+            let n = specs.len();
+            let mut m = m;
+            let r = m.remove_and_add_blocks(|_| false, |b| pick(b), &specs);
+            m.write_to(std::path::Path::new(&out)).unwrap_or_else(|e| panic!("{e}"));
+            println!("{out}: {n} generated record(s) promoted to authored blocks ({} baked dropped, {} authored before)", r.baked, m.blocks.len());
+        }
         "add-blocks" => {
             let src = std::path::PathBuf::from(&args[2]);
             let out = std::path::PathBuf::from(tmmaps::cli::flag(&args, "--out").expect("add-blocks needs --out OUT"));
