@@ -1,0 +1,227 @@
+//! `tinyctl rethumb` — new thumbnails for LIVE maps, from the devserver, end to end:
+//!
+//! ```text
+//! tinyctl rethumb --uids-file U.tsv --work DIR [--token-dir /tmp/tinyctl-tokens]
+//!                 [--no-promote] [--publish] [--jobs 4] [--resume]
+//! ```
+//!
+//! `U.tsv`: `uid<TAB>name` per live map (an inventory slice). Per map:
+//!
+//! 1. the live file (`nadeo-here maps --fetch`, skipped when `DIR/live/<uid>.Map.Gbx` exists);
+//! 2. a RENDER COPY with the game's generated records promoted to authored blocks
+//!    (`tmmaps promote-baked`): the editor rebuilds pillars, stage bases and wall clips
+//!    from the placed blocks when it loads a map, and a piece whose parent became one of
+//!    our items never comes back — the September thumbnails lost them (Everios96
+//!    2026-11-02, "parts of blocks missing, like on 39") while play mode draws the saved
+//!    pieces as they are. Promoted, the editor renders them too. `--no-promote` renders
+//!    the live file itself;
+//! 3. the render copies pushed to the box, `tinyctl thumbs --editor` run there under
+//!    `tmdrive` (the game's own thumbnail camera, square, no UI; ~7 s a map);
+//! 4. the new JPEG lifted from each rendered copy and spliced into the LIVE file
+//!    (`tmmaps set-thumbnail`) → `DIR/final/<name>.Map.Gbx`: the shipped bytes are the
+//!    live map's, thumbnail aside (checked: the body hash is the live file's);
+//! 5. with `--publish`: `publish-batch` UPDATE in place (same uid — records kept; no
+//!    playlist touched), results in `DIR/results.tsv`, every row expected IDENTICAL.
+//!
+//! The box binaries are `/home/vjeux/bin/tinyctl-fix4` and `tmmaps-fix4` (this tree's
+//! builds; the box repo is another branch). Nothing here wipes, renames or re-ids a map.
+use crate::wsx::Wsx;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::Instant;
+
+const BOX_TINYCTL: &str = "/home/vjeux/bin/tinyctl-fix4";
+const BOX_TMMAPS: &str = "/home/vjeux/bin/tmmaps-fix4";
+const BOX_ROOT: &str = "/home/vjeux/rethumb";
+
+fn tool(name: &str) -> PathBuf {
+    std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join(name))).filter(|p| p.exists()).unwrap_or_else(|| PathBuf::from(name))
+}
+
+/// The header thumbnail's JPEG bytes, as stored.
+fn thumbnail_of(p: &Path) -> Result<Vec<u8>, String> {
+    let bytes = std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()))?;
+    let start = bytes.windows(15).position(|w| w == b"<Thumbnail.jpg>").ok_or_else(|| format!("{}: no <Thumbnail.jpg> in the header", p.display()))? + 15;
+    let end = start + bytes[start..].windows(16).position(|w| w == b"</Thumbnail.jpg>").ok_or_else(|| format!("{}: no </Thumbnail.jpg>", p.display()))?;
+    Ok(bytes[start..end].to_vec())
+}
+
+/// The bytes after the header (the body, compressed as stored): what must not change.
+fn body_hash(p: &Path) -> Result<String, String> {
+    let bytes = std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()))?;
+    let end = bytes.windows(16).position(|w| w == b"</Thumbnail.jpg>").ok_or("no thumbnail end")? + 16;
+    Ok(crate::batch::md5_hex(&bytes[end..]))
+}
+
+pub fn cmd(args: &[String]) -> Result<(), String> {
+    let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
+    let uids_file = PathBuf::from(f("--uids-file").ok_or("rethumb needs --uids-file U.tsv (uid<TAB>name)")?);
+    let work = PathBuf::from(f("--work").ok_or("rethumb needs --work DIR")?);
+    let token_dir = f("--token-dir").unwrap_or_else(|| "/tmp/tinyctl-tokens".into());
+    let promote = !tmmaps::cli::has(args, "--no-promote");
+    let publish = tmmaps::cli::has(args, "--publish");
+    let jobs = f("--jobs").unwrap_or_else(|| "4".into());
+    let t0 = Instant::now();
+    let rows: Vec<(String, String)> = std::fs::read_to_string(&uids_file)
+        .map_err(|e| format!("{}: {e}", uids_file.display()))?
+        .lines()
+        .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+        .map(|l| {
+            let mut it = l.split('\t');
+            (it.next().unwrap_or("").trim().to_string(), it.next().unwrap_or("").trim().to_string())
+        })
+        .filter(|(u, n)| !u.is_empty() && !n.is_empty())
+        .collect();
+    if rows.is_empty() {
+        return Err("rethumb: no uid rows".into());
+    }
+    let live_dir = work.join("live");
+    let render_dir = work.join("render");
+    let final_dir = work.join("final");
+    for d in [&live_dir, &render_dir, &final_dir] {
+        std::fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
+    }
+    let tinyctl = std::env::current_exe().map_err(|e| e.to_string())?;
+    let tmmaps = tool("tmmaps");
+
+    // 1. the live files
+    let missing: Vec<&(String, String)> = rows.iter().filter(|(u, _)| !live_dir.join(format!("{u}.Map.Gbx")).exists()).collect();
+    if !missing.is_empty() {
+        let list = work.join("fetch.tsv");
+        std::fs::write(&list, missing.iter().map(|(u, n)| format!("{u}\t{n}\n")).collect::<String>()).map_err(|e| e.to_string())?;
+        let out = Command::new(&tinyctl)
+            .env("TINYCTL_TOKEN_DIR", &token_dir)
+            .args(["nadeo-here", "maps", "--uids-file", &list.to_string_lossy(), "--fetch", &live_dir.to_string_lossy(), "--no-lock"])
+            .output()
+            .map_err(|e| e.to_string())?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        println!("[{:>4.0}s] fetch: {}", t0.elapsed().as_secs_f64(), text.lines().last().unwrap_or("").trim());
+    }
+    let still: Vec<&(String, String)> = rows.iter().filter(|(u, _)| !live_dir.join(format!("{u}.Map.Gbx")).exists()).collect();
+    if !still.is_empty() {
+        return Err(format!("rethumb: {} live file(s) missing after the fetch ({} …)", still.len(), still[0].0));
+    }
+
+    // 2. the render copies
+    let mut n_prom = 0usize;
+    for (u, _) in &rows {
+        let live = live_dir.join(format!("{u}.Map.Gbx"));
+        let render = render_dir.join(format!("{u}.Map.Gbx"));
+        if render.exists() {
+            continue;
+        }
+        if promote {
+            let out = Command::new(&tmmaps).args(["promote-baked", &live.to_string_lossy(), "--out", &render.to_string_lossy()]).output().map_err(|e| e.to_string())?;
+            if !out.status.success() || !render.exists() {
+                return Err(format!("promote-baked {u}: {}", String::from_utf8_lossy(&out.stderr).lines().last().unwrap_or("")));
+            }
+            n_prom += 1;
+        } else {
+            std::fs::copy(&live, &render).map_err(|e| e.to_string())?;
+        }
+    }
+    println!("[{:>4.0}s] render copies: {} ({} promoted this run)", t0.elapsed().as_secs_f64(), rows.len(), n_prom);
+
+    // 3. the box: push + the editor renders (resumable on the box side)
+    let wsx = Wsx::new(args);
+    let batch = work.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "batch".into());
+    let remote = format!("{BOX_ROOT}/{batch}");
+    wsx.sh(&format!("mkdir -p {remote}/in {remote}/out"))?;
+    let tar = work.join("render.tar");
+    let st = Command::new("tar").args(["cf", &tar.to_string_lossy(), "-C", &render_dir.to_string_lossy(), "."]).status().map_err(|e| e.to_string())?;
+    if !st.success() {
+        return Err("tar of the render copies failed".into());
+    }
+    wsx.push(&tar, &format!("{remote}/render.tar"))?;
+    wsx.sh(&format!("cd {remote}/in && tar xf {remote}/render.tar && rm -f {remote}/render.tar && ls {remote}/in/*.Map.Gbx > {remote}/list.tsv && wc -l < {remote}/list.tsv"))?;
+    println!("[{:>4.0}s] pushed {} render copies to {remote}/in", t0.elapsed().as_secs_f64(), rows.len());
+    let env = crate::remoteshots::ENV;
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        // the game, if not up, as its own lock step; then the loop under the lock
+        let _ = wsx.sh(&format!("{env}; tmdrive status | grep -q '^FREE' && (/mnt/c/Windows/System32/tasklist.exe | grep -qi trackmania.exe || tmdrive launch --timeout 180 --purpose rethumb --wait 60) ; true"));
+        let run = format!(
+            "{env}; cd {remote} && tmdrive run --purpose \"rethumb {batch}\" --wait 100 -- {BOX_TINYCTL} thumbs --editor --resume --list {remote}/list.tsv --outdir {remote}/out --tmmaps {BOX_TMMAPS} 2>&1 | tail -3"
+        );
+        let out = wsx.sh(&run).unwrap_or_else(|e| format!("bridge: {e}"));
+        println!("[{:>4.0}s] box: {}", t0.elapsed().as_secs_f64(), out.lines().last().unwrap_or("").chars().take(140).collect::<String>());
+        let done: usize = wsx.sh(&format!("ls {remote}/out/*.Map.Gbx 2>/dev/null | wc -l")).ok().and_then(|t| t.trim().parse().ok()).unwrap_or(0);
+        if done >= rows.len() {
+            break;
+        }
+        if attempt >= 3 {
+            return Err(format!("rethumb: {done}/{} rendered after {attempt} attempts — see {remote}/out/thumbs.tsv", rows.len()));
+        }
+        println!("[{:>4.0}s] {done}/{} rendered — again (attempt {})", t0.elapsed().as_secs_f64(), rows.len(), attempt + 1);
+    }
+    // the rendered copies back (one tar)
+    wsx.sh(&format!("cd {remote}/out && tar cf {remote}/out.tar *.Map.Gbx thumbs.tsv"))?;
+    let back = work.join("out.tar");
+    wsx.pull(&format!("{remote}/out.tar"), &back)?;
+    let out_dir = work.join("rendered");
+    std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
+    let st = Command::new("tar").args(["xf", &back.to_string_lossy(), "-C", &out_dir.to_string_lossy()]).status().map_err(|e| e.to_string())?;
+    if !st.success() {
+        return Err("untar of the rendered copies failed".into());
+    }
+    println!("[{:>4.0}s] pulled the rendered copies", t0.elapsed().as_secs_f64());
+
+    // 4. splice each new JPEG into the LIVE file
+    let mut manifest = String::new();
+    let mut n_same = 0usize;
+    for (u, n) in &rows {
+        let rendered = out_dir.join(format!("{u}.Map.Gbx"));
+        if !rendered.exists() {
+            return Err(format!("{u} ({n}): no rendered copy came back"));
+        }
+        let jpeg = thumbnail_of(&rendered)?;
+        let live = live_dir.join(format!("{u}.Map.Gbx"));
+        if thumbnail_of(&live)? == jpeg {
+            n_same += 1;
+        }
+        let jpg = work.join(format!("{u}.jpg"));
+        std::fs::write(&jpg, &jpeg).map_err(|e| e.to_string())?;
+        let fin = final_dir.join(format!("{n}.Map.Gbx"));
+        let out = Command::new(&tmmaps).args(["set-thumbnail", &live.to_string_lossy(), "--jpeg", &jpg.to_string_lossy(), "--out", &fin.to_string_lossy()]).output().map_err(|e| e.to_string())?;
+        if !out.status.success() || !fin.exists() {
+            return Err(format!("set-thumbnail {n}: {}", String::from_utf8_lossy(&out.stderr).lines().last().unwrap_or("")));
+        }
+        let _ = std::fs::remove_file(&jpg);
+        if body_hash(&fin)? != body_hash(&live)? {
+            return Err(format!("{n}: the final file's body differs from the live file's — refusing"));
+        }
+        if thumbnail_of(&fin)? != jpeg {
+            return Err(format!("{n}: the spliced thumbnail does not read back"));
+        }
+        manifest.push_str(&format!("{}\t{n}\n", fin.display()));
+    }
+    let man = work.join("manifest.tsv");
+    std::fs::write(&man, &manifest).map_err(|e| e.to_string())?;
+    println!("[{:>4.0}s] final files: {} (body = live, thumbnail new; {n_same} unchanged pictures)", t0.elapsed().as_secs_f64(), rows.len());
+    if !publish {
+        println!("not published (--publish); manifest {}", man.display());
+        return Ok(());
+    }
+
+    // 5. the in-place update
+    let results = work.join("results.tsv");
+    let st = Command::new(&tinyctl)
+        .args(["publish-batch", "--manifest", &man.to_string_lossy(), "--results", &results.to_string_lossy(), "--no-campaign", "--files-only", "--token-dir", &token_dir, "--jobs", &jobs])
+        .status()
+        .map_err(|e| e.to_string())?;
+    if !st.success() {
+        return Err("publish-batch failed".into());
+    }
+    let text = std::fs::read_to_string(&results).unwrap_or_default();
+    let mut by: HashMap<String, usize> = HashMap::new();
+    for l in text.lines().skip(1) {
+        *by.entry(l.split('\t').nth(7).unwrap_or("?").to_string()).or_default() += 1;
+    }
+    println!("[{:>4.0}s] published: {:?}", t0.elapsed().as_secs_f64(), by);
+    if by.get("IDENTICAL").copied().unwrap_or(0) != rows.len() {
+        return Err(format!("rethumb: {} of {} IDENTICAL — see {}", by.get("IDENTICAL").copied().unwrap_or(0), rows.len(), results.display()));
+    }
+    Ok(())
+}

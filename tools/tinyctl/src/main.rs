@@ -18,6 +18,7 @@
 mod boxbuild;
 mod boxfront;
 mod gameclose;
+mod rethumb;
 mod iconcrops;
 mod tileicons;
 mod credits;
@@ -228,6 +229,7 @@ fn main() {
         "icon-crops" => iconcrops::cmd(rest),
         "tile-icons" => tileicons::cmd(rest),
         "box-close-game" => gameclose::cmd(rest),
+        "rethumb" => rethumb::cmd(rest),
         "box-front" => {
             let wsx = wsx::Wsx::new(rest);
             // the foreground dance taps a key on the box (the OS idle clock restarts): log

@@ -54,7 +54,7 @@ fn curl(args: &[&str]) -> Result<(String, String), String> {
     Ok((body, code))
 }
 
-fn md5_hex(data: &[u8]) -> String {
+pub fn md5_hex(data: &[u8]) -> String {
     mapgeom::md5::md5(data).iter().map(|b| format!("{b:02x}")).collect()
 }
 
