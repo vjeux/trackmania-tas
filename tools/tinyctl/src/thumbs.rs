@@ -54,6 +54,14 @@ fn plugin_addr() -> &'static str {
 
 fn http_get(path: &str) -> Result<String, String> {
     let addr = plugin_addr();
+    // ONE GAME, ONE DRIVER (tmdrive): the plugin refuses a mutating route without the
+    // driver's lock token; `tmdrive run … -- tinyctl thumbs …` hands it down as
+    // TM_LOCK_TOKEN (the plugin ignores it on reads) — 2026-11-02
+    let path: String = match std::env::var("TM_LOCK_TOKEN").ok().filter(|t| !t.is_empty()) {
+        Some(t) => format!("{path}{}token={t}", if path.contains('?') { '&' } else { '?' }),
+        None => path.to_string(),
+    };
+    let path = path.as_str();
     let mut s = std::net::TcpStream::connect(addr).map_err(|e| format!("connect {addr}: {e}"))?;
     s.set_read_timeout(Some(std::time::Duration::from_secs(10))).ok();
     s.set_write_timeout(Some(std::time::Duration::from_secs(10))).ok();
@@ -303,17 +311,22 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         let _ = http_get("/thumbshot?done=1");
         poll_until(&["MENU", "IDLE"], 20_000)?;
     }
-    let mut cap_client = CapClient::start()?;
-    cap_client.capture(&format!("{CAP_WIN}\\_probe.jpg"))?;
-    let t_run = Instant::now();
-    let mut n_ok = 0usize;
-    let mut n_fail = 0usize;
     // --editor: the EDITOR-SAVE route (2026-09-15). The play-mode camera override never
     // took effect (the playground rewrites the camera every frame: every shot of the
     // 14/15 September run was the spawn camera). TM2020 renders the thumbnail from the
     // map's stored thumbnail camera on every editor save — square, stored fov, no UI:
     // open the map in the editor, save a scratch copy, lift its JPEG, splice it in.
     let editor_mode = tmmaps::cli::has(args, "--editor") || std::env::var("THUMBS_EDITOR").map(|v| v == "1").unwrap_or(false);
+    // the capture server (`\\.\pipe\tmcap`) serves the play-mode route only; the editor
+    // route lifts the JPEG the game itself wrote, so it needs no capture server (a box
+    // without one failed the probe before the first map, 2026-11-02)
+    let mut cap_client = if editor_mode { None } else { Some(CapClient::start()?) };
+    if let Some(c) = cap_client.as_mut() {
+        c.capture(&format!("{CAP_WIN}\\_probe.jpg"))?;
+    }
+    let t_run = Instant::now();
+    let mut n_ok = 0usize;
+    let mut n_fail = 0usize;
     let mut attempts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
     let mut retry_queue: Vec<usize> = Vec::new();
     let order: Vec<usize> = (0..maps.len()).collect();
@@ -367,6 +380,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             // again while it is still rising (two captures 250 ms apart agreeing
             // within 2 = stable), at most 8 times. Measured 2026-09-14: the veiled
             // frame reads ~45, the clear one ~110 on the same map.
+            let cap_client = cap_client.as_mut().ok_or("play-mode capture without a capture server")?;
             let mut cap = cap_client.capture(&jpg_win)?;
             let lum = |c: &str| c.split("lum=").nth(1).and_then(|r| r.split(' ').next()).and_then(|v| v.parse::<i32>().ok()).unwrap_or(0);
             let mut retries = 0;
