@@ -220,6 +220,12 @@ fn editor_shot(k: usize, src: &Path, out_map: &Path, tmmaps_bin: &str) -> Result
         std::thread::sleep(std::time::Duration::from_millis(150));
     }
     let _ = std::fs::remove_file(&staged);
+    // THUMBS_KEEP_SAVED=1: the editor's own save stays (what the editor made of the file —
+    // which records it kept or regenerated — is readable there, 2026-11-02)
+    if std::env::var("THUMBS_KEEP_SAVED").map(|v| v == "1").unwrap_or(false) {
+        let keep = out_map.with_extension("editor-saved.Map.Gbx");
+        let _ = std::fs::copy(&saved, &keep);
+    }
     let _ = std::fs::remove_file(&saved);
     let _ = std::fs::remove_file(&jpg_wsl);
     Ok((format!("editor {t_editor}ms saved {t_saved}ms quit {}ms", t0.elapsed().as_millis()), jpeg.len()))
@@ -258,6 +264,41 @@ fn poll_until(prefixes: &[&str], timeout_ms: u64) -> Result<String, String> {
     Err(format!("timeout after {timeout_ms} ms; last {last}"))
 }
 
+/// One key tap into the game window (keybd_event through PowerShell; the game is brought
+/// to the foreground first) — shootctl's `playshots::tap_key`, the same bytes.
+fn tap_key(name: &str, hold_ms: u64) -> Result<String, String> {
+    let (vk, scan, ext): (u8, u8, bool) = match name.to_ascii_uppercase().as_str() {
+        "ESC" | "ESCAPE" => (0x1B, 0x01, false),
+        "ENTER" | "RETURN" => (0x0D, 0x1C, false),
+        "SPACE" => (0x20, 0x39, false),
+        other => return Err(format!("key {other}: not a known name (ESC ENTER SPACE)")),
+    };
+    let (down, up) = if ext { (1u32, 3u32) } else { (0u32, 2u32) };
+    let script = format!(
+        "$sig = '[DllImport(\"user32.dll\")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, System.UIntPtr dwExtraInfo); \
+         [DllImport(\"user32.dll\")] public static extern bool SetForegroundWindow(System.IntPtr hWnd); \
+         [DllImport(\"user32.dll\")] public static extern void SwitchToThisWindow(System.IntPtr hWnd, bool fAltTab); \
+         [DllImport(\"user32.dll\")] public static extern System.IntPtr GetForegroundWindow();'; \
+         $k = Add-Type -MemberDefinition $sig -Name Keys3 -Namespace Thumbs -PassThru; \
+         $p = Get-Process Trackmania -ErrorAction SilentlyContinue | Select-Object -First 1; \
+         if (-not $p) {{ 'no Trackmania process'; exit 1 }}; \
+         $h = $p.MainWindowHandle; \
+         $k::keybd_event(0x12, 0x38, 0, [System.UIntPtr]::Zero); [void]$k::SetForegroundWindow($h); $k::keybd_event(0x12, 0x38, 2, [System.UIntPtr]::Zero); Start-Sleep -Milliseconds 150; \
+         if ($k::GetForegroundWindow() -ne $h) {{ $k::SwitchToThisWindow($h, $true); Start-Sleep -Milliseconds 300 }}; \
+         $k::keybd_event({vk}, {scan}, {down}, [System.UIntPtr]::Zero); Start-Sleep -Milliseconds {hold_ms}; $k::keybd_event({vk}, {scan}, {up}, [System.UIntPtr]::Zero); 'tapped'"
+    );
+    let out = std::process::Command::new("/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe")
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &script])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("powershell: {e}"))?;
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if !out.status.success() || !text.contains("tapped") {
+        return Err(format!("keybd_event script: {text} {}", String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    Ok(text)
+}
+
 pub fn cmd(args: &[String]) -> Result<(), String> {
     let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
     let list = PathBuf::from(f("--list").ok_or("thumbs needs --list MAPS.tsv (one map path per line)")?);
@@ -267,6 +308,9 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     // wall time the pose must hold before the shot (the map-load fade): 2.4 s measured
     let ready_ms: u32 = f("--ready-ms").and_then(|s| s.parse().ok()).unwrap_or(2400);
     let resume = tmmaps::cli::has(args, "--resume");
+    // the race started before the shot (see the play route); --start-wait-ms: intro skip → race
+    let start_race = !tmmaps::cli::has(args, "--no-start");
+    let start_wait_ms: u64 = f("--start-wait-ms").and_then(|s| s.parse().ok()).unwrap_or(4500);
     let limit: usize = f("--limit").and_then(|s| s.parse().ok()).unwrap_or(usize::MAX);
     let tmmaps_bin = f("--tmmaps").unwrap_or_else(|| "/home/vjeux/shoot/fix4/target/release/tmmaps".into());
     std::fs::create_dir_all(&outdir).map_err(|e| format!("{}: {e}", outdir.display()))?;
@@ -373,6 +417,21 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                 return Err(format!("load refused: {a}"));
             }
             let ready = poll_until(&["READY"], 25_000)?;
+            // THE RACE MUST BE RUNNING for the playground camera to yield to the pose:
+            // during the intro / countdown the game's own camera wins every frame (the
+            // September run: every shot was the spawn camera, 2026-09-14). The MK64 skin QA
+            // found the way (/lookat, 2026-09-24): skip the intro with ENTER, let the 3-2-1
+            // run, re-arm the pose (+ HUD off) once the race clock runs. `--no-start` keeps
+            // the old behaviour.
+            if start_race {
+                tap_key("ENTER", 60)?;
+                std::thread::sleep(std::time::Duration::from_millis(start_wait_ms));
+                let arm = http_get("/thumbcam?on=1")?;
+                if !arm.starts_with("armed") {
+                    return Err(format!("re-arm after the start refused: {arm}"));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1500));
+            }
             let jpg_win = format!("{CAP_WIN}\\thumb-{k}.jpg");
             let jpg_wsl = format!("{CAP_DIR}/thumb-{k}.jpg");
             // the map-load FADE: the first posed frames are under a dark veil that

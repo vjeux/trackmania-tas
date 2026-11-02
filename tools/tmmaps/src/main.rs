@@ -457,6 +457,97 @@ fn main() {
             m.write_to(std::path::Path::new(&out)).unwrap_or_else(|e| panic!("{e}"));
             println!("{out}: {n} generated record(s) promoted to authored blocks ({} baked dropped, {} authored before)", r.baked, m.blocks.len());
         }
+        // tmmaps render-copy LIVE --orig ORIGINAL --out OUT [--lift 0.05] [--all-removed]: a copy of
+        // a converted map FOR AN EDITOR RENDER ONLY. The editor rebuilds the game's generated
+        // pieces (pillars, stage bases, wall clips) from the PLACED blocks when it loads a map,
+        // and drops the saved ones whose parent is gone — a block our pipeline turned into an
+        // item loses its pillars and bases in every editor render (the September thumbnails:
+        // "parts of blocks missing", Everios96 2026-11-02), while play mode draws the saved
+        // pieces as they are. The copy puts the ORIGINAL authored block back wherever one of
+        // our embedded items stands at its cell (the converted ones; `--all-removed` = every
+        // authored block the live map lost), so the editor regenerates its pieces, and lifts
+        // every embedded item by `--lift` metres so the item's own look wins the depth test
+        // over the block it replaced. Never shipped: the thumbnail is lifted from the render.
+        "render-copy" => {
+            let live = args.get(2).cloned().unwrap_or_else(|| { eprintln!("tmmaps render-copy LIVE --orig ORIGINAL --out OUT [--lift 0.05] [--all-removed]"); std::process::exit(2) });
+            let orig = tmmaps::cli::flag(&args, "--orig").map(String::from).unwrap_or_else(|| { eprintln!("--orig ORIGINAL"); std::process::exit(2) });
+            let out = tmmaps::cli::flag(&args, "--out").map(String::from).unwrap_or_else(|| { eprintln!("--out OUT"); std::process::exit(2) });
+            let lift: f32 = tmmaps::cli::flag(&args, "--lift").and_then(|v| v.parse().ok()).unwrap_or(0.05);
+            let all_removed = tmmaps::cli::has(&args, "--all-removed");
+            let o = tmmaps::map::MapFile::load(std::path::Path::new(&orig));
+            let mut m = tmmaps::map::MapFile::load(std::path::Path::new(&live));
+            let key = |b: &tmmaps::map::BlockRec| (b.name.clone(), b.coords(), b.dir, b.free_pos.map(|p| [p[0].to_bits(), p[1].to_bits(), p[2].to_bits()]));
+            let have: std::collections::HashSet<_> = m.blocks.iter().map(|b| key(b)).collect();
+            // a live block in the same cell with the same quarter turn = the original was RENAMED
+            // to a twin (not baked): nothing to put back there
+            // (only a live block the ORIGINAL does not have counts — a base platform sharing the
+            // cell with a stage in both files is no twin of the stage)
+            let orig_keys: std::collections::HashSet<_> = o.blocks.iter().map(|b| key(b)).collect();
+            let have_cell: std::collections::HashSet<((i32, i32, i32), u8)> = m.blocks.iter().filter(|b| b.free_pos.is_none() && !orig_keys.contains(&key(b))).map(|b| (b.coords(), b.dir)).collect();
+            // our embedded items, by the cell origin they stand on (a baked block's item sits
+            // at the cell's world origin: x = cx*32, y = cy*8 − 64, z = cz*32)
+            let item_cells: std::collections::HashSet<(i32, i32, i32)> = m
+                .items
+                .iter()
+                .filter(|it| it.model.starts_with("AC"))
+                .map(|it| ((it.pos[0] / 32.0).round() as i32, ((it.pos[1] + 64.0) / 8.0).round() as i32, (it.pos[2] / 32.0).round() as i32))
+                .collect();
+            let mut specs: Vec<tmmaps::map::FreeBlockSpec> = Vec::new();
+            let mut n_conv = 0usize;
+            let mut n_other = 0usize;
+            for b in o.blocks.iter() {
+                if have.contains(&key(b)) {
+                    continue;
+                }
+                // a waypoint block (start, finish, checkpoint) is never duplicated — its record
+                // carries a special node, and a second spawn would break the map
+                if b.is_waypoint() {
+                    continue;
+                }
+                let (cx, cy, cz) = b.coords();
+                if b.free_pos.is_none() && have_cell.contains(&((cx, cy, cz), b.dir)) {
+                    if std::env::var("RENDER_COPY_VERBOSE").is_ok() {
+                        eprintln!("  renamed (twin in place): {} at {:?} dir {}", b.name, (cx, cy, cz), b.dir);
+                    }
+                    continue;
+                }
+                // a rotated multi-cell block's item anchors on another corner of its footprint:
+                // an item origin within two cells sideways and one up/down counts
+                let converted = item_cells.iter().any(|&(ix, iy, iz)| (ix - cx).abs() <= 2 && (iz - cz).abs() <= 2 && (iy - cy).abs() <= 1);
+                if !converted && !all_removed {
+                    n_other += 1;
+                    if std::env::var("RENDER_COPY_VERBOSE").is_ok() {
+                        eprintln!("  left out: {} at {:?} dir {}", b.name, (cx, cy, cz), b.dir);
+                    }
+                    continue;
+                }
+                n_conv += 1;
+                if std::env::var("RENDER_COPY_VERBOSE").is_ok() {
+                    eprintln!("  put back: {} at {:?} dir {} flags {:08x} free {}", b.name, (cx, cy, cz), b.dir, b.flags, b.free_pos.is_some());
+                }
+                match (b.free_pos, b.free_rot) {
+                    (Some(pos), Some(rot)) => specs.push(tmmaps::map::FreeBlockSpec { name: b.name.clone(), author: None, flags: b.flags & !tmmaps::map::FREE_BLOCK_FLAG, pos, rot, grid: None, dir: 0 }),
+                    _ => specs.push(tmmaps::map::FreeBlockSpec { name: b.name.clone(), author: None, flags: b.flags, pos: [0.0; 3], rot: [0.0; 3], grid: Some([cx, cy, cz]), dir: b.dir }),
+                }
+            }
+            let tmp = format!("{out}.tmp.Map.Gbx");
+            if specs.is_empty() {
+                std::fs::copy(&live, &tmp).unwrap_or_else(|e| panic!("{e}"));
+            } else {
+                let _ = m.remove_and_add_blocks(|_| false, |_| false, &specs);
+                m.write_to(std::path::Path::new(&tmp)).unwrap_or_else(|e| panic!("{e}"));
+            }
+            // the lift, on a fresh load (the add was a variable-length edit)
+            let mut m2 = tmmaps::map::MapFile::load(std::path::Path::new(&tmp));
+            let lifted: Vec<(usize, [f32; 3])> = m2.items.iter().filter(|it| it.model.starts_with("AC")).map(|it| (it.index, [it.pos[0], it.pos[1] + lift, it.pos[2]])).collect();
+            let n_lift = lifted.len();
+            for (i, p) in lifted {
+                m2.move_item_pos(i, p);
+            }
+            m2.write_to(std::path::Path::new(&out)).unwrap_or_else(|e| panic!("{e}"));
+            let _ = std::fs::remove_file(&tmp);
+            println!("{out}: {n_conv} original block(s) put back for the render ({n_other} other removed blocks left out), {n_lift} embedded items lifted {lift} m");
+        }
         "add-blocks" => {
             let src = std::path::PathBuf::from(&args[2]);
             let out = std::path::PathBuf::from(tmmaps::cli::flag(&args, "--out").expect("add-blocks needs --out OUT"));

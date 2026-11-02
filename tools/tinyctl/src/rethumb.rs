@@ -60,6 +60,11 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     let work = PathBuf::from(f("--work").ok_or("rethumb needs --work DIR")?);
     let token_dir = f("--token-dir").unwrap_or_else(|| "/tmp/tinyctl-tokens".into());
     let promote = !tmmaps::cli::has(args, "--no-promote");
+    // --orig-root: the ORIGINAL maps (`<root>/p<P>/<NN>-U10S_<N>.Map.Gbx`, the 2026-10-09 bank):
+    // the render copy puts a converted block's original back so the editor regenerates its
+    // pillars and bases (`tmmaps render-copy`); the game refuses promoted clip records, so
+    // `promote-baked` is not the way (tested 2026-11-02 on Plastic 39)
+    let orig_root = PathBuf::from(f("--orig-root").unwrap_or_else(|| "/home/vjeux/tm-bank/u10s-originals-2026-10-09".into()));
     let publish = tmmaps::cli::has(args, "--publish");
     let jobs = f("--jobs").unwrap_or_else(|| "4".into());
     let t0 = Instant::now();
@@ -105,23 +110,29 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
 
     // 2. the render copies
     let mut n_prom = 0usize;
-    for (u, _) in &rows {
+    for (u, n) in &rows {
         let live = live_dir.join(format!("{u}.Map.Gbx"));
         let render = render_dir.join(format!("{u}.Map.Gbx"));
         if render.exists() {
             continue;
         }
         if promote {
-            let out = Command::new(&tmmaps).args(["promote-baked", &live.to_string_lossy(), "--out", &render.to_string_lossy()]).output().map_err(|e| e.to_string())?;
+            let num: usize = n.strip_prefix("U10S_").and_then(|x| x.split(' ').next()).and_then(|x| x.parse().ok()).ok_or_else(|| format!("{n}: no U10S_<N> number in the name"))?;
+            let part = (num - 1) / 25 + 1;
+            let orig = orig_root.join(format!("p{part}")).join(format!("{:02}-U10S_{num}.Map.Gbx", (num - 1) % 25 + 1));
+            if !orig.exists() {
+                return Err(format!("{n}: no original at {}", orig.display()));
+            }
+            let out = Command::new(&tmmaps).args(["render-copy", &live.to_string_lossy(), "--orig", &orig.to_string_lossy(), "--out", &render.to_string_lossy()]).output().map_err(|e| e.to_string())?;
             if !out.status.success() || !render.exists() {
-                return Err(format!("promote-baked {u}: {}", String::from_utf8_lossy(&out.stderr).lines().last().unwrap_or("")));
+                return Err(format!("render-copy {u}: {}", String::from_utf8_lossy(&out.stderr).lines().last().unwrap_or("")));
             }
             n_prom += 1;
         } else {
             std::fs::copy(&live, &render).map_err(|e| e.to_string())?;
         }
     }
-    println!("[{:>4.0}s] render copies: {} ({} promoted this run)", t0.elapsed().as_secs_f64(), rows.len(), n_prom);
+    println!("[{:>4.0}s] render copies: {} ({} made this run)", t0.elapsed().as_secs_f64(), rows.len(), n_prom);
 
     // 3. the box: push + the editor renders (resumable on the box side)
     let wsx = Wsx::new(args);
