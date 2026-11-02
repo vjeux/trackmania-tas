@@ -119,7 +119,8 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         if promote {
             let num: usize = n.strip_prefix("U10S_").and_then(|x| x.split(' ').next()).and_then(|x| x.parse().ok()).ok_or_else(|| format!("{n}: no U10S_<N> number in the name"))?;
             let part = (num - 1) / 25 + 1;
-            let orig = orig_root.join(format!("p{part}")).join(format!("{:02}-U10S_{num}.Map.Gbx", (num - 1) % 25 + 1));
+            // the bank names: `01-U10S_01` … `25-U10S_25` (two digits below 100), `01-U10S_101` …
+            let orig = orig_root.join(format!("p{part}")).join(format!("{:02}-U10S_{:02}.Map.Gbx", (num - 1) % 25 + 1, num));
             if !orig.exists() {
                 return Err(format!("{n}: no original at {}", orig.display()));
             }
@@ -152,9 +153,14 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     loop {
         attempt += 1;
         // the game, if not up, as its own lock step; then the loop under the lock
-        let _ = wsx.sh(&format!("{env}; tmdrive status | grep -q '^FREE' && (/mnt/c/Windows/System32/tasklist.exe | grep -qi trackmania.exe || tmdrive launch --timeout 180 --purpose rethumb --wait 60) ; true"));
+        // no game → launch it (tmdrive reclaims our own stale hold; a foreign hold makes it wait)
+        let up = wsx.sh("/mnt/c/Windows/System32/tasklist.exe | grep -ci trackmania.exe").map(|t| t.trim() != "0").unwrap_or(false);
+        if !up {
+            let l = wsx.sh(&format!("{env}; tmdrive launch --timeout 180 --purpose rethumb --wait 100 2>&1 | tail -1")).unwrap_or_default();
+            println!("[{:>4.0}s] launch: {}", t0.elapsed().as_secs_f64(), l.trim().chars().take(100).collect::<String>());
+        }
         let run = format!(
-            "{env}; cd {remote} && tmdrive run --purpose \"rethumb {batch}\" --wait 100 -- {BOX_TINYCTL} thumbs --editor --resume --list {remote}/list.tsv --outdir {remote}/out --tmmaps {BOX_TMMAPS} 2>&1 | tail -3"
+            "{env}; cd {remote} && tmdrive run --purpose \"rethumb {batch}\" --wait 100 -- {BOX_TINYCTL} thumbs --editor --resume --list {remote}/list.tsv --outdir {remote}/out --tmmaps {BOX_TMMAPS} > {remote}/run.log 2>&1; tail -3 {remote}/run.log"
         );
         let out = wsx.sh(&run).unwrap_or_else(|e| format!("bridge: {e}"));
         println!("[{:>4.0}s] box: {}", t0.elapsed().as_secs_f64(), out.lines().last().unwrap_or("").chars().take(140).collect::<String>());
@@ -162,7 +168,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         if done >= rows.len() {
             break;
         }
-        if attempt >= 3 {
+        if attempt >= 6 {
             return Err(format!("rethumb: {done}/{} rendered after {attempt} attempts — see {remote}/out/thumbs.tsv", rows.len()));
         }
         println!("[{:>4.0}s] {done}/{} rendered — again (attempt {})", t0.elapsed().as_secs_f64(), rows.len(), attempt + 1);
