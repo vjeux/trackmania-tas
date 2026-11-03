@@ -163,11 +163,30 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             launch_ago = tl.elapsed().as_secs() + 1;
         }
         // the launch's own input (Alt press, pointer warps) is not a person's: the box run
-        // gets the launch moment, so only input NEWER than it stops the run
+        // gets the launch moment, so only input NEWER than it stops the run.
+        // DETACHED: a bridge call is capped at 150 s and a 40-map render is ~10 min — the
+        // in-call form timed out, the driver counted a failure and started a SECOND run while
+        // the first kept rendering: two runs fought over the game (18 stragglers in one chunk)
+        // and the orphan's own input read as a person (2026-11-02 22:19, Everios96: "are you
+        // sure you're not detecting yourself again?"). One run at a time: nohup + a done file.
+        let done_file = format!("{remote}/run.done");
+        let _ = wsx.sh(&format!("rm -f {done_file}; pgrep -f 'tinyctl-fix4 thumbs --editor --resume --list {remote}/list.tsv' >/dev/null && echo STILL-RUNNING"));
         let run = format!(
-            "{env}; export THUMBS_LAUNCH_AGO_S={launch_ago}; cd {remote} && tmdrive run --purpose \"rethumb {batch}\" --wait 100 -- {BOX_TINYCTL} thumbs --editor --resume --list {remote}/list.tsv --outdir {remote}/out --tmmaps {BOX_TMMAPS} > {remote}/run.log 2>&1; tail -3 {remote}/run.log"
+            "{env}; export THUMBS_LAUNCH_AGO_S={launch_ago}; cd {remote} && nohup sh -c 'tmdrive run --purpose \"rethumb {batch}\" --wait 100 -- {BOX_TINYCTL} thumbs --editor --resume --list {remote}/list.tsv --outdir {remote}/out --tmmaps {BOX_TMMAPS} > {remote}/run.log 2>&1; echo OK $? > {done_file}' > /dev/null 2>&1 & echo started"
         );
-        let out = wsx.sh(&run).unwrap_or_else(|e| format!("bridge: {e}"));
+        let started = wsx.sh(&run).unwrap_or_else(|e| format!("bridge: {e}"));
+        if !started.contains("started") {
+            println!("[{:>4.0}s] box: could not start the run: {}", t0.elapsed().as_secs_f64(), started.trim().chars().take(120).collect::<String>());
+        }
+        // one probe every 30 s (the fleet's bridge budget), up to 40 min for a 40-map chunk
+        let out = match wsx.wait_done(&done_file, &format!("{remote}/run.log"), std::time::Duration::from_secs(2400), "rethumb render") {
+            Ok(_) => wsx.sh(&format!("tail -3 {remote}/run.log")).unwrap_or_default(),
+            Err(e) => {
+                // no done file in 40 min: the run is wedged — stop it so the next attempt is alone
+                let _ = wsx.sh(&format!("pkill -f 'tinyctl-fix4 thumbs --editor --resume --list {remote}/list.tsv'; pkill -f 'rethumb {batch}'; true"));
+                format!("{e}")
+            }
+        };
         println!("[{:>4.0}s] box: {}", t0.elapsed().as_secs_f64(), out.lines().last().unwrap_or("").chars().take(140).collect::<String>());
         // a person took the box: close our game and hand the decision back to the caller
         if out.contains("a person is using the box") {
