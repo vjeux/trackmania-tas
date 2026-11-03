@@ -139,6 +139,21 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                     log(&format!("{set} c{k:03}: {ok} maps ok{} in {:.0} s (set {set_ok}/{}, total {n_done_total}, {:.1} h elapsed)", if strag > 0 { format!(" + {strag} straggler(s)") } else { String::new() }, tc.elapsed().as_secs_f64(), rows.len(), t0.elapsed().as_secs_f64() / 3600.0));
                     break;
                 }
+                if text.contains("HUMAN on the box") {
+                    // not a failure of the chunk: back to the gate (30 min of idle), same chunk again
+                    log(&format!("{set} c{k:03}: a person took the box — pausing"));
+                    attempt -= 1;
+                    close_game();
+                    loop {
+                        std::thread::sleep(Duration::from_secs(300));
+                        let (free, _) = box_free();
+                        if free && !lock_foreign() {
+                            break;
+                        }
+                    }
+                    log(&format!("{set} c{k:03}: box free again — resuming"));
+                    continue;
+                }
                 log(&format!("{set} c{k:03}: attempt {attempt} failed — {}", last.chars().take(160).collect::<String>()));
                 if attempt >= 3 {
                     log(&format!("{set} c{k:03}: GIVING UP on this chunk (see {})", cw.display()));

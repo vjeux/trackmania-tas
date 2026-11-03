@@ -301,6 +301,14 @@ fn tap_key(name: &str, hold_ms: u64) -> Result<String, String> {
     Ok(text)
 }
 
+/// The box's keyboard/mouse idle seconds, from the Windows `inputidle.exe` (the same reading
+/// `tinyctl box-idle` takes from the devserver, here without the bridge).
+fn box_kbm_idle_s() -> Option<u64> {
+    let out = std::process::Command::new("/mnt/c/Users/vjeux/inputidle.exe").args(["status", "--window-s", "60"]).output().ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    text.split_whitespace().find_map(|w| w.strip_prefix("kbm_idle_s=")).and_then(|v| v.parse().ok())
+}
+
 pub fn cmd(args: &[String]) -> Result<(), String> {
     let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
     let list = PathBuf::from(f("--list").ok_or("thumbs needs --list MAPS.tsv (one map path per line)")?);
@@ -312,6 +320,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     let resume = tmmaps::cli::has(args, "--resume");
     // the race started before the shot (see the play route); --start-wait-ms: intro skip → race
     let start_race = !tmmaps::cli::has(args, "--no-start");
+    let human_idle_s: u64 = f("--human-idle-s").and_then(|s| s.parse().ok()).unwrap_or(120);
     let start_wait_ms: u64 = f("--start-wait-ms").and_then(|s| s.parse().ok()).unwrap_or(4500);
     let limit: usize = f("--limit").and_then(|s| s.parse().ok()).unwrap_or(usize::MAX);
     let tmmaps_bin = f("--tmmaps").unwrap_or_else(|| "/home/vjeux/shoot/fix4/target/release/tmmaps".into());
@@ -385,6 +394,18 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         }
         if done.contains(m) || Path::new(m).file_name().map(|n| done.contains(&n.to_string_lossy().to_string())).unwrap_or(false) {
             continue;
+        }
+        // THE HUMAN GATE, PER MAP (2026-11-02 19:00: a person sat down mid-chunk; the
+        // between-chunk gate let 15 minutes of renders run over their session): the box's
+        // own keyboard/mouse idle (inputidle.exe, this very machine) must exceed
+        // `--human-idle-s` (default 120) or the run STOPS here — the caller's gate decides
+        // when to come back. `THUMBS_IGNORE_IDLE=1` for a test on a busy box.
+        if human_idle_s > 0 && std::env::var("THUMBS_IGNORE_IDLE").is_err() {
+            let idle = box_kbm_idle_s().unwrap_or(0);
+            if idle < human_idle_s {
+                let _ = http_get("/back");
+                return Err(format!("stopped: a person is using the box (input {idle} s ago); {n_ok} ok, {n_fail} failed before the stop"));
+            }
         }
         let t0 = Instant::now();
         let src = match &root { Some(r) => r.join(m), None => PathBuf::from(m) };

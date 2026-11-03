@@ -164,6 +164,11 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         );
         let out = wsx.sh(&run).unwrap_or_else(|e| format!("bridge: {e}"));
         println!("[{:>4.0}s] box: {}", t0.elapsed().as_secs_f64(), out.lines().last().unwrap_or("").chars().take(140).collect::<String>());
+        // a person took the box: close our game and hand the decision back to the caller
+        if out.contains("a person is using the box") {
+            let _ = Command::new(&tinyctl).args(["box-close-game", "--idle-s", "1"]).output();
+            return Err("rethumb: HUMAN on the box — stopped; rerun when free (resumes)".into());
+        }
         let done: usize = wsx.sh(&format!("ls {remote}/out/*.Map.Gbx 2>/dev/null | wc -l")).ok().and_then(|t| t.trim().parse().ok()).unwrap_or(0);
         if done >= rows.len() {
             break;
