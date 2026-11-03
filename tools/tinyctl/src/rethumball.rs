@@ -122,6 +122,15 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             if waited > 0 {
                 discord(&format!("Thumbnails resumed ({set} {}/{}) after {} min. -- ai", set_ok, rows.len(), waited / 60));
             }
+            // THIS CHUNK'S WHOLE BOX ACTIVITY (mint, launch, renders) is ONE logged run of ours,
+            // registered BEFORE the first box action with the gate's human-attributed idle: the
+            // 22:46 run logged itself after its mint and read the mint's input as a person's
+            // (Everios96 23:03: "YOU KEEP SEEING YOUR OWN INPUTS")
+            {
+                let (_, line) = box_free();
+                let idle_eff = line.split_whitespace().find_map(|w| w.strip_prefix("kbm_idle_s=")).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
+                crate::inputidle::runlog::start(&format!("tinyctl rethumb-all {set} c{k:03}"), idle_eff);
+            }
             // tokens: ≥ 15 min left, else a mint (standalone when the plain one came back short)
             if token_left(&token_dir) < 15 * 60 {
                 let _ = Command::new(tinyctl()).args(["mint-tokens"]).output();
@@ -136,6 +145,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                 attempt += 1;
                 let mut cmd = Command::new(tinyctl());
                 cmd.args(["rethumb", "--uids-file", &uids.to_string_lossy(), "--work", &cw.to_string_lossy(), "--publish", "--token-dir", &token_dir]);
+                cmd.env("RETHUMB_RUN_REGISTERED", "1");
                 if plain.iter().any(|p| p == set) {
                     cmd.arg("--no-promote");
                 }

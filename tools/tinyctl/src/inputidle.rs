@@ -52,7 +52,17 @@ pub fn read(wsx: &Wsx, window_s: u32) -> Result<Verdict, String> {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
         let last_input = now - raw;
         if let Some((start, end, idle_at_start, what)) = runlog::covering(last_input) {
-            let human_last = start - idle_at_start;
+            // the human reading the run started from may ITSELF have been inside an earlier
+            // logged run of ours (a mint right before a rethumb: 22:46 on 11-02 logged
+            // idle_at_start 79 — the mint's own input): chain back through the log until the
+            // reading lands outside every run of ours
+            let mut human_last = start - idle_at_start;
+            for _ in 0..8 {
+                match runlog::covering(human_last) {
+                    Some((s2, _, i2, _)) if s2 < start => human_last = s2 - i2,
+                    _ => break,
+                }
+            }
             let eff = now - human_last;
             let pad_busy = line.split_whitespace().find_map(|w| w.strip_prefix("pad_idle_s=")).and_then(|v| v.parse::<f64>().ok()).map(|p| p < window_s as f64).unwrap_or(false);
             let was_free = free;

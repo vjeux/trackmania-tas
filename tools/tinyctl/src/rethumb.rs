@@ -142,7 +142,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     // the run instead of our own launch/render input (the mechanism every shoot/play run
     // uses; the rethumb chain had skipped it — Everios96 2026-11-02 22:22: "this happens way
     // too often that you detect yourself")
-    {
+    if std::env::var("RETHUMB_RUN_REGISTERED").is_err() {
         let idle_now = Command::new(&tinyctl).args(["box-idle", "--window-s", "60"]).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
         let idle_at_start = idle_now.split_whitespace().find_map(|w| w.strip_prefix("raw_kbm_idle_s=").or_else(|| w.strip_prefix("kbm_idle_s="))).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
         crate::inputidle::runlog::start(&format!("tinyctl rethumb {}", work.display()), idle_at_start);
