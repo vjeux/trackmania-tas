@@ -424,8 +424,15 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             let idle = box_kbm_idle_s().unwrap_or(0);
             let since_own = last_own_action.elapsed().as_secs();
             if idle < human_idle_s && (idle as u64) + 2 < since_own {
-                let _ = http_get("/back");
-                return Err(format!("stopped: a person is using the box (input {idle} s ago, our last action {since_own} s ago); {n_ok} ok, {n_fail} failed before the stop"));
+                // a PERSON keeps producing input; a stray synthetic event does not: confirm
+                // with a second reading 45 s later before stopping a 10-minute chunk
+                std::thread::sleep(std::time::Duration::from_secs(45));
+                let idle2 = box_kbm_idle_s().unwrap_or(0);
+                if idle2 < 45 {
+                    let _ = http_get("/back");
+                    return Err(format!("stopped: a person is using the box (input {idle} s ago, then again {idle2} s ago; our last action {} s ago); {n_ok} ok, {n_fail} failed before the stop", since_own + 45));
+                }
+                last_own_action = Instant::now() - std::time::Duration::from_secs(idle2.min(600));
             }
         }
         let t0 = Instant::now();

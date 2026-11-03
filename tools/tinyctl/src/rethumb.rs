@@ -137,6 +137,16 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
 
     // 3. the box: push + the editor renders (resumable on the box side)
     let wsx = Wsx::new(args);
+    // THIS RUN IS NOT A PERSON: logged in the host's box-run log with its heartbeat, so the
+    // devserver gate (`box-idle`, rethumb-all) measures idle from the last HUMAN input before
+    // the run instead of our own launch/render input (the mechanism every shoot/play run
+    // uses; the rethumb chain had skipped it — Everios96 2026-11-02 22:22: "this happens way
+    // too often that you detect yourself")
+    {
+        let idle_now = Command::new(&tinyctl).args(["box-idle", "--window-s", "60"]).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
+        let idle_at_start = idle_now.split_whitespace().find_map(|w| w.strip_prefix("raw_kbm_idle_s=").or_else(|| w.strip_prefix("kbm_idle_s="))).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
+        crate::inputidle::runlog::start(&format!("tinyctl rethumb {}", work.display()), idle_at_start);
+    }
     let batch = work.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "batch".into());
     let remote = format!("{BOX_ROOT}/{batch}");
     wsx.sh(&format!("mkdir -p {remote}/in {remote}/out"))?;
