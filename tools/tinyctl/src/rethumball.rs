@@ -40,10 +40,22 @@ fn chunk_state(work: &Path, n: usize) -> (bool, usize, usize) {
     (ok + strag >= n && ok > 0, ok, strag)
 }
 
+/// The devserver gate's reading. A reading that did not come back (a bridge hiccup gave an
+/// EMPTY line at 23:15 on 11-02 and the driver announced "input 0 min ago" — Everios96:
+/// "BRO IT WAS YOU AGAIN") is retried up to 3 times 20 s apart; still nothing = (false,
+/// "no reading"), which the caller reports as such, never as a person.
 fn box_free() -> (bool, String) {
-    let out = Command::new(tinyctl()).args(["box-idle", "--window-s", "1800"]).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
-    let last = out.lines().last().unwrap_or("").to_string();
-    (last.contains("verdict=free"), last)
+    for attempt in 0..3 {
+        let out = Command::new(tinyctl()).args(["box-idle", "--window-s", "1800"]).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
+        let last = out.lines().rev().find(|l| l.contains("verdict=")).unwrap_or("").to_string();
+        if !last.is_empty() && !last.contains("verdict=error") {
+            return (last.contains("verdict=free"), last);
+        }
+        if attempt < 2 {
+            std::thread::sleep(Duration::from_secs(20));
+        }
+    }
+    (false, "no reading (bridge)".to_string())
 }
 
 fn lock_foreign() -> bool {
@@ -101,15 +113,18 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                     break;
                 }
                 if waited == 0 {
-                    let why = if foreign { "lock held by another session".to_string() } else { format!("in use: {}", line.chars().take(80).collect::<String>()) };
+                    let no_reading = line.starts_with("no reading");
+                    let why = if foreign { "lock held by another session".to_string() } else if no_reading { line.clone() } else { format!("in use: {}", line.chars().take(80).collect::<String>()) };
                     log(&format!("{set} c{k:03}: waiting for the box ({why})"));
                     close_game();
                     // Everios96 2026-11-02 23:01: "let me know whenever you wait for something"
                     let idle = line.split_whitespace().find_map(|w| w.strip_prefix("kbm_idle_s=")).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
                     let msg = if foreign {
                         format!("Thumbnails paused ({set} {}/{}): another job holds the render machine; resuming when it is free. -- ai", set_ok, rows.len())
+                    } else if no_reading {
+                        format!("Thumbnails paused ({set} {}/{}): the bridge to the render machine gave no reading; retrying every 5 min. -- ai", set_ok, rows.len())
                     } else {
-                        format!("Thumbnails paused ({set} {}/{}): the render machine saw input {:.0} min ago; resuming after 30 min untouched. -- ai", set_ok, rows.len(), idle / 60.0)
+                        format!("Thumbnails paused ({set} {}/{}): the render machine saw input {:.0} min ago (last real input, my own runs excluded); resuming after 30 min untouched. -- ai", set_ok, rows.len(), idle / 60.0)
                     };
                     discord(&msg);
                 }
