@@ -22,13 +22,19 @@ fn tinyctl() -> PathBuf {
     std::env::current_exe().unwrap_or_else(|_| PathBuf::from("tinyctl"))
 }
 
+/// Seconds left on the SHORTER of the two tokens: the Live token (the fetch's) expires
+/// before the core one (the upload's) — the driver checked core alone and a chunk's fetch
+/// ran on a dead Live token (00:08 on 11-03, c017 "40 live files missing").
 fn token_left(dir: &str) -> i64 {
-    let p = format!("{dir}/token-NadeoServices.txt");
-    let t = std::fs::read_to_string(&p).unwrap_or_default();
-    match crate::nadeo::jwt_exp(t.trim()) {
-        Some(exp) => exp as i64 - std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0),
-        None => -1,
-    }
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+    ["NadeoServices", "NadeoLiveServices"]
+        .iter()
+        .map(|aud| {
+            let t = std::fs::read_to_string(format!("{dir}/token-{aud}.txt")).unwrap_or_default();
+            crate::nadeo::jwt_exp(t.trim()).map(|exp| exp as i64 - now).unwrap_or(-1)
+        })
+        .min()
+        .unwrap_or(-1)
 }
 
 /// A chunk is done when every map is either published IDENTICAL or listed as a straggler
