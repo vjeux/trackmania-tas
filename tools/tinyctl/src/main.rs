@@ -21,6 +21,7 @@ mod gameclose;
 mod rethumb;
 mod openroadgraft;
 mod rethumball;
+mod rethumbwipe;
 mod iconcrops;
 mod tileicons;
 mod credits;
@@ -234,6 +235,7 @@ fn main() {
         "rethumb" => rethumb::cmd(rest),
         "openroad-graft" => openroadgraft::cmd(rest),
         "rethumb-all" => rethumball::cmd(rest),
+        "rethumb-wipe" => rethumbwipe::cmd(rest),
         "box-front" => {
             let wsx = wsx::Wsx::new(rest);
             // the foreground dance taps a key on the box (the OS idle clock restarts): log
