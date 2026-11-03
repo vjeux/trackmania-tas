@@ -31,10 +31,13 @@ fn token_left(dir: &str) -> i64 {
     }
 }
 
-fn chunk_done(work: &Path, n: usize) -> bool {
-    let Ok(t) = std::fs::read_to_string(work.join("results.tsv")) else { return false };
+/// A chunk is done when every map is either published IDENTICAL or listed as a straggler
+/// (stragglers.tsv — rendered in a later pass over that file); returns (done, published, stragglers).
+fn chunk_state(work: &Path, n: usize) -> (bool, usize, usize) {
+    let t = std::fs::read_to_string(work.join("results.tsv")).unwrap_or_default();
     let ok = t.lines().skip(1).filter(|l| l.split('\t').nth(7) == Some("IDENTICAL")).count();
-    ok == n
+    let strag = std::fs::read_to_string(work.join("stragglers.tsv")).map(|s| s.lines().filter(|l| !l.trim().is_empty()).count()).unwrap_or(0);
+    (ok + strag >= n && ok > 0, ok, strag)
 }
 
 fn box_free() -> (bool, String) {
@@ -84,8 +87,9 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             std::fs::create_dir_all(&cw).map_err(|e| e.to_string())?;
             let uids = cw.join("uids.tsv");
             std::fs::write(&uids, c.join("\n") + "\n").map_err(|e| e.to_string())?;
-            if chunk_done(&cw, c.len()) {
-                set_ok += c.len();
+            let (done0, ok0, _) = chunk_state(&cw, c.len());
+            if done0 {
+                set_ok += ok0;
                 continue;
             }
             // the box gate
@@ -128,10 +132,11 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                 let out = cmd.output().map_err(|e| e.to_string())?;
                 let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
                 let last = text.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("").to_string();
-                if out.status.success() && chunk_done(&cw, c.len()) {
-                    set_ok += c.len();
-                    n_done_total += c.len();
-                    log(&format!("{set} c{k:03}: {} maps ok in {:.0} s (set {set_ok}/{}, total {n_done_total}, {:.1} h elapsed)", c.len(), tc.elapsed().as_secs_f64(), rows.len(), t0.elapsed().as_secs_f64() / 3600.0));
+                let (done, ok, strag) = chunk_state(&cw, c.len());
+                if out.status.success() && done {
+                    set_ok += ok;
+                    n_done_total += ok;
+                    log(&format!("{set} c{k:03}: {ok} maps ok{} in {:.0} s (set {set_ok}/{}, total {n_done_total}, {:.1} h elapsed)", if strag > 0 { format!(" + {strag} straggler(s)") } else { String::new() }, tc.elapsed().as_secs_f64(), rows.len(), t0.elapsed().as_secs_f64() / 3600.0));
                     break;
                 }
                 log(&format!("{set} c{k:03}: attempt {attempt} failed — {}", last.chars().take(160).collect::<String>()));

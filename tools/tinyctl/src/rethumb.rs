@@ -168,9 +168,17 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         if done >= rows.len() {
             break;
         }
-        if attempt >= 6 {
-            return Err(format!("rethumb: {done}/{} rendered after {attempt} attempts — see {remote}/out/thumbs.tsv", rows.len()));
+        if attempt >= 4 {
+            // a map the editor would not save in four runs (transient on the box: the same
+            // file renders alone — 2026-11-02, Tarmac 53) is LEFT OUT of this batch, not a
+            // reason to drop the other 39: the rest goes on, the stragglers are listed for a
+            // later pass (`DIR/stragglers.tsv`)
+            println!("[{:>4.0}s] {done}/{} rendered after {attempt} attempts — going on without the rest", t0.elapsed().as_secs_f64(), rows.len());
+            break;
         }
+        // the game restarted between attempts: a stuck editor is what the retries hit
+        let _ = wsx.sh(&format!("{env}; tmdrive kill --purpose \"rethumb restart\" --wait 100 >/dev/null 2>&1; true"));
+        std::thread::sleep(std::time::Duration::from_secs(5));
         println!("[{:>4.0}s] {done}/{} rendered — again (attempt {})", t0.elapsed().as_secs_f64(), rows.len(), attempt + 1);
     }
     // the rendered copies back (one tar)
@@ -188,11 +196,15 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     // 4. splice each new JPEG into the LIVE file
     let mut manifest = String::new();
     let mut n_same = 0usize;
+    let mut stragglers = String::new();
+    let mut n_final = 0usize;
     for (u, n) in &rows {
         let rendered = out_dir.join(format!("{u}.Map.Gbx"));
         if !rendered.exists() {
-            return Err(format!("{u} ({n}): no rendered copy came back"));
+            stragglers.push_str(&format!("{u}\t{n}\n"));
+            continue;
         }
+        n_final += 1;
         let jpeg = thumbnail_of(&rendered)?;
         let live = live_dir.join(format!("{u}.Map.Gbx"));
         if thumbnail_of(&live)? == jpeg {
@@ -216,7 +228,13 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     }
     let man = work.join("manifest.tsv");
     std::fs::write(&man, &manifest).map_err(|e| e.to_string())?;
-    println!("[{:>4.0}s] final files: {} (body = live, thumbnail new; {n_same} unchanged pictures)", t0.elapsed().as_secs_f64(), rows.len());
+    let strag = work.join("stragglers.tsv");
+    std::fs::write(&strag, &stragglers).map_err(|e| e.to_string())?;
+    let n_strag = stragglers.lines().count();
+    println!("[{:>4.0}s] final files: {n_final} (body = live, thumbnail new; {n_same} unchanged pictures; {n_strag} stragglers → {})", t0.elapsed().as_secs_f64(), strag.display());
+    if n_final == 0 {
+        return Err("rethumb: nothing rendered".into());
+    }
     if !publish {
         println!("not published (--publish); manifest {}", man.display());
         return Ok(());
@@ -237,8 +255,8 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         *by.entry(l.split('\t').nth(7).unwrap_or("?").to_string()).or_default() += 1;
     }
     println!("[{:>4.0}s] published: {:?}", t0.elapsed().as_secs_f64(), by);
-    if by.get("IDENTICAL").copied().unwrap_or(0) != rows.len() {
-        return Err(format!("rethumb: {} of {} IDENTICAL — see {}", by.get("IDENTICAL").copied().unwrap_or(0), rows.len(), results.display()));
+    if by.get("IDENTICAL").copied().unwrap_or(0) != n_final {
+        return Err(format!("rethumb: {} of {} IDENTICAL — see {}", by.get("IDENTICAL").copied().unwrap_or(0), n_final, results.display()));
     }
     Ok(())
 }

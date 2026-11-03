@@ -154,8 +154,10 @@ fn editor_shot(k: usize, src: &Path, out_map: &Path, tmmaps_bin: &str) -> Result
     // editor up and its loading dialog gone
     let te = Instant::now();
     loop {
-        if te.elapsed().as_secs() > 60 {
-            return Err(format!("editor did not come up in 60 s (last ctx {})", http_get("/ctx").unwrap_or_default().chars().take(80).collect::<String>()));
+        // 120 s: a dense map (650 generated pillars, Tarmac 53) took the editor past 60 s on a
+        // busy box while the same file alone opened in 4 s (2026-11-02)
+        if te.elapsed().as_secs() > 120 {
+            return Err(format!("editor did not come up in 120 s (last ctx {})", http_get("/ctx").unwrap_or_default().chars().take(80).collect::<String>()));
         }
         // ready = the editor is up AND the plugin-map API answers (the editor keeps a
         // hidden progress bar alive, so the dialog flag never clears here)
@@ -178,8 +180,8 @@ fn editor_shot(k: usize, src: &Path, out_map: &Path, tmmaps_bin: &str) -> Result
     let ts = Instant::now();
     let mut last = 0u64;
     let jpeg = loop {
-        if ts.elapsed().as_secs() > 30 {
-            return Err("saved file did not appear in 30 s".into());
+        if ts.elapsed().as_secs() > 75 {
+            return Err("saved file did not appear in 75 s".into());
         }
         std::thread::sleep(std::time::Duration::from_millis(150));
         let n = std::fs::metadata(&saved).map(|m| m.len()).unwrap_or(0);
