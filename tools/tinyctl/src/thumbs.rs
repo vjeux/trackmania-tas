@@ -380,6 +380,22 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         c.capture(&format!("{CAP_WIN}\\_probe.jpg"))?;
     }
     let t_run = Instant::now();
+    // THUMBS_LAUNCH_AGO_S: the driver launched the game that many seconds before this run
+    // started (its Alt press is ours, not a person's)
+    let launch_ago: u64 = std::env::var("THUMBS_LAUNCH_AGO_S").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+    let mut last_own_action = Instant::now() - std::time::Duration::from_secs(launch_ago.min(600));
+    let own_start_idle = box_kbm_idle_s().unwrap_or(9999);
+    // the first map: input older than our launch is nobody's business of this run; input
+    // NEWER than the launch (a person) stops it right away
+    if human_idle_s > 0 && std::env::var("THUMBS_IGNORE_IDLE").is_err() && own_start_idle < human_idle_s && own_start_idle + 2 < launch_ago.max(0) {
+        return Err(format!("stopped: a person is using the box (input {own_start_idle} s ago, after our launch {launch_ago} s ago)"));
+    }
+    if human_idle_s > 0 && std::env::var("THUMBS_LAUNCH_AGO_S").is_err() && std::env::var("THUMBS_IGNORE_IDLE").is_err() && own_start_idle < human_idle_s {
+        // no launch context: the plain rule (what the devserver gate also asks)
+        return Err(format!("stopped: a person is using the box (input {own_start_idle} s ago)"));
+    }
+    // from here on, our own actions are timed against `last_own_action`
+    last_own_action = Instant::now();
     let mut n_ok = 0usize;
     let mut n_fail = 0usize;
     let mut attempts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
@@ -401,10 +417,15 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         // `--human-idle-s` (default 120) or the run STOPS here — the caller's gate decides
         // when to come back. `THUMBS_IGNORE_IDLE=1` for a test on a busy box.
         if human_idle_s > 0 && std::env::var("THUMBS_IGNORE_IDLE").is_err() {
+            // OUR OWN launch and renders leave input (the launcher's Alt press, the plugin's
+            // pointer warps; the first resume after a pause read "input 25 s ago" from our own
+            // game coming up, 2026-11-02 20:05): input is a PERSON's only when it is newer than
+            // this run's own last action — the previous map's end or this run's start
             let idle = box_kbm_idle_s().unwrap_or(0);
-            if idle < human_idle_s {
+            let since_own = last_own_action.elapsed().as_secs();
+            if idle < human_idle_s && (idle as u64) + 2 < since_own {
                 let _ = http_get("/back");
-                return Err(format!("stopped: a person is using the box (input {idle} s ago); {n_ok} ok, {n_fail} failed before the stop"));
+                return Err(format!("stopped: a person is using the box (input {idle} s ago, our last action {since_own} s ago); {n_ok} ok, {n_fail} failed before the stop"));
             }
         }
         let t0 = Instant::now();
@@ -506,6 +527,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             Ok((format!("{ready} | {cap}"), jpeg.len()))
         })() };
         let ms = t0.elapsed().as_millis();
+        last_own_action = Instant::now();
         match res {
             Ok((detail, bytes)) => {
                 n_ok += 1;

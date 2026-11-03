@@ -155,12 +155,17 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         // the game, if not up, as its own lock step; then the loop under the lock
         // no game → launch it (tmdrive reclaims our own stale hold; a foreign hold makes it wait)
         let up = wsx.sh("/mnt/c/Windows/System32/tasklist.exe | grep -ci trackmania.exe").map(|t| t.trim() != "0").unwrap_or(false);
+        let mut launch_ago = 0u64;
         if !up {
+            let tl = Instant::now();
             let l = wsx.sh(&format!("{env}; tmdrive launch --timeout 180 --purpose rethumb --wait 100 2>&1 | tail -1")).unwrap_or_default();
             println!("[{:>4.0}s] launch: {}", t0.elapsed().as_secs_f64(), l.trim().chars().take(100).collect::<String>());
+            launch_ago = tl.elapsed().as_secs() + 1;
         }
+        // the launch's own input (Alt press, pointer warps) is not a person's: the box run
+        // gets the launch moment, so only input NEWER than it stops the run
         let run = format!(
-            "{env}; cd {remote} && tmdrive run --purpose \"rethumb {batch}\" --wait 100 -- {BOX_TINYCTL} thumbs --editor --resume --list {remote}/list.tsv --outdir {remote}/out --tmmaps {BOX_TMMAPS} > {remote}/run.log 2>&1; tail -3 {remote}/run.log"
+            "{env}; export THUMBS_LAUNCH_AGO_S={launch_ago}; cd {remote} && tmdrive run --purpose \"rethumb {batch}\" --wait 100 -- {BOX_TINYCTL} thumbs --editor --resume --list {remote}/list.tsv --outdir {remote}/out --tmmaps {BOX_TMMAPS} > {remote}/run.log 2>&1; tail -3 {remote}/run.log"
         );
         let out = wsx.sh(&run).unwrap_or_else(|e| format!("bridge: {e}"));
         println!("[{:>4.0}s] box: {}", t0.elapsed().as_secs_f64(), out.lines().last().unwrap_or("").chars().take(140).collect::<String>());
