@@ -104,12 +104,23 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                     let why = if foreign { "lock held by another session".to_string() } else { format!("in use: {}", line.chars().take(80).collect::<String>()) };
                     log(&format!("{set} c{k:03}: waiting for the box ({why})"));
                     close_game();
+                    // Everios96 2026-11-02 23:01: "let me know whenever you wait for something"
+                    let idle = line.split_whitespace().find_map(|w| w.strip_prefix("kbm_idle_s=")).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
+                    let msg = if foreign {
+                        format!("Thumbnails paused ({set} {}/{}): another job holds the render machine; resuming when it is free. -- ai", set_ok, rows.len())
+                    } else {
+                        format!("Thumbnails paused ({set} {}/{}): the render machine saw input {:.0} min ago; resuming after 30 min untouched. -- ai", set_ok, rows.len(), idle / 60.0)
+                    };
+                    discord(&msg);
                 }
                 std::thread::sleep(Duration::from_secs(300));
                 waited += 300;
                 if waited % 3600 == 0 {
                     log(&format!("{set} c{k:03}: still waiting ({} min)", waited / 60));
                 }
+            }
+            if waited > 0 {
+                discord(&format!("Thumbnails resumed ({set} {}/{}) after {} min. -- ai", set_ok, rows.len(), waited / 60));
             }
             // tokens: ≥ 15 min left, else a mint (standalone when the plain one came back short)
             if token_left(&token_dir) < 15 * 60 {
@@ -163,10 +174,17 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             }
         }
         log(&format!("set {set}: {set_ok}/{} maps done", rows.len()));
+        discord(&format!("Thumbnails: {set} done — {set_ok} of {} maps have new pictures (live, in place; the rest are stragglers for a final pass). -- ai", rows.len()));
     }
     close_game();
     log(&format!("rethumb-all: {n_done_total} maps this run, {:.1} h", t0.elapsed().as_secs_f64() / 3600.0));
     Ok(())
+}
+
+/// One line to Everios96's DM (the rollout's waits and finishes; his ask 2026-11-02 23:01).
+fn discord(msg: &str) {
+    let cmd = format!("~/bin/discordctl send 1548403109309579264 '{}'", msg.replace('\'', ""));
+    let _ = Command::new("/home/vjeux/bin/whitestick").arg(&cmd).output();
 }
 
 fn chrono_like() -> String {
