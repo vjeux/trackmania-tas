@@ -249,7 +249,7 @@ fn discord(msg: &str) {
     let _ = Command::new("/home/vjeux/bin/whitestick").arg(&cmd).output();
 }
 
-fn chrono_like() -> String {
+pub fn chrono_like() -> String {
     let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     // PT (UTC−8 in November) wall clock, hh:mm:ss
     let local = secs as i64 - 8 * 3600;
