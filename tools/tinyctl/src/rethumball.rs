@@ -223,7 +223,13 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             }
         }
         log(&format!("set {set}: {set_ok}/{} maps done", rows.len()));
-        discord(&format!("Thumbnails: {set} done — {set_ok} of {} maps have new pictures (live, in place; the rest are stragglers for a final pass). -- ai", rows.len()));
+        // announced once: a restart re-walks finished sets (every chunk already done) and
+        // must not repeat the line (03:04 on 11-03)
+        let marker = work.join(set).join("announced");
+        if !marker.exists() {
+            discord(&format!("Thumbnails: {set} done — {set_ok} of {} maps have new pictures (live, in place; the rest are stragglers for a final pass). -- ai", rows.len()));
+            let _ = std::fs::write(&marker, "1");
+        }
     }
     close_game();
     log(&format!("rethumb-all: {n_done_total} maps this run, {:.1} h", t0.elapsed().as_secs_f64() / 3600.0));
