@@ -113,9 +113,19 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                 skipped += 1;
                 continue;
             }
-            let new = format!("{}S{}", &u[..3], &u[4..]);
-            if uid_online(&tok, &new)? {
-                return Err(format!("{n}: {new} is already online — refusing"));
+            // the uid's 4th character is the generation marker (2,3,4,F,H,S,W,X… are taken by
+            // earlier wipes — Dirt 53 is already `DirS…`): 'T' (thumbnails) first, then the
+            // next free letter, each checked online before use
+            let mut new = String::new();
+            for g in ['T', 'U', 'V', 'Y', 'Z', 'Q', 'R', 'N', 'M', 'K'] {
+                let cand = format!("{}{}{}", &u[..3], g, &u[4..]);
+                if !uid_online(&tok, &cand)? {
+                    new = cand;
+                    break;
+                }
+            }
+            if new.is_empty() {
+                return Err(format!("{n}: no free generation letter for {u}"));
             }
             let dst = wipe_dir.join(format!("{n}.Map.Gbx"));
             let o = Command::new(tmmaps()).args(["rename-map", &fin.to_string_lossy(), "--out", &dst.to_string_lossy(), "--name", n, "--uid", &new]).output().map_err(|e| e.to_string())?;
