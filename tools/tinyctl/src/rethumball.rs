@@ -25,7 +25,7 @@ fn tinyctl() -> PathBuf {
 /// Seconds left on the SHORTER of the two tokens: the Live token (the fetch's) expires
 /// before the core one (the upload's) — the driver checked core alone and a chunk's fetch
 /// ran on a dead Live token (00:08 on 11-03, c017 "40 live files missing").
-fn token_left(dir: &str) -> i64 {
+pub fn token_left(dir: &str) -> i64 {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
     ["NadeoServices", "NadeoLiveServices"]
         .iter()

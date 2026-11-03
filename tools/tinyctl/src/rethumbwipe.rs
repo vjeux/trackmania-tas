@@ -78,10 +78,38 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         }
         let uids = cw.join("uids.tsv");
         std::fs::write(&uids, c.iter().map(|(u, n)| format!("{u}\t{n}\n")).collect::<String>()).map_err(|e| e.to_string())?;
+        // tokens: the shorter of core/Live must have ≥ 15 min left (a chunk is ~10 min); a
+        // mint touches the game, so it is a registered run of ours (10:55 on 11-03: the Live
+        // token expired mid-set and the fetch of w001 came back empty)
+        if crate::rethumball::token_left(&token_dir) < 15 * 60 {
+            let _ = Command::new(tinyctl()).args(["mint-tokens", "--token-dir", &token_dir]).output();
+            if crate::rethumball::token_left(&token_dir) < 15 * 60 {
+                let _ = Command::new(tinyctl()).args(["mint-tokens", "--standalone", "--token-dir", &token_dir]).output();
+            }
+            println!("[{:>4.0}s] w{k:03}: tokens {} s left", t0.elapsed().as_secs_f64(), crate::rethumball::token_left(&token_dir));
+        }
+        // the human gate (the box's own idle, my runs excluded): a person at the machine
+        // pauses the wipe until 30 min untouched
+        loop {
+            let out = Command::new(tinyctl()).args(["box-idle", "--window-s", "1800"]).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
+            let last = out.lines().rev().find(|l| l.contains("verdict=")).unwrap_or("").to_string();
+            if last.contains("verdict=free") {
+                break;
+            }
+            println!("[{:>4.0}s] w{k:03}: waiting for the box ({})", t0.elapsed().as_secs_f64(), last.chars().take(90).collect::<String>());
+            let _ = Command::new(tinyctl()).args(["box-close-game", "--idle-s", "60"]).output();
+            std::thread::sleep(std::time::Duration::from_secs(300));
+        }
+        {
+            let out = Command::new(tinyctl()).args(["box-idle", "--window-s", "60"]).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
+            let idle = out.split_whitespace().find_map(|w| w.strip_prefix("kbm_idle_s=")).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
+            crate::inputidle::runlog::start(&format!("tinyctl rethumb-wipe w{k:03}"), idle);
+        }
         // 1. the renders (no publish)
         if !cw.join("manifest.tsv").exists() {
             let mut cmd = Command::new(tinyctl());
             cmd.args(["rethumb", "--uids-file", &uids.to_string_lossy(), "--work", &cw.to_string_lossy(), "--token-dir", &token_dir]);
+            cmd.env("RETHUMB_RUN_REGISTERED", "1");
             if no_promote {
                 cmd.arg("--no-promote");
             }
