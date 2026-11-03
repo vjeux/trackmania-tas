@@ -57,6 +57,13 @@ fn box_free() -> (bool, String) {
         if !last.is_empty() && !last.contains("verdict=error") {
             return (last.contains("verdict=free"), last);
         }
+        // what came back instead (03:14 on 11-03: three empty readings while the bridge
+        // answered a hand-run check fine — the error text is the evidence we lacked)
+        let err = out.lines().last().unwrap_or("").chars().take(160).collect::<String>();
+        if let Ok(mut fh) = std::fs::OpenOptions::new().create(true).append(true).open("/home/vjeux/tt-home/rethumb/all/gate-errors.log") {
+            use std::io::Write;
+            let _ = writeln!(fh, "{} attempt {attempt}: {err}", chrono_like());
+        }
         if attempt < 2 {
             std::thread::sleep(Duration::from_secs(20));
         }
