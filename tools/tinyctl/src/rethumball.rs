@@ -196,6 +196,24 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                     log(&format!("{set} c{k:03}: box free again — resuming"));
                     continue;
                 }
+                // Nadeo's servers down (HTTP 503/502/504 on the upload or the fetch, 01:15 on
+                // 11-03): not this chunk's fault — wait them out, 10 min a probe, no attempt spent
+                let results_text = std::fs::read_to_string(cw.join("results.tsv")).unwrap_or_default();
+                if results_text.contains("HTTP 503") || results_text.contains("HTTP 502") || results_text.contains("HTTP 504") || text.contains("HTTP 503") {
+                    attempt -= 1;
+                    log(&format!("{set} c{k:03}: Nadeo servers answer 5xx — waiting 10 min"));
+                    discord(&format!("Thumbnails paused ({set} {}/{}): Nadeo's servers answer errors (5xx) — not the render machine; retrying every 10 min. -- ai", set_ok, rows.len()));
+                    loop {
+                        std::thread::sleep(Duration::from_secs(600));
+                        let probe = Command::new("curl").args(["-s", "-m", "30", "-o", "/dev/null", "-w", "%{http_code}", "https://prod.trackmania.core.nadeo.online/"]).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
+                        if !probe.starts_with('5') {
+                            log(&format!("{set} c{k:03}: Nadeo answers {probe} — resuming"));
+                            discord(&format!("Thumbnails resumed ({set} {}/{}): Nadeo's servers are back. -- ai", set_ok, rows.len()));
+                            break;
+                        }
+                    }
+                    continue;
+                }
                 log(&format!("{set} c{k:03}: attempt {attempt} failed — {}", last.chars().take(160).collect::<String>()));
                 if attempt >= 3 {
                     log(&format!("{set} c{k:03}: GIVING UP on this chunk (see {})", cw.display()));
