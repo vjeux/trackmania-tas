@@ -193,16 +193,16 @@ pub mod runlog {
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
     }
 
-    fn rewrite(pid: u32, start: f64, end: f64, idle: f64, what: &str) {
+    fn rewrite(key: &str, start: f64, end: f64, idle: f64, what: &str) {
         let p = path();
         let _ = std::fs::create_dir_all(p.parent().unwrap());
         let text = std::fs::read_to_string(&p).unwrap_or_default();
-        let mine = format!("{pid}\t");
+        let mine = format!("{key}\t");
         let mut lines: Vec<String> = text.lines().filter(|l| !l.starts_with(&mine)).map(String::from).collect();
         // the log stays short: runs older than two days go
         let cutoff = now() - 2.0 * 86400.0;
         lines.retain(|l| l.split('\t').nth(1).and_then(|v| v.parse::<f64>().ok()).map(|s| s > cutoff).unwrap_or(false));
-        lines.push(format!("{pid}\t{start:.0}\t{end:.0}\t{idle:.0}\t{}", what.replace(['\t', '\n'], " ")));
+        lines.push(format!("{key}\t{start:.0}\t{end:.0}\t{idle:.0}\t{}", what.replace(['\t', '\n'], " ")));
         let tmp = p.with_extension("tmp");
         if let Ok(mut f) = std::fs::File::create(&tmp) {
             let _ = writeln!(f, "{}", lines.join("\n"));
@@ -210,16 +210,28 @@ pub mod runlog {
         }
     }
 
+    /// One log row per RUN, keyed by (pid, start): a long-lived driver that registers a run
+    /// per chunk used to overwrite its previous row (the key was the pid alone), so every
+    /// earlier chunk's render input lost its attribution and read as a person once the
+    /// row moved on (02:57 on 11-03, Dirt c009: "input 18 min ago" = chunk c002's renders).
+    /// The heartbeat of an earlier run stops when a new one starts (its `end` is final).
     pub fn start(what: &str, idle_at_start: f64) {
         let pid = std::process::id();
         let t0 = now();
         let w = what.to_string();
-        rewrite(pid, t0, t0, idle_at_start, &w);
+        let gen = RUN_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        let key = format!("{pid}.{gen}");
+        rewrite(&key, t0, t0, idle_at_start, &w);
         std::thread::spawn(move || loop {
             std::thread::sleep(std::time::Duration::from_secs(20));
-            rewrite(pid, t0, now(), idle_at_start, &w);
+            if RUN_GEN.load(std::sync::atomic::Ordering::SeqCst) != gen {
+                break; // a newer run of this process took over the heartbeat
+            }
+            rewrite(&key, t0, now(), idle_at_start, &w);
         });
     }
+
+    static RUN_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
     /// (start, end, idle_at_start, what) of a logged run covering instant `t`.
     pub fn covering(t: f64) -> Option<(f64, f64, f64, String)> {
