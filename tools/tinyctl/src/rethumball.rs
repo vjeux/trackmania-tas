@@ -41,7 +41,7 @@ fn chunk_state(work: &Path, n: usize) -> (bool, usize, usize) {
 }
 
 fn box_free() -> (bool, String) {
-    let out = Command::new(tinyctl()).args(["box-idle", "--idle-window-s", "1800"]).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
+    let out = Command::new(tinyctl()).args(["box-idle", "--window-s", "1800"]).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
     let last = out.lines().last().unwrap_or("").to_string();
     (last.contains("verdict=free"), last)
 }

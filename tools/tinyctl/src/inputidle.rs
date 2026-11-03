@@ -136,7 +136,16 @@ pub fn gate(wsx: &crate::wsx::Wsx, args: &[String], what: &str) -> Result<(), St
 pub fn cmd(args: &[String]) -> i32 {
     let wsx = Wsx::new(args);
     let f = |k: &str| tmmaps::cli::flag(args, k).and_then(|v| v.parse::<u32>().ok());
-    let window = f("--window-s").unwrap_or(60);
+    // `--window-s` (this command's) or `--idle-window-s` (the gate's spelling): a wrong
+    // spelling was silently a 60 s window and let a 30-minute gate pass a person who had
+    // typed 3 minutes earlier (2026-11-02 19:00) — an unknown flag is now an error
+    let window = f("--window-s").or_else(|| f("--idle-window-s")).unwrap_or(60);
+    for a in args.iter().filter(|a| a.starts_with("--")) {
+        if !["--window-s", "--idle-window-s", "--wait-s", "--poll-s", "--quiet", "--wsx"].contains(&a.as_str()) {
+            println!("box-idle: unknown flag {a} (known: --window-s N --wait-s N --poll-s N --quiet)");
+            return 2;
+        }
+    }
     let quiet = tmmaps::cli::has(args, "--quiet");
     let r = match f("--wait-s") {
         Some(w) => wait_free(&wsx, window, w, f("--poll-s").unwrap_or(20), quiet),
