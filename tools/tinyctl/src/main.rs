@@ -313,6 +313,12 @@ fn main() {
             let dir = tmmaps::cli::flag(rest, "--token-dir").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from("/tmp/tinyctl-tokens"));
             std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
             let wsx = wsx::Wsx::new(rest);
+            // a mint launches/touches the game: registered as OUR run (with the gate's
+            // human-attributed idle) so its input is never booked as a person's (2026-11-02)
+            {
+                let idle = inputidle::read(&wsx, 60).map(|v| v.line.split_whitespace().find_map(|w| w.strip_prefix("kbm_idle_s=")).and_then(|x| x.parse::<f64>().ok()).unwrap_or(0.0)).unwrap_or(0.0);
+                inputidle::runlog::start("tinyctl mint-tokens", idle);
+            }
             // --standalone: the plugin-free path (own game, own tiny plugin, closed by pid);
             // the default still uses GhostShooter's route when that plugin is installed
             if rest.iter().any(|a| a == "--standalone") {

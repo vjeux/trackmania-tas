@@ -65,6 +65,9 @@ impl Drop for GameGuard<'_> {
 
 /// `tinyctl box-close-game [--idle-s N] [--dry-run]`.
 pub fn cmd(args: &[String]) -> Result<(), String> {
+    // closing a game touches the box (taskkill, the foreground): registered as OUR run so the
+    // gate never books it as a person's input (2026-11-02 23:07: "that was you as well")
+    crate::inputidle::runlog::start("tinyctl box-close-game", 0.0);
     let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
     let idle_s: u64 = f("--idle-s").map(|v| v.parse().map_err(|_| "--idle-s wants seconds")).transpose()?.unwrap_or(600);
     let dry = args.iter().any(|a| a == "--dry-run");
