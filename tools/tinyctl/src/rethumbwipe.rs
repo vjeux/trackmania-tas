@@ -48,6 +48,12 @@ fn uid_online(tok: &str, uid: &str) -> Result<bool, String> {
     Ok(text.trim() != "[]")
 }
 
+/// One line to Everios96's DM (his ask: every wait announced).
+fn discord(msg: &str) {
+    let cmd = format!("~/bin/discordctl send 1548403109309579264 '{}'", msg.replace('\'', ""));
+    let _ = Command::new("/home/vjeux/bin/whitestick").arg(&cmd).output();
+}
+
 pub fn cmd(args: &[String]) -> Result<(), String> {
     let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
     let uids_file = PathBuf::from(f("--uids-file").ok_or("rethumb-wipe needs --uids-file U.tsv (uid<TAB>name, NO-record maps)")?);
@@ -90,15 +96,29 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         }
         // the human gate (the box's own idle, my runs excluded): a person at the machine
         // pauses the wipe until 30 min untouched
+        let mut waited = 0u64;
         loop {
             let out = Command::new(tinyctl()).args(["box-idle", "--window-s", "1800"]).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
             let last = out.lines().rev().find(|l| l.contains("verdict=")).unwrap_or("").to_string();
             if last.contains("verdict=free") {
+                if waited > 0 {
+                    discord(&format!("Thumbnail wipes resumed after {} min. -- ai", waited / 60));
+                }
                 break;
             }
             println!("[{:>4.0}s] w{k:03}: waiting for the box ({})", t0.elapsed().as_secs_f64(), last.chars().take(90).collect::<String>());
+            if waited == 0 {
+                // Everios96 2026-11-03 23:01: "let me know whenever you wait for something"
+                let idle = last.split_whitespace().find_map(|w| w.strip_prefix("kbm_idle_s=")).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
+                if last.is_empty() {
+                    discord("Thumbnail wipes paused: the link to the render machine gave no reading; retrying every 5 min. -- ai");
+                } else {
+                    discord(&format!("Thumbnail wipes paused: the render machine saw input {:.0} min ago (my own runs excluded); resuming after 30 min untouched. -- ai", idle / 60.0));
+                }
+            }
             let _ = Command::new(tinyctl()).args(["box-close-game", "--idle-s", "60"]).output();
             std::thread::sleep(std::time::Duration::from_secs(300));
+            waited += 300;
         }
         {
             let out = Command::new(tinyctl()).args(["box-idle", "--window-s", "60"]).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
