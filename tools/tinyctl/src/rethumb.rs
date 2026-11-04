@@ -116,7 +116,13 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         let idle_at_start = idle_now.split_whitespace().find_map(|w| w.strip_prefix("raw_kbm_idle_s=").or_else(|| w.strip_prefix("kbm_idle_s="))).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
         crate::inputidle::runlog::start(&format!("tinyctl rethumb {}", work.display()), idle_at_start);
     }
-    let batch = work.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "batch".into());
+    // the box dir is named after SET and chunk (`dirt-w006`): chunk dirs repeat their names
+    // across sets (every set has a w000) and the box keeps one scratch tree for all of them
+    let batch = match (work.parent().and_then(|p| p.file_name()), work.file_name()) {
+        (Some(set), Some(chunk)) => format!("{}-{}", set.to_string_lossy(), chunk.to_string_lossy()),
+        (_, Some(chunk)) => chunk.to_string_lossy().to_string(),
+        _ => "batch".into(),
+    };
     let remote = format!("{BOX_ROOT}/{batch}");
     wsx.sh(&format!("mkdir -p {remote}/in {remote}/out"))?;
     // RETHUMB_BOX_PREP=<dir of tinyctl+tmmaps on the box>: the box makes the render copies
