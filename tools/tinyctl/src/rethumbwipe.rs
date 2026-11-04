@@ -57,14 +57,21 @@ fn core_token(dir: &str) -> Result<String, String> {
     Ok(t.trim().to_string())
 }
 
-/// `true` when the uid has a map record online (a uid we must not create).
-fn uid_online(tok: &str, uid: &str) -> Result<bool, String> {
+/// The online map record for a uid: `None` when free, `Some(name)` when a map holds it.
+fn uid_online(tok: &str, uid: &str) -> Result<Option<String>, String> {
     let out = Command::new("curl").args(["-s", "-m", "30", "-H", &format!("Authorization: {tok}"), &format!("https://prod.trackmania.core.nadeo.online/maps/?mapUidList={uid}")]).output().map_err(|e| e.to_string())?;
     let text = String::from_utf8_lossy(&out.stdout);
     if !text.trim_start().starts_with('[') {
         return Err(format!("maps lookup {uid}: {}", text.chars().take(120).collect::<String>()));
     }
-    Ok(text.trim() != "[]")
+    if text.trim() == "[]" {
+        return Ok(None);
+    }
+    // the record's name, so a candidate WE created in an earlier, half-failed attempt is
+    // reused (publish-batch then updates it in place to identical bytes) instead of the
+    // next letter orphaning it (w006 on 2026-11-04: Nadeo's upload hung mid-chunk)
+    let name = text.split("\"name\":\"").nth(1).and_then(|r| r.split('"').next()).unwrap_or("").replace("\\\\", "\\");
+    Ok(Some(name))
 }
 
 /// One line to Everios96's DM (his ask: every wait announced).
@@ -106,9 +113,9 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         // tokens: the shorter of core/Live must have ≥ 15 min left (a chunk is ~10 min); a
         // mint touches the game, so it is a registered run of ours (10:55 on 11-03: the Live
         // token expired mid-set and the fetch of w001 came back empty)
-        if crate::rethumball::token_left(&token_dir) < 15 * 60 {
+        if crate::rethumball::token_left(&token_dir) < 30 * 60 {
             let _ = Command::new(tinyctl()).args(["mint-tokens", "--token-dir", &token_dir]).output();
-            if crate::rethumball::token_left(&token_dir) < 15 * 60 {
+            if crate::rethumball::token_left(&token_dir) < 30 * 60 {
                 let _ = Command::new(tinyctl()).args(["mint-tokens", "--standalone", "--token-dir", &token_dir]).output();
             }
             println!("[{:>4.0}s] w{k:03}: tokens {} s left", t0.elapsed().as_secs_f64(), crate::rethumball::token_left(&token_dir));
@@ -186,9 +193,17 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             let mut new = String::new();
             for g in ['T', 'U', 'V', 'Y', 'Z', 'Q', 'R', 'N', 'M', 'K'] {
                 let cand = format!("{}{}{}", &u[..3], g, &u[4..]);
-                if !uid_online(&tok, &cand)? {
-                    new = cand;
-                    break;
+                match uid_online(&tok, &cand)? {
+                    None => {
+                        new = cand;
+                        break;
+                    }
+                    Some(online_name) if online_name == *n => {
+                        // ours, from an earlier attempt of this very chunk: reuse
+                        new = cand;
+                        break;
+                    }
+                    Some(_) => {}
                 }
             }
             if new.is_empty() {
@@ -209,6 +224,16 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         }
         std::fs::write(cw.join("pairs.tsv"), &pairs).map_err(|e| e.to_string())?;
         std::fs::write(cw.join("wipe-manifest.tsv"), &manifest).map_err(|e| e.to_string())?;
+        // 3. the creates — on a token with ≥ 20 min left (the render took ~10 min of the
+        // hour; a slow Nadeo made 40 uploads outlive the token on 2026-11-04). The game is
+        // free at this point (the render is done), so a mint can run.
+        if crate::rethumball::token_left(&token_dir) < 20 * 60 {
+            let _ = Command::new(tinyctl()).args(["mint-tokens", "--token-dir", &token_dir]).output();
+            if crate::rethumball::token_left(&token_dir) < 20 * 60 {
+                let _ = Command::new(tinyctl()).args(["mint-tokens", "--standalone", "--token-dir", &token_dir]).output();
+            }
+            println!("[{:>4.0}s] w{k:03}: tokens {} s left before the creates", t0.elapsed().as_secs_f64(), crate::rethumball::token_left(&token_dir));
+        }
         // 3. the creates
         let results = cw.join("wipe-results.tsv");
         let st = Command::new(tinyctl())
