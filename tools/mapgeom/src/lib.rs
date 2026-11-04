@@ -71,6 +71,7 @@ pub mod debug;
 pub mod crystal_model;
 pub mod rescale;
 pub mod tables;
+pub mod mapsize;
 pub mod reftable;
 pub mod tiny_assets;
 pub mod tiny_library;

@@ -1744,6 +1744,12 @@ fn main() {
             println!("wrote {dir}/{ident} ({} bytes; entity model node {idx} external -> {prefab_name}) and {dir}/{prefab_name} ({} bytes, class 0x{class_id:08X}, {num_nodes} node slots)", item_bytes.len(), prefab_file.len());
             print!("{}", mapgeom::reftable::describe(&mapgeom::reftable::table_of(&item_bytes)));
         }
+        "mapsize" => {
+            // mapsize MAP.Map.Gbx [--top N] [--tsv OUT.tsv]: where the bytes of a map go
+            // (embedded archive by type / folder / DDS format, texture references from the
+            // item bodies, duplicates, top entries) -- mapgeom::mapsize.
+            mapgeom::mapsize::run(&a.rest[1..]).unwrap_or_else(|e| die(e));
+        }
         "rename-item" => {
             // rename-item IN.Item.Gbx --out OUT --to NAME [--from NAME] : the same file under
             // another ident (header + body, any length; the pack item Flag16m -> FlagCopy.Item.Gbx)
