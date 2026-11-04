@@ -94,50 +94,8 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     let tinyctl = std::env::current_exe().map_err(|e| e.to_string())?;
     let tmmaps = tool("tmmaps");
 
-    // 1. the live files
-    let missing: Vec<&(String, String)> = rows.iter().filter(|(u, _)| !live_dir.join(format!("{u}.Map.Gbx")).exists()).collect();
-    if !missing.is_empty() {
-        let list = work.join("fetch.tsv");
-        std::fs::write(&list, missing.iter().map(|(u, n)| format!("{u}\t{n}\n")).collect::<String>()).map_err(|e| e.to_string())?;
-        let out = Command::new(&tinyctl)
-            .env("TINYCTL_TOKEN_DIR", &token_dir)
-            .args(["nadeo-here", "maps", "--uids-file", &list.to_string_lossy(), "--fetch", &live_dir.to_string_lossy(), "--no-lock"])
-            .output()
-            .map_err(|e| e.to_string())?;
-        let text = String::from_utf8_lossy(&out.stdout);
-        println!("[{:>4.0}s] fetch: {}", t0.elapsed().as_secs_f64(), text.lines().last().unwrap_or("").trim());
-    }
-    let still: Vec<&(String, String)> = rows.iter().filter(|(u, _)| !live_dir.join(format!("{u}.Map.Gbx")).exists()).collect();
-    if !still.is_empty() {
-        return Err(format!("rethumb: {} live file(s) missing after the fetch ({} …)", still.len(), still[0].0));
-    }
-
-    // 2. the render copies
-    let mut n_prom = 0usize;
-    for (u, n) in &rows {
-        let live = live_dir.join(format!("{u}.Map.Gbx"));
-        let render = render_dir.join(format!("{u}.Map.Gbx"));
-        if render.exists() {
-            continue;
-        }
-        if promote {
-            let num: usize = n.strip_prefix("U10S_").and_then(|x| x.split(' ').next()).and_then(|x| x.parse().ok()).ok_or_else(|| format!("{n}: no U10S_<N> number in the name"))?;
-            let part = (num - 1) / 25 + 1;
-            // the bank names: `01-U10S_01` … `25-U10S_25` (two digits below 100), `01-U10S_101` …
-            let orig = orig_root.join(format!("p{part}")).join(format!("{:02}-U10S_{:02}.Map.Gbx", (num - 1) % 25 + 1, num));
-            if !orig.exists() {
-                return Err(format!("{n}: no original at {}", orig.display()));
-            }
-            let out = Command::new(&tmmaps).args(["render-copy", &live.to_string_lossy(), "--orig", &orig.to_string_lossy(), "--out", &render.to_string_lossy()]).output().map_err(|e| e.to_string())?;
-            if !out.status.success() || !render.exists() {
-                return Err(format!("render-copy {u}: {}", String::from_utf8_lossy(&out.stderr).lines().last().unwrap_or("")));
-            }
-            n_prom += 1;
-        } else {
-            std::fs::copy(&live, &render).map_err(|e| e.to_string())?;
-        }
-    }
-    println!("[{:>4.0}s] render copies: {} ({} made this run)", t0.elapsed().as_secs_f64(), rows.len(), n_prom);
+    // 1+2. the live files and the render copies (the same code the box runs in `box-prep`)
+    prep(&rows, &live_dir, &render_dir, &orig_root, promote, &tinyctl, &tmmaps, &token_dir, &work, &t0)?;
 
     // 3. the box: push + the editor renders (resumable on the box side)
     let wsx = Wsx::new(args);
@@ -154,14 +112,34 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     let batch = work.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "batch".into());
     let remote = format!("{BOX_ROOT}/{batch}");
     wsx.sh(&format!("mkdir -p {remote}/in {remote}/out"))?;
-    let tar = work.join("render.tar");
-    let st = Command::new("tar").args(["cf", &tar.to_string_lossy(), "-C", &render_dir.to_string_lossy(), "."]).status().map_err(|e| e.to_string())?;
-    if !st.success() {
-        return Err("tar of the render copies failed".into());
+    // RETHUMB_BOX_PREP=<dir of tinyctl+tmmaps on the box>: the box makes the render copies
+    // itself (`box-prep`: fetches the LIVE files from Nadeo over its own internet, originals
+    // from /home/vjeux/rollout/orig) — only the uid list and the two token files travel up.
+    // The relay's upstream fell to ~10 KB/s on 2026-11-04 (a 50 MB tar = 85 min, pushes
+    // timing out); downstream (pull) stayed at ~1 MB/s.
+    let box_prep_bin = std::env::var("RETHUMB_BOX_PREP").ok().filter(|v| !v.is_empty());
+    let mut prep_cmd = String::new();
+    if let Some(bin) = &box_prep_bin {
+        let uids_tsv = work.join("box-uids.tsv");
+        std::fs::write(&uids_tsv, rows.iter().map(|(u, n)| format!("{u}\t{n}\n")).collect::<String>()).map_err(|e| e.to_string())?;
+        wsx.push(&uids_tsv, &format!("{remote}/box-uids.tsv"))?;
+        wsx.sh(&format!("mkdir -p {remote}/tokens"))?;
+        for aud in ["NadeoServices", "NadeoLiveServices"] {
+            wsx.push(Path::new(&format!("{token_dir}/token-{aud}.txt")), &format!("{remote}/tokens/token-{aud}.txt"))?;
+        }
+        let np = if promote { "" } else { " --no-promote" };
+        prep_cmd = format!("{bin}/tinyctl box-prep --uids-file {remote}/box-uids.tsv --live {remote}/live --render {remote}/in --token-dir {remote}/tokens{np} > {remote}/prep.log 2>&1 && ls {remote}/in/*.Map.Gbx > {remote}/list.tsv && ");
+        println!("[{:>4.0}s] box-prep mode: {} uids + tokens pushed; the box fetches and copies", t0.elapsed().as_secs_f64(), rows.len());
+    } else {
+        let tar = work.join("render.tar");
+        let st = Command::new("tar").args(["cf", &tar.to_string_lossy(), "-C", &render_dir.to_string_lossy(), "."]).status().map_err(|e| e.to_string())?;
+        if !st.success() {
+            return Err("tar of the render copies failed".into());
+        }
+        wsx.push(&tar, &format!("{remote}/render.tar"))?;
+        wsx.sh(&format!("cd {remote}/in && tar xf {remote}/render.tar && rm -f {remote}/render.tar && ls {remote}/in/*.Map.Gbx > {remote}/list.tsv && wc -l < {remote}/list.tsv"))?;
+        println!("[{:>4.0}s] pushed {} render copies to {remote}/in", t0.elapsed().as_secs_f64(), rows.len());
     }
-    wsx.push(&tar, &format!("{remote}/render.tar"))?;
-    wsx.sh(&format!("cd {remote}/in && tar xf {remote}/render.tar && rm -f {remote}/render.tar && ls {remote}/in/*.Map.Gbx > {remote}/list.tsv && wc -l < {remote}/list.tsv"))?;
-    println!("[{:>4.0}s] pushed {} render copies to {remote}/in", t0.elapsed().as_secs_f64(), rows.len());
     let env = crate::remoteshots::ENV;
     let mut attempt = 0;
     loop {
@@ -186,7 +164,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         let done_file = format!("{remote}/run.done");
         let _ = wsx.sh(&format!("rm -f {done_file}; pgrep -f 'tinyctl-fix4 thumbs --editor --resume --list {remote}/list.tsv' >/dev/null && echo STILL-RUNNING"));
         let run = format!(
-            "{env}; export THUMBS_LAUNCH_AGO_S={launch_ago}; cd {remote} && nohup sh -c 'tmdrive run --purpose \"rethumb {batch}\" --wait 100 -- {BOX_TINYCTL} thumbs --editor --resume --list {remote}/list.tsv --outdir {remote}/out --tmmaps {BOX_TMMAPS} > {remote}/run.log 2>&1; echo OK $? > {done_file}' > /dev/null 2>&1 & echo started"
+            "{env}; export THUMBS_LAUNCH_AGO_S={launch_ago}; cd {remote} && nohup sh -c '{prep_cmd}tmdrive run --purpose \"rethumb {batch}\" --wait 100 -- {BOX_TINYCTL} thumbs --editor --resume --list {remote}/list.tsv --outdir {remote}/out --tmmaps {BOX_TMMAPS} > {remote}/run.log 2>&1; echo OK $? > {done_file}' > /dev/null 2>&1 & echo started"
         );
         let started = wsx.sh(&run).unwrap_or_else(|e| format!("bridge: {e}"));
         if !started.contains("started") {
@@ -301,5 +279,88 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     if by.get("IDENTICAL").copied().unwrap_or(0) != n_final {
         return Err(format!("rethumb: {} of {} IDENTICAL — see {}", by.get("IDENTICAL").copied().unwrap_or(0), n_final, results.display()));
     }
+    Ok(())
+}
+
+/// Steps 1–2 of a rethumb: fetch the LIVE files (`nadeo-here maps --fetch`, tokens from
+/// `token_dir`) and make the render copies (`tmmaps render-copy` against the ORIGINAL, or a
+/// plain copy with `--no-promote`). Runs on the devserver, or on the box as `tinyctl box-prep`
+/// when the relay's upstream is too slow to push 50 MB of copies (2026-11-04: 10 KB/s).
+#[allow(clippy::too_many_arguments)]
+pub fn prep(rows: &[(String, String)], live_dir: &Path, render_dir: &Path, orig_root: &Path, promote: bool, tinyctl: &Path, tmmaps: &Path, token_dir: &str, work: &Path, t0: &Instant) -> Result<(), String> {
+    std::fs::create_dir_all(live_dir).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(render_dir).map_err(|e| e.to_string())?;
+    let missing: Vec<&(String, String)> = rows.iter().filter(|(u, _)| !live_dir.join(format!("{u}.Map.Gbx")).exists()).collect();
+    if !missing.is_empty() {
+        let list = work.join("fetch.tsv");
+        std::fs::write(&list, missing.iter().map(|(u, n)| format!("{u}\t{n}\n")).collect::<String>()).map_err(|e| e.to_string())?;
+        let out = Command::new(tinyctl)
+            .env("TINYCTL_TOKEN_DIR", token_dir)
+            .args(["nadeo-here", "maps", "--uids-file", &list.to_string_lossy(), "--fetch", &live_dir.to_string_lossy(), "--no-lock"])
+            .output()
+            .map_err(|e| e.to_string())?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        println!("[{:>4.0}s] fetch: {}", t0.elapsed().as_secs_f64(), text.lines().last().unwrap_or("").trim());
+    }
+    let still: Vec<&(String, String)> = rows.iter().filter(|(u, _)| !live_dir.join(format!("{u}.Map.Gbx")).exists()).collect();
+    if !still.is_empty() {
+        return Err(format!("rethumb: {} live file(s) missing after the fetch ({} …)", still.len(), still[0].0));
+    }
+
+    // 2. the render copies
+    let mut n_prom = 0usize;
+    for (u, n) in rows {
+        let live = live_dir.join(format!("{u}.Map.Gbx"));
+        let render = render_dir.join(format!("{u}.Map.Gbx"));
+        if render.exists() {
+            continue;
+        }
+        if promote {
+            let num: usize = n.strip_prefix("U10S_").and_then(|x| x.split(' ').next()).and_then(|x| x.parse().ok()).ok_or_else(|| format!("{n}: no U10S_<N> number in the name"))?;
+            let part = (num - 1) / 25 + 1;
+            // the bank names: `01-U10S_01` … `25-U10S_25` (two digits below 100), `01-U10S_101` …
+            let orig = orig_root.join(format!("p{part}")).join(format!("{:02}-U10S_{:02}.Map.Gbx", (num - 1) % 25 + 1, num));
+            if !orig.exists() {
+                return Err(format!("{n}: no original at {}", orig.display()));
+            }
+            let out = Command::new(tmmaps).args(["render-copy", &live.to_string_lossy(), "--orig", &orig.to_string_lossy(), "--out", &render.to_string_lossy()]).output().map_err(|e| e.to_string())?;
+            if !out.status.success() || !render.exists() {
+                return Err(format!("render-copy {u}: {}", String::from_utf8_lossy(&out.stderr).lines().last().unwrap_or("")));
+            }
+            n_prom += 1;
+        } else {
+            std::fs::copy(&live, &render).map_err(|e| e.to_string())?;
+        }
+    }
+    println!("[{:>4.0}s] render copies: {} ({} made this run)", t0.elapsed().as_secs_f64(), rows.len(), n_prom);
+
+    Ok(())
+}
+
+/// `tinyctl box-prep --uids-file L --live DIR --render DIR --orig-root R --token-dir D
+/// [--no-promote]`: steps 1–2 on the box itself (its own internet fetches from Nadeo).
+pub fn box_prep(args: &[String]) -> Result<(), String> {
+    let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
+    let uids_file = PathBuf::from(f("--uids-file").ok_or("box-prep needs --uids-file L.tsv")?);
+    let live_dir = PathBuf::from(f("--live").ok_or("box-prep needs --live DIR")?);
+    let render_dir = PathBuf::from(f("--render").ok_or("box-prep needs --render DIR")?);
+    let orig_root = PathBuf::from(f("--orig-root").unwrap_or_else(|| "/home/vjeux/rollout/orig".into()));
+    let token_dir = f("--token-dir").ok_or("box-prep needs --token-dir DIR")?;
+    let promote = !tmmaps::cli::has(args, "--no-promote");
+    let rows: Vec<(String, String)> = std::fs::read_to_string(&uids_file)
+        .map_err(|e| format!("{}: {e}", uids_file.display()))?
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| {
+            let mut it = l.split('\t');
+            (it.next().unwrap_or("").trim().to_string(), it.next().unwrap_or("").trim().to_string())
+        })
+        .collect();
+    let tinyctl = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("tinyctl"));
+    let tmmaps = tinyctl.parent().map(|d| d.join("tmmaps")).filter(|p| p.exists()).unwrap_or_else(|| PathBuf::from("tmmaps"));
+    let work = live_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
+    let t0 = Instant::now();
+    prep(&rows, &live_dir, &render_dir, &orig_root, promote, &tinyctl, &tmmaps, &token_dir, &work, &t0)?;
+    println!("box-prep: {} render copies in {}", rows.len(), render_dir.display());
     Ok(())
 }

@@ -237,6 +237,7 @@ fn main() {
         "openroad-graft" => openroadgraft::cmd(rest),
         "rethumb-all" => rethumball::cmd(rest),
         "rethumb-wipe" => rethumbwipe::cmd(rest),
+        "box-prep" => rethumb::box_prep(rest),
         "rethumb-wipe-all" => rethumbwipeall::cmd(rest),
         "box-front" => {
             let wsx = wsx::Wsx::new(rest);
