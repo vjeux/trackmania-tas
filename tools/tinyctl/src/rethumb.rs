@@ -33,7 +33,11 @@ use std::time::Instant;
 
 const BOX_TINYCTL: &str = "/home/vjeux/bin/tinyctl-fix4";
 const BOX_TMMAPS: &str = "/home/vjeux/bin/tmmaps-fix4";
-const BOX_ROOT: &str = "/home/vjeux/rethumb";
+/// The box-side scratch lives on the WINDOWS disk (DrvFs), not inside the WSL VHDX: four
+/// WSL deaths on 2026-11-03 were host-side VHDX write failures (`hv_storvsc … cmd 0x2a …
+/// host 0xc00000a1` = STATUS_WORKING_SET_QUOTA) that hit exactly when a chunk's tar landed;
+/// an NTFS directory takes the same bytes without touching the VHDX at all.
+const BOX_ROOT: &str = "/mnt/c/Users/vjeux/rethumb-work";
 
 fn tool(name: &str) -> PathBuf {
     std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join(name))).filter(|p| p.exists()).unwrap_or_else(|| PathBuf::from(name))
