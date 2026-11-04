@@ -92,7 +92,10 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         loop {
             attempt += 1;
             let mut c = Command::new(tinyctl());
-            c.args(["rethumb-wipe", "--uids-file", &list.to_string_lossy(), "--work", &set_work.to_string_lossy(), "--chunk", "40"]);
+            // 80 per chunk: the render is ~7 s/map whatever the chunk, but the swap scan, the
+            // token check and the gate are per chunk (~6 min) — 40-map chunks ran 24 s/map,
+            // 80-map chunks ~15 s/map (2026-11-04)
+            c.args(["rethumb-wipe", "--uids-file", &list.to_string_lossy(), "--work", &set_work.to_string_lossy(), "--chunk", "80"]);
             if plain.iter().any(|p| p == set) {
                 c.arg("--no-promote");
             }

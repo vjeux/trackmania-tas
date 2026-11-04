@@ -193,7 +193,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             println!("[{:>4.0}s] box: could not start the run: {}", t0.elapsed().as_secs_f64(), started.trim().chars().take(120).collect::<String>());
         }
         // one probe every 30 s (the fleet's bridge budget), up to 40 min for a 40-map chunk
-        let out = match wsx.wait_done(&done_file, &format!("{remote}/run.log"), std::time::Duration::from_secs(2400), "rethumb render") {
+        let out = match wsx.wait_done(&done_file, &format!("{remote}/run.log"), std::time::Duration::from_secs(3600), "rethumb render") {
             Ok(_) => wsx.sh(&format!("tail -3 {remote}/run.log")).unwrap_or_default(),
             Err(e) => {
                 // no done file in 40 min: the run is wedged — stop it so the next attempt is alone
