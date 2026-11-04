@@ -31,8 +31,15 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
 
-const BOX_TINYCTL: &str = "/home/vjeux/bin/tinyctl-fix4";
-const BOX_TMMAPS: &str = "/home/vjeux/bin/tmmaps-fix4";
+/// The box-side binaries: `RETHUMB_BOX_BIN=<dir>` (tinyctl + tmmaps built ON the box from
+/// the same commit — `/home/vjeux/bin/tt5` since 2026-11-04, when the relay's upstream could
+/// no longer carry a 10 MB binary in reasonable time), else the Nov-2 pushed copies.
+fn box_tinyctl() -> String {
+    std::env::var("RETHUMB_BOX_BIN").ok().filter(|v| !v.is_empty()).map(|d| format!("{d}/tinyctl")).unwrap_or_else(|| "/home/vjeux/bin/tinyctl-fix4".into())
+}
+fn box_tmmaps() -> String {
+    std::env::var("RETHUMB_BOX_BIN").ok().filter(|v| !v.is_empty()).map(|d| format!("{d}/tmmaps")).unwrap_or_else(|| "/home/vjeux/bin/tmmaps-fix4".into())
+}
 /// The box-side scratch lives on the WINDOWS disk (DrvFs), not inside the WSL VHDX: four
 /// WSL deaths on 2026-11-03 were host-side VHDX write failures (`hv_storvsc … cmd 0x2a …
 /// host 0xc00000a1` = STATUS_WORKING_SET_QUOTA) that hit exactly when a chunk's tar landed;
@@ -117,7 +124,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     // from /home/vjeux/rollout/orig) — only the uid list and the two token files travel up.
     // The relay's upstream fell to ~10 KB/s on 2026-11-04 (a 50 MB tar = 85 min, pushes
     // timing out); downstream (pull) stayed at ~1 MB/s.
-    let box_prep_bin = std::env::var("RETHUMB_BOX_PREP").ok().filter(|v| !v.is_empty());
+    let box_prep_bin = std::env::var("RETHUMB_BOX_PREP").ok().filter(|v| !v.is_empty()).map(|v| if v == "1" { std::env::var("RETHUMB_BOX_BIN").unwrap_or_else(|_| "/home/vjeux/bin/tt5".into()) } else { v });
     let mut prep_cmd = String::new();
     if let Some(bin) = &box_prep_bin {
         let uids_tsv = work.join("box-uids.tsv");
@@ -141,6 +148,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         println!("[{:>4.0}s] pushed {} render copies to {remote}/in", t0.elapsed().as_secs_f64(), rows.len());
     }
     let env = crate::remoteshots::ENV;
+    let (bt, bm) = (box_tinyctl(), box_tmmaps());
     let mut attempt = 0;
     loop {
         attempt += 1;
@@ -162,9 +170,9 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         // and the orphan's own input read as a person (2026-11-02 22:19, Everios96: "are you
         // sure you're not detecting yourself again?"). One run at a time: nohup + a done file.
         let done_file = format!("{remote}/run.done");
-        let _ = wsx.sh(&format!("rm -f {done_file}; pgrep -f 'tinyctl-fix4 thumbs --editor --resume --list {remote}/list.tsv' >/dev/null && echo STILL-RUNNING"));
+        let _ = wsx.sh(&format!("rm -f {done_file}; pgrep -f 'tinyctl.* thumbs --editor --resume --list {remote}/list.tsv' >/dev/null && echo STILL-RUNNING"));
         let run = format!(
-            "{env}; export THUMBS_LAUNCH_AGO_S={launch_ago}; cd {remote} && nohup sh -c '{prep_cmd}tmdrive run --purpose \"rethumb {batch}\" --wait 100 -- {BOX_TINYCTL} thumbs --editor --resume --list {remote}/list.tsv --outdir {remote}/out --tmmaps {BOX_TMMAPS} > {remote}/run.log 2>&1; echo OK $? > {done_file}' > /dev/null 2>&1 & echo started"
+            "{env}; export THUMBS_LAUNCH_AGO_S={launch_ago}; cd {remote} && nohup sh -c '{prep_cmd}tmdrive run --purpose \"rethumb {batch}\" --wait 100 -- {bt} thumbs --editor --resume --list {remote}/list.tsv --outdir {remote}/out --tmmaps {bm} > {remote}/run.log 2>&1; echo OK $? > {done_file}' > /dev/null 2>&1 & echo started"
         );
         let started = wsx.sh(&run).unwrap_or_else(|e| format!("bridge: {e}"));
         if !started.contains("started") {
@@ -175,7 +183,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             Ok(_) => wsx.sh(&format!("tail -3 {remote}/run.log")).unwrap_or_default(),
             Err(e) => {
                 // no done file in 40 min: the run is wedged — stop it so the next attempt is alone
-                let _ = wsx.sh(&format!("pkill -f 'tinyctl-fix4 thumbs --editor --resume --list {remote}/list.tsv'; pkill -f 'rethumb {batch}'; true"));
+                let _ = wsx.sh(&format!("pkill -f 'tinyctl.* thumbs --editor --resume --list {remote}/list.tsv'; pkill -f 'rethumb {batch}'; true"));
                 format!("{e}")
             }
         };
