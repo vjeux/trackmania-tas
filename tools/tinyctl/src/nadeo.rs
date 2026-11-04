@@ -693,6 +693,10 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             let club = f("--club").ok_or("reuid-swap needs --club ID")?;
             let pairs_p = f("--pairs").ok_or("reuid-swap needs --pairs pairs.tsv")?;
             let dry = tmmaps::cli::has(args, "--dry-run");
+            // --name-filter S: only campaigns whose LIST entry name contains S (case-insensitive)
+            // get their playlist fetched — the club has ~390 campaigns and one set's maps sit in
+            // ~40 of them; the per-campaign GET was ~5 of a 16-minute wipe chunk (2026-11-04)
+            let name_filter = f("--name-filter").map(|v| v.to_lowercase());
             let pairs: std::collections::HashMap<String, String> = std::fs::read_to_string(&pairs_p).map_err(|e| format!("{pairs_p}: {e}"))?.lines().filter_map(|l| { let mut it = l.split('\t'); Some((it.next()?.trim().to_string(), it.next()?.trim().to_string())) }).filter(|(a, b)| a.len() > 20 && b.len() > 20).collect();
             eprintln!("{} uid pairs", pairs.len());
             // campaigns
@@ -706,6 +710,12 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                 }
                 for c in &list {
                     let camp = c.get("campaignId").and_then(|x| x.as_u64()).or_else(|| c.get("id").and_then(|x| x.as_u64())).unwrap_or(0).to_string();
+                    if let Some(nf) = &name_filter {
+                        let list_name = s(c, "name").to_lowercase();
+                        if !list_name.contains(nf.as_str()) {
+                            continue;
+                        }
+                    }
                     let d = get_json(&auth_live, &format!("{LIVE}/api/token/club/{club}/campaign/{camp}"))?;
                     let inner = d.get("campaign").cloned().unwrap_or(Value::Null);
                     let name = s(&d, "name");

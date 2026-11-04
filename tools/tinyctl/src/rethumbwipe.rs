@@ -33,6 +33,25 @@ fn tmmaps() -> PathBuf {
     std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("tmmaps"))).filter(|p| p.exists()).unwrap_or_else(|| PathBuf::from("tmmaps"))
 }
 
+/// The campaign-name word of a set, from its uid prefix (Everios96's campaigns are
+/// "<Set> Part NN"; "Wood" also matches "Wet Wood" — harmless, the uids decide).
+fn set_name_of(uid: &str) -> String {
+    match &uid[..3] {
+        "Dir" => "Dirt",
+        "Gia" => "Giant",
+        "Gra" => "Grass",
+        "Ice" => "Icy",
+        "Mag" => "Magnet",
+        "Pla" => "Plastic",
+        "Tar" => "Tarmac",
+        "Tin" => "Tiny",
+        "Wet" => "Wet Wood",
+        "Woo" => "Wood",
+        _ => "",
+    }
+    .to_string()
+}
+
 fn core_token(dir: &str) -> Result<String, String> {
     let t = std::fs::read_to_string(format!("{dir}/token-NadeoServices.txt")).map_err(|e| e.to_string())?;
     Ok(t.trim().to_string())
@@ -207,7 +226,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         env.insert("TINYCTL_TOKEN_DIR", token_dir.clone());
         let o = Command::new(tinyctl())
             .envs(env)
-            .args(["nadeo-here", "reuid-swap", "--club", &club, "--pairs", &cw.join("pairs.tsv").to_string_lossy(), "--no-lock", "--outdir", &cw.to_string_lossy()])
+            .args(["nadeo-here", "reuid-swap", "--club", &club, "--pairs", &cw.join("pairs.tsv").to_string_lossy(), "--no-lock", "--outdir", &cw.to_string_lossy(), "--name-filter", &set_name_of(&c[0].0)])
             .output()
             .map_err(|e| e.to_string())?;
         let so = String::from_utf8_lossy(&o.stdout).to_string();
