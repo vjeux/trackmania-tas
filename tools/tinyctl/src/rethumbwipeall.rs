@@ -38,6 +38,9 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     let done = PathBuf::from(f("--done").ok_or("rethumb-wipe-all needs --done DONE.txt")?);
     let work = PathBuf::from(f("--work").ok_or("rethumb-wipe-all needs --work DIR")?);
     let sets: Vec<String> = f("--sets").map(|s| s.split(',').map(|x| x.trim().to_string()).collect()).unwrap_or_else(|| vec!["dirt", "giant", "grass", "icy", "magnet", "plastic", "tarmac", "tiny", "wetwood", "wood"].into_iter().map(String::from).collect());
+    // --chunk N: maps per wipe chunk (80). A set already started with another size keeps it
+    // (its swap.done markers are per chunk index): dirt = 40.
+    let chunk = f("--chunk").unwrap_or_else(|| "80".into());
     let plain: Vec<String> = f("--plain-sets").map(|s| s.split(',').map(|x| x.trim().to_string()).collect()).unwrap_or_else(|| vec!["giant".into(), "tiny".into()]);
     let log_path = work.join("wipe-all.log");
     let log = |line: &str| {
@@ -95,7 +98,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             // 80 per chunk: the render is ~7 s/map whatever the chunk, but the swap scan, the
             // token check and the gate are per chunk (~6 min) — 40-map chunks ran 24 s/map,
             // 80-map chunks ~15 s/map (2026-11-04)
-            c.args(["rethumb-wipe", "--uids-file", &list.to_string_lossy(), "--work", &set_work.to_string_lossy(), "--chunk", "80"]);
+            c.args(["rethumb-wipe", "--uids-file", &list.to_string_lossy(), "--work", &set_work.to_string_lossy(), "--chunk", &chunk]);
             if plain.iter().any(|p| p == set) {
                 c.arg("--no-promote");
             }
