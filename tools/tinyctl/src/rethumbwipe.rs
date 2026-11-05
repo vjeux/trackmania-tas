@@ -72,7 +72,10 @@ pub fn missing_embedded_items(tmmaps: &Path, map: &Path) -> Vec<String> {
     }
     let embedded = Command::new(tmmaps).args(["embedded", &map.to_string_lossy()]).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
     let zip_names: Vec<String> = embedded.lines().filter_map(|l| l.trim_start().strip_prefix("zip  ")).filter_map(|l| l.split('\t').next().map(|n| n.replace('/', "\\"))).collect();
-    refs.into_iter().filter(|r| !zip_names.iter().any(|z| z.ends_with(r.as_str()) || r.ends_with(z.as_str()))).collect()
+    // the game resolves a reference by its RELATIVE name (`<ref>` or `Items\<ref>`); an entry
+    // stored under the original author's absolute path (`C:\Users\David\Documents\Trackmania\
+    // Items\TM_Items_Sorted_v8.0\…\1_Ease.Item.Gbx`, Giant 495) is as good as missing
+    refs.into_iter().filter(|r| !zip_names.iter().any(|z| z == r || z.strip_prefix("Items\\").map(|t| t == r).unwrap_or(false))).collect()
 }
 
 fn core_token(dir: &str) -> Result<String, String> {
