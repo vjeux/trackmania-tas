@@ -234,17 +234,63 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             }
             println!("[{:>4.0}s] w{k:03}: tokens {} s left before the creates", t0.elapsed().as_secs_f64(), crate::rethumball::token_left(&token_dir));
         }
-        // 3. the creates
+        // 3. the creates. ONE failed upload must not fail the chunk: Nadeo's upload endpoint
+        // ran at 40–80 s per map on 2026-11-04 (7 s that morning) and a single 408 at
+        // 39/40 cost three one-hour attempts. The failed maps get one more try on their own
+        // manifest; what still fails goes to `<set>/leftover.tsv` for a final pass, and the
+        // chunk swaps the ones that landed.
         let results = cw.join("wipe-results.tsv");
-        let st = Command::new(tinyctl())
+        let read_results = |p: &Path| -> std::collections::HashMap<String, String> {
+            std::fs::read_to_string(p).unwrap_or_default().lines().skip(1).filter_map(|l| {
+                let f: Vec<&str> = l.split('\t').collect();
+                (f.len() >= 8).then(|| (f[1].to_string(), f[7].to_string()))
+            }).collect()
+        };
+        let _ = Command::new(tinyctl())
             .args(["publish-batch", "--manifest", &cw.join("wipe-manifest.tsv").to_string_lossy(), "--results", &results.to_string_lossy(), "--no-campaign", "--files-only", "--token-dir", &token_dir, "--jobs", "4"])
             .status()
             .map_err(|e| e.to_string())?;
-        let text = std::fs::read_to_string(&results).unwrap_or_default();
-        let ok = text.lines().skip(1).filter(|l| l.split('\t').nth(7) == Some("IDENTICAL")).count();
+        let mut verdicts = read_results(&results);
         let want = manifest.lines().count();
-        if !st.success() || ok != want {
-            return Err(format!("w{k:03}: {ok} of {want} created IDENTICAL — swap NOT done (see {})", results.display()));
+        let mut failed: Vec<String> = manifest.lines().filter_map(|l| l.split('\t').nth(1)).filter(|n| verdicts.get(*n).map(|v| v != "IDENTICAL").unwrap_or(true)).map(String::from).collect();
+        if !failed.is_empty() {
+            println!("[{:>4.0}s] w{k:03}: {} of {want} created; retrying the {} that failed", t0.elapsed().as_secs_f64(), want - failed.len(), failed.len());
+            let retry_manifest: String = manifest.lines().filter(|l| l.split('\t').nth(1).map(|n| failed.iter().any(|f| f == n)).unwrap_or(false)).map(|l| format!("{l}\n")).collect();
+            std::fs::write(cw.join("retry-manifest.tsv"), &retry_manifest).map_err(|e| e.to_string())?;
+            let retry_results = cw.join("retry-results.tsv");
+            if crate::rethumball::token_left(&token_dir) < 15 * 60 {
+                let _ = Command::new(tinyctl()).args(["mint-tokens", "--token-dir", &token_dir]).output();
+            }
+            let _ = Command::new(tinyctl())
+                .args(["publish-batch", "--manifest", &cw.join("retry-manifest.tsv").to_string_lossy(), "--results", &retry_results.to_string_lossy(), "--no-campaign", "--files-only", "--token-dir", &token_dir, "--jobs", "2"])
+                .status()
+                .map_err(|e| e.to_string())?;
+            for (n, v) in read_results(&retry_results) {
+                verdicts.insert(n, v);
+            }
+            failed = manifest.lines().filter_map(|l| l.split('\t').nth(1)).filter(|n| verdicts.get(*n).map(|v| v != "IDENTICAL").unwrap_or(true)).map(String::from).collect();
+        }
+        let ok = want - failed.len();
+        if ok == 0 {
+            return Err(format!("w{k:03}: 0 of {want} created IDENTICAL — swap NOT done (see {})", results.display()));
+        }
+        if !failed.is_empty() {
+            // leftovers: old uid + name, for the set's final pass; their pairs leave this swap
+            let leftover = work.join("leftover.tsv");
+            let mut lf = std::fs::OpenOptions::new().create(true).append(true).open(&leftover).map_err(|e| e.to_string())?;
+            use std::io::Write;
+            let kept: String = pairs.lines().filter(|l| {
+                let old = l.split('\t').next().unwrap_or("");
+                let n = c.iter().find(|(u, _)| u == old).map(|(_, n)| n.as_str()).unwrap_or("");
+                if failed.iter().any(|f| f == n) {
+                    let _ = writeln!(lf, "{old}\t{n}");
+                    false
+                } else {
+                    true
+                }
+            }).map(|l| format!("{l}\n")).collect();
+            std::fs::write(cw.join("pairs.tsv"), &kept).map_err(|e| e.to_string())?;
+            println!("[{:>4.0}s] w{k:03}: {} map(s) left for the final pass ({})", t0.elapsed().as_secs_f64(), failed.len(), leftover.display());
         }
         // 4. the playlist/room swap — only for the uids that landed
         let mut env = std::collections::HashMap::new();
@@ -259,8 +305,8 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             return Err(format!("w{k:03}: reuid-swap: {}", so.lines().last().unwrap_or("")));
         }
         std::fs::write(cw.join("swap.done"), &so).map_err(|e| e.to_string())?;
-        total_swapped += want;
-        println!("[{:>4.0}s] w{k:03}: {want} maps wiped to new uids with new thumbnails ({skipped} skipped); {}", t0.elapsed().as_secs_f64(), so.lines().last().unwrap_or(""));
+        total_swapped += ok;
+        println!("[{:>4.0}s] w{k:03}: {ok} maps wiped to new uids with new thumbnails ({skipped} skipped, {} left over); {}", failed.len(), t0.elapsed().as_secs_f64(), so.lines().last().unwrap_or(""));
     }
     println!("rethumb-wipe: {total_swapped} maps swapped in {:.1} h", t0.elapsed().as_secs_f64() / 3600.0);
     Ok(())
