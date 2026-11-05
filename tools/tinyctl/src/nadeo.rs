@@ -692,6 +692,25 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         // tinyctl nadeo-here room-drop-map --club C --room ID --uid U [--no-lock]: the room's
         // playlist without U (Everios96 2026-11-04 20:49: Giant 300's 9 MB file blocks every
         // edit of room "Giant V3 201-300" — "we need to remove this map for now")
+        // tinyctl nadeo-here campaign-drop-map --club C --campaign ID --uid U [--no-lock]: the
+        // campaign's playlist without U, order kept (Everios96 2026-11-05 01:22: the five
+        // oversized Giant maps "remove them from the club. We will attempt to fix them later")
+        "campaign-drop-map" => {
+            let club = f("--club").ok_or("campaign-drop-map needs --club ID")?;
+            let camp = f("--campaign").ok_or("campaign-drop-map needs --campaign ID")?;
+            let uid = f("--uid").ok_or("campaign-drop-map needs --uid U")?;
+            let d = get_json(&auth_live, &format!("{LIVE}/api/token/club/{club}/campaign/{camp}"))?;
+            let name = s(&d, "name");
+            let uids = campaign_playlist(&auth_live, &club, &camp)?;
+            if !uids.iter().any(|u| u == &uid) {
+                return Err(format!("campaign {camp} {name}: {uid} is not in its playlist ({} maps)", uids.len()));
+            }
+            let kept: Vec<String> = uids.iter().filter(|u| *u != &uid).cloned().collect();
+            let r = campaign_set(&auth_live, &club, &camp, &name, &kept)?;
+            let n = r.get("playlist").and_then(|l| l.as_array()).map(|a| a.len()).or_else(|| r.get("campaign").and_then(|c| c.get("playlist")).and_then(|l| l.as_array()).map(|a| a.len())).unwrap_or(0);
+            println!("campaign\t{camp}\t{name}\tdropped {uid}\t{} → {n} maps", uids.len());
+            Ok(())
+        }
         "room-drop-map" => {
             let club = f("--club").ok_or("room-drop-map needs --club ID")?;
             let id = f("--room").ok_or("room-drop-map needs --room ID")?;
