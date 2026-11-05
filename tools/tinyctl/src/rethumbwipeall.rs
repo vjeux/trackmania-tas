@@ -41,6 +41,9 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     // --chunk N: maps per wipe chunk (80). A set already started with another size keeps it
     // (its swap.done markers are per chunk index): dirt = 40.
     let chunk = f("--chunk").unwrap_or_else(|| "80".into());
+    // --exclude FILE: uids (first column) never wiped — the oversized Giant maps Everios96
+    // had removed from the club on 2026-11-05 (~/tm-bank/giant-oversized-2026-11-05/list.tsv)
+    let exclude: HashSet<String> = f("--exclude").map(|p| std::fs::read_to_string(p).unwrap_or_default().lines().filter_map(|l| l.split('\t').next().map(|u| u.trim().to_string())).filter(|u| u.len() > 20).collect()).unwrap_or_default();
     let plain: Vec<String> = f("--plain-sets").map(|s| s.split(',').map(|x| x.trim().to_string()).collect()).unwrap_or_else(|| vec!["giant".into(), "tiny".into()]);
     let log_path = work.join("wipe-all.log");
     let log = |line: &str| {
@@ -71,7 +74,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             let (d, r) = census_sets(&rec, &done);
             let counted = rows.iter().filter(|(u, _)| d.contains(u)).count();
             if counted == rows.len() {
-                break rows.iter().filter(|(u, _)| !r.contains(u)).cloned().collect();
+                break rows.iter().filter(|(u, _)| !r.contains(u) && !exclude.contains(u)).cloned().collect();
             }
             if !announced_wait {
                 log(&format!("{set}: census {counted}/{} — waiting", rows.len()));
