@@ -52,6 +52,29 @@ fn set_name_of(uid: &str) -> String {
     .to_string()
 }
 
+/// Item references of a map whose files are NOT in its embedded zip: the editor shows
+/// "Error while retrieving map! Missing Items … LOAD ANYWAY / CANCEL" and that modal blocks
+/// every map opened after it (Giant 495, 2026-11-05: 94 moving-platform items from
+/// "TM_Items_Sorted_v8.0" referenced by path, absent from the zip — in Everios96's original
+/// too, so they are missing for players as well). Such a map is left over, never rendered.
+pub fn missing_embedded_items(tmmaps: &Path, map: &Path) -> Vec<String> {
+    let census = Command::new(tmmaps).args(["census", &map.to_string_lossy()]).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
+    let refs: std::collections::BTreeSet<String> = census
+        .lines()
+        .skip(1)
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split('\t').collect();
+            (f.len() > 2 && f[1].starts_with('i') && f[2].contains('\\')).then(|| f[2].to_string())
+        })
+        .collect();
+    if refs.is_empty() {
+        return Vec::new();
+    }
+    let embedded = Command::new(tmmaps).args(["embedded", &map.to_string_lossy()]).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
+    let zip_names: Vec<String> = embedded.lines().filter_map(|l| l.trim_start().strip_prefix("zip  ")).filter_map(|l| l.split('\t').next().map(|n| n.replace('/', "\\"))).collect();
+    refs.into_iter().filter(|r| !zip_names.iter().any(|z| z.ends_with(r.as_str()) || r.ends_with(z.as_str()))).collect()
+}
+
 fn core_token(dir: &str) -> Result<String, String> {
     let t = std::fs::read_to_string(format!("{dir}/token-NadeoServices.txt")).map_err(|e| e.to_string())?;
     Ok(t.trim().to_string())
@@ -163,6 +186,27 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             if !out.status.success() {
                 let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
                 return Err(format!("w{k:03} render: {}", text.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("")));
+            }
+        }
+        // maps box-prep/prep refused to render (items referenced but not embedded): leftovers
+        // with the reason, so the final pass knows not to try them again blindly
+        for cand in [cw.join("prep-skipped.tsv"), cw.join("rendered").join("prep-skipped.tsv")] {
+            if let Ok(text) = std::fs::read_to_string(&cand) {
+                let leftover = work.join("leftover.tsv");
+                if let Ok(mut lf) = std::fs::OpenOptions::new().create(true).append(true).open(&leftover) {
+                    use std::io::Write;
+                    let existing = std::fs::read_to_string(&leftover).unwrap_or_default();
+                    for l in text.lines().filter(|l| !l.trim().is_empty()) {
+                        if !existing.contains(l.split('\t').next().unwrap_or("")) {
+                            let _ = writeln!(lf, "{l}");
+                        }
+                    }
+                }
+                let n = text.lines().filter(|l| !l.trim().is_empty()).count();
+                if n > 0 {
+                    println!("[{:>4.0}s] w{k:03}: {n} map(s) with non-embedded items left over (see {})", t0.elapsed().as_secs_f64(), leftover.display());
+                }
+                break;
             }
         }
         // 2. re-uid + the no-record re-check

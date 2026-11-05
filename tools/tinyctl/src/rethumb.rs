@@ -217,7 +217,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         println!("[{:>4.0}s] {done}/{} rendered — again (attempt {})", t0.elapsed().as_secs_f64(), rows.len(), attempt + 1);
     }
     // the rendered copies back (one tar)
-    wsx.sh(&format!("cd {remote}/out && tar cf {remote}/out.tar *.Map.Gbx thumbs.tsv"))?;
+    wsx.sh(&format!("cd {remote}/out && tar cf {remote}/out.tar *.Map.Gbx thumbs.tsv $(ls prep-skipped.tsv 2>/dev/null)"))?;
     let back = work.join("out.tar");
     wsx.pull(&format!("{remote}/out.tar"), &back)?;
     let out_dir = work.join("rendered");
@@ -347,6 +347,34 @@ pub fn prep(rows: &[(String, String)], live_dir: &Path, render_dir: &Path, orig_
         }
     }
     println!("[{:>4.0}s] render copies: {} ({} made this run)", t0.elapsed().as_secs_f64(), rows.len(), n_prom);
+    // maps the editor cannot open without a modal ("Missing Items", items referenced by path
+    // but absent from the zip — Giant 495 and 2 more on 2026-11-05; the modal then blocks every
+    // later map): their render copy is removed and the uid listed in `prep-skipped.tsv`, which
+    // travels back with the renders so the caller leaves those maps over with the reason.
+    let mut skipped = String::new();
+    for (u, n) in rows {
+        let render = render_dir.join(format!("{u}.Map.Gbx"));
+        if !render.exists() {
+            continue;
+        }
+        let missing = crate::rethumbwipe::missing_embedded_items(tmmaps, &render);
+        if !missing.is_empty() {
+            let _ = std::fs::remove_file(&render);
+            skipped.push_str(&format!("{u}\t{n}\tmissing embedded items ({}): {}\n", missing.len(), missing.iter().take(2).cloned().collect::<Vec<_>>().join("; ")));
+            println!("[{:>4.0}s] {n}: {} referenced item(s) not embedded — not rendered (the editor would block on a modal)", t0.elapsed().as_secs_f64(), missing.len());
+        }
+    }
+    if !skipped.is_empty() {
+        let _ = std::fs::write(work.join("prep-skipped.tsv"), &skipped);
+        // and beside the renders' output dir on the box (box-prep: render_dir is `in/`, the
+        // results dir is its sibling `out/`), so the tar of `out/` carries it home
+        if let Some(parent) = render_dir.parent() {
+            let out = parent.join("out");
+            if out.is_dir() {
+                let _ = std::fs::write(out.join("prep-skipped.tsv"), &skipped);
+            }
+        }
+    }
 
     Ok(())
 }

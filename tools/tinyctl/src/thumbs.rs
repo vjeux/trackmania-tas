@@ -398,6 +398,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     last_own_action = Instant::now();
     let mut n_ok = 0usize;
     let mut n_fail = 0usize;
+    let mut consecutive_editor_fail = 0usize;
     let mut attempts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
     let mut retry_queue: Vec<usize> = Vec::new();
     let order: Vec<usize> = (0..maps.len()).collect();
@@ -538,6 +539,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         match res {
             Ok((detail, bytes)) => {
                 n_ok += 1;
+                consecutive_editor_fail = 0;
                 let uid = tmmaps::header::read(out_map.to_str().unwrap_or_default()).map(|h| h.uid).unwrap_or_default();
                 writeln!(log, "{m}\t{uid}\t{bytes}\t{ms}\tok\t{}", detail.replace('\t', " ")).map_err(|e| e.to_string())?;
                 println!("[{:>4}/{}] ok {ms:5} ms  {}", k + 1, maps.len(), rel.display());
@@ -567,6 +569,18 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                 } else {
                     n_fail += 1;
                     writeln!(log, "{m}\t\t0\t{ms}\tFAIL\t{}", e.replace('\t', " ")).map_err(|e| e.to_string())?;
+                }
+                // a game stuck behind a modal ("Error while retrieving map! Missing Items …
+                // LOAD ANYWAY / CANCEL", Giant 495 on 2026-11-05) fails EVERY later map the
+                // same way, 2 min each; synthetic clicks never reach the game. Three in a row
+                // with the editor never appearing = the run ends so the caller relaunches.
+                if e.contains("editor did not come up") {
+                    consecutive_editor_fail += 1;
+                    if consecutive_editor_fail >= 3 {
+                        println!("{n_ok} ok, {n_fail} failed; stopping: the editor did not come up for 3 maps in a row (a modal dialog is blocking the game) — relaunch and resume");
+                        let _ = log.flush();
+                        return Ok(());
+                    }
                 }
             }
         }
