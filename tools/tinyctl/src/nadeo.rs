@@ -689,6 +689,32 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         // list of the club that contains an old uid is rewritten with the new one (one
         // write per touched campaign / room). The records reset, option (b): the new uid
         // starts an empty leaderboard; the old maps simply drop out of the club.
+        // tinyctl nadeo-here room-drop-map --club C --room ID --uid U [--no-lock]: the room's
+        // playlist without U (Everios96 2026-11-04 20:49: Giant 300's 9 MB file blocks every
+        // edit of room "Giant V3 201-300" — "we need to remove this map for now")
+        "room-drop-map" => {
+            let club = f("--club").ok_or("room-drop-map needs --club ID")?;
+            let id = f("--room").ok_or("room-drop-map needs --room ID")?;
+            let uid = f("--uid").ok_or("room-drop-map needs --uid U")?;
+            let d = get_json(&auth_live, &format!("{LIVE}/api/token/club/{club}/room/{id}"))?;
+            let room = d.get("room").cloned().unwrap_or(Value::Null);
+            let maps: Vec<String> = room.get("maps").and_then(|m| m.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
+            if !maps.iter().any(|m| m == &uid) {
+                return Err(format!("room {id}: {uid} is not in its playlist ({} maps)", maps.len()));
+            }
+            let new_maps: Vec<String> = maps.iter().filter(|m| *m != &uid).cloned().collect();
+            let name = s(&d, "name");
+            let settings: Vec<Value> = room.get("scriptSettings").and_then(|o| o.as_object()).map(|o| o.values().map(|v| serde_json::json!({"key": s(v, "key"), "value": s(v, "value"), "type": s(v, "type")})).collect()).unwrap_or_default();
+            let body = serde_json::json!({
+                "name": name, "region": s(&room, "region"), "maxPlayersPerServer": room.get("maxPlayers").and_then(|x| x.as_u64()).unwrap_or(100),
+                "script": s(&room, "script"), "settings": settings,
+                "maps": new_maps, "scalable": 0, "password": 0, "shufflePlaylist": 0
+            });
+            let r = post_json(&auth_live, &format!("{LIVE}/api/token/club/{club}/room/{id}/edit"), &body.to_string())?;
+            let n = r["room"]["maps"].as_array().map(|a| a.len()).unwrap_or(0);
+            println!("room\t{id}\t{name}\tdropped {uid}\t{} → {n} maps", maps.len());
+            Ok(())
+        }
         "reuid-swap" => {
             let club = f("--club").ok_or("reuid-swap needs --club ID")?;
             let pairs_p = f("--pairs").ok_or("reuid-swap needs --pairs pairs.tsv")?;
