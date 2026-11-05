@@ -212,7 +212,14 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                 break;
             }
         }
-        // 2. re-uid + the no-record re-check
+        // 2. re-uid + the no-record re-check — on a live token (a render with retries can
+        // outlast the hour: w006 on 2026-11-05 came back to "Invalid credentials")
+        if crate::rethumball::token_left(&token_dir) < 20 * 60 {
+            let _ = Command::new(tinyctl()).args(["mint-tokens", "--token-dir", &token_dir]).output();
+            if crate::rethumball::token_left(&token_dir) < 20 * 60 {
+                let _ = Command::new(tinyctl()).args(["mint-tokens", "--standalone", "--token-dir", &token_dir]).output();
+            }
+        }
         let tok = core_token(&token_dir)?;
         let final_dir = cw.join("final");
         let wipe_dir = cw.join("wipe");
