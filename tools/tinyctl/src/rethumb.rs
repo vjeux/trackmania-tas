@@ -200,7 +200,11 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             return Err("rethumb: HUMAN on the box — stopped; rerun when free (resumes)".into());
         }
         let done: usize = wsx.sh(&format!("ls {remote}/out/*.Map.Gbx 2>/dev/null | wc -l")).ok().and_then(|t| t.trim().parse().ok()).unwrap_or(0);
-        if done >= rows.len() {
+        // the target is what the box LISTED (box-prep leaves maps with non-embedded items
+        // out of list.tsv), not the batch size: 78 of 80 rendered is complete when 2 were
+        // skipped (Icy w000, 2026-11-05: three empty relaunch attempts otherwise)
+        let listed: usize = wsx.sh(&format!("wc -l < {remote}/list.tsv 2>/dev/null")).ok().and_then(|t| t.trim().parse().ok()).unwrap_or(rows.len());
+        if done >= listed.min(rows.len()) {
             break;
         }
         if attempt >= 4 {
