@@ -186,7 +186,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         }
         // one probe every 30 s (the fleet's bridge budget), up to 40 min for a 40-map chunk
         let out = match wsx.wait_done(&done_file, &format!("{remote}/run.log"), std::time::Duration::from_secs(3600), "rethumb render") {
-            Ok(_) => wsx.sh(&format!("tail -3 {remote}/run.log")).unwrap_or_default(),
+            Ok(_) => wsx.sh(&format!("tail -3 {remote}/run.log 2>/dev/null; true")).unwrap_or_default(),
             Err(e) => {
                 // no done file in 40 min: the run is wedged — stop it so the next attempt is alone
                 let _ = wsx.sh(&format!("pkill -f 'tinyctl.* thumbs --editor --resume --list {remote}/list.tsv'; pkill -f 'rethumb {batch}'; true"));
@@ -223,7 +223,9 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     // the rendered copies back (one tar), then the box scratch of this chunk goes: a chunk
     // leaves ~450 MB (live + render copies + renders) and 97 of them had refilled C: to
     // 49 GB free on 2026-11-06 — the devserver keeps everything that matters
-    wsx.sh(&format!("cd {remote}/out && tar cf {remote}/out.tar *.Map.Gbx thumbs.tsv $(ls prep-skipped.tsv 2>/dev/null)"))?;
+    // a chunk whose every map was skipped by prep has no renders: the tar carries only
+    // prep-skipped.tsv (a literal, unmatched glob failed the tar)
+    wsx.sh(&format!("cd {remote}/out && tar cf {remote}/out.tar $(ls *.Map.Gbx thumbs.tsv prep-skipped.tsv 2>/dev/null) && test -s {remote}/out.tar"))?;
     let back = work.join("out.tar");
     wsx.pull(&format!("{remote}/out.tar"), &back)?;
     let _ = wsx.sh(&format!("rm -rf {remote}/in {remote}/live {remote}/out/*.Map.Gbx {remote}/out.tar {remote}/tokens"));

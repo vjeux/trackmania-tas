@@ -113,7 +113,11 @@ impl Wsx {
         let t0 = Instant::now();
         let mut last_note = Instant::now();
         loop {
-            let probe = format!("if [ -f '{done}' ]; then printf 'DONE:'; tr '\\n' ' ' < '{done}'; fi; printf '\\nLOG:'; tail -n 1 '{log}' 2>/dev/null");
+            // `; true`: the probe's exit status must not be tail's — with no log file yet
+            // (a chunk whose prep listed nothing never reached the game) the remote exits 1,
+            // wsx retries and drops the DONE text, and the wait ran to its 60-min cap
+            // (Tiny leftovers, 2026-11-07)
+            let probe = format!("if [ -f '{done}' ]; then printf 'DONE:'; tr '\\n' ' ' < '{done}'; fi; printf '\\nLOG:'; tail -n 1 '{log}' 2>/dev/null; true");
             let out = self.run(&["sh", &probe], Duration::from_secs(60)).unwrap_or_default();
             let mut done_text: Option<String> = None;
             let mut log_line = String::new();
