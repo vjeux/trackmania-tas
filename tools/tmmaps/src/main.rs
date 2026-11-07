@@ -1331,12 +1331,49 @@ fn main() {
                     (ident.clone(), author.clone())
                 })
                 .collect();
-            if fixed == 0 {
-                println!("{src}: no path-shaped manifest rows with an original match ({} rows)", rows.len());
+            // second repair: a referenced item with NO row and NO file at all (the Tiny
+            // build dropped it from the archive: 521's PMC green light, 2026-11-07) comes
+            // back from the ORIGINAL — its row and its zip entry, byte for byte
+            let mut new_rows = new_rows;
+            let mut zip = zip;
+            let mut readded = 0usize;
+            {
+                let placed: std::collections::BTreeSet<String> = tmmaps::census::entries(&m)
+                    .into_iter()
+                    .filter(|e| e.item && e.name.contains('\\'))
+                    .map(|e| e.name)
+                    .collect();
+                let have: std::collections::BTreeSet<String> = new_rows.iter().map(|(i, _)| norm(i)).collect();
+                let orig_zip = o.embedded_objects().map(|(_, z)| z).unwrap_or_default();
+                let orig_entries = tmmaps::header::zip_entries(&orig_zip);
+                let mut files: std::collections::BTreeMap<String, Vec<u8>> = tmmaps::header::zip_entries(&zip).into_iter().collect();
+                for ident in placed {
+                    if have.contains(&norm(&ident)) {
+                        continue;
+                    }
+                    let Some((oi, oa)) = orig_rows.iter().find(|(oi, _)| norm(oi) == norm(&ident)) else { continue };
+                    let tail = norm(&ident);
+                    let Some((zname, bytes)) = orig_entries.iter().find(|(z, _)| {
+                        let zl = norm(z);
+                        zl == tail || zl.ends_with(&format!("/{tail}")) || zl.ends_with(&format!("/{}", tail.rsplit('/').next().unwrap_or(&tail)))
+                    }) else { continue };
+                    files.insert(zname.clone(), bytes.clone());
+                    new_rows.push((oi.clone(), oa.clone()));
+                    readded += 1;
+                }
+                if readded > 0 {
+                    zip = tmmaps::header::deflated_zip(&files);
+                }
+            }
+            if fixed == 0 && readded == 0 {
+                println!("{src}: no path-shaped manifest rows with an original match ({} rows), nothing to re-add", rows.len());
                 std::process::exit(3);
             }
             let refs: Vec<(&str, &str)> = new_rows.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
             m.replace_embedded_objects(&refs, &zip);
+            if readded > 0 {
+                println!("{src}: {readded} missing item file(s) + row(s) re-added from the original");
+            }
             m.write_to(std::path::Path::new(&out)).unwrap_or_else(|e| { eprintln!("write {out}: {e}"); std::process::exit(2) });
             println!("{src}: {fixed} manifest row(s) re-pointed at the original's idents → {out}");
         }
