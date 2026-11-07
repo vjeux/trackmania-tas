@@ -1105,10 +1105,11 @@ pub fn cmd(args: &[String]) {
                 // while the placements and the manifest say `TM_Items_Sorted_v8.0\…\1_Ease.Item.Gbx`
                 // — the game resolves that pair fine; our fallback row (the full zip path)
                 // broke it: "Missing Items" on 23 maps × every alteration (2026-11-05/07)
+                let club_form = key.split("favoriteclubitems/").nth(1).map(|rest| format!("club:{rest}"));
                 let hit = source_rows.get(&key).or_else(|| {
                     source_rows
                         .iter()
-                        .filter(|(k, _)| key.ends_with(&format!("/{k}")) || key == **k)
+                        .filter(|(k, _)| key.ends_with(&format!("/{k}")) || key == **k || club_form.as_deref() == Some(k.as_str()))
                         .max_by_key(|(k, _)| k.len())
                         .map(|(_, v)| v)
                 });

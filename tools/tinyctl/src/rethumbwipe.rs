@@ -75,7 +75,25 @@ pub fn missing_embedded_items(tmmaps: &Path, map: &Path) -> Vec<String> {
     // the game resolves a reference by its RELATIVE name (`<ref>` or `Items\<ref>`); an entry
     // stored under the original author's absolute path (`C:\Users\David\Documents\Trackmania\
     // Items\TM_Items_Sorted_v8.0\…\1_Ease.Item.Gbx`, Giant 495) is as good as missing
-    refs.into_iter().filter(|r| !zip_names.iter().any(|z| z == r || z.strip_prefix("Items\\").map(|t| t == r).unwrap_or(false))).collect()
+    // what the GAME accepts (proven in the editor on 2026-11-07, Giant 495 and 448): the
+    // manifest row must equal the placement's ident; the zip entry may then be that ident
+    // itself, `Items\<ident>`, an absolute folder ENDING in the ident, or for a club item
+    // (`club:<id>\<zip>\<file>`) the `<fake>/MemoryTemp/FavoriteClubItems/<id>/<zip>/<file>` form
+    let manifest_idents: Vec<String> = embedded.lines().filter_map(|l| l.trim_start().strip_prefix("row  ")).filter_map(|l| l.split('\t').next().map(|n| n.to_string())).collect();
+    let zip_accepts = |r: &str| -> bool {
+        let rl = r.to_ascii_lowercase();
+        zip_names.iter().any(|z| {
+            let zl = z.to_ascii_lowercase();
+            if zl == rl || zl.strip_prefix("items\\").map(|t| t == rl).unwrap_or(false) || zl.ends_with(&format!("\\{rl}")) {
+                return true;
+            }
+            if let Some(club) = rl.strip_prefix("club:") {
+                return zl.replace('\\', "/").ends_with(&format!("favoriteclubitems/{}", club.replace('\\', "/")));
+            }
+            false
+        })
+    };
+    refs.into_iter().filter(|r| !(manifest_idents.iter().any(|m| m.eq_ignore_ascii_case(r)) && zip_accepts(r))).collect()
 }
 
 fn core_token(dir: &str) -> Result<String, String> {

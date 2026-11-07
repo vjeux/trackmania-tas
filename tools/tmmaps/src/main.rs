@@ -1310,9 +1310,20 @@ fn main() {
                     let key = norm(ident);
                     // a row that names a zip PATH (drive letter or a slash-rooted folder) and has an
                     // original row that is its suffix
-                    let looks_like_path = key.len() > 2 && (key.as_bytes()[1] == b':' || key.starts_with('/'));
+                    // a drive-rooted or slash-rooted folder, or the game's `<fake>/MemoryTemp/
+                    // FavoriteClubItems/<club>/…` spelling of a CLUB item (whose row reads
+                    // `club:<id>\<zip>\<file>`)
+                    let looks_like_path = key.len() > 2 && (key.as_bytes()[1] == b':' || key.starts_with('/') || key.starts_with("<fake>"));
                     if looks_like_path {
-                        if let Some((oi, oa)) = orig_rows.iter().filter(|(oi, _)| key.ends_with(&format!("/{}", norm(oi)))).max_by_key(|(oi, _)| oi.len()) {
+                        let club_form = key.split("favoriteclubitems/").nth(1).map(|rest| format!("club:{}", rest.replacen('/', "\\", 1)).replace('/', "\\").to_ascii_lowercase());
+                        if let Some((oi, oa)) = orig_rows
+                            .iter()
+                            .filter(|(oi, _)| {
+                                let o = norm(oi);
+                                key.ends_with(&format!("/{o}")) || club_form.as_deref().map(|c| c == oi.to_ascii_lowercase()).unwrap_or(false)
+                            })
+                            .max_by_key(|(oi, _)| oi.len())
+                        {
                             fixed += 1;
                             return (oi.clone(), oa.clone());
                         }
