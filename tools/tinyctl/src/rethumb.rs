@@ -364,7 +364,38 @@ pub fn prep(rows: &[(String, String)], live_dir: &Path, render_dir: &Path, orig_
         if !render.exists() {
             continue;
         }
-        let missing = crate::rethumbwipe::missing_embedded_items(tmmaps, &render);
+        let mut missing = crate::rethumbwipe::missing_embedded_items(tmmaps, &render);
+        if !missing.is_empty() {
+            // the usual cause is OUR build's manifest row naming the zip PATH instead of the
+            // placements' relative ident (2026-11-07): `tmmaps fix-item-idents` takes the
+            // ORIGINAL's row for each such file — into BOTH the render copy and the LIVE
+            // file (the live file is what gets re-uploaded under the new uid)
+            if promote {
+                let num: usize = n.strip_prefix("U10S_").and_then(|x| x.split(' ').next()).and_then(|x| x.parse().ok()).unwrap_or(0);
+                let part = (num.max(1) - 1) / 25 + 1;
+                let orig = orig_root.join(format!("p{part}")).join(format!("{:02}-U10S_{:02}.Map.Gbx", (num.max(1) - 1) % 25 + 1, num));
+                if orig.exists() {
+                    let live = live_dir.join(format!("{u}.Map.Gbx"));
+                    let mut ok = true;
+                    for target in [&render, &live] {
+                        let tmp = target.with_extension("fixed.Gbx");
+                        let st = Command::new(tmmaps).args(["fix-item-idents", &target.to_string_lossy(), "--orig", &orig.to_string_lossy(), "--out", &tmp.to_string_lossy()]).status().map(|st| st.success()).unwrap_or(false);
+                        if st && tmp.exists() {
+                            let _ = std::fs::rename(&tmp, target);
+                        } else {
+                            let _ = std::fs::remove_file(&tmp);
+                            ok = false;
+                        }
+                    }
+                    if ok {
+                        missing = crate::rethumbwipe::missing_embedded_items(tmmaps, &render);
+                        if missing.is_empty() {
+                            println!("[{:>4.0}s] {n}: item idents repaired from the original", t0.elapsed().as_secs_f64());
+                        }
+                    }
+                }
+            }
+        }
         if !missing.is_empty() {
             let _ = std::fs::remove_file(&render);
             skipped.push_str(&format!("{u}\t{n}\tmissing embedded items ({}): {}\n", missing.len(), missing.iter().take(2).cloned().collect::<Vec<_>>().join("; ")));
