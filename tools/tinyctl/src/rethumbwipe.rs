@@ -88,7 +88,12 @@ pub fn missing_embedded_items(tmmaps: &Path, map: &Path) -> Vec<String> {
                 return true;
             }
             if let Some(club) = rl.strip_prefix("club:") {
-                return zl.replace('\\', "/").ends_with(&format!("favoriteclubitems/{}", club.replace('\\', "/")));
+                // two zip spellings of a club item: the game's `<fake>/MemoryTemp/
+                // FavoriteClubItems/<id>/<zip>/<file>` and the editor's `ClubItems/<id>/<zip>/<file>`
+                // (828/846, club 56909: the original itself uses the second — never broken, 2026-11-07)
+                let tail = club.replace('\\', "/");
+                let z = zl.replace('\\', "/");
+                return z.ends_with(&format!("favoriteclubitems/{tail}")) || z == format!("clubitems/{tail}") || z.ends_with(&format!("/clubitems/{tail}"));
             }
             false
         })
