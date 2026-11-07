@@ -1098,7 +1098,21 @@ pub fn cmd(args: &[String]) {
         let mut manifest_owned: Vec<(String, String)> = Vec::new();
         for n in &embedded_names {
             if carried_set.contains(n.as_str()) {
-                if let Some((ident, author)) = source_rows.get(&n.to_ascii_lowercase()) {
+                let key = n.to_ascii_lowercase();
+                // exact, else the source ident that is a SUFFIX of the zip path: an author
+                // who embedded from an absolute folder leaves the zip entry as
+                // `C:/Users/David/Documents/Trackmania/Items/TM_Items_Sorted_v8.0/…/1_Ease.Item.Gbx`
+                // while the placements and the manifest say `TM_Items_Sorted_v8.0\…\1_Ease.Item.Gbx`
+                // — the game resolves that pair fine; our fallback row (the full zip path)
+                // broke it: "Missing Items" on 23 maps × every alteration (2026-11-05/07)
+                let hit = source_rows.get(&key).or_else(|| {
+                    source_rows
+                        .iter()
+                        .filter(|(k, _)| key.ends_with(&format!("/{k}")) || key == **k)
+                        .max_by_key(|(k, _)| k.len())
+                        .map(|(_, v)| v)
+                });
+                if let Some((ident, author)) = hit {
                     manifest_owned.push((ident.clone(), author.clone()));
                     continue;
                 }

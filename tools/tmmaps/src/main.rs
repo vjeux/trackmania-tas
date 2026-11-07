@@ -1290,6 +1290,45 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        // tmmaps fix-item-idents MAP --orig ORIGINAL --out OUT: every manifest row whose ident
+        // is a zip PATH (the author's absolute folder, `C:/Users/David/…/1_Ease.Item.Gbx`) gets
+        // the ORIGINAL's row for that file (the relative ident the placements use, its real
+        // author). The zip stays as it is. Exit 3 when nothing needed fixing.
+        "fix-item-idents" => {
+            let src = args.get(2).cloned().unwrap_or_else(|| { eprintln!("tmmaps fix-item-idents MAP --orig ORIGINAL --out OUT"); std::process::exit(2) });
+            let orig = tmmaps::cli::flag(&args, "--orig").map(String::from).unwrap_or_else(|| { eprintln!("--orig ORIGINAL"); std::process::exit(2) });
+            let out = tmmaps::cli::flag(&args, "--out").map(String::from).unwrap_or_else(|| { eprintln!("--out OUT"); std::process::exit(2) });
+            let mut m = tmmaps::map::MapFile::load(std::path::Path::new(&src));
+            let o = tmmaps::map::MapFile::load(std::path::Path::new(&orig));
+            let (rows, zip) = m.embedded_objects().unwrap_or_else(|| { eprintln!("{src}: no embedded objects"); std::process::exit(2) });
+            let orig_rows: Vec<(String, String)> = o.embedded_objects().map(|(r, _)| r).unwrap_or_default();
+            let norm = |s: &str| s.replace('\\', "/").to_ascii_lowercase();
+            let mut fixed = 0usize;
+            let new_rows: Vec<(String, String)> = rows
+                .iter()
+                .map(|(ident, author)| {
+                    let key = norm(ident);
+                    // a row that names a zip PATH (drive letter or a slash-rooted folder) and has an
+                    // original row that is its suffix
+                    let looks_like_path = key.len() > 2 && (key.as_bytes()[1] == b':' || key.starts_with('/'));
+                    if looks_like_path {
+                        if let Some((oi, oa)) = orig_rows.iter().filter(|(oi, _)| key.ends_with(&format!("/{}", norm(oi)))).max_by_key(|(oi, _)| oi.len()) {
+                            fixed += 1;
+                            return (oi.clone(), oa.clone());
+                        }
+                    }
+                    (ident.clone(), author.clone())
+                })
+                .collect();
+            if fixed == 0 {
+                println!("{src}: no path-shaped manifest rows with an original match ({} rows)", rows.len());
+                std::process::exit(3);
+            }
+            let refs: Vec<(&str, &str)> = new_rows.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+            m.replace_embedded_objects(&refs, &zip);
+            m.write_to(std::path::Path::new(&out)).unwrap_or_else(|e| { eprintln!("write {out}: {e}"); std::process::exit(2) });
+            println!("{src}: {fixed} manifest row(s) re-pointed at the original's idents → {out}");
+        }
         "rename-map" => {
             let src = args.get(2).cloned().unwrap_or_else(|| { eprintln!("tmmaps rename-map MAP --out OUT --name NEW"); std::process::exit(2) });
             let out = tmmaps::cli::flag(&args, "--out").map(String::from).unwrap_or_else(|| { eprintln!("--out OUT"); std::process::exit(2) });
