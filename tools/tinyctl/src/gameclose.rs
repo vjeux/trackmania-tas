@@ -65,17 +65,24 @@ impl Drop for GameGuard<'_> {
 
 /// `tinyctl box-close-game [--idle-s N] [--dry-run]`.
 pub fn cmd(args: &[String]) -> Result<(), String> {
-    // closing a game touches the box (taskkill, the foreground): registered as OUR run so the
-    // gate never books it as a person's input (2026-11-02 23:07: "that was you as well")
-    crate::inputidle::runlog::start("tinyctl box-close-game", 0.0);
     let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
     let idle_s: u64 = f("--idle-s").map(|v| v.parse().map_err(|_| "--idle-s wants seconds")).transpose()?.unwrap_or(600);
     let dry = args.iter().any(|a| a == "--dry-run");
     let wsx = Wsx::new(args);
     let Some(pid) = tm_pid(&wsx) else {
+        // nothing to close = nothing touched the box: no run row (a row with idle 0 made
+        // every 5-min gate probe read "input just now" and the wait never ended, 2026-11-07)
         println!("no game running");
         return Ok(());
     };
+    // closing a game touches the box (taskkill, the foreground): registered as OUR run so the
+    // gate never books it as a person's input (2026-11-02 23:07: "that was you as well") —
+    // with the idle the gate attributes RIGHT NOW (not 0: that invented a person)
+    {
+        let line = crate::inputidle::read(&wsx, 60).map(|v| v.line).unwrap_or_default();
+        let idle = line.split_whitespace().find_map(|w| w.strip_prefix("kbm_idle_s=")).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
+        crate::inputidle::runlog::start("tinyctl box-close-game", idle);
+    }
     let lock = wsx.sh("/home/vjeux/bin/tmdrive status 2>/dev/null | head -1; true").unwrap_or_default().trim().to_string();
     let foreign_live = lock.starts_with("HELD") && !lock.contains(SESSION);
     if foreign_live {
