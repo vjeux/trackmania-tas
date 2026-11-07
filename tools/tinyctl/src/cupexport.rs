@@ -119,7 +119,20 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     struct Wr { account: String, score: u32 }
     let mut wrs: Vec<(PathBuf, tmmaps::header::MapHeader, Option<Wr>)> = Vec::new();
     for p in &files {
-        let hdr = tmmaps::header::read(p.to_str().unwrap()).map_err(|e| format!("{}: {e}", p.display()))?;
+        let mut hdr = tmmaps::header::read(p.to_str().unwrap()).map_err(|e| format!("{}: {e}", p.display()))?;
+        // 15 Giant files carry an unsubstituted "{author}" in their HEADER name from the
+        // 09-23 rebuild (server names are right): the export takes the ONLINE name and fixes
+        // the file's header too, so the file, its name and the cup list agree (2026-11-07)
+        if hdr.name.contains("{author}") {
+            let rec = curl_json(&auth_core, &format!("{}/maps/?mapUidList={}", crate::publish::CORE, hdr.uid))?;
+            if let Some(online) = rec.as_array().and_then(|a| a.first()).and_then(|m| m.get("name")).and_then(|n| n.as_str()) {
+                let mut mm = tmmaps::map::MapFile::load(p);
+                let _ = mm.set_map_name(&hdr.name, online);
+                mm.write_to(p).map_err(|e| format!("{}: {e}", p.display()))?;
+                println!("  {}: header name fixed → {online}", hdr.name);
+                hdr = tmmaps::header::read(p.to_str().unwrap()).map_err(|e| format!("{}: {e}", p.display()))?;
+            }
+        }
         let url = format!("{}/api/token/leaderboard/group/Personal_Best/map/{}/top?length=1&onlyWorld=true", crate::publish::LIVE, hdr.uid);
         let v = curl_json(&auth_live, &url)?;
         let top = v.get("tops").and_then(|t| t.as_array()).and_then(|t| t.first()).and_then(|t| t.get("top")).and_then(|t| t.as_array()).and_then(|t| t.first()).cloned();
