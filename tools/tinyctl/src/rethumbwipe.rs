@@ -223,7 +223,10 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                     use std::io::Write;
                     let existing = std::fs::read_to_string(&leftover).unwrap_or_default();
                     for l in text.lines().filter(|l| !l.trim().is_empty()) {
-                        if !existing.contains(l.split('\t').next().unwrap_or("")) {
+                        let uid = l.split('\t').next().unwrap_or("");
+                        // a skip line for a map that DID render is stale (a reused batch dir)
+                        let rendered = cw.join("rendered").join(format!("{uid}.Map.Gbx")).exists();
+                        if !rendered && !existing.contains(uid) {
                             let _ = writeln!(lf, "{l}");
                         }
                     }

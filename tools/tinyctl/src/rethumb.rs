@@ -228,7 +228,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     wsx.sh(&format!("cd {remote}/out && tar cf {remote}/out.tar $(ls *.Map.Gbx thumbs.tsv prep-skipped.tsv 2>/dev/null) && test -s {remote}/out.tar"))?;
     let back = work.join("out.tar");
     wsx.pull(&format!("{remote}/out.tar"), &back)?;
-    let _ = wsx.sh(&format!("rm -rf {remote}/in {remote}/live {remote}/out/*.Map.Gbx {remote}/out.tar {remote}/tokens"));
+    let _ = wsx.sh(&format!("rm -rf {remote}/in {remote}/live {remote}/out/*.Map.Gbx {remote}/out.tar {remote}/tokens {remote}/prep-skipped.tsv {remote}/out/prep-skipped.tsv"));
     let out_dir = work.join("rendered");
     std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
     let st = Command::new("tar").args(["xf", &back.to_string_lossy(), "-C", &out_dir.to_string_lossy()]).status().map_err(|e| e.to_string())?;
@@ -404,6 +404,13 @@ pub fn prep(rows: &[(String, String)], live_dir: &Path, render_dir: &Path, orig_
             skipped.push_str(&format!("{u}\t{n}\tmissing embedded items ({}): {}\n", missing.len(), missing.iter().take(2).cloned().collect::<Vec<_>>().join("; ")));
             println!("[{:>4.0}s] {n}: {} referenced item(s) not embedded — not rendered (the editor would block on a modal)", t0.elapsed().as_secs_f64(), missing.len());
         }
+    }
+    // written FRESH every prep, an empty skip list included: a batch dir reused by a later
+    // pass (pass 2 over the leftovers, 2026-11-07) kept pass 1's file and the maps that
+    // rendered fine were booked as leftovers again
+    let _ = std::fs::remove_file(work.join("prep-skipped.tsv"));
+    if let Some(parent) = render_dir.parent() {
+        let _ = std::fs::remove_file(parent.join("out").join("prep-skipped.tsv"));
     }
     if !skipped.is_empty() {
         let _ = std::fs::write(work.join("prep-skipped.tsv"), &skipped);
