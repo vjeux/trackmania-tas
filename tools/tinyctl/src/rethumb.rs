@@ -369,8 +369,9 @@ pub fn prep(rows: &[(String, String)], live_dir: &Path, render_dir: &Path, orig_
             // the usual cause is OUR build's manifest row naming the zip PATH instead of the
             // placements' relative ident (2026-11-07): `tmmaps fix-item-idents` takes the
             // ORIGINAL's row for each such file — into BOTH the render copy and the LIVE
-            // file (the live file is what gets re-uploaded under the new uid)
-            if promote {
+            // file (the live file is what gets re-uploaded under the new uid). Independent of
+            // promotion: Giant runs --no-promote and skipped all 10 on the first try.
+            {
                 let num: usize = n.strip_prefix("U10S_").and_then(|x| x.split(' ').next()).and_then(|x| x.parse().ok()).unwrap_or(0);
                 let part = (num.max(1) - 1) / 25 + 1;
                 let orig = orig_root.join(format!("p{part}")).join(format!("{:02}-U10S_{:02}.Map.Gbx", (num.max(1) - 1) % 25 + 1, num));
