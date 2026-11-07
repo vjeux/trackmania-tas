@@ -60,15 +60,30 @@ fn token(args: &[String]) -> Result<String, String> {
 /// curl with the devserver's proxy certificate (its `~/.curlrc` supplies it) and
 /// the API headers. Returns (body, http status).
 fn curl(token: &str, args: &[&str]) -> Result<(String, u32), String> {
+    // the devserver's ~/.curlrc says `max-time = 90`: fine for API calls, fatal for a
+    // 130 MB asset at the proxy's ~0.5 MB/s (HTTP 0 with nothing said, 2026-11-07) —
+    // an explicit --max-time overrides it, sized from the file being sent
+    let upload_bytes: u64 = args
+        .iter()
+        .find_map(|a| a.strip_prefix("@"))
+        .and_then(|p| std::fs::metadata(p).ok())
+        .map(|m| m.len())
+        .unwrap_or(0);
+    let max_time = 120 + upload_bytes / 100_000; // 0.1 MB/s floor
     let mut c = Command::new("curl");
-    c.args(["-s", "-w", "\n%{http_code}"])
+    c.args(["-s", "-S", "--max-time", &max_time.to_string(), "-w", "\n%{http_code}"])
         .args(["-H", &format!("Authorization: token {token}")])
         .args(["-H", "Accept: application/vnd.github+json"])
         .args(args);
     let out = c.output().map_err(|e| format!("curl: {e}"))?;
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
-    let (body, code) = text.rsplit_once('\n').ok_or("curl: no status line")?;
-    Ok((body.to_string(), code.trim().parse().unwrap_or(0)))
+    let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    let (body, code) = text.rsplit_once('\n').ok_or_else(|| format!("curl: no status line ({err})"))?;
+    let code: u32 = code.trim().parse().unwrap_or(0);
+    if code == 0 {
+        return Err(format!("curl failed: {err}"));
+    }
+    Ok((body.to_string(), code))
 }
 
 /// `tinyctl gh-release create --tag TAG --repo OWNER/REPO [--name TITLE] [--notes TEXT] [--token-file F]`
