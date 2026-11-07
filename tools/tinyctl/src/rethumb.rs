@@ -220,10 +220,13 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         std::thread::sleep(std::time::Duration::from_secs(5));
         println!("[{:>4.0}s] {done}/{} rendered — again (attempt {})", t0.elapsed().as_secs_f64(), rows.len(), attempt + 1);
     }
-    // the rendered copies back (one tar)
+    // the rendered copies back (one tar), then the box scratch of this chunk goes: a chunk
+    // leaves ~450 MB (live + render copies + renders) and 97 of them had refilled C: to
+    // 49 GB free on 2026-11-06 — the devserver keeps everything that matters
     wsx.sh(&format!("cd {remote}/out && tar cf {remote}/out.tar *.Map.Gbx thumbs.tsv $(ls prep-skipped.tsv 2>/dev/null)"))?;
     let back = work.join("out.tar");
     wsx.pull(&format!("{remote}/out.tar"), &back)?;
+    let _ = wsx.sh(&format!("rm -rf {remote}/in {remote}/live {remote}/out/*.Map.Gbx {remote}/out.tar {remote}/tokens"));
     let out_dir = work.join("rendered");
     std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
     let st = Command::new("tar").args(["xf", &back.to_string_lossy(), "-C", &out_dir.to_string_lossy()]).status().map_err(|e| e.to_string())?;
