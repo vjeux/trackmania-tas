@@ -14,7 +14,7 @@
 //!   tmxup listed --id MAPID                        switch an uploaded map from unlisted to listed
 //!   tmxup mappack --name N --ids-file F [--type 0] [--description-file F] [--tags ID,…] [--dry-run]
 //!   tmxup batch --playlist P.json --sheet S.csv --maps-dir DIR --alteration Tiny --done D.tsv
-//!               [--surface-tag ID] [--difficulty N] [--limit N] [--unlisted] [--dry-run] [--not-agent-built]
+//!               [--surface-tag ID] [--also-tag ID] [--difficulty N] [--limit N] [--unlisted] [--dry-run] [--not-agent-built]
 //!
 //! Every command talks to Chrome's DevTools port on the loopback (`--port`, default
 //! 9222): Chrome binds it to 127.0.0.1, so this runs ON Windows (built for
@@ -400,9 +400,23 @@ fn sheet_tag(word: &str) -> Option<u32> {
 /// sheet knows nothing. `surface` (a surface alteration's tag id) takes the second slot and
 /// drops the sheet's surface words — the surface changed.
 fn tags_for(sheet_row: Option<&[String]>, surface: Option<u32>) -> Vec<u32> {
+    tags_for_with(sheet_row, surface, None)
+}
+
+/// `also` (--also-tag): a tag every map carries, right after Mini — TMX staff + Everios96
+/// agreed on 2026-11-07 that every altered map is tagged "Altered Community" (73); it takes
+/// the second slot, the surface tag the third, and the sheet's words fill what is left.
+fn tags_for_with(sheet_row: Option<&[String]>, surface: Option<u32>, also: Option<u32>) -> Vec<u32> {
     let mut out = vec![25u32];
+    if let Some(a) = also {
+        if !out.contains(&a) {
+            out.push(a);
+        }
+    }
     if let Some(s) = surface {
-        out.push(s);
+        if !out.contains(&s) {
+            out.push(s);
+        }
     }
     if let Some(r) = sheet_row {
         for w in r.iter().skip(3) {
@@ -592,6 +606,7 @@ fn run(args: &[String]) -> Result<(), String> {
             let agent_built = !args.iter().any(|a| a == "--not-agent-built");
             let alteration = flag(args, "--alteration").ok_or("batch needs --alteration Tiny|Dirt|…")?;
             let surface: Option<u32> = flag(args, "--surface-tag").and_then(|t| t.parse().ok());
+            let also: Option<u32> = flag(args, "--also-tag").and_then(|t| t.parse().ok());
             let done_path = flag(args, "--done").ok_or("batch needs --done DONE.tsv")?;
             let difficulty = flag(args, "--difficulty").unwrap_or_else(|| "1".into());
             let limit: usize = flag(args, "--limit").and_then(|l| l.parse().ok()).unwrap_or(usize::MAX);
@@ -623,7 +638,7 @@ fn run(args: &[String]) -> Result<(), String> {
                 let hunter = r["authorplayer"]["name"].as_str().unwrap_or("").to_string();
                 let file = r["filename"].as_str().unwrap_or("").to_string();
                 let row = sheet_rows.get(&num).map(|v| v.as_slice());
-                let tags: Vec<String> = tags_for(row, surface).iter().map(|t| t.to_string()).collect();
+                let tags: Vec<String> = tags_for_with(row, surface, also).iter().map(|t| t.to_string()).collect();
                 let link = row.and_then(|f| f.get(1)).cloned().unwrap_or_default();
                 let spec = UploadSpec {
                     map: format!("{}\\{}", maps_dir.trim_end_matches(['\\', '/']), file),
