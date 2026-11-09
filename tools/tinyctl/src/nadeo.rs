@@ -734,6 +734,34 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             println!("room\t{id}\t{name}\tdropped {uid}\t{} → {n} maps", maps.len());
             Ok(())
         }
+        // `room-touch --club C --room R [--room R2 …]`: re-save a room unchanged. An idle club
+        // room's server is released by Nadeo and a join then fails with "error code 404"
+        // until the room is saved again (Everios96's manual re-save fixed the Wet Wood room
+        // on 2026-10-31; all ten Giant rooms were in that state on 2026-11-09).
+        "room-touch" => {
+            let club = f("--club").ok_or("room-touch needs --club ID")?;
+            let ids: Vec<String> = args.iter().enumerate().filter(|(_, a)| *a == "--room").filter_map(|(i, _)| args.get(i + 1).cloned()).collect();
+            if ids.is_empty() {
+                return Err("room-touch needs --room ID (repeatable)".into());
+            }
+            for id in ids {
+                let d = get_json(&auth_live, &format!("{LIVE}/api/token/club/{club}/room/{id}"))?;
+                let room = d.get("room").cloned().unwrap_or(Value::Null);
+                let maps: Vec<String> = room.get("maps").and_then(|m| m.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
+                let name = s(&d, "name");
+                let settings: Vec<Value> = room.get("scriptSettings").and_then(|o| o.as_object()).map(|o| o.values().map(|v| serde_json::json!({"key": s(v, "key"), "value": s(v, "value"), "type": s(v, "type")})).collect()).unwrap_or_default();
+                let body = serde_json::json!({
+                    "name": name, "region": s(&room, "region"), "maxPlayersPerServer": room.get("maxPlayers").and_then(|x| x.as_u64()).unwrap_or(100),
+                    "script": s(&room, "script"), "settings": settings,
+                    "maps": maps, "scalable": 0, "password": 0, "shufflePlaylist": 0
+                });
+                let r = post_json(&auth_live, &format!("{LIVE}/api/token/club/{club}/room/{id}/edit"), &body.to_string())?;
+                let n = r["room"]["maps"].as_array().map(|a| a.len()).unwrap_or(0);
+                let server = r["room"].get("serverInfo").map(|v| !v.is_null()).unwrap_or(false);
+                println!("room\t{id}\t{name}\tre-saved, {n} maps, server {}", if server { "allocated" } else { "not yet" });
+            }
+            Ok(())
+        }
         "reuid-swap" => {
             let club = f("--club").ok_or("reuid-swap needs --club ID")?;
             let pairs_p = f("--pairs").ok_or("reuid-swap needs --pairs pairs.tsv")?;
