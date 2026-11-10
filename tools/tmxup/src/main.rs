@@ -430,7 +430,10 @@ fn tags_for_with(sheet_row: Option<&[String]>, surface: Option<u32>, also: Optio
                     out.push(t);
                 }
             }
-            if out.len() == 3 {
+            // Everios96's rule: two slots beyond Mini (+ the Altered tag) — `== 3` let every
+            // sheet word through once `also` made the list 3 long before the loop (Icy 63 got
+            // 6 tags and TMX refused the 6th, 2026-11-09)
+            if out.len() >= 3 + usize::from(also.is_some()) {
                 break;
             }
         }
