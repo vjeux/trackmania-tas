@@ -87,6 +87,10 @@ impl Grid {
         self.bits[n >> 6] |= 1u64 << (n & 63);
     }
     #[inline]
+    pub fn clear_lin(&mut self, n: usize) {
+        self.bits[n >> 6] &= !(1u64 << (n & 63));
+    }
+    #[inline]
     pub fn clear(&mut self, i: usize, j: usize, k: usize) {
         let n = self.index(i, j, k);
         self.bits[n >> 6] &= !(1u64 << (n & 63));
@@ -1680,6 +1684,130 @@ pub fn run(store: &mut DataStore, map_path: &str, o: &Options) -> Result<(), Str
             }
             println!("  column x {:.0} z {:.0} (voxel {i},{k}): solid y {}", v[0], v[1], runs.iter().map(|(a, b)| format!("{a:.1}..{b:.1}")).collect::<Vec<_>>().join(", "));
         }
+    }
+
+    // ---- printability: overhangs, bridges, floating islands, thin walls —
+    // what a slicer will want supports for (Altrd: "double check that
+    // everything is reasonably printable with sufficient support")
+    {
+        let mut unsupported = 0usize; // solid with air below (an overhang face)
+        let mut bridged = 0usize; // … whose nearest solid below is > 3 mm down
+        let mut max_drop_mm = 0.0f32;
+        let mut n_islands = 0usize;
+        let mut island_cells = 0usize;
+        // 26-connected islands not touching the base layer
+        let mut seen = Grid::new(nx, ny, nz);
+        let mut stack: Vec<u32> = Vec::new();
+        for lin in 0..solid.len() {
+            if !solid.get_lin(lin) || seen.get_lin(lin) {
+                continue;
+            }
+            seen.set_lin(lin);
+            stack.push(lin as u32);
+            let mut cells = 0usize;
+            let mut grounded = false;
+            while let Some(l) = stack.pop() {
+                cells += 1;
+                let (i, j, k) = solid.unlin(l as usize);
+                if j == 0 {
+                    grounded = true;
+                }
+                for dk in -1i64..=1 {
+                    for dj in -1i64..=1 {
+                        for di in -1i64..=1 {
+                            let (a, b, c) = (i as i64 + di, j as i64 + dj, k as i64 + dk);
+                            if a < 0 || b < 0 || c < 0 || a >= nx as i64 || b >= ny as i64 || c >= nz as i64 {
+                                continue;
+                            }
+                            let m = solid.index(a as usize, b as usize, c as usize);
+                            if solid.get_lin(m) && !seen.get_lin(m) {
+                                seen.set_lin(m);
+                                stack.push(m as u32);
+                            }
+                        }
+                    }
+                }
+            }
+            if !grounded {
+                n_islands += 1;
+                island_cells += cells;
+                // a floating piece prints as a blob on the bed or falls off
+                // (Fall 01: the ShowSpeakers hanging under the stage truss,
+                // 12-34 voxels each) — REMOVE it, the slicer cannot save it
+                let (i, j, k) = solid.unlin(lin);
+                println!("  floating island removed: {cells} voxels near x {:.0} y {:.0} z {:.0} m", x0 + i as f32 * voxel_m, y_lo + j as f32 * voxel_y_m, z0 + k as f32 * voxel_m);
+                // second pass over the same island to clear it
+                let mut clear_stack = vec![lin as u32];
+                let mut cleared = Grid::new(nx, ny, nz);
+                cleared.set_lin(lin);
+                while let Some(l) = clear_stack.pop() {
+                    solid.clear_lin(l as usize);
+                    let (i, j, k) = solid.unlin(l as usize);
+                    for dk in -1i64..=1 {
+                        for dj in -1i64..=1 {
+                            for di in -1i64..=1 {
+                                let (a, b, c) = (i as i64 + di, j as i64 + dj, k as i64 + dk);
+                                if a < 0 || b < 0 || c < 0 || a >= nx as i64 || b >= ny as i64 || c >= nz as i64 {
+                                    continue;
+                                }
+                                let m = solid.index(a as usize, b as usize, c as usize);
+                                if solid.get_lin(m) && !cleared.get_lin(m) {
+                                    cleared.set_lin(m);
+                                    clear_stack.push(m as u32);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for k in 0..nz {
+            for i in 0..nx {
+                for j in 1..ny {
+                    if solid.get(i, j, k) && !solid.get(i, j - 1, k) {
+                        unsupported += 1;
+                        let mut d = 1;
+                        while j >= d + 1 && !solid.get(i, j - 1 - d, k) {
+                            d += 1;
+                        }
+                        let drop = d as f32 * voxel_y_mm;
+                        if drop > 3.0 {
+                            bridged += 1;
+                        }
+                        max_drop_mm = max_drop_mm.max(drop);
+                    }
+                }
+            }
+        }
+        // where are the big overhangs: the >3 mm faces by 16 m height band
+        let mut bands: std::collections::BTreeMap<i32, usize> = Default::default();
+        for k in 0..nz {
+            for i in 0..nx {
+                for j in 1..ny {
+                    if solid.get(i, j, k) && !solid.get(i, j - 1, k) {
+                        let mut d = 1;
+                        while j >= d + 1 && !solid.get(i, j - 1 - d, k) {
+                            d += 1;
+                        }
+                        if d as f32 * voxel_y_mm > 3.0 {
+                            *bands.entry(((y_lo + j as f32 * voxel_y_m) / 16.0).floor() as i32).or_insert(0) += 1;
+                        }
+                    }
+                }
+            }
+        }
+        let face_mm2 = voxel_mm * voxel_mm;
+        for (b, n) in &bands {
+            println!("  overhang faces >3 mm at y {}..{} m: {:.1} cm2", b * 16, b * 16 + 16, *n as f32 * face_mm2 / 100.0);
+        }
+        println!(
+            "printability: {} floating island(s) ({} voxels) not connected to the base; {:.0} cm2 of downward faces over air, {:.0} cm2 of them more than 3 mm above the next solid (bridges/overhangs needing support); tallest drop {:.1} mm",
+            n_islands,
+            island_cells,
+            unsupported as f32 * face_mm2 / 100.0,
+            bridged as f32 * face_mm2 / 100.0,
+            max_drop_mm
+        );
     }
 
     // MAPGEOM_PRINT_TALL=N: the N tallest columns, in world metres — what the
