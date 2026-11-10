@@ -202,6 +202,24 @@ fn main() {
         // archive-only variants of a tiny map for the load-failure bisect (zippad.rs)
         "zippad" => tmmaps::zippad::cmd(&args),
         "header" => header::cmd(&args),
+        // thumb MAP --out F.jpg: the editor's thumbnail out of header chunk
+        // 0x03043007 (the JPEG sits between `<Thumbnail.jpg>` and
+        // `</Thumbnail.jpg>`; the game stores it upside down — `--flip` turns it
+        // over by swapping the rows of the decoded image is NOT done here: the
+        // bytes are written as stored, and a viewer flips it). Ground truth for
+        // which way a model of the map should face (printable.rs, 2026-11-09).
+        "thumb" => {
+            let path = std::path::Path::new(&args[2]);
+            let out = tmmaps::cli::flag(&args, "--out").expect("thumb MAP --out F.jpg");
+            let g = tmmaps::gbx::Gbx::parse(&std::fs::read(path).expect("read map"));
+            let u = &g.user_data;
+            let open = b"<Thumbnail.jpg>";
+            let close = b"</Thumbnail.jpg>";
+            let a = u.windows(open.len()).position(|w| w == open).expect("no <Thumbnail.jpg> in the header") + open.len();
+            let b = a + u[a..].windows(close.len()).position(|w| w == close).expect("no </Thumbnail.jpg>");
+            std::fs::write(&out, &u[a..b]).expect("write");
+            println!("wrote {out} ({} bytes)", b - a);
+        }
         "dropscan" => dropscan::cmd(&args),
         "mediatracker" => tmmaps::mediatracker::cmd(&args),
         "chunks" => inspect::chunks(&args),

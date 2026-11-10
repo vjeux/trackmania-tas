@@ -59,6 +59,7 @@ pub mod pak;
 pub mod pakfile;
 pub mod parents;
 pub mod place;
+pub mod printable;
 pub mod probe;
 pub mod reader;
 pub mod render;

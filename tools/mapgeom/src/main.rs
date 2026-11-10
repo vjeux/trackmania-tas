@@ -1397,6 +1397,19 @@ fn main() {
                         let s = m.stats();
                         let lods: Vec<String> = m.lods.iter().map(|l| format!("{}", l.iter().map(|e| format!("{}v", e.visual.main.as_ref().map(|mm| mm.count).unwrap_or(0))).collect::<Vec<_>>().join("+"))).collect();
                         println!("{p}: {} levels [{}] switch {:?} far {} ; {} materials ({}); hull {} verts {} tris; bottom {:.2} top {:.2} (height {:.2}) radius {:.2} m", m.lods.len(), lods.join(" | "), m.switch, m.far, m.materials.len(), m.materials.iter().map(|mt| format!("{}{}", mt.name, if mt.leaf { "*" } else { "" })).collect::<Vec<_>>().join(", "), m.hull_vertices.len(), m.hull_triangles.len(), s.bottom, s.top, s.top - s.bottom, s.radius);
+                        // the collision hull's own box — the "visual hitbox" a
+                        // printable model stands in for the stripped visuals
+                        if !m.hull_vertices.is_empty() {
+                            let mut lo = [f32::MAX; 3];
+                            let mut hi = [f32::MIN; 3];
+                            for v in &m.hull_vertices {
+                                for k in 0..3 {
+                                    lo[k] = lo[k].min(v[k]);
+                                    hi[k] = hi[k].max(v[k]);
+                                }
+                            }
+                            println!("  hull bounds x {:.2}..{:.2} y {:.2}..{:.2} z {:.2}..{:.2}", lo[0], hi[0], lo[1], hi[1], lo[2], hi[2]);
+                        }
                         if brief {
                             continue;
                         }
@@ -1961,6 +1974,39 @@ fn main() {
         "shot-crop" => mapgeom::item_set::shot_crop_cmd(&a.rest),
         "item-desc" => mapgeom::item_set::item_desc_cmd(&a.rest),
         "item-scale" => mapgeom::item_scale::cmd(&a.rest),
+        // print-stl MAP --out DIR [--mm 210] [--tiles AxB] [--wall-mm 0.8] [--voxel-m N]
+        // [--margin-cells 2] [--base-mm 3] [--no-crop] [--no-items] [--no-decoration]
+        // [--yoff N] [--render]: the map as a watertight, manifold, 3D-printable STL
+        // (printable.rs; Altrd's display print of Fall 2026 - 01, 2026-11-09)
+        "print-stl" => {
+            let mut store = open(&a);
+            let p = a.rest.get(1).cloned().unwrap_or_else(|| die("print-stl MAP --out DIR".into()));
+            let tiles = flag(&a.rest, "--tiles").unwrap_or_else(|| "1x1".into());
+            let (tx, tz) = tiles.split_once('x').and_then(|(a, b)| Some((a.parse().ok()?, b.parse().ok()?))).unwrap_or_else(|| die("--tiles AxB".into()));
+            let o = mapgeom::printable::Options {
+                out_dir: flag(&a.rest, "--out").unwrap_or_else(|| die("print-stl needs --out DIR".into())),
+                obj: flag(&a.rest, "--obj"),
+                mm: flag(&a.rest, "--mm").and_then(|s| s.parse().ok()).unwrap_or(210.0),
+                tiles: (tx, tz),
+                wall_mm: flag(&a.rest, "--wall-mm").and_then(|s| s.parse().ok()).unwrap_or(0.8),
+                voxel_m: flag(&a.rest, "--voxel-m").and_then(|s| s.parse().ok()),
+                margin_cells: flag(&a.rest, "--margin-cells").and_then(|s| s.parse().ok()).unwrap_or(2),
+                base_mm: flag(&a.rest, "--base-mm").and_then(|s| s.parse().ok()).unwrap_or(3.0),
+                crop: !a.rest.iter().any(|x| x == "--no-crop"),
+                bbox: flag(&a.rest, "--box").map(|v| {
+                    let n: Vec<f32> = v.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+                    if n.len() != 4 {
+                        die::<()>("--box x0,z0,x1,z1".into());
+                    }
+                    [n[0], n[1], n[2], n[3]]
+                }),
+                items: !a.rest.iter().any(|x| x == "--no-items"),
+                decoration: !a.rest.iter().any(|x| x == "--no-decoration"),
+                yoff: flag(&a.rest, "--yoff").and_then(|s| s.parse().ok()),
+                render: a.rest.iter().any(|x| x == "--render"),
+            };
+            mapgeom::printable::run(&mut store, &p, &o).unwrap_or_else(die);
+        }
         "block-trees" => {
             let mut store = open(&a);
             mapgeom::block_trees::run(&mut store, &a.rest).unwrap_or_else(die);
