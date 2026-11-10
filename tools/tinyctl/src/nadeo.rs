@@ -723,7 +723,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             }
             let new_maps: Vec<String> = maps.iter().filter(|m| *m != &uid).cloned().collect();
             let name = s(&d, "name");
-            let settings: Vec<Value> = room.get("scriptSettings").and_then(|o| o.as_object()).map(|o| o.values().map(|v| serde_json::json!({"key": s(v, "key"), "value": s(v, "value"), "type": s(v, "type")})).collect()).unwrap_or_default();
+            let settings: Vec<Value> = room.get("scriptSettings").and_then(|o| o.as_object()).map(|o| o.values().map(setting_row).collect()).unwrap_or_default();
             let body = serde_json::json!({
                 "name": name, "region": s(&room, "region"), "maxPlayersPerServer": room.get("maxPlayers").and_then(|x| x.as_u64()).unwrap_or(100),
                 "script": s(&room, "script"), "settings": settings,
@@ -749,7 +749,15 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                 let room = d.get("room").cloned().unwrap_or(Value::Null);
                 let maps: Vec<String> = room.get("maps").and_then(|m| m.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
                 let name = s(&d, "name");
-                let settings: Vec<Value> = room.get("scriptSettings").and_then(|o| o.as_object()).map(|o| o.values().map(|v| serde_json::json!({"key": s(v, "key"), "value": s(v, "value"), "type": s(v, "type")})).collect()).unwrap_or_default();
+                let mut settings: Vec<Value> = room.get("scriptSettings").and_then(|o| o.as_object()).map(|o| o.values().map(setting_row).collect()).unwrap_or_default();
+                // --set KEY=VALUE (repeatable): a setting restored or changed, e.g. S_TimeLimit=270
+                let sets: Vec<(String, String)> = args.iter().enumerate().filter(|(_, a)| *a == "--set").filter_map(|(i, _)| args.get(i + 1)).filter_map(|kv| kv.split_once('=').map(|(k, v)| (k.to_string(), v.to_string()))).collect();
+                for (k, v) in &sets {
+                    match settings.iter_mut().find(|st| st.get("key").and_then(|x| x.as_str()) == Some(k.as_str())) {
+                        Some(st) => st["value"] = Value::String(v.clone()),
+                        None => settings.push(serde_json::json!({"key": k, "value": v, "type": if v.parse::<i64>().is_ok() { "integer" } else { "text" }})),
+                    }
+                }
                 let body = serde_json::json!({
                     "name": name, "region": s(&room, "region"), "maxPlayersPerServer": room.get("maxPlayers").and_then(|x| x.as_u64()).unwrap_or(100),
                     "script": s(&room, "script"), "settings": settings,
@@ -757,8 +765,8 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                 });
                 let r = post_json(&auth_live, &format!("{LIVE}/api/token/club/{club}/room/{id}/edit"), &body.to_string())?;
                 let n = r["room"]["maps"].as_array().map(|a| a.len()).unwrap_or(0);
-                let server = r["room"].get("serverInfo").map(|v| !v.is_null()).unwrap_or(false);
-                println!("room\t{id}\t{name}\tre-saved, {n} maps, server {}", if server { "allocated" } else { "not yet" });
+                let tl = r["room"]["scriptSettings"]["S_TimeLimit"]["value"].as_str().unwrap_or("?").to_string();
+                println!("room\t{id}\t{name}\tre-saved, {n} maps, S_TimeLimit now {tl:?}");
             }
             Ok(())
         }
@@ -842,7 +850,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                         continue;
                     }
                     // the GET gives scriptSettings as an object keyed by setting; the edit wants the array form
-                    let settings: Vec<Value> = room.get("scriptSettings").and_then(|o| o.as_object()).map(|o| o.values().map(|v| serde_json::json!({"key": s(v, "key"), "value": s(v, "value"), "type": s(v, "type")})).collect()).unwrap_or_default();
+                    let settings: Vec<Value> = room.get("scriptSettings").and_then(|o| o.as_object()).map(|o| o.values().map(setting_row).collect()).unwrap_or_default();
                     let body = serde_json::json!({
                         "name": name, "region": s(&room, "region"), "maxPlayersPerServer": room.get("maxPlayers").and_then(|x| x.as_u64()).unwrap_or(100),
                         "script": s(&room, "script"), "settings": settings,
@@ -1037,6 +1045,20 @@ fn activity_edit(auth_live: &str, club: &str, activity: &str, active: bool, publ
 
 /// `POST /club/{club}/campaign/{id}/edit {"name":…,"playlist":[{mapUid,position}…]}` —
 /// the campaign's whole playlist in the given order (an entry per uid).
+/// A room script setting as the edit endpoint wants it. The VALUE keeps whatever JSON the
+/// read returned: `s()` (a string getter) turned a numeric `S_TimeLimit` into "" and every
+/// room the wipes rewrote lost its time limit — the dedicated server then failed to start
+/// and joins answered "error code 404" (hunt club, 2026-11-09/10; the Wet Wood room 10-31).
+fn setting_row(v: &Value) -> Value {
+    let value = match v.get("value") {
+        Some(Value::String(x)) => Value::String(x.clone()),
+        Some(Value::Number(n)) => Value::String(n.to_string()),
+        Some(Value::Bool(b)) => Value::String(b.to_string()),
+        _ => Value::String(String::new()),
+    };
+    serde_json::json!({"key": s(v, "key"), "value": value, "type": s(v, "type")})
+}
+
 pub fn campaign_set(auth_live: &str, club: &str, campaign: &str, name: &str, uids: &[String]) -> Result<Value, String> {
     let playlist: Vec<String> = uids.iter().enumerate().map(|(i, u)| format!("{{\"mapUid\":\"{u}\",\"position\":{i}}}")).collect();
     let body = format!("{{\"name\":\"{}\",\"playlist\":[{}]}}", name.replace('"', "\\\""), playlist.join(","));
