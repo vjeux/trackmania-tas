@@ -2007,6 +2007,7 @@ fn main() {
                 render: a.rest.iter().any(|x| x == "--render"),
                 puzzle: a.rest.iter().any(|x| x == "--puzzle"),
                 puzzle_clearance: flag(&a.rest, "--puzzle-clearance").and_then(|s| s.parse().ok()).unwrap_or(0.2),
+                mirror: a.rest.iter().any(|x| x == "--mirror"),
             };
             mapgeom::printable::run(&mut store, &p, &o).unwrap_or_else(die);
         }

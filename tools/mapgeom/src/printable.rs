@@ -28,6 +28,15 @@
 //! placement is rasterised from its hull. Bushes (a hull a few cm tall) are
 //! skipped: at print scale they are smaller than a voxel.
 //!
+//! Orientation: TM's world is x, y up, z with the map editor's North = +z and
+//! East = -x (the start of Fall 2026 - 01 faces dir 2 = South and its road
+//! leaves toward -z; dir 1 = East turns a block's forward from +z to -x, the
+//! rotation the car-position fits validated). A right-handed print with
+//! X = x, Y = z is therefore the MIRROR of the game's top view, which Altrd
+//! saw at once ("we still need to fix the mirroring"). Default: X = -x, so a
+//! print seen from above with +Y (north) up has east on the right like the
+//! editor; `--mirror` keeps the other chirality.
+//!
 //! `check_mesh` is the proof: every edge in exactly two triangles with
 //! opposite orientation, every vertex a single fan, positive signed volume.
 //! Self-intersection is impossible by construction — every face lies on a
@@ -421,6 +430,12 @@ pub struct Mesh {
 /// millimetres; the sub-range's own lower corner is the print origin, so a
 /// tile stands on its own plate.
 pub fn extract_surface(solid: &Grid, i0: usize, i1: usize, k0: usize, k1: usize, mm: f32) -> Mesh {
+    extract_surface_oriented(solid, i0, i1, k0, k1, mm, false)
+}
+
+/// `extract_surface` with the chirality choice: `mirror_x` = print X runs
+/// along -i (the game's east on the right when north is up).
+pub fn extract_surface_oriented(solid: &Grid, i0: usize, i1: usize, k0: usize, k1: usize, mm: f32, mirror_x: bool) -> Mesh {
     let mut owned = Grid::new(solid.nx, solid.ny, solid.nz);
     for k in k0..k1 {
         for j in 0..solid.ny {
@@ -431,19 +446,21 @@ pub fn extract_surface(solid: &Grid, i0: usize, i1: usize, k0: usize, k1: usize,
             }
         }
     }
-    extract_owned(&owned, i0, k0, mm)
+    extract_owned(&owned, i0, i1, k0, mm, mirror_x)
 }
 
 /// The boundary of the cells set in `owned` (a tile's cells: its range minus
 /// the pockets other tiles' tabs cut into it, plus its own tabs), with the
-/// print origin at grid corner `(oi, 0, ok)`.
-pub fn extract_owned(owned: &Grid, oi: usize, ok: usize, mm: f32) -> Mesh {
+/// print origin at grid corner `(oi, 0, ok)` — or, mirrored, at `(oi1, 0, ok)`
+/// with X growing toward smaller i.
+pub fn extract_owned(owned: &Grid, oi: usize, oi1: usize, ok: usize, mm: f32, mirror_x: bool) -> Mesh {
     let mut mesh = Mesh::default();
     let mut index: HashMap<(u32, u32, u32), u32> = HashMap::new();
     let mut vertex = |i: usize, j: usize, k: usize, mesh: &mut Mesh| -> u32 {
         let key = (i as u32, j as u32, k as u32);
         *index.entry(key).or_insert_with(|| {
-            mesh.verts.push([(i as f32 - oi as f32) * mm, (k as f32 - ok as f32) * mm, j as f32 * mm]);
+            let x = if mirror_x { (oi1 as f32 - i as f32) * mm } else { (i as f32 - oi as f32) * mm };
+            mesh.verts.push([x, (k as f32 - ok as f32) * mm, j as f32 * mm]);
             mesh.corners.push([i as u32, j as u32, k as u32]);
             (mesh.verts.len() - 1) as u32
         })
@@ -479,6 +496,12 @@ pub fn extract_owned(owned: &Grid, oi: usize, ok: usize, mm: f32) -> Mesh {
                     quad(&mut mesh, &mut vertex, [(i, j + 1, k), (i, j + 1, k + 1), (i + 1, j + 1, k + 1), (i + 1, j + 1, k)]);
                 }
             }
+        }
+    }
+    if mirror_x {
+        // a mirror flips handedness: turn every triangle back outward
+        for t in mesh.tris.iter_mut() {
+            t.swap(1, 2);
         }
     }
     mesh
@@ -537,8 +560,10 @@ impl Tab {
 /// glued to the tile (the cut plane), so they press-fit the voxel-exact
 /// pockets: the tip comes back, the shoulders move out (away from the plane),
 /// the flanks move toward the tab's centreline, the top comes down.
-pub fn shrink_tabs(mesh: &mut Mesh, tabs: &[Tab], clearance: f32, mm: f32) {
+pub fn shrink_tabs(mesh: &mut Mesh, tabs: &[Tab], clearance: f32, mm: f32, mirror_x: bool) {
     let c = clearance.min(mm * 0.45);
+    // every adjustment along print X changes sign when X runs along -i
+    let sx = if mirror_x { -1.0f32 } else { 1.0 };
     for (v, corner) in mesh.verts.iter_mut().zip(mesh.corners.iter()) {
         for t in tabs {
             if !t.contains_corner(*corner) {
@@ -553,17 +578,19 @@ pub fn shrink_tabs(mesh: &mut Mesh, tabs: &[Tab], clearance: f32, mm: f32) {
             let shoulder = t.cut + t.neck_len;
             let neck_lo = t.across.saturating_sub(t.neck_w / 2);
             let neck_hi = neck_lo + t.neck_w;
+            let s_along = if along_idx == 0 { sx } else { 1.0 };
+            let s_across = if across_idx == 0 { sx } else { 1.0 };
             if along == tip {
-                v[along_idx] -= c;
+                v[along_idx] -= c * s_along;
             } else if along == shoulder && (across < neck_lo || across > neck_hi) {
-                v[along_idx] += c;
+                v[along_idx] += c * s_along;
             }
             // flanks: toward the centreline
             let centre = t.across as f32 + if t.head_w % 2 == 0 { 0.0 } else { 0.5 };
             if (across as f32) > centre + 0.25 {
-                v[across_idx] -= c;
+                v[across_idx] -= c * s_across;
             } else if (across as f32) < centre - 0.25 {
-                v[across_idx] += c;
+                v[across_idx] += c * s_across;
             }
             if j == t.height {
                 v[2] -= c;
@@ -1023,6 +1050,8 @@ pub struct Options {
     pub puzzle: bool,
     /// Press-fit clearance per side, mm.
     pub puzzle_clearance: f32,
+    /// Keep print X = game x (the mirror of the editor's top view).
+    pub mirror: bool,
 }
 
 pub fn run(store: &mut DataStore, map_path: &str, o: &Options) -> Result<(), String> {
@@ -1395,7 +1424,10 @@ pub fn run(store: &mut DataStore, map_path: &str, o: &Options) -> Result<(), Str
     let stem = std::path::Path::new(map_path).file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default().replace(".Map.Gbx", "");
     let header = format!("mapgeom print-stl {stem} units=mm voxel={voxel_mm:.3}mm scale={mm_per_m:.4}mm/m", );
     let mut outputs: Vec<(String, Mesh)> = Vec::new();
-    let whole = extract_surface(&solid, 0, nx, 0, nz, voxel_mm);
+    // default chirality: X = -x (east on the right with north up, as in the editor)
+    let mirror_x = !o.mirror;
+    println!("orientation: print X = {} game x, print Y = game z (north), Z = height{}", if mirror_x { "-" } else { "+" }, if mirror_x { " — the editor's top view" } else { " — MIRRORED versus the editor (--mirror)" });
+    let whole = extract_surface_oriented(&solid, 0, nx, 0, nz, voxel_mm, mirror_x);
     outputs.push((format!("{}/{stem}.stl", o.out_dir), whole));
     if tx * tz > 1 {
         let tabs = if o.puzzle { plan_tabs(nx, nz, tx, tz, voxel_mm, (base_vox / 2).max(2)) } else { Vec::new() };
@@ -1419,11 +1451,14 @@ pub fn run(store: &mut DataStore, map_path: &str, o: &Options) -> Result<(), Str
                 let k0 = b * nz / tz;
                 let k1 = (b + 1) * nz / tz;
                 let (owned, mine) = tile_owned(&solid, i0, i1, k0, k1, &tabs);
-                let mut tile = extract_owned(&owned, i0, k0, voxel_mm);
+                let mut tile = extract_owned(&owned, i0, i1, k0, voxel_mm, mirror_x);
                 if !mine.is_empty() {
-                    shrink_tabs(&mut tile, &mine, o.puzzle_clearance, voxel_mm);
+                    shrink_tabs(&mut tile, &mine, o.puzzle_clearance, voxel_mm, mirror_x);
                 }
-                outputs.push((format!("{}/{stem}-tile-x{a}-y{b}.stl", o.out_dir), tile));
+                // tile names follow the PRINT layout: x0 is the leftmost tile
+                // seen from above with north up
+                let pa = if mirror_x { tx - 1 - a } else { a };
+                outputs.push((format!("{}/{stem}-tile-x{pa}-y{b}.stl", o.out_dir), tile));
             }
         }
     }
@@ -1509,17 +1544,19 @@ pub fn run(store: &mut DataStore, map_path: &str, o: &Options) -> Result<(), Str
             // close-up: the triangles of tiles x0-y0 and x1-y0 within 15 mm of the first tab
             let tabs = plan_tabs(nx, nz, tx, tz, voxel_mm, (base_vox / 2).max(2));
             if let Some(t) = tabs.first() {
-                let centre_x = (t.cut as f32 - 0.0) * voxel_mm;
-                let centre_y = (t.across as f32 - 0.0) * voxel_mm;
+                let centre_x = if mirror_x { (nx - t.cut) as f32 * voxel_mm } else { t.cut as f32 * voxel_mm };
+                let centre_y = t.across as f32 * voxel_mm;
                 let mut close = Mesh::default();
                 for (path, mesh) in outputs.iter().skip(1).take(tx * tz) {
                     // tile origin in whole-grid mm
                     let name = path.rsplit('/').next().unwrap_or("");
-                    let (a, b) = name.rsplit_once("-tile-x").map(|(_, r)| r.trim_end_matches(".stl")).and_then(|r| r.split_once("-y")).and_then(|(a, b)| Some((a.parse::<usize>().ok()?, b.parse::<usize>().ok()?))).unwrap_or((0, 0));
-                    let ox = (a * nx / tx) as f32 * voxel_mm;
+                    let (pa, b) = name.rsplit_once("-tile-x").map(|(_, r)| r.trim_end_matches(".stl")).and_then(|r| r.split_once("-y")).and_then(|(a, b)| Some((a.parse::<usize>().ok()?, b.parse::<usize>().ok()?))).unwrap_or((0, 0));
+                    // the grid tile index behind the print name
+                    let a = if mirror_x { tx - 1 - pa } else { pa };
+                    let ox = if mirror_x { (nx - (a + 1) * nx / tx) as f32 * voxel_mm } else { (a * nx / tx) as f32 * voxel_mm };
                     let oy = (b * nz / tz) as f32 * voxel_mm;
                     // pull the two tiles 1.5 mm apart along X so the fit reads
-                    let sep = if a == 0 { -1.5 } else { 1.5 };
+                    let sep = if pa == 0 { -1.5 } else { 1.5 };
                     let base_i = close.verts.len() as u32;
                     let mut keep: HashMap<u32, u32> = HashMap::new();
                     for tri in &mesh.tris {
@@ -1751,20 +1788,58 @@ mod tests {
         let tab_cells: usize = tabs.iter().map(|t| t.cells().len()).sum();
         assert_eq!(owned_a.count(), 20 * nz * 6 + tab_cells);
         assert_eq!(owned_b.count(), 20 * nz * 6 - tab_cells);
-        let mut a = extract_owned(&owned_a, 0, 0, 1.0);
-        let b = extract_owned(&owned_b, 20, 0, 1.0);
+        let mut a = extract_owned(&owned_a, 0, 20, 0, 1.0, false);
+        let b = extract_owned(&owned_b, 20, 40, 0, 1.0, false);
         let (ra, rb) = (check_mesh(&a), check_mesh(&b));
         assert!(ra.ok() && rb.ok(), "{ra:?} {rb:?}");
         assert!((ra.volume_mm3 + rb.volume_mm3 - (nx * nz * 6) as f64).abs() < 1e-3);
         // the tab reaches past the tile's own width
         assert!(a.verts.iter().any(|v| v[0] > 20.0));
         let vol_before = ra.volume_mm3;
-        shrink_tabs(&mut a, &mine_a, 0.2, 1.0);
+        shrink_tabs(&mut a, &mine_a, 0.2, 1.0, false);
         let ra2 = check_mesh(&a);
         assert!(ra2.ok(), "{ra2:?}");
         assert!(ra2.volume_mm3 < vol_before && ra2.volume_mm3 > vol_before - tab_cells as f64);
         // nothing of the tile body moved
         assert!(a.verts.iter().zip(a.corners.iter()).all(|(v, c)| c[0] > 20 || (v[0] - c[0] as f32).abs() < 1e-6));
+    }
+
+    #[test]
+    fn mirrored_extraction_is_outward_and_flipped() {
+        // two voxels at i=0 and i=2 in a 3-wide grid; mirrored, the i=0 one
+        // sits at the HIGH X end and the mesh still has positive volume
+        let mut g = Grid::new(3, 1, 1);
+        g.set(0, 0, 0);
+        g.set(2, 0, 0);
+        let plain = extract_surface_oriented(&g, 0, 3, 0, 1, 1.0, false);
+        let mirrored = extract_surface_oriented(&g, 0, 3, 0, 1, 1.0, true);
+        let (rp, rm) = (check_mesh(&plain), check_mesh(&mirrored));
+        assert!(rp.ok() && rm.ok(), "{rp:?} {rm:?}");
+        assert!((rp.volume_mm3 - 2.0).abs() < 1e-6 && (rm.volume_mm3 - 2.0).abs() < 1e-6);
+        // the i=0 voxel's vertices: X in 0..1 plain, 2..3 mirrored
+        let xs_plain: Vec<f32> = plain.verts.iter().zip(plain.corners.iter()).filter(|(_, c)| c[0] <= 1).map(|(v, _)| v[0]).collect();
+        let xs_mirr: Vec<f32> = mirrored.verts.iter().zip(mirrored.corners.iter()).filter(|(_, c)| c[0] <= 1).map(|(v, _)| v[0]).collect();
+        assert!(xs_plain.iter().all(|x| *x >= 0.0 && *x <= 1.0));
+        assert!(xs_mirr.iter().all(|x| *x >= 2.0 && *x <= 3.0), "{xs_mirr:?}");
+        // a mirrored tile with a tab still shrinks toward its own body
+        let (nx, nz) = (40usize, 60usize);
+        let mut g = Grid::new(nx, 8, nz);
+        for k in 0..nz {
+            for i in 0..nx {
+                for j in 0..6 {
+                    g.set(i, j, k);
+                }
+            }
+        }
+        let tabs = plan_tabs(nx, nz, 2, 1, 1.0, 3);
+        let (owned_a, mine_a) = tile_owned(&g, 0, 20, 0, nz, &tabs);
+        let mut a = extract_owned(&owned_a, 0, 20, 0, 1.0, true);
+        let before = check_mesh(&a).volume_mm3;
+        shrink_tabs(&mut a, &mine_a, 0.2, 1.0, true);
+        let after = check_mesh(&a);
+        assert!(after.ok() && after.volume_mm3 < before, "{after:?}");
+        // mirrored: the tab (i > 20) lies at X < 0, beyond the tile's own 0..20
+        assert!(a.verts.iter().zip(a.corners.iter()).filter(|(_, c)| c[0] > 20).all(|(v, _)| v[0] < 0.0));
     }
 
     #[test]

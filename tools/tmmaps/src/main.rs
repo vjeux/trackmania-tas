@@ -208,6 +208,22 @@ fn main() {
         // over by swapping the rows of the decoded image is NOT done here: the
         // bytes are written as stored, and a viewer flips it). Ground truth for
         // which way a model of the map should face (printable.rs, 2026-11-09).
+        // thumbcam MAP: the thumbnail camera (chunk 0x03043036: position Vec3,
+        // pitch/yaw/roll Vec3 in radians, FOV, then three floats) — the one
+        // camera of the map whose picture we also have, so a model's chirality
+        // can be checked against the game's own render (printable.rs, 2026-11-09)
+        "thumbcam" => {
+            let path = std::path::Path::new(&args[2]);
+            let m = tmmaps::map::MapFile::load(path);
+            let b = &m.gbx.body;
+            let id = 0x03043036u32.to_le_bytes();
+            let at = b.windows(4).position(|w| w == id).expect("no chunk 0x03043036");
+            let f = |o: usize| f32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]);
+            // the chunk id is followed by its 4-byte length (skippable chunk)
+            // then the 12 floats
+            let o = at + 8;
+            println!("thumbnail camera: pos ({:.2}, {:.2}, {:.2}) pitch {:.4} yaw {:.4} roll {:.4} rad (yaw {:.1} deg, pitch {:.1} deg) fov {:.2} ; then {:.3} {:.3} {:.3}", f(o), f(o + 4), f(o + 8), f(o + 12), f(o + 16), f(o + 20), f(o + 16).to_degrees(), f(o + 12).to_degrees(), f(o + 24), f(o + 28), f(o + 32), f(o + 36));
+        }
         "thumb" => {
             let path = std::path::Path::new(&args[2]);
             let out = tmmaps::cli::flag(&args, "--out").expect("thumb MAP --out F.jpg");
