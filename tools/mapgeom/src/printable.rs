@@ -1182,6 +1182,27 @@ pub fn run(store: &mut DataStore, map_path: &str, o: &Options) -> Result<(), Str
                 wall_cells.push((p.cell, pillar));
             }
         }
+        if let Ok(spec) = std::env::var("MAPGEOM_PRINT_WHO") {
+            // MAPGEOM_PRINT_WHO=x,y0,y1,z: every placement whose transformed
+            // geometry has a vertex within 1 m of x and z and y in y0..y1
+            let v: Vec<f32> = spec.split(',').filter_map(|t| t.trim().parse().ok()).collect();
+            if v.len() == 4 {
+                let names: Vec<String> = if p.error.is_none() && !p.prefabs.is_empty() { p.prefabs.clone() } else { vec![format!("fallback:{}", p.name)] };
+                for pf in &names {
+                    let mut c = crate::geom::Collector::new(asm.store);
+                    if !pf.starts_with("fallback:") {
+                        c.file(pf, &crate::geom::IDENTITY, 0);
+                    }
+                    let hit = c.scene.groups.values().any(|g| g.verts.iter().any(|q| {
+                        let w = crate::geom::apply(&xf, *q);
+                        (w[0] - v[0]).abs() < 1.0 && (w[2] - v[3]).abs() < 1.0 && w[1] >= v[1] && w[1] <= v[2]
+                    }));
+                    if hit {
+                        println!("  WHO: {} {} cell {:?} dir {} {} -> {pf}", if p.baked { "baked" } else { "grid" }, p.name, p.cell, p.dir, p.variant_label);
+                    }
+                }
+            }
+        }
         if p.error.is_none() && !p.prefabs.is_empty() {
             for pf in &p.prefabs {
                 let sc = prefab_cache.entry(pf.clone()).or_insert_with(|| {
@@ -1203,6 +1224,23 @@ pub fn run(store: &mut DataStore, map_path: &str, o: &Options) -> Result<(), Str
             n_picked += 1;
         } else if p.path.as_deref().map(|q| q.contains("GameCtnBlockInfoPillar")).unwrap_or(false) && p.prefabs.is_empty() {
             // a pillar cell covered by the taller segment above it
+            n_placeholder += 1;
+        } else if p.name.starts_with("DecoWall") && p.prefabs.is_empty() {
+            // a deco wall block has no mesh of its own: the game bakes its
+            // skins as separate records (the FCT top at the block's top face,
+            // the VFC sides in the neighbour cells) and those are placed
+            // above. The clip fallback drew a SECOND copy of the sloped top
+            // at the block's base cell, 16 m too low — "the sloped decowalls
+            // are way off" (Altrd, v8). The cell interior is filled by
+            // `wall_cells` below.
+            n_placeholder += 1;
+        } else if p.error.is_none() && p.is_clip && p.prefabs.is_empty() {
+            // a CLIP whose picked mobil is the EMPTY one (a VFC record under
+            // the 32 m `Middle_Air4` piece that already covers it: lists 20-22
+            // of the stack carry variant 4 = "nothing here") draws nothing.
+            // Sending these to the clip fallback handed them Air4/Air8
+            // templates — the phantom thin walls 40 m above the pillars that
+            // Altrd saw on v8 (2026-11-09).
             n_placeholder += 1;
         } else {
             // the walker had nothing: a clip-built block (DecoWallSlope2Straight
@@ -1249,6 +1287,18 @@ pub fn run(store: &mut DataStore, map_path: &str, o: &Options) -> Result<(), Str
             });
             match sc {
                 Some(sc) => {
+                    if let Ok(spec) = std::env::var("MAPGEOM_PRINT_WHO") {
+                        let v: Vec<f32> = spec.split(',').filter_map(|t| t.trim().parse().ok()).collect();
+                        if v.len() == 4 {
+                            let hit = sc.groups.values().any(|g| g.verts.iter().any(|q| {
+                                let w = crate::geom::apply(&xf, *q);
+                                (w[0] - v[0]).abs() < 1.0 && (w[2] - v[3]).abs() < 1.0 && w[1] >= v[1] && w[1] <= v[2]
+                            }));
+                            if hit {
+                                println!("  WHO: FALLBACK {} cell {:?} dir {} ({} triangles)", p.name, p.cell, p.dir, sc.tri_count());
+                            }
+                        }
+                    }
                     if p.name.contains("DecoWall") {
                         wall_scene.append(sc, &xf);
                     }
