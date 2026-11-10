@@ -78,6 +78,11 @@ impl Grid {
         self.bits[n >> 6] |= 1u64 << (n & 63);
     }
     #[inline]
+    pub fn clear(&mut self, i: usize, j: usize, k: usize) {
+        let n = self.index(i, j, k);
+        self.bits[n >> 6] &= !(1u64 << (n & 63));
+    }
+    #[inline]
     pub fn get_lin(&self, n: usize) -> bool {
         self.bits[n >> 6] >> (n & 63) & 1 == 1
     }
@@ -406,6 +411,9 @@ pub fn make_well_composed(solid: &mut Grid) -> (usize, usize) {
 pub struct Mesh {
     pub verts: Vec<[f32; 3]>,
     pub tris: Vec<[u32; 3]>,
+    /// The grid corner (i, j, k) each vertex came from — what the puzzle-tab
+    /// clearance shrink keys on.
+    pub corners: Vec<[u32; 3]>,
 }
 
 /// The boundary of the solid voxels inside `[i0, i1) x [k0, k1)` (every
@@ -413,54 +421,60 @@ pub struct Mesh {
 /// millimetres; the sub-range's own lower corner is the print origin, so a
 /// tile stands on its own plate.
 pub fn extract_surface(solid: &Grid, i0: usize, i1: usize, k0: usize, k1: usize, mm: f32) -> Mesh {
+    let mut owned = Grid::new(solid.nx, solid.ny, solid.nz);
+    for k in k0..k1 {
+        for j in 0..solid.ny {
+            for i in i0..i1 {
+                if solid.get(i, j, k) {
+                    owned.set(i, j, k);
+                }
+            }
+        }
+    }
+    extract_owned(&owned, i0, k0, mm)
+}
+
+/// The boundary of the cells set in `owned` (a tile's cells: its range minus
+/// the pockets other tiles' tabs cut into it, plus its own tabs), with the
+/// print origin at grid corner `(oi, 0, ok)`.
+pub fn extract_owned(owned: &Grid, oi: usize, ok: usize, mm: f32) -> Mesh {
     let mut mesh = Mesh::default();
     let mut index: HashMap<(u32, u32, u32), u32> = HashMap::new();
     let mut vertex = |i: usize, j: usize, k: usize, mesh: &mut Mesh| -> u32 {
         let key = (i as u32, j as u32, k as u32);
         *index.entry(key).or_insert_with(|| {
-            mesh.verts.push([(i - i0) as f32 * mm, (k - k0) as f32 * mm, j as f32 * mm]);
+            mesh.verts.push([(i as f32 - oi as f32) * mm, (k as f32 - ok as f32) * mm, j as f32 * mm]);
+            mesh.corners.push([i as u32, j as u32, k as u32]);
             (mesh.verts.len() - 1) as u32
         })
     };
-    let inside = |i: i64, j: i64, k: i64| -> bool {
-        if i < i0 as i64 || i >= i1 as i64 || k < k0 as i64 || k >= k1 as i64 {
-            return false;
-        }
-        solid.get_i(i, j, k)
-    };
-    // For each face: the four corner offsets (in grid corner units) in an
-    // order that is counter-clockwise seen from OUTSIDE in print space.
-    // Print space is (X, Y, Z) = (i, k, j): the map (i, k) by (j, i)…
-    // derived once by hand for each of the six directions and checked by
-    // the signed-volume test (positive for a single voxel).
-    for k in k0..k1 {
-        for j in 0..solid.ny {
-            for i in i0..i1 {
-                if !solid.get(i, j, k) {
+    let inside = |i: i64, j: i64, k: i64| -> bool { owned.get_i(i, j, k) };
+    // For each face: the four corners in an order that is counter-clockwise
+    // seen from outside in the GAME's left-handed frame; `quad` reverses the
+    // winding for right-handed print space. The single-voxel test's positive
+    // volume is the proof the faces point outward.
+    for k in 0..owned.nz {
+        for j in 0..owned.ny {
+            for i in 0..owned.nx {
+                if !owned.get(i, j, k) {
                     continue;
                 }
                 let (ii, jj, kk) = (i as i64, j as i64, k as i64);
-                // -X face (print -X)
                 if !inside(ii - 1, jj, kk) {
                     quad(&mut mesh, &mut vertex, [(i, j, k), (i, j, k + 1), (i, j + 1, k + 1), (i, j + 1, k)]);
                 }
-                // +X face
                 if !inside(ii + 1, jj, kk) {
                     quad(&mut mesh, &mut vertex, [(i + 1, j, k), (i + 1, j + 1, k), (i + 1, j + 1, k + 1), (i + 1, j, k + 1)]);
                 }
-                // -Z game (print -Y)
                 if !inside(ii, jj, kk - 1) {
                     quad(&mut mesh, &mut vertex, [(i, j, k), (i, j + 1, k), (i + 1, j + 1, k), (i + 1, j, k)]);
                 }
-                // +Z game (print +Y)
                 if !inside(ii, jj, kk + 1) {
                     quad(&mut mesh, &mut vertex, [(i, j, k + 1), (i + 1, j, k + 1), (i + 1, j + 1, k + 1), (i, j + 1, k + 1)]);
                 }
-                // -Y game = bottom (print -Z)
                 if !inside(ii, jj - 1, kk) {
                     quad(&mut mesh, &mut vertex, [(i, j, k), (i + 1, j, k), (i + 1, j, k + 1), (i, j, k + 1)]);
                 }
-                // +Y game = top (print +Z)
                 if !inside(ii, jj + 1, kk) {
                     quad(&mut mesh, &mut vertex, [(i, j + 1, k), (i, j + 1, k + 1), (i + 1, j + 1, k + 1), (i + 1, j + 1, k)]);
                 }
@@ -468,6 +482,176 @@ pub fn extract_surface(solid: &Grid, i0: usize, i1: usize, k0: usize, k1: usize,
         }
     }
     mesh
+}
+
+// ----------------------------------------------------------- puzzle tabs
+
+/// One jigsaw tab on a seam between two tiles: it belongs to the tile on the
+/// `-dir` side of the cut plane and reaches `neck_len + head_len` cells past
+/// it; the other tile gets the matching pocket. `axis` 0 = a plane of
+/// constant i (the tab runs along i), 2 = constant k. `across` is the
+/// centre on the other horizontal axis; the tab occupies layers
+/// `0..height` — the bottom of the base, under the roof.
+#[derive(Clone, Debug)]
+pub struct Tab {
+    pub axis: usize,
+    pub cut: usize,
+    pub across: usize,
+    pub neck_w: usize,
+    pub head_w: usize,
+    pub neck_len: usize,
+    pub head_len: usize,
+    pub height: usize,
+}
+
+impl Tab {
+    /// Every cell of the tab, in grid coordinates.
+    pub fn cells(&self) -> Vec<(usize, usize, usize)> {
+        let mut out = Vec::new();
+        for d in 0..self.neck_len + self.head_len {
+            let w = if d < self.neck_len { self.neck_w } else { self.head_w };
+            let lo = self.across.saturating_sub(w / 2);
+            for a in lo..lo + w {
+                for j in 0..self.height {
+                    let along = self.cut + d;
+                    out.push(if self.axis == 0 { (along, j, a) } else { (a, j, along) });
+                }
+            }
+        }
+        out
+    }
+    /// The tab's cells minus the socket-side ones: none — the socket IS the
+    /// tab's cells, removed from the other tile.
+    fn contains_corner(&self, c: [u32; 3]) -> bool {
+        let (along, a, j) = if self.axis == 0 { (c[0] as usize, c[2] as usize, c[1] as usize) } else { (c[2] as usize, c[0] as usize, c[1] as usize) };
+        if j > self.height || along <= self.cut || along > self.cut + self.neck_len + self.head_len {
+            return false;
+        }
+        let w = self.head_w.max(self.neck_w);
+        let lo = self.across.saturating_sub(w / 2);
+        a >= lo && a <= lo + w
+    }
+}
+
+/// Shrink a tile's own tabs by `clearance` mm on every side but the one
+/// glued to the tile (the cut plane), so they press-fit the voxel-exact
+/// pockets: the tip comes back, the shoulders move out (away from the plane),
+/// the flanks move toward the tab's centreline, the top comes down.
+pub fn shrink_tabs(mesh: &mut Mesh, tabs: &[Tab], clearance: f32, mm: f32) {
+    let c = clearance.min(mm * 0.45);
+    for (v, corner) in mesh.verts.iter_mut().zip(mesh.corners.iter()) {
+        for t in tabs {
+            if !t.contains_corner(*corner) {
+                continue;
+            }
+            let (along_idx, across_idx) = if t.axis == 0 { (0usize, 1usize) } else { (1usize, 0usize) };
+            // print axes: X = i, Y = k, Z = j
+            let along = if t.axis == 0 { corner[0] } else { corner[2] } as usize;
+            let across = if t.axis == 0 { corner[2] } else { corner[0] } as usize;
+            let j = corner[1] as usize;
+            let tip = t.cut + t.neck_len + t.head_len;
+            let shoulder = t.cut + t.neck_len;
+            let neck_lo = t.across.saturating_sub(t.neck_w / 2);
+            let neck_hi = neck_lo + t.neck_w;
+            if along == tip {
+                v[along_idx] -= c;
+            } else if along == shoulder && (across < neck_lo || across > neck_hi) {
+                v[along_idx] += c;
+            }
+            // flanks: toward the centreline
+            let centre = t.across as f32 + if t.head_w % 2 == 0 { 0.0 } else { 0.5 };
+            if (across as f32) > centre + 0.25 {
+                v[across_idx] -= c;
+            } else if (across as f32) < centre - 0.25 {
+                v[across_idx] += c;
+            }
+            if j == t.height {
+                v[2] -= c;
+            }
+            break;
+        }
+    }
+}
+
+/// The tabs for a `tx` x `tz` tiling of the grid: two per seam segment, at
+/// 30 % and 70 % of the segment, owned by the lower-index tile.
+pub fn plan_tabs(nx: usize, nz: usize, tx: usize, tz: usize, voxel_mm: f32, height: usize) -> Vec<Tab> {
+    let cells = |mm: f32| ((mm / voxel_mm).round() as usize).max(1);
+    let neck_w = cells(6.0).max(3);
+    let head_w = (cells(10.0)).max(neck_w + 4);
+    let neck_len = cells(2.4).max(2);
+    let head_len = cells(5.6).max(3);
+    let mut out = Vec::new();
+    for a in 1..tx {
+        let cut = a * nx / tx;
+        for b in 0..tz {
+            let k0 = b * nz / tz;
+            let k1 = (b + 1) * nz / tz;
+            for f in [0.3f32, 0.7] {
+                let across = k0 + ((k1 - k0) as f32 * f) as usize;
+                if across < k0 + head_w / 2 + 2 || across + head_w / 2 + 2 > k1 {
+                    continue;
+                }
+                out.push(Tab { axis: 0, cut, across, neck_w, head_w, neck_len, head_len, height });
+            }
+        }
+    }
+    for b in 1..tz {
+        let cut = b * nz / tz;
+        for a in 0..tx {
+            let i0 = a * nx / tx;
+            let i1 = (a + 1) * nx / tx;
+            for f in [0.3f32, 0.7] {
+                let across = i0 + ((i1 - i0) as f32 * f) as usize;
+                if across < i0 + head_w / 2 + 2 || across + head_w / 2 + 2 > i1 {
+                    continue;
+                }
+                out.push(Tab { axis: 2, cut, across, neck_w, head_w, neck_len, head_len, height });
+            }
+        }
+    }
+    out
+}
+
+/// A tile's owned cells: its range, minus the pockets of tabs that reach
+/// into it from neighbours, plus its own tabs. `tile` is (a, b).
+pub fn tile_owned(solid: &Grid, i0: usize, i1: usize, k0: usize, k1: usize, tabs: &[Tab]) -> (Grid, Vec<Tab>) {
+    let mut owned = Grid::new(solid.nx, solid.ny, solid.nz);
+    for k in k0..k1 {
+        for j in 0..solid.ny {
+            for i in i0..i1 {
+                if solid.get(i, j, k) {
+                    owned.set(i, j, k);
+                }
+            }
+        }
+    }
+    let mut mine = Vec::new();
+    for t in tabs {
+        // the tab's root cell: just on the -dir side of the cut, at `across`
+        let root = if t.axis == 0 { (t.cut - 1, t.across) } else { (t.across, t.cut - 1) };
+        let owner_is_me = root.0 >= i0 && root.0 < i1 && root.1 >= k0 && root.1 < k1;
+        let cells = t.cells();
+        let reaches_me = cells.iter().any(|&(i, _, k)| i >= i0 && i < i1 && k >= k0 && k < k1);
+        if owner_is_me {
+            for (i, j, k) in &cells {
+                if solid.get(*i, *j, *k) {
+                    owned.set(*i, *j, *k);
+                }
+            }
+            mine.push(t.clone());
+        } else if reaches_me {
+            // the pocket: clear those cells from this tile
+            let mut cleared = Grid::new(1, 1, 1);
+            let _ = &mut cleared;
+            for (i, j, k) in &cells {
+                if i >= &i0 && i < &i1 && k >= &k0 && k < &k1 {
+                    owned.clear(*i, *j, *k);
+                }
+            }
+        }
+    }
+    (owned, mine)
 }
 
 fn quad(mesh: &mut Mesh, vertex: &mut impl FnMut(usize, usize, usize, &mut Mesh) -> u32, c: [(usize, usize, usize); 4]) {
@@ -717,7 +901,8 @@ pub fn render_png(m: &Mesh, path: &str, w: usize, h: usize, yaw_deg: f32, pitch_
     let mut img = vec![[235u8, 238, 242]; w * h];
     let mut depth = vec![f32::MAX; w * h];
     let light = {
-        let l = [-0.4f32, 0.3, 0.86];
+        // light from the camera's side of the horizon, so an underside view is lit
+        let l = if pitch_deg < 0.0 { [-0.4f32, 0.3, -0.86] } else { [-0.4f32, 0.3, 0.86] };
         let n = (l[0] * l[0] + l[1] * l[1] + l[2] * l[2]).sqrt();
         [l[0] / n, l[1] / n, l[2] / n]
     };
@@ -745,7 +930,7 @@ pub fn render_png(m: &Mesh, path: &str, w: usize, h: usize, yaw_deg: f32, pitch_
         let base = if n[2] > 0.5 {
             [120.0 + 100.0 * hgt, 150.0 + 60.0 * hgt, 110.0 + 50.0 * hgt]
         } else if n[2] < -0.5 {
-            [90.0, 90.0, 95.0]
+            if pitch_deg < 0.0 { [200.0, 190.0, 170.0] } else { [90.0, 90.0, 95.0] }
         } else {
             [150.0, 170.0, 190.0]
         };
@@ -834,6 +1019,10 @@ pub struct Options {
     pub decoration: bool,
     pub yoff: Option<f32>,
     pub render: bool,
+    /// Jigsaw tabs in the bottom of the base along every tile seam.
+    pub puzzle: bool,
+    /// Press-fit clearance per side, mm.
+    pub puzzle_clearance: f32,
 }
 
 pub fn run(store: &mut DataStore, map_path: &str, o: &Options) -> Result<(), String> {
@@ -1136,7 +1325,10 @@ pub fn run(store: &mut DataStore, map_path: &str, o: &Options) -> Result<(), Str
     let mm_per_m = (o.mm * tx as f32 / width_m).min(o.mm * tz as f32 / depth_m);
     let voxel_m = o.voxel_m.unwrap_or(o.wall_mm / mm_per_m);
     let voxel_mm = voxel_m * mm_per_m;
-    let base_vox = (o.base_mm / voxel_mm).ceil().max(1.0) as usize;
+    // puzzle tabs live in the lower half of the base: 4.8 mm of base gives a
+    // 2.4 mm tab under a 2.4 mm roof
+    let base_mm = if o.puzzle && tx * tz > 1 { o.base_mm.max(4.8) } else { o.base_mm };
+    let base_vox = (base_mm / voxel_mm).ceil().max(1.0) as usize;
     let y_lo = slo[1] - base_vox as f32 * voxel_m;
     let nx = ((x1 - x0) / voxel_m).ceil() as usize;
     let nz = ((z1 - z0) / voxel_m).ceil() as usize;
@@ -1206,13 +1398,31 @@ pub fn run(store: &mut DataStore, map_path: &str, o: &Options) -> Result<(), Str
     let whole = extract_surface(&solid, 0, nx, 0, nz, voxel_mm);
     outputs.push((format!("{}/{stem}.stl", o.out_dir), whole));
     if tx * tz > 1 {
+        let tabs = if o.puzzle { plan_tabs(nx, nz, tx, tz, voxel_mm, (base_vox / 2).max(2)) } else { Vec::new() };
+        if o.puzzle {
+            let t0 = tabs.first();
+            println!(
+                "puzzle: {} tabs on the seams, each {} x {} mm neck / {} mm head, {:.1} mm tall under a {:.1} mm roof, {:.2} mm clearance per side",
+                tabs.len(),
+                t0.map(|t| t.neck_w as f32 * voxel_mm).unwrap_or(0.0),
+                t0.map(|t| (t.neck_len + t.head_len) as f32 * voxel_mm).unwrap_or(0.0),
+                t0.map(|t| t.head_w as f32 * voxel_mm).unwrap_or(0.0),
+                t0.map(|t| t.height as f32 * voxel_mm).unwrap_or(0.0),
+                (base_vox - (base_vox / 2).max(2)) as f32 * voxel_mm,
+                o.puzzle_clearance
+            );
+        }
         for a in 0..tx {
             for b in 0..tz {
                 let i0 = a * nx / tx;
                 let i1 = (a + 1) * nx / tx;
                 let k0 = b * nz / tz;
                 let k1 = (b + 1) * nz / tz;
-                let tile = extract_surface(&solid, i0, i1, k0, k1, voxel_mm);
+                let (owned, mine) = tile_owned(&solid, i0, i1, k0, k1, &tabs);
+                let mut tile = extract_owned(&owned, i0, k0, voxel_mm);
+                if !mine.is_empty() {
+                    shrink_tabs(&mut tile, &mine, o.puzzle_clearance, voxel_mm);
+                }
                 outputs.push((format!("{}/{stem}-tile-x{a}-y{b}.stl", o.out_dir), tile));
             }
         }
@@ -1287,6 +1497,53 @@ pub fn run(store: &mut DataStore, map_path: &str, o: &Options) -> Result<(), Str
             let p = format!("{}/{stem}-{name}.png", o.out_dir);
             render_png(whole, &p, 1600, 1200, yaw, pitch)?;
             println!("rendered {p}");
+        }
+        // the tiles from below, where the puzzle tabs and pockets are, and a
+        // close-up of the first seam's tab + pocket pair
+        if o.puzzle && outputs.len() > 1 {
+            for (path, mesh) in outputs.iter().skip(1) {
+                let p = format!("{}-bottom.png", path.trim_end_matches(".stl"));
+                render_png(mesh, &p, 1600, 1200, 35.0, -40.0)?;
+                println!("rendered {p}");
+            }
+            // close-up: the triangles of tiles x0-y0 and x1-y0 within 15 mm of the first tab
+            let tabs = plan_tabs(nx, nz, tx, tz, voxel_mm, (base_vox / 2).max(2));
+            if let Some(t) = tabs.first() {
+                let centre_x = (t.cut as f32 - 0.0) * voxel_mm;
+                let centre_y = (t.across as f32 - 0.0) * voxel_mm;
+                let mut close = Mesh::default();
+                for (path, mesh) in outputs.iter().skip(1).take(tx * tz) {
+                    // tile origin in whole-grid mm
+                    let name = path.rsplit('/').next().unwrap_or("");
+                    let (a, b) = name.rsplit_once("-tile-x").map(|(_, r)| r.trim_end_matches(".stl")).and_then(|r| r.split_once("-y")).and_then(|(a, b)| Some((a.parse::<usize>().ok()?, b.parse::<usize>().ok()?))).unwrap_or((0, 0));
+                    let ox = (a * nx / tx) as f32 * voxel_mm;
+                    let oy = (b * nz / tz) as f32 * voxel_mm;
+                    // pull the two tiles 1.5 mm apart along X so the fit reads
+                    let sep = if a == 0 { -1.5 } else { 1.5 };
+                    let base_i = close.verts.len() as u32;
+                    let mut keep: HashMap<u32, u32> = HashMap::new();
+                    for tri in &mesh.tris {
+                        let ps: Vec<[f32; 3]> = tri.iter().map(|v| mesh.verts[*v as usize]).collect();
+                        if ps.iter().all(|p| (p[0] + ox - centre_x).abs() < 15.0 && (p[1] + oy - centre_y).abs() < 15.0 && p[2] < 12.0) {
+                            let mut ids = [0u32; 3];
+                            for (k, v) in tri.iter().enumerate() {
+                                ids[k] = *keep.entry(*v).or_insert_with(|| {
+                                    let p = mesh.verts[*v as usize];
+                                    close.verts.push([p[0] + ox + sep, p[1] + oy, p[2]]);
+                                    (close.verts.len() - 1) as u32
+                                });
+                            }
+                            close.tris.push(ids);
+                        }
+                    }
+                    let _ = base_i;
+                }
+                if !close.tris.is_empty() {
+                    let p = format!("{}/{stem}-puzzle-closeup.png", o.out_dir);
+                    render_png(&close, &p, 1600, 1200, 25.0, -35.0)?;
+                    println!("rendered {p}");
+                }
+            }
         }
     }
     println!("done in {:.1}s; every mesh passed: {all_ok}", t0.elapsed().as_secs_f32());
@@ -1471,6 +1728,43 @@ mod tests {
         assert!((rl.volume_mm3 + rr.volume_mm3 - 128.0).abs() < 1e-3);
         // a tile stands on its own origin
         assert!(left.verts.iter().all(|v| v[0] >= 0.0 && v[0] <= 4.0) && right.verts.iter().all(|v| v[0] >= 0.0 && v[0] <= 4.0));
+    }
+
+    #[test]
+    fn puzzle_tab_and_pocket_fit() {
+        // a 2-tile slab, 6 layers thick; one tab on the seam
+        let (nx, ny, nz) = (40usize, 8usize, 60usize);
+        let mut g = Grid::new(nx, ny, nz);
+        for k in 0..nz {
+            for i in 0..nx {
+                for j in 0..6 {
+                    g.set(i, j, k);
+                }
+            }
+        }
+        let tabs = plan_tabs(nx, nz, 2, 1, 1.0, 3);
+        assert!(!tabs.is_empty(), "no tab fitted");
+        let (owned_a, mine_a) = tile_owned(&g, 0, 20, 0, nz, &tabs);
+        let (owned_b, mine_b) = tile_owned(&g, 20, 40, 0, nz, &tabs);
+        assert_eq!(mine_a.len(), tabs.len());
+        assert!(mine_b.is_empty());
+        let tab_cells: usize = tabs.iter().map(|t| t.cells().len()).sum();
+        assert_eq!(owned_a.count(), 20 * nz * 6 + tab_cells);
+        assert_eq!(owned_b.count(), 20 * nz * 6 - tab_cells);
+        let mut a = extract_owned(&owned_a, 0, 0, 1.0);
+        let b = extract_owned(&owned_b, 20, 0, 1.0);
+        let (ra, rb) = (check_mesh(&a), check_mesh(&b));
+        assert!(ra.ok() && rb.ok(), "{ra:?} {rb:?}");
+        assert!((ra.volume_mm3 + rb.volume_mm3 - (nx * nz * 6) as f64).abs() < 1e-3);
+        // the tab reaches past the tile's own width
+        assert!(a.verts.iter().any(|v| v[0] > 20.0));
+        let vol_before = ra.volume_mm3;
+        shrink_tabs(&mut a, &mine_a, 0.2, 1.0);
+        let ra2 = check_mesh(&a);
+        assert!(ra2.ok(), "{ra2:?}");
+        assert!(ra2.volume_mm3 < vol_before && ra2.volume_mm3 > vol_before - tab_cells as f64);
+        // nothing of the tile body moved
+        assert!(a.verts.iter().zip(a.corners.iter()).all(|(v, c)| c[0] > 20 || (v[0] - c[0] as f32).abs() < 1e-6));
     }
 
     #[test]
