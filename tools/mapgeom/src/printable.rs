@@ -1064,10 +1064,16 @@ fn raster(img: &mut [[u8; 3]], depth: &mut [f32], w: usize, h: usize, p0: [f32; 
 
 // ----------------------------------------------------------- the command
 
-const TERRAIN_MATERIALS: &[&str] = &["Grass", "Sand", "Rock", "Dirt", "Water", "Snow", "Gravel", "Ice", "Mud"];
 
 /// Is this block part of the landscape (terrain, water, cliffs) rather than
 /// something the author built? Decides the crop rectangle only.
+/// Items that cannot print at any sane scale: flags (a pole and a sheet of
+/// cloth) and the like.
+pub fn is_unprintable_item(name: &str) -> bool {
+    let stem = name.rsplit('\\').next().unwrap_or(name).trim_end_matches(".Item.Gbx").to_ascii_lowercase();
+    stem.starts_with("flag") || stem.contains("sparkler")
+}
+
 /// Vegetation items and the Stadium season clumps: scenery, never the track.
 pub fn is_veget_name(name: &str) -> bool {
     const P: &[&str] = &["Tree", "Bush", "Palm", "Grove", "Forest", "Ecotone", "Flower", "Grass", "Fern", "Plant", "Cactus", "Spring", "Summer", "Fall", "Winter", "Fir", "Cypress"];
@@ -1147,6 +1153,28 @@ pub fn run(store: &mut DataStore, map_path: &str, o: &Options) -> Result<(), Str
     // (the first 0.4 mm run carved the stadium's two towers into poles), so
     // they are collected here as well and column-filled like terrain.
     let mut wall_scene = crate::scene::Scene::default();
+    // The ground: geometry that came from a TERRAIN BLOCK (Dirt, Water,
+    // the cliffs and hills, DecoTerrainHD…), the only thing that fills down
+    // to the base plate. The first cut keyed on material instead and a road
+    // block's Sand shoulder (OpenTechZone) became a column to the ground —
+    // "a column extending down under the techroad block that has a zone of
+    // sand on it" (Altrd, 2026-11-10).
+    let mut ground_scene = crate::scene::Scene::default();
+    // A road variant that carries its own ground — `RoadTechStraightOnDirtCliff4`
+    // on Fall 2026 - 01 is a bridge on pillars with a rock outcrop under its
+    // start end (Rock + Sand in the prefab, seen in game 2026-11-10) — sits on
+    // a plain terrain record at the SAME cell (DirtCliff4 DeadendA, a full
+    // 32 m cliff end). The game draws the variant's own cliff; drawing both
+    // and column-filling the plain cliff put a solid block under the bridge
+    // (Altrd: "a column under the techroad block that has a zone of sand on
+    // it"). So: the plain terrain record at an `On<Terrain>` block's cell is
+    // skipped, and the variant's terrain-material groups are the ground there.
+    let consumed: std::collections::HashSet<[i32; 3]> = placements
+        .iter()
+        .filter(|p| !p.baked && !p.free && p.name.contains("On") && ["OnDirt", "OnWater", "OnGrass", "OnSand", "OnRock", "OnLand", "OnBeach"].iter().any(|t| p.name.contains(t)))
+        .map(|p| p.cell)
+        .collect();
+    let mut n_consumed = 0usize;
     // the cells the DecoWall family occupies: (cell, is_pillar)
     let mut wall_cells: Vec<([i32; 3], bool)> = Vec::new();
     let mut prefab_cache: HashMap<String, Option<crate::scene::Scene>> = HashMap::new();
@@ -1207,6 +1235,11 @@ pub fn run(store: &mut DataStore, map_path: &str, o: &Options) -> Result<(), Str
                 }
             }
         }
+        if is_terrain_block(&p.name) && consumed.contains(&p.cell) {
+            n_consumed += 1;
+            continue;
+        }
+        let carries_ground = ["OnDirt", "OnWater", "OnGrass", "OnSand", "OnRock", "OnLand", "OnBeach"].iter().any(|t| p.name.contains(t));
         if p.error.is_none() && !p.prefabs.is_empty() {
             for pf in &p.prefabs {
                 let sc = prefab_cache.entry(pf.clone()).or_insert_with(|| {
@@ -1222,6 +1255,18 @@ pub fn run(store: &mut DataStore, map_path: &str, o: &Options) -> Result<(), Str
                     scene.append(sc, &xf);
                     if pf.contains("DecoWall") {
                         wall_scene.append(sc, &xf);
+                    }
+                    if is_terrain_block(&p.name) {
+                        ground_scene.append(sc, &xf);
+                    } else if carries_ground {
+                        // only the variant's ground materials fill down
+                        let mut g = crate::scene::Scene::default();
+                        for (mat, grp) in &sc.groups {
+                            if ["Rock", "Sand", "Dirt", "Grass", "Water", "Snow", "Gravel"].iter().any(|t| mat.starts_with(t)) {
+                                g.groups.insert(mat.clone(), crate::scene::Group { verts: grp.verts.clone(), tris: grp.tris.clone() });
+                            }
+                        }
+                        ground_scene.append(&g, &xf);
                     }
                 }
             }
@@ -1318,17 +1363,29 @@ pub fn run(store: &mut DataStore, map_path: &str, o: &Options) -> Result<(), Str
             }
         }
     }
-    println!("blocks: {n_picked} placements by their picked variant, {n_placeholder} covered pillar cells, {n_fallback} by the assembler's union, {n_nothing} with no geometry");
+    println!("blocks: {n_picked} placements by their picked variant, {n_placeholder} covered pillar cells, {n_fallback} by the assembler's union, {n_nothing} with no geometry, {n_consumed} terrain records under an On<Terrain> road variant skipped");
+    let mut n_skipped_items = 0usize;
     if o.items {
         for it in &m.items {
+            // flags print as stacks of gap fill and only some survive the
+            // stick cut (Altrd, 2026-11-10) — out, with anything else that
+            // is cloth or a pole
+            if is_unprintable_item(&it.model) {
+                n_skipped_items += 1;
+                continue;
+            }
             let Some(lm) = asm.item_model(&it.model) else { continue };
             let xf = place::anchored(it.pos, [it.yaw, it.pitch, it.roll], it.pivot, it.scale);
             scene.append(&lm.scene, &xf);
+        }
+        if n_skipped_items > 0 {
+            println!("items: {n_skipped_items} flag / pole placements skipped as unprintable");
         }
     }
     if o.decoration {
         if let Some((_, d)) = asm.decoration(&m, yoff) {
             scene.append(&d, &crate::geom::IDENTITY);
+            ground_scene.append(&d, &crate::geom::IDENTITY);
         }
     }
     // --obj F: the assembled scene before voxelisation (debugging a spike:
@@ -1576,8 +1633,7 @@ pub fn run(store: &mut DataStore, map_path: &str, o: &Options) -> Result<(), Str
     let mut terrain = Grid::new(nx, ny, nz);
     let to_grid = |p: [f32; 3]| -> [f32; 3] { [(p[0] - x0) / voxel_m, (p[1] - y_lo) / voxel_y_m, (p[2] - z0) / voxel_m] };
     let mut rastered = 0usize;
-    for (mat, g) in &scene.groups {
-        let is_terrain = TERRAIN_MATERIALS.iter().any(|t| mat.starts_with(t));
+    for (_, g) in &scene.groups {
         for t in &g.tris {
             let tri = [to_grid(g.verts[t[0] as usize]), to_grid(g.verts[t[1] as usize]), to_grid(g.verts[t[2] as usize])];
             // skip triangles wholly outside the crop
@@ -1585,10 +1641,16 @@ pub fn run(store: &mut DataStore, map_path: &str, o: &Options) -> Result<(), Str
                 continue;
             }
             voxelize_tri(&mut solid, tri);
-            if is_terrain {
-                voxelize_tri(&mut terrain, tri);
-            }
             rastered += 1;
+        }
+    }
+    for (_, g) in &ground_scene.groups {
+        for t in &g.tris {
+            let tri = [to_grid(g.verts[t[0] as usize]), to_grid(g.verts[t[1] as usize]), to_grid(g.verts[t[2] as usize])];
+            if tri.iter().all(|p| p[0] < 0.0) || tri.iter().all(|p| p[0] >= nx as f32) || tri.iter().all(|p| p[2] < 0.0) || tri.iter().all(|p| p[2] >= nz as f32) {
+                continue;
+            }
+            voxelize_tri(&mut terrain, tri);
         }
     }
     // Deco walls are solid INSIDE THEIR OWN CELLS: a pillar cell is a full
@@ -1808,6 +1870,60 @@ pub fn run(store: &mut DataStore, map_path: &str, o: &Options) -> Result<(), Str
             bridged as f32 * face_mm2 / 100.0,
             max_drop_mm
         );
+    }
+
+    // MAPGEOM_PRINT_COLCENSUS=1: per 32 m cell, the share of columns that
+    // are solid without a break from the base to more than 6 m above the
+    // TERRAIN top of that column — pillars are ~1 % of a cell, a deco-wall
+    // cell 100 %; anything in between is a column that should not be there
+    // (Altrd's "column under the techroad block", 2026-11-10)
+    if std::env::var_os("MAPGEOM_PRINT_COLCENSUS").is_some() {
+        let cells_x = (nx as f32 * voxel_m / 32.0).ceil() as usize;
+        let cells_z = (nz as f32 * voxel_m / 32.0).ceil() as usize;
+        let mut rows: Vec<(f32, usize, usize, usize, usize, f32)> = Vec::new();
+        for cz in 0..cells_z {
+            for cx in 0..cells_x {
+                let i0 = (cx as f32 * 32.0 / voxel_m) as usize;
+                let i1 = (((cx + 1) as f32 * 32.0 / voxel_m) as usize).min(nx);
+                let k0 = (cz as f32 * 32.0 / voxel_m) as usize;
+                let k1 = (((cz + 1) as f32 * 32.0 / voxel_m) as usize).min(nz);
+                let (mut n, mut tall) = (0usize, 0usize);
+                let mut top_max = 0.0f32;
+                for k in k0..k1 {
+                    for i in i0..i1 {
+                        n += 1;
+                        // continuous run from the base
+                        let mut j = 0;
+                        while j < ny && solid.get(i, j, k) {
+                            j += 1;
+                        }
+                        // terrain top
+                        let mut tj = 0;
+                        for jj in (0..ny).rev() {
+                            if terrain.get(i, jj, k) {
+                                tj = jj + 1;
+                                break;
+                            }
+                        }
+                        if (j as f32 - tj as f32) * voxel_y_m > 6.0 {
+                            tall += 1;
+                            top_max = top_max.max(y_lo + j as f32 * voxel_y_m);
+                        }
+                    }
+                }
+                if n > 0 && tall > 0 {
+                    let share = tall as f32 / n as f32;
+                    rows.push((share, cx, cz, tall, n, top_max));
+                }
+            }
+        }
+        rows.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+        println!("column census: {} cells have columns rising >6 m above their terrain from the base", rows.len());
+        for (share, cx, cz, tall, n, top) in rows.iter().filter(|r| r.0 > 0.03 && r.0 < 0.9) {
+            let wx = x0 + *cx as f32 * 32.0;
+            let wz = z0 + *cz as f32 * 32.0;
+            println!("  cell x {:.0}..{:.0} z {:.0}..{:.0} (grid cell {},{}): {:.0}% of columns ({}/{}), top {:.0} m", wx, wx + 32.0, wz, wz + 32.0, (wx / 32.0) as i32, (wz / 32.0) as i32, share * 100.0, tall, n, top);
+        }
     }
 
     // MAPGEOM_PRINT_TALL=N: the N tallest columns, in world metres — what the
@@ -2076,6 +2192,133 @@ pub fn tree_volume(conifer: bool, base: [f32; 3], r: f32, top: f32) -> Vec<[[f32
         cap(&mut out, &prev, [base[0], yc + ry, base[2]]);
     }
     out
+}
+
+/// `mapgeom stl-diff A.stl B.stl [--cell 2]`: where two prints of the same
+/// map differ. Both are read as triangle soups, a height map (max Z per
+/// `cell` mm square) is built for each, and the cells whose heights differ
+/// by more than 1 mm are clustered and listed with their print coordinates
+/// and the game-world position behind them when `--origin x0,z0 --mm-per-m
+/// S [--mirror-width W]` is given. The tool that answered "where was the
+/// column you removed" on Altrd's v10 -> v11 (2026-11-10).
+pub fn stl_diff(rest: &[String]) -> Result<(), String> {
+    let flag = |n: &str| rest.iter().position(|a| a == n).and_then(|i| rest.get(i + 1)).cloned();
+    let files: Vec<&String> = rest.iter().skip(1).filter(|a| !a.starts_with("--")).take(2).collect();
+    if files.len() != 2 {
+        return Err("stl-diff A.stl B.stl".into());
+    }
+    let cell: f32 = flag("--cell").and_then(|v| v.parse().ok()).unwrap_or(2.0);
+    let (_, a) = read_stl(files[0])?;
+    let (_, b) = read_stl(files[1])?;
+    let mut lo = [f32::MAX; 2];
+    let mut hi = [f32::MIN; 2];
+    for t in a.iter().chain(b.iter()) {
+        for v in t {
+            lo[0] = lo[0].min(v[0]);
+            lo[1] = lo[1].min(v[1]);
+            hi[0] = hi[0].max(v[0]);
+            hi[1] = hi[1].max(v[1]);
+        }
+    }
+    let nx = ((hi[0] - lo[0]) / cell).ceil() as usize + 1;
+    let ny = ((hi[1] - lo[1]) / cell).ceil() as usize + 1;
+    let heights = |tris: &[[[f32; 3]; 3]]| -> Vec<f32> {
+        let mut h = vec![f32::MIN; nx * ny];
+        for t in tris {
+            // the triangle's footprint cells get its max Z (coarse, enough for columns)
+            let zmax = t[0][2].max(t[1][2]).max(t[2][2]);
+            let (mut x0, mut x1, mut y0, mut y1) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+            for v in t {
+                x0 = x0.min(v[0]);
+                x1 = x1.max(v[0]);
+                y0 = y0.min(v[1]);
+                y1 = y1.max(v[1]);
+            }
+            // only small triangles (a voxel face) count: a big face spanning cells would smear
+            if x1 - x0 > cell * 2.0 || y1 - y0 > cell * 2.0 {
+                continue;
+            }
+            let cx = ((x0 + x1) / 2.0 - lo[0]) / cell;
+            let cy = ((y0 + y1) / 2.0 - lo[1]) / cell;
+            let (i, j) = (cx.floor() as usize, cy.floor() as usize);
+            if i < nx && j < ny {
+                let k = j * nx + i;
+                h[k] = h[k].max(zmax);
+            }
+        }
+        h
+    };
+    let ha = heights(&a);
+    let hb = heights(&b);
+    let origin: Option<Vec<f32>> = flag("--origin").map(|v| v.split(',').filter_map(|s| s.trim().parse().ok()).collect());
+    let mm_per_m: Option<f32> = flag("--mm-per-m").and_then(|v| v.parse().ok());
+    let mirror_w: Option<f32> = flag("--mirror-width").and_then(|v| v.parse().ok());
+    let mut diffs: Vec<(usize, usize, f32, f32)> = Vec::new();
+    for j in 0..ny {
+        for i in 0..nx {
+            let (x, y) = (ha[j * nx + i], hb[j * nx + i]);
+            if x == f32::MIN || y == f32::MIN {
+                continue;
+            }
+            if (x - y).abs() > 1.0 {
+                diffs.push((i, j, x, y));
+            }
+        }
+    }
+    println!("{} of {} cells differ by more than 1 mm in height ({} mm cells)", diffs.len(), nx * ny, cell);
+    // cluster by 8-neighbourhood
+    let mut seen = vec![false; diffs.len()];
+    let idx: HashMap<(usize, usize), usize> = diffs.iter().enumerate().map(|(n, d)| ((d.0, d.1), n)).collect();
+    let mut clusters: Vec<Vec<usize>> = Vec::new();
+    for n in 0..diffs.len() {
+        if seen[n] {
+            continue;
+        }
+        let mut stack = vec![n];
+        seen[n] = true;
+        let mut members = Vec::new();
+        while let Some(m) = stack.pop() {
+            members.push(m);
+            let (i, j, _, _) = diffs[m];
+            for di in -1i64..=1 {
+                for dj in -1i64..=1 {
+                    let key = ((i as i64 + di) as usize, (j as i64 + dj) as usize);
+                    if let Some(&o) = idx.get(&key) {
+                        if !seen[o] {
+                            seen[o] = true;
+                            stack.push(o);
+                        }
+                    }
+                }
+            }
+        }
+        clusters.push(members);
+    }
+    clusters.sort_by_key(|c| std::cmp::Reverse(c.len()));
+    for c in clusters.iter().take(12) {
+        let (mut sx, mut sy, mut da, mut db) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+        for &m in c {
+            let (i, j, x, y) = diffs[m];
+            sx += lo[0] + (i as f32 + 0.5) * cell;
+            sy += lo[1] + (j as f32 + 0.5) * cell;
+            da += x;
+            db += y;
+        }
+        let n = c.len() as f32;
+        let (px, py) = (sx / n, sy / n);
+        let world = match (&origin, mm_per_m) {
+            (Some(o), Some(s)) if o.len() == 2 => {
+                let gx = match mirror_w {
+                    Some(w) => o[0] + (w - px) / s,
+                    None => o[0] + px / s,
+                };
+                format!(" = game x {:.0} z {:.0}", gx, o[1] + py / s)
+            }
+            _ => String::new(),
+        };
+        println!("  cluster of {} cells at print ({:.1}, {:.1}) mm{world}: A top {:.1} mm, B top {:.1} mm", c.len(), px, py, da / n, db / n);
+    }
+    Ok(())
 }
 
 /// The VegetTreeModel paths of a vegetation item, in VARIANT order (the
@@ -2403,6 +2646,12 @@ mod tests {
     fn veget_names() {
         assert!(is_veget_name("TreePineBig") && is_veget_name("Bush") && is_veget_name("Forest") && is_veget_name("RedIsland\\Items\\Vegetation\\PalmTreeBigA0.Item.Gbx") && is_veget_name("Summer"));
         assert!(!is_veget_name("RoadTechStart") && !is_veget_name("Flag16m") && !is_veget_name("StructurePillar"));
+    }
+
+    #[test]
+    fn unprintable_items() {
+        assert!(is_unprintable_item("Flag16m") && is_unprintable_item("Flag8m") && is_unprintable_item("Stadium\\Items\\Flag16m.Item.Gbx") && is_unprintable_item("Sparkler8m"));
+        assert!(!is_unprintable_item("RoadSignC") && !is_unprintable_item("ShowSpeakers") && !is_unprintable_item("TreePineBig"));
     }
 
     #[test]

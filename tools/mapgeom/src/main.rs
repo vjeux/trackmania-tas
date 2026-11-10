@@ -2014,6 +2014,7 @@ fn main() {
             };
             mapgeom::printable::run(&mut store, &p, &o).unwrap_or_else(die);
         }
+        "stl-diff" => mapgeom::printable::stl_diff(&a.rest).unwrap_or_else(die),
         "block-trees" => {
             let mut store = open(&a);
             mapgeom::block_trees::run(&mut store, &a.rest).unwrap_or_else(die);
