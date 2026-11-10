@@ -283,6 +283,38 @@ pub fn fill_enclosed(solid: &mut Grid) -> usize {
     added
 }
 
+/// A solid voxel with air on both sides along TWO axes is a one-voxel stick
+/// (a flag pole, a railing post, a tree tip): REMOVE it. Altrd on the 0.4 mm
+/// run (2026-11-09): "just cut these, they would likely fail; stacking dots
+/// is a bad idea" — and, after a first cut that also took sheets, "only
+/// things that are .4 x .4, because they are thin in 2 directions": a
+/// one-voxel wall or floor prints. One pass from a snapshot.
+pub fn cut_thin(solid: &mut Grid) -> usize {
+    let snap = solid.clone();
+    let mut removed = 0;
+    for k in 0..snap.nz {
+        for j in 0..snap.ny {
+            for i in 0..snap.nx {
+                if !snap.get(i, j, k) {
+                    continue;
+                }
+                let (ii, jj, kk) = (i as i64, j as i64, k as i64);
+                let thin_x = !snap.get_i(ii - 1, jj, kk) && !snap.get_i(ii + 1, jj, kk);
+                let thin_y = !snap.get_i(ii, jj - 1, kk) && !snap.get_i(ii, jj + 1, kk);
+                let thin_z = !snap.get_i(ii, jj, kk - 1) && !snap.get_i(ii, jj, kk + 1);
+                // Altrd: "only things that are .4 x .4, because they are thin
+                // in 2 directions" — a one-voxel STICK goes, a one-voxel sheet
+                // (a wall, a floor, a flag's cloth) prints and stays
+                if (thin_x as u8 + thin_y as u8 + thin_z as u8) >= 2 {
+                    solid.clear(i, j, k);
+                    removed += 1;
+                }
+            }
+        }
+    }
+    removed
+}
+
 /// A solid voxel with air on both sides along an axis is a one-voxel sheet:
 /// give it a second layer on the negative side. One pass, read from a
 /// snapshot so the pass cannot cascade.
@@ -430,12 +462,12 @@ pub struct Mesh {
 /// millimetres; the sub-range's own lower corner is the print origin, so a
 /// tile stands on its own plate.
 pub fn extract_surface(solid: &Grid, i0: usize, i1: usize, k0: usize, k1: usize, mm: f32) -> Mesh {
-    extract_surface_oriented(solid, i0, i1, k0, k1, mm, false)
+    extract_surface_oriented(solid, i0, i1, k0, k1, mm, mm, false)
 }
 
 /// `extract_surface` with the chirality choice: `mirror_x` = print X runs
 /// along -i (the game's east on the right when north is up).
-pub fn extract_surface_oriented(solid: &Grid, i0: usize, i1: usize, k0: usize, k1: usize, mm: f32, mirror_x: bool) -> Mesh {
+pub fn extract_surface_oriented(solid: &Grid, i0: usize, i1: usize, k0: usize, k1: usize, mm: f32, mm_y: f32, mirror_x: bool) -> Mesh {
     let mut owned = Grid::new(solid.nx, solid.ny, solid.nz);
     for k in k0..k1 {
         for j in 0..solid.ny {
@@ -446,21 +478,23 @@ pub fn extract_surface_oriented(solid: &Grid, i0: usize, i1: usize, k0: usize, k
             }
         }
     }
-    extract_owned(&owned, i0, i1, k0, mm, mirror_x)
+    extract_owned(&owned, i0, i1, k0, mm, mm_y, mirror_x)
 }
 
 /// The boundary of the cells set in `owned` (a tile's cells: its range minus
 /// the pockets other tiles' tabs cut into it, plus its own tabs), with the
 /// print origin at grid corner `(oi, 0, ok)` — or, mirrored, at `(oi1, 0, ok)`
 /// with X growing toward smaller i.
-pub fn extract_owned(owned: &Grid, oi: usize, oi1: usize, ok: usize, mm: f32, mirror_x: bool) -> Mesh {
+pub fn extract_owned(owned: &Grid, oi: usize, oi1: usize, ok: usize, mm: f32, mm_y: f32, mirror_x: bool) -> Mesh {
     let mut mesh = Mesh::default();
     let mut index: HashMap<(u32, u32, u32), u32> = HashMap::new();
     let mut vertex = |i: usize, j: usize, k: usize, mesh: &mut Mesh| -> u32 {
         let key = (i as u32, j as u32, k as u32);
         *index.entry(key).or_insert_with(|| {
             let x = if mirror_x { (oi1 as f32 - i as f32) * mm } else { (i as f32 - oi as f32) * mm };
-            mesh.verts.push([x, (k as f32 - ok as f32) * mm, j as f32 * mm]);
+            // voxels may be flatter than they are wide (Altrd: 0.4 mm terraces
+            // on 0.8 mm walls, two print layers per step)
+            mesh.verts.push([x, (k as f32 - ok as f32) * mm, j as f32 * mm_y]);
             mesh.corners.push([i as u32, j as u32, k as u32]);
             (mesh.verts.len() - 1) as u32
         })
@@ -560,8 +594,8 @@ impl Tab {
 /// glued to the tile (the cut plane), so they press-fit the voxel-exact
 /// pockets: the tip comes back, the shoulders move out (away from the plane),
 /// the flanks move toward the tab's centreline, the top comes down.
-pub fn shrink_tabs(mesh: &mut Mesh, tabs: &[Tab], clearance: f32, mm: f32, mirror_x: bool) {
-    let c = clearance.min(mm * 0.45);
+pub fn shrink_tabs(mesh: &mut Mesh, tabs: &[Tab], clearance: f32, mm: f32, mm_y: f32, mirror_x: bool) {
+    let c = clearance.min(mm * 0.45).min(mm_y * 0.45);
     // every adjustment along print X changes sign when X runs along -i
     let sx = if mirror_x { -1.0f32 } else { 1.0 };
     for (v, corner) in mesh.verts.iter_mut().zip(mesh.corners.iter()) {
@@ -753,51 +787,68 @@ pub fn check_mesh(m: &Mesh) -> MeshReport {
         }
     }
     // vertex fans: the triangles around a vertex, linked by shared edges at
-    // that vertex, must form ONE component
-    let mut incident: Vec<Vec<u32>> = vec![Vec::new(); m.verts.len()];
-    for (ti, t) in m.tris.iter().enumerate() {
+    // that vertex, must form ONE component. CSR lists (one flat array, no
+    // per-vertex heap boxes): at 0.4 mm a tile has ~3 M vertices and the
+    // Vec<Vec<u32>> form took the build box down (2026-11-09).
+    let nv = m.verts.len();
+    let mut deg = vec![0u32; nv + 1];
+    for t in &m.tris {
         for v in t {
-            incident[*v as usize].push(ti as u32);
+            deg[*v as usize + 1] += 1;
         }
     }
-    for (v, faces) in incident.iter().enumerate() {
+    for i in 0..nv {
+        deg[i + 1] += deg[i];
+    }
+    let mut fill = deg.clone();
+    let mut incident = vec![0u32; m.tris.len() * 3];
+    for (ti, t) in m.tris.iter().enumerate() {
+        for v in t {
+            let slot = &mut fill[*v as usize];
+            incident[*slot as usize] = ti as u32;
+            *slot += 1;
+        }
+    }
+    let mut parent: Vec<usize> = Vec::new();
+    let mut others: Vec<(u32, usize)> = Vec::new();
+    fn find(p: &mut [usize], x: usize) -> usize {
+        let mut x = x;
+        while p[x] != x {
+            p[x] = p[p[x]];
+            x = p[x];
+        }
+        x
+    }
+    for v in 0..nv {
+        let faces = &incident[deg[v] as usize..deg[v + 1] as usize];
         if faces.len() < 3 {
             if !faces.is_empty() {
                 r.nonmanifold_vertices += 1;
             }
             continue;
         }
-        // union-find over the incident faces by the other vertex of each
-        // edge at v
-        let mut parent: Vec<usize> = (0..faces.len()).collect();
-        fn find(p: &mut Vec<usize>, x: usize) -> usize {
-            let mut x = x;
-            while p[x] != x {
-                p[x] = p[p[x]];
-                x = p[x];
-            }
-            x
-        }
-        let mut by_other: HashMap<u32, usize> = HashMap::new();
+        parent.clear();
+        parent.extend(0..faces.len());
+        others.clear();
         for (fi, f) in faces.iter().enumerate() {
             let t = m.tris[*f as usize];
             for w in t {
                 if w as usize == v {
                     continue;
                 }
-                if let Some(&other) = by_other.get(&w) {
+                if let Some(&(_, other)) = others.iter().find(|(x, _)| *x == w) {
                     let a = find(&mut parent, other);
                     let b = find(&mut parent, fi);
                     if a != b {
                         parent[a] = b;
                     }
                 } else {
-                    by_other.insert(w, fi);
+                    others.push((w, fi));
                 }
             }
         }
-        let roots: std::collections::HashSet<usize> = (0..faces.len()).map(|x| find(&mut parent, x)).collect();
-        if roots.len() != 1 {
+        let root0 = find(&mut parent, 0);
+        if (1..faces.len()).any(|x| find(&mut parent, x) != root0) {
             r.nonmanifold_vertices += 1;
             if r.bad_vertices.len() < 16 {
                 r.bad_vertices.push(v as u32);
@@ -1052,6 +1103,14 @@ pub struct Options {
     pub puzzle_clearance: f32,
     /// Keep print X = game x (the mirror of the editor's top view).
     pub mirror: bool,
+    /// Vertical voxels are this many times FLATTER than they are wide:
+    /// 2 = 0.4 mm terraces on 0.8 mm walls (two 0.2 mm print layers per step).
+    pub vertical_factor: f32,
+    /// Double one-voxel sheets (a 0.4 mm wall becomes 0.8). Altrd: a single
+    /// nozzle width prints, and the doubled flags looked chunky — off by default.
+    pub thicken: bool,
+    /// Remove one-voxel-thin features instead (default on; `--keep-thin`).
+    pub cut_thin: bool,
 }
 
 pub fn run(store: &mut DataStore, map_path: &str, o: &Options) -> Result<(), String> {
@@ -1076,6 +1135,16 @@ pub fn run(store: &mut DataStore, map_path: &str, o: &Options) -> Result<(), Str
     };
     let (placements, _) = crate::blockmap::walk(store, &m, true, collection_name);
     let mut scene = crate::scene::Scene::default();
+    // The DecoWall family is SOLID CONCRETE drawn as skins: the block has no
+    // mesh of its own, its sides are the VFC filler faces the game bakes,
+    // its top the FCT cover, and a wall in the air stands on
+    // DecoWallBasePillar cells that reach the ground. Those zero-thickness
+    // faces voxelise to one-voxel shells that the thin-feature cut removes
+    // (the first 0.4 mm run carved the stadium's two towers into poles), so
+    // they are collected here as well and column-filled like terrain.
+    let mut wall_scene = crate::scene::Scene::default();
+    // the cells the DecoWall family occupies: (cell, is_pillar)
+    let mut wall_cells: Vec<([i32; 3], bool)> = Vec::new();
     let mut prefab_cache: HashMap<String, Option<crate::scene::Scene>> = HashMap::new();
     let (mut n_picked, mut n_placeholder, mut n_fallback, mut n_nothing) = (0usize, 0usize, 0usize, 0usize);
     let mut asm = Assembler::new(store);
@@ -1104,6 +1173,15 @@ pub fn run(store: &mut DataStore, map_path: &str, o: &Options) -> Result<(), Str
         } else {
             place::grid_block((p.cell[0], p.cell[1], p.cell[2]), p.dir, (w, d), yoff)
         };
+        if p.name.starts_with("DecoWall") && !p.is_clip && !p.free {
+            let pillar = p.name.contains("Pillar");
+            for (_, rel) in &p.cells {
+                wall_cells.push(([p.cell[0] + rel[0], p.cell[1] + rel[1], p.cell[2] + rel[2]], pillar));
+            }
+            if p.cells.is_empty() {
+                wall_cells.push((p.cell, pillar));
+            }
+        }
         if p.error.is_none() && !p.prefabs.is_empty() {
             for pf in &p.prefabs {
                 let sc = prefab_cache.entry(pf.clone()).or_insert_with(|| {
@@ -1117,6 +1195,9 @@ pub fn run(store: &mut DataStore, map_path: &str, o: &Options) -> Result<(), Str
                 });
                 if let Some(sc) = sc {
                     scene.append(sc, &xf);
+                    if pf.contains("DecoWall") {
+                        wall_scene.append(sc, &xf);
+                    }
                 }
             }
             n_picked += 1;
@@ -1168,6 +1249,9 @@ pub fn run(store: &mut DataStore, map_path: &str, o: &Options) -> Result<(), Str
             });
             match sc {
                 Some(sc) => {
+                    if p.name.contains("DecoWall") {
+                        wall_scene.append(sc, &xf);
+                    }
                     if std::env::var_os("MAPGEOM_PRINT_DEBUG").is_some() {
                         if let Some((lo, hi)) = sc.bounds() {
                             println!("  fallback {} cell {:?}: {} triangles, local y {:.1}..{:.1}", p.name, p.cell, sc.tri_count(), lo[1], hi[1]);
@@ -1233,14 +1317,35 @@ pub fn run(store: &mut DataStore, map_path: &str, o: &Options) -> Result<(), Str
                     Err(_) => None,
                 })
                 .clone();
-            let Some((hv, ht, height)) = hull else { continue };
+            let Some((hv, _ht, height)) = hull else { continue };
             if height < 1.0 {
                 skipped_low += 1;
                 continue;
             }
             let xf: Xform = place::anchored(it.pos, [it.yaw, it.pitch, it.roll], it.pivot, it.scale);
-            for t in &ht {
-                tree_tris.push([apply(&xf, hv[t[0] as usize]), apply(&xf, hv[t[1] as usize]), apply(&xf, hv[t[2] as usize])]);
+            // The hull is the TRUNK (RedIsland's TreePineBigA1: 792 vertices,
+            // 0.5 m wide) — rasterised it printed as a stack of single
+            // voxels (Altrd: "stacking dots is a bad idea"). What he asked for
+            // is the tree's visual volume: a cone for a conifer, a ball on a
+            // trunk for anything else, sized from the hull's height and
+            // footprint (closed meshes, so the enclosed fill makes them solid).
+            let mut lo = [f32::MAX; 3];
+            let mut hi = [f32::MIN; 3];
+            for v in &hv {
+                for a in 0..3 {
+                    lo[a] = lo[a].min(v[a]);
+                    hi[a] = hi[a].max(v[a]);
+                }
+            }
+            let radius = (hi[0] - lo[0]).max(hi[2] - lo[2]) / 2.0;
+            let conifer = {
+                let n = path.to_ascii_lowercase();
+                n.contains("pine") || n.contains("fir") || n.contains("cypress") || n.contains("spruce")
+            };
+            let cx = (lo[0] + hi[0]) / 2.0;
+            let cz = (lo[2] + hi[2]) / 2.0;
+            for t in tree_volume(conifer, [cx, lo[1].max(0.0), cz], radius.max(0.8), hi[1]) {
+                tree_tris.push([apply(&xf, t[0]), apply(&xf, t[1]), apply(&xf, t[2])]);
             }
             tree_count += 1;
         }
@@ -1354,23 +1459,68 @@ pub fn run(store: &mut DataStore, map_path: &str, o: &Options) -> Result<(), Str
     let mm_per_m = (o.mm * tx as f32 / width_m).min(o.mm * tz as f32 / depth_m);
     let voxel_m = o.voxel_m.unwrap_or(o.wall_mm / mm_per_m);
     let voxel_mm = voxel_m * mm_per_m;
+    let vf = o.vertical_factor.max(1.0);
+    let voxel_y_m = voxel_m / vf;
+    let voxel_y_mm = voxel_mm / vf;
     // puzzle tabs live in the lower half of the base: 4.8 mm of base gives a
     // 2.4 mm tab under a 2.4 mm roof
     let base_mm = if o.puzzle && tx * tz > 1 { o.base_mm.max(4.8) } else { o.base_mm };
-    let base_vox = (base_mm / voxel_mm).ceil().max(1.0) as usize;
-    let y_lo = slo[1] - base_vox as f32 * voxel_m;
+    let base_vox = (base_mm / voxel_y_mm).ceil().max(1.0) as usize;
+    let y_lo = slo[1] - base_vox as f32 * voxel_y_m;
     let nx = ((x1 - x0) / voxel_m).ceil() as usize;
     let nz = ((z1 - z0) / voxel_m).ceil() as usize;
-    let ny = ((shi[1] - y_lo) / voxel_m).ceil() as usize + 1;
-    println!("scale: {mm_per_m:.4} mm per metre ({:.1} mm per block); voxel {voxel_m:.3} m = {voxel_mm:.3} mm; grid {nx} x {ny} x {nz} = {:.1} M voxels; base {base_vox} layers", 32.0 * mm_per_m, (nx * ny * nz) as f64 / 1e6);
+    let ny = ((shi[1] - y_lo) / voxel_y_m).ceil() as usize + 1;
+    println!("scale: {mm_per_m:.4} mm per metre ({:.1} mm per block); voxel {voxel_m:.3} x {voxel_y_m:.3} m = {voxel_mm:.3} mm wide x {voxel_y_mm:.3} mm tall; grid {nx} x {ny} x {nz} = {:.1} M voxels; base {base_vox} layers", 32.0 * mm_per_m, (nx * ny * nz) as f64 / 1e6);
     if nx * ny * nz > u32::MAX as usize {
         return Err("grid too large for the 32-bit fill stack: raise --voxel-m or --wall-mm".into());
+    }
+
+    let stem = std::path::Path::new(map_path).file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default().replace(".Map.Gbx", "");
+    // --render-scene: the assembled TRIANGLES over the crop, drawn with the
+    // same camera as the voxel renders — what the voxel pass should look
+    // like; a difference between the two is a fill or thickness artefact
+    if o.render && std::env::var_os("MAPGEOM_PRINT_SCENE").is_some() {
+        let mirror_x = !o.mirror;
+        let mut sm = Mesh::default();
+        let (wx, wz) = ((x1 - x0) * mm_per_m, (z1 - z0) * mm_per_m);
+        let conv = |v: [f32; 3]| -> [f32; 3] {
+            let px = if mirror_x { (x1 - v[0]) * mm_per_m } else { (v[0] - x0) * mm_per_m };
+            [px, (v[2] - z0) * mm_per_m, (v[1] - y_lo) * mm_per_m]
+        };
+        for (_, g) in &scene.groups {
+            for t in &g.tris {
+                let ps = [conv(g.verts[t[0] as usize]), conv(g.verts[t[1] as usize]), conv(g.verts[t[2] as usize])];
+                if !ps.iter().all(|p| p[0] >= 0.0 && p[0] <= wx && p[1] >= 0.0 && p[1] <= wz) {
+                    continue;
+                }
+                let base = sm.verts.len() as u32;
+                sm.verts.extend_from_slice(&ps);
+                // both windings: the scene's triangles are not consistently oriented
+                sm.tris.push([base, base + 1, base + 2]);
+                sm.tris.push([base, base + 2, base + 1]);
+            }
+        }
+        for t in &tree_tris {
+            let ps = [conv(t[0]), conv(t[1]), conv(t[2])];
+            if !ps.iter().all(|p| p[0] >= 0.0 && p[0] <= wx && p[1] >= 0.0 && p[1] <= wz) {
+                continue;
+            }
+            let base = sm.verts.len() as u32;
+            sm.verts.extend_from_slice(&ps);
+            sm.tris.push([base, base + 1, base + 2]);
+            sm.tris.push([base, base + 2, base + 1]);
+        }
+        for (name, yaw, pitch) in [("scene-iso-sw", 35.0f32, 35.0f32), ("scene-iso-ne", 215.0, 30.0)] {
+            let p = format!("{}/{stem}-{name}.png", o.out_dir);
+            render_png(&sm, &p, 1600, 1200, yaw, pitch)?;
+            println!("rendered {p}");
+        }
     }
 
     // ---- voxelise
     let mut solid = Grid::new(nx, ny, nz);
     let mut terrain = Grid::new(nx, ny, nz);
-    let to_grid = |p: [f32; 3]| -> [f32; 3] { [(p[0] - x0) / voxel_m, (p[1] - y_lo) / voxel_m, (p[2] - z0) / voxel_m] };
+    let to_grid = |p: [f32; 3]| -> [f32; 3] { [(p[0] - x0) / voxel_m, (p[1] - y_lo) / voxel_y_m, (p[2] - z0) / voxel_m] };
     let mut rastered = 0usize;
     for (mat, g) in &scene.groups {
         let is_terrain = TERRAIN_MATERIALS.iter().any(|t| mat.starts_with(t));
@@ -1387,8 +1537,61 @@ pub fn run(store: &mut DataStore, map_path: &str, o: &Options) -> Result<(), Str
             rastered += 1;
         }
     }
+    // Deco walls are solid INSIDE THEIR OWN CELLS: a pillar cell is a full
+    // 32 x 8 x 32 m block (its skins sit in the neighbouring cells), a wall
+    // block fills each column of its cell up to its top face (the sloped
+    // FCT). Not "to the ground": a pillar segment between two stacked
+    // platforms ends at the platform below it — the first cut filled a
+    // column from 80 m straight down through two air gaps.
+    let mut wall = Grid::new(nx, ny, nz);
+    let mut wall_tris = 0usize;
+    for (_, g) in &wall_scene.groups {
+        for t in &g.tris {
+            let tri = [to_grid(g.verts[t[0] as usize]), to_grid(g.verts[t[1] as usize]), to_grid(g.verts[t[2] as usize])];
+            voxelize_tri(&mut wall, tri);
+            wall_tris += 1;
+        }
+    }
+    let mut wall_filled = 0usize;
+    for (c, pillar) in &wall_cells {
+        let gi0 = (((c[0] as f32) * 32.0 - x0) / voxel_m).floor().max(0.0) as usize;
+        let gi1 = ((((c[0] + 1) as f32) * 32.0 - x0) / voxel_m).ceil().clamp(0.0, nx as f32) as usize;
+        let gk0 = (((c[2] as f32) * 32.0 - z0) / voxel_m).floor().max(0.0) as usize;
+        let gk1 = ((((c[2] + 1) as f32) * 32.0 - z0) / voxel_m).ceil().clamp(0.0, nz as f32) as usize;
+        let gj0 = (((c[1] as f32) * 8.0 + yoff - y_lo) / voxel_y_m).floor().max(0.0) as usize;
+        let gj1 = ((((c[1] + 1) as f32) * 8.0 + yoff - y_lo) / voxel_y_m).ceil().clamp(0.0, ny as f32) as usize;
+        if gi0 >= gi1 || gk0 >= gk1 || gj0 >= gj1 {
+            continue;
+        }
+        for k in gk0..gk1 {
+            for i in gi0..gi1 {
+                let top = (gj0..gj1).rev().find(|j| wall.get(i, *j, k));
+                let upto = match (top, pillar) {
+                    (Some(j), _) => j + 1,
+                    (None, true) => gj1,
+                    (None, false) => continue,
+                };
+                for j in gj0..upto {
+                    if !solid.get(i, j, k) {
+                        solid.set(i, j, k);
+                        wall_filled += 1;
+                    }
+                }
+            }
+        }
+    }
+    if !wall_cells.is_empty() {
+        println!("deco walls: {} cells ({} pillar), {wall_tris} skin triangles, {wall_filled} voxels filled inside them", wall_cells.len(), wall_cells.iter().filter(|(_, p)| *p).count());
+    }
     for t in &tree_tris {
-        voxelize_tri(&mut solid, [to_grid(t[0]), to_grid(t[1]), to_grid(t[2])]);
+        let tri = [to_grid(t[0]), to_grid(t[1]), to_grid(t[2])];
+        voxelize_tri(&mut solid, tri);
+        // a tree stands on the ground: its hull goes into the column-fill
+        // grid too, so the cone comes out SOLID (the hulls are open at the
+        // base, so the enclosed-air fill cannot close them, and a one-voxel
+        // shell is exactly what the thin-feature cut removes — the 0.4 mm
+        // run lost its pines that way)
+        voxelize_tri(&mut terrain, tri);
     }
     println!("voxelised {rastered} scene triangles + {} tree triangles: {} surface voxels ({} terrain) in {:.1}s", tree_tris.len(), solid.count(), terrain.count(), t0.elapsed().as_secs_f32());
 
@@ -1396,9 +1599,38 @@ pub fn run(store: &mut DataStore, map_path: &str, o: &Options) -> Result<(), Str
     fill_below(&mut solid, &terrain, base_vox);
     let after_columns = solid.count();
     let enclosed = fill_enclosed(&mut solid);
-    let sheets = thicken_sheets(&mut solid);
+    let cut = if o.cut_thin && !o.thicken { cut_thin(&mut solid) } else { 0 };
+    let sheets = if o.thicken { thicken_sheets(&mut solid) } else { 0 };
     let (passes, repaired) = make_well_composed(&mut solid);
-    println!("filled: {after_columns} after the column fill, +{enclosed} enclosed, +{sheets} sheet thickening, +{repaired} manifold repairs in {passes} pass(es) -> {} solid voxels ({:.1}s)", solid.count(), t0.elapsed().as_secs_f32());
+    println!("filled: {after_columns} after the column fill, +{enclosed} enclosed, -{cut} one-voxel-thin cut, +{sheets} sheet thickening, +{repaired} manifold repairs in {passes} pass(es) -> {} solid voxels ({:.1}s)", solid.count(), t0.elapsed().as_secs_f32());
+
+    // MAPGEOM_PRINT_COLUMN=x,z[;x,z…]: the solid runs of those world columns,
+    // in metres — what the model has at a spot, for comparing against the
+    // block records there
+    if let Ok(spec) = std::env::var("MAPGEOM_PRINT_COLUMN") {
+        for xz in spec.split(';') {
+            let v: Vec<f32> = xz.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+            if v.len() != 2 {
+                continue;
+            }
+            let i = ((v[0] - x0) / voxel_m).floor() as i64;
+            let k = ((v[1] - z0) / voxel_m).floor() as i64;
+            let mut runs: Vec<(f32, f32)> = Vec::new();
+            let mut start: Option<usize> = None;
+            for j in 0..=ny {
+                let on = j < ny && solid.get_i(i, j as i64, k);
+                match (on, start) {
+                    (true, None) => start = Some(j),
+                    (false, Some(s0)) => {
+                        runs.push((y_lo + s0 as f32 * voxel_y_m, y_lo + j as f32 * voxel_y_m));
+                        start = None;
+                    }
+                    _ => {}
+                }
+            }
+            println!("  column x {:.0} z {:.0} (voxel {i},{k}): solid y {}", v[0], v[1], runs.iter().map(|(a, b)| format!("{a:.1}..{b:.1}")).collect::<Vec<_>>().join(", "));
+        }
+    }
 
     // MAPGEOM_PRINT_TALL=N: the N tallest columns, in world metres — what the
     // spikes in a render are (then `mapgeom where MAP --at x,z` names them)
@@ -1416,77 +1648,20 @@ pub fn run(store: &mut DataStore, map_path: &str, o: &Options) -> Result<(), Str
         }
         tops.sort_by(|a, b| b.cmp(a));
         for (j, i, k) in tops.iter().take(n) {
-            println!("  tall column: top y {:.0} m at x {:.0} z {:.0} (voxel {i},{j},{k})", y_lo + (*j as f32 + 1.0) * voxel_m, x0 + (*i as f32 + 0.5) * voxel_m, z0 + (*k as f32 + 0.5) * voxel_m);
+            println!("  tall column: top y {:.0} m at x {:.0} z {:.0} (voxel {i},{j},{k})", y_lo + (*j as f32 + 1.0) * voxel_y_m, x0 + (*i as f32 + 0.5) * voxel_m, z0 + (*k as f32 + 0.5) * voxel_m);
         }
     }
 
     // ---- surfaces: the whole, then the tiles
-    let stem = std::path::Path::new(map_path).file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default().replace(".Map.Gbx", "");
-    let header = format!("mapgeom print-stl {stem} units=mm voxel={voxel_mm:.3}mm scale={mm_per_m:.4}mm/m", );
-    let mut outputs: Vec<(String, Mesh)> = Vec::new();
-    // default chirality: X = -x (east on the right with north up, as in the editor)
-    let mirror_x = !o.mirror;
-    println!("orientation: print X = {} game x, print Y = game z (north), Z = height{}", if mirror_x { "-" } else { "+" }, if mirror_x { " — the editor's top view" } else { " — MIRRORED versus the editor (--mirror)" });
-    let whole = extract_surface_oriented(&solid, 0, nx, 0, nz, voxel_mm, mirror_x);
-    outputs.push((format!("{}/{stem}.stl", o.out_dir), whole));
-    if tx * tz > 1 {
-        let tabs = if o.puzzle { plan_tabs(nx, nz, tx, tz, voxel_mm, (base_vox / 2).max(2)) } else { Vec::new() };
-        if o.puzzle {
-            let t0 = tabs.first();
-            println!(
-                "puzzle: {} tabs on the seams, each {} x {} mm neck / {} mm head, {:.1} mm tall under a {:.1} mm roof, {:.2} mm clearance per side",
-                tabs.len(),
-                t0.map(|t| t.neck_w as f32 * voxel_mm).unwrap_or(0.0),
-                t0.map(|t| (t.neck_len + t.head_len) as f32 * voxel_mm).unwrap_or(0.0),
-                t0.map(|t| t.head_w as f32 * voxel_mm).unwrap_or(0.0),
-                t0.map(|t| t.height as f32 * voxel_mm).unwrap_or(0.0),
-                (base_vox - (base_vox / 2).max(2)) as f32 * voxel_mm,
-                o.puzzle_clearance
-            );
-        }
-        for a in 0..tx {
-            for b in 0..tz {
-                let i0 = a * nx / tx;
-                let i1 = (a + 1) * nx / tx;
-                let k0 = b * nz / tz;
-                let k1 = (b + 1) * nz / tz;
-                let (owned, mine) = tile_owned(&solid, i0, i1, k0, k1, &tabs);
-                let mut tile = extract_owned(&owned, i0, i1, k0, voxel_mm, mirror_x);
-                if !mine.is_empty() {
-                    shrink_tabs(&mut tile, &mine, o.puzzle_clearance, voxel_mm, mirror_x);
-                }
-                // tile names follow the PRINT layout: x0 is the leftmost tile
-                // seen from above with north up
-                let pa = if mirror_x { tx - 1 - a } else { a };
-                outputs.push((format!("{}/{stem}-tile-x{pa}-y{b}.stl", o.out_dir), tile));
-            }
-        }
-    }
+
+    let header = format!("mapgeom print-stl {stem} units=mm voxel={voxel_mm:.3}x{voxel_y_mm:.3}mm scale={mm_per_m:.4}mm/m");
+    // one mesh at a time: write, check, read back, render, DROP — the 0.4 mm
+    // 2x2 run (210 M voxels, 9 M triangles for the whole alone) ran the build
+    // box out of memory when every mesh stayed alive until the end
     let mut all_ok = true;
-    for (path, mesh) in &outputs {
-        let rep = check_mesh(mesh);
-        write_stl(path, mesh, &header)?;
-        // the FILE, not the memory: read the STL back as a triangle soup,
-        // merge vertices on exact coordinates, check again
-        let (n_file, soup) = read_stl(path)?;
-        let mut re = Mesh::default();
-        let mut idx: HashMap<[u32; 3], u32> = HashMap::with_capacity(mesh.verts.len());
-        for t in &soup {
-            let mut ids = [0u32; 3];
-            for (k, v) in t.iter().enumerate() {
-                let key = [v[0].to_bits(), v[1].to_bits(), v[2].to_bits()];
-                ids[k] = *idx.entry(key).or_insert_with(|| {
-                    re.verts.push(*v);
-                    (re.verts.len() - 1) as u32
-                });
-            }
-            re.tris.push(ids);
-        }
-        let rep2 = check_mesh(&re);
-        if n_file != mesh.tris.len() || !rep2.ok() || (rep2.volume_mm3 - rep.volume_mm3).abs() > 1e-3 * rep.volume_mm3.abs().max(1.0) {
-            println!("{path}: READ-BACK FAILED: {n_file} triangles in the file, watertight {} manifold {} volume {:.1}", rep2.watertight(), rep2.manifold(), rep2.volume_mm3 / 1000.0);
-            all_ok = false;
-        }
+    let mut finish = |path: &str, mesh: Mesh, renders: &[(&str, f32, f32)]| -> Result<(), String> {
+        let rep = check_mesh(&mesh);
+        write_stl(path, &mesh, &header)?;
         let (lo, hi) = rep.bounds_mm;
         println!(
             "{path}: {} triangles, {} vertices, {:.1} x {:.1} x {:.1} mm, volume {:.1} cm3; watertight {} manifold {} oriented {} (boundary {}, overused {}, inconsistent {}, nonmanifold vertices {}, euler {})",
@@ -1506,12 +1681,10 @@ pub fn run(store: &mut DataStore, map_path: &str, o: &Options) -> Result<(), Str
             rep.euler
         );
         all_ok &= rep.ok();
-        println!("  read back from the file: {n_file} triangles, watertight {} manifold {} volume {:.1} cm3", rep2.watertight(), rep2.manifold(), rep2.volume_mm3 / 1000.0);
         if !rep.bad_vertices.is_empty() && std::env::var_os("MAPGEOM_PRINT_DEBUG").is_some() {
             for v in &rep.bad_vertices {
                 let p = mesh.verts[*v as usize];
-                // back to corner indices of the WHOLE grid (tiles share the voxel size; only the whole is debugged)
-                let (ci, ck, cj) = ((p[0] / voxel_mm).round() as i64, (p[1] / voxel_mm).round() as i64, (p[2] / voxel_mm).round() as i64);
+                let (ci, ck, cj) = ((p[0] / voxel_mm).round() as i64, (p[1] / voxel_mm).round() as i64, (p[2] / voxel_y_mm).round() as i64);
                 let mut pat = String::new();
                 for dk in -1..=0 {
                     for dj in -1..=0 {
@@ -1522,58 +1695,130 @@ pub fn run(store: &mut DataStore, map_path: &str, o: &Options) -> Result<(), Str
                     }
                     pat.push('|');
                 }
-                println!("  non-manifold vertex at corner ({ci},{cj},{ck}) mm {:?}: cells (x pairs, y rows, z layers) {pat}", p);
+                println!("  non-manifold vertex at corner ({ci},{cj},{ck}) mm {:?}: cells {pat}", p);
             }
         }
-    }
-    if o.render {
-        let whole = &outputs[0].1;
-        for (name, yaw, pitch) in [("top", 0.0, 89.9), ("iso-sw", 35.0, 35.0), ("iso-ne", 215.0, 30.0), ("side", 90.0, 12.0)] {
-            let p = format!("{}/{stem}-{name}.png", o.out_dir);
-            render_png(whole, &p, 1600, 1200, yaw, pitch)?;
+        for (name, yaw, pitch) in renders {
+            let p = format!("{}-{name}.png", path.trim_end_matches(".stl"));
+            render_png(&mesh, &p, 1600, 1200, *yaw, *pitch)?;
             println!("rendered {p}");
         }
-        // the tiles from below, where the puzzle tabs and pockets are, and a
-        // close-up of the first seam's tab + pocket pair
-        if o.puzzle && outputs.len() > 1 {
-            for (path, mesh) in outputs.iter().skip(1) {
-                let p = format!("{}-bottom.png", path.trim_end_matches(".stl"));
-                render_png(mesh, &p, 1600, 1200, 35.0, -40.0)?;
-                println!("rendered {p}");
+        let n_tris = mesh.tris.len();
+        drop(mesh);
+        // the FILE, not the memory: read the STL back as a triangle soup,
+        // merge vertices on exact coordinates, check again
+        let (n_file, soup) = read_stl(path)?;
+        let mut re = Mesh::default();
+        let mut idx: HashMap<[u32; 3], u32> = HashMap::with_capacity(n_file / 2);
+        for t in &soup {
+            let mut ids = [0u32; 3];
+            for (k, v) in t.iter().enumerate() {
+                let key = [v[0].to_bits(), v[1].to_bits(), v[2].to_bits()];
+                ids[k] = *idx.entry(key).or_insert_with(|| {
+                    re.verts.push(*v);
+                    (re.verts.len() - 1) as u32
+                });
             }
-            // close-up: the triangles of tiles x0-y0 and x1-y0 within 15 mm of the first tab
-            let tabs = plan_tabs(nx, nz, tx, tz, voxel_mm, (base_vox / 2).max(2));
+            re.tris.push(ids);
+        }
+        drop(soup);
+        drop(idx);
+        let rep2 = check_mesh(&re);
+        println!("  read back from the file: {n_file} triangles, watertight {} manifold {} volume {:.1} cm3", rep2.watertight(), rep2.manifold(), rep2.volume_mm3 / 1000.0);
+        if n_file != n_tris || !rep2.ok() || (rep2.volume_mm3 - rep.volume_mm3).abs() > 1e-3 * rep.volume_mm3.abs().max(1.0) {
+            println!("{path}: READ-BACK FAILED");
+            all_ok = false;
+        }
+        Ok(())
+    };
+    let whole_renders: &[(&str, f32, f32)] = if o.render { &[("top", 0.0, 89.9), ("iso-sw", 35.0, 35.0), ("iso-ne", 215.0, 30.0), ("side", 90.0, 12.0)] } else { &[] };
+    let tile_renders: &[(&str, f32, f32)] = if o.render && o.puzzle { &[("bottom", 35.0, -40.0)] } else { &[] };
+    // default chirality: X = -x (east on the right with north up, as in the editor)
+    let mirror_x = !o.mirror;
+    println!("orientation: print X = {} game x, print Y = game z (north), Z = height{}", if mirror_x { "-" } else { "+" }, if mirror_x { " — the editor's top view" } else { " — MIRRORED versus the editor (--mirror)" });
+    let whole = extract_surface_oriented(&solid, 0, nx, 0, nz, voxel_mm, voxel_y_mm, mirror_x);
+    finish(&format!("{}/{stem}.stl", o.out_dir), whole, whole_renders)?;
+    if tx * tz > 1 {
+        let tabs = if o.puzzle { plan_tabs(nx, nz, tx, tz, voxel_mm, (base_vox / 2).max(2)) } else { Vec::new() };
+        if o.puzzle {
+            let t0 = tabs.first();
+            println!(
+                "puzzle: {} tabs on the seams, each {} x {} mm neck / {} mm head, {:.1} mm tall under a {:.1} mm roof, {:.2} mm clearance per side",
+                tabs.len(),
+                t0.map(|t| t.neck_w as f32 * voxel_mm).unwrap_or(0.0),
+                t0.map(|t| (t.neck_len + t.head_len) as f32 * voxel_mm).unwrap_or(0.0),
+                t0.map(|t| t.head_w as f32 * voxel_mm).unwrap_or(0.0),
+                t0.map(|t| t.height as f32 * voxel_y_mm).unwrap_or(0.0),
+                (base_vox - (base_vox / 2).max(2)) as f32 * voxel_y_mm,
+                o.puzzle_clearance
+            );
+        }
+        for a in 0..tx {
+            for b in 0..tz {
+                let i0 = a * nx / tx;
+                let i1 = (a + 1) * nx / tx;
+                let k0 = b * nz / tz;
+                let k1 = (b + 1) * nz / tz;
+                let (owned, mine) = tile_owned(&solid, i0, i1, k0, k1, &tabs);
+                let mut tile = extract_owned(&owned, i0, i1, k0, voxel_mm, voxel_y_mm, mirror_x);
+                drop(owned);
+                if !mine.is_empty() {
+                    shrink_tabs(&mut tile, &mine, o.puzzle_clearance, voxel_mm, voxel_y_mm, mirror_x);
+                }
+                // tile names follow the PRINT layout: x0 is the leftmost tile
+                // seen from above with north up
+                let pa = if mirror_x { tx - 1 - a } else { a };
+                finish(&format!("{}/{stem}-tile-x{pa}-y{b}.stl", o.out_dir), tile, tile_renders)?;
+            }
+        }
+        // close-up of the first seam's tab + pocket: the two tiles' cells within
+        // a box around it, extracted on their own (cheap; no tile mesh kept)
+        if o.render && o.puzzle {
             if let Some(t) = tabs.first() {
-                let centre_x = if mirror_x { (nx - t.cut) as f32 * voxel_mm } else { t.cut as f32 * voxel_mm };
-                let centre_y = t.across as f32 * voxel_mm;
+                let r = ((15.0 / voxel_mm).ceil() as usize).max(4);
+                let rj = ((12.0 / voxel_y_mm).ceil() as usize).min(ny);
+                let (ci, ck) = if t.axis == 0 { (t.cut, t.across) } else { (t.across, t.cut) };
                 let mut close = Mesh::default();
-                for (path, mesh) in outputs.iter().skip(1).take(tx * tz) {
-                    // tile origin in whole-grid mm
-                    let name = path.rsplit('/').next().unwrap_or("");
-                    let (pa, b) = name.rsplit_once("-tile-x").map(|(_, r)| r.trim_end_matches(".stl")).and_then(|r| r.split_once("-y")).and_then(|(a, b)| Some((a.parse::<usize>().ok()?, b.parse::<usize>().ok()?))).unwrap_or((0, 0));
-                    // the grid tile index behind the print name
-                    let a = if mirror_x { tx - 1 - pa } else { pa };
-                    let ox = if mirror_x { (nx - (a + 1) * nx / tx) as f32 * voxel_mm } else { (a * nx / tx) as f32 * voxel_mm };
-                    let oy = (b * nz / tz) as f32 * voxel_mm;
-                    // pull the two tiles 1.5 mm apart along X so the fit reads
-                    let sep = if pa == 0 { -1.5 } else { 1.5 };
-                    let base_i = close.verts.len() as u32;
-                    let mut keep: HashMap<u32, u32> = HashMap::new();
-                    for tri in &mesh.tris {
-                        let ps: Vec<[f32; 3]> = tri.iter().map(|v| mesh.verts[*v as usize]).collect();
-                        if ps.iter().all(|p| (p[0] + ox - centre_x).abs() < 15.0 && (p[1] + oy - centre_y).abs() < 15.0 && p[2] < 12.0) {
-                            let mut ids = [0u32; 3];
-                            for (k, v) in tri.iter().enumerate() {
-                                ids[k] = *keep.entry(*v).or_insert_with(|| {
-                                    let p = mesh.verts[*v as usize];
-                                    close.verts.push([p[0] + ox + sep, p[1] + oy, p[2]]);
-                                    (close.verts.len() - 1) as u32
-                                });
+                for (a, b) in [(0usize, 0usize), (1, 0), (0, 1), (1, 1)] {
+                    if a >= tx || b >= tz {
+                        continue;
+                    }
+                    let i0 = a * nx / tx;
+                    let i1 = (a + 1) * nx / tx;
+                    let k0 = b * nz / tz;
+                    let k1 = (b + 1) * nz / tz;
+                    let (owned, mine) = tile_owned(&solid, i0, i1, k0, k1, &tabs);
+                    // keep only the cells in the box
+                    let mut part = Grid::new(owned.nx, owned.ny, owned.nz);
+                    let (bi0, bi1) = (ci.saturating_sub(r), (ci + r).min(nx));
+                    let (bk0, bk1) = (ck.saturating_sub(r), (ck + r).min(nz));
+                    let mut any = false;
+                    for k in bk0..bk1 {
+                        for j in 0..rj {
+                            for i in bi0..bi1 {
+                                if owned.get(i, j, k) {
+                                    part.set(i, j, k);
+                                    any = true;
+                                }
                             }
-                            close.tris.push(ids);
                         }
                     }
-                    let _ = base_i;
+                    if !any {
+                        continue;
+                    }
+                    let mut pm = extract_owned(&part, i0, i1, k0, voxel_mm, voxel_y_mm, mirror_x);
+                    if !mine.is_empty() {
+                        shrink_tabs(&mut pm, &mine, o.puzzle_clearance, voxel_mm, voxel_y_mm, mirror_x);
+                    }
+                    // place the tile in whole-grid print space, pulled 1.5 mm off the seam
+                    let pa = if mirror_x { tx - 1 - a } else { a };
+                    let ox = if mirror_x { (nx - i1) as f32 * voxel_mm } else { i0 as f32 * voxel_mm };
+                    let oy = k0 as f32 * voxel_mm;
+                    let sep = if t.axis == 0 { if pa == 0 { -1.5 } else { 1.5 } } else { 0.0 };
+                    let sepy = if t.axis == 2 { if b == 0 { -1.5 } else { 1.5 } } else { 0.0 };
+                    let base = close.verts.len() as u32;
+                    close.verts.extend(pm.verts.iter().map(|p| [p[0] + ox + sep, p[1] + oy + sepy, p[2]]));
+                    close.tris.extend(pm.tris.iter().map(|t| [t[0] + base, t[1] + base, t[2] + base]));
                 }
                 if !close.tris.is_empty() {
                     let p = format!("{}/{stem}-puzzle-closeup.png", o.out_dir);
@@ -1592,6 +1837,67 @@ pub fn run(store: &mut DataStore, map_path: &str, o: &Options) -> Result<(), Str
 
 fn rest_flag_obj(o: &Options) -> Option<String> {
     o.obj.clone()
+}
+
+/// A closed tree solid in the item's own frame: a cone (base radius `r` at
+/// 15 % of the height, apex at `top`) over a stub, or a ball of radius `r`
+/// on a trunk 0.4 m wide, 16 segments.
+pub fn tree_volume(conifer: bool, base: [f32; 3], r: f32, top: f32) -> Vec<[[f32; 3]; 3]> {
+    let n = 16usize;
+    let ring = |y: f32, rad: f32| -> Vec<[f32; 3]> { (0..n).map(|i| {
+        let a = i as f32 / n as f32 * std::f32::consts::TAU;
+        [base[0] + rad * a.cos(), y, base[2] + rad * a.sin()]
+    }).collect() };
+    let mut out = Vec::new();
+    // a closed band between two rings
+    let band = |out: &mut Vec<[[f32; 3]; 3]>, a: &[[f32; 3]], b: &[[f32; 3]]| {
+        for i in 0..n {
+            let j = (i + 1) % n;
+            out.push([a[i], a[j], b[j]]);
+            out.push([a[i], b[j], b[i]]);
+        }
+    };
+    // a cap: a fan to the centre
+    let cap = |out: &mut Vec<[[f32; 3]; 3]>, ring: &[[f32; 3]], centre: [f32; 3]| {
+        for i in 0..n {
+            let j = (i + 1) % n;
+            out.push([ring[i], ring[j], centre]);
+        }
+    };
+    let h = top - base[1];
+    if conifer {
+        let r_trunk = (0.35 * r).max(0.3);
+        let y_crown = base[1] + 0.15 * h;
+        let trunk_lo = ring(base[1], r_trunk);
+        let trunk_hi = ring(y_crown, r_trunk);
+        let crown_lo = ring(y_crown, r);
+        let apex = [base[0], top, base[2]];
+        cap(&mut out, &trunk_lo, base);
+        band(&mut out, &trunk_lo, &trunk_hi);
+        band(&mut out, &trunk_hi, &crown_lo);
+        cap(&mut out, &crown_lo, apex);
+    } else {
+        let r_trunk = 0.2f32.max(0.15 * r);
+        let yc = base[1] + 0.62 * h;
+        let ry = 0.38 * h;
+        let trunk_lo = ring(base[1], r_trunk);
+        let trunk_hi = ring(yc - ry * 0.7, r_trunk);
+        cap(&mut out, &trunk_lo, base);
+        band(&mut out, &trunk_lo, &trunk_hi);
+        // the ball as stacked rings
+        let steps = 8;
+        let mut prev = trunk_hi.clone();
+        for k in 0..=steps {
+            let t = -1.0 + 2.0 * k as f32 / steps as f32; // -1..1
+            let y = yc + ry * t;
+            let rad = (r * (1.0 - t * t).max(0.0).sqrt()).max(0.05);
+            let cur = ring(y, rad);
+            band(&mut out, &prev, &cur);
+            prev = cur;
+        }
+        cap(&mut out, &prev, [base[0], yc + ry, base[2]]);
+    }
+    out
 }
 
 /// The VegetTreeModel paths of a vegetation item, in VARIANT order (the
@@ -1788,15 +2094,15 @@ mod tests {
         let tab_cells: usize = tabs.iter().map(|t| t.cells().len()).sum();
         assert_eq!(owned_a.count(), 20 * nz * 6 + tab_cells);
         assert_eq!(owned_b.count(), 20 * nz * 6 - tab_cells);
-        let mut a = extract_owned(&owned_a, 0, 20, 0, 1.0, false);
-        let b = extract_owned(&owned_b, 20, 40, 0, 1.0, false);
+        let mut a = extract_owned(&owned_a, 0, 20, 0, 1.0, 1.0, false);
+        let b = extract_owned(&owned_b, 20, 40, 0, 1.0, 1.0, false);
         let (ra, rb) = (check_mesh(&a), check_mesh(&b));
         assert!(ra.ok() && rb.ok(), "{ra:?} {rb:?}");
         assert!((ra.volume_mm3 + rb.volume_mm3 - (nx * nz * 6) as f64).abs() < 1e-3);
         // the tab reaches past the tile's own width
         assert!(a.verts.iter().any(|v| v[0] > 20.0));
         let vol_before = ra.volume_mm3;
-        shrink_tabs(&mut a, &mine_a, 0.2, 1.0, false);
+        shrink_tabs(&mut a, &mine_a, 0.2, 1.0, 1.0, false);
         let ra2 = check_mesh(&a);
         assert!(ra2.ok(), "{ra2:?}");
         assert!(ra2.volume_mm3 < vol_before && ra2.volume_mm3 > vol_before - tab_cells as f64);
@@ -1811,8 +2117,8 @@ mod tests {
         let mut g = Grid::new(3, 1, 1);
         g.set(0, 0, 0);
         g.set(2, 0, 0);
-        let plain = extract_surface_oriented(&g, 0, 3, 0, 1, 1.0, false);
-        let mirrored = extract_surface_oriented(&g, 0, 3, 0, 1, 1.0, true);
+        let plain = extract_surface_oriented(&g, 0, 3, 0, 1, 1.0, 1.0, false);
+        let mirrored = extract_surface_oriented(&g, 0, 3, 0, 1, 1.0, 1.0, true);
         let (rp, rm) = (check_mesh(&plain), check_mesh(&mirrored));
         assert!(rp.ok() && rm.ok(), "{rp:?} {rm:?}");
         assert!((rp.volume_mm3 - 2.0).abs() < 1e-6 && (rm.volume_mm3 - 2.0).abs() < 1e-6);
@@ -1833,13 +2139,63 @@ mod tests {
         }
         let tabs = plan_tabs(nx, nz, 2, 1, 1.0, 3);
         let (owned_a, mine_a) = tile_owned(&g, 0, 20, 0, nz, &tabs);
-        let mut a = extract_owned(&owned_a, 0, 20, 0, 1.0, true);
+        let mut a = extract_owned(&owned_a, 0, 20, 0, 1.0, 1.0, true);
         let before = check_mesh(&a).volume_mm3;
-        shrink_tabs(&mut a, &mine_a, 0.2, 1.0, true);
+        shrink_tabs(&mut a, &mine_a, 0.2, 1.0, 1.0, true);
         let after = check_mesh(&a);
         assert!(after.ok() && after.volume_mm3 < before, "{after:?}");
         // mirrored: the tab (i > 20) lies at X < 0, beyond the tile's own 0..20
         assert!(a.verts.iter().zip(a.corners.iter()).filter(|(_, c)| c[0] > 20).all(|(v, _)| v[0] < 0.0));
+    }
+
+    #[test]
+    fn flat_voxels_keep_volume_and_manifoldness() {
+        // 0.8 mm wide, 0.4 mm tall: a 3-layer stack of one column is 0.8 x 0.8 x 1.2 mm
+        let mut g = Grid::new(3, 5, 3);
+        for j in 0..3 {
+            g.set(1, j, 1);
+        }
+        let m = extract_surface_oriented(&g, 0, 3, 0, 3, 0.8, 0.4, false);
+        let r = check_mesh(&m);
+        assert!(r.ok(), "{r:?}");
+        assert!((r.volume_mm3 - 0.8 * 0.8 * 1.2).abs() < 1e-5, "volume {}", r.volume_mm3);
+        let (lo, hi) = r.bounds_mm;
+        assert!((hi[2] - lo[2] - 1.2).abs() < 1e-5 && (hi[0] - lo[0] - 0.8).abs() < 1e-5);
+    }
+
+    #[test]
+    fn cut_thin_removes_sticks_but_not_sheets_or_slabs() {
+        let mut g = Grid::new(6, 6, 6);
+        // a 2-thick slab survives
+        for i in 0..6 {
+            for k in 0..6 {
+                g.set(i, 0, k);
+                g.set(i, 1, k);
+            }
+        }
+        // a pole and a one-voxel sheet on top of it go
+        for j in 2..6 {
+            g.set(1, j, 1);
+        }
+        for i in 3..6 {
+            for j in 2..5 {
+                g.set(i, j, 4);
+            }
+        }
+        // a one-layer floor floating above the slab stays
+        for i in 0..3 {
+            for k in 0..3 {
+                g.set(i, 5, k);
+            }
+        }
+        let before = g.count();
+        let removed = cut_thin(&mut g);
+        // the pole's top cell is part of the floor now, so 3 pole cells go;
+        // the one-voxel SHEET (thin in z only) and the floor (thin in y only) stay
+        assert_eq!(removed, 3, "removed {removed}");
+        assert_eq!(g.count(), before - 3);
+        assert!(g.get(1, 5, 1), "the floor must survive");
+        assert!(g.get(4, 3, 4), "the sheet must survive");
     }
 
     #[test]

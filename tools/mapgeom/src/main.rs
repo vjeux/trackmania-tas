@@ -1989,7 +1989,7 @@ fn main() {
                 gap_cells: flag(&a.rest, "--gap-cells").and_then(|s| s.parse().ok()).unwrap_or(2),
                 mm: flag(&a.rest, "--mm").and_then(|s| s.parse().ok()).unwrap_or(210.0),
                 tiles: (tx, tz),
-                wall_mm: flag(&a.rest, "--wall-mm").and_then(|s| s.parse().ok()).unwrap_or(0.8),
+                wall_mm: flag(&a.rest, "--wall-mm").and_then(|s| s.parse().ok()).unwrap_or(0.4),
                 voxel_m: flag(&a.rest, "--voxel-m").and_then(|s| s.parse().ok()),
                 margin_cells: flag(&a.rest, "--margin-cells").and_then(|s| s.parse().ok()).unwrap_or(2),
                 base_mm: flag(&a.rest, "--base-mm").and_then(|s| s.parse().ok()).unwrap_or(3.0),
@@ -2008,6 +2008,9 @@ fn main() {
                 puzzle: a.rest.iter().any(|x| x == "--puzzle"),
                 puzzle_clearance: flag(&a.rest, "--puzzle-clearance").and_then(|s| s.parse().ok()).unwrap_or(0.2),
                 mirror: a.rest.iter().any(|x| x == "--mirror"),
+                vertical_factor: flag(&a.rest, "--vertical-factor").and_then(|s| s.parse().ok()).unwrap_or(1.0),
+                thicken: a.rest.iter().any(|x| x == "--thicken"),
+                cut_thin: !a.rest.iter().any(|x| x == "--keep-thin"),
             };
             mapgeom::printable::run(&mut store, &p, &o).unwrap_or_else(die);
         }

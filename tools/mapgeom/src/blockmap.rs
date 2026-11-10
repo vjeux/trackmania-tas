@@ -287,6 +287,13 @@ pub fn walk(
         let ground = b.flags & FLAG_GROUND != 0;
         let vindex = (b.flags & FLAG_VARIANT_MASK) as usize;
         let sub = ((b.flags >> FLAG_SUBVARIANT_SHIFT) & 63) as usize;
+        // bits 21..27: 0 = the base variant, k = additional variant k-1 —
+        // decoded in `pick_placement_add` off DecoTerrainHD in September but
+        // never passed from here, so every DecoTerrainHD (61 cliff/hill detail
+        // shapes) drew as the base WaterHill slab: the "1x1 blocks" Altrd saw
+        // on the Fall 2026 - 01 print (2026-11-09). Fall 01's 23 placements
+        // carry 3, 4, 6 and 14 here.
+        let additional = ((b.flags >> FLAG_ADDITIONAL_SHIFT) & 0x7F) as usize;
         let paths = idx.paths_for(&b.name);
         let mut p = Placement {
             index: b.index,
@@ -321,7 +328,7 @@ pub fn walk(
             Ok(bi) => {
                 p.is_clip = bi.clip.is_some();
                 p.additional = (bi.additional_ground.len(), bi.additional_air.len());
-                match bi.pick_placement(ground, vindex, sub) {
+                match bi.pick_placement_add(ground, vindex, sub, additional) {
                     None => p.error = Some("block info has no variant with units or mobils".into()),
                     Some(pk) => {
                         p.variant_label = pk.label.clone();
