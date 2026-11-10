@@ -801,6 +801,13 @@ const TERRAIN_MATERIALS: &[&str] = &["Grass", "Sand", "Rock", "Dirt", "Water", "
 
 /// Is this block part of the landscape (terrain, water, cliffs) rather than
 /// something the author built? Decides the crop rectangle only.
+/// Vegetation items and the Stadium season clumps: scenery, never the track.
+pub fn is_veget_name(name: &str) -> bool {
+    const P: &[&str] = &["Tree", "Bush", "Palm", "Grove", "Forest", "Ecotone", "Flower", "Grass", "Fern", "Plant", "Cactus", "Spring", "Summer", "Fall", "Winter", "Fir", "Cypress"];
+    let stem = name.rsplit('\\').next().unwrap_or(name).trim_end_matches(".Item.Gbx");
+    P.iter().any(|p| stem.starts_with(p))
+}
+
 pub fn is_terrain_block(name: &str) -> bool {
     const P: &[&str] = &["Water", "Sea", "Land", "Dirt", "Grass", "Sand", "Rock", "Beach", "Lake", "Hill", "Cliff", "Snow", "Shore", "Ocean", "River", "Zone", "DecoTerrain", "Terrain"];
     P.iter().any(|p| name.starts_with(p))
@@ -808,6 +815,9 @@ pub fn is_terrain_block(name: &str) -> bool {
 
 pub struct Options {
     pub out_dir: String,
+    /// Islands of track cells farther apart than this (in 32 m cells) are
+    /// separate; only the start's island sets the crop.
+    pub gap_cells: i32,
     /// Debug: write the assembled scene as OBJ here.
     pub obj: Option<String>,
     pub mm: f32,
@@ -1019,38 +1029,87 @@ pub fn run(store: &mut DataStore, map_path: &str, o: &Options) -> Result<(), Str
         println!("trees: {tree_count} vegetation placements rasterised from their collision hulls ({} triangles); {skipped_low} ground-cover placements under 1 m skipped", tree_tris.len());
     }
 
-    // ---- the crop rectangle: the author's blocks and items, plus a margin
+    // ---- the crop rectangle: the TRACK's blocks, plus a margin.
+    // Terrain, deco-terrain and vegetation never count; the remaining blocks
+    // and items are grouped into islands on the 32 m cell grid, and an island
+    // farther than `gap` cells from the island holding the start is an
+    // outlier (a stand or a screen the author parked far off to one side) and
+    // is dropped — Altrd's crop v2 (2026-11-09): "greater than a 2 block gap
+    // in between, it's not included", which bought a big step in resolution.
     let (mut x0, mut x1, mut z0, mut z1) = (slo[0], shi[0], slo[2], shi[2]);
     if o.crop {
-        let mut lo = [f32::MAX; 2];
-        let mut hi = [f32::MIN; 2];
-        let mut n = 0;
+        let gap = o.gap_cells.max(1);
+        let mut cells: std::collections::HashSet<(i32, i32)> = Default::default();
+        let mut start: Option<(i32, i32)> = None;
         for b in &m.blocks {
-            if is_terrain_block(&b.name) {
+            if is_terrain_block(&b.name) || is_veget_name(&b.name) {
                 continue;
             }
-            let (bx, bz) = if b.flags & tmmaps::map::FREE_BLOCK_FLAG != 0 {
+            let (cx, cz) = if b.flags & tmmaps::map::FREE_BLOCK_FLAG != 0 {
                 match b.free_pos {
-                    Some(p) => (p[0], p[2]),
+                    Some(p) => ((p[0] / 32.0).floor() as i32, (p[2] / 32.0).floor() as i32),
                     None => continue,
                 }
             } else {
                 let c = b.coords();
-                (c.0 as f32 * 32.0 + 16.0, c.2 as f32 * 32.0 + 16.0)
+                (c.0, c.2)
             };
-            lo[0] = lo[0].min(bx);
-            lo[1] = lo[1].min(bz);
-            hi[0] = hi[0].max(bx);
-            hi[1] = hi[1].max(bz);
-            n += 1;
+            cells.insert((cx, cz));
+            if b.name.contains("Start") && start.is_none() {
+                start = Some((cx, cz));
+            }
         }
         for it in &m.items {
-            lo[0] = lo[0].min(it.pos[0]);
-            lo[1] = lo[1].min(it.pos[2]);
-            hi[0] = hi[0].max(it.pos[0]);
-            hi[1] = hi[1].max(it.pos[2]);
+            if is_veget_name(&it.model) {
+                continue;
+            }
+            cells.insert(((it.pos[0] / 32.0).floor() as i32, (it.pos[2] / 32.0).floor() as i32));
+        }
+        // islands: cells within `gap` (Chebyshev) of each other are one island
+        let list: Vec<(i32, i32)> = cells.iter().copied().collect();
+        let mut island = vec![usize::MAX; list.len()];
+        let mut n_islands = 0;
+        for i in 0..list.len() {
+            if island[i] != usize::MAX {
+                continue;
+            }
+            let id = n_islands;
+            n_islands += 1;
+            let mut stack = vec![i];
+            island[i] = id;
+            while let Some(a) = stack.pop() {
+                for b in 0..list.len() {
+                    if island[b] == usize::MAX && (list[a].0 - list[b].0).abs() <= gap && (list[a].1 - list[b].1).abs() <= gap {
+                        island[b] = id;
+                        stack.push(b);
+                    }
+                }
+            }
+        }
+        // the main island: the start's, else the biggest
+        let mut sizes = vec![0usize; n_islands];
+        for id in &island {
+            sizes[*id] += 1;
+        }
+        let main = start
+            .and_then(|s| list.iter().position(|c| *c == s).map(|i| island[i]))
+            .unwrap_or_else(|| (0..n_islands).max_by_key(|id| sizes[*id]).unwrap_or(0));
+        let mut lo = [f32::MAX; 2];
+        let mut hi = [f32::MIN; 2];
+        let mut n = 0;
+        let mut dropped = 0;
+        for (i, c) in list.iter().enumerate() {
+            if island[i] != main {
+                dropped += 1;
+                continue;
+            }
+            lo[0] = lo[0].min(c.0 as f32 * 32.0);
+            lo[1] = lo[1].min(c.1 as f32 * 32.0);
+            hi[0] = hi[0].max(c.0 as f32 * 32.0 + 32.0);
+            hi[1] = hi[1].max(c.1 as f32 * 32.0 + 32.0);
             n += 1;
         }
+        println!("crop: {} track cells in {n_islands} island(s) (gap {gap} cells); main island {n} cells, {dropped} outlier cells dropped", list.len());
         if n > 0 {
             let margin = o.margin_cells as f32 * 32.0;
             // snap to whole cells so the cut runs along block seams
@@ -1058,7 +1117,7 @@ pub fn run(store: &mut DataStore, map_path: &str, o: &Options) -> Result<(), Str
             z0 = ((lo[1] - margin) / 32.0).floor().max(0.0) * 32.0;
             x1 = (((hi[0] + margin) / 32.0).ceil() * 32.0).min(shi[0]);
             z1 = (((hi[1] + margin) / 32.0).ceil() * 32.0).min(shi[2]);
-            println!("crop: {n} authored blocks/items span x {:.0}..{:.0} z {:.0}..{:.0}; with {} cells of margin the print covers x {x0:.0}..{x1:.0} z {z0:.0}..{z1:.0} ({:.0} x {:.0} m)", lo[0], hi[0], lo[1], hi[1], o.margin_cells, x1 - x0, z1 - z0);
+            println!("crop: the track spans x {:.0}..{:.0} z {:.0}..{:.0}; with {} cells of margin the print covers x {x0:.0}..{x1:.0} z {z0:.0}..{z1:.0} ({:.0} x {:.0} m)", lo[0], hi[0], lo[1], hi[1], o.margin_cells, x1 - x0, z1 - z0);
         }
     }
 
@@ -1162,6 +1221,27 @@ pub fn run(store: &mut DataStore, map_path: &str, o: &Options) -> Result<(), Str
     for (path, mesh) in &outputs {
         let rep = check_mesh(mesh);
         write_stl(path, mesh, &header)?;
+        // the FILE, not the memory: read the STL back as a triangle soup,
+        // merge vertices on exact coordinates, check again
+        let (n_file, soup) = read_stl(path)?;
+        let mut re = Mesh::default();
+        let mut idx: HashMap<[u32; 3], u32> = HashMap::with_capacity(mesh.verts.len());
+        for t in &soup {
+            let mut ids = [0u32; 3];
+            for (k, v) in t.iter().enumerate() {
+                let key = [v[0].to_bits(), v[1].to_bits(), v[2].to_bits()];
+                ids[k] = *idx.entry(key).or_insert_with(|| {
+                    re.verts.push(*v);
+                    (re.verts.len() - 1) as u32
+                });
+            }
+            re.tris.push(ids);
+        }
+        let rep2 = check_mesh(&re);
+        if n_file != mesh.tris.len() || !rep2.ok() || (rep2.volume_mm3 - rep.volume_mm3).abs() > 1e-3 * rep.volume_mm3.abs().max(1.0) {
+            println!("{path}: READ-BACK FAILED: {n_file} triangles in the file, watertight {} manifold {} volume {:.1}", rep2.watertight(), rep2.manifold(), rep2.volume_mm3 / 1000.0);
+            all_ok = false;
+        }
         let (lo, hi) = rep.bounds_mm;
         println!(
             "{path}: {} triangles, {} vertices, {:.1} x {:.1} x {:.1} mm, volume {:.1} cm3; watertight {} manifold {} oriented {} (boundary {}, overused {}, inconsistent {}, nonmanifold vertices {}, euler {})",
@@ -1181,6 +1261,7 @@ pub fn run(store: &mut DataStore, map_path: &str, o: &Options) -> Result<(), Str
             rep.euler
         );
         all_ok &= rep.ok();
+        println!("  read back from the file: {n_file} triangles, watertight {} manifold {} volume {:.1} cm3", rep2.watertight(), rep2.manifold(), rep2.volume_mm3 / 1000.0);
         if !rep.bad_vertices.is_empty() && std::env::var_os("MAPGEOM_PRINT_DEBUG").is_some() {
             for v in &rep.bad_vertices {
                 let p = mesh.verts[*v as usize];
@@ -1413,6 +1494,12 @@ mod tests {
         assert!(!tri_box_overlap([3.0, 3.0, 0.0], [0.5; 3], tri));
         // a plane just above the box
         assert!(!tri_box_overlap([0.5, 0.5, 0.0], [0.5; 3], [[0.0, 0.0, 0.6], [1.0, 0.0, 0.6], [0.0, 1.0, 0.6]]));
+    }
+
+    #[test]
+    fn veget_names() {
+        assert!(is_veget_name("TreePineBig") && is_veget_name("Bush") && is_veget_name("Forest") && is_veget_name("RedIsland\\Items\\Vegetation\\PalmTreeBigA0.Item.Gbx") && is_veget_name("Summer"));
+        assert!(!is_veget_name("RoadTechStart") && !is_veget_name("Flag16m") && !is_veget_name("StructurePillar"));
     }
 
     #[test]

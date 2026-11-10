@@ -1986,6 +1986,7 @@ fn main() {
             let o = mapgeom::printable::Options {
                 out_dir: flag(&a.rest, "--out").unwrap_or_else(|| die("print-stl needs --out DIR".into())),
                 obj: flag(&a.rest, "--obj"),
+                gap_cells: flag(&a.rest, "--gap-cells").and_then(|s| s.parse().ok()).unwrap_or(2),
                 mm: flag(&a.rest, "--mm").and_then(|s| s.parse().ok()).unwrap_or(210.0),
                 tiles: (tx, tz),
                 wall_mm: flag(&a.rest, "--wall-mm").and_then(|s| s.parse().ok()).unwrap_or(0.8),
