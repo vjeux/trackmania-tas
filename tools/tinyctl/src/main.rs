@@ -18,6 +18,7 @@
 mod boxbuild;
 mod boxfront;
 mod gameclose;
+mod boxdo;
 mod rethumb;
 mod openroadgraft;
 mod rethumball;
@@ -233,6 +234,8 @@ fn main() {
         "icon-crops" => iconcrops::cmd(rest),
         "tile-icons" => tileicons::cmd(rest),
         "box-close-game" => gameclose::cmd(rest),
+        "box-do" => match boxdo::cmd(rest) { Ok(code) => std::process::exit(code), Err(e) => Err(e) },
+        "tmx-login" => boxdo::tmx_login(rest),
         "rethumb" => rethumb::cmd(rest),
         "openroad-graft" => openroadgraft::cmd(rest),
         "rethumb-all" => rethumball::cmd(rest),
