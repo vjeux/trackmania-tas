@@ -1799,10 +1799,20 @@ pub fn pack_item_variants(store: &mut crate::store::DataStore, item_path: &str) 
 /// (`ItemObstacleDiscontinuous` does not prefix `ItemObstacleLevel1`).
 pub fn item_modifier_links(store: &mut crate::store::DataStore, item_path: &str) -> Option<(Vec<String>, String)> {
     let model = store.load_model(item_path).ok()?;
-    let modifier = model.externals.iter().map(|(_, p)| p.as_str()).find(|p| {
+    let external = model.externals.iter().map(|(_, p)| p.as_str()).find(|p| {
         let low = p.to_ascii_lowercase();
         low.contains("\\media\\modifier\\") && low.ends_with(".gbx") && !low.ends_with(".material.gbx") && !low.ends_with(".kinematicconstraint.gbx") && low.matches('\\').count() == 3
-    })?;
+    });
+    // No external modifier file: the item may carry its modifier INLINE, as a
+    // CPlugGameSkinAndFolder node naming the folder (the Theme gates). The
+    // folder stands for `<folder>.TerrainModifier.Gbx` of the external form.
+    let inline_folder = if external.is_none() { inline_modifier_folder(&model) } else { None };
+    let modifier = match (external, inline_folder.as_deref()) {
+        (Some(x), _) => x.to_string(),
+        (None, Some(folder)) => format!("{folder}.TerrainModifier.Gbx"),
+        (None, None) => return None,
+    };
+    let modifier = modifier.as_str();
     let (dir, file) = modifier.rsplit_once('\\')?;
     // `Reset.TerrainModifier .Gbx` — the pack's own GateSpecial24mReset item
     // spells its modifier with a space before the extension
@@ -1861,6 +1871,18 @@ pub fn item_modifier_links(store: &mut crate::store::DataStore, item_path: &str)
         return Some((vec![format!("{folder_prefix}{}", "")], suffix));
     }
     Some((links, suffix))
+}
+
+/// The folder of an item's INLINE material modifier (`CPlugGameSkinAndFolder`,
+/// the `MaterialModifier` of chunk 0x2E002019), without its trailing
+/// backslash: `Stadium\\Media\\Modifier\\GateGameplayRally`. `None` when the
+/// item's node graph carries no such node (or does not walk).
+fn inline_modifier_folder(model: &crate::store::Model) -> Option<String> {
+    let g = crate::node::Graph::parse(&model.body, model.class_id, model.num_nodes, &model.externals).ok()?;
+    g.slots.iter().find_map(|s| match s {
+        crate::node::Slot::Node(crate::node::Node::SkinFolder(f)) => Some(f.trim_end_matches('\\').to_string()),
+        _ => None,
+    })
 }
 
 /// The gate sign panels' pictures (signlogo.rs), one per kind the item's

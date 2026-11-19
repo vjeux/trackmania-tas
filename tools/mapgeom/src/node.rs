@@ -281,6 +281,12 @@ pub enum Node {
     RoadChunk(Box<crate::blockinfo::RoadChunkRaw>),
     /// `CPlugLight` or a `GxLight*` (the class id says which).
     Light(u32, Box<LightInfo>),
+    /// `CPlugGameSkinAndFolder`: an item's inline material modifier, as the
+    /// folder its re-dressing materials live in (`Stadium\\Media\\Modifier\\
+    /// GateGameplayRally\\`). The Theme gates (RallyGateGameplay,
+    /// DesertGateGameplay) carry their car this way instead of an external
+    /// `<Kind>.TerrainModifier.Gbx`.
+    SkinFolder(String),
     Other(u32),
 }
 
@@ -305,6 +311,7 @@ impl Node {
             Node::Genealogy(_) => crate::blockinfo::C_ZONE_GENEALOGY,
             Node::RoadChunk(_) => crate::blockinfo::C_ROAD_CHUNK,
             Node::Light(c, _) => *c,
+            Node::SkinFolder(_) => C_GAME_SKIN_AND_FOLDER,
             Node::Other(c) => *c,
         }
     }
@@ -347,6 +354,11 @@ pub struct Graph<'a> {
     /// class id into a pak file's cipher (`parents.rs`, `pakfile.rs`).
     pub node_starts: Vec<(usize, u32)>,
 }
+
+/// `CPlugGameSkinAndFolder`, an item's inline material modifier (`Node::SkinFolder`).
+pub const C_GAME_SKIN_AND_FOLDER: u32 = 0x0915D000;
+/// `CPlugGameSkin`, the remapping the folder wrapper carries (walked, nothing kept).
+pub const C_GAME_SKIN: u32 = 0x090F4000;
 
 const FACADE: u32 = 0xFACADE01;
 const SKIP: &[u8; 4] = b"PIKS";
@@ -500,6 +512,8 @@ pub struct Acc {
     pub material_name: String,
     pub physics_id: u8,
     pub light: Option<Box<LightInfo>>,
+    /// `CPlugGameSkinAndFolder` 0x0915D000: the RemapFolder string.
+    pub remap_folder: Option<String>,
     pub touched: bool,
 }
 
@@ -521,6 +535,7 @@ impl Acc {
             material_name: String::new(),
             physics_id: 0,
             light: None,
+            remap_folder: None,
             touched: false,
         }
     }
@@ -538,6 +553,9 @@ impl Acc {
         }
         if let Some(l) = self.light {
             return Node::Light(class_id, l);
+        }
+        if let Some(folder) = self.remap_folder {
+            return Node::SkinFolder(folder);
         }
         match class_id {
             C_SURFACE => Node::Surface(self.surface),
@@ -589,6 +607,7 @@ pub fn node_kind_name(n: &Node) -> &'static str {
         Node::Genealogy(_) => "CGameCtnZoneGenealogy",
         Node::RoadChunk(_) => "CPlugRoadChunk",
         Node::Light(c, _) => if *c == 0x0901D000 { "CPlugLight" } else { "GxLight" },
+        Node::SkinFolder(_) => "CPlugGameSkinAndFolder",
         Node::Other(_) => "other",
     }
 }

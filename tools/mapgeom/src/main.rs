@@ -5125,6 +5125,7 @@ fn describe(n: &Node) -> String {
                 )
             }
         }
+        Node::SkinFolder(f) => format!("CPlugGameSkinAndFolder, modifier folder {f}"),
         Node::Other(c) => format!("class 0x{:08X}", c),
     }
 }

@@ -772,6 +772,35 @@ impl<'a> Graph<'a> {
                 self.r.take(9)?;
                 Ok(())
             }
+            // CPlugGameSkinAndFolder (0x0915D000): an item's inline material
+            // modifier — `0x2E002019`'s MaterialModifier. { Remapping: a
+            // CPlugGameSkin node, RemapFolder: string }; 0x0915D001 one node
+            // ref (null in every pack item seen). The Theme gates
+            // (`Stadium\Items\Theme\RallyGateGameplay.Item.Gbx`, Desert too)
+            // name their car ONLY here (`Stadium\Media\Modifier\
+            // GateGameplayRally\`): until this reader existed the walk stopped
+            // at the node and the gate was baked with the trigger shape's own
+            // generic id 20 — a Stadium-car gate (Tiny 241, 2026-11-18:
+            // goosefire "map 241 is missing a rally car gate").
+            0x0915D000 => {
+                acc.touched = true;
+                self.noderef()?; // Remapping (CPlugGameSkin)
+                acc.remap_folder = Some(self.r.string()?);
+                Ok(())
+            }
+            0x0915D001 => {
+                self.noderef()?;
+                Ok(())
+            }
+            // CPlugGameSkin (0x090F4000), as the folder wrapper embeds it:
+            // 0x090F4003 two words; 0x090F4005 is a PIKS-framed blob (the
+            // remapping table: dir name + (class, stem, file) rows) that the
+            // chunk loop steps over unread — the wrapper's folder string is
+            // what matters.
+            0x090F4003 => {
+                self.r.take(8)?;
+                Ok(())
+            }
             0x2E002015 => {
                 self.r.u32()?; // EItemType
                 Ok(())

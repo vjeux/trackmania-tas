@@ -328,7 +328,7 @@ impl<'a> Collector<'a> {
                 }
             }
             Node::ItemModel(i) => self.slot(*i, slots, at, depth),
-            Node::Material(..) => {}
+            Node::Material(..) | Node::SkinFolder(_) => {}
             Node::Crystal(c) => {
                 self.stats.visual_meshes += 1;
                 for m in &c.meshes {

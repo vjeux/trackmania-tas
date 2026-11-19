@@ -175,7 +175,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                 "Content-Type: application/octet-stream",
                 "--data-binary",
                 &format!("@{path}"),
-                &format!("{UPLOADS}/repos/{repo}/releases/{rel}/assets?name={name}"),
+                &format!("{UPLOADS}/repos/{repo}/releases/{rel}/assets?name={}", url_encode(&name)),
             ],
         )?;
         if code != 201 {
@@ -191,4 +191,16 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     }
     println!("gh-release upload: {n_files} file(s) to {repo} @ {tag} — from the devserver, no box");
     Ok(())
+}
+
+/// The asset name as a URL query value: letters, digits and `-._~` as they are,
+/// everything else `%XX` — a map name with spaces and brackets (`U10S_241 By
+/// Everios96 [Tiny].Map.Gbx`) made curl refuse the URL ("bad range") otherwise.
+fn url_encode(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
 }

@@ -15,6 +15,9 @@
 //!   tmxup mappack --name N --ids-file F [--type 0] [--description-file F] [--tags ID,…] [--dry-run]
 //!   tmxup batch --playlist P.json --sheet S.csv --maps-dir DIR --alteration Tiny --done D.tsv
 //!               [--surface-tag ID] [--also-tag ID] [--difficulty N] [--limit N] [--unlisted] [--dry-run] [--not-agent-built]
+//!               [--hunter TEXT | --no-hunter]  the AT-setter credit for every map instead of the playlist's
+//!                                 map author; --no-hunter drops the "set by" clause (the Tiny V1 sets carry
+//!                                 Everios96 as author, and their ATs have long been beaten)
 //!
 //! Every command talks to Chrome's DevTools port on the loopback (`--port`, default
 //! 9222): Chrome binds it to 127.0.0.1, so this runs ON Windows (built for
@@ -495,7 +498,8 @@ fn description(alteration: &str, num: &str, orig_link: &str, hunter: &str, agent
     // Altered club's part 1/2 sets of 2026-10-31) — no AI-agent line, nothing else differs
     let head = if agent_built { "This map was created using vjeux's AI agent (automated alteration tool).\n\n" } else { "" };
     format!(
-        "{head}{alteration} alteration of U10S_{num} from the Under 10 Seconds maps by Everios96. Original map: {orig}\n\nAuthor times hunted by the Everios96 Community; the AT on this map was set by: {hunter}\n\nAll released maps are playable in the Altered U10S club. Discord for the club: https://discord.gg/zNbJN5sH5D"
+        "{head}{alteration} alteration of U10S_{num} from the Under 10 Seconds maps by Everios96. Original map: {orig}\n\nAuthor times hunted by the Everios96 Community{set_by}\n\nAll released maps are playable in the Altered U10S club. Discord for the club: https://discord.gg/zNbJN5sH5D",
+        set_by = if hunter.is_empty() { ".".to_string() } else { format!("; the AT on this map was set by: {hunter}") }
     )
 }
 
@@ -652,6 +656,9 @@ fn run(args: &[String]) -> Result<(), String> {
             let sheet = flag(args, "--sheet").ok_or("batch needs --sheet u10s-tags.csv")?;
             let maps_dir = flag(args, "--maps-dir").ok_or("batch needs --maps-dir DIR")?;
             let agent_built = !args.iter().any(|a| a == "--not-agent-built");
+            // the playlist's map author is the AT setter only for the agent-built sets (the
+            // export writes the WR holder as author); older sets carry Everios96 there
+            let hunter_override = if args.iter().any(|a| a == "--no-hunter") { Some(String::new()) } else { flag(args, "--hunter") };
             let alteration = flag(args, "--alteration").ok_or("batch needs --alteration Tiny|Dirt|…")?;
             let surface: Option<u32> = flag(args, "--surface-tag").and_then(|t| t.parse().ok());
             let also: Option<u32> = flag(args, "--also-tag").and_then(|t| t.parse().ok());
@@ -683,7 +690,7 @@ fn run(args: &[String]) -> Result<(), String> {
                     break;
                 }
                 let num = name.strip_prefix("U10S_").and_then(|x| x.split(' ').next()).unwrap_or("").trim_start_matches('0').to_string();
-                let hunter = r["authorplayer"]["name"].as_str().unwrap_or("").to_string();
+                let hunter = hunter_override.clone().unwrap_or_else(|| r["authorplayer"]["name"].as_str().unwrap_or("").to_string());
                 let file = r["filename"].as_str().unwrap_or("").to_string();
                 let row = sheet_rows.get(&num).map(|v| v.as_slice());
                 let tags: Vec<String> = tags_for_with(row, surface, also).iter().map(|t| t.to_string()).collect();
