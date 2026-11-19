@@ -555,10 +555,29 @@ pub fn publish_one(n: usize, args: &[String], build_dir: Option<&Path>) -> Resul
     wsx.push(&map, &remote)?;
     let tinyctl = f("--box-tinyctl").unwrap_or_else(|| format!("{BOX_TOOLS}/tinyctl"));
     let remote_out = format!("/mnt/c/Users/vjeux/tinyshots/publish-{n:02}");
-    let mut cmd = format!("{tinyctl} publish-here --detach --map {remote} --name '{}' --club {} --campaign {} --campaign-name '{}' --outdir {remote_out} --position {}", name.replace('\'', ""), f("--club").unwrap_or_else(|| DEFAULT_CLUB.into()), f("--campaign").unwrap_or_else(|| DEFAULT_CAMPAIGN.into()), f("--campaign-name").unwrap_or_else(|| DEFAULT_CAMPAIGN_NAME.into()).replace('\'', ""), f("--position").unwrap_or_else(|| (n - 1).to_string()));
+    // The box side mints the game's tokens under the render lock: the lock wants a
+    // session id (TM_SESSION) and a lock token, which only `tmdrive run` stamps — a
+    // bare `publish-here` over the bridge answered "render lock: no session id" and
+    // then "token-refused" (2026-11-19, the Tiny 241 re-publish). `tmdrive run` holds
+    // the lock for the whole publish, so the detaching is the shell's (`nohup … &`,
+    // the bridge caps one call at 150 s), not publish-here's own `--detach`. The
+    // previous run's done file goes first: wait_done read a stale one as this run's
+    // verdict (2026-11-19). PATH is quoted: the box's inherited PATH carries
+    // Windows paths with spaces, which split `env`'s argument.
+    let purpose = format!("publish {}", name.replace(['"', '\''], ""));
+    let mut cmd = format!(
+        "mkdir -p {remote_out}; rm -f {remote_out}/done-publish.txt {remote_out}/publish.log; cd /home/vjeux/shoot/hunt; nohup env TM_SESSION={} TM_SESSION_TITLE='Tiny u10s publish' PATH=\"/home/vjeux/mk64-fidelity/l1-enum24-stage/frozen-bin:/home/vjeux/bin:$PATH\" tmdrive run --purpose \"{purpose}\" --wait 100 -- {tinyctl} publish-here --map {remote} --name '{}' --club {} --campaign {} --campaign-name '{}' --outdir {remote_out} --position {}",
+        crate::gameclose::SESSION,
+        name.replace('\'', ""),
+        f("--club").unwrap_or_else(|| DEFAULT_CLUB.into()),
+        f("--campaign").unwrap_or_else(|| DEFAULT_CAMPAIGN.into()),
+        f("--campaign-name").unwrap_or_else(|| DEFAULT_CAMPAIGN_NAME.into()),
+        f("--position").unwrap_or_else(|| (n - 1).to_string())
+    );
     if tmmaps::cli::has(args, "--playcheck") {
         cmd.push_str(" --playcheck");
     }
+    cmd.push_str(&format!(" > {remote_out}/publish-launch.log 2>&1 &"));
     let started = wsx.sh(&cmd)?;
     if wsx.verbose {
         eprintln!("{}", started.trim());
