@@ -267,6 +267,42 @@ fn force_tags(c: &mut Cdp, id: u64, tags: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// The TMX map ids listed under exactly `name` (the search API matches substrings, so the
+/// exact-name filter is ours). Fetched from the page the browser is on, which must be a
+/// trackmania.exchange page (same origin).
+fn api_ids_by_name(c: &mut Cdp, name: &str) -> Result<Vec<u64>, String> {
+    let got = c.eval(&format!(
+        "fetch('https://trackmania.exchange/api/maps?count=50&fields=MapId,Name&name=' + encodeURIComponent({})).then(function(r){{return r.text()}})",
+        serde_json::to_string(name).unwrap()
+    ))?;
+    let body: Value = serde_json::from_str(got.as_str().unwrap_or("")).map_err(|e| format!("api/maps by name: {e}"))?;
+    Ok(body["Results"]
+        .as_array()
+        .map(|rs| rs.iter().filter(|m| m["Name"].as_str() == Some(name)).filter_map(|m| m["MapId"].as_u64()).collect())
+        .unwrap_or_default())
+}
+
+/// After a submit whose redirect was lost: the one map id that appeared under `name` since
+/// `ids_before` (polled for ~20 s from the site's front page, since the error page has no
+/// origin to fetch from). `None` when nothing new, or more than one new id, shows up.
+fn recover_landed_id(c: &mut Cdp, name: &str, ids_before: &[u64]) -> Option<u64> {
+    c.call("Page.navigate", json!({"url": "https://trackmania.exchange/"})).ok()?;
+    std::thread::sleep(Duration::from_millis(1500));
+    c.wait_ready(30).ok()?;
+    for _ in 0..5 {
+        let new: Vec<u64> = api_ids_by_name(c, name).unwrap_or_default().into_iter().filter(|id| !ids_before.contains(id)).collect();
+        if let [id] = new[..] {
+            return Some(id);
+        }
+        if new.len() > 1 {
+            eprintln!("  {} new maps named {name:?}: {new:?}; not picking one", new.len());
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(4000));
+    }
+    None
+}
+
 fn upload_one(c: &mut Cdp, u: &UploadSpec, dry: bool) -> Result<Option<String>, String> {
     c.call("Page.navigate", json!({"url": "https://trackmania.exchange/mapupload"}))?;
     std::thread::sleep(Duration::from_millis(800));
@@ -313,20 +349,29 @@ fn upload_one(c: &mut Cdp, u: &UploadSpec, dry: bool) -> Result<Option<String>, 
         return Ok(None);
     }
     let before = c.eval("location.href")?.as_str().unwrap_or("").to_string();
+    // the ids TMX already lists under this exact name: after a lost redirect, a NEW one is ours
+    let ids_before = api_ids_by_name(c, &u.name).unwrap_or_default();
     c.eval("document.querySelector('#mapUploadForm button[type=submit]').click(); 1")?;
     let t0 = std::time::Instant::now();
     loop {
         std::thread::sleep(Duration::from_millis(1000));
         let h = c.eval("document.readyState + ' ' + location.href").unwrap_or(Value::Null).as_str().unwrap_or("").to_string();
         if h.starts_with("complete ") && !h.ends_with(&before) && !h.contains("/mapupload") {
-            let url = h[9..].to_string();
+            let mut url = h[9..].to_string();
             if !url.contains("/mapshow/") {
-                return Err(format!("submitted but landed on {url}"));
-            }
-            // the page's own check: the name and that it is ours
-            let title = c.eval("document.title")?.as_str().unwrap_or("").to_string();
-            if !title.starts_with(&u.name) {
-                return Err(format!("landed on {url} but its title is {title:?}, not {:?}", u.name));
+                // The POST went through but the redirect to the map page died (chrome-error://
+                // on map 209, 2026-11-18, which TMX had taken with its tags). Ask the API which
+                // map appeared under this exact name since the submit; only one new id counts.
+                let id = recover_landed_id(c, &u.name, &ids_before)
+                    .ok_or_else(|| format!("submitted but landed on {url}, and the API lists no new map named {:?}", u.name))?;
+                println!("  landed on {url}; the API shows the new map {id} under this name, continuing with it");
+                url = format!("https://trackmania.exchange/mapshow/{id}");
+            } else {
+                // the page's own check: the name and that it is ours
+                let title = c.eval("document.title")?.as_str().unwrap_or("").to_string();
+                if !title.starts_with(&u.name) {
+                    return Err(format!("landed on {url} but its title is {title:?}, not {:?}", u.name));
+                }
             }
             // TAGS: the DropdownFilter widget blanks any Tags[i] hidden input that was not
             // picked through its own UI before the native submit (TMX changed it after
