@@ -1040,6 +1040,29 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
             if n > 0 {
                 m.notes.push(format!("{n} Water-physics collision triangles kept at the pack's physics 13 (TINY_WATER=pack: nothing to the client, the ship13 form)"));
             }
+            // …except on a water GAMEPLAY PAD (`RoadWaterSpecialTurbo2`, `PlatformWater
+            // Special*`): there the 13 plane is the deck the original car rides at the
+            // water line, and "nothing to the client" means the car falls into the dry
+            // channel onto the booster plate (boost fires: 48 km/h in Tiny, 65 in
+            // Giant), then hits the channel's exit lip (the FC2 cap: 0.4 m in Tiny,
+            // 0.9 m in Giant) and stops or is thrown back and stuck bouncing between lip
+            // and booster. Measured on U10S 152, remote-drive 2026-11-20 — Everios96
+            // "a booster facing the wrong direction", danyy912 "boosts me backwards".
+            // The plane stays as a SOLID Asphalt drive floor carrying the pad's gameplay
+            // byte: a plain booster deck, what the original car feels minus the water.
+            // `TINY_WATER_PAD_PLANE=0` keeps the old fall-through.
+            let water_pad = name.contains("Special") && (name.starts_with("RoadWater") || name.starts_with("PlatformWater"));
+            if n > 0 && std::env::var("TINY_DEBUG_WATER_PAD").is_ok() {
+                eprintln!("water pad check: name={name:?} path={path:?} water_pad={water_pad} n={n}");
+            }
+            if water_pad && n > 0 && std::env::var("TINY_WATER_PAD_PLANE").map(|v| v != "0").unwrap_or(true) {
+                let gp = crate::static_item::build::special_collision_ids(store, &m).map(|(_, ids)| ids.1).unwrap_or(0);
+                for t in m.surf_triangles.iter_mut().filter(|t| t.material_id == 13) {
+                    t.material_id = 16;
+                    t.gameplay = gp;
+                }
+                m.notes.push(format!("water gameplay pad: {n} water-plane triangle(s) made a solid Asphalt drive floor with gameplay {gp} (the car fell through 13 onto the plate and hit the channel lip)"));
+            }
             // TINY_FLOOR_PHYSICS=NN: the drag emulation probe (2026-09-10 21:30Z). The
             // original's car drives ON THE FLOOR under the plane and the water volume
             // brakes it (05: 31.7 → 22.5 m/s over 33 m); an item has no volume, so the
