@@ -13,6 +13,7 @@
 //!   tmxup comments --id MAPID --comments-file F    re-set an uploaded map's comments
 //!   tmxup listed --id MAPID                        switch an uploaded map from unlisted to listed
 //!   tmxup mappack --name N --ids-file F [--type 0] [--description-file F] [--tags ID,…] [--dry-run]
+//!   tmxup update-file --id MAPID --map C:\\path\\X.Map.Gbx   a new version of an uploaded map (edit form)
 //!   tmxup batch --playlist P.json --sheet S.csv --maps-dir DIR --alteration Tiny --done D.tsv
 //!               [--surface-tag ID] [--also-tag ID] [--difficulty N] [--limit N] [--unlisted] [--dry-run] [--not-agent-built]
 //!               [--hunter TEXT | --no-hunter]  the AT-setter credit for every map instead of the playlist's
@@ -615,6 +616,51 @@ fn run(args: &[String]) -> Result<(), String> {
             Ok(())
         }
         // Re-set the comments of an uploaded map through its edit form (/mapupload/<id>).
+        // tmxup update-file --id MAPID --map C:\path\X.Map.Gbx — a new VERSION of an uploaded
+        // map through its edit form (/mapupload/<id>: the `TrackFile` input takes a file;
+        // name, tags, comments stay). Verified by the API's UpdatedAt moving past the submit
+        // (2026-11-20: Tiny 152/154 with their water pads repaired, same uids).
+        "update-file" => {
+            let id = flag(args, "--id").ok_or("update-file needs --id MAPID")?;
+            let map = flag(args, "--map").ok_or("update-file needs --map C:\\path\\X.Map.Gbx")?;
+            let before = api_updated_at(&id)?;
+            let mut c = Cdp::attach(port, target.as_deref())?;
+            c.call("Page.navigate", json!({"url": format!("https://trackmania.exchange/mapupload/{id}")}))?;
+            std::thread::sleep(Duration::from_millis(800));
+            let at = c.wait_ready(60)?;
+            if !at.contains(&format!("/mapupload/{id}")) {
+                return Err(format!("not on the edit form but at {at}"));
+            }
+            let n = c.node("#mapUploadForm input[type=file]#TrackFile")?;
+            c.call("DOM.setFileInputFiles", json!({"files": [map], "nodeId": n}))?;
+            std::thread::sleep(Duration::from_millis(2500));
+            let picked = c.eval("(function(){const e=document.querySelector('#TrackFile'); return e && e.files && e.files.length ? e.files[0].name + ' ' + e.files[0].size : 'none'})()")?;
+            println!("  file set: {}", picked.as_str().unwrap_or(""));
+            if picked.as_str() == Some("none") {
+                return Err("the edit form took no file".into());
+            }
+            c.eval("document.querySelector('#mapUploadForm button[type=submit]').click(); 1")?;
+            let t0 = std::time::Instant::now();
+            loop {
+                std::thread::sleep(Duration::from_millis(1000));
+                let h = c.eval("document.readyState + ' ' + location.href").unwrap_or(Value::Null).as_str().unwrap_or("").to_string();
+                if h.starts_with("complete ") && !h.contains("/mapupload") {
+                    println!("landed: {}", &h[9..]);
+                    break;
+                }
+                if t0.elapsed().as_secs() > 180 {
+                    let errs = c.eval("JSON.stringify([...document.querySelectorAll('.field-validation-error, .validation-summary-errors, .alert-danger')].map(e=>e.innerText).filter(Boolean))").unwrap_or(Value::Null);
+                    return Err(format!("no new page after 180 s (still at {h}); form errors: {errs}"));
+                }
+            }
+            std::thread::sleep(Duration::from_millis(1500));
+            let after = api_updated_at(&id)?;
+            if after == before {
+                return Err(format!("the API still shows UpdatedAt {after} — the file was not taken"));
+            }
+            println!("updated: {id} UpdatedAt {before} -> {after}");
+            Ok(())
+        }
         "comments" => {
             let id = flag(args, "--id").ok_or("comments needs --id MAPID")?;
             let comments = match flag(args, "--comments-file") {
@@ -877,4 +923,14 @@ fn main() {
         eprintln!("tmxup: {e}");
         std::process::exit(2);
     }
+}
+
+/// The map's `UpdatedAt` as the public API reports it (a plain HTTPS GET, no browser).
+fn api_updated_at(id: &str) -> Result<String, String> {
+    let out = std::process::Command::new("curl")
+        .args(["-s", "--max-time", "30", &format!("https://trackmania.exchange/api/maps?id={id}&fields=MapId%2CUpdatedAt")])
+        .output()
+        .map_err(|e| format!("curl: {e}"))?;
+    let v: Value = serde_json::from_slice(&out.stdout).map_err(|e| format!("api/maps?id={id}: {e}"))?;
+    v["Results"][0]["UpdatedAt"].as_str().map(|s| s.to_string()).ok_or_else(|| format!("api/maps?id={id}: no UpdatedAt in {}", String::from_utf8_lossy(&out.stdout).chars().take(200).collect::<String>()))
 }
