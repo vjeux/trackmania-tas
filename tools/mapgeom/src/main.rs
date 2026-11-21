@@ -621,6 +621,25 @@ fn main() {
             };
             let mut decisions = mapgeom::waterblocks::decide(&plates, &tris, source.as_ref());
             decisions.extend(mapgeom::waterblocks::decide_roads(&plates, &tris));
+            // --pads --scale S [--pad-depth D]: the water GAMEPLAY PADS of a scale set get the
+            // game's water under their booster deck (waterblocks::decide_pads); the pad items
+            // are found through the manifest's source-block names
+            if a.rest.iter().any(|x| x == "--pads") {
+                let scale: f32 = flag(&a.rest, "--scale").and_then(|v| v.parse().ok()).unwrap_or_else(|| die("--pads needs --scale S (2 for Giant, 0.5 for Tiny)".into()));
+                let depth_extra: f32 = flag(&a.rest, "--pad-depth").and_then(|v| v.parse().ok()).unwrap_or(0.0);
+                // the pad ITEMS by ident (`--pad-items AC05702032.Item.Gbx[,…]`: a live file
+                // carries no build report to name its source blocks; `tmmaps census` +
+                // `mapgeom dump` name them — the pad is the 8548-triangle item with a 16/2 deck)
+                let pad_idents: Vec<String> = flag(&a.rest, "--pad-items").unwrap_or_else(|| die("--pads needs --pad-items IDENT[,IDENT…]".into())).split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect();
+                let pads: Vec<mapgeom::waterblocks::PadCell> = m
+                    .items
+                    .iter()
+                    .filter(|it| pad_idents.iter().any(|i| i.eq_ignore_ascii_case(&it.model)))
+                    .map(|it| mapgeom::waterblocks::PadCell { item_index: it.index, source_block: it.model.clone(), pos: it.pos, yaw: it.yaw })
+                    .collect();
+                println!("  {} water gameplay pad placement(s)", pads.len());
+                decisions.extend(mapgeom::waterblocks::decide_pads(&pads, scale, depth_extra));
+            }
             let mut table = String::from("body\tarchetype\tchoice\treason\tblock_origin\tspill\n");
             let mut specs: Vec<tmmaps::map::FreeBlockSpec> = Vec::new();
             let mut files: std::collections::BTreeMap<String, Vec<u8>> = Default::default();

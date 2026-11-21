@@ -407,3 +407,70 @@ pub fn decide_roads(plates: &[PlateRow], tris: &[UpTri]) -> Vec<Decision> {
     }
     out
 }
+
+/// A water GAMEPLAY PAD cell to give the game's own water: the pad ITEM's placement
+/// (`RoadWaterSpecial*`, `PlatformWaterSpecial*` in the manifest) in the scale set.
+pub struct PadCell {
+    pub item_index: usize,
+    pub source_block: String,
+    /// The item's position (the cell's min corner at scale 1 of the item, y = the pad's base).
+    pub pos: [f32; 3],
+    pub yaw: f32,
+}
+
+/// The WATER under a gameplay PAD in a scale set (Giant ×2 / Tiny ×0.5), the water-road
+/// rule applied to the pad's own cell: the drive plane sits `2 × scale` m over the pad's
+/// base (the block's own water plane at y 2 of its 32-m cell), the game's
+/// `RoadWaterStraight` volume (26 m across, 32 m along the road, 2 m deep under its
+/// plane) is laid with its top at that plane, tiled along the road axis over the whole
+/// cell (`32 × scale` m: one volume in Tiny's 16-m cell, two in Giant's 64-m cell) and,
+/// where the cell is wider than the volume (Giant: 64 m across vs 26), side by side
+/// across it. `depth_extra` lowers every volume by that many metres (Everios96
+/// 2026-11-21: "it would have to be a bit deeper" — the car's draft under the plane is
+/// what it reads as depth; the booster deck above is unchanged). No spill test: the
+/// pad's own cell is wet by design and the volumes stay inside it.
+pub fn decide_pads(pads: &[PadCell], scale: f32, depth_extra: f32) -> Vec<Decision> {
+    let mut out = Vec::new();
+    let cell = 32.0 * scale;
+    for p in pads {
+        let along_z = ((p.yaw / std::f32::consts::FRAC_PI_2).round() as i32).rem_euclid(2) == 0;
+        let plane = p.pos[1] + 2.0 * scale - depth_extra;
+        // the cell's min corner in world: the item is anchored at its cell's min corner for
+        // yaw 0; the other yaws rotate about that corner — take the footprint from the
+        // placement the census reports (pos is the min corner of the cell in x/z for the
+        // scale sets' item placements, measured: Giant 152 pads at x 800/864/928, z 640)
+        // The item position is the rotated frame's origin corner, not the cell's min
+        // corner: at yaw +π/2 the cell lies toward −z of the position (Giant 152, the
+        // pad placed at (800, 88, 832) with yaw +π/2: the car rode it at z 800 — measured
+        // 2026-11-21), at yaw π toward −x and −z, at yaw −π/2 toward −x. The quarter
+        // turn's convention (local (x, z) → world (x₀ + z, z₀ − x) at +90°).
+        let q = ((p.yaw / std::f32::consts::FRAC_PI_2).round() as i32).rem_euclid(4);
+        let (x0, z0) = match q {
+            0 => (p.pos[0], p.pos[2]),
+            1 => (p.pos[0], p.pos[2] - cell),
+            2 => (p.pos[0] - cell, p.pos[2] - cell),
+            _ => (p.pos[0] - cell, p.pos[2]),
+        };
+        let n_along = ((cell / 32.0).round() as usize).max(1);
+        let n_across = ((cell / 26.0).floor() as usize).max(1);
+        let across_step = cell / n_across as f32;
+        for i in 0..n_along {
+            for j in 0..n_across {
+                let along_min = i as f32 * 32.0;
+                let across_centre = (j as f32 + 0.5) * across_step;
+                // the free block origin and yaw as decide_roads lays them: along z → yaw 0,
+                // origin (centre_cross − 16, plane − 2, along_min); along x → yaw π/2 with
+                // the +90° convention (local x,z → world x₀+z, z₀−x)
+                let (origin, yaw) = if along_z {
+                    ([x0 + across_centre - 16.0, plane - 2.0, z0 + along_min], 0.0f32)
+                } else {
+                    ([x0 + along_min, plane - 2.0, z0 + across_centre + 16.0], std::f32::consts::FRAC_PI_2)
+                };
+                let body = format!("water pad i{} {} cell at ({:.0}, {:.0}) plane {plane:.2} tile {i}/{j}", p.item_index, p.source_block.split_whitespace().next().unwrap_or(""), x0, z0);
+                let spill = format!("inside the pad cell x {x0:.0}..{:.0} z {z0:.0}..{:.0}", x0 + cell, z0 + cell);
+                out.push(Decision { water_cells: 1, body, archetype: "RoadWaterStraight".to_string(), choice: "block", reason: format!("gameplay pad in a scale set ({scale}): the game's water under the booster deck, {depth_extra} m deeper"), origin, yaw, spill });
+            }
+        }
+    }
+    out
+}
