@@ -84,6 +84,8 @@ pub fn archetype_depth(block: &str) -> Option<f32> {
 /// in 1-m units = 4..7 → top 7; DecoWallWaterBase one 32×8×32 unit = 0..8 → top 8
 /// (the FCT plate plane sits at the block top); RoadWater* y 0..0 in 2-m units → top 2.
 pub fn archetype_top_offset(block: &str) -> f32 {
+    let name = block.split_whitespace().next().unwrap_or(block);
+    if name.starts_with("RoadWater") { return 2.0; }
     match archetype_of(block).map(|(a, _)| a) {
         Some("DecoWallWaterBase") => 8.0,
         _ => 7.0,
@@ -430,6 +432,70 @@ pub struct PadCell {
 /// what it reads as depth; the booster deck above is unchanged). No spill test: the
 /// pad's own cell is wet by design and the volumes stay inside it.
 pub fn decide_pads(pads: &[PadCell], scale: f32, depth_extra: f32) -> Vec<Decision> {
+    decide_pads_with(pads, scale, depth_extra, "RoadWaterStraight")
+}
+
+/// `decide_pads` with the archetype chosen: `RoadWaterStraight` (26 × 32, top at
+/// origin + 2, 2 m deep) or `WaterBase` (32 × 32 zone tile, top at origin + 7, 4 m
+/// deep — no road ends, so no end stubs where a run starts or stops; 2026-11-21).
+pub fn decide_pads_with(pads: &[PadCell], scale: f32, depth_extra: f32, archetype: &str) -> Vec<Decision> {
+    decide_pads_oriented(pads, scale, depth_extra, archetype, "along")
+}
+
+/// `decide_pads_with` with the tiles' orientation chosen. Every water block's clips draw
+/// a FILLER where they are open (measured 2026-11-21 on Giant 152: RoadWaterStraight's
+/// road ends put a 2-m stub at the channel entry — Everios96's "2 collisions" — and
+/// WaterBase's four sides a wooden wall on the start deck; the clip table has no
+/// water block without fillers). RoadWaterStraight has clips only at its two road
+/// ENDS, so `across` turns the tiles 90°: the ends sit inside the pad's 8-m side
+/// walls, the 32-m road axis spans the channel in `cell / 32` end-to-end tiles (a
+/// connected pair draws nothing), and the 26-m water band is repeated along the
+/// channel in `ceil(cell / 26)` overlapping bands (first and last flush with the cell
+/// ends, the rest spread evenly).
+pub fn decide_pads_oriented(pads: &[PadCell], scale: f32, depth_extra: f32, archetype: &str, orient: &str) -> Vec<Decision> {
+    if orient != "across" {
+        return decide_pads_along(pads, scale, depth_extra, archetype);
+    }
+    let mut out = Vec::new();
+    let cell = 32.0 * scale;
+    let band = 26.0f32;
+    let top = archetype_top_offset(archetype);
+    for p in pads {
+        let along_z = ((p.yaw / std::f32::consts::FRAC_PI_2).round() as i32).rem_euclid(2) == 0;
+        let plane = p.pos[1] + 2.0 * scale - depth_extra;
+        let q = ((p.yaw / std::f32::consts::FRAC_PI_2).round() as i32).rem_euclid(4);
+        let (x0, z0) = match q {
+            0 => (p.pos[0], p.pos[2]),
+            1 => (p.pos[0], p.pos[2] - cell),
+            2 => (p.pos[0] - cell, p.pos[2] - cell),
+            _ => (p.pos[0] - cell, p.pos[2]),
+        };
+        let n_bands = ((cell / band).ceil() as usize).max(1);
+        let n_across = ((cell / 32.0).round() as usize).max(1);
+        for i in 0..n_bands {
+            // the band centre along the channel
+            let centre_along = if n_bands == 1 { cell / 2.0 } else { band / 2.0 + (cell - band) * i as f32 / (n_bands - 1) as f32 };
+            for j in 0..n_across {
+                let across_min = j as f32 * 32.0;
+                // the tile's road axis runs ACROSS the channel: a channel along x gets
+                // tiles with their axis along z (yaw 0, origin x = centre − 16); a
+                // channel along z gets tiles along x (yaw +π/2: world x = x₀..x₀+32,
+                // world z = z₀−32..z₀ → z₀ = centre + 16)
+                let (origin, yaw) = if along_z {
+                    ([x0 + across_min, plane - top, z0 + centre_along + 16.0], std::f32::consts::FRAC_PI_2)
+                } else {
+                    ([x0 + centre_along - 16.0, plane - top, z0 + across_min], 0.0f32)
+                };
+                let body = format!("water pad i{} {} cell at ({:.0}, {:.0}) plane {plane:.2} band {i}/{n_bands} across {j}/{n_across}", p.item_index, p.source_block.split_whitespace().next().unwrap_or(""), x0, z0);
+                let spill = format!("inside the pad cell x {x0:.0}..{:.0} z {z0:.0}..{:.0}; road ends in the side walls", x0 + cell, z0 + cell);
+                out.push(Decision { water_cells: 1, body, archetype: archetype.to_string(), choice: "block", reason: format!("gameplay pad in a scale set ({scale}): the game's water under the booster deck, tiles across so the clip fillers sit in the walls, {depth_extra} m deeper"), origin, yaw, spill });
+            }
+        }
+    }
+    out
+}
+
+fn decide_pads_along(pads: &[PadCell], scale: f32, depth_extra: f32, archetype: &str) -> Vec<Decision> {
     let mut out = Vec::new();
     let cell = 32.0 * scale;
     for p in pads {
@@ -461,14 +527,15 @@ pub fn decide_pads(pads: &[PadCell], scale: f32, depth_extra: f32) -> Vec<Decisi
                 // the free block origin and yaw as decide_roads lays them: along z → yaw 0,
                 // origin (centre_cross − 16, plane − 2, along_min); along x → yaw π/2 with
                 // the +90° convention (local x,z → world x₀+z, z₀−x)
+                let top = archetype_top_offset(archetype);
                 let (origin, yaw) = if along_z {
-                    ([x0 + across_centre - 16.0, plane - 2.0, z0 + along_min], 0.0f32)
+                    ([x0 + across_centre - 16.0, plane - top, z0 + along_min], 0.0f32)
                 } else {
-                    ([x0 + along_min, plane - 2.0, z0 + across_centre + 16.0], std::f32::consts::FRAC_PI_2)
+                    ([x0 + along_min, plane - top, z0 + across_centre + 16.0], std::f32::consts::FRAC_PI_2)
                 };
                 let body = format!("water pad i{} {} cell at ({:.0}, {:.0}) plane {plane:.2} tile {i}/{j}", p.item_index, p.source_block.split_whitespace().next().unwrap_or(""), x0, z0);
                 let spill = format!("inside the pad cell x {x0:.0}..{:.0} z {z0:.0}..{:.0}", x0 + cell, z0 + cell);
-                out.push(Decision { water_cells: 1, body, archetype: "RoadWaterStraight".to_string(), choice: "block", reason: format!("gameplay pad in a scale set ({scale}): the game's water under the booster deck, {depth_extra} m deeper"), origin, yaw, spill });
+                out.push(Decision { water_cells: 1, body, archetype: archetype.to_string(), choice: "block", reason: format!("gameplay pad in a scale set ({scale}): the game's water under the booster deck, {depth_extra} m deeper"), origin, yaw, spill });
             }
         }
     }

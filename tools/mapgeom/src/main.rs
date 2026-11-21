@@ -484,9 +484,36 @@ fn main() {
             let p = a.rest.get(1).cloned().unwrap_or_else(|| die("blockitem-archetype IN.Block.Gbx --out OUT --archetype NAME".into()));
             let out = flag(&a.rest, "--out").unwrap_or_else(|| die("--out FILE".into()));
             let arche = flag(&a.rest, "--archetype").unwrap_or_else(|| die("--archetype NAME".into()));
-            let bytes = std::fs::read(&p).unwrap_or_else(|e| die(e.to_string()));
+            let mut bytes = std::fs::read(&p).unwrap_or_else(|e| die(e.to_string()));
             if bytes.get(7) != Some(&b'U') {
                 die::<()>(format!("{p}: body is compressed; this patches bytes in place"));
+            }
+            // --mesh-scale F: the block's OWN mesh positions times F, in place (the
+            // walker's position marks, as `rescale` patches a pack model; an
+            // uncompressed file's body is its tail). 2026-11-21: the water-pad
+            // volumes' template mesh showed as 2-m stubs at the block origins
+            // (Everios96's "2 collisions" at the Giant 152 channel entry) — at 0.001
+            // it is a speck under the water plane; the archetype's water volume is
+            // what the block is for.
+            let mut mesh_note = String::new();
+            if let Some(f) = flag(&a.rest, "--mesh-scale") {
+                let factor: f32 = f.parse().unwrap_or_else(|_| die("--mesh-scale number".into()));
+                let model = mapgeom::store::Model::parse(&bytes, &p).unwrap_or_else(die);
+                let graph = model.graph().unwrap_or_else(die);
+                let body_off = bytes.len() - model.body.len();
+                let mut floats = 0usize;
+                for (off, n) in &graph.r.marks {
+                    if *off == usize::MAX {
+                        die::<()>(format!("{p}: packed positions cannot be rescaled in place"));
+                    }
+                    for k in 0..*n {
+                        let o = body_off + off + 4 * k;
+                        let v = f32::from_le_bytes(bytes[o..o + 4].try_into().unwrap());
+                        bytes[o..o + 4].copy_from_slice(&(v * factor).to_le_bytes());
+                    }
+                    floats += n;
+                }
+                mesh_note = format!("; mesh x{factor} ({floats} floats)");
             }
             let header_size = u32::from_le_bytes(bytes[13..17].try_into().unwrap()) as usize;
             let nchunks = u32::from_le_bytes(bytes[17..21].try_into().unwrap()) as usize;
@@ -568,7 +595,7 @@ fn main() {
                 note = format!("; {patched} collidable byte(s) cleared");
             }
             std::fs::write(&out, &out_bytes).unwrap_or_else(|e| die(e.to_string()));
-            println!("{p}: archetype {cur} -> {arche} at {} places (header delta {header_delta}){note} -> {out}", offs.len());
+            println!("{p}: archetype {cur} -> {arche} at {} places (header delta {header_delta}){note}{mesh_note} -> {out}", offs.len());
         }
         "waterblocks" => {
             // waterblocks MAP --plates P.tsv --template T.Block.Gbx --out MAP2 --table T.tsv
@@ -624,7 +651,8 @@ fn main() {
             // --pads --scale S [--pad-depth D]: the water GAMEPLAY PADS of a scale set get the
             // game's water under their booster deck (waterblocks::decide_pads); the pad items
             // are found through the manifest's source-block names
-            if a.rest.iter().any(|x| x == "--pads") {
+            let pads_mode = a.rest.iter().any(|x| x == "--pads");
+            if pads_mode {
                 let scale: f32 = flag(&a.rest, "--scale").and_then(|v| v.parse().ok()).unwrap_or_else(|| die("--pads needs --scale S (2 for Giant, 0.5 for Tiny)".into()));
                 let depth_extra: f32 = flag(&a.rest, "--pad-depth").and_then(|v| v.parse().ok()).unwrap_or(0.0);
                 // the pad ITEMS by ident (`--pad-items AC05702032.Item.Gbx[,…]`: a live file
@@ -638,7 +666,9 @@ fn main() {
                     .map(|it| mapgeom::waterblocks::PadCell { item_index: it.index, source_block: it.model.clone(), pos: it.pos, yaw: it.yaw })
                     .collect();
                 println!("  {} water gameplay pad placement(s)", pads.len());
-                decisions.extend(mapgeom::waterblocks::decide_pads(&pads, scale, depth_extra));
+                let arche = flag(&a.rest, "--pad-archetype").unwrap_or_else(|| "RoadWaterStraight".to_string());
+                let orient = flag(&a.rest, "--pad-orient").unwrap_or_else(|| "across".to_string());
+                decisions.extend(mapgeom::waterblocks::decide_pads_oriented(&pads, scale, depth_extra, &arche, &orient));
             }
             let mut table = String::from("body\tarchetype\tchoice\treason\tblock_origin\tspill\n");
             let mut specs: Vec<tmmaps::map::FreeBlockSpec> = Vec::new();
@@ -657,9 +687,13 @@ fn main() {
                     let tmp_in = std::env::temp_dir().join(format!("wb-{}.in.Block.Gbx", d.archetype));
                     let tmp_out = std::env::temp_dir().join(format!("wb-{}.Block.Gbx", d.archetype));
                     std::fs::write(&tmp_in, &tpl).unwrap_or_else(|e| die(e.to_string()));
-                    let status = std::process::Command::new(std::env::current_exe().unwrap())
-                        .args(["blockitem-archetype", tmp_in.to_str().unwrap(), "--out", tmp_out.to_str().unwrap(), "--archetype", &d.archetype])
-                        .status()
+                    let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
+                    cmd.args(["blockitem-archetype", tmp_in.to_str().unwrap(), "--out", tmp_out.to_str().unwrap(), "--archetype", &d.archetype]);
+                    if pads_mode {
+                        // the pad volumes: the template's own mesh is a speck and stops nothing
+                        cmd.args(["--no-collide", "--mesh-scale", "0.001"]);
+                    }
+                    let status = cmd.status()
                         .unwrap_or_else(|e| die(e.to_string()));
                     if !status.success() { die::<()>(format!("blockitem-archetype failed for {}", d.archetype)); }
                     // the file's own ident must be the manifest's (the game pairs them by ident,
