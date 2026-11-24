@@ -683,7 +683,7 @@ pub fn deflated_zip(files: &std::collections::BTreeMap<String, Vec<u8>>) -> Vec<
         let n = entries.len();
         let workers = std::thread::available_parallelism().map(|w| w.get()).unwrap_or(1).min(32).min(n.max(1));
         if workers <= 1 {
-            entries.iter().map(|(_, data)| (crc32(data), miniz_oxide::deflate::compress_to_vec(data, DEFLATE_LEVEL))).collect()
+            entries.iter().map(|(_, data)| (crc32(data), miniz_oxide::deflate::compress_to_vec(data, deflate_level()))).collect()
         } else {
             let next = std::sync::atomic::AtomicUsize::new(0);
             let slots: Vec<std::sync::Mutex<Option<(u32, Vec<u8>)>>> = (0..n).map(|_| std::sync::Mutex::new(None)).collect();
@@ -695,7 +695,7 @@ pub fn deflated_zip(files: &std::collections::BTreeMap<String, Vec<u8>>) -> Vec<
                             break;
                         }
                         let data = entries[i].1;
-                        let r = (crc32(data), miniz_oxide::deflate::compress_to_vec(data, DEFLATE_LEVEL));
+                        let r = (crc32(data), miniz_oxide::deflate::compress_to_vec(data, deflate_level()));
                         *slots[i].lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
                     });
                 }
@@ -1136,6 +1136,12 @@ pub fn embedded_zip_bytes(body: &[u8]) -> Option<(Vec<u8>, Vec<String>)> {
 /// an exhaustive search, ~2 % smaller at several times the compression time —
 /// not what moves a map off the upload cap; the detail-level pick is).
 pub const DEFLATE_LEVEL: u8 = 6;
+
+/// `TINY_DEFLATE_LEVEL=N` (0..=10) over DEFLATE_LEVEL: the last 2 % for a map at the cap
+/// (Giant Fall 2026 x4 map 21, 2026-11-24: 22.9 MB of items).
+pub fn deflate_level() -> u8 {
+    std::env::var("TINY_DEFLATE_LEVEL").ok().and_then(|v| v.parse::<u8>().ok()).map(|v| v.min(10)).unwrap_or(DEFLATE_LEVEL)
+}
 
 /// Every SUPPORT entry (not an `.Item.Gbx`: the .dds cut-out masks and diffuse maps, materials, prefabs) of `full`'s
 /// embedded zip that `reduced` lacks, added to `reduced`'s zip; the manifest (item idents) is kept — support files need no

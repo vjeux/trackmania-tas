@@ -92,6 +92,19 @@ fn vertex_key(v: &CPlugVisualIndexedTriangles, i: usize) -> Vec<u8> {
             k.extend(t.chunks(per).nth(i).unwrap_or(&[]));
         }
     }
+    if let Some(m) = v.main.as_ref() {
+        for s in &m.tex_coord_sets {
+            if let Some((uv, a, b)) = s.coords.get(i) {
+                k.extend(uv[0].to_bits().to_le_bytes());
+                k.extend(uv[1].to_bits().to_le_bytes());
+                k.extend(a.unwrap_or(i32::MIN).to_le_bytes());
+                k.extend(b.unwrap_or(i32::MIN).to_le_bytes());
+            }
+            if let Some(u) = s.u01.get(i) {
+                k.extend(u.to_bits().to_le_bytes());
+            }
+        }
+    }
     k
 }
 
@@ -384,9 +397,11 @@ pub fn decimate(v: &CPlugVisualIndexedTriangles, tol: f32) -> Option<(CPlugVisua
 
 fn decimatable(v: &CPlugVisualIndexedTriangles) -> bool {
     let (pts, idx) = visual_triangles(v);
-    // texcoords kept OUTSIDE the stream (main.tex_coord_sets) are neither in the weld key nor
-    // compacted by `sub_visual`: such a visual stays as it is
-    pts.len() >= 3 && idx.len() >= 3 && idx.iter().all(|i| (*i as usize) < pts.len()) && v.main.as_ref().map(|m| m.tex_coord_sets.is_empty() && m.skin.is_none()).unwrap_or(false)
+    let n = pts.len();
+    // texcoords kept OUTSIDE the stream (main.tex_coord_sets) take part in the weld key and are
+    // compacted by `sub_visual` when they hold one entry per vertex; any other shape (or a
+    // skin) leaves the visual as it is
+    n >= 3 && idx.len() >= 3 && idx.iter().all(|i| (*i as usize) < n) && v.main.as_ref().map(|m| m.skin.is_none() && m.tex_coord_sets.iter().all(|s| s.coords.len() == n && (s.u01.is_empty() || s.u01.len() == n))).unwrap_or(false)
 }
 
 /// SEVERAL visuals of one item decimated TOGETHER within `tol`: one position-level mesh, so an

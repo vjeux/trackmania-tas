@@ -1574,6 +1574,18 @@ pub fn sub_visual(v: &CPlugVisualIndexedTriangles, keep: &[bool]) -> R<CPlugVisu
     if let Some(ib) = out.index_buffer.as_mut() {
         ib.indices = new_idx;
     }
+    // texcoords kept outside the stream (main.tex_coord_sets): one entry per vertex, dropped
+    // with it (a set of another length is left as it is)
+    if let Some(m) = out.main.as_mut() {
+        for set in m.tex_coord_sets.iter_mut() {
+            if set.coords.len() == nverts {
+                set.coords = set.coords.iter().zip(&used).filter(|(_, u)| **u).map(|(x, _)| *x).collect();
+            }
+            if set.u01.len() == nverts {
+                set.u01 = set.u01.iter().zip(&used).filter(|(_, u)| **u).map(|(x, _)| *x).collect();
+            }
+        }
+    }
     Ok(out)
 }
 

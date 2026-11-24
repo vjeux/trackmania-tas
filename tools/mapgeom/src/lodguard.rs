@@ -436,6 +436,47 @@ fn coplanar_parts(result: &Merged, nearest: &Merged, holds: &BTreeMap<u32, Hold>
 /// How many closing rounds may add culprit parts before the whole item goes to its nearest level.
 const CLOSING_ROUNDS: usize = 3;
 
+/// THE DECIMATION FLOW: bake again with the decimation in force (the held nearest-level visuals,
+/// or with `all` every nearest-level visual), read the decimated parts against the SAME bake
+/// undecimated (`out`: a decimated part answers for the cells its decimation moved off the hull,
+/// not for its coarse neighbours') and the item's vis-coll census; one more round without the
+/// parts off the hull; else everything back. Returns the LAST bake run and the note.
+#[allow(clippy::too_many_arguments)]
+fn decimate_flow<T>(bake: &mut impl FnMut(bool, &BTreeMap<u32, Hold>) -> Result<T, String>, merged: &impl Fn(&mut T) -> &mut Merged, mut out: T, holds: &BTreeMap<u32, Hold>, step: f32, tol: f32, dtol: f32, all: bool) -> Result<(T, String), String> {
+    let mut targets = holds.clone();
+    let mut exclude: BTreeSet<u32> = BTreeSet::new();
+    for round in 0..2 {
+        let mut dec = with_decimation_all(Some((dtol, targets.clone())), if all { Some(exclude.clone()) } else { None }, || bake(false, holds))?;
+        let parts = DECIMATED.with(|d| d.borrow().clone());
+        if parts.is_empty() {
+            return Ok((dec, "lod guard: nothing to decimate".into()));
+        }
+        let blamed_why = hull_holds_for(merged(&mut dec), merged(&mut out), step, tol, &parts);
+        let why_s: Vec<String> = blamed_why.values().map(|f| f.why.clone()).collect();
+        let blamed: BTreeSet<u32> = blamed_why.into_keys().collect();
+        let (dvc, dvc0, _) = vis_coll_rel(merged(&mut dec), merged(&mut out), step, tol, &parts);
+        let what = if all { "nearest-level" } else { "held" };
+        if !dvc.worse_than(&dvc0) && blamed.is_empty() {
+            let (b, a) = DECIMATED_VERTS.with(|d| d.get());
+            return Ok((dec, format!("lod guard: {} {what} part(s) decimated within {dtol} m ({b} -> {a} vertices; vis-coll {} vs {}){}", parts.len(), dvc.describe(), dvc0.describe(), if round > 0 { " after putting back the parts off the hull" } else { "" })));
+        }
+        if round == 1 || (dvc.worse_than(&dvc0) && blamed.is_empty()) {
+            let back = bake(false, holds)?;
+            return Ok((back, format!("lod guard: decimation put back (vis-coll {} vs {}; {} part(s) off the hull: {})", dvc.describe(), dvc0.describe(), blamed.len(), why_s.join(" | "))));
+        }
+        targets.retain(|p, _| !blamed.contains(p));
+        exclude.extend(blamed.iter().copied());
+        if targets.is_empty() && !all {
+            let back = bake(false, holds)?;
+            return Ok((back, format!("lod guard: decimation put back ({} part(s) off the hull: {})", blamed.len(), why_s.join(" | "))));
+        }
+        // `dec` is not the reference: `out` stays the undecimated bake
+        let _ = &mut out;
+    }
+    let back = bake(false, holds)?;
+    Ok((back, "lod guard: decimation put back".into()))
+}
+
 /// `TINY_LOD_DECIMATE=M`: the held nearest-level visuals get OUR coarse level, decimated within
 /// M metres (`crate::decimate`), then read against the hull like any other level (unset: off).
 pub fn decimate_tolerance() -> Option<f32> {
@@ -446,6 +487,9 @@ thread_local! {
     /// The decimation in force for ONE bake on this thread: the tolerance and the holds whose
     /// nearest-level visuals get decimated (`apply_decimation`, called before every assembly).
     static DECIMATE: std::cell::RefCell<Option<(f32, BTreeMap<u32, Hold>)>> = std::cell::RefCell::new(None);
+    /// TINY_LOD_DECIMATE_ALL: every nearest-level visual of the bake (held, or of a part the pick
+    /// left alone) is decimated but these parts' (put back after a round off the hull)
+    static DECIMATE_ALL: std::cell::RefCell<Option<BTreeSet<u32>>> = std::cell::RefCell::new(None);
     /// What the last `apply_decimation` on this thread decimated: the parts, the vertex counts.
     static DECIMATED: std::cell::RefCell<BTreeSet<u32>> = std::cell::RefCell::new(BTreeSet::new());
     static DECIMATED_VERTS: std::cell::Cell<(usize, usize)> = std::cell::Cell::new((0, 0));
@@ -453,12 +497,24 @@ thread_local! {
 
 /// Run `f` (a bake) with the decimation `spec` in force (restored afterwards).
 pub fn with_decimation<T>(spec: Option<(f32, BTreeMap<u32, Hold>)>, f: impl FnOnce() -> T) -> T {
+    with_decimation_all(spec, None, f)
+}
+
+/// `with_decimation` with the ALL mode in force when `all` is Some (its parts excluded).
+pub fn with_decimation_all<T>(spec: Option<(f32, BTreeMap<u32, Hold>)>, all: Option<BTreeSet<u32>>, f: impl FnOnce() -> T) -> T {
     let before = DECIMATE.with(|d| std::mem::replace(&mut *d.borrow_mut(), spec));
+    let before_all = DECIMATE_ALL.with(|d| std::mem::replace(&mut *d.borrow_mut(), all));
     DECIMATED.with(|d| d.borrow_mut().clear());
     DECIMATED_VERTS.with(|d| d.set((0, 0)));
     let out = f();
     DECIMATE.with(|d| *d.borrow_mut() = before);
+    DECIMATE_ALL.with(|d| *d.borrow_mut() = before_all);
     out
+}
+
+/// `TINY_LOD_DECIMATE_ALL=1`: decimate every nearest-level visual, not only the held ones.
+pub fn decimate_all() -> bool {
+    std::env::var("TINY_LOD_DECIMATE_ALL").map(|v| v == "1").unwrap_or(false)
 }
 
 /// THE HOOK every item assembly calls: with a decimation in force (`with_decimation`), the
@@ -467,6 +523,7 @@ pub fn with_decimation<T>(spec: Option<(f32, BTreeMap<u32, Hold>)>, f: impl FnOn
 pub fn apply_decimation(m: &mut Merged) {
     // once per bake: a second assembly in the same bake must not decimate the decimation
     let Some((tol, holds)) = DECIMATE.with(|d| d.borrow_mut().take()) else { return };
+    let all = DECIMATE_ALL.with(|d| d.borrow_mut().take());
     let mut parts = BTreeSet::new();
     // the held nearest-level visuals go in ONE decimation (their shared edges move together);
     // every other visual's positions stay put (`decimate_many`'s lock)
@@ -476,11 +533,11 @@ pub fn apply_decimation(m: &mut Merged) {
         let part = m.visuals[i].part;
         let link = m.materials.get(m.visuals[i].material).and_then(|x| x.link()).unwrap_or("").to_string();
         let held = part < VEGET_PART_BASE
-            && match holds.get(&part) {
+            && (match holds.get(&part) {
                 Some(Hold::Whole) => true,
                 Some(Hold::Links(l)) => l.get(&link) == Some(&0),
                 None => false,
-            };
+            } || all.as_ref().map(|ex| !ex.contains(&part) && !m.picked_parts.contains_key(&part) && !holds.contains_key(&part)).unwrap_or(false));
         if held {
             held_idx.push(i);
         } else {
@@ -513,6 +570,14 @@ pub fn guarded<T>(scale: f32, mut bake: impl FnMut(bool, &BTreeMap<u32, Hold>) -
     let none: BTreeMap<u32, Hold> = BTreeMap::new();
     let mut first = bake(false, &none)?;
     if !enabled() || merged(&mut first).picked_parts.is_empty() {
+        // nothing coarsened: with TINY_LOD_DECIMATE_ALL the item's nearest-level visuals still
+        // get our coarse level
+        if let (true, Some(dtol), true) = (enabled(), decimate_tolerance(), decimate_all()) {
+            let (step, tol) = (step(scale), tolerance());
+            let (mut o, n) = decimate_flow(&mut bake, &merged, first, &none, step, tol, dtol, true)?;
+            merged(&mut o).notes.push(n);
+            return Ok(o);
+        }
         return Ok(first);
     }
     let (step, tol) = (step(scale), tolerance());
@@ -581,41 +646,14 @@ pub fn guarded<T>(scale: f32, mut bake: impl FnMut(bool, &BTreeMap<u32, Hold>) -
                 let whole = holds.values().filter(|h| **h == Hold::Whole).count();
                 format!("lod guard: {} of {} coarsened part(s) held ({whole} whole) — {} ({tail})", holds.len(), coarsened.len(), why.join(" | "))
             };
-            // OUR coarse level for what the guard holds at the nearest level (TINY_LOD_DECIMATE)
+            // OUR coarse level for what the guard holds at the nearest level (TINY_LOD_DECIMATE),
+            // and with TINY_LOD_DECIMATE_ALL for every nearest-level visual
             let mut dnote: Option<String> = None;
-            if let (Some(dtol), false) = (decimate_tolerance(), holds.is_empty()) {
-                let mut targets = holds.clone();
-                for round in 0..2 {
-                    let mut dec = with_decimation(Some((dtol, targets.clone())), || bake(false, &holds))?;
-                    let parts = DECIMATED.with(|d| d.borrow().clone());
-                    if parts.is_empty() {
-                        out = dec;
-                        dnote = Some("lod guard: nothing to decimate".into());
-                        break;
-                    }
-                    // judged against the SAME bake undecimated (`out`): a decimated part answers for
-                    // the cells its decimation moved off the hull, not for its coarse neighbours'
-                    let blamed_why = hull_holds_for(merged(&mut dec), merged(&mut out), step, tol, &parts);
-                    let why_s: Vec<String> = blamed_why.values().map(|f| f.why.clone()).collect();
-                    let blamed: BTreeSet<u32> = blamed_why.into_keys().collect();
-                    let (dvc, dvc0, _) = vis_coll_rel(merged(&mut dec), merged(&mut out), step, tol, &parts);
-                    if !dvc.worse_than(&dvc0) && blamed.is_empty() {
-                        let (b, a) = DECIMATED_VERTS.with(|d| d.get());
-                        dnote = Some(format!("lod guard: {} held part(s) decimated within {dtol} m ({b} -> {a} vertices; vis-coll {} vs {}){}", parts.len(), dvc.describe(), dvc0.describe(), if round > 0 { " after putting back the parts off the hull" } else { "" }));
-                        out = dec;
-                        break;
-                    }
-                    if round == 1 || dvc.worse_than(&dvc0) && blamed.is_empty() {
-                        out = bake(false, &holds)?;
-                        dnote = Some(format!("lod guard: decimation put back (vis-coll {} vs {}; {} part(s) off the hull)", dvc.describe(), dvc0.describe(), blamed.len()));
-                        break;
-                    }
-                    targets.retain(|p, _| !blamed.contains(p));
-                    if targets.is_empty() {
-                        out = bake(false, &holds)?;
-                        dnote = Some(format!("lod guard: decimation put back ({} part(s) off the hull: {})", blamed.len(), why_s.join(" | ")));
-                        break;
-                    }
+            if let Some(dtol) = decimate_tolerance() {
+                if !holds.is_empty() || decimate_all() {
+                    let (o, n) = decimate_flow(&mut bake, &merged, out, &holds, step, tol, dtol, decimate_all())?;
+                    out = o;
+                    dnote = Some(n);
                 }
             }
             merged(&mut out).notes.push(note);
