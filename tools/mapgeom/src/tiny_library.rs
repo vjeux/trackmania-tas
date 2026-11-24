@@ -852,9 +852,9 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
     }
     crate::lodguard::guarded(
         scale,
-        |all, parts| {
+        |all, holds| {
             bake_env_reset(collection);
-            crate::static_item::lod::with_guard_lod0(all, parts, || bake_block_once(store, plan, name, path, bi, ident, scale, collection, legacy, water, at_water_row))
+            crate::static_item::lod::with_guard(all, holds, || bake_block_once(store, plan, name, path, bi, ident, scale, collection, legacy, water, at_water_row))
         },
         |t| &mut t.1,
     )
@@ -951,6 +951,15 @@ fn bake_block_once(store: &mut DataStore, plan: &BlockBake, name: &str, path: &s
     if let (true, Some((_, wlocal)), true) = (plan.terrain, water, at_water_row) {
         crate::static_item::build::restore_depth(&mut m, wlocal * scale, scale);
         deepened = true;
+    }
+    // THE FACADE SLAB (merged::inflate_sheet): a giant's baked VFC facade filler moves off the
+    // plane of the engine's own 1× facade on the grid water tiles (the flicker on giant Fall 15)
+    if scale > 1.0 && name.contains("VFC") && std::env::var("TINY_FACADE_SLAB").map(|v| v != "0").unwrap_or(true) {
+        let d = 0.015 * scale;
+        let n = crate::static_item::build::inflate_sheet(&mut m, d);
+        if n > 0 {
+            m.notes.push(format!("facade slab: {n} vertical sheet visual(s) moved {d:.3} m along their normals (off the engine's coplanar facade; TINY_FACADE_SLAB=0 keeps them)"));
+        }
     }
     // A gameplay gate BLOCK (GateSpecialBoost/Reset/…): its trigger
     // disc lives in the block info, not the prefab (`blockinfo_special_
@@ -1397,7 +1406,7 @@ impl ItemOut {
 /// One item bake under THE LOD GUARD — the same three steps as `bake_block`.
 #[allow(clippy::too_many_arguments)]
 fn bake_item(store: &mut DataStore, src: &ItemSrc, ident: &str, scale: f32, collection: u32, variant: u8, light_skin: &Option<crate::light_skin::LightSkin>, still_flag: bool) -> Result<(Vec<u8>, crate::static_item::build::Merged), String> {
-    crate::lodguard::guarded(scale, |all, parts| crate::static_item::lod::with_guard_lod0(all, parts, || bake_item_once(store, src, ident, scale, collection, variant, light_skin, still_flag)), |t| &mut t.1)
+    crate::lodguard::guarded(scale, |all, holds| crate::static_item::lod::with_guard(all, holds, || bake_item_once(store, src, ident, scale, collection, variant, light_skin, still_flag)), |t| &mut t.1)
 }
 
 #[allow(clippy::too_many_arguments)]

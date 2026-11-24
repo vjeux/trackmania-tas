@@ -52,27 +52,47 @@ pub fn lod0_only() -> bool {
     lod_pick().is_some()
 }
 
+/// What the LOD guard holds of one part in the bake in progress (`crate::lodguard`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Hold {
+    /// every geom of the part at its nearest level
+    Whole,
+    /// the geoms of these material LINKS at their nearest level, the others at the pick
+    Links(std::collections::BTreeSet<String>),
+}
+
 thread_local! {
     /// The LOD guard's override for ONE bake on this thread (`tiny_library::bake_block`,
-    /// `crate::lodguard`): `(all, parts)` — every part, or the parts listed (numbered as
-    /// `Merged::parts` counts them, from 1), keep their NEAREST level whatever the pick says.
-    static GUARD_LOD0: std::cell::RefCell<(bool, std::collections::BTreeSet<u32>)> = std::cell::RefCell::new((false, std::collections::BTreeSet::new()));
+    /// `crate::lodguard`): `(all, holds)` — every part at its nearest level, or the parts listed
+    /// (numbered as `Merged::parts` counts them, from 1) held as their `Hold` says.
+    static GUARD: std::cell::RefCell<(bool, std::collections::BTreeMap<u32, Hold>)> = std::cell::RefCell::new((false, std::collections::BTreeMap::new()));
 }
 
 /// Run `f` with the guard's override in force (restored afterwards, also on an error path).
-pub fn with_guard_lod0<T>(all: bool, parts: &std::collections::BTreeSet<u32>, f: impl FnOnce() -> T) -> T {
-    let before = GUARD_LOD0.with(|g| std::mem::replace(&mut *g.borrow_mut(), (all, parts.clone())));
+pub fn with_guard<T>(all: bool, holds: &std::collections::BTreeMap<u32, Hold>, f: impl FnOnce() -> T) -> T {
+    let before = GUARD.with(|g| std::mem::replace(&mut *g.borrow_mut(), (all, holds.clone())));
     let out = f();
-    GUARD_LOD0.with(|g| *g.borrow_mut() = before);
+    GUARD.with(|g| *g.borrow_mut() = before);
     out
 }
 
-/// Whether the guard holds part `part` of the bake in progress at its nearest level.
+/// `with_guard` with every listed part held whole.
+pub fn with_guard_lod0<T>(all: bool, parts: &std::collections::BTreeSet<u32>, f: impl FnOnce() -> T) -> T {
+    let holds = parts.iter().map(|p| (*p, Hold::Whole)).collect();
+    with_guard(all, &holds, f)
+}
+
+/// Whether the guard holds part `part` of the bake in progress whole at its nearest level.
 pub fn guard_forces_lod0(part: u32) -> bool {
-    GUARD_LOD0.with(|g| {
+    GUARD.with(|g| {
         let g = g.borrow();
-        g.0 || g.1.contains(&part)
+        g.0 || g.1.get(&part) == Some(&Hold::Whole)
     })
+}
+
+/// Whether the guard holds the geoms of material link `link` of part `part` at their nearest level.
+pub fn guard_holds_link(part: u32, link: &str) -> bool {
+    GUARD.with(|g| matches!(g.borrow().1.get(&part), Some(Hold::Links(l)) if l.contains(link)))
 }
 
 /// A source part's detail ladder length: one more level than it has switch

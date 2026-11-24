@@ -11,7 +11,7 @@ use super::surface::{CPlugSurface, Surf, Triangle};
 use super::visual::CPlugVisualIndexedTriangles;
 use super::vstream::{Elem, N_COLOR0, N_NORMAL, N_POSITION, N_TANGENT_U, N_TANGENT_V, N_TEXCOORD0, T_DEC3N, T_FLOAT3};
 use super::{Node, R};
-use super::lod::{guard_forces_lod0, lod0_only, lod_levels_of, lod_pick, merge_lod_ladder};
+use super::lod::{guard_forces_lod0, guard_holds_link, lod0_only, lod_levels_of, lod_pick, merge_lod_ladder};
 use super::materials::{gate_special_stem, material_link, most_common_physics, physics_for_link, resolve_crystal_link, same_look};
 use crate::crystal_model::CPlugMaterialUserInst;
 use crate::geom::{apply, compose, Xform, IDENTITY};
@@ -231,6 +231,8 @@ pub struct Merged {
     /// The parts the size ladder's `--lod-pick` drew at a COARSER level than their
     /// nearest (part number → the level kept) — what `crate::lodguard` checks.
     pub picked_parts: std::collections::BTreeMap<u32, u32>,
+    /// The parts with collision-voted materials (the terrain id materials split per triangle).
+    pub voted_parts: std::collections::BTreeSet<u32>,
     /// Solid2 fields carried from the source mesh for a tween part: the pack's
     /// Flag.Mesh.Gbx says `vis_cst_type` 2 (its vertices are not constant —
     /// the frames), `u07` -1; a static item says 1 and 1.
@@ -427,6 +429,57 @@ pub fn remap_positions(m: &mut Merged, f: &dyn Fn([f32; 3]) -> [f32; 3]) {
     for v in &mut m.surf_vertices {
         *v = f(*v);
     }
+}
+
+/// THE FACADE SLAB (stadium2, 2026-10-02; lost with its branch, re-applied 2026-11-24): a giant
+/// map's grid water tiles draw the engine's own 1× `DecoWallWaterVFC` facade on every open
+/// face, coplanar with the source's facade filler baked ×N as an item — two one-sided
+/// zero-thickness sheets on one plane z-fight (vjeux on giant Fall 15: "a flicker on one side
+/// of a pool"). Every visual of the item that is a VERTICAL SHEET (under 2 cm thick across
+/// x or z, over 1 m wide and 0.5 m tall) moves `d` along its vertex normals (the facing side),
+/// in front of the engine's sheet. Returns how many visuals moved.
+pub fn inflate_sheet(m: &mut Merged, d: f32) -> usize {
+    let mut moved = 0usize;
+    for mv in &mut m.visuals {
+        let Some(main) = mv.visual.main.as_mut() else { continue };
+        let Some(Node::VertexStream(stream)) = main.vertex_streams.first_mut().and_then(|r| r.inline.as_deref_mut()) else { continue };
+        let compress = stream.compress_local3d.unwrap_or(false);
+        let mut normals: Option<Vec<[f32; 3]>> = None;
+        let mut positions: Option<Vec<[f32; 3]>> = None;
+        for (dcl, e) in stream.decls.iter().zip(stream.elems.iter()) {
+            match (dcl.name(), dcl.stored_type(compress), e) {
+                (N_NORMAL, T_DEC3N, Elem::Word(w)) => normals = Some(w.iter().map(|x| dec3n_unpack(*x)).collect()),
+                (N_NORMAL, T_FLOAT3, Elem::Float3(p)) => normals = Some(p.clone()),
+                (N_POSITION, T_FLOAT3, Elem::Float3(p)) => positions = Some(p.clone()),
+                _ => {}
+            }
+        }
+        let (Some(pos), Some(nrm)) = (positions, normals) else { continue };
+        if pos.is_empty() || pos.len() != nrm.len() {
+            continue;
+        }
+        let b = bbox(&pos);
+        let (dx, dy, dz) = (b[3] - b[0], b[4] - b[1], b[5] - b[2]);
+        if !(dx.min(dz) < 0.02 && dx.max(dz) > 1.0 && dy > 0.5) {
+            continue;
+        }
+        let shifted: Vec<[f32; 3]> = pos
+            .iter()
+            .zip(nrm.iter())
+            .map(|(p, n)| {
+                let l = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt().max(1e-6);
+                [p[0] + d * n[0] / l, p[1] + d * n[1] / l, p[2] + d * n[2] / l]
+            })
+            .collect();
+        for (dcl, e) in stream.decls.iter().zip(stream.elems.iter_mut()) {
+            if let (N_POSITION, T_FLOAT3, Elem::Float3(p)) = (dcl.name(), dcl.stored_type(compress), e) {
+                *p = shifted.clone();
+            }
+        }
+        main.bounding_box = bbox(&shifted);
+        moved += 1;
+    }
+    moved
 }
 
 /// The sea floor keeps its depth. A shore tile at the water row (BlueBay's
@@ -900,6 +953,11 @@ impl Merged {
                 is_old && votes.get(mi).map(|v| v.is_some()).unwrap_or(false)
             })
             .collect();
+        if voted.iter().any(|v| *v) {
+            // a part whose look the collision votes per triangle (the terrain id materials):
+            // the LOD guard holds it whole, never by material link
+            self.voted_parts.insert(part);
+        }
         let mut visual_slots: Vec<(usize, usize)> = Vec::new();
         if crate::debug::on("decls") {
             self.notes.push(format!(
@@ -1006,7 +1064,10 @@ impl Merged {
                         lvl
                     }).unwrap_or(0),
                 };
-                let keep = g.lod_mask == 0 || g.lod_mask & (1 << pick) != 0;
+                // the LOD guard may hold this geom's material link at its nearest level
+                let link: String = slots.get(g.material_index.max(0) as usize).copied().flatten().and_then(|s| self.materials.get(s)).and_then(|m| m.link()).unwrap_or("").to_string();
+                let held = pick > 0 && guard_holds_link(part, &link);
+                let keep = if held { g.lod_mask == 0 || g.lod_mask & 1 != 0 } else { g.lod_mask == 0 || g.lod_mask & (1 << pick) != 0 };
                 if pick > 0 && self.one_level.is_none() {
                     self.picked_parts.insert(part, pick);
                 }
