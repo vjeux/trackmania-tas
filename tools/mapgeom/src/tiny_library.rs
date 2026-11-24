@@ -1273,6 +1273,7 @@ fn bake_block_once(store: &mut DataStore, plan: &BlockBake, name: &str, path: &s
             m.notes.push(format!("{n} of {} filler foliage entities inlined into the item", filler.len()));
         }
     }
+    crate::lodguard::apply_decimation(&mut m);
     let opts = crate::static_item::build::BuildOpts { ident: ident.to_string(), author: ident.to_string(), scale, collection, skin: m.skin.clone() };
     let f = crate::static_item::build::assemble(&m, &opts)?;
     Ok((crate::static_item::file::write_file(&f), m, deepened))

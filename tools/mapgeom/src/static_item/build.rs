@@ -753,6 +753,7 @@ pub fn static_item_from_prefab_report(store: &mut crate::store::DataStore, prefa
 /// The last step of every pack-item bake: assemble + write. Public so a caller can edit the
 /// `Merged` first (Hugo's flag finishes, 2026-10-07: a Finish waypoint with a box trigger).
 pub fn finish_item(mut m: Merged, ident: &str, author: &str, scale: f32, collection: u32) -> R<(Vec<u8>, Merged)> {
+    crate::lodguard::apply_decimation(&mut m);
     let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, skin: m.skin.clone() };
     let f = assemble(&m, &opts)?;
     if let Some(n) = super::assemble::REPACK_NOTE.with(|c| c.get()) {
@@ -939,6 +940,7 @@ pub fn static_item_from_item_report(item_bytes: &[u8], ident: &str, author: &str
         }
     }
     m.skin = skin;
+    crate::lodguard::apply_decimation(&mut m);
     let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, skin: m.skin.clone() };
     let f = assemble(&m, &opts)?;
     if let Some(n) = super::assemble::REPACK_NOTE.with(|c| c.get()) {

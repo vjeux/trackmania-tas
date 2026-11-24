@@ -57,8 +57,9 @@ pub fn lod0_only() -> bool {
 pub enum Hold {
     /// every geom of the part at its nearest level
     Whole,
-    /// the geoms of these material LINKS at their nearest level, the others at the pick
-    Links(std::collections::BTreeSet<String>),
+    /// the geoms of these material LINKS at the level given (0 = the nearest; a level between
+    /// the nearest and the pick = the coarsest one still on the hull), the others at the pick
+    Links(std::collections::BTreeMap<String, u32>),
 }
 
 thread_local! {
@@ -90,9 +91,12 @@ pub fn guard_forces_lod0(part: u32) -> bool {
     })
 }
 
-/// Whether the guard holds the geoms of material link `link` of part `part` at their nearest level.
-pub fn guard_holds_link(part: u32, link: &str) -> bool {
-    GUARD.with(|g| matches!(g.borrow().1.get(&part), Some(Hold::Links(l)) if l.contains(link)))
+/// The level the guard gives the geoms of material link `link` of part `part`, when it holds them.
+pub fn guard_link_level(part: u32, link: &str) -> Option<u32> {
+    GUARD.with(|g| match g.borrow().1.get(&part) {
+        Some(Hold::Links(l)) => l.get(link).copied(),
+        _ => None,
+    })
 }
 
 /// A source part's detail ladder length: one more level than it has switch

@@ -74,11 +74,11 @@ fn surface_kind(m: &Merged, slot: usize) -> Option<(String, bool)> {
     Some((link, !NON_DRIVING.contains(&mat.physics())))
 }
 
-type Cell = (i32, i32);
+pub(crate) type Cell = (i32, i32);
 
 /// Every lattice point inside the xz projection of an up- or down-facing triangle (|n.y| ≥ 0.3
 /// of |n|: walls are not surfaces the car stands on), with the triangle's height there.
-fn raster(a: [f32; 3], b: [f32; 3], c: [f32; 3], step: f32, out: &mut dyn FnMut(Cell, f32)) {
+pub(crate) fn raster(a: [f32; 3], b: [f32; 3], c: [f32; 3], step: f32, out: &mut dyn FnMut(Cell, f32)) {
     let e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
     let e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
     let n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
@@ -219,43 +219,6 @@ fn short(link: &str) -> &str {
     link.rsplit('\\').next().unwrap_or(link)
 }
 
-/// Step 1: the parts of `picked` (the ladder's bake) whose coarse level strays from the same
-/// part in `nearest` (every part at its nearest level): the hold per part, with the reason.
-pub fn parts_to_hold(picked: &Merged, nearest: &Merged, step: f32, tol: f32) -> BTreeMap<u32, (Hold, String)> {
-    let mut holds = BTreeMap::new();
-    for (&part, &level) in &picked.picked_parts {
-        let near = layers(nearest, part, step, true);
-        if near.all.is_empty() {
-            continue; // no driving surface in the part at all
-        }
-        let coarse = layers(picked, part, step, true);
-        let mut failed: BTreeSet<String> = BTreeSet::new();
-        let mut why: Vec<String> = Vec::new();
-        for (link, field) in &near.by_link {
-            let s = stray(field, &coarse.all, step, tol);
-            if s.fails() {
-                failed.insert(link.clone());
-                why.push(format!("{} {}", short(link), s.describe()));
-            }
-        }
-        for (link, field) in &coarse.by_link {
-            let s = stray(field, &near.all, step, tol);
-            if s.fails() {
-                failed.insert(link.clone());
-                why.push(format!("level-{level} {} sheet {}", short(link), s.describe()));
-            }
-        }
-        if failed.is_empty() {
-            continue;
-        }
-        let whole = nearest.voted_parts.contains(&part) || part_links(nearest, part) != part_links(picked, part);
-        let hold = if whole { Hold::Whole } else { Hold::Links(failed.clone()) };
-        let what = if whole { "whole".to_string() } else { format!("links {}", failed.iter().map(|l| short(l)).collect::<Vec<_>>().join("+")) };
-        holds.insert(part, (hold, format!("part {part} (level {level}, {what}): {}", why.join("; "))));
-    }
-    holds
-}
-
 /// One cell of a TOP-MOST field: the height, whether that surface is a driving one, the part
 /// that drew it and its material slot.
 #[derive(Clone, Copy)]
@@ -294,8 +257,13 @@ fn top(m: &Merged, step: f32) -> HashMap<Cell, Top> {
 /// that should be there: a vanished kerb). A (part, link) is held when its blame passes 2 % of
 /// the cells it tops in either bake (and MIN_SAMPLES). Cells where Nadeo's own nearest level is
 /// off its hull (a Canopy roof) are nobody's fault.
-pub fn hull_holds(picked: &Merged, nearest: &Merged, step: f32, tol: f32) -> BTreeMap<u32, (Hold, String)> {
+pub fn hull_holds(picked: &Merged, nearest: &Merged, step: f32, tol: f32) -> BTreeMap<u32, Found> {
     let coarsened: BTreeSet<u32> = picked.picked_parts.keys().copied().collect();
+    hull_holds_for(picked, nearest, step, tol, &coarsened)
+}
+
+/// `hull_holds` over an explicit set of candidate parts (the decimated ones).
+pub fn hull_holds_for(picked: &Merged, nearest: &Merged, step: f32, tol: f32, coarsened: &BTreeSet<u32>) -> BTreeMap<u32, Found> {
     let hull = hull_top(nearest, step);
     let hull_layers: HashMap<Cell, Vec<f32>> = hull.iter().map(|(c, (y, _))| (*c, vec![*y])).collect();
     let (tp, tn) = (top(picked, step), top(nearest, step));
@@ -337,9 +305,17 @@ pub fn hull_holds(picked: &Merged, nearest: &Merged, step: f32, tol: f32) -> BTr
         let set: BTreeSet<String> = links.iter().map(|l| l.0.clone()).collect();
         let what = if whole { "whole".to_string() } else { format!("links {}", set.iter().map(|l| short(l)).collect::<Vec<_>>().join("+")) };
         let why: Vec<String> = links.iter().map(|(l, bad, tot, max)| format!("{} {:.1} % of {tot} cells off the hull (max {:.2} m)", short(l), 100.0 * *bad as f64 / (*tot).max(1) as f64, max)).collect();
-        holds.insert(part, (if whole { Hold::Whole } else { Hold::Links(set) }, format!("part {part} (level {level}, {what}): {}", why.join("; "))));
+        holds.insert(part, Found { whole, links: set, level, why: format!("part {part} (level {level}, {what}): {}", why.join("; ")) });
     }
     holds
+}
+
+/// A part `hull_holds` blames: whole or by links, the level it was read at, the reason.
+pub struct Found {
+    pub whole: bool,
+    pub links: BTreeSet<String>,
+    pub level: u32,
+    pub why: String,
 }
 
 /// Step 2: the result's top-most surface against the nearest-level bake's, where that one is a
@@ -443,11 +419,12 @@ fn overlap(l: &Layers, a: &BTreeSet<String>, b: &BTreeSet<String>) -> usize {
 fn coplanar_parts(result: &Merged, nearest: &Merged, holds: &BTreeMap<u32, Hold>, step: f32) -> BTreeSet<u32> {
     let mut out = BTreeSet::new();
     for (part, hold) in holds {
-        let Hold::Links(held) = hold else { continue };
+        let Hold::Links(held_levels) = hold else { continue };
+        let held: BTreeSet<String> = held_levels.keys().cloned().collect();
         let lr = layers(result, *part, step, false);
         let ln = layers(nearest, *part, step, false);
         let others: BTreeSet<String> = lr.by_link.keys().filter(|l| !held.contains(*l)).cloned().collect();
-        let (a, b) = (overlap(&lr, held, &others), overlap(&ln, held, &others));
+        let (a, b) = (overlap(&lr, &held, &others), overlap(&ln, &held, &others));
         let base: usize = others.iter().filter_map(|l| lr.by_link.get(l)).map(|f| f.len()).sum();
         if a > b && (a - b) as f64 > (FAIL_SHARE * base as f64).max(16.0) {
             out.insert(*part);
@@ -458,6 +435,71 @@ fn coplanar_parts(result: &Merged, nearest: &Merged, holds: &BTreeMap<u32, Hold>
 
 /// How many closing rounds may add culprit parts before the whole item goes to its nearest level.
 const CLOSING_ROUNDS: usize = 3;
+
+/// `TINY_LOD_DECIMATE=M`: the held nearest-level visuals get OUR coarse level, decimated within
+/// M metres (`crate::decimate`), then read against the hull like any other level (unset: off).
+pub fn decimate_tolerance() -> Option<f32> {
+    std::env::var("TINY_LOD_DECIMATE").ok().and_then(|v| v.parse().ok()).filter(|v: &f32| *v > 0.0)
+}
+
+thread_local! {
+    /// The decimation in force for ONE bake on this thread: the tolerance and the holds whose
+    /// nearest-level visuals get decimated (`apply_decimation`, called before every assembly).
+    static DECIMATE: std::cell::RefCell<Option<(f32, BTreeMap<u32, Hold>)>> = std::cell::RefCell::new(None);
+    /// What the last `apply_decimation` on this thread decimated: the parts, the vertex counts.
+    static DECIMATED: std::cell::RefCell<BTreeSet<u32>> = std::cell::RefCell::new(BTreeSet::new());
+    static DECIMATED_VERTS: std::cell::Cell<(usize, usize)> = std::cell::Cell::new((0, 0));
+}
+
+/// Run `f` (a bake) with the decimation `spec` in force (restored afterwards).
+pub fn with_decimation<T>(spec: Option<(f32, BTreeMap<u32, Hold>)>, f: impl FnOnce() -> T) -> T {
+    let before = DECIMATE.with(|d| std::mem::replace(&mut *d.borrow_mut(), spec));
+    DECIMATED.with(|d| d.borrow_mut().clear());
+    DECIMATED_VERTS.with(|d| d.set((0, 0)));
+    let out = f();
+    DECIMATE.with(|d| *d.borrow_mut() = before);
+    out
+}
+
+/// THE HOOK every item assembly calls: with a decimation in force (`with_decimation`), the
+/// visuals of the parts it names that are at their nearest level (a whole-held part, or a link
+/// held at level 0) are replaced by their decimation (`crate::decimate`) in place.
+pub fn apply_decimation(m: &mut Merged) {
+    // once per bake: a second assembly in the same bake must not decimate the decimation
+    let Some((tol, holds)) = DECIMATE.with(|d| d.borrow_mut().take()) else { return };
+    let mut parts = BTreeSet::new();
+    // the held nearest-level visuals go in ONE decimation (their shared edges move together);
+    // every other visual's positions stay put (`decimate_many`'s lock)
+    let mut held_idx: Vec<usize> = Vec::new();
+    let mut locked: std::collections::HashSet<[u32; 3]> = std::collections::HashSet::new();
+    for i in 0..m.visuals.len() {
+        let part = m.visuals[i].part;
+        let link = m.materials.get(m.visuals[i].material).and_then(|x| x.link()).unwrap_or("").to_string();
+        let held = part < VEGET_PART_BASE
+            && match holds.get(&part) {
+                Some(Hold::Whole) => true,
+                Some(Hold::Links(l)) => l.get(&link) == Some(&0),
+                None => false,
+            };
+        if held {
+            held_idx.push(i);
+        } else {
+            let (p, _) = visual_triangles(&m.visuals[i].visual);
+            locked.extend(p.iter().map(|x| x.map(f32::to_bits)));
+        }
+    }
+    let refs: Vec<&crate::static_item::visual::CPlugVisualIndexedTriangles> = held_idx.iter().map(|i| &m.visuals[*i].visual).collect();
+    let (outs, before, after) = crate::decimate::decimate_many(&refs, &locked, tol);
+    for (i, o) in held_idx.iter().zip(outs) {
+        if let Some(o) = o {
+            m.visuals[*i].visual = o;
+            parts.insert(m.visuals[*i].part);
+        }
+    }
+    DECIMATED.with(|d| *d.borrow_mut() = parts);
+    DECIMATED_VERTS.with(|d| d.set((before, after)));
+}
+
 
 /// The whole decision for one item. `bake(all, holds)` bakes the item with the override in force
 /// (every part at its nearest level, or the parts held as listed) and hands back its output;
@@ -477,9 +519,51 @@ pub fn guarded<T>(scale: f32, mut bake: impl FnMut(bool, &BTreeMap<u32, Hold>) -
     let coarsened: BTreeSet<u32> = merged(&mut first).picked_parts.keys().copied().collect();
     let mut nearest = bake(true, &none)?;
     let found = hull_holds(merged(&mut first), merged(&mut nearest), step, tol);
-    let mut holds: BTreeMap<u32, Hold> = found.iter().map(|(p, (h, _))| (*p, h.clone())).collect();
-    let mut why: Vec<String> = found.into_values().map(|(_, w)| w).collect();
+    // a blamed link takes the next finer level first (THE STEP-DOWN: the coarsest level of
+    // Nadeo's own ladder still on the hull), the nearest level when that one strays too
+    let mut holds: BTreeMap<u32, Hold> = found
+        .iter()
+        .map(|(p, f)| (*p, if f.whole { Hold::Whole } else { Hold::Links(f.links.iter().map(|l| (l.clone(), f.level.saturating_sub(1))).collect()) }))
+        .collect();
+    let mut why: Vec<String> = found.into_values().map(|f| f.why).collect();
     let mut candidate = if holds.is_empty() { first } else { bake(false, &holds)? };
+    for _ in 0..3 {
+        let finer: bool = holds.values().any(|h| matches!(h, Hold::Links(m) if m.values().any(|l| *l > 0)));
+        if !finer {
+            break;
+        }
+        let still = hull_holds(merged(&mut candidate), merged(&mut nearest), step, tol);
+        let mut changed = false;
+        for (part, f) in &still {
+            match holds.get_mut(part) {
+                Some(Hold::Whole) => {}
+                Some(Hold::Links(m)) if !f.whole => {
+                    for l in &f.links {
+                        match m.get_mut(l) {
+                            Some(e) if *e > 0 => {
+                                *e -= 1;
+                                changed = true;
+                            }
+                            Some(_) => {}
+                            None => {
+                                m.insert(l.clone(), f.level.saturating_sub(1));
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    holds.insert(*part, Hold::Whole);
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+        why.push(format!("step-down: {} part(s) still off the hull at their finer level", still.len()));
+        candidate = bake(false, &holds)?;
+    }
     let mut rounds = 0usize;
     loop {
         // the top surface against the nearest-level bake is REPORTED; the decision is the gate's
@@ -497,7 +581,47 @@ pub fn guarded<T>(scale: f32, mut bake: impl FnMut(bool, &BTreeMap<u32, Hold>) -
                 let whole = holds.values().filter(|h| **h == Hold::Whole).count();
                 format!("lod guard: {} of {} coarsened part(s) held ({whole} whole) — {} ({tail})", holds.len(), coarsened.len(), why.join(" | "))
             };
+            // OUR coarse level for what the guard holds at the nearest level (TINY_LOD_DECIMATE)
+            let mut dnote: Option<String> = None;
+            if let (Some(dtol), false) = (decimate_tolerance(), holds.is_empty()) {
+                let mut targets = holds.clone();
+                for round in 0..2 {
+                    let mut dec = with_decimation(Some((dtol, targets.clone())), || bake(false, &holds))?;
+                    let parts = DECIMATED.with(|d| d.borrow().clone());
+                    if parts.is_empty() {
+                        out = dec;
+                        dnote = Some("lod guard: nothing to decimate".into());
+                        break;
+                    }
+                    // judged against the SAME bake undecimated (`out`): a decimated part answers for
+                    // the cells its decimation moved off the hull, not for its coarse neighbours'
+                    let blamed_why = hull_holds_for(merged(&mut dec), merged(&mut out), step, tol, &parts);
+                    let why_s: Vec<String> = blamed_why.values().map(|f| f.why.clone()).collect();
+                    let blamed: BTreeSet<u32> = blamed_why.into_keys().collect();
+                    let (dvc, dvc0, _) = vis_coll_rel(merged(&mut dec), merged(&mut out), step, tol, &parts);
+                    if !dvc.worse_than(&dvc0) && blamed.is_empty() {
+                        let (b, a) = DECIMATED_VERTS.with(|d| d.get());
+                        dnote = Some(format!("lod guard: {} held part(s) decimated within {dtol} m ({b} -> {a} vertices; vis-coll {} vs {}){}", parts.len(), dvc.describe(), dvc0.describe(), if round > 0 { " after putting back the parts off the hull" } else { "" }));
+                        out = dec;
+                        break;
+                    }
+                    if round == 1 || dvc.worse_than(&dvc0) && blamed.is_empty() {
+                        out = bake(false, &holds)?;
+                        dnote = Some(format!("lod guard: decimation put back (vis-coll {} vs {}; {} part(s) off the hull)", dvc.describe(), dvc0.describe(), blamed.len()));
+                        break;
+                    }
+                    targets.retain(|p, _| !blamed.contains(p));
+                    if targets.is_empty() {
+                        out = bake(false, &holds)?;
+                        dnote = Some(format!("lod guard: decimation put back ({} part(s) off the hull: {})", blamed.len(), why_s.join(" | ")));
+                        break;
+                    }
+                }
+            }
             merged(&mut out).notes.push(note);
+            if let Some(n) = dnote {
+                merged(&mut out).notes.push(n);
+            }
             return Ok(out);
         }
         let mut add: BTreeSet<u32> = fights.clone();

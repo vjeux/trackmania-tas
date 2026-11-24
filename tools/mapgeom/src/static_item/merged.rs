@@ -11,7 +11,7 @@ use super::surface::{CPlugSurface, Surf, Triangle};
 use super::visual::CPlugVisualIndexedTriangles;
 use super::vstream::{Elem, N_COLOR0, N_NORMAL, N_POSITION, N_TANGENT_U, N_TANGENT_V, N_TEXCOORD0, T_DEC3N, T_FLOAT3};
 use super::{Node, R};
-use super::lod::{guard_forces_lod0, guard_holds_link, lod0_only, lod_levels_of, lod_pick, merge_lod_ladder};
+use super::lod::{guard_forces_lod0, guard_link_level, lod0_only, lod_levels_of, lod_pick, merge_lod_ladder};
 use super::materials::{gate_special_stem, material_link, most_common_physics, physics_for_link, resolve_crystal_link, same_look};
 use crate::crystal_model::CPlugMaterialUserInst;
 use crate::geom::{apply, compose, Xform, IDENTITY};
@@ -1064,10 +1064,10 @@ impl Merged {
                         lvl
                     }).unwrap_or(0),
                 };
-                // the LOD guard may hold this geom's material link at its nearest level
+                // the LOD guard may hold this geom's material link at a finer level
                 let link: String = slots.get(g.material_index.max(0) as usize).copied().flatten().and_then(|s| self.materials.get(s)).and_then(|m| m.link()).unwrap_or("").to_string();
-                let held = pick > 0 && guard_holds_link(part, &link);
-                let keep = if held { g.lod_mask == 0 || g.lod_mask & 1 != 0 } else { g.lod_mask == 0 || g.lod_mask & (1 << pick) != 0 };
+                let level = if pick > 0 { guard_link_level(part, &link).unwrap_or(pick) } else { pick };
+                let keep = g.lod_mask == 0 || g.lod_mask & (1 << level) != 0;
                 if pick > 0 && self.one_level.is_none() {
                     self.picked_parts.insert(part, pick);
                 }
