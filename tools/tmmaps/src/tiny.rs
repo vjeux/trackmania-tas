@@ -591,6 +591,13 @@ pub fn cmd(args: &[String]) {
                     s.min(254)
                 }
             };
+            // THE LATTICE RULE (A08 v4, 2026-10-03; lost with its branch, re-applied 2026-11-24):
+            // on an OVERHANG at a whole scale k, a source tile's scaled footprint is k × k cells
+            // and must lie wholly inside or wholly outside the grid, so the grid is a multiple of
+            // k cells (x4: 252, not 254 — 254 ends mid-tile) and the source cell lattice is put
+            // on the k-cell lattice from the grid origin (below)
+            let whole_k = scale >= 2.0 && (scale - scale.round()).abs() < 1e-6;
+            let s = if given.is_none() && need > s && whole_k { s - s % (scale.round() as i32) } else { s };
             // a build wider than the cell bytes allow (a 64-grid collection at x4:
             // BlueBay 16 spans 260 cells) takes the 254 grid and overhangs it
             // symmetrically — the overhang is items only (they need no cell), the
@@ -605,10 +612,20 @@ pub fn cmd(args: &[String]) {
             // OVERHANG the shift is a multiple of `scale` cells: a source tile's scaled footprint
             // (scale × scale cells) then never straddles the grid edge, so the floor items beyond
             // the grid (TINY_FLOOR_ITEMS) butt against the regenerated floor inside it.
-            let unit = if need > s && scale >= 2.0 && (scale - scale.round()).abs() < 1e-6 { scale.round() } else { 1.0 };
+            let unit = if need > s && whole_k { scale.round() } else { 1.0 };
             for k in [0usize, 2] {
                 let span = thi[k] - tlo[k];
-                let want = ((((grid[k] - span) / 2.0 - tlo[k]) / crate::map::CELL_XZ) / unit).round() * unit * crate::map::CELL_XZ;
+                let centre = (grid[k] - span) / 2.0 - tlo[k];
+                let want = if unit > 1.0 {
+                    // the k-cell lattice: (target − k·source anchor) ≡ 0 mod k cells, so every
+                    // source cell corner lands on a multiple of k cells from the grid origin; of
+                    // those shifts, the one nearest the centring shift
+                    let m = unit * crate::map::CELL_XZ;
+                    let base = -(target_anchor[k] - scale * source_anchor[k]).rem_euclid(m);
+                    base + ((centre - base) / m).round() * m
+                } else {
+                    (centre / crate::map::CELL_XZ).round() * crate::map::CELL_XZ
+                };
                 shift[k] += want;
                 target_anchor[k] += want;
             }
@@ -891,7 +908,14 @@ pub fn cmd(args: &[String]) {
     let mut floor_groups: BTreeMap<(i32, i32, i32), FloorGroup> = BTreeMap::new();
     // a zone tile whose scaled footprint lies inside the fit grid (the genealogy's floor)
     let floor_inside = |b: &BlockRec, sg: i32| -> bool {
-        let o = transform(block_pos(b), source_anchor, target_anchor, scale);
+        // the tile's scaled footprint from its cell's MIN corner (block_pos is the cell CENTRE:
+        // measured from it, a tile straddling the grid edge read as inside and was dropped — the
+        // 32-m void band across A08 #11's far end, 2026-10-02 — and a tile inside the high edge
+        // read as outside and was placed over the regenerated floor)
+        let mut corner = block_pos(b);
+        corner[0] -= crate::map::CELL_XZ / 2.0;
+        corner[2] -= crate::map::CELL_XZ / 2.0;
+        let o = transform(corner, source_anchor, target_anchor, scale);
         let ext = crate::map::CELL_XZ * scale;
         let lim = sg as f32 * crate::map::CELL_XZ;
         o[0] >= -0.5 && o[2] >= -0.5 && o[0] + ext <= lim + 0.5 && o[2] + ext <= lim + 0.5
