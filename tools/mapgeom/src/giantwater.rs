@@ -604,6 +604,7 @@ pub fn plan_volumes(store: &mut crate::store::DataStore, idx: &mut crate::blockm
     let mut rowtop: BTreeMap<[i32; 3], (String, u8, bool)> = BTreeMap::new(); // cell -> (tile, dir, ground)
     let mut shallow: BTreeMap<(i32, i32, i32), ()> = BTreeMap::new(); // (x, z, surface_y) -> ()
     let mut platform: BTreeMap<[i32; 3], (String, u8, u32)> = BTreeMap::new();
+    let mut road_cells: BTreeMap<(i32, i32, i32), ()> = BTreeMap::new(); // (x, z, plane in cm) -> ()
     let eps = 0.01;
     for wb in &blocks {
         if wb.free {
@@ -623,7 +624,28 @@ pub fn plan_volumes(store: &mut crate::store::DataStore, idx: &mut crate::blockm
         let sb: Vec<[f32; 6]> = wb.world.iter().map(scaled).collect();
         match class {
             Class::Road => {
-                // handled below by the legacy road path (free archetype tiles) when asked
+                // THE ROAD VOLUMES (stadium2, 2026-10-02; lost with its branch, re-applied
+                // 2026-11-24): the RoadWater* volume is 0..2 under the Water plane the wheels
+                // drive on; at xN the item keeps its plane (Water 13) and quad, and nothing gave
+                // it a volume (vjeux on giant Fall 15: "still not the small road pool"). Every
+                // giant cell a scaled volume box touches gets ONE free PlatformWaterBase tile
+                // (volume 0..2 over the 32 m tile; the template's mesh, no sheet) with its top AT
+                // the scaled plane — the car on the plane reads Water with the volume under it.
+                // TINY_GIANT_ROAD_VOLUMES=0 = the item quad only.
+                if std::env::var("TINY_GIANT_ROAD_VOLUMES").map(|v| v != "0").unwrap_or(true) {
+                    for b in &sb {
+                        let plane = b[4];
+                        let (cx0, cx1) = ((b[0] / CELL_XZ).floor() as i32, ((b[3] - eps) / CELL_XZ).floor() as i32);
+                        let (cz0, cz1) = ((b[2] / CELL_XZ).floor() as i32, ((b[5] - eps) / CELL_XZ).floor() as i32);
+                        for cx in cx0..=cx1 {
+                            for cz in cz0..=cz1 {
+                                if cell_area(b, cx, cz) > 0.5 {
+                                    road_cells.insert((cx, cz, (plane * 100.0).round() as i32), ());
+                                }
+                            }
+                        }
+                    }
+                }
                 continue;
             }
             Class::RowTop | Class::Other => {
@@ -757,6 +779,16 @@ pub fn plan_volumes(store: &mut crate::store::DataStore, idx: &mut crate::blockm
             }
         }
         p.notes.push(format!("{} shallow cells -> {free_n} free DecoWallWaterBase tiles ({layers} layer(s)) with their top at the scaled surface", shallow.len()));
+    }
+    // emit the ROAD volume tiles: one free PlatformWaterBase per cell, its top at the plane
+    if !road_cells.is_empty() {
+        let ident = "Water\\PlatformWaterBase.Block.Gbx".to_string();
+        p.archetypes.entry("PlatformWaterBase".to_string()).or_insert(ident.clone());
+        for ((cx, cz, plane_cm), _) in &road_cells {
+            let y = *plane_cm as f32 / 100.0 - 2.0;
+            p.roads.push(FreeBlockSpec { name: format!("{ident}_CustomBlock"), author: Some(author.to_string()), flags: FREE_WATER_FLAGS, pos: [*cx as f32 * CELL_XZ, y, *cz as f32 * CELL_XZ], rot: [0.0, 0.0, 0.0], grid: None, dir: 0 });
+        }
+        p.notes.push(format!("{} water-road cells -> {} free PlatformWaterBase volume tiles (volume 0..2, top at the scaled Water plane; TINY_GIANT_ROAD_VOLUMES=0 = quad only)", road_cells.len(), road_cells.len()));
     }
     // the water ROADS: the legacy free archetype tiles when asked
     for b in &source.blocks {
