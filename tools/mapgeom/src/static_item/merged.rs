@@ -458,8 +458,19 @@ pub fn inflate_sheet(m: &mut Merged, d: f32) -> usize {
         if pos.is_empty() || pos.len() != nrm.len() {
             continue;
         }
-        let b = bbox(&pos);
-        let (dx, dy, dz) = (b[3] - b[0], b[4] - b[1], b[5] - b[2]);
+        // the raw extents (`bbox` is centre + half-extents, floored at 2 cm)
+        let mut lo = [f32::MAX; 3];
+        let mut hi = [f32::MIN; 3];
+        for p in &pos {
+            for k in 0..3 {
+                lo[k] = lo[k].min(p[k]);
+                hi[k] = hi[k].max(p[k]);
+            }
+        }
+        let (dx, dy, dz) = (hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]);
+        if std::env::var("TINY_FACADE_DEBUG").is_ok() {
+            eprintln!("facade slab probe: visual {} verts, extents {dx:.3} x {dy:.3} x {dz:.3}", pos.len());
+        }
         if !(dx.min(dz) < 0.02 && dx.max(dz) > 1.0 && dy > 0.5) {
             continue;
         }
