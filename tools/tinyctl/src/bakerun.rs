@@ -71,6 +71,15 @@ fn kill_pid(pid: u32) {
     }
 }
 
+/// A Windows pid's working set in KB (`tasklist /FO CSV`), None when it cannot be read.
+fn pid_mem_kb(pid: u32) -> Option<u64> {
+    let o = Command::new("/mnt/c/Windows/System32/tasklist.exe").args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"]).output().ok()?;
+    let s = String::from_utf8_lossy(&o.stdout);
+    let line = s.lines().find(|l| l.contains(&format!("\"{pid}\"")))?;
+    let mem = line.rsplit("\",\"").next()?.trim_matches(|c: char| !c.is_ascii_digit());
+    mem.chars().filter(|c| c.is_ascii_digit()).collect::<String>().parse().ok()
+}
+
 /// Our own game: launched by explorer (the plain Steam path), the plugin's
 /// /ping awaited; closed by PID on drop.
 struct MyGame {
@@ -96,6 +105,16 @@ impl MyGame {
             }
             if plugin_pong(shootctl) {
                 break;
+            }
+            // THE LAUNCHER STUB: right after a client crash the next launch can hang as a
+            // ~77 MB Trackmania.exe that never loads (Steam still counts the dead game as
+            // running) — 400 s lost per map in Nov 2026; a pid still under 200 MB after 90 s is
+            // that stub: ours, closed, and the caller's next attempt comes up in ~20 s
+            if let (Some(p), true) = (our_pid, t0.elapsed() > Duration::from_secs(90)) {
+                if pid_mem_kb(p).map(|kb| kb < 200_000).unwrap_or(false) {
+                    kill_pid(p);
+                    return Err(format!("our game pid {p} hung as the launcher stub (under 200 MB after 90 s) — closed"));
+                }
             }
             if t0.elapsed() > timeout {
                 if let Some(p) = our_pid {
@@ -242,7 +261,12 @@ fn bake_one(g: &MyGame, map_wsl: &str, quality: u32, load_timeout: Duration, com
             }
         }
         let _ = std::fs::remove_file(&game_copy);
-        g.to_menu()?;
+        // the car is read: a client that dies on its way back to the menu (the harness's crash
+        // on leaving a map, Nov 2026 — the original maps too) does not undo the check; the
+        // caller sees the dead game and launches a fresh one for the next map
+        if let Err(e) = g.to_menu() {
+            println!("  {name}: after the check: {e} (the check stands)");
+        }
         return Ok(("-".into(), 0.0, car));
     }
     println!("  {name}: cache {dropped} dropped; /editmap: {}", get(shootctl, "/editmap", 30));
@@ -283,7 +307,12 @@ fn bake_one(g: &MyGame, map_wsl: &str, quality: u32, load_timeout: Duration, com
         // `--check-only`: no compute, no save — the start check alone on the pushed file
         let car = start_check(g, &name)?;
         let _ = std::fs::remove_file(&game_copy);
-        g.to_menu()?;
+        // the car is read: a client that dies on its way back to the menu (the harness's crash
+        // on leaving a map, Nov 2026 — the original maps too) does not undo the check; the
+        // caller sees the dead game and launches a fresh one for the next map
+        if let Err(e) = g.to_menu() {
+            eprintln!("  {name}: after the check: {e} (the check stands)");
+        }
         return Ok(("-".into(), 0.0, car));
     }
     let ts = Instant::now();
@@ -496,6 +525,14 @@ pub fn bake_run(args: &[String]) -> Result<(), String> {
                 eprintln!("  {in_game} maps in this game — a fresh one (the client leaks across loads)");
                 game = None;
             }
+            // a game that died after its last map (on the way to the menu) is no game; Steam
+            // counts it as running for a while after the crash (the next launch then hangs as
+            // the launcher stub), so the relaunch waits 30 s
+            if game.as_ref().map(|g| !g.alive()).unwrap_or(false) {
+                eprintln!("  the game is gone — a fresh one in 30 s");
+                game = None;
+                std::thread::sleep(Duration::from_secs(30));
+            }
             if game.is_none() {
                 // three launch attempts (a cold Ubisoft launcher chain after a by-PID kill can run past
                 // 240 s; 2026-10-02 the third launch of a run answered no /ping in 240 s and the run died
@@ -554,7 +591,12 @@ pub fn bake_run(args: &[String]) -> Result<(), String> {
                 Err(e) => {
                     eprintln!("  {m}: FAILED: {e}");
                     // a failed map leaves the game in an unknown state: the next map gets a fresh one
+                    // (after 30 s when it died: Steam still counts a crashed game as running)
+                    let dead = game.as_ref().map(|g| !g.alive()).unwrap_or(false);
                     game = None;
+                    if dead {
+                        std::thread::sleep(Duration::from_secs(30));
+                    }
                     format!("{m}\t-\tFAILED {}\t-\t-\n", e.replace('\t', " ").lines().next().unwrap_or(""))
                 }
             };
