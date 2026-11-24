@@ -838,7 +838,30 @@ fn plan_block<'b>(bi: &'b crate::blockinfo::BlockInfo, key: &BlockKey, collectio
 /// the collection's water row and the surface's height above that row's
 /// floor; `at_water_row`: whether every placement of this key sits on it.
 #[allow(clippy::too_many_arguments)]
+/// One block bake under THE LOD GUARD (`crate::lodguard`): the size ladder's `--lod-pick`
+/// bake, then — when the pick coarsened a part — the nearest-level twin, the parts whose
+/// coarse level strays from the hull's surface held at their nearest level, and the closing
+/// check on the whole item (a failure = the nearest-level bake). Each attempt starts from a
+/// clean bake environment, and the bake handed back is always the LAST one run (the thread's
+/// externals/sidecars belong to it).
+#[allow(clippy::too_many_arguments)]
 fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, bi: &crate::blockinfo::BlockInfo, ident: &str, scale: f32, collection: u32, legacy: &BTreeMap<String, Vec<u8>>, water: Option<(u8, f32)>, at_water_row: bool) -> Result<(Vec<u8>, crate::static_item::build::Merged, bool), String> {
+    if plan.legacy_item.is_some() {
+        bake_env_reset(collection);
+        return bake_block_once(store, plan, name, path, bi, ident, scale, collection, legacy, water, at_water_row);
+    }
+    crate::lodguard::guarded(
+        scale,
+        |all, parts| {
+            bake_env_reset(collection);
+            crate::static_item::lod::with_guard_lod0(all, parts, || bake_block_once(store, plan, name, path, bi, ident, scale, collection, legacy, water, at_water_row))
+        },
+        |t| &mut t.1,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn bake_block_once(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, bi: &crate::blockinfo::BlockInfo, ident: &str, scale: f32, collection: u32, legacy: &BTreeMap<String, Vec<u8>>, water: Option<(u8, f32)>, at_water_row: bool) -> Result<(Vec<u8>, crate::static_item::build::Merged, bool), String> {
     if let Some(l) = plan.legacy_item {
         return match legacy.get(l) {
             Some(bytes) => crate::static_item::build::static_item_from_item_report(bytes, ident, ident, scale, collection).map(|(b, m)| (b, m, false)),
@@ -1371,7 +1394,14 @@ impl ItemOut {
 /// parts off — `TWEEN_OVERRIDE`, a thread-local, set around the bake on the
 /// thread that bakes).
 #[allow(clippy::too_many_arguments)]
+/// One item bake under THE LOD GUARD — the same three steps as `bake_block`.
+#[allow(clippy::too_many_arguments)]
 fn bake_item(store: &mut DataStore, src: &ItemSrc, ident: &str, scale: f32, collection: u32, variant: u8, light_skin: &Option<crate::light_skin::LightSkin>, still_flag: bool) -> Result<(Vec<u8>, crate::static_item::build::Merged), String> {
+    crate::lodguard::guarded(scale, |all, parts| crate::static_item::lod::with_guard_lod0(all, parts, || bake_item_once(store, src, ident, scale, collection, variant, light_skin, still_flag)), |t| &mut t.1)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn bake_item_once(store: &mut DataStore, src: &ItemSrc, ident: &str, scale: f32, collection: u32, variant: u8, light_skin: &Option<crate::light_skin::LightSkin>, still_flag: bool) -> Result<(Vec<u8>, crate::static_item::build::Merged), String> {
     bake_env_reset(collection);
     match src {
         ItemSrc::Local(p) => crate::static_item::build::static_item_from_item_report(&std::fs::read(p).unwrap(), ident, ident, scale, collection),

@@ -52,6 +52,29 @@ pub fn lod0_only() -> bool {
     lod_pick().is_some()
 }
 
+thread_local! {
+    /// The LOD guard's override for ONE bake on this thread (`tiny_library::bake_block`,
+    /// `crate::lodguard`): `(all, parts)` — every part, or the parts listed (numbered as
+    /// `Merged::parts` counts them, from 1), keep their NEAREST level whatever the pick says.
+    static GUARD_LOD0: std::cell::RefCell<(bool, std::collections::BTreeSet<u32>)> = std::cell::RefCell::new((false, std::collections::BTreeSet::new()));
+}
+
+/// Run `f` with the guard's override in force (restored afterwards, also on an error path).
+pub fn with_guard_lod0<T>(all: bool, parts: &std::collections::BTreeSet<u32>, f: impl FnOnce() -> T) -> T {
+    let before = GUARD_LOD0.with(|g| std::mem::replace(&mut *g.borrow_mut(), (all, parts.clone())));
+    let out = f();
+    GUARD_LOD0.with(|g| *g.borrow_mut() = before);
+    out
+}
+
+/// Whether the guard holds part `part` of the bake in progress at its nearest level.
+pub fn guard_forces_lod0(part: u32) -> bool {
+    GUARD_LOD0.with(|g| {
+        let g = g.borrow();
+        g.0 || g.1.contains(&part)
+    })
+}
+
 /// A source part's detail ladder length: one more level than it has switch
 /// distances, and at least one past its highest mask bit (a mask bit with no
 /// distance is the unbounded last level).

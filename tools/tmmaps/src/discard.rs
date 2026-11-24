@@ -44,7 +44,7 @@ pub fn loss_of(code: &str) -> &'static str {
         "BLOCK_REFUSED" | "BLOCK_BAKE_FAILED" | "BLOCK_NO_VISUALS" | "BLOCK_NO_INFO" | "CUSTOM_BLOCK_FAILED" | "BAKED_NO_MODEL" | "BLOCK_NO_MODEL" => "fail",
         // ---- library: bake notes (per entity / visual)
         "ENTITY_CLASS_UNREADABLE" | "ENTITY_EXTERNAL_FAILED" | "ENTITY_EXTERNAL_SKIPPED" | "FILLER_FOLIAGE_LOST" | "PREFAB_VEGET_LOST" | "VISUAL_LOD_PICK_SKIPPED" | "LIGHT_DROPPED" | "TRIGGERFX_CURTAIN_DROPPED" | "SCREEN_DARKENED" => "visible",
-        "VISUAL_ID_PASS_DROPPED" | "VISUAL_WATER_DROPPED" | "SPAWN_SECOND_IGNORED" | "LOD_LADDER_KEPT" => "none",
+        "VISUAL_ID_PASS_DROPPED" | "VISUAL_WATER_DROPPED" | "SPAWN_SECOND_IGNORED" | "LOD_LADDER_KEPT" | "LOD_GUARD" => "none",
         "DYNA_AT_REST" | "TWEEN_AT_REST" | "VISUAL_FRAME0_ONLY" | "FX_EMITTER_LEFT_OUT" | "TRIGGER_SKIPPED" | "SPECIAL_TRIGGER_SKIPPED" | "CONSTRAINT_SKIPPED" | "COLLISION_SKIPPED" | "LIGHT_ANIMATED_OFF" | "WATER_PHYSICS_NONE" | "WATER_TRIANGLES_REMOVED" => "behavioral",
         "NOTE_OTHER_SKIP" => "visible",
         // ---- library: trees
@@ -163,6 +163,10 @@ impl Discards {
 pub fn note_code(note: &str) -> Option<&'static str> {
     let n = note;
     let has = |s: &str| n.contains(s);
+    // the size ladder's LOD guard (mapgeom lodguard): what it held sharp, and why
+    if n.starts_with("lod guard:") {
+        return Some("LOD_GUARD");
+    }
     if has("model class 0x") && has("skipped") {
         return Some("ENTITY_CLASS_UNREADABLE");
     }

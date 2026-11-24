@@ -11,7 +11,7 @@ use super::surface::{CPlugSurface, Surf, Triangle};
 use super::visual::CPlugVisualIndexedTriangles;
 use super::vstream::{Elem, N_COLOR0, N_NORMAL, N_POSITION, N_TANGENT_U, N_TANGENT_V, N_TEXCOORD0, T_DEC3N, T_FLOAT3};
 use super::{Node, R};
-use super::lod::{lod0_only, lod_levels_of, lod_pick, merge_lod_ladder};
+use super::lod::{guard_forces_lod0, lod0_only, lod_levels_of, lod_pick, merge_lod_ladder};
 use super::materials::{gate_special_stem, material_link, most_common_physics, physics_for_link, resolve_crystal_link, same_look};
 use crate::crystal_model::CPlugMaterialUserInst;
 use crate::geom::{apply, compose, Xform, IDENTITY};
@@ -228,6 +228,9 @@ pub struct Merged {
     /// different detail levels (crumpled shards, giant sails: the full map 10
     /// with its 39 flags spread over 400 m, while 39 in one row were fine).
     pub one_level: Option<u32>,
+    /// The parts the size ladder's `--lod-pick` drew at a COARSER level than their
+    /// nearest (part number → the level kept) — what `crate::lodguard` checks.
+    pub picked_parts: std::collections::BTreeMap<u32, u32>,
     /// Solid2 fields carried from the source mesh for a tween part: the pack's
     /// Flag.Mesh.Gbx says `vis_cst_type` 2 (its vertices are not constant —
     /// the frames), `u07` -1; a static item says 1 and 1.
@@ -988,6 +991,8 @@ impl Merged {
                 let level0_verts: i32 = s2.shaded_geoms.iter().filter(|h| h.lod_mask == 0 || h.lod_mask & 1 != 0).filter_map(|h| s2.visuals.get(h.visual_index as usize).and_then(|r| r.inline.as_deref())).filter_map(|n| if let Node::Visual(v) = n { v.main.as_ref().map(|m| m.count) } else { None }).sum();
                 let pick = match self.one_level {
                     Some(n) => n,
+                    // the LOD guard holds this part at its nearest level (crate::lodguard)
+                    None if guard_forces_lod0(part) => 0,
                     // the pick's level — or, for a part with FEWER levels than the pick,
                     // its own coarsest level at or below it (not its nearest: the size
                     // ladder's "every part at level 3" came out BIGGER than level 2 on
@@ -1002,6 +1007,9 @@ impl Merged {
                     }).unwrap_or(0),
                 };
                 let keep = g.lod_mask == 0 || g.lod_mask & (1 << pick) != 0;
+                if pick > 0 && self.one_level.is_none() {
+                    self.picked_parts.insert(part, pick);
+                }
                 if !keep {
                     self.notes.push(format!("visual {} (lod mask {}) skipped: not level {pick} (--lod-pick)", g.visual_index, g.lod_mask));
                     continue;
