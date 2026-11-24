@@ -17,10 +17,13 @@
 //! ```text
 //! box:  tinyctl bake-run --maps A.Map.Gbx,B.Map.Gbx,… --quality 4 --report R.tsv [--done D]
 //!                        [--max-maps 4] [--stage-plugin DIR] [--shootctl PATH]
+//!                        [--car-route carlog|wheels|/route]
 //!       (maps = WSL paths of the staged copies; the saved files land in
-//!        Maps/_lightmap/<stem>.Map.Gbx; the report row: map, saved, verdict, secs)
+//!        Maps/_lightmap/<stem>.Map.Gbx; the report row: map, saved, verdict, secs;
+//!        the start check reads the car from /carlog by default — the /wheels
+//!        route crashed the game during play in Nov 2026)
 //! dev:  tinyctl lightmap-run --manifest M.tsv --quality 4 [--group 4] [--stage-plugin DIR]
-//!                            [--report R.tsv] [--box-tinyctl PATH]
+//!                            [--report R.tsv] [--box-tinyctl PATH] [--car-route R]
 //!       (the lightmap-batch manifest: copy, shipped, out, name; per group of
 //!        `--group` rows: bake copies with a fresh uid and no password pushed
 //!        to the box, one `tmdrive run -- bake-run` for the group, the saved
@@ -195,7 +198,7 @@ fn bake_one(g: &MyGame, map_wsl: &str, quality: u32, load_timeout: Duration, com
         // column then reads "spawn [x y z] reversed [x y z]".
         if let Some(ms) = std::env::var("BAKE_RUN_REVERSE_MS").ok().and_then(|v| v.parse::<u64>().ok()).filter(|v| *v > 0) {
             std::thread::sleep(Duration::from_millis(5000)); // the 3-2-1 countdown
-            let spawn = get(shootctl, "/wheels?ms=100", 15);
+            let spawn = get(shootctl, car_route(), 15);
             let o = Command::new(shootctl).arg("key").arg("DOWN").arg("--hold-ms").arg(ms.to_string()).output();
             println!("  {name}: reverse {ms} ms: {}", o.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_else(|e| e.to_string()));
             // settle: the position stops moving
@@ -203,7 +206,7 @@ fn bake_one(g: &MyGame, map_wsl: &str, quality: u32, load_timeout: Duration, com
             let mut rest = String::new();
             for _ in 0..12 {
                 std::thread::sleep(Duration::from_millis(500));
-                let c = get(shootctl, "/wheels?ms=100", 15);
+                let c = get(shootctl, car_route(), 15);
                 let p = car_xyz(&c);
                 if p == last && !p.is_empty() {
                     rest = p.clone();
@@ -371,6 +374,26 @@ fn start_check(g: &MyGame, name: &str) -> Result<String, String> {
 /// again 2.5 s later (the car has settled on the start). Logs /appstate every 20 s and
 /// re-clicks the editor's Test button while no playground appears (an editor session).
 /// The x y z of a `/wheels?ms=100` answer's first data row (wall_ms, t_ms, x, y, z, …), as "x y z".
+/// The plugin route the check reads the car from (`--car-route`, set once by `bake-run`).
+/// Default `/carlog?ms=100`: the GhostShooter /wheel and /wheels routes crashed the game
+/// during play in Nov 2026, and a /carlog row leads with the same wall_ms, t_ms, x, y, z
+/// columns, so `car_xyz` and the start check read it unchanged. `--car-route wheels` keeps
+/// the old route; any `/route?query` is taken as written.
+static CAR_ROUTE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+fn car_route() -> &'static str {
+    CAR_ROUTE.get().map(String::as_str).unwrap_or("/carlog?ms=100")
+}
+
+fn car_route_arg(v: Option<&str>) -> Result<String, String> {
+    match v {
+        None | Some("carlog") => Ok("/carlog?ms=100".to_string()),
+        Some("wheels") => Ok("/wheels?ms=100".to_string()),
+        Some(r) if r.starts_with('/') => Ok(r.to_string()),
+        Some(other) => Err(format!("--car-route {other}: carlog, wheels or a /route")),
+    }
+}
+
 fn car_xyz(text: &str) -> String {
     for line in text.lines() {
         if line.starts_with('#') || line.starts_with("wall_ms") {
@@ -416,12 +439,12 @@ fn wait_for_car(g: &MyGame, name: &str, timeout: Duration) -> Result<String, Str
         if ctx(shootctl) == Some(3) {
             std::thread::sleep(Duration::from_millis(1000));
             if ctx(shootctl) == Some(3) {
-                let probe = get(shootctl, "/wheels?ms=100", 15);
+                let probe = get(shootctl, car_route(), 15);
                 if let Some(l) = probe.lines().find(|l| !l.starts_with('#') && !l.starts_with("wall_ms") && l.split('\t').count() > 4) {
                     let c: Vec<String> = l.split('\t').map(String::from).collect();
                     // the first car row ~1 s into the playground; read again once it has settled
                     std::thread::sleep(Duration::from_millis(2500));
-                    let again = get(shootctl, "/wheels?ms=100", 15);
+                    let again = get(shootctl, car_route(), 15);
                     let c2: Vec<String> = again.lines().find(|l| !l.starts_with('#') && !l.starts_with("wall_ms") && l.split('\t').count() > 4).map(|l| l.split('\t').map(String::from).collect()).unwrap_or(c);
                     car = format!("{} {} {}", c2[2], c2[3], c2[4]);
                     break;
@@ -451,6 +474,8 @@ pub fn bake_run(args: &[String]) -> Result<(), String> {
     let load_wait = Duration::from_secs(f("--load-wait").and_then(|s| s.parse().ok()).unwrap_or(100));
     let shots: usize = f("--shots").and_then(|s| s.parse().ok()).unwrap_or(0);
     let shot_every_ms: u64 = f("--shot-every-ms").and_then(|s| s.parse().ok()).unwrap_or(4000);
+    let route = car_route_arg(f("--car-route").as_deref())?;
+    let _ = CAR_ROUTE.set(route);
     if std::env::var("TM_LOCK_TOKEN").map(|t| t.is_empty()).unwrap_or(true) {
         return Err("no TM_LOCK_TOKEN in the environment — run this under `tmdrive run --purpose … -- tinyctl bake-run …`".into());
     }
@@ -655,7 +680,7 @@ pub fn lightmap_run(args: &[String]) -> Result<(), String> {
         };
         // --load-timeout S / --compute-timeout S ride through to the box side (tiny 22's 21k items
         // did not open in the default 420 s, 2026-10-01)
-        for k in ["--load-timeout", "--compute-timeout", "--load-wait", "--shots", "--shot-every-ms"] {
+        for k in ["--load-timeout", "--compute-timeout", "--load-wait", "--shots", "--shot-every-ms", "--car-route"] {
             if let Some(v) = f(k) {
                 cmd = cmd.replace(" > '", &format!(" {k} {v} > '"));
             }
