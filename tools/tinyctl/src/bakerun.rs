@@ -261,12 +261,9 @@ fn bake_one(g: &MyGame, map_wsl: &str, quality: u32, load_timeout: Duration, com
             }
         }
         let _ = std::fs::remove_file(&game_copy);
-        // the car is read: a client that dies on its way back to the menu (the harness's crash
-        // on leaving a map, Nov 2026 — the original maps too) does not undo the check; the
-        // caller sees the dead game and launches a fresh one for the next map
-        if let Err(e) = g.to_menu() {
-            println!("  {name}: after the check: {e} (the check stands)");
-        }
+        // the car is read: no trip back to the menu (the client dies on the way out of a map —
+        // the harness's crash, Nov 2026, the original maps too — and the next launch then hangs
+        // as the launcher stub); the caller closes this game by PID and launches a fresh one
         return Ok(("-".into(), 0.0, car));
     }
     println!("  {name}: cache {dropped} dropped; /editmap: {}", get(shootctl, "/editmap", 30));
@@ -584,6 +581,12 @@ pub fn bake_run(args: &[String]) -> Result<(), String> {
                 Ok((saved, secs, car)) => {
                     if car.starts_with("NO VEHICLE") {
                         game = None;
+                    }
+                    if check_only {
+                        // closed by PID right after the check (no menu trip, see bake_one), then
+                        // 25 s for Steam to count it gone before the next launch
+                        game = None;
+                        std::thread::sleep(Duration::from_secs(25));
                     }
                     ok += 1;
                     format!("{m}\t{saved}\tok\t{secs:.0}\t{car}\n")
