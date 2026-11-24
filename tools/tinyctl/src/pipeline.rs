@@ -13,6 +13,7 @@
 //!                  [--club 43788] [--out-root /tmp/u10s/out] [--tag u10s] [--out-prefix U10S]
 //!                  [--recipe /tmp/u10s/recipe.env] [--env K=V …] [--frames-dir /tmp/u10s/frames]
 //!                  [--tracker /tmp/u10s/tracker.tsv] [--no-shoot] [--no-publish] [--fresh]
+//!                  [--max-bytes N | --caps FILE (per map: "NN … BYTES" lines)]
 //! ```
 //!
 //! Every step's failure ends that map's row (`FAILED <step>: <why>`) and the
@@ -137,7 +138,16 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         // --reuse-build: a map already built into the build dir (e.g. the one that
         // was published) is shot/published as it is, not rebuilt
         let reuse = tmmaps::cli::has(args, "--reuse-build") && tiny.exists();
-        let max_bytes: Option<u64> = f("--max-bytes").and_then(|v| v.parse().ok());
+        // --caps FILE: one cap per map ("NN BYTES …" lines, `#` comments) over --max-bytes — the
+        // TRUE cap of a lit file differs per map (26 214 400 − margin − (new chunk − the source's
+        // chunk the unlit file still carries), Giant Fall x4 2026-11-24)
+        let max_bytes: Option<u64> = f("--caps")
+            .and_then(|p| std::fs::read_to_string(&p).ok())
+            .and_then(|t| t.lines().filter(|l| !l.trim_start().starts_with('#')).find_map(|l| {
+                let mut w = l.split_whitespace();
+                (w.next() == Some(nn.as_str())).then(|| w.last().and_then(|v| v.parse().ok())).flatten()
+            }))
+            .or_else(|| f("--max-bytes").and_then(|v| v.parse().ok()));
         let build_res = if reuse {
             println!("{nn}: reusing {}", tiny.display());
             Ok(())
