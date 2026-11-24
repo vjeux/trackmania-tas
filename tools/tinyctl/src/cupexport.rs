@@ -187,6 +187,17 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     // "seems off" to the cup uploader (Danyy via Everios96, 2026-10-30 02:17);
     // `--file-names fetch` keeps the fetched names
     let fetch_names = f("--file-names").map(|v| v == "fetch").unwrap_or(false);
+    // Two maps of one campaign can carry the same NAME (a rehunt's new-uid copy next to
+    // the old one: Tiny 241 in Part 10, 2026-11-24): named by map name, the second file
+    // overwrote the first while the manifest listed both. Refuse before writing anything.
+    if !fetch_names {
+        let mut seen: std::collections::BTreeMap<String, String> = Default::default();
+        for (_, hdr, _) in &wrs {
+            if let Some(prev) = seen.insert(hdr.name.trim().to_string(), hdr.uid.clone()) {
+                return Err(format!("campaign {camp}: two maps are named `{}` ({prev} and {}); map-named files would overwrite each other — rerun with `--file-names fetch` (the fetched NN- names are unique)", hdr.name.trim(), hdr.uid));
+            }
+        }
+    }
     for (p, hdr, wr) in &wrs {
         let fname = if fetch_names {
             p.file_name().unwrap().to_string_lossy().into_owned()
